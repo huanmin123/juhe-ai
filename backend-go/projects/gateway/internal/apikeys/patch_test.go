@@ -490,8 +490,8 @@ func TestAPIKeyPatchQuotaAndSchedule(t *testing.T) {
 	}
 	revision = dataMap(t, scheduled)["revision"].(string)
 
-	// A schedule that denies `now` (past date range) forces status → disabled;
-	// the schedule entry precedes the status entry.
+	// A schedule that denies `now` (past date range) only closes the derived
+	// gate: status stays active（时间计划闸门与账户状态解耦设计 §4.2）。
 	expired := `{"expectedRevision":"` + revision + `","availabilitySchedule":{"enabled":true,"timezone":"UTC","mode":"allow_windows",
 		"windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"00:00","end":"23:59"}],
 		"dateRange":{"startDate":"2000-01-01","endDate":"2000-01-02"}}}`
@@ -500,11 +500,14 @@ func TestAPIKeyPatchQuotaAndSchedule(t *testing.T) {
 		t.Fatalf("expired schedule patch: %d %v", code, disabled)
 	}
 	fields = changedFieldsOf(t, disabled)
-	if len(fields) != 2 || fields[0] != "availabilitySchedule" || fields[1] != "status" {
+	if len(fields) != 1 || fields[0] != "availabilitySchedule" {
 		t.Fatalf("expired schedule changedFields: %v", fields)
 	}
-	if _, _, status, _, _, _, _, _ := patchRow(t, env, keyID); status != "disabled" {
-		t.Fatalf("schedule must disable the key: %v", status)
+	if _, _, status, _, _, _, _, _ := patchRow(t, env, keyID); status != "active" {
+		t.Fatalf("schedule must keep the key active: %v", status)
+	}
+	if gate := env.queryCell(t, `SELECT availability_schedule_gate FROM api_keys WHERE id = ?`, keyID); gate != "0" {
+		t.Fatalf("expired schedule must close the gate: %v", gate)
 	}
 	revision = dataMap(t, disabled)["revision"].(string)
 

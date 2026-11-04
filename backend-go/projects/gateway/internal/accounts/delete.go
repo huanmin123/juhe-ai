@@ -10,7 +10,7 @@ import (
 // Delete mirrors deleteAccountWithRelatedCleanupAsync (owner mode): the
 // scope-checked account is soft deleted (status='disabled', schedulable=0,
 // cooldown cleared, deleted_at/deleted_by stamped) together with its
-// authorization instances, tag bindings and name search terms. Authorization
+// authorization instances and tag bindings. Authorization
 // instances must go through the return flow instead. Before the soft delete
 // the account's resource-authorization chain (grants, sources, authorizations
 // and the quota scope bindings they produced) is revoked inside the same
@@ -111,7 +111,6 @@ func (s *Store) Delete(ctx context.Context, accountID string, access AccessScope
 			return false, err
 		}
 	}
-	s.deleteAccountNameSearchTermsForAccounts(ctx, tx, accountIDs)
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}

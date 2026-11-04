@@ -391,10 +391,11 @@ func TestCreateDeepseekApiKeyReservesHealthInputSnapshot(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-deepseek', 'deepseek', 'DeepSeek', 1, '["deepseek-v4.1-flash"]', ?, ?)`, now, now)
+	// 绑定断言要求目标行可计价（BUG-0344），夹具补 input/output 直价。
 	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
-		supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
+		supported_endpoint_modes_json, catalog_visible, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
 		VALUES ('mod-fixture-deepseek-v41f', 'deepseek', 'deepseek-v4.1-flash', 'deepseek-v4.1-flash',
-		'builtin', 'active', '["chat_json","chat_sse"]', false, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+		'builtin', 'active', '["chat_json","chat_sse"]', false, 1, 2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
 		ON CONFLICT DO NOTHING`)
 
 	healthModel := "deepseek-v4.1-flash"

@@ -46,8 +46,12 @@ CREATE TABLE IF NOT EXISTS juhe_usage.usage_records (
   output_image_tokens integer,
   cost_usd double precision,
   created_at text NOT NULL,
+  usage_stats_aggregated_at text,
+  client_ip_stats_aggregated_at text,
   PRIMARY KEY (created_at, id)
 );
+CREATE INDEX IF NOT EXISTS idx_usage_records_stats_pending ON juhe_usage.usage_records(created_at, id) WHERE usage_stats_aggregated_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_usage_records_client_ip_stats_pending ON juhe_usage.usage_records(created_at, id) WHERE client_ip_stats_aggregated_at IS NULL;
 CREATE TABLE IF NOT EXISTS juhe_stats.stats_job_state (
   scope_type text NOT NULL,
   scope_id text NOT NULL DEFAULT '',
@@ -74,14 +78,56 @@ CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_registry (
 CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_stats_daily (
   ip_hash text NOT NULL,
   stat_date text NOT NULL,
-  updated_at text NOT NULL,
+          request_count bigint NOT NULL DEFAULT 0,
+          success_count bigint NOT NULL DEFAULT 0,
+          error_count bigint NOT NULL DEFAULT 0,
+          input_tokens bigint NOT NULL DEFAULT 0,
+          output_tokens bigint NOT NULL DEFAULT 0,
+          cache_read_tokens bigint NOT NULL DEFAULT 0,
+          cache_read_cost_usd double precision NOT NULL DEFAULT 0,
+          cache_write_tokens bigint NOT NULL DEFAULT 0,
+          cache_write_1h_tokens bigint NOT NULL DEFAULT 0,
+          cache_write_cost_usd double precision NOT NULL DEFAULT 0,
+          thinking_tokens bigint NOT NULL DEFAULT 0,
+          input_image_tokens bigint NOT NULL DEFAULT 0,
+          output_image_tokens bigint NOT NULL DEFAULT 0,
+          total_cost_usd double precision NOT NULL DEFAULT 0,
+          duration_ms_sum bigint NOT NULL DEFAULT 0,
+          duration_ms_count bigint NOT NULL DEFAULT 0,
+          duration_ms_max bigint NOT NULL DEFAULT 0,
+          first_token_ms_sum bigint NOT NULL DEFAULT 0,
+          first_token_ms_count bigint NOT NULL DEFAULT 0,
+          last_used_at text,
+          last_error_at text,
+          updated_at text NOT NULL,
   PRIMARY KEY (ip_hash, stat_date)
 );
 CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_account_stats_daily (
   ip_hash text NOT NULL,
   account_id text NOT NULL,
   stat_date text NOT NULL,
-  updated_at text NOT NULL,
+          request_count bigint NOT NULL DEFAULT 0,
+          success_count bigint NOT NULL DEFAULT 0,
+          error_count bigint NOT NULL DEFAULT 0,
+          input_tokens bigint NOT NULL DEFAULT 0,
+          output_tokens bigint NOT NULL DEFAULT 0,
+          cache_read_tokens bigint NOT NULL DEFAULT 0,
+          cache_read_cost_usd double precision NOT NULL DEFAULT 0,
+          cache_write_tokens bigint NOT NULL DEFAULT 0,
+          cache_write_1h_tokens bigint NOT NULL DEFAULT 0,
+          cache_write_cost_usd double precision NOT NULL DEFAULT 0,
+          thinking_tokens bigint NOT NULL DEFAULT 0,
+          input_image_tokens bigint NOT NULL DEFAULT 0,
+          output_image_tokens bigint NOT NULL DEFAULT 0,
+          total_cost_usd double precision NOT NULL DEFAULT 0,
+          duration_ms_sum bigint NOT NULL DEFAULT 0,
+          duration_ms_count bigint NOT NULL DEFAULT 0,
+          duration_ms_max bigint NOT NULL DEFAULT 0,
+          first_token_ms_sum bigint NOT NULL DEFAULT 0,
+          first_token_ms_count bigint NOT NULL DEFAULT 0,
+          last_used_at text,
+          last_error_at text,
+          updated_at text NOT NULL,
   PRIMARY KEY (ip_hash, account_id, stat_date)
 );
 CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_usage_range_windows (

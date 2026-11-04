@@ -36,7 +36,7 @@ func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 		protocol string
 		path     string
 		// jsonOnly 响应为统一 chat JSON；SSE/images 等格式差异只要求请求
-		// 构造正确（响应语义差异覆盖在 neutral 断言中）。
+		// 构造正确（响应语义差异覆盖在 HTTP failure 断言中）。
 		requireSuccess bool
 	}{
 		{"chat_json", "openai", "/v1/chat/completions", true},
@@ -103,7 +103,7 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 	if result.Outcome != OutcomeUpstreamFailed {
 		t.Fatalf("transport failure outcome=%s err=%s", result.Outcome, result.ErrorCode)
 	}
-	// 响应内容不满足探活语义 → neutral protocol invalid。
+	// 响应内容不满足探活语义 → HTTP failure protocol invalid。
 	badBody := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte(`{"unrelated":true}`))
 	}))
@@ -111,10 +111,10 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 	wrong := w12dProbeInput(badBody.URL, "chat_json", "openai")
 	wrong.APIKeys[0].Credential.Ciphertext = testEnvelope(t, "s", `{"api_key":"sk"}`)
 	result = ProbeOpenAI(context.Background(), wrong, wrong.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: time.Second})
-	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
+	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
 		t.Fatalf("protocol invalid: %+v", result)
 	}
-	// 非 2xx → neutral http status。
+	// 非 2xx → HTTP failure http status。
 	errStatus := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusForbidden)
 	}))
@@ -122,7 +122,7 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 	forbidden := w12dProbeInput(errStatus.URL, "chat_json", "openai")
 	forbidden.APIKeys[0].Credential.Ciphertext = testEnvelope(t, "s", `{"api_key":"sk"}`)
 	result = ProbeOpenAI(context.Background(), forbidden, forbidden.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: time.Second})
-	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_http_status" {
+	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_http_status" {
 		t.Fatalf("http status: %+v", result)
 	}
 	// MaxResponseBytes 不足 → 响应过大失败。

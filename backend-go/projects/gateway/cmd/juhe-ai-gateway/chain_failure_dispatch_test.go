@@ -269,6 +269,51 @@ func TestChainFailureDispatcherGatewaySkipEnrichesAttempt(t *testing.T) {
 	}
 }
 
+// TestChainFailureDispatcherSystemQuota429GenericType：生产真实载荷（稳定额度
+// code + 通用 type=TooManyRequests）必须命中系统额度规则——失败分类为
+// explicit_policy（引擎据此跳过同账户 transient 重试），并写出系统规则审计
+// 元数据；修复前该组合被判为普通频控，走 opaque_http 与同账户重试。
+func TestChainFailureDispatcherSystemQuota429GenericType(t *testing.T) {
+	const body = `{"error":{"code":"AccountQuotaExceeded","message":"You have exceeded the 5-hour usage quota. It will reset at 2026-11-03 21:15:56 +0800 CST.","param":"","type":"TooManyRequests"}}`
+	response := failureDispatchUpstreamResponse(t, http.StatusTooManyRequests, "application/json", body)
+	sink := &failureDispatchAuditSink{}
+	effects := &recordingErrorPolicyEffects{}
+	dispatcher := &chainFailureDispatcher{effects: effects}
+
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	input.AuditCapture = gatewaydispatch.AuditCapture{Context: sink, Sink: sink}
+	input.Account = gatewaydispatch.AccountCandidate{
+		ID: "acc_quota", Name: "火山-ds", Type: "api_key",
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+	input.AccountStateMutationEnabled = true
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle failed upstream response: %v", err)
+	}
+	if result.Action != gatewaydispatch.FailedResponseActionSkipAccount {
+		t.Fatalf("action=%s want skip_account", result.Action)
+	}
+	if result.FailureKind != gatewaydispatch.FailureKindExplicitPolicy {
+		t.Fatalf("failureKind=%s want explicit_policy（否则引擎会走同账户 transient 重试）", result.FailureKind)
+	}
+	if result.KeyScopedFailure || result.PendingApiKeyFailure != nil {
+		t.Fatalf("single-key account must not rotate keys: %+v", result)
+	}
+	if effects.applyCalls != 1 || effects.recordCalls != 0 {
+		t.Fatalf("account-level write calls = apply %d / record %d, want 1 / 0", effects.applyCalls, effects.recordCalls)
+	}
+	matched := sink.metadataByLabel("account_error_policy_matched")
+	if matched == nil {
+		t.Fatal("system quota decision must be attributed in audit metadata")
+	}
+	if matched.metadata["ruleId"] != systemInsufficientQuotaRuleID ||
+		matched.metadata["ruleSource"] != "system" ||
+		matched.metadata["cooldownStatus"] != cooldownStatusRateLimited {
+		t.Fatalf("account_error_policy_matched = %+v", matched.metadata)
+	}
+}
+
 // TestChainFailureDispatcherGatewayBodyTruncated：失败体超过捕获上限时截断
 // （upstreamErrorBodyCaptureBytes），不吞掉 skip 决策。正文用内存读取器替换：
 // 单元边界是派发器的有界捕获，不依赖真实传输通道。
@@ -1130,6 +1175,9 @@ func TestChainErrorPolicySystemRuleMatrix(t *testing.T) {
 		{"403 非额度标识排除", http.StatusForbidden, `{"error":{"code":"content_policy_violation","message":"blocked"}}`, false},
 		{"429 不属于系统规则", http.StatusTooManyRequests, `{"error":{"code":"rate_limit_exceeded"}}`, false},
 		{"429 稳定额度码命中", http.StatusTooManyRequests, `{"error":{"code":"AccountQuotaExceeded","message":"You have exceeded the 5-hour usage quota. It will reset at 2026-11-01 19:13:27 +0800 CST."}}`, true},
+		{"429 火山方舟真实载荷（额度码+泛化 type）", http.StatusTooManyRequests, `{"error":{"code":"AccountQuotaExceeded","message":"You have exceeded the 5-hour usage quota. It will reset at 2026-11-03 21:15:56 +0800 CST.","param":"","type":"TooManyRequests"}}`, true},
+		{"429 频控码+泛化 type 排除", http.StatusTooManyRequests, `{"error":{"code":"AccountRateLimitExceeded","message":"Requests are too frequent.","type":"TooManyRequests"}}`, false},
+		{"429 额度码优先于频控 type", http.StatusTooManyRequests, `{"error":{"code":"AccountQuotaExceeded","message":"You have exceeded the 5-hour usage quota.","type":"rate_limit_exceeded"}}`, true},
 		{"429 余额耗尽码命中", http.StatusTooManyRequests, `{"error":{"code":"balance_exhausted","message":"密钥余额已用尽"}}`, true},
 		{"200 无决策", http.StatusOK, `{"error":{"code":"insufficient_quota"}}`, false},
 	}
@@ -1336,7 +1384,7 @@ func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL DEFAULT 'sys_owner',
 			protocol_code TEXT, protocol_version TEXT,
 			name TEXT NOT NULL DEFAULT '账户', type TEXT NOT NULL DEFAULT 'api_key',
-			status TEXT NOT NULL DEFAULT 'active', schedulable INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'active', schedulable INTEGER NOT NULL DEFAULT 1, availability_schedule_gate INTEGER,
 			config_revision INTEGER NOT NULL DEFAULT 1,
 			dispatch_revision INTEGER NOT NULL DEFAULT 1, last_health_success_at TEXT,
 			credentials_encrypted TEXT, cooldown_until TEXT,

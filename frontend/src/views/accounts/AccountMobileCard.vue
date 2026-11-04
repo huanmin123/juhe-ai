@@ -197,7 +197,10 @@ const proxyTooltip = computed(() => {
 const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || currentProxy.value?.enabled === false ? 'proxy-error' : ''))
 const prioritySuffix = computed(() => {
   if (!props.account.fallbackEnabled) return ''
-  return props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'
+  // 与 AccountStatusTag「降级备用 / 备用暂停」同源：时间计划闸门关闭（非时间段）时不算可调度。
+  const dispatchActive = props.account.effectiveAvailability?.available
+    ?? (props.account.status === 'active' && props.account.schedulable)
+  return dispatchActive ? '备用' : '备用暂停'
 })
 const actions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []

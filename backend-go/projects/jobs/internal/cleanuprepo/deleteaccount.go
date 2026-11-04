@@ -480,13 +480,11 @@ func (s *DeletedAccountStore) physicallyDelete(ctx context.Context, rootAccountI
 				return result, err
 			}
 		}
-		// 搜索索引与 API Key 运行态三表清理双方言：SQLite jobs 句柄未开
-		// foreign_keys pragma，FK CASCADE 不生效，必须与 PG 同语义显式
-		// DELETE（三表在双 schema 均存在）。
-		for _, table := range []string{"account_name_search_terms", "account_name_search_documents", "account_api_key_runtime_states"} {
-			if _, err = exec(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.table(table), s.Business.BindIn(len(chunk))), args...); err != nil {
-				return result, err
-			}
+		// API Key 运行态表清理双方言：SQLite jobs 句柄未开 foreign_keys
+		// pragma，FK CASCADE 不生效，必须与 PG 同语义显式 DELETE（该表在
+		// 双 schema 均存在）。
+		if _, err = exec(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.table("account_api_key_runtime_states"), s.Business.BindIn(len(chunk))), args...); err != nil {
+			return result, err
 		}
 	}
 	for _, chunk := range chunkValues(authorizationIDs, 900) {
@@ -811,12 +809,10 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
 			}
 		}
 		for _, chunk := range chunkValues(deletedIDs, 900) {
-			for _, table := range []string{"account_tag_bindings", "account_name_search_terms", "account_name_search_documents"} {
-				if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(
-					`DELETE FROM %s WHERE account_id IN (%s)`, s.table(table), s.Business.BindIn(len(chunk)))),
-					stringSliceToAny(chunk)...); err != nil {
-					return nil, err
-				}
+			if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(
+				`DELETE FROM %s WHERE account_id IN (%s)`, s.table("account_tag_bindings"), s.Business.BindIn(len(chunk)))),
+				stringSliceToAny(chunk)...); err != nil {
+				return nil, err
 			}
 		}
 	}

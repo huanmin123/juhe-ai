@@ -83,7 +83,7 @@ const fallbackTooltip = computed(() => dispatchFlagActive.value
   : '降级备用已保留；账户恢复可调度并参与调度后自动生效'
 )
 // 特供徽章只表达“恢复道加速”，不表达健康、可用性或调度优先级（设计 §4 展示边界）。
-const expeditedRecoveryTooltip = '特供恢复：中性封顶基准 1 分钟，实际 30–90 秒'
+const expeditedRecoveryTooltip = '特供恢复：持续失败复测基准 15 秒，实际 7.5–22.5 秒'
 const expeditedOverLimitTooltip = '特供账户数量已超过当前上限'
 
 const lockTag = computed(() => accountLockTag(props.account))

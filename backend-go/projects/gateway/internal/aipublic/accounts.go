@@ -665,13 +665,15 @@ func (d *Deps) addAccount(w http.ResponseWriter, r *http.Request) {
 	_ = itemValue
 }
 
-// findDuplicateAccount mirrors findTargetAccount: paged keyword lookup plus
-// provider/name equality. 目标 schema 不再持久化档案 ID（§2.1），重复判定去掉
-// profile 维度（同 owner + vendor + 分组 + 名称）。
+// findDuplicateAccount mirrors findTargetAccount: exact-name lookup plus
+// provider equality. 目标 schema 不再持久化档案 ID（§2.1），重复判定去掉
+// profile 维度（同 owner + vendor + 分组 + 名称）。ExactName 走精确匹配：
+// 不能用 Keyword 的包含匹配做候选窗口，否则同子串候选超过页大小会漏掉精确
+// 同名行并落到唯一索引冲突（500）。
 func (d *Deps) findDuplicateAccount(ctx context.Context, ownerID, providerCode, profileID, groupID, name string) bool {
 	_ = profileID
 	result, err := d.AiAccounts.ListPage(ctx, accounts.AccessScope{ViewerID: ownerID}, accounts.ListOptions{
-		Page: 1, PageSize: 20, Keyword: name,
+		Page: 1, PageSize: 20, ExactName: name,
 		ProviderCode: providerCode, GroupID: groupID,
 	})
 	if err != nil {

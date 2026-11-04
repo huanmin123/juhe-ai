@@ -124,17 +124,6 @@ var ddl = []string{
 		created_at_ms INTEGER NOT NULL,
 		updated_at_ms INTEGER NOT NULL,
 		UNIQUE (projection_key, dedupe_key))`,
-	`CREATE TABLE IF NOT EXISTS account_name_search_terms (
-		account_id TEXT NOT NULL,
-		system_account_id TEXT NOT NULL,
-		term TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT '',
-		PRIMARY KEY (account_id, term))`,
-	`CREATE TABLE IF NOT EXISTS account_name_search_documents (
-		account_id TEXT PRIMARY KEY,
-		system_account_id TEXT NOT NULL,
-		normalized_name TEXT NOT NULL,
-		updated_at TEXT NOT NULL DEFAULT '')`,
 	`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (
 		system_account_id TEXT NOT NULL,
 		scope_type TEXT NOT NULL,

@@ -615,6 +615,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       schedulable integer NOT NULL DEFAULT 1,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
+      availability_schedule_gate integer,
       notes text,
       account_expires_at text,
       last_used_at text,
@@ -860,31 +861,6 @@ var postgresSchemaBusinessTables = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE TABLE IF NOT EXISTS account_name_search_terms (
-      account_id text NOT NULL,
-      system_account_id text NOT NULL,
-      term text NOT NULL,
-      created_at text NOT NULL,
-      PRIMARY KEY (account_id, term),
-      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
-    )`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE TABLE IF NOT EXISTS account_name_search_documents (
-      account_id text PRIMARY KEY,
-      system_account_id text NOT NULL,
-      normalized_name text NOT NULL,
-      updated_at text NOT NULL,
-      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
-    )`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
       id text PRIMARY KEY,
       system_account_id text NOT NULL,
@@ -1056,7 +1032,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       last_used_at_sort_key text,
       created_at_sort_key text NOT NULL,
       access_type_sort_key text NOT NULL,
-      search_index_complete integer NOT NULL DEFAULT 0 CHECK (search_index_complete IN (0, 1)),
       authorization_quota_exceeded integer NOT NULL DEFAULT 0 CHECK (authorization_quota_exceeded IN (0, 1)),
       PRIMARY KEY (viewer_system_account_id, account_id),
       FOREIGN KEY (viewer_system_account_id, account_id)
@@ -1076,21 +1051,6 @@ var postgresSchemaBusinessTables = []PGStatement{
         REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)
         ON DELETE CASCADE,
       FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE
-    )`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE TABLE IF NOT EXISTS account_list_availability_projection_search_terms (
-      viewer_system_account_id text NOT NULL,
-      account_id text NOT NULL,
-      term text NOT NULL,
-      name_sort_key text NOT NULL,
-      created_at_sort_key text NOT NULL,
-      PRIMARY KEY (viewer_system_account_id, account_id, term),
-      FOREIGN KEY (viewer_system_account_id, account_id)
-        REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)
-        ON DELETE CASCADE
     )`,
 	},
 	{
@@ -1354,6 +1314,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       quota_limits_json text,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
+      availability_schedule_gate integer,
       last_used_at text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -1589,6 +1550,23 @@ $$`,
 		SchemaName: "juhe_business",
 		Source:     "account-rpm-limit-pg-column",
 		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS rpm_limit integer NOT NULL DEFAULT 0`,
+	},
+	{
+		// 时间计划闸门（时间计划闸门与账户状态解耦设计 §3.1）：accounts
+		// availability_schedule_gate 列的存量库守卫，模式同上。三态
+		// NULL=无计划 / 1=时段内 / 0=时段外；存量行保持 NULL（等价「无计划」），
+		// 行为零变化。纯 DDL 增量，占用 SchemaRevision 15 空号、不入升级账本
+		// （账本设计 §6.4）。存量「计划造成的 disabled」不设数据步骤：同步任务
+		// 只补闸门、不改写 status，需在发布窗口人工启用一次（T112）。
+		SchemaName: "juhe_business",
+		Source:     "account-availability-schedule-gate-pg-column",
+		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS availability_schedule_gate integer`,
+	},
+	{
+		// 同上，api_keys 面（同一设计 §3.1）。
+		SchemaName: "juhe_business",
+		Source:     "api-key-availability-schedule-gate-pg-column",
+		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS availability_schedule_gate integer`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -2073,22 +2051,6 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION account_list_availability_name_search_dirty_trigger()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = juhe_business, public
-AS $function$
-DECLARE
-  v_account_id text;
-BEGIN
-  v_account_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.account_id ELSE NEW.account_id END;
-  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(
-    ARRAY[v_account_id], 'account_name_search_changed'
-  );
-  RETURN COALESCE(NEW, OLD);
-END;
-$function$;
-
 CREATE OR REPLACE FUNCTION account_list_availability_runtime_state_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -2185,14 +2147,6 @@ DROP TRIGGER IF EXISTS account_list_availability_tags ON account_tags;
 CREATE TRIGGER account_list_availability_tags
 AFTER UPDATE OR DELETE ON account_tags
 FOR EACH ROW EXECUTE FUNCTION account_list_availability_tags_dirty_trigger();
-DROP TRIGGER IF EXISTS account_list_availability_name_search_documents ON account_name_search_documents;
-CREATE TRIGGER account_list_availability_name_search_documents
-AFTER INSERT OR UPDATE OR DELETE ON account_name_search_documents
-FOR EACH ROW EXECUTE FUNCTION account_list_availability_name_search_dirty_trigger();
-DROP TRIGGER IF EXISTS account_list_availability_name_search_terms ON account_name_search_terms;
-CREATE TRIGGER account_list_availability_name_search_terms
-AFTER INSERT OR UPDATE OR DELETE ON account_name_search_terms
-FOR EACH ROW EXECUTE FUNCTION account_list_availability_name_search_dirty_trigger();
 DROP TRIGGER IF EXISTS account_list_availability_api_key_runtime ON account_api_key_runtime_states;
 CREATE TRIGGER account_list_availability_api_key_runtime
 AFTER INSERT OR UPDATE OR DELETE ON account_api_key_runtime_states

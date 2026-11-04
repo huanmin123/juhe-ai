@@ -35,4 +35,3 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 		t.Fatal("垃圾密文 FindRotationAccount 必须报错")
 	}
 }
-

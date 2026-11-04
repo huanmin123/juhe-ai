@@ -629,6 +629,16 @@ func (d *fakeCompactDispatcher) DispatchCompactSummary(_ context.Context, input 
 	return d.exchange, d.err
 }
 
+// fakeGatewayClientRetryError 实现 GatewayClientRetryError，模拟派发层锁死
+// 保持错误在压缩摘要消费面的识别（不 import 派发包，避免循环依赖）。
+type fakeGatewayClientRetryError struct{}
+
+func (fakeGatewayClientRetryError) Error() string { return "account lock hold" }
+
+func (fakeGatewayClientRetryError) GatewayClientRetryMessage() string {
+	return "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试"
+}
+
 func compactPreflightService(t *testing.T) (*CompactPreflightService, *ChatBridgeStateService, *ContextRequestStateRegistry, *recordedSink, *fakeCompactDispatcher) {
 	t.Helper()
 	bridge, registry, sink, _, _ := newBridgeService(t)
@@ -804,6 +814,33 @@ func TestApplyChatBridgeCompactPreflightFailurePaths(t *testing.T) {
 		}
 		if failure.ResponsePayload.Error.Message != "上游摘要请求失败：boom" {
 			t.Errorf("message = %q", failure.ResponsePayload.Error.Message)
+		}
+	})
+
+	t.Run("dispatch lock hold 503 client retry", func(t *testing.T) {
+		service, _, req, dispatcher := setup(t)
+		dispatcher.err = fakeGatewayClientRetryError{}
+		sink := &recordedSink{}
+		service.Sink = sink
+		result, err := service.ApplyChatBridgeCompactPreflight(context.Background(), CompactPreflightInput{
+			Req: req, AuditCapture: &recordedAudit{},
+			UsageContext:    gatewaypreauth.GatewayFailureUsageContext{},
+			SystemAccountID: "sys", APIKeyID: "key", GroupID: "group",
+			DispatchAccounts: []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
+			Signal:           context.Background(),
+		})
+		if err != nil || !result.Completed {
+			t.Fatalf("result = %+v err %v", result, err)
+		}
+		failure, ok := sink.lastFailure()
+		if !ok || failure.Audit.ErrorCode != gatewaypreauth.GatewayStreamClientRetryErrorCode || failure.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("failure = %+v", failure.Audit)
+		}
+		if failure.ResponsePayload.Error.Message != "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试" {
+			t.Errorf("message = %q", failure.ResponsePayload.Error.Message)
+		}
+		if failure.Audit.ErrorPhase != "dispatch" {
+			t.Errorf("phase = %q", failure.Audit.ErrorPhase)
 		}
 	})
 

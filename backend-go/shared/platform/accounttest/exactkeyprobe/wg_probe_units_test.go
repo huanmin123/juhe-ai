@@ -418,24 +418,24 @@ func TestProbeOpenAIFailureLadder(t *testing.T) {
 	if result := ProbeOpenAI(context.Background(), proxyInput, envelope, ProbeOptions{Secret: secret}); result.ErrorCode != "proxy_unavailable" {
 		t.Fatalf("坏代理必须报 proxy_unavailable: %#v", result)
 	}
-	// 上游 5xx → neutral。
+	// 上游 5xx → HTTP failure。
 	errorServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "boom", http.StatusInternalServerError)
 	}))
 	defer errorServer.Close()
 	errorInput := testInput(errorServer.URL, "chat_json")
-	if result := ProbeOpenAI(context.Background(), errorInput, envelope, ProbeOptions{Secret: secret}); result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_http_status" {
-		t.Fatalf("5xx 必须 neutral: %#v", result)
+	if result := ProbeOpenAI(context.Background(), errorInput, envelope, ProbeOptions{Secret: secret}); result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_http_status" {
+		t.Fatalf("5xx 必须 HTTP failure: %#v", result)
 	}
-	// 协议不满足 → neutral。
+	// 协议不满足 → HTTP failure。
 	badProtocol := testInput(errorServer.URL, "chat_json")
 	badProtocolServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte(`{"nope":true}`))
 	}))
 	defer badProtocolServer.Close()
 	badProtocol.BaseURL = badProtocolServer.URL
-	if result := ProbeOpenAI(context.Background(), badProtocol, envelope, ProbeOptions{Secret: secret}); result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
-		t.Fatalf("协议不满足必须 neutral: %#v", result)
+	if result := ProbeOpenAI(context.Background(), badProtocol, envelope, ProbeOptions{Secret: secret}); result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
+		t.Fatalf("协议不满足必须 HTTP failure: %#v", result)
 	}
 	// 连接拒绝 → 上游失败族（dial guard 可能改写错误包装，分类落在
 	// upstream_connection / upstream_connection_refused 均为上游连接失败语义）。

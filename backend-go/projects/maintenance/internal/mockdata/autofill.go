@@ -311,11 +311,9 @@ var autofillSkipExactTables = map[string]string{
 	"openai_compatible_vector_stores":            "域业务表：seedBusiness 写入向量库",
 	"openai_compatible_vector_store_files":       "域业务表：seedBusiness 写入向量库文件",
 	"openai_compatible_vector_store_chunks":      "域业务表：seedBusiness 写入向量库分块",
-	"account_name_search_documents":              "域业务表：seedBusiness 写入账户名搜索索引文档",
-	"account_name_search_terms":                  "域业务表：seedBusiness 写入账户名搜索词条",
 	"account_list_availability_projection_dependency_health": "域业务表：seedBusiness 写入依赖健康行（CHECK 锁定 dependency_name='runtime_state'，占位值必违约）",
 	// —— 域显式写入的业务表（usage / stats / observability / codex-model-check；
-// chat_* 行随 my-chat 会话面退役移除——演练场设计 §8）。
+	// chat_* 行随 my-chat 会话面退役移除——演练场设计 §8）。
 	"usage_records":               "域业务表：seedUsage 写入使用记录（经日分区）",
 	"usage_record_shards":         "域业务表：seedUsage 写入分片登记",
 	"usage_record_shard_entries":  "域业务表：seedUsage 写入分片条目",
@@ -376,7 +374,6 @@ var autofillSkipExactTables = map[string]string{
 	"account_list_availability_projections":              "运行时投影族：管理列表可用性投影由 jobs circuitstore 重建",
 	"account_list_availability_projection_index":         "运行时投影族：可用性投影索引由 jobs circuitstore 重建",
 	"account_list_availability_projection_tags":          "运行时投影族：可用性投影标签由 jobs circuitstore 重建",
-	"account_list_availability_projection_search_terms":  "运行时投影族：可用性投影搜索词条由 jobs circuitstore 重建",
 	"account_list_availability_projection_viewer_health": "运行时投影族：查看者健康行由表触发器随访问维护",
 	"account_list_availability_runtime_overlays":         "运行时对账族：可用性并发 overlay 由常驻对账写回",
 	"account_list_availability_dirty":                    "运行时脏队列：可用性脏标记由触发器写入、jobs circuitstore 消费后即空",

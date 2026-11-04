@@ -62,7 +62,7 @@ func TestRecordProbeUsage(t *testing.T) {
 		wantSucc  bool
 	}{
 		{"success", exactkeyprobe.OutcomeSuccess, 1, true},
-		{"neutral", exactkeyprobe.OutcomeNeutral, 1, false},
+		{"http failure", exactkeyprobe.OutcomeHTTPFailure, 1, false},
 		{"upstream failure", exactkeyprobe.OutcomeUpstreamFailed, 1, false},
 		{"stale skipped", OutcomeStale, 0, false},
 		{"task failure skipped", exactkeyprobe.OutcomeTaskFailed, 0, false},

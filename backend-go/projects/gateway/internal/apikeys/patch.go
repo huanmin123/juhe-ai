@@ -489,7 +489,6 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		}
 	}
 
-	var effectiveSchedule *AvailabilitySchedule
 	if input.HasSchedule {
 		// Stored-row parse failures surface as plain errors (500) exactly like
 		// Node's raw parse/normalize throws inside patchApiKeyAsync.
@@ -501,7 +500,6 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		if err != nil {
 			return nil, err
 		}
-		effectiveSchedule = schedule
 		nextScheduleJSONRaw, nextScheduleValid := ScheduleJSON(schedule)
 		currentScheduleJSONRaw, currentScheduleValid := ScheduleJSON(currentSchedule)
 		if nextScheduleJSONRaw != currentScheduleJSONRaw || nextScheduleValid != currentScheduleValid {
@@ -514,26 +512,20 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 				nextCheckParam = rawNextCheck
 			}
 			addChange("availabilitySchedule", scheduleOrNil(currentSchedule), scheduleOrNil(schedule))
-			setClauses = append(setClauses, "availability_schedule_json = ?", "availability_schedule_next_check_at = ?")
-			setArgs = append(setArgs, nullStringParam(nextScheduleJSON), nextCheckParam)
+			// 计划变化只重算派生闸门（时间计划闸门与账户状态解耦设计 §4.2）：
+			// 计划清除 / 未启用写 NULL（闸门恒开），否则按当前时刻落 1/0；
+			// status 只由用户启停决定，不再被计划覆盖。
+			setClauses = append(setClauses, "availability_schedule_json = ?",
+				"availability_schedule_next_check_at = ?", "availability_schedule_gate = ?")
+			setArgs = append(setArgs, nullStringParam(nextScheduleJSON), nextCheckParam, ScheduleGateValue(schedule, now))
 			rowPatch["availabilitySchedule"] = scheduleOrNil(schedule)
 		}
 	}
 
-	if input.HasStatus || input.HasSchedule {
-		requestedStatus := status
-		if input.HasStatus {
-			if input.Status != "active" && input.Status != "disabled" {
-				return nil, &ValidationError{Message: "API Key 状态无效"}
-			}
-			requestedStatus = input.Status
-		}
-		if input.HasSchedule {
-			// apiKeyStatusForScheduleMutation: the schedule override wins when
-			// it resolves for `now`, otherwise the requested status stands.
-			if override, ok := ScheduleStatus(effectiveSchedule, now); ok {
-				requestedStatus = override
-			}
+	if input.HasStatus {
+		requestedStatus := input.Status
+		if requestedStatus != "active" && requestedStatus != "disabled" {
+			return nil, &ValidationError{Message: "API Key 状态无效"}
 		}
 		if requestedStatus != status {
 			addChange("status", status, requestedStatus)
@@ -608,7 +600,10 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 				outcome.ValidationCacheError = err
 			}
 		}
-		if containsString(changed, "name") {
+		if containsString(changed, "name") || containsString(changed, "availabilitySchedule") {
+			// 计划变化会改写派生闸门 availability_schedule_gate（时间计划闸门与
+			// 账户状态解耦设计 §5.2）：复用既有运行时缓存失效链，让网关立即按
+			// 新闸门鉴权，不等 TTL。
 			s.inval.InvalidateRuntime(id, ReasonAPIKeyUpdated)
 		}
 		if containsString(changed, "quotaLimits") {

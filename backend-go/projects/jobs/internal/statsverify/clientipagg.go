@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // Client-ip daily aggregation mirroring
@@ -16,9 +18,13 @@ import (
 //   - cursorSafetyDelaySeconds = 15: rows with created_at <= now-15s are
 //     eligible;
 //   - traffic_source IN ('runtime_recovery_probe','cooldown_retest') is
-//     excluded from aggregation but still advances the cursor via the
-//     "ignored cursor" path;
-//   - cursor ordering is (created_at, id), lag is floor((now-cursor)/1000).
+//     excluded from aggregation but still consumed (its marker is set), so it
+//     never blocks the pending queue;
+//   - batch selection is driven by the consumption marker
+//     (client_ip_stats_aggregated_at IS NULL), not by the cursor: a record
+//     written after its created_at has been passed by the cursor is still
+//     consumed (BUG-0345). The cursor is diagnostic only, ordering is
+//     (created_at, id), lag is the age of the oldest still-pending record.
 //
 // Write rules (writeClientIpStatsAggregatesFromUsageRowsAsync): registry
 // upsert keeps min(first_seen)/max(last_seen); daily tables accumulate with
@@ -26,9 +32,8 @@ import (
 // ip_hash marks both range-window dirty tables and the current windows go
 // stale.
 const (
-	clientIpStatsJobName           = "client_ip_stats_aggregation"
-	clientIpCursorSafetyDelay      = 15 * time.Second
-	clientIpExcludedTrafficSources = "('runtime_recovery_probe', 'cooldown_retest')"
+	clientIpStatsJobName      = "client_ip_stats_aggregation"
+	clientIpCursorSafetyDelay = 15 * time.Second
 )
 
 // ClientIPStatsAggregationJobState mirrors the global stats_job_state row
@@ -62,26 +67,48 @@ func (s *Store) AggregateClientIPStatsBatch(ctx context.Context, limit int, now 
 	}
 	defer tx.Rollback()
 
+	// 行锁仍要拿：它把并发实例串行化；游标本身不再参与选行，只用于水位列
+	// 首次启用时的存量结算与诊断。
 	state, err := s.loadClientIPJobState(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
-	rows, err := s.selectClientIPUsageRecords(ctx, tx, safeCreatedBefore, state.CursorCreatedAt, state.CursorID, batchLimit)
+	bootstrapped, err := statsagg.BootstrapUsageRecordConsumption(ctx, tx, statsagg.UsageRecordConsumptionClientIPStats, updatedAt, state.CursorCreatedAt, state.CursorID)
+	if err != nil {
+		return 0, err
+	}
+	if bootstrapped {
+		// 结算只处理「旧游标已覆盖」的行；游标之后的行仍是待消费积压，lag 照实报。
+		lagSeconds, err := s.pendingClientIPStatsLagSeconds(ctx, tx, now)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.updateClientIPJobState(ctx, tx, clientIPJobStateUpdate{
+			LastSuccessAt: updatedAt,
+			LagSeconds:    &lagSeconds,
+			UpdatedAt:     updatedAt,
+		}); err != nil {
+			return 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	rows, err := s.selectClientIPUsageRecords(ctx, tx, safeCreatedBefore, batchLimit)
 	if err != nil {
 		return 0, err
 	}
 
 	if len(rows) == 0 {
-		ignoredCursor, lagSeconds, err := s.latestIgnoredCursorAndLag(ctx, tx, safeCreatedBefore, state.CursorCreatedAt, state.CursorID, now)
+		lagSeconds, err := s.pendingClientIPStatsLagSeconds(ctx, tx, now)
 		if err != nil {
 			return 0, err
 		}
 		if err := s.updateClientIPJobState(ctx, tx, clientIPJobStateUpdate{
-			CursorCreatedAt: nilIfEmpty(ignoredCursor.CreatedAt),
-			CursorID:        nilIfEmpty(ignoredCursor.ID),
-			LastSuccessAt:   updatedAt,
-			LagSeconds:      &lagSeconds,
-			UpdatedAt:       updatedAt,
+			LastSuccessAt: updatedAt,
+			LagSeconds:    &lagSeconds,
+			UpdatedAt:     updatedAt,
 		}); err != nil {
 			return 0, err
 		}
@@ -91,16 +118,35 @@ func (s *Store) AggregateClientIPStatsBatch(ctx context.Context, limit int, now 
 		return 0, nil
 	}
 
-	if err := s.writeClientIPAggregates(ctx, tx, rows, updatedAt, location, now); err != nil { //nolint:staticcheck // windows derived inside from the loaded location
+	// 被排除的流量来源不参与聚合，但同样消费（打水位），否则它们会永久留在
+	// 待消费队列里，把积压读数与清理地板一起钉死。
+	aggregatable := make([]UsageStatsRecordRow, 0, len(rows))
+	for _, row := range rows {
+		if clientIPTrafficSourceExcluded(row.TrafficSource) {
+			continue
+		}
+		aggregatable = append(aggregatable, row)
+	}
+	if err := s.writeClientIPAggregates(ctx, tx, aggregatable, updatedAt, location, now); err != nil { //nolint:staticcheck // windows derived inside from the loaded location
+		return 0, err
+	}
+	consumedIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		consumedIDs = append(consumedIDs, row.ID)
+	}
+	if err := statsagg.MarkUsageRecordsConsumed(ctx, tx, statsagg.UsageRecordConsumptionClientIPStats, consumedIDs, updatedAt); err != nil {
 		return 0, err
 	}
 	last := rows[len(rows)-1]
-	cursorLag := cursorLagSeconds(last.CreatedAt, now)
+	lagSeconds, err := s.pendingClientIPStatsLagSeconds(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
 	if err := s.updateClientIPJobState(ctx, tx, clientIPJobStateUpdate{
 		CursorCreatedAt: &last.CreatedAt,
 		CursorID:        &last.ID,
 		LastSuccessAt:   updatedAt,
-		LagSeconds:      &cursorLag,
+		LagSeconds:      &lagSeconds,
 		UpdatedAt:       updatedAt,
 	}); err != nil {
 		return 0, err
@@ -111,15 +157,30 @@ func (s *Store) AggregateClientIPStatsBatch(ctx context.Context, limit int, now 
 	return len(rows), nil
 }
 
+// clientIPTrafficSourceExcluded 判定该流量来源是否不参与 client-ip 聚合。
+func clientIPTrafficSourceExcluded(trafficSource string) bool {
+	switch trafficSource {
+	case "runtime_recovery_probe", "cooldown_retest":
+		return true
+	}
+	return false
+}
+
+// pendingClientIPStatsLagSeconds 返回待消费积压的年龄（最旧未消费记录的
+// created_at 到现在，秒）；无积压为 0。旧口径用「最后消费游标」算 lag，
+// 晚到记录会让它永远显示接近 0（BUG-0345 的掩盖口径）。
+func (s *Store) pendingClientIPStatsLagSeconds(ctx context.Context, q queryer, now time.Time) (int, error) {
+	oldest, ok, err := statsagg.OldestPendingUsageRecordCreatedAt(ctx, q, statsagg.UsageRecordConsumptionClientIPStats)
+	if err != nil || !ok {
+		return 0, err
+	}
+	return cursorLagSeconds(oldest, now), nil
+}
+
 // AggregateClientIPStatsBatchState exposes the persisted global cursor for
 // diagnostics and tests.
 func (s *Store) AggregateClientIPStatsBatchState(ctx context.Context) (ClientIPStatsAggregationJobState, error) {
 	return s.loadClientIPJobState(ctx, s.db)
-}
-
-type cursorTuple struct {
-	CreatedAt string
-	ID        string
 }
 
 type clientIPJobStateUpdate struct {
@@ -203,25 +264,24 @@ const clientIPUsageRecordColumns = `
 	cost_usd, created_at
 `
 
-// selectClientIPUsageRecords mirrors the batch cursor query: excluded
-// traffic sources are skipped, ordering is (created_at, id).
-func (s *Store) selectClientIPUsageRecords(ctx context.Context, q queryer, safeCreatedBefore, cursorCreatedAt, cursorID string, batchLimit int) ([]UsageStatsRecordRow, error) {
+// selectClientIPUsageRecords 取最旧的一批未消费记录：选行只看消费水位列
+// （client_ip_stats_aggregated_at IS NULL），不再按游标区间推进，因此记录晚到
+// 多久都不会被永久越过；被排除的流量来源也在这批里，交由调用方过滤后统一标记。
+func (s *Store) selectClientIPUsageRecords(ctx context.Context, q queryer, safeCreatedBefore string, batchLimit int) ([]UsageStatsRecordRow, error) {
 	query := fmt.Sprintf(`
 		SELECT %s
 		FROM %s
 		WHERE created_at <= %s
-		  AND traffic_source NOT IN %s
-		  AND (created_at > %s OR (created_at = %s AND id > %s))
+		  AND client_ip_stats_aggregated_at IS NULL
 		ORDER BY created_at ASC, id ASC
 		LIMIT %s
 	`,
 		clientIPUsageRecordColumns,
 		s.usageTable("usage_records"),
-		s.placeholder(1), clientIpExcludedTrafficSources,
-		s.placeholder(2), s.placeholder(3), s.placeholder(4),
-		s.placeholder(5),
+		s.placeholder(1),
+		s.placeholder(2),
 	)
-	rows, err := q.QueryContext(ctx, query, safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorID, batchLimit)
+	rows, err := q.QueryContext(ctx, query, safeCreatedBefore, batchLimit)
 	if err != nil {
 		return nil, fmt.Errorf("读取 client-ip 统计 usage_records 失败: %w", err)
 	}
@@ -304,70 +364,6 @@ func (s *Store) selectClientIPUsageRecords(ctx context.Context, q queryer, safeC
 		return nil, fmt.Errorf("遍历 client-ip 统计 usage_records 失败: %w", err)
 	}
 	return result, nil
-}
-
-// latestIgnoredCursorAndLag mirrors latestIgnoredUsageRecordCursor +
-// latestUsageRecordLagSeconds: when no aggregatable rows exist the cursor
-// still advances past excluded traffic sources and the lag reflects the
-// newest eligible record.
-func (s *Store) latestIgnoredCursorAndLag(ctx context.Context, q queryer, safeCreatedBefore, cursorCreatedAt, cursorID string, now time.Time) (cursorTuple, int, error) {
-	ignoredQuery := fmt.Sprintf(`
-		SELECT created_at, id
-		FROM %s
-		WHERE created_at <= %s
-		  AND traffic_source IN %s
-		  AND (created_at > %s OR (created_at = %s AND id > %s))
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1
-	`, s.usageTable("usage_records"), s.placeholder(1), clientIpExcludedTrafficSources,
-		s.placeholder(2), s.placeholder(3), s.placeholder(4))
-	var ignored cursorTuple
-	var ignoredCreatedAt, ignoredID any
-	err := q.QueryRowContext(ctx, ignoredQuery, safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorID).Scan(&ignoredCreatedAt, &ignoredID)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Node leaves cursor fields NULL in this branch (COALESCE keeps the
-		// previous cursor).
-		ignored = cursorTuple{}
-	} else if err != nil {
-		return cursorTuple{}, 0, fmt.Errorf("读取 client-ip 统计忽略游标失败: %w", err)
-	} else {
-		ignored.CreatedAt, err = sqlText(ignoredCreatedAt)
-		if err != nil {
-			return cursorTuple{}, 0, err
-		}
-		if _, err := ParseRFC3339(ignored.CreatedAt, "usage_records.created_at"); err != nil {
-			return cursorTuple{}, 0, err
-		}
-		if ignored.ID, err = sqlText(ignoredID); err != nil {
-			return cursorTuple{}, 0, err
-		}
-	}
-
-	lagQuery := fmt.Sprintf(`
-		SELECT created_at
-		FROM %s
-		WHERE created_at <= %s
-		  AND traffic_source NOT IN %s
-		  AND (created_at > %s OR (created_at = %s AND id > %s))
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1
-	`, s.usageTable("usage_records"), s.placeholder(1), clientIpExcludedTrafficSources,
-		s.placeholder(2), s.placeholder(3), s.placeholder(4))
-	var latest any
-	lagSeconds := 0
-	err = q.QueryRowContext(ctx, lagQuery, safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorID).Scan(&latest)
-	if errors.Is(err, sql.ErrNoRows) {
-		lagSeconds = 0
-	} else if err != nil {
-		return cursorTuple{}, 0, fmt.Errorf("读取 client-ip 统计 lag 失败: %w", err)
-	} else {
-		latestText, err := sqlText(latest)
-		if err != nil {
-			return cursorTuple{}, 0, err
-		}
-		lagSeconds = cursorLagSeconds(latestText, now)
-	}
-	return ignored, lagSeconds, nil
 }
 
 func (s *Store) updateClientIPJobState(ctx context.Context, tx execer, input clientIPJobStateUpdate) error {

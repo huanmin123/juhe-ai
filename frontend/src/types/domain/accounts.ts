@@ -184,6 +184,8 @@ export type AccountEffectiveAvailabilityStatus =
   | 'runtime_half_open'
   | 'runtime_precheck_pending'
   | 'runtime_precheck_failed'
+  /** 时间计划闸门（时间计划闸门设计 §5.4）：status='active' 且 gate=0，仅暂停调度，不是停用。 */
+  | 'schedule_out_of_window'
 
 export type AccountEffectiveAvailabilityBlockerScope =
   | 'permission'
@@ -194,6 +196,8 @@ export type AccountEffectiveAvailabilityBlockerScope =
   | 'binding'
   | 'api_key_pool'
   | 'runtime'
+  /** 时间计划闸门：当前不在允许时段内。 */
+  | 'schedule'
 
 export interface AccountEffectiveAvailability {
   available: boolean
@@ -231,7 +235,7 @@ export interface AccountAvailabilityPresentation {
   action?: string
   statusBoundary?: {
     at: string
-    kind: 'policy_ttl_expiry' | 'quota_reset' | 'cooldown_expiry' | 'account_expired' | 'authorization_expired' | 'source_expired'
+    kind: 'policy_ttl_expiry' | 'quota_reset' | 'cooldown_expiry' | 'account_expired' | 'authorization_expired' | 'source_expired' | 'schedule_window_open'
   }
   probe?: AccountProbeSummary
 }
@@ -533,6 +537,11 @@ export interface AccountListItem {
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
   schedulable: boolean
+  /**
+   * 时间计划闸门（时间计划闸门与账户状态解耦设计 §3.1）：null=未配置计划（恒开），
+   * 1=当前在允许时段内，0=当前不在允许时段内（仅暂停调度，不改写 status）。
+   */
+  availabilityScheduleGate?: number | null
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   cooldownUntil?: string

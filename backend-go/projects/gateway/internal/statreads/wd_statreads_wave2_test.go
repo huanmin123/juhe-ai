@@ -144,7 +144,7 @@ func TestWdAiHealthEmptyOutcomeURLKeepsMergeAbsent(t *testing.T) {
 
 func TestWdAiHealthOversizedKeywordYieldsEmptyPage(t *testing.T) {
 	fixture := newWdFixture(t)
-	// 关键字超过 128 rune：n-gram 词表为空 → "0 = 1" 恒假过滤，空集而非错误。
+	// 关键字超过 128 rune：名称过滤片段恒假（"0 = 1"），空集而非错误。
 	// 用 ASCII 保证字节长度不超过 boundedKeyword 的 200 上限。
 	keyword := strings.Repeat("a", 129)
 	recorder := wdGet(t, fixture.deps.aiHealthListHandler(false), "/?hours=24&keyword="+keyword, adminAuth(""))

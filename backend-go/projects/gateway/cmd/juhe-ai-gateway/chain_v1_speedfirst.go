@@ -89,14 +89,39 @@ func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutov
 	// on settleResponseStreamServerRetry).
 	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
 		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, cutover.AccountID)
-		if err == nil && lockState != nil && lockState.BlocksCrossAccount {
+		// M4 收窄（与引擎/响应检查门同规则）：读取失败时只有本请求已观察到
+		// 该账户锁行的才 fail-closed；从未观察到锁行的账户按既有 cutover
+		// 行为 fail-open，避免锁运行态抖动阻断未锁账户的速度切号。
+		accountLocked := err == nil && lockState != nil && lockState.BlocksCrossAccount
+		if err != nil && l.accountLockObservation != nil {
+			accountLocked = true
+		}
+		if accountLocked {
 			if view, ok := cutover.CutoverReservation.(*gatewaydispatch.SpeedFirstCutoverReservationView); ok && view != nil {
 				l.releaseCutoverReservation(view)
 			}
 			l.speedFirstRetryCandidateAccountIds = nil
 			delete(l.streamRetryExcludedAccounts, cutover.AccountID)
 			l.exhaustDispatchFailedAccountID(cutover.AccountID)
-			l.renderDispatchExhaustedWithMessage(ctx, cutover.Message, cutover.AccountID, cutover.AccountName)
+			// 锁死窗口否决速度切号：非终态 hold，客户端重试可重新选号；
+			// 交接断连，不得落到终态耗尽 503。
+			metadata := map[string]any{
+				"accountId": cutover.AccountID,
+				"dimension": dimension,
+				"message":   cutover.Message,
+			}
+			if err != nil {
+				metadata["readFailed"] = true
+				metadata["error"] = err.Error()
+			}
+			l.auditCapture.AddGatewayMetadata("account_lock_cutover_denied", metadata)
+			l.renderClientHandoff(streamServerRetryExhaustedInput{
+				message:        "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试",
+				retryReason:    "account_lock_hold",
+				errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
+				usageContext:   current.UsageContext,
+				clientStrategy: &current.ClientStrategy,
+			})
 			return true
 		}
 	}
@@ -147,6 +172,15 @@ func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutov
 		return true
 	case fallback == v1FallbackSwitched:
 		return false
+	case fallback == v1FallbackLockHold:
+		// 切组被锁死门否决：非终态 hold，交接断连让客户端重试。
+		return l.renderClientHandoff(streamServerRetryExhaustedInput{
+			message:        "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试",
+			retryReason:    "account_lock_hold",
+			errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
+			usageContext:   l.current.UsageContext,
+			clientStrategy: &l.current.ClientStrategy,
+		})
 	}
 	l.renderDispatchExhaustedWithMessage(ctx, cutover.Message, cutover.AccountID, cutover.AccountName)
 	return true
@@ -305,7 +339,19 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 	scope *gatewaydispatch.LatencyScopeInput,
 	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
 ) (speedFirstDeadlineAction, error) {
-	// routes.ts:1124-1139: a cross-account lock blocks the cutover.
+	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
+	if err != nil {
+		return "", err
+	}
+	slowResult, err := decisions.RecordFirstByteSlowAsync(ctx, account, scope, config,
+		"普通路由速度优先首字观察阈值 "+fmt.Sprintf("%d", deadline.EffectiveDeadlineMs)+"ms 已到达")
+	if err != nil {
+		return "", err
+	}
+	l.speedFirstSlowObservedForAttempt = slowResult
+	// routes.ts:1124-1139: a cross-account lock blocks the cutover. 锁死门放在
+	// 慢样本记录之后（设计 §4.1）：首字计时、慢样本和可观测性继续运行，只否决
+	// 跨账号 cutover。
 	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
 		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, account.ID)
 		if err != nil {
@@ -318,16 +364,6 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
 		}
 	}
-	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
-	if err != nil {
-		return "", err
-	}
-	slowResult, err := decisions.RecordFirstByteSlowAsync(ctx, account, scope, config,
-		"普通路由速度优先首字观察阈值 "+fmt.Sprintf("%d", deadline.EffectiveDeadlineMs)+"ms 已到达")
-	if err != nil {
-		return "", err
-	}
-	l.speedFirstSlowObservedForAttempt = slowResult
 	nextExcluded := make(map[string]struct{}, len(l.streamRetryExcludedAccounts)+1)
 	for id := range l.streamRetryExcludedAccounts {
 		nextExcluded[id] = struct{}{}
@@ -726,20 +762,6 @@ func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
 	scope *gatewaydispatch.LatencyScopeInput,
 	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
 ) (speedFirstDeadlineAction, error) {
-	// routes.ts:1124-1139 同型：a cross-account lock blocks the cutover.
-	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
-		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, account.ID)
-		if err != nil {
-			return "", err
-		}
-		if lockState != nil && lockState.BlocksCrossAccount {
-			l.auditCapture.AddGatewayMetadata("account_lock_speed_first_cutover_denied", map[string]any{
-				"accountId": account.ID,
-				"dimension": gatewayproxyhealth.LatencyDimensionTotalTime,
-			})
-			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
-		}
-	}
 	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
 	if err != nil {
 		return "", err
@@ -761,6 +783,21 @@ func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
 			"thresholdMs":        thresholdMs,
 		})
 		return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+	}
+	// routes.ts:1124-1139 同型：锁死门放在慢样本记录与写出检查之后（设计
+	// §4.1），只否决跨账号 cutover，不跳过慢样本/可观测性。
+	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
+		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, account.ID)
+		if err != nil {
+			return "", err
+		}
+		if lockState != nil && lockState.BlocksCrossAccount {
+			l.auditCapture.AddGatewayMetadata("account_lock_speed_first_cutover_denied", map[string]any{
+				"accountId": account.ID,
+				"dimension": gatewayproxyhealth.LatencyDimensionTotalTime,
+			})
+			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+		}
 	}
 	nextExcluded := make(map[string]struct{}, len(l.streamRetryExcludedAccounts)+1)
 	for id := range l.streamRetryExcludedAccounts {

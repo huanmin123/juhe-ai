@@ -202,14 +202,6 @@ func (f *fakeListAvailabilityRepo) ListScopes(_ context.Context, accountIDs []st
 	return scopes, nil
 }
 
-func (f *fakeListAvailabilityRepo) LoadSearchTerms(_ context.Context, accountIDs []string) (map[string][]string, error) {
-	result := map[string][]string{}
-	for _, id := range accountIDs {
-		result[id] = []string{"term-" + id}
-	}
-	return result, nil
-}
-
 func (f *fakeListAvailabilityRepo) ApplyClaims(_ context.Context, writes []ProjectionWrite) (map[string]bool, error) {
 	if f.applyErr != nil {
 		return nil, f.applyErr

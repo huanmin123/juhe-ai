@@ -112,7 +112,7 @@ GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 | `page` | `1` | 正整数 |
 | `pageSize` | `20` | `10..50` |
 
-后端先按权限、账户名搜索和最近使用时间稳定分页，再批量读取当前页账户的小时结果。账户名包含搜索复用增量维护的 `account_name_search_terms / account_name_search_documents` 候选表，不扫描 `lower(accounts.name)`；默认按 `accounts.last_used_at DESC NULLS LAST` 的等价跨存储表达式排序，最后按 `name, id` 兜底，没有近期使用记录的账户自然排在后面。列表排序只读取业务库账户快照，并由管理 / 自助作用域各自的窄排序索引承接，不跨库读取质量统计，也不扫描使用记录明细。
+后端先按权限、账户名搜索和最近使用时间稳定分页，再批量读取当前页账户的小时结果。账户名包含搜索直读 `accounts.name`：`accounts.name COLLATE "C" ILIKE '%' || escaped(keyword) || '%' ESCAPE '\'`，先落 `system_account_id` 作用域；所属人视图由 `(system_account_id, name, id)` 索引承接，全局管理员视图由 `pg_trgm` GIN 索引 `idx_accounts_name_c_trgm_lookup` 兜底，不再维护派生词项表（2026-11-03 T116 去索引化）。默认按 `accounts.last_used_at DESC NULLS LAST` 的等价跨存储表达式排序，最后按 `name, id` 兜底，没有近期使用记录的账户自然排在后面。列表排序只读取业务库账户快照，并由管理 / 自助作用域各自的窄排序索引承接，不跨库读取质量统计，也不扫描使用记录明细。
 
 ## 6. 页面
 

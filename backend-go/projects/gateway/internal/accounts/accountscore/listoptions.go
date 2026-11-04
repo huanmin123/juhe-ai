@@ -13,11 +13,14 @@ type ListSort struct {
 
 // ListOptions mirrors AccountListOptions.
 type ListOptions struct {
-	Sorts                     []ListSort
-	IDs                       []string
-	Page                      int
-	PageSize                  int
-	Keyword                   string
+	Sorts    []ListSort
+	IDs      []string
+	Page     int
+	PageSize int
+	Keyword  string
+	// ExactName 是内部调用的精确名称过滤（findDuplicateAccount 的重名判定）：
+	// 非空时追加 accounts.name = ?，与 Keyword 的包含匹配互不复用。
+	ExactName                 string
 	ProviderCode              string
 	ProviderProtocolProfileID string
 	GroupID                   string

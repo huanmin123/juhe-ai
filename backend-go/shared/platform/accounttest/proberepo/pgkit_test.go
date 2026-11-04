@@ -147,6 +147,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   schedulable integer NOT NULL DEFAULT 1,
   availability_schedule_json text,
   availability_schedule_next_check_at text,
+  availability_schedule_gate integer,
   notes text,
   account_expires_at text,
   last_used_at text,

@@ -19,7 +19,7 @@ func TestRefreshJobTerminalAccountUses24hBackoff(t *testing.T) {
 	})
 	seedAccountRow(t, db, accountRowSeed{
 		ID: "acc-active-300s", ProviderCode: "gpt", Type: "oauth",
-		Status: "active",
+		Status:      "active",
 		Credentials: openAICredentials(expiresInMillis(0)), Now: clock.Now(),
 	})
 	exchanger.respond = func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {

@@ -132,8 +132,14 @@ func kitStatsStatements() []string {
       group_authorization_source_type text,
       group_authorization_source_team_id text,
       created_at text NOT NULL,
+      usage_stats_aggregated_at text,
+      client_ip_stats_aggregated_at text,
       PRIMARY KEY (created_at, id)
     )`,
+		// 统计消费水位部分索引（BUG-0345）：与生产 schema 同形状，供「消费未
+		// 标记行」的选行与 MIN(created_at) 走索引。
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_stats_pending ON juhe_usage.usage_records(created_at, id) WHERE usage_stats_aggregated_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_client_ip_stats_pending ON juhe_usage.usage_records(created_at, id) WHERE client_ip_stats_aggregated_at IS NULL`,
 		// ---- usage_stats 六层（pg_schema_stats.go 基础列；success_cost_usd 与
 		// 媒体计量列由下方 ALTER 追加，与生产执行序一致）----
 		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_totals (

@@ -4,6 +4,18 @@ import { capabilityDomainWithoutBackgroundProbe, type AccountCapabilityDomain } 
 import { accountDiagnosticMessageWithoutRepeatedFields } from './accountDiagnosticMessages'
 
 /**
+ * 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.4）：`status='active'` 且 `gate=0`
+ * 表示账户本身正常、只是当前不在允许时段，不参与调度；不属于停用。
+ * `effectiveAvailability` 在列表投影里恒产出，缺失时按 `availabilityScheduleGate` 兜底。
+ */
+export function isAccountScheduleOutOfWindow(
+  account: Pick<AccountListItem, 'status' | 'availabilityScheduleGate' | 'effectiveAvailability'>
+): boolean {
+  if (account.effectiveAvailability) return account.effectiveAvailability.status === 'schedule_out_of_window'
+  return account.status === 'active' && account.availabilityScheduleGate === 0
+}
+
+/**
  * 探测模式探针（总开关设计 §2）：行缺省（旧数据/未返回）按开启处理。
  * 开关不适用域仅 audio/video（二轮复审裁决：image 域存在后台探测，适用并显示
  * 「手动」标签）。
@@ -46,11 +58,15 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const presentation = account.availabilityPresentation
   const effective = account.effectiveAvailability
   const observation = presentation?.probe?.lastObservation
+  // 时间计划闸门是独立的调度事实，与手动模式二态健康映射正交：时段外仍显示「非时间段」。
+  const scheduleOutOfWindow = isAccountScheduleOutOfWindow(account)
   const lines: string[] = [
     `状态：${
-      manualMode
-        ? accountManualModeStatusText(account.status)
-        : presentation?.label ?? effective?.label ?? accountStatusFallbackLabel(account.status)
+      scheduleOutOfWindow
+        ? '非时间段'
+        : manualMode
+          ? accountManualModeStatusText(account.status)
+          : presentation?.label ?? effective?.label ?? accountStatusFallbackLabel(account)
     }`
   ]
 
@@ -84,7 +100,8 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const reason = observation?.result === 'failed'
     ? (observation.reason ?? presentation?.reason ?? effective?.reason)
     : (presentation?.reason ?? observation?.reason ?? effective?.reason)
-  const normalizedReason = normalizeAccountStatusReason(reason, observation)
+  // 时段外的说明由 accountStatusTooltipLines 统一给出口径，避免与后端 reason 重复。
+  const normalizedReason = scheduleOutOfWindow ? '' : normalizeAccountStatusReason(reason, observation)
   if (normalizedReason) lines.push(`原因：${normalizedReason}`)
   if (observation?.traceId) lines.push(`traceId：${observation.traceId}`)
   return lines
@@ -104,7 +121,10 @@ function normalizeAccountStatusReason(
   })
 }
 
-function accountStatusFallbackLabel(status: AccountListItem['status']): string {
+function accountStatusFallbackLabel(account: AccountListItem): string {
+  // 状态回退文案：列表投影缺失 label 时，时段外仍按闸门事实展示，不能退化成「可调度」。
+  if (account.effectiveAvailability?.status === 'schedule_out_of_window') return '非时间段'
+  const status = account.status
   if (status === 'active') return '可调度'
   if (status === 'pending_test') return '待检查'
   if (status === 'disabled') return '停用'

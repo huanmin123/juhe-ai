@@ -24,7 +24,7 @@ func b7CooldownErrorOutcome(outputFence *exactkeyprobe.CooldownFence) Outcome {
 		ConfigRevision:   5,
 		DispatchRevision: 7,
 		StatusCode:       503,
-		ErrorCode:        "cooldown_retest_neutral_timeout",
+		ErrorCode:        "cooldown_retest_http_failure_timeout",
 		Projection: &Projection{
 			TargetAccountID:       "acct-b7",
 			TransitionKind:        "cooldown_error",

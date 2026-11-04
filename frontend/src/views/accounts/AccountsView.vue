@@ -122,6 +122,7 @@
       :editing-concurrency-account-id="editingConcurrencyAccountId"
       :editing-priority-account-id="editingPriorityAccountId"
       :group-name="groupNameForAccount"
+      :has-active-filters="Boolean(filters.keyword.trim()) || activeAdvancedFilterCount > 0"
       :is-management-view="isManagementView"
       :is-selected="isAccountSelected"
       :loading="loading"

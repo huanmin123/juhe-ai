@@ -156,7 +156,15 @@ client_handoff {
 - `client_handoff.reason` 至少区分 `gateway_request_wall_budget_exhausted`、`precommit_budget_exhausted`、`server_retry_wait_budget_exhausted`。
 - 墙钟到期时**不得**伪装成 `hard_exhausted` 或“号池永久不可用”；`remainingUntriedCandidatesPossible=true` 时明确告诉实现与观测：后续客户端重试仍可重新选号。
 - `request_exhausted` 只表示本请求在当前路由范围内已无未尝试可执行候选；墙钟到期但还有未尝试好号时必须用 `client_handoff`，不能用 `request_exhausted` 糊弄。
-
+- **传输实现（2026-11-04）**：Go 链面的 `client_handoff` 统一走 `renderClientHandoff`：流式请求先提交 200/`text/event-stream` 头并 flush，再 Hijack 底层连接并 Close；非流式请求先提交 200/`application/json` 头并 flush，再 Hijack+Close（不写完整响应）——两类都让反向代理把「已开始响应但正文截断」透传给客户端，避免 pre-commit 断连被代理合成为 502。Hijack 能力缺失（典型为 HTTP/2 直连）时才回退该出口自己的 503 契约（锁死 hold / 协调预算是 `upstream_retryable_error`，wall 是 `gateway_request_wall_budget_exhausted`，临时隔离保留 `gateway_capacity` 归因）；Hijack 能力存在但运行期失败时 200 头已提交，只能以截断正文收场并在审计记录降级。不能把 503 当成客户端一定会重试的交接——不同客户端重试策略不同；锁死 hold 与响应检查否决共用同一传输实现。等待心跳已提交 SSE 传输头（语义未提交）时仍直接 Hijack+Close；已提交非 SSE 响应才拒绝交接。
+- **终态 / 非终态裁决规则（2026-11-04 用户裁决）**：只有**终态**才可以把失败写给客户端；**非终态一律不得返回客户端失败**，必须断开连接让客户端按网络错误自行重试。
+  - 终态 = 网关已完成决策空间：确定性拒绝（认证 / 参数 / 策略 / 配额 / 限流）、没有任何可派发账户、所有候选都已尝试失败或超时、上游明确返回的终态错误（含 `no_available_upstream_account`、`request_exhausted`、RPM 429、超级分组耗尽）。
+  - 非终态 = 网关主动提前停止或资源只是暂时不可用：锁死 hold、响应检查换号被锁死门否决、协调预算 / 整请求墙钟预算耗尽、`temporarily_blocked` / `client_handoff`、全部账户处于临时隔离（local suppression 耗尽，503 `upstream_retryable_error`）。
+  - 例外：网关自身未预期内部错误与基础设施故障（DB / 运行时缓存不可用）保留错误响应，用于暴露故障；同签名即停（BUG-0298）按耗尽契约保留错误，因为此时客户端自动重试会重新进入同一失败循环；已提交后的协议内终态事件（SSE `response.failed`）已裁决保留（2026-11-04 真实 Codex CLI 验证其会触发客户端重试，见 [BUG-0351](../bug/问题-0351-client_handoff以503渲染导致客户端不重试.md)「错误帧裁决」）。
+  - 交接断开成功时仍必须落失败审计与 usage（`gatewaypreauth.GatewayFailureRecorder` / `gatewayresponse.Sink.RecordGatewayFailureWithoutResponse`）：审计 outcome / phase / code 与同源 503 契约一致，`gateway_client_handoff_transport` 记录实际传输结果（含 `stream_headers_committed_hijack_failed` / `response_headers_committed_hijack_failed` 降级）；压缩摘要预检（codex compact）的锁死 hold 走 `gatewaypreauth.InterruptClientConnection` 直连断开，Hijack 不可用才回退 503。零上游 attempt 的 `gateway_failed` 行按既有审计收录规则不落审计主行（只落 usage），wall / 临时隔离出口与改动前的 503 行为一致。
+  - 接入清单（Go 链面）：`settleDispatchError` 的协调预算 / wall 预算 / 锁死 hold、`settleResponseStreamServerRetry` 的响应检查锁死门与切组锁死门、`switchToFallbackGroup` 的锁死门（返回 `v1FallbackLockHold`，调用方转交接）、`speed_first` 切号被锁死门否决、`finalizeRouteAction` 的 `client_handoff` 与 `temporarily_blocked`（含 route action 的 503 `upstream_retryable_error` 临时隔离失败）。
+  - 交接回退契约与记账同源：各出口自己的 503 契约（wall 的 `gateway_request_wall_budget_exhausted`、临时隔离的 `gateway_failed` / `gateway_capacity` 归因、锁死 hold 的 `upstream_retryable_error`）不会被交接改写成统一的流式重试口径；断开成功时按该契约记账，回退时按该契约写 503。
+  - 已提交边界：等待心跳写出的 200/`text/event-stream` 只是传输提交，语义未提交时仍必须 Hijack+Close 真断开；已提交非 SSE 响应或响应已结束才回退/放弃。
 - `temporarily_blocked` 表示当前路由范围内存在对本请求 waitable 的资源：本请求即将合法取得的 confirmation / half-open / capacity lease，或本请求自身持有的在途 confirmation，或可被事件唤醒的容量队列。外国租约与后台探针不得使本请求阻塞。若阻断账号已被本请求尝试且无合法 self-lease 例外，返回 `request_exhausted`。
 - `hard_exhausted` 只表示当前路由范围内已经没有满足能力、授权、状态或其他硬资格的账号，或已经进入确定不可恢复的持久终态；瞬态 attempt 失败、短电路退避和 confirmation 在途不得构成 `hard_exhausted`。
 - `request_exhausted` 表示当前请求已尝试完当前路由范围内所有本来可执行的协议作用域账号，且没有对本请求 waitable 的临时阻断；这些账号对其他新请求仍可能是 `CLOSED`，因此该结果不能写共享账号状态。账户层必须把 `attemptedProtocolModelKeys`、`attemptedAccountRuntimeKeys`、`attemptedPhysicalCredentialKeys` 与 `attemptedKeyFingerprints` 作为候选过滤输入。

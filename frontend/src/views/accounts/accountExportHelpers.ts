@@ -1,5 +1,7 @@
 import type { AccountExportFilters, AccountListSortParam } from '@/api/client'
 import type { AccountListItem } from '@/types/domain'
+import type { AccountStatusFilterValue } from './accountFormTypes'
+import { accountStatusFilterQuery } from './accountListFilters'
 
 export const ACCOUNT_EXPORT_MAX_ACCOUNTS = 500
 
@@ -9,7 +11,7 @@ export interface AccountExportFilterState {
   type: string
   groupId: string
   tagIds: string[]
-  status: string[]
+  status: AccountStatusFilterValue[]
 }
 
 export interface AccountExportTargetOption {
@@ -24,6 +26,8 @@ export interface AccountExportTargetState {
 }
 
 export function accountExportFiltersFromState(filters: AccountExportFilterState, sorts: AccountListSortParam[]): AccountExportFilters {
+  // 导出与列表同口径：「非时间段」经 schedulable 下发，不混入 status。
+  const statusQuery = accountStatusFilterQuery(filters.status)
   return {
     sorts,
     keyword: filters.keyword.trim() || undefined,
@@ -31,7 +35,8 @@ export function accountExportFiltersFromState(filters: AccountExportFilterState,
     type: filters.type && filters.type !== 'all' ? filters.type : undefined,
     groupId: filters.groupId || undefined,
     tagIds: filters.tagIds.length ? filters.tagIds : undefined,
-    status: filters.status.length ? filters.status : undefined
+    status: statusQuery.status,
+    schedulable: statusQuery.schedulable
   }
 }
 

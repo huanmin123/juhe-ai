@@ -1679,8 +1679,10 @@ func chatCodexInputDigest(inputID, identityKey, targetID, configRevision, policy
 // 游标 / 抑制窗口是运行态，伪造持有者会让本机 jobs 误判，一律不写。
 //
 // outcome 词表与 shared/platform/accounttest/exactkeyprobe 的四常量 +
-// accounthealth.OutcomeStale 一致：complete_success / framing_complete_neutral /
-// upstream_failure / probe_task_failure / stale。
+// accounthealth.OutcomeStale 一致：complete_success / upstream_http_failure /
+// upstream_failure / probe_task_failure / stale。历史存量
+// framing_complete_neutral 是 upstream_http_failure 的旧名，仅读取侧归一，
+// 新样本不再写入。
 func seedAccountHealthSection(w *chatCodexWriter, resources chatCodexResources) error {
 	account, ok := resources.accountAt(0)
 	if !ok {
@@ -1710,7 +1712,7 @@ func seedAccountHealthSection(w *chatCodexWriter, resources chatCodexResources) 
 			ageHours int
 		}{
 			{key: "success", outcome: "complete_success", ageHours: 3},
-			{key: "neutral", outcome: "framing_complete_neutral", ageHours: 11},
+			{key: "http_failed", outcome: "upstream_http_failure", ageHours: 11},
 			{key: "upstream_failed", outcome: "upstream_failure", ageHours: 19},
 			{key: "task_failed", outcome: "probe_task_failure", ageHours: 26},
 		}

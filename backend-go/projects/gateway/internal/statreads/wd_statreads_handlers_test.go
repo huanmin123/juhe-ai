@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -21,18 +22,15 @@ import (
 )
 
 // wdExtraSchema 是组B SQLite 夹具（共享 testSchema）之外、被测 SQL 需要的
-// 业务表（providers、分组关系、账户名检索索引），随 SQLite 臂退役。
+// 业务表（providers、分组关系），随 SQLite 臂退役。
 const wdExtraSchema = `
 	CREATE TABLE providers (code TEXT PRIMARY KEY, name TEXT NOT NULL);
 	CREATE TABLE group_accounts (account_id TEXT NOT NULL, group_id TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
-	CREATE TABLE account_name_search_terms (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, term TEXT NOT NULL, PRIMARY KEY (system_account_id, account_id, term));
-	CREATE TABLE account_name_search_documents (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, normalized_name TEXT NOT NULL, PRIMARY KEY (system_account_id, account_id));
 `
 
-// 组A PG 夹具直接复用 pgTestSchema：分组关系（group_accounts）与账户名检索
-// 索引（account_name_search_terms/documents）已随共享 schema 就位（生产
-// business schema 同形态）；providers 不在生产 PG schema（vendors 是
-// provider 名唯一来源），不建。
+// 组A PG 夹具直接复用 pgTestSchema：分组关系（group_accounts）已随共享 schema
+// 就位；账户名称搜索直读 accounts.name（名称搜索去索引化，不再有派生词项
+// 表）。providers 不在生产 PG schema（vendors 是 provider 名唯一来源），不建。
 
 type wdFixture struct {
 	deps *Deps
@@ -510,23 +508,45 @@ func TestWdUsageOverviewModelDistributionAndErrors(t *testing.T) {
 // ai-health：关键字检索 + J1 outcome SQLite 合并
 // ---------------------------------------------------------------------------
 
-func TestWdAiHealthKeywordUsesSearchIndex(t *testing.T) {
+func TestWdAiHealthKeywordMatchesAccountNameDirectly(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-hit', 'SearchHit', 'sys-user-1', 'api_key', 'openai', 'active')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-hit', 'k40 林夕', 'sys-user-1', 'api_key', 'openai', 'active')`,
 		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-miss', 'Unrelated', 'sys-user-1', 'api_key', 'openai', 'active')`,
-		// 3-gram 词表齐全才命中（"Search" → Sea/ear/arc/rch，HAVING 全量匹配）。
-		`INSERT INTO juhe_business.account_name_search_terms (system_account_id, account_id, term) VALUES ('sys-user-1', 'acct-hit', 'Sea')`,
-		`INSERT INTO juhe_business.account_name_search_terms (system_account_id, account_id, term) VALUES ('sys-user-1', 'acct-hit', 'ear')`,
-		`INSERT INTO juhe_business.account_name_search_terms (system_account_id, account_id, term) VALUES ('sys-user-1', 'acct-hit', 'arc')`,
-		`INSERT INTO juhe_business.account_name_search_terms (system_account_id, account_id, term) VALUES ('sys-user-1', 'acct-hit', 'rch')`,
-		`INSERT INTO juhe_business.account_name_search_documents (system_account_id, account_id, normalized_name) VALUES ('sys-user-1', 'acct-hit', 'SearchHit')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-special', 'rate 50%_off', 'sys-user-1', 'api_key', 'openai', 'active')`,
+		// 其他 system_account 的同名账户：作用域过滤必须把它挡在外面。
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-other', 'k40 林夕', 'sys-other', 'api_key', 'openai', 'active')`,
 	)
-	recorder := wdGet(t, fixture.deps.aiHealthListHandler(false),
-		"/?hours=24&page=1&pageSize=10&keyword=Search", adminAuth(""))
-	items := wdJSONArray(t, wdData(t, recorder)["items"], "items")
-	if len(items) != 1 || items[0].(map[string]any)["id"] != "acct-hit" {
-		t.Fatalf("关键字检索应命中检索索引账户: %#v", items)
+	handler := fixture.deps.aiHealthListHandler(false)
+	itemIDs := func(target string) []string {
+		t.Helper()
+		recorder := wdGet(t, handler, target, adminAuth(""))
+		items := wdJSONArray(t, wdData(t, recorder)["items"], "items")
+		ids := []string{}
+		for _, item := range items {
+			ids = append(ids, item.(map[string]any)["id"].(string))
+		}
+		return ids
+	}
+
+	// 中文子串命中，且 systemAccountId 作用域隔离其他 system_account 的同名账户。
+	if ids := itemIDs("/?hours=24&page=1&pageSize=10&keyword=" + url.QueryEscape("林") + "&systemAccountId=sys-user-1"); len(ids) != 1 || ids[0] != "acct-hit" {
+		t.Fatalf("中文子串应命中作用域内账户: %#v", ids)
+	}
+	// 全局管理员（无作用域）能看到两个账户。
+	if ids := itemIDs("/?hours=24&page=1&pageSize=10&keyword=" + url.QueryEscape("林")); len(ids) != 2 {
+		t.Fatalf("全局关键字应命中两个账户: %#v", ids)
+	}
+	// ASCII 大小写不敏感。
+	if ids := itemIDs("/?hours=24&page=1&pageSize=10&keyword=unrel"); len(ids) != 1 || ids[0] != "acct-miss" {
+		t.Fatalf("ASCII 大小写不敏感匹配: %#v", ids)
+	}
+	// `%` / `_` 按字面字符匹配。
+	if ids := itemIDs("/?hours=24&page=1&pageSize=10&keyword=" + url.QueryEscape("%")); len(ids) != 1 || ids[0] != "acct-special" {
+		t.Fatalf("百分号字面匹配: %#v", ids)
+	}
+	if ids := itemIDs("/?hours=24&page=1&pageSize=10&keyword=" + url.QueryEscape("_")); len(ids) != 1 || ids[0] != "acct-special" {
+		t.Fatalf("下划线字面匹配: %#v", ids)
 	}
 }
 

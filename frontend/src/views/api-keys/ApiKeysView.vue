@@ -181,6 +181,8 @@ import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type 
 import {
   apiKeyColumnStorageKey,
   apiKeyListStatusOptions as listStatusOptions,
+  apiKeyListStatusQueryValue,
+  apiKeyMatchesListStatusFilter,
   buildApiKeyTableColumns
 } from './apiKeyTableConfig'
 import type { ApiKeyScopeParams } from './apiKeyScope'
@@ -337,8 +339,10 @@ const {
   minVisible: 1
 })
 
-const filteredApiKeys = computed(() => apiKeys.value)
-const mobileApiKeys = computed(() => apiKeys.value)
+// 非时间段已下沉为服务端筛选值 status=out_of_window（时间计划闸门设计 §5.4）；
+// 本地过滤只用于行内编辑后即时反映闸门变化。
+const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => apiKeyMatchesListStatusFilter(apiKey, statusFilter.value)))
+const mobileApiKeys = computed(() => filteredApiKeys.value)
 const activeFilterCount = computed(() => [
   keywordFilter.value.trim(),
   statusFilter.value !== 'all',
@@ -518,7 +522,7 @@ function apiKeyListParams(systemAccountId: string | undefined, pageState: { curr
     page: pageState.current,
     pageSize: pageState.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
-    status: statusFilter.value,
+    status: apiKeyListStatusQueryValue(statusFilter.value),
     routeStrategyId: routeStrategyFilter.value
   }
 }

@@ -358,15 +358,19 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 	env.assertFloats("after pagination totals",
 		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM juhe_stats.usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account'`),
 		2)
-	// 乱序到达（迟到记录 created_at 早于游标）：游标单调推进，迟于游标的
-	// 记录不回补——与 Node 游标 WHERE 语义一致（ingest 保证写入序）。
+	// 乱序到达（迟到记录 created_at 早于游标）：按消费水位列选行，晚到记录
+	// 照样被消费（BUG-0345——旧口径按 (created_at, id) 游标消费，游标越过后
+	// 才落库的记录永久漏计；`created_at` 是请求终态时刻，落库更晚是常态）。
 	env.seedUsageRecord(UsageStatsRecordRow{
 		ID: "rec-late", SystemAccountID: "alice", TrafficSource: "gateway", ProviderCode: strPtr("openai"),
 		Success: 1, CreatedAt: "2026-04-18T10:14:00.000Z",
 	})
 	processed, _ = aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 10, SafeCreatedBefore: "2026-04-18T11:00:00.000Z"})
-	if processed != 0 {
-		t.Fatalf("late record must not be aggregated behind cursor, processed=%d", processed)
+	if processed != 1 {
+		t.Fatalf("late record must still be aggregated, processed=%d", processed)
+	}
+	if got := env.queryFloats(`SELECT count(*) FROM juhe_usage.usage_records WHERE usage_stats_aggregated_at IS NULL`); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("待消费行数 = %v want 0", got)
 	}
 	// 新库中记录按 created_at 升序取批（ORDER BY created_at ASC, id ASC），
 	// 游标落在最晚一条。

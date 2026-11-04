@@ -147,10 +147,6 @@ const pgTestSchema = `
 		id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
 		resource_owner_system_account_id TEXT, grantee_system_account_id TEXT,
 		status TEXT, expires_at TEXT, created_at TEXT, updated_at TEXT);
-	CREATE TABLE juhe_business.account_name_search_terms (
-		system_account_id TEXT, account_id TEXT, term TEXT);
-	CREATE TABLE juhe_business.account_name_search_documents (
-		system_account_id TEXT, account_id TEXT, normalized_name TEXT);
 	CREATE TABLE juhe_usage.usage_records (
 		id TEXT, system_account_id TEXT, trace_id TEXT, traffic_source TEXT,
 		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT,

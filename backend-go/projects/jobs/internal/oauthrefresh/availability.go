@@ -9,33 +9,33 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/quotahourly"
 )
 
-// Availability schedule status sync ×2 mirrors
-// syncApiKeyAvailabilityScheduleStatuses(Async) and
-// syncAccountAvailabilityScheduleStatuses(Async)
-// (api-key-schedule-status-sync.repository.ts /
-// account-availability-schedule-status-sync.repository.ts): due rows are
-// evaluated for window boundary events, applied exactly once through the
-// *_schedule_status_events dedupe tables, and the derived next-check column is
-// advanced for every scanned row.
+// Availability schedule gate sync ×2（《时间计划闸门与账户状态解耦设计》§4.1）：
+// due rows are evaluated for the current availability window, and the derived
+// gate column (availability_schedule_gate: NULL = 无计划 / 1 = 时段内 / 0 = 时段外)
+// plus the next-check column are advanced for every scanned row.
 //
-// T91-7 deviation (api_keys only): the boundary branch alone never fires when
-// the exact boundary minute is missed (process restart / failed round), so the
-// api-key sync additionally recomputes the target status from "is now inside
-// an allowed window" on every due row and compensates a missed boundary with
-// the canonical boundary event key (see catchUpScheduleEvent). The dedupe key
-// keeps the BUG-0025 contract intact: manual enable/disable between two
-// boundaries is not continuously overridden.
+// 2026-11-03 契约变更：时间计划不再写 status。status 只表达账户 / Key 自身的
+// 管理与健康事实（人工启停、待检查、异常、冷却、限流），计划只维护 gate 这一
+// 个派生事实。由此：
+//   - 人工停用持久生效，不会被下一个窗口开始边界自动复活；
+//   - 时段外表现为「正常状态 + 非时间段」（列表侧派生），不再表现为停用；
+//   - gate 每轮按「当前时刻是否在允许窗口内」重算，错过边界由下一轮天然纠正，
+//     不再需要 T91-7 的事件补偿分支；
+//   - *_schedule_status_events 保留为翻转审计（status 列读作闸门开/关），
+//     不再承担「决定是否写」的去重职责。
+//
+// 旧文案留档（供 git 历史对照）：原实现 mirrors
+// syncApiKeyAvailabilityScheduleStatuses(Async) /
+// syncAccountAvailabilityScheduleStatuses(Async)，在窗口边界写 status。
 
 // DefaultScheduleSyncBatchLimit mirrors
 // runtimeConfig.background.{apiKeyScheduleSyncBatchLimit,
 // accountAvailabilityScheduleSyncBatchLimit} (default 500).
 const DefaultScheduleSyncBatchLimit = 500
 
-// ScheduleStatusSyncResult mirrors ApiKeyScheduleStatusSyncResult /
-// AccountAvailabilityScheduleStatusSyncResult. Invalid counts rows whose data
-// could not be applied this round: an unparseable schedule, and for api_keys
-// also a quota document whose hourly window cannot be determined (that row is
-// left at its current status instead of being activated without a binding).
+// ScheduleStatusSyncResult 汇总一轮闸门同步。Activated / Disabled 现在表示
+// gate 的 0/NULL→1 与 1→0 翻转（不再表示 status 变化）；Invalid 统计本轮无法
+// 应用的行（计划文档不可解析，以及 Key 在闸门打开时额度文档无法判定小时窗口）。
 type ScheduleStatusSyncResult struct {
 	Scanned    int
 	Activated  int
@@ -94,19 +94,33 @@ func (f APIKeyActivationHookFunc) OnAPIKeyActivated(ctx context.Context, tx *sql
 	return f(ctx, tx, apiKeyID, nowIso)
 }
 
-// scheduleSyncUpdate carries one evaluated row (Node
-// ScheduledApiKeyStatusUpdate).
+// scheduleSyncUpdate 承载一行的闸门求值结果。gate 为 nil 表示本轮只推进
+// next_check_at（无计划文档，或目标与现值为 NULL 对齐）；非 nil 即目标闸门值
+// （1 = 时段内，0 = 时段外）。
 type scheduleSyncUpdate struct {
 	id          string
-	eventKey    string // "" = next-check-only update
-	status      string // "" = next-check-only update
+	eventKey    string // "" = 不写审计事件
+	gate        *int   // nil 且 clearGate=false 表示只推进下次检查
+	clearGate   bool   // true = 把闸门显式写回 NULL（计划已清除）
 	nextCheckAt string
+	// scheduleJSON 是求值时读到的计划原文，作为写回时的 CAS 栅栏：求值事务外
+	// 读行、写回在事务内，期间 PATCH/批量可能改写计划；栅栏确保「用旧计划算出
+	// 的 next_check / gate」不会覆盖新计划的结果（覆盖会把 next_check 推到旧
+	// 计划的远端边界，导致新窗口整个不会被扫描）。
+	scheduleJSON string
 }
 
-// SyncApiKeyScheduleStatuses mirrors the api_keys sync. hook is required for the
-// production path: every activation flip rebuilds the Key's hourly quota window
-// binding inside the flip transaction (B3-H11); nil keeps the status flip only
-// and is reserved for tests that assert the bare schedule semantics.
+// gateWord 是 gate 值的事件表词形（沿用 active/disabled 词表，审计兼容）。
+func gateWord(gate int) string {
+	if gate == 1 {
+		return "active"
+	}
+	return "disabled"
+}
+
+// SyncApiKeyScheduleStatuses 执行 API Key 闸门同步。hook 在生产路径必填：闸门
+// 由关到开时要重建该 Key 的小时额度窗口绑定（B3-H11）；nil 仅保留闸门写入，
+// 供只断言裸闸门语义的测试使用。
 func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, batchLimit int, hook APIKeyActivationHook) (ScheduleStatusSyncResult, error) {
 	rows, err := s.listScheduleRows(ctx, s.table("api_keys"), false, batchLimit, isoMillis(now))
 	if err != nil {
@@ -117,7 +131,7 @@ func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, b
 		return ScheduleStatusSyncResult{}, err
 	}
 	activation := func(tx *sql.Tx, update scheduleSyncUpdate) (func(), error) {
-		if hook == nil || update.status != "active" {
+		if hook == nil || update.gate == nil || *update.gate != 1 {
 			return nil, nil
 		}
 		return hook.OnAPIKeyActivated(ctx, tx, update.id, isoMillis(now))
@@ -128,9 +142,9 @@ func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, b
 	return result, nil
 }
 
-// SyncAccountScheduleStatuses mirrors the accounts sync: only active/disabled
-// rows are schedule-mutable, an active disable-enforcement blocks the flip and
-// activation side effects ride the ActivationHook.
+// SyncAccountScheduleStatuses 执行账户闸门同步。闸门与 status 正交：任何 status
+// 的行都可以维护闸门，闸门本身不改变账户可用性事实；激活副作用（dispatch
+// revision 家族推进）只在闸门由关到开时触发。
 func (s *Store) SyncAccountScheduleStatuses(ctx context.Context, now time.Time, batchLimit int, hook ActivationHook) (ScheduleStatusSyncResult, error) {
 	rows, err := s.listScheduleRows(ctx, s.table("accounts"), true, batchLimit, isoMillis(now))
 	if err != nil {
@@ -141,7 +155,7 @@ func (s *Store) SyncAccountScheduleStatuses(ctx context.Context, now time.Time, 
 		return ScheduleStatusSyncResult{}, err
 	}
 	activation := func(tx *sql.Tx, update scheduleSyncUpdate) (func(), error) {
-		if hook == nil || update.status != "active" {
+		if hook == nil || update.gate == nil || *update.gate != 1 {
 			return nil, nil
 		}
 		return nil, hook.OnAccountActivated(ctx, tx, update.id, isoMillis(now))
@@ -152,112 +166,82 @@ func (s *Store) SyncAccountScheduleStatuses(ctx context.Context, now time.Time, 
 	return result, nil
 }
 
-// evaluateScheduleRows mirrors the per-row evaluation half of both syncs
-// (parse → next-check → due event; invalid schedules disable active rows).
+// evaluateScheduleRows 求值每行的目标闸门：解析 → 目标 gate → 与现值比较。
+// status 不参与求值也不再被改写。
 func (s *Store) evaluateScheduleRows(rows []scheduleRow, now time.Time, accountMode bool) ([]scheduleSyncUpdate, ScheduleStatusSyncResult, error) {
 	result := ScheduleStatusSyncResult{Scanned: len(rows)}
 	updates := make([]scheduleSyncUpdate, 0, len(rows))
 	for _, row := range rows {
 		schedule, parseErr := ParseScheduleJSON(row.scheduleJSON)
 		if parseErr != nil {
+			// 计划文档不可解析：fail-closed 关闸，避免坏数据放行；行本身仍推进
+			// 下次检查，等配置修正后下一轮自然恢复。
 			result.Invalid++
 			result.InvalidIDs = append(result.InvalidIDs, row.id)
-			if accountMode {
-				// Invalid account schedules disable active rows
-				// ("已按不可调度处理"); other statuses only drop the schedule.
-				if row.status == "active" {
-					updates = append(updates, scheduleSyncUpdate{id: row.id, status: "disabled", nextCheckAt: ""})
-				} else {
-					updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: ""})
-				}
-			} else {
-				if row.status != "disabled" {
-					updates = append(updates, scheduleSyncUpdate{id: row.id, status: "disabled", nextCheckAt: ""})
-				} else {
-					updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: ""})
-				}
-			}
+			closed := 0
+			updates = append(updates, scheduleSyncUpdate{id: row.id, gate: &closed, nextCheckAt: "", scheduleJSON: row.scheduleJSON})
 			continue
 		}
 		nextCheckAt, _ := NextScheduleCheckAt(schedule, now)
-		event, hasEvent := DueScheduleEvent(schedule, now)
-		// T91-7 补偿只落在 API Key 同步：账户同步还叠加质量处罚 / 可调度状态
-		// 等保护语义，本轮裁决范围不含账户计划。
-		if !hasEvent && !accountMode {
-			event, hasEvent = catchUpScheduleEvent(schedule, row, now)
-		}
-		if !hasEvent {
-			updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt})
+		target, ok := ScheduleStatus(schedule, now)
+		if !ok {
+			// 无计划文档（已清除 / 未启用）：闸门回到 NULL（恒开）。gate.Valid 说明
+			// 库里有陈旧值，需要显式清空；已为 NULL 时只推进下次检查。
+			if row.gate.Valid {
+				updates = append(updates, scheduleSyncUpdate{id: row.id, clearGate: true, nextCheckAt: "", scheduleJSON: row.scheduleJSON})
+			} else {
+				updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: "", scheduleJSON: row.scheduleJSON})
+			}
 			result.Unchanged++
 			continue
 		}
-		if accountMode && row.status != "active" && row.status != "disabled" {
-			// isScheduleMutableAccountStatus: pending_test/error/… rows only
-			// advance the next check.
-			updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt})
+		gate := 0
+		if target == "active" {
+			gate = 1
+		}
+		if row.gate.Valid && int(row.gate.Int64) == gate {
+			// 目标与现值一致：只推进下次检查。
+			updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt, scheduleJSON: row.scheduleJSON})
 			result.Unchanged++
 			continue
 		}
-		if !accountMode && event.Status == "active" && row.status != "active" {
-			// B3-H11：非 active → active 的翻转必须能重建小时额度窗口绑定。额度
-			// 文档无法判定小时窗口时不得翻为 active（否则小时额度不可判定），按
-			// 「该行本轮无效」逐项隔离：只推进下次检查、保持当前状态，不影响同批
-			// 其它 Key 的转换。已是 active 的行不在此列（守卫本就拒绝重复翻转）。
+		if !accountMode && gate == 1 {
+			// B3-H11：闸门打开必须能重建小时额度窗口绑定。额度文档无法判定小时
+			// 窗口时不得开闸（否则小时额度不可判定），按「该行本轮无效」逐项隔离：
+			// 只推进下次检查、保持现闸门，不影响同批其它 Key。
 			if _, _, quotaErr := quotahourly.HourlyWindowHours(row.quotaLimitsJSON.String); quotaErr != nil {
 				result.Invalid++
 				result.InvalidIDs = append(result.InvalidIDs, row.id)
-				updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt})
+				updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt, scheduleJSON: row.scheduleJSON})
 				continue
 			}
 		}
+		targetGate := gate
 		updates = append(updates, scheduleSyncUpdate{
-			id:          row.id,
-			eventKey:    row.id + ":" + event.EventKey,
-			status:      event.Status,
-			nextCheckAt: nextCheckAt,
+			id:           row.id,
+			eventKey:     row.id + ":" + gateWord(gate) + ":" + now.UTC().Format("2006-01-02T15:04"),
+			gate:         &targetGate,
+			nextCheckAt:  nextCheckAt,
+			scheduleJSON: row.scheduleJSON,
 		})
 	}
 	return updates, result, nil
 }
 
-// catchUpScheduleEvent 是 T91-7 的补偿判定（仅 API Key 同步）：窗口边界只在
-// 精确分钟产出事件，进程重启 / 任务失败错过该分钟后状态一整天不纠正。这里
-// 每轮按「当前时刻是否在允许窗口内」重算目标状态，只有目标状态与当前落库
-// 状态不同、且能定位到「最近一个本应执行但尚未执行」的边界事件时才补偿。
-//
-// 三条与既有契约的对齐点：
-//   - 事件键沿用被错过边界的标准键（CatchUpScheduleEvent），已执行过的边界
-//     在事件表里天然去重，因此人工启用 / 停用在两个边界之间不被持续覆盖
-//     （BUG-0025 契约：下一次计划边界才接管）。
-//   - next_check_at 为空的行只推进下次检查、不补偿：该形态来自导入/存量行，
-//     没有「已错过边界」的事实，按既有「人工状态不被持续纠偏」处理。
-//   - 补偿事件的 Status 必须与当前时刻的目标状态一致，否则放弃本轮（多窗口
-//     重叠等边界语义变化时宁可不写，也不写错状态）。
-func catchUpScheduleEvent(schedule *AvailabilitySchedule, row scheduleRow, now time.Time) (ScheduleDueEvent, bool) {
-	if schedule == nil || !schedule.Enabled {
-		return ScheduleDueEvent{}, false
-	}
-	if !row.nextCheckAt.Valid || row.nextCheckAt.String == "" {
-		return ScheduleDueEvent{}, false
-	}
-	target, ok := ScheduleStatus(schedule, now)
-	if !ok || target == row.status {
-		return ScheduleDueEvent{}, false
-	}
-	event, ok := CatchUpScheduleEvent(schedule, now)
-	if !ok || event.Status != target {
-		return ScheduleDueEvent{}, false
-	}
-	return event, true
-}
+// catchUpScheduleEvent 已随 2026-11-03 闸门契约删除：闸门每轮按「当前时刻是否
+// 在允许窗口内」重算并与现值比较，错过边界天然由下一轮纠正，不再需要「最近
+// 一个本应执行但尚未执行」的事件键补偿。保留此说明供 git 历史对照。
 
+// scheduleRow 是同步候选行的投影。gate 为闸门现值（NULL = 尚未求值过 / 无
+// 计划），用于判定目标是否已达成，也是升级后存量行的自愈入口。
 type scheduleRow struct {
 	id           string
 	status       string
 	scheduleJSON string
 	nextCheckAt  sql.NullString
-	// quotaLimitsJSON 只在 api_keys 同步读取（激活时要重建小时额度窗口绑定，
-	// B3-H11）；accounts 同步留空。
+	gate         sql.NullInt64
+	// quotaLimitsJSON 只在 api_keys 同步读取（闸门打开时要重建小时额度窗口
+	// 绑定，B3-H11）；accounts 同步留空。
 	quotaLimitsJSON sql.NullString
 }
 
@@ -265,14 +249,16 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 	if batchLimit <= 0 {
 		batchLimit = DefaultScheduleSyncBatchLimit
 	}
-	columns := "id, status, availability_schedule_json, availability_schedule_next_check_at"
+	columns := "id, status, availability_schedule_json, availability_schedule_next_check_at, availability_schedule_gate"
 	if !accountMode {
 		columns += ", quota_limits_json"
 	}
+	// gate IS NULL 也纳入候选：升级后的存量行闸门未求值，需要第一轮补齐；
+	// 这也是唯一让新列对历史数据生效的入口（设计 §7.2 同步任务内建自愈）。
 	query := `SELECT ` + columns + `
 		FROM ` + table + `
 		WHERE availability_schedule_json IS NOT NULL
-			AND (availability_schedule_next_check_at IS NULL OR availability_schedule_next_check_at <= ?)`
+			AND (availability_schedule_next_check_at IS NULL OR availability_schedule_next_check_at <= ? OR availability_schedule_gate IS NULL)`
 	if accountMode {
 		query += `
 			AND deleted_at IS NULL`
@@ -289,10 +275,10 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 	for rows.Next() {
 		var row scheduleRow
 		if accountMode {
-			if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt); err != nil {
+			if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt, &row.gate); err != nil {
 				return nil, err
 			}
-		} else if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt, &row.quotaLimitsJSON); err != nil {
+		} else if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt, &row.gate, &row.quotaLimitsJSON); err != nil {
 			return nil, err
 		}
 		output = append(output, row)
@@ -300,11 +286,11 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 	return output, rows.Err()
 }
 
-// applyScheduleUpdates mirrors the transaction half of both syncs. activation
-// runs inside the transaction for a successful activation flip and may return
-// an afterCommit callback; callbacks run only after Commit succeeds and are
-// responsible for their own failure handling (the committed sync must not be
-// failed by a tail effect).
+// applyScheduleUpdates 是两侧同步的事务半部。闸门是否写入由「目标与现值是否
+// 一致」决定（已在求值阶段判定）；事件表只做审计，插入冲突不阻断闸门写入。
+// activation 在闸门由关到开时于同一事务内执行，可返回 afterCommit 回调；
+// 回调只在 Commit 成功后运行，自身失败由回调负责（已提交的同步不得被尾部
+// 副作用改写为失败）。
 func (s *Store) applyScheduleUpdates(
 	ctx context.Context,
 	table string,
@@ -326,38 +312,36 @@ func (s *Store) applyScheduleUpdates(
 	defer tx.Rollback()
 	afterCommit := []func(){}
 	for _, update := range updates {
-		if update.status != "" && update.eventKey != "" {
-			inserted, err := s.insertScheduleStatusEvent(ctx, tx, eventsTable, entityColumn, update, updatedAt)
-			if err != nil {
-				return err
-			}
-			if !inserted {
-				result.Skipped++
-				if err := s.updateScheduleNextCheckAt(ctx, tx, table, update.id, update.nextCheckAt); err != nil {
+		if update.gate == nil {
+			if update.clearGate {
+				if _, err := s.clearScheduleGate(ctx, tx, table, update.id, updatedAt, update.scheduleJSON); err != nil {
 					return err
 				}
-				continue
 			}
-		}
-		if update.status == "" {
-			if err := s.updateScheduleNextCheckAt(ctx, tx, table, update.id, update.nextCheckAt); err != nil {
+			if err := s.updateScheduleNextCheckAt(ctx, tx, table, update.id, update.nextCheckAt, update.scheduleJSON); err != nil {
 				return err
 			}
 			continue
 		}
-		changed, err := s.applyScheduleStatusFlip(ctx, tx, table, accountMode, update, updatedAt, result)
+		changed, err := s.applyScheduleGate(ctx, tx, table, accountMode, update, updatedAt)
 		if err != nil {
 			return err
 		}
 		if !changed {
-			if err := s.updateScheduleNextCheckAt(ctx, tx, table, update.id, update.nextCheckAt); err != nil {
+			if err := s.updateScheduleNextCheckAt(ctx, tx, table, update.id, update.nextCheckAt, update.scheduleJSON); err != nil {
 				return err
 			}
 			result.Unchanged++
 			continue
 		}
+		// 审计事件：翻转已确定发生，事件键按目标值 + 分钟唯一，冲突视为已记账。
+		if update.eventKey != "" {
+			if _, err := s.insertScheduleStatusEvent(ctx, tx, eventsTable, entityColumn, update, updatedAt); err != nil {
+				return err
+			}
+		}
 		result.ChangedIDs = append(result.ChangedIDs, update.id)
-		if update.status == "active" {
+		if *update.gate == 1 {
 			if activation != nil {
 				after, err := activation(tx, update)
 				if err != nil {
@@ -381,13 +365,35 @@ func (s *Store) applyScheduleUpdates(
 	return nil
 }
 
-// insertScheduleStatusEvent mirrors INSERT OR IGNORE /
-// ON CONFLICT(event_key) DO NOTHING; false = the event already ran.
+// clearScheduleGate 把闸门显式写回 NULL（计划已清除或未启用）。只在现值非空时
+// 写入，避免无意义推进 updated_at。
+func (s *Store) clearScheduleGate(ctx context.Context, tx *sql.Tx, table, id, updatedAt, scheduleJSON string) (bool, error) {
+	// next_check 同时写 NULL：无计划语义下不该保留边界时间，否则该行会因
+	// next_check_at <= now 每轮都进候选扫描。
+	query := `UPDATE ` + table + `
+		SET availability_schedule_gate = NULL, availability_schedule_next_check_at = NULL, updated_at = ?
+		WHERE id = ?
+			AND availability_schedule_gate IS NOT NULL
+			AND availability_schedule_json = ?`
+	executed, err := tx.ExecContext(ctx, s.bind(query), updatedAt, id, scheduleJSON)
+	if err != nil {
+		return false, err
+	}
+	affected, err := executed.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// insertScheduleStatusEvent 写一条闸门翻转审计（INSERT ... ON CONFLICT DO
+// NOTHING）。返回值不再用于决定是否写闸门——去重职责已移到求值阶段的
+// 「目标与现值比较」。
 func (s *Store) insertScheduleStatusEvent(ctx context.Context, tx *sql.Tx, eventsTable, entityColumn string, update scheduleSyncUpdate, executedAt string) (bool, error) {
 	query := `INSERT INTO ` + eventsTable + ` (event_key, ` + entityColumn + `, status, executed_at)
 		VALUES (?, ?, ?, ?)`
 	query += ` ON CONFLICT(event_key) DO NOTHING`
-	result, err := tx.ExecContext(ctx, s.bind(query), update.eventKey, update.id, update.status, executedAt)
+	result, err := tx.ExecContext(ctx, s.bind(query), update.eventKey, update.id, gateWord(*update.gate), executedAt)
 	if err != nil {
 		return false, err
 	}
@@ -398,32 +404,36 @@ func (s *Store) insertScheduleStatusEvent(ctx context.Context, tx *sql.Tx, event
 	return affected > 0, nil
 }
 
-// applyScheduleStatusFlip mirrors the guarded status update:
-// api_keys guard on availability_schedule_json + status <> target; accounts
-// additionally guard deleted_at, the mutable status set and the active
-// disable-enforcement.
-func (s *Store) applyScheduleStatusFlip(ctx context.Context, tx *sql.Tx, table string, accountMode bool, update scheduleSyncUpdate, updatedAt string, result *ScheduleStatusSyncResult) (bool, error) {
+// applyScheduleGate 写目标闸门。守卫：
+//   - 计划文档必须仍是求值时的同一份（`availability_schedule_json = ?` CAS）——
+//     求值在事务外读行，写回在事务内；期间 PATCH / 批量可能改写计划，用旧计划
+//     算出的 gate 与 next_check 一旦覆盖新结果，会把手闸与下次扫描推到旧计划的
+//     远端边界，新窗口就整个不会被扫描；
+//   - 闸门现值与目标不同。
+//
+// 不再守卫 status / schedulable / 质量处罚：闸门与可用性事实正交，任何 status
+// 的行都维护闸门。
+//
+// updated_at 的刷新按方言语义区分：账户用 config_revision 做乐观锁，刷新它无
+// 副作用；api_keys 用 updated_at 作为对外 revision 与 PATCH CAS 基准，闸门翻转
+// 不得推进它，否则窗口边界会在用户编辑期间制造 409。
+func (s *Store) applyScheduleGate(ctx context.Context, tx *sql.Tx, table string, accountMode bool, update scheduleSyncUpdate, updatedAt string) (bool, error) {
+	setClause := `SET availability_schedule_gate = ?, availability_schedule_next_check_at = ?`
+	args := []any{*update.gate, update.nextCheckAt}
+	if accountMode {
+		setClause += `, updated_at = ?`
+		args = append(args, updatedAt)
+	}
+	args = append(args, update.id, *update.gate, update.scheduleJSON)
 	query := `UPDATE ` + table + `
-		SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
+		` + setClause + `
 		WHERE id = ?
-			AND availability_schedule_json IS NOT NULL`
-	args := []any{update.status, update.nextCheckAt, updatedAt, update.id}
+			AND availability_schedule_json IS NOT NULL
+			AND (availability_schedule_gate IS NULL OR availability_schedule_gate <> ?)
+			AND availability_schedule_json = ?`
 	if accountMode {
 		query += `
-			AND deleted_at IS NULL
-			AND status IN ('active', 'disabled')
-			AND status <> ?
-			AND NOT EXISTS (
-				SELECT 1 FROM ` + s.table("account_quality_enforcements") + ` aqe
-				WHERE aqe.account_id = ` + outerEntityName(table) + `.id
-					AND aqe.state = 'active'
-					AND aqe.action = 'disable'
-			)`
-		args = append(args, update.status)
-	} else {
-		query += `
-			AND status <> ?`
-		args = append(args, update.status)
+			AND deleted_at IS NULL`
 	}
 	executed, err := tx.ExecContext(ctx, s.bind(query), args...)
 	if err != nil {
@@ -445,12 +455,15 @@ func outerEntityName(table string) string {
 	return "api_keys"
 }
 
-func (s *Store) updateScheduleNextCheckAt(ctx context.Context, tx *sql.Tx, table, id, nextCheckAt string) error {
+func (s *Store) updateScheduleNextCheckAt(ctx context.Context, tx *sql.Tx, table, id, nextCheckAt, scheduleJSON string) error {
+	// 计划 CAS 同 applyScheduleGate：求值到写回之间计划被改写时放弃本行推进，
+	// 由下一轮按新计划重算。
 	query := `UPDATE ` + table + `
 		SET availability_schedule_next_check_at = ?
 		WHERE id = ?
 			AND availability_schedule_json IS NOT NULL
-			AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')`
-	_, err := tx.ExecContext(ctx, s.bind(query), nextCheckAt, id, nextCheckAt)
+			AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
+			AND availability_schedule_json = ?`
+	_, err := tx.ExecContext(ctx, s.bind(query), nextCheckAt, id, nextCheckAt, scheduleJSON)
 	return err
 }

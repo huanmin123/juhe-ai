@@ -191,6 +191,9 @@ func (s *Service) ResolveGatewayRuntimeAsync(ctx context.Context, res GatewayRes
 
 	runtime, err := s.readGatewayRuntimeForDispatch(ctx, gatewayAPIKey, options)
 	if err != nil {
+		if s.rejectAPIKeyOutsideSchedule(res, req, options, err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if runtime.APIKey == nil {
@@ -257,6 +260,9 @@ func (s *Service) ResolveGatewayAPIKeyForModelsAsync(ctx context.Context, res Ga
 	}
 	apiKey, err := s.APIKeyValidator.Validate(ctx, gatewayAPIKey)
 	if err != nil {
+		if s.rejectAPIKeyOutsideSchedule(res, req, options, err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if apiKey == nil {
@@ -270,6 +276,32 @@ func (s *Service) ResolveGatewayAPIKeyForModelsAsync(ctx context.Context, res Ga
 		return nil, nil
 	}
 	return apiKey, nil
+}
+
+// rejectAPIKeyOutsideSchedule 渲染「API Key 当前不在可用时段」的 401（时间计划
+// 闸门与账户状态解耦设计 §5.2）：Key 本身有效（status=active、未过期），只是
+// 当前落在计划时段外（gate=0），因此与「API Key 无效」区分——
+// type=invalid_request_error、code=api_key_outside_schedule。返回 true 表示
+// 响应已写出。该分支刻意不计入认证前熔断：时段外是合法密钥的短暂限制，计入会
+// 让正常客户端在窗口关闭期间被短期封禁。
+func (s *Service) rejectAPIKeyOutsideSchedule(res GatewayResponseWriter, req *GatewayRequest, options ResolveGatewayRuntimeOptions, err error) bool {
+	if !errors.Is(err, gatewayruntimecache.ErrAPIKeyOutsideSchedule) {
+		return false
+	}
+	s.Observability.Logger().Warn("gateway_auth_outside_schedule", map[string]any{
+		"endpoint": s.requestEndpointForLog(req),
+	}, "API Key 当前不在可用时段")
+	s.prepareEarlyAuthFailureResponse(res, options)
+	// 审计侧同样记录真实原因：否则 FinalizeGatewayAuthFailureAudit 在 Bearer
+	// 存在时会把失败文案回填成「API Key 无效」，排查日志再次出现误导。
+	s.setGatewayAuthFailureAudit(req, auditFailureCopy{
+		errorMessage: "API Key 当前不在可用时段",
+		errorCode:    "api_key_outside_schedule",
+	})
+	SendGatewayJSONError(res, http.StatusUnauthorized,
+		GatewayErrorPayloadOf("API Key 当前不在可用时段", "invalid_request_error", "api_key_outside_schedule"),
+		SendGatewayErrorOptions{Protocol: s.clientErrorProtocolOrOpenAI(req)})
+	return true
 }
 
 // rejectMissingOrInvalidGatewayCredential mirrors the private helper.

@@ -24,6 +24,10 @@ const (
 	attemptStopNone attemptStop = iota
 	attemptStopAccount
 	attemptStopRotation
+	// attemptStopLocked 表示账号处于锁死窗口（ENGAGED 且未到死亡窗口）：
+	// 终止本账号的 attempt 循环并让候选循环整体停在锁死账号上，不再尝试
+	// 其他候选（设计 §3.4 锁死门）。
+	attemptStopLocked
 )
 
 // halfOpenLeaseUnclaimed mirrors halfOpenLease?.generation === undefined

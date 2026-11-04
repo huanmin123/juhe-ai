@@ -174,7 +174,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			credentials_encrypted TEXT, credential_fingerprint TEXT, credential_mask TEXT,
 			oauth_access_token_expires_at TEXT, oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
 			proxy_profile_id TEXT, cooldown_until TEXT,
-			availability_schedule_json TEXT, availability_schedule_next_check_at TEXT,
+			availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, availability_schedule_gate INTEGER,
 			notes TEXT, last_used_at TEXT,
 			last_error_message TEXT, last_error_code TEXT, last_error_trace_id TEXT,
 			cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -208,6 +208,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			key_hash TEXT NOT NULL, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT,
 			status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT,
 			expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT,
+			availability_schedule_gate INTEGER,
 			scheduling_preference_id TEXT, created_at TEXT, updated_at TEXT)`,
 		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）；
 		// enabled 已随 v2 用户裁决修订第 4 条退役，夹具与权威 DDL 同构 8 列。
@@ -1428,7 +1429,7 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 	statements := []string{
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
 		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, concurrency_limit INTEGER, rpm_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, health_check_connection_id TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, availability_schedule_gate INTEGER, concurrency_limit INTEGER, rpm_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, health_check_connection_id TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT, system_account_id TEXT, group_id TEXT, account_authorization_id TEXT, local_priority INTEGER, local_super_priority_enabled INTEGER, local_fallback_enabled INTEGER, enabled INTEGER, created_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT, model_id TEXT, created_at TEXT)`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT, source_model TEXT, source_endpoint_family TEXT, target_connection_id TEXT, target_model_id TEXT, target_endpoint_family TEXT, enabled INTEGER, created_at TEXT, updated_at TEXT)`,

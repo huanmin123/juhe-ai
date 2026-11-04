@@ -457,15 +457,17 @@ func TestW1VResolveRouteActionFinalizesFailureAction(t *testing.T) {
 }
 
 // TestW1VResolveRouteActionVisitedGroupSkipsFallback：同分组重复路由动作不再
-// 尝试回退，直接按 exhausted 文案收尾（temporarily_blocked 与缺省两条文案）。
+// 尝试回退，直接按 exhausted 文案收尾（temporarily_blocked 走客户端交接，
+// 无 Hijack 时回退固定 503 client retry 文案；缺省终态渲染无可用上游账户）。
 func TestW1VResolveRouteActionVisitedGroupSkipsFallback(t *testing.T) {
 	cases := []struct {
 		name        string
 		outcome     string
 		wantMessage string
+		wantCode    string
 	}{
-		{"temporarily_blocked", "temporarily_blocked", "当前路由暂时没有可派发账户，请稍后重试"},
-		{"default_exhausted", "hard_exhausted", "当前路由没有可用的上游账户"},
+		{"temporarily_blocked", "temporarily_blocked", "当前路由暂时没有可派发账户，请稍后重试", "upstream_retryable_error"},
+		{"default_exhausted", "hard_exhausted", "当前路由没有可用的上游账户", "no_available_upstream_account"},
 	}
 	for _, testCase := range cases {
 		sink := &recordingFailureSink{}
@@ -489,7 +491,7 @@ func TestW1VResolveRouteActionVisitedGroupSkipsFallback(t *testing.T) {
 		if sink.inputs[0].ResponsePayload.Error.Message != testCase.wantMessage {
 			t.Fatalf("%s: payload = %q", testCase.name, sink.inputs[0].ResponsePayload.Error.Message)
 		}
-		if sink.inputs[0].ResponsePayload.Error.Code != "upstream_retryable_error" {
+		if sink.inputs[0].ResponsePayload.Error.Code != testCase.wantCode {
 			t.Fatalf("%s: code = %q", testCase.name, sink.inputs[0].ResponsePayload.Error.Code)
 		}
 	}

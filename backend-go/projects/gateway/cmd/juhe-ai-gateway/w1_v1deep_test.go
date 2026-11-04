@@ -478,6 +478,9 @@ func TestW1FinalizeRouteActionArms(t *testing.T) {
 		}
 		blocked := sink.inputs[0].ResponsePayload.Error.Message
 		defaultMsg := sink2.inputs[0].ResponsePayload.Error.Message
+		// temporarily_blocked 是非终态交接：无 Hijack 的测试 writer 回退该出口
+		// 既有 503 文案（gateway_failed / upstream_retryable_error）；缺省耗尽
+		// 仍是终态"无可用上游账户"。
 		if blocked != "当前路由暂时没有可派发账户，请稍后重试" {
 			t.Fatalf("blocked = %q", blocked)
 		}
@@ -488,8 +491,8 @@ func TestW1FinalizeRouteActionArms(t *testing.T) {
 }
 
 // TestW1SettleDispatchErrorBudgetArms 覆盖派发错误结算的已知错误/中断/
-// 预算臂：wall 预算 503 固定文案、coordination 预算客户端交接、
-// 上游中断静默结算、未知错误的兜底 503。
+// 预算臂：wall / coordination 预算均走客户端交接（无 Hijack 回退固定 503
+// client retry 文案）、上游中断静默结算、未知错误的兜底 503。
 func TestW1SettleDispatchErrorBudgetArms(t *testing.T) {
 	// 未知错误：HandleGatewayRequestKnownErrorResponse 不命中 → 兜底 503。
 	loop, sink := w1LoopWithEngine(t, &w1FakeLocks{})
@@ -521,11 +524,11 @@ func TestW1SettleDispatchErrorBudgetArms(t *testing.T) {
 	if sink3.inputs[0].ResponsePayload.Error.Code != gatewaypreauth.GatewayStreamClientRetryErrorCode {
 		t.Fatalf("code = %q", sink3.inputs[0].ResponsePayload.Error.Code)
 	}
-	// wall 预算：固定 503 文案。
+	// wall 预算：同属非终态客户端交接（无 Hijack 回退墙钟专用 503 契约）。
 	loop4, sink4 := w1LoopWithEngine(t, &w1FakeLocks{})
 	wall := &gatewaydispatch.GatewayRequestWallBudgetExhaustedError{BudgetKind: gatewaydispatch.WallBudgetKindWall}
 	if settled := loop4.settleDispatchError(context.Background(), wall); !settled {
-		t.Fatal("wall 预算必须结算")
+		t.Fatal("wall 预算必须交接结算")
 	}
 	if len(sink4.inputs) != 1 {
 		t.Fatalf("sink = %+v", sink4.inputs)

@@ -29,18 +29,42 @@ export function apiKeyRouteStrategyTagColor(apiKey: ApiKeySummary): string {
   return 'green'
 }
 
-export function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {
+export function apiKeyIsScheduleOutOfWindow(apiKey: Pick<ApiKeySummary, 'status' | 'availabilityScheduleGate'>): boolean {
+  return apiKey.status === 'active' && apiKey.availabilityScheduleGate === 0
+}
+
+export interface ApiKeyStatusTagInfo {
+  color: string
+  label: string
+}
+
+/**
+ * API Key 运行状态标签（时间计划闸门设计 §5.4/§6）：`active + gate=0` 时段外显示
+ * 「非时间段」，不改写运行状态、不显示为停用；其余沿用现有状态文案。
+ */
+export function apiKeyStatusTag(apiKey: Pick<ApiKeySummary, 'status' | 'availabilityScheduleGate'>): ApiKeyStatusTagInfo {
+  if (apiKeyIsScheduleOutOfWindow(apiKey)) return { color: 'blue', label: '非时间段' }
+  return { color: apiKeyStatusTagColor(apiKey), label: apiKeyStatusTagLabel(apiKey) }
+}
+
+export function apiKeyStatusTagLabel(apiKey: Pick<ApiKeySummary, 'status'>): string {
   return apiKey.status === 'active' ? '启用' : '停用'
 }
 
-export function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
+export function apiKeyStatusTagColor(apiKey: Pick<ApiKeySummary, 'status'>): string {
   return apiKey.status === 'active' ? 'green' : 'default'
 }
 
 export function apiKeyStatusTooltipLines(apiKey: ApiKeySummary): string[] {
-  return apiKey.availabilitySchedule?.enabled
-    ? ['已配置时间计划；计划边界会自动更新当前运行状态']
-    : []
+  const lines: string[] = []
+  if (apiKeyIsScheduleOutOfWindow(apiKey)) {
+    lines.push('当前不在可用时段，到达下一个时间计划边界后自动恢复；运行状态仍是启用')
+  }
+  if (apiKey.availabilitySchedule?.enabled) {
+    // 时间计划不再写 status：计划边界只切换可用时段（非时间段），人工停用不会被计划自动恢复。
+    lines.push('已配置时间计划；计划边界只切换可用时段（非时间段），不改写运行状态')
+  }
+  return lines
 }
 
 export function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {

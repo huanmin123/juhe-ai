@@ -719,30 +719,31 @@ func TestW9HSweepFinalizerErrorAborts(t *testing.T) {
 // Health fanout reserve/query error arms
 // ---------------------------------------------------------------------------
 
-func TestW9HSyncApiKeyInvalidDisabledAdvancesOnly(t *testing.T) {
+func TestW9HSyncApiKeyInvalidDisabledClosesGateOnly(t *testing.T) {
 	store, db, _ := newSweepStore(t)
 	seedApiKeyWithSchedule(t, db, "w9h-key-invalid-disabled", `{"enabled":true,"mode":"bogus"}`, "", "disabled")
 	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Invalid != 1 || result.Disabled != 0 || result.Unchanged != 0 {
+	if result.Invalid != 1 || result.Disabled != 1 || result.Unchanged != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	var status, nextCheck string
-	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,'') FROM juhe_business.api_keys WHERE id = 'w9h-key-invalid-disabled'`).Scan(&status, &nextCheck); err != nil {
-		t.Fatal(err)
-	}
+	status, nextCheck, _ := readApiKey(t, db, "w9h-key-invalid-disabled")
 	if status != "disabled" {
-		t.Fatalf("status=%q", status)
+		t.Fatalf("非法计划只关闸不改写 status：status=%q want disabled", status)
+	}
+	requireGate(t, "w9h-key-invalid-disabled", readApiKeyGate(t, db, "w9h-key-invalid-disabled"), "0")
+	if nextCheck != "" {
+		t.Fatalf("next=%q want 空（非法计划不产生下次检查）", nextCheck)
 	}
 	// The empty schedule drops only the JSON; a nil next-check is fine.
 	_, _ = db.Exec(`UPDATE juhe_business.api_keys SET availability_schedule_json = NULL WHERE id = 'w9h-key-invalid-disabled'`)
 }
 
-func TestW9HSyncAccountDueEventOnDisabledActivates(t *testing.T) {
+func TestW9HSyncAccountWindowEndClosesGate(t *testing.T) {
 	store, db, _ := newSweepStore(t)
-	// Window end at 18:00 UTC disables the active account.
+	// Window end at 18:00 UTC closes the gate; status stays active.
 	atEnd := time.Date(2026, 9, 7, 18, 0, 0, 0, time.UTC)
 	seedAccountWithSchedule(t, db, "w9h-acc-end", availabilityScheduleJSON, "", "active", false)
 	result, err := store.SyncAccountScheduleStatuses(context.Background(), atEnd, 0, nil)
@@ -753,11 +754,12 @@ func TestW9HSyncAccountDueEventOnDisabledActivates(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	status, _, _ := readAccountStatus(t, db, "w9h-acc-end")
-	if status != "disabled" {
-		t.Fatalf("status=%q", status)
+	if status != "active" {
+		t.Fatalf("status=%q want active（同步不得改写 status）", status)
 	}
+	requireGate(t, "w9h-acc-end", readAccountGate(t, db, "w9h-acc-end"), "0")
 	// The first run advanced the next-check column past now; resetting it puts
-	// the row back into the scan while the dedupe event stays → skipped.
+	// the row back into the scan while the gate already matches → unchanged.
 	if _, err := db.Exec(`UPDATE juhe_business.accounts SET availability_schedule_next_check_at = NULL WHERE id = 'w9h-acc-end'`); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +767,11 @@ func TestW9HSyncAccountDueEventOnDisabledActivates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Skipped != 1 {
-		t.Fatalf("dedupe result=%+v", result)
+	if result.Unchanged != 1 || result.Disabled != 0 || result.Skipped != 0 {
+		t.Fatalf("同值闸门 result=%+v", result)
 	}
+	if status, _, _ := readAccountStatus(t, db, "w9h-acc-end"); status != "active" {
+		t.Fatalf("status after replay=%q want active", status)
+	}
+	requireGate(t, "w9h-acc-end", readAccountGate(t, db, "w9h-acc-end"), "0")
 }

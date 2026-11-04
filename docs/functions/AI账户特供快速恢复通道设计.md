@@ -8,12 +8,12 @@
 
 ## 1. 背景与目标
 
-部分 AI 账户处于"临期 + 极不稳定"形态：频繁被后台确认落入持久冷却态（`temporary_unavailable`），而现行恢复节奏是全局统一档——中性顺延基准 30 秒、封顶 15 分钟（jitter 后实际约 14.5–15.5 分钟）、持续失败 5 轮后进入 60 秒慢速道、超过最大恢复观察窗（默认 12 小时）降为 1 小时长期道。对存活窗口本来就有限的临期账户，这套节奏意味着"还活着的时间被恢复检测延迟吃掉"。
+部分 AI 账户处于"临期 + 极不稳定"形态：频繁被后台确认落入持久冷却态（`temporary_unavailable`），而现行恢复节奏是全局统一档——真实上游尝试的非成功结果（`upstream_failure` 与 `upstream_http_failure` 二元归一）统一按 `3`、`6`、`12`、`24`、`48` 秒快速道推进，第 6 轮起进入 `60` 秒慢速道（jitter 后 30–90 秒），超过最大恢复观察窗（默认 12 小时）降为 1 小时长期道；无真实上游尝试的本地任务故障另按 `30` 秒基数、封顶 15 分钟顺延。对存活窗口本来就有限的临期账户，这套节奏意味着"还活着的时间被恢复检测延迟吃掉"。
 
 本文定义一个按账户显式标记的**恢复道加速档**，展示名"特供"：
 
 - **目标**：特供账户在**具备合法冷却 fence 且被归类为冷却复测的持久冷却任务**中，复测更密、候补扫描更靠前（大积压下不被 LIMIT 饿死）、不被短观察终态提前打死；用户显式限流/停用等无 fence 状态不在目标范围内。
-- **非目标**：不改变 `/v1` 请求调度、候选资格和路由结果；不降低复活证据标准；不改变普通账户的任何节奏；不加速 gateway 运行态道（`precheck_pending` / `runtime_degraded` / `latency_degraded`，二期另议）；不加速 Key 级恢复；不加速 `pending_test` 激活检查。
+- **非目标**：不改变 `/v1` 请求调度、候选资格和路由结果；不降低复活证据标准；不以改变普通账户节奏为代价（特供只作用于被标记账户，普通账户节奏由全局冷却复测契约决定）；不加速 gateway 运行态道（`precheck_pending` / `runtime_degraded` / `latency_degraded`，二期另议）；不加速 Key 级恢复；不加速 `pending_test` 激活检查。
 
 ## 2. 术语与命名
 
@@ -32,7 +32,7 @@
 1. **做属性标记，不做新状态。** 现行状态机已有 9 个状态和严格的恢复出口矩阵（《AI 账户运行态探针恢复设计》状态分层表）；新增状态会把状态组合按 2^N 膨胀，且每个状态都必须回答"谁触发、谁恢复"两个问题。特供不改变任何状态的进入/退出语义，只改恢复道参数——工程上与 `temporaryUnavailableContinuousProbeEnabled`（按账户改变恢复行为的既有先例）完全同构。
 2. **不降低复活证据标准。** 复活仍然当且仅当匹配来源的 `complete_success`。加速的唯一安全形式是"更频繁地问"，而不是"更低门槛地判活"：降门槛会把真坏号标成 `active` 进入调度，直接伤害真实流量；而加密复测间隔只影响"复活被发现的延迟"，业务可接受。这是本设计的安全底线，不接受放宽。
 3. **档位写死一档，不做用户可调参数。** 全局规范"功能不设开关"：暴露参数会制造不可测的参数组合；名额默认 3、可调上限 100（§9），配置上限本身就是爆炸半径控制。特供只有"设了/没设"两态。
-4. **只加速 jobs 冷却复测道。** 临时不可调用恢复的延迟瓶颈全部在这条道：15 分钟中性顺延封顶、60 秒失败慢速道、12 小时后 1 小时长期道、未开持续探针的账户 10 分钟即写 `error` 终态。gateway 运行态探针本身分钟级，加速收益小而要动 `RuntimeProbeStateStore` 调度器，改动面与收益不成比例，列为二期候选。
+4. **只加速 jobs 冷却复测道。** 临时不可调用恢复的延迟瓶颈全部在这条道：60 秒失败慢速道（HTTP 失败结果与 transport 失败同档，第 6 轮起）、12 小时后 1 小时长期道、未开持续探针的账户 10 分钟即写 `error` 终态。gateway 运行态探针本身分钟级，加速收益小而要动 `RuntimeProbeStateStore` 调度器，改动面与收益不成比例，列为二期候选。
 5. **名额默认 3，按系统账户计。** 探针是带账户凭据的真实上游请求，密度必须受控；默认名额是成本基线，不是硬上限，管理员可在 0–100 内调整。上限入口放在"系统账户管理 → 编辑系统账户 → 用户限制"，与既有 `aiAccountLimit` 同区同模式。
 6. **不加自动过期 TTL。** 最小改动；特供账户真死会被 7 天观察超时写 `error` 自然停损，账户过期有 `account_expires_at` 硬门，特供标记残留无害。"手动设、手动取消"语义清晰。
 7. **特供视同持续探针，绕开有界 10 分钟 `error`。** 有界观察（`boundedCooldownRemaining`）的初衷是控制"未知状态账户"的探针预算；用户显式声明"这个账户值得密集探"后，该预算约束的前提不再成立。否则特供账户反而是最容易被 10 分钟终态打死的账户，与需求直接冲突。
@@ -46,7 +46,9 @@
 | 边界 | 契约 |
 | --- | --- |
 | 调度边界 | 不改变 `/v1` 请求调度、候选资格和路由结果；只改变 jobs 恢复扫描在冷却类内部的候选排序与恢复探针节奏。`accounts.status`、`schedulable`、账户排序、超级优先、降级备用、会话亲和的任何比特都不受特供影响。 |
-| 证据边界 | 复活条件不变：匹配来源 `complete_success`；`framing_complete_neutral` / `unknown` 的语义与现行完全一致（中性在 7 天观察窗内只顺延、满窗后的下一次中性结果按上位设计写 `cooldown_retest_neutral_timeout`；unknown 不计数不推进）。特供不新增任何"成功"形态，也不豁免中性终态。 |
+| 超级优先边界 | 可共存：超级优先只作用于 `/v1` 候选排序，特供只作用于 jobs 冷却复测，两者互不读取、互不覆盖；同一账户可同时开启。特供不得被展示或实现为调度优先级，也不改变超级优先排序。 |
+| 锁死边界 | 可共存：锁死判死结算写入 `temporary_unavailable` + 合法冷却 fence 后，由特供加速复测；特供不改变锁死死亡窗口、死期结算、切号否决与锁死状态保留。特供不把后台探针成功当作锁死窗口的存活证据，也不提前解除锁死。 |
+| 证据边界 | 复活条件不变：匹配来源 `complete_success`；`upstream_http_failure` / `unknown` 的语义与现行完全一致（HTTP 失败在 7 天观察窗内按与 transport 失败一致的失败快速道复测，满窗后的下一次 HTTP 失败结果按上位设计写 `cooldown_retest_http_failure_timeout`；unknown 不计数不推进）。特供不新增任何"成功"形态，也不豁免 HTTP 失败终态。历史存量 `framing_complete_neutral` 在读取侧归一为 `upstream_http_failure`。 |
 | 状态覆盖边界 | 特供只作用于**已具备合法冷却 fence、且被归类为冷却复测任务的** `temporary_unavailable` / `rate_limited`（`nextDue` 对两类同判据，无合法五元 fence 即不进入复测）。用户显式限流/停用状态没有冷却 fence，本就不进入冷却复测：特供不得使其进入，也不得被无关 transport 复测接管（沿用上位设计的用户显式状态来源保护）。`pending_test` 激活检查（含 24 小时 `account_activation_check_timeout`）、`error` 终态的人工恢复、Key 级冷却复测不加速。 |
 | 授权实例边界 | 特供标记打在授权实例自己的 `accounts` 行上，名额计入被授权方系统账户（见 §3.11）；来源账户的特供不传染实例，实例特供不回写来源（与"来源可用性参与 `effectiveAvailability`、运行态不回写"的既有授权边界一致）。 |
 | 名额边界 | 默认 3；`expedited_account_limit = 0` 表示该用户**禁止新增/重新启用**特供（语义有意不同于 `aiAccountLimit` 的"0 = 不限制"，见 §3.11）。已有特供标记按"上限下调不回溯"保留，直至用户显式取消；管理员可调范围 0–100。设置特供走"事务 + 锁 + 计数"校验（§9）；取消特供无条件允许、不校验。 |
@@ -61,27 +63,27 @@
 
 | 行为点 | 现行（全部账户） | 特供档位 | 实现落点 | 理由 |
 | --- | --- | --- | --- | --- |
-| 中性顺延封顶 | 30s 基数倍增，封顶 15 分钟（jitter 后 14.5–15.5 分钟） | 基准封顶 **60s**（jitter 后 30–90s） | per-account 覆盖 `Schedule.CooldownNeutralMaxMS`（reader 装配点） | 主收益：复活检测最坏延迟 15 分钟 → 90 秒 |
+| HTTP 失败复测节奏 | 与 transport 失败完全一致（成功 / 非成功二元）：第 1–5 轮 3/6/12/24/48 秒，第 6 轮起进入下表慢速道；不再按 30 秒基数翻倍并封顶 15 分钟 | 不单独设档：与 transport 失败同走失败快速道与慢速道（第 6 轮起基准 **15s**，jitter 后 7.5–22.5 秒） | `applyCooldownDecision` 对 `upstream_http_failure` 复用失败计数与快速道 | HTTP 失败不再是慢道，此项特供收益收敛为慢速道加速 |
 | 失败慢速道 | 连续失败 >5 轮后固定 60s（jitter 后 30–90s） | 基准 **15s**（jitter 后 7.5–22.5s） | `cooldownSlowRetryDelay` 按 `Eligibility.ExpeditedRecovery` 分支 | 持续失败的特供号保持高压复测，不因失败次数而松弛 |
-| 长期降频道 | 超过最大恢复观察窗（设置 `cooldownAccountRetestMaxBackoffHours`，默认 12h）降为 1 小时/轮（jitter 后 30–90 分钟） | **不降频**，保持特供节奏 | `applyCooldownDecision` 长期道分支按 `ExpeditedRecovery` 跳过 | 12 小时降频对临期账户无意义；探针密度已有名额约束兜底 |
-| 有界观察 10 分钟 `error` | 未开持续探针的 `temporary_unavailable` 超过 10 分钟有界观察写 `cooldown_retest_limited_probe_timeout` | **视同持续探针**，不适用 | `boundedCooldownRemaining` 判定追加 `ExpeditedRecovery` | 见 §3.7 |
-| 7 天观察超时 `error` | transport 失败写 `cooldown_retest_observation_timeout`；满窗后的中性结果写 `cooldown_retest_neutral_timeout` | **保留** | 不改 | 防无限烧探针的停损（§3.8） |
+| 长期降频道 | 超过最大恢复观察窗（设置 `cooldownAccountRetestMaxBackoffHours`，默认 12h）降为 1 小时/轮（jitter 后 30–90 分钟）；`upstream_failure` 与 `upstream_http_failure` 同判 | **不降频**，保持特供节奏 | `applyCooldownDecision` 长期道分支按 `ExpeditedRecovery` 跳过 | 12 小时降频对临期账户无意义；探针密度已有名额约束兜底 |
+| 有界观察 10 分钟 `error` | 未开持续探针的 `temporary_unavailable` 在独立 transport 失败（`upstream_failure`）超过 10 分钟有界观察写 `cooldown_retest_limited_probe_timeout`；`upstream_http_failure` 不触发终态 | **视同持续探针**，不适用 | `boundedCooldownRemaining` 判定追加 `ExpeditedRecovery` | 见 §3.7 |
+| 7 天观察超时 `error` | transport 失败写 `cooldown_retest_observation_timeout`；满窗后的 HTTP 失败结果写 `cooldown_retest_http_failure_timeout` | **保留** | 不改 | 防无限烧探针的停损（§3.8） |
 | 失败初始退避 | 3s 基准（jitter 后 1.5–4.5s） | 不变 | 不改 | 首轮复测已经够快 |
-| 失败指数退避 | 3s 起每轮 ×2 | 不变 | 不改 | 特供只改封顶与慢速道 |
-| 中性顺延基数 | 30s 基准（jitter 后 15–45s） | 不变 | 不改 | 30s 起步已足够快，收益全在封顶 |
+| 失败指数退避 | 3s 起每轮 ×2 | 不变 | 不改 | 特供只改慢速道基准 |
+| 本地任务故障顺延基数 | 30s 基准（jitter 后 15–45s），仅用于 `probe_task_failure` / `unknown` 等无真实上游尝试的本地故障 | 不变 | 不改 | 本地故障不是账户可用性证据，保持慢速有界重排 |
 | 候补扫描排序 | 冷却类内按 `cooldown_until` ASC | 冷却类内特供账户**最优先层**，层内仍按 `cooldown_until` ASC | `directInputCandidatesSQL` ORDER BY（历史双方言时期 PG/SQLite 双 reader 同步，现行仅 PostgreSQL reader） | 大积压 + LIMIT 下特供不被饿死；名额大小不改变排序规则，普通账户受影响的边界与实际候选数见 §10 第 5 项 |
 | `pending_test` 激活 | 全局第一优先类，5 分钟失败重试，24h 终态 | 不变 | 不改 | §3.9 |
 | active 常规巡检 | 全局设置（默认 1 小时） | 不变 | 不覆盖 `HealthIntervalMS` | 特供管"恢复快"，不管"巡检勤"，控制探针成本 |
 | jitter | 全局被动 jitter | 不变 | 不改 | §4 时间语义边界；特供账户 due 由各自冷却时点天然错开，全局被动 jitter 已提供非零偏移——该决策与名额数无关，不因名额调大而改变 |
 
-**量化效果**（含 jitter 上下界）：特供账户复活检测最坏延迟 ≈ **90 秒**（中性封顶基准 60s + 上界 jitter 30s），持续失败高压复测 7.5–22.5 秒/轮；普通账户维持现行全部节奏，逐字节不变。
+**量化效果**（含 jitter 上下界）：特供剩余收益 = 持续失败 15s 高压复测（7.5–22.5 秒/轮）+ 跳过 12 小时降频 + 绕开 10 分钟有界终态；复活检测最坏延迟普通账户也已约 **90 秒**（慢速道基准 60s + 上界 jitter 30s），特供账户 7.5–22.5 秒/轮。
 
 ## 6. jobs / shared 输入契约（新增字段与传播链）
 
 现行 `exactkeyprobe.Input` 是签名序列化传播的任务契约（`signed_input.go` 序列化 → worker `VerifySignedInput` 反序列化）；`Schedule` 随输入版本冻结，`Eligibility` 是随输入冻结的业务状态快照。特供沿既有形态扩展，共两处 shared 字段变更：
 
 1. **`Eligibility.ExpeditedRecovery bool`，JSON `expedited_recovery,omitempty`**（`exactkeyprobe/types.go`）。消费点三处，全在 `scheduler.go`：慢速道 15s 分支、长期道跳过、有界观察绕开。放在 `Eligibility` 而非 `Schedule` 的理由：它是"该账户是什么"的事实布尔（与 `TemporaryUnavailableContinuousProbeEnabled *bool` 同类），而行为数值继续走 `Schedule`。
-2. **`Schedule.CooldownNeutralMaxMS` 按账户覆盖**，不新增字段：reader 装配输入时，特供账户写 `60_000`，普通账户维持现行 `900_000`。`Schedule` 随输入版本冻结的既有语义仍成立；对账户行配置发生变更的输入，先由 §6.3 新鲜度门拒绝旧输入，再由下一轮 reader 生成新档位，避免旧配置在门后继续发出探针。
+2. **`Schedule.CooldownNeutralMaxMS` 按账户覆盖**，不新增字段：reader 装配输入时，特供账户写 `60_000`，普通账户维持现行 `900_000`。`Schedule` 随输入版本冻结的既有语义仍成立；对账户行配置发生变更的输入，先由 §6.3 新鲜度门拒绝旧输入，再由下一轮 reader 生成新档位，避免旧配置在门后继续发出探针。v3.5 起 HTTP 失败结果不再读取该字段（改走与 transport 失败一致的失败快速道），该覆盖只约束无真实上游尝试的本地任务故障顺延上限；字段与装配保持不变。
 3. **执行前新鲜度门（新增通用机制，本设计的动机案例是特供）。** 现行签名输入默认 TTL 为 24 小时（`JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS`，`config.go` 默认 24h、钳制 1 分钟–7 天），`validateScheduledInput` 只校验 `ExpiresAt`——特供开关变更后，已签发的旧输入在 TTL 内仍会通过校验并照常发出**旧档位**上游探针，只是结果在写回时被 fence 拒绝。
 
    - 门必须落在两条真实 dispatch 路径的 `ExecuteInputProbe` 之前：定时输入的 `prepareScheduledInput`，以及显式探活请求的 `runExplicitRequest`。两者都在签名验证与 `validateScheduledInput` 通过后，按 `input.AccountID` 重读 `accounts.config_revision` 单列，与 `input.ConfigRevision` 不一致即拒绝上游调用。
@@ -135,7 +137,7 @@ PG reader    directInputCandidatesSQL 增列 a.expedited_recovery_enabled
 1. 请求/响应：`expeditedAccountLimit`（响应为 `int|null`；请求采用三态：字段缺省=不修改，显式 `null`=清除覆盖值并恢复 NULL/默认 3，整数=设置 0–100；值为 0 时禁止新增/重新启用，存量标记不回溯清除）；store `store_accounts.go` 读写列、owner_gate 投影列同步。
 2. 校验：非空时必须为 0–100 整数；审计与 `updated_at` 沿用系统账户补丁既有链路。
 3. 前端：系统账户编辑弹窗"用户限制"区增"特供账户上限"输入框，占位说明"默认 3，0 = 禁止新增/重新启用"。
-4. 账户列表：行操作"设为特供 / 取消特供"；特供徽章；状态卡片在特供账户上展示加速节奏摘要（例如"特供恢复：中性封顶基准 1 分钟，实际 30–90 秒"），不得表述为调度优先级。
+4. 账户列表：行操作"设为特供 / 取消特供"；特供徽章；状态卡片在特供账户上展示加速节奏摘要（例如"特供恢复：持续失败复测基准 15 秒，实际 7.5–22.5 秒"），不得表述为调度优先级。
 5. 个人信息（2026-10-24 用户裁决）：`GET /__aisys__/api/auth/profile` 响应新增 `effectiveExpeditedAccountLimit`（`{limit, source=global|user}`；覆盖 → `source=user`，NULL → 内置默认 3、`source=global`，`0` 语义为禁止新增/重新启用），个人信息页「账户上限」卡片向归属用户只读展示其名额与来源，契约见 [接口契约与权限矩阵](接口契约与权限矩阵.md)「auth/profile」。
 
 ## 9. 名额校验与并发（精确契约）
@@ -157,17 +159,17 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 
 ## 10. 风险与取舍
 
-1. **上游风控**：特供号中性顺延基准 60 秒；**持续失败时进入慢速道基准 15 秒（jitter 后 7.5–22.5 秒，单账户理论上界约 11,520 次探针/天）**。探针成本与风控压力必须按当前名额 N 评估（N 为该系统账户 `COALESCE(expedited_account_limit, 3)`，可配置到 100）：默认 N=3 时全池最坏约 3.5 万次/天（最小请求、走账户自有凭据）；N 调大则上界随 N 线性增长，调大名额即代表接受相应上游压力。文档与界面文案不承诺"特供能救活"，只承诺"复活会被最快发现"。
+1. **上游风控**：特供号的非成功复测与 transport 失败同档，**第 6 轮起进入慢速道基准 15 秒（jitter 后 7.5–22.5 秒，单账户理论上界约 11,520 次探针/天）**。探针成本与风控压力必须按当前名额 N 评估（N 为该系统账户 `COALESCE(expedited_account_limit, 3)`，可配置到 100）：默认 N=3 时全池最坏约 3.5 万次/天（最小请求、走账户自有凭据）；N 调大则上界随 N 线性增长，调大名额即代表接受相应上游压力。文档与界面文案不承诺"特供能救活"，只承诺"复活会被最快发现"。
 2. **临期终局**：特供不阻止死亡；7 天观察超时仍写 `error` 停损。特供的价值区间是"账户尚能复活的窗口期"。
-3. **探针成本**：默认名额 3、中性路径下对探针池与 DB service 窗口可忽略；持续失败路径与更大名额按本节第 1 条的 N 上界评估，不由实现或文档宣称"可忽略"。约 11,520 次/天/账户是没有并发、限速、租约和上游拒绝等其他预算时的**策略路径理论最密上界**，实际吞吐只能更低；N=100 时单池理论上界约 1,152,000 次/天。
+3. **探针成本**：默认名额 3、常规复测路径（≤90 秒/轮）对探针池与 DB service 窗口可忽略；持续失败路径与更大名额按本节第 1 条的 N 上界评估，不由实现或文档宣称"可忽略"。约 11,520 次/天/账户是没有并发、限速、租约和上游拒绝等其他预算时的**策略路径理论最密上界**，实际吞吐只能更低；N=100 时单池理论上界约 1,152,000 次/天。
 4. **误判不变性**：因证据标准未降，特供不会让坏号进入调度；加速的全部代价是探针密度。
-5. **普通账户公平性**：扫描排序特供层只影响冷却类内部次序，类间槽位份额机制保留；普通账户的节奏参数逐字节不变（回归测试锁定）。大名额下（极端 N=100），普通账户可能因当轮实际入选的特供候选而延后出本轮扫描；设计上受影响幅度与该轮特供候选数同阶，不能把配置上限 N 直接当成每轮必后移的精确值，具体边界由 PostgreSQL 同 SQL 回归锁定。
+5. **普通账户公平性**：扫描排序特供层只影响冷却类内部次序，类间槽位份额机制保留；普通账户的复测节奏参数不因特供改变（回归测试锁定；全局复测节奏的成功 / 非成功二元化见 §13 v3.5）。大名额下（极端 N=100），普通账户可能因当轮实际入选的特供候选而延后出本轮扫描；设计上受影响幅度与该轮特供候选数同阶，不能把配置上限 N 直接当成每轮必后移的精确值，具体边界由 PostgreSQL 同 SQL 回归锁定。
 
 ## 11. 验证要求
 
 实现时至少覆盖（Mock 优先，双方言）：
 
-1. jobs `accounthealth` 单测：特供分支的中性封顶基准 60s、慢速道 15s、长期道跳过、有界 10 分钟 `error` 绕开；**普通账户节奏逐字节不变的回归**（中性 15 分钟封顶、60 秒慢速道、1 小时长期道仍生效）；jitter 上下界断言按 §4 换算（60s → [30s, 90s]，15s → [7.5s, 22.5s]，且恒不等于基准值）。
+1. jobs `accounthealth` 单测：特供慢速道 15s、长期道跳过、有界 10 分钟 `error` 绕开；HTTP 失败结果与 `upstream_failure` 同走 3/6/12/24/48 秒快速道与慢速道（不按状态码分叉）；**普通账户回归**（第 6 轮起 60 秒慢速道、1 小时长期道仍生效、只有 transport 失败触发 10 分钟有界终态）；jitter 上下界断言按 §4 换算（60s → [30s, 90s]，15s → [7.5s, 22.5s]，3s → [1.5s, 4.5s]，且恒不等于基准值）。
 2. 7 天观察超时对特供同样生效的终态测试。
 3. reader：PostgreSQL 回归（SQLite reader 已删除）——新列读取、`Eligibility.ExpeditedRecovery` / `CooldownNeutralMaxMS` 装配正确；排序特供在冷却类内优先、激活类仍全局第一优先。
 4. **特供变更传播**：补丁后下一轮扫描重建的输入携带新档位与新的账户 `ConfigRevision`；只有授权实例且存在来源账户时，相关来源版本才填入 `SourceConfigRevision`。旧代次输入的迟到结果按 fence 校验返回未变更。执行前新鲜度门（§6.3）必须覆盖“补丁在 freshness 判定前提交”这一时序（Mock 观测零上游请求、零状态写回、失败计数不变）；补丁在判定后提交的竞态允许请求已发出，但必须验证写回 fence 拒绝，不能把该时序写成绝对的零上游请求保证。
@@ -197,6 +199,9 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 
 ## 13. 修订记录
 
+- **v3.6（2026-11-04，J1 结果改名）**：账户健康（J1）探针域去掉"中性"概念，`framing_complete_neutral` 更名为 `upstream_http_failure`（它本来就是一次失败）；`complete_success` 仍是唯一成功，`upstream_http_failure` 与 `upstream_failure`（transport）同走快速复测道，仅 `transport_incomplete` 触发 10 分钟有界终态。7 天 HTTP 失败终态码改为 `cooldown_retest_http_failure_timeout`；历史存量 `framing_complete_neutral` 在投影 replay 与 current-state 读取时归一为 `upstream_http_failure`。§1/§3.4 基线、§4 证据边界、§5 档位表、§6.2 注释与 §8 测试清单同步；v3.5 保留为历史记录。
+- **v3.5（2026-11-03，普通账户冷却复测二元化）**：普通账户冷却复测改为"成功 / 非成功"二元判定，`framing_complete_neutral` 与 `upstream_failure` 统一走 3/6/12/24/48 秒快速道与 60 秒慢速道，不再有 15 分钟中性封顶慢道（生产账户连续两个 502/503 被推到 15 分钟后复测）。§1/§3.4 基线、§4 证据边界、§5 档位表与量化效果逐行对齐新基线：特供剩余收益收窄为持续失败 15s 高压复测 + 跳过 12h 降频 + 绕开 10 分钟有界终态；v3.4 的「超级优先边界」「锁死边界」两行不变。
+- **v3.4（2026-11-03，叠加边界补充）**：§4 边界契约表新增「超级优先边界」「锁死边界」两行，明确超级优先 / 锁死 / 特供三者可同时开启及各自作用面；不改任何已实现行为。
 - **v3.3（2026-10-10，BUG-0305 发布事故修正）**：§7.1 补 `accounts.expedited_recovery_enabled` 的 PG 既有库 ALTER 守卫——v3.1/v3.2 契约错误省略该守卫（误引"probe 列无 ALTER"先例，该列先于存量库存在而新列不是），2026-10-10 发布窗口生产与 jobs 双双因缺列 fail-closed 崩溃循环约 11 分钟，手工 ALTER 恢复；代码守卫 + golden 706 + 守卫测试断言随本版入库。详 docs/bug/问题-0305。
 - **v3.2（2026-10-10，实施落定）**：功能已全部实施并测试通过，状态头改为"已实施"。① contracts business SQLite schema 版本 v13→v14（`accounts.expedited_recovery_enabled`、`system_accounts.expedited_account_limit` 双方言加列，随 `--ensure-schema` 生效）；② 实施落定澄清两处（§6.3）：新鲜度门查询落在 PG/SQLite 直读 reader 的 `LoadAccountConfigRevision`（业务库连接面）并由 `NewRunnerWithDirectInputReader` 注入 Runner、不落 jobs Store；files 文件输入后备通道组合根不装配业务读面，门未装配即跳过，陈旧输入上界由签名输入 24h TTL 兜底；③ 验证结果摘要：jobs accounthealth 全量 ok（含 8 项 PG 门禁）、gateway accounts/authsys ok、contracts ok、maintenance schema ok、前端 vue-tsc/build/960 项单测 ok。
 - **v3.1（2026-10-10，终审补充）**：① 明确执行前新鲜度门只覆盖 `accounts.config_revision`，补上全局 settings 不在覆盖范围内的边界；② 定义 freshness 判定的线性化点与补丁竞态，避免把“零旧请求”误写成无法实现的绝对保证；③ 补充数据库读失败/账户消失的失败关闭、旧签名输入不得原样重试与诊断语义；④ 补齐 PG `system_accounts` 建表 DDL、创建事务请求增量、幂等补丁不重复占额、系统账户限制字段的 `null` 三态；⑤ 修正 `SourceConfigRevision` 仅适用于授权实例的验收措辞；⑥ 将探针次数明确为无其他预算时的理论最密上界，并把普通账户后移改成需由双 SQL 回归锁定的实际候选数边界；⑦ 增加新鲜度门竞态与失败关闭验收项；⑧ 明确 batch-edit 不携带特供字段，未来批量开放必须按整批增量校验；README 索引同步。

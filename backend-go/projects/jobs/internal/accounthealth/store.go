@@ -612,6 +612,16 @@ func sameOptionalInt64(left, right *int64) bool {
 	return *left == *right
 }
 
+// normalizeStoredOutcome 把历史存量结果名归一为当前契约值。读取路径
+// （outcome 投影页与 current-state 行）共用；写入路径不调用，新结果直接使用
+// 当前值。
+func normalizeStoredOutcome(outcome string) string {
+	if outcome == legacyOutcomeFramingCompleteNeutral {
+		return exactkeyprobe.OutcomeHTTPFailure
+	}
+	return outcome
+}
+
 func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (CurrentState, bool, error) {
 	if strings.TrimSpace(accountID) == "" {
 		return CurrentState{}, false, errors.New("current state 查询缺少 account ID")
@@ -632,6 +642,9 @@ func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (Current
 		return CurrentState{}, false, err
 	}
 	state.ObservedAt = observed.Time
+	// 历史存量归一（2026-11-04 结果改名）：旧行的 framing_complete_neutral 在
+	// 读取侧统一视为 upstream_http_failure，避免历史账户在后续决策中落空。
+	state.Outcome = normalizeStoredOutcome(state.Outcome)
 	if statusCode.Valid {
 		state.StatusCode = int(statusCode.Int64)
 	}

@@ -458,31 +458,34 @@ func usageCatalogScopePriority(scope string) int {
 }
 
 // usageCatalogBillingPolicy mirrors pricing.billingPolicies（六家 provider 的
-// buildCostBreakdown 差异：长上下文乘数、tier 拒绝、缓存读口径与 cache 写
-// 标签；其余 token 标签与默认表一致）。
+// buildCostBreakdown 差异：长上下文乘数、tier 拒绝、缓存读/写是否计入 input
+// 口径与 cache 写标签；其余 token 标签与默认表一致）。
 type usageCatalogBillingPolicy struct {
-	id                       string
-	applyLongContext         bool
-	rejectUnsupportedTier    bool
-	cacheReadIncludedInInput bool
-	cacheReadFallbackToInput bool
-	cacheWriteLabel          string
+	id                        string
+	applyLongContext          bool
+	rejectUnsupportedTier     bool
+	cacheReadIncludedInInput  bool
+	cacheWriteIncludedInInput bool
+	cacheReadFallbackToInput  bool
+	cacheWriteLabel           string
 }
 
 func usageCatalogBillingPolicyFor(providerCode string) *usageCatalogBillingPolicy {
 	switch strings.ToLower(strings.TrimSpace(providerCode)) {
 	case "openai", "gpt":
-		return &usageCatalogBillingPolicy{id: "openai", applyLongContext: true, cacheReadIncludedInInput: true, cacheReadFallbackToInput: true, cacheWriteLabel: "缓存写入 Token"}
+		return &usageCatalogBillingPolicy{id: "openai", applyLongContext: true, cacheReadIncludedInInput: true, cacheWriteIncludedInInput: true, cacheReadFallbackToInput: true, cacheWriteLabel: "缓存写入 Token"}
+	// anthropic 的 cache_creation_input_tokens 独立于 input_tokens：缓存
+	// 读取/写入都不从 input 扣除（cacheWriteIncludedInInput 保持 false）。
 	case "anthropic":
 		return &usageCatalogBillingPolicy{id: "anthropic", rejectUnsupportedTier: true, cacheWriteLabel: "5m 缓存写入 Token"}
 	case "gemini":
-		return &usageCatalogBillingPolicy{id: "gemini", applyLongContext: true, cacheReadIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
+		return &usageCatalogBillingPolicy{id: "gemini", applyLongContext: true, cacheReadIncludedInInput: true, cacheWriteIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
 	case "xai":
-		return &usageCatalogBillingPolicy{id: "xai", applyLongContext: true, cacheReadIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
+		return &usageCatalogBillingPolicy{id: "xai", applyLongContext: true, cacheReadIncludedInInput: true, cacheWriteIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
 	case "deepseek":
-		return &usageCatalogBillingPolicy{id: "deepseek", rejectUnsupportedTier: true, cacheReadIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
+		return &usageCatalogBillingPolicy{id: "deepseek", rejectUnsupportedTier: true, cacheReadIncludedInInput: true, cacheWriteIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
 	case "glm":
-		return &usageCatalogBillingPolicy{id: "glm", rejectUnsupportedTier: true, cacheReadIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
+		return &usageCatalogBillingPolicy{id: "glm", rejectUnsupportedTier: true, cacheReadIncludedInInput: true, cacheWriteIncludedInInput: true, cacheWriteLabel: "缓存写入 Token"}
 	}
 	return nil
 }
@@ -652,9 +655,17 @@ func buildUsageCatalogTokenBreakdown(row usageCatalogPricingRow, input usagewrit
 	if policy.cacheReadIncludedInInput {
 		includedCacheRead = cacheReadTokens
 	}
+	// BUG-0347：cache 写入总量（标准档 + 1h 档）在上游计入 input_tokens 时
+	// 必须先从普通输入中扣除，否则同一批 token 被输入价与缓存写入价各计一次
+	// （与 gateway pricing.buildTokenCostBreakdown 同构镜像）。
+	includedCacheWrite := 0.0
+	if policy.cacheWriteIncludedInInput {
+		includedCacheWrite = cacheWriteStandardTokens + cacheWrite1hTokens
+	}
 	uncachedInputTokens := math.Max(
 		nonNegativeUsageCatalogFloat(input.InputTokens)-
 			includedCacheRead-
+			includedCacheWrite-
 			inputImageTokens-
 			inputAudioTokens,
 		0)

@@ -1105,6 +1105,17 @@ wholePoolRound:
 					if kind == dispatchResultSelected {
 						return *singleResult, nil
 					}
+					if kind == dispatchResultLocked {
+						// 锁死门（设计 §3.4）：账号处于 ENGAGED 且未到死亡窗口，
+						// 本次真实失败后本请求不得继续同组其他候选、后续分派段
+						// 或后备分组。释放发送租约并让下一次预约按 nextRetryAt
+						// 等待（§3.5-9），由链面渲染 handoff / 503 交给客户端。
+						_ = releaseActiveAccountLockLease(true)
+						return UpstreamDispatchResult{}, &AccountLockHoldError{
+							AccountID: originalAccount.ID,
+							Message:   "账户处于锁死窗口，窗口内不切换其他账户",
+						}
+					}
 				}
 
 				// 段周期结束：本段仍有未释放排除账号时先腾空本轮队列回段释放门结算

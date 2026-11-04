@@ -150,6 +150,10 @@ func presentationMapping(status string) (string, string) {
 		return "temporarily_unavailable", "restore_account"
 	case "instance_quality_isolated":
 		return "error", "retry_check"
+	// 时间计划闸门（设计 §5.4）：非时间段是正常状态的子集，无人工动作，
+	// 到下一个计划边界自动恢复。
+	case "schedule_out_of_window":
+		return "out_of_window", "none"
 	case "binding_missing":
 		return "binding_missing", "bind_group"
 	case "api_key_pool_unavailable":
@@ -181,6 +185,9 @@ func boundaryKindOf(status string) string {
 		return "quota_reset"
 	case "source_cooldown", "instance_cooldown":
 		return "cooldown_expiry"
+	case "schedule_out_of_window":
+		// 时间计划闸门：下一个计划边界开启时刻（availability_schedule_next_check_at）。
+		return "schedule_window_open"
 	case "runtime_local_suppressed":
 		return "policy_ttl_expiry"
 	}
@@ -201,6 +208,11 @@ func availabilityStatusBoundaryAt(status string, row listRow) string {
 	case "instance_cooldown":
 		if row.cooldownUntil.Valid {
 			return row.cooldownUntil.String
+		}
+	case "schedule_out_of_window":
+		// 时间计划闸门（设计 §5.4）：RetryAt 取下一个计划边界检查时刻。
+		if row.availabilityScheduleNext.Valid {
+			return row.availabilityScheduleNext.String
 		}
 	}
 	return ""

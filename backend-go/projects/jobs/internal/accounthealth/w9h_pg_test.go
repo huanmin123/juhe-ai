@@ -415,11 +415,26 @@ func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
 	assertW9HDisposition("w9h-outcome-activate", "applied", "")
 	var failureCount int
 	var accountStatus string
-	if err := db.QueryRow(`SELECT health_check_failure_count, status FROM juhe_business.accounts WHERE id = 'w9h-proj-acc'`).Scan(&failureCount, &accountStatus); err != nil {
+	var scheduleGate sql.NullInt64
+	if err := db.QueryRow(`SELECT health_check_failure_count, status, availability_schedule_gate FROM juhe_business.accounts WHERE id = 'w9h-proj-acc'`).Scan(&failureCount, &accountStatus, &scheduleGate); err != nil {
 		t.Fatal(err)
 	}
 	if failureCount != 0 || accountStatus != "active" {
 		t.Fatalf("activation must reset failure count and activate: count=%d status=%s", failureCount, accountStatus)
+	}
+	// 激活投影按计划写独立闸门（w9hScheduleJSON 全天窗口 → gate=1），
+	// status 不再因计划改写。
+	if !scheduleGate.Valid || scheduleGate.Int64 != 1 {
+		t.Fatalf("activation must write schedule gate=1, got %+v", scheduleGate)
+	}
+	// 首次激活成功同时写入余额自动探测意图（T110：判据是首次成功健康检查）。
+	var balanceIntent sql.NullString
+	if err := db.QueryRow(`SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = 'w9h-proj-acc'`).Scan(&balanceIntent); err != nil {
+		t.Fatal(err)
+	}
+	wantBalanceIntent := base.ObservedAt.Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
+	if !balanceIntent.Valid || balanceIntent.String != wantBalanceIntent {
+		t.Fatalf("activation must seed balance intent=%q, got %+v", wantBalanceIntent, balanceIntent)
 	}
 	var outboxRows int
 	if err := db.QueryRow(`SELECT count(*) FROM juhe_business.account_circuit_outbox WHERE account_id = 'w9h-proj-acc'`).Scan(&outboxRows); err != nil {

@@ -454,8 +454,9 @@ func TestV1DispatchLoopExhaustedCopyBranches(t *testing.T) {
 	}
 }
 
-// TestV1DispatchLoopWallBudgetKinds covers the V4 split: coordination →
-// client handoff, wall → the fixed 503.
+// TestV1DispatchLoopWallBudgetKinds covers the V4 split: coordination → client
+// handoff, wall → 同一客户端交接（非终态；无 Hijack 时回退固定 503 client
+// retry 文案）。
 func TestV1DispatchLoopWallBudgetKinds(t *testing.T) {
 	sink := &recordingFailureSink{}
 	loop := newV1TestLoop(t, sink)
@@ -496,8 +497,14 @@ func TestV1DispatchLoopWallBudgetKinds(t *testing.T) {
 		t.Fatalf("inputs=%d", len(sink.inputs))
 	}
 	wall := sink.inputs[0]
+	// 交接回退 503 保留墙钟专用错误码/文案（gateway_failed），断连成功时
+	// 记账同源。
 	if wall.ResponsePayload.Error.Code != "gateway_request_wall_budget_exhausted" {
-		t.Fatalf("wall contract wrong: %+v", wall.ResponsePayload)
+		t.Fatalf("wall handoff contract wrong: %+v", wall.ResponsePayload)
+	}
+	if wall.Audit.ErrorCode != "gateway_request_wall_budget_exhausted" ||
+		wall.Audit.Outcome != gatewaypreauth.AuditOutcomeGatewayFailed {
+		t.Fatalf("wall audit wrong: %+v", wall.Audit)
 	}
 }
 

@@ -19,14 +19,6 @@ func TestW14LMiscPureArms(t *testing.T) {
 	}); err == nil {
 		t.Fatal("内置查询不应接受 custom 配置")
 	}
-	// 账户名搜索 3-gram。
-	terms := accountNameSearchQueryTerms("w14l")
-	if len(terms) == 0 {
-		t.Fatal("应产出搜索词")
-	}
-	if got := accountNameSearchQueryTerms(""); got != nil {
-		t.Fatalf("空关键词应返回 nil：%v", got)
-	}
 }
 
 func TestW14LMiscPureArms2(t *testing.T) {

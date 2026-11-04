@@ -26,24 +26,34 @@ func TestW12fEvaluateScheduleRowsBranches(t *testing.T) {
 	if result.Invalid != 2 || result.Scanned != 4 {
 		t.Fatalf("result=%+v", result)
 	}
-	if len(updates) < 3 {
+	if len(updates) != 4 {
 		t.Fatalf("updates=%+v", updates)
 	}
-	pausedHasNext := false
-	for _, update := range updates {
-		if update.id == "w12f-invalid-paused" && update.status == "" {
-			pausedHasNext = true
-		}
+	// 2026-11-03 闸门契约：计划文档不可解析一律 fail-closed 关闸，与 status 无关；
+	// 可解析的行按当前时刻（10:00，09:00-18:00 窗口内）开闸。
+	wantGates := map[string]int64{
+		"w12f-invalid-active": 0,
+		"w12f-invalid-paused": 0,
+		"w12f-valid-active":   1,
+		"w12f-valid-paused":   1,
 	}
-	if !pausedHasNext {
-		t.Fatalf("非 active 的无效行只推进 nextCheckAt: %+v", updates)
+	for _, update := range updates {
+		want, ok := wantGates[update.id]
+		if !ok || update.gate == nil || *update.gate != int(want) {
+			t.Fatalf("%s gate=%+v want %d", update.id, update.gate, want)
+		}
 	}
 	// 非账户模式（api key）同样的非法行归类。
 	updates, result, err = store.evaluateScheduleRows(rows, now, false)
 	if err != nil || result.Invalid != 2 {
 		t.Fatalf("api key 模式 result=%+v err=%v", result, err)
 	}
-	_ = updates
+	for _, update := range updates {
+		want, ok := wantGates[update.id]
+		if !ok || update.gate == nil || *update.gate != int(want) {
+			t.Fatalf("Key %s gate=%+v want %d", update.id, update.gate, want)
+		}
+	}
 }
 
 func TestW12fSelectBatchCandidatesFilterArms(t *testing.T) {

@@ -31,12 +31,14 @@ type RevalidateResult struct {
 
 // accountRow 是 revalidate 的账户行投影。
 type revalidateAccountRow struct {
-	providerCode         string
-	protocolCode         sql.NullString
-	protocolVersion      sql.NullString
-	accountType          string
-	status               string
-	schedulable          int64
+	providerCode    string
+	protocolCode    sql.NullString
+	protocolVersion sql.NullString
+	accountType     string
+	status          string
+	schedulable     int64
+	// scheduleGate 是时间计划闸门派生列（NULL=无计划 / 1=时段内 / 0=时段外）。
+	scheduleGate         sql.NullInt64
 	configRevision       int64
 	credentialsEncrypted string
 }
@@ -115,14 +117,15 @@ func (s *Store) RevalidatePool(ctx context.Context, accountID string, expectedCo
 func (s *Store) loadRevalidateAccountRow(ctx context.Context, accountID string) (*revalidateAccountRow, error) {
 	// 供应商解耦（供应商与上游协议面重构设计 §2.1）：accounts.provider_code
 	// 列退役，连接身份读 vendor_code（值域与旧 providerCode 同名，NULL 归一
-	// 空串）；COALESCE 别名保持行投影字段名不变。
-	query := s.bind(fmt.Sprintf(`SELECT COALESCE(vendor_code, '') AS provider_code, protocol_code, protocol_version, type, status, schedulable, config_revision, credentials_encrypted
+	// 空串）；COALESCE 别名保持行投影字段名不变。时间计划闸门
+	// （availability_schedule_gate）同列读取，时段外按不可调度拒绝。
+	query := s.bind(fmt.Sprintf(`SELECT COALESCE(vendor_code, '') AS provider_code, protocol_code, protocol_version, type, status, schedulable, availability_schedule_gate, config_revision, credentials_encrypted
       FROM %s WHERE id = ? AND deleted_at IS NULL`, s.businessTable("accounts")))
 	var row revalidateAccountRow
 	var credentials sql.NullString
 	if err := s.db.QueryRowContext(ctx, query, accountID).Scan(
 		&row.providerCode, &row.protocolCode, &row.protocolVersion, &row.accountType,
-		&row.status, &row.schedulable, &row.configRevision, &credentials); err != nil {
+		&row.status, &row.schedulable, &row.scheduleGate, &row.configRevision, &credentials); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -135,14 +138,15 @@ func (s *Store) loadRevalidateAccountRow(ctx context.Context, accountID string) 
 type revalidateGateRow struct {
 	status         string
 	schedulable    int64
+	scheduleGate   sql.NullInt64
 	configRevision int64
 }
 
 // loadRevalidateGateRow 等价 changed==0 分支的重读取。
 func (s *Store) loadRevalidateGateRow(ctx context.Context, accountID string) (*revalidateGateRow, error) {
-	query := s.bind(fmt.Sprintf(`SELECT status, schedulable, config_revision FROM %s WHERE id = ? AND deleted_at IS NULL`, s.businessTable("accounts")))
+	query := s.bind(fmt.Sprintf(`SELECT status, schedulable, availability_schedule_gate, config_revision FROM %s WHERE id = ? AND deleted_at IS NULL`, s.businessTable("accounts")))
 	var row revalidateGateRow
-	if err := s.db.QueryRowContext(ctx, query, accountID).Scan(&row.status, &row.schedulable, &row.configRevision); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, accountID).Scan(&row.status, &row.schedulable, &row.scheduleGate, &row.configRevision); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -160,6 +164,7 @@ func revalidateGateReason(row *revalidateAccountRow, expectedConfigRevision int6
 	return revalidateGateReasonFromGate(&revalidateGateRow{
 		status:         row.status,
 		schedulable:    row.schedulable,
+		scheduleGate:   row.scheduleGate,
 		configRevision: row.configRevision,
 	}, expectedConfigRevision)
 }
@@ -175,6 +180,12 @@ func revalidateGateReasonFromGate(row *revalidateGateRow, expectedConfigRevision
 		return ReasonAccountNotActive, false
 	}
 	if row.schedulable != 1 {
+		return ReasonAccountUnschedulable, false
+	}
+	// 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.3）：时段外账户不投递
+	// 上游重校验。诊断沿用 account_unschedulable（文案「当前不可调度」同义），
+	// 不新增外部错误码。
+	if row.scheduleGate.Valid && row.scheduleGate.Int64 == 0 {
 		return ReasonAccountUnschedulable, false
 	}
 	return "", true
@@ -198,6 +209,7 @@ func (s *Store) revalidateUpdateSQL(fingerprints int) string {
           AND accounts.config_revision = ?
           AND accounts.status = 'active'
           AND accounts.schedulable = 1
+          AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)
           AND accounts.deleted_at IS NULL
       )
   `, s.statesTable(), placeholders(fingerprints), s.businessTable("accounts")))

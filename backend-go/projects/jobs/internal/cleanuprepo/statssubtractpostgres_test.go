@@ -1023,6 +1023,8 @@ func TestCleanupAPIKeyRelatedPostgresFlow(t *testing.T) {
     FROM juhe_usage.usage_records
     WHERE api_key_id = $1
       AND system_account_id = $2
+      AND usage_stats_aggregated_at IS NOT NULL
+      AND client_ip_stats_aggregated_at IS NOT NULL
       AND (created_at < $3 OR (created_at = $4 AND id <= $5))
     ORDER BY created_at ASC, id ASC
     LIMIT $6
@@ -1184,6 +1186,8 @@ func TestCleanupAccountRelatedPostgresFlow(t *testing.T) {
     SELECT %s
     FROM juhe_usage.usage_records
     WHERE (account_id = ANY($1::text[]) OR account_authorization_id = ANY($2::text[]))
+      AND usage_stats_aggregated_at IS NOT NULL
+      AND client_ip_stats_aggregated_at IS NOT NULL
       AND (created_at < $3 OR (created_at = $4 AND id <= $5))
     ORDER BY created_at ASC, id ASC
     LIMIT $6

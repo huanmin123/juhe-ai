@@ -20,9 +20,17 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 )
+
+// validationCodeModelNotFound 标记「目标模型在目录中不存在/不可见」这一类
+// 校验失败；调用方据此把模型计入 400 样本，其余 ValidationError（如同名跨厂商
+// 无法确定计价厂商）原样上抛，避免被折叠成「不在目录中」。
+const validationCodeModelNotFound = "model_not_found"
 
 // entryMappingPairTargetModes 是设计 §5.2 固定 endpoint family 矩阵的 18 个
 // 允许 (source, target) pair 及其全部可执行 target mode 形态（§5.3 唯一选择
@@ -153,16 +161,104 @@ func (s *Store) resolveEntryConnectionID(ctx context.Context, q queryer, account
 // models.id：vendor_code + upstream_model + owner 可见性（personal 行必须归属
 // 该 owner，builtin/global 全局可见，owner personal 行优先）+ status=active。
 func (s *Store) resolveEntryModelID(ctx context.Context, q queryer, vendor, owner, model string) (string, error) {
-	var id string
-	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("models")+`
-		WHERE COALESCE(vendor_code,'') = ? AND upstream_model = ? AND status = 'active'
+	id, _, err := s.resolveEntryModelRow(ctx, q, vendor, owner, model)
+	return id, err
+}
+
+// resolveEntryModelRow 在 resolveEntryModelID 的身份解析之上带回「该行是否可
+// 被计价引擎直接消费」：绑定/映射写入断言据此拒绝无价模型（BUG-0344 根治）。
+// 解析谓词与 resolveEntryModelID 完全同键同序（单条 SQL，不重复查询）。
+//
+// priced 判定委托 pricing.HasCatalogDirectPrice——与网关目录 priced 过滤
+// （chainHasDirectCatalogPrice）同一函数、同一入参口径：直价列 / 静态媒体层
+// （TTS 字符、音频秒、视频秒、视频按次）/ 档位价三选一。静态媒体层按
+// (vendor, public_model) 查（catalogdata 键为目录行 public_model，与链面
+// item.Model 一致）。
+func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, owner, model string) (string, bool, error) {
+	var (
+		id                                                                  string
+		publicModel                                                         string
+		rowVendor                                                           string
+		inputUsd, outputUsd, cachedInputUsd, cacheWriteUsd, cacheWrite1hUsd sql.NullFloat64
+		cacheStorageUsd, imageInputUsd, imageOutputUsd                      sql.NullFloat64
+		audioInputUsd, audioOutputUsd, outputUsdPerImage                    sql.NullFloat64
+		serviceTierPricesJSON                                               sql.NullString
+	)
+	// vendor 为空 = generic_http 账户（accounts.vendor_code 为 NULL）。供应商
+	// 设计允许 generic_http 绑定任一真实 vendor 的模型；2026-11-03 存量处置后
+	// 空 vendor 的 active personal 行已清零，这里按模型名跨 vendor 解析，仍保持
+	// owner 可见性与 personal 优先。下方再断言「计价 vendor 唯一且非空」，避免
+	// 出现「能绑定但运行期解析不出厂商」的第二形态。
+	where := "COALESCE(vendor_code,'') = ? AND "
+	args := []any{vendor, model, owner}
+	if strings.TrimSpace(vendor) == "" {
+		where = "TRUE AND "
+		args = []any{model, owner}
+	}
+	err := q.QueryRowContext(ctx, s.bind(`SELECT id, public_model, COALESCE(vendor_code,''),
+			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+			cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour,
+			image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
+			audio_output_usd_per_1m, output_usd_per_image, service_tier_prices_json
+		FROM `+s.table("models")+`
+		WHERE `+where+`upstream_model = ? AND status = 'active'
 		  AND (scope IN ('builtin','global') OR (scope = 'personal' AND system_account_id = ?))
 		ORDER BY CASE scope WHEN 'personal' THEN 0 WHEN 'global' THEN 1 ELSE 2 END, id
-		LIMIT 1`), vendor, model, owner).Scan(&id)
+		LIMIT 1`), args...).Scan(
+		&id, &publicModel, &rowVendor,
+		&inputUsd, &outputUsd, &cachedInputUsd, &cacheWriteUsd, &cacheWrite1hUsd,
+		&cacheStorageUsd, &imageInputUsd, &imageOutputUsd, &audioInputUsd,
+		&audioOutputUsd, &outputUsdPerImage, &serviceTierPricesJSON,
+	)
 	if err != nil {
-		return "", &ValidationError{Message: fmt.Sprintf("目标模型 %q 不在当前供应商模型目录中，或已停用/不可见", model)}
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, &ValidationError{Code: validationCodeModelNotFound, Message: fmt.Sprintf("目标模型 %q 不在当前供应商模型目录中，或已停用/不可见", model)}
+		}
+		return "", false, err
 	}
-	return id, nil
+	if strings.TrimSpace(vendor) == "" && rowVendor == "" {
+		// generic_http 账户只能绑定「已归属真实厂商」的行：NULL vendor 行在
+		// 运行期无法装载任何厂商目录（sourceVendorCodes("") 返回空源），
+		// 绑上就会重现「可调度但算不出成本」。
+		return "", false, &ValidationError{Message: fmt.Sprintf("目标模型 %q 未归属任何厂商，无法计价，不能绑定", model)}
+	}
+	priceSet := pricing.PriceSet{
+		InputUsdPer1M:               nullablePriceValue(inputUsd),
+		OutputUsdPer1M:              nullablePriceValue(outputUsd),
+		CachedInputUsdPer1M:         nullablePriceValue(cachedInputUsd),
+		CacheWriteUsdPer1M:          nullablePriceValue(cacheWriteUsd),
+		CacheWrite1hUsdPer1M:        nullablePriceValue(cacheWrite1hUsd),
+		CacheStorageUsdPer1MPerHour: nullablePriceValue(cacheStorageUsd),
+		ImageInputUsdPer1M:          nullablePriceValue(imageInputUsd),
+		ImageOutputUsdPer1M:         nullablePriceValue(imageOutputUsd),
+		AudioInputUsdPer1M:          nullablePriceValue(audioInputUsd),
+		AudioOutputUsdPer1M:         nullablePriceValue(audioOutputUsd),
+		OutputUsdPerImage:           nullablePriceValue(outputUsdPerImage),
+	}
+	return id, pricing.HasCatalogDirectPrice(rowVendor, publicModel, priceSet, serviceTierPriceCount(serviceTierPricesJSON.String)), nil
+}
+
+// nullablePriceValue 把可空价格列收敛成 *float64（NULL → nil，0 是真实免费价）。
+func nullablePriceValue(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	out := value.Float64
+	return &out
+}
+
+// serviceTierPriceCount 统计档位价 JSON 的条目数；空/无效/null 均为 0，
+// 与链面 chainCatalogTierPriceCount 同语义。
+func serviceTierPriceCount(raw string) int {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) < 2 || trimmed == "null" {
+		return 0
+	}
+	var prices map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &prices); err != nil {
+		return 0
+	}
+	return len(prices)
 }
 
 // entryConnectionEndpointModes 读目标连接的 account_endpoint_modes 实际集合

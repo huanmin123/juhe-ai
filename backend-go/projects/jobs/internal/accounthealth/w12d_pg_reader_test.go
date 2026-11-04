@@ -324,7 +324,7 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	// 无基线行 → epoch upsert 臂。
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-1", RequestID: "w12d-cool-r1", AccountID: "w12d-cool-acc",
-		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		AccountStatus: "temporary_unavailable",
 		NextDueAt:     ptrTime(observed.Add(30 * time.Minute)),
 		Projection: &Projection{
@@ -342,7 +342,7 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	// 同 epoch 冷却 CAS 命中（fence 一致）→ update 臂。
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-2", RequestID: "w12d-cool-r2", AccountID: "w12d-cool-acc",
-		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(observed.Add(40 * time.Minute)),
 		Projection: &Projection{
 			TargetAccountID: "w12d-cool-acc", TransitionKind: "cooldown_defer", InputVersion: 1,
@@ -363,7 +363,7 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	}
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-4", RequestID: "w12d-cool-r4", AccountID: "w12d-cool-baseline",
-		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(observed.Add(50 * time.Minute)),
 		Projection: &Projection{
 			TargetAccountID: "w12d-cool-baseline", TransitionKind: "cooldown_defer", InputVersion: 1,

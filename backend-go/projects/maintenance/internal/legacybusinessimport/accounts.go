@@ -144,8 +144,31 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 		return nil, fmt.Errorf("遍历旧账户: %w", err)
 	}
 
-	accountIDs := make(map[string]struct{}, len(collected))
+	accountIDs, err := writeAccountRows(ctx, tx, collected, secret, report)
+	if err != nil {
+		return nil, err
+	}
+
+	accountOwners := make(map[string]string, len(collected))
 	for _, row := range collected {
+		accountOwners[row.ID] = row.Owner
+	}
+	if err := importSupportedModels(ctx, source, tx, accountIDs, accountOwners, report); err != nil {
+		return nil, err
+	}
+	if err := importMappings(ctx, source, tx, accountIDs, accountOwners, report); err != nil {
+		return nil, err
+	}
+	return accountIDs, nil
+}
+
+// writeAccountRows 把已 resolve 的账户行写成目标形态：账户行、连接、
+// endpoint modes 与健康检查连接指针，全部在同一事务内完成。
+// 由 importAccounts 在读取/解析源库后调用；独立出来便于 PG 测试直接锁定
+// 写账户调用点，防止连接/endpoint mode 写入被未来重构移除。
+func writeAccountRows(ctx context.Context, tx *sql.Tx, rows []accountRow, secret string, report *Report) (map[string]struct{}, error) {
+	accountIDs := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
 		credit, err := decodeCredit(secret, row.Credential)
 		if err != nil {
 			return nil, fmt.Errorf("解密账户 %s 凭据失败（生产 JUHE_AI_SECRET 是否正确）: %w", row.ID, err)
@@ -244,19 +267,8 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 
 		accountIDs[row.ID] = struct{}{}
 	}
-	report.Tables["accounts"] = len(collected)
-	report.CreatedAccounts = len(collected)
-
-	accountOwners := make(map[string]string, len(collected))
-	for _, row := range collected {
-		accountOwners[row.ID] = row.Owner
-	}
-	if err := importSupportedModels(ctx, source, tx, accountIDs, accountOwners, report); err != nil {
-		return nil, err
-	}
-	if err := importMappings(ctx, source, tx, accountIDs, accountOwners, report); err != nil {
-		return nil, err
-	}
+	report.Tables["accounts"] = len(rows)
+	report.CreatedAccounts = len(rows)
 	return accountIDs, nil
 }
 
@@ -354,33 +366,69 @@ func importSupportedModels(ctx context.Context, source *sql.DB, tx *sql.Tx, acco
 
 	count := 0
 	created := 0
+	skippedUnpriced := 0
+	boundAccounts := map[string]struct{}{}
 	for _, item := range collected {
 		if _, ok := accounts[item.accountID]; !ok {
 			continue
 		}
 		vendor := vendorForLegacyProvider(item.provider)
-		modelID, ok := models.lookup(vendor, item.model)
+		entry, ok := models.lookup(vendor, item.model)
 		if !ok {
 			newID, err := createPersonalModel(ctx, tx, owners[item.accountID], vendor, item.model)
 			if err != nil {
 				return err
 			}
-			models.add(vendor, item.model, newID)
-			modelID = newID
+			// 补建行落 draft（无价）：本包不绑定，管理员配置价格并启用后才可绑定。
+			models.add(vendor, item.model, newID, false)
 			created++
+			skippedUnpriced++
+			continue
+		}
+		if !entry.bindable {
+			// 目录中已存在但不可绑定（无价 personal 行等）：不再制造无价绑定。
+			skippedUnpriced++
+			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at)
-			VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, item.accountID, modelID, item.createdAt); err != nil {
-			return fmt.Errorf("写入账户 %s 模型 %s: %w", item.accountID, modelID, err)
+			VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, item.accountID, entry.id, item.createdAt); err != nil {
+			return fmt.Errorf("写入账户 %s 模型 %s: %w", item.accountID, entry.id, err)
 		}
+		boundAccounts[item.accountID] = struct{}{}
 		count++
+	}
+	// 支持模型被跳过可能让某账户最终一条绑定都不剩（旧配置全是无价自定义名）：
+	// 这种账户不可调度，必须点名，不能静默交付。
+	accountsWithoutModels := 0
+	for accountID := range accounts {
+		if _, ok := boundAccounts[accountID]; ok {
+			continue
+		}
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM juhe_business.account_supported_models WHERE account_id = $1 LIMIT 1`,
+			accountID).Scan(&exists); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("复查账户 %s 支持模型: %w", accountID, err)
+		} else if err == sql.ErrNoRows {
+			accountsWithoutModels++
+		}
 	}
 	report.Tables["account_supported_models"] = count
 	report.Tables["models_created"] = created
+	report.Tables["account_supported_models_skipped_unpriced"] = skippedUnpriced
+	report.Tables["accounts_without_supported_models"] = accountsWithoutModels
 	if created > 0 {
 		report.Notes = append(report.Notes,
-			fmt.Sprintf("模型目录：%d 个旧账户模型名（中转站自定义名）在新目录中不存在，已按 personal scope 补建", created))
+			fmt.Sprintf("模型目录：%d 个旧账户模型名（中转站自定义名）在新目录中不存在，已按 personal scope 补建为 draft（未绑定）", created))
+	}
+	if skippedUnpriced > 0 {
+		report.Notes = append(report.Notes,
+			fmt.Sprintf("模型目录：%d 条账户支持模型因目标行无价格或未启用未绑定；请为对应 personal 模型配置价格并启用后重新绑定", skippedUnpriced))
+	}
+	if accountsWithoutModels > 0 {
+		report.Notes = append(report.Notes,
+			fmt.Sprintf("模型目录：%d 个账户在本次回迁后没有任何支持模型（旧配置全部不可绑定），这些账户不可调度，需先配置模型价格并绑定", accountsWithoutModels))
 	}
 	return nil
 }
@@ -419,26 +467,36 @@ func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts ma
 	}
 
 	count := 0
+	created := 0
+	skippedUnpriced := 0
 	for index, item := range collected {
 		if _, ok := accounts[item.accountID]; !ok {
 			continue
 		}
 		vendor := vendorForLegacyProvider(item.provider)
-		modelID, ok := models.lookup(vendor, item.upstreamModel)
+		entry, ok := models.lookup(vendor, item.upstreamModel)
 		if !ok {
 			newID, err := createPersonalModel(ctx, tx, owners[item.accountID], vendor, item.upstreamModel)
 			if err != nil {
 				return err
 			}
-			models.add(vendor, item.upstreamModel, newID)
-			modelID = newID
+			// 补建行落 draft（无价）：映射目标必须先绑定支持模型（复合外键），
+			// 无价行不可绑定，故映射一并跳过。
+			models.add(vendor, item.upstreamModel, newID, false)
+			created++
+			skippedUnpriced++
+			continue
+		}
+		if !entry.bindable {
+			skippedUnpriced++
+			continue
 		}
 		// 目标模型必须先出现在该账户的 supported_models 中：映射表有
 		// (account_id, target_model_id) → account_supported_models 的复合外键。
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at)
-			VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, item.accountID, modelID, item.createdAt); err != nil {
-			return fmt.Errorf("映射目标模型补登记 %s/%s: %w", item.accountID, modelID, err)
+			VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, item.accountID, entry.id, item.createdAt); err != nil {
+			return fmt.Errorf("映射目标模型补登记 %s/%s: %w", item.accountID, entry.id, err)
 		}
 		connectionID := "conn_" + item.accountID
 		mappingID := fmt.Sprintf("map_%s_%d", item.accountID, index)
@@ -447,60 +505,103 @@ func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts ma
 				(id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id,
 				 target_endpoint_family, enabled, created_at, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-			mappingID, item.accountID, item.sourceModel, item.sourceFamily, connectionID, modelID,
+			mappingID, item.accountID, item.sourceModel, item.sourceFamily, connectionID, entry.id,
 			item.upstreamFamily, item.enabled, item.createdAt, item.updatedAt); err != nil {
 			return fmt.Errorf("写入模型映射 %s: %w", mappingID, err)
 		}
 		count++
 	}
 	report.Tables["account_entry_mappings"] = count
+	if created > 0 {
+		report.Notes = append(report.Notes,
+			fmt.Sprintf("模型目录：%d 个映射目标模型名在新目录中不存在，已按 personal scope 补建为 draft（映射未绑定）", created))
+	}
+	if skippedUnpriced > 0 {
+		report.Notes = append(report.Notes,
+			fmt.Sprintf("模型目录：%d 条入口映射因目标模型无价格或未启用未迁移；请配置价格并启用后重建映射", skippedUnpriced))
+	}
 	return nil
 }
 
-// modelIndex maps (vendor, model name) to a target models.id. Lookup tries the
+// modelIndex maps (vendor, model name) to a target models row. Lookup tries the
 // upstream name first and falls back to the public name, matching how relays
 // name their custom models.
+//
+// bindable 是「该行能否作为账户支持模型绑定」的判定（BUG-0344 根治）：只有
+// active 且能被计价引擎直接消费的行才可绑定。personal 行必须自带价格或档位
+// 价（本包补建行落 draft，恒不可绑定）；builtin/global 行由目录种子与 T93-2
+// 写侧校验保证口径（媒体单价在网关静态快照层，维护侧不可见），按 active 放行。
+type modelIndexEntry struct {
+	id       string
+	bindable bool
+}
+
 type modelIndex struct {
-	byUpstream map[string]string
-	byPublic   map[string]string
+	byUpstream map[string]modelIndexEntry
+	byPublic   map[string]modelIndexEntry
 }
 
 func modelKey(vendor, name string) string { return vendor + "\x00" + name }
 
 func loadModelIndex(ctx context.Context, tx *sql.Tx) (*modelIndex, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(vendor_code,''), upstream_model, public_model, id FROM juhe_business.models`)
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(vendor_code,''), upstream_model, public_model, id, scope, status,
+			CASE WHEN (
+				input_usd_per_1m IS NOT NULL OR output_usd_per_1m IS NOT NULL OR
+				cached_input_usd_per_1m IS NOT NULL OR cache_write_usd_per_1m IS NOT NULL OR
+				cache_write_1h_usd_per_1m IS NOT NULL OR cache_storage_usd_per_1m_per_hour IS NOT NULL OR
+				image_input_usd_per_1m IS NOT NULL OR image_output_usd_per_1m IS NOT NULL OR
+				audio_input_usd_per_1m IS NOT NULL OR audio_output_usd_per_1m IS NOT NULL OR
+				output_usd_per_image IS NOT NULL OR
+				COALESCE(service_tier_prices_json,'{}') NOT IN ('{}','null')
+			) THEN 1 ELSE 0 END
+		FROM juhe_business.models`)
 	if err != nil {
 		return nil, fmt.Errorf("读取目标模型目录: %w", err)
 	}
 	defer rows.Close()
-	index := &modelIndex{byUpstream: map[string]string{}, byPublic: map[string]string{}}
+	index := &modelIndex{byUpstream: map[string]modelIndexEntry{}, byPublic: map[string]modelIndexEntry{}}
 	for rows.Next() {
-		var vendor, upstream, public, id string
-		if err := rows.Scan(&vendor, &upstream, &public, &id); err != nil {
+		var vendor, upstream, public, id, scope, status string
+		var priced int
+		if err := rows.Scan(&vendor, &upstream, &public, &id, &scope, &status, &priced); err != nil {
 			return nil, fmt.Errorf("扫描目标模型目录: %w", err)
 		}
-		index.byUpstream[modelKey(vendor, upstream)] = id
+		// personal 行只有自带价格才可绑定；builtin/global 由目录种子与写侧
+		// 校验保证口径（媒体单价在网关静态层，维护侧不可见）。
+		bindable := status == "active" && (scope != "personal" || priced == 1)
+		entry := modelIndexEntry{id: id, bindable: bindable}
+		index.byUpstream[modelKey(vendor, upstream)] = entry
 		if _, exists := index.byPublic[modelKey(vendor, public)]; !exists {
-			index.byPublic[modelKey(vendor, public)] = id
+			index.byPublic[modelKey(vendor, public)] = entry
 		}
 	}
 	return index, rows.Err()
 }
 
-func (m *modelIndex) lookup(vendor, name string) (string, bool) {
-	if id, ok := m.byUpstream[modelKey(vendor, name)]; ok {
-		return id, true
+func (m *modelIndex) lookup(vendor, name string) (modelIndexEntry, bool) {
+	if entry, ok := m.byUpstream[modelKey(vendor, name)]; ok {
+		return entry, true
 	}
-	id, ok := m.byPublic[modelKey(vendor, name)]
-	return id, ok
+	entry, ok := m.byPublic[modelKey(vendor, name)]
+	return entry, ok
 }
 
-func (m *modelIndex) add(vendor, name, id string) {
-	m.byUpstream[modelKey(vendor, name)] = id
+func (m *modelIndex) add(vendor, name, id string, bindable bool) {
+	entry := modelIndexEntry{id: id, bindable: bindable}
+	m.byUpstream[modelKey(vendor, name)] = entry
+	if _, exists := m.byPublic[modelKey(vendor, name)]; !exists {
+		m.byPublic[modelKey(vendor, name)] = entry
+	}
 }
 
 // createPersonalModel inserts a personal-scope model row for an owner so a
 // relay custom model name keeps working after the rebuild.
+//
+// BUG-0344 根治：补建行一律落 draft 且不写任何价格。旧实现直接落 active 但不写
+// 价格，随后被无条件绑进 account_supported_models——该行在计价目录的 priced
+// 过滤里被剔除（目录 miss），成功流量 cost_usd 恒 NULL（免费用量）。draft 行
+// 既不可被 resolveEntryModelID 解析，也不会被本包绑定；管理员为它配置价格并
+// 启用后才进入可绑定/可调度集合。
 func createPersonalModel(ctx context.Context, tx *sql.Tx, owner, vendor, name string) (string, error) {
 	sum := sha256.Sum256([]byte(owner + "\x00" + vendor + "\x00" + name))
 	id := "mdl_" + hex.EncodeToString(sum[:10])
@@ -511,7 +612,7 @@ func createPersonalModel(ctx context.Context, tx *sql.Tx, owner, vendor, name st
 			 supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			 codex_supported_reasoning_levels_json, service_tier_prices_json, long_context_input_token_threshold_inclusive,
 			 supports_prompt_caching, currency, created_at, updated_at)
-		VALUES ($1,$2,$3,$3,'personal',$4,'active',false,$5,'[]','[]','[]','{}',false,false,'USD',$6,$6)`,
+		VALUES ($1,$2,$3,$3,'personal',$4,'draft',false,$5,'[]','[]','[]','{}',false,false,'USD',$6,$6)`,
 		id, nullableVendor(vendor), name, owner, modes, nowText()); err != nil {
 		return "", fmt.Errorf("补建 personal 模型 %s/%s: %w", vendor, name, err)
 	}

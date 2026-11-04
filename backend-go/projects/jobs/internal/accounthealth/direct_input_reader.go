@@ -344,17 +344,19 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	return result, nil
 }
 
-// expeditedCooldownNeutralMaxMS 是特供账户的中性顺延封顶基准（设计 §6.2）：
-// 仅在按账户装配点覆盖，普通账户维持 loadDirectScheduleFrom 装配的 900_000
-// 全局值不动。
+// expeditedCooldownNeutralMaxMS 是特供账户的本地任务故障顺延封顶基准（设计
+// §6.2）：自 2026-11-03 冷却复测二元化后，该字段只约束 probe_task_failure 的
+// 有界顺延上限，不影响真实上游非成功结果（HTTP 失败与 transport 失败都走失败
+// 快速道）。仅在按账户装配点覆盖，普通账户维持 loadDirectScheduleFrom 装配的
+// 900_000 全局值不动。
 const expeditedCooldownNeutralMaxMS = int64(60 * time.Second / time.Millisecond)
 
 func buildDirectCandidateInput(candidate directCandidate, direct exactkeyprobe.DirectInput, secret string, now time.Time) (exactkeyprobe.Input, *DirectInputFailure, error) {
 	input, err := direct.ToInput(secret, now)
 	if err == nil {
 		// 特供档位按账户装配（设计 §6 传播链）：Eligibility 布尔随输入冻结，
-		// 中性封顶覆盖只发生在本装配点；普通账户 Schedule 逐字节保持 settings
-		// 全局值。
+		// 任务故障顺延上限覆盖只发生在本装配点；普通账户 Schedule 逐字节保持
+		// settings 全局值。
 		input.Eligibility.ExpeditedRecovery = candidate.expeditedRecovery
 		if candidate.expeditedRecovery {
 			input.Schedule.CooldownNeutralMaxMS = expeditedCooldownNeutralMaxMS
@@ -539,6 +541,9 @@ WHERE a.deleted_at IS NULL
   -- account. Legacy rows can retain schedulable=0, so do not let that stale
   -- scheduling bit permanently hide an otherwise due recovery candidate.
   AND (a.status IN ('pending_test', 'temporary_unavailable', 'rate_limited') OR a.schedulable = 1)
+  -- 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.3）：时段外不投递真实
+  -- 上游请求，避免白跑与无意义计数；同一账户的闸门由排程同步维护。
+  AND (a.availability_schedule_gate IS NULL OR a.availability_schedule_gate = 1)
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)
   AND (a.cooldown_until IS NULL OR a.cooldown_until <= $1)
   AND binding.group_id IS NOT NULL
@@ -546,7 +551,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
+    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1 AND (source.availability_schedule_gate IS NULL OR source.availability_schedule_gate = 1)
     AND source.deleted_at IS NULL AND source.last_error_code IS DISTINCT FROM 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)

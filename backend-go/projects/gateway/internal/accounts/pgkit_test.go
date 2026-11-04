@@ -168,6 +168,7 @@ const accountsPGFixtureSchema = `
       schedulable integer NOT NULL DEFAULT 1,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
+      availability_schedule_gate integer,
       notes text,
       account_expires_at text,
       last_used_at text,
@@ -237,6 +238,18 @@ const accountsPGFixtureSchema = `
       shutdown_date text,
       catalog_visible boolean NOT NULL DEFAULT true,
       catalog_order integer NOT NULL DEFAULT 0,
+      input_usd_per_1m double precision,
+      output_usd_per_1m double precision,
+      cached_input_usd_per_1m double precision,
+      cache_write_usd_per_1m double precision,
+      cache_write_1h_usd_per_1m double precision,
+      cache_storage_usd_per_1m_per_hour double precision,
+      service_tier_prices_json text NOT NULL DEFAULT '{}',
+      image_input_usd_per_1m double precision,
+      image_output_usd_per_1m double precision,
+      audio_input_usd_per_1m double precision,
+      audio_output_usd_per_1m double precision,
+      output_usd_per_image double precision,
       created_at text NOT NULL,
       updated_at text NOT NULL
     );
@@ -291,19 +304,6 @@ const accountsPGFixtureSchema = `
       system_account_id text NOT NULL,
       created_at text NOT NULL,
       PRIMARY KEY (account_id, tag_id)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.account_name_search_terms (
-      account_id text NOT NULL,
-      system_account_id text NOT NULL,
-      term text NOT NULL,
-      created_at text NOT NULL,
-      PRIMARY KEY (account_id, term)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.account_name_search_documents (
-      account_id text PRIMARY KEY,
-      system_account_id text NOT NULL,
-      normalized_name text NOT NULL,
-      updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_api_key_runtime_states (
       id text PRIMARY KEY,

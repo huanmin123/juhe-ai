@@ -593,6 +593,9 @@ func TestAPIKeyAvailabilityScheduleContract(t *testing.T) {
 	if status := env.queryCell(t, `SELECT status FROM api_keys WHERE id = ?`, onID); status != "active" {
 		t.Fatalf("schedule status: %v", status)
 	}
+	if gate := env.queryCell(t, `SELECT availability_schedule_gate FROM api_keys WHERE id = ?`, onID); gate != "1" {
+		t.Fatalf("in-window schedule must open the gate: %v", gate)
+	}
 	nextCheck := env.queryCell(t, `SELECT availability_schedule_next_check_at FROM api_keys WHERE id = ?`, onID)
 	if nextCheck == "" {
 		t.Fatal("next check timestamp missing")
@@ -601,7 +604,9 @@ func TestAPIKeyAvailabilityScheduleContract(t *testing.T) {
 		t.Fatalf("next check must fall on the window end (<=24h): %v", nextCheck)
 	}
 
-	// Date range fully in the past → disabled now, fallback check in ~7 days.
+	// Date range fully in the past → gate 0（非时间段），status 保持 active：
+	// 时间计划不再改写 status（时间计划闸门与账户状态解耦设计 §4.2）。Fallback
+	// check in ~7 days.
 	expired := `{"name":"scheduled-off","status":"active","availabilitySchedule":{"enabled":true,"timezone":"UTC","mode":"allow_windows",
 		"windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"00:00","end":"23:59"}],
 		"dateRange":{"startDate":"2000-01-01","endDate":"2000-01-02"}}}`
@@ -610,16 +615,23 @@ func TestAPIKeyAvailabilityScheduleContract(t *testing.T) {
 		t.Fatalf("expired schedule create: %d %v", code, disabledCreate)
 	}
 	offID := dataMap(t, disabledCreate)["id"].(string)
-	if status := env.queryCell(t, `SELECT status FROM api_keys WHERE id = ?`, offID); status != "disabled" {
-		t.Fatalf("expired schedule must disable the key: %v", status)
+	if status := env.queryCell(t, `SELECT status FROM api_keys WHERE id = ?`, offID); status != "active" {
+		t.Fatalf("expired schedule must keep the key active: %v", status)
+	}
+	if gate := env.queryCell(t, `SELECT availability_schedule_gate FROM api_keys WHERE id = ?`, offID); gate != "0" {
+		t.Fatalf("expired schedule must close the gate: %v", gate)
 	}
 	fallback := env.queryCell(t, `SELECT availability_schedule_next_check_at FROM api_keys WHERE id = ?`, offID)
 	if parsed, err := time.Parse(time.RFC3339Nano, fallback); err != nil || time.Until(parsed) < 6*24*time.Hour {
 		t.Fatalf("fallback next check ~7 days: %v", fallback)
 	}
 
-	// Read mapper echoes the normalized schedule.
+	// Read mapper echoes the normalized schedule and the derived gate（前端以
+	// status=active && gate=0 显示「非时间段」次级标签）。
 	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/api-keys/"+onID, "")
+	if gate, ok := dataMap(t, detail)["availabilityScheduleGate"].(float64); !ok || gate != 1 {
+		t.Fatalf("detail must echo availabilityScheduleGate=1: %v", dataMap(t, detail)["availabilityScheduleGate"])
+	}
 	schedule := dataMap(t, detail)["availabilitySchedule"].(map[string]any)
 	if schedule["enabled"] != true || schedule["mode"] != "allow_windows" || schedule["timezone"] != "UTC" {
 		t.Fatalf("schedule echo: %v", schedule)

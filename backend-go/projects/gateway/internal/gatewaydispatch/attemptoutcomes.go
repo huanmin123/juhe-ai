@@ -361,6 +361,31 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		_, _ = in.accountCircuitAttempt.ReportUnknown(ctx)
 	}
 	*in.lastAttempt = failedResponseResult.LastAttempt
+	// 锁死窗口推进（设计 §3.3/§3.4）：完整非 2xx 不是有效成功，必须作为真实
+	// 失败写入锁死运行态并把 LOCKED_IDLE 推进到 ENGAGED（已有 ENGAGED 窗口时
+	// 幂等），然后按死期结算。只有 complete_success 能清窗；Key 轮换 / 同账号
+	// 有界重试等后续分支照常执行，锁死门只否决跨账号切换。
+	//
+	// M1（复审）：锁死记账是运行态观测，best-effort 失败只落审计，不得否决
+	// 既有 Key 轮换 / 同账号重试 / 锁死判断。
+	// M2（复审）：显式策略失败已由失败派发器把账户置为不可调度，不再写锁死
+	// 运行态，也不参与末尾锁死门（按原机制换号/结束）。
+	if in.accountLockTrafficEnabled && e.Locks != nil && !explicitPolicyFailure {
+		if err := e.Locks.RecordFailureAsync(ctx, c.account.ID, "upstream_http_response", *in.activeAccountLockObservation); err != nil {
+			auditCapture.AddGatewayMetadata("account_lock_failure_record_error", map[string]any{
+				"accountId": c.account.ID,
+				"phase":     "record_failure",
+				"error":     err.Error(),
+			})
+		}
+		if err := e.Locks.SettleDeadlineAsync(ctx, c.account.ID, gatewayupstream.NowMs(), *in.activeAccountLockObservation); err != nil {
+			auditCapture.AddGatewayMetadata("account_lock_failure_record_error", map[string]any{
+				"accountId": c.account.ID,
+				"phase":     "settle_deadline",
+				"error":     err.Error(),
+			})
+		}
+	}
 	in.failedAccountIDs[c.account.ID] = struct{}{}
 	delete(in.recoverableFailedAccountIDs, c.account.ID)
 	delete(in.cycleRecoverableAccountIDs, c.account.ID)
@@ -406,13 +431,36 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			}
 		}
 	}
-	if in.accountLockTrafficEnabled {
+	// M2（复审）：显式策略失败已把账户置为不可调度，末尾不再走锁死门，直接
+	// 按原有跳过出口换号/结束。
+	if in.accountLockTrafficEnabled && e.Locks != nil && !explicitPolicyFailure {
 		lockState, stateErr := e.Locks.FindStateAsync(ctx, c.account.ID)
-		if stateErr == nil && lockState != nil && accountLockBlocksCrossAccount(*lockState) {
+		if stateErr != nil {
+			// 锁死门 fail-closed 收窄（M4 复审）：只有本请求已观察到该账户的锁行
+			// 时才按锁死有效处理；从未观察到锁行的账户没有被锁死证据，按既有
+			// 跳过出口 fail-open，避免锁运行态读取抖动把请求钉在未锁账户上。
+			auditCapture.AddGatewayMetadata("account_lock_state_read_failed", map[string]any{
+				"accountId": c.account.ID,
+				"reason":    "lock_state_read_failed",
+				"error":     stateErr.Error(),
+			})
+			if accountLockObservationPresent(in.activeAccountLockObservation) {
+				return responseKindContinue, responseStopAccountLocked, nil
+			}
 			return responseKindContinue, responseStopSkipAccount, nil
+		}
+		if lockState != nil && accountLockBlocksCrossAccount(*lockState) {
+			return responseKindContinue, responseStopAccountLocked, nil
 		}
 	}
 	return responseKindContinue, responseStopSkipAccount, nil
+}
+
+// accountLockObservationPresent 报告本请求是否已观察到该账户的锁行。锁状态
+// 读取失败时只有已观察到锁行的请求才 fail-closed（M4 复审收窄），未观察到
+// 锁行的请求按既有跳过出口 fail-open。
+func accountLockObservationPresent(observation **AccountLockObservation) bool {
+	return observation != nil && *observation != nil
 }
 
 // handleUpstreamAttemptError mirrors the `catch (error) {...}` block of the
@@ -664,14 +712,30 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 			}
 		}
 		in.failedAccountIDs[c.account.ID] = struct{}{}
-		if in.accountLockTrafficEnabled {
-			lockState, stateErr := e.Locks.FindStateAsync(ctx, c.account.ID)
-			if stateErr == nil && lockState != nil && accountLockBlocksCrossAccount(*lockState) {
-				return errorKindHandled, errorStop{kind: errorStopSkipAccount}, nil
-			}
-		}
+		// B1（复审）：Key-model attempt 必须在本跳过/锁死终态统一结算一次。
+		// 锁死门两个 return 此前跳过 ReportUpstreamNotComplete，传输失败锁死
+		// 会泄漏前台许可与续租；结算幂等，故前置到锁死门之前覆盖所有出口。
 		if c.keyModelAttempt != nil {
 			_ = c.keyModelAttempt.ReportUpstreamNotComplete(ctx)
+		}
+		if in.accountLockTrafficEnabled && e.Locks != nil {
+			lockState, stateErr := e.Locks.FindStateAsync(ctx, c.account.ID)
+			if stateErr != nil {
+				// 锁死门 fail-closed 收窄（M4 复审）：只有本请求已观察到该账户的
+				// 锁行时才按锁死有效处理；未观察到锁行按既有跳过出口 fail-open。
+				auditCapture.AddGatewayMetadata("account_lock_state_read_failed", map[string]any{
+					"accountId": c.account.ID,
+					"reason":    "lock_state_read_failed",
+					"error":     stateErr.Error(),
+				})
+				if accountLockObservationPresent(in.activeAccountLockObservation) {
+					return errorKindHandled, errorStop{kind: errorStopAccountLocked}, nil
+				}
+				return errorKindHandled, errorStop{kind: errorStopSkipAccount}, nil
+			}
+			if lockState != nil && accountLockBlocksCrossAccount(*lockState) {
+				return errorKindHandled, errorStop{kind: errorStopAccountLocked}, nil
+			}
 		}
 		return errorKindHandled, errorStop{kind: errorStopSkipAccount}, nil
 	}

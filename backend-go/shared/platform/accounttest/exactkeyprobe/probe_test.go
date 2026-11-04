@@ -184,8 +184,8 @@ func TestProbeOpenAIResponsesSSERequiresCompletionEvent(t *testing.T) {
 	defer server.Close()
 
 	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-test")}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
-		t.Fatalf("incomplete SSE stream must be neutral, got %#v", result)
+	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
+		t.Fatalf("incomplete SSE stream must be an HTTP failure, got %#v", result)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestProbeOpenAIResponsesSSERejectsJSONImposter(t *testing.T) {
 	defer server.Close()
 
 	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-test")}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
+	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
 		t.Fatalf("JSON cannot satisfy an SSE probe, got %#v", result)
 	}
 }
@@ -238,8 +238,8 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	}))
 	defer missingResultServer.Close()
 	result = ProbeOpenAI(context.Background(), testInput(missingResultServer.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
-		t.Fatalf("missing image result must be neutral, got %#v", result)
+	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
+		t.Fatalf("missing image result must be an HTTP failure, got %#v", result)
 	}
 }
 
@@ -466,7 +466,7 @@ func TestTransportFailureClassifiesClosedConnectionWithoutRawError(t *testing.T)
 	}
 }
 
-func TestProbeOpenAIClassifiesCompleteSemanticFailureAsNeutral(t *testing.T) {
+func TestProbeOpenAIClassifiesCompleteSemanticFailureAsHTTPFailure(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -474,7 +474,7 @@ func TestProbeOpenAIClassifiesCompleteSemanticFailureAsNeutral(t *testing.T) {
 	}))
 	defer server.Close()
 	result := ProbeOpenAI(context.Background(), testInput(server.URL, "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-test")}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
+	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
 		t.Fatalf("unexpected probe result: %#v", result)
 	}
 }

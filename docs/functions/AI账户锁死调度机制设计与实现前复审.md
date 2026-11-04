@@ -1,12 +1,14 @@
 # AI 账户锁死调度机制设计与实现前复审
 
-> 状态：首版已实现，待持续回归验证
+> 状态：已实施；2026-11-04 补强锁死保持门（同组候选、链面后备分组、响应检查重放）
 >
-> 更新时间：2026-08-30
+> 更新时间：2026-11-04（补强失败后不切号实现，见 §4 与 §10.6）
 >
 > 需求来源：用户需求调研
 >
 > 本文固化当前链路事实、已确定的锁死方案、冲突审查和实现约束；锁死已完成首版实现，本文同时作为实现边界与复审记录。
+>
+> **2026-11-04 实现补强**：普通失败后的同组候选切换、链面 `switchToFallbackGroup`、响应检查 `retry_next_account` 已接入锁死门；锁死窗口内真实失败后请求停在锁死账号上，优先网络级断开（Hijack+Close）让客户端断连后重试，Hijack 不可用时才回退 503 handoff；锁状态保留并由客户端重试继续；完整非 2xx 现在会推进/维持 `ENGAGED`。锁死等待仍受 §3.5.10 的 3 秒协调预算约束，单请求不承诺硬撑 5 分钟。剩余出口与边界见 §10.6。
 
 ## 1. 需求概述
 
@@ -155,6 +157,10 @@ DEAD_CONFIRMED
 
 该门只表达“不要主动换号”，不重写路由策略、候选过滤、Key 选择、重试预算或上游协议转换。锁死门是否存在由列表 `lock` / `unlock` 操作后的账号状态决定，不由高级配置里的重复开关决定。
 
+**客户端交接的实现口径（2026-11-04）**：pre-commit 锁死 hold 不能只返回 503——现有客户端仅在连接中断时自动重试。流式请求先提交 SSE 响应头并 flush，再 Hijack 底层连接后 Close，让反向代理（Caddy）把截断的流透传给客户端；非流式请求先提交 200 + `application/json` 传输头并 flush，再 Hijack+Close（不写完整响应），代理同样透传截断正文而不是合成 502；Hijack 能力缺失时才回退 503 `upstream_retryable_error`，能力存在但运行期失败则以截断正文收场并记录降级。断开成功时仍按同源契约落失败审计与 usage（`GatewayFailureRecorder` / `Sink.RecordGatewayFailureWithoutResponse`），`gateway_client_handoff_transport` 记录 `stream_committed_disconnect | connection_interrupt | http_503_fallback | stream_headers_committed_hijack_failed | response_headers_committed_hijack_failed`；Codex compact 摘要预检的锁死 hold 走 `gatewaypreauth.InterruptClientConnection` 直连断开，Hijack 不可用才回退 503。
+
+**终态 / 非终态边界（2026-11-04 用户裁决）**：锁死 hold 属非终态（账号仍存在、死期后恢复），一律不向客户端返回失败，只断开连接；终态（无可用账户、候选耗尽、配额/参数拒绝等）才允许返回错误响应。同批次其他非终态出口（协调预算、整请求墙钟、`temporarily_blocked`、全部账户临时隔离）按同一口径交接，接入清单见[AI账户短窗口热质量与精准切号设计](AI账户短窗口热质量与精准切号设计.md) §3.4。
+
 ### 3.5 锁死重试频率和随机抖动
 
 锁死不能把“继续使用该账号”实现成失败后立即再次发送。每次锁死业务重试都必须经过同一账号运行态的共享重试闸门，至少满足以下规则：
@@ -193,13 +199,17 @@ DEAD_CONFIRMED
 | --- | --- | --- |
 | 策略路由和分组绑定 | 仍由路由层选择初始分组；锁死只在账号派发和切号决策处生效 | 不把锁死账号跨路由策略强行注入 |
 | 普通候选排序 | 正常使用模型匹配、fallback、super、priority 和运行态排序选出首账号 | 不新增一个伪造的无限优先级层 |
+| 普通失败后的同组候选切换 | 锁死窗口内真实失败后不得切换到同组其他候选；流式请求先提交 SSE 响应头再断开（避免反向代理合成 502），非流式请求直接 Hijack+Close；Hijack 不可用时回退 503 handoff；锁状态保留，客户端断连后重试 | 不把锁死实现成更高优先级；不因锁死绕过 3 秒协调预算 / 270 秒墙钟 |
+| 超级优先 | 可与锁死同时开启：超级优先只决定初始候选排序层级，锁死门只在切号决策处否决；锁死窗口内超级优先配置保留并继续参与首账号选择 | 不把锁死实现成更高的优先级层，也不因锁死取消超级优先配置 |
+| 特供快速恢复 | 可与锁死同时开启：特供只加速 jobs 冷却复测，不改变 `/v1` 调度、锁死窗口证据与死期结算；锁死判死写入 `temporary_unavailable` 的合法冷却 fence 正好进入特供加速道 | 不让特供绕过锁死门，不把后台探针成功当作锁死窗口的存活证据 |
 | `speed_first` | 锁死窗口内，已确认慢也不能执行跨账号切换，否则锁死弱于超级优先；首字计时本身仍按原规则执行 | 不把速度截止改成账号死亡证据，不暂停墙钟 |
 | 同账号重试 | 复用现有有界重试、`retry_next`、Key 轮换和电路确认 | 不扩大为无限重试，不自动授权兄弟 Key |
 | 锁死重试频率 | 每次锁死重试经过共享 `nextRetryAt` / 发送租约，基准值按 `lockRetryIntervalSeconds` 加随机抖动 | 不让每个请求独立 sleep 后同时撞击上游，不改全局重试次数 |
 | 账号电路 | `OPEN`、硬阻断、过期、凭据不可装配、模型不支持等仍是硬门；锁死不能绕过 | 不为了“全力尝试”跳过熔断或半开租约 |
 | 并发和队列 | 继续受账号并发上限、组容量和 `ServerRetryBudget` 控制 | 不因锁死让容量超限或无限排队 |
-| 后备分组 | 健康锁死窗口内禁止因当前账号失败而主动切组；锁释放或账号硬死后恢复原 fallback | 不改变分组权重、轮询和其他路由模式语义 |
-| 完整非 `2xx` | 仍遵循 opaque 错误边界；除非命中显式账户策略，否则不能直接持久化死亡 | 不按 400/401/429/5xx 或正文关键词自动锁死 |
+| 后备分组 | 健康锁死窗口内禁止因当前账号失败而主动切组（准备层 `requestRouteFallback` 与链面 `switchToFallbackGroup` 同源门禁）；锁释放或账号硬死后恢复原 fallback | 不改变分组权重、轮询和其他路由模式语义 |
+| 响应检查 `retry_next_account` | 当前账号锁死窗口内命中换号 verdict 时不写排除集、不计数、不切组；流式先提交 SSE 头再断开，非流式 Hijack+Close，Hijack 不可用时回退 503 handoff | 不把响应检查策略当成绕过锁死的授权 |
+| 完整非 `2xx` | 不构成 `complete_success`，会推进/维持锁死窗口，但不直接判死；判死仍由死期结算 | 不按 400/401/429/5xx 或正文关键词自动判死 |
 | 流式提交 | semantic commit 前可继续同账号处理；提交真实事件后不能拼接其他账号 | 不在流中途换号拼接 |
 | IP 回避和热质量 | 保留为各自作用域的排序/避让事实；锁死只作为切号否决门 | 不把锁死失败扩散成 IP、代理或其他账号状态 |
 | 后台探针 | 继续负责既有恢复和账户健康确认；可作为独立恢复证据 | 不把人工测试或普通业务流量假装成探针成功 |
@@ -358,7 +368,7 @@ DEAD_CONFIRMED
 | `ServerRetryBudget` | `ServerRetryBudget` 只累计零可派发、并发 / FIFO / 半开等待；活动上游读取和正常 attempt 不按该口径累计 | 若把锁死等待错误计入或暂停错误，会改变现有全局重试语义 | 保持现有预算口径；锁死共享闸门等待同时受 wall budget 和 route coordination 约束 |
 | 熔断、硬门和并发 | 单候选 attempt 前先经过账号电路、运行态抑制、代理、并发槽和 Key / 模型 admission；blocked 或硬不可用会跳过 | “全力使用”不能解释成绕过熔断、来源不可用、过期、模型不支持或并发上限 | 锁死只禁止主动切号，不绕过任何硬门；硬门成立时按原机制结束、恢复或交接 |
 | 响应提交边界 | 下游 `transportCommitted` / `semanticCommitted` 分离；未提交的可验证 transport failure 可继续候选，真实 JSON / SSE / 模型输出提交后不能透明拼接 | 锁死不能为了坚持账号而在已提交流中重放或拼接第二账号 | 仍以现有提交状态为最高边界；客户端负责已提交后的重试 |
-| 完整非 `2xx` | generic 路径保留 opaque 响应；先按账户内多 Key 隔离规则尝试后续 Key，Key 池耗尽后排除当前账户并继续后续候选；只有显式账户错误策略或独立后台探针才能推进共享状态 | 不能按 400、401、429、5xx 或正文关键词直接判定锁死死亡 | “全死”只能由锁死窗口内无 `complete_success` 的明确证据结算；错误语义继续遵守现有边界 |
+| 完整非 `2xx` | generic 路径保留 opaque 响应；先按账户内多 Key 隔离规则尝试后续 Key，Key 池耗尽后：未锁账户继续后续候选；锁死窗口内的账户按 §4 锁死门停在当前账号并优先网络级断开（Hijack 不可用时回退 503），不切换；只有显式账户错误策略或独立后台探针才能推进共享状态 | 不能按 400、401、429、5xx 或正文关键词直接判定锁死死亡 | “全死”只能由锁死窗口内无 `complete_success` 的明确证据结算；错误语义继续遵守现有边界 |
 | 精确协议响应检查 | 当前代码另有系统默认 / 显式 `retry_next_account`、账户避让和 `retry_no_avoidance` 分支；是否排除当前账号取决于规则、客户端画像、下游提交和端点重放门禁 | 不能把账户错误策略 `retry_next`（兄弟 Key）误当成账号切换授权，也不能让锁死窗口被 `retry_next_account` 或速度 cutover 绕过 | 锁死门必须覆盖所有跨账号 / 跨组重放出口；保留原规则的协议呈现、预算和同账户 Key 语义 |
 | 现行文档一致性 | 当前代码和回归测试要求未命中策略的完整非 `2xx` 先按账户内 Key 隔离规则处理，Key 池耗尽后再扫描后续候选；本轮已同步架构总览、backend README、流式调研和网关错误链路中的旧描述，并补充系统默认 / 显式响应检查重放分支 | 若实现者按旧文档改锁死，会把普通候选切换、账户内 Key 轮换、响应检查重放和锁死否决门混成一个权限 | 以当前代码和回归为现行事实：账户内 Key 轮换和同 Key 有界重试按既有规则保留，账户 / 分组切换按统一未提交边界进行，精确协议切号由适用响应检查规则授权，`retry_next` 只额外授权其声明的兄弟 Key 行为；锁死需覆盖所有跨账号 / 跨组出口 |
 | 运行态作用域 | 现有授权账户运行键会区分当前用户、分组和授权关系；`speed_first` latency state 还按 system account、route strategy、group 隔离 | 直接复用 route / model / lane latency key 会把锁死错误隔离，导致换协议、换模型或换 lane 绕过 | 锁死主键必须是当前使用方的账号实例；协议、模型、lane 只作能力 / 诊断维度 |
@@ -403,7 +413,7 @@ DEAD_CONFIRMED
 | --- | --- |
 | 锁死作用域 | 以当前使用方的账号实例为全局作用域，跨协议、模型、lane、route strategy 和 group；不按 `account + protocol + model bucket + lane` 分片。协议 / 模型能力过滤仍是前置硬门，锁死不能把不支持的请求强行送上游。 |
 | 授权实例 | 授权用户的实例状态与授权方原账户、其他被授权人隔离。现有含 `groupId` 的 `gatewayAccountRuntimeKey` 不可直接作为锁死主键；换分组、换路由或换 lane 不能开启第二个锁死窗口。 |
-| 普通失败与死亡结算 | 普通网关失败继续沿用 Key 池、同 Key 有界重试、账户 / 分组候选和 opaque 错误规则；只有锁死事故达到死期且窗口内没有 `complete_success`，才触发 A 方案的持久状态 CAS。 |
+| 普通失败与死亡结算 | 未锁账户的普通网关失败继续沿用 Key 池、同 Key 有界重试、账户 / 分组候选和 opaque 错误规则；锁死窗口内的真实失败在 Key 池 / 有界重试耗尽后停在当前账号并优先网络级断开（Hijack 不可用时回退 503），不切同组候选或后备分组；只有锁死事故达到死期且窗口内没有 `complete_success`，才触发 A 方案的持久状态 CAS。 |
 | 账号内 Key | 锁死只否决跨账号 / 跨组切换，不否决现有账户内 Key 轮换和同账号重试；账户错误策略 `retry_next` 仍只代表其已有的兄弟 Key 语义，不扩大为跨账号授权。 |
 | 所有跨账号出口 | 锁死门必须覆盖普通失败后的候选切换、`switchToFallbackGroup`、响应检查 `retry_next_account`、`speed_first` cutover、混合质量切换和会话亲和打破等出口；不能只拦一个 `NormalRouteFirstByteCutoverError` 分支。 |
 | `speed_first` | 锁死窗口内可以继续计首字、记录慢样本和等待，但不得预占其他账号并切换；死期、硬不可用或 `unlock` 后才恢复原 cutover。 |
@@ -421,6 +431,14 @@ DEAD_CONFIRMED
 因此，当前方案不存在需要另造“超级锁死调度器”的理由：实现只需增加账号实例级锁死策略 / 共享闸门、死期结算 CAS 和管理端操作，并在既有跨账号决策点接入一个否决门。任何试图通过提高优先级、复制 `latency_degraded` 键、改写全局重试次数或绕过硬门来实现锁死的方案均视为范围漂移。
 
 本轮深度复审未修改业务代码、数据库 schema 或 API；只同步方案已确定的设计文档。工作区内其他未提交改动保持不变。
+
+### 10.6 锁死保持门实现落定（2026-11-04）
+
+- **已覆盖**：普通失败后的同组候选切换（引擎返回 `dispatchResultLocked` → `AccountLockHoldError` → 链面流式先提交 SSE 头再断开、非流式直接 Hijack+Close，不可用时回退 503，不进入下一候选/分派段/后备分组）、链面 `switchToFallbackGroup`（锁死门返回 `v1FallbackLockHold`，调用方转客户端交接而不是终态耗尽 503）、响应检查 `retry_next_account`（`LOCKED_IDLE` 的 200 内容失败也先推进窗口再否决，同样走流式提交后断开）、`speed_first` 切号被锁死门否决（交接断连）、Codex compact 摘要路径经 `GatewayClientRetryError` 窄接口先 `InterruptClientConnection` 真断开、Hijack 不可用才回退 503 handoff；完整非 2xx 推进/维持 `ENGAGED`；显式错误策略仍按原机制优先换号/结束；`speed_first` 慢样本记录在锁死门之前继续。
+- **交接记账（2026-11-04）**：`renderClientHandoff` 断连成功后不再丢审计/计费——`gatewaypreauth.GatewayFailureRecorder` 让 `gatewayresponse.Sink` 只记 `SendGatewayFailureResponse` 的审计与 usage 部分而不写响应；审计 outcome/phase/code 与同源 503 契约一致，`gateway_client_handoff_transport` 记录实际传输方式。锁死门的两条链面出口（`account_lock_hold_dispatch_denied`、`account_lock_response_inspection_retry_denied`）统一经 `renderClientHandoffWithMetadata` 接入，`handoff` 字段保留实际传输结果。
+- **验证**：`internal/gatewaydispatch` 全包与 `cmd/juhe-ai-gateway` 的 `TestV1|TestW1|AccountLock|SpeedFirst|ClientHandoff` 定向集全绿；双账号回归断言锁死账号失败后 `a-2` 命中 0，并覆盖首次失败进入 `ENGAGED`、Key 池预派发跳过、显式策略换号、key-model attempt 结算；`TestSettleResponseStreamServerRetryLockedFallbackHandsOff`、`TestSettleDispatchErrorAttemptLockedFallbackHandsOff`、`TestSettleSpeedFirstCutoverLockedHandsOff` 断言三处锁死否决均交接断连；`TestSettleResponseStreamServerRetryLockReadFailureM4Narrowing` 断言读取失败仅已观察锁行时 fail-closed；`internal/gatewaycodex` compact 失败路径断言锁死错误优先真断开、Hijack 不可用渲染 503 / `upstream_retryable_error`（外部 PG 门控，默认回归跳过）；`internal/gatewaypreauth` 的 `TestInterruptClientConnection*` 默认回归覆盖 Hijack 成功、能力缺失与运行期失败三种传输结果；链面 `LOCKED_IDLE` 首次 200 内容失败断言先 `RecordFailureAsync` 再拒绝换号；`TestChainAccountLockHoldInterruptsDownstream` 断言可 Hijack 时真断开且不再写 503，`TestChainAccountLockHoldFallsBackTo503WhenHijackFails` 断言 Hijack 失败回退 503 且不被 wroteHeader 守卫吞掉，`TestChainAccountLockHoldStreamingHandoffCommitsSSEThenDisconnects` 与 `TestRenderClientHandoffAfterHeartbeatCommitsStreaming` 断言流式（含心跳已提交场景）先提交 `text/event-stream` 再断开。
+- **已裁决边界**：容量/Key 池/电路等硬门优先于锁死，锁死不绕过硬门；Key 池与容量跳过出口已由最终锁死门覆盖（锁死窗口内不再换号），电路 `OPEN` 等候选准入硬门成立时按原机制跳过当前候选（硬门优先）。跨请求不强制把锁死账号提升为首候选：锁状态跨请求保留，但选号仍按既有排序，只有选中该账号后才受锁死门约束（§8-2“继续”指运行态延续，§9“可”不构成强制选回）。
+- **链面读取失败与避让口径（2026-11-04 复审补强）**：响应检查锁死门与 `speed_first` 结算期的锁状态读取失败均与引擎 M4 同规则收窄——只有本请求已观察到该账户锁行（`UpstreamDispatchResult.AccountLockObservation`）才 fail-closed，未观察到锁行的请求按既有换号 / cutover 行为 fail-open；BUG-0298 的同签名状态与来源级短 TTL 避让只在换号真正被接受后登记，锁死门否决换号时不得为失败账号登记跨请求避让（否则后续请求会绕开仍处于锁死窗口的账号）；锁死 hold 交接不确认本请求 pending 的客户端 IP 来源避让（锁状态与客户端重试重新评估候选，避免把锁死账号进一步后置）。
 
 ## 11. 实施前置和文档同步
 

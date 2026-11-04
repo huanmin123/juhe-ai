@@ -282,8 +282,6 @@ func TestDeleteAccountPGErrorStages(t *testing.T) {
 		{"version upsert", "INSERT INTO account_health_jobs_input_versions"},
 		{"outbox insert", "INSERT INTO account_health_jobs_input_outbox"},
 		{"tags delete", "DELETE FROM juhe_business.account_tag_bindings"},
-		{"search terms", "DELETE FROM juhe_business.account_name_search_terms"},
-		{"search documents", "DELETE FROM juhe_business.account_name_search_documents"},
 	}
 	runPGStages(t, stages, func(t *testing.T, stage pgStage) error {
 		rec := newPGRecorder()

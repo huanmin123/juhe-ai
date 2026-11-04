@@ -92,24 +92,6 @@ func TestW13g2FailpointProvisionArms(t *testing.T) {
 		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
 	})
 
-	t.Run("searchTermsDelete", func(t *testing.T) {
-		fp.arm("account_name_search_terms WHERE account_id = ?")
-		defer fp.disarm()
-		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
-	})
-
-	t.Run("searchTermsInsert", func(t *testing.T) {
-		fp.arm("INSERT INTO account_name_search_terms")
-		defer fp.disarm()
-		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
-	})
-
-	t.Run("searchDocumentsInsert", func(t *testing.T) {
-		fp.arm("INSERT INTO account_name_search_documents\n")
-		defer fp.disarm()
-		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
-	})
-
 	t.Run("bindExistingQuery", func(t *testing.T) {
 		fp.arm("SELECT group_id FROM")
 		defer fp.disarm()

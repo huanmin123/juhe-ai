@@ -13,8 +13,8 @@
 //   - syncAccountAuthorizationInstanceNamesForSourceAccount (:225-257)
 //
 // Boundary notes (deliberate SQL-level ownership):
-//   - The accounts/groups write primitives (revision family advance, name
-//     search terms) are unexported in internal/accounts and the composition
+//   - The accounts/groups write primitives (revision family advance) are
+//     unexported in internal/accounts and the composition
 //     root is outside this task's write scope, so the well-known business
 //     tables are written directly here; column sets follow
 //     maintenance/internal/schema (pg_schema.go / sqlite_schema.go).
@@ -37,8 +37,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/text/unicode/norm"
 
 	circuitcontrolplane "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_control_plane"
 )
@@ -224,9 +222,6 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 			in.SourceAccountID, in.OwnerID, now, deletedID); err != nil {
 			return nil, err
 		}
-		if err := s.replaceInstanceNameSearchTerms(ctx, tx, deletedID, in.GranteeID, restoredName, now); err != nil {
-			return nil, err
-		}
 		if err := s.advanceInstanceDispatchRevision(ctx, tx, deletedID, nowTime.UnixMilli()); err != nil {
 			return nil, err
 		}
@@ -259,9 +254,6 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		source.backgroundProbeEnabled, source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
 		source.capabilityDomain,
 		in.SourceAccountID, in.RuntimeAuthorizationID, in.OwnerID, now, now); err != nil {
-		return nil, err
-	}
-	if err := s.replaceInstanceNameSearchTerms(ctx, tx, id, in.GranteeID, name, now); err != nil {
 		return nil, err
 	}
 	return &instanceAccountRef{id: id, providerCode: source.vendorCode, driver: source.connectionDriverCode}, nil
@@ -576,45 +568,6 @@ func (s *Store) advanceInstanceDispatchRevision(ctx context.Context, tx *sql.Tx,
 	return err
 }
 
-// replaceInstanceNameSearchTerms mirrors replaceAccountNameSearchTerms for
-// the provisioned instance rows: the NFKC-normalized document plus the 1..3
-// gram term set backing the account list search.
-func (s *Store) replaceInstanceNameSearchTerms(ctx context.Context, q queryer, accountID, systemAccountID, name, now string) error {
-	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_name_search_terms")+` WHERE account_id = ?`), accountID); err != nil {
-		return err
-	}
-	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_name_search_documents")+` WHERE account_id = ?`), accountID); err != nil {
-		return err
-	}
-	normalizedName := strings.TrimSpace(norm.NFKC.String(name))
-	if normalizedName == "" {
-		return nil
-	}
-	if _, err := q.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_name_search_documents")+`
-		(account_id, system_account_id, normalized_name, updated_at) VALUES (?, ?, ?, ?)`),
-		accountID, systemAccountID, normalizedName, now); err != nil {
-		return err
-	}
-	seen := map[string]bool{}
-	runes := []rune(normalizedName)
-	for length := 1; length <= 3; length++ {
-		for index := 0; index+length <= len(runes); index++ {
-			term := string(runes[index : index+length])
-			if strings.TrimSpace(term) == "" || seen[term] {
-				continue
-			}
-			seen[term] = true
-			statement := `INSERT INTO ` + s.table("account_name_search_terms") + `
-				(account_id, system_account_id, term, created_at) VALUES (?, ?, ?, ?)`
-			conflict := ` ON CONFLICT (account_id, term) DO NOTHING`
-			if _, err := q.ExecContext(ctx, s.bind(statement+conflict), accountID, systemAccountID, term, now); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // SyncAccountAuthorizationInstanceNamesForSourceAccount mirrors
 // syncAccountAuthorizationInstanceNamesForSourceAccount (:225-257): every
 // live instance of the renamed source account follows the new source name
@@ -683,9 +636,6 @@ func (s *Store) syncAccountAuthorizationInstanceNamesForSourceAccountTx(ctx cont
 		}
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+`
 			SET name = ?, updated_at = ? WHERE id = ?`), nextName, now, row.id); err != nil {
-			return nil, err
-		}
-		if err := s.replaceInstanceNameSearchTerms(ctx, tx, row.id, row.systemAccountID, nextName, now); err != nil {
 			return nil, err
 		}
 		changed = append(changed, row.id)

@@ -125,6 +125,10 @@ describe('accountListParams', () => {
     expect(accountListParams({ status: 'active,all,active, disabled' })).toEqual({ status: 'active,disabled' })
   })
 
+  it('透传时间计划闸门筛选 schedulable=out_of_window', () => {
+    expect(accountListParams({ schedulable: 'out_of_window' })).toEqual({ schedulable: 'out_of_window' })
+  })
+
   it('空 ids 与空 sorts 不输出', () => {
     expect(accountListParams({ ids: [], sorts: [] })).toBeUndefined()
   })

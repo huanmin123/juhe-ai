@@ -663,13 +663,25 @@ func openAIAccountsCacheTTL(accounts []OpenAIAccountSecret, now int64) (time.Dur
 // usability checks (throw on malformed instants like the Node service)
 // ---------------------------------------------------------------------------
 
+// ErrAPIKeyOutsideSchedule 表示 API Key 自身有效（status=active、未过期），但
+// 当前不在时间计划允许的时段内（api_keys.availability_schedule_gate = 0，
+// 《时间计划闸门与账户状态解耦设计》§5.2）。鉴权层据此返回 401
+// api_key_outside_schedule（「API Key 当前不在可用时段」），与「API Key 无效」
+// 区分开，避免把时段限制误导成密钥失效。
+var ErrAPIKeyOutsideSchedule = errors.New("API Key 当前不在可用时段")
+
 // isGatewayAPIKeyRuntimeUsableAt mirrors isGatewayApiKeyRuntimeUsableAt.
+// 时间计划闸门：status=active 且 gate=0 视为当前不在可用时段，返回区分哨兵
+// 错误（err != nil 时 usable 为 false）；gate NULL/1 正常放行。
 func isGatewayAPIKeyRuntimeUsableAt(apiKey *GatewayAPIKeyRow, now int64) (bool, error) {
 	if apiKey == nil {
 		return false, nil
 	}
 	if apiKey.Status != "active" {
 		return false, nil
+	}
+	if apiKey.AvailabilityScheduleGate != nil && *apiKey.AvailabilityScheduleGate == 0 {
+		return false, ErrAPIKeyOutsideSchedule
 	}
 	expiresAt := ""
 	if apiKey.ExpiresAt != nil {

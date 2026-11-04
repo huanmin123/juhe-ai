@@ -41,11 +41,13 @@ var accountListSortFields = accountscore.AccountListSortFields
 
 // NormalizedListOptions mirrors NormalizedAccountListOptions.
 type NormalizedListOptions struct {
-	Sorts                     []ListSort
-	IDs                       []string
-	Page                      int
-	PageSize                  int
-	Keyword                   string
+	Sorts    []ListSort
+	IDs      []string
+	Page     int
+	PageSize int
+	Keyword  string
+	// ExactName 是内部精确名称过滤（重名判定），与 Keyword 的包含匹配无关。
+	ExactName                 string
 	ProviderCode              string
 	ProviderProtocolProfileID string
 	GroupID                   string
@@ -105,7 +107,9 @@ func normalizeListOptions(options ListOptions) NormalizedListOptions {
 		page = minInt(pageCap, maxInt(1, options.Page))
 	}
 	schedulable := options.Schedulable
-	if schedulable != "enabled" && schedulable != "disabled" && schedulable != "cooling" {
+	// out_of_window 是时间计划闸门筛选（设计 §5.4）：等价 status=active 且
+	// gate=0，独立于 enabled/disabled。
+	if schedulable != "enabled" && schedulable != "disabled" && schedulable != "cooling" && schedulable != "out_of_window" {
 		schedulable = "all"
 	}
 	// domain 过滤（M1 读通道）：路由面已对非法值 400，这里兜底为不过滤（与
@@ -120,6 +124,7 @@ func normalizeListOptions(options ListOptions) NormalizedListOptions {
 		Sorts: sorts, IDs: normalizeTextList(options.IDs, maxAccountListIDs),
 		Page: page, PageSize: pageSize,
 		Keyword:                   strings.TrimSpace(options.Keyword),
+		ExactName:                 strings.TrimSpace(options.ExactName),
 		ProviderCode:              strings.TrimSpace(options.ProviderCode),
 		ProviderProtocolProfileID: strings.TrimSpace(options.ProviderProtocolProfileID),
 		GroupID:                   strings.TrimSpace(options.GroupID),
@@ -255,15 +260,23 @@ type ListItem struct {
 	ProxyProfileErrorMessage *string               `json:"proxyProfileErrorMessage,omitempty"`
 	Schedulable              bool                  `json:"schedulable"`
 	AvailabilitySchedule     *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt         *string               `json:"accountExpiresAt,omitempty"`
-	CooldownUntil            *string               `json:"cooldownUntil,omitempty"`
-	LastErrorCode            *string               `json:"lastErrorCode,omitempty"`
-	LastErrorMessage         *string               `json:"lastErrorMessage,omitempty"`
-	LastErrorTraceID         *string               `json:"lastErrorTraceId,omitempty"`
-	LastUsedAt               *string               `json:"lastUsedAt,omitempty"`
-	EffectiveAvailability    EffectiveAvailability `json:"effectiveAvailability"`
-	TodayUsage               TodayUsageSummary     `json:"todayUsage"`
-	Usage                    UsageSummary          `json:"usage"`
+	// AvailabilityScheduleGate 是 accounts.availability_schedule_gate 派生列
+	// （《时间计划闸门与账户状态解耦设计》§3.1/§5.4）：NULL = 无计划（恒开）/
+	// 1 = 时段内 / 0 = 时段外。前端以 status=active && gate=0 展示「非时间段」。
+	AvailabilityScheduleGate *int    `json:"availabilityScheduleGate,omitempty"`
+	AccountExpiresAt         *string `json:"accountExpiresAt,omitempty"`
+	CooldownUntil            *string `json:"cooldownUntil,omitempty"`
+	// availabilityScheduleNextCheckAt 是 availability_schedule_next_check_at 列
+	// 的读取投影：只供 effectiveAvailability 的「非时间段」retryAt（设计 §5.4），
+	// 不对外输出。
+	availabilityScheduleNextCheckAt string
+	LastErrorCode                   *string               `json:"lastErrorCode,omitempty"`
+	LastErrorMessage                *string               `json:"lastErrorMessage,omitempty"`
+	LastErrorTraceID                *string               `json:"lastErrorTraceId,omitempty"`
+	LastUsedAt                      *string               `json:"lastUsedAt,omitempty"`
+	EffectiveAvailability           EffectiveAvailability `json:"effectiveAvailability"`
+	TodayUsage                      TodayUsageSummary     `json:"todayUsage"`
+	Usage                           UsageSummary          `json:"usage"`
 	// OAuthUsage mirrors the AccountSummary.oauthUsage read projection
 	// (account-summary.repository.ts:1452,1575, BUG-0175 D-206): populated
 	// only for gpt-provider oauth accounts from the stats-side Codex
@@ -524,6 +537,8 @@ type listRow struct {
 	clientCompatibility       string
 	schedulable               int
 	availabilityScheduleJSON  sql.NullString
+	availabilityScheduleGate  sql.NullInt64
+	availabilityScheduleNext  sql.NullString
 	accountExpiresAt          sql.NullString
 	cooldownUntil             sql.NullString
 	lastErrorCode             sql.NullString
@@ -624,6 +639,8 @@ func listItemColumns(alias string) []string {
 		"'' AS client_compatibility",
 		alias + ".schedulable",
 		alias + ".availability_schedule_json",
+		alias + ".availability_schedule_gate",
+		alias + ".availability_schedule_next_check_at",
 		alias + ".account_expires_at",
 		alias + ".cooldown_until",
 		alias + ".last_error_code",
@@ -746,7 +763,8 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.accountType, &row.capabilityDomain, &row.status, &row.concurrencyLimit, &row.rpmLimit,
 		&row.priority,
 		&row.superPriorityEnabled, &row.fallbackEnabled, &row.clientCompatibility,
-		&row.schedulable, &row.availabilityScheduleJSON, &row.accountExpiresAt,
+		&row.schedulable, &row.availabilityScheduleJSON, &row.availabilityScheduleGate,
+		&row.availabilityScheduleNext, &row.accountExpiresAt,
 		&row.cooldownUntil, &row.lastErrorCode, &row.lastErrorMessage,
 		&row.lastErrorTraceID, &row.lastUsedAt,
 		&row.lastHealthCheckAt, &row.nextHealthCheckAt, &row.lastHealthCheckStatusCode,
@@ -771,6 +789,14 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.sourceBackgroundProbeEnabled,
 	)
 	return row, err
+}
+
+// accountNameLikeContainsPattern 把关键字渲染成 `ILIKE ... ESCAPE '\'` 的
+// 字面包含模式：反斜杠、`%`、`_` 全部转义为字面字符，再包裹 `%...%`。
+// 账户名称搜索直接读 accounts.name，不再依赖派生词项表。
+func accountNameLikeContainsPattern(keyword string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + replacer.Replace(keyword) + "%"
 }
 
 // listFilters mirrors accountManagementListFilters (owner mode: the source
@@ -799,25 +825,18 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 		clauses = append(clauses, "accounts.id IN ("+placeholders(len(options.IDs))+")")
 		*args = append(*args, anySlice(options.IDs)...)
 	}
-	keyword := normalizeAccountNameSearchText(options.Keyword)
-	if keyword != "" {
-		keywordClauses := []string{"(accounts.name >= ? AND accounts.name < ?)"}
-		*args = append(*args, keyword, textPrefixUpperBound(keyword))
-		if terms := accountNameSearchQueryTerms(options.Keyword); len(terms) > 0 {
-			keywordClauses = append(keywordClauses, `accounts.id IN (
-				SELECT search.account_id
-				FROM `+s.table("account_name_search_terms")+` search
-				INNER JOIN `+s.table("account_name_search_documents")+` documents
-					ON documents.account_id = search.account_id
-				WHERE instr(documents.normalized_name, ?) > 0
-					AND search.term IN (`+placeholders(len(terms))+`)
-				GROUP BY search.account_id
-				HAVING COUNT(DISTINCT search.term) = ?)`)
-			*args = append(*args, keyword)
-			*args = append(*args, anySlice(terms)...)
-			*args = append(*args, len(terms))
-		}
-		clauses = append(clauses, "("+strings.Join(keywordClauses, " OR ")+")")
+	// 名称包含匹配直读 accounts.name（账户名称搜索去索引化）：pg_trgm GIN
+	// 索引 idx_accounts_name_c_trgm_lookup 支撑；`C` collation 让匹配与索引
+	// 同形，ILIKE 提供 ASCII 大小写不敏感语义。
+	if keyword := strings.TrimSpace(options.Keyword); keyword != "" {
+		clauses = append(clauses, `accounts.name COLLATE "C" ILIKE ? ESCAPE '\'`)
+		*args = append(*args, accountNameLikeContainsPattern(keyword))
+	}
+	// 精确名称过滤（内部重名判定）：与 Keyword 的包含匹配独立，避免宽候选
+	// 集在分页窗口内漏掉精确同名行。
+	if exactName := strings.TrimSpace(options.ExactName); exactName != "" {
+		clauses = append(clauses, "accounts.name = ?")
+		*args = append(*args, exactName)
 	}
 	if options.ProviderCode != "" && options.ProviderCode != "all" {
 		// B4 W2 行为键过渡投影：过滤列同 patch.go COALESCE(vendor, provider)。
@@ -868,11 +887,18 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 	}
 	switch options.Schedulable {
 	case "enabled":
-		clauses = append(clauses, effective+" = 'active'")
+		// 时间计划闸门（设计 §5.4）：可调度排除时段外（gate=0）；NULL/1 放行。
+		clauses = append(clauses, effective+" = 'active'",
+			"(accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)")
 	case "disabled":
-		clauses = append(clauses, effective+" NOT IN ('active', 'rate_limited', 'temporary_unavailable')")
+		// 「停用 / 不可调度」不再命中非时间段（active + gate=0 已由 effective
+		// 状态独立表达）。
+		clauses = append(clauses, effective+" NOT IN ('active', 'rate_limited', 'temporary_unavailable')",
+			"NOT (accounts.status = 'active' AND accounts.availability_schedule_gate = 0)")
 	case "cooling":
 		clauses = append(clauses, effective+" IN ('rate_limited', 'temporary_unavailable')")
+	case "out_of_window":
+		clauses = append(clauses, "accounts.status = 'active' AND accounts.availability_schedule_gate = 0")
 	}
 	return " WHERE " + strings.Join(clauses, " AND ")
 }
@@ -1075,17 +1101,20 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		HealthCheckEndpointMode:   row.healthCheckEndpointMode,
 		Schedulable:               row.schedulable == 1,
 		AvailabilitySchedule:      parseScheduleOrNull(row.availabilityScheduleJSON),
-		AccountExpiresAt:          nullPtrString(row.accountExpiresAt),
-		CooldownUntil:             nullPtrString(row.cooldownUntil),
-		LastErrorCode:             nullPtrString(row.lastErrorCode),
-		LastErrorMessage:          nullPtrString(row.lastErrorMessage),
-		LastErrorTraceID:          nullPtrString(row.lastErrorTraceID),
-		LastUsedAt:                nullPtrString(row.lastUsedAt),
-		AccessType:                "owner",
-		Permissions:               ownerPermissions(),
-		TodayUsage:                emptyTodayUsageSummary(),
-		Usage:                     emptyUsageSummary(),
-		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
+		// 时间计划闸门（设计 §5.4）：NULL = 无计划 / 1 = 时段内 / 0 = 时段外。
+		AvailabilityScheduleGate:        nullPtrScheduleGate(row.availabilityScheduleGate),
+		AccountExpiresAt:                nullPtrString(row.accountExpiresAt),
+		CooldownUntil:                   nullPtrString(row.cooldownUntil),
+		LastErrorCode:                   nullPtrString(row.lastErrorCode),
+		LastErrorMessage:                nullPtrString(row.lastErrorMessage),
+		LastErrorTraceID:                nullPtrString(row.lastErrorTraceID),
+		LastUsedAt:                      nullPtrString(row.lastUsedAt),
+		AccessType:                      "owner",
+		Permissions:                     ownerPermissions(),
+		TodayUsage:                      emptyTodayUsageSummary(),
+		Usage:                           emptyUsageSummary(),
+		BackgroundProbeEnabled:          row.backgroundProbeEnabled == 1,
+		availabilityScheduleNextCheckAt: row.availabilityScheduleNext.String,
 	}
 	if authorized {
 		item.AccessType = "authorized"
@@ -1421,10 +1450,31 @@ func ownerEffectiveAvailability(item ListItem, now time.Time) EffectiveAvailabil
 	if cooldownFuture {
 		return blockedAvailability("instance_cooldown", "账户冷却", "gold", "account", "账户正在冷却，恢复前不会参与调度", retryAt)
 	}
+	// 时间计划闸门（设计 §5.4）：active + gate=0 =「非时间段」，属于正常状态的
+	// 子集，不并入停用；到达下一个计划边界自动恢复调度。
+	if item.AvailabilityScheduleGate != nil && *item.AvailabilityScheduleGate == 0 {
+		var scheduleRetryAt *string
+		if item.availabilityScheduleNextCheckAt != "" {
+			value := item.availabilityScheduleNextCheckAt
+			scheduleRetryAt = &value
+		}
+		return blockedAvailability("schedule_out_of_window", "非时间段", "blue", "schedule",
+			"当前不在可用时段，到达下一个时间计划边界后自动恢复", scheduleRetryAt)
+	}
 	if !item.Schedulable {
 		return blockedAvailability("instance_unschedulable", "账户停调", "orange", "account", "账户暂时不可调用，恢复前不会参与调度", nil)
 	}
 	return EffectiveAvailability{Available: true, Status: "available", Label: "可调度", Color: "green"}
+}
+
+// nullPtrScheduleGate 把三态整数列（availability_schedule_gate）投影为可空
+// int：NULL（无计划）→ nil，1/0 原值输出。
+func nullPtrScheduleGate(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	gate := int(value.Int64)
+	return &gate
 }
 
 func blockedAvailability(status, label, color, scope, reason string, retryAt *string) EffectiveAvailability {
@@ -1478,10 +1528,10 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		clauses = append(clauses, "accounts.id IN ("+placeholders(len(normalized.IDs))+")")
 		args = append(args, anySlice(normalized.IDs)...)
 	}
-	keyword := normalizeAccountNameSearchText(normalized.Keyword)
-	if keyword != "" {
-		clauses = append(clauses, "(accounts.name >= ? AND accounts.name < ?)")
-		args = append(args, keyword, textPrefixUpperBound(keyword))
+	// 包含匹配直读 accounts.name（与列表同一语义，不再只做前缀）。
+	if keyword := strings.TrimSpace(normalized.Keyword); keyword != "" {
+		clauses = append(clauses, `accounts.name COLLATE "C" ILIKE ? ESCAPE '\'`)
+		args = append(args, accountNameLikeContainsPattern(keyword))
 	}
 	if normalized.ProviderCode != "" && normalized.ProviderCode != "all" {
 		// B4 W2 行为键过渡投影：过滤列同 patch.go COALESCE(vendor, provider)。
@@ -1542,17 +1592,21 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 	case "enabled":
 		clauses = append(clauses, `accounts.status = 'active'
 			AND accounts.schedulable = 1
+			AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)
 			AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= `+sqlQuoteISO(now)+`)
 			AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > `+sqlQuoteISO(now)+`)
 			AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')`)
 	case "disabled":
-		clauses = append(clauses, `(accounts.status = 'disabled'
+		clauses = append(clauses, `((accounts.status = 'disabled'
 			OR accounts.schedulable <> 1
 			OR accounts.last_error_code = 'account_expired'
-			OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= `+sqlQuoteISO(now)+`))`)
+			OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= `+sqlQuoteISO(now)+`))
+			AND NOT (accounts.status = 'active' AND accounts.availability_schedule_gate = 0))`)
 	case "cooling":
 		clauses = append(clauses, `(accounts.status IN ('rate_limited', 'temporary_unavailable')
 			OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > `+sqlQuoteISO(now)+`))`)
+	case "out_of_window":
+		clauses = append(clauses, `accounts.status = 'active' AND accounts.availability_schedule_gate = 0`)
 	}
 	args = append(args, normalized.PageSize, (normalized.Page-1)*normalized.PageSize)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT accounts.id, accounts.system_account_id,

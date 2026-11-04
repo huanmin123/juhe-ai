@@ -26,7 +26,7 @@ func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerC
 		schedulable, created_at, updated_at)
 		VALUES (?, ?, ?, 'active', ?, ?, 'chat_json', 'v1', 'oauth',
 		'{"api_key":"owner-secret"}', 'sk-****cret', 7000,
-		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), 		id, ownerID, name, vendor, driver); err != nil {
+		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), id, ownerID, name, vendor, driver); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -48,7 +48,7 @@ func (f *fixture) seedGranteeGroup(t *testing.T, id, granteeID, _ string, enable
 	t.Helper()
 	// 组无 provider 维度（设计 §8）：providerCode 入参仅为调用点兼容保留。
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
-		VALUES (?, ?, ?, 'active', ?, ?, '2026-01-01T00:00:00Z')`), 		id, "Group "+id, granteeID, enabled, isDefault); err != nil {
+		VALUES (?, ?, ?, 'active', ?, ?, '2026-01-01T00:00:00Z')`), id, "Group "+id, granteeID, enabled, isDefault); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -190,18 +190,6 @@ func TestProvisionInstanceOnCreateWithTargetGroup(t *testing.T) {
 	}
 	if !readable[row.id] {
 		t.Fatalf("grantee cannot read instance %q: %v", row.id, readable)
-	}
-
-	// Name search terms back the account list search.
-	var documentCount, termCount int
-	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`), row.id).Scan(&documentCount); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ?`), row.id).Scan(&termCount); err != nil {
-		t.Fatal(err)
-	}
-	if documentCount != 1 || termCount == 0 {
-		t.Fatalf("search terms: documents=%d terms=%d", documentCount, termCount)
 	}
 }
 
@@ -380,7 +368,7 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 	}
 	var outboxCount int
 	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_circuit_outbox
-		WHERE account_id = ? AND event_type = 'dispatch_revision_changed' AND status = 'pending'`), 		restored.id).Scan(&outboxCount); err != nil {
+		WHERE account_id = ? AND event_type = 'dispatch_revision_changed' AND status = 'pending'`), restored.id).Scan(&outboxCount); err != nil {
 		t.Fatal(err)
 	}
 	if outboxCount != 1 {
@@ -477,12 +465,13 @@ func TestSyncInstanceNamesFollowsSourceRename(t *testing.T) {
 	if renamed.name != "renamed 生产账户-"+shortID {
 		t.Fatalf("renamed instance = %q", renamed.name)
 	}
-	var normalizedName string
-	if err := f.db.QueryRow(fixtureBind(`SELECT normalized_name FROM account_name_search_documents WHERE account_id = ?`), row.id).Scan(&normalizedName); err != nil {
+	// 名称搜索直读 accounts.name：改名后的名称列即搜索事实。
+	var storedName string
+	if err := f.db.QueryRow(fixtureBind(`SELECT name FROM accounts WHERE id = ?`), row.id).Scan(&storedName); err != nil {
 		t.Fatal(err)
 	}
-	if normalizedName != "renamed 生产账户-"+shortID {
-		t.Fatalf("normalized search document = %q", normalizedName)
+	if storedName != "renamed 生产账户-"+shortID {
+		t.Fatalf("stored instance name = %q", storedName)
 	}
 
 	// An unchanged candidate is a no-op.

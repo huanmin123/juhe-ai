@@ -50,9 +50,15 @@ type interruptFakeWriter struct {
 	hijackErr   error
 	conn        *interruptFakeConn
 	sink        *strings.Builder
+	header      http.Header
 }
 
-func (w *interruptFakeWriter) Header() http.Header         { return http.Header{} }
+func (w *interruptFakeWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
 func (w *interruptFakeWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (w *interruptFakeWriter) WriteHeader(int)             {}
 

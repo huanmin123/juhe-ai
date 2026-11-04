@@ -92,7 +92,6 @@ func TestApplyClaimsUpsertFailurePaths(t *testing.T) {
 		"account_list_availability_projection_index",
 		"account_list_availability_runtime_overlays",
 		"account_list_availability_projection_tags",
-		"account_list_availability_projection_search_terms",
 	} {
 		t.Run(dropTable, func(t *testing.T) {
 			repo, db := openListAvailabilityFixture(t)

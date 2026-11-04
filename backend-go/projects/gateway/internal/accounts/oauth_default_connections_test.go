@@ -214,7 +214,7 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			name: "gemini google_oauth video", provider: "gemini", accountType: "google_oauth", domain: "video",
 			credentials: Credentials{"access_token": "at-gemini-video", "oauth_type": "code_assist", "base_url": "https://generativelanguage.googleapis.com"},
 			model:       "gemini-media-video", modelModes: `["video_create","video_get","video_content","video_cancel"]`,
-			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com/v1beta", wantSurface: "gemini_v1beta",
+			wantPreset: "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com/v1beta", wantSurface: "gemini_v1beta",
 			wantModes: []string{"video_cancel", "video_content", "video_create", "video_get"},
 		},
 	}
@@ -231,9 +231,10 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 				VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`,
 				"grp-default-"+ownerID, ownerID, now, now)
+			// 绑定断言要求目标行可计价（BUG-0344），夹具补 input/output 直价。
 			env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
-				supported_endpoint_modes_json, created_at, updated_at)
-				VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`,
+				supported_endpoint_modes_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+				VALUES (?, ?, ?, ?, 'builtin', 'active', ?, 1, 2, ?, ?)`,
 				"mod-"+testCase.provider, testCase.provider, testCase.model, testCase.model, testCase.modelModes, now, now)
 
 			defaults, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.domain, testCase.credentials)

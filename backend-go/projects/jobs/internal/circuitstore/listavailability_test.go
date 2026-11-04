@@ -23,8 +23,6 @@ CREATE TABLE juhe_business.accounts (
 );
 CREATE TABLE juhe_business.resource_authorizations (id text PRIMARY KEY, status text NOT NULL);
 CREATE TABLE juhe_business.system_accounts (id text PRIMARY KEY);
-CREATE TABLE juhe_business.account_name_search_terms (account_id text NOT NULL, term text NOT NULL);
-CREATE TABLE juhe_business.account_name_search_documents (account_id text PRIMARY KEY);
 CREATE TABLE juhe_business.account_list_availability_projection_dependency_health (
 	dependency_name text PRIMARY KEY,
 	state text NOT NULL,
@@ -85,7 +83,6 @@ CREATE TABLE juhe_business.account_list_availability_projection_index (
 	last_used_at_sort_key text,
 	created_at_sort_key text NOT NULL,
 	access_type_sort_key text NOT NULL DEFAULT 'owner',
-	search_index_complete integer NOT NULL DEFAULT 0,
 	authorization_quota_exceeded integer NOT NULL DEFAULT 0,
 	PRIMARY KEY (viewer_system_account_id, account_id)
 );
@@ -94,14 +91,6 @@ CREATE TABLE juhe_business.account_list_availability_projection_tags (
 	account_id text NOT NULL,
 	tag_id text NOT NULL,
 	PRIMARY KEY (viewer_system_account_id, account_id, tag_id)
-);
-CREATE TABLE juhe_business.account_list_availability_projection_search_terms (
-	viewer_system_account_id text NOT NULL,
-	account_id text NOT NULL,
-	term text NOT NULL,
-	name_sort_key text NOT NULL,
-	created_at_sort_key text NOT NULL,
-	PRIMARY KEY (viewer_system_account_id, account_id, term)
 );
 CREATE TABLE juhe_business.account_list_availability_runtime_overlays (
 	account_id text PRIMARY KEY,
@@ -188,7 +177,13 @@ func TestListAvailabilityClaimProjectRefresh(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	nowMS := now.UnixMilli()
+	// dirty 的 available_at_ms 与 ClaimDirty 的过滤都按数据库时钟比较。
+	// 测试机与 dev PG 存在百毫秒级时钟偏差时，用本机 now 入队会立刻 claim
+	// 不到（既有失败案例）；时间基准统一取数据库 clock_timestamp()。
+	var nowMS int64
+	if err := db.QueryRow(`SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint`).Scan(&nowMS); err != nil {
+		t.Fatal(err)
+	}
 	updatedAt := now.Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
 		INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1'), ('acc-2', 'viewer-1');
@@ -245,14 +240,6 @@ func TestListAvailabilityClaimProjectRefresh(t *testing.T) {
 		scopeByAccount[scope.AccountID] = scope
 	}
 
-	searchTerms, err := repo.LoadSearchTerms(ctx, claimAccounts(claims))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(searchTerms) != 0 {
-		t.Fatalf("无搜索文档时 terms 必须为空: %v", searchTerms)
-	}
-
 	// acc-1 投影为 rate_limited（cooling），acc-2 为 active（enabled）。
 	writes := []opsjobs.ProjectionWrite{
 		{
@@ -266,8 +253,7 @@ func TestListAvailabilityClaimProjectRefresh(t *testing.T) {
 				Payload:         map[string]any{"id": claims[0].AccountID, "accessType": "owner"},
 				TagIDs:          []string{"tag-b", "tag-a"},
 			},
-			SearchTerms: []string{"账", "账户", "户甲"},
-			Now:         now,
+			Now: now,
 		},
 		{
 			Claim: claims[1],

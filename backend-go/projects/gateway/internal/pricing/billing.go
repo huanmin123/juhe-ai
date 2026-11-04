@@ -64,10 +64,16 @@ var defaultTokenBillingLabels = tokenBillingLabels{
 }
 
 // tokenBillingOptions mirrors provider-billing.shared TokenBillingOptions.
+//
+// cacheWriteIncludedInInput：上游把 cache_write_tokens 计入 input_tokens 总额
+// （OpenAI 兼容族语义）时，普通 input 行项必须先扣除缓存写入部分再计价，否则
+// 同一批 token 被「输入价 + 缓存写入价」各计一次（BUG-0347）。Anthropic 的
+// cache_creation_input_tokens 独立于 input_tokens，保持 false。
 type tokenBillingOptions struct {
-	cacheReadIncludedInInput bool
-	cacheReadFallbackToInput bool
-	labels                   tokenBillingLabels
+	cacheReadIncludedInInput  bool
+	cacheWriteIncludedInInput bool
+	cacheReadFallbackToInput  bool
+	labels                    tokenBillingLabels
 }
 
 // resolvedRates mirrors provider-billing.types ResolvedProviderBillingRates.
@@ -81,24 +87,29 @@ type resolvedRates struct {
 // The display half of the Node ProviderBillingPolicy interface is not
 // ported (presentation-only).
 type billingPolicy struct {
-	id                       string
-	applyLongContext         bool
-	cacheReadIncludedInInput bool
-	cacheReadFallbackToInput bool
-	labels                   tokenBillingLabels
+	id                        string
+	applyLongContext          bool
+	cacheReadIncludedInInput  bool
+	cacheWriteIncludedInInput bool
+	cacheReadFallbackToInput  bool
+	labels                    tokenBillingLabels
 }
 
 // billingPolicies mirrors the six provider-billing.policies.ts policies.
 var billingPolicies = []*billingPolicy{
 	{
-		id:                       "openai",
-		applyLongContext:         true,
-		cacheReadIncludedInInput: true,
-		cacheReadFallbackToInput: true,
-		labels:                   defaultTokenBillingLabels,
+		id:                        "openai",
+		applyLongContext:          true,
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
+		cacheReadFallbackToInput:  true,
+		labels:                    defaultTokenBillingLabels,
 	},
 	{
-		id:                    "anthropic",
+		// anthropic 的 cache_creation_input_tokens 独立于 input_tokens，
+		// 缓存读取/写入都不从 input 中扣除（cacheReadIncludedInInput 与
+		// cacheWriteIncludedInInput 同为 false）。
+		id: "anthropic",
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
 			output:          "输出 Token",
@@ -118,9 +129,10 @@ var billingPolicies = []*billingPolicy{
 		},
 	},
 	{
-		id:                       "gemini",
-		applyLongContext:         true,
-		cacheReadIncludedInInput: true,
+		id:                        "gemini",
+		applyLongContext:          true,
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
 			output:          "输出 Token",
@@ -140,14 +152,16 @@ var billingPolicies = []*billingPolicy{
 		},
 	},
 	{
-		id:                       "xai",
-		applyLongContext:         true,
-		cacheReadIncludedInInput: true,
-		labels:                   defaultTokenBillingLabels,
+		id:                        "xai",
+		applyLongContext:          true,
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
+		labels:                    defaultTokenBillingLabels,
 	},
 	{
-		id:                       "deepseek",
-		cacheReadIncludedInInput: true,
+		id:                        "deepseek",
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
 			output:          "输出 Token",
@@ -167,8 +181,9 @@ var billingPolicies = []*billingPolicy{
 		},
 	},
 	{
-		id:                       "glm",
-		cacheReadIncludedInInput: true,
+		id:                        "glm",
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
 			output:          "输出 Token",
@@ -191,26 +206,29 @@ var billingPolicies = []*billingPolicy{
 		// M3 媒体供应商新增（媒体设计 §9/契约 §8）：MiniMax 只有媒体行项
 		//（tts_input_chars / video_output_seconds，目录未落价——见
 		// data_minimax.go 计价落法注释），token 行项标签沿用默认集。
-		id:                       "minimax",
-		cacheReadIncludedInInput: true,
-		labels:                   defaultTokenBillingLabels,
+		id:                        "minimax",
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
+		labels:                    defaultTokenBillingLabels,
 	},
 	{
 		// M3 媒体供应商新增（媒体设计 §9/契约 §9）：火山方舟只有媒体行项
 		//（video_output_seconds——2026-10-17 国内价口径批起 720p 主档秒价
 		// 已落值，1-0-pro 除外；seed-audio-1.0 音频秒行同批落值），token
 		// 行项标签沿用默认集。
-		id:                       "volcengine",
-		cacheReadIncludedInInput: true,
-		labels:                   defaultTokenBillingLabels,
+		id:                        "volcengine",
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
+		labels:                    defaultTokenBillingLabels,
 	},
 	{
 		// M3 媒体供应商新增（媒体设计 §9/契约 §10）：通义百炼只有媒体行项
 		//（video_output_seconds，目录未落价——见 data_qwen.go 计价落法注释，
 		// usage 秒计量照抽、成本不虚计），token 行项标签沿用默认集。
-		id:                       "qwen",
-		cacheReadIncludedInInput: true,
-		labels:                   defaultTokenBillingLabels,
+		id:                        "qwen",
+		cacheReadIncludedInInput:  true,
+		cacheWriteIncludedInInput: true,
+		labels:                    defaultTokenBillingLabels,
 	},
 }
 
@@ -283,9 +301,10 @@ func (p *billingPolicy) buildCostBreakdown(pricing *Pricing, input CostInput) *C
 		billable.OutputTokens = nil
 	}
 	return buildTokenCostBreakdown(pricing, billable, rates, tokenBillingOptions{
-		cacheReadIncludedInInput: p.cacheReadIncludedInInput,
-		cacheReadFallbackToInput: p.cacheReadFallbackToInput,
-		labels:                   p.labels,
+		cacheReadIncludedInInput:  p.cacheReadIncludedInInput,
+		cacheWriteIncludedInInput: p.cacheWriteIncludedInInput,
+		cacheReadFallbackToInput:  p.cacheReadFallbackToInput,
+		labels:                    p.labels,
 	})
 }
 
@@ -496,9 +515,20 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	if cacheReadRate == nil && options.cacheReadFallbackToInput {
 		cacheReadRate = rates.InputUsdPer1M
 	}
+	// 未缓存输入 = 输入总额 −（计入 input 的）缓存读取 −（计入 input 的）
+	// 缓存写入 − 已单列的图片/音频输入。cacheWrite 扣的是写入总量
+	// （cacheWriteStandard + cacheWrite1h 两行之和，含只在 1h 槽位出现的
+	// 上游形态），不是只扣标准档：BUG-0347，OpenAI 兼容族把
+	// cache_write_tokens 计入 input_tokens 总额，不扣就会让同一批 token 按
+	// 「输入价 + 缓存写入价」各计一次（生产 gpt-6.1-sol 样本 input 13196 /
+	// cache_write 13193，虚增约 76%）。anthropic 的
+	// cache_creation_input_tokens 独立于 input_tokens，
+	// cacheWriteIncludedInInput=false 保持全量输入计价。
+	cacheWriteDeductedTokens := cacheWriteStandardTokens + cacheWrite1hTokens
 	uncachedInputTokens := math.Max(
 		nonNegative(input.InputTokens)-
 			boolFloat(options.cacheReadIncludedInInput)*cacheReadTokens-
+			boolFloat(options.cacheWriteIncludedInInput)*cacheWriteDeductedTokens-
 			inputImageTokens-
 			inputAudioTokens,
 		0)

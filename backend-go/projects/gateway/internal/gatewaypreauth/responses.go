@@ -300,6 +300,46 @@ func (w *TrackingWriter) Flush() {
 	}
 }
 
+// InterruptClientConnection 对 pre-commit 的客户端交接执行真·网络级断开：
+// Hijack 底层连接后直接 Close（不发任何响应）。返回值 true 表示断开成功，
+// 调用方不得再向该连接写错误响应；false 表示底层不支持 Hijack 或响应已
+// 开始，调用方可回退既有 HTTP 错误契约。与 *TrackingWriter 的
+// End/SetDestroyed 无关——需要置销毁标记的链面 helper 在成功后再补。
+//
+// 必须对 TrackingWriter 解包后断言底层 writer：TrackingWriter.Hijack 会先
+// 置 wroteHeader/101 再转发，Hijack 失败时会让调用方的 503 回退被
+// HeadersSent 守卫吞掉（客户端收到空 200）。
+func InterruptClientConnection(res GatewayResponseWriter) bool {
+	if res == nil || res.HeadersSent() {
+		return false
+	}
+	var hijackTarget any = res
+	if tracking, ok := res.(*TrackingWriter); ok {
+		hijackTarget = tracking.ResponseWriter
+	}
+	hijacker, ok := hijackTarget.(http.Hijacker)
+	if !ok {
+		return false
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err != nil {
+		return false
+	}
+	if tracking, ok := res.(*TrackingWriter); ok {
+		// 连接已被接管：置 End/Destroyed 让后续写守卫立即生效，避免同请求
+		// 其他代码再向已劫持连接补写响应。
+		tracking.End()
+		tracking.SetDestroyed()
+	}
+	if rw != nil {
+		_ = rw.Flush()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	return true
+}
+
 // SendGatewayJSONError mirrors sendGatewayJsonError: localize unless the
 // upstream flag is preserved (then mark the kernel writer), convert to the
 // protocol payload and write it as JSON.

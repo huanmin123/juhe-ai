@@ -69,6 +69,9 @@ type dispatchResultKind int
 const (
 	dispatchResultContinue dispatchResultKind = iota
 	dispatchResultSelected
+	// dispatchResultLocked 表示当前候选处于锁死窗口且已真实失败：本请求必须
+	// 停在锁死账号上，不得继续尝试其他候选或后备分组（设计 §3.4）。
+	dispatchResultLocked
 )
 
 // dispatchSingleAccount executes the candidate loop body for one account.
@@ -199,6 +202,9 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	keyModelForegroundWaitStartedAtMs := int64(0)
 	retryAccountApiKey := false
 	skipAccount := false
+	// lockedStop 标记本轮轮换循环因锁死门终止：退出后必须让整请求停在锁死
+	// 账号上（dispatchResultLocked），而不是继续下一候选。
+	lockedStop := false
 	var accountScopedResult *UpstreamDispatchResult
 
 	// 会话黏性（账户内 Key 会话亲和，设计 §5）：每次 dispatchSingleAccount 调用
@@ -474,6 +480,9 @@ rotationLoop:
 			break rotationLoop
 		case attemptStopRotation:
 			continue rotationLoop
+		case attemptStopLocked:
+			lockedStop = true
+			break rotationLoop
 		}
 		// Node loops the do/while only on retryAccountApiKey.
 		if !retryAccountApiKey {
@@ -483,6 +492,23 @@ rotationLoop:
 
 	releaseTransientState()
 	*in.pendingApiKeyFailures = pendingAccountApiKeyFailures
+	// 最终锁死门（M3 复审）：Key 池不可用、Key 安全上限、准备期 guidance 等
+	// 候选内跳过出口（skipAccount）绕过尝试内的锁死门，锁死窗口内同样不得切换
+	// 到其他候选。已经过尝试内锁死门判定的出口（attemptStopAccount，含显式策略
+	// 失败）不重复判定：显式策略已由失败派发器把账户置为不可调度，锁行可能仍
+	// 处于阻断态，不得在此反向钉住请求。未锁账户行为不变。
+	if !lockedStop && skipAccount && in.accountLockTrafficEnabled && e.Locks != nil {
+		lockState, stateErr := e.Locks.FindStateAsync(ctx, originalAccount.ID)
+		switch {
+		case stateErr != nil:
+			// 读取失败与 M4 同规则：仅当本请求已观察到该账户锁行时才 fail-closed。
+			if accountLockObservationPresent(in.activeAccountLockObservation) {
+				return dispatchResultLocked, nil, nil
+			}
+		case lockState != nil && accountLockBlocksCrossAccount(*lockState):
+			return dispatchResultLocked, nil, nil
+		}
+	}
 	// BUG-0247 项 3：此处不存在 accountScopedResult 非 nil 的到达路径——
 	// *c.loop.resultRef（=&accountScopedResult）仅在 attemptoutcomes.go 两个
 	// 构造点（response.OK 与 ReturnResponse 分支）写入，且每次写入后立即
@@ -528,6 +554,11 @@ rotationLoop:
 	//   - :1228 / :1251 key-model busy/blocked/state_unavailable
 	//   - :1521-1522 响应失败换 Key
 	//   - :1836-1837 传输失败换 Key
+	if lockedStop {
+		// 锁死门终止：不进入同周期其余候选（设计 §3.4 第 3 条）。并发槽与
+		// 半开租约已由上方 releaseTransientState 释放。
+		return dispatchResultLocked, nil, nil
+	}
 	return dispatchResultContinue, nil, nil
 }
 
@@ -966,6 +997,8 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					return attemptLoopRetryKey, attemptStopNone, nil
 				case responseStopSkipAccount:
 					return attemptLoopExhausted, attemptStopAccount, nil
+				case responseStopAccountLocked:
+					return attemptLoopExhausted, attemptStopLocked, nil
 				}
 				attemptIndex++
 				continue
@@ -1006,6 +1039,8 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			switch stop.kind {
 			case errorStopSkipAccount:
 				return attemptLoopExhausted, attemptStopAccount, nil
+			case errorStopAccountLocked:
+				return attemptLoopExhausted, attemptStopLocked, nil
 			case errorStopRetrySameAccount:
 				attemptIndex++
 				continue
@@ -1070,6 +1105,9 @@ const (
 	responseStopRetryKey
 	responseStopSkipAccount
 	responseStopSemanticRetry
+	// responseStopAccountLocked 是锁死门否决跨账号切换的终态停止（设计
+	// §3.4）：请求停在当前锁死账号上，由链面渲染 handoff / 503。
+	responseStopAccountLocked
 )
 
 // NormalRouteTotalTimeDeadlineDefaultMs / NormalRouteCompactionTotalTimeDeadlineDefaultMs
@@ -1172,6 +1210,9 @@ const (
 	errorStopRetrySameAccount
 	errorStopRetryKey
 	errorStopURLBreak
+	// errorStopAccountLocked 是传输失败侧的锁死门终态：与
+	// responseStopAccountLocked 同义，终止跨账号切换。
+	errorStopAccountLocked
 )
 
 type errorStop struct {

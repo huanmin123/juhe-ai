@@ -634,30 +634,24 @@ func chainCatalogTokenBoundaryEnd(model string, index int) bool {
 	return false
 }
 
-// chainHasDirectCatalogPrice mirrors hasDirectPrice.
+// chainHasDirectCatalogPrice mirrors hasDirectPrice. 判据单一真源在
+// pricing.HasCatalogDirectPrice（accounts 绑定断言共用同一函数）：
+// 直价列 / 静态媒体层 / 档位价三选一。两处若各自维护，就会出现「能绑定但
+// 计价目录查不到」的裂缝（BUG-0344：成功流量 cost NULL）。
 func chainHasDirectCatalogPrice(item gatewayruntimecache.ProviderModelCatalogItem) bool {
-	if item.InputUsdPer1M != nil || item.OutputUsdPer1M != nil || item.CachedInputUsdPer1M != nil ||
-		item.CacheWriteUsdPer1M != nil || item.CacheWrite1hUsdPer1M != nil ||
-		item.CacheStorageUsdPer1MPerHour != nil || item.ImageInputUsdPer1M != nil ||
-		item.ImageOutputUsdPer1M != nil || item.AudioInputUsdPer1M != nil ||
-		item.AudioOutputUsdPer1M != nil || item.OutputUsdPerImage != nil {
-		return true
-	}
-	// 媒体单价维度（TTS 字符 / 音频秒 / 视频秒 / 视频按次）不在
-	// provider_model_catalog 列集内，唯一权威源是 go:embed 静态快照层
-	//（catalogdata/*.json，计价落法"目录表无列、计费读静态层"）——DB 行无
-	// token 价但静态层命中媒体价的目录行（volcengine seed-audio-1.0 /
-	// seedance 系）不得被 priced 过滤误杀：秒计量落值后运行时计费真实读取
-	// 该价（2026-10-17 维度修正批，真实复现：TTS usage 行 audioInputSeconds
-	// 落值而 costUsd 恒 NULL——priced 过滤把无 token 价媒体行剔除，
-	// chainCatalogPricing 的静态层补齐永远不执行）。
-	if media := pricing.FindProviderModelPricing(item.ProviderCode, item.Model); media != nil {
-		if media.TtsInputUsdPer1MChars != nil || media.AudioInputUsdPerSecond != nil ||
-			media.VideoOutputUsdPerSecond != nil || media.VideoOutputUsdPerCall != nil {
-			return true
-		}
-	}
-	return chainCatalogTierPriceCount(item.ServiceTierPrices) > 0
+	return pricing.HasCatalogDirectPrice(item.ProviderCode, item.Model, pricing.PriceSet{
+		InputUsdPer1M:               item.InputUsdPer1M,
+		OutputUsdPer1M:              item.OutputUsdPer1M,
+		CachedInputUsdPer1M:         item.CachedInputUsdPer1M,
+		CacheWriteUsdPer1M:          item.CacheWriteUsdPer1M,
+		CacheWrite1hUsdPer1M:        item.CacheWrite1hUsdPer1M,
+		CacheStorageUsdPer1MPerHour: item.CacheStorageUsdPer1MPerHour,
+		ImageInputUsdPer1M:          item.ImageInputUsdPer1M,
+		ImageOutputUsdPer1M:         item.ImageOutputUsdPer1M,
+		AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
+		AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
+		OutputUsdPerImage:           item.OutputUsdPerImage,
+	}, chainCatalogTierPriceCount(item.ServiceTierPrices))
 }
 
 func chainCatalogTierPriceCount(raw json.RawMessage) int {

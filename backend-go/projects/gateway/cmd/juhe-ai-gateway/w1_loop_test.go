@@ -210,14 +210,18 @@ func TestW1SpeedFirstDeadlineDecisionLockAndError(t *testing.T) {
 	// 锁阻断：Continue + 审计元数据。
 	locks := &w1FakeLocks{view: &gatewaydispatch.AccountLockStateView{BlocksCrossAccount: true}}
 	loop, _ := w1LoopWithEngine(t, locks)
+	latency := &w1LatencyFake{}
 	coordinator := &gatewaydispatch.NormalRouteFirstByteAttemptCoordinator{}
 	action, err := loop.speedFirstDeadlineDecision(context.Background(), loop.current,
 		gatewaydispatch.AccountCandidate{ID: "acc_1"},
 		gatewayrouting.NormalRouteAttemptFirstByteDeadline{EffectiveDeadlineMs: 900},
-		coordinator, &w1LatencyFake{}, &gatewaydispatch.LatencyScopeInput{GroupID: "grp_1"},
+		coordinator, latency, &gatewaydispatch.LatencyScopeInput{GroupID: "grp_1"},
 		w4bSpeedFirstConfig(8_000, nil))
 	if err != nil || action != gatewaydispatch.FirstByteDeadlineActionContinue {
 		t.Fatalf("锁阻断 = %v, %v", action, err)
+	}
+	if latency.firstByteSlowCalls != 1 {
+		t.Fatalf("锁死否决 cutover 前必须继续记录首字慢样本，calls = %d", latency.firstByteSlowCalls)
 	}
 	// 决策错误（IsAccountLatencyDegradedAsync 报错）：错误透传，由闭包兜底。
 	loop2, _ := w1LoopWithEngine(t, &w1FakeLocks{})

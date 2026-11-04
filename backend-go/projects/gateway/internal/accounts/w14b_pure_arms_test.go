@@ -43,26 +43,6 @@ func TestW14BStoreHelpersArms(t *testing.T) {
 	if ensureCtx(context.Background()) == nil {
 		t.Fatal("ensureCtx 应原样返回")
 	}
-	if got := normalizeAccountNameSearchText(123); got != "" {
-		t.Fatalf("非字符串归一化应为空：%q", got)
-	}
-	if got := normalizeAccountNameSearchText("　 Ａｂｃ 　"); got != "Abc" {
-		t.Fatalf("NFKC+trim 归一化不符：%q", got)
-	}
-	if terms := accountNameSearchQueryTerms(""); terms != nil {
-		t.Fatalf("空关键字应无词条：%v", terms)
-	}
-	if terms := accountNameSearchQueryTerms(strings.Repeat("长", maxAccountNameLength+1)); terms != nil {
-		t.Fatalf("超长关键字应无词条：%v", terms)
-	}
-	if terms := buildAccountNameSearchTerms("　"); terms != nil {
-		t.Fatalf("全空白名称应无词条：%v", terms)
-	}
-	termsShort := buildAccountNameSearchTerms("ab")
-	wantShort := []string{"a", "b", "ab"}
-	if !equalsStringSlice(termsShort, wantShort) {
-		t.Fatalf("短名称 1..3 gram 应全集：%v", termsShort)
-	}
 	// ownerEffectiveStatusSQL 空别名回退 accounts。
 	sqlText := ownerEffectiveStatusSQL("", "'2026-01-01T00:00:00.000Z'")
 	if !strings.Contains(sqlText, "accounts.last_error_code") {
@@ -75,12 +55,6 @@ func TestW14BStoreHelpersArms(t *testing.T) {
 	}
 	if normalizeTextList(nil, 3) != nil {
 		t.Fatal("空输入应返回 nil")
-	}
-	if got := textPrefixUpperBound(string(rune(0x10ffff))); got != string(rune(0x10ffff))+"\uffff" {
-		t.Fatalf("上界回退符不符：%q", got)
-	}
-	if got := textPrefixUpperBound("ab"); got != "ac" {
-		t.Fatalf("普通上界不符：%q", got)
 	}
 	// pg Store 的 insertIgnore 走 ON CONFLICT 附加分支。
 	if !strings.Contains(store.insertIgnore("INSERT INTO t (a) VALUES (?)", " ON CONFLICT DO NOTHING"), "ON CONFLICT DO NOTHING") {
@@ -710,9 +684,6 @@ func TestW14BTagStoreArms(t *testing.T) {
 	deleted, err = env.store.DeleteTag(context.Background(), "tag-w14b-missing", scope)
 	if err != nil || deleted {
 		t.Fatalf("缺失标签删除应返回 false：%v %v", deleted, err)
-	}
-	if err := env.store.replaceAccountNameSearchTerms(context.Background(), env.db, "acc-w14b-tag", adminID, "　", "2026-01-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("空名称词条替换应成功返回：%v", err)
 	}
 	// 非 owner 视角：非管理员只能看到自己的（空列表）。
 	userID := env.login(t, "alice-w14b", "alice-pass", "user")

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0347
-- 状态：待修复（口径需裁决）
+- 状态：已修复待发布（2026-11-03）
 - 严重程度：P2
 - 发现时间：2026-11-03
 - 发现方式：自查（成本快照行项与 token 列交叉核对）
@@ -58,13 +58,22 @@
 - 规模：近 30 天 161 条命中、`cacheWriteCostUsd` 88.45 USD；全量 `cache_write_tokens>0` 共 2,045 条、成本 250.13 USD（其中异常 161 条占 35%）。
 - 另一形态：部分行 `input_tokens` 与 `cache_write_tokens` 完全相等（如 `usage_20261103_s08_…` 的 13196/13193），也有 `cache_write_tokens` 远小于 input 的正常形态（如 4215/18993），说明只有「接近相等」这批是重复计量。
 
-## 修复方案（待裁决）
+## 修复方案（2026-11-03 已实施，采纳 B）
 
-- **A（推荐）**：`buildTokenCostBreakdown` 的 `uncachedInputTokens` 同步扣除 `cacheWriteTokens`（与 `cacheReadTokens` 同权），并在 `hasUnpricedUsage` 判定中同步。前提：确认 `cache_write_tokens` 在 OpenAI 兼容族确实包含于 `input_tokens`（上游样本已佐证）。
-- **B**：若某些上游的 `cache_write_tokens` 是**独立于** input 的（Anthropic 语义），则需按 provider 分族处理：openai/gemini/xai 族扣除，anthropic 族不扣。当前 `cacheReadIncludedInInput` 已是分族开关，可扩为 `cacheWriteIncludedInInput`。
-- 裁决要点：A 改动最小但假设所有族同语义；B 更严谨但需逐族确认上游口径。建议先按 A 修 openai 族，并对 anthropic 族显式标注为不扣（其 `cache_creation_input_tokens` 不包含在 `input_tokens` 内）。
+复审把原「A/B 二选一」收敛为 B：**逐厂商开关 `cacheWriteIncludedInInput`**，与既有 `cacheReadIncludedInInput` 同构。
 
-- 行为影响：修复后这些请求的成本下降（回到真实单价），`success_cost_usd` 与额度消耗同步下降；历史行不回填。
+- 置 `true`（普通 input 行项扣除缓存写入总量）：openai / gpt、gemini、xai、deepseek、glm、minimax、volcengine、qwen。生产取证支持该判断——这些厂商的全部 `cache_write_tokens>0` 行都满足 `cache_write ≤ input`，且 `cache_read + cache_write ≤ input`，说明缓存写入含在 `input_tokens` 内。
+- 置 `false`（不扣除）：anthropic。其 `cache_creation_input_tokens` 独立于 `input_tokens`；生产同口径 `cache_write/input` 最高 **98.9**（远大于 1），证明写入量与输入量无关，扣除会漏计真实输入。
+- 扣除量取**两档之和**（`cacheWriteStandardTokens + cacheWrite1hTokens`），覆盖「只返回 1h 槽位」的上游形态。
+
+落点（两个引擎必须同步，否则 gateway 冻结与 jobs 回填会算出不同成本）：
+
+| 引擎 | 文件 | 改动 |
+| --- | --- | --- |
+| gateway 计价 | `internal/pricing/billing.go` | `billingPolicy` / `tokenBillingOptions` 增 `cacheWriteIncludedInInput`；`uncachedInputTokens` 扣 `cacheWriteStandard+cacheWrite1h` |
+| jobs 镜像 | `cmd/juhe-ai-jobs/worker_usage_pricing_catalog.go` | `usageCatalogBillingPolicy` 增同名字段；`buildUsageCatalogTokenBreakdown` 同构扣除 |
+
+- 行为影响：这些请求的成本下降（回到真实单价），`success_cost_usd` 与额度消耗同步下降；历史行不回填。
 - 发布异常处理：无 schema 变更。
 
 ## 验证记录
@@ -73,7 +82,11 @@
 | --- | --- | --- | --- | --- | --- |
 | 生产取证 | 上游 usage 与成本行项对照 | 审计载荷解析 + 快照 | 确认重复计量 | 确认（13196 vs 13193） | 已执行 |
 | 生产取证 | 规模统计 | 快照 lineItems 扫描 | 量化影响 | 161 条 / 88.45 USD / 2.2% | 已执行 |
-| 单元验证 | 缓存写入扣除后成本正确 | 待实施后补 | 通过 | 待实施 | 未执行 |
+| 生产取证 | 逐厂商「写入是否含于 input」判定 | 全部 `cache_write_tokens>0` 行计算 `cache_write/input` 与 `(cache_read+cache_write)/input` | 分族结论 | openai 族 ≤1.000000；anthropic 最高 98.9 | 已执行 |
+| 单元验证 | 缓存写入扣除后成本正确（gateway） | `go test ./projects/gateway/internal/pricing/ -run CacheWrite` | 通过 | 通过（含 `cache_write≈input` / `≪input` / 仅 1h 槽位 / anthropic 不扣） | 已执行 |
+| 单元验证 | 新测试可直接证伪 | 临时把 openai 的开关置 false 后重跑 | 用例失败 | 失败（input 行项 13196，期望 3），恢复后通过 | 已执行 |
+| 单元验证 | jobs 镜像引擎同构 | `go test ./projects/jobs/cmd/juhe-ai-jobs/ -run UsageCatalogTokenBreakdown` | 通过 | 通过（同一组形态 + 证伪验证） | 已执行 |
+| 单元验证 | 计价包全量回归 | `go test ./projects/gateway/internal/pricing/...` | 全绿 | 全绿（`TestBuildCostBreakdownOpenAICacheSplit` 期望按新公式更新；anthropic 用例不变） | 已执行 |
 | 生产验证 | 发布后同类请求成本下降且无负值 | 发布后抽样 | 符合预期 | 待发布 | 未执行 |
 
 ## 复发记录
@@ -91,6 +104,6 @@
 
 ## 完成总结
 
-- 完成时间：待修复
-- 结论：待裁决修复方向（建议 A + anthropic 族显式豁免）
-- 后续建议：修复后核对同期 `success_cost_usd` 变化，评估历史 161 行是否需要重算（需授权）
+- 完成时间：2026-11-03（代码与文档；待发布上线）
+- 结论：按厂商分族扣除缓存写入（openai 族扣、anthropic 不扣），gateway 与 jobs 双引擎同步实施，单测可证伪。
+- 后续建议：发布后核对同期 `success_cost_usd` 变化；历史 161 行（88.45 USD）是否重算需另行授权（当前口径不回填）。

@@ -160,6 +160,89 @@ func TestNextScheduleCheckFallback(t *testing.T) {
 	}
 }
 
+// CatchUpScheduleEvent 仍是 schedule.go 的公共函数（同步路径自 2026-11-03 闸门
+// 契约起不再使用它），这里保留纯函数契约：补偿事件与「边界分钟当轮执行」的
+// 事件逐字段一致（action / status / 去重键）。
+func TestCatchUpScheduleEventMatchesBoundaryEvent(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		now     time.Time
+		at      time.Time
+		matches bool
+	}{
+		{
+			name:    "窗口内回看开始边界",
+			raw:     `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"09:00","end":"18:00"}]}`,
+			now:     time.Date(2026, 9, 7, 10, 30, 0, 0, time.UTC),
+			at:      time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC),
+			matches: true,
+		},
+		{
+			name:    "窗口外回看结束边界",
+			raw:     `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"09:00","end":"18:00"}]}`,
+			now:     time.Date(2026, 9, 7, 20, 0, 0, 0, time.UTC),
+			at:      time.Date(2026, 9, 7, 18, 0, 0, 0, time.UTC),
+			matches: true,
+		},
+		{
+			name:    "跨午夜回看次日结束边界",
+			raw:     `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"22:00","end":"02:00"}]}`,
+			now:     time.Date(2026, 9, 8, 3, 0, 0, 0, time.UTC),
+			at:      time.Date(2026, 9, 8, 2, 0, 0, 0, time.UTC),
+			matches: true,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			schedule, err := ParseScheduleJSON(testCase.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			catchUp, ok := CatchUpScheduleEvent(schedule, testCase.now)
+			if !ok {
+				t.Fatal("补偿事件缺失")
+			}
+			boundary, ok := DueScheduleEvent(schedule, testCase.at)
+			if !ok {
+				t.Fatal("边界事件缺失")
+			}
+			if catchUp != boundary {
+				t.Fatalf("补偿事件=%+v 与边界事件=%+v 不一致", catchUp, boundary)
+			}
+		})
+	}
+	// 停用计划（nil / enabled=false）没有补偿事件。
+	if _, ok := CatchUpScheduleEvent(nil, time.Now()); ok {
+		t.Fatal("nil 计划不应产生补偿事件")
+	}
+	if _, ok := CatchUpScheduleEvent(&AvailabilitySchedule{Enabled: false}, time.Now()); ok {
+		t.Fatal("停用计划不应产生补偿事件")
+	}
+}
+
+// CatchUpScheduleEvent 的 dateRange 已结束长停摆定位（公共函数契约）。
+func TestCatchUpScheduleEventFindsLastBoundaryAfterDateRangeEnded(t *testing.T) {
+	const bounded = `{"enabled":true,"timezone":"UTC","mode":"allow_windows","dateRange":{"startDate":"2026-08-01","endDate":"2026-08-20"},
+		"windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"09:00","end":"18:00"}]}`
+	schedule, err := ParseScheduleJSON(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := CatchUpScheduleEvent(schedule, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	if !ok {
+		t.Fatal("dateRange 结束边界必须仍可定位")
+	}
+	want := ScheduleDueEvent{
+		Action:   "end",
+		Status:   "disabled",
+		EventKey: "2026-08-20:1080:end:window:0:end:18:00",
+	}
+	if event != want {
+		t.Fatalf("补偿事件=%+v want %+v", event, want)
+	}
+}
+
 func mustParseSchedule(t *testing.T, raw string) *AvailabilitySchedule {
 	t.Helper()
 	schedule, err := ParseScheduleJSON(raw)

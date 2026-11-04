@@ -207,10 +207,11 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountStatus, AccountTagSummary, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountTagSummary, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText } from './accountBasicFormatters'
-import type { AccountFilters } from './accountFormTypes'
+import type { AccountFilters, AccountStatusFilterValue } from './accountFormTypes'
+import { isAccountStatusFilterValue } from './accountListFilters'
 
 type FilterOption<T extends string> = {
   label: string
@@ -232,7 +233,7 @@ const props = defineProps<{
   refreshLoading: boolean
   allLoadedSelected?: boolean
   selectedCount?: number
-  statusOptions: Array<FilterOption<AccountStatus>>
+  statusOptions: Array<FilterOption<AccountStatusFilterValue>>
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
   tagFilterDisabled?: boolean
@@ -260,14 +261,13 @@ const emit = defineEmits<{
   (event: 'update:groupSelection', value?: GroupSelection): void
   (event: 'update:keyword', value: string): void
   (event: 'update:providerCode', value: string): void
-  (event: 'update:status', value: AccountStatus[]): void
+  (event: 'update:status', value: AccountStatusFilterValue[]): void
   (event: 'update:systemAccountId', value: string): void
   (event: 'update:systemAccountSelection', value?: PrincipalSelection): void
   (event: 'update:tagIds', value: string[]): void
   (event: 'update:type', value: string): void
 }>()
 
-const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated'])
 const exportTooltip = computed(() => props.allLoadedSelected
   ? '已全选当前列表，将按当前筛选导出全部账户（最多 500 个）'
   : props.selectedCount
@@ -331,17 +331,23 @@ function handleSystemAccountUpdate(value: SelectValue) {
 }
 
 function handleStatusChange(value: SelectValue) {
-  emit('update:status', Array.isArray(value) ? value.filter(isAccountStatus) : [])
+  const next = Array.isArray(value) ? value.filter(isAccountStatusFilterValue) : []
+  const previous = props.filters.status
+  const added = next.find((item) => !previous.includes(item))
+  if (added === 'out_of_window') {
+    // 「非时间段」与具体账户状态互斥：列表接口只有单值 schedulable，混选会被后端 AND 成空集。
+    emit('update:status', [added])
+  } else if (added && previous.includes('out_of_window')) {
+    emit('update:status', next.filter((item) => item !== 'out_of_window'))
+  } else {
+    emit('update:status', next)
+  }
   emit('search')
 }
 
 function handleTagChange(value: SelectValue) {
   emit('update:tagIds', Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()) : [])
   emit('search')
-}
-
-function isAccountStatus(value: string): value is AccountStatus {
-  return accountStatusValues.has(value as AccountStatus)
 }
 </script>
 

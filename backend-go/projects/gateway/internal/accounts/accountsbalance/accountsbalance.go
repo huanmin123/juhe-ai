@@ -48,8 +48,13 @@ type Deps struct {
 	FindAccountSummary func(ctx context.Context, accountID, ownerID string) (any, error)
 	// ScheduleGate mirrors m11ScheduleAllowed: the availability-schedule gate
 	// at an instant (schedule.go stays a facade surface; parse errors degrade
-	// to always-allowed).
+	// to always-allowed). 时间计划闸门解耦后仅供兼容读面使用；
+	// ScheduleGateValue 是写面（force-activate）需要的三态派生值。
 	ScheduleGate func(scheduleJSON string, now time.Time) bool
+	// ScheduleGateValue mirrors m11ScheduleGateValue: the
+	// accounts.availability_schedule_gate column value (NULL = 无计划 / 1 =
+	// 时段内 / 0 = 时段外).
+	ScheduleGateValue func(scheduleJSON string, now time.Time) sql.NullInt64
 	// NewDispatchID mirrors the facade free function newID("dispatch")
 	// (crypto.go): the original call site bypassed the store-injected newID
 	// clock, so the port closes over the free function instead of StoreBase.

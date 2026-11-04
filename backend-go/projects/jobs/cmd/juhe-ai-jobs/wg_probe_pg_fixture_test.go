@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   type TEXT NOT NULL,
   status TEXT NOT NULL,
   schedulable INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_gate INTEGER,
   vendor_code TEXT,
   connection_driver_code TEXT NOT NULL DEFAULT 'generic_http',
   oauth_type TEXT,

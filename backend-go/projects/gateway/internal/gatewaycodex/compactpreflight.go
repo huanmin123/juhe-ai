@@ -257,6 +257,31 @@ func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Co
 			})
 			return CompactPreflightResult{Completed: true}, nil
 		}
+		// 锁死保持（AI账户锁死调度机制设计与实现前复审 §3.4）：账号处于
+		// 锁死窗口时，派发层不切换其他账号。这是非终态交接——客户端只在
+		// 断连时重试，因此先真断连并落同一失败审计；Hijack 不可用才回退
+		// 503 client retry 契约。
+		var clientRetry GatewayClientRetryError
+		if errors.As(err, &clientRetry) {
+			failure := gatewayFailure{
+				statusCode: http.StatusServiceUnavailable,
+				_type:      "service_unavailable",
+				code:       gatewaypreauth.GatewayStreamClientRetryErrorCode,
+				message:    clientRetry.GatewayClientRetryMessage(),
+				phase:      "dispatch",
+			}
+			if gatewaypreauth.InterruptClientConnection(input.Res) {
+				input.AuditCapture.AddGatewayMetadata("gateway_client_handoff_transport", map[string]any{
+					"retryReason": "account_lock_hold",
+					"errorCode":   gatewaypreauth.GatewayStreamClientRetryErrorCode,
+					"handoff":     "connection_interrupt",
+				})
+				s.recordCompactFailure(input, failure)
+				return CompactPreflightResult{Completed: true}, nil
+			}
+			s.sendCompactFailure(input, failure)
+			return CompactPreflightResult{Completed: true}, nil
+		}
 		s.sendCompactFailure(input, gatewayFailure{
 			statusCode: 502,
 			_type:      "bad_gateway",
@@ -563,22 +588,59 @@ func (s *CompactPreflightService) sendCompactFailure(input CompactPreflightInput
 	if s.Sink == nil {
 		return
 	}
-	responsePayload := gatewaypreauth.GatewayErrorPayloadOf(failure.message, failure._type, failure.code)
-	s.Sink.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+	s.Sink.SendGatewayFailureResponse(compactFailureResponseInput(input, failure))
+}
+
+// recordCompactFailure 是 sendCompactFailure 的 pre-commit 交接形态：连接
+// 已断开，不再写 HTTP 响应，但失败审计与 usage 仍按同源契约落库（生产 sink
+// 实现 gatewaypreauth.GatewayFailureRecorder；测试/裸装配回退为仅审计）。
+func (s *CompactPreflightService) recordCompactFailure(input CompactPreflightInput, failure gatewayFailure) {
+	finalizeAudit := func() {
+		if input.AuditCapture == nil {
+			return
+		}
+		input.AuditCapture.Finalize(gatewaypreauth.AuditFinalizeInput{
+			Outcome:          gatewaypreauth.AuditOutcomeGatewayFailed,
+			Success:          false,
+			StatusCode:       failure.statusCode,
+			ResponsePartType: "gateway_error",
+			ErrorPhase:       failurePhaseOrDefault(failure.phase),
+			ErrorCode:        failure.code,
+			ErrorMessage:     failure.message,
+		})
+	}
+	if s.Sink == nil {
+		// 裸装配（无 sink）也必须落审计：连接已断，之后不会再有任何响应面
+		// 收尾；静默返回会让整条请求从审计里消失。
+		finalizeAudit()
+		return
+	}
+	responseInput := compactFailureResponseInput(input, failure)
+	if recorder, ok := s.Sink.(gatewaypreauth.GatewayFailureRecorder); ok {
+		recorder.RecordGatewayFailureWithoutResponse(responseInput)
+		return
+	}
+	finalizeAudit()
+}
+
+// compactFailureResponseInput 是压缩摘要失败的统一记账输入，发送与交接断连
+// 两条臂共用，保证审计 outcome/phase/code 与 usage 语义一致。
+func compactFailureResponseInput(input CompactPreflightInput, failure gatewayFailure) gatewaypreauth.FailureResponseInput {
+	return gatewaypreauth.FailureResponseInput{
 		Req:             input.Req,
 		Res:             input.Res,
 		AuditCapture:    input.AuditCapture,
 		UsageContext:    input.UsageContext,
 		StartedAt:       input.StartedAt,
 		StatusCode:      failure.statusCode,
-		ResponsePayload: responsePayload,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(failure.message, failure._type, failure.code),
 		Audit: gatewaypreauth.FailureAudit{
 			Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
 			ErrorPhase:   failurePhaseOrDefault(failure.phase),
 			ErrorCode:    failure.code,
 			ErrorMessage: failure.message,
 		},
-	})
+	}
 }
 
 // failurePhaseOrDefault 取审计 error_phase（空值沿用既有"request_validation"）。

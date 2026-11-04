@@ -193,6 +193,47 @@ var postgresSchemaUsage = []PGStatement{
 		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS output_video_seconds double precision NOT NULL DEFAULT 0`,
 	},
 	{
+		// 统计消费水位（BUG-0345 根治，2026-11-03）：`usage_stats_aggregated_at`
+		// / `client_ip_stats_aggregated_at` 分别记录该行被两个统计聚合器消费的
+		// 时刻，NULL = 尚未聚合。聚合器由此从「按 (created_at, id) 顺序游标消费」
+		// 改为「消费未标记行」，消费幂等且不再依赖任何时序假设——记录晚到多久
+		// 都不会被游标永久越过。
+		//
+		// 两个聚合器消费同一张源表、各自有独立游标，因此各需一个水位列；共用一个
+		// 列会让先跑的聚合器把行藏起来，另一个永久看不到。
+		//
+		// 为什么不能只调窗口：`created_at` 是请求终态时刻（逻辑时间），落库是
+		// 物理写入；两者差值上限约等于请求墙钟预算（270s）加投递余量，生产实测
+		// 最大 299,163ms 对 300,000ms 缓冲窗口只剩 837ms 余量。任何固定窗口都
+		// 只能降低失败概率，机制仍在。
+		//
+		// 存量语义：加列后存量行全为 NULL（视作待聚合）。聚合器首次运行自动结算
+		// 存量——按旧游标把 <= 该水位的行标记为已消费（它们已进过统计），之后的
+		// 行正常消费；统计写入是增量累加，缺少这一步会把历史行整体重算一遍。见
+		// jobs/internal/statsagg/consumption.go 的 BootstrapUsageRecordConsumption。
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-stats-consumption-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS usage_stats_aggregated_at text`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-stats-consumption-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS client_ip_stats_aggregated_at text`,
+	},
+	{
+		// 待聚合扫描的部分索引（BUG-0345 根治）：只索引未标记的行，索引大小与
+		// 实际积压成正比而非与表大小成正比。排序键 (created_at, id) 让「取最旧
+		// 未聚合批」直接走索引顺序，无需排序；MIN(created_at) 也能走索引首端。
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-stats-consumption-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_stats_pending ON usage_records(created_at, id) WHERE usage_stats_aggregated_at IS NULL`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-stats-consumption-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_client_ip_stats_pending ON usage_records(created_at, id) WHERE client_ip_stats_aggregated_at IS NULL`,
+	},
+	{
 		SchemaName: "juhe_usage",
 		Source:     "usage-records",
 		SQL:        `DROP INDEX IF EXISTS idx_usage_records_created_at`,

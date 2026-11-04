@@ -1,6 +1,6 @@
 // w13g2 instance_provision / usage_detail 覆盖缺口补充（只新增测试）：
 //   - 装载 restore arm：软删实例在授权重激活时按源账户字段复位、名字走
-//     uniqueness 梯子、搜索词重写、dispatch revision 前移并写 outbox。
+//     uniqueness 梯子、dispatch revision 前移并写 outbox。
 //   - 名字梯子：baseName 与 baseName-<short> 被同命名空间账户占用时落到
 //     -<short>-2 候选。
 //   - 同步改名级联：name==next 跳过、authorization id 缺失跳过、成功返回
@@ -83,10 +83,6 @@ func TestW13g2ProvisionRestoreArm(t *testing.T) {
 	var outboxCount int
 	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ?`), instanceID).Scan(&outboxCount); err != nil || outboxCount < 1 {
 		t.Fatalf("restore 应写 dispatch outbox: %d %v", outboxCount, err)
-	}
-	var searchDocs int
-	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`), instanceID).Scan(&searchDocs); err != nil || searchDocs != 1 {
-		t.Fatalf("restore 应重写名字搜索文档: %d %v", searchDocs, err)
 	}
 }
 
@@ -220,14 +216,6 @@ func TestW13g2ProvisionGuards(t *testing.T) {
 	}
 	tx.Rollback()
 
-	// replaceInstanceNameSearchTerms canceled（452-456）。
-	tx = w13g2Tx(t, f)
-	if err := f.store.replaceInstanceNameSearchTerms(w13g2CanceledCtx(), tx, "acc_x", "grantee", "n", "now"); err == nil {
-		tx.Rollback()
-		t.Fatalf("canceled replaceTerms 应失败")
-	}
-	tx.Rollback()
-
 	// groupIDForAuthorizationBinding：停用分组 failf（394-396）与默认分组
 	// 缺失 failf（403-405）。
 	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, updated_at)
@@ -274,7 +262,7 @@ func TestW13g2ProvisionSyncNames(t *testing.T) {
 	w13g2SeedProvision(t, f)
 	ctx := context.Background()
 
-	// 源账户改名 → 活实例跟随（update + search terms 重写 + changed 返回）。
+	// 源账户改名 → 活实例跟随（update + changed 返回）。
 	w13g2InsertRuntimeRow(t, f, "rt_p13_s", "account", "acc_p13", "owner", "grantee", StatusActive, "manual", "", nil)
 	tx := w13g2Tx(t, f)
 	id, err := f.store.ensureAccountAuthorizationInstance(ctx, tx, authorizedInstanceProvision{

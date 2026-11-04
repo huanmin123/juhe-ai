@@ -127,15 +127,15 @@ func TestCredentialFingerprintIsStable(t *testing.T) {
 // re-pointing legacy (provider, model) pairs at target model ids.
 func TestModelIndexPrefersUpstreamThenPublic(t *testing.T) {
 	index := &modelIndex{
-		byUpstream: map[string]string{modelKey("gpt", "gpt-5.4"): "m_upstream"},
-		byPublic:   map[string]string{modelKey("gpt", "gpt-5.4"): "m_public"},
+		byUpstream: map[string]modelIndexEntry{modelKey("gpt", "gpt-5.4"): {id: "m_upstream", bindable: true}},
+		byPublic:   map[string]modelIndexEntry{modelKey("gpt", "gpt-5.4"): {id: "m_public", bindable: true}},
 	}
-	if id, ok := index.lookup("gpt", "gpt-5.4"); !ok || id != "m_upstream" {
-		t.Fatalf("lookup = %q,%v want upstream id", id, ok)
+	if entry, ok := index.lookup("gpt", "gpt-5.4"); !ok || entry.id != "m_upstream" {
+		t.Fatalf("lookup = %q,%v want upstream id", entry.id, ok)
 	}
-	index.byPublic[modelKey("gpt", "alias")] = "m_alias"
-	if id, ok := index.lookup("gpt", "alias"); !ok || id != "m_alias" {
-		t.Fatalf("public fallback = %q,%v", id, ok)
+	index.byPublic[modelKey("gpt", "alias")] = modelIndexEntry{id: "m_alias", bindable: true}
+	if entry, ok := index.lookup("gpt", "alias"); !ok || entry.id != "m_alias" {
+		t.Fatalf("public fallback = %q,%v", entry.id, ok)
 	}
 	if _, ok := index.lookup("gemini", "gpt-5.4"); ok {
 		t.Fatal("跨 vendor 不得命中")

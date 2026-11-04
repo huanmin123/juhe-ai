@@ -250,16 +250,29 @@ func CloneSameTierExplorationState(input SameTierExplorationState) *SameTierExpl
 
 // uniqueBoundedKeys mirrors the private Node helper: scan newest-first,
 // dedupe, keep the most recent identities up to the limit.
+//
+// 实现说明（T111，2026-11-03）：旧实现先复制并反转整个 values，再在循环内用
+// `append([]string{x}, result...)` 逐项前插——每次前插都重新分配并拷贝已收集
+// 元素，容量上限 2048 时为 O(n²)，生产 pprof 实测该函数占网关累计分配 15.55%
+// （165GB/11.4h）。现改为直接从尾部倒序扫描、顺序 append，最后整体反转一次：
+// 去重语义仍是「倒序首次出现者胜出」，返回顺序仍是原 values 的相对顺序（保留
+// 最近 limit 个），分配降为 O(n)。
 func uniqueBoundedKeys(values []string, limit int) ([]string, error) {
-	var result []string
-	seen := make(map[string]struct{})
-	reversed := make([]string, len(values))
-	copy(reversed, values)
-	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
-		reversed[left], reversed[right] = reversed[right], reversed[left]
+	// 保留旧行为的 nil 返回：空输入不分配 result；limit<=0 时仍只保留第一个
+	// 命中项（旧实现 append 后判断 len>=limit 即 break 的既有语义）。
+	capacity := len(values)
+	if limit <= 0 {
+		capacity = 0
+	} else if limit < capacity {
+		capacity = limit
 	}
-	for _, value := range reversed {
-		normalized, err := explorationRequiredKey(value, "状态 identity")
+	var result []string
+	if capacity > 0 {
+		result = make([]string, 0, capacity)
+	}
+	seen := make(map[string]struct{}, capacity)
+	for index := len(values) - 1; index >= 0; index-- {
+		normalized, err := explorationRequiredKey(values[index], "状态 identity")
 		if err != nil {
 			return nil, err
 		}
@@ -267,10 +280,13 @@ func uniqueBoundedKeys(values []string, limit int) ([]string, error) {
 			continue
 		}
 		seen[normalized] = struct{}{}
-		result = append([]string{normalized}, result...)
+		result = append(result, normalized)
 		if len(result) >= limit {
 			break
 		}
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
 	}
 	return result, nil
 }

@@ -140,9 +140,9 @@ func TestPatchClearFailureStateKeepsActiveRowActive(t *testing.T) {
 	}
 }
 
-// TestPatchClearFailureStateDefersToClosedSchedule：人工恢复仍受可用时间计划
-// 约束——行内计划当前不生效时恢复落 disabled（对齐 ForceActivatePending），
-// 不产生计划外的 active 行（BUG-0288）。
+// TestPatchClearFailureStateDefersToClosedSchedule：人工恢复不受时间计划约束
+// （时间计划闸门与账户状态解耦设计 §4.2）——恢复为 active，同时把派生闸门
+// 按行内计划重算为 0（时段外）：展示「正常 · 非时间段」，不参与调度。
 func TestPatchClearFailureStateDefersToClosedSchedule(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -160,9 +160,10 @@ func TestPatchClearFailureStateDefersToClosedSchedule(t *testing.T) {
 		t.Fatalf("closed-schedule restore: %d %v", code, patched)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ?
-		AND status = 'disabled'
+		AND status = 'active'
+		AND availability_schedule_gate = 0
 		AND cooldown_until IS NULL`, id) != 1 {
-		t.Fatal("restore must land disabled while the availability schedule is closed")
+		t.Fatal("restore must land active with a closed schedule gate (非时间段)")
 	}
 }
 

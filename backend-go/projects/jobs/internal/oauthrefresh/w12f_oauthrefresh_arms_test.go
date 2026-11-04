@@ -70,7 +70,8 @@ func TestW12fOauthScheduleUpdateBadTxArams(t *testing.T) {
 	closed := w12fClosedStore(t)
 	ctx := context.Background()
 	badTx := w12fClosedTx(t, db)
-	updates := []scheduleSyncUpdate{{id: "w12f-id", nextCheckAt: "2026-09-14T10:00:00.000Z", status: "active"}}
+	gateOpen := 1
+	updates := []scheduleSyncUpdate{{id: "w12f-id", nextCheckAt: "2026-09-14T10:00:00.000Z", gate: &gateOpen}}
 
 	// 空更新 → 直接成功（无事务）。
 	if err := store.applyScheduleUpdates(ctx, store.table("api_keys"), store.table("api_key_schedule_status_events"), "api_key_id", false, nil, isoMillis(time.Now()), nil, nil); err != nil {
@@ -81,17 +82,17 @@ func TestW12fOauthScheduleUpdateBadTxArams(t *testing.T) {
 		t.Fatal("句柄关闭后 applyScheduleUpdates 必须报错")
 	}
 	// 回滚事务上的 nextCheckAt 与事件写入。
-	if err := store.updateScheduleNextCheckAt(ctx, badTx, store.table("api_keys"), "w12f-id", "2026-09-14T10:00:00.000Z"); err == nil {
+	if err := store.updateScheduleNextCheckAt(ctx, badTx, store.table("api_keys"), "w12f-id", "2026-09-14T10:00:00.000Z", `{"enabled":true}`); err == nil {
 		t.Fatal("回滚事务上 updateScheduleNextCheckAt 必须报错")
 	}
-	executed, err := store.insertScheduleStatusEvent(ctx, badTx, store.table("api_key_schedule_status_events"), "api_key_id", scheduleSyncUpdate{id: "w12f-id"}, isoMillis(time.Now()))
+	executed, err := store.insertScheduleStatusEvent(ctx, badTx, store.table("api_key_schedule_status_events"), "api_key_id", scheduleSyncUpdate{id: "w12f-id", gate: &gateOpen}, isoMillis(time.Now()))
 	if err == nil {
 		t.Fatal("回滚事务上 insertScheduleStatusEvent 必须报错")
 	}
 	_ = executed
-	flip, err := store.applyScheduleStatusFlip(ctx, badTx, store.table("api_keys"), false, scheduleSyncUpdate{id: "w12f-id", status: "active"}, isoMillis(time.Now()), &ScheduleStatusSyncResult{})
+	flip, err := store.applyScheduleGate(ctx, badTx, store.table("api_keys"), false, scheduleSyncUpdate{id: "w12f-id", gate: &gateOpen}, isoMillis(time.Now()))
 	if err == nil {
-		t.Fatal("回滚事务上 applyScheduleStatusFlip 必须报错")
+		t.Fatal("回滚事务上 applyScheduleGate 必须报错")
 	}
 	_ = flip
 }

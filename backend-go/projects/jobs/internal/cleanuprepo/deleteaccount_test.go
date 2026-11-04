@@ -70,7 +70,7 @@ func TestOrphanSweepPostgres(t *testing.T) {
 	if !strings.Contains(outboxInsert.query, "'tombstone'") || !strings.Contains(outboxInsert.query, "'account_deleted'") {
 		t.Fatalf("outbox 语句缺少字面 kind/reason：\n%s", outboxInsert.query)
 	}
-	// 实例账户逻辑删除 + tags/搜索清理语句存在。
+	// 实例账户逻辑删除 + tags 清理语句存在。
 	joined := make([]string, 0, len(statements))
 	for _, statement := range statements {
 		joined = append(joined, statement.query)
@@ -79,7 +79,6 @@ func TestOrphanSweepPostgres(t *testing.T) {
 	for _, needle := range []string{
 		"UPDATE juhe_business.accounts",
 		"DELETE FROM juhe_business.account_tag_bindings",
-		"DELETE FROM juhe_business.account_name_search_terms",
 		"UPDATE juhe_business.resource_authorization_grants",
 		"request_quota_hourly_window_scope_bindings",
 	} {

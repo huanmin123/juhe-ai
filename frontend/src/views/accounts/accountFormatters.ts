@@ -17,7 +17,8 @@ import {
   accountBackgroundProbeDisabled,
   accountManualModeStatusColor,
   accountManualModeStatusText,
-  accountStatusTooltipLines as accountStatusPresentationTooltipLines
+  accountStatusTooltipLines as accountStatusPresentationTooltipLines,
+  isAccountScheduleOutOfWindow
 } from './accountStatusPresentation'
 
 export {
@@ -25,7 +26,8 @@ export {
   accountManualModeStatusColor,
   accountManualModeStatusText,
   accountManualModeTag,
-  accountManualModeTooltipText
+  accountManualModeTooltipText,
+  isAccountScheduleOutOfWindow
 } from './accountStatusPresentation'
 
 export {
@@ -98,6 +100,8 @@ export function accountErrorCodeText(code?: string): string {
   if (code === 'cooldown_retest_failed') return '后台复测失败'
   if (code === 'cooldown_retest_long_term_unavailable') return '长期不可用每小时复测'
   if (code === 'cooldown_retest_observation_timeout') return '长期不可用超过 7 天'
+  if (code === 'cooldown_retest_http_failure_timeout') return '上游持续拒绝超过 7 天'
+  // 历史存量（J1 结果改名前的行），仅用于读取旧数据。
   if (code === 'cooldown_retest_neutral_timeout') return '上游持续拒绝超过 7 天'
   if (code === 'account_activation_check_timeout') return '激活检查超过 24 小时'
   if (code === 'account_health_check_failed') return '后台健康检测失败'
@@ -105,6 +109,9 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountListItem) {
+  // 时间计划闸门（时间计划闸门与账户状态解耦设计 §6）：时段外属于正常状态的子集，
+  // 非告警蓝色；与手动模式二态映射正交，不能被压成「正常」绿。
+  if (isAccountScheduleOutOfWindow(account)) return 'blue'
   // 手动模式（总开关设计 §9）：二态健康状态映射，正交状态（授权/到期/额度）保持现有展示，
   // 过程态（熔断/运行态/可用性投影）标签全部抑制。
   if (accountBackgroundProbeDisabled(account)) {
@@ -135,6 +142,9 @@ export function accountStatusColor(account: AccountListItem) {
 }
 
 export function accountStatusText(account: AccountListItem) {
+  // 时间计划闸门（时间计划闸门与账户状态解耦设计 §6）：时段外显示「非时间段」，
+  // 不得显示为「停用」，也不能被手动模式二态映射改写成「正常」。
+  if (isAccountScheduleOutOfWindow(account)) return '非时间段'
   // 手动模式（总开关设计 §9）：二态健康状态映射，正交状态保持现有展示；
   // 待探针确认/调度降级/恢复中等过程态标签隐藏。
   if (accountBackgroundProbeDisabled(account)) {
@@ -192,6 +202,12 @@ export function accountLockTooltipLines(account: AccountListItem): string[] {
 
 export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const lines = accountStatusPresentationTooltipLines(account)
+  if (isAccountScheduleOutOfWindow(account)) {
+    // 时段外是正常状态的子集：说明自动恢复与健康语义，避免被误读成停用或异常。
+    lines.push('当前不在可用时段，到达下一个时间计划边界后自动恢复，不影响账户健康')
+    const boundaryAt = scheduleWindowOpenAt(account)
+    if (boundaryAt) lines.push(`下一个时间计划边界：${formatDateTime(boundaryAt)}`)
+  }
   const circuitStatus = activeCircuitStatus(account)
   if (circuitStatus === 'avoided') {
     lines.push('账户电路正在避让失败作用域，请求不会继续命中该作用域')
@@ -206,12 +222,19 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
   lines.push(...accountLockTooltipLines(account))
   // 特供只表达恢复道加速节奏，不表达调度优先级或健康状态（设计 §4 展示边界）。
   if (account.expeditedRecoveryEnabled) {
-    lines.push('特供恢复：中性封顶基准 1 分钟，实际 30–90 秒')
+    lines.push('特供恢复：持续失败复测基准 15 秒，实际 7.5–22.5 秒')
   }
   if (account.expeditedOverLimit) {
     lines.push('特供账户数量已超过当前上限')
   }
   return lines
+}
+
+/** 时间计划下个边界：状态边界优先，其次 effectiveAvailability.retryAt（设计 §5.4）。 */
+function scheduleWindowOpenAt(account: AccountListItem): string | undefined {
+  const boundary = account.availabilityPresentation?.statusBoundary
+  if (boundary?.kind === 'schedule_window_open') return boundary.at
+  return account.effectiveAvailability?.retryAt
 }
 
 function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountListItem): account is AccountListItem & { effectiveAvailability: NonNullable<AccountListItem['effectiveAvailability']> } {

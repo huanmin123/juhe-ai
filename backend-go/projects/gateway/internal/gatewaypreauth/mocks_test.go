@@ -451,9 +451,13 @@ func (f *fakeAuditSettings) AuditLogEnabled() bool { return f.enabled }
 
 type fakeAPIKeyValidator struct {
 	row *gatewayruntimecache.GatewayAPIKeyRow
+	err error
 }
 
 func (f *fakeAPIKeyValidator) Validate(context.Context, string) (*gatewayruntimecache.GatewayAPIKeyRow, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	return f.row, nil
 }
 

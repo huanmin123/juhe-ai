@@ -1446,6 +1446,18 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			} else {
 				setColumn("availability_schedule_next_check_at", nil)
 			}
+			// 计划变化只重算派生闸门（时间计划闸门与账户状态解耦设计 §4.2）：
+			// 无计划 / 计划未启用写 NULL（闸门恒开），否则按当前时刻落 1/0；
+			// status 不再被计划覆盖。
+			if status, ok := s.deps.ScheduleStatus(nextSchedule, s.store.Now()); ok {
+				if status == "active" {
+					setColumn("availability_schedule_gate", 1)
+				} else {
+					setColumn("availability_schedule_gate", 0)
+				}
+			} else {
+				setColumn("availability_schedule_gate", nil)
+			}
 		}
 	}
 
@@ -1466,7 +1478,8 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		}
 	}
 
-	// Package expiry / schedule driven runtime state.
+	// Package expiry / schedule driven runtime state. 时间计划不再改写 status
+	// （时间计划闸门与账户状态解耦设计 §4.2）：计划变化只在上方写派生闸门列。
 	nextStatus := account.status
 	nextSchedulable := account.schedulable
 	expiredByChangedPackage := expiresAtChanged && accountscore.IsAccountExpired(nextExpiresAt.String, s.store.Now())
@@ -1483,14 +1496,6 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		setColumn("cooldown_retest_generation", nil)
 		setColumn("cooldown_retest_last_at", nil)
 		setColumn("cooldown_retest_last_status_code", nil)
-	} else if scheduleChanged {
-		if override, ok := s.deps.ScheduleStatus(nextSchedule, s.store.Now()); ok &&
-			(account.status == "active" || account.status == "disabled") {
-			nextStatus = override
-		}
-		if nextStatus != account.status && BatchStatusForcesSchedulableOff(nextStatus) {
-			nextSchedulable = false
-		}
 	}
 	if nextStatus != account.status {
 		addChange("status")

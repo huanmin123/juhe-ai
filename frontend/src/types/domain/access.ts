@@ -305,6 +305,11 @@ export interface ApiKeySummary {
   keyPrefix: string
   keySuffix: string
   status: 'active' | 'disabled'
+  /**
+   * 时间计划闸门（时间计划闸门与账户状态解耦设计 §3.1）：null=未配置计划（恒开），
+   * 1=当前在允许时段内，0=当前不在允许时段内（仅暂停调用，不改写 status）。
+   */
+  availabilityScheduleGate?: number | null
   isDefault?: boolean
   purpose: 'general' | 'chat'
   routeStrategyId: string

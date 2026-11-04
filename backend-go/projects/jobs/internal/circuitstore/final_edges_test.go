@@ -382,29 +382,16 @@ func TestOverlayReconcilerAcknowledgePassthrough(t *testing.T) {
 	}
 }
 
-// TestLoadSearchTermsAndScopesEdge 覆盖有搜索词与无授权 scope 的读取路径。
-func TestLoadSearchTermsAndScopesEdge(t *testing.T) {
+// TestListScopesEdge 覆盖无授权 scope 的读取路径。
+func TestListScopesEdge(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	ctx := context.Background()
 	if _, err := db.Exec(`
 		INSERT INTO juhe_business.accounts (id, system_account_id, authorization_instance_authorization_id) VALUES
 			('acc-t', 'viewer-1', NULL), ('acc-auth', 'viewer-1', 'auth-gone');
 		INSERT INTO juhe_business.system_accounts (id) VALUES ('viewer-1');
-		INSERT INTO juhe_business.resource_authorizations (id, status) VALUES ('auth-gone', 'active');
-		INSERT INTO juhe_business.account_name_search_documents (account_id) VALUES ('acc-t');
-		INSERT INTO juhe_business.account_name_search_terms (account_id, term) VALUES ('acc-t', '账'), ('acc-t', '账户');`); err != nil {
+		INSERT INTO juhe_business.resource_authorizations (id, status) VALUES ('auth-gone', 'active');`); err != nil {
 		t.Fatal(err)
-	}
-	terms, err := repo.LoadSearchTerms(ctx, []string{"acc-t"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(terms["acc-t"]) != 2 || terms["acc-t"][0] != "账" || terms["acc-t"][1] != "账户" {
-		t.Fatalf("搜索词按字典序返回: %v", terms)
-	}
-	// 无文档的账户不出键。
-	if _, exists := terms["acc-auth"]; exists {
-		t.Fatalf("无搜索文档不得出键: %v", terms)
 	}
 	scopes, err := repo.ListScopes(ctx, []string{"acc-t", "acc-auth", "acc-missing"})
 	if err != nil {

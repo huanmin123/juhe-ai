@@ -81,6 +81,7 @@ CREATE TABLE juhe_business.accounts (
 	status TEXT NOT NULL DEFAULT 'active',
 	availability_schedule_json TEXT,
 	availability_schedule_next_check_at TEXT,
+	availability_schedule_gate integer,
 	deleted_at TEXT,
 	updated_at TEXT NOT NULL DEFAULT '',
 	config_revision BIGINT NOT NULL DEFAULT 1,

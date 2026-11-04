@@ -2,7 +2,6 @@ package gatewayresponse
 
 import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
@@ -285,20 +284,10 @@ func openAIEndpointFamilyOrUnknown(family gatewayproto.ResponseEndpointFamily) g
 	}
 }
 
-// interceptorFailureEvent 构建拦截后的失败事件（SSE 传输），对齐 G02 缓冲的
-// buildFailureEvent 缺省行为：以 gatewayStreamClientRetryErrorCode 语义补发。
-func interceptorFailureEvent(decision *ResponseInspectionDecision, clientRetryEnabled bool) []byte {
-	errorCode := orDefault(decision.RewriteErrorCode, decision.UpstreamErrorCode)
-	message := orDefault(decision.RewriteMessage, decision.UpstreamErrorMessage)
-	if clientRetryEnabled && decision.RetryEnabled {
-		errorCode = gatewaypreauth.GatewayStreamClientRetryErrorCode
-		message = GatewayStreamClientRetryMessage
-	}
-	if errorCode == "" {
-		errorCode = "response_inspection_matched"
-	}
-	return gatewaypreauth.BuildGatewayStreamFailureEvent(message, errorCode)
-}
+// 响应检查拦截本身只产出 verdict（retry / terminal），不直接写失败事件：
+// pre-commit 的终态失败帧由 finalize 的 writePreCommitStreamFailureToClient
+// 按 StreamPipeResult 统一渲染（T120：原 interceptorFailureEvent 无生产
+// 调用方，已删除）。
 
 // ---------------------------------------------------------------------------
 // ParseError 事件字节隔离（流式提交边界受限重放与异常终局处置设计 §3.2.0）

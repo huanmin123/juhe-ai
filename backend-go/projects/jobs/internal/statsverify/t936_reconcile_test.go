@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS juhe_usage.usage_records (
   group_authorization_source_type text,
   group_authorization_source_team_id text,
   created_at text NOT NULL,
+  usage_stats_aggregated_at text,
+  client_ip_stats_aggregated_at text,
   PRIMARY KEY (created_at, id)
 );
 CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_hourly (
@@ -155,6 +157,16 @@ func t936InsertRecord(t *testing.T, db *sql.DB, id, systemAccountID string, succ
 	}
 }
 
+// t936MarkRecordAggregated 把一条记录标记为已被 usage 统计消费（完工小时的
+// 记录形态；未标记的记录视为仍在待消费积压里）。
+func t936MarkRecordAggregated(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE juhe_usage.usage_records
+		SET usage_stats_aggregated_at = created_at WHERE id = $1`, id); err != nil {
+		t.Fatalf("标记消费水位失败: %v", err)
+	}
+}
+
 func t936InsertHourly(t *testing.T, db *sql.DB, systemAccountID, scopeID, statHour string, request, success, errorCount, inputTokens int64, totalCost, successCost float64) {
 	t.Helper()
 	if _, err := db.Exec(`INSERT INTO juhe_stats.usage_stats_hourly
@@ -173,6 +185,11 @@ func t936SeedBalancedWindow(t *testing.T, db *sql.DB) {
 	t936InsertRecord(t, db, "rec-alice-success", "alice", 1, 10, 0.5, "2026-09-07T09:10:00.000Z")
 	t936InsertRecord(t, db, "rec-alice-error", "alice", 0, 3, 0.25, "2026-09-07T09:20:00.000Z")
 	t936InsertRecord(t, db, "rec-bob-success", "bob", 1, 7, 0.1, "2026-09-07T09:30:00.000Z")
+	// 三条记录代表已聚合完工的小时：消费水位已打标（BUG-0345 后对账边界取
+	// 「最旧未消费记录」，未打标的记录会被当作未聚合积压，整小时不进比较面）。
+	for _, id := range []string{"rec-alice-success", "rec-alice-error", "rec-bob-success"} {
+		t936MarkRecordAggregated(t, db, id)
+	}
 	t936InsertHourly(t, db, "alice", "alice", "2026-09-07T09", 2, 1, 1, 13, 0.75, 0.5)
 	t936InsertHourly(t, db, "bob", "bob", "2026-09-07T09", 1, 1, 0, 7, 0.1, 0.1)
 	t936InsertHourly(t, db, statsagg.GlobalStatsSystemAccountID, statsagg.GlobalStatsScopeID, "2026-09-07T09", 3, 2, 1, 20, 0.85, 0.6)

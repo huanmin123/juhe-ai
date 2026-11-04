@@ -113,11 +113,10 @@ type ProjectionItem struct {
 
 // ProjectionWrite 是完整替换载荷。
 type ProjectionWrite struct {
-	Claim       DirtyClaim
-	Scope       ProjectionScope
-	Item        ProjectionItem
-	SearchTerms []string
-	Now         time.Time
+	Claim DirtyClaim
+	Scope ProjectionScope
+	Item  ProjectionItem
+	Now   time.Time
 }
 
 // ListAvailabilityRepo 是投影持久化 port。
@@ -135,7 +134,6 @@ type ListAvailabilityRepo interface {
 	RefreshViewerHealth(ctx context.Context, viewerSystemAccountID, updatedAt string) error
 	ClaimDirty(ctx context.Context, ownerID string, limit int, leaseMS, nowMS int64) ([]DirtyClaim, error)
 	ListScopes(ctx context.Context, accountIDs []string) ([]ProjectionScope, error)
-	LoadSearchTerms(ctx context.Context, accountIDs []string) (map[string][]string, error)
 	ApplyClaims(ctx context.Context, writes []ProjectionWrite) (map[string]bool, error)
 	ApplyDeletionClaim(ctx context.Context, claim DirtyClaim) (bool, error)
 	ReleaseForReplay(ctx context.Context, input ListAvailabilityReplayInput) (bool, error)
@@ -301,16 +299,15 @@ func parseRFC3339Millis(value string) (int64, bool) {
 }
 
 // BuildProjectionWrite 对齐 accountListAvailabilityProjectionWrite。
-func BuildProjectionWrite(scope ProjectionScope, item ProjectionItem, claim DirtyClaim, now time.Time, searchTerms []string) (ProjectionWrite, error) {
+func BuildProjectionWrite(scope ProjectionScope, item ProjectionItem, claim DirtyClaim, now time.Time) (ProjectionWrite, error) {
 	if item.EffectiveStatus == "" {
 		return ProjectionWrite{}, fmt.Errorf("账户 %s 无法归类为唯一投影状态", item.AccountID)
 	}
 	return ProjectionWrite{
-		Claim:       claim,
-		Scope:       scope,
-		Item:        item,
-		SearchTerms: searchTerms,
-		Now:         now,
+		Claim: claim,
+		Scope: scope,
+		Item:  item,
+		Now:   now,
 	}, nil
 }
 
@@ -640,10 +637,6 @@ func projectClaimsForViewer(
 	for _, claim := range viewerClaims {
 		accountIDs = append(accountIDs, claim.AccountID)
 	}
-	searchTermsByAccount, searchErr := repo.LoadSearchTerms(ctx, accountIDs)
-	if searchErr != nil {
-		return 0, 0, 0, searchErr
-	}
 	items, loadErr := opts.LoadItems(ctx, viewerSystemAccountID, accountIDs)
 	if loadErr != nil {
 		// Node：先释放 claim 为重放，再把原始错误交给上层标记依赖不可用。
@@ -664,7 +657,7 @@ func projectClaimsForViewer(
 			released, releaseErr := releaseClaimsForReplay(ctx, repo, viewerClaims, nowMS)
 			return 0, released, 0, errors.Join(fmt.Errorf("账户列表投影账户 %s 在当前可见范围中缺失", claim.AccountID), releaseErr)
 		}
-		write, writeErr := BuildProjectionWrite(scopeByAccountID[claim.AccountID], item, claim, now, searchTermsByAccount[item.AccountID])
+		write, writeErr := BuildProjectionWrite(scopeByAccountID[claim.AccountID], item, claim, now)
 		if writeErr != nil {
 			released, releaseErr := releaseClaimsForReplay(ctx, repo, viewerClaims, nowMS)
 			return 0, released, 0, errors.Join(writeErr, releaseErr)

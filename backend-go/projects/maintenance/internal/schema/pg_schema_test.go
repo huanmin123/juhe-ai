@@ -120,8 +120,16 @@ import (
 // 进当前 schema，dev 清库/生产备份后 drop 由维护窗口另行授权）。
 // 627→628：AI 账户每分钟请求上限批（设计 §7.1）——juhe_business +1
 // （account-rpm-limit-pg-column 幂等 ALTER；建表 DDL 原位加列不另计语句）。
+// 628→630：时间计划闸门批（时间计划闸门与账户状态解耦设计 §3.1）——juhe_business
+// +2（accounts / api_keys 各一条 availability_schedule_gate 幂等 ALTER；建表
+// DDL 原位加列不另计语句）。
+// 630→634：用量统计消费水位批（BUG-0345 根治）——juhe_usage +4
+// （两个统计聚合器各一列幂等 ALTER + 各一条部分索引）。
+// 634→622：账户名称搜索去索引化批——juhe_business -12（3 张派生词项表
+// 建表语句 + 9 枚相关索引；搜索读取侧改为 accounts.name 直查，pg_trgm
+// 扩展与 idx_accounts_name_c_trgm_lookup 保留）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 628
+const goldenPostgresSchemaStatementCount = 622
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -143,11 +151,17 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 317→320：models 能力声明三列批（T82 根治）+3（三条幂等 ALTER）。
 	// 320→321：后台自动探测总开关批 +1（account-background-probe-pg-column）。
 	// 321→322：AI 账户每分钟请求上限批 +1（account-rpm-limit-pg-column）。
-	"juhe_business": 322,
+	// 322→324：时间计划闸门批 +2（accounts / api_keys 各一条
+	// availability_schedule_gate 幂等 ALTER）。324→312：账户名称搜索
+	// 去索引化批 -12（3 TABLE + 9 INDEX）。
+	"juhe_business": 312,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
-	"juhe_usage":   54,
+	// 53→54：用量记录压缩标记批 +1（compaction_expected 幂等 ALTER）。
+	// 54→58：用量统计消费水位批 +4（两个聚合器各一列幂等 ALTER 与各一条
+	// 部分索引）。
+	"juhe_usage": 58,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
 	// 238→232：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
 	//（-2 TABLE -6 INDEX +2 DROP TABLE）。
@@ -277,9 +291,11 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// CREATE TRIGGER 的语句块。106→92：my-chat 会话面退役批（演练场设计 §8）
 	// 移除 juhe_chat 组 14 条 ALTER TABLE ADD COLUMN（chat_conversations 绑定
 	// 列 8 + 语义列 2、chat_user_tool_preferences 4）。92→93：AI 账户每分钟
-	// 请求上限批 +1（account-rpm-limit-pg-column）。
-	if alterColumns != 93 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 93", alterColumns)
+	// 请求上限批 +1（account-rpm-limit-pg-column）。93→96：时间计划闸门批 +2
+	// （accounts / api_keys 各一条 availability_schedule_gate；当批未同步本计数，
+	// 由本批一并回正）+ 用量统计消费水位批 +1（两列中第一列；另一列计入下一条）。
+	if alterColumns != 97 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 97", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。

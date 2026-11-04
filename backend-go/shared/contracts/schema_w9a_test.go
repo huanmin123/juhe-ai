@@ -74,7 +74,7 @@ func TestW9ABusinessSchemaContract(t *testing.T) {
 // TestW9ABusinessSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
-	if BusinessSchemaVersion != "business-postgres-gateway-v21" {
+	if BusinessSchemaVersion != "business-postgres-gateway-v22" {
 		t.Fatalf("schema version drifted: %q", BusinessSchemaVersion)
 	}
 	for _, table := range []string{

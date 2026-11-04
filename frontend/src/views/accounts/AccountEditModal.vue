@@ -985,7 +985,7 @@ const lockRuntimeStateText = computed(() => {
 // 特供恢复只读摘要：来自高级详情投影，不进入任何保存 payload；只表达恢复道加速节奏。
 const expeditedRecoveryNote = computed(() => {
   if (props.accountAdvancedDetail?.expeditedRecoveryEnabled !== true) return undefined
-  return '特供恢复：中性封顶基准 1 分钟，实际 30–90 秒'
+  return '特供恢复：持续失败复测基准 15 秒，实际 7.5–22.5 秒'
 })
 
 // ---- 后台自动探测总开关（总开关设计 §4/§7 手动模式）----
@@ -1158,7 +1158,8 @@ const balanceCardCount = computed(() => [
 
 const scheduleCardSummary = computed(() =>
   props.form.availabilitySchedule.enabled
-    ? `已启用 ${props.form.availabilitySchedule.windows.length} 个时段`
+    // 时间计划闸门（时间计划闸门与账户状态解耦设计 §6）：时段外只是暂停调度，不改写账户状态。
+    ? `已启用 ${props.form.availabilitySchedule.windows.length} 个时段 · 时段外仅暂停调度`
     : '未启用')
 const scheduleCardCount = computed(() => (props.form.availabilitySchedule.enabled ? 1 : 0))
 

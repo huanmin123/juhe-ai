@@ -8,8 +8,14 @@ package exactkeyprobe
 import "time"
 
 const (
-	OutcomeSuccess        = "complete_success"
-	OutcomeNeutral        = "framing_complete_neutral"
+	OutcomeSuccess = "complete_success"
+	// OutcomeHTTPFailure 表示真实上游 HTTP 交换已完成但未取得协议成功证据
+	// （非 2xx、2xx-invalid-body、协议错误对象等）。对恢复决策它就是一次失败，
+	// 不再称"中性"；与 transport 失败走同一快速复测道，但不触发只对
+	// transport 证据生效的 10 分钟有界终态。
+	OutcomeHTTPFailure = "upstream_http_failure"
+	// OutcomeUpstreamFailed 仅限 transport incomplete（超时 / 连接 / 读取中断 /
+	// framing 未完成），此时 StatusCode == 0。
 	OutcomeUpstreamFailed = "upstream_failure"
 	OutcomeTaskFailed     = "probe_task_failure"
 )
@@ -74,8 +80,10 @@ type Eligibility struct {
 	// ExpeditedRecovery 是按账户显式标记的恢复道加速档（"特供"，账户属性而非
 	// 状态，与 TemporaryUnavailableContinuousProbeEnabled 同类的事实布尔）。
 	// jobs 冷却复测据此收紧节奏：失败慢速道基准 15s、跳过 1 小时长期降频道、
-	// 绕开有界 10 分钟 error 终态（7 天观察超时保留）；中性顺延封顶按账户走
-	// Schedule.CooldownNeutralMaxMS 覆盖（特供 60s），不在此字段承载。
+	// 绕开有界 10 分钟 error 终态（7 天观察超时保留）；真实上游非成功结果
+	// （HTTP 失败与 transport 失败）都走失败快速道，不读取
+	// Schedule.CooldownNeutralMaxMS（该字段现在只约束本地任务故障
+	// probe_task_failure 的顺延上限，特供账户由 reader 覆盖为 60s）。
 	ExpeditedRecovery bool `json:"expedited_recovery,omitempty"`
 }
 
@@ -83,10 +91,13 @@ type Eligibility struct {
 // new input version, which makes pending work visibly stale instead of
 // applying a new policy halfway through an old account configuration.
 type Schedule struct {
-	HealthIntervalMS         int64 `json:"health_interval_ms"`
-	HealthJitterMS           int64 `json:"health_jitter_ms"`
-	FailureThreshold         int   `json:"failure_threshold"`
-	FailureRetryMS           int64 `json:"failure_retry_ms"`
+	HealthIntervalMS int64 `json:"health_interval_ms"`
+	HealthJitterMS   int64 `json:"health_jitter_ms"`
+	FailureThreshold int   `json:"failure_threshold"`
+	FailureRetryMS   int64 `json:"failure_retry_ms"`
+	// CooldownNeutralBaseMS / CooldownNeutralMaxMS 自 2026-11-03 冷却复测二元化
+	// 后只约束本地任务故障（probe_task_failure）的顺延基数与上限，不再影响
+	// 真实上游非成功结果（HTTP 失败与 transport 失败同走失败快速道）。
 	CooldownNeutralBaseMS    int64 `json:"cooldown_neutral_base_ms"`
 	CooldownNeutralMaxMS     int64 `json:"cooldown_neutral_max_ms"`
 	CooldownFailureBackoffMS int64 `json:"cooldown_failure_backoff_ms"`

@@ -412,10 +412,10 @@ func TestBuildCostBreakdownOpenAIStandardTokens(t *testing.T) {
 
 func TestBuildCostBreakdownOpenAICacheSplit(t *testing.T) {
 	// gpt-5.6-sol promo prices: input 4, cache_write 5, cache_read 0.4.
-	// OpenAI counts cache-read tokens inside the input total; the 1h column
-	// is absent so the 1h line falls back to the standard write rate. Token
-	// counts stay below the 272000 long-context threshold so standard rates
-	// bill.
+	// OpenAI counts cache-read AND cache-write tokens inside the input total
+	// (BUG-0347)，所以普通 input 行项要同时扣除两者；the 1h column is absent
+	// so the 1h line falls back to the standard write rate. Token counts stay
+	// below the 272000 long-context threshold so standard rates bill.
 	got := billingBreakdown(t, "openai", "gpt-5.6-sol", CostInput{
 		ProviderCode:       "openai",
 		Model:              "gpt-5.6-sol",
@@ -424,17 +424,21 @@ func TestBuildCostBreakdownOpenAICacheSplit(t *testing.T) {
 		CacheWriteTokens:   f64p(60_000),
 		CacheWrite1hTokens: f64p(20_000),
 	})
-	wantFloat(t, "inputCostUsd", got.InputCostUsd, 0.6) // (250k - 100k) * 4/1M
+	wantFloat(t, "inputCostUsd", got.InputCostUsd, 0.36) // (250k - 100k - 60k) * 4/1M
 	wantFloat(t, "cacheReadCostUsd", got.CacheReadCostUsd, 0.04)
 	wantFloat(t, "cacheWriteCostUsd", got.CacheWriteCostUsd, 0.2)     // 40k * 5/1M
 	wantFloat(t, "cacheWrite1hCostUsd", got.CacheWrite1hCostUsd, 0.1) // 20k * 5/1M
 	wantFloat(t, "cacheWrite1hUsdPer1M", got.CacheWrite1hUsdPer1M, 5)
-	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 0.94)
+	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 0.7)
 	if len(got.LineItems) != 4 {
 		t.Fatalf("line items = %d, want input/cache_read/cache_write/cache_write_1h", len(got.LineItems))
 	}
 	for _, line := range got.LineItems {
 		switch line.Key {
+		case "input":
+			if line.Quantity != 90_000 {
+				t.Fatalf("input line = %+v, want 90k uncached", line)
+			}
 		case "cache_read":
 			if line.Label != "缓存读 Token" || line.UnitPriceUsd != 0.4 || line.Quantity != 100_000 {
 				t.Fatalf("cache_read line = %+v", line)

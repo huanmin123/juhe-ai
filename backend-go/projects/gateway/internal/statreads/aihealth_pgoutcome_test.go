@@ -207,6 +207,7 @@ func TestJ1OutcomeHealthStatusExcludesNonQualityOutcomes(t *testing.T) {
 		{"account_dependency", "failure"},
 		{"unexpected_outcome", "failure"},
 		{"stale", ""},
+		{"upstream_http_failure", ""},
 		{"framing_complete_neutral", ""},
 		{"opaque_upstream", ""},
 		{"gateway_capacity", ""},
@@ -220,11 +221,11 @@ func TestJ1OutcomeHealthStatusExcludesNonQualityOutcomes(t *testing.T) {
 	}
 }
 
-// TestJ1NeutralOutcomesStayOutOfHealthRate proves the merge and aggregation
-// layers agree with the mapping: neutral outcomes produce no hourly row, never
+// TestJ1NonQualityOutcomesStayOutOfHealthRate proves the merge and aggregation
+// layers agree with the mapping: non-quality outcomes produce no hourly row, never
 // become the latest/displayed status, and leave the hour unknown instead of
 // counting it as a failure hour.
-func TestJ1NeutralOutcomesStayOutOfHealthRate(t *testing.T) {
+func TestJ1NonQualityOutcomesStayOutOfHealthRate(t *testing.T) {
 	location := time.UTC
 	hourBuckets := []string{
 		"2026-09-04T00", "2026-09-04T01", "2026-09-04T02", "2026-09-04T03",
@@ -233,7 +234,7 @@ func TestJ1NeutralOutcomesStayOutOfHealthRate(t *testing.T) {
 	outcomes := []j1Outcome{
 		{AccountID: "acct-a", Outcome: "complete_success", ObservedAt: "2026-09-04T00:30:00.000Z"},
 		{AccountID: "acct-a", Outcome: "upstream_failure", ObservedAt: "2026-09-04T01:30:00.000Z"},
-		{AccountID: "acct-a", Outcome: "framing_complete_neutral", ObservedAt: "2026-09-04T02:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "upstream_http_failure", ObservedAt: "2026-09-04T02:30:00.000Z"},
 		{AccountID: "acct-a", Outcome: "opaque_upstream", ObservedAt: "2026-09-04T03:30:00.000Z"},
 		{AccountID: "acct-a", Outcome: "gateway_capacity", ObservedAt: "2026-09-04T04:30:00.000Z"},
 		{AccountID: "acct-a", Outcome: "gateway_policy", ObservedAt: "2026-09-04T05:30:00.000Z"},
@@ -251,7 +252,7 @@ func TestJ1NeutralOutcomesStayOutOfHealthRate(t *testing.T) {
 	}
 	item := result.Items[0]
 	if item.SuccessHours != 1 || item.FailureHours != 1 {
-		t.Fatalf("neutral/stale 不得计入成功或失败小时: %+v", item)
+		t.Fatalf("非质量/stale 不得计入成功或失败小时: %+v", item)
 	}
 	if item.UnknownHours != 6 {
 		t.Fatalf("非质量终态所在小时应为 unknown: %+v", item)
@@ -264,10 +265,10 @@ func TestJ1NeutralOutcomesStayOutOfHealthRate(t *testing.T) {
 	}
 	latest := latestJ1OutcomeForAccount(outcomes, "acct-a")
 	if latest == nil || latest.Outcome != "upstream_failure" {
-		t.Fatalf("neutral/stale 不得成为账户最新质量终态: %#v", latest)
+		t.Fatalf("非质量/stale 不得成为账户最新质量终态: %#v", latest)
 	}
 	if got := newestJ1OutcomeHourRow(outcomes, "2026-09-04T06", location); got != nil {
-		t.Fatalf("小时详情不得把 neutral 终态当作健康结论: %#v", got)
+		t.Fatalf("小时详情不得把非质量终态当作健康结论: %#v", got)
 	}
 	if got := newestJ1OutcomeHourRow(outcomes, "2026-09-04T01", location); got == nil || got.Outcome != "upstream_failure" {
 		t.Fatalf("小时详情应保留真实失败结论: %#v", got)

@@ -489,6 +489,87 @@ func TestPatchWiresSupportedModelsCatalogAssertion(t *testing.T) {
 
 // ---- 支持模型目录校验挂接（normalizeAccountSupportedModelsForProvider 家族） ----
 
+// ---- 支持模型「可绑定即计价可见」断言（BUG-0344 根治） ----
+//
+// 绑定写侧此前只校验 models 行身份（vendor + upstream_model + owner 可见 +
+// active），不校验价格；回迁 CLI 补建的无价 personal 行因此可绑定、可调度，
+// 而计价目录以 priced 过滤把同一行剔除 → 目录 miss → 成功流量 cost_usd 恒
+// NULL（生产 4,878 条成功行、应计约 22.20 USD）。本组用例钉住新判据：
+// 目标行必须可被计价引擎直接消费（直价列 / 静态媒体层 / 档位价）。
+
+func TestCreateRejectsUnpricedSupportedModel(t *testing.T) {
+	env := newTestEnv(t)
+	owner := "owner-unpriced-supported"
+	env.seedProviderAndDefaultGroup(t, owner)
+	store := env.store
+	scope := AccessScope{ViewerID: owner, IsAdmin: true}
+	// 无价 personal 行（与回迁 CLI 补建形态一致：status=active、价格列全空、
+	// service_tier_prices_json 为空 JSON）。
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, created_at, updated_at)
+		VALUES ('mdl-unpriced-personal', 'gpt', 'unpriced-model', 'unpriced-model', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
+
+	_, err := store.Create(context.Background(), catalogWiringCreateInput("unpriced-supported",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"unpriced-model"}, nil), scope)
+	assertValidationError(t, err, "账户支持模型未配置价格，不能绑定（计价会得到空成本）：unpriced-model")
+
+	// 只配了档位价的同一行 → 可绑定（档位价可被请求选中，计价目录 priced
+	// 过滤同样放行）。
+	env.exec(t, `UPDATE models SET service_tier_prices_json =
+		'{"priority":{"inputUsdPer1M":1,"outputUsdPer1M":2}}' WHERE id = 'mdl-unpriced-personal'`)
+	if _, err := store.Create(context.Background(), catalogWiringCreateInput("tier-priced-supported",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"unpriced-model"}, nil), scope); err != nil {
+		t.Fatalf("only tier-priced model must stay bindable: %v", err)
+	}
+}
+
+func TestCreateRejectsUnpricedMappingTarget(t *testing.T) {
+	env := newTestEnv(t)
+	owner := "owner-unpriced-mapping"
+	env.seedProviderAndDefaultGroup(t, owner)
+	store := env.store
+	scope := AccessScope{ViewerID: owner, IsAdmin: true}
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, created_at, updated_at)
+		VALUES ('mdl-unpriced-target', 'gpt', 'unpriced-target', 'unpriced-target', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
+
+	_, err := store.Create(context.Background(), catalogWiringCreateInput("unpriced-mapping",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
+		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "unpriced-target", "chat_completions")}), scope)
+	assertValidationError(t, err, "账号模型别名目标模型未配置价格，不能绑定（计价会得到空成本）：unpriced-target")
+}
+
+// generic_http 账户（account vendor 为 NULL）在 2026-11-03 存量处置后需要绑定
+// 「已归属真实厂商」的 personal 行（空 vendor 行已清零）：写侧必须放行，并断言
+// 计价厂商唯一，避免再次出现「能绑定但运行期解析不出厂商」。
+func TestGenericHTTPAccountBindsVendorBoundModel(t *testing.T) {
+	env := newTestEnv(t)
+	owner := "owner-generic-vendor"
+	env.seedProviderAndDefaultGroup(t, owner)
+	store := env.store
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl-generic-vendor', 'deepseek', 'relay-ds', 'relay-ds', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', 5, 30, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
+
+	if err := store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
+		[]string{"relay-ds"}, "generic_http", owner); err != nil {
+		t.Fatalf("generic_http 账户应能绑定已归属厂商的有价模型: %v", err)
+	}
+
+	// 未归属厂商（vendor_code=NULL）的行无法装载任何厂商目录 → 拒绝。
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl-generic-null-vendor', NULL, 'relay-null', 'relay-null', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', 5, 30, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
+	assertValidationError(t, store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
+		[]string{"relay-null"}, "generic_http", owner),
+		"目标模型 \"relay-null\" 未归属任何厂商，无法计价，不能绑定")
+}
+
+// TestCreateWiresSupportedModelsCatalogAssertion 的原用例见下方（目录外拒绝臂）。
 func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	// 本测试后半段需要直写 providers/groups 种子（generic 语义供应商臂），
 	// 直接持有 env 而不是 newCatalogWiringStore 包装。

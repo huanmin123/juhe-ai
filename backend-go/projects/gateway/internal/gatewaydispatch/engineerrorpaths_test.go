@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
@@ -393,7 +394,7 @@ func TestHandleUpstreamAttemptErrorLockBlocksCrossAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if kind != errorKindHandled || stop.kind != errorStopSkipAccount {
+	if kind != errorKindHandled || stop.kind != errorStopAccountLocked {
 		t.Fatalf("kind=%v stop=%#v", kind, stop)
 	}
 }
@@ -832,7 +833,7 @@ func TestDispatchReturnResponseActionSelectsFailedResponse(t *testing.T) {
 }
 
 func TestDispatchLockBlocksAfterFailedResponse(t *testing.T) {
-	engine, driver, _ := newTestEngine(t)
+	engine, driver, dispatcher := newTestEngine(t)
 	engine.Locks = &blockingLocks{}
 	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -843,13 +844,21 @@ func TestDispatchLockBlocksAfterFailedResponse(t *testing.T) {
 		"a-1": {failServer.URL + "/v1/chat/completions"},
 	}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	startedAt := time.Now()
 	_, err := engine.FetchFirstAvailableUpstream(context.Background(), fastDispatchArgs(t, req, testAccounts("a-1")))
-	var attemptErr *UpstreamAttemptError
-	if !errorsAs(err, &attemptErr) {
-		t.Fatalf("expected UpstreamAttemptError, got %v", err)
+	// 锁死门必须在同账号有界重试耗尽后立即停下，而不是跑满 60s 墙钟。
+	if elapsed := time.Since(startedAt); elapsed > 5*time.Second {
+		t.Fatalf("锁死门耗时 = %s，期望快速返回 handoff", elapsed)
 	}
-	if attemptErr.LastAttempt == nil || attemptErr.LastAttempt.Status != http.StatusBadGateway {
-		t.Fatalf("lastAttempt = %#v", attemptErr.LastAttempt)
+	var lockHold *AccountLockHoldError
+	if !errorsAs(err, &lockHold) {
+		t.Fatalf("expected AccountLockHoldError, got %v", err)
+	}
+	if lockHold.AccountID != "a-1" {
+		t.Fatalf("accountId = %q", lockHold.AccountID)
+	}
+	if dispatcher.handleFailedCalls.Load() == 0 {
+		t.Fatal("失败响应必须经过失败派发器")
 	}
 }
 

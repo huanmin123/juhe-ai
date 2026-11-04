@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -262,8 +263,10 @@ func seedFixtureModels(t *testing.T, db *sql.DB) {
 			{"-gemini", "gemini"}, {"-glm", "glm"}, {"-minimax", "minimax"}, {"-volcengine", "volcengine"},
 			{"-qwen", "qwen"}, {"-generic", ""},
 		} {
-			statement := `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', false, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+			// 夹具模型一律带 input/output 直价：绑定断言要求「可绑定即计价可见」
+			//（BUG-0344），无价行另由专门的拒绝臂构造。
+			statement := `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', false, 1, 2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
 			ON CONFLICT DO NOTHING`
 			statement = fixtureBind(statement)
 			if _, err := db.Exec(statement,
@@ -464,7 +467,7 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatalf("credential_mask: %v", got)
 	}
 
-	// Satellites: group binding, supported models, tags, name search.
+	// Satellites: group binding, supported models, tags.
 	if env.count(t, `SELECT COUNT(*) FROM group_accounts WHERE account_id = ? AND enabled = 1`, id) != 1 {
 		t.Fatal("group binding missing")
 	}
@@ -473,12 +476,6 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_tag_bindings WHERE account_id = ?`, id) != 2 {
 		t.Fatal("tag bindings missing")
-	}
-	if env.count(t, `SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`, id) != 1 {
-		t.Fatal("name search document missing")
-	}
-	if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ? AND term = 'alp'`, id) != 1 {
-		t.Fatal("name search terms missing")
 	}
 
 	// Detail: owner fields present, credentials surface unmasked for editing.
@@ -604,12 +601,12 @@ func TestAccountListPagingAndFilters(t *testing.T) {
 		t.Fatalf("unstable page order: %s vs %s", firstSequence, secondSequence)
 	}
 
-	// Keyword prefix match.
+	// Keyword contains match (prefix is a subset).
 	code, keyword := env.do(t, http.MethodGet, "/__aisys__/api/accounts?keyword=bra", "")
 	if items := dataMap(t, keyword)["items"].([]any); code != 200 || len(items) != 1 || items[0].(map[string]any)["name"] != "bravo" {
 		t.Fatalf("keyword filter: %d %v", code, keyword)
 	}
-	// Contains via the search terms index.
+	// Mid-string contains match over accounts.name.
 	code, contains := env.do(t, http.MethodGet, "/__aisys__/api/accounts?keyword=arli", "")
 	if items := dataMap(t, contains)["items"].([]any); code != 200 || len(items) != 1 {
 		t.Fatalf("contains filter: %d %v", code, contains)
@@ -1102,9 +1099,6 @@ func TestAccountDeleteSoftCleanup(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM account_tag_bindings WHERE account_id = ?`, id) != 0 {
 		t.Fatal("tag bindings must be cleaned")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ?`, id) != 0 {
-		t.Fatal("name search terms must be cleaned")
-	}
 	// Reads 404 with the Node copy; list drops the row.
 	code, gone := env.do(t, http.MethodGet, "/__aisys__/api/accounts/"+id, "")
 	if code != http.StatusNotFound || gone["message"] != "账户不存在" {
@@ -1275,7 +1269,7 @@ func TestAccountPermissionMatrix(t *testing.T) {
 	}
 }
 
-func TestCryptoMaskAndNameSearchUnits(t *testing.T) {
+func TestCryptoMaskAndLikeContainsPatternUnits(t *testing.T) {
 	// MaskSecret mirrors maskSecret.
 	if got := MaskSecret("sk-live-secret-1234567890"); got != "sk-liv***7890" {
 		t.Fatalf("long mask: %v", got)
@@ -1296,13 +1290,12 @@ func TestCryptoMaskAndNameSearchUnits(t *testing.T) {
 		t.Fatalf("account id shape: %v", id)
 	}
 
-	// Name search grams mirror the 1..3-gram contract.
-	terms := buildAccountNameSearchTerms("alpha")
-	if len(terms) != 11 || !containsTerm(terms, "alp") || !containsTerm(terms, "lph") || containsTerm(terms, "alpha") {
-		t.Fatalf("name search terms: %v", terms)
+	// 名称包含匹配的 LIKE 字面模式：`\`、`%`、`_` 转义后包成 %...%。
+	if got := accountNameLikeContainsPattern(`50%_off\`); got != `%50\%\_off\\%` {
+		t.Fatalf("like contains pattern: %q", got)
 	}
-	if got := normalizeAccountNameSearchText("  ＡＬＰＨＡ "); got != "ALPHA" {
-		t.Fatalf("nfkc normalize: %q", got)
+	if got := accountNameLikeContainsPattern("k40 林夕"); got != "%k40 林夕%" {
+		t.Fatalf("like contains pattern cn: %q", got)
 	}
 
 	// Encryption round trip + tamper rejection (Node envelope layout).
@@ -1323,13 +1316,113 @@ func TestCryptoMaskAndNameSearchUnits(t *testing.T) {
 	}
 }
 
-func containsTerm(terms []string, target string) bool {
-	for _, term := range terms {
-		if term == target {
-			return true
+// TestAccountListKeywordContainsSemantics 锁定名称搜索去索引化后的直读语义：
+// 中文子串、ASCII 大小写不敏感、`%`/`_`/`\` 字面匹配，以及列表/options 两
+// 个读面的作用域隔离（其他 system_account 的同名/同子串账户不返回）。
+func TestAccountListKeywordContainsSemantics(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedAccount(t, "acc-kw-cn", adminID, "k40 林夕", "active")
+	env.seedAccount(t, "acc-kw-ascii", adminID, "AlphaBeta", "active")
+	env.seedAccount(t, "acc-kw-special", adminID, "rate 50%_off", "active")
+	env.seedAccount(t, "acc-kw-backslash", adminID, `back\slash`, "active")
+	env.seedAccount(t, "acc-kw-plain", adminID, "plain", "active")
+
+	listNames := func(target string) []string {
+		t.Helper()
+		code, payload := env.do(t, http.MethodGet, target, "")
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %v", target, code, payload)
 		}
+		names := []string{}
+		for _, item := range dataMap(t, payload)["items"].([]any) {
+			names = append(names, item.(map[string]any)["name"].(string))
+		}
+		return names
 	}
-	return false
+
+	// 中文子串命中（不再依赖 1..3-gram 词项表）。
+	if names := listNames("/__aisys__/api/accounts?keyword=" + url.QueryEscape("林")); len(names) != 1 || names[0] != "k40 林夕" {
+		t.Fatalf("中文子串匹配: %v", names)
+	}
+	// ASCII 大小写不敏感。
+	if names := listNames("/__aisys__/api/accounts?keyword=alphabet"); len(names) != 1 || names[0] != "AlphaBeta" {
+		t.Fatalf("ASCII 大小写不敏感: %v", names)
+	}
+	// `%` 与 `_` 按字面处理，不是通配符。
+	if names := listNames("/__aisys__/api/accounts?keyword=" + url.QueryEscape("%")); len(names) != 1 || names[0] != "rate 50%_off" {
+		t.Fatalf("百分号字面匹配: %v", names)
+	}
+	if names := listNames("/__aisys__/api/accounts?keyword=" + url.QueryEscape("_")); len(names) != 1 || names[0] != "rate 50%_off" {
+		t.Fatalf("下划线字面匹配: %v", names)
+	}
+	if names := listNames("/__aisys__/api/accounts?keyword=" + url.QueryEscape("50%_")); len(names) != 1 || names[0] != "rate 50%_off" {
+		t.Fatalf("特殊字符组合字面匹配: %v", names)
+	}
+	// 反斜杠按字面处理（`\\` 转义），不报错、不误命中其他账户。
+	if names := listNames("/__aisys__/api/accounts?keyword=" + url.QueryEscape(`\`)); len(names) != 1 || names[0] != `back\slash` {
+		t.Fatalf("反斜杠字面匹配: %v", names)
+	}
+	if names := listNames("/__aisys__/api/accounts?keyword=" + url.QueryEscape(`back\s`)); len(names) != 1 || names[0] != `back\slash` {
+		t.Fatalf("反斜杠组合字面匹配: %v", names)
+	}
+	if names := listNames("/__aisys__/api/accounts?keyword=zzz"); len(names) != 0 {
+		t.Fatalf("无命中应空集: %v", names)
+	}
+
+	// options 复用同一包含语义（不再只做前缀）。
+	code, options := env.do(t, http.MethodGet, "/__aisys__/api/accounts/options?keyword="+url.QueryEscape("林"), "")
+	if items := dataArray(t, options); code != http.StatusOK || len(items) != 1 || items[0].(map[string]any)["name"] != "k40 林夕" {
+		t.Fatalf("options 包含匹配: %d %v", code, options)
+	}
+
+	// 作用域隔离：其他 system_account 的同名账户不返回（root 只看自己的
+	// 账户；alice 只看自己的）。
+	aliceID := env.login(t, "alice", "alice-pass", "user")
+	env.seedAccount(t, "acc-kw-alice", aliceID, "k40 林夕", "active")
+	listIDs := func(target string) []string {
+		t.Helper()
+		code, payload := env.do(t, http.MethodGet, target, "")
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %v", target, code, payload)
+		}
+		ids := []string{}
+		for _, item := range dataMap(t, payload)["items"].([]any) {
+			ids = append(ids, item.(map[string]any)["id"].(string))
+		}
+		return ids
+	}
+	optionIDs := func(target string) []string {
+		t.Helper()
+		code, payload := env.do(t, http.MethodGet, target, "")
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %v", target, code, payload)
+		}
+		ids := []string{}
+		for _, item := range dataArray(t, payload) {
+			ids = append(ids, item.(map[string]any)["id"].(string))
+		}
+		return ids
+	}
+	env.login(t, "root", "root-pass", "super_admin")
+	if ids := listIDs("/__aisys__/api/my-accounts?keyword=" + url.QueryEscape("林夕")); len(ids) != 1 || ids[0] != "acc-kw-cn" {
+		t.Fatalf("root 的自助列表不应看到 alice 账户: %v", ids)
+	}
+	// options 读面：管理面显式 systemAccountId 作用域与自助 options 面都只
+	// 返回作用域内账户（管理员不带过滤是全局视图，属既有语义）。
+	if ids := optionIDs("/__aisys__/api/accounts/options?keyword=" + url.QueryEscape("林夕") + "&systemAccountId=" + adminID); len(ids) != 1 || ids[0] != "acc-kw-cn" {
+		t.Fatalf("options 管理面作用域隔离: %v", ids)
+	}
+	if ids := optionIDs("/__aisys__/api/my-accounts/options?keyword=" + url.QueryEscape("林夕")); len(ids) != 1 || ids[0] != "acc-kw-cn" {
+		t.Fatalf("root options 自助面不应看到 alice 账户: %v", ids)
+	}
+	env.login(t, "alice", "alice-pass", "user")
+	if ids := listIDs("/__aisys__/api/my-accounts?keyword=" + url.QueryEscape("林夕")); len(ids) != 1 || ids[0] != "acc-kw-alice" {
+		t.Fatalf("alice 应只看到自己的账户: %v", ids)
+	}
+	if ids := optionIDs("/__aisys__/api/my-accounts/options?keyword=" + url.QueryEscape("林夕")); len(ids) != 1 || ids[0] != "acc-kw-alice" {
+		t.Fatalf("alice options 应只看到自己的账户: %v", ids)
+	}
 }
 
 func TestAccountCloneContext(t *testing.T) {

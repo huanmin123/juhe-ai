@@ -22,6 +22,7 @@
 - [AI 工具创建规范](AI工具创建规范.md)：模型决策、参数契约、执行器校验和外部副作用的稳定边界，含工具创建与评审清单（自 architecture/backend 迁入，与后端语言无关）。
 - [统一会话身份与审计串联设计](统一会话身份与审计串联设计.md)：只从厂商官方客户端的会话 Header 识别会话，按客户端隔离亲和，并统一写入审计 `session_id`。
 - [内容指纹会话身份设计](内容指纹会话身份设计.md)：无官方会话 Header 客户端以上下文锚点（前导 system / 首 user / 首 assistant / 第二 user）派生确定性降级身份——审计临时档首请求可用、三层亲和确认档第二请求起可用（增长判别器挡批量重放）、来源阶梯新增 `content_fingerprint` 档使来源级避让与 L2 负面缓存升级会话级作用域（消除共享出口 IP 连带）；IP 熔断与 IP 级账号回避维持 IP 维度。已实施：锚点扫描器与指纹函数在 `backend-go/projects/gateway/internal/gatewaybody`（contentfingerprint.go），谱系判别器在 `internal/gatewaysession`，消费接缝为 `cmd/juhe-ai-gateway/chain_ports.go` 的 `sessionIdentityAdapter` 与 `internal/gatewaycodex/sourceidentity.go` 阶梯；fullchain 验收在 `acceptance/fullchain_contentfingerprint_session_test.go`（JUHE_AI_E2E_FULLCHAIN 门控）。
+- [时间计划闸门与账户状态解耦设计](时间计划闸门与账户状态解耦设计.md)：时间计划不再写 `accounts.status` / `api_keys.status`，改为独立派生列 `availability_schedule_gate`（NULL=无计划 / 1=时段内 / 0=时段外）；时段外表现为「正常 · 非时间段」并暂停调度，人工停用持久不被计划边界复活，时段外 Key 返回可区分的 401 文案；含存量迁移判定口径与 schema revision 15 升级契约。已实施（2026-11-03，gateway + jobs + 前端同批；待发布与真机验收，见 #T112）。
 - [用户请求限制设计](用户请求限制设计.md)：定义全局与用户级每分钟 / 日 / 周 / 月请求限制、进程内零 I/O 快速判断、Redis 后台延迟协调、快速失败和个人信息展示。
 - [AI 账户每分钟请求上限设计](AI账户每分钟请求上限设计.md)：账户级 `rpm_limit`（每分钟向上游派发次数，0=不限制）与硬并发上限正交叠加——同一 `TryAcquire` 原子临界区判定、自然分钟固定窗口、候选切换与全池有界等待后 429、列表双行展示、schema revision 14 升级契约。设计稿 2026-11-03，待实施。
 - [用户个人信息页面设计](用户个人信息页面设计.md)：头像菜单统一进入个人信息页面，集中展示账号、角色、状态、生图权限和时间，并维护用户名称与登录密码。
@@ -169,7 +170,7 @@
 - [账户内 API Key 会话亲和设计](账户内APIKey会话亲和设计.md)：会话复用上次协议成功的账户内 Key；轮询/权重/主备只在 sticky 失配后决策；绑定追加 HMAC 指纹并复用账户维度存储。已实施（2026-10-17）。
 - [账号健康检测设计](账号健康检测设计.md)
 - [AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)
-- [AI 账户特供快速恢复通道设计](AI账户特供快速恢复通道设计.md)：按账户显式标记"特供"的恢复道加速档——只加速 jobs 冷却复测节奏（中性顺延封顶基准 60s、失败慢速道基准 15s、跳过长期降频、视同持续探针绕开有界 10 分钟 error）与恢复扫描在冷却类内部的排序，不降低 `complete_success` 复活证据标准、不改变 `/v1` 调度；含执行前 `config_revision` 新鲜度门（含竞态线性化点与失败关闭）、shared 输入契约、双方言 schema 升级、克隆/导入不携带标记与名额精确口径（默认 3、可调上限 100）。已实施（2026-10-10，实现与设计契约一致，契约现行为 v3.2）。
+- [AI 账户特供快速恢复通道设计](AI账户特供快速恢复通道设计.md)：按账户显式标记"特供"的恢复道加速档——只加速 jobs 冷却复测节奏（失败慢速道基准 15s、跳过长期降频、视同持续探针绕开有界 10 分钟 error；普通账户冷却复测自 v3.5 起为成功 / 非成功二元，HTTP 失败不再走 15 分钟封顶慢道，特供的任务故障顺延上限覆盖不再是主要差异；v3.6 起 J1 结果 `framing_complete_neutral` 更名 `upstream_http_failure`）与恢复扫描在冷却类内部的排序，不降低 `complete_success` 复活证据标准、不改变 `/v1` 调度；与超级优先、锁死可同时开启（超级优先只决定排序、锁死只在切号决策否决），含执行前 `config_revision` 新鲜度门（含竞态线性化点与失败关闭）、shared 输入契约、PostgreSQL schema 升级、克隆/导入不携带标记与名额精确口径（默认 3、可调上限 100）。已实施（2026-10-10，实现与设计契约一致，契约现行为 v3.6）。
 - [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md)
 - [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)
 - [客户端网关入口路径设计](客户端网关入口路径设计.md)

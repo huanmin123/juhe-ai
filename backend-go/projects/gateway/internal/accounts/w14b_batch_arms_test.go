@@ -364,8 +364,13 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	}, scope); err != nil {
 		t.Fatalf("过期时间计划应成功：%v", err)
 	}
-	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE status = 'disabled'`); got != 2 {
-		t.Fatalf("过期计划应强制停用：%d", got)
+	// 时间计划闸门与账户状态解耦（设计 §4.2）：计划只写派生闸门，status 保持
+	// active（展示「正常 · 非时间段」，不并入停用）。
+	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE status = 'active' AND availability_schedule_gate = 0`); got != 2 {
+		t.Fatalf("过期计划应只关闭闸门（active + gate=0）：%d", got)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE status = 'disabled'`); got != 0 {
+		t.Fatalf("过期计划不得改写 status：%d", got)
 	}
 }
 

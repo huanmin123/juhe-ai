@@ -43,7 +43,7 @@
       </a-form-item>
       <a-row :gutter="12">
         <a-col :span="12">
-          <a-form-item label="运行状态" tooltip="API Key 只有一个运行状态；配置时间计划后，保存和计划边界都会直接更新该状态。">
+          <a-form-item label="运行状态" tooltip="API Key 只有一个运行状态；时间计划只切换可用时段（非时间段），不改写运行状态；人工停用不会被计划自动恢复。">
             <a-select v-model:value="form.status" :options="statusOptions" />
           </a-form-item>
         </a-col>

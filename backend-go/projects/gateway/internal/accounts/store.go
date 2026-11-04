@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
@@ -224,103 +222,10 @@ func canonicalRFC3339(value string) (string, bool) {
 	return isoMillis(parsed), true
 }
 
-// normalizeAccountNameSearchText mirrors normalizeAccountNameSearchText:
-// NFKC + trim.
-func normalizeAccountNameSearchText(value any) string {
-	text, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(norm.NFKC.String(text))
-}
-
-// accountNameSearchQueryTerms mirrors accountNameSearchQueryTerms: the 3-gram
-// set of the normalized keyword.
-func accountNameSearchQueryTerms(keyword any) []string {
-	normalized := normalizeAccountNameSearchText(keyword)
-	runes := []rune(normalized)
-	if normalized == "" || len(runes) > maxAccountNameLength {
-		return nil
-	}
-	length := minInt(3, len(runes))
-	if len(runes) < length {
-		return nil
-	}
-	seen := map[string]bool{}
-	terms := []string{}
-	for index := 0; index+length <= len(runes); index++ {
-		term := string(runes[index : index+length])
-		if strings.TrimSpace(term) != "" && !seen[term] {
-			seen[term] = true
-			terms = append(terms, term)
-		}
-	}
-	return terms
-}
-
-// buildAccountNameSearchTerms mirrors buildAccountNameSearchTerms: the 1..3
-// gram set written into account_name_search_terms.
-func buildAccountNameSearchTerms(name string) []string {
-	normalized := normalizeAccountNameSearchText(name)
-	if normalized == "" {
-		return nil
-	}
-	runes := []rune(normalized)
-	seen := map[string]bool{}
-	terms := []string{}
-	for length := 1; length <= 3; length++ {
-		for index := 0; index+length <= len(runes); index++ {
-			term := string(runes[index : index+length])
-			if strings.TrimSpace(term) != "" && !seen[term] {
-				seen[term] = true
-				terms = append(terms, term)
-			}
-		}
-	}
-	return terms
-}
-
-// replaceAccountNameSearchTerms mirrors replaceAccountNameSearchTerms.
-func (s *Store) replaceAccountNameSearchTerms(ctx context.Context, q queryer, accountID, systemAccountID, name, createdAt string) error {
-	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_name_search_terms")+` WHERE account_id = ?`), accountID); err != nil {
-		return err
-	}
-	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_name_search_documents")+` WHERE account_id = ?`), accountID); err != nil {
-		return err
-	}
-	normalizedName := normalizeAccountNameSearchText(name)
-	if normalizedName == "" {
-		return nil
-	}
-	if _, err := q.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_name_search_documents")+`
-		(account_id, system_account_id, normalized_name, updated_at) VALUES (?, ?, ?, ?)`),
-		accountID, systemAccountID, normalizedName, createdAt); err != nil {
-		return err
-	}
-	for _, term := range buildAccountNameSearchTerms(name) {
-		if _, err := q.ExecContext(ctx, s.bind(s.insertIgnore(`INSERT INTO `+s.table("account_name_search_terms")+`
-			(account_id, system_account_id, term, created_at) VALUES (?, ?, ?, ?)`,
-			` ON CONFLICT (account_id, term) DO NOTHING`)),
-			accountID, systemAccountID, term, createdAt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // insertIgnore appends the explicit ON CONFLICT clause to an INSERT
 // statement.
 func (s *Store) insertIgnore(statement, conflictClause string) string {
 	return statement + conflictClause
-}
-
-// deleteAccountNameSearchTermsForAccounts mirrors
-// deleteAccountNameSearchTermsForAccounts.
-func (s *Store) deleteAccountNameSearchTermsForAccounts(ctx context.Context, q queryer, accountIDs []string) {
-	for _, id := range accountIDs {
-		_, _ = q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_name_search_terms")+` WHERE account_id = ?`), id)
-		_, _ = q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_name_search_documents")+` WHERE account_id = ?`), id)
-	}
 }
 
 // ownerEffectiveStatusSQL mirrors the owner branch of
@@ -338,6 +243,9 @@ func ownerEffectiveStatusSQL(alias, nowLiteral string) string {
 		THEN 'disabled'
 		WHEN ` + alias + `.status <> 'active' THEN ` + alias + `.status
 		WHEN ` + alias + `.cooldown_until IS NOT NULL AND ` + alias + `.cooldown_until > ` + nowLiteral + ` THEN 'temporary_unavailable'
+		-- 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.4）：active + 时段外
+		-- 是正常状态的子集，独立子状态，不并入 disabled（排序在 schedulable 之前）。
+		WHEN ` + alias + `.availability_schedule_gate = 0 THEN 'schedule_out_of_window'
 		WHEN ` + alias + `.schedulable <> 1 THEN 'disabled'
 		ELSE ` + alias + `.status
 	END`
@@ -349,9 +257,11 @@ func sqlQuoteISO(iso string) string {
 }
 
 // statusRankSQL mirrors the accountManagementListOrderClause status CASE.
+// schedule_out_of_window 是正常状态的子集（设计 §5.4），与 active 同档排序。
 func statusRankSQL(effective string) string {
 	return `CASE ` + effective + `
 		WHEN 'active' THEN 1
+		WHEN 'schedule_out_of_window' THEN 1
 		WHEN 'temporary_unavailable' THEN 2
 		WHEN 'rate_limited' THEN 3
 		WHEN 'pending_test' THEN 4
@@ -421,17 +331,6 @@ func minInt(a, b int) int {
 
 func maxInt(a, b int) int {
 	return accountscore.MaxInt(a, b)
-}
-
-func textPrefixUpperBound(value string) string {
-	runes := []rune(value)
-	for index := len(runes) - 1; index >= 0; index-- {
-		if runes[index] < 0x10ffff {
-			runes[index]++
-			return string(runes[:index+1])
-		}
-	}
-	return value + "\uffff"
 }
 
 // nullPtrString renders NULL/empty SQL text as an omitted JSON field.

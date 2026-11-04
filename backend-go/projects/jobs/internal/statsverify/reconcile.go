@@ -148,8 +148,19 @@ func (s *Store) ReconcileUsageStatsHourly(ctx context.Context, options UsageStat
 		result.SkipReason = "统计聚合游标尚未建立（stats_job_state 无 usage_stats_aggregation 行），无法确定已聚合边界"
 		return result, nil
 	}
-	// 时钟偏斜防御：游标晚于本机 now 时按 now 收口，绝不比较未聚合区间。
+	// 已聚合边界取「最旧未消费记录」的时刻：晚到记录被消费水位列兜住后，游标
+	// 可能已经越过它（BUG-0345），拿游标当边界会把只聚合了一部分的小时计入
+	// 比较面，制造假差异。无待消费记录时退回游标（它天然滞后于 now，保留
+	// 「不比较当前小时」的保守口径）。
 	reference := cursor
+	if oldestPending, pending, err := statsagg.OldestPendingUsageRecordCreatedAt(ctx, s.db, statsagg.UsageRecordConsumptionUsageStats); err != nil {
+		return result, err
+	} else if pending {
+		if parsed, parsedOK := statsagg.ParseRFC3339Instant(oldestPending); parsedOK {
+			reference = parsed.UTC()
+		}
+	}
+	// 时钟偏斜防御：边界晚于本机 now 时按 now 收口，绝不比较未聚合区间。
 	if now.Before(reference) {
 		reference = now
 	}

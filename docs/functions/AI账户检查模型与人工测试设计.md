@@ -181,9 +181,9 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。账户目录同步不属于检查形态，不参与自动测试或健康结果；其 `requestUrl` 只说明该次同步的受控目录路径。
 
-后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件，图片响应必须满足图片协议成功证据。空正文、仅 `[DONE]`、HTML、畸形 JSON 或只有未完成数据片段都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`。人工测试只显示诊断，激活、周期健康、请求失败二次确认和质量确认则把它作为通用可用性失败。上游目录是否存在不参与该判断。媒体域三种模式（`video_create` / `images_json` / `audio_speech`）的人工测试自 2026-11-01 起是唯一例外：按 §17 的连通性状态码分类表判读，不要求协议完成证据。
+后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件，图片响应必须满足图片协议成功证据。空正文、仅 `[DONE]`、HTML、畸形 JSON 或只有未完成数据片段都不能激活 `pending_test` 账户；framing 完整时归为 `upstream_http_failure`。人工测试只显示诊断，激活、周期健康、请求失败二次确认和质量确认则把它作为通用可用性失败。上游目录是否存在不参与该判断。媒体域三种模式（`video_create` / `images_json` / `audio_speech`）的人工测试自 2026-11-01 起是唯一例外：按 §17 的连通性状态码分类表判读，不要求协议完成证据。
 
-	普通文本生成检查还必须为每次实际请求生成独立的随机算术挑战：报文为「接口连通性自动测试：请计算 A+B，只回复数字」，A、B 各取 10～89，期望答案是两数之和的十进制文本。2026-10-15 起停用历史的「请原样输出固定令牌」形态——上游内容审核会把这类报文整段判为 HTTP 403，把正常账户打成临时不可调用；算术题要求模型真实作答，实测不被拦截。可见输出包含该答案即匹配（答案两侧不得是数字，避免命中更长数字的片段）；reasoning、thinking 和工具内容不属于可见输出。图片与音频继续按各自的协议成功证据判断，不校验文本答案。严格中性结果保留 HTTP framing 诊断，但不得清理运行态、事前确认或账户电路升级证据。
+	普通文本生成检查还必须为每次实际请求生成独立的随机算术挑战：报文为「接口连通性自动测试：请计算 A+B，只回复数字」，A、B 各取 10～89，期望答案是两数之和的十进制文本。2026-10-15 起停用历史的「请原样输出固定令牌」形态——上游内容审核会把这类报文整段判为 HTTP 403，把正常账户打成临时不可调用；算术题要求模型真实作答，实测不被拦截。可见输出包含该答案即匹配（答案两侧不得是数字，避免命中更长数字的片段）；reasoning、thinking 和工具内容不属于可见输出。图片与音频继续按各自的协议成功证据判断，不校验文本答案。严格 HTTP 失败结果保留 HTTP framing 诊断，但不得清理运行态、事前确认或账户电路升级证据。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 
@@ -193,7 +193,7 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 | 场景 | 模型来源 | 允许的状态副作用 |
 | --- | --- | --- |
-| 新账户激活检查 | 账户检查模型 | `complete_success` 后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；完整 framing 协议失败和 `transport_incomplete` 都是可用性失败，从首次起满 24 小时后仍独立失败才原子转为 `error` |
+| 新账户激活检查 | 账户检查模型 | `complete_success` 后 `pending_test` 转为 `active`，并同时按账户时间计划写入派生闸门 `availability_schedule_gate`（时段外为 0，表现为「非时间段」，不改写 `status`）；完整 framing 协议失败和 `transport_incomplete` 都是可用性失败，从首次起满 24 小时后仍独立失败才原子转为 `error` |
 | 关键配置变更复检 | 账户检查模型 | 按配置变更类型进入待检查或正常健康阈值流程 |
 | 正常账户周期健康检查 | 账户检查模型 | 写健康事实；达到阈值且确认账户级故障后进入保护状态 |
 | 运行态恢复探针 | 账户检查模型 | 只推进对应运行态状态机 |
@@ -223,7 +223,7 @@ runApiKeyRecoveryProbe()
 - 未提交状态的新建账户和所有导入账户默认保存为 `pending_test` 且不可调度；导入载荷中的 `active` 也先规范化为 `pending_test`。
 - 普通创建接口显式提交 `status = active` 是受支持的人工风险确认例外：账户直接保存为 `active`、`schedulable = true`，并跳过首次后台激活检查。该例外不把人工草稿测试当作激活凭证，也不改变默认创建、导入或后续状态转换的待检查路径。
 - 待检查的创建或导入账户在保存事务完成后立即投递后台激活检查，不等待人工测试任务，也不接受人工测试任务 ID 作为激活凭证。
-- 后台激活检查得到 `complete_success` 后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。完整 framing 但协议未成功和 `transport_incomplete` 都保持 `pending_test`、写失败事实并每 1 小时复检；从首次可用性失败起满 24 小时后的再次独立失败才原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
+- 后台激活检查得到 `complete_success` 后写入 `active`，并按账户当前时间计划写入派生闸门 `availability_schedule_gate`（无计划 NULL / 时段内 1 / 时段外 0）；健康成功不能绕过时间计划——时段外账户仍不可调度，但状态保持正常。完整 framing 但协议未成功和 `transport_incomplete` 都保持 `pending_test`、写失败事实并每 1 小时复检；从首次可用性失败起满 24 小时后的再次独立失败才原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
 - 检查失败的 `pending_test` 提供“重新检查”：同一事务把失败计数、首次失败时间、错误摘要和检查计划重置到新账户待检查基线，随后立即投递后台激活检查。尚无失败事实的普通待检查账户不提供该操作。
 - 用户可以在保存前人工测试草稿，但该结果只用于判断是否愿意保存，不参与账户激活。
 - 明确创建为 `disabled` 的账户尊重人工停用，不投递激活检查。
@@ -242,14 +242,14 @@ runApiKeyRecoveryProbe()
 ## 11. 多 API Key 账户
 
 - 人工测试可以返回每个 Key 的诊断明细，但不能写 Key 运行态。
-- 新账户后台激活检查按系统探针策略检查 Key 池，至少一个 Key 得到 `complete_success` 时账户可以激活；只有带独立 `transport_incomplete` 证据且通过来源 CAS 的 Key 才可进入对应自动 transport 运行态，完整 HTTP / 协议失败保持中性。
+- 新账户后台激活检查按系统探针策略检查 Key 池，至少一个 Key 得到 `complete_success` 时账户可以激活；只有带独立 `transport_incomplete` 证据且通过来源 CAS 的 Key 才可进入对应自动 transport 运行态，完整 HTTP / 协议失败（`upstream_http_failure`）不构成 transport 证据，不进入该运行态。
 - 已保存账户新增或替换 Key 后，由后台 Key 检查初始化或更新 Key 运行态，不复用人工测试结果。
 - 账号级周期健康检查只使用当前可用 Key 集合；Key 级冷却恢复固定命中目标 Key。
 - 所有 Key 不可用时，账户通过 Key 池派生可用性退出调度，不需要由人工测试改变账户状态。
 
 ## 12. 失败分类
 
-系统探针统一返回 `complete_success`、`framing_complete_neutral`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。传输电路、账号冷却和 Key 恢复只把第三类视为负向证据；固定模型、固定协议的激活、周期健康、请求失败二次确认和质量确认还把第二类视为账户可用性失败。任务、本地配置或过期结果不计数、不改状态。
+J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。传输电路、账号冷却和 Key 恢复只把第三类视为负向证据；固定模型、固定协议的激活、周期健康、请求失败二次确认和质量确认还把第二类视为账户可用性失败。任务、本地配置或过期结果不计数、不改状态。历史存量 `framing_complete_neutral` 在 J1 读取侧归一为 `upstream_http_failure`；质量预检与网关运行态探针仍使用各自独立契约的 `framing_complete_neutral`。
 
 自动 transport 失败候选：
 
@@ -265,7 +265,7 @@ runApiKeyRecoveryProbe()
 - 本地请求形态与已声明协议能力不匹配，或最小检查请求模板无法构造。
 - 本地凭据缺失、解密失败或必要配置非法。
 
-这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `framing_complete_neutral`，只形成通用可用性失败，不派生具体业务语义。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
+这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `upstream_http_failure`，只形成通用可用性失败，不派生具体业务语义。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
 
 ## 13. 状态边界
 

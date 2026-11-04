@@ -152,12 +152,13 @@ func TestW2ExportHelpers(t *testing.T) {
 		}
 	})
 	t.Run("exportAccountStatus", func(t *testing.T) {
-		// active 需同时 schedulable；pending_test 透传；其余 disabled。
+		// 时间计划闸门与账户状态解耦（设计 §5.4）：导出以 status 为准，
+		// schedulable/闸门不参与——时段外账户（active + gate=0）仍导出 active。
 		if got := exportAccountStatus(&exportAccountRow{Status: "active", Schedulable: true}); got != "active" {
 			t.Fatalf("active 判定不一致：%s", got)
 		}
-		if got := exportAccountStatus(&exportAccountRow{Status: "active", Schedulable: false}); got != "disabled" {
-			t.Fatalf("不可调度导出为 disabled：%s", got)
+		if got := exportAccountStatus(&exportAccountRow{Status: "active", Schedulable: false}); got != "active" {
+			t.Fatalf("active 账户必须导出 active（计划/调度不参与导出状态）：%s", got)
 		}
 		if got := exportAccountStatus(&exportAccountRow{Status: "pending_test"}); got != "pending_test" {
 			t.Fatalf("pending_test 透传不一致：%s", got)

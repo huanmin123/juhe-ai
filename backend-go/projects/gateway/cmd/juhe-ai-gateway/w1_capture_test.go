@@ -145,8 +145,9 @@ func TestW1V1LoopSpeedFirstLatencyScope(t *testing.T) {
 
 // w1LatencyFake 同时满足 LatencyDegradationPort 与 chainSpeedFirstDecisions。
 type w1LatencyFake struct {
-	degraded map[string]bool
-	err      error
+	degraded           map[string]bool
+	err                error
+	firstByteSlowCalls int
 }
 
 func (f *w1LatencyFake) OrderAsync(context.Context, []gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, *gatewaydispatch.ModelPriority) (gatewaydispatch.LatencyDegradationOrder, error) {
@@ -161,6 +162,7 @@ func (f *w1LatencyFake) IsAccountLatencyDegradedAsync(_ context.Context, account
 }
 
 func (f *w1LatencyFake) RecordFirstByteSlowAsync(context.Context, gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	f.firstByteSlowCalls++
 	return nil, nil
 }
 

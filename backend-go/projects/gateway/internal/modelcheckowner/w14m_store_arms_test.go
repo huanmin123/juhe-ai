@@ -112,7 +112,7 @@ func TestW14MTrustProjectionWriteArms(t *testing.T) {
 // w14mOptionsDDL 与 account_options_test 的表结构一致（含 protocol_version）。
 var w14mOptionsDDL = []string{
 	// 目标 schema（设计 §2.1/§9）：账户探针身份 = (vendor_code, 健康检查连接)。
-	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,availability_schedule_json TEXT,proxy_profile_id TEXT,health_check_connection_id TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
+	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,availability_schedule_json TEXT,availability_schedule_gate INTEGER,proxy_profile_id TEXT,health_check_connection_id TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
 	`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
 	`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 	// w14mOptionsAccountsDDL 的 group_accounts 需含 system_account_id。

@@ -36,10 +36,10 @@
             </div>
           </template>
           <span>
-            <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+            <StatusTag v-bind="apiKeyStatusTag(record)" />
           </span>
         </a-tooltip>
-        <StatusTag v-else :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+        <StatusTag v-else v-bind="apiKeyStatusTag(record)" />
       </template>
       <template v-else-if="column.key === 'availabilitySchedule'">
         <a-tag class="schedule-tag" :color="apiKeyScheduleTagColor(record)">
@@ -111,10 +111,10 @@
                 </div>
               </template>
               <span>
-                <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+                <StatusTag v-bind="apiKeyStatusTag(record)" />
               </span>
             </a-tooltip>
-            <StatusTag v-else :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+            <StatusTag v-else v-bind="apiKeyStatusTag(record)" />
             <a-tag :color="apiKeyRouteStrategyTagColor(record)">{{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</a-tag>
           </div>
         </div>
@@ -183,8 +183,7 @@ import {
   apiKeyScheduleSummary,
   apiKeyScheduleTagColor,
   apiKeySchedulingPreferenceText,
-  apiKeyStatusTagColor,
-  apiKeyStatusTagLabel,
+  apiKeyStatusTag,
   apiKeyStatusTooltipLines,
   apiKeySystemAccountText,
   formatKeyPreview,

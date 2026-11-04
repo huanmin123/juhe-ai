@@ -8,7 +8,6 @@ package gatewayresponse
 // 断言只依赖既有协议包行为，不构造网络。
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -542,26 +541,6 @@ func TestWdInterceptorObservationsAndFailureEvent(t *testing.T) {
 		t.Fatalf("取走后应为 nil: %#v", again)
 	}
 	interceptor.MarkDownstreamWrite()
-
-	// interceptorFailureEvent：rewrite 优先于 upstream；client retry 改写。
-	event := interceptorFailureEvent(&ResponseInspectionDecision{
-		RewriteErrorCode: "wd_code", RewriteMessage: "改写",
-		UpstreamErrorCode: "upstream_code", UpstreamErrorMessage: "上游",
-	}, false)
-	encoded := string(event)
-	if !bytes.Contains(event, []byte("wd_code")) || !bytes.Contains(event, []byte("改写")) {
-		t.Fatalf("失败事件应携带 rewrite 字段: %s", encoded)
-	}
-	retryEvent := interceptorFailureEvent(&ResponseInspectionDecision{
-		UpstreamErrorCode: "upstream_code", RetryEnabled: true,
-	}, true)
-	if !bytes.Contains(retryEvent, []byte(gatewaypreauth.GatewayStreamClientRetryErrorCode)) {
-		t.Fatalf("client retry 应改写错误码: %s", retryEvent)
-	}
-	fallbackEvent := interceptorFailureEvent(&ResponseInspectionDecision{}, false)
-	if !bytes.Contains(fallbackEvent, []byte("response_inspection_matched")) {
-		t.Fatalf("缺省错误码错误: %s", fallbackEvent)
-	}
 }
 
 func TestWdFirstJSONPathMatch(t *testing.T) {

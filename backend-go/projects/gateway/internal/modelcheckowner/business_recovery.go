@@ -86,15 +86,14 @@ func (a *BusinessRecoveryApplier) Complete(ctx context.Context, input RecoveryPa
 		}
 		return tx.Commit()
 	}
-	allowed, err := availabilityAllowedGateway(schedule, now)
+	// 时间计划闸门（《时间计划闸门与账户状态解耦设计》§4.3）：恢复只表达健康
+	// 事实，status 恒为 active；计划只写派生闸门（NULL=无计划 / 1=时段内 /
+	// 0=时段外），next_check 置 NULL 让下一轮同步写回精确边界。
+	gate, err := availabilityGateForRecovery(schedule, now)
 	if err != nil {
 		return fmt.Errorf("evaluate J3b account availability: %w", err)
 	}
-	after := "disabled"
-	if allowed {
-		after = "active"
-	}
-	result, err := tx.ExecContext(ctx, q(`UPDATE `+a.table("accounts")+` SET status=?,schedulable=?,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND status='quality_isolated' AND config_revision=?`), after, boolIntGateway(after == "active"), now.Format(time.RFC3339Nano), input.AccountID, systemID, accountRevision)
+	result, err := tx.ExecContext(ctx, q(`UPDATE `+a.table("accounts")+` SET status='active',schedulable=1,availability_schedule_gate=?,availability_schedule_next_check_at=NULL,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND status='quality_isolated' AND config_revision=?`), gate, now.Format(time.RFC3339Nano), input.AccountID, systemID, accountRevision)
 	if err != nil {
 		return err
 	}
@@ -212,15 +211,12 @@ func (a *BusinessRecoveryApplier) RestoreSchedulePenalties(ctx context.Context, 
 				outcome.Skipped++
 				continue
 			}
-			allowed, err := availabilityAllowedGateway(availability, now)
+			// 同 Complete：恢复 status 恒 active，计划只写派生闸门。
+			gate, err := availabilityGateForRecovery(availability, now)
 			if err != nil {
 				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("evaluate J3b schedule restore availability: %w", err)
 			}
-			after := "disabled"
-			if allowed {
-				after = "active"
-			}
-			res, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("accounts")+` SET status=?,schedulable=?,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND status='quality_isolated' AND config_revision=?`), after, boolIntGateway(after == "active"), now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID, currentRevision)
+			res, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("accounts")+` SET status='active',schedulable=1,availability_schedule_gate=?,availability_schedule_next_check_at=NULL,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND status='quality_isolated' AND config_revision=?`), gate, now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID, currentRevision)
 			if err != nil {
 				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("restore J3b schedule isolate account: %w", err)
 			}
@@ -375,6 +371,24 @@ func (e *gatewayException) UnmarshalJSON(data []byte) error {
 type gatewayExceptionWindow struct {
 	Start string `json:"start"`
 	End   string `json:"end"`
+}
+
+// availabilityGateForRecovery 计算恢复写面要落的闸门值
+// （《时间计划闸门与账户状态解耦设计》§3.1/§4.3）：无计划文档 → NULL（恒开）；
+// 当前在允许时段内 → 1；时段外 → 0。计划 JSON 非法仍按既有语义上抛错误，
+// 由调用方回滚整笔恢复。
+func availabilityGateForRecovery(raw string, now time.Time) (sql.NullInt64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return sql.NullInt64{}, nil
+	}
+	allowed, err := availabilityAllowedGateway(raw, now)
+	if err != nil {
+		return sql.NullInt64{}, err
+	}
+	if allowed {
+		return sql.NullInt64{Int64: 1, Valid: true}, nil
+	}
+	return sql.NullInt64{Int64: 0, Valid: true}, nil
 }
 
 func availabilityAllowedGateway(raw string, now time.Time) (bool, error) {

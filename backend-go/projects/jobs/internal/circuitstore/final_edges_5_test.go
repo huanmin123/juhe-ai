@@ -88,13 +88,6 @@ func TestRepoErrorSurfacesOnMissingTables(t *testing.T) {
 			},
 		},
 		{
-			name: "搜索文档表缺失LoadSearchTerms", drop: "account_name_search_documents",
-			action: func(repo *ListAvailabilityRepo, ctx context.Context) error {
-				_, err := repo.LoadSearchTerms(ctx, []string{"acc-1"})
-				return err
-			},
-		},
-		{
 			name: "dirty表缺失ClaimDirty", drop: "account_list_availability_dirty",
 			action: func(repo *ListAvailabilityRepo, ctx context.Context) error {
 				_, err := repo.ClaimDirty(ctx, "owner", 10, 1000, 1000)

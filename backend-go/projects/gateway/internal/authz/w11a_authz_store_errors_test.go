@@ -528,10 +528,7 @@ func TestW11AInstanceLadderArms(t *testing.T) {
 		f := newFixture(t)
 		// Drop before opening the transaction: the fixture pool is a single
 		// connection, so a mid-test DDL would deadlock the tx.
-		// Both drops precede the transaction: the fixture pool allows a
-		// single connection, so a mid-tx DDL would deadlock.
 		f.exec(t, `DROP TABLE accounts`)
-		f.exec(t, `DROP TABLE account_name_search_terms`)
 		tx, err := f.db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -540,10 +537,6 @@ func TestW11AInstanceLadderArms(t *testing.T) {
 		if err := f.store.advanceInstanceDispatchRevision(ctx, tx, "w11a-acct", time.Now().UnixMilli()); err == nil {
 			t.Fatal("dispatch revision failure must surface")
 		}
-		if err := f.store.replaceInstanceNameSearchTerms(ctx, tx, "w11a-acct", "g", "name", "now"); err == nil {
-			t.Fatal("search term failure must surface")
-		}
-
 	})
 
 	t.Run("sync_names_for_source", func(t *testing.T) {

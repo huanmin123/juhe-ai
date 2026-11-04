@@ -51,6 +51,9 @@ func TestPresentationMappingVocabulary(t *testing.T) {
 		{"instance_cooldown", "temporarily_unavailable", "restore_account"},
 		{"instance_quality_isolated", "error", "retry_check"},
 		{"instance_disabled", "disabled", "enable_account"},
+		// 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.4）：非时间段无人工
+		// 动作，到下一个计划边界自动恢复。
+		{"schedule_out_of_window", "out_of_window", "none"},
 		{"instance_unschedulable", "disabled", "enable_account"},
 		{"instance_expired", "expired", "renew_authorization"},
 		{"api_key_pool_unavailable", "key_pool_unavailable", "retry_check"},

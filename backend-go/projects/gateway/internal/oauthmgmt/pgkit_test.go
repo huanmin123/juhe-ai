@@ -134,6 +134,7 @@ const oauthMgmtPGFixtureSchema = `
       schedulable integer NOT NULL DEFAULT 1,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
+      availability_schedule_gate integer,
       notes text,
       account_expires_at text,
       last_used_at text,
@@ -298,19 +299,6 @@ const oauthMgmtPGFixtureSchema = `
       system_account_id text NOT NULL,
       created_at text NOT NULL,
       PRIMARY KEY (account_id, tag_id)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.account_name_search_terms (
-      account_id text NOT NULL,
-      system_account_id text NOT NULL,
-      term text NOT NULL,
-      created_at text NOT NULL,
-      PRIMARY KEY (account_id, term)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.account_name_search_documents (
-      account_id text PRIMARY KEY,
-      system_account_id text NOT NULL,
-      normalized_name text NOT NULL,
-      updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_lock_states (
       account_id text PRIMARY KEY,

@@ -135,7 +135,7 @@ func TestPostgresCurrentStateCASRegression(t *testing.T) {
 
 	cooldownAccount := unique + "-cooldown"
 	oldFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: unique + "-generation-old"}
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: unique + "-cooldown-baseline", RequestID: unique + "-cooldown-baseline-request", AccountID: cooldownAccount, Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17, AccountStatus: "temporary_unavailable", CooldownFence: oldFence})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: unique + "-cooldown-baseline", RequestID: unique + "-cooldown-baseline-request", AccountID: cooldownAccount, Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17, AccountStatus: "temporary_unavailable", CooldownFence: oldFence})
 	mismatch := cooldownCASOutcome(unique+"-generation-mismatch", unique+"-generation-mismatch-request", cooldownAccount, observed.Add(time.Second), &exactkeyprobe.CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: unique + "-generation-new"})
 	appendStoreOutcome(t, store, lease, mismatch)
 	state, found, err = store.LoadCurrentState(ctx, cooldownAccount)
@@ -163,7 +163,7 @@ func cooldownCASOutcome(outcomeID, requestID, accountID string, observed time.Ti
 		OutcomeID:        outcomeID,
 		RequestID:        requestID,
 		AccountID:        accountID,
-		Outcome:          exactkeyprobe.OutcomeNeutral,
+		Outcome:          exactkeyprobe.OutcomeHTTPFailure,
 		ObservedAt:       observed,
 		InputVersion:     7,
 		ConfigRevision:   11,

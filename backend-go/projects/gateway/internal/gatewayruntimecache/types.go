@@ -193,8 +193,13 @@ type GatewayAPIKeyRow struct {
 	RouteStrategyConfigJSON *string `json:"route_strategy_config_json"`
 	SelectedGroupID         string  `json:"selected_group_id"`
 	Status                  string  `json:"status"`
-	ExpiresAt               *string `json:"expires_at"`
-	QuotaLimitsJSON         *string `json:"quota_limits_json"`
+	// AvailabilityScheduleGate 是 api_keys.availability_schedule_gate 派生列
+	// （《时间计划闸门与账户状态解耦设计》§5.2）：NULL = 无计划（恒开）/ 1 =
+	// 时段内 / 0 = 时段外。status=active 且 gate=0 表示「当前不在可用时段」，
+	// 鉴权层据此返回 api_key_outside_schedule，而不是「API Key 无效」。
+	AvailabilityScheduleGate *int64  `json:"availability_schedule_gate,omitempty"`
+	ExpiresAt                *string `json:"expires_at"`
+	QuotaLimitsJSON          *string `json:"quota_limits_json"`
 	// 调度偏好独立实体 P1 快照三字段（SP-C1/SP-C2 冻结接口）：三者全空 =
 	// 历史策略路径（scheduling_preference_id IS NULL 或 purpose=chat，v1 运行
 	// 态键，行为与旧版逐项一致）；SchedulingPreferenceFingerprint 非空 = 合成

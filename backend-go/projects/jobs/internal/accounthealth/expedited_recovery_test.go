@@ -1,7 +1,9 @@
 // expedited_recovery_test.go 覆盖「AI 账户特供快速恢复通道」jobs/shared 范围
-// （设计契约 docs/functions/AI账户特供快速恢复通道设计.md v3.2 §5/§6/§11）：
-// 特供三处消费点与 7 天停损保留、普通账户节奏逐字节回归、expedited_recovery
-// 签名回路、PG 直读候选特供列装配与冷却类内优先排序。
+// （设计契约 docs/functions/AI账户特供快速恢复通道设计.md v3.6 §5/§6/§11）：
+// 特供三处消费点（慢速道 15s、长期道跳过、有界观察绕开）与 7 天停损保留、
+// 普通账户与特供共用失败快速道 / 慢速道的回归、expedited_recovery 签名回路、
+// PG 直读候选特供列装配与冷却类内优先排序。v3.5 起 HTTP 失败结果与 transport 失败
+// 同档，不再有 15 分钟顺延封顶慢道。
 // 注：原借 SQLite store 载体的新鲜度门/直读 reader 用例随 sqlite 臂退役，
 // PG 侧回归覆盖待存储迁移批次重建。
 package accounthealth
@@ -25,38 +27,51 @@ func newCooldownRetestInput(fence *exactkeyprobe.CooldownFence, cooldownUntil ti
 	return input
 }
 
-// TestExpeditedCooldownNeutralCapIsSixtySeconds：特供中性封顶基准 60s
-// （jitter 后 30–90s 且恒不等于基准，§5/§11.1）。
-func TestExpeditedCooldownNeutralCapIsSixtySeconds(t *testing.T) {
+// TestCooldownHTTPFailureSharesFailureLaneAcrossExpeditedAndNormal：v3.5 起 HTTP 失败
+// 结果与 transport 失败同走失败快速道 / 慢速道，不再有 15 分钟顺延封顶：
+// 第 6 轮起普通账户 60s 基准（jitter 后 30–90s）、特供 15s 基准（7.5–22.5s），
+// 两者都是 cooldown_defer 且不写错误码（§5/§11.1）。
+func TestCooldownHTTPFailureSharesFailureLaneAcrossExpeditedAndNormal(t *testing.T) {
 	now := time.Now().UTC()
-	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "wexp-neutral-gen"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "wexp-http-failure-lane-gen"}
 	cooldownUntil := now.Add(-time.Second)
-	input := newCooldownRetestInput(fence, cooldownUntil)
-	input.Schedule.CooldownNeutralMaxMS = 60_000
-	input.Eligibility.ExpeditedRecovery = true
-	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: fence}
-	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
-	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
-	if outcome.NextDueAt == nil || !isJitteredWithin(outcome.NextDueAt.Sub(now), time.Minute) {
-		t.Fatalf("特供中性封顶基准必须为 60s（jitter [30s,90s] 且不等于基准）: %s", outcome.NextDueAt.Sub(now))
+
+	expedited := newCooldownRetestInput(fence, cooldownUntil)
+	expedited.Eligibility.ExpeditedRecovery = true
+	prior := CurrentState{InputVersion: expedited.InputVersion, ConfigRevision: expedited.ConfigRevision, DispatchRevision: expedited.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 5, CooldownFence: fence}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
+	applyOutcomeDecision(&outcome, expedited, prior, true, "cooldown_retest")
+	if outcome.NextDueAt == nil || !isJitteredWithin(outcome.NextDueAt.Sub(now), 15*time.Second) {
+		t.Fatalf("特供HTTP 失败第 6 轮必须落 15s 慢速道（jitter [7.5s,22.5s] 且不等于基准）: %s", outcome.NextDueAt.Sub(now))
 	}
-	if outcome.AccountStatus != "temporary_unavailable" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_defer" {
-		t.Fatalf("特供中性顺延必须保持冷却态 defer: %#v", outcome)
+	if outcome.FailureCount != 6 || outcome.AccountStatus != "temporary_unavailable" || outcome.ErrorCode != "" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_defer" {
+		t.Fatalf("特供HTTP 失败必须按 cooldown_defer 推进失败计数且不写错误码: %#v", outcome)
+	}
+
+	normal := newCooldownRetestInput(fence, cooldownUntil)
+	normalOutcome := Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
+	applyOutcomeDecision(&normalOutcome, normal, prior, true, "cooldown_retest")
+	if normalOutcome.NextDueAt == nil || !isJitteredWithin(normalOutcome.NextDueAt.Sub(now), time.Minute) {
+		t.Fatalf("普通HTTP 失败第 6 轮必须落 60s 慢速道（jitter [30s,90s] 且不等于基准）: %s", normalOutcome.NextDueAt.Sub(now))
 	}
 }
 
-// TestNormalCooldownNeutralCapStaysFifteenMinutes：普通账户中性封顶 15 分钟
-// 逐字节不变回归（jitter 后 14.5–15.5 分钟，§11.1）。
-func TestNormalCooldownNeutralCapStaysFifteenMinutes(t *testing.T) {
+// TestNormalCooldownHTTPFailureUsesInitialBackoffAfterCapRemoval：HTTP 失败不再按观察
+// 时长翻倍到 15 分钟封顶；观察已 1 小时且无历史失败时仍按第 1 次失败的 3s
+// 基准退避（jitter 后 1.5–4.5s，§5/§11.1）。
+func TestNormalCooldownHTTPFailureUsesInitialBackoffAfterCapRemoval(t *testing.T) {
 	now := time.Now().UTC()
-	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "wnormal-neutral-gen"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "wnormal-http-failure-initial-gen"}
 	cooldownUntil := now.Add(-time.Second)
 	input := newCooldownRetestInput(fence, cooldownUntil)
 	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: fence}
-	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
-	if outcome.NextDueAt == nil || !isJitteredWithin(outcome.NextDueAt.Sub(now), 15*time.Minute) {
-		t.Fatalf("普通中性封顶必须维持 15 分钟（jitter [14.5m,15.5m]）: %s", outcome.NextDueAt.Sub(now))
+	if outcome.NextDueAt == nil || !isJitteredWithin(outcome.NextDueAt.Sub(now), 3*time.Second) {
+		t.Fatalf("普通HTTP 失败第 1 次失败必须使用 3s 初始退避（jitter [1.5s,4.5s]）: %s", outcome.NextDueAt.Sub(now))
+	}
+	if outcome.FailureCount != 1 || outcome.NextDueAt.Sub(now) >= time.Minute {
+		t.Fatalf("15 分钟顺延封顶已移除，观察 1 小时不得放大延迟: delay=%s failures=%d", outcome.NextDueAt.Sub(now), outcome.FailureCount)
 	}
 }
 

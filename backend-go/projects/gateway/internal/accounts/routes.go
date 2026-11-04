@@ -1691,7 +1691,9 @@ func statusQueryValue(value string) string {
 func schedulableQueryValue(value string) string {
 	text := strings.TrimSpace(value)
 	switch text {
-	case "all", "enabled", "disabled", "cooling":
+	// out_of_window 是时间计划闸门筛选（时间计划闸门与账户状态解耦设计
+	// §5.4）：等价 status=active 且 gate=0。
+	case "all", "enabled", "disabled", "cooling", "out_of_window":
 		return text
 	default:
 		return ""

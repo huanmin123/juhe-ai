@@ -513,9 +513,6 @@ func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
 	if err != nil {
 		return err
 	}
-	if err := w.seedAccountProjections(tx, guard, accounts); err != nil {
-		return err
-	}
 	if err := w.seedAccountRuntimeSamples(tx, guard, accounts); err != nil {
 		return err
 	}
@@ -1623,56 +1620,6 @@ func maskSecret(value string) string {
 	}
 }
 
-// seedAccountProjections 写入账户名检索投影（document + 1..3 gram terms）。
-//
-// 为什么造数要写这两张投影表：gateway 的账户列表关键字检索走
-// account_name_search_documents.normalized_name + account_name_search_terms，
-// 不写它们时页面按关键字搜不到任何 mock 账户（写路径由账户增改维护，造数直接
-// 落库必须自己补齐）。
-func (w *businessWriter) seedAccountProjections(tx *sql.Tx, guard businessGuard, accounts []mockAccountSeed) error {
-	now := w.stamp()
-	for _, account := range accounts {
-		normalized := strings.TrimSpace(account.name)
-		if err := w.put(tx, "account_name_search_documents", map[string]any{
-			"account_id": account.id, "system_account_id": account.owner,
-			"normalized_name": normalized, "updated_at": now,
-		}); err != nil {
-			return err
-		}
-		for _, term := range mockNameTerms(normalized) {
-			if err := w.put(tx, "account_name_search_terms", map[string]any{
-				"account_id": account.id, "system_account_id": account.owner,
-				"term": term, "created_at": now,
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// mockNameTerms 复刻 gateway buildAccountNameSearchTerms 的 1..3 gram 集合。
-// 造数名称只含 CJK 与 ASCII，不含 NFKC 兼容字符，故这里只做 trim。
-func mockNameTerms(name string) []string {
-	runes := []rune(strings.TrimSpace(name))
-	if len(runes) == 0 {
-		return nil
-	}
-	seen := map[string]bool{}
-	terms := []string{}
-	for length := 1; length <= 3; length++ {
-		for index := 0; index+length <= len(runes); index++ {
-			term := string(runes[index : index+length])
-			if strings.TrimSpace(term) == "" || seen[term] {
-				continue
-			}
-			seen[term] = true
-			terms = append(terms, term)
-		}
-	}
-	return terms
-}
-
 // mockKeyPoolKeys 复刻 accountCredentials 里多 Key 池的明文键列表，供运行态
 // 指纹与凭据保持一致。
 func mockKeyPoolKeys(seed *mockAccountSeed) []string {
@@ -2537,20 +2484,6 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 			"enabled": 1, "created_at": now, "updated_at": now,
 		}); err != nil {
 			return err
-		}
-		if err := w.put(tx, "account_name_search_documents", map[string]any{
-			"account_id": instanceID, "system_account_id": instance.grantee,
-			"normalized_name": strings.TrimSpace(instanceName), "updated_at": now,
-		}); err != nil {
-			return err
-		}
-		for _, term := range mockNameTerms(instanceName) {
-			if err := w.put(tx, "account_name_search_terms", map[string]any{
-				"account_id": instanceID, "system_account_id": instance.grantee,
-				"term": term, "created_at": now,
-			}); err != nil {
-				return err
-			}
 		}
 	}
 	return nil

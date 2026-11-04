@@ -450,7 +450,7 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 	}
 	stages := []pgStage{
 		{"orphan sweep", "LEFT JOIN"},
-		{"physically delete pg tables", "juhe_business.account_name_search_terms"},
+		{"physically delete pg tables", "juhe_business.account_api_key_runtime_states"},
 		{"related targets", "FROM juhe_dataset.account_record_cleanup_targets"},
 		{"related usage", "FROM juhe_usage.usage_records WHERE account_id = ANY"},
 		{"related usage auth", "FROM juhe_usage.usage_records WHERE account_authorization_id = ANY"},
@@ -488,9 +488,9 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 	{
 		rec := newPGRecorder()
 		pgAccountSeed(rec)
-		store := newStore(t, rec, "account_name_search_terms")
+		store := newStore(t, rec, "account_api_key_runtime_states")
 		summary, err := store.CleanupExpired(ctx)
-		if err != nil && !strings.Contains(err.Error(), "account_name_search_terms") {
+		if err != nil && !strings.Contains(err.Error(), "account_api_key_runtime_states") {
 			t.Fatalf("PG 专有表删除失败应透传: %v", err)
 		}
 		if summary != nil && summary.Failed == 1 {

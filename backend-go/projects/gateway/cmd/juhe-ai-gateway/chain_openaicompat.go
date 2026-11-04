@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -179,6 +180,13 @@ func (d *chainCompatDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if d.cache != nil && d.chain != nil {
 		scope, infraErr := readChainCompatScope(d.cache, r)
 		if infraErr != nil {
+			// 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.2）：Key 有效但
+			// 不在可用时段，渲染可区分的 401，不按基础设施故障处理。
+			if errors.Is(infraErr, gatewayruntimecache.ErrAPIKeyOutsideSchedule) {
+				openaicompatcore.WriteGatewayErrorPayload(w, http.StatusUnauthorized,
+					"API Key 当前不在可用时段", "invalid_request_error", "api_key_outside_schedule")
+				return
+			}
 			// DD3-D1：运行时缓存基础设施故障按主链同窗同错口径渲染
 			// （handleOrchestratorError 的 503/500，同 preauth.go
 			// ResolveGatewayRuntimeAsync 的 err 上抛臂——主链该臂不计数），

@@ -77,7 +77,7 @@ AI 账户新增/编辑弹窗增加“余额查询”开关，交互与时间计�
 | --- | --- | --- | --- |
 | `balance_query_enabled` | INTEGER / boolean | `false` | 是否启用；供到期任务索引筛选 |
 | `balance_query_config_json` | TEXT / JSON | `{}` | 适配器、刷新间隔和自定义规则 |
-| `balance_query_next_refresh_at` | TEXT / timestamptz NULL | `NULL` | 已开启余额的自动刷新到期时间，或首次激活后未配置余额的自动探测意图；业务库中的唯一调度事实 |
+| `balance_query_next_refresh_at` | TEXT / timestamptz NULL | `NULL` | 已开启余额的自动刷新到期时间，或首次成功健康检查后未配置余额的自动探测意图；业务库中的唯一调度事实 |
 
 ```ts
 type AccountBalanceBuiltinAdapter =
@@ -296,9 +296,11 @@ POST /__aisys__/api/accounts/balance/test-draft
 
 ## 7. 新账户非阻塞自动探测
 
-新建物理单 Key API Key 账户且用户没有开启余额查询时，首次激活健康检查成功必须在同一账户条件写入中保存 `balance_query_next_refresh_at=checkedAt` 作为探测意图；成功提交后再把任务投入 ops-worker 内存队列。投递是常数时间操作，创建 HTTP 请求不等待健康检查或余额请求。内存队列只是低延迟路径，不能是唯一事实源。
+新建物理 API Key 账户且用户没有开启余额查询时，首次成功健康检查（激活、周期健康或冷却恢复）必须在同一账户条件写入中保存 `balance_query_next_refresh_at=checkedAt` 作为探测意图；成功提交后再把任务投入 ops-worker 内存队列。投递是常数时间操作，创建 HTTP 请求不等待健康检查或余额请求。内存队列只是低延迟路径，不能是唯一事实源。
 
 「首次激活」按创建形态分两条等价路径：`pending_test` 创建的账户由待检查激活探活（转换 `activation_success`，期望状态 `pending_test`）写入意图；创建事务直接以 `active` 落地的账户由创建后派发的 `reason="activation"` 首探写入意图——该显式首探成功同样分类为 `activation_success`，投影期望状态为 `active`（2026-10-24 T56 修复前该形态被分类为 `health_success`，探测意图永不写入，余额自动探测恒空转）。`reason="activation"` 仅创建首探与 `pending_test` 重置两处派发，后者期望状态已是 `pending_test`，不依赖上述 active 分支。
+
+2026-11-03 T110 补齐上述两条路径的失联情形：`active` 账户的 activation 首探失败，或其结果因期间配置变更被判 `stale` 时，首次成功会来自周期健康检查（`health_success`）或冷却恢复（`cooldown_success`）。投影以 pre-update 的 `last_health_success_at` 为 NULL/空识别「从未成功健康检查」，在这两类成功分支同样写一次探测意图。该回退只对从未成功过的账户生效：已有成功记录的周期检查、旧账户和普通编辑不写；`unsupported` 清除意图后账户已有成功记录，周期/冷却路径不会重复创建意图（`pending_test` 重置与连接身份重置是下述明示的重新获得机会）。自动探测面向「有至少一个有效 API Key 的物理 API Key 账户」：创建期的「单 Key」只是 activation 首探的派发条件，不是自动探测的限制，多 Key 账户首次成功同样写一次意图，执行面按逐 Key 查询。授权实例在投影侧直接跳过（`authorization_instance_source_account_id` 或 `authorization_instance_authorization_id` 任一有值即在 transition 判断与凭据解密之前返回），与规则 2 的「非授权实例」一致。连接身份变更导致健康成功记录被清空（如 Base URL / 代理变化，或 Key 池变更后无活跃 Key；需后台探测开启且非 audio/video 域）或恢复到 `pending_test` 时，下一次成功检查重新获得一次自动探测机会——这是有意的余额身份变化行为；名称、优先级、备注等普通编辑不清空健康成功记录，也不会写意图。2026-11-03 T110 修复前该路径的探测意图永久丢失。
 
 探测规则：
 
@@ -311,7 +313,7 @@ POST /__aisys__/api/accounts/balance/test-draft
 
 （历史 Node 拓扑描述：DB service、stats-writer 与 server IPC 已随 2026-09-05 Node 归档退役，Go 现行写库边界见 [架构总览](../architecture/架构总览.md) 的「数据访问隔离」节；现行补偿路径见下节 go-only 说明。）SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：业务配置和调度时间通过 DB service 条件提交，租约与余额快照通过 stats-writer 写入；手动刷新所在的 DB service 也通过 server IPC 把统计写操作转交 stats-writer。查询结束时先按 `configRevision + balanceQueryConfig` 提交业务状态，stats-writer 写快照前再次核对当前配置。配置在请求期间发生变化时丢弃旧结果，不恢复旧快照和旧调度时间。
 
-自动探测意图只由新账户首次激活创建一次；它允许因 worker 重启或临时失败进行受控补偿尝试。周期健康检查、旧账户和普通编辑不创建新意图，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
+自动探测意图只由新账户首次成功健康检查创建一次；它允许因 worker 重启或临时失败进行受控补偿尝试。已有成功记录的周期健康检查、旧账户和普通编辑不创建新意图，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
 
 go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除与第 5 节 due 写回同语义同格式：`balance_query_next_refresh_at` 为 TEXT 列，写入值统一为 RFC3339Nano UTC 毫秒截断文本，围栏以 `::timestamptz` 等值比较（历史双方言时期 SQLite 分支为同格式文本等值，已随 2026-10-25 存储收口退役）；围栏未命中（期间被用户编辑或手动刷新抢先）只跳过本次推进/清除，不算失败。命中 `unsupported` 时清除意图（收口），临时失败按固定短周期延后，命中 `fresh/unlimited` 时开启配置并安排下次刷新。围栏格式失配会让意图永不收口、候选被 J2 探测循环按扫描节奏反复执行（见问题-0204），该格式家族回归由毫秒截断往返测试锁定。
 
@@ -367,7 +369,7 @@ go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除�
 - 列表按页批量补齐快照，不出现 N+1 查询。
 - 前端桌面和移动端不重叠，刷新图标无按钮外观，加载旋转和悬浮错误正常。
 - 点击列表余额刷新图标后，当前行金额立即使用接口返回快照更新，分页、筛选、排序和其他行不重新加载。
-- 新账户创建响应不等待余额探测；首次健康成功原子保存探测意图，worker 重启后仍可恢复。首次激活后只在严格命中时自动开启，确定不支持或配置版本变化时保持关闭，临时失败仅延后重试。
+- 新账户创建响应不等待余额探测；首次健康成功原子保存探测意图，worker 重启后仍可恢复。首次探测成功后只在严格命中时自动开启，确定不支持或配置版本变化时保持关闭，临时失败仅延后重试。
 - 已开启但尚无快照的不可自动调度账户显示“待查询”并明确提示恢复可调度后自动查询、也可手动刷新，避免把状态边界误解为缓存未更新。
 - 新增和编辑弹窗“测试查询”使用当前表单草稿，无持久化副作用；成功金额只通过顶部消息显示。
 - 编辑弹窗的“测试查询”位于“刷新周期”输入框右侧，不再单独占据一行；桌面和移动端无重叠或横向溢出。

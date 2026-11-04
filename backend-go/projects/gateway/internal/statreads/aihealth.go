@@ -20,6 +20,10 @@ import (
 
 var statHourPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$`)
 
+// aiHealthAccountNameMaxLength 是 AI 健康列表名称关键字参与匹配的最大
+// rune 数（与账户名称上限同口径）；超长关键字按空集处理而非报错。
+const aiHealthAccountNameMaxLength = 128
+
 // HealthOutcomeSource mirrors accountHealthJobsOutcomeStoreSource: the
 // jobs-owned outcome store the gateway only reads. It points at the jobs
 // database URL (outcomePostgresUrl) and reads juhe_jobs.account_health_outcomes
@@ -276,7 +280,8 @@ func (d *Deps) loadAiHealthAccountPage(r *http.Request, scope AccessScope, optio
 		params = append(params, scopeID)
 	}
 	if options.Keyword != "" {
-		filterSQL, filterParams := d.aiHealthAccountNameContainsFilter(options.Keyword, scopeID)
+		// 作用域条件只在上面追加一次；这里只返回名称包含条件，避免重复绑定。
+		filterSQL, filterParams := d.aiHealthAccountNameContainsFilter(options.Keyword)
 		clauses = append(clauses, filterSQL)
 		params = append(params, filterParams...)
 	}
@@ -405,34 +410,18 @@ func (d *Deps) loadAccountHealthRows(r *http.Request, accountIds []string, hourB
 	return rows, nil
 }
 
-// aiHealthAccountNameContainsFilter mirrors aiHealthAccountNameContainsFilter
-// over the account_name_search_terms/documents index.
-func (d *Deps) aiHealthAccountNameContainsFilter(keyword, scopedAccountID string) (string, []any) {
-	terms := accountNameSearchQueryTerms(keyword)
-	if len(terms) == 0 {
+// aiHealthAccountNameContainsFilter 直读 accounts.name 做包含匹配（账户
+// 名称搜索去索引化）：`C` collation 与 pg_trgm 索引同形，ILIKE 提供 ASCII
+// 大小写不敏感语义，`%` / `_` / `\` 由 postgresSubstringLikePattern 转义为
+// 字面字符。空关键字或超过 128 rune 的关键字保持恒假空集语义。作用域条件
+// 由 loadAiHealthAccountPage 统一追加一次，本函数只返回名称条件。
+func (d *Deps) aiHealthAccountNameContainsFilter(keyword string) (string, []any) {
+	trimmed := strings.TrimSpace(keyword)
+	if trimmed == "" || len([]rune(trimmed)) > aiHealthAccountNameMaxLength {
 		return "0 = 1", nil
 	}
-	normalized := normalizeAccountNameSearchText(keyword)
-	scopeClause := ""
-	params := []any{}
-	if scopedAccountID != "" {
-		scopeClause = "search.system_account_id = ? AND "
-		params = append(params, scopedAccountID)
-	}
-	clause := `accounts.id IN (
-		SELECT search.account_id
-		FROM ` + d.businessTable("account_name_search_terms") + ` search
-		INNER JOIN ` + d.businessTable("account_name_search_documents") + ` documents
-			ON documents.account_id = search.account_id
-			AND documents.system_account_id = search.system_account_id
-		WHERE ` + scopeClause + `search.term IN (` + placeholders(len(terms)) + `)
-			AND instr(documents.normalized_name, ?) > 0
-		GROUP BY search.account_id
-		HAVING COUNT(DISTINCT search.term) = ?
-	)`
-	params = append(params, idsToAny(terms)...)
-	params = append(params, normalized, len(terms))
-	return clause, params
+	return `accounts.name COLLATE "C" ILIKE ? ESCAPE '\'`,
+		[]any{"%" + postgresSubstringLikePattern(trimmed) + "%"}
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +557,10 @@ func dedupeStrings(values []string) []string {
 // 聚合，不构成 AI 账户近期质量的正样本或负样本。映射回空串与 stale 同臂，
 // 即该小时不计入 successHours/failureHours（无其它观测时页面显示 unknown）。
 var j1NonQualityOutcomes = map[string]bool{
-	"stale":                    true,
+	"stale": true,
+	// upstream_http_failure 是 J1 自 2026-11-04 起的当前结果名；
+	// framing_complete_neutral 是同一类结果的历史别名，仅用于读取存量行。
+	"upstream_http_failure":    true,
 	"framing_complete_neutral": true,
 	"opaque_upstream":          true,
 	"gateway_capacity":         true,
@@ -807,40 +799,6 @@ type aiHealthHourDetail struct {
 	StatusCode     *int64  `json:"statusCode,omitempty"`
 	ErrorCode      *string `json:"errorCode,omitempty"`
 	ErrorMessage   *string `json:"errorMessage,omitempty"`
-}
-
-// accountNameSearchQueryTerms mirrors accountNameSearchQueryTerms: n-grams of
-// the normalized name with length min(len, 3).
-func accountNameSearchQueryTerms(keyword string) []string {
-	normalized := normalizeAccountNameSearchText(keyword)
-	if normalized == "" {
-		return nil
-	}
-	if len([]rune(normalized)) > 128 {
-		return nil
-	}
-	chars := []rune(normalized)
-	length := len(chars)
-	if length > 3 {
-		length = 3
-	}
-	seen := map[string]bool{}
-	terms := []string{}
-	for index := 0; index+length <= len(chars); index++ {
-		term := string(chars[index : index+length])
-		if strings.TrimSpace(term) == "" {
-			continue
-		}
-		if !seen[term] {
-			seen[term] = true
-			terms = append(terms, term)
-		}
-	}
-	return terms
-}
-
-func normalizeAccountNameSearchText(value string) string {
-	return strings.TrimSpace(value)
 }
 
 // Status mirrors outcomeHealthStatus for the merged detail row.

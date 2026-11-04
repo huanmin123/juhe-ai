@@ -733,45 +733,6 @@ func (r *ListAvailabilityRepo) ListScopes(ctx context.Context, accountIDs []stri
 	return scopes, rows.Err()
 }
 
-// LoadSearchTerms 对齐 loadAccountListAvailabilityProjectionSearchTermsInClient。
-func (r *ListAvailabilityRepo) LoadSearchTerms(ctx context.Context, accountIDs []string) (map[string][]string, error) {
-	ids, err := normalizedIDList(accountIDs)
-	if err != nil {
-		return nil, err
-	}
-	output := map[string][]string{}
-	if len(ids) == 0 {
-		return output, nil
-	}
-	placeholders := placeholdersFor(len(ids))
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	rows, err := r.db.QueryContext(ctx, `
-    SELECT search.account_id, search.term
-    FROM `+r.table("account_name_search_terms")+` search
-    INNER JOIN `+r.table("account_name_search_documents")+` documents
-      ON documents.account_id = search.account_id
-    WHERE search.account_id IN (`+placeholders+`)
-    ORDER BY search.account_id ASC, search.term ASC`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			accountID string
-			term      string
-		)
-		if err := rows.Scan(&accountID, &term); err != nil {
-			return nil, err
-		}
-		output[accountID] = append(output[accountID], term)
-	}
-	return output, rows.Err()
-}
-
 // ---- apply / delete / release ----
 
 type normalizedProjection struct {
@@ -795,8 +756,6 @@ type normalizedProjection struct {
 	createdAtSortKey        string
 	payload                 []byte
 	tagIDs                  []string
-	searchTerms             []string
-	searchIndexComplete     bool
 	sourceGeneration        int64
 	nextTransitionAt        *string
 	projectedAt             string
@@ -910,18 +869,6 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 		tagSeen[normalizedTag] = struct{}{}
 		normalized.tagIDs = append(normalized.tagIDs, normalizedTag)
 	}
-	termSeen := map[string]struct{}{}
-	for _, term := range write.SearchTerms {
-		if term == "" || len(term) > 256 {
-			return normalizedProjection{}, errors.New("searchTerm 必须是 1-256 位文本")
-		}
-		if _, exists := termSeen[term]; exists {
-			continue
-		}
-		termSeen[term] = struct{}{}
-		normalized.searchTerms = append(normalized.searchTerms, term)
-	}
-	normalized.searchIndexComplete = len(normalized.searchTerms) > 0
 	if write.Item.EffectiveStatus == "" {
 		return normalizedProjection{}, fmt.Errorf("账户 %s 无法归类为唯一投影状态", accountID)
 	}
@@ -929,7 +876,7 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 }
 
 // upsertProjectionTx 对齐 upsertAccountListAvailabilityProjectionInTransaction
-// （payload/index/overlay/tags/terms/viewer 全部在同一 fenced 事务内）。
+// （payload/index/overlay/tags/viewer 全部在同一 fenced 事务内）。
 func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike, value normalizedProjection) (bool, error) {
 	projections := r.table("account_list_availability_projections")
 	result, err := tx.ExecContext(ctx, `
@@ -995,8 +942,8 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
       account_type, bound_group_id,
       name_sort_key, priority_sort_key, super_priority_sort_key, fallback_sort_key,
       concurrency_sort_key, account_expires_at_sort_key, last_used_at_sort_key,
-      created_at_sort_key, access_type_sort_key, search_index_complete, authorization_quota_exceeded
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      created_at_sort_key, access_type_sort_key, authorization_quota_exceeded
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(viewer_system_account_id, account_id) DO UPDATE SET
       effective_status = excluded.effective_status,
       schedulable_bucket = excluded.schedulable_bucket,
@@ -1011,13 +958,12 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
       last_used_at_sort_key = excluded.last_used_at_sort_key,
       created_at_sort_key = excluded.created_at_sort_key,
       access_type_sort_key = excluded.access_type_sort_key,
-      search_index_complete = excluded.search_index_complete,
       authorization_quota_exceeded = excluded.authorization_quota_exceeded`,
 		value.viewerSystemAccountID, value.accountID, value.effectiveStatus, value.schedulableBucket,
 		value.accountType, value.boundGroupID,
 		value.nameSortKey, value.prioritySortKey, value.superPrioritySortKey, value.fallbackSortKey,
 		value.concurrencySortKey, value.accountExpiresAtSortKey, value.lastUsedAtSortKey,
-		value.createdAtSortKey, accessType, boolParam(value.searchIndexComplete), boolParam(quotaExceeded)); err != nil {
+		value.createdAtSortKey, accessType, boolParam(quotaExceeded)); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1044,78 +990,8 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 			return false, err
 		}
 	}
-	if unchanged, err := r.projectionSearchTermsUnchangedTx(ctx, tx, value); err != nil {
-		return false, err
-	} else if !unchanged {
-		if _, err := tx.ExecContext(ctx, `
-    DELETE FROM `+r.table("account_list_availability_projection_search_terms")+`
-    WHERE viewer_system_account_id = ? AND account_id = ?`,
-			value.viewerSystemAccountID, value.accountID); err != nil {
-			return false, err
-		}
-		if value.searchIndexComplete {
-			for _, term := range value.searchTerms {
-				if _, err := tx.ExecContext(ctx, `
-        INSERT INTO `+r.table("account_list_availability_projection_search_terms")+` (
-          viewer_system_account_id, account_id, term, name_sort_key, created_at_sort_key
-        ) VALUES (?, ?, ?, ?, ?)`,
-					value.viewerSystemAccountID, value.accountID, term, value.nameSortKey, value.createdAtSortKey); err != nil {
-					return false, err
-				}
-			}
-		}
-	}
 	if err := r.markViewerHealthStaleTx(ctx, tx, value.viewerSystemAccountID, value.projectedAt); err != nil {
 		return false, err
-	}
-	return true, nil
-}
-
-// projectionSearchTermsUnchangedTx 判断库内 search_terms 行与本次期望行元组
-// 是否完全一致（一致则调用方整体跳过删写）。写放大治理（问题-0313 后续批次
-// 1-4）：健康/额度/运行态变化触发的重投影名称不变，原形态每次 claim 应用固定
-// 1 DELETE + N INSERT（N 为名称 1..3-gram 词数）纯 churn，且全部发生在
-// 7001001 持锁事务内；词集对比以 1 SELECT（≤N 行）替代。对比含 term 行携带
-// 的 name_sort_key/created_at_sort_key，与"无条件重写"语义等价；
-// searchIndexComplete=false 即期望零行，库内有残行时仍走删写清除。
-func (r *ListAvailabilityRepo) projectionSearchTermsUnchangedTx(ctx context.Context, tx txLike, value normalizedProjection) (bool, error) {
-	rows, err := tx.QueryContext(ctx, `
-    SELECT term, name_sort_key, created_at_sort_key
-    FROM `+r.table("account_list_availability_projection_search_terms")+`
-    WHERE viewer_system_account_id = ? AND account_id = ?`, value.viewerSystemAccountID, value.accountID)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	type searchTermRow struct {
-		term             string
-		nameSortKey      string
-		createdAtSortKey string
-	}
-	var existing []searchTermRow
-	for rows.Next() {
-		var row searchTermRow
-		if err := rows.Scan(&row.term, &row.nameSortKey, &row.createdAtSortKey); err != nil {
-			return false, err
-		}
-		existing = append(existing, row)
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	if len(existing) != len(value.searchTerms) {
-		return false, nil
-	}
-	desired := make([]searchTermRow, 0, len(value.searchTerms))
-	for _, term := range value.searchTerms {
-		desired = append(desired, searchTermRow{term: term, nameSortKey: value.nameSortKey, createdAtSortKey: value.createdAtSortKey})
-	}
-	sort.Slice(existing, func(i, j int) bool { return existing[i].term < existing[j].term })
-	sort.Slice(desired, func(i, j int) bool { return desired[i].term < desired[j].term })
-	for i := range existing {
-		if existing[i] != desired[i] {
-			return false, nil
-		}
 	}
 	return true, nil
 }
@@ -1359,8 +1235,7 @@ func placeholdersFor(count int) string {
 // boolParam 把布尔绑定为整数 1/0 参数：投影索引列在两种方言里都是
 // integer CHECK(0,1)。boolLit 风格的 "TRUE"/"FALSE" 字符串只能用于 SQL
 // 字面量插值——作为绑定参数时 pgx 会把字符串交给 integer 列，PostgreSQL
-// 拒绝 invalid input syntax for type integer: "TRUE"（2026-09-25 生产
-// my-accounts keyword 搜索 500 修复：$18=search_index_complete）。
+// 拒绝 invalid input syntax for type integer: "TRUE"。
 func boolParam(value bool) int {
 	if value {
 		return 1

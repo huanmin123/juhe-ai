@@ -9,9 +9,9 @@ import (
 
 func TestBusinessRecoveryApplierClearsOnlyMatchingLease(t *testing.T) {
 	db := newJ3BPGDatabase(t,
-		`CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,deleted_at TEXT,updated_at TEXT)`,
+		`CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,availability_schedule_next_check_at TEXT,availability_schedule_gate INTEGER,deleted_at TEXT,updated_at TEXT)`,
 		`CREATE TABLE juhe_business.account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,policy_revision INTEGER,account_config_revision INTEGER,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,recovery_due_at TEXT,cleared_at TEXT,updated_at TEXT)`)
-	if _, err := db.Exec(j3bQ(`INSERT INTO accounts VALUES ('acct','sys','quality_isolated',5,0,'model_quality_failed','bad','',NULL,'')`)); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO accounts (id,system_account_id,status,config_revision,schedulable,last_error_code,last_error_message,availability_schedule_json,deleted_at,updated_at) VALUES ('acct','sys','quality_isolated',5,0,'model_quality_failed','bad','',NULL,'')`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(j3bQ(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate',7,5,'gateway-1','2030-01-01T00:10:00Z',NULL,'2030-01-01T00:00:00Z',NULL,'')`)); err != nil {

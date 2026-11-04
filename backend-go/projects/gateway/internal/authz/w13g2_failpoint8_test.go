@@ -183,17 +183,6 @@ func TestW13g2ProvisionFinalArms(t *testing.T) {
 		t.Fatalf("应失败")
 	}
 	fp.disarm()
-	// restore arm 的搜索词重写失败（201-203）。
-	fp.arm("account_name_search_terms WHERE account_id = ?")
-	if _, err := s.Create(ctx, CreateInput{
-		ResourceType: "account", ResourceID: "acc_f13",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: func() *string { v := "tg_f13"; return &v }(),
-	}, "owner"); err == nil {
-		fp.disarm()
-		t.Fatalf("应失败")
-	}
-	fp.disarm()
 
 	// 空 shortID（无 "_" 且长度 < 6）走兜底赋值（269-273）。
 	tx := mustTx(t, db)

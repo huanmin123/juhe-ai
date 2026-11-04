@@ -205,6 +205,9 @@ func balanceDetectionCandidateWhere() string {
     AND balance_query_config_json = '{}'
     AND deleted_at IS NULL
     AND authorization_instance_authorization_id IS NULL
+    -- 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.3）：时段外不投递首次
+    -- 余额探测的真实上游请求。闸门由排程同步维护，NULL = 无计划。
+    AND (availability_schedule_gate IS NULL OR availability_schedule_gate = 1)
   `
 }
 

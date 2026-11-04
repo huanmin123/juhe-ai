@@ -20,7 +20,6 @@ import (
 // Gemini OAuth type / tier / client resolution
 // ---------------------------------------------------------------------------
 
-
 func TestW9HCanonicalGeminiTierIDTable(t *testing.T) {
 	cases := []struct {
 		oauthType string

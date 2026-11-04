@@ -27,7 +27,6 @@ type w7dFailingListRepo struct {
 	refreshErr                 error
 	claimErr                   error
 	scopesErr                  error
-	searchTermsErr             error
 	applyClaimsErr             error
 	deletionErr                error
 	releaseErr                 error
@@ -103,12 +102,6 @@ func (r *w7dFailingListRepo) ListScopes(ctx context.Context, ids []string) ([]Pr
 		return nil, r.scopesErr
 	}
 	return r.inner.ListScopes(ctx, ids)
-}
-func (r *w7dFailingListRepo) LoadSearchTerms(ctx context.Context, ids []string) (map[string][]string, error) {
-	if r.searchTermsErr != nil {
-		return nil, r.searchTermsErr
-	}
-	return r.inner.LoadSearchTerms(ctx, ids)
 }
 func (r *w7dFailingListRepo) ApplyClaims(ctx context.Context, writes []ProjectionWrite) (map[string]bool, error) {
 	if r.applyClaimsErr != nil {
@@ -397,20 +390,6 @@ func TestW7DListAvailabilityProjectionArms(t *testing.T) {
 		t.Fatal("scopes 错误必须暴露")
 	}
 
-	// LoadSearchTerms 错误按 Node 语义被吞：标记依赖不可用并释放重放。
-	searchErrRepo := newRepo()
-	searchErrRepo.searchTermsErr = errors.New("w7d: terms boom")
-	result, err = RunListAvailabilityMaintenance(context.Background(), w7dListOptions(searchErrRepo, loader, nil, probe), true)
-	if err != nil {
-		t.Fatalf("search terms 错误不得上抛: %v", err)
-	}
-	if len(searchErrRepo.inner.released) != 0 {
-		t.Fatalf("search terms 失败不释放 claim（直接返回错误）: %d", len(searchErrRepo.inner.released))
-	}
-	if got := searchErrRepo.inner.markUnavailable; len(got) != 1 || got[0] != "projection_runtime_materialization_failed" {
-		t.Fatalf("search terms 失败必须标记依赖不可用: %v", got)
-	}
-
 	// LoadItems 错误按 Node 语义被吞：释放重放并标记依赖不可用。
 	loadErrRepo := newRepo()
 	loadErrRepo.inner.recoveryStarted = true
@@ -543,11 +522,11 @@ func TestW7DProjectionReplayDelayBounds(t *testing.T) {
 	}
 	// BuildProjectionWrite 正常路径字段透传。
 	now := time.UnixMilli(1_000)
-	write, err := BuildProjectionWrite(w7dScopeFor("a", "v"), projectionItem("a"), w7dClaimFor("a", "v", "t"), now, []string{"term"})
-	if err != nil || write.Claim.ClaimToken != "t" || write.Scope.ViewerSystemAccountID != "v" || write.Item.AccountID != "a" || write.Now != now || len(write.SearchTerms) != 1 {
+	write, err := BuildProjectionWrite(w7dScopeFor("a", "v"), projectionItem("a"), w7dClaimFor("a", "v", "t"), now)
+	if err != nil || write.Claim.ClaimToken != "t" || write.Scope.ViewerSystemAccountID != "v" || write.Item.AccountID != "a" || write.Now != now {
 		t.Fatalf("投影写入字段不正确: %#v %v", write, err)
 	}
-	if _, err := BuildProjectionWrite(w7dScopeFor("a", "v"), ProjectionItem{AccountID: "a"}, w7dClaimFor("a", "v", "t"), now, nil); err == nil {
+	if _, err := BuildProjectionWrite(w7dScopeFor("a", "v"), ProjectionItem{AccountID: "a"}, w7dClaimFor("a", "v", "t"), now); err == nil {
 		t.Fatal("空投影状态必须拒绝")
 	}
 }

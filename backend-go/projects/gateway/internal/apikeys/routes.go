@@ -722,10 +722,12 @@ func bodyString(body map[string]any, key string) (string, error) {
 }
 
 // apiKeyStatusQueryValue mirrors apiKeyStatusQueryValue: anything beyond
-// active/disabled/all is treated as absent.
+// active/disabled/out_of_window/all is treated as absent. out_of_window 是
+// 时间计划闸门派生的虚拟筛选值（《时间计划闸门与账户状态解耦设计》§5.4）：
+// 等价 status='active' AND availability_schedule_gate=0，下表不是 status 词表。
 func apiKeyStatusQueryValue(value string) string {
 	switch strings.TrimSpace(value) {
-	case "active", "disabled", "all":
+	case "active", "disabled", "out_of_window", "all":
 		text := strings.TrimSpace(value)
 		if text == "all" {
 			return ""

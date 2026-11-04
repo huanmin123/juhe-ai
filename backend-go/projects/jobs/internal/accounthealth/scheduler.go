@@ -629,11 +629,14 @@ func applyExplicitRequestDecision(outcome *Outcome, input exactkeyprobe.Input, r
 			decisionKind = "request_failure_health"
 		}
 		// 直接以 active 落地的单 Key 新账户，创建事务以 reason="activation"
-		// 派发首探（余额探测意图的唯一写入口是 activation_success 投影分支）。
-		// 该首探成功必须按激活语义分类，否则探测意图永不写入、余额自动探测
-		// 恒空转（《AI账户上游余额查询设计》§5：首次激活健康检查成功必须保存
-		// 探测意图）。reason="activation" 仅创建首探与 pending_test 重置两处
-		// 派发，后者 priorStatus 已是 pending_test，不依赖本分支。
+		// 派发首探（activation_success 是创建期写余额探测意图的主路径；
+		// T110 起投影层对从未成功健康检查的账户在 health_success /
+		// cooldown_success 分支也会补写一次，见 projection.go
+		// shouldScheduleBalanceAutoDetection）。该首探成功必须按激活语义分类，
+		// 否则探测意图可能延后到周期检查才写入（《AI账户上游余额查询设计》
+		// §7：首次成功健康检查必须保存探测意图）。reason="activation" 仅创建
+		// 首探与 pending_test 重置两处派发，后者 priorStatus 已是 pending_test，
+		// 不依赖本分支。
 		if request.Reason == "activation" && mutationKind == "health" {
 			decisionKind = "activation"
 		}
@@ -1167,12 +1170,14 @@ func applyHealthDecision(outcome *Outcome, input exactkeyprobe.Input, prior Curr
 		transition := "health_success"
 		// kind="activation" 只来自显式 reason="activation" 首探（创建直接
 		// active 落地的账户）；周期健康检查（scheduled/source）仍走
-		// health_success，不创建余额探测意图。
+		// health_success。T110 起投影层对从未成功健康检查的账户在
+		// health_success / cooldown_success 分支同样补写一次余额探测意图，
+		// 此处 transition 分类不变。
 		if priorStatus == "pending_test" || kind == "activation" {
 			transition = "activation_success"
 		}
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: transition, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: priorStatus, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
-	case exactkeyprobe.OutcomeNeutral, exactkeyprobe.OutcomeUpstreamFailed:
+	case exactkeyprobe.OutcomeHTTPFailure, exactkeyprobe.OutcomeUpstreamFailed:
 		failures := prior.FailureCount + 1
 		outcome.FailureCount = failures
 		started := prior.FailureStartedAt
@@ -1237,24 +1242,54 @@ func applyCooldownDecision(outcome *Outcome, input exactkeyprobe.Input, prior Cu
 		outcome.FailureCount = 0
 		outcome.AccountStatus = "active"
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_success", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
-	case exactkeyprobe.OutcomeNeutral, exactkeyprobe.OutcomeTaskFailed:
-		// 中性结果同样必须收敛（T44）：观察起点满 7 天且期间没有任何成功
-		// （cooldown_success 会清空 observation_started_at，因此该字段即
-		// "连续未成功时长"），说明上游持续返回完整但非成功的响应，账户事实
-		// 上不可用。若只按 transport 失败推进终态，这类账户会在 15 分钟封顶
-		// 的顺延里无限循环（生产 70 个账户超过 7 天仍为 TU）。
-		// probe_task_failure 属本地输入/配置问题，不作为上游证据终止。
-		if outcome.Outcome == exactkeyprobe.OutcomeNeutral {
-			elapsed := observed.Sub(fence.ObservationStartedAt)
-			if elapsed >= cooldownObservationTimeout {
-				outcome.AccountStatus = "error"
-				outcome.ErrorCode = "cooldown_retest_neutral_timeout"
-				outcome.ErrorMessage = fmt.Sprintf("冷却复测观察期已超过 7 天（起点 %s）且上游持续完整拒绝（最近 HTTP %d）", fence.ObservationStartedAt.UTC().Format(time.RFC3339), outcome.StatusCode)
-				outcome.CooldownFence = fence
-				outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_error", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
-				return
-			}
+	case exactkeyprobe.OutcomeHTTPFailure:
+		// 恢复决策只区分成功与非成功（2026-11-03 裁决）：真实上游 HTTP 交换
+		// 完成但未成功的结果与 transport 失败使用同一套复测节奏，不按 HTTP
+		// 状态码分叉。旧实现让该类结果走 30 秒基数、封顶 15 分钟的顺延，连续
+		// 两个 502/503 就把下一次复测推到 15 分钟后，冷却恢复被无谓拖慢。
+		//
+		// HTTP 失败证据仍承担 7 天观察终态（T44）：观察起点满 7 天且期间没有
+		// 任何成功（cooldown_success 会清空 observation_started_at，因此该字段
+		// 即"连续未成功时长"），说明上游持续拒绝，账户事实上不可用。
+		elapsed := observed.Sub(fence.ObservationStartedAt)
+		if elapsed >= cooldownObservationTimeout {
+			outcome.AccountStatus = "error"
+			outcome.ErrorCode = "cooldown_retest_http_failure_timeout"
+			outcome.ErrorMessage = fmt.Sprintf("冷却复测观察期已超过 7 天（起点 %s）且上游持续完整拒绝（最近 HTTP %d）", fence.ObservationStartedAt.UTC().Format(time.RFC3339), outcome.StatusCode)
+			outcome.CooldownFence = fence
+			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_error", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+			return
 		}
+		// 长期降频道与 transport 失败同判（特供跳过，设计 §5）：HTTP 失败结果
+		// 只按 1 小时/轮降频，不写长期道错误码——诊断码属于 transport 失败
+		// 证据，不能把 HTTP 拒绝渲染成同一诊断。
+		if !input.Eligibility.ExpeditedRecovery && elapsed >= cooldownMaxRecovery(input.Schedule) {
+			next := observed.Add(schedulejitter.Delay(cooldownLongTermInterval))
+			outcome.NextDueAt = &next
+			outcome.FailureCount = prior.FailureCount
+			outcome.FailureStartedAt = prior.FailureStartedAt
+			outcome.AccountStatus = expectedStatus
+			outcome.CooldownFence = fence
+			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_defer", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+			return
+		}
+		// 快速道与慢速道与 transport 失败完全一致：第 1–5 次 3/6/12/24/48 秒，
+		// 第 6 次起 60 秒基准（特供 15 秒）；jitter 由 schedulejitter.Delay
+		// 统一施加一次。HTTP 失败结果不得进入 boundedCooldownRemaining 的
+		// 10 分钟有界终态：完整响应证明上游可达，有界窗口只约束无法完成真实
+		// 交互的 transport 证据。
+		failures := prior.FailureCount + 1
+		outcome.FailureCount = failures
+		delay := schedulejitter.Delay(cooldownFailureDelay(input.AccountID, fence.Generation, initialBackoff, failures, input.Eligibility.ExpeditedRecovery))
+		next := observed.Add(delay)
+		outcome.NextDueAt = &next
+		outcome.FailureStartedAt = prior.FailureStartedAt
+		outcome.AccountStatus = expectedStatus
+		outcome.CooldownFence = fence
+		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_defer", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+	case exactkeyprobe.OutcomeTaskFailed:
+		// 无真实上游尝试的本地任务/配置故障不是账户可用性证据：保持旧的慢速
+		// 有界顺延，不推进失败计数、不进入长期道、不触发任何终态。
 		growthStep := cooldownDeferGrowthStep(fence, observed, base)
 		delay := schedulejitter.Delay(cooldownDefer(growthStep, base, maxDelay))
 		next := observed.Add(delay)

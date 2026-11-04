@@ -1,6 +1,6 @@
 // Package statsrebuild 是 jobs 模块的受控导出面：统计缓存离线重建编排
 // （BUG-0182）。它只编排 internal/statsagg 的既有聚合与窗口刷新实现——
-// 聚合口径、游标推进语义、窗口阶段全部复用 Aggregator /
+// 聚合口径、消费水位推进语义、窗口阶段全部复用 Aggregator /
 // WindowRefresher，自身不含第二套口径 SQL；唯一消费方是 maintenance CLI
 // 的 rebuild-usage-stats 子命令（基线受控例外登记见
 // docs/architecture/Go三项目架构基线.md §2 与
@@ -22,8 +22,8 @@
 //     ai_performance_summary_windows、scope range windows、system metrics
 //     trend windows），使统计缓存面在一次离线执行内回到与在线收敛一致的
 //     状态；
-//  4. 绝不写业务库（juhe_business 只读）与 usage_records 源表
-//     （juhe_usage.usage_records 只读）。
+//  4. 绝不写业务库（juhe_business 只读）；usage_records 源表只写统计消费
+//     水位列（把 usage_stats_aggregated_at 归零，见下），其余列只读。
 //
 // dirty 队列处置（显式契约，见 BUG-0182 验收记录；2026-10-17 起两表在线
 // 消费方为窗口刷新 job 的同日增量轮，见 BUG-0327）：
@@ -278,7 +278,7 @@ func Rebuild(ctx context.Context, options Options) (Result, error) {
 	}
 
 	// 2. 从 usage_records 逐批重放聚合（每批独立事务提交，复用
-	// statsagg 游标推进语义）。
+	// statsagg 消费水位推进语义）。
 	aggregator := &statsagg.Aggregator{
 		DB:         options.DB,
 		Dialect:    dialect,
@@ -347,6 +347,15 @@ func clearStatsSurface(ctx context.Context, db *sql.DB, dialect statsagg.Dialect
 		if logf != nil {
 			logf("已清空统计结果表 %s", dialect.StatsTable(table))
 		}
+	}
+	// 统计消费水位回零：水位列是统计管线的消费标记（BUG-0345），重建后必须
+	// 让它重新等于「全部待消费」，否则重放一条都读不到，重建结果会是空统计面。
+	// 这是本编排对源表唯一的写：只动统计自己的水位列，不碰任何业务列。
+	if _, err := tx.ExecContext(ctx, bind(true, `UPDATE juhe_usage.usage_records SET usage_stats_aggregated_at = NULL`)); err != nil {
+		return fmt.Errorf("重置 usage_records 统计消费水位失败: %w", err)
+	}
+	if logf != nil {
+		logf("已重置 usage_records 统计消费水位（usage_stats_aggregated_at）")
 	}
 	args := make([]any, 0, len(rebuildResetJobStateNames))
 	for _, jobName := range rebuildResetJobStateNames {

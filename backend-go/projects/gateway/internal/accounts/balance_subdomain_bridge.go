@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"strings"
@@ -113,7 +114,8 @@ func (s *Store) balanceService() *accountsbalance.Service {
 			}
 			return item, err
 		},
-		ScheduleGate: m11ScheduleAllowed,
+		ScheduleGate:      m11ScheduleAllowed,
+		ScheduleGateValue: m11ScheduleGateValue,
 		// BUG-0286：余额输入身份摘要与 J2 写端同一算法源（shared 执行核）。
 		// 读端行带凭据密文列原文：此处解密提取逻辑身份（base_url + 有效
 		// Key 全池，与 J2 执行核同一 CredentialBalanceIdentity），解密失败
@@ -251,6 +253,21 @@ func m11ScheduleAllowed(scheduleJSON string, now time.Time) bool {
 		return override == "active"
 	}
 	return true
+}
+
+// m11ScheduleGateValue 是 schedule JSON 文本形态的闸门派生值（设计 §3.1）：
+// 空/不可解析 → NULL（闸门恒开），否则 1（时段内）/ 0（时段外）。写面
+// （force-activate 等）用它落 accounts.availability_schedule_gate。
+func m11ScheduleGateValue(scheduleJSON string, now time.Time) sql.NullInt64 {
+	trimmed := strings.TrimSpace(scheduleJSON)
+	if trimmed == "" {
+		return sql.NullInt64{}
+	}
+	schedule, err := ParseScheduleJSON(trimmed)
+	if err != nil || schedule == nil {
+		return sql.NullInt64{}
+	}
+	return ScheduleGateValue(schedule, now)
 }
 
 // ---- 门面留根：prepareBalanceDraft（路由侧草稿准备） ----

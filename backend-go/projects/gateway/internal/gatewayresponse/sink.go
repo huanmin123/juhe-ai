@@ -56,6 +56,22 @@ var _ gatewaypreauth.ResponseSink = (*Sink)(nil)
 
 // SendGatewayFailureResponse 对齐 sendGatewayFailureResponse。
 func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseInput) {
+	s.finalizeGatewayFailure(input, true)
+}
+
+// RecordGatewayFailureWithoutResponse 是 SendGatewayFailureResponse 的
+// pre-commit 客户端交接形态（gatewaypreauth.GatewayFailureRecorder）：连接
+// 已被交接断开，不再写 HTTP 响应，但失败审计与 usage 行必须与 503 契约同源
+// 落库（否则审计与计费各丢一条）。
+func (s *Sink) RecordGatewayFailureWithoutResponse(input gatewaypreauth.FailureResponseInput) {
+	s.finalizeGatewayFailure(input, false)
+}
+
+var _ gatewaypreauth.GatewayFailureRecorder = (*Sink)(nil)
+
+// finalizeGatewayFailure 是失败响应的唯一实现：writeResponse 控制是否把错误
+// 写向下游（交接断开后必须为 false），其余审计/usage 行为两臂完全一致。
+func (s *Sink) finalizeGatewayFailure(input gatewaypreauth.FailureResponseInput, writeResponse bool) {
 	// Protocol 非空时按调用方已判定的显式协议构造错误形态（models 装载
 	// 失败收尾）；为空时保持既有按请求路径的协议推断，其他失败调用零变化。
 	protocol := gatewayErrorProtocolForRequest(input.Req)
@@ -68,10 +84,12 @@ func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseIn
 	}
 	clientPayload := gatewaypreauth.GatewayErrorPayloadForProtocol(deliveredPayload, protocol)
 	clientPayloadJSON := marshalClientPayload(clientPayload)
-	sendGatewayErrorResponseForSink(input.Res, input.StatusCode, deliveredPayload, gatewaypreauth.SendGatewayErrorResponseOptions{
-		Protocol:                     protocol,
-		PreserveUpstreamErrorMessage: input.PreserveUpstreamErrorMessage,
-	})
+	if writeResponse {
+		sendGatewayErrorResponseForSink(input.Res, input.StatusCode, deliveredPayload, gatewaypreauth.SendGatewayErrorResponseOptions{
+			Protocol:                     protocol,
+			PreserveUpstreamErrorMessage: input.PreserveUpstreamErrorMessage,
+		})
+	}
 	input.AuditCapture.Finalize(gatewaypreauth.AuditFinalizeInput{
 		Outcome:          input.Audit.Outcome,
 		Success:          false,

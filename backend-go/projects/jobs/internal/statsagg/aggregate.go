@@ -97,19 +97,40 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 游标只用于诊断与下游（对账窗口、清理地板）参考，不参与选行：选行完全由
+	// 消费水位列决定，重复执行不依赖游标是否落后。这里仍读一次，用于水位列
+	// 首次启用时的存量结算（见 BootstrapUsageRecordConsumption）。
 	state, err := statsJobState(ctx, tx, a.Dialect)
 	if err != nil {
 		return 0, err
 	}
+	bootstrapped, err := BootstrapUsageRecordConsumption(ctx, tx, UsageRecordConsumptionUsageStats, updatedAt, state.CursorCreatedAt, state.CursorID)
+	if err != nil {
+		return 0, err
+	}
+	if bootstrapped {
+		// 结算只处理「旧游标已覆盖」的行；游标之后的行仍是待消费积压，lag 照实报。
+		lagSeconds, err := a.pendingUsageStatsLagSeconds(ctx, tx)
+		if err != nil {
+			return 0, err
+		}
+		if err := a.updateStatsJobState(ctx, tx, statsJobStateInput{LastSuccessAt: &updatedAt, LagSeconds: &lagSeconds}); err != nil {
+			return 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
 	query := a.Dialect.bind(`
 		SELECT ` + usageStatsRecordSelectColumns + `
 		FROM ` + a.Dialect.UsageRecordsTable() + `
-		WHERE created_at <= ?
-		  AND (created_at > ? OR (created_at = ? AND id > ?))
+		WHERE ` + string(UsageRecordConsumptionUsageStats) + ` IS NULL
+		  AND created_at <= ?
 		ORDER BY created_at ASC, id ASC
 		LIMIT ?
 	`)
-	rows, err := tx.QueryContext(ctx, query, safeCreatedBefore, state.CursorCreatedAt, state.CursorCreatedAt, state.CursorID, batchLimit)
+	rows, err := tx.QueryContext(ctx, query, safeCreatedBefore, batchLimit)
 	if err != nil {
 		return 0, err
 	}
@@ -118,11 +139,12 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 		return 0, err
 	}
 	if len(records) == 0 {
-		// 空批次 lag 固定 0：此前的 latestUsageRecordLagSeconds 查询与主查询
-		// 谓词完全一致（created_at <= safeCreatedBefore AND (created_at > cursor
-		// OR (= AND id >))，仅 ORDER/LIMIT 不同），主查询已返回空 ⟺ 最新行查询
-		// 必空，非空分支不可达（防御性死代码，w10c 测试举证后移除）。
-		lagSeconds := 0.0
+		// 无待消费行：lag 取「最旧未消费记录」的年龄（0 表示积压清零）。
+		// created_at 晚于安全截止的行（时钟前跳）会留到后续轮次消费，不会漏。
+		lagSeconds, err := a.pendingUsageStatsLagSeconds(ctx, tx)
+		if err != nil {
+			return 0, err
+		}
 		if err := a.updateStatsJobState(ctx, tx, statsJobStateInput{LastSuccessAt: &updatedAt, LagSeconds: &lagSeconds}); err != nil {
 			return 0, err
 		}
@@ -135,8 +157,19 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 	if err := a.aggregateRows(ctx, tx, records, updatedAt, timezone); err != nil {
 		return 0, err
 	}
+	// 消费水位与聚合写同事务：回滚时标记一并撤销，本批下轮重新消费（幂等）。
+	consumedIDs := make([]string, 0, len(records))
+	for _, record := range records {
+		consumedIDs = append(consumedIDs, record.ID)
+	}
+	if err := MarkUsageRecordsConsumed(ctx, tx, UsageRecordConsumptionUsageStats, consumedIDs, updatedAt); err != nil {
+		return 0, err
+	}
 	last := records[len(records)-1]
-	lagSeconds := statsLagSecondsFromCursor(last.CreatedAt, a.now())
+	lagSeconds, err := a.pendingUsageStatsLagSeconds(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 	if err := a.updateStatsJobState(ctx, tx, statsJobStateInput{
 		CursorCreatedAt: &last.CreatedAt,
 		CursorID:        &last.ID,
@@ -149,6 +182,27 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 		return 0, err
 	}
 	return len(records), nil
+}
+
+// pendingUsageStatsLagSeconds 返回待消费积压的年龄：最旧未标记使用记录的
+// created_at 到现在的秒数，无积压为 0。
+//
+// 为什么不沿用「最后消费行的 created_at」：晚到记录会让该值停在近处，而积压里
+// 还躺着更旧的行，读数永远是 0——BUG-0345 正是被这个口径掩盖的。
+func (a *Aggregator) pendingUsageStatsLagSeconds(ctx context.Context, tx *sql.Tx) (float64, error) {
+	oldest, ok, err := OldestPendingUsageRecordCreatedAt(ctx, tx, UsageRecordConsumptionUsageStats)
+	if err != nil || !ok {
+		return 0, err
+	}
+	milliseconds, parsed := RFC3339Milliseconds(oldest)
+	if !parsed {
+		return 0, fmt.Errorf("待统计消费的使用记录 created_at 不是合法的 RFC3339 时间: %q", oldest)
+	}
+	lag := (a.now().UnixMilli() - milliseconds) / 1000
+	if lag < 0 {
+		return 0, nil
+	}
+	return float64(lag), nil
 }
 
 // usageStatsRecordSelectColumns mirrors usage-stats-types.ts

@@ -1,4 +1,5 @@
-import type { AccountStatus, ProviderDefinition } from '@/types/domain'
+import type { ProviderDefinition } from '@/types/domain'
+import type { AccountStatusFilterValue } from './accountFormTypes'
 import {
   ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
   ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
@@ -524,8 +525,10 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, XAI_PROVI
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20
 
-export const statusOptions: Array<{ label: string; value: AccountStatus }> = [
+export const statusOptions: Array<{ label: string; value: AccountStatusFilterValue }> = [
   { label: '可调度', value: 'active' },
+  // 时间计划闸门（设计 §5.4）：时段外是正常状态的子集，独立筛选值。
+  { label: '非时间段', value: 'out_of_window' },
   { label: '待检查', value: 'pending_test' },
   { label: '停用', value: 'disabled' },
   { label: '异常', value: 'error' },

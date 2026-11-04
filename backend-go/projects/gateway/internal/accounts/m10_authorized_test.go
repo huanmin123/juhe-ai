@@ -577,8 +577,8 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 
 // TestPatchRenameSyncsAuthorizationInstanceNames covers the archived rename
 // arm (account-management-patch.repository.ts:801-805): a source rename
-// refreshes the source name search terms and cascades the new name onto each
-// live authorization instance through the uniqueness ladder (:1670-1739).
+// cascades the new name onto each live authorization instance through the
+// uniqueness ladder (:1670-1739).
 func TestPatchRenameSyncsAuthorizationInstanceNames(t *testing.T) {
 	env, authzStore := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner9", "owner-pass", "super_admin")
@@ -614,17 +614,10 @@ func TestPatchRenameSyncsAuthorizationInstanceNames(t *testing.T) {
 	if got := env.queryCell(t, `SELECT name FROM accounts WHERE id = ?`, instanceID); got != "RenamedSource" {
 		t.Fatalf("instance name after rename: %q", got)
 	}
-	// Source and instance search terms follow the new name; the old prefix is
-	// gone from both.
+	// 名称搜索直读 accounts.name：来源与实例名称列已同步更新即完成语义。
 	for _, accountID := range []string{"acc-rename-src", instanceID} {
-		if env.count(t, `SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`, accountID) != 1 {
-			t.Fatalf("search document missing for %s", accountID)
-		}
-		if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ? AND term = 'Ren'`, accountID) != 1 {
-			t.Fatalf("'Ren' term missing for %s", accountID)
-		}
-		if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ? AND term = 'Ori'`, accountID) != 0 {
-			t.Fatalf("stale 'Ori' term kept for %s", accountID)
+		if got := env.queryCell(t, `SELECT name FROM accounts WHERE id = ?`, accountID); got != "RenamedSource" {
+			t.Fatalf("name column not updated for %s: %q", accountID, got)
 		}
 	}
 }

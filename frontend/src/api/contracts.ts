@@ -144,7 +144,8 @@ export interface AccountListParams extends ListParams {
   tagIds?: string[]
   type?: string
   status?: string | string[]
-  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  /** `out_of_window` 为时间计划闸门筛选：等价 status='active' AND gate=0（时间计划闸门设计 §5.4）。 */
+  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling' | 'out_of_window'
   // M1 读通道：按能力域过滤列表/导出（chat/video/audio/image；all=不过滤，前端四域菜单恒传具体域）。
   domain?: AccountCapabilityDomain
 }
@@ -164,7 +165,7 @@ export interface AccountOptionParams extends ListParams {
   tagIds?: string[]
   type?: string
   status?: string | string[]
-  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling' | 'out_of_window'
 }
 
 export interface AccountUsageStatsOptionParams extends ListParams {
@@ -246,7 +247,8 @@ export interface ApiKeyListParams extends ListParams {
   page?: number
   pageSize?: number
   keyword?: string
-  status?: 'active' | 'disabled' | 'all'
+  /** out_of_window 是服务端虚拟筛选值：status='active' AND availability_schedule_gate=0 */
+  status?: 'active' | 'disabled' | 'out_of_window' | 'all'
   routeStrategyId?: string
 }
 

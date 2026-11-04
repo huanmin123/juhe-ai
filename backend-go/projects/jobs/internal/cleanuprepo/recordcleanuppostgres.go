@@ -233,6 +233,11 @@ func (s *RecordCleanupStore) postgresUsageRecordCleanupFloorCursor(ctx context.C
 
 // selectPostgresAPIKeyUsageRows 照 deletePostgresApiKeyUsageDataBatch 的批次
 // 查询（usageStatsRecordSelectColumns 全列，游标内正序）。
+//
+// 追加「两个统计聚合器都已消费」过滤（BUG-0345）：扣减台账假设被删行的贡献
+// 已经计入统计，否则删一行就冲销一份从未加进去的量。游标已不再是「此后全部
+// 聚合完毕」的水位（晚到记录会在游标之后落库），因此直接用消费水位列判定，
+// 未消费的行留到下一批，精确且不引入新的时间窗口假设。
 func (s *RecordCleanupStore) selectPostgresAPIKeyUsageRows(ctx context.Context, queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, apiKeyID, systemAccountID string, cursor cleanupCursor, limit int) ([]statsagg.UsageStatsRecordRow, error) {
@@ -241,6 +246,8 @@ func (s *RecordCleanupStore) selectPostgresAPIKeyUsageRows(ctx context.Context, 
     FROM juhe_usage.usage_records
     WHERE api_key_id = ?
       AND system_account_id = ?
+      AND usage_stats_aggregated_at IS NOT NULL
+      AND client_ip_stats_aggregated_at IS NOT NULL
       AND (created_at < ? OR (created_at = ? AND id <= ?))
     ORDER BY created_at ASC, id ASC
     LIMIT ?
@@ -259,6 +266,8 @@ func (s *RecordCleanupStore) selectPostgresAccountUsageRows(ctx context.Context,
     SELECT %s
     FROM juhe_usage.usage_records
     WHERE (account_id = ANY(?::text[]) OR account_authorization_id = ANY(?::text[]))
+      AND usage_stats_aggregated_at IS NOT NULL
+      AND client_ip_stats_aggregated_at IS NOT NULL
       AND (created_at < ? OR (created_at = ? AND id <= ?))
     ORDER BY created_at ASC, id ASC
     LIMIT ?

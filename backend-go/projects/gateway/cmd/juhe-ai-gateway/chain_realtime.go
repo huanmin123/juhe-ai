@@ -808,6 +808,12 @@ func (c *gatewayChain) resolveRealtimeIdentity(ctx context.Context, req *gateway
 	}
 	runtime, err := c.cache.ReadGatewayRuntimeByAPIKeyIDAsync(ctx, verify.APIKeyID)
 	if err != nil {
+		// 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.2）：token 绑定的
+		// Key 有效但当前不在可用时段，返回可区分的 401。
+		if errors.Is(err, gatewayruntimecache.ErrAPIKeyOutsideSchedule) {
+			c.renderRealtimeError(res, http.StatusUnauthorized, "API Key 当前不在可用时段", "invalid_request_error", "api_key_outside_schedule")
+			return nil, "", &realtimePrepareFailure{status: http.StatusUnauthorized}
+		}
 		c.handleOrchestratorError(err, req, res, c.preauth.NowMs(), "GET /v1/realtime")
 		return nil, "", &realtimePrepareFailure{status: http.StatusInternalServerError}
 	}

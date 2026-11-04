@@ -344,7 +344,7 @@ func nullStringForOAuthType(value string) sql.NullString {
 // Create mirrors createAccountInClientAsync (owner-mode core): provider
 // profile check, group binding resolution, sealed credentials with fingerprint
 // and mask, schedule-aware initial status, supported models / mappings / tags
-// / name search terms writes, then the in-transaction tail of the archive
+// writes, then the in-transaction tail of the archive
 // create (repositories.ts:2412-2432): the dispatch revision family advance
 // plus the J1 snapshot health-input outbox row for the health-capable
 // gpt/openai accounts (BUG-0174 M-8; the direct_input_reader candidate SQL
@@ -688,13 +688,16 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 	expiredByPackage := isAccountExpired(accountExpiresAt.String, now)
 	nextStatus := initialStatus
-	if !expiredByPackage {
-		if override, ok := ScheduleStatus(schedule, now); ok && (initialStatus == "active" || initialStatus == "disabled") {
-			nextStatus = override
-		}
-	} else {
+	// 时间计划不再改写 status（《时间计划闸门与账户状态解耦设计》§4.2）：status
+	// 只由用户选择与健康状态机派生，计划只维护派生闸门
+	// availability_schedule_gate（NULL=无计划/1=时段内/0=时段外）。套餐到期仍
+	// 强制 disabled。
+	if expiredByPackage {
 		nextStatus = "disabled"
 	}
+	// 闸门是计划在当前时刻的唯一派生事实：无计划（或计划未启用）为 NULL，闸门
+	// 恒开；有计划时按时段求值落 1/0。计划与 status 正交，任何状态都写闸门。
+	scheduleGate := ScheduleGateValue(schedule, now)
 	// 媒体域 schedulable 跟随派生状态：入参 status 缺省时 CreationStatus 的
 	// Schedulable 哨兵为 false（对应 chat 的 pending_test 暂停调度），媒体域
 	// 派生为 active 后必须可调度，否则产生「active 却禁调度」的滞留行；显式
@@ -942,20 +945,21 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
 		 rpm_limit,
 		 priority, super_priority_enabled, fallback_enabled, schedulable,
-		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
+		 availability_schedule_json, availability_schedule_next_check_at, availability_schedule_gate,
+		 notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message,
 		 balance_query_enabled, balance_query_config_json, background_probe_enabled,
 		 temporary_unavailable_continuous_probe_enabled,
 		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, protocol.protocolCode, protocol.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		nullStringForOAuthType(oauthType),
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit, rpmLimit,
 		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), boolInt(schedulable),
-		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
+		scheduleJSONValue, nextCheckAt, scheduleGate, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, backgroundProbeEnabled, temporaryProbeEnabled,
 		boolInt(expeditedRecoveryEnabled), domain, vendorCode, connectionDriverCode,
@@ -984,9 +988,6 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, err
 	}
 	if err := s.replaceAccountModelMappings(ctx, tx, id, providerCode, input.ModelMappings, nowISO); err != nil {
-		return nil, err
-	}
-	if err := s.replaceAccountNameSearchTerms(ctx, tx, id, systemAccountID, strings.TrimSpace(input.Name), nowISO); err != nil {
 		return nil, err
 	}
 	if _, err := s.replaceAccountTags(ctx, tx, id, systemAccountID, tagNames, nowISO); err != nil {

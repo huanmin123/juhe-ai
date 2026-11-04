@@ -62,8 +62,8 @@ func TestW13g2TeamDetailTwoMembers(t *testing.T) {
 	_ = fp
 }
 
-// TestW13g2ProvisionMisc 覆盖 provision 的空 shortID 梯子、空名搜索词、
-// stale 绑定替换与 pg 分支。
+// TestW13g2ProvisionMisc 覆盖 provision 的空 shortID 梯子、stale 绑定替换与
+// pg 分支。
 func TestW13g2ProvisionMisc(t *testing.T) {
 	s, _ := w13g2FailStore(t)
 	db := s.db
@@ -79,10 +79,6 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 	name, err := s.uniqueAuthorizedAccountInstanceName(ctx, tx, "Misc源", "grantee", "ab3", "")
 	if err != nil || name == "" {
 		t.Fatalf("短 authorizationID 应可用: %q %v", name, err)
-	}
-	// 空规范化名 → 搜索词直接返回 nil（460-462）。
-	if err := s.replaceInstanceNameSearchTerms(ctx, tx, "acc_misc_x", "grantee", "   ", "now"); err != nil {
-		t.Fatalf("空名应直接返回: %v", err)
 	}
 	// 夹具池为单连接：后续事务开始前必须释放当前事务，否则 BeginTx 永久等待。
 	tx.Rollback()
@@ -101,7 +97,7 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 
 // TestW13g2FailpointFinalArms 收尾错误臂：team 展开来源、成员展开 upsert、
 // quota 计数、syncUser returned 的来源回收、paused 非法 limits、梯子查询
-// 失败、搜索词删除失败、改名链 replaceTerms。
+// 失败。
 func TestW13g2FailpointFinalArms(t *testing.T) {
 	s, fp := w13g2FailStore(t)
 	db := s.db
@@ -179,8 +175,7 @@ func TestW13g2FailpointFinalArms(t *testing.T) {
 	}
 	fp.disarm()
 
-	// 梯子可用性查询失败（instance 288-290）与搜索词文档删除失败
-	//（instance 456-458）、改名链 replaceTerms 失败（562-564）。
+	// 梯子可用性查询失败（instance 288-290）。
 	createdAcc, err := s.Create(ctx, CreateInput{
 		ResourceType: "account", ResourceID: "acc_f13",
 		GranteeType: "system_account", GranteeID: "grantee",
@@ -195,11 +190,6 @@ func TestW13g2FailpointFinalArms(t *testing.T) {
 		t.Fatalf("应失败")
 	}
 	fp.disarm()
-	fp.arm("INSERT INTO account_name_search_terms")
-	defer fp.disarm()
-	if _, err := s.SyncAccountAuthorizationInstanceNamesForSourceAccount(ctx, "acc_f13", "又改名"); err == nil {
-		t.Fatalf("应失败")
-	}
 	_ = createdAcc
 }
 

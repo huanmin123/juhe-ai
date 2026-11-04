@@ -16,7 +16,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE } from './accountOptions'
-import { countActiveAccountFilters } from './accountListFilters'
+import { accountStatusFilterQuery, countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSortParams, normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
 import { isAbortError } from './accountTestTaskHelpers'
@@ -484,6 +484,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   function accountListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }): AccountListParams {
+    // 「非时间段」不是账户状态：经 schedulable=out_of_window 下发（时间计划闸门设计 §5.4）。
+    const statusQuery = accountStatusFilterQuery(filters.status)
     return {
       systemAccountId,
       sorts: accountSorts.value,
@@ -495,7 +497,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       type: filters.type && filters.type !== 'all' ? filters.type : undefined,
       groupId: filters.groupId || undefined,
       tagIds: filters.tagIds,
-      status: filters.status
+      status: statusQuery.status,
+      schedulable: statusQuery.schedulable
     }
   }
 

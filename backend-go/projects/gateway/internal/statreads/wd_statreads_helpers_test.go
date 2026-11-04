@@ -911,25 +911,26 @@ func TestWdJ1OutcomeMergeHelpers(t *testing.T) {
 	}
 }
 
-func TestWdAccountNameSearchQueryTerms(t *testing.T) {
-	if terms := accountNameSearchQueryTerms("   "); terms != nil {
-		t.Fatalf("空白关键字应无词项: %#v", terms)
+func TestWdAiHealthAccountNameContainsFilter(t *testing.T) {
+	deps := &Deps{}
+	if clause, params := deps.aiHealthAccountNameContainsFilter("   "); clause != "0 = 1" || params != nil {
+		t.Fatalf("空白关键字应恒假: %q %#v", clause, params)
 	}
 	long := strings.Repeat("字", 129)
-	if terms := accountNameSearchQueryTerms(long); terms != nil {
-		t.Fatalf("超过 128 rune 应无词项")
+	if clause, params := deps.aiHealthAccountNameContainsFilter(long); clause != "0 = 1" || params != nil {
+		t.Fatalf("超过 128 rune 应恒假: %q %#v", clause, params)
 	}
-	terms := accountNameSearchQueryTerms(" GPT-4 ")
-	// "GPT-4" 5 个 rune，3-gram 依次为 GPT / PT- / T-4。
-	if len(terms) != 3 || terms[0] != "GPT" || terms[2] != "T-4" {
-		t.Fatalf("n-gram 词项错误: %#v", terms)
+	// 作用域条件由 loadAiHealthAccountPage 统一追加，本函数只产出名称条件。
+	clause, params := deps.aiHealthAccountNameContainsFilter(`50%_\`)
+	if clause != "accounts.name COLLATE \"C\" ILIKE ? ESCAPE '\\'" {
+		t.Fatalf("过滤片段错误: %q", clause)
 	}
-	// "aaaa" 收缩为 3-gram 后仅剩一个去重词项。
-	if dup := accountNameSearchQueryTerms("aaaa"); len(dup) != 1 || dup[0] != "aaa" {
-		t.Fatalf("n-gram 去重错误: %#v", dup)
+	if len(params) != 1 || params[0] != `%50\%\_\\%` {
+		t.Fatalf("过滤参数错误: %#v", params)
 	}
-	if normalizeAccountNameSearchText(" x ") != "x" {
-		t.Fatalf("规范化应仅去首尾空白")
+	clause, params = deps.aiHealthAccountNameContainsFilter(" 林夕 ")
+	if clause != "accounts.name COLLATE \"C\" ILIKE ? ESCAPE '\\'" || len(params) != 1 || params[0] != "%林夕%" {
+		t.Fatalf("包含模式错误: %q %#v", clause, params)
 	}
 }
 

@@ -14,8 +14,16 @@ const ArchitectureVersion = "go-projects-v1"
 // accounts.rpm_limit 加法列（纯 DDL 空号）：AI账户每分钟请求上限设计 §7.2
 // 为纯 DDL 增量，无新数据步骤，按《升级兼容与迁移账本设计》§6.4 占用
 // revision 14 空号、不写入 schema_migrations，由 DDL golden 与本常量共同
-// 表达；upgrade 依据 dbRevision < SchemaRevision 触发加法相补列。当前值 14。
-const SchemaRevision int64 = 14
+// 表达；upgrade 依据 dbRevision < SchemaRevision 触发加法相补列。2026-11-03
+// revision 15 时间计划闸门（《时间计划闸门与账户状态解耦设计》§3）：accounts
+// 与 api_keys 各新增 availability_schedule_gate 加法列，纯 DDL 增量、无数据
+// 步骤（存量自愈走同步任务内建，§7），因此同样不写入 schema_migrations。
+// 2026-11-03 revision 16 用量统计消费水位（BUG-0345 根治）：
+// juhe_usage.usage_records 新增 usage_stats_aggregated_at /
+// client_ip_stats_aggregated_at 两列与两条部分索引，纯 DDL 增量；存量行的
+// 水位结算由聚合器首次运行自举完成（不是升级步骤，不需要停写窗口），因此同样
+// 不写入 schema_migrations。当前值 16。
+const SchemaRevision int64 = 16
 
 type ProjectID string
 

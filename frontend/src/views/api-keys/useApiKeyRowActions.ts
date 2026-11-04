@@ -108,7 +108,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
           icon: 'disable',
           tone: 'warning',
           disabled: busy,
-          confirmTitle: '确认停用这个 API Key？停用后后续请求会立即被拒绝；如配置了时间计划，后续计划边界仍会继续更新状态。',
+          confirmTitle: '确认停用这个 API Key？停用后后续请求会立即被拒绝；时间计划只切换可用时段，不会自动恢复停用状态。',
           confirmOkText: '停用'
         }
       : {

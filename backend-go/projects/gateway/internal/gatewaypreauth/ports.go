@@ -503,6 +503,14 @@ type ResponseSink interface {
 	SendGeminiModelsGatewayResponse(input ModelsResponseInput) error
 }
 
+// GatewayFailureRecorder 是 ResponseSink 的可选扩展，供 pre-commit 客户端
+// 交接使用：交接已把连接断开（客户端以网络错误重试），不可能再写 HTTP 错误
+// 响应，但失败审计与网关失败 usage 行仍必须落库。实现方只做
+// SendGatewayFailureResponse 的记账部分，绝不写响应。
+type GatewayFailureRecorder interface {
+	RecordGatewayFailureWithoutResponse(input FailureResponseInput)
+}
+
 // GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影：绑定行的激
 // 活分组（设计 6.4 的绑定输入；canonical 定义在本包，gatewayresponse 以别名
 // 引用）。供应商解耦后绑定行不携带 provider 维度（设计 §8，B4 W2 删除过渡

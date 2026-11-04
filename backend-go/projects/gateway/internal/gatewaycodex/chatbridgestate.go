@@ -1208,6 +1208,14 @@ type GatewayQuotaExceededError interface {
 	GatewayQuotaRejection() (status int, errorType string, code string, message string)
 }
 
+// GatewayClientRetryError 是派发层锁死保持错误在压缩摘要面上的识别接口：
+// 实现方提供客户端可重试文案，消费者渲染 503 / gateway stream client retry
+// 契约，而不是 502「上游摘要请求失败」。gatewaycodex 不 import 派发包。
+type GatewayClientRetryError interface {
+	error
+	GatewayClientRetryMessage() string
+}
+
 func stateRestoreFailure(outcome string) gatewayFailure {
 	if outcome == RestoreOutcomeBoundaryMismatch {
 		return gatewayFailure{

@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -133,6 +134,21 @@ func ScheduleStatus(schedule *AvailabilitySchedule, now time.Time) (string, bool
 		return "active", true
 	}
 	return "disabled", true
+}
+
+// ScheduleGateValue 返回 accounts/api_keys.availability_schedule_gate 的派生值
+// （《时间计划闸门与账户状态解耦设计》§3.1）：无计划（或计划已清除）为 NULL
+// （闸门恒开），时段内为 1，时段外为 0。时间计划不再改写 status，闸门是计划
+// 与当前时刻的唯一派生事实。
+func ScheduleGateValue(schedule *AvailabilitySchedule, now time.Time) sql.NullInt64 {
+	status, ok := ScheduleStatus(schedule, now)
+	if !ok {
+		return sql.NullInt64{}
+	}
+	if status == "active" {
+		return sql.NullInt64{Int64: 1, Valid: true}
+	}
+	return sql.NullInt64{Int64: 0, Valid: true}
 }
 
 func normalizeScheduleTimezone(value any) (string, error) {

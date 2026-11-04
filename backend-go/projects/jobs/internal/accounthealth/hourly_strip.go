@@ -42,7 +42,7 @@ type AccountHealthHourlySink interface {
 }
 
 // recordAccountHealthHourlyObservation 把一个 outcome 转成条带观测并写入：
-// `complete_success` → success，其余 outcome（neutral/upstream/task failure）
+// `complete_success` → success，其余 outcome（http/upstream/task failure）
 // → failure（与 J1 投影自身的失败归类一致）；`stale` 不是真实探针观测，跳过。
 // 账户已删除（无 owner/provider 行）时跳过。返回错误供调用方决定游标策略。
 func recordAccountHealthHourlyObservation(ctx context.Context, sink AccountHealthHourlySink, business *ProjectionBusinessDB, outcome Outcome) error {

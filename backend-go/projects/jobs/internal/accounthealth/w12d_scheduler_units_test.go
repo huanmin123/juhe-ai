@@ -171,14 +171,14 @@ func TestW12dApplyCooldownDecisionArms(t *testing.T) {
 	input.ExpiresAt = now.Add(time.Hour)
 	input.Schedule = w12dSchedule()
 	// (a) fence 无效 → TaskFailed。
-	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyCooldownDecision(&outcome, input, CurrentState{}, false, "temporary_unavailable", now)
 	if outcome.Outcome != exactkeyprobe.OutcomeTaskFailed || outcome.ErrorCode != "cooldown_fence_invalid" {
 		t.Fatalf("invalid fence: %+v", outcome)
 	}
-	// (b) neutral → cooldown_defer 投影。
+	// (b) HTTP failure → cooldown_defer 投影。
 	input.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now, Generation: "gen-w12d-defer"}
-	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyCooldownDecision(&outcome, input, CurrentState{}, false, "temporary_unavailable", now)
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_defer" || outcome.CooldownFence == nil {
 		t.Fatalf("defer: %+v", outcome)
@@ -205,7 +205,7 @@ func TestW12dApplyCooldownDecisionArms(t *testing.T) {
 	priorFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "gen-prior"}
 	input.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "gen-prior"}
 	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, CooldownFence: priorFence}
-	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyCooldownDecision(&outcome, input, prior, true, "temporary_unavailable", now)
 	if outcome.CooldownFence == nil || outcome.CooldownFence.Generation != "gen-prior" {
 		t.Fatalf("prior fence: %+v", outcome.CooldownFence)
@@ -234,27 +234,27 @@ func TestW12dApplyOutcomeDecisionArms(t *testing.T) {
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "activation_success" {
 		t.Fatalf("activation success: %+v", outcome.Projection)
 	}
-	// neutral + active + scheduled_health → 立即冷却（阈值旁路）。
-	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	// HTTP failure + active + scheduled_health → 立即冷却（阈值旁路）。
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}, true, "scheduled_health")
 	if outcome.AccountStatus != "temporary_unavailable" || outcome.CooldownFence == nil {
 		t.Fatalf("immediate cooldown: %+v", outcome)
 	}
-	// neutral + active + 阈值内显式 health kind → health_failure。
-	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	// HTTP failure + active + 阈值内显式 health kind → health_failure。
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}, true, "health")
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "health_failure" || outcome.FailureCount != 1 {
 		t.Fatalf("health failure: %+v", outcome)
 	}
-	// neutral + active 达到阈值 → temporary_unavailable + 输出 fence。
-	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	// HTTP failure + active 达到阈值 → temporary_unavailable + 输出 fence。
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 2}, true, "scheduled_health")
 	if outcome.AccountStatus != "temporary_unavailable" || outcome.CooldownFence == nil || outcome.FailureCount != 0 {
 		t.Fatalf("threshold cooldown: %+v", outcome)
 	}
 	// pending_test 失败超过 24h → activation_error。
 	lateStarted := now.Add(-25 * time.Hour)
-	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeHTTPFailure, ObservedAt: now}
 	applyOutcomeDecision(&outcome, activationInput, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "pending_test", FailureCount: 1, FailureStartedAt: &lateStarted}, true, "scheduled_health")
 	if outcome.AccountStatus != "error" || outcome.ErrorCode != "account_activation_check_timeout" || outcome.Projection.TransitionKind != "activation_error" {
 		t.Fatalf("activation timeout: %+v", outcome)

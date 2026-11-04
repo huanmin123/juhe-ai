@@ -65,6 +65,7 @@ const accountKeyStatesPGFixtureSchema = `
       type TEXT NOT NULL DEFAULT 'api_key',
       status TEXT NOT NULL DEFAULT 'active',
       schedulable INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_gate INTEGER,
       vendor_code TEXT,
       protocol_code TEXT,
       protocol_version TEXT,

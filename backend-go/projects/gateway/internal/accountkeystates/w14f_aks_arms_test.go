@@ -152,7 +152,7 @@ func w14fPoolEnvelope(t *testing.T) string {
 
 // w14fRevalidateAccountRow 是 loadRevalidateAccountRow 的 8 列成功行。
 func w14fRevalidateAccountRow(t *testing.T) []driver.Value {
-	return []driver.Value{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), w14fPoolEnvelope(t)}
+	return []driver.Value{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), int64(1), w14fPoolEnvelope(t)}
 }
 
 // w14fFingerprintValues 返回池内两把 Key 的指纹（按 entries 顺序）。
@@ -185,12 +185,12 @@ type w14fRevalidateScript struct {
 func (s *w14fRevalidateScript) queryFn(query string, _ []driver.NamedValue) (driver.Rows, error) {
 	switch {
 	case strings.Contains(query, "SELECT COALESCE(vendor_code"):
-		return &w14fFakeRows{columns: make([]string, 8), values: s.accountRows}, nil
-	case strings.Contains(query, "SELECT status, schedulable, config_revision FROM"):
+		return &w14fFakeRows{columns: make([]string, 9), values: s.accountRows}, nil
+	case strings.Contains(query, "SELECT status, schedulable, availability_schedule_gate"):
 		if s.gateErr != nil {
 			return nil, s.gateErr
 		}
-		return &w14fFakeRows{columns: make([]string, 3), values: s.gateRows}, nil
+		return &w14fFakeRows{columns: make([]string, 4), values: s.gateRows}, nil
 	case strings.Contains(query, "SELECT 1 FROM"):
 		if s.candidateErr != nil {
 			return nil, s.candidateErr
@@ -232,7 +232,7 @@ func (s *w14fRevalidateScript) execFn(query string, _ []driver.NamedValue) (driv
 func TestW14fRevalidatePoolRetrySuccessPath(t *testing.T) {
 	script := &w14fRevalidateScript{
 		accountRows:  [][]driver.Value{w14fRevalidateAccountRow(t)},
-		gateRows:     [][]driver.Value{{"active", int64(1), int64(1)}},
+		gateRows:     [][]driver.Value{{"active", int64(1), int64(1), int64(1)}},
 		candidateRow: true,
 		// 第一次 UPDATE 命中 0 行（changed==0 分支），重试命中 1 行。
 		retrySecondUpdate: true,
@@ -260,7 +260,7 @@ func TestW14fRevalidatePoolGateRereadArms(t *testing.T) {
 		t.Helper()
 		script := &w14fRevalidateScript{
 			accountRows: [][]driver.Value{w14fRevalidateAccountRow(t)},
-			gateRows:    [][]driver.Value{{"active", int64(1), int64(1)}},
+			gateRows:    [][]driver.Value{{"active", int64(1), int64(1), int64(1)}},
 			// 候选默认存在、重试 UPDATE 仍 0 行；各用例按需覆盖。
 			candidateRow: true,
 			updateResult: w14fFakeResult{rowsAffected: 0},
@@ -277,7 +277,7 @@ func TestW14fRevalidatePoolGateRereadArms(t *testing.T) {
 	}
 	// 重读 revision 冲突。
 	store = build(t, func(s *w14fRevalidateScript) {
-		s.gateRows = [][]driver.Value{{"active", int64(1), int64(9)}}
+		s.gateRows = [][]driver.Value{{"active", int64(1), int64(1), int64(9)}}
 	})
 	if result, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err != nil ||
 		result.Reason != ReasonConfigRevisionConflict {
@@ -285,7 +285,7 @@ func TestW14fRevalidatePoolGateRereadArms(t *testing.T) {
 	}
 	// 重读 status 非 active。
 	store = build(t, func(s *w14fRevalidateScript) {
-		s.gateRows = [][]driver.Value{{"rate_limited", int64(1), int64(1)}}
+		s.gateRows = [][]driver.Value{{"rate_limited", int64(1), int64(1), int64(1)}}
 	})
 	if result, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err != nil ||
 		result.Reason != ReasonAccountNotActive {
@@ -293,7 +293,7 @@ func TestW14fRevalidatePoolGateRereadArms(t *testing.T) {
 	}
 	// 重读 schedulable != 1。
 	store = build(t, func(s *w14fRevalidateScript) {
-		s.gateRows = [][]driver.Value{{"active", int64(0), int64(1)}}
+		s.gateRows = [][]driver.Value{{"active", int64(0), int64(1), int64(1)}}
 	})
 	if result, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err != nil ||
 		result.Reason != ReasonAccountUnschedulable {
@@ -401,7 +401,7 @@ func TestW14fRevalidatePoolErrorArms(t *testing.T) {
 
 func TestW14fRevalidateDecryptFailureFallsBackToNotSupported(t *testing.T) {
 	script := &w14fRevalidateScript{
-		accountRows: [][]driver.Value{{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), "w14f-not-an-envelope"}},
+		accountRows: [][]driver.Value{{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), int64(1), "w14f-not-an-envelope"}},
 	}
 	store := w14fFakeStore(t, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
 	if result, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err != nil ||

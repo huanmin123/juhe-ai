@@ -48,7 +48,6 @@ func TestW12fListAvailabilityClosedArms(t *testing.T) {
 		{"RefreshViewerHealth", func() error { return repo.RefreshViewerHealth(ctx, "w12f-viewer", isoMillisW12f(time.Now())) }},
 		{"ClaimDirty", func() error { _, err := repo.ClaimDirty(ctx, "w12f-owner", 10, 30_000, 1000); return err }},
 		{"ListScopes", func() error { _, err := repo.ListScopes(ctx, []string{"w12f-acc"}); return err }},
-		{"LoadSearchTerms", func() error { _, err := repo.LoadSearchTerms(ctx, []string{"w12f-acc"}); return err }},
 		{"ApplyClaims", func() error { _, err := repo.ApplyClaims(ctx, []opsjobs.ProjectionWrite{{}}); return err }},
 		{"ApplyDeletionClaim", func() error { _, err := repo.ApplyDeletionClaim(ctx, opsjobs.DirtyClaim{}); return err }},
 		{"ReleaseForReplay", func() error { _, err := repo.ReleaseForReplay(ctx, opsjobs.ListAvailabilityReplayInput{}); return err }},

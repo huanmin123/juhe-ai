@@ -224,6 +224,7 @@ func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 		"vendor_code TEXT", "protocol_code TEXT", "protocol_version TEXT",
 		"type TEXT", "status TEXT", "schedulable INTEGER DEFAULT 1",
 		"config_revision INTEGER DEFAULT 1", "credentials_encrypted TEXT",
+		"availability_schedule_gate INTEGER",
 	} {
 		if _, err := db.Exec("ALTER TABLE juhe_business.accounts ADD COLUMN " + column); err != nil {
 			t.Fatalf("补齐 accounts 列 %s: %v", column, err)

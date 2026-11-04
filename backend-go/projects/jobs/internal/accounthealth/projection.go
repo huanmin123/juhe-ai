@@ -398,6 +398,10 @@ func (s *Store) listProjectedOutcomes(ctx context.Context, after *OutcomeCursor,
 		default:
 			return nil, fmt.Errorf("J1 jobs outcome payload 列类型无效: %T", payload)
 		}
+		// 历史存量归一：2026-11-04 前该类结果叫 framing_complete_neutral，其
+		// transition 仍是 cooldown_defer 且 StatusCode 非 0，归一为
+		// upstream_http_failure 后与新真值表匹配。
+		outcome.Outcome = normalizeStoredOutcome(outcome.Outcome)
 		result = append(result, DrainedOutcome{StorageObservedAtText: observed.RawText, StorageObservedAt: observed.Time.UTC(), Outcome: outcome})
 	}
 	return result, rows.Err()
@@ -685,19 +689,21 @@ type projectionAccountFence struct {
 	configRevision                int64
 	dispatchRevision              int64
 	authorizationInstanceSourceID sql.NullString
+	authorizationInstanceAuthID   sql.NullString
 	cooldownRetestObservation     projectionDBTime
 	cooldownRetestGeneration      sql.NullString
 	accountType                   string
 	credentialsEncrypted          string
 	balanceQueryEnabled           sql.NullInt64
 	balanceQueryConfigJSON        string
+	lastHealthSuccessAt           sql.NullString
 	availabilityScheduleJSON      sql.NullString
 }
 
 func (p *OutcomeProjector) findAccountFence(ctx context.Context, tx *sql.Tx, accountID string) (*projectionAccountFence, error) {
-	query := p.business.bind(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json, availability_schedule_json FROM ` + p.business.table("accounts") + ` WHERE id = ? AND deleted_at IS NULL` + p.forUpdate())
+	query := p.business.bind(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, authorization_instance_authorization_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json, last_health_success_at, availability_schedule_json FROM ` + p.business.table("accounts") + ` WHERE id = ? AND deleted_at IS NULL` + p.forUpdate())
 	var account projectionAccountFence
-	err := tx.QueryRowContext(ctx, query, accountID).Scan(&account.id, &account.status, &account.configRevision, &account.dispatchRevision, &account.authorizationInstanceSourceID, &account.cooldownRetestObservation, &account.cooldownRetestGeneration, &account.accountType, &account.credentialsEncrypted, &account.balanceQueryEnabled, &account.balanceQueryConfigJSON, &account.availabilityScheduleJSON)
+	err := tx.QueryRowContext(ctx, query, accountID).Scan(&account.id, &account.status, &account.configRevision, &account.dispatchRevision, &account.authorizationInstanceSourceID, &account.authorizationInstanceAuthID, &account.cooldownRetestObservation, &account.cooldownRetestGeneration, &account.accountType, &account.credentialsEncrypted, &account.balanceQueryEnabled, &account.balanceQueryConfigJSON, &account.lastHealthSuccessAt, &account.availabilityScheduleJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -767,10 +773,13 @@ func (p *OutcomeProjector) fenceMismatchReason(ctx context.Context, tx *sql.Tx, 
 	return "", nil
 }
 
-// activationPlanForProjection 移植归档 57535d3ad 的 activationPlan：仅
-// activation_success / cooldown_success 读取账户 availability schedule；
-// 计划缺失或未启用视同 active（归档 `?? 'active'`），解析失败 fail closed
-// （disabled / 不恢复 dispatch）。
+// activationPlanForProjection 求激活投影的目标状态与闸门（《时间计划闸门与
+// 账户状态解耦设计》§4.3）：
+//   - status 恒为 active——健康事实恢复，时间计划不再改写它；
+//   - 闸门按计划当前时刻求值：无计划 → NULL（恒开），时段内 → 1，时段外 → 0；
+//   - 计划文档解析失败 fail-closed 关闸（gate=0），但 status 仍恢复为 active，
+//     因为「计划坏了」不等于「账户不健康」；
+//   - restoresDispatch 只在 status=active 且闸门未关时成立。
 func (p *OutcomeProjector) activationPlanForProjection(account *projectionAccountFence, outcome Outcome) (activationProjectionPlan, error) {
 	transition := outcome.Projection.TransitionKind
 	if transition != "activation_success" && transition != "cooldown_success" {
@@ -778,19 +787,35 @@ func (p *OutcomeProjector) activationPlanForProjection(account *projectionAccoun
 	}
 	schedule, err := oauthrefresh.ParseScheduleJSON(account.availabilityScheduleJSON.String)
 	if err != nil {
-		// 归档 catch 分支：解析失败按 disabled 处理，不恢复 dispatch。
-		return activationProjectionPlan{status: "disabled", restoresDispatch: false}, nil
+		// 解析失败：关闸（不恢复 dispatch），但账户本身按健康事实恢复为 active。
+		return activationProjectionPlan{status: "active", scheduleGate: gateValue(0), restoresDispatch: false}, nil
 	}
 	status, ok := oauthrefresh.ScheduleStatus(schedule, p.now().UTC())
 	if !ok {
-		status = "active"
+		// 无计划文档：闸门为 NULL（恒开）。
+		return activationProjectionPlan{status: "active", restoresDispatch: true}, nil
 	}
 	nextCheckAt, _ := oauthrefresh.NextScheduleCheckAt(schedule, p.now().UTC())
-	return activationProjectionPlan{status: status, nextCheckAt: nextCheckAt, restoresDispatch: status == "active"}, nil
+	gate := 0
+	if status == "active" {
+		gate = 1
+	}
+	return activationProjectionPlan{
+		status:           "active",
+		scheduleGate:     gateValue(gate),
+		nextCheckAt:      nextCheckAt,
+		restoresDispatch: gate == 1,
+	}, nil
+}
+
+// gateValue 把闸门整数包成可空列值。
+func gateValue(gate int) *int {
+	return &gate
 }
 
 type activationProjectionPlan struct {
 	status           string
+	scheduleGate     *int // nil = 无计划（NULL 列）
 	nextCheckAt      string
 	restoresDispatch bool
 }
@@ -828,7 +853,24 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		}
 		return value
 	}
+	// gateOrNil 把闸门指针转成列值：nil（无计划）→ SQL NULL，0/1 原样写入。
+	gateOrNil := func(value *int) any {
+		if value == nil {
+			return nil
+		}
+		return *value
+	}
 	observedText := outcome.ObservedAt.UTC().Format(time.RFC3339Nano)
+	scheduleBalanceAutoDetection := func() error {
+		scheduleBalance, err := p.shouldScheduleBalanceAutoDetection(account, outcome, plan)
+		if err != nil {
+			return err
+		}
+		if scheduleBalance {
+			set("balance_query_next_refresh_at", observedText)
+		}
+		return nil
+	}
 	health := func() {
 		set("last_health_check_at", observedText)
 		set("next_health_check_at", timeTextOrNil(outcome.NextDueAt))
@@ -884,18 +926,18 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 	case "activation_success":
 		set("status", plan.status)
 		set("schedulable", 1)
+		set("availability_schedule_gate", gateOrNil(plan.scheduleGate))
 		set("availability_schedule_next_check_at", textOrNil(plan.nextCheckAt))
-		scheduleBalance, err := p.shouldScheduleBalanceAutoDetection(account, outcome, plan)
-		if err != nil {
+		if err := scheduleBalanceAutoDetection(); err != nil {
 			return false, err
-		}
-		if scheduleBalance {
-			set("balance_query_next_refresh_at", observedText)
 		}
 		clearCooldown()
 		clearLastError()
 		healthSuccess()
 	case "health_success":
+		if err := scheduleBalanceAutoDetection(); err != nil {
+			return false, err
+		}
 		healthSuccess()
 	case "health_failure":
 		healthFailure()
@@ -912,8 +954,12 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		setLastError()
 		healthFailure()
 	case "cooldown_success":
+		if err := scheduleBalanceAutoDetection(); err != nil {
+			return false, err
+		}
 		set("status", plan.status)
 		set("schedulable", 1)
+		set("availability_schedule_gate", gateOrNil(plan.scheduleGate))
 		set("availability_schedule_next_check_at", textOrNil(plan.nextCheckAt))
 		clearCooldown()
 		clearLastError()
@@ -966,11 +1012,35 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 	return affected == 1, nil
 }
 
-// shouldScheduleBalanceAutoDetection 移植归档同名函数：仅 activation_success
-// 且计划判定 active 时，为无余额配置的 api_key 账户安排余额探测。凭据解密
-// 失败与归档 decryptJson 一致上抛（中止投影事务、保留游标重试），不静默降级。
+// shouldScheduleBalanceAutoDetection 移植归档同名函数并叠加 T110 口径：为无
+// 余额配置的 api_key 账户在「首次成功健康检查」时写一次余额探测意图。
+//   - activation_success 保持归档原语义：首次激活成功即写，不要求账户此前从未
+//     成功健康检查；
+//   - health_success / cooldown_success 只在账户从未成功过健康检查（投影前
+//     last_health_success_at 为 NULL/空）时写一次：新建即 active 的账户激活首探
+//     失败、或其结果因期间配置变更被判 stale 后，首次成功会来自周期健康检查或
+//     冷却恢复路径；不写则探测意图永久丢失（2026-11-03 T110）。
+//
+// 其余条件与归档一致：计划判定 active、api_key 类型、余额查询关闭、空配置
+// 且至少一个有效 Key。已有成功记录的周期检查/旧账户/普通编辑不写，避免持续
+// 增加上游请求。凭据解密失败与归档 decryptJson 一致上抛（中止投影事务、保留
+// 游标重试），不静默降级。
 func (p *OutcomeProjector) shouldScheduleBalanceAutoDetection(account *projectionAccountFence, outcome Outcome, plan activationProjectionPlan) (bool, error) {
-	if outcome.Projection.TransitionKind != "activation_success" {
+	// 授权实例不参与余额自动探测（设计《AI账户上游余额查询》§7 规则 2 的
+	// 「非授权实例」）。实例的 credentials_encrypted 在生产是占位 "{}"，
+	// 必须在 transition 判断与任何解密之前跳过：否则首次成功路径会抛
+	// envelope 格式错误，drain 在投影处中断、receipt 不写、游标不前进。
+	if account.authorizationInstanceSourceID.Valid || account.authorizationInstanceAuthID.Valid {
+		return false, nil
+	}
+	firstSuccess := false
+	switch outcome.Projection.TransitionKind {
+	case "activation_success":
+		firstSuccess = true
+	case "health_success", "cooldown_success":
+		firstSuccess = !account.lastHealthSuccessAt.Valid || strings.TrimSpace(account.lastHealthSuccessAt.String) == ""
+	}
+	if !firstSuccess {
 		return false, nil
 	}
 	if plan.status != "active" {
@@ -1172,17 +1242,26 @@ func projectionValueAllowed(key string) bool {
 	}
 }
 
+// legacyOutcomeFramingCompleteNeutral 是 2026-11-04 前的历史结果字符串，仅用于
+// 读取历史 outcome 行时归一为 OutcomeHTTPFailure；新探针不再产生该值。
+const legacyOutcomeFramingCompleteNeutral = "framing_complete_neutral"
+
 // outcomeMatchesTransition 归档同名函数的分支真值表。
 func outcomeMatchesTransition(outcome Outcome, transition string) bool {
 	switch {
 	case transition == "activation_success" || transition == "health_success" || transition == "cooldown_success":
 		return outcome.Outcome == exactkeyprobe.OutcomeSuccess
 	case transition == "cooldown_defer":
-		return outcome.Outcome == exactkeyprobe.OutcomeNeutral || outcome.Outcome == exactkeyprobe.OutcomeTaskFailed
-	case transition == "cooldown_failure" || transition == "cooldown_error":
+		return outcome.Outcome == exactkeyprobe.OutcomeHTTPFailure || outcome.Outcome == exactkeyprobe.OutcomeTaskFailed
+	case transition == "cooldown_failure":
 		return outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed
+	case transition == "cooldown_error":
+		// 7 天终态可由 transport 失败（cooldown_retest_observation_timeout）或
+		// HTTP 失败（cooldown_retest_http_failure_timeout）产生；历史存量
+		// framing_complete_neutral 的终态行归一后也落在这一分支。
+		return outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed || outcome.Outcome == exactkeyprobe.OutcomeHTTPFailure
 	default:
-		return outcome.Outcome == exactkeyprobe.OutcomeNeutral || outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed
+		return outcome.Outcome == exactkeyprobe.OutcomeHTTPFailure || outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed
 	}
 }
 

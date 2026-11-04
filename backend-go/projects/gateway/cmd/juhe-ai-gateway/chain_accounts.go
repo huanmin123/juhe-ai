@@ -289,6 +289,9 @@ const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 			AND accounts.deleted_at IS NULL
 			AND (accounts.status IN ({statusSet}){mediaStatusArm})
 			AND accounts.schedulable = 1
+			-- 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.1）：NULL = 无计划
+			-- （恒开），1 = 时段内，0 = 时段外（不参与调度，status 保持 active）。
+			AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)
 			AND ((? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?){mediaCooldownArm})
 			AND (
 				(accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
@@ -298,6 +301,8 @@ const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 					AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
 					AND source_accounts.status IN ({statusSet})
 					AND source_accounts.schedulable = 1
+					-- 授权实例不复制来源计划，按来源账户的闸门判定（设计 §2.2/§5.1）。
+					AND (source_accounts.availability_schedule_gate IS NULL OR source_accounts.availability_schedule_gate = 1)
 					AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
 					AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
 					AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
@@ -308,13 +313,15 @@ const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 // chainMediaAdmissionStatusArm 冷却到期视频异步任务准入臂的 status 扩展：
 // 仅 video_create 账户在四个可调度 status 上可被视频创建请求选中。
 const chainMediaAdmissionStatusArm = ` OR (accounts.health_check_endpoint_mode = 'video_create'
-				AND accounts.status IN ('active', 'pending_test', 'rate_limited', 'temporary_unavailable'))`
+				AND accounts.status IN ('active', 'pending_test', 'rate_limited', 'temporary_unavailable')
+				AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1))`
 
 // chainMediaAdmissionCooldownArm 准入臂的冷却门：媒体账户要求冷却已过期或为
 // 空（NULL 视为过期）。占位展开自带 `<= ?` 一个占位符，实参由调用方按
 // mediaAdmission 追加一个 now。
 const chainMediaAdmissionCooldownArm = ` OR (accounts.health_check_endpoint_mode = 'video_create'
 				AND accounts.status IN ('active', 'pending_test', 'rate_limited', 'temporary_unavailable')
+				AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)
 				AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?))`
 
 // chainMediaAdmissionArmed 仅为视频异步任务创建请求武装恢复准入；TTS 与

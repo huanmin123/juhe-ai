@@ -273,7 +273,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 
 - 除 F1 / F4 专属事实外，表数据长期保留期统一由 `data-retention-cleanup` 默认每 10 分钟执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行（单轮固定 5 秒预算，预算耗尽后停止本轮留给下一轮）。F1 运行日志和 F4 操作日志分别由对应 Go owner 保留清理，其他清理器不得删除它们的专用事实。
 - 清理任务按内部常量小批次删除，固定每类表每轮最多处理 1000 条、最多 20 批，即每类数据每轮最多 2 万行；这些吞吐参数不属于系统设置，不允许用户在线调整。PostgreSQL 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。
-- 手动清理 `usage_records` 按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护；没有可安全清理记录或统计游标尚未建立时拒绝并说明原因。
+- 手动清理 `usage_records` 按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合消费水位保护——批次只挑「两个统计聚合器都已消费」的行（`usage_stats_aggregated_at` / `client_ip_stats_aggregated_at` 均非空），未消费的行留到下一批；没有可安全清理记录或统计游标尚未建立时拒绝并说明原因。
 - 统计聚合和审计日志落库只负责写入或聚合，不在各自流程里顺手删除历史表数据。
 
 ### 统计缓存离线重建（rebuild-usage-stats）
@@ -282,7 +282,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 
 - 离线门禁：必须显式传 `--confirm-offline` 或设置 `JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1`，否则拒绝执行且零副作用；前置条件是 gateway 与 jobs 已停止。除显式确认外，重建入口还会自动做离线校验：`background_job_leases` 存在未过期租约，或 `background_task_runs` 在活动回看窗口（5 分钟）内有心跳痕迹时拒绝（退出码 4，零副作用）——jobs 是统计结果表唯一在线写入方；停止 jobs 后如被拒绝，等待活动滑出回看窗口（至多约 5 分钟）再重试。
 - 存储形态：`--dsn <PostgreSQL URL>` 单形态（事实源 `juhe_usage.usage_records`，重建目标 `juhe_stats`，业务 schema `juhe_business` 只读）。
-- 重建语义：单事务清空 statsagg 实际写入的统计结果面（`usage_stats_*` 六桶、`usage_model_*` / `usage_error_*` / `usage_latency_*` 各五桶、`account_quality_minute_stats`、`account_health_hourly`、授权摘要 / 窗口表、`usage_rank_snapshots`、`ai_performance_summary_windows`、`usage_overview_*_windows`、`usage_model_rank_windows` / `usage_error_rank_windows`、`usage_scope_range_windows`、`usage_quota_hourly_windows` 等，执行时逐表打印；清单由防漂移守卫测试对 schema 全量分类断言）并重置 `stats_job_state` 的 `usage_stats_aggregation` 与 `usage_quota_hourly_windows_expiry` 游标行，然后从 `usage_records` 逐批重放聚合（复用 jobs `internal/statsagg` 既有口径，经 `backend-go/projects/jobs/statsrebuild` 受控导出面）；重放排干后运行全部窗口 / 排行刷新阶段，使统计缓存面一次回到与在线收敛一致的状态。业务库与 `usage_records` 源表全程只读。
+- 重建语义：单事务清空 statsagg 实际写入的统计结果面（`usage_stats_*` 六桶、`usage_model_*` / `usage_error_*` / `usage_latency_*` 各五桶、`account_quality_minute_stats`、`account_health_hourly`、授权摘要 / 窗口表、`usage_rank_snapshots`、`ai_performance_summary_windows`、`usage_overview_*_windows`、`usage_model_rank_windows` / `usage_error_rank_windows`、`usage_scope_range_windows`、`usage_quota_hourly_windows` 等，执行时逐表打印；清单由防漂移守卫测试对 schema 全量分类断言）并重置 `stats_job_state` 的 `usage_stats_aggregation` 与 `usage_quota_hourly_windows_expiry` 游标行，然后从 `usage_records` 逐批重放聚合（复用 jobs `internal/statsagg` 既有口径，经 `backend-go/projects/jobs/statsrebuild` 受控导出面）；重放排干后运行全部窗口 / 排行刷新阶段，使统计缓存面一次回到与在线收敛一致的状态。业务库只读；`usage_records` 源表除统计消费水位列外只读——同一事务内会把 `usage_stats_aggregated_at` 全部归零（不归零则重放读不到任何待消费行，重建结果会是空统计面），这是本命令对源表唯一的写。
 - 吞吐与续跑：`--batch-size` 默认 2000（钳 1..50000）、`--max-batches` 默认 1000（钳 1..10000）；单轮达到批数上限时退出码 3（未完成），调大上限后再次执行本命令即可完成重建（每轮重新清空并从零重放）。退出码契约：0 完成（含空源）、1 运行失败、2 用法错误（含门禁拒绝）、3 未完成、4 离线校验未通过。
 - dirty 队列处置：`usage_overview_dirty_scopes` / `ai_performance_summary_dirty_system_accounts` 的在线消费方是两个窗口刷新 job 的同日增量轮；离线重建在同一执行内已按当前口径全量重建窗口，完成路径末尾清空标记；`usage_quota_hourly_window_dirty_scopes` 保留重放再生的标记（恢复在线后首轮额度窗口刷新消费补建）；`account_quality_dirty_accounts` 保留（gateway 账号质量刷新据此重算分数）。
 - 空源语义：`usage_records` 为空或历史记录已丢弃时明确提示"放弃历史统计重建，后续从新请求重新累计"，统计缓存面重置为空并正常完成（退出码 0）。

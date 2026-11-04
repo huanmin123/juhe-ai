@@ -477,10 +477,11 @@ type ForceActivateOutcome struct {
 }
 
 // ForceActivatePending mirrors forceActivatePendingAccountAsync: the
-// pending_test CAS restore (active/disabled by the availability schedule),
-// the dispatch revision advance for the activated branch and the summary
-// re-read. Returns (nil outcome) when the row is missing or outside the
-// scope; the route turns the state race into 409.
+// pending_test CAS restore（人工确认：status 恒 active，时间计划只重算派生闸门
+// availability_schedule_gate——时段外恢复为 active+gate=0，见时间计划闸门与
+// 账户状态解耦设计 §4.2）, the dispatch revision advance for the activated
+// branch and the summary re-read. Returns (nil outcome) when the row is missing
+// or outside the scope; the route turns the state race into 409.
 func (s *Service) ForceActivatePending(ctx context.Context, accountID string, access accountscore.AccessScope) (*ForceActivateOutcome, error) {
 	ctx = accountscore.EnsureCtx(ctx)
 	id := strings.TrimSpace(accountID)
@@ -538,10 +539,11 @@ func (s *Service) ForceActivatePending(ctx context.Context, accountID string, ac
 	}
 	now := s.store.Now()
 	checkedAt := accountscore.IsoMillis(now)
-	nextStatus := "disabled"
-	if s.deps.ScheduleGate(row.scheduleJSON.String, now) {
-		nextStatus = "active"
-	}
+	// 人工确认恢复（时间计划闸门与账户状态解耦设计 §4.2）：status 恒为 active，
+	// 不再因计划时段外落 disabled；闸门按计划在当前时刻重算（无计划 → NULL，
+	// 闸门恒开），时段外恢复为「正常 · 非时间段」，展示与调度均按闸门判定。
+	nextStatus := "active"
+	nextScheduleGate := s.deps.ScheduleGateValue(row.scheduleJSON.String, now)
 	tx, err := s.store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -549,6 +551,7 @@ func (s *Service) ForceActivatePending(ctx context.Context, accountID string, ac
 	defer tx.Rollback()
 	exec, err := tx.ExecContext(ctx, s.store.Bind(`UPDATE `+s.store.Table("accounts")+`
 		SET status = ?,
+			availability_schedule_gate = ?,
 			schedulable = 1,
 			cooldown_until = NULL,
 			last_error_code = NULL,
@@ -573,7 +576,7 @@ func (s *Service) ForceActivatePending(ctx context.Context, accountID string, ac
 			AND status = 'pending_test'
 			AND config_revision = ?
 			AND (account_expires_at IS NULL OR account_expires_at > ?)`),
-		nextStatus, checkedAt, row.id, row.systemAccountID, row.configRevision, checkedAt)
+		nextStatus, nextScheduleGate, checkedAt, row.id, row.systemAccountID, row.configRevision, checkedAt)
 	if err != nil {
 		return nil, err
 	}

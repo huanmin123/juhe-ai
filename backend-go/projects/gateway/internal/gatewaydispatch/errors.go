@@ -73,6 +73,26 @@ type UpstreamAttemptError struct {
 
 func (e *UpstreamAttemptError) Error() string { return e.Message }
 
+// AccountLockHoldError 表示当前账号处于锁死窗口（ENGAGED 且未到死亡窗口）：
+// 本次请求已以真实失败结束该账号的 attempt，按设计 §3.4 不得切换到同组其他
+// 账号或后备分组，交给客户端重试。AccountID 是触发锁死门的账号。
+type AccountLockHoldError struct {
+	AccountID string
+	Message   string
+}
+
+func (e *AccountLockHoldError) Error() string { return e.Message }
+
+// GatewayClientRetryMessage implements the gatewaycodex.GatewayClientRetryError
+// narrow interface so the Codex compact summary path renders the same 503
+// client-retry handoff instead of 502 (设计 §3.4/§10.6).
+func (e *AccountLockHoldError) GatewayClientRetryMessage() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试"
+}
+
 // NormalRouteFirstByteCutoverError mirrors
 // dispatch/upstream-dispatch.ts NormalRouteFirstByteCutoverError.
 type NormalRouteFirstByteCutoverError struct {

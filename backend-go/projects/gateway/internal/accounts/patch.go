@@ -264,6 +264,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		fallbackEnabled           int
 		schedulable               int
 		availabilitySchedule      sql.NullString
+		availabilityScheduleGate  sql.NullInt64
 		accountExpiresAt          sql.NullString
 		lastErrorCode             sql.NullString
 		lastErrorMessage          sql.NullString
@@ -312,7 +313,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
 			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-			accounts.schedulable, accounts.availability_schedule_json, accounts.account_expires_at,
+			accounts.schedulable, accounts.availability_schedule_json, accounts.availability_schedule_gate,
+			accounts.account_expires_at,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
 			accounts.cooldown_until, accounts.cooldown_retest_failure_count,
 			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_generation,
@@ -350,7 +352,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.accountType, &row.credentialsEncrypted, &row.status, &row.concurrencyLimit,
 		&row.rpmLimit,
 		&row.priority, &row.superPriorityEnabled, &row.fallbackEnabled, &row.schedulable,
-		&row.availabilitySchedule, &row.accountExpiresAt, &row.lastErrorCode,
+		&row.availabilitySchedule, &row.availabilityScheduleGate, &row.accountExpiresAt, &row.lastErrorCode,
 		&row.lastErrorMessage, &row.lastErrorTraceID, &row.cooldownUntil,
 		&row.cooldownRetestCount, &row.cooldownRetestObservation, &row.cooldownRetestGeneration,
 		&row.cooldownRetestLastAt, &row.cooldownRetestLastCode,
@@ -437,11 +439,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			clearFailureRestoreTarget = "active"
 		}
 	}
-	// 时间计划门（复用 ForceActivatePending 同款 m11ScheduleAllowed 判定：
-	// 无计划/解析失败视为允许）：恢复到 active 仅在行内可用时间计划当前
-	// 生效时允许，计划不生效时落停用。
-	clearFailureScheduleBlocksActive := clearFailureRestoreTarget == "active" &&
-		!m11ScheduleAllowed(row.availabilitySchedule.String, now)
+	// 2026-11-03 时间计划闸门解耦（《时间计划闸门与账户状态解耦设计》§4.2）：
+	// 人工恢复是管理事实，不再受时间计划门限制——status 恢复到目标状态，是否
+	// 可调度由派生闸门 availability_schedule_gate 表达（时段外恢复为
+	// active+gate=0，展示「正常 · 非时间段」）。
 
 	changes := []PatchChange{}
 	addChange := func(field string, before, after any) {
@@ -687,8 +688,6 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 无过期输入时 nextExpiresAt 取行内现值（启用守卫按现值判断）。
 	nextExpiresAt := row.accountExpiresAt
 	expiresAtChanged := false
-	var nextSchedule *AvailabilitySchedule
-	scheduleChanged := false
 	if input.AccountExpiresAtPresent {
 		var next sql.NullString
 		if input.AccountExpiresAt != nil && strings.TrimSpace(*input.AccountExpiresAt) != "" {
@@ -711,16 +710,27 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err != nil {
 			return nil, err
 		}
-		nextSchedule = schedule
 		var next sql.NullString
 		if raw, ok := ScheduleJSON(schedule); ok {
 			next = sql.NullString{String: raw, Valid: true}
 		}
 		if next.Valid != row.availabilitySchedule.Valid || next.String != row.availabilitySchedule.String {
-			scheduleChanged = true
 			addChange("availabilitySchedule", parseScheduleOrNull(row.availabilitySchedule), schedule)
-			sets = append(sets, "availability_schedule_json = ?", "availability_schedule_next_check_at = ?")
-			setArgs = append(setArgs, next, scheduleNextCheckArg(schedule, now))
+			// 计划变化只重算闸门（设计 §4.2）：计划清除 / 未启用写 NULL（闸门
+			// 恒开），否则按时段落 1/0；status 保持状态机裁定值不变。
+			sets = append(sets, "availability_schedule_json = ?", "availability_schedule_next_check_at = ?",
+				"availability_schedule_gate = ?")
+			setArgs = append(setArgs, next, scheduleNextCheckArg(schedule, now), ScheduleGateValue(schedule, now))
+		}
+	}
+	// 人工恢复（clearFailureState）不带计划入参时，闸门按行内计划现值在当前时刻
+	// 重算（设计 §4.2「gate 由计划事实决定」）；与行内现值一致则不写列，避免
+	// 无谓的 revision 变化。带计划入参的分支已在上段同事务写入。
+	if clearFailureRestoreTarget != "" && !input.AvailabilitySchedulePresent {
+		gate := ScheduleGateValue(parseScheduleOrNull(row.availabilitySchedule), now)
+		if gate != row.availabilityScheduleGate {
+			sets = append(sets, "availability_schedule_gate = ?")
+			setArgs = append(setArgs, gate)
 		}
 	}
 
@@ -1284,18 +1294,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	scheduledStatus := requestedStatus
 	if expiredByPackage {
 		scheduledStatus = "disabled"
-	} else if scheduleChanged {
-		// 归档 accountStatusForScheduleMutation：active/disabled 请求才会被
-		// 时间计划派生状态覆盖，其余状态原样保留。
-		if override, ok := ScheduleStatus(nextSchedule, now); ok &&
-			(requestedStatus == "active" || requestedStatus == "disabled") {
-			scheduledStatus = override
-		}
-	} else if clearFailureScheduleBlocksActive {
-		// 人工恢复仍受时间计划约束：计划当前不生效时落停用（对齐
-		// ForceActivatePending）；套餐到期臂优先级不变（上文 expiredByPackage）。
-		scheduledStatus = "disabled"
 	}
+	// 时间计划不再覆盖 status（设计 §4.2）：计划变化只重算派生闸门
+	// availability_schedule_gate（scheduleChanged 分支在下方写列），status 只由
+	// 用户选择、到期与健康状态机裁定。
 	nextStatus := scheduledStatus
 	// 连接变化降级臂按域守卫（媒体账户生命周期定案表）：audio/video 域不参
 	// 与对话健康检查状态机，凭据/代理编辑保持 scheduledStatus（active 保持
@@ -1820,15 +1822,13 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 	// 重命名臂（归档 account-management-patch.repository.ts:801-805）：名称
-	// 变更在同一事务内刷新来源账户的名称搜索词，并把每个授权实例的名称沿
-	// 唯一性阶梯跟进（:1670-1739）。归档侧还把变更实例 id 归入
-	// renamedAuthorizationInstanceIds 驱动事后 per-instance lookup 缓存失效
-	// ——Go lookup 失效通道是登记过的 no-op hook（invalidation.go），网关
-	// 运行时缓存经 finishPatchSideEffects 的来源账户整面失效，无需额外通道。
+	// 变更在同一事务内把每个授权实例的名称沿唯一性阶梯跟进（:1670-1739）；
+	// 搜索直读 accounts.name，名称列更新即生效，无派生词项需要维护。归档侧
+	// 还把变更实例 id 归入 renamedAuthorizationInstanceIds 驱动事后
+	// per-instance lookup 缓存失效——Go lookup 失效通道是登记过的 no-op hook
+	// （invalidation.go），网关运行时缓存经 finishPatchSideEffects 的来源账户
+	// 整面失效，无需额外通道。
 	if nameChanged {
-		if err := s.replaceAccountNameSearchTerms(ctx, tx, row.id, row.systemAccountID, nextName, nowISO); err != nil {
-			return nil, err
-		}
 		if _, err := s.syncAuthorizationInstanceNames(ctx, tx, row.id, nextName, nowISO); err != nil {
 			return nil, err
 		}
@@ -2308,9 +2308,6 @@ func (s *Store) syncAuthorizationInstanceNames(ctx context.Context, tx *sql.Tx, 
 		}
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+`
 			SET name = ?, updated_at = ? WHERE id = ?`), nextName, nowISO, row.id); err != nil {
-			return nil, err
-		}
-		if err := s.replaceAccountNameSearchTerms(ctx, tx, row.id, row.systemAccountID, nextName, nowISO); err != nil {
 			return nil, err
 		}
 		changed = append(changed, row.id)

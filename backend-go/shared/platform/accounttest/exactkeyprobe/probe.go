@@ -193,17 +193,17 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	}
 	body, readErr := upstreamhttp.ReadBoundedPartial(response.Body, maxBytes)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return neutral(response.StatusCode, "upstream_http_status", "上游返回非成功状态")
+		return httpFailure(response.StatusCode, "upstream_http_status", "上游返回非成功状态")
 	}
 	if err := verifyResponse(input, challenge, body); err != nil {
 		var failure *responsesSSEFailure
 		if errors.As(err, &failure) {
-			return neutral(response.StatusCode, "upstream_protocol_invalid", failure.Error())
+			return httpFailure(response.StatusCode, "upstream_protocol_invalid", failure.Error())
 		}
 		if readErr != nil {
 			return responseReadFailure(readErr)
 		}
-		return neutral(response.StatusCode, "upstream_protocol_invalid", "上游响应未满足探活语义")
+		return httpFailure(response.StatusCode, "upstream_protocol_invalid", "上游响应未满足探活语义")
 	}
 	if errors.Is(readErr, upstreamhttp.ErrResponseBodyTooLarge) {
 		return responseReadFailure(readErr)
@@ -1100,8 +1100,11 @@ func responseReadFailure(err error) ProbeResult {
 	return ProbeResult{Outcome: OutcomeUpstreamFailed, ErrorCode: "upstream_read_incomplete", ErrorMessage: "上游响应读取未完成"}
 }
 
-func neutral(status int, code, message string) ProbeResult {
-	return ProbeResult{Outcome: OutcomeNeutral, StatusCode: status, ErrorCode: code, ErrorMessage: message}
+// httpFailure 表示真实上游 HTTP 交换已完成但没有取得协议成功证据（非 2xx、
+// 2xx-invalid-body、协议错误对象等）。对恢复决策这是一次失败，与 transport
+// 失败同走快速复测道；保留 StatusCode 供诊断区分"HTTP 拒绝"与"连接没完成"。
+func httpFailure(status int, code, message string) ProbeResult {
+	return ProbeResult{Outcome: OutcomeHTTPFailure, StatusCode: status, ErrorCode: code, ErrorMessage: message}
 }
 
 func taskFailure(code, message string) ProbeResult {

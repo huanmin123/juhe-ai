@@ -148,7 +148,7 @@ func catalogAPIKeyFields(prefix string) []catalogField {
 		catalogFieldEx(prefix+".routeStrategyMode", "string", false, "策略路由模式。", "normal"),
 		catalogFieldEx(prefix+".routeStrategyStatus", "string", false, "策略路由状态：active 或 disabled。", "active"),
 		catalogFieldEx(prefix+".expiresAt", "string", false, "API Key 到期时间，ISO 8601 字符串；未设置时缺省。", "2026-12-31T23:59:59.000Z"),
-		catalogFieldEx(prefix+".availabilitySchedule", "object", false, "API Key 时间计划；未设置时缺省。计划命中开始 / 结束边界时会直接更新 API Key status。"),
+		catalogFieldEx(prefix+".availabilitySchedule", "object", false, "API Key 时间计划；未设置时缺省。计划边界只切换可用时段（availabilityScheduleGate），不改写 API Key 状态。"),
 	}
 }
 
@@ -667,7 +667,7 @@ func externalPublicAPICatalog() externalAPICatalog {
 				catalogFieldEx("providerCode", "string", false, "供应商编码筛选。", vendorCodeGPT),
 				catalogFieldEx("providerProtocolProfileId", "string", false, "供应商协议档案筛选。", "profile_gpt_openai_v1"),
 				catalogFieldEx("groupId", "string", false, "目标分组 ID；优先于 targetGroupName。", "grp_xxx"),
-				catalogFieldEx("keyword", "string", false, "按账号名称精确 / 前缀筛选。", "公益站"),
+				catalogFieldEx("keyword", "string", false, "按账号名称包含筛选（ASCII 大小写不敏感，`%`/`_`/`\\` 按字面）。", "公益站"),
 				catalogFieldEx("type", "string", false, "账号类型筛选；公开写入当前只支持 api_key。", "api_key"),
 				catalogFieldEx("status", "string", false, "账号状态，支持逗号分隔多个状态。", "active,disabled"),
 				catalogFieldEx("schedulable", "string", false, "可调度状态筛选：all、enabled、disabled 或 cooling。", "enabled")},

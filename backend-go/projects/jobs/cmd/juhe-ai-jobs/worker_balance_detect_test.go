@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   type TEXT NOT NULL,
   status TEXT NOT NULL,
   schedulable INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_gate INTEGER,
   deleted_at TEXT,
   authorization_instance_authorization_id TEXT,
   dispatch_revision INTEGER NOT NULL DEFAULT 1,

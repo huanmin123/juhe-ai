@@ -162,6 +162,7 @@ const authzPGFixtureSchema = `
       schedulable integer DEFAULT 1,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
+      availability_schedule_gate integer,
       notes text,
       account_expires_at text,
       last_used_at text,
@@ -240,19 +241,6 @@ const authzPGFixtureSchema = `
       created_at_ms bigint DEFAULT 0,
       updated_at_ms bigint DEFAULT 0,
       UNIQUE (projection_key, dedupe_key)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.account_name_search_terms (
-      account_id text DEFAULT '',
-      system_account_id text DEFAULT '',
-      term text DEFAULT '',
-      created_at text DEFAULT '',
-      PRIMARY KEY (account_id, term)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.account_name_search_documents (
-      account_id text PRIMARY KEY,
-      system_account_id text DEFAULT '',
-      normalized_name text DEFAULT '',
-      updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
       system_account_id text DEFAULT '',

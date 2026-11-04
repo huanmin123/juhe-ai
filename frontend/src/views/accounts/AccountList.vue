@@ -22,7 +22,12 @@
     @mobile-refresh="$emit('mobile-refresh')"
   >
     <template #emptyText>
-      <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
+      <a-empty
+        class="page-empty-card"
+        :description="hasActiveFilters
+          ? '没有匹配的账户。请调整或重置筛选条件。'
+          : '还没有账户。点击「添加账户」，再选择供应商和账户类型。'"
+      />
     </template>
     <template #bodyCell="{ column, record }">
       <AccountTableCell
@@ -119,6 +124,7 @@ defineProps<{
   editingConcurrencyAccountId?: string
   editingPriorityAccountId?: string
   groupName: (accountId: string) => string | undefined
+  hasActiveFilters?: boolean
   isManagementView: boolean
   isSelected: (accountId: string) => boolean
   loading: boolean

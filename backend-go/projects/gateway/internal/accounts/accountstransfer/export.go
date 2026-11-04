@@ -512,12 +512,14 @@ func (s *Service) exportTagNames(ctx context.Context, accountID string) ([]strin
 	return names, rows.Err()
 }
 
-// ExportAccountStatus mirrors ExportAccountStatus.
+// ExportAccountStatus mirrors ExportAccountStatus. 时间计划闸门与账户状态解耦
+// （设计 §5.4）：导出以 status 为准，时段外账户（active + gate=0）仍导出
+// active——计划只限制可用时段，不改变账户的管理状态。
 func ExportAccountStatus(row *ExportAccountRow) string {
 	if row.Status == "pending_test" {
 		return "pending_test"
 	}
-	if row.Status == "active" && row.Schedulable {
+	if row.Status == "active" {
 		return "active"
 	}
 	return "disabled"

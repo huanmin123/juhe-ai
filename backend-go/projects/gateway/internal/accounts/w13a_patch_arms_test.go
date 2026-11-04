@@ -312,9 +312,6 @@ func TestW13APatchRenameAuthorizationInstanceFollow(t *testing.T) {
 	if got := env.queryCell(t, `SELECT name FROM accounts WHERE id = 'acc-w13a-i3'`); got != "w13a-newname-authz-" {
 		t.Fatalf("实例 3 应跟随阶梯命名：%q", got)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = 'acc-w13a-i3'`) == 0 {
-		t.Fatal("实例改名应刷新搜索词")
-	}
 }
 
 func TestW13AUniqueAuthorizedInstanceNameLadder(t *testing.T) {

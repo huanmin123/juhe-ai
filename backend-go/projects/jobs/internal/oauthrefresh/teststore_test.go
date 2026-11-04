@@ -63,6 +63,7 @@ const oauthRefreshFixtureSchema = `CREATE TABLE juhe_business.accounts (
 	schedulable integer NOT NULL DEFAULT 1,
 	availability_schedule_json text,
 	availability_schedule_next_check_at text,
+	availability_schedule_gate integer,
 	notes text,
 	account_expires_at text,
 	last_used_at text,
@@ -121,6 +122,7 @@ CREATE TABLE juhe_business.api_keys (
 	quota_limits_json text,
 	availability_schedule_json text,
 	availability_schedule_next_check_at text,
+	availability_schedule_gate integer,
 	last_used_at text,
 	created_at text NOT NULL,
 	updated_at text NOT NULL
@@ -216,7 +218,7 @@ CREATE TABLE juhe_business.resource_authorization_grants (
 
 CREATE SCHEMA IF NOT EXISTS juhe_stats;
 
--- B3-H11：排期激活重建的小时额度窗口绑定与提交后打脏（列集对照 maintenance
+-- B3-H11：排期开闸重建的小时额度窗口绑定与提交后打脏（列集对照 maintenance
 -- pg_schema_business_tables.go / pg_schema_stats.go）。
 CREATE TABLE juhe_business.request_quota_hourly_window_scope_bindings (
 	system_account_id text NOT NULL,

@@ -121,9 +121,6 @@ func TestW14BFaultInjectedStoreArms(t *testing.T) {
 	if _, err := store.replaceAccountTags(ctx, store.db, "a", adminID, []string{"t"}, "2026-09-17T00:00:00.000Z"); err == nil {
 		t.Fatal("replaceAccountTags 应传播错误")
 	}
-	if err := store.replaceAccountNameSearchTerms(ctx, store.db, "a", adminID, "n", "2026-09-17T00:00:00.000Z"); err == nil {
-		t.Fatal("replaceAccountNameSearchTerms 应传播错误")
-	}
 	if err := store.markBatchGroupStatsDirty(ctx, []string{"a"}, "w14b"); err == nil {
 		t.Fatal("markBatchGroupStatsDirty 应传播错误")
 	}
@@ -158,7 +155,7 @@ func TestW14BFaultInjectedStoreArms(t *testing.T) {
 	if _, err := store.listCustomTestCatalogOptions(ctx, []string{"gpt"}, adminID, ManualTestOptionsQuery{}); err == nil {
 		t.Fatal("listCustomTestCatalogOptions 应传播错误")
 	}
-	if _, err := store.collectTestCatalogCandidates(ctx, []string{"gpt"}, []string{"gpt"}, "m", ""); err == nil {
+	if _, err := store.collectTestCatalogCandidates(ctx, []string{"gpt"}, []string{"gpt"}, "m", "", "owner-fixture"); err == nil {
 		t.Fatal("collectTestCatalogCandidates 应传播错误")
 	}
 	if _, err := store.findTestCatalogItem(ctx, "gpt", adminID, "gpt-4o-mini"); err == nil {

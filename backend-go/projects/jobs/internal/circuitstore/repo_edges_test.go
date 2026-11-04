@@ -353,7 +353,6 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 		{"负并发", func(w *opsjobs.ProjectionWrite) { w.Item.CurrentConcurrency = -1 }},
 		{"generation 0", func(w *opsjobs.ProjectionWrite) { w.Claim.Generation = 0 }},
 		{"空 tag", func(w *opsjobs.ProjectionWrite) { w.Item.TagIDs = []string{"  "} }},
-		{"空 term", func(w *opsjobs.ProjectionWrite) { w.SearchTerms = []string{""} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -372,7 +371,6 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 	write.Item.EffectiveAvailable = &available
 	write.Item.SourceAccountID = "src-1"
 	write.Item.TagIDs = []string{"tag-b", "tag-a", "tag-b"}
-	write.SearchTerms = []string{"账", "账"}
 	normalized, err := normalizeProjectionWrite(write)
 	if err != nil {
 		t.Fatal(err)
@@ -385,12 +383,6 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 	}
 	if len(normalized.tagIDs) != 2 || normalized.tagIDs[0] != "tag-b" || normalized.tagIDs[1] != "tag-a" {
 		t.Fatalf("tag 应去重保持序: %v", normalized.tagIDs)
-	}
-	if len(normalized.searchTerms) != 1 || normalized.searchTerms[0] != "账" {
-		t.Fatalf("term 应去重: %v", normalized.searchTerms)
-	}
-	if !normalized.searchIndexComplete {
-		t.Fatal("有 term 时索引必须标记 complete")
 	}
 	// payload 的 effectiveAvailable 仅在显式字段缺失时生效。
 	write2 := base()

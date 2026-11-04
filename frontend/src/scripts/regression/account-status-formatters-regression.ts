@@ -2,12 +2,22 @@ import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary,
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { accountLockTag, accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
-import type { AccountFilters } from '../../views/accounts/accountFormTypes'
-import { filterAccounts } from '../../views/accounts/accountListFilters'
+import type { AccountFilters, AccountStatusFilterValue } from '../../views/accounts/accountFormTypes'
+import { accountStatusFilterQuery, filterAccounts } from '../../views/accounts/accountListFilters'
+import { statusOptions as accountStatusOptions } from '../../views/accounts/accountOptions'
 import { accountMenuItems, canToggleAccountStatus } from '../../views/accounts/accountRules'
-import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } from '../../views/api-keys/apiKeyFormatters'
+import {
+  apiKeyIsScheduleOutOfWindow,
+  apiKeyStatusTag,
+  apiKeyStatusTagColor,
+  apiKeyStatusTagLabel,
+  apiKeyStatusTooltipLines
+} from '../../views/api-keys/apiKeyFormatters'
+import { apiKeyListStatusOptions, apiKeyMatchesListStatusFilter } from '../../views/api-keys/apiKeyTableConfig'
 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
+// 状态筛选取值：真实账户状态 + 时间计划闸门派生值（时间计划闸门设计 §5.4）。
+const accountStatusFilterValues: AccountStatusFilterValue[] = [...accountStatusValues, 'quality_isolated', 'out_of_window']
 
 assertStatus('可调度账户', accountFixture(), '可调度', 'green')
 const circuitAvoidedAccount = accountFixture({
@@ -672,6 +682,69 @@ const precheckTooltip = accountStatusTooltipLines(accountFixture({
 }))
 assertTrue(!precheckTooltip.some((line) => line.includes('运行态状态') || line.includes('数据库状态') || line.includes('短窗口失败')), '事前确认 tooltip 不应展示内部机制')
 
+// ---- 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.4/§6）----
+const scheduleOutOfWindowAccount = accountFixture({
+  effectiveAvailability: {
+    available: false,
+    status: 'schedule_out_of_window',
+    label: '非时间段',
+    color: 'blue',
+    blockerScope: 'schedule',
+    reason: '当前不在可用时段，到达下一个时间计划边界后自动恢复',
+    retryAt: '2099-01-01T00:00:00.000Z'
+  }
+})
+assertStatus('时段外账户', scheduleOutOfWindowAccount, '非时间段', 'blue')
+const scheduleOutOfWindowTooltip = accountStatusTooltipLines(scheduleOutOfWindowAccount)
+assertTrue(
+  scheduleOutOfWindowTooltip.some((line) => line.includes('当前不在可用时段，到达下一个时间计划边界后自动恢复，不影响账户健康')),
+  '时段外账户 tooltip 必须说明自动恢复且不影响账户健康'
+)
+assertTrue(
+  scheduleOutOfWindowTooltip.some((line) => line.includes('下一个时间计划边界：')),
+  '时段外账户 tooltip 必须展示下一个时间计划边界'
+)
+assertEqual(
+  filterAccounts({ accounts: [scheduleOutOfWindowAccount], filters: accountFilters(['out_of_window']), isManagementView: false }).length,
+  1,
+  '时段外账户必须能被「非时间段」筛选命中'
+)
+assertEqual(
+  filterAccounts({ accounts: [scheduleOutOfWindowAccount], filters: accountFilters(['active']), isManagementView: false }).length,
+  0,
+  '时段外账户不得被正常/可调度筛选命中'
+)
+assertEqual(
+  filterAccounts({ accounts: [scheduleOutOfWindowAccount], filters: accountFilters(['disabled']), isManagementView: false }).length,
+  0,
+  '时段外账户不得被停用/不可调度筛选命中'
+)
+// 列表投影缺失 effectiveAvailability 时按闸门事实兜底（status='active' 且 gate=0）。
+const scheduleGateOnlyAccount = accountFixture({
+  effectiveAvailability: undefined,
+  availabilityScheduleGate: 0
+})
+assertStatus('仅携带闸门事实的时段外账户', scheduleGateOnlyAccount, '非时间段', 'blue')
+assertEqual(
+  filterAccounts({ accounts: [scheduleGateOnlyAccount], filters: accountFilters(['out_of_window']), isManagementView: false }).length,
+  1,
+  '仅携带 gate=0 的账户也必须归入「非时间段」筛选'
+)
+assertTrue(
+  accountStatusOptions.some((option) => option.value === 'out_of_window' && option.label === '非时间段'),
+  '账户状态筛选必须新增「非时间段」选项'
+)
+assertEqual(
+  JSON.stringify(accountStatusFilterQuery(['out_of_window'])),
+  JSON.stringify({ status: undefined, schedulable: 'out_of_window' }),
+  '「非时间段」筛选必须经 schedulable=out_of_window 下发'
+)
+assertEqual(
+  JSON.stringify(accountStatusFilterQuery(['active', 'disabled'])),
+  JSON.stringify({ status: ['active', 'disabled'], schedulable: undefined }),
+  '真实账户状态仍走 status 多值参数'
+)
+
 const effectiveAvailabilityStatusFilterExpectations = {
   available: 'active',
   permission_denied: 'disabled',
@@ -702,9 +775,10 @@ const effectiveAvailabilityStatusFilterExpectations = {
   runtime_local_suppressed: 'temporary_unavailable',
   runtime_half_open: 'temporary_unavailable',
   runtime_precheck_pending: 'temporary_unavailable',
-  runtime_precheck_failed: 'temporary_unavailable'
-} satisfies Record<AccountEffectiveAvailabilityStatus, AccountStatus>
-for (const [effectiveStatus, expectedStatus] of Object.entries(effectiveAvailabilityStatusFilterExpectations) as Array<[AccountEffectiveAvailabilityStatus, AccountStatus]>) {
+  runtime_precheck_failed: 'temporary_unavailable',
+  schedule_out_of_window: 'out_of_window'
+} satisfies Record<AccountEffectiveAvailabilityStatus, AccountStatusFilterValue>
+for (const [effectiveStatus, expectedStatus] of Object.entries(effectiveAvailabilityStatusFilterExpectations) as Array<[AccountEffectiveAvailabilityStatus, AccountStatusFilterValue]>) {
   assertEffectiveAvailabilityFilter(effectiveStatus, expectedStatus)
 }
 
@@ -713,16 +787,38 @@ const apiKeyScheduleInactive = apiKeyFixture({
 })
 assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 停用状态标签应显示停用')
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 停用状态颜色应使用停用颜色')
-assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('计划边界会自动更新当前运行状态')), 'API Key 配置时间计划时应在状态 tooltip 展示单状态提示')
+assertTrue(
+  apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('计划边界只切换可用时段（非时间段），不改写运行状态')),
+  'API Key 配置时间计划时应在状态 tooltip 说明计划不改写运行状态'
+)
+// 时间计划闸门：active + gate=0 显示「非时间段」蓝色，不显示为停用。
+const apiKeyOutOfWindow = apiKeyFixture({ availabilityScheduleGate: 0 })
+assertEqual(apiKeyStatusTag(apiKeyOutOfWindow).label, '非时间段', 'API Key 时段外状态标签应显示非时间段')
+assertEqual(apiKeyStatusTag(apiKeyOutOfWindow).color, 'blue', 'API Key 时段外状态颜色应为蓝色')
+assertTrue(apiKeyIsScheduleOutOfWindow(apiKeyOutOfWindow), 'API Key 时段外判定必须命中 active + gate=0')
+assertTrue(
+  apiKeyStatusTooltipLines(apiKeyOutOfWindow).some((line) => line.includes('当前不在可用时段')),
+  'API Key 时段外 tooltip 必须说明当前不在可用时段'
+)
+assertEqual(apiKeyStatusTag(apiKeyFixture({ availabilityScheduleGate: 1 })).label, '启用', 'API Key 时段内保持启用文案')
+assertEqual(apiKeyStatusTag(apiKeyFixture({ availabilityScheduleGate: null })).label, '启用', '无时间计划的 API Key 保持启用文案')
+assertEqual(apiKeyStatusTag(apiKeyFixture({ status: 'disabled', availabilityScheduleGate: 0 })).label, '停用', '人工停用的 API Key 即使 gate=0 也显示停用')
+assertEqual(apiKeyMatchesListStatusFilter(apiKeyOutOfWindow, 'out_of_window'), true, 'API Key「非时间段」筛选按 active + gate=0 判定')
+assertEqual(apiKeyMatchesListStatusFilter(apiKeyOutOfWindow, 'active'), true, 'API Key 启用筛选包含时段外 Key（运行状态仍为启用）')
+assertEqual(apiKeyMatchesListStatusFilter(apiKeyOutOfWindow, 'disabled'), false, 'API Key 停用筛选不含时段外 Key')
+assertTrue(
+  apiKeyListStatusOptions.some((option) => option.value === 'out_of_window' && option.label === '非时间段'),
+  'API Key 状态筛选必须新增「非时间段」选项'
+)
 
-console.log('账户状态 formatter 回归通过：正常、待检查、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限、锁死状态均可显示和筛选')
+console.log('账户状态 formatter 回归通过：正常、待检查、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划闸门（非时间段）、无可用权限、锁死状态均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)
   assertEqual(accountStatusColor(account), color, `${name} 颜色应为 ${color}`)
 }
 
-function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary {
+function accountFixture(overrides: Partial<AccountSummary> & { availabilityScheduleGate?: number | null } = {}): AccountSummary {
   return {
     id: 'account_status_formatter_regression',
     providerCode: 'gpt',
@@ -795,7 +891,7 @@ function emptyUsage() {
   }
 }
 
-function accountFilters(status: AccountStatus[]): AccountFilters {
+function accountFilters(status: AccountStatusFilterValue[]): AccountFilters {
   return {
     keyword: '',
     providerCode: 'all',
@@ -807,7 +903,7 @@ function accountFilters(status: AccountStatus[]): AccountFilters {
   }
 }
 
-function assertEffectiveAvailabilityFilter(effectiveStatus: AccountEffectiveAvailabilityStatus, expectedStatus: AccountStatus): void {
+function assertEffectiveAvailabilityFilter(effectiveStatus: AccountEffectiveAvailabilityStatus, expectedStatus: AccountStatusFilterValue): void {
   const account = accountFixture({
     effectiveAvailability: {
       available: effectiveStatus === 'available' || effectiveStatus === 'runtime_degraded',
@@ -816,7 +912,7 @@ function assertEffectiveAvailabilityFilter(effectiveStatus: AccountEffectiveAvai
       color: 'default'
     }
   })
-  for (const status of accountStatusValues) {
+  for (const status of accountStatusFilterValues) {
     const matched = filterAccounts({ accounts: [account], filters: accountFilters([status]), isManagementView: false }).length
     assertEqual(
       matched,

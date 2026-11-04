@@ -135,7 +135,7 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	}
 
 	// account 资源 create：走 targetGroupID 输入（routes.go 428-430）与
-	// provision insert arm（instance + search terms + 绑定默认分组）。
+	// provision insert arm（instance + 绑定默认分组）。
 	status, body = env.do(t, http.MethodPost, selfPrefix,
 		`{"resourceType":"account","resourceId":"acc_w13s","granteeType":"system_account","granteeId":"grantee","targetGroupId":"tg_w13s"}`)
 	if status != http.StatusCreated && status != http.StatusOK {

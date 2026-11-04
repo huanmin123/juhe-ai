@@ -187,7 +187,7 @@ func ptrString(v string) *string { return &v }
 // 而不恢复；恢复窗口外清除为 disabled；非法输入失败关闭。
 func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 	ddl := []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,deleted_at TEXT,updated_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,availability_schedule_next_check_at TEXT,availability_schedule_gate INTEGER,deleted_at TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,policy_revision INTEGER,account_config_revision INTEGER,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,recovery_due_at TEXT,cleared_at TEXT,updated_at TEXT)`,
 	}
 	seed := func(t *testing.T, db *sql.DB, state, action string, policyRevision int, accountStatus string, accountRevision int, schedule string) {
@@ -231,7 +231,7 @@ func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 			t.Fatalf("策略漂移必须只重排: owner=%q due=%q state=%q", owner, due, state)
 		}
 	})
-	t.Run("cleared as disabled outside availability", func(t *testing.T) {
+	t.Run("cleared as active with closed gate outside availability", func(t *testing.T) {
 		db := wbOpenPGDB(t, ddl)
 		seed(t, db, "active", "quality_isolate", 7, "quality_isolated", 5, `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"00:00","end":"01:00"}]}`)
 		applier, _ := NewBusinessRecoveryApplier(db)
@@ -240,11 +240,14 @@ func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 		}
 		var status string
 		var schedulable int
-		if err := db.QueryRow(`SELECT status,schedulable FROM accounts WHERE id='acct'`).Scan(&status, &schedulable); err != nil {
+		var gate sql.NullInt64
+		if err := db.QueryRow(`SELECT status,schedulable,availability_schedule_gate FROM accounts WHERE id='acct'`).Scan(&status, &schedulable, &gate); err != nil {
 			t.Fatal(err)
 		}
-		if status != "disabled" || schedulable != 0 {
-			t.Fatalf("窗口外恢复必须禁用: status=%q schedulable=%d", status, schedulable)
+		// 时间计划闸门（设计 §4.3）：恢复表达健康事实，status 恒 active；时段外
+		// 由 gate=0 表达「非时间段」，不再把账户改写成停用。
+		if status != "active" || schedulable != 1 || !gate.Valid || gate.Int64 != 0 {
+			t.Fatalf("窗口外恢复必须 active+gate=0: status=%q schedulable=%d gate=%v", status, schedulable, gate)
 		}
 	})
 	t.Run("account drift only reschedules", func(t *testing.T) {

@@ -253,6 +253,9 @@ func (s *Store) ClaimDueForProbe(ctx context.Context, limit int) ([]ProbeCandida
       AND accounts.deleted_at IS NULL
       AND accounts.status IN (%s)
       AND accounts.schedulable = 1
+      -- 时间计划闸门（时间计划闸门与账户状态解耦设计 §5.3）：时段外账户不投递
+      -- 探针上游请求，闸门由排程同步维护。
+      AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
     LIMIT ?

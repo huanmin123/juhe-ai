@@ -93,6 +93,10 @@ type v1DispatchLoop struct {
 	// 仍是系统性上游故障的较强证据；勿按与 streamRetryExcludedAccounts 的
 	// 对称性在此补重置。
 	lastPreCommitSwitchSignature string
+	// accountLockObservation 是本请求最近一次成功派发带出的锁行观察
+	// （UpstreamDispatchResult.AccountLockObservation）：速度优先结算等不再
+	// 持有 dispatched 的出口用它按引擎 M4 规则决定读取失败时是否 fail-closed。
+	accountLockObservation *gatewaydispatch.AccountLockObservation
 	// compactWaitHeartbeat 是 codex 压缩 SSE 请求在上游派发等待期的专属保活
 	// 心跳（Node activeCompactSseWaitHeartbeat，routes.ts:1229-1239：10s 间隔
 	// 写出 compaction 保活块，防客户端/中间层在压缩长等待期空闲断连）。
@@ -185,6 +189,9 @@ const (
 	v1FallbackNone      v1FallbackSwitch = "none"
 	v1FallbackSwitched  v1FallbackSwitch = "switched"
 	v1FallbackCompleted v1FallbackSwitch = "completed"
+	// v1FallbackLockHold 表示切组被锁死门否决：这是非终态 hold，调用方必须
+	// 走客户端交接（断连重试），不得落到终态耗尽 503。
+	v1FallbackLockHold v1FallbackSwitch = "lock_hold"
 )
 
 // stopWaitHeartbeat 终止 D-120 等待心跳：请求 handler 返回即下游终态
@@ -587,6 +594,8 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		})
 		l.stopCompactSseWaitHeartbeat()
 		if dispatchErr == nil {
+			// 锁行观察随成功派发带出：后续速度优先结算等出口用它做 M4 收窄。
+			l.accountLockObservation = dispatched.AccountLockObservation
 			// ---- response piping + finalization (response/finalization.ts) ----
 			// F13（E2E-FINDING #13 第二层）：账户并发槽随本轮派发迭代释放。
 			// keepConcurrencySlot=true 时 dispatch 内 releaseTransientState 是空操作，
@@ -834,9 +843,11 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	// ResponseInspection 非 nil 的换号；恢复臂重放（上方专用通道）与检查未
 	// 命中换号（无决策对象可签名）行为不变。避让不写账户健康/熔断状态
 	// （预提交零输出失败契约不变），协作方未装配时显式降级。
-	if handling.RetryReason == gatewayresponse.StreamServerRetryPreCommitStreamFailure && handling.ResponseInspection != nil {
-		signature := handling.ResponseInspection.UpstreamErrorCode + "\x1f" + handling.ResponseInspection.UpstreamErrorMessage
-		if signature == l.lastPreCommitSwitchSignature {
+	var preCommitSwitchSignature string
+	preCommitSwitchEligible := handling.RetryReason == gatewayresponse.StreamServerRetryPreCommitStreamFailure && handling.ResponseInspection != nil
+	if preCommitSwitchEligible {
+		preCommitSwitchSignature = handling.ResponseInspection.UpstreamErrorCode + "\x1f" + handling.ResponseInspection.UpstreamErrorMessage
+		if preCommitSwitchSignature == l.lastPreCommitSwitchSignature {
 			l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, current, "pre_commit_switch_same_signature")
 			l.auditCapture.AddGatewayMetadata("pre_commit_stream_server_retry_stopped", map[string]any{
 				"reason":    "same_signature",
@@ -853,14 +864,80 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 			})
 			return true
 		}
-		l.lastPreCommitSwitchSignature = signature
-		if l.c.streamFailureAvoidance != nil {
-			l.c.streamFailureAvoidance.scheduleStreamSwitchClientSourceAvoidance(ctx, l.req, current.UsageContext, current.SessionAffinityKey, dispatched.Account, handling.ResponseInspection.UpstreamErrorCode, handling.ResponseInspection.UpstreamErrorMessage, dispatched.AuditAttemptID)
-		}
+		// 签名与来源级避让只在换号真正被接受后登记（锁死门可能否决换号，
+		// 见下方）；锁死 hold 不应让后续请求绕开该账号。
 	}
 	// Node 2301-2307: a policy-requested exclusion puts the current account
 	// into the per-group stream-retry excluded set.
 	policyRequestedAccountExclusion := handling.ExcludeCurrentAccount
+	// 锁死窗口（设计 §3.4）：当前账号处于锁死策略（LOCKED_IDLE / ENGAGED）且
+	// 响应检查要求换号时，200 内容失败不是 complete_success——先推进锁死窗口
+	// 并按死期结算，再否决换号；不写排除集、不增加服务端重试计数、不切组，
+	// 直接按客户端交接把请求交还客户端重试。engine / Locks 未装配（大量链面
+	// 单测使用 newV1TestLoop）时保持既有行为；运行态读取失败按 M4 收窄规则
+	// 处理（仅本请求已观察到锁行时 fail-closed）。
+	if policyRequestedAccountExclusion && l.c != nil && l.c.engine != nil && l.c.engine.Locks != nil {
+		if err := l.c.engine.Locks.RecordFailureAsync(ctx, accountID, "upstream_http_response", nil); err != nil {
+			l.auditCapture.AddGatewayMetadata("account_lock_failure_record_error", map[string]any{
+				"accountId": accountID,
+				"phase":     "record_failure",
+				"error":     err.Error(),
+			})
+		}
+		nowMs := int64(0)
+		if l.c.preauth != nil {
+			nowMs = l.c.preauth.NowMs()
+		}
+		if err := l.c.engine.Locks.SettleDeadlineAsync(ctx, accountID, nowMs, nil); err != nil {
+			l.auditCapture.AddGatewayMetadata("account_lock_failure_record_error", map[string]any{
+				"accountId": accountID,
+				"phase":     "settle_deadline",
+				"error":     err.Error(),
+			})
+		}
+		lockState, stateErr := l.c.engine.Locks.FindStateAsync(ctx, accountID)
+		// M4 收窄（与引擎 attemptoutcomes 同规则）：读取失败时只有本请求已
+		// 观察到该账户锁行的才 fail-closed；从未观察到锁行的账户按既有换号
+		// 行为 fail-open，避免锁运行态抖动把未锁账户的请求钉住。
+		accountLocked := false
+		if stateErr != nil {
+			accountLocked = dispatched.AccountLockObservation != nil
+		} else {
+			accountLocked = lockState != nil && lockState.BlocksCrossAccount
+		}
+		if accountLocked {
+			// 与锁死 hold 同源：流式请求先提交 SSE 头再断开（避免 Caddy 合成
+			// 502），非流式请求直接 Hijack+Close；都不可用时回退 503。
+			metadata := map[string]any{
+				"accountId":   accountID,
+				"retryReason": handling.RetryReason,
+				"errorCode":   handling.ErrorCode,
+			}
+			if stateErr != nil {
+				metadata["readFailed"] = true
+				metadata["error"] = stateErr.Error()
+			}
+			if handling.ResponseInspection != nil {
+				metadata["policyId"] = handling.ResponseInspection.PolicyID
+				metadata["policyName"] = handling.ResponseInspection.PolicyName
+			}
+			return l.renderClientHandoffWithMetadata(streamServerRetryExhaustedInput{
+				message:        "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试",
+				retryReason:    "account_lock_hold",
+				errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
+				decision:       handling.ResponseInspection,
+				usageContext:   current.UsageContext,
+				clientStrategy: &current.ClientStrategy,
+			}, "account_lock_response_inspection_retry_denied", metadata)
+		}
+	}
+	if preCommitSwitchEligible {
+		// 换号已被接受（锁死门未否决）：登记同签名状态与来源级短 TTL 避让。
+		l.lastPreCommitSwitchSignature = preCommitSwitchSignature
+		if l.c.streamFailureAvoidance != nil {
+			l.c.streamFailureAvoidance.scheduleStreamSwitchClientSourceAvoidance(ctx, l.req, current.UsageContext, current.SessionAffinityKey, dispatched.Account, handling.ResponseInspection.UpstreamErrorCode, handling.ResponseInspection.UpstreamErrorMessage, dispatched.AuditAttemptID)
+		}
+	}
 	if policyRequestedAccountExclusion {
 		if l.streamRetryExcludedAccounts == nil {
 			l.streamRetryExcludedAccounts = map[string]struct{}{}
@@ -936,6 +1013,17 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 			return true
 		case fallback == v1FallbackSwitched:
 			return false
+		case fallback == v1FallbackLockHold:
+			// 切组被锁死门否决：非终态 hold，客户端重试可重新选号；交接断连，
+			// 不得落到终态耗尽 503。
+			return l.renderClientHandoff(streamServerRetryExhaustedInput{
+				message:        "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试",
+				retryReason:    "account_lock_hold",
+				errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
+				decision:       handling.ResponseInspection,
+				usageContext:   current.UsageContext,
+				clientStrategy: &current.ClientStrategy,
+			})
 		}
 		// Node 2386-2397: no fallback switch → the stream server-retry
 		// exhausted contract (503, recordUsage:false), never an empty 200.
@@ -1049,20 +1137,24 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 				"reason":          "route_coordination_budget_exhausted",
 				"wallRemainingMs": wall.WallRemainingMs,
 			})
-			l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+			return l.renderClientHandoff(streamServerRetryExhaustedInput{
 				message:        "网关请求协调预算已到，请客户端重试并重新选择可用账户",
 				retryReason:    "pre_commit_stream_failure",
 				errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
 				usageContext:   l.current.UsageContext,
 				clientStrategy: &l.current.ClientStrategy,
 			})
-			return true
 		}
-		// The wall kind keeps the fixed 503 wall exit (review ruling V4; the
-		// Go engine surfaces the wall error instead of the Node while-loop
-		// continue, whose continuation the engine budget loop internalizes).
+		// The wall kind is also a non-terminal handoff: a new request may pick
+		// another account. 现有客户端只在断连时重试，因此与 coordination 同走
+		// 交接；503 回退与断连记账都保留墙钟专用的错误码、文案与
+		// gateway_failed 语义（与改动前的 503 契约一致）。
+		l.auditCapture.AddGatewayMetadata("gateway_request_client_handoff", map[string]any{
+			"reason":          "gateway_request_wall_budget_exhausted",
+			"wallRemainingMs": wall.WallRemainingMs,
+		})
 		message := "网关请求时间预算已用尽，请稍后重试"
-		l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		return l.renderClientHandoffFailure(gatewaypreauth.FailureResponseInput{
 			Req:             l.req,
 			Res:             l.res,
 			AuditCapture:    l.auditCapture,
@@ -1077,8 +1169,24 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 				ErrorMessage: message,
 			},
 			FailureScope: "upstream",
+		}, "pre_commit_stream_failure", "gateway_request_wall_budget_exhausted", "", nil)
+	}
+	// 锁死窗口（设计 §3.4）：账号处于 ENGAGED 且未到死亡窗口时，本次请求已在
+	// 锁死账号上真实失败，禁止切换到同组其他账号或后备分组。优先按客户端真实
+	// 重试条件交还：流式请求先提交 SSE 头再断开（避免 Caddy 合成 502），非流式
+	// 请求直接 Hijack+Close；都不可用时才回退 503 client retry 契约。
+	var lockHold *gatewaydispatch.AccountLockHoldError
+	if errors.As(dispatchErr, &lockHold) {
+		return l.renderClientHandoffWithMetadata(streamServerRetryExhaustedInput{
+			message:        "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试",
+			retryReason:    "account_lock_hold",
+			errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
+			usageContext:   l.current.UsageContext,
+			clientStrategy: &l.current.ClientStrategy,
+		}, "account_lock_hold_dispatch_denied", map[string]any{
+			"accountId":    lockHold.AccountID,
+			"errorMessage": lockHold.Error(),
 		})
-		return true
 	}
 	var attempt *gatewaydispatch.UpstreamAttemptError
 	if errors.As(dispatchErr, &attempt) {
@@ -1123,6 +1231,15 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 				return true
 			case fallback == v1FallbackSwitched:
 				return false
+			case fallback == v1FallbackLockHold:
+				// 切组被锁死门否决：非终态 hold，交接断连让客户端重试。
+				return l.renderClientHandoff(streamServerRetryExhaustedInput{
+					message:        "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试",
+					retryReason:    "account_lock_hold",
+					errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
+					usageContext:   l.current.UsageContext,
+					clientStrategy: &l.current.ClientStrategy,
+				})
 			case fallback == v1FallbackNone && len(attempt.RecoverableAccountIDs) > 0 &&
 				!dispatchDomainStatelessMediaOf(l.current) &&
 				!l.serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil):
@@ -1660,6 +1777,34 @@ func (l *v1DispatchLoop) exhaustDispatchFailedAccounts(attempt *gatewaydispatch.
 // switchToFallbackGroup mirrors switchToFallbackGroup (routes.ts:570-662).
 func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason string) (v1FallbackSwitch, error) {
 	current := l.current
+	// 锁死窗口后备分组门（设计 §3.4 第 3 条）：请求级耗尽集里任一账号仍处于
+	// 锁死窗口（ENGAGED 且未到死亡窗口）时，禁止切组。读取失败按 fail-closed
+	// 处理（不得切组）；engine / Locks 未装配时保持既有行为。返回
+	// v1FallbackLockHold 让调用方转入客户端交接，而不是终态耗尽 503。
+	if l.c != nil && l.c.engine != nil && l.c.engine.Locks != nil && len(l.exhaustedAccounts) > 0 {
+		exhaustedAccountIDs := stringSetKeys(l.exhaustedAccounts)
+		states, stateErr := l.c.engine.Locks.ListStatesAsync(ctx, exhaustedAccountIDs)
+		if stateErr != nil {
+			l.auditCapture.AddGatewayMetadata("account_lock_fallback_denied", map[string]any{
+				"reason":              reason,
+				"exhaustedAccountIds": exhaustedAccountIDs,
+				"readFailed":          true,
+				"error":               stateErr.Error(),
+			})
+			return v1FallbackLockHold, nil
+		}
+		for _, accountID := range exhaustedAccountIDs {
+			state, ok := states[accountID]
+			if ok && state.BlocksCrossAccount {
+				l.auditCapture.AddGatewayMetadata("account_lock_fallback_denied", map[string]any{
+					"reason":              reason,
+					"exhaustedAccountIds": exhaustedAccountIDs,
+					"lockedAccountId":     accountID,
+				})
+				return v1FallbackLockHold, nil
+			}
+		}
+	}
 	if classification := superTargetClassificationFromReason(reason); classification != "" {
 		l.trackSuperTargetOutcome(current.UsageContext.GroupID, classification, l.currentMemberSkips(classification))
 		l.auditCapture.AddGatewayMetadata("super_group_target_outcome", map[string]any{
@@ -2520,6 +2665,38 @@ func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction)
 			}
 			res.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
 		}
+		if failure.StatusCode == http.StatusServiceUnavailable && failure.ErrorCode == gatewaypreauth.GatewayStreamClientRetryErrorCode {
+			// 全部上游账户处于临时隔离（local suppression 耗尽）：非终态，
+			// 客户端重试可重新选号，不得把失败写给客户端——走客户端交接；
+			// Hijack 不可用时回退既有 503 契约。交接两臂都保留 failure 原始
+			// 语义（gateway_failed / dispatch / upstream_retryable_error /
+			// gateway_capacity 归因与原文案），不得沿用流式重试耗尽口径。
+			metadata := map[string]any{
+				"reason":     failure.ErrorCode,
+				"statusCode": failure.StatusCode,
+				"message":    failure.Message,
+			}
+			if failure.RetryAfterMs != nil {
+				metadata["retryAfterMs"] = *failure.RetryAfterMs
+			}
+			l.renderClientHandoffFailure(gatewaypreauth.FailureResponseInput{
+				Req:             l.req,
+				Res:             res,
+				AuditCapture:    l.auditCapture,
+				UsageContext:    action.UsageContext,
+				StartedAt:       l.startedAt,
+				StatusCode:      failure.StatusCode,
+				ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(failure.Message, failure.ErrorType, failure.ErrorCode),
+				Audit: gatewaypreauth.FailureAudit{
+					Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
+					ErrorPhase:   failure.ErrorPhase,
+					ErrorCode:    failure.ErrorCode,
+					ErrorMessage: failure.Message,
+				},
+				FailureAttribution: failure.FailureAttribution,
+			}, "pre_commit_stream_failure", failure.ErrorCode, "route_action_temporarily_blocked_handoff", metadata)
+			return
+		}
 		l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
 			Req:             l.req,
 			Res:             res,
@@ -2541,7 +2718,8 @@ func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction)
 	if action.Coordination.Outcome == gatewaypreauth.RouteOutcomeClientHandoff {
 		// Node 398-411: the client-handoff outcome renders the stream server
 		// retry exhausted contract instead of the exhausted-accounts copy.
-		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+		// pre-commit 交接必须真断开（客户端只在断连时重试），503 仅作回退。
+		l.renderClientHandoff(streamServerRetryExhaustedInput{
 			message:        "当前路由暂时无法继续派发，请客户端重试并重新选择可用账户",
 			retryReason:    "pre_commit_stream_failure",
 			errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
@@ -2551,10 +2729,30 @@ func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction)
 		return
 	}
 	temporarilyBlocked := action.Coordination.Outcome == "temporarily_blocked"
-	message := "当前路由没有可用的上游账户"
 	if temporarilyBlocked {
-		message = "当前路由暂时没有可派发账户，请稍后重试"
+		// temporarily_blocked 是非终态（等待资源可恢复），不得把失败写给客户端；
+		// 走统一 client handoff 让客户端断连后重试；503 回退与记账保留该出口
+		// 历史语义（gateway_failed / dispatch / upstream_retryable_error）。
+		message := "当前路由暂时没有可派发账户，请稍后重试"
+		l.renderClientHandoffFailure(gatewaypreauth.FailureResponseInput{
+			Req:             l.req,
+			Res:             l.res,
+			AuditCapture:    l.auditCapture,
+			UsageContext:    action.UsageContext,
+			StartedAt:       l.startedAt,
+			StatusCode:      http.StatusServiceUnavailable,
+			ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
+			Audit: gatewaypreauth.FailureAudit{
+				Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
+				ErrorPhase:   "dispatch",
+				ErrorCode:    gatewaypreauth.GatewayStreamClientRetryErrorCode,
+				ErrorMessage: message,
+			},
+			FailureScope: "upstream",
+		}, "pre_commit_stream_failure", gatewaypreauth.GatewayStreamClientRetryErrorCode, "", nil)
+		return
 	}
+	// 终态：当前路由没有可用的上游账户，可以返回错误。
 	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
 		Req:             l.req,
 		Res:             res,
@@ -2562,12 +2760,12 @@ func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction)
 		UsageContext:    action.UsageContext,
 		StartedAt:       l.startedAt,
 		StatusCode:      http.StatusServiceUnavailable,
-		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", "upstream_retryable_error"),
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf("当前路由没有可用的上游账户", "service_unavailable", "no_available_upstream_account"),
 		Audit: gatewaypreauth.FailureAudit{
 			Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
 			ErrorPhase:   "dispatch",
-			ErrorCode:    "upstream_retryable_error",
-			ErrorMessage: message,
+			ErrorCode:    "no_available_upstream_account",
+			ErrorMessage: "当前路由没有可用的上游账户",
 		},
 		FailureScope: "upstream",
 	})

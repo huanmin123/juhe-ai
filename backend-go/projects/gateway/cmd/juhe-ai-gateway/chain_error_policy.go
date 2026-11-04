@@ -441,12 +441,18 @@ func systemQuotaClassicMatch(statusCode int, code, typ, searchableText string) b
 	return false
 }
 
-// systemQuotaRateLimitedMatch 承接 429 的新匹配逻辑：429 只认稳定额度码，
+// systemQuotaRateLimitedMatch 承接 429 的匹配逻辑：429 只认稳定额度码，
 // 普通频控（AccountRateLimitExceeded / rate_limit_exceeded / too_many_requests /
 // rate_limited）不是余额不足 —— 裸 429、频控码、仅文本命中一律 false；
 // 不读文本白名单、不做 contains("quota") 泛匹配。
+//
+// 判定顺序必须让「精确命中额度 code」优先于「泛化 type」：上游常把 HTTP 状态
+// 语义写进 type（火山方舟 429 响应为 code=AccountQuotaExceeded +
+// type=TooManyRequests）。若先用 type 做频控否决，稳定额度码会被通用 type
+// 掩盖，额度规则永不命中（生产 T92 漏命中根因）。显式频控 code 仍然优先否决，
+// 避免把频控响应误判为额度不足。
 func systemQuotaRateLimitedMatch(code, typ, searchableText string) bool {
-	if isRateLimitErrorIdentifier(code) || isRateLimitErrorIdentifier(typ) {
+	if isRateLimitErrorIdentifier(code) {
 		return false
 	}
 	if _, ok := insufficientQuotaStableCodes[code]; ok {
@@ -454,6 +460,9 @@ func systemQuotaRateLimitedMatch(code, typ, searchableText string) bool {
 	}
 	if _, ok := insufficientQuotaStableCodes[typ]; ok {
 		return true
+	}
+	if isRateLimitErrorIdentifier(typ) {
+		return false
 	}
 	// 沿用 402/403 的非额度标识排除：命中这些标识（code/typ/文本）说明不是
 	// 额度问题，直接排除，避免频控响应被误判为余额不足。

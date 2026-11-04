@@ -78,6 +78,17 @@ func (m *SQLReadModels) readGatewayRuntimeForAPIKey(ctx context.Context, apiKey 
 	if apiKey == nil {
 		return GatewayRuntime{Settings: projectedSettings, Accounts: []OpenAIAccountSecret{}}, nil
 	}
+	// 时间计划闸门（设计 §5.2）：时段外的 Key 不需要装载候选账户（鉴权层随后
+	// 直接返回 ErrAPIKeyOutsideSchedule），避免为不可用 Key 消费动态路由/轮转
+	// 状态。行本身保留在运行时快照里，供鉴权层区分「不在时段」与「Key 无效」。
+	if apiKey.AvailabilityScheduleGate != nil && *apiKey.AvailabilityScheduleGate == 0 {
+		return GatewayRuntime{
+			APIKey:                     apiKey,
+			Settings:                   projectedSettings,
+			Accounts:                   []OpenAIAccountSecret{},
+			ResponseInspectionPolicies: []ResponseInspectionPolicySummary{},
+		}, nil
+	}
 	systemAccountID := apiKey.SystemAccountID
 	if IsDynamicRouteStrategyMode(apiKey.RouteStrategyMode) {
 		return GatewayRuntime{
@@ -214,6 +225,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyByID(ctx context.Context, apiKeyID stri
 func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate string, value any) (*GatewayAPIKeyRow, error) {
 	var id, systemAccountID, routeStrategyID, routeStrategyMode, status string
 	var routeConfigJSON, expiresAt, quotaLimitsJSON, requestLimitsJSON sql.NullString
+	var availabilityScheduleGate sql.NullInt64
 	var purpose, schedulingPreferenceID, schedulingPreferenceJoinedID sql.NullString
 	var schedulingPreferenceChatMode, schedulingPreferenceConfigJSON sql.NullString
 	var imageGenerationEnabled int
@@ -230,6 +242,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 			route_strategies.mode AS route_strategy_mode,
 			route_strategies.config_json AS route_strategy_config_json,
 			api_keys.status,
+			api_keys.availability_schedule_gate,
 			api_keys.expires_at,
 			api_keys.quota_limits_json,
 			system_accounts.image_generation_enabled,
@@ -254,7 +267,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 		WHERE `+predicate+`
 		LIMIT 1`), value).
 		Scan(&id, &systemAccountID, &routeStrategyID, &routeStrategyMode, &routeConfigJSON,
-			&status, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON,
+			&status, &availabilityScheduleGate, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON,
 			&purpose, &schedulingPreferenceID, &schedulingPreferenceJoinedID,
 			&schedulingPreferenceChatMode, &schedulingPreferenceConfigJSON)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -301,6 +314,13 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 		SystemAccountRequestLimitsJSON:      nullToStrPtr(requestLimitsJSON),
 		SystemAccountRequestLimits:          parseUserRequestLimitsJSON(requestLimitsJSON),
 		GroupBindings:                       bindings,
+	}
+	// 时间计划闸门（设计 §5.2）：status=active 且 gate=0 的行仍然返回（不按
+	// 「Key 不存在」处理），由 isGatewayAPIKeyRuntimeUsableAt 产出可区分的
+	// ErrAPIKeyOutsideSchedule；NULL（无计划）/1（时段内）正常放行。
+	if availabilityScheduleGate.Valid {
+		gate := availabilityScheduleGate.Int64
+		row.AvailabilityScheduleGate = &gate
 	}
 	row.SelectedGroupID = bindings[0].GroupID
 	if routeConfigJSON.Valid && strings.TrimSpace(routeConfigJSON.String) != "" {

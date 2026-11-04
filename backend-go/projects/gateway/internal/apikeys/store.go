@@ -580,6 +580,10 @@ type ListItem struct {
 	ExpiresAt            *string               `json:"expiresAt,omitempty"`
 	QuotaLimits          QuotaLimits           `json:"quotaLimits"`
 	AvailabilitySchedule *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	// AvailabilityScheduleGate 是时间计划闸门派生列（《时间计划闸门与账户状态
+	// 解耦设计》§3.1）：NULL = 无计划（恒开）/ 1 = 时段内 / 0 = 时段外。前端
+	// 以 status=active && gate=0 显示「非时间段」次级标签。
+	AvailabilityScheduleGate *int `json:"availabilityScheduleGate,omitempty"`
 	// 调度偏好绑定投影（P1）：null = 历史「沿用策略路由（迁移期）」，前端
 	// 不得回显为成本优先；绑定行回显 id/name/builtIn（enabled 已随 v2 第 4 条
 	// 退役，无停用行）。
@@ -684,6 +688,7 @@ type apiKeyRow struct {
 	expiresAt           sql.NullString
 	quotaJSON           sql.NullString
 	scheduleJSON        sql.NullString
+	scheduleGate        sql.NullInt64
 	updatedAt           string
 
 	schedulingPreferenceID      sql.NullString
@@ -703,7 +708,7 @@ func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error
 		&row.routeStrategyID, &row.routeStrategyName, &row.routeStrategyMode, &row.routeStrategyStatus,
 		&row.schedulingPreferenceID, &row.schedulingPreferenceName, &row.schedulingPreferenceBuiltIn,
 		&row.name, &row.description, &row.keyPrefix, &row.keySuffix, &row.status, &row.isDefault,
-		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.updatedAt)
+		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.scheduleGate, &row.updatedAt)
 	err := scan(targets...)
 	return row, err
 }
@@ -742,7 +747,10 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		clauses = append(clauses, clause)
 		args = append(args, keywordArgs...)
 	}
-	if normalized.Status != "" {
+	if normalized.Status == "out_of_window" {
+		// 时间计划闸门虚拟筛选：active 且时段外。与 active / disabled 互斥。
+		clauses = append(clauses, "api_keys.status = 'active' AND api_keys.availability_schedule_gate = 0")
+	} else if normalized.Status != "" {
 		clauses = append(clauses, "api_keys.status = ?")
 		args = append(args, normalized.Status)
 	}
@@ -766,7 +774,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		` + apiKeySchedulingPreferenceColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
-		api_keys.availability_schedule_json, api_keys.updated_at`
+		api_keys.availability_schedule_json, api_keys.availability_schedule_gate, api_keys.updated_at`
 	args = append(args, normalized.PageSize+1, (normalized.Page-1)*normalized.PageSize)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+columns+`
 		FROM `+s.table("api_keys")+` api_keys`+join+apiKeyJoin(s)+where+`
@@ -829,7 +837,9 @@ func normalizeListOptions(options ListOptions) ListOptions {
 	}
 	keyword := strings.TrimSpace(options.Keyword)
 	status := options.Status
-	if status != "active" && status != "disabled" {
+	// out_of_window 是虚拟筛选值（status='active' AND gate=0），不是 status 词表，
+	// 保留原值交由 ListPage 转换成闸门条件（设计 §5.4）。
+	if status != "active" && status != "disabled" && status != "out_of_window" {
 		status = ""
 	}
 	return ListOptions{
@@ -923,6 +933,7 @@ func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error)
 		ExpiresAt:                   nullPtrString(row.expiresAt),
 		QuotaLimits:                 quotaLimits,
 		AvailabilitySchedule:        schedule,
+		AvailabilityScheduleGate:    nullPtrInt(row.scheduleGate),
 		SchedulingPreferenceID:      nullPtrString(row.schedulingPreferenceID),
 		SchedulingPreferenceName:    nullPtrString(row.schedulingPreferenceName),
 		SchedulingPreferenceBuiltIn: nullPtrBoolFromNullInt64(row.schedulingPreferenceBuiltIn),
@@ -984,7 +995,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		` + apiKeySchedulingPreferenceColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
-		api_keys.availability_schedule_json, api_keys.updated_at`
+		api_keys.availability_schedule_json, api_keys.availability_schedule_gate, api_keys.updated_at`
 	where := ""
 	args := []any{id}
 	if scoped := access.manageableID(); scoped != "" {
@@ -1111,10 +1122,10 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if input.Status != nil {
 		requestedStatus = *input.Status
 	}
+	// 时间计划不再改写 status（《时间计划闸门与账户状态解耦设计》§4.2）：status
+	// 只由用户启停决定，计划只维护派生闸门 availability_schedule_gate
+	// （NULL=无计划/1=时段内/0=时段外）。
 	status := requestedStatus
-	if override, ok := ScheduleStatus(schedule, s.now()); ok {
-		status = override
-	}
 	quotaJSON, quotaJSONValid := QuotaLimitsJSON(quotaLimits)
 	quotaJSONValue := sql.NullString{}
 	if quotaJSONValid {
@@ -1128,6 +1139,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if rawNextCheck, ok := NextScheduleCheckAt(schedule, s.now()); ok {
 		nextCheckAt = sql.NullString{String: rawNextCheck, Valid: true}
 	}
+	scheduleGateValue := ScheduleGateValue(schedule, s.now())
 
 	now := s.now()
 	nowISO := isoMillis(now)
@@ -1161,11 +1173,13 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("api_keys")+`
 		(id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
 		 key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json,
-		 availability_schedule_json, availability_schedule_next_check_at, scheduling_preference_id,
+		 availability_schedule_json, availability_schedule_next_check_at, availability_schedule_gate,
+		 scheduling_preference_id,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, ownerID, strategy.id, name, description, HashSecret(key), keyPrefix, keySuffix,
-		sealed, status, expiresAt, quotaJSONValue, scheduleJSONValue, nextCheckAt, preference.id, nowISO, revision)
+		sealed, status, expiresAt, quotaJSONValue, scheduleJSONValue, nextCheckAt, scheduleGateValue,
+		preference.id, nowISO, revision)
 	if err != nil {
 		if duplicate := duplicateAPIKeyNameError(err, name); duplicate != nil {
 			return nil, nil, duplicate
@@ -1562,4 +1576,14 @@ func nullPtrBoolFromNullInt64(value sql.NullInt64) *bool {
 	}
 	flag := value.Int64 == 1
 	return &flag
+}
+
+// nullPtrInt 把三态整数列（availability_schedule_gate）投影为可空 int：
+// NULL（无计划）→ nil，1/0 原值输出。
+func nullPtrInt(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	number := int(value.Int64)
+	return &number
 }

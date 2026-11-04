@@ -131,30 +131,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_term_owner
-      ON account_name_search_terms(term, system_account_id, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_owner_term
-      ON account_name_search_terms(system_account_id, term, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_account
-      ON account_name_search_terms(account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_name_search_documents_owner
-      ON account_name_search_documents(system_account_id, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_priority
       ON account_list_availability_projections(
         viewer_system_account_id,
@@ -202,24 +178,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_search_terms_lookup
-      ON account_list_availability_projection_search_terms(viewer_system_account_id, term, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_search_terms_name_order
-      ON account_list_availability_projection_search_terms(
-        viewer_system_account_id,
-        term,
-        name_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      )`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_priority
       ON account_list_availability_projection_index(
         viewer_system_account_id,
@@ -238,18 +196,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
         created_at_sort_key ASC,
         account_id ASC
       )`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name_search_incomplete
-      ON account_list_availability_projection_index(
-        viewer_system_account_id,
-        name_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      )
-      WHERE search_index_complete = 0`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -1195,16 +1141,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "account-list-projection-index-pg-trigram-index",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name_trgm ON account_list_availability_projection_index USING gin (name_sort_key juhe_business.gin_trgm_ops)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "account-list-projection-search-terms-pg-name-order-index",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_alap_search_term_name_c ON account_list_availability_projection_search_terms(viewer_system_account_id, term, (name_sort_key COLLATE "C") ASC, created_at_sort_key ASC, account_id ASC)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "account-list-projection-index-pg-name-search-incomplete-index",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_alap_index_name_incomplete_c ON account_list_availability_projection_index(viewer_system_account_id, (name_sort_key COLLATE "C") ASC, created_at_sort_key ASC, account_id ASC) WHERE search_index_complete = 0`,
 	},
 	{
 		SchemaName: "juhe_business",
