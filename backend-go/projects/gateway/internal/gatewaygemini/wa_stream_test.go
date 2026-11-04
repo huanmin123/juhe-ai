@@ -121,22 +121,157 @@ func TestWAStreamInspectorTerminalEventTypes(t *testing.T) {
 	}
 }
 
-// 超大事件跳过契约。
-func TestWAStreamInspectorOversizeSkip(t *testing.T) {
-	oversize := strings.Repeat("a", 256*1024+1)
+// 超大事件契约：data/event 超限只丢弃当前事件的完整解析，后续事件继续
+// 扫描；终止事件与输出提示仍可识别（BUG-0354）。
+func TestWAStreamInspectorOversizedEventContinues(t *testing.T) {
+	oversize := strings.Repeat("a", 300*1024)
 	inspector := NewStreamInspector()
-	inspector.PushText("data: {\"pad\":\"" + oversize + "\"}\n\n")
-	snapshot := inspector.Finish()
-	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
-		t.Fatalf("跳过标记 = %v/%q", snapshot.Skipped, snapshot.SkipReason)
+	inspector.PushText("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"" + oversize + "\"}]}}]}\n\n")
+	snapshot := inspector.Snapshot()
+	if snapshot.Skipped {
+		t.Fatalf("data 超限不应整流跳过: %+v", snapshot)
 	}
-	if inspector.PushText("data: {}\n\n").EventCount != 0 {
-		t.Fatal("跳过后不应再分类事件")
+	if snapshot.EventCount != 1 || !snapshot.OutputReceived || snapshot.OutputEventCount != 1 {
+		t.Fatalf("超大 candidates 事件应按输出计数: %+v", snapshot)
+	}
+	if snapshot.PendingEvent {
+		t.Fatal("事件完结后不应报告 pending")
+	}
+	// 后续终止事件继续解析。
+	snapshot = inspector.PushText("data: [DONE]\n\n")
+	if !snapshot.TerminalReceived || snapshot.EventCount != 2 || snapshot.EventTypeCounts["[DONE]"] != 1 {
+		t.Fatalf("后续 [DONE] 应终止: %+v", snapshot)
+	}
+	if snapshot.OutputEventCount != 1 {
+		t.Fatalf("[DONE] 不应继承 output 计数: %+v", snapshot)
+	}
+	// 第二个超大事件不含输出/失败提示，不得继承上一事件的 oversized 状态。
+	snapshot = inspector.PushText("data: " + oversize + "\n\n")
+	if snapshot.EventCount != 3 || snapshot.OutputEventCount != 1 || snapshot.FailedReceived {
+		t.Fatalf("oversized 状态跨事件泄漏: %+v", snapshot)
+	}
+	drained := inspector.DrainEventSummaries()
+	if len(drained) != 3 {
+		t.Fatalf("summary 数 = %d，期望 3", len(drained))
+	}
+	if !drained[0].ParseError || !drained[0].Output {
+		t.Fatalf("超大事件 summary = %+v", drained[0])
+	}
+	if drained[2].Output || drained[2].Failed || drained[2].Type != "message" {
+		t.Fatalf("第二个超大事件 summary = %+v", drained[2])
+	}
+}
+
+// 超大顶层 {"error":{...}} 帧必须置 FailedReceived，不能被 oversized 吞成成功。
+func TestWAStreamInspectorOversizedTopLevelError(t *testing.T) {
+	oversize := strings.Repeat("a", 300*1024)
+	inspector := NewStreamInspector()
+	inspector.PushText("data: {\"error\":{\"status\":\"INVALID_ARGUMENT\",\"message\":\"" + oversize + "\"}}\n\n")
+	snapshot := inspector.Snapshot()
+	if snapshot.Skipped {
+		t.Fatalf("超大顶层 error 不应整流跳过: %+v", snapshot)
+	}
+	if !snapshot.FailedReceived || !snapshot.TerminalReceived {
+		t.Fatalf("超大顶层 error 应失败且终止: %+v", snapshot)
+	}
+	snapshot = inspector.PushText("data: [DONE]\n\n")
+	if !snapshot.TerminalReceived || snapshot.EventCount != 2 {
+		t.Fatalf("后续终止事件应继续解析: %+v", snapshot)
+	}
+	// 后续超大事件不得继承上一事件的 failed 状态。
+	snapshot = inspector.PushText("data: " + oversize + "\n\n")
+	if snapshot.EventCount != 3 || !snapshot.FailedReceived {
+		t.Fatalf("后续超大事件不应清除已发生的失败: %+v", snapshot)
+	}
+	drained := inspector.DrainEventSummaries()
+	if len(drained) != 3 || drained[2].Failed {
+		t.Fatalf("failed 状态跨事件泄漏: %+v", drained)
+	}
+}
+
+// 行限跨 chunk 且无 event 名的数据帧：前缀 candidates 提示继续生效，后续终止可识别。
+func TestWAStreamInspectorOversizedLineAcrossChunks(t *testing.T) {
+	oversize := strings.Repeat("a", 300*1024)
+	inspector := NewStreamInspector()
+	inspector.PushChunk([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\""))
+	for offset := 0; offset < len(oversize); offset += 8192 {
+		end := offset + 8192
+		if end > len(oversize) {
+			end = len(oversize)
+		}
+		inspector.PushChunk([]byte(oversize[offset:end]))
+	}
+	inspector.PushChunk([]byte("\"}]}}]\n"))
+	inspector.PushChunk([]byte("\ndata: [DONE]\n\n"))
+	snapshot := inspector.Finish()
+	if snapshot.Skipped {
+		t.Fatalf("行限跨 chunk 不应整流跳过: %+v", snapshot)
+	}
+	if !snapshot.OutputReceived {
+		t.Fatalf("无 event 名数据帧应由前缀提示计入输出: %+v", snapshot)
+	}
+	if !snapshot.TerminalReceived || snapshot.EventCount != 2 {
+		t.Fatalf("后续终止事件应继续解析: %+v", snapshot)
+	}
+}
+
+// 事件限跨 chunk：多条 data 行各自低于行上限、累计超过事件上限时，只丢弃
+// 当前事件，后续终止继续解析。
+func TestWAStreamInspectorOversizedEventAcrossChunks(t *testing.T) {
+	padding := strings.Repeat("a", 200*1024)
+	line := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"" + padding + "\"}]}}]}\n"
+	inspector := NewStreamInspector()
+	inspector.PushChunk([]byte(line[:100*1024]))
+	inspector.PushChunk([]byte(line[100*1024:]))
+	inspector.PushChunk([]byte(line))
+	inspector.PushChunk([]byte("\ndata: [DONE]\n\n"))
+	snapshot := inspector.Finish()
+	if snapshot.Skipped {
+		t.Fatalf("事件限跨 chunk 不应整流跳过: %+v", snapshot)
+	}
+	if !snapshot.OutputReceived {
+		t.Fatalf("事件前缀应保留输出提示: %+v", snapshot)
+	}
+	if !snapshot.TerminalReceived || snapshot.EventCount != 2 {
+		t.Fatalf("后续终止事件应继续解析: %+v", snapshot)
+	}
+}
+
+// 前缀含 finishReason 的超大事件直接判定终止，不依赖后续 [DONE]。
+func TestWAStreamInspectorOversizedFinishReasonPrefix(t *testing.T) {
+	oversize := strings.Repeat("a", 300*1024)
+	inspector := NewStreamInspector()
+	inspector.PushText("data: {\"finishReason\":\"STOP\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"" + oversize + "\"}]}}]}\n\n")
+	snapshot := inspector.Finish()
+	if snapshot.Skipped || !snapshot.TerminalReceived || !snapshot.OutputReceived {
+		t.Fatalf("前缀 finishReason 应终止且 candidates 应输出: %+v", snapshot)
+	}
+}
+
+// 顶层 error 前缀容错：{ 后允许空白，"error" 必须是首个键且值为对象。
+func TestWATopLevelStreamErrorObjectHint(t *testing.T) {
+	cases := []struct {
+		name   string
+		prefix string
+		want   bool
+	}{
+		{"紧凑", `{"error":{"message":"x"}}`, true},
+		{"键值空白", `{ "error" : { "message": "x" } }`, true},
+		{"非首键", `{"type":"error","error":{}}`, false},
+		{"null", `{"error":null}`, false},
+		{"字符串", `{"error":"x"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := topLevelStreamErrorObjectHint(tc.prefix); got != tc.want {
+				t.Fatalf("topLevelStreamErrorObjectHint(%q) = %v，期望 %v", tc.prefix, got, tc.want)
+			}
+		})
 	}
 }
 
 // 持续无换行输入契约：未完结行缓冲受 256KB 行上限约束，不随输入无上限增长；
-// 超过行上限即按事件超限语义整流跳过并报告原因（资源边界回归）。
+// data 行超限进入 oversized 事件而不是整流跳过（BUG-0354）。
 func TestWAStreamInspectorNoNewlineLineCap(t *testing.T) {
 	const lineCap = 256 * 1024
 	inspector := NewStreamInspector()
@@ -149,15 +284,22 @@ func TestWAStreamInspectorNoNewlineLineCap(t *testing.T) {
 		}
 	}
 	snapshot := inspector.Snapshot()
-	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
-		t.Fatalf("持续无换行输入应超限跳过: %+v", snapshot)
+	if snapshot.Skipped {
+		t.Fatalf("data 行超限不应整流跳过: %+v", snapshot)
 	}
-	if snapshot.PendingEvent {
-		t.Fatal("跳过状态不应报告 pending")
+	if !inspector.oversizedEvent || !snapshot.PendingEvent {
+		t.Fatalf("超限 data 行应进入 oversized 事件: %+v", snapshot)
+	}
+	snapshot = inspector.Finish()
+	if snapshot.EventCount != 1 || snapshot.PendingEvent {
+		t.Fatalf("Finish 应收尾 oversized 事件: %+v", snapshot)
+	}
+	if len(inspector.pendingLine) != 0 {
+		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
 	}
 }
 
-// 行上限边界：恰为上限的未完结行保留，超出 1 字节即跳过。
+// 行上限边界：恰为上限的未完结行保留，超出 1 字节进入 oversized 事件。
 func TestWAStreamInspectorLineCapBoundary(t *testing.T) {
 	const lineCap = 256 * 1024
 	atLimit := NewStreamInspector()
@@ -167,12 +309,12 @@ func TestWAStreamInspectorLineCapBoundary(t *testing.T) {
 	}
 	overLimit := NewStreamInspector()
 	overLimit.PushChunk([]byte("data: " + strings.Repeat("x", lineCap-len("data: ")+1)))
-	if snapshot := overLimit.Snapshot(); !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
-		t.Fatalf("超出上限 1 字节应跳过: %+v", snapshot)
+	if snapshot := overLimit.Snapshot(); snapshot.Skipped || !overLimit.oversizedEvent {
+		t.Fatalf("超出上限 1 字节应进入 oversized 事件: %+v", snapshot)
 	}
 }
 
-// 行上限跨 chunk：多段推入累计恰达上限不跳过，再来 1 字节即跳过且缓冲释放。
+// 行上限跨 chunk：多段推入累计恰达上限不跳过，再来 1 字节进入 oversized。
 func TestWAStreamInspectorLineCapCrossChunk(t *testing.T) {
 	const lineCap = 256 * 1024
 	inspector := NewStreamInspector()
@@ -195,43 +337,52 @@ func TestWAStreamInspectorLineCapCrossChunk(t *testing.T) {
 	}
 	inspector.PushChunk([]byte("x"))
 	snapshot := inspector.Snapshot()
-	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
-		t.Fatalf("跨 chunk 超出上限 1 字节应跳过: %+v", snapshot)
+	if snapshot.Skipped || !inspector.oversizedEvent {
+		t.Fatalf("跨 chunk 超出上限 1 字节应进入 oversized 事件: %+v", snapshot)
 	}
 	if len(inspector.pendingLine) != 0 {
-		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
+		t.Fatalf("超限后未完结行缓冲应释放: %d", len(inspector.pendingLine))
 	}
 }
 
-// 超限行在同 chunk 内带换行完结：预追加检查先于行处理触发，整流跳过且不分类事件。
+// 超限行在同 chunk 内带换行完结：只丢弃当前事件，空行触发 oversized 收尾。
 func TestWAStreamInspectorOversizedLineWithNewline(t *testing.T) {
 	const lineCap = 256 * 1024
 	inspector := NewStreamInspector()
 	inspector.PushChunk([]byte("data: " + strings.Repeat("x", lineCap) + "\n\n"))
 	snapshot := inspector.Snapshot()
-	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" || snapshot.EventCount != 0 {
-		t.Fatalf("同 chunk 超限行应整流跳过且不分类: %+v", snapshot)
+	if snapshot.Skipped || snapshot.EventCount != 1 {
+		t.Fatalf("同 chunk 超限 data 行应只丢弃当前事件并继续: %+v", snapshot)
 	}
 	if len(inspector.pendingLine) != 0 {
-		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
+		t.Fatalf("超限行缓冲应释放: %d", len(inspector.pendingLine))
+	}
+	drained := inspector.DrainEventSummaries()
+	if len(drained) != 1 || !drained[0].ParseError {
+		t.Fatalf("oversized summary = %+v", drained)
 	}
 }
 
-// event 前缀行与其他前缀同判（上限检查在预追加阶段，与行前缀无关）；跳过后短路。
+// event 前缀行超限同样进入 oversized 事件；后续事件继续解析。
 func TestWAStreamInspectorOversizedEventPrefixLine(t *testing.T) {
 	const lineCap = 256 * 1024
 	inspector := NewStreamInspector()
 	inspector.PushChunk([]byte("event: " + strings.Repeat("x", lineCap)))
 	snapshot := inspector.Snapshot()
-	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
-		t.Fatalf("event 前缀超限行应跳过: %+v", snapshot)
+	if snapshot.Skipped {
+		t.Fatalf("event 前缀超限行不应整流跳过: %+v", snapshot)
 	}
 	if len(inspector.pendingLine) != 0 {
-		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
+		t.Fatalf("超限行缓冲应释放: %d", len(inspector.pendingLine))
 	}
-	inspector.PushChunk([]byte("data: {\"type\":\"finish\"}\n\n"))
-	if snapshot := inspector.Snapshot(); snapshot.EventCount != 0 || !snapshot.Skipped {
-		t.Fatalf("跳过后应短路不再分类: %+v", snapshot)
+	// 先结束超大 event 行，再由空行收尾 oversized 事件，最后是后续正常事件。
+	inspector.PushChunk([]byte("\n\ndata: [DONE]\n\n"))
+	snapshot = inspector.Snapshot()
+	if snapshot.Skipped {
+		t.Fatalf("后续事件不应整流跳过: %+v", snapshot)
+	}
+	if !snapshot.TerminalReceived || snapshot.EventCount != 2 {
+		t.Fatalf("后续 [DONE] 应继续解析: %+v", snapshot)
 	}
 }
 

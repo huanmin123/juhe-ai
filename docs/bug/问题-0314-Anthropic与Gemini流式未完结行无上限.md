@@ -56,7 +56,7 @@
 ## 下次遇到
 
 - 先查什么：`gateway_stream_inspector_skipped` 的 `skipReason` 与上游是否出现超大单行（大 base64 图像、大 JSON 事件）。
-- 重点看什么：三个协议 inspector 的行 / 事件上限语义是否仍一致（openai 行 256KiB + 事件 512KiB 分类处理；anthropic/gemini 行 256KiB + 事件 256KiB，超限整流跳过）。
+- 重点看什么：三个协议 inspector 的行 / 事件上限语义是否仍一致（openai 行 256KiB + 事件 512KiB 分类处理；anthropic/gemini 行 256KiB + 事件 256KiB；2026-11-04 起 data/event 超限改为 per-event oversized 续解析，非 data/event 行仍整流跳过）。
 - 如何避免误判：主转发路径不受 inspector 跳过影响；skip 只影响旁路检查状态、usage 与终止识别。
 
 ## 完成总结
@@ -64,3 +64,4 @@
 - 完成时间：2026-10-14
 - 结论：Anthropic/Gemini inspector 未完结行缓冲补齐 256KiB 行级上限，超限整流跳过并报告既有原因；两包新增红绿回归用例，五包全量测试与 `go vet`/gofmt 全绿。
 - 后续建议：若后续需要 Anthropic/Gemini 图像流大事件继续可解析（对齐 BUG-0014 的 oversized 事件语义），应另立设计任务评估 oversized 事件分类与 usage 尾窗提取。
+- 2026-11-04 后续：已由 [BUG-0354](问题-0354-跨协议超大SSE事件整流跳过致终止失败丢失.md) 将 data/event 超限的「整流 Skipped」改为 per-event oversized 续解析（当前事件轻量分类、后续事件继续），行/事件 256KB 内存上限不变；非 data/event 垃圾行仍保留 Skipped。

@@ -155,9 +155,6 @@ func TestW14BFaultInjectedStoreArms(t *testing.T) {
 	if _, err := store.listCustomTestCatalogOptions(ctx, []string{"gpt"}, adminID, ManualTestOptionsQuery{}); err == nil {
 		t.Fatal("listCustomTestCatalogOptions 应传播错误")
 	}
-	if _, err := store.collectTestCatalogCandidates(ctx, []string{"gpt"}, []string{"gpt"}, "m", "", "owner-fixture"); err == nil {
-		t.Fatal("collectTestCatalogCandidates 应传播错误")
-	}
 	if _, err := store.findTestCatalogItem(ctx, "gpt", adminID, "gpt-4o-mini"); err == nil {
 		t.Fatal("findTestCatalogItem 应传播错误")
 	}

@@ -156,13 +156,20 @@ func TestWAOpenAIStreamInspectorOversizedEvent(t *testing.T) {
 	}
 }
 
-// 单行 data 超行限（256KB）且无类型信息：整流跳过并报告行超限原因。
+// 单行 data 超行限（256KB）且无类型信息：只丢弃当前事件的完整解析，
+// 不再整流跳过（BUG-0354）；无终止/失败/输出提示时只留 message summary。
 func TestWAOpenAIStreamInspectorOversizedEventUnknownType(t *testing.T) {
 	inspector := NewStreamInspector()
 	inspector.PushText("data: " + strings.Repeat("a", 512*1024+2) + "\n\n")
 	snapshot := inspector.Finish()
-	if !snapshot.Skipped || snapshot.SkipReason != "SSE 单行超过网关解析上限" {
-		t.Fatalf("未知类型行超限应整流跳过 = %v/%q", snapshot.Skipped, snapshot.SkipReason)
+	if snapshot.Skipped {
+		t.Fatalf("data 行超限不应整流跳过: %+v", snapshot)
+	}
+	if snapshot.EventCount != 1 || snapshot.EventTypeCounts["message"] != 1 {
+		t.Fatalf("超大未知事件应计入 message summary: %+v", snapshot)
+	}
+	if snapshot.TerminalReceived || snapshot.FailedReceived || snapshot.OutputReceived {
+		t.Fatalf("无终止/失败/输出提示的超大事件不应置位: %+v", snapshot)
 	}
 }
 
@@ -246,37 +253,40 @@ func TestWAOpenAIStreamInspectorErrorFrameWithUsage(t *testing.T) {
 }
 
 // 超大 error 帧（单事件单行超过 inspector 行上限 256KB，streamInspectorMaxLineBytes）：
-// 整流跳过解析（Skipped），不做逐事件分类，因此不判 Failed——设计 §5.2 已知
-// 边界（结构性限制，非本判定缺口）。
-func TestWAOpenAIStreamInspectorOversizedErrorFrameSkipped(t *testing.T) {
+// 完整 JSON 不再解析，但首 4096 字节的有界顶层 error 提示必须置
+// FailedReceived/TerminalReceived（BUG-0354），不得整流跳过或吞成成功。
+func TestWAOpenAIStreamInspectorOversizedErrorFrameNotSkipped(t *testing.T) {
 	inspector := NewStreamInspector()
 	// error 对象仅含 message 键：无 "type" 字符串可被前缀探针识别。
 	inspector.PushText("data: {\"error\":{\"message\":\"" + strings.Repeat("x", 256*1024) + "\"}}\n\n")
 	snapshot := inspector.Finish()
-	if !snapshot.Skipped {
-		t.Fatalf("超行限 error 帧应整流跳过: %+v", snapshot)
+	if snapshot.Skipped {
+		t.Fatalf("超行限 error 帧不应整流跳过: %+v", snapshot)
 	}
-	if snapshot.SkipReason != "SSE 单行超过网关解析上限" {
-		t.Fatalf("跳过原因 = %q", snapshot.SkipReason)
+	if !snapshot.FailedReceived || !snapshot.TerminalReceived {
+		t.Fatalf("超大顶层 error 帧应失败且终止: %+v", snapshot)
 	}
-	if snapshot.FailedReceived || snapshot.TerminalReceived {
-		t.Fatalf("跳过路径不判失败/终止: %+v", snapshot)
+	if snapshot.EventCount != 1 || snapshot.EventTypeCounts["message"] != 1 {
+		t.Fatalf("超大 error 事件应计入 message summary: %+v", snapshot)
+	}
+	summary := inspector.DrainEventSummaries()
+	if len(summary) != 1 || !summary[0].ParseError || !summary[0].Failed || !summary[0].Terminal {
+		t.Fatalf("超大 error summary = %+v", summary)
 	}
 }
 
-// 超大 error 帧变体：error 内含 "type" 字段时不触发整流跳过，走 oversized
-// 事件分类路径——事件类型取自 "type" 前缀探针（"upstream_error" 不在
-// oversized 失败/终止类型集），同样不判 Failed。与上一用例共同锚定 §5.2
-// 的两个分支：超大事件一律不解析 JSON、不做负载级失败判定。
-func TestWAOpenAIStreamInspectorOversizedErrorFrameWithTypeNotFailed(t *testing.T) {
+// 超大 error 帧变体：error 内含 "type" 字段时事件类型取自前缀探针
+// （"upstream_error" 不在 oversized 失败/终止类型集），但顶层 error 对象的
+// 有界提示仍必须判失败/终止（BUG-0354）。
+func TestWAOpenAIStreamInspectorOversizedErrorFrameWithTypeStillFailed(t *testing.T) {
 	inspector := NewStreamInspector()
 	inspector.PushText("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"" + strings.Repeat("x", 300*1024) + "\"}}\n\n")
 	snapshot := inspector.Finish()
 	if snapshot.Skipped {
 		t.Fatalf("含 type 的超大帧走 oversized 事件分类而非整流跳过: %+v", snapshot)
 	}
-	if snapshot.FailedReceived {
-		t.Fatalf("oversized 路径不解析 JSON，不应判失败: %+v", snapshot)
+	if !snapshot.FailedReceived || !snapshot.TerminalReceived {
+		t.Fatalf("超大顶层 error 帧应失败且终止: %+v", snapshot)
 	}
 	if snapshot.LastEventType != "upstream_error" {
 		t.Fatalf("事件类型应取自 type 前缀探针: %q", snapshot.LastEventType)

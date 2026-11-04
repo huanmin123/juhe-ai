@@ -38,10 +38,10 @@ func TestWAStreamInspectorDrainSummaries(t *testing.T) {
 	}
 }
 
-// 跳过后的 PushParsedEvent / Finish 短路。
+// 跳过后的 PushParsedEvent / Finish 短路（非 data/event 超大行仍整流跳过）。
 func TestWAStreamInspectorSkippedShortCircuit(t *testing.T) {
 	inspector := NewStreamInspector()
-	inspector.PushText("data: " + strings.Repeat("a", 256*1024+1) + "\n\n")
+	inspector.PushText("garbage: " + strings.Repeat("a", 256*1024+1) + "\n\n")
 	if !inspector.Snapshot().Skipped {
 		t.Fatal("前置条件：应已跳过")
 	}

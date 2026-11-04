@@ -53,6 +53,7 @@
 - `TestSettleResponseStreamServerRetryLockReadFailureM4Narrowing`：锁读取失败仅在已观察到锁行时 fail-closed。
 - `TestSettleSpeedFirstCutoverLockReadFailureFailClosedWhenObserved`：speed_first 结算期读取失败同样按 observation 收窄。
 - `TestClientHandoffThroughReverseProxyStaysTruncated`：真实 `httptest` 后端 + `httputil.ReverseProxy` 前置代理验证——非流式交接先提交 200 头再断连时客户端收到 200 + 截断正文（网络级读错误）；未提交响应直接断连会被代理合成为 502。
+- dev 服务器 `caddy:2-alpine`（Caddy v2.11.7）真机 + 真实 Codex CLI 0.152.0 链路验证，结果见下节「Caddy 真机验证」。
 - `TestApplyChatBridgeCompactPreflightLockHoldInterruptsConnection` / `...FallsBackTo503`：compact 摘要预检锁死 hold 真断开、Hijack 不可用回退 503 且不污染 `HeadersSent`（该文件受 `JUHE_AI_TEST_EXTERNAL` 外部 PG 门控制，默认回归跳过；其核心传输/回退行为由 `internal/gatewaypreauth` 的默认单测覆盖）。
 - 既有 `WallBudgetKinds` / `RouteAction` / `TestV1|TestW1` 定向集全绿。
 - 命令：`go build ./...`、`go test ./cmd/juhe-ai-gateway -run 'TestV1|TestW1|AccountLock|SpeedFirst|ClientHandoff|WallBudgetKinds|RouteAction' -count=1`、`go test ./internal/gatewaydispatch -count=1`、`go test ./internal/gatewaycodex ./internal/gatewayresponse ./internal/gatewaypreauth -count=1`。
@@ -74,13 +75,32 @@
 - `interceptor.go` 的 `interceptorFailureEvent` 无生产调用方（响应检查只产出 verdict，终态帧由 finalize 统一渲染），已删除函数与其单测。
 - 该裁决不改变"非终态不得返回客户端失败"的用户规则：上述帧路径只在网关已完成决策空间（无可切换候选/策略终态）后触发。
 
+## Caddy 真机验证（原 T121，2026-11-04 关闭）
+
+dev 服务器 `192.168.1.203`（Docker 29.1.3）启动 `caddy:2-alpine`（Caddy v2.11.7，`--network host`，`reverse_proxy 127.0.0.1:28080`，默认 HTTP/1.1 upstream）打到本机探针：
+
+| 探针形态 | 经 Caddy 后客户端观察 | Caddy 日志 |
+| --- | --- | --- |
+| 完整 SSE 成功 | 200 + 完整事件流 | 正常 |
+| 503 JSON | 503 + 原文透传 | 正常 |
+| 200 SSE + `response.failed` | 200 + 完整错误帧 | 正常 |
+| SSE 头已提交后断连 | **200 + 截断流**（curl 18） | `aborting with incomplete response` |
+| 200/JSON 头已提交后断连 | **200 + 截断正文**（curl 18） | `aborting with incomplete response` |
+| 未提交响应直接断连 | **502 由 Caddy 合成** | `statusError 502` |
+
+真实 Codex CLI 0.152.0 经 dev Caddy（`base_url=http://192.168.1.203:28081/v1`）访问「200 头已提交后断连」探针：1 次首发 + 5 次 `Reconnecting`（共 6 次请求），最终 `Transport error: network error`，Caddy 日志持续 `aborting with incomplete response`——客户端按网络错误重试，未收到 Caddy 合成的 502。
+
+结论：流式与非流式交接都必须在断连前提交 200 传输头；HTTP/2 upstream 不支持 Hijack 的限制已在 `docker/single-server/README.md` 固化为「Caddy → gateway upstream 必须保持 HTTP/1.1」。验证后已清理 dev 服务器上的探针、Caddy 容器与临时目录，未改动既有容器。
+
+**Nginx 形态（同环境追加验证，2026-11-04）**：`nginx:alpine`（nginx/1.31.8）`--network host` 反代同一探针，默认 `proxy_http_version 1.0` 与显式 `1.1` 两种配置结果一致——SSE 头或 JSON 200 头提交后断连，客户端均收到 **200 + 截断正文**（curl 18），Nginx 记 `upstream prematurely closed connection while reading upstream`（error 级）；未提交响应断连才返回 **502**（`while reading response header from upstream`）。真实 Codex CLI 经 Nginx：6 次请求（1 首发 + 5 次 `Reconnecting`）、`Transport error: network error`。注意事项已写入部署 README：交接产生的 error 日志属预期，SSE 依赖 `X-Accel-Buffering: no`，多实例 upstream 建议 `proxy_next_upstream off`。
+
 ## 剩余边界
 
-- HTTP/2 直连（不经 Caddy）不支持 Hijack，交接退化为 503；生产经 Caddy HTTP/1.1 upstream 为正常路径。本地已用真实 `httputil.ReverseProxy` 验证代理类行为（SSE 与 JSON 截断透传、未提交断连合成 502），Caddy 容器真机确认仍登记为 [T121](../待办与阻塞事项.md#t121)。
+- HTTP/2 直连（不经 Caddy）不支持 Hijack，交接退化为 503；生产经 Caddy HTTP/1.1 upstream 为正常路径，部署契约已固化。Caddy 真机链路（v2.11.7）已在 dev 验证，见上节。
 
 ## 关联
 
 - [AI账户短窗口热质量与精准切号设计](../functions/AI账户短窗口热质量与精准切号设计.md) §client_handoff
 - [AI账户锁死调度机制设计与实现前复审](../functions/AI账户锁死调度机制设计与实现前复审.md) §3.4 / §10.6
 - [BUG-0350](问题-0350-锁死窗口内同组候选切换仍会切号.md)
-- [T121](../待办与阻塞事项.md#t121)（Caddy 真机透传验证）
+- 部署契约：[docker/single-server/README.md](../../docker/single-server/README.md)「Caddy → gateway upstream 必须保持 HTTP/1.1」

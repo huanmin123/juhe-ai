@@ -60,6 +60,7 @@ type StreamUsageFallbackResult struct {
 const (
 	streamInspectorMaxLineBytes       = 256 * 1024
 	streamInspectorMaxEventBytes      = 256 * 1024
+	streamInspectorOversizedPrefix    = 4 * 1024
 	streamInspectorRecentEventTypes   = 8
 	anthropicStreamSkipReasonTooLarge = "anthropic_stream_event_too_large"
 )
@@ -73,7 +74,16 @@ type StreamInspector struct {
 	// pendingLine 是当前未完结行的字节缓冲（容量跨 chunk 复用），替代
 	// strings.Builder：每个 chunk 快照的 PendingEvent 判定可走字节前缀比较，
 	// 不再为读一行而复制。
-	pendingLine           []byte
+	pendingLine []byte
+	// oversized 状态只属于当前 SSE event：data:/event: 行或事件超过解析上限
+	// 时丢弃当前事件的完整解析，但继续扫描后续事件（BUG-0354）。前缀只保留
+	// 有界窗口，用于轻量识别顶层 error 与可见输出。
+	oversizedEvent        bool
+	oversizedEventType    string
+	oversizedEventFailed  bool
+	oversizedEventOutput  bool
+	oversizedEventPrefix  []byte
+	oversizedLineSkip     bool
 	pendingEventSummaries []StreamEventSummary
 }
 
@@ -98,6 +108,16 @@ func (s *StreamInspector) pushBytes(chunk []byte) StreamInspection {
 	}
 	offset := 0
 	for offset < len(chunk) {
+		// 超大行剩余字节只丢弃到换行，不再缓冲；后续行继续扫描。
+		if s.oversizedLineSkip {
+			newlineIndex := bytes.IndexByte(chunk[offset:], '\n')
+			if newlineIndex < 0 {
+				return s.Snapshot()
+			}
+			offset += newlineIndex + 1
+			s.oversizedLineSkip = false
+			continue
+		}
 		newlineIndex := bytes.IndexByte(chunk[offset:], '\n')
 		var segmentEnd int
 		if newlineIndex < 0 {
@@ -111,9 +131,20 @@ func (s *StreamInspector) pushBytes(chunk []byte) StreamInspection {
 			segment = segment[:len(segment)-1]
 		}
 		// 行级上限（对齐 openai 侧 streamInspectorMaxLineBytes）：未完结行缓冲
-		// 不得随无换行输入无上限累积；单行超限与事件超限同语义，整流跳过并
-		// 报告原因，缓冲随跳过后释放。
+		// 不得随无换行输入无上限累积。data:/event: 行只丢弃当前事件并进入
+		// oversized 状态，后续事件继续解析；其他前缀仍按整流 Skipped 处理。
 		if len(s.pendingLine)+len(segment) > streamInspectorMaxLineBytes {
+			linePrefix := boundedStreamLinePrefix(s.pendingLine, segment, streamInspectorOversizedPrefix)
+			if isStreamDataOrEventLinePrefix(linePrefix) {
+				s.markOversizedLine(linePrefix, len(s.pendingLine)+len(segment))
+				s.pendingLine = nil
+				if newlineIndex < 0 {
+					s.oversizedLineSkip = true
+					return s.Snapshot()
+				}
+				offset = segmentEnd + 1
+				continue
+			}
 			s.inspection.Skipped = true
 			s.inspection.SkipReason = anthropicStreamSkipReasonTooLarge
 			s.pendingLine = nil
@@ -199,11 +230,18 @@ func (s *StreamInspector) DrainEventSummariesCanEndStream() bool {
 
 func (s *StreamInspector) processLine(line string) {
 	if line == "" {
+		if s.oversizedEvent {
+			s.flushOversizedEvent()
+			return
+		}
 		s.flushEvent()
 		return
 	}
 	if strings.HasPrefix(line, "event:") {
 		s.eventName = strings.TrimSpace(line[len("event:"):])
+		if s.oversizedEvent && s.oversizedEventType == "" {
+			s.oversizedEventType = s.eventName
+		}
 		return
 	}
 	if !strings.HasPrefix(line, "data:") {
@@ -211,10 +249,13 @@ func (s *StreamInspector) processLine(line string) {
 	}
 	dataLine := trimStart(line[len("data:"):])
 	s.dataBytes += len(dataLine)
+	if s.oversizedEvent {
+		// 当前事件已超限：后续 data 行只计数，不再保存完整内容。
+		s.rememberOversizedEventPrefix(dataLine)
+		return
+	}
 	if s.dataBytes > streamInspectorMaxEventBytes {
-		s.inspection.Skipped = true
-		s.inspection.SkipReason = anthropicStreamSkipReasonTooLarge
-		s.resetEvent()
+		s.enterOversizedEvent(dataLine)
 		return
 	}
 	s.dataLines = append(s.dataLines, dataLine)
@@ -222,6 +263,10 @@ func (s *StreamInspector) processLine(line string) {
 
 func (s *StreamInspector) flushEvent() {
 	if s.inspection.Skipped {
+		return
+	}
+	if s.oversizedEvent {
+		s.flushOversizedEvent()
 		return
 	}
 	if len(s.dataLines) == 0 {
@@ -244,6 +289,102 @@ func (s *StreamInspector) flushEvent() {
 	rawText.WriteString("\n")
 	event := ParseSSEEventData(dataText, eventName, rawText.String(), s.dataBytes)
 	s.inspectParsedEvent(event, s.dataBytes, eventName)
+	s.resetEvent()
+}
+
+// markOversizedLine 处理超过行上限的 data:/event: 行：只保留有界前缀用于
+// 轻量分类，当前行剩余字节由 pushBytes 丢弃；非 data/event 前缀不走本路径。
+func (s *StreamInspector) markOversizedLine(linePrefix []byte, lineBytes int) {
+	if bytes.HasPrefix(linePrefix, []byte("event:")) {
+		s.eventName = strings.TrimSpace(string(linePrefix[len("event:"):]))
+		s.enterOversizedEvent("")
+		return
+	}
+	dataPrefix := trimStart(string(linePrefix[len("data:"):]))
+	s.dataBytes += lineBytes
+	s.enterOversizedEvent(dataPrefix)
+}
+
+// enterOversizedEvent 把当前事件切换为 oversized 模式：已有 data 行与本次
+// 触发片段只进入有界前缀，完整内容不再保存。
+func (s *StreamInspector) enterOversizedEvent(extraPrefix string) {
+	if !s.oversizedEvent {
+		s.oversizedEvent = true
+		if s.oversizedEventType == "" {
+			s.oversizedEventType = s.eventName
+		}
+	}
+	for _, line := range s.dataLines {
+		s.rememberOversizedEventPrefix(line)
+		if len(s.oversizedEventPrefix) >= streamInspectorOversizedPrefix {
+			break
+		}
+	}
+	s.rememberOversizedEventPrefix(extraPrefix)
+	s.dataLines = nil
+}
+
+func (s *StreamInspector) rememberOversizedEventPrefix(fragment string) {
+	if fragment == "" || len(s.oversizedEventPrefix) >= streamInspectorOversizedPrefix {
+		return
+	}
+	remaining := streamInspectorOversizedPrefix - len(s.oversizedEventPrefix)
+	if len(fragment) > remaining {
+		fragment = fragment[:remaining]
+	}
+	s.oversizedEventPrefix = append(s.oversizedEventPrefix, fragment...)
+	prefix := string(s.oversizedEventPrefix)
+	if !s.oversizedEventFailed && topLevelStreamErrorObjectHint(prefix) {
+		s.oversizedEventFailed = true
+	}
+	if !s.oversizedEventOutput && anthropicOversizedOutputHint(prefix) {
+		s.oversizedEventOutput = true
+	}
+}
+
+func (s *StreamInspector) flushOversizedEvent() {
+	eventType := s.eventName
+	if eventType == "" {
+		eventType = s.oversizedEventType
+	}
+	if eventType == "" {
+		eventType = "message"
+	}
+	failed := s.oversizedEventFailed || s.eventName == "error"
+	terminal := failed || s.eventName == "message_stop"
+	output := s.oversizedEventOutput ||
+		s.eventName == "content_block_start" ||
+		s.eventName == "content_block_delta"
+
+	if failed {
+		s.inspection.FailedReceived = true
+		if s.inspection.ErrorMessage == "" {
+			s.inspection.ErrorMessage = "Anthropic 流式响应失败"
+		}
+	}
+	if terminal {
+		s.inspection.TerminalReceived = true
+	}
+	if output {
+		s.inspection.OutputReceived = true
+		s.inspection.OutputEventCount++
+	}
+	s.inspection.EventCount++
+	s.inspection.LastEventType = eventType
+	s.inspection.EventTypeCounts[eventType]++
+	s.inspection.RecentEventTypes = append(s.inspection.RecentEventTypes, eventType)
+	if len(s.inspection.RecentEventTypes) > streamInspectorRecentEventTypes {
+		s.inspection.RecentEventTypes = s.inspection.RecentEventTypes[1:]
+	}
+	s.pendingEventSummaries = append(s.pendingEventSummaries, StreamEventSummary{
+		Type:         eventType,
+		DataBytes:    s.dataBytes,
+		Terminal:     terminal,
+		CanEndStream: eventType == "message_stop",
+		Failed:       failed,
+		Output:       output,
+		ParseError:   true,
+	})
 	s.resetEvent()
 }
 
@@ -330,6 +471,59 @@ func (s *StreamInspector) resetEvent() {
 	s.eventName = ""
 	s.dataLines = nil
 	s.dataBytes = 0
+	s.oversizedEvent = false
+	s.oversizedEventType = ""
+	s.oversizedEventFailed = false
+	s.oversizedEventOutput = false
+	s.oversizedEventPrefix = nil
+	s.oversizedLineSkip = false
+}
+
+// boundedStreamLinePrefix 只拼出当前行开头的有界窗口，用于判断行类型；
+// 不随超大行剩余字节增长。
+func boundedStreamLinePrefix(pendingLine, segment []byte, limit int) []byte {
+	prefix := make([]byte, 0, limit)
+	if len(pendingLine) >= limit {
+		return append(prefix, pendingLine[:limit]...)
+	}
+	prefix = append(prefix, pendingLine...)
+	remaining := limit - len(prefix)
+	if remaining > 0 && len(segment) > 0 {
+		if len(segment) > remaining {
+			segment = segment[:remaining]
+		}
+		prefix = append(prefix, segment...)
+	}
+	return prefix
+}
+
+func isStreamDataOrEventLinePrefix(prefix []byte) bool {
+	return bytes.HasPrefix(prefix, []byte("data:")) || bytes.HasPrefix(prefix, []byte("event:"))
+}
+
+// topLevelStreamErrorObjectHint 识别数据前缀中的顶层 {"error":{...}} 形态；
+// 只做有界文本判断，不做 JSON 解析。
+func topLevelStreamErrorObjectHint(prefix string) bool {
+	text := strings.TrimSpace(prefix)
+	if !strings.HasPrefix(text, "{") {
+		return false
+	}
+	text = strings.TrimSpace(text[1:])
+	const errorKey = `"error"`
+	if !strings.HasPrefix(text, errorKey) {
+		return false
+	}
+	text = strings.TrimSpace(text[len(errorKey):])
+	if !strings.HasPrefix(text, ":") {
+		return false
+	}
+	text = strings.TrimSpace(text[1:])
+	return strings.HasPrefix(text, "{")
+}
+
+func anthropicOversizedOutputHint(prefix string) bool {
+	return strings.Contains(prefix, `"content_block_start"`) ||
+		strings.Contains(prefix, `"content_block_delta"`)
 }
 
 // outputTextFromStreamEvent 对齐 outputTextFromAnthropicStreamEvent。

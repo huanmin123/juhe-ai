@@ -178,7 +178,7 @@ func TestW9FStreamInspectorFinishFlushesPendingLine(t *testing.T) {
 	if !snapshot.OutputReceived || !snapshot.TerminalReceived {
 		t.Fatalf("finish = %+v", snapshot)
 	}
-	// Skipped 后 Finish 直通。
+	// data 行超限进入 per-event oversized，Finish 收尾为一条轻量事件（BUG-0354）。
 	inspector = NewStreamInspector()
 	inspector.PushChunk([]byte("data: "))
 	for i := 0; i <= streamInspectorMaxEventBytes/1024; i++ {
@@ -186,8 +186,8 @@ func TestW9FStreamInspectorFinishFlushesPendingLine(t *testing.T) {
 	}
 	inspector.PushChunk([]byte("\n\n"))
 	snapshot = inspector.Finish()
-	if !snapshot.Skipped {
-		t.Fatalf("oversize skipped = %+v", snapshot)
+	if snapshot.Skipped || snapshot.EventCount != 1 {
+		t.Fatalf("oversize event finish = %+v", snapshot)
 	}
 }
 

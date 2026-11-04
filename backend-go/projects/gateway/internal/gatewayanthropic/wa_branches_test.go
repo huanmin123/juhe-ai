@@ -60,10 +60,10 @@ func TestWAWithQueryParamSortedOutput(t *testing.T) {
 	}
 }
 
-// 跳过后的 PushParsedEvent / Finish 直接返回快照。
+// 跳过后的 PushParsedEvent / Finish 直接返回快照（非 data/event 超大行仍整流跳过）。
 func TestWAStreamInspectorSkippedShortCircuit(t *testing.T) {
 	inspector := NewStreamInspector()
-	inspector.PushText("data: " + repeatA(256*1024+1) + "\n\n")
+	inspector.PushText("garbage: " + repeatA(256*1024+1) + "\n\n")
 	if !inspector.Snapshot().Skipped {
 		t.Fatal("前置条件：应已跳过")
 	}
