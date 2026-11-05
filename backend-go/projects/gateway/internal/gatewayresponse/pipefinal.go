@@ -666,6 +666,11 @@ func (p *streamPipe) finalizeEmptyCompletion(inspection gatewayproto.StreamInspe
 
 func (p *streamPipe) finalizeParserSkipped(inspection gatewayproto.StreamInspection) (StreamPipeResult, error) {
 	success := p.completed && !p.interpretedProtocolFailure(inspection)
+	if success && p.interpretProtocolFailures && !inspection.TerminalReceived {
+		// 精确画像客户端要求协议终止事件；解析被跳过后 EOF 只代表传输结束，
+		// 不能把“没有终止事件”当成成功（否则下游拿到截断流且不重试）。
+		success = false
+	}
 	message := orDefault(inspection.ErrorMessage, "上游流式响应返回失败终态")
 	var errorCode string
 	if success {

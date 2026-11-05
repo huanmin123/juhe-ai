@@ -208,7 +208,7 @@ scrape_configs:
 
 | 顶层键 | 导出指标 | 含义 |
 | --- | --- | --- |
-| `juhe_app_job_stall` | `juhe_app_job_stall_minutes_since_success` | 任务距上次成功的分钟数 |
+| `juhe_app_job_stall` | `juhe_app_job_stall_minutes_since_success` | 任务距上次成功（`status='completed'`）的分钟数；失败运行的 `finished_at` 不计入 |
 | `juhe_app_stats_cursor_lag` | `juhe_app_stats_cursor_lag_minutes_since_success` | 统计游标滞后分钟数 |
 | `juhe_app_account_status` | `juhe_app_account_status_accounts` | 各状态账户数 |
 | `juhe_postgres_db_size` | `juhe_postgres_db_size_bytes` | 各库磁盘大小 |

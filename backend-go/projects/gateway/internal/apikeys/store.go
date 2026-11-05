@@ -907,7 +907,9 @@ func strategyJoinLockClause() string {
 func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error) {
 	schedule, err := s.parseScheduleJSON(row.scheduleJSON.String)
 	if err != nil {
-		return ListItem{}, err
+		// 单条非法存量计划降级为“无计划”，不让列表/详情整体 500；用户可通过
+		// PATCH 清空或替换该计划。
+		schedule = nil
 	}
 	quotaLimits, err := ParseQuotaLimitsJSON(row.quotaJSON.String)
 	if err != nil {

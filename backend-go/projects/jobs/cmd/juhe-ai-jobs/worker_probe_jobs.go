@@ -146,7 +146,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 	// ---- normal-route-speed-first-recovery-probe ----
 	redisConfig := speedfirstrepo.SpeedFirstRedisConfig{
 		URL:       a.config.RedisURL,
-		Namespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainSpeedFirst),
+		Namespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainProxyHealth),
 		Enabled:   a.config.RedisURL != "",
 	}
 	if !redisConfig.Enabled {

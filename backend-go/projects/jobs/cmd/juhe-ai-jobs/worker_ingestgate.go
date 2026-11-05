@@ -87,7 +87,7 @@ func assembleIngestDrainStatus(readSpoolOldest func() string, readRuntime func()
 		SnapshotUsageRecordQueueFlushFailureCount: runtime.FlushFailureCount,
 		// C2-H2：死信/丢弃计数。死信已脱离队列与 spool 水位，必须单独进入
 		// 门控；丢弃计数供 /health 观测（不硬阻断，见 ingestgate 字段注释）。
-		SnapshotUsageRecordQueueDeadLetterCount: runtime.DeadLetterCount,
+		SnapshotUsageRecordQueueDeadLetterCount: runtime.ActiveDeadLetterCount,
 		SnapshotUsageRecordQueueDroppedCount:    runtime.DroppedCount,
 		// Node pendingQueues.usageRecords envelope：Go 单进程承载为
 		// spool 文件段——gateway 交接 drain 与 writer 溢出回放 drain

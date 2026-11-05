@@ -24,6 +24,7 @@ import (
 //     availability 为 Redis 单实现（同 Node 网关键空间）；
 //   - JUHE_AI_SECRET：apiKeyRuntime 汇总需凭据解密与 Key 指纹；
 //   - 探针族（proberepo 凭据解码）与 OAuth 族（schedule 边界同步）已装配。
+//
 // 原 databaseDriver=postgres 门禁（Node PostgreSQL-only 物化器，非 PG 分支
 // 不注册）已随 sqlite 形态退役删除：PG 分支恒注册。
 //
@@ -68,7 +69,11 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 		return err
 	}
 	a.addCloser(overlayStore.Close)
-	runtimeReader, err := circuitstore.NewRuntimeStateReader(a.config.RedisURL, rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainCircuit), nil)
+	runtimeReader, err := circuitstore.NewRuntimeStateReaderWithNamespaces(
+		a.config.RedisURL,
+		rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainProxyHealth),
+		rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainKeyModel),
+		nil)
 	if err != nil {
 		return err
 	}

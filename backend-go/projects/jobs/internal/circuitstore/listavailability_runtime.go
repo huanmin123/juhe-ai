@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
+	"github.com/redis/go-redis/v9"
 )
 
 // recoveryProbeStoreName 与 Node createRuntimeProbeStateStore 名称一致。
@@ -72,11 +72,18 @@ type RuntimeStateReader struct {
 	now                func() time.Time
 }
 
-// NewRuntimeStateReader 建立 Redis 连接（Client 注入供测试）。
+// NewRuntimeStateReader 建立 Redis 连接（Client 注入供测试）。recovery 与
+// avoidance 使用同一 namespace（兼容既有单域调用/测试）。
 func NewRuntimeStateReader(url, namespace string, client redis.Cmdable) (*RuntimeStateReader, error) {
-	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
-	// `juhe-ai:` 全前缀配置，避免键空间双根前缀；短名输入逐字节不变。
-	namespace = canonicalRedisNamespace(namespace)
+	return NewRuntimeStateReaderWithNamespaces(url, namespace, namespace, client)
+}
+
+// NewRuntimeStateReaderWithNamespaces 允许恢复探针状态与 policy avoidance 使用
+// 不同业务域：gateway 侧恢复探针写 proxyhealth 域、避让写 keymodel 域，jobs
+// 必须逐域对齐，否则会读到空键并把避让账户标成可用。
+func NewRuntimeStateReaderWithNamespaces(url, recoveryNamespace, avoidanceNamespace string, client redis.Cmdable) (*RuntimeStateReader, error) {
+	recoveryNamespace = canonicalRedisNamespace(recoveryNamespace)
+	avoidanceNamespace = canonicalRedisNamespace(avoidanceNamespace)
 	var cmdable redis.Cmdable = client
 	if cmdable == nil {
 		if strings.TrimSpace(url) == "" {
@@ -92,9 +99,9 @@ func NewRuntimeStateReader(url, namespace string, client redis.Cmdable) (*Runtim
 	safeAvoidance := sanitizeRedisName(policyAvoidanceStoreName)
 	return &RuntimeStateReader{
 		client:             cmdable,
-		statePrefix:        redisNamespacedKey("juhe-ai:probe:"+safeRecovery+":state:", namespace),
-		dueKey:             redisNamespacedKey("juhe-ai:probe:"+safeRecovery+":due", namespace),
-		avoidanceKeyPrefix: redisNamespacedKey("juhe-ai:state:"+safeAvoidance+":", namespace),
+		statePrefix:        redisNamespacedKey("juhe-ai:probe:"+safeRecovery+":state:", recoveryNamespace),
+		dueKey:             redisNamespacedKey("juhe-ai:probe:"+safeRecovery+":due", recoveryNamespace),
+		avoidanceKeyPrefix: redisNamespacedKey("juhe-ai:state:"+safeAvoidance+":", avoidanceNamespace),
 		now:                func() time.Time { return time.Now() },
 	}, nil
 }

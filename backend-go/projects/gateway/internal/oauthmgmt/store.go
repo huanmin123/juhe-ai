@@ -535,6 +535,7 @@ type CreateAccountInput struct {
 	BackgroundProbeEnabled  *bool
 	Status                  string
 	ConcurrencyLimit        *int
+	RPMLimit                *int
 	Priority                *int
 	SuperPriorityEnabled    *bool
 	FallbackEnabled         *bool
@@ -672,6 +673,7 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 		Status:                          creationStatus,
 		BackgroundProbeEnabled:          input.BackgroundProbeEnabled,
 		ConcurrencyLimit:                input.ConcurrencyLimit,
+		RPMLimit:                        input.RPMLimit,
 		Priority:                        input.Priority,
 		SuperPriorityEnabled:            input.SuperPriorityEnabled,
 		FallbackEnabled:                 input.FallbackEnabled,

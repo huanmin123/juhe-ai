@@ -161,8 +161,19 @@ func BootstrapUsageRecordConsumption(ctx context.Context, q sqlExecutorQueryer, 
 			` AND (created_at < ? OR (created_at = ? AND id <= ?))`)
 		args = []any{consumedAt, cursorCreatedAt, cursorCreatedAt, cursorID}
 	}
-	if _, err := q.ExecContext(ctx, query, args...); err != nil {
+	result, err := q.ExecContext(ctx, query, args...)
+	if err != nil {
 		return false, fmt.Errorf("结算存量使用记录统计消费水位失败: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("读取存量结算影响行数失败: %w", err)
+	}
+	// 0 行结算说明游标存在但表内没有可结算的存量行（例如全部晚于游标、
+	// 源表已清空、或旧分区已被保留清理 DROP）。此时必须回落正常消费路径，
+	// 否则下一轮仍无已标记行、再次进入自举，形成永久空转。
+	if affected == 0 {
+		return false, nil
 	}
 	return true, nil
 }

@@ -322,22 +322,22 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 	// 账户不支持超优先级标记），此处不启用。托管字段拆两组创建：组合联动
 	// 校验属于 accounts store 契约，不在此展开。
 	schedulingBody := `{"refreshToken":"rt",` +
-		`"name":"调度字段账户","concurrencyLimit":7,"priority":2,"status":"active",` +
+		`"name":"调度字段账户","concurrencyLimit":7,"rpmLimit":9,"priority":2,"status":"active",` +
 		`"fallbackEnabled":true,"supportedModels":["m1","m2"]}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token", schedulingBody)
 	if code != http.StatusCreated {
 		t.Fatalf("调度字段创建: %d %v", code, payload)
 	}
 	accountID := dataMap(t, payload)["id"].(string)
-	var concurrency, priority int64
+	var concurrency, rpm, priority int64
 	var superPriority, fallback int
 	var models string
-	if err := env.db.QueryRow(fixtureBind(`SELECT concurrency_limit, priority, super_priority_enabled, fallback_enabled
-		FROM accounts WHERE id = ?`), accountID).Scan(&concurrency, &priority, &superPriority, &fallback); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT concurrency_limit, rpm_limit, priority, super_priority_enabled, fallback_enabled
+		FROM accounts WHERE id = ?`), accountID).Scan(&concurrency, &rpm, &priority, &superPriority, &fallback); err != nil {
 		t.Fatal(err)
 	}
-	if concurrency != 7 || priority != 2 || superPriority != 0 || fallback != 1 {
-		t.Fatalf("调度字段落库: %d %d %d %d", concurrency, priority, superPriority, fallback)
+	if concurrency != 7 || rpm != 9 || priority != 2 || superPriority != 0 || fallback != 1 {
+		t.Fatalf("调度字段落库: %d %d %d %d %d", concurrency, rpm, priority, superPriority, fallback)
 	}
 	if err := env.db.QueryRow(fixtureBind(`SELECT m.upstream_model FROM account_supported_models asm
 		JOIN models m ON m.id = asm.model_id WHERE asm.account_id = ? ORDER BY m.upstream_model`), accountID).Scan(&models); err != nil {

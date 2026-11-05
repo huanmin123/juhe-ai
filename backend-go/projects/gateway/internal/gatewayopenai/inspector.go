@@ -439,7 +439,10 @@ func (i *StreamInspector) flushOversizedEvent() {
 	classification := classifyOversizedStreamEvent(eventType, i.oversizedEventImage)
 	failed := classification.failed || i.oversizedEventError
 	terminal := classification.terminal || failed
-	visibleOutput := classification.visibleOutput || i.oversizedEventOutput
+	// 元数据事件的 response 快照也含 output/text 键（如 response.created 的
+	// output:[]），不能仅凭键存在就判为可见输出，否则会绕过空完成检测。
+	hintOutput := i.oversizedEventOutput && !oversizedEventHintIsMetadataOnly(eventType)
+	visibleOutput := classification.visibleOutput || hintOutput
 	if visibleOutput {
 		i.inspection.OutputReceived = true
 		i.inspection.OutputEventCount++
@@ -471,6 +474,16 @@ func (i *StreamInspector) flushOversizedEvent() {
 	i.dataLines = nil
 	i.dataBytes = 0
 	i.resetOversizedEventState()
+}
+
+func oversizedEventHintIsMetadataOnly(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.in_progress", "response.completed",
+		"response.output_item.added", "response.output_item.done",
+		"response.content_part.added", "response.content_part.done":
+		return true
+	}
+	return false
 }
 
 func (i *StreamInspector) resetOversizedEventState() {

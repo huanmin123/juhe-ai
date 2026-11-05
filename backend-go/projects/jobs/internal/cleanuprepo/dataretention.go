@@ -694,7 +694,26 @@ func (s *UsageRecordsStore) dropEligiblePartitions(ctx context.Context, cutoffCr
 	if len(eligible) == 0 {
 		return outcome, nil
 	}
-	target := eligible[0]
+	// 分区 DROP 前必须确认分区内没有未结算水位行：cursor 只能证明“已消费到
+	// 哪个时间点”，不能证明 cursor 覆盖范围内的晚到行已被消费。存在 NULL
+	// 行的分区跳过，等聚合器结算后再删。
+	target := partition{}
+	for _, candidate := range eligible {
+		var pending int64
+		if err := s.Catalog.QueryRowContext(ctx, fmt.Sprintf(
+			`SELECT COUNT(*) FROM juhe_usage.%s WHERE usage_stats_aggregated_at IS NULL OR client_ip_stats_aggregated_at IS NULL`,
+			pgQuoteIdentifier(candidate.name))).Scan(&pending); err != nil {
+			return outcome, err
+		}
+		if pending > 0 {
+			continue
+		}
+		target = candidate
+		break
+	}
+	if target.name == "" {
+		return outcome, nil
+	}
 	var rowCount int64
 	if err := s.Catalog.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT COUNT(*) AS total FROM juhe_usage.%s`, pgQuoteIdentifier(target.name))).Scan(&rowCount); err != nil {
@@ -757,6 +776,8 @@ func (s *UsageRecordsStore) selectPostgresCleanupRows(ctx context.Context, cutof
       FROM juhe_usage.usage_records
       WHERE created_at < ?
         AND (created_at < ? OR (created_at = ? AND id <= ?))
+        AND usage_stats_aggregated_at IS NOT NULL
+        AND client_ip_stats_aggregated_at IS NOT NULL
       ORDER BY created_at ASC, id ASC
       LIMIT ?
 	`), cutoffCreatedAt, cursor.CreatedAt, cursor.CreatedAt, cursor.ID, limit)

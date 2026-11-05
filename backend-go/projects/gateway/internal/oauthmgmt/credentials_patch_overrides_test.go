@@ -87,10 +87,10 @@ func TestOAuthPatchOverridesAlignedWithAccountsWriteFace(t *testing.T) {
 	// base_url 为写入面必填键，按各构建器默认形态补齐。
 	openAICredentials := mergePatchOpenAI(
 		mustParsePatch(t, parseOpenAICredentialsPatch, map[string]any{"error_handling_rules": patchRules, "error_handling_rule_overrides": overrides}),
-		map[string]any{"access_token": "t", "refresh_token": "r", "base_url": "https://api.openai.com/v1"},
+		map[string]any{"access_token": "t", "refresh_token": "r", "account_id": "acc-test", "base_url": "https://api.openai.com/v1"},
 	)
 	otherCredentials := mergePatchLast(
-		map[string]any{"access_token": "t", "refresh_token": "r", "base_url": "https://upstream.example"},
+		map[string]any{"access_token": "t", "refresh_token": "r", "account_id": "acc-test", "base_url": "https://upstream.example"},
 		mustParsePatch(t, parseAnthropicCredentialsPatch, map[string]any{"error_handling_rules": patchRules, "error_handling_rule_overrides": overrides}),
 	)
 	// google_oauth 形态：写入面要求 refresh token 配套 client_id + client_secret。

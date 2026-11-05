@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
 )
 
 // dataretention.go 的语义测试：public_api_logs / system_sessions 保留清理、
@@ -61,6 +60,7 @@ func TestDropEligiblePartitions(t *testing.T) {
 			{"usage_records_20260999", "FOR VALUES FROM ('2026-09-01') TO ('2026-09-02')"},
 		})
 	rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(5)}})
+	rec.script("usage_stats_aggregated_at IS NULL", []string{"count"}, [][]driver.Value{{int64(0)}})
 
 	outcome, err := store.dropEligiblePartitions(context.Background(),
 		"2026-09-10T00:00:00.000Z", cleanupCursor{CreatedAt: "2026-01-05T00:00:00.000Z", ID: "rec-0"})

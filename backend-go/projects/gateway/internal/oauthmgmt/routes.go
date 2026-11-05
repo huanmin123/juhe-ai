@@ -302,7 +302,7 @@ func creationStatusText(value any) string {
 // sso-to-oauth 三端点共用本词表，admin 与 self 双面同 handler）：不帷新键的
 // 载荷行为完全不变（capabilityDomain 缺省 = chat，现状语义）。
 var managedFields = []string{
-	"name", "groupId", "concurrencyLimit", "priority",
+	"name", "groupId", "concurrencyLimit", "rpmLimit", "priority",
 	"status", "superPriorityEnabled", "fallbackEnabled", "supportedModels",
 	"healthCheckModel", "healthCheckEndpointMode", "temporaryUnavailableContinuousProbeEnabled",
 	"backgroundProbeEnabled",
@@ -336,6 +336,13 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 		return input, false
 	} else if limit != nil {
 		input.ConcurrencyLimit = limit
+	}
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §3/§6.3）：整数且 >= 0，
+	// 0 = 不限制；负数/浮点按参数无效拒绝，与 accounts 创建面同口径。
+	if limit, ok := bodyInt(body, "rpmLimit", 0); !ok {
+		return input, false
+	} else if limit != nil {
+		input.RPMLimit = limit
 	}
 	if priority, ok := bodyInt(body, "priority", 0); !ok {
 		return input, false
@@ -509,6 +516,7 @@ type managedInput struct {
 	Name                    *string
 	GroupID                 *string
 	ConcurrencyLimit        *int
+	RPMLimit                *int
 	Priority                *int
 	Status                  string
 	SuperPriorityEnabled    *bool
@@ -697,6 +705,7 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		BackgroundProbeEnabled:    managed.BackgroundProbeEnabled,
 		Status:                    managed.Status,
 		ConcurrencyLimit:          managed.ConcurrencyLimit,
+		RPMLimit:                  managed.RPMLimit,
 		Priority:                  managed.Priority,
 		SuperPriorityEnabled:      managed.SuperPriorityEnabled,
 		FallbackEnabled:           managed.FallbackEnabled,
@@ -1109,25 +1118,26 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 				// refresh 的 mergePatchLast(buildGrokOAuthCredentials(...), patch)
 				// 同方向同语义；Grok patch 键域为策略键（无 token 键），不影响
 				// 上方 grokSSOImportAccountName/AccountExpiresAt 对 outcome 的推导。
-				Credentials:               mergePatchLast(outcome.Credentials, credentialPatch),
-				CapabilityDomain:          managed.CapabilityDomain,
-				CloneSourceID:             managed.CloneSourceID,
-				BackgroundProbeEnabled:    managed.BackgroundProbeEnabled,
-				Status:                    managed.Status,
-				ConcurrencyLimit:          managed.ConcurrencyLimit,
-				Priority:                  managed.Priority,
-				SuperPriorityEnabled:      managed.SuperPriorityEnabled,
-				FallbackEnabled:           managed.FallbackEnabled,
-				SupportedModels:           managed.SupportedModels,
-				HealthCheckModel:          managed.HealthCheckModel,
-				HealthCheckEndpointMode:   managed.HealthCheckEndpointMode,
-				ModelMappings:             managed.ModelMappings,
-				Tags:                      managed.Tags,
-				ProxyProfileID:            managed.ProxyProfileID,
-				GroupID:                   managed.GroupID,
-				AccountExpiresAt:          accountExpiresAt,
-				AvailabilitySchedule:      managed.AvailabilitySchedule,
-				Notes:                     managed.Notes,
+				Credentials:             mergePatchLast(outcome.Credentials, credentialPatch),
+				CapabilityDomain:        managed.CapabilityDomain,
+				CloneSourceID:           managed.CloneSourceID,
+				BackgroundProbeEnabled:  managed.BackgroundProbeEnabled,
+				Status:                  managed.Status,
+				ConcurrencyLimit:        managed.ConcurrencyLimit,
+				RPMLimit:                managed.RPMLimit,
+				Priority:                managed.Priority,
+				SuperPriorityEnabled:    managed.SuperPriorityEnabled,
+				FallbackEnabled:         managed.FallbackEnabled,
+				SupportedModels:         managed.SupportedModels,
+				HealthCheckModel:        managed.HealthCheckModel,
+				HealthCheckEndpointMode: managed.HealthCheckEndpointMode,
+				ModelMappings:           managed.ModelMappings,
+				Tags:                    managed.Tags,
+				ProxyProfileID:          managed.ProxyProfileID,
+				GroupID:                 managed.GroupID,
+				AccountExpiresAt:        accountExpiresAt,
+				AvailabilitySchedule:    managed.AvailabilitySchedule,
+				Notes:                   managed.Notes,
 			}, access)
 			if createErr != nil {
 				failed = append(failed, map[string]any{

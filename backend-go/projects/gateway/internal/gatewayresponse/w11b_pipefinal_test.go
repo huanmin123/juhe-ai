@@ -176,8 +176,29 @@ func TestW11BFinalizeParserSkippedSuccess(t *testing.T) {
 	}
 }
 
-func TestW11BFinalizeParserSkippedFailureBranches(t *testing.T) {
-	// interpret 开启 + inspection.ErrorCode 优先。
+func TestW11BFinalizeParserSkippedRequiresTerminalForPreciseClients(t *testing.T) {
+	pipe, _ := w11bNewFinalPipe(t, func(options *StreamPipeOptions) {
+		options.InterpretProtocolFailures = true
+	})
+	pipe.inspector = &w11bFakeInspector{snapshot: gatewayproto.StreamInspection{
+		Skipped: true, SkipReason: "stream_inspection_max_bytes",
+		OutputReceived: true, TerminalReceived: false,
+	}}
+	pipe.completed = true
+	pipe.preCommitSseEvidence.DataEventObserved = true
+	result, err := pipe.finalizeAfterLoop()
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Completed {
+		t.Fatalf("精确画像客户端缺少终止事件时不得按成功结算: %+v", result)
+	}
+	if result.ErrorCode == "" {
+		t.Fatalf("应带失败错误码: %+v", result)
+	}
+}
+
+func TestW11BFinalizeParserSkippedFailureBranches(t *testing.T) { // interpret 开启 + inspection.ErrorCode 优先。
 	pipe, recorder := w11bNewFinalPipe(t, nil)
 	pipe.inspector = &w11bFakeInspector{snapshot: gatewayproto.StreamInspection{
 		Skipped: true, FailedReceived: true, ErrorMessage: "bad", ErrorCode: "orig_code",

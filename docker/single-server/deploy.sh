@@ -326,7 +326,7 @@ REMOTE_CMD="set -o pipefail; cd $SERVER_DIR && docker compose build ${TARGETS[*]
 
 if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   # ---- upgrade 模式（§11.3）：build → 停写 → 备份确认 → upgrade → 拉起 ----
-  REMOTE_CMD="$REMOTE_CMD && docker compose stop gateway jobs 2>&1 | tail -1"
+  REMOTE_CMD="$REMOTE_CMD && docker compose stop -t 30 gateway jobs 2>&1 | tail -1"
   if ! $SSH "$SERVER" "bash -c '$REMOTE_CMD'"; then
     echo "[FAIL] 服务器侧 compose build/停写失败，发布中止（未执行升级，服务状态未变）。" >&2
     exit 1
@@ -348,6 +348,13 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
     echo "[FAIL] upgrade 失败：gateway/jobs 保持停止。二选一：" >&2
     echo "       ① 重跑本命令前向续跑（账本断点，推荐）：./deploy.sh upgrade" >&2
     echo "       ② 恢复升级前备份后重试。" >&2
+    exit 1
+  fi
+
+  echo "== 重建账户电路运行态索引（Redis namespace 变更后必需）=="
+  INIT_CMD="set -a && . ./.env && set +a && docker compose run --rm gateway -init-account-circuit-runtime-index"
+  if ! $SSH "$SERVER" "bash -c 'cd $SERVER_DIR && set -o pipefail; $INIT_CMD'"; then
+    echo "[FAIL] 电路索引重建失败：gateway 启动会 fail-fast。修复后重跑该命令再拉起。" >&2
     exit 1
   fi
 

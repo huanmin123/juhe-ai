@@ -490,11 +490,12 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	}
 
 	if input.HasSchedule {
-		// Stored-row parse failures surface as plain errors (500) exactly like
-		// Node's raw parse/normalize throws inside patchApiKeyAsync.
+		// 旧计划非法时不能阻断修复：清空或替换计划必须始终可用。解析失败按
+		// “无旧计划”处理（change 检测自然为真），由新计划覆盖坏数据；列表
+		// 读面同样降级，避免单条坏行打挂整个列表。
 		currentSchedule, err := s.parseScheduleJSON(scheduleJSON.String)
 		if err != nil {
-			return nil, err
+			currentSchedule = nil
 		}
 		schedule, err := normalizeScheduleWithDefault(input.AvailabilitySchedule, s.defaultScheduleTimezone)
 		if err != nil {

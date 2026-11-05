@@ -26,7 +26,7 @@ juhe_app_job_stall:
     CROSS JOIN LATERAL (
          SELECT nullif(r2.finished_at, '')::timestamptz AS last_success
          FROM juhe_stats.background_task_runs r2
-         WHERE r2.job_name = jobs.job_name AND r2.finished_at <> ''
+         WHERE r2.job_name = jobs.job_name AND r2.finished_at <> '' AND r2.status = 'completed'
          ORDER BY r2.finished_at DESC
          LIMIT 1
     ) r

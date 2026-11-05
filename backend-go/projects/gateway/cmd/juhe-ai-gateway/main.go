@@ -543,13 +543,13 @@ func main() {
 		if !runtimeCfg.CaptchaDisabled {
 			captchaService = modelcheckauth.NewCaptchaService(time.Now)
 		}
-		// R7-A A-H1：J3b 登录守卫与主面共享 Redis 运行态驱动（复用 compose
-		// 的 RedisStateURL/RedisNamespace 配置——主面 authDeps 的
-		// NewRedisLoginGuard 同源同键）。此前 J3b 面惰性构造独立纯内存守卫：
+		// R7-A A-H1：J3b 登录守卫与主面共享 Redis 运行态驱动（主面 authDeps
+		// 用 DomainAuthState 域，这里必须同域；根 namespace 会让两侧各自计数，
+		// 同一凭据获得两份锁定预算）。此前 J3b 面惰性构造独立纯内存守卫：
 		// 重启清零、无 fail-closed 臂、反代后全员共享代理 IP 桶。注入后
 		// 失败计数/锁定预算与主面同库共享，Check/Failed 携带错误的
 		// fail-closed 语义随之生效（状态存储故障回 500 而非读作未锁定）。
-		j3bSharedLoginGuard, j3bSharedLoginGuardClose, j3bGuardErr := authsys.NewRedisLoginGuard(runtimeCfg.RedisURL, runtimeCfg.RedisNamespace, time.Now)
+		j3bSharedLoginGuard, j3bSharedLoginGuardClose, j3bGuardErr := authsys.NewRedisLoginGuard(runtimeCfg.RedisURL, rediscfg.DomainNamespace(runtimeCfg.RedisNamespace, rediscfg.DomainAuthState), time.Now)
 		if j3bGuardErr != nil {
 			fail(fmt.Errorf("create J3b shared login guard: %w", j3bGuardErr))
 		}

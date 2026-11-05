@@ -546,6 +546,8 @@ func TestWCParseManagedFields(t *testing.T) {
 		{"name": "  "},
 		{"concurrencyLimit": 0.0},
 		{"concurrencyLimit": "x"},
+		{"rpmLimit": -1.0},
+		{"rpmLimit": 1.5},
 		{"priority": -1.0},
 		{"status": "bogus"},
 		{"status": 1.5},
@@ -571,7 +573,7 @@ func TestWCParseManagedFields(t *testing.T) {
 	}
 	good, ok := parseManagedFields(map[string]any{
 		"name": " n ", "groupId": " g ",
-		"concurrencyLimit": 3.0, "priority": 1.0, "status": "disabled",
+		"concurrencyLimit": 3.0, "rpmLimit": 9.0, "priority": 1.0, "status": "disabled",
 		"superPriorityEnabled": true, "fallbackEnabled": false,
 		"supportedModels":                            []any{" m1 "},
 		"healthCheckModel":                           " hm ",
@@ -585,7 +587,7 @@ func TestWCParseManagedFields(t *testing.T) {
 		"notes":                                      " note ",
 	})
 	if !ok || good.Name == nil || good.GroupID == nil ||
-		good.ConcurrencyLimit == nil || good.Priority == nil || good.Status != "disabled" ||
+		good.ConcurrencyLimit == nil || good.RPMLimit == nil || *good.RPMLimit != 9 || good.Priority == nil || good.Status != "disabled" ||
 		good.SuperPriorityEnabled == nil || good.FallbackEnabled == nil || len(good.SupportedModels) != 1 ||
 		good.HealthCheckModel == nil || good.HealthCheckEndpointMode == nil ||
 		len(good.ModelMappings) != 1 || good.ModelMappings[0].SourceModel != "a" || good.ModelMappings[0].Enabled == nil ||

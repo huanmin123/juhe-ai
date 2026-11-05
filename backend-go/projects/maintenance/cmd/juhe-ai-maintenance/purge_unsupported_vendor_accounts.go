@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -218,7 +219,12 @@ func runPurgeUnsupportedVendorAccounts(ctx context.Context, db *sql.DB, gate pur
 			return report, fmt.Errorf("manifest ID 清单哈希不匹配（文件损坏或手工修改）")
 		}
 		if len(liveIDs) == 0 {
-			// 幂等重跑：上一轮已清退完毕，按 manifest 继续做残留表的 no-op 删除。
+			// 幂等重跑：上一轮已清退完毕。但 manifest 里的 ID 若仍存在且已不再
+			// 满足目标谓词（例如 dry-run 后被人工修复为真实厂商），按 manifest
+			// 删除会误删真实账户，必须先拒绝。
+			if err := purgeValidateStaleManifest(ctx, db, ids); err != nil {
+				return report, err
+			}
 			logf("apply：目标库 %s 已无待清退账户（上一轮已完成），按 manifest 做幂等复查", database)
 		} else if liveHash := purgeIDsHash(liveIDs); liveHash != manifest.IDsSHA256 {
 			return report, fmt.Errorf("manifest 已漂移：当前目标集合哈希 %s != manifest %s；请重新 dry-run 生成", liveHash, manifest.IDsSHA256)
@@ -255,6 +261,11 @@ func runPurgeUnsupportedVendorAccounts(ctx context.Context, db *sql.DB, gate pur
 		logf("apply：manifest 为空，无需删除；只检查残留不变量")
 		report.PostCheckAccounts, err = purgeUnsupportedAccountCount(ctx, db)
 		return report, err
+	}
+	if pending, err := purgePendingSpoolFiles(); err != nil {
+		return report, err
+	} else if pending > 0 {
+		return report, fmt.Errorf("usage spool 仍有 %d 个待消费文件；请先启动 jobs 排空（或确认停写后清理）再执行 purge，否则已清退账户的用量会在拉起后被回放", pending)
 	}
 
 	if err := purgeDeleteRows(ctx, db, ids, batch, &report, logf); err != nil {
@@ -297,6 +308,69 @@ func purgeTargetAccountIDs(ctx context.Context, db *sql.DB) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// purgeValidateStaleManifest 在 liveIDs 为空时复核 manifest：只要 manifest 中
+// 任一账户仍存在，就说明它已被修复为真实厂商、被重新创建或目标集合发生变化，
+// 不能再按旧 manifest 删除。
+func purgeValidateStaleManifest(ctx context.Context, db *sql.DB, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM juhe_business.accounts WHERE id = ANY($1::text[]) ORDER BY id`, ids)
+	if err != nil {
+		return fmt.Errorf("复核 manifest 账户: %w", err)
+	}
+	defer rows.Close()
+	existing := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("扫描 manifest 账户: %w", err)
+		}
+		existing = append(existing, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("复核 manifest 账户: %w", err)
+	}
+	if len(existing) > 0 {
+		return fmt.Errorf("manifest 已失效：账户 %s 仍存在（可能已被修复或重建），拒绝按旧 manifest 删除；请重新 dry-run 生成", strings.Join(existing, ", "))
+	}
+	return nil
+}
+
+// purgePendingSpoolFiles 统计数据目录下两个 usage spool 的待消费文件数。purge
+// 删除的是 PG 行，spool 文件若仍有残留，jobs 拉起后会把已清退账户的用量重新
+// 写回 usage_records。
+func purgePendingSpoolFiles() (int, error) {
+	dataDir := strings.TrimSpace(os.Getenv("JUHE_AI_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+	total := 0
+	for _, sub := range []string{"usage-record-spool", "usage-record-overflow-spool"} {
+		root := filepath.Join(dataDir, sub)
+		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if strings.EqualFold(filepath.Ext(path), ".json") {
+				total++
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, fmt.Errorf("检查 usage spool %s: %w", root, err)
+		}
+	}
+	return total, nil
 }
 
 func purgeUnsupportedAccountCount(ctx context.Context, db *sql.DB) (int64, error) {
@@ -510,6 +584,20 @@ func purgeDeleteRows(ctx context.Context, db *sql.DB, ids []string, batchSize in
 		WHERE authorization_id IN (SELECT id FROM juhe_business.resource_authorizations
 		                           WHERE resource_type = 'account' AND resource_id = ANY($1::text[]))`, ids); err != nil {
 		return fmt.Errorf("删除授权 sources: %w", err)
+	}
+	// 解除两个 NO ACTION 引用后再删授权行（顺序错误会 23503 中断清退）：
+	//   - group_accounts.account_authorization_id -> resource_authorizations
+	//   - accounts.authorization_instance_authorization_id -> resource_authorizations
+	if _, err := db.ExecContext(ctx, `DELETE FROM juhe_business.group_accounts
+		WHERE account_id = ANY($1::text[])
+		   OR account_authorization_id IN (SELECT id FROM juhe_business.resource_authorizations
+		                                   WHERE resource_type = 'account' AND resource_id = ANY($1::text[]))`, ids); err != nil {
+		return fmt.Errorf("删除授权分组绑定: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE juhe_business.accounts
+		SET authorization_instance_authorization_id = NULL
+		WHERE id = ANY($1::text[]) AND authorization_instance_authorization_id IS NOT NULL`, ids); err != nil {
+		return fmt.Errorf("解除账户授权引用: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM juhe_business.resource_authorizations
 		WHERE resource_type = 'account' AND resource_id = ANY($1::text[])`, ids); err != nil {

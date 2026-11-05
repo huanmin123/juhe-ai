@@ -102,6 +102,9 @@ services:
     # + PG ~3GiB + jobs/监控/caddy ~0.5GiB ≈ 6.7GiB，8G 物理仍留页缓存与 swap 兜底。
     mem_limit: "4g"
     restart: unless-stopped
+    # 优雅关闭串行预算最坏 20s（main 10s + j3b 5s + health 5s）；默认 10s 宽限
+    # 会在在途 SSE 上 SIGKILL，usage/审计尚未构造即丢。必须大于关闭预算。
+    stop_grace_period: 30s
     # datadir/日志等相对路径约定以进程 cwd 为基准（缺省 ./data 相对 cwd）；
     # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
     # 下方挂载的宿主机持久目录（usage spool 交接、文件日志等）。
@@ -186,6 +189,8 @@ services:
     # BUG-0313 内存治理：jobs 当前 RSS ~114MiB，硬限防异常扩散。
     mem_limit: "1g"
     restart: unless-stopped
+    # 与 gateway 同批停写；给任务 finish/租约释放留出排空时间。
+    stop_grace_period: 30s
     # 与 gateway 同理：spool drain 目录按相对路径派生，必须锚定 /app/backend
     # 才能与网关共享宿主机挂载的 data 目录（两侧同源才能完成用量交接）。
     working_dir: /app/backend

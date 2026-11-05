@@ -39,6 +39,23 @@ func TestOversizedUnknownDataLineKeepsParsingFollowingEvents(t *testing.T) {
 	}
 }
 
+// 元数据事件的 response 快照含 output/text 键，不得据此置 OutputReceived，
+// 否则空完成检测会被绕过。
+func TestOversizedResponseCreatedMetadataDoesNotMarkOutput(t *testing.T) {
+	inspector := NewStreamInspector()
+	pad := strings.Repeat("x", 300*1024)
+	inspector.PushText("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"output\":[],\"text\":{\"format\":\"text\",\"pad\":\"" + pad + "\"}}}\n\n")
+	inspector.PushText("data: [DONE]\n\n")
+
+	snapshot := inspector.Finish()
+	if snapshot.OutputReceived || snapshot.OutputEventCount != 0 {
+		t.Fatalf("response.created 元数据不应置输出: %v/%d", snapshot.OutputReceived, snapshot.OutputEventCount)
+	}
+	if !snapshot.TerminalReceived {
+		t.Fatalf("后续 [DONE] 应识别终止: %+v", snapshot)
+	}
+}
+
 // BUG-0354：超大顶层 {"error":{...}} 数据行必须置 FailedReceived，
 // 即使后续 [DONE] 也不能把错误吞成成功。
 func TestOversizedTopLevelErrorDataLineNotSwallowed(t *testing.T) {

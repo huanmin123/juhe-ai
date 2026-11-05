@@ -165,6 +165,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			{"usage_records_20260101", "FOR VALUES FROM ('2026-01-01') TO ('2026-01-02')"},
 			{"usage_records_other", "FOR VALUES FROM ('x') TO ('y')"},
 		})
+		rec.script("usage_stats_aggregated_at IS NULL", []string{"count"}, [][]driver.Value{{int64(0)}})
 	}
 	{
 		rec := newPGRecorder()

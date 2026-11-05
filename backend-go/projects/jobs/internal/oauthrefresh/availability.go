@@ -174,12 +174,14 @@ func (s *Store) evaluateScheduleRows(rows []scheduleRow, now time.Time, accountM
 	for _, row := range rows {
 		schedule, parseErr := ParseScheduleJSON(row.scheduleJSON)
 		if parseErr != nil {
-			// 计划文档不可解析：fail-closed 关闸，避免坏数据放行；行本身仍推进
-			// 下次检查，等配置修正后下一轮自然恢复。
+			// 计划文档不可解析：fail-closed 关闸，避免坏数据放行；但不能把
+			// next_check 写成 NULL/空串——候选条件是 `IS NULL OR <= now`，
+			// 坏行会因此永久 due 并占满批次。改写到 1 小时后重试；PATCH 修正
+			// 计划会同时重算 gate/next_check，不必等重试。
 			result.Invalid++
 			result.InvalidIDs = append(result.InvalidIDs, row.id)
 			closed := 0
-			updates = append(updates, scheduleSyncUpdate{id: row.id, gate: &closed, nextCheckAt: "", scheduleJSON: row.scheduleJSON})
+			updates = append(updates, scheduleSyncUpdate{id: row.id, gate: &closed, nextCheckAt: isoMillis(now.Add(time.Hour)), scheduleJSON: row.scheduleJSON})
 			continue
 		}
 		nextCheckAt, _ := NextScheduleCheckAt(schedule, now)
@@ -187,10 +189,13 @@ func (s *Store) evaluateScheduleRows(rows []scheduleRow, now time.Time, accountM
 		if !ok {
 			// 无计划文档（已清除 / 未启用）：闸门回到 NULL（恒开）。gate.Valid 说明
 			// 库里有陈旧值，需要显式清空；已为 NULL 时只推进下次检查。
+			// 同样不能写 NULL：availability_schedule_json 仍非 NULL 时该行会永久
+			// 命中候选；写到 1 小时后重试，PATCH 启用计划会立即重算。
+			retryAt := isoMillis(now.Add(time.Hour))
 			if row.gate.Valid {
-				updates = append(updates, scheduleSyncUpdate{id: row.id, clearGate: true, nextCheckAt: "", scheduleJSON: row.scheduleJSON})
+				updates = append(updates, scheduleSyncUpdate{id: row.id, clearGate: true, nextCheckAt: retryAt, scheduleJSON: row.scheduleJSON})
 			} else {
-				updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: "", scheduleJSON: row.scheduleJSON})
+				updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: retryAt, scheduleJSON: row.scheduleJSON})
 			}
 			result.Unchanged++
 			continue

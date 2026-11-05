@@ -98,6 +98,7 @@ type Runtime struct {
 	DroppedOversizeCount         int    `json:"droppedOversizeCount"`
 	DroppedDispatchCount         int    `json:"droppedDispatchCount"`
 	DeadLetterCount              int    `json:"deadLetterCount"`
+	ActiveDeadLetterCount        int    `json:"activeDeadLetterCount"`
 	FlushFailureCount            int    `json:"flushFailureCount"`
 	OldestQueuedMs               int64  `json:"oldestQueuedMs"`
 	LastFlushMs                  int64  `json:"lastFlushMs"`
@@ -144,6 +145,7 @@ type Writer struct {
 	droppedOversizeCount         int
 	retainedOverflowWarningCount int
 	deadLetterCount              int
+	activeDeadLetterCount        int
 	deadLetters                  []UsageRecordInput
 	flushFailureCount            int
 	handledRecords               int
@@ -660,6 +662,8 @@ func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int)
 	}
 	w.writtenRecords += inserted
 	w.flushFailureCount = 0
+	// 一次成功写入证明写路径已恢复；解除死信门控（累计计数保留用于观测）。
+	w.activeDeadLetterCount = 0
 	w.mu.Unlock()
 }
 
@@ -669,14 +673,21 @@ func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int)
 func (w *Writer) deadLetterBatch(batch []queuedRecord) {
 	const deadLetterRetention = 100
 	w.mu.Lock()
+	batchBytes := 0
 	for _, item := range batch {
 		w.deadLetterCount++
+		w.activeDeadLetterCount++
+		batchBytes += item.bytes
 		w.deadLetters = append(w.deadLetters, item.input)
 	}
 	if len(w.deadLetters) > deadLetterRetention {
 		w.deadLetters = w.deadLetters[len(w.deadLetters)-deadLetterRetention:]
 	}
 	w.pending = w.pending[len(batch):]
+	w.pendingBytes -= batchBytes
+	if w.pendingBytes < 0 {
+		w.pendingBytes = 0
+	}
 	w.flushFailureCount = 0
 	w.mu.Unlock()
 }
@@ -822,6 +833,7 @@ func (w *Writer) Runtime() Runtime {
 		DroppedOversizeCount:         w.droppedOversizeCount,
 		DroppedDispatchCount:         w.droppedDispatchCount,
 		DeadLetterCount:              w.deadLetterCount,
+		ActiveDeadLetterCount:        w.activeDeadLetterCount,
 		FlushFailureCount:            w.flushFailureCount,
 		OldestQueuedMs:               oldestQueuedMs,
 		LastFlushMs:                  w.lastFlushMs,

@@ -149,6 +149,7 @@ juhe-ai:{<namespace>:<域>}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - `{namespace}` 由 `JUHE_AI_REDIS_NAMESPACE` 决定；必填非空，生产必须显式配置并保持稳定。
 - `{<namespace>:<域>}` 是 Cluster hash tag：同一域的所有键固定同一 slot，域间可分布到不同 slot。域清单集中在 `shared/platform/rediscfg`（circuit、j3b、keymodel、hotquality、clientip、session、runtimecache、ratelimit、callertier、quota、obs、routestate、proxyhealth、inval、realtime、speedfirst、oauth、authstate）。
 - `circuit` / `keymodel` / `hotquality` 三个域含全局索引与多键原子 Lua，必须单 slot；这是已知容量边界，热点域只能垂直扩容。
+- 跨进程同键必须逐域对齐：gateway 的 normal-route 延迟降级/恢复探针写 `proxyhealth`，jobs 的速度优先恢复读取器必须用 `proxyhealth`（不能再用 `speedfirst`）；gateway 的 policy avoidance 写 `keymodel`，jobs 列表可用性投影读取避让态必须用 `keymodel`，而恢复探针状态仍读 `proxyhealth`。一个读取器不能把两类键合并到同一 namespace，否则会静默读空、把避让账户标成可用。
 - 缓存失效优先递增 domain version，实现常量成本失效，不做全库 `SCAN + DEL`。
 - 所有 Redis cache / state key 必须有 TTL；确需长期保留的运行态要先证明不是持久业务事实。
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
