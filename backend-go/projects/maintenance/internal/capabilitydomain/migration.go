@@ -154,6 +154,16 @@ func scanArgs(after string, batchSize int) []any {
 	return []any{after, batchSize}
 }
 
+// isEmptyCredentialsEnvelope 报告授权实例凭据是否为空信封：历史实例行可能
+// 落 `{}` 或空串，表示自身不持有凭据（使用源账户凭据），不是解密损坏。
+func isEmptyCredentialsEnvelope(raw string) bool {
+	switch strings.TrimSpace(raw) {
+	case "", "{}", "null":
+		return true
+	}
+	return false
+}
+
 // scanAccounts 分批只读扫描全部账户（含软删除），解密凭据、解析声明并推导
 // 源账户域，实例行另解密自身凭据以支撑声明裁剪。每批先完整读取（rows.Err +
 // Close）再处理下一批，全程不开写事务。
@@ -185,9 +195,13 @@ func scanAccounts(ctx context.Context, db *sql.DB, secret string, batchSize int)
 				item.sourceID = strings.TrimSpace(source.String)
 				// 实例行解密自身凭据以支撑声明裁剪；解密失败阻断该阶段（失败
 				// 清单语义不变），声明解析非 ModesOK 维持既有宽松语义（实例
-				// 声明不参与域推导，无可裁集即不裁剪）。
+				// 声明不参与域推导，无可裁集即不裁剪）。授权实例可以没有自身
+				// 凭据（空信封/`{}`，实际凭据来自源账户），此时不参与裁剪，
+				// 不应被当成解密失败阻断 postflight。
 				var credentialsMap map[string]any
-				if err := accountcrypto.DecryptJSON(secret, credentials, &credentialsMap); err != nil {
+				if isEmptyCredentialsEnvelope(credentials) {
+					// 无自身凭据：跳过解密与声明解析。
+				} else if err := accountcrypto.DecryptJSON(secret, credentials, &credentialsMap); err != nil {
 					item.decryptFailed = true
 					failures = append(failures, capdomain.Failure{
 						AccountID: item.id,
