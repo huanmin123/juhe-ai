@@ -32,6 +32,7 @@
         :form="form"
         :model-options="[]"
         :models-loading="false"
+        :provider-code="form.providerCode"
         :title="credentialTitle"
         variant="media"
       />
@@ -103,10 +104,23 @@
       </div>
       <a-form-item v-if="form.type !== 'google_oauth'" required>
         <template #label>
-          <div class="media-speech-label">
+          <div class="media-speech-label supported-models-label">
             <span>支持模型</span>
             <a-tooltip title="声明这个账户实际支持的上游模型；媒体域账户必须至少选择一个模型。">
               <QuestionCircleOutlined class="media-speech-help" />
+            </a-tooltip>
+            <a-tooltip title="从上游同步可新增模型">
+              <a-button
+                class="supported-models-refresh-button"
+                size="small"
+                type="text"
+                aria-label="从上游同步可新增模型"
+                :disabled="authorizedEditing"
+                :loading="modelSyncing"
+                @click.stop="$emit('refresh-models')"
+              >
+                <template #icon><SyncOutlined /></template>
+              </a-button>
             </a-tooltip>
           </div>
         </template>
@@ -127,19 +141,6 @@
               <ModelOptionsTruncatedHint :menu-node="menuNode" />
             </template>
           </a-select>
-          <a-tooltip title="从上游同步可新增模型">
-            <a-button
-              class="supported-models-refresh-button"
-              size="small"
-              type="text"
-              aria-label="从上游同步可新增模型"
-              :disabled="authorizedEditing"
-              :loading="modelSyncing"
-              @click.stop="$emit('refresh-models')"
-            >
-              <template #icon><SyncOutlined /></template>
-            </a-button>
-          </a-tooltip>
         </div>
         <div v-if="domainModelAvailabilityHint" class="media-domain-model-empty-hint">{{ domainModelAvailabilityHint }}</div>
       </a-form-item>
@@ -648,6 +649,22 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.supported-models-label {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.supported-models-label .supported-models-refresh-button {
+  margin-left: auto;
+}
+
+:deep(.ant-form-item-label > label:has(.supported-models-label)) {
+  width: 100%;
 }
 
 .media-speech-help {

@@ -176,6 +176,7 @@
                 :models-loading="modelsLoading"
                 :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
+                :provider-code="form.providerCode"
                 :protocol-code="selectedProtocolProfile?.protocolCode"
                 :protocol-version="selectedProtocolProfile?.protocolVersion"
                 :title="credentialTitle"
@@ -250,6 +251,18 @@
                   />
                 </div>
               </section>
+
+              <!-- 代理字段（原「策略与代理」高级卡内）：创建向导第 1 步与编辑态常用配置区共用同一处渲染；
+                   OAuth 四家（gpt / anthropic / gemini / xai）必选。 -->
+              <AccountProxyField
+                :authorized-editing="authorizedEditing"
+                :form="form"
+                :is-o-auth-form="isOAuthForm"
+                :proxy-options="proxyOptions"
+                :proxy-options-loading="proxyOptionsLoading"
+                @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
+                @proxy-options-search="$emit('proxyOptionsSearch', $event)"
+              />
 
               <!-- 创建向导第 1 步的「加入分组」（创建/编辑均必选）：跟随凭证 section 的 v-show 可见性；
                    编辑态分组在常用配置 bench 区，此处不重复渲染。 -->
@@ -331,7 +344,7 @@
 
                 <AccountAdvancedCard
                   :open="advancedActiveKeys.includes('strategy')"
-                  name="策略与代理"
+                  name="策略与模型"
                   :summary="strategyCardSummary"
                   :count="strategyCardCount"
                   :icon="SwapOutlined"
@@ -362,16 +375,12 @@
                         :mapping-source-model-options="mappingSourceModelOptions"
                         :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
                         :mapping-upstream-model-options="mappingUpstreamModelOptions"
-                        :proxy-options="proxyOptions"
-                        :proxy-options-loading="proxyOptionsLoading"
                         :selected-protocol-profile="selectedProtocolProfile"
                         :authorized-editing="authorizedEditing"
                         @current-provider-model-options-open="$emit('model-options-open', $event)"
                         @current-provider-model-options-search="$emit('model-options-search', $event)"
                         @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
                         @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
-                        @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
-                        @proxy-options-search="$emit('proxyOptionsSearch', $event)"
                       />
                     </div>
                 </AccountAdvancedCard>
@@ -551,7 +560,7 @@
               <div class="bench-cards">
                 <AccountAdvancedCard
                   :open="advancedActiveKeys.includes('strategy')"
-                  name="策略与代理"
+                  name="策略与模型"
                   :summary="strategyCardSummary"
                   :count="strategyCardCount"
                   :icon="SwapOutlined"
@@ -576,16 +585,12 @@
                       :mapping-source-model-options="mappingSourceModelOptions"
                       :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
                       :mapping-upstream-model-options="mappingUpstreamModelOptions"
-                      :proxy-options="proxyOptions"
-                      :proxy-options-loading="proxyOptionsLoading"
                       :selected-protocol-profile="selectedProtocolProfile"
                       :authorized-editing="authorizedEditing"
                       @current-provider-model-options-open="$emit('model-options-open', $event)"
                       @current-provider-model-options-search="$emit('model-options-search', $event)"
                       @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
                       @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
-                      @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
-                      @proxy-options-search="$emit('proxyOptionsSearch', $event)"
                     />
                   </div>
                 </AccountAdvancedCard>
@@ -776,6 +781,7 @@ import AccountGptRequestOverridesSection from './AccountGptRequestOverridesSecti
 import AccountGroupField from './AccountGroupField.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
+import AccountProxyField from './AccountProxyField.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import AccountMediaForm from './AccountMediaForm.vue'
@@ -1115,12 +1121,11 @@ function privilegeSummaryText(): string {
 }
 
 const strategyCardSummary = computed(() => {
-  const parts = [props.form.proxyProfileId ? '代理已绑定' : '直连', `别名 ${props.form.modelMappings.length} 条`]
+  const parts = [`别名 ${props.form.modelMappings.length} 条`]
   if (props.form.serviceTierOverride || props.form.reasoningEffortOverride) parts.push('请求覆盖')
   return parts.join(' · ')
 })
 const strategyCardCount = computed(() => [
-  Boolean(props.form.proxyProfileId),
   props.form.modelMappings.length > 0,
   !endpointModesEqual(props.form.supportedEndpointModes, defaultAccountEndpointModes(props.form.providerCode, props.form.type, undefined, {
     provider: props.selectedProvider,

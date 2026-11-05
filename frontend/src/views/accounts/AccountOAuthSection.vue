@@ -166,6 +166,18 @@
           <a-tooltip title="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
             <QuestionCircleOutlined class="supported-models-help" />
           </a-tooltip>
+          <a-tooltip title="从上游同步可新增模型">
+            <a-button
+              class="supported-models-refresh-button"
+              size="small"
+              type="text"
+              aria-label="从上游同步可新增模型"
+              :loading="modelSyncing"
+              @click.stop="$emit('refresh-models')"
+            >
+              <template #icon><SyncOutlined /></template>
+            </a-button>
+          </a-tooltip>
         </div>
       </template>
       <div class="supported-models-control">
@@ -185,18 +197,6 @@
             <ModelOptionsTruncatedHint :menu-node="menuNode" />
           </template>
         </a-select>
-        <a-tooltip title="从上游同步可新增模型">
-          <a-button
-            class="supported-models-refresh-button"
-            size="small"
-            type="text"
-            aria-label="从上游同步可新增模型"
-            :loading="modelSyncing"
-            @click.stop="$emit('refresh-models')"
-          >
-            <template #icon><SyncOutlined /></template>
-          </a-button>
-        </a-tooltip>
       </div>
     </a-form-item>
     <AccountHealthCheckModelField
@@ -410,7 +410,12 @@ defineEmits<{
   display: flex;
   flex: 1;
   align-items: center;
+  gap: 6px;
   min-width: 0;
+}
+
+.supported-models-label .supported-models-refresh-button {
+  margin-left: auto;
 }
 
 .supported-models-control {

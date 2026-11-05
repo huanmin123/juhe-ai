@@ -1296,7 +1296,11 @@ func buildProbeSpec(view *View, mode EndpointMode, model string, challenge Outpu
 		}
 	case mode.anthropic():
 		sessionID := newUUID()
-		spec.BodyFields = anthropicMessagesBodyFields(model, challenge.Prompt, mode.streaming(), sessionID)
+		fields, err := anthropicMessagesBodyFields(model, challenge.Prompt, mode.streaming(), sessionID)
+		if err != nil {
+			return upstreamenvelope.Spec{}, err
+		}
+		spec.BodyFields = fields
 		// Claude Code 身份：x-claude-code-session-id 头与 body
 		// metadata.user_id.session_id 共用一次生成的 session 值。
 		spec.Auth.ExtraHeaders["x-claude-code-session-id"] = sessionID

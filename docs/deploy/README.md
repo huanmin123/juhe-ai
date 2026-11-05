@@ -19,6 +19,7 @@
 | 非 Docker 直跑 | [linux/README.md](linux/README.md)：systemd/裸进程差异、cwd/数据目录契约、升级等价操作 |
 | 发布包构建（非生产主流程） | [构建指南](构建指南.md)：跨平台构建 Go 三项目 + 前端，生成 go-only 发布包 |
 | 出海网络代理（AI 上游） | [proxy/README.md](proxy/README.md) → [sing-box 指南](proxy/sing-box网络代理部署指南.md) |
+| 多节点部署与不停机发布（规划） | [functions/多节点部署与不停机发布设计.md](../functions/多节点部署与不停机发布设计.md)：多机 Docker + 外部 LB + expand/contract 滚动发布；**设计稿未实施**，当前生产仍以单机流程为准 |
 
 ## 权威位置
 

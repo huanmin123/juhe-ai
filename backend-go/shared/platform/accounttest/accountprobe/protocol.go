@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -280,7 +281,7 @@ func protocolFamilyForMode(mode EndpointMode) string {
 // createAnthropicClaudeCodeAccountTestPayload 的字段集；W4 起不再私有编码，
 // max_tokens 由 Build 按 catalog 必填字段注入——BUG-0201 下 1024、无
 // thinking/effort 的轻量探针契约不变，见信封统一设计 §4.3）。
-func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID string) []upstreamenvelope.BodyField {
+func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID string) ([]upstreamenvelope.BodyField, error) {
 	messages := []map[string]any{
 		{
 			"role": "user",
@@ -295,10 +296,18 @@ func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID st
 		{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.", "cache_control": map[string]any{"type": "ephemeral"}},
 		{"type": "text", "text": fmt.Sprintf("CWD: %s\nDate: %s", cwdOrEmpty(), time.Now().UTC().Format("2006-01-02"))},
 	}
-	metadataUser := map[string]any{
+	// Claude Code 的 metadata.user_id 是 JSON 序列化后的字符串（Anthropic
+	// 协议该字段类型为 string），不是对象：对象形态会被严格解析的
+	// Anthropic 兼容上游以 400「Failed to parse request body」拒绝
+	// （2chat/sub2api 系中转实测：同 body 仅此字段类型不同，对象 400、
+	// 字符串 200）。
+	userID, err := json.Marshal(map[string]any{
 		"device_id":    anthropicDeviceID,
 		"account_uuid": "",
 		"session_id":   sessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("序列化 Anthropic metadata.user_id 失败: %w", err)
 	}
 	return []upstreamenvelope.BodyField{
 		{Key: "model", Value: model},
@@ -308,9 +317,9 @@ func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID st
 		// 探测请求必须轻量（max_tokens 1024、不带 thinking/effort）：非流式
 		// 探测要等完整响应，推理增强会让首字节超过 Cloudflare 类代理的 100s
 		// 上限（上游回 524），也远超手动测试 60s 诊断预算（BUG-0201）。
-		{Key: "metadata", Value: map[string]any{"user_id": metadataUser}},
+		{Key: "metadata", Value: map[string]any{"user_id": string(userID)}},
 		{Key: "stream", Value: stream},
-	}
+	}, nil
 }
 
 // probeSpeechDefaultVoice 是目录 voices 未承载时的探针音色缺省（任务报告

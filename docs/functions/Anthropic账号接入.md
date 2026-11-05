@@ -126,8 +126,8 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 
 - API Key 账户加密保存 `api_key`；列表不展示，编辑弹窗可查看和修改。
 - OAuth 账户加密保存 `access_token`；列表不展示，编辑弹窗可查看和修改。
-- API Key 账户的 `base_url` 默认 `https://api.anthropic.com`，允许用户修改为明确的 Anthropic-compatible 代理地址；前端不对非官方域名做额外警告，和 GPT / OpenAI-compatible API Key 的 Base URL 体验保持一致。如需严控官方直连，必须通过独立需求增加只允许官方域名的档案。
-- OAuth 账户的 `base_url` 默认 `https://api.anthropic.com/v1`；允许用户修改为同协议代理地址，但上游仍只走 Anthropic Messages / Models / Count Tokens 原生语义。
+- API Key 账户的 `base_url` 默认 `https://api.anthropic.com/v1`（版本根语义），允许用户修改为明确的 Anthropic-compatible 代理地址；**系统按填写内容原样拼接操作路径（`/messages`），不会自动补充 `/v1` 或其他版本段**，代理地址缺少版本前缀时需用户自行补齐（前端 Base URL 帮助入口已显式说明，避免与自定义 Base URL 冲突）。前端不对非官方域名做额外警告，和 GPT / OpenAI-compatible API Key 的 Base URL 体验保持一致。如需严控官方直连，必须通过独立需求增加只允许官方域名的档案。
+- OAuth 账户的 `base_url` 默认 `https://api.anthropic.com/v1`；允许用户修改为同协议代理地址，但上游仍只走 Anthropic Messages / Models / Count Tokens 原生语义，同样不自动补版本段。
 - `Anthropic-Version` 不是账号字段；客户端请求带 `anthropic-version` 时透传客户端值，否则由上游 adapter 固定补齐当前协议默认 `2023-06-01`。
 - `credentials.supported_endpoint_modes` 省略时，API Key 与 OAuth 账户都默认 `['messages_json', 'messages_sse', 'message_token_counting']`。
 - 新建账户默认写入 `pending_test` 且不可调度，测试通过后才恢复正常。
@@ -172,10 +172,10 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 
 | 本地路径 | 方法 | 语义 | 上游路径 |
 | --- | --- | --- | --- |
-| `/v1/messages` | `POST` | Anthropic Messages | `<base_url>/v1/messages` |
-| `/messages` | `POST` | 根路径容错入口 | `<base_url>/v1/messages` |
-| `/v1/messages/count_tokens` | `POST` | Anthropic Token Counting | `<base_url>/v1/messages/count_tokens` |
-| `/messages/count_tokens` | `POST` | 根路径容错入口 | `<base_url>/v1/messages/count_tokens` |
+| `/v1/messages` | `POST` | Anthropic Messages | `<base_url>/messages` |
+| `/messages` | `POST` | 根路径容错入口 | `<base_url>/messages` |
+| `/v1/messages/count_tokens` | `POST` | Anthropic Token Counting | `<base_url>/messages/count_tokens` |
+| `/messages/count_tokens` | `POST` | 根路径容错入口 | `<base_url>/messages/count_tokens` |
 | `/v1/models` | `GET` | 本地 Anthropic 模型目录 | 不请求上游 |
 | `/models` | `GET` | 本地 Anthropic 模型目录 | 不请求上游 |
 

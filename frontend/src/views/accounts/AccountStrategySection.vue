@@ -80,34 +80,13 @@
         新增别名
       </a-button>
     </a-form-item>
-    <a-form-item
-      class="strategy-proxy-field"
-      :required="oauthProxyRequired"
-      :label="oauthProxyRequired ? '代理（必选）' : '代理'"
-      :tooltip="oauthProxyRequired
-        ? '该供应商的 OAuth 账户上游必须经代理访问：不绑定代理时后端会拒绝创建、刷新和重新授权。'
-        : '仅影响这个账号访问上游供应商时使用的代理；不使用代理时直接按 Base URL 访问上游。'"
-    >
-      <ProxySelect
-        v-model:value="form.proxyProfileId"
-        allow-clear
-        :disabled="authorizedEditing"
-        :loading="proxyOptionsLoading"
-        :placeholder="oauthProxyRequired ? '必须选择出海代理' : '不使用代理'"
-        :options="proxyOptions"
-        @dropdown-visible-change="emit('proxyOptionsDropdown', $event)"
-        @search="emit('proxyOptionsSearch', $event)"
-      />
-    </a-form-item>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
-import ProxySelect from '@/components/ProxySelect.vue'
-import type { SelectOption } from '@/shared/selectLabelCache'
 import {
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
@@ -146,8 +125,6 @@ const props = defineProps<{
   mappingUpstreamModelOptions: ModelMappingSourceModelOption[]
   /** 当前供应商目录（上游模型/源模型）的服务端截断标志（T25 hasMore）。 */
   modelsTruncated?: boolean
-  proxyOptions: SelectOption[]
-  proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
 }>()
 
@@ -156,18 +133,11 @@ const emit = defineEmits<{
   (event: 'current-provider-model-options-search', value: string): void
   (event: 'mapping-source-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
   (event: 'mapping-source-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
-  (event: 'proxyOptionsDropdown', open: boolean): void
-  (event: 'proxyOptionsSearch', value: string): void
 }>()
 
 type ModelMappingSourceModelOption = AccountModelMappingModelOption
 
 const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
-// 国外 OAuth 供应商（Grok/GPT/Anthropic/Gemini）的上游必须经代理可达：
-// 与后端 oauthmgmt requiresProxy 拦截和 accountSavePayload 校验保持一致。
-const oauthProxyRequired = computed(() =>
-  props.isOAuthForm
-  && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode))
 const modelMappingTooltip = computed(() => (
   '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
 ))
@@ -387,10 +357,6 @@ function modelMappingProtocolContext() {
 
 .strategy-help {
   margin-top: -8px;
-  margin-bottom: 16px;
-}
-
-.strategy-proxy-field {
   margin-bottom: 16px;
 }
 

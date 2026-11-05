@@ -8,11 +8,13 @@
             <template #content>
               <div class="api-key-help-content">
                 <div><strong>单 Key</strong><span>直接使用当前唯一 Key。</span></div>
-                <div><strong>轮询</strong><span>首次选择或会话 Key 黏性失配后，按 Key 顺序轮流选择；命中会话黏性时复用上次协议成功的 Key。</span></div>
-                <div><strong>权重</strong><span>首次选择或会话 Key 黏性失配后，按配置权重选择；命中会话黏性时复用上次协议成功的 Key。</span></div>
-                <div><strong>主备</strong><span>第一行是主 Key，后续是备用 Key；主 Key 失败时，本次请求按顺序切换备用 Key。会话切换到备用 Key 后，在绑定失效前不自动回切主 Key。</span></div>
-                <div><strong>状态</strong><span>输入框前缀显示当前 Key 的运行状态；不可调度的 Key 会被自动跳过。</span></div>
-                <div><strong>排序</strong><span>只有主备模式支持拖拽，调整顺序即可调整主备优先级。</span></div>
+                <template v-if="showApiKeyStrategy">
+                  <div><strong>轮询</strong><span>首次选择或会话 Key 黏性失配后，按 Key 顺序轮流选择；命中会话黏性时复用上次协议成功的 Key。</span></div>
+                  <div><strong>权重</strong><span>首次选择或会话 Key 黏性失配后，按配置权重选择；命中会话黏性时复用上次协议成功的 Key。</span></div>
+                  <div><strong>主备</strong><span>第一行是主 Key，后续是备用 Key；主 Key 失败时，本次请求按顺序切换备用 Key。会话切换到备用 Key 后，在绑定失效前不自动回切主 Key。</span></div>
+                </template>
+                <div v-if="showApiKeyRuntimeDetails"><strong>状态</strong><span>输入框前缀显示当前 Key 的运行状态；不可调度的 Key 会被自动跳过。</span></div>
+                <div v-if="isFailoverMode"><strong>排序</strong><span>主备模式支持拖拽，调整顺序即可调整主备优先级。</span></div>
               </div>
             </template>
             <button type="button" class="api-key-help-button" aria-label="API Key 使用说明">
@@ -125,16 +127,16 @@
         <a-popover placement="bottomLeft" trigger="hover">
           <template #content>
             <div class="base-url-help-content">
-              <div><strong>填写内容</strong><span>填写包含版本前缀的根地址，例如 <code>https://api.openai.com/v1</code>；火山引擎（Ark）填 <code>https://ark.cn-beijing.volces.com/api/v3</code>；GLM 官方根直接填 <code>https://open.bigmodel.cn/api/paas/v4</code>。</span></div>
-              <div><strong>通义千问</strong><span>填 DashScope 裸根 <code>https://dashscope.aliyuncs.com</code>，不要带 compatible-mode 路径。</span></div>
+              <div v-if="baseUrlHelp.example"><strong>{{ baseUrlHelp.label }}</strong><span>填写该供应商的版本根地址，例如 <code>{{ baseUrlHelp.example }}</code>。</span></div>
+              <div v-if="baseUrlHelp.note"><strong>注意</strong><span>{{ baseUrlHelp.note }}</span></div>
               <div><strong>不要填写</strong><span>不要填写具体接口路径，例如 <code>/chat/completions</code>、<code>/responses</code>、<code>/messages</code> 或 <code>:generateContent</code>。</span></div>
-              <div><strong>本地联调</strong><span>CLIProxyAPI sidecar 可填写 <code>http://127.0.0.1:&lt;port&gt;/v1</code>；Gemini native 使用 <code>/v1beta</code>。</span></div>
             </div>
           </template>
           <button type="button" class="base-url-help-button" aria-label="Base URL 填写说明">
             <QuestionCircleOutlined />
           </button>
         </a-popover>
+        <span class="base-url-inline-hint">系统不会自动补充 <code>/v1</code> 或其他版本</span>
       </template>
       <a-input
         v-model:value="form.baseUrl"
@@ -160,6 +162,18 @@
           <a-tooltip title="声明这个 Base URL 实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
             <QuestionCircleOutlined class="supported-models-help" />
           </a-tooltip>
+          <a-tooltip title="从上游同步可新增模型">
+            <a-button
+              class="supported-models-refresh-button"
+              size="small"
+              type="text"
+              aria-label="从上游同步可新增模型"
+              :loading="modelSyncing"
+              @click.stop="$emit('refresh-models')"
+            >
+              <template #icon><SyncOutlined /></template>
+            </a-button>
+          </a-tooltip>
         </div>
       </template>
       <div class="supported-models-control">
@@ -179,18 +193,6 @@
             <ModelOptionsTruncatedHint :menu-node="menuNode" />
           </template>
         </a-select>
-        <a-tooltip title="从上游同步可新增模型">
-          <a-button
-            class="supported-models-refresh-button"
-            size="small"
-            type="text"
-            aria-label="从上游同步可新增模型"
-            :loading="modelSyncing"
-            @click.stop="$emit('refresh-models')"
-          >
-            <template #icon><SyncOutlined /></template>
-          </a-button>
-        </a-tooltip>
       </div>
     </a-form-item>
     <AccountHealthCheckModelField
@@ -233,6 +235,8 @@ const props = withDefaults(defineProps<{
   modelsTruncated?: boolean
   protocolCode?: string
   protocolVersion?: string
+  /** 当前选择的上游供应商代码（anthropic/gpt/glm 等），决定 Base URL 帮助展示哪家供应商的说明。 */
+  providerCode?: string
   title: string
   /** media 变体（M2 媒体域三段式）：只渲染凭据块，支持模型/检查模型由三段式段2承接。 */
   variant?: 'chat' | 'media'
@@ -246,6 +250,33 @@ defineEmits<{
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
 }>()
+
+// Base URL 帮助只展示当前供应商相关的填写说明（示例取该供应商的默认 Base URL），
+// 避免所有供应商共用一份大而全的说明。
+const providerLabelByCode: Record<string, string> = {
+  anthropic: 'Anthropic',
+  gpt: 'GPT',
+  xai: 'xAI / Grok',
+  deepseek: 'DeepSeek',
+  glm: '智谱 GLM',
+  gemini: 'Google Gemini',
+  minimax: 'MiniMax',
+  volcengine: '火山引擎',
+  qwen: '通义千问'
+}
+const providerBaseUrlNote: Record<string, string> = {
+  anthropic: '使用中转/代理地址时同样要带版本根，例如 https://example.com/v1。',
+  deepseek: 'Anthropic 兼容形态的版本根为 /anthropic/v1。',
+  glm: 'GLM Coding 的 Anthropic 形态版本根为 /api/anthropic/v1。',
+  gemini: 'Gemini OpenAI 兼容形态的版本根为 /v1beta/openai。',
+  qwen: '填 DashScope 裸根，不要带 compatible-mode 路径。'
+}
+const normalizedProviderCode = computed(() => (props.providerCode || '').trim().toLowerCase())
+const baseUrlHelp = computed(() => ({
+  label: providerLabelByCode[normalizedProviderCode.value] || '',
+  example: props.baseUrlPlaceholder,
+  note: providerBaseUrlNote[normalizedProviderCode.value] || ''
+}))
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)
 const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
@@ -544,6 +575,21 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   gap: 4px;
 }
 
+.base-url-inline-hint {
+  margin-inline-start: 8px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.base-url-inline-hint code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--juhe-surface-soft);
+  color: rgba(0, 0, 0, 0.78);
+  font-size: 11px;
+}
+
 .base-url-help-button {
   display: inline-flex;
   width: 20px;
@@ -600,7 +646,12 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   display: flex;
   flex: 1;
   align-items: center;
+  gap: 6px;
   min-width: 0;
+}
+
+.supported-models-label .supported-models-refresh-button {
+  margin-left: auto;
 }
 
 .supported-models-control {

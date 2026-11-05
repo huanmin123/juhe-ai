@@ -551,7 +551,16 @@ func TestW4AnthropicMessagesArms(t *testing.T) {
 				t.Fatalf("stream=%v", payload["stream"])
 			}
 			metadata, _ := payload["metadata"].(map[string]any)
-			userID, _ := metadata["user_id"].(map[string]any)
+			// Anthropic 协议 metadata.user_id 是 string：对象形态会被严格解析
+			// 的上游以 400 拒绝（2chat/sub2api 系实测），此处钉死字符串形态。
+			userIDRaw, ok := metadata["user_id"].(string)
+			if !ok {
+				t.Fatalf("metadata.user_id 必须是 JSON 字符串，got %T: %v", metadata["user_id"], metadata["user_id"])
+			}
+			var userID map[string]any
+			if err := json.Unmarshal([]byte(userIDRaw), &userID); err != nil {
+				t.Fatalf("metadata.user_id 不是合法 JSON 对象字符串: %v (%q)", err, userIDRaw)
+			}
 			session := header.Get("X-Claude-Code-Session-Id")
 			if session == "" {
 				t.Fatalf("x-claude-code-session-id 缺失: %v", header)
