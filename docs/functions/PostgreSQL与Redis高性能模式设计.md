@@ -239,6 +239,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 ## Redis 调优基线
 
 - 现行生产为单 `redis:7.4-alpine` 容器（DB0），cache / state / J3b 以 `juhe-ai:{<namespace>:<域>}` 键空间分离；可淘汰缓存与不可淘汰运行态混用同一实例时必须守住 `noeviction` 边界，运行态与 J3b 电路运行态不得混用同一键空间（域 namespace 强制分离）。需要横向扩容或故障转移时切换 `JUHE_AI_REDIS_MODE=cluster`（域级分布，热点三域仍单 slot）。
+- Cluster 客户端超时有界：拨号 1s、读写 2s、最多 1 次重试（默认 5s×3 次会把死节点影响放大到十几秒）；单节点路径保持 go-redis 默认。
 - 可丢弃缓存设置 `maxmemory` 和淘汰策略，命中率低于阈值时优先检查 key 设计，不直接加内存。
 - 运行态使用 `noeviction`，所有写入必须带 TTL；写失败时调用方按降级策略处理。
 - 硬约束运行态使用 Lua 或 Redis 原生命令收口，不把 `GET -> 本地判断 -> SET` 暴露给并发调用方；短 TTL 调度状态可以直接读写并接受短暂覆盖，但必须有 TTL、成功清理、后台恢复或 generation 收敛机制。
