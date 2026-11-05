@@ -131,6 +131,12 @@ func (s *Service) project(ctx context.Context, event control.Outbox) (runtime.Ga
 	if loaded.Status == "stale" {
 		return runtime.GatewayAccountCircuitRevisionProjection{Status: runtime.GatewayAccountCircuitRevisionStale, CurrentRevision: loaded.CurrentDispatchRevision, Obsolete: true}, nil
 	}
+	if loaded.Status == "missing" {
+		// incident 行已被 ledger 清理/账户删除：没有可投影事实，按 obsolete
+		// 成功 ack。若当成错误重试，历史 outbox 行会永久占用 claim 并在
+		// release/retry 间循环（2026-11-06 生产验证）。
+		return runtime.GatewayAccountCircuitRevisionProjection{Status: runtime.GatewayAccountCircuitRevisionStale, CurrentRevision: loaded.CurrentDispatchRevision, Obsolete: true}, nil
+	}
 	if loaded.Status != "current" {
 		return runtime.GatewayAccountCircuitRevisionProjection{}, errors.New("account circuit incident ledger snapshot is missing")
 	}

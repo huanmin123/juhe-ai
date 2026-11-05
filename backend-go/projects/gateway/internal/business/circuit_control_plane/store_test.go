@@ -75,6 +75,31 @@ func TestBackfillProjectionRowsCopiesRetainedMainRows(t *testing.T) {
 	}
 }
 
+func TestBackfillSkipsDispatchedMainRows(t *testing.T) {
+	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	ctx := context.Background()
+	if _, err := s.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t-dispatched", NowMS: 100}); err != nil {
+		t.Fatal(err)
+	}
+	mainClaimed, err := s.ClaimOutbox(ctx, "main-worker", 100, 20, 10)
+	if err != nil || len(mainClaimed) != 1 {
+		t.Fatalf("main claim=%+v err=%v", mainClaimed, err)
+	}
+	if ok, err := s.AcknowledgeOutbox(ctx, mainClaimed[0].EventID, ProjectionKey, *mainClaimed[0].ClaimToken, 110); err != nil || !ok {
+		t.Fatalf("main ack=%v err=%v", ok, err)
+	}
+	if _, err := db.Exec(`DELETE FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE projection_key=?`, J3bProjectionKey); err != nil {
+		t.Fatal(err)
+	}
+	affected, err := s.BackfillProjectionRows(ctx, ProjectionKey, J3bProjectionKey, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affected != 0 {
+		t.Fatalf("dispatched main rows must not be backfilled, affected=%d", affected)
+	}
+}
+
 func TestOwnerGateBlocksWrites(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true})
 	_, err := s.AdvanceDispatchRevision(context.Background(), DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t1"})

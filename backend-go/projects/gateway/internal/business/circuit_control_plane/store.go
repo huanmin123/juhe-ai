@@ -582,11 +582,11 @@ func (s *Store) ClaimOutboxForProjection(ctx context.Context, projectionKey, own
 	return s.claimOutbox(ctx, projectionKey, owner, nowMS, leaseMS, limit)
 }
 
-// BackfillProjectionRows 为目标投影补齐主投影中尚不存在的行（部署切换用：
-// 历史事件只有主 projection_key，新 J3b 消费者需要自己的行）。复制所有
-// 保留期内主行（含已 dispatched）：主消费者可能先于 J3b 启动并 ack，只有
-// 复制全量才能关闭这个竞态；J3b 投影按 revision/ledger 幂等，旧事件会被
-// 判 stale/obsolete。幂等：唯一键冲突直接跳过。
+// BackfillProjectionRows 为目标投影补齐主投影中尚未 dispatched 的行
+// （部署切换用：历史事件只有主 projection_key，新 J3b 消费者需要自己的行）。
+// 已 dispatched 的事件不再复制：它已被主消费者处理，J3b 的 durable 运行态
+// 由启动基线回填覆盖；复制旧事件会重放已删除 incident 的历史行并造成无效
+// 重试（2026-11-06 生产验证）。幂等：唯一键冲突直接跳过。
 func (s *Store) BackfillProjectionRows(ctx context.Context, fromProjectionKey, toProjectionKey string, nowMS int64) (int64, error) {
 	if err := s.requireOwner(); err != nil {
 		return 0, err
@@ -605,7 +605,7 @@ func (s *Store) BackfillProjectionRows(ctx context.Context, fromProjectionKey, t
 		"transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms)" +
 		" SELECT event_id || ':j3b', ?, dedupe_key, event_type, account_id, account_runtime_key, circuit_scope_key, incident_id," +
 		" transition_id, dispatch_revision, generation, ledger_revision, 'pending', available_at_ms, 0, created_at_ms, updated_at_ms" +
-		" FROM " + outbox + " WHERE projection_key=?" +
+		" FROM " + outbox + " WHERE projection_key=? AND status<>'dispatched'" +
 		" ON CONFLICT DO NOTHING"
 	res, err := s.db.ExecContext(ctx, s.bind(query), toProjectionKey, fromProjectionKey)
 	if err != nil {
