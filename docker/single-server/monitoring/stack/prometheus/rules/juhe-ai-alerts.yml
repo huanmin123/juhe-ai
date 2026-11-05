@@ -1,0 +1,227 @@
+# juhe-ai 应用告警规则（随监控栈交付的基线）
+#
+# 指标来源：
+# - 应用进程：juhe-ai-gateway / juhe-ai-jobs 的 GET /__aisys__/metrics（60s）
+# - 数据库：采集端 postgres_exporter 的 juhe_app_* 自定义查询（60s）
+# 阈值按本项目生产基线设定，复用方应按自己的流量与机器规格校准后再上线。
+groups:
+  - name: juhe-ai-app
+    interval: 60s
+    rules:
+      # ---- 抓取链路 ----
+      - alert: AppScrapeDown
+        expr: up{job=~"juhe-ai-(gateway|jobs)"} == 0
+        for: 5m
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "应用指标抓取失联：{{ $labels.job }}"
+          description: "连续 5 分钟抓取 /__aisys__/metrics 失败（进程退出 / 隧道中断 / 端口未监听）。先在生产机宿主 curl http://127.0.0.1:3306/__aisys__/metrics（jobs 为 3305），再查隧道与 Prometheus targets 页。"
+
+      - alert: AppScrapeTargetMissing
+        expr: absent(up{job="juhe-ai-gateway"}) or absent(up{job="juhe-ai-jobs"})
+        for: 5m
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "应用指标 target 消失：{{ $labels.job }}"
+          description: "该 job 的 up 序列不存在（抓取配置被移除或损坏）。检查 Prometheus 配置中的 juhe-ai-gateway / juhe-ai-jobs 与隧道转发。"
+
+      # ---- 进程健康 ----
+      - alert: AppGoroutinesHigh
+        expr: go_goroutines{job=~"juhe-ai-(gateway|jobs)"} > 1500
+        for: 10m
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "应用 goroutine 数异常升高：{{ $labels.job }}"
+          description: "超过 1500 持续 10 分钟（参考基线 gateway ~100-190 / jobs ~130-190）。看面板 goroutines 曲线斜率；持续爬升按泄漏排查，必要时取 127.0.0.1:3306/debug/pprof/goroutine。"
+
+      - alert: AppGCPauseHigh
+        expr: go_gc_duration_seconds{quantile=~"1(\\.0)?", job=~"juhe-ai-(gateway|jobs)"} > 1
+        for: 5m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "应用 GC 最大停顿超过 1 秒：{{ $labels.job }}"
+          description: "quantile=1 是最近 256 次 GC 的最大停顿（参考基线 <10ms）。多为磁盘/CPU 压力的伴生症状，先查主机 io_full/PSI，再查 PG 慢语句。"
+
+      - alert: AppHeapFloorHigh
+        expr: min_over_time(go_memstats_heap_alloc_bytes{job=~"juhe-ai-(gateway|jobs)"}[30m]) > 800 * 1024 * 1024
+        for: 15m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "GC 后堆底持续高位：{{ $labels.job }}"
+          description: "GC 后活堆底超过 800MiB 持续 15 分钟（参考基线 gateway 30-300MiB / jobs ~25MiB）。早于容器内存告警的驻留增长信号，取 pprof heap 分析。"
+
+      - alert: AppThreadsHigh
+        expr: go_threads{job=~"juhe-ai-(gateway|jobs)"} > 100
+        for: 15m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "应用 OS 线程数异常升高：{{ $labels.job }}"
+          description: "超过 100 持续 15 分钟（参考基线 gateway 11-36 / jobs 11-13）。CGO=0 时线程由阻塞文件 I/O 推高，检查磁盘压力与审计 blob 写入。"
+
+      - alert: AppAuditPersistErrorRate
+        expr: sum(rate(juhe_ai_audit_log_persist_duration_seconds_count{result=~"error|panic", job="juhe-ai-gateway"}[10m])) > 0.05
+        for: 15m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "审计持久化失败速率持续升高"
+          description: "近 10 分钟审计持久化 error/panic 超过 0.05 次/s（约 3 次/分钟）持续 15 分钟。查 gateway 审计持久化日志、队列 depth/bytes、磁盘 I/O 与 PG 慢语句。"
+
+      # ---- 后台任务 ----
+      - alert: AppJobStalled
+        # 24h 级任务必须排除：120min 阈值对日频任务每天约 22h 恒为真。
+        # 已退役任务（chat-retention-cleanup，2026-11 随 chat_* 表退役）也要排除：
+        # 指标取「该 job_name 最后一条 finished 记录」，历史行会让分钟数单调增长。
+        # 新增 >=24h 周期任务或退役任务时，同步更新本排除清单。
+        expr: juhe_app_job_stall_minutes_since_success{job_name!~"expired-deleted-account-cleanup|upstream-client-version-refresh|chat-retention-cleanup"} > 120
+        for: 15m
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "后台任务停摆：{{ $labels.job_name }}"
+          description: "该任务距上次成功完成超过 2 小时（各任务周期 5s-60m）。已排除 24h 级任务 expired-deleted-account-cleanup、upstream-client-version-refresh 与已退役的 chat-retention-cleanup。查 jobs 日志中该任务名与 lane/resource_lane_busy。"
+
+      - alert: AppStatsCursorStalled
+        expr: juhe_app_stats_cursor_lag_minutes_since_success > 180
+        for: 15m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "统计游标停摆：{{ $labels.cursor_job }}"
+          description: "统计游标距上次成功推进超过 3 小时，对应统计面会停更。查 juhe_stats.stats_job_state.last_error_message 与 jobs 日志。"
+
+      - alert: AppAccountUnavailableSurge
+        expr: juhe_app_account_status_accounts{status="temporary_unavailable"} - juhe_app_account_status_accounts{status="temporary_unavailable"} offset 1h > 20
+        for: 10m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "临时不可用账户数激增（1 小时 +{{ $value | printf \"%.0f\" }}）"
+          description: "环比增加超过 20，常见于 OAuth 批量失效 / 上游批量拒绝 / 探活误判。查 jobs 日志中 oauth refresh 失败与健康探活错误。"
+
+  - name: juhe-ai-infra
+    interval: 60s
+    rules:
+      - alert: HostDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels: {severity: critical, alert_family: host}
+        annotations:
+          summary: "主机失联：{{ $labels.instance }}"
+          description: "node_exporter 抓取失败 2 分钟（主机宕机 / 断网 / 隧道断开）。"
+
+      - alert: HostDiskUsageHigh
+        expr: (1 - node_filesystem_avail_bytes{job="node", mountpoint="/", fstype!~"tmpfs|overlay|squashfs|ramfs"} / node_filesystem_size_bytes{job="node", mountpoint="/", fstype!~"tmpfs|overlay|squashfs|ramfs"}) > 0.8
+        for: 10m
+        labels: {severity: warning, alert_family: host}
+        annotations:
+          summary: "根分区使用率超 80%：{{ $labels.instance }}"
+          description: "当前 {{ $value | humanizePercentage }}。本项目 PG + 备份 + 审计 blob 会持续增长，按部署指南清理或扩容。"
+
+      - alert: HostMemoryHigh
+        expr: (1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"}) > 0.85
+        for: 10m
+        labels: {severity: warning, alert_family: host}
+        annotations:
+          summary: "内存使用率超 85%：{{ $labels.instance }}"
+          description: "当前 {{ $value | humanizePercentage }}。本项目 PG 预置 shared_buffers=2GB 属设计预期，重点看 gateway/jobs 容器工作集。"
+
+      - alert: AppContainerDown
+        # 两个容器分别 absent：单个缺失就要告警；用一条带正则的 absent 只在
+        # “两个都缺失”时才触发，会漏掉单容器消失。
+        expr: absent(container_last_seen{job="cadvisor", name="juhe-ai-go-gateway"}) or absent(container_last_seen{job="cadvisor", name="juhe-ai-go-jobs"})
+        for: 2m
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "应用容器消失（cadvisor 未见心跳）"
+          description: "gateway 或 jobs 容器被删除 / Docker 异常 / cadvisor 故障。先用 docker compose ps 确认。"
+
+      - alert: AppContainerRestarted
+        expr: changes(container_start_time_seconds{job="cadvisor", name=~"juhe-ai-.*", image!=""}[10m]) > 0
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "容器重启：{{ $labels.name }}"
+          description: "近 10 分钟发生重启（可能健康检查失败或崩溃）。"
+
+      - alert: AppContainerRestartLoop
+        expr: changes(container_start_time_seconds{job="cadvisor", name=~"juhe-ai-.*", image!=""}[1h]) > 3
+        for: 5m
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "容器反复重启：{{ $labels.name }}"
+          description: "1 小时内重启超过 3 次，存在崩溃循环。看 docker compose logs 与退出码。"
+
+      - alert: AppContainerCpuHigh
+        expr: sum by (name) (rate(container_cpu_usage_seconds_total{job="cadvisor", name=~"juhe-ai-.*", image!=""}[5m])) > 2
+        for: 15m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "容器 CPU 高：{{ $labels.name }}"
+          description: "5 分钟均值超过 2 核当量。参考环境 gateway 峰值通常 <1 核；持续高位查 goroutine、GC 与审计写入。"
+
+      - alert: AppContainerMemoryHigh
+        # PG 排除：shared_buffers=2GB 后工作集 ~2.8GiB 属设计预期，
+        # PG 可用性由 PostgresDown/主机内存告警覆盖，避免恒误报。
+        expr: container_memory_working_set_bytes{job="cadvisor", name=~"juhe-ai-.*", image!="", name!="juhe-ai-postgres"} > 2147483648
+        for: 10m
+        labels: {severity: warning, alert_family: app}
+        annotations:
+          summary: "容器内存超过 2GB：{{ $labels.name }}"
+          description: "工作集 {{ $value | humanize1024 }}B。对照 compose 的 GOMEMLIMIT 与 mem_limit；gateway 接近 GOMEMLIMIT 时会开始激进 GC。"
+
+      - alert: AppContainerOom
+        expr: increase(container_oom_events_total{job="cadvisor", name=~"juhe-ai-.*"}[10m]) > 0
+        labels: {severity: critical, alert_family: app}
+        annotations:
+          summary: "容器发生 OOM：{{ $labels.name }}"
+          description: "容器内存超限被杀。检查 compose 的 mem_limit/GOMEMLIMIT 与进程堆。"
+
+      - alert: PostgresDown
+        expr: pg_up{job="postgres"} == 0
+        for: 2m
+        labels: {severity: critical, alert_family: db}
+        annotations:
+          summary: "PostgreSQL 不可用：{{ $labels.instance }}"
+          description: "postgres_exporter 无法连接数据库。查容器状态、连接串与磁盘空间。"
+
+      - alert: PostgresDeadlocks
+        expr: increase(pg_stat_database_deadlocks{job="postgres"}[10m]) > 0
+        labels: {severity: warning, alert_family: db}
+        annotations:
+          summary: "发生死锁：{{ $labels.instance }} {{ $labels.datname }}"
+          description: "10 分钟内出现死锁，查 PG 日志中的 deadlock detected 与相关语句。"
+
+      - alert: PostgresRollbacksHigh
+        expr: rate(pg_stat_database_xact_rollback{job="postgres", datname!~"template.*"}[10m]) > 0.5
+        for: 10m
+        labels: {severity: warning, alert_family: db}
+        annotations:
+          summary: "事务回滚率过高：{{ $labels.instance }} {{ $labels.datname }}"
+          description: "持续回滚通常来自应用侧显式回滚或约束冲突，结合 PG 日志与 jobs/gateway 错误排查。"
+
+      - alert: RedisDown
+        expr: redis_up{job="redis"} == 0
+        for: 2m
+        labels: {severity: critical, alert_family: db}
+        annotations:
+          summary: "Redis 不可用：{{ $labels.instance }}"
+          description: "redis_exporter 无法连接 Redis。注意 Redis 承载熔断/限流/会话等运行态，不可用时网关会快速失败。"
+
+      - alert: RedisMemoryPressure
+        expr: redis_memory_max_bytes{job="redis"} > 0 and redis_memory_used_bytes{job="redis"} / redis_memory_max_bytes{job="redis"} > 0.85
+        for: 10m
+        labels: {severity: warning, alert_family: db}
+        annotations:
+          summary: "Redis 内存超过 maxmemory 的 85%：{{ $labels.instance }}"
+          description: "本项目 Redis 配置 maxmemory 1gb + noeviction；接近上限会开始拒绝写入并影响网关运行态。"
+
+      - alert: RedisSlowCommandsSurge
+        expr: juhe_redis_slowlog_new_entries > 30 and on(instance) (time() - juhe_redis_slowlog_snapshot_timestamp_seconds < 1200)
+        for: 10m
+        labels: {severity: warning, alert_family: db}
+        annotations:
+          summary: "Redis 慢命令激增：近 5 分钟新增 {{ $value }} 条（>10ms）"
+          description: "数据源为采集端 redis-slowlog-snapshot.py 的 textfile 指标。查 /opt/juhe-monitoring/redis-slowlog/slowlog.jsonl 与 SLOWLOG GET，关注 Lua 脚本与大 key。"
+
+      - alert: Watchdog
+        expr: vector(1)
+        labels: {severity: none, alert_family: watchdog}
+        annotations:
+          summary: "监控告警链路心跳（持续 firing 属正常）"
+          description: "该告警恒为 firing，用于验证规则评估链路存活；它消失说明 Prometheus 规则评估异常。"

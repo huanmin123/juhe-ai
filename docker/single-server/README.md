@@ -1,6 +1,6 @@
 # 单机 Docker 部署（国内服务器，go-only）
 
-> 面向部署者的完整手动步骤（新机初始化、`.env` 模板、首次部署、验证、升级、回滚、备份、排障）见 `docs/deploy/部署指南.md`。本文是配置契约与发布机制说明，含历史迁移记录；当前操作以部署指南与 `docs/待办与阻塞事项.md` 为准。
+> 部署主流程（首次部署、验证、升级与回滚）见 `docs/deploy/部署指南.md`；主机初始化、`.env` 全量参考、Nginx 入口、备份、排障、迁移分别见 `docs/deploy/{host,config,nginx,backup,troubleshooting,migration}/README.md`。本文是配置契约与发布机制说明，含历史迁移记录；当前操作以部署指南与 `docs/待办与阻塞事项.md` 为准。
 
 国内单台服务器（Debian 13）上以 Docker Compose 运行全套 juhe-ai：PostgreSQL + Redis + gateway/jobs/maintenance（本地交叉编译的二进制）+ Caddy 入口。这是替代 K3s 混合形态的 go-only 目标部署形态；服务器地址、资产、密码与运行事实记录在 `.local/project-resources/prod/`（私有，不入库——BUG-0225）。
 
@@ -49,7 +49,7 @@ Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 12
 - PG/Redis 不对宿主机发布端口。入口为 `https://aijh.huanmin.top`（Caddy ACME 自动续期，80 常驻 308 升级 HTTPS，443/udp HTTP/3）。
 - **Caddy → gateway upstream 必须保持 HTTP/1.1（2026-11-04 起契约）**：客户端交接（锁死 hold / 预算耗尽 / 临时隔离等非终态失败）依赖 `http.Hijacker` 先提交 200 传输头再断开，让 Caddy 把截断响应透传给客户端；Caddy `reverse_proxy` 默认 HTTP/1.1 upstream 满足该条件。**不要给 gateway 反代块配置 `transport http { versions h2c }`**——HTTP/2 upstream 不支持 Hijack，交接会退化为 503，客户端是否重试取决于其策略。Caddy 2.11.7 真机验证：SSE 与 JSON 截断均透传为 200 + 不完整正文，未提交响应才由 Caddy 合成 502；证据见 [BUG-0351](../../docs/bug/问题-0351-client_handoff以503渲染导致客户端不重试.md)「错误帧裁决」与 T121 记录（已关闭）。
 - **Nginx 形态（如改用 Nginx 反代，2026-11-04 真机验证）**：交接行为与 Caddy 一致——先提交 200 头再断连时客户端收到 200 + 截断正文（Nginx 默认与 `proxy_http_version 1.1` 两种 upstream 均验证，nginx/1.31.8），未提交响应直接断连才合成 502。注意事项：① Nginx 每次交接都会在 error 级日志记录 `upstream prematurely closed connection`，这是预期行为，告警规则不要按该日志判故障；② SSE 依赖网关已发送的 `X-Accel-Buffering: no` 关闭缓冲（心跳与交接均设置），也可在 location 显式 `proxy_buffering off;`；③ 多实例 upstream 建议 `proxy_next_upstream off;`，避免网关真实崩溃（未提交响应）时 Nginx 把非幂等 POST 重放到另一实例造成重复请求。
-- 指标暴露（2026-10-14 起，替代已下线的系统指标统计/表监控自维护采样）：gateway 健康监听 `JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=0.0.0.0:3306`（承载 `GET /__aisys__/metrics`）与 jobs 健康监听 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS=0.0.0.0:3305` 经宿主回环端口映射发布（`"127.0.0.1:3306:3306"` / `"127.0.0.1:3305:3305"`）——**仅宿主回环可达，部署层必须拒绝公网入口、只允许受限 Prometheus 抓取**（infra 机经既有 SSH 隧道抓取，60s 采样预算；抓取片段、面板导入与告警迁移见 `monitoring/README.md`）。
+- 指标暴露（2026-10-14 起，替代已下线的系统指标统计/表监控自维护采样）：gateway 健康监听 `JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=0.0.0.0:3306`（承载 `GET /__aisys__/metrics`）与 jobs 健康监听 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS=0.0.0.0:3305` 经宿主回环端口映射发布（`"127.0.0.1:3306:3306"` / `"127.0.0.1:3305:3305"`）——**仅宿主回环可达，部署层必须拒绝公网入口、只允许受限 Prometheus 抓取**（监控机经本机回环或 SSH 隧道抓取，60s 采样预算；抓取片段、面板导入与告警基线见 `monitoring/README.md`，通用接入与复用说明见 [docs/deploy/monitoring/README.md](../../docs/deploy/monitoring/README.md)）。
 - pprof 诊断端点（2026-10-30 起）：gateway 健康监听承载只读 pprof 诊断面 `GET /debug/pprof/`（标准 net/http/pprof：index/heap/allocs/goroutine/block/mutex/threadcreate/profile/trace/cmdline/symbol，仅 GET），用于堆/goroutine 增长等运行时问题定位。与 metrics 同监听、不新增端口，依赖既有宿主回环发布契约——**仅生产机宿主经 `127.0.0.1:3306` 可达，禁止加入 Caddy/反代或任何公网发布**；抓取产物（profile 文件）属一次性诊断产物，不入仓库。注意信任边界：容器网络（compose 默认网 `172.18.0.0/16`）内其他容器也可直达健康监听的 pprof 面（容器间互通不经过宿主端口映射），信任边界即 compose 内网；公网仍不可达。
 - postgres 服务经 compose `command` 预置内存调优（2026-09-30 起部署契约）：`shared_buffers=2GB`、`effective_cache_size=4GB`（后者为优化器估值不占内存）。此前镜像默认 `shared_buffers=128MB` 在 8GB 单机上是隐性瓶颈（两库共享 128MB 缓存导致命中率 0.85~0.95、iowait ~9%、checkpoint 5 分钟一轮）。**新建实例勿删此 command**，改参数需同步本节与 `.local` 运维手册。
 - postgres 服务 `command` 另预置 `shared_preload_libraries=pg_stat_statements`（2026-10-08 起，慢 SQL 可追溯契约）：实例需执行一次 `CREATE EXTENSION pg_stat_statements`（juhe_ai 库，幂等报错即已存在）后即可查询累计语句统计（Top-N 采样口径与命令见 `.local/project-resources/prod/runbooks/监控与告警运维.md`）。**实例级日志参数不在 compose 内、也不在镜像默认里**：固化在数据卷内 `postgresql.auto.conf`（随容器重建保留、随数据卷删除丢失），2026-10-17 巡检盘点实证生产共四项——**新建实例/全新数据卷必须照下述清单重放**（reload 级，逐条 `ALTER SYSTEM` 后 `SELECT pg_reload_conf();` 生效）：
@@ -78,7 +78,7 @@ docker/single-server/
 ├── deploy.sh            # 发布脚本（防呆流程，见下「更新发布」节）
 ├── verify-release.sh    # 发布后验证（spool 同源 / drain 接线 / 内存限制断言，随发布自动上传执行）
 ├── host-init.sh         # 主机层优化自检（swap/sysctl/journald，幂等；deploy.sh 每次发布自检，新机初始化单独执行）
-├── monitoring/          # Prometheus/Grafana 监控产物（面板 JSON、postgres_exporter 增补查询、抓取与告警迁移说明）
+├── monitoring/          # 监控交付物：collector/（应用机采集端）、stack/（监控机 Prometheus/Grafana/Loki/告警）、stack/dashboards/（面板 JSON）
 ├── .env                 # 密钥、连接串与部署变量（gitignore；服务器同路径放置，见下".env 契约"）
 ├── .env.example         # 现行配置模板（入库，不含密钥；复制为 .env 后填值）
 └── build/               # 本机构建产物（gitignore）：bin/ + frontend-dist/
@@ -327,7 +327,7 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 
 - `GOMEMLIMIT=3072MiB`：compose gateway `environment` 固定值（**非 .env 变量**），Go 堆软限制——接近时 GC 激进回收，RSS 实际封顶约 3.2GiB。背景：流量高峰下 gateway RSS 曾冲 3.56GiB（goroutines 全程平坦无泄漏，纯堆膨胀），与 PG（~3GiB）合计挤光 8G 整机页缓存引发 I/O 活锁僵死（10-14 11:51-13:48），彼时定 2300MiB/3g 收口。**2026-10-27 juhe-pw 应用族下线、整机转 juhe-ai 专供后重划：2300MiB→3072MiB、mem_limit 3g→4g**（维持 75% 比例；当时白天峰值 RSS 仅 ~0.8GiB，上调为增长留余量并降低高峰 GC 压力）。调大前必须复核整机内存预算：`gateway RSS ≈ GOMEMLIMIT + ~200MiB 运行时开销`，须与 PG（shared_buffers 2.5GiB、历史 RSS 2.7-3.2GiB）、系统与其余容器共存后仍留 ≥1.5GiB 页缓存（专供后实测预算 ~1.5-1.9GiB，另有 4G swap 兜底）。
 - `mem_limit`（cgroup 硬限，最后防线）：gateway `4g`、jobs `1g`——超限 OOM kill 只波及容器自身（restart: unless-stopped 自动拉起），不再拖死整机。PG **有意不设限**：PG 被 OOM 强杀的恢复代价远大于保护收益，其 RSS 由 shared_buffers/work_mem 自控（历史稳定 3.0-3.2GiB）。Redis 设 `--maxmemory 1gb` + `--maxmemory-policy noeviction`：承载全部缓存与运行态域，逐出会破坏熔断/并发等运行态正确性，所以到顶表现为写入失败而不是逐出；当前用量 ~16MiB 无压力。
-- 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/部署指南.md` §3 主机初始化执行。
+- 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/host/README.md` 执行。
 
 - `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。
 - `JUHE_AI_SECRET`：≥32 位强随机；账号凭据/内建 API Key 加密封套，**有加密数据后不可更换**，务必留档。所有共享 Redis 会话亲和绑定的 Gateway 实例必须使用相同 secret：会话绑定携带上游 Key 的 HMAC 指纹（账户内 Key 会话黏性，见 `docs/functions/账户内APIKey会话亲和设计.md`），组级会话绑定键同样由该 secret 派生（独立 HMAC purpose `group-affinity:v1`，见 `docs/functions/策略路由分组会话亲和设计.md`），不同 secret 实例混跑不是受支持的稳定形态；secret 协调轮换时先统一切换全部实例再恢复流量，旧指纹自然失配并在下一次协议成功后重绑。

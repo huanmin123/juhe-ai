@@ -1,0 +1,81 @@
+// 应用容器日志采集（Alloy → Loki）
+//
+// 部署位置：应用机 /opt/juhe-monitoring/alloy/config.alloy
+// 范围：只采应用容器（gateway/jobs），不采 PG/Redis 与 journald。
+// 推送目标：监控机 Loki，经 SSH 反向隧道映射到应用机本机 127.0.0.1:13100。
+//   隧道方向与指标相反（指标是监控机 → 应用机拉取），由监控机侧建立：
+//   ssh -R 13100:127.0.0.1:13100 <app-host>  （在监控机执行，把监控机 Loki 暴露给应用机）
+// 若应用机与监控机同机，把 endpoint.url 改成 http://127.0.0.1:13100/... 即可。
+//
+// 查询约定：level 标签保留原始大小写，查询用 level=~"(?i)error"；
+// traceId 不做标签（避免高基数），保留在日志行内，用 | json 或行过滤提取。
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_log_path"]
+    target_label  = "__path__"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // 只保留应用容器；新增常驻应用服务时在这里补名字
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(juhe-ai-go-gateway|juhe-ai-go-jobs)"
+    action        = "keep"
+  }
+
+  rule {
+    target_label = "host"
+    replacement  = "juhe-ai-host"
+  }
+
+  rule {
+    target_label = "environment"
+    replacement  = "prod"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.enrich.receiver]
+}
+
+loki.process "enrich" {
+  // 提取日志级别作为可查询标签（低基数；保留原始大小写）
+  stage.regex {
+    expression = "(?i)\\b(?P<level>DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL)\\b"
+  }
+  stage.labels {
+    values = { level = "level" }
+  }
+
+  // 丢弃健康检查/指标抓取噪音
+  stage.drop {
+    expression          = ".*?(GET|POST) /(health|healthz|ready|readyz|live|livez|metrics|favicon\\.ico).*"
+    drop_counter_reason = "health-noise"
+  }
+
+  forward_to = [loki.write.monitoring.receiver]
+}
+
+loki.write "monitoring" {
+  endpoint {
+    url = "http://127.0.0.1:13100/loki/api/v1/push"
+
+    // 速度控制：重试退避
+    min_backoff = "500ms"
+    max_backoff = "30s"
+    max_retries = 5
+  }
+}

@@ -62,7 +62,7 @@ systemctl enable --now juhe-ai-gateway juhe-ai-jobs
 
 ## 4. 配置
 
-- `.env` 变量与 Docker 形态同源（见部署指南 §5）；区别是连接串指向**真实 PG/Redis 地址**而不是容器名，三个进程启动时自动设置 `PGAPPNAME`（慢 SQL 归因用），不需要也不应在 URL 内写 `application_name`。
+- `.env` 变量与 Docker 形态同源（见[配置参考](../config/README.md)）；区别是连接串指向**真实 PG/Redis 地址**而不是容器名，三个进程启动时自动设置 `PGAPPNAME`（慢 SQL 归因用），不需要也不应在 URL 内写 `application_name`。
 - `JUHE_AI_HOST` / `JUHE_AI_PORT` 默认 `127.0.0.1:3000`；对外暴露需在前面放 Caddy/Nginx（见 [https](../https/README.md)）。
 - `JUHE_AI_FRONTEND_DIST_PATH` 指向前端 `dist` 绝对路径（不配则不挂管理 SPA）。
 - `JUHE_AI_LOG_DIR` 显式指向与 jobs 索引器相同的日志目录。

@@ -1,0 +1,16 @@
+# blackbox_exporter 模块配置（监控机侧）
+#
+# 用途：从监控机出口视角探测业务入口可达性与公网链路 RTT/丢包。
+# 部署：监控机 /opt/juhe-monitoring-stack/blackbox/blackbox.yml，
+#       容器监听 127.0.0.1:19115，由 Prometheus 静态 target 抓取。
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+  icmp:
+    prober: icmp
+    timeout: 3s
+    icmp:
+      preferred_ip_protocol: ip4

@@ -214,7 +214,7 @@ pnpm package:release:windows
 ## 部署
 
 - 单机部署：PostgreSQL + Redis，两个 Go 常驻进程即可运行，参考 [Docker Compose 单机部署](docker/single-server/README.md)（配置契约权威）。
-- 部署入口（Docker 单机、Linux 直跑、HTTPS/反向代理、出海代理、备份迁移、排障）：[部署文档](docs/deploy/README.md) 与 [部署指南](docs/deploy/部署指南.md)；systemd / 裸进程直跑差异见 [Linux 直跑说明](docs/deploy/linux/README.md)。
+- 部署入口（Docker 单机主流程、主机/配置参考、Nginx/HTTPS 入口、监控、备份、排障、迁移、Linux 直跑、出海代理）：[部署文档](docs/deploy/README.md) 与 [部署指南](docs/deploy/部署指南.md)；systemd / 裸进程直跑差异见 [Linux 直跑说明](docs/deploy/linux/README.md)。
 
 ## 架构一览
 

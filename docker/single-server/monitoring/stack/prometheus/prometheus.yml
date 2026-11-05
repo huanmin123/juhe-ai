@@ -1,0 +1,103 @@
+# Prometheus 配置（juhe-ai 单机部署监控栈）
+#
+# 抓取模型：应用机采集端（../../collector）的 exporter 全部只绑 127.0.0.1，
+# 由监控机经 SSH 本地转发映射到本机端口后抓取。默认端口约定：
+#   19107 node_exporter       19108 cadvisor
+#   19109 postgres_exporter   19110 redis_exporter
+#   19111 gateway metrics     19112 jobs metrics
+# 若监控机与应用机同机，把 targets 改成 127.0.0.1:9100 / 18081 / 9187 / 9121 / 3306 / 3305 即可。
+#
+# 采样预算：应用指标 60s（面板 [5m] 窗口至少 5 个点）；主机/数据库 30-60s。
+# 不要把应用 job 调密：应用端点与隧道都按 60s 评估。
+global:
+  scrape_interval: 60s
+  scrape_timeout: 10s
+  evaluation_interval: 60s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# 可选：启用 Alertmanager 后取消注释并改成实际地址
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["127.0.0.1:19093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:19091"]
+
+  # ---- 应用进程指标（本仓库契约，面板依赖这两个 job 名）----
+  # job_name 必须保持 juhe-ai-gateway / juhe-ai-jobs：
+  # Grafana 面板与告警都用 job=~"juhe-ai-(gateway|jobs)" 过滤。
+  - job_name: juhe-ai-gateway
+    scrape_interval: 60s
+    metrics_path: /__aisys__/metrics
+    static_configs:
+      - targets: ["127.0.0.1:19111"]
+        labels:
+          asset_type: application
+          instance: juhe-ai-gateway
+
+  - job_name: juhe-ai-jobs
+    scrape_interval: 60s
+    metrics_path: /__aisys__/metrics
+    static_configs:
+      - targets: ["127.0.0.1:19112"]
+        labels:
+          asset_type: application
+          instance: juhe-ai-jobs
+
+  # ---- 主机 / 容器 / 数据库 exporter（可选，全部来自采集端）----
+  # 不需要某一类时直接删除对应 job；应用面板不受影响。
+  - job_name: node
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["127.0.0.1:19107"]
+        labels:
+          asset_type: physical_host
+          instance: juhe-ai-host
+
+  - job_name: cadvisor
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["127.0.0.1:19108"]
+        labels:
+          asset_type: physical_host
+          instance: juhe-ai-host
+
+  - job_name: postgres
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["127.0.0.1:19109"]
+        labels:
+          asset_type: database
+          database_engine: postgresql
+          instance: juhe-ai-postgres
+
+  - job_name: redis
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["127.0.0.1:19110"]
+        labels:
+          asset_type: database
+          database_engine: redis
+          instance: juhe-ai-redis
+
+  # ---- 可选：入口与链路探测（blackbox，监控机本地）----
+  # 把 <domain> 换成实际业务域名；不需要链路基线时删除这两个 job。
+  # - job_name: blackbox_http
+  #   scrape_interval: 60s
+  #   metrics_path: /probe
+  #   params:
+  #     module: [http_2xx]
+  #   static_configs:
+  #     - targets: ["https://<domain>/__aisys__/health"]
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: __param_target
+  #     - source_labels: [__param_target]
+  #       target_label: instance
+  #     - target_label: __address__
+  #       replacement: 127.0.0.1:19115

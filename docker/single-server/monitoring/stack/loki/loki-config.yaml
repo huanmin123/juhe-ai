@@ -1,0 +1,53 @@
+# 单机 Loki 配置（监控机侧，接收应用机 Alloy 推送）
+#
+# 部署：监控机 /opt/juhe-monitoring-stack/loki/loki-config.yaml
+# 保留 72 小时；单机内存索引（inmemory ring），适合单实例监控栈。
+auth_enabled: false
+
+analytics:
+  reporting_enabled: false
+
+server:
+  # 只监听回环：应用机 Alloy 经 SSH 反向隧道推送到本机 13100，
+  # 不直接对公网暴露 Loki 写入接口。
+  http_listen_address: 127.0.0.1
+  http_listen_port: 13100
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 72h
+  max_query_lookback: 72h
+  max_query_length: 72h
+  # 应用日志量按 2MB/s 预算；日志暴涨时 Loki 会限流而不是拖垮监控机
+  ingestion_rate_mb: 2
+  ingestion_burst_size_mb: 4
+  per_stream_rate_limit: 512KB
+  per_stream_rate_limit_burst: 1MB
+  max_line_size: 256KB
+  max_line_size_truncate: true
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem

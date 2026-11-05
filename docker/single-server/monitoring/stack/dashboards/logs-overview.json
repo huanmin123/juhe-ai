@@ -1,0 +1,191 @@
+{
+  "uid": "juhe-ai-app-logs-overview",
+  "title": "应用日志总览（juhe-ai 单机部署）",
+  "description": "纯日志查询页：juhe-ai 应用容器（gateway / jobs）的日志，由应用机 Alloy 经反向隧道推送至 Loki。筛选全部生效于下方日志流：应用（容器名前缀）、容器（多选）、日志级别（忽略大小写）、traceId（行内 JSON 字段，按子串匹配）、内容搜索（区分大小写子串，留空不过滤）。应用与容器的资源监控见「juhe-ai 应用总览」。",
+  "tags": [
+    "juhe-ai",
+    "logs",
+    "loki",
+    "single-server"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 3,
+  "refresh": "30s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "应用",
+        "type": "custom",
+        "includeAll": true,
+        "multi": false,
+        "allValue": ".*",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "juhe-ai",
+            "value": "juhe-ai.*"
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "container",
+        "label": "容器",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "Loki"
+        },
+        "query": {
+          "query": "label_values(container)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "sort": 1,
+        "current": {}
+      },
+      {
+        "name": "level",
+        "label": "日志级别",
+        "type": "custom",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "DEBUG",
+            "value": "DEBUG"
+          },
+          {
+            "selected": false,
+            "text": "INFO",
+            "value": "INFO"
+          },
+          {
+            "selected": false,
+            "text": "NOTICE",
+            "value": "NOTICE"
+          },
+          {
+            "selected": false,
+            "text": "WARN",
+            "value": "WARN"
+          },
+          {
+            "selected": false,
+            "text": "WARNING",
+            "value": "WARNING"
+          },
+          {
+            "selected": false,
+            "text": "ERROR",
+            "value": "ERROR"
+          },
+          {
+            "selected": false,
+            "text": "FATAL",
+            "value": "FATAL"
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "traceId",
+        "label": "traceId",
+        "type": "textbox",
+        "description": "traceId 在日志行内 JSON 中，此处按子串匹配；留空不过滤。",
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "",
+            "value": ""
+          }
+        ]
+      },
+      {
+        "name": "search",
+        "label": "内容搜索（子串）",
+        "type": "textbox",
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "",
+            "value": ""
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "应用日志（应用 / 容器 / 级别 / traceId / 内容搜索 全部生效；行内 JSON 可用 | json 提取字段）",
+      "gridPos": {
+        "h": 34,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "expr": "{host=\"juhe-ai-host\", container=~\"$app\", container=~\"$container\", level=~\"(?i)$level\"} |= \"$traceId\" |= \"$search\"",
+          "refId": "A",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

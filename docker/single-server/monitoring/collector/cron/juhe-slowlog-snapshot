@@ -1,0 +1,6 @@
+# /etc/cron.d/juhe-slowlog-snapshot
+# Redis 慢命令增量快照（每 5 分钟）。脚本写 jsonl + node-exporter textfile 指标。
+# 安装：apt install -y python3（或等价），脚本放 /opt/juhe-monitoring/redis-slowlog-snapshot.py 并 chmod 0755。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /opt/juhe-monitoring/redis-slowlog-snapshot.py >>/opt/juhe-monitoring/redis-slowlog/cron.log 2>&1

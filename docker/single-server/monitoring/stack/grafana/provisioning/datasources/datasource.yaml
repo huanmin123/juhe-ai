@@ -1,0 +1,28 @@
+apiVersion: 1
+
+datasources:
+  # 与面板 JSON 里的默认数据源名对应；名字不同时在 Grafana 顶部下拉框改选即可。
+  - name: Prometheus
+    uid: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:19091
+    isDefault: true
+    editable: false
+
+  - name: Loki
+    uid: Loki
+    type: loki
+    access: proxy
+    url: http://127.0.0.1:13100
+    editable: false
+
+  # 启用 Alertmanager 后再取消注释
+  # - name: Alertmanager
+  #   uid: Alertmanager
+  #   type: alertmanager
+  #   access: proxy
+  #   url: http://127.0.0.1:19093
+  #   jsonData:
+  #     implementation: prometheus
+  #   editable: false

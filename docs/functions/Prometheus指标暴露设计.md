@@ -113,10 +113,10 @@
 
 监控交付物统一在 `docker/single-server/monitoring/`（部署域权威，随部署配置同步维护）：
 
-- Prometheus 抓取配置片段：经 SSH 隧道指向宿主回环 `127.0.0.1:3306`（gateway）与 `127.0.0.1:3305`（jobs），`scrape_interval: 60s`；含 postgres_exporter target。
-- postgres_exporter 增补查询：`juhe_postgres_db_size_bytes`、`juhe_postgres_table_size_bytes`、`juhe_postgres_table_rows` 及索引体积等自定义 query 定义。
-- Grafana 面板 JSON：网关 HTTP / 上游失败 / 首输出面板、jobs 任务运行 / 停摆面板、go_/process_ 运行时面板、DB 容量面板。
-- `docker/single-server/monitoring/README.md`：抓取接入、面板导入与验证步骤。
+- `collector/`：应用机采集端，可直接复制到 `/opt/juhe-monitoring/`——node/cadvisor/postgres/redis exporter 与 Alloy 的 compose、postgres_exporter 全量 `queries.yaml`、PG 只读角色 SQL、Redis 慢命令快照脚本与 cron、主机 PSI / PG 活动语句采样脚本与 cron。
+- `stack/`：监控机栈，可直接复制到 `/opt/juhe-monitoring-stack/`——Prometheus / Grafana / Loki / blackbox 的 compose、抓取配置、告警规则基线、Grafana provisioning 与 `dashboards/` 五个面板 JSON（应用总览、主机、PostgreSQL、Redis、日志）。
+- `postgres-exporter-queries-additive.yaml`：已有 exporter 的追加式查询片段（任务停摆、统计游标、账户状态与库表容量）。
+- `docker/single-server/monitoring/README.md`：交付物总览与两条使用路径；`collector/README.md` 与 `stack/README.md` 分别是两侧安装步骤；通用接入、复用与验收见 `docs/deploy/monitoring/README.md`。
 
 `.env` 清理清单：生产与开发环境删除上述两家族全部变量与 gateway 侧 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS`；无需新增任何变量。
 

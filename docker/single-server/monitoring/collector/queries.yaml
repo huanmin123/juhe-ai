@@ -1,0 +1,109 @@
+# postgres_exporter 自定义查询（juhe-ai 单机部署，随采集栈交付）
+#
+# 挂载位置：/opt/juhe-monitoring/queries.yaml，由 postgres-exporter 的
+# PG_EXPORTER_EXTEND_QUERY_PATH 加载。
+# 连接库：juhe_ai（单库多 schema：juhe_business / juhe_stats / juhe_usage ...）。
+# 连接角色：只读监控角色（见 sql/monitoring-role.sql），不要用应用写账号。
+#
+# 命名约定：导出的指标名 = 查询键名 + "_" + 列别名。键承担前缀、列别名补全后半段；
+# 不要把列别名写成完整指标名，否则会导出双前缀（例如 juhe_postgres_juhe_postgres_...）。
+
+# 后台任务停摆：按任务取最后一条成功完成记录距现在的分钟数。
+# 递归跳扫（loose index scan）取 distinct job_name，每个任务走
+# (job_name, finished_at) 索引逆序探针，避免对 background_task_runs 全表 GROUP BY。
+juhe_app_job_stall:
+  query: |
+    WITH RECURSIVE jobs AS (
+         (SELECT job_name FROM juhe_stats.background_task_runs ORDER BY job_name LIMIT 1)
+         UNION ALL
+         SELECT (SELECT r.job_name FROM juhe_stats.background_task_runs r
+                  WHERE r.job_name > jobs.job_name ORDER BY r.job_name LIMIT 1)
+         FROM jobs WHERE jobs.job_name IS NOT NULL
+    )
+    SELECT jobs.job_name,
+           greatest(0, extract(epoch from (now() - r.last_success)) / 60)::int AS minutes_since_success
+    FROM jobs
+    CROSS JOIN LATERAL (
+         SELECT nullif(r2.finished_at, '')::timestamptz AS last_success
+         FROM juhe_stats.background_task_runs r2
+         WHERE r2.job_name = jobs.job_name AND r2.finished_at <> ''
+         ORDER BY r2.finished_at DESC
+         LIMIT 1
+    ) r
+    WHERE jobs.job_name IS NOT NULL
+  metrics:
+    - job_name:
+        usage: LABEL
+    - minutes_since_success:
+        usage: GAUGE
+        description: '距该后台任务上次成功完成的分钟数（停摆检测；24h 级任务在告警规则侧排除）'
+
+# 统计游标滞后：窗口型 scope（形如 YYYY-MM-DD:YYYY-MM-DD）只保留未完结窗口，
+# 已完结历史窗口的游标设计上不再推进，纳入会持续误报。
+juhe_app_stats_cursor_lag:
+  query: |
+    SELECT scope_type || '/' || scope_id || '/' || job_name AS cursor_job,
+           greatest(0, extract(epoch from (now() - coalesce(nullif(last_success_at, '')::timestamptz, now() - interval '999 days'))) / 60)::int AS minutes_since_success
+    FROM juhe_stats.stats_job_state
+    WHERE (scope_type = 'global'
+       OR coalesce(split_part(scope_id, ':', 2), '') >= to_char(now(), 'YYYY-MM-DD'))
+      AND NOT (job_name = 'authorization_usage_range_windows' AND scope_type = 'global')
+  metrics:
+    - cursor_job:
+        usage: LABEL
+    - minutes_since_success:
+        usage: GAUGE
+        description: '统计游标任务距上次成功推进的分钟数（仅活跃窗口与 global 游标）'
+
+# 账户状态分布：绝对值受存量影响，告警只看环比变化。
+juhe_app_account_status:
+  query: |
+    SELECT status, count(*)::float AS accounts
+    FROM juhe_business.accounts
+    WHERE deleted_at IS NULL
+    GROUP BY status
+  metrics:
+    - status:
+        usage: LABEL
+    - accounts:
+        usage: GAUGE
+        description: '各状态账户数（环比增量告警用）'
+
+# 以下两块用于 Grafana「存储」行，替代已下线的「表监控」自维护采样。
+juhe_postgres_db_size:
+  # 各库磁盘总大小；排除模板库。
+  query: |
+    SELECT datname,
+           pg_database_size(datname) AS bytes
+    FROM pg_database
+    WHERE datistemplate = false
+  metrics:
+    - datname:
+        usage: "LABEL"
+        description: "数据库名"
+    - bytes:
+        usage: "GAUGE"
+        description: "库总大小（字节，pg_database_size）→ juhe_postgres_db_size_bytes"
+
+juhe_postgres_table:
+  # 用户表总大小（heap + 索引 + TOAST）与存活行数估算。
+  # n_live_tup 为统计估算值，依赖 autovacuum/ANALYZE 刷新，用于趋势观察，不用于精确对账。
+  query: |
+    SELECT schemaname,
+           relname,
+           pg_total_relation_size(relid) AS size_bytes,
+           n_live_tup AS rows
+    FROM pg_stat_user_tables
+  metrics:
+    - schemaname:
+        usage: "LABEL"
+        description: "schema 名"
+    - relname:
+        usage: "LABEL"
+        description: "表名"
+    - size_bytes:
+        usage: "GAUGE"
+        description: "表总大小（字节，含索引与 TOAST）→ juhe_postgres_table_size_bytes"
+    - rows:
+        usage: "GAUGE"
+        description: "表存活行数估算（pg_stat_user_tables.n_live_tup）→ juhe_postgres_table_rows"

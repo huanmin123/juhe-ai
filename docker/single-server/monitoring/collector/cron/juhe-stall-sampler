@@ -1,0 +1,6 @@
+# /etc/cron.d/juhe-stall-sampler
+# 僵死窗口取证采样（每分钟）。脚本只读 /proc 与 pg_stat_activity，无网络拉取。
+# 安装：chmod 0644 /etc/cron.d/juhe-stall-sampler，脚本放 /opt/juhe-monitoring/stall-sampler.sh 并 chmod 0755。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+* * * * * root /opt/juhe-monitoring/stall-sampler.sh >/dev/null 2>&1

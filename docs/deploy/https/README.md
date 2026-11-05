@@ -4,7 +4,7 @@
 
 ## 1. 默认：compose 内置 Caddy（推荐）
 
-`docker/single-server/compose.yml` 自带 `caddy` 服务，`Caddyfile` 模板见 [部署指南 §5.2](../部署指南.md#52-caddyfile)。要点：
+`docker/single-server/compose.yml` 自带 `caddy` 服务，`Caddyfile` 模板见[配置参考 §6](../config/README.md)。要点：
 
 - DNS A 记录指向服务器公网 IP；安全组放行 80/443（及 443/udp，若启用 HTTP/3）。
 - Caddy 自动 ACME 申请/续期证书；证书存 Docker 命名卷 `juhe-ai_caddy_data`，丢失会自动重签。
@@ -39,56 +39,13 @@ echo | openssl s_client -servername <domain> -connect <domain>:443 2>/dev/null |
 
 ### 2.1 Nginx 示例
 
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
+完整安装、TLS 引导、SSE/WebSocket、超时、真实客户端 IP 与排障见 [Nginx 部署](../nginx/README.md)。最小要求与本文 §2 相同：
 
-server {
-    listen 80;
-    server_name <domain>;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    http2 on;
-    server_name <domain>;
-
-    ssl_certificate     /etc/letsencrypt/live/<domain>/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/<domain>/privkey.pem;
-
-    client_max_body_size 32m;
-
-    location /v1/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_buffering off;
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-注意：
-
-- Nginx ≥ 1.25.1 用 `http2 on;`；更旧版本改用 `listen 443 ssl http2;`。
-- `proxy_http_version 1.1` 不要改成 h2c；Nginx 每次客户端交接都会在 error 级日志记录 `upstream prematurely closed connection`，这是预期行为，不要按该日志告警。
-- 多实例 upstream 时建议 `proxy_next_upstream off;`，避免网关未提交响应就崩溃时把非幂等 POST 重放到另一实例。
+- 上游固定 `127.0.0.1:3000`（宿主 Nginx）或 `172.18.0.10:3000`（容器 Nginx）；
+- `proxy_http_version 1.1`，不要用 h2c；
+- `/v1/` 关闭 `proxy_buffering`/`gzip`，`proxy_read_timeout` ≥ 600s；
+- 透传 `Upgrade`/`Connection` 与 `X-Forwarded-For`；
+- `client_max_body_size` 不小于网关上限（64m）。
 
 ### 2.2 外部 Caddy 示例
 

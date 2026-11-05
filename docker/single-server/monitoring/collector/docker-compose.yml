@@ -1,0 +1,117 @@
+# 应用机采集栈（juhe-ai 单机 Docker × Prometheus）
+#
+# 部署位置：应用机 /opt/juhe-monitoring（与 /opt/juhe-ai 分离，互不覆盖）
+# 访问边界：所有监听只绑定 127.0.0.1，由监控机经 SSH 隧道拉取；不发布公网。
+# 项目名独立，避免与 /opt/juhe-ai 的 compose 项目冲突。
+name: juhe-ai-monitoring
+
+services:
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    container_name: juhe-ai-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+      # textfile 采集：redis-slowlog-snapshot.py / stall-sampler.sh 写入
+      # /opt/juhe-monitoring/textfile/*.prom，暴露 juhe_redis_slowlog_* 与 juhe_host_psi_*
+      - --collector.textfile.directory=/host/opt/juhe-monitoring/textfile
+    volumes:
+      - /:/host:ro,rslave
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: juhe-ai-cadvisor
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+      - --store_container_labels=false
+      - --listen_ip=127.0.0.1
+      - --port=18081
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    container_name: juhe-ai-postgres-exporter
+    restart: unless-stopped
+    # 必须接入应用 compose 网络才能用容器名连 juhe-ai-postgres
+    networks:
+      - app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      # 监控专用只读角色（见 sql/monitoring-role.sql），不要复用应用写账号
+      DATA_SOURCE_NAME: "postgresql://juhe_monitor:${MONITORING_PG_PASSWORD:?MONITORING_PG_PASSWORD is required}@juhe-ai-postgres:5432/juhe_ai?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /queries.yaml
+    volumes:
+      - ./queries.yaml:/queries.yaml:ro
+    ports:
+      - "127.0.0.1:9187:9187"
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.79.0
+    container_name: juhe-ai-redis-exporter
+    restart: unless-stopped
+    networks:
+      - app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      # REDIS_PASSWORD 必须与应用 /opt/juhe-ai/.env 中的值一致
+      REDIS_ADDR: "redis://juhe-ai-redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
+    ports:
+      - "127.0.0.1:9121:9121"
+
+  alloy:
+    image: docker.m.daocloud.io/grafana/alloy:v1.5.1
+    container_name: juhe-ai-alloy
+    restart: unless-stopped
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=127.0.0.1:12346
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/lib/juhe-ai-alloy:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+networks:
+  app:
+    name: juhe-ai_default
+    external: true

@@ -1,0 +1,114 @@
+# 监控机栈：Prometheus + Grafana + Loki + blackbox_exporter（可选 Alertmanager）
+#
+# 部署位置：监控机（可为应用同机，也可为独立主机）/opt/juhe-monitoring-stack
+# 访问边界：Prometheus/Grafana/Loki 只绑 127.0.0.1；需要远程访问时经反向代理 + HTTPS，
+#           不要把 Prometheus 管理端口直接暴露公网。
+# 数据源：应用机采集端（../collector）经 SSH 隧道映射到本机 19107-19112，
+#         详见 prometheus/prometheus.yml。
+name: juhe-ai-monitoring-stack
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: juhe-ai-prometheus
+    restart: unless-stopped
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=127.0.0.1:19091
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    container_name: juhe-ai-grafana
+    restart: unless-stopped
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: "3000"
+      # 对外访问时改成实际域名，并终止 TLS（Caddy/Nginx 反代）
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://127.0.0.1:3000/}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # 面板目录：本目录 dashboards/ 下的五个面板 JSON（随 stack 一起交付）
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+  loki:
+    image: docker.m.daocloud.io/grafana/loki:3.4
+    container_name: juhe-ai-loki
+    restart: unless-stopped
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command:
+      - -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:13100/ready | grep -q ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+
+  blackbox-exporter:
+    image: quay.io/prometheus/blackbox-exporter:v0.25.0
+    container_name: juhe-ai-blackbox-exporter
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_RAW
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command:
+      - --config.file=/etc/blackbox_exporter/blackbox.yml
+      - --web.listen-address=127.0.0.1:19115
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+
+  # Alertmanager 可选。需要主动通知时再启用，并把 prometheus.yml 的 alerting 段指向
+  # 127.0.0.1:19093；不需要通知时保持注释，Prometheus 规则仍会在 Grafana Alerting 页展示。
+  # alertmanager:
+  #   image: prom/alertmanager:latest
+  #   container_name: juhe-ai-alertmanager
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   command:
+  #     - --config.file=/etc/alertmanager/alertmanager.yml
+  #     - --web.listen-address=127.0.0.1:19093
+  #   volumes:
+  #     - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+  #     - alertmanager-data:/alertmanager
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:

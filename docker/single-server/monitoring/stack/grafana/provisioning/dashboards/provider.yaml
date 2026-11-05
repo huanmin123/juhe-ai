@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  # 面板目录：容器内 /var/lib/grafana/dashboards 由 compose 只读挂载本目录下的
+  # dashboards/（含 juhe-ai-app-overview.json 等五个面板）。
+  # disableDeletion: false 允许在 UI 中删除误导入的副本；文件源更新后 30s 内自动重载。
+  - name: juhe-ai
+    orgId: 1
+    folder: juhe-ai
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
