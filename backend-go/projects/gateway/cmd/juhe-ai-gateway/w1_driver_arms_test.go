@@ -835,41 +835,18 @@ func TestW1GRequiredSupportedEndpointModeArms(t *testing.T) {
 		}
 	})
 
-	t.Run("bridge mapping to anthropic messages and gemini", func(t *testing.T) {
-		// 跨协议桥映射只有 hybrid 供应商准入（isOpenAIModelMappingRuntimeConversionSupported），
-		// 存储词汇是 messages / generate_content，NormalizeEndpointFamily 再切到
-		// anthropic_messages / gemini_generate_content。
-		responsesSource := gatewaydispatch.AccountCandidate{
-			ID: "acc_p6", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
-			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
-				SourceModel: "m", SourceEndpointFamily: "responses",
-				UpstreamModel: "u", UpstreamEndpointFamily: "messages", Enabled: true,
-			}},
-		}
-		mode, required := driver.requiredSupportedEndpointMode(responsesReq, responsesSource, "")
-		if !required || mode != gatewaypreauth.EndpointModeMessagesJSON {
-			t.Fatalf("anthropic bridge mode=%q required=%v, want messages_json", mode, required)
-		}
-		chatToGemini := gatewaydispatch.AccountCandidate{
-			ID: "acc_p7", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
-			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
-				SourceModel: "m", SourceEndpointFamily: "chat_completions",
-				UpstreamModel: "u", UpstreamEndpointFamily: "generate_content", Enabled: true,
-			}},
-		}
-		mode, required = driver.requiredSupportedEndpointMode(chatReq, chatToGemini, "")
-		if !required || mode != gatewaypreauth.EndpointModeGenerateContentJSON {
-			t.Fatalf("gemini bridge mode=%q required=%v, want generate_content_json", mode, required)
-		}
+	t.Run("unknown bridge upstream falls back to openai protocol", func(t *testing.T) {
+		// 2026-11-05 供应商/协议面收窄后跨协议只保留 Responses → Chat
+		// Completions；hybrid 准入的 messages/generate_content 桥映射用例删除。
 		unknownUpstream := gatewaydispatch.AccountCandidate{
-			ID: "acc_p8", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
+			ID: "acc_p8", ProtocolCode: "openai", VendorCode: "gpt", Type: "api_key",
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 				SourceModel: "m", SourceEndpointFamily: "chat_completions",
 				UpstreamModel: "u", UpstreamEndpointFamily: "embeddings", Enabled: true,
 			}},
 		}
 		// 转换支持层拒绝 embeddings 上游 → 映射不解析，回落 openai 协议面 chat 形态。
-		mode, required = driver.requiredSupportedEndpointMode(chatReq, unknownUpstream, "")
+		mode, required := driver.requiredSupportedEndpointMode(chatReq, unknownUpstream, "")
 		if !required || mode != gatewaypreauth.EndpointModeChatJSON {
 			t.Fatalf("未知上游族 mode=%q required=%v, want chat_json 回落", mode, required)
 		}

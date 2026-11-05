@@ -267,9 +267,13 @@ func TestW1PassiveScheduleJitterWindowMs(t *testing.T) {
 }
 
 func TestW1AccountsSecretHelpers(t *testing.T) {
-	// chainAccountAPIKeyPoolProviderSupported。
-	if !chainAccountAPIKeyPoolProviderSupported("OpenAI ", "", "openai", "v1") {
-		t.Fatal("openai 必须支持")
+	// chainAccountAPIKeyPoolProviderSupported。openai 兼容已退役，仅九家真实厂商；
+	// 用 gpt 验证支持臂，openai 必须拒绝。
+	if !chainAccountAPIKeyPoolProviderSupported("gpt", "", "gpt", "v1") {
+		t.Fatal("gpt 必须支持")
+	}
+	if chainAccountAPIKeyPoolProviderSupported("OpenAI ", "", "openai", "v1") {
+		t.Fatal("已退役 openai 兼容不得支持")
 	}
 	if !chainAccountAPIKeyPoolProviderSupported("unknown", "", "anthropic", "v1") {
 		t.Fatal("anthropic v1 必须支持")

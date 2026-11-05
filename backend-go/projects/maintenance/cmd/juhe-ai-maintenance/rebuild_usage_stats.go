@@ -48,7 +48,7 @@ type rebuildUsageStatsReport struct {
 
 // rebuildUsageStatsResult 返回 CLI 退出码；runMaintenance 派发它，测试进程
 // 内直调。门禁检查先于一切开库动作，拒绝路径零副作用。
-func rebuildUsageStatsResult(dsn string, batchSize, maxBatches int, confirmOffline bool) int {
+func rebuildUsageStatsResult(dsn string, batchSize, maxBatches int, confirmOffline bool, allowHistoryLoss bool) int {
 	confirmSource := ""
 	if confirmOffline {
 		confirmSource = "flag"
@@ -73,9 +73,10 @@ func rebuildUsageStatsResult(dsn string, batchSize, maxBatches int, confirmOffli
 
 	fmt.Fprintln(os.Stderr, "统计缓存离线重建开始：清空统计结果面并重置游标，从 usage_records 重放聚合（业务库与 usage_records 源表只读）。")
 	result, rebuildErr := statsrebuild.Rebuild(context.Background(), statsrebuild.Options{
-		DB:         statsDB,
-		BatchSize:  batchSize,
-		MaxBatches: maxBatches,
+		DB:               statsDB,
+		BatchSize:        batchSize,
+		MaxBatches:       maxBatches,
+		AllowHistoryLoss: allowHistoryLoss,
 		Logf: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "[rebuild-usage-stats] "+format+"\n", args...)
 		},
@@ -84,6 +85,10 @@ func rebuildUsageStatsResult(dsn string, batchSize, maxBatches int, confirmOffli
 		if errors.Is(rebuildErr, statsrebuild.ErrJobsNotOffline) {
 			fmt.Fprintf(os.Stderr, "统计缓存离线重建被拒绝（离线校验未通过，零副作用）：%v\n", rebuildErr)
 			return 4
+		}
+		if errors.Is(rebuildErr, statsrebuild.ErrHistoryLoss) {
+			fmt.Fprintf(os.Stderr, "统计缓存重建被拒绝（历史覆盖校验未通过，零副作用）：%v\n", rebuildErr)
+			return 5
 		}
 		fmt.Fprintf(os.Stderr, "统计缓存离线重建失败：%v\n", rebuildErr)
 		return 1

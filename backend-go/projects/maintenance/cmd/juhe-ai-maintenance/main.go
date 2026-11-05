@@ -90,6 +90,7 @@ func runMaintenance(argv []string) int {
 	confirmOffline := fs.Bool("confirm-offline", false, "confirm an offline window for --rebuild-usage-stats (gateway/jobs stopped); alternatively set JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1")
 	rebuildBatchSize := fs.Int("batch-size", 2000, "rebuild-usage-stats aggregation batch size (clamped to 1..50000; default 2000)")
 	rebuildMaxBatches := fs.Int("max-batches", 1000, "rebuild-usage-stats aggregation batch cap per run (clamped to 1..10000; default 1000; rerun to continue when the cap is hit)")
+	rebuildAllowHistoryLoss := fs.Bool("allow-history-loss", false, "rebuild-usage-stats: allow clearing statistics older than the current usage_records retention window (default refuses; DR-35)")
 	applySuccessCostBackfill := fs.Bool("apply-success-cost-backfill", false, "one-shot idempotent backfill of usage_stats success_cost_usd from total_cost_usd for the six stats tables (maintenance window with jobs stopped; run --ensure-schema first to create the backfill_progress marker table; requires --dsn; resumable from the persisted cursor)")
 	backfillDryRun := fs.Bool("dry-run", false, "read-only dry-run: with --apply-success-cost-backfill prints the pending-row count per table (never touches the backfill_progress marker); also selects dry-run for other one-shot migration commands")
 	importLegacyBusiness := fs.Bool("import-legacy-business", false, `business database rebuild backfill (2026-10-22 cutover): reads a legacy provider-era database via --legacy-dsn and writes business configuration rows (accounts/groups/routing/keys/authorizations/settings/teams/tags/integrations) into the freshly ensured target --dsn; historical usage/audit/statistics/model-check domains are intentionally discarded; --dry-run runs the whole transaction and rolls back`)
@@ -224,7 +225,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "rebuild-usage-stats flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
-		return rebuildUsageStatsResult(*bootstrapDSN, *rebuildBatchSize, *rebuildMaxBatches, *confirmOffline)
+		return rebuildUsageStatsResult(*bootstrapDSN, *rebuildBatchSize, *rebuildMaxBatches, *confirmOffline, *rebuildAllowHistoryLoss)
 	}
 	if *applySuccessCostBackfill {
 		if *printVersion || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {

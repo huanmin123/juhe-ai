@@ -359,16 +359,16 @@ func TestW1TDriverEndpointModeBridgeArms(t *testing.T) {
 			modes      []string
 			wantReason string
 		}{
+			// 2026-11-05 供应商/协议面收窄后跨协议只保留 Responses → Chat
+			// Completions 账户级映射；chat→anthropic / chat→gemini 映射不可再
+			// 创建，原矩阵用例随之删除。
 			{name: "responses→chat SSE 缺模式", path: "/v1/responses", body: `{"model":"src"}`, source: "responses", upstream: "chat_completions", modes: []string{"responses_json"}, wantReason: "endpoint_mode_unsupported"},
-			{name: "chat→anthropic SSE 缺模式", path: "/v1/chat/completions", body: `{"model":"src","stream":true}`, source: "chat_completions", upstream: "messages", modes: []string{"messages_json"}, wantReason: "endpoint_mode_unsupported"},
-			{name: "chat→gemini SSE 缺模式", path: "/v1/chat/completions", body: `{"model":"src","stream":true}`, source: "chat_completions", upstream: "generate_content", modes: []string{"generate_content_json"}, wantReason: "endpoint_mode_unsupported"},
-			{name: "chat→gemini JSON 缺模式", path: "/v1/chat/completions", body: `{"model":"src"}`, source: "chat_completions", upstream: "generate_content", modes: []string{"chat_json"}, wantReason: "endpoint_mode_unsupported"},
 			{name: "未知上游族不设闸", path: "/v1/chat/completions", body: `{"model":"src"}`, source: "chat_completions", upstream: "bogus_family", modes: []string{"chat_json"}, wantReason: ""},
 		}
 		for _, testCase := range cases {
 			req := w1tNewRequest(t, http.MethodPost, testCase.path, testCase.body)
 			account := gatewaydispatch.AccountCandidate{
-				ID: "acc_w1t_bridge", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key", BaseURL: "https://up.example",
+				ID: "acc_w1t_bridge", ProtocolCode: "openai", VendorCode: "gpt", Type: "api_key", BaseURL: "https://up.example",
 				SupportedEndpointModes: testCase.modes, ModelMappings: mapping(testCase.source, testCase.upstream),
 			}
 			if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, account, ""); reason != testCase.wantReason {
@@ -791,7 +791,7 @@ func TestW1TRuntimeComposeRedisDriverClosures(t *testing.T) {
 	}
 	cfg := runtimeConfig{
 		Secret:                        "w1t-runtime-secret",
-		RedisURL:                 "redis://" + mr.Addr(),
+		RedisURL:                      "redis://" + mr.Addr(),
 		RedisNamespace:                "juhe-ai:w1t",
 		DispatchAccountCandidateLimit: 20,
 		ConcurrencyGlobalMax:          64,
@@ -1107,7 +1107,7 @@ func TestW1TTrafficMigrationBridgeErrorArm(t *testing.T) {
 		CacheDriver:        gatewaysession.CacheDriverRedis,
 		RuntimeStateDriver: gatewaysession.RuntimeStateDriverRedis,
 		Secret:             "w1t-migration-secret",
-		RedisURL:      "redis://" + addr,
+		RedisURL:           "redis://" + addr,
 		RedisNamespace:     "juhe-ai:w1t",
 	})
 	if err != nil {

@@ -199,7 +199,7 @@ func TestW1CLIPostgresURLValidationErrorsAreLocalAndPreserved(t *testing.T) {
 	t.Run("usage stats rebuild", func(t *testing.T) {
 		var code int
 		stdout, stderr := bdCaptureOutput(t, func() {
-			code = rebuildUsageStatsResult(w1InvalidPostgresSchemeURL, 1, 1, true)
+			code = rebuildUsageStatsResult(w1InvalidPostgresSchemeURL, 1, 1, true, false)
 		})
 		want := storageErr + "\n"
 		if code != 2 || stdout != "" || stderr != want {
@@ -248,7 +248,7 @@ func TestW1CLIRuntimePostgresConfigErrorsStayLocal(t *testing.T) {
 	t.Run("usage stats rebuild", func(t *testing.T) {
 		var code int
 		stdout, stderr := bdCaptureOutput(t, func() {
-			code = rebuildUsageStatsResult(w1InvalidPGSSLModeURL, 1, 1, true)
+			code = rebuildUsageStatsResult(w1InvalidPGSSLModeURL, 1, 1, true, false)
 		})
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "统计缓存离线重建失败：") || !strings.Contains(stderr, "sslmode is invalid") {
 			t.Fatalf("usage rebuild local PG config error = %d/%q/%q, want exit 1 with sslmode error", code, stdout, stderr)
@@ -262,7 +262,7 @@ func TestW1RebuildUsageStatsFlagErrorsAndReportEncoding(t *testing.T) {
 		call func() int
 		want string
 	}{
-		{name: "missing dsn", call: func() int { return rebuildUsageStatsResult("", 1, 1, true) }, want: "统计缓存重建需要 --dsn 指向显式的 PostgreSQL URL"},
+		{name: "missing dsn", call: func() int { return rebuildUsageStatsResult("", 1, 1, true, false) }, want: "统计缓存重建需要 --dsn 指向显式的 PostgreSQL URL"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

@@ -272,13 +272,8 @@ func TestChainCatalogSourceVendorCodesIdentity(t *testing.T) {
 			t.Fatalf("sourceVendorCodes(%q) = %#v, want [%q]", input, codes, want)
 		}
 	}
-	// openai 兼容目标在内置目录源中剔除自身（openai vendor 无自身内置目录）。
-	if codes := chainCatalogBuiltInSourceProviderCodes("openai", []string{"openai"}); len(codes) != 0 {
-		t.Fatalf("openai builtin 源剔除后应为空: %#v", codes)
-	}
-	if codes := chainCatalogBuiltInSourceProviderCodes("gpt", []string{"gpt"}); len(codes) != 1 || codes[0] != "gpt" {
-		t.Fatalf("gpt builtin 源保持恒等: %#v", codes)
-	}
+	// openai 兼容/hybrid 已退役：built-in 源剔除 helper 随目录维度收窄删除，
+	// 当前只保留 sourceVendorCodes 恒等归一化断言。
 }
 
 func TestChainCatalogSourceClosedDBErrorArms(t *testing.T) {

@@ -653,10 +653,10 @@ func (c *gatewayChain) handleUpstreamResponse(
 	// ——同样不进通用管道（chat 错误检查/改写会把上游参数错误吞成 502）；
 	// 其余失败在引擎 attempt 语义内换候选（受理前可切换），不会到达本拦截。
 	if upstream != nil && upstream.OK() && chainIsMediaJobCreateRequest(req) {
-		return c.handleMediaJobCreateUpstreamResponse(ctx, req, res, context, dispatched, upstream)
+		return c.handleMediaJobCreateUpstreamResponse(ctx, req, res, auditCapture, context, dispatched, upstream)
 	}
 	if upstream != nil && chainIsMediaJobCreateRequest(req) && chainVideoCreateDeterministicParamStatus(upstream.Status()) {
-		return c.handleVideoCreateUpstreamErrorPassthrough(res, req, upstream)
+		return c.handleVideoCreateUpstreamErrorPassthrough(res, req, auditCapture, upstream)
 	}
 	// BUG-0326 音频同步业务拒绝透传（问题档案修复设计）：失败派发器对音频同
 	// 步 lane 的确定性业务拒绝 4xx（401/403/407/408/429 保留集外）短路为

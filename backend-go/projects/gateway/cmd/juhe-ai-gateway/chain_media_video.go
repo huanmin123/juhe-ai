@@ -1008,6 +1008,7 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 	ctx context.Context,
 	req *gatewaypreauth.GatewayRequest,
 	res *gatewaypreauth.TrackingWriter,
+	auditCapture gatewaypreauth.AuditCaptureContext,
 	context *gatewaypreauth.DispatchContext,
 	dispatched gatewaydispatch.UpstreamDispatchResult,
 	upstream *gatewayupstream.GatewayUpstreamResponse,
@@ -1020,22 +1021,30 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 	body, readErr := io.ReadAll(io.LimitReader(upstream.Body, maxMediaJobObjectBytes+1))
 	_ = upstream.Body.Close()
 	if readErr != nil {
-		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "读取上游"+jobLabel+"任务响应失败", "upstream_error")
+		message := "读取上游" + jobLabel + "任务响应失败"
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusBadGateway, nil, "", gatewaypreauth.AuditPartGatewayError, "upstream_response", "upstream_error", message)
+		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	if len(body) > maxMediaJobObjectBytes {
-		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游"+jobLabel+"任务响应超过网关处理上限", "upstream_error")
+		message := "上游" + jobLabel + "任务响应超过网关处理上限"
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusBadGateway, nil, "", gatewaypreauth.AuditPartGatewayError, "upstream_response", "upstream_error", message)
+		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	if c.mediaJobs == nil {
-		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务面未装配，无法受理"+jobLabel+"任务", "service_unavailable")
+		message := "媒体任务面未装配，无法受理" + jobLabel + "任务"
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusServiceUnavailable, nil, "", gatewaypreauth.AuditPartGatewayError, "gateway_response", "service_unavailable", message)
+		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, message, "service_unavailable")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	// 供应商身份源（供应商与上游协议面重构设计 §1.1/§2.1 切片）：任务面
 	// adapter 解析键与创建计划一致，取 VendorCode。
 	adapter := chainMediaJobTaskAdapterFor(kind, dispatched.Account.VendorCode, dispatched.Account.ProtocolCode)
 	if adapter == nil {
-		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游账户缺少"+jobLabel+"任务 adapter，任务受理中断", "upstream_error")
+		message := "上游账户缺少" + jobLabel + "任务 adapter，任务受理中断"
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusBadGateway, nil, "", gatewaypreauth.AuditPartGatewayError, "upstream_response", "upstream_error", message)
+		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	ir, parseErr := adapter.ParsePollResponse(upstream.Status(), upstream.Header, body)
@@ -1049,6 +1058,7 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		} else if ir != nil && ir.Error != nil {
 			message = "上游" + jobLabel + "任务受理被上游拒绝: " + ir.Error.Message
 		}
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusBadGateway, nil, "", gatewaypreauth.AuditPartGatewayError, "upstream_response", "upstream_error", message)
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
@@ -1060,6 +1070,7 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		if planErr != nil {
 			message = planErr.Error()
 		}
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusInternalServerError, nil, "", gatewaypreauth.AuditPartGatewayError, "gateway_response", "internal_error", message)
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, message, "internal_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
@@ -1093,11 +1104,14 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 			"event", "media_job_insert_failed", "traceId", context.UsageContext.TraceID,
 			"accountId", dispatched.Account.ID, "upstreamJobId", ir.UpstreamJobID,
 			"error", insertErr.Error())
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusInternalServerError, nil, "", gatewaypreauth.AuditPartGatewayError, "gateway_response", "internal_error", jobLabel+"任务受理后落库失败")
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, jobLabel+"任务受理后落库失败", "internal_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	object := chainMediaJobObjectOf(&record, ir.Status, ir.Progress)
+	responseBody, _ := json.Marshal(object)
 	c.writeMediaVideoJSON(res, http.StatusOK, object)
+	c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeSuccess, true, http.StatusOK, responseHeadersOf(upstream), string(responseBody), gatewaypreauth.AuditPartGatewayResponse, "", "", "")
 	return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, ProtocolValidatedSuccess: true}
 }
 
@@ -1110,12 +1124,15 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 func (c *gatewayChain) handleVideoCreateUpstreamErrorPassthrough(
 	res *gatewaypreauth.TrackingWriter,
 	req *gatewaypreauth.GatewayRequest,
+	auditCapture gatewaypreauth.AuditCaptureContext,
 	upstream *gatewayupstream.GatewayUpstreamResponse,
 ) gatewayresponse.UpstreamResponseHandlingResult {
 	body, readErr := io.ReadAll(io.LimitReader(upstream.Body, maxMediaJobObjectBytes+1))
 	_ = upstream.Body.Close()
 	if readErr != nil || len(body) > maxMediaJobObjectBytes {
-		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "读取上游视频任务错误响应失败", "upstream_error")
+		message := "读取上游视频任务错误响应失败"
+		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusBadGateway, nil, "", gatewaypreauth.AuditPartGatewayError, "upstream_response", "upstream_error", message)
+		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	contentType := strings.TrimSpace(upstream.Header.Get("Content-Type"))
@@ -1125,6 +1142,7 @@ func (c *gatewayChain) handleVideoCreateUpstreamErrorPassthrough(
 	res.Header().Set("Content-Type", contentType)
 	res.WriteHeader(upstream.Status())
 	_, _ = res.Write(body)
+	c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeUpstreamFailed, false, upstream.Status(), responseHeadersOf(upstream), string(body), gatewaypreauth.AuditPartGatewayError, "upstream_response", "", "")
 	return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 }
 
@@ -1658,7 +1676,7 @@ func chainIsChatCompletionsPathAndQuery(pathAndQuery string) bool {
 
 // chainQwenChatUpstreamURL 归一 qwen 对话（chat completions）的上游 URL：
 // 客户端版本剥离后的 chat opPath 恒定拼 chainQwenChatPathPrefix 前缀
-//（R6，服务根由前缀常量承载）后与 base_url 直拼——官方 origin 形态
+// （R6，服务根由前缀常量承载）后与 base_url 直拼——官方 origin 形态
 // base（https://dashscope.aliyuncs.com）+ /compatible-mode/v1/chat/
 // completions。不再有 base 侧 strict 插根/去重分支（v2 契约：版本段只在
 // opPath 一侧，base_url 不参与版本判定）。
@@ -2097,4 +2115,41 @@ func (c *gatewayChain) renderMediaVideoTransportError(res *gatewaypreauth.Tracki
 // writeMediaVideoJSON 渲染任务面成功 JSON。
 func (c *gatewayChain) writeMediaVideoJSON(res *gatewaypreauth.TrackingWriter, statusCode int, payload any) {
 	kernel.WriteJSON(res, statusCode, payload)
+}
+
+// finalizeMediaAudit 收口媒体创建短路的审计终态。媒体创建不进入通用响应
+// 管道（handleUpstreamResponse 的 parser/finalize 链），必须在每个早退分支
+// 自行 finalize，否则该请求只有阶段记录、没有终态审计（DR-29）。
+func (c *gatewayChain) finalizeMediaAudit(
+	capture gatewaypreauth.AuditCaptureContext,
+	outcome string,
+	success bool,
+	statusCode int,
+	headers map[string]string,
+	body string,
+	partType string,
+	errorPhase string,
+	errorCode string,
+	errorMessage string,
+) {
+	if capture == nil {
+		return
+	}
+	input := gatewaypreauth.AuditFinalizeInput{
+		Outcome:          outcome,
+		Success:          success,
+		StatusCode:       statusCode,
+		ResponseBody:     body,
+		ResponsePartType: partType,
+		ErrorPhase:       errorPhase,
+		ErrorCode:        errorCode,
+		ErrorMessage:     errorMessage,
+	}
+	if len(headers) > 0 {
+		input.ResponseHeaders = make(map[string]any, len(headers))
+		for name, value := range headers {
+			input.ResponseHeaders[name] = value
+		}
+	}
+	capture.Finalize(input)
 }

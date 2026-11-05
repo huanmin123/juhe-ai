@@ -119,6 +119,30 @@ func (f *rebuildFixture) rebuildPoisonRow(t *testing.T) {
 	) VALUES ('poison', 'global', 'global', 999, '2026-01-01T00:00:00.000Z')`)
 }
 
+func TestStatsHistoryPredatesRaw(t *testing.T) {
+	cases := []struct {
+		name        string
+		statsOldest string
+		rawOldest   string
+		want        bool
+	}{
+		{name: "raw 覆盖更长", statsOldest: "2026-10-01", rawOldest: "2026-09-01", want: false},
+		{name: "统计早于 raw 保留窗口", statsOldest: "2026-09-01", rawOldest: "2026-10-01", want: true},
+		{name: "同日边界不阻断", statsOldest: "2026-10-01", rawOldest: "2026-10-01", want: false},
+		{name: "raw 为空统计非空", statsOldest: "2026-10-01", rawOldest: "", want: true},
+		{name: "统计为空", statsOldest: "", rawOldest: "2026-10-01", want: false},
+		{name: "两侧为空", statsOldest: "", rawOldest: "", want: false},
+		{name: "RFC3339 截日期比较", statsOldest: "2026-09-30T23:59:59.000Z", rawOldest: "2026-10-01T00:00:00.000Z", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := statsHistoryPredatesRaw(tc.statsOldest, tc.rawOldest); got != tc.want {
+				t.Fatalf("statsHistoryPredatesRaw(%q, %q) = %v, want %v", tc.statsOldest, tc.rawOldest, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPostgresStatementShape(t *testing.T) {
 	pgDialect := statsagg.Dialect{}
 	for _, table := range rebuildClearedStatsTables {

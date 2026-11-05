@@ -36,7 +36,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 ## 不做什么
 
 - 不引入 Kafka、RabbitMQ、BullMQ、ClickHouse 或其他外部队列 / OLAP。
-- 不实现多节点自动故障转移、跨地域复制或自动用户迁移；多节点路由仍按 [分布式部署与用户分片设计](分布式部署与用户分片设计.md) 单独推进。
+- 不实现多节点自动故障转移、跨地域复制或自动用户迁移；多节点部署与滚动发布按 [多节点部署与不停机发布设计](多节点部署与不停机发布设计.md) 推进（设计稿，未实施）；按系统账户 home node 分片的分布式路由是 SQLite 时代历史方向，未实施。
 - 不把 Redis 作为账务、权限、授权、账号健康、审计或使用记录的持久事实库；跨进程短 TTL 缓存、运行态和原子计数的当前事实源必须是 Redis，不能回退到进程内 memory。持久事实统一落 PostgreSQL，不引入外部队列。
 - 不为运行路径保留旧 schema 兼容分支；历史数据处理只允许离线脚本或重建流程。
 - 不恢复 SQLite / memory 本地模式，也不为旧 env 值、旧命令行形态、sqlite 数据文件提供任何读取或转换能力。
@@ -57,7 +57,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 
 ## 部署边界
 
-现行唯一生产形态是国内单机 Docker（`docker/single-server/`，go-only）：Caddy 入口 + gateway / jobs 常驻容器 + maintenance 一次性容器 + postgres / redis 两个中间件容器；部署、初始化与 env 契约以 `docker/single-server/README.md` 和 `docs/deploy/部署指南.md` 为准。
+现行唯一生产形态是国内单机 Docker（`docker/single-server/`，go-only）：Caddy 入口 + gateway / jobs 常驻容器 + maintenance 一次性容器 + postgres / redis 两个中间件容器；部署、初始化与 env 契约以 `docker/single-server/README.md` 和 `docs/deploy/部署指南.md` 为准。多节点（gateway 多副本 + jobs 单活 + 外部 LB）的目标形态与迁移契约见 [多节点部署与不停机发布设计](多节点部署与不停机发布设计.md)（设计稿，未实施）。
 
 | 服务 | 职责 | 说明 |
 | --- | --- | --- |
@@ -286,9 +286,10 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 统计缓存损坏或统计口径升级时，使用 `backend-go/projects/maintenance` 的一次性命令 `juhe-ai-maintenance rebuild-usage-stats` 停服离线重建（BUG-0182）：
 
 - 离线门禁：必须显式传 `--confirm-offline` 或设置 `JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1`，否则拒绝执行且零副作用；前置条件是 gateway 与 jobs 已停止。除显式确认外，重建入口还会自动做离线校验：`background_job_leases` 存在未过期租约，或 `background_task_runs` 在活动回看窗口（5 分钟）内有心跳痕迹时拒绝（退出码 4，零副作用）——jobs 是统计结果表唯一在线写入方；停止 jobs 后如被拒绝，等待活动滑出回看窗口（至多约 5 分钟）再重试。
+- 历史覆盖门禁（DR-35）：清空统计面前比较 `MIN(juhe_usage.usage_records.created_at)` 与 `MIN(juhe_stats.usage_stats_daily.stat_date)`。若统计最早日期早于 usage_records 最旧日期（raw 只保留 30 天，统计可能更长），重建会永久丢失该段历史，命令默认拒绝（退出码 5，零副作用），报告 `rawOldest`/`statsOldest`；确认可丢弃后加 `--allow-history-loss` 才继续。该门禁不能替代备份，执行前仍应完成可恢复备份。
 - 存储形态：`--dsn <PostgreSQL URL>` 单形态（事实源 `juhe_usage.usage_records`，重建目标 `juhe_stats`，业务 schema `juhe_business` 只读）。
 - 重建语义：单事务清空 statsagg 实际写入的统计结果面（`usage_stats_*` 六桶、`usage_model_*` / `usage_error_*` / `usage_latency_*` 各五桶、`account_quality_minute_stats`、`account_health_hourly`、授权摘要 / 窗口表、`usage_rank_snapshots`、`ai_performance_summary_windows`、`usage_overview_*_windows`、`usage_model_rank_windows` / `usage_error_rank_windows`、`usage_scope_range_windows`、`usage_quota_hourly_windows` 等，执行时逐表打印；清单由防漂移守卫测试对 schema 全量分类断言）并重置 `stats_job_state` 的 `usage_stats_aggregation` 与 `usage_quota_hourly_windows_expiry` 游标行，然后从 `usage_records` 逐批重放聚合（复用 jobs `internal/statsagg` 既有口径，经 `backend-go/projects/jobs/statsrebuild` 受控导出面）；重放排干后运行全部窗口 / 排行刷新阶段，使统计缓存面一次回到与在线收敛一致的状态。业务库只读；`usage_records` 源表除统计消费水位列外只读——同一事务内会把 `usage_stats_aggregated_at` 全部归零（不归零则重放读不到任何待消费行，重建结果会是空统计面），这是本命令对源表唯一的写。
-- 吞吐与续跑：`--batch-size` 默认 2000（钳 1..50000）、`--max-batches` 默认 1000（钳 1..10000）；单轮达到批数上限时退出码 3（未完成），调大上限后再次执行本命令即可完成重建（每轮重新清空并从零重放）。退出码契约：0 完成（含空源）、1 运行失败、2 用法错误（含门禁拒绝）、3 未完成、4 离线校验未通过。
+- 吞吐与续跑：`--batch-size` 默认 2000（钳 1..50000）、`--max-batches` 默认 1000（钳 1..10000）；单轮达到批数上限时退出码 3（未完成），调大上限后再次执行本命令即可完成重建（每轮重新清空并从零重放，历史覆盖门禁仍生效）。退出码契约：0 完成（含空源）、1 运行失败、2 用法错误（含门禁拒绝）、3 未完成、4 离线校验未通过、5 历史覆盖校验未通过（需 `--allow-history-loss`）。
 - dirty 队列处置：`usage_overview_dirty_scopes` / `ai_performance_summary_dirty_system_accounts` 的在线消费方是两个窗口刷新 job 的同日增量轮；离线重建在同一执行内已按当前口径全量重建窗口，完成路径末尾清空标记；`usage_quota_hourly_window_dirty_scopes` 保留重放再生的标记（恢复在线后首轮额度窗口刷新消费补建）；`account_quality_dirty_accounts` 保留（gateway 账号质量刷新据此重算分数）。
 - 空源语义：`usage_records` 为空或历史记录已丢弃时明确提示"放弃历史统计重建，后续从新请求重新累计"，统计缓存面重置为空并正常完成（退出码 0）。
 

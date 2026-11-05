@@ -51,6 +51,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
@@ -159,6 +160,10 @@ type Options struct {
 	MaxBatches int
 	// Logf 接收进度输出；nil 时静默。
 	Logf func(format string, args ...any)
+	// AllowHistoryLoss 允许在 usage_records 保留窗口短于统计历史时继续重建。
+	// 默认拒绝：重建会先清空统计面，只回放当前 raw，早于 raw 最旧日期的
+	// 统计历史将永久丢失（DR-35）。
+	AllowHistoryLoss bool
 }
 
 // WindowStageRun 是窗口阶段执行记录的导出面形态（内部对齐
@@ -185,14 +190,62 @@ type Result struct {
 	Drained bool `json:"drained"`
 	// EmptySource 表示无可重放历史记录（首批即空）：历史统计放弃，后续
 	// 从新请求重新累计。
-	EmptySource  bool             `json:"emptySource"`
-	WindowStages []WindowStageRun `json:"windowStages"`
-	DurationMs   int64            `json:"durationMs"`
+	EmptySource bool `json:"emptySource"`
+	// RawOldest / StatsOldest 是重建前的覆盖边界（usage_records 最旧记录
+	// 日期 / usage_stats_daily 最早统计日期），供运维判断重建会丢掉多少历史。
+	RawOldest   string `json:"rawOldest,omitempty"`
+	StatsOldest string `json:"statsOldest,omitempty"`
+	// HistoryLossAllowed 表示本次重建确实会丢弃 raw 覆盖之前的历史统计，
+	// 且调用方显式传了 AllowHistoryLoss。
+	HistoryLossAllowed bool             `json:"historyLossAllowed"`
+	WindowStages       []WindowStageRun `json:"windowStages"`
+	DurationMs         int64            `json:"durationMs"`
 }
 
 // ErrJobsNotOffline 是离线校验未通过（检测到 jobs 活动痕迹）的哨兵错误：
 // Rebuild 在清空任何表之前拒绝，零副作用；CLI 据此映射专用退出码。
 var ErrJobsNotOffline = errors.New("jobs 未离线")
+
+// ErrHistoryLoss 是历史覆盖校验未通过的哨兵错误：usage_records 的保留窗口
+// 短于既有统计历史，重建会先清空统计面、只回放 raw，早于 raw 最旧日期的
+// 历史统计将永久丢失。默认拒绝，调用方须显式 AllowHistoryLoss 才继续。
+var ErrHistoryLoss = errors.New("重建会丢失 usage_records 保留窗口之前的历史统计")
+
+// rebuildCoverage 读取重建前的两条边界：usage_records 最旧记录时间与
+// usage_stats_daily 最早统计日期。空串表示该侧没有数据。
+func rebuildCoverage(ctx context.Context, db *sql.DB) (rawOldest, statsOldest string, err error) {
+	var raw, stats sql.NullString
+	if err := db.QueryRowContext(ctx, bind(true, `SELECT MIN(created_at) FROM juhe_usage.usage_records`)).Scan(&raw); err != nil {
+		return "", "", fmt.Errorf("读取 usage_records 最旧记录失败: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, bind(true, `SELECT MIN(stat_date) FROM juhe_stats.usage_stats_daily`)).Scan(&stats); err != nil {
+		return "", "", fmt.Errorf("读取 usage_stats_daily 最早统计失败: %w", err)
+	}
+	return strings.TrimSpace(raw.String), strings.TrimSpace(stats.String), nil
+}
+
+// statsHistoryPredatesRaw 判断统计面是否覆盖了 raw 保留窗口之前的日期。
+// 日期取前 10 字符（YYYY-MM-DD）做字典序比较；raw 为空而统计非空时视为
+// 会丢全部历史。
+func statsHistoryPredatesRaw(statsOldest, rawOldest string) bool {
+	statsDay := datePrefix(statsOldest)
+	if statsDay == "" {
+		return false
+	}
+	rawDay := datePrefix(rawOldest)
+	if rawDay == "" {
+		return true
+	}
+	return statsDay < rawDay
+}
+
+func datePrefix(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 10 {
+		return value
+	}
+	return value[:10]
+}
 
 // jobsOfflineActivityWindow 是离线校验的任务活动回看窗口：jobs 存活时调度
 // 任务最短节拍为 60s（usage-hot-window-refresh），窗口内必然留下
@@ -270,6 +323,21 @@ func Rebuild(ctx context.Context, options Options) (Result, error) {
 	// 先于任何清空动作，零副作用。
 	if err := CheckJobsOffline(ctx, options.DB, startedAt); err != nil {
 		return Result{}, err
+	}
+
+	// 0b. 历史覆盖校验（DR-35）：重建只回放当前 usage_records，早于其最旧
+	// 记录的统计历史会被清空后永久丢失。raw 覆盖短于统计面时默认拒绝，
+	// 必须先人工确认（AllowHistoryLoss）或先扩大 raw 保留窗口。
+	rawOldest, statsOldest, coverageErr := rebuildCoverage(ctx, options.DB)
+	if coverageErr != nil {
+		return Result{}, coverageErr
+	}
+	result.RawOldest = rawOldest
+	result.StatsOldest = statsOldest
+	historyLoss := statsHistoryPredatesRaw(statsOldest, rawOldest)
+	result.HistoryLossAllowed = historyLoss && options.AllowHistoryLoss
+	if historyLoss && !options.AllowHistoryLoss {
+		return result, fmt.Errorf("%w（统计最早 %s，usage_records 最旧 %s）；确认可丢弃该段历史后加 --allow-history-loss 重跑", ErrHistoryLoss, statsOldest, rawOldest)
 	}
 
 	// 1. 清空统计缓存面 + 重置游标（单事务：半清空状态不可见）。
