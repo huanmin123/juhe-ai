@@ -1394,6 +1394,19 @@ func (s *Service) AdvanceResetDispatchRevision(ctx context.Context, accountID, t
 		transitionID, revision, nowMS, nowMS, nowMS); err != nil {
 		return ResetDispatchFenceResult{}, err
 	}
+	j3bEventID, err := s.deps.CircuitEventID()
+	if err != nil {
+		return ResetDispatchFenceResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, s.store.Bind(`INSERT INTO `+s.store.Table("account_circuit_outbox")+`
+		(event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
+		 circuit_scope_key, incident_id, transition_id, dispatch_revision, generation,
+		 ledger_revision, status, available_at_ms, attempt_count, created_at_ms, updated_at_ms)
+		VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?) ON CONFLICT DO NOTHING`),
+		j3bEventID, circuitcontrolplane.J3bProjectionKey, dedupeKey, accountID, accountID,
+		transitionID, revision, nowMS, nowMS, nowMS); err != nil {
+		return ResetDispatchFenceResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ResetDispatchFenceResult{}, err
 	}

@@ -20,6 +20,61 @@ func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 	return wkPGStoreLabeled(t, "", gate)
 }
 
+func TestOutboxProjectionFanoutIsolation(t *testing.T) {
+	s, _ := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	ctx := context.Background()
+	if _, err := s.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t-j3b", NowMS: 100}); err != nil {
+		t.Fatal(err)
+	}
+	mainClaimed, err := s.ClaimOutbox(ctx, "main-worker", 100, 20, 10)
+	if err != nil || len(mainClaimed) != 1 || mainClaimed[0].ProjectionKey != ProjectionKey {
+		t.Fatalf("main claim=%+v err=%v", mainClaimed, err)
+	}
+	j3bClaimed, err := s.ClaimOutboxForProjection(ctx, J3bProjectionKey, "j3b-worker", 100, 20, 10)
+	if err != nil || len(j3bClaimed) != 1 || j3bClaimed[0].ProjectionKey != J3bProjectionKey {
+		t.Fatalf("j3b claim=%+v err=%v", j3bClaimed, err)
+	}
+	if j3bClaimed[0].EventID == mainClaimed[0].EventID {
+		t.Fatalf("projection rows must have distinct event ids: %q", j3bClaimed[0].EventID)
+	}
+	if ok, err := s.AcknowledgeOutbox(ctx, mainClaimed[0].EventID, ProjectionKey, *mainClaimed[0].ClaimToken, 110); err != nil || !ok {
+		t.Fatalf("main ack=%v err=%v", ok, err)
+	}
+	if ok, err := s.AcknowledgeOutbox(ctx, j3bClaimed[0].EventID, J3bProjectionKey, *j3bClaimed[0].ClaimToken, 111); err != nil || !ok {
+		t.Fatalf("j3b ack=%v err=%v", ok, err)
+	}
+	// 两侧各自 ack 后，再认领都应为空，证明没有互相消费。
+	if again, err := s.ClaimOutbox(ctx, "main-worker", 200, 20, 10); err != nil || len(again) != 0 {
+		t.Fatalf("main reclaim=%+v err=%v", again, err)
+	}
+	if again, err := s.ClaimOutboxForProjection(ctx, J3bProjectionKey, "j3b-worker", 200, 20, 10); err != nil || len(again) != 0 {
+		t.Fatalf("j3b reclaim=%+v err=%v", again, err)
+	}
+}
+
+func TestBackfillProjectionRowsCopiesRetainedMainRows(t *testing.T) {
+	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	ctx := context.Background()
+	if _, err := s.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t-backfill", NowMS: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟部署前只有主投影行的存量。
+	if _, err := db.Exec(`DELETE FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE projection_key=?`, J3bProjectionKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BackfillProjectionRows(ctx, ProjectionKey, J3bProjectionKey, 200); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimOutboxForProjection(ctx, J3bProjectionKey, "j3b-worker", 100, 20, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].ProjectionKey != J3bProjectionKey {
+		t.Fatalf("backfilled claim=%+v err=%v", claimed, err)
+	}
+	// 幂等：再次回填不应产生重复行。
+	if _, err := s.BackfillProjectionRows(ctx, ProjectionKey, J3bProjectionKey, 300); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOwnerGateBlocksWrites(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true})
 	_, err := s.AdvanceDispatchRevision(context.Background(), DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t1"})

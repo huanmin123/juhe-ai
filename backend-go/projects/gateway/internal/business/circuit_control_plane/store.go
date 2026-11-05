@@ -16,9 +16,15 @@ import (
 	"time"
 
 	sharedcontracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
-const ProjectionKey = "account_circuit_runtime_v1"
+const (
+	// ProjectionKey 是主运行态投影；J3bProjectionKey 是 J3b 运行态投影。
+	// 每个 outbox 事件按两个键各写一行，消费者只认领自己的键（DR-33）。
+	ProjectionKey    = circuitstate.ProjectionKeyRuntime
+	J3bProjectionKey = circuitstate.ProjectionKeyJ3B
+)
 
 var (
 	ErrOwnerGate      = errors.New("business owner handoff gate is not satisfied")
@@ -563,6 +569,52 @@ func (s *Store) GetIncident(ctx context.Context, scopeKey string) (Incident, boo
 }
 
 func (s *Store) ClaimOutbox(ctx context.Context, owner string, nowMS, leaseMS int64, limit int) ([]Outbox, error) {
+	return s.claimOutbox(ctx, ProjectionKey, owner, nowMS, leaseMS, limit)
+}
+
+// ClaimOutboxForProjection 只认领指定 projection_key 的事件；J3b 投影器
+// 使用 J3bProjectionKey，与主运行态消费者互不抢行（DR-33）。
+func (s *Store) ClaimOutboxForProjection(ctx context.Context, projectionKey, owner string, nowMS, leaseMS int64, limit int) ([]Outbox, error) {
+	projectionKey = strings.TrimSpace(projectionKey)
+	if projectionKey == "" {
+		return nil, errors.New("claim projection key is required")
+	}
+	return s.claimOutbox(ctx, projectionKey, owner, nowMS, leaseMS, limit)
+}
+
+// BackfillProjectionRows 为目标投影补齐主投影中尚不存在的行（部署切换用：
+// 历史事件只有主 projection_key，新 J3b 消费者需要自己的行）。复制所有
+// 保留期内主行（含已 dispatched）：主消费者可能先于 J3b 启动并 ack，只有
+// 复制全量才能关闭这个竞态；J3b 投影按 revision/ledger 幂等，旧事件会被
+// 判 stale/obsolete。幂等：唯一键冲突直接跳过。
+func (s *Store) BackfillProjectionRows(ctx context.Context, fromProjectionKey, toProjectionKey string, nowMS int64) (int64, error) {
+	if err := s.requireOwner(); err != nil {
+		return 0, err
+	}
+	fromProjectionKey = strings.TrimSpace(fromProjectionKey)
+	toProjectionKey = strings.TrimSpace(toProjectionKey)
+	if fromProjectionKey == "" || toProjectionKey == "" || fromProjectionKey == toProjectionKey {
+		return 0, errors.New("projection backfill keys are invalid")
+	}
+	if err := requireNonNegativeMS(nowMS, "nowMs"); err != nil {
+		return 0, err
+	}
+	outbox := s.table("account_circuit_outbox")
+	query := "INSERT INTO " + outbox +
+		" (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id," +
+		"transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms)" +
+		" SELECT event_id || ':j3b', ?, dedupe_key, event_type, account_id, account_runtime_key, circuit_scope_key, incident_id," +
+		" transition_id, dispatch_revision, generation, ledger_revision, 'pending', available_at_ms, 0, created_at_ms, updated_at_ms" +
+		" FROM " + outbox + " WHERE projection_key=?" +
+		" ON CONFLICT DO NOTHING"
+	res, err := s.db.ExecContext(ctx, s.bind(query), toProjectionKey, fromProjectionKey)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *Store) claimOutbox(ctx context.Context, projectionKey, owner string, nowMS, leaseMS int64, limit int) ([]Outbox, error) {
 	if err := s.requireOwner(); err != nil {
 		return nil, err
 	}
@@ -585,8 +637,8 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, nowMS, leaseMS in
 	if leaseMS > 0 && now > maxInt64-leaseMS {
 		return nil, errors.New("claim lease exceeds timestamp bounds")
 	}
-	q := "SELECT " + outboxColumns + " FROM " + s.table("account_circuit_outbox") + " WHERE (status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?) ORDER BY available_at_ms,created_at_ms,event_id LIMIT ?" + s.forUpdateSkipLocked()
-	rows, err := tx.QueryContext(ctx, s.bind(q), now, now, limit)
+	q := "SELECT " + outboxColumns + " FROM " + s.table("account_circuit_outbox") + " WHERE projection_key=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?)) ORDER BY available_at_ms,created_at_ms,event_id LIMIT ?" + s.forUpdateSkipLocked()
+	rows, err := tx.QueryContext(ctx, s.bind(q), projectionKey, now, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +665,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, nowMS, leaseMS in
 			return nil, e
 		}
 		until := now + leaseMS
-		res, e := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='processing',claim_token=?,claimed_by=?,claim_until_ms=?,attempt_count=attempt_count+1,updated_at_ms=? WHERE event_id=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?))"), token, owner, until, now, candidate.EventID, now, now)
+		res, e := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='processing',claim_token=?,claimed_by=?,claim_until_ms=?,attempt_count=attempt_count+1,updated_at_ms=? WHERE event_id=? AND projection_key=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?))"), token, owner, until, now, candidate.EventID, projectionKey, now, now)
 		if e != nil {
 			return nil, e
 		}
@@ -946,10 +998,30 @@ func (s *Store) listIncidents(ctx context.Context, q string, args ...any) (Rebui
 // 冲突只能来自同 tid 并发竞态——23505 报错回滚、调用方重试后命中幂等臂，
 // 维持纯 INSERT，不做冲突重置（重置会让同 tid 重试静默二次推进 revision）。
 func (s *Store) insertOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
-	q := "INSERT INTO " + s.table("account_circuit_outbox") + " (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-	_, err := tx.ExecContext(ctx, s.bind(q), v.EventID, v.ProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	// fan-out：主运行态与 J3b 运行态各一行，消费者按 projection_key 认领。
+	if err := s.insertOutboxRow(ctx, tx, v, ProjectionKey, v.EventID); err != nil {
+		return err
+	}
+	return s.insertOutboxJ3bRow(ctx, tx, v, j3bEventID(v.EventID))
+}
+
+// insertOutboxJ3bRow 对 J3b 投影行使用 ON CONFLICT DO NOTHING：主行清理与
+// J3b 行清理可能不同批，同 dedupe 的重放不应因残留 J3b 行把事务打回。
+func (s *Store) insertOutboxJ3bRow(ctx context.Context, tx *sql.Tx, v Outbox, eventID string) error {
+	q := "INSERT INTO " + s.table("account_circuit_outbox") + " (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"
+	_, err := tx.ExecContext(ctx, s.bind(q), eventID, J3bProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
 	return err
 }
+
+func (s *Store) insertOutboxRow(ctx context.Context, tx *sql.Tx, v Outbox, projectionKey, eventID string) error {
+	q := "INSERT INTO " + s.table("account_circuit_outbox") + " (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+	_, err := tx.ExecContext(ctx, s.bind(q), eventID, projectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	return err
+}
+
+// j3bEventID 为同一事件的 J3b 投影生成独立主键；event_id 是 TEXT 主键，
+// 后缀稳定且不会与主投影行冲突。
+func j3bEventID(eventID string) string { return eventID + ":j3b" }
 
 // insertIncidentChangedOutbox 列集与 insertOutbox 一致（claim 面列保持 NULL，
 // 由 ClaimOutbox 更新），仅服务 incident_changed 事件。
@@ -967,6 +1039,13 @@ func (s *Store) insertOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
 // runtime/scope 任一不一致则 0 行受影响，返回 ErrIdentityReplay（与上方
 // 幂等回放臂的 identity 校验同字段同语义）。无冲突的首次插入行为不变。
 func (s *Store) insertIncidentChangedOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
+	if err := s.insertIncidentChangedOutboxRow(ctx, tx, v, ProjectionKey, v.EventID); err != nil {
+		return err
+	}
+	return s.insertIncidentChangedOutboxRow(ctx, tx, v, J3bProjectionKey, j3bEventID(v.EventID))
+}
+
+func (s *Store) insertIncidentChangedOutboxRow(ctx context.Context, tx *sql.Tx, v Outbox, projectionKey, eventID string) error {
 	outbox := s.table("account_circuit_outbox")
 	q := "INSERT INTO " + outbox +
 		" (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id," +
@@ -984,7 +1063,7 @@ func (s *Store) insertIncidentChangedOutbox(ctx context.Context, tx *sql.Tx, v O
 		" AND " + outbox + ".account_id=excluded.account_id" +
 		" AND " + outbox + ".account_runtime_key=excluded.account_runtime_key" +
 		" AND " + outbox + ".circuit_scope_key IS NOT DISTINCT FROM excluded.circuit_scope_key"
-	res, err := tx.ExecContext(ctx, s.bind(q), v.EventID, v.ProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	res, err := tx.ExecContext(ctx, s.bind(q), eventID, projectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
 	if err != nil {
 		return err
 	}

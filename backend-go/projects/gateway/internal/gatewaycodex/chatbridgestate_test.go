@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -693,6 +694,41 @@ func seedCompactRequest(t *testing.T, bridge *ChatBridgeStateService, registry *
 	})
 	bridge.PrepareCodexResponsesCompactDispatchForAccounts(registry, req, []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()})
 	return req, "resp_chat_bridge_c1"
+}
+
+func TestCompactPreflightSummaryUsageCallback(t *testing.T) {
+	service, _, registry, _, dispatcher := compactPreflightService(t)
+	req, _ := seedCompactRequest(t, service.Bridge, registry)
+	dispatcher.exchange = &CompactUpstreamExchange{
+		Account:            compactBridgeAccount(),
+		BodyText:           `{"choices":[{"message":{"content":"最终摘要"}}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`,
+		UpstreamOK:         true,
+		UpstreamStatus:     200,
+		ReleaseConcurrency: func() {},
+	}
+	var captured gatewayproto.ParsedUsage
+	calls := 0
+	service.OnSummaryUsage = func(input CompactPreflightInput, account gatewayruntimecache.OpenAIAccountSecret, model string, usage gatewayproto.ParsedUsage) {
+		calls++
+		captured = usage
+		if account.ID != "acc-bridge" {
+			t.Fatalf("account = %q", account.ID)
+		}
+		if model == "" {
+			t.Fatal("摘要 usage 记账必须带模型")
+		}
+	}
+	_, res := newTrackedWriter()
+	result, err := service.ApplyChatBridgeCompactPreflight(context.Background(), CompactPreflightInput{
+		Req: req, Res: res, AuditCapture: &recordedAudit{}, Signal: context.Background(),
+	})
+	if err != nil || !result.Completed {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if calls != 1 || captured.InputTokens == nil || *captured.InputTokens != 11 ||
+		captured.OutputTokens == nil || *captured.OutputTokens != 7 {
+		t.Fatalf("calls=%d usage=%+v", calls, captured)
+	}
 }
 
 func TestApplyChatBridgeCompactPreflightCompleted(t *testing.T) {

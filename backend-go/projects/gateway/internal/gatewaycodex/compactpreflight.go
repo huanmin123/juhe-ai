@@ -13,6 +13,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -110,6 +111,10 @@ type CompactPreflightService struct {
 	Dispatcher CompactSummaryDispatcher
 	Clock      Clock
 	Sink       gatewaypreauth.ResponseSink
+	// OnSummaryUsage 把成功摘要上游响应的 usage 交回组合根记账（DR-28）。
+	// 摘要响应是 Chat Completions JSON，token 在 usage 字段；不回调则摘要
+	// 始终零计量。失败面仍走既有失败 usage 路径。
+	OnSummaryUsage func(input CompactPreflightInput, account gatewayruntimecache.OpenAIAccountSecret, model string, usage gatewayproto.ParsedUsage)
 }
 
 // CompactPreflightInput mirrors applyCodexResponsesChatBridgeCompactPreflight's
@@ -371,6 +376,12 @@ func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Co
 		ResponseBody:     string(mustMarshalJSON(responsePayload)),
 		ResponsePartType: "gateway_response",
 	})
+	if s.OnSummaryUsage != nil {
+		usage := gatewayopenai.ParseUsageFromJSONBuffer([]byte(exchange.BodyText))
+		if gatewayproto.HasAnyUsageValue(usage) {
+			s.OnSummaryUsage(input, exchange.Account, summaryUpstreamModel, usage)
+		}
+	}
 	s.releaseExchange(exchange)
 	return CompactPreflightResult{Completed: true}, nil
 }

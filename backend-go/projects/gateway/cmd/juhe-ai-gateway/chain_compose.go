@@ -43,9 +43,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/redis/go-redis/v9"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // gatewaybodyLogger adapts the chain slog logger onto the gatewaybody.Logger
@@ -500,6 +500,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			Clock:  clock,
 			Logger: slogWarnLogger{inner: logger},
 			Sink:   sink,
+			OnSummaryUsage: chainCompactUsageRecorder{
+				recorder:           recorder,
+				pricing:            chainPricingCatalog,
+				syncPricingAllowed: chainSyncPricingAllowed,
+			}.Record,
 		})
 		if bridgeErr != nil {
 			recorder.Close()

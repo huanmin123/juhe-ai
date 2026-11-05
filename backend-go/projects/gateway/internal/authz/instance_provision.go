@@ -564,6 +564,16 @@ func (s *Store) advanceInstanceDispatchRevision(ctx context.Context, tx *sql.Tx,
 		VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?)`),
 		"circ_"+randomSuffix(), circuitcontrolplane.ProjectionKey, dedupeKey, accountID, accountID,
 		transitionID, revision, nowMS, nowMS, nowMS)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_circuit_outbox")+`
+		(event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
+		 circuit_scope_key, incident_id, transition_id, dispatch_revision, generation,
+		 ledger_revision, status, available_at_ms, attempt_count, created_at_ms, updated_at_ms)
+		VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?) ON CONFLICT DO NOTHING`),
+		"circ_"+randomSuffix(), circuitcontrolplane.J3bProjectionKey, dedupeKey, accountID, accountID,
+		transitionID, revision, nowMS, nowMS, nowMS)
 	return err
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // 控制面 ledger/outbox 适配器：移植 Node
@@ -31,8 +32,12 @@ import (
 // circuit_projection_revision / projected_ledger_revision 的回写与
 // Node acknowledge 完全一致。
 
-// ProjectionKey 与 Node accountCircuitProjectionKey 一致。
-const ProjectionKey = "account_circuit_runtime_v1"
+// ProjectionKey 与 Node accountCircuitProjectionKey 一致；J3bProjectionKey
+// 是 J3b 运行态的独立投影键，jobs 控制面只消费主键（DR-33）。
+const (
+	ProjectionKey    = circuitstate.ProjectionKeyRuntime
+	J3bProjectionKey = circuitstate.ProjectionKeyJ3B
+)
 
 // ControlPlaneConfig 组装 ledger/outbox 适配器。
 type ControlPlaneConfig struct {
@@ -753,6 +758,13 @@ func (r *ControlPlaneRepo) upsertIncidentCAS(ctx context.Context, tx *sql.Tx, v 
 // 防 transition_id 复用：事件类型/账户/runtime/scope 任一不一致则 0 行受
 // 影响，返回 ErrIdentityReplay。无冲突的首次插入行为不变。
 func (r *ControlPlaneRepo) insertIncidentChangedOutbox(ctx context.Context, tx *sql.Tx, v opsjobs.IncidentCASRow, dedupe string, nowMS int64) error {
+	if err := r.insertIncidentChangedOutboxRow(ctx, tx, v, dedupe, nowMS, ProjectionKey, newClaimToken()); err != nil {
+		return err
+	}
+	return r.insertIncidentChangedOutboxRow(ctx, tx, v, dedupe, nowMS, J3bProjectionKey, newClaimToken())
+}
+
+func (r *ControlPlaneRepo) insertIncidentChangedOutboxRow(ctx context.Context, tx *sql.Tx, v opsjobs.IncidentCASRow, dedupe string, nowMS int64, projectionKey, eventID string) error {
 	scopeKey := v.CircuitScopeKey
 	incidentID := v.IncidentID
 	generation := v.Generation
@@ -775,7 +787,7 @@ func (r *ControlPlaneRepo) insertIncidentChangedOutbox(ctx context.Context, tx *
 		" AND " + outbox + ".account_runtime_key=excluded.account_runtime_key" +
 		" AND " + outbox + ".circuit_scope_key IS NOT DISTINCT FROM excluded.circuit_scope_key"
 	result, err := tx.ExecContext(ctx, query,
-		newClaimToken(), ProjectionKey, dedupe, "incident_changed",
+		eventID, projectionKey, dedupe, "incident_changed",
 		v.AccountID, v.AccountRuntimeKey, &scopeKey, &incidentID,
 		v.TransitionID, v.DispatchRevision, &generation, &ledgerRevision,
 		"pending", nowMS, 0, nowMS, nowMS)
@@ -1294,10 +1306,11 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
       SELECT event_id, projection_key, event_type, account_id, account_runtime_key,
         circuit_scope_key, transition_id, dispatch_revision
       FROM `+outboxTable+`
-      WHERE (status = 'pending' AND available_at_ms <= ?)
-         OR (status = 'processing' AND claim_until_ms <= ?)
+      WHERE projection_key = ?
+        AND ((status = 'pending' AND available_at_ms <= ?)
+          OR (status = 'processing' AND claim_until_ms <= ?))
       ORDER BY available_at_ms ASC, created_at_ms ASC, event_id ASC
-      LIMIT ? FOR UPDATE SKIP LOCKED`, nowMS, nowMS, limit)
+      LIMIT ? FOR UPDATE SKIP LOCKED`, ProjectionKey, nowMS, nowMS, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1323,9 +1336,10 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
         SET status = 'processing', claim_token = ?, claimed_by = ?, claim_until_ms = ?,
             attempt_count = attempt_count + 1, updated_at_ms = ?
         WHERE event_id = ?
+          AND projection_key = ?
           AND ((status = 'pending' AND available_at_ms <= ?)
             OR (status = 'processing' AND claim_until_ms <= ?))`,
-			claimToken, ownerID, nowMS+leaseMS, nowMS, row.eventID, nowMS, nowMS)
+			claimToken, ownerID, nowMS+leaseMS, nowMS, row.eventID, ProjectionKey, nowMS, nowMS)
 		if err != nil {
 			return nil, err
 		}

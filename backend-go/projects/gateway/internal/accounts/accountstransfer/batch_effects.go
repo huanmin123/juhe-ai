@@ -214,6 +214,20 @@ func (s *Service) AdvanceBatchDispatchRevision(ctx context.Context, q accountsco
 		VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?)`),
 		eventID, circuitcontrolplane.ProjectionKey, dedupeKey, accountID, accountID,
 		transitionID, revision, nowMS, nowMS, nowMS)
+	if err != nil {
+		return err
+	}
+	j3bEventID, err := BatchCircuitEventID()
+	if err != nil {
+		return err
+	}
+	_, err = q.ExecContext(ctx, s.store.Bind(`INSERT INTO `+s.store.Table("account_circuit_outbox")+`
+		(event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
+		 circuit_scope_key, incident_id, transition_id, dispatch_revision, generation,
+		 ledger_revision, status, available_at_ms, attempt_count, created_at_ms, updated_at_ms)
+		VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?) ON CONFLICT DO NOTHING`),
+		j3bEventID, circuitcontrolplane.J3bProjectionKey, dedupeKey, accountID, accountID,
+		transitionID, revision, nowMS, nowMS, nowMS)
 	return err
 }
 

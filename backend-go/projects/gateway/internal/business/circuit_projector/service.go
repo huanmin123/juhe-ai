@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	control "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_control_plane"
@@ -18,6 +19,8 @@ type Service struct {
 	runtime           *runtime.Store
 	ownerID           string
 	lease, retryDelay time.Duration
+	backfillMu        sync.Mutex
+	backfilled        bool
 }
 
 func New(controlStore *control.Store, runtimeStore *runtime.Store, ownerID string) (*Service, error) {
@@ -55,7 +58,18 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time, limit int) (RunRes
 	} else {
 		now = now.UTC()
 	}
-	events, err := s.control.ClaimOutbox(ctx, s.ownerID, now.UnixMilli(), s.lease.Milliseconds(), limit)
+	// 部署切换：把主投影中仍未 dispatched 的事件复制成 J3b 行，避免切换瞬间
+	// 被主消费者认领后 J3b 永久漏事件（DR-33）。失败不吞：下一轮重试。
+	s.backfillMu.Lock()
+	if !s.backfilled {
+		if _, backfillErr := s.control.BackfillProjectionRows(ctx, control.ProjectionKey, control.J3bProjectionKey, now.UnixMilli()); backfillErr != nil {
+			s.backfillMu.Unlock()
+			return RunResult{}, fmt.Errorf("backfill J3b account circuit outbox: %w", backfillErr)
+		}
+		s.backfilled = true
+	}
+	s.backfillMu.Unlock()
+	events, err := s.control.ClaimOutboxForProjection(ctx, control.J3bProjectionKey, s.ownerID, now.UnixMilli(), s.lease.Milliseconds(), limit)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("claim account circuit outbox: %w", err)
 	}
@@ -86,7 +100,9 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time, limit int) (RunRes
 }
 
 func (s *Service) project(ctx context.Context, event control.Outbox) (runtime.GatewayAccountCircuitRevisionProjection, error) {
-	converted := runtime.GatewayAccountCircuitOutboxEvent{EventID: event.EventID, ProjectionKey: event.ProjectionKey, EventType: event.EventType, AccountID: event.AccountID, AccountRuntimeKey: event.AccountRuntimeKey, TransitionID: event.TransitionID, DispatchRevision: event.DispatchRevision, AttemptCount: int(event.AttemptCount), CreatedAt: time.UnixMilli(event.CreatedAtMS).UTC()}
+	// 运行态 ProjectRevision 校验的是运行态投影键（GatewayAccountCircuitProjectionKey）；
+	// outbox 的 J3b projection_key 只用于认领隔离，不传入运行态校验。
+	converted := runtime.GatewayAccountCircuitOutboxEvent{EventID: event.EventID, ProjectionKey: runtime.GatewayAccountCircuitProjectionKey, EventType: event.EventType, AccountID: event.AccountID, AccountRuntimeKey: event.AccountRuntimeKey, TransitionID: event.TransitionID, DispatchRevision: event.DispatchRevision, AttemptCount: int(event.AttemptCount), CreatedAt: time.UnixMilli(event.CreatedAtMS).UTC()}
 	if event.CircuitScopeKey != nil {
 		converted.CircuitScopeKey = *event.CircuitScopeKey
 	}

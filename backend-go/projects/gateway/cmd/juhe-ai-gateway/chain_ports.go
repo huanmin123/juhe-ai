@@ -2414,6 +2414,9 @@ type chainCodexBridgeDeps struct {
 	// sender（restore/compact 失败面的 403/404/413 响应）。
 	Logger gatewaypreauth.Logger
 	Sink   gatewaypreauth.ResponseSink
+	// OnSummaryUsage 是 compact 摘要成功 usage 的记账回调（DR-28）；nil 时
+	// 摘要仍不计量（仅组合测试注入空依赖的降级形态）。
+	OnSummaryUsage func(input gatewaycodex.CompactPreflightInput, account gatewayruntimecache.OpenAIAccountSecret, model string, usage gatewayproto.ParsedUsage)
 }
 
 // newChainCodexBridgePreflight wires the real bridge preflight over
@@ -2442,10 +2445,11 @@ func newChainCodexBridgePreflight(deps chainCodexBridgeDeps) (gatewaypreauth.Cod
 	bridge.Sink = deps.Sink
 	registry := gatewaycodex.NewContextRequestStateRegistry()
 	compact := &gatewaycodex.CompactPreflightService{
-		Bridge:   bridge,
-		Registry: registry,
-		Clock:    clock,
-		Sink:     deps.Sink,
+		Bridge:         bridge,
+		Registry:       registry,
+		Clock:          clock,
+		Sink:           deps.Sink,
+		OnSummaryUsage: deps.OnSummaryUsage,
 	}
 	return codexPreflightAdapter{bridge: bridge, compact: compact, registry: registry}, nil
 }
@@ -2591,7 +2595,7 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 // 采样 47.9%（checkValid/appendCompact 大头都在扫 base64 大串），且中间
 // []byte 与 base64 串同时驻留。2026-11-03 改为逐字段直接赋值：
 //   - Headers 的单值/数组判定与 gatewayusage.AuditLogPayloadInput.MarshalJSON
-//     + auditlog.HeaderValues.UnmarshalJSON 的组合语义逐条对齐（见
+//   - auditlog.HeaderValues.UnmarshalJSON 的组合语义逐条对齐（见
 //     auditHeadersFromWire）；
 //   - 三处时长 *int → *int64 为无损宽度扩展；
 //   - 枚举 string → 命名类型直接转换；

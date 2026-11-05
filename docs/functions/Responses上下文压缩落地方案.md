@@ -326,7 +326,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。
 - Chat-only bridge：首轮 `/responses` 成功后生成 `response_id` 状态；第二轮带 `previous_response_id` 时能还原历史并转 Chat。
 - Chat-only bridge：`previous_response_id` 跨 API Key、跨分组、跨供应商或过期时受控失败，且不命中上游。
-- Chat-only compact：当前分组当前供应商内有摘要账户时，内部摘要请求按普通调度链路切号并记录 usage。
+- Chat-only compact：当前分组当前供应商内有摘要账户时，内部摘要请求按普通调度链路切号；**摘要成功响应中的 usage 必须写一条普通 usage 记录（token 与同步定价成本，DR-28）**，不再只写审计。
 - Chat-only compact：摘要成功后返回 1 个 `compaction_summary` envelope，后续请求带回该 envelope 时能恢复为 Chat summary + 最近历史。
 - Chat-only compact：摘要 schema 缺关键字段、工具调用未闭合或内部摘要账户耗尽时不生成 compact envelope。
 

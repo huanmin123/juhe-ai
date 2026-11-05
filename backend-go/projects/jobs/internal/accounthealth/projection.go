@@ -18,6 +18,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // J1 outcome → 业务账户投影器（BUG-0174 M-1）。行为基线是 Node 归档的
@@ -1375,6 +1376,11 @@ func (p *OutcomeProjector) advanceDispatchRevision(ctx context.Context, tx *sql.
 		newProjectionEventID(), accountCircuitProjectionKey, dedupeKey, accountID, accountID, transitionID, revision, nowMS, nowMS, nowMS)
 	if err != nil {
 		return fmt.Errorf("写入 J1 投影 circuit outbox 失败: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, p.business.bind(`INSERT INTO `+outboxTable+` (event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key, circuit_scope_key, incident_id, transition_id, dispatch_revision, generation, ledger_revision, status, available_at_ms, attempt_count, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?) ON CONFLICT DO NOTHING`),
+		newProjectionEventID(), circuitstate.ProjectionKeyJ3B, dedupeKey, accountID, accountID, transitionID, revision, nowMS, nowMS, nowMS)
+	if err != nil {
+		return fmt.Errorf("写入 J1 投影 circuit outbox（J3b）失败: %w", err)
 	}
 	return nil
 }
