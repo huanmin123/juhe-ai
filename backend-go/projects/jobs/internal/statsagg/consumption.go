@@ -10,6 +10,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
+// bootstrapBatchRows 是存量结算每轮最多标记的行数；单轮必须显著低于 job 20s
+// 预算，剩余行由后续轮次继续（见 BootstrapUsageRecordConsumption）。
+const bootstrapBatchRows = 20000
+
 // 使用记录统计消费水位（BUG-0345 根治）：
 //
 // 旧口径按 `(created_at, id)` 顺序游标消费，隐含假设「游标越过一行时该行已落库」。
@@ -146,20 +150,31 @@ func BootstrapUsageRecordConsumption(ctx context.Context, q sqlExecutorQueryer, 
 	}
 	// 游标 id 缺失时按「created_at <= 游标」（含边界毫秒）结算：宁可把边界毫秒里
 	// 一条未聚合的行当作已消费，也不能把它留给下一轮重复累加。
+	//
+	// 存量可能很大（生产 38 万行、30 天保留），整表 UPDATE 会超过 20s job 预算并
+	// 在超时后整批回滚，形成每轮重复超时。这里每轮只结算 bootstrapBatchRows 行，
+	// 由上层“本轮不再消费、下一轮继续”的语义分批推进；行值 IN 命中
+	// (created_at,id) 主键/部分索引，避免按 id 跨分区扫描。
 	bind := sqldialect.BindSQL
 	var query string
 	var args []any
 	if strings.TrimSpace(cursorID) == "" {
 		query = bind(`UPDATE ` + usageRecordsTableSQL +
 			` SET ` + string(column) + ` = ?` +
-			` WHERE ` + string(column) + ` IS NULL AND created_at <= ?`)
-		args = []any{consumedAt, cursorCreatedAt}
+			` WHERE (created_at, id) IN (` +
+			`SELECT created_at, id FROM ` + usageRecordsTableSQL +
+			` WHERE ` + string(column) + ` IS NULL AND created_at <= ?` +
+			` ORDER BY created_at, id LIMIT ?)`)
+		args = []any{consumedAt, cursorCreatedAt, bootstrapBatchRows}
 	} else {
 		query = bind(`UPDATE ` + usageRecordsTableSQL +
 			` SET ` + string(column) + ` = ?` +
+			` WHERE (created_at, id) IN (` +
+			`SELECT created_at, id FROM ` + usageRecordsTableSQL +
 			` WHERE ` + string(column) + ` IS NULL` +
-			` AND (created_at < ? OR (created_at = ? AND id <= ?))`)
-		args = []any{consumedAt, cursorCreatedAt, cursorCreatedAt, cursorID}
+			` AND (created_at < ? OR (created_at = ? AND id <= ?))` +
+			` ORDER BY created_at, id LIMIT ?)`)
+		args = []any{consumedAt, cursorCreatedAt, cursorCreatedAt, cursorID, bootstrapBatchRows}
 	}
 	result, err := q.ExecContext(ctx, query, args...)
 	if err != nil {
