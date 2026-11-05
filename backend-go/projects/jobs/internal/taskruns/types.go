@@ -17,9 +17,14 @@ const (
 	StatusSkipped   TaskRunStatus = "skipped"
 )
 
-// TemporaryMaintenanceWorkerRole 是 background-task-run-reconcile 的对账对象：
-// 只有该 worker_role 的 queued/running 陈旧行会被收口为 failed。
+// TemporaryMaintenanceWorkerRole 是临时维护任务的 worker_role：该角色的
+// queued/running 陈旧行由 background-task-run-reconcile 按租约与心跳收口。
 const TemporaryMaintenanceWorkerRole = "temporary-maintenance-worker"
+
+// ScheduledWorkerRole 是周期调度任务的 worker_role。scheduled 任务不持有
+// 按 run_id 关联的租约（租约按 job lease_key 复用），因此只能按心跳/提交
+// 时间收口；硬 kill 遗留的 queued/running 行由此清理（DR-33 生产巡检）。
+const ScheduledWorkerRole = "worker"
 
 // TaskRun 是 background_task_runs 行的只读视图（等价 BackgroundTaskRunSummary）。
 type TaskRun struct {

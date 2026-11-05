@@ -517,6 +517,63 @@ func TestKillRestartRecovery(t *testing.T) {
 	}
 }
 
+// TestReconcileStaleScheduledWorkerRuns：scheduled worker 的硬 kill 遗留
+// queued/running 行按提交/心跳时间收口；新鲜 running 行保持不动。
+func TestReconcileStaleScheduledWorkerRuns(t *testing.T) {
+	store, clock := newTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// 陈旧 queued：创建后进程未启动。
+	staleQueued, err := store.CreateTaskRun(ctx, TaskRunCreateInput{
+		JobName: "scheduled-stale-queued", JobType: "maintenance", WorkerRole: ScheduledWorkerRole, LeaseKey: "scheduled:q:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 陈旧 running：启动后心跳停在启动时刻。
+	staleRunning, err := store.CreateTaskRun(ctx, TaskRunCreateInput{
+		JobName: "scheduled-stale-running", JobType: "maintenance", WorkerRole: ScheduledWorkerRole, LeaseKey: "scheduled:r:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAt := clock.Now()
+	if ok, err := store.TryStartTaskRun(ctx, TaskRunStartInput{RunID: staleRunning.RunID, OwnerID: "dead-owner", LeaseUntil: startAt.Add(time.Minute)}); err != nil || !ok {
+		t.Fatalf("start stale running: %v %v", ok, err)
+	}
+	clock.Advance(10 * time.Minute)
+
+	// 新鲜 running：同一时刻启动且心跳为当前时间，不应被收口。
+	freshRunning, err := store.CreateTaskRun(ctx, TaskRunCreateInput{
+		JobName: "scheduled-fresh-running", JobType: "maintenance", WorkerRole: ScheduledWorkerRole, LeaseKey: "scheduled:f:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.TryStartTaskRun(ctx, TaskRunStartInput{RunID: freshRunning.RunID, OwnerID: "live-owner", LeaseUntil: clock.Now().Add(10 * time.Minute)}); err != nil || !ok {
+		t.Fatalf("start fresh running: %v %v", ok, err)
+	}
+
+	result, err := store.ReconcileStale(ctx, TaskRunReconcileInput{QueuedBefore: clock.Now().Add(-5 * time.Minute), RunningHeartbeatBefore: clock.Now().Add(-5 * time.Minute), Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FailedQueuedCount < 1 || result.FailedRunningCount < 1 {
+		t.Fatalf("应至少收口 1 条 queued 与 1 条 running: %+v", result)
+	}
+	for _, runID := range []string{staleQueued.RunID, staleRunning.RunID} {
+		got, err := store.GetTaskRun(ctx, runID)
+		if err != nil || got == nil || got.Status != StatusFailed {
+			t.Fatalf("陈旧行 %s 应 failed: got=%+v err=%v", runID, got, err)
+		}
+	}
+	fresh, err := store.GetTaskRun(ctx, freshRunning.RunID)
+	if err != nil || fresh == nil || fresh.Status != StatusRunning {
+		t.Fatalf("新鲜 running 不应被收口: got=%+v err=%v", fresh, err)
+	}
+}
+
 // TestConcurrentTaskStartOnlyOneWinner 并发 TryStartTaskRun 只有一个赢家。
 func TestConcurrentTaskStartOnlyOneWinner(t *testing.T) {
 	store, clock := newTestStore(t)

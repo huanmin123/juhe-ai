@@ -774,6 +774,30 @@ func (s *Store) ReconcileStale(ctx context.Context, input TaskRunReconcileInput)
 		}
 		result.FailedRunningCount = changes
 
+		// scheduled 任务的 queued/running 遗留行：租约按 job 复用，不能按
+		// run_id 关联判定，排队按 submitted_at、运行按 heartbeat_at 收口。
+		scheduledQueuedArgs := []any{
+			`{"reconciled":true,"reconciledReason":"scheduled_worker_never_started"}`,
+			"周期任务未在期限内启动，后台任务已自动收口为失败",
+			nowText, nowText, queuedBefore, queuedBefore, limit,
+		}
+		changes, err = execTxChanges(tx, s.bind(s.reconcileScheduledQueuedSQL()), scheduledQueuedArgs...)
+		if err != nil {
+			return err
+		}
+		result.FailedQueuedCount += changes
+
+		scheduledRunningArgs := []any{
+			`{"reconciled":true,"reconciledReason":"scheduled_worker_heartbeat_stale"}`,
+			"周期任务心跳中断，后台任务已自动收口为失败",
+			nowText, nowText, heartbeatBefore, heartbeatBefore, limit,
+		}
+		changes, err = execTxChanges(tx, s.bind(s.reconcileScheduledRunningSQL()), scheduledRunningArgs...)
+		if err != nil {
+			return err
+		}
+		result.FailedRunningCount += changes
+
 		changes, err = execTxChanges(tx, s.bind(s.deleteExpiredLeasesSQL()), nowText, limit)
 		if err != nil {
 			return err
@@ -856,6 +880,58 @@ WHERE target.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
         FROM ` + leases + ` leases
         WHERE ` + leaseValidSub + `
       )
+    ORDER BY runs.updated_at ASC, runs.run_id ASC
+    LIMIT ?
+  )
+`
+}
+
+func (s *Store) reconcileScheduledQueuedSQL() string {
+	runs := s.runsTable()
+	return `
+UPDATE ` + runs + ` AS target
+SET status = 'failed',
+  result_json = ?,
+  error_message = ?,
+  finished_at = ?,
+  updated_at = ?
+WHERE target.worker_role = '` + ScheduledWorkerRole + `'
+  AND target.status = 'queued'
+  AND target.submitted_at <= ?
+  AND target.run_id IN (
+    SELECT runs.run_id
+    FROM ` + runs + ` runs
+    WHERE runs.worker_role = '` + ScheduledWorkerRole + `'
+      AND runs.status = 'queued'
+      AND runs.submitted_at <= ?
+    ORDER BY runs.updated_at ASC, runs.run_id ASC
+    LIMIT ?
+  )
+`
+}
+
+// reconcileScheduledRunningSQL 只按心跳时间收口 scheduled running 行：该类
+// 任务的租约按 job lease_key 复用，不按 run_id 关联，不能用租约存在性判定；
+// 存活任务的心跳由 RunWithTaskRun 的 heartbeat 协程持续刷新，超过宽限期
+// 未心跳即可安全判定为进程异常退出遗留。
+func (s *Store) reconcileScheduledRunningSQL() string {
+	runs := s.runsTable()
+	return `
+UPDATE ` + runs + ` AS target
+SET status = 'failed',
+  result_json = ?,
+  error_message = ?,
+  finished_at = ?,
+  updated_at = ?
+WHERE target.worker_role = '` + ScheduledWorkerRole + `'
+  AND target.status = 'running'
+  AND COALESCE(target.heartbeat_at, target.started_at, target.updated_at) <= ?
+  AND target.run_id IN (
+    SELECT runs.run_id
+    FROM ` + runs + ` runs
+    WHERE runs.worker_role = '` + ScheduledWorkerRole + `'
+      AND runs.status = 'running'
+      AND COALESCE(runs.heartbeat_at, runs.started_at, runs.updated_at) <= ?
     ORDER BY runs.updated_at ASC, runs.run_id ASC
     LIMIT ?
   )
