@@ -12,7 +12,7 @@ import (
 
 // bootstrapBatchRows 是存量结算每轮最多标记的行数；单轮必须显著低于 job 20s
 // 预算，剩余行由后续轮次继续（见 BootstrapUsageRecordConsumption）。
-const bootstrapBatchRows = 20000
+const bootstrapBatchRows = 5000
 
 // 使用记录统计消费水位（BUG-0345 根治）：
 //
