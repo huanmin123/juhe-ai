@@ -126,7 +126,10 @@ func (s *redisNamespacedStateStore) GetDeleteJSON(ctx context.Context, key strin
 	var raw string
 	err := s.run(ctx, func(runCtx context.Context) error {
 		var getErr error
-		raw, getErr = s.client.GetDel(runCtx, s.redisKey(key)).Result()
+		// Redis 5.0 (the shared deployment instance) has no GETDEL command.
+		// EVAL with GET+DEL keeps the same single-key atomic consume semantics
+		// on Redis 5+, Redis 6+ and single-slot Cluster keys.
+		raw, getErr = s.client.Eval(runCtx, getDeleteJSONScript, []string{s.redisKey(key)}).Text()
 		return getErr
 	})
 	if errors.Is(err, redis.Nil) {
@@ -140,6 +143,15 @@ func (s *redisNamespacedStateStore) GetDeleteJSON(ctx context.Context, key strin
 	}
 	return true, nil
 }
+
+// getDeleteJSONScript mirrors GETDEL for Redis versions before 6.2.
+const getDeleteJSONScript = `
+local value = redis.call('GET', KEYS[1])
+if value then
+  redis.call('DEL', KEYS[1])
+end
+return value
+`
 
 func (s *redisNamespacedStateStore) SetJSON(ctx context.Context, key string, value any, ttlMs int64) error {
 	encoded, err := json.Marshal(value)

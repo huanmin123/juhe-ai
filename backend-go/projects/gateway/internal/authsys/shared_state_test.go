@@ -47,7 +47,7 @@ func TestRedisStateStoreKeyPrefix(t *testing.T) {
 
 // TestSharedCaptchaIssueVerifyAtomicConsumption proves the Redis captcha
 // driver: issue writes the Node-shaped challenge record, the first verify
-// atomically consumes it (GETDEL) and the second verify misses.
+// atomically consumes it (EVAL GET+DEL) and the second verify misses.
 func TestSharedCaptchaIssueVerifyAtomicConsumption(t *testing.T) {
 	store, server := newMiniredisStore(t)
 	now := time.Unix(1_800_000_000, 0)
@@ -78,7 +78,7 @@ func TestSharedCaptchaIssueVerifyAtomicConsumption(t *testing.T) {
 		t.Fatal("second verify must miss: the challenge was consumed atomically")
 	}
 	if _, err := server.Get(challengePrefix + result.Challenge.CaptchaID); err == nil {
-		t.Fatal("GETDEL did not remove the key")
+		t.Fatal("atomic consume did not remove the key")
 	}
 }
 

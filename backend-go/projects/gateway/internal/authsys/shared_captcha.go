@@ -38,7 +38,7 @@ type captchaChallengeRecord struct {
 // SharedCaptchaService is the Redis runtime-state captcha driver: it mirrors
 // the Node async paths (createCaptchaChallengeAsync /
 // verifyCaptchaChallengeAsync / consumeCaptchaIssueAllowanceAsync) so challenge
-// consumption is atomic across instances (GETDEL) and the per-IP issue window
+// consumption is atomic across instances (EVAL GET+DEL, Redis 5 compatible) and the per-IP issue window
 // is a shared counter (BUG-0171.4). The memory driver remains
 // modelcheckauth.CaptchaService. Issue propagates state-store failures to the
 // existing 500 path; Verify does the same since the 2026-10-23 K2 close-out
@@ -117,7 +117,7 @@ func (s *SharedCaptchaService) Issue(clientIP string) (modelcheckauth.CaptchaIss
 	}, nil
 }
 
-// Verify mirrors verifyCaptchaChallengeAsync: GETDEL consumes the challenge
+// Verify mirrors verifyCaptchaChallengeAsync: atomic get+delete consumes the challenge
 // exactly once, then the expiry and normalized answer decide the result.
 // VerifyWithError is the error-carrying face; this bool shim keeps
 // SharedCaptchaService satisfying the error-free CaptchaIssuer surface

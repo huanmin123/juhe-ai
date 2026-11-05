@@ -200,9 +200,14 @@ async function handleLogin() {
       password: form.password,
       ...(captchaRequired.value ? { captchaId: captcha.value?.captchaId, captchaCode: form.captchaCode.trim() } : {})
     })
-    if (user.mustChangePassword) showToast('当前账户使用初始密码，请先完成修改')
+    if (user.mustChangePassword) showToast('当前账户需要修改登录密码，请先完成修改')
     const redirect = resolveRedirect(user)
     if (isHelp(redirect)) {
+      if (user.mustChangePassword) {
+        // 强制改密优先：忽略帮助站外跳，交给路由守卫进入 /profile 并由全局弹窗阻塞。
+        await router.replace('/')
+        return
+      }
       window.location.assign(redirect)
       return
     }

@@ -194,6 +194,12 @@ describe('顶层资源函数', () => {
     await expect(prewarmSelfUserReferenceData()).resolves.toBeUndefined()
   })
 
+  it('强制改密用户 prewarm 不发请求，避免 403 刷新循环', async () => {
+    authState.currentUser.value = user({ role: 'user', id: 'me-must', mustChangePassword: true })
+    await expect(prewarmSelfUserReferenceData()).resolves.toBeUndefined()
+    expect(api.myUiBootstrap.options).not.toHaveBeenCalled()
+  })
+
   it('authRevision 变化触发会话键更新并重新拉取', async () => {
     authState.currentUser.value = user({ role: 'user', id: 'me-4' })
     vi.mocked(api.myUiBootstrap.options).mockResolvedValue(referenceData('me-4'))

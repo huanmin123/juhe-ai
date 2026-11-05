@@ -134,6 +134,9 @@ export function loadUserReferenceData(params: UserReferenceDataScopeParams = {})
 }
 
 export async function prewarmSelfUserReferenceData(): Promise<UserReferenceData | undefined> {
+  // 强制改密期间业务 API 全部返回 403；预热会触发 403 -> 刷新当前用户 -> 再次预热
+  // 的循环，且反复打满 /auth/me 限频。改密成功、mustChangePassword 变 false 后再预热。
+  if (authState.currentUser.value?.mustChangePassword) return undefined
   try {
     return await loadUserReferenceData({ viewScope: 'self' })
   } catch {

@@ -2,6 +2,7 @@
   <a-config-provider :locale="zhCN" :theme="themeConfig">
     <router-view v-if="$route.meta.public" />
     <AppLayout v-else />
+    <ForcePasswordChangeModal />
   </a-config-provider>
 </template>
 
@@ -11,6 +12,7 @@ import dayjs from 'dayjs'
 import 'dayjs/locale/zh-cn'
 
 import AppLayout from './layouts/AppLayout.vue'
+import ForcePasswordChangeModal from './layouts/ForcePasswordChangeModal.vue'
 
 const themeConfig = {
   token: {

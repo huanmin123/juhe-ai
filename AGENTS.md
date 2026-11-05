@@ -61,12 +61,15 @@
 
   ```text
   .local/project-resources/
-  ├── dev/                 # 本地开发资源（远端 192.168.1.203 开发库 + 独立环境变量）
-  │   ├── env/             # shared.env / standalone.env / server.env 等；*.example 是模板
-  │   ├── database/        # 开发 PostgreSQL / Redis 隔离约定
-  │   ├── runbooks/        # 开发环境初始化与验证、数据库生命周期
-  │   ├── logs/            # 开发运行日志（按需生成）
-  │   └── runtime/         # 隔离实例运行时文件（按需生成）
+  ├── dev/                 # 生产演练实例（192.168.40.195）+ 本机开发环境变量
+  │   ├── env/             # shared.env（本机 dev）/ server.env（演练服务器）/ admin.env（管理侧）
+  │   ├── accounts/        # SSH、Grafana、juhe-ai 管理员凭据索引
+  │   ├── database/        # PostgreSQL / Redis 事实、库/角色/namespace、每日备份
+  │   ├── deploy/          # 演练部署拓扑、目录、端口、更新回滚、备份脚本
+  │   ├── monitoring/      # Prometheus/Grafana 接入说明（核心应用指标已接入）
+  │   ├── runbooks/        # 初始化与验证、数据库生命周期、备份恢复
+  │   ├── logs/            # 演练运行日志（按需生成）
+  │   └── runtime/         # 演练实例运行时文件（按需生成）
   └── prod/                # 生产资料：国内单机 Docker 103.36.63.105（唯一形态）
       ├── README.md         # 范围、导航与当前待办
       ├── assets/           # 服务器资产台账（含 SSH 密钥）
@@ -76,9 +79,11 @@
       └── runbooks/         # 国内单机 Docker 部署与运维（唯一手册）
   ```
 
-- `dev` 使用远端 `192.168.1.203` 的 PostgreSQL 数据库 `juhe_ai_sub2api_dev`、专用登录角色 `juhe_ai_sub2api_dev_app`，以及 cache/state/queue 三个 Redis 实例各自的 DB `9`；统一 namespace 是 `juhe-ai:dev`。真实连接配置在 `dev/env/shared.env`，初始化和加载入口在 `dev/runbooks/`。
+- `dev` 使用远端 dev 服务器的 PostgreSQL 专用库 `juhe_ai_dev`（本机开发用 `juhe_ai_dev_local`）与共享 Redis namespace `dev`（本机 `devlocal`）；应用角色 `juhe_ai_dev` 拥有两库。真实连接配置在 `dev/env/shared.env` 与 `dev/env/server.env`，初始化、验证和数据库生命周期在 `dev/runbooks/`；服务器地址、角色口令与监控凭据只在 `.local`。共享 Redis 禁止 `FLUSHDB`/`FLUSHALL`，只按 `juhe-ai:{dev:*` / `juhe-ai:{devlocal:*` 前缀清理。
+- `dev/` 当前承载 `192.168.40.195` 的**生产演练实例**：`server.env` 为 `NODE_ENV=production`、验证码开启、首登强制改密门禁开启，仅内网 HTTP 使用 `COOKIE_SECURE=false`；`shared.env` 仍是本机 `pnpm dev` 的 `development` 配置，两者不得混用。演练实例每日 03:40 备份 `juhe_ai_dev`，但备份与数据库同机，异机灾备未接入（T155）。
 - `F:\juhe-ai-public-welfare\.local` 仅供目录设计参考；当前项目不读取或复用其中的数据库、Redis、连接串或命名空间。
 - `prod` 只保存当前唯一生产形态（国内单机 Docker，`103.36.63.105`）的私有资料：资产台账 `assets/国内单机-103.36.63.105.md`（含 SSH 密钥）、数据库事实 `database/国内单机-postgresql-redis.md`、唯一运维手册 `runbooks/国内单机Docker部署与运维.md`。旧 Mac + K3s + Edge 形态资料已清理，不另留备份。单机形态的变更通过 `docker/single-server/` 配置 + 上传发布；在当前任务获得明确授权时，允许在目标服务器上以受控方式执行限定的数据修复、回填和向前兼容的加法式 schema 变更（执行前先备份）。不允许把 Secret、env、logs、releases、backups 数据复制到本目录之外的任何位置。
+- **当前检出未包含 `.local/project-resources/prod/`**：生产资产台账、备份脚本与运维手册缺失，`docker/single-server/deploy.sh` 不可执行；恢复前不得进行生产发布/备份操作。该缺口已登记到 `docs/待办与阻塞事项.md`。
 - 操作 `.local` 后必须验证 `git check-ignore -v --no-index .local/<探针路径>` 命中忽略规则，并确认 `git ls-files -- .local` 没有输出。
 
 ## 事件导航
@@ -93,7 +98,7 @@
 | 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/architecture/Go三项目架构基线.md` |
 | 需求计划、执行进度或关联文档 | `docs/plans/README.md` |
 | 本地安装、运行、联调、测试或验证 | `docs/develop/README.md` |
-| 部署相关变动（compose/env/参数/运行时目录/初始化与验证步骤） | `docs/deploy/README.md` 与 `docker/single-server/README.md`（同步约束见上文"部署变更文档同步"） |
+| 部署相关变动（compose/env/参数/运行时目录/初始化与验证步骤） | `docs/deploy/README.md` 与 `docker/single-server/README.md`（同步约束见上文"部署变更文档同步"）；内网生产演练形态见 `docker/dev-server/README.md` |
 | bug、异常、测试失败或数据不一致 | `docs/architecture/问题修复指导.md`，必要时记录到 `docs/bug/README.md` |
 | 大文件拆分、职责调整或重复逻辑收敛 | `docs/architecture/大文件重构指南.md`，复盘记录到 `docs/refactors/README.md` |
 | 压测、性能分析、容量或验证报告 | `docs/reports/README.md` |

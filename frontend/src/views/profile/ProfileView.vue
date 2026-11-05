@@ -34,14 +34,6 @@
         </div>
       </a-card>
 
-      <div v-if="mustChangePassword" class="profile-required-notice" role="alert">
-        <span class="profile-required-icon"><LockOutlined /></span>
-        <div>
-          <strong>请先修改初始密码</strong>
-          <p>完成密码修改后才能继续使用控制台；当前会话会保留，其他登录会话将失效。</p>
-        </div>
-      </div>
-
       <div class="profile-grid">
         <a-card class="page-card profile-section-card profile-basic-card" title="基本资料">
           <div class="profile-basic-editor">
@@ -437,8 +429,9 @@ async function savePassword(): Promise<void> {
       return
     }
   } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '修改密码失败'))
+    const errorMessage = extractApiErrorMessage(error, '修改密码失败')
+    console.error('修改密码失败', errorMessage)
+    message.error(errorMessage)
   } finally {
     passwordSaving.value = false
   }
@@ -547,42 +540,6 @@ async function focusRequestedSection(): Promise<void> {
 .profile-summary {
   margin-top: 8px;
   color: var(--juhe-muted);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.profile-required-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 16px 18px;
-  color: var(--juhe-warn);
-  background: var(--juhe-warn-soft);
-  border: 1px solid var(--juhe-warn-line);
-  border-radius: 14px;
-  box-shadow: 0 8px 22px rgba(146, 64, 14, 0.06);
-}
-
-.profile-required-icon {
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 34px;
-  color: var(--juhe-warn);
-  background: var(--juhe-warn-soft);
-  border-radius: 10px;
-}
-
-.profile-required-notice strong {
-  display: block;
-  font-size: 15px;
-}
-
-.profile-required-notice p {
-  margin: 4px 0 0;
-  color: var(--juhe-warn);
   font-size: 13px;
   line-height: 20px;
 }

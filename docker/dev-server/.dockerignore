@@ -1,0 +1,7 @@
+# 构建上下文只保留 Dockerfile 需要的 build/；.env、运行数据与备份不得进入构建上下文。
+.env
+.env.*
+data/
+backup/
+compose.yml
+.dockerignore
