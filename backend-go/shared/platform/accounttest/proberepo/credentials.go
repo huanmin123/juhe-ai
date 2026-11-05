@@ -120,22 +120,17 @@ func (s *Store) IsAccountAPIKeyPoolIsolationEnabled(providerCode, protocolCode, 
 }
 
 // isAccountAPIKeyPoolProviderSupported 供应商解耦后的等价词表：vendor_code 直取
-// 旧支持集里的真实厂商（gpt/deepseek/glm/gemini/anthropic）；空 vendor 对应
-// generic_http 连接（旧 openai/openai-compatible/hybrid 泛化身份的收敛形态），
-// 按协议面 openai/anthropic/gemini 放行；其余真实厂商沿用协议面 anthropic
+// 旧支持集里的真实厂商（gpt/deepseek/glm/gemini/anthropic）；空 vendor（历史
+// generic_http 形态）已退役，一律不支持；其余真实厂商沿用协议面 anthropic
 // 兜底（GLM anthropic profile 等）。
 func isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion string) bool {
 	code := normalizeProviderToken(providerCode)
+	if code == "" {
+		return false
+	}
 	switch code {
 	case "gpt", "deepseek", "glm", "gemini", "anthropic":
 		return true
-	}
-	if code == "" {
-		switch normalizeProviderToken(protocolCode) {
-		case "openai", "anthropic", "gemini":
-			return true
-		}
-		return false
 	}
 	return normalizeProviderToken(protocolCode) == "anthropic"
 }

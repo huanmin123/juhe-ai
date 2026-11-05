@@ -12,6 +12,7 @@ func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 	env := map[string]string{
 		"JUHE_AI_DATA_DIR":     dataDir,
 		"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke",
+		"JUHE_AI_REDIS_URL":    "redis://smoke-test.invalid:6379/0",
 		"JUHE_AI_SECRET":       "0123456789abcdef0123456789abcdef",
 	}
 	config, err := loadWorkerConfig(getenvFrom(env))
@@ -37,15 +38,15 @@ func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 	if config.UsageSpoolDirectory != explicit {
 		t.Fatalf("显式 SPOOL_DIRECTORY 必须优先: %q", config.UsageSpoolDirectory)
 	}
-	// 旧名 JUHE_AI_USAGE_SPOOL_DIR 兜底 + 披露标记。
+	// 旧名 JUHE_AI_USAGE_SPOOL_DIR 已删除：未配置 DIRECTORY 时按 DATA_DIR 派生。
 	delete(env, "JUHE_AI_USAGE_SPOOL_DIRECTORY")
 	env["JUHE_AI_USAGE_SPOOL_DIR"] = explicit
 	config, err = loadWorkerConfig(getenvFrom(env))
 	if err != nil {
 		t.Fatalf("旧名 spool 必须可解析: %v", err)
 	}
-	if config.UsageSpoolDirectory != explicit || !config.usageSpoolDirectoryLegacyName {
-		t.Fatalf("旧名 SPOOL_DIR 必须兜底并打标: %q %v", config.UsageSpoolDirectory, config.usageSpoolDirectoryLegacyName)
+	if config.UsageSpoolDirectory == explicit {
+		t.Fatalf("旧名 SPOOL_DIR 必须被忽略: %q", config.UsageSpoolDirectory)
 	}
 }
 
@@ -54,10 +55,10 @@ func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 // env 因 POSTGRES_URL 必填直接 fail closed；带 POSTGRES_URL 的非生产 env
 // 空 SECRET 回退开发密钥，production 空 SECRET 仍 fail-fast。
 func TestLoadWorkerConfigEmptyEnvZeroConfig(t *testing.T) {
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
-		t.Fatalf("空 env 缺 POSTGRES_URL 必须 fail closed: %v", err)
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || (!strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") && !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL")) {
+		t.Fatalf("空 env 缺存储连接串必须 fail closed: %v", err)
 	}
-	config, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke"}))
+	config, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke", "JUHE_AI_REDIS_URL": "redis://smoke-test.invalid:6379/0"}))
 	if err != nil {
 		t.Fatalf("带 POSTGRES_URL 必须可装载: %v", err)
 	}
@@ -65,6 +66,7 @@ func TestLoadWorkerConfigEmptyEnvZeroConfig(t *testing.T) {
 		t.Fatalf("非生产空 SECRET 应回退开发密钥: %q", config.Secret)
 	}
 	if _, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke",
+		"JUHE_AI_REDIS_URL":    "redis://smoke-test.invalid:6379/0",
 		"NODE_ENV": "production",
 	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
 		t.Fatalf("production 空 SECRET 必须 fail-fast: %v", err)

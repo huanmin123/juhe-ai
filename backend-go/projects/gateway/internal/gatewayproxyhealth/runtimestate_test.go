@@ -232,7 +232,7 @@ func TestRedisRuntimeStateStoreDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key := range client.data {
-		if !strings.HasPrefix(key, "juhe-ai:dev:state:gateway-upstream-bucket-health:bucket:abc") {
+		if !strings.HasPrefix(key, "juhe-ai:{dev}:state:gateway-upstream-bucket-health:bucket:abc") {
 			t.Fatalf("redis key = %q", key)
 		}
 	}
@@ -263,11 +263,11 @@ func TestRedisRuntimeStateStoreDriver(t *testing.T) {
 	}
 
 	// Malformed JSON reads as absent and is cleaned up.
-	client.data["juhe-ai:dev:state:gateway-upstream-bucket-health:bad"] = "{not-json"
+	client.data["juhe-ai:{dev}:state:gateway-upstream-bucket-health:bad"] = "{not-json"
 	if value, err := store.GetJSON(ctx, "bad"); err != nil || value != nil {
 		t.Fatalf("malformed value = %s err=%v", value, err)
 	}
-	if _, exists := client.data["juhe-ai:dev:state:gateway-upstream-bucket-health:bad"]; exists {
+	if _, exists := client.data["juhe-ai:{dev}:state:gateway-upstream-bucket-health:bad"]; exists {
 		t.Fatal("malformed value must be deleted")
 	}
 
@@ -293,11 +293,11 @@ func TestNamespacedRedisKey(t *testing.T) {
 		key       string
 		expected  string
 	}{
-		{namespace: "dev", key: "state:x:", expected: "juhe-ai:dev:state:x:"},
+		{namespace: "dev", key: "state:x:", expected: "juhe-ai:{dev}:state:x:"},
 		// Node never strips juhe-ai: from the namespace value itself; a
 		// namespace carrying the root prefix genuinely double-prefixes.
-		{namespace: "juhe-ai:dev", key: "state:x:", expected: "juhe-ai:juhe-ai:dev:state:x:"},
-		{namespace: "juhe-ai", key: "state:x:", expected: "juhe-ai:juhe-ai:state:x:"},
+		{namespace: "juhe-ai:dev", key: "state:x:", expected: "juhe-ai:{dev}:state:x:"},
+		{namespace: "juhe-ai", key: "state:x:", expected: "juhe-ai:{juhe-ai}:state:x:"},
 	}
 	for _, tt := range tests {
 		if got := namespacedRedisKey(tt.namespace, tt.key); got != tt.expected {

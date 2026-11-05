@@ -20,24 +20,24 @@ func TestGatewayHotQualityRuntimeSingletonIdentity(t *testing.T) {
 	// 构建与缓存复用断言由 w9c 的 TestW9CGetGatewayHotQualityRuntimeRedisDriver
 	// 承载）。miniredis 承载真实 redis 客户端构造。
 	server := miniredis.RunT(t)
-	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev", RedisStateURL: "redis://" + server.Addr()})
+	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev", RedisURL: "redis://" + server.Addr()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	again, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev", RedisStateURL: "redis://" + server.Addr()})
+	again, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev", RedisURL: "redis://" + server.Addr()})
 	if err != nil || again != runtime {
 		t.Fatalf("singleton broken: %v", err)
 	}
-	if _, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev"}); err == nil || err.Error() != "热质量缺少 JUHE_AI_REDIS_STATE_URL" {
+	if _, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev"}); err == nil || err.Error() != "热质量缺少 JUHE_AI_REDIS_URL" {
 		t.Fatalf("err = %v", err)
 	}
-	identity, identityErr := gatewayHotQualityRuntimeIdentity(RuntimeDriverConfig{RedisStateURL: "redis://x"})
+	identity, identityErr := gatewayHotQualityRuntimeIdentity(RuntimeDriverConfig{RedisURL: "redis://x"})
 	if identityErr != nil || !strings.HasPrefix(identity, "redis:") {
 		t.Fatalf("identity = %v, err = %v", identity, identityErr)
 	}
 	ResetGatewayHotQualityRuntimeForTest()
 	server2 := miniredis.RunT(t)
-	if runtime2, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev2", RedisStateURL: "redis://" + server2.Addr()}); err != nil || runtime2 == runtime {
+	if runtime2, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev2", RedisURL: "redis://" + server2.Addr()}); err != nil || runtime2 == runtime {
 		t.Fatalf("reset must rebuild the singleton")
 	}
 	ResetGatewayHotQualityRuntimeForTest()

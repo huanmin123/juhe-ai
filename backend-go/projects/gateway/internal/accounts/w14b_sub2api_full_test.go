@@ -29,6 +29,7 @@ func TestW14BSub2APIFullFieldAdaptation(t *testing.T) {
 				"credentials": map[string]any{"api_key": "sk-src-full", "base_url": "https://api.openai.com/v1"},
 				"notes":       "w14b 来源备注", "concurrency": float64(7), "priority": float64(3),
 				"expires_at": "2031-01-01", "proxy_key": "p1",
+				"supportedModels": []any{"gpt-4o-mini"},
 			},
 			// OAuth：refresh+access+account_id 全齐（凭据归一化臂）。
 			map[string]any{
@@ -41,7 +42,8 @@ func TestW14BSub2APIFullFieldAdaptation(t *testing.T) {
 			// 2026-09-19 决策：私网 Base URL 默认放行，原跳过臂转为接受。
 			map[string]any{
 				"name": "w14b-unsafe", "platform": "openai", "type": "api_key",
-				"credentials": map[string]any{"api_key": "sk-x", "base_url": "http://127.0.0.1:9999/v1"},
+				"credentials":     map[string]any{"api_key": "sk-x", "base_url": "http://127.0.0.1:9999/v1"},
+				"supportedModels": []any{"gpt-4o-mini"},
 			},
 			// 未知平台：跳过臂。
 			map[string]any{"name": "w14b-claude", "platform": "anthropic", "type": "api_key",

@@ -311,7 +311,7 @@ func TestW13AImportPlanValidationArms(t *testing.T) {
 				"accountExpiresAt": "not-a-time", "providerCode": "bogus-provider",
 				"providerProtocolProfileId": "profile_bogus", "groupName": "w13a-g2",
 				"credentials": map[string]any{"api_key": "sk-x", "base_url": "https://x"}},
-			map[string]any{"name": "w13a-n4", "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
+			map[string]any{"name": "w13a-n4", "providerCode": "gpt", "providerProtocolProfileId": openAICompatibleProfileID,
 				"status": "active", "groupName": "w13a-g2", "type": "google_oauth",
 				"credentials": map[string]any{"api_key": "sk-x", "base_url": "https://x"}},
 		},

@@ -12,6 +12,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // wireProbeFamily 把探针依赖族的三个任务翻转为 GoWired：
@@ -144,13 +145,13 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 
 	// ---- normal-route-speed-first-recovery-probe ----
 	redisConfig := speedfirstrepo.SpeedFirstRedisConfig{
-		URL:       a.config.RedisStateURL,
-		Namespace: a.config.RedisNamespace,
-		Enabled:   a.config.RedisStateURL != "",
+		URL:       a.config.RedisURL,
+		Namespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainSpeedFirst),
+		Enabled:   a.config.RedisURL != "",
 	}
 	if !redisConfig.Enabled {
 		a.registerDisabledJob("normal-route-speed-first-recovery-probe",
-			"缺 JUHE_AI_REDIS_STATE_URL（速度优先降级运行态为 Redis 单实现，jobs 与 Node 网关共用键空间，无 Redis 时不得落库复制）")
+			"缺 JUHE_AI_REDIS_URL（速度优先降级运行态为 Redis 单实现，jobs 与 Node 网关共用键空间，无 Redis 时不得落库复制）")
 		return nil
 	}
 	if !speedfirstrepo.ValidSpeedFirstNamespace(redisConfig.Namespace) {

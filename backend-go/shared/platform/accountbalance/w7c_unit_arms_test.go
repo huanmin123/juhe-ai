@@ -621,9 +621,7 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 	valid := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":          "go",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":            "w7c",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":               "postgres",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":        "postgres://example.test/db",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL":  "postgres://example.test/business",
+		"JUHE_AI_POSTGRES_URL":                        "postgres://example.test/db",
 		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":   "secret",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":    "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL":       "10s",
@@ -653,8 +651,6 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 	}{
 		{"owner not go", "JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER", "JOBS_OWNER=go"},
 		// owner id 缺省回落主机名（2026-09-21 零配置），不再有缺失失败臂。
-		{"wrong store", "JUHE_AI_ACCOUNT_BALANCE_STORE", "postgres"},
-		{"missing business url", "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL", "INPUT_POSTGRES_URL"},
 		{"missing credential secret", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET", "CREDENTIAL_SECRET"},
 		{"short http secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET", "32"},
 		{"bad scan interval", "JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL", "duration"},

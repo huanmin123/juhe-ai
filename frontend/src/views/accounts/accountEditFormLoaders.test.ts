@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   MINIMAX_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
 import type { AccountEditBasicDetail, AccountCloneContext } from '@/types/domain'
@@ -72,7 +71,7 @@ describe('buildAccountBasicEditFormLoad 档案派生（T102）', () => {
     expect(patch.speechToken).toBe('token-1')
   })
 
-  it('generic_http 账户：vendor 投影空 providerCode + 探针目录 id → 派生 openai 兼容身份（原来被「请先选择供应商」拦死）', () => {
+  it('已退役 generic_http 账户：编辑装载保持 fail-closed（providerCode 为空）', () => {
     const defaults = defaultAccountForm('', 'api_key', FALLBACK_PROVIDERS)
     const { patch } = buildAccountBasicEditFormLoad({
       account: editDetail({
@@ -83,8 +82,7 @@ describe('buildAccountBasicEditFormLoad 档案派生（T102）', () => {
       credentials: { base_url: 'https://relay.example.com/v1', api_key: 'sk-relay' },
       defaults
     })
-    expect(patch.providerCode).toBe('openai')
-    expect(patch.providerProtocolProfileId).toBe(OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID)
+    expect(patch.providerCode).toBe('')
   })
 
   it('详情档案前端可识别时保持原值（已派生成功的探针表账户零回归）', () => {

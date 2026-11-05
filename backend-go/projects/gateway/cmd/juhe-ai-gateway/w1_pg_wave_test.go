@@ -101,7 +101,7 @@ func w1g2TestNamespace(t *testing.T) string {
 	if len(sanitized) > 40 {
 		sanitized = sanitized[len(sanitized)-40:]
 	}
-	return "juhe-ai:dev:w1g2-" + sanitized
+	return "juhe-ai:{dev}:w1g2-" + sanitized
 }
 
 // w1pgEnvFile 读取 dev env 文件的 KEY=VALUE 集合（Redis URL 等非 PG 事实）；
@@ -290,13 +290,17 @@ func w1g2SeedCircuitRuntimeIndex(t *testing.T, redisURL, namespace string) {
 	client := w1g2RedisClient(t, redisURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	key := fmt.Sprintf("juhe-ai:%s:account-circuit:gateway-account-circuit:runtime-index-meta", rediscfg.CanonicalRedisNamespace(namespace))
-	if err := client.HSet(ctx, key, "version", "1", "status", "ready", "ownerMode", "go-runtime-state-v1").Err(); err != nil {
-		t.Fatalf("写入 account-circuit runtime-index-meta 失败: %v", err)
-	}
-	stored, err := client.HMGet(ctx, key, "version", "status", "ownerMode").Result()
-	if err != nil || len(stored) != 3 || fmt.Sprint(stored[0]) != "1" || fmt.Sprint(stored[1]) != "ready" || fmt.Sprint(stored[2]) != "go-runtime-state-v1" {
-		t.Fatalf("runtime-index-meta 回读不符: stored=%v err=%v", stored, err)
+	// 同一 Redis 现在承载主链 circuit 与 J3b 两个域，种子按域 hash tag 各写
+	// 一份，调用方仍只传基础 namespace。
+	for _, domain := range []string{rediscfg.DomainCircuit, rediscfg.DomainJ3B} {
+		key := rediscfg.NamespacedKey("juhe-ai:account-circuit:gateway-account-circuit:runtime-index-meta", rediscfg.DomainNamespace(namespace, domain))
+		if err := client.HSet(ctx, key, "version", "1", "status", "ready", "ownerMode", "go-runtime-state-v1").Err(); err != nil {
+			t.Fatalf("写入 account-circuit runtime-index-meta (%s) 失败: %v", domain, err)
+		}
+		stored, err := client.HMGet(ctx, key, "version", "status", "ownerMode").Result()
+		if err != nil || len(stored) != 3 || fmt.Sprint(stored[0]) != "1" || fmt.Sprint(stored[1]) != "ready" || fmt.Sprint(stored[2]) != "go-runtime-state-v1" {
+			t.Fatalf("runtime-index-meta (%s) 回读不符: stored=%v err=%v", domain, stored, err)
+		}
 	}
 }
 
@@ -353,8 +357,8 @@ func w1g2EnsureJ3bSchema(t *testing.T, db *sql.DB) {
 func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	tempAppURL := w1g2CoverPostgres(t)
 	env := w1pgEnvFile(t)
-	cacheRedisURL := env["JUHE_AI_REDIS_CACHE_URL"]
-	stateRedisURL := env["JUHE_AI_REDIS_STATE_URL"]
+	cacheRedisURL := env["JUHE_AI_REDIS_URL"]
+	stateRedisURL := env["JUHE_AI_REDIS_URL"]
 	if cacheRedisURL == "" || stateRedisURL == "" {
 		t.Skipf("dev env 缺少 Redis URL 键（跳过）")
 	}
@@ -372,14 +376,12 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 		// PG+Redis 唯一存储形态（2026-10-24 存储形态收口）。
 		PostgresURL:                   tempAppURL,
 		BusinessPostgresURL:           tempAppURL,
-		RedisCacheURL:                 cacheRedisURL,
-		RedisStateURL:                 stateRedisURL,
+		RedisURL:                      cacheRedisURL,
 		RedisNamespace:                w1g2TestNamespace(t),
 		Secret:                        "w1g2-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
 		UsageSpoolDirectory:           spoolDirectory,
-		ChatToolEnvironment:           "development",
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,
@@ -733,8 +735,8 @@ func TestW1G2F4OperationLogLegacyPostgresMigration(t *testing.T) {
 func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 	tempAppURL := w1g2CoverPostgres(t)
 	envFile := w1pgEnvFile(t)
-	cacheRedisURL := envFile["JUHE_AI_REDIS_CACHE_URL"]
-	stateRedisURL := envFile["JUHE_AI_REDIS_STATE_URL"]
+	cacheRedisURL := envFile["JUHE_AI_REDIS_URL"]
+	stateRedisURL := envFile["JUHE_AI_REDIS_URL"]
 	if cacheRedisURL == "" || stateRedisURL == "" {
 		t.Skipf("dev env 缺少 Redis URL 键（跳过）")
 	}
@@ -779,9 +781,8 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 		"JUHE_AI_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_CACHE_DRIVER=redis",
-		"JUHE_AI_REDIS_CACHE_URL="+cacheRedisURL,
 		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
-		"JUHE_AI_REDIS_STATE_URL="+stateRedisURL,
+		"JUHE_AI_REDIS_URL="+stateRedisURL,
 		"JUHE_AI_REDIS_NAMESPACE="+w1g2TestNamespace(t),
 		"JUHE_AI_SECRET=w1g2-owner-full-boot-secret",
 		"JUHE_AI_HOST=127.0.0.1",
@@ -812,8 +813,8 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 		"JUHE_AI_J3B_SCHEMA_READY=true",
 		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
 		"JUHE_AI_J3B_RUNTIME_READY=true",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL="+stateRedisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1g2TestNamespace(t),
+		"JUHE_AI_REDIS_URL="+stateRedisURL,
+		"JUHE_AI_REDIS_NAMESPACE="+w1g2TestNamespace(t),
 		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS="+j3bAddress,
 		// F3 审计（postgres 模式）
 		"JUHE_AI_AUDIT_LOG_STORE=postgres",

@@ -58,8 +58,7 @@ func LoadManualAdminConfig(getenv func(string) string) (ManualAdminConfig, error
 	// JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED 开关移除；地址缺省绑定随机
 	// 回环端口（生产按 J3a 契约显式配置固定地址）。家族依赖缺席（无任何
 	// PG 连接串可回落）时管理面合法缺席。
-	familyStoreURL := firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
-	managementURL := firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL"), familyStoreURL)
+	managementURL := strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	if managementURL == "" {
 		return ManualAdminConfig{Enabled: false}, nil
 	}

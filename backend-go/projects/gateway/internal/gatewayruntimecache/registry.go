@@ -18,6 +18,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // ---------------------------------------------------------------------------
@@ -108,7 +109,7 @@ type RegistryConfig struct {
 // Stop unregisters the boot id, ListEndpoints reads live peers.
 type Registry struct {
 	config   RegistryConfig
-	client   *redis.Client
+	client   redis.UniversalClient
 	prefix   string
 	indexKey string
 	// logger 由组合根经 SetLogger 注入（须在 Start 前调用）；nil 回落
@@ -139,22 +140,16 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 	if strings.TrimSpace(config.Secret) == "" {
 		return nil, errors.New("内部 Gateway 注册表需要 runtime secret")
 	}
-	options, err := redis.ParseURL(config.RedisURL)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: config.RedisURL})
 	if err != nil {
-		return nil, fmt.Errorf("parse registry Redis URL: %w", err)
+		return nil, fmt.Errorf("create registry Redis client: %w", err)
 	}
-	namespace := strings.TrimRight(strings.TrimSpace(config.Namespace), ":")
-	if namespace != "juhe-ai" && !strings.HasPrefix(namespace, "juhe-ai:") {
-		namespace = "juhe-ai:" + namespace
-	}
-	if strings.HasSuffix(namespace, "juhe-ai:") {
-		namespace = "juhe-ai"
-	}
+	prefix := rediscfg.TaggedPrefix(config.Namespace)
 	return &Registry{
 		config:       config,
-		client:       redis.NewClient(options),
-		prefix:       namespace + ":" + registryEntryKeyPrefix,
-		indexKey:     namespace + ":" + registryIndexKeySuffix,
+		client:       client,
+		prefix:       prefix + registryEntryKeyPrefix,
+		indexKey:     prefix + registryIndexKeySuffix,
 		warnLoggedAt: map[string]time.Time{},
 	}, nil
 }

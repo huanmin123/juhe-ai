@@ -332,23 +332,7 @@ func TestWIConfigValidateRetentionPolicyMatrix(t *testing.T) {
 			t.Fatalf("第 %d 个非法配置必须报错", i)
 		}
 	}
-	// parseBoundedDecimal 矩阵。
-	fallback := 0.5
-	if got, err := parseBoundedDecimal("n", "", fallback, 0, 1, 4); err != nil || got != fallback {
-		t.Fatalf("空值回落=%v err=%v", got, err)
-	}
-	if _, err := parseBoundedDecimal("n", "abc", fallback, 0, 1, 4); err == nil {
-		t.Fatal("非数字必须报错")
-	}
-	if _, err := parseBoundedDecimal("n", "1.12345", fallback, 0, 2, 4); err == nil {
-		t.Fatal("超小数位必须报错")
-	}
-	if _, err := parseBoundedDecimal("n", "1.5", fallback, 0, 1, 4); err == nil {
-		t.Fatal("超范围必须报错")
-	}
-	if got, err := parseBoundedDecimal("n", "0.25", fallback, 0, 1, 4); err != nil || got != 0.25 {
-		t.Fatalf("合法小数=%v err=%v", got, err)
-	}
+
 }
 
 func TestWIRetentionConfigAtDerivesCutoffs(t *testing.T) {

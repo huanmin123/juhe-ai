@@ -311,7 +311,7 @@ func TestRedisMissingCacheURLConfigError(t *testing.T) {
 	// Replace the driver with one that has no client and no URL.
 	service.redis = nil
 	_, err := service.redisSessionAffinityClient(context.Background())
-	if err == nil || err.Error() != "JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置" {
+	if err == nil || err.Error() != "JUHE_AI_REDIS_URL 在 Redis cache driver 下必须配置" {
 		t.Fatalf("err = %v", err)
 	}
 }

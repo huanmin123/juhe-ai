@@ -28,7 +28,7 @@ import (
 
 // TestW16KModelRecoveryRedisOpenFailArm 锁定 run() 的 model-recovery
 // Redis store 打开失败臂（230-232）：J1 PG store+input 装配成功、reader
-// 就绪后，JUHE_AI_REDIS_STATE_URL 非法必须在 OpenRedisStore 处 fail-fast。
+// 就绪后，JUHE_AI_REDIS_URL 非法必须在 OpenRedisStore 处 fail-fast。
 func TestW16KModelRecoveryRedisOpenFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("w16k PG 门禁臂 skipped in -short mode")

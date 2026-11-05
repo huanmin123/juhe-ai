@@ -2,9 +2,9 @@ package inval
 
 import (
 	"context"
-	"strings"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // publishVersionScript moves the stored topic version forward only: the
@@ -50,14 +50,7 @@ func NewRedisSharedStore(client redis.Cmdable, namespace string) *RedisSharedSto
 // key renders the namespaced per-topic version key. An empty namespace keeps
 // the bare juhe-ai root exactly once (no juhe-ai:juhe-ai doubling).
 func (s *RedisSharedStore) key(topic string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(s.namespace), ":")
-	if normalized == "" {
-		return "juhe-ai:inval:topic-version:" + topic
-	}
-	if !strings.HasPrefix(normalized, "juhe-ai:") {
-		normalized = "juhe-ai:" + normalized
-	}
-	return normalized + ":inval:topic-version:" + topic
+	return rediscfg.NamespacedKey("juhe-ai:inval:topic-version:"+topic, s.namespace)
 }
 
 // GetVersion returns the persisted version; a missing key reads as 0 (the

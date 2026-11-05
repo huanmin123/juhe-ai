@@ -48,15 +48,15 @@ func TestW11GComposeRuntimeBadRedisArms(t *testing.T) {
 	}
 	setting := func(string) (string, error) { return "", nil }
 	// 坏 cache URL。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisCacheURL: "://w11g-bad"}, setting); err == nil {
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisURL: "://w11g-bad"}, setting); err == nil {
 		t.Fatal("bad cache url must fail")
 	}
 	// 坏 state URL。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisStateURL: "://w11g-bad"}, setting); err == nil {
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisURL: "://w11g-bad"}, setting); err == nil {
 		t.Fatal("bad state url must fail")
 	}
 	// 空 URL。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisCacheURL: ""}, setting); err == nil {
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisURL: ""}, setting); err == nil {
 		t.Fatal("empty cache url must fail")
 	}
 }

@@ -114,4 +114,3 @@ func TestNullableDBTimeScan(t *testing.T) {
 		t.Fatal("不支持的类型必须报错")
 	}
 }
-

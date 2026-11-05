@@ -66,7 +66,7 @@ func w7bRealRedisStore(t *testing.T, clock *w7bClock) *Store {
 	return store
 }
 
-func w7bScanDelete(client *goredis.Client, pattern string) {
+func w7bScanDelete(client goredis.UniversalClient, pattern string) {
 	var cursor uint64
 	for {
 		keys, next, err := client.Scan(context.Background(), cursor, pattern, 200).Result()
@@ -95,11 +95,11 @@ func w7bSharedEnvRedisURL(t *testing.T) string {
 		t.Skipf("dev env 不可读，真实 Redis 用例跳过: %v", err)
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.HasPrefix(line, "JUHE_AI_REDIS_CACHE_URL=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "JUHE_AI_REDIS_CACHE_URL="))
+		if strings.HasPrefix(line, "JUHE_AI_REDIS_URL=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "JUHE_AI_REDIS_URL="))
 		}
 	}
-	t.Skip("shared.env 缺少 JUHE_AI_REDIS_CACHE_URL，真实 Redis 用例跳过")
+	t.Skip("shared.env 缺少 JUHE_AI_REDIS_URL，真实 Redis 用例跳过")
 	return ""
 }
 

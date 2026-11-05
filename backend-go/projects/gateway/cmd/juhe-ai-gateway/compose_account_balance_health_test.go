@@ -185,10 +185,10 @@ func TestAccountBalanceGoOwnerHealthEarlyExitReportsOwnerMode(t *testing.T) {
 	}
 }
 
-// TestResolveAccountBalanceOwnerMode pins the archived parse semantics:
-// only the exact trimmed lowercase standby/drain strings select the mode,
-// every other value falls back to active (unlike the fail-closed process
-// ownermode.Load gate).
+// TestResolveAccountBalanceOwnerMode pins the unified parsing: the same
+// ownermode.Load contract as the process-level gate (trim + case-insensitive),
+// and illegal values fall back to active only as a defensive branch because
+// startup already fails fast.
 func TestResolveAccountBalanceOwnerMode(t *testing.T) {
 	cases := map[string]ownermode.Mode{
 		"":          ownermode.Active,
@@ -196,7 +196,7 @@ func TestResolveAccountBalanceOwnerMode(t *testing.T) {
 		"standby":   ownermode.Standby,
 		"drain":     ownermode.Drain,
 		" standby ": ownermode.Standby,
-		"STANDBY":   ownermode.Active,
+		"STANDBY":   ownermode.Standby,
 		"weird":     ownermode.Active,
 	}
 	for value, want := range cases {

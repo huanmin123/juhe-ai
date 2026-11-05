@@ -1198,7 +1198,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 
 	t.Run("async redis round robin uses the shared counter", func(t *testing.T) {
 		counter := &scriptedRedisCounter{values: []int64{1, 0}}
-		selector := NewAPIKeyGroupRouteSelector("redis", counter, "redis://example:6379/0")
+		selector := NewAPIKeyGroupRouteSelector("redis", counter, "redis://example:6379/0", "route-state")
 		apiKey := &APIKeyRow{
 			ID: "key1", RouteStrategyID: "strategy1",
 			RouteStrategyMode: RouteStrategyModeRoundRobin,
@@ -1218,7 +1218,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 		if len(counter.keys) != 1 {
 			t.Fatalf("counter calls = %d, want 1", len(counter.keys))
 		}
-		wantKey := "juhe-ai:route-state:api-key-group:round-robin:" + base64URL("strategy1")
+		wantKey := "juhe-ai:{route-state}:api-key-group:round-robin:" + base64URL("strategy1")
 		if counter.keys[0] != wantKey {
 			t.Fatalf("counter key = %q, want %q", counter.keys[0], wantKey)
 		}
@@ -1229,7 +1229,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 
 	t.Run("async redis weighted picks by cumulative weight", func(t *testing.T) {
 		counter := &scriptedRedisCounter{values: []int64{3}}
-		selector := NewAPIKeyGroupRouteSelector("redis", counter, "redis://example:6379/0")
+		selector := NewAPIKeyGroupRouteSelector("redis", counter, "redis://example:6379/0", "route-state")
 		apiKey := &APIKeyRow{
 			ID:                "key1",
 			RouteStrategyMode: RouteStrategyModeWeighted,
@@ -1247,7 +1247,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 		if !equalStrings(bindingIDs(ordered), []string{"w1", "w3", "w2"}) {
 			t.Fatalf("ordered = %v, want [w1 w3 w2]", bindingIDs(ordered))
 		}
-		wantKey := "juhe-ai:route-state:api-key-group:weighted:" + base64URL("key1")
+		wantKey := "juhe-ai:{route-state}:api-key-group:weighted:" + base64URL("key1")
 		if counter.keys[0] != wantKey {
 			t.Fatalf("counter key = %q, want %q", counter.keys[0], wantKey)
 		}
@@ -1266,7 +1266,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 			},
 		}
 		_, err := selector.OrderAPIKeyGroupBindingsForDispatchAsync(context.Background(), apiKey)
-		if err == nil || err.Error() != "高性能模式动态路由需要 JUHE_AI_REDIS_STATE_URL" {
+		if err == nil || err.Error() != "高性能模式动态路由需要 JUHE_AI_REDIS_URL" {
 			t.Fatalf("err = %v", err)
 		}
 		// modulo <= 0 short-circuits before the URL check — exercised through

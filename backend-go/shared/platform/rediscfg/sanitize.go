@@ -57,24 +57,9 @@ func CanonicalRedisNamespace(value string) string {
 	return SanitizeRedisNamespacePart(normalized)
 }
 
-// NamespacedKey 把 namespace 插在 `juhe-ai:` 根之后（与部署键位一致；
-// 对齐 shared/redis-namespace.ts 语义）。key 为空 panic（调用方契约）。
+// NamespacedKey 把 namespace 插在 `juhe-ai:` 根之后并加 Cluster hash tag：
+// `juhe-ai:{<namespace>}:<key>`。同一域 namespace 的键固定同一 slot。
+// key 为空 panic（调用方契约）。
 func NamespacedKey(key, namespace string) string {
-	normalized := strings.TrimSpace(key)
-	if normalized == "" {
-		panic("Redis key 不能为空")
-	}
-	rootPrefix := "juhe-ai:"
-	ns := SanitizeRedisNamespacePart(namespace)
-	if ns == "" {
-		return normalized
-	}
-	namespacePrefix := rootPrefix + ns + ":"
-	if strings.HasPrefix(normalized, namespacePrefix) {
-		return normalized
-	}
-	if strings.HasPrefix(normalized, rootPrefix) {
-		return namespacePrefix + normalized[len(rootPrefix):]
-	}
-	return namespacePrefix + normalized
+	return TaggedNamespacedKey(key, namespace)
 }

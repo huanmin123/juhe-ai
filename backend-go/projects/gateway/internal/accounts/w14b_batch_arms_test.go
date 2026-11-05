@@ -22,7 +22,7 @@ func w14bBatchSetup(t *testing.T, env *testEnv, suffix string) (string, []BatchU
 		ON CONFLICT DO NOTHING`, now, now)
 	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1',
+		VALUES ('profile_gpt_openai_v1', 'gpt', 'OpenAI 官方协议', 1, 'openai', 'v1',
 		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)
 		ON CONFLICT DO NOTHING`, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
@@ -34,7 +34,7 @@ func w14bBatchSetup(t *testing.T, env *testEnv, suffix string) (string, []BatchU
 		}
 		env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 			protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-			VALUES (?, ?, NULL, 'generic_http', 'openai', 'v1', ?, 'api_key', 'active', ?, ?, ?)`,
+			VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, ?, ?)`,
 			"acc-"+name, adminID, name, sealed, now, now)
 	}
 	revision := func(id string) int64 {
@@ -93,7 +93,7 @@ func TestW14BBatchEditContextArms(t *testing.T) {
 	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
 		SELECT ?, id, '2026-09-17T00:00:00.000Z' FROM models WHERE upstream_model = 'gpt-4o-mini'`, ids[0])
 	// B4 W2 目标形态直插（连接 preset + upstream 支持成员 + 入口映射行）。
-	env.seedEntryMapping(t, ids[0], "generic_openai_v1", "gpt-4o-mini", "chat_completions", "up-mini", "chat_completions", 1)
+	env.seedEntryMapping(t, ids[0], "gpt_openai_v1", "gpt-4o-mini", "chat_completions", "up-mini", "chat_completions", 1)
 	items, err := env.store.LoadBatchEditContext(ctx, ids, []string{"supportedModels", "modelMappings", "supportedEndpointModes"}, scope)
 	if err != nil {
 		t.Fatalf("批量上下文应成功：%v", err)
@@ -296,7 +296,7 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	// B4 W2（设计 §8）：映射携带 preset；批量前为各目标种连接 + target
 	// upstream 支持成员（写入侧双解析与外键引用面）。
 	for _, target := range targets {
-		env.seedAccountConnection(t, target.AccountID, "generic_openai_v1", "gpt-4o-mini-2")
+		env.seedAccountConnection(t, target.AccountID, "gpt_openai_v1", "gpt-4o-mini-2")
 	}
 	if _, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: targets,
@@ -304,7 +304,7 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 			"modelMappings": field("modelMappings", []any{map[string]any{
 				"sourceModel": "gpt-4o-mini", "sourceEndpointFamily": "chat_completions",
 				"upstreamModel": "gpt-4o-mini-2", "upstreamEndpointFamily": "chat_completions",
-				"targetConnectionPresetCode": "generic_openai_v1", "enabled": true,
+				"targetConnectionPresetCode": "gpt_openai_v1", "enabled": true,
 			}}),
 			"tags": field("tags", []any{"w14b-tag-a", "w14b-tag-b"}),
 		},

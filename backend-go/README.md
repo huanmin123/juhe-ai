@@ -24,17 +24,13 @@
 `projects/maintenance` 的 `upgrade` 子命令（2026-10-30 P1 交付，[升级兼容与迁移账本设计](../docs/functions/升级兼容与迁移账本设计.md) §8/§9）是一次性升级编排入口：账本 `juhe_business.schema_state`/`schema_migrations` + 12 步骤注册表（复用各一次性命令内部函数，advisory 锁 `advisorylock.UpgradeOrchestration=7001002` 与 `--ensure-schema`/`--seed` 互斥）；显式触发、不自动升级，`upgrade --dry-run` 只读预演。`projects/maintenance` 的 J3a/J3b bootstrap 不是常驻服务，是现行生产初始化契约命令（`docker/single-server/README.md` 初始化序列：PG 先手工 `CREATE SCHEMA`，再由下列命令建表）。J3a bootstrap 与 jobs runtime 共享同一 J3a PostgreSQL schema 契约：6 张 jobs 表、2 个索引、必需列的名称/类型/`NOT NULL`、主键/唯一约束均须匹配。maintenance 只做加法预置，不会创建 schema、改变 owner、`ALTER` 既有表、访问 `juhe_business`、调用 Node、写 Goose ledger 或作为 jobs runtime 的 fallback；apply 完成后命令会再次只读检查，缺项或结构不符时返回 `3`。jobs runtime 的 `Store.CheckSchema` 也会执行该结构 preflight，无法绕过 maintenance 后以同名畸形表启动。
 
 ```powershell
-$env:JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL = 'postgres://<schema-owner-role>:<secret>@<host>:5432/<database>?sslmode=require'
-go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3a-proxy-latency-postgres
-Remove-Item Env:JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL -ErrorAction SilentlyContinue
+go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3a-proxy-latency-postgres --dsn 'postgres://<schema-owner-role>:<secret>@<host>:5432/<database>?sslmode=require'
 ```
 
 J3b 专属 `juhe_j3b` schema 同序列执行（同样要求先手工 `CREATE SCHEMA`）：
 
 ```powershell
-$env:JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL = 'postgres://<schema-owner-role>:<secret>@<host>:5432/<database>?sslmode=require'
-go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-postgres
-Remove-Item Env:JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL -ErrorAction SilentlyContinue
+go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-postgres --dsn 'postgres://<schema-owner-role>:<secret>@<host>:5432/<database>?sslmode=require'
 ```
 
 （原 J3b 专属 SQLite 库的 `--apply-j3b-model-check-sqlite` 命令与 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH` env 已于 2026-10-24 随 SQLite 退役批物理删除，不再提供该引导路径。）
@@ -87,7 +83,7 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 
 ```powershell
 $env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'go-jobs-runtime-log-a'
-$env:JUHE_AI_RUNTIME_LOG_POSTGRES_URL = 'postgres://<user>:<password>@<host>:5432/juhe_ai?sslmode=require&application_name=juhe-ai-jobs-runtime-log'
+$env:JUHE_AI_RUNTIME_LOG_POSTGRES_URL = 'postgres://<user>:<password>@<host>:5432/juhe_ai?sslmode=require'
 $env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
 go run ./projects/jobs/cmd/juhe-ai-jobs
 ```

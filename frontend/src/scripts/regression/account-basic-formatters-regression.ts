@@ -35,8 +35,7 @@ import {
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
 import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
-  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID
 } from '../../shared/providerProtocol'
 
 const standardAccount = accountFixture({
@@ -140,18 +139,18 @@ const geminiOAuthAccount = accountFixture({
 assertEqual(canManageOAuthAccount(geminiOAuthAccount), true, 'Gemini Google OAuth 自有账户应允许刷新和重新授权')
 assertEqual(canCreateOAuthAccount({
   provider: providerFixture({
-    code: 'openai',
+    code: 'glm',
     accountTypes: ['oauth', 'api_key'],
     protocolCode: 'openai',
     protocolVersion: 'v1'
   }),
   profile: providerProfileFixture({
-    providerCode: 'openai',
+    providerCode: 'glm',
     accountTypes: ['oauth', 'api_key'],
     protocolCode: 'openai',
     protocolVersion: 'v1'
   })
-}), false, 'OpenAI-compatible 即使声明 OAuth 类型，也不应误走 GPT OAuth 创建流程')
+}), false, '非 GPT 厂商即使声明 OAuth 类型，也不应误走 GPT OAuth 创建流程')
 assertEqual(supportsOAuthAccountType({
   provider: providerFixture({
     code: 'anthropic',
@@ -246,15 +245,6 @@ assertEqual(
   }).join(','),
   'chat_json,chat_sse,responses_json,responses_sse',
   'DeepSeek 原生 Responses 档案应按 endpointFamilies 公开 Chat 与 Responses 两类能力'
-)
-assertEqual(
-  profileSupportsCodexResponsesChatBridge({
-    ...deepSeekBridgeProfile,
-    id: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-    providerCode: 'openai'
-  }),
-  true,
-  '通用 OpenAI-compatible Chat-only 档案应支持显式 Responses 到 Chat bridge'
 )
 assertEqual(
   profileSupportsCodexResponsesChatBridge({

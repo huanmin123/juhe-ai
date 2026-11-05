@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Account API key transient failure statuses mirror
@@ -120,8 +121,7 @@ type RedisAccountApiKeyTransientStateStore struct {
 	failureCounterWindowMs int64
 
 	once   sync.Once
-	client *redis.Client
-	opts   *redis.Options
+	client redis.UniversalClient
 	err    error
 }
 
@@ -174,7 +174,7 @@ func NewRedisAccountApiKeyTransientStateStore(options RedisAccountApiKeyTransien
 	// redisNamespacedKey(`juhe-ai:state:<name>:state:`).
 	return &RedisAccountApiKeyTransientStateStore{
 		redisURL:               redisURL,
-		keyPrefix:              "juhe-ai:" + strings.TrimSpace(options.Namespace) + ":state:" + name + ":state:",
+		keyPrefix:              rediscfg.NamespacedKey("juhe-ai:state:"+name+":state:", strings.TrimSpace(options.Namespace)),
 		stateTtlMs:             stateTtlMs,
 		suppressionDelayMs:     append([]int64(nil), suppressionDelays...),
 		failureCounterWindowMs: failureCounterWindowMs,
@@ -188,15 +188,14 @@ func (s *RedisAccountApiKeyTransientStateStore) stateKey(target AccountApiKeyTra
 	return s.keyPrefix + hex.EncodeToString(digest[:])
 }
 
-func (s *RedisAccountApiKeyTransientStateStore) clientForUse(ctx context.Context) (*redis.Client, error) {
+func (s *RedisAccountApiKeyTransientStateStore) clientForUse(ctx context.Context) (redis.UniversalClient, error) {
 	s.once.Do(func() {
-		opts, err := redis.ParseURL(s.redisURL)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: s.redisURL})
 		if err != nil {
 			s.err = err
 			return
 		}
-		s.opts = opts
-		s.client = redis.NewClient(opts)
+		s.client = client
 	})
 	if s.err != nil {
 		return nil, s.err

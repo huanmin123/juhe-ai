@@ -185,7 +185,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       message.error(options.extractApiErrorMessage(error, '加载 Gemini 协议模型池失败'))
     }
   })
-  // T23：hybrid 账户的映射源模型下拉按协议取三实例候选；三实例是同一目录
+  // T23：映射源模型下拉按协议取实例候选；这些实例是同一目录
   // （同 scope、同供应商窗口）的协议切片，服务端截断判定一致，取或即可。
   const mappingSourceModelOptionsTruncated = computed(() => (
     allProviderModelOptionsTruncated.value

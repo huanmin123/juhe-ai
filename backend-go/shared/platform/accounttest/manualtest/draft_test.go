@@ -13,7 +13,7 @@ func validDraftRecord() map[string]any {
 		"id":                      "acc_1",
 		"ownerSystemAccountId":    "sys_owner",
 		"groupId":                 "group_1",
-		"providerCode":            "openai",
+		"providerCode":            "gpt",
 		"name":                    "测试账户",
 		"type":                    "api_key",
 		"credentials":             map[string]any{"api_key": "sk-test"},

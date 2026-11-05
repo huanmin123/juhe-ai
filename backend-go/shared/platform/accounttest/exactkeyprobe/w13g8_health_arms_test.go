@@ -9,12 +9,8 @@ import (
 	"time"
 )
 
-// TestW13G8DirectProbeTargetArms 驱动 directProbeTarget 的 hybrid 解析失败臂。
+// TestW13G8DirectProbeTargetArms 驱动 directProbeTarget 的成功路径。
 func TestW13G8DirectProbeTargetArms(t *testing.T) {
-	// hybrid profile 缺模型映射 → ResolveHybridProbeTarget 失败。
-	if _, _, err := directProbeTarget(DirectAccount{ProtocolProfileID: "profile_hybrid_openai_chat_v1", EndpointMode: "chat_json", MappedUpstreamModel: "", MappedUpstreamEndpointFamily: ""}); err == nil || !strings.Contains(err.Error(), "PG direct input") {
-		t.Fatalf("hybrid 缺模型映射必须报错: %v", err)
-	}
 	// 合法 profile → 成功路径。
 	mode, model, err := directProbeTarget(DirectAccount{ProtocolProfileID: "profile_gpt_openai_v1", EndpointMode: "responses_json", HealthModel: "gpt-w13g8"})
 	if err != nil || mode == "" || model == "" {

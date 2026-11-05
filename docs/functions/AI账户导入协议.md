@@ -2,7 +2,7 @@
 
 ## 定位
 
-AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JSON）、`sub2api`（Sub2API sub2api-data / sub2api-bundle v1）、`newapi`（NewAPI Channel JSON）、`oneapi`（One-API Channel JSON）和 `cpa`（CLIProxyAPI config.yaml / Codex auth JSON）。`native` 之外的来源模式只提取可确认的 OpenAI 账户，不支持的供应商和非核心字段会在预览中跳过或计数忽略；来源模型字段的映射方式和模型目录拦截语义见下文「来源模型映射与目录拦截」。无法直接映射的数据仍可先用 AI、脚本或表格工具整理为 `native` 协议后再导入。
+AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JSON）、`sub2api`（Sub2API sub2api-data / sub2api-bundle v1）、`newapi`（NewAPI Channel JSON）、`oneapi`（One-API Channel JSON）和 `cpa`（CLIProxyAPI config.yaml / Codex auth JSON）。`native` 之外的来源模式只提取 OpenAI 平台条目，并按来源模型名推断真实厂商；无法推断的记录和非核心字段会在预览中跳过或计数忽略；来源模型字段的映射方式和模型目录拦截语义见下文「来源模型映射与目录拦截」。无法直接映射的数据仍可先用 AI、脚本或表格工具整理为 `native` 协议后再导入。
 
 当前协议：
 
@@ -20,10 +20,10 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`providerProtocolProfileId`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
 - 每个账户必须显式提交非空 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；`native` 导入不做缺省补齐，四键缺任一该账户在预览中标记失败（`sub2api` 等非原生来源由适配器按契约补齐三件套，但 `connections` 仍必须由来源包显式携带）。
-- 当前 `providerCode` 可填 `openai`、`gpt`、`xai`、`anthropic`、`glm`、`deepseek`、`gemini` 或 `hybrid`；系统按 `providerCode + providerProtocolProfileId` 校验内部协议档案。`openai` 只支持 `api_key`；`gpt` 支持 `api_key|oauth`；`xai` 支持官方 API Key 与 Responses-only Grok `oauth`；`anthropic` 支持 API Key 与官方 `oauth`；`gemini` native 支持 API Key 与 `google_oauth`，后者必须保存 `code_assist|google_one|ai_studio` 模式，OpenAI Chat 档案只支持 API Key；GLM、DeepSeek 和 hybrid 继续按各自档案与账户类型约束。
+- `providerCode` 只能是九家真实厂商：`gpt`、`xai`、`anthropic`、`gemini`、`deepseek`、`glm`、`minimax`、`volcengine`、`qwen`。`openai` 兼容、`hybrid` 与 `generic_http` 已于 2026-11-05 退役，提交这些值会返回「不支持的供应商」。`gpt` 支持 `api_key|oauth`；`xai` 支持官方 API Key 与 Responses-only Grok `oauth`；`anthropic` 支持 API Key 与官方 `oauth`；`gemini` native 支持 API Key 与 `google_oauth`，后者必须保存 `code_assist|google_one|ai_studio` 模式，OpenAI Chat 档案只支持 API Key；其余厂商按各自档案与账户类型约束。
 - `providerProtocolProfileId` 是协议档案唯一入口；导入协议不接收旧接入类型别名，也不按 `base_url`、供应商默认值或历史字段猜测档案。
-- `providerCode = hybrid` 时必须使用 API Key 账户，按真实上游协议显式填写混合供应商档案；真实上游目标协议由账户 `modelMappings.upstreamEndpointFamily` 和 `credentials.supported_endpoint_modes` 表达，不再区分多个混合账户类型。
-- 账号导入不填写 `clientCompatibility`。下游客户端画像由网关运行时内部识别；OpenAI v1 普通账户可用 `modelMappings` 显式声明 Responses 到 Chat Completions，Anthropic Messages 或 Gemini native 等其他跨协议转换由混合供应商账户表达真实上游和协议转换能力，不在 API Key 中配置。
+- 来源模式没有可信厂商时（Sub2API/NewAPI/One-API/CLIProxyAPI），适配器按来源账户模型名/前缀推断九家厂商：所有模型必须收敛到同一厂商，缺模型、零命中或跨厂商冲突一律跳过该来源记录并写入预览报告；不提供通用连接器兜底。
+- 账号导入不填写 `clientCompatibility`。下游客户端画像由网关运行时内部识别；OpenAI v1 普通账户可用 `modelMappings` 显式声明 Responses 到 Chat Completions，其余跨协议映射已随 hybrid 退役，不再支持。
 - 不确定是否可立即调度时，`status` 填 `pending_test` 或 `disabled`，不要默认填 `active`；即使导入文件写 `active`，导入落库也会转为 `pending_test`，必须由后台激活检查成功后才参与调度，人工测试结果不能作为激活凭证。
 - 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。
 - 外部来源字段如果没有本协议对应字段，不要塞进 `credentials`，可以整理到 `notes`。
@@ -51,7 +51,13 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `native` | 协议账户对象的 `supportedModels`、`healthCheckModel`、`healthCheckEndpointMode`、`modelMappings` | 按本协议字段直接导入。 |
 | `sub2api` | 来源账户对象的 `supportedModels`、`healthCheckModel`、`healthCheckEndpointMode`、`modelMappings` | 透传为账户的支持模型 / 健康检查 / 模型映射配置。 |
 | `newapi` / `oneapi` | Channel 的 `models` 字段（逗号 / 分号 / 换行分隔） | 映射为账户 `supportedModels`，去空白、去重、保序；`model_mapping` 字段仍不读取。 |
-| `cpa` | 来源模型列表 | 不映射模型，来源模型信息仍被忽略（计入忽略字段）。 |
+| `cpa` | 来源模型列表 | 作为厂商推断输入读取，不写入账户 `supportedModels`（合法形态不计入忽略字段）。 |
+
+厂商推断语义（适用于 `sub2api`、`newapi`、`oneapi`、`cpa`）：
+
+- 来源记录没有显式真实厂商时，适配器用模型名匹配九家厂商：先精确匹配目标目录的 `public_model`/`upstream_model`，再按最长模型名前缀匹配，最后使用静态前缀表（`gpt-`/`o1`/`o3`/`claude`/`gemini`/`grok`/`deepseek`/`glm`/`qwen`/`doubao`/`minimax` 等）。
+- 所有模型必须指向同一厂商；缺模型列表、零命中或跨厂商冲突时跳过该来源记录，报告包含原因与模型样本。
+- 推断成功后选择该厂商在 openai_v1 协议面的连接 preset；CLIProxyAPI `codex-api-key` 条目直接按 gpt 处理。
 
 目录拦截语义（适用于 `native`、`sub2api`、`newapi`、`oneapi`）：
 
@@ -95,38 +101,6 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
     }
   ],
   "accounts": [
-    {
-      "ref": "openai-key-001",
-      "name": "OpenAI 兼容 API Key 账号 1",
-      "providerCode": "openai",
-      "providerProtocolProfileId": "profile_openai_openai_v1",
-      "type": "api_key",
-      "status": "active",
-      "groupName": "默认 OpenAI 兼容分组",
-      "concurrencyLimit": 3,
-      "rpmLimit": 0,
-      "priority": 50,
-      "tags": ["主力", "OpenAI 兼容"],
-      "proxyRef": "proxy-hk-1",
-      "credentials": {
-        "api_key": "sk-xxx",
-        "base_url": "https://api.openai.com/v1",
-        "supported_endpoint_modes": ["chat_json", "chat_sse"]
-      },
-      "supportedModels": ["gpt-5.2"],
-      "connections": [
-        {
-          "connectionPresetCode": "generic_openai_v1",
-          "baseUrl": "https://api.openai.com/v1",
-          "endpointModes": ["chat_json", "chat_sse"],
-          "enabled": true
-        }
-      ],
-      "healthCheckConnectionPresetCode": "generic_openai_v1",
-      "healthCheckModel": "gpt-5.2",
-      "healthCheckEndpointMode": "chat_sse",
-      "notes": "通用 OpenAI-compatible API Key 账号"
-    },
     {
       "ref": "gpt-oauth-001",
       "name": "GPT OAuth 账号 1",
@@ -314,45 +288,6 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "healthCheckModel": "deepseek-v4.1-flash",
       "healthCheckEndpointMode": "messages_sse",
       "notes": "DeepSeek Anthropic v1 / Claude Code 账号"
-    },
-    {
-      "ref": "hybrid-glm-chat-001",
-      "name": "混合供应商 GLM Chat 上游账号 1",
-      "providerCode": "hybrid",
-      "providerProtocolProfileId": "profile_hybrid_openai_chat_v1",
-      "type": "api_key",
-      "status": "active",
-      "groupName": "默认混合供应商分组",
-      "concurrencyLimit": 3,
-      "rpmLimit": 0,
-      "priority": 50,
-      "credentials": {
-        "api_key": "sk-glm-coding-xxx",
-        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-        "supported_endpoint_modes": ["chat_json", "chat_sse"]
-      },
-      "supportedModels": ["glm-5.2"],
-      "connections": [
-        {
-          "connectionPresetCode": "generic_openai_v1",
-          "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
-          "endpointModes": ["chat_json", "chat_sse"],
-          "enabled": true
-        }
-      ],
-      "healthCheckConnectionPresetCode": "generic_openai_v1",
-      "healthCheckModel": "glm-5.2",
-      "healthCheckEndpointMode": "chat_sse",
-      "modelMappings": [
-        {
-          "sourceModel": "claude-sonnet-4",
-          "sourceEndpointFamily": "messages",
-          "upstreamModel": "glm-5.2",
-          "upstreamEndpointFamily": "chat_completions",
-          "enabled": true
-        }
-      ],
-      "notes": "真实上游是 GLM OpenAI Chat；下游 Anthropic Messages 模型通过混合供应商账户映射到 glm-5.2"
     }
   ]
 }
@@ -373,8 +308,8 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | --- | --- | --- |
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
-| `providerCode` | 是 | 当前支持 `openai`、`gpt`、`xai`、`anthropic`、`glm`、`deepseek`、`gemini` 和 `hybrid`。`xai` 表示官方 xAI / Grok，`anthropic` 表示官方 Anthropic Claude，`gemini` 表示 Google Gemini，其余含义见上文。 |
-| `providerProtocolProfileId` | 是 | 显式供应商协议档案。常用值包括 `profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_xai_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta` 和混合供应商档案。 |
+| `providerCode` | 是 | 只能是九家真实厂商：`gpt`、`xai`、`anthropic`、`gemini`、`deepseek`、`glm`、`minimax`、`volcengine`、`qwen`。`openai`、`hybrid` 与 `generic_http` 已退役，提交即失败。 |
+| `providerProtocolProfileId` | 是 | 显式供应商协议档案。可用值：`profile_gpt_openai_v1`、`profile_xai_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta`、`profile_minimax_openai_v1`、`profile_volcengine_openai_v1`、`profile_qwen_openai_v1`。 |
 | `type` | 是 | `api_key`、`oauth` 或 `google_oauth`，具体可用值受供应商协议档案约束。 |
 | `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
@@ -391,7 +326,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `healthCheckConnectionPresetCode` | 是 | 健康检查三件套之一；必须等于本账户 `connections` 中一条 `enabled: true` 连接的 `connectionPresetCode`，落库时同事务解析为 `health_check_connection_id`。 |
 | `healthCheckModel` | 是 | 健康检查三件套之一；账户级检查模型，必须属于账户 `supportedModels`（含供应商默认回填后的集合）。管理面手动创建时才允许省略并由创建事务在最终支持模型集内解析；`native` 导入必须显式提交。 |
 | `healthCheckEndpointMode` | 是 | 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 |
-| `modelMappings` | 否 | 账号模型映射列表；普通供应商账户只允许当前账号供应商模型目录内的同协议模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge；混合供应商账户允许用该字段声明其他下游模型 / 协议入口到真实上游模型 / 协议的跨协议映射。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
+| `modelMappings` | 否 | 账号模型映射列表；只允许当前账号供应商模型目录内的同族模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
 | `availabilitySchedule` | 否 | 时间计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`。 |
@@ -406,13 +341,12 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。
 - 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 `native` 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`，检查模型属于 `supportedModels`。
 - `healthCheckModel` 只在账户创建阶段使用默认链补齐；账户落库后后台系统检查严格读取该字段，不动态跟随供应商默认值。
-- 通用 OpenAI-compatible 上游如需承接 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
-- 普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据。
-- 混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝。
+- 需要承接 OpenAI Responses 的 GPT 账户，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
+- `modelMappings` 只做账号模型别名和 OpenAI v1 bridge：Chat Completions → Chat Completions，Responses → Responses，Responses → Chat Completions（仅 stream=true），Messages → Messages，GenerateContent / 流式 GenerateContent → GenerateContent，video_generation → video_generation，tts → tts。其他跨协议方向会被拒绝。
 - `modelMappings` 右侧 `upstreamEndpointFamily: "responses"` 只允许 `sourceEndpointFamily: "responses"` 的原生 Responses 别名，账号真实能力必须包含 `responses_json` 或 `responses_sse`。
-- 需要把 OpenAI / Gemini 转到 Anthropic Messages、Anthropic / OpenAI 转到 Gemini native，或 Gemini native 转到 OpenAI / Anthropic 时，请使用 `providerCode: "hybrid"` 的混合供应商账户配置真实上游和协议转换；普通账户 `modelMappings` 只额外承接 OpenAI v1 Responses -> Chat Completions。
+- 跨协议（如 OpenAI 到 Anthropic Messages）已无账户类型承载；需要对应协议时请直接创建该厂商的原生账户，不要尝试写入跨协议映射。
 - `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内完全相同的标签会去重，大小写不同的标签会按不同标签保留。
-- `modelMappings` 的 `sourceModel` 是客户端请求模型，`upstreamModel` 是该账户实际转发模型；普通供应商账户两者都必须来自当前账户供应商模型目录。OpenAI v1 `responses -> chat_completions` bridge 的左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型；右侧 `upstreamModel` 仍必须支持 Chat Completions。通用 OpenAI-compatible 账号按 OpenAI-compatible 协议模型池处理，专用供应商不能引用其他供应商目录模型。混合供应商账户允许任意填写明确的下游模型名和真实上游模型名。
+- `modelMappings` 的 `sourceModel` 是客户端请求模型，`upstreamModel` 是该账户实际转发模型；两者都必须来自当前账户供应商模型目录。OpenAI v1 `responses -> chat_completions` bridge 的左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型；右侧 `upstreamModel` 仍必须支持 Chat Completions。
 - `supportedModels` 最终必须非空，限制的是映射右侧 `upstreamModel`，不是左侧 `sourceModel`；映射右侧只能选择账户支持模型。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
 - `pending_test` 表示账户等待后台激活检查，检查成功后才参与调度；这是新建和导入账户的默认安全状态，人工测试不能改变它。
@@ -423,9 +357,9 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `connectionPresetCode` | 是 | 连接器注册表预设标识，当前恰好 17 个值：`generic_openai_v1`、`generic_anthropic_v1`、`generic_gemini_v1beta`、`gpt_openai_v1`、`xai_openai_v1`、`deepseek_openai_v1`、`deepseek_anthropic_v1`、`anthropic_v1`、`gemini_openai_chat_v1beta`、`gemini_native_v1beta`、`glm_general_openai_v1`、`glm_coding_openai_v1`、`glm_coding_anthropic_v1`、`minimax_media`、`volcengine_ark`、`volcengine_openspeech`、`qwen_dashscope`。必须与账户 `providerCode` + `providerProtocolProfileId` 的能力组合匹配，同一账户内不能重复。 |
+| `connectionPresetCode` | 是 | 连接器注册表预设标识，当前恰好 14 个值：`gpt_openai_v1`、`xai_openai_v1`、`deepseek_openai_v1`、`deepseek_anthropic_v1`、`anthropic_v1`、`gemini_openai_chat_v1beta`、`gemini_native_v1beta`、`glm_general_openai_v1`、`glm_coding_openai_v1`、`glm_coding_anthropic_v1`、`minimax_media`、`volcengine_ark`、`volcengine_openspeech`、`qwen_dashscope`。必须与账户 `providerCode` + `providerProtocolProfileId` 的能力组合匹配，同一账户内不能重复。 |
 | `baseUrl` | 是 | 包含版本前缀的根地址（如 `/v1`、`/api/v3`），不能带 `/chat/completions`、`/messages` 等具体接口路径，必须通过 registry URL 契约校验；通常与 `credentials.base_url` 相同。 |
-| `endpointModes` | 是 | 非空字符串数组，无重复；取值必须在该预设与账户组合允许的 mode 集合内。常用组合：`gpt_openai_v1` API Key 允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；`gpt_openai_v1` 与 `xai_openai_v1` 的 OAuth 收窄为 `responses_json`、`responses_sse`；`glm_general_openai_v1`、`glm_coding_openai_v1` 允许 `chat_json`、`chat_sse`；`deepseek_anthropic_v1`、`glm_coding_anthropic_v1` 允许 `messages_json`、`messages_sse`；`anthropic_v1` 允许 `messages_json`、`messages_sse`、`message_token_counting`；`generic_openai_v1` 按 OpenAI 词表。 |
+| `endpointModes` | 是 | 非空字符串数组，无重复；取值必须在该预设与账户组合允许的 mode 集合内。常用组合：`gpt_openai_v1` API Key 允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；`gpt_openai_v1` 与 `xai_openai_v1` 的 OAuth 收窄为 `responses_json`、`responses_sse`；`glm_general_openai_v1`、`glm_coding_openai_v1` 允许 `chat_json`、`chat_sse`；`deepseek_anthropic_v1`、`glm_coding_anthropic_v1` 允许 `messages_json`、`messages_sse`；`anthropic_v1` 允许 `messages_json`、`messages_sse`、`message_token_counting`。 |
 | `enabled` | 是 | 是否启用；必须显式填写，省略或非布尔即失败。健康检查只能指向 `enabled: true` 的连接。 |
 | `protocolSurfaceCode` | 否 | 协议面回显；省略即可，填写时必须与预设注册的协议面一致（`openai_v1`、`anthropic_v1`、`gemini_v1beta`）。 |
 
@@ -507,33 +441,8 @@ Grok OAuth 账户：
 }
 ```
 
-混合供应商账户：
-
-```json
-{
-  "providerCode": "hybrid",
-  "providerProtocolProfileId": "profile_hybrid_openai_chat_v1",
-  "type": "api_key",
-  "credentials": {
-    "api_key": "sk-glm-coding-xxx",
-    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-    "supported_endpoint_modes": ["chat_json", "chat_sse"]
-  },
-  "modelMappings": [
-    {
-      "sourceModel": "claude-sonnet-4",
-      "sourceEndpointFamily": "messages",
-      "upstreamModel": "glm-5.2",
-      "upstreamEndpointFamily": "chat_completions",
-      "enabled": true
-    }
-  ]
-}
-```
-
 规则：
 
-- `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
 - `providerCode = xai` 允许 `type = api_key|oauth`，并必须使用 `profile_xai_openai_v1`。API Key 必须有 `credentials.api_key`，默认地址 `https://api.x.ai/v1`；OAuth 必须有 `credentials.access_token`，可选 Refresh / ID Token 和公开 claims，默认地址 `https://cli-chat-proxy.grok.com/v1`，endpoint modes 只能是 `responses_json/responses_sse`。SSO Cookie 不属于通用导入凭据，必须通过 Grok 专属 `/sso-to-oauth` 接口转换，导入 JSON 不接受 `sso`、`sso-rw` 或 Cookie 字段。
@@ -548,7 +457,7 @@ Grok OAuth 账户：
 - `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_openai_responses_v1`（实施后）时，账号只保存经验证的 `responses_json`、`responses_sse`，默认 Base URL 为 `https://open.bigmodel.cn/api/v1`，模型必须在目录中声明 `responses`；不得静默改投 Chat 或把 bridge 当成原生 Responses。
 - `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_anthropic_v1` 时，`credentials.supported_endpoint_modes` 只保存 `messages_json`、`messages_sse`。
 - `providerCode = glm` 的通用 GLM API、GLM Coding OpenAI Chat 和 GLM Coding Anthropic 都要求 `credentials.base_url` 显式填写到对应协议档案的版本根（GLM `/api/paas/v4`、`/api/coding/paas/v4`、`/api/anthropic/v1`），不能依赖后端猜测。
-- NewAPI / OpenAI-compatible 聚合入口如果只给代理根地址，例如 `https://vsllm.com`，优先按通用 `providerCode = openai` 导入，`credentials.base_url` 填该代理的 OpenAI v1 版本根（如 `https://vsllm.com/v1`）——上游 URL 为版本根 + 不含版本前缀的操作路径（`/chat/completions`），不能只填站点根地址（运行时不再自动补 `/v1`，存量裸根由迁移命令回填）；如果按 `providerCode = glm` 专用 OpenAI v1 档案导入，同样必须填写到该代理的版本根，例如 `https://vsllm.com/v1`。
+- NewAPI / OpenAI-compatible 聚合入口如果只给代理根地址，例如 `https://vsllm.com`，先按来源模型名推断真实厂商；`credentials.base_url` 填该代理的 OpenAI v1 版本根（如 `https://vsllm.com/v1`）——上游 URL 为版本根 + 不含版本前缀的操作路径（`/chat/completions`），不能只填站点根地址（运行时不再自动补 `/v1`，存量裸根由迁移命令回填）。推断失败时该来源记录跳过，不再按通用 `providerCode = openai` 导入。
 - `providerCode = deepseek` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。DeepSeek OpenAI-compatible 必须显式填写 `providerProtocolProfileId = profile_deepseek_openai_v1`；DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId = profile_deepseek_anthropic_v1`。当前不接受 DeepSeek OAuth、Refresh Token、Setup Token 或 Claude Code token；Anthropic-compatible 只通过 API Key + 协议档案导入。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com/v1`（版本根）；如使用代理地址或专属部署地址，填该代理的版本根，仍必须通过 SSRF 防护和 OpenAI-compatible base URL 校验。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_anthropic_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com/anthropic/v1`（版本根）；使用 NewAPI 类代理时填该代理的 anthropic 版本根（含 `/v1`），例如 `https://vsllm.com/v1`。
@@ -557,12 +466,10 @@ Grok OAuth 账户：
 - `providerCode = gemini` 且 `type = api_key` 时必须有 `credentials.api_key`；`type = google_oauth` 时必须有 Access Token，或 Refresh Token + 与签发令牌一致的 Client ID / Secret，并显式保存 `credentials.oauth_type = code_assist|google_one|ai_studio`。没有 Refresh Token 的 access-only 账户按静态 token 使用。Google OAuth 必须落到 `profile_gemini_native_v1beta`；Gemini OpenAI Chat 档案只接受 API Key。
 - `oauth_type = code_assist|google_one` 时 `credentials.base_url` 使用 `https://cloudcode-pa.googleapis.com`、必须有 `project_id`，endpoint modes 只能是 `generate_content_json/generate_content_sse`；`code_assist` 默认 `tier_id=gcp_standard`，`google_one` 默认 `tier_id=google_one_free`。`oauth_type = ai_studio` 时使用 `https://generativelanguage.googleapis.com/v1beta`（Gemini 原生版本根）、自定义 Google OAuth client 和 native 档案 endpoint modes，默认 `tier_id=aistudio_free`。
 - `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_native_v1beta` 时不配置普通账户 OpenAI / Anthropic 跨协议模型映射；Code Assist / Google One 也不能通过导入的 endpoint modes 放开 Interactions、Count Tokens 或 Embedding。
-- `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com/v1beta/openai`，`credentials.supported_endpoint_modes` 使用 `chat_json`、`chat_sse`；如需 Codex / Responses 使用 Gemini OpenAI Chat，可在普通账号中配置 `responses -> chat_completions` 模型别名；Gemini native 下游使用 Gemini OpenAI Chat 时请使用混合供应商账户。该档案不接受 Anthropic Messages 来源的账户模型别名。
-- `providerCode = hybrid` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。混合供应商账户是真实 AI 账户，不能填写目标账户 ID、目标分组 ID 或 API Key 级路由规则。
-- `providerCode = hybrid` 时，`credentials.base_url` 填真实上游版本根地址（含协议版本前缀，如 `/v1`、`/anthropic/v1`、`/v1beta`）；可按真实上游能力在 OpenAI、Anthropic 和 Gemini endpoint modes 中选择 `credentials.supported_endpoint_modes`。`modelMappings.upstreamEndpointFamily` 决定本条映射实际请求 Chat Completions、Messages 还是 Gemini GenerateContent 上游。
+- `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com/v1beta/openai`，`credentials.supported_endpoint_modes` 使用 `chat_json`、`chat_sse`；如需 Codex / Responses 使用 Gemini OpenAI Chat，可在普通账号中配置 `responses -> chat_completions` 模型别名。该档案不接受 Anthropic Messages 来源的账户模型别名。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
 - `credentials.supported_endpoint_modes` 可限制协议端点能力。xAI API Key 可用 Chat / Responses，Grok OAuth 固定 Responses；Anthropic 使用 Messages / Count Tokens；Gemini native 枚举 GenerateContent、Interactions、Count Tokens、Embedding，但 Code Assist / Google One 固定只有 GenerateContent JSON / SSE。省略时按供应商、协议档案和认证模式默认值回填，不能只按协议大类放宽。
-- Codex Responses 请求的客户端画像由网关自动识别；目标账号必须具备对应真实上游能力。GPT / 通用 OpenAI 原生 Responses 账号必须具备 `responses_sse`；DeepSeek `deepseek-v4-flash` 与预兼容的 `deepseek-v4-pro` 原生 Responses 账号必须具备 `responses_sse`，其他需要改写到 Chat 的显式 Chat-only DeepSeek、GLM Coding 和 Gemini OpenAI Chat 账号必须配置 `responses -> chat_completions` 模型别名并具备 `chat_sse`。Gemini native `streamGenerateContent` 通过混合供应商账户桥接到 Chat 上游时要求真实上游具备 `chat_sse`，桥接到 Anthropic Messages 上游时要求真实上游具备 `messages_sse`。
+- Codex Responses 请求的客户端画像由网关自动识别；目标账号必须具备对应真实上游能力。GPT / 通用 OpenAI 原生 Responses 账号必须具备 `responses_sse`；DeepSeek `deepseek-v4-flash` 与预兼容的 `deepseek-v4-pro` 原生 Responses 账号必须具备 `responses_sse`，其他需要改写到 Chat 的显式 Chat-only DeepSeek、GLM Coding 和 Gemini OpenAI Chat 账号必须配置 `responses -> chat_completions` 模型别名并具备 `chat_sse`。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
 

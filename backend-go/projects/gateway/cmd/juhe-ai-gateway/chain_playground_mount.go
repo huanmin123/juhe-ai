@@ -50,7 +50,6 @@ func composePlaygroundFamily(composed *composition, services *chainRuntimeServic
 		AccountLookup:     playgroundAccountLookupAdapter{store: accountStore},
 		TransportAccounts: playgroundTransportAccountsAdapter{catalog: catalog},
 		ProviderCatalog:   playgroundProviderCatalogAdapter{catalog: catalog},
-		AccountCatalog:    playgroundAccountCatalogAdapter{catalog: catalog},
 		// 产物暂存根（§3.8）：图片/语音字节与视频任务引用的落盘目录约定。
 		ArtifactsRoot: artifactsRoot,
 	}
@@ -208,17 +207,6 @@ type playgroundProviderCatalogAdapter struct {
 // ListProviderCatalog implements playground.ProviderCatalogPort.
 func (a playgroundProviderCatalogAdapter) ListProviderCatalog(providerCode, systemAccountID string) []playground.CatalogItem {
 	return playgroundCatalogItemsProjection(a.catalog.ListProviderCatalog(providerCode, systemAccountID))
-}
-
-// playgroundAccountCatalogAdapter 适配 runtime cache 的账户显式绑定模型目录
-// （generic_http 账户按 account_supported_models 补齐）。
-type playgroundAccountCatalogAdapter struct {
-	catalog chatModelCatalog
-}
-
-// ListAccountSupportedModels implements playground.AccountCatalogPort.
-func (a playgroundAccountCatalogAdapter) ListAccountSupportedModels(accountID, systemAccountID string) []playground.CatalogItem {
-	return playgroundCatalogItemsProjection(a.catalog.ListAccountSupportedModels(accountID, systemAccountID))
 }
 
 // playgroundCatalogItemsProjection 是目录条目到 playground 最小投影的字段复

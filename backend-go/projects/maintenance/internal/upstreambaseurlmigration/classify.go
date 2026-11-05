@@ -78,13 +78,13 @@ const qwenStripSuffix = "/compatible-mode/v1"
 func FamilyForPreset(preset string) Family {
 	switch preset {
 	case contracts.PresetGPTOpenAIV1, contracts.PresetXAIOpenAIV1, contracts.PresetDeepSeekOpenAIV1,
-		contracts.PresetMiniMaxMedia, contracts.PresetGenericOpenAIV1, contracts.PresetGLMGeneralOpenAIV1,
+		contracts.PresetMiniMaxMedia, contracts.PresetGLMGeneralOpenAIV1,
 		contracts.PresetGLMCodingOpenAIV1, contracts.PresetGeminiOpenAIChatV1Beta:
 		return FamilyOpenAI
 	case contracts.PresetAnthropicV1, contracts.PresetDeepSeekAnthropicV1,
-		contracts.PresetGLMCodingAnthropicV1, contracts.PresetGenericAnthropicV1:
+		contracts.PresetGLMCodingAnthropicV1:
 		return FamilyAnthropic
-	case contracts.PresetGeminiNativeV1Beta, contracts.PresetGenericGeminiV1Beta:
+	case contracts.PresetGeminiNativeV1Beta:
 		return FamilyGemini
 	case contracts.PresetQwenDashScope:
 		return FamilyQwen
@@ -98,8 +98,8 @@ func FamilyForPreset(preset string) Family {
 // accountDefaultPreset 是账户级 (vendor_code, protocol_code) → registry preset
 // 提示的固定表（账户行不存 preset；凭据 base_url 的家族与空值回填按供应商与
 // 协议档案推导。glm 的 openai 协议账户按 general 档案根 /api/paas/v4 处理，
-// coding 连接的根由连接行各自的 preset 承载）。vendor 为空串（generic_http）
-// 按协议面落 generic preset（registry 默认值为空 → 空值进复核桶）。
+// coding 连接的根由连接行各自的 preset 承载）。generic_http 已随通用连接器
+// 退役，空 vendor 不再有默认 preset。
 var accountDefaultPreset = map[string]map[string]string{
 	"gpt":        {"openai": contracts.PresetGPTOpenAIV1},
 	"xai":        {"openai": contracts.PresetXAIOpenAIV1},
@@ -110,7 +110,6 @@ var accountDefaultPreset = map[string]map[string]string{
 	"minimax":    {"openai": contracts.PresetMiniMaxMedia},
 	"volcengine": {"openai": contracts.PresetVolcengineArk},
 	"qwen":       {"openai": contracts.PresetQwenDashScope},
-	"":           {"openai": contracts.PresetGenericOpenAIV1, "anthropic": contracts.PresetGenericAnthropicV1, "gemini": contracts.PresetGenericGeminiV1Beta},
 }
 
 // AccountPresetHint 由账户的供应商与协议档案合成 registry preset 提示；未知

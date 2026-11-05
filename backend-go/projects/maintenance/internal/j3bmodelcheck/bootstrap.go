@@ -15,7 +15,6 @@ import (
 
 const (
 	SchemaName    = "juhe_j3b"
-	BootstrapEnv  = "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL"
 	bootstrapLock = int64(732_946_110_271_044_016)
 )
 
@@ -50,7 +49,6 @@ func Open(rawURL string) (*sql.DB, error) {
 	db.SetMaxIdleConns(1)
 	return db, nil
 }
-
 
 func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
 	if db == nil {

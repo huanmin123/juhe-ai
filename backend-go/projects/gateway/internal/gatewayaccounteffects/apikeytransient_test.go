@@ -37,7 +37,7 @@ func newTransientStoreForTest(t *testing.T, mutateStateTtlMs int64) (*RedisAccou
 func TestTransientRedisStoreKeyLayout(t *testing.T) {
 	store, _ := newTransientStoreForTest(t, 0)
 	digest := sha256.Sum256([]byte("acc-1\x00fp-1"))
-	want := "juhe-ai:test-space:state:gateway-account-api-key-transient-avoidance:state:" + hex.EncodeToString(digest[:])
+	want := "juhe-ai:{test-space}:state:gateway-account-api-key-transient-avoidance:state:" + hex.EncodeToString(digest[:])
 	if store.stateKey(AccountApiKeyTransientTarget{AccountID: "acc-1", KeyFingerprint: "fp-1"}) != want {
 		t.Fatalf("stateKey mismatch: %s", store.stateKey(AccountApiKeyTransientTarget{AccountID: "acc-1", KeyFingerprint: "fp-1"}))
 	}
@@ -171,7 +171,7 @@ func TestTransientRedisStoreFailureCounterWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte("acc-1\x00fp-1"))
-	key := "juhe-ai:test-space:state:gateway-account-api-key-transient-avoidance:state:" + hex.EncodeToString(digest[:])
+	key := "juhe-ai:{test-space}:state:gateway-account-api-key-transient-avoidance:state:" + hex.EncodeToString(digest[:])
 	current, err := raw.Get(ctx, key).Result()
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestTransientRedisStoreCorruptStateIgnoredByLoad(t *testing.T) {
 	store, server := newTransientStoreForTest(t, 0)
 	ctx := context.Background()
 	digest := sha256.Sum256([]byte("acc-1\x00fp-1"))
-	key := "juhe-ai:test-space:state:gateway-account-api-key-transient-avoidance:state:" + hex.EncodeToString(digest[:])
+	key := "juhe-ai:{test-space}:state:gateway-account-api-key-transient-avoidance:state:" + hex.EncodeToString(digest[:])
 	server.Set(key, `{"schemaVersion":2}`)
 	states, err := store.LoadMany(ctx, "acc-1", []string{"fp-1"})
 	if err != nil {
@@ -304,13 +304,13 @@ func TestTransientStoreDualDriveThroughGuard(t *testing.T) {
 	failingGuard := NewAccountAPIKeyFailureGuard(SideEffectsConfig{RuntimeStateDriver: "redis"}, clock, nil, func() (AccountApiKeyTransientStateStore, error) {
 		return nil, errRedisStateURLRequired()
 	})
-	if _, err := failingGuard.RecordTransientFailure(ctx, account, APIKeyStatusError); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置") {
+	if _, err := failingGuard.RecordTransientFailure(ctx, account, APIKeyStatusError); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置") {
 		t.Fatalf("factory err = %v", err)
 	}
 }
 
 func errRedisStateURLRequired() error {
-	return &staticError{message: "JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置"}
+	return &staticError{message: "JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置"}
 }
 
 type staticError struct{ message string }

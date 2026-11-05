@@ -300,7 +300,7 @@ func TestFullchainGroupSessionAffinityRedisDriver(t *testing.T) {
 	f := startFullchainFixtureExtraEnv(t, func(_ string) map[string]string {
 		return map[string]string{
 			"JUHE_AI_CACHE_DRIVER":    "redis",
-			"JUHE_AI_REDIS_CACHE_URL": "redis://" + cacheRedis.Addr(),
+			"JUHE_AI_REDIS_URL": "redis://" + cacheRedis.Addr(),
 			"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:fullchain-grpaff",
 		}
 	})

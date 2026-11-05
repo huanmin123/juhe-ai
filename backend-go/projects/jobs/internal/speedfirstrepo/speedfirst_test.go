@@ -12,7 +12,7 @@ import (
 // normal-route-latency-degradation.service.ts 逐段一致）。
 func TestSpeedFirstKeysMatchNodeContract(t *testing.T) {
 	store, err := OpenSpeedFirstStore(SpeedFirstRedisConfig{
-		Enabled: true, URL: "redis://127.0.0.1:6379/9", Namespace: "test-space",
+		Enabled: true, URL: "redis://127.0.0.1:6379/0", Namespace: "test-space",
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +23,7 @@ func TestSpeedFirstKeysMatchNodeContract(t *testing.T) {
 	if want := "v1:sys-1:strategy-1:group-1:acc-1"; stateKey != want {
 		t.Fatalf("stateKey=%q want %q", stateKey, want)
 	}
-	if got, want := store.redisKey(stateKey), "juhe-ai:test-space:state:gateway-normal-route-latency-degradation:v1:sys-1:strategy-1:group-1:acc-1"; got != want {
+	if got, want := store.redisKey(stateKey), "juhe-ai:{test-space}:state:gateway-normal-route-latency-degradation:v1:sys-1:strategy-1:group-1:acc-1"; got != want {
 		t.Fatalf("redisKey=%q want %q", got, want)
 	}
 	if store.generationKey() != "v1:generation" || store.probeIndexKey() != "v1:probe-index" || store.allIndexKey() != "v1:all-index" {
@@ -130,7 +130,7 @@ func TestSpeedFirstConfigLoading(t *testing.T) {
 	if err != nil || config.Enabled {
 		t.Fatalf("disabled cfg=%#v err=%v", config, err)
 	}
-	env["JUHE_AI_REDIS_STATE_URL"] = "redis://127.0.0.1:6379/9"
+	env["JUHE_AI_REDIS_URL"] = "redis://127.0.0.1:6379/0"
 	if _, err := LoadSpeedFirstRedisConfig(func(name string) string { return env[name] }); err == nil {
 		t.Fatal("Redis state 无 namespace 必须 fail closed")
 	}
@@ -162,7 +162,7 @@ func TestOpenSpeedFirstStoreCanonicalizesNamespacePrefix(t *testing.T) {
 	open := func(namespace string) *SpeedFirstStore {
 		t.Helper()
 		store, err := OpenSpeedFirstStore(SpeedFirstRedisConfig{
-			Enabled: true, URL: "redis://127.0.0.1:6379/9", Namespace: namespace,
+			Enabled: true, URL: "redis://127.0.0.1:6379/0", Namespace: namespace,
 		}, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -173,7 +173,7 @@ func TestOpenSpeedFirstStoreCanonicalizesNamespacePrefix(t *testing.T) {
 	defer full.Close()
 	short := open("dev-space")
 	defer short.Close()
-	want := "juhe-ai:dev-space:" + speedFirstRedisGroup + ":"
+	want := "juhe-ai:{dev-space}:" + speedFirstRedisGroup + ":"
 	if full.prefix != want || short.prefix != want {
 		t.Fatalf("prefix 全前缀=%q 短名=%q want %q", full.prefix, short.prefix, want)
 	}

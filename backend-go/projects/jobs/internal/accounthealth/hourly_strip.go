@@ -49,8 +49,8 @@ func recordAccountHealthHourlyObservation(ctx context.Context, sink AccountHealt
 	if sink == nil || outcome.Outcome == OutcomeStale || outcome.AccountID == "" {
 		return nil
 	}
-	// 供应商解耦：条带的 provider 维度取 accounts.vendor_code（nullable）；
-	// generic_http 账户与缺失值一并按 "unknown" 归档。
+	// 供应商解耦：条带的 provider 维度取 accounts.vendor_code；异常缺失值按
+	// "unknown" 归档（DB CHECK 已禁止空 vendor 账户）。
 	var vendorCode, systemAccountID sql.NullString
 	err := business.db.QueryRowContext(ctx, business.bind(`SELECT COALESCE(vendor_code, ''), system_account_id FROM `+business.table("accounts")+` WHERE id = ?`), outcome.AccountID).Scan(&vendorCode, &systemAccountID)
 	if errors.Is(err, sql.ErrNoRows) {

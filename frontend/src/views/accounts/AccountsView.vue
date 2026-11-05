@@ -317,7 +317,6 @@ import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
-import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountBalanceDetails, AccountBatchEditResult, AccountListItem, AccountMutationResult, AccountSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
@@ -1523,9 +1522,7 @@ const proxyByIdMapRef = computed(() => proxyByIdMap(proxies.value))
 const proxyOptions = computed(() => buildProxyOptions(proxies.value))
 const proxyById = (proxyProfileId?: string) => proxyProfileId ? proxyByIdMapRef.value.get(proxyProfileId) : undefined
 const accountBaseUrlPlaceholder = computed(() => (
-  isHybridProviderCode(form.providerCode)
-    ? '填写真实上游 Base URL'
-    : selectedProtocolProfile.value?.baseUrl || selectedProvider.value?.baseUrl || 'https://api.openai.com/v1'
+  selectedProtocolProfile.value?.baseUrl || selectedProvider.value?.baseUrl || 'https://api.openai.com/v1'
 ))
 
 function groupIdForAccount(accountId: string) {

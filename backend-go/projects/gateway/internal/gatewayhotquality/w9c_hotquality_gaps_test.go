@@ -47,7 +47,7 @@ func TestW9CGetGatewayHotQualityRuntimeRedisDriver(t *testing.T) {
 	ctx := context.Background()
 	url := "redis://" + server.Addr()
 	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RedisStateURL:      url,
+		RedisURL:      url,
 		RedisNamespace:     "w9c-redis",
 	})
 	if err != nil {
@@ -58,7 +58,7 @@ func TestW9CGetGatewayHotQualityRuntimeRedisDriver(t *testing.T) {
 	}
 	// Same identity returns the cached pair.
 	cached, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RedisStateURL:      url,
+		RedisURL:      url,
 		RedisNamespace:     "w9c-redis",
 	})
 	if err != nil || cached != runtime {
@@ -254,7 +254,7 @@ func TestW9CParseRedisHotQualityEntryAndTerminal(t *testing.T) {
 
 func TestW9CExplorationRedisPrefixAndRegistry(t *testing.T) {
 	store := newW9CExplorationRedisStore(t, newMockScriptRunner(t, nil))
-	if store.Prefix() != "juhe-ai:dev:same-tier-exploration:gateway" {
+	if store.Prefix() != "juhe-ai:{dev}:same-tier-exploration:gateway" {
 		t.Fatalf("prefix = %s", store.Prefix())
 	}
 	if store.Registry() != store.Prefix()+":registry" {

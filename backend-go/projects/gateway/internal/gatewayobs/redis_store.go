@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Redis 路由观测 store，逐行为对齐
@@ -26,11 +27,11 @@ type RedisCommandClient interface {
 
 // RedisCommandClientAdapter adapts go-redis to RedisCommandClient.
 type RedisCommandClientAdapter struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 // NewRedisCommandClient builds the production adapter.
-func NewRedisCommandClient(client *redis.Client) *RedisCommandClientAdapter {
+func NewRedisCommandClient(client redis.UniversalClient) *RedisCommandClientAdapter {
 	return &RedisCommandClientAdapter{client: client}
 }
 
@@ -56,11 +57,11 @@ func (adapter *RedisCommandClientAdapter) SendCommand(ctx context.Context, args 
 // URL for the process lifetime.
 var redisClientCache = struct {
 	sync.Mutex
-	clients map[string]*redis.Client
-}{clients: make(map[string]*redis.Client)}
+	clients map[string]redis.UniversalClient
+}{clients: make(map[string]redis.UniversalClient)}
 
 // GetRedisClient mirrors getRedisClient.
-func GetRedisClient(ctx context.Context, redisURL string) (*redis.Client, error) {
+func GetRedisClient(ctx context.Context, redisURL string) (redis.UniversalClient, error) {
 	normalized := strings.TrimSpace(redisURL)
 	if normalized == "" {
 		return nil, errors.New("Redis 连接串不能为空")
@@ -70,11 +71,10 @@ func GetRedisClient(ctx context.Context, redisURL string) (*redis.Client, error)
 	if client, ok := redisClientCache.clients[normalized]; ok {
 		return client, nil
 	}
-	options, err := redis.ParseURL(normalized)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: normalized})
 	if err != nil {
 		return nil, err
 	}
-	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
 		if closeErr := client.Close(); closeErr != nil {
 			slog.Debug("关闭 Ping 失败的 Redis 客户端连接失败", "event", "gateway_handle_close_failed", "component", "gatewayobs_redis_client", "error", closeErr)

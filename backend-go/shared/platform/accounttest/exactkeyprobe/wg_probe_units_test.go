@@ -130,13 +130,13 @@ func TestVerifyResponseJSONDispatch(t *testing.T) {
 		body    string
 		wantErr bool
 	}{
-		{"chat_json 完成", wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"),
+		{"chat_json 完成", wgSSEInput("chat_json", "gpt", "profile_gpt_openai_v1"),
 			`{"choices":[{"finish_reason":"stop","message":{"content":"46"}}]}`, false},
-		{"chat_json 未完成", wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"),
+		{"chat_json 未完成", wgSSEInput("chat_json", "gpt", "profile_gpt_openai_v1"),
 			`{"choices":[{"delta":{"content":"46"}}]}`, true},
-		{"responses_json 完成", wgSSEInput("responses_json", "openai", "profile_openai_openai_v1"),
+		{"responses_json 完成", wgSSEInput("responses_json", "gpt", "profile_gpt_openai_v1"),
 			`{"status":"completed","object":"response","output":[{"content":"46"}]}`, false},
-		{"responses_json 未完成", wgSSEInput("responses_json", "openai", "profile_openai_openai_v1"),
+		{"responses_json 未完成", wgSSEInput("responses_json", "gpt", "profile_gpt_openai_v1"),
 			`{"status":"in_progress","output":[{"content":"46"}]}`, true},
 		{"messages_json 完成", wgSSEInput("messages_json", "anthropic", "profile_anthropic_anthropic_v1"),
 			`{"type":"message","stop_reason":"end_turn","content":[{"text":"46"}]}`, false},
@@ -148,15 +148,15 @@ func TestVerifyResponseJSONDispatch(t *testing.T) {
 			`{"candidates":[{"content":{"parts":[{"text":"46"}]}}]}`, true},
 		{"interactions_json 完成", wgSSEInput("interactions_json", "gemini", "profile_gemini_native_v1beta"),
 			`{"status":"completed","output":"46"}`, false},
-		{"images_json 有效图", wgSSEInput("images_json", "openai", ""),
+		{"images_json 有效图", wgSSEInput("images_json", "gpt", ""),
 			`{"data":[{"b64_json":"AAAA"}]}`, false},
-		{"images_json 缺图", wgSSEInput("images_json", "openai", ""),
+		{"images_json 缺图", wgSSEInput("images_json", "gpt", ""),
 			`{"data":[{}]}`, true},
-		{"images_json 缺 data", wgSSEInput("images_json", "openai", ""),
+		{"images_json 缺 data", wgSSEInput("images_json", "gpt", ""),
 			`{}`, true},
-		{"无 profile 默认分支含挑战", wgSSEInput("chat_json", "openai", ""),
+		{"无 profile 默认分支含挑战", wgSSEInput("chat_json", "gpt", ""),
 			`{"anything":"46"}`, false},
-		{"无 profile 默认分支缺挑战", wgSSEInput("chat_json", "openai", ""),
+		{"无 profile 默认分支缺挑战", wgSSEInput("chat_json", "gpt", ""),
 			`{"anything":"nope"}`, true},
 	}
 	for _, item := range cases {
@@ -168,7 +168,7 @@ func TestVerifyResponseJSONDispatch(t *testing.T) {
 		})
 	}
 	// 非 JSON 响应。
-	if err := verifyResponse(wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"), testChallenge, []byte("<html>")); err == nil {
+	if err := verifyResponse(wgSSEInput("chat_json", "gpt", "profile_gpt_openai_v1"), testChallenge, []byte("<html>")); err == nil {
 		t.Fatal("非 JSON 响应必须报错")
 	}
 	// codeAssist 分支（gemini oauth → verifyGeminiSSE）。
@@ -203,10 +203,10 @@ func TestChatCompletedAndGeminiCandidateHelpers(t *testing.T) {
 // 参数缺失与非 API Key 分支。
 func TestProbeExactKeyModelRoutesToSelectedKey(t *testing.T) {
 	secret := "exact-key-secret"
-		upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(request) + `"}}]}`))
-		}))
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(request) + `"}}]}`))
+	}))
 	defer upstream.Close()
 	input := testInput(upstream.URL, "chat_json")
 	input.APIKeys = []APIKeyInput{

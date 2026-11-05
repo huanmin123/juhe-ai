@@ -498,7 +498,7 @@ func TestClientIPConcurrencyRedisQueueFullAndMissingURL(t *testing.T) {
 	if _, err := NewClientIPConcurrency(ClientIPConcurrencyOptions{
 		RuntimeStateDriver: RuntimeStateDriverRedis,
 		StateRedisURL:      " ",
-	}); err == nil || err.Error() != "JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置" {
+	}); err == nil || err.Error() != "JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置" {
 		t.Fatalf("err=%v", err)
 	}
 }

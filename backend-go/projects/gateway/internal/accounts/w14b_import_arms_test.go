@@ -19,14 +19,14 @@ func TestW14BImportAccountValidationArms(t *testing.T) {
 	// 空协议档案 + 非法状态/并发/过期 + 非法凭据：各消息臂逐条命中。
 	result, err := env.store.PreviewImport(context.Background(), w13aRawDoc(
 		[]any{
-			map[string]any{"name": "w14b-i1", "providerCode": "openai", "type": "api_key",
+			map[string]any{"name": "w14b-i1", "providerCode": "gpt", "type": "api_key",
 				"status": "active", "groupName": "w14b-g1",
 				"credentials": map[string]any{"api_key": "sk-x", "base_url": "https://api.openai.com/v1"}},
-			map[string]any{"name": "w14b-i2", "providerCode": "openai", "type": "api_key",
+			map[string]any{"name": "w14b-i2", "providerCode": "gpt", "type": "api_key",
 				"status": "bogus", "concurrencyLimit": float64(-1), "accountExpiresAt": "not-a-time",
 				"groupName":   "w14b-g1",
 				"credentials": map[string]any{"api_key": "sk-x", "base_url": "https://api.openai.com/v1"}},
-			map[string]any{"name": "w14b-i3", "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
+			map[string]any{"name": "w14b-i3", "providerCode": "gpt", "providerProtocolProfileId": openAICompatibleProfileID,
 				"type": "api_key", "status": "active", "groupName": "w14b-g1",
 				"credentials": map[string]any{"api_key": "sk-x"}},
 		}, nil,
@@ -73,11 +73,11 @@ func TestW14BImportProxyCacheAndOrphanProfile(t *testing.T) {
 	sharedProxy := map[string]any{"ref": "p1", "name": "w14b-shared-proxy", "type": "socks5", "host": "proxy.example.com", "port": float64(1080)}
 	account := func(name string) map[string]any {
 		// B1 断点批（设计 §8）：导入账户显式携带连接集合与健康检查三件套。
-		return map[string]any{"name": name, "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
+		return map[string]any{"name": name, "providerCode": "gpt", "providerProtocolProfileId": openAICompatibleProfileID,
 			"type": "api_key", "status": "active", "groupName": "w14b-gc", "proxyRef": "p1",
 			"credentials":                     map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
-			"connections":                     []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
-			"healthCheckConnectionPresetCode": "generic_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
+			"connections":                     []any{map[string]any{"connectionPresetCode": "gpt_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
+			"healthCheckConnectionPresetCode": "gpt_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
 	}
 	result, err := env.store.PreviewImport(context.Background(), w13aRawDoc(
 		[]any{account("w14b-pa"), account("w14b-pb")}, []any{sharedProxy},
@@ -104,11 +104,11 @@ func TestW14BImportModelCatalogValidationArms(t *testing.T) {
 
 	account := func(name string, extra map[string]any) map[string]any {
 		// B1 断点批（设计 §8）：导入账户显式携带连接集合与健康检查三件套。
-		base := map[string]any{"name": name, "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
+		base := map[string]any{"name": name, "providerCode": "gpt", "providerProtocolProfileId": openAICompatibleProfileID,
 			"type": "api_key", "status": "active", "groupName": "w14b-cat",
 			"credentials":                     map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
-			"connections":                     []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
-			"healthCheckConnectionPresetCode": "generic_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
+			"connections":                     []any{map[string]any{"connectionPresetCode": "gpt_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
+			"healthCheckConnectionPresetCode": "gpt_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
 		for key, value := range extra {
 			base[key] = value
 		}

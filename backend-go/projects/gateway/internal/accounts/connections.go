@@ -457,7 +457,10 @@ func (s *Store) syncSingleConnectionEndpointModes(ctx context.Context, q queryer
 	if len(connections) != 1 {
 		return &ValidationError{Message: fmt.Sprintf("批量编辑连接行同步：账户 %s 连接行数 %d ≠ 1，与批量准备决策矛盾", accountID, len(connections))}
 	}
-	_, driver := accountVendorIdentity(providerCode)
+	_, driver, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return err
+	}
 	resolved, err := resolveConnectionSet(domain, driver, accountType, oauthType, connections)
 	if err != nil {
 		return err

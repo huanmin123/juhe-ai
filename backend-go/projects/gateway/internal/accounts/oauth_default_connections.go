@@ -63,7 +63,10 @@ func DefaultConnectionsForOAuthVendor(providerCode, accountType, domain string, 
 	if domain == "" {
 		domain = accountscore.CapabilityDomainChat
 	}
-	_, driver := accountVendorIdentity(providerCode)
+	_, driver, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return nil, err
+	}
 	if !contracts.IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain) {
 		return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: 连接预设 %s 不允许用于 OAuth 组合（provider=%s, accountType=%s, oauthType=%s, domain=%s）", preset, providerCode, accountType, oauthType, domain)}
 	}

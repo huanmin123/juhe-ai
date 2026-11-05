@@ -304,7 +304,7 @@ func TestW14EGetGatewayHotQualityRuntimeRedisClientError(t *testing.T) {
 	t.Cleanup(ResetGatewayHotQualityRuntimeForTest)
 	ResetGatewayHotQualityRuntimeForTest()
 	if _, err := GetGatewayHotQualityRuntime(context.Background(), RuntimeDriverConfig{
-		RedisStateURL:      "://w14e-not-a-url",
+		RedisURL:      "://w14e-not-a-url",
 		RedisNamespace:     "w14e-ns",
 	}); err == nil {
 		t.Fatal("invalid redis url must fail the runtime build")
@@ -312,7 +312,7 @@ func TestW14EGetGatewayHotQualityRuntimeRedisClientError(t *testing.T) {
 	// 空命名空间：热质量 Redis store 构造必须拒绝。
 	server := miniredis.RunT(t)
 	if _, err := GetGatewayHotQualityRuntime(context.Background(), RuntimeDriverConfig{
-		RedisStateURL:      "redis://" + server.Addr(),
+		RedisURL:      "redis://" + server.Addr(),
 		RedisNamespace:     " ",
 	}); err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("empty namespace err = %v", err)
@@ -349,7 +349,7 @@ func TestW14ERedisHotQualityStoreConstructorArms(t *testing.T) {
 	}
 	// 空白 name 触发 safeRedisName 的回退名。
 	fallbackStore, err := NewRedisHotQualityStore(NewRedisScriptRunner(client), RedisHotQualityStoreOptions{Namespace: "w14e", Name: "  "})
-	if err != nil || fallbackStore.Keys().Prefix != "juhe-ai:w14e:hot-quality:gateway-hot-quality" {
+	if err != nil || fallbackStore.Keys().Prefix != "juhe-ai:{w14e}:hot-quality:gateway-hot-quality" {
 		t.Fatalf("fallback name prefix = %s, %v", fallbackStore.Keys().Prefix, err)
 	}
 }

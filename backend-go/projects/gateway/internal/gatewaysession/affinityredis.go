@@ -17,7 +17,7 @@ func (s *AffinityService) redisSessionAffinityClient(ctx context.Context) (Redis
 	}
 	// Node redisSessionAffinityClient: the URL-less Redis cache driver is a
 	// configuration error.
-	return nil, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置")
+	return nil, fmt.Errorf("JUHE_AI_REDIS_URL 在 Redis cache driver 下必须配置")
 }
 
 // getRedisSessionAffinityBindingForOrdering mirrors

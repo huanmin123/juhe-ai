@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 type MethodClass string
@@ -107,7 +108,7 @@ func (s *MemoryStore) Check(ctx context.Context, nowMs int64, buckets []BucketIn
 		// ipBurstStore, userMinuteStore, system-api-rate-limit.middleware.ts
 		// :65-67), so the same `ip:class` key must not collide across
 		// windows. Composing StoreName into the single Go map gives each
-		// bucket the same isolation as redisFixedWindowKey(storeName, key).
+		// bucket the same isolation as redisFixedWindowKeyNS(s.Namespace, storeName, key).
 		key := memoryWindowKey(bucket.StoreName, bucket.Key)
 		current, exists := s.entries[key]
 		var count int
@@ -345,8 +346,9 @@ func (e *SettingError) Error() string {
 // RedisStore implements Store with the Node fixed-window Lua script
 // (multi-bucket atomic check-and-commit).
 type RedisStore struct {
-	Client redisEval
-	Now    func() time.Time
+	Client    redisEval
+	Namespace string
+	Now       func() time.Time
 }
 
 type redisEval interface {
@@ -404,7 +406,7 @@ func (s *RedisStore) Check(ctx context.Context, nowMs int64, buckets []BucketInp
 	keys := make([]string, len(buckets))
 	args := []any{nowMs, len(buckets)}
 	for i, bucket := range buckets {
-		keys[i] = redisFixedWindowKey(bucket.StoreName, bucket.Key)
+		keys[i] = redisFixedWindowKeyNS(s.Namespace, bucket.StoreName, bucket.Key)
 		args = append(args, bucket.StoreName, bucket.WindowMs, bucket.Limit)
 	}
 	result, err := s.Client.Eval(ctx, redisFixedWindowScript, keys, args...)
@@ -432,7 +434,11 @@ func (s *RedisStore) Check(ctx context.Context, nowMs int64, buckets []BucketInp
 }
 
 func redisFixedWindowKey(storeName, key string) string {
-	return "juhe-ai:rate-limit:fixed:" + redisKeyHash(storeName) + ":" + redisKeyHash(key)
+	return redisFixedWindowKeyNS("", storeName, key)
+}
+
+func redisFixedWindowKeyNS(namespace, storeName, key string) string {
+	return rediscfg.NamespacedKey("juhe-ai:rate-limit:fixed:"+redisKeyHash(storeName)+":"+redisKeyHash(key), namespace)
 }
 
 func redisKeyHash(value string) string {

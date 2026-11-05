@@ -5,7 +5,6 @@ package circuitstore
 
 import (
 	"testing"
-
 )
 
 func TestW14JMapOutboxEventScopeToken(t *testing.T) {

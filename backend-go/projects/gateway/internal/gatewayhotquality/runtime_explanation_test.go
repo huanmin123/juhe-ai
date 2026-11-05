@@ -23,7 +23,7 @@ func TestOrderGatewayAccountsByHotQualityReturnsFirstGroupDecisionExplanation(t 
 	// standalone memory 运行态随存储形态退役删除）。
 	server := miniredis.RunT(t)
 	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RedisStateURL:  "redis://" + server.Addr(),
+		RedisURL:  "redis://" + server.Addr(),
 		RedisNamespace: "exp-explain",
 	})
 	if err != nil {

@@ -6,10 +6,11 @@ import (
 	"strings"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 type Client struct {
-	client    *goredis.Client
+	client    goredis.UniversalClient
 	namespace string
 }
 
@@ -21,12 +22,11 @@ func NewClient(rawURL, namespace string) (*Client, error) {
 	if namespace == "" {
 		return nil, fmt.Errorf("redis namespace is required")
 	}
-	opts, err := goredis.ParseURL(rawURL)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: rawURL, ContextTimeoutEnabled: true})
 	if err != nil {
-		return nil, fmt.Errorf("parse redis url: %w", err)
+		return nil, fmt.Errorf("create redis client: %w", err)
 	}
-	opts.ContextTimeoutEnabled = true
-	return &Client{client: goredis.NewClient(opts), namespace: namespace}, nil
+	return &Client{client: client, namespace: namespace}, nil
 }
 
 func (c *Client) Close() error {

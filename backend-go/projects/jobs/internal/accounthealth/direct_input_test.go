@@ -535,7 +535,7 @@ func TestBuildDirectCandidateInputIsolatesBadProxyWithoutLeakingSecrets(t *testi
 		t.Fatal(err)
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
-	base := exactkeyprobe.DirectInput{Account: exactkeyprobe.DirectAccount{ID: "bad-proxy-account", ConfigRevision: 2, DispatchRevision: 3, Provider: "openai", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.example.com/v1"}, Binding: exactkeyprobe.DirectBinding{GroupID: "group-1", Enabled: true}, InputVersion: 4, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: exactkeyprobe.Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1}}
+	base := exactkeyprobe.DirectInput{Account: exactkeyprobe.DirectAccount{ID: "bad-proxy-account", ConfigRevision: 2, DispatchRevision: 3, Provider: "gpt", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.example.com/v1"}, Binding: exactkeyprobe.DirectBinding{GroupID: "group-1", Enabled: true}, InputVersion: 4, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: exactkeyprobe.Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1}}
 	bad := base
 	bad.Proxy = &exactkeyprobe.DirectProxy{ID: "bad-proxy", Enabled: false, Type: "http", Host: "127.0.0.1", Port: 8080, PasswordEncrypted: "must-not-escape"}
 	candidate := directCandidate{account: bad.Account, inputVersion: bad.InputVersion}

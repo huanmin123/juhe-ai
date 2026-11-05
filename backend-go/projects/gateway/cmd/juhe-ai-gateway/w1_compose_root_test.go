@@ -485,7 +485,7 @@ func TestW1OComposeChainRuntimeServicesGuardsAndBadRedisURLs(t *testing.T) {
 	})
 	t.Run("坏缓存redis URL", func(t *testing.T) {
 		cfg := composeTestConfig(t)
-		cfg.RedisCacheURL = "://w1o-bad-cache-url"
+		cfg.RedisURL = "://w1o-bad-cache-url"
 		services, err := composeChainRuntimeServices(&composition{}, cfg, fakeRead)
 		if err == nil {
 			if services != nil {
@@ -499,7 +499,7 @@ func TestW1OComposeChainRuntimeServicesGuardsAndBadRedisURLs(t *testing.T) {
 	})
 	t.Run("坏状态redis URL", func(t *testing.T) {
 		cfg := composeTestConfig(t)
-		cfg.RedisStateURL = "://w1o-bad-state-url"
+		cfg.RedisURL = "://w1o-bad-state-url"
 		services, err := composeChainRuntimeServices(&composition{}, cfg, fakeRead)
 		if err == nil {
 			if services != nil {
@@ -588,8 +588,8 @@ func TestW1OComposeChainRuntimeServicesRedisStateArms(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	fixture := newChainFixture(t)
 	cfg := composeTestConfig(t)
-	cfg.RedisStateURL = "redis://" + redisServer.Addr()
-	cfg.RedisCacheURL = "redis://" + redisServer.Addr()
+	cfg.RedisURL = "redis://" + redisServer.Addr()
+	cfg.RedisURL = "redis://" + redisServer.Addr()
 	cfg.RedisNamespace = "w1o-chain-ns"
 	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: inval.New(time.Now)}
 	services, err := composeChainRuntimeServices(composed, cfg, fakeRead)

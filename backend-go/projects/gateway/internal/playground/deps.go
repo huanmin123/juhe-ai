@@ -127,13 +127,6 @@ type ProviderCatalogPort interface {
 	ListProviderCatalog(providerCode, systemAccountID string) []CatalogItem
 }
 
-// AccountCatalogPort 取 generic_http 账户的显式绑定模型目录（vendor 为空时
-// 按 account_supported_models 补齐，禁止按空 provider 查目录；生产实现 =
-// runtime cache ListAccountSupportedModelCatalogAsync）。
-type AccountCatalogPort interface {
-	ListAccountSupportedModels(accountID, systemAccountID string) []CatalogItem
-}
-
 // FetchResult 是 fetch_url 工具的执行结果（正文文本 + 供 tool_end 摘要的首行）。
 type FetchResult struct {
 	Text string
@@ -159,10 +152,10 @@ type Deps struct {
 	Accounts          AccountOptionsPort
 	AccountLookup     AccountLookupPort
 	TransportAccounts TransportAccountsPort
-	// ProviderCatalog/AccountCatalog 是模型目录两端口（cmd 层包装同一
-	// runtime cache loader，与 chat 面读取链同源，custom 继承已生效）。
+	// ProviderCatalog 是模型目录端口（cmd 层包装同一 runtime cache loader，
+	// 与 chat 面读取链同源，custom 继承已生效）。generic_http 账户的
+	// account_supported_models 目录回退端口随通用连接器退场删除。
 	ProviderCatalog ProviderCatalogPort
-	AccountCatalog  AccountCatalogPort
 	// FetchURL 是 fetch_url 工具执行端口（nil 时装配默认实现 fetchurl.go）。
 	FetchURL FetchURLFunc
 	// ArtifactsRoot 是产物暂存根 <数据根>/playground-artifacts（设计 §3.8，零

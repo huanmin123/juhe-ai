@@ -36,12 +36,9 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 		{"retention batch", map[string]string{"JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE": "0"}, "RETENTION_BATCH_SIZE"},
 		{"retention batch float", map[string]string{"JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE": "1.5"}, "RETENTION_BATCH_SIZE"},
 		{"hot hours", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS": "999"}, "HOT_RETENTION_HOURS"},
-		{"sample rate", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "2"}, "SAMPLE_RATE"},
-		{"sample rate decimals", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "0.12345"}, "SAMPLE_RATE"},
-		{"sample rate format", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "abc"}, "SAMPLE_RATE"},
 		{"success days", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "-1"}, "SUCCESS_RETENTION_DAYS"},
 		{"problem days", map[string]string{"JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS": "0"}, "PROBLEM_RETENTION_DAYS"},
-		{"sample/days mismatch", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "0", "JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "3"}, "同时为 0"},
+		{"sample/days mismatch", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "0"}, "同时为 0"},
 		{"success days below hot", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS": "72", "JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "1"}, "覆盖"},
 	}
 	// 2026-09-19 零配置默认后，instance id（回落 hostname）与 blob 目录（按
@@ -53,14 +50,13 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 			}
 		})
 	}
-	// F3 专属 URL 优先于主连接串（基座 loadConfigBaseEnv 的主 URL 满足回退，
-	// 这里验证专属覆盖）。
-	pgBase := map[string]string{"JUHE_AI_AUDIT_LOG_POSTGRES_URL": "postgres://w11e.invalid/f3"}
+	// F3 与主链共用唯一 JUHE_AI_POSTGRES_URL。
+	pgBase := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/f3"}
 	pgCfgOnly, err := LoadConfig(w11eEnvWith(pgBase))
 	if err != nil || pgCfgOnly.PostgresURL != "postgres://w11e.invalid/f3" {
-		t.Fatalf("专属 F3 URL 必须优先: %+v err=%v", pgCfgOnly.PostgresURL, err)
+		t.Fatalf("主 URL 必须生效: %+v err=%v", pgCfgOnly.PostgresURL, err)
 	}
-	pgWithURL := map[string]string{"JUHE_AI_AUDIT_LOG_POSTGRES_URL": "postgres://w11e.invalid/db", "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://w11e.invalid/settings", "JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY": " "}
+	pgWithURL := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/db", "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://w11e.invalid/settings", "JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY": " "}
 	pgCfg, err := LoadConfig(w11eEnvWith(pgWithURL))
 	if err != nil || pgCfg.PayloadBlobDirectory != filepath.Join("data", "audit-blob") {
 		t.Fatalf("postgres 空 blob 目录必须派生 <DATA_DIR>/audit-blob: %+v err=%v", pgCfg, err)

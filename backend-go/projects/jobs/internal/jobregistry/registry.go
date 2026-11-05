@@ -285,14 +285,14 @@ func ScheduledEntries() []Entry {
 			Hotspot: true, SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"runtime-state:gateway-normal-route-latency-degradation", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "opsjobs + proberepo + accountprobe",
-			GoBinding: "SpeedFirstProbeRunner 经组合根接线：SpeedFirstClaimStore 由 proberepo 的 Redis 降级运行态实现提供（与 Node 网关同键同 Lua 契约，state/probe-index/claim 键形状逐字段一致），探针走 accountprobe 完整分级诊断；缺 JUHE_AI_REDIS_STATE_URL 时组合根登记 disabled",
+			GoBinding: "SpeedFirstProbeRunner 经组合根接线：SpeedFirstClaimStore 由 proberepo 的 Redis 降级运行态实现提供（与 Node 网关同键同 Lua 契约，state/probe-index/claim 键形状逐字段一致），探针走 accountprobe 完整分级诊断；缺 JUHE_AI_REDIS_URL 时组合根登记 disabled",
 		},
 		{
 			JobName: "account-circuit-control-plane-maintenance", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_circuit_incidents", "business:account_circuit_outbox", "runtime:account_circuit"},
 			GoStatus: GoWired, GoPackage: "opsjobs + circuitstore",
-			GoBinding: "ControlPlaneMaintenance 经组合根接线：Redis CircuitStore 由 circuitstore 提供（Lua 与键形状逐字节对照 gatewaycircuit/Node account-circuit-redis-store.ts，同键空间单实现；容量随 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY），ControlPlaneLedger/Outbox 由 circuitstore 业务库双模适配器提供（ack 回写投影 revision 水位）；reconcile 游标持久化为加法扩展（Node 内存语义保留：游标缺失即从头幂等回放）；2026-10-08 起追加孤儿 incident 结清职责：OrphanIncidentCloser 对运行态缺键且超宽限期的活动行按 CLOSED CAS 结清（写 incidents/outbox），随后 Cleanup 删除保留期到期的 CLOSED 行与账户行缺失/已软删的遗留行（BUG-0295 遗留项②，2026-10-19 起，同一无未 dispatched outbox 守卫）；缺 JUHE_AI_REDIS_STATE_URL 时组合根登记 disabled",
+			GoBinding: "ControlPlaneMaintenance 经组合根接线：Redis CircuitStore 由 circuitstore 提供（Lua 与键形状逐字节对照 gatewaycircuit/Node account-circuit-redis-store.ts，同键空间单实现；容量随 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY），ControlPlaneLedger/Outbox 由 circuitstore 业务库双模适配器提供（ack 回写投影 revision 水位）；reconcile 游标持久化为加法扩展（Node 内存语义保留：游标缺失即从头幂等回放）；2026-10-08 起追加孤儿 incident 结清职责：OrphanIncidentCloser 对运行态缺键且超宽限期的活动行按 CLOSED CAS 结清（写 incidents/outbox），随后 Cleanup 删除保留期到期的 CLOSED 行与账户行缺失/已软删的遗留行（BUG-0295 遗留项②，2026-10-19 起，同一无未 dispatched outbox 守卫）；缺 JUHE_AI_REDIS_URL 时组合根登记 disabled",
 		},
 		{
 			JobName: "account-list-availability-projection-maintenance", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "ops-worker",
@@ -306,14 +306,14 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, Shardable: true, LeaseRequired: true,
 			Writes:   []string{"business:account_circuit_incidents", "business:account_circuit_outbox", "runtime:account_circuit"},
 			GoStatus: GoWired, GoPackage: "opsjobs + circuitstore + proberepo + accountprobe",
-			GoBinding: "CircuitRecoveryService 经组合根接线：CircuitStore 同 control-plane（Redis 单实现同键空间）；恢复目标解析由 proberepo 账户域读取链（LoadAccountForTest/LoadAccountForGroup ignoreAvailability + dispatch revision 围栏）与 accountprobe limited 诊断提供；2026-10-08 起恢复 mutation 经 CircuitIncidentProjector 投影回业务库 ledger（CAS 写 + incident_changed outbox，与 gateway 写侧同键同契约），失败残留由每轮 Sweep 前的 FlushPending 重放；已知限制：gatewayAccountRuntimeKey 复核退化为 identity 一致性（CandidateAccount 未暴露授权绑定上下文，由 store 侧 CAS 围栏兜底），protocol_model scope 的 modelBucket 钉住模型不可表达（走健康检查模型）；缺 JUHE_AI_REDIS_STATE_URL 时组合根登记 disabled",
+			GoBinding: "CircuitRecoveryService 经组合根接线：CircuitStore 同 control-plane（Redis 单实现同键空间）；恢复目标解析由 proberepo 账户域读取链（LoadAccountForTest/LoadAccountForGroup ignoreAvailability + dispatch revision 围栏）与 accountprobe limited 诊断提供；2026-10-08 起恢复 mutation 经 CircuitIncidentProjector 投影回业务库 ledger（CAS 写 + incident_changed outbox，与 gateway 写侧同键同契约），失败残留由每轮 Sweep 前的 FlushPending 重放；已知限制：gatewayAccountRuntimeKey 复核退化为 identity 一致性（CandidateAccount 未暴露授权绑定上下文，由 store 侧 CAS 围栏兜底），protocol_model scope 的 modelBucket 钉住模型不可表达（走健康检查模型）；缺 JUHE_AI_REDIS_URL 时组合根登记 disabled",
 		},
 		{
 			JobName: "key-model-memory-recovery", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			Hotspot: true, SingleOwner: true, LeaseRequired: false,
 			Writes:   []string{"runtime:key_model_memory"},
 			GoStatus: GoEquivalent, GoPackage: "keymodelrecovery",
-			GoBinding: "Runner 已由 jobs 组件装配（自有扫描循环，lease-free）。T6b 冻结依据：Node 仅在 runtimeStateDriver !== 'redis' 注册该 job（background-jobs.ts:366），Go runtime-state 键空间随 JUHE_AI_REDIS_STATE_URL 归一，driver 分支由接线层承担，注册表不建 driver 字段",
+			GoBinding: "Runner 已由 jobs 组件装配（自有扫描循环，lease-free）。T6b 冻结依据：Node 仅在 runtimeStateDriver !== 'redis' 注册该 job（background-jobs.ts:366），Go runtime-state 键空间随 JUHE_AI_REDIS_URL 归一，driver 分支由接线层承担，注册表不建 driver 字段",
 		},
 		{
 			JobName: "data-retention-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ingest-worker",

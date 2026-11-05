@@ -521,12 +521,12 @@ func TestW2AAPIKeyRotationNilContextGuard(t *testing.T) {
 	defer func() { _ = counter.client.Close() }()
 	// ctx 为 nil 且 modulo > 0：63-65 行把 nil 换成 context.Background()，
 	// 随后脚本执行在拒连客户端上失败（68-73 行错误出口）。
-	_, err := counter.NextIndex(nil, "w2a-acc", "juhe-ai:dev:w2a-rot", 5)
+	_, err := counter.NextIndex(nil, "w2a-acc", "juhe-ai:{dev}:w2a-rot", 5)
 	if err == nil {
 		t.Fatalf("NextIndex with nil ctx on refused client must fail")
 	}
 	// modulo <= 0 的直通臂（57-59 行）保持既有覆盖。
-	if index, err := counter.NextIndex(context.Background(), "w2a-acc", "juhe-ai:dev:w2a-rot", 0); err != nil || index != 0 {
+	if index, err := counter.NextIndex(context.Background(), "w2a-acc", "juhe-ai:{dev}:w2a-rot", 0); err != nil || index != 0 {
 		t.Fatalf("modulo<=0 must return 0,nil, got %d,%v", index, err)
 	}
 }
@@ -539,7 +539,7 @@ func TestW2AAPIKeyRotationNilContextGuard(t *testing.T) {
 func TestW2ATurnRetryRedisMarshalFailureAndNilNamespace(t *testing.T) {
 	client := w2aRefusedRedisClient()
 	defer func() { _ = client.Close() }()
-	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:dev:w2a-turnretry")
+	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:{dev}:w2a-turnretry")
 	if err != nil || store == nil {
 		t.Fatalf("build store: %v,%v", store, err)
 	}
@@ -983,7 +983,7 @@ func TestW2AClientIPAvoidanceOrderError(t *testing.T) {
 	avoidance, err := gatewayclientip.NewAvoidance(gatewayclientip.AvoidanceOptions{
 		RuntimeStateDriver: "redis",
 		StateRedisURL:      "redis://127.0.0.1:1",
-		RedisNamespace:     "juhe-ai:dev:w2a-avoidance",
+		RedisNamespace:     "juhe-ai:{dev}:w2a-avoidance",
 	})
 	if err != nil {
 		t.Fatalf("build avoidance: %v", err)
@@ -1180,8 +1180,7 @@ func w2aComposeSettingValue(key string) (string, error) {
 func TestW2AComposeQuotaSharedNamespaceError(t *testing.T) {
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RedisCacheURL:                 "redis://127.0.0.1:1",
-		RedisStateURL:                 "redis://127.0.0.1:1",
+		RedisURL:                 "redis://127.0.0.1:1",
 		RedisNamespace:                "",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
@@ -1203,9 +1202,9 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 	// 通过，key-model 的 ^[A-Za-z0-9_.:-]{1,64}$ 拒绝 → Select 报错
 	//（549-551）。
 	env := w1pgEnvFile(t)
-	stateURL := env["JUHE_AI_REDIS_STATE_URL"]
+	stateURL := env["JUHE_AI_REDIS_URL"]
 	if stateURL == "" {
-		t.Skip("dev env 缺少 JUHE_AI_REDIS_STATE_URL（跳过）")
+		t.Skip("dev env 缺少 JUHE_AI_REDIS_URL（跳过）")
 	}
 	options, err := redis.ParseURL(stateURL)
 	if err != nil {
@@ -1220,9 +1219,8 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 	}
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RedisCacheURL:                 stateURL,
-		RedisStateURL:                 stateURL,
-		RedisNamespace:                "juhe-ai:dev:w2a-oversized:" + strings.Repeat("w2a", 30),
+		RedisURL:                 stateURL,
+		RedisNamespace:                "juhe-ai:{dev}:w2a-oversized:" + strings.Repeat("w2a", 30),
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
 	}
@@ -1243,9 +1241,8 @@ func TestW2AComposeRuntimeInvalidationClosures(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisURL := "redis://" + server.Addr()
 	cfg := runtimeConfig{
-		RedisCacheURL:                 redisURL,
-		RedisStateURL:                 redisURL,
-		RedisNamespace:                "juhe-ai:dev:w2a-compose",
+		RedisURL:                 redisURL,
+		RedisNamespace:                "juhe-ai:{dev}:w2a-compose",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
 	}

@@ -25,11 +25,11 @@ func w12dProbeInput(baseURL, mode, protocol string) Input {
 // TestW12dProbeEndpointModeMatrix 逐个 endpoint mode 走真实探针执行路径。
 func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 	var seenPath string
-		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			seenPath = request.URL.Path
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(request) + `"}}]}`))
-		}))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		seenPath = request.URL.Path
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(request) + `"}}]}`))
+	}))
 	defer server.Close()
 	cases := []struct {
 		mode     string
@@ -39,11 +39,11 @@ func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 		// 构造正确（响应语义差异覆盖在 HTTP failure 断言中）。
 		requireSuccess bool
 	}{
-		{"chat_json", "openai", "/v1/chat/completions", true},
-		{"chat_sse", "openai", "/v1/chat/completions", false},
-		{"responses_json", "openai", "/v1/responses", true},
-		{"responses_sse", "openai", "/v1/responses", false},
-		{"images_json", "openai", "/v1/images/generations", false},
+		{"chat_json", "gpt", "/v1/chat/completions", true},
+		{"chat_sse", "gpt", "/v1/chat/completions", false},
+		{"responses_json", "gpt", "/v1/responses", true},
+		{"responses_sse", "gpt", "/v1/responses", false},
+		{"images_json", "gpt", "/v1/images/generations", false},
 		{"messages_json", "anthropic", "/v1/messages", false},
 		{"generate_content_json", "gemini", "/v1beta/models/w12d-model:generateContent", false},
 		{"generate_content_sse", "gemini", "/v1beta/models/w12d-model:streamGenerateContent", false},
@@ -86,8 +86,8 @@ func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 	}
 	// 未知 endpoint mode → 前置校验拒绝（build switch 的 default 分支由
 	// isSupportedDirectProfile 契约保证不可达，属防御守卫）。
-	badMode := w12dProbeInput(server.URL, "teleport_json", "openai")
-	badMode.ProtocolProfileID = "profile_openai_openai_v1"
+	badMode := w12dProbeInput(server.URL, "teleport_json", "gpt")
+	badMode.ProtocolProfileID = "profile_gpt_openai_v1"
 	result := ProbeOpenAI(context.Background(), badMode, badMode.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: time.Second})
 	if result.Outcome != OutcomeTaskFailed || result.ErrorCode != "invalid_input" {
 		t.Fatalf("unknown mode: %+v", result)
@@ -97,7 +97,7 @@ func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 // TestW12dProbeTransportAndVerifyArms 覆盖传输失败、协议校验失败与响应过大臂。
 func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 	// 不可达端口 → transportFailure。
-	dead := w12dProbeInput("http://127.0.0.1:1", "chat_json", "openai")
+	dead := w12dProbeInput("http://127.0.0.1:1", "chat_json", "gpt")
 	dead.APIKeys[0].Credential.Ciphertext = testEnvelope(t, "s", `{"api_key":"sk"}`)
 	result := ProbeOpenAI(context.Background(), dead, dead.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: 500 * time.Millisecond})
 	if result.Outcome != OutcomeUpstreamFailed {
@@ -108,7 +108,7 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"unrelated":true}`))
 	}))
 	defer badBody.Close()
-	wrong := w12dProbeInput(badBody.URL, "chat_json", "openai")
+	wrong := w12dProbeInput(badBody.URL, "chat_json", "gpt")
 	wrong.APIKeys[0].Credential.Ciphertext = testEnvelope(t, "s", `{"api_key":"sk"}`)
 	result = ProbeOpenAI(context.Background(), wrong, wrong.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: time.Second})
 	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
@@ -119,7 +119,7 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 		writer.WriteHeader(http.StatusForbidden)
 	}))
 	defer errStatus.Close()
-	forbidden := w12dProbeInput(errStatus.URL, "chat_json", "openai")
+	forbidden := w12dProbeInput(errStatus.URL, "chat_json", "gpt")
 	forbidden.APIKeys[0].Credential.Ciphertext = testEnvelope(t, "s", `{"api_key":"sk"}`)
 	result = ProbeOpenAI(context.Background(), forbidden, forbidden.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: time.Second})
 	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_http_status" {
@@ -130,7 +130,7 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + strings.Repeat("46", 4096) + `"}}]}`))
 	}))
 	defer huge.Close()
-	capped := w12dProbeInput(huge.URL, "chat_json", "openai")
+	capped := w12dProbeInput(huge.URL, "chat_json", "gpt")
 	capped.APIKeys[0].Credential.Ciphertext = testEnvelope(t, "s", `{"api_key":"sk"}`)
 	result = ProbeOpenAI(context.Background(), capped, capped.APIKeys[0].Credential, ProbeOptions{Secret: "s", Timeout: time.Second, MaxResponseBytes: 128})
 	if result.Outcome == OutcomeSuccess {

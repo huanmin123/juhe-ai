@@ -95,8 +95,30 @@ func captureCheckConfig(argv []string) (stdout, stderr string, code int) {
 	}()
 	doneOut := make(chan string, 1)
 	doneErr := make(chan string, 1)
-	go func() { buf := make([]byte, 0, 64<<10); tmp := make([]byte, 4096); for { n, err := outR.Read(tmp); buf = append(buf, tmp[:n]...); if err != nil { doneOut <- string(buf); return } } }()
-	go func() { buf := make([]byte, 0, 64<<10); tmp := make([]byte, 4096); for { n, err := errR.Read(tmp); buf = append(buf, tmp[:n]...); if err != nil { doneErr <- string(buf); return } } }()
+	go func() {
+		buf := make([]byte, 0, 64<<10)
+		tmp := make([]byte, 4096)
+		for {
+			n, err := outR.Read(tmp)
+			buf = append(buf, tmp[:n]...)
+			if err != nil {
+				doneOut <- string(buf)
+				return
+			}
+		}
+	}()
+	go func() {
+		buf := make([]byte, 0, 64<<10)
+		tmp := make([]byte, 4096)
+		for {
+			n, err := errR.Read(tmp)
+			buf = append(buf, tmp[:n]...)
+			if err != nil {
+				doneErr <- string(buf)
+				return
+			}
+		}
+	}()
 	code = runCheckConfigCommand(stripCommand(argv))
 	outW.Close()
 	errW.Close()
@@ -115,4 +137,22 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestCheckConfigDeployOnlyVariablesAreAccepted(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "deploy.env")
+	content := "JUHE_AI_IMAGE_TAG=v1.2.3\nJUHE_AI_DEPLOY_SERVER=ops@example.test\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, code := captureCheckConfig([]string{
+		"check-config", "--process", "gateway", "--env-file", envFile,
+	})
+	if code != 0 {
+		t.Fatalf("部署侧变量不应被判未知: code=%d stdout=%q", code, stdout)
+	}
+	if strings.Contains(stdout, "未登记的 JUHE_AI_* 变量") {
+		t.Fatalf("部署侧变量被误报未知: %q", stdout)
+	}
 }

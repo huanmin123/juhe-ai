@@ -77,15 +77,16 @@ func TestWMMainExitBranches(t *testing.T) {
 		branch("no command selected", nil, 2, "runtime is not switched yet"),
 		// schema snapshot 预检链（env 门控逐级返回 2）。
 		branch("snapshot missing target", []string{"-postgres-schema-snapshot"}, 2, "JUHE_AI_SCHEMA_SNAPSHOT_TARGET"),
-		branch("snapshot missing url", []string{"-postgres-schema-snapshot"}, 2, "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL"),
-		branch("snapshot missing confirm", []string{"-postgres-schema-snapshot"}, 2, "READ_ONLY"),
-		branch("snapshot sqlite url rejected", []string{"-postgres-schema-snapshot"}, 1, "仅支持 PostgreSQL"),
+		branch("snapshot missing url", []string{"-postgres-schema-snapshot"}, 2, "--dsn"),
+		branch("snapshot missing confirm", []string{"-postgres-schema-snapshot", "-dsn", "postgres://s@127.0.0.1:5432/db"}, 2, "READ_ONLY"),
+		branch("snapshot sqlite url rejected", []string{"-postgres-schema-snapshot", "-dsn", "sqlite:///x.db"}, 1, "仅支持 PostgreSQL"),
 		// runner 用法错误。
 		// J3a/J3b bootstrap apply 命令（现行生产初始化契约）：与其他命令
 		// 互斥、无 env 拒绝裸跑（对照基线 j3a/j3b bootstrap without env 分支）。
 		branch("j3 apply mutex with storage bootstrap", []string{"-apply-j3b-model-check-postgres", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
-		branch("j3a apply without env", []string{"-apply-j3a-proxy-latency-postgres"}, 2, "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL"),
-		branch("j3b pg apply without env", []string{"-apply-j3b-model-check-postgres"}, 2, "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL"),
+		branch("j3a apply without dsn", []string{"-apply-j3a-proxy-latency-postgres"}, 2, "--dsn"),
+		branch("j3b pg apply without dsn", []string{"-apply-j3b-model-check-postgres"}, 2, "--dsn"),
+		branch("j2 and j3 apply mutex", []string{"-apply-account-balance-postgres", "-apply-j3a-proxy-latency-postgres"}, 2, "mutually exclusive"),
 		// 成功成本历史回填一次性子命令（2026-10-12）：与其他命令互斥。
 		branch("success-cost backfill mutex with storage bootstrap", []string{"-apply-success-cost-backfill", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
 		branch("success-cost backfill mutex with rebuild", []string{"-apply-success-cost-backfill", "-rebuild-usage-stats", "-confirm-offline"}, 2, "rebuild-usage-stats flag is mutually exclusive"),
@@ -97,15 +98,11 @@ func TestWMMainExitBranches(t *testing.T) {
 		case "snapshot missing target":
 			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": ""}
 		case "snapshot missing url":
-			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": "test", "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL": ""}
+			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": "test"}
 		case "snapshot missing confirm":
-			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": "test", "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL": "postgres://s@127.0.0.1:5432/db", "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM": ""}
+			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": "test", "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM": ""}
 		case "snapshot sqlite url rejected":
-			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": "test", "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL": "sqlite:///x.db", "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM": "READ_ONLY"}
-		case "j3a apply without env":
-			branches[i].env = map[string]string{"JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL": ""}
-		case "j3b pg apply without env":
-			branches[i].env = map[string]string{"JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL": ""}
+			branches[i].env = map[string]string{"JUHE_AI_SCHEMA_SNAPSHOT_TARGET": "test", "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM": "READ_ONLY"}
 		}
 	}
 

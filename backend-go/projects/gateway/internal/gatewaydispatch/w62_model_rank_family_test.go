@@ -13,46 +13,47 @@ import (
 )
 
 // TestFilterGatewayAccountsByRequestedModelFamilyArms 覆盖同一请求模型下
-// 同族改名 / 跨协议 / 直连三个 rank 判定臂（SQL 候选窗口的同构语义由
-// cmd/juhe-ai-gateway 的 w62_model_rank_family_test.go 以真实 seed 验证）。
+// 同族改名 / 保留的 Responses→Chat bridge / 直连三个 rank 判定臂（SQL 候选
+// 窗口的同构语义由 cmd/juhe-ai-gateway 的 w62_model_rank_family_test.go 以
+// 真实 seed 验证）。
 func TestFilterGatewayAccountsByRequestedModelFamilyArms(t *testing.T) {
 	sameFamilyRename := AccountCandidate{
 		ID:              "acc_same_family_rename",
 		SupportedModels: []string{"up-alias"},
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "client-model",
-			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,
+			SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
 			UpstreamModel:          "up-alias",
-			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyChatCompletions,
+			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyResponses,
 			Enabled:                true,
 		}},
 	}
-	crossProtocol := AccountCandidate{
-		ID:              "acc_cross_protocol",
+	bridge := AccountCandidate{
+		ID:              "acc_responses_chat_bridge",
 		SupportedModels: []string{"up-cross"},
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "client-model",
-			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,
+			SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
 			UpstreamModel:          "up-cross",
-			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyMessages,
+			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyChatCompletions,
 			Enabled:                true,
 		}},
 	}
 	direct := AccountCandidate{ID: "acc_direct", SupportedModels: []string{"client-model"}}
 
 	result := FilterGatewayAccountsByRequestedModel(
-		[]AccountCandidate{sameFamilyRename, crossProtocol, direct},
-		"client-model", gatewayrouting.EndpointFamilyChatCompletions)
+		[]AccountCandidate{sameFamilyRename, bridge, direct},
+		"client-model", gatewayrouting.EndpointFamilyResponses)
 
 	if got := len(result.Accounts); got != 3 {
-		t.Fatalf("accounts = %d, want 3 (same-family rename + cross protocol + direct)", got)
+		t.Fatalf("accounts = %d, want 3 (same-family rename + bridge + direct)", got)
 	}
 	ranks := result.ModelPriority.RankByAccountID
 	if ranks["acc_same_family_rename"] != ModelPriorityRankDirect {
 		t.Fatalf("same-family rename rank = %d, want %d (ties with direct)", ranks["acc_same_family_rename"], ModelPriorityRankDirect)
 	}
-	if ranks["acc_cross_protocol"] != ModelPriorityRankMapping {
-		t.Fatalf("cross-protocol rank = %d, want %d", ranks["acc_cross_protocol"], ModelPriorityRankMapping)
+	if ranks["acc_responses_chat_bridge"] != ModelPriorityRankMapping {
+		t.Fatalf("bridge rank = %d, want %d", ranks["acc_responses_chat_bridge"], ModelPriorityRankMapping)
 	}
 	if ranks["acc_direct"] != ModelPriorityRankDirect {
 		t.Fatalf("direct rank = %d, want %d", ranks["acc_direct"], ModelPriorityRankDirect)
@@ -72,30 +73,30 @@ func TestW62ModelFilterKeepsRankOrderNotBucketOrder(t *testing.T) {
 		SupportedModels: []string{"up-alias"},
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "client-model",
-			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,
+			SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
 			UpstreamModel:          "up-alias",
-			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyChatCompletions,
+			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyResponses,
 			Enabled:                true,
 		}},
 	}
 	directA := AccountCandidate{ID: "acc_direct_a", SupportedModels: []string{"client-model"}}
 	directB := AccountCandidate{ID: "acc_direct_b", SupportedModels: []string{"client-model"}}
-	crossProtocol := AccountCandidate{
+	bridge := AccountCandidate{
 		ID:              "acc_cross_last",
 		SupportedModels: []string{"up-cross"},
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "client-model",
-			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,
+			SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
 			UpstreamModel:          "up-cross",
-			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyMessages,
+			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyChatCompletions,
 			Enabled:                true,
 		}},
 	}
 
 	// 输入序 = 上游装配序：同秩映射账户在最前（比较器已按超级优先置顶）。
 	result := FilterGatewayAccountsByRequestedModel(
-		[]AccountCandidate{sameFamilyRename, directA, directB, crossProtocol},
-		"client-model", gatewayrouting.EndpointFamilyChatCompletions)
+		[]AccountCandidate{sameFamilyRename, directA, directB, bridge},
+		"client-model", gatewayrouting.EndpointFamilyResponses)
 
 	got := make([]string, 0, len(result.Accounts))
 	for _, account := range result.Accounts {

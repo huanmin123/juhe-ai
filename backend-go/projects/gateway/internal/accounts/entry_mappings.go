@@ -32,9 +32,10 @@ import (
 // 无法确定计价厂商）原样上抛，避免被折叠成「不在目录中」。
 const validationCodeModelNotFound = "model_not_found"
 
-// entryMappingPairTargetModes 是设计 §5.2 固定 endpoint family 矩阵的 18 个
-// 允许 (source, target) pair 及其全部可执行 target mode 形态（§5.3 唯一选择
-// 函数的写侧输入）。矩阵外的 pair 一律拒绝（§5.2 权威，本包唯一实现）。
+// entryMappingPairTargetModes 是账号模型别名允许的 8 个 (source, target) pair
+// 及其全部可执行 target mode 形态（§5.3 唯一选择函数的写侧输入）。同一协议面
+// 内的同族改名 + OpenAI v1 Responses→Chat Completions 显式 bridge；跨协议
+// 方向随 openai/hybrid/generic_http 一起退役，矩阵外的 pair 一律拒绝。
 var entryMappingPairTargetModes = map[string][]string{
 	"chat_completions\x00chat_completions": {"chat_json", "chat_sse"},
 	// §5.2 #18：responses→responses 是同族改名映射（Responses 原生上游的
@@ -44,19 +45,9 @@ var entryMappingPairTargetModes = map[string][]string{
 	// 该项导致此类映射保存恒 400。
 	"responses\x00responses":                      {"responses_json", "responses_sse"},
 	"responses\x00chat_completions":               {"chat_sse"},
-	"messages\x00chat_completions":                {"chat_json", "chat_sse"},
-	"generate_content\x00chat_completions":        {"chat_json"},
-	"stream_generate_content\x00chat_completions": {"chat_sse"},
 	"messages\x00messages":                        {"messages_json", "messages_sse"},
-	"chat_completions\x00messages":                {"messages_json", "messages_sse"},
-	"responses\x00messages":                       {"messages_json", "messages_sse"},
-	"generate_content\x00messages":                {"messages_json"},
-	"stream_generate_content\x00messages":         {"messages_sse"},
 	"generate_content\x00generate_content":        {"generate_content_json"},
 	"stream_generate_content\x00generate_content": {"generate_content_sse"},
-	"chat_completions\x00generate_content":        {"generate_content_json", "generate_content_sse"},
-	"responses\x00generate_content":               {"generate_content_json", "generate_content_sse"},
-	"messages\x00generate_content":                {"generate_content_json", "generate_content_sse"},
 	// §5.2 #16：视频映射 target 必须同时声明并启用全部四个 video mode——
 	// 不能把单一 video_create 当作完整可轮询的视频连接。
 	"video_generation\x00video_generation": {"video_create", "video_get", "video_content", "video_cancel"},
@@ -74,7 +65,7 @@ var entryMappingPairTargetModes = map[string][]string{
 func validateEntryMappingFamilyLinkage(sourceFamily, targetFamily string, connectionModes, modelModes []string) error {
 	pairModes, ok := entryMappingPairTargetModes[sourceFamily+"\x00"+targetFamily]
 	if !ok {
-		return &ValidationError{Message: fmt.Sprintf("账号模型别名不支持 %s 到 %s 的上游协议转换，请改用混合供应商账户",
+		return &ValidationError{Message: fmt.Sprintf("账号模型别名不支持 %s 到 %s 的上游协议转换",
 			accountModelMappingEndpointFamilyLabel(sourceFamily), accountModelMappingEndpointFamilyLabel(targetFamily))}
 	}
 	connectionSet := entryModeSet(connectionModes)
@@ -184,16 +175,12 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		audioInputUsd, audioOutputUsd, outputUsdPerImage                    sql.NullFloat64
 		serviceTierPricesJSON                                               sql.NullString
 	)
-	// vendor 为空 = generic_http 账户（accounts.vendor_code 为 NULL）。供应商
-	// 设计允许 generic_http 绑定任一真实 vendor 的模型；2026-11-03 存量处置后
-	// 空 vendor 的 active personal 行已清零，这里按模型名跨 vendor 解析，仍保持
-	// owner 可见性与 personal 优先。下方再断言「计价 vendor 唯一且非空」，避免
-	// 出现「能绑定但运行期解析不出厂商」的第二形态。
-	where := "COALESCE(vendor_code,'') = ? AND "
-	args := []any{vendor, model, owner}
+	// 身份键严格按账户 vendor 解析：九家真实厂商账户只能绑定本厂商的模型行
+	// （vendor_code 相等，含 NULL→'' 归一），不再有 generic_http 账户的空 vendor
+	// 跨 vendor 通配解析；owner 可见性与 personal 优先保持原序。账户 vendor 缺失
+	// 属于历史数据形态：无法确定计价厂商，直接拒绝绑定。
 	if strings.TrimSpace(vendor) == "" {
-		where = "TRUE AND "
-		args = []any{model, owner}
+		return "", false, &ValidationError{Message: fmt.Sprintf("目标模型 %q 未归属任何厂商，无法计价，不能绑定", model)}
 	}
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id, public_model, COALESCE(vendor_code,''),
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
@@ -201,10 +188,10 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 			image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
 			audio_output_usd_per_1m, output_usd_per_image, service_tier_prices_json
 		FROM `+s.table("models")+`
-		WHERE `+where+`upstream_model = ? AND status = 'active'
+		WHERE COALESCE(vendor_code,'') = ? AND upstream_model = ? AND status = 'active'
 		  AND (scope IN ('builtin','global') OR (scope = 'personal' AND system_account_id = ?))
 		ORDER BY CASE scope WHEN 'personal' THEN 0 WHEN 'global' THEN 1 ELSE 2 END, id
-		LIMIT 1`), args...).Scan(
+		LIMIT 1`), vendor, model, owner).Scan(
 		&id, &publicModel, &rowVendor,
 		&inputUsd, &outputUsd, &cachedInputUsd, &cacheWriteUsd, &cacheWrite1hUsd,
 		&cacheStorageUsd, &imageInputUsd, &imageOutputUsd, &audioInputUsd,
@@ -216,10 +203,9 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		}
 		return "", false, err
 	}
-	if strings.TrimSpace(vendor) == "" && rowVendor == "" {
-		// generic_http 账户只能绑定「已归属真实厂商」的行：NULL vendor 行在
-		// 运行期无法装载任何厂商目录（sourceVendorCodes("") 返回空源），
-		// 绑上就会重现「可调度但算不出成本」。
+	if strings.TrimSpace(vendor) == "" {
+		// 账户 vendor 缺失属于历史数据形态：无法确定计价厂商，直接拒绝绑定，
+		// 不再以「按模型名跨 vendor 命中」兜底。
 		return "", false, &ValidationError{Message: fmt.Sprintf("目标模型 %q 未归属任何厂商，无法计价，不能绑定", model)}
 	}
 	priceSet := pricing.PriceSet{

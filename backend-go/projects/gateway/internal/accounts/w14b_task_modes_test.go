@@ -95,7 +95,7 @@ func TestW14BTargetModelModesWithMapping(t *testing.T) {
 			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`)
 	// 账户模型映射：gpt-4o-mini → custom-a（触发映射解析 + 目录缓存臂）；
 	// B4 W2 目标形态直插。
-	env.seedEntryMapping(t, "acc-w14b-map", "generic_openai_v1", "gpt-4o-mini", "chat_completions", "custom-a", "chat_completions", 1)
+	env.seedEntryMapping(t, "acc-w14b-map", "gpt_openai_v1", "gpt-4o-mini", "chat_completions", "custom-a", "chat_completions", 1)
 
 	gotOptions, err := env.store.FindManualTestOptionsContext(ctx, "acc-w14b-map", &scope)
 	if err != nil || gotOptions == nil {

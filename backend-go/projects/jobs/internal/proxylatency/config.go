@@ -75,7 +75,7 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	// 均未配置 = 依赖缺席，家族合法缺席（非开关）；一旦有 PG 即恒开，
 	// 任何错误 fail-closed。owner 缺省 go、实例 ID 缺省主机名、业务/结果
 	// 连接串缺省回落主配置。
-	storeURL := firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
+	storeURL := strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	if storeURL == "" {
 		return RuntimeConfig{Enabled: false, Now: time.Now}, nil
 	}
@@ -91,14 +91,8 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 			return RuntimeConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_INSTANCE_ID 是必填配置")
 		}
 	}
-	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_STORE"))))
-	if mode == "" {
-		mode = StorePostgres
-	}
-	if mode != StorePostgres {
-		return RuntimeConfig{}, errors.New("J3a runtime 只允许 postgres jobs store")
-	}
-	cfg.Store = StoreConfig{Mode: mode, PostgresURL: storeURL}
+	// 唯一合法存储即 postgres；存储形态不再作为配置输入。
+	cfg.Store = StoreConfig{Mode: StorePostgres, PostgresURL: storeURL}
 	var err error
 	// 清理批次 C4（2026-09-30）：连接池上限族 env（4 个）零引用收编为默认
 	// 常量（单机单实例从未配置第二个值），常量组合校验随之退役。
@@ -106,14 +100,8 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	cfg.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	cfg.InputPostgresMaxOpenConns = defaultPostgresMaxOpenConns
 	cfg.InputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
-	cfg.BusinessPostgresURL = firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"), getenv("JUHE_AI_BUSINESS_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
-	if cfg.BusinessPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("J3a 缺少 JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
-	}
-	cfg.ResultPostgresURL = firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
-	if cfg.ResultPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("J3a 缺少 JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
-	}
+	cfg.BusinessPostgresURL = storeURL
+	cfg.ResultPostgresURL = storeURL
 	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, maxProxyLatencyWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}

@@ -75,13 +75,10 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 	_ = j3bSchemaDB.Close()
 	_, evidenceEnv := w1BuildSystemApiEvidence(t, root)
 	cacheRedis := miniredis.RunT(t)
-	stateRedis := miniredis.RunT(t)
 	env := map[string]string{
 		"NODE_ENV":                                "development",
-		"JUHE_AI_REDIS_CACHE_URL":                 "redis://" + cacheRedis.Addr() + "/0",
-		"JUHE_AI_REDIS_STATE_URL":                 "redis://" + stateRedis.Addr() + "/0",
+		"JUHE_AI_REDIS_URL":                 "redis://" + cacheRedis.Addr() + "/0",
 		"JUHE_AI_REDIS_NAMESPACE":                 "w16b-boot",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":           "redis://" + stateRedis.Addr() + "/0",
 		"JUHE_AI_SECRET":                          "w16b-boot-secret-0123456789abcdef",
 		"JUHE_AI_POSTGRES_URL":                    businessDSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL":           businessDSN,

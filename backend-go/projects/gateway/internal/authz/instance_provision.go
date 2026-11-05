@@ -86,9 +86,9 @@ func (s *Store) provisionAuthorizedAccountInstance(ctx context.Context, tx *sql.
 	if err != nil {
 		return err
 	}
-	// 供应商解耦（设计 §2.1）：vendor_code 为 NULL 是 generic_http 账户的合法
-	// 身份；connection_driver_code 才是资源账户必填身份列，空 driver 表示源行
-	// 不完整，沿用归档实现的「退化跳过」语义。实例缺失同样跳过。
+	// 供应商解耦（设计 §2.1）：connection_driver_code 是资源账户必填身份列，
+	// 空 driver（含 generic_http 退场后的历史空 vendor 行）表示源行不完整，
+	// 沿用归档实现的「退化跳过」语义。实例缺失同样跳过。
 	if instance == nil || instance.id == "" || instance.driver == "" {
 		return nil
 	}
@@ -259,8 +259,8 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 	return &instanceAccountRef{id: id, providerCode: source.vendorCode, driver: source.connectionDriverCode}, nil
 }
 
-// nullableVendorCode 把空厂商串落 SQL NULL（设计 §2.1：generic_http 账户
-// vendor_code 必须为 NULL，空串由应用层 registry 保证不落库）。
+// nullableVendorCode 把空厂商串落 SQL NULL（设计 §2.1：历史空 vendor 行与
+// 未归属厂商的模型行保留 SQL NULL 语义；九家真实厂商写入恒非空）。
 func nullableVendorCode(code string) any {
 	if strings.TrimSpace(code) == "" {
 		return nil
@@ -274,8 +274,8 @@ func nullableVendorCode(code string) any {
 const instanceEmptyCredentials = "{}"
 
 // instanceAccountRef is the provisioning result the bind step consumes.
-// driver 是源账户的 connection_driver_code：目标 schema 下 vendor 可空
-// （generic_http），driver 才是资源账户的必填身份列，绑定守卫以它判定行完整。
+// driver 是源账户的 connection_driver_code：driver 是资源账户的必填身份列，
+// 绑定守卫以它判定行完整。
 type instanceAccountRef struct {
 	id           string
 	providerCode string
@@ -474,8 +474,7 @@ func (s *Store) defaultGroupIDForProvider(ctx context.Context, q queryer, provid
 // is never auto-created, so a missing default group fails the whole enclosing
 // transaction with the member label (name, falling back to the id). The gate
 // order mirrors provisionAuthorizedAccountInstance: an expired grant skips
-// silently. 供应商解耦后 vendor_code 可空（generic_http），不再按空 provider
-// 跳过。
+// silently. 供应商解耦后按 vendor 判定目录维度，不再按空 provider 跳过。
 func (s *Store) provisionTeamAccountInstanceForMember(ctx context.Context, tx *sql.Tx, sourceAccountID, ownerID, memberID string, grantExpiresAt *string, nowTime time.Time, now string) error {
 	if grantExpiresAt != nil && *grantExpiresAt != "" &&
 		authorizationExpiresPassed(*grantExpiresAt, nowTime) {

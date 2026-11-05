@@ -122,7 +122,7 @@ assert.match(validateAccountBalanceForm({
 }) ?? '', /相对路径/)
 
 const advancedPayloadFields = {
-  providerCode: 'openai', providerProtocolProfileId: 'openai-chat', name: '账户 A', type: 'api_key',
+  providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', name: '账户 A', type: 'api_key',
   concurrencyLimit: 1, rpmLimit: 0, priority: 0, status: 'active', superPriorityEnabled: false,
   fallbackEnabled: false, supportedModels: ['gpt-4o'], healthCheckModel: 'gpt-4o',
   healthCheckEndpointMode: 'chat_completions', temporaryUnavailableContinuousProbeEnabled: false,

@@ -61,7 +61,7 @@ const groups = buildCcSwitchExportGroupOptions([
     id: 'binding-openai',
     groupId: 'group-openai',
     groupName: 'OpenAI 分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     priority: 10,
     weight: 1,
     status: 'active',
@@ -89,11 +89,11 @@ const groups = buildCcSwitchExportGroupOptions([
   }
 ] satisfies RouteStrategyGroupBindingSummary[], [
   {
-    id: 'openai',
-    code: 'openai',
-    name: 'OpenAI',
+    id: 'gpt',
+    code: 'gpt',
+    name: 'GPT',
     enabled: true,
-    defaultProtocolProfileId: 'profile_openai_openai_v1',
+    defaultProtocolProfileId: 'profile_gpt_openai_v1',
     protocolCode: 'openai',
     protocolVersion: 'v1',
     baseUrl: 'https://api.openai.com/v1',
@@ -107,8 +107,8 @@ const groups = buildCcSwitchExportGroupOptions([
 assert.deepEqual(groups, [{
   groupId: 'group-openai',
   groupName: 'OpenAI 分组',
-  providerCode: 'openai',
-  providerName: 'OpenAI',
+  providerCode: 'gpt',
+  providerName: 'GPT',
   defaultModel: ''
 }])
 assert.deepEqual(buildCcSwitchExportModelOptions([

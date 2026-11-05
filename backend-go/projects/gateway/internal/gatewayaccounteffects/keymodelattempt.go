@@ -473,7 +473,7 @@ func (s *KeyModelRuntimeStoreSelector) Select(driver string) (KeyModelRuntimeSto
 	s.driver = driver
 	if driver == "redis" {
 		if s.redisFactory == nil {
-			return nil, fmt.Errorf("启用 Key-model Redis state 必须配置 JUHE_AI_REDIS_STATE_URL")
+			return nil, fmt.Errorf("启用 Key-model Redis state 必须配置 JUHE_AI_REDIS_URL")
 		}
 		store, err := s.redisFactory()
 		if err != nil {

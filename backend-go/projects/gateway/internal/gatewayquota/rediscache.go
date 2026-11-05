@@ -34,22 +34,13 @@ func SanitizeRedisNamespacePart(value string) (string, error) {
 // juhe-ai:<namespace>:, an existing juhe-ai: root on the key is collapsed so
 // keys never double the root prefix.
 func RedisNamespacedKey(namespace, key string) (string, error) {
-	normalized := strings.TrimSpace(key)
-	if normalized == "" {
+	if strings.TrimSpace(key) == "" {
 		return "", errors.New("Redis key 不能为空")
 	}
-	namespacePart, err := SanitizeRedisNamespacePart(namespace)
-	if err != nil {
+	if _, err := SanitizeRedisNamespacePart(namespace); err != nil {
 		return "", err
 	}
-	prefix := redisRootPrefix + namespacePart + ":"
-	if strings.HasPrefix(normalized, prefix) {
-		return normalized, nil
-	}
-	if strings.HasPrefix(normalized, redisRootPrefix) {
-		return prefix + normalized[len(redisRootPrefix):], nil
-	}
-	return prefix + normalized, nil
+	return rediscfg.NamespacedKey(key, namespace), nil
 }
 
 // sanitizeRedisKeyPart mirrors cache.ts sanitizeRedisKeyPart.
@@ -79,13 +70,13 @@ const sharedCacheVersionTTL = 30 * 24 * time.Hour
 // snapshot: GET/SET/DEL of JSON documents under
 // juhe-ai:<namespace>:juhe-ai:state:<storeName>:<key>.
 type RedisRuntimeState struct {
-	client *redis.Client
+	client redis.UniversalClient
 	prefix string
 }
 
 // NewRedisRuntimeStateStore mirrors createRuntimeStateStore('...') with the
 // redis driver (keyPrefix = redisNamespacedKey(`juhe-ai:state:<name>:`)).
-func NewRedisRuntimeStateStore(client *redis.Client, namespace, storeName string) (*RedisRuntimeState, error) {
+func NewRedisRuntimeStateStore(client redis.UniversalClient, namespace, storeName string) (*RedisRuntimeState, error) {
 	if client == nil {
 		return nil, errors.New("gatewayquota redis runtime state requires a redis client")
 	}
@@ -163,14 +154,14 @@ func (s *RedisRuntimeState) Delete(ctx context.Context, storeName, key string) e
 // removes exactly the tracked keys (byte-compatible with Node's layout, so
 // the Go gateway and the Node server share entries during migration).
 type RedisSharedCache struct {
-	client         *redis.Client
+	client         redis.UniversalClient
 	keyPrefix      string
 	indexKeyPrefix string
 	versionKey     string
 }
 
 // NewRedisSharedCache mirrors new RedisSharedJsonCache({name}).
-func NewRedisSharedCache(client *redis.Client, namespace, name string) (*RedisSharedCache, error) {
+func NewRedisSharedCache(client redis.UniversalClient, namespace, name string) (*RedisSharedCache, error) {
 	if client == nil {
 		return nil, errors.New("gatewayquota redis shared cache requires a redis client")
 	}

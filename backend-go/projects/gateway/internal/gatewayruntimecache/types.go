@@ -372,7 +372,7 @@ type OpenAIAccountSecret struct {
 	// 与上游协议面重构设计 §1.1/§2.1）：组合根按账户行 vendor_code /
 	// connection_driver_code 投影（授权实例经来源账户 resource_* 列）。vendor
 	// 值域与旧 providerCode 同名（gpt/xai/deepseek/anthropic/gemini/glm/
-	// minimax/volcengine/qwen），generic_http 账户 VendorCode 为空串。
+	// minimax/volcengine/qwen），九家真实厂商的 VendorCode 恒非空。
 	VendorCode           string `json:"vendorCode"`
 	ConnectionDriverCode string `json:"connectionDriverCode"`
 }

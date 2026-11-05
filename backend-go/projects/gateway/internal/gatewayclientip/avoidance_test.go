@@ -247,7 +247,7 @@ func TestAvoidanceRedisModeMatchesMemoryContract(t *testing.T) {
 	// Redis 中能看到 entry:key，且 scope key 与 memory 模式逐字节一致。
 	memoryAvoidance, _ := newTestAvoidance(t, nil)
 	wantScopeKey := avoidanceScopeKey(normalizeAvoidanceScope(scope))
-	if !server.Exists("juhe-ai:dev:state:gateway-client-ip-account-avoidance:entry:" + wantScopeKey + ":a1") {
+	if !server.Exists("juhe-ai:{dev}:state:gateway-client-ip-account-avoidance:entry:" + wantScopeKey + ":a1") {
 		t.Fatalf("redis key missing: %s", wantScopeKey+":a1")
 	}
 	accounts := []gatewayruntimecache.OpenAIAccountSecret{account("a1", 1, false, false), account("a2", 2, false, false)}

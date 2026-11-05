@@ -14,6 +14,7 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Redis hot quality store mirroring
@@ -51,11 +52,11 @@ type ScriptRunner interface {
 
 // RedisScriptRunner adapts go-redis to ScriptRunner.
 type RedisScriptRunner struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 // NewRedisScriptRunner builds the production adapter.
-func NewRedisScriptRunner(client *redis.Client) *RedisScriptRunner {
+func NewRedisScriptRunner(client redis.UniversalClient) *RedisScriptRunner {
 	return &RedisScriptRunner{client: client}
 }
 
@@ -641,11 +642,11 @@ func derefScope(scope *HotQualityScope) HotQualityScope {
 // URL for the process lifetime.
 var redisClientCache = struct {
 	sync.Mutex
-	clients map[string]*redis.Client
-}{clients: make(map[string]*redis.Client)}
+	clients map[string]redis.UniversalClient
+}{clients: make(map[string]redis.UniversalClient)}
 
 // GetRedisClient mirrors getRedisClient.
-func GetRedisClient(ctx context.Context, redisURL string) (*redis.Client, error) {
+func GetRedisClient(ctx context.Context, redisURL string) (redis.UniversalClient, error) {
 	normalized := strings.TrimSpace(redisURL)
 	if normalized == "" {
 		return nil, errors.New("Redis 连接串不能为空")
@@ -655,11 +656,10 @@ func GetRedisClient(ctx context.Context, redisURL string) (*redis.Client, error)
 	if client, ok := redisClientCache.clients[normalized]; ok {
 		return client, nil
 	}
-	options, err := redis.ParseURL(normalized)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: normalized})
 	if err != nil {
 		return nil, err
 	}
-	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, err

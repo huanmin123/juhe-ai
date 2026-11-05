@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestJ2CandidateQueriesPreserveDueRecoveryAndFirstProbeShapes(t *testing.T) {
@@ -91,29 +90,18 @@ func TestJ2RecoveryQueryUsesOnlyLimitPlaceholder(t *testing.T) {
 	}
 }
 
-// TestJ2CandidateProviderFillsGenericHTTPForNullVendor：目标 schema 中
-// generic_http 账户 vendor_code 为 NULL，候选必须补连接器标签后才能通过
-// Candidate→Input 的 provider 非空校验；真实 vendor 不得被改写。
-func TestJ2CandidateProviderFillsGenericHTTPForNullVendor(t *testing.T) {
-	if got := candidateProvider(sql.NullString{}); got != "generic_http" {
-		t.Fatalf("空 vendor 的候选 provider 必须是 generic_http，得到 %q", got)
+// TestJ2CandidateProviderKeepsVendor：generic_http / 空 vendor 账户已退役，
+// 候选 provider 直接取 vendor_code（空值保持空串，由下游 fail closed），不再
+// 用连接器代码占位；真实 vendor 原样保留。
+func TestJ2CandidateProviderKeepsVendor(t *testing.T) {
+	if got := candidateProvider(sql.NullString{}); got != "" {
+		t.Fatalf("空 vendor 的候选 provider 必须保持空串，得到 %q", got)
 	}
-	if got := candidateProvider(sql.NullString{String: "  ", Valid: true}); got != "generic_http" {
-		t.Fatalf("空白 vendor 的候选 provider 必须是 generic_http，得到 %q", got)
+	if got := candidateProvider(sql.NullString{String: "  ", Valid: true}); got != "" {
+		t.Fatalf("空白 vendor 的候选 provider 必须归一为空串，得到 %q", got)
 	}
 	if got := candidateProvider(sql.NullString{String: "gpt", Valid: true}); got != "gpt" {
 		t.Fatalf("真实 vendor 必须原样保留，得到 %q", got)
-	}
-	now := time.Now().UTC()
-	candidate := Candidate{
-		AccountID: "acc-generic", SystemAccountID: "sys-1", InputVersion: 1, ConfigRevision: 1,
-		Provider: candidateProvider(sql.NullString{}), Type: "api_key", Status: "active", Schedulable: true,
-		APIKeyCount: 1, APIKey: CredentialEnvelope{Kind: "api_key", Ciphertext: "envelope"},
-		BaseURL: "https://generic.example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5},
-		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
-	}
-	if _, err := candidate.ToInput(TriggerPeriodic, now, time.Minute); err != nil {
-		t.Fatalf("generic_http 候选必须能生成 input: %v", err)
 	}
 }
 

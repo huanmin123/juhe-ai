@@ -19,10 +19,10 @@ func TestLegacyProfilePresetTable(t *testing.T) {
 			t.Fatalf("profile %q → preset %q 缺少 protocol surface 定义", profile, preset)
 		}
 		vendor := presetVendor(preset)
-		if vendor == "" && driver != "generic_http" {
-			t.Fatalf("profile %q → preset %q: 无 vendor 但 driver=%q（应为 generic_http）", profile, preset, driver)
+		if vendor == "" {
+			t.Fatalf("profile %q → preset %q: 没有真实厂商归属", profile, preset)
 		}
-		if vendor != "" && driver != vendor {
+		if driver != vendor {
 			t.Fatalf("profile %q → preset %q: vendor=%q 与 driver=%q 不一致", profile, preset, vendor, driver)
 		}
 	}
@@ -33,7 +33,7 @@ func TestLegacyProfilePresetTable(t *testing.T) {
 // in production must be added deliberately, not silently mapped to generic.
 func TestLegacyProfilePresetCoversProductionProfiles(t *testing.T) {
 	production := []string{
-		"profile_gpt_openai_v1", "profile_anthropic_anthropic_v1", "profile_openai_openai_v1",
+		"profile_gpt_openai_v1", "profile_anthropic_anthropic_v1",
 		"profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1",
 		"profile_gemini_openai_chat_v1beta", "profile_glm_coding_openai_v1",
 		"profile_gemini_native_v1beta", "profile_deepseek_anthropic_v1",
@@ -41,6 +41,15 @@ func TestLegacyProfilePresetCoversProductionProfiles(t *testing.T) {
 	for _, profile := range production {
 		if _, ok := legacyProfilePresets[profile]; !ok {
 			t.Fatalf("生产快照中的 profile %q 没有固定映射", profile)
+		}
+	}
+	// 旧 openai/hybrid 档案不再映射到 generic preset，改为按模型推断厂商。
+	for _, profile := range []string{
+		"profile_openai_openai_v1", "profile_hybrid_openai_chat_v1",
+		"profile_hybrid_anthropic_messages_v1", "profile_hybrid_gemini_native_v1beta",
+	} {
+		if _, ok := legacyGenericProfileSurfaces[profile]; !ok {
+			t.Fatalf("旧 generic profile %q 缺少协议面映射", profile)
 		}
 	}
 }
@@ -51,14 +60,6 @@ func TestLegacyProfilePresetCoversProductionProfiles(t *testing.T) {
 func TestPresetDefaultBaseURLMatchesRegistry(t *testing.T) {
 	for _, preset := range legacyProfilePresets {
 		if surface := presetSurfaces[preset]; surface == "" {
-			continue
-		}
-		// generic_* 没有官方地址，必须由账户凭据自带 base_url；其余 preset
-		// 必须有 registry 默认值。
-		if strings.HasPrefix(preset, "generic_") {
-			if _, ok := presetDefaultBaseURL[preset]; !ok {
-				t.Fatalf("generic preset %q 必须显式登记（空串表示由凭据提供）", preset)
-			}
 			continue
 		}
 		if strings.TrimSpace(presetDefaultBaseURL[preset]) == "" {

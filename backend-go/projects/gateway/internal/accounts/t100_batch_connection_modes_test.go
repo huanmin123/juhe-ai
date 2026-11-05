@@ -122,7 +122,7 @@ func t100AssertModes(t *testing.T, got []string, want ...string) {
 func t100SeedExtraConnection(t *testing.T, env *testEnv, accountID string) {
 	t.Helper()
 	env.exec(t, `INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
-		VALUES ('conn-t100-extra', ?, 'generic_openai_v1', 'openai_v1', 'https://relay.example.com/v1', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, accountID)
+		VALUES ('conn-t100-extra', ?, 'xai_openai_v1', 'openai_v1', 'https://relay.example.com/v1', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, accountID)
 	env.exec(t, `INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
 		SELECT 'conn-t100-extra', m.mode FROM (VALUES ('chat_json'), ('chat_sse')) AS m(mode)`)
 }

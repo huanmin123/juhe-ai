@@ -108,8 +108,6 @@ const (
 	maxImportedAccounts          = accountstransfer.MaxImportedAccounts
 	maxImportedProxies           = accountstransfer.MaxImportedProxies
 	gptOpenAIV1ProfileID         = accountstransfer.GptOpenAIV1ProfileID
-	openAICompatibleProvider     = accountstransfer.OpenAICompatibleProvider
-	openAICompatibleProfileID    = accountstransfer.OpenAICompatibleProfileID
 	batchAccessDefaultMessage    = accountstransfer.BatchAccessDefaultMessage
 	batchSameScopeMessage        = accountstransfer.BatchSameScopeMessage
 	batchRangeMessage            = accountstransfer.BatchRangeMessage

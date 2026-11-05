@@ -5,7 +5,6 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
-  isHybridProviderCode,
   normalizeProviderToken
 } from '@/shared/providerProtocol'
 import {
@@ -123,7 +122,7 @@ export function validateAccountEndpointModes(input: {
   const hasGeminiMode = input.modes.some((mode) => geminiAccountEndpointModes.includes(mode) && !openAIEndpointModes.includes(mode))
   const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode) && !geminiAccountEndpointModes.includes(mode))
   const protocolModeCount = [hasOpenAIMode, hasAnthropicMode, hasGeminiMode].filter(Boolean).length
-  if (protocolModeCount > 1 && !isHybridEndpointModeContext(input.profile)) {
+  if (protocolModeCount > 1) {
     return '不同协议的上游接口能力不能混选'
   }
   if (hasAnthropicMode && !input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
@@ -305,18 +304,6 @@ export function defaultAccountTestEndpointModeForSelection(
 // accountTestEndpointModeOrder 与后端 accounts/accountstest.AccountTestEndpointModeOrder
 // 同序：流式优先（2026-10-19 定案），同一协议内 _sse 恒在 _json 之前。
 export function accountTestEndpointModeOrder(account?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
-  if (isHybridProviderCode(contextProviderCode(account))) {
-    return [
-      'chat_sse',
-      'responses_sse',
-      'messages_sse',
-      'generate_content_sse',
-      'chat_json',
-      'responses_json',
-      'messages_json',
-      'generate_content_json'
-    ]
-  }
   const protocolKind = accountProviderProtocolKind(account)
   if (protocolKind === 'anthropic_v1') return ['messages_sse', 'messages_json']
   if (protocolKind === 'gemini_v1beta') return ['interactions_sse', 'generate_content_sse', 'interactions_json', 'generate_content_json']
@@ -341,10 +328,6 @@ function contextProviderCode(context?: AccountEndpointModeLabelContext): string 
   if ('providerCode' in context) return context.providerCode
   if ('code' in context) return context.code
   return undefined
-}
-
-function isHybridEndpointModeContext(context?: AccountEndpointModeLabelContext): boolean {
-  return isHybridProviderCode(contextProviderCode(context))
 }
 
 function contextProfileId(context?: AccountEndpointModeLabelContext): string | undefined {

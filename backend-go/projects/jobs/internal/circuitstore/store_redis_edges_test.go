@@ -438,7 +438,7 @@ func TestStoreCodecsAndParsers(t *testing.T) {
 // TestRedisKeyNaming 锁定键空间命名与 namespace 归一化。
 func TestRedisKeyNaming(t *testing.T) {
 	keys := redisAccountCircuitStoreKeys("gateway-account-circuit", "dev space")
-	if !strings.HasPrefix(keys.states, "juhe-ai:dev_space:account-circuit:gateway-account-circuit:states") {
+	if !strings.HasPrefix(keys.states, "juhe-ai:{dev_space}:account-circuit:gateway-account-circuit:states") {
 		t.Fatalf("namespace 非法字符应折叠为下划线: %s", keys.states)
 	}
 	// 空白 name（TrimSpace 后为空）回落默认 store 名。
@@ -451,10 +451,10 @@ func TestRedisKeyNaming(t *testing.T) {
 		t.Fatalf("sanitizeRedisName: %q", got)
 	}
 	// redisNamespacedKey：已带 ns 前缀幂等、根前缀插入、无前缀拼接。
-	if got := redisNamespacedKey("juhe-ai:ns:k", "ns"); got != "juhe-ai:ns:k" {
+	if got := redisNamespacedKey("juhe-ai:{ns}:k", "ns"); got != "juhe-ai:{ns}:k" {
 		t.Fatalf("已带 namespace 前缀必须幂等: %s", got)
 	}
-	if got := redisNamespacedKey("juhe-ai:k", "ns"); got != "juhe-ai:ns:k" {
+	if got := redisNamespacedKey("juhe-ai:k", "ns"); got != "juhe-ai:{ns}:k" {
 		t.Fatalf("根前缀后插入 namespace: %s", got)
 	}
 	if got := redisNamespacedKey("plain", ""); got != "plain" {

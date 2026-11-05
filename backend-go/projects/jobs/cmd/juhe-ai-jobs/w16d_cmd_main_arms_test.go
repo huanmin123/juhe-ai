@@ -61,7 +61,7 @@ func TestW16DMainFailFastArms(t *testing.T) {
 		}},
 		// model-recovery：Redis URL 合法但不可达 → Ping 失败（218-224）。
 		{"model-recovery-redis-closed-port", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:1/9",
+			"JUHE_AI_REDIS_URL": "redis://127.0.0.1:1/9",
 			"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:w16d",
 		}},
 		// J1 store=postgres 但连接不可达 → OpenStore/Ping 失败（157-159）。

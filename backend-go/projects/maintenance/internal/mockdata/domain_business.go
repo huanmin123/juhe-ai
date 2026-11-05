@@ -802,9 +802,6 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 			desc: "备用调度分组，包含降级账户和冷却样例", enabled: true},
 		{id: CleanupIDPrefix + "group_oauth", name: CleanupNamePrefix + "OAuth 分组", owner: guard.adminID,
 			desc: "OAuth 账户分组，用于 Codex 额度快照展示", enabled: true},
-		{id: CleanupIDPrefix + "group_compat", name: CleanupNamePrefix + "OpenAI 兼容分组", owner: guard.adminID,
-			desc:    "OpenAI-compatible 标准客户端分组，用于客户端兼容覆盖和通用 API Key 透传展示",
-			enabled: true},
 		{id: CleanupIDPrefix + "group_experiment", name: CleanupNamePrefix + "实验分组", owner: guard.adminID,
 			desc: "实验分组，用于授权、额度和模型策略演示", enabled: true},
 		{id: CleanupIDPrefix + "group_empty", name: CleanupNamePrefix + "空分组", owner: guard.adminID,
@@ -971,24 +968,16 @@ var mockExtraPresetDomains = map[string]string{
 }
 
 // mockConnectorIdentity 解析账户的 vendor_code / connection_driver_code：
-// 显式 driver 优先；generic_* preset 是 vendor SQL NULL 的 generic 账户；其余
-// 未声明连接的账户默认 gpt × gpt_openai_v1（registry 允许组合）。
+// 显式 driver 优先；未声明连接的账户默认 gpt × gpt_openai_v1（registry 允许组合）。
+// generic_http 已随通用连接器退役，不再生成 vendor SQL NULL 账户。
 func mockConnectorIdentity(seed *mockAccountSeed) (string, string) {
-	preset := seed.preset
-	if preset == "" {
-		preset = contracts.PresetGPTOpenAIV1
-	}
 	if seed.driver != "" {
 		return seed.vendor, seed.driver
 	}
-	switch {
-	case seed.vendor != "":
+	if seed.vendor != "" {
 		return seed.vendor, seed.vendor
-	case preset == contracts.PresetGenericOpenAIV1 || preset == contracts.PresetGenericAnthropicV1 || preset == contracts.PresetGenericGeminiV1Beta:
-		return "", contracts.DriverGenericHTTP
-	default:
-		return contracts.VendorGPT, contracts.DriverGPT
 	}
+	return contracts.VendorGPT, contracts.DriverGPT
 }
 
 // connectorPlansFor 解析一条账户样本的连接计划：主连接 + 追加连接。组合不在
@@ -1120,14 +1109,6 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 					targetFam: mockEntryTargetFamily, enabled: false},
 			},
 			notes: "Mockdata OpenAI 标准兼容账号，用于客户端兼容、入口映射和标签展示"},
-		{id: CleanupIDPrefix + "acc_compat", name: CleanupNamePrefix + "OpenAI 兼容 API Key 账户", owner: guard.adminID,
-			group: groups["compat"], slug: "openai-compatible", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
-			priority: 36, concurrency: 28, modelSlots: []int{1, 2},
-			tags:  []string{"OpenAI兼容", "标准客户端"},
-			notes: "Mockdata OpenAI-compatible 账号（generic_http 连接，vendor_code 为 NULL），用于 openai_standard 客户端兼容覆盖",
-			// generic 账户：vendor_code SQL NULL + generic_http driver（设计 §2.1）。
-			vendor: "", driver: contracts.DriverGenericHTTP, preset: contracts.PresetGenericOpenAIV1,
-			domain: contracts.DomainChat, baseURL: mockAccountBaseURL},
 		{id: CleanupIDPrefix + "acc_multikey", name: CleanupNamePrefix + "多 API Key 轮换账户", owner: guard.adminID,
 			group: groups["main"], slug: "multi-key-pool", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
 			priority: 18, concurrency: 70, rpm: 30, balance: true,

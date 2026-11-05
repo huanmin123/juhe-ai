@@ -145,4 +145,3 @@ func TestValidateScheduledInputMatrix(t *testing.T) {
 		})
 	}
 }
-

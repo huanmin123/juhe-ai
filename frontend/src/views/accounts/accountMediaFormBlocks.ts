@@ -21,18 +21,16 @@ export type MediaCapabilityModeOption = { label: string; value: AccountSupported
  * v8-D 域内空模型列表提示：选中供应商在当前能力域的目录候选「加载后确认为
  * 空」（settled 且非加载中）时给出引导文案。候选是懒加载，弹窗打开加载一次、
  * 切供应商即清空、下拉展开/搜索再加载——未加载的空不是真没有货，settled 前
- * 返回 undefined。hybrid 映射域的上游模型来自映射面（不依赖目录候选）、对话
- * 域不适用本提示，两者恒返回 undefined。
+ * 返回 undefined。对话域不适用本提示。
  */
 export function mediaDomainModelAvailabilityHint(input: {
   capabilityDomain: AccountCapabilityDomain
   optionCount: number
   loading: boolean
   settled: boolean
-  hybridMappingDomain: boolean
 }): string | undefined {
   if (!capabilityDomainIsMedia(input.capabilityDomain)) return undefined
-  if (input.hybridMappingDomain || input.loading || !input.settled || input.optionCount > 0) return undefined
+  if (input.loading || !input.settled || input.optionCount > 0) return undefined
   return '该供应商在此域暂无可用目录模型，可切换供应商，或先在模型目录中为该供应商添加此域模型'
 }
 

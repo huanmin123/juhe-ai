@@ -321,24 +321,24 @@ func TestW7CSuccessEvidenceMatrix(t *testing.T) {
 	}
 }
 
-	// w7c output-challenge fingerprint rotation: each request gets its own
-	// arithmetic challenge (operands 10-89, expected output is their decimal
-	// sum), and responses instructions rotate within a fixed pool.
-	func TestW7COutputChallengeRandomization(t *testing.T) {
-		challenge := CreateOutputChallenge()
-		promptRe := regexp.MustCompile(`^接口连通性自动测试：请计算 (\d+)\+(\d+)，只回复数字$`)
-		match := promptRe.FindStringSubmatch(challenge.Prompt)
-		if match == nil {
-			t.Fatalf("challenge prompt: %q", challenge.Prompt)
-		}
-		left, _ := strconv.Atoi(match[1])
-		right, _ := strconv.Atoi(match[2])
-		if left < 10 || left > 89 || right < 10 || right > 89 {
-			t.Fatalf("operands out of range: %d %d", left, right)
-		}
-		if challenge.ExpectedOutput != strconv.Itoa(left+right) {
-			t.Fatalf("expected output: %q", challenge.ExpectedOutput)
-		}
+// w7c output-challenge fingerprint rotation: each request gets its own
+// arithmetic challenge (operands 10-89, expected output is their decimal
+// sum), and responses instructions rotate within a fixed pool.
+func TestW7COutputChallengeRandomization(t *testing.T) {
+	challenge := CreateOutputChallenge()
+	promptRe := regexp.MustCompile(`^接口连通性自动测试：请计算 (\d+)\+(\d+)，只回复数字$`)
+	match := promptRe.FindStringSubmatch(challenge.Prompt)
+	if match == nil {
+		t.Fatalf("challenge prompt: %q", challenge.Prompt)
+	}
+	left, _ := strconv.Atoi(match[1])
+	right, _ := strconv.Atoi(match[2])
+	if left < 10 || left > 89 || right < 10 || right > 89 {
+		t.Fatalf("operands out of range: %d %d", left, right)
+	}
+	if challenge.ExpectedOutput != strconv.Itoa(left+right) {
+		t.Fatalf("expected output: %q", challenge.ExpectedOutput)
+	}
 	sawDifferent := false
 	for i := 0; i < 32; i++ {
 		if next := CreateOutputChallenge(); next.Prompt != challenge.Prompt {

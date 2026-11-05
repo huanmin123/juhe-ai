@@ -49,7 +49,7 @@ func TestBug0337EmptyPresetMappingWithMultipleConnectionsRejectedInChinese(t *te
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 	id := w2PatchAccount(t, env, "BUG-0337 多连接歧义")
-	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini", "gpt-4.1")
+	env.seedAccountConnection(t, id, "xai_openai_v1", "gpt-4o-mini", "gpt-4.1")
 
 	code, payload := w2PatchBody(t, env, id, `"supportedModels":["gpt-4o-mini","gpt-4.1","gpt-4o"],
 		"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions"}]`)
@@ -60,7 +60,7 @@ func TestBug0337EmptyPresetMappingWithMultipleConnectionsRejectedInChinese(t *te
 	if !strings.Contains(message, "多个启用的上游连接") ||
 		!strings.Contains(message, "targetConnectionPresetCode") ||
 		!strings.Contains(message, "gpt_openai_v1") ||
-		!strings.Contains(message, "generic_openai_v1") {
+		!strings.Contains(message, "xai_openai_v1") {
 		t.Fatalf("应中文列出候选 preset（localize 不改写）：%v", payload["message"])
 	}
 	if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ?`, id); got != 0 {
@@ -76,14 +76,14 @@ func TestBug0337ExplicitPresetBehaviorUnchanged(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 	id := w2PatchAccount(t, env, "BUG-0337 显式 preset")
-	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini", "gpt-4.1", "gpt-4o")
+	env.seedAccountConnection(t, id, "xai_openai_v1", "gpt-4o-mini", "gpt-4.1", "gpt-4o")
 
-	code, payload := w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1"}]`)
+	code, payload := w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1"}]`)
 	if code != http.StatusOK {
 		t.Fatalf("显式命中 preset 应放行：%d %v", code, payload)
 	}
 	if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ?
-		AND target_connection_id = ?`, id, "conn-"+id+"-generic_openai_v1"); got != 1 {
+		AND target_connection_id = (SELECT id FROM account_connections WHERE account_id = ? AND connection_preset_code = 'gpt_openai_v1')`, id, id); got != 1 {
 		t.Fatalf("映射应落库到显式连接：%d", got)
 	}
 }

@@ -462,13 +462,7 @@ func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	// Redis 再查 POSTGRES_URL（runtime.go 308-314 的顺序），因此只注入
 	// Redis 两条即可让失败落点精确到缺 POSTGRES_URL。
 	cacheRedis := miniredis.RunT(t)
-	stateRedis := miniredis.RunT(t)
-	env = append(env,
-		"JUHE_AI_CACHE_DRIVER=redis",
-		"JUHE_AI_REDIS_CACHE_URL=redis://"+cacheRedis.Addr(),
-		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
-		"JUHE_AI_REDIS_STATE_URL=redis://"+stateRedis.Addr(),
-	)
+	env = append(env, "JUHE_AI_REDIS_URL=redis://"+cacheRedis.Addr())
 	env = append(env, "GOCOVERDIR="+coverageDir)
 	_, stderr, code := w1bRunScenario(t, "K1-missing-postgres-url", env)
 	w1bRequireExitCode(t, "K1-missing-postgres-url", code, 1)

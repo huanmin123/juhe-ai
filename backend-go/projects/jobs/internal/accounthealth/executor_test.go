@@ -53,4 +53,3 @@ func staleLeaseFor(t *testing.T, store *Store, ownerID string) OwnerLease {
 	}
 	return OwnerLease{OwnerID: ownerID, FenceToken: 999999}
 }
-

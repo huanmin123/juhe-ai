@@ -1,5 +1,5 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
-import { defaultProviderProtocolProfileId, isHybridProviderCode, preferredDefaultProviderCode } from '@/shared/providerProtocol'
+import { defaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import { defaultAccountEndpointModes } from './accountEndpointModes'
 import { defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
@@ -51,7 +51,7 @@ export function defaultAccountForm(
     apiKeys: [''],
     apiKeyStrategy: 'failover',
     apiKeyWeights: [1],
-    baseUrl: isHybridProviderCode(resolvedProviderCode) ? '' : profile?.baseUrl ?? provider?.baseUrl ?? '',
+    baseUrl: profile?.baseUrl ?? provider?.baseUrl ?? '',
     accessToken: '',
     refreshToken: '',
     googleClientId: '',

@@ -142,9 +142,8 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_POSTGRES_URL=" + f.pg.DSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL=" + f.pg.DSN,
 		"JUHE_AI_CACHE_DRIVER=redis",
-		"JUHE_AI_REDIS_CACHE_URL=redis://" + f.cache.Addr(),
 		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
-		"JUHE_AI_REDIS_STATE_URL=redis://" + f.state.Addr(),
+		"JUHE_AI_REDIS_URL=redis://" + f.state.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:" + w1wJ3bRedisNS,
 		"JUHE_AI_SECRET=" + w1wRuntimeSecret,
 		"JUHE_AI_HOST=127.0.0.1",
@@ -179,8 +178,8 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_J3B_SCHEMA_READY=true",
 		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
 		"JUHE_AI_J3B_RUNTIME_READY=true",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://" + f.state.Addr(),
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=" + w1wJ3bRedisNS,
+		"JUHE_AI_REDIS_URL=redis://" + f.state.Addr(),
+		"JUHE_AI_REDIS_NAMESPACE=" + w1wJ3bRedisNS,
 		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=" + f.j3bAddr,
 		// F3 审计（postgres 模式）
 		"JUHE_AI_AUDIT_LOG_POSTGRES_URL=" + f.audit.DSN,
@@ -210,21 +209,16 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 	return w1bScenarioEnv(t, coverageDir, env...)
 }
 
-// w1wRuntimeRedisPairs 返回 2026-10-24 存储收口后 loadRuntimeConfig 无条件
-// 必填的三条 Redis 连接基线（cache/state/J3b 电路各用独立 miniredis 实例），
+// w1wRuntimeRedisPairs 返回唯一 Redis 连接基线（单个 miniredis 承载全部域），
 // 并按调用方给 namespace（每场景唯一，避免键空间串扰）。实例由 t.Cleanup
 // 关闭，晚于子进程 kill 的清理顺序。
 func w1wRuntimeRedisPairs(t *testing.T, namespace string) []string {
 	t.Helper()
-	cacheRedis := miniredis.RunT(t)
-	stateRedis := miniredis.RunT(t)
-	circuitRedis := miniredis.RunT(t)
+	redis := miniredis.RunT(t)
 	// CheckReady 契约要求 circuit Redis 预置 runtime-index-meta（网关不自建）。
-	w1g2SeedCircuitRuntimeIndex(t, "redis://"+circuitRedis.Addr(), namespace)
+	w1g2SeedCircuitRuntimeIndex(t, "redis://"+redis.Addr(), namespace)
 	return []string{
-		"JUHE_AI_REDIS_CACHE_URL=redis://" + cacheRedis.Addr(),
-		"JUHE_AI_REDIS_STATE_URL=redis://" + stateRedis.Addr(),
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://" + circuitRedis.Addr(),
+		"JUHE_AI_REDIS_URL=redis://" + redis.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE=" + namespace,
 	}
 }
@@ -428,7 +422,7 @@ func TestW1WOwnerJ3bFailFastArms(t *testing.T) {
 			// 非法 URL：circuitruntime.New 的 NewClient 解析失败（210-212）。
 			name: "circuit-url-invalid", prepareJ3b: true, seedMeta: true,
 			mutate: func(t *testing.T, f *w1wOwnerFixture) []string {
-				return []string{"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://[::bad-w1w]:9/0"}
+				return []string{"JUHE_AI_REDIS_URL=redis://[::bad-w1w]:9/0"}
 			},
 			wantStderr: "create J3b Gateway circuit runtime owner",
 		},
@@ -482,9 +476,6 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 		// 2026-10-24 存储收口：cache/state driver 开关退役，三连接串无条件
 		// 必填；主链 cache/state 由 fixture 的 state miniredis 承载（本场景
 		// 预期失败在 J3b 契约校验，先于主链 compose，连接可达即可）。
-		"JUHE_AI_REDIS_CACHE_URL=redis://"+stateRedisAddr,
-		"JUHE_AI_REDIS_STATE_URL=redis://"+stateRedisAddr,
-		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:"+w1wJ3bRedisNS,
 		"JUHE_AI_SECRET=w1w-pg-contract-secret",
 		"JUHE_AI_J3B_ENABLED=true",
 		"JUHE_AI_J3B_OWNER=gateway",
@@ -501,8 +492,8 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 		"JUHE_AI_J3B_SCHEMA_READY=true",
 		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
 		"JUHE_AI_J3B_RUNTIME_READY=true",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://"+stateRedisAddr,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1wJ3bRedisNS,
+		"JUHE_AI_REDIS_URL=redis://"+stateRedisAddr,
+		"JUHE_AI_REDIS_NAMESPACE="+w1wJ3bRedisNS,
 	)
 }
 
@@ -767,7 +758,7 @@ func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 // 错误臂（空 URL / 空 secret / URL 解析失败）在 main 装配序里都被更早的
 // 门禁拦截——loadRuntimeConfig 强制 redis state driver 下 URL 非空、secret
 // 非空，而 composeSystemAPI 的 shared login guard 在注册表之前就用同一
-// cfg.RedisStateURL 做 ParseURL，URL 解析失败会先以 "create shared login
+// cfg.RedisURL 做 ParseURL，URL 解析失败会先以 "create shared login
 // guard" 失败（已在 W1W-registry-error 试跑中实证）。无可达触发缝。
 
 // ---------------------------------------------------------------------------
@@ -994,8 +985,7 @@ func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
 	cfg := runtimeConfig{
 		// PG+Redis 恒定形态（存储形态收口）：redis 端点由 miniredis 承载；
 		// db 句柄走 pgtestkit fresh DDL 夹具（PG 唯一路径）。
-		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
-		RedisStateURL:                 "redis://" + stateRedis.Addr(),
+		RedisURL:                      "redis://" + stateRedis.Addr(),
 		RedisNamespace:                "w1w-chain-ns",
 		Secret:                        "w1w-chain-runtime-secret",
 		DispatchAccountCandidateLimit: 5000,
@@ -1044,8 +1034,7 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 	composed.statsDB = composed.db
 	stateRedis := miniredis.RunT(t)
 	cfg := runtimeConfig{
-		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
-		RedisStateURL:                 "redis://" + stateRedis.Addr(),
+		RedisURL:                      "redis://" + stateRedis.Addr(),
 		RedisNamespace:                "juhe-ai:" + w1wJ3bRedisNS,
 		Secret:                        "w1w-chain-runtime-secret",
 		DispatchAccountCandidateLimit: 5000,
@@ -1104,8 +1093,7 @@ func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 	}
 	composed.statsDB = composed.db
 	cfg := runtimeConfig{
-		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
-		RedisStateURL:                 "redis://" + stateRedis.Addr(),
+		RedisURL:                      "redis://" + stateRedis.Addr(),
 		RedisNamespace:                "w1w-chain-ns",
 		Secret:                        "   ",
 		DispatchAccountCandidateLimit: 5000,

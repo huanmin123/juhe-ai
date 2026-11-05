@@ -1,6 +1,6 @@
 import type { AccountSupportedEndpointMode, AccountType, ProviderDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
-import { GEMINI_NATIVE_V1BETA_PROFILE_ID, isGeminiProviderCode, isGlmProviderCode, isGptVendorCode, isHybridProviderCode, isMinimaxProviderCode, isOpenAICompatibleProviderCode, isQwenProviderCode, isVolcengineProviderCode, isXaiProviderCode } from '@/shared/providerProtocol'
+import { GEMINI_NATIVE_V1BETA_PROFILE_ID, isGeminiProviderCode, isGlmProviderCode, isGptVendorCode, isMinimaxProviderCode, isQwenProviderCode, isVolcengineProviderCode, isXaiProviderCode } from '@/shared/providerProtocol'
 import { defaultEndpointModesForAccount, endpointModesForProfile, type AccountProviderProfileLike } from './accountProviderCapabilities'
 
 // AI 账户能力域拆分（docs/plans/计划-20261011T141004000Z-AI账户能力域拆分.md
@@ -174,9 +174,6 @@ const GEMINI_NATIVE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audi
 // openai/gpt 本体直连：sora（视频）+ tts（audio_speech）+ images；v8-A 后
 // 短转写与实时会话归音频域。
 const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
-// hybrid：媒体映射面已实施，域内允许集含视频四值/audio_speech/images_json
-// （映射模型另算，D7）；v8-A 音频域同 openai 行补短转写与实时会话。
-const HYBRID_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
 // minimax：hailuo（视频）+ t2a_v2（audio_speech）；无 chat/image 域，词表无新值。
 const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
 // volcengine：seedance（视频）+ 豆包音频生成 TTS（audio_speech，新版语音
@@ -193,7 +190,6 @@ function mediaMatrixRowForProfile(input: {
   const profile = input.profile
   const providerCode = profile?.providerCode ?? profile?.code ?? input.providerCode
   const profileId = profile?.providerProtocolProfileId ?? profile?.id
-  if (isHybridProviderCode(providerCode)) return HYBRID_MEDIA_ROW
   if (isGeminiProviderCode(providerCode)) {
     // 媒体能力挂 native 档案；OpenAI Chat 档案无媒体域（词表含对话族）。
     return profileId === GEMINI_NATIVE_V1BETA_PROFILE_ID || (!profileId && isGeminiProtocolKind(profile))
@@ -205,8 +201,8 @@ function mediaMatrixRowForProfile(input: {
   if (isVolcengineProviderCode(providerCode)) return VOLCENGINE_MEDIA_ROW
   if (isQwenProviderCode(providerCode)) return QWEN_MEDIA_ROW
   if (isXaiProviderCode(providerCode)) return XAI_MEDIA_ROW
-  // 「openai / gpt」矩阵行：OpenAI 兼容供应商与 GPT 供应商共用本体词表。
-  if (isGptVendorCode(providerCode) || isOpenAICompatibleProviderCode(providerCode)) return OPENAI_MEDIA_ROW
+  // GPT 本体直连的媒体矩阵行。
+  if (isGptVendorCode(providerCode)) return OPENAI_MEDIA_ROW
   return undefined
 }
 

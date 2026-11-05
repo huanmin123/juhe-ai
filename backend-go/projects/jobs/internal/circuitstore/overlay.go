@@ -12,6 +12,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // 账户并发 overlay 对账（opsjobs.OverlayReconciler 完整实现）：
@@ -52,11 +53,11 @@ func NewOverlayRedisStore(config OverlayRedisConfig, client redis.Cmdable) (*Ove
 		if strings.TrimSpace(config.URL) == "" {
 			return nil, errors.New("账户并发 overlay 对账缺少 Redis URL")
 		}
-		options, err := redis.ParseURL(config.URL)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: config.URL})
 		if err != nil {
-			return nil, fmt.Errorf("解析账户并发 overlay Redis URL: %w", err)
+			return nil, fmt.Errorf("创建账户并发 overlay Redis 客户端: %w", err)
 		}
-		cmdable = redis.NewClient(options)
+		cmdable = client
 	}
 	return &OverlayRedisStore{client: cmdable, namespace: config.Namespace, generations: map[string]int64{}}, nil
 }
@@ -64,8 +65,8 @@ func NewOverlayRedisStore(config OverlayRedisConfig, client redis.Cmdable) (*Ove
 // Close 释放连接（Client 注入时 no-op 的保守实现：go-redis 的 Cmdable 无法
 // 统一关闭；组合根以独立连接构造时负责 Close）。
 func (s *OverlayRedisStore) Close() error {
-	if client, ok := s.client.(*redis.Client); ok && client != nil {
-		return client.Close()
+	if client, ok := s.client.(interface{ Close() error }); ok && client != nil {
+		return rediscfg.CloseClient(client)
 	}
 	return nil
 }

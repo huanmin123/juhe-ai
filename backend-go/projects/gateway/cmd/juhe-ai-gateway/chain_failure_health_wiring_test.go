@@ -666,7 +666,7 @@ func TestChainTurnRetryRedisStateStoreRoundTrip(t *testing.T) {
 	if err != nil || store == nil {
 		t.Fatalf("build store: %v, %v", store, err)
 	}
-	if store.prefix != "juhe-ai:dev:state:gateway-codex-turn-retry:" {
+	if store.prefix != "juhe-ai:{dev}:state:gateway-codex-turn-retry:" {
 		t.Fatalf("prefix = %s want the Node redisNamespacedKey layout", store.prefix)
 	}
 	ctx := context.Background()
@@ -734,7 +734,7 @@ func TestChainTurnRetryRedisStateStoreRoundTrip(t *testing.T) {
 	if buildErr != nil || nilStore == nil {
 		t.Fatalf("nil client with valid namespace must still build: %v, %v", nilStore, buildErr)
 	}
-	if want := "juhe-ai:dev:state:gateway-codex-turn-retry:"; nilStore.prefix != want {
+	if want := "juhe-ai:{dev}:state:gateway-codex-turn-retry:"; nilStore.prefix != want {
 		t.Fatalf("nil client store prefix = %q, want %q", nilStore.prefix, want)
 	}
 }

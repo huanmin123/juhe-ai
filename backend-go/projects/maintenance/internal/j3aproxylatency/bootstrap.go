@@ -16,7 +16,6 @@ import (
 
 const (
 	SchemaName     = "juhe_jobs"
-	BootstrapEnv   = "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL"
 	bootstrapLock  = int64(732_946_110_271_044_015)
 	postgresSetSQL = "SET LOCAL statement_timeout = '30s'; SET LOCAL lock_timeout = '5s'; SET LOCAL idle_in_transaction_session_timeout = '30s'"
 )

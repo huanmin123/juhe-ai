@@ -35,8 +35,6 @@ import (
 const (
 	// EnvTarget selects the audited environment: production or test.
 	EnvTarget = "JUHE_AI_SCHEMA_SNAPSHOT_TARGET"
-	// EnvPostgresURL carries the maintenance-scoped PostgreSQL URL.
-	EnvPostgresURL = "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL"
 	// EnvReadOnlyConfirm must be READ_ONLY before the tool talks to a server.
 	EnvReadOnlyConfirm = "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM"
 	// ReadOnlyConfirmValue is the only accepted EnvReadOnlyConfirm value.

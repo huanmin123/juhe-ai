@@ -48,7 +48,7 @@ func w17RedisAffinityService(t *testing.T, mr *miniredis.Miniredis, namespace st
 		CacheDriver:        gatewaysession.CacheDriverRedis,
 		RuntimeStateDriver: gatewaysession.RuntimeStateDriverMemory,
 		Secret:             w17AffinitySecret,
-		RedisCacheURL:      "redis://" + mr.Addr(),
+		RedisURL:      "redis://" + mr.Addr(),
 		RedisNamespace:     namespace,
 	})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestComposeGatewayChainAffinityPortRedisShared(t *testing.T) {
 	server := miniredis.RunT(t)
 	cfg := composeTestConfig(t)
 	cfg.RedisNamespace = "w17-compose"
-	cfg.RedisCacheURL = "redis://" + server.Addr()
+	cfg.RedisURL = "redis://" + server.Addr()
 	fixture := newChainFixture(t)
 	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: nil}
 	services, servicesErr := composeChainRuntimeServices(composed, cfg, func(string) (string, error) { return "UTC", nil })

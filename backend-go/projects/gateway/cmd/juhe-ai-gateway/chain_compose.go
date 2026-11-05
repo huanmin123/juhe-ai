@@ -45,6 +45,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // gatewaybodyLogger adapts the chain slog logger onto the gatewaybody.Logger
@@ -197,7 +198,9 @@ type chainRuntimeDeps struct {
 	// KeyRotation 同源判据，runtimeStateDriver==='redis' 时非 nil）。调用方
 	// 分级影子观测据此选驱动（chain_compose 装配段）：有则 Redis 跨进程，
 	// 无则进程内 memory（部署形态选择，设计 §6.1；非运行时回退）。
-	StateClient *redis.Client
+	StateClient redis.UniversalClient
+	// CallerTierNamespace 是调用方分级域的带 tag namespace。
+	CallerTierNamespace string
 
 	// 显式账户错误策略（chain_error_policy*.go）：决策服务 + 状态写侧窄口
 	// （optional；nil 时派发器保留决策事实，状态变更加显式降级日志）。生产
@@ -423,7 +426,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// 指标回调接 gatewaycallertier 进程注册表（/__aisys__/metrics 暴露）；
 	// 构造失败 fail-fast（对齐 recorder/codexBridge 的装配惯例）。影子运行，
 	// 零资源效果，不新增任何配置项。
-	callerTier, err := gatewaycallertier.NewRecorder(newCallerTierStore(deps.StateClient), gatewaycallertier.PrometheusMetrics(), nil)
+	callerTier, err := gatewaycallertier.NewRecorder(newCallerTierStore(deps.StateClient, deps.CallerTierNamespace), gatewaycallertier.PrometheusMetrics(), nil)
 	if err != nil {
 		recorder.Close()
 		return nil, nil, fmt.Errorf("compose caller tier shadow recorder: %w", err)
@@ -1191,9 +1194,9 @@ func chainGatewayAPIKeyIDOf(r *http.Request) string {
 // 时非 nil）。redis 驱动落 juhe-ai:caller-tiers:<apiKeyID>（滑动 TTL 48h，
 // 重启/丢失回 T2 保守默认）；standalone/memory 驱动落进程内 store。双形态
 // 都是启动时选定的部署形态，非运行时回退。
-func newCallerTierStore(stateClient *redis.Client) gatewaycallertier.Store {
+func newCallerTierStore(stateClient redis.UniversalClient, namespace string) gatewaycallertier.Store {
 	if stateClient != nil {
-		return gatewaycallertier.NewRedisStore(stateClient, "juhe-ai:caller-tiers:", time.Now)
+		return gatewaycallertier.NewRedisStore(stateClient, rediscfg.NamespacedKey("juhe-ai:caller-tiers:", namespace), time.Now)
 	}
 	return gatewaycallertier.NewMemoryStore(time.Now)
 }

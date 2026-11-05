@@ -21,9 +21,6 @@ package main
 import (
 	"os"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 )
 
 // wm14kWithClosedStdout 用已关闭的管道替换 os.Stdout，使 json 编码写入必然
@@ -49,39 +46,33 @@ func wm14kWithClosedStdout(t *testing.T, fn func()) {
 func TestW14KRunnerUsageGates(t *testing.T) {
 	t.Run("schema snapshot env gates", func(t *testing.T) {
 		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_TARGET", "")
-		if got := postgresSchemaSnapshotResult(); got != 2 {
+		if got := postgresSchemaSnapshotResult("postgres://w14k@127.0.0.1:5432/db"); got != 2 {
 			t.Fatalf("缺失 target 必须返回 2: %d", got)
 		}
 		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_TARGET", "test")
-		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL", "")
-		if got := postgresSchemaSnapshotResult(); got != 2 {
-			t.Fatalf("缺失 URL 必须返回 2: %d", got)
+		if got := postgresSchemaSnapshotResult(""); got != 2 {
+			t.Fatalf("缺失 --dsn 必须返回 2: %d", got)
 		}
-		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL", "postgres://w14k@127.0.0.1:5432/db")
 		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM", "")
-		if got := postgresSchemaSnapshotResult(); got != 2 {
+		if got := postgresSchemaSnapshotResult("postgres://w14k@127.0.0.1:5432/db"); got != 2 {
 			t.Fatalf("缺失只读确认必须返回 2: %d", got)
 		}
 	})
 	// J3a/J3b 一次性 bootstrap apply 命令（现行生产初始化契约）的用法门：
 	// 空 env、缺主机 URL 与 apply 无确认都必须 fail-closed 返回 2。
 	t.Run("j3a bootstrap", func(t *testing.T) {
-		t.Setenv(j3aproxylatency.BootstrapEnv, "")
-		if got := j3aProxyLatencyBootstrapResult(false); got != 2 {
-			t.Fatalf("空 env 必须返回 2: %d", got)
+		if got := j3aProxyLatencyBootstrapResult("", false); got != 2 {
+			t.Fatalf("空 --dsn 必须返回 2: %d", got)
 		}
-		t.Setenv(j3aproxylatency.BootstrapEnv, "postgres://@/")
-		if got := j3aProxyLatencyBootstrapResult(false); got != 2 {
+		if got := j3aProxyLatencyBootstrapResult("postgres://@/", false); got != 2 {
 			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
 		}
 	})
 	t.Run("j3b pg bootstrap", func(t *testing.T) {
-		t.Setenv(j3bmodelcheck.BootstrapEnv, "")
-		if got := j3bModelCheckBootstrapResult(false); got != 2 {
-			t.Fatalf("空 env 必须返回 2: %d", got)
+		if got := j3bModelCheckBootstrapResult("", false); got != 2 {
+			t.Fatalf("空 --dsn 必须返回 2: %d", got)
 		}
-		t.Setenv(j3bmodelcheck.BootstrapEnv, "postgres://@/")
-		if got := j3bModelCheckBootstrapResult(false); got != 2 {
+		if got := j3bModelCheckBootstrapResult("postgres://@/", false); got != 2 {
 			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
 		}
 	})

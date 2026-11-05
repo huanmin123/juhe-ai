@@ -420,7 +420,7 @@ func TestW1TrafficMigrationBridge(t *testing.T) {
 	defer mini.Close()
 	affinity, err := gatewaysession.NewAffinityService(gatewaysession.AffinityConfig{
 		Secret:        "w1-traffic-migration-secret-0123456789abcdef",
-		RedisCacheURL: "redis://" + mini.Addr(),
+		RedisURL: "redis://" + mini.Addr(),
 		Clock:         func() time.Time { return time.UnixMilli(1728000000000) },
 	})
 	if err != nil {
@@ -629,7 +629,7 @@ func TestW1ComposeRuntimeServicesRedisStateArm(t *testing.T) {
 	cfg := composeTestConfig(t)
 	// D-137：redis 运行态恒定形态（存储形态收口）。
 	cfg.RedisNamespace = "w1-compose-state"
-	cfg.RedisStateURL = "redis://" + server.Addr()
+	cfg.RedisURL = "redis://" + server.Addr()
 	fixture := newChainFixture(t)
 	composed := &composition{db: fixture.db, statsDB: fixture.statsDB}
 	services, err := composeChainRuntimeServices(composed, cfg, func(string) (string, error) { return "UTC", nil })
@@ -645,7 +645,7 @@ func TestW1ComposeRuntimeServicesRedisStateArm(t *testing.T) {
 	}
 	// 非法 redis URL：fail fast 契约。
 	badCfg := composeTestConfig(t)
-	badCfg.RedisStateURL = "redis://[::bad-url"
+	badCfg.RedisURL = "redis://[::bad-url"
 	if _, err := composeChainRuntimeServices(&composition{db: fixture.db, statsDB: fixture.statsDB}, badCfg, func(string) (string, error) { return "UTC", nil }); err == nil {
 		t.Fatal("非法 state URL 必须报错")
 	}

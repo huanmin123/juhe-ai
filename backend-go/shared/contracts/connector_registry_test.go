@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// testDriverCodes 是全部 10 个 connection driver。
+// testDriverCodes 是全部 9 个真实厂商 connection driver。
 var testDriverCodes = []string{
-	DriverGenericHTTP, DriverGPT, DriverXAI, DriverDeepSeek, DriverAnthropic,
+	DriverGPT, DriverXAI, DriverDeepSeek, DriverAnthropic,
 	DriverGemini, DriverGLM, DriverMiniMax, DriverVolcengine, DriverQwen,
 }
 
@@ -20,9 +20,8 @@ var (
 	testOAuthTypes   = []string{"", OAuthTypeCodeAssist, OAuthTypeGoogleOne, OAuthTypeAIStudio}
 )
 
-// testPresets 是全部 17 个 connection preset。
+// testPresets 是全部 14 个真实厂商 connection preset。
 var testPresets = []string{
-	PresetGenericOpenAIV1, PresetGenericAnthropicV1, PresetGenericGeminiV1Beta,
 	PresetGPTOpenAIV1, PresetXAIOpenAIV1, PresetDeepSeekOpenAIV1, PresetDeepSeekAnthropicV1,
 	PresetAnthropicV1, PresetGeminiOpenAIChatV1Beta, PresetGeminiNativeV1Beta,
 	PresetGLMGeneralOpenAIV1, PresetGLMCodingOpenAIV1, PresetGLMCodingAnthropicV1,
@@ -65,24 +64,24 @@ func stringSliceContains(values []string, target string) bool {
 	return false
 }
 
-// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 的 50 条与按 driver 计数。
+// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 去掉 generic_http 后的 42 条
+// 与按 driver 计数。
 func TestConnectorRegistryComboCounts(t *testing.T) {
 	combos := AllowedConnectorCombos()
-	if len(combos) != 50 {
-		t.Fatalf("AllowedConnectorCombos() = %d 条, want 50", len(combos))
+	if len(combos) != 42 {
+		t.Fatalf("AllowedConnectorCombos() = %d 条, want 42", len(combos))
 	}
 	counts := ComboDriverCounts()
 	expected := map[string]int{
-		DriverGenericHTTP: 8,
-		DriverGPT:         5,
-		DriverXAI:         4,
-		DriverDeepSeek:    2,
-		DriverAnthropic:   2,
-		DriverGemini:      13,
-		DriverGLM:         7,
-		DriverMiniMax:     2,
-		DriverVolcengine:  4,
-		DriverQwen:        3,
+		DriverGPT:        5,
+		DriverXAI:        4,
+		DriverDeepSeek:   2,
+		DriverAnthropic:  2,
+		DriverGemini:     13,
+		DriverGLM:        7,
+		DriverMiniMax:    2,
+		DriverVolcengine: 4,
+		DriverQwen:       3,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -94,25 +93,24 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 163 条与按 driver 计数，
+// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 133 条与按 driver 计数，
 // 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
-	if len(modeCombos) != 163 {
-		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 163", len(modeCombos))
+	if len(modeCombos) != 133 {
+		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 133", len(modeCombos))
 	}
 	counts := ModeComboDriverCounts()
 	expected := map[string]int{
-		DriverGenericHTTP: 30,
-		DriverGPT:         18,
-		DriverXAI:         11,
-		DriverDeepSeek:    6,
-		DriverAnthropic:   6,
-		DriverGemini:      46,
-		DriverGLM:         18,
-		DriverMiniMax:     5,
-		DriverVolcengine:  13,
-		DriverQwen:        10,
+		DriverGPT:        18,
+		DriverXAI:        11,
+		DriverDeepSeek:   6,
+		DriverAnthropic:  6,
+		DriverGemini:     46,
+		DriverGLM:        18,
+		DriverMiniMax:    5,
+		DriverVolcengine: 13,
+		DriverQwen:       10,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ModeComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -122,13 +120,13 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 			t.Errorf("driver %q 单 mode 组合数 = %d, want %d", driver, counts[driver], want)
 		}
 	}
-	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 163。
+	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 133。
 	sum := 0
 	for _, combo := range AllowedConnectorCombos() {
 		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
 	}
-	if sum != 163 {
-		t.Fatalf("50 个组合的 AllowedModes 求和 = %d, want 163", sum)
+	if sum != 133 {
+		t.Fatalf("42 个组合的 AllowedModes 求和 = %d, want 133", sum)
 	}
 }
 
@@ -148,15 +146,15 @@ func TestConnectorRegistrySortedStable(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryCartesianProduct 遍历 10 driver × 3 account type × 4 oauth 值 ×
-// 17 preset × 4 domain = 8160 组合，断言恰 49 允许、8111 拒绝，且允许集合与
+// TestConnectorRegistryCartesianProduct 遍历 9 driver × 3 account type × 4 oauth 值 ×
+// 14 preset × 4 domain = 6048 组合，断言恰 42 允许、6006 拒绝，且允许集合与
 // AllowedConnectorCombos() 精确一致。
 func TestConnectorRegistryCartesianProduct(t *testing.T) {
 	total := len(testDriverCodes) * len(testAccountTypes) * len(testOAuthTypes) * len(testPresets) * len(testDomains)
-	if total != 8160 {
-		t.Fatalf("笛卡尔积空间 = %d, want 8160", total)
+	if total != 6048 {
+		t.Fatalf("笛卡尔积空间 = %d, want 6048", total)
 	}
-	allowedKeys := make(map[string]struct{}, 49)
+	allowedKeys := make(map[string]struct{}, 42)
 	for _, combo := range AllowedConnectorCombos() {
 		allowedKeys[connectorComboKey(combo.Driver, combo.AccountType, combo.OAuthType, combo.Preset, combo.Domain)] = struct{}{}
 	}
@@ -187,11 +185,11 @@ func TestConnectorRegistryCartesianProduct(t *testing.T) {
 			}
 		}
 	}
-	if allowed != 50 {
-		t.Fatalf("允许组合数 = %d, want 50", allowed)
+	if allowed != 42 {
+		t.Fatalf("允许组合数 = %d, want 42", allowed)
 	}
-	if rejected != 8110 {
-		t.Fatalf("拒绝组合数 = %d, want 8110", rejected)
+	if rejected != 6006 {
+		t.Fatalf("拒绝组合数 = %d, want 6006", rejected)
 	}
 }
 
@@ -244,8 +242,7 @@ func TestDomainLanes(t *testing.T) {
 // TestPresetVocabularies 按设计 §2.2 的 8 行词表逐 preset 断言集合相等。
 func TestPresetVocabularies(t *testing.T) {
 	expectedByPreset := map[string]map[string]struct{}{
-		// 行 1：*_openai_v1 与 generic_openai_v1。
-		PresetGenericOpenAIV1:    toSet(openAIVocabulary),
+		// 行 1：*_openai_v1。
 		PresetGPTOpenAIV1:        toSet(openAIVocabulary),
 		PresetXAIOpenAIV1:        toSet(openAIVocabulary),
 		PresetDeepSeekOpenAIV1:   toSet(openAIVocabulary),
@@ -253,25 +250,23 @@ func TestPresetVocabularies(t *testing.T) {
 		PresetGLMCodingOpenAIV1:  toSet(openAIVocabulary),
 		// 行 2：gemini_openai_chat_v1beta。
 		PresetGeminiOpenAIChatV1Beta: toSet(geminiOpenAIChatVocabulary),
-		// 行 3：*_anthropic_v1 与 generic_anthropic_v1。
-		PresetGenericAnthropicV1:   toSet(anthropicVocabulary),
+		// 行 3：*_anthropic_v1。
 		PresetDeepSeekAnthropicV1:  toSet(anthropicVocabulary),
 		PresetAnthropicV1:          toSet(anthropicVocabulary),
 		PresetGLMCodingAnthropicV1: toSet(anthropicVocabulary),
-		// 行 4：gemini_native_v1beta 与 generic_gemini_v1beta。
-		PresetGeminiNativeV1Beta:  toSet(geminiNativeVocabulary),
-		PresetGenericGeminiV1Beta: toSet(geminiNativeVocabulary),
+		// 行 4：gemini_native_v1beta。
+		PresetGeminiNativeV1Beta: toSet(geminiNativeVocabulary),
 		// 行 5-8：厂商媒体 preset。
 		PresetMiniMaxMedia:         toSet(miniMaxMediaVocabulary),
 		PresetVolcengineArk:        toSet(volcengineArkVocabulary),
 		PresetVolcengineOpenSpeech: toSet(volcengineOpenSpeechVocabulary),
 		PresetQwenDashScope:        toSet(qwenDashScopeVocabulary),
 	}
-	if len(expectedByPreset) != 17 {
-		t.Fatalf("词表断言覆盖 %d 个 preset, want 17", len(expectedByPreset))
+	if len(expectedByPreset) != 14 {
+		t.Fatalf("词表断言覆盖 %d 个 preset, want 14", len(expectedByPreset))
 	}
-	if len(connectorPresetRecords) != 17 {
-		t.Fatalf("registry preset record 数 = %d, want 17", len(connectorPresetRecords))
+	if len(connectorPresetRecords) != 14 {
+		t.Fatalf("registry preset record 数 = %d, want 14", len(connectorPresetRecords))
 	}
 	for _, record := range connectorPresetRecords {
 		want, ok := expectedByPreset[record.Code]
@@ -299,48 +294,26 @@ func TestPresetVocabularies(t *testing.T) {
 }
 
 // TestPresetAuthStrategies 断言设计 §1.1 :58 的认证策略引用：
-// 17 个 preset 的 AuthStrategyKey 非空且属于 4 个合法值；
-// generic 三预设精确匹配设计 §1 附加规则 1 的固定认证，其余 preset 为 driver_defined。
+// 14 个真实厂商 preset 的 AuthStrategyKey 非空且统一为 driver_defined
+// （认证由各厂商 driver 实现，registry 不再保留 generic 固定认证头策略）。
 func TestPresetAuthStrategies(t *testing.T) {
-	legalValues := toSet([]string{
-		AuthStrategyGenericBearer,
-		AuthStrategyGenericAnthropicHeaders,
-		AuthStrategyGenericGoogAPIKey,
-		AuthStrategyDriverDefined,
-	})
-	genericExpected := map[string]string{
-		PresetGenericOpenAIV1:     AuthStrategyGenericBearer,
-		PresetGenericAnthropicV1:  AuthStrategyGenericAnthropicHeaders,
-		PresetGenericGeminiV1Beta: AuthStrategyGenericGoogAPIKey,
-	}
-	if len(connectorPresetRecords) != 17 {
-		t.Fatalf("registry preset record 数 = %d, want 17", len(connectorPresetRecords))
+	if len(connectorPresetRecords) != 14 {
+		t.Fatalf("registry preset record 数 = %d, want 14", len(connectorPresetRecords))
 	}
 	for _, record := range connectorPresetRecords {
 		if record.AuthStrategyKey == "" {
 			t.Errorf("preset %q 的认证策略引用为空", record.Code)
 			continue
 		}
-		if _, ok := legalValues[record.AuthStrategyKey]; !ok {
-			t.Errorf("preset %q 的认证策略引用 %q 不在 4 个合法值集合内", record.Code, record.AuthStrategyKey)
+		if record.AuthStrategyKey != AuthStrategyDriverDefined {
+			t.Errorf("preset %q 的认证策略引用 = %q, want %q", record.Code, record.AuthStrategyKey, AuthStrategyDriverDefined)
 		}
-		if want, ok := genericExpected[record.Code]; ok {
-			if record.AuthStrategyKey != want {
-				t.Errorf("generic preset %q 的认证策略引用 = %q, want %q", record.Code, record.AuthStrategyKey, want)
-			}
-			delete(genericExpected, record.Code)
-		} else if record.AuthStrategyKey != AuthStrategyDriverDefined {
-			t.Errorf("真实厂商 preset %q 的认证策略引用 = %q, want %q", record.Code, record.AuthStrategyKey, AuthStrategyDriverDefined)
-		}
-	}
-	if len(genericExpected) != 0 {
-		t.Fatalf("generic 三预设未被 registry 覆盖: %v", genericExpected)
 	}
 }
 
 // TestDriverNarrowingRules 断言设计 §2.2 收窄规则：gpt.oauth/xai.oauth、glm OpenAI、
-// deepseek/glm anthropic 收窄，官方 anthropic 与 generic_anthropic_v1 完整词表，
-// gemini google_oauth 同词表不再收窄，generic_http 不收窄。
+// deepseek/glm anthropic 收窄，官方 anthropic 完整词表，
+// gemini google_oauth 同词表不再收窄。
 func TestDriverNarrowingRules(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -352,15 +325,13 @@ func TestDriverNarrowingRules(t *testing.T) {
 		{"gpt oauth 收窄为 responses 双 mode", PresetGPTOpenAIV1, AccountTypeOAuth, "", responsesOnlyVocabulary},
 		{"xai oauth 收窄为 responses 双 mode", PresetXAIOpenAIV1, AccountTypeOAuth, "", responsesOnlyVocabulary},
 		{"gpt api_key 不收窄", PresetGPTOpenAIV1, AccountTypeAPIKey, "", openAIVocabulary},
-		{"generic_openai_v1 不收窄", PresetGenericOpenAIV1, AccountTypeAPIKey, "", openAIVocabulary},
 		{"glm general OpenAI 收窄", PresetGLMGeneralOpenAIV1, AccountTypeAPIKey, "", glmOpenAINarrowedVocabulary},
 		{"glm coding OpenAI 收窄", PresetGLMCodingOpenAIV1, AccountTypeAPIKey, "", glmOpenAINarrowedVocabulary},
 		{"deepseek anthropic 收窄", PresetDeepSeekAnthropicV1, AccountTypeAPIKey, "", messagesOnlyVocabulary},
 		{"glm coding anthropic 收窄", PresetGLMCodingAnthropicV1, AccountTypeAPIKey, "", messagesOnlyVocabulary},
 		{"官方 anthropic api_key 完整词表", PresetAnthropicV1, AccountTypeAPIKey, "", anthropicVocabulary},
 		{"官方 anthropic oauth 完整词表", PresetAnthropicV1, AccountTypeOAuth, "", anthropicVocabulary},
-		{"generic_anthropic_v1 完整词表", PresetGenericAnthropicV1, AccountTypeAPIKey, "", anthropicVocabulary},
-		{"generic_gemini_v1beta 不收窄", PresetGenericGeminiV1Beta, AccountTypeAPIKey, "", geminiNativeVocabulary},
+		{"gemini native api_key 不收窄", PresetGeminiNativeV1Beta, AccountTypeAPIKey, "", geminiNativeVocabulary},
 	}
 	for _, tc := range cases {
 		got := presetVocabulary(tc.preset, tc.accountType, tc.oauthType)
@@ -388,11 +359,11 @@ func TestAllowedModesIntersections(t *testing.T) {
 		accountType string
 		oauthType   string
 	}{
-		{DomainImage, PresetGenericAnthropicV1, AccountTypeAPIKey, ""},
+		{DomainImage, PresetAnthropicV1, AccountTypeAPIKey, ""},
 		{DomainChat, PresetMiniMaxMedia, AccountTypeAPIKey, ""},
 		{DomainImage, PresetVolcengineOpenSpeech, AccountTypeAPIKey, ""},
 		{DomainImage, PresetGeminiNativeV1Beta, AccountTypeAPIKey, ""},
-		{"unknown_domain", PresetGenericOpenAIV1, AccountTypeAPIKey, ""},
+		{"unknown_domain", PresetGPTOpenAIV1, AccountTypeAPIKey, ""},
 		{DomainChat, "unknown_preset", AccountTypeAPIKey, ""},
 	}
 	for _, tc := range emptyCases {
@@ -409,7 +380,7 @@ func TestAllowedModesIntersections(t *testing.T) {
 		oauthType   string
 		want        []string
 	}{
-		{"gemini native audio 交集", DomainAudio, PresetGenericGeminiV1Beta, AccountTypeAPIKey, "", []string{ModeAudioSpeech}},
+		{"gemini native audio 交集", DomainAudio, PresetGeminiNativeV1Beta, AccountTypeAPIKey, "", []string{ModeAudioSpeech}},
 		{"ark chat 交集", DomainChat, PresetVolcengineArk, AccountTypeAPIKey, "", []string{ModeChatJSON, ModeChatSSE}},
 		{"glm general chat 收窄后交集", DomainChat, PresetGLMGeneralOpenAIV1, AccountTypeAPIKey, "", []string{ModeChatJSON, ModeChatSSE}},
 		{"gpt oauth chat 交集", DomainChat, PresetGPTOpenAIV1, AccountTypeOAuth, "", []string{ModeResponsesJSON, ModeResponsesSSE}},
@@ -430,10 +401,10 @@ func TestAllowedModesIntersections(t *testing.T) {
 	}
 }
 
-// TestPresetDefaultBaseURLs 断言设计 :58-80 的 nullable default_base_url 17 值表：
-// preset record 字段逐值精确匹配；generic 三 preset 为空串（registry 表达 SQL NULL）；
-// canonical JSON 中 17 个 preset 的 defaultBaseUrl 逐值精确匹配且 generic 三 preset
-// 序列化为 JSON null（标量按 canonical bytes 原样写入，不参与排序）。
+// TestPresetDefaultBaseURLs 断言设计 :58-80 的 nullable default_base_url 14 值表：
+// preset record 字段逐值精确匹配；九家真实厂商的 14 个 preset 均有固定上游地址；
+// canonical JSON 中 14 个 preset 的 defaultBaseUrl 逐值精确匹配（标量按 canonical
+// bytes 原样写入，不参与排序）。
 func TestPresetDefaultBaseURLs(t *testing.T) {
 	// 2026-10 上游 Base URL 版本根语义 v2（R9）：default_base_url 一律是
 	// 版本根形态——deepseek_openai_v1（/v1）、deepseek_anthropic_v1
@@ -441,9 +412,6 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 	// volcengine_ark（/api/v3）、gemini_native_v1beta（/v1beta）、
 	// minimax_media（/v1）六处由服务根改写为版本根。
 	expected := map[string]string{
-		PresetGenericOpenAIV1:        "",
-		PresetGenericAnthropicV1:     "",
-		PresetGenericGeminiV1Beta:    "",
 		PresetGPTOpenAIV1:            "https://api.openai.com/v1",
 		PresetXAIOpenAIV1:            "https://api.x.ai/v1",
 		PresetDeepSeekOpenAIV1:       "https://api.deepseek.com/v1",
@@ -459,8 +427,8 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 		PresetVolcengineOpenSpeech:   "https://openspeech.bytedance.com",
 		PresetQwenDashScope:          "https://dashscope.aliyuncs.com",
 	}
-	if len(expected) != 17 {
-		t.Fatalf("default_base_url 断言覆盖 %d 个 preset, want 17", len(expected))
+	if len(expected) != 14 {
+		t.Fatalf("default_base_url 断言覆盖 %d 个 preset, want 14", len(expected))
 	}
 	for _, record := range connectorPresetRecords {
 		want, ok := expected[record.Code]
@@ -472,34 +440,30 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 		}
 	}
 
-	// canonical JSON 逐元素断言：defaultBaseUrl 按 preset 精确匹配，generic 三
-	// preset 输出 JSON null（指针为 nil），其余为 canonical bytes 原样字符串。
+	// canonical JSON 逐元素断言：defaultBaseUrl 按 preset 精确匹配且一律非 null
+	//（九家真实厂商均有固定上游地址）。
 	var elements []registryFingerprintElement
 	if err := json.Unmarshal([]byte(registryCanonicalJSON), &elements); err != nil {
 		t.Fatalf("canonical JSON 反序列化失败: %v", err)
 	}
-	if len(elements) != 163 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 163", len(elements))
+	if len(elements) != 133 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 133", len(elements))
 	}
-	checked := make(map[string]int, 17)
+	checked := make(map[string]int, 14)
 	for _, element := range elements {
 		want, ok := expected[element.Preset]
 		if !ok {
 			t.Fatalf("canonical JSON 出现未断言的 preset %q", element.Preset)
 		}
-		if want == "" {
-			if element.DefaultBaseURL != nil {
-				t.Errorf("preset %q 的 canonical defaultBaseUrl = %q, want JSON null", element.Preset, *element.DefaultBaseURL)
-			}
-		} else if element.DefaultBaseURL == nil {
+		if element.DefaultBaseURL == nil {
 			t.Errorf("preset %q 的 canonical defaultBaseUrl = null, want %q", element.Preset, want)
 		} else if *element.DefaultBaseURL != want {
 			t.Errorf("preset %q 的 canonical defaultBaseUrl = %q, want %q", element.Preset, *element.DefaultBaseURL, want)
 		}
 		checked[element.Preset]++
 	}
-	if len(checked) != 17 {
-		t.Fatalf("canonical JSON 覆盖 %d 个 preset, want 17", len(checked))
+	if len(checked) != 14 {
+		t.Fatalf("canonical JSON 覆盖 %d 个 preset, want 14", len(checked))
 	}
 	for _, preset := range testPresets {
 		if checked[preset] == 0 {
@@ -509,16 +473,15 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 }
 
 // TestPresetDefaultBaseURLAccessor 断言导出访问器 PresetDefaultBaseURL 与
-// record 字段同源：17 个 preset 逐值一致（含 generic 三 preset 空串 = SQL
-// NULL），未知 preset 返回空串。
+// record 字段同源：14 个 preset 逐值一致，未知 preset 返回空串。
 func TestPresetDefaultBaseURLAccessor(t *testing.T) {
 	for _, record := range connectorPresetRecords {
 		if got := PresetDefaultBaseURL(record.Code); got != record.DefaultBaseURL {
 			t.Errorf("PresetDefaultBaseURL(%q) = %q, want %q", record.Code, got, record.DefaultBaseURL)
 		}
 	}
-	if len(connectorPresetRecords) != 17 {
-		t.Fatalf("registry preset 数 = %d, want 17", len(connectorPresetRecords))
+	if len(connectorPresetRecords) != 14 {
+		t.Fatalf("registry preset 数 = %d, want 14", len(connectorPresetRecords))
 	}
 	if got := PresetDefaultBaseURL("no_such_preset"); got != "" {
 		t.Errorf("未知 preset 应返回空串, got %q", got)
@@ -526,7 +489,7 @@ func TestPresetDefaultBaseURLAccessor(t *testing.T) {
 }
 
 // TestRegistryFingerprint 断言 fingerprint 稳定、64 位小写 hex，
-// 且 canonical JSON 为 163 元素紧凑数组、nullable 字段输出 JSON null。
+// 且 canonical JSON 为 133 元素紧凑数组、nullable 字段输出 JSON null。
 func TestRegistryFingerprint(t *testing.T) {
 	first := RegistryFingerprint()
 	second := RegistryFingerprint()
@@ -549,11 +512,12 @@ func TestRegistryFingerprint(t *testing.T) {
 	if strings.Contains(registryCanonicalJSON, ", ") || strings.Contains(registryCanonicalJSON, ": ") {
 		t.Fatalf("canonical JSON 的结构分隔符后含空格，违反紧凑分隔要求")
 	}
-	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 163 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 163", got)
+	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 133 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 133", got)
 	}
-	if !strings.Contains(registryCanonicalJSON, `"vendor":null`) {
-		t.Fatalf("canonical JSON 缺少 generic_http 的 vendor null")
+	// 九家真实厂商均有 vendor，删除 generic_http 后 canonical JSON 不得再出现 vendor null。
+	if strings.Contains(registryCanonicalJSON, `"vendor":null`) {
+		t.Fatalf("canonical JSON 仍含 vendor null，说明 registry 混入未绑定真实厂商的行")
 	}
 	if !strings.Contains(registryCanonicalJSON, `"oauthType":null`) {
 		t.Fatalf("canonical JSON 缺少非 google_oauth 行的 oauthType null")
@@ -564,8 +528,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	// defaultBaseUrl 是标量尾字段：每元素恰一次且其后不得再有任何字段（设计
 	// :56/:81；不能按 } 切分——模板值含 {id}/{model} 占位符，故用正则断言尾位；
 	// generic 三 preset 输出 null，逐值精确断言见 TestPresetDefaultBaseURLs）。
-	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 163 {
-		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 163", got)
+	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 133 {
+		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 133", got)
 	}
 	if trailingFieldPattern.MatchString(registryCanonicalJSON) {
 		t.Fatalf("canonical JSON 存在 defaultBaseUrl 之后仍有字段或元素未以 defaultBaseUrl 收尾")
@@ -582,11 +546,8 @@ func TestRegistryInternalConsistency(t *testing.T) {
 			t.Fatalf("driver record 重复: %q", record.Code)
 		}
 		seenDrivers[record.Code] = true
-		if record.Code == DriverGenericHTTP && record.Vendor != "" {
-			t.Errorf("generic_http 的 vendor 必须为 NULL（空字符串）")
-		}
-		if record.Code != DriverGenericHTTP && record.Vendor == "" {
-			t.Errorf("真实 driver %q 的 vendor 不能为空", record.Code)
+		if record.Vendor == "" {
+			t.Errorf("driver %q 的 vendor 不能为空（registry 只注册九家真实厂商）", record.Code)
 		}
 		if len(record.CredentialSchemaKeys) != len(record.AccountTypes) {
 			t.Errorf("driver %q 的凭据键与 account type 数量不一致", record.Code)
@@ -605,8 +566,8 @@ func TestRegistryInternalConsistency(t *testing.T) {
 			t.Errorf("driver %q 声明了 OAuthTypes 但没有 google_oauth account type", record.Code)
 		}
 	}
-	if len(seenDrivers) != 10 {
-		t.Fatalf("driver record 数 = %d, want 10", len(seenDrivers))
+	if len(seenDrivers) != 9 {
+		t.Fatalf("driver record 数 = %d, want 9", len(seenDrivers))
 	}
 
 	templatePattern := regexp.MustCompile(`^[A-Z]+ /`)
@@ -650,8 +611,8 @@ func TestRegistryInternalConsistency(t *testing.T) {
 			}
 		}
 	}
-	if len(seenPresets) != 17 {
-		t.Fatalf("preset record 数 = %d, want 17", len(seenPresets))
+	if len(seenPresets) != 14 {
+		t.Fatalf("preset record 数 = %d, want 14", len(seenPresets))
 	}
 
 	// 组合行引用闭合：driver/preset 无孤儿记录，account type 必须在 driver record 内注册，
@@ -755,7 +716,7 @@ func TestRegistryInternalConsistency(t *testing.T) {
 	// 模式 chat 模板）。
 	openAITemplateSet := toSet(openAIOperationTemplates)
 	for _, preset := range []string{
-		PresetGenericOpenAIV1, PresetGPTOpenAIV1, PresetXAIOpenAIV1,
+		PresetGPTOpenAIV1, PresetXAIOpenAIV1,
 		PresetDeepSeekOpenAIV1, PresetGLMGeneralOpenAIV1, PresetGLMCodingOpenAIV1,
 	} {
 		if !setsEqual(toSet(connectorPresetRecordIndex[preset].OperationPathTemplates), openAITemplateSet) {
@@ -764,14 +725,14 @@ func TestRegistryInternalConsistency(t *testing.T) {
 	}
 	anthropicTemplateSet := toSet(anthropicOperationTemplates)
 	for _, preset := range []string{
-		PresetGenericAnthropicV1, PresetDeepSeekAnthropicV1, PresetAnthropicV1, PresetGLMCodingAnthropicV1,
+		PresetDeepSeekAnthropicV1, PresetAnthropicV1, PresetGLMCodingAnthropicV1,
 	} {
 		if !setsEqual(toSet(connectorPresetRecordIndex[preset].OperationPathTemplates), anthropicTemplateSet) {
 			t.Errorf("preset %q 必须精确使用 Anthropic 公共 2 条模板", preset)
 		}
 	}
 	geminiTemplateSet := toSet(geminiNativeOperationTemplates)
-	for _, preset := range []string{PresetGenericGeminiV1Beta, PresetGeminiNativeV1Beta} {
+	for _, preset := range []string{PresetGeminiNativeV1Beta} {
 		if !setsEqual(toSet(connectorPresetRecordIndex[preset].OperationPathTemplates), geminiTemplateSet) {
 			t.Errorf("preset %q 必须精确使用 Gemini native 公共 8 条模板", preset)
 		}

@@ -20,7 +20,7 @@ import {
 
 const emptyList: ResponseInspectionPolicyListResult = { defaultRules: [], policies: [] }
 const options: ResponseInspectionPolicyProviderOption[] = [
-  { code: 'openai', name: 'OpenAI 兼容' },
+  { code: 'gpt', name: 'GPT' },
   { code: 'anthropic', name: 'Anthropic' },
   { code: 'gemini', name: 'Gemini' }
 ]
@@ -189,8 +189,8 @@ async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
   assert.equal(calls, 2, '同 protocol/scope/keyword 的成功结果必须跨 modal intent 复用')
   const searched = coordinator.loadProviderOptions(cachedIntent, { ...openAiProviderQuery, keyword: 'open' })
   assert.equal(calls, 3, '不同 keyword 必须使用独立 provider options 缓存键')
-  requests[2]?.resolve([{ code: 'openai', name: 'OpenAI 兼容' }])
-  assert.deepEqual(await searched, [{ code: 'openai', name: 'OpenAI 兼容' }])
+  requests[2]?.resolve([{ code: 'gpt', name: 'GPT' }])
+  assert.deepEqual(await searched, [{ code: 'gpt', name: 'GPT' }])
   assert.deepEqual(queries, [openAiProviderQuery, anthropicProviderQuery, { ...openAiProviderQuery, keyword: 'open' }], 'loader 必须收到完整 protocol/scope/keyword 查询矩阵')
   coordinator.dispose()
 

@@ -1,6 +1,6 @@
 # Go 后端架构基线
 
-> **2026-10-25 存储形态注记：** 本文写于 Node→Go 迁移期，其中 SQLite / memory 本地模式与"双模式基线"表述已随存储形态收口整体退役——现行唯一存储形态为 PostgreSQL + Redis（`JUHE_AI_POSTGRES_URL` / `JUHE_AI_REDIS_CACHE_URL` / `JUHE_AI_REDIS_STATE_URL` 必填），权威契约见 [PostgreSQL 与 Redis 高性能模式设计](../functions/PostgreSQL与Redis高性能模式设计.md) 收口决策记录；本文其余项目边界与并发纪律继续有效，涉及 SQLite / 双模式的段落只作迁移期历史对照，不得作为新增实现的依据。
+> **2026-10-25 存储形态注记：** 本文写于 Node→Go 迁移期，其中 SQLite / memory 本地模式与"双模式基线"表述已随存储形态收口整体退役——现行唯一存储形态为 PostgreSQL + Redis（`JUHE_AI_POSTGRES_URL` / `JUHE_AI_REDIS_URL` 必填），权威契约见 [PostgreSQL 与 Redis 高性能模式设计](../functions/PostgreSQL与Redis高性能模式设计.md) 收口决策记录；本文其余项目边界与并发纪律继续有效，涉及 SQLite / 双模式的段落只作迁移期历史对照，不得作为新增实现的依据。
 
 > **双模式基线（2026-08-14；历史截面：「Go 要同时支持 SQLite 与 PostgreSQL/Redis」已于 2026-10-25 随存储收口作废，现行唯一形态为 PostgreSQL + Redis，见文首注记）。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块；F1/F2 已物理在 `jobs`，F3/F4 已物理在 `gateway`。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 完整功能接管与 Node 归档迁移规则（已删除，git 历史可溯） 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 迁移状态与后续批次-20260812（已删除，git 历史可溯） 为准。
 >

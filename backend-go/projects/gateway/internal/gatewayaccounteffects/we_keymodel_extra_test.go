@@ -123,7 +123,7 @@ func TestWeKeyModelRuntimeStoreSelector(t *testing.T) {
 	if again != memory {
 		t.Fatal("memory store 应复用同一实例")
 	}
-	if _, err := selector.Select("redis"); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
+	if _, err := selector.Select("redis"); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL") {
 		t.Fatalf("nil factory 应报配置错误: %v", err)
 	}
 
@@ -347,7 +347,7 @@ func TestWeRedisStoreKeysAccessor(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	keys := store.Keys()
 	hash := strings.Repeat("ab", 32)
-	if keys.State(hash) != "juhe-ai:we-ns:"+KeyModelRedisGroup+":state:"+hash {
+	if keys.State(hash) != "juhe-ai:{we-ns}:"+KeyModelRedisGroup+":state:"+hash {
 		t.Fatalf("state key = %s", keys.State(hash))
 	}
 	if keys.Admission(hash) == "" || keys.AdmissionLease(hash, "a-1") == "" || keys.AdmissionWake(hash) == "" || keys.MainProbeFence(hash) == "" {

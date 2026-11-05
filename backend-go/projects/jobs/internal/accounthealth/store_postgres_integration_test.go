@@ -11,7 +11,7 @@ import (
 // graceful shutdown releases the exact lease generation through PgBouncer;
 // it must never point at a shared production jobs store.
 func TestPostgresStoreReleaseOwnerLeaseSmoke(t *testing.T) {
-	postgresURL := os.Getenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL")
+	postgresURL := os.Getenv("JUHE_AI_TEST_ACCOUNT_HEALTH_POSTGRES_URL")
 	if postgresURL == "" {
 		t.Skip("requires isolated J1 PostgreSQL jobs-store smoke environment")
 	}

@@ -290,7 +290,7 @@ type chainAccountCircuitRuntime struct {
 
 // newChainAccountCircuitService mirrors the Node GatewayAccountCircuitService
 // singleton fork: the redis driver persists the circuit store through
-// JUHE_AI_REDIS_STATE_URL, memory keeps the process-local store.
+// JUHE_AI_REDIS_URL, memory keeps the process-local store.
 //
 // 缺陷 E（熔断观测断链）：persist 配置齐备（业务库句柄 + business owner
 // gate 三证）时，把 OnMutation 接到既有 control-plane 持久化管道

@@ -26,7 +26,7 @@ func newTestGroupAffinityService(t *testing.T, mutate func(*GroupAffinityConfig)
 	}
 	if cfg.CacheDriver == CacheDriverRedis && cfg.Redis == nil {
 		server = miniredis.RunT(t)
-		cfg.RedisCacheURL = "redis://" + server.Addr()
+		cfg.RedisURL = "redis://" + server.Addr()
 	}
 	service, err := NewGroupAffinityService(cfg)
 	if err != nil {
@@ -281,7 +281,7 @@ func TestGroupAffinityCASScriptMatchAndMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	key := "juhe-ai:test:session-affinity:group-binding:cas-script"
+	key := "juhe-ai:{test}:session-affinity:group-binding:cas-script"
 
 	// missing 分支：expected=空串命中 → 写入 + PX TTL。
 	ok, err := client.Eval(ctx, redisSetGroupAffinityBindingScript, []string{key},

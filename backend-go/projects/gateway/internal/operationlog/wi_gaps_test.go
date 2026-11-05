@@ -41,17 +41,8 @@ func TestWILoadConfigMatrix(t *testing.T) {
 	}
 	// 空 env fail-fast 且指名缺失连接串（实例 ID 回落 hostname 在 URL 校验前
 	// 不可达时由基线覆盖）。
-	if _, err := LoadConfig(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_OPERATION_LOG_POSTGRES_URL") {
+	if _, err := LoadConfig(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
 		t.Fatalf("空 env 必须 fail-fast 指名连接串，got %v", err)
-	}
-	// 显式 F4 专属 URL 优先于主连接串；主连接串缺失时 F4 URL 兜底。
-	dedicated, err := LoadConfig(wiEnv(base, map[string]string{"JUHE_AI_OPERATION_LOG_POSTGRES_URL": "postgres://wi-f4"}))
-	if err != nil || dedicated.PostgresURL != "postgres://wi-f4" {
-		t.Fatalf("专属 URL=%+v err=%v", dedicated.PostgresURL, err)
-	}
-	onlyDedicated, err := LoadConfig(wiEnv(map[string]string{}, map[string]string{"JUHE_AI_OPERATION_LOG_POSTGRES_URL": "postgres://wi-f4"}))
-	if err != nil || onlyDedicated.PostgresURL != "postgres://wi-f4" {
-		t.Fatalf("仅专属 URL=%+v err=%v", onlyDedicated.PostgresURL, err)
 	}
 	// 非法矩阵。（2026-09-30 C4 收编：PG pool 两项 env 已收编为常量。）
 	invalids := map[string]map[string]string{

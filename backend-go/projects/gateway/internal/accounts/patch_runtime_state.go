@@ -325,13 +325,13 @@ func isAccountAPIKeyPoolIsolationEnabled(providerCode, connectionDriverCode, pro
 }
 
 // isAccountAPIKeyPoolProviderSupported mirrors
-// isAccountApiKeyPoolProviderSupported (account-api-key-rotation.ts:157-171).
+// isAccountAPIKeyPoolProviderSupported (account-api-key-rotation.ts:157-171)，
+// 值域收窄到九家真实厂商：generic_http 连接器与 openai 兼容 token 已退场，
+// 不再按连接器或兼容供应商放行 Key 池隔离。
 func isAccountAPIKeyPoolProviderSupported(providerCode, connectionDriverCode, protocolCode, protocolVersion string) bool {
-	if normalizeProviderToken(connectionDriverCode) == "generic_http" {
-		return true
-	}
+	_ = connectionDriverCode
 	normalized := normalizeProviderToken(providerCode)
-	if normalized == openAICompatibleProviderCodeConstant || normalized == gptVendorCode {
+	if normalized == gptVendorCode {
 		return true
 	}
 	if isDeepSeekProviderCodeToken(providerCode) || isGlmProviderCodeToken(providerCode) ||

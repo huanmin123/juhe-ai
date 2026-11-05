@@ -32,7 +32,7 @@ func w3BaselineRequest(t *testing.T, baseURL string, mutate func(*Input)) (*http
 		InputVersion:     1,
 		ConfigRevision:   1,
 		DispatchRevision: 1,
-		Provider:         "openai",
+		Provider:         "gpt",
 		Type:             "api_key",
 		EndpointMode:     "chat_json",
 		HealthModel:      "w3-model",
@@ -86,7 +86,7 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 	})
 	t.Run("responses_json", func(t *testing.T) {
 		request, body := w3BaselineRequest(t, "https://w3-up.test/v1", func(input *Input) {
-			input.ProtocolProfileID = "profile_openai_openai_v1"
+			input.ProtocolProfileID = "profile_gpt_openai_v1"
 			input.EndpointMode = "responses_json"
 		})
 		if request.URL.String() != "https://w3-up.test/v1/responses" {
@@ -238,7 +238,7 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 // TestW3F4BaselineCodexCompatibilityShape 钉 B 形态（codex_responses 兼容画像）
 // 出站形状：身份头/身份 body 单源派生、Lite 头 §9.5 模型条件、预算保留、
 // Accept 双 accept、不写 OpenAI-Beta。迁移前后不变式。base 改带 /v1 版本根
-//（R1/R3：不再自动补 /v1），want URL 不变。
+// （R1/R3：不再自动补 /v1），want URL 不变。
 func TestW3F4BaselineCodexCompatibilityShape(t *testing.T) {
 	for _, tc := range []struct {
 		model    string

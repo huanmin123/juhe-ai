@@ -32,7 +32,6 @@ import {
 import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
 import {
   connectionPresetCodeForProfile,
-  isHybridProviderCode,
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
 import { accountModelMappingEndpointFamilyProtocol, accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
@@ -634,9 +633,8 @@ export function validateAccountModelMappings(
       return '模型映射的下游模型和上游模型不能完全相同'
     }
     if (!isPristineBaselineMappingRow(item, baselineRowsByKey)) {
-      const providerCode = options.providerCode ?? formProviderCode(providerProfile)
       const sourceModelOptions = accountModelMappingSourceModelOptions({
-        providerCode,
+        providerCode: options.providerCode,
         sourceEndpointFamily,
         currentProviderOptions: options.mappingCurrentProviderSourceModelOptions ?? [],
         openAIProtocolOptions: options.mappingSourceModelOptions ?? [],
@@ -645,12 +643,6 @@ export function validateAccountModelMappings(
       })
       if (!modelExistsInOptions(sourceModel, sourceModelOptions)) {
         return `客户端模型 ${sourceModel} 不在当前可选模型目录中`
-      }
-      if (
-        isHybridProviderCode(providerCode)
-        && !modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
-      ) {
-        return `客户端模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
       }
       if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
         return `上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
@@ -700,12 +692,4 @@ function modelOptionSupportsProtocol(
 function modelExistsInOptions(model: string, options: ModelMappingProtocolOption[] | undefined): boolean {
   if (!options?.length) return true
   return options.some((option) => option.value === model)
-}
-
-function formProviderCode(providerProfile?: AccountModelMappingProviderProfile): string | undefined {
-  if (!providerProfile) return undefined
-  if ('providerCode' in providerProfile && typeof providerProfile.providerCode === 'string') {
-    return providerProfile.providerCode
-  }
-  return 'code' in providerProfile ? providerProfile.code : undefined
 }

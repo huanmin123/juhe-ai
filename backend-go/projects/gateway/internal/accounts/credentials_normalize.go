@@ -92,10 +92,18 @@ func endpointModeContextWithOf(c EndpointModeDefaultContext, accountType string)
 }
 
 // NormalizeAccountCredentialsForWrite mirrors normalizeAccountCredentialsForWrite.
-// A nil defaults context means Node's `{ accountType }` fallback.
+// A nil defaults context falls back to the gpt vendor's openai_v1 identity:
+// generic/openai-compatible driver routing was retired with the universal
+// connector, so there is no blank-provider fallback any more.
 func NormalizeAccountCredentialsForWrite(accountType string, value Credentials, defaults *EndpointModeDefaultContext) (Credentials, error) {
 	if defaults == nil {
-		defaults = &EndpointModeDefaultContext{AccountType: accountType}
+		defaults = &EndpointModeDefaultContext{
+			ProviderCode:              accountscore.GptVendorCode,
+			AccountType:               accountType,
+			ProtocolCode:              accountscore.OpenAIProtocolCode,
+			ProtocolVersion:           accountscore.OpenAIProtocolVersion,
+			ProviderProtocolProfileID: accountscore.GptOpenAIV1ProfileID,
+		}
 	}
 	input, err := accountCredentialsRecord(value)
 	if err != nil {

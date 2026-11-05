@@ -51,7 +51,7 @@ func TestKeysMatchGatewayKeySpace(t *testing.T) {
 	}
 	defer store.Close()
 	states, due, closed, escalation, saturated := store.Keys()
-	prefix := "juhe-ai:dev-space:account-circuit:gateway-account-circuit"
+	prefix := "juhe-ai:{dev-space}:account-circuit:gateway-account-circuit"
 	if states != prefix+":states" || due != prefix+":due" || closed != prefix+":closed" ||
 		escalation != prefix+":escalation" || saturated != prefix+":capacity-saturated" {
 		t.Fatalf("键空间与网关布局不一致: %s %s %s %s %s", states, due, closed, escalation, saturated)

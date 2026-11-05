@@ -29,7 +29,7 @@ func TestResolveGptRequestOverrideModelCapabilitiesPorts(t *testing.T) {
 		ModelCandidates: func(providerCode, model string) []string { return []string{model} },
 	}
 	account := gatewayruntimecache.OpenAIAccountSecret{
-		ID: "a-1", VendorCode: "openai",
+		ID: "a-1", VendorCode: "gpt",
 		Credentials: map[string]any{
 			"service_tier_override":     "flex",
 			"reasoning_effort_override": "high",

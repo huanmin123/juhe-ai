@@ -129,7 +129,7 @@ func TestW13GFindAdvancedDetailAuthorizedHappyPath(t *testing.T) {
 	// 源账户上的映射与支持模型 → authorized 详情的映射投影。
 	now := "2026-01-01T00:00:00Z"
 	// B4 W2 目标形态直插（连接 preset + upstream 支持成员 + 入口映射行）。
-	env.seedEntryMapping(t, "acc-w13g-adv-src", "generic_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
+	env.seedEntryMapping(t, "acc-w13g-adv-src", "gpt_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
 	// 锁状态行 → 详情锁字段。
 	env.exec(t, `INSERT INTO account_lock_states (account_id, enabled, lock_state, lock_death_timeout_seconds,
 		lock_retry_interval_seconds, updated_at) VALUES ('acc-w13g-adv-inst', 1, 'ENGAGED', 600, 10, ?)`, now)
@@ -169,7 +169,7 @@ func TestW13GFindCloneContextArms(t *testing.T) {
 		env.seedAccount(t, "acc-w13g-clone", adminID, "w13g-clone", "active")
 		now := "2026-01-01T00:00:00Z"
 		// B4 W2 目标形态直插：克隆源账户的连接 + 支持成员 + 入口映射行。
-		env.seedEntryMapping(t, "acc-w13g-clone", "generic_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
+		env.seedEntryMapping(t, "acc-w13g-clone", "gpt_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
 		env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
 			VALUES ('acc-w13g-clone', (SELECT id FROM models WHERE upstream_model = 'gpt-4o' ORDER BY id LIMIT 1), ?)
 			ON CONFLICT DO NOTHING`, now)

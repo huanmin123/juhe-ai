@@ -62,7 +62,8 @@ func TestIsSupportedDirectProfileMatrix(t *testing.T) {
 		mode     string
 		want     bool
 	}{
-		{"", "openai", "api_key", "chat_json", true},
+		{"", "gpt", "api_key", "chat_json", true},
+		{"", "openai", "api_key", "chat_json", false},
 		{"", "openai", "api_key", "generate_content_json", false},
 		{"", "gpt", "oauth", "responses_sse", true},
 		{"", "gpt", "oauth", "chat_json", false},
@@ -70,8 +71,7 @@ func TestIsSupportedDirectProfileMatrix(t *testing.T) {
 		{"profile_gpt_openai_v1", "gpt", "api_key", "chat_json", true},
 		{"profile_gpt_openai_v1", "gpt", "api_key", "images_json", true},
 		{"profile_gpt_openai_v1", "openai", "api_key", "chat_json", false},
-		{"profile_openai_openai_v1", "openai", "api_key", "responses_json", true},
-		{"profile_openai_openai_v1", "openai", "oauth", "chat_json", false},
+		{"profile_gpt_openai_v1", "openai", "api_key", "responses_json", false},
 		{"profile_xai_openai_v1", "xai", "api_key", "chat_sse", true},
 		{"profile_deepseek_openai_v1", "deepseek", "api_key", "chat_json", true},
 		{"profile_deepseek_openai_v1", "deepseek", "oauth", "chat_json", false},
@@ -79,12 +79,9 @@ func TestIsSupportedDirectProfileMatrix(t *testing.T) {
 		{"profile_glm_general_openai_v1", "glm", "api_key", "responses_json", false},
 		{"profile_glm_coding_openai_v1", "glm", "api_key", "chat_sse", true},
 		{"profile_gemini_openai_chat_v1beta", "gemini", "api_key", "chat_json", true},
-		{"profile_hybrid_openai_chat_v1", "hybrid", "api_key", "messages_json", true},
-		{"profile_hybrid_openai_chat_v1", "hybrid", "api_key", "generate_content_sse", true},
-		{"profile_hybrid_anthropic_messages_v1", "hybrid", "api_key", "messages_sse", true},
-		{"profile_hybrid_anthropic_messages_v1", "hybrid", "api_key", "chat_json", false},
-		{"profile_hybrid_gemini_native_v1beta", "hybrid", "api_key", "generate_content_json", true},
-		{"profile_hybrid_gemini_native_v1beta", "hybrid", "api_key", "interactions_json", true},
+		{"profile_hybrid_openai_chat_v1", "hybrid", "api_key", "messages_json", false},
+		{"profile_hybrid_anthropic_messages_v1", "hybrid", "api_key", "messages_sse", false},
+		{"profile_hybrid_gemini_native_v1beta", "hybrid", "api_key", "generate_content_json", false},
 		{"profile_anthropic_anthropic_v1", "anthropic", "oauth", "messages_json", true},
 		{"profile_anthropic_anthropic_v1", "anthropic", "api_key", "chat_json", false},
 		{"profile_deepseek_anthropic_v1", "deepseek", "api_key", "messages_json", true},
@@ -114,13 +111,9 @@ func TestDirectProbeProtocolForModeMatrix(t *testing.T) {
 		{"profile_glm_coding_anthropic_v1", "glm", "messages_json", "anthropic"},
 		{"profile_gemini_native_v1beta", "gemini", "generate_content_json", "gemini"},
 		{"profile_gpt_openai_v1", "gpt", "chat_json", "openai"},
-		{"profile_hybrid_openai_chat_v1", "hybrid", "messages_json", "anthropic"},
-		{"profile_hybrid_openai_chat_v1", "hybrid", "generate_content_sse", "gemini"},
-		{"profile_hybrid_openai_chat_v1", "hybrid", "chat_sse", "openai"},
-		{"profile_hybrid_openai_chat_v1", "hybrid", "bogus", ""},
-		{"profile_hybrid_anthropic_messages_v1", "hybrid", "messages_json", "anthropic"},
-		{"profile_hybrid_gemini_native_v1beta", "hybrid", "generate_content_json", "gemini"},
-		{"", "openai", "chat_json", "openai"},
+		{"profile_hybrid_openai_chat_v1", "hybrid", "chat_json", ""},
+		{"", "gpt", "chat_json", "openai"},
+		{"", "openai", "chat_json", ""},
 		{"", "anthropic", "chat_json", ""},
 	}
 	for _, item := range cases {
@@ -133,21 +126,17 @@ func TestDirectProbeProtocolForModeMatrix(t *testing.T) {
 // TestProbeProfileProviderMatrix 锁定 profile → provider 归属映射。
 func TestProbeProfileProviderMatrix(t *testing.T) {
 	cases := map[string]string{
-		"profile_gpt_openai_v1":                "gpt",
-		"profile_openai_openai_v1":             "openai",
-		"profile_xai_openai_v1":                "xai",
-		"profile_deepseek_openai_v1":           "deepseek",
-		"profile_deepseek_anthropic_v1":        "deepseek",
-		"profile_glm_general_openai_v1":        "glm",
-		"profile_glm_coding_openai_v1":         "glm",
-		"profile_glm_coding_anthropic_v1":      "glm",
-		"profile_anthropic_anthropic_v1":       "anthropic",
-		"profile_gemini_native_v1beta":         "gemini",
-		"profile_gemini_openai_chat_v1beta":    "gemini",
-		"profile_hybrid_openai_chat_v1":        "hybrid",
-		"profile_hybrid_anthropic_messages_v1": "hybrid",
-		"profile_hybrid_gemini_native_v1beta":  "hybrid",
-		"":                                     "openai",
+		"profile_gpt_openai_v1":             "gpt",
+		"profile_xai_openai_v1":             "xai",
+		"profile_deepseek_openai_v1":        "deepseek",
+		"profile_deepseek_anthropic_v1":     "deepseek",
+		"profile_glm_general_openai_v1":     "glm",
+		"profile_glm_coding_openai_v1":      "glm",
+		"profile_glm_coding_anthropic_v1":   "glm",
+		"profile_anthropic_anthropic_v1":    "anthropic",
+		"profile_gemini_native_v1beta":      "gemini",
+		"profile_gemini_openai_chat_v1beta": "gemini",
+		"":                                  "gpt",
 	}
 	for profile, protocol := range cases {
 		if got := probeProfileProvider(profile, protocol); got != protocol {
@@ -225,10 +214,10 @@ func TestDirectStringAndTimeHelpers(t *testing.T) {
 func TestValidateDirectProtocolMetadataMatrix(t *testing.T) {
 	valid := [][3]string{
 		{"", "", ""},
-		{"profile_openai_openai_v1", "openai", "v1"},
+		{"profile_gpt_openai_v1", "openai", "v1"},
 		{"profile_anthropic_anthropic_v1", "anthropic", "v1"},
 		{"profile_gemini_native_v1beta", "gemini", "v1beta"},
-		{"profile_openai_openai_v1", "", ""},
+		{"profile_gpt_openai_v1", "", ""},
 	}
 	for _, item := range valid {
 		if err := validateDirectProtocolMetadata(item[0], item[1], item[2]); err != nil {
@@ -236,7 +225,7 @@ func TestValidateDirectProtocolMetadataMatrix(t *testing.T) {
 		}
 	}
 	invalid := [][3]string{
-		{"profile_openai_openai_v1", "anthropic", "v1"},
+		{"profile_gpt_openai_v1", "anthropic", "v1"},
 		{"profile_gemini_native_v1beta", "gemini", "v1"},
 		{"profile_anthropic_anthropic_v1", "openai", "v9"},
 	}

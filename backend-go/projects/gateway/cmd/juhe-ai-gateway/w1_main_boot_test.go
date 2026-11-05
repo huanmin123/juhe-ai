@@ -73,11 +73,8 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	ownerEnv := w1BootScenarioEnv(t, root, "owner",
 		"NODE_ENV=development",
 		"JUHE_AI_POSTGRES_URL="+w1BootOwnerPostgres(t).DSN,
-		"JUHE_AI_REDIS_CACHE_URL="+redisURL,
-		"JUHE_AI_REDIS_STATE_URL="+redisURL,
+		"JUHE_AI_REDIS_URL="+redisURL,
 		"JUHE_AI_REDIS_NAMESPACE="+w1BootRedisNamespace,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL="+redisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1BootJ3bNamespace,
 		"JUHE_AI_SECRET=w1-boot-owner-secret-0123456789abcdef",
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1-boot-instance",
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "blobs"),
@@ -110,11 +107,8 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(composeRoot, "hotsearch"),
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1-boot-operation-compose",
 		"JUHE_AI_SECRET=w1-boot-composition-secret-0123456789abcdef",
-		"JUHE_AI_REDIS_CACHE_URL="+redisURL,
-		"JUHE_AI_REDIS_STATE_URL="+redisURL,
+		"JUHE_AI_REDIS_URL="+redisURL,
 		"JUHE_AI_REDIS_NAMESPACE="+w1BootRedisNamespace,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL="+redisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1BootJ3bNamespace,
 		"JUHE_AI_HOST=127.0.0.1",
 		"JUHE_AI_PORT="+composeMainPort,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+composeHealthPort,
@@ -146,11 +140,8 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 		"NODE_ENV=development",
 		"JUHE_AI_POSTGRES_URL="+j3bBusiness.DSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+j3bBusiness.DSN,
-		"JUHE_AI_REDIS_CACHE_URL="+redisURL,
-		"JUHE_AI_REDIS_STATE_URL="+redisURL,
+		"JUHE_AI_REDIS_URL="+redisURL,
 		"JUHE_AI_REDIS_NAMESPACE="+w1BootRedisNamespace,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL="+redisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1BootJ3bNamespace,
 		"JUHE_AI_SECRET=w1-boot-j3b-secret-0123456789abcdef",
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1-boot-instance-j3b",
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "j3b-blobs"),
@@ -173,8 +164,8 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 		"JUHE_AI_J3B_SCHEMA_READY=true",
 		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
 		"JUHE_AI_J3B_RUNTIME_READY=true",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL="+redisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1BootJ3bNamespace,
+		"JUHE_AI_REDIS_URL="+redisURL,
+		"JUHE_AI_REDIS_NAMESPACE="+w1BootJ3bNamespace,
 		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=127.0.0.1:"+j3bPort,
 	)
 	// 生产缺陷 #5 已修复（retention mode 按枚举映射）：本场景转正为成功
@@ -189,7 +180,7 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	// 两臂随切流门禁退役删除：VerifyConfiguredCutoverEvidence 已于清理批次
 	// C1（2026-09-30）物理删除，证据路径 env 不再被读取，进程不再因此退出。）
 	j3bBadRedis := append([]string{}, j3bEnv...)
-	j3bBadRedis = append(j3bBadRedis, "JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1")
+	j3bBadRedis = append(j3bBadRedis, "JUHE_AI_REDIS_URL=redis://127.0.0.1:1")
 	w1BootExpectExit(t, exe, filepath.Join(root, "cov-case"), nil, j3bBadRedis, 1, "ping J3b Gateway circuit runtime Redis")
 	// runtime-index-meta 未就绪：新 miniredis 不预置就绪哈希 → CheckReady fail。
 	miniBare := miniredis.NewMiniRedis()
@@ -198,7 +189,7 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	}
 	defer miniBare.Close()
 	j3bNoIndex := append([]string{}, j3bEnv...)
-	j3bNoIndex = append(j3bNoIndex, "JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://"+miniBare.Addr())
+	j3bNoIndex = append(j3bNoIndex, "JUHE_AI_REDIS_URL=redis://"+miniBare.Addr())
 	w1BootExpectExit(t, exe, filepath.Join(root, "cov-case"), nil, j3bNoIndex, 1, "verify J3b Gateway circuit runtime owner fence")
 	// 覆盖率合并：covdata textfmt → 与单元 profile（可选）按块取 max。
 	bootProfile := filepath.Join(root, "boot.out")

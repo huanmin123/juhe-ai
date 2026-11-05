@@ -319,13 +319,11 @@ func TestW12HModelAndRuntimeArms(t *testing.T) {
 	}
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":         "go",
-			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":           "w12h-runtime",
-			"JUHE_AI_ACCOUNT_BALANCE_STORE":              "postgres",
-			"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":       "postgres://u:p@127.0.0.1:5432/j2",
-			"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://u:p@127.0.0.1:5432/juhe_ai",
-			"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":  "w12h-runtime-secret",
-			"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":   "w12h-runtime-jobs-http-secret-0123456789abcdef",
+			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":        "go",
+			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":          "w12h-runtime",
+			"JUHE_AI_POSTGRES_URL":                      "postgres://u:p@127.0.0.1:5432/j2",
+			"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "w12h-runtime-secret",
+			"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":  "w12h-runtime-jobs-http-secret-0123456789abcdef",
 		}
 	}
 	lookup := func(env map[string]string) func(string) string {

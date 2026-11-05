@@ -18,7 +18,7 @@ func TestWlNamespaceHelpers(t *testing.T) {
 	})
 	t.Run("RedisNamespacePrefix", func(t *testing.T) {
 		prefix, err := RedisNamespacePrefix("dev")
-		if err != nil || prefix != "juhe-ai:dev:" {
+		if err != nil || prefix != "juhe-ai:{dev}:" {
 			t.Fatalf("prefix=%q err=%v", prefix, err)
 		}
 		if _, err := RedisNamespacePrefix("  "); err == nil {
@@ -27,15 +27,15 @@ func TestWlNamespaceHelpers(t *testing.T) {
 	})
 	t.Run("RedisNamespacedKey", func(t *testing.T) {
 		key, err := RedisNamespacedKey("dev", "hq:a:1")
-		if err != nil || key != "juhe-ai:dev:hq:a:1" {
+		if err != nil || key != "juhe-ai:{dev}:hq:a:1" {
 			t.Fatalf("key=%q err=%v", key, err)
 		}
 		// 已带命名空间前缀的键不重复加前缀。
-		if key, _ := RedisNamespacedKey("dev", "juhe-ai:dev:hq:a:1"); key != "juhe-ai:dev:hq:a:1" {
+		if key, _ := RedisNamespacedKey("dev", "juhe-ai:{dev}:hq:a:1"); key != "juhe-ai:{dev}:hq:a:1" {
 			t.Fatalf("key=%q", key)
 		}
 		// 只带根前缀的键补齐命名空间。
-		if key, _ := RedisNamespacedKey("dev", "juhe-ai:hq:a:1"); key != "juhe-ai:dev:hq:a:1" {
+		if key, _ := RedisNamespacedKey("dev", "juhe-ai:hq:a:1"); key != "juhe-ai:{dev}:hq:a:1" {
 			t.Fatalf("key=%q", key)
 		}
 		if _, err := RedisNamespacedKey("dev", "   "); err == nil {
@@ -52,10 +52,10 @@ func TestWlNamespaceHelpers(t *testing.T) {
 		if got := normalizedNamespace("juhe-ai:dev"); got != "dev" {
 			t.Fatalf("got=%q", got)
 		}
-		if got := namespacedKey("dev", "k"); got != "juhe-ai:dev:k" {
+		if got := namespacedKey("dev", "k"); got != "juhe-ai:{dev}:k" {
 			t.Fatalf("got=%q", got)
 		}
-		if got := namespacedKey("juhe-ai:dev", "k"); got != "juhe-ai:dev:k" {
+		if got := namespacedKey("juhe-ai:dev", "k"); got != "juhe-ai:{dev}:k" {
 			t.Fatalf("got=%q", got)
 		}
 	})

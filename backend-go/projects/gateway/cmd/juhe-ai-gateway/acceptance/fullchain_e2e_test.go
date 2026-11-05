@@ -751,8 +751,7 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 		// J1 账户健康 PG 直读输入连接串（docker/single-server/README 同款显式
 		// 必填，无回落）。
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": gw.dsn,
-		"JUHE_AI_REDIS_CACHE_URL":                   gw.redisURL,
-		"JUHE_AI_REDIS_STATE_URL":                   gw.redisURL,
+		"JUHE_AI_REDIS_URL":                   gw.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   gw.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(root, "storage", "codex-context-root"),

@@ -87,52 +87,28 @@ codex-api-key:
   - api-key: sk-codex-1
 `
 	document, source := cpaAdapt(t, yamlInput)
-	assertSourceSummary(t, source, 4, 4, 0, 0)
+	// codex-api-key 条目来源类型确定厂商（gpt）可导入；openai-compatibility
+	// 两条 provider 的三个 API Key 条目没有模型列表，无法按模型名推断厂商，
+	// 全部跳过并写一条（去重后的）报告。
+	assertSourceSummary(t, source, 4, 1, 3, 0,
+		"第 1 条来源记录已跳过：来源账户缺少模型列表，无法按模型名推断厂商",
+		"第 2 条来源记录已跳过：来源账户缺少模型列表，无法按模型名推断厂商")
 
 	accounts := cpaAccounts(t, document)
-	if len(accounts) != 4 {
+	if len(accounts) != 1 {
 		t.Fatalf("cpa accounts: %d", len(accounts))
 	}
 	// codex-api-key entries adapt before the openai-compatibility providers
-	// (Node and Go order alike).
+	// (Node and Go order alike)。
 	first := accounts[0]
 	if first["name"] != "CLIProxyAPI Codex API Key 1" {
 		t.Fatalf("cpa codex entry name: %v", first)
 	}
+	if first["providerCode"] != "gpt" || first["providerProtocolProfileId"] != "profile_gpt_openai_v1" {
+		t.Fatalf("cpa codex entry identity: %v", first)
+	}
 	if first["credentials"].(map[string]any)["base_url"] != defaultOpenAIBaseURL {
 		t.Fatalf("cpa codex entry base URL: %v", first)
-	}
-	second := accounts[1]
-	if second["name"] != "供应商一 1" || second["providerCode"] != "openai" ||
-		second["providerProtocolProfileId"] != "profile_openai_openai_v1" ||
-		second["type"] != "api_key" || second["status"] != "active" || second["groupName"] != "CLIProxyAPI 导入" {
-		t.Fatalf("cpa account one: %v", second)
-	}
-	credentials := second["credentials"].(map[string]any)
-	if credentials["api_key"] != "sk-one-1" || credentials["base_url"] != "https://provider-one.example.com/v1" {
-		t.Fatalf("cpa account one credentials: %v", credentials)
-	}
-	failoverKeys := credentials["api_keys"].([]any)
-	if len(failoverKeys) != 2 || failoverKeys[0] != "sk-one-1" || failoverKeys[1] != "sk-one-2" ||
-		credentials["api_key_strategy"] != "failover" {
-		t.Fatalf("cpa failover keys: %v", credentials)
-	}
-	third := accounts[2]
-	if third["name"] != "供应商一 2" {
-		t.Fatalf("cpa account two: %v", third)
-	}
-	if third["credentials"].(map[string]any)["base_url"] != "https://entry.example.com/v1" {
-		t.Fatalf("cpa entry base-url override: %v", third)
-	}
-	// Provider two falls back to the underscore key spellings, the default
-	// OpenAI base URL and the provider-derived label.
-	fourth := accounts[3]
-	if fourth["name"] != "CLIProxyAPI OpenAI Provider 2 1" {
-		t.Fatalf("cpa provider fallback name: %v", fourth)
-	}
-	fourthCredentials := fourth["credentials"].(map[string]any)
-	if fourthCredentials["api_key"] != "sk-two-1" || fourthCredentials["base_url"] != defaultOpenAIBaseURL {
-		t.Fatalf("cpa provider two credentials: %v", fourthCredentials)
 	}
 }
 
@@ -142,10 +118,11 @@ func TestCPAYAMLSourceAdapterJSONStringInput(t *testing.T) {
 	jsonInput := `{"openai-compatibility":[{"name":"cpa-provider","base-url":"https://cpa.example.com/v1",
 		"api-key-entries":[{"api-key":"sk-cpa-secret"}]}]}`
 	document, source := cpaAdapt(t, jsonInput)
-	assertSourceSummary(t, source, 1, 1, 0, 0)
-	accounts := cpaAccounts(t, document)
-	if accounts[0]["name"] != "cpa-provider 1" {
-		t.Fatalf("json string account: %v", accounts[0])
+	// 条目无模型列表：无法推断厂商，按新契约跳过并报告。
+	assertSourceSummary(t, source, 1, 0, 1, 0,
+		"第 1 条来源记录已跳过：来源账户缺少模型列表，无法按模型名推断厂商")
+	if accounts := cpaAccounts(t, document); len(accounts) != 0 {
+		t.Fatalf("无模型列表的 openai-compatibility 条目不得导入：%v", accounts)
 	}
 	if document["type"] != accountImportProtocolType || document["version"] != float64(accountImportProtocolVersion) {
 		t.Fatalf("cpa document envelope: %v", document)
@@ -281,6 +258,7 @@ func TestAccountImportCPAYAMLSource(t *testing.T) {
 	yamlPlan := "openai-compatibility:\n" +
 		"  - name: cpa-yaml-provider\n" +
 		"    base-url: https://yaml.example.com/v1\n" +
+		"    models: [gpt-4o-mini]\n" +
 		"    api-key-entries:\n" +
 		"      - api-key: |\n" +
 		"          sk-yaml-1\n" +
@@ -331,10 +309,10 @@ func TestAccountImportCPAYAMLSource(t *testing.T) {
 		t.Fatalf("cpa yaml confirm items: %v", confirmItems)
 	}
 	createdID := confirmItems[0].(map[string]any)["accountId"].(string)
-	// B4 W2：openai 兼容 provider 落 generic 账户（vendor_code SQL NULL、
-	// driver generic_http）；provider_code 已停写。
+	// 来源无显式 vendor，按 models（gpt-4o-mini）推断为 gpt：vendor_code 与
+	// connection_driver_code 同为 gpt，不再落 generic/空 vendor 账户。
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND name = 'cpa-yaml-provider 1'
-		AND vendor_code IS NULL AND connection_driver_code = 'generic_http'`, createdID) != 1 {
+		AND vendor_code = 'gpt' AND connection_driver_code = 'gpt'`, createdID) != 1 {
 		t.Fatal("cpa yaml row contract violated")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM groups WHERE name = 'CLIProxyAPI 导入'`) != 1 {

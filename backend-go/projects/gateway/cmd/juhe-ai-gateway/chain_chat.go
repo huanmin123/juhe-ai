@@ -225,19 +225,6 @@ func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID stri
 	return chatCatalogItemsFromRuntime(items)
 }
 
-// ListAccountSupportedModels：generic_http 账户按 account_supported_models.
-// model_id 取真实 models 行（完整元数据）。
-func (c chatModelCatalog) ListAccountSupportedModels(accountID, systemAccountID string) []ProviderModelCatalogItem {
-	if c.cache == nil {
-		return nil
-	}
-	items, err := c.cache.ListAccountSupportedModelCatalogAsync(context.Background(), accountID, systemAccountID)
-	if err != nil {
-		return nil
-	}
-	return chatCatalogItemsFromRuntime(items)
-}
-
 // chatCatalogItemsFromRuntime 是 runtimecache 大结构到传输小结构的类型投影：
 // 两侧均为纯 JSON 数据（字段 tag 同形），往返恒成功（w2 登记）。
 func chatCatalogItemsFromRuntime(items []gatewayruntimecache.ProviderModelCatalogItem) []ProviderModelCatalogItem {

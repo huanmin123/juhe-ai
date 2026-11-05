@@ -50,7 +50,7 @@ func TestWhRedisRuntimeStateErrorPropagation(t *testing.T) {
 	// 直接构造错误注入的命令面。
 	store := &RedisRuntimeStateStore{
 		client: &whErrorRedis{inner: client, failAll: true},
-		prefix: "juhe-ai:wh:state:err:",
+		prefix: "juhe-ai:{wh}:state:err:",
 	}
 	ctx := contextBackground()
 	if _, err := store.GetJSON(ctx, "k"); err == nil {

@@ -59,8 +59,7 @@ func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
 	return runtimeConfig{
 		PostgresURL:         dsn,
 		BusinessPostgresURL: dsn,
-		RedisCacheURL:       "redis://" + redisServer.Addr(),
-		RedisStateURL:       "redis://" + redisServer.Addr(),
+		RedisURL:            "redis://" + redisServer.Addr(),
 		RedisNamespace:      "compose-test",
 		Secret:              "compose-test-secret",
 		// Node runtime.ts:770: dispatchAccountCandidateLimit =
@@ -70,7 +69,6 @@ func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
 		UsageSpoolDirectory:           filepath.Join(root, "usage-record-spool"),
-		ChatToolEnvironment:           "development",
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,
@@ -298,7 +296,7 @@ func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 	cfg := composeTestConfig(t)
 	redisServer := miniredis.RunT(t)
-	cfg.RedisStateURL = "redis://" + redisServer.Addr()
+	cfg.RedisURL = "redis://" + redisServer.Addr()
 	cfg.RedisNamespace = "dev"
 	cfg.CaptchaDisabled = false
 
@@ -333,7 +331,7 @@ func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 	// memory: the Go key equals redisNamespacedKey(`juhe-ai:state:auth_captcha:`).
 	found := false
 	for _, key := range redisServer.Keys() {
-		if strings.HasPrefix(key, "juhe-ai:dev:state:auth_captcha:challenge:") {
+		if strings.HasPrefix(key, "juhe-ai:{dev}:state:auth_captcha:challenge:") {
 			found = true
 		}
 	}
@@ -490,15 +488,14 @@ func TestGateGatewayChainPassesAfterPhase2(t *testing.T) {
 // segments / logs / chat-assets）保留。
 func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
 	}
 	cfg, err := loadRuntimeConfig(func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("full storage env must load: %v", err)
 	}
-	if cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] || cfg.RedisCacheURL != env["JUHE_AI_REDIS_CACHE_URL"] || cfg.RedisStateURL != env["JUHE_AI_REDIS_STATE_URL"] {
+	if cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] || cfg.RedisURL != env["JUHE_AI_REDIS_URL"] {
 		t.Fatalf("storage endpoints wrong: %#v", cfg)
 	}
 	// Spool derivation lands under <DATA_DIR>/usage-record-spool (D1).
@@ -509,7 +506,7 @@ func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 		t.Fatalf("derived codex context root = %q", cfg.CodexContextRoot)
 	}
 	// Missing任一连接串启动即失败（错误信息可定位）。
-	for _, missing := range []string{"JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL"} {
+	for _, missing := range []string{"JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_URL"} {
 		partial := map[string]string{}
 		for key, value := range env {
 			if key != missing {
@@ -533,15 +530,6 @@ func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 	if _, err := loadRuntimeConfig(func(key string) string { return legacy[key] }); err != nil {
 		t.Fatalf("legacy driver env must be ignored (not read), got %v", err)
 	}
-
-	// none-cookie requires secure.
-	cookieEnv := map[string]string{"JUHE_AI_COOKIE_SAME_SITE": "none"}
-	for key, value := range env {
-		cookieEnv[key] = value
-	}
-	if _, err := loadRuntimeConfig(func(key string) string { return cookieEnv[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
-		t.Fatalf("none cookie without secure must fail, got %v", err)
-	}
 }
 
 // TestLoadRuntimeConfigConcurrencyGlobalMaxBound pins the D2 fix: the Node
@@ -549,9 +537,8 @@ func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 // values above 50000 must fail at startup (runtime.ts:410).
 func TestLoadRuntimeConfigConcurrencyGlobalMaxBound(t *testing.T) {
 	storage := map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
 	}
 	loaded := func(value string) func(string) string {
 		return func(key string) string {

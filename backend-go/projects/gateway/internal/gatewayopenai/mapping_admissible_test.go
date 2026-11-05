@@ -7,9 +7,10 @@ import (
 // IsAdmissibleModelMapping：单条账户模型映射行的运行时可执行性判定
 // （启用 + 源族可接受集 + 恒等拒绝 + 转换矩阵），与
 // ResolveAccountModelMapping 共享唯一函数源（网关模型列表账户并集设计 4.2）。
-// 供应商解耦 B4 W2 拆门后判定只依赖映射行（设计 §2 终态）：跨协议矩阵内
-// family 对按账户声明放行，矩阵之外与 family/mode 合法性由写侧
-// validateEntryMappingFamilyLinkage（§5.2 + §5.3）在保存时保证。
+// 2026-11-05 openai/hybrid/generic_http 退役后只保留同族改写、
+// stream_generate_content→generate_content 归一与 OpenAI v1
+// Responses→Chat Completions bridge；其余跨族映射由写侧
+// validateEntryMappingFamilyLinkage（§5.2 + §5.3）在保存时拒绝。
 
 func boolPtr(v bool) *bool { return &v }
 
@@ -42,28 +43,26 @@ func TestIsAdmissibleModelMapping(t *testing.T) {
 		{"unknown source family excluded", admissibleMappingRow("m5", "unknown_family", "m1", FamilyChatCompletions, nil), plainAccount, false},
 		{"empty source family excluded", admissibleMappingRow("m5", "", "m1", FamilyChatCompletions, nil), plainAccount, false},
 
-		// ③ 跨协议映射按账户声明放行（B4 W2 拆除 hybrid 门与 Gemini
-		// OpenAI-chat 档案排除后，messages 源族不再被账户身份前置拒绝）。
-		{"messages source admitted (former profile exclusion removed)", admissibleMappingRow("m5", FamilyAnthropicMessages, "m1", FamilyChatCompletions, nil), plainAccount, true},
+		// ③ 跨协议映射已随 hybrid 退役：messages 源族到 chat 上游不再放行。
+		{"messages source excluded", admissibleMappingRow("m5", FamilyAnthropicMessages, "m1", FamilyChatCompletions, nil), plainAccount, false},
 		{"identity chat row still excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m5", FamilyChatCompletions, nil), plainAccount, false},
 
-		// ④ 恒等改写拒绝：模型与族全同不是映射；同模型跨族不是恒等。
+		// ④ 恒等改写拒绝：模型与族全同不是映射；同模型跨族同样不执行。
 		{"identity row excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m5", FamilyChatCompletions, nil), plainAccount, false},
-		{"same model cross family is not identity", admissibleMappingRow("m5", FamilyChatCompletions, "m5", FamilyAnthropicMessages, nil), plainAccount, true},
+		{"same model cross family excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m5", FamilyAnthropicMessages, nil), plainAccount, false},
 
 		// ⑤ 转换矩阵：同族改写与 stream_generate_content→generate_content 恒放行。
 		{"same family rewrite admitted", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyChatCompletions, nil), plainAccount, true},
 		{"gemini stream to generate admitted", admissibleMappingRow("m5", FamilyGeminiStreamGenerate, "m1", FamilyGeminiGenerateContent, nil), plainAccount, true},
 
-		// 矩阵内跨协议族对按账户声明放行（含 responses→chat，不再要求
-		// OpenAI 协议档案——写侧 §5.2 矩阵对该族对不区分账户档案）。
-		{"responses to chat admitted (any account)", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyChatCompletions, nil), plainAccount, true},
-		{"messages to chat admitted", admissibleMappingRow("m5", FamilyAnthropicMessages, "m1", FamilyChatCompletions, nil), plainAccount, true},
-		{"chat to messages admitted", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyAnthropicMessages, nil), plainAccount, true},
-		{"responses to messages admitted", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyAnthropicMessages, nil), plainAccount, true},
-		{"chat to generate_content admitted", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyGeminiGenerateContent, nil), plainAccount, true},
-		{"stream_generate to messages admitted", admissibleMappingRow("m5", FamilyGeminiStreamGenerate, "m1", FamilyAnthropicMessages, nil), plainAccount, true},
-		{"messages to generate_content admitted", admissibleMappingRow("m5", FamilyAnthropicMessages, "m1", FamilyGeminiGenerateContent, nil), plainAccount, true},
+		// 仅保留 OpenAI v1 Responses→Chat Completions 显式 bridge；其余跨族
+		// family 对在运行时与写侧同时拒绝。
+		{"responses to chat bridge admitted", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyChatCompletions, nil), plainAccount, true},
+		{"chat to messages excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyAnthropicMessages, nil), plainAccount, false},
+		{"responses to messages excluded", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyAnthropicMessages, nil), plainAccount, false},
+		{"chat to generate_content excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyGeminiGenerateContent, nil), plainAccount, false},
+		{"stream_generate to messages excluded", admissibleMappingRow("m5", FamilyGeminiStreamGenerate, "m1", FamilyAnthropicMessages, nil), plainAccount, false},
+		{"messages to generate_content excluded", admissibleMappingRow("m5", FamilyAnthropicMessages, "m1", FamilyGeminiGenerateContent, nil), plainAccount, false},
 
 		// 矩阵外族对拒绝（chat→responses 不在 §5.2 矩阵，写侧同样拒绝）。
 		{"chat to responses excluded (not in matrix)", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyResponses, nil), plainAccount, false},

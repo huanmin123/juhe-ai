@@ -607,7 +607,7 @@ func TestW2BTurnRetryRedisArms(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:dev:w2a-turnretry")
+	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:{dev}:w2a-turnretry")
 	if err != nil || store == nil {
 		t.Fatalf("构建 redis 状态存储失败: %v", err)
 	}

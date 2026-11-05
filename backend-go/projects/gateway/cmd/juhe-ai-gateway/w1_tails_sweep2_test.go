@@ -511,7 +511,7 @@ func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-drv-s"),
 		}
 		cfg := runtimeConfig{
-			Secret: "w1t-runtime-secret", RedisStateURL: "redis://[::w1t-bad-url",
+			Secret: "w1t-runtime-secret", RedisURL: "redis://[::w1t-bad-url",
 			DispatchAccountCandidateLimit: 20,
 		}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {

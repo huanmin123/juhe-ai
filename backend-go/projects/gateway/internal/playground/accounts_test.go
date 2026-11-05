@@ -199,7 +199,6 @@ func TestAccountsEndpoint(t *testing.T) {
 				{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}},
 			},
 		}},
-		AccountCatalog: &staticCatalog{},
 	}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/accounts", nil)
@@ -249,7 +248,6 @@ func TestAccountsEndpointEmptyList(t *testing.T) {
 		AccountLookup:     &staticLookup{refs: map[string]*AccountRef{}},
 		TransportAccounts: &staticTransport{},
 		ProviderCatalog:   &staticCatalog{},
-		AccountCatalog:    &staticCatalog{},
 	}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/accounts", nil)
@@ -276,7 +274,6 @@ func TestAccountsEndpointEnvelopeContract(t *testing.T) {
 		ProviderCatalog: &staticCatalog{byProvider: map[string][]CatalogItem{
 			"gpt": {{Model: "gpt-5.4", SupportedAPIProtocols: []string{"chat_completions"}}},
 		}},
-		AccountCatalog: &staticCatalog{},
 	}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/accounts", nil)

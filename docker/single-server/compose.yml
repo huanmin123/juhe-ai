@@ -127,7 +127,6 @@ services:
       # GC 激进回收，RSS 实际封顶约 3.2GiB，把页缓存还给系统。
       GOMEMLIMIT: 3072MiB
       JUHE_AI_HOST: 0.0.0.0
-      JUHE_AI_PORT: 3000
       # 不显式指向 dist 就不挂管理 SPA（代码默认空）
       JUHE_AI_FRONTEND_DIST_PATH: /app/frontend/dist
       # 运行日志文件写侧/grep 面（gateway）与索引器/轮转清理（jobs）必须三方同目录。
@@ -152,11 +151,6 @@ services:
       # （> 30s TTL，覆盖发布过渡窗口，F3/F4 两获取点共用）。jobs 无启动
       # fail-fast 租约（运行期由 supervisor 重试覆盖），不配。
       JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT: 45s
-      # 慢 SQL / pg_stat_activity 来源区分（2026-10-08 起）：主库 URL 三进程共用同一
-      # .env 变量，无法在 .env 层区分进程，故在此按服务追加 application_name 查询参数
-      # （当前实例 URL 均无查询串，追加符恒为 ?；若未来 .env 值自带参数需同步改 &）。
-      # 其余子系统专用 URL 的 application_name 在 .env 值内配置，契约见 README.md。
-      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-gateway
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
@@ -216,8 +210,6 @@ services:
       # 统计功能下线删除；该端口现经上方 ports 宿主回环映射，供 infra 机
       # Prometheus 经 SSH 隧道抓取。
       JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3305
-      # 主库 URL 按 service 追加 application_name（与 gateway 同理，见 gateway 注释）
-      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-jobs
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
@@ -264,9 +256,6 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Shanghai
-      # 主库 URL 按 service 追加 application_name（与 gateway/jobs 同理）：
-      # maintenance 一次性容器曾因 DDL 死锁无法从 PG 日志区分来源（BUG-0237 取证痛点）
-      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-maintenance
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段

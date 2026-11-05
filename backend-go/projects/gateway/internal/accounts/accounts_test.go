@@ -405,8 +405,8 @@ const b1GPTFragment = `"connections":[{"connectionPresetCode":"gpt_openai_v1","b
 
 // b1GenericGPTFragment 是 generic（openai 兼容）语义 provider 的连接片段
 // （generic_http driver 只允许 generic_* 预设，§1.1 组合表）。
-const b1GenericGPTFragment = `"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
-	`"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"`
+const b1GenericGPTFragment = `"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
+	`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"`
 
 // b1ConnectionsJSON 是 B1 断点批夹具的 §8 connections 片段构造器：单连接
 // gpt_openai_v1 形态（endpointModes 可变），供域感知媒体夹具复用。
@@ -673,10 +673,8 @@ func TestAccountCreateValidation(t *testing.T) {
 		{"bad account type", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x4","type":"google_oauth"}`, 400, "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"},
 		// B1 剩余①：connections 必填校验（§8 连接集合前置）先于凭据归一化触发。
 		{"missing credentials", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x5","type":"api_key","supportedModels":["gpt-4o-mini"]}`, 400, "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"},
-		// generic 语义 provider（非 §1.1 真实厂商）不再有 vendor 拒绝臂
-		//（vendor_code=NULL，设计 §2.1）；载荷未携连接时先触发 connections
-		// 必填校验。
-		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"},
+		// 非九家真实厂商在写入面直接拒绝，不再回落 generic 账户。
+		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "不支持的供应商：provider-zzz"},
 		// 检查模型越界（b1GPTFragment 连接合法 + 检查模型不在支持集合）。
 		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
 		{"super and fallback", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"sf1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"superPriorityEnabled":true,"fallbackEnabled":true}`, 400, "超级优先和降级备用不能同时开启"},
@@ -703,10 +701,10 @@ func TestAccountCreateValidation(t *testing.T) {
 
 	// 缺少启用默认分组（组无 provider 维度，owner 是唯一解析维度，设计 §8）：
 	// 停用 owner 的默认分组后创建按 400 拒绝（分组解析先于三件套校验之外的
-	// 后续写段；generic 片段用 generic_openai_v1——generic_http driver 组合表）。
+	// 后续写段；generic 片段用 gpt_openai_v1——generic_http driver 组合表）。
 	env.exec(t, `UPDATE groups SET enabled = 0 WHERE id = ?`, "grp-default-"+adminID)
 	code, missingGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GenericGPTFragment+`}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GenericGPTFragment+`}`)
 	if code != 400 || missingGroup["message"] != "当前用户缺少启用的默认分组" {
 		t.Fatalf("missing default group: %d %v", code, missingGroup)
 	}
@@ -1506,3 +1504,11 @@ func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
 		t.Fatalf("codex_responses 账户端点模式应含 responses_sse: %v", modes)
 	}
 }
+
+// 通用连接器（generic_http）与 openai 兼容供应商退场后的测试别名：历史
+// openai 兼容 provider/profile 字面量统一映射到 gpt 真实厂商与对应档案 ID，
+// 供既有用例按九家真实厂商语义继续断言；不得用于生产代码。
+const (
+	openAICompatibleProvider  = "gpt"
+	openAICompatibleProfileID = "profile_gpt_openai_v1"
+)

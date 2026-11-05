@@ -38,7 +38,7 @@ func TestNewRedisStoreValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if store.prefix != "juhe-ai:short-ns:gateway-account-circuit-key-model" {
+	if store.prefix != "juhe-ai:{short-ns}:gateway-account-circuit-key-model" {
 		t.Fatalf("前缀=%q", store.prefix)
 	}
 }

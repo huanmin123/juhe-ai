@@ -52,8 +52,8 @@ func publicProfileIDForVendor(vendorCode string) string {
 	case contracts.VendorQwen:
 		return accountscore.QwenOpenAIV1ProfileID
 	default:
-		// generic_http（公开 API 的历史 "openai" 词根）没有 vendors 行，
-		// 由调用方在 loadProvider 阶段拒绝；此处返回空表示不派生。
+		// 九家之外的 vendor 没有 vendors 行，由调用方在 loadProvider 阶段
+		// 拒绝；此处返回空表示不派生。
 		return ""
 	}
 }
@@ -85,8 +85,8 @@ func publicConnectionPresetForVendor(vendorCode string) string {
 }
 
 // publicDriverForVendor 映射 vendor → connection_driver_code（registry 身份表，
-// 设计 §1）。真实厂商的 driver 与 vendor 同名；public API 的 generic 词根在目标
-// schema 中不是 vendors 行，因此不在此返回 generic_http。
+// 设计 §1）。九家真实厂商的 driver 与 vendor 同名；空 vendor（generic_http
+// 历史形态）在目标 schema 中不是 vendors 行，返回空串由调用方拒绝。
 func publicDriverForVendor(vendorCode string) string {
 	switch vendorCode {
 	case contracts.VendorGPT:
@@ -113,8 +113,9 @@ func publicDriverForVendor(vendorCode string) string {
 }
 
 // DefaultPublicConnections 派生公开推送账户的连接集合与健康检查连接维度。
-// baseURL 为空时回落 registry 的 preset 默认地址（generic 无默认，调用方必须
-// 提交 baseUrl）。派生结果以常规创建载荷形态进入 Store.Create 全量校验。
+// baseURL 为空时回落 registry 的 preset 默认地址（14 个真实 preset 均有默认；
+// 未知 vendor 无 preset 时显式返回 false）。派生结果以常规创建载荷形态进入
+// Store.Create 全量校验。
 func DefaultPublicConnections(vendorCode, baseURL, healthCheckModel string) (*PublicConnectionDefaults, bool) {
 	preset := publicConnectionPresetForVendor(vendorCode)
 	if preset == "" {
@@ -230,9 +231,9 @@ func publicDerivedProtocolProfiles(vendorCode string) []PublicDerivedProtocolPro
 // anthropic 面 → anthropic/v1；gemini native → gemini/v1beta；其余 → openai/v1。
 func publicProtocolOfPreset(preset string) (string, string) {
 	switch preset {
-	case contracts.PresetAnthropicV1, contracts.PresetGenericAnthropicV1, contracts.PresetDeepSeekAnthropicV1, contracts.PresetGLMCodingAnthropicV1:
+	case contracts.PresetAnthropicV1, contracts.PresetDeepSeekAnthropicV1, contracts.PresetGLMCodingAnthropicV1:
 		return "anthropic", "v1"
-	case contracts.PresetGeminiNativeV1Beta, contracts.PresetGenericGeminiV1Beta:
+	case contracts.PresetGeminiNativeV1Beta:
 		return "gemini", "v1beta"
 	default:
 		return "openai", "v1"

@@ -4,7 +4,6 @@
 //   LoginView.vue 轨道节点内联 SVG 同源，逐条复制 viewBox、d、fill（Qwen 另带 evenodd 镂空）；
 // - minimax：simple-icons 单色 path（currentColor）；
 // - xai：Boxicons 方形 X 标（单色 currentColor）——x.ai 官网横版 logo 宽高比约 2.6:1，在内联列表场景比其他方形图标宽一倍多，2026-10-17 改用方形标；
-// - hybrid / openai-compatible：本项目自绘通用图形（非品牌），实心/镂空 fill path。
 // 运行时零网络约束：全部图形内联于本文件；禁止任何网络 import、fetch 或远程 URL 资产。
 
 import {
@@ -13,9 +12,7 @@ import {
   GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
   GPT_VENDOR_CODE,
-  HYBRID_PROVIDER_CODE,
   MINIMAX_PROVIDER_CODE,
-  OPENAI_COMPATIBLE_PROVIDER_CODE,
   QWEN_PROVIDER_CODE,
   VOLCENGINE_PROVIDER_CODE,
   XAI_PROVIDER_CODE
@@ -151,24 +148,6 @@ export const providerIconPaths: Record<string, ProviderIconPaths> = {
     paths: [
       {
         d: 'M3.8 21h3.8l1.9-2.71l-1.9-2.71zm0-12.2L12.34 21h3.8L7.6 8.8zM17.4 21h2.49l.31-16.64l-3.11 4.44zm-6.96-9.49l1.9 2.71L20.2 3h-3.8z'
-      }
-    ]
-  },
-  // 自绘通用图形（非品牌）：一分三支路节点
-  [HYBRID_PROVIDER_CODE]: {
-    viewBox: '0 0 24 24',
-    paths: [
-      {
-        d: 'M4 10.1a1.9 1.9 0 1 0 0 3.8a1.9 1.9 0 1 0 0-3.8Z M5.9 11.25H8.75V12.75H5.9Z M12 8.75a3.25 3.25 0 1 0 0 6.5a3.25 3.25 0 1 0 0-6.5Z M14.83 10.23L19.14 5.92L18.08 4.86L13.77 9.17Z M15.25 11.25H20.5V12.75H15.25Z M14.83 13.77L19.14 18.08L18.08 19.14L13.77 14.83Z M19.6 2.5a1.9 1.9 0 1 0 0 3.8a1.9 1.9 0 1 0 0-3.8Z M21.9 10.1a1.9 1.9 0 1 0 0 3.8a1.9 1.9 0 1 0 0-3.8Z M19.6 17.7a1.9 1.9 0 1 0 0 3.8a1.9 1.9 0 1 0 0-3.8Z'
-      }
-    ]
-  },
-  // 自绘通用图形（非品牌）：插头/接口
-  [OPENAI_COMPATIBLE_PROVIDER_CODE]: {
-    viewBox: '0 0 24 24',
-    paths: [
-      {
-        d: 'M3 8.6H5.4V11.2H3Z M3 12.8H5.4V15.4H3Z M6.9 6.5H12.1A1.6 1.6 0 0 1 13.7 8.1V15.9A1.6 1.6 0 0 1 12.1 17.5H6.9A1.6 1.6 0 0 1 5.3 15.9V8.1A1.6 1.6 0 0 1 6.9 6.5Z M13.7 11.25H16.4V12.75H13.7Z M19.2 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8Z M19.2 10.1a1.9 1.9 0 1 1 0 3.8a1.9 1.9 0 1 1 0-3.8Z'
       }
     ]
   }

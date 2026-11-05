@@ -12,12 +12,12 @@ import (
 // switch 而非各 verifier 直测）。
 func TestVerifyResponseSSEDispatch(t *testing.T) {
 	goodChat := "data: {\"choices\":[{\"delta\":{\"content\":\"46\"}}]}\n\ndata: [DONE]\n\n"
-	if err := verifyResponse(wgSSEInput("chat_sse", "openai", "profile_openai_openai_v1"), testChallenge, []byte(goodChat)); err != nil {
+	if err := verifyResponse(wgSSEInput("chat_sse", "gpt", "profile_gpt_openai_v1"), testChallenge, []byte(goodChat)); err != nil {
 		t.Fatalf("chat_sse 分派: %v", err)
 	}
 	goodResponses := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\n" +
 		"data: {\"type\":\"response.completed\"}\n\n"
-	if err := verifyResponse(wgSSEInput("responses_sse", "openai", "profile_openai_openai_v1"), testChallenge, []byte(goodResponses)); err != nil {
+	if err := verifyResponse(wgSSEInput("responses_sse", "gpt", "profile_gpt_openai_v1"), testChallenge, []byte(goodResponses)); err != nil {
 		t.Fatalf("responses_sse 分派: %v", err)
 	}
 	goodMessages := "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"46\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"

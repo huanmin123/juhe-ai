@@ -791,8 +791,7 @@ func TestW1TRuntimeComposeRedisDriverClosures(t *testing.T) {
 	}
 	cfg := runtimeConfig{
 		Secret:                        "w1t-runtime-secret",
-		RedisCacheURL:                 "redis://" + mr.Addr(),
-		RedisStateURL:                 "redis://" + mr.Addr(),
+		RedisURL:                 "redis://" + mr.Addr(),
 		RedisNamespace:                "juhe-ai:w1t",
 		DispatchAccountCandidateLimit: 20,
 		ConcurrencyGlobalMax:          64,
@@ -1108,7 +1107,7 @@ func TestW1TTrafficMigrationBridgeErrorArm(t *testing.T) {
 		CacheDriver:        gatewaysession.CacheDriverRedis,
 		RuntimeStateDriver: gatewaysession.RuntimeStateDriverRedis,
 		Secret:             "w1t-migration-secret",
-		RedisCacheURL:      "redis://" + addr,
+		RedisURL:      "redis://" + addr,
 		RedisNamespace:     "juhe-ai:w1t",
 	})
 	if err != nil {

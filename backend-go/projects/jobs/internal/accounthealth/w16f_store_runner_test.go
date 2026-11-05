@@ -27,4 +27,3 @@ func (r *Runner) prepareScheduledInputErr(ctx context.Context, lease OwnerLease,
 	_, err := r.prepareScheduledInput(ctx, lease, input, now)
 	return err
 }
-

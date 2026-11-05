@@ -147,14 +147,18 @@ func TestW13GOAuthCredentialArms(t *testing.T) {
 		{"chatgpt_account_id 非字符串", base(Credentials{"access_token": "at", "chatgpt_account_id": 1}), "OpenAI chatgpt_account_id不能为空"},
 		{"organization_id 非字符串", base(Credentials{"access_token": "at", "organization_id": 1}), "Anthropic organization_id不能为空"},
 	}
+	// 逐字段类型校验使用非 gpt/anthropic 的真实厂商上下文，避免 gpt 的
+	// account_id 要求或 anthropic 的 token 要求抢先命中。
+	fieldContext := &EndpointModeDefaultContext{ProviderCode: "deepseek", ProtocolCode: "openai",
+		ProtocolVersion: "v1", ProviderProtocolProfileID: "profile_deepseek_openai_v1"}
 	for _, c := range cases {
-		if _, err := NormalizeAccountCredentialsForWrite("oauth", c.input, nil); err == nil ||
+		if _, err := NormalizeAccountCredentialsForWrite("oauth", c.input, fieldContext); err == nil ||
 			!strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s：%v", c.name, err)
 		}
 	}
 	// base_url 缺失。
-	if _, err := NormalizeAccountCredentialsForWrite("oauth", Credentials{"access_token": "at"}, nil); err == nil ||
+	if _, err := NormalizeAccountCredentialsForWrite("oauth", Credentials{"access_token": "at"}, fieldContext); err == nil ||
 		!strings.Contains(err.Error(), "Base URL不能为空") {
 		t.Fatalf("缺 base_url：%v", err)
 	}
@@ -187,14 +191,16 @@ func TestW13GOAuthCredentialArms(t *testing.T) {
 		t.Fatalf("gpt 思考级别枚举：%v", err)
 	}
 	// 覆盖字段非字符串（任意已注册上下文都会在 token 形状检查处失败）。
+	// 使用非 gpt 真实厂商上下文，避免 gpt 的 account_id 必填抢先命中。
+	overrideContext := w13gOpenAIContext("deepseek")
 	if _, err := NormalizeAccountCredentialsForWrite("oauth", base(Credentials{
 		"access_token": "at", "service_tier_override": 1,
-	}), nil); err == nil || !strings.Contains(err.Error(), "服务等级覆盖无效") {
+	}), overrideContext); err == nil || !strings.Contains(err.Error(), "服务等级覆盖无效") {
 		t.Fatalf("服务等级类型：%v", err)
 	}
 	if _, err := NormalizeAccountCredentialsForWrite("oauth", base(Credentials{
 		"access_token": "at", "reasoning_effort_override": 1,
-	}), nil); err == nil || !strings.Contains(err.Error(), "思考级别覆盖无效") {
+	}), overrideContext); err == nil || !strings.Contains(err.Error(), "思考级别覆盖无效") {
 		t.Fatalf("思考级别类型：%v", err)
 	}
 	// 凭据整体超限：三个 16KB 级字段相加。
@@ -203,7 +209,7 @@ func TestW13GOAuthCredentialArms(t *testing.T) {
 		"refresh_token": strings.Repeat("r", 16*1024),
 		"id_token":      strings.Repeat("i", 16*1024),
 	})
-	if _, err := NormalizeAccountCredentialsForWrite("oauth", huge, nil); err == nil ||
+	if _, err := NormalizeAccountCredentialsForWrite("oauth", huge, overrideContext); err == nil ||
 		!strings.Contains(err.Error(), "整体大小") {
 		t.Fatalf("oauth 整体超限：%v", err)
 	}

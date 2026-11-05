@@ -240,10 +240,9 @@ func supportsFunctionCalling(item CatalogItem) bool {
 }
 
 // resolveAccountPlaygroundView 解析单账户的演练场视图（GET /accounts 与各端
-// 点的候选校验共用）：账户事实 → chat-pinned 运行时视图 → 目录（vendor 为空
-// 的 generic_http 账户按账户显式绑定模型补齐，禁止按空 provider 查目录——
-// chat loadChatModelCatalogForScope 同口径）。返回 (ref, 目录, 传输视图)；
-// 账户不在数据范围时 ref 为 nil。
+// 点的候选校验共用）：账户事实 → chat-pinned 运行时视图 → 目录（只按账户
+// vendor 取供应商目录，chat loadChatModelCatalogForScope 同口径）。返回
+// (ref, 目录, 传输视图)；账户不在数据范围时 ref 为 nil。
 func (rt *playgroundRoutes) resolveAccountPlaygroundView(ctx context.Context, scope Scope, accountID string) (*AccountRef, []CatalogItem, *TransportAccount, *HTTPError) {
 	if rt.deps.AccountLookup == nil {
 		return nil, nil, nil, &HTTPError{Status: http.StatusServiceUnavailable, Code: codeEndpointDegraded, Message: "账户查询暂不可用，请稍后重试"}
@@ -270,17 +269,11 @@ func (rt *playgroundRoutes) resolveAccountPlaygroundView(ctx context.Context, sc
 }
 
 // catalogForAccount 取账户目录（chat loadChatModelCatalogForScope 的单账户
-// 变体：真实 vendor 按 provider_code 查供应商目录；generic_http（vendor 空）
-// 按 account_supported_models 取真实 models 行）。
+// 变体：只按账户 vendor 查供应商目录；空 vendor 的 generic_http 历史账户不再
+// 有 account_supported_models 回退，得到空候选）。
 func (rt *playgroundRoutes) catalogForAccount(ref *AccountRef, systemAccountID string) []CatalogItem {
 	code := normalizeProviderToken(ref.ProviderCode)
-	if code == "" {
-		if rt.deps.AccountCatalog == nil {
-			return []CatalogItem{}
-		}
-		return rt.deps.AccountCatalog.ListAccountSupportedModels(ref.ID, systemAccountID)
-	}
-	if rt.deps.ProviderCatalog == nil {
+	if code == "" || rt.deps.ProviderCatalog == nil {
 		return []CatalogItem{}
 	}
 	return rt.deps.ProviderCatalog.ListProviderCatalog(code, systemAccountID)

@@ -681,7 +681,7 @@ func (f fakeHalfOpenLease) CompleteSuccess() (bool, error) { return true, nil }
 
 func TestAccountAttemptBuilders(t *testing.T) {
 	account := AccountCandidate{
-		ID: "a-1", Name: "账号 a-1", VendorCode: "openai",
+		ID: "a-1", Name: "账号 a-1", VendorCode: "gpt",
 		ProviderProtocolProfileID: "profile", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
 	attempt := accountApiKeyPoolUnavailableAttempt(account)
@@ -714,7 +714,7 @@ func TestAccountAttemptBuilders(t *testing.T) {
 		t.Fatalf("keymodel attempt = %#v", attempt)
 	}
 	// 身份字段全量投影。
-	if attempt.AccountID != "a-1" || attempt.ProviderCode != "openai" || attempt.ProtocolVersion != "v1" {
+	if attempt.AccountID != "a-1" || attempt.ProviderCode != "gpt" || attempt.ProtocolVersion != "v1" {
 		t.Fatalf("身份投影缺失: %#v", attempt)
 	}
 }

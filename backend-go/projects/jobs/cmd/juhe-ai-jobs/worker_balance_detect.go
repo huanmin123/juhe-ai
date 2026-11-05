@@ -778,12 +778,11 @@ func (r *balanceDetectRuntime) buildQueryInput(ctx context.Context, candidate op
 		inputVersion = *candidate.InputVersion
 	}
 	now := r.nowFunc().UTC()
-	// generic_http 账户的 vendor_code 按设计为 NULL（供应商与上游协议面重构设计
-	// §10 规则 2：旧 openai/hybrid 不提升为真实 vendor）。余额探测只要求 provider
-	// 非空来区分“可查询的 API Key 账户”，这里用 generic_http 占位，不改变
-	// 账户的真实 vendor 归属。
-	if strings.TrimSpace(providerCode) == "" {
-		providerCode = "generic_http"
+	// generic_http / 空 vendor 账户已退役（DB CHECK 要求 vendor_code 非空）；
+	// 余额探测只接受真实厂商身份，异常空值 fail closed。
+	providerCode = strings.TrimSpace(providerCode)
+	if providerCode == "" {
+		return accountbalance.Input{}, errors.New("余额自动探测候选缺少 vendor_code")
 	}
 	input := accountbalance.Input{
 		AccountID:       candidate.ID,

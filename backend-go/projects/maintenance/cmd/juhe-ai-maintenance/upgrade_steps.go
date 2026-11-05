@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -26,32 +25,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upgradepipeline"
 )
 
-// 目标连接串环境变量（§8.3：缺失回落 --dsn，进程内 Setenv 使既有 bootstrap
-// 函数读到回落值——把「漏跑 j3b 静默失败」变成显式执行）。
-const (
-	envJ3AURL     = "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL"
-	envJ3BURL     = "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL"
-	envBalanceURL = "JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL"
-)
-
 // upgradeTargets 解析三个辅助 target 的连接串（env 优先，缺失回落 primary）。
+// upgradeTargets 的所有域共用同一个 --dsn：J3a/J3b/J2 表与主库同实例，
+// 不再支持维护专用的独立连接串（账号/密码差异由 PG 角色或 URL query 表达）。
 func upgradeTargets(primaryDSN string) (j3a, j3b, balance string) {
-	j3a = os.Getenv(envJ3AURL)
-	if strings.TrimSpace(j3a) == "" {
-		j3a = primaryDSN
-		os.Setenv(envJ3AURL, j3a)
-	}
-	j3b = os.Getenv(envJ3BURL)
-	if strings.TrimSpace(j3b) == "" {
-		j3b = primaryDSN
-		os.Setenv(envJ3BURL, j3b)
-	}
-	balance = os.Getenv(envBalanceURL)
-	if strings.TrimSpace(balance) == "" {
-		balance = primaryDSN
-		os.Setenv(envBalanceURL, balance)
-	}
-	return j3a, j3b, balance
+	return primaryDSN, primaryDSN, primaryDSN
 }
 
 // openPG 打开 PG 连接（pgx stdlib 驱动在包内注册一次）。
@@ -229,21 +207,21 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			Title: "J3a 代理延迟检测 PostgreSQL 表与索引预置", Target: upgradepipeline.TargetJ3A,
 			ImplVersion: 1,
 			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
-				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(false) })
+				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(j3aDSN, false) })
 				return code == 0, nil
 			},
 			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
 				if err := upgradepipeline.EnsureTargetSchema(ctx, j3aDSN, upgradepipeline.TargetJ3A); err != nil {
 					return nil, err
 				}
-				code, output := callResult(func() int { return j3aProxyLatencyBootstrapResult(true) })
+				code, output := callResult(func() int { return j3aProxyLatencyBootstrapResult(j3aDSN, true) })
 				if code != 0 {
 					return upgradepipeline.Detail{"output": output}, exitErr("j3a 预置", output, code)
 				}
 				return upgradepipeline.Detail{"output": output}, nil
 			},
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
-				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(false) })
+				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(j3aDSN, false) })
 				if code != 0 {
 					return fmt.Errorf("J3a 表/索引契约未就绪（退出码 %d）", code)
 				}
@@ -255,21 +233,21 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			Title: "J3b 模型检测 PostgreSQL 表预置与 trigger_kind 词表", Target: upgradepipeline.TargetJ3B,
 			ImplVersion: 1,
 			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
-				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(false) })
+				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(j3bDSN, false) })
 				return code == 0, nil
 			},
 			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
 				if err := upgradepipeline.EnsureTargetSchema(ctx, j3bDSN, upgradepipeline.TargetJ3B); err != nil {
 					return nil, err
 				}
-				code, output := callResult(func() int { return j3bModelCheckBootstrapResult(true) })
+				code, output := callResult(func() int { return j3bModelCheckBootstrapResult(j3bDSN, true) })
 				if code != 0 {
 					return upgradepipeline.Detail{"output": output}, exitErr("j3b 预置", output, code)
 				}
 				return upgradepipeline.Detail{"output": output}, nil
 			},
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
-				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(false) })
+				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(j3bDSN, false) })
 				if code != 0 {
 					return fmt.Errorf("J3b 表/CHECK 契约未就绪（退出码 %d）", code)
 				}
@@ -296,7 +274,7 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				if err := upgradepipeline.EnsureTargetSchema(ctx, balanceDSN, upgradepipeline.TargetAccountBalance); err != nil {
 					return nil, err
 				}
-				code, output := callResult(accountBalanceBootstrapResult)
+				code, output := callResult(func() int { return accountBalanceBootstrapResult(balanceDSN) })
 				if code != 0 {
 					return upgradepipeline.Detail{"output": output}, exitErr("账户余额预置", output, code)
 				}

@@ -44,13 +44,8 @@ func (chainUsageDefaultProviderCode) DefaultUsageProviderCode() string {
 // 与 gatewayresponse 的 usageSemanticForProviderCode 同一词汇表（钉住测试
 // 对照）。入参 profile 的 ProviderCode 投影位现承载 vendor 身份（供应商与上
 // 游协议面重构设计 §1.1/§2.1 切片；分派词表不变——anthropic/gemini 按 vendor
-// 同名值命中，hybrid profile 级覆盖随 vendor 值域退役成保留分支）。registry
-// 的协议驱动回退与 hybrid profile 级覆盖均已落地：anthropic/gemini 真实供应
-// 商按身份分派；hybrid（vendor 值域已无该值，历史分支保留）按档案 ID 决定
-// 语义——anthropic-messages 档案 → anthropic、gemini-native 档案 → gemini、
-// 其余（openai chat 等）→ openai。档案 ID 用小写包含判断，兼容 gemini-native
-// 形态（profile_hybrid_gemini_native_v1beta，Node 存在、Go 种子暂未种）及
-// 未来新增档案命名。
+// 同名值命中）。hybrid profile 级覆盖已随通用连接器退场删除：协议面优先，
+// anthropic/gemini 供应商按身份分派，其余（openai chat 等）→ openai。
 type chainUsageSemanticResolver struct{}
 
 func (chainUsageSemanticResolver) UsageSemanticForProfile(profile *gatewayusage.ProviderProtocolProfile) string {
@@ -65,21 +60,7 @@ func (chainUsageSemanticResolver) UsageSemanticForProfile(profile *gatewayusage.
 		case "gemini", "gemini_v1beta":
 			return "gemini"
 		}
-		provider := strings.ToLower(strings.TrimSpace(profile.ProviderCode))
-		if provider == "hybrid" {
-			// hybrid profile 级覆盖（Node registry hybrid driver 的档案分派）：
-			// 档案 ID 命名含目标语义词汇，包含判断即足够；未命中保持 openai
-			// 兜底（openai chat 档案与无法识别档案同路径）。
-			id := strings.ToLower(profile.ProfileID)
-			switch {
-			case strings.Contains(id, "anthropic"):
-				return "anthropic"
-			case strings.Contains(id, "gemini"):
-				return "gemini"
-			}
-			return "openai"
-		}
-		switch provider {
+		switch provider := strings.ToLower(strings.TrimSpace(profile.ProviderCode)); provider {
 		case "anthropic":
 			return "anthropic"
 		case "gemini":
@@ -131,8 +112,7 @@ func (p chainUsageProtocolErrorParser) driverFor(account gatewayusage.UsageModel
 	case "gemini", "gemini_v1beta":
 		return p.gemini
 	default:
-		// openai / openai_v1 / 缺省 profile：openai 驱动（hybrid 账户协议面
-		// 同为 openai）。
+		// openai / openai_v1 / 缺省 profile：openai 驱动。
 		return p.openai
 	}
 }

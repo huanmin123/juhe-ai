@@ -126,7 +126,7 @@ type AffinityConfig struct {
 	// Secret mirrors runtimeConfig.secret (the deriveGatewaySessionAffinityKey
 	// fallback). Must be non-empty, like the Node runtime default.
 	Secret         string
-	RedisCacheURL  string
+	RedisURL  string
 	RedisNamespace string
 	// ConcurrencyGlobalMax mirrors runtimeConfig.concurrency.globalMax
 	// (default 5000) used by the scheduling policy defaults.
@@ -178,8 +178,8 @@ func NewAffinityService(cfg AffinityConfig) (*AffinityService, error) {
 		logger = noopAffinityLogger{}
 	}
 	redisDriver := cfg.Redis
-	if redisDriver == nil && cfg.RedisCacheURL != "" {
-		redisDriver = newLazyRedisClient(cfg.RedisCacheURL)
+	if redisDriver == nil && cfg.RedisURL != "" {
+		redisDriver = newLazyRedisClient(cfg.RedisURL)
 	}
 	s := &AffinityService{
 		cfg:                            cfg,

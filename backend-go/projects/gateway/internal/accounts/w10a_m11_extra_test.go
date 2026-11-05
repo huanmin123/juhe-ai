@@ -76,8 +76,8 @@ func TestW10AErrorTypeMessages(t *testing.T) {
 }
 
 func TestW10AIsAPIKeyPoolProviderSupported(t *testing.T) {
-	// openai 兼容 / gpt。
-	for _, code := range []string{openAICompatibleProviderCodeConstant, gptVendorCode, "OPENAI", "Gpt"} {
+	// gpt（大小写归一）。
+	for _, code := range []string{gptVendorCode, "GPT", "Gpt"} {
 		if !isAccountAPIKeyPoolProviderSupported(code, "", "", "") {
 			t.Fatalf("%s 应支持 API Key 池", code)
 		}
@@ -88,9 +88,12 @@ func TestW10AIsAPIKeyPoolProviderSupported(t *testing.T) {
 			t.Fatalf("%s 应支持 API Key 池", code)
 		}
 	}
-	// generic_http 连接器（vendor 为空）。
-	if !isAccountAPIKeyPoolProviderSupported("", "generic_http", "openai", "v1") {
-		t.Fatal("generic_http 应支持 API Key 池")
+	// 通用连接器与 openai 兼容供应商已退场：空 vendor 不再放行。
+	if isAccountAPIKeyPoolProviderSupported("", "generic_http", "openai", "v1") {
+		t.Fatal("generic_http 不得再支持 API Key 池")
+	}
+	if isAccountAPIKeyPoolProviderSupported("openai", "", "openai", "v1") {
+		t.Fatal("openai 兼容供应商不得再支持 API Key 池")
 	}
 	// anthropic 协议档案。
 	if !isAccountAPIKeyPoolProviderSupported("", "", anthropicProtocolCodeConstant, anthropicProtocolVersionConstant) {

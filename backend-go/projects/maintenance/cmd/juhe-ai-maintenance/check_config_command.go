@@ -101,7 +101,7 @@ func runCheckConfigCommand(argv []string) int {
 	// 未知变量（env 文件/当前环境中存在但未登记的 JUHE_AI_*）。
 	unknown := []string{}
 	for key := range values {
-		if strings.HasPrefix(key, "JUHE_AI_") && !configregistry.Known(key) {
+		if strings.HasPrefix(key, "JUHE_AI_") && !configregistry.Known(key) && !configregistry.DeployOnly(key) {
 			unknown = append(unknown, key)
 		}
 	}

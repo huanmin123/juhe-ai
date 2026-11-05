@@ -54,7 +54,7 @@
 
 ## 同源场景审计
 
-- `gatewayanthropic` / `gatewaygemini`：两个 inspector 没有 `oversizedEventType/Image/Usage` 这一组旁路状态，`resetEvent` 已覆盖其全部逐事件字段；不存在本 bug 的「上一条事件类型泄漏」。两者对单行/单事件超过 256KB 原按 BUG-0314 语义整流跳过，属另一种根因（整条流 `Skipped` 而非事件状态泄漏），已由 [BUG-0354](问题-0354-跨协议超大SSE事件整流跳过致终止失败丢失.md) 改为 per-event oversized 续解析。
+- `gatewayanthropic` / `gatewaygemini`：BUG-0354 之前两个 inspector 没有 `oversizedEventType/Image/Usage` 这一组旁路状态，`resetEvent` 覆盖当时的全部逐事件字段；BUG-0354 同批新增了 per-event `oversizedEventType/Failed/Output/Prefix` 状态，并统一在各自 `resetEvent` 清理，不存在本 bug 的「上一条事件类型泄漏」。两者原对单行/单事件超过 256KB 按 BUG-0314 语义整流跳过（整条流 `Skipped`），已由 [BUG-0354](问题-0354-跨协议超大SSE事件整流跳过致终止失败丢失.md) 改为 per-event oversized 续解析。
 - OpenAI Chat Completions：与 Responses 共用 `gatewayopenai.StreamInspector`，因此本 bug 的 stale type 修复同时覆盖 chat 路径；chat 的终止帧 `[DONE]` 很小，通常不触发 oversized。超大未知类型 `data:` 行的整条流 `skipParsing` 同属 BUG-0354 的整流失明根因，已在该档改为只丢弃当前事件、后续继续解析。
 - 桥接与拦截层（`openaicompatbridge`、`gatewayresponse.OpenAIStreamInterceptor`、`parseErrorEventIsolator`）：状态按流实例持有，不存在按事件缓存的 type/image/usage 临时字段；不参与本 bug 的终止分类。
 - 结论：本 bug 所属的「逐事件 oversized 临时状态跨事件泄漏」在 `gatewayopenai` 内已按事件边界根治；Anthropic/Gemini 与 OpenAI chat 的超大事件整流失明属于 BUG-0354，已在同批按 per-event oversized 续解析处理。

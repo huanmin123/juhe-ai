@@ -2,8 +2,8 @@ package gatewayhotquality
 
 import (
 	"errors"
-	"fmt"
 	"strings"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Redis namespace helpers mirroring backend/src/shared/redis-namespace.ts.
@@ -17,11 +17,10 @@ var (
 
 // RedisNamespacePrefix mirrors redisNamespacePrefix.
 func RedisNamespacePrefix(namespace string) (string, error) {
-	sanitized, err := SanitizeRedisNamespacePart(namespace)
-	if err != nil {
+	if _, err := SanitizeRedisNamespacePart(namespace); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s%s:", redisRootPrefix, sanitized), nil
+	return rediscfg.TaggedPrefix(namespace), nil
 }
 
 // SanitizeRedisNamespacePart mirrors sanitizeRedisNamespacePart.
@@ -49,21 +48,13 @@ func SanitizeRedisNamespacePart(value string) (string, error) {
 // RedisNamespacedKey mirrors redisNamespacedKey: keys already carrying the
 // namespace prefix (or the juhe-ai root) are not double-prefixed.
 func RedisNamespacedKey(namespace string, key string) (string, error) {
-	normalized := strings.TrimSpace(key)
-	if normalized == "" {
+	if strings.TrimSpace(key) == "" {
 		return "", errRedisKeyEmpty
 	}
-	namespacePrefix, err := RedisNamespacePrefix(namespace)
-	if err != nil {
+	if _, err := RedisNamespacePrefix(namespace); err != nil {
 		return "", err
 	}
-	if strings.HasPrefix(normalized, namespacePrefix) {
-		return normalized, nil
-	}
-	if strings.HasPrefix(normalized, redisRootPrefix) {
-		return namespacePrefix + normalized[len(redisRootPrefix):], nil
-	}
-	return namespacePrefix + normalized, nil
+	return rediscfg.NamespacedKey(key, namespace), nil
 }
 
 // normalizedNamespace accepts the short namespace or a full juhe-ai: prefixed
@@ -81,9 +72,5 @@ func normalizedNamespace(namespace string) string {
 // prefix, never double-prefix. The namespace part is used verbatim (it is
 // validated by the callers).
 func namespacedKey(namespace string, key string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(namespace), ":")
-	if !strings.HasPrefix(normalized, "juhe-ai:") {
-		normalized = "juhe-ai:" + normalized
-	}
-	return normalized + ":" + key
+	return rediscfg.NamespacedKey(key, namespace)
 }

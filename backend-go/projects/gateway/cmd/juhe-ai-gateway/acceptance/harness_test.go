@@ -83,22 +83,22 @@ const acceptanceSharedEnvRelative = ".local/project-resources/dev/env/shared.env
 const acceptanceRedisEnvOverride = "JUHE_AI_TEST_REDIS_URL"
 
 // acceptanceRedisURL 解析验收进程族的 Redis 连接串：显式 env 优先，缺失时回退
-// 仓库根 .local dev env 的 JUHE_AI_REDIS_CACHE_URL。未配置即显式失败（验收
+// 仓库根 .local dev env 的 JUHE_AI_REDIS_URL。未配置即显式失败（验收
 // boot 的 Redis 契约是必填面，不静默跳过）。
 func acceptanceRedisURL(t *testing.T) string {
 	t.Helper()
 	if raw := strings.TrimSpace(os.Getenv(acceptanceRedisEnvOverride)); raw != "" {
 		return raw
 	}
-	for _, key := range []string{"JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL"} {
+	for _, key := range []string{"JUHE_AI_REDIS_URL", "JUHE_AI_REDIS_URL"} {
 		if raw := strings.TrimSpace(os.Getenv(key)); raw != "" {
 			return raw
 		}
 	}
 	values := acceptanceSharedEnv(t)
-	raw := strings.TrimSpace(values["JUHE_AI_REDIS_CACHE_URL"])
+	raw := strings.TrimSpace(values["JUHE_AI_REDIS_URL"])
 	if raw == "" {
-		t.Fatalf("acceptance: Redis 连接串不可用（设 %s 或在仓库根 %s 配置 JUHE_AI_REDIS_CACHE_URL）",
+		t.Fatalf("acceptance: Redis 连接串不可用（设 %s 或在仓库根 %s 配置 JUHE_AI_REDIS_URL）",
 			acceptanceRedisEnvOverride, acceptanceSharedEnvRelative)
 	}
 	return raw
@@ -421,13 +421,8 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		// 连接串必填；F3/F4 store URL 缺省回落主连接串，实例 ID 显式钉死。
 		"JUHE_AI_POSTGRES_URL":          dsn,
 		"JUHE_AI_BUSINESS_POSTGRES_URL": dsn,
-		"JUHE_AI_REDIS_CACHE_URL":       redisURL,
-		"JUHE_AI_REDIS_STATE_URL":       redisURL,
-		"JUHE_AI_REDIS_NAMESPACE":       namespace,
-		// J3b 常驻（2026-09-21）后 circuit runtime 要求显式连接串（与主链
-		// 共享同一 Redis 实例时必须显式声明并隔离键空间：独立 namespace）。
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":       redisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE": namespace + "-j3b",
+		"JUHE_AI_REDIS_URL":       redisURL,
+		"JUHE_AI_REDIS_NAMESPACE": namespace,
 		"JUHE_AI_BUSINESS_OWNER":              "gateway",
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":  "true",
 		"JUHE_AI_AUTH_CAPTCHA_DISABLED":       "true",

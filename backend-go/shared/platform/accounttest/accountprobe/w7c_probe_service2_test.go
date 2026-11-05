@@ -345,23 +345,6 @@ func TestW7CUpstreamURLBranchArms(t *testing.T) {
 }
 
 func TestW7CHybridAndLimitedArms(t *testing.T) {
-	// Interactions sources cannot be mapped to a responses upstream.
-	if _, _, _, err := ResolveHybridProbeTarget("profile_hybrid_openai_chat_v1", ModeInteractionsJSON, "m", "n", "responses"); err == nil || !strings.Contains(err.Error(), "不支持") {
-		t.Fatalf("interactions mapping: %v", err)
-	}
-	if _, _, _, err := ResolveHybridProbeTarget("profile_hybrid_openai_chat_v1", ModeChatJSON, "m", "", ""); err == nil || !strings.Contains(err.Error(), "缺少") {
-		t.Fatalf("missing mapping: %v", err)
-	}
-	if _, _, _, err := ResolveHybridProbeTarget("profile_hybrid_openai_chat_v1", ModeChatJSON, "m", "n", "alien"); err == nil || !strings.Contains(err.Error(), "不受探针支持") {
-		t.Fatalf("alien family: %v", err)
-	}
-	if !hybridMappingSourceSupported(ModeResponsesSSE, "responses") || !hybridMappingSourceSupported(ModeMessagesJSON, "messages") {
-		t.Fatal("same-family mappings are supported")
-	}
-	if hybridMappingSourceSupported(ModeInteractionsSSE, "chat_completions") {
-		t.Fatal("interactions sources are never mappable")
-	}
-
 	// ProbeAccountView happy path.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))

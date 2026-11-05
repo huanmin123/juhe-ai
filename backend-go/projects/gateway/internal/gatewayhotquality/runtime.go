@@ -31,7 +31,7 @@ type RuntimeDriverConfig struct {
 	// PostgreSQL + Redis 是唯一存储形态（PLAN-20261024T051925945Z）：热质量
 	// 运行态恒 redis（原 RuntimeMode/RuntimeStateDriver 双模字段随 standalone
 	// + memory 形态退役删除）。
-	RedisStateURL  string
+	RedisURL  string
 	RedisNamespace string
 }
 
@@ -93,10 +93,10 @@ func GetGatewayHotQualityRuntime(ctx context.Context, config RuntimeDriverConfig
 	defer hotQualityRuntime.Unlock()
 	if hotQualityRuntime.identity != identity || hotQualityRuntime.hotQualityStore == nil || hotQualityRuntime.explorationStore == nil {
 		var runtime GatewayHotQualityRuntime
-		if strings.TrimSpace(config.RedisStateURL) == "" {
-			return nil, errors.New("热质量缺少 JUHE_AI_REDIS_STATE_URL")
+		if strings.TrimSpace(config.RedisURL) == "" {
+			return nil, errors.New("热质量缺少 JUHE_AI_REDIS_URL")
 		}
-		client, err := GetRedisClient(ctx, config.RedisStateURL)
+		client, err := GetRedisClient(ctx, config.RedisURL)
 		if err != nil {
 			return nil, err
 		}
@@ -138,9 +138,9 @@ func ResetGatewayHotQualityRuntimeForTest() {
 }
 
 func gatewayHotQualityRuntimeIdentity(config RuntimeDriverConfig) (string, error) {
-	redisURL := strings.TrimSpace(config.RedisStateURL)
+	redisURL := strings.TrimSpace(config.RedisURL)
 	if redisURL == "" {
-		return "", errors.New("热质量缺少 JUHE_AI_REDIS_STATE_URL")
+		return "", errors.New("热质量缺少 JUHE_AI_REDIS_URL")
 	}
 	digest := sha256.Sum256([]byte(redisURL))
 	return "redis:" + hex.EncodeToString(digest[:]), nil

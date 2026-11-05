@@ -968,7 +968,7 @@ func TestW14GRealRedisScanPaginationBounds(t *testing.T) {
 	if err != nil {
 		t.Skipf("真实 Redis store 构建失败，跳过: %v", err)
 	}
-	pattern := "juhe-ai:dev:w14g:circuitrt:*"
+	pattern := "juhe-ai:{dev:w14g:circuitrt}:*"
 	w7bScanDelete(store.client.client, pattern)
 	t.Cleanup(func() {
 		w7bScanDelete(store.client.client, pattern)

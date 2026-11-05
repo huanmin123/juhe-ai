@@ -11,7 +11,7 @@ func TestLoadConfigDirectInputSource(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "jobs-test",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":              "postgres",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "credential-secret",
@@ -35,7 +35,7 @@ func TestLoadConfigJ1CapacityDefaultsAndUpperBound(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "jobs-test",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":              "postgres",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "credential-secret",
@@ -75,7 +75,7 @@ func TestLoadConfigDirectInputRequiresSeparateBusinessURL(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "jobs-test",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "postgres",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                     "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": key,
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "credential-secret",
@@ -91,7 +91,7 @@ func TestLoadConfigDirectInputRequiresSeparateBusinessURL(t *testing.T) {
 func TestLoadConfigOwnerDefaultsToGoAndRejectsOthers(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://business-read-only",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
@@ -127,7 +127,7 @@ func TestLoadConfigOwnerDefaultsToGoAndRejectsOthers(t *testing.T) {
 func TestLoadConfigInstanceIDDefaultsToHostname(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://business-read-only",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
@@ -156,7 +156,7 @@ func TestLoadConfigInstanceIDDefaultsToHostname(t *testing.T) {
 func TestLoadConfigCredentialSecretFallsBackToSharedSecret(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://business-read-only",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
@@ -203,14 +203,14 @@ func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
 			return t.TempDir()
 		}
 		return ""
-	}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL") {
+	}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
 		t.Fatalf("zero-config 必须 fail-fast 缺 POSTGRES_URL: %v", err)
 	}
 	loaded, err := LoadConfig(func(name string) string {
 		switch name {
 		case "JUHE_AI_DATA_DIR":
 			return t.TempDir()
-		case "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":
+		case "JUHE_AI_POSTGRES_URL":
 			return "postgres://jobs-output"
 		case "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL":
 			return "postgres://business-read-only"
@@ -227,7 +227,7 @@ func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
 		switch name {
 		case "JUHE_AI_DATA_DIR":
 			return t.TempDir()
-		case "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":
+		case "JUHE_AI_POSTGRES_URL":
 			return "postgres://jobs-output"
 		case "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL":
 			return "postgres://business-read-only"
@@ -242,7 +242,7 @@ func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
 		switch name {
 		case "JUHE_AI_DATA_DIR":
 			return t.TempDir()
-		case "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":
+		case "JUHE_AI_POSTGRES_URL":
 			return "postgres://jobs-output"
 		case "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL":
 			return "postgres://business-read-only"
@@ -262,7 +262,7 @@ func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
 func TestLoadConfigZeroConfigDefaultsKeyFileAndSource(t *testing.T) {
 	base := map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "pg-direct-secret",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://jobs-output",
+		"JUHE_AI_POSTGRES_URL":                     "postgres://jobs-output",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": strings.Repeat("A", 43),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 	}

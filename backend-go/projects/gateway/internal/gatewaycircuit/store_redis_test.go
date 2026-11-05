@@ -469,7 +469,7 @@ func TestRedisKeyNamespace(t *testing.T) {
 	// Node redisNamespacedKey replaces the juhe-ai root with
 	// "juhe-ai:<namespace>:".
 	keys := redisAccountCircuitStoreKeys("gateway-account-circuit", "dev")
-	if keys.states != "juhe-ai:dev:account-circuit:gateway-account-circuit:states" {
+	if keys.states != "juhe-ai:{dev}:account-circuit:gateway-account-circuit:states" {
 		t.Fatalf("namespaced key = %s", keys.states)
 	}
 	bare := redisAccountCircuitStoreKeys("gateway-account-circuit", "")

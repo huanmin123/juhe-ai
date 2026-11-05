@@ -215,9 +215,9 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 }
 
 // accountHealthTombstoneProviderCodes / Types carry the health-capable vendor
-// vocabulary of logicallyDeleteAccounts：真实厂商行按 vendor_code IN 词表判定；
-// generic_http 驱动账户（vendor_code 为 NULL，≡ 旧 openai/hybrid 两 generic
-// 语义供应商族）恒健康能力，由 SQL 的独立 generic_http 分支命中，不进词表。
+// vocabulary of logicallyDeleteAccounts：健康能力按 vendor_code IN 词表判定；
+// 空 vendor（generic_http 历史形态）与媒体专用厂商不参与对话健康投影，
+// 不再有独立连接器分支。
 var (
 	accountHealthTombstoneProviderCodes = []string{"gpt", "xai", "anthropic", "deepseek", "glm", "gemini"}
 	accountHealthTombstoneAccountTypes  = []string{"api_key", "oauth", "google_oauth"}
@@ -241,16 +241,12 @@ func (s *Store) enqueueDeletedAccountHealthTombstones(ctx context.Context, tx *s
 		FROM `+s.table("accounts")+`
 		WHERE deleted_at = ?
 			AND id IN (`+idsClause+`)
-			-- B4 W2 健康能力判定随供应商解耦重述（设计 §1.1/§2.1/§8）：真实厂商
-			-- 行按 vendor_code（词表 = 原 provider 词表去掉 openai/hybrid 两 generic
-			-- 语义值）；generic_http 驱动账户（vendor NULL，≡ 旧 openai/hybrid
-			-- 两供应商族）恒健康能力——provider_code 已停写，不得再作判定键。
-			AND (
-				COALESCE(vendor_code, '') IN (`+providerClause+`)
-				OR (vendor_code IS NULL AND connection_driver_code = 'generic_http')
-			)
+			-- B4 W2 健康能力判定随供应商解耦重述（设计 §1.1/§2.1/§8）：按
+			-- vendor_code 词表判定；provider_code 已停写，不得再作判定键；
+			-- generic_http 退场后不再有空 vendor 通配臂。
+			AND COALESCE(vendor_code, '') IN (`+providerClause+`)
 			AND type IN (`+typeClause+`)
-		ORDER BY id ASC`+lockSuffix), args...)
+			ORDER BY id ASC`+lockSuffix), args...)
 	if err != nil {
 		return err
 	}

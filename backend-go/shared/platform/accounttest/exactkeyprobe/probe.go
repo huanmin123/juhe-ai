@@ -244,7 +244,12 @@ func validateInput(input Input, options ProbeOptions) error {
 		return err
 	}
 	protocol := directProbeProtocolForMode(input.ProtocolProfileID, profileProvider, input.EndpointMode)
-	if protocol == "" || strings.TrimSpace(input.Provider) != protocol {
+	if protocol == "" {
+		return errors.New("provider 与协议 profile 不一致")
+	}
+	// provider 是厂商（如 gpt），protocol 是报文协议（如 openai）；一致性按
+	// profile 推导出的厂商比较，不能拿 vendor 与 protocol 字面比较。
+	if strings.TrimSpace(input.Provider) != profileProvider {
 		return errors.New("provider 与协议 profile 不一致")
 	}
 	if strings.TrimSpace(input.HealthModel) == "" {

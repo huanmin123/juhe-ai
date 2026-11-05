@@ -11,6 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // wireListProjectionFamily 把 account-list-availability-projection-maintenance
@@ -19,7 +20,7 @@ import (
 // 运行态读面，对照 Node loadProjectedAccountListItems）。
 //
 // 依赖门禁（逐项登记 disabled，不静默跳过）：
-//   - JUHE_AI_REDIS_STATE_URL + 合法 namespace：concurrency/runtime
+//   - JUHE_AI_REDIS_URL + 合法 namespace：concurrency/runtime
 //     availability 为 Redis 单实现（同 Node 网关键空间）；
 //   - JUHE_AI_SECRET：apiKeyRuntime 汇总需凭据解密与 Key 指纹；
 //   - 探针族（proberepo 凭据解码）与 OAuth 族（schedule 边界同步）已装配。
@@ -31,9 +32,9 @@ import (
 // 进程无该组件，等价于 Node 协调器空状态（恒 false）。
 func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business *businessDB, probeStore *proberepo.Store) error {
 	const jobName = "account-list-availability-projection-maintenance"
-	if a.config.RedisStateURL == "" {
+	if a.config.RedisURL == "" {
 		a.registerDisabledJob(jobName,
-			"缺 JUHE_AI_REDIS_STATE_URL（账户并发与运行态可用性为 Redis 单实现，jobs 与 Node/Go 网关共用键空间，无 Redis 时不得落库复制）")
+			"缺 JUHE_AI_REDIS_URL（账户并发与运行态可用性为 Redis 单实现，jobs 与 Node/Go 网关共用键空间，无 Redis 时不得落库复制）")
 		return nil
 	}
 	if !speedfirstrepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
@@ -60,14 +61,14 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	// Redis 运行态读面：overlay（concurrency-v2 同键 Lua）+ recovery probe
 	// 状态机/policy avoidance 只读（与 Node 网关同键空间）。
 	overlayStore, err := circuitstore.NewOverlayRedisStore(circuitstore.OverlayRedisConfig{
-		URL:       a.config.RedisStateURL,
-		Namespace: a.config.RedisNamespace,
+		URL:       a.config.RedisURL,
+		Namespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainCircuit),
 	}, nil)
 	if err != nil {
 		return err
 	}
 	a.addCloser(overlayStore.Close)
-	runtimeReader, err := circuitstore.NewRuntimeStateReader(a.config.RedisStateURL, a.config.RedisNamespace, nil)
+	runtimeReader, err := circuitstore.NewRuntimeStateReader(a.config.RedisURL, rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainCircuit), nil)
 	if err != nil {
 		return err
 	}

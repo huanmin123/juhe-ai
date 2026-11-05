@@ -31,9 +31,9 @@ func w14bSeedCreateProvider(t *testing.T, env *testEnv) {
 func w14bValidCreateInput() CreateInput {
 	healthModel := "gpt-4o-mini"
 	healthMode := "chat_json"
-	healthPreset := "generic_openai_v1"
+	healthPreset := "gpt_openai_v1"
 	return CreateInput{
-		ProviderCode: "openai", ProviderProtocolProfileID: openAICompatibleProfileID,
+		ProviderCode: "gpt", ProviderProtocolProfileID: openAICompatibleProfileID,
 		Name: "w14b-create", AccountType: "api_key",
 		Credentials:     Credentials{"api_key": "sk-w14b-create-123", "base_url": "https://api.openai.com/v1"},
 		SupportedModels: []string{"gpt-4o-mini"},
@@ -78,7 +78,7 @@ func TestW14BCreateValidationArms(t *testing.T) {
 	// 入参，空/未知/停用档案臂不可达。
 	valid := w14bValidCreateInput()
 
-	// 账户类型合法性由 registry 组合门承载：google_oauth 与 generic_openai_v1
+	// 账户类型合法性由 registry 组合门承载：google_oauth 与 gpt_openai_v1
 	// 组合不在 §1.1 表内 → connection_capability_unsupported。
 	badType := valid
 	badType.AccountType = "google_oauth"

@@ -27,15 +27,15 @@ import (
 // env + READ ONLY 事务 + statement/lock 超时）保证零写入、零运行时耦合，
 // 不参与任何业务链路。
 // postgresSchemaSnapshotResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func postgresSchemaSnapshotResult() int {
+func postgresSchemaSnapshotResult(dsn string) int {
 	target, err := schemasnapshot.AssertSnapshotTarget(os.Getenv(schemasnapshot.EnvTarget))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 2
 	}
-	rawURL := strings.TrimSpace(os.Getenv(schemasnapshot.EnvPostgresURL))
+	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
-		fmt.Fprintf(os.Stderr, "%s 未配置\n", schemasnapshot.EnvPostgresURL)
+		fmt.Fprintln(os.Stderr, "--postgres-schema-snapshot 必须提供 --dsn")
 		return 2
 	}
 	if os.Getenv(schemasnapshot.EnvReadOnlyConfirm) != schemasnapshot.ReadOnlyConfirmValue {

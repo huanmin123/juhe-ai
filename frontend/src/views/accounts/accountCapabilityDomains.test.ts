@@ -7,9 +7,7 @@ import {
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GPT_OPENAI_V1_PROFILE_ID,
-  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   MINIMAX_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   QWEN_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
   XAI_OPENAI_V1_PROFILE_ID
@@ -254,14 +252,12 @@ function fallbackProfileById(id: string): AccountProviderProfileLike {
 // 三家媒体供应商现在也在 FALLBACK_PROVIDERS，直接复用真实回退档案，
 // 避免测试自造档案与生产回退形状漂移（T47）。
 const gptProfile = fallbackProfileById(GPT_OPENAI_V1_PROFILE_ID)
-const openaiCompatibleProfile = fallbackProfileById(OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID)
 const xaiProfile = fallbackProfileById(XAI_OPENAI_V1_PROFILE_ID)
 const glmProfile = fallbackProfileById(GLM_GENERAL_OPENAI_V1_PROFILE_ID)
 const deepseekProfile = fallbackProfileById(DEEPSEEK_OPENAI_V1_PROFILE_ID)
 const anthropicProfile = fallbackProfileById(ANTHROPIC_ANTHROPIC_V1_PROFILE_ID)
 const geminiNativeProfile = fallbackProfileById(GEMINI_NATIVE_V1BETA_PROFILE_ID)
 const geminiOpenAIChatProfile = fallbackProfileById(GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
-const hybridProfile = fallbackProfileById(HYBRID_OPENAI_CHAT_V1_PROFILE_ID)
 const minimaxProfile = fallbackProfileById(MINIMAX_OPENAI_V1_PROFILE_ID)
 const volcengineProfile = fallbackProfileById(VOLCENGINE_OPENAI_V1_PROFILE_ID)
 const qwenProfile = fallbackProfileById(QWEN_OPENAI_V1_PROFILE_ID)
@@ -313,18 +309,12 @@ describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 �
     ])
   })
 
-  it('hybrid：13 值对话锚集合全量可用（v8-A 后不再追加 images_json）', () => {
-    expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: hybridProfile, accountType: 'api_key' })).toEqual([
-      ...DOMAIN_ENDPOINT_MODES_CHAT
-    ])
-  })
-
   it('minimax 纯媒体词表与 chat 域求交为空集（无 chat 域）', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: minimaxProfile, accountType: 'api_key' })).toEqual([])
   })
 
   it('允许集是词表与域集合的子集：任何域结果都不含词表外值', () => {
-    const profiles = [gptProfile, xaiProfile, glmProfile, deepseekProfile, anthropicProfile, geminiNativeProfile, geminiOpenAIChatProfile, hybridProfile, minimaxProfile, volcengineProfile, qwenProfile]
+    const profiles = [gptProfile, xaiProfile, glmProfile, deepseekProfile, anthropicProfile, geminiNativeProfile, geminiOpenAIChatProfile, minimaxProfile, volcengineProfile, qwenProfile]
     const vocabulary = new Set<string>(allAccountEndpointModes)
     for (const profile of profiles) {
       for (const domain of ACCOUNT_CAPABILITY_DOMAINS) {
@@ -341,11 +331,9 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
     // v8-A：音频域允许集补 audio_transcription_json / realtime_session（按
     // 各供应商词表实际支持取舍；qwen/gemini/minimax/volcengine 词表无则不行值）。
     { name: 'gpt', profile: gptProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
-    { name: 'openai 兼容', profile: openaiCompatibleProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
     { name: 'xai', profile: xaiProfile, video: VIDEO_GROUP, audio: [], image: [] },
     { name: 'glm', profile: glmProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json'], image: [] },
     { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    { name: 'hybrid', profile: hybridProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
     { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech', ...AUDIO_JOB_GROUP], image: ['images_json'] },
     { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
@@ -366,7 +354,7 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
   })
 
   it('矩阵结果与媒体触发集合一致：视频域允许集恒为视频四值组', () => {
-    for (const profile of [gptProfile, glmProfile, geminiNativeProfile, hybridProfile, minimaxProfile, volcengineProfile, qwenProfile]) {
+    for (const profile of [gptProfile, glmProfile, geminiNativeProfile, minimaxProfile, volcengineProfile, qwenProfile]) {
       expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile, accountType: 'api_key' })).toEqual([...DOMAIN_ENDPOINT_MODES_VIDEO])
     }
   })
@@ -414,17 +402,11 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
     }
   })
 
-  it('chat 域默认集：BUG-0323 根治——现行默认不含对话值的供应商落词表内基础对话对，hybrid 收敛为域内允许集', () => {
+  it('chat 域默认集：现行默认不含对话值的供应商落词表内基础对话对', () => {
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: volcengineProfile, type: 'api_key' }))
       .toEqual(['chat_json', 'chat_sse'])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: qwenProfile, type: 'api_key' }))
       .toEqual(['chat_json', 'chat_sse'])
-    const hybridAllowed = allowedEndpointModesFor({ capabilityDomain: 'chat', profile: hybridProfile, accountType: 'api_key' })
-    expect(hybridAllowed.length).toBeGreaterThan(0)
-    // hybrid 现行默认为全词表并集，求交结果按并集序保序（与后端 intersectLaneModes
-    // 同语义），与锚集序的允许集集合相同、排序不同，按集合比较。
-    const hybridChat = defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: hybridProfile, type: 'api_key' })
-    expect([...hybridChat].sort()).toEqual([...hybridAllowed].sort())
   })
 
   it.each([

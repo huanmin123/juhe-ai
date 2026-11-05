@@ -70,7 +70,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
-import { isHybridProviderCode } from '@/shared/providerProtocol'
 import ProviderIcon from '@/components/ProviderIcon.vue'
 import { accountTypeText } from './accountBasicFormatters'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
@@ -148,7 +147,7 @@ const selectedAccountTypeChoiceValue = computed(() => {
     ?? props.accountTypeChoices.find((item) => item.type === props.accountType)?.value
     ?? ''
 })
-const showAccountTypePicker = computed(() => !isHybridProviderCode(props.providerCode) && props.accountTypeChoices.length > 1)
+const showAccountTypePicker = computed(() => props.accountTypeChoices.length > 1)
 
 function handleTypeChange(value: string | number): void {
   emit('select-type-choice', String(value))

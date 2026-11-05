@@ -556,8 +556,8 @@ var inspectionProtocolSurfaces = map[string]string{
 	protocolCodeGemini:    contracts.SurfaceGeminiV1Beta,
 }
 
-// inspectionProtocolVendors 返回连接器 registry 中声明该协议面的真实厂商集合。
-// generic_http 行 Vendor 为空，不是供应商（设计 §1），自然排除。
+// inspectionProtocolVendors 返回连接器 registry 中声明该协议面的真实厂商集合
+// （registry 只注册九家真实厂商，Vendor 恒非空）。
 func inspectionProtocolVendors(protocolCode string) map[string]bool {
 	vendors := map[string]bool{}
 	surface := inspectionProtocolSurfaces[strings.TrimSpace(protocolCode)]

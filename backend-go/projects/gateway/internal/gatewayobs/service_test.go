@@ -516,7 +516,7 @@ func TestRoutingObservabilityStoreIdentity(t *testing.T) {
 	}
 	digest := sha256.Sum256([]byte("redis://state.example:6379/5"))
 	want := "performance:redis:" + hex.EncodeToString(digest[:])
-	identity, err = RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisStateURL: "redis://state.example:6379/5"})
+	identity, err = RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisURL: "redis://state.example:6379/5"})
 	if err != nil || identity != want {
 		t.Fatalf("identity = %q err = %v, want %q", identity, err, want)
 	}
@@ -525,7 +525,7 @@ func TestRoutingObservabilityStoreIdentity(t *testing.T) {
 	if err == nil || err.Error() != "performance routing observability 要求 Redis runtime state" {
 		t.Fatalf("err = %v", err)
 	}
-	_, err = RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisStateURL: "  "})
+	_, err = RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisURL: "  "})
 	if err == nil || err.Error() != "performance routing observability 要求 Redis runtime state" {
 		t.Fatalf("err = %v", err)
 	}

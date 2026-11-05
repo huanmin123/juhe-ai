@@ -101,11 +101,7 @@ func m2SeedDomainAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name,
 
 // downstreamTestVendorIdentity 把 provider 语义映射为账户身份列（设计 §2.1）。
 func downstreamTestVendorIdentity(providerCode string) (any, string) {
-	switch providerCode {
-	case "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen":
-		return providerCode, providerCode
-	}
-	return nil, "generic_http"
+	return providerCode, providerCode
 }
 
 // m2ConnectionContractByProvider 是 B1 断点批夹具的 provider → (连接 preset,
@@ -123,7 +119,6 @@ var m2ConnectionContractByProvider = map[string]struct {
 	"minimax":    {"minimax_media", "https://api.minimax.chat"},
 	"volcengine": {"volcengine_ark", "https://ark.cn-beijing.volces.com"},
 	"qwen":       {"qwen_dashscope", "https://dashscope.aliyuncs.com"},
-	"openai":     {"generic_openai_v1", "https://upstream.example.com/v1"},
 }
 
 // m2CreateBody 构造 POST /accounts 负载。B1 断点批（设计 §8）：连接集合
@@ -512,7 +507,7 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 }
 
 // TestM2ChatDomainLegacyDefaultsPin 把 chat 域默认集按 BUG-0323 根治口径钉住：
-// 现行默认本就域内的供应商（openai 族/gemini/anthropic/glm）与现行归一化缺省
+// 现行默认本就域内的供应商（gpt 族/gemini/anthropic/glm）与现行归一化缺省
 // 逐项全等；媒体优先供应商（volcengine/qwen）改为域内断言——缺省恒 ⊆
 // chat 域允许集，volcengine/qwen 落词表内基础对话对。
 func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
@@ -524,7 +519,6 @@ func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 	}{
 		{name: "gpt api_key", providerCode: "gpt", accountType: "api_key", profile: protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: gptOpenAIV1ProfileIDConstant}},
 		{name: "gpt oauth", providerCode: "gpt", accountType: "oauth", profile: protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: gptOpenAIV1ProfileIDConstant}},
-		{name: "openai api_key", providerCode: "openai", accountType: "api_key", profile: protocolPredicateInput{providerCode: "openai", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: openAICompatibleProfileID}},
 		{name: "anthropic api_key", providerCode: "anthropic", accountType: "api_key", profile: protocolPredicateInput{providerCode: "anthropic", protocolCode: "anthropic", protocolVersion: "v1", providerProtocolProfileID: "profile_anthropic_v1"}},
 		{name: "deepseek anthropic", providerCode: "deepseek", accountType: "api_key", profile: protocolPredicateInput{providerCode: "deepseek", protocolCode: "anthropic", protocolVersion: "v1", providerProtocolProfileID: deepSeekAnthropicV1ProfileID}},
 		{name: "glm openai", providerCode: "glm", accountType: "api_key", profile: protocolPredicateInput{providerCode: "glm", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: glmGeneralOpenAIV1ProfileID}},
@@ -886,8 +880,8 @@ func TestM2ImportCapabilityDomainStrict(t *testing.T) {
 	videoAccount := w2APIKeyAccount("m2-导入视频", "导入分组")
 	videoAccount["credentials"].(map[string]any)["supported_endpoint_modes"] = videoModes
 	// B1 断点批：视频域账户的连接集合改写为 video lane 全集 + video_create 检查形态。
-	videoAccount["connections"] = []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": videoModes, "enabled": true}}
-	videoAccount["healthCheckConnectionPresetCode"] = "generic_openai_v1"
+	videoAccount["connections"] = []any{map[string]any{"connectionPresetCode": "gpt_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": videoModes, "enabled": true}}
+	videoAccount["healthCheckConnectionPresetCode"] = "gpt_openai_v1"
 	videoAccount["healthCheckEndpointMode"] = "video_create"
 	videoAccount["healthCheckModel"] = "gpt-4o-mini"
 	absentAccount := w2APIKeyAccount("m2-导入缺省", "导入分组")
@@ -945,8 +939,8 @@ func TestM2ImportCapabilityDomainStrict(t *testing.T) {
 	if domain := env.queryCell(t, `SELECT capability_domain FROM accounts WHERE id = ?`, absentRowID); domain != "chat" {
 		t.Fatalf("缺省导入账户应落 chat 域：%s", domain)
 	}
-	if modes := m2AccountModes(t, env, absentRowID); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse"}) {
-		t.Fatalf("缺省导入账户应落现行默认集（openai 兼容档案为 chat 对）：%v", modes)
+	if modes := m2AccountModes(t, env, absentRowID); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}) {
+		t.Fatalf("缺省导入账户应落 gpt 档案默认集（chat + responses）：%v", modes)
 	}
 }
 

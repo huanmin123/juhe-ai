@@ -192,7 +192,7 @@ func TestW2TestAccountDispatch(t *testing.T) {
 		}
 	})
 	t.Run("草稿与账户不一致", func(t *testing.T) {
-		body := strings.Replace(w2DraftAccountBody(groupID), `"providerCode":"gpt"`, `"providerCode":"openai"`, 1)
+		body := strings.Replace(w2DraftAccountBody(groupID), `"providerCode":"gpt"`, `"providerCode":"anthropic"`, 1)
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/"+accountID+"/test", `{`+body+`}`)
 		if code != http.StatusBadRequest || payload["message"] != "账户测试草稿与当前账户不一致" {
 			t.Fatalf("一致性 gate 不一致：%d %v", code, payload)

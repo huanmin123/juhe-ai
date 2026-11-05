@@ -98,7 +98,7 @@ func TestKeyNamespacing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 全前缀 namespace 被规范为短形式并插在 juhe-ai: 根后。
-	fullKey := "juhe-ai:dev:" + keyPrefix + issued.Value
+	fullKey := "juhe-ai:{dev}:" + keyPrefix + issued.Value
 	if !server.Exists(fullKey) {
 		t.Fatalf("namespaced key %s missing (keys: %v)", fullKey, server.Keys())
 	}

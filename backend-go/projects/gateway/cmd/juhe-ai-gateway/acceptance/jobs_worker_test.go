@@ -39,8 +39,7 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 		// README 同款显式必填，均无回落主连接串）。
 		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          fixture.dsn,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": fixture.dsn,
-		"JUHE_AI_REDIS_CACHE_URL":                   fixture.redisURL,
-		"JUHE_AI_REDIS_STATE_URL":                   fixture.redisURL,
+		"JUHE_AI_REDIS_URL":                   fixture.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   fixture.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(root, "storage", "codex-context-root"),

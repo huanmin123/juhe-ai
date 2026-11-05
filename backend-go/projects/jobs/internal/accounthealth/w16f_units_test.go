@@ -51,15 +51,15 @@ func w16fMergeEnv(base, overlay map[string]string) map[string]string {
 // TestW16fLoadConfigPoolArms 覆盖 LoadConfig 的连接池与超时配置失败臂。
 func TestW16fLoadConfigPoolArms(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":   "go",
-		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":  "w16f-instance",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "postgres",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": "postgres://w16f.invalid:5432/db",
+		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":  "go",
+		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID": "w16f-instance",
+		"JUHE_AI_ACCOUNT_HEALTH_STORE":       "postgres",
+		"JUHE_AI_POSTGRES_URL":               "postgres://w16f.invalid:5432/db",
 		// D12：InputSource 恒 postgres 直读（INPUT_POSTGRES_URL 必填）。
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w16f.invalid:5432/business",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    `C:\w16f\inputs`,
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": w16fSigningKey(),
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "w16f-secret",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  w16fSigningKey(),
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "w16f-secret",
 	}
 	// 清理批次 C4（2026-09-30）：连接池 env 校验臂已随收编退役。
 	// PROBE_TIMEOUT 非法 → configDuration 失败臂。

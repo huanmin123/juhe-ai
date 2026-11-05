@@ -1056,8 +1056,10 @@ func isGeminiProtocol(view *View) bool {
 }
 
 // resolveProbeView 先按账户声明的请求形态选择 source route，再应用与 J1
-// 相同的 hybrid account_model_mappings 一跳映射。返回的视图是本次请求的
-// 有效上游协议视图，因此 URL、认证、请求体和响应分类不会各自重新推断。
+// 相同的 account_model_mappings 一跳映射（跨协议映射已随 hybrid 退役，剩余
+// 映射只改模型名；responses→chat 这类同协议面形态切换按上游 family 归一一
+// 次）。返回的视图是本次请求的有效上游视图，URL、认证、请求体和响应分类
+// 不会各自重新推断。
 func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
 	if view == nil {
 		return nil, "", "", errors.New("探针视图缺失")
@@ -1075,72 +1077,30 @@ func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
 	if err != nil {
 		return nil, "", "", err
 	}
-	routedMode, routedModel, routedProtocol, err := resolveHybridRoute(view, sourceMode, sourceModel)
-	if err != nil {
-		return nil, "", "", err
+	routedMode, routedModel := sourceMode, sourceModel
+	sourceFamily := endpointFamilyForProbeMode(sourceMode)
+	for index := range view.ModelMappings {
+		mapping := &view.ModelMappings[index]
+		if mapping.SourceModel != sourceModel || mapping.SourceEndpointFamily != sourceFamily {
+			continue
+		}
+		if mapping.UpstreamModel == sourceModel && mapping.UpstreamEndpointFamily == sourceFamily {
+			continue
+		}
+		routedModel = strings.TrimSpace(mapping.UpstreamModel)
+		if mapping.UpstreamEndpointFamily != sourceFamily {
+			mappedMode, ok := endpointModeForUpstreamFamily(mapping.UpstreamEndpointFamily, sourceMode.streaming())
+			if !ok {
+				return nil, "", "", fmt.Errorf("账户模型映射的上游协议不受探针支持：%s", mapping.UpstreamEndpointFamily)
+			}
+			routedMode = mappedMode
+		}
+		break
 	}
 	routed := *view
-	// 非 hybrid 账户的 protocol_code 是已验证的账户契约，不能仅按某个
-	// endpoint mode 重写；只有 hybrid 映射明确切换了真实上游协议时才改变。
-	if view.ProviderProtocolProfileID == "profile_hybrid_openai_chat_v1" {
-		routed.ProtocolCode = string(routedProtocol)
-	}
 	routed.HealthCheckEndpointMode = string(routedMode)
 	routed.HealthCheckModel = routedModel
 	return &routed, routedMode, routedModel, nil
-}
-
-// resolveHybridRoute mirrors jobs/internal/accounthealth.directProbeTarget:
-// only profile_hybrid_openai_chat_v1 uses a model mapping to select the real
-// upstream protocol. Other profiles already encode a fixed protocol route.
-func resolveHybridRoute(view *View, sourceMode EndpointMode, sourceModel string) (EndpointMode, string, DiagnosticProtocol, error) {
-	sourceFamily := endpointFamilyForProbeMode(sourceMode)
-	var mapping *ModelMapping
-	for index := range view.ModelMappings {
-		candidate := &view.ModelMappings[index]
-		if candidate.SourceModel == sourceModel && candidate.SourceEndpointFamily == sourceFamily &&
-			(candidate.UpstreamModel != candidate.SourceModel || candidate.UpstreamEndpointFamily != candidate.SourceEndpointFamily) {
-			mapping = candidate
-			break
-		}
-	}
-	mappedModel, mappedFamily := "", ""
-	if mapping != nil {
-		mappedModel = mapping.UpstreamModel
-		mappedFamily = mapping.UpstreamEndpointFamily
-	}
-	return ResolveHybridProbeTarget(view.ProviderProtocolProfileID, sourceMode, sourceModel, mappedModel, mappedFamily)
-}
-
-// ResolveHybridProbeTarget is the shared J1/manual-test model mapping
-// decision. profile_hybrid_openai_chat_v1 has no safe unmapped fallback: the
-// source protocol may differ from the actual upstream protocol, so a missing
-// non-identity mapping is a configuration error rather than an OpenAI request.
-func ResolveHybridProbeTarget(profile string, sourceMode EndpointMode, sourceModel, mappedModel, mappedFamily string) (EndpointMode, string, DiagnosticProtocol, error) {
-	protocol := protocolCodeForMode(sourceMode)
-	if profile != "profile_hybrid_openai_chat_v1" {
-		return sourceMode, sourceModel, protocol, nil
-	}
-	if strings.TrimSpace(mappedModel) == "" || strings.TrimSpace(mappedFamily) == "" {
-		return "", "", "", fmt.Errorf("混合供应商账户缺少 %s/%s 的启用模型映射", sourceModel, endpointFamilyForProbeMode(sourceMode))
-	}
-	if !hybridMappingSourceSupported(sourceMode, mappedFamily) {
-		return "", "", "", fmt.Errorf("混合供应商账户模型映射不支持 %s 到 %s 的探针转换", endpointFamilyForProbeMode(sourceMode), strings.TrimSpace(mappedFamily))
-	}
-	routedMode, ok := endpointModeForUpstreamFamily(mappedFamily, sourceMode.streaming())
-	if !ok {
-		return "", "", "", fmt.Errorf("混合供应商账户模型映射的上游协议不受探针支持：%s", mappedFamily)
-	}
-	routedProtocol := protocolCodeForMode(routedMode)
-	return routedMode, strings.TrimSpace(mappedModel), routedProtocol, nil
-}
-
-func hybridMappingSourceSupported(source EndpointMode, targetFamily string) bool {
-	sourceOpenAI := source == ModeChatJSON || source == ModeChatSSE || source == ModeResponsesJSON || source == ModeResponsesSSE
-	if targetFamily == "responses" {
-		return sourceOpenAI
-	}
-	return source != ModeInteractionsJSON && source != ModeInteractionsSSE
 }
 
 func endpointFamilyForProbeMode(mode EndpointMode) string {

@@ -246,7 +246,7 @@ func TestWIAvoidanceRedisAsyncContract(t *testing.T) {
 		t.Fatalf("二次 clear=%v err=%v", cleared, err)
 	}
 	// redis 条目真的被删除。
-	if server.Exists("juhe-ai:dev:state:gateway-client-ip-account-avoidance:entry:" + avoidanceEntryKey(normalizeAvoidanceScope(scope), "bad")) {
+	if server.Exists("juhe-ai:{dev}:state:gateway-client-ip-account-avoidance:entry:" + avoidanceEntryKey(normalizeAvoidanceScope(scope), "bad")) {
 		t.Fatal("clear 后 redis 条目必须删除")
 	}
 	_ = clock

@@ -1,147 +1,52 @@
 package modelcheckowner
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-// A（状态机专项 2026-09-25）J3b circuit runtime Redis 隔离防呆单测。
-//
-// 背景：internal/business/circuit_runtime 是 J3b 性能模式的第三套熔断实现，
-// 独立 Lua 副本但与主链 gatewaycircuit 共用同名 states hash（键布局同为
-// `juhe-ai:<namespace>:account-circuit:gateway-account-circuit:*`）。当
-// JUHE_AI_J3B_CIRCUIT_REDIS_URL 显式未设置时，LoadConfig 回退主链
-// JUHE_AI_REDIS_STATE_URL（回退行为本身不变）；一旦装配启用，两套 Lua 状态机
-// 并发写同一 hash 会互相毒化。gate 构造处必须对"启用+回退"组合 fail-fast。
-//
-// 契约矩阵：
-//   - 启用 + 回退 → 报错；
-//   - 启用 + 显式 URL → 通过；
-//   - 关闭（memory 装配路径，URL 为空）→ 不受影响，即使存在主链 state URL
-//     的配置也不改变 LoadConfig 的回退解析结果。
+// J3b circuit runtime 与主链共用唯一 Redis 连接串，键空间由
+// {namespace:j3b} 域隔离；不存在独立 URL、回退标志或启动期隔离校验。
 
-func aCircuitIsolationEnv(pairs map[string]string) func(string) string {
+func isolationEnv(pairs map[string]string) func(string) string {
 	return func(key string) string { return pairs[key] }
 }
 
-func aCircuitIsolationBaseEnv() map[string]string {
-	// 2026-10-24 存储形态收口：恒 postgres（JUHE_AI_J3B_STORE env 读取删除）。
+func isolationBaseEnv() map[string]string {
 	return map[string]string{
-		"JUHE_AI_J3B_POSTGRES_URL":     "postgres://a-isolation-j3b",
-		"JUHE_AI_J3B_CREDENTIAL_SECRET": "cred",
+		"JUHE_AI_POSTGRES_URL":    "postgres://a-isolation-main",
+		"JUHE_AI_REDIS_URL":       "redis://main-chain:6379/0",
+		"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:dev",
 	}
 }
 
-// 启用 + 回退：LoadConfig 解析结果不变（URL 来自回退），但装配处校验必须报错。
-func TestACircuitRedisEnabledWithFallbackMustFail(t *testing.T) {
-	env := aCircuitIsolationBaseEnv()
-	env["JUHE_AI_REDIS_STATE_URL"] = "redis://main-chain:6379/9"
-	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:dev"
-	cfg, err := LoadConfig(aCircuitIsolationEnv(env))
+func TestCircuitRedisUsesUnifiedURLAndDomainNamespace(t *testing.T) {
+	cfg, err := LoadConfig(isolationEnv(isolationBaseEnv()))
 	if err != nil {
-		t.Fatalf("回退解析行为不得改变: %v", err)
+		t.Fatalf("LoadConfig: %v", err)
 	}
-	if !cfg.CircuitRuntimeRedisURLFellBack {
-		t.Fatal("回退标志必须置位")
+	if cfg.CircuitRuntimeRedisURL != "redis://main-chain:6379/0" {
+		t.Fatalf("URL = %q", cfg.CircuitRuntimeRedisURL)
 	}
-	if cfg.CircuitRuntimeRedisURL != "redis://main-chain:6379/9" {
-		t.Fatalf("回退 URL = %q", cfg.CircuitRuntimeRedisURL)
-	}
-	isolationErr := cfg.ValidateCircuitRuntimeRedisIsolation()
-	if isolationErr == nil {
-		t.Fatal("启用+回退组合必须在装配处 fail-fast")
-	}
-	if !strings.Contains(isolationErr.Error(), "JUHE_AI_J3B_CIRCUIT_REDIS_URL") ||
-		!strings.Contains(isolationErr.Error(), "JUHE_AI_REDIS_STATE_URL") {
-		t.Fatalf("错误信息必须说明回退来源与显式配置要求: %v", isolationErr)
+	if cfg.CircuitRuntimeRedisNamespace != "dev:j3b" {
+		t.Fatalf("namespace = %q, want dev:j3b", cfg.CircuitRuntimeRedisNamespace)
 	}
 }
 
-// 启用 + 显式 URL：即使同时配置了主链 state URL（运维显式决定，含显式同值），
-// 校验必须通过。
-func TestACircuitRedisExplicitURLPasses(t *testing.T) {
-	env := aCircuitIsolationBaseEnv()
-	env["JUHE_AI_J3B_CIRCUIT_REDIS_URL"] = "redis://j3b-dedicated:6379/9"
-	env["JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"] = "j3b-circuit"
-	env["JUHE_AI_REDIS_STATE_URL"] = "redis://main-chain:6379/9"
-	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:dev"
-	cfg, err := LoadConfig(aCircuitIsolationEnv(env))
-	if err != nil {
-		t.Fatalf("显式配置加载失败: %v", err)
-	}
-	if cfg.CircuitRuntimeRedisURLFellBack {
-		t.Fatal("显式配置不得置位回退标志")
-	}
-	if cfg.CircuitRuntimeRedisURL != "redis://j3b-dedicated:6379/9" {
-		t.Fatalf("显式 URL = %q", cfg.CircuitRuntimeRedisURL)
-	}
-	if err := cfg.ValidateCircuitRuntimeRedisIsolation(); err != nil {
-		t.Fatalf("显式 URL 必须通过校验: %v", err)
+func TestCircuitRedisRequiresNamespace(t *testing.T) {
+	env := isolationBaseEnv()
+	delete(env, "JUHE_AI_REDIS_NAMESPACE")
+	if _, err := LoadConfig(isolationEnv(env)); err == nil {
+		t.Fatal("缺 namespace 必须失败")
 	}
 }
 
-// 显式设置与主链同值：这是运维的显式决定（知晓风险的共享），必须与回退区分、
-// 校验通过。
-func TestACircuitRedisExplicitSameValuePasses(t *testing.T) {
-	env := aCircuitIsolationBaseEnv()
-	env["JUHE_AI_J3B_CIRCUIT_REDIS_URL"] = "redis://main-chain:6379/9"
-	env["JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"] = "juhe-ai:dev"
-	env["JUHE_AI_REDIS_STATE_URL"] = "redis://main-chain:6379/9"
-	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:dev"
-	cfg, err := LoadConfig(aCircuitIsolationEnv(env))
-	if err != nil {
-		t.Fatalf("显式同值加载失败: %v", err)
-	}
-	if cfg.CircuitRuntimeRedisURLFellBack {
-		t.Fatal("显式同值不得置位回退标志")
-	}
-	if err := cfg.ValidateCircuitRuntimeRedisIsolation(); err != nil {
-		t.Fatalf("显式同值（运维显式决定）必须通过校验: %v", err)
-	}
-}
-
-// 关闭路径（memory 装配，URL 为空）零影响：零配置自动认领且无任何 Redis URL
-// 时，校验必须通过。
-func TestACircuitRedisMemoryAssemblyPathPasses(t *testing.T) {
-	cfg, err := LoadConfig(aCircuitIsolationEnv(aCircuitIsolationBaseEnv()))
+// 关闭路径（memory 装配，URL 为空）：零配置自动认领。
+func TestCircuitRedisMemoryAssemblyPathPasses(t *testing.T) {
+	cfg, err := LoadConfig(isolationEnv(map[string]string{
+		"JUHE_AI_POSTGRES_URL": "postgres://a-isolation-j3b",
+	}))
 	if err != nil || !cfg.AutoClaimed {
 		t.Fatalf("零配置必须自动认领: cfg=%+v err=%v", cfg, err)
 	}
-	if cfg.CircuitRuntimeRedisURL != "" || cfg.CircuitRuntimeRedisURLFellBack {
-		t.Fatalf("无 Redis 配置不得产生 URL/回退标志: %q/%v", cfg.CircuitRuntimeRedisURL, cfg.CircuitRuntimeRedisURLFellBack)
-	}
-	if err := cfg.ValidateCircuitRuntimeRedisIsolation(); err != nil {
-		t.Fatalf("关闭路径不受影响，必须通过: %v", err)
-	}
-}
-
-// 防御臂：URL 为空（memory 装配）时即使标志被误置也不报错——校验只对
-// "Redis 装配 + 回退值"组合生效。
-func TestACircuitRedisValidatorIgnoresEmptyURL(t *testing.T) {
-	cfg := Config{CircuitRuntimeRedisURLFellBack: true}
-	if err := cfg.ValidateCircuitRuntimeRedisIsolation(); err != nil {
-		t.Fatalf("URL 为空时校验必须通过: %v", err)
-	}
-}
-
-// LoadConfig 回退解析契约保持不变：handoff 家族显式配置（非自动认领）且未配
-// circuit URL 时，仍按原样回退 JUHE_AI_REDIS_STATE_URL 并要求 namespace；
-// 完全缺失时仍按原样报"缺少 Redis state URL"（既有拒绝面不变）。
-func TestACircuitRedisLoadConfigFallbackBehaviorUnchanged(t *testing.T) {
-	// 清理批次 C1（2026-09-30）：切流门禁家族退役后，本测试只保留"回退解析
-	// 行为不变"的断言（REDIS_STATE_URL 回退 + FellBack 标记）；原严格模式
-	// "无 URL 拒绝面"与"非自动认领 fail-fast"随门禁退役（auto-claim 恒真）。
-	values := map[string]string{
-		"JUHE_AI_J3B_POSTGRES_URL":     "postgres://a-isolation-j3b",
-		"JUHE_AI_J3B_CREDENTIAL_SECRET": "cred",
-		"JUHE_AI_REDIS_STATE_URL":      "redis://main-chain:6379/9",
-		"JUHE_AI_REDIS_NAMESPACE":      "juhe-ai:dev",
-	}
-	cfg, err := LoadConfig(aCircuitIsolationEnv(values))
-	if err != nil {
-		t.Fatalf("回退解析行为不得改变: %v", err)
-	}
-	if !cfg.CircuitRuntimeRedisURLFellBack || cfg.CircuitRuntimeRedisURL != "redis://main-chain:6379/9" {
-		t.Fatalf("回退解析结果不符: fellBack=%v url=%q", cfg.CircuitRuntimeRedisURLFellBack, cfg.CircuitRuntimeRedisURL)
+	if cfg.CircuitRuntimeRedisURL != "" {
+		t.Fatalf("无 Redis 配置不得产生 URL: %q", cfg.CircuitRuntimeRedisURL)
 	}
 }

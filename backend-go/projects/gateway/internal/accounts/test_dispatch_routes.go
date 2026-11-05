@@ -1199,11 +1199,9 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		if _, hasBaseURL := credentialsInput["base_url"]; !hasBaseURL || !credentialTextPresent(credentialsInput["base_url"]) {
 			// draftAccountCredentials：oauth 草稿缺省 base_url 按 vendor 默认
 			// preset 的 registry default_base_url 落根（§1.1，与 balance 草稿链
-			// 同源）；generic 语义退 legacy OpenAI 官方根。
+			// 同源）；九家之外的 provider 已在 assertVendorEnabled 拒绝，不再回落
+			// legacy OpenAI 官方根。
 			baseURL := vendorDefaultBaseURL(input.ProviderCode)
-			if baseURL == "" {
-				baseURL = "https://api.openai.com/v1"
-			}
 			merged := Credentials{}
 			for key, value := range credentialsInput {
 				merged[key] = value

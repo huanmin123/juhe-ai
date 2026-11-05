@@ -133,7 +133,7 @@ func TestW13GTestAccountAuthAndDraftGates(t *testing.T) {
 		VALUES ('prof-w13g-x', 'wx', 'X 协议', 1, 'wxp', 'v1', 'https://x.example/v1', 'm-x', '["api_key"]', '[]',
 		'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	env.seedAccount(t, "acc-w13g-tx", adminID, "w13g-tx", "active")
-	env.exec(t, `UPDATE accounts SET vendor_code = NULL, connection_driver_code = 'generic_http',
+	env.exec(t, `UPDATE accounts SET vendor_code = 'wx', connection_driver_code = 'wx',
 		protocol_code = 'wxp' WHERE id = 'acc-w13g-tx'`)
 	if code, payload := env.do(t, http.MethodPost, base+"/acc-w13g-tx/test", `{}`); code != http.StatusBadRequest || payload["message"] != unsupportedGatewayProtocolTestMessage {
 		t.Fatalf("协议拒绝：%d %v", code, payload)
@@ -545,14 +545,10 @@ func TestW13GDraftVendorGateArms(t *testing.T) {
 		t.Fatalf("供应商停用：%v", err)
 	}
 	env.exec(t, `UPDATE vendors SET enabled = 1 WHERE code = 'gpt'`)
-	// generic 语义（openai，无 vendors 行）跳过 vendor 门，推导 openai 族通过。
-	draft, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), build("openai"), access, "")
-	if err != nil {
-		t.Fatalf("generic 语义应通过：%v", err)
-	}
-	if draft.ProviderProtocolProfileID == nil || *draft.ProviderProtocolProfileID != "" ||
-		draft.ProtocolCode == nil || *draft.ProtocolCode != "openai" {
-		t.Fatalf("generic 推导：%+v %v", draft.ProviderProtocolProfileID, draft.ProtocolCode)
+	// openai 兼容供应商已退役：不再跳过 vendor 门，按不支持拒绝。
+	if _, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), build("openai"), access, ""); err == nil ||
+		!strings.Contains(err.Error(), "不支持的供应商：openai") {
+		t.Fatalf("openai 兼容草稿应拒绝：%v", err)
 	}
 	// vendors 读错误 → 传播。
 	env.exec(t, `DROP TABLE vendors`)

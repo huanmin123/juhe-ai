@@ -51,7 +51,7 @@ func TestW1iChainTurnRetryKeyPrefixEmpty(t *testing.T) {
 }
 
 func TestW1iChainTurnRetryKeyPrefixColon(t *testing.T) {
-	prefix, err := chainTurnRetryKeyPrefix("juhe-ai:test:")
+	prefix, err := chainTurnRetryKeyPrefix("juhe-ai:{test}:")
 	if err != nil {
 		t.Fatalf("colon ns: %v", err)
 	}

@@ -41,6 +41,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // ---------------------------------------------------------------------------
@@ -1718,7 +1719,7 @@ func TestW1XHotQualityLifecycleMarkFirstByte(t *testing.T) {
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisStateURL:  "redis://" + server.Addr(),
+		RedisURL:  "redis://" + server.Addr(),
 		RedisNamespace: "w1x-hot-quality",
 	})
 	if err != nil {
@@ -1818,8 +1819,8 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 	// composition 缺业务库：读模型构造失败。
 	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{
 		DispatchAccountCandidateLimit: 20,
-		RedisCacheURL:                 redisURL,
-		RedisStateURL:                 redisURL,
+		RedisURL:                      redisURL,
+		RedisMode:                     rediscfg.ModeSingle,
 		RedisNamespace:                "w1x-ns",
 	}, settingValue); err == nil ||
 		!strings.Contains(err.Error(), "sql read models") {
@@ -1831,8 +1832,8 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 	composed := &composition{db: db, statsDB: db}
 	if _, err := composeChainRuntimeServices(composed, runtimeConfig{
 		DispatchAccountCandidateLimit: 0,
-		RedisCacheURL:                 redisURL,
-		RedisStateURL:                 redisURL,
+		RedisURL:                      redisURL,
+		RedisMode:                     rediscfg.ModeSingle,
 		RedisNamespace:                "w1x-ns",
 	}, settingValue); err == nil ||
 		!strings.Contains(err.Error(), "accounts selector") {
@@ -1842,8 +1843,7 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 	// runtime state 驱动 + 空 namespace：state 前缀构造失败于错误电路。
 	if _, err := composeChainRuntimeServices(composed, runtimeConfig{
 		DispatchAccountCandidateLimit: 20,
-		RedisCacheURL:                 redisURL,
-		RedisStateURL:                 redisURL,
+		RedisURL:                 redisURL,
 		RedisNamespace:                "   ",
 	}, settingValue); err == nil || !strings.Contains(err.Error(), "error circuit") {
 		t.Fatalf("redis 驱动空 namespace 必须报错误电路失败: %v", err)
@@ -1853,8 +1853,8 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 	businessOnly := &composition{db: db}
 	if _, err := composeChainRuntimeServices(businessOnly, runtimeConfig{
 		DispatchAccountCandidateLimit: 20,
-		RedisCacheURL:                 redisURL,
-		RedisStateURL:                 redisURL,
+		RedisURL:                      redisURL,
+		RedisMode:                     rediscfg.ModeSingle,
 		RedisNamespace:                "w1x-ns",
 	}, settingValue); err == nil ||
 		!strings.Contains(err.Error(), "policy source") {

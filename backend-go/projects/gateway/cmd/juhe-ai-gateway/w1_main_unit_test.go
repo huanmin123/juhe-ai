@@ -128,11 +128,6 @@ func TestW1EnvHelpers(t *testing.T) {
 	if got := envOrDefault("W1_ENV_MISSING", "回退"); got != "回退" {
 		t.Fatalf("fallback = %q", got)
 	}
-	t.Setenv("W1_ENV_LIST", " a , b ,, c ")
-	if got := commaList(" a , b ,, c "); len(got) != 3 || got[0] != "a" || got[2] != "c" {
-		t.Fatalf("commaList = %v", got)
-	}
-	_ = os.Getenv("W1_ENV_LIST")
 	t.Setenv("W1_ENV_BOOL", "ON")
 	if !envBool("W1_ENV_BOOL") {
 		t.Fatal("on 必须为真")

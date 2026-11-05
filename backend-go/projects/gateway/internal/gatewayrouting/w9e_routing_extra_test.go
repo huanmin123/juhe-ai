@@ -463,7 +463,7 @@ func TestW9ERedisRouteStateCounterWithMiniredis(t *testing.T) {
 		t.Fatalf("modulo<=0 = %d err=%v", got, err)
 	}
 	noURL := NewAPIKeyGroupRouteSelector("redis", nil, "")
-	if _, err := noURL.nextRedisRouteCounterIndex(ctx, "k", 3); err == nil || !strings.Contains(err.Error(), "STATE_URL") {
+	if _, err := noURL.nextRedisRouteCounterIndex(ctx, "k", 3); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL") {
 		t.Fatalf("缺 state URL = %v", err)
 	}
 	failing := NewAPIKeyGroupRouteSelector("redis", nil, "://bad")

@@ -34,7 +34,7 @@ const gptOpenAIAccount = accountFixture({
   protocolCode: 'openai',
   protocolVersion: 'v1'
 })
-const openAICompatibleAccount = accountFixture({
+const retiredOpenAICompatibleAccount = accountFixture({
   id: 'acct_model_check_openai_compatible',
   providerCode: 'openai',
   providerProtocolProfileId: 'profile_openai_openai_v1',
@@ -76,23 +76,23 @@ const secondAnthropicAccount = accountFixture({
   protocolCode: 'anthropic',
   protocolVersion: 'v1'
 })
-const unnamedOpenAIAccount = accountFixture({
+const unnamedGPTAccount = accountFixture({
   id: 'acct_model_check_unnamed',
-  providerCode: 'openai',
+  providerCode: 'gpt',
   protocolCode: 'openai',
   protocolVersion: 'v1',
   name: '   '
 })
 
 assert.equal(canRunModelCheckForAccount(gptOpenAIAccount), true, 'GPT 的 OpenAI v1 账户仍应可进入模型检测')
-assert.equal(canRunModelCheckForAccount(openAICompatibleAccount), true, 'OpenAI-compatible 的 OpenAI v1 账户应可进入模型检测')
+assert.equal(canRunModelCheckForAccount(retiredOpenAICompatibleAccount), false, '已退役的 OpenAI-compatible 账户不得进入模型检测')
 assert.equal(canRunModelCheckForAccount(deepSeekAccount), true, 'DeepSeek OpenAI Chat 账户应可进入模型检测')
 assert.equal(canRunModelCheckForAccount(anthropicAccount), true, 'Anthropic 原生账户应可进入模型检测')
 assert.equal(canRunModelCheckForAccount(glmAccount), true, 'GLM OpenAI Chat 账户应可进入模型检测')
 assert.equal(canRunModelCheckForAccount(geminiAccount), true, 'Gemini native 账户应可进入模型检测')
-assert.equal(canSelectModelCheckAccount(openAICompatibleAccount), true, 'OpenAI-compatible 有名称账户应可被选择')
-assert.equal(canSelectModelCheckAccount(openAICompatibleAccount, { excludedAccountId: openAICompatibleAccount.id }), false, '可信对比账户不能选择当前检测目标')
-assert.equal(canSelectModelCheckAccount(unnamedOpenAIAccount), false, '无名称账户不应出现在模型检测选项中')
+assert.equal(canSelectModelCheckAccount(deepSeekAccount), true, 'DeepSeek 有名称账户应可被选择')
+assert.equal(canSelectModelCheckAccount(deepSeekAccount, { excludedAccountId: deepSeekAccount.id }), false, '可信对比账户不能选择当前检测目标')
+assert.equal(canSelectModelCheckAccount(unnamedGPTAccount), false, '无名称账户不应出现在模型检测选项中')
 assert.deepEqual(modelCheckModelsForAccount(gptOpenAIAccount), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4'], 'GPT 模型检测必须使用当前完整 GPT 模型 ID')
 assert.deepEqual(modelCheckModelsForAccount(anthropicAccount), ['claude-opus-5', 'claude-opus-4-8'], 'Anthropic 模型检测必须使用完整 Claude 模型 ID')
 assert.deepEqual(modelCheckModelsForAccount(glmAccount), ['glm-5.2', 'glm-5.1'], 'GLM 模型检测必须使用完整 GLM 模型 ID')

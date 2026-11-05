@@ -42,17 +42,8 @@ type Config struct {
 	HealthBoundaryReady          bool
 	CircuitRuntimeRedisURL       string
 	CircuitRuntimeRedisNamespace string
-	// CircuitRuntimeRedisURLFellBack（A，状态机专项 2026-09-25）marks that
-	// JUHE_AI_J3B_CIRCUIT_REDIS_URL was explicitly unset and the URL value
-	// came from the main-chain JUHE_AI_REDIS_STATE_URL fallback. The fallback
-	// itself is unchanged (an explicit same-value opt-in stays allowed); the
-	// flag only lets the assembly site fail fast on the enabled+fallback
-	// combination via ValidateCircuitRuntimeRedisIsolation, because the
-	// circuit_runtime Lua dialect shares the main chain's states hash key
-	// layout and the two state machines are not compatible on one hash.
-	CircuitRuntimeRedisURLFellBack bool
-	CircuitRuntimeCapacity         int
-	CircuitRuntimeRetention        time.Duration
+	CircuitRuntimeCapacity       int
+	CircuitRuntimeRetention      time.Duration
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -63,32 +54,19 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	// gateway 进程始终装配 J3b owner；访问控制走管理面权限（Admin/Self
 	// 会话鉴权），部署依赖只有存储与可选 Redis。
 	cfg := Config{Enabled: true}
-	cfg.Owner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_J3B_OWNER")))
-	if cfg.Owner == "" {
-		cfg.Owner = "gateway"
-	}
-	if cfg.Owner != "gateway" {
-		return Config{}, errors.New("启用 J3b 时 JUHE_AI_J3B_OWNER 必须为 gateway")
-	}
+	// J3b owner 只有 gateway 一个合法值：Go 迁移完成后 Node 侧写入方已清零，
+	// owner 判定不再是部署输入。
+	cfg.Owner = "gateway"
 	cfg.InstanceID = strings.TrimSpace(getenv("JUHE_AI_J3B_INSTANCE_ID"))
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = datadir.DefaultInstanceID()
 	}
-	// PostgreSQL 是唯一存储形态，不再有形态选择 env。
-	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_POSTGRES_URL"))
+	// PostgreSQL 是唯一存储形态：J3b 与主链共用主库，不再有独立 URL。
+	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	if cfg.PostgresURL == "" {
-		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
+		return Config{}, errors.New("缺少 JUHE_AI_POSTGRES_URL")
 	}
-	if cfg.PostgresURL == "" {
-		return Config{}, errors.New("缺少 JUHE_AI_J3B_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
-	}
-	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_BUSINESS_POSTGRES_URL"))
-	if cfg.BusinessPostgresURL == "" {
-		cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
-	}
-	if cfg.BusinessPostgresURL == "" {
-		cfg.BusinessPostgresURL = cfg.PostgresURL
-	}
+	cfg.BusinessPostgresURL = cfg.PostgresURL
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_J3B_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {
 		// 与主配置同源：未显式配置时回落 JUHE_AI_SECRET；仍为空时由组合根
@@ -110,32 +88,20 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.SchemaReady = true
 	cfg.HealthBoundaryReady = true
 	cfg.RuntimeReady = true
-	cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_URL"))
-	if cfg.CircuitRuntimeRedisURL == "" {
-		// A（状态机专项 2026-09-25）：回退行为本身不变（显式设置同值仍允许），
-		// 仅记录"值来自回退"事实，供装配处 ValidateCircuitRuntimeRedisIsolation
-		// 对启用+回退组合 fail-fast。
-		cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
-		cfg.CircuitRuntimeRedisURLFellBack = cfg.CircuitRuntimeRedisURL != ""
-	}
+	// 硬切：J3b 与主链共用唯一 Redis 连接串，键空间由 {namespace:j3b}
+	// 域隔离；不再读取独立的 J3B_CIRCUIT_REDIS_URL/NAMESPACE。
+	cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_URL"))
 	if cfg.CircuitRuntimeRedisURL == "" {
 		if !cfg.AutoClaimed {
-			return Config{}, errors.New("J3b account circuit runtime 缺少 Redis state URL")
+			return Config{}, errors.New("J3b account circuit runtime 缺少 Redis URL")
 		}
-		// 自动认领零配置：无 Redis 时组合根回退进程内 memory 准入，
-		// namespace 不参与装配，不校验。
+		// 单元测试/零配置内存装配路径；生产 gateway 的 JUHE_AI_REDIS_URL 必填。
 	} else {
-		// 2026-09-22 namespace canonical 化：J3b 组合根把同一 namespace 喂给
-		// circuit_runtime（直接拼接型）与 key_model_runtime（双格式去重型），
-		// 加载层统一剥除 `juhe-ai:` 根前缀，短名输入逐字节不变，键空间不再
-		// 因全前缀配置分裂。
-		cfg.CircuitRuntimeRedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"))
-		if cfg.CircuitRuntimeRedisNamespace == "" {
-			cfg.CircuitRuntimeRedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_REDIS_NAMESPACE"))
-		}
-		if cfg.CircuitRuntimeRedisNamespace == "" {
+		baseNamespace := rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_REDIS_NAMESPACE"))
+		if baseNamespace == "" {
 			return Config{}, errors.New("J3b account circuit runtime 缺少 Redis namespace")
 		}
+		cfg.CircuitRuntimeRedisNamespace = rediscfg.DomainNamespace(baseNamespace, rediscfg.DomainJ3B)
 	}
 	cfg.CircuitRuntimeCapacity = 100000
 	if raw := strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_RUNTIME_CAPACITY")); raw != "" {
@@ -154,30 +120,4 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		cfg.CircuitRuntimeRetention = value
 	}
 	return cfg, nil
-}
-
-// ValidateCircuitRuntimeRedisIsolation（A，状态机专项 2026-09-25）fails fast
-// when the J3b circuit runtime is assembled against a Redis URL that came from
-// the main-chain fallback. internal/business/circuit_runtime 携带独立 Lua 副本，
-// 但与主链 gatewaycircuit 共用同名 states hash（键布局同为
-// `juhe-ai:<namespace>:account-circuit:gateway-account-circuit:*`，见
-// circuit_runtime/revision.go accountCircuitRevisionRedisKeys 与
-// gatewaycircuit/store_redis.go redisAccountCircuitStoreKeys），两套状态机的
-// 状态字段语义/校验不变式不保证兼容，并发写同一 hash 会互相毒化。必须在
-// gate 构造处显式拒绝：要么为 circuit runtime 配置独立 Redis URL，要么经评估
-// 确认共享后显式设置同值（那是运维的显式决定，回退不算）。
-//
-// J3b 关闭路径（CircuitRuntimeRedisURL 为空，memory 回退装配）零影响；本方法
-// 不改变 LoadConfig 的回退解析结果（wb_scheduler_config_test 的
-// "happy path with fallbacks" 契约保持）。
-func (c Config) ValidateCircuitRuntimeRedisIsolation() error {
-	// URL 为空说明 circuit runtime 走进程内 memory 装配，与主链无共享面；
-	// 即使标志被误置也不报错（防御臂，保持关闭路径零影响）。
-	if c.CircuitRuntimeRedisURL == "" || !c.CircuitRuntimeRedisURLFellBack {
-		return nil
-	}
-	return errors.New("J3b account circuit runtime 与主链熔断共享状态语义不兼容: " +
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL 未显式配置，当前值回退自主链 JUHE_AI_REDIS_STATE_URL，" +
-		"两套 Lua 状态机并发写同一 states hash 会互相毒化；" +
-		"必须显式配置独立的 JUHE_AI_J3B_CIRCUIT_REDIS_URL（或经评估确认共享后，显式设置同值并知晓风险）")
 }

@@ -178,29 +178,10 @@ func profileUnpinnedMatches(profileID string, expected ...string) bool {
 func resolveCapabilityWriteContext(providerCode, accountType string, profile ProtocolPredicate) (string, []string) {
 	provider := NormalizeProviderToken(providerCode)
 	protocol := NormalizeProviderToken(profile.ProtocolCode)
-	if provider == "" && protocol == "" {
-		// 门面 providerAccountCredentialDriverForContext：双空 token 回退
-		// openai-compatible driver。
-		return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
-	}
 	profileID := profile.ProviderProtocolProfileID
 	openaiProtocol := IsOpenAIProtocolProfileOf(profile)
 	anthropicProtocol := IsAnthropicProtocolProfileOf(profile)
-	// 供应商解耦（设计 §2.1/§9.11）：generic_http 账户 vendor 为空，接口能力
-	// 矩阵行由协议面决定（openai/anthropic/gemini 三个 generic preset）。
-	if provider == "" {
-		switch {
-		case openaiProtocol:
-			return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
-		case anthropicProtocol:
-			return capabilityMatrixAnthropic, append([]string{}, AnthropicEndpointModeValues...)
-		case IsGeminiProtocolProfileOf(profile):
-			return capabilityMatrixGeminiNative, append([]string{}, GeminiEndpointModeValues...)
-		}
-	}
 	switch {
-	case provider == OpenAICompatibleProviderCode && openaiProtocol:
-		return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
 	case provider == GeminiProviderCode && profileUnpinnedMatches(profileID, GeminiOpenAIChatV1BetaProfileID) && openaiProtocol:
 		return capabilityMatrixGeminiOpenAIChat, openAIFamilyVocabulary(accountType)
 	case provider == GptVendorCode && openaiProtocol:
@@ -242,9 +223,6 @@ func resolveCapabilityWriteContext(providerCode, accountType string, profile Pro
 func legacyDefaultEndpointModes(providerCode, accountType string, profile ProtocolPredicate) []string {
 	provider := NormalizeProviderToken(providerCode)
 	protocol := NormalizeProviderToken(profile.ProtocolCode)
-	if provider == "" && protocol == "" {
-		return DefaultOpenAIEndpointModes(ModeDefaultContext{AccountType: accountType})
-	}
 	profileID := profile.ProviderProtocolProfileID
 	openaiProtocol := IsOpenAIProtocolProfileOf(profile)
 	anthropicProtocol := IsAnthropicProtocolProfileOf(profile)
@@ -252,8 +230,7 @@ func legacyDefaultEndpointModes(providerCode, accountType string, profile Protoc
 		return DefaultOpenAIEndpointModes(ModeDefaultContext{ProviderCode: provider, AccountType: accountType})
 	}
 	switch {
-	case (provider == OpenAICompatibleProviderCode ||
-		(provider == GeminiProviderCode && profileUnpinnedMatches(profileID, GeminiOpenAIChatV1BetaProfileID))) && openaiProtocol:
+	case provider == GeminiProviderCode && profileUnpinnedMatches(profileID, GeminiOpenAIChatV1BetaProfileID) && openaiProtocol:
 		return openAIDefaults()
 	case provider == GptVendorCode && openaiProtocol:
 		return openAIDefaults()

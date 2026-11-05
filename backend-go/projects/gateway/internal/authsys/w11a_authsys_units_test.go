@@ -452,7 +452,7 @@ func TestW11ASharedDriverArms(t *testing.T) {
 func TestW11ASharedStateStoreArms(t *testing.T) {
 	store, server := newMiniredisStore(t)
 	// Malformed stored JSON decodes as a miss.
-	key := "juhe-ai:dev:state:test_store:w11a-bad-json"
+	key := "juhe-ai:{dev}:state:test_store:w11a-bad-json"
 	if err := server.Set(key, "{not-json"); err != nil {
 		t.Fatal(err)
 	}

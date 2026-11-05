@@ -173,8 +173,7 @@ func (s *Store) ListProviderModelsForRequest(ctx context.Context, providerCode, 
 	if len(sourceCodes) == 0 {
 		return []ModelCatalogItem{}, nil
 	}
-	builtInCodes := modelCatalogBuiltInSourceProviderCodes(providerCode, sourceCodes)
-	builtIn, err := s.listBuiltInCatalogModels(ctx, builtInCodes, includeInactive)
+	builtIn, err := s.listBuiltInCatalogModels(ctx, sourceCodes, includeInactive)
 	if err != nil {
 		return nil, err
 	}
@@ -212,13 +211,6 @@ func (s *Store) ListProviderModelsForRequest(ctx context.Context, providerCode, 
 	return filtered, nil
 }
 
-// 供应商 token（vendor 值域沿用旧 providerCode 同名值；hybrid/openai 仅用于
-// 内置源剔除与 hybrid 身份保留判定）。
-const (
-	hybridProviderCode = "hybrid"
-	openaiProviderCode = "openai"
-)
-
 // modelCatalogSourceProviderCodes 归一化目录维度入参（设计 §3：vendor_code 即
 // 目录归属维度，每个 vendor 即自身目录维度，无协议子供应商源扩展）。
 func modelCatalogSourceProviderCodes(providerCode string) []string {
@@ -227,23 +219,6 @@ func modelCatalogSourceProviderCodes(providerCode string) []string {
 		return []string{}
 	}
 	return []string{normalized}
-}
-
-// modelCatalogBuiltInSourceProviderCodes mirrors the same-named helper: only
-// the openai-compatible target drops itself from its built-in sources (it has
-// no built-in catalog of its own).
-func modelCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderCodes []string) []string {
-	if normalizeProviderToken(providerCode) != openaiProviderCode {
-		return sourceProviderCodes
-	}
-	codes := []string{}
-	for _, code := range sourceProviderCodes {
-		if normalizeProviderToken(code) == openaiProviderCode {
-			continue
-		}
-		codes = append(codes, code)
-	}
-	return codes
 }
 
 // builtInCatalogColumns mirrors the models 单表 builtin 读投影：旧目录行形状
@@ -860,8 +835,8 @@ func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query Mod
 // （hybrid 不在 vendors 值域，经 modelOptionSourceCodes 自然排除），只取
 // DISTINCT provider_code，不受 options endpoint LIMIT 50 截断。
 func (s *Store) ListProviderModelOptionProviderCodes(ctx context.Context, query ModelOptionQuery) ([]string, error) {
-	// 单表后 DISTINCT 聚合只看 vendor 窗口（builtin ∪ global/personal 同表），
-	// openai 自剔除臂不再影响去重结果，builtInCodes 弃用。
+	// 单表后 DISTINCT 聚合只看 vendor 窗口（builtin ∪ global/personal 同表）；
+	// openai 自剔除臂随通用连接器退场删除，builtin 源与 custom 源同集。
 	sourceCodes, _, err := s.modelOptionSourceCodes(ctx, query.ProviderCode, query.Protocol)
 	if err != nil {
 		return nil, err
@@ -927,7 +902,7 @@ func collectDistinctProviderCodes(rows *sql.Rows, codes map[string]bool) error {
 func (s *Store) modelOptionSourceCodes(ctx context.Context, providerCode, protocol string) (sourceCodes, builtInCodes []string, err error) {
 	if providerCode != "" {
 		sourceCodes = modelCatalogSourceProviderCodes(providerCode)
-		return sourceCodes, modelCatalogBuiltInSourceProviderCodes(providerCode, sourceCodes), nil
+		return sourceCodes, sourceCodes, nil
 	}
 	sourceCodes, err = s.EnabledNonHybridProviderCodes(ctx)
 	if err != nil {
@@ -1298,8 +1273,7 @@ func (s *Store) FindProviderModelCapabilities(ctx context.Context, providerCode,
 	if len(sourceCodes) == 0 {
 		return nil, nil
 	}
-	builtInCodes := modelCatalogBuiltInSourceProviderCodes(providerCode, sourceCodes)
-	builtIn, err := s.findBuiltInTestCatalogItems(ctx, builtInCodes, trimmedModel)
+	builtIn, err := s.findBuiltInTestCatalogItems(ctx, sourceCodes, trimmedModel)
 	if err != nil {
 		return nil, err
 	}

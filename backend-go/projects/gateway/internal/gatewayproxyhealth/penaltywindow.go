@@ -552,7 +552,7 @@ return {1, 0, 0, 0}
 
 func (l *PenaltyWindowRateLimiter) redisStateClient() (redisStateClient, error) {
 	if !l.redisDriver || l.redisClient == nil {
-		return nil, errors.New("JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置")
+		return nil, errors.New("JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置")
 	}
 	return l.redisClient, nil
 }

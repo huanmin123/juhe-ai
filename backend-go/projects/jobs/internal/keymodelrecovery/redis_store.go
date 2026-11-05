@@ -30,7 +30,7 @@ func LoadRedisConfig(getenv func(string) string) (RedisConfig, error) {
 	if getenv == nil {
 		return RedisConfig{}, errors.New("getenv 不能为空")
 	}
-	cfg := RedisConfig{URL: strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL")), Namespace: strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))}
+	cfg := RedisConfig{URL: strings.TrimSpace(getenv("JUHE_AI_REDIS_URL")), Namespace: strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))}
 	// Redis state selects the distributed profile; jobs without a Redis state
 	// URL are the standalone topology.
 	cfg.Enabled = cfg.URL != ""
@@ -50,6 +50,9 @@ func LoadRedisConfig(getenv func(string) string) (RedisConfig, error) {
 	if !namespacePartPattern.MatchString(cfg.Namespace) {
 		return RedisConfig{}, errors.New("启用 model-recovery 必须配置合法 JUHE_AI_REDIS_NAMESPACE")
 	}
+	// 与 gateway key_model_runtime 使用同一域 namespace；否则 recovery 扫的是
+	// 基础 namespace，永远看不到 gateway 写在 {ns:keymodel} 下的 due/state。
+	cfg.Namespace = rediscfg.DomainNamespace(cfg.Namespace, rediscfg.DomainKeyModel)
 	return cfg, nil
 }
 
@@ -59,7 +62,7 @@ func NewRedisKeys(namespace string) (RedisKeys, error) {
 	if !namespacePartPattern.MatchString(strings.TrimSpace(namespace)) {
 		return RedisKeys{}, errors.New("Redis namespace 无效")
 	}
-	return RedisKeys{Prefix: "juhe-ai:" + strings.TrimSpace(namespace) + ":" + redisGroup}, nil
+	return RedisKeys{Prefix: rediscfg.NamespacedKey("juhe-ai:"+redisGroup, strings.TrimSpace(namespace))}, nil
 }
 func (k RedisKeys) State(hash string) string { return k.Prefix + ":state:" + hash }
 func (k RedisKeys) Lease(hash string) string { return k.Prefix + ":lease:" + hash }
@@ -72,7 +75,7 @@ func (k RedisKeys) SourceProbes(sourceID string) string {
 }
 
 type RedisStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	keys   RedisKeys
 	logger *slog.Logger
 }
@@ -81,15 +84,15 @@ func OpenRedisStore(cfg RedisConfig) (*RedisStore, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("model-recovery Redis 未启用")
 	}
-	options, err := redis.ParseURL(cfg.URL)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: cfg.URL})
 	if err != nil {
-		return nil, fmt.Errorf("解析 model-recovery Redis URL: %w", err)
+		return nil, fmt.Errorf("创建 model-recovery Redis 客户端: %w", err)
 	}
 	keys, err := NewRedisKeys(cfg.Namespace)
 	if err != nil {
 		return nil, err
 	}
-	return &RedisStore{client: redis.NewClient(options), keys: keys, logger: slog.Default()}, nil
+	return &RedisStore{client: client, keys: keys, logger: slog.Default()}, nil
 }
 
 func (s *RedisStore) Close() error {

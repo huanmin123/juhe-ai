@@ -106,13 +106,13 @@ func TestW14JStorePureHelpers(t *testing.T) {
 	if got := encodeJSON(map[string]string{"k": "v"}); got != `{"k":"v"}` {
 		t.Fatalf("encodeJSON: %s", got)
 	}
-	if got := redisNamespacedKey("plain", "w14j-ns"); got != "juhe-ai:w14j-ns:plain" {
+	if got := redisNamespacedKey("plain", "w14j-ns"); got != "juhe-ai:{w14j-ns}:plain" {
 		t.Fatalf("无前缀键: %s", got)
 	}
-	if got := redisNamespacedKey("juhe-ai:other:plain", "w14j-ns"); got != "juhe-ai:w14j-ns:other:plain" {
+	if got := redisNamespacedKey("juhe-ai:other:plain", "w14j-ns"); got != "juhe-ai:{w14j-ns}:other:plain" {
 		t.Fatalf("根前缀键: %s", got)
 	}
-	if got := redisNamespacedKey("juhe-ai:w14j-ns:already", "w14j-ns"); got != "juhe-ai:w14j-ns:already" {
+	if got := redisNamespacedKey("juhe-ai:{w14j-ns}:already", "w14j-ns"); got != "juhe-ai:{w14j-ns}:already" {
 		t.Fatalf("已带 namespace 前缀: %s", got)
 	}
 	// validateOperationPayload 关键分支。

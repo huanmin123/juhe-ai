@@ -141,7 +141,7 @@ func TestGatewayKeyModelRouteMatchesMainProbe(t *testing.T) {
 	fingerprint := "fp-probe"
 	account := AccountCandidate{
 		ID:                        "a-1",
-		VendorCode:                "openai",
+		VendorCode:                "gpt",
 		HealthCheckModel:          "gpt-probe",
 		HealthCheckEndpointMode:   "chat_sse",
 		DispatchRevision:          &revision,

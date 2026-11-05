@@ -3,7 +3,6 @@ package circuitstore
 import (
 	"database/sql"
 	"testing"
-
 )
 
 func seedIncident(t *testing.T, db *sql.DB, scopeKey, accountID, runtimeKey, state string, generation, dispatchRevision, ledgerRevision, updatedAt int64) {
@@ -38,4 +37,3 @@ func kitSeedIncident(t *testing.T, db *sql.DB, scopeKey, accountID, runtimeKey, 
 		t.Fatal(err)
 	}
 }
-

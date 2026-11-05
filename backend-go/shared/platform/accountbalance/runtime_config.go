@@ -59,7 +59,7 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	// 未配置 = 依赖缺席，家族合法缺席（非开关）；一旦有 PG 即恒开，任何
 	// 错误 fail-closed。owner 缺省 go、OWNER_ID 缺省主机名、凭据缺省回落
 	// 主配置。
-	storeURL := firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
+	storeURL := strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	if storeURL == "" {
 		return RuntimeConfig{Enabled: false, Now: time.Now}, nil
 	}
@@ -75,18 +75,8 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 			return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_OWNER_ID 是必填配置")
 		}
 	}
-	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_STORE"))))
-	if mode == "" {
-		// 2026-09-21 零配置：唯一合法存储即 postgres，未配置时直接默认。
-		mode = StorePostgres
-	}
-	if mode != StorePostgres {
-		return RuntimeConfig{}, errors.New("J2 Go owner 只允许 JUHE_AI_ACCOUNT_BALANCE_STORE=postgres")
-	}
-	cfg.Store = StoreConfig{Mode: mode, PostgresURL: storeURL}
-	if cfg.Store.PostgresURL == "" {
-		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
-	}
+	// 唯一合法存储即 postgres；存储形态不再作为配置输入。
+	cfg.Store = StoreConfig{Mode: StorePostgres, PostgresURL: storeURL}
 	var err error
 	// 清理批次 C4（2026-09-30）：连接池上限族 env（*_POSTGRES_MAX_OPEN_CONNS
 	// 等 4 个）全库五源核对零引用，收编为默认常量（单机单实例形态下从未
@@ -95,10 +85,7 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	cfg.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	cfg.InputPostgresMaxOpenConns = defaultPostgresMaxOpenConns
 	cfg.InputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
-	cfg.BusinessPostgresURL = firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"), getenv("JUHE_AI_BUSINESS_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
-	if cfg.BusinessPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("J2 direct input 缺少 JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
-	}
+	cfg.BusinessPostgresURL = storeURL
 	cfg.CredentialSecret = firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET"), getenv("JUHE_AI_SECRET"))
 	if cfg.CredentialSecret == "" {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET 是必填配置")

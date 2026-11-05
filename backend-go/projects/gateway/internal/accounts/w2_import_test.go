@@ -37,18 +37,18 @@ func w2APIKeyAccount(name, groupName string) map[string]any {
 	return map[string]any{
 		"ref":                       "acc-" + name,
 		"name":                      name,
-		"providerCode":              "openai",
+		"providerCode":              "gpt",
 		"providerProtocolProfileId": openAICompatibleProfileID,
 		"type":                      "api_key",
 		"status":                    "active",
 		"groupName":                 groupName,
 		"connections": []any{map[string]any{
-			"connectionPresetCode": "generic_openai_v1",
+			"connectionPresetCode": "gpt_openai_v1",
 			"baseUrl":              "https://api.openai.com/v1",
 			"endpointModes":        []any{"chat_json", "chat_sse"},
 			"enabled":              true,
 		}},
-		"healthCheckConnectionPresetCode": "generic_openai_v1",
+		"healthCheckConnectionPresetCode": "gpt_openai_v1",
 		"healthCheckEndpointMode":         "chat_json",
 		"healthCheckModel":                "gpt-4o-mini",
 		"credentials": map[string]any{
@@ -122,7 +122,7 @@ func TestW2ImportPreviewNativeSuccess(t *testing.T) {
 	if item.Ref == nil || *item.Ref != "acc-导入一" || item.GroupName == nil || *item.GroupName != "新分组" {
 		t.Fatalf("账户项回显字段不一致：%+v", item)
 	}
-	if item.ProviderCode == nil || *item.ProviderCode != "openai" ||
+	if item.ProviderCode == nil || *item.ProviderCode != openAICompatibleProvider ||
 		item.ProviderProtocolProfileID == nil || *item.ProviderProtocolProfileID != openAICompatibleProfileID ||
 		item.ProtocolCode == nil || *item.ProtocolCode != "openai" || item.ProtocolVersion == nil || *item.ProtocolVersion != "v1" {
 		t.Fatalf("协议档案回显不一致：%+v", item)
@@ -199,7 +199,7 @@ func TestW2ImportPreviewFieldValidation(t *testing.T) {
 		message string
 	}{
 		{"providerCode 缺失", map[string]any{"name": "a", "type": "api_key", "status": "active", "groupName": "g", "credentials": map[string]any{}}, "账户 providerCode 不能为空"},
-		{"type 缺失", map[string]any{"providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID, "name": "a", "status": "active", "groupName": "g"}, "账户 type 不能为空"},
+		{"type 缺失", map[string]any{"providerCode": "gpt", "providerProtocolProfileId": openAICompatibleProfileID, "name": "a", "status": "active", "groupName": "g"}, "账户 type 不能为空"},
 		{"status 不支持", w2WithField(w2APIKeyAccount("a", "g"), "status", "flying"), "账户状态不支持：flying"},
 		{"名称为空", w2WithField(w2APIKeyAccount("a", "g"), "name", "  "), "账户名称不能为空"},
 		{"concurrencyLimit 非整数", w2WithField(w2APIKeyAccount("a", "g"), "concurrencyLimit", "10"), "账户 concurrencyLimit必须是整数"},
@@ -515,10 +515,10 @@ func TestW2ImportConfirmExecutesPlan(t *testing.T) {
 	// HTTP confirm 链路：覆盖 handler、审计 sink 与执行器。
 	body := `{"data":{"type":"` + accountImportProtocolType + `","version":1,` +
 		`"proxies":[{"ref":"p1","name":"导入代理","type":"socks5","host":"proxy.example.com","port":1080}],` +
-		`"accounts":[{"ref":"a1","name":"导入账户","providerCode":"openai","providerProtocolProfileId":"` + openAICompatibleProfileID + `",` +
+		`"accounts":[{"ref":"a1","name":"导入账户","providerCode":"gpt","providerProtocolProfileId":"` + openAICompatibleProfileID + `",` +
 		`"type":"api_key","status":"active","groupName":"导入分组","proxyRef":"p1",` +
 		`"credentials":{"api_key":"sk-import-1","base_url":"https://api.openai.com/v1"},` +
-		`"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}]},` +
+		`"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}]},` +
 		`"options":{"createMissingGroups":true,"createMissingProxies":true,"skipDuplicates":true}}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", body)
 	if code != http.StatusOK {
@@ -606,7 +606,7 @@ func TestW2ImportMediaDomainPreservesPendingTest(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	env.login(t, "root", "root-pass", "super_admin")
-	body := `{"data":{"type":"` + accountImportProtocolType + `","version":1,"accounts":[{"ref":"video-import","name":"导入视频账户","providerCode":"openai","providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active","groupName":"导入视频分组","credentials":{"api_key":"sk-import-video-1","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["video_create"]},"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["video_create","video_get","video_content","video_cancel"],"enabled":true}],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"video_create","healthCheckModel":"gpt-4o-mini"}]},"options":{"createMissingGroups":true,"createMissingProxies":false,"skipDuplicates":true}}`
+	body := `{"data":{"type":"` + accountImportProtocolType + `","version":1,"accounts":[{"ref":"video-import","name":"导入视频账户","providerCode":"gpt","providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active","groupName":"导入视频分组","credentials":{"api_key":"sk-import-video-1","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["video_create"]},"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["video_create","video_get","video_content","video_cancel"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"video_create","healthCheckModel":"gpt-4o-mini"}]},"options":{"createMissingGroups":true,"createMissingProxies":false,"skipDuplicates":true}}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", body)
 	if code != http.StatusOK {
 		t.Fatalf("媒体账户导入确认失败：%d %v", code, payload)

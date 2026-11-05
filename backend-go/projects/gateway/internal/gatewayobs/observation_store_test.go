@@ -279,9 +279,9 @@ func TestRedisStoreConstructor(t *testing.T) {
 	}{
 		{"missing-url", "  ", "", "dev", "performance routing observability 缺少 Redis URL", ""},
 		{"bad-name", "redis://state.example:6379", "bad name!", "dev", "routing observability name 非法", ""},
-		{"default-name", "redis://state.example:6379", "", "dev", "", "juhe-ai:dev:gateway-routing-observability:v1"},
-		{"custom-name", "redis://state.example:6379", "Gateway-Routing-Observability", "dev", "", "juhe-ai:dev:gateway-routing-observability:v1"},
-		{"namespaced-key", "redis://state.example:6379", "", "juhe-ai:dev", "", "juhe-ai:dev:gateway-routing-observability:v1"},
+		{"default-name", "redis://state.example:6379", "", "dev", "", "juhe-ai:{dev}:gateway-routing-observability:v1"},
+		{"custom-name", "redis://state.example:6379", "Gateway-Routing-Observability", "dev", "", "juhe-ai:{dev}:gateway-routing-observability:v1"},
+		{"namespaced-key", "redis://state.example:6379", "", "juhe-ai:dev", "", "juhe-ai:{dev}:gateway-routing-observability:v1"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -320,7 +320,7 @@ func TestRedisStoreRecordBatchScriptArgs(t *testing.T) {
 	if eval.script != redisGatewayRoutingObservabilityRecordScript {
 		t.Fatalf("Lua 脚本必须原样提交")
 	}
-	if len(eval.keys) != 1 || eval.keys[0] != "juhe-ai:dev:gateway-routing-observability:v1" {
+	if len(eval.keys) != 1 || eval.keys[0] != "juhe-ai:{dev}:gateway-routing-observability:v1" {
 		t.Fatalf("keys = %v", eval.keys)
 	}
 	// 相同 key 的计数必须先合并再进脚本。
@@ -364,7 +364,7 @@ func TestRedisStoreSnapshot(t *testing.T) {
 	if snapshot.Counters["attempt.started"] != 12 {
 		t.Fatalf("counters = %v", snapshot.Counters)
 	}
-	if len(client.sends) != 1 || strings.Join(client.sends[0].args, "|") != "HGETALL|juhe-ai:dev:gateway-routing-observability:v1" {
+	if len(client.sends) != 1 || strings.Join(client.sends[0].args, "|") != "HGETALL|juhe-ai:{dev}:gateway-routing-observability:v1" {
 		t.Fatalf("sends = %v", client.sends)
 	}
 }
@@ -472,7 +472,7 @@ func TestRedisStoreRecordScriptAgainstMiniredis(t *testing.T) {
 		t.Fatalf("counters = %v", snapshot.Counters)
 	}
 	// version 字段由同一 Lua 写入。
-	raw, err := client.HGetAll(ctx, "juhe-ai:dev:gateway-routing-observability:v1").Result()
+	raw, err := client.HGetAll(ctx, "juhe-ai:{dev}:gateway-routing-observability:v1").Result()
 	if err != nil {
 		t.Fatal(err)
 	}

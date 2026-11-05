@@ -955,7 +955,7 @@ func TestW1KBusinessOwnerGateArms(t *testing.T) {
 		mutate func(*runtimeConfig)
 		want   string
 	}{
-		{"缺少业务 URL", func(c *runtimeConfig) { c.BusinessPostgresURL = "" }, "JUHE_AI_BUSINESS_POSTGRES_URL"},
+		{"缺少业务 URL", func(c *runtimeConfig) { c.BusinessPostgresURL = "" }, "JUHE_AI_POSTGRES_URL"},
 	}
 	for _, fail := range fails {
 		candidate := valid

@@ -190,7 +190,7 @@ func TestW12bRedisConfigArms(t *testing.T) {
 	}
 	// 启用但 namespace 非法。
 	if _, err := LoadRedisConfig(func(key string) string {
-		if key == "JUHE_AI_REDIS_STATE_URL" {
+		if key == "JUHE_AI_REDIS_URL" {
 			return "redis://127.0.0.1:6379/9"
 		}
 		return "illegal namespace!"
@@ -199,13 +199,16 @@ func TestW12bRedisConfigArms(t *testing.T) {
 	}
 	// 启用且合法。
 	cfg, err = LoadRedisConfig(func(key string) string {
-		if key == "JUHE_AI_REDIS_STATE_URL" {
+		if key == "JUHE_AI_REDIS_URL" {
 			return "redis://127.0.0.1:6379/9"
 		}
 		return "w12b-space"
 	})
 	if err != nil || !cfg.Enabled {
 		t.Fatalf("合法配置应启用: %#v %v", cfg, err)
+	}
+	if cfg.Namespace != "w12b-space:keymodel" {
+		t.Fatalf("recovery 必须使用 keymodel 域 namespace: %q", cfg.Namespace)
 	}
 
 	// RedisKeys namespace 校验与键族。

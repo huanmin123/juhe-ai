@@ -1,5 +1,7 @@
 # 单机 Docker 部署（国内服务器，go-only）
 
+> 面向部署者的完整手动步骤（新机初始化、`.env` 模板、首次部署、验证、升级、回滚、备份、排障）见 `docs/deploy/部署指南.md`。本文是配置契约与发布机制说明，含历史迁移记录；当前操作以部署指南与 `docs/待办与阻塞事项.md` 为准。
+
 国内单台服务器（Debian 13）上以 Docker Compose 运行全套 juhe-ai：PostgreSQL + Redis + gateway/jobs/maintenance（本地交叉编译的二进制）+ Caddy 入口。这是替代 K3s 混合形态的 go-only 目标部署形态；服务器地址、资产、密码与运行事实记录在 `.local/project-resources/prod/`（私有，不入库——BUG-0225）。
 
 ## 拓扑
@@ -7,7 +9,7 @@
 ```
 :80 / :443 Caddy ──> gateway:3000（管理 SPA /__aisys__/ + OpenAI 兼容 /v1）
 gateway ─┬─ postgres:5432（单库 juhe_ai，7 schema，见下）
-         └─ redis:6379（DB0=cache，DB1=state，DB2=J3b circuit，namespace=prod）
+         └─ redis:6379（DB0；cache/state/J3b circuit 等按 {namespace:域} 键空间隔离，namespace=prod）
 jobs ─────┘（与 gateway 共用同一 PG/Redis/namespace）
 maintenance：compose --profile tool 一次性容器（幂等 CLI）
 Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 127.0.0.1:3306（gateway GET /__aisys__/metrics）
@@ -23,12 +25,14 @@ Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 12
 
 一次性迁移命令（上游 Base URL 版本根语义 v2，随本次交付引入；生产执行需用户单独授权）：`juhe-ai-maintenance --migrate-upstream-base-url-version-root [--dry-run] --dsn "$JUHE_AI_POSTGRES_URL" --secret "$JUHE_AI_SECRET" --manifest-out <path>`——按账户协议族等价回填 `account_connections.base_url` 与 `accounts.credentials_encrypted.base_url` 到版本根语义：openai 族空路径补 `/v1`（GLM 官方根、gemini-openai 根、已含 `/v1` 的不动，其他非空路径进人工复核桶）；anthropic 族空补 `/v1`、以 `/v1` 结尾不动；gemini 原生空补 `/v1beta`；qwen 剥 `/compatible-mode/v1` 后缀回 origin；volcengine 空补 `/api/v3`、已含不动。含 dry-run manifest 与 preflight/postflight 核验，幂等可重入；执行前先停写并完成可恢复备份。**`--secret` 必传（2026-11-03 生产实证）**：该命令只读 flag 不回读环境变量，缺省回落 Node 开发默认密钥，生产凭据会 100% `credential_decrypt_failed` 进 review 桶、凭据内裸 origin 无法清洗，随后 upgrade postflight 以同一检查失败；补 `--secret` 重跑 apply 即收敛（幂等）。**`--manifest-out` 建议写挂载路径 `/app/backend/data/<文件名>`**（maintenance 容器 2026-11-03 起与 jobs 同款挂载 data/logs，manifest 落宿主机 `data/app/data/` 可事后复核；此前无挂载时 manifest 随 `run --rm` 容器销毁）。`upgrade` 的 postflight `upstream-base-url-version-root` 检查失败时，先跑本命令 apply 再重跑 upgrade（2026-11-02、11-03 两季实证）。
 
-一次性搜索索引退役命令（账户名称搜索去索引化，2026-11-03 T116）：先**构建/上传**含该子命令的 maintenance 镜像（不重启 gateway/jobs）；直查代码发布、备份与清退按下方同一停写窗口顺序执行。窗口内执行 `docker compose --profile tool run --rm maintenance drop-retired-account-name-search-index --dsn "$JUHE_AI_POSTGRES_URL" --stop-write-confirmed --backup-confirmed`——单事务清退 `juhe_business.account_name_search_terms` / `account_name_search_documents` / `account_list_availability_projection_search_terms` 三张派生表、`account_list_availability_projection_index.search_index_complete` 列与残留触发器函数 `account_list_availability_name_search_dirty_trigger()`；幂等可重跑，两个确认均必填（缺一 exit 2）；只读预检用 `--dry-run`（不要求确认，输出目标库与各对象存在状态）。**执行顺序固定为同一停写窗口：停 gateway/jobs → 备份并验证（此时旧代码已停止、派生索引完整，是回滚恢复点）→ 发布/升级直查代码 → dry-run → 退役命令 → 拉起 gateway/jobs → 验证搜索**；回滚 = 恢复该备份 + 回退旧镜像，DROP 后只换二进制不可行。新库由 `--ensure-schema` 直接建出无索引层形态，无需执行本命令。
+一次性清退命令（2026-11-05 openai/hybrid/generic_http 账户退役，revision 17 前置）：`juhe-ai-maintenance purge-unsupported-vendor-accounts --dry-run --manifest-out /app/backend/data/purge-unsupported-vendors-<批次>.json --dsn "$JUHE_AI_POSTGRES_URL"` 只读探测并冻结目标账户 ID 清单（目标谓词：`vendor_code IS NULL OR connection_driver_code='generic_http' OR vendor_code IS DISTINCT FROM connection_driver_code`），stdout 输出每表行数、日期范围与 manifest 哈希；人工核对后去掉 `--dry-run` 并补 `--stop-write-confirmed --backup-confirmed` 正式执行，缺一 exit 2。清退按授权实例 → 授权/quota → 非 FK 运行态/任务 → 历史 usage/audit/stats → accounts（级联连接/映射/支持模型/分组绑定）→ 非九家 vendors/models 的顺序分批删除，幂等可重入；manifest 漂移会拒绝执行。**清退与随后 revision 17 的 accounts vendor/driver CHECK 均不可逆**，回滚只能恢复停写后的整库备份；必须先用 `--dry-run` 给用户确认行数与历史数据影响。窗口顺序见 `docs/deploy/部署指南.md` §9.4。
+
+一次性搜索索引退役命令（账户名称搜索去索引化，2026-11-03 T119）：先**构建/上传**含该子命令的 maintenance 镜像（不重启 gateway/jobs）；直查代码发布、备份与清退按下方同一停写窗口顺序执行。窗口内执行 `docker compose --profile tool run --rm maintenance drop-retired-account-name-search-index --dsn "$JUHE_AI_POSTGRES_URL" --stop-write-confirmed --backup-confirmed`——单事务清退 `juhe_business.account_name_search_terms` / `account_name_search_documents` / `account_list_availability_projection_search_terms` 三张派生表、`account_list_availability_projection_index.search_index_complete` 列与残留触发器函数 `account_list_availability_name_search_dirty_trigger()`；幂等可重跑，两个确认均必填（缺一 exit 2）；只读预检用 `--dry-run`（不要求确认，输出目标库与各对象存在状态）。**执行顺序固定为同一停写窗口：停 gateway/jobs → 备份并验证（此时旧代码已停止、派生索引完整，是回滚恢复点）→ 发布/升级直查代码 → dry-run → 退役命令 → 拉起 gateway/jobs → 验证搜索**；回滚 = 恢复该备份 + 回退旧镜像，DROP 后只换二进制不可行。新库由 `--ensure-schema` 直接建出无索引层形态，无需执行本命令。
 ```
 
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
-- **存量库结构重建 + 业务回迁（2026-10-22 上线采用，一次性）**：当旧库与 HEAD schema 差额过大、无法用 `--ensure-schema` 就地升级时，按「新建空库 → `--ensure-schema --seed` → `--import-legacy-business` 回迁业务配置」切换。回迁命令为 `juhe-ai-maintenance --import-legacy-business --legacy-dsn <旧库> --dsn <目标库> --secret <JUHE_AI_SECRET>`（`--dry-run` 完整执行后回滚只出报告）。只回迁账户/连接/模型/分组/路由/API Key/授权/设置/团队/标签/外部来源/配额窗口，**历史用量、审计、操作日志、统计、模型检测运行态整体丢弃**；凭据密文逐字节复制，要求新旧库同一 `JUHE_AI_SECRET`。目标库必须为空业务库（回迁拒绝非空库），全部写入单事务提交。账户名称搜索直读 `accounts.name`，回迁不再需要写任何派生词项表（2026-11-03 T116 去索引化）。契约与验收口径见 `docs/functions/供应商与上游协议面重构设计.md` §10.1。
-- 7 个 PG schema：5 个由 `maintenance --ensure-schema` 建（business/dataset/usage/stats/codex_context；原 juhe_chat 组已随 AI 问答退役整体移除，ensure 不再创建）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres`（J2 account_balance 四表，2026-10-02 起取代手工 SQL）建表（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
+- **存量库结构重建 + 业务回迁（2026-10-22 上线采用，一次性）**：当旧库与 HEAD schema 差额过大、无法用 `--ensure-schema` 就地升级时，按「新建空库 → `--ensure-schema --seed` → `--import-legacy-business` 回迁业务配置」切换。回迁命令为 `juhe-ai-maintenance --import-legacy-business --legacy-dsn <旧库> --dsn <目标库> --secret <JUHE_AI_SECRET>`（`--dry-run` 完整执行后回滚只出报告）。只回迁账户/连接/模型/分组/路由/API Key/授权/设置/团队/标签/外部来源/配额窗口，**历史用量、审计、操作日志、统计、模型检测运行态整体丢弃**；凭据密文逐字节复制，要求新旧库同一 `JUHE_AI_SECRET`。目标库必须为空业务库（回迁拒绝非空库），全部写入单事务提交。账户名称搜索直读 `accounts.name`，回迁不再需要写任何派生词项表（2026-11-03 T119 去索引化）。契约与验收口径见 `docs/functions/供应商与上游协议面重构设计.md` §10.1。
+- 7 个 PG schema：5 个由 `maintenance --ensure-schema` 建（business/dataset/usage/stats/codex_context；原 juhe_chat 组已随 AI 问答退役整体移除，ensure 不再创建）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres --dsn "$JUHE_AI_POSTGRES_URL"`（J2 account_balance 四表，2026-10-02 起取代手工 SQL）建表（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
 - `--ensure-schema` 幂等契约（2026-10-14 起）：普通 ensure **恢复幂等加法**——schema 收敛只剩建表/补列/建索引/内置行补种等加法动作，**studio 退场清理已移出普通 ensure**（studio 行/列/表改由一次性显式命令 `--apply-studio-retirement` 清理，见下「更新发布」节）；2026-10-30 B08 曾撤除原 12 条幂等收列语句（破坏相一度清零）；2026-10-30 B09 起普通 ensure **当前仅 2 条破坏性 DROP TABLE（B09 授权范围窗口退役）**，破坏相仍须按「更新发布」节维护窗口执行，**存量库上跑 ensure 前必须先停写并完成可恢复备份**——写者运行时跑 ensure 会打断仍在运行的旧版进程，ensure 之后才备份会让备份失去回滚价值。
 - **[已退役 2026-10-31]** 原「chat 库加表随例行 `--ensure-schema` 幂等生效」条款随 AI 问答退役失效：`juhe_chat` 组（含 2026-10-02 的 `chat_user_tool_preferences` 等 11 张 chat_* 表）已从 `--ensure-schema` 整体移除，ensure 不再创建或维护该 schema（存量库残留 schema 的 drop 由维护窗口另行授权）。
 - 模型检测题库内置题（2026-10-09 起）：`model_check_question_bank` 新增 `is_builtin` 列（`--ensure-schema` 幂等补列，PG `ADD COLUMN IF NOT EXISTS`），8 道系统内置公开题（草莓字母计数、9.11 vs 9.9、糖果多步算术、牛奶稀释等）由 seed 幂等写入（固定 id 条件 upsert：新行插入、存量内置行题面随 seed 版本恢复权威值）。生效方式：发版后跑 `maintenance --ensure-schema --seed`——只跑 ensure-schema 会补列但不写内置题数据；seed 幂等可重入，对用户自拟题无副作用。
@@ -52,7 +56,7 @@ Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 12
 
   ```sql
   ALTER SYSTEM SET log_min_duration_statement = '500ms';  -- >500ms 语句逐条进容器 json-file 日志
-  ALTER SYSTEM SET log_line_prefix = '%m [%p] app=%a ';   -- 慢语句/活动日志带 app= 来源标签（与 application_name 契约配套，缺失则慢语句无法区分来源进程）
+  ALTER SYSTEM SET log_line_prefix = '%m [%p] app=%a ';   -- 慢语句/活动日志带 app= 来源标签（与进程 PGAPPNAME 契约配套，缺失则慢语句无法区分来源进程）
   ALTER SYSTEM SET log_connections = 'on';                -- 连接建立留痕
   ALTER SYSTEM SET log_lock_waits = 'on';                 -- 超过 deadlock_timeout 的锁等待逐条留痕（锁取证/死锁现场依赖，监控手册 5.8）
   SELECT pg_reload_conf();
@@ -60,7 +64,7 @@ Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 12
 
   该日志不进 Loki（alloy 只采应用容器），追溯窗口受 docker `daemon.json` 日志轮转（20MB×3）约束，**容器重建会丢日志，重建前先备份**（运维手册 5.8 节同规）。可直接复制的整套重放命令在 `.local` 运维手册「首次初始化序列」第 1 步。
 - redis 服务 `command` 预置 `--slowlog-max-len 1024`（2026-10-08 起，慢命令可追溯契约；阈值维持默认 `slowlog-log-slower-than=10ms`——生产慢命令实测集中在 10~15ms 的 Lua 脚本，收紧到 1ms 会用常规 eval 刷满环形缓冲，丧失巡检价值）。持久留痕由宿主机 `/opt/juhe-monitoring/redis-slowlog/` 快照 cron（每 5 分钟 id 增量导出 jsonl + node-exporter textfile 指标）负责，安装与口径见 `.local` 监控手册；slowlog 本身在 Redis 重启后清空，快照文件不受影响。
-- **连接串 `application_name` 契约（2026-10-08 起）**：PG 慢语句日志与 `pg_stat_activity` 靠 `app=%a` 区分来源，三进程共用主库 URL 无法在 `.env` 层区分，故 gateway/jobs/maintenance 在 compose `environment` 对 `JUHE_AI_POSTGRES_URL` 追加 `?application_name=juhe-ai-gateway|juhe-ai-jobs|juhe-ai-maintenance`；子系统专用 URL（`RUNTIME_LOG`/`ACCOUNT_HEALTH_INPUT`/`MAINTENANCE_J3A`/`MAINTENANCE_J3B` 各 `*_POSTGRES_URL`）在 `.env` 值内自带 `?application_name=juhe-ai-<子系统>`。当前实例各 URL 均无其他查询参数，追加符恒为 `?`；若未来某个 URL 值自带参数，需把该处追加符改为 `&` 并同步本节。（原 `TABLE_MONITOR`/`GO_RUNTIME_METRICS` 专用 URL 随两子系统 2026-10-14 下线删除。）
+- **连接来源标识（2026-11 起）**：PG 慢语句日志与 `pg_stat_activity` 靠 `app=%a` 区分来源。三个进程启动时由 `pgcfg.PrepareProcessEnv` 设置 `PGAPPNAME=juhe-ai-gateway|juhe-ai-jobs|juhe-ai-maintenance`，连接串不再追加 `?application_name=`；显式设置的 `PGAPPNAME` 不会被覆盖。
 - caddy 服务声明 `init: true`（2026-09-29 起强制）：healthcheck 的 busybox wget 走 https 每次探测泄漏 1 个 `ssl_client` 子进程，caddy 自身作为容器 PID 1 不回收，曾连续堆积 9470 个 zombie 导致容器 docker exec 全败（`procReady not received`，实例级损坏）；docker 内置 init（tini）负责收割，移除该字段即回归。
 - 同机共存：聚合AI公益站（juhe-pw 栈，`gyai.huanmin.top`）以 external 方式加入本栈网络并复用本栈 PG/Redis/Caddy；`Caddyfile` 为两栈共享文件（含公益站反代块），划分与修改纪律见 `.local/project-resources/prod/assets/` 服务器资产台账「同机共存」节。
 
@@ -76,6 +80,7 @@ docker/single-server/
 ├── host-init.sh         # 主机层优化自检（swap/sysctl/journald，幂等；deploy.sh 每次发布自检，新机初始化单独执行）
 ├── monitoring/          # Prometheus/Grafana 监控产物（面板 JSON、postgres_exporter 增补查询、抓取与告警迁移说明）
 ├── .env                 # 密钥、连接串与部署变量（gitignore；服务器同路径放置，见下".env 契约"）
+├── .env.example         # 现行配置模板（入库，不含密钥；复制为 .env 后填值）
 └── build/               # 本机构建产物（gitignore）：bin/ + frontend-dist/
 ```
 
@@ -89,7 +94,8 @@ docker/single-server/
 - **revision 14（2026-11-03，AI 账户每分钟请求上限）**：业务库加法式一列 `accounts.rpm_limit integer NOT NULL DEFAULT 0`（`0` = 不限制），随升级链加法相幂等补列，**无一次性数据步骤**；`schema_state.schema_revision` 升至 14（纯 DDL 空号，注册表最高步骤仍为 13）。网关与 jobs 运行时读取该列，旧库缺列会被启动门禁 fail-closed，发布前 `upgrade --dry-run` 会因 `dbRevision < 14` 拒绝，须先走 `./deploy.sh upgrade`。回滚上一版二进制无需处理该列（加法式，旧代码不读）。契约见 `docs/functions/AI账户每分钟请求上限设计.md`。
 - **revision 15（2026-11-03，T112 时间计划闸门与账户状态解耦）**：业务库加法式两列——`accounts.availability_schedule_gate` 与 `api_keys.availability_schedule_gate`（integer 可空；NULL = 无计划恒开 / 1 = 时段内 / 0 = 时段外），随升级链加法相幂等补列，**无一次性数据步骤**（存量补齐由排程同步任务在升级后第一轮内建自愈）。`schema_state.schema_revision` 升至 15（纯 DDL 空号，不写 `schema_migrations`）。gateway 派发候选、Key 鉴权、探测候选与列表状态机读取该列，旧库缺列按查询报错暴露，发布前 `upgrade --dry-run` 会因 `dbRevision < 15` 拒绝。**发布窗口需人工启用一次**：升级前由时间计划写成 `status='disabled'` 的账户 / Key 不会被自动恢复（新语义只补闸门、不改写 `status`），按 `docs/待办与阻塞事项.md` T112 的核对 SQL 逐条确认后在页面上启用；启用只写 `status='active'`，闸门随计划自动重算。回滚上一版二进制无需处理该列（加法式，旧代码不读），但旧二进制会重新按计划改写 `status`。契约见 `docs/functions/时间计划闸门与账户状态解耦设计.md`。
 - **revision 16（2026-11-03，BUG-0345 统计消费水位）**：`juhe_usage.usage_records` 加法式两列 `usage_stats_aggregated_at` / `client_ip_stats_aggregated_at` 与两条部分索引（`(created_at, id) WHERE <列> IS NULL`），纯 DDL 增量、无升级数据步骤，`schema_state.schema_revision` 升至 16（空号，不写 `schema_migrations`；与 T112 的 revision 15 同窗口一次 upgrade 补齐）。两个统计聚合器由「按 `(created_at, id)` 游标消费」改为「消费未消费行」，晚到写入的用量记录不再被游标永久越过。**存量结算自动完成**：聚合器首次运行发现「表内无任何已标记行且旧游标已存在」时，先把 `(created_at, id) <= 旧游标` 的行标记为已消费再恢复正常消费——统计写入是增量累加，缺少这一步会把历史整体重算一遍。因此发布无需额外命令、无需停写窗口；`upgrade --dry-run` 因 `dbRevision < 16` 仍会要求先走 `./deploy.sh upgrade`（只做加法补列）。这两列本身是加法式、旧代码不读，但**回滚二进制会被启动门禁拦下**：库 revision=16 > 旧二进制 schemaRevision=15，`schemagate` 判「二进制版本低于数据库结构」并 fail-fast。回滚必须先恢复升级前备份，或显式把 `schema_state.schema_revision` 降到旧二进制认识的值（回滚到上一版生产二进制是 14；门禁只比对 revision 与账本行，不校验 digest）。**回滚后再升级**还必须补一次结算：回滚期间旧代码按游标消费、不写水位，重新升级后这些行会被再消费一次（重复累加）；升级前按 `usage_stats_aggregation` 游标把 `usage_stats_aggregated_at IS NULL AND created_at <= cursor_created_at` 的行补齐（`client_ip_stats_aggregated_at` 对 `client_ip_stats_aggregation` 同理，执行前备份）。只回滚不再升级时无需补结算。口径见 `docs/functions/统计指标与分层聚合设计.md`「增量写入策略」。
-- 配置自检：`docker compose --profile tool run --rm maintenance check-config --env-file .env --process all`（升级前核对 env 是否还合法；未登记变量/别名弃用会列出）。启动期对未登记的 `JUHE_AI_*` 变量打 WARN（不阻断）。
+- **revision 17（2026-11-05，openai/hybrid/generic_http 退役）**：`juhe_business.accounts` 新增 CHECK `accounts_vendor_driver_consistency_check (vendor_code IS NOT NULL AND connection_driver_code = vendor_code)`，`schema_state.schema_revision` 升至 17（纯 DDL 空号，不写 `schema_migrations`）。**前置条件**：必须先在停写窗口执行 `purge-unsupported-vendor-accounts`（见上方一次性清退命令）删除 vendor NULL/generic_http 账户及其历史 usage/audit/stats；未清退时 `upgrade` 添加 CHECK 会失败。清退与 CHECK 均不可逆，回滚只能恢复停写后的整库备份；旧二进制因 revision 17 门禁无法直接启动。契约见 `docs/functions/供应商与上游协议面重构设计.md` 顶部退役裁决与 §2.1。
+- 配置自检：`docker compose --profile tool run --rm maintenance check-config --process all`（`.env` 由 compose 注入容器，容器内无 `.env` 文件，勿传 `--env-file`；升级前核对 env 是否还合法；未登记变量/别名弃用会列出）。启动期对未登记的 `JUHE_AI_*` 变量打 WARN（不阻断）。
 
 ## 运行时数据目录契约（working_dir 必须锚定 /app/backend）
 
@@ -97,7 +103,7 @@ gateway/jobs 的全部"路径类"env 未配置时按 datadir 约定派生为 `<D
 
 - **compose 必须为 gateway/jobs 保持 `working_dir: /app/backend`**（2026-09-26 起，BUG-0193）。丢了这一行，`data/`、`logs/` 会解析到容器私有可写层 `/data`、`/logs`：用量记录、文件日志、account-health-input 等全部写进临时层，容器重建即静默丢失。
 - **gateway↔jobs 同源要求**：用量记录经 `usage-record-spool` 文件目录交接（网关写 JSON 文件，jobs 的 usage spool drain 消费后写 PG `juhe_usage.usage_records`），两侧目录必须解析到**同一个宿主机路径**（当前形态 = `/app/backend/data/usage-record-spool`，挂载 `./data/app/data`）。任何一侧不一致，记录永不到库且无报错——统计全空。
-- 非 compose 部署（systemd/裸进程直跑）同理：必须让进程 cwd 锚定到含 `data/` 的工作目录，或显式配置绝对路径（`JUHE_AI_DATA_DIR`，必要时 `JUHE_AI_USAGE_SPOOL_DIRECTORY`，现行名；旧名 `JUHE_AI_USAGE_SPOOL_DIR` 兼容回落）。
+- 非 compose 部署（systemd/裸进程直跑）同理：必须让进程 cwd 锚定到含 `data/` 的工作目录，或显式配置绝对路径（`JUHE_AI_DATA_DIR`，必要时 `JUHE_AI_USAGE_SPOOL_DIRECTORY`；旧名 `JUHE_AI_USAGE_SPOOL_DIR` 已删除，不再读取）。
 - 症状速查（BUG-0193）：统计页面全空但接口 200 → 先查 `SELECT count(*) FROM juhe_usage.usage_records;` 是否 0 行，再对比 gateway/jobs 两容器内 `data/usage-record-spool` 是否为同一挂载目录（`docker inspect` 挂载 + `docker exec ls` 实际内容）。
 
 
@@ -159,7 +165,7 @@ bash docker/single-server/deploy.sh gateway      # 单服务发布仅限 mainten
 
 **数据库约束迁移（2026-10-01 起，模型质量检测批次，两步）**：本次升级的两处 CHECK 约束分属两条迁移通道，发布检查必须两步分别执行——（历史批次注：本批约束放宽向后兼容、写者运行时执行安全；现行契约下 ensure 内的破坏性收敛——如删列、退场清理——必须在「更新发布」节停写窗口内执行）。
 1. `maintenance --ensure-schema`（业务库，例行幂等）：迁移 `model_quality_schedules.interval_minutes`（`10..10080` → `1..10080`，对应定时检查间隔下限放宽到 1 分钟）。实现方式：ensure-schema 内用 DO 块替换约束。
-2. `maintenance --apply-j3b-model-check-postgres`（j3b 库，读 env `JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL`，幂等可重入，与 ensure-schema 相互独立）：迁移 `juhe_j3b.model_check_runs.trigger_kind`（取值域加 `schedule_now`，计划立即执行）。`--ensure-schema` 不包含该迁移；未执行时存量三值 CHECK 不变，首个 `schedule_now` run 插入会因 CHECK 约束写入失败（用户侧表现为"已发起"后静默无记录）。
+2. `maintenance --apply-j3b-model-check-postgres`（j3b 库，读 `--dsn`，幂等可重入，与 ensure-schema 相互独立）：迁移 `juhe_j3b.model_check_runs.trigger_kind`（取值域加 `schedule_now`，计划立即执行）。`--ensure-schema` 不包含该迁移；未执行时存量三值 CHECK 不变，首个 `schedule_now` run 插入会因 CHECK 约束写入失败（用户侧表现为"已发起"后静默无记录）。
 
 升级后验证（PG，`docker compose exec postgres psql -U juhe_ai juhe_ai`）：
 
@@ -310,7 +316,7 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 ```
 
 
-## .env 契约（当前实例全集见服务器 /opt/juhe-ai/.env）
+## .env 契约（模板见同目录 `.env.example`；当前实例全集见服务器 /opt/juhe-ai/.env）
 
 ### Compose 与 deploy 脚本级必含变量（BUG-0225 实例事实变量化）
 
@@ -320,14 +326,14 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 ### 容器内存治理（BUG-0313，2026-10-14；2026-10-27 整机转 juhe-ai 专供后重划）
 
 - `GOMEMLIMIT=3072MiB`：compose gateway `environment` 固定值（**非 .env 变量**），Go 堆软限制——接近时 GC 激进回收，RSS 实际封顶约 3.2GiB。背景：流量高峰下 gateway RSS 曾冲 3.56GiB（goroutines 全程平坦无泄漏，纯堆膨胀），与 PG（~3GiB）合计挤光 8G 整机页缓存引发 I/O 活锁僵死（10-14 11:51-13:48），彼时定 2300MiB/3g 收口。**2026-10-27 juhe-pw 应用族下线、整机转 juhe-ai 专供后重划：2300MiB→3072MiB、mem_limit 3g→4g**（维持 75% 比例；当时白天峰值 RSS 仅 ~0.8GiB，上调为增长留余量并降低高峰 GC 压力）。调大前必须复核整机内存预算：`gateway RSS ≈ GOMEMLIMIT + ~200MiB 运行时开销`，须与 PG（shared_buffers 2.5GiB、历史 RSS 2.7-3.2GiB）、系统与其余容器共存后仍留 ≥1.5GiB 页缓存（专供后实测预算 ~1.5-1.9GiB，另有 4G swap 兜底）。
-- `mem_limit`（cgroup 硬限，最后防线）：gateway `4g`、jobs `1g`——超限 OOM kill 只波及容器自身（restart: unless-stopped 自动拉起），不再拖死整机。PG **有意不设限**：PG 被 OOM 强杀的恢复代价远大于保护收益，其 RSS 由 shared_buffers/work_mem 自控（历史稳定 3.0-3.2GiB）。Redis **有意不设 maxmemory**：其上承载 cache/state/queue 三域，触发逐出会破坏队列语义，且当前用量 ~16MiB 无压力。
-- 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/部署指南.md` 第 1 节执行。
+- `mem_limit`（cgroup 硬限，最后防线）：gateway `4g`、jobs `1g`——超限 OOM kill 只波及容器自身（restart: unless-stopped 自动拉起），不再拖死整机。PG **有意不设限**：PG 被 OOM 强杀的恢复代价远大于保护收益，其 RSS 由 shared_buffers/work_mem 自控（历史稳定 3.0-3.2GiB）。Redis 设 `--maxmemory 1gb` + `--maxmemory-policy noeviction`：承载全部缓存与运行态域，逐出会破坏熔断/并发等运行态正确性，所以到顶表现为写入失败而不是逐出；当前用量 ~16MiB 无压力。
+- 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/部署指南.md` §3 主机初始化执行。
 
 - `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。
 - `JUHE_AI_SECRET`：≥32 位强随机；账号凭据/内建 API Key 加密封套，**有加密数据后不可更换**，务必留档。所有共享 Redis 会话亲和绑定的 Gateway 实例必须使用相同 secret：会话绑定携带上游 Key 的 HMAC 指纹（账户内 Key 会话黏性，见 `docs/functions/账户内APIKey会话亲和设计.md`），组级会话绑定键同样由该 secret 派生（独立 HMAC purpose `group-affinity:v1`，见 `docs/functions/策略路由分组会话亲和设计.md`），不同 secret 实例混跑不是受支持的稳定形态；secret 协调轮换时先统一切换全部实例再恢复流量，旧指纹自然失配并在下一次协议成功后重绑。
 - `JUHE_AI_IMAGE_TAG`（compose 变量，2026-10-30 起）：三服务镜像 tag 前缀（`juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-gateway|jobs|maintenance`）；不配置回落 `latest`，发布时由 `deploy.sh` 注入 tag 版本号实现镜像与 git tag 一一对应。历史镜像名 `juhe-ai-single-server:<role>` 已退役，首次升级到该版后旧 tag 镜像可清理。
-- `JUHE_AI_POSTGRES_URL`：主库连接串，gateway/jobs/maintenance 三进程必填（缺失启动 fail-fast），配套 `JUHE_AI_REDIS_CACHE_URL` / `JUHE_AI_REDIS_STATE_URL` 两个 Redis 连接串同属必填；audit/operation 子系统专用 URL 缺省回落主 URL（account-health 两个专用 URL 各有契约：jobs 输入 URL 见 `JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL` 条目、gateway outcome URL 见 `JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL` 条目，均不回落主 URL）。
-- `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`：**必须显式**（F1 运行日志索引无主 URL 回退）。（原并列表的 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL` 随表监控子系统 2026-10-14 下线删除，见下"部署时需同步从 .env 移除的行"。）
+- `JUHE_AI_POSTGRES_URL`：唯一主库连接串，gateway/jobs/maintenance 及全部子系统共用，必填（缺失启动 fail-fast）。审计、操作日志、J3b、J2、J3a、J1 store 等不再有独立 URL；密码只需在 `POSTGRES_PASSWORD` 维护一份（进程启动映射为 `PGPASSWORD`），URL 写 `postgres://juhe_ai@postgres:5432/juhe_ai`。
+- `JUHE_AI_RUNTIME_LOG_POSTGRES_URL` / `JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL`：**必须显式，不回退主库**，用于保留独立库隔离能力；生产通常与主库同值。
 - `JUHE_AI_LOG_DIR`（compose 已显式配 `/app/backend/logs`，对应宿主 `data/app/logs`；显式配置行为不变）：运行日志文件三方同目录契约——gateway 文件日志写侧与 grep 扫描面、jobs F1 索引器与轮转文件保留清理都按它取目录。**2026-09-28 默认开启整改起，gateway 未配置时同样派生 `<DATA_DIR>/logs`（与 jobs 侧派生对称，写侧 NewFileSink 代建目录），文件日志与 grep 面默认可用**；`disabled` 字面量（大小写不敏感）= 显式关闭文件日志写侧与 grep 面（启动事件 `runtime_log_file_sink_disabled`）。双进程要共享同一目录（compose 挂载卷内）时仍建议显式同值，避免 `JUHE_AI_DATA_DIR` 分叉造成 gateway/jobs 目录不一致。gateway 文件日志为 BUG-0195 修复（2026-09-28）：slog 同时写 stdout 与 `juhe-ai.log`（按大小轮转 `<base>.<YYYYMMDDTHHMMSSZ>.<uuid>.log`），`slog.Default()` 一并接管——HTTP 访问日志自此为 JSON 且进文件；文件清理由 jobs 保留清理负责（只删已完整索引的 rotated 文件）。
 - `JUHE_AI_LOG_MAX_FILE_MB`（gateway 写侧轮转阈值，2026-09-28 随 BUG-0195 恢复——Node 既有 env，同名同默认同范围）：默认 `100`，合法 `1..1024`，越界启动失败；另有 `JUHE_AI_LOG_MAX_FILES`（默认 `500`）/ `JUHE_AI_LOG_RETENTION_DAYS`（默认 `30`，1..30）为轮转文件保留参数，由 jobs 索引器按此清理 rotated 文件（**jobs 长期停机期间 gateway 持续写不受 500×30 约束，目录会继续增长，需关注磁盘**）。注意区分：索引**行**保留是独立参数 `JUHE_AI_RUNTIME_LOG_RETENTION_DAYS`（默认 `14`，1..90，可被 system_settings `runtimeLogIndexRetentionDays` 覆盖），索引查询读窗默认最近 3 天——500×30 只约束文件，不约束索引行。
 - `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS`（BUG-0226，2026-09-28；**2026-10-14 起仅 jobs 使用**）：jobs 健康监听地址，compose 显式配 `0.0.0.0:3305`（代码默认 `127.0.0.1:3305`，容器形态必须显式覆盖为 0.0.0.0 才能经 ports 的宿主回环映射 `"127.0.0.1:3305:3305"` 对宿主可达）——现供 infra 机 Prometheus 经 SSH 隧道抓取（见 `monitoring/README.md`）；值非法（主机名/坏端口）会启动失败。原 gateway 侧同名变量（系统指标页 jobs 健康段抓取地址，曾配容器名视角 `juhe-ai-go-jobs:3305`）随「系统指标统计」子系统下线从 compose gateway 服务删除，`.env` 中若有该变量整行移除（见下"部署时需同步从 .env 移除的行"）。
@@ -335,14 +341,16 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 - `JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK`（2026-10-15 起 compose 显式配置 `"true"`）：健康监听 fail-closed 校验的放行开关。代码默认只允许 localhost/回环地址，`0.0.0.0:3306` 会启动失败（2026-10-15 发布实测重启循环）；设 `true` 放行私网（RFC1918）与未指定地址（`0.0.0.0`），**公网地址任何情况下仍拒绝**（见 gateway `main.go` `validateHealthListenHost`）。jobs 侧无该校验、无对应变量。
 - **[已退役 2026-10-31]** `JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER` / `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` / `JUHE_AI_CHAT_WEB_SEARCH_TIMEOUT_MS`（原 AI 问答子系统，含已删的 RETENTION_DAYS/ASSETS_ROOT/MAX_TURNS）：随 AI 问答退役（演练场替代），解析与登记已删除——现配置这三个变量只会得到未知变量 WARN、无任何效果。
 - `JUHE_AI_CODEX_CONTEXT_ROOT`（Codex Responses↔Chat 桥 segments 根，gateway/jobs 双进程；2026-10-03 起 gateway 组合根装配该状态，gateway 现亦消费本 env）：可选，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/codex-context`。gateway 桥 segment 写入与 jobs retention segment 文件清理**双进程必须同值**（同卷同目录）——根不同源时清理按「文件不存在=成功」落账而文件永不删除（存储泄漏）。PG 模式另要求 `juhe_codex_context` schema（`juhe-ai-maintenance --ensure-schema` 预置五个 schema 之一）：缺失时 gateway 启动期 schema 探针 fail-fast（错误含 `codex context postgres schema 探针失败`），属部署错误，先补 schema 再启动，无静默降级。
-- `JUHE_AI_REDIS_STATE_URL`：Redis 运行态键空间连接串（cache/state/queue 三实例约定中的 state 实例）。**依赖门禁非开关**：未配置时 jobs 的账户恢复探针、速度优先运行态、电路控制面 reconcile 等族按 disabled 登记（`/health` 的 `workerWired`/`workerJobs` 与任务登记可见缺席），配置后自动启用；gateway 主链运行态也按它归一。生产 compose 三容器共享同值。
-- `JUHE_AI_J3B_CIRCUIT_REDIS_URL`：J3b 电路运行态专用 Redis。**必须显式且不得与 `JUHE_AI_REDIS_STATE_URL` 相同键空间**（gateway 启动强校验——主链 state URL 回退会让两套 Lua 状态机并发写同一 states hash，语义不兼容；现用同实例 DB2）。未配置/无 Redis 时 J3b 电路回退**进程内 memory 状态机（重启即失，跨进程不共享）**——功能性可用但持久性降级，生产应显式配置独立 Redis URL。
+- `JUHE_AI_REDIS_URL`：唯一 Redis 连接串，必填。单节点写 `redis://redis:6379`（只允许 DB0）；Cluster 写 `redis://<node1>:6379?addr=<node2>:6379&addr=<node3>:6379`。
+- `JUHE_AI_REDIS_MODE`：`single`（缺省）或 `cluster`。Cluster 由 `NewClusterClient` 发现拓扑并故障转移；single 与 cluster 都强制 DB0。
+- 键空间固定 `juhe-ai:{<namespace>:<域>}:...`：cache/state/J3b/限流/会话/OAuth 等域由 hash tag 隔离，同一域内多键 Lua 与批量读同 slot，域间分布到不同 slot。`circuit` / `keymodel` / `hotquality` 三个热点域含全局索引与多键原子脚本，只能单 slot，容量靠垂直扩容。
+- `JUHE_AI_REDIS_NAMESPACE=prod`：键空间根，必填非空。
 - `JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET`（J2 账户余额手动拉取的 jobs↔gateway 共享 HTTP 认证密钥）：两进程必须同值；**≥32 字符**强校验。回退链为 `JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET` → `JUHE_AI_SECRET`——`JUHE_AI_SECRET` 满足 ≥32 字符时可省略本变量，不足时（或需与凭据密钥分权时）必须显式配置，否则 jobs 启动失败（`load J2 account-balance config`）。
 - `JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`（jobs 侧，J3a 代理延迟管理面）：`POST /__aisys__/api/proxies/{id}/test` 手动探测入口的监听地址，默认 `127.0.0.1:0`（随机回环端口，每次启动变化；`/health` payload 报告实际监听地址）。需稳定入口或跨容器访问时显式配置 `host:port`（端口 0 = 随机）；非法 host/端口启动失败。
 - `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`（未配置按 `JUHE_AI_DATA_DIR` 派生 `audit-blob`）、`JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL`（J1 账户健康 PG 直读输入连接串，按运维手册显式化）：原 `JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE` env 已随 sqlite/files 输入臂退役（输入源恒 PG 直读），不再读取。
-- `JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL`（gateway 单进程；2026-10-27 B5 起显式化）：AI 健康监控读面（`/stats/ai-health`、`/my-stats/ai-health` 及两者 hour-detail）J1 outcome 合并的 PG 连接串，直读 `juhe_jobs.account_health_outcomes`（jobs 侧 schema 同在主 `juhe_ai` 库）。**不回落主 URL**：未配置（含空值）按「源未配置」契约保持合并缺席——页面仍可用，仅缺 J1 最新结果叠加（2026-10-27 前组合根恒建空 URL 源，空值下探 `sql.Open` 拨驱动默认地址，曾把该读面打成恒 500，已随 B5 修复为缺席语义）；已配置时连接以 `BEGIN READ ONLY` 契约只读，值内配独立 `application_name`（现网 `juhe-ai-account-health-outcomes`）便于慢 SQL 归因，值形态同 `JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL`。
-- `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`（**2026-09-28 默认开启整改起默认 `1`**——成功正文默认全量，原默认 0.1 采样已废除；显式 `0..1` 仍生效，`0` 须与 `JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS=0` 联动）与 `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）：成功请求正文长期采样率与热保留窗口（失败/问题请求恒全量保留 7 天，成功正文长期保留 3 天）。当前生产显式配 `1`——与新的出厂默认一致（BUG-0198）。
-- `JUHE_AI_MAINTENANCE_J3A/J3B/ACCOUNT_BALANCE_POSTGRES_URL`：`--apply-*` 预置命令的 maintenance 专用 URL（`ACCOUNT_BALANCE` 为 2026-10-02 新增成员，值通常与 J3A 相同——目标都是 `juhe_ai` 库且当前 role 拥有 `juhe_jobs` schema）。
+- AI 健康监控读面的 J1 outcome 合并改用主库 `JUHE_AI_POSTGRES_URL`：默认始终可用，不再有「未配置即缺席」分支。
+- 成功正文采样率固定为全量（1）：原 `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE` 已删除，成功的率/耗时统计必须覆盖每一次成功请求；`JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）与 `SUCCESS_RETENTION_DAYS`（默认 3）仍可配置。
+- `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres` / `--postgres-schema-snapshot` 全部改读 `--dsn`；`JUHE_AI_MAINTENANCE_*_POSTGRES_URL` 与 `JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL` 已删除。
 - `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT`（compose 为 gateway 显式配 `45s`，BUG-0228，2026-09-28 起）：F3 audit 与 F4 operation-log 两个启动获取点共用的 owner 租约有界等待——被前任进程持有时按 1s 间隔重试到 deadline，超时仍维持 fail-fast 原文案退出（不静默排队活 owner 并存场景）。作用：发布 recreate 窗口旧容器被 SIGKILL 截断 `defer` 租约释放时，新 gateway 在启动期等待 DB 租约 TTL（默认 30s）过期后接管，替代原来的 fail-fast 重启循环。默认空/0 = 既有 fail-fast 契约不变；生产取 `45s`（> 30s TTL）。gateway healthcheck `start_period` 相应配 `75s`（等待发生在 health server 监听之前：45s 等待 + 启动余量）。jobs 无启动 fail-fast 租约（F1/F2/J1/J3a 均为运行期 supervisor 重试），不配置该变量。2026-10-15 起 F3 与 F4 获取冲突分支均有同 owner 快速路径：未过期租约的 owner_id（进程身份，默认主机名）与获取方相同时直接接管并自增 fence_token，不消耗等待预算——同 owner 的再获取只可能来自本实例自己的重启/失租恢复，旧世代写入由 fence 挡在外面；跨 owner 仍必须等过期（BUG-0228 契约不变）。失租后的 keeper 不再发放旧 owner/fence 快照，采集路径不能把已丢失的行续活。
 - `JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL`（**测试 seam，生产不配置**；2026-10-04 M6 火山语音批引入）：火山豆包 TTS 出站服务根覆盖（缺省恒官方 `https://openspeech.bytedance.com`，与账户 ark base_url 无关的 URL 构造特例）。仅验收 E2E 把 gateway 子进程出站指回本机 mock 上游时注入；**不是功能开关**（语音能力恒生效），生产/compose/直跑均不配置，误配置会把语音流量指向错误上游。
 - `JUHE_AI_ALLOWED_ORIGINS`：生产必填、逗号分隔、拒绝 `*`；当前为 `https://aijh.huanmin.top` 加 `http://<生产服务器公网 IP>`（实例值见服务器 `/opt/juhe-ai/.env` 与 `.local` 资产）。
@@ -357,6 +365,15 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 - `JUHE_AI_GO_RUNTIME_METRICS_STORE`（及同家族若存在：`JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL` / `JUHE_AI_GO_RUNTIME_METRICS_INTERVAL` / `JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS` / `JUHE_AI_GO_RUNTIME_METRICS_SERVICE` / `JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH`）
 - `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`（及同家族若存在：`JUHE_AI_TABLE_MONITOR_INTERVAL` / `JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` / `JUHE_AI_TABLE_MONITOR_MAX_TABLES` / `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` / `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` / `JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` / `JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` / `JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` / `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` / `JUHE_AI_TABLE_MONITOR_STORE`）
 - `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS`（gateway 跨容器抓取用途已删除；jobs 侧监听地址由 compose 显式固定为 `0.0.0.0:3305`，该变量在 `.env` 中整行移除）
+
+### 2026-11 配置硬切：需从 .env 删除的行
+
+以下变量已从代码删除、不会再生效；升级到本版前从 `/opt/juhe-ai/.env` 整行删除：
+
+- Redis：`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE`。
+- PG 专属/回退 URL：`JUHE_AI_BUSINESS_POSTGRES_URL`、`JUHE_AI_AUDIT_LOG_POSTGRES_URL`、`JUHE_AI_OPERATION_LOG_POSTGRES_URL`、`JUHE_AI_J3B_POSTGRES_URL`、`JUHE_AI_J3B_BUSINESS_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL`、`JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL`、`JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL`、`JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL`、`JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL`、`JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL`、`JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`。
+- 无效读取/重复默认值：`JUHE_AI_BUSINESS_OWNER`、`JUHE_AI_PROCESS_ROLE`、`JUHE_AI_NODE_ENV`、`JUHE_AI_J3B_OWNER`、`JUHE_AI_MODEL_CHECK_ENABLED`、`JUHE_AI_ACCOUNT_BALANCE_STORE`、`JUHE_AI_PROXY_LATENCY_STORE`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE`、`JUHE_AI_COOKIE_SAME_SITE`、`JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`、`JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE`、`JUHE_AI_USAGE_SPOOL_DIR`。
+- 连接串内的 `?application_name=...`：删除查询参数，改由进程 `PGAPPNAME` 设置（`POSTGRES_PASSWORD`/`REDIS_PASSWORD` 已自动注入，URL 内密码也可删除）。
 
 ### 存储形态收口退役 env（2026-10-24/25，SQLite 与内存模式退役）
 

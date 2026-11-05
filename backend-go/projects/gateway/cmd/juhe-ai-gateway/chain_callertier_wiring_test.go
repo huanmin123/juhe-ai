@@ -23,12 +23,12 @@ import (
 // TestNewCallerTierStoreFollowsStateClient：StateClient 非 nil 选 Redis 跨进
 // 程驱动，nil 选进程内 memory——双形态都是启动时选定的部署形态（设计 §6.1）。
 func TestNewCallerTierStoreFollowsStateClient(t *testing.T) {
-	if _, ok := newCallerTierStore(nil).(*gatewaycallertier.MemoryStore); !ok {
+	if _, ok := newCallerTierStore(nil, "").(*gatewaycallertier.MemoryStore); !ok {
 		t.Fatal("nil StateClient 必须选 memory 驱动")
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	t.Cleanup(func() { _ = client.Close() })
-	if _, ok := newCallerTierStore(client).(*gatewaycallertier.RedisStore); !ok {
+	if _, ok := newCallerTierStore(client, "").(*gatewaycallertier.RedisStore); !ok {
 		t.Fatal("非 nil StateClient 必须选 Redis 驱动")
 	}
 }

@@ -45,11 +45,10 @@ func TestW14KPgGateSchemaSnapshotSuccess(t *testing.T) {
 		return nil
 	})
 	t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_TARGET", "test")
-	t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL", testDB.DSN)
 	t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM", "READ_ONLY")
 
 	var got int
-	stdout := wmCaptureStdout(t, func() { got = postgresSchemaSnapshotResult() })
+	stdout := wmCaptureStdout(t, func() { got = postgresSchemaSnapshotResult(testDB.DSN) })
 	if got != 0 {
 		t.Fatalf("schema snapshot 必须 exit 0: exit %d, stdout %.200s", got, stdout)
 	}

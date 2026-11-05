@@ -330,9 +330,8 @@ type AccountModelCatalogSource interface {
 
 // ListAccountSupportedModelCatalogAsync reads the exact models bound to one
 // account (account_supported_models.model_id → models 行). 供应商与上游协议面
-// 重构设计 §3/§4：模型身份由真实 models 行承载，generic_http 账户不得用空
-// vendor 伪造目录，也不得按模型名猜 vendor。不缓存：调用方是会话模型列表、
-// 人工测试候选和计价身份解析，读取量按账户支持模型收敛。
+// 重构设计 §3/§4：模型身份由真实 models 行承载，不得用空 vendor 伪造目录，
+// 也不得按模型名猜 vendor。不缓存：读取量按账户支持模型收敛。
 func (s *Service) ListAccountSupportedModelCatalogAsync(ctx context.Context, accountID, systemAccountID string) ([]ProviderModelCatalogItem, error) {
 	if s == nil || s.models == nil {
 		return nil, errors.New("gatewayruntimecache 账户模型目录读取器未接线")

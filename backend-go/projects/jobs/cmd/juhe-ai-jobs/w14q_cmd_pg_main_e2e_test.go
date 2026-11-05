@@ -65,7 +65,7 @@ func w14qPGMainEnv(t *testing.T, root string, pgURL, redisURL string, management
 	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS"] = "8"
 	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS"] = "4"
 	// model-recovery：独立 namespace，只允许 w14q 形状字符。
-	env["JUHE_AI_REDIS_STATE_URL"] = redisURL
+	env["JUHE_AI_REDIS_URL"] = redisURL
 	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:w14q"
 	// J2 account-balance：postgres store + postgres 直连输入。
 	env["JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER"] = "go"
@@ -100,7 +100,7 @@ func TestW14QPGMainFullAssemblySmoke(t *testing.T) {
 		t.Skip("PG main e2e skipped in -short mode")
 	}
 	db, pgURL := wgCmdKitDB(t)
-	redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_STATE_URL")
+	redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_URL")
 	if redisURL == "" {
 		t.Skip("w14q: shared.env 无 Redis state URL")
 	}

@@ -14,9 +14,6 @@ import (
 // （rehearsal 的子进程继承 env 后拿 placeholder DSN 连库）。
 func pinUpgradeTargetEnv(t *testing.T, dsn string) {
 	t.Helper()
-	t.Setenv(envJ3AURL, dsn)
-	t.Setenv(envJ3BURL, dsn)
-	t.Setenv(envBalanceURL, dsn)
 }
 
 func TestUpgradeStepsRegistryGolden(t *testing.T) {

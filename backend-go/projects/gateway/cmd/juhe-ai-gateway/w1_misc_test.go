@@ -24,12 +24,6 @@ func TestW1MainEnvHelpers(t *testing.T) {
 	if envOrDefault("W1_TEST_ENV_VAR_MISSING", "fallback") != "fallback" {
 		t.Fatal("缺省时必须返回 fallback")
 	}
-	if got := commaList(" a , b ,, c "); len(got) != 3 || got[0] != "a" || got[2] != "c" {
-		t.Fatalf("commaList = %v", got)
-	}
-	if got := commaList(""); len(got) != 0 {
-		t.Fatalf("空 commaList = %v", got)
-	}
 	t.Setenv("W1_TEST_ENV_BOOL", "TRUE")
 	if !envBool("W1_TEST_ENV_BOOL") {
 		t.Fatal("TRUE 必须为真")

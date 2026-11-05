@@ -56,9 +56,9 @@ func TestCanonicalRedisNamespace(t *testing.T) {
 
 func TestNamespacedKey(t *testing.T) {
 	cases := map[[2]string]string{
-		{"probe:state:key", "dev"}:             "juhe-ai:dev:probe:state:key",
-		{"juhe-ai:probe:state:key", "dev"}:     "juhe-ai:dev:probe:state:key",
-		{"juhe-ai:dev:probe:state:key", "dev"}: "juhe-ai:dev:probe:state:key",
+		{"probe:state:key", "dev"}:             "juhe-ai:{dev}:probe:state:key",
+		{"juhe-ai:probe:state:key", "dev"}:     "juhe-ai:{dev}:probe:state:key",
+		{"juhe-ai:dev:probe:state:key", "dev"}: "juhe-ai:{dev}:probe:state:key",
 		{"probe:state:key", "  "}:              "probe:state:key",
 	}
 	for in, want := range cases {

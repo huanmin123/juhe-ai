@@ -71,8 +71,8 @@ func draftEnvelope(t *testing.T, credentials map[string]any) string {
 		ID:                        "acct-draft-1",
 		OwnerSystemAccountID:      "sys-1",
 		GroupID:                   "grp-1",
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		Name:                      "草稿账户",
@@ -168,8 +168,6 @@ func challengeAnswerFromBody(raw []byte) string {
 	return strconv.Itoa(left + right)
 }
 
-
-
 // 快乐路径：draft 解密 → chat_json 诊断 → 成功信封（result_json 形状对照
 // Node AccountTestResult）。
 func TestExecutorDraftSuccessWritesEnvelope(t *testing.T) {
@@ -208,8 +206,8 @@ func TestExecutorDraftSuccessWritesEnvelope(t *testing.T) {
 		t.Fatalf("result_json 不是 JSON: %v", err)
 	}
 	if envelope["accountId"] != "acct-draft-1" || envelope["accountName"] != "草稿账户" ||
-		envelope["providerCode"] != "openai" || envelope["protocolCode"] != "openai" ||
-		envelope["providerProtocolProfileId"] != "profile_openai_openai_v1" ||
+		envelope["providerCode"] != "gpt" || envelope["protocolCode"] != "openai" ||
+		envelope["providerProtocolProfileId"] != "profile_gpt_openai_v1" ||
 		envelope["type"] != "api_key" || envelope["success"] != true ||
 		envelope["model"] != "gpt-test" || envelope["testEndpointMode"] != "chat_json" ||
 		envelope["accountStatus"] != "active" {
@@ -227,8 +225,9 @@ func TestExecutorDraftSuccessWritesEnvelope(t *testing.T) {
 }
 
 // 草稿账户也会携带 modelMappings。它不能在手动测试时退回存储协议（OpenAI），
-// 否则和后台 J1 对同一份草稿的实际供应商选择不一致。
-func TestExecutorDraftHybridMappingUsesMappedProtocol(t *testing.T) {
+// 否则和后台 J1 对同一份草稿的实际供应商选择不一致。hybrid 退役后模型映射
+// 只改上游模型名，不再切换协议。
+func TestExecutorDraftMappingRewritesUpstreamModel(t *testing.T) {
 	var seenPath, seenModel, seenAPIKey, seenAuthorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
@@ -241,17 +240,15 @@ func TestExecutorDraftHybridMappingUsesMappedProtocol(t *testing.T) {
 		}
 		seenModel, _ = body["model"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"` + challengeAnswerFromBody(raw) + `"}],"stop_reason":"end_turn"}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromBody(raw) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
 	draft := DraftSnapshot{
-		ID: "acct-draft-hybrid", OwnerSystemAccountID: "sys-1", GroupID: "grp-1",
-		ProviderCode: "hybrid", ProviderProtocolProfileID: "profile_hybrid_openai_chat_v1",
-		ProtocolCode: "openai", ProtocolVersion: "v1", Name: "Hybrid 草稿", Type: "api_key",
+		ID: "acct-draft-mapping", OwnerSystemAccountID: "sys-1", GroupID: "grp-1",
+		ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1", Name: "映射草稿", Type: "api_key",
 		Credentials: map[string]any{
-			// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），hybrid 映射到
-			// anthropic messages 后线上路径 = 根 + 去前缀操作路径，断言不变。
 			"api_key": "sk-test-123456", "base_url": server.URL + "/v1",
 			"supported_endpoint_modes": []any{"chat_json"},
 		},
@@ -259,25 +256,25 @@ func TestExecutorDraftHybridMappingUsesMappedProtocol(t *testing.T) {
 		HealthCheckModel: "client-model", HealthCheckEndpointMode: "chat_json",
 		ModelMappings: []accountprobe.ModelMapping{{
 			SourceModel: "client-model", SourceEndpointFamily: "chat_completions",
-			UpstreamModel: "claude-target", UpstreamEndpointFamily: "messages",
+			UpstreamModel: "gpt-target", UpstreamEndpointFamily: "chat_completions",
 		}},
 	}
 	envelope := encryptDraft(t, &draft)
 	decoded, decodeErr := DecryptDraft(testSecret, envelope)
 	if decodeErr != nil || decoded == nil || len(decoded.ModelMappings) != 1 {
-		t.Fatalf("hybrid draft mappings decode=%+v err=%v", decoded, decodeErr)
+		t.Fatalf("draft mappings decode=%+v err=%v", decoded, decodeErr)
 	}
 	task := manualTestTask(envelope)
 	task.Model = "client-model"
 	result, err := newTestExecutor(t, nil).Execute(context.Background(), task, func(string) {})
 	if err != nil || !result.Success {
-		t.Fatalf("hybrid draft result=%+v err=%v", result, err)
+		t.Fatalf("mapped draft result=%+v err=%v", result, err)
 	}
-	if seenPath != "/v1/messages" || seenModel != "claude-target" {
-		t.Fatalf("hybrid draft request path=%q model=%q", seenPath, seenModel)
+	if seenPath != "/v1/chat/completions" || seenModel != "gpt-target" {
+		t.Fatalf("mapped draft request path=%q model=%q", seenPath, seenModel)
 	}
-	if seenAPIKey != "sk-test-123456" || seenAuthorization != "" {
-		t.Fatalf("hybrid draft auth x-api-key=%q authorization=%q", seenAPIKey, seenAuthorization)
+	if seenAPIKey != "" || seenAuthorization != "Bearer sk-test-123456" {
+		t.Fatalf("mapped draft auth x-api-key=%q authorization=%q", seenAPIKey, seenAuthorization)
 	}
 }
 
@@ -461,8 +458,8 @@ func TestExecutorSavedAccountPath(t *testing.T) {
 				ID: "acc-saved", Name: "保存账户", Type: "api_key", Status: "active",
 				BoundGroupID: "grp-1", OwnerSystemAccountID: "sys-1",
 			},
-			ProviderCode:              "openai",
-			ProviderProtocolProfileID: "profile_openai_openai_v1",
+			ProviderCode:              "gpt",
+			ProviderProtocolProfileID: "profile_gpt_openai_v1",
 			ProtocolVersion:           "v1",
 			HealthCheckModel:          "gpt-test",
 			HealthCheckEndpointMode:   "chat_json",
@@ -478,13 +475,13 @@ func TestExecutorSavedAccountPath(t *testing.T) {
 				Type:   "api_key",
 				Status: "active",
 			},
-			ProviderCode:    "openai",
+			ProviderCode:    "gpt",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			// 供应商解耦：探针上游地址来自候选连接面（凭据 JSON 不再承载 base_url）。
-			BaseURL:     server.URL + "/v1",
-			Credentials: map[string]any{"api_key": "sk-saved"},
-			SelectedAPIKey:  "sk-saved",
+			BaseURL:        server.URL + "/v1",
+			Credentials:    map[string]any{"api_key": "sk-saved"},
+			SelectedAPIKey: "sk-saved",
 			APIKeyEntries: []proberepo.KeyEntry{
 				{Key: "sk-saved", Fingerprint: "fp", Index: 0},
 			},
@@ -533,8 +530,8 @@ func TestExecutorSavedAccountModelOutsideSupportedList(t *testing.T) {
 				ID: "acc-saved", Name: "保存账户", Type: "api_key", Status: "active",
 				BoundGroupID: "grp-1", OwnerSystemAccountID: "sys-1",
 			},
-			ProviderCode:              "openai",
-			ProviderProtocolProfileID: "profile_openai_openai_v1",
+			ProviderCode:              "gpt",
+			ProviderProtocolProfileID: "profile_gpt_openai_v1",
 			ProtocolVersion:           "v1",
 			HealthCheckModel:          "gpt-test",
 			HealthCheckEndpointMode:   "chat_json",
@@ -545,13 +542,13 @@ func TestExecutorSavedAccountModelOutsideSupportedList(t *testing.T) {
 			OpenAIAccountCandidate: accountquality.OpenAIAccountCandidate{
 				ID: "acc-saved", Name: "保存账户", Type: "api_key", Status: "active",
 			},
-			ProviderCode:    "openai",
+			ProviderCode:    "gpt",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			// 供应商解耦：探针上游地址来自候选连接面（凭据 JSON 不再承载 base_url）。
-			BaseURL:     server.URL + "/v1",
-			Credentials: map[string]any{"api_key": "sk-saved"},
-			SelectedAPIKey:  "sk-saved",
+			BaseURL:        server.URL + "/v1",
+			Credentials:    map[string]any{"api_key": "sk-saved"},
+			SelectedAPIKey: "sk-saved",
 			APIKeyEntries: []proberepo.KeyEntry{
 				{Key: "sk-saved", Fingerprint: "fp", Index: 0},
 			},
@@ -603,8 +600,8 @@ func TestExecutorDraftModelOutsideSupportedList(t *testing.T) {
 		ID:                        "acct-draft-free",
 		OwnerSystemAccountID:      "sys-1",
 		GroupID:                   "grp-1",
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		Name:                      "草稿账户",

@@ -12,6 +12,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // codex 源探针 fence 结算（background_worker_codex_source_fence_settled 的
@@ -71,11 +72,11 @@ func NewProbeStateStore(url, namespace string, client redis.Cmdable) (*ProbeStat
 		if strings.TrimSpace(url) == "" {
 			return nil, errors.New("探针运行态结算缺少 Redis URL")
 		}
-		options, err := redis.ParseURL(url)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: url})
 		if err != nil {
-			return nil, fmt.Errorf("解析探针运行态 Redis URL: %w", err)
+			return nil, fmt.Errorf("创建探针运行态 Redis 客户端: %w", err)
 		}
-		cmdable = redis.NewClient(options)
+		cmdable = client
 	}
 	safeName := sanitizeRedisName(ProbeStoreName)
 	statePrefix := redisNamespacedKey("juhe-ai:probe:"+safeName+":state:", namespace)
@@ -91,8 +92,8 @@ func NewProbeStateStore(url, namespace string, client redis.Cmdable) (*ProbeStat
 
 // Close 释放自建连接。
 func (s *ProbeStateStore) Close() error {
-	if client, ok := s.client.(*redis.Client); ok && client != nil {
-		return client.Close()
+	if client, ok := s.client.(interface{ Close() error }); ok && client != nil {
+		return rediscfg.CloseClient(client)
 	}
 	return nil
 }

@@ -134,19 +134,19 @@ func TestW9CRedisNamespaceHelpers(t *testing.T) {
 		t.Fatal("empty namespace must fail")
 	}
 	got, err := RedisNamespacedKey("dev", "plain-key")
-	if err != nil || got != "juhe-ai:dev:plain-key" {
+	if err != nil || got != "juhe-ai:{dev}:plain-key" {
 		t.Fatalf("namespaced key = %s, %v", got, err)
 	}
 	got, err = RedisNamespacedKey("dev", "juhe-ai:other:key")
-	if err != nil || got != "juhe-ai:dev:other:key" {
+	if err != nil || got != "juhe-ai:{dev}:other:key" {
 		t.Fatalf("root prefix rebind = %s, %v", got, err)
 	}
-	got, err = RedisNamespacedKey("dev", "juhe-ai:dev:keep")
-	if err != nil || got != "juhe-ai:dev:keep" {
+	got, err = RedisNamespacedKey("dev", "juhe-ai:{dev}:keep")
+	if err != nil || got != "juhe-ai:{dev}:keep" {
 		t.Fatalf("already prefixed = %s, %v", got, err)
 	}
 	prefix, err := RedisNamespacePrefix("dev")
-	if err != nil || prefix != "juhe-ai:dev:" {
+	if err != nil || prefix != "juhe-ai:{dev}:" {
 		t.Fatalf("prefix = %s, %v", prefix, err)
 	}
 	if _, err := RedisNamespacePrefix("///"); err == nil {
@@ -225,7 +225,7 @@ func (w9cFailingRedis) SendCommand(context.Context, ...any) (any, error) {
 func TestW9CLazyRedisClient(t *testing.T) {
 	// Empty URL fails on first use.
 	lazy := newLazyRedisClient("")
-	if _, err := lazy.client(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
+	if _, err := lazy.client(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL") {
 		t.Fatalf("empty url err = %v", err)
 	}
 	// Bad URL surfaces the dial error once and never caches it.

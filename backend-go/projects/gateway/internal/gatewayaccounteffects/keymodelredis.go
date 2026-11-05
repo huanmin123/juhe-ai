@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // KeyModelRedisGroup mirrors the redis group name shared with Node
@@ -35,7 +36,7 @@ func NewKeyModelRedisKeys(namespace string) (KeyModelRedisKeys, error) {
 	if !keyModelNamespacePartPattern.MatchString(strings.TrimSpace(namespace)) {
 		return KeyModelRedisKeys{}, errors.New("Redis namespace 无效")
 	}
-	return KeyModelRedisKeys{Prefix: "juhe-ai:" + strings.TrimSpace(namespace) + ":" + KeyModelRedisGroup}, nil
+	return KeyModelRedisKeys{Prefix: rediscfg.NamespacedKey("juhe-ai:"+KeyModelRedisGroup, strings.TrimSpace(namespace))}, nil
 }
 
 // State mirrors keys.state(hash).
@@ -94,8 +95,7 @@ type RedisKeyModelRuntimeStore struct {
 	evalRunner func(script string, keys []string, args []string) (any, error)
 
 	once   sync.Once
-	client *redis.Client
-	opts   *redis.Options
+	client redis.UniversalClient
 	err    error
 }
 
@@ -103,7 +103,7 @@ type RedisKeyModelRuntimeStore struct {
 func NewRedisKeyModelRuntimeStore(options KeyModelRedisStoreOptions) (*RedisKeyModelRuntimeStore, error) {
 	redisURL, err := requireKeyModelText(options.RedisURL, "redisUrl")
 	if err != nil {
-		return nil, errors.New("启用 Key-model Redis state 必须配置 JUHE_AI_REDIS_STATE_URL")
+		return nil, errors.New("启用 Key-model Redis state 必须配置 JUHE_AI_REDIS_URL")
 	}
 	keys, err := NewKeyModelRedisKeys(options.Namespace)
 	if err != nil {
@@ -128,15 +128,14 @@ func (s *RedisKeyModelRuntimeStore) Close() error {
 	return nil
 }
 
-func (s *RedisKeyModelRuntimeStore) clientForUse(ctx context.Context) (*redis.Client, error) {
+func (s *RedisKeyModelRuntimeStore) clientForUse(ctx context.Context) (redis.UniversalClient, error) {
 	s.once.Do(func() {
-		opts, err := redis.ParseURL(s.redisURL)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: s.redisURL})
 		if err != nil {
 			s.err = err
 			return
 		}
-		s.opts = opts
-		s.client = redis.NewClient(opts)
+		s.client = client
 	})
 	if s.err != nil {
 		return nil, s.err
@@ -189,7 +188,6 @@ func (s *RedisKeyModelRuntimeStore) RecordFailure(ctx context.Context, intent Ke
 		s.keys.Admission(hash),
 		s.keys.AdmissionLease(hash, attemptID),
 		s.keys.AdmissionWake(hash),
-		s.keys.AdmissionEvents(),
 		s.keys.Closed(),
 	}, []string{
 		string(mustJSON(state)),
@@ -198,6 +196,7 @@ func (s *RedisKeyModelRuntimeStore) RecordFailure(ctx context.Context, intent Ke
 		strconv.FormatInt(5*60_000, 10),
 		attemptID,
 		hash,
+		s.keys.AdmissionEvents(),
 	})
 	if err != nil {
 		return KeyModelFailureResult{}, err
@@ -291,8 +290,7 @@ func (s *RedisKeyModelRuntimeStore) ReleaseForeground(ctx context.Context, permi
 		s.keys.Admission(hash),
 		s.keys.AdmissionLease(hash, attemptID),
 		s.keys.AdmissionWake(hash),
-		s.keys.AdmissionEvents(),
-	}, []string{hash, attemptID})
+	}, []string{hash, attemptID, s.keys.AdmissionEvents()})
 	if err != nil {
 		return false, err
 	}
@@ -359,8 +357,7 @@ func (s *RedisKeyModelRuntimeStore) RecordMainProbeFailure(ctx context.Context, 
 		s.keys.Admission(hash),
 		s.keys.AdmissionLease(hash, permit.AttemptID),
 		s.keys.AdmissionWake(hash),
-		s.keys.AdmissionEvents(),
-	}, []string{permit.AttemptID, hash, "90000"})
+	}, []string{permit.AttemptID, hash, "90000", s.keys.AdmissionEvents()})
 	return err
 }
 
@@ -536,7 +533,7 @@ local function releasePermit()
   if redis.call('DEL', KEYS[6]) == 0 then return end
   redis.call('ZREM', KEYS[5], ARGV[5])
   local wake = redis.call('INCR', KEYS[7])
-  redis.call('PUBLISH', KEYS[8], ARGV[6] .. ':' .. tostring(wake))
+  redis.call('PUBLISH', ARGV[7], ARGV[6] .. ':' .. tostring(wake))
 end
 local receipt = redis.call('GET', KEYS[3])
 if receipt then
@@ -560,7 +557,7 @@ if currentRaw then
   incoming.generation = tonumber(current.generation or 0) + 1
 elseif tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then
   local removed = 0
-  local closed = redis.call('ZRANGE', KEYS[9], 0, 999)
+  local closed = redis.call('ZRANGE', KEYS[8], 0, 999)
   for _, hash in ipairs(closed) do
     local closedState = redis.call('GET', string.gsub(KEYS[1], '[^:]+$', hash))
     if closedState and cjson.decode(closedState).phase == 'CLOSED' then
@@ -570,7 +567,7 @@ elseif tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then
       removed = removed + 1
       if tonumber(redis.call('GET', KEYS[4]) or '0') < tonumber(ARGV[3]) then break end
     end
-    redis.call('ZREM', KEYS[9], hash)
+    redis.call('ZREM', KEYS[8], hash)
   end
   if tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then
     releasePermit()
@@ -634,7 +631,7 @@ const releaseKeyModelForegroundScript = `
 if redis.call('DEL', KEYS[2]) == 0 then return {0, redis.call('GET', KEYS[3]) or '0'} end
 redis.call('ZREM', KEYS[1], ARGV[2])
 local wake = redis.call('INCR', KEYS[3])
-redis.call('PUBLISH', KEYS[4], ARGV[1] .. ':' .. tostring(wake))
+redis.call('PUBLISH', ARGV[3], ARGV[1] .. ':' .. tostring(wake))
 return {1, wake}
 `
 
@@ -656,7 +653,7 @@ const recordMainProbeFenceScript = `
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
 if redis.call('DEL', KEYS[3]) == 1 then redis.call('ZREM', KEYS[2], ARGV[1]) end
 local wake = redis.call('INCR', KEYS[4])
-redis.call('PUBLISH', KEYS[5], ARGV[2] .. ':' .. tostring(wake))
+redis.call('PUBLISH', ARGV[4], ARGV[2] .. ':' .. tostring(wake))
 return {'applied', wake}
 `
 

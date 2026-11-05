@@ -464,7 +464,7 @@ func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisStateURL:  "redis://" + server.Addr(),
+		RedisURL:  "redis://" + server.Addr(),
 		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
@@ -537,7 +537,7 @@ func TestChainHotQualityPortPreservesCandidateIdentityThroughOrder(t *testing.T)
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisStateURL:  "redis://" + server.Addr(),
+		RedisURL:  "redis://" + server.Addr(),
 		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
@@ -583,7 +583,7 @@ func TestChainHotQualityLifecycleScopeMatchesOrderingScope(t *testing.T) {
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisStateURL:  "redis://" + server.Addr(),
+		RedisURL:  "redis://" + server.Addr(),
 		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {

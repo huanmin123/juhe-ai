@@ -943,7 +943,7 @@ func apiKeyPoolIsolationEnabled(codec CredentialCodec, accountType, providerCode
 	}
 	normalizedProvider := normalizeProviderToken(providerCode)
 	switch normalizedProvider {
-	case "openai", "gpt", "deepseek", "glm", "gemini", "anthropic":
+	case "gpt", "deepseek", "glm", "gemini", "anthropic":
 		return true
 	}
 	if normalizeProviderToken(protocolCode) == "anthropic" && normalizeProviderToken(protocolVersion) == "v1" {

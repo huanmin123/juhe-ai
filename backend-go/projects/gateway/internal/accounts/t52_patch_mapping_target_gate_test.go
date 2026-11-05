@@ -25,9 +25,9 @@ func TestT52PatchMappingTargetOutsideSupportedModelsRejected(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 	id := w2PatchAccount(t, env, "T52 映射门禁")
-	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini", "gpt-4.1")
+	env.seedAccountConnection(t, id, "gpt_openai_v1", "gpt-4o-mini", "gpt-4.1")
 
-	code, payload := w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1"}]`)
+	code, payload := w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1"}]`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("越界 target 应 400：%d %v", code, payload)
 	}
@@ -47,7 +47,7 @@ func TestT52PatchMappingTargetOutsideSupportedModelsRejected(t *testing.T) {
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o", SourceEndpointFamily: "chat_completions",
 			UpstreamModel: "gpt-4o", UpstreamEndpointFamily: "chat_completions",
-			TargetConnectionPresetCode: "generic_openai_v1",
+			TargetConnectionPresetCode: "gpt_openai_v1",
 		}},
 	}, scope)
 	assertValidationError(t, err, "映射上游模型只能选择账户支持模型：gpt-4o")
@@ -63,10 +63,10 @@ func TestT52PatchMappingTargetValidatedAgainstPostPatchSupportedModels(t *testin
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 	id := w2PatchAccount(t, env, "T52 生效集合")
-	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini", "gpt-4.1")
+	env.seedAccountConnection(t, id, "gpt_openai_v1", "gpt-4o-mini", "gpt-4.1")
 
 	code, payload := w2PatchBody(t, env, id, `"supportedModels":["gpt-4o-mini","gpt-4.1","gpt-4o"],
-		"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1"}]`)
+		"modelMappings":[{"sourceModel":"gpt-4o","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1"}]`)
 	if code != http.StatusOK {
 		t.Fatalf("生效后集合内的 target 应放行：%d %v", code, payload)
 	}

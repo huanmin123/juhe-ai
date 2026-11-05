@@ -343,7 +343,7 @@ func TestW13CRedisKeyBuilderArms(t *testing.T) {
 	}
 	// 有效 namespace 的 key 形状。
 	key, err := redisSessionAffinityBindingKey("ns-1", "session key/1")
-	if err != nil || !strings.HasPrefix(key, "juhe-ai:ns-1:session-affinity:binding:") {
+	if err != nil || !strings.HasPrefix(key, "juhe-ai:{ns-1}:session-affinity:binding:") {
 		t.Fatalf("binding key = %q err=%v", key, err)
 	}
 	// 迁移索引 key 的三种 scope 形状。
@@ -817,7 +817,7 @@ func TestW13CNilRedisServiceClientArms(t *testing.T) {
 		cfg.CacheDriver = CacheDriverRedis
 		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
 		cfg.Redis = nil
-		cfg.RedisCacheURL = ""
+		cfg.RedisURL = ""
 	})
 	scope := &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "grp-1"}
 	binding := SessionBinding{AccountID: "acc-1", Scope: scope}

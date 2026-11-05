@@ -64,11 +64,11 @@ func NewRedisStore(options RedisStoreOptions) (*RedisStore, error) {
 		if strings.TrimSpace(options.RedisURL) == "" {
 			return nil, errors.New("账户电路操作缺少 redisUrl")
 		}
-		parsed, err := redis.ParseURL(options.RedisURL)
+		var err error
+		client, err = rediscfg.NewUniversalClient(rediscfg.Config{URL: options.RedisURL})
 		if err != nil {
 			return nil, err
 		}
-		client = redis.NewClient(parsed)
 	}
 	capacity, err := positiveInteger(options.Capacity, "capacity")
 	if err != nil {

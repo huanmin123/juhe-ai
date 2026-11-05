@@ -159,7 +159,7 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	// provider_code 过渡投影与 chainCandidateRow 过渡字段已删除，运行时行为键
 	// 统一按 vendor 维度（§8：账户连接身份=vendor_code）。B4②：secret 的
 	// ProviderCode 冗余槽位已退役（与 VendorCode 恒同值），身份读取统一走
-	// VendorCode（generic 账户为空串）。
+	// VendorCode（九家真实厂商恒非空）。
 	vendorCode := row.resourceVendorCode()
 	connectionDriverCode := row.resourceConnectionDriverCode()
 	protocolCode := row.resourceProtocolCode()
@@ -330,8 +330,8 @@ func chainFingerprintAPIKey(secret, key string) string {
 
 // chainAccountAPIKeyPoolIsolationEnabled mirrors
 // isAccountApiKeyPoolIsolationEnabled. vendorCode 承载账户连接身份（§8：行为
-// 键控按 vendor_code）；generic_http 账户 vendor 为空，但连接器本身支持
-// API Key 池隔离，按 connection_driver_code 放行。
+// 键控按 vendor_code）；九家真实厂商之外（含 generic_http 历史空 vendor
+// 形态）不再放行 Key 池隔离。
 func chainAccountAPIKeyPoolIsolationEnabled(vendorCode, connectionDriverCode, protocolCode, protocolVersion, accountType string, credentials map[string]any) bool {
 	if accountType != "api_key" {
 		return false
@@ -345,12 +345,10 @@ func chainAccountAPIKeyPoolIsolationEnabled(vendorCode, connectionDriverCode, pr
 // chainAccountAPIKeyPoolProviderSupported mirrors
 // isAccountApiKeyPoolProviderSupported.
 func chainAccountAPIKeyPoolProviderSupported(vendorCode, connectionDriverCode, protocolCode, protocolVersion string) bool {
-	if chainNormalizeProviderToken(connectionDriverCode) == "generic_http" {
-		return true
-	}
+	_ = connectionDriverCode
 	code := chainNormalizeProviderToken(vendorCode)
 	switch code {
-	case "openai", "gpt", "xai", "deepseek", "glm", "gemini", "hybrid", "anthropic":
+	case "gpt", "xai", "deepseek", "glm", "gemini", "anthropic":
 		return true
 	}
 	if chainNormalizeProviderToken(protocolCode) == "anthropic" && chainNormalizeProviderToken(protocolVersion) == "v1" {
@@ -486,33 +484,13 @@ var (
 	// 承载，契约 §5.2；词表缺失会让显式勾选的账户在 secret 投影时被滤除，
 	// /v1/videos 创建链按 video_create 候选过滤无账户可命中）。
 	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech", "video_create", "video_get", "video_content", "video_cancel"}
-	// chainHybridEndpointModes mirrors accountscore.HybridEndpointModeValues
-	// (the three-family union; images_json rides the openai family). M4b 媒体
-	// 映射（媒体设计 §9 hybrid 行）：补 video_create / video_get /
-	// video_content / video_cancel 四 token（随 openai 族并集——写侧
-	// accountscore hybrid 并集已含，此处缺会让显式声明视频能力的 hybrid 账户
-	// 在 secret 投影时被滤除，/v1/videos 创建链按 video_create 候选过滤无账户
-	// 可命中，镜像 M3 gemini 词表缺失同款缺陷）。M3f 长音频四 token 随
-	// openai 族并集同批进入（hybrid 无长转写 adapter，声明后创建链按能力
-	// 缺失失败——词表并集仅为投影一致性，非能力承诺）。
-	chainHybridEndpointModes = []string{
-		"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json",
-		"messages_json", "messages_sse", "message_token_counting",
-		"generate_content_json", "generate_content_sse", "count_tokens", "embed_content", "interactions_json", "interactions_sse",
-		"video_create", "video_get", "video_content", "video_cancel",
-		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
-		"realtime_session",
-	}
 )
 
 // chainNormalizeGatewayEndpointModesForRuntime mirrors
-// normalizeGatewayEndpointModesForRuntime (openai / anthropic / gemini /
-// hybrid profile branches)。vendorCode 承载账户连接身份（§8）。
+// normalizeGatewayEndpointModesForRuntime (openai / anthropic / gemini
+// profile branches)。vendorCode 承载账户连接身份（§8）；hybrid 分支随通用
+// 连接器退场删除。
 func chainNormalizeGatewayEndpointModesForRuntime(value []any, vendorCode, accountType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion string) []string {
-	code := chainNormalizeProviderToken(vendorCode)
-	if code == "hybrid" {
-		return chainFilterEndpointModes(value, chainHybridEndpointModes)
-	}
 	if chainIsAnthropicProtocolProfile(protocolCode, protocolVersion) {
 		defaults := chainAnthropicEndpointModes
 		if providerProtocolProfileID == "profile_deepseek_anthropic_v1" || providerProtocolProfileID == "profile_glm_coding_anthropic_v1" {
@@ -542,7 +520,7 @@ func chainNormalizeOpenAIEndpointModesForRuntime(value []any, vendorCode, accoun
 	switch code {
 	case "gpt", "deepseek":
 		return append([]string{}, chainOpenAIDefaultEndpointModes...)
-	case "openai", "glm", "gemini", "hybrid":
+	case "glm", "gemini":
 		return append([]string{}, chainOpenAIChatEndpointModes...)
 	}
 	if clientCompatibility == "codex_responses" {

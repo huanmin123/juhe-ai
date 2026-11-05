@@ -87,7 +87,7 @@ func newSyncCoordinator(clock *fakeClock, client *fakeEvalClient, provider *fake
 	counter := NewUserRequestLimitCounter(clock.Now, UserRequestLimitCounterOptions{})
 	coordinator := NewUserRequestLimitCoordinator(counter, clock.Now, UserRequestLimitCoordinatorOptions{
 		RedisEnabled:   true,
-		Namespace:      "juhe-ai",
+		Namespace:      "gateway",
 		ClientProvider: provider,
 	})
 	return coordinator, counter
@@ -114,7 +114,7 @@ func TestUserRequestLimitCoordinatorSyncsDirtyCounters(t *testing.T) {
 	if call.script != UserRequestLimitRedisSyncScript {
 		t.Fatal("coordinator must run the exact Node sync script")
 	}
-	if len(call.keys) != 1 || call.keys[0] != "juhe-ai:gateway:user-request-limit:perMinute:29500000:u1" {
+	if len(call.keys) != 1 || call.keys[0] != "juhe-ai:{gateway}:user-request-limit:perMinute:29500000:u1" {
 		t.Fatalf("redis keys = %v", call.keys)
 	}
 	// ARGV = [instanceId, localCount, ttlMs].

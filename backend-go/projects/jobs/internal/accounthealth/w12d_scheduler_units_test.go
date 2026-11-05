@@ -354,4 +354,3 @@ func TestW12dSchedulerPureHelpers(t *testing.T) {
 		t.Fatal("blank owner must fail")
 	}
 }
-

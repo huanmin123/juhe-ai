@@ -40,7 +40,7 @@ func (nopLogger) Debug(fields map[string]interface{}, msg string) {}
 type RuntimeDriverConfig struct {
 	RuntimeMode        string // 'standalone' | 'performance'
 	RuntimeStateDriver string // 'memory' | 'redis'
-	RedisStateURL      string
+	RedisURL      string
 	RedisNamespace     string
 }
 
@@ -328,7 +328,7 @@ func RoutingObservabilityStoreIdentity(config RuntimeDriverConfig) (string, erro
 	if config.RuntimeMode == "standalone" {
 		return "standalone:memory", nil
 	}
-	redisURL := strings.TrimSpace(config.RedisStateURL)
+	redisURL := strings.TrimSpace(config.RedisURL)
 	if config.RuntimeStateDriver != "redis" || redisURL == "" {
 		return "", errors.New("performance routing observability 要求 Redis runtime state")
 	}
@@ -351,9 +351,9 @@ func buildRoutingObservabilityStore(ctx context.Context, config RuntimeDriverCon
 	if config.RuntimeStateDriver != "redis" {
 		return nil, errors.New("performance routing observability 要求 redis runtime state driver")
 	}
-	redisURL := strings.TrimSpace(config.RedisStateURL)
+	redisURL := strings.TrimSpace(config.RedisURL)
 	if redisURL == "" {
-		return nil, errors.New("performance routing observability 缺少 JUHE_AI_REDIS_STATE_URL")
+		return nil, errors.New("performance routing observability 缺少 JUHE_AI_REDIS_URL")
 	}
 	client, err := GetRedisClient(ctx, redisURL)
 	if err != nil {

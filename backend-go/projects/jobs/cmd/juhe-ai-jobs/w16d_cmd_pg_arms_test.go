@@ -226,7 +226,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	}
 	business := &businessDB{db: pgDB}
 	// miniredis URL + 全依赖齐备 → 完整接线（63-137）。
-	assembly.config.RedisStateURL = "redis://" + redisServer.Addr()
+	assembly.config.RedisURL = "redis://" + redisServer.Addr()
 	assembly.config.RedisNamespace = "juhe-ai:w16d"
 	if err := assembly.wireListProjectionFamily(context.Background(), business, probeStore); err != nil {
 		t.Fatalf("列表投影族 PG 装配: %v", err)

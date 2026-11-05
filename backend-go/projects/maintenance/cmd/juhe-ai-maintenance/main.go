@@ -17,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/mockdata"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgcfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -45,6 +46,9 @@ func main() {
 // 旗标族与 --apply-j3b-model-check-sqlite、--chat-sqlite-path 一并删除；
 // 全部存储型命令收敛为 --dsn 单形态。
 func runMaintenance(argv []string) int {
+	// compose 只提供 POSTGRES_PASSWORD：一次性容器与常驻进程同样需要
+	// PGPASSWORD / PGAPPNAME（application_name 用于慢 SQL 溯源）。
+	pgcfg.PrepareProcessEnv("juhe-ai-maintenance")
 	// upgrade / check-config 显式子命令分发（升级兼容与迁移账本设计 §9.1）：
 	// Go flag 在首个非 flag 参数处停止解析，单层 FlagSet 无法承载子命令；
 	// 这里在旗标解析前剥离子命令并交独立 FlagSet。
@@ -57,12 +61,15 @@ func runMaintenance(argv []string) int {
 	if len(argv) > 0 && argv[0] == "drop-retired-account-name-search-index" {
 		return runDropRetiredAccountNameSearchIndexCommand(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == "purge-unsupported-vendor-accounts" {
+		return runPurgeUnsupportedVendorAccountsCommand(argv[1:])
+	}
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	printVersion := fs.Bool("version", false, "print the maintenance build version, commit and schema revision")
 	check := fs.Bool("check-boundary", false, "verify the scaffold boundary")
-	j3Apply := fs.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL)")
-	j3bApply := fs.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL)")
-	accountBalanceApply := fs.Bool("apply-account-balance-postgres", false, "add missing J2 account-balance PostgreSQL juhe_jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL)")
+	j3Apply := fs.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization (requires --dsn)")
+	j3bApply := fs.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization (requires --dsn)")
+	accountBalanceApply := fs.Bool("apply-account-balance-postgres", false, "add missing J2 account-balance PostgreSQL juhe_jobs tables/indexes after explicit authorization (requires --dsn)")
 	applyStudioRetirement := fs.Bool("apply-studio-retirement", false, "explicit cleanup of legacy media-studio artifacts after stop and backup confirmations; refuses before writes while studio API Keys still own OpenAI-compatible files/vector resources; storage via --dsn")
 	dropRetiredMonitoringTables := fs.Bool("drop-retired-monitoring-tables", false, "one-shot idempotent DROP of the 12 retired monitoring tables (9 stats tables + 3 table-monitor tables) after stop and backup confirmations; storage via --dsn")
 	ensureAccountDefaults := fs.Bool("ensure-account-default-resources", false, "idempotent additive backfill of the default group/route-strategy/API-key family for existing system accounts created before the 2026-10-07 default-resources cutover (only INSERTs what is missing; rerun writes nothing; requires --dsn, --secret and --backup-confirmed)")
@@ -73,7 +80,7 @@ func runMaintenance(argv []string) int {
 	seedDefaults := fs.Bool("seed", false, "idempotently run the default seed (PostgreSQL; runs after --ensure-schema when both are set)")
 	bootstrapDSN := fs.String("dsn", "", "postgres URL for storage-bound commands")
 	seedSecret := fs.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
-	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY)")
+	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, --dsn and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY)")
 	mockdataRun := fs.Bool("mockdata", false, "idempotently rebuild the development mockdata set in the target PostgreSQL database (schema ensure + seed + cleanup + per-domain seeding + summary; requires --dsn)")
 	mockdataVerifyCoverage := fs.Bool("verify-mockdata-coverage", false, "read-only verify that every wired mockdata domain store table is non-empty (allowlisted runtime-state tables excepted) and that the key coverage assertions hold (requires --dsn; exit 3 when not ready)")
 	mockdataDays := fs.Int("mockdata-days", mockdata.DefaultDays, "mockdata history span in days for detail and monitoring samples (1..90)")
@@ -104,6 +111,16 @@ func runMaintenance(argv []string) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		return 2
+	}
+	jBootstrapFlags := 0
+	for _, enabled := range []bool{*j3Apply, *j3bApply, *accountBalanceApply} {
+		if enabled {
+			jBootstrapFlags++
+		}
+	}
+	if jBootstrapFlags > 1 {
+		fmt.Fprintln(os.Stderr, "J3a/J3b/J2 bootstrap flags are mutually exclusive")
 		return 2
 	}
 	if *applyStudioRetirement && (*printVersion || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot || *ensureAccountDefaults) {
@@ -175,7 +192,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
-		return postgresSchemaSnapshotResult()
+		return postgresSchemaSnapshotResult(*bootstrapDSN)
 	}
 	if *ensureSchema || *seedDefaults {
 		if *postgresSchemaSnapshot || *printVersion || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
@@ -230,13 +247,13 @@ func runMaintenance(argv []string) int {
 	// 排在 J2 之后；退役监控表清退（--drop-retired-monitoring-tables）与
 	// studio 清理同模式，互斥同链。
 	if *j3bApply {
-		return j3bModelCheckBootstrapResult(*j3bApply)
+		return j3bModelCheckBootstrapResult(*bootstrapDSN, *j3bApply)
 	}
 	if *j3Apply {
-		return j3aProxyLatencyBootstrapResult(*j3Apply)
+		return j3aProxyLatencyBootstrapResult(*bootstrapDSN, *j3Apply)
 	}
 	if *accountBalanceApply {
-		return accountBalanceBootstrapResult()
+		return accountBalanceBootstrapResult(*bootstrapDSN)
 	}
 	if *applyStudioRetirement {
 		return studioRetirementResult(*bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
@@ -256,10 +273,10 @@ func runMaintenance(argv []string) int {
 }
 
 // j3bModelCheckBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func j3bModelCheckBootstrapResult(apply bool) int {
-	rawURL := strings.TrimSpace(os.Getenv(j3bmodelcheck.BootstrapEnv))
+func j3bModelCheckBootstrapResult(dsn string, apply bool) int {
+	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
-		fmt.Fprintf(os.Stderr, "J3b PostgreSQL bootstrap requires %s\n", j3bmodelcheck.BootstrapEnv)
+		fmt.Fprintln(os.Stderr, "J3b PostgreSQL bootstrap requires --dsn")
 		return 2
 	}
 	db, err := j3bmodelcheck.Open(rawURL)
@@ -290,10 +307,10 @@ func j3bBootstrapOutcomeExitCode(report j3bmodelcheck.Report, runErr error) int 
 }
 
 // j3aProxyLatencyBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func j3aProxyLatencyBootstrapResult(apply bool) int {
-	rawURL := strings.TrimSpace(os.Getenv(j3aproxylatency.BootstrapEnv))
+func j3aProxyLatencyBootstrapResult(dsn string, apply bool) int {
+	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
-		fmt.Fprintf(os.Stderr, "J3a PostgreSQL bootstrap requires %s\n", j3aproxylatency.BootstrapEnv)
+		fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap requires --dsn")
 		return 2
 	}
 	db, err := j3aproxylatency.Open(rawURL)
@@ -323,15 +340,14 @@ func j3aBootstrapOutcomeExitCode(report j3aproxylatency.Report, runErr error) in
 	return 0
 }
 
-// accountBalanceBootstrapEnv 对齐 j3a/j3b 的 JUHE_AI_MAINTENANCE_*_POSTGRES_URL
-// 家族；accountbalance 是纯库包（连接打开与 CLI 契约留在 maintenance）。
-const accountBalanceBootstrapEnv = "JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL"
-
-// accountBalanceBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func accountBalanceBootstrapResult() int {
-	rawURL := strings.TrimSpace(os.Getenv(accountBalanceBootstrapEnv))
+// accountBalanceBootstrapResult returns the CLI exit code; runMaintenance
+// dispatches it and tests call it in-process. The target database comes from
+// the shared --dsn flag（accountbalance 是纯库包，连接打开与 CLI 契约留在
+// maintenance）。
+func accountBalanceBootstrapResult(dsn string) int {
+	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
-		fmt.Fprintf(os.Stderr, "J2 account-balance PostgreSQL bootstrap requires %s\n", accountBalanceBootstrapEnv)
+		fmt.Fprintln(os.Stderr, "J2 account-balance PostgreSQL bootstrap requires --dsn")
 		return 2
 	}
 	db, err := openAccountBalancePostgres(rawURL)

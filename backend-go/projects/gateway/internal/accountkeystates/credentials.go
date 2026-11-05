@@ -18,9 +18,9 @@ import (
 //
 // 与 sibling Go 移植的差异披露：jobs proberepo/credentials.go 与
 // cmd/juhe-ai-gateway chain_accounts_secret.go 的 provider 白名单各自加入了
-// 'hybrid'/'xai' 且（jobs）省略 anthropic 协议 profile 的版本校验；本包按
-// 归档 Node isAccountApiKeyPoolProviderSupported 原文实现
-// （openai/gpt/deepseek/glm/gemini/anthropic 供应商，或 anthropic 协议 v1）。
+// 'xai' 且（jobs）省略 anthropic 协议 profile 的版本校验；本包按归档 Node
+// isAccountApiKeyPoolProviderSupported 收窄到九家真实厂商后实现
+// （gpt/deepseek/glm/gemini/anthropic 供应商，或 anthropic 协议 v1）。
 
 // KeyEntry 等价 Node AccountApiKeyEntry。
 type KeyEntry struct {
@@ -132,13 +132,13 @@ func (s *Store) IsAccountAPIKeyPoolIsolationEnabled(providerCode, protocolCode, 
 }
 
 // isAccountAPIKeyPoolProviderSupported 对齐归档 Node
-// isAccountApiKeyPoolProviderSupported：openai / gpt（openai-compatible 供应商
-// 码族）、deepseek、glm、gemini、anthropic 供应商，或 anthropic 协议 profile
-// （protocolCode=anthropic 且 protocolVersion=v1）。
+// isAccountApiKeyPoolProviderSupported：gpt、deepseek、glm、gemini、anthropic
+// 真实厂商，或 anthropic 协议 profile（protocolCode=anthropic 且
+// protocolVersion=v1）。openai 兼容供应商已退役，不再放行。
 func isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion string) bool {
 	code := normalizeProviderToken(providerCode)
 	switch code {
-	case "openai", "gpt", "deepseek", "glm", "gemini", "anthropic":
+	case "gpt", "deepseek", "glm", "gemini", "anthropic":
 		return true
 	}
 	return normalizeProviderToken(protocolCode) == "anthropic" &&

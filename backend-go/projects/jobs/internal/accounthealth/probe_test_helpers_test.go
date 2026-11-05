@@ -47,7 +47,7 @@ func testInput(baseURL, mode string) exactkeyprobe.Input {
 		InputVersion:         1,
 		ConfigRevision:       1,
 		DispatchRevision:     1,
-		Provider:             "openai",
+		Provider:             "gpt",
 		Type:                 "api_key",
 		EndpointMode:         mode,
 		HealthModel:          "gpt-test",

@@ -23,16 +23,12 @@ func TestApplySystemClientHeadersUsesZCodeForExactGLMCodingProfiles(t *testing.T
 	}
 }
 
-// BUG-0201：GLM 家族（provider glm、profile_glm_ 前缀、两个 hybrid 桥接档案）
-// 的 API Key 系统请求统一走 ZCode 全套身份，OpenCode 万金油兜底删除。
+// BUG-0201：GLM 家族（provider glm、profile_glm_ 前缀）的 API Key 系统请求
+// 统一走 ZCode 全套身份，OpenCode 万金油兜底删除。
 func TestApplySystemClientHeadersSelectsZCodeForWholeGLMFamily(t *testing.T) {
 	for _, input := range []Input{
 		{ProviderCode: "glm", ProviderProtocolProfileID: "profile_glm_general_openai_v1", CredentialType: "api_key"},
 		{ProviderCode: "", ProviderProtocolProfileID: "profile_glm_general_openai_v1", CredentialType: "api_key"},
-		{ProviderCode: "hybrid", ProviderProtocolProfileID: ProfileHybridOpenAIChatV1, CredentialType: "api_key"},
-		{ProviderCode: "hybrid", ProviderProtocolProfileID: ProfileHybridAnthropicMessagesV1, CredentialType: "api_key"},
-		{ProviderCode: "", ProviderProtocolProfileID: ProfileHybridOpenAIChatV1, CredentialType: "api_key"},
-		{ProviderCode: "", ProviderProtocolProfileID: ProfileHybridAnthropicMessagesV1, CredentialType: "api_key"},
 	} {
 		headers := http.Header{}
 		ApplySystemClientHeaders(headers, input)

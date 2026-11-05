@@ -100,10 +100,10 @@ func TestCircuitAuditR1KeyspaceGatewayAndJobsInteroperable(t *testing.T) {
 	gatewayKeys := redisAccountCircuitStoreKeys("gateway-account-circuit", "circuit-audit-ns")
 	jobsKeys := redisAccountCircuitStoreKeys("gateway-account-circuit", "circuit-audit-ns") // jobs circuitstore.StoreName（单数）
 
-	if gatewayKeys.states != "juhe-ai:circuit-audit-ns:account-circuit:gateway-account-circuit:states" {
+	if gatewayKeys.states != "juhe-ai:{circuit-audit-ns}:account-circuit:gateway-account-circuit:states" {
 		t.Fatalf("gateway states 键形状漂移: %q", gatewayKeys.states)
 	}
-	if jobsKeys.states != "juhe-ai:circuit-audit-ns:account-circuit:gateway-account-circuit:states" {
+	if jobsKeys.states != "juhe-ai:{circuit-audit-ns}:account-circuit:gateway-account-circuit:states" {
 		t.Fatalf("jobs states 键形状漂移: %q", jobsKeys.states)
 	}
 	if gatewayKeys.states != jobsKeys.states || gatewayKeys.due != jobsKeys.due {

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"sort"
 	"sync"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 const (
@@ -146,8 +147,8 @@ const (
 	RedisRouteStateRoundRobinMode     = "round-robin"
 	RedisRouteStateWeightedMode       = "weighted"
 	// ErrHighPerformanceDynamicRouteRequiresStateURL mirrors the Node error
-	// thrown when the redis driver is selected without JUHE_AI_REDIS_STATE_URL.
-	ErrHighPerformanceDynamicRouteRequiresStateURL = "高性能模式动态路由需要 JUHE_AI_REDIS_STATE_URL"
+	// thrown when the redis driver is selected without JUHE_AI_REDIS_URL.
+	ErrHighPerformanceDynamicRouteRequiresStateURL = "高性能模式动态路由需要 JUHE_AI_REDIS_URL"
 	// ErrRedisRouteCounterInvalidResult mirrors the Node error for a
 	// non-numeric counter result.
 	ErrRedisRouteCounterInvalidResult = "Redis 动态路由计数器返回值无效"
@@ -182,17 +183,20 @@ type APIKeyGroupRouteSelector struct {
 	// RedisStateURL mirrors runtimeConfig.redis.stateUrl; an empty value with
 	// the redis driver reproduces the Node missing-URL error.
 	RedisStateURL string
+	// RedisNamespace is the domain-qualified key namespace.
+	RedisNamespace string
 
 	states *routeStateRegistry
 }
 
 // NewAPIKeyGroupRouteSelector builds a selector with fresh process-local
 // route state (Node module-level state singleton).
-func NewAPIKeyGroupRouteSelector(runtimeStateDriver string, redisCounter RedisRouteCounter, redisStateURL string) *APIKeyGroupRouteSelector {
+func NewAPIKeyGroupRouteSelector(runtimeStateDriver string, redisCounter RedisRouteCounter, redisStateURL string, namespaces ...string) *APIKeyGroupRouteSelector {
 	return &APIKeyGroupRouteSelector{
 		RuntimeStateDriver: runtimeStateDriver,
 		Redis:              redisCounter,
 		RedisStateURL:      redisStateURL,
+		RedisNamespace:     firstString(namespaces),
 		states:             newRouteStateRegistry(),
 	}
 }
@@ -252,7 +256,7 @@ func (s *APIKeyGroupRouteSelector) PeekAPIKeyGroupBindingsForDispatchAsync(ctx c
 	}
 	if apiKey.RouteStrategyMode == RouteStrategyModeRoundRobin {
 		if s.RuntimeStateDriver == runtimeStateDriverRedis {
-			index, err := s.peekRedisRouteCounterIndex(ctx, redisRouteStateKey(apiKey, RedisRouteStateRoundRobinMode), int64(len(bindings)))
+			index, err := s.peekRedisRouteCounterIndex(ctx, redisRouteStateKeyNS(s.RedisNamespace, apiKey, RedisRouteStateRoundRobinMode), int64(len(bindings)))
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +286,7 @@ func (s *APIKeyGroupRouteSelector) peekWeightedBindingsWithRedisCounter(ctx cont
 		}
 		totalWeight += weight
 	}
-	selectedWeightIndex, err := s.peekRedisRouteCounterIndex(ctx, redisRouteStateKey(apiKey, RedisRouteStateWeightedMode), totalWeight)
+	selectedWeightIndex, err := s.peekRedisRouteCounterIndex(ctx, redisRouteStateKeyNS(s.RedisNamespace, apiKey, RedisRouteStateWeightedMode), totalWeight)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +353,7 @@ func (s *APIKeyGroupRouteSelector) OrderAPIKeyGroupBindingsForDispatchAsync(ctx 
 		return s.OrderAPIKeyGroupBindingsForDispatch(apiKey)
 	}
 	if apiKey.RouteStrategyMode == RouteStrategyModeRoundRobin {
-		index, err := s.nextRedisRouteCounterIndex(ctx, redisRouteStateKey(apiKey, RedisRouteStateRoundRobinMode), int64(len(bindings)))
+		index, err := s.nextRedisRouteCounterIndex(ctx, redisRouteStateKeyNS(s.RedisNamespace, apiKey, RedisRouteStateRoundRobinMode), int64(len(bindings)))
 		if err != nil {
 			return nil, err
 		}
@@ -506,7 +510,7 @@ func (s *APIKeyGroupRouteSelector) orderWeightedBindingsWithRedisCounter(ctx con
 		}
 		totalWeight += weight
 	}
-	selectedWeightIndex, err := s.nextRedisRouteCounterIndex(ctx, redisRouteStateKey(apiKey, RedisRouteStateWeightedMode), totalWeight)
+	selectedWeightIndex, err := s.nextRedisRouteCounterIndex(ctx, redisRouteStateKeyNS(s.RedisNamespace, apiKey, RedisRouteStateWeightedMode), totalWeight)
 	if err != nil {
 		return nil, err
 	}
@@ -638,9 +642,20 @@ func (e *RouteStateURLError) Error() string { return e.Message }
 
 // redisRouteStateKey mirrors redisRouteStateKey:
 // juhe-ai:route-state:api-key-group:<mode>:<base64url(stateKey)>.
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
 func redisRouteStateKey(apiKey *APIKeyRow, mode string) string {
+	return redisRouteStateKeyNS("", apiKey, mode)
+}
+
+func redisRouteStateKeyNS(namespace string, apiKey *APIKeyRow, mode string) string {
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(apiKeyRouteStateKey(apiKey)))
-	return "juhe-ai:route-state:api-key-group:" + mode + ":" + encoded
+	return rediscfg.NamespacedKey("juhe-ai:route-state:api-key-group:"+mode+":"+encoded, namespace)
 }
 
 // assertSyncRouteStateAllowed mirrors assertSyncRouteStateAllowed: the

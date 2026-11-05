@@ -39,7 +39,7 @@ func TestRedisMemoryEquivalenceAndLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	redisStore := NewRedisStore(client, "juhe-ai:caller-tiers:", nowFn)
+	redisStore := NewRedisStore(client, "juhe-ai:{caller-tiers}:", nowFn)
 	viaRedis, err := NewRecorder(redisStore, Metrics{}, nowFn)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestRedisMemoryEquivalenceAndLoss(t *testing.T) {
 	// TTL 语义：滑动过期后回 T2。
 	server.FlushDB()
 	viaRedis.RecordRequest(ctx, "key-ttl")
-	if !server.Exists("juhe-ai:caller-tiers:key-ttl") {
+	if !server.Exists("juhe-ai:{caller-tiers}:key-ttl") {
 		t.Fatal("写入必须建立状态 key")
 	}
 	server.FastForward(StateTTL + time.Minute)

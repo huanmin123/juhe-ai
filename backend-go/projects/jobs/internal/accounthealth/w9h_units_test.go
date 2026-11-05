@@ -212,7 +212,7 @@ func w9hValidConfigEnv(_, _, inputDir string) map[string]string {
 	return map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "inst-w9h",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://w9h.invalid/jobs",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://w9h.invalid/jobs",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w9h.invalid/business",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    inputDir,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
@@ -269,7 +269,7 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	}
 	// The happy postgres path accepts pool limits and the direct input source.
 	env = w9hValidConfigEnv("postgres", storePath, inputDir)
-	env["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"] = "postgres://example"
+	env["JUHE_AI_POSTGRES_URL"] = "postgres://example"
 	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "postgres"
 	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] = "postgres://business"
 	cfg, err = load(env)

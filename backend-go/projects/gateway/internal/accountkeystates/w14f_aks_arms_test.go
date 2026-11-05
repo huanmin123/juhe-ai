@@ -152,7 +152,7 @@ func w14fPoolEnvelope(t *testing.T) string {
 
 // w14fRevalidateAccountRow 是 loadRevalidateAccountRow 的 8 列成功行。
 func w14fRevalidateAccountRow(t *testing.T) []driver.Value {
-	return []driver.Value{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), int64(1), w14fPoolEnvelope(t)}
+	return []driver.Value{"gpt", "openai", "v1", "api_key", "active", int64(1), int64(1), int64(1), w14fPoolEnvelope(t)}
 }
 
 // w14fFingerprintValues 返回池内两把 Key 的指纹（按 entries 顺序）。
@@ -401,7 +401,7 @@ func TestW14fRevalidatePoolErrorArms(t *testing.T) {
 
 func TestW14fRevalidateDecryptFailureFallsBackToNotSupported(t *testing.T) {
 	script := &w14fRevalidateScript{
-		accountRows: [][]driver.Value{{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), int64(1), "w14f-not-an-envelope"}},
+		accountRows: [][]driver.Value{{"gpt", "openai", "v1", "api_key", "active", int64(1), int64(1), int64(1), "w14f-not-an-envelope"}},
 	}
 	store := w14fFakeStore(t, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
 	if result, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err != nil ||
@@ -420,7 +420,7 @@ func w14fClaimDispatch(t *testing.T, query string, args []driver.NamedValue) (dr
 	if strings.Contains(query, "states.next_probe_at IS NOT NULL") {
 		return &w14fFakeRows{columns: make([]string, 17), values: [][]driver.Value{
 			{"w14f-acc", w14fFingerprintValues(t)[0], int64(0), "rate_limited", "2026-09-04T09:00:00.000Z", "2026-09-04T09:00:00.000Z",
-				nil, nil, "w14f-account", "openai", "openai", "v1", "api_key", w14fPoolEnvelope(t), int64(1), nil, nil},
+				nil, nil, "w14f-account", "gpt", "openai", "v1", "api_key", w14fPoolEnvelope(t), int64(1), nil, nil},
 		}}, nil
 	}
 	_ = args
@@ -520,7 +520,7 @@ func w14fMutationTarget(t *testing.T) TargetInput {
 		SelectedAPIKeyFingerprint: w14fFingerprintValues(t)[1],
 		HasSelectedAPIKeyIndex:    true,
 		SelectedAPIKeyIndex:       2,
-		ProviderCode:              "openai",
+		ProviderCode:              "gpt",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		AccountType:               "api_key",
@@ -655,7 +655,7 @@ func TestW14fSummaryErrorArms(t *testing.T) {
 			switch {
 			case strings.Contains(query, "AS view_account_id"):
 				return &w14fFakeRows{columns: make([]string, 7), values: [][]driver.Value{{
-					"w14f-acc", "w14f-acc", "openai", "openai", "v1", "api_key", w14fPoolEnvelope(t),
+					"w14f-acc", "w14f-acc", "gpt", "openai", "v1", "api_key", w14fPoolEnvelope(t),
 				}}}, nil
 			case strings.Contains(query, "SELECT account_id, key_fingerprint"):
 				return nil, errors.New("w14f detail query failure")
@@ -684,7 +684,7 @@ func TestW14fSummaryErrorArms(t *testing.T) {
 	}
 	goodSource := func() (driver.Rows, error) {
 		return &w14fFakeRows{columns: make([]string, 7), values: [][]driver.Value{{
-			"w14f-acc", "w14f-acc", "openai", "openai", "v1", "api_key", w14fPoolEnvelope(t),
+			"w14f-acc", "w14f-acc", "gpt", "openai", "v1", "api_key", w14fPoolEnvelope(t),
 		}}}, nil
 	}
 	emptyDetail := func() (driver.Rows, error) { return &w14fFakeRows{columns: make([]string, 15)}, nil }
@@ -784,7 +784,7 @@ func TestW14fResolveTargetMergesCredentials(t *testing.T) {
 		OwnerSystemAccountID:      "w14f-owner",
 		CredentialSourceAccountID: "w14f-source",
 		SelectedAPIKeyFingerprint: "",
-		ProviderCode:              "openai",
+		ProviderCode:              "gpt",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		AccountType:               "api_key",
@@ -802,7 +802,7 @@ func TestW14fResolveTargetMergesCredentials(t *testing.T) {
 		OwnerSystemAccountID:      "w14f-owner",
 		CredentialSourceAccountID: "w14f-source",
 		SelectedAPIKeyFingerprint: fingerprint,
-		ProviderCode:              "openai",
+		ProviderCode:              "gpt",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		AccountType:               "api_key",

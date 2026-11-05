@@ -12,7 +12,6 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
-
 )
 
 func validScheduleJSON() string {

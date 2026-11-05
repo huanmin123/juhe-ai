@@ -17,11 +17,10 @@ import (
 
 func TestZeroConfigMissingStorageEndpointsFailFast(t *testing.T) {
 	full := map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://:secret@127.0.0.1:6379/1",
-		"JUHE_AI_REDIS_STATE_URL": "redis://:secret@127.0.0.1:6379/9",
+		"JUHE_AI_POSTGRES_URL": "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
+		"JUHE_AI_REDIS_URL":    "redis://:secret@127.0.0.1:6379/0",
 	}
-	for _, missing := range []string{"JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL"} {
+	for _, missing := range []string{"JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_URL"} {
 		env := map[string]string{}
 		for key, value := range full {
 			if key != missing {
@@ -37,8 +36,7 @@ func TestZeroConfigMissingStorageEndpointsFailFast(t *testing.T) {
 	// 之一（校验顺序 cache → state → postgres）。
 	if _, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{})); err == nil ||
 		(!strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") &&
-			!strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") &&
-			!strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL")) {
+			!strings.Contains(err.Error(), "JUHE_AI_REDIS_URL")) {
 		t.Fatalf("全空 env 必须失败并指名缺失连接串，got %v", err)
 	}
 }
@@ -46,10 +44,9 @@ func TestZeroConfigMissingStorageEndpointsFailFast(t *testing.T) {
 func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 	root := t.TempDir()
 	env := map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://:secret@127.0.0.1:6379/1",
-		"JUHE_AI_REDIS_STATE_URL": "redis://:secret@127.0.0.1:6379/9",
-		"JUHE_AI_DATA_DIR":        root,
+		"JUHE_AI_POSTGRES_URL": "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
+		"JUHE_AI_REDIS_URL":    "redis://:secret@127.0.0.1:6379/0",
+		"JUHE_AI_DATA_DIR":     root,
 	}
 	cfg, err := loadRuntimeConfig(w1iFakeEnv(env))
 	if err != nil {
@@ -90,8 +87,7 @@ func TestZeroConfigBusinessOwnerGateSemantics(t *testing.T) {
 	// 忽略——恒自动认领，门禁只保留业务连接串检查。
 	env := map[string]string{
 		"JUHE_AI_POSTGRES_URL":               "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
-		"JUHE_AI_REDIS_CACHE_URL":            "redis://:secret@127.0.0.1:6379/1",
-		"JUHE_AI_REDIS_STATE_URL":            "redis://:secret@127.0.0.1:6379/9",
+		"JUHE_AI_REDIS_URL":                  "redis://:secret@127.0.0.1:6379/1",
 		"JUHE_AI_BUSINESS_OWNER":             "gateway",
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED": "true",
 	}
@@ -105,25 +101,24 @@ func TestZeroConfigBusinessOwnerGateSemantics(t *testing.T) {
 	if err := explicit.businessOwnerGate(); err != nil {
 		t.Fatalf("连接性满足时残留切流语义 env 不得阻断启动: %v", err)
 	}
-	// 显式独立业务连接串是运维配置，不触发门禁——连接串原样保留。
+	// 业务面与主链共用一个连接串：旧的独立业务连接串变量不再被读取。
 	explicitURL, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
 		"JUHE_AI_POSTGRES_URL":          "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
-		"JUHE_AI_REDIS_CACHE_URL":       "redis://:secret@127.0.0.1:6379/1",
-		"JUHE_AI_REDIS_STATE_URL":       "redis://:secret@127.0.0.1:6379/9",
+		"JUHE_AI_REDIS_URL":             "redis://:secret@127.0.0.1:6379/1",
 		"JUHE_AI_BUSINESS_POSTGRES_URL": "postgres://biz:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
 	}))
 	if err != nil {
 		t.Fatalf("显式 business postgres 配置: %v", err)
 	}
-	if explicitURL.BusinessPostgresURL != "postgres://biz:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable" {
-		t.Fatalf("显式业务连接串必须原样保留: %q", explicitURL.BusinessPostgresURL)
+	if explicitURL.BusinessPostgresURL != "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable" {
+		t.Fatalf("业务连接串必须与主库同源: %q", explicitURL.BusinessPostgresURL)
 	}
 	if err := explicitURL.businessOwnerGate(); err != nil {
 		t.Fatalf("仅运维变量自动认领下 businessOwnerGate 必须放行: %v", err)
 	}
 	// 缺业务连接串（主连接串也未配置）→ 门禁 fail closed（错误可定位）。
 	missingBiz := runtimeConfig{SystemAPIEnabled: true}
-	if err := missingBiz.businessOwnerGate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_BUSINESS_POSTGRES_URL") {
+	if err := missingBiz.businessOwnerGate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
 		t.Fatalf("缺业务连接串必须 fail closed 且指名 env，got %v", err)
 	}
 }

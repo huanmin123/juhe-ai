@@ -223,15 +223,15 @@ func TestB1ValidateConnectionBaseURLTable(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		"",                                    // 空
-		"ftp://api.openai.com/v1",             // 非 http/https
-		"https://user:pass@api.openai.com/v1", // userinfo
-		"https://api.openai.com/v1?x=1",       // query
-		"https://api.openai.com/v1#frag",      // fragment
-		"https://api.openai.com/../v1",        // dot segment
-		"https://api.openai.com/%zz/v1",       // 坏 percent escape
-		"https://api.openai.com/%2F/v1",       // percent-decoded slash
-		"https://api.openai.com/%5C/v1",       // percent-decoded backslash
+		"",                                           // 空
+		"ftp://api.openai.com/v1",                    // 非 http/https
+		"https://user:pass@api.openai.com/v1",        // userinfo
+		"https://api.openai.com/v1?x=1",              // query
+		"https://api.openai.com/v1#frag",             // fragment
+		"https://api.openai.com/../v1",               // dot segment
+		"https://api.openai.com/%zz/v1",              // 坏 percent escape
+		"https://api.openai.com/%2F/v1",              // percent-decoded slash
+		"https://api.openai.com/%5C/v1",              // percent-decoded backslash
 		"https://api.openai.com/v1/chat/completions", // operation 完整路径（R8 后缀命中）
 		"https://api.openai.com/v1/chat",             // operation 按段前缀（后缀 /chat）
 		"https://api.openai.com/responses",           // operation 完整路径（R2 去前缀模板）
@@ -379,9 +379,9 @@ func TestB1CloneAdoptsExplicitConnections(t *testing.T) {
 	// 臂 1：显式 connections 改 baseUrl → 克隆连接域 = 表单值，凭据域同步。
 	editBaseURL := "https://clone-edit.example.com/v1"
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"b1-t99-adopt","type":"api_key",
-		"capabilityDomain":"chat","credentials":{"api_key":"sk-t99-adopt-secret-123456","base_url":"` + editBaseURL + `"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"` + sourceID + `",
-		"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"` + editBaseURL + `","endpointModes":["chat_json","chat_sse"],"enabled":true}]}`)
+		"capabilityDomain":"chat","credentials":{"api_key":"sk-t99-adopt-secret-123456","base_url":"`+editBaseURL+`"},
+		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"`+sourceID+`",
+		"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"`+editBaseURL+`","endpointModes":["chat_json","chat_sse"],"enabled":true}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("显式连接克隆应 201：%d %v", code, payload)
 	}
@@ -420,7 +420,7 @@ func TestB1CloneAdoptsExplicitConnections(t *testing.T) {
 	// 未提交臂由 TestB1CloneCopiesConnectionRows 覆盖）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"b1-t99-fallback","type":"api_key",
 		"capabilityDomain":"chat","credentials":{"api_key":"sk-t99-fallback-secret-123","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"` + sourceID + `","connections":[]}`)
+		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"`+sourceID+`","connections":[]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("空数组回落克隆应 201：%d %v", code, payload)
 	}
@@ -432,7 +432,7 @@ func TestB1CloneAdoptsExplicitConnections(t *testing.T) {
 	// 臂 3：显式非法连接（重复 preset）→ 400 且不产生克隆体。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"b1-t99-invalid","type":"api_key",
 		"capabilityDomain":"chat","credentials":{"api_key":"sk-t99-invalid-secret-12","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"` + sourceID + `",
+		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"`+sourceID+`",
 		"connections":[
 			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true},
 			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json"],"enabled":true}]}`)
@@ -447,22 +447,22 @@ func TestB1CloneAdoptsExplicitConnections(t *testing.T) {
 	// 源连接用自定义 baseUrl（区别于 preset 缺省），断言克隆忠实重建源值。
 	genericBaseURL := "https://compat-t99.example.com/v1"
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"openai","name":"b1-t99-generic-source","type":"api_key","credentials":{"api_key":"sk-t99-generic-secret-123","base_url":"` + genericBaseURL + `"},
+		`{"providerCode":"gpt","name":"b1-t99-generic-source","type":"api_key","credentials":{"api_key":"sk-t99-generic-secret-123","base_url":"`+genericBaseURL+`"},
 		"supportedModels":["gpt-4o-mini"],"status":"active",
-		"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"` + genericBaseURL + `","endpointModes":["chat_json","chat_sse"],"enabled":true}],
-		"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`)
+		"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"`+genericBaseURL+`","endpointModes":["chat_json","chat_sse"],"enabled":true}],
+		"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("generic 源创建应 201：%d %v", code, payload)
 	}
 	genericSourceID := dataMap(t, payload)["id"].(string)
-	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"openai","name":"b1-t99-generic-clone","type":"api_key",
-		"credentials":{"api_key":"sk-t99-genericclone-secret","base_url":"` + genericBaseURL + `"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"` + genericSourceID + `"}`)
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","name":"b1-t99-generic-clone","type":"api_key",
+		"credentials":{"api_key":"sk-t99-genericclone-secret","base_url":"`+genericBaseURL+`"},
+		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"`+genericSourceID+`"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("generic 回落克隆应 201：%d %v", code, payload)
 	}
 	genericCloneID := dataMap(t, payload)["id"].(string)
-	if got := env.queryCell(t, `SELECT connection_preset_code || '|' || base_url || '|' || enabled FROM account_connections WHERE account_id = ?`, genericCloneID); got != "generic_openai_v1|"+genericBaseURL+"|1" {
+	if got := env.queryCell(t, `SELECT connection_preset_code || '|' || base_url || '|' || enabled FROM account_connections WHERE account_id = ?`, genericCloneID); got != "gpt_openai_v1|"+genericBaseURL+"|1" {
 		t.Fatalf("generic 回落克隆连接行应原样重建源连接：%q", got)
 	}
 }
@@ -475,7 +475,7 @@ func TestB1ImportLegacyFormatFailsExplicitly(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 
 	legacy := `{"data":{"type":"juhe-ai-account-import","version":1,"proxies":[],
-		"accounts":[{"ref":"legacy-1","name":"旧格式账户","providerCode":"openai",
+		"accounts":[{"ref":"legacy-1","name":"旧格式账户","providerCode":"gpt",
 		"providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active",
 		"groupName":"旧格式分组","supportedModels":["gpt-4o-mini"],
 		"credentials":{"api_key":"sk-legacy-1234567890","base_url":"https://api.openai.com/v1"}}]}}`

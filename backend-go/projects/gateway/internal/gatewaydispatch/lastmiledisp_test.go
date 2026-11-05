@@ -88,7 +88,7 @@ func TestFilterGatewayAccountsByRequestedModelRuntimeMapping(t *testing.T) {
 	accounts := []AccountCandidate{{
 		ID:              "mapped",
 		SupportedModels: []string{"upstream-model"},
-		VendorCode:      "openai",
+		VendorCode:      "gpt",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "gpt-test",
 			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,

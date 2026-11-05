@@ -769,7 +769,6 @@ func (c *gatewayChain) handleUpstreamResponse(
 				sourceEndpointFamily: requestMappingSourceFamilyOf(req),
 				compactionExpected:   context.UsageContext.CompactionExpected,
 				models:               c.usageModelResolver,
-				resolveModelVendor:   c.resolveAccountModelVendor,
 			},
 			Logger: gatewayResponseLogger{inner: slog.Default()},
 			NowMs:  func() int64 { return c.preauth.NowMs() },

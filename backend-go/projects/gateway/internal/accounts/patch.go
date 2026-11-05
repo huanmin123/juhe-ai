@@ -849,7 +849,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &patchCredentials); err != nil {
 			return nil, err
 		}
-		patchVendor, patchDriver := accountVendorIdentity(row.providerCode)
+		patchVendor, patchDriver, err := accountVendorIdentity(row.providerCode)
+		if err != nil {
+			return nil, err
+		}
 		resolvedPatchConnections, err := resolveConnectionSet(row.capabilityDomain, patchDriver, row.accountType,
 			accountOAuthTypeForRegistry(row.accountType, row.oauthType, patchCredentials), input.Connections)
 		if err != nil {
@@ -999,7 +1002,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if _, err := normalizedHealthCheckModel(effectiveModel, supportedModelNames); err != nil {
 			return nil, err
 		}
-		patchHealthVendor, _ := accountVendorIdentity(row.providerCode)
+		patchHealthVendor, _, err := accountVendorIdentity(row.providerCode)
+		if err != nil {
+			return nil, err
+		}
 		modelID, err := s.resolveEntryModelID(ctx, tx, patchHealthVendor.String, row.systemAccountID, effectiveModel)
 		if err != nil {
 			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查模型 %s 不在本账户可见支持模型内", effectiveModel)}

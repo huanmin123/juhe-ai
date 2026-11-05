@@ -25,10 +25,6 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
-  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
-  HYBRID_PROVIDER_CODE,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   XAI_OPENAI_V1_PROFILE_ID,
@@ -58,46 +54,11 @@ export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-fable-5-1', 'claude-o
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro']
 export const DEFAULT_GLM_SUPPORTED_MODELS = ['glm-5.3', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flashx', 'glm-4.7-flash']
-export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.6-sol', 'claude-opus-5', 'gemini-3.7-flash', 'deepseek-v4-flash', 'glm-5.3']
-
-export const OPENAI_COMPATIBLE_PROVIDER: ProviderDefinition = {
-  id: OPENAI_COMPATIBLE_PROVIDER_CODE,
-  code: OPENAI_COMPATIBLE_PROVIDER_CODE,
-  name: 'OpenAI 兼容',
-  enabled: true,
-  defaultProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
-  baseUrl: 'https://api.openai.com/v1',
-  defaultHealthCheckModel: 'gpt-5.5',
-  defaultSupportedModels: DEFAULT_OPENAI_SUPPORTED_MODELS,
-  accountTypes: ['api_key'],
-  capabilities: ['responses', 'chat', 'passthrough'],
-  protocolProfiles: [
-    {
-      id: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      name: 'OpenAI 兼容 / OpenAI v1',
-      enabled: true,
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      protocolVersion: OPENAI_PROTOCOL_VERSION,
-      baseUrl: 'https://api.openai.com/v1',
-      defaultHealthCheckModel: 'gpt-5.5',
-      accountTypes: ['api_key'],
-      capabilities: ['responses', 'chat', 'passthrough'],
-      endpointFamilies: [
-        { code: OPENAI_RESPONSES_FAMILY, name: 'Responses' },
-        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
-      ]
-    }
-  ]
-}
 
 export const GPT_PROVIDER: ProviderDefinition = {
   id: GPT_VENDOR_CODE,
   code: GPT_VENDOR_CODE,
   name: 'GPT',
-  parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
   enabled: true,
   defaultProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
   protocolCode: OPENAI_PROTOCOL_CODE,
@@ -131,7 +92,6 @@ export const XAI_PROVIDER: ProviderDefinition = {
   id: XAI_PROVIDER_CODE,
   code: XAI_PROVIDER_CODE,
   name: 'xAI / Grok',
-  parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
   enabled: true,
   defaultProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID,
   protocolCode: OPENAI_PROTOCOL_CODE,
@@ -241,41 +201,6 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
       capabilities: ['chat', 'passthrough'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
-      ]
-    }
-  ]
-}
-
-export const HYBRID_PROVIDER: ProviderDefinition = {
-  id: HYBRID_PROVIDER_CODE,
-  code: HYBRID_PROVIDER_CODE,
-  name: '混合供应商',
-  enabled: true,
-  defaultProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
-  baseUrl: '',
-  defaultHealthCheckModel: '',
-  defaultSupportedModels: DEFAULT_HYBRID_SUPPORTED_MODELS,
-  accountTypes: ['api_key'],
-  capabilities: ['chat', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
-  protocolProfiles: [
-    {
-      id: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
-      providerCode: HYBRID_PROVIDER_CODE,
-      name: '混合供应商',
-      enabled: true,
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      protocolVersion: OPENAI_PROTOCOL_VERSION,
-      baseUrl: '',
-      defaultHealthCheckModel: '',
-      accountTypes: ['api_key'],
-      capabilities: ['chat', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
-      endpointFamilies: [
-        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
-        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' },
-        { code: GEMINI_GENERATE_CONTENT_FAMILY, name: 'Generate Content' },
-        { code: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, name: 'Stream Generate Content' }
       ]
     }
   ]
@@ -520,7 +445,7 @@ const QWEN_PROVIDER: ProviderDefinition = {
   ]
 }
 
-export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, XAI_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, HYBRID_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER, MINIMAX_PROVIDER, VOLCENGINE_PROVIDER, QWEN_PROVIDER]
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, XAI_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER, MINIMAX_PROVIDER, VOLCENGINE_PROVIDER, QWEN_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20

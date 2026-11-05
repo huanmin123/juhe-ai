@@ -43,11 +43,11 @@ func NewGoRedisClient(client goredis.UniversalClient) *GoRedisClient {
 
 // DialGoRedisClient builds a go-redis client from a redis:// URL.
 func DialGoRedisClient(redisURL string) (*GoRedisClient, error) {
-	options, err := goredis.ParseURL(redisURL)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: redisURL})
 	if err != nil {
 		return nil, err
 	}
-	return &GoRedisClient{Client: goredis.NewClient(options)}, nil
+	return &GoRedisClient{Client: client}, nil
 }
 
 // Get implements RedisClient.
@@ -91,31 +91,22 @@ const redisRootPrefix = "juhe-ai:"
 // RedisNamespacedKey mirrors redisNamespacedKey with an explicit namespace
 // value (runtimeConfig.redis.namespace projection).
 func RedisNamespacedKey(namespace string, key string) (string, error) {
-	normalized := strings.TrimSpace(key)
-	if normalized == "" {
+	if strings.TrimSpace(key) == "" {
 		return "", errors.New("Redis key 不能为空")
 	}
-	namespacePrefix, err := RedisNamespacePrefix(namespace)
-	if err != nil {
+	if _, err := RedisNamespacePrefix(namespace); err != nil {
 		return "", err
 	}
-	if strings.HasPrefix(normalized, namespacePrefix) {
-		return normalized, nil
-	}
-	if strings.HasPrefix(normalized, redisRootPrefix) {
-		return namespacePrefix + normalized[len(redisRootPrefix):], nil
-	}
-	return namespacePrefix + normalized, nil
+	return rediscfg.NamespacedKey(key, namespace), nil
 }
 
 // RedisNamespacePrefix mirrors redisNamespacePrefix; the caller injects the
 // configured namespace (the env-derived default lives in platform config).
 func RedisNamespacePrefix(namespace string) (string, error) {
-	sanitized, err := SanitizeRedisNamespacePart(namespace)
-	if err != nil {
+	if _, err := SanitizeRedisNamespacePart(namespace); err != nil {
 		return "", err
 	}
-	return redisRootPrefix + sanitized + ":", nil
+	return rediscfg.TaggedPrefix(namespace), nil
 }
 
 // SanitizeRedisNamespacePart mirrors sanitizeRedisNamespacePart.
@@ -219,7 +210,7 @@ func (l *lazyRedisClient) client() (RedisClient, error) {
 		return l.delegate, nil
 	}
 	if l.url == "" {
-		return nil, errors.New("JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置")
+		return nil, errors.New("JUHE_AI_REDIS_URL 在 Redis cache driver 下必须配置")
 	}
 	client, err := DialGoRedisClient(l.url)
 	if err != nil {

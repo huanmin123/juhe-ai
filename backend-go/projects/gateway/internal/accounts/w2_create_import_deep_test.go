@@ -75,9 +75,9 @@ func TestW2CreateFullFieldSuccess(t *testing.T) {
 	}
 	// 禁用映射：B4 W2（设计 §5.1/§8）创建链尚无连接行，映射经创建后的
 	// 连接种子 + PATCH 面落库（与 TestW2PatchSupportedModelsAndMappings 同法）。
-	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini")
+	env.seedAccountConnection(t, id, "gpt_openai_v1", "gpt-4o-mini")
 	if code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":false}]}`); code != http.StatusOK {
+		`{"expectedConfigRevision":1,"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":false}]}`); code != http.StatusOK {
 		t.Fatalf("映射 PATCH 应成功：%d %v", code, patched)
 	}
 	var enabled int

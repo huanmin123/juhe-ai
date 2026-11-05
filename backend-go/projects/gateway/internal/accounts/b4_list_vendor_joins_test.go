@@ -9,9 +9,10 @@ package accounts
 //
 //  1. 真实厂商行（vendor_code='gpt'）→ 命中 vendors 行，providerName 回显、
 //     providerCode 取 vendor 值；
-//  2. generic_http 行（vendor_code NULL，driver='generic_http'）→ vendors JOIN
-//     不中，provider_name 为 NULL（响应 omitempty）、providerCode 为空串，
-//     列表不得报错。
+//  2. 孤儿厂商行（vendor_code 在 vendors 目录无对应行）→ vendors JOIN 不中，
+//     provider_name 为 NULL（响应 omitempty）、providerCode 仍取 vendor_code，
+//     列表不得报错。generic/空 vendor 行已随 2026-11-05 退役并由 DB CHECK 禁止，
+//     这里用非九家 vendor 值模拟目录缺失的健壮性分支。
 
 import (
 	"context"
@@ -44,7 +45,7 @@ func TestB4ListProviderNameJoinsVendors(t *testing.T) {
 			id, adminID, vendorCode, driver, name, sealed(t, id), now, now)
 	}
 	seed(t, "acc-b4-vendor", "b4-vendor", "gpt", "gpt")
-	seed(t, "acc-b4-generic", "b4-generic", nil, "generic_http")
+	seed(t, "acc-b4-generic", "b4-generic", "legacy-vendor", "legacy-vendor")
 
 	page, err := env.store.ListPage(context.Background(), scope, ListOptions{Page: 1, PageSize: 10})
 	if err != nil {
@@ -66,12 +67,12 @@ func TestB4ListProviderNameJoinsVendors(t *testing.T) {
 	}
 	generic := byID["acc-b4-generic"]
 	if generic.ID == "" {
-		t.Fatal("generic 行应在列表中")
+		t.Fatal("孤儿厂商行应在列表中")
 	}
 	if generic.ProviderName != nil {
-		t.Fatalf("generic_http 行（vendor NULL）providerName 应为 NULL：%+v", generic.ProviderName)
+		t.Fatalf("孤儿厂商行 providerName 应为 NULL：%+v", generic.ProviderName)
 	}
-	if generic.ProviderCode != "" {
-		t.Fatalf("generic_http 行 providerCode 应为空串：%q", generic.ProviderCode)
+	if generic.ProviderCode != "legacy-vendor" {
+		t.Fatalf("孤儿厂商行 providerCode 应取 vendor_code：%q", generic.ProviderCode)
 	}
 }

@@ -615,7 +615,7 @@ func listItemColumns(alias string) []string {
 		alias + ".system_account_id",
 		"COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, " + alias + ".system_account_id) AS system_account_name",
 		// 供应商解耦（设计 §9.11）：accounts.provider_code 已从目标 schema 删除，
-		// 行为键只剩 vendor_code——generic_http 账户（vendor NULL）投影空串。
+		// 行为键只剩 vendor_code（九家真实厂商恒非空）。
 		"COALESCE(" + alias + ".vendor_code, '') AS provider_code",
 		"vendors.name AS provider_name",
 		"'' AS provider_protocol_profile_id",
@@ -721,8 +721,8 @@ func listItemColumns(alias string) []string {
 // 供应商名 JOIN 切 vendors（B4 ⑨，设计 §439：providers 表已更名收敛为
 // vendors 且 fresh DDL 无 providers，旧 JOIN 在 fresh 库直接 no such table）。
 // JOIN 键与投影走 B4 W2 行为键：行为键只读 vendor_code；provider_code 已退
-// 役，不存在旧列回落。generic 语义账户（vendor_code 为 NULL）JOIN 不中，
-// provider_name 走 LEFT JOIN 的 NULL（响应层 omitempty）。
+// 役，不存在旧列回落。空 vendor 的历史行 JOIN 不中，provider_name 走 LEFT
+// JOIN 的 NULL（响应层 omitempty）。
 func (s *Store) listJoins() (cte, joins string) {
 	joins = ` LEFT JOIN LATERAL (
 			SELECT group_accounts.system_account_id, group_accounts.group_id,

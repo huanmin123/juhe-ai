@@ -322,8 +322,8 @@ func TestW11ELoadConfigArms(t *testing.T) {
 	// 2026-10-24 存储形态收口：JUHE_AI_J3B_STORE env 读取删除（恒 postgres）；
 	// 空 env 缺连接串必须 fail-fast 且指名 env。
 	_, err := LoadConfig(func(string) string { return "" })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_J3B_POSTGRES_URL") {
-		t.Fatalf("空 env 必须 fail-fast 指名 J3B POSTGRES_URL: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("空 env 必须 fail-fast 指名 JUHE_AI_POSTGRES_URL: %v", err)
 	}
 	getenv := func(overrides map[string]string) func(string) string {
 		return func(key string) string {
@@ -333,10 +333,13 @@ func TestW11ELoadConfigArms(t *testing.T) {
 			return ""
 		}
 	}
-	// 2026-09-20 零配置自动认领：owner/instance/PG URL 都有默认或回退，
-	// 仅显式非法 owner 仍拒绝。
-	if _, err := LoadConfig(getenv(map[string]string{"JUHE_AI_J3B_OWNER": "jobs"})); err == nil || !strings.Contains(err.Error(), "OWNER") {
-		t.Fatalf("非法 owner 必须拒绝: %v", err)
+	// 2026-09-20 零配置自动认领：owner 固定 gateway、instance 有默认、
+	// PG URL 唯一直连主库；旧的 owner / 业务库覆盖变量不再参与加载。
+	if cfg, err := LoadConfig(getenv(map[string]string{
+		"JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/main",
+		"JUHE_AI_J3B_OWNER":    "jobs",
+	})); err != nil || cfg.Owner != "gateway" {
+		t.Fatalf("owner 覆盖必须被忽略: cfg=%+v err=%v", cfg, err)
 	}
 	zero := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/main"}
 	cfg, err := LoadConfig(getenv(zero))
@@ -344,18 +347,7 @@ func TestW11ELoadConfigArms(t *testing.T) {
 		t.Fatalf("零配置 postgres 必须自动认领: cfg=%+v err=%v", cfg, err)
 	}
 	if cfg.PostgresURL != "postgres://w11e.invalid/main" || cfg.BusinessPostgresURL != "postgres://w11e.invalid/main" {
-		t.Fatalf("postgres URL 回退=%+v", cfg)
-	}
-	explicit := map[string]string{
-		"JUHE_AI_J3B_POSTGRES_URL":          "postgres://w11e.invalid/db",
-		"JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://w11e.invalid/business",
-	}
-	cfgExplicit, err := LoadConfig(getenv(explicit))
-	if err != nil {
-		t.Fatalf("显式 PG URL 必须优先: %v", err)
-	}
-	if cfgExplicit.PostgresURL != "postgres://w11e.invalid/db" || cfgExplicit.BusinessPostgresURL != "postgres://w11e.invalid/business" {
-		t.Fatalf("显式 PG URL=%+v", cfgExplicit)
+		t.Fatalf("postgres URL 统一=%+v", cfg)
 	}
 }
 

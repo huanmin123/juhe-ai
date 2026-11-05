@@ -95,7 +95,7 @@ assertIncludes(accountTestModelsSource, 'optionsAbortController?.abort()', '关�
 assertIncludes(accountTestModelsSource, 'option.testEndpointModes', '候选模型列表必须使用服务端计算后的请求形态')
 assertNotIncludes(accountTestModelsSource, 'supportedApiProtocols', '前端不得接触模型协议原始元数据')
 assertIncludes(updateSelectableTestModelSource, 'applyTestEndpointModes(option.testEndpointModes, false)', '切换模型必须立即选择该模型首个可用请求形态')
-assertNotIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试不得从裁剪后的列表账户推导请求形态')
+assertIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试首开必须以账户检查形态推导可测形态集')
 assertNotIncludes(accountTestModelsSource, 'endpointModesForProtocol', '模型协议标签不得决定保存账户可测试请求形态')
 assertNotIncludes(accountTestModelsSource, 'modelRequestToken', '模型切换不应再维护独立请求 token')
 assertIncludes(accountTestModelsSource, 'initializeDraftTestOptions', '草稿测试应播种默认检查模型进入可切换模式')

@@ -15,7 +15,7 @@ import (
 // 提交前 key 未变才生效；冲突重试上限内失败则返回 Redis 错误（保守缺省兜底）。
 // 状态为单 key JSON blob，滑动 TTL（StateTTL）。
 type RedisStore struct {
-	client    *redis.Client
+	client    redis.UniversalClient
 	keyPrefix string
 	maxRetries int
 	now       func() time.Time
@@ -23,7 +23,7 @@ type RedisStore struct {
 
 // NewRedisStore 构造 Redis 存储。keyPrefix 形如 "juhe-ai:caller-tiers:"，
 // 最终 key = prefix + apiKeyID。
-func NewRedisStore(client *redis.Client, keyPrefix string, now func() time.Time) *RedisStore {
+func NewRedisStore(client redis.UniversalClient, keyPrefix string, now func() time.Time) *RedisStore {
 	if now == nil {
 		now = time.Now
 	}

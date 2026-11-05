@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 const (
@@ -150,7 +151,7 @@ func accountCircuitRevisionRedisKeys(namespace, name string) (accountCircuitRevi
 	if namespace == "" || name == "" {
 		return accountCircuitRevisionKeys{}, fmt.Errorf("account circuit Redis namespace is invalid")
 	}
-	prefix := "juhe-ai:" + namespace + ":account-circuit:" + name
+	prefix := rediscfg.NamespacedKey("juhe-ai:account-circuit:"+name, namespace)
 	return accountCircuitRevisionKeys{
 		states: prefix + ":states", due: prefix + ":due", closed: prefix + ":closed",
 		escalation: prefix + ":escalation", revisions: prefix + ":dispatch-revisions",

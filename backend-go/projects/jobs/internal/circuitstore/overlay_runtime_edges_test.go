@@ -51,13 +51,13 @@ func TestOverlayRedisStoreKeysAndConstruction(t *testing.T) {
 	}
 	store := newOverlayStore(t, server)
 	// redisNamespacedKey 对 juhe-ai: 根前缀键在根后插入 namespace（单根前缀）。
-	if store.concurrencyKey("acc-1", "total") != "juhe-ai:ns:account-concurrency-v2:acc-1:total" {
+	if store.concurrencyKey("acc-1", "total") != "juhe-ai:{ns}:account-concurrency-v2:acc-1:total" {
 		t.Fatalf("并发键形状不符: %s", store.concurrencyKey("acc-1", "total"))
 	}
-	if store.dirtyKey() != "juhe-ai:ns:account-concurrency-projection-dirty" {
+	if store.dirtyKey() != "juhe-ai:{ns}:account-concurrency-projection-dirty" {
 		t.Fatalf("dirty 键形状不符: %s", store.dirtyKey())
 	}
-	if store.generationKey() != "juhe-ai:ns:account-concurrency-projection-generation" {
+	if store.generationKey() != "juhe-ai:{ns}:account-concurrency-projection-generation" {
 		t.Fatalf("generation 键形状不符: %s", store.generationKey())
 	}
 	if err := store.Close(); err != nil {
@@ -799,7 +799,7 @@ func TestSettleDispatchedBySourceFenceGuards(t *testing.T) {
 		t.Fatalf("无状态不得结算: %v %v", settled, err)
 	}
 	// generationKeyOf 形状（namespace 插在 juhe-ai 根之后）。
-	if got := probeStore.generationKeyOf("k"); got != "juhe-ai:ns:probe:gateway-availability-probe-coordinator:generation:k" {
+	if got := probeStore.generationKeyOf("k"); got != "juhe-ai:{ns}:probe:gateway-availability-probe-coordinator:generation:k" {
 		t.Fatalf("generation 键形状不符: %s", got)
 	}
 }

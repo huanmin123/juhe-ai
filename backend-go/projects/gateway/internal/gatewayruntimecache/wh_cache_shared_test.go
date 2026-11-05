@@ -84,7 +84,7 @@ func TestWhRedisSharedCacheFactory(t *testing.T) {
 	// 非 JSON 载荷：读取按未命中处理（Node catch 同款）。
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	defer client.Close()
-	if err := client.Set(ctx, "juhe-ai:wh-ns:models:raw", "{nope", time.Minute).Err(); err != nil {
+	if err := client.Set(ctx, "juhe-ai:{wh-ns}:models:raw", "{nope", time.Minute).Err(); err != nil {
 		t.Fatal(err)
 	}
 	readOK, readErr := cache.Get(ctx, "raw", &out)

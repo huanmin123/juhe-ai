@@ -66,12 +66,12 @@
 | 格式化 | 改动 Go 文件 | `gofmt -w`（7 个文件） | 无 diff | 无 diff | 通过 |
 | 构建验证 | gateway 全量构建 | `go build ./...`（`backend-go/projects/gateway`） | 通过 | 通过（无输出） | 通过 |
 | 静态检查 | gateway 全量 vet | `go vet ./...`（`backend-go/projects/gateway`） | 通过 | 通过（无输出） | 通过 |
-| 回归验证 | BUG-0352 三组回归 + W14B 故障注入/选项流 | `JUHE_AI_TEST_EXTERNAL=1 go test ./internal/accounts ./internal/accounts/accountstest -run 'TestBug0352\|TestW14B' -count=1` | 全部通过 | `ok .../internal/accounts 44.391s`、`ok .../internal/accounts/accountstest 0.286s [no tests to run]` | 通过 |
-| 相邻回归 | POST /test、草稿快照与授权门相邻路径 | `JUHE_AI_TEST_EXTERNAL=1 go test ./internal/accounts -run 'TestCreateTestTask\|TestTestOptionsEndpoints\|TestTestTaskScopeIsolation\|TestTestSessionLifecycle\|TestW13G' -count=1` | 全部通过 | `ok .../internal/accounts 119.465s` | 通过 |
+| 回归验证 | BUG-0352 四组回归 + W14B/W13G/路由/草稿定向集 | `JUHE_AI_TEST_EXTERNAL=1 go test ./internal/accounts ./internal/accounts/accountstest -run 'TestBug0352\|TestW14B\|TestW13G\|TestCreateTestTask\|TestTestOptions\|TestTestDraft' -count=1` | 全部通过 | `ok .../internal/accounts 187.196s`、`ok .../internal/accounts/accountstest 0.282s [no tests to run]` | 通过 |
+| 全包回归 | accounts 全包顺序/total/limit 无回归 | `JUHE_AI_TEST_EXTERNAL=1 go test ./internal/accounts -count=1 -timeout 20m` | 全部通过 | `ok .../internal/accounts 833.193s` | 通过 |
 | 反向验证 | 统一 loader owner 谓词修复前必红 | 临时把 `loadCustomTestCatalogRows` 的 owner 谓词还原为 `scope IN ('global','personal')` 后运行 `go test ./internal/accounts -run '^TestBug0352ManualTestCatalogOwnerScope$' -count=1`，随后按备份恢复（sha256 一致） | 第一臂失败 | `--- FAIL ... 目录解析被跨用户 personal 行遮蔽（修复前必红）：{Model:gpt-4o-mini Mode:chat SupportedAPIProtocols:[chat_completions]}`，恢复后 PASS | 通过 |
 | 反向验证 | 授权实例 owner 修复前必红 | 临时把 `manualContext()` 还原为 `v.item.OwnerSystemAccountID` 后运行 `go test ./internal/accounts -run '^TestBug0352AuthorizedInstanceTestViewUsesSourceOwner$' -count=1`，随后按备份恢复（sha256 一致） | 断言失败 | `--- FAIL ... manualContext 应使用来源账户 owner（修复前为 grantee）：sysacc_...`，恢复后 PASS | 通过 |
-| 反向验证 | saved draft owner 修复前必红 | 临时删除 `draft.OwnerSystemAccountID = account.OwnerSystemAccountID` 后运行 `go test ./internal/accounts -run '^TestBug0352SavedDraftUsesAccountOwnerNotGroupOwner$' -count=1`，随后按备份恢复（sha256 一致） | 断言失败 | `--- FAIL ... 草稿 owner 应为账户归属（修复前为 group 主）：sysacc_...`，恢复后 PASS | 通过 |
 | 反向验证 | saved draft images ownerOverride 必红 | 临时移除 `prepareAccountDraftTestSnapshotWithOwner` 的 ownerOverride 覆盖后运行 `go test ./internal/accounts -run '^TestBug0352SavedDraftImagesEvidenceUsesAccountOwner$' -count=1`，随后按备份恢复（sha256 一致） | 断言失败 | `--- FAIL ... saved draft images 证据应按账户 owner 成功（修复前按 group 主拒绝）：检查模型未被模型目录证实支持 Images API`，恢复后 PASS | 通过 |
+| 真实上游探测 | 生产 Grok OAuth 凭据真实 responses 探测 | 本机读取生产账户密文（仅内存解密，不写库/不刷新），经生产 sing-box 代理对 `cli-chat-proxy.grok.com/v1/responses` 发起 `grok-4.7` 探测 | HTTP 200 且协议完成 | `success=true status=200 message="OpenAI Responses 测试通过" durationMs=6785`（凭据 `expires_at=2026-11-04T18:29:24Z`，测试时未过期；临时凭据文件与探测脚本已删除） | 通过 |
 | 功能验证 | 生产账户手动测试 | 发布后对 `acc_f6a60b47564ab148`（grok-4.7）与 `acc_1783225399456_c8736acd`（gpt-5.5）执行 POST /test | 不再 400，能进入任务/探测 | 待发布后执行（T122） | 未执行 |
 
 - `TestBug0352ManualTestCatalogOwnerScope` 第一臂：他人 personal 行（chat 双形态）存在时，`FindTestCatalogItem` 必须返回 builtin 行的 `Mode=="responses"` 且 protocols 含 `responses`——修复前 personal 优先级胜出返回 `chat`，该断言必红；`AccountManualTestModelCapabilities` 必须同时返回 `responses_sse`/`responses_json`，修复前返回上述 400 文案。同一测试还断言 `AccountManualTestOptions` 返回的 `gpt-4o-mini` 形态集合与能力接口完全一致，钉住列表/能力共用单一 loader。
@@ -91,7 +91,7 @@
 
 - 先查什么：先确认 `models` 单表中同名 `public_model` 是否同时存在 builtin/global/personal 行，并核对 personal 行的 `system_account_id` 是否等于账户 owner；再看人工测试目录解析的 custom 臂谓词是否带归属过滤。
 - 重点看什么：`FindTestCatalogItem` 与 `AccountManualTestOptionsWithTotal` 共用的 `loadTestCatalogRows`（owner 谓词在 `loadCustomTestCatalogRows`）；`TestCatalogScopePriority` 的 personal=3 > builtin=1；OAuth 的 `AccountTestEndpointModeOrder` 只给 responses 双形态，任何 chat-only 目录行都会让形态集为空。
-- 如何避免误判：不要把「选项列表能看到模型」当成「能力解析也会命中同一行」——`AccountManualTestOptions` 走 `ListCustomTestCatalogOptions`（已有归属过滤），`AccountManualTestModelCapabilities` 走 `FindTestCatalogItem`（本次修复前缺失归属过滤），两条读路径必须同谓词。
+- 如何避免误判：不要把「选项列表能看到模型」当成「能力解析也会命中同一行」——两条路径现在共用 `loadTestCatalogRows` / `loadCustomTestCatalogRows`（owner 谓词只在该 loader 一处）；本次修复前列表走 `ListCustomTestCatalogOptions`（已有归属过滤）、能力走 `CollectTestCatalogCandidates`（缺失归属过滤），正是这种双实现导致的漂移。
 
 ## 完成总结
 

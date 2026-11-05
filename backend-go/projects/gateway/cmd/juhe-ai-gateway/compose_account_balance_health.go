@@ -62,18 +62,15 @@ func accountBalanceGoOwnerEnabled(getenv func(string) string) bool {
 	return strings.ToLower(strings.TrimSpace(getenv(accountBalanceJobsOwnerEnv))) == "go"
 }
 
-// resolveAccountBalanceOwnerMode keeps the archived Node parse semantics
-// verbatim: a trimmed JUHE_AI_BLUE_GREEN_OWNER_MODE of exactly "standby" or
-// "drain" selects that mode, and every other value (empty, unknown, wrong
-// case) falls back to active — unlike the fail-closed process-level
-// ownermode.Load gate in main.go.
+// resolveAccountBalanceOwnerMode 复用进程级 ownermode.Load 的唯一解析：
+// 非法值在主流程启动期已经 fail-fast，这里错误分支只是防御性回退 active，
+// 不再维护第二套大小写/trim 规则。
 func resolveAccountBalanceOwnerMode(getenv func(string) string) ownermode.Mode {
-	configured := strings.TrimSpace(getenv(ownermode.EnvironmentKey))
-	switch ownermode.Mode(configured) {
-	case ownermode.Standby, ownermode.Drain:
-		return ownermode.Mode(configured)
+	mode, err := ownermode.Load(getenv)
+	if err != nil {
+		return ownermode.Active
 	}
-	return ownermode.Active
+	return mode
 }
 
 // accountBalanceGoOwnerHealth ports the archived Node hotfix one-to-one:

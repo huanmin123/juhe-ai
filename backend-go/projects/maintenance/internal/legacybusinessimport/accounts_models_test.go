@@ -118,7 +118,7 @@ func TestImportSupportedModelsSkipsUnpricedAndCreatesDraft(t *testing.T) {
 	accounts := map[string]struct{}{"account-a": {}, "account-b": {}}
 	owners := map[string]string{"account-a": "owner-a", "account-b": "owner-b"}
 	report := &Report{Tables: map[string]int{}, Notes: []string{}}
-	if err := importSupportedModels(ctx, source, tx, accounts, owners, report); err != nil {
+	if err := importSupportedModels(ctx, source, tx, accounts, owners, map[string]string{}, report); err != nil {
 		t.Fatal(err)
 	}
 

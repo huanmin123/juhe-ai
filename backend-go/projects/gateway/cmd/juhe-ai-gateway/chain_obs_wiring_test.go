@@ -178,7 +178,7 @@ func TestWireGatewayObservabilityArms(t *testing.T) {
 		HotQuality:      &gatewayhotquality.GatewayHotQualityRuntime{},
 	}
 	// 存储形态收口：接线恒走 redis 驱动轴，组合冒烟用 miniredis 提供状态端点。
-	cfg := runtimeConfig{RedisStateURL: "redis://" + miniredis.RunT(t).Addr(), RedisNamespace: "w19-obs"}
+	cfg := runtimeConfig{RedisURL: "redis://" + miniredis.RunT(t).Addr(), RedisNamespace: "w19-obs"}
 	if err := wireGatewayObservabilityArms(services, cfg); err != nil {
 		t.Fatalf("观测接线失败：%v", err)
 	}

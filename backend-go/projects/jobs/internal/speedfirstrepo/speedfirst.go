@@ -64,13 +64,13 @@ type SpeedFirstRedisConfig struct {
 
 var speedFirstNamespacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 
-// LoadSpeedFirstRedisConfig 读取 JUHE_AI_REDIS_STATE_URL / JUHE_AI_REDIS_NAMESPACE。
+// LoadSpeedFirstRedisConfig 读取 JUHE_AI_REDIS_URL / JUHE_AI_REDIS_NAMESPACE。
 func LoadSpeedFirstRedisConfig(getenv func(string) string) (SpeedFirstRedisConfig, error) {
 	if getenv == nil {
 		return SpeedFirstRedisConfig{}, errors.New("getenv 不能为空")
 	}
 	config := SpeedFirstRedisConfig{
-		URL:       strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL")),
+		URL:       strings.TrimSpace(getenv("JUHE_AI_REDIS_URL")),
 		Namespace: strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE")),
 	}
 	config.Enabled = config.URL != ""
@@ -102,7 +102,7 @@ func ValidSpeedFirstNamespace(namespace string) bool {
 const rfc3339Milli = "2006-01-02T15:04:05.000Z07:00"
 
 type SpeedFirstStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	prefix string
 	now    func() time.Time
 	random func() float64
@@ -161,16 +161,16 @@ func OpenSpeedFirstStore(config SpeedFirstRedisConfig, now func() time.Time) (*S
 	// 全前缀配置，避免键空间双根前缀；短名输入逐字节不变。形状校验仍由装配层
 	// 对原始值 fail closed，此处不做二次校验。
 	config.Namespace = rediscfg.CanonicalRedisNamespace(config.Namespace)
-	options, err := redis.ParseURL(config.URL)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: config.URL})
 	if err != nil {
-		return nil, fmt.Errorf("解析速度优先降级运行态 Redis URL: %w", err)
+		return nil, fmt.Errorf("创建速度优先降级运行态 Redis 客户端: %w", err)
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &SpeedFirstStore{
-		client: redis.NewClient(options),
-		prefix: "juhe-ai:" + config.Namespace + ":" + speedFirstRedisGroup + ":",
+		client: client,
+		prefix: rediscfg.NamespacedKey("juhe-ai:"+speedFirstRedisGroup, config.Namespace) + ":",
 		now:    now,
 		random: defaultRandom,
 	}, nil

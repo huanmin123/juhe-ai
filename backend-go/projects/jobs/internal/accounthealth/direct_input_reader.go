@@ -530,7 +530,7 @@ LEFT JOIN LATERAL (
 ) binding ON TRUE
 LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
 WHERE a.deleted_at IS NULL
-  AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta')
+  AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta')
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
   AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
@@ -551,7 +551,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1 AND (source.availability_schedule_gate IS NULL OR source.availability_schedule_gate = 1)
+    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1 AND (source.availability_schedule_gate IS NULL OR source.availability_schedule_gate = 1)
     AND source.deleted_at IS NULL AND source.last_error_code IS DISTINCT FROM 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
@@ -651,7 +651,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	); err != nil {
 		return directCandidate{}, fmt.Errorf("解码 PG direct input 候选失败: %w", err)
 	}
-	// vendor_code nullable（generic_http 账户为 NULL）：Provider 走空串投影，
+	// vendor_code 恒为九家真实厂商（DB CHECK 保证非空）；Provider 直接投影，
 	// 真实身份门禁由派生 profile 承担。
 	result.account.Provider = accountVendor.String
 	result.account.OAuthType = accountOAuthType.String

@@ -12,9 +12,8 @@ import (
 func w4gEnv(values map[string]string) func(string) string {
 	// 2026-10-24 存储形态收口：三连接串 env 无条件必填，基座统一注入。
 	base := map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
 	}
 	for key, value := range values {
 		base[key] = value
@@ -89,23 +88,22 @@ func TestTemporaryAccessIPAllowlistConfig(t *testing.T) {
 }
 
 func TestLoadRuntimeConfigUsageSpoolEnvs(t *testing.T) {
-	// Defaults and the legacy DIR fallback.
+	// 旧名 JUHE_AI_USAGE_SPOOL_DIR 已删除：只配旧名时按 DATA_DIR 派生默认目录。
 	cfg, err := loadRuntimeConfig(w4gEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH":       "data/business.sqlite3",
-		"JUHE_AI_USAGE_SPOOL_DIR":     "/tmp/spool-legacy",
-		"JUHE_AI_STATS_DATABASE_PATH": "data/stats.sqlite3",
+		"JUHE_AI_DATA_DIR":        "data",
+		"JUHE_AI_USAGE_SPOOL_DIR": "/tmp/spool-legacy",
 	}))
 	if err != nil {
 		t.Fatalf("load with legacy spool dir: %v", err)
 	}
-	if cfg.UsageSpoolDirectory != "/tmp/spool-legacy" {
-		t.Fatalf("legacy DIR ignored: %q", cfg.UsageSpoolDirectory)
+	if cfg.UsageSpoolDirectory == "/tmp/spool-legacy" {
+		t.Fatalf("legacy DIR must be ignored: %q", cfg.UsageSpoolDirectory)
 	}
 	if cfg.UsageSpoolMaxItems != 250_000 || cfg.UsageSpoolMaxBytes != 4_096*1024*1024 ||
 		cfg.UsageSpoolReplayBatchSize != 500 || cfg.UsageSpoolReplayIntervalMs != 1_000 {
 		t.Fatalf("spool defaults = %#v", cfg)
 	}
-	// DIRECTORY wins over DIR.
+	// 显式 DIRECTORY 生效。
 	cfg, err = loadRuntimeConfig(w4gEnv(map[string]string{
 		"JUHE_AI_DATABASE_PATH":         "data/business.sqlite3",
 		"JUHE_AI_USAGE_SPOOL_DIR":       "/tmp/spool-legacy",

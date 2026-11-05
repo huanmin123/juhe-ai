@@ -20,8 +20,7 @@ func productionSecurityEnv(t *testing.T) map[string]string {
 	return map[string]string{
 		"NODE_ENV":                "production",
 		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_REDIS_URL":       "redis://127.0.0.1:6379/0",
 		"JUHE_AI_SECRET":          strongProductionSecret(32),
 		"JUHE_AI_ALLOWED_ORIGINS": "https://admin.example.com",
 	}
@@ -32,9 +31,8 @@ func developmentSecurityEnv(t *testing.T) map[string]string {
 	// 2026-10-24 存储形态收口：PostgreSQL + Redis 是唯一存储形态，三个连接串
 	// env 无条件必填（HTTP 安全门测试只关心 NODE_ENV/secret/CORS 面）。
 	return map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
 	}
 }
 
@@ -139,28 +137,6 @@ func TestLoadRuntimeConfigProductionSignalReadsNodeEnv(t *testing.T) {
 	if !cfg.CookieSecure {
 		t.Fatal("NODE_ENV=production alone must default cookie secure on")
 	}
-	if cfg.ChatToolEnvironment != "production" {
-		t.Fatalf("chat tool environment must fall back to NODE_ENV, got %q", cfg.ChatToolEnvironment)
-	}
-
-	// 显式 JUHE_AI_NODE_ENV 保持覆盖 ChatToolEnvironment 的能力，但不再携带
-	// 生产语义：JUHE_AI_NODE_ENV=development + NODE_ENV=production 时生产门禁
-	// 仍然生效。
-	env = productionSecurityEnv(t)
-	env["JUHE_AI_NODE_ENV"] = "development"
-	env["JUHE_AI_SECRET"] = "short"
-	if _, err := loadRuntimeConfigEnv(t, env); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET 在生产环境必须配置为至少 32 位") {
-		t.Fatalf("explicit JUHE_AI_NODE_ENV must not weaken the production gates, got %v", err)
-	}
-	env = productionSecurityEnv(t)
-	env["JUHE_AI_NODE_ENV"] = "development"
-	cfg, err = loadRuntimeConfigEnv(t, env)
-	if err != nil {
-		t.Fatalf("explicit JUHE_AI_NODE_ENV=development under production: %v", err)
-	}
-	if cfg.ChatToolEnvironment != "development" {
-		t.Fatalf("explicit JUHE_AI_NODE_ENV must override the chat environment, got %q", cfg.ChatToolEnvironment)
-	}
 
 	// 仅设 JUHE_AI_NODE_ENV=production（NODE_ENV 未设）→ 非生产契约，门禁不生效。
 	env = developmentSecurityEnv(t)
@@ -172,9 +148,6 @@ func TestLoadRuntimeConfigProductionSignalReadsNodeEnv(t *testing.T) {
 	}
 	if cfg.CookieSecure {
 		t.Fatal("JUHE_AI_NODE_ENV alone must not default cookie secure on")
-	}
-	if cfg.ChatToolEnvironment != "production" {
-		t.Fatalf("chat tool environment override lost: %q", cfg.ChatToolEnvironment)
 	}
 }
 
@@ -222,13 +195,6 @@ func TestLoadRuntimeConfigCookieSecureDefaultAndOverride(t *testing.T) {
 	}
 	if !cfg.CookieSecure {
 		t.Fatal("explicit JUHE_AI_COOKIE_SECURE=true must override the development default")
-	}
-
-	// 非生产 SameSite=none 且未开 Secure 仍失败（既有契约）。
-	env = developmentSecurityEnv(t)
-	env["JUHE_AI_COOKIE_SAME_SITE"] = "none"
-	if _, err := loadRuntimeConfigEnv(t, env); err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SAME_SITE=none 时必须启用 JUHE_AI_COOKIE_SECURE=true") {
-		t.Fatalf("non-production same-site=none without secure must fail, got %v", err)
 	}
 }
 

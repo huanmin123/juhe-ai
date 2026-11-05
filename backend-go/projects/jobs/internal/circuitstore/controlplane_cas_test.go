@@ -38,4 +38,3 @@ func mustAccount(t *testing.T, db *sql.DB, id string, dispatch int64, deleted bo
 		}
 	}
 }
-

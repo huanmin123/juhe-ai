@@ -105,28 +105,30 @@
 | 供应商 | 接入方式 |
 | --- | --- |
 | OpenAI（`gpt`） | API Key；ChatGPT / Codex OAuth（含 service tier、reasoning effort 受控覆盖） |
-| 通用 OpenAI-compatible（`openai`） | 任意兼容上游 API Key，可作为临时接入聚合目录 |
 | Anthropic（`anthropic`） | API Key；官方 OAuth |
 | Gemini（`gemini`） | API Key；AI Studio OAuth；Code Assist / Google One OAuth |
 | xAI / Grok（`xai`） | API Key；Grok OAuth；Grok Web SSO Cookie（受控 device flow 转换，不保存 Cookie） |
 | DeepSeek（`deepseek`） | API Key（OpenAI 兼容 / Anthropic 兼容双档案） |
 | 智谱 GLM（`glm`） | API Key（通用 OpenAI Chat；Coding Plan 的 OpenAI Chat / Anthropic Messages 兼容档案） |
-| 混合供应商（`hybrid`） | 保存真实上游凭据，承接跨协议入口适配与模型映射（见下节） |
+
+只支持以上九家真实厂商。`openai` 兼容、混合供应商与 `generic_http` 通用连接器已于 2026-11-05 退役，不提供自定义协议连接；来源导入没有可信厂商时按模型名前缀推断，推断不出的记录跳过。
 
 每个账号支持代理绑定、并发上限、可用时间计划、模型限制、错误处理策略、必填检查模型与请求形态；账户激活、周期健康、冷却恢复全部由后台探针执行，人工测试只出诊断结果、零状态副作用。
 
-### 跨协议桥接
+### 模型别名与协议映射
 
-跨协议转换是混合供应商（`hybrid`）账户的能力，不在 API Key 或路由策略上配置；OpenAI v1 普通账号可用模型别名显式声明 `responses -> chat_completions`。当前白名单：
+账户模型别名只在同一协议面内改名；跨协议仅保留 OpenAI v1 的 Responses → Chat Completions 显式 bridge，且由账户声明映射行，不写成 API Key 或路由策略的桥接规则。可保存的映射对：
 
-| 下游客户端协议 | 可承接的真实上游协议 |
+| 下游请求协议 | 可承接的上游协议 |
 | --- | --- |
-| OpenAI Responses | Chat Completions、Anthropic Messages、Gemini GenerateContent（Responses 上游仅原生直连，不做桥接目标） |
-| OpenAI Chat Completions | Anthropic Messages、Gemini GenerateContent |
-| Anthropic Messages | OpenAI Chat Completions、Gemini GenerateContent |
-| Gemini native（GenerateContent） | OpenAI Chat Completions、Anthropic Messages |
+| Chat Completions | Chat Completions（改名） |
+| Responses | Responses（改名）、Chat Completions（显式 bridge） |
+| Anthropic Messages | Anthropic Messages（改名） |
+| Gemini GenerateContent / 流式 GenerateContent | GenerateContent（改名或流式归一到非流式） |
+| 视频生成 | 视频生成（改名，四个视频形态齐全） |
+| TTS | TTS（改名） |
 
-也就是说：Claude Code 客户端可以打到 Chat-only 上游，Codex 可以打到 Anthropic / GLM / DeepSeek 上游——由 hybrid 账户声明真实上游与映射，使用记录同时保留下游模型、上游模型和实际计价模型。
+使用记录同时保留下游模型、上游模型和实际计价模型。
 
 ### 授权与多用户
 
@@ -212,7 +214,7 @@ pnpm package:release:windows
 ## 部署
 
 - 单机部署：PostgreSQL + Redis，两个 Go 常驻进程即可运行，参考 [Docker Compose 单机部署](docker/single-server/README.md)（配置契约权威）。
-- 场景入口（Windows / Linux / macOS、代理、HTTPS、反向代理、备份迁移、排障）：[部署文档](docs/deploy/README.md) 与 [部署指南](docs/deploy/部署指南.md)；systemd / 裸进程直跑差异见 [Linux 直跑说明](docs/deploy/linux/README.md)。
+- 部署入口（Docker 单机、Linux 直跑、HTTPS/反向代理、出海代理、备份迁移、排障）：[部署文档](docs/deploy/README.md) 与 [部署指南](docs/deploy/部署指南.md)；systemd / 裸进程直跑差异见 [Linux 直跑说明](docs/deploy/linux/README.md)。
 
 ## 架构一览
 
@@ -233,15 +235,13 @@ flowchart LR
     subgraph U["上游账号池（OAuth / API Key / 代理）"]
         U1["OpenAI · GPT<br/>ChatGPT / Codex OAuth · API Key"]
         U2["Anthropic · Gemini · Grok<br/>API Key · 官方 OAuth"]
-        U3["DeepSeek · GLM<br/>通用 OpenAI 兼容"]
-        U4["hybrid 混合供应商<br/>跨协议桥接 + 模型映射"]
+        U3["DeepSeek · GLM · MiniMax<br/>Volcengine · Qwen<br/>API Key"]
     end
 
     C -->|"一个 Base URL + 一个本地 Key"| K
     A --> U1
     A --> U2
     A --> U3
-    A --> U4
 
     J["🔁 juhe-ai-jobs<br/>健康探针 · 冷却复测 · 统计 · 审计落库"]
     D[("🗄️ PostgreSQL + Redis")]
@@ -283,7 +283,7 @@ flowchart LR
 
 - 默认目标是**可管理的单机 AI 网关**；分布式部署属于显式配置能力，不是默认形态。
 - 不做支付、充值、对外售卖；额度体系只用于用量治理与授权控制。
-- 跨协议转换归属混合供应商账户，不写成 API Key 或路由策略里的显式桥接规则；客户端画像由网关内部自动识别，不是用户配置项。
+- 只接入九家真实厂商；跨协议能力仅保留 OpenAI v1 Responses → Chat Completions 的账户级别名 bridge，不写成 API Key 或路由策略里的显式桥接规则；客户端画像由网关内部自动识别，不是用户配置项。
 - 默认情况下真实上游失败按有界预算切换候选，不做无限重试；`retry_next` 仅是同账户兄弟 Key 的显式重放授权。
 
 ## 交流与支持

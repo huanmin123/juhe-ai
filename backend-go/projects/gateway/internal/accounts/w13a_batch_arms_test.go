@@ -23,7 +23,7 @@ func w13aBatchAccounts(t *testing.T, env *testEnv, suffix string) (adminID strin
 		ON CONFLICT DO NOTHING`, now, now)
 	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1',
+		VALUES ('profile_gpt_openai_v1', 'gpt', 'OpenAI 官方协议', 1, 'openai', 'v1',
 		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)
 		ON CONFLICT DO NOTHING`, now, now)
 	env.seedAccount(t, "acc-w13a-b1"+suffix, adminID, "w13a-b1"+suffix, "active")
@@ -256,9 +256,9 @@ func TestW13ABatchUpdateValidationArms(t *testing.T) {
 		{AccountID: "acc-w13a-b1x", ConfigRevision: revision("acc-w13a-b1x")},
 		{AccountID: "acc-w13a-b2x", ConfigRevision: revision("acc-w13a-b2x")},
 	}
-	// seedAccount 全部落在 gpt，第二账户改成 generic_http（openai 兼容语义）：
-	// vendor 为空 + driver generic_http 即目标 schema 的兼容账户身份（设计 §2.1）。
-	env.exec(t, `UPDATE accounts SET vendor_code = NULL, connection_driver_code = 'generic_http'
+	// seedAccount 全部落在 gpt，第二账户改成另一家真实厂商（anthropic）：
+	// vendor/driver 同值仍满足目标 schema 的身份约束，但协议签名与 gpt 不同。
+	env.exec(t, `UPDATE accounts SET vendor_code = 'anthropic', connection_driver_code = 'anthropic'
 		WHERE id = 'acc-w13a-b2x'`)
 	_, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: mixed,

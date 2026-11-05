@@ -80,42 +80,28 @@ func w1mAuditRoot(t *testing.T, name string) string {
 }
 
 // w1mRuntimeBaseEnvPairs 返回 owner 子进程启动必需的 runtime 基线 env：
-// 三个连接串中的 Redis 两个由 miniredis 承载（JUHE_AI_POSTGRES_URL 由
-// w1bScenarioEnv 在场景未显式给出时自动注入 pgtestkit 隔离库），加 SECRET。
+// 唯一 Redis 连接由 miniredis 承载（JUHE_AI_POSTGRES_URL 由 w1bScenarioEnv
+// 在场景未显式给出时自动注入 pgtestkit 隔离库），加 SECRET。
 func w1mRuntimeBaseEnvPairs(t *testing.T) []string {
 	t.Helper()
-	cacheRedis := miniredis.RunT(t)
-	stateRedis := miniredis.RunT(t)
-	// J3b 账户电路运行时要求显式声明 JUHE_AI_J3B_CIRCUIT_REDIS_URL（回退自
-	// 主链 state URL 会被 ValidateCircuitRuntimeRedisIsolation fail-fast）；
-	// 测试里用第三个独立 miniredis 承载，语义与生产「独立 URL」一致，实例
-	// 由 t.Cleanup 关闭（晚于子进程 kill 的清理顺序）。
-	circuitRedis := miniredis.RunT(t)
+	redis := miniredis.RunT(t)
 	// CheckReady 契约要求 circuit Redis 预置 runtime-index-meta（网关不自建，
 	// 见 w1wNewOwnerFixture 的 seedMeta 语义），就绪路径场景必须先种子。
-	w1g2SeedCircuitRuntimeIndex(t, "redis://"+circuitRedis.Addr(), "juhe-ai:w1m")
+	w1g2SeedCircuitRuntimeIndex(t, "redis://"+redis.Addr(), "juhe-ai:w1m")
 	return []string{
-		"JUHE_AI_CACHE_DRIVER=redis",
-		"JUHE_AI_REDIS_CACHE_URL=redis://" + cacheRedis.Addr(),
-		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
-		"JUHE_AI_REDIS_STATE_URL=redis://" + stateRedis.Addr(),
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://" + circuitRedis.Addr(),
+		"JUHE_AI_REDIS_URL=redis://" + redis.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m",
 		"JUHE_AI_SECRET=w1m-owner-arms-secret-0123456789abcdef",
 		"NODE_ENV=test",
 	}
 }
 
-// w1mMainChainRedisPairs 返回主链 cache/state 两条 miniredis 连接串（2026-10-24
-// 存储收口后 loadRuntimeConfig 对三连接串无条件必填；J3b 电路连接由场景按自身
-// 失败臂语义显式给值，不由本帮手注入）。实例由 t.Cleanup 关闭。
+// w1mMainChainRedisPairs 返回主链唯一 Redis 连接串。
 func w1mMainChainRedisPairs(t *testing.T) []string {
 	t.Helper()
-	cacheRedis := miniredis.RunT(t)
-	stateRedis := miniredis.RunT(t)
+	redis := miniredis.RunT(t)
 	return []string{
-		"JUHE_AI_REDIS_CACHE_URL=redis://" + cacheRedis.Addr(),
-		"JUHE_AI_REDIS_STATE_URL=redis://" + stateRedis.Addr(),
+		"JUHE_AI_REDIS_URL=redis://" + redis.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m",
 	}
 }
@@ -501,8 +487,8 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 				"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+w1mUnreachablePostgresURL,
 				"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
 				"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-				"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
-				"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
+				"JUHE_AI_REDIS_URL=redis://127.0.0.1:1/0",
+				"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-pg-business-unreachable", env)
 		w1bRequireExitCode(t, "M3-j3b-pg-business-unreachable", code, 1)
 		w1bRequireContains(t, "M3-j3b-pg-business-unreachable", stderr, "open J3b Business owner connection")
@@ -530,8 +516,8 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 				"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
 				"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
 				"JUHE_AI_J3B_SCHEMA_READY=true",
-				"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
-				"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
+				"JUHE_AI_REDIS_URL=redis://127.0.0.1:1/0",
+				"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-redis-unreachable", env)
 		w1bRequireExitCode(t, "M3-j3b-redis-unreachable", code, 1)
 		w1bRequireContains(t, "M3-j3b-redis-unreachable", stderr, "ping J3b Gateway circuit runtime Redis")

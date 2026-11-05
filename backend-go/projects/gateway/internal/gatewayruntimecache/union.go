@@ -53,7 +53,7 @@ var (
 
 // GroupModelUnionEntry 是分组模型并集的缓存载荷：模型名集合 + 有效期界
 // （设计 §6.3）。Vendors（B4 W2，供应商与上游协议面重构设计 §2.1/§8）是并集
-// 成员资源账户的去重 vendor_code 集（generic_http 账户空串不入集）：绑定行
+// 成员资源账户的去重 vendor_code 集（九家真实厂商恒非空，数组不含空串）：绑定行
 // 已无 provider 维度，/v1/models 目录字典（并集设计 §4.9）改按该集装载。
 type GroupModelUnionEntry struct {
 	Models     []string

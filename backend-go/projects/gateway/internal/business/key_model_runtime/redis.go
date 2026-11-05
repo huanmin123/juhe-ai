@@ -10,11 +10,12 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 type OwnerGate struct{ Confirmed, SchemaReady, NodeWriterStopped bool }
 type RedisStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	prefix string
 	gate   OwnerGate
 }
@@ -23,19 +24,15 @@ func NewRedisStore(url, namespace string, gate OwnerGate) (*RedisStore, error) {
 	if strings.TrimSpace(url) == "" || strings.TrimSpace(namespace) == "" {
 		return nil, errors.New("key-model Redis URL and namespace are required")
 	}
-	options, err := redis.ParseURL(url)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: url, ContextTimeoutEnabled: true})
 	if err != nil {
-		return nil, fmt.Errorf("parse key-model Redis URL: %w", err)
+		return nil, fmt.Errorf("create key-model Redis client: %w", err)
 	}
-	client := redis.NewClient(options)
-	normalizedNamespace := strings.TrimRight(strings.TrimSpace(namespace), ":")
-	// Node's redisNamespacedKey always emits juhe-ai:<namespace>:<key>.
-	// Accept both the documented full prefix and the short namespace used by
-	// isolated smoke tests, but never create a second juhe-ai: prefix.
-	if !strings.HasPrefix(normalizedNamespace, "juhe-ai:") {
-		normalizedNamespace = "juhe-ai:" + normalizedNamespace
-	}
-	return &RedisStore{client: client, prefix: normalizedNamespace + ":gateway-account-circuit-key-model", gate: gate}, nil
+	return &RedisStore{
+		client: client,
+		prefix: rediscfg.NamespacedKey("juhe-ai:gateway-account-circuit-key-model", namespace),
+		gate:   gate,
+	}, nil
 }
 func (s *RedisStore) Close() error {
 	if s == nil || s.client == nil {
@@ -149,7 +146,7 @@ func (s *RedisStore) ReleaseForeground(ctx context.Context, permit ForegroundPer
 	if err := s.requireOwner(); err != nil {
 		return false, err
 	}
-	result, err := releaseScript.Run(ctx, s.client, []string{s.admissionKey(permit.CapabilityHash), s.admissionLeaseKey(permit.CapabilityHash, permit.AttemptID), s.wakeKey(permit.CapabilityHash), s.key("admission-events")}, permit.CapabilityHash, permit.AttemptID).Result()
+	result, err := releaseScript.Run(ctx, s.client, []string{s.admissionKey(permit.CapabilityHash), s.admissionLeaseKey(permit.CapabilityHash, permit.AttemptID), s.wakeKey(permit.CapabilityHash)}, permit.CapabilityHash, permit.AttemptID, s.key("admission-events")).Result()
 	if err != nil {
 		return false, err
 	}
@@ -227,7 +224,7 @@ func (s *RedisStore) RecordFailureIntent(ctx context.Context, intent FailureInte
 		}
 		attemptID = intent.Permit.AttemptID
 	}
-	result, err := recordFailureScript.Run(ctx, s.client, []string{s.stateKey(state.CapabilityHash), s.key("due"), s.key("receipt", intent.IntentID), s.key("capacity"), s.admissionKey(state.CapabilityHash), s.admissionLeaseKey(state.CapabilityHash, attemptID), s.wakeKey(state.CapabilityHash), s.key("admission-events"), s.key("closed")}, string(raw), strconv.FormatInt(intent.Capability.DispatchRevision, 10), "100000", strconv.FormatInt((5*time.Minute).Milliseconds(), 10), attemptID, state.CapabilityHash).Result()
+	result, err := recordFailureScript.Run(ctx, s.client, []string{s.stateKey(state.CapabilityHash), s.key("due"), s.key("receipt", intent.IntentID), s.key("capacity"), s.admissionKey(state.CapabilityHash), s.admissionLeaseKey(state.CapabilityHash, attemptID), s.wakeKey(state.CapabilityHash), s.key("closed")}, string(raw), strconv.FormatInt(intent.Capability.DispatchRevision, 10), "100000", strconv.FormatInt((5*time.Minute).Milliseconds(), 10), attemptID, state.CapabilityHash, s.key("admission-events")).Result()
 	if err != nil {
 		return "", State{}, err
 	}
@@ -419,13 +416,13 @@ func decodeRedisState(raw string) (State, error) {
 }
 
 var admitScript = redis.NewScript(`local existing=redis.call('GET',KEYS[3]); if existing then return {'idempotent',redis.call('GET',KEYS[4]) or '0',existing} end; local raw=redis.call('GET',KEYS[1]); if raw then local state=cjson.decode(raw); if tonumber(state.dispatchRevision)==tonumber(ARGV[4]) and state.phase~='CLOSED' then return {'blocked',redis.call('GET',KEYS[4]) or '0','0'} end end; if redis.call('EXISTS',KEYS[5])==1 then return {'blocked',redis.call('GET',KEYS[4]) or '0','0'} end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',now); if redis.call('ZCARD',KEYS[2])>=tonumber(ARGV[3]) then return {'busy',redis.call('GET',KEYS[4]) or '0','0'} end; local leaseUntil=now+tonumber(ARGV[2]); redis.call('SET',KEYS[3],leaseUntil,'PX',ARGV[2]); redis.call('ZADD',KEYS[2],leaseUntil,ARGV[1]); redis.call('PEXPIRE',KEYS[2],ARGV[2]); return {'admitted',redis.call('GET',KEYS[4]) or '0',tostring(leaseUntil)}`)
-var releaseScript = redis.NewScript(`if redis.call('DEL',KEYS[2])==0 then return {0,redis.call('GET',KEYS[3]) or '0'} end; redis.call('ZREM',KEYS[1],ARGV[2]); local wake=redis.call('INCR',KEYS[3]); redis.call('PUBLISH',KEYS[4],ARGV[1]..':'..tostring(wake)); return {1,wake}`)
+var releaseScript = redis.NewScript(`if redis.call('DEL',KEYS[2])==0 then return {0,redis.call('GET',KEYS[3]) or '0'} end; redis.call('ZREM',KEYS[1],ARGV[2]); local wake=redis.call('INCR',KEYS[3]); redis.call('PUBLISH',ARGV[3],ARGV[1]..':'..tostring(wake)); return {1,wake}`)
 var renewScript = redis.NewScript(`if not redis.call('GET',KEYS[2]) then return {'lost','0'} end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local leaseUntil=now+tonumber(ARGV[2]); redis.call('SET',KEYS[2],leaseUntil,'PX',ARGV[2]); redis.call('ZADD',KEYS[1],leaseUntil,ARGV[1]); redis.call('PEXPIRE',KEYS[1],ARGV[2]); return {'renewed',tostring(leaseUntil)}`)
 var acquireRecoveryScript = redis.NewScript(`local raw=redis.call('GET',KEYS[1]); if not raw then return {'stale',''} end; local state=cjson.decode(raw); if tonumber(state.generation)~=tonumber(ARGV[1]) or tonumber(state.dispatchRevision)~=tonumber(ARGV[2]) then return {'stale',raw} end; if state.phase~='OPEN' and state.phase~='RECOVERING' then return {'not_due',raw} end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); if tonumber(state.retryAtMs or 0)>now then return {'not_due',raw} end; if redis.call('SET',KEYS[2],ARGV[3],'NX','PX',ARGV[4])==false then return {'lease_mismatch',raw} end; redis.call('ZREMRANGEBYSCORE',KEYS[4],'-inf',now); redis.call('ZREMRANGEBYSCORE',KEYS[5],'-inf',now); local globalLimit=100000; local sourceLimit=100000; if tonumber(redis.call('ZCARD',KEYS[4]))>=globalLimit or tonumber(redis.call('ZCARD',KEYS[5]))>=sourceLimit then redis.call('DEL',KEYS[2]); return {'not_due',raw} end; local leaseUntil=now+tonumber(ARGV[4]); redis.call('ZADD',KEYS[4],leaseUntil,ARGV[3]); redis.call('ZADD',KEYS[5],leaseUntil,ARGV[3]); state.phase='HALF_OPEN'; state.probeLease={leaseId=ARGV[3],leaseUntilMs=leaseUntil,priorSuccessCount=tonumber(state.recoverySuccessCount or 0)}; local encoded=cjson.encode(state); redis.call('SET',KEYS[1],encoded); return {'applied',encoded}`)
 var renewRecoveryScript = redis.NewScript(`local raw=redis.call('GET',KEYS[1]); if not raw or redis.call('GET',KEYS[2])~=ARGV[3] then return 0 end; local state=cjson.decode(raw); if tonumber(state.generation)~=tonumber(ARGV[1]) or tonumber(state.dispatchRevision)~=tonumber(ARGV[2]) then return 0 end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local leaseUntil=now+tonumber(ARGV[4]); redis.call('PEXPIRE',KEYS[2],ARGV[4]); redis.call('ZADD',KEYS[3],leaseUntil,ARGV[3]); redis.call('ZADD',KEYS[4],leaseUntil,ARGV[3]); state.probeLease.leaseUntilMs=leaseUntil; redis.call('SET',KEYS[1],cjson.encode(state)); return 1`)
 var commitRecoveryScript = redis.NewScript(`local raw=redis.call('GET',KEYS[1]); if not raw or redis.call('GET',KEYS[2])~=ARGV[3] then return 'stale' end; local state=cjson.decode(raw); if tonumber(state.generation)~=tonumber(ARGV[1]) or tonumber(state.dispatchRevision)~=tonumber(ARGV[2]) then return 'stale' end; redis.call('SET',KEYS[1],ARGV[4]); redis.call('DEL',KEYS[2]); redis.call('ZREM',KEYS[4],ARGV[3]); redis.call('ZREM',KEYS[5],ARGV[3]); if ARGV[6]=='CLOSED' then redis.call('ZREM',KEYS[3],state.capabilityHash); local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); redis.call('ZADD',KEYS[6],now+300000,state.capabilityHash) else redis.call('ZADD',KEYS[3],ARGV[5],state.capabilityHash); redis.call('ZREM',KEYS[6],state.capabilityHash) end; return 'applied'`)
 var cleanClosedScript = redis.NewScript(`local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local hashes=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',now,'LIMIT',0,ARGV[1]); local removed=0; for _,hash in ipairs(hashes) do local stateKey=ARGV[2]..hash; local raw=redis.call('GET',stateKey); if raw and cjson.decode(raw).phase=='CLOSED' then redis.call('DEL',stateKey); redis.call('ZREM',KEYS[2],hash); redis.call('DECR',KEYS[3]); removed=removed+1 end; redis.call('ZREM',KEYS[1],hash) end; return removed`)
-var recordFailureScript = redis.NewScript(`local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local incoming=cjson.decode(ARGV[1]); incoming.lastObservedAtMs=now; incoming.retryAtMs=now+5000; local function releasePermit() if redis.call('DEL',KEYS[6])==1 then redis.call('ZREM',KEYS[5],ARGV[5]); local wake=redis.call('INCR',KEYS[7]); redis.call('PUBLISH',KEYS[8],ARGV[6]..':'..tostring(wake)); end end; local receipt=redis.call('GET',KEYS[3]); if receipt then releasePermit(); return {'idempotent',redis.call('GET',KEYS[1]) or receipt} end; local raw=redis.call('GET',KEYS[1]); if raw then local current=cjson.decode(raw); if tonumber(current.dispatchRevision)>tonumber(ARGV[2]) then releasePermit(); return {'stale',''} end; if tonumber(current.dispatchRevision)==tonumber(ARGV[2]) and current.phase~='CLOSED' then current.lastObservedAtMs=now; current.lastOutcome='upstream_not_complete'; local encoded=cjson.encode(current); redis.call('SET',KEYS[1],encoded); redis.call('SET',KEYS[3],encoded,'PX',ARGV[4]); releasePermit(); return {'idempotent',encoded} end; incoming.generation=tonumber(current.generation or 0)+1 end; local capacity=tonumber(redis.call('GET',KEYS[4]) or '0'); if capacity>=tonumber(ARGV[3]) then local removed=0; for _, hash in ipairs(redis.call('ZRANGE',KEYS[9],0,999)) do local old=redis.call('GET',string.gsub(KEYS[1],'[^:]+$',hash)); if old then local parsed=cjson.decode(old); if parsed.phase=='CLOSED' then redis.call('DEL',string.gsub(KEYS[1],'[^:]+$',hash)); redis.call('ZREM',KEYS[9],hash); redis.call('DECR',KEYS[4]); removed=removed+1; if tonumber(redis.call('GET',KEYS[4]) or '0')<tonumber(ARGV[3]) then break end end end end; capacity=tonumber(redis.call('GET',KEYS[4]) or '0'); if capacity>=tonumber(ARGV[3]) then releasePermit(); return {'capacity_exhausted',''} end end; redis.call('INCR',KEYS[4]); local encoded=cjson.encode(incoming); redis.call('SET',KEYS[1],encoded); redis.call('ZADD',KEYS[2],incoming.retryAtMs,incoming.capabilityHash); redis.call('SET',KEYS[3],encoded,'PX',ARGV[4]); releasePermit(); return {'applied',encoded}`)
+var recordFailureScript = redis.NewScript(`local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local incoming=cjson.decode(ARGV[1]); incoming.lastObservedAtMs=now; incoming.retryAtMs=now+5000; local function releasePermit() if redis.call('DEL',KEYS[6])==1 then redis.call('ZREM',KEYS[5],ARGV[5]); local wake=redis.call('INCR',KEYS[7]); redis.call('PUBLISH',ARGV[7],ARGV[6]..':'..tostring(wake)); end end; local receipt=redis.call('GET',KEYS[3]); if receipt then releasePermit(); return {'idempotent',redis.call('GET',KEYS[1]) or receipt} end; local raw=redis.call('GET',KEYS[1]); if raw then local current=cjson.decode(raw); if tonumber(current.dispatchRevision)>tonumber(ARGV[2]) then releasePermit(); return {'stale',''} end; if tonumber(current.dispatchRevision)==tonumber(ARGV[2]) and current.phase~='CLOSED' then current.lastObservedAtMs=now; current.lastOutcome='upstream_not_complete'; local encoded=cjson.encode(current); redis.call('SET',KEYS[1],encoded); redis.call('SET',KEYS[3],encoded,'PX',ARGV[4]); releasePermit(); return {'idempotent',encoded} end; incoming.generation=tonumber(current.generation or 0)+1 end; local capacity=tonumber(redis.call('GET',KEYS[4]) or '0'); if capacity>=tonumber(ARGV[3]) then local removed=0; for _, hash in ipairs(redis.call('ZRANGE',KEYS[8],0,999)) do local old=redis.call('GET',string.gsub(KEYS[1],'[^:]+$',hash)); if old then local parsed=cjson.decode(old); if parsed.phase=='CLOSED' then redis.call('DEL',string.gsub(KEYS[1],'[^:]+$',hash)); redis.call('ZREM',KEYS[8],hash); redis.call('DECR',KEYS[4]); removed=removed+1; if tonumber(redis.call('GET',KEYS[4]) or '0')<tonumber(ARGV[3]) then break end end end end; capacity=tonumber(redis.call('GET',KEYS[4]) or '0'); if capacity>=tonumber(ARGV[3]) then releasePermit(); return {'capacity_exhausted',''} end end; redis.call('INCR',KEYS[4]); local encoded=cjson.encode(incoming); redis.call('SET',KEYS[1],encoded); redis.call('ZADD',KEYS[2],incoming.retryAtMs,incoming.capabilityHash); redis.call('SET',KEYS[3],encoded,'PX',ARGV[4]); releasePermit(); return {'applied',encoded}`)
 
 func stringValue(v interface{}) string {
 	switch x := v.(type) {

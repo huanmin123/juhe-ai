@@ -84,15 +84,15 @@ func TestW16fProbeTransportBadProxy(t *testing.T) {
 // 与 images data 非法/url 臂。
 func TestW16fVerifyResponseArms(t *testing.T) {
 	// profile 非空 + images_json。
-	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "images_json"}, testChallenge, []byte(`{"data":[{"b64_json":"dzE2Zg=="}]}`)); err != nil {
+	if err := verifyResponse(Input{ProtocolProfileID: "profile_gpt_openai_v1", EndpointMode: "images_json"}, testChallenge, []byte(`{"data":[{"b64_json":"dzE2Zg=="}]}`)); err != nil {
 		t.Fatalf("profile images 必须通过: %v", err)
 	}
 	// profile 非空 + 未知 mode + 含挑战 → default 成功臂。
-	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "w16f-custom"}, testChallenge, []byte(`{"note":"46"}`)); err != nil {
+	if err := verifyResponse(Input{ProtocolProfileID: "profile_gpt_openai_v1", EndpointMode: "w16f-custom"}, testChallenge, []byte(`{"note":"46"}`)); err != nil {
 		t.Fatalf("default 含挑战必须通过: %v", err)
 	}
 	// default 无挑战 → 失败臂。
-	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "w16f-custom"}, testChallenge, []byte(`{"note":"none"}`)); err == nil {
+	if err := verifyResponse(Input{ProtocolProfileID: "profile_gpt_openai_v1", EndpointMode: "w16f-custom"}, testChallenge, []byte(`{"note":"none"}`)); err == nil {
 		t.Fatal("default 无挑战必须报错")
 	}
 	// images data 元素非对象 → continue 后报缺少有效图片。
@@ -182,35 +182,15 @@ func w16fSource(t *testing.T, provider, profile, code string) *DirectSource {
 }
 
 // TestW16fToInputSourceMetadataArms 覆盖 ToInput 的来源协议元数据不一致、
-// hybrid 探活目标失败与 hybrid 缺 base_url 臂。
+// 来源 protocol_code 与 profile 不一致臂；BaseURL 单源连接行（旧「凭据缺
+// base_url」失败臂随 base_url 退出凭据契约退役，缺失已在连接解析层 fail closed）。
 func TestW16fToInputSourceMetadataArms(t *testing.T) {
 	direct, now := w16fDirectFixture(t)
 	direct.Authorization = &DirectAuthorization{ID: "w16f-auth", Status: "active", QuotaEligible: true}
 	direct.Binding.AuthorizationBindingID = "w16f-auth"
-	// 来源 protocol_code 与 profile 不一致。
 	direct.Source = w16fSource(t, "gpt", "profile_gpt_openai_v1", "anthropic")
 	if _, err := direct.ToInput("w16f-secret", now); err == nil || !strings.Contains(err.Error(), "protocol_code") {
 		t.Fatalf("来源 protocol_code 不一致必须报错: %v", err)
-	}
-	// hybrid 来源缺模型映射 → 探活目标解析失败。
-	hybridDirect := direct
-	hybridDirect.Source = w16fSource(t, "hybrid", "profile_hybrid_openai_chat_v1", "openai")
-	if _, err := hybridDirect.ToInput("w16f-secret", now); err == nil {
-		t.Fatal("hybrid 缺模型映射必须报错")
-	}
-	// hybrid 带映射 → 探活目标按映射改写；BaseURL 单源连接行（旧「凭据缺
-	// base_url」失败臂随 base_url 退出凭据契约退役，缺失已在连接解析层
-	// fail closed）。
-	mappedDirect := direct
-	mappedDirect.Account.MappedUpstreamModel = "w16f-upstream-model"
-	mappedDirect.Account.MappedUpstreamEndpointFamily = "chat_completions"
-	mappedDirect.Source = w16fSource(t, "hybrid", "profile_hybrid_openai_chat_v1", "openai")
-	mappedInput, err := mappedDirect.ToInput("w16f-secret", now)
-	if err != nil {
-		t.Fatalf("hybrid 带映射必须装配成功: %v", err)
-	}
-	if mappedInput.HealthModel != "w16f-upstream-model" || mappedInput.BaseURL != "https://api.aggregate.test/v1" {
-		t.Fatalf("hybrid 映射输入 = %+v", mappedInput)
 	}
 }
 
@@ -245,17 +225,20 @@ func TestW16fToInputChatGPTUserIDFallback(t *testing.T) {
 }
 
 // TestW16fDirectProfileAndBaseURLArms 覆盖 isSupportedDirectProfile 的 xai
-// provider 不匹配臂与 generic profile 的注册事实（供应商解耦后 base_url 单源
+// provider 不匹配臂与 generic/hybrid 档案退役事实（供应商解耦后 base_url 单源
 // 连接行，协议分叉不再在输入层承担）。
 func TestW16fDirectProfileAndBaseURLArms(t *testing.T) {
 	if isSupportedDirectProfile("profile_xai_openai_v1", "gpt", "api_key", "chat_json") {
 		t.Fatal("xai profile 配 gpt provider 必须不支持")
 	}
-	if !isSupportedDirectProfile("profile_generic_openai_v1", "", "api_key", "chat_json") {
-		t.Fatal("generic openai 连接的 api_key chat 形态必须支持")
+	if isSupportedDirectProfile("profile_generic_openai_v1", "", "api_key", "chat_json") {
+		t.Fatal("generic openai 档案已退役，必须不支持")
 	}
-	if isSupportedDirectProfile("profile_generic_openai_v1", "", "oauth", "responses_json") {
-		t.Fatal("generic openai 连接必须保持 API-key-only")
+	if isSupportedDirectProfile("profile_gpt_openai_v1", "openai", "api_key", "chat_json") {
+		t.Fatal("openai 兼容档案已退役，必须不支持")
+	}
+	if isSupportedDirectProfile("profile_hybrid_openai_chat_v1", "hybrid", "api_key", "chat_json") {
+		t.Fatal("hybrid 档案已退役，必须不支持")
 	}
 	if _, ok := ConnectionPresetProfileID("minimax_media"); ok {
 		t.Fatal("media preset 没有 J1 探针 profile，必须派生失败")

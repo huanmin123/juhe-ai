@@ -82,7 +82,10 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 			return err
 		}
 	}
-	vendorNull, _ := accountVendorIdentity(providerCode)
+	vendorNull, _, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return err
+	}
 	invalidUpstreamModels := []string{}
 	unpricedUpstreamModels := []string{}
 	for _, mapping := range mappings {
@@ -123,7 +126,10 @@ func (s *Store) assertAccountSupportedModelsInProviderCatalog(ctx context.Contex
 	if len(models) == 0 {
 		return nil
 	}
-	vendorNull, _ := accountVendorIdentity(providerCode)
+	vendorNull, _, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return err
+	}
 	invalidModels := []string{}
 	unpricedModels := []string{}
 	for _, model := range models {

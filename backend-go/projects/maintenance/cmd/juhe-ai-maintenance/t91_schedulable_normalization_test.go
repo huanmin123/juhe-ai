@@ -50,9 +50,6 @@ func TestT91AccountSchedulableNormalizationStep(t *testing.T) {
 	// upgradeSteps 的 upgradeTargets 会把缺失的 J3a/J3b/balance 连接串写回进程
 	// 环境（生产语义：缺省回落 primary）。这里用 t.Setenv 显式占位，测试结束时
 	// 自动还原，避免把「已删除的临时库 DSN」泄漏给同包后续用例。
-	t.Setenv(envJ3AURL, td.DSN)
-	t.Setenv(envJ3BURL, td.DSN)
-	t.Setenv(envBalanceURL, td.DSN)
 	steps := upgradeSteps(td.DSN, "t91-normalization-secret")
 	var step *upgradepipeline.Step
 	for index := range steps {

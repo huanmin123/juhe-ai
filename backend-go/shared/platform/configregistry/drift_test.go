@@ -56,7 +56,8 @@ func TestHarvestedNamesMatchRegistry(t *testing.T) {
 
 	missing := []string{}
 	for _, name := range sortedKeys(harvested) {
-		if !Known(name) {
+		// deploy_only.go 自身会携带这些字面量；它们不登记为应用配置。
+		if !Known(name) && !DeployOnly(name) {
 			missing = append(missing, name)
 		}
 	}

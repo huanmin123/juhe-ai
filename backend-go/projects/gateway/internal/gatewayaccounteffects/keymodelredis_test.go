@@ -33,13 +33,13 @@ func TestKeyModelRedisKeysJobsCompatible(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if keys.State(hash) != "juhe-ai:test-space:gateway-account-circuit-key-model:state:"+hash {
+	if keys.State(hash) != "juhe-ai:{test-space}:gateway-account-circuit-key-model:state:"+hash {
 		t.Fatalf("state key = %s", keys.State(hash))
 	}
-	if keys.Due() != "juhe-ai:test-space:gateway-account-circuit-key-model:due" {
+	if keys.Due() != "juhe-ai:{test-space}:gateway-account-circuit-key-model:due" {
 		t.Fatalf("due key = %s", keys.Due())
 	}
-	if keys.Closed() != "juhe-ai:test-space:gateway-account-circuit-key-model:closed" {
+	if keys.Closed() != "juhe-ai:{test-space}:gateway-account-circuit-key-model:closed" {
 		t.Fatalf("closed key = %s", keys.Closed())
 	}
 	if _, err := NewKeyModelRedisKeys("bad namespace!"); err == nil || err.Error() != "Redis namespace 无效" {
@@ -66,7 +66,7 @@ func TestRedisStoreRecordFailureAppliedIdempotentAndDue(t *testing.T) {
 		t.Fatalf("observed=%d retry=%v want base=%d", result.State.LastObservedAtMs, *result.State.RetryAtMs, base)
 	}
 	// due 集合已登记。
-	if score, err := server.ZScore("juhe-ai:test-space:gateway-account-circuit-key-model:due", result.State.CapabilityHash); err != nil || score != float64(base+5_000) {
+	if score, err := server.ZScore("juhe-ai:{test-space}:gateway-account-circuit-key-model:due", result.State.CapabilityHash); err != nil || score != float64(base+5_000) {
 		t.Fatalf("due score = %v err = %v", score, err)
 	}
 	// receipt 幂等：同 intentId 二次写入返回首次状态并释放 permit。
@@ -118,7 +118,7 @@ func TestRedisStoreAdmitBusyAndReleaseWake(t *testing.T) {
 	}
 	// recordFailure 写入的是 OPEN 态（必 blocked）；为验证 busy/release 路径，
 	// 删除 state key 使 admission 视作无共享运行态（Node 同语义）。
-	if !server.Del("juhe-ai:test-space:gateway-account-circuit-key-model:state:" + result.State.CapabilityHash) {
+	if !server.Del("juhe-ai:{test-space}:gateway-account-circuit-key-model:state:" + result.State.CapabilityHash) {
 		t.Fatal("state key must exist before deletion")
 	}
 	first, err := store.AdmitForeground(ctx, capabilityZero, "attempt-1")

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Ports runtime/user-request-limit-coordinator.ts: the background single-flight
@@ -406,7 +407,7 @@ func (c *UserRequestLimitCoordinator) lastLoggedCapacityEvictions() int64 {
 
 // redisKey mirrors redisKey: `<namespace>:gateway:user-request-limit:<window>:<bucket>:<systemAccountId>`.
 func (c *UserRequestLimitCoordinator) redisKey(entry UserRequestLimitDirtySnapshot) string {
-	return c.opts.Namespace + ":gateway:user-request-limit:" + string(entry.Window) + ":" + entry.Bucket + ":" + entry.SystemAccountID
+	return rediscfg.NamespacedKey("juhe-ai:gateway:user-request-limit:"+string(entry.Window)+":"+entry.Bucket+":"+entry.SystemAccountID, c.opts.Namespace)
 }
 
 func numericSyncValue(value any) int64 {

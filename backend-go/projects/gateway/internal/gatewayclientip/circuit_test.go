@@ -347,7 +347,7 @@ func TestCircuitRedisModeMatchesMemoryContract(t *testing.T) {
 		t.Fatal("redis inspect must block")
 	}
 	// preauth entry key 与 memory 模式一致（redisNamespacedKey 前缀 + entry:）。
-	if !server.Exists("juhe-ai:dev:state:gateway-client-ip-error-circuit:entry:preauth:10.0.0.1:missing") {
+	if !server.Exists("juhe-ai:{dev}:state:gateway-client-ip-error-circuit:entry:preauth:10.0.0.1:missing") {
 		t.Fatalf("redis key missing")
 	}
 	// error circuit sample → success。

@@ -58,8 +58,8 @@ function mediaProfile(input: {
 
 const openAiMediaProvider: ProviderDefinition = {
   id: 'provider-openai',
-  code: 'openai',
-  name: 'OpenAI',
+  code: 'gpt',
+  name: 'GPT',
   enabled: true,
   defaultProtocolProfileId: 'openai-v1',
   protocolCode: 'openai',
@@ -71,7 +71,7 @@ const openAiMediaProvider: ProviderDefinition = {
   capabilities: [],
   protocolProfiles: [mediaProfile({
     id: 'openai-v1',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     // openai 族通用词表：chat/tts/转写任务族由 families 推导，短转写与
     // realtime_session 为显式可选能力（v8-A 音频域 lane）。
     families: ['chat_completions', OPENAI_TTS_FAMILY, 'audio_transcription', OPENAI_VIDEO_GENERATION_FAMILY]
@@ -79,7 +79,7 @@ const openAiMediaProvider: ProviderDefinition = {
 }
 
 function mediaForm(capabilityDomain: AccountCapabilityDomain, patch: Partial<AccountFormModel> = {}): AccountFormModel {
-  const form = defaultAccountForm('openai', 'api_key')
+  const form = defaultAccountForm('gpt', 'api_key')
   form.capabilityDomain = capabilityDomain
   form.supportedEndpointModes = [...defaultEndpointModesForCapabilityDomain({
     capabilityDomain,
@@ -122,7 +122,7 @@ describe('mediaCapabilityModeOptions（域允许集 × 供应商词表）', () =
   it('openai 音频域：audio_speech + 短转写 + realtime_session（v8-A 移入项可勾选）', () => {
     const options = mediaCapabilityModeOptions({
       capabilityDomain: 'audio',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       profile: openAiMediaProvider.protocolProfiles[0],
       accountType: 'api_key'
     })
@@ -136,14 +136,14 @@ describe('mediaCapabilityModeOptions（域允许集 × 供应商词表）', () =
   it('openai 视频域：视频四值组；图像域：images_json', () => {
     const videoOptions = mediaCapabilityModeOptions({
       capabilityDomain: 'video',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       profile: openAiMediaProvider.protocolProfiles[0],
       accountType: 'api_key'
     })
     expect(videoOptions.map((option) => option.value)).toEqual(VIDEO_GROUP)
     const imageOptions = mediaCapabilityModeOptions({
       capabilityDomain: 'image',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       profile: openAiMediaProvider.protocolProfiles[0],
       accountType: 'api_key'
     })
@@ -510,8 +510,7 @@ describe('mediaDomainModelAvailabilityHint：域内空目录模型提示（v8-D�
     capabilityDomain: 'video' as AccountCapabilityDomain,
     optionCount: 0,
     loading: false,
-    settled: true,
-    hybridMappingDomain: false
+    settled: true
   }
 
   it('候选加载后确认为空（settled 且非加载中）时提示；有候选或加载中不提示', () => {
@@ -524,8 +523,7 @@ describe('mediaDomainModelAvailabilityHint：域内空目录模型提示（v8-D�
     expect(mediaDomainModelAvailabilityHint({ ...base, settled: false })).toBeUndefined()
   })
 
-  it('hybrid 映射域（上游模型来自映射面）与对话域不提示', () => {
-    expect(mediaDomainModelAvailabilityHint({ ...base, hybridMappingDomain: true })).toBeUndefined()
+  it('对话域不提示', () => {
     expect(mediaDomainModelAvailabilityHint({ ...base, capabilityDomain: 'chat' })).toBeUndefined()
   })
 })

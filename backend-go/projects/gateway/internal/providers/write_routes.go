@@ -1179,7 +1179,7 @@ func (s *Store) defaultReferenceCleanupTargets(ctx context.Context, providerCode
 	for _, code := range sources {
 		targets = append(targets, defaultReferenceCleanupTarget{
 			ProviderCode:               code,
-			BuiltInSourceProviderCodes: modelCatalogBuiltInSourceProviderCodes(normalized, sources),
+			BuiltInSourceProviderCodes: sources,
 			CustomSourceProviderCodes:  sources,
 		})
 	}

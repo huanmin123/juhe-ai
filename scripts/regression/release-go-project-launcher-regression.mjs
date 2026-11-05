@@ -250,8 +250,8 @@ function assertLauncherForwardsGatewayOwnershipGates() {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
     JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
-    // 2026-09-30 Node→Go 切流门禁 env 家族已整体退役：显式残留必须被 drop；
-    // 仍在役的 JUHE_AI_BUSINESS_POSTGRES_URL（缺省回落主 URL）原样透传。
+    // 2026-09-30 Node→Go 切流门禁 env 家族与 2026-11 删除的
+    // JUHE_AI_BUSINESS_POSTGRES_URL 均已退役：显式残留必须被 drop。
     'JUHE_AI_BUSINESS_POSTGRES_URL=postgres://business-owner',
     'JUHE_AI_BUSINESS_OWNER=gateway',
     'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true',
@@ -267,7 +267,8 @@ function assertLauncherForwardsGatewayOwnershipGates() {
   ].join('\n'))
   try {
     assert.equal(gateway.status, 0, `gateway ownership-gate launcher failed: ${gateway.output}`)
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_POSTGRES_URL, 'postgres://business-owner')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_POSTGRES_URL, undefined,
+      'the retired JUHE_AI_BUSINESS_POSTGRES_URL must not be forwarded to the gateway child')
     for (const name of [
       'JUHE_AI_BUSINESS_OWNER', 'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED',
       'JUHE_AI_BUSINESS_NODE_WRITER_STOPPED', 'JUHE_AI_BUSINESS_SCHEMA_READY',
@@ -353,7 +354,8 @@ function assertLauncherForwardsGatewayRuntimeConfig() {
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_CACHE_DRIVER=memory',
     'JUHE_AI_RUNTIME_STATE_DRIVER=redis',
-    'JUHE_AI_REDIS_STATE_URL=redis://state.example.test:6379/9',
+    'JUHE_AI_REDIS_URL=redis://state.example.test:6379',
+    'JUHE_AI_REDIS_MODE=cluster',
     'JUHE_AI_UNLISTED_FUTURE_GATEWAY_SETTING=kept'
   ].join('\n'))
   try {
@@ -361,14 +363,18 @@ function assertLauncherForwardsGatewayRuntimeConfig() {
     assert.equal(gateway.childEnvironment.JUHE_AI_HOST, '127.0.0.1')
     assert.equal(gateway.childEnvironment.JUHE_AI_PORT, '4300')
     assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SECURE, 'true')
-    assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SAME_SITE, 'strict')
+    assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SAME_SITE, undefined,
+      'the retired JUHE_AI_COOKIE_SAME_SITE must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_DATABASE_DRIVER, undefined,
       'the retired JUHE_AI_DATABASE_DRIVER must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_CACHE_DRIVER, undefined,
       'the retired JUHE_AI_CACHE_DRIVER must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_STATE_DRIVER, undefined,
       'the retired JUHE_AI_RUNTIME_STATE_DRIVER must not be forwarded to the gateway child')
-    assert.equal(gateway.childEnvironment.JUHE_AI_REDIS_STATE_URL, 'redis://state.example.test:6379/9')
+    assert.equal(gateway.childEnvironment.JUHE_AI_REDIS_URL, 'redis://state.example.test:6379')
+    assert.equal(gateway.childEnvironment.JUHE_AI_REDIS_MODE, 'cluster')
+    assert.equal(gateway.childEnvironment.JUHE_AI_REDIS_STATE_URL, undefined,
+      'the retired JUHE_AI_REDIS_STATE_URL must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_UNLISTED_FUTURE_GATEWAY_SETTING, 'kept')
     // 2026-09-19 零配置语义：SYSTEM_API/CHAIN 开关缺省 true，由 Go 侧解析；
     // launcher 未配置时不得注入。
@@ -403,8 +409,8 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL: 'postgres://j2-store',
     JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
     JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret',
-    // 去跨进程战役第四刀回归注入：历史 env 残留的 J2 手动桥 secret 必须被
-    // launcher 显式 drop，不得进入 jobs 子进程。
+    // J2 手动触发端点仍在役：该密钥必须到达 jobs 子进程（2026-11 修复
+    // launcher 误把在役密钥列入拒转清单的缺陷）。
     JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET: 'j2-manual-bridge-secret-0123456789',
     JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE: '3',
     JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET: '40s'
@@ -421,10 +427,12 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     assert.equal(jobs.status, 0, `J2 jobs launcher failed: ${jobs.output}`)
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER, 'go')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_OWNER_ID, 'j2-owner')
-    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, 'postgres://j2-store')
-    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL, 'postgres://j2-input')
-    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, undefined,
-      'the removed J2 manual-bridge secret must not be forwarded to the jobs child')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, undefined,
+      'the retired J2 store URL must not be forwarded to the jobs child')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL, undefined,
+      'the retired J2 input URL must not be forwarded to the jobs child')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, 'j2-manual-bridge-secret-0123456789',
+      'the in-service J2 manual bridge secret must be forwarded to the jobs child')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
     for (const name of [
@@ -501,7 +509,10 @@ function assertLauncherDropsRetiredJ2StoreAndForwardsPgUrl() {
     assert.equal(result.status, 0, `launcher 必须放行 J2 配置由 Go 侧校验: ${result.output}`)
     assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_STORE, undefined,
       'the retired JUHE_AI_ACCOUNT_BALANCE_STORE must not be forwarded to the jobs child')
-    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, 'postgres://j2-store')
+    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, undefined,
+      'the retired JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL must not be forwarded to the jobs child')
+    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL, undefined,
+      'the retired JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL must not be forwarded to the jobs child')
   } finally {
     result.cleanup()
   }

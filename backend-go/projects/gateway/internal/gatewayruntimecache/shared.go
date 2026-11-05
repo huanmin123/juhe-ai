@@ -8,6 +8,7 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // SharedCache mirrors the Node createSharedJsonCache surface actually used by
@@ -37,7 +38,7 @@ func (f SharedCacheNamespaceFunc) Cache(name string) SharedCache { return f(name
 // "<namespace>:<name>:<key>" following the Node redisNamespacedKey convention
 // (namespace already carries the juhe-ai: root, same as key_model_runtime).
 type RedisSharedCache struct {
-	client *redis.Client
+	client redis.UniversalClient
 	prefix string
 }
 
@@ -47,21 +48,14 @@ func NewRedisSharedCacheFactory(url, namespace string) (SharedCacheFactory, func
 	if strings.TrimSpace(url) == "" {
 		return nil, nil, errors.New("gatewayruntimecache Redis URL 不能为空")
 	}
-	options, err := redis.ParseURL(url)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: url})
 	if err != nil {
 		return nil, nil, err
 	}
-	client := redis.NewClient(options)
-	normalized := strings.TrimRight(strings.TrimSpace(namespace), ":")
-	if normalized != "juhe-ai" && !strings.HasPrefix(normalized, "juhe-ai:") {
-		normalized = "juhe-ai:" + normalized
-	}
-	if strings.HasSuffix(normalized, "juhe-ai:") {
-		normalized = "juhe-ai"
-	}
+	prefix := rediscfg.TaggedPrefix(namespace)
 	closeFunc := func() { _ = client.Close() }
 	return SharedCacheNamespaceFunc(func(name string) SharedCache {
-		return &RedisSharedCache{client: client, prefix: normalized + ":" + name + ":"}
+		return &RedisSharedCache{client: client, prefix: prefix + name + ":"}
 	}), closeFunc, nil
 }
 
@@ -96,20 +90,7 @@ func (c *RedisSharedCache) Set(ctx context.Context, key string, value any, ttl t
 // Clear deletes every key under the cache prefix (SCAN + DEL batches).
 func (c *RedisSharedCache) Clear(ctx context.Context) error {
 	pattern := c.prefix + "*"
-	var cursor uint64
-	for {
-		keys, next, err := c.client.Scan(ctx, cursor, pattern, 200).Result()
-		if err != nil {
-			return err
-		}
-		if len(keys) > 0 {
-			if err := c.client.Del(ctx, keys...).Err(); err != nil {
-				return err
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			return nil
-		}
-	}
+	return rediscfg.ScanAll(ctx, c.client, pattern, func(keys []string) error {
+		return c.client.Del(ctx, keys...).Err()
+	})
 }

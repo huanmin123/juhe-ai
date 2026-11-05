@@ -38,7 +38,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 		gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: "redis"},
 		gatewayaccounteffects.SystemClock{}, nil, func() (gatewayaccounteffects.AccountApiKeyTransientStateStore, error) {
 			return gatewayaccounteffects.NewRedisAccountApiKeyTransientStateStore(gatewayaccounteffects.RedisAccountApiKeyTransientStateStoreOptions{
-				RedisURL: cfg.RedisStateURL, Namespace: cfg.RedisNamespace,
+				RedisURL: cfg.RedisURL, Namespace: cfg.RedisNamespace,
 			})
 		})
 	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, 65_000))

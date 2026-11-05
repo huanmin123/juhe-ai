@@ -28,7 +28,7 @@ func newW2CHotQualityRuntime(t *testing.T) *gatewayhotquality.GatewayHotQualityR
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisStateURL:  "redis://" + miniredis.RunT(t).Addr(),
+		RedisURL:  "redis://" + miniredis.RunT(t).Addr(),
 		RedisNamespace: "w2c-hot-quality",
 	})
 	if err != nil {

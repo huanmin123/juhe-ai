@@ -22,8 +22,12 @@ const ArchitectureVersion = "go-projects-v1"
 // juhe_usage.usage_records 新增 usage_stats_aggregated_at /
 // client_ip_stats_aggregated_at 两列与两条部分索引，纯 DDL 增量；存量行的
 // 水位结算由聚合器首次运行自举完成（不是升级步骤，不需要停写窗口），因此同样
-// 不写入 schema_migrations。当前值 16。
-const SchemaRevision int64 = 16
+// 不写入 schema_migrations。2026-11-05 revision 17 九家真实厂商收口：
+// accounts 新增 vendor_code NOT NULL + connection_driver_code = vendor_code
+// 的一致性 CHECK（generic_http / vendor NULL 账户退役），纯 DDL 空号；必须
+// 先由 --purge-unsupported-vendor-accounts 清退存量 NULL vendor 账户，再由
+// ensure-schema/upgrade 添加约束。当前值 17。
+const SchemaRevision int64 = 17
 
 type ProjectID string
 

@@ -21,10 +21,6 @@ const (
 	//（与自动跟版同源：main 分支 Cargo.toml；2026-10-10 锚点 1.0.45）。运行时
 	// 可被 SetClientVersionOverrides 覆盖（EffectiveGrokCLIVersion）。
 	GrokCLIClientVersion = "1.0.45"
-	// 两个 hybrid 档案当前桥接的目标上游都是 GLM（BUG-0176 时代的兼容事实），
-	// 因此归入 GLM 家族选择 ZCode 身份。
-	ProfileHybridOpenAIChatV1        = "profile_hybrid_openai_chat_v1"
-	ProfileHybridAnthropicMessagesV1 = "profile_hybrid_anthropic_messages_v1"
 	// 内置客户端版本常量：下方 UA 常量由这些版本拼接。运行时生效值 = 手动
 	// 覆盖（system_settings 键 upstreamClientVersionOverrides）> 自动覆盖
 	//（键 upstreamClientVersionAutoOverrides，jobs 跟版任务写入）> 本常量；
@@ -272,9 +268,7 @@ func matchesGLMFamily(provider, profileID string) bool {
 	if provider == "glm" {
 		return true
 	}
-	return strings.HasPrefix(profileID, "profile_glm_") ||
-		profileID == ProfileHybridOpenAIChatV1 ||
-		profileID == ProfileHybridAnthropicMessagesV1
+	return strings.HasPrefix(profileID, "profile_glm_")
 }
 
 // matchesGPTFamily 判定 GPT/Codex 家族。provider openai 是泛化 OpenAI-compatible

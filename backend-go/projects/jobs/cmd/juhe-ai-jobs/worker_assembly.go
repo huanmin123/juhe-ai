@@ -598,7 +598,7 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	a.oauthStore = store
 
 	// P0 修复：OAuth 刷新失败状态存储按运行态部署注入。缺省（无
-	// JUHE_AI_REDIS_STATE_URL）保持各 job 的内存版默认；redis-state 部署注入
+	// JUHE_AI_REDIS_URL）保持各 job 的内存版默认；redis-state 部署注入
 	// Redis 版（refresh 注入 OpenAI 族既有 key 前缀、keepalive 注入独立
 	// oauth-keepalive-failure 前缀，共用同一客户端），退避状态跨重启与多副本
 	// 共享（refresh.go / keepalive.go 注释声明的装配约定）。Redis 读取失败由

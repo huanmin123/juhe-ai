@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/vendorinfer"
 )
 
 // Import source adapters mirror account-import-source-adapters.ts: the
@@ -49,15 +51,114 @@ func SourceLabel(mode string) string {
 }
 
 const (
-	MaxImportedAccounts       = 50
-	MaxImportedProxies        = 20
-	DefaultOpenAIBaseURL      = "https://api.openai.com/v1"
-	importSourceMessageLimit  = 8
-	gptVendorCode             = accountscore.GptVendorCode
-	GptOpenAIV1ProfileID      = "profile_gpt_openai_v1"
-	OpenAICompatibleProvider  = "openai"
-	OpenAICompatibleProfileID = "profile_openai_openai_v1"
+	MaxImportedAccounts      = 50
+	MaxImportedProxies       = 20
+	DefaultOpenAIBaseURL     = "https://api.openai.com/v1"
+	importSourceMessageLimit = 8
+	gptVendorCode            = accountscore.GptVendorCode
+	GptOpenAIV1ProfileID     = "profile_gpt_openai_v1"
 )
+
+// sourceAdapterEntries 是来源适配器的推断目录：适配器不读库，目录恒空，
+// vendorinfer 只走静态模型名前缀表（gpt-/claude/gemini/grok/deepseek/glm/
+// qwen/doubao/minimax 等）。
+var sourceAdapterCatalog = vendorinfer.NewCatalog(nil)
+
+// sourceVendorTarget 是一次来源 API Key 账户的厂商推断结果。
+type sourceVendorTarget struct {
+	Vendor    string
+	Preset    string
+	ProfileID string
+}
+
+// sourceModelSample 归一模型样本（最多 5 个）用于跳过报告。
+func sourceModelSample(models []string) string {
+	sample := make([]string, 0, 5)
+	for _, model := range models {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			continue
+		}
+		sample = append(sample, trimmed)
+		if len(sample) == 5 {
+			break
+		}
+	}
+	if len(sample) == 0 {
+		return "（空）"
+	}
+	return strings.Join(sample, "、")
+}
+
+// sourcePresetProfileID 返回 registry preset 对应的既有档案字面量（与
+// accounts/protocol_context.go presetProfileID 同表；本包不能反向 import 父包）。
+func sourcePresetProfileID(preset string) string {
+	switch preset {
+	case contracts.PresetGPTOpenAIV1:
+		return accountscore.GptOpenAIV1ProfileID
+	case contracts.PresetXAIOpenAIV1:
+		return accountscore.XaiOpenAIV1ProfileID
+	case contracts.PresetDeepSeekOpenAIV1:
+		return accountscore.DeepSeekOpenAIV1ProfileID
+	case contracts.PresetGLMGeneralOpenAIV1:
+		return accountscore.GlmGeneralOpenAIV1ProfileID
+	case contracts.PresetGeminiOpenAIChatV1Beta:
+		return accountscore.GeminiOpenAIChatV1BetaProfileID
+	case contracts.PresetQwenDashScope:
+		return accountscore.QwenOpenAIV1ProfileID
+	case contracts.PresetVolcengineArk:
+		return accountscore.VolcengineOpenAIV1ProfileID
+	case contracts.PresetMiniMaxMedia:
+		return accountscore.MinimaxOpenAIV1ProfileID
+	default:
+		return ""
+	}
+}
+
+// resolveSourceVendor 解析来源账户的厂商并选 openai_v1 协议面的连接 preset。
+// vendorHint 非空表示来源形态本身已显式声明厂商（如 CLIProxyAPI 的 codex-api-key
+// 条目 = gpt），否则按来源模型列表经 vendorinfer 推断。返回 (target, "") 表示
+// 可导入，返回 (zero, reason) 表示必须跳过并把原因（含模型样本）写入来源报告：
+// 所有模型必须命中同一厂商，且该厂商在 openai_v1 面有可承载 chat 的 preset，
+// 否则跳过，绝不回落通用连接器。
+func resolveSourceVendor(vendorHint string, models []string) (sourceVendorTarget, string) {
+	vendor := strings.TrimSpace(vendorHint)
+	if vendor == "" {
+		if len(models) == 0 {
+			return sourceVendorTarget{}, "来源账户缺少模型列表，无法按模型名推断厂商"
+		}
+		result := sourceAdapterCatalog.Infer(models)
+		if !result.OK {
+			if len(result.Conflicts) > 0 {
+				return sourceVendorTarget{}, "来源模型厂商冲突，无法确定唯一厂商（模型样本：" + sourceModelSample(result.Conflicts) + "）"
+			}
+			return sourceVendorTarget{}, "来源模型无法推断厂商（模型样本：" + sourceModelSample(models) + "）"
+		}
+		vendor = result.Vendor
+	}
+	preset, ok := vendorinfer.ConnectionPreset(vendor, contracts.SurfaceOpenAIV1)
+	if !ok {
+		return sourceVendorTarget{}, "厂商 " + vendor + " 没有 openai_v1 协议面的连接预设"
+	}
+	modes := contracts.AllowedModes(contracts.DomainChat, preset, contracts.AccountTypeAPIKey, "")
+	if !containsSourceString(modes, "chat_sse") || !containsSourceString(modes, "chat_json") {
+		return sourceVendorTarget{}, "厂商 " + vendor + " 的连接预设 " + preset + " 不承载对话请求"
+	}
+	profileID := sourcePresetProfileID(preset)
+	if profileID == "" {
+		return sourceVendorTarget{}, "厂商 " + vendor + " 缺少可用的协议档案"
+	}
+	return sourceVendorTarget{Vendor: vendor, Preset: preset, ProfileID: profileID}, ""
+}
+
+func containsSourceString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
 
 // AdaptImportSource mirrors adaptAccountImportSource. Native data passes
 // through untouched; every other mode rewrites into the native document. The
@@ -291,6 +392,7 @@ func AdaptSub2APIAccount(value any, index int, state *AdapterState) {
 		priority:       nonNegativeInteger(record["priority"]),
 		notes:          sourceText(record["notes"]),
 		accountExpires: isoDateString(record["expires_at"]),
+		models:         sourceModelStrings(record["supportedModels"]),
 	}
 	if name := sourceText(record["name"]); name != "" {
 		input.name = name
@@ -298,17 +400,14 @@ func AdaptSub2APIAccount(value any, index int, state *AdapterState) {
 		input.name = fmt.Sprintf("Sub2API %s %d", map[string]string{"api_key": "API Key", "oauth": "OAuth"}[sourceType], index)
 	}
 	var account map[string]any
+	skipReason := "缺少可用 OAuth 凭据或 Base URL"
 	if sourceType == "api_key" {
-		account = adaptAPIKeyAccount(input, state)
+		account, skipReason = adaptAPIKeyAccount(input, state)
 	} else {
 		account = adaptOAuthAccount(input, state)
 	}
 	if account == nil {
-		if sourceType == "api_key" {
-			skipSourceRecord(state, index, "缺少可用 API Key 或 Base URL")
-		} else {
-			skipSourceRecord(state, index, "缺少可用 OAuth 凭据或 Base URL")
-		}
+		skipSourceRecord(state, index, skipReason)
 		return
 	}
 	passthroughSub2APIModelFields(account, record)
@@ -325,6 +424,18 @@ func passthroughSub2APIModelFields(account map[string]any, record map[string]any
 		if value, exists := record[key]; exists && sourceNonEmptyValue(value) {
 			account[key] = value
 		}
+	}
+}
+
+// cpaModelsShaped 判定 CPA 的 models/supportedModels 键是否为合法模型列表形态
+// （string 或 []any）：合法形态由适配器读取用于厂商推断，不再计入 ignoredFields；
+// 非法形态保持原计数语义。
+func cpaModelsShaped(value any) bool {
+	switch value.(type) {
+	case string, []any:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -413,9 +524,14 @@ func AdaptChannelSource(input any, mode string, state *AdapterState) {
 		if name == "" {
 			name = fmt.Sprintf("%s Channel %d", SourceLabel(mode), index+1)
 		}
-		account := buildSourceAPIKeyAccount(apiKeys, baseURL, name,
+		channelModels := sourceModelStrings(record["models"])
+		account, skipReason := buildSourceAPIKeyAccount(apiKeys, baseURL, name,
 			sourceGroupName(record["group"], fmt.Sprintf("%s 导入", SourceLabel(mode))),
-			normalizeChannelStatus(record["status"]), "", 0, 0, -1, "", "")
+			normalizeChannelStatus(record["status"]), "", 0, 0, -1, "", "", channelModels, "")
+		if account == nil {
+			skipSourceRecord(state, index+1, skipReason)
+			continue
+		}
 		// channel 的 models 列表映射为 native 文档的 supportedModels（TrimSpace、
 		// 丢空、首次出现顺序去重）；models 键缺失时不写入；空串、空数组等形态
 		// 合法但归一后为空的输入不写入也不计数，保持回退供应商默认支持模型。
@@ -454,7 +570,9 @@ func AdaptCLIProxyAPI(input any, state *AdapterState) {
 	}
 	codexEntries, _ := firstPresentList(root, "codex-api-key", "codex_api_key")
 	for index, value := range codexEntries {
-		AdaptCPAAPIKeyEntry(value, index+1, "CLIProxyAPI Codex API Key", "CLIProxyAPI 导入", "", state)
+		// codex-api-key 条目是显式 Codex（gpt）凭据：来源类型本身确定厂商，
+		// 不依赖模型列表。
+		AdaptCPAAPIKeyEntry(value, index+1, "CLIProxyAPI Codex API Key", "CLIProxyAPI 导入", "", nil, gptVendorCode, state)
 	}
 	providers, _ := firstPresentList(root, "openai-compatibility", "openai_compatibility")
 	for providerIndex, value := range providers {
@@ -466,15 +584,22 @@ func AdaptCLIProxyAPI(input any, state *AdapterState) {
 		countIgnoredRecordKeys(provider, map[string]bool{
 			"name": true, "base-url": true, "base_url": true,
 			"api-key-entries": true, "api_key_entries": true,
+			"models": cpaModelsShaped(provider["models"]), "supportedModels": cpaModelsShaped(provider["supportedModels"]),
 		}, state)
 		providerName := sourceText(provider["name"])
 		if providerName == "" {
 			providerName = fmt.Sprintf("CLIProxyAPI OpenAI Provider %d", providerIndex+1)
 		}
 		providerBaseURL := firstSourceText(provider["base-url"], provider["base_url"])
+		providerModels := sourceModelStrings(firstPresent(provider, "models", "supportedModels"))
 		entries, _ := firstPresentList(provider, "api-key-entries", "api_key_entries")
 		for entryIndex, entry := range entries {
-			AdaptCPAAPIKeyEntry(entry, entryIndex+1, providerName, "CLIProxyAPI 导入", providerBaseURL, state)
+			entryRecord, _ := entry.(map[string]any)
+			entryModels := providerModels
+			if own := sourceModelStrings(firstPresent(entryRecord, "models", "supportedModels")); len(own) > 0 {
+				entryModels = own
+			}
+			AdaptCPAAPIKeyEntry(entry, entryIndex+1, providerName, "CLIProxyAPI 导入", providerBaseURL, entryModels, "", state)
 		}
 	}
 	if state.Source.Records == 0 {
@@ -482,12 +607,13 @@ func AdaptCLIProxyAPI(input any, state *AdapterState) {
 	}
 }
 
-func AdaptCPAAPIKeyEntry(value any, index int, label, groupName, baseURL string, state *AdapterState) {
+func AdaptCPAAPIKeyEntry(value any, index int, label, groupName, baseURL string, models []string, vendorHint string, state *AdapterState) {
 	state.Source.Records++
 	record, _ := value.(map[string]any)
 	if record != nil {
 		countIgnoredRecordKeys(record, map[string]bool{
 			"api-key": true, "api_key": true, "key": true, "base-url": true, "base_url": true,
+			"models": cpaModelsShaped(record["models"]), "supportedModels": cpaModelsShaped(record["supportedModels"]),
 		}, state)
 	}
 	var keyValue any = value
@@ -513,8 +639,13 @@ func AdaptCPAAPIKeyEntry(value any, index int, label, groupName, baseURL string,
 		skipSourceRecord(state, index, "API Key Base URL 不符合上游地址策略")
 		return
 	}
-	acceptAccount(state, index, buildSourceAPIKeyAccount(apiKeys, resolved,
-		fmt.Sprintf("%s %d", label, index), groupName, "active", "", 0, 0, -1, "", ""))
+	account, skipReason := buildSourceAPIKeyAccount(apiKeys, resolved,
+		fmt.Sprintf("%s %d", label, index), groupName, "active", "", 0, 0, -1, "", "", models, vendorHint)
+	if account == nil {
+		skipSourceRecord(state, index, skipReason)
+		return
+	}
+	acceptAccount(state, index, account)
 }
 
 func AdaptCPACodexAuthFile(root map[string]any, state *AdapterState) {
@@ -554,7 +685,7 @@ func AdaptCPACodexAuthFile(root map[string]any, state *AdapterState) {
 		"groupName":                 "CLIProxyAPI 导入",
 		"credentials":               credentials,
 	}
-	applySourceConnections(codexAccount, "", true)
+	applySourceConnections(codexAccount, contracts.PresetDefaultBaseURL(contracts.PresetGPTOpenAIV1), contracts.PresetGPTOpenAIV1, true)
 	acceptAccount(state, 1, codexAccount)
 }
 
@@ -572,25 +703,26 @@ type adaptedAccountInput struct {
 	priority       int
 	notes          string
 	accountExpires string
+	// models 是来源账户声明的模型列表（Sub2API supportedModels / Channel
+	// models）。API Key 通道据此推断唯一厂商；OAuth 通道不用。
+	models []string
 }
 
-func adaptAPIKeyAccount(input adaptedAccountInput, state *AdapterState) map[string]any {
+func adaptAPIKeyAccount(input adaptedAccountInput, state *AdapterState) (map[string]any, string) {
 	countIgnoredRecordKeys(input.credentials, map[string]bool{
 		"api_key": true, "api_keys": true, "key": true, "base_url": true,
 	}, state)
 	apiKeys := sourceAPIKeyList(firstPresent(input.credentials, "api_key", "api_keys", "key"))
 	if len(apiKeys) == 0 || len(apiKeys) > 10 {
-		return nil
+		return nil, "缺少可用 API Key"
 	}
 	baseURL := sourceText(input.credentials["base_url"])
-	if baseURL == "" {
-		baseURL = DefaultOpenAIBaseURL
-	}
-	if !SafeSourceBaseURL(baseURL, state) {
-		return nil
+	if baseURL != "" && !SafeSourceBaseURL(baseURL, state) {
+		return nil, "Base URL 不符合上游地址策略"
 	}
 	return buildSourceAPIKeyAccount(apiKeys, baseURL, input.name, input.groupName, input.status,
-		input.proxyRef, input.concurrency, input.rpm, input.priority, input.notes, input.accountExpires)
+		input.proxyRef, input.concurrency, input.rpm, input.priority, input.notes, input.accountExpires,
+		input.models, "")
 }
 
 func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[string]any {
@@ -607,7 +739,7 @@ func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[strin
 		"groupName":                 input.groupName,
 		"credentials":               credentials,
 	}
-	applySourceConnections(account, "", true)
+	applySourceConnections(account, contracts.PresetDefaultBaseURL(contracts.PresetGPTOpenAIV1), contracts.PresetGPTOpenAIV1, true)
 	if input.proxyRef != "" {
 		account["proxyRef"] = input.proxyRef
 	}
@@ -632,24 +764,22 @@ func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[strin
 }
 
 // applySourceConnections 是来源适配器合成的 §8 连接集合（B1 断点批，设计 §8
-// wire schema）：api_key 通道走 generic_openai_v1（openai 兼容语义），
-// OAuth 通道走 gpt_openai_v1（gpt OAuth 收窄词表 responses 双形态）；健康检查
+// wire schema）：连接 preset 由来源模型推断出的厂商决定（openai_v1 协议面），
+// OAuth 通道固定 gpt_openai_v1（gpt OAuth 收窄词表 responses 双形态）；健康检查
 // 连接维度随连接写入，模型维度由导入计划在 supportedModels 终值化后按非原生
 // 来源契约补齐（适配器不读库，无法预知供应商默认支持模型）。
 // 形态顺序与检查形态均流式优先（AI账户检查模型与人工测试设计 2026-10-19
 // 定案）：非原生导入的检查形态缺省取 connections[0].EndpointModes 首个可检查
 // 形态（import.go），故 endpointModes 自身必须 _sse 在前。
-func applySourceConnections(account map[string]any, baseURL string, oauth bool) {
-	preset := "generic_openai_v1"
+func applySourceConnections(account map[string]any, baseURL, preset string, oauth bool) {
 	modes := []any{"chat_sse", "chat_json"}
 	healthMode := "chat_sse"
 	if oauth {
-		preset = "gpt_openai_v1"
 		modes = []any{"responses_sse", "responses_json"}
 		healthMode = "responses_sse"
 	}
 	if baseURL == "" {
-		baseURL = DefaultOpenAIBaseURL
+		baseURL = contracts.PresetDefaultBaseURL(preset)
 	}
 	account["connections"] = []any{map[string]any{
 		"connectionPresetCode": preset,
@@ -664,11 +794,26 @@ func applySourceConnections(account map[string]any, baseURL string, oauth bool) 
 // buildSourceAPIKeyAccount mirrors buildApiKeyAccount: absent numeric fields
 // use the -1 sentinel and stay out of the document. rpm 走 0 哨兵（>0 才写
 // rpmLimit，见 AI账户每分钟请求上限设计 §6.4）。
-func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status, proxyRef string, concurrency, rpm, priority int, notes, accountExpires string) map[string]any {
+//
+// 供应商身份不再固定 openai：按来源模型列表经 vendorinfer 推断九家真实厂商，
+// 用 registry 的 openai_v1 preset 与对应档案字面量落 providerCode /
+// providerProtocolProfileId；无法确定、跨厂商冲突或无兼容 preset 时返回
+// (nil, reason)，调用方跳过该条来源记录并把原因写入报告（含模型样本）。
+func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status, proxyRef string, concurrency, rpm, priority int, notes, accountExpires string, models []string, vendorHint string) (map[string]any, string) {
+	target, skipReason := resolveSourceVendor(vendorHint, models)
+	if skipReason != "" {
+		return nil, skipReason
+	}
+	if baseURL == "" {
+		baseURL = contracts.PresetDefaultBaseURL(target.Preset)
+	}
+	if baseURL == "" {
+		return nil, "厂商 " + target.Vendor + " 的预设缺少默认上游地址"
+	}
 	account := map[string]any{
 		"name":                      name,
-		"providerCode":              OpenAICompatibleProvider,
-		"providerProtocolProfileId": OpenAICompatibleProfileID,
+		"providerCode":              target.Vendor,
+		"providerProtocolProfileId": target.ProfileID,
 		"type":                      "api_key",
 		"status":                    status,
 		"groupName":                 groupName,
@@ -677,7 +822,7 @@ func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status
 			"base_url": baseURL,
 		},
 	}
-	applySourceConnections(account, baseURL, false)
+	applySourceConnections(account, baseURL, target.Preset, false)
 	if len(apiKeys) > 1 {
 		list := make([]any, 0, len(apiKeys))
 		for _, key := range apiKeys {
@@ -706,7 +851,7 @@ func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status
 	if notes != "" {
 		account["notes"] = notes
 	}
-	return account
+	return account, ""
 }
 
 // sourceOAuthCredentials mirrors oauthCredentials.
@@ -1046,6 +1191,22 @@ func sourceModelList(value any) []any {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// sourceModelStrings 是 sourceModelList 的 []string 投影（推断输入用；保持
+// TrimSpace 去空去重与首次出现顺序）。
+func sourceModelStrings(value any) []string {
+	items := sourceModelList(value)
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
 	}
 	return out
 }

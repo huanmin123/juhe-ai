@@ -97,11 +97,11 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 	if err := noRedis.wireListProjectionFamily(ctx, &businessDB{}, nil); err != nil {
 		t.Fatalf("缺 Redis 必须 disabled: %v", err)
 	}
-	assertDisabled(t, noRedis, "JUHE_AI_REDIS_STATE_URL")
+	assertDisabled(t, noRedis, "JUHE_AI_REDIS_URL")
 
 	// PG + Redis + 非法 namespace。
 	badNamespace := build(func(config *workerConfig) {
-		config.RedisStateURL = "redis://127.0.0.1:6379/9"
+		config.RedisURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8 bad namespace!"
 	})
 	if err := badNamespace.wireListProjectionFamily(ctx, &businessDB{}, nil); err != nil {
@@ -111,7 +111,7 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 
 	// PG + Redis + 合法 namespace + 缺 secret。
 	noSecret := build(func(config *workerConfig) {
-		config.RedisStateURL = "redis://127.0.0.1:6379/9"
+		config.RedisURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8"
 		config.Secret = ""
 	})
@@ -122,7 +122,7 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 
 	// secret 就绪 + 探针族未装配。
 	noProbe := build(func(config *workerConfig) {
-		config.RedisStateURL = "redis://127.0.0.1:6379/9"
+		config.RedisURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8"
 	})
 	if err := noProbe.wireListProjectionFamily(ctx, &businessDB{}, nil); err != nil {

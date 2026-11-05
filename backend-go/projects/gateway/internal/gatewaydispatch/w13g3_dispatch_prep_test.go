@@ -1053,7 +1053,7 @@ func TestW13g3GptOverrideTokenValidation(t *testing.T) {
 
 func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 	ctx := context.Background()
-	account := AccountCandidate{ID: "a-1", VendorCode: "openai", Credentials: map[string]any{"service_tier_override": "priority"}}
+	account := AccountCandidate{ID: "a-1", VendorCode: "gpt", Credentials: map[string]any{"service_tier_override": "priority"}}
 	// T15 收敛：目录端口经 GptRequestOverrideRuntime 显式传入（无进程级 Set*）。
 	inertRuntime := GptRequestOverrideRuntime{}
 	t.Run("invalid credentials surface", func(t *testing.T) {
@@ -1099,7 +1099,7 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 			SupportedReasoningEfforts: []string{"high"},
 		}}}
 		runtime := GptRequestOverrideRuntime{Catalog: catalog}
-		effortAccount := AccountCandidate{ID: "a-1", VendorCode: "openai", Credentials: map[string]any{"reasoning_effort_override": "high"}}
+		effortAccount := AccountCandidate{ID: "a-1", VendorCode: "gpt", Credentials: map[string]any{"reasoning_effort_override": "high"}}
 		for _, tc := range []struct {
 			family string
 			expect string

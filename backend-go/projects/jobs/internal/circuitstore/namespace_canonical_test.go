@@ -34,7 +34,7 @@ func TestNamespaceEntryCanonicalization(t *testing.T) {
 		if fullStore.keys != shortStore.keys {
 			t.Fatalf("全前缀与短名键空间不一致: %#v vs %#v", fullStore.keys, shortStore.keys)
 		}
-		if want := "juhe-ai:dev-space:account-circuit:gateway-account-circuit:states"; fullStore.keys.states != want {
+		if want := "juhe-ai:{dev-space}:account-circuit:gateway-account-circuit:states"; fullStore.keys.states != want {
 			t.Fatalf("短名键空间被改写: %s want %s", fullStore.keys.states, want)
 		}
 	})
@@ -51,7 +51,7 @@ func TestNamespaceEntryCanonicalization(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = shortStore.Close() })
 		probe := "juhe-ai:account-concurrency-v2:acc-1:total"
-		if got, want := fullStore.namespaced(probe), "juhe-ai:dev-space:account-concurrency-v2:acc-1:total"; got != want {
+		if got, want := fullStore.namespaced(probe), "juhe-ai:{dev-space}:account-concurrency-v2:acc-1:total"; got != want {
 			t.Fatalf("全前缀 overlay 键=%q want %q", got, want)
 		}
 		if fullStore.namespaced(probe) != shortStore.namespaced(probe) {
@@ -73,7 +73,7 @@ func TestNamespaceEntryCanonicalization(t *testing.T) {
 			fullStore.generationPrefix != shortStore.generationPrefix || fullStore.dueKey != shortStore.dueKey {
 			t.Fatalf("全前缀与短名探针键空间不一致: %#v vs %#v", *fullStore, *shortStore)
 		}
-		if want := "juhe-ai:dev-space:probe:" + ProbeStoreName + ":state:"; fullStore.statePrefix != want {
+		if want := "juhe-ai:{dev-space}:probe:" + ProbeStoreName + ":state:"; fullStore.statePrefix != want {
 			t.Fatalf("短名探针键前缀被改写: %s want %s", fullStore.statePrefix, want)
 		}
 	})
@@ -92,7 +92,7 @@ func TestNamespaceEntryCanonicalization(t *testing.T) {
 			fullStore.avoidanceKeyPrefix != shortStore.avoidanceKeyPrefix {
 			t.Fatalf("全前缀与短名运行态键空间不一致: %#v vs %#v", *fullStore, *shortStore)
 		}
-		if want := "juhe-ai:dev-space:probe:" + recoveryProbeStoreName + ":state:"; fullStore.statePrefix != want {
+		if want := "juhe-ai:{dev-space}:probe:" + recoveryProbeStoreName + ":state:"; fullStore.statePrefix != want {
 			t.Fatalf("短名运行态键前缀被改写: %s want %s", fullStore.statePrefix, want)
 		}
 	})

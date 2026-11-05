@@ -15,9 +15,8 @@ func w1iFakeEnv(values map[string]string) func(string) string {
 
 func w1iStorageEnv(extra map[string]string) map[string]string {
 	merged := map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
 	}
 	for key, value := range extra {
 		merged[key] = value
@@ -108,7 +107,6 @@ func TestW1iLoadRuntimeConfigInvalidValues(t *testing.T) {
 		wantErr string
 	}{
 		{w1iStorageEnv(map[string]string{"JUHE_AI_PORT": "bogus"}), "JUHE_AI_PORT"},
-		{w1iStorageEnv(map[string]string{"JUHE_AI_NODE_ENV": "staging"}), "production、test 或 development"},
 	}
 	for _, tc := range tests {
 		_, err := loadRuntimeConfig(w1iFakeEnv(tc.env))
@@ -120,19 +118,10 @@ func TestW1iLoadRuntimeConfigInvalidValues(t *testing.T) {
 
 func TestW1iLoadRuntimeConfigMissingRedisURL(t *testing.T) {
 	env := w1iStorageEnv(nil)
-	delete(env, "JUHE_AI_REDIS_CACHE_URL")
+	delete(env, "JUHE_AI_REDIS_URL")
 	_, err := loadRuntimeConfig(w1iFakeEnv(env))
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
-		t.Fatalf("missing redis cache url: %v", err)
-	}
-}
-
-func TestW1iLoadRuntimeConfigMissingRedisStateURL(t *testing.T) {
-	env := w1iStorageEnv(nil)
-	delete(env, "JUHE_AI_REDIS_STATE_URL")
-	_, err := loadRuntimeConfig(w1iFakeEnv(env))
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
-		t.Fatalf("missing redis state url: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL") {
+		t.Fatalf("missing redis url: %v", err)
 	}
 }
 
@@ -155,10 +144,10 @@ func TestW1iLoadRuntimeConfigPort(t *testing.T) {
 // `juhe-ai:juhe-ai:dev:...` 键空间分裂；短名逐字节不变。
 func TestW1iLoadRuntimeConfigCanonicalizesRedisNamespace(t *testing.T) {
 	cases := map[string]string{
-		"juhe-ai:dev":   "dev",
-		"dev":           "dev",
-		" juhe-ai:dev ": "dev",
-		"juhe-ai:dev:":  "dev",
+		"juhe-ai:dev":    "dev",
+		"dev":            "dev",
+		" juhe-ai:dev ":  "dev",
+		"juhe-ai:{dev}:": "dev",
 	}
 	for raw, want := range cases {
 		cfg, err := loadRuntimeConfig(w1iFakeEnv(w1iStorageEnv(map[string]string{

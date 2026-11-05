@@ -78,7 +78,7 @@ func scopeJSON(scope HotQualityScope) string {
 func TestRedisHotQualityStoreKeyLayout(t *testing.T) {
 	store, _ := newTestRedisHotQualityStore(t, "dev")
 	keys := store.Keys()
-	if keys.Prefix != "juhe-ai:dev:hot-quality:gateway-hot-quality" {
+	if keys.Prefix != "juhe-ai:{dev}:hot-quality:gateway-hot-quality" {
 		t.Fatalf("prefix = %s", keys.Prefix)
 	}
 	if keys.HotRegistry != keys.Prefix+":registry:hot" || keys.AttemptRegistry != keys.Prefix+":registry:attempt" ||
@@ -373,7 +373,7 @@ func TestRedisSameTierExplorationStoreFreshPoolScriptsWithMiniredis(t *testing.T
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if store.Prefix() != "juhe-ai:dev:same-tier-exploration:gateway" {
+	if store.Prefix() != "juhe-ai:{dev}:same-tier-exploration:gateway" {
 		t.Fatalf("prefix = %s", store.Prefix())
 	}
 	ctx := context.Background()

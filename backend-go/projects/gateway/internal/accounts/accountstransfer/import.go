@@ -281,15 +281,9 @@ func (s *Service) LoadImportProviders(ctx context.Context) (map[string]*ImportPr
 		}
 		providers[code] = provider
 	}
-	// generic_http 旧 provider 词根：目标 schema 的 vendors 只含九家真实厂商，
-	// generic 账户在库内 vendor=NULL；导入 wire（既有导出文件、模板）仍以
-	// "openai" 词根表达，故在读取面合成为 enabled 的兼容条目。默认支持模型沿用
-	// 旧 providers 种子的 generic 缺省（迁移窗口兼容；导入载荷显式 supportedModels
-	// 时优先）。
-	providers["openai"] = &ImportProvider{
-		code: "openai", enabled: true,
-		defaultSupportedModels: []string{"gpt-4o-mini"},
-	}
+	// 目标 schema（§9.1/§9.3）只注册九家真实厂商：不再合成 "openai" 兼容条目。
+	// 非原生来源由适配器按模型名推断厂商后写入真实 providerCode；原生导入文档
+	// 携带 openai/hybrid 词根时按「不支持的供应商」拒绝，不静默落通用连接器。
 	return providers, rows.Err()
 }
 

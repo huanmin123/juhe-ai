@@ -253,7 +253,7 @@ func TestW13g3KeyModelCapabilityForRoute(t *testing.T) {
 	})
 	t.Run("mapping rewrites model and family", func(t *testing.T) {
 		account := AccountCandidate{
-			VendorCode:                "openai",
+			VendorCode:                "gpt",
 			ProtocolCode:              "openai",
 			ProtocolVersion:           "v1",
 			SelectedAPIKeyFingerprint: &fingerprint,

@@ -21,6 +21,11 @@ type Report struct {
 	// no usable supported_endpoint_modes. Such an account is migrated with the
 	// preset vocabulary fallback and reported for review.
 	UnresolvedEndpointModes []string `json:"unresolved_endpoint_modes"`
+	// SkippedAccounts lists legacy openai/hybrid accounts whose model list could
+	// not be resolved to exactly one of the nine real vendors (or whose vendor
+	// has no compatible connection preset for the legacy protocol surface).
+	// These accounts and their dependent rows are intentionally not imported.
+	SkippedAccounts []SkippedAccount `json:"skipped_accounts,omitempty"`
 	// CreatedAccounts counts accounts whose legacy row had no deleted_at
 	// (active resource accounts).
 	CreatedAccounts int `json:"created_accounts"`
@@ -35,7 +40,17 @@ type Report struct {
 }
 
 // Ready reports whether the import committed without leaving any row it could
-// not translate.
+// not translate. SkippedAccounts is an intentional, reported drop (the account
+// has no supported vendor), so it does not fail the run.
 func (r Report) Ready() bool {
 	return r.SourceIdentity != "" && r.TargetIdentity != "" && len(r.UnresolvedEndpointModes) == 0
+}
+
+// SkippedAccount is one legacy account intentionally not imported.
+type SkippedAccount struct {
+	ID           string   `json:"id"`
+	ProviderCode string   `json:"provider_code"`
+	ProfileID    string   `json:"profile_id"`
+	Reason       string   `json:"reason"`
+	Models       []string `json:"models,omitempty"`
 }

@@ -31,14 +31,20 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgcfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schemagate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 func main() {
+	pgcfg.PrepareProcessEnv("juhe-ai-jobs")
+	if redisCfg, redisErr := rediscfg.FromEnv(os.Getenv); redisErr == nil {
+		rediscfg.Configure(redisCfg)
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -417,12 +423,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	workerCfg, err := loadWorkerConfig(os.Getenv)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("load jobs worker config: %w", err))
-	}
-	// 旧名兼容路径披露：只配 JUHE_AI_USAGE_SPOOL_DIR 时 drain 仍与 gateway
-	// 写侧同目录交接，但该名已废弃，提示部署改配新名。
-	if workerCfg.usageSpoolDirectoryLegacyName {
-		logger.Warn("usage spool 目录来自旧名 JUHE_AI_USAGE_SPOOL_DIR 回退（兼容路径，建议改配 JUHE_AI_USAGE_SPOOL_DIRECTORY）",
-			"event", "usage_spool_directory_legacy_fallback", "directory", workerCfg.UsageSpoolDirectory)
 	}
 	// accounts.capability_domain 启动只读校验（AI 账户能力域拆分 M1/M2）：
 	// 加列/迁移归 maintenance，jobs 启动仅校验；形状不符或阶段记录未封存

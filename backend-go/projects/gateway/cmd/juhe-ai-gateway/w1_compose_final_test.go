@@ -187,21 +187,18 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 
 	// 主链 cache/state 连接由独立 miniredis 实例承载（实例由 t.Cleanup 关闭）。
 	redisCache := miniredis.RunT(t)
-	redisState := miniredis.RunT(t)
 
 	cfg := runtimeConfig{
 		// PG+Redis 唯一存储形态（2026-10-24 存储形态收口）：组合根的 redis
 		// 登录守卫与链条运行态都消费两条连接串，由 miniredis 承载。
 		PostgresURL:                   tempAppURL,
 		BusinessPostgresURL:           tempAppURL,
-		RedisCacheURL:                 "redis://" + redisCache.Addr(),
-		RedisStateURL:                 "redis://" + redisState.Addr(),
+		RedisURL:                      "redis://" + redisCache.Addr(),
 		RedisNamespace:                w1g2TestNamespace(t),
 		Secret:                        "w1u-final-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
 		UsageSpoolDirectory:           filepath.Join(root, "usage-spool"),
-		ChatToolEnvironment:           "development",
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,

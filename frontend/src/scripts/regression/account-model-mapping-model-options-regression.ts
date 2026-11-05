@@ -13,7 +13,6 @@ import {
   defaultAccountModelMappingSourceEndpointFamily,
   defaultAccountModelMappingUpstreamEndpointFamily,
   hasAccountModelMappingUpstreamEndpointFamilyCapability,
-  hybridAccountModelMappingProtocolRules,
   isAccountModelMappingProtocolAllowed,
   isAccountModelMappingSourceEndpointFamilyAllowed,
   shouldResetAccountModelMappingUpstreamEndpointFamily,
@@ -64,18 +63,6 @@ assertDeepEqual(
   values(ordinarySourceOptions),
   values(options),
   '普通账户客户端模型必须使用当前供应商完整目录，不能按客户端或上游协议反向过滤'
-)
-assertDeepEqual(
-  values(accountModelMappingSourceModelOptions({
-    providerCode: 'hybrid',
-    sourceEndpointFamily: 'messages',
-    currentProviderOptions: options,
-    openAIProtocolOptions: options,
-    anthropicProtocolOptions: options,
-    geminiProtocolOptions: options
-  })),
-  ['claude-messages'],
-  'Hybrid 客户端模型必须按客户端协议使用对应全局协议池'
 )
 assertDeepEqual(
   values(accountModelMappingUpstreamModelOptions(options, 'responses')),
@@ -182,7 +169,6 @@ const geminiNativeProfile = {
   protocolCode: 'gemini',
   protocolVersion: 'v1beta'
 }
-const hybridProfile = { providerCode: 'hybrid' }
 
 assertDefaultMappingFamilies(
   { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] },
@@ -280,27 +266,7 @@ assertMatch(
   /Gemini GenerateContent.*上游接口能力/,
   '前端 Gemini 目标族必须要求 GenerateContent JSON 或 SSE 上游能力'
 )
-// M4b 媒体映射（矩阵 17 行对齐后端 model_mapping_protocol_matrix.go）。
-assertEqual(
-  isAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'video_generation',
-    upstreamEndpointFamily: 'video_generation',
-    enabled: true,
-    context: { providerProfile: hybridProfile, supportedEndpointModes: ['video_create'] }
-  }),
-  true,
-  'Hybrid 视频生成同族映射必须在账户启用 video_create 时可用'
-)
-assertMatch(
-  accountModelMappingProtocolValidationMessage({
-    sourceEndpointFamily: 'tts',
-    upstreamEndpointFamily: 'tts',
-    enabled: true,
-    context: { providerProfile: hybridProfile, supportedEndpointModes: [] }
-  }) ?? '',
-  /语音合成.*上游接口能力/,
-  'Hybrid 语音合成映射必须按 audio_speech 上游能力门校验'
-)
+// M4b 媒体映射（普通 OpenAI 档案同族改写）。
 assertEqual(
   isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'tts',
@@ -367,24 +333,20 @@ for (const item of entryMappingPairsGolden.pairs) {
 }
 
 const ordinaryProtocolPairs = new Set(accountModelMappingProtocolRules.map((rule) => `${rule.source} -> ${rule.upstream}`))
-const hybridProtocolPairs = new Set(hybridAccountModelMappingProtocolRules.map((rule) => `${rule.source} -> ${rule.upstream}`))
 assertSetEquals(
   goldenPairModes,
-  new Set([...ordinaryProtocolPairs, ...hybridProtocolPairs]),
-  '前端协议矩阵（普通+混合清单并集）与 golden 的 pair 集合'
+  ordinaryProtocolPairs,
+  '前端协议矩阵与 golden 的 pair 集合'
 )
 
-// frontendRuleSets 标注锁定两条清单各自的成员关系：任何一条清单单独增删
-// pair（而不是两份清单与 golden 一起演化）都转红。
+// frontendRuleSets 标注锁定清单成员关系：任何一条 pair 单独增删（而不是
+// 清单与 golden 一起演化）都转红。
 for (const item of entryMappingPairsGolden.pairs) {
-  const expected = [
-    ordinaryProtocolPairs.has(item.pair) ? 'ordinary' : '',
-    hybridProtocolPairs.has(item.pair) ? 'hybrid' : ''
-  ].filter(Boolean).sort()
+  const expected = ordinaryProtocolPairs.has(item.pair) ? ['ordinary'] : []
   assertDeepEqual(
     [...item.frontendRuleSets].sort(),
     expected,
-    `golden pair ${item.pair}（设计 §5.2 #${item.designDocRow}）的 frontendRuleSets 标注与前端两条清单实际成员关系`
+    `golden pair ${item.pair}（设计 §5.2 #${item.designDocRow}）的 frontendRuleSets 标注与前端清单实际成员关系`
   )
 }
 

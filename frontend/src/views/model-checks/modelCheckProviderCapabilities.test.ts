@@ -60,8 +60,8 @@ describe('modelCheckModelsForAccount', () => {
     const account = {
       id: 'a1',
       name: 'Alpha',
-      providerCode: 'openai',
-      providerProtocolProfileId: 'profile_openai_openai_v1',
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
       modelCheckModels: ['gpt-5.6-sol', 'deepseek-v4.1-flash']
     }
     expect(modelCheckModelsForAccount(account)).toEqual(['gpt-5.6-sol', 'deepseek-v4.1-flash'])
@@ -71,8 +71,8 @@ describe('modelCheckModelsForAccount', () => {
     const account = {
       id: 'a1',
       name: 'Alpha',
-      providerCode: 'openai',
-      providerProtocolProfileId: 'profile_openai_openai_v1'
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1'
     }
     expect(modelCheckModelsForAccount(account)).toEqual([
       'gpt-5.6-sol',
@@ -88,8 +88,8 @@ describe('canSelectTrustedModelCheckAccount', () => {
   const target = {
     id: 'target',
     name: '目标账户',
-    providerCode: 'openai',
-    providerProtocolProfileId: 'profile_openai_openai_v1',
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
     modelCheckModels: ['gpt-5.6-sol', 'gpt-6.1-sol']
   }
   const catalogModel = 'gpt-5.6-sol'
@@ -99,8 +99,8 @@ describe('canSelectTrustedModelCheckAccount', () => {
     const candidate = {
       id: 'peer',
       name: '对比账户',
-      providerCode: 'openai',
-      providerProtocolProfileId: 'profile_openai_openai_v1'
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1'
     }
     expect(canSelectTrustedModelCheckAccount(candidate, {
       targetAccount: target,

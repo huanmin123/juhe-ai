@@ -408,10 +408,7 @@ func sharedPenaltyKey(namespace, scopeKey string, windowSeconds, maxRequests int
 		sum := sha256.Sum256([]byte(value))
 		return base64.RawURLEncoding.EncodeToString(sum[:])
 	}
-	prefix := "juhe-ai:" + namespace + ":"
-	if strings.HasPrefix("juhe-ai:rate-limit:penalty", prefix) {
-		panic("unexpected namespace")
-	}
+	prefix := "juhe-ai:{" + namespace + "}:"
 	return strings.Join([]string{
 		prefix + "rate-limit:penalty",
 		hash(penaltyWindowStoreName),

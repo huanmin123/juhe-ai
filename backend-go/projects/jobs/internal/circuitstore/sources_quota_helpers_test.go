@@ -354,7 +354,7 @@ func TestAPIKeyPoolIsolationAndProviderTokens(t *testing.T) {
 	oneEntry := stubMultiKeyCredentials{count: 1}
 
 	supported := []struct{ provider, protocol, version string }{
-		{"openai", "", ""},
+		{"gpt", "", ""},
 		{" GPT ", "", ""},
 		{"deepseek", "", ""},
 		{"GLM", "", ""},
@@ -378,10 +378,10 @@ func TestAPIKeyPoolIsolationAndProviderTokens(t *testing.T) {
 		}
 	}
 	// 非 api_key 类型 / 单 key 池 / 空 entries 均不启用。
-	if apiKeyPoolIsolationEnabled(twoEntries, "oauth", "openai", "", "", credentials) {
+	if apiKeyPoolIsolationEnabled(twoEntries, "oauth", "gpt", "", "", credentials) {
 		t.Fatal("oauth 类型不得启用隔离")
 	}
-	if apiKeyPoolIsolationEnabled(oneEntry, "api_key", "openai", "", "", credentials) {
+	if apiKeyPoolIsolationEnabled(oneEntry, "api_key", "gpt", "", "", credentials) {
 		t.Fatal("单 key 池不得启用隔离")
 	}
 	if apiKeyRuntimeProbeCandidateStatus("temporary_unavailable") != true ||

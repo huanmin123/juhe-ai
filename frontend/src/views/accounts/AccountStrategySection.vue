@@ -109,17 +109,14 @@ import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHin
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import {
-  ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_TTS_FAMILY,
-  OPENAI_VIDEO_GENERATION_FAMILY,
-  isHybridProviderCode
+  OPENAI_VIDEO_GENERATION_FAMILY
 } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import {
-  accountModelMappingSourceModelOptions,
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
@@ -144,10 +141,10 @@ const props = defineProps<{
   mappingCurrentProviderSourceModelOptions: ModelMappingSourceModelOption[]
   mappingGeminiSourceModelOptions: ModelMappingSourceModelOption[]
   mappingSourceModelOptions: ModelMappingSourceModelOption[]
-  /** hybrid 账户映射源模型下拉（三协议实例）的服务端截断标志（T25 hasMore）。 */
+  /** 映射源模型下拉（协议切片实例）的服务端截断标志（T25 hasMore）。 */
   mappingSourceModelOptionsTruncated?: boolean
   mappingUpstreamModelOptions: ModelMappingSourceModelOption[]
-  /** 当前供应商目录（上游模型/非 hybrid 源模型）的服务端截断标志（T25 hasMore）。 */
+  /** 当前供应商目录（上游模型/源模型）的服务端截断标志（T25 hasMore）。 */
   modelsTruncated?: boolean
   proxyOptions: SelectOption[]
   proxyOptionsLoading?: boolean
@@ -166,16 +163,13 @@ const emit = defineEmits<{
 type ModelMappingSourceModelOption = AccountModelMappingModelOption
 
 const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
-const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerCode))
 // 国外 OAuth 供应商（Grok/GPT/Anthropic/Gemini）的上游必须经代理可达：
 // 与后端 oauthmgmt requiresProxy 拦截和 accountSavePayload 校验保持一致。
 const oauthProxyRequired = computed(() =>
   props.isOAuthForm
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode))
 const modelMappingTooltip = computed(() => (
-  isHybridAccount.value
-    ? '混合供应商账户在这里配置下游协议和模型到真实上游协议和模型的映射；左侧模型只能选择对应协议支持的模型，右侧上游模型只能选择账户支持模型。'
-    : '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
+  '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
   // M2 能力域收口 + v8-A 对话域纯粹化：chat 域允许集 = 13 值对话锚集合 ∩
@@ -192,11 +186,8 @@ const endpointModeOptions = computed(() => {
 })
 
 const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
-// T23：源模型下拉的截断提示条件与取数路径一致——非 hybrid 账户走当前供应商
-// 目录（modelsTruncated），hybrid 账户走协议池三实例（mappingSourceModelOptionsTruncated）。
-const sourceModelTruncated = computed(() => (
-  isHybridAccount.value ? Boolean(props.mappingSourceModelOptionsTruncated) : Boolean(props.modelsTruncated)
-))
+// T23：源模型下拉的截断提示条件——当前供应商目录的 modelsTruncated。
+const sourceModelTruncated = computed(() => Boolean(props.modelsTruncated))
 
 function setModeEnabled(mode: AccountSupportedEndpointMode, enabled: boolean): void {
   props.form.supportedEndpointModes = enabled
@@ -246,47 +237,22 @@ watch(() => [
   }
 })
 
-function mappingSourceModelOptionsFor(mapping: AccountFormModel['modelMappings'][number]) {
-  return accountModelMappingSourceModelOptions({
-    providerCode: props.form.providerCode,
-    sourceEndpointFamily: mapping.sourceEndpointFamily,
-    currentProviderOptions: props.mappingCurrentProviderSourceModelOptions,
-    openAIProtocolOptions: props.mappingSourceModelOptions,
-    anthropicProtocolOptions: props.mappingAnthropicSourceModelOptions,
-    geminiProtocolOptions: props.mappingGeminiSourceModelOptions
-  })
+function mappingSourceModelOptionsFor(_mapping: AccountFormModel['modelMappings'][number]) {
+  return props.mappingCurrentProviderSourceModelOptions
 }
 
 function handleSourceModelDropdown(
-  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
+  _sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
   open: boolean
 ): void {
-  if (!isHybridAccount.value) {
-    emit('current-provider-model-options-open', open)
-    return
-  }
-  const protocol = sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
-    ? 'anthropic'
-    : sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
-      ? 'gemini'
-      : 'openai'
-  emit('mapping-source-model-options-open', protocol, open)
+  emit('current-provider-model-options-open', open)
 }
 
 function handleSourceModelSearch(
-  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
+  _sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
   value: string
 ): void {
-  if (!isHybridAccount.value) {
-    emit('current-provider-model-options-search', value)
-    return
-  }
-  const protocol = sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
-    ? 'anthropic'
-    : sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
-      ? 'gemini'
-      : 'openai'
-  emit('mapping-source-model-options-search', protocol, value)
+  emit('current-provider-model-options-search', value)
 }
 
 function mappingUpstreamModelOptionsFor(upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']) {

@@ -63,24 +63,26 @@ func TestAutoClaimExplicitSecretWins(t *testing.T) {
 	}
 }
 
-func TestPostgresStoreAndURLFallbacks(t *testing.T) {
-	values := map[string]string{
-		"JUHE_AI_POSTGRES_URL":          "postgres://main",
-		"JUHE_AI_BUSINESS_POSTGRES_URL": "postgres://business",
-	}
+func TestPostgresStoreUsesMainURL(t *testing.T) {
+	values := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://main"}
 	cfg, err := LoadConfig(func(key string) string { return values[key] })
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if cfg.PostgresURL != "postgres://main" || cfg.BusinessPostgresURL != "postgres://business" {
+	if cfg.PostgresURL != "postgres://main" || cfg.BusinessPostgresURL != "postgres://main" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 }
 
-func TestRejectsNonGatewayOwner(t *testing.T) {
-	values := map[string]string{"JUHE_AI_J3B_OWNER": "jobs"}
-	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
-		t.Fatal("non-gateway J3b owner must fail closed")
+func TestIgnoresOwnerOverride(t *testing.T) {
+	// owner 判定不再是部署输入：设置旧变量不得改变或阻止加载。
+	values := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://main", "JUHE_AI_J3B_OWNER": "jobs"}
+	cfg, err := LoadConfig(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if cfg.Owner != "gateway" {
+		t.Fatalf("owner=%q want gateway", cfg.Owner)
 	}
 }
 
@@ -88,15 +90,15 @@ func TestRejectsNonGatewayOwner(t *testing.T) {
 // 组合根回退进程内 memory 准入（不再有"严格模式缺 Redis fail closed"路径）。
 func TestAutoClaimWithoutRedisFallsBackInProcess(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1",
-		"JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b", "JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://business",
+		"JUHE_AI_J3B_INSTANCE_ID":       "gw-1",
+		"JUHE_AI_POSTGRES_URL":          "postgres://j3b",
 		"JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity",
 	}
 	cfg, err := LoadConfig(func(key string) string { return values[key] })
 	if err != nil {
 		t.Fatalf("auto-claim 无 Redis 不再 fail closed: %v", err)
 	}
-	if !cfg.AutoClaimed || cfg.CircuitRuntimeRedisURL != "" || cfg.CircuitRuntimeRedisURLFellBack {
+	if !cfg.AutoClaimed || cfg.CircuitRuntimeRedisURL != "" {
 		t.Fatalf("auto-claim 无 Redis 应回退 memory 准入: %+v", cfg)
 	}
 }
@@ -106,30 +108,27 @@ func TestAutoClaimWithoutRedisFallsBackInProcess(t *testing.T) {
 // 统一剥除 `juhe-ai:` 根前缀；短名逐字节不变；J3B 专属变量优先于共享变量。
 func TestCanonicalizesCircuitRuntimeRedisNamespace(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1",
-		"JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b", "JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://business",
+		"JUHE_AI_J3B_INSTANCE_ID":       "gw-1",
+		"JUHE_AI_POSTGRES_URL":          "postgres://j3b",
 		"JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity", "JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED": "true",
 		"JUHE_AI_J3B_NODE_WRITER_STOPPED": "true", "JUHE_AI_J3B_SCHEMA_READY": "true", "JUHE_AI_J3B_HEALTH_BOUNDARY_READY": "true", "JUHE_AI_J3B_RUNTIME_READY": "true",
 		"JUHE_AI_J3B_OWNER_EPOCH": "epoch-ns", "JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH": "evidence.json",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL": "redis://127.0.0.1:6379/9",
+		"JUHE_AI_REDIS_URL": "redis://127.0.0.1:6379/0",
 	}
 	cases := []struct {
 		name     string
-		j3bNS    string
 		sharedNS string
 		want     string
 	}{
-		{name: "全前缀剥根", j3bNS: "juhe-ai:dev", want: "dev"},
-		{name: "短名不变", j3bNS: "dev", want: "dev"},
-		{name: "空白与全前缀", j3bNS: " juhe-ai:dev ", want: "dev"},
-		{name: "专属缺省回落共享全前缀", sharedNS: "juhe-ai:dev", want: "dev"},
+		{name: "全前缀剥根", sharedNS: "juhe-ai:dev", want: "dev:j3b"},
+		{name: "短名不变", sharedNS: "dev", want: "dev:j3b"},
+		{name: "空白与全前缀", sharedNS: " juhe-ai:dev ", want: "dev:j3b"},
 	}
 	for _, tc := range cases {
 		values := map[string]string{}
 		for key, value := range base {
 			values[key] = value
 		}
-		values["JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"] = tc.j3bNS
 		values["JUHE_AI_REDIS_NAMESPACE"] = tc.sharedNS
 		cfg, err := LoadConfig(func(key string) string { return values[key] })
 		if err != nil {
@@ -141,9 +140,8 @@ func TestCanonicalizesCircuitRuntimeRedisNamespace(t *testing.T) {
 	}
 }
 
-// TestPostgresURLFallbackChain 钉死 URL 回退链：J3B 专属 URL 缺失回落主
-// JUHE_AI_POSTGRES_URL；业务 URL 缺失回落 J3B/主连接串。
-func TestPostgresURLFallbackChain(t *testing.T) {
+// TestPostgresURLRequiresMain 钉死唯一连接串：J3b 与业务面都用主库。
+func TestPostgresURLRequiresMain(t *testing.T) {
 	cfg, err := LoadConfig(func(key string) string {
 		if key == "JUHE_AI_POSTGRES_URL" {
 			return "postgres://main"
@@ -154,9 +152,9 @@ func TestPostgresURLFallbackChain(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	if cfg.PostgresURL != "postgres://main" || cfg.BusinessPostgresURL != "postgres://main" {
-		t.Fatalf("fallback chain broken: %+v", cfg)
+		t.Fatalf("unified URL broken: %+v", cfg)
 	}
-	if _, err := LoadConfig(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_J3B_POSTGRES_URL") {
-		t.Fatalf("全空 env 必须指名缺失的 J3B POSTGRES_URL，got %v", err)
+	if _, err := LoadConfig(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("全空 env 必须指名缺失的 JUHE_AI_POSTGRES_URL，got %v", err)
 	}
 }

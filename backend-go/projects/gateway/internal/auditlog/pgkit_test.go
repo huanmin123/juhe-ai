@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
 	env := map[string]string{
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":           "f3-test-instance",
 		"JUHE_AI_AUDIT_LOG_STORE":                 "postgres",
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL":          testDB.DSN,
+		"JUHE_AI_POSTGRES_URL":                    testDB.DSN,
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":        filepath.Join(root, "audit-blobs"),
 		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": testDB.DSN,
 	}

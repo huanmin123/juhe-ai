@@ -30,7 +30,7 @@ func TestW12CPGWorkerAssemblyWiring(t *testing.T) {
 		"JUHE_AI_SECRET":          wgBalanceSecret,
 		"JUHE_AI_INSTANCE_ID":     "w12c-pg-assembly",
 		"JUHE_AI_WORKER_ROLE":     "stats-worker",
-		"JUHE_AI_REDIS_STATE_URL": "redis://" + redisServer.Addr(),
+		"JUHE_AI_REDIS_URL": "redis://" + redisServer.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:w12c",
 	}
 	config, err := loadWorkerConfig(getenvFrom(env))

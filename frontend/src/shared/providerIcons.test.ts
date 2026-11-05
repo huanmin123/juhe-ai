@@ -6,17 +6,15 @@ import {
   ANTHROPIC_PROVIDER_CODE,
   DEEPSEEK_PROVIDER_CODE,
   GEMINI_PROVIDER_CODE,
-  HYBRID_PROVIDER_CODE,
   MINIMAX_PROVIDER_CODE,
-  OPENAI_COMPATIBLE_PROVIDER_CODE,
   QWEN_PROVIDER_CODE,
   VOLCENGINE_PROVIDER_CODE,
   XAI_PROVIDER_CODE
 } from '@/shared/providerProtocol'
 import { providerIconFallbackChar, providerIconPaths } from '@/shared/providerIcons'
 
-// 设计契约（供应商卡片选择与图标设计 §2.2）的 12 个 providerCode。
-// moonshot 为预留 code，providerProtocol.ts 尚无对应常量，此处按设计契约字面量列出。
+// 九家真实厂商 + 预留 moonshot 的 providerCode（共 10 个）。
+// moonshot 为预留 code，providerProtocol.ts 尚无对应常量，此处按字面量列出。
 const DESIGN_PROVIDER_ICON_CODES = [
   GPT_VENDOR_CODE,
   ANTHROPIC_PROVIDER_CODE,
@@ -27,13 +25,11 @@ const DESIGN_PROVIDER_ICON_CODES = [
   VOLCENGINE_PROVIDER_CODE,
   'moonshot',
   MINIMAX_PROVIDER_CODE,
-  XAI_PROVIDER_CODE,
-  HYBRID_PROVIDER_CODE,
-  OPENAI_COMPATIBLE_PROVIDER_CODE
+  XAI_PROVIDER_CODE
 ]
 
 describe('providerIconPaths', () => {
-  it('映射 key 集合与设计契约的 12 个 providerCode 完全一致', () => {
+  it('映射 key 集合与设计契约的 10 个 providerCode 完全一致', () => {
     expect(Object.keys(providerIconPaths).sort()).toEqual([...DESIGN_PROVIDER_ICON_CODES].sort())
   })
 

@@ -8,9 +8,7 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
-  GPT_VENDOR_CODE,
-  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
-  HYBRID_PROVIDER_CODE
+  GPT_VENDOR_CODE
 } from '@/shared/providerProtocol'
 import { accountImportProtocolMarkdown, aiConversionPrompt, importTemplate } from '../../views/accounts/accountImportProtocol'
 
@@ -94,13 +92,8 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   },
   {
     name: '模型映射与跨协议边界',
-    exportedPattern: /普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据/,
-    formalPattern: /普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据/
-  },
-  {
-    name: '混合供应商模型映射目标协议',
-    exportedPattern: /混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝/,
-    formalPattern: /混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝/
+    exportedPattern: /`modelMappings` 只做账号模型别名和 OpenAI v1 bridge：Chat Completions → Chat Completions，Responses → Responses，Responses → Chat Completions（仅 stream=true），Messages → Messages，GenerateContent \/ 流式 GenerateContent → GenerateContent，video_generation → video_generation，tts → tts。其他跨协议方向会被拒绝/,
+    formalPattern: /`modelMappings` 只做账号模型别名和 OpenAI v1 bridge：Chat Completions → Chat Completions，Responses → Responses，Responses → Chat Completions（仅 stream=true），Messages → Messages，GenerateContent \/ 流式 GenerateContent → GenerateContent，video_generation → video_generation，tts → tts。其他跨协议方向会被拒绝/
   },
   {
     name: '来源模型映射与模型目录拦截',
@@ -113,7 +106,7 @@ const template = JSON.parse(importTemplate) as ImportTemplateDocument
 
 assertEqual(template.type, 'juhe-ai-account-import', '导入模板 type 必须保持当前协议')
 assertEqual(template.version, 1, '导入模板 version 必须保持 v1')
-assertEqual(template.accounts?.length, 9, '导入模板应继续覆盖 GPT API Key、GPT OAuth、DeepSeek 双接入、GLM 三接入、Anthropic API Key 和混合供应商账号')
+assertEqual(template.accounts?.length, 8, '导入模板应覆盖 GPT API Key、GPT OAuth、DeepSeek 双接入、GLM 三接入和 Anthropic API Key')
 assertEqual(template.proxies?.length, 1, '导入模板应继续包含代理 ref 示例')
 
 const apiKeyAccount = template.accounts?.find((account) => account.type === 'api_key')
@@ -124,7 +117,6 @@ const glmGeneralAccount = template.accounts?.find((account) => account.providerC
 const glmCodingAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID)
 const glmCodingAnthropicAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID)
 const anthropicAccount = template.accounts?.find((account) => account.providerCode === ANTHROPIC_PROVIDER_CODE)
-const hybridAccount = template.accounts?.find((account) => account.providerCode === HYBRID_PROVIDER_CODE)
 const deprecatedGlmProfileField = ['connection', 'Type'].join('')
 assertDefined(apiKeyAccount, '导入模板应包含 API Key 账号示例')
 assertDefined(oauthAccount, '导入模板应包含 OAuth 账号示例')
@@ -134,7 +126,6 @@ assertDefined(glmGeneralAccount, '导入模板应包含 GLM 通用 API Key 账�
 assertDefined(glmCodingAccount, '导入模板应包含 GLM Coding Plan Key 账号示例')
 assertDefined(glmCodingAnthropicAccount, '导入模板应包含 GLM Coding Anthropic Key 账号示例')
 assertDefined(anthropicAccount, '导入模板应包含 Anthropic API Key 账号示例')
-assertDefined(hybridAccount, '导入模板应包含混合供应商账号示例')
 assertTrue(template.accounts?.every((account) => typeof account.providerProtocolProfileId === 'string' && account.providerProtocolProfileId.trim().length > 0) === true, '导入模板每个账号都必须显式填写 providerProtocolProfileId')
 assertEqual(apiKeyAccount.providerCode, GPT_VENDOR_CODE, 'API Key 示例应继续使用 GPT 供应商')
 assertEqual(apiKeyAccount.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, 'API Key 示例应显式填写 GPT OpenAI v1 profile')
@@ -170,18 +161,13 @@ assertEqual(anthropicAccount.providerProtocolProfileId, ANTHROPIC_ANTHROPIC_V1_P
 assertTrue(Array.isArray(anthropicAccount.credentials?.supported_endpoint_modes), 'Anthropic 示例应包含 supported_endpoint_modes')
 assertFalse(Object.prototype.hasOwnProperty.call(anthropicAccount.credentials ?? {}, 'anthropic_version'), 'Anthropic 导入示例不应把 anthropic-version 当作账号凭据')
 assertFalse(Object.prototype.hasOwnProperty.call(anthropicAccount.credentials ?? {}, 'anthropic_beta'), 'Anthropic 导入示例不应把 anthropic-beta 当作账号凭据')
-assertEqual(hybridAccount.providerProtocolProfileId, HYBRID_OPENAI_CHAT_V1_PROFILE_ID, '混合供应商示例应显式填写真实上游 OpenAI Chat profile')
-assertFalse(Object.prototype.hasOwnProperty.call(hybridAccount, 'clientCompatibility'), '混合供应商示例不应暴露客户端兼容字段')
-assertEqual(JSON.stringify(hybridAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse']), '混合供应商 OpenAI Chat 示例应只保存真实上游 Chat 能力')
-assertEqual(hybridAccount.modelMappings?.[0]?.sourceEndpointFamily, 'messages', '混合供应商示例应允许下游 Messages 来源')
-assertEqual(hybridAccount.modelMappings?.[0]?.upstreamEndpointFamily, 'chat_completions', '混合供应商示例应映射到真实上游 Chat Completions')
 assertEqual(typeof apiKeyAccount.groupName, 'string', '模板账号必须保留 groupName 示例')
 assertTrue(template.accounts?.every((account) => Array.isArray(account.connections) && account.connections.length > 0) === true, '导入模板每个账号都必须显式提交非空 connections 数组（native 导入不做缺省补齐）')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckConnectionPresetCode === 'string' && account.healthCheckConnectionPresetCode.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckConnectionPresetCode')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckModel === 'string' && account.healthCheckModel.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckModel')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckEndpointMode === 'string' && account.healthCheckEndpointMode.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckEndpointMode')
 
-// ---- rpmLimit（RPM 设计 §6.4）：模板 9 账号统一补 rpmLimit: 0，字段表与规则同步 ----
+// ---- rpmLimit（RPM 设计 §6.4）：模板 8 账号统一补 rpmLimit: 0，字段表与规则同步 ----
 
 assertTrue(
   template.accounts?.every((account) => account.rpmLimit === 0) === true,
@@ -202,7 +188,6 @@ assertMatch(accountImportProtocolMarkdown, /# juhe-ai AI 账户导入协议 v1/,
 assertMatch(accountImportProtocolMarkdown, /```json[\s\S]+juhe-ai-account-import[\s\S]+```/, '协议 Markdown 应继续包含 JSON 示例代码块')
 assertTrue(accountImportProtocolMarkdown.includes(importTemplate), '协议 Markdown 的完整示例应继续嵌入导入模板')
 assertMatch(accountImportProtocolMarkdown, /当前默认使用 `providerCode: "gpt"`/, '协议 Markdown 应继续说明默认 GPT providerCode')
-assertMatch(accountImportProtocolMarkdown, /`hybrid`/, '协议 Markdown 应说明 hybrid providerCode')
 assertMatch(accountImportProtocolMarkdown, /`deepseek`/, '协议 Markdown 应说明 DeepSeek providerCode')
 assertMatch(accountImportProtocolMarkdown, /`xai`/, '协议 Markdown 应说明 xAI providerCode')
 assertMatch(accountImportProtocolMarkdown, /profile_xai_openai_v1/, '协议 Markdown 应说明 xAI 官方协议档案')
@@ -222,9 +207,8 @@ assertFalse(new RegExp(deprecatedGlmProfileField).test(accountImportProtocolMark
 assertMatch(accountImportProtocolMarkdown, /"providerProtocolProfileId": "profile_glm_coding_anthropic_v1"/, '协议 Markdown 应说明 GLM Coding Anthropic profile')
 assertMatch(accountImportProtocolMarkdown, /profile_deepseek_anthropic_v1/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
 assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '协议 Markdown 应说明 modelMappings 只做账号模型别名')
-assertMatch(accountImportProtocolMarkdown, /混合供应商账户的 `modelMappings` 用于声明跨协议入口/, '协议 Markdown 应说明混合供应商账户使用 modelMappings 声明跨协议入口')
-assertMatch(accountImportProtocolMarkdown, /其他跨协议方向不要写入普通账户导入数据/, '协议 Markdown 应说明跨协议方向不写入普通账户导入数据')
-assertMatch(accountImportProtocolMarkdown, /OpenAI Responses 可映射到 Responses 或 Chat Completions/, '协议 Markdown 应说明普通 OpenAI v1 账户可声明 Responses 到 Chat 映射')
+assertMatch(accountImportProtocolMarkdown, /其他跨协议方向会被拒绝/, '协议 Markdown 应说明跨协议方向会被拒绝')
+assertMatch(accountImportProtocolMarkdown, /Responses → Responses，Responses → Chat Completions（仅 stream=true）/, '协议 Markdown 应说明普通 OpenAI v1 账户可声明 Responses 同族改名与 Responses 到 Chat 映射')
 assertMatch(accountImportProtocolMarkdown, /左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型/, '协议 Markdown 应说明 OpenAI v1 Responses 到 Chat 映射可用 Chat-only 模型作为下游别名')
 assertMatch(accountImportProtocolMarkdown, /两者都必须来自当前账户供应商模型目录/, '协议 Markdown 应说明 source/upstream 均受当前供应商目录约束')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 与 GLM Coding Anthropic 使用 Anthropic v1 Messages 原生协议，`credentials\.supported_endpoint_modes` 填 `messages_json`、`messages_sse`，不要填 `message_token_counting`/, '协议 Markdown 应说明第三方 Anthropic 档案不支持 count_tokens')
@@ -292,11 +276,10 @@ function assertDefined<T>(value: T | undefined, message: string): asserts value 
 // - backend-go/projects/gateway/internal/accounts/connections.go
 //   （执行链 Store.Create：preset ∈ registry、账户内唯一、modes ∈ AllowedModes、
 //   finalizeAccountHealthCheckTrio 429-456：三件套指向 enabled 连接 + 形态 ∈ 连接 modes）
-// - backend-go/shared/contracts/connector_registry.go（17 preset、词表与 URL 后缀契约）
+// - backend-go/shared/contracts/connector_registry.go（14 preset、词表与 URL 后缀契约）
 // ---------------------------------------------------------------------------
 
 const connectorPresetCodes: readonly string[] = [
-  'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta',
   'gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1',
   'anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta',
   'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1',
@@ -344,9 +327,6 @@ const geminiNativeOperationTemplates: readonly string[] = [
 ]
 
 const presetCapabilities: Record<string, PresetCapability> = {
-  generic_openai_v1: { operationTemplates: openAIOperationTemplates, vocabulary: openAIVocabulary },
-  generic_anthropic_v1: { operationTemplates: anthropicOperationTemplates, vocabulary: anthropicVocabulary },
-  generic_gemini_v1beta: { operationTemplates: geminiNativeOperationTemplates, vocabulary: geminiNativeVocabulary },
   gpt_openai_v1: { operationTemplates: openAIOperationTemplates, vocabulary: openAIVocabulary },
   xai_openai_v1: { operationTemplates: openAIOperationTemplates, vocabulary: openAIVocabulary },
   deepseek_openai_v1: { operationTemplates: openAIOperationTemplates, vocabulary: openAIVocabulary },
@@ -586,4 +566,4 @@ const missingTrioAccount = { ...handWrittenXaiAccount } as Record<string, unknow
 delete missingTrioAccount.healthCheckEndpointMode
 expectNativeImportAccountRejected(missingTrioAccount, '负向样例（缺 healthCheckEndpointMode）')
 
-console.log('账户导入协议回归通过：模板 JSON、AI 提示词与两份协议的关键语义矩阵保持一致；模板 9 账号与手填 xAI 样例均通过 native 导入必填键同规则复算，4 个负向样例均被正确拒绝')
+console.log('账户导入协议回归通过：模板 JSON、AI 提示词与两份协议的关键语义矩阵保持一致；模板 8 账号与手填 xAI 样例均通过 native 导入必填键同规则复算，4 个负向样例均被正确拒绝')

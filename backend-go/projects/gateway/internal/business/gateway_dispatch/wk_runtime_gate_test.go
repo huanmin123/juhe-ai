@@ -61,7 +61,7 @@ func wkAccountCircuitScopeKey(t *testing.T, accountID string) string {
 func wkPatchRetryAt(t *testing.T, raw *redis.Client, accountID string, retryAtMS int64) {
 	t.Helper()
 	ctx := context.Background()
-	statesKey := "juhe-ai:wk-gate:account-circuit:gateway-account-circuit:states"
+	statesKey := "juhe-ai:{wk-gate}:account-circuit:gateway-account-circuit:states"
 	rawState, err := raw.HGet(ctx, statesKey, wkAccountCircuitScopeKey(t, accountID)).Result()
 	if err != nil {
 		t.Fatalf("read state: %v", err)
@@ -92,7 +92,7 @@ func wkPatchRetryAt(t *testing.T, raw *redis.Client, accountID string, retryAtMS
 func wkPatchPhase(t *testing.T, raw *redis.Client, accountID, phase string) {
 	t.Helper()
 	ctx := context.Background()
-	statesKey := "juhe-ai:wk-gate:account-circuit:gateway-account-circuit:states"
+	statesKey := "juhe-ai:{wk-gate}:account-circuit:gateway-account-circuit:states"
 	rawState, err := raw.HGet(ctx, statesKey, wkAccountCircuitScopeKey(t, accountID)).Result()
 	if err != nil {
 		t.Fatalf("read state: %v", err)

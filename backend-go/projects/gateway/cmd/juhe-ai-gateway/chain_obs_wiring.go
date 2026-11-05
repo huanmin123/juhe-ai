@@ -28,6 +28,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // chainRoutingObserver 是 wall budget 等无构造期句柄的接线点共用的进程级
@@ -150,8 +151,8 @@ func wireGatewayObservabilityArms(services *chainRuntimeServices, cfg runtimeCon
 	observer, err := gatewayobs.GetGatewayRoutingObservability(context.Background(), gatewayobs.RuntimeDriverConfig{
 		RuntimeMode:        "performance",
 		RuntimeStateDriver: "redis",
-		RedisStateURL:      cfg.RedisStateURL,
-		RedisNamespace:     cfg.RedisNamespace,
+		RedisURL:      cfg.RedisURL,
+		RedisNamespace:     rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainObs),
 	}, func(options *gatewayobs.ObserverOptions) {
 		if options.Logger == nil {
 			options.Logger = chainSlogObserverLogger{inner: slog.Default()}

@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   GPT_OPENAI_V1_PROFILE_ID,
-  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
-  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
   MINIMAX_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   QWEN_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
@@ -18,8 +15,6 @@ import {
   isGatewaySupportedProtocolProfile,
   isGlmProviderCode,
   isGptVendorCode,
-  isHybridProviderCode,
-  isOpenAICompatibleProviderCode,
   isOpenAIProtocolProfile,
   isOpenAIProtocolProvider,
   isXaiProviderCode,
@@ -94,15 +89,7 @@ describe('供应商 code 判定函数', () => {
     expect(isDeepSeekProviderCode(' deepseek ')).toBe(true)
     expect(isGlmProviderCode('GLM')).toBe(true)
     expect(isGeminiProviderCode('Gemini')).toBe(true)
-    expect(isHybridProviderCode('Hybrid')).toBe(true)
     expect(isGptVendorCode(undefined)).toBe(false)
-  })
-
-  it('isOpenAICompatibleProviderCode 接受 openai 与 gpt', () => {
-    expect(isOpenAICompatibleProviderCode('openai')).toBe(true)
-    expect(isOpenAICompatibleProviderCode('gpt')).toBe(true)
-    expect(isOpenAICompatibleProviderCode('glm')).toBe(false)
-    expect(isOpenAICompatibleProviderCode('')).toBe(false)
   })
 })
 
@@ -134,7 +121,7 @@ describe('preferredDefaultProvider', () => {
 describe('defaultProviderProtocolProfileId', () => {
   const profiles = [
     { id: 'profile_a', providerCode: 'openai', name: 'A', enabled: false, protocolCode: 'openai', protocolVersion: 'v1', baseUrl: '' },
-    { id: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID, providerCode: 'openai', name: 'B', enabled: true, protocolCode: 'openai', protocolVersion: 'v1', baseUrl: '' }
+    { id: GPT_OPENAI_V1_PROFILE_ID, providerCode: 'gpt', name: 'B', enabled: true, protocolCode: 'openai', protocolVersion: 'v1', baseUrl: '' }
   ] as unknown as ProviderProtocolProfileDefinition[]
 
   it('优先返回 defaultProtocolProfileId 命中的 profile', () => {
@@ -142,7 +129,7 @@ describe('defaultProviderProtocolProfileId', () => {
   })
 
   it('default 未命中时返回第一个启用的 profile', () => {
-    expect(defaultProviderProtocolProfileId({ defaultProtocolProfileId: 'missing', protocolProfiles: profiles })).toBe(OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID)
+    expect(defaultProviderProtocolProfileId({ defaultProtocolProfileId: 'missing', protocolProfiles: profiles })).toBe(GPT_OPENAI_V1_PROFILE_ID)
   })
 
   it('无启用 profile 时回退第一个 profile', () => {
@@ -192,11 +179,10 @@ describe('providerIdentityForConnectionPreset 反查（T102 媒体四档 + gener
     })
   })
 
-  it('generic_http 账户（generic_openai_v1）派生出非空 openai 兼容身份', () => {
-    expect(providerIdentityForConnectionPreset('generic_openai_v1')).toEqual({
-      providerCode: 'openai',
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
-    })
+  it('已退役的 generic preset 保持 fail-closed（返回 undefined）', () => {
+    expect(providerIdentityForConnectionPreset('generic_openai_v1')).toBeUndefined()
+    expect(providerIdentityForConnectionPreset('generic_anthropic_v1')).toBeUndefined()
+    expect(providerIdentityForConnectionPreset('generic_gemini_v1beta')).toBeUndefined()
   })
 
   it('未知/空白 preset 保持 fail-closed（返回 undefined）', () => {
@@ -207,13 +193,8 @@ describe('providerIdentityForConnectionPreset 反查（T102 媒体四档 + gener
     expect(providerIdentityForConnectionPreset(null)).toBeUndefined()
   })
 
-  it('反查表内除 hybrid 两条外逐条经正向表往返一致（双射护栏）', () => {
-    // mapping.go legacyProfilePresets 双射逆向：反查 → 档案 → 正向导出必须回到原 preset。
-    // hybrid 两档案（generic_anthropic/generic_gemini 的落地档案）无正向 preset 条目，
-    // 保存链不携带 connections，属登记过的例外。
-    const hybridOnlyProfiles = new Set([HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID, HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID])
+  it('反查表内 14 条逐条经正向表往返一致（双射护栏）', () => {
     for (const [preset, identity] of Object.entries({
-      generic_openai_v1: providerIdentityForConnectionPreset('generic_openai_v1'),
       gpt_openai_v1: providerIdentityForConnectionPreset('gpt_openai_v1'),
       xai_openai_v1: providerIdentityForConnectionPreset('xai_openai_v1'),
       deepseek_openai_v1: providerIdentityForConnectionPreset('deepseek_openai_v1'),
@@ -231,7 +212,6 @@ describe('providerIdentityForConnectionPreset 反查（T102 媒体四档 + gener
     })) {
       expect(identity, preset).toBeDefined()
       if (!identity) continue
-      if (hybridOnlyProfiles.has(identity.providerProtocolProfileId)) continue
       expect(connectionPresetCodeForProfile(identity.providerProtocolProfileId), preset).toBe(preset)
     }
   })
@@ -259,12 +239,12 @@ describe('resolveEditAccountProviderIdentity 编辑装载派生', () => {
     expect(connectionPresetCodeForProfile(identity.providerProtocolProfileId)).toBe('volcengine_openspeech')
   })
 
-  it('generic_http 账户：探针目录 id（profile_generic_*）经 preset 反查为前端档案且供应商非空', () => {
+  it('已退役 generic_http 账户：无供应商身份，保持 fail-closed', () => {
     expect(resolveEditAccountProviderIdentity({
       providerCode: '',
       providerProtocolProfileId: 'profile_generic_openai_v1',
       connectionPresetCode: 'generic_openai_v1'
-    })).toEqual({ providerCode: 'openai', providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID })
+    })).toEqual({ providerCode: '', providerProtocolProfileId: 'profile_generic_openai_v1' })
   })
 
   it('详情档案前端可识别时原样保留（不因反查表改写既有身份）', () => {

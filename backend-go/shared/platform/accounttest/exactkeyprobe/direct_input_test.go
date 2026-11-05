@@ -15,7 +15,7 @@ func TestDirectInputAcceptsOAuthResponsesSSE(t *testing.T) {
 		ID:                   "oauth-account",
 		ConfigRevision:       1,
 		DispatchRevision:     1,
-		Provider:             "openai",
+		Provider:             "gpt",
 		Type:                 "oauth",
 		Status:               "active",
 		Schedulable:          true,
@@ -29,7 +29,7 @@ func TestDirectInputAcceptsOAuthResponsesSSE(t *testing.T) {
 }
 
 func TestDirectInputRejectsOAuthForOpenAICompatibleProfile(t *testing.T) {
-	if isSupportedDirectProfile("profile_openai_openai_v1", "openai", "oauth", "responses_json") {
+	if isSupportedDirectProfile("profile_gpt_openai_v1", "openai", "oauth", "responses_json") {
 		t.Fatal("OpenAI-compatible profile must remain API-key-only")
 	}
 }
@@ -93,7 +93,7 @@ func TestDirectInputToInputUsesEffectiveSourceAndProxy(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	input, err := (DirectInput{
-		Account:      DirectAccount{ID: "account-1", ConfigRevision: 7, DispatchRevision: 9, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "responses_json", HealthModel: "gpt-test", CredentialsEncrypted: credentialCiphertext, ConnectionBaseURL: "https://upstream.example/"},
+		Account:      DirectAccount{ID: "account-1", ConfigRevision: 7, DispatchRevision: 9, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "responses_json", HealthModel: "gpt-test", CredentialsEncrypted: credentialCiphertext, ConnectionBaseURL: "https://upstream.example/"},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		Proxy:        &DirectProxy{ID: "proxy-1", Enabled: true, Type: "socks5", Host: "127.0.0.1", Port: 1080, Username: "user", PasswordEncrypted: passwordCiphertext},
 		InputVersion: 3, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1",
@@ -135,8 +135,8 @@ func TestDirectInputNormalizesGPTProviderToOpenAIProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GPT OpenAI-v1 provider must be accepted: %v", err)
 	}
-	if input.Provider != "openai" {
-		t.Fatalf("provider = %q, want openai", input.Provider)
+	if input.Provider != "gpt" {
+		t.Fatalf("provider = %q, want gpt", input.Provider)
 	}
 	if input.EndpointMode != "responses_sse" {
 		t.Fatalf("endpoint mode = %q, want responses_sse", input.EndpointMode)
@@ -151,9 +151,9 @@ func TestDirectInputRejectsIncompleteAuthorization(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	_, err = (DirectInput{
-		Account:       DirectAccount{ID: "account-1", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
+		Account:       DirectAccount{ID: "account-1", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Authorization: &DirectAuthorization{ID: "auth-1", Status: "active", QuotaEligible: false},
-		Source:        &DirectSource{ID: "source-1", ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
+		Source:        &DirectSource{ID: "source-1", ConfigRevision: 1, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:       DirectBinding{GroupID: "group-1", Enabled: true, AuthorizationBindingID: "auth-1"},
 		InputVersion:  1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -172,7 +172,7 @@ func TestDirectInputAllowsOwnerCooldownFenceWithoutSourceRevision(t *testing.T) 
 	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "owner-generation"}
 	cooldownUntil := now.Add(-time.Second)
 	input, err := (DirectInput{
-		Account:      DirectAccount{ID: "account-owner", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1", CooldownUntil: &cooldownUntil, Cooldown: fence},
+		Account:      DirectAccount{ID: "account-owner", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1", CooldownUntil: &cooldownUntil, Cooldown: fence},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -192,7 +192,7 @@ func TestDirectInputRejectsUnavailableProxy(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	base := DirectInput{
-		Account:      DirectAccount{ID: "account-proxy", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
+		Account:      DirectAccount{ID: "account-proxy", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}
@@ -219,9 +219,9 @@ func TestDirectInputAllowsAuthorizedCooldownFenceWithSourceRevision(t *testing.T
 	cooldownUntil := now.Add(-time.Second)
 	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "authorized-generation", SourceConfigRevision: &sourceRevision}
 	input, err := (DirectInput{
-		Account:       DirectAccount{ID: "authorized-cooldown", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1", CooldownUntil: &cooldownUntil, Cooldown: fence},
+		Account:       DirectAccount{ID: "authorized-cooldown", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1", CooldownUntil: &cooldownUntil, Cooldown: fence},
 		Authorization: &DirectAuthorization{ID: "auth-1", Status: "active", QuotaEligible: true},
-		Source:        &DirectSource{ID: "source-1", ConfigRevision: sourceRevision, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
+		Source:        &DirectSource{ID: "source-1", ConfigRevision: sourceRevision, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:       DirectBinding{GroupID: "group-1", Enabled: true, AuthorizationBindingID: "auth-1"},
 		InputVersion:  1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -251,36 +251,19 @@ func TestDirectInputAcceptsGeminiOpenAIChatProfileMetadata(t *testing.T) {
 	}
 }
 
-// TestDirectProbeTargetSharesHybridRouteWithManualDiagnostics protects the
-// common resolver used by J1 and accountprobe. A change in endpoint family,
-// streaming intent, or model must therefore affect both callers together.
-func TestDirectProbeTargetSharesHybridRouteWithManualDiagnostics(t *testing.T) {
-	tests := []struct {
-		name       string
-		sourceMode string
-		family     string
-		wantMode   string
-	}{
-		{name: "chat to messages", sourceMode: "chat_json", family: "messages", wantMode: "messages_json"},
-		{name: "responses stream to chat", sourceMode: "responses_sse", family: "chat_completions", wantMode: "chat_sse"},
-		{name: "messages to gemini", sourceMode: "messages_json", family: "generate_content", wantMode: "generate_content_json"},
-		{name: "gemini stream to messages", sourceMode: "generate_content_sse", family: "messages", wantMode: "messages_sse"},
+// TestDirectProbeTargetUsesSavedModeAndModel：hybrid 退役后探针目标恒为账户已
+// 保存的 endpoint mode 与健康模型，不再按模型映射改写上游协议。
+func TestDirectProbeTargetUsesSavedModeAndModel(t *testing.T) {
+	mode, model, err := directProbeTarget(DirectAccount{
+		EndpointMode:                 "chat_json",
+		HealthModel:                  "client-model",
+		MappedUpstreamModel:          "upstream-model",
+		MappedUpstreamEndpointFamily: "messages",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			mode, model, err := directProbeTarget(DirectAccount{
-				ProtocolProfileID:            "profile_hybrid_openai_chat_v1",
-				EndpointMode:                 test.sourceMode,
-				HealthModel:                  "client-model",
-				MappedUpstreamModel:          "upstream-model",
-				MappedUpstreamEndpointFamily: test.family,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if mode != test.wantMode || model != "upstream-model" {
-				t.Fatalf("route mode=%q model=%q", mode, model)
-			}
-		})
+	if mode != "chat_json" || model != "client-model" {
+		t.Fatalf("route mode=%q model=%q", mode, model)
 	}
 }

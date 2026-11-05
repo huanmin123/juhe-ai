@@ -53,7 +53,7 @@ func TestPlanFromConnections(t *testing.T) {
 	if change := byID["conn-d"]; change.NewValue != "https://ark.cn-beijing.volces.com/api/v3" || change.Reason != string(ReasonFillRegistryDefault) || change.OldValue != "" {
 		t.Fatalf("conn-d change = %+v", change)
 	}
-	if len(manifest.Review) != 1 || manifest.Review[0].ID != "conn-c" || manifest.Review[0].Reason != string(ReviewNonconforming) {
+	if len(manifest.Review) != 1 || manifest.Review[0].ID != "conn-c" || manifest.Review[0].Reason != string(ReviewUnknownPreset) {
 		t.Fatalf("review = %+v", manifest.Review)
 	}
 	if manifest.BalanceImpactNote == "" || len(manifest.Notes) == 0 {

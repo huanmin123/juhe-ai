@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/datadir"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // defaultRuntimeSecret 与 gateway cmd/juhe-ai-gateway/runtime.go 同名常量同值：
@@ -54,15 +55,9 @@ type workerConfig struct {
 
 	// UsageSpoolDirectory 是 gateway usage-record 文件 spool 交接表的根目录
 	// （BUG-0175 D-72 消费侧）：env JUHE_AI_USAGE_SPOOL_DIRECTORY，未配置时
-	// 先回退旧名 JUHE_AI_USAGE_SPOOL_DIR（与 gateway 组合根同款兼容路径，
-	// 高性能部署指南与 install-performance-topology.sh 仍使用旧名），仍未配置
-	// 时按 D1 从 JUHE_AI_DATA_DIR 派生 <DATA_DIR>/usage-record-spool（两侧
-	// 必须同源，drain 才能读到 gateway 写出的交接文件）。
+	// 按 D1 从 JUHE_AI_DATA_DIR 派生 <DATA_DIR>/usage-record-spool（两侧必须
+	// 同源，drain 才能读到 gateway 写出的交接文件）。
 	UsageSpoolDirectory string
-	// usageSpoolDirectoryLegacyName 记录 UsageSpoolDirectory 是否来自旧名
-	// JUHE_AI_USAGE_SPOOL_DIR 回退（新名未配置、旧名兜底生效）。组合根据此
-	// 打一行 warn 披露旧名是兼容路径。
-	usageSpoolDirectoryLegacyName bool
 
 	CodexContextRoot               string
 	RecordMaintenanceQueueMaxItems int
@@ -97,9 +92,11 @@ type workerConfig struct {
 	ListProjectionMaxBatchesPerRun  int
 	ListProjectionWorkerConcurrency int
 
-	// RedisStateURL / RedisNamespace 供速度优先恢复探针读写降级运行态
-	// （与 Node 网关同一键空间）。
-	RedisStateURL  string
+	// RedisURL/RedisMode/RedisPassword 是唯一 Redis 连接配置。
+	RedisURL      string
+	RedisMode     rediscfg.Mode
+	RedisPassword string
+
 	RedisNamespace string
 
 	// circuitCapacityMS 是账户电路运行态容量（JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY，
@@ -183,18 +180,10 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	// 50/10。idle 上限受平台 pgpool 校验约束（idle <= min(open, 10)），常量值
 	// 必须落在合法区间内，否则组装 worker pool 时直接失败。
 	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
-	// 同名 env、同派生规则；新名优先，旧名 JUHE_AI_USAGE_SPOOL_DIR 兜底（与
-	// gateway runtime.go 回退同款，docs/deploy/高性能模式部署指南.md 宣称
-	// 「旧名仍兼容，DIRECTORY 优先」），两者都未配置时按 D1 从 DATA_DIR 派生
+	// 同名 env、同派生规则；未配置时按 D1 从 DATA_DIR 派生
 	// <DATA_DIR>/usage-record-spool，因此本字段恒非空；wireUsageSpoolDrain
-	// 常驻按该目录接线 drain。旧名回退生效时由组合根打 warn 披露兼容路径。
+	// 常驻按该目录接线 drain。
 	config.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
-	if config.UsageSpoolDirectory == "" {
-		if legacySpoolDirectory := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIR")); legacySpoolDirectory != "" {
-			config.UsageSpoolDirectory = legacySpoolDirectory
-			config.usageSpoolDirectoryLegacyName = true
-		}
-	}
 	if config.UsageSpoolDirectory == "" {
 		config.UsageSpoolDirectory = filepath.Join(config.DataDir, "usage-record-spool")
 	}
@@ -236,7 +225,13 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	// 投影批量族（原 env ..._PROJECTION_BATCH_SIZE / MAX_BATCHES_PER_RUN /
 	// WORKER_CONCURRENCY）五源零引用，2026-09-30 C4 收编为常量 100/200/4
 	// （与 Node 一致）；轮询间隔 INTERVAL_MS 属运维节奏保留 env。
-	config.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
+	redisConfig, err := rediscfg.FromEnv(getenv)
+	if err != nil {
+		return config, err
+	}
+	config.RedisURL = redisConfig.URL
+	config.RedisMode = redisConfig.Mode
+	config.RedisPassword = redisConfig.Password
 	config.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 	capacity := int64(50_000)
 	if value := strings.TrimSpace(getenv("JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY")); value != "" {

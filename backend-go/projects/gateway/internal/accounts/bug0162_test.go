@@ -163,12 +163,6 @@ func TestBug0162DeleteEnqueuesHealthTombstone(t *testing.T) {
 	}
 	id := dataMap(t, payload)["id"].(string)
 	env.exec(t, `UPDATE accounts SET config_revision = 3, dispatch_revision = 4 WHERE id = ?`, id)
-	// A non-health-capable provider/type pairing (custom provider) rides along.
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
-		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
-		health_check_model, created_at, updated_at)
-		VALUES ('acc-custom', ?, NULL, 'generic_http', 'openai', 'v1', 'custom', 'api_key', 'active',
-		'cipher', 'sk-***', 'm', '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, adminID)
 
 	code, _ = env.do(t, http.MethodDelete, "/__aisys__/api/accounts/"+id, "")
 	if code != http.StatusNoContent {
@@ -184,9 +178,6 @@ func TestBug0162DeleteEnqueuesHealthTombstone(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_versions WHERE account_id = ?
 		AND current_version = 2`, id) != 1 {
 		t.Fatal("health input epoch must be reserved")
-	}
-	if env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_outbox WHERE account_id = 'acc-custom'`) != 0 {
-		t.Fatal("non-health-capable provider must not receive a tombstone")
 	}
 }
 

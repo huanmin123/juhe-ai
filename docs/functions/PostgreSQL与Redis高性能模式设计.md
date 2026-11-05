@@ -11,7 +11,7 @@
 - **2026-10-24/25 收口决策**：SQLite 本地存储与进程内 memory 驱动模式彻底退役，全仓唯一存储形态为 PostgreSQL + Redis。本决策经用户 2026-10-24 明确裁决，**反转 2026-09-19 的零配置决策**（当时 gateway 二进制空 env 可用 standalone SQLite + memory 驱动零配置启动）；退役理由与执行契约见 [PLAN-20261024T051925945Z：SQLite 与内存模式彻底退役](../plans/PLAN-20261024T051925945Z-SQLite与内存模式彻底退役.md)。
 - 退役范围包括：运行时模式开关（`JUHE_AI_RUNTIME_MODE` / `JUHE_AI_DATABASE_DRIVER` / `JUHE_AI_CACHE_DRIVER` / `JUHE_AI_RUNTIME_STATE_DRIVER`）、组合根 sqlite/memory 装配臂、共享层方言双实现、maintenance `--driver sqlite --paths` 形态与 `--apply-j3b-model-check-sqlite` 等一次性命令、sqlite 分片（usage shards / codex-context state shards）与全部 `*_DATABASE_PATH` 路径族 env。上述 env 与旗标代码不再读取，残留值一律无效；不提供任何兼容层、数据迁移或读取转换。
 - 原《SQLite 存储说明》已整篇退役删除；其中仍然成立的现行事实（存储域表边界、数据保留与统一清理、审计 / 操作日志存储边界、敏感字段口径、统计缓存离线重建）已迁入本文对应章节。
-- 启动必填项（缺失即 fail-fast）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`。
+- 启动必填项（缺失即 fail-fast）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_URL`（`JUHE_AI_REDIS_MODE` 选 `single`/`cluster`）。
 
 ## 背景
 
@@ -43,12 +43,13 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 
 ## 配置模型
 
-- 启动必填（缺失启动即失败，fail-fast 保留）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`。
+- 启动必填（缺失启动即失败，fail-fast 保留）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_URL`。
 - 已退役 env：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER` 与全部 sqlite 路径 / 分片族（`*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_ROOT` / `_COUNT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` / `_COUNT`）及 store 选择族（`JUHE_AI_AUDIT_LOG_STORE` / `JUHE_AI_OPERATION_LOG_STORE` / `JUHE_AI_RUNTIME_LOG_STORE` / `JUHE_AI_J3B_STORE` / `JUHE_AI_ACCOUNT_HEALTH_STORE` / `JUHE_AI_ACCOUNT_BALANCE_STORE`）——代码不再读取，部署面残留值无效，应从 `.env` 删除（清理清单见 `docker/single-server/README.md`）。
 - 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `usage-record-spool`（gateway↔jobs 用量交接，可用 `JUHE_AI_USAGE_SPOOL_DIRECTORY` 显式覆盖）、`codex-context` segments 根（可用 `JUHE_AI_CODEX_CONTEXT_ROOT` 显式覆盖）、`logs`、`audit-blob`（chat-assets 已随 AI 问答退役删除，2026-10-31）。gateway 与 jobs 双进程消费同一目录时必须解析到同一宿主机路径。
-- `JUHE_AI_CACHE_DRIVER` 类语义不复存在：Redis cache 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走 Redis state（`JUHE_AI_REDIS_STATE_URL`）。
+- `JUHE_AI_CACHE_DRIVER` 类语义不复存在：Redis cache 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走运行态域（同一 Redis 连接下的 `runtimecache` / `ratelimit` / `session` 等域键空间）。
 - `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，必填非空（现行生产配 `prod`）；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
-- 运行态与 J3b 电路运行态必须分离键空间：`JUHE_AI_J3B_CIRCUIT_REDIS_URL` 不得与 `JUHE_AI_REDIS_STATE_URL` 相同（gateway 启动强校验），现行生产以同实例不同 DB 承载。
+- `JUHE_AI_REDIS_MODE` 选择 `single` 或 `cluster`；两种形态都只使用 DB0。Cluster 多节点通过 `JUHE_AI_REDIS_URL` 重复 `addr` 参数声明，客户端负责 MOVED/ASK 与故障转移。
+- 运行态与 J3b 电路运行态通过域 namespace 分离：J3b 固定 `{namespace}:j3b`，主链电路固定 `{namespace}:circuit`；两套 Lua 状态机的 `states` hash 布局同名但语义不兼容，域隔离是硬约束（不再有独立 URL/DB 配置）。
 - Go 不读取 `JUHE_AI_QUEUE_DRIVER` / `JUHE_AI_REDIS_QUEUE_URL`（Node 时代死配置）；Go 三项目没有 Redis 任务队列，无需第三个队列 Redis 实例。
 - `JUHE_AI_DB_POOL_MAX`、`JUHE_AI_DB_WRITE_MAX_CONCURRENCY`、`JUHE_AI_POSTGRES_*_TIMEOUT_MS`、`JUHE_AI_REDIS_STREAM_*`、`JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT` 等 Node 时代 env 在 Go 中不存在；现行必需 env 契约以 `docker/single-server/README.md` 的".env 契约"节为准。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
@@ -134,18 +135,20 @@ schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/inter
 缓存层拆成三类（以各进程 internal 包的 cache / runtime state 组件承载）：
 
 - 进程本地缓存：进程内同步缓存，可存放不可序列化对象，例如 HTTP agent、临时近端只读结果和进程内 memoization；仍允许使用，但不能承载跨进程事实源。需要跨进程一致的缓存必须接入 Redis，进程本地缓存只能作为可丢弃本地 L1 或明确的进程内易失优化。
-- 跨进程可丢弃缓存：Redis cache（`JUHE_AI_REDIS_CACHE_URL`）。
-- 跨进程短 TTL 运行态：Redis state（`JUHE_AI_REDIS_STATE_URL`）；硬并发槽、限流计数这类不能超卖的状态必须通过该层工具或封装后的专用原子操作访问。分布式锁只保留给明确需要单资源串行化且不可接受重复执行的基础设施保护，例如 OAuth access token 单账号刷新；网关调度、账号运行态探针、上游桶避让、IP 级账号回避、IP 错误熔断和 Codex turn retry 不允许在请求路径使用 Redis 分布式锁。
+- 跨进程可丢弃缓存：Redis `cache` 域（同一 `JUHE_AI_REDIS_URL`，键前缀 `juhe-ai:{<namespace>:cache}:`）。
+- 跨进程短 TTL 运行态：Redis 运行态各域（`session`/`runtimecache`/`ratelimit` 等）；硬并发槽、限流计数这类不能超卖的状态必须通过该层工具或封装后的专用原子操作访问。分布式锁只保留给明确需要单资源串行化且不可接受重复执行的基础设施保护，例如 OAuth access token 单账号刷新；网关调度、账号运行态探针、上游桶避让、IP 级账号回避、IP 错误熔断和 Codex turn retry 不允许在请求路径使用 Redis 分布式锁。
 
 Redis key 统一命名：
 
 ```text
-juhe-ai:{namespace}:{driver}:{cache-name}:v{version}:{scope}:{key}
+juhe-ai:{<namespace>:<域>}:{driver}:{cache-name}:v{version}:{scope}:{key}
 ```
 
 规则：
 
-- `{namespace}` 由 `JUHE_AI_REDIS_NAMESPACE` 决定；必填非空，生产建议显式配置并保持稳定（键形状以 Go cache / runtime state 各实现为准）。
+- `{namespace}` 由 `JUHE_AI_REDIS_NAMESPACE` 决定；必填非空，生产必须显式配置并保持稳定。
+- `{<namespace>:<域>}` 是 Cluster hash tag：同一域的所有键固定同一 slot，域间可分布到不同 slot。域清单集中在 `shared/platform/rediscfg`（circuit、j3b、keymodel、hotquality、clientip、session、runtimecache、ratelimit、callertier、quota、obs、routestate、proxyhealth、inval、realtime、speedfirst、oauth、authstate）。
+- `circuit` / `keymodel` / `hotquality` 三个域含全局索引与多键原子 Lua，必须单 slot；这是已知容量边界，热点域只能垂直扩容。
 - 缓存失效优先递增 domain version，实现常量成本失效，不做全库 `SCAN + DEL`。
 - 所有 Redis cache / state key 必须有 TTL；确需长期保留的运行态要先证明不是持久业务事实。
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
@@ -235,7 +238,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 
 ## Redis 调优基线
 
-- 现行生产为单 `redis:7.4-alpine` 容器，cache / state / J3b circuit 以 DB 编号分离；可淘汰缓存与不可淘汰运行态混用同一实例时必须守住 `noeviction` 边界，运行态与 J3b 电路运行态不得混用同一键空间（`JUHE_AI_J3B_CIRCUIT_REDIS_URL` 强制分离）。
+- 现行生产为单 `redis:7.4-alpine` 容器（DB0），cache / state / J3b 以 `juhe-ai:{<namespace>:<域>}` 键空间分离；可淘汰缓存与不可淘汰运行态混用同一实例时必须守住 `noeviction` 边界，运行态与 J3b 电路运行态不得混用同一键空间（域 namespace 强制分离）。需要横向扩容或故障转移时切换 `JUHE_AI_REDIS_MODE=cluster`（域级分布，热点三域仍单 slot）。
 - 可丢弃缓存设置 `maxmemory` 和淘汰策略，命中率低于阈值时优先检查 key 设计，不直接加内存。
 - 运行态使用 `noeviction`，所有写入必须带 TTL；写失败时调用方按降级策略处理。
 - 硬约束运行态使用 Lua 或 Redis 原生命令收口，不把 `GET -> 本地判断 -> SET` 暴露给并发调用方；短 TTL 调度状态可以直接读写并接受短暂覆盖，但必须有 TTL、成功清理、后台恢复或 generation 收敛机制。

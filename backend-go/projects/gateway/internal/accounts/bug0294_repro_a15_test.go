@@ -39,7 +39,8 @@ func TestBug0294A15DuplicateNameSkipsWhenSkipDuplicates(t *testing.T) {
 		"type": "sub2api-export", "version": float64(2), "exported_at": "2026-01-01T00:00:00Z",
 		"accounts": []any{
 			map[string]any{"name": "A15重复名账户", "platform": "OpenAI", "type": "api_key",
-				"credentials": map[string]any{"api_key": "sk-bug0294-a15", "base_url": "https://api.openai.com/v1"}},
+				"credentials":     map[string]any{"api_key": "sk-bug0294-a15", "base_url": "https://api.openai.com/v1"},
+				"supportedModels": []any{"gpt-4o-mini"}},
 		},
 	}
 

@@ -26,8 +26,6 @@ const (
 	MinimaxProviderCode    = "minimax"
 	VolcengineProviderCode = "volcengine"
 	QwenProviderCode       = "qwen"
-	// OpenAICompatibleProviderCode mirrors openai (openai-compatible token).
-	OpenAICompatibleProviderCode = "openai"
 	// Protocol code/version pairs mirror provider-protocol.ts:1-2 and the
 	// anthropic/gemini protocol constants.
 	OpenAIProtocolCode       = "openai"
@@ -260,7 +258,7 @@ func DefaultOpenAIEndpointModes(input ModeDefaultContext) []string {
 	switch providerCode {
 	case GptVendorCode, DeepSeekProviderCode:
 		return append([]string{}, OpenAIDefaultEndpointModes...)
-	case OpenAICompatibleProviderCode, GlmProviderCode, GeminiProviderCode:
+	case GlmProviderCode, GeminiProviderCode:
 		return append([]string{}, OpenAIChatEndpointModes...)
 	}
 	return append([]string{}, OpenAIDefaultEndpointModes...)

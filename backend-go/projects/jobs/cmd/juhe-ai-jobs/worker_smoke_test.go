@@ -20,6 +20,7 @@ func workerSmokeTestEnv(t *testing.T) map[string]string {
 	root := t.TempDir()
 	return map[string]string{
 		"JUHE_AI_POSTGRES_URL":          "postgres://smoke-test.invalid/juhe_ai_smoke",
+		"JUHE_AI_REDIS_URL":             "redis://smoke-test.invalid:6379/0",
 		"JUHE_AI_INSTANCE_ID":           "smoke-instance",
 		"JUHE_AI_WORKER_ROLE":           "stats-worker",
 		"JUHE_AI_SECRET":                "0123456789abcdef0123456789abcdef",
@@ -37,11 +38,11 @@ func getenvFrom(env map[string]string) func(string) string {
 // closed（原 sqlite 零配置可加载契约随 sqlite 形态退役）；非生产缺 SECRET
 // 回退开发密钥，production 缺 SECRET 仍 fail closed。
 func TestWorkerConfigGatesFailsClosed(t *testing.T) {
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
-		t.Fatalf("空 env 缺 JUHE_AI_POSTGRES_URL 必须 fail closed: %v", err)
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || (!strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") && !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL")) {
+		t.Fatalf("空 env 缺存储连接串必须 fail closed: %v", err)
 	}
 	// 非生产缺 SECRET 回退开发密钥（与 gateway defaultRuntimeSecret 同值）。
-	config, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke"}))
+	config, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke", "JUHE_AI_REDIS_URL": "redis://smoke-test.invalid:6379/0"}))
 	if err != nil {
 		t.Fatalf("仅缺 SECRET 必须回退开发密钥: %v", err)
 	}
@@ -50,12 +51,14 @@ func TestWorkerConfigGatesFailsClosed(t *testing.T) {
 	}
 	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
 		"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke",
+		"JUHE_AI_REDIS_URL":    "redis://smoke-test.invalid:6379/0",
 		"NODE_ENV":             "production",
 	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
 		t.Fatalf("production 空 JUHE_AI_SECRET 必须 fail closed: %v", err)
 	}
 	explicit, err := loadWorkerConfig(getenvFrom(map[string]string{
 		"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke",
+		"JUHE_AI_REDIS_URL":    "redis://smoke-test.invalid:6379/0",
 		"JUHE_AI_SECRET":       "explicit-secret",
 	}))
 	if err != nil || explicit.Secret != "explicit-secret" {

@@ -193,7 +193,7 @@ func w2bGuardInput(t *testing.T, serverURL, accountID string, now time.Time) exa
 		DispatchRevision: 1,
 		// 空 ProtocolProfileID 的可探针形态要求 Provider=openai + chat_json
 		// （probe.go validateInput 的 provider/协议一致性门）。
-		Provider:         "openai",
+		Provider:         "gpt",
 		Type:             "api_key",
 		EndpointMode:     "chat_json",
 		HealthModel:      "w2b-model",

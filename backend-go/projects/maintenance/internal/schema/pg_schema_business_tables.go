@@ -573,10 +573,10 @@ var postgresSchemaBusinessTables = []PGStatement{
 	{
 		// accounts 目标形态（设计 §2.1，迁移窗口 shim 已按 A 路线一次性收敛
 		// 撤除）：无 provider_code / provider_protocol_profile_id /
-		// client_compatibility；vendor_code nullable（FK→vendors.code；
-		// generic_http 必须 NULL，空串拒绝由应用层 registry 保证）、
-		// connection_driver_code NOT NULL（授权实例投影语义由 account_type/
-		// 授权实例切片落库）、oauth_type nullable。health_check_connection_id /
+		// client_compatibility；vendor_code / connection_driver_code NOT NULL 且
+		// 由 accounts_vendor_driver_consistency_check 强制相等（授权实例创建时
+		// 继承来源账户同值；generic_http / vendor NULL 账户已于 2026-11-05 退役）、
+		// oauth_type nullable。health_check_connection_id /
 		// health_check_endpoint_mode / health_check_model 三列 nullable（设计
 		// §10 硬规则：不得 NOT NULL，创建事务先插 accounts（三字段暂 NULL）、
 		// 再写 connection/mode/model 关系，最后同一条 UPDATE 补齐——NOT NULL +
@@ -595,6 +595,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       system_account_id text NOT NULL,
       vendor_code text,
       connection_driver_code text NOT NULL,
+      CONSTRAINT accounts_vendor_driver_consistency_check CHECK (vendor_code IS NOT NULL AND connection_driver_code = vendor_code),
       oauth_type text,
       protocol_code text NOT NULL,
       protocol_version text NOT NULL,
@@ -2412,6 +2413,31 @@ BEGIN
         AND c.conname = 'accounts_health_check_endpoint_mode_check'
     ) THEN
       EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session''))';
+    END IF;
+  END IF;
+END
+$$`,
+	},
+	{
+		// accounts vendor/driver 一致性（2026-11-05 九家真实厂商收口）：
+		// generic_http / vendor NULL 账户退役，新库在 CREATE TABLE 内联声明，
+		// 存量库由本幂等 ALTER 补齐。执行前必须先跑
+		// --purge-unsupported-vendor-accounts 清退 NULL vendor 账户，否则约束
+		// 校验失败；models.vendor_code 仍保持可空（手工定价模型）。
+		SchemaName: "juhe_business",
+		Source:     "accounts-vendor-driver-consistency-check",
+		SQL: `DO $$
+BEGIN
+  IF to_regclass('juhe_business.accounts') IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'accounts'
+        AND c.conname = 'accounts_vendor_driver_consistency_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_vendor_driver_consistency_check CHECK (vendor_code IS NOT NULL AND connection_driver_code = vendor_code)';
     END IF;
   END IF;
 END

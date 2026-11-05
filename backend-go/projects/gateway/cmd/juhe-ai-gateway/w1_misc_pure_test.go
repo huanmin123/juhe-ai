@@ -126,30 +126,6 @@ func TestW1UEnvOrDefault(t *testing.T) {
 	}
 }
 
-func TestW1UCommaList(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"空串", "", []string{}},
-		{"单项", "a", []string{"a"}},
-		{"多项", "a,b,c", []string{"a", "b", "c"}},
-		{"首尾与项间空白", " a , b ,c", []string{"a", "b", "c"}},
-		{"空段剔除", ",,a,,b,", []string{"a", "b"}},
-		{"纯逗号", ",", []string{}},
-		{"中文项", "模型A, 模型B", []string{"模型A", "模型B"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := commaList(tc.in)
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("commaList(%q) = %#v，want %#v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestW1UEnvBool(t *testing.T) {
 	cases := []struct {
 		raw  string

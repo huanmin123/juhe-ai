@@ -73,7 +73,7 @@ func TestW16HIPGFullChainOwnerShutdown(t *testing.T) {
 		t.Skip("PG 全链 skipped in -short mode")
 	}
 	db, pgURL := wgCmdKitDB(t)
-	redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_STATE_URL")
+	redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_URL")
 	if redisURL == "" {
 		t.Skip("w16i: shared.env 无 Redis state URL")
 	}
@@ -176,7 +176,7 @@ func TestW16HIPGModelRecoveryPingFailArm(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_REDIS_STATE_URL":                   "redis://127.0.0.1:1",
+		"JUHE_AI_REDIS_URL":                   "redis://127.0.0.1:1",
 		"JUHE_AI_REDIS_NAMESPACE":                   "juhe-ai:w16i",
 	})
 	w16hRunArms(t, nil, 1, "ping model-recovery Redis store")

@@ -54,12 +54,10 @@ func TestOpenStoreDoesNotMutateBlobDirectory(t *testing.T) {
 	}
 }
 
-func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
+func TestLoadConfigUsesMainPostgresURL(t *testing.T) {
 	env := map[string]string{
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":           "f3-postgres-config",
-		"JUHE_AI_AUDIT_LOG_STORE":                 "postgres",
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL":          "postgres://dedicated-owner@localhost/dedicated",
-		"JUHE_AI_POSTGRES_URL":                    "postgres://shared-owner@localhost/shared",
+		"JUHE_AI_POSTGRES_URL":                    "postgres://owner@localhost/main",
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":        t.TempDir(),
 		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://settings-owner@localhost/business",
 	}
@@ -67,24 +65,18 @@ func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PostgresURL != env["JUHE_AI_AUDIT_LOG_POSTGRES_URL"] {
-		t.Fatalf("PostgresURL=%q want dedicated F3 URL", cfg.PostgresURL)
+	if cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] {
+		t.Fatalf("PostgresURL=%q want main URL", cfg.PostgresURL)
 	}
 	if cfg.PostgresMaxOpenConns != 20 || cfg.PostgresMaxIdleConns != 10 {
 		t.Fatalf("default F3 PostgreSQL pool=%d/%d want 20/10", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 	}
 	// 2026-09-30 C4 收编：JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS /
 	// MAX_IDLE_CONNS 收编为常量，pool 覆盖断言删除（取值恒为默认）。
-	// 2026-09-19：专职 URL 缺省回退主 JUHE_AI_POSTGRES_URL（显式仍优先）；
-	// 两者皆空才保持 fail-fast。
-	delete(env, "JUHE_AI_AUDIT_LOG_POSTGRES_URL")
-	cfg, err = LoadConfig(func(name string) string { return env[name] })
-	if err != nil || cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] {
-		t.Fatalf("fallback shared PostgresURL=%q err=%v", cfg.PostgresURL, err)
-	}
+	// 主连接串是唯一来源：缺失即 fail-fast。
 	delete(env, "JUHE_AI_POSTGRES_URL")
-	if _, err = LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_POSTGRES_URL") {
-		t.Fatalf("missing dedicated PostgresURL must fail, got %v", err)
+	if _, err = LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("missing main PostgresURL must fail, got %v", err)
 	}
 }
 
@@ -107,18 +99,16 @@ func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 	env["JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL"] = "2m"
 	env["JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE"] = "42"
 	env["JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS"] = "24"
-	env["JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE"] = "0.1234"
 	env["JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS"] = "2"
 	env["JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS"] = "9"
 	cfg, err = LoadConfig(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RetentionInterval != 2*time.Minute || cfg.RetentionBatchSize != 42 || cfg.SuccessHotRetentionHours != 24 || cfg.SuccessSampleRate != 0.1234 || cfg.SuccessRetentionDays != 2 || cfg.ProblemRetentionDays != 9 {
+	if cfg.RetentionInterval != 2*time.Minute || cfg.RetentionBatchSize != 42 || cfg.SuccessHotRetentionHours != 24 || cfg.SuccessSampleRate != 1 || cfg.SuccessRetentionDays != 2 || cfg.ProblemRetentionDays != 9 {
 		t.Fatalf("configured retention policy mismatch: %+v", cfg)
 	}
 	for name, overrides := range map[string]map[string]string{
-		"rate-days-mismatch": {"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "0"},
 		"zero-days-mismatch": {"JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "0"},
 		"short-interval":     {"JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL": "500ms"},
 		"zero-batch":         {"JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE": "0"},

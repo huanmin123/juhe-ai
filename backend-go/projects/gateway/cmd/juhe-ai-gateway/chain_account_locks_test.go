@@ -932,7 +932,7 @@ func TestComposeWiresAccountLockSecretRotationFromConfig(t *testing.T) {
 	for _, needle := range []string{
 		"EngineSecret: cfg.Secret,",
 		"AccountLocks: accountLockPort,",
-		"KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),",
+		`KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRouteState)),`,
 		"newChainAccountLocks(composed.db, func(reason string) {",
 	} {
 		if !strings.Contains(text, needle) {
@@ -949,7 +949,7 @@ func TestChainAPIKeyRotationRedisCounter(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	counter := newChainAPIKeyRotationCounterOrNil(client)
+	counter := newChainAPIKeyRotationCounterOrNil(client, "route-state")
 	if counter == nil {
 		t.Fatal("redis client must build the adapter")
 	}
@@ -973,10 +973,10 @@ func TestChainAPIKeyRotationRedisCounter(t *testing.T) {
 
 	// 键名：juhe-ai:route-state:account-api-key:<strategy>:<base64url(accountId)>
 	//（归档 :297-299 字面量，无命名空间后缀）。
-	wantKey := "juhe-ai:route-state:account-api-key:round-robin:" +
+	wantKey := "juhe-ai:{route-state}:account-api-key:round-robin:" +
 		base64.RawURLEncoding.EncodeToString([]byte("acc-1"))
-	if chainAccountAPIKeyRotationKey("acc-1", "round-robin") != wantKey {
-		t.Fatalf("key = %s, want %s", chainAccountAPIKeyRotationKey("acc-1", "round-robin"), wantKey)
+	if chainAccountAPIKeyRotationKeyNS("route-state", "acc-1", "round-robin") != wantKey {
+		t.Fatalf("key = %s, want %s", chainAccountAPIKeyRotationKeyNS("route-state", "acc-1", "round-robin"), wantKey)
 	}
 	// 不同账户键隔离。
 	if got, err := counter.NextIndex(ctx, "acc-2", "round-robin", 3); err != nil || got != 0 {
@@ -984,14 +984,14 @@ func TestChainAPIKeyRotationRedisCounter(t *testing.T) {
 	}
 
 	// 键集合：round-robin/weighted 两个策略段 + 第二账户的独立键。
-	keys, err := client.Keys(ctx, "juhe-ai:route-state:account-api-key:*").Result()
+	keys, err := client.Keys(ctx, "juhe-ai:{route-state}:account-api-key:*").Result()
 	if err != nil {
 		t.Fatalf("keys: %v", err)
 	}
 	wantKeys := map[string]bool{
 		wantKey: true,
-		"juhe-ai:route-state:account-api-key:weighted:" + base64.RawURLEncoding.EncodeToString([]byte("acc-1")):    true,
-		"juhe-ai:route-state:account-api-key:round-robin:" + base64.RawURLEncoding.EncodeToString([]byte("acc-2")): true,
+		"juhe-ai:{route-state}:account-api-key:weighted:" + base64.RawURLEncoding.EncodeToString([]byte("acc-1")):    true,
+		"juhe-ai:{route-state}:account-api-key:round-robin:" + base64.RawURLEncoding.EncodeToString([]byte("acc-2")): true,
 	}
 	if len(keys) != len(wantKeys) {
 		t.Fatalf("keys = %v, want %v", keys, wantKeys)
@@ -1007,7 +1007,7 @@ func TestChainAPIKeyRotationRedisCounter(t *testing.T) {
 	}
 
 	// nil 客户端：保持引擎的进程内回退。
-	if newChainAPIKeyRotationCounterOrNil(nil) != nil {
+	if newChainAPIKeyRotationCounterOrNil(nil, "") != nil {
 		t.Fatal("nil client must yield nil adapter")
 	}
 }

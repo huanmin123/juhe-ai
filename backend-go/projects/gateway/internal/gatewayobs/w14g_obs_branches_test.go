@@ -82,14 +82,14 @@ func TestW14GBuildRoutingObservabilityStoreBranches(t *testing.T) {
 		t.Fatalf("缺 URL 必须失败")
 	}
 	// URL 非法。
-	if _, err := buildRoutingObservabilityStore(ctx, RuntimeDriverConfig{RuntimeMode: "cluster", RuntimeStateDriver: "redis", RedisStateURL: "not-a-url"}); err == nil {
+	if _, err := buildRoutingObservabilityStore(ctx, RuntimeDriverConfig{RuntimeMode: "cluster", RuntimeStateDriver: "redis", RedisURL: "not-a-url"}); err == nil {
 		t.Fatalf("非法 URL 必须失败")
 	}
 	// 合法 URL → Redis store。
 	server := miniredis.RunT(t)
 	store, err := buildRoutingObservabilityStore(ctx, RuntimeDriverConfig{
 		RuntimeMode: "cluster", RuntimeStateDriver: "redis",
-		RedisStateURL: "redis://" + server.Addr() + "/0", RedisNamespace: "w14g-ns",
+		RedisURL: "redis://" + server.Addr() + "/0", RedisNamespace: "w14g-ns",
 	})
 	if err != nil {
 		t.Fatalf("合法构造失败: %v", err)

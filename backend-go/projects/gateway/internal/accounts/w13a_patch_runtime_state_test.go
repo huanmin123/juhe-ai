@@ -147,9 +147,9 @@ func TestW13AAPIKeyPoolIsolationArms(t *testing.T) {
 	if !isAccountAPIKeyPoolIsolationEnabled("gpt", "", "openai", "v1", "api_key", Credentials{"api_keys": []any{"a", "b"}}) {
 		t.Fatal("多 Key gpt 应隔离")
 	}
-	// generic_http（vendor 为空）按连接器保留池隔离。
-	if !isAccountAPIKeyPoolIsolationEnabled("", "generic_http", "openai", "v1", "api_key", Credentials{"api_keys": []any{"a", "b"}}) {
-		t.Fatal("generic_http 多 Key 应隔离")
+	// generic_http 已退场：空 vendor + generic_http driver 不再放行池隔离。
+	if isAccountAPIKeyPoolIsolationEnabled("", "generic_http", "openai", "v1", "api_key", Credentials{"api_keys": []any{"a", "b"}}) {
+		t.Fatal("generic_http 多 Key 不得再隔离")
 	}
 	// anthropic 协议档案支持判定（350-352）。
 	if !isAccountAPIKeyPoolIsolationEnabled("other", "", "anthropic", "v1", "api_key", Credentials{"api_keys": []any{"a", "b"}}) {

@@ -1,7 +1,7 @@
 package main
 
 // P0 修复回归（组合根装配面）：
-//   - OAuth 刷新失败状态存储按运行态部署分支注入：无 JUHE_AI_REDIS_STATE_URL
+//   - OAuth 刷新失败状态存储按运行态部署分支注入：无 JUHE_AI_REDIS_URL
 //     → 内存版默认（oauthFailures=nil）；配置后 → refresh（OpenAI 族既有 key
 //     前缀）与 keepalive（族隔离前缀）两个共用客户端的 Redis 版 + closer；
 //     URL 非法 → 装配 fail-fast。
@@ -41,7 +41,7 @@ func TestP0OAuthFailureStateStoreAssemblyBranch(t *testing.T) {
 	// redis-state 部署 → 共用同一 Redis 客户端的两个族隔离存储（客户端惰性
 	// 建连，不拨号）：refresh 注入 OpenAI 族既有 key 前缀，keepalive 注入族
 	// 隔离前缀，二者必须是不同实例（keyPrefix 不同）。
-	redisAssembly := newWorkerAssembly(workerConfig{RedisStateURL: "redis://127.0.0.1:6379/9"}, slog.Default())
+	redisAssembly := newWorkerAssembly(workerConfig{RedisURL: "redis://127.0.0.1:6379/0"}, slog.Default())
 	defer redisAssembly.closeStores()
 	redisRefresh, redisKeepalive, redisCloser, err := redisAssembly.oauthFailureStateStores()
 	if err != nil {
@@ -60,10 +60,10 @@ func TestP0OAuthFailureStateStoreAssemblyBranch(t *testing.T) {
 		t.Fatal("redis client closer missing")
 	}
 	// 非法 URL → 装配失败（fail-fast，不静默退回内存版）。
-	badAssembly := newWorkerAssembly(workerConfig{RedisStateURL: "://not-a-url"}, slog.Default())
+	badAssembly := newWorkerAssembly(workerConfig{RedisURL: "://not-a-url"}, slog.Default())
 	defer badAssembly.closeStores()
 	if _, _, _, err := badAssembly.oauthFailureStateStores(); err == nil {
-		t.Fatal("invalid JUHE_AI_REDIS_STATE_URL must fail the assembly")
+		t.Fatal("invalid JUHE_AI_REDIS_URL must fail the assembly")
 	}
 }
 

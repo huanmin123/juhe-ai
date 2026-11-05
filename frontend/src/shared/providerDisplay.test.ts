@@ -10,14 +10,17 @@ describe('providerDisplayName', () => {
   })
 
   it('内置供应商 code 映射中文名称', () => {
-    expect(providerDisplayName('openai')).toBe('OpenAI 兼容')
     expect(providerDisplayName('gpt')).toBe('GPT')
     expect(providerDisplayName('xai')).toBe('xAI / Grok')
     expect(providerDisplayName('deepseek')).toBe('DeepSeek')
     expect(providerDisplayName('glm')).toBe('智谱 GLM')
     expect(providerDisplayName('anthropic')).toBe('Anthropic')
     expect(providerDisplayName('gemini')).toBe('Google Gemini')
-    expect(providerDisplayName('hybrid')).toBe('混合供应商')
+  })
+
+  it('已退役的 openai/hybrid code 回落未知供应商', () => {
+    expect(providerDisplayName('openai')).toBe('未知供应商')
+    expect(providerDisplayName('hybrid')).toBe('未知供应商')
   })
 
   it('未知 code 且无自定义列表时返回未知供应商', () => {

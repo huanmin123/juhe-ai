@@ -215,7 +215,7 @@ func TestW12CMinimalAssemblyFenceSettlerArms(t *testing.T) {
 		t.Fatalf("无 Redis 应返回 nil settler: %v %v %v", settler, closer != nil, err)
 	}
 	// miniredis 配置 → settler 可用。
-	assembly.config.RedisStateURL = "redis://" + redisServer.Addr()
+	assembly.config.RedisURL = "redis://" + redisServer.Addr()
 	assembly.config.RedisNamespace = "juhe-ai:w12c"
 	settler, closer, err = assembly.wireHealthProbeFenceSettler()
 	if err != nil || settler == nil {
@@ -243,7 +243,7 @@ func TestW12CMinimalAssemblyFenceSettlerArms(t *testing.T) {
 }
 
 // TestW12CMinimalAssemblyFenceSettlerStandaloneNotWarn 验证模式平等语义：
-// standalone（未配置 JUHE_AI_REDIS_STATE_URL）只记 Info 说明，不产生
+// standalone（未配置 JUHE_AI_REDIS_URL）只记 Info 说明，不产生
 // fence_settler_unavailable 的 WARN——缺 Redis 是该模式正常 shape，不是
 // 能力缺失；只有已配置 URL 但 namespace 非法才允许 WARN。
 func TestW12CMinimalAssemblyFenceSettlerStandaloneNotWarn(t *testing.T) {

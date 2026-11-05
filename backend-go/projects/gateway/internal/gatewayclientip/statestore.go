@@ -103,7 +103,7 @@ func (s *memoryRuntimeStateStore) Delete(_ context.Context, key string) error {
 // keys are "<namespace>:state:<name>:<key>" following the Node
 // redisNamespacedKey(`juhe-ai:state:<name>:`) layout.
 type redisRuntimeStateStore struct {
-	client     *redis.Client
+	client     redis.UniversalClient
 	keyPrefix  string
 }
 
@@ -112,13 +112,12 @@ type redisRuntimeStateStore struct {
 // the Node namespace root "juhe-ai:" is always applied on top exactly once.
 func NewRedisRuntimeStateStore(url, namespace, name string) (RuntimeStateStore, func(), error) {
 	if strings.TrimSpace(url) == "" {
-		return nil, nil, errors.New("JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置")
+		return nil, nil, errors.New("JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置")
 	}
-	options, err := redis.ParseURL(url)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: url})
 	if err != nil {
 		return nil, nil, err
 	}
-	client := redis.NewClient(options)
 	prefix, err := stateStoreKeyPrefix(namespace, name)
 	if err != nil {
 		_ = client.Close()
@@ -135,7 +134,7 @@ func stateStoreKeyPrefix(namespace, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("juhe-ai:%s:state:%s:", sanitizedNamespace, sanitizeRedisKeyPart(name)), nil
+	return rediscfg.NamespacedKey(fmt.Sprintf("juhe-ai:state:%s:", sanitizeRedisKeyPart(name)), sanitizedNamespace), nil
 }
 
 // sanitizeRedisNamespacePart mirrors shared/redis-namespace.ts（清洗收敛到

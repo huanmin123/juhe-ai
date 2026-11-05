@@ -669,22 +669,6 @@ func NormalizeTestProviderCodeList(codes []string) []string {
 	return out
 }
 
-// TestCatalogBuiltInSourceCodes mirrors modelCatalogBuiltInSourceProviderCodes
-// （原根包私有函数，根包测试经由转发访问）.
-func TestCatalogBuiltInSourceCodes(providerCode string, sourceCodes []string) []string {
-	if accountscore.NormalizeProviderToken(providerCode) != accountscore.OpenAICompatibleProviderCode {
-		return sourceCodes
-	}
-	codes := []string{}
-	for _, code := range sourceCodes {
-		if accountscore.NormalizeProviderToken(code) == accountscore.OpenAICompatibleProviderCode {
-			continue
-		}
-		codes = append(codes, code)
-	}
-	return codes
-}
-
 // testCatalogOrder 是测试目录 loader 的排序模式（私有枚举，不暴露到 HTTP/JSON）.
 type testCatalogOrder int
 
@@ -803,36 +787,6 @@ func (s *Service) ListCustomTestCatalogOptions(ctx context.Context, providerCode
 	return s.loadCustomTestCatalogRows(ctx, providerCodes, systemAccountID, "", testCatalogOrderOptions, query)
 }
 
-// ListAccountSupportedTestCatalogOptions 是 generic_http 账户的目录来源：
-// account_supported_models JOIN models，只返回账户显式绑定且 active 的行，
-// 保留 public_model/modes/release_date 元数据；与会话模型列表同一身份口径。
-// 不按空 vendor 查目录、不伪造 custom、不按模型名猜 vendor。
-func (s *Service) ListAccountSupportedTestCatalogOptions(ctx context.Context, accountID string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
-	trimmed := strings.TrimSpace(accountID)
-	if trimmed == "" {
-		return []TestOptionRow{}, nil
-	}
-	clauses := []string{
-		"supported.account_id = ?",
-		"models.status = 'active'",
-		"(models.shutdown_date IS NULL OR trim(models.shutdown_date) = '' OR models.shutdown_date > " + s.TestTodayText() + ")",
-	}
-	args := []any{trimmed}
-	args = s.appendTestOptionTextFilter(&clauses, args, query)
-	args = append(args, selectedOrderArgs(query)...)
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT COALESCE(models.vendor_code, '') AS provider_code, models.public_model AS model, models.scope, models.supported_endpoint_modes_json, models.release_date
-		FROM `+s.store.Table("models")+` models
-		INNER JOIN `+s.store.Table("account_supported_models")+` supported ON supported.model_id = models.id
-		WHERE `+strings.Join(clauses, " AND ")+`
-		ORDER BY `+testSelectedOrderClause(query)+`CASE WHEN models.release_date IS NULL OR trim(models.release_date) = '' THEN 1 ELSE 0 END ASC,
-			models.release_date DESC, lower(models.public_model) ASC, COALESCE(models.vendor_code, '') ASC, models.scope ASC, models.id ASC`), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTestOptionRows(rows, "")
-}
-
 // the (selectedIds OR keyword LIKE) clause is pushed only when a keyword is
 // present. models 单表列名 public_model（WHERE 阶段不可引用 SELECT 别名 model）。
 func (s *Service) appendTestOptionTextFilter(clauses *[]string, args []any, query ManualTestOptionsQuery) []any {
@@ -913,8 +867,7 @@ func (s *Service) FindTestCatalogItem(ctx context.Context, providerCode, systemA
 	if len(sourceCodes) == 0 {
 		return nil, nil
 	}
-	builtInCodes := TestCatalogBuiltInSourceCodes(providerCode, sourceCodes)
-	rows, err := s.loadTestCatalogRows(ctx, builtInCodes, sourceCodes, systemAccountID, trimmed, testCatalogOrderExact, ManualTestOptionsQuery{})
+	rows, err := s.loadTestCatalogRows(ctx, sourceCodes, sourceCodes, systemAccountID, trimmed, testCatalogOrderExact, ManualTestOptionsQuery{})
 	if err != nil {
 		return nil, err
 	}
@@ -942,41 +895,6 @@ func (s *Service) FindTestCatalogItem(ctx context.Context, providerCode, systemA
 		Model:                 winner.Model,
 		Mode:                  winner.Mode,
 		SupportedAPIProtocols: winner.SupportedAPIProtocols,
-	}, nil
-}
-
-// FindAccountSupportedTestCatalogItem 是 generic_http 账户的测试目录校验源：
-// account_supported_models.model_id 对应的真实 models 行，public_model 精确
-// 匹配。返回 nil 表示账户没有该模型；同一账户出现多行属于目录冲突，显式
-// 报错而不是任选一行（不按模型名猜 vendor）。
-func (s *Service) FindAccountSupportedTestCatalogItem(ctx context.Context, accountID, model string) (*TestCatalogItem, error) {
-	trimmedAccount := strings.TrimSpace(accountID)
-	trimmedModel := strings.TrimSpace(model)
-	if trimmedAccount == "" || trimmedModel == "" {
-		return nil, nil
-	}
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT COALESCE(models.vendor_code, '') AS provider_code, models.public_model AS model, models.scope, models.supported_endpoint_modes_json, models.release_date
-		FROM `+s.store.Table("models")+` models
-		INNER JOIN `+s.store.Table("account_supported_models")+` supported ON supported.model_id = models.id
-		WHERE supported.account_id = ? AND models.public_model = ? AND models.status = 'active'
-		LIMIT 2`), trimmedAccount, trimmedModel)
-	if err != nil {
-		return nil, err
-	}
-	items, err := scanTestOptionRows(rows, "")
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	if len(items) > 1 {
-		return nil, &accountscore.ValidationError{Message: "账户模型目录存在重复模型：" + trimmedModel}
-	}
-	return &TestCatalogItem{
-		Model:                 items[0].Model,
-		Mode:                  items[0].Mode,
-		SupportedAPIProtocols: items[0].SupportedAPIProtocols,
 	}, nil
 }
 
@@ -1032,21 +950,12 @@ func (s *Service) AccountManualTestOptionsWithTotal(ctx context.Context, account
 		return nil, 0, err
 	}
 	optionQuery := ManualTestOptionsQuery{Keyword: query.Keyword, Limit: query.Limit, SelectedIDs: selectedIDs}
-	catalogRows := []TestOptionRow{}
-	if len(sourceCodes) == 0 {
-		// generic_http（vendor 为空）：人工测试与会话模型列表同源，按账户
-		// account_supported_models.model_id 取真实 models 行；不得返回空候选
-		// 或按模型名猜 vendor（供应商与上游协议面重构设计 §3/§4）。
-		catalogRows, err = s.ListAccountSupportedTestCatalogOptions(ctx, account.FactAccountID, optionQuery)
-		if err != nil {
-			return nil, 0, err
-		}
-	} else {
-		builtInCodes := TestCatalogBuiltInSourceCodes(account.ProviderCode, sourceCodes)
-		catalogRows, err = s.loadTestCatalogRows(ctx, builtInCodes, sourceCodes, systemAccountID, "", testCatalogOrderOptions, optionQuery)
-		if err != nil {
-			return nil, 0, err
-		}
+	// 目录来源恒为账户 vendor 的 builtin 目录：generic_http 账户的
+	// account_supported_models 回落来源已随通用连接器退场删除（供应商与上游
+	// 协议面重构设计 §3/§4）。vendor 缺失的历史账户得到空候选。
+	catalogRows, err := s.loadTestCatalogRows(ctx, sourceCodes, sourceCodes, systemAccountID, "", testCatalogOrderOptions, optionQuery)
+	if err != nil {
+		return nil, 0, err
 	}
 	source := account.ModeSource()
 	eligible := []TestOptionRow{}
@@ -1123,8 +1032,8 @@ func MergeTestOptionRowsWithTotal(rows []TestOptionRow, query ManualTestOptionsQ
 	for _, row := range rows {
 		row.Provider = strings.TrimSpace(row.Provider)
 		row.Model = strings.TrimSpace(row.Model)
-		// generic_http 账户的 models.vendor_code 合法为 NULL（provider 投影为空
-		// 串），不能用 provider 非空过滤掉整行；只以 model 身份判空。
+		// 只以 model 身份判空（九家真实厂商的目录行 provider 恒非空；空 vendor
+		// 历史行也不因 provider 投影为空串被整行丢弃）。
 		if row.Model == "" {
 			continue
 		}
@@ -1233,13 +1142,6 @@ func (s *Service) AccountManualTestModelCapabilities(ctx context.Context, accoun
 	if err != nil {
 		return nil, err
 	}
-	if item == nil && strings.TrimSpace(account.ProviderCode) == "" {
-		// generic_http：目录身份来自 account_supported_models.model_id。
-		item, err = s.FindAccountSupportedTestCatalogItem(ctx, account.FactAccountID, model)
-		if err != nil {
-			return nil, err
-		}
-	}
 	source := account.ModeSource()
 	if item == nil || !IsAccountManualTestModel(*item, source) {
 		return nil, &accountscore.ValidationError{Message: fmt.Sprintf("模型不在当前账户供应商可用目录中：%s", model)}
@@ -1312,12 +1214,6 @@ func (s *Service) manualTestEndpointModesForTargetModel(ctx context.Context, sou
 				loaded, err := s.FindTestCatalogItem(ctx, source.ProviderCode, systemAccountID, mapping.UpstreamModel)
 				if err != nil {
 					return nil, err
-				}
-				if loaded == nil && strings.TrimSpace(source.ProviderCode) == "" {
-					loaded, err = s.FindAccountSupportedTestCatalogItem(ctx, source.AccountID, mapping.UpstreamModel)
-					if err != nil {
-						return nil, err
-					}
 				}
 				cache[mapping.UpstreamModel] = loaded
 				upstream = loaded

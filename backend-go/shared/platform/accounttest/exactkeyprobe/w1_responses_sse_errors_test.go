@@ -38,7 +38,7 @@ func (body *w1ResponsesSSEBody) Close() error {
 // 实际 F4 入口回放 A/B/C 三种 Responses 请求。上游失败即使夹在有效
 // challenge/completed 前后，或同时发生读尾错误，也不能被成功证据掩盖。
 func TestW1ResponsesSSEFailureEvidenceThroughProbe(t *testing.T) {
-		const delta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"__ANSWER__\"}\n\n"
+	const delta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"__ANSWER__\"}\n\n"
 	const completed = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"error\":null}}\n\n"
 	const errorEvent = "event: error\ndata: {\"type\":\"error\",\"message\":\"quota exceeded 原文\"}\n\n"
 	const failedEvent = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"message\":\"model failed 原文\"}}}\n\n"
@@ -86,7 +86,7 @@ func TestW1ResponsesSSEFailureEvidenceThroughProbe(t *testing.T) {
 		for _, test := range cases {
 			t.Run(shape+"/"+test.name, func(t *testing.T) {
 				input := testInput("https://f4-probe.invalid", "responses_sse")
-				input.ProtocolProfileID = "profile_openai_openai_v1"
+				input.ProtocolProfileID = "profile_gpt_openai_v1"
 				input.ProtocolCode = "openai"
 				credentialJSON, credentialKind := `{"api_key":"w1-mock-key"}`, "api_key"
 				if shape == "A" {
@@ -98,17 +98,17 @@ func TestW1ResponsesSSEFailureEvidenceThroughProbe(t *testing.T) {
 				} else if shape == "B" {
 					input.ClientCompatibility = "codex_responses"
 				}
-					var body *w1ResponsesSSEBody
-					calls := 0
-					client := &http.Client{Transport: w1ResponsesSSETransport(func(request *http.Request) (*http.Response, error) {
-						calls++
-						if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/responses") {
-							t.Fatalf("unexpected actual request: %s %s", request.Method, request.URL.Path)
-						}
-						answered := strings.ReplaceAll(test.body, "__ANSWER__", challengeAnswerFromRequest(request))
-						body = &w1ResponsesSSEBody{reader: strings.NewReader(answered), tail: test.tail}
-						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: body, Request: request}, nil
-					})}
+				var body *w1ResponsesSSEBody
+				calls := 0
+				client := &http.Client{Transport: w1ResponsesSSETransport(func(request *http.Request) (*http.Response, error) {
+					calls++
+					if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/responses") {
+						t.Fatalf("unexpected actual request: %s %s", request.Method, request.URL.Path)
+					}
+					answered := strings.ReplaceAll(test.body, "__ANSWER__", challengeAnswerFromRequest(request))
+					body = &w1ResponsesSSEBody{reader: strings.NewReader(answered), tail: test.tail}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: body, Request: request}, nil
+				})}
 				const secret = "w1-f4-sse-secret"
 				credential := CredentialEnvelope{Kind: credentialKind, Ciphertext: testEnvelope(t, secret, credentialJSON)}
 				result := ProbeOpenAI(context.Background(), input, credential, ProbeOptions{Client: client, Secret: secret, MaxResponseBytes: test.limit})

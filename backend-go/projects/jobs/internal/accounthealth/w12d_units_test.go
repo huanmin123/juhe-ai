@@ -16,7 +16,7 @@ import (
 // TestW12dLoadConfigNilGetenv 覆盖 getenv 注入为 nil 的分支：nil 等价
 // os.Getenv，在完整 env 下正常通过（恒开终态，无 disabled 默认路径）。
 func TestW12dLoadConfigNilGetenv(t *testing.T) {
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", "postgres://w12d.invalid/jobs")
+	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://w12d.invalid/jobs")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL", "postgres://w12d.invalid/business")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
@@ -36,7 +36,7 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
-		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", "postgres://w12d/w12d")
+		t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://w12d/w12d")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", key)
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
@@ -111,7 +111,7 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
-		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", "postgres://w12d/w12d")
+		t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://w12d/w12d")
 		// D12：InputSource 恒 postgres 直读（INPUT_POSTGRES_URL 必填）。
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL", "postgres://w12d/business")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
@@ -128,7 +128,7 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		// 「sqlite missing path」「missing input dir」「missing signing key」三个
 		// 失败臂已删除（2026-09-19 零配置决策：DATABASE_PATH/INPUT_DIRECTORY
 		// 按 DATA_DIR 派生，SIGNING_KEY 缺省生成/复用 key 文件，均不再必填）。
-		{"postgres missing url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": ""}, "POSTGRES_URL"},
+		{"postgres missing url", map[string]string{"JUHE_AI_POSTGRES_URL": ""}, "POSTGRES_URL"},
 		{"missing input pg url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": ""}, "INPUT_POSTGRES_URL"},
 		{"short signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "aaaa"}, "至少 32 字节"},
 		{"bad signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "!!!"}, "至少 32 字节"},

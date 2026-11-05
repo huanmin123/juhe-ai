@@ -119,7 +119,7 @@ func TestW14GProxyHealthRecordBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = redisStore
-	failingStore := &RedisRuntimeStateStore{client: &whErrorRedis{inner: newFakeRedisClient(), failAll: true}, prefix: "juhe-ai:w14g:err:"}
+	failingStore := &RedisRuntimeStateStore{client: &whErrorRedis{inner: newFakeRedisClient(), failAll: true}, prefix: "juhe-ai:{w14g}:err:"}
 	failingService := NewProxyHealthService(clock.Now, failingStore, ProxyHealthOptions{}, nil)
 	if _, err := failingService.RecordGatewayUpstreamBucketFailureAsync(ctx, keyedAccount, "w14g", FailureRecordOptions{}); err == nil {
 		t.Fatalf("Redis 故障必须传播")

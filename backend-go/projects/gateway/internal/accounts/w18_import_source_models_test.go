@@ -14,7 +14,7 @@ import (
 )
 
 // w18OpenAIFact 构造一个声明 chat_completions + responses 协议的目录事实，
-// 满足 openai 兼容供应商（profile_openai_openai_v1）的协议档案过滤。
+// 满足 openai 兼容供应商（profile_gpt_openai_v1）的协议档案过滤。
 func w18OpenAIFact(model string) AccountModelCatalogFact {
 	return AccountModelCatalogFact{
 		Model:                 model,
@@ -229,13 +229,13 @@ func TestW18Sub2APIModelFieldsBlockedAndGuidanceScope(t *testing.T) {
 	}
 }
 
-// TestW18ChannelWithoutModelsFallsBackToProviderDefaults 场景 d：channel 无
-// models 字段时维持回退供应商默认支持模型并导入成功（既有行为回归保护）。
-func TestW18ChannelWithoutModelsFallsBackToProviderDefaults(t *testing.T) {
+// TestW18ChannelWithoutModelsSkipsUnsupported 场景 d：channel 无 models 字段时
+// 没有可信 vendor，也不再回退通用连接器/供应商默认值——来源记录按「缺少模型
+// 列表，无法推断厂商」跳过并写报告。
+func TestW18ChannelWithoutModelsSkipsUnsupported(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	// 目录只含供应商默认模型 gpt-4o-mini（default_supported_models_json）。
 
 	document := []any{
 		map[string]any{"type": float64(1), "key": "sk-w18-default", "name": "默认频道"},
@@ -245,25 +245,30 @@ func TestW18ChannelWithoutModelsFallsBackToProviderDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("预览不应报错：%v", err)
 	}
-	if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionCreate || len(result.Accounts[0].Messages) != 0 {
-		t.Fatalf("无 models 字段应回退默认支持模型：%+v", result.Accounts)
+	if result.Source.Records != 1 || result.Source.Accepted != 0 || result.Source.Skipped != 1 {
+		t.Fatalf("无 models 字段应跳过：%+v", result.Source)
+	}
+	if !strings.Contains(strings.Join(result.Source.Messages, "|"), "来源账户缺少模型列表，无法按模型名推断厂商") {
+		t.Fatalf("缺少推断失败报告：%+v", result.Source.Messages)
+	}
+	if len(result.Accounts) != 0 || result.CanImport {
+		t.Fatalf("无厂商可推断时不得产出可导入账户：%+v", result)
 	}
 	executed, err := env.store.ExecuteImport(context.Background(), document, importSourceNewAPI, ImportOptions{}, scope)
 	if err != nil {
 		t.Fatalf("执行错误：%v", err)
 	}
-	if !executed.Imported || executed.Summary.Accounts.Create != 1 || executed.Accounts[0].AccountID == nil {
-		t.Fatalf("执行汇总不一致：%+v", executed)
+	if executed.Imported || executed.Summary.Accounts.Total != 0 {
+		t.Fatalf("无厂商可推断时不得创建账户：%+v", executed.Summary)
 	}
-	accountID := *executed.Accounts[0].AccountID
-	if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-		WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, accountID); count != 1 {
-		t.Fatalf("应落库供应商默认支持模型：%d", count)
+	if count := env.count(t, `SELECT COUNT(*) FROM accounts`); count != 0 {
+		t.Fatalf("不得创建任何账户：%d", count)
 	}
 }
 
-// TestW18CPASourceKeepsNoSupportedModels 场景 e：CPA 输入含模型类键时，适配
-// 产出的账户记录仍无 supportedModels（模型类键维持计入 ignoredFields）。
+// TestW18CPASourceKeepsNoSupportedModels 场景 e：CPA 输入的 models 类键用于
+// 厂商推断（合法形态不再计入 ignoredFields），适配产出的账户记录仍无
+// supportedModels（模型列表只作推断输入，不透传）。
 func TestW18CPASourceKeepsNoSupportedModels(t *testing.T) {
 	yamlInput := `openai-compatibility:
   - name: cpa-models-provider
@@ -275,12 +280,15 @@ func TestW18CPASourceKeepsNoSupportedModels(t *testing.T) {
         models: [gpt-4o-mini]
 `
 	document, source := cpaAdapt(t, yamlInput)
-	// provider 层 models/supportedModels 与 entry 层 models 均不在 CPA 白名单，
-	// 逐层计入 ignoredFields（总量 3）。
-	assertSourceSummary(t, source, 1, 1, 0, 3)
+	// provider/entry 的 models/supportedModels 均为合法形态，作为厂商推断输入
+	// 读取，不再计入 ignoredFields。
+	assertSourceSummary(t, source, 1, 1, 0, 0)
 	accounts := cpaAccounts(t, document)
 	if len(accounts) != 1 {
 		t.Fatalf("cpa accounts: %d", len(accounts))
+	}
+	if accounts[0]["providerCode"] != "gpt" {
+		t.Fatalf("CPA 模型列表应推断出 gpt：%v", accounts[0])
 	}
 	if _, exists := accounts[0]["supportedModels"]; exists {
 		t.Fatalf("CPA 适配不得产出 supportedModels：%v", accounts[0])
@@ -288,9 +296,8 @@ func TestW18CPASourceKeepsNoSupportedModels(t *testing.T) {
 }
 
 // TestW18ChannelModelsInvalidShapeCountsIgnoredField 场景 f：channel models
-// 为非法形态（数字、null、布尔、对象）时账户仍被接受、不跳过，回退供应商
-// 默认支持模型导入成功，且来源摘要恰好计入 1 个 ignoredFields（异常形态可
-// 观测）。各形态独立 env，互不污染。
+// 为非法形态（数字、null、布尔、对象）时按「无模型列表可推断」跳过，来源摘要
+// 恰好计入 1 个 ignoredFields（异常形态可观测）。各形态独立 env，互不污染。
 func TestW18ChannelModelsInvalidShapeCountsIgnoredField(t *testing.T) {
 	invalidShapes := []struct {
 		name   string
@@ -317,31 +324,26 @@ func TestW18ChannelModelsInvalidShapeCountsIgnoredField(t *testing.T) {
 			if err != nil {
 				t.Fatalf("预览不应报错：%v", err)
 			}
-			if result.Source.Records != 1 || result.Source.Accepted != 1 || result.Source.IgnoredFields != 1 {
-				t.Fatalf("非法形态 models 应恰好计入 1 个 ignoredFields：%+v", result.Source)
+			if result.Source.Records != 1 || result.Source.Accepted != 0 || result.Source.Skipped != 1 || result.Source.IgnoredFields != 1 {
+				t.Fatalf("非法形态 models 应跳过并恰好计入 1 个 ignoredFields：%+v", result.Source)
 			}
-			if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionCreate || len(result.Accounts[0].Messages) != 0 {
-				t.Fatalf("非法形态 models 应回退默认支持模型并通过预览：%+v", result.Accounts)
+			if len(result.Accounts) != 0 || result.CanImport {
+				t.Fatalf("非法形态 models 无厂商可推断，不得产出账户：%+v", result)
 			}
 			executed, err := env.store.ExecuteImport(context.Background(), document, importSourceNewAPI, ImportOptions{}, scope)
 			if err != nil {
 				t.Fatalf("执行错误：%v", err)
 			}
-			if !executed.Imported || executed.Summary.Accounts.Create != 1 || executed.Accounts[0].AccountID == nil {
-				t.Fatalf("执行汇总不一致：%+v", executed)
-			}
-			accountID := *executed.Accounts[0].AccountID
-			if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-				WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, accountID); count != 1 {
-				t.Fatalf("应仅落库供应商默认支持模型（未写入异常 models）：%d", count)
+			if executed.Imported || executed.Summary.Accounts.Total != 0 {
+				t.Fatalf("无厂商可推断时不得创建账户：%+v", executed.Summary)
 			}
 		})
 	}
 }
 
 // TestW18ChannelModelsLegalEmptyShapeNotCounted 场景 g：channel models 为
-// []any{float64(1)}（形态合法但归一为空）时不计 ignoredFields、不写
-// supportedModels，回退供应商默认支持模型导入成功。
+// []any{float64(1)}（形态合法但归一为空）时不计 ignoredFields；归一为空等价于
+// 无模型列表，按「无法推断厂商」跳过。
 func TestW18ChannelModelsLegalEmptyShapeNotCounted(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
@@ -357,22 +359,17 @@ func TestW18ChannelModelsLegalEmptyShapeNotCounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("预览不应报错：%v", err)
 	}
-	if result.Source.Records != 1 || result.Source.Accepted != 1 || result.Source.IgnoredFields != 0 {
-		t.Fatalf("形态合法的空 models 不应计入 ignoredFields：%+v", result.Source)
+	if result.Source.Records != 1 || result.Source.Accepted != 0 || result.Source.Skipped != 1 || result.Source.IgnoredFields != 0 {
+		t.Fatalf("形态合法的空 models 应跳过且不计入 ignoredFields：%+v", result.Source)
 	}
-	if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionCreate || len(result.Accounts[0].Messages) != 0 {
-		t.Fatalf("归一为空的 models 应回退默认支持模型并通过预览：%+v", result.Accounts)
+	if len(result.Accounts) != 0 || result.CanImport {
+		t.Fatalf("归一为空的 models 无厂商可推断，不得产出账户：%+v", result)
 	}
 	executed, err := env.store.ExecuteImport(context.Background(), document, importSourceNewAPI, ImportOptions{}, scope)
 	if err != nil {
 		t.Fatalf("执行错误：%v", err)
 	}
-	if !executed.Imported || executed.Summary.Accounts.Create != 1 || executed.Accounts[0].AccountID == nil {
-		t.Fatalf("执行汇总不一致：%+v", executed)
-	}
-	accountID := *executed.Accounts[0].AccountID
-	if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-		WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, accountID); count != 1 {
-		t.Fatalf("应仅落库供应商默认支持模型：%d", count)
+	if executed.Imported || executed.Summary.Accounts.Total != 0 {
+		t.Fatalf("无厂商可推断时不得创建账户：%+v", executed.Summary)
 	}
 }

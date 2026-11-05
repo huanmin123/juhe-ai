@@ -127,7 +127,7 @@ type AccountAPIKeyFailureGuard struct {
 
 // NewAccountAPIKeyFailureGuard builds the guard. defaultStoreFactory is used
 // lazily in the redis driver; nil falls back to the Redis store built from
-// JUHE_AI_REDIS_STATE_URL configuration supplied at construction time.
+// JUHE_AI_REDIS_URL configuration supplied at construction time.
 func NewAccountAPIKeyFailureGuard(config SideEffectsConfig, clock Clock, logger Logger, defaultStoreFactory TransientStateStoreFactory) *AccountAPIKeyFailureGuard {
 	if clock == nil {
 		clock = SystemClock{}
@@ -506,7 +506,7 @@ func (g *AccountAPIKeyFailureGuard) transientStateStore() (AccountApiKeyTransien
 		return g.store, nil
 	}
 	if g.newStore == nil {
-		return nil, errors.New("JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置")
+		return nil, errors.New("JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置")
 	}
 	store, err := g.newStore()
 	if err != nil {

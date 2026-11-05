@@ -52,11 +52,11 @@ func TestW11BSyncFromSharedArms(t *testing.T) {
 		t.Fatalf("bare key = %q", bare.key("t"))
 	}
 	namespaced := NewRedisSharedStore(client, "  juhe-ai:dev:  ")
-	if namespaced.key("t") != "juhe-ai:dev:inval:topic-version:t" {
+	if namespaced.key("t") != "juhe-ai:{dev}:inval:topic-version:t" {
 		t.Fatalf("namespaced key = %q", namespaced.key("t"))
 	}
 	prefixed := NewRedisSharedStore(client, "prod")
-	if prefixed.key("t") != "juhe-ai:prod:inval:topic-version:t" {
+	if prefixed.key("t") != "juhe-ai:{prod}:inval:topic-version:t" {
 		t.Fatalf("prefixed key = %q", prefixed.key("t"))
 	}
 	// GetVersion 空键 → 0。

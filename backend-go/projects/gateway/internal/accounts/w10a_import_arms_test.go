@@ -44,8 +44,9 @@ func TestW10AImportProxyFailedArm(t *testing.T) {
 		},
 		"accounts": []any{
 			map[string]any{"name": "w10a代理失败账户", "platform": "OpenAI", "type": "api_key",
-				"credentials": map[string]any{"api_key": "sk-w10a-1", "base_url": "https://api.openai.com/v1"},
-				"proxy_key":   "p1"},
+				"credentials":     map[string]any{"api_key": "sk-w10a-1", "base_url": "https://api.openai.com/v1"},
+				"supportedModels": []any{"gpt-4o-mini"},
+				"proxy_key":       "p1"},
 		},
 	}
 	result, err := env.store.ExecuteImport(context.Background(), document, importSourceSub2Api,
@@ -102,7 +103,8 @@ func TestW10AImportDuplicateAccountSkipAndFail(t *testing.T) {
 		"type": "sub2api-export", "version": float64(2), "exported_at": "2026-01-01T00:00:00Z",
 		"accounts": []any{
 			map[string]any{"name": "w10a重复名账户", "platform": "OpenAI", "type": "api_key",
-				"credentials": map[string]any{"api_key": "sk-w10a-2", "base_url": "https://api.openai.com/v1"}},
+				"credentials":     map[string]any{"api_key": "sk-w10a-2", "base_url": "https://api.openai.com/v1"},
+				"supportedModels": []any{"gpt-4o-mini"}},
 		},
 	}
 

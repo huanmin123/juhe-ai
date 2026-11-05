@@ -70,16 +70,9 @@ func TestDeriveConnectionProtocolContext(t *testing.T) {
 			},
 		},
 		{
-			name:        "generic 预设无 pin",
-			connections: []resolvedConnection{{preset: "generic_openai_v1", surface: "openai_v1"}},
-			want: protocolContext{
-				protocolCode:    accountscore.OpenAIProtocolCode,
-				protocolVersion: accountscore.OpenAIProtocolVersion,
-			},
-		},
-		{
-			name:        "generic 纯媒体集合退 openai 族无 pin",
-			connections: []resolvedConnection{{preset: "generic_openai_v1", surface: ""}},
+			// 未知 preset 且无协议面：按 openai 族默认上下文回落，不制造 pin。
+			name:        "未知预设退 openai 族无 pin",
+			connections: []resolvedConnection{{preset: "unknown_preset", surface: ""}},
 			want: protocolContext{
 				protocolCode:    accountscore.OpenAIProtocolCode,
 				protocolVersion: accountscore.OpenAIProtocolVersion,
@@ -98,7 +91,7 @@ func TestDeriveConnectionProtocolContext(t *testing.T) {
 
 func TestVendorDefaultProtocolContext(t *testing.T) {
 	// vendor 语义默认（草稿/探针链，无 connections 载荷）：gemini 默认 native
-	// 档案、anthropic 官方无 pin、generic 语义退 openai 族无 pin。
+	// 档案、anthropic 官方无 pin；九家之外的 provider 无默认档案（空上下文）。
 	if got := vendorDefaultProtocolContext("gemini"); got.profileID != geminiNativeV1BetaProfileID ||
 		got.protocolCode != accountscore.GeminiProtocolCode {
 		t.Fatalf("gemini 默认 = %+v", got)
@@ -110,9 +103,8 @@ func TestVendorDefaultProtocolContext(t *testing.T) {
 	if got := vendorDefaultProtocolContext("gpt"); got.profileID != accountscore.GptOpenAIV1ProfileID {
 		t.Fatalf("gpt 默认 = %+v", got)
 	}
-	if got := vendorDefaultProtocolContext("openai"); got.profileID != "" ||
-		got.protocolCode != accountscore.OpenAIProtocolCode {
-		t.Fatalf("generic 默认 = %+v", got)
+	if got := vendorDefaultProtocolContext("openai"); got != (protocolContext{}) {
+		t.Fatalf("非九家 provider 无默认档案，应为空上下文：%+v", got)
 	}
 }
 

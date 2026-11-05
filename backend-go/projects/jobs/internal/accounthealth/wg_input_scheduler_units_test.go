@@ -10,14 +10,14 @@ import (
 func TestLoadConfigErrorMatrix(t *testing.T) {
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "wg",
-			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://wg-input.invalid/jobs",
+			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
+			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "wg",
+			"JUHE_AI_POSTGRES_URL":                      "postgres://wg-input.invalid/jobs",
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://wg-input.invalid/business",
-			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     "/tmp/wg/j1.sqlite3",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   "/tmp/wg/inputs",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
-			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "secret",
+			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":      "/tmp/wg/j1.sqlite3",
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    "/tmp/wg/inputs",
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
+			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "secret",
 		}
 	}
 	cases := []struct {
@@ -25,7 +25,7 @@ func TestLoadConfigErrorMatrix(t *testing.T) {
 		mutate func(env map[string]string)
 	}{
 		{"缺 owner 声明", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "node" }},
-		{"PG 缺 URL", func(env map[string]string) { delete(env, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL") }},
+		{"PG 缺 URL", func(env map[string]string) { delete(env, "JUHE_AI_POSTGRES_URL") }},
 		{"input 直读缺 URL", func(env map[string]string) { delete(env, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL") }},
 		{"签名键过短", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"] = "AAAA" }},
 		// 「缺凭据 secret」非生产臂已随 2026-09-19 零配置决策回退开发密钥；
@@ -89,4 +89,3 @@ func (b *wgFakeBoundary) CurrentProbeInput(context.Context, string) (int64, int6
 	}
 	return b.revision, b.revision, 1, b.ok, nil
 }
-

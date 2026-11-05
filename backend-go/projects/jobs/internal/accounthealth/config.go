@@ -83,17 +83,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		cfg.InstanceID = hostname
 	}
 	var err error
-	// STORE 恒 postgres（sqlite store 形态已随存储形态收口物理删除；
-	// JUHE_AI_ACCOUNT_HEALTH_STORE env 退役）。PG 连接串无法凭空默认：显式
-	// JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL 优先，缺省回退 worker/gateway 共用
-	// 的 JUHE_AI_POSTGRES_URL，仍空则 fail-fast。
-	postgresURL := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"))
-	if postgresURL == "" {
-		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	}
+	// STORE 恒 postgres，且与 gateway/jobs 主库同源（JUHE_AI_POSTGRES_URL）。
+	postgresURL := strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	cfg.Store = StoreConfig{Mode: StorePostgres, PostgresURL: postgresURL}
 	if cfg.Store.PostgresURL == "" {
-		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL（或 JUHE_AI_POSTGRES_URL）")
+		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_POSTGRES_URL")
 	}
 	// 清理批次 C4（2026-09-30）：连接池 env 族零引用收编为默认常量。
 	cfg.Store.PostgresMaxOpenConns = defaultPostgresPoolSize

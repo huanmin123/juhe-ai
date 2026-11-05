@@ -127,7 +127,7 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000, 0, 0, 5); err != nil {
 		t.Fatalf("AcquireAccountConcurrency(空 lane=text) 失败: %v", err)
 	}
-	key := "juhe-ai:dev:gateway-account-concurrency:account-concurrency:acc-1"
+	key := "juhe-ai:{dev}:gateway-account-concurrency:account-concurrency:acc-1"
 	if got := server.HGet(key, AccountConcurrencyLaneText); got != "2" {
 		t.Fatalf("text lane 字段=%q want 2", got)
 	}
@@ -223,7 +223,7 @@ func TestWIRedisAccountConcurrencyConstructionErrors(t *testing.T) {
 		t.Fatalf("RedisURL 构造失败: %v", err)
 	}
 	// name 空白回落默认名。
-	if want := "juhe-ai:dev:gateway-account-concurrency:account-concurrency:x"; instance.accountConcurrencyKey("x") != want {
+	if want := "juhe-ai:{dev}:gateway-account-concurrency:account-concurrency:x"; instance.accountConcurrencyKey("x") != want {
 		t.Fatalf("key=%q want %q", instance.accountConcurrencyKey("x"), want)
 	}
 	instance.Close()
@@ -234,7 +234,7 @@ func TestWIRedisAccountConcurrencyLoadByLaneAndErrors(t *testing.T) {
 	instance, _ := newTestRedisAccountConcurrency(t, server, "ns")
 	ctx := context.Background()
 
-	server.HSet("juhe-ai:ns:gateway-account-concurrency:account-concurrency:acc-1", "image", "3")
+	server.HSet("juhe-ai:{ns}:gateway-account-concurrency:account-concurrency:acc-1", "image", "3")
 	byLane, err := instance.LoadAccountCurrentConcurrencyByLane(ctx, []string{"acc-1"}, AccountConcurrencyLaneImage)
 	if err != nil || byLane["acc-1"] != 3 {
 		t.Fatalf("lane 读取错误: %v %v", byLane, err)
@@ -316,7 +316,7 @@ func TestWIRedisRuntimeStateStoreContract(t *testing.T) {
 	if err := store.SetJSON(ctx, "k1", payload{N: 7}, 60_000); err != nil {
 		t.Fatalf("SetJSON 失败: %v", err)
 	}
-	if !server.Exists("juhe-ai:dev:state:circuit-test:k1") {
+	if !server.Exists("juhe-ai:{dev}:state:circuit-test:k1") {
 		t.Fatalf("redis key 布局错误，want juhe-ai:dev:state:circuit-test:k1")
 	}
 	var got payload
@@ -324,13 +324,13 @@ func TestWIRedisRuntimeStateStoreContract(t *testing.T) {
 		t.Fatalf("读回错误: found=%v err=%v value=%+v", found, err, got)
 	}
 	// 契约：坏 JSON 读作 miss 且删除毒键（Node parse failure deletes the poisoned key）。
-	if err := server.Set("juhe-ai:dev:state:circuit-test:poison", "not-json"); err != nil {
+	if err := server.Set("juhe-ai:{dev}:state:circuit-test:poison", "not-json"); err != nil {
 		t.Fatalf("注入坏 JSON 失败: %v", err)
 	}
 	if found, err := store.GetJSON(ctx, "poison", &payload{}); err != nil || found {
 		t.Fatalf("坏 JSON 必须读作 miss 无错: %v %v", found, err)
 	}
-	if server.Exists("juhe-ai:dev:state:circuit-test:poison") {
+	if server.Exists("juhe-ai:{dev}:state:circuit-test:poison") {
 		t.Fatal("毒键必须被删除")
 	}
 	if err := store.Delete(ctx, "k1"); err != nil {
@@ -346,7 +346,7 @@ func TestWIRedisRuntimeStateStoreContract(t *testing.T) {
 	if err := store.SetJSON(ctx, "k-tiny", payload{N: 1}, 0); err != nil {
 		t.Fatalf("SetJSON(ttl=0) 失败: %v", err)
 	}
-	if ttl := server.TTL("juhe-ai:dev:state:circuit-test:k-tiny"); ttl <= 0 {
+	if ttl := server.TTL("juhe-ai:{dev}:state:circuit-test:k-tiny"); ttl <= 0 {
 		t.Fatalf("ttl=0 必须归一化为正 TTL: %v", ttl)
 	}
 }
@@ -371,7 +371,7 @@ func TestWIRedisStateKeySanitizers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stateStoreKeyPrefix 失败: %v", err)
 	}
-	if want := "juhe-ai:prod_edge:state:circuit_name:"; prefix != want {
+	if want := "juhe-ai:{prod_edge}:state:circuit_name:"; prefix != want {
 		t.Fatalf("prefix=%q want %q", prefix, want)
 	}
 	if _, err := sanitizeRedisNamespacePart("  "); err == nil {

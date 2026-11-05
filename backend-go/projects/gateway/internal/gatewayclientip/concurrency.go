@@ -14,6 +14,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Reject reasons mirror ClientIpConcurrencyRejectReason.
@@ -87,6 +88,8 @@ type ClientIPConcurrencyOptions struct {
 	RuntimeStateDriver string
 	// StateRedisURL mirrors runtimeConfig.redis.stateUrl.
 	StateRedisURL string
+	// RedisNamespace is the domain-qualified key namespace.
+	RedisNamespace string
 	// PolicyDefaults carries the concurrency.globalMax-derived defaults.
 	PolicyDefaults HighConcurrencyPolicyDefaults
 	// Scheduler schedules queue timeouts; defaults to time.AfterFunc.
@@ -104,8 +107,9 @@ type ClientIPConcurrency struct {
 	sleep    func(time.Duration)
 	defaults HighConcurrencyPolicyDefaults
 
-	redis    *redis.Client
-	closeFns []func()
+	redis     redis.UniversalClient
+	closeFns  []func()
+	namespace string
 
 	mu     sync.Mutex
 	states map[string]*clientIPConcurrencyState
@@ -161,14 +165,14 @@ func NewClientIPConcurrency(opts ClientIPConcurrencyOptions) (*ClientIPConcurren
 	}
 	if opts.RuntimeStateDriver == RuntimeStateDriverRedis {
 		if strings.TrimSpace(opts.StateRedisURL) == "" {
-			return nil, errors.New("JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置")
+			return nil, errors.New("JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置")
 		}
-		options, err := redis.ParseURL(opts.StateRedisURL)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: opts.StateRedisURL})
 		if err != nil {
 			return nil, err
 		}
-		client := redis.NewClient(options)
 		c.redis = client
+		c.namespace = opts.RedisNamespace
 		c.closeFns = append(c.closeFns, func() { _ = client.Close() })
 	}
 	return c, nil
@@ -565,8 +569,8 @@ func (c *ClientIPConcurrency) tryAcquireRedisClientIPSlot(ctx context.Context, k
 	current  int
 }, error) {
 	result, err := c.redis.Eval(ctx, redisAcquireClientIPConcurrencyScript, []string{
-		redisClientIPConcurrencyKey(key),
-		redisClientIPQueueKey(key),
+		redisClientIPConcurrencyKeyNS(c.namespace, key),
+		redisClientIPQueueKeyNS(c.namespace, key),
 	}, strconvItoa(limit), strconvItoa(redisClientIPConcurrencyTTL), requireEmptyQueueBool(requireEmptyQueue), strconvIota64(c.clock.Now().UnixMilli()), slotToken).Result()
 	if err != nil {
 		return struct {
@@ -646,7 +650,7 @@ func (c *ClientIPConcurrency) startRedisClientIPSlotRenewal(key string, slotToke
 }
 
 func (c *ClientIPConcurrency) renewRedisClientIPSlot(ctx context.Context, key string, slotToken string) (bool, error) {
-	result, err := c.redis.Eval(ctx, redisRenewClientIPConcurrencyScript, []string{redisClientIPConcurrencyKey(key)},
+	result, err := c.redis.Eval(ctx, redisRenewClientIPConcurrencyScript, []string{redisClientIPConcurrencyKeyNS(c.namespace, key)},
 		strconvIota64(c.clock.Now().UnixMilli()), strconvItoa(redisClientIPConcurrencyTTL), slotToken).Result()
 	if err != nil {
 		return false, err
@@ -665,7 +669,7 @@ func (c *ClientIPConcurrency) releaseRedisClientIPSlotWithRetry(ctx context.Cont
 			c.sleep(delayMs)
 		}
 		runCtx, cancel := context.WithTimeout(ctx, stateOperationTimeout)
-		err := c.redis.Eval(runCtx, redisReleaseClientIPConcurrencyScript, []string{redisClientIPConcurrencyKey(key)}, slotToken).Err()
+		err := c.redis.Eval(runCtx, redisReleaseClientIPConcurrencyScript, []string{redisClientIPConcurrencyKeyNS(c.namespace, key)}, slotToken).Err()
 		cancel()
 		if err == nil {
 			return
@@ -690,7 +694,7 @@ func (c *ClientIPConcurrency) enqueueRedisClientIPQueueItem(ctx context.Context,
 	if ttlMs < 1 {
 		ttlMs = 1
 	}
-	result, err := c.redis.Eval(ctx, redisClientIPQueueEnqueueScript, []string{redisClientIPQueueKey(key)},
+	result, err := c.redis.Eval(ctx, redisClientIPQueueEnqueueScript, []string{redisClientIPQueueKeyNS(c.namespace, key)},
 		itemID, strconvIota64(clampNonNegative(deadlineAtMs)), strconvIota64(clampNonNegative(nowMs)),
 		strconvItoa(maxInt(1, queueLimit)), strconvIota64(ttlMs)).Result()
 	if err != nil {
@@ -718,7 +722,7 @@ func (c *ClientIPConcurrency) redisClientIPQueuePosition(ctx context.Context, ke
 	rank      int
 	queueSize int
 }, error) {
-	result, err := c.redis.Eval(ctx, redisClientIPQueuePositionScript, []string{redisClientIPQueueKey(key)},
+	result, err := c.redis.Eval(ctx, redisClientIPQueuePositionScript, []string{redisClientIPQueueKeyNS(c.namespace, key)},
 		itemID, strconvIota64(clampNonNegative(c.clock.Now().UnixMilli()))).Result()
 	if err != nil {
 		return struct {
@@ -746,7 +750,7 @@ func (c *ClientIPConcurrency) redisClientIPQueuePosition(ctx context.Context, ke
 }
 
 func (c *ClientIPConcurrency) removeRedisClientIPQueueItem(ctx context.Context, key string, itemID string) (int, error) {
-	result, err := c.redis.Eval(ctx, redisClientIPQueueRemoveScript, []string{redisClientIPQueueKey(key)},
+	result, err := c.redis.Eval(ctx, redisClientIPQueueRemoveScript, []string{redisClientIPQueueKeyNS(c.namespace, key)},
 		itemID, strconvIota64(clampNonNegative(c.clock.Now().UnixMilli()))).Result()
 	if err != nil {
 		return 0, err
@@ -774,12 +778,20 @@ func clientIPConcurrencyKey(systemAccountID string, groupID string, apiKeyID str
 // redisClientIPConcurrencyKey mirrors redisClientIpConcurrencyKey. Node
 // applies a raw juhe-ai: prefix here (not redisNamespacedKey); ported as-is.
 func redisClientIPConcurrencyKey(key string) string {
-	return "juhe-ai:client-ip-concurrency:" + base64.RawURLEncoding.EncodeToString([]byte(key))
+	return redisClientIPConcurrencyKeyNS("", key)
+}
+
+func redisClientIPConcurrencyKeyNS(namespace, key string) string {
+	return rediscfg.NamespacedKey("juhe-ai:client-ip-concurrency:"+base64.RawURLEncoding.EncodeToString([]byte(key)), namespace)
 }
 
 // redisClientIPQueueKey mirrors redisClientIpQueueKey.
 func redisClientIPQueueKey(key string) string {
-	return "juhe-ai:client-ip-concurrency-queue:" + base64.RawURLEncoding.EncodeToString([]byte(key))
+	return redisClientIPQueueKeyNS("", key)
+}
+
+func redisClientIPQueueKeyNS(namespace, key string) string {
+	return rediscfg.NamespacedKey("juhe-ai:client-ip-concurrency-queue:"+base64.RawURLEncoding.EncodeToString([]byte(key)), namespace)
 }
 
 // redisClientIPConcurrencySlotToken mirrors redisClientIpConcurrencySlotToken.

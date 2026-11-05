@@ -10,6 +10,7 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Reject reasons mirror HighConcurrencyQueueRejectReason.
@@ -93,7 +94,7 @@ type HighConcurrencyGroupQueue struct {
 	concurrency AccountConcurrencySource
 	unsubscribe func()
 
-	redis     *redis.Client
+	redis     redis.UniversalClient
 	closeFns  []func()
 	namespace string
 
@@ -171,14 +172,13 @@ func NewHighConcurrencyGroupQueue(opts HighConcurrencyQueueOptions) (*HighConcur
 	if opts.RuntimeStateDriver == RuntimeStateDriverRedis {
 		if strings.TrimSpace(opts.StateRedisURL) == "" {
 			q.unsubscribe()
-			return nil, errors.New("JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置")
+			return nil, errors.New("JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置")
 		}
-		options, err := redis.ParseURL(opts.StateRedisURL)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: opts.StateRedisURL})
 		if err != nil {
 			q.unsubscribe()
 			return nil, err
 		}
-		client := redis.NewClient(options)
 		q.redis = client
 		q.closeFns = append(q.closeFns, func() { _ = client.Close() })
 	}
@@ -931,14 +931,7 @@ func namespacedStateKey(namespace string, key string) string {
 	if err != nil {
 		return normalized
 	}
-	prefix := "juhe-ai:" + sanitizedNamespace + ":"
-	if strings.HasPrefix(normalized, prefix) {
-		return normalized
-	}
-	if strings.HasPrefix(normalized, "juhe-ai:") {
-		return prefix + normalized[len("juhe-ai:"):]
-	}
-	return prefix + normalized
+	return rediscfg.NamespacedKey(normalized, sanitizedNamespace)
 }
 
 // The redis Lua scripts mirror high-concurrency-queue.service.ts verbatim.

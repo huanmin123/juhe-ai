@@ -21,9 +21,6 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 	// 被删除，泄漏的 DSN 会让同包后续用例（如 TestW1J2BootstrapMutualExclusion
 	// 的互斥负臂）拿到已删除库、在互斥门之前就以运行时失败 exit 1 收场。
 	// t.Setenv 显式占位并在用例结束自动还原。
-	t.Setenv(envJ3AURL, td.DSN)
-	t.Setenv(envJ3BURL, td.DSN)
-	t.Setenv(envBalanceURL, td.DSN)
 	const testSecret = "upgrade-integration-secret"
 
 	newOpts := func(dryRun, stopWrite, backup bool) upgradepipeline.Options {

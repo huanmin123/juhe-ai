@@ -116,7 +116,7 @@ export function buildCcSwitchExportGroupOptions(
       groupId: binding.groupId,
       groupName: binding.groupName?.trim() || binding.groupId,
       providerCode,
-      providerName: provider?.name?.trim() || '自定义协议连接',
+      providerName: provider?.name?.trim() || '未知供应商',
       // 分组只作为模型参考，不再提供默认客户端推断依据（T34）。
       defaultModel: ''
     }]

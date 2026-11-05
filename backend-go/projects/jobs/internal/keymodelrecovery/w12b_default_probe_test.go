@@ -44,7 +44,7 @@ func w12bProbeInput(baseURL string) exactkeyprobe.Input {
 		InputVersion:         1,
 		ConfigRevision:       1,
 		DispatchRevision:     9,
-		Provider:             "openai",
+		Provider:             "gpt",
 		Type:                 "api_key",
 		EndpointMode:         "chat_json",
 		HealthModel:          "placeholder",

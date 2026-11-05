@@ -194,8 +194,8 @@ func (i *StreamInspector) flushEvent() {
 		i.flushOversizedEvent()
 		return
 	}
-	// oversized 临时状态（type/image/usage）只属于当前 SSE event：普通事件
-	// 收尾必须清理，否则后续超大终止事件会复用上一条事件的类型（BUG-0353）。
+	// oversized 临时状态（type/image/usage/error/output）只属于当前 SSE event：
+	// 普通事件收尾必须清理，否则后续超大终止事件会复用上一条事件的类型（BUG-0353）。
 	if len(i.dataLines) == 0 {
 		i.eventName = ""
 		i.dataBytes = 0

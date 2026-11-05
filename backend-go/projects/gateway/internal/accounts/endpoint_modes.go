@@ -48,7 +48,6 @@ const (
 	volcengineProviderCode               = accountscore.VolcengineProviderCode
 	qwenProviderCode                     = accountscore.QwenProviderCode
 	xaiProviderCode                      = accountscore.XaiProviderCode
-	openAICompatibleProviderCodeConstant = accountscore.OpenAICompatibleProviderCode
 )
 
 var openAIEndpointModeValues = accountscore.OpenAIEndpointModeValues
@@ -307,12 +306,14 @@ type credentialDriver struct {
 // order exactly like Node's find().
 var providerAccountCredentialDrivers = []credentialDriver{
 	{
-		id: "openai-compatible",
+		// gemini_openai_chat_v1beta 是 gemini 的 OpenAI 兼容子面（surface
+		// openai_v1），接口能力按 openai 族词表归一。通用 openai /
+		// openai-compatible 供应商已随通用连接器退场，此驱动只承载该子面。
+		id: "gemini-openai-chat",
 		supportsContext: func(c endpointModeDefaultContext) bool {
-			openAICompatible := normalizeProviderToken(c.providerCode) == openAICompatibleProviderCodeConstant ||
-				(normalizeProviderToken(c.providerCode) == geminiProviderCode &&
-					profileUnpinnedMatches(c.providerProtocolProfileID, geminiOpenAIChatV1BetaProfileID))
-			return openAICompatible && isOpenAIProtocolProfileOf(c.predicate())
+			return normalizeProviderToken(c.providerCode) == geminiProviderCode &&
+				profileUnpinnedMatches(c.providerProtocolProfileID, geminiOpenAIChatV1BetaProfileID) &&
+				isOpenAIProtocolProfileOf(c.predicate())
 		},
 		normalizeForWrite: func(value optionalValue, c endpointModeDefaultContext) ([]string, error) {
 			return normalizeOpenAIEndpointModesForWrite(value, c)
@@ -643,38 +644,14 @@ func profileUnpinnedMatches(profileID string, expected ...string) bool {
 func providerAccountCredentialDriverForContext(context endpointModeDefaultContext) (*credentialDriver, error) {
 	normalized := context
 	normalized.providerCode = normalizeProviderToken(context.providerCode)
-	if normalized.providerCode == "" && normalizeProviderToken(context.protocolCode) == "" {
-		return &providerAccountCredentialDrivers[0], nil
-	}
-	// 供应商解耦（设计 §2.1/§9.11）：generic_http 账户 vendor_code 为 NULL，
-	// 驱动族由协议面决定（generic_openai_v1 / generic_anthropic_v1 /
-	// generic_gemini_v1beta 三个 preset 各自的接口能力词表）。
-	if normalized.providerCode == "" {
-		switch {
-		case isOpenAIProtocolProfileOf(normalized.predicate()):
-			return &providerAccountCredentialDrivers[0], nil
-		case isAnthropicProtocolProfileOf(normalized.predicate()):
-			return credentialDriverByID("anthropic")
-		case isGeminiProtocolProfileOf(normalized.predicate()):
-			return credentialDriverByID("gemini")
-		}
-	}
+	// 九家真实厂商之外（含历史 generic_http 空 vendor 形态）不再有协议面兜底
+	// 分派：没有驱动命中时由调用方按「供应商协议档案未注册接口能力归一化」拒绝。
 	for index := range providerAccountCredentialDrivers {
 		if providerAccountCredentialDrivers[index].supportsContext(normalized) {
 			return &providerAccountCredentialDrivers[index], nil
 		}
 	}
 	return nil, nil
-}
-
-// credentialDriverByID 按注册表 id 取 driver（供 vendor 缺失时的协议面分派）。
-func credentialDriverByID(id string) (*credentialDriver, error) {
-	for index := range providerAccountCredentialDrivers {
-		if providerAccountCredentialDrivers[index].id == id {
-			return &providerAccountCredentialDrivers[index], nil
-		}
-	}
-	return nil, errors.New("接口能力驱动不存在：" + id)
 }
 
 // normalizeEndpointModesForWrite mirrors the storage helper of the same name:

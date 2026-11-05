@@ -165,7 +165,7 @@ func TestWhPenaltyWindowRedisConsume(t *testing.T) {
 
 	// 缺失 client 的 limiter：消费必须报状态 URL 错误。
 	brokenLimiter := NewPenaltyWindowRateLimiter(clock.Now, true, nil, "juhe-ai:wh")
-	if _, err := brokenLimiter.ConsumeAsync(ctx, store, "scope-a", rules, nil); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
+	if _, err := brokenLimiter.ConsumeAsync(ctx, store, "scope-a", rules, nil); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL") {
 		t.Fatalf("缺 Redis client 必须报错, err=%v", err)
 	}
 

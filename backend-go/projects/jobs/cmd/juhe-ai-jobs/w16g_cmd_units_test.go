@@ -114,7 +114,7 @@ func TestW16GCircuitControlPlaneNilDBArm(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{
 
 		InstanceID:     "w16g-circuit-nil",
-		RedisStateURL:  "redis://127.0.0.1:1",
+		RedisURL:  "redis://127.0.0.1:1",
 		RedisNamespace: w16gNamespace,
 	}, nil)
 	if err := assembly.wireCircuitFamily(context.Background(), &businessDB{}, func(name, reason string) {

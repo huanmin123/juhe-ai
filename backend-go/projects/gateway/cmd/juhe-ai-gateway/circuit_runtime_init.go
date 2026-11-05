@@ -34,7 +34,7 @@ func runAccountCircuitRuntimeIndexInit() {
 		fail(fmt.Errorf("load J3b config: %w", err))
 	}
 	if !j3bConfig.Enabled {
-		fail(errors.New("账户电路运行态索引初始化需要 Redis 运行态：JUHE_AI_REDIS_STATE_URL（或 JUHE_AI_J3B_CIRCUIT_REDIS_URL）未配置"))
+		fail(errors.New("账户电路运行态索引初始化需要 Redis 运行态：JUHE_AI_REDIS_URL（或 JUHE_AI_REDIS_URL）未配置"))
 	}
 	// 与 serve 路径（main.go 组合根）同一零配置回退：未显式配置密钥时填内置
 	// 开发默认，否则 OpenBusinessTargetConnection 直接拒绝。
@@ -46,13 +46,6 @@ func runAccountCircuitRuntimeIndexInit() {
 	}
 	if j3bConfig.CircuitRuntimeRedisURL == "" || j3bConfig.CircuitRuntimeRedisNamespace == "" {
 		fail(errors.New("账户电路运行态索引初始化缺少 Redis URL/namespace 配置"))
-	}
-	// A（状态机专项 2026-09-25）与 serve 路径（main.go gate 构造处）同款
-	// fail-fast：circuit runtime 的 Redis URL 来自主链 JUHE_AI_REDIS_STATE_URL
-	// 回退时，两套 Lua 状态机会并发写同一 states hash，语义不兼容；显式设置
-	// 同值（运维显式决定）不受影响。
-	if isolationErr := j3bConfig.ValidateCircuitRuntimeRedisIsolation(); isolationErr != nil {
-		fail(isolationErr)
 	}
 	gate := circuitcontrolplane.OwnerGate{
 		Confirmed:         j3bConfig.BusinessHandoffConfirmed,

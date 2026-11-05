@@ -438,8 +438,8 @@ func TestW13DRedisCacheConstructionGuards(t *testing.T) {
 		t.Fatal("空 key 必须报错")
 	}
 	// 已带根前缀的 key 不重复前缀。
-	key, err := RedisNamespacedKey("dev", "juhe-ai:state:x:")
-	if err != nil || !strings.HasPrefix(key, "juhe-ai:dev:") {
+	key, err := RedisNamespacedKey("dev", "juhe-ai:{state}:x:")
+	if err != nil || !strings.HasPrefix(key, "juhe-ai:{dev}:") {
 		t.Fatalf("key=%q err=%v", key, err)
 	}
 }

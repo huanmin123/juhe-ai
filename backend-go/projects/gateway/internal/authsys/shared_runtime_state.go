@@ -10,6 +10,7 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // redisStateOperationTimeout mirrors runRedisOperationWithDeadline
@@ -37,7 +38,7 @@ type RedisStateStore interface {
 // "<juhe-ai>:<namespace>:state:<name>:<key>" following
 // redisNamespacedKey(`juhe-ai:state:<name>:`).
 type redisNamespacedStateStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	prefix string
 }
 
@@ -46,13 +47,12 @@ type redisNamespacedStateStore struct {
 // Node root "juhe-ai:" is always applied exactly once on top of it.
 func NewRedisNamespacedStateStore(url, namespace, name string) (RedisStateStore, func(), error) {
 	if strings.TrimSpace(url) == "" {
-		return nil, nil, errors.New("JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置")
+		return nil, nil, errors.New("JUHE_AI_REDIS_URL 在 Redis runtime state driver 下必须配置")
 	}
-	options, err := redis.ParseURL(url)
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: url})
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse redis state url: %w", err)
+		return nil, nil, fmt.Errorf("create redis state client: %w", err)
 	}
-	client := redis.NewClient(options)
 	prefix, err := redisStateStoreKeyPrefix(namespace, name)
 	if err != nil {
 		_ = client.Close()
@@ -72,7 +72,7 @@ func redisStateStoreKeyPrefix(namespace, name string) (string, error) {
 	if normalized == "" {
 		return "", errors.New("Redis namespace 不能为空")
 	}
-	return fmt.Sprintf("juhe-ai:%s:state:%s:", normalized, sanitizeRedisStateKeyPart(name)), nil
+	return rediscfg.NamespacedKey(fmt.Sprintf("juhe-ai:state:%s:", sanitizeRedisStateKeyPart(name)), normalized), nil
 }
 
 var redisNamespaceSanitizePattern = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)

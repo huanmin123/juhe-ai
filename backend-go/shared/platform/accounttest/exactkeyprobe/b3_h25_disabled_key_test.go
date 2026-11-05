@@ -38,7 +38,7 @@ func TestB3H25DirectInputExcludesDisabledKeys(t *testing.T) {
 	disabledFingerprint := directKeyFingerprint(secret, "sk-b3h25-disabled")
 	fixture := func(disabled []string) DirectInput {
 		return DirectInput{
-			Account:      DirectAccount{ID: "b3h25-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "responses_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: server.URL},
+			Account:      DirectAccount{ID: "b3h25-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "responses_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: server.URL},
 			Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 			InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1",
 			Schedule:                Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},

@@ -22,23 +22,23 @@ func TestW11CRedisNamespaceHelpers(t *testing.T) {
 		t.Fatalf("unusable namespace must fail")
 	}
 	// Keys already carrying the namespace prefix are not double-prefixed.
-	if key, err := RedisNamespacedKey("ns", "juhe-ai:ns:thing"); err != nil || key != "juhe-ai:ns:thing" {
+	if key, err := RedisNamespacedKey("ns", "juhe-ai:{ns}:thing"); err != nil || key != "juhe-ai:{ns}:thing" {
 		t.Fatalf("namespaced key = (%s, %v)", key, err)
 	}
 	// Keys carrying only the root prefix get the namespace inserted.
-	if key, err := RedisNamespacedKey("ns", "juhe-ai:thing"); err != nil || key != "juhe-ai:ns:thing" {
+	if key, err := RedisNamespacedKey("ns", "juhe-ai:thing"); err != nil || key != "juhe-ai:{ns}:thing" {
 		t.Fatalf("root key = (%s, %v)", key, err)
 	}
 	// Plain keys are fully prefixed.
-	if key, err := RedisNamespacedKey("ns", "thing"); err != nil || key != "juhe-ai:ns:thing" {
+	if key, err := RedisNamespacedKey("ns", "thing"); err != nil || key != "juhe-ai:{ns}:thing" {
 		t.Fatalf("plain key = (%s, %v)", key, err)
 	}
 	// A different namespace prefix keeps the remaining key intact.
-	if key, err := RedisNamespacedKey("ns2", "juhe-ai:ns:thing"); err != nil || key != "juhe-ai:ns2:ns:thing" {
+	if key, err := RedisNamespacedKey("ns2", "juhe-ai:ns:thing"); err != nil || key != "juhe-ai:{ns2}:ns:thing" {
 		t.Fatalf("foreign prefix = (%s, %v)", key, err)
 	}
 	// Namespace prefix sanitization.
-	if prefix, err := RedisNamespacePrefix("A B"); err != nil || prefix != "juhe-ai:A_B:" {
+	if prefix, err := RedisNamespacePrefix("A B"); err != nil || prefix != "juhe-ai:{A_B}:" {
 		t.Fatalf("prefix = (%s, %v)", prefix, err)
 	}
 }
@@ -115,14 +115,14 @@ func TestW11CRoutingStoreIdentityBranches(t *testing.T) {
 	if _, err := RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "memory"}); err == nil {
 		t.Fatalf("performance+memory must fail")
 	}
-	if _, err := RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisStateURL: " "}); err == nil {
+	if _, err := RoutingObservabilityStoreIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisURL: " "}); err == nil {
 		t.Fatalf("performance without url must fail")
 	}
 	// Store construction follows the identity branches.
 	if _, err := buildRoutingObservabilityStore(context.Background(), RuntimeDriverConfig{RuntimeMode: "standalone", RuntimeStateDriver: "redis"}); err == nil {
 		t.Fatalf("standalone redis store must fail")
 	}
-	if _, err := buildRoutingObservabilityStore(context.Background(), RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisStateURL: ""}); err == nil {
+	if _, err := buildRoutingObservabilityStore(context.Background(), RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisURL: ""}); err == nil {
 		t.Fatalf("performance without url store must fail")
 	}
 	if _, err := buildRoutingObservabilityStore(context.Background(), RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "memory"}); err == nil {

@@ -90,7 +90,8 @@ func TestW14BSub2APIOAuthSourceArms(t *testing.T) {
 			map[string]any{
 				"email": "w14b-key@example.com", "name": "w14b-key", "type": "api_key",
 				"status": "active", "group": "w14b-src-group", "platform": "openai",
-				"credentials": map[string]any{"api_key": "sk-src-w14b", "base_url": "https://api.openai.com/v1"},
+				"credentials":     map[string]any{"api_key": "sk-src-w14b", "base_url": "https://api.openai.com/v1"},
+				"supportedModels": []any{"gpt-4o-mini"},
 			},
 		},
 	}

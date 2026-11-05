@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Refresh failure state mirrors the openai-oauth-access-token-refresh.service
@@ -215,6 +216,18 @@ var errRedisShape = errors.New("OAuth 刷新失败状态 Redis 返回结构无�
 // OpenAI refresh family key prefix.
 func NewRedisFailureStateStore(redis Scripter) *RedisFailureStateStore {
 	return newRedisFailureStateStore(redis, openAIFailureStateKeyPrefix)
+}
+
+// NewRedisFailureStateStoreNamespaced builds the OpenAI refresh family under a
+// domain-qualified cluster hash tag.
+func NewRedisFailureStateStoreNamespaced(redis Scripter, namespace string) *RedisFailureStateStore {
+	return newRedisFailureStateStore(redis, rediscfg.NamespacedKey(openAIFailureStateKeyPrefix, namespace))
+}
+
+// NewRedisFailureStateStoreWithKeyPrefixNamespaced builds the keepalive family
+// under a domain-qualified cluster hash tag.
+func NewRedisFailureStateStoreWithKeyPrefixNamespaced(redis Scripter, keyPrefix, namespace string) *RedisFailureStateStore {
+	return newRedisFailureStateStore(redis, rediscfg.NamespacedKey(keyPrefix, namespace))
 }
 
 // NewRedisFailureStateStoreWithKeyPrefix builds the Redis-backed store under an

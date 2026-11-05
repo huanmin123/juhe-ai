@@ -299,11 +299,11 @@ func NewRedisStore(options RedisStoreOptions) (*RedisStore, error) {
 		if strings.TrimSpace(options.RedisURL) == "" {
 			return nil, errors.New("账户电路操作缺少 redisUrl")
 		}
-		parsed, err := redis.ParseURL(options.RedisURL)
+		var err error
+		client, err = rediscfg.NewUniversalClient(rediscfg.Config{URL: options.RedisURL})
 		if err != nil {
-			return nil, fmt.Errorf("解析账户电路 Redis URL: %w", err)
+			return nil, fmt.Errorf("创建账户电路 Redis 客户端: %w", err)
 		}
-		client = redis.NewClient(parsed)
 	}
 	capacity, err := positiveInteger(options.Capacity, "capacity")
 	if err != nil {
@@ -345,8 +345,8 @@ func NewRedisStore(options RedisStoreOptions) (*RedisStore, error) {
 
 // Close 释放自建 Redis 连接（Client 注入时为空操作）。
 func (s *RedisStore) Close() error {
-	if client, ok := s.client.(*redis.Client); ok && client != nil {
-		return client.Close()
+	if client, ok := s.client.(interface{ Close() error }); ok && client != nil {
+		return rediscfg.CloseClient(client)
 	}
 	return nil
 }

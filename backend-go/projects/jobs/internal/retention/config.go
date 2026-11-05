@@ -36,9 +36,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		ProcessRole: "server",
 		WorkerRole:  "worker",
 	}
-	if value := strings.TrimSpace(getenv("JUHE_AI_PROCESS_ROLE")); value != "" {
-		cfg.ProcessRole = value
-	}
 	if value := strings.TrimSpace(getenv("JUHE_AI_WORKER_ROLE")); value != "" {
 		cfg.WorkerRole = value
 	}

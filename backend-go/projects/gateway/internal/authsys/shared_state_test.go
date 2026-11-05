@@ -30,7 +30,7 @@ func TestRedisStateStoreKeyPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prefix != "juhe-ai:dev:state:auth_captcha:" {
+	if prefix != "juhe-ai:{dev}:state:auth_captcha:" {
 		t.Fatalf("prefix=%q", prefix)
 	}
 	if _, err := redisStateStoreKeyPrefix("  ", "auth_captcha"); err == nil || err.Error() != "Redis namespace 不能为空" {
@@ -40,7 +40,7 @@ func TestRedisStateStoreKeyPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sanitized != "juhe-ai:dev:state:auth_login_guard_:" {
+	if sanitized != "juhe-ai:{dev}:state:auth_login_guard_:" {
 		t.Fatalf("sanitized prefix=%q", sanitized)
 	}
 }
@@ -61,7 +61,7 @@ func TestSharedCaptchaIssueVerifyAtomicConsumption(t *testing.T) {
 		t.Fatalf("issue result blocked=%v challenge=%+v", result.Blocked, result.Challenge)
 	}
 
-	challengePrefix := "juhe-ai:dev:state:test_store:challenge:"
+	challengePrefix := "juhe-ai:{dev}:state:test_store:challenge:"
 	raw, err := server.Get(challengePrefix + result.Challenge.CaptchaID)
 	if err != nil || raw == "" {
 		t.Fatalf("challenge key missing (prefix %s): %v", challengePrefix, err)
@@ -260,7 +260,7 @@ func TestSharedCaptchaCrossInstanceConsumption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := sharedCaptchaAnswerForTest(t, instanceA, result.Challenge.CaptchaID, server, "juhe-ai:dev:state:test_store:challenge:")
+	answer := sharedCaptchaAnswerForTest(t, instanceA, result.Challenge.CaptchaID, server, "juhe-ai:{dev}:state:test_store:challenge:")
 
 	if verified, err := instanceB.VerifyWithError(result.Challenge.CaptchaID, strings.ToLower(answer)); err != nil || !verified {
 		t.Fatalf("instance B must consume the challenge issued by instance A: verified=%v err=%v", verified, err)

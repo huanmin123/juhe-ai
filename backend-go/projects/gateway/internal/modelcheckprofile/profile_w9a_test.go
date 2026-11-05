@@ -11,8 +11,8 @@ import (
 // whole catalog.
 func TestW9AFrozenCatalogShape(t *testing.T) {
 	profiles := Profiles()
-	if len(profiles) != 9 {
-		t.Fatalf("catalog size = %d, want 9", len(profiles))
+	if len(profiles) != 8 {
+		t.Fatalf("catalog size = %d, want 8", len(profiles))
 	}
 	seenProfileIDs := map[string]bool{}
 	for _, p := range profiles {
@@ -91,8 +91,8 @@ func TestW9AFind(t *testing.T) {
 	if !ok || p.ProviderCode != "gpt" || p.Protocol != ProtocolOpenAIResponses {
 		t.Fatalf("Find case-insensitive hit failed: %+v ok=%v", p, ok)
 	}
-	if _, ok := Find("OpenAI", "profile_openai_openai_v1"); !ok {
-		t.Fatal("Find should match openai provider profile")
+	if _, ok := Find("OpenAI", "profile_openai_openai_v1"); ok {
+		t.Fatal("retired openai-compatible provider profile must miss")
 	}
 	if p, ok := Find("nope", "profile_gpt_openai_v1"); ok || p.ID != "" {
 		t.Fatalf("unknown provider must miss, got %+v ok=%v", p, ok)

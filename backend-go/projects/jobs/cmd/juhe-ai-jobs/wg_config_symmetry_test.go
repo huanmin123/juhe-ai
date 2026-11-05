@@ -8,22 +8,18 @@ import (
 // 本文件锁定 jobs worker 配置与 gateway 组合根的三处对称契约：
 // usage spool 目录旧名回退、production SECRET 强度门禁、CODEX 分片数边界。
 
-// TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback 锁定 usage spool 目录
-// 新名/旧名解析顺序与 gateway runtime.go 同款：DIRECTORY 优先，仅配旧名
-// JUHE_AI_USAGE_SPOOL_DIR 时回退旧名（组合根据 usageSpoolDirectoryLegacyName
-// 打 warn 披露兼容路径），两者都配置时旧名静默失效。
-func TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback(t *testing.T) {
+// TestLoadWorkerConfigUsageSpoolDirectory 锁定 usage spool 目录只认现行名
+// JUHE_AI_USAGE_SPOOL_DIRECTORY；旧名 JUHE_AI_USAGE_SPOOL_DIR 已删除，不再
+// 参与解析（与 gateway runtime.go 同款硬切）。
+func TestLoadWorkerConfigUsageSpoolDirectory(t *testing.T) {
 	env := workerSmokeTestEnv(t)
 	env["JUHE_AI_USAGE_SPOOL_DIR"] = "/tmp/spool-legacy"
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {
-		t.Fatalf("只配旧名必须可装载: %v", err)
+		t.Fatalf("装载失败: %v", err)
 	}
-	if config.UsageSpoolDirectory != "/tmp/spool-legacy" {
-		t.Fatalf("只配旧名时必须使用旧名目录，得到 %q", config.UsageSpoolDirectory)
-	}
-	if !config.usageSpoolDirectoryLegacyName {
-		t.Fatal("只配旧名时必须登记旧名回退标记（组合根据此披露兼容路径）")
+	if config.UsageSpoolDirectory == "/tmp/spool-legacy" {
+		t.Fatalf("旧名必须被忽略，得到 %q", config.UsageSpoolDirectory)
 	}
 
 	env = workerSmokeTestEnv(t)
@@ -31,23 +27,17 @@ func TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback(t *testing.T) {
 	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = "/tmp/spool-new"
 	config, err = loadWorkerConfig(getenvFrom(env))
 	if err != nil {
-		t.Fatalf("两处都配置必须可装载: %v", err)
+		t.Fatalf("装载失败: %v", err)
 	}
 	if config.UsageSpoolDirectory != "/tmp/spool-new" {
-		t.Fatalf("新名 DIRECTORY 必须优先于旧名 DIR，得到 %q", config.UsageSpoolDirectory)
-	}
-	if config.usageSpoolDirectoryLegacyName {
-		t.Fatal("新名生效时不得登记旧名回退标记")
+		t.Fatalf("DIRECTORY 必须生效，得到 %q", config.UsageSpoolDirectory)
 	}
 
 	env = workerSmokeTestEnv(t)
 	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = "/tmp/spool-new"
 	config, err = loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("只配新名必须可装载: %v", err)
-	}
-	if config.UsageSpoolDirectory != "/tmp/spool-new" || config.usageSpoolDirectoryLegacyName {
-		t.Fatalf("只配新名必须直接生效且无回退标记: %q %v", config.UsageSpoolDirectory, config.usageSpoolDirectoryLegacyName)
+	if err != nil || config.UsageSpoolDirectory != "/tmp/spool-new" {
+		t.Fatalf("只配 DIRECTORY 必须生效: %q %v", config.UsageSpoolDirectory, err)
 	}
 }
 
@@ -85,7 +75,7 @@ func TestLoadWorkerConfigProductionSecretGate(t *testing.T) {
 	if _, err := loadWorkerConfig(getenvFrom(env)); err != nil {
 		t.Fatalf("非生产短 SECRET 必须放行: %v", err)
 	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke"})); err != nil {
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke", "JUHE_AI_REDIS_URL": "redis://smoke-test.invalid:6379/0"})); err != nil {
 		t.Fatalf("非生产空 SECRET 必须回退开发密钥: %v", err)
 	}
 }

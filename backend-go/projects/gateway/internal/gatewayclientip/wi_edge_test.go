@@ -268,11 +268,11 @@ func TestWIGatewayClientIPKeyHelpers(t *testing.T) {
 	if got := namespacedStateKey("///", "state:x"); got != "state:x" {
 		t.Fatalf("namespace 失败 key=%q", got)
 	}
-	prefixed := "juhe-ai:dev:state:x"
+	prefixed := "juhe-ai:{dev}:state:x"
 	if got := namespacedStateKey("dev", prefixed); got != prefixed {
 		t.Fatalf("已带前缀=%q", got)
 	}
-	if got := namespacedStateKey("dev", "state:x"); got != "juhe-ai:dev:state:x" {
+	if got := namespacedStateKey("dev", "state:x"); got != "juhe-ai:{dev}:state:x" {
 		t.Fatalf("普通 key=%q", got)
 	}
 	// uniqueAccountIDs / uniqueAccountIDSet / buildAccountCapacities。

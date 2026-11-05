@@ -43,12 +43,14 @@ func TestW2Sub2APIAdapterAPIKeyAccounts(t *testing.T) {
 		},
 		"accounts": []any{
 			map[string]any{"name": "密钥账户", "platform": "OpenAI", "type": "api_key",
-				"credentials": map[string]any{"api_key": "sk-live-1", "base_url": "https://api.openai.com/v1"},
-				"proxy_key":   "p1", "concurrency": float64(3), "priority": float64(2),
+				"credentials":     map[string]any{"api_key": "sk-live-1", "base_url": "https://api.openai.com/v1"},
+				"supportedModels": []any{"gpt-4o-mini"},
+				"proxy_key":       "p1", "concurrency": float64(3), "priority": float64(2),
 				"notes": "备注", "expires_at": float64(1767225600), "legacy_field": true},
 			map[string]any{"name": "多密钥账户", "platform": "gpt", "type": "api_key",
 				"credentials": map[string]any{"api_keys": []any{"sk-a-1", "sk-a-1", "sk-***", "sk-a-2", "  ", 42},
-					"base_url": "https://api.openai.com/v1"}},
+					"base_url": "https://api.openai.com/v1"},
+				"supportedModels": []any{"gpt-4o-mini"}},
 			map[string]any{"name": "引用缺失", "platform": "openai", "type": "api_key",
 				"credentials": map[string]any{"api_key": "sk-live-2"}, "proxy_key": "ghost"},
 			map[string]any{"name": "引用停用", "platform": "openai", "type": "api_key",
@@ -141,7 +143,6 @@ func TestW2Sub2APIAdapterAPIKeyAccounts(t *testing.T) {
 
 func TestW2Sub2APIAdapterOAuthAccounts(t *testing.T) {
 	env := newTestEnv(t)
-	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	// OAuth 账户固定映射 gpt 供应商的 profile_gpt_openai_v1 档案；基础夹具
 	// 只有 prof-gpt，这里补齐导入链引用的档案 id。
@@ -241,7 +242,8 @@ func TestW2Sub2APIAdapterMalformedInputs(t *testing.T) {
 	})
 	t.Run("内嵌 data 包装", func(t *testing.T) {
 		inner := map[string]any{"accounts": []any{map[string]any{"name": "内嵌", "platform": "openai",
-			"type": "api_key", "credentials": map[string]any{"api_key": "sk-x"}}}}
+			"type": "api_key", "credentials": map[string]any{"api_key": "sk-x"},
+			"supportedModels": []any{"gpt-4o-mini"}}}}
 		result := w2PreviewSource(t, env, map[string]any{"data": inner}, importSourceSub2Api, adminID)
 		if result.Source.Accepted != 1 || len(result.Accounts) != 1 || *result.Accounts[0].Name != "内嵌" {
 			t.Fatalf("内嵌 data 未展开：%+v", result.Source)
@@ -254,16 +256,20 @@ func TestW2ChannelAdapterNewAPIAndOneAPI(t *testing.T) {
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 
+	// 来源没有可信 vendor，models 是唯一推断依据：可接受记录都必须携带可识别
+	// 模型（gpt-4o-mini → gpt），无 models 的记录按「无法推断厂商」跳过。
 	document := []any{
 		map[string]any{"id": float64(1), "type": float64(1), "key": "sk-chan-1", "name": "频道一",
-			"base_url": "https://api.openai.com/v1", "group": "频道分组", "status": float64(1), "weight": float64(0)},
-		map[string]any{"type": "OpenAI-Compatible", "key": "sk-chan-2\nsk-chan-3", "status": "enabled"},
-		map[string]any{"type": float64(8), "key": "sk-x"},                                         // 非 OpenAI 类型
-		map[string]any{"type": float64(1), "key": ""},                                             // 缺 key
-		map[string]any{"type": float64(1), "key": "sk-a"},                                         // base_url 缺省走官方
-		map[string]any{"type": float64(1), "key": "sk-b", "base_url": "http://127.0.0.1:8080/v1"}, // 私网拒绝
-		map[string]any{"type": float64(1), "key": "sk-c", "group": "a,b"},                         // 非法分组名回退
-		map[string]any{"type": float64(1), "key": "sk-d", "status": float64(0)},                   // 停用状态透传
+			"base_url": "https://api.openai.com/v1", "group": "频道分组", "status": float64(1), "weight": float64(0),
+			"models": "gpt-4o-mini"},
+		map[string]any{"type": "OpenAI-Compatible", "key": "sk-chan-2\nsk-chan-3", "status": "enabled",
+			"models": "gpt-4o-mini"},
+		map[string]any{"type": float64(8), "key": "sk-x"},                                                                  // 非 OpenAI 类型
+		map[string]any{"type": float64(1), "key": ""},                                                                      // 缺 key
+		map[string]any{"type": float64(1), "key": "sk-a", "models": "gpt-4o-mini"},                                         // base_url 缺省走官方
+		map[string]any{"type": float64(1), "key": "sk-b", "base_url": "http://127.0.0.1:8080/v1", "models": "gpt-4o-mini"}, // 私网拒绝
+		map[string]any{"type": float64(1), "key": "sk-c", "group": "a,b", "models": "gpt-4o-mini"},                         // 非法分组名回退
+		map[string]any{"type": float64(1), "key": "sk-d", "status": float64(0), "models": "gpt-4o-mini"},                   // 停用状态透传
 		"not-an-object",
 	}
 	result := w2PreviewSource(t, env, document, importSourceNewAPI, adminID)
@@ -299,14 +305,14 @@ func TestW2ChannelAdapterNewAPIAndOneAPI(t *testing.T) {
 		}
 	}
 	// One-API 模式：标签与默认分组名切换，支持 {data:[...]} 包装。
-	wrapped := map[string]any{"data": []any{map[string]any{"type": float64(1), "key": "sk-one-1"}}}
+	wrapped := map[string]any{"data": []any{map[string]any{"type": float64(1), "key": "sk-one-1", "models": "gpt-4o-mini"}}}
 	result = w2PreviewSource(t, env, wrapped, importSourceOneAPI, adminID)
 	if result.Source.Accepted != 1 || *result.Accounts[0].Name != "One-API Channel 1" {
 		t.Fatalf("One-API 默认命名不一致：%+v", result.Accounts)
 	}
 
 	// items 包装同样被识别。
-	result = w2PreviewSource(t, env, map[string]any{"items": []any{map[string]any{"type": "openai", "key": "sk-one-2"}}},
+	result = w2PreviewSource(t, env, map[string]any{"items": []any{map[string]any{"type": "openai", "key": "sk-one-2", "models": "gpt-4o-mini"}}},
 		importSourceOneAPI, adminID)
 	if result.Source.Accepted != 1 {
 		t.Fatalf("items 包装未识别：%+v", result.Source)

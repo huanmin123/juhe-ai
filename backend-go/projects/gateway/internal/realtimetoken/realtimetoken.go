@@ -63,7 +63,7 @@ type RedisClient interface {
 
 // GoRedisClient 把 go-redis 客户端适配到 RedisClient（redis.Nil 翻译为
 // ErrMiss）。
-type GoRedisClient struct{ Client *redis.Client }
+type GoRedisClient struct{ Client redis.UniversalClient }
 
 // Set 实现 RedisClient。
 func (c GoRedisClient) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {

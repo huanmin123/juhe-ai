@@ -135,30 +135,10 @@ func isOpenAIModelMappingRuntimeConversionSupported(mapping *AccountModelMapping
 		(source == FamilyGeminiStreamGenerate && upstream == FamilyGeminiGenerateContent) {
 		return true
 	}
-	// 跨协议转换矩阵（设计 §2 终态，B4 W2 拆门）：hybrid provider 门与
-	// OpenAI 档案亲和判定已拆除，矩阵内 family 对按账户声明放行；矩阵之外
-	// 的 family 对由写侧 §5.2 校验拒绝，不会出现在 account_entry_mappings。
-	switch {
-	case source == FamilyResponses && upstream == FamilyChatCompletions:
-		return true
-	case source == FamilyAnthropicMessages && upstream == FamilyChatCompletions:
-		return true
-	case (source == FamilyGeminiGenerateContent || source == FamilyGeminiStreamGenerate) && upstream == FamilyChatCompletions:
-		return true
-	case source == FamilyChatCompletions && upstream == FamilyAnthropicMessages:
-		return true
-	case source == FamilyResponses && upstream == FamilyAnthropicMessages:
-		return true
-	case (source == FamilyGeminiGenerateContent || source == FamilyGeminiStreamGenerate) && upstream == FamilyAnthropicMessages:
-		return true
-	case source == FamilyChatCompletions && upstream == FamilyGeminiGenerateContent:
-		return true
-	case source == FamilyResponses && upstream == FamilyGeminiGenerateContent:
-		return true
-	case source == FamilyAnthropicMessages && upstream == FamilyGeminiGenerateContent:
-		return true
-	}
-	return false
+	// 跨协议转换矩阵已随 openai/hybrid/generic_http 退役（2026-11-05 用户
+	// 裁决）：只保留 OpenAI v1 Responses -> Chat Completions 的显式 bridge，
+	// 其余跨族映射不再放行。写侧 §5.2 矩阵与本处保持同一 8 pair 口径。
+	return source == FamilyResponses && upstream == FamilyChatCompletions
 }
 
 // isOpenAIResponsesToChatCompletionsModelMapping mirrors the same-named Node

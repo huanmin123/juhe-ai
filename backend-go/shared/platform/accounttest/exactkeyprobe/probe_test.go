@@ -40,18 +40,18 @@ func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
 		if body["model"] != "gpt-test" || body["stream"] != false || body["max_tokens"] != float64(probeOutputTokenLimit) {
 			t.Fatalf("unexpected direct request body: %#v", body)
 		}
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromDecoded(body) + `"}}]}`))
-		}))
-		defer server.Close()
-	
-		// R3：探针 base_url 携带 /v1 版本根，线上路径 = 根 + 去前缀操作路径
-		//（R1 删除运行时补 /v1），mock 断言路径不变。
-		result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-		if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
-			t.Fatalf("unexpected probe result: %#v", result)
-		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromDecoded(body) + `"}}]}`))
+	}))
+	defer server.Close()
+
+	// R3：探针 base_url 携带 /v1 版本根，线上路径 = 根 + 去前缀操作路径
+	//（R1 删除运行时补 /v1），mock 断言路径不变。
+	result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected probe result: %#v", result)
 	}
+}
 
 func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 	secret := "test-secret"
@@ -69,13 +69,13 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 		if body["model"] != "gpt-test" || body["stream"] != true || body["max_output_tokens"] != float64(probeOutputTokenLimit) {
 			t.Fatalf("unexpected SSE request body: %#v", body)
 		}
-			writer.Header().Set("Content-Type", "text/event-stream")
-			_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + challengeAnswerFromDecoded(body) + "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
-		}))
-		defer server.Close()
-	
-		// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
-		result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + challengeAnswerFromDecoded(body) + "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+	result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected SSE probe result: %#v", result)
 	}
@@ -110,12 +110,12 @@ func TestProbeOpenAICodexResponsesMatchesManualCompatibilityContract(t *testing.
 		if !ok || metadata["x-codex-window-id"] != sessionID+":0" || metadata["session_id"] != sessionID || metadata["x-codex-turn-metadata"] != request.Header.Get("X-Codex-Turn-Metadata") {
 			t.Fatalf("unexpected Codex metadata: %#v", body["client_metadata"])
 		}
-			writer.Header().Set("Content-Type", "text/event-stream")
-			_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + challengeAnswerFromDecoded(body) + "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
-		}))
-		defer server.Close()
-	
-		input := testInput(server.URL, "responses_sse")
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + challengeAnswerFromDecoded(body) + "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	input := testInput(server.URL, "responses_sse")
 	input.ClientCompatibility = "codex_responses"
 	input.HealthModel = "gpt-5.6-terra"
 	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
@@ -169,11 +169,11 @@ func TestProbeGPTOAuthResponsesSSEUsesCodexShape(t *testing.T) {
 	}
 	// 评分承接（§9.4 裁决）：响应按请求编码形态统一走 verifyResponsesSSE，
 	// SSE body 照旧 success。
-		sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
-		if err := verifyResponse(input, testChallenge, sseBody); err != nil {
-			t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
-		}
+	sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	if err := verifyResponse(input, testChallenge, sseBody); err != nil {
+		t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
 	}
+}
 
 func TestProbeOpenAIResponsesSSERequiresCompletionEvent(t *testing.T) {
 	secret := "test-secret"
@@ -243,8 +243,8 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	}
 }
 
-	// 挑战报文自 2026-10-15 起为每次请求独立的随机算术题（停用「请原样输出
-	// juhe<数字>」令牌形态，上游内容审核会整段 403）。以下正则锁定请求侧报文形态。
+// 挑战报文自 2026-10-15 起为每次请求独立的随机算术题（停用「请原样输出
+// juhe<数字>」令牌形态，上游内容审核会整段 403）。以下正则锁定请求侧报文形态。
 var (
 	challengeDigitsPattern  = regexp.MustCompile(`^\d{3,6}$`)
 	challengeMessagePattern = regexp.MustCompile(`^接口连通性自动测试：请计算 \d+\+\d+，只回复数字$`)
@@ -266,9 +266,9 @@ func TestProbeOpenAIChatSendsRandomizedChallengeMessage(t *testing.T) {
 		}
 		message, _ := messages[0].(map[string]any)
 		content, _ := message["content"].(string)
-			messageCh <- content
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromDecoded(body) + `"}}]}`))
+		messageCh <- content
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromDecoded(body) + `"}}]}`))
 	}))
 	defer server.Close()
 
@@ -296,9 +296,9 @@ func TestProbeOpenAIResponsesJSONKeepsInstructionsInRotationPool(t *testing.T) {
 			return
 		}
 		instructions, _ := body["instructions"].(string)
-			instructionsCh <- instructions
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"` + challengeAnswerFromDecoded(body) + `"}]}]}`))
+		instructionsCh <- instructions
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"` + challengeAnswerFromDecoded(body) + `"}]}]}`))
 	}))
 	defer server.Close()
 
@@ -329,8 +329,8 @@ func TestProbeAnthropicMessagesUsesNativeHeadersAndCompletion(t *testing.T) {
 		if request.URL.Path != "/v1/messages" || request.Header.Get("x-api-key") != "anthropic-key" || request.Header.Get("anthropic-version") != "2023-06-01" {
 			t.Fatalf("unexpected Anthropic request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"` + challengeAnswerFromRequest(request) + `"}]}`))
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"` + challengeAnswerFromRequest(request) + `"}]}`))
 	}))
 	defer server.Close()
 	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
@@ -350,8 +350,8 @@ func TestProbeGeminiNativeUsesGoogleOAuthHeadersAndCompletion(t *testing.T) {
 		if request.URL.Path != "/v1beta/models/gemini-test:generateContent" || request.Header.Get("Authorization") != "Bearer google-token" || request.Header.Get("x-goog-user-project") != "quota-1" {
 			t.Fatalf("unexpected Gemini request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"` + challengeAnswerFromRequest(request) + `"}]}}]}`))
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"` + challengeAnswerFromRequest(request) + `"}]}}]}`))
 	}))
 	defer server.Close()
 	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
@@ -377,8 +377,8 @@ func TestProbeGeminiInteractionsSSERequiresCompletedEvent(t *testing.T) {
 		if request.URL.Path != "/v1beta/interactions" || request.Header.Get("api-revision") != "2026-05-20" || request.Header.Get("Accept") != "application/json, text/event-stream" {
 			t.Fatalf("unexpected Gemini Interactions request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
-			writer.Header().Set("Content-Type", "text/event-stream")
-			_, _ = writer.Write([]byte("data: {\"type\":\"interaction.delta\",\"text\":\"" + challengeAnswerFromRequest(request) + "\"}\n\ndata: {\"type\":\"interaction.completed\",\"status\":\"completed\"}\n\n"))
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"interaction.delta\",\"text\":\"" + challengeAnswerFromRequest(request) + "\"}\n\ndata: {\"type\":\"interaction.completed\",\"status\":\"completed\"}\n\n"))
 	}))
 	defer server.Close()
 	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
@@ -521,10 +521,10 @@ func TestProbeOpenAIOAuthUsesCodexEndpointAndIdentity(t *testing.T) {
 		t.Fatalf("A 形态 BudgetNone 不得携带 max_output_tokens: %#v", body)
 	}
 	// 评分承接：SSE body 照旧 success。
-		sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
-		if err := verifyResponse(input, testChallenge, sseBody); err != nil {
-			t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
-		}
+	sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	if err := verifyResponse(input, testChallenge, sseBody); err != nil {
+		t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
+	}
 	// JSON body 不再满足 A 形态探活语义（评分跟随请求编码形态，无 fallback）。
 	if err := verifyResponse(input, testChallenge, []byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"46"}]}]}`)); err == nil {
 		t.Fatal("A 形态请求发 SSE 后 JSON 响应不得被判 success")
@@ -605,7 +605,7 @@ func testInput(baseURL, mode string) Input {
 		InputVersion:         1,
 		ConfigRevision:       1,
 		DispatchRevision:     1,
-		Provider:             "openai",
+		Provider:             "gpt",
 		Type:                 "api_key",
 		EndpointMode:         mode,
 		HealthModel:          "gpt-test",
@@ -646,7 +646,7 @@ func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
 	oauthInput := Input{
 		AccountID:           "acc-oauth",
 		Type:                "oauth",
-		Provider:            "openai",
+		Provider:            "gpt",
 		EndpointMode:        "responses_sse",
 		HealthModel:         "gpt-test",
 		ClientCompatibility: "codex_responses",
@@ -686,7 +686,7 @@ func TestBuildProbeRequestGLMCodingUsesZCodeIdentityForBothProtocols(t *testing.
 		wantAuth   string
 		wantAPIKey string
 	}{
-		{name: "openai", profileID: "profile_glm_coding_openai_v1", provider: "openai", mode: "chat_json", wantAuth: "Bearer glm-key"},
+		{name: "openai", profileID: "profile_glm_coding_openai_v1", provider: "gpt", mode: "chat_json", wantAuth: "Bearer glm-key"},
 		{name: "anthropic", profileID: "profile_glm_coding_anthropic_v1", provider: "anthropic", mode: "messages_json", wantAuth: "Bearer glm-key"},
 	}
 	for _, tc := range cases {
@@ -732,8 +732,8 @@ func TestBuildProbeRequestGLMOpenAIUsesManualCompatibleBasePaths(t *testing.T) {
 			wantPath: "/api/coding/paas/v4/chat/completions",
 		},
 		{
-			name:     "generic service root",
-			profile:  "profile_glm_general_openai_v1",
+			name:    "generic service root",
+			profile: "profile_glm_general_openai_v1",
 			// R3：base_url 必须自带版本根（R1 删除运行时补 /v1 后，无根 base
 			// 会直拼成 /chat/completions）——fixture 改为带 /v1 的服务根。
 			base:     "https://glm-proxy.test/v1",
@@ -775,7 +775,7 @@ func TestBuildProbeRequestProviderBasePathsRemainAligned(t *testing.T) {
 		base     string
 		wantPath string
 	}{
-		{name: "OpenAI service root", profile: "profile_openai_openai_v1", provider: "openai", mode: "chat_json", base: "https://api.openai.com/v1", wantPath: "/v1/chat/completions"},
+		{name: "OpenAI service root", profile: "profile_gpt_openai_v1", provider: "gpt", mode: "chat_json", base: "https://api.openai.com/v1", wantPath: "/v1/chat/completions"},
 		{name: "xAI version root", profile: "profile_xai_openai_v1", provider: "xai", mode: "chat_json", base: "https://api.x.ai/v1", wantPath: "/v1/chat/completions"},
 		{name: "DeepSeek OpenAI root", profile: "profile_deepseek_openai_v1", provider: "deepseek", mode: "chat_json", base: "https://api.deepseek.com/v1", wantPath: "/v1/chat/completions"},
 		{name: "DeepSeek Anthropic root", profile: "profile_deepseek_anthropic_v1", provider: "deepseek", mode: "messages_json", base: "https://api.deepseek.com/anthropic/v1", wantPath: "/anthropic/v1/messages"},

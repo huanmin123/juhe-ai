@@ -307,17 +307,6 @@ func TestW2OptionMergeHelpers(t *testing.T) {
 			t.Fatalf("去重结果不一致：%v", got)
 		}
 	})
-	t.Run("openai 兼容供应商剔除自身", func(t *testing.T) {
-		got := testCatalogBuiltInSourceCodes("openai", []string{"openai", "gpt", "  "})
-		// 只剔除 openai 兼容自身；空白清洗由 normalizeTestProviderCodeList 负责。
-		if len(got) != 2 || got[0] != "gpt" {
-			t.Fatalf("剔除结果不一致：%v", got)
-		}
-		other := testCatalogBuiltInSourceCodes("gpt", []string{"gpt", "x"})
-		if len(other) != 2 {
-			t.Fatalf("非 openai 兼容供应商应原样返回：%v", other)
-		}
-	})
 	t.Run("目录日期比较", func(t *testing.T) {
 		if testCatalogReleaseDate("2026-01-02T00:00:00Z") != "2026-01-02" || testCatalogReleaseDate("short") != "" {
 			t.Fatal("目录日期归一不一致")
@@ -481,15 +470,6 @@ func TestW2TestCatalogSourceCodes(t *testing.T) {
 		codes, err := store.testCatalogSourceCodes(ctx, "openai")
 		if err != nil || len(codes) != 1 || codes[0] != "openai" {
 			t.Fatalf("openai 兼容源码应单值归一：%v %v", codes, err)
-		}
-	})
-
-	t.Run("内置源码剔除 openai 兼容自身", func(t *testing.T) {
-		got := testCatalogBuiltInSourceCodes("openai", []string{"openai", "gpt"})
-		for _, code := range got {
-			if code == "openai" {
-				t.Fatalf("内置源码不应包含 openai 兼容自身：%v", got)
-			}
 		}
 	})
 }

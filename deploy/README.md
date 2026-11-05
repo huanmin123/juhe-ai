@@ -37,7 +37,7 @@ go-only 发布包不再携带 `backend/.env.example`（X02 裁剪）。可以直
 notepad .\backend\.env
 ```
 
-如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动创建 `backend/.env`（发布包已无 example 模板），生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。这不会生成 F2/F3/F4 owner ID 或 F3/F4 input secret；任一组件必填项缺失时启动会明确失败。因此首次启动前仍应手工编辑 `backend/.env`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/Caddy自动HTTPS部署指南.md`。
+如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动创建 `backend/.env`（发布包已无 example 模板），生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。这不会生成 F2/F3/F4 owner ID 或 F3/F4 input secret；任一组件必填项缺失时启动会明确失败。因此首次启动前仍应手工编辑 `backend/.env`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/README.md`。
 
 最低配置（PostgreSQL + Redis 唯一存储形态；JUHE_AI_SECRET 由启动脚本自动生成）：
 

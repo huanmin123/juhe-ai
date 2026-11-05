@@ -17,7 +17,7 @@ func wgValidDirectInput(t *testing.T, secret string) DirectInput {
 	return DirectInput{
 		Account: DirectAccount{
 			ID: "acct-in", ConfigRevision: 2, DispatchRevision: 3,
-			Provider: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+			Provider: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 			Type: "api_key", Status: "active", Schedulable: true,
 			EndpointMode: "chat_json", HealthModel: "gpt-test",
 			CredentialsEncrypted: credentials,
@@ -42,7 +42,7 @@ func TestToInputSuccessPaths(t *testing.T) {
 	if input.BaseURL != "https://api.test/v1" || len(input.APIKeys) != 1 || input.APIKeys[0].Fingerprint == "" {
 		t.Fatalf("api_key 输入形状错误: %+v", input)
 	}
-	if input.Provider != "openai" || input.EndpointMode != "chat_json" || !input.Eligibility.BoundGroup {
+	if input.Provider != "gpt" || input.EndpointMode != "chat_json" || !input.Eligibility.BoundGroup {
 		t.Fatalf("输入协议/资格错误: %+v", input)
 	}
 	// OAuth 形态：access_token + expires_at + account_id + quota project。
@@ -102,7 +102,7 @@ func TestToInputRejectsInvalidMutations(t *testing.T) {
 	// 授权可用但 binding id 不匹配（binding 校验先于 source 检查）。
 	fullSource := base
 	fullSource.Authorization = &DirectAuthorization{ID: "auth-2", Status: "active", QuotaEligible: true}
-	fullSource.Source = &DirectSource{ID: "src-1", ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: mustEnvelopeJSON(t, secret, `{"api_key":"sk-2"}`)}
+	fullSource.Source = &DirectSource{ID: "src-1", ConfigRevision: 1, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: mustEnvelopeJSON(t, secret, `{"api_key":"sk-2"}`)}
 	if _, err := fullSource.ToInput(secret, now); err == nil || !strings.Contains(err.Error(), "不匹配") {
 		t.Fatalf("binding id 不匹配必须报错: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestValidateDirectAccountMatrix(t *testing.T) {
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	valid := DirectAccount{
 		ID: "acct", ConfigRevision: 1, DispatchRevision: 1,
-		Provider: "openai", Type: "api_key", Status: "active", Schedulable: true,
+		Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true,
 		EndpointMode: "chat_json", HealthModel: "gpt-x", CredentialsEncrypted: "envelope",
 	}
 	if err := validateDirectAccount(valid, now); err != nil {
@@ -186,7 +186,7 @@ func TestValidateDirectAccountMatrix(t *testing.T) {
 		t.Fatal("mode 不支持必须在 ToInput 拒绝")
 	}
 	metadataMismatch := DirectInput{Account: valid, Binding: DirectBinding{GroupID: "g", Enabled: true}, InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "tls"}
-	metadataMismatch.Account.ProtocolProfileID = "profile_openai_openai_v1"
+	metadataMismatch.Account.ProtocolProfileID = "profile_gpt_openai_v1"
 	metadataMismatch.Account.ProtocolCode = "anthropic"
 	metadataMismatch.Account.ConnectionBaseURL = "https://api.test"
 	if _, err := metadataMismatch.ToInput("secret", now); err == nil {
@@ -208,12 +208,12 @@ func TestProbeValidateInputMismatch(t *testing.T) {
 	if err := validateInput(input, ProbeOptions{}); err == nil {
 		t.Fatal("协议不一致必须报错")
 	}
-	noModel := wgSSEInput("chat_json", "openai", "profile_openai_openai_v1")
+	noModel := wgSSEInput("chat_json", "gpt", "profile_gpt_openai_v1")
 	noModel.HealthModel = ""
 	if err := validateInput(noModel, ProbeOptions{}); err == nil {
 		t.Fatal("缺模型必须报错")
 	}
-	badMetadata := wgSSEInput("chat_json", "openai", "profile_openai_openai_v1")
+	badMetadata := wgSSEInput("chat_json", "gpt", "profile_gpt_openai_v1")
 	badMetadata.ProtocolCode = "anthropic"
 	if err := validateInput(badMetadata, ProbeOptions{}); err == nil {
 		t.Fatal("协议元数据不一致必须报错")

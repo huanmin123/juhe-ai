@@ -94,10 +94,10 @@
       </div>
     </section>
 
-    <!-- 段2 模型与映射：支持模型一律必选（D7）；hybrid 视频/音频域保留域内映射编辑。 -->
+    <!-- 段2 模型：支持模型一律必选（D7）。 -->
     <section v-show="!providerPickerExpanded" class="media-form-section">
       <div class="media-section-label">
-        <span class="media-section-name">模型{{ isHybridMappingDomain ? '与映射' : '' }}</span>
+        <span class="media-section-name">模型</span>
         <span class="media-section-hint">{{ domainModelSectionHint }}</span>
         <span class="media-section-line" />
       </div>
@@ -167,54 +167,6 @@
             {{ option.label }}
           </a-checkbox>
         </div>
-      </a-form-item>
-
-      <a-form-item v-if="isHybridMappingDomain" class="media-mapping-field">
-        <template #label>
-          <div class="media-speech-label">
-            <span>域内模型映射</span>
-            <a-tooltip :title="mediaMappingTooltip">
-              <QuestionCircleOutlined class="media-speech-help" />
-            </a-tooltip>
-          </div>
-        </template>
-        <div v-if="form.modelMappings.length" class="media-mapping-list">
-          <div v-for="(mapping, index) in form.modelMappings" :key="index" class="media-mapping-row">
-            <a-select
-              v-model:value="mapping.sourceModel"
-              allow-clear
-              :disabled="authorizedEditing"
-              option-filter-prop="label"
-              :options="mediaMappingSourceModelOptions"
-              placeholder="客户端模型"
-              show-search
-              @dropdown-visible-change="emitMappingSourceOptionsOpen($event)"
-              @search="emitMappingSourceOptionsSearch($event)"
-            />
-            <SwapRightOutlined class="media-mapping-arrow" />
-            <a-select
-              v-model:value="mapping.upstreamModel"
-              allow-clear
-              :disabled="authorizedEditing"
-              option-filter-prop="label"
-              :options="mediaMappingUpstreamModelOptions"
-              placeholder="上游模型"
-              show-search
-            />
-            <div class="media-mapping-actions">
-              <a-switch v-model:checked="mapping.enabled" :disabled="authorizedEditing" />
-              <a-tooltip title="删除映射">
-                <a-button type="text" danger :disabled="authorizedEditing" @click="removeMediaMapping(index)">
-                  <template #icon><DeleteOutlined /></template>
-                </a-button>
-              </a-tooltip>
-            </div>
-          </div>
-        </div>
-        <a-button v-if="!authorizedEditing" block type="dashed" @click="addMediaMapping">
-          <template #icon><PlusOutlined /></template>
-          新增映射
-        </a-button>
       </a-form-item>
     </section>
 
@@ -355,14 +307,11 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SettingOutlined, SwapRightOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { QuestionCircleOutlined, SettingOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import {
-  OPENAI_TTS_FAMILY,
-  OPENAI_VIDEO_GENERATION_FAMILY,
-  isHybridProviderCode,
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
 import type { AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
@@ -392,8 +341,6 @@ import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 import {
-  accountModelMappingSourceModelOptions,
-  filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
 import type { AccountFormModel } from './accountFormTypes'
@@ -595,7 +542,7 @@ const oauthProxyRequired = computed(() =>
   props.form.type === 'google_oauth'
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode))
 
-// ---- 段2：支持模型按域 modes 过滤 + hybrid 域内映射 ----
+// ---- 段2：支持模型按域 modes 过滤 + 媒体域内映射 ----
 
 // 目录协议 token 过滤（mediaDomainModelProtocolTokens 与 model_catalog 种子同源）。
 // v8-C：服务端已按账户域目录 mode 过滤（模型候选加载传 DOMAIN_MODEL_MODES[域]），
@@ -609,67 +556,17 @@ const domainModelOptions = computed(() => {
     option.supportedApiProtocols?.some((protocol) => tokens.has(protocol)))
 })
 
-const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerCode))
-const isHybridMappingDomain = computed(() =>
-  isHybridAccount.value
-  && !props.authorizedEditing
-  && (props.capabilityDomain === 'video' || props.capabilityDomain === 'audio'))
-
 // v8-D：选中供应商在当前域目录候选「加载后确认为空」时的引导提示。候选是
 // 懒加载（弹窗打开加载一次、切供应商即清空、下拉展开/搜索再加载），未加载
-// 的空不是真没有货，settled 前不提示（hybrid 映射域上游模型来自映射面，恒不提示）。
+// 的空不是真没有货，settled 前不提示。
 const domainModelAvailabilityHint = computed(() => mediaDomainModelAvailabilityHint({
   capabilityDomain: props.capabilityDomain,
   optionCount: domainModelOptions.value.length,
   loading: props.modelsLoading,
-  settled: props.modelsSettled === true,
-  hybridMappingDomain: isHybridMappingDomain.value
+  settled: props.modelsSettled === true
 }))
-const mediaMappingFamily = computed(() =>
-  props.capabilityDomain === 'video' ? OPENAI_VIDEO_GENERATION_FAMILY : OPENAI_TTS_FAMILY)
-const mediaMappingTooltip = computed(() => (
-  props.capabilityDomain === 'video'
-    ? '混合供应商视频域映射：客户端视频模型名 → 真实上游视频模型名（同族改写）；上游模型只能从支持模型中选择。'
-    : '混合供应商音频域映射：客户端语音合成模型名 → 真实上游语音模型名（同族改写）；上游模型只能从支持模型中选择。'
-))
-
-const mediaMappingSourceModelOptions = computed(() => accountModelMappingSourceModelOptions({
-  providerCode: props.form.providerCode,
-  sourceEndpointFamily: mediaMappingFamily.value,
-  currentProviderOptions: props.mappingCurrentProviderSourceModelOptions,
-  openAIProtocolOptions: props.mappingSourceModelOptions,
-  anthropicProtocolOptions: props.mappingAnthropicSourceModelOptions,
-  geminiProtocolOptions: props.mappingGeminiSourceModelOptions
-}))
-
-const mediaMappingUpstreamModelOptions = computed(() =>
-  filterAccountModelMappingOptionsByEndpointFamily(props.mappingUpstreamModelOptions, mediaMappingFamily.value))
-
-function emitMappingSourceOptionsOpen(open: boolean): void {
-  // 媒体映射来源恒为媒体族（openai 协议池），固定走 openai 协议选项加载。
-  emit('mapping-source-model-options-open', 'openai', open)
-}
-
-function emitMappingSourceOptionsSearch(value: string): void {
-  emit('mapping-source-model-options-search', 'openai', value)
-}
-
-function addMediaMapping(): void {
-  props.form.modelMappings.push({
-    sourceModel: '',
-    sourceEndpointFamily: mediaMappingFamily.value,
-    upstreamModel: '',
-    upstreamEndpointFamily: mediaMappingFamily.value,
-    enabled: true
-  })
-}
-
-function removeMediaMapping(index: number): void {
-  props.form.modelMappings.splice(index, 1)
-}
 
 const domainModelSectionHint = computed(() => {
-  if (isHybridMappingDomain.value) return '支持模型必选 · 域内映射'
   if (props.capabilityDomain === 'video') return '支持模型必选 · 视频模型'
   if (props.capabilityDomain === 'audio') return '支持模型必选 · 语音模型'
   return '支持模型必选 · 图像模型'

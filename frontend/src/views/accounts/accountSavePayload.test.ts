@@ -17,7 +17,7 @@ const mapping: AccountFormModel['modelMappings'][number] = {
   upstreamEndpointFamily: 'chat_completions',
   enabled: true
 }
-const openAIProfile = FALLBACK_PROVIDERS.find((provider) => provider.code === 'openai')!
+const openAIProfile = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gpt')!
 
 describe('validateAccountModelMappings baseline changes', () => {
   it('revalidates an enabled-only change against current model candidates', () => {

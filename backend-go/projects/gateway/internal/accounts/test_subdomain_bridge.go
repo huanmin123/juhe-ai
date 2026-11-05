@@ -244,12 +244,6 @@ func (s *Store) AccountManualTestOptionsWithTotal(ctx context.Context, account *
 	return s.testService().AccountManualTestOptionsWithTotal(ctx, account, query)
 }
 
-// ListAccountSupportedTestCatalogOptions 转发 generic_http 账户的
-// account_supported_models 目录来源（T33/T36 共用读取面）。
-func (s *Store) ListAccountSupportedTestCatalogOptions(ctx context.Context, accountID string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
-	return s.testService().ListAccountSupportedTestCatalogOptions(ctx, accountID, query)
-}
-
 func (s *Store) AccountManualTestModelCapabilities(ctx context.Context, account *ManualTestContext, modelInput string) (*ManualTestModelCapabilities, error) {
 	return s.testService().AccountManualTestModelCapabilities(ctx, account, modelInput)
 }
@@ -318,10 +312,6 @@ func dedupeTestStrings(values []string) []string {
 
 func normalizeTestProviderCodeList(codes []string) []string {
 	return accountstest.NormalizeTestProviderCodeList(codes)
-}
-
-func testCatalogBuiltInSourceCodes(providerCode string, sourceCodes []string) []string {
-	return accountstest.TestCatalogBuiltInSourceCodes(providerCode, sourceCodes)
 }
 
 func testCatalogScopePriority(scope string) int {

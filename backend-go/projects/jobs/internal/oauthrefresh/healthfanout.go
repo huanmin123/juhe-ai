@@ -30,10 +30,8 @@ import (
 
 // authorizationFanoutVendorCodes mirrors the Node whitelist
 // (account-health-jobs-input-authorization-fanout.repository.ts:59) translated
-// to the target vendor vocabulary（§9.1 九真实厂商）：旧白名单里的
-// openai/hybrid 行经迁移落为 vendor_code IS NULL 的 generic_http 账户，与
-// accounthealth J1 读侧同款等价换轴，由下方 SQL 的 NULL 臂承接；白名单外
-// 身份与 J1 一样最终 fail-closed。
+// to the target vendor vocabulary（§9.1 九真实厂商）：generic_http / 空 vendor
+// 账户已退役，白名单外身份与 J1 一样最终 fail-closed。
 var authorizationFanoutVendorCodes = []string{
 	"gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen",
 }

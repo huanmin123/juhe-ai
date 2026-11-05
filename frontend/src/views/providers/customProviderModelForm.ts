@@ -254,7 +254,7 @@ export function availableCustomModelModeOptions(providerCode: string, providerMo
   const code = providerCode.trim().toLowerCase()
   const categories = new Set<ModelCategoryKey>(['text'])
   for (const item of providerModels) categories.add(getModelCategory(item))
-  if (code === 'gpt' || code === 'openai' || code === 'hybrid') {
+  if (code === 'gpt') {
     categories.add('image')
   }
   return modelModeOptions.filter((option) => categories.has(option.value))

@@ -189,10 +189,10 @@ func chainIsMediaJobTaskPlaneRequest(req *gatewaypreauth.GatewayRequest) bool {
 
 // chainVideoAdapterKeyOfProvider 把账户 provider_code 归一为视频 adapter
 // 注册键。映射规则：
-//   - openai 族账户 → "openai"：provider_code 为 openai（API Key 直连本体）
-//     或 gpt（openai 的 OAuth 子供应商代码，协议同族）都归一到 openai
-//     adapter（对外契约即本体，契约 §4.3）；注册键即 videoadapter.go 的
-//     videoAdapters 表键（VideoAdapterForProvider 内部小写归一）。
+//   - gpt 账户 → "openai"：gpt 的媒体 adapter 键沿用 openai（对外契约即本体，
+//     契约 §4.3）；注册键即 videoadapter.go 的 videoAdapters 表键
+//     （VideoAdapterForProvider 内部小写归一）。通用 openai/hybrid 供应商已
+//     随通用连接器退场，不再作为账户 vendor 出现。
 //   - gemini 账户 → "gemini"（M3：api_key 与 google_oauth 两类账户同键，
 //     认证头差异由任务面按协议/账户类型构造）：Veo predictLongRunning
 //     形态（契约 §5.2），URL 前缀按账户 base_url + /v1beta。
@@ -222,19 +222,13 @@ func chainIsMediaJobTaskPlaneRequest(req *gatewaypreauth.GatewayRequest) bool {
 //     /videos/generations + 轮询 /videos/{request_id}），URL 按 base_url
 //     版本根直拼（v2 契约，/v1 由 base_url 承载——api.x.ai 官方根 seed
 //     base_url 已是 https://api.x.ai/v1，同 minimax 先例，无需专用归一函数）。
-//   - hybrid 账户 → "openai"（M4b 媒体设计 §9 hybrid 行）：hybrid 是真实聚合
-//     中转账户，媒体执行面 = 该中转的 OpenAI 形态媒体端点（/v1/videos、
-//     /v1/audio/speech）——URL 走 openai 归一（base 强制 /v1 结尾）直连中转
-//     base_url，模型名经账号媒体映射（video_generation/tts 族）改写出站
-//     body（chainVideoMappedModel）；openai adapter 的 sora 形态即统一媒体
-//     面契约。
 //   - 其余 provider（anthropic/deepseek 等）→ ""：无对应 adapter。
 //     创建链在 driver 构造点显式失败（能力缺失不静默回退，媒体设计 §5
 //     禁止项：不把厂商差异写进组合根 switch）；后续供应商接入起只新增
 //     注册表条目与本映射分支。
 func chainVideoAdapterKeyOfProvider(providerCode string) string {
 	switch strings.ToLower(strings.TrimSpace(providerCode)) {
-	case "openai", "gpt", "hybrid":
+	case "gpt":
 		return "openai"
 	case "gemini":
 		return "gemini"
@@ -254,32 +248,20 @@ func chainVideoAdapterKeyOfProvider(providerCode string) string {
 }
 
 // chainVideoAdapterForAccount 解析账户的视频 adapter；nil 表示该账户没有
-// 可用的视频 adapter（调用方按能力缺失处理）。real vendor 优先；generic_http
-// 账户 vendor 为空时按冻结的连接协议面回退：openai_v1 → openai adapter、
-// gemini_v1beta → gemini adapter（连接器 registry 明确允许这两族的 video 域，
-// 不得因为 vendor 为空而拒绝，也不得反向收窄 registry）。
+// 可用的视频 adapter（调用方按能力缺失处理）。只按账户 vendor 解析：空 vendor
+// （generic_http 历史形态）不再按协议面回退到 openai/gemini adapter。
 func chainVideoAdapterForAccount(account gatewaydispatch.AccountCandidate) gatewaymedia.VideoProviderAdapter {
-	key := chainVideoAdapterKeyForIdentity(account.VendorCode, account.ProtocolCode)
+	key := chainVideoAdapterKeyForIdentity(account.VendorCode)
 	if key == "" {
 		return nil
 	}
 	return gatewaymedia.VideoAdapterForProvider(key)
 }
 
-// chainVideoAdapterKeyForIdentity 是视频 adapter 的统一身份解析：real vendor
-// 优先；vendor 为空（generic_http）时按协议面回退。媒体任务面只有
-// chainMediaJobAccount 的列式快照，复用本函数避免再造候选结构。
-func chainVideoAdapterKeyForIdentity(vendorCode, protocolCode string) string {
-	key := chainVideoAdapterKeyOfProvider(vendorCode)
-	if key == "" {
-		switch normalizeProtocol(protocolCode) {
-		case driverProtocolOpenAI:
-			key = "openai"
-		case driverProtocolGemini:
-			key = "gemini"
-		}
-	}
-	return key
+// chainVideoAdapterKeyForIdentity 是视频 adapter 的统一身份解析（只按 vendor）。
+// 媒体任务面只有 chainMediaJobAccount 的列式快照，复用本函数避免再造候选结构。
+func chainVideoAdapterKeyForIdentity(vendorCode string) string {
+	return chainVideoAdapterKeyOfProvider(vendorCode)
 }
 
 // chainAudioJobAdapterKeyOfProvider 把账户 provider_code 归一为长转写
@@ -294,7 +276,7 @@ func chainVideoAdapterKeyForIdentity(vendorCode, protocolCode string) string {
 //     2026-10-17 承接批）——出站 host 恒 openspeech.bytedance.com 语音服务域
 //     （chainVolcengineASRUpstreamURL 特例，同 TTS 先例），鉴权 X-Api-Key
 //     （speech_token），头驱动受理协议。
-//   - 其余 provider（openai/gemini/glm/minimax/hybrid 等）→ ""：
+//   - 其余 provider（gemini/glm/minimax/gpt 等）→ ""：
 //     无长转写 adapter（长转写面未回填的供应商接入前不承接，回填后只新增
 //     audioJobAdapters 注册表条目与本映射分支）。
 func chainAudioJobAdapterKeyOfProvider(providerCode string) string {
@@ -344,7 +326,7 @@ func chainMediaJobTaskAdapterFor(kind gatewaymedia.MediaJobKind, vendorCode, pro
 	case gatewaymedia.JobKindAudioTranscription:
 		return chainAudioJobAdapterForAccount(vendorCode)
 	default:
-		key := chainVideoAdapterKeyForIdentity(vendorCode, protocolCode)
+		key := chainVideoAdapterKeyForIdentity(vendorCode)
 		if key == "" {
 			return nil
 		}
@@ -1720,7 +1702,7 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 	if kind == gatewaymedia.JobKindAudioTranscription {
 		adapterKey = chainAudioJobAdapterKeyOfProvider(account.ProviderCode)
 	} else {
-		adapterKey = chainVideoAdapterKeyForIdentity(account.ProviderCode, account.ProtocolCode)
+		adapterKey = chainVideoAdapterKeyForIdentity(account.ProviderCode)
 	}
 	if adapterKey == "" {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 无该种类媒体任务 adapter", account.ID, account.ProviderCode)

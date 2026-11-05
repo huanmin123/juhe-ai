@@ -20,10 +20,10 @@ func TestRedisNamespacedKey(t *testing.T) {
 		want      string
 		wantErr   string
 	}{
-		{name: "plain key", namespace: "dev", key: "abc", want: "juhe-ai:dev:abc"},
-		{name: "juhe-ai root collapsed", namespace: "dev", key: "juhe-ai:state:gw:current", want: "juhe-ai:dev:state:gw:current"},
-		{name: "full prefix kept", namespace: "dev", key: "juhe-ai:dev:state:gw:current", want: "juhe-ai:dev:state:gw:current"},
-		{name: "namespace sanitized", namespace: "dev team!", key: "abc", want: "juhe-ai:dev_team:abc"},
+		{name: "plain key", namespace: "dev", key: "abc", want: "juhe-ai:{dev}:abc"},
+		{name: "juhe-ai root collapsed", namespace: "dev", key: "juhe-ai:state:gw:current", want: "juhe-ai:{dev}:state:gw:current"},
+		{name: "full prefix kept", namespace: "dev", key: "juhe-ai:{dev}:state:gw:current", want: "juhe-ai:{dev}:state:gw:current"},
+		{name: "namespace sanitized", namespace: "dev team!", key: "abc", want: "juhe-ai:{dev_team}:abc"},
 		{name: "empty namespace rejected", namespace: "  ", key: "abc", wantErr: "Redis namespace 不能为空"},
 		{name: "empty key rejected", namespace: "dev", key: "  ", wantErr: "Redis key 不能为空"},
 	}
@@ -63,7 +63,7 @@ func TestRedisRuntimeStateStore(t *testing.T) {
 		t.Fatalf("SetJSON: %v", err)
 	}
 	// The key layout must match Node: juhe-ai:<ns>:juhe-ai:state:<name>:<key>.
-	if _, err := server.Get("juhe-ai:dev:state:gateway_quota_snapshot:current"); err != nil {
+	if _, err := server.Get("juhe-ai:{dev}:state:gateway_quota_snapshot:current"); err != nil {
 		t.Fatalf("expected Node-compatible key layout, miniredis says: %v", err)
 	}
 	var got payload
@@ -73,14 +73,14 @@ func TestRedisRuntimeStateStore(t *testing.T) {
 	}
 
 	// Corrupt payloads read as absent and are deleted (mirrors Node).
-	if err := client.Set(ctx, "juhe-ai:dev:state:gateway_quota_snapshot:broken", "{nope", 0).Err(); err != nil {
+	if err := client.Set(ctx, "juhe-ai:{dev}:state:gateway_quota_snapshot:broken", "{nope", 0).Err(); err != nil {
 		t.Fatalf("seed corrupt: %v", err)
 	}
 	var broken payload
 	if found, err := store.GetJSON(ctx, "gateway_quota_snapshot", "broken", &broken); err != nil || found {
 		t.Fatalf("corrupt document must read as absent: (%v, %v)", found, err)
 	}
-	if exists := server.Exists("juhe-ai:dev:state:gateway_quota_snapshot:broken"); exists {
+	if exists := server.Exists("juhe-ai:{dev}:state:gateway_quota_snapshot:broken"); exists {
 		t.Fatal("corrupt document must be deleted")
 	}
 
@@ -109,11 +109,11 @@ func TestRedisSharedCacheLayoutAndLifecycle(t *testing.T) {
 	}
 
 	// Node-compatible layout: value key + sorted-set index + version key.
-	version, err := client.Get(ctx, "juhe-ai:dev:cache-version:gateway:api-key-quota").Result()
+	version, err := client.Get(ctx, "juhe-ai:{dev}:cache-version:gateway:api-key-quota").Result()
 	if err != nil || version == "" {
 		t.Fatalf("version key missing: %v", err)
 	}
-	valueKey := "juhe-ai:dev:cache:gateway:api-key-quota:" + version + ":" + key
+	valueKey := "juhe-ai:{dev}:cache:gateway:api-key-quota:" + version + ":" + key
 	raw, err := client.Get(ctx, valueKey).Result()
 	if err != nil {
 		t.Fatalf("value key missing: %v", err)
@@ -125,7 +125,7 @@ func TestRedisSharedCacheLayoutAndLifecycle(t *testing.T) {
 	if decoded.Message != "额度已用完，请联系管理员提升额度" {
 		t.Fatalf("payload mismatch: %+v", decoded)
 	}
-	indexKey := "juhe-ai:dev:cache-index:gateway:api-key-quota:" + version
+	indexKey := "juhe-ai:{dev}:cache-index:gateway:api-key-quota:" + version
 	if count, err := client.ZCard(ctx, indexKey).Result(); err != nil || count != 1 {
 		t.Fatalf("index must track the value key, card=%v err=%v", count, err)
 	}
@@ -146,7 +146,7 @@ func TestRedisSharedCacheLayoutAndLifecycle(t *testing.T) {
 	if exists := server.Exists(valueKey); exists {
 		t.Fatal("clear must delete tracked values")
 	}
-	nextVersion, err := client.Get(ctx, "juhe-ai:dev:cache-version:gateway:api-key-quota").Result()
+	nextVersion, err := client.Get(ctx, "juhe-ai:{dev}:cache-version:gateway:api-key-quota").Result()
 	if err != nil || nextVersion == "" || nextVersion == version {
 		t.Fatalf("clear must rotate the version: old=%q new=%q err=%v", version, nextVersion, err)
 	}
@@ -168,8 +168,8 @@ func TestRedisSharedCacheCorruptValue(t *testing.T) {
 	if err := cache.Set(ctx, "k", CachedDecision{Allowed: true}, time.Minute); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	version, _ := client.Get(ctx, "juhe-ai:dev:cache-version:gateway:authorization-quota").Result()
-	if err := client.Set(ctx, "juhe-ai:dev:cache:gateway:authorization-quota:"+version+":k", "{bad", time.Minute).Err(); err != nil {
+	version, _ := client.Get(ctx, "juhe-ai:{dev}:cache-version:gateway:authorization-quota").Result()
+	if err := client.Set(ctx, "juhe-ai:{dev}:cache:gateway:authorization-quota:"+version+":k", "{bad", time.Minute).Err(); err != nil {
 		t.Fatalf("corrupt: %v", err)
 	}
 	if found, err := cache.Get(ctx, "k", &CachedDecision{}); err != nil || found {
@@ -192,8 +192,8 @@ func TestRedisSharedCacheTrim(t *testing.T) {
 			t.Fatalf("Set %d: %v", i, err)
 		}
 	}
-	version, _ := client.Get(ctx, "juhe-ai:dev:cache-version:trim-test").Result()
-	count, err := client.ZCard(ctx, "juhe-ai:dev:cache-index:trim-test:"+version).Result()
+	version, _ := client.Get(ctx, "juhe-ai:{dev}:cache-version:trim-test").Result()
+	count, err := client.ZCard(ctx, "juhe-ai:{dev}:cache-index:trim-test:"+version).Result()
 	if err != nil {
 		t.Fatalf("ZCard: %v", err)
 	}

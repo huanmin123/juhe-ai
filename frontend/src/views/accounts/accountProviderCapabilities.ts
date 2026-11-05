@@ -17,7 +17,6 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_RESPONSES_FAMILY,
   OPENAI_TTS_FAMILY,
   OPENAI_VIDEO_GENERATION_FAMILY,
@@ -30,7 +29,6 @@ import {
   isXaiProviderCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
-  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
 
@@ -263,7 +261,6 @@ export function defaultEndpointModesForAccount(input: {
   type: AccountType
   clientCompatibility?: AccountClientCompatibility
 }): AccountSupportedEndpointMode[] {
-  if (isHybridProviderProfile(input.profile ?? input.provider)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
   // gemini 新账户默认集保持 generateContent/interactions 推导结果；audio_speech
@@ -298,15 +295,13 @@ export function defaultEndpointModesForAccount(input: {
 
 export function profileSupportsCodexResponsesChatBridge(profile?: AccountProviderProfileLike): boolean {
   const profileId = profile?.providerProtocolProfileId ?? profile?.id
-  return profileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
-    || profileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID
+  return profileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID
     || profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
     || profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
     || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }
 
 export function endpointModesForProfile(profile?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
-  if (isHybridProviderProfile(profile)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(profile)
   if (protocolKind === 'anthropic_v1') return endpointModesForFamilies(profile, anthropicAccountEndpointModes, [
     { family: ANTHROPIC_MESSAGES_FAMILY, modes: ['messages_json', 'messages_sse'] },
@@ -456,8 +451,4 @@ function providerCodeForOAuthFlow(input: {
   profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
 }): string | undefined {
   return input.profile?.providerCode ?? input.provider?.code
-}
-
-function isHybridProviderProfile(profile?: AccountProviderProfileLike): boolean {
-  return isHybridProviderCode(profile?.providerCode ?? profile?.code)
 }

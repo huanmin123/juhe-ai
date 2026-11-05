@@ -40,7 +40,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/configregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgcfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schemagate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
@@ -98,6 +100,10 @@ func newHealthServerHandler(healthHandler http.Handler) http.Handler {
 }
 
 func main() {
+	pgcfg.PrepareProcessEnv("juhe-ai-gateway")
+	if redisCfg, redisErr := rediscfg.FromEnv(os.Getenv); redisErr == nil {
+		rediscfg.Configure(redisCfg)
+	}
 	printVersion := flag.Bool("version", false, "print the gateway build version, commit and schema revision")
 	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
 	operationLegacyPostgresMigration := flag.Bool("migrate-operation-log-legacy-postgres", false, "offline F4 legacy PostgreSQL schema migration")
@@ -289,13 +295,6 @@ func main() {
 		var keyModelGate gatewaydispatch.KeyModelGate
 		var probeCircuit gatewaydispatch.AccountCircuitGate
 		if j3bConfig.CircuitRuntimeRedisURL != "" {
-			// A（状态机专项 2026-09-25）gate 构造处 fail-fast：circuit runtime
-			// 的 Redis URL 来自主链 JUHE_AI_REDIS_STATE_URL 回退时，两套 Lua
-			// 状态机会并发写同一 states hash（键布局同名），语义不兼容。显式
-			// 设置同值（运维显式决定）不受影响；J3b memory 装配路径零影响。
-			if isolationErr := j3bConfig.ValidateCircuitRuntimeRedisIsolation(); isolationErr != nil {
-				fail(isolationErr)
-			}
 			circuitGate := circuitcontrolplane.OwnerGate{
 				Confirmed:         j3bConfig.BusinessHandoffConfirmed,
 				SchemaReady:       j3bConfig.SchemaReady,
@@ -550,7 +549,7 @@ func main() {
 		// 重启清零、无 fail-closed 臂、反代后全员共享代理 IP 桶。注入后
 		// 失败计数/锁定预算与主面同库共享，Check/Failed 携带错误的
 		// fail-closed 语义随之生效（状态存储故障回 500 而非读作未锁定）。
-		j3bSharedLoginGuard, j3bSharedLoginGuardClose, j3bGuardErr := authsys.NewRedisLoginGuard(runtimeCfg.RedisStateURL, runtimeCfg.RedisNamespace, time.Now)
+		j3bSharedLoginGuard, j3bSharedLoginGuardClose, j3bGuardErr := authsys.NewRedisLoginGuard(runtimeCfg.RedisURL, runtimeCfg.RedisNamespace, time.Now)
 		if j3bGuardErr != nil {
 			fail(fmt.Errorf("create J3b shared login guard: %w", j3bGuardErr))
 		}
@@ -564,7 +563,7 @@ func main() {
 		j3bAuthHandler := &modelcheckauth.HTTPHandler{
 			Auth:                       authenticator,
 			Captcha:                    captchaService,
-			TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST")),
+			TemporaryAccessIPAllowlist: runtimeCfg.TemporaryAccessIPAllowlist,
 			SharedGuard:                j3bSharedLoginGuard,
 			CookieSecure:               runtimeCfg.CookieSecure,
 			TrustProxyCount:            trustProxyCount(runtimeCfg.TrustProxy),
@@ -971,7 +970,7 @@ func main() {
 		// 内急切解析，Secret 已被 compose 的 apikeys.NewStore 空秘钥守卫拒绝
 		// （w2 登记，纯重复判据）。
 		registry, _ := gatewayruntimecache.NewRegistry(gatewayruntimecache.RegistryConfig{
-			RedisURL:         runtimeCfg.RedisStateURL,
+			RedisURL:         runtimeCfg.RedisURL,
 			Namespace:        runtimeCfg.RedisNamespace,
 			Secret:           runtimeCfg.Secret,
 			InstanceID:       newCompositionID("gateway"),
@@ -1216,17 +1215,6 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func commaList(value string) []string {
-	parts := strings.Split(value, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part = strings.TrimSpace(part); part != "" {
-			result = append(result, part)
-		}
-	}
-	return result
 }
 
 func envBool(name string) bool {

@@ -3,6 +3,7 @@ package gatewaygemini
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -339,6 +340,9 @@ func (s *StreamInspector) rememberOversizedEventPrefix(fragment string) {
 	}
 	s.oversizedEventPrefix = append(s.oversizedEventPrefix, fragment...)
 	prefix := string(s.oversizedEventPrefix)
+	if s.eventName == "" && s.oversizedEventType == "" {
+		s.oversizedEventType = extractOversizedEventType(prefix)
+	}
 	if !s.oversizedEventFailed && topLevelStreamErrorObjectHint(prefix) {
 		s.oversizedEventFailed = true
 	}
@@ -356,12 +360,15 @@ func (s *StreamInspector) flushOversizedEvent() {
 		eventType = "message"
 	}
 	prefix := string(s.oversizedEventPrefix)
-	failed := s.oversizedEventFailed || s.eventName == "error"
+	failed := s.oversizedEventFailed ||
+		eventType == "error" ||
+		eventType == "interaction.failed"
 	terminal := failed ||
-		isGeminiTerminalEventType(s.eventName) ||
-		strings.Contains(prefix, "finishReason")
+		isGeminiTerminalEventType(eventType) ||
+		eventType == "interaction.completed" ||
+		geminiOversizedFinishReasonHint(prefix)
 	output := s.oversizedEventOutput ||
-		s.eventName == "step.delta" ||
+		eventType == "step.delta" ||
 		strings.Contains(prefix, "candidates")
 
 	if failed {
@@ -533,6 +540,27 @@ func topLevelStreamErrorObjectHint(prefix string) bool {
 
 func geminiOversizedOutputHint(prefix string) bool {
 	return strings.Contains(prefix, "candidates")
+}
+
+// oversizedEventTypePattern 只认顶层首键 type，避免 functionCall.args 等
+// 嵌套 type 被误当作事件类型；匹配范围受 4KB 有界前缀限制。
+var oversizedEventTypePattern = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"([^"]{1,160})"`)
+
+func extractOversizedEventType(prefix string) string {
+	match := oversizedEventTypePattern.FindStringSubmatch(prefix)
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
+}
+
+// geminiOversizedFinishReasonPattern 只认 JSON 键值形态，避免正文中裸
+// finishReason 字面量触发误终止；值必须是非空字符串（与正常分类器
+// stringField 的取值口径一致）。
+var geminiOversizedFinishReasonPattern = regexp.MustCompile(`"finishReason"\s*:\s*"[^"]+"`)
+
+func geminiOversizedFinishReasonHint(prefix string) bool {
+	return geminiOversizedFinishReasonPattern.MatchString(prefix)
 }
 
 // interactionResourceID 对齐 interactionResourceId：仅 interaction.* 事件提取。

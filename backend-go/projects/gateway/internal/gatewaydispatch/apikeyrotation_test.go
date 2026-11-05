@@ -376,7 +376,7 @@ func TestAccountAPIKeyPoolIsolationMatrix(t *testing.T) {
 		keys            []string
 		want            bool
 	}{
-		{name: "openai api_key 池", accountType: "api_key", providerCode: "openai", keys: twoKeys, want: true},
+		{name: "openai api_key 池", accountType: "api_key", providerCode: "gpt", keys: twoKeys, want: true},
 		{name: "gpt api_key 池", accountType: "api_key", providerCode: "GPT", keys: twoKeys, want: true},
 		{name: "deepseek 池（修复前不隔离）", accountType: "api_key", providerCode: "deepseek", keys: twoKeys, want: true},
 		{name: "glm 池（修复前不隔离）", accountType: "api_key", providerCode: "glm", keys: twoKeys, want: true},
@@ -387,7 +387,7 @@ func TestAccountAPIKeyPoolIsolationMatrix(t *testing.T) {
 		{name: "不受支持供应商", accountType: "api_key", providerCode: "unknown-vendor", keys: twoKeys, want: false},
 		{name: "单 Key 不隔离", accountType: "api_key", providerCode: "deepseek", keys: []string{"k0"}, want: false},
 		{name: "oauth 类型不入池判定（旧 gpt+openai+OAuth 分支废弃）", accountType: "oauth", providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1", keys: twoKeys, want: false},
-		{name: "去重后单 Key 不隔离", accountType: "api_key", providerCode: "openai", keys: []string{" k1 ", "k1"}, want: false},
+		{name: "去重后单 Key 不隔离", accountType: "api_key", providerCode: "gpt", keys: []string{" k1 ", "k1"}, want: false},
 	}
 	for _, testCase := range cases {
 		credentials := poolCredentials(testCase.keys, "", nil)

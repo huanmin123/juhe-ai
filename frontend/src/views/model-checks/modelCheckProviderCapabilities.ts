@@ -13,8 +13,6 @@ import {
   GLM_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_PROVIDER_CODE,
   normalizeProviderToken
 } from '@/shared/providerProtocol'
 import type { AccountOptionSummary } from '@/types/domain'
@@ -38,7 +36,6 @@ const geminiModels = ['gemini-3.5-flash', 'gemini-3.1-pro-preview'] as const
 
 const modelCheckAccountProfileRules: readonly ModelCheckAccountProfileRule[] = [
   { providerCode: GPT_VENDOR_CODE, providerProtocolProfileIds: [GPT_OPENAI_V1_PROFILE_ID], models: gptModels },
-  { providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE, providerProtocolProfileIds: [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID], models: gptModels },
   { providerCode: DEEPSEEK_PROVIDER_CODE, providerProtocolProfileIds: [DEEPSEEK_OPENAI_V1_PROFILE_ID, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID], models: deepSeekModels },
   { providerCode: GLM_PROVIDER_CODE, providerProtocolProfileIds: [GLM_GENERAL_OPENAI_V1_PROFILE_ID, GLM_CODING_OPENAI_V1_PROFILE_ID, GLM_CODING_ANTHROPIC_V1_PROFILE_ID], models: glmModels },
   { providerCode: ANTHROPIC_PROVIDER_CODE, providerProtocolProfileIds: [ANTHROPIC_ANTHROPIC_V1_PROFILE_ID], models: anthropicModels },

@@ -3,7 +3,7 @@ package main
 // J3b 零配置自动认领（2026-09-20）在未配置 Redis 时的 key-model 前台准入
 // 回退：进程内 memory store，适配 gatewaydispatch.KeyModelGate 的 ctx 形签
 // 名。单进程 owner 重启后短屏蔽状态即重置；配置
-// JUHE_AI_J3B_CIRCUIT_REDIS_URL（或 JUHE_AI_REDIS_STATE_URL）后组合根改用
+// JUHE_AI_REDIS_URL（或 JUHE_AI_REDIS_URL）后组合根改用
 // Redis store，本实现不再参与。
 
 import (

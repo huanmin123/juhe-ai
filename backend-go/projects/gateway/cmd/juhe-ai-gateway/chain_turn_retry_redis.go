@@ -33,6 +33,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // chainTurnRetryRedisStoreName mirrors createRuntimeStateStore('gateway-codex-turn-retry').
@@ -75,13 +76,13 @@ return next_value
 // chainTurnRetryRedisStateStore implements gatewaycodex.TurnRetryStateStore
 // over the runtime-state redis client.
 type chainTurnRetryRedisStateStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	prefix string
 }
 
 // newChainTurnRetryRedisStateStore builds the adapter over the runtime-state
 // redis client (恒注入；nil client 不再有 memory 回退语义).
-func newChainTurnRetryRedisStateStore(client *redis.Client, namespace string) (*chainTurnRetryRedisStateStore, error) {
+func newChainTurnRetryRedisStateStore(client redis.UniversalClient, namespace string) (*chainTurnRetryRedisStateStore, error) {
 	prefix, err := chainTurnRetryKeyPrefix(namespace)
 	if err != nil {
 		return nil, err
@@ -93,14 +94,10 @@ func newChainTurnRetryRedisStateStore(client *redis.Client, namespace string) (*
 // accept the short namespace or the full juhe-ai: prefix, never double-prefix
 // (same normalization the sibling gateway drivers use).
 func chainTurnRetryKeyPrefix(namespace string) (string, error) {
-	normalized := strings.TrimRight(strings.TrimSpace(namespace), ":")
-	if normalized == "" {
+	if strings.TrimSpace(namespace) == "" {
 		return "", errors.New("codex turn retry redis 驱动缺少 namespace")
 	}
-	if !strings.HasPrefix(normalized, "juhe-ai:") {
-		normalized = "juhe-ai:" + normalized
-	}
-	return fmt.Sprintf("%s:state:%s:", normalized, chainTurnRetryRedisStoreName), nil
+	return rediscfg.NamespacedKey("juhe-ai:state:"+chainTurnRetryRedisStoreName+":", namespace), nil
 }
 
 func (s *chainTurnRetryRedisStateStore) key(key string) string {
@@ -157,7 +154,7 @@ func (s *chainTurnRetryRedisStateStore) Incr(ctx context.Context, key string, tt
 // deps: the runtime-state client is always injected since the storage-shape
 // retirement; a construction failure fails the assembly with the named cause
 // instead of degrading silently.
-func newChainTurnRetryRedisStateStoreOrNil(client *redis.Client, namespace string) (gatewaycodex.TurnRetryStateStore, error) {
+func newChainTurnRetryRedisStateStoreOrNil(client redis.UniversalClient, namespace string) (gatewaycodex.TurnRetryStateStore, error) {
 	store, err := newChainTurnRetryRedisStateStore(client, namespace)
 	if err != nil {
 		return nil, fmt.Errorf("codex turn retry redis 状态驱动构建失败: %w", err)

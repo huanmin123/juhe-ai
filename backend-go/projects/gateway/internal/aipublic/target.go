@@ -224,8 +224,8 @@ func (d *Deps) assertProviderCodeEnabled(ctx context.Context, providerCode strin
 }
 
 // loadProvider mirrors the listProviders().find(code) + enabled checks. 目标
-// schema（§9.1）：真实厂商读 vendors 单表；generic_http 旧词根（openai）无
-// vendors 行，公开 API 兼容按「九厂商之外视为未注册」处理。
+// schema（§9.1）：供应商读 vendors 单表；通用连接器（generic_http）与空 vendor
+// 已退场，九厂商之外一律按未注册拒绝。
 func (d *Deps) loadProvider(ctx context.Context, providerCode string) (enabled bool, err error) {
 	var providerEnabled int64
 	queryErr := d.db().QueryRowContext(ctx, d.bind(`SELECT enabled FROM `+d.table("vendors")+`

@@ -39,7 +39,6 @@ func playgroundFixtureDeps(t *testing.T, functionCalling bool) *Deps {
 		AccountLookup:     &staticLookup{refs: map[string]*AccountRef{"acc_1": {ID: "acc_1", Name: "神影-克隆", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp_1"}}}},
 		TransportAccounts: &staticTransport{views: map[string][]TransportAccount{"acc_1": {transportView}}},
 		ProviderCatalog:   &staticCatalog{byProvider: map[string][]CatalogItem{"gpt": {{Model: "gpt-5.4", SupportedAPIProtocols: []string{"chat_completions"}, SupportedToolsByProtocol: tools}}}},
-		AccountCatalog:    &staticCatalog{},
 		FetchURL: func(context.Context, string) (FetchResult, error) {
 			return FetchResult{Text: "正文首行\n第二行"}, nil
 		},

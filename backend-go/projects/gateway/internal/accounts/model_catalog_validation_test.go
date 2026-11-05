@@ -541,32 +541,40 @@ func TestCreateRejectsUnpricedMappingTarget(t *testing.T) {
 	assertValidationError(t, err, "账号模型别名目标模型未配置价格，不能绑定（计价会得到空成本）：unpriced-target")
 }
 
-// generic_http 账户（account vendor 为 NULL）在 2026-11-03 存量处置后需要绑定
-// 「已归属真实厂商」的 personal 行（空 vendor 行已清零）：写侧必须放行，并断言
-// 计价厂商唯一，避免再次出现「能绑定但运行期解析不出厂商」。
-func TestGenericHTTPAccountBindsVendorBoundModel(t *testing.T) {
+// 真实厂商账户只能绑定本厂商的有价模型：跨厂商行与未归属厂商（vendor_code
+// NULL）行都无法按账户 vendor 解析，写侧必须拒绝，避免运行期计价厂商缺失。
+func TestAccountBindsOnlyOwnVendorModels(t *testing.T) {
 	env := newTestEnv(t)
-	owner := "owner-generic-vendor"
+	owner := "owner-vendor-bound"
 	env.seedProviderAndDefaultGroup(t, owner)
 	store := env.store
 	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
 		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl-generic-vendor', 'deepseek', 'relay-ds', 'relay-ds', 'personal', ?, 'active',
+		VALUES ('mdl-own-vendor', 'gpt', 'relay-gpt', 'relay-gpt', 'personal', ?, 'active',
 		'["chat_json","chat_sse"]', false, '{}', 5, 30, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
 
 	if err := store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
-		[]string{"relay-ds"}, "generic_http", owner); err != nil {
-		t.Fatalf("generic_http 账户应能绑定已归属厂商的有价模型: %v", err)
+		[]string{"relay-gpt"}, "gpt", owner); err != nil {
+		t.Fatalf("gpt 账户应能绑定本厂商的有价模型: %v", err)
 	}
 
-	// 未归属厂商（vendor_code=NULL）的行无法装载任何厂商目录 → 拒绝。
+	// 跨厂商行：按账户 vendor 解析不到 → 拒绝。
 	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
 		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl-generic-null-vendor', NULL, 'relay-null', 'relay-null', 'personal', ?, 'active',
+		VALUES ('mdl-cross-vendor', 'deepseek', 'relay-ds', 'relay-ds', 'personal', ?, 'active',
 		'["chat_json","chat_sse"]', false, '{}', 5, 30, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
 	assertValidationError(t, store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
-		[]string{"relay-null"}, "generic_http", owner),
-		"目标模型 \"relay-null\" 未归属任何厂商，无法计价，不能绑定")
+		[]string{"relay-ds"}, "gpt", owner),
+		"账户支持模型不在供应商模型目录中：relay-ds")
+
+	// 未归属厂商（vendor_code=NULL）的行同样不可绑定。
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl-null-vendor', NULL, 'relay-null', 'relay-null', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', 5, 30, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
+	assertValidationError(t, store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
+		[]string{"relay-null"}, "gpt", owner),
+		"账户支持模型不在供应商模型目录中：relay-null")
 }
 
 // TestCreateWiresSupportedModelsCatalogAssertion 的原用例见下方（目录外拒绝臂）。
@@ -596,36 +604,21 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		Credentials{"api_key": "sk-live-secret-1234567890"},
 		[]string{"m2", "m3", "m4", "m5", "m6", "gpt-o9"}, nil), scope)
 	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：m2、m3、m4、m5、m6")
-	// generic 语义供应商（openai，vendor_code=NULL）：身份键 COALESCE(vendor,'')
-	// 命中夹具的 NULL vendor 行 → 同名模型放行（协议档案过滤段已随 legacy 面
-	// 拆除，models 行即权威）。
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-		ON CONFLICT DO NOTHING`)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('prof-openai-compat', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1', 'https://compat.example.com/v1',
-		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
-		ON CONFLICT DO NOTHING`)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.EffectiveViewerID())
-	compatInput := catalogWiringCreateInput("supported-generic-hit",
+	// 已退役的 openai 供应商（原 generic_http 账户形态）不得再创建：写侧按
+	// 不支持的供应商显式拒绝，不回落通用连接器或空 vendor 账户。
+	retiredInput := catalogWiringCreateInput("supported-retired-openai",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil)
-	compatInput.ProviderCode = "openai"
-	compatInput.ProviderProtocolProfileID = "prof-openai-compat"
-	b1SetGenericConnections(&compatInput, "https://compat.example.com/v1")
-	if _, err := store.Create(context.Background(), compatInput, scope); err != nil {
-		t.Fatalf("generic provider create must succeed: %v", err)
-	}
+	retiredInput.ProviderCode = "openai"
+	b1SetGenericConnections(&retiredInput, "https://api.openai.com/v1")
+	_, err = store.Create(context.Background(), retiredInput, scope)
+	assertValidationError(t, err, "不支持的供应商：openai")
 }
 
 // b1SetGenericConnections 把 §8 连接集合与健康检查三件套改写为
-// generic_openai_v1 形态（provider 覆写为 openai 等 generic 语义的 catalog
-// wiring 测试臂使用；B1 断点批）。检查模型取载荷支持模型首个（缺失时回退
-// gpt-4o-mini，两模型均在夹具 models 种子内）。
+// gpt_openai_v1 形态（catalog wiring 测试臂使用；B1 断点批）。检查模型取
+// 载荷支持模型首个（缺失时回退 gpt-4o-mini，两模型均在夹具 models 种子内）。
 func b1SetGenericConnections(input *CreateInput, baseURL string) {
-	preset := "generic_openai_v1"
+	preset := "gpt_openai_v1"
 	mode := "chat_json"
 	model := "gpt-4o-mini"
 	if len(input.SupportedModels) > 0 {
@@ -731,7 +724,7 @@ func TestGenericNullVendorAccountWriteChecksModelsIdentityAndMappingGate(t *test
 	hybridInput.ProviderCode = "hybrid"
 	b1SetGenericConnections(&hybridInput, "https://hybrid.example.com/v1")
 	_, err := store.Create(context.Background(), hybridInput, scope)
-	assertValidationError(t, err, "hybrid 不支持对话账户")
+	assertValidationError(t, err, "不支持的供应商：hybrid")
 
 	// generic 账户 vendor_code=NULL：支持模型按 COALESCE(vendor,'') 身份键解析
 	// （夹具 NULL vendor 行命中 m1）；providerProtocolProfileId 是过渡 DTO、
@@ -739,7 +732,7 @@ func TestGenericNullVendorAccountWriteChecksModelsIdentityAndMappingGate(t *test
 	input := catalogWiringCreateInput("generic-nullvendor-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890", "supported_endpoint_modes": []any{"chat_json", "chat_sse"}},
 		[]string{"m1"}, nil)
-	input.ProviderCode = "openai"
+	input.ProviderCode = "gpt"
 	b1SetGenericConnections(&input, "https://generic.example.com/v1")
 	created, err := store.Create(context.Background(), input, scope)
 	if err != nil {
@@ -752,14 +745,14 @@ func TestGenericNullVendorAccountWriteChecksModelsIdentityAndMappingGate(t *test
 	// 映射：per-profile 矩阵门 + target 模型 models 身份解析（写入侧双解析需要
 	// 连接 + 支持成员前置事实，设计 §5.1/§9）。T52 门禁：映射 target 必须落
 	// 在支持模型集合内，target 取创建集合内的 m1（NULL vendor 行）。
-	env.seedAccountConnection(t, created.ID, "generic_openai_v1", "outside-upstream")
+	env.seedAccountConnection(t, created.ID, "gpt_openai_v1", "outside-upstream")
 	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 1,
 		ModelMappingsPresent:   true,
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o-mini", SourceEndpointFamily: "chat_completions",
 			UpstreamModel: "m1", UpstreamEndpointFamily: "chat_completions",
-			TargetConnectionPresetCode: "generic_openai_v1",
+			TargetConnectionPresetCode: "gpt_openai_v1",
 		}},
 	}, scope); err != nil {
 		t.Fatal(err)
@@ -775,7 +768,7 @@ func TestGenericNullVendorAccountWriteChecksModelsIdentityAndMappingGate(t *test
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o-mini", SourceEndpointFamily: "chat_completions",
 			UpstreamModel: "gpt-o1", UpstreamEndpointFamily: "chat_completions",
-			TargetConnectionPresetCode: "generic_openai_v1",
+			TargetConnectionPresetCode: "gpt_openai_v1",
 		}},
 	}, scope)
 	assertValidationError(t, err, "映射上游模型只能选择账户支持模型：gpt-o1")

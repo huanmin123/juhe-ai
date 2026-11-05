@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // 第 1-3 段对齐测试：凭据规范化域、批量 5 凭据字段、runtime-reset 端点。
@@ -167,20 +169,20 @@ func TestNormalizeAPIKeyCredentialsForWrite(t *testing.T) {
 		t.Fatal("deprecated key must be stripped")
 	}
 
-	// OpenAI-compatible provider defaults to the chat pair only.
+	// gemini 的 OpenAI 兼容子面（gemini_openai_chat_v1beta）只默认 chat 对。
 	normalized, err = NormalizeAccountCredentialsForWrite("api_key", Credentials{
-		"api_key": "sk-abc", "base_url": "https://api.openai.com/v1",
+		"api_key": "sk-abc", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
 	}, &EndpointModeDefaultContext{
-		ProviderCode: "openai", AccountType: "api_key",
+		ProviderCode: "gemini", AccountType: "api_key",
 		ProtocolCode: "openai", ProtocolVersion: "v1",
-		ProviderProtocolProfileID: openAICompatibleProfileID,
+		ProviderProtocolProfileID: accountscore.GeminiOpenAIChatV1BetaProfileID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	modes, _ = normalized["supported_endpoint_modes"].([]any)
 	if len(modes) != 2 || modes[0] != "chat_json" || modes[1] != "chat_sse" {
-		t.Fatalf("openai-compatible defaults: %v", modes)
+		t.Fatalf("gemini openai_chat defaults: %v", modes)
 	}
 }
 

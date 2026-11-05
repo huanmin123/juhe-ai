@@ -1,6 +1,10 @@
 package keymodelrecovery
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
+)
 
 func TestRedisKeysMatchNodeContract(t *testing.T) {
 	keys, err := NewRedisKeys("test-space")
@@ -8,13 +12,13 @@ func TestRedisKeysMatchNodeContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if got, want := keys.State(hash), "juhe-ai:test-space:gateway-account-circuit-key-model:state:"+hash; got != want {
+	if got, want := keys.State(hash), "juhe-ai:{test-space}:gateway-account-circuit-key-model:state:"+hash; got != want {
 		t.Fatalf("state key=%q want %q", got, want)
 	}
-	if keys.Due() != "juhe-ai:test-space:gateway-account-circuit-key-model:due" {
+	if keys.Due() != "juhe-ai:{test-space}:gateway-account-circuit-key-model:due" {
 		t.Fatalf("due key=%q", keys.Due())
 	}
-	if got := keys.GlobalProbes(); got != "juhe-ai:test-space:gateway-account-circuit-key-model:recovery:global" {
+	if got := keys.GlobalProbes(); got != "juhe-ai:{test-space}:gateway-account-circuit-key-model:recovery:global" {
 		t.Fatalf("global probe key=%q", got)
 	}
 	if got := keys.SourceProbes("source-1"); got == keys.SourceProbes("source-2") {
@@ -28,7 +32,7 @@ func TestRedisConfigFollowsRedisStateProfile(t *testing.T) {
 	if err != nil || cfg.Enabled {
 		t.Fatalf("disabled cfg=%#v err=%v", cfg, err)
 	}
-	env["JUHE_AI_REDIS_STATE_URL"] = "redis://127.0.0.1:6379/9"
+	env["JUHE_AI_REDIS_URL"] = "redis://127.0.0.1:6379/9"
 	if _, err := LoadRedisConfig(func(name string) string { return env[name] }); err == nil {
 		t.Fatal("Redis state without namespace must fail")
 	}
@@ -43,22 +47,45 @@ func TestRedisConfigFollowsRedisStateProfile(t *testing.T) {
 // （2026-09-22 对齐 gateway 加载层）：全前缀配置剥除 `juhe-ai:` 根前缀，短名
 // 逐字节不变；canonical 化为空的退化输入沿用非法 namespace 的 fail closed。
 func TestLoadRedisConfigCanonicalizesNamespace(t *testing.T) {
-	env := map[string]string{"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/9"}
+	env := map[string]string{"JUHE_AI_REDIS_URL": "redis://127.0.0.1:6379/9"}
 	load := func() (RedisConfig, error) {
 		return LoadRedisConfig(func(name string) string { return env[name] })
 	}
 	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:dev"
 	cfg, err := load()
-	if err != nil || cfg.Namespace != "dev" {
+	if err != nil || cfg.Namespace != "dev:keymodel" {
 		t.Fatalf("全前缀 namespace 未 canonical 化: cfg=%#v err=%v", cfg, err)
 	}
 	env["JUHE_AI_REDIS_NAMESPACE"] = "test-space"
 	cfg, err = load()
-	if err != nil || cfg.Namespace != "test-space" {
+	if err != nil || cfg.Namespace != "test-space:keymodel" {
 		t.Fatalf("短名 namespace 被改写: cfg=%#v err=%v", cfg, err)
 	}
 	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:"
 	if _, err := load(); err == nil {
 		t.Fatal("canonical 化为空的 namespace 必须 fail closed")
+	}
+}
+
+// TestRecoveryNamespaceMatchesGatewayWriter 锁定跨进程契约：jobs recovery 与
+// gateway key_model_runtime 必须落在同一 {ns:keymodel} 域前缀，否则 recovery
+// 永远扫不到 gateway 写入的 due/state。
+func TestRecoveryNamespaceMatchesGatewayWriter(t *testing.T) {
+	env := map[string]string{
+		"JUHE_AI_REDIS_URL":       "redis://127.0.0.1:6379",
+		"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:dev",
+	}
+	cfg, err := LoadRedisConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryKeys, err := NewRedisKeys(cfg.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayNamespace := rediscfg.DomainNamespace("juhe-ai:dev", rediscfg.DomainKeyModel)
+	gatewayPrefix := rediscfg.NamespacedKey("juhe-ai:gateway-account-circuit-key-model", gatewayNamespace)
+	if recoveryKeys.Prefix != gatewayPrefix {
+		t.Fatalf("recovery prefix %q != gateway prefix %q", recoveryKeys.Prefix, gatewayPrefix)
 	}
 }

@@ -802,7 +802,7 @@ func TestW11DRegistryLifecycleAndList(t *testing.T) {
 	seedEntry("w11d-b", "http://127.0.0.1:9002", "w11d-secret")
 	seedEntry("w11d-bad", "http://127.0.0.1:9003", "wrong-secret")
 	// 前缀不符成员。
-	if err := client.ZAdd(ctx, reader.indexKey, redis.Z{Score: float64(time.Now().UnixMilli()), Member: "juhe-ai:w11dreg:other:v1:foreign"}).Err(); err != nil {
+	if err := client.ZAdd(ctx, reader.indexKey, redis.Z{Score: float64(time.Now().UnixMilli()), Member: "juhe-ai:{w11dreg}:other:v1:foreign"}).Err(); err != nil {
 		t.Fatal(err)
 	}
 	endpoints, err := reader.ListEndpoints(ctx)

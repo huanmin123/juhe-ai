@@ -27,6 +27,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // chainAccountAPIKeyRotationTtlMs mirrors redisAccountApiKeyRotationTtlMs
@@ -48,7 +49,8 @@ var chainAccountAPIKeyRotationScript = redis.NewScript(`
 // chainAPIKeyRotationRedisCounter implements
 // gatewaydispatch.APIKeyRotationCounter over the shared runtime-state client.
 type chainAPIKeyRotationRedisCounter struct {
-	client *redis.Client
+	client    redis.UniversalClient
+	namespace string
 }
 
 // NextIndex mirrors nextRedisAccountApiKeyRotationIndex: INCR + PEXPIRE 30d on
@@ -66,7 +68,7 @@ func (c *chainAPIKeyRotationRedisCounter) NextIndex(ctx context.Context, account
 	callCtx, cancel := context.WithTimeout(ctx, chainAccountAPIKeyRotationTimeout)
 	defer cancel()
 	index, err := chainAccountAPIKeyRotationScript.Run(callCtx, c.client,
-		[]string{chainAccountAPIKeyRotationKey(accountID, strategy)},
+		[]string{chainAccountAPIKeyRotationKeyNS(c.namespace, accountID, strategy)},
 		strconv.Itoa(modulo), strconv.FormatInt(chainAccountAPIKeyRotationTtlMs, 10)).Int()
 	if err != nil {
 		return 0, err
@@ -80,18 +82,22 @@ func (c *chainAPIKeyRotationRedisCounter) NextIndex(ctx context.Context, account
 // (归档 :297-299)：Buffer.from(accountId).toString('base64url') 即无填充
 // base64url。
 func chainAccountAPIKeyRotationKey(accountID, strategy string) string {
-	return "juhe-ai:route-state:account-api-key:" + strategy + ":" +
-		base64.RawURLEncoding.EncodeToString([]byte(accountID))
+	return chainAccountAPIKeyRotationKeyNS("", accountID, strategy)
+}
+
+func chainAccountAPIKeyRotationKeyNS(namespace, accountID, strategy string) string {
+	return rediscfg.NamespacedKey("juhe-ai:route-state:account-api-key:"+strategy+":"+
+		base64.RawURLEncoding.EncodeToString([]byte(accountID)), namespace)
 }
 
 // newChainAPIKeyRotationCounterOrNil builds the adapter for the chain deps: a
 // nil client (runtimeStateDriver !== 'redis') yields nil so the engine keeps
 // the in-process counter fallback.
-func newChainAPIKeyRotationCounterOrNil(client *redis.Client) gatewaydispatch.APIKeyRotationCounter {
+func newChainAPIKeyRotationCounterOrNil(client redis.UniversalClient, namespace string) gatewaydispatch.APIKeyRotationCounter {
 	if client == nil {
 		return nil
 	}
-	return &chainAPIKeyRotationRedisCounter{client: client}
+	return &chainAPIKeyRotationRedisCounter{client: client, namespace: namespace}
 }
 
 // compile-time: the adapter satisfies the rotation counter port.

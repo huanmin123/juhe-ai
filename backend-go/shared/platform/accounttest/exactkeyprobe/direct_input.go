@@ -15,8 +15,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 )
 
 // DirectInput is the typed result expected from the PostgreSQL read-only
@@ -178,7 +176,7 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		InputVersion:        d.InputVersion,
 		ConfigRevision:      d.Account.ConfigRevision,
 		DispatchRevision:    d.Account.DispatchRevision,
-		Provider:            protocol,
+		Provider:            strings.TrimSpace(effective.Provider),
 		ProtocolProfileID:   effective.ProtocolProfileID,
 		ProtocolCode:        effective.ProtocolCode,
 		ProtocolVersion:     effective.ProtocolVersion,
@@ -274,17 +272,9 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 }
 
 func directProbeTarget(account DirectAccount) (string, string, error) {
-	mode, model, _, err := accountprobe.ResolveHybridProbeTarget(
-		account.ProtocolProfileID,
-		accountprobe.EndpointMode(account.EndpointMode),
-		account.HealthModel,
-		account.MappedUpstreamModel,
-		account.MappedUpstreamEndpointFamily,
-	)
-	if err != nil {
-		return "", "", fmt.Errorf("PG direct input 的 %w", err)
-	}
-	return string(mode), model, nil
+	// hybrid 供应商退役后，探针目标恒为账户已保存的健康检查形态与模型，
+	// 不再经模型映射切换上游协议。
+	return account.EndpointMode, account.HealthModel, nil
 }
 
 func validateDirectAccount(account DirectAccount, now time.Time) error {
@@ -319,26 +309,18 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 // version)。供应商解耦后读侧身份改为 (vendor_code, 健康检查连接 preset)，由
 // ConnectionPresetProfileID 派生出同一批 profile_* ID（下游取值形状不变），
 // 本表与 isSupportedDirectProfile 继续按 profile 做最终 fail-closed 门禁。
-// generic_* 三档对应新 generic_http 连接（旧 openai-compatible/hybrid 泛化
-// 身份）；profile_hybrid_* 为 Node 遗留形态，种子未含但保留兼容）。
+// generic_http / hybrid / openai-compatible 档案已随通用连接器退役，不再登记。
 var directProfileProtocolMetadata = map[string][2]string{
-	"profile_openai_openai_v1":             {"openai", "v1"},
-	"profile_gpt_openai_v1":                {"openai", "v1"},
-	"profile_xai_openai_v1":                {"openai", "v1"},
-	"profile_deepseek_openai_v1":           {"openai", "v1"},
-	"profile_deepseek_anthropic_v1":        {"anthropic", "v1"},
-	"profile_anthropic_anthropic_v1":       {"anthropic", "v1"},
-	"profile_glm_general_openai_v1":        {"openai", "v1"},
-	"profile_glm_coding_openai_v1":         {"openai", "v1"},
-	"profile_glm_coding_anthropic_v1":      {"anthropic", "v1"},
-	"profile_gemini_openai_chat_v1beta":    {"openai", "v1"},
-	"profile_gemini_native_v1beta":         {"gemini", "v1beta"},
-	"profile_generic_openai_v1":            {"openai", "v1"},
-	"profile_generic_anthropic_v1":         {"anthropic", "v1"},
-	"profile_generic_gemini_v1beta":        {"gemini", "v1beta"},
-	"profile_hybrid_openai_chat_v1":        {"openai", "v1"},
-	"profile_hybrid_anthropic_messages_v1": {"anthropic", "v1"},
-	"profile_hybrid_gemini_native_v1beta":  {"gemini", "v1beta"},
+	"profile_gpt_openai_v1":             {"openai", "v1"},
+	"profile_xai_openai_v1":             {"openai", "v1"},
+	"profile_deepseek_openai_v1":        {"openai", "v1"},
+	"profile_deepseek_anthropic_v1":     {"anthropic", "v1"},
+	"profile_anthropic_anthropic_v1":    {"anthropic", "v1"},
+	"profile_glm_general_openai_v1":     {"openai", "v1"},
+	"profile_glm_coding_openai_v1":      {"openai", "v1"},
+	"profile_glm_coding_anthropic_v1":   {"anthropic", "v1"},
+	"profile_gemini_openai_chat_v1beta": {"openai", "v1"},
+	"profile_gemini_native_v1beta":      {"gemini", "v1beta"},
 }
 
 // ConnectionPresetProfileID 把 account_connections.connection_preset_code 确定性地
@@ -365,9 +347,6 @@ var connectionPresetProfiles = []struct {
 	{"glm_coding_anthropic_v1", "profile_glm_coding_anthropic_v1"},
 	{"gemini_openai_chat_v1beta", "profile_gemini_openai_chat_v1beta"},
 	{"gemini_native_v1beta", "profile_gemini_native_v1beta"},
-	{"generic_openai_v1", "profile_generic_openai_v1"},
-	{"generic_anthropic_v1", "profile_generic_anthropic_v1"},
-	{"generic_gemini_v1beta", "profile_generic_gemini_v1beta"},
 }
 
 func ConnectionPresetProfileID(preset string) (string, bool) {
@@ -436,7 +415,7 @@ func validateDirectAuthorization(input DirectInput, now time.Time) error {
 }
 
 func isDirectOpenAIProvider(value string) bool {
-	return value == "gpt" || value == "openai"
+	return value == "gpt"
 }
 
 func isSupportedDirectProfile(profile, provider, accountType, mode string) bool {
@@ -455,11 +434,6 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 			return false
 		}
 		return openAIProfileMode(accountType, mode, true)
-	case "profile_openai_openai_v1":
-		if provider != "openai" || accountType != "api_key" {
-			return false
-		}
-		return openAIChatOrResponseMode(mode, true)
 	case "profile_xai_openai_v1":
 		if provider != "xai" {
 			return false
@@ -471,12 +445,6 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 		return provider == "glm" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
 	case "profile_gemini_openai_chat_v1beta":
 		return provider == "gemini" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
-	case "profile_hybrid_openai_chat_v1":
-		return provider == "hybrid" && accountType == "api_key" && hybridProfileMode(mode)
-	case "profile_hybrid_anthropic_messages_v1":
-		return provider == "hybrid" && accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
-	case "profile_hybrid_gemini_native_v1beta":
-		return provider == "hybrid" && accountType == "api_key" && geminiProfileMode(mode)
 	case "profile_anthropic_anthropic_v1":
 		return provider == "anthropic" && (accountType == "api_key" || accountType == "oauth") && (mode == "messages_json" || mode == "messages_sse")
 	case "profile_deepseek_anthropic_v1":
@@ -485,14 +453,6 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 		return provider == "glm" && accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
 	case "profile_gemini_native_v1beta":
 		return provider == "gemini" && (accountType == "api_key" || accountType == "google_oauth") && geminiProfileMode(mode)
-	// generic_http 连接（vendor_code NULL）：厂商未知，不做 provider 交叉校验；
-	// 协议面由 profile 本身固定（与旧 openai-compatible/hybrid 泛化身份等价）。
-	case "profile_generic_openai_v1":
-		return accountType == "api_key" && openAIChatOrResponseMode(mode, true)
-	case "profile_generic_anthropic_v1":
-		return accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
-	case "profile_generic_gemini_v1beta":
-		return accountType == "api_key" && geminiProfileMode(mode)
 	default:
 		return false
 	}
@@ -519,33 +479,14 @@ func geminiProfileMode(mode string) bool {
 	return mode == "generate_content_json" || mode == "generate_content_sse" || mode == "interactions_json" || mode == "interactions_sse"
 }
 
-func hybridProfileMode(mode string) bool {
-	return openAIChatOrResponseMode(mode, true) || mode == "messages_json" || mode == "messages_sse" || geminiProfileMode(mode)
-}
-
 func directProbeProtocolForMode(profile, provider, mode string) string {
 	switch profile {
-	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1", "profile_generic_anthropic_v1":
+	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1":
 		return "anthropic"
-	case "profile_gemini_native_v1beta", "profile_generic_gemini_v1beta":
+	case "profile_gemini_native_v1beta":
 		return "gemini"
-	case "profile_gpt_openai_v1", "profile_openai_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta", "profile_generic_openai_v1":
+	case "profile_gpt_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta":
 		return "openai"
-	case "profile_hybrid_openai_chat_v1":
-		if mode == "messages_json" || mode == "messages_sse" {
-			return "anthropic"
-		}
-		if geminiProfileMode(mode) {
-			return "gemini"
-		}
-		if openAIChatOrResponseMode(mode, true) {
-			return "openai"
-		}
-		return ""
-	case "profile_hybrid_anthropic_messages_v1":
-		return "anthropic"
-	case "profile_hybrid_gemini_native_v1beta":
-		return "gemini"
 	case "":
 		if isDirectOpenAIProvider(provider) {
 			return "openai"
@@ -558,8 +499,6 @@ func probeProfileProvider(profile, protocol string) string {
 	switch profile {
 	case "profile_gpt_openai_v1":
 		return "gpt"
-	case "profile_openai_openai_v1":
-		return "openai"
 	case "profile_xai_openai_v1":
 		return "xai"
 	case "profile_deepseek_openai_v1", "profile_deepseek_anthropic_v1":
@@ -570,8 +509,6 @@ func probeProfileProvider(profile, protocol string) string {
 		return "anthropic"
 	case "profile_gemini_native_v1beta", "profile_gemini_openai_chat_v1beta":
 		return "gemini"
-	case "profile_hybrid_openai_chat_v1", "profile_hybrid_anthropic_messages_v1", "profile_hybrid_gemini_native_v1beta":
-		return "hybrid"
 	default:
 		return protocol
 	}

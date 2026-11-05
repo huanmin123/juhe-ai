@@ -53,6 +53,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
 	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // 系统组合根 PG 池默认规格（system-api / chat / codex-context 三池共用）：
@@ -657,7 +658,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// window live in the shared auth_captcha state store (Node
 		// captcha.service.ts async paths) so captcha consumption is atomic
 		// across instances.
-		svc, closeFn, err := authsys.NewRedisCaptchaService(cfg.RedisStateURL, cfg.RedisNamespace, time.Now)
+		svc, closeFn, err := authsys.NewRedisCaptchaService(cfg.RedisURL, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainAuthState), time.Now)
 		if err != nil {
 			return nil, fmt.Errorf("create shared captcha service: %w", err)
 		}
@@ -669,7 +670,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// Redis runtime-state driver: failure counters and locks live in the
 	// shared auth_login_guard state store (Node login-guard.service.ts
 	// async paths) so throttling is shared across instances.
-	loginGuard, loginGuardClose, err := authsys.NewRedisLoginGuard(cfg.RedisStateURL, cfg.RedisNamespace, time.Now)
+	loginGuard, loginGuardClose, err := authsys.NewRedisLoginGuard(cfg.RedisURL, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainAuthState), time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create shared login guard: %w", err)
 	}
@@ -879,7 +880,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		// turn-retry Redis 状态驱动：StateClient 恒注入（存储形态收口后 redis
 		// 是唯一运行态形态），构造失败 fail-fast。
-		turnRetryStateStore, turnRetryStateErr := newChainTurnRetryRedisStateStoreOrNil(services.StateClient, cfg.RedisNamespace)
+		turnRetryStateStore, turnRetryStateErr := newChainTurnRetryRedisStateStoreOrNil(services.StateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainSession))
 		if turnRetryStateErr != nil {
 			services.Close()
 			return nil, turnRetryStateErr
@@ -1053,11 +1054,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			EngineSecret: cfg.Secret,
 			// B-3（BUG-0174）：账户 API Key 轮转 Redis 计数器（StateClient 为
 			// nil 时返回 nil，引擎保持进程内计数器回退）。
-			KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),
+			KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRouteState)),
 			// 调用方分级影子观测驱动选择（调用方分级调度设计 §6.1/§6.3）：
 			// 与 turn-retry / KeyRotation 同源的 state Redis 客户端判据，
 			// 链装配据此选 Redis / memory 存储（部署形态选择，非运行时回退）。
 			StateClient: chainServices.StateClient,
+			CallerTierNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainCallerTier),
 			// Codex / Anthropic 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道
 			// （同一适配器实例同时实现 codex / anthropic 两个派发窄口）。
@@ -1179,7 +1181,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if chainServices != nil && chainServices.StateClient != nil {
 		aipublicDeps.RedisDriver = true
 		aipublicDeps.RedisStateClient = chainServices.StateClient
-		aipublicDeps.RedisNamespace = cfg.RedisNamespace
+		aipublicDeps.RedisNamespace = rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRateLimit)
 	}
 	// capturePublicApiLog (Node /__aipublic__ prefix middleware): the shared
 	// business pool feeds the P05 pipeline (bounded channel → batch insert).

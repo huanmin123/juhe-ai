@@ -20,7 +20,7 @@
 
 - 这里是 `juhe-ai`，定位为轻量级 OpenAI 兼容中转与账号管理项目。
 - 前端使用 Vue 3 + TypeScript + Ant Design Vue；后端使用 Go：`gateway`（管理面、公开面与 `/v1` 网关链主入口）、`jobs`（后台任务与探针/统计/retention 任务族）、`maintenance`（schema/seed 一次性 CLI）。
-- 供应商与账户创建：已接入 gpt、xai（Grok）、anthropic、gemini、deepseek、glm、minimax、volcengine、qwen 九家真实厂商（未知厂商按 generic_http 通用连接器接入）；账户创建支持 API Key（九家全覆盖）与 OAuth（gpt / gemini / anthropic / xai），组合、能力域与 endpoint mode 以连接器注册表为准（[供应商与上游协议面重构设计](docs/functions/供应商与上游协议面重构设计.md) §2、[官方可落地 OAuth 账户接入设计](docs/functions/官方可落地OAuth账户接入设计.md)）。
+- 供应商与账户创建：只接入 gpt、xai（Grok）、anthropic、gemini、deepseek、glm、minimax、volcengine、qwen 九家真实厂商；`openai` 兼容、混合供应商与 `generic_http` 通用连接器已于 2026-11-05 退役，未知厂商一律拒绝，不提供自定义协议连接。账户创建支持 API Key（九家全覆盖）与 OAuth（gpt / gemini / anthropic / xai），组合、能力域与 endpoint mode 以连接器注册表为准（[供应商与上游协议面重构设计](docs/functions/供应商与上游协议面重构设计.md) §2、[官方可落地 OAuth 账户接入设计](docs/functions/官方可落地OAuth账户接入设计.md)）。
 
 ## 核心业务边界
 
@@ -29,7 +29,7 @@
 - API Key 并列绑定路由策略与调度偏好：路由策略只负责路由拓扑（路由模式与分组绑定）；调度偏好自 v1 起为独立实体与独立菜单，内置「对话·成本优先」行不可删改；分组协调 AI 账户；AI 账户和供应商管理真实上游语义。路由拓扑配置是会话盲的；组级会话黏性（[策略路由分组会话亲和设计](docs/functions/策略路由分组会话亲和设计.md)）是网关在策略拓扑之内的软调度偏好，与账户亲和同级，不改配置面。
 - 普通路由只绑定一个分组；权重、故障回退和轮询规则由策略路由维护。路由目标可以是普通分组或超级分组（[超级分组设计](docs/functions/超级分组设计.md)）：超级分组属于分组域，把多个普通分组组合成一个分组目标，不新增路由模式。
 - 客户端画像由网关内部自动识别，不作为 API Key、路由策略、分组或普通 AI 账户的用户配置项。
-- 跨协议转换属于混合供应商账户能力，不写成 API Key 或路由策略里的显式协议桥接规则。
+- 跨协议只保留 OpenAI v1 Responses → Chat Completions 的账户级模型别名 bridge；混合供应商、openai 兼容与 generic_http 已退役，不写成 API Key 或路由策略里的显式协议桥接规则。
 
 ## 本地管理页面测试
 

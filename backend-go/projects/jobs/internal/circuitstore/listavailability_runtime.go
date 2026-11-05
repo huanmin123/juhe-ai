@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // recoveryProbeStoreName 与 Node createRuntimeProbeStateStore 名称一致。
@@ -81,11 +82,11 @@ func NewRuntimeStateReader(url, namespace string, client redis.Cmdable) (*Runtim
 		if strings.TrimSpace(url) == "" {
 			return nil, errors.New("账户列表投影运行态读取缺少 Redis URL")
 		}
-		options, err := redis.ParseURL(url)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: url})
 		if err != nil {
-			return nil, fmt.Errorf("解析账户列表投影运行态 Redis URL: %w", err)
+			return nil, fmt.Errorf("创建账户列表投影运行态 Redis 客户端: %w", err)
 		}
-		cmdable = redis.NewClient(options)
+		cmdable = client
 	}
 	safeRecovery := sanitizeRedisName(recoveryProbeStoreName)
 	safeAvoidance := sanitizeRedisName(policyAvoidanceStoreName)
@@ -100,8 +101,8 @@ func NewRuntimeStateReader(url, namespace string, client redis.Cmdable) (*Runtim
 
 // Close 释放自建连接。
 func (r *RuntimeStateReader) Close() error {
-	if client, ok := r.client.(*redis.Client); ok && client != nil {
-		return client.Close()
+	if client, ok := r.client.(interface{ Close() error }); ok && client != nil {
+		return rediscfg.CloseClient(client)
 	}
 	return nil
 }

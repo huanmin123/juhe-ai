@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/vendorinfer"
 )
 
 // accountRow is one legacy account plus the vendor/preset translation resolved
@@ -82,6 +84,17 @@ type accountRow struct {
 // does not know get that model created as a personal row, preserving the
 // relay-style custom names production actually uses.
 func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret string, report *Report) (map[string]struct{}, error) {
+	// generic_http 退役后，旧 openai/hybrid 账户不再有 generic preset 可落。
+	// 先读旧账户的模型列表与目标模型目录，按模型名/前缀推断唯一真实厂商；
+	// 推断不出的账户跳过并写报告，其模型/映射/分组绑定随账户集合一并跳过。
+	legacyModelsByAccount, err := loadLegacyAccountModels(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	inferCatalog, err := loadVendorInferCatalog(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	// rpm_limit 是 2026-11-03 新增列（AI账户每分钟请求上限设计 §7.1）：
 	// provider-era 旧库普遍没有该列，先探测存在性——有列读
 	// COALESCE(rpm_limit, 0)，无列以常量 0 占位同名投影，按 0 回填，
@@ -135,8 +148,12 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 			&row.CreatedAt, &row.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("扫描旧账户: %w", err)
 		}
-		if err := resolveAccountTarget(&row, report); err != nil {
-			return nil, err
+		skip, resolveErr := resolveAccountTarget(&row, report, legacyModelsByAccount[row.ID], inferCatalog)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		if skip {
+			continue
 		}
 		collected = append(collected, row)
 	}
@@ -150,13 +167,17 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 	}
 
 	accountOwners := make(map[string]string, len(collected))
+	accountVendors := make(map[string]string, len(collected))
 	for _, row := range collected {
 		accountOwners[row.ID] = row.Owner
+		if row.Vendor.Valid {
+			accountVendors[row.ID] = row.Vendor.String
+		}
 	}
-	if err := importSupportedModels(ctx, source, tx, accountIDs, accountOwners, report); err != nil {
+	if err := importSupportedModels(ctx, source, tx, accountIDs, accountOwners, accountVendors, report); err != nil {
 		return nil, err
 	}
-	if err := importMappings(ctx, source, tx, accountIDs, accountOwners, report); err != nil {
+	if err := importMappings(ctx, source, tx, accountIDs, accountOwners, accountVendors, report); err != nil {
 		return nil, err
 	}
 	return accountIDs, nil
@@ -286,32 +307,119 @@ func legacyAccountsHasRPMLimitColumn(ctx context.Context, db *sql.DB) (bool, err
 }
 
 // resolveAccountTarget validates the legacy provider/profile pair and fills the
-// target vendor, driver and preset. openai/hybrid stay generic on purpose.
-func resolveAccountTarget(row *accountRow, report *Report) error {
+// target vendor, driver and preset. Legacy openai/hybrid profiles have no
+// generic connector anymore: their accounts are resolved from the legacy model
+// list to one of the nine real vendors. An account that cannot be resolved
+// unambiguously is skipped and reported; its dependent rows are skipped by the
+// account-set filters in the model/mapping/group import passes.
+func resolveAccountTarget(row *accountRow, report *Report, models []string, catalog *vendorinfer.Catalog) (skip bool, err error) {
+	if surface, generic := legacyGenericProfileSurfaces[row.ProfileID]; generic {
+		result := catalog.Infer(models)
+		if !result.OK {
+			report.SkippedAccounts = append(report.SkippedAccounts, SkippedAccount{
+				ID:           row.ID,
+				ProviderCode: row.ProviderCode,
+				ProfileID:    row.ProfileID,
+				Reason:       "无法从模型列表唯一确定九家真实厂商",
+				Models:       append([]string(nil), models...),
+			})
+			return true, nil
+		}
+		preset, ok := vendorinfer.ConnectionPreset(result.Vendor, surface)
+		if !ok {
+			report.SkippedAccounts = append(report.SkippedAccounts, SkippedAccount{
+				ID:           row.ID,
+				ProviderCode: row.ProviderCode,
+				ProfileID:    row.ProfileID,
+				Reason:       fmt.Sprintf("推断厂商 %s 没有 %s 协议面的兼容连接 preset", result.Vendor, surface),
+				Models:       append([]string(nil), models...),
+			})
+			return true, nil
+		}
+		row.Vendor = sql.NullString{String: result.Vendor, Valid: true}
+		row.Driver = result.Vendor
+		row.Preset = preset
+		row.ProtocolCode, row.ProtocolVersion = protocolCodeVersionForSurface(surface)
+		report.LegacyProfiles[row.ProfileID] = preset
+		return false, nil
+	}
+
 	preset, ok := legacyProfilePresets[row.ProfileID]
 	if !ok {
-		return fmt.Errorf("账户 %s 的旧 profile %q 不在固定映射表中，无法确定连接 preset", row.ID, row.ProfileID)
+		return false, fmt.Errorf("账户 %s 的旧 profile %q 不在固定映射表中，无法确定连接 preset", row.ID, row.ProfileID)
 	}
 	driver, ok := presetDriver(preset)
 	if !ok {
-		return fmt.Errorf("账户 %s 的 preset %q 没有目标 driver", row.ID, preset)
+		return false, fmt.Errorf("账户 %s 的 preset %q 没有目标 driver", row.ID, preset)
 	}
 	expectedVendor := presetVendor(preset)
-	if expectedVendor != "" {
-		if row.ProviderCode != expectedVendor {
-			return fmt.Errorf("账户 %s 的 provider_code %q 与 profile %q 推导的 vendor %q 不一致",
-				row.ID, row.ProviderCode, row.ProfileID, expectedVendor)
-		}
-		row.Vendor = sql.NullString{String: expectedVendor, Valid: true}
-		row.Driver = driver
-	} else {
-		// generic_http账户：vendor 为 NULL，driver 固定 generic_http。
-		row.Vendor = sql.NullString{}
-		row.Driver = "generic_http"
+	if expectedVendor == "" {
+		return false, fmt.Errorf("账户 %s 的 preset %q 没有真实厂商归属", row.ID, preset)
 	}
+	if row.ProviderCode != expectedVendor {
+		return false, fmt.Errorf("账户 %s 的 provider_code %q 与 profile %q 推导的 vendor %q 不一致",
+			row.ID, row.ProviderCode, row.ProfileID, expectedVendor)
+	}
+	row.Vendor = sql.NullString{String: expectedVendor, Valid: true}
+	row.Driver = driver
 	row.Preset = preset
 	report.LegacyProfiles[row.ProfileID] = preset
-	return nil
+	return false, nil
+}
+
+func protocolCodeVersionForSurface(surface string) (string, string) {
+	switch surface {
+	case "anthropic_v1":
+		return "anthropic", "v1"
+	case "gemini_v1beta":
+		return "gemini", "v1beta"
+	default:
+		return "openai", "v1"
+	}
+}
+
+// loadLegacyAccountModels 读取旧库每个账户的支持模型列表，供 openai/hybrid
+// 旧账户的厂商推断使用。
+func loadLegacyAccountModels(ctx context.Context, source *sql.DB) (map[string][]string, error) {
+	rows, err := source.QueryContext(ctx,
+		`SELECT account_id, model FROM juhe_business.account_supported_models ORDER BY account_id, model`)
+	if err != nil {
+		return nil, fmt.Errorf("读取旧账户支持模型: %w", err)
+	}
+	defer rows.Close()
+	byAccount := map[string][]string{}
+	for rows.Next() {
+		var accountID, model string
+		if err := rows.Scan(&accountID, &model); err != nil {
+			return nil, fmt.Errorf("扫描旧账户支持模型: %w", err)
+		}
+		byAccount[accountID] = append(byAccount[accountID], model)
+	}
+	return byAccount, rows.Err()
+}
+
+// loadVendorInferCatalog 从目标模型目录构造推断目录；只收九家真实厂商行。
+func loadVendorInferCatalog(ctx context.Context, tx *sql.Tx) (*vendorinfer.Catalog, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT COALESCE(vendor_code,''), public_model, upstream_model
+		   FROM juhe_business.models
+		  WHERE vendor_code IS NOT NULL AND btrim(vendor_code) <> ''`)
+	if err != nil {
+		return nil, fmt.Errorf("读取目标模型目录（厂商推断）: %w", err)
+	}
+	defer rows.Close()
+	entries := []vendorinfer.Entry{}
+	for rows.Next() {
+		var vendor, publicModel, upstreamModel string
+		if err := rows.Scan(&vendor, &publicModel, &upstreamModel); err != nil {
+			return nil, fmt.Errorf("扫描目标模型目录（厂商推断）: %w", err)
+		}
+		entries = append(entries, vendorinfer.Entry{Vendor: vendor, PublicModel: publicModel, UpstreamModel: upstreamModel})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return vendorinfer.NewCatalog(entries), nil
 }
 
 func maxInt(value, floor int) int {
@@ -338,7 +446,7 @@ func credentialFingerprint(envelope string) string {
 // importSupportedModels re-points each account's legacy (provider, model) pairs
 // at target model ids, creating a personal model row when the builtin catalog
 // has no match (relay deployments routinely use vendor-prefixed custom names).
-func importSupportedModels(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts map[string]struct{}, owners map[string]string, report *Report) error {
+func importSupportedModels(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts map[string]struct{}, owners map[string]string, accountVendors map[string]string, report *Report) error {
 	models, err := loadModelIndex(ctx, tx)
 	if err != nil {
 		return err
@@ -372,7 +480,10 @@ func importSupportedModels(ctx context.Context, source *sql.DB, tx *sql.Tx, acco
 		if _, ok := accounts[item.accountID]; !ok {
 			continue
 		}
-		vendor := vendorForLegacyProvider(item.provider)
+		vendor := accountVendors[item.accountID]
+		if vendor == "" {
+			vendor = vendorForLegacyProvider(item.provider)
+		}
 		entry, ok := models.lookup(vendor, item.model)
 		if !ok {
 			newID, err := createPersonalModel(ctx, tx, owners[item.accountID], vendor, item.model)
@@ -436,7 +547,7 @@ func importSupportedModels(ctx context.Context, source *sql.DB, tx *sql.Tx, acco
 // importMappings rewrites legacy account_model_mappings into
 // account_entry_mappings: family-only legacy rows lose their upstream model and
 // are re-pointed at the target connection plus the resolved target model.
-func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts map[string]struct{}, owners map[string]string, report *Report) error {
+func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts map[string]struct{}, owners map[string]string, accountVendors map[string]string, report *Report) error {
 	models, err := loadModelIndex(ctx, tx)
 	if err != nil {
 		return err
@@ -473,7 +584,10 @@ func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts ma
 		if _, ok := accounts[item.accountID]; !ok {
 			continue
 		}
-		vendor := vendorForLegacyProvider(item.provider)
+		vendor := accountVendors[item.accountID]
+		if vendor == "" {
+			vendor = vendorForLegacyProvider(item.provider)
+		}
 		entry, ok := models.lookup(vendor, item.upstreamModel)
 		if !ok {
 			newID, err := createPersonalModel(ctx, tx, owners[item.accountID], vendor, item.upstreamModel)
@@ -626,8 +740,9 @@ func nullableVendor(vendor string) sql.NullString {
 	return sql.NullString{String: vendor, Valid: true}
 }
 
-// vendorForLegacyProvider maps a legacy provider_code to the target vendor. The
-// generic pseudo-vendors (openai/hybrid) map to the empty (NULL) vendor.
+// vendorForLegacyProvider maps a legacy provider_code to the target vendor.
+// openai/hybrid rows are resolved from the account's model list before this
+// fallback is consulted (see resolveAccountTarget); unresolved rows are skipped.
 func vendorForLegacyProvider(provider string) string {
 	if vendor, ok := realVendors[provider]; ok {
 		return vendor

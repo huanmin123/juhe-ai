@@ -20,9 +20,8 @@ package accounts
 //     或入参 ID 词表外回落 vendorDefaultProtocolContext（vendor 语义默认
 //     档案，与退役前各 vendor 的默认 profile 行一致）。
 //
-// 本推导是 protocol 列退役（§9.11 后续切片）前的过渡投影；generic（openai/
-// hybrid）与纯媒体集合无 pin，profileID 留空——openai-compatible / anthropic
-// driver 路由只依赖 protocol 对。
+// 本推导是 protocol 列退役（§9.11 后续切片）前的过渡投影；纯媒体集合无 pin，
+// profileID 留空——媒体用 openai 族协议对（surface 为空时由媒体缺省兜底）。
 
 import (
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
@@ -47,7 +46,7 @@ func (c protocolContext) predicate(providerCode string) protocolPredicateInput {
 	}
 }
 
-// openAIProtocolContext 是无 pin 的 openai 族上下文（generic / 纯媒体集合）。
+// openAIProtocolContext 是无 pin 的 openai 族上下文（纯媒体连接集合的协议对）。
 func openAIProtocolContext() protocolContext {
 	return protocolContext{
 		protocolCode:    accountscore.OpenAIProtocolCode,
@@ -78,7 +77,7 @@ func surfaceProtocolContext(surface string) (protocolContext, bool) {
 }
 
 // presetProfileID 是 registry preset → 旧 profile ID pin 的固定对应表（§1.1
-// 注册值一一对应；generic_*/anthropic_v1 官方预设无 pin）。
+// 注册值一一对应；anthropic_v1 官方预设无 pin）。
 var presetProfileID = map[string]string{
 	contracts.PresetGPTOpenAIV1:            accountscore.GptOpenAIV1ProfileID,
 	contracts.PresetXAIOpenAIV1:            accountscore.XaiOpenAIV1ProfileID,
@@ -101,7 +100,7 @@ var presetProfileID = map[string]string{
 // preset 对应表落 pin，协议对退 openai 族（媒体 adapter 的上游面恒为 OpenAI
 // 形态，媒体设计 §9）——丢失 pin 会让 legacy 词表路由（resolveCapabilityWrite
 // Context 的 per-vendor 行）解析失败、合法媒体域创建被误拒。无 pin 无 surface
-// （generic 纯媒体集合）退 openai 族无 pin 上下文。
+// （纯媒体集合）退 openai 族无 pin 上下文。
 func deriveConnectionProtocolContext(resolved []resolvedConnection) protocolContext {
 	for _, connection := range resolved {
 		pin := presetProfileID[connection.preset]
@@ -204,8 +203,8 @@ var profileIDProtocolContext = map[string]protocolContext{
 
 // vendorDefaultProtocolContext 是草稿/探针链（无 connections 载荷）的 vendor
 // 语义默认上下文，与退役前各 vendor 的默认 profile 行一致（gemini 默认 native
-// 档案、deepseek/glm 默认 openai 档案；openai/hybrid 语义无 vendor 行，落
-// generic openai 族无 pin）。
+// 档案、deepseek/glm 默认 openai 档案）。九家之外的 provider 无默认档案，
+// 返回空上下文由后续 registry 词表门显式拒绝，不回落 generic openai 族。
 func vendorDefaultProtocolContext(providerCode string) protocolContext {
 	switch normalizeProviderToken(providerCode) {
 	case accountscore.GptVendorCode:
@@ -262,14 +261,14 @@ func vendorDefaultProtocolContext(providerCode string) protocolContext {
 			profileID:       accountscore.QwenOpenAIV1ProfileID,
 		}
 	default:
-		return openAIProtocolContext()
+		return protocolContext{}
 	}
 }
 
 // vendorDefaultPreset 是 vendorDefaultProtocolContext 同一批 vendor 行的 URL
 // 维度：各 vendor 默认 connection preset（§1.1 注册表，与上面各 case 的默认
-// profile ID 一一对应）；generic 语义（openai/hybrid 等，无 vendor preset）
-// 返回空串。两表必须同批维护：protocol_context_test.go 以成对断言钉住。
+// profile ID 一一对应）；九家之外的 provider 无 vendor preset，返回空串。
+// 两表必须同批维护：protocol_context_test.go 以成对断言钉住。
 func vendorDefaultPreset(providerCode string) string {
 	switch normalizeProviderToken(providerCode) {
 	case accountscore.GptVendorCode:
@@ -297,8 +296,7 @@ func vendorDefaultPreset(providerCode string) string {
 
 // vendorDefaultBaseURL 是草稿/探针链 OAuth 草稿缺省 base_url（供应商与上游
 // 协议面重构设计 §1.1 default_base_url 表）：按 vendor 默认 preset 查 registry
-// 注册根；generic 语义无 vendor preset，返回空串由调用方落 legacy OpenAI
-// 官方根。
+// 注册根；九家之外的 provider 无 vendor preset，返回空串。
 func vendorDefaultBaseURL(providerCode string) string {
 	preset := vendorDefaultPreset(providerCode)
 	if preset == "" {

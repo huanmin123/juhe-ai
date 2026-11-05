@@ -1,8 +1,7 @@
 import type { ProviderModelApiProtocol } from '@/types/domain'
 import {
   OPENAI_TTS_FAMILY,
-  OPENAI_VIDEO_GENERATION_FAMILY,
-  isHybridProviderCode
+  OPENAI_VIDEO_GENERATION_FAMILY
 } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
 
@@ -50,23 +49,6 @@ export function accountModelMappingSourceModelOptions(input: {
   anthropicProtocolOptions: AccountModelMappingModelOption[]
   geminiProtocolOptions: AccountModelMappingModelOption[]
 }): AccountModelMappingModelOption[] {
-  if (!isHybridProviderCode(input.providerCode)) return input.currentProviderOptions
-  return filterAccountModelMappingOptionsByEndpointFamily(
-    protocolSourceOptions(input),
-    input.sourceEndpointFamily
-  )
-}
-
-function protocolSourceOptions(input: {
-  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
-  openAIProtocolOptions: AccountModelMappingModelOption[]
-  anthropicProtocolOptions: AccountModelMappingModelOption[]
-  geminiProtocolOptions: AccountModelMappingModelOption[]
-}): AccountModelMappingModelOption[] {
-  if (input.sourceEndpointFamily === 'messages') return input.anthropicProtocolOptions
-  if (input.sourceEndpointFamily === 'generate_content' || input.sourceEndpointFamily === 'stream_generate_content') {
-    return input.geminiProtocolOptions
-  }
-  return input.openAIProtocolOptions
+  return input.currentProviderOptions
 }
 

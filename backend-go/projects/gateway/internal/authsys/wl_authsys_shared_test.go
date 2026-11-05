@@ -45,7 +45,7 @@ func TestWlNewRedisNamespacedStateStore(t *testing.T) {
 		if err := store.SetJSON(context.Background(), "k", map[string]any{"a": 1}, 1000); err != nil {
 			t.Fatalf("SetJSON err=%v", err)
 		}
-		if got, _ := server.Get("juhe-ai:dev:state:auth_captcha:k"); got == "" {
+		if got, _ := server.Get("juhe-ai:{dev}:state:auth_captcha:k"); got == "" {
 			t.Fatal("键必须带完整命名空间前缀")
 		}
 		closeFn()
@@ -56,7 +56,7 @@ func TestWlNewRedisNamespacedStateStore(t *testing.T) {
 		}
 		prefix, err := redisStateStoreKeyPrefix("juhe ai/dev", "cap cha")
 		_ = err
-		if err != nil || prefix != "juhe-ai:juhe_ai_dev:state:cap_cha:" {
+		if err != nil || prefix != "juhe-ai:{juhe_ai_dev}:state:cap_cha:" {
 			t.Fatalf("prefix=%q err=%v", prefix, err)
 		}
 	})
@@ -96,7 +96,7 @@ func TestWlRedisStateStoreOperations(t *testing.T) {
 		}
 	})
 	t.Run("毒化键删除后读为不存在", func(t *testing.T) {
-		if err := server.Set("juhe-ai:dev:state:state_test:poison", "not-json"); err != nil {
+		if err := server.Set("juhe-ai:{dev}:state:state_test:poison", "not-json"); err != nil {
 			t.Fatalf("err=%v", err)
 		}
 		var payload map[string]any
@@ -104,7 +104,7 @@ func TestWlRedisStateStoreOperations(t *testing.T) {
 		if err != nil || ok {
 			t.Fatalf("毒化键必须读为不存在: ok=%v err=%v", ok, err)
 		}
-		if _, err := server.Get("juhe-ai:dev:state:state_test:poison"); err == nil {
+		if _, err := server.Get("juhe-ai:{dev}:state:state_test:poison"); err == nil {
 			t.Fatal("毒化键必须被删除")
 		}
 	})
@@ -135,7 +135,7 @@ func TestWlRedisStateStoreOperations(t *testing.T) {
 		if count != 3 {
 			t.Fatalf("count=%d", count)
 		}
-		if value, _ := server.Get("juhe-ai:dev:state:state_test:counter"); value != "2" {
+		if value, _ := server.Get("juhe-ai:{dev}:state:state_test:counter"); value != "2" {
 			t.Fatalf("存储值=%q, 应停留在 max", value)
 		}
 	})

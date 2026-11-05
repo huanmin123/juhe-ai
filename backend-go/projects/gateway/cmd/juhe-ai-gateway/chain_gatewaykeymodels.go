@@ -149,9 +149,9 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 		// chainCandidateColumns 已按来源账户取 resource_* 列，resourceAccountID()
 		// 即 COALESCE 语义；vendor 身份取模型事实主体（资源账户）的
 		// accounts.vendor_code（供应商与上游协议面重构设计 §2.1/§8：vendor 值域
-		// 与旧 providerCode 同名，generic_http 账户为空串）——并集语义按「事实
-		// 主体自身的连接身份」收敛，与同位置 resourceProtocolCode 的 COALESCE
-		// 口径一致。
+		// 与旧 providerCode 同名，九家真实厂商恒非空）——并集语义按「事实主体
+		// 自身的连接身份」收敛，与同位置 resourceProtocolCode 的 COALESCE 口径
+		// 一致。
 		factIDs := make([]string, 0, len(admitted))
 		seenFact := map[string]bool{}
 		for _, row := range admitted {
@@ -174,7 +174,7 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 		for _, row := range admitted {
 			factID := row.resourceAccountID()
 			// vendor 身份（§4.9 字典维度，B4 W2）：去重收集进并集条目，供
-			// /v1/models 端口按 vendor 装载目录元数据（generic 账户空串不入集）。
+			// /v1/models 端口按 vendor 装载目录元数据（空 vendor 历史行不入集）。
 			if factVendor := row.resourceVendorCode(); factVendor != "" {
 				if !vendorSeen[factVendor] {
 					vendorSeen[factVendor] = true
@@ -444,8 +444,8 @@ func (c chainGatewayKeyModelCatalog) ListGatewayKeyModels(ctx context.Context, s
 	// 3. 元数据字典（§4.9.1，B4 W2 维度迁移）：按并集成员去重 vendor 复用现有
 	// 目录缓存路径；active 行内按 scope 优先级（personal > global > built_in）
 	// 取每模型最优行。成员过滤职责（可见性/价格/模式）已退役——目录只回答
-	// "元数据长什么样"。generic_http 账户（vendor 空串）不入 vendor 集，其模型
-	// 未命中字典时按 §4.9.3 合成条目出。
+	// "元数据长什么样"。空 vendor 历史行不入 vendor 集，其模型未命中字典时按
+	// §4.9.3 合成条目出。
 	dictionary := map[string]gatewayruntimecache.ProviderModelCatalogItem{}
 	for _, code := range dictionaryVendors {
 		catalog, err := c.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{

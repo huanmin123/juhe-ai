@@ -103,7 +103,7 @@ func TestOpenStoreRejectsInvalidPostgresPoolShape(t *testing.T) {
 // isolated jobs schema. It exercises PostgreSQL's ON CONFLICT and null-safe
 // cooldown-fence predicates.
 func TestPostgresCurrentStateCASRegression(t *testing.T) {
-	postgresURL := os.Getenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL")
+	postgresURL := os.Getenv("JUHE_AI_TEST_ACCOUNT_HEALTH_POSTGRES_URL")
 	if postgresURL == "" {
 		t.Skip("requires isolated J1 PostgreSQL jobs-store smoke environment")
 	}

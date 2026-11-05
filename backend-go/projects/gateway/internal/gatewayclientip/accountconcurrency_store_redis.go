@@ -8,12 +8,13 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // RedisAccountConcurrencyOptions configures Redis-backed account concurrency.
 type RedisAccountConcurrencyOptions struct {
 	RedisURL         string
-	Client           redis.Cmdable
+	Client           redis.UniversalClient
 	Namespace        string
 	Name             string
 	Clock            func() int64
@@ -25,7 +26,7 @@ type RedisAccountConcurrencyOptions struct {
 // It tracks per-account concurrency counts in Redis hashes, enabling
 // cross-instance coordination for the account concurrency seam.
 type RedisAccountConcurrency struct {
-	client redis.Cmdable
+	client redis.UniversalClient
 	keys   redisAccountConcurrencyKeys
 	clock  func() int64
 	logger Logger
@@ -37,22 +38,22 @@ type redisAccountConcurrencyKeys struct {
 
 func redisAccountConcurrencyStoreKeys(name, namespace string) redisAccountConcurrencyKeys {
 	return redisAccountConcurrencyKeys{
-		accountConcurrency: "juhe-ai:" + namespace + ":" + name + ":account-concurrency",
+		accountConcurrency: rediscfg.NamespacedKey("juhe-ai:"+name+":account-concurrency", namespace),
 	}
 }
 
 // NewRedisAccountConcurrency creates a Redis-backed account concurrency source.
 func NewRedisAccountConcurrency(opts RedisAccountConcurrencyOptions) (*RedisAccountConcurrency, error) {
 	client := opts.Client
+	var err error
 	if client == nil {
 		if strings.TrimSpace(opts.RedisURL) == "" {
 			return nil, errors.New("account concurrency Redis URL 不能为空")
 		}
-		parsed, err := redis.ParseURL(opts.RedisURL)
+		client, err = rediscfg.NewUniversalClient(rediscfg.Config{URL: opts.RedisURL})
 		if err != nil {
 			return nil, err
 		}
-		client = redis.NewClient(parsed)
 	}
 	clock := opts.Clock
 	if clock == nil {
@@ -74,9 +75,7 @@ func NewRedisAccountConcurrency(opts RedisAccountConcurrencyOptions) (*RedisAcco
 // Close closes the Redis client if this instance owns it.
 func (r *RedisAccountConcurrency) Close() {
 	if r.client != nil {
-		if c, ok := r.client.(*redis.Client); ok {
-			_ = c.Close()
-		}
+		_ = r.client.Close()
 	}
 }
 

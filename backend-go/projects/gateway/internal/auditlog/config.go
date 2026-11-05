@@ -3,7 +3,6 @@ package auditlog
 import (
 	"fmt"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -57,7 +56,7 @@ type Config struct {
 func LoadConfig(getenv func(string) string) (Config, error) {
 	// 2026-10-24 存储形态收口：JUHE_AI_AUDIT_LOG_STORE 仅剩单一合法形态
 	// postgres——整个 env 读取删除（不留解析不留告警）；Mode 恒 ModePostgres。
-	postgresURL := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_POSTGRES_URL"))
+	postgresURL := strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	// F3 PG 连接池上限为内部常量（2026-09-30 C4 收编：原
 	// JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS / MAX_IDLE_CONNS 全库五源
 	// 零引用，pool 覆盖族旋钮从未被配置，取值固定为下方默认值）。
@@ -102,11 +101,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.SuccessHotRetentionHours = successHotRetentionHours
-	successSampleRate, err := parseBoundedDecimal("JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE", getenv("JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE"), defaultSuccessSampleRate, 0, 1, 4)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.SuccessSampleRate = successSampleRate
+	// 成功信封采样率固定全采样：成功率与耗时统计必须覆盖每一次成功请求，
+	// 原 env 默认值即为 1，保留可调只会让统计口径随部署漂移。
+	cfg.SuccessSampleRate = defaultSuccessSampleRate
 	successRetentionDays, err := parseBoundedInteger("JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS", getenv("JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS"), defaultSuccessRetentionDays, 0, 3650)
 	if err != nil {
 		return Config{}, err
@@ -129,12 +126,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("必须设置 JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL；F3 只能只读业务设置")
 	}
 	if cfg.PostgresURL == "" {
-		// PG 模式 F3 store URL 缺省回退主 JUHE_AI_POSTGRES_URL，
-		// 仍为空时按原契约报错。
-		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	}
-	if cfg.PostgresURL == "" {
-		return Config{}, fmt.Errorf("缺少 JUHE_AI_AUDIT_LOG_POSTGRES_URL")
+		return Config{}, fmt.Errorf("缺少 JUHE_AI_POSTGRES_URL")
 	}
 	if cfg.PayloadBlobDirectory == "" {
 		return Config{}, fmt.Errorf("缺少 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")
@@ -163,25 +155,6 @@ func parseBoundedInteger(name, value string, fallback, min, max int) (int, error
 		return 0, fmt.Errorf("%s 必须是 %d 到 %d 之间的整数", name, min, max)
 	}
 	return int(parsed), nil
-}
-
-func parseBoundedDecimal(name, value string, fallback, min, max float64, maxDecimals int) (float64, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback, nil
-	}
-	message := fmt.Sprintf("%s 必须是 %g 到 %g 之间且最多 %d 位小数的数字", name, min, max, maxDecimals)
-	if !regexp.MustCompile(`^(?:\d+|\d*\.\d+)$`).MatchString(value) {
-		return 0, fmt.Errorf("%s", message)
-	}
-	if point := strings.IndexByte(value, '.'); point >= 0 && len(value)-point-1 > maxDecimals {
-		return 0, fmt.Errorf("%s", message)
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < min || parsed > max {
-		return 0, fmt.Errorf("%s", message)
-	}
-	return parsed, nil
 }
 
 func (cfg Config) validateRetentionPolicy() error {

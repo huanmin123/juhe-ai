@@ -269,15 +269,11 @@ func (r *PostgresDirectInputReader) makeProxy(kind, host string, port int64, use
 	return &ciphertext, nil
 }
 
-// candidateProvider 返回余额候选的 provider 标签。目标 schema 中 generic_http
-// 账户的 vendor_code 按设计为 NULL（供应商与上游协议面重构设计 §10 规则 2：
-// 旧 openai/hybrid 不提升为真实 vendor），而 Candidate→Input 只要求 provider
-// 非空；这里用连接器代码占位，账户真实 vendor 归属仍以 accounts.vendor_code 为准。
+// candidateProvider 返回余额候选的 provider 标签：直接取 accounts.vendor_code。
+// generic_http / 空 vendor 账户已退役并由 DB CHECK 禁止，异常空值保持空串并在
+// 下游 fail closed，不再用连接器代码占位。
 func candidateProvider(vendorCode sql.NullString) string {
-	if code := strings.TrimSpace(vendorCode.String); code != "" {
-		return code
-	}
-	return "generic_http"
+	return strings.TrimSpace(vendorCode.String)
 }
 
 func j2CandidateSQL(kind candidateReadKind) string {
@@ -297,8 +293,8 @@ func j2CandidateSQL(kind candidateReadKind) string {
 		limit = "$1"
 	}
 	// 供应商解耦读侧（设计 §9.11 目标列集无 provider_code）：身份列改
-	// COALESCE(vendor_code,'')，与 jobs cmd SQLite 侧 balanceDetectRuntime
-	// 同口径；generic_http 账户的 vendor 为 NULL，由 candidateProvider 补连接器标签。
+	// COALESCE(vendor_code,'')，与 jobs cmd SQLite 侧 balanceDetectRuntime 同口径；
+	// 真实厂商账户 vendor 恒非空。
 	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,COALESCE(a.vendor_code,''),a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.credential_fingerprint,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND (a.availability_schedule_gate IS NULL OR a.availability_schedule_gate = 1) AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
 }
 

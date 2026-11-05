@@ -155,9 +155,8 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 	items := []gatewayruntimecache.ProviderModelCatalogItem{}
 	builtinRows := []gatewayruntimecache.ProviderModelCatalogItem{}
 
-	builtInCodes := chainCatalogBuiltInSourceProviderCodes(input.ProviderCode, sourceCodes)
-	if len(builtInCodes) > 0 {
-		builtInQuery, builtInArgs := s.builtinCatalogQuery(input, now, builtInCodes)
+	if len(sourceCodes) > 0 {
+		builtInQuery, builtInArgs := s.builtinCatalogQuery(input, now, sourceCodes)
 		rows, err := s.db.QueryContext(ctx, s.bind(builtInQuery), builtInArgs...)
 		if err != nil {
 			return nil, err
@@ -181,9 +180,10 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 	}
 	items = append(items, scanned...)
 
-	preserveProviderIdentity := chainNormalizeProviderToken(input.ProviderCode) == chainCatalogHybridProviderCode
-	merged := chainMergeCatalogItems(items, preserveProviderIdentity)
-	chainInheritCustomCatalogCapabilities(merged, builtinRows, preserveProviderIdentity)
+	// hybrid 身份保留（provider+model 合并键）随通用连接器退场删除：九家真实
+	// 厂商的目录合并键恒为裸 model。
+	merged := chainMergeCatalogItems(items, false)
+	chainInheritCustomCatalogCapabilities(merged, builtinRows, false)
 	out := make([]gatewayruntimecache.ProviderModelCatalogItem, 0, len(merged))
 	for _, item := range merged {
 		if !chainIsSupportedCatalogModel(item) {
@@ -263,42 +263,15 @@ func decorateAccountModelCatalogRow(row map[string]any) {
 	decorateCustomCatalogRow(row)
 }
 
-// chainCatalogHybridProviderCode / chainCatalogOpenAICompatibleProviderCode
-// mirror the providerProtocol.ts tokens；协议子供应商源扩展（原
-// chainCatalogProtocolPairs + provider-definition ceiling）已随
-// providers/provider_protocol_profiles 退役拆除，常量仅供 openai 自身内置
-// 目录剔除与 hybrid 身份保留判定使用。
-const (
-	chainCatalogHybridProviderCode           = "hybrid"
-	chainCatalogOpenAICompatibleProviderCode = "openai"
-)
-
 // sourceVendorCodes 归一化目录维度入参（供应商解耦设计 §3：vendor_code 即
 // 目录归属维度；providers/provider_protocol_profiles 协议子供应商聚合随两表
-// 退役拆除，无 hybrid/openai 源扩展，空入参返回空源）。
+// 退役拆除，无 openai 源扩展，空入参返回空源）。
 func sourceVendorCodes(providerCode string) []string {
 	normalized := chainNormalizeProviderToken(providerCode)
 	if normalized == "" {
 		return []string{}
 	}
 	return []string{normalized}
-}
-
-// chainCatalogBuiltInSourceProviderCodes mirrors the same-named helper: only
-// the openai-compatible target drops itself from its built-in sources (it has
-// no built-in catalog of its own).
-func chainCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderCodes []string) []string {
-	if chainNormalizeProviderToken(providerCode) != chainCatalogOpenAICompatibleProviderCode {
-		return sourceProviderCodes
-	}
-	codes := []string{}
-	for _, code := range sourceProviderCodes {
-		if chainNormalizeProviderToken(code) == chainCatalogOpenAICompatibleProviderCode {
-			continue
-		}
-		codes = append(codes, code)
-	}
-	return codes
 }
 
 // builtinCatalogQuery mirrors listBuiltInProviderModels: availability filter
@@ -430,8 +403,9 @@ func catalogStringList(value any) []string {
 }
 
 // chainMergeCatalogItems mirrors mergeModelCatalogItems: dedupe by model (or
-// provider+model for the hybrid identity), higher scope priority wins and
-// later rows win ties.
+// provider+model when preserveProviderIdentity is set — production passes
+// false 后恒按裸 model；保留参数以维持合并函数的独立测试面）, higher scope
+// priority wins and later rows win ties.
 func chainMergeCatalogItems(items []gatewayruntimecache.ProviderModelCatalogItem, preserveProviderIdentity bool) []gatewayruntimecache.ProviderModelCatalogItem {
 	type key struct {
 		provider string

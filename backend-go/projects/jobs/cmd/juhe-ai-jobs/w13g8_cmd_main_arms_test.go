@@ -170,11 +170,10 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		{"runtime log ONCE 不支持", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}, false, 1},
 		{"J1 owner 非 go", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "w13g8-not-go"}, false, 1},
 		{"model-recovery 非法 namespace", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/9",
+			"JUHE_AI_REDIS_URL": "redis://127.0.0.1:6379/9",
 			"JUHE_AI_REDIS_NAMESPACE": "w13g8 bad namespace!",
 		}, false, 1},
 		{"model-recovery Redis URL 非法", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_REDIS_STATE_URL": "redis://w13g8-invalid-url",
 			"JUHE_AI_REDIS_NAMESPACE": "w13g8",
 		}, false, 1},
 		{"J3a 管理接口守卫", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED": "true"}, false, 1},

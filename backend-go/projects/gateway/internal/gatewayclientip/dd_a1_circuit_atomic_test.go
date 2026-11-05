@@ -67,7 +67,7 @@ func TestDDA1RecordPreAuthFailureConcurrentNoLostUpdates(t *testing.T) {
 	for err := range errCh {
 		t.Fatalf("并发记录失败: %v", err)
 	}
-	samples, found := readRedisCircuitEntry(t, server, "juhe-ai:dev:state:gateway-client-ip-error-circuit:entry:preauth:10.0.0.7:missing")
+	samples, found := readRedisCircuitEntry(t, server, "juhe-ai:{dev}:state:gateway-client-ip-error-circuit:entry:preauth:10.0.0.7:missing")
 	if !found {
 		t.Fatal("entry 必须存在")
 	}
@@ -117,7 +117,7 @@ func TestDDA1RecordClientIPErrorSampleConcurrentNoLostUpdates(t *testing.T) {
 		t.Fatalf("并发采样失败: %v", err)
 	}
 	// scope key 与 memory 臂一致：JSON.stringify({systemAccountId, apiKeyId, clientIp})。
-	redisKey := "juhe-ai:dev:state:gateway-client-ip-error-circuit:entry:" +
+	redisKey := "juhe-ai:{dev}:state:gateway-client-ip-error-circuit:entry:" +
 		`{"systemAccountId":"sys_dd_a1","apiKeyId":"key_dd_a1","clientIp":"10.0.0.9"}`
 	samples, found := readRedisCircuitEntry(t, server, redisKey)
 	if !found {
@@ -164,7 +164,7 @@ func TestDDA1PreAuthThresholdBlockSemantics(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	samples, _ := readRedisCircuitEntry(t, server, "juhe-ai:dev:state:gateway-client-ip-error-circuit:entry:preauth:10.0.0.11:missing")
+	samples, _ := readRedisCircuitEntry(t, server, "juhe-ai:{dev}:state:gateway-client-ip-error-circuit:entry:preauth:10.0.0.11:missing")
 	if samples != preAuthMissingThreshold {
 		t.Fatalf("blocked 后样本数 = %d, want %d（早退不得追加）", samples, preAuthMissingThreshold)
 	}
@@ -200,7 +200,7 @@ func TestDDA1ClientIPErrorSignatureBlockSemantics(t *testing.T) {
 	if !decision.Blocked {
 		t.Fatalf("签名达阈值必须熔断: %+v", decision)
 	}
-	raw, err := server.Get("juhe-ai:dev:state:gateway-client-ip-error-circuit:entry:" +
+	raw, err := server.Get("juhe-ai:{dev}:state:gateway-client-ip-error-circuit:entry:" +
 		`{"systemAccountId":"sys_dd_sig","apiKeyId":"key_dd_sig","clientIp":"10.0.0.12"}`)
 	if err != nil {
 		t.Fatal(err)

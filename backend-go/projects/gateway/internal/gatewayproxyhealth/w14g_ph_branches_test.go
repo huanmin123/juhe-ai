@@ -72,10 +72,10 @@ func TestW14GRuntimeStateMemoryBranches(t *testing.T) {
 		t.Fatalf("normalizeTTLms(0) = %d", normalizeTTLms(0))
 	}
 	// 命名空间键。
-	if got := namespacedRedisKey("ns", "juhe-ai:ns:k"); got != "juhe-ai:ns:k" {
+	if got := namespacedRedisKey("ns", "juhe-ai:{ns}:k"); got != "juhe-ai:{ns}:k" {
 		t.Fatalf("已前缀键 = %s", got)
 	}
-	if got := namespacedRedisKey("ns", "juhe-ai:other:k"); got != "juhe-ai:ns:other:k" {
+	if got := namespacedRedisKey("ns", "juhe-ai:other:k"); got != "juhe-ai:{ns}:other:k" {
 		t.Fatalf("juhe-ai 前缀改写 = %s", got)
 	}
 	if got := sanitizeRedisNamespacePart("  $$$ "); got != "" {

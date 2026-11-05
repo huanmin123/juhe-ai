@@ -11,7 +11,6 @@ import {
   isGeminiProviderCode,
   isGlmProviderCode,
   isGptVendorCode,
-  isHybridProviderCode,
   isXaiProviderCode
 } from '@/shared/providerProtocol'
 import type { AccountClientCompatibility, AccountListItem, AccountType } from '@/types/domain'
@@ -69,15 +68,14 @@ export function accountTypeDescription(providerCode: string, type: AccountType, 
   if (isXaiProviderCode(providerCode) && type === 'oauth') return '支持 Grok 官方 OAuth 托管授权、Refresh Token 或 Access Token 导入；使用 OpenAI-compatible 请求形态并按账户能力启用 Responses。'
   if (isXaiProviderCode(providerCode) && type === 'api_key') return '适合 xAI 官方 API Key；原生支持 OpenAI v1 Chat Completions 与 Responses 文本接口。'
   if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '适合智谱通用 GLM API Key；默认只启用对话补全 (JSON/Streaming)，不承接 Responses API。'
-  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return '适合 GLM Coding Plan Key；使用 Coding 专用 Base URL；Codex Responses 桥接请使用混合供应商账户配置。'
+  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return '适合 GLM Coding Plan Key；使用 Coding 专用 Base URL。'
   if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return '适合 GLM Coding Plan Key 的 Anthropic Messages 接入；使用 Anthropic v1 Messages 协议，不承接 Codex Responses 桥接。'
   if (isGlmProviderCode(providerCode) && type === 'api_key') return '适合智谱 GLM API Key；通用 API 与 Coding Plan 需要选择对应接入档案。'
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return '适合 DeepSeek API Key 直连 Claude Code；使用 Anthropic v1 Messages 协议，默认只启用 Messages (JSON/Streaming)。'
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key' && (!providerProtocolProfileId || providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID)) return '适合 DeepSeek OpenAI-compatible API Key；支持 Chat Completions 与原生 Responses，Responses 仅限目录中声明支持的模型。'
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key') return '适合 DeepSeek API Key；OpenAI-compatible 与 Claude Code 需要选择对应接入档案。'
-  if (isGeminiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return '适合 Gemini OpenAI Chat 兼容入口；跨协议 Codex / Gemini native 调度请使用混合供应商账户配置。'
+  if (isGeminiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return '适合 Gemini OpenAI Chat 兼容入口。'
   if (isGeminiProviderCode(providerCode) && type === 'api_key') return '适合 Gemini 原生 API Key；默认启用 generateContent、streamGenerateContent 和 countTokens，不承接 Responses 或 Anthropic 协议转换。'
-  if (isHybridProviderCode(providerCode) && type === 'api_key') return '混合供应商账户保存自己的真实上游凭据和 Base URL，跨协议入口只通过账号模型映射配置。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 

@@ -281,15 +281,7 @@ func NewRedisRuntimeStateStore(client redisStateClient, namespace, name string) 
 // namespacedRedisKey mirrors redisNamespacedKey: the root prefix juhe-ai: is
 // never doubled.
 func namespacedRedisKey(namespace, key string) string {
-	namespacePrefix := "juhe-ai:" + sanitizeRedisNamespacePart(namespace) + ":"
-	normalized := strings.TrimSpace(key)
-	if strings.HasPrefix(normalized, namespacePrefix) {
-		return normalized
-	}
-	if strings.HasPrefix(normalized, "juhe-ai:") {
-		return namespacePrefix + normalized[len("juhe-ai:"):]
-	}
-	return namespacePrefix + normalized
+	return rediscfg.NamespacedKey(key, namespace)
 }
 
 // sanitizeRedisNamespacePart mirrors the Node helper of the same name.

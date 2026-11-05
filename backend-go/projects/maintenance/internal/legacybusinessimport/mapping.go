@@ -17,17 +17,22 @@ var legacyProfilePresets = map[string]string{
 	"profile_minimax_openai_v1":         "minimax_media",
 	"profile_volcengine_openai_v1":      "volcengine_ark",
 	"profile_qwen_openai_v1":            "qwen_dashscope",
-	// Legacy "openai" provider_code accounts were OpenAI-compatible relays with
-	// no vendor identity; the design maps them to the generic HTTP driver.
-	"profile_openai_openai_v1":             "generic_openai_v1",
-	"profile_hybrid_openai_chat_v1":        "generic_openai_v1",
-	"profile_hybrid_anthropic_messages_v1": "generic_anthropic_v1",
-	"profile_hybrid_gemini_native_v1beta":  "generic_gemini_v1beta",
+}
+
+// legacyGenericProfileSurfaces 是已退役的 openai/hybrid 旧档案到协议面的
+// 固定映射。generic_http 连接器退役后，这些档案不再映射到 generic preset；
+// 导入链按旧账户的模型列表推断九家真实厂商，再按这里声明的协议面选择该厂商
+// 的兼容 preset。推断不出或厂商无兼容 preset 时跳过账户并写报告。
+var legacyGenericProfileSurfaces = map[string]string{
+	"profile_openai_openai_v1":             "openai_v1",
+	"profile_hybrid_openai_chat_v1":        "openai_v1",
+	"profile_hybrid_anthropic_messages_v1": "anthropic_v1",
+	"profile_hybrid_gemini_native_v1beta":  "gemini_v1beta",
 }
 
 // realVendors is the set of legacy provider_code values that name a real
-// upstream vendor. "openai" and "hybrid" deliberately do NOT appear: the
-// design maps them to generic_http with a NULL vendor, never to gpt.
+// upstream vendor. "openai" and "hybrid" deliberately do NOT appear: accounts
+// carrying those legacy codes are resolved from their model lists.
 var realVendors = map[string]string{
 	"gpt":        "gpt",
 	"xai":        "xai",
@@ -60,21 +65,17 @@ var legacyPresetVendors = map[string]string{
 	"minimax_media":             "minimax",
 	"volcengine_ark":            "volcengine",
 	"qwen_dashscope":            "qwen",
-	"generic_openai_v1":         "",
-	"generic_anthropic_v1":      "",
-	"generic_gemini_v1beta":     "",
 }
 
-// presetDriver resolves the connection driver for an account. Real vendors use
-// their own driver; generic presets use generic_http.
+// presetDriver resolves the connection driver for an account. Every remaining
+// preset belongs to one of the nine real vendors, so the driver equals the
+// vendor.
 func presetDriver(preset string) (string, bool) {
-	if vendor, ok := legacyPresetVendors[preset]; ok {
-		if vendor == "" {
-			return "generic_http", true
-		}
-		return vendor, true
+	vendor, ok := legacyPresetVendors[preset]
+	if !ok || vendor == "" {
+		return "", false
 	}
-	return "", false
+	return vendor, true
 }
 
 // presetSurfaces is the protocol surface a preset speaks; "" means media-only
@@ -93,9 +94,6 @@ var presetSurfaces = map[string]string{
 	"minimax_media":             "",
 	"volcengine_ark":            "openai_v1",
 	"qwen_dashscope":            "openai_v1",
-	"generic_openai_v1":         "openai_v1",
-	"generic_anthropic_v1":      "anthropic_v1",
-	"generic_gemini_v1beta":     "gemini_v1beta",
 }
 
 // presetDefaultBaseURL mirrors shared/contracts connector registry defaults for
@@ -114,16 +112,11 @@ var presetDefaultBaseURL = map[string]string{
 	"minimax_media":             "https://api.minimax.chat/v1",
 	"volcengine_ark":            "https://ark.cn-beijing.volces.com/api/v3",
 	"qwen_dashscope":            "https://dashscope.aliyuncs.com",
-	// generic_* 没有官方地址：账户必须自带 base_url（旧库在加密凭据内保存）。
-	// 留空即"必须由凭据提供"，迁移侧对缺失值 fail-closed，不生成占位 host。
-	"generic_openai_v1":     "",
-	"generic_anthropic_v1":  "",
-	"generic_gemini_v1beta": "",
 }
 
 // presetVocabulary is the endpoint-mode fallback for accounts whose credential
 // JSON carries no supported_endpoint_modes. It mirrors the shared connector
-// registry vocabularies (opens with the generic preset surface).
+// registry vocabularies by protocol surface.
 var presetVocabulary = map[string][]string{
 	"openai_v1": {
 		"chat_json", "chat_sse", "responses_json", "responses_sse", "images_json",

@@ -2,12 +2,17 @@
 // capability domain 与 endpoint mode 的编译期唯一事实源。
 //
 // 数据与计数契约来自 docs/functions/供应商与上游协议面重构设计.md：
-//   - §1.1（:29-50 的 20 行注册表）展开恰有 50 个允许连接组合与 163 个单 mode 组合；
+//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 42 个
+//     允许连接组合与 133 个单 mode 组合；
 //   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 15 条、Anthropic 2 条、Gemini native 8 条）；
 //   - §2.2 的域 lane（chat 13、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
 //
-// 50 与 163 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
+// 42 与 133 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
 // 禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断规则」）。
+//
+// 2026-11 裁决：registry 只注册九家真实厂商（gpt/xai/deepseek/anthropic/gemini/
+// glm/minimax/volcengine/qwen），不再提供 generic_http 通用连接器与三条 generic
+// preset；vendor_code 在所有注册行均为非 NULL。
 
 package contracts
 
@@ -37,19 +42,17 @@ const (
 )
 
 // 连接 driver 标识（connection_driver_code，设计 §1 身份表）：
-// 9 个厂商 driver + generic_http，恰好 10 个值。
-// generic_http 是连接器而不是供应商，不出现在 vendors 表与供应商目录（设计 §1）。
+// 恰好 9 个真实厂商 driver，与 vendors 表一一对应。
 const (
-	DriverGenericHTTP = "generic_http"
-	DriverGPT         = "gpt"
-	DriverXAI         = "xai"
-	DriverDeepSeek    = "deepseek"
-	DriverAnthropic   = "anthropic"
-	DriverGemini      = "gemini"
-	DriverGLM         = "glm"
-	DriverMiniMax     = "minimax"
-	DriverVolcengine  = "volcengine"
-	DriverQwen        = "qwen"
+	DriverGPT        = "gpt"
+	DriverXAI        = "xai"
+	DriverDeepSeek   = "deepseek"
+	DriverAnthropic  = "anthropic"
+	DriverGemini     = "gemini"
+	DriverGLM        = "glm"
+	DriverMiniMax    = "minimax"
+	DriverVolcengine = "volcengine"
+	DriverQwen       = "qwen"
 )
 
 // 协议面标识（protocol_surface_code，设计 §1 身份表，恰好 3 个值）。
@@ -74,14 +77,11 @@ const (
 	OAuthTypeAIStudio   = "ai_studio"
 )
 
-// 认证策略引用键（设计 §1.1 :58 preset record 的认证策略引用，恰好 4 个合法值）。
-// generic_http 三种 API Key 认证按设计 §1 附加规则 1 固定认证头；
-// 真实厂商 preset 不重复定义认证，由各自 driver 实现（含 gpt/xai 的 oauth 行）。
+// 认证策略引用键（设计 §1.1 :58 preset record 的认证策略引用）。
+// 真实厂商 preset 不重复定义认证，由各自 driver 实现（含 gpt/xai 的 oauth 行），
+// 因此全部 preset 统一引用 driver_defined。
 const (
-	AuthStrategyGenericBearer           = "generic_bearer"
-	AuthStrategyGenericAnthropicHeaders = "generic_anthropic_headers"
-	AuthStrategyGenericGoogAPIKey       = "generic_goog_api_key"
-	AuthStrategyDriverDefined           = "driver_defined"
+	AuthStrategyDriverDefined = "driver_defined"
 )
 
 // 账户能力域（capability_domain，设计 §2，恰好 4 个值）。
@@ -92,11 +92,8 @@ const (
 	DomainImage = "image"
 )
 
-// 连接预设标识（connection_preset_code，设计 §1.1 注册表，恰好 17 个值）。
+// 连接预设标识（connection_preset_code，设计 §1.1 注册表，恰好 14 个值）。
 const (
-	PresetGenericOpenAIV1        = "generic_openai_v1"
-	PresetGenericAnthropicV1     = "generic_anthropic_v1"
-	PresetGenericGeminiV1Beta    = "generic_gemini_v1beta"
 	PresetGPTOpenAIV1            = "gpt_openai_v1"
 	PresetXAIOpenAIV1            = "xai_openai_v1"
 	PresetDeepSeekOpenAIV1       = "deepseek_openai_v1"
@@ -260,7 +257,7 @@ var (
 // ---------------------------------------------------------------------------
 
 var (
-	// openAIVocabulary：*_openai_v1 与 generic_openai_v1 共用（16 个 mode）。
+	// openAIVocabulary：*_openai_v1 共用（16 个 mode）。
 	openAIVocabulary = []string{
 		ModeChatJSON, ModeChatSSE, ModeResponsesJSON, ModeResponsesSSE, ModeImagesJSON,
 		ModeAudioSpeech, ModeAudioTranscriptionJSON,
@@ -269,10 +266,10 @@ var (
 		ModeRealtimeSession,
 	}
 
-	// anthropicVocabulary：*_anthropic_v1 与 generic_anthropic_v1 共用（3 个 mode）。
+	// anthropicVocabulary：*_anthropic_v1 共用（3 个 mode）。
 	anthropicVocabulary = []string{ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting}
 
-	// geminiNativeVocabulary：gemini_native_v1beta 与 generic_gemini_v1beta 共用（11 个 mode）。
+	// geminiNativeVocabulary：gemini_native_v1beta（11 个 mode）。
 	geminiNativeVocabulary = []string{
 		ModeGenerateContentJSON, ModeGenerateContentSSE,
 		ModeInteractionsJSON, ModeInteractionsSSE,
@@ -326,7 +323,7 @@ var (
 type connectorDriverRecord struct {
 	// Code 是 connection_driver_code。
 	Code string
-	// Vendor 是 driver 绑定的真实厂商；空字符串表达 SQL NULL（generic_http）。
+	// Vendor 是 driver 绑定的真实厂商；registry 只注册九家真实厂商，恒为非空。
 	Vendor string
 	// AccountTypes 是该 driver 允许的 account type 集合。
 	AccountTypes []string
@@ -339,8 +336,6 @@ type connectorDriverRecord struct {
 }
 
 var connectorDriverRecords = []connectorDriverRecord{
-	{Code: DriverGenericHTTP, Vendor: "", AccountTypes: []string{AccountTypeAPIKey},
-		CredentialSchemaKeys: map[string]string{AccountTypeAPIKey: "generic_http.api_key"}},
 	{Code: DriverGPT, Vendor: VendorGPT, AccountTypes: []string{AccountTypeAPIKey, AccountTypeOAuth},
 		CredentialSchemaKeys: map[string]string{AccountTypeAPIKey: "gpt.api_key", AccountTypeOAuth: "gpt.oauth"}},
 	{Code: DriverXAI, Vendor: VendorXAI, AccountTypes: []string{AccountTypeAPIKey, AccountTypeOAuth},
@@ -369,7 +364,7 @@ var connectorDriverRecords = []connectorDriverRecord{
 // connectorPresetRecord 描述一个 connection preset 的协议、URL、认证与词表注册事实
 // （设计 §1.1 :58：每个 preset record 必须同时包含 operation_path_templates[]、
 // allowed_base_path_suffixes[]、认证策略引用、URL builder key、协议面和完整 mode 集合，
-// 以及 nullable default_base_url，见设计 :58-80 的 17 值表）。
+// 以及 nullable default_base_url，见设计 :58-80 的 14 值表）。
 type connectorPresetRecord struct {
 	// Code 是 connection_preset_code。
 	Code string
@@ -380,8 +375,8 @@ type connectorPresetRecord struct {
 	// Surface 是绑定的协议面；空字符串表达纯媒体连接（SQL NULL，设计 §1.1 表）。
 	Surface string
 	// DefaultBaseURL 是 nullable default_base_url（设计 :58-80）：只用于迁移
-	// fallback、seed 和 UI 初始值，不覆盖 API 明确提交的 baseUrl；generic 三
-	// preset 固定为 NULL（registry 内空串表达 SQL NULL）。
+	// fallback、seed 和 UI 初始值，不覆盖 API 明确提交的 baseUrl；九家真实厂商的
+	// 14 个 preset 均有固定上游地址，请求方未提交 baseUrl 时按此回退。
 	DefaultBaseURL string
 	// AllowedBasePathSuffixes 是允许的 service/version 前缀后缀集合；
 	// 空字符串表示根路径（设计 §2.1 base_url 约束）。
@@ -393,18 +388,6 @@ type connectorPresetRecord struct {
 }
 
 var connectorPresetRecords = []connectorPresetRecord{
-	{Code: PresetGenericOpenAIV1, URLBuilderKey: PresetGenericOpenAIV1, AuthStrategyKey: AuthStrategyGenericBearer, Surface: SurfaceOpenAIV1,
-		AllowedBasePathSuffixes: []string{"", "/v1"},
-		OperationPathTemplates:  openAIOperationTemplates,
-		Vocabulary:              openAIVocabulary},
-	{Code: PresetGenericAnthropicV1, URLBuilderKey: PresetGenericAnthropicV1, AuthStrategyKey: AuthStrategyGenericAnthropicHeaders, Surface: SurfaceAnthropicV1,
-		AllowedBasePathSuffixes: []string{"", "/v1"},
-		OperationPathTemplates:  anthropicOperationTemplates,
-		Vocabulary:              anthropicVocabulary},
-	{Code: PresetGenericGeminiV1Beta, URLBuilderKey: PresetGenericGeminiV1Beta, AuthStrategyKey: AuthStrategyGenericGoogAPIKey, Surface: SurfaceGeminiV1Beta,
-		AllowedBasePathSuffixes: []string{"", "/v1beta"},
-		OperationPathTemplates:  geminiNativeOperationTemplates,
-		Vocabulary:              geminiNativeVocabulary},
 	{Code: PresetGPTOpenAIV1, URLBuilderKey: PresetGPTOpenAIV1, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceOpenAIV1,
 		DefaultBaseURL:          "https://api.openai.com/v1",
 		AllowedBasePathSuffixes: []string{"", "/v1"},
@@ -493,12 +476,6 @@ type connectorComboRow struct {
 }
 
 var connectorComboRows = []connectorComboRow{
-	{Driver: DriverGenericHTTP, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGenericOpenAIV1,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage}},
-	{Driver: DriverGenericHTTP, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGenericAnthropicV1,
-		Domains: []string{DomainChat}},
-	{Driver: DriverGenericHTTP, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGenericGeminiV1Beta,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio}},
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGPTOpenAIV1,
 		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage}},
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeOAuth}, Preset: PresetGPTOpenAIV1,
@@ -538,15 +515,16 @@ var connectorComboRows = []connectorComboRow{
 }
 
 // ---------------------------------------------------------------------------
-// 派生数据（50 连接组合与 163 单 mode 组合的唯一来源）
+// 派生数据（42 连接组合与 133 单 mode 组合的唯一来源）
 // ---------------------------------------------------------------------------
 
 // ConnectorCombo 是一个允许的连接组合（设计 §1.1 五元组 + driver/preset 投影字段）。
-// Vendor/OAuthType/Surface 为空字符串时等价于数据库 SQL NULL。
+// OAuthType/Surface 为空字符串时等价于数据库 SQL NULL；Vendor 恒为非空（registry
+// 只注册九家真实厂商）。
 type ConnectorCombo struct {
 	// Driver 是 connection_driver_code。
 	Driver string
-	// Vendor 是 driver 绑定的真实厂商；generic_http 为空字符串（SQL NULL）。
+	// Vendor 是 driver 绑定的真实厂商，恒为非空。
 	Vendor string
 	// AccountType 是账户类型。
 	AccountType string
@@ -561,7 +539,7 @@ type ConnectorCombo struct {
 }
 
 // EndpointModeCombo 是 ConnectorCombo 的单 mode 展开：一个连接组合允许的每个
-// endpoint mode 各一条（设计 §1.1 :54 的 163 条清单）。
+// endpoint mode 各一条（设计 §1.1 :54 的 133 条清单）。
 type EndpointModeCombo struct {
 	// Driver/Vendor/AccountType/OAuthType/Preset/Surface/Domain 语义与 ConnectorCombo 相同。
 	Driver      string
@@ -585,9 +563,9 @@ var (
 )
 
 var (
-	// connectorCombos 是 49 条允许连接组合的排序稳定清单。
+	// connectorCombos 是 42 条允许连接组合的排序稳定清单。
 	connectorCombos = buildConnectorCombos()
-	// endpointModeCombos 是 163 条单 mode 组合的排序稳定清单。
+	// endpointModeCombos 是 133 条单 mode 组合的排序稳定清单。
 	endpointModeCombos = buildEndpointModeCombos()
 	// connectorComboIndex 是五元组判定索引。
 	connectorComboIndex = buildConnectorComboIndex(connectorCombos)
@@ -612,14 +590,21 @@ func buildPresetRecordIndex(records []connectorPresetRecord) map[string]connecto
 }
 
 // PresetDefaultBaseURL 返回 preset 注册的 nullable default_base_url（设计
-// :58-80 的 17 值表；registry 内空串表达 SQL NULL）。语义与 record 字段一致：
-// 只用于草稿缺省回退、迁移 fallback、seed 和 UI 初始值，不覆盖 API 明确提交
-// 的 baseUrl；generic 三 preset 与未知 preset 返回空串。
+// :58-80 的 14 值表）。语义与 record 字段一致：只用于草稿缺省回退、迁移
+// fallback、seed 和 UI 初始值，不覆盖 API 明确提交的 baseUrl；未知 preset
+// 返回空串。
 func PresetDefaultBaseURL(preset string) string {
 	if record, ok := connectorPresetRecordIndex[preset]; ok {
 		return record.DefaultBaseURL
 	}
 	return ""
+}
+
+// HasConnectionPreset 判定 preset code 是否已在 registry 注册。调用方用它在
+// 返回 preset 前确认取值来自注册表，避免写入历史或臆造的 preset 字面量。
+func HasConnectionPreset(preset string) bool {
+	_, ok := connectorPresetRecordIndex[preset]
+	return ok
 }
 
 // BasePathValidationTemplates 返回凭据域 base_url 路径校验使用的操作模板
@@ -751,7 +736,6 @@ func buildConnectorComboIndex(combos []ConnectorCombo) map[string]struct{} {
 // （设计 §2.2：AllowedModes = DomainLane(capability_domain) ∩ PresetVocabulary(...)）。
 // 收窄只作用于真实 driver 的注册行：gpt.oauth 与 xai.oauth 收窄为 responses 双 mode；
 // glm 两个 OpenAI 预设与 deepseek_anthropic_v1、glm_coding_anthropic_v1 各自收窄；
-// generic_http 的 preset 不参与任何收窄规则；
 // gemini google_oauth 三种 oauth type 与 api_key 同词表，不按 oauth_type 再收窄。
 // oauthType 参数当前不产生额外收窄，保留以对齐设计公式的入参形状。
 func presetVocabulary(preset, accountType, oauthType string) map[string]struct{} {
@@ -798,14 +782,14 @@ func AllowedModes(domain, preset, accountType, oauthType string) []string {
 // 公开 API（设计 §1.1：三个项目绑定同一 tuple，不得复制允许集合）
 // ---------------------------------------------------------------------------
 
-// AllowedConnectorCombos 返回全部 50 个允许连接组合，
+// AllowedConnectorCombos 返回全部 42 个允许连接组合，
 // 按 driver、account type、oauth type、preset、domain 的字典序稳定排序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedConnectorCombos() []ConnectorCombo {
 	return connectorCombos
 }
 
-// AllowedEndpointModeCombos 返回全部 163 个单 mode 组合，
+// AllowedEndpointModeCombos 返回全部 133 个单 mode 组合，
 // 按 connectorCombos 同一排序规则追加 mode 字典序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedEndpointModeCombos() []EndpointModeCombo {
@@ -820,13 +804,13 @@ func IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain stri
 }
 
 // ConnectorComboVerdict 是笛卡尔积判定辅助，语义与 IsAllowedConnectorCombo 相同，
-// 供外部遍历全组合空间（10 driver × 3 account type × 4 oauth 值 × 17 preset × 4 domain
-// = 8160）时统计允许/拒绝结论。
+// 供外部遍历全组合空间（9 driver × 3 account type × 4 oauth 值 × 14 preset × 4 domain
+// = 6048）时统计允许/拒绝结论。
 func ConnectorComboVerdict(driver, accountType, oauthType, preset, domain string) (allowed bool) {
 	return IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain)
 }
 
-// ComboDriverCounts 返回 49 条连接组合按 driver 的计数。
+// ComboDriverCounts 返回 42 条连接组合按 driver 的计数。
 func ComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(connectorCombos))
 	for _, combo := range connectorCombos {
@@ -835,7 +819,7 @@ func ComboDriverCounts() map[string]int {
 	return counts
 }
 
-// ModeComboDriverCounts 返回 163 条单 mode 组合按 driver 的计数。
+// ModeComboDriverCounts 返回 133 条单 mode 组合按 driver 的计数。
 func ModeComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(endpointModeCombos))
 	for _, combo := range endpointModeCombos {
@@ -845,13 +829,13 @@ func ModeComboDriverCounts() map[string]int {
 }
 
 // RegistryFingerprint 返回 registry 的 SHA-256 指纹（64 位小写 hex）。
-// 计算方式（设计 §1.1 :56）：对 163 条单 mode 元素组成的 UTF-8 compact JSON 数组的
+// 计算方式（设计 §1.1 :56）：对 133 条单 mode 元素组成的 UTF-8 compact JSON 数组的
 // 原始 bytes 计算 SHA-256；数组元素按 ASCII 字典序排序；每个元素字段顺序固定为
 // driver、vendor、accountType、oauthType、preset、surface、domain、mode、
-// allowedBaseSuffixes、operationTemplates、defaultBaseUrl；vendor/oauthType/surface
-// 为空时输出 JSON null；allowedBaseSuffixes 与 operationTemplates 按 ASCII 排序；
-// defaultBaseUrl 是标量，按注册表 canonical bytes 原样写入，不参与排序，
-// 空串（generic 三 preset）输出 JSON null（设计 :81）；分隔紧凑（无空格、无缩进）。
+// allowedBaseSuffixes、operationTemplates、defaultBaseUrl；oauthType/surface
+// 为空时输出 JSON null（九家真实厂商使 vendor 恒非空）；allowedBaseSuffixes 与
+// operationTemplates 按 ASCII 排序；defaultBaseUrl 是标量，按注册表 canonical
+// bytes 原样写入，不参与排序，空串输出 JSON null（设计 :81）；分隔紧凑（无空格、无缩进）。
 func RegistryFingerprint() string {
 	sum := sha256.Sum256([]byte(registryCanonicalJSON))
 	return hex.EncodeToString(sum[:])

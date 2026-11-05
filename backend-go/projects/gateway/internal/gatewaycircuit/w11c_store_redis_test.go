@@ -405,20 +405,20 @@ func TestW11CRedisPureHelpers(t *testing.T) {
 	if !strings.Contains(keys.states, "My_Store_") {
 		t.Fatalf("name sanitization = %s", keys.states)
 	}
-	if !strings.Contains(keys.states, "juhe-ai:team_a:account-circuit") {
+	if !strings.Contains(keys.states, "juhe-ai:{team_a}:account-circuit") {
 		t.Fatalf("namespace insertion = %s", keys.states)
 	}
 	if got := redisAccountCircuitStoreKeys("", ""); !strings.Contains(got.states, "juhe-ai:account-circuit:gateway-account-circuit") {
 		t.Fatalf("default keys = %s", got.states)
 	}
 	// Already-namespaced keys are not double-prefixed.
-	if got := redisNamespacedKey("juhe-ai:team_a:account-circuit:x", "team_a"); got != "juhe-ai:team_a:account-circuit:x" {
+	if got := redisNamespacedKey("juhe-ai:{team_a}:account-circuit:x", "team_a"); got != "juhe-ai:{team_a}:account-circuit:x" {
 		t.Fatalf("double prefix = %s", got)
 	}
-	if got := redisNamespacedKey("juhe-ai:x", "team_a"); got != "juhe-ai:team_a:x" {
+	if got := redisNamespacedKey("juhe-ai:x", "team_a"); got != "juhe-ai:{team_a}:x" {
 		t.Fatalf("root insertion = %s", got)
 	}
-	if got := redisNamespacedKey("other", "team_a"); got != "juhe-ai:team_a:other" {
+	if got := redisNamespacedKey("other", "team_a"); got != "juhe-ai:{team_a}:other" {
 		t.Fatalf("plain insertion = %s", got)
 	}
 	if got := sanitizeRedisNamespacePart("a--b!!"); got != "a--b" {

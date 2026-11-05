@@ -673,82 +673,7 @@ func (s *Store) upsertSystemSettings(ctx context.Context, sectionKey string, nor
 			return execErr
 		}
 	}
-	if sectionKey == "account-health" {
-		if err := s.reserveAccountHealthInputVersions(ctx, tx, nowISO); err != nil {
-			return err
-		}
-	}
 	return tx.Commit()
-}
-
-// reserveAccountHealthInputVersions registers the D7 gap inside the caller's
-// transaction. The Node account-health settings branch
-// (settings.repository.ts:308-327) scans the eligible OpenAI accounts and
-// enqueues their health jobs input snapshots, writing BOTH
-// account_health_jobs_input_versions (epoch reservation) and
-// account_health_jobs_input_outbox (publish intent). This Go port reserves
-// the versions rows only: the Go topology has no outbox consumer — jobs
-// accounthealth discovers the direct input projection from an INNER JOIN on
-// account_health_jobs_input_versions (accounthealth/direct_input_reader.go) —
-// and the #7 ruling (juhe-ai-gateway/chain_error_policy_effects.go
-// markCooldown) already established "never write a dead surface without a
-// consumer" for this exact outbox family. The statement shape mirrors the
-// sibling reservation in accounts/write.go
-// (reserveAndEnqueueAccountHealthSnapshot) without the outbox insert, and the
-// PG row-lock suffix follows authz/downstream.go. Any failure returns into
-// the enclosing transaction and rolls the settings write back with it. No
-// version upper-bound guard is added, matching the sibling writers.
-func (s *Store) reserveAccountHealthInputVersions(ctx context.Context, tx *sql.Tx, now string) error {
-	lockSuffix := " FOR UPDATE"
-	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, config_revision, dispatch_revision FROM `+s.table("accounts")+`
-		WHERE deleted_at IS NULL AND vendor_code IS NULL AND connection_driver_code = 'generic_http' AND type IN ('api_key','oauth')
-		ORDER BY id ASC`)+lockSuffix)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	// pgx 的查询结果按流式读取:外层 rows 未读完时连接处于 busy,循环内再
-	// 在同一事务上 QueryRow/Exec 会得到 driver: bad connection(PG 唯一路径
-	// 必炸;SQLite 全量缓冲无此约束)。先把账户行全部读入内存并关闭 rows,
-	// 再做版本预留。
-	type accountHealthRevision struct {
-		accountID                        string
-		configRevision, dispatchRevision int64
-	}
-	var accounts []accountHealthRevision
-	for rows.Next() {
-		var account accountHealthRevision
-		if err := rows.Scan(&account.accountID, &account.configRevision, &account.dispatchRevision); err != nil {
-			return err
-		}
-		accounts = append(accounts, account)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-	for _, account := range accounts {
-		var currentVersion sql.NullInt64
-		err := tx.QueryRowContext(ctx, s.bind(`SELECT current_version FROM `+s.table("account_health_jobs_input_versions")+`
-			WHERE account_id = ?`)+lockSuffix, account.accountID).Scan(&currentVersion)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		nextVersion := int64(1)
-		if err == nil && currentVersion.Valid {
-			nextVersion = currentVersion.Int64 + 1
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_health_jobs_input_versions")+`
-				SET current_version = ?, reserved_at = ? WHERE account_id = ?`), nextVersion, now, account.accountID); err != nil {
-				return err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_versions")+`
-				(account_id, current_version, reserved_at) VALUES (?, ?, ?)`), account.accountID, nextVersion, now); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // refreshSystemCache mirrors refreshSystemSettingsCacheAfterSectionWrite's
@@ -956,13 +881,8 @@ func (s *Store) LoadSection(ctx context.Context, sectionKey string) (map[string]
 // sections, a single upsert transaction persists the values and the write
 // refreshes the domain cache — system sections additionally fire the gateway
 // runtime invalidation (Node notifyGatewayRuntimeCacheInvalidation). The
-// account-health section additionally reserves the account health jobs input
-// epochs inside the same transaction (D7 gap registration): the Node branch
-// writes versions + outbox, but the Go topology has no outbox consumer (jobs
-// accounthealth schedules from the versions INNER JOIN) and the #7 ruling
-// (chain_error_policy_effects.go markCooldown) established "never write a
-// dead surface without a consumer", so only the versions reservation is
-// ported (see reserveAccountHealthInputVersions).
+// account-health section no longer reserves health input epochs: that arm only
+// covered generic_http（vendor NULL）账户，通用连接器退场后不再存在该账户形态。
 func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[string]any) (map[string]any, error) {
 	ctx = ensureCtx(ctx)
 	section, err := resolveSettingsSection(sectionKey)

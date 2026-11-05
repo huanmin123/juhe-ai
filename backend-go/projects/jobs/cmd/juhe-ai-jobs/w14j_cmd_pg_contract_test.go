@@ -87,7 +87,7 @@ func TestW14JPGContractSmoke(t *testing.T) {
 	})
 
 	t.Run("model-recovery-redis-config", func(t *testing.T) {
-		redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_STATE_URL")
+		redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_URL")
 		if redisURL == "" {
 			t.Skip("w14j: shared.env 无 Redis state URL")
 		}

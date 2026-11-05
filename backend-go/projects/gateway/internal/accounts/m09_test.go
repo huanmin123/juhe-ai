@@ -24,7 +24,7 @@ func seedImportProxy(t *testing.T, env *testEnv, id, ownerID, name string) {
 }
 
 // seedOpenAICompatibleProvider mirrors the adapter constants: the openai
-// provider plus profile_openai_openai_v1 with default supported models.
+// provider plus profile_gpt_openai_v1 with default supported models.
 func seedOpenAICompatibleProvider(t *testing.T, env *testEnv) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -32,7 +32,7 @@ func seedOpenAICompatibleProvider(t *testing.T, env *testEnv) {
 		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '["gpt-4o-mini"]', ?, ?)`, now, now)
 	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1',
+		VALUES ('profile_gpt_openai_v1', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1',
 		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)`, now, now)
 }
 
@@ -169,13 +169,13 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 			"supportedModels":{"enabled":true,"value":["gpt-4o-mini","gpt-4.1","o3-mini"]},
 			"healthCheckModel":{"enabled":true,"value":"gpt-4o-mini"},
 			"healthCheckEndpointMode":{"enabled":true,"value":"chat_sse"},
-			"modelMappings":{"enabled":true,"value":[{"sourceModel":"o3-mini","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":true}]},
+			"modelMappings":{"enabled":true,"value":[{"sourceModel":"o3-mini","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":true}]},
 			"serviceTierOverride":{"enabled":false}}}`
 	// B4 W2（设计 §8）：映射携带 preset；批量前为两个目标种连接 + 双 chat
 	// 形态（target upstream gpt-4o-mini 的支持成员随本批 supportedModels
 	// 写入，同一事务内先模型后映射满足外键引用面）。
 	for _, targetID := range ids {
-		env.seedAccountConnection(t, targetID, "generic_openai_v1")
+		env.seedAccountConnection(t, targetID, "gpt_openai_v1")
 	}
 	code, updated := env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update", batchBody)
 	if code != http.StatusOK {
@@ -610,6 +610,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 	code, sub2api := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", `{
 		"data":{"data":{"accounts":[{"name":"s2-一号","platform":"openai","type":"api_key",
 			"credentials":{"api_key":"sk-s2-secret","base_url":"https://api.openai.com/v1"},
+			"supportedModels":["gpt-4o-mini"],
 			"concurrency":5,"priority":2,"notes":"来自Sub2API"}]},"proxies":[]},
 		"sourceMode":"sub2api"}`)
 	if code != http.StatusOK {
@@ -622,7 +623,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 	}
 	item := plan["accounts"].([]any)[0].(map[string]any)
 	if item["action"] != "create" || item["name"] != "s2-一号" ||
-		item["providerCode"] != "openai" || item["providerProtocolProfileId"] != "profile_openai_openai_v1" {
+		item["providerCode"] != "gpt" || item["providerProtocolProfileId"] != "profile_gpt_openai_v1" {
 		t.Fatalf("sub2api planned item: %v", item)
 	}
 	if plan["summary"].(map[string]any)["accounts"].(map[string]any)["create"] != float64(1) {
@@ -633,6 +634,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 	code, confirmed := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", `{
 		"data":{"data":{"accounts":[{"name":"s2-二号","platform":"openai","type":"api_key",
 			"credentials":{"api_key":"sk-s2-secret-2","base_url":"https://api.openai.com/v1"},
+			"supportedModels":["gpt-4o-mini"],
 			"concurrency":6,"priority":3,"notes":"来自Sub2API"}]},"proxies":[]},
 		"sourceMode":"sub2api"}`)
 	if code != http.StatusOK {
@@ -657,7 +659,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 	// cpa: openai-compatibility providers become api_key accounts.
 	code, cpa := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", `{
 		"data":{"openai-compatibility":[{"name":"cpa-provider","base-url":"https://cpa.example.com/v1",
-			"api-key-entries":[{"api-key":"sk-cpa-secret"}]}]},
+			"models":["gpt-4o-mini"],"api-key-entries":[{"api-key":"sk-cpa-secret"}]}]},
 		"sourceMode":"cpa"}`)
 	if code != http.StatusOK {
 		t.Fatalf("cpa preview: %d %v", code, cpa)
@@ -675,7 +677,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 	// newapi: channel records become failover api_key accounts; disabled or
 	// non-openai channels are skipped at the source layer.
 	code, newapi := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", `{
-		"data":[{"type":1,"key":"sk-newapi-secret","name":"渠道一","status":1,"group":"渠道分组"},
+		"data":[{"type":1,"key":"sk-newapi-secret","name":"渠道一","status":1,"group":"渠道分组","models":"gpt-4o-mini"},
 			{"type":15,"key":"sk-other","name":"渠道二"}],
 		"sourceMode":"newapi"}`)
 	if code != http.StatusOK {
@@ -689,7 +691,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 
 	// oneapi with a multi-key channel creates the failover strategy.
 	code, oneapi := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", `{
-		"data":{"channels":[{"type":"openai","key":"sk-one-1\nsk-one-2","name":"oneapi-渠道"}]},
+		"data":{"channels":[{"type":"openai","key":"sk-one-1\nsk-one-2","name":"oneapi-渠道","models":"gpt-4o-mini"}]},
 		"sourceMode":"oneapi"}`)
 	if code != http.StatusOK {
 		t.Fatalf("oneapi preview: %d %v", code, oneapi)

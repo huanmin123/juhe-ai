@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -95,29 +96,26 @@ var accountHealthCheckEndpointModes = accountscore.AccountHealthCheckEndpointMod
 // （与历史 provider connection migration 的 realVendorCodes 同词表）。
 //
 // vendor_code / connection_driver_code 推导规则（写入面唯一来源，创建请求体
-// 当前不携带 vendor/driver 字段）：按 provider 既有语义推导，与已退役的
-// 历史迁移规则中的 vendorOfProvider / driver 推导同口径，与 chain 面按
-// vendor_code 取身份的运行时语义一致——
-//   - provider_code 命中 9 厂商：vendor_code = provider_code，
-//     connection_driver_code = provider_code（§1.1 注册表 driver 名与 vendor
-//     同名；oauth 账户同规则，OpenAI OAuth 账户现以 provider gpt 创建，天然
-//     落 vendor gpt）；
-//   - 其余（openai / hybrid 等 generic 语义 provider）：vendor_code = NULL、
-//     connection_driver_code = 'generic_http'（设计 §2.1：generic_http 账户
-//     vendor 恒 NULL，空串由应用层 registry 保证不落库）。
+// 当前不携带 vendor/driver 字段）：provider_code 必须命中九家真实厂商，
+// vendor_code = provider_code、connection_driver_code = provider_code
+// （§1.1 注册表 driver 名与 vendor 同名；oauth 账户同规则，OpenAI OAuth 账户
+// 以 provider gpt 创建，天然落 vendor gpt）。generic 语义 provider（openai /
+// hybrid / generic_http 等）已随通用连接器退场，写入面直接按不支持拒绝，
+// 不再落 vendor NULL + generic_http 兜底行。
 var realVendorCodes = map[string]bool{
 	"gpt": true, "xai": true, "deepseek": true, "anthropic": true, "gemini": true,
 	"glm": true, "minimax": true, "volcengine": true, "qwen": true,
 }
 
 // accountVendorIdentity 把 provider 语义推导为账户行 (vendor_code,
-// connection_driver_code) 写入值；vendor 走 NullString 承载 generic 账户的
-// SQL NULL。推导规则见 realVendorCodes 注释。
-func accountVendorIdentity(providerCode string) (sql.NullString, string) {
-	if realVendorCodes[providerCode] {
-		return sql.NullString{String: providerCode, Valid: true}, providerCode
+// connection_driver_code) 写入值；未知 provider 返回 ValidationError
+// 「不支持的供应商：x」，不回落 generic_http。
+func accountVendorIdentity(providerCode string) (sql.NullString, string, error) {
+	providerCode = strings.TrimSpace(providerCode)
+	if !realVendorCodes[providerCode] {
+		return sql.NullString{}, "", &ValidationError{Message: "不支持的供应商：" + providerCode}
 	}
-	return sql.NullString{}, "generic_http"
+	return sql.NullString{String: providerCode, Valid: true}, providerCode, nil
 }
 
 var accountStatusValues = map[string]bool{
@@ -154,11 +152,11 @@ func AccountCreationStatusInput(value any) CreationStatus {
 
 // assertVendorEnabled 是 profile 行删除后的 vendor 归属校验（供应商与上游协
 // 议面重构设计 §2.1/§9.1）：vendor_code 只允许 §1.1 九个真实厂商且外键引用
-// vendors.code，真实厂商创建必须在 vendors 表存在且 enabled；generic 语义
-// provider（openai/hybrid 等，vendor_code=NULL）无 vendors 行，跳过校验。
+// vendors.code，创建必须在 vendors 表存在且 enabled；非九家 provider 一律
+// 按不支持拒绝，不再跳过校验去落 vendor NULL 行。
 func (s *Store) assertVendorEnabled(ctx context.Context, q queryer, providerCode string) error {
-	if !realVendorCodes[providerCode] {
-		return nil
+	if !realVendorCodes[strings.TrimSpace(providerCode)] {
+		return &ValidationError{Message: "不支持的供应商：" + providerCode}
 	}
 	var enabled int64
 	err := q.QueryRowContext(ctx, s.bind(`SELECT enabled FROM `+s.table("vendors")+`
@@ -435,9 +433,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// providerCode 非空由两个入口前置校验保证（routes.go createBody 与
 	// aipublic parseAccountAddBody 的 requiredTrimmedBody），此处不再重复。
 	providerCode := strings.TrimSpace(input.ProviderCode)
-	// vendor 归属校验（设计 §2.1/§9.1，profile 行删除后的替代门）：真实厂商
-	// 必须在 vendors 表存在且 enabled；generic 语义 provider 无 vendors 行，
-	// 跳过（vendor_code 落 SQL NULL）。
+	// vendor 归属校验（设计 §2.1/§9.1，profile 行删除后的替代门）：provider 必须
+	// 是九家真实厂商且在 vendors 表存在且 enabled；generic 语义 provider 已退场。
 	if err := s.assertVendorEnabled(ctx, tx, providerCode); err != nil {
 		return nil, err
 	}
@@ -494,8 +491,6 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 荷）时按表单整集合重建，preset 唯一性等既有 resolveConnectionSet 校验
 	// 照走；未提交/空数组时按源账户连接行原样重建（原克隆综合行为）。源账户
 	// 连接事实仍无条件读取：回落臂需要连接行，health 三字段回落两臂共用。
-	// generic_http 来源 CloneContext 无连接 preset 字段（T102 遗留②），前端
-	// 构造不出连接载荷，恒走回落臂，不受本条件影响。
 	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
 		cloneConnections, cloneHealthPreset, cloneHealthMode, cloneHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, strings.TrimSpace(*input.CloneSourceID))
 		if err != nil {
@@ -536,7 +531,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 全量校验（§2.1/§2.2）。账户类型合法性由同一 registry 组合门承载
 	// （IsAllowedConnectorCombo 五元组含 account_type/oauth_type），不再有
 	// profile 行的 accountTypes 成员校验。
-	vendorCode, connectionDriverCode := accountVendorIdentity(providerCode)
+	vendorCode, connectionDriverCode, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return nil, err
+	}
 	resolvedConnections, err := resolveConnectionSet(domain, connectionDriverCode, accountType,
 		accountOAuthTypeForRegistry(accountType, "", input.Credentials), input.Connections)
 	if err != nil {
@@ -623,10 +621,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	fingerprint := accountCredentialFingerprint(source)
 	mask := MaskSecret(source)
 
-	// OAuth refresh metadata (gpt/openai oauth only).
+	// OAuth refresh metadata (gpt oauth only; generic openai oauth 已退场).
 	accessTokenExpiresAt := sql.NullString{}
 	refreshTokenPresent := 0
-	if accountType == "oauth" && (providerCode == "gpt" || providerCode == "openai") {
+	if accountType == "oauth" && providerCode == contracts.VendorGPT {
 		if accessToken, ok := credentials["access_token"].(string); ok && strings.TrimSpace(accessToken) != "" {
 			if expiresAt, ok := credentials["expires_at"].(string); ok && strings.TrimSpace(expiresAt) != "" {
 				if canonical, valid := canonicalRFC3339(expiresAt); valid {
@@ -1028,15 +1026,16 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// (reason 'account_created') in the same transaction, which is what puts
 	// the new account into the probe candidate join. Media domains have no
 	// conversation probe path. API Key accounts reserve for every vendor:
-	// J1 direct reader covers all vendors (deepseek/generic 等) — the legacy
+	// J1 direct reader covers all nine vendors (deepseek 等) — the legacy
 	// gpt/openai gate left non-GPT API Key accounts without an input-version
 	// row, so their creation probe was silently dropped by the jobs outbox
 	// drain (CurrentProbeInput !ok) and the balance detection intent never
-	// appeared (T56 第二层根因，2026-10-24)。OAuth 仍维持 gpt/openai 原范围。
+	// appeared (T56 第二层根因，2026-10-24)。OAuth 仅 gpt（generic openai oauth
+	// 已退场）。
 	// 手动模式（background_probe_enabled=0，总开关设计 §8）跳过首次激活检查
 	// 意图：不写 J1 input outbox，账户直接以 active 可调度参与真实流量。
 	if backgroundProbeEnabled != 0 && !accountscore.SkipsConversationHealthStateMachine(domain) &&
-		(accountType == "api_key" || ((providerCode == "gpt" || providerCode == "openai") && accountType == "oauth")) {
+		(accountType == "api_key" || (providerCode == contracts.VendorGPT && accountType == "oauth")) {
 		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
 			return nil, err
 		}
@@ -1290,7 +1289,10 @@ func (s *Store) resolveEnabledProxyProfile(ctx context.Context, q queryer, proxy
 // replaceAccountModelMappings，幸存映射因此不丢；next 集合为空时两个删除均
 // 退化为删除该账户全部行。
 func (s *Store) replaceAccountSupportedModels(ctx context.Context, q queryer, accountID, providerCode string, models []string, nowISO string) error {
-	vendorNull, _ := accountVendorIdentity(providerCode)
+	vendorNull, _, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return err
+	}
 	vendor := vendorNull.String
 	var owner string
 	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner); err != nil {
@@ -1340,7 +1342,10 @@ func (s *Store) replaceAccountSupportedModels(ctx context.Context, q queryer, ac
 // 不静默跳过。旧 account_model_mappings 写循环已删除（该表随 A 路线撤除，
 // fresh DDL 不再建表）；providerCode 仅用于推导模型身份键的 vendor（§2.1）。
 func (s *Store) replaceAccountModelMappings(ctx context.Context, q queryer, accountID, providerCode string, mappings []ModelMapping, nowISO string) error {
-	vendorNull, _ := accountVendorIdentity(providerCode)
+	vendorNull, _, err := accountVendorIdentity(providerCode)
+	if err != nil {
+		return err
+	}
 	vendor := vendorNull.String
 	var owner string
 	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner); err != nil {

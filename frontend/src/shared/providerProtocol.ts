@@ -2,7 +2,6 @@ import type { ProviderDefinition } from '@/types/domain'
 
 export const OPENAI_PROTOCOL_CODE = 'openai'
 export const OPENAI_PROTOCOL_VERSION = 'v1'
-export const OPENAI_COMPATIBLE_PROVIDER_CODE = 'openai'
 export const GPT_VENDOR_CODE = 'gpt'
 export const XAI_PROVIDER_CODE = 'xai'
 export const DEEPSEEK_PROVIDER_CODE = 'deepseek'
@@ -16,8 +15,6 @@ export const ANTHROPIC_PROVIDER_CODE = 'anthropic'
 export const GEMINI_PROTOCOL_CODE = 'gemini'
 export const GEMINI_PROTOCOL_VERSION = 'v1beta'
 export const GEMINI_PROVIDER_CODE = 'gemini'
-export const HYBRID_PROVIDER_CODE = 'hybrid'
-export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID = 'profile_openai_openai_v1'
 export const GPT_OPENAI_V1_PROFILE_ID = 'profile_gpt_openai_v1'
 export const XAI_OPENAI_V1_PROFILE_ID = 'profile_xai_openai_v1'
 export const DEEPSEEK_OPENAI_V1_PROFILE_ID = 'profile_deepseek_openai_v1'
@@ -39,9 +36,6 @@ export const QWEN_OPENAI_V1_PROFILE_ID = 'profile_qwen_openai_v1'
 export const ANTHROPIC_ANTHROPIC_V1_PROFILE_ID = 'profile_anthropic_anthropic_v1'
 export const GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_gemini_native_v1beta'
 export const GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID = 'profile_gemini_openai_chat_v1beta'
-export const HYBRID_OPENAI_CHAT_V1_PROFILE_ID = 'profile_hybrid_openai_chat_v1'
-export const HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID = 'profile_hybrid_anthropic_messages_v1'
-export const HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_hybrid_gemini_native_v1beta'
 export const OPENAI_CHAT_COMPLETIONS_FAMILY = 'chat_completions'
 export const OPENAI_RESPONSES_FAMILY = 'responses'
 // M3 媒体新增（媒体设计 §9/契约 §8）：openai 协议族的厂商原生媒体端点族——
@@ -118,20 +112,9 @@ export function isGeminiProviderCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GEMINI_PROVIDER_CODE
 }
 
-export function isHybridProviderCode(value: unknown): boolean {
-  return normalizeProviderToken(value) === HYBRID_PROVIDER_CODE
-}
-
-export function isOpenAICompatibleProviderCode(value: unknown): boolean {
-  const normalized = normalizeProviderToken(value)
-  return normalized === OPENAI_COMPATIBLE_PROVIDER_CODE || normalized === GPT_VENDOR_CODE
-}
-
 // 账户创建载荷的 connections[] 使用连接预设 code（设计 §1.1/§9.3）；前端表单仍以
-// 协议档案 id 驱动，二者一一对应。hybrid 无 preset（vendors 值域不含 hybrid），
-// 迁移完成后删除本表。
+// 协议档案 id 驱动，二者一一对应。
 const CONNECTION_PRESET_BY_PROFILE_ID: Record<string, string> = {
-  [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID]: 'generic_openai_v1',
   [GPT_OPENAI_V1_PROFILE_ID]: 'gpt_openai_v1',
   [XAI_OPENAI_V1_PROFILE_ID]: 'xai_openai_v1',
   [DEEPSEEK_OPENAI_V1_PROFILE_ID]: 'deepseek_openai_v1',
@@ -156,23 +139,17 @@ export function connectionPresetCodeForProfile(profileId: string | undefined): s
 // 连接 preset → 表单供应商身份的反查表（T102）：编辑/克隆详情的
 // providerProtocolProfileId 由后端探针表（exactkeyprobe.connectionPresetProfiles，
 // 仅 13 条）反查派生，minimax_media / volcengine_ark / volcengine_openspeech /
-// qwen_dashscope 四档媒体 preset 不在表内返回空串，generic_http 账户另因
-// vendor_code 为 NULL 投影出空 providerCode——这些账户的编辑保存被前端校验拦死。
-// 本表在后端读面派生缺失时按连接 preset（编辑详情 connectionPresetCode 字段，
-// 即健康检查连接行）反查补齐供应商身份。取值依据（逐条）：
+// qwen_dashscope 四档媒体 preset 不在表内返回空串——这些账户的编辑保存被前端
+// 校验拦死。本表在后端读面派生缺失时按连接 preset（编辑详情 connectionPresetCode
+// 字段，即健康检查连接行）反查补齐供应商身份。取值依据（逐条）：
 //   - 文本 preset 与 anthropic_v1：后端迁移映射 legacybusinessimport/mapping.go
 //     legacyProfilePresets 的双射逆向，与上方正向表逐条互逆；
-//   - generic_openai_v1 → openai 兼容档案：mapping.go「profile_openai_openai_v1 ↔
-//     generic_openai_v1」（legacy openai 供应商按设计映射 generic_http，NULL vendor）；
-//   - generic_anthropic_v1 / generic_gemini_v1beta → hybrid 对应档案：
-//     mapping.go 的 profile_hybrid_* 双射逆向（连接 preset 词表内可派生，不再拦死；
-//     hybrid 档案无正向 preset 条目，保存链不携带 connections，连接域不被改写）；
 //   - minimax_media / volcengine_ark / qwen_dashscope：同上双射逆向；
 //   - volcengine_openspeech → OpenSpeech 专用档案：registry PresetVolcengineOpenSpeech，
 //     档案 id 见 VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID 注释。
-// 词表外的 preset 不入表：由 resolveEditAccountProviderIdentity 保持 fail-closed。
+// generic_http 三档 preset 已随连接器退役，不再入表；词表外的 preset 由
+// resolveEditAccountProviderIdentity 保持 fail-closed。
 const PROVIDER_IDENTITY_BY_CONNECTION_PRESET: Record<string, ProviderProtocolIdentity> = {
-  generic_openai_v1: { providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE, providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID },
   gpt_openai_v1: { providerCode: GPT_VENDOR_CODE, providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID },
   xai_openai_v1: { providerCode: XAI_PROVIDER_CODE, providerProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID },
   deepseek_openai_v1: { providerCode: DEEPSEEK_PROVIDER_CODE, providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID },
@@ -186,9 +163,7 @@ const PROVIDER_IDENTITY_BY_CONNECTION_PRESET: Record<string, ProviderProtocolIde
   minimax_media: { providerCode: MINIMAX_PROVIDER_CODE, providerProtocolProfileId: MINIMAX_OPENAI_V1_PROFILE_ID },
   volcengine_ark: { providerCode: VOLCENGINE_PROVIDER_CODE, providerProtocolProfileId: VOLCENGINE_OPENAI_V1_PROFILE_ID },
   volcengine_openspeech: { providerCode: VOLCENGINE_PROVIDER_CODE, providerProtocolProfileId: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID },
-  qwen_dashscope: { providerCode: QWEN_PROVIDER_CODE, providerProtocolProfileId: QWEN_OPENAI_V1_PROFILE_ID },
-  generic_anthropic_v1: { providerCode: HYBRID_PROVIDER_CODE, providerProtocolProfileId: HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID },
-  generic_gemini_v1beta: { providerCode: HYBRID_PROVIDER_CODE, providerProtocolProfileId: HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID }
+  qwen_dashscope: { providerCode: QWEN_PROVIDER_CODE, providerProtocolProfileId: QWEN_OPENAI_V1_PROFILE_ID }
 }
 
 export interface ProviderProtocolIdentity {

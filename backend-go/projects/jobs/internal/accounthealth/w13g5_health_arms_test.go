@@ -23,7 +23,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 )
 
 func w13g5HealthOutcome() Outcome {

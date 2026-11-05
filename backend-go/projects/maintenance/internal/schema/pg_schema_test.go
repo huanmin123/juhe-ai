@@ -128,8 +128,10 @@ import (
 // 634→622：账户名称搜索去索引化批——juhe_business -12（3 张派生词项表
 // 建表语句 + 9 枚相关索引；搜索读取侧改为 accounts.name 直查，pg_trgm
 // 扩展与 idx_accounts_name_c_trgm_lookup 保留）。
+// 622→623：2026-11-05 九家真实厂商收口——juhe_business +1（accounts
+// vendor_code/connection_driver_code 一致性 CHECK 的幂等 ALTER DO 块）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 622
+const goldenPostgresSchemaStatementCount = 623
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -153,8 +155,9 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 321→322：AI 账户每分钟请求上限批 +1（account-rpm-limit-pg-column）。
 	// 322→324：时间计划闸门批 +2（accounts / api_keys 各一条
 	// availability_schedule_gate 幂等 ALTER）。324→312：账户名称搜索
-	// 去索引化批 -12（3 TABLE + 9 INDEX）。
-	"juhe_business": 312,
+	// 去索引化批 -12（3 TABLE + 9 INDEX）。312→313：2026-11-05 九家真实
+	// 厂商收口 +1（accounts vendor/driver 一致性 CHECK 幂等 ALTER）。
+	"juhe_business": 313,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -303,7 +306,9 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 0 (B08 removed all 12 idempotent DROP COLUMN statements on 2026-10-30)", droppedColumns)
 	}
 	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
-	if doBlocks != 5 {
+	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
+	// ALTER DO 块。
+	if doBlocks != 6 {
 		t.Fatalf("DO block count = %d, want 5", doBlocks)
 	}
 	if extensions != 1 {

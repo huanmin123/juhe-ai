@@ -40,7 +40,7 @@ const (
 func LoadConfig(getenv func(string) string) (Config, error) {
 	// 2026-10-24 存储形态收口：JUHE_AI_OPERATION_LOG_STORE 仅剩单一合法形态
 	// postgres——整个 env 读取删除（不留解析不留告警）；Mode 恒 ModePostgres。
-	postgresURL := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_POSTGRES_URL"))
+	postgresURL := strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	ownerLease, err := durationOrDefault("JUHE_AI_OPERATION_LOG_OWNER_LEASE", getenv("JUHE_AI_OPERATION_LOG_OWNER_LEASE"), defaultOwnerLease)
 	if err != nil || ownerLease < 5*time.Second {
 		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_OWNER_LEASE must be a duration of at least 5s")
@@ -77,12 +77,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		cfg.InstanceID = datadir.DefaultInstanceID()
 	}
 	if cfg.PostgresURL == "" {
-		// PG 模式 F4 store URL 缺省回退主 JUHE_AI_POSTGRES_URL，
-		// 仍为空时按原契约报错。
-		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	}
-	if cfg.PostgresURL == "" {
-		return Config{}, fmt.Errorf("缺少 JUHE_AI_OPERATION_LOG_POSTGRES_URL")
+		return Config{}, fmt.Errorf("缺少 JUHE_AI_POSTGRES_URL")
 	}
 	return cfg, nil
 }

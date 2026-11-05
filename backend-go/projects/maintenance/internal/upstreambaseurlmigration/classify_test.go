@@ -32,14 +32,6 @@ func TestClassifyBaseURL(t *testing.T) {
 			wantDisposition: DispositionRewrite, wantNew: "https://api.deepseek.com/v1", wantChangeReason: ReasonAppendVersionRoot},
 		{name: "openai/已带v1不变", preset: contracts.PresetDeepSeekOpenAIV1, raw: "https://api.deepseek.com/v1",
 			wantDisposition: DispositionUnchanged},
-		{name: "openai/generic空值无默认进复核", preset: contracts.PresetGenericOpenAIV1, raw: "",
-			wantDisposition: DispositionReview, wantReview: ReviewNoDefault},
-		{name: "openai/generic裸origin补v1", preset: contracts.PresetGenericOpenAIV1, raw: "https://proxy.example.com",
-			wantDisposition: DispositionRewrite, wantNew: "https://proxy.example.com/v1", wantChangeReason: ReasonAppendVersionRoot},
-		{name: "openai/generic已合规不变", preset: contracts.PresetGenericOpenAIV1, raw: "https://proxy.example.com/v1",
-			wantDisposition: DispositionUnchanged},
-		{name: "openai/具体接口路径进复核", preset: contracts.PresetGenericOpenAIV1, raw: "https://proxy.example.com/openai",
-			wantDisposition: DispositionReview, wantReview: ReviewNonconforming},
 		{name: "openai/glm裸origin补paas_v4而非v1", preset: contracts.PresetGLMGeneralOpenAIV1, raw: "https://open.bigmodel.cn",
 			wantDisposition: DispositionRewrite, wantNew: "https://open.bigmodel.cn/api/paas/v4", wantChangeReason: ReasonAppendVersionRoot},
 		{name: "openai/glm默认值带尾斜杠等值规整", preset: contracts.PresetGLMGeneralOpenAIV1, raw: "https://open.bigmodel.cn/api/paas/v4/",
@@ -77,8 +69,6 @@ func TestClassifyBaseURL(t *testing.T) {
 		{name: "gemini/裸origin补v1beta", preset: contracts.PresetGeminiNativeV1Beta, raw: "https://generativelanguage.googleapis.com",
 			wantDisposition: DispositionRewrite, wantNew: "https://generativelanguage.googleapis.com/v1beta", wantChangeReason: ReasonAppendVersionRoot},
 		{name: "gemini/已合规不变", preset: contracts.PresetGeminiNativeV1Beta, raw: "https://generativelanguage.googleapis.com/v1beta",
-			wantDisposition: DispositionUnchanged},
-		{name: "gemini/generic已合规不变", preset: contracts.PresetGenericGeminiV1Beta, raw: "https://proxy.example.com/v1beta",
 			wantDisposition: DispositionUnchanged},
 		// ── qwen ─────────────────────────────────────────────────────
 		{name: "qwen/compatible-mode后缀剥回origin", preset: contracts.PresetQwenDashScope, raw: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -140,7 +130,6 @@ func TestClassifyBaseURLIdempotent(t *testing.T) {
 	cases := []struct{ preset, raw string }{
 		{contracts.PresetGPTOpenAIV1, ""},
 		{contracts.PresetDeepSeekOpenAIV1, "https://api.deepseek.com"},
-		{contracts.PresetGenericOpenAIV1, "https://proxy.example.com"},
 		{contracts.PresetGLMGeneralOpenAIV1, "https://open.bigmodel.cn"},
 		{contracts.PresetGLMGeneralOpenAIV1, "https://open.bigmodel.cn/api/paas/v4/"},
 		{contracts.PresetGLMCodingOpenAIV1, "https://open.bigmodel.cn"},
@@ -185,9 +174,6 @@ func TestAccountPresetHint(t *testing.T) {
 		{"minimax", "openai", contracts.PresetMiniMaxMedia},
 		{"volcengine", "openai", contracts.PresetVolcengineArk},
 		{"qwen", "openai", contracts.PresetQwenDashScope},
-		{"", "openai", contracts.PresetGenericOpenAIV1},
-		{"", "anthropic", contracts.PresetGenericAnthropicV1},
-		{"", "gemini", contracts.PresetGenericGeminiV1Beta},
 		{"unknown_vendor", "openai", ""},
 		{"glm", "unknown_protocol", ""},
 	}
@@ -197,11 +183,11 @@ func TestAccountPresetHint(t *testing.T) {
 		}
 	}
 	// 账户级行为抽检：glm openai 账户裸 origin 按 general 根补；generic 空值
-	// 复核；qwen 空值不变；未知组合复核。
+	// 已随连接器退役进入 unknown_preset 复核；qwen 空值不变；未知组合复核。
 	if got := ClassifyBaseURL(AccountPresetHint("glm", "openai"), contracts.PresetDefaultBaseURL(AccountPresetHint("glm", "openai")), "https://open.bigmodel.cn"); got.NewValue != "https://open.bigmodel.cn/api/paas/v4" || got.Disposition != DispositionRewrite {
 		t.Fatalf("glm 账户裸 origin 分类 = %+v", got)
 	}
-	if got := ClassifyBaseURL(AccountPresetHint("", "openai"), contracts.PresetDefaultBaseURL(AccountPresetHint("", "openai")), ""); got.Disposition != DispositionReview || got.ReviewReason != ReviewNoDefault {
+	if got := ClassifyBaseURL(AccountPresetHint("", "openai"), contracts.PresetDefaultBaseURL(AccountPresetHint("", "openai")), ""); got.Disposition != DispositionReview || got.ReviewReason != ReviewUnknownPreset {
 		t.Fatalf("generic 账户空值分类 = %+v", got)
 	}
 	if got := ClassifyBaseURL(AccountPresetHint("qwen", "openai"), contracts.PresetDefaultBaseURL(AccountPresetHint("qwen", "openai")), ""); got.Disposition != DispositionUnchanged {

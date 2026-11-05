@@ -265,11 +265,11 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	// 连接 + 支持成员前置事实（target upstream gpt-4o-mini 须在支持集内）。
 	// T52 门禁：映射 target 必须落在本次 PATCH 生效后的支持模型集合内，因此
 	// supportedModels 变更为只增不删（保留 gpt-4o-mini 作为映射 target）。
-	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini")
+	env.seedAccountConnection(t, id, "gpt_openai_v1", "gpt-4o-mini")
 
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1","gpt-4o","gpt-4o-mini"],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4.1",
-		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":false}]}`)
+		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1","gpt-4o","gpt-4o-mini"],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4.1",
+		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":false}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("模型补丁: %d %v", code, payload)
 	}
@@ -295,7 +295,7 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	// PATCH 面不重复支持模型池断言（目录端口直通）：替换映射并以落库为准。
 	// 声明集 gpt-4.1 的 chat 形态已随首轮 PATCH 落支持集（target upstream 在
 	// 支持集内），responses 源族替换沿用同一 preset。
-	code, payload = w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1"}]`)
+	code, payload = w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1"}]`)
 	if code != http.StatusOK {
 		t.Fatalf("映射替换: %d %v", code, payload)
 	}

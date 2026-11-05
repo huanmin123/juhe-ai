@@ -62,7 +62,7 @@ func (noopGroupAffinityLogger) Warn(fields map[string]any, message string) {}
 type GroupAffinityConfig struct {
 	CacheDriver    CacheDriver
 	Secret         string
-	RedisCacheURL  string
+	RedisURL  string
 	RedisNamespace string
 	// Clock injects time; defaults to time.Now.
 	Clock func() time.Time
@@ -97,8 +97,8 @@ func NewGroupAffinityService(cfg GroupAffinityConfig) (*GroupAffinityService, er
 		logger = noopGroupAffinityLogger{}
 	}
 	redisClient := cfg.Redis
-	if redisClient == nil && cfg.RedisCacheURL != "" {
-		redisClient = newLazyRedisClient(cfg.RedisCacheURL)
+	if redisClient == nil && cfg.RedisURL != "" {
+		redisClient = newLazyRedisClient(cfg.RedisURL)
 	}
 	s := &GroupAffinityService{
 		cfg:    cfg,
@@ -174,7 +174,7 @@ func (s *GroupAffinityService) shouldUseRedisGroupAffinity() bool {
 
 func (s *GroupAffinityService) redisGroupAffinityClient(ctx context.Context) (RedisClient, error) {
 	if s.redis == nil {
-		return nil, errors.New("group-affinity:v1 Redis cache driver requires JUHE_AI_REDIS_CACHE_URL")
+		return nil, errors.New("group-affinity:v1 Redis cache driver requires JUHE_AI_REDIS_URL")
 	}
 	_ = ctx
 	return s.redis, nil

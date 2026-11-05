@@ -114,7 +114,7 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 	t.Run("坏redis状态URL验证码服务失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
 		stack.cfg.CaptchaDisabled = false
-		stack.cfg.RedisStateURL = "://w1q-bad-captcha-url"
+		stack.cfg.RedisURL = "://w1q-bad-captcha-url"
 		composed, err := stack.compose(t)
 		if err == nil {
 			if composed != nil {
@@ -130,7 +130,7 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 	t.Run("坏redis状态URL登录守卫失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
 		stack.cfg.CaptchaDisabled = true
-		stack.cfg.RedisStateURL = "://w1q-bad-guard-url"
+		stack.cfg.RedisURL = "://w1q-bad-guard-url"
 		composed, err := stack.compose(t)
 		if err == nil {
 			if composed != nil {
@@ -163,7 +163,7 @@ func TestW1QComposeSystemAPIChainRuntimeArms(t *testing.T) {
 	t.Run("坏缓存redisURL链条组装失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
 		stack.cfg.ChainEnabled = true
-		stack.cfg.RedisCacheURL = "://w1q-bad-cache-url"
+		stack.cfg.RedisURL = "://w1q-bad-cache-url"
 		composed, err := stack.compose(t)
 		if err == nil {
 			if composed != nil {
@@ -179,8 +179,8 @@ func TestW1QComposeSystemAPIChainRuntimeArms(t *testing.T) {
 	t.Run("redis缓存加状态驱动全链条成功变体", func(t *testing.T) {
 		redisServer := miniredis.RunT(t)
 		stack := w1oNewComposeStack(t)
-		stack.cfg.RedisCacheURL = "redis://" + redisServer.Addr()
-		stack.cfg.RedisStateURL = "redis://" + redisServer.Addr()
+		stack.cfg.RedisURL = "redis://" + redisServer.Addr()
+		stack.cfg.RedisURL = "redis://" + redisServer.Addr()
 		stack.cfg.RedisNamespace = "w1q-ns"
 		stack.cfg.ChainEnabled = true
 		stack.cfg.AuditLogEnabled = true
@@ -388,8 +388,8 @@ func TestW1QResetBridgeTransientStatesArms(t *testing.T) {
 		bridge := w1qRedisBridge(t, fixture, redisGuard)
 		if _, err := bridge.LoadAPIKeyTransientStates(ctx, "acc-w1q", []string{"fp-w1q"}); err == nil {
 			t.Fatal("redis 驱动缺状态 URL 必须报错")
-		} else if !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
-			t.Fatalf("错误 = %v，want 指名 JUHE_AI_REDIS_STATE_URL", err)
+		} else if !strings.Contains(err.Error(), "JUHE_AI_REDIS_URL") {
+			t.Fatalf("错误 = %v，want 指名 JUHE_AI_REDIS_URL", err)
 		}
 	})
 
@@ -761,9 +761,8 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 	// 基座改为三连接串必填 env。
 	env := func(extra map[string]string) func(string) string {
 		merged := map[string]string{
-			"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-			"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+			"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+			"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
 		}
 		for key, value := range extra {
 			merged[key] = value
@@ -776,8 +775,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		extra map[string]string
 		want  string
 	}{
-		{"聊天工具环境非法", map[string]string{"JUHE_AI_NODE_ENV": "staging"}, "必须是 production、test 或 development"},
-		{"cookie同站非法", map[string]string{"JUHE_AI_COOKIE_SAME_SITE": "auto"}, "JUHE_AI_COOKIE_SAME_SITE 必须为 lax、strict 或 none"},
 		{"信任代理非法", map[string]string{"JUHE_AI_TRUST_PROXY": "maybe"}, "JUHE_AI_TRUST_PROXY 只能配置为 true/false 或 0-16"},
 		{"临时访问白名单非法", map[string]string{"JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST": "example.com"}, "只能填写逗号分隔的单个 IPv4 或 IPv6 地址"},
 		// 2026-09-21 起 SYSTEM_API/CHAIN/AUDIT_LOG/LOG_FILE 开关全部移除（恒开），

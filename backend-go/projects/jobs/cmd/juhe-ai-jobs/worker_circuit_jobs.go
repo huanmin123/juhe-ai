@@ -13,6 +13,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // wireCircuitFamily 把账户电路族的两个任务翻转为 GoWired：
@@ -28,7 +29,7 @@ import (
 //     CAS 写 + incident_changed outbox，与 gateway 写侧同键同契约）。
 //
 // 账户电路运行态是 Redis 单实现（与 Node/Go 网关同键空间、同一 Lua 状态机，
-// 见 internal/circuitstore/store.go）：缺 JUHE_AI_REDIS_STATE_URL 或命名空间
+// 见 internal/circuitstore/store.go）：缺 JUHE_AI_REDIS_URL 或命名空间
 // 非法时本族 fail closed 登记 disabled，不落库复制。
 //
 // account-list-availability-projection-maintenance 保持 disabled：投影仓储
@@ -36,10 +37,10 @@ import (
 // （AccountListItem 由网关域组装）仍无 jobs 侧等价实现（见
 // worker_partial_jobs.go 缺口清单）。
 func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *businessDB, registerDisabled func(name, reason string)) error {
-	if a.config.RedisStateURL == "" {
+	if a.config.RedisURL == "" {
 		registerDisabled("account-circuit-control-plane-maintenance",
-			"缺 JUHE_AI_REDIS_STATE_URL（账户电路运行态为 Redis 单实现，jobs 与 Node/Go 网关共用键空间，无 Redis 时不得落库复制）")
-		registerDisabled("account-circuit-recovery", "同 account-circuit-control-plane-maintenance：缺 JUHE_AI_REDIS_STATE_URL")
+			"缺 JUHE_AI_REDIS_URL（账户电路运行态为 Redis 单实现，jobs 与 Node/Go 网关共用键空间，无 Redis 时不得落库复制）")
+		registerDisabled("account-circuit-recovery", "同 account-circuit-control-plane-maintenance：缺 JUHE_AI_REDIS_URL")
 		return nil
 	}
 	if !speedfirstrepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
@@ -49,8 +50,8 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 		return nil
 	}
 	redisStore, err := circuitstore.NewRedisStore(circuitstore.RedisStoreOptions{
-		RedisURL:  a.config.RedisStateURL,
-		Namespace: a.config.RedisNamespace,
+		RedisURL:  a.config.RedisURL,
+		Namespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainCircuit),
 		Capacity:  a.config.CircuitCapacity(),
 	})
 	if err != nil {

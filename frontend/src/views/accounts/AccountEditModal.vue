@@ -869,7 +869,8 @@ const props = withDefaults(defineProps<{
   mappingCurrentProviderSourceModelOptions: SelectOption[]
   mappingGeminiSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
-  /** hybrid 账户映射源模型下拉（三协议实例）的服务端截断标志（T25 hasMore）。 */
+  /** 映射源模型下拉的服务端截断标志（T25 hasMore）；openai/hybrid 退役后
+   *  账户只走当前供应商目录，本字段保留给仍在下发该事件的父链。 */
   mappingSourceModelOptionsTruncated?: boolean
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean

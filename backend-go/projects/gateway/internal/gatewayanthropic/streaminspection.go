@@ -3,6 +3,7 @@ package gatewayanthropic
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -334,6 +335,9 @@ func (s *StreamInspector) rememberOversizedEventPrefix(fragment string) {
 	}
 	s.oversizedEventPrefix = append(s.oversizedEventPrefix, fragment...)
 	prefix := string(s.oversizedEventPrefix)
+	if s.eventName == "" && s.oversizedEventType == "" {
+		s.oversizedEventType = extractOversizedEventType(prefix)
+	}
 	if !s.oversizedEventFailed && topLevelStreamErrorObjectHint(prefix) {
 		s.oversizedEventFailed = true
 	}
@@ -350,11 +354,11 @@ func (s *StreamInspector) flushOversizedEvent() {
 	if eventType == "" {
 		eventType = "message"
 	}
-	failed := s.oversizedEventFailed || s.eventName == "error"
-	terminal := failed || s.eventName == "message_stop"
+	failed := s.oversizedEventFailed || eventType == "error"
+	terminal := failed || eventType == "message_stop"
 	output := s.oversizedEventOutput ||
-		s.eventName == "content_block_start" ||
-		s.eventName == "content_block_delta"
+		eventType == "content_block_start" ||
+		eventType == "content_block_delta"
 
 	if failed {
 		s.inspection.FailedReceived = true
@@ -524,6 +528,18 @@ func topLevelStreamErrorObjectHint(prefix string) bool {
 func anthropicOversizedOutputHint(prefix string) bool {
 	return strings.Contains(prefix, `"content_block_start"`) ||
 		strings.Contains(prefix, `"content_block_delta"`)
+}
+
+// oversizedEventTypePattern 只认顶层首键 type，避免 functionCall.args 等
+// 嵌套 type 被误当作事件类型；匹配范围受 4KB 有界前缀限制。
+var oversizedEventTypePattern = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"([^"]{1,160})"`)
+
+func extractOversizedEventType(prefix string) string {
+	match := oversizedEventTypePattern.FindStringSubmatch(prefix)
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
 }
 
 // outputTextFromStreamEvent 对齐 outputTextFromAnthropicStreamEvent。

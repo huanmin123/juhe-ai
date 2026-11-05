@@ -45,18 +45,21 @@ const (
 // 模式彻底退役，PostgreSQL + Redis 是唯一存储形态——JUHE_AI_RUNTIME_MODE /
 // JUHE_AI_DATABASE_DRIVER / JUHE_AI_CACHE_DRIVER / JUHE_AI_RUNTIME_STATE_DRIVER
 // 四开关与全部 sqlite 库路径 env 随之删除，三个连接串 env
-// （JUHE_AI_POSTGRES_URL / JUHE_AI_REDIS_CACHE_URL / JUHE_AI_REDIS_STATE_URL）
+// （JUHE_AI_POSTGRES_URL / JUHE_AI_REDIS_URL）
 // 无条件必填（缺失启动即失败）。普通文件目录派生保留：usage-record-spool、
 // codex-context segments、logs 等仍按 internal/datadir 固定名表
 // 派生到 JUHE_AI_DATA_DIR（缺省 ./data）下；非生产未配置 JUHE_AI_SECRET 时
 // 回退内置开发密钥。
 type runtimeConfig struct {
-	ChatToolEnvironment string
-	PostgresURL         string
-	RedisCacheURL       string
-	RedisStateURL       string
-	RedisNamespace      string
-	Secret              string
+	PostgresURL string
+
+	// RedisURL/Mode/Password 是唯一 Redis 连接配置；cache/state/J3b 通过
+	// rediscfg.DomainNamespace 派生域 namespace，不再各自配置 URL。
+	RedisURL       string
+	RedisMode      rediscfg.Mode
+	RedisPassword  string
+	RedisNamespace string
+	Secret         string
 
 	// CodexContextRoot is the codex-context segments root (Node
 	// runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_ROOT, default
@@ -280,38 +283,20 @@ func productionRuntime(getenv func(string) string) bool {
 func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg := runtimeConfig{}
 
-	// ChatToolEnvironment keeps the explicit JUHE_AI_NODE_ENV override and
-	// falls back to NODE_ENV when unset (the same variable the single
-	// production signal reads, Node runtime.ts:532 nodeEnv); the
-	// production/test/development validation stays further down.
-	cfg.ChatToolEnvironment = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_NODE_ENV")))
-	if cfg.ChatToolEnvironment == "" {
-		cfg.ChatToolEnvironment = strings.ToLower(strings.TrimSpace(getenv("NODE_ENV")))
-	}
 	production := productionRuntime(getenv)
-	if cfg.ChatToolEnvironment == "" {
-		cfg.ChatToolEnvironment = "development"
-	}
 
-	// 2026-10-24 存储形态收口：JUHE_AI_RUNTIME_MODE / JUHE_AI_DATABASE_DRIVER /
-	// JUHE_AI_CACHE_DRIVER / JUHE_AI_RUNTIME_STATE_DRIVER 随 sqlite+memory 模式
-	// 退役删除；PostgreSQL + Redis 是唯一存储形态，三个连接串无条件必填
-	// （缺失启动即失败，保留原 fail-fast 文案口径）。
+	// 2026-11 存储配置硬切：唯一 Redis 连接串；cache/state/J3b 的域
+	// namespace 由 rediscfg 在装配层派生，DB 固定为 0（Cluster 只支持 DB0）。
 	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	cfg.RedisCacheURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_CACHE_URL"))
-	cfg.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
-	// JUHE_AI_QUEUE_DRIVER / JUHE_AI_REDIS_QUEUE_URL are deliberately not read
-	// anywhere in the Go gateway or jobs projects (dead Node-era config): the
-	// queue URL had no consumer and its performance-mode mandatory check only
-	// forced deployments to configure a value that was never used.
-	if cfg.RedisCacheURL == "" {
-		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_REDIS_CACHE_URL（PostgreSQL + Redis 是唯一存储形态，三个连接串均为必填）")
+	redisConfig, err := rediscfg.FromEnv(getenv)
+	if err != nil {
+		return runtimeConfig{}, err
 	}
-	if cfg.RedisStateURL == "" {
-		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_REDIS_STATE_URL（PostgreSQL + Redis 是唯一存储形态，三个连接串均为必填）")
-	}
+	cfg.RedisURL = redisConfig.URL
+	cfg.RedisMode = redisConfig.Mode
+	cfg.RedisPassword = redisConfig.Password
 	if cfg.PostgresURL == "" {
-		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_POSTGRES_URL（PostgreSQL + Redis 是唯一存储形态，三个连接串均为必填）")
+		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_POSTGRES_URL（PostgreSQL + Redis 是唯一存储形态，连接串为必填）")
 	}
 
 	cfg.Secret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
@@ -349,13 +334,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// 演练场产物暂存根（演练场设计 §3.8，零新 env：固定派生
 	// <DATA_DIR>/playground-artifacts，无显式覆盖入口）。
 	cfg.PlaygroundArtifactsRoot = filepath.Join(dataDir, datadir.PlaygroundArtifactsDirectory)
-	// ChatToolEnvironment was normalized at the top of this function
-	// (JUHE_AI_NODE_ENV with the NODE_ENV fallback); only the value validation
-	// stays here.
-	if cfg.ChatToolEnvironment != "production" && cfg.ChatToolEnvironment != "test" && cfg.ChatToolEnvironment != "development" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_NODE_ENV（未设置时回落 NODE_ENV）必须是 production、test 或 development: %q", cfg.ChatToolEnvironment)
-	}
-
 	cfg.Host = strings.TrimSpace(getenv("JUHE_AI_HOST"))
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
@@ -428,16 +406,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		return runtimeConfig{}, secureErr
 	}
 	cfg.CookieSecure = cookieSecure
-	cfg.CookieSameSite = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_COOKIE_SAME_SITE")))
-	if cfg.CookieSameSite == "" {
-		cfg.CookieSameSite = "lax"
-	}
-	if cfg.CookieSameSite != "lax" && cfg.CookieSameSite != "strict" && cfg.CookieSameSite != "none" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_COOKIE_SAME_SITE 必须为 lax、strict 或 none: %q", cfg.CookieSameSite)
-	}
-	if cfg.CookieSameSite == "none" && !cfg.CookieSecure {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_COOKIE_SAME_SITE=none 时必须启用 JUHE_AI_COOKIE_SECURE=true")
-	}
+	cfg.CookieSameSite = "lax"
 	// Node trustProxyConfig (runtime.ts:1615-1630): empty keeps false;
 	// true/yes/on、false/no/off（小写）按布尔处理；整数 0-16 是反向代理跳数；
 	// 其余值启动即失败。D-211：Go 曾把非法值静默当 0 且无 16 上限。
@@ -509,14 +478,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// fields the gateway chain reads). 2026-09-21 起链路审计为常驻能力，
 	// JUHE_AI_AUDIT_LOG_ENABLED 开关移除。
 	cfg.AuditLogEnabled = true
-	// D-209：JUHE_AI_USAGE_SPOOL_DIRECTORY 是现行名；高性能部署指南与
-	// install-performance-topology.sh 仍使用旧名 JUHE_AI_USAGE_SPOOL_DIR，
-	// DIRECTORY 未配置时回落旧名（DIRECTORY 优先，两处都配置时旧名静默失效
-	// 与 Node 覆盖语义一致）。
 	cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
-	if cfg.UsageSpoolDirectory == "" {
-		cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIR"))
-	}
 	// D1（PLAN-20261024T051925945Z）：spool 目录派生改挂 JUHE_AI_DATA_DIR
 	// （缺省 <cwd>/data），不再以已退役的 JUHE_AI_STATS_DATABASE_PATH 目录为
 	// 派生根。PG 零配置派生路径不变（<DATA_DIR>/usage-record-spool——stats
@@ -606,7 +568,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 			cfg.AccountHealthProbeDeadlineMS = parsed
 		}
 	}
-	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))
+	cfg.AccountHealthOutcomePostgresURL = cfg.PostgresURL
 	cfg.ConcurrencyGlobalMax = 5000
 	// Node integerConfig('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000)
 	// （runtime.ts:410）：非整数/越界启动报错，上限 50000 对齐 integerConfig。
@@ -683,8 +645,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.LogMaxFileMB = parsed
 	}
 
-	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
-	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
+	cfg.BusinessPostgresURL = cfg.PostgresURL
 	// 清理批次 C1（2026-09-30）：Node→Go 切流已完成且 Node 进程已于
 	// 2026-09-05 清零（不可恢复），BUSINESS 切流五证 env 家族与 cutover
 	// evidence 校验链整体退役——owner 事实一律按零配置自动认领（原显式配置
@@ -697,10 +658,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.BusinessNodeWriterStopped = true
 	cfg.BusinessSchemaReady = true
 	cfg.BusinessOwnerEpoch = "standalone"
-	if cfg.BusinessPostgresURL == "" {
-		cfg.BusinessPostgresURL = cfg.PostgresURL
-	}
-
 	return cfg, nil
 }
 
@@ -714,7 +671,7 @@ func (c *runtimeConfig) businessOwnerGate() error {
 		return nil
 	}
 	if c.BusinessPostgresURL == "" {
-		return fmt.Errorf("缺少 JUHE_AI_BUSINESS_POSTGRES_URL（未配置时回落 JUHE_AI_POSTGRES_URL）")
+		return fmt.Errorf("缺少 JUHE_AI_POSTGRES_URL（业务面共用主库）")
 	}
 	return nil
 }

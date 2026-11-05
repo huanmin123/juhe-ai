@@ -28,11 +28,10 @@ import (
 // connection_preset_code 值域，两处字面量必须同步演化）。基线播种按 EXISTS
 // 判定，比候选 SQL 的「health-check 优先」单连接解析略宽——设计上无害（为暂
 // 不符合条件的账户预置版本行免二次迁移），最终资格仍由读取器运行时过滤。
-var directInputBaselineConnectionPresetCodes = [13]string{
+var directInputBaselineConnectionPresetCodes = [10]string{
 	"gpt_openai_v1", "xai_openai_v1", "deepseek_openai_v1", "deepseek_anthropic_v1",
 	"anthropic_v1", "glm_general_openai_v1", "glm_coding_openai_v1", "glm_coding_anthropic_v1",
 	"gemini_openai_chat_v1beta", "gemini_native_v1beta",
-	"generic_openai_v1", "generic_anthropic_v1", "generic_gemini_v1beta",
 }
 
 // directInputBaselineAccountTypes mirrors direct_input_reader.go:452。

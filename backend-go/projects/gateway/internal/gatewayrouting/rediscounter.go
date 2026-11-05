@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // redisRouteCounterScript mirrors the Node Lua script: INCR the counter,
@@ -27,7 +28,7 @@ type RedisRouteStateCounter struct {
 	Timeout time.Duration
 
 	once   sync.Once
-	client *redis.Client
+	client redis.UniversalClient
 	opts   *redis.Options
 	err    error
 }
@@ -41,15 +42,14 @@ func NewRedisRouteStateCounter(stateURL string) *RedisRouteStateCounter {
 	}
 }
 
-func (c *RedisRouteStateCounter) clientForUse() (*redis.Client, error) {
+func (c *RedisRouteStateCounter) clientForUse() (redis.UniversalClient, error) {
 	c.once.Do(func() {
-		opts, err := redis.ParseURL(c.URL)
+		client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: c.URL})
 		if err != nil {
 			c.err = err
 			return
 		}
-		c.opts = opts
-		c.client = redis.NewClient(opts)
+		c.client = client
 	})
 	return c.client, c.err
 }

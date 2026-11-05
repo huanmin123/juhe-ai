@@ -46,7 +46,7 @@ func TestW13ATestEndpointModeRuntimeHelpers(t *testing.T) {
 func TestW13AAccountManualTestEndpointModes(t *testing.T) {
 	// OpenAI api_key：chat 族默认在前，health 模式优先。
 	source := manualTestModeSource{
-		ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		ProtocolCode: "openai", ProtocolVersion: "v1", AccountType: "api_key",
 		HealthCheckEndpointMode: "chat_sse",
 	}
@@ -90,7 +90,7 @@ func TestW13ATestMappingHelpers(t *testing.T) {
 		t.Fatal("映射源族判定不一致")
 	}
 	openaiSource := manualTestModeSource{
-		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+		ProviderCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
 	// 同族直通、流式转非流式、responses→chat 在 OpenAI 协议支持。
 	if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {

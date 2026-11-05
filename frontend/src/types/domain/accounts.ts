@@ -288,7 +288,7 @@ export interface GroupAccountStats {
 
 export interface AccountModelMapping {
   sourceModel: string
-  // M4b 媒体映射族（媒体设计 §9 hybrid 行）：video_generation / tts 同族
+  // M4b 媒体映射族（媒体设计 §9）：video_generation / tts 同族
   // 模型名改写，与后端 write.go accountSourceEndpointFamilies 同枚举。
   sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts'
   upstreamModel: string

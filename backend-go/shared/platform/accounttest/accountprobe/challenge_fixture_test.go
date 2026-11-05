@@ -8,7 +8,7 @@ import (
 )
 
 // challengeQuestionPattern 匹配探针算术挑战报文里的算式部分
-//（CreateOutputChallenge 的 outputChallengePromptFormat）。
+// （CreateOutputChallenge 的 outputChallengePromptFormat）。
 var challengeQuestionPattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
 
 // challengeAnswerFromBody 从探针请求体解析算术挑战并返回两数之和的十进制
