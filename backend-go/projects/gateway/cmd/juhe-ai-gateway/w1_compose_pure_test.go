@@ -464,13 +464,13 @@ func TestW1CChainAccountAPIKeyPoolProviderSupported(t *testing.T) {
 		protocolVersion string
 		want            bool
 	}{
-		{"openai大小写", "OpenAI", "", "", true},
+		{"openai兼容已退役", "OpenAI", "", "", false},
 		{"gpt带空白", " gpt ", "", "", true},
 		{"xai", "xai", "", "", true},
 		{"deepseek", "deepseek", "", "", true},
 		{"glm", "glm", "", "", true},
 		{"gemini", "Gemini", "", "", true},
-		{"hybrid", "Hybrid", "", "", true},
+		{"hybrid已退役", "Hybrid", "", "", false},
 		{"anthropic供应商", "Anthropic", "", "", true},
 		{"未知供应商", "mystery", "", "", false},
 		{"anthropic协议v1", "", "anthropic", "v1", true},
@@ -498,12 +498,12 @@ func TestW1CChainAccountAPIKeyPoolIsolationEnabled(t *testing.T) {
 		credentials     map[string]any
 		want            bool
 	}{
-		{"oauth账户直接排除", "openai", "", "", "oauth", map[string]any{"api_keys": []any{"a", "b"}}, false},
-		{"双键池启用", "OpenAI", "", "", "api_key", map[string]any{"api_keys": []any{"a", "b"}}, true},
+		{"oauth账户直接排除", "gpt", "", "", "oauth", map[string]any{"api_keys": []any{"a", "b"}}, false},
+		{"双键池启用", "GPT", "", "", "api_key", map[string]any{"api_keys": []any{"a", "b"}}, true},
 		{"供应商不支持", "mystery", "", "", "api_key", map[string]any{"api_keys": []any{"a", "b"}}, false},
 		{"anthropic协议支持", "", "anthropic", "v1", "api_key", map[string]any{"api_keys": []any{"a", "b"}}, true},
-		{"单键不启用", "openai", "", "", "api_key", map[string]any{"api_key": "a"}, false},
-		{"重复键坍缩后不启用", "openai", "", "", "api_key", map[string]any{"api_keys": []any{"a", " a "}}, false},
+		{"单键不启用", "gpt", "", "", "api_key", map[string]any{"api_key": "a"}, false},
+		{"重复键坍缩后不启用", "gpt", "", "", "api_key", map[string]any{"api_keys": []any{"a", " a "}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -556,13 +556,11 @@ func TestW1CChainNormalizeGatewayEndpointModesForRuntime(t *testing.T) {
 		protocolVer   string
 		want          []string
 	}{
-		{"hybrid过滤", []any{"chat_json", "messages_json", "bogus", "chat_json"}, "Hybrid", "", "", "", "", "", []string{"chat_json", "messages_json"}},
-		{"hybrid优先于anthropic协议", []any{"chat_json", "messages_json"}, "hybrid", "", "", "", "anthropic", "v1", []string{"chat_json", "messages_json"}},
 		{"anthropic默认", []any{"messages_json", "chat_json", "bogus"}, "", "", "", "", "anthropic", "v1", []string{"messages_json"}},
 		{"anthropic deepseek profile", []any{"messages_json", "messages_sse", "message_token_counting"}, "", "", "", "profile_deepseek_anthropic_v1", "anthropic", "v1", []string{"messages_json", "messages_sse"}},
 		{"anthropic glm coding profile", []any{"messages_json", "messages_sse", "message_token_counting"}, "", "", "", "profile_glm_coding_anthropic_v1", "anthropic", "v1", []string{"messages_json", "messages_sse"}},
 		{"gemini过滤", []any{"generate_content_json", "chat_json"}, "", "", "", "", "gemini", "v1beta", []string{"generate_content_json"}},
-		{"默认走openai分支", []any{"chat_json"}, "openai", "api_key", "", "", "", "", []string{"chat_json"}},
+		{"默认走openai分支", []any{"chat_json"}, "gpt", "api_key", "", "", "", "", []string{"chat_json"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -589,7 +587,6 @@ func TestW1CChainNormalizeOpenAIEndpointModesForRuntime(t *testing.T) {
 		{"oauth回落responses", nil, "", "oauth", "", []string{"responses_json", "responses_sse"}},
 		{"gpt全模式", nil, "GPT", "api_key", "", allModes},
 		{"deepseek全模式", []any{}, "deepseek", "api_key", "", allModes},
-		{"openai聊天模式", nil, "openai", "api_key", "", chatModes},
 		{"glm聊天模式", nil, " GLM ", "api_key", "", chatModes},
 		{"codex兼容全模式", nil, "unknown", "api_key", "codex_responses", allModes},
 		{"默认全模式", nil, "unknown", "api_key", "", allModes},

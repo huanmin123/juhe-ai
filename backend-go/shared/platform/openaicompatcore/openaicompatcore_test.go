@@ -111,8 +111,11 @@ func TestNormalizeEndpointFamily(t *testing.T) {
 }
 
 func TestIsCrossProtocolBridgeRequired(t *testing.T) {
-	if !IsCrossProtocolBridgeRequired("messages", FamilyChatCompletions) {
-		t.Errorf("存储行 token 应可判定跨协议")
+	if !IsCrossProtocolBridgeRequired(FamilyResponses, FamilyChatCompletions) {
+		t.Errorf("Responses -> Chat Completions 是保留的跨协议桥")
+	}
+	if IsCrossProtocolBridgeRequired("messages", FamilyChatCompletions) {
+		t.Errorf("messages -> chat 已随供应商协议面收窄退役")
 	}
 	if IsCrossProtocolBridgeRequired(FamilyChatCompletions, FamilyChatCompletions) {
 		t.Errorf("同协议不应桥接")

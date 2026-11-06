@@ -28,43 +28,17 @@ func NormalizeEndpointFamily(family string) string {
 }
 
 // IsCrossProtocolBridgeRequired reports whether a model mapping requires
-// cross-protocol bridge conversion (OpenAI <-> Anthropic / Gemini), including
-// the in-family Responses -> Chat Completions conversion. Both the
-// canonical protocol tokens and the stored mapping-row tokens are accepted.
+// cross-protocol bridge conversion. 2026-11-05 供应商/协议面收窄后，映射矩阵
+// 只保留 8 个 family pair；其中唯一的跨族组合是 OpenAI v1 Responses ->
+// Chat Completions（chat-only 账户承接 /v1/responses），其余 chat/messages/
+// gemini 互转在写侧和运行时同时拒绝。同族改名不需要 bridge，返回 false。
+//
+// Both the canonical protocol tokens and the stored mapping-row tokens are
+// accepted.
 func IsCrossProtocolBridgeRequired(source, upstream string) bool {
 	source = NormalizeEndpointFamily(source)
 	upstream = NormalizeEndpointFamily(upstream)
-	switch {
-	case source == FamilyChatCompletions && upstream == FamilyAnthropicMessages:
-		return true
-	case source == FamilyChatCompletions && upstream == FamilyGeminiGenerateContent:
-		return true
-	case source == FamilyChatCompletions && upstream == FamilyGeminiStreamGenerate:
-		return true
-	case source == FamilyResponses && upstream == FamilyAnthropicMessages:
-		return true
-	case source == FamilyResponses && upstream == FamilyGeminiGenerateContent:
-		return true
-	case source == FamilyResponses && upstream == FamilyGeminiStreamGenerate:
-		return true
-	case source == FamilyResponses && upstream == FamilyChatCompletions:
-		return true
-	case source == FamilyAnthropicMessages && upstream == FamilyChatCompletions:
-		return true
-	case source == FamilyAnthropicMessages && upstream == FamilyGeminiGenerateContent:
-		return true
-	case source == FamilyAnthropicMessages && upstream == FamilyGeminiStreamGenerate:
-		return true
-	case source == FamilyGeminiGenerateContent && upstream == FamilyChatCompletions:
-		return true
-	case source == FamilyGeminiStreamGenerate && upstream == FamilyChatCompletions:
-		return true
-	case source == FamilyGeminiGenerateContent && upstream == FamilyAnthropicMessages:
-		return true
-	case source == FamilyGeminiStreamGenerate && upstream == FamilyAnthropicMessages:
-		return true
-	}
-	return false
+	return source == FamilyResponses && upstream == FamilyChatCompletions
 }
 
 // Config carries the runtime-config surface the five Node modules read from

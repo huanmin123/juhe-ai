@@ -1,11 +1,16 @@
 package main
 
+// 2026-11-05 协议面收窄后，流式跨协议映射只保留 OpenAI v1 Responses ->
+// Chat Completions（chat-only 账户承接 /v1/responses）。本文件覆盖该保留
+// bridge 的增量管道语义（首事件先于上游 EOF、断开传播、取消关闭上游体），
+// 以及 Code Assist 同族解包的增量语义。已退役 chat↔anthropic/gemini 方向
+// 的测试删除，不再以测试固化旧行为。
+
 import (
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -15,13 +20,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
-// gatedUpstreamBody 模拟"写出一个事件后阻塞、从不主动 EOF"的上游 SSE 流：
+// gatedUpstreamBody 模拟“写出一个事件后阻塞、从不主动 EOF”的上游 SSE 流：
 // 首次 Read 交付 chunk 并关闭 emitted，后续 Read 阻塞在 release 上；release
-// 关闭后按 readErr（nil = io.EOF）收尾。测试用它证明下游读到首个转换事件时
-// 上游尚未 EOF。
+// 关闭后按 readErr（nil = io.EOF）收尾。
 type gatedUpstreamBody struct {
 	chunk     string
 	chunkRead bool
@@ -46,23 +49,19 @@ func (b *gatedUpstreamBody) Read(p []byte) (int, error) {
 
 func (b *gatedUpstreamBody) Close() error { return nil }
 
-// bridgeStreamMappingAccount 构造 hybrid 账户上 responses -> gemini 的跨协议
-// mapping（gatewayopenai 支持面），上游模型名与上游真实 modelVersion 刻意
-// 不同，用于区分"映射名"与"上游原生归因"。
+// bridgeStreamMappingAccount 构造保留的 responses -> chat_completions bridge
+// 账户（chat-only 上游），用于增量管道语义测试。
 func bridgeStreamMappingAccount() gatewaydispatch.AccountCandidate {
-	enabled := true
 	return gatewaydispatch.AccountCandidate{
 		ID:           "acc_bridge_stream",
-		VendorCode:   "hybrid",
-		ProtocolCode: "gemini",
+		VendorCode:   "glm",
+		ProtocolCode: "openai",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
-			SourceModel:          "client-model",
-			SourceEndpointFamily: "responses",
-			UpstreamModel:        "mapped-upstream-model",
-			// 映射行存储的是 gatewayopenai 词汇（generate_content），桥侧经
-			// NormalizeEndpointFamily 归一为 gemini_generate_content。
-			UpstreamEndpointFamily: "generate_content",
-			Enabled:                enabled,
+			SourceModel:            "client-model",
+			SourceEndpointFamily:   "responses",
+			UpstreamModel:          "mapped-upstream-model",
+			UpstreamEndpointFamily: "chat_completions",
+			Enabled:                true,
 		}},
 	}
 }
@@ -76,8 +75,6 @@ func bridgeStreamTransformInput(t *testing.T, stream bool, response *gatewaydisp
 	body := `{"model":"client-model","stream":` + streamText + `,"input":"hi"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 	req := gatewaypreauth.NewGatewayRequest(request)
-	// ParsedJSONObjectBody 依赖 body 管道捕获态，测试里手工挂载（对齐
-	// chain_driver_gemini_mapped_url_test 的构造方式）。
 	req.Body = &gatewaybody.Request{RawBody: []byte(body), Body: mustJSONMap(t, body)}
 	return gatewaydispatch.UpstreamResponseTransformInput{
 		Req:      req,
@@ -86,8 +83,8 @@ func bridgeStreamTransformInput(t *testing.T, stream bool, response *gatewaydisp
 	}
 }
 
-func geminiBridgeUpstreamEvent() string {
-	return "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"he\"}]}}],\"modelVersion\":\"real-upstream-model-v1\"}\n\n"
+func chatBridgeUpstreamEvent() string {
+	return "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"real-upstream-model-v1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"}}]}\n\n"
 }
 
 func newBridgeUpstreamResponse(contentType string, body io.ReadCloser) *gatewaydispatch.GatewayUpstreamResponse {
@@ -108,56 +105,19 @@ func readStreamOnce(body io.Reader, result chan<- streamReadResult) {
 	result <- streamReadResult{n: n, text: string(buffer[:n]), err: err}
 }
 
-// bridgeWallClockIDPattern 匹配 Gemini 桥输出里由挂钟时间戳派生的 id 值
-// （"resp_<base36>"、"chatcmpl_<base36>"、"msg_<base36>"，镜像 Node
-// Date.now() 后缀；长度 6-14 覆盖 base36 毫秒串，且不误伤 "msg_0" 这类
-// 固定字面量与含下划线的确定性 id）。
-// 适用边界：只覆盖 gemini 桥（bridge_gemini_response.go 的
-// resp_+base36(毫秒) 形态）。codex 桥（resp_chat_bridge_<base36>_<rand6>，
-// 另有秒级 created 字段）与 anthropic 桥（resp_anthropic_<suffix>）的 id
-// 不匹配本模式——那两座桥若将来加增量/buffer 一致性对照，需要各自的
-// 归一化模式，不得直接复用本 helper。
-var bridgeWallClockIDPattern = regexp.MustCompile(`"(resp|chatcmpl|msg)_[0-9a-z]{6,14}"`)
-
-// normalizeBridgeWallClockIDs 把挂钟派生 id 归一为占位符（适用边界见
-// bridgeWallClockIDPattern 注释）。增量管道与 buffer 转换是两次独立调用，
-// 毫秒边界处两侧 id 后缀必然不同；归一后其余字节仍逐字节比较（事件结构、
-// 字段、顺序差异不会被掩盖）。
-func normalizeBridgeWallClockIDs(text string) string {
-	return bridgeWallClockIDPattern.ReplaceAllString(text, `"$1_<wallclock>"`)
-}
-
-// TestNormalizeBridgeWallClockIDs 钉住归一化边界：只折叠挂钟 base36 后缀，
-// 固定字面量 id 与含下划线的确定性 id 保持原样。
-func TestNormalizeBridgeWallClockIDs(t *testing.T) {
-	left := `{"id":"resp_mu5616tu","item_id":"msg_0","name":"resp_anthropic_x_1"}`
-	right := `{"id":"resp_mu5616tv","item_id":"msg_0","name":"resp_anthropic_x_1"}`
-	if normalizeBridgeWallClockIDs(left) != normalizeBridgeWallClockIDs(right) {
-		t.Fatalf("挂钟 id 归一后应相等:\nleft=%q\nright=%q", normalizeBridgeWallClockIDs(left), normalizeBridgeWallClockIDs(right))
-	}
-	if strings.Contains(normalizeBridgeWallClockIDs(left), "msg_0") == false {
-		t.Fatalf("固定字面量 msg_0 不应被归一化")
-	}
-	if strings.Contains(normalizeBridgeWallClockIDs(left), "resp_anthropic_x_1") == false {
-		t.Fatalf("含下划线的确定性 id 不应被归一化")
-	}
-}
-
-// TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF 钉住 P1
-// 核心语义：跨协议桥的流式转换是增量管道——上游写出一个事件并阻塞（未
-// EOF）时，下游必须已能读到首个转换事件；同时对照 buffer 版本断言完整输出
-// 逐字节一致（增量不改变转换结果）。
+// TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF 钉住保留
+// bridge 的增量语义：上游写出一个事件并阻塞（未 EOF）时，下游必须已能读到
+// 首个转换后的 Responses SSE 事件。
 func TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF(t *testing.T) {
 	transformer := newChainBridgeResponseTransformer()
 	release := make(chan struct{})
 	emitted := make(chan struct{})
 	upstreamBody := &gatedUpstreamBody{
-		chunk:   geminiBridgeUpstreamEvent(),
+		chunk:   chatBridgeUpstreamEvent(),
 		emitted: emitted,
 		release: release,
 	}
 	t.Cleanup(func() {
-		// 失败路径也要让 pump goroutine 退出并释放管道。
 		select {
 		case <-release:
 		default:
@@ -175,7 +135,6 @@ func TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF(t *testing
 		t.Fatalf("streaming bridge must answer SSE, got %q", ct)
 	}
 
-	// 首个转换事件必须在上游 EOF 之前可读（2s 超时判定）。
 	firstRead := make(chan streamReadResult, 1)
 	go readStreamOnce(got.Body, firstRead)
 	var first streamReadResult
@@ -187,7 +146,7 @@ func TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF(t *testing
 	if first.err != nil {
 		t.Fatalf("首个转换事件读取失败: %v", first.err)
 	}
-	if !strings.Contains(first.text, "data:") {
+	if !strings.Contains(first.text, "event: response.") {
 		t.Fatalf("首个转换事件必须是 Responses SSE 帧, got %q", first.text)
 	}
 	select {
@@ -196,32 +155,21 @@ func TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF(t *testing
 		t.Fatalf("下游读到首事件时上游 chunk 尚未被消费（管道时序异常）")
 	}
 
-	// 放行上游 EOF，排空下游，对照 buffer 转换函数逐字节一致。
+	// 放行上游 EOF；排空下游即可，尾部完整性由 glm_responses_chat_bridge_
+	// adjudication_test 的完整转换用例覆盖。
 	close(release)
-	rest, err := io.ReadAll(got.Body)
-	if err != nil {
-		t.Fatalf("排空下游失败: %v", err)
-	}
-	full := first.text + string(rest)
-	buffered := openaicompatbridge.TransformGeminiSseBufferToDownstreamSse(
-		[]byte(geminiBridgeUpstreamEvent()), openaicompatbridge.GeminiNativeProtocolResponses, "mapped-upstream-model")
-	// 挂钟 id（response.created/completed 的 resp_<base36>）在两次独立转换
-	// 之间不可复现，归一后比较；结构差异仍是逐字节判定（见 helper 注释）。
-	if normalizeBridgeWallClockIDs(full) != normalizeBridgeWallClockIDs(string(buffered)) {
-		t.Fatalf("增量管道输出必须与 buffer 转换逐字节一致:\n增量=%q\nbuffer=%q", full, string(buffered))
-	}
+	_, _ = io.ReadAll(got.Body)
 }
 
 // TestChainBridgeResponseStreamPropagatesUpstreamDisconnect 钉住错误传播：
-// 上游中途断开时，下游读取必须以同一错误结束（Node abort 分支的截断语义），
-// 而不是静默当作正常 EOF。
+// 上游中途断开时，下游读取必须以同一错误结束，而不是静默当作正常 EOF。
 func TestChainBridgeResponseStreamPropagatesUpstreamDisconnect(t *testing.T) {
 	transformer := newChainBridgeResponseTransformer()
 	release := make(chan struct{})
 	emitted := make(chan struct{})
 	disconnect := errors.New("upstream disconnected mid-stream")
 	upstreamBody := &gatedUpstreamBody{
-		chunk:   geminiBridgeUpstreamEvent(),
+		chunk:   chatBridgeUpstreamEvent(),
 		emitted: emitted,
 		release: release,
 		readErr: disconnect,
@@ -240,8 +188,6 @@ func TestChainBridgeResponseStreamPropagatesUpstreamDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transform: %v", err)
 	}
-	// ReadAll 在 goroutine 中执行：它会先读到首个事件，然后阻塞在未放行的
-	// 上游读上；close(release) 触发上游断开，错误必须经管道传播回来。
 	readAllDone := make(chan error, 1)
 	go func() {
 		_, err := io.ReadAll(got.Body)
@@ -306,40 +252,14 @@ func TestChainBridgeCodeAssistStreamFirstEventReadableBeforeUpstreamEOF(t *testi
 	}
 }
 
-// TestChainBridgeResponseNonStreamMappingKeepsBufferSemantics 钉住非流式
-// 回归：非流式桥转换保持 buffer 语义（JSON 收集），Content-Type 为 JSON。
-func TestChainBridgeResponseNonStreamMappingKeepsBufferSemantics(t *testing.T) {
-	transformer := newChainBridgeResponseTransformer()
-	payload := "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"full\"}]}}],\"modelVersion\":\"real-upstream-model-v1\"}"
-	response := newBridgeUpstreamResponse("application/json", io.NopCloser(strings.NewReader(payload)))
-	input := bridgeStreamTransformInput(t, false, response)
-
-	got, err := transformer.TransformUpstreamResponseForAccount(input)
-	if err != nil {
-		t.Fatalf("transform: %v", err)
-	}
-	body, err := io.ReadAll(got.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	text := string(body)
-	if !strings.Contains(text, "full") {
-		t.Fatalf("非流式桥转换必须产出完整 JSON, got %q", text)
-	}
-	if ct := got.Header.Get("Content-Type"); !strings.Contains(strings.ToLower(ct), "json") {
-		t.Fatalf("非流式桥转换必须回答 JSON, got %q", ct)
-	}
-}
-
 // TestChainBridgeResponseStreamPipeClosesUpstreamBodyOnDownstreamClose 钉住
-// 取消语义：下游提前关闭管道读端时，pump goroutine 必须退出并关闭上游体
-// （并发槽释放/请求取消挂在 Body.Close 上）。
+// 取消语义：下游提前关闭管道读端时，pump goroutine 必须退出并关闭上游体。
 func TestChainBridgeResponseStreamPipeClosesUpstreamBodyOnDownstreamClose(t *testing.T) {
 	transformer := newChainBridgeResponseTransformer()
 	release := make(chan struct{})
 	emitted := make(chan struct{})
 	upstreamBody := &closingTrackingBody{gatedUpstreamBody: gatedUpstreamBody{
-		chunk:   geminiBridgeUpstreamEvent(),
+		chunk:   chatBridgeUpstreamEvent(),
 		emitted: emitted,
 		release: release,
 	}}

@@ -125,57 +125,6 @@ func TestChainDriverOverrideWithoutMappingKeepsRequestModel(t *testing.T) {
 	}
 }
 
-// TestChainDriverServiceTierStrippedForAnthropicMappedTarget 钉住 DD-F2：
-// 跨协议映射目标为 anthropic_messages 时 service_tier 被剥离（最终 body 无
-// 该字段），reasoning 覆盖仍按 anthropic wire 写 output_config.effort；目录
-// 解析按映射右侧模型行（DD-F1 同源）。openai 直连回归见
-// TestChainDriverServiceTierKeptForOpenAIDirect。
-func TestChainDriverServiceTierStrippedForAnthropicMappedTarget(t *testing.T) {
-	catalog := &overrideModelTestCatalog{items: []gatewaydispatch.GptRequestOverrideModelCatalogItem{
-		{Model: "claude-target", SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"high"}},
-	}}
-	driver := overrideModelTestDriver(catalog)
-	account := gatewaydispatch.AccountCandidate{
-		ID:           "acc_override_bridge",
-		VendorCode:   "gpt",
-		ProtocolCode: "openai",
-		Type:         "api_key",
-		BaseURL:      "https://api.example/v1",
-		APIKey:       "gk-1",
-		Credentials: map[string]any{
-			"service_tier_override":     "priority",
-			"reasoning_effort_override": "high",
-		},
-		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
-			SourceModel:            "gpt-source",
-			SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
-			UpstreamModel:          "claude-target",
-			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyMessages,
-			Enabled:                true,
-		}},
-	}
-	req := mappedURLTestRequest(t, http.MethodPost, "/v1/responses", `{"model":"gpt-source","input":"hi"}`)
-
-	parts, err := driver.buildGatewayUpstreamRequestParts(context.Background(), req, account, gatewaydispatch.UsageIdentity{}, "")
-	if err != nil {
-		t.Fatalf("build parts: %v", err)
-	}
-	body := decodeOverrideTestBody(t, parts.Body)
-	if body["model"] != "claude-target" {
-		t.Fatalf("映射后出站 model = %v, want claude-target", body["model"])
-	}
-	if _, has := body["service_tier"]; has {
-		t.Fatalf("anthropic_messages 目标不得写入 service_tier: %v", body)
-	}
-	outputConfig, ok := body["output_config"].(map[string]any)
-	if !ok || outputConfig["effort"] != "high" {
-		t.Fatalf("output_config = %v, want effort=high（reasoning 分支不受影响）", body["output_config"])
-	}
-	if _, has := body["messages"]; !has {
-		t.Fatalf("anthropic 桥接 body 缺少 messages: %v", body)
-	}
-}
-
 // TestChainDriverServiceTierKeptForOpenAIDirect 钉住 DD-F2 openai 直连回归：
 // 未映射请求维持 service_tier 能力门写入不变。
 func TestChainDriverServiceTierKeptForOpenAIDirect(t *testing.T) {

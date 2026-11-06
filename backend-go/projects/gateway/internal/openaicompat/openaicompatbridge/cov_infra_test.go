@@ -426,15 +426,9 @@ func TestCovComputerAdapterNormalization(t *testing.T) {
 }
 
 func TestCovConfigAndEndpointFamilies(t *testing.T) {
-	t.Run("IsCrossProtocolBridgeRequired 全对", func(t *testing.T) {
+	t.Run("IsCrossProtocolBridgeRequired 8 pair 收窄", func(t *testing.T) {
 		yes := [][2]string{
-			{FamilyResponses, FamilyAnthropicMessages},
-			{FamilyResponses, FamilyGeminiGenerateContent},
-			{FamilyResponses, FamilyGeminiStreamGenerate},
-			{FamilyAnthropicMessages, FamilyGeminiGenerateContent},
-			{FamilyAnthropicMessages, FamilyGeminiStreamGenerate},
-			{FamilyGeminiGenerateContent, FamilyAnthropicMessages},
-			{FamilyGeminiStreamGenerate, FamilyAnthropicMessages},
+			{FamilyResponses, FamilyChatCompletions},
 		}
 		for _, pair := range yes {
 			if !IsCrossProtocolBridgeRequired(pair[0], pair[1]) {
@@ -443,6 +437,16 @@ func TestCovConfigAndEndpointFamilies(t *testing.T) {
 		}
 		no := [][2]string{
 			{FamilyResponses, FamilyResponses},
+			{FamilyResponses, FamilyAnthropicMessages},
+			{FamilyResponses, FamilyGeminiGenerateContent},
+			{FamilyResponses, FamilyGeminiStreamGenerate},
+			{FamilyAnthropicMessages, FamilyGeminiGenerateContent},
+			{FamilyAnthropicMessages, FamilyGeminiStreamGenerate},
+			{FamilyGeminiGenerateContent, FamilyAnthropicMessages},
+			{FamilyGeminiStreamGenerate, FamilyAnthropicMessages},
+			{FamilyChatCompletions, FamilyAnthropicMessages},
+			{FamilyAnthropicMessages, FamilyChatCompletions},
+			{FamilyGeminiGenerateContent, FamilyChatCompletions},
 			{FamilyAnthropicMessages, "unknown"},
 			{"unknown", FamilyChatCompletions},
 		}

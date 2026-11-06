@@ -294,11 +294,14 @@ func TestIsCrossProtocolBridgeRequired(t *testing.T) {
 		upstream string
 		want     bool
 	}{
-		{"chat_completions", "anthropic_messages", true},
-		{"chat_completions", "gemini_generate_content", true},
-		{"chat_completions", "gemini_stream_generate", true},
-		{"gemini_generate_content", "chat_completions", true},
-		{"gemini_stream_generate", "chat_completions", true},
+		{"responses", "chat_completions", true},
+		{"chat_completions", "anthropic_messages", false},
+		{"chat_completions", "gemini_generate_content", false},
+		{"chat_completions", "gemini_stream_generate", false},
+		{"gemini_generate_content", "chat_completions", false},
+		{"gemini_stream_generate", "chat_completions", false},
+		{"messages", "chat_completions", false},
+		{"messages", "generate_content", false},
 		{"chat_completions", "chat_completions", false},
 		{"anthropic_messages", "anthropic_messages", false},
 		{"gemini_generate_content", "gemini_generate_content", false},

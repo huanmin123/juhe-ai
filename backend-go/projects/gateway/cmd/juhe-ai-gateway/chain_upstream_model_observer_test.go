@@ -46,13 +46,14 @@ func sseModelUpstream(t *testing.T, contentType, payload string) *httptest.Serve
 }
 
 // TestUpstreamModelObservedBeforeBridgeTransformReachesSlot 钉住桥路径归因
-// （P2 核心）：responses -> gemini 桥请求下，观察挂在桥转换之前的原始上游流
-// 上——slot 归因的是上游原生 modelVersion，而不是空值、映射名或转换后的
-// 客户端形态；发布值经 slot Bind 进入响应快照（usage/audit 的
+// （P2 核心）：保留的 responses -> chat_completions 桥请求下，观察挂在桥转换
+// 之前的原始上游流上——slot 归因的是上游原生 model，而不是空值、映射名或
+// 转换后的客户端形态；发布值经 slot Bind 进入响应快照（usage/audit 的
 // UpstreamResponseModel 数据源）。
 func TestUpstreamModelObservedBeforeBridgeTransformReachesSlot(t *testing.T) {
 	server := sseModelUpstream(t, "text/event-stream",
-		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"he\"}]}}],\"modelVersion\":\"real-upstream-model-v1\"}\n\n")
+		"data: {\"id\":\"chatcmpl-obs\",\"object\":\"chat.completion.chunk\",\"model\":\"real-upstream-model-v1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"}}]}\n\n"+
+			"data: [DONE]\n\n")
 	engine := upstreamModelObserverEngine()
 
 	request := bodyAttachedRequest(t, http.MethodPost, "/v1/responses",
@@ -61,7 +62,7 @@ func TestUpstreamModelObservedBeforeBridgeTransformReachesSlot(t *testing.T) {
 	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), gatewaydispatch.AttemptInput{
 		Req:                       request,
 		Account:                   bridgeStreamMappingAccount(),
-		UpstreamURL:               server.URL + "/v1/responses",
+		UpstreamURL:               server.URL + "/v1/chat/completions",
 		Headers:                   http.Header{},
 		Body:                      []byte(`{"model":"client-model","stream":true,"input":"hi"}`),
 		Signal:                    context.Background(),
@@ -82,12 +83,9 @@ func TestUpstreamModelObservedBeforeBridgeTransformReachesSlot(t *testing.T) {
 	if !strings.Contains(text, "event: response.completed") {
 		t.Fatalf("桥转换必须产出 Responses SSE, got %q", text)
 	}
-	// 归因不来自转换后的客户端形态：下游载荷不含上游原生 modelVersion。
-	if strings.Contains(text, "real-upstream-model-v1") {
-		t.Fatalf("转换后的客户端载荷不应携带上游原生 modelVersion")
-	}
+	// 下游载荷可能保留上游 model 字段；这里只钉住观察 slot 归因于原始上游流。
 	if slot.Get() != "real-upstream-model-v1" {
-		t.Fatalf("slot 必须归因上游原始 modelVersion, got %q", slot.Get())
+		t.Fatalf("slot 必须归因上游原始 model, got %q", slot.Get())
 	}
 
 	// chain 响应面消费契约：Bind 把发布接入响应快照（发布先于绑定也要能看到）。

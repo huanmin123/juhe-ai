@@ -7,9 +7,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 )
 
-// T36：generic_http 账户 vendor 为空时，视频 adapter 按冻结的协议面回退；
-// real vendor 仍优先；未知协议保持能力缺失（nil）。
-func TestChainVideoAdapterGenericProtocolFallback(t *testing.T) {
+// T36 / 2026-11-05 协议面退役：空 vendor 的 generic openai/gemini 账户不再
+// 按冻结协议面回退；只有真实 vendor 仍生成 adapter，未知协议保持 nil。
+func TestChainVideoAdapterRetiredGenericVendorRejected(t *testing.T) {
 	cases := []struct {
 		name     string
 		vendor   string
@@ -17,8 +17,8 @@ func TestChainVideoAdapterGenericProtocolFallback(t *testing.T) {
 		version  string
 		want     string
 	}{
-		{name: "generic openai", vendor: "", protocol: "openai", version: "v1", want: "openai"},
-		{name: "generic gemini", vendor: "", protocol: "gemini", version: "v1beta", want: "gemini"},
+		{name: "retired generic openai", vendor: "", protocol: "openai", version: "v1", want: ""},
+		{name: "retired generic gemini", vendor: "", protocol: "gemini", version: "v1beta", want: ""},
 		{name: "real vendor wins", vendor: "glm", protocol: "openai", version: "v1", want: "glm"},
 		{name: "unknown protocol", vendor: "", protocol: "anthropic", version: "v1", want: ""},
 	}
@@ -42,11 +42,12 @@ func TestChainVideoAdapterGenericProtocolFallback(t *testing.T) {
 	}
 }
 
-// T36：generic_http API-key 账户保持多 Key 池隔离；空 vendor 不得作为通配符。
-func TestChainAccountAPIKeyPoolGenericHTTP(t *testing.T) {
+// T36 / 2026-11-05 协议面退役：generic_http 与空 vendor 不再是可承载账户，
+// 即使多 Key 也不得启用池隔离；空 vendor 不得作为通配符。
+func TestChainAccountAPIKeyPoolRetiredGenericVendorRejected(t *testing.T) {
 	credentials := map[string]any{"api_keys": []any{"a", "b"}}
-	if !chainAccountAPIKeyPoolIsolationEnabled("", "generic_http", "openai", "v1", "api_key", credentials) {
-		t.Fatal("generic_http 多 Key 应启用池隔离")
+	if chainAccountAPIKeyPoolIsolationEnabled("", "generic_http", "openai", "v1", "api_key", credentials) {
+		t.Fatal("generic_http 已退役，不得启用池隔离")
 	}
 	if chainAccountAPIKeyPoolIsolationEnabled("", "", "openai", "v1", "api_key", credentials) {
 		t.Fatal("空 driver + 空 vendor 不得启用池隔离")

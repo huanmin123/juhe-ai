@@ -100,12 +100,12 @@ func TestW16BBridgeMappingOfPointerArms(t *testing.T) {
 	request.Body.State = &gatewaybody.BodyState{Model: w2aModelPtr("w16b-model")}
 	mapping := chainBridgeResponseMappingOf(request, gatewaydispatch.AccountCandidate{
 		ID:         "w16b-bridge-acc",
-		VendorCode: "hybrid",
+		VendorCode: "gpt",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "w16b-model",
 			SourceEndpointFamily:   "chat_completions",
 			UpstreamModel:          "w16b-upstream",
-			UpstreamEndpointFamily: "messages",
+			UpstreamEndpointFamily: "chat_completions",
 			Enabled:                true,
 			RuntimeSource:          &runtimeSource,
 			RuntimeRouteRuleID:     &runtimeRouteRuleID,
@@ -121,12 +121,12 @@ func TestW16BBridgeMappingOfPointerArms(t *testing.T) {
 	// 反向臂：nil 指针保持空串（既有覆盖面，保持双臂都执行）。
 	nilMapping := chainBridgeResponseMappingOf(request, gatewaydispatch.AccountCandidate{
 		ID:         "w16b-bridge-acc",
-		VendorCode: "hybrid",
+		VendorCode: "gpt",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "w16b-model",
 			SourceEndpointFamily:   "chat_completions",
 			UpstreamModel:          "w16b-upstream",
-			UpstreamEndpointFamily: "messages",
+			UpstreamEndpointFamily: "chat_completions",
 			Enabled:                true,
 		}},
 	})
