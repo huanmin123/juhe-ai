@@ -398,8 +398,9 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB, Logger: a.logger}
 	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
 	settingsSource := jobssettings.NewSource(jobssettings.Options{
-		DB:   settingsDB,
-		Warn: jobssettingsWarn(a.logger),
+		DB:      settingsDB,
+		Warn:    jobssettingsWarn(a.logger),
+		Version: a.settingsVersionReader(),
 	})
 	a.settings = dbSettingsSource{source: settingsSource}
 

@@ -56,8 +56,8 @@ func TestW7CCredentialHelperMatrix(t *testing.T) {
 
 	h := openTestDBPostgres(t)
 	pool := map[string]any{"api_keys": []any{"a", "b"}}
-	// 供应商解耦后的等价词表：gpt 直取；空 vendor（generic_http）+ openai 协议
-	// 面承接旧 openai-compatible 语义。
+	// 供应商解耦后的等价词表：真实 vendor 直取；空 vendor（旧 generic_http /
+	// openai 兼容形态）已退役，即使协议面是 openai 也不支持 Key 池隔离。
 	if h.store.IsAccountAPIKeyPoolIsolationEnabled("gpt", "openai", "v1", "oauth", pool) {
 		t.Fatal("oauth accounts are excluded")
 	}
@@ -67,8 +67,8 @@ func TestW7CCredentialHelperMatrix(t *testing.T) {
 	if !h.store.IsAccountAPIKeyPoolIsolationEnabled("gpt", "openai", "v1", "api_key", pool) {
 		t.Fatal("gpt pool accounts qualify")
 	}
-	if !h.store.IsAccountAPIKeyPoolIsolationEnabled("", "openai", "v1", "api_key", pool) {
-		t.Fatal("generic openai-compatible pool accounts qualify")
+	if h.store.IsAccountAPIKeyPoolIsolationEnabled("", "openai", "v1", "api_key", pool) {
+		t.Fatal("retired generic openai-compatible pool accounts must be excluded")
 	}
 	if h.store.IsAccountAPIKeyPoolIsolationEnabled("xai", "openai", "v1", "api_key", pool) {
 		t.Fatal("unsupported providers are excluded")

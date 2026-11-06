@@ -127,6 +127,29 @@ func TestKeyShapeIsClusterTaggedAndStable(t *testing.T) {
 	}
 }
 
+func TestSettingsVersionRoundTrip(t *testing.T) {
+	exec := newFakeExecutor()
+	client, err := New(exec, "prod:settings")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got, want := client.Key(EntitySettingsVersion, "sys_admin"), "juhe-ai:{prod:settings}:version:settings:sys_admin"; got != want {
+		t.Fatalf("settings key = %q, want %q", got, want)
+	}
+	for want := int64(1); want <= 2; want++ {
+		got, err := client.BumpSettingsVersion(context.Background(), "sys_admin")
+		if err != nil || got != want {
+			t.Fatalf("BumpSettingsVersion = (%d,%v), want (%d,nil)", got, err, want)
+		}
+	}
+	if got, err := client.SettingsVersion(context.Background(), "sys_admin"); err != nil || got != 2 {
+		t.Fatalf("SettingsVersion = (%d,%v), want (2,nil)", got, err)
+	}
+	if got, err := client.SettingsVersion(context.Background(), "missing"); err != nil || got != 0 {
+		t.Fatalf("missing SettingsVersion = (%d,%v), want (0,nil)", got, err)
+	}
+}
+
 func TestKeyPanicsOnEmptyParts(t *testing.T) {
 	client, _ := newTestClient(t)
 	for _, parts := range [][2]string{{"", "id"}, {"entity", ""}} {

@@ -93,7 +93,7 @@ docker compose --profile tool run --rm maintenance check-config --process all
 
 - 三个（或更多）master，建议 3 master + 3 replica；客户端经 `JUHE_AI_REDIS_URL` 的重复 `addr` 参数发现拓扑，故障转移由 Redis Cluster 负责。
 - `JUHE_AI_REDIS_MODE=cluster`，URL 不能带 DB 路径（只支持 DB0）。
-- 键形态固定 `juhe-ai:{<namespace>:<域>}:<key>`；同一域内多键操作同 slot。域清单：`circuit`、`j3b`、`keymodel`、`hotquality`、`clientip`、`session`、`runtimecache`、`ratelimit`、`callertier`、`quota`、`obs`、`routestate`、`proxyhealth`、`inval`、`realtime`、`speedfirst`、`oauth`、`authstate`。
+- 键形态固定 `juhe-ai:{<namespace>:<域>}:<key>`；同一域内多键操作同 slot。域清单：`circuit`、`j3b`、`keymodel`、`hotquality`、`clientip`、`session`、`runtimecache`、`ratelimit`、`callertier`、`quota`、`obs`、`routestate`、`proxyhealth`、`inval`、`realtime`、`speedfirst`、`oauth`、`authstate`、`settings`。
 - 跨进程同键逐域对齐：延迟降级/恢复探针用 `proxyhealth`（jobs 不再读 `speedfirst`），policy avoidance 用 `keymodel`；详见《PostgreSQL与Redis高性能模式设计》键布局规则。
 - 不支持把同一份数据同时跑在 single 与 cluster 之间热切：键布局与 DB0 假设不同，必须停写迁移。
 

@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
@@ -418,11 +420,19 @@ var usageStatsDataTables = []string{
 	"usage_scope_range_windows",
 }
 
+// VersionBumper 是 system_settings 跨进程版本写入端口（B5）；nil 保持既有
+// 60s 可见性窗口。
+type VersionBumper interface {
+	BumpSettingsVersion(ctx context.Context) error
+}
+
 // Store is the PostgreSQL settings persistence behind the M12 route family.
 type Store struct {
 	db    *sql.DB
 	now   func() time.Time
 	inval RuntimeInvalidator
+	// versionBumper 在 system_settings 事务提交后递增共享版本（B5）。
+	versionBumper VersionBumper
 	// statsDB backs the usageStatsTimezone guard probe. Node runs
 	// usageStatsDataExists against getStatsDatabase(); in the six-database
 	// split the usage_stats_* tables live in the dedicated stats database,
@@ -435,6 +445,14 @@ type Store struct {
 	cachedAt       time.Time
 	globalCached   map[string]any
 	globalCachedAt time.Time
+
+	// overrideRefresh* 合并跨实例失效回调触发的 upstream 覆盖重放：
+	// ClearSettingsCache 位于 gateway runtime 读前失效同步路径，不能同步读
+	// PG；同一时刻最多一个后台 worker 在途，worker 运行期间的触发置 dirty，
+	// 完成当前轮后再跑一轮，避免尾随失效被 TryLock 丢弃。
+	overrideRefreshMu      sync.Mutex
+	overrideRefreshRunning bool
+	overrideRefreshDirty   bool
 }
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
@@ -456,6 +474,26 @@ func NewStore(db *sql.DB, now func() time.Time, inval RuntimeInvalidator) (*Stor
 // can leave it unset.
 func (s *Store) SetStatsDatabase(db *sql.DB) {
 	s.statsDB = db
+}
+
+// SetVersionBumper 注入 settings 跨进程版本写入端口（B5）。
+func (s *Store) SetVersionBumper(bumper VersionBumper) {
+	s.versionBumper = bumper
+}
+
+// bumpSettingsVersion 在 system_settings 事务提交后递增共享版本；失败只告警，
+// 读者按既有 60s 窗口回退。使用 detached 2s 预算，请求取消不回滚已提交写。
+func (s *Store) bumpSettingsVersion(ctx context.Context) {
+	if s == nil || s.versionBumper == nil {
+		return
+	}
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.versionBumper.BumpSettingsVersion(bumpCtx); err != nil {
+		slog.Warn("settings 跨进程版本写入失败，jobs 按既有 60s 缓存窗口回退",
+			"event", "settings_version_bump_failed",
+			"error", err)
+	}
 }
 
 func (s *Store) table(name string) string {
@@ -627,6 +665,7 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 	if err := s.upsertSystemSettings(ctx, "", normalized); err != nil {
 		return nil, err
 	}
+	s.bumpSettingsVersion(ctx)
 	s.mu.Lock()
 	s.cached = nil
 	s.cachedAt = time.Time{}
@@ -940,6 +979,7 @@ func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[
 		if err := s.upsertSystemSettings(ctx, sectionKey, normalized); err != nil {
 			return nil, err
 		}
+		s.bumpSettingsVersion(ctx)
 		s.mu.Lock()
 		s.cached = nil
 		s.cachedAt = time.Time{}
@@ -1208,11 +1248,72 @@ func (s *Store) UpstreamClientVersionOverrides(ctx context.Context) (map[string]
 // 成功后调用，管理端保存后新请求立即使用新版本）。读取失败保持既有覆盖
 // 不动（不影响写请求结果，下一轮写入或进程重启再对齐）。只刷新手动层。
 func (s *Store) refreshUpstreamClientVersionOverrides(ctx context.Context) {
-	overrides, err := s.UpstreamClientVersionOverrides(ctx)
-	if err != nil {
+	_ = s.RefreshUpstreamClientVersionOverrides(ctx)
+}
+
+// ScheduleUpstreamClientVersionOverridesRefresh 异步重放手动覆盖层，供
+// gateway runtime 读前失效同步回调使用。回调本身必须保持纯内存，不能把
+// system_settings 的 PG 查询插到请求派发路径上；同一时刻只允许一个后台重放，
+// 重放失败只告警并保持旧覆盖（下一次写入/启动或下一轮失效再对齐）。
+func (s *Store) ScheduleUpstreamClientVersionOverridesRefresh() {
+	if s == nil {
 		return
 	}
+	s.overrideRefreshMu.Lock()
+	s.overrideRefreshDirty = true
+	if s.overrideRefreshRunning {
+		s.overrideRefreshMu.Unlock()
+		return
+	}
+	s.overrideRefreshRunning = true
+	s.overrideRefreshMu.Unlock()
+	go s.runUpstreamClientVersionOverridesRefresh()
+}
+
+// runUpstreamClientVersionOverridesRefresh 单 worker 消费合并后的重放请求：
+// 每轮开始前清 dirty，若刷新期间又到达新触发，循环再读一次，保证最终收敛
+// 到最新 PG 值而不是丢弃尾随事件。panic 由 safego 兜底且退出前复位 running。
+func (s *Store) runUpstreamClientVersionOverridesRefresh() {
+	defer safego.Recover("gatewaysettings.upstream_overrides_async_refresh")
+	defer func() {
+		s.overrideRefreshMu.Lock()
+		s.overrideRefreshRunning = false
+		s.overrideRefreshMu.Unlock()
+	}()
+	for {
+		s.overrideRefreshMu.Lock()
+		if !s.overrideRefreshDirty {
+			s.overrideRefreshRunning = false
+			s.overrideRefreshMu.Unlock()
+			return
+		}
+		s.overrideRefreshDirty = false
+		s.overrideRefreshMu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := s.RefreshUpstreamClientVersionOverrides(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("跨实例 settings 失效后异步刷新 upstream 覆盖失败，保持旧覆盖",
+				"event", "settings_upstream_overrides_async_refresh_failed",
+				"error", err)
+		}
+	}
+}
+
+// RefreshUpstreamClientVersionOverrides 是跨实例失效回调可调用的导出入口：
+// 重新读取并应用手动覆盖层；读取失败返回 error，调用方只告警、保持旧覆盖。
+func (s *Store) RefreshUpstreamClientVersionOverrides(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	ctx = ensureCtx(ctx)
+	overrides, err := s.UpstreamClientVersionOverrides(ctx)
+	if err != nil {
+		return err
+	}
 	upstreamidentity.SetClientVersionOverrides(overrides)
+	return nil
 }
 
 // UpstreamClientVersionAutoOverrides 读取自动键当前生效的覆盖表：缺行/空对象/

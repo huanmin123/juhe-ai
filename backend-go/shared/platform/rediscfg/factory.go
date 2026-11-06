@@ -47,6 +47,7 @@ const (
 	DomainSpeedFirst   = "speedfirst"
 	DomainOAuth        = "oauth"
 	DomainAuthState    = "authstate"
+	DomainSettings     = "settings"
 )
 
 // Config 是一次 Redis 客户端构造所需的全部输入。

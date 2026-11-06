@@ -16,11 +16,18 @@
 package proberepo
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// AccountStateVersionBumper 是账户运行态版本栅栏写入端口（B3b/B4）：Key 运行
+// 态 PG 写成功后按受影响账户递增共享序号，gateway runtime 缓存下一次读重载。
+type AccountStateVersionBumper interface {
+	BumpAccountState(ctx context.Context, accountID string) error
+}
 
 // Config 组装 Store。
 type Config struct {
@@ -30,13 +37,16 @@ type Config struct {
 	Secret string
 	// Now 注入时间源；为空取 UTC time.Now。
 	Now func() time.Time
+	// StateVersion 是 Key 运行态/账户状态版本写入端口；nil 保持既有窗口。
+	StateVersion AccountStateVersionBumper
 }
 
 // Store 承载探针族全部业务库读写。
 type Store struct {
-	db     *sql.DB
-	secret string
-	now    func() time.Time
+	db           *sql.DB
+	secret       string
+	now          func() time.Time
+	stateVersion AccountStateVersionBumper
 }
 
 // NewStore 构建 Store；输入校验失败返回错误。
@@ -51,7 +61,7 @@ func NewStore(config Config) (*Store, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Store{db: config.DB, secret: config.Secret, now: now}, nil
+	return &Store{db: config.DB, secret: config.Secret, now: now, stateVersion: config.StateVersion}, nil
 }
 
 func (s *Store) nowMS() int64 { return s.now().UnixMilli() }

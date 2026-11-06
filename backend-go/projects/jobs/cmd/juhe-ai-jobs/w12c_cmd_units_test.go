@@ -69,7 +69,7 @@ CREATE TABLE juhe_business.system_settings (
 	PRIMARY KEY (system_account_id, key))`)
 		return err
 	})
-	runtime := newRetentionSettingsRuntime(db, slog.Default())
+	runtime := newRetentionSettingsRuntime(db, slog.Default(), nil)
 	ctx := context.Background()
 	settings, err := runtime.settings(ctx)
 	if err != nil || len(settings) != len(retentionPolicySettingKeys) {
@@ -79,7 +79,7 @@ CREATE TABLE juhe_business.system_settings (
 	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'usageRecordRetentionDays', '"abc"')`); err != nil {
 		t.Fatal(err)
 	}
-	freshRuntime := newRetentionSettingsRuntime(db, slog.Default())
+	freshRuntime := newRetentionSettingsRuntime(db, slog.Default(), nil)
 	if _, err := freshRuntime.settings(ctx); err == nil {
 		t.Fatal("非法设置值必须失败")
 	}
@@ -137,7 +137,7 @@ CREATE TABLE juhe_business.system_settings (
 	if _, err := db.Exec(`DROP TABLE juhe_business.system_settings`); err != nil {
 		t.Fatal(err)
 	}
-	brokenRuntime := newRetentionSettingsRuntime(db, slog.Default())
+	brokenRuntime := newRetentionSettingsRuntime(db, slog.Default(), nil)
 	if name, err = brokenRuntime.timezoneName(ctx); err != nil || name != "Asia/Shanghai" {
 		t.Fatalf("PG 读失败应回落默认: %q %v", name, err)
 	}

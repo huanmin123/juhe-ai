@@ -59,6 +59,10 @@ const (
 	// 栅栏）：id 约定为 `account:<account_id>` / `apikey:<api_key_id>`。写方在
 	// 状态 PG 提交后 INCR；读者比较序号变化后重载 PG 快照，不复制状态字段。
 	EntityGatewayStateVersion = "version:state"
+	// EntitySettingsVersion 是 system_settings 版本（B5）：id 为 system_account_id
+	// （当前 sys_admin）。gateway/jobs 在设置 PG 提交后 INCR；读者比较后重载
+	// settings 快照，只存整型版本，不复制设置值。
+	EntitySettingsVersion = "version:settings"
 )
 
 const bumpSeqScript = `
@@ -206,6 +210,21 @@ func (c *Client) BumpSeqVersion(ctx context.Context, entity, id string) (int64, 
 		return 0, fmt.Errorf("crossprocessstate 序号返回值不是整数: %v", raw)
 	}
 	return value, nil
+}
+
+// BumpSettingsVersion 在 system_settings PG 提交成功后递增设置版本；实体/id
+// 约定收口在此，避免 gateway/jobs 各写一份。
+func (c *Client) BumpSettingsVersion(ctx context.Context, systemAccountID string) (int64, error) {
+	return c.BumpSeqVersion(ctx, EntitySettingsVersion, systemAccountID)
+}
+
+// SettingsVersion 读取设置版本；键缺失/非法记 0，Redis 调用失败返回 error。
+func (c *Client) SettingsVersion(ctx context.Context, systemAccountID string) (int64, error) {
+	versions, err := c.Versions(ctx, EntitySettingsVersion, []string{systemAccountID})
+	if err != nil {
+		return 0, err
+	}
+	return versions[systemAccountID], nil
 }
 
 // Versions 批量读取实体版本。返回值覆盖全部入参 id：键缺失、值为空或非法

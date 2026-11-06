@@ -35,8 +35,9 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return err
 	}
 	store, err := proberepo.NewStore(proberepo.Config{
-		DB:     business.db,
-		Secret: a.config.Secret,
+		DB:           business.db,
+		Secret:       a.config.Secret,
+		StateVersion: a.accountStateVersionBumper(),
 	})
 	if err != nil {
 		_ = business.close()

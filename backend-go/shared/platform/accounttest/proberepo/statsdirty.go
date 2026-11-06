@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 )
@@ -20,11 +22,13 @@ import (
 // jobs 探针族（本包 RecordKeySuccess/RecordKeyFailure）此前缺失。
 //
 // Node 同函数尾部的 notifyGatewayRuntimeCacheInvalidation 是 gateway 进程内
-// 运行态缓存失效通知，jobs 侧不可跨进程等价；group_account_stats_dirty 脏行
-// 即唯一跨进程事实源，因此本实现只落 DB。
+// 运行态缓存失效通知；jobs 侧不能直接调用 gateway 总线，B3b 改为在 PG 写
+// 提交后按同一受影响账户集合递增 crossprocessstate 状态序号，让 gateway
+// runtime 下一次读重载。group_account_stats_dirty 脏行仍是统计面事实源。
 //
-// MarkPrecheckTemporaryUnavailable（写 accounts.status 的 precheck 路径）与
-// DeferKeyProbe（仅推 next_probe_at，不翻状态）在 Node 侧均不标脏，保持不标。
+// MarkPrecheckTemporaryUnavailable（写 accounts.status 的 precheck 路径）在
+// Node 侧不标分组脏；B3b 仍为它补状态序号（gateway 需感知账户状态变化）。
+// DeferKeyProbe 仅推 next_probe_at，不翻状态，不标脏也不 bump。
 
 // accountKeyRuntimeStatsDirtyReason 对齐 Node markRuntimeStateChanged 的
 // reason 常量（gateway accountkeystates statsDirtyReason 同源）。
@@ -39,7 +43,27 @@ func (s *Store) markRuntimeStateChanged(ctx context.Context, sourceAccountID str
 	if len(affected) == 0 {
 		affected = []string{sourceAccountID}
 	}
+	// B3b：Key 运行态 PG 写已提交，先递增来源 + 授权实例账户的共享状态序号；
+	// 后续分组标脏失败不回滚已提交的 Key 状态，序号仍需让 gateway 重载。
+	s.bumpAccountStateVersions(ctx, affected)
 	return s.markGroupAccountStatsDirtyByAccountIds(ctx, affected)
+}
+
+// bumpAccountStateVersions 在 Key 运行态提交后按受影响账户递增共享序号；失败
+// 只告警，gateway 按既有 60s/2min 窗口回退。
+func (s *Store) bumpAccountStateVersions(ctx context.Context, accountIDs []string) {
+	if s.stateVersion == nil || len(accountIDs) == 0 {
+		return
+	}
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	for _, accountID := range normalizeDirtyAccountIds(accountIDs) {
+		if err := s.stateVersion.BumpAccountState(bumpCtx, accountID); err != nil {
+			slog.Warn("Key 运行态版本栅栏写入失败，gateway 按既有缓存窗口回退",
+				"event", "account_state_version_bump_failed",
+				"accountId", accountID, "error", err)
+		}
+	}
 }
 
 // affectedAccountIdsBySourceAccount 等价 accountIdsAffectedBySourceAccount(Async)：

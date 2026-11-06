@@ -40,6 +40,9 @@ type jobsCompositionWiringGuardEntry struct {
 	Purpose string
 	// MissingImpact 是缺失时的用户可见影响，失败信息直接引用。
 	MissingImpact string
+	// MinCount 是源码池中必须出现的最小次数；0 等价于 1。用于同一端口在
+	// 多个装配点复用时防止删掉其中一处仍被单次命中掩盖。
+	MinCount int
 	// RegistryScope 为 true 时，标识符除 cmd 源码池外还必须出现在
 	// ../../internal/jobregistry 的非测试源码池中。
 	RegistryScope bool
@@ -115,9 +118,9 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		MissingImpact: "jobs 翻转时间计划闸门/Key 状态后，gateway 最长 60s 仍按旧快照派发，时段外账户继续被请求",
 	},
 	{
-		Identifier:    "StateVersion:",
+		Identifier:    "accountStateVersionBumperOrNil(stateClient)",
 		Name:          "账户健康投影状态版本栅栏接入",
-		Purpose:       "J1 outcome 投影提交后必须 bump 账户状态序号（OutcomeProjectorConfig.StateVersion，worker_health_projection.go）",
+		Purpose:       "J1 outcome 投影提交后必须 bump 账户状态序号（OutcomeProjectorConfig.StateVersion = accountStateVersionBumperOrNil(stateClient)，worker_health_projection.go）",
 		MissingImpact: "jobs 将账户标记临时不可用/冷却/恢复后，gateway runtime 缓存最长 60s 不感知，继续使用旧状态候选",
 	},
 	{
@@ -125,6 +128,37 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		Name:          "孤儿账户删除状态版本栅栏接入",
 		Purpose:       "孤儿授权实例账户逻辑删除提交后必须 bump 账户状态序号（worker_retention.go），gateway runtime 缓存下一次读重载",
 		MissingImpact: "已删除孤儿账户在 gateway 最长 60s 仍可能被派发",
+	},
+	{
+		Identifier:    "Version: a.settingsVersionReader()",
+		MinCount:      2,
+		Name:          "jobs settings 跨进程版本读取",
+		Purpose:       "statsagg 与 probe 的 jobssettings Source 必须读取 version:settings，gateway 写入后下一次读重载 60s 快照（B5）",
+		MissingImpact: "gateway 改设置后 jobs 最长 60s 继续使用旧值（统计批量/冷却复测）",
+	},
+	{
+		Identifier:    "newRetentionSettingsRuntime(business.DB, a.logger, a.settingsVersionReader())",
+		Name:          "retention settings 跨进程版本读取",
+		Purpose:       "retention 家族的 jobssettings Source 必须注入 version:settings 读取端口（worker_retention.go），与 statsagg/probe 同步重载",
+		MissingImpact: "gateway 改 retention 保留策略后 jobs 最长 60s 继续使用旧值",
+	},
+	{
+		Identifier:    "rediscfg.DomainSettings",
+		Name:          "settings 版本键独立域",
+		Purpose:       "jobs settings 版本客户端派生 `<RedisNamespace>:settings` 域（worker_settings_crossprocess.go），与 gateway 写入侧一致",
+		MissingImpact: "jobs 读到的版本键与 gateway 不在同一域，B5 跨进程失效静默不生效",
+	},
+	{
+		Identifier:    "a.bumpSettingsVersion(ctx)",
+		Name:          "jobs settings 自动覆盖写后版本 bump",
+		Purpose:       "upstream-client-version-refresh 成功写入自动覆盖后必须 bump settings 版本（worker_version_tracking.go）",
+		MissingImpact: "jobs 自动版本写后其它读方继续使用旧 settings 快照",
+	},
+	{
+		Identifier:    "StateVersion: a.accountStateVersionBumper()",
+		Name:          "探针 Key 运行态状态版本栅栏接入",
+		Purpose:       "jobs 冷却复测 RecordKeySuccess/Failure 提交后必须按来源+授权实例 bump 账户状态序号（worker_probe_jobs.go），gateway runtime 下一次读重载 Key 运行态",
+		MissingImpact: "jobs 恢复/冷却 Key 后 gateway 最长 60s 仍按旧 Key 状态过滤",
 	},
 	{
 		Identifier:    "newAccountScheduleActivationHook(",
@@ -183,9 +217,13 @@ func TestCompositionWiringGuard(t *testing.T) {
 		t.Fatalf("组合根源码池异常（文件数=%d，缺失 package main）：请确认测试运行目录是 cmd/juhe-ai-jobs", cmdFiles)
 	}
 	for _, guard := range jobsCompositionWiringGuardEntries {
-		if !strings.Contains(cmdPool, guard.Identifier) {
-			t.Errorf("组合根接线守卫失败 [%s]：标识符 %q 未出现在 cmd/juhe-ai-jobs 的任何非测试 .go 源码中。端口作用：%s。缺失时的用户可见影响：%s。若属有意移除该端口，必须同步更新本测试的 jobsCompositionWiringGuardEntries 清单；否则请在组合根补上对应接线。",
-				guard.Name, guard.Identifier, guard.Purpose, guard.MissingImpact)
+		minCount := guard.MinCount
+		if minCount < 1 {
+			minCount = 1
+		}
+		if count := strings.Count(cmdPool, guard.Identifier); count < minCount {
+			t.Errorf("组合根接线守卫失败 [%s]：标识符 %q 在 cmd/juhe-ai-jobs 的任何非测试 .go 源码中出现 %d 次，要求至少 %d 次。端口作用：%s。缺失时的用户可见影响：%s。若属有意移除该端口，必须同步更新本测试的 jobsCompositionWiringGuardEntries 清单；否则请在组合根补上对应接线。",
+				guard.Name, guard.Identifier, count, minCount, guard.Purpose, guard.MissingImpact)
 			continue
 		}
 		if guard.RegistryScope && !strings.Contains(registryPool, guard.Identifier) {

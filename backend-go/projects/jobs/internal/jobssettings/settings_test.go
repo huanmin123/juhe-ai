@@ -15,6 +15,7 @@ package jobssettings
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -186,5 +187,67 @@ func TestSourceCacheWindowShieldsReads(t *testing.T) {
 	}
 	if count, events := warn.snapshot(); count != 1 || len(events) != 1 || events[0] != "background_job_settings_snapshot_refresh_failed" {
 		t.Fatalf("expired cache must warn refresh failure: %d %v", count, events)
+	}
+}
+
+// B5：共享 settings 版本变化时，下一次读命中既有 60s 窗口也必须回 PG 重载；
+// 版本读失败保持既有缓存。
+func TestSourceVersionChangeInvalidatesCache(t *testing.T) {
+	db := newSettingsDB(t, true)
+	insertSetting(t, db, "statsAggregationBatchSize", "3500")
+	current := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	var version int64
+	var versionErr error
+	warn := newWarnCollector()
+	source := NewSource(Options{
+		DB:      db,
+		Warn:    warn.warn,
+		Now:     func() time.Time { return current },
+		Version: func(context.Context) (int64, error) { return version, versionErr },
+	})
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 3500 {
+		t.Fatalf("first read = %d, %v", value, err)
+	}
+	// 窗口内版本未变：继续读缓存。
+	current = current.Add(10 * time.Second)
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 3500 {
+		t.Fatalf("cached read = %d, %v", value, err)
+	}
+	// 版本变化：即使仍在 60s 窗口内也必须回 PG 读到新值。
+	insertSetting(t, db, "statsAggregationBatchSize", "4200")
+	version = 1
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 4200 {
+		t.Fatalf("version change reload = %d, %v", value, err)
+	}
+	// 版本回退（Redis 版本键被清空/重建）：同样视为变化并回 PG 重载。
+	insertSetting(t, db, "statsAggregationBatchSize", "4800")
+	version = 0
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 4800 {
+		t.Fatalf("version rollback reload = %d, %v", value, err)
+	}
+	// 版本读失败：保持既有缓存（4800）。把 DB 现值改成 9999，若错误分支
+	// 误清缓存并回表，会读到 9999 而不是缓存值 4800。
+	insertSetting(t, db, "statsAggregationBatchSize", "9999")
+	versionErr = errors.New("redis down")
+	current = current.Add(10 * time.Second)
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 4800 {
+		t.Fatalf("version error must keep cache: %d, %v", value, err)
+	}
+	// 第二次版本读失败仍在分钟节流窗口内：值保持缓存，告警不重复。
+	current = current.Add(10 * time.Second)
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 4800 {
+		t.Fatalf("second version error must keep cache: %d, %v", value, err)
+	}
+	if count, events := warn.snapshot(); count != 1 || len(events) != 1 || events[0] != "background_job_settings_version_read_failed" {
+		t.Fatalf("version read failure must warn once per minute: %d %v", count, events)
+	}
+	// 版本再次变化但 PG 不可用：重载降级默认值，不返回旧 4800。
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	versionErr = nil
+	version = 2
+	if value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 2000 {
+		t.Fatalf("version change with closed PG = %d, %v", value, err)
 	}
 }

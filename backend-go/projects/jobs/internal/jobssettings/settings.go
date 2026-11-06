@@ -21,9 +21,11 @@
 //     failing the job.
 //
 // Deviation (deliberate): the values are cached per key for 60s — the Node
-// PostgreSQL path keeps a 60s backgroundJobSettingsSnapshotTtlMs snapshot; a
-// per-key TTL window keeps the same staleness bound without wiring the
-// cross-process invalidation the settings writer owns.
+// PostgreSQL path keeps a 60s backgroundJobSettingsSnapshotTtlMs snapshot.
+// A per-key TTL window keeps the same upper bound, while Version (B5) lets a
+// gateway/jobs settings writer invalidate the cache earlier by bumping the
+// shared settings version; a version read failure intentionally falls back to
+// the 60s window instead of blocking the job.
 package jobssettings
 
 import (
@@ -66,18 +68,25 @@ type Options struct {
 	Now func() time.Time
 	// SnapshotTTL overrides the 60s default (tests).
 	SnapshotTTL time.Duration
+	// Version 读取 system_settings 跨进程版本（B5）；nil 或读失败保持既有
+	// 60s 窗口。读方必须先读版本再读 PG，并记录读 PG 前观测到的版本。
+	Version func(ctx context.Context) (int64, error)
 }
 
 // Source is the read model one background worker keeps per database handle.
 type Source struct {
-	db   *sql.DB
-	warn WarnFunc
-	now  func() time.Time
-	ttl  time.Duration
+	db        *sql.DB
+	warn      WarnFunc
+	now       func() time.Time
+	ttl       time.Duration
+	versionFn func(ctx context.Context) (int64, error)
 
-	mutex    sync.Mutex
-	loadedAt map[string]time.Time
-	values   map[string]any
+	mutex           sync.Mutex
+	loadedAt        map[string]time.Time
+	values          map[string]any
+	version         int64
+	versionSeen     bool
+	versionWarnedAt time.Time
 }
 
 // NewSource builds the read model; the DB handle must outlive it.
@@ -91,12 +100,13 @@ func NewSource(options Options) *Source {
 		ttl = SettingsSnapshotTTL
 	}
 	return &Source{
-		db:       options.DB,
-		warn:     options.Warn,
-		now:      now,
-		ttl:      ttl,
-		loadedAt: map[string]time.Time{},
-		values:   map[string]any{},
+		db:        options.DB,
+		warn:      options.Warn,
+		now:       now,
+		ttl:       ttl,
+		versionFn: options.Version,
+		loadedAt:  map[string]time.Time{},
+		values:    map[string]any{},
 	}
 }
 
@@ -215,6 +225,7 @@ func (s *Source) readValueStrict(ctx context.Context, key string) (any, error) {
 // the DEFAULT_SYSTEM_SETTINGS fallback.
 func (s *Source) settingValue(ctx context.Context, key string) (any, error) {
 	now := s.now()
+	s.refreshVersion(ctx)
 	s.mutex.Lock()
 	if loadedAt, ok := s.loadedAt[key]; ok && now.Sub(loadedAt) < s.ttl {
 		value := s.values[key]
@@ -232,6 +243,47 @@ func (s *Source) settingValue(ctx context.Context, key string) (any, error) {
 	s.values[key] = value
 	s.mutex.Unlock()
 	return value, nil
+}
+
+// refreshVersion 在读取 PG 前比较共享 settings 版本；版本变化清空全部键的
+// 60s 缓存。版本读失败保持既有缓存（不新增失败面）。
+func (s *Source) refreshVersion(ctx context.Context) {
+	if s.versionFn == nil {
+		return
+	}
+	version, err := s.versionFn(ctx)
+	if err != nil {
+		s.warnVersionReadFailure(err)
+		return
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.versionSeen && s.version == version {
+		return
+	}
+	s.version = version
+	s.versionSeen = true
+	s.loadedAt = map[string]time.Time{}
+	s.values = map[string]any{}
+}
+
+// warnVersionReadFailure 记录版本读回退，按分钟节流，避免 Redis 故障期间
+// 每个设置读取都刷一条告警。
+func (s *Source) warnVersionReadFailure(err error) {
+	if s.warn == nil {
+		return
+	}
+	s.mutex.Lock()
+	now := s.now()
+	if !s.versionWarnedAt.IsZero() && now.Sub(s.versionWarnedAt) < time.Minute {
+		s.mutex.Unlock()
+		return
+	}
+	s.versionWarnedAt = now
+	s.mutex.Unlock()
+	s.warn("background_job_settings_version_read_failed",
+		map[string]any{"error": err.Error()},
+		"后台任务系统设置版本读取失败，保持 60s 缓存并回退既有窗口")
 }
 
 func (s *Source) readValue(ctx context.Context, key string) (any, error) {

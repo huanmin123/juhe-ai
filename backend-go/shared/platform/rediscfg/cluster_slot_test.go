@@ -36,7 +36,7 @@ func TestDomainKeysShareSlot(t *testing.T) {
 		DomainClientIP, DomainSession, DomainRuntimeCache, DomainRateLimit,
 		DomainCallerTier, DomainQuota, DomainObs, DomainRouteState,
 		DomainProxyHealth, DomainInval, DomainRealtime, DomainSpeedFirst,
-		DomainOAuth, DomainAuthState,
+		DomainOAuth, DomainAuthState, DomainSettings,
 	}
 	for _, domain := range domains {
 		namespace := DomainNamespace("juhe-ai:prod", domain)

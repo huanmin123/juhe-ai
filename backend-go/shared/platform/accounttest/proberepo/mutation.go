@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"strings"
@@ -126,6 +127,18 @@ func (s *Store) MarkPrecheckTemporaryUnavailable(ctx context.Context, input acco
 		return accountquality.PrecheckMutationResult{}, err
 	}
 	if changed > 0 {
+		// 相邻 B4 缺口：precheck 写 accounts.status 后同样要触发 gateway
+		// 重载；按来源 + 授权实例展开，失败只告警。
+		affected, affectedErr := s.affectedAccountIdsBySourceAccount(ctx, input.AccountID)
+		if affectedErr != nil {
+			slog.Warn("precheck 状态版本栅栏受影响账户展开失败，仅 bump 源账户",
+				"event", "precheck_state_version_affected_expand_failed",
+				"accountId", input.AccountID, "error", affectedErr)
+		}
+		if affectedErr != nil || len(affected) == 0 {
+			affected = []string{input.AccountID}
+		}
+		s.bumpAccountStateVersions(ctx, affected)
 		return accountquality.PrecheckMutationResult{Updated: true}, nil
 	}
 	return skipped("stale_dispatch_revision"), nil

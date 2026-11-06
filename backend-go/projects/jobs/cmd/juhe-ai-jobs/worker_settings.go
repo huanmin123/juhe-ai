@@ -83,8 +83,9 @@ func (a *workerAssembly) refreshUpstreamClientVersionOverrides(source *jobssetti
 // warn 后回落 DEFAULT_SYSTEM_SETTINGS 边界值，保持该端口的既有消费语义。
 func (a *workerAssembly) probeSettingsSource(business *businessDB) accountquality.SettingsNumber {
 	source := jobssettings.NewSource(jobssettings.Options{
-		DB:   business.db,
-		Warn: jobssettingsWarn(a.logger),
+		DB:      business.db,
+		Warn:    jobssettingsWarn(a.logger),
+		Version: a.settingsVersionReader(),
 	})
 	logger := a.logger
 	return func(key string, min, max int) int {

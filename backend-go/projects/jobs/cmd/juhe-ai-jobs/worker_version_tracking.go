@@ -48,7 +48,11 @@ func (a *workerAssembly) wireVersionTrackingFamily(_ context.Context) error {
 			HTTP: client,
 			Read: source.UpstreamClientVersionAutoOverrides,
 			Write: func(ctx context.Context, next map[string]string) error {
-				return upsertUpstreamClientVersionAutoOverrides(ctx, business, next)
+				if err := upsertUpstreamClientVersionAutoOverrides(ctx, business, next); err != nil {
+					return err
+				}
+				a.bumpSettingsVersion(ctx)
+				return nil
 			},
 			Apply:   upstreamidentity.SetClientVersionAutoOverrides,
 			BuiltIn: upstreamidentity.BuiltInClientVersion,

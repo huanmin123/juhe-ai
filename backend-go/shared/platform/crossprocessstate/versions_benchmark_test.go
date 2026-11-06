@@ -12,20 +12,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
+
+// BenchmarkVersionsMultiLoopback 用 miniredis 在 127.0.0.1 上提供同机 Redis
+// 形状（仅测试进程内服务，不是生产 Redis），给出同机网络下限参考。
+func BenchmarkVersionsMultiLoopback(b *testing.B) {
+	server := miniredis.RunT(b)
+	benchmarkVersionsMulti(b, "redis://"+server.Addr()+"/0", "juhe-ai:cptest-loopback-"+time.Now().Format("150405.000000000"))
+}
 
 func BenchmarkVersionsMultiRealRedis(b *testing.B) {
 	rawURL := strings.TrimSpace(os.Getenv("JUHE_AI_TEST_REDIS_URL"))
 	if rawURL == "" {
 		b.Skip("requires JUHE_AI_TEST_REDIS_URL=redis://host:port/0")
 	}
+	benchmarkVersionsMulti(b, rawURL, "juhe-ai:cptest-bench-"+time.Now().Format("150405.000000000"))
+}
+
+func benchmarkVersionsMulti(b *testing.B, rawURL, baseNamespace string) {
 	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: rawURL, ContextTimeoutEnabled: true})
 	if err != nil {
 		b.Fatalf("NewUniversalClient: %v", err)
 	}
 	defer client.Close()
-	namespace := rediscfg.DomainNamespace("juhe-ai:cptest-bench-"+time.Now().Format("150405.000000000"), rediscfg.DomainOAuth)
+	namespace := rediscfg.DomainNamespace(baseNamespace, rediscfg.DomainOAuth)
 	state, err := NewRedis(client, namespace)
 	if err != nil {
 		b.Fatalf("NewRedis: %v", err)

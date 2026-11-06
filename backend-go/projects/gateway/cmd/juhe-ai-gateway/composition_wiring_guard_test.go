@@ -150,10 +150,28 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		MissingImpact: "jobs 已记 invalid_grant/退避后，gateway 仍可能重复尝试刷新，增加无谓 token 端点调用",
 	},
 	{
-		Identifier:    "ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache",
+		Identifier:    "composed.settingsStore.InvalidateSnapshotCache()",
 		Name:          "settings 快照跨实例失效回调",
 		Purpose:       "settings_updated 与跨实例失效同步（reason 为空）到达时清空本进程 settings 60s 快照（chain_runtime.go，Node clearSettingsRepositoryCache 对应物）",
 		MissingImpact: "写入方进程外的实例 settings 快照滞留到自然过期（60s），限流/配额等按旧设置执行",
+	},
+	{
+		Identifier:    "composed.settingsStore.ScheduleUpstreamClientVersionOverridesRefresh()",
+		Name:          "settings peer upstream 覆盖异步重放",
+		Purpose:       "跨实例 settings 失效回调异步重放 upstreamidentity 手动覆盖（chain_runtime.go / settings.Store），不把 PG 查询放在 runtime 读前路径",
+		MissingImpact: "peer 只在启动时应用 upstream 版本覆盖，管理端改版本后其他实例无界滞后",
+	},
+	{
+		Identifier:    "settingsStore.SetVersionBumper(",
+		Name:          "settings 跨进程版本写入端口",
+		Purpose:       "把 system_settings 版本 bump 端口注入 gateway settings Store（chain_runtime.go），jobs 依据同一版本重载 60s 设置快照",
+		MissingImpact: "gateway 写设置后 jobs 最长 60s 继续使用旧值",
+	},
+	{
+		Identifier:    "rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainSettings)",
+		Name:          "settings 版本键独立域",
+		Purpose:       "gateway settings 版本键派生 `<RedisNamespace>:settings` 域（chain_runtime.go），与 jobs 读取侧保持一致",
+		MissingImpact: "settings 版本键可能落到 OAuth 域或两端域不一致，跨进程版本静默失效",
 	},
 	{
 		Identifier:    "Node stats-writer 桥仅多进程拆分时启用，接线时需同步补齐角色",

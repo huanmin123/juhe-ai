@@ -319,6 +319,19 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.OAuthState = oauthCrossProcessState
 	services.OAuthStateClient = oauthStateClient
+	// B5：system_settings 提交后递增共享版本；jobs 以同一版本判断 60s 快照
+	// 是否需要重载。版本键落在独立 settings 域（与 OAuth 锁/凭据/状态域
+	// 隔离），但复用同一个开启 ContextTimeoutEnabled 的 Redis 客户端，不额外
+	// 增加连接池。
+	settingsCrossProcessState, settingsStateErr := crossprocessstate.NewRedis(oauthStateClient,
+		rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainSettings))
+	if settingsStateErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create settings version state client: %w", settingsStateErr)
+	}
+	if composed.settingsStore != nil {
+		composed.settingsStore.SetVersionBumper(gatewaySettingsVersionBumper{client: settingsCrossProcessState})
+	}
 	// M5b realtime ephemeral token 面（Realtime 设计 §4）：与状态键空间
 	// 共用同一客户端（键位 realtime_token:<t> 经 namespace 隔离）。
 	services.RealtimeTokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: stateClient}, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRealtime))
@@ -393,8 +406,16 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// settings_updated / 跨实例失效同步（reason 为空）到达时清空本进程
 		// settings 快照（Node clearSettingsRepositoryCache）：本进程写入方在
 		// Store.Update 内自清；跨实例同步只能走该回调，否则远端实例的 60s
-		// settings 快照会滞留到自然过期。回调仅内存置空，无 IO。
-		ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache,
+		// settings 快照会滞留到自然过期。B5：同时异步重放 upstreamidentity
+		// 手动覆盖，关闭 peer 只在启动时应用覆盖的无界滞后；回调位于 runtime
+		// 读前失效同步路径，必须保持纯内存，不能同步读 PG。
+		ClearSettingsCache: func() {
+			if composed.settingsStore == nil {
+				return
+			}
+			composed.settingsStore.InvalidateSnapshotCache()
+			composed.settingsStore.ScheduleUpstreamClientVersionOverridesRefresh()
+		},
 		// /v1/models 分组模型并集装载端口（chain_gatewaykeymodels.go）。
 		Union: unionLoader,
 		// B2：OAuth 凭据版本投影读取端口（jobs/gateway 写入后 bump）。

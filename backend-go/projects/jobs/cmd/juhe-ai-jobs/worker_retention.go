@@ -82,7 +82,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	// 读模型（business 库）。此前 timezone 固定 Asia/Shanghai、retention 策略
 	// 固定一套与 DEFAULT_SYSTEM_SETTINGS 不一致的硬编码值（自述临时边界），
 	// 运营改设置完全不生效。
-	retentionSettings := newRetentionSettingsRuntime(business.DB, a.logger)
+	retentionSettings := newRetentionSettingsRuntime(business.DB, a.logger, a.settingsVersionReader())
 	family.timezone = retentionSettings.location
 	family.usageTimezone = retentionSettings.timezoneName
 	family.retentionSettings = retentionSettings
@@ -472,11 +472,12 @@ var retentionPolicySettingKeys = []string{
 	"usageRankSnapshotRetentionDays",
 }
 
-func newRetentionSettingsRuntime(business *sql.DB, logger *slog.Logger) *retentionSettingsRuntime {
+func newRetentionSettingsRuntime(business *sql.DB, logger *slog.Logger, version func(context.Context) (int64, error)) *retentionSettingsRuntime {
 	return &retentionSettingsRuntime{
 		source: jobssettings.NewSource(jobssettings.Options{
-			DB:   business,
-			Warn: jobssettingsWarn(logger),
+			DB:      business,
+			Warn:    jobssettingsWarn(logger),
+			Version: version,
 		}),
 		db:   business,
 		warn: jobssettingsWarn(logger),
