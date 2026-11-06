@@ -46,14 +46,14 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
-		id, system_account_id, connection_driver_code, protocol_code, protocol_version,
+		id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
 		health_check_model, health_check_endpoint_mode,
 		authorization_instance_source_account_id, authorization_instance_authorization_id,
 		created_at, updated_at, config_revision, dispatch_revision
 	) VALUES (
-		'w12d-team-inst', 'sys_admin', 'gpt', 'openai', 'v1',
+		'w12d-team-inst', 'sys_admin', 'gpt', 'gpt', 'openai', 'v1',
 		'w12d-team-inst', 'api_key', 'active', $1, 'w12d-fp', 'w12d-mask',
 		1, 0, 0, 0, 0,
 		'w12d-model', 'chat_json',

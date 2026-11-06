@@ -97,6 +97,8 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
 刷新互斥与凭据版本（2026-11-06，[网关与 jobs 跨进程共享状态改造计划](../plans/计划-20261106T024618000Z-网关与jobs跨进程共享状态改造.md) Tier 1）：gateway 手动刷新 / 上游 401 自动刷新与 jobs 定时 refresh / keepalive 通过共享 Redis 账户锁互斥——`juhe-ai:{<namespace>:oauth}:lock:oauth-refresh:<account_id>`，`SET NX PX 60s`、随机 token、compare-delete 释放；锁被占用时 gateway 自动刷新本轮跳过（不进入 5 分钟上游失败静默）、管理面手动刷新返回 409、jobs 批量计入 `SkippedLocked`；锁后端不可用时回退 PG `config_revision` CAS（jobs 另有进程内锁；告警后继续，不阻断刷新）。凭据事务提交成功后双方把 `juhe-ai:{<namespace>:oauth}:version:account-credentials:<account_id>` 单调推进到该次提交的 `config_revision`（`SET max`，30 天 TTL，只在 PG 提交后写）；gateway runtime 缓存与 accounts 缓存条目记录版本快照，命中时批量比较（50ms 预算），变化则同步重载（runtime 复用既有单飞），版本读失败/重载失败按既有 60s revalidate 窗口回退；装载时若快照版本领先于数据行 `config_revision`（读数据早于最近提交）：accounts 路径重读一次，runtime 路径直接丢弃版本快照；仍未收敛时退回 60s 窗口（不永久禁用缓存）。共享缓存模式（`cacheDriver=redis`）下 accounts 缓存恒禁用、不读版本键，但 runtime 缓存仍启用，主 `/v1` 路径由 runtime 版本比较覆盖。`reauthorize-from-code` / `reauthorize-from-refresh-token` 使用调用方提交的授权材料，不参与该刷新锁；与并发刷新的冲突由 `config_revision` CAS 收敛。Redis 只存锁 token 与整型版本，不写 access/refresh token；PG 仍是唯一凭据事实源。
 
+刷新失败退避共享（2026-11-06，S13）：jobs 的 OAuth 刷新失败状态按族分键——OpenAI 刷新族 `openai-oauth-refresh-failure`，anthropic/gemini/xai keepalive 族 `oauth-keepalive-failure`，均带 `<namespace>:oauth` hash tag 与 `base64url(sha256(account_id))` 后缀，是刷新退避的唯一账本。gateway 401 自动刷新在换发 token 前按账户 vendor 选择对应族读取同一键，`configRevision` 与当前账户一致且 `backoffUntil` 未过期时直接跳过本轮（不调 token 端点）。gateway 只读，不写 jobs 的计数/退避账本；读取失败按分钟级告警回退既有进程内节流（成功 60s / 上游失败 5min），不阻断刷新。键形状、JSON 与 revision 守卫固化在 `backend-go/shared/platform/oauthfailure`，jobs `RedisFailureStateStore` 与 gateway 适配器共用，避免两侧键/字段漂移。
+
 以下小节保留设计契约。
 
 ### 存储与默认档案

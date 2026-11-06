@@ -133,9 +133,10 @@ func w14jPGSeedStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_proxy ON juhe_jobs.proxy_latency_outcomes(proxy_id, observed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_cursor ON juhe_jobs.proxy_latency_outcomes(stored_at, outcome_id)`,
 		// BUG-0300：CheckSchema 的索引契约含 expires_at 清理列索引（contracts
-		// J3AProxyLatencyIndexes 三索引），覆盖库种子必须同步补齐；w16j 预置
-		// 清单已含同一条，此处遗漏会让 W14J/W14Q/W16I 的 J3a 门禁恒失败。
+		// J3AProxyLatencyIndexes）；issued_at 索引由保留清理查询新增，二者必须
+		// 同步补齐，否则 W14J/W14Q/W16I 的 J3a 门禁恒失败。
 		`CREATE INDEX IF NOT EXISTS idx_proxy_latency_inputs_expires_at ON juhe_jobs.proxy_latency_inputs(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_proxy_latency_inputs_issued_at ON juhe_jobs.proxy_latency_inputs(issued_at)`,
 		// groups / group_accounts / resource_authorizations / proxy_profiles 最小形状补列。
 		`ALTER TABLE juhe_business.groups ADD COLUMN IF NOT EXISTS description text`,
 		`ALTER TABLE juhe_business.groups ADD COLUMN IF NOT EXISTS is_default integer NOT NULL DEFAULT 0`,

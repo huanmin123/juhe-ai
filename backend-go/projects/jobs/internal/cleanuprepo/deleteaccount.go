@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -35,9 +36,17 @@ type DeletedAccountStore struct {
 	Business *DB
 	Dataset  *DB
 	Stats    *DB
+	// StateVersion 是账户运行态版本栅栏写入端口：孤儿账户逻辑删除提交后递增
+	// 共享序号，gateway runtime 缓存下一次读重载，不必等 60s。nil 保持既有窗口。
+	StateVersion AccountStateVersionBumper
 	// LastTargetError 记录最近一个目标失败的诊断信息（组合根可上报）。
 	LastTargetError string
 	Now             func() time.Time
+}
+
+// AccountStateVersionBumper 是 jobs 状态版本栅栏的写入端口（B4）。
+type AccountStateVersionBumper interface {
+	BumpAccountState(ctx context.Context, accountID string) error
 }
 
 func (s *DeletedAccountStore) now() time.Time {
@@ -45,6 +54,23 @@ func (s *DeletedAccountStore) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
+}
+
+// bumpAccountStateVersions 在逻辑删除事务提交后按账户递增共享状态序号；失败
+// 只告警，gateway 按既有 60s 窗口回退。
+func (s *DeletedAccountStore) bumpAccountStateVersions(ctx context.Context, accountIDs []string) {
+	if s.StateVersion == nil || len(accountIDs) == 0 {
+		return
+	}
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	for _, accountID := range uniqueNonEmpty(accountIDs) {
+		if err := s.StateVersion.BumpAccountState(bumpCtx, accountID); err != nil {
+			slog.Warn("账户运行态版本栅栏写入失败，gateway 按既有缓存窗口回退",
+				"event", "account_state_version_bump_failed",
+				"accountId", accountID, "error", err)
+		}
+	}
 }
 
 func (s *DeletedAccountStore) table(name string) string {
@@ -608,6 +634,7 @@ func (s *DeletedAccountStore) orphanSweepPostgres(ctx context.Context, limit int
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
+		s.bumpAccountStateVersions(ctx, ids)
 		deletedIDs = append(deletedIDs, ids...)
 	}
 	return uniqueNonEmpty(deletedIDs), nil

@@ -977,8 +977,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			//（组合根唯一实例），重新水合读侧与引擎候选同源（chainServices.Cache，
 			// 轮换后 finishRotationSideEffects 同步清缓存，组级重读即新凭据）。
 			OAuthTokenRefresh: &chainOAuthRefreshCoordinator{
-				store: oauthStore,
-				cache: chainServices.Cache,
+				store:        oauthStore,
+				cache:        chainServices.Cache,
+				failureState: newGatewayOAuthRefreshFailureState(chainServices.OAuthStateClient, cfg.RedisNamespace),
 			},
 			Clock:           gatewaypreauth.SystemClock{},
 			AuditLogEnabled: func() bool { return cfg.AuditLogEnabled },

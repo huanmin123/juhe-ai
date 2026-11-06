@@ -67,20 +67,30 @@ type chainOAuthRefreshRuntimeCache interface {
 	ListCachedOpenAIAccountsForGroupAsync(ctx context.Context, groupID, systemAccountID string, options gatewayruntimecache.CachedOpenAIAccountsForGroupOptions) ([]gatewayruntimecache.OpenAIAccountSecret, error)
 }
 
+// chainOAuthRefreshFailureStateReader 读取 jobs 写入的账户级刷新失败退避
+// （S13）：jobs 已记录 invalid_grant 等上游失败后，gateway 401 自动刷新不应
+// 再重复调用 token 端点。只读；写入/清理仍归 jobs。
+type chainOAuthRefreshFailureStateReader interface {
+	ActiveBackoff(ctx context.Context, accountID, vendor string, nowMillis, configRevision int64) (int64, bool, error)
+}
+
 // chainOAuthRefreshCoordinator 汇聚单飞、节流与重新水合。零值不可用；生产由
 // compose.go 构造并经 chainRuntimeDeps 注入失败派发器，nil 协调器 = 自动刷新
 // 整体缺席（组合测试既有 SkipAccount 语义不变）。
 type chainOAuthRefreshCoordinator struct {
 	store chainOAuthRefreshStore
 	cache chainOAuthRefreshRuntimeCache
+	// failureState 读取 jobs 共享失败状态；nil 时保持既有进程内节流。
+	failureState chainOAuthRefreshFailureStateReader
 	// Now 供测试钉住节流时钟；nil 用 time.Now。
 	Now func() time.Time
 
 	group singleflight.Group
 
-	mu          sync.Mutex
-	refreshedAt map[string]time.Time // 成功（含 already-current）时间 → 60s 最小间隔
-	failedUntil map[string]time.Time // 上游换发失败 → 5 分钟不再自动刷
+	mu                 sync.Mutex
+	refreshedAt        map[string]time.Time // 成功（含 already-current）时间 → 60s 最小间隔
+	failedUntil        map[string]time.Time // 上游换发失败 → 5 分钟不再自动刷
+	failureStateWarnAt time.Time
 }
 
 func (c *chainOAuthRefreshCoordinator) now() time.Time {
@@ -118,6 +128,24 @@ func (c *chainOAuthRefreshCoordinator) refreshForRetry(ctx context.Context, inpu
 		return nil
 	}
 	c.mu.Unlock()
+
+	// S13：jobs 已记录的账户级失败退避优先于本进程节流；revision 不一致
+	// （凭据已轮换/快照过期）时共享记录失效，按既有路径继续。读取失败不阻断
+	// 自动刷新，只按分钟级告警回退进程内节流。授权实例账户当前不会进入实际
+	// 刷新（findRotationAccount 只取非实例行），读到 miss 属预期；若未来支持
+	// 实例刷新，应改读 CredentialSourceAccountID 对应的来源账户退避。
+	if c.failureState != nil {
+		revision := int64(1)
+		if account.ConfigRevision != nil && *account.ConfigRevision >= 1 {
+			revision = *account.ConfigRevision
+		}
+		until, active, readErr := c.failureState.ActiveBackoff(ctx, account.ID, account.VendorCode, now.UnixMilli(), revision)
+		if readErr != nil {
+			c.warnFailureStateRead(readErr)
+		} else if active && until > now.UnixMilli() {
+			return nil
+		}
+	}
 
 	// 单飞：同一账户并发 401 合并为一次刷新，后来者等待并共享同一结果。
 	value, err, _ := c.group.Do(account.ID, func() (any, error) {
@@ -237,6 +265,22 @@ func (c *chainOAuthRefreshCoordinator) markFailure(accountID string) {
 	now := c.now()
 	c.failedUntil[accountID] = now.Add(chainOAuthRefreshFailureSilence)
 	sweepStaleThrottleEntries(c.failedUntil, now.Add(-chainOAuthRefreshEntryTTL))
+}
+
+// warnFailureStateRead 把共享失败状态读取失败限流到每分钟一条：Redis 故障
+// 时不能按 401 请求逐条刷日志。
+func (c *chainOAuthRefreshCoordinator) warnFailureStateRead(err error) {
+	c.mu.Lock()
+	now := c.now()
+	if !c.failureStateWarnAt.IsZero() && now.Sub(c.failureStateWarnAt) < time.Minute {
+		c.mu.Unlock()
+		return
+	}
+	c.failureStateWarnAt = now
+	c.mu.Unlock()
+	slog.Warn("OAuth 刷新共享失败状态读取失败，按进程内节流继续",
+		"event", "gateway_oauth_refresh_failure_state_read_failed",
+		"error", err)
 }
 
 // ---------------------------------------------------------------------------

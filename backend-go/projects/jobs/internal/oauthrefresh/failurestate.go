@@ -3,8 +3,6 @@ package oauthrefresh
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/oauthfailure"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
@@ -508,14 +508,13 @@ func formatInt64(value int64) string { return strconv.FormatInt(value, 10) }
 // the two families' counters and backoffs never alias. The memory store needs
 // no namespace: each instance is process-local by construction.
 const (
-	openAIFailureStateKeyPrefix    = "juhe-ai:state:openai-oauth-refresh-failure:"
-	KeepaliveFailureStateKeyPrefix = "juhe-ai:state:oauth-keepalive-failure:"
+	openAIFailureStateKeyPrefix    = oauthfailure.OpenAIKeyPrefix
+	KeepaliveFailureStateKeyPrefix = oauthfailure.KeepaliveKeyPrefix
 )
 
 // failureStateKeySuffix derives base64url(sha256(accountId)).
 func failureStateKeySuffix(accountID string) string {
-	sum := sha256.Sum256([]byte(accountID))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
+	return oauthfailure.KeySuffix(accountID)
 }
 
 // failureStateKey mirrors redisRefreshFailureKey with the historical OpenAI

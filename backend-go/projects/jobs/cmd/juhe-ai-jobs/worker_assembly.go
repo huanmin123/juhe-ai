@@ -26,8 +26,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
+	"github.com/redis/go-redis/v9"
 )
 
 // workerAssembly 是 jobs 二进制 worker 侧的组合根：按 jobregistry 的
@@ -81,6 +83,13 @@ type workerAssembly struct {
 	// 挂在既有 closer 链"）。
 	poolRegistry *pgpool.Registry
 	closers      []func() error
+
+	// oauthCrossProcess* 缓存 OAuth 跨进程状态客户端：OAuth 家族、健康投影、
+	// retention 孤儿删除共用同一 Redis 客户端，避免每个家族各开一个池。
+	oauthCrossProcessResolved bool
+	oauthCrossProcessClient   *crossprocessstate.Client
+	oauthCrossProcessRedis    redis.UniversalClient
+	oauthCrossProcessErr      error
 
 	wiredJobs []string
 	// wiringErr 是装配期第一条结构性错误（当前仅重名注册，缺陷4修复）：
@@ -600,12 +609,9 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	// B1/B2（跨进程共享状态改造 Tier 1）：OAuth 域共享锁 + 凭据版本投影。
 	// redis-state 部署注入；Store 的凭据写事务提交后 bump 版本，gateway 运行态
 	// 账号缓存下一次读即可重载。未配置 Redis 时保持既有进程内锁/60s 窗口。
-	crossProcess, crossProcessClient, crossProcessErr := a.oauthCrossProcessState()
+	crossProcess, _, crossProcessErr := a.oauthCrossProcessState()
 	if crossProcessErr != nil {
 		return crossProcessErr
-	}
-	if crossProcessClient != nil {
-		a.addCloser(func() error { return crossProcessClient.Close() })
 	}
 	if crossProcess != nil {
 		store.SetCredentialVersionBumper(oauthCredentialVersionBumper{client: crossProcess})

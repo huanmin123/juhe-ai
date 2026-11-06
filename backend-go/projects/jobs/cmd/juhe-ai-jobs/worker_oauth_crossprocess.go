@@ -74,19 +74,29 @@ func (b oauthRuntimeStateBumper) BumpAPIKeyState(ctx context.Context, apiKeyID s
 
 // oauthCrossProcessState 构造 OAuth 域的共享状态客户端；未配置 Redis 时返回
 // (nil, nil, nil)，调用方保持既有内存/进程内语义。Redis URL 非法时 fail-fast，
-// 不静默退回掩盖配置错误。
+// 不静默退回掩盖配置错误。结果按 assembly 缓存：OAuth 家族、健康投影与
+// retention 孤儿删除共用同一客户端，避免每个家族各开一个 Redis 池。
 func (a *workerAssembly) oauthCrossProcessState() (*crossprocessstate.Client, redis.UniversalClient, error) {
+	if a.oauthCrossProcessResolved {
+		return a.oauthCrossProcessClient, a.oauthCrossProcessRedis, a.oauthCrossProcessErr
+	}
+	a.oauthCrossProcessResolved = true
 	if a.config.RedisURL == "" {
 		return nil, nil, nil
 	}
 	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: a.config.RedisURL, ContextTimeoutEnabled: true})
 	if err != nil {
-		return nil, nil, fmt.Errorf("创建 OAuth 跨进程状态 Redis 客户端失败: %w", err)
+		a.oauthCrossProcessErr = fmt.Errorf("创建 OAuth 跨进程状态 Redis 客户端失败: %w", err)
+		return nil, nil, a.oauthCrossProcessErr
 	}
 	state, err := crossprocessstate.NewRedis(client, rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainOAuth))
 	if err != nil {
 		_ = client.Close()
-		return nil, nil, err
+		a.oauthCrossProcessErr = err
+		return nil, nil, a.oauthCrossProcessErr
 	}
+	a.addCloser(func() error { return client.Close() })
+	a.oauthCrossProcessClient = state
+	a.oauthCrossProcessRedis = client
 	return state, client, nil
 }

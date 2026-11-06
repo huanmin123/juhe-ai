@@ -148,6 +148,8 @@ func balanceDetectAssemblyEnv(t *testing.T, postgresURL string) map[string]strin
 	t.Helper()
 	return map[string]string{
 		"JUHE_AI_POSTGRES_URL":          postgresURL,
+		"JUHE_AI_REDIS_URL":             "redis://127.0.0.1:1",
+		"JUHE_AI_REDIS_NAMESPACE":       "juhe-ai:balancedetect",
 		"JUHE_AI_INSTANCE_ID":           "balance-detect-instance",
 		"JUHE_AI_WORKER_ROLE":           "ops-worker",
 		"JUHE_AI_SECRET":                "0123456789abcdef0123456789abcdef",

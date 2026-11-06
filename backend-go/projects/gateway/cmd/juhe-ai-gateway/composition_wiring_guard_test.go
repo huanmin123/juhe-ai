@@ -144,6 +144,12 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		MissingImpact: "jobs 翻转时间计划闸门或写入账户状态后，gateway 主派发继续使用 60s 旧 runtime 快照",
 	},
 	{
+		Identifier:    "failureState: newGatewayOAuthRefreshFailureState(",
+		Name:          "网关 401 自动刷新共享失败状态读取",
+		Purpose:       "把 jobs OAuth 刷新失败退避读取端口注入 401 自动刷新协调器（compose.go），jobs 已记录退避时不再重复调用 token 端点",
+		MissingImpact: "jobs 已记 invalid_grant/退避后，gateway 仍可能重复尝试刷新，增加无谓 token 端点调用",
+	},
+	{
 		Identifier:    "ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache",
 		Name:          "settings 快照跨实例失效回调",
 		Purpose:       "settings_updated 与跨实例失效同步（reason 为空）到达时清空本进程 settings 60s 快照（chain_runtime.go，Node clearSettingsRepositoryCache 对应物）",

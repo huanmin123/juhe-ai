@@ -108,6 +108,15 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		Stats:    stats,
 		Now:      family.now,
 	}
+	// B4 续：孤儿账户逻辑删除后 bump 共享状态序号；未配置 Redis 时保持既有
+	// 60s 可见性窗口。
+	stateClient, _, stateErr := a.oauthCrossProcessState()
+	if stateErr != nil {
+		return stateErr
+	}
+	if stateClient != nil {
+		deletedAccounts.StateVersion = oauthRuntimeStateBumper{client: stateClient}
+	}
 
 	codexStore := &cleanuprepo.CodexContextStore{
 		PG:  usageCatalog,

@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 // w16dClosedPortURL 返回一个格式合法但端口不可达的 postgres 连接串。
@@ -61,7 +63,7 @@ func TestW16DMainFailFastArms(t *testing.T) {
 		}},
 		// model-recovery：Redis URL 合法但不可达 → Ping 失败（218-224）。
 		{"model-recovery-redis-closed-port", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_REDIS_URL": "redis://127.0.0.1:1/9",
+			"JUHE_AI_REDIS_URL":       "redis://127.0.0.1:1/9",
 			"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:w16d",
 		}},
 		// J1 store=postgres 但连接不可达 → OpenStore/Ping 失败（157-159）。
@@ -190,6 +192,11 @@ func TestW16DMainProjectionWarnArm(t *testing.T) {
 		t.Skip("main e2e skipped in -short mode")
 	}
 	env := w13g8FullOwnerEnv(t)
+	// Redis 依赖用 miniredis：父测试环境默认指向不可达 smoke 主机，本臂只
+	// 验证投影器降级后进程仍可服务，不能让 Redis 连接拖住启动。
+	redisServer := miniredis.RunT(t)
+	env["JUHE_AI_REDIS_URL"] = "redis://" + redisServer.Addr() + "/0"
+	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:w16d"
 	// poll 低于下界 100ms → 投影器装配失败 → main 降级 warn。
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS"] = "1"
 	port := wgFreePort(t)

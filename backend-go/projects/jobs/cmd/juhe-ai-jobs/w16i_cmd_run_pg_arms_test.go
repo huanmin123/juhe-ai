@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 // w16iKitDBWithContractSurface 打开 wgCmdKitDB 隔离测试库并补齐 run() 装配链
@@ -53,9 +55,12 @@ func w16iKitDBWithContractSurface(t *testing.T) (*sql.DB, string) {
 // 退役删除；连接串不落日志）。
 func w16iBaseEnv(t *testing.T, pgURL string) map[string]string {
 	t.Helper()
+	redisServer := miniredis.RunT(t)
 	return map[string]string{
 		"JUHE_AI_POSTGRES_URL":                      pgURL,
 		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          pgURL,
+		"JUHE_AI_REDIS_URL":                         "redis://" + redisServer.Addr() + "/0",
+		"JUHE_AI_REDIS_NAMESPACE":                   "juhe-ai:w16i",
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "w16i-run",
 		"JUHE_AI_LOG_DIR":                           t.TempDir(),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(t.TempDir(), "codex-context"),
@@ -176,7 +181,7 @@ func TestW16HIPGModelRecoveryPingFailArm(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_REDIS_URL":                   "redis://127.0.0.1:1",
+		"JUHE_AI_REDIS_URL":                         "redis://127.0.0.1:1",
 		"JUHE_AI_REDIS_NAMESPACE":                   "juhe-ai:w16i",
 	})
 	w16hRunArms(t, nil, 1, "ping model-recovery Redis store")
@@ -189,6 +194,9 @@ func TestW16HIPGJ3aInputPingFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
+	// C4 配置收敛后 J3a input/result/management 均复用 JUHE_AI_POSTGRES_URL，
+	// 无法再构造“store 成功、input 单独不可达”的形状；该失败臂不可达。
+	t.Skip("J3a input 连接串已统一为 JUHE_AI_POSTGRES_URL，旧独立 URL 失败臂不可达")
 	_, pgURL := w16iKitDBWithContractSurface(t)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
@@ -236,6 +244,9 @@ func TestW16HIPGJ3aManagementFailArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
+	// C4 配置收敛后 management 也复用 JUHE_AI_POSTGRES_URL，旧独立 URL
+	// 失败臂不可达。
+	t.Skip("J3a management 连接串已统一为 JUHE_AI_POSTGRES_URL，旧独立 URL 失败臂不可达")
 	_, pgURL := w16iKitDBWithContractSurface(t)
 	managementPort := wgFreePort(t)
 	env := w16iBaseEnv(t, pgURL)

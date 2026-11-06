@@ -16,7 +16,8 @@ import (
 func TestOrphanSweepPostgres(t *testing.T) {
 	rec := newPGRecorder()
 	business := openRecorderPG(rec)
-	store := &DeletedAccountStore{Business: business, Now: kitNow}
+	bumper := &fakeAccountStateBumper{}
+	store := &DeletedAccountStore{Business: business, Now: kitNow, StateVersion: bumper}
 	rec.script("SELECT accounts.id, accounts.system_account_id", []string{
 		"id", "system_account_id", "authorization_instance_authorization_id",
 		"authorization_instance_source_account_id", "deleted_at",
@@ -38,6 +39,9 @@ func TestOrphanSweepPostgres(t *testing.T) {
 	}
 	if len(orphaned) != 1 || orphaned[0] != "acc-inst" {
 		t.Fatalf("orphaned = %v", orphaned)
+	}
+	if len(bumper.ids) != 1 || bumper.ids[0] != "acc-inst" {
+		t.Fatalf("state bumps = %v, want [acc-inst]", bumper.ids)
 	}
 	statements := rec.all()
 	// revoke 链：实例授权回收（sources + authorizations UPDATE）必须在事务内。
@@ -221,4 +225,13 @@ func TestHasRelatedRecordDataDispatch(t *testing.T) {
 			t.Fatalf("缺少 PG 检查查询：%s", needle)
 		}
 	}
+}
+
+type fakeAccountStateBumper struct {
+	ids []string
+}
+
+func (f *fakeAccountStateBumper) BumpAccountState(_ context.Context, accountID string) error {
+	f.ids = append(f.ids, accountID)
+	return nil
 }

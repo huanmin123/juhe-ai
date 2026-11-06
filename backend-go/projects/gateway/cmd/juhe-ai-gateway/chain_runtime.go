@@ -63,6 +63,9 @@ type chainRuntimeServices struct {
 	// OAuthState 是 OAuth 域跨进程锁/凭据版本（crossprocessstate）：
 	// 独立客户端启用 ContextTimeoutEnabled，让 50ms 读预算真正约束命令执行。
 	OAuthState *crossprocessstate.Client
+	// OAuthStateClient 是 OAuthState 背后的 go-redis 客户端（同样开启
+	// ContextTimeoutEnabled）；S13 只读失败状态读取复用它。nil = 未配置 Redis。
+	OAuthStateClient redis.UniversalClient
 	// Identity carries the G14 session identity + affinity services (nil is
 	// rejected by the chain assembly: the preflight dereferences them).
 	Identity *sessionIdentityServices
@@ -315,6 +318,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create oauth credential version reader: %w", oauthStateErr)
 	}
 	services.OAuthState = oauthCrossProcessState
+	services.OAuthStateClient = oauthStateClient
 	// M5b realtime ephemeral token 面（Realtime 设计 §4）：与状态键空间
 	// 共用同一客户端（键位 realtime_token:<t> 经 namespace 隔离）。
 	services.RealtimeTokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: stateClient}, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRealtime))

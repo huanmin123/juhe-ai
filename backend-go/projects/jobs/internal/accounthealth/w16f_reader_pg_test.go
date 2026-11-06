@@ -278,7 +278,8 @@ func TestW16fPGDispatchFamilyChildLockArm(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM juhe_business.account_circuit_outbox WHERE account_id IN ('w16f-pg-root', 'w16f-pg-inst')`).Scan(&outboxRows); err != nil {
 		t.Fatal(err)
 	}
-	if outboxRows != 2 {
-		t.Fatalf("PG outbox 行数=%d", outboxRows)
+	// 家族根 + 实例各写 J3a/J3b 两条 outbox，共 4 条。
+	if outboxRows != 4 {
+		t.Fatalf("PG outbox 行数=%d, want 4", outboxRows)
 	}
 }

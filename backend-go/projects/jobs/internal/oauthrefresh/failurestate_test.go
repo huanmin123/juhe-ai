@@ -4,7 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/oauthfailure"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
+
+// TestFailureStateKeyMatchesSharedContract 钉死 jobs 写入键与 gateway 读取键
+// 同源：任一侧改前缀/后缀/命名空间都会在这里失败。
+func TestFailureStateKeyMatchesSharedContract(t *testing.T) {
+	const accountID = "acc_key_contract"
+	for _, namespace := range []string{"", "dev:oauth", "juhe-ai-dev:oauth"} {
+		store := newRedisFailureStateStore(nil, rediscfgNamespaceForTest(namespace))
+		if got, want := store.failureStateKey(accountID), oauthfailure.Key(namespace, accountID); got != want {
+			t.Fatalf("namespace=%q key=%q want %q", namespace, got, want)
+		}
+		// keepalive 族（anthropic/gemini/xai）走独立前缀，gateway 按 vendor
+		// 选择同一键；两侧改前缀必须同时失败。
+		keepalive := newRedisFailureStateStore(nil, rediscfg.NamespacedKey(KeepaliveFailureStateKeyPrefix, namespace))
+		for _, vendor := range []string{"anthropic", "gemini", "xai"} {
+			if got, want := keepalive.failureStateKey(accountID), oauthfailure.KeyForVendor(vendor, namespace, accountID); got != want {
+				t.Fatalf("namespace=%q vendor=%s key=%q want %q", namespace, vendor, got, want)
+			}
+		}
+	}
+}
+
+// rediscfgNamespaceForTest 复刻 NewRedisFailureStateStoreNamespaced 的前缀
+// 语义；空 namespace 保持历史无 tag 键。
+func rediscfgNamespaceForTest(namespace string) string {
+	if namespace == "" {
+		return openAIFailureStateKeyPrefix
+	}
+	return rediscfg.NamespacedKey(openAIFailureStateKeyPrefix, namespace)
+}
 
 func jsonUnmarshal(raw []byte, target any) error {
 	return json.Unmarshal(raw, target)

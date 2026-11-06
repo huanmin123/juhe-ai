@@ -87,14 +87,11 @@ func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, 
 	}
 	// B4：账户运行态版本栅栏（状态 PG 提交后递增共享序号）。未配置 Redis
 	// 时保持既有 60s 可见性窗口。
-	stateClient, stateRedisClient, stateErr := a.oauthCrossProcessState()
+	stateClient, _, stateErr := a.oauthCrossProcessState()
 	if stateErr != nil {
 		_ = business.close()
 		_ = hourly.close()
 		return nil, stateErr
-	}
-	if stateRedisClient != nil {
-		a.addCloser(func() error { return stateRedisClient.Close() })
 	}
 	projector, projectorErr := accounthealth.NewOutcomeProjector(store, accounthealth.OutcomeProjectorConfig{
 		Business:         handle,

@@ -13,8 +13,10 @@ import (
 	"database/sql"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"io"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 )
@@ -153,6 +155,9 @@ func TestW16JJ3aInputContractFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
+	// C4 配置收敛后 input 复用 JUHE_AI_POSTGRES_URL，contractless 独立
+	// input URL 不再被读取，该失败臂不可达。
+	t.Skip("J3a input 连接串已统一为 JUHE_AI_POSTGRES_URL，旧独立 URL 失败臂不可达")
 	_, pgURL := w16iKitDBWithContractSurface(t)
 	contractlessURL := w16jContractlessInputURL(t, pgURL)
 	env := w16iBaseEnv(t, pgURL)
@@ -176,6 +181,9 @@ func TestW16JJ3aResultContractFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
+	// C4 配置收敛后 result 复用 JUHE_AI_POSTGRES_URL，contractless 独立
+	// result URL 不再被读取，该失败臂不可达。
+	t.Skip("J3a result 连接串已统一为 JUHE_AI_POSTGRES_URL，旧独立 URL 失败臂不可达")
 	_, pgURL := w16iKitDBWithContractSurface(t)
 	contractlessURL := w16jContractlessInputURL(t, pgURL)
 	env := w16iBaseEnv(t, pgURL)
@@ -190,6 +198,36 @@ func TestW16JJ3aResultContractFailArm(t *testing.T) {
 		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": contractlessURL,
 	})
 	w16hRunArms(t, nil, 1, "verify J3a Go business-result contract")
+}
+
+// TestW16JJ3aRuntimeConfigUsesStoreURL 固化 C4 后的 J3a 连接串契约：store /
+// input / result / management 全部复用 JUHE_AI_POSTGRES_URL，旧独立 URL env
+// 不再参与；这也是上述三个旧失败臂不可达的原因。
+func TestW16JJ3aRuntimeConfigUsesStoreURL(t *testing.T) {
+	const storeURL = "postgres://store.example:5432/juhe"
+	for key, value := range map[string]string{
+		"JUHE_AI_POSTGRES_URL":                          storeURL,
+		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":       "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":      "postgres://ignored-input:5432/x",
+		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL":     "postgres://ignored-result:5432/x",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL": "postgres://ignored-mgmt:5432/x",
+	} {
+		t.Setenv(key, value)
+	}
+	cfg, err := proxylatency.LoadRuntimeConfig(os.Getenv)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+	if cfg.Store.PostgresURL != storeURL || cfg.BusinessPostgresURL != storeURL || cfg.ResultPostgresURL != storeURL {
+		t.Fatalf("J3a 连接串必须统一为 store URL: %+v", cfg)
+	}
+	admin, err := proxylatency.LoadManualAdminConfig(os.Getenv)
+	if err != nil {
+		t.Fatalf("LoadManualAdminConfig: %v", err)
+	}
+	if admin.PostgresURL != storeURL {
+		t.Fatalf("J3a management URL=%q, want %q", admin.PostgresURL, storeURL)
+	}
 }
 
 // TestW16JOutboxStoreArms：healthProbeOutboxStore 直调（w1cover 之外零 PG

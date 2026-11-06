@@ -121,6 +121,12 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		MissingImpact: "jobs 将账户标记临时不可用/冷却/恢复后，gateway runtime 缓存最长 60s 不感知，继续使用旧状态候选",
 	},
 	{
+		Identifier:    "deletedAccounts.StateVersion = oauthRuntimeStateBumper{",
+		Name:          "孤儿账户删除状态版本栅栏接入",
+		Purpose:       "孤儿授权实例账户逻辑删除提交后必须 bump 账户状态序号（worker_retention.go），gateway runtime 缓存下一次读重载",
+		MissingImpact: "已删除孤儿账户在 gateway 最长 60s 仍可能被派发",
+	},
+	{
 		Identifier:    "newAccountScheduleActivationHook(",
 		Name:          "排期激活 dispatch revision 推进 hook",
 		Purpose:       "account-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时推进 circuit dispatch revision 家族",

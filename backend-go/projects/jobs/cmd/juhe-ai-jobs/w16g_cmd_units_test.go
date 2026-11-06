@@ -74,6 +74,8 @@ func TestW16GAssemblyComponentsLifecycle(t *testing.T) {
 	env := map[string]string{
 		"JUHE_AI_POSTGRES_URL":             pgURL,
 		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": pgURL,
+		"JUHE_AI_REDIS_URL":                "redis://127.0.0.1:1",
+		"JUHE_AI_REDIS_NAMESPACE":          w16gNamespace,
 		"JUHE_AI_DATA_DIR":                 filepath.Join(t.TempDir(), "data"),
 		"JUHE_AI_SECRET":                   "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_LOG_DIR":                  filepath.Join(t.TempDir(), "logs"),
@@ -114,7 +116,7 @@ func TestW16GCircuitControlPlaneNilDBArm(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{
 
 		InstanceID:     "w16g-circuit-nil",
-		RedisURL:  "redis://127.0.0.1:1",
+		RedisURL:       "redis://127.0.0.1:1",
 		RedisNamespace: w16gNamespace,
 	}, nil)
 	if err := assembly.wireCircuitFamily(context.Background(), &businessDB{}, func(name, reason string) {

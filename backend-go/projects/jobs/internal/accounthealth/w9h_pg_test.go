@@ -157,20 +157,22 @@ func w9hPresetBaseURL(preset, accountType string) string {
 // w9hSeedBusinessAccount 写入供应商解耦后形态的账户：身份列
 // vendor_code/connection_driver_code + 健康检查连接行（connection_preset_code/
 // base_url/account_endpoint_modes，profile 参数剥掉 profile_ 前缀即 preset）。
-// 授权实例行（sourceID 非空）不写 vendor/连接事实，资源事实归来源账户。
+// 授权实例行（sourceID 非空）继承 vendor_code/connection_driver_code（与来源
+// 同值，满足 accounts 一致性 CHECK），但不单独写健康检查连接行；资源事实仍
+// 归来源账户。
 func w9hSeedBusinessAccount(t *testing.T, db *sql.DB, id, provider, profile, accountType, status, endpointMode string, sourceID, authorizationID sql.NullString) {
 	t.Helper()
 	isInstance := sourceID.Valid && sourceID.String != ""
 	if isInstance {
 		w9hMustExec(t, db, `INSERT INTO juhe_business.accounts (
-			id, system_account_id, connection_driver_code, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 			schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
 			health_check_model, health_check_endpoint_mode,
 			authorization_instance_source_account_id, authorization_instance_authorization_id,
 			created_at, updated_at, config_revision, dispatch_revision
 		) VALUES (
-			$1, 'sys_admin', $2, 'openai', 'v1',
+			$1, 'sys_admin', $2, $2, 'openai', 'v1',
 			$3, $4, $5, $6, 'w9h-fp', 'w9h-mask',
 			1, 0, 0, 0, 0,
 			'w9h-model', $7,
@@ -440,8 +442,10 @@ func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM juhe_business.account_circuit_outbox WHERE account_id = 'w9h-proj-acc'`).Scan(&outboxRows); err != nil {
 		t.Fatal(err)
 	}
-	if outboxRows != 1 {
-		t.Fatalf("dispatch outbox rows=%d", outboxRows)
+	// 每个账户写 J3a + J3b 两条投影 outbox 行（advanceDispatchRevision 的
+	// 双 projection_key 契约）。
+	if outboxRows != 2 {
+		t.Fatalf("dispatch outbox rows=%d, want 2", outboxRows)
 	}
 	// Receipts make a second drain a no-op.
 	result, err = projector.DrainOnce(ctx)
@@ -547,10 +551,10 @@ func TestW9HPgDirectInputReaderChain(t *testing.T) {
 			if input.TLSPolicyVersion != "j1-direct-upstream-v1" || input.ExpiresAt.IsZero() || input.Schedule.FailureThreshold != 3 {
 				t.Fatalf("input envelope=%+v", input)
 			}
-			// The probe protocol for deepseek chat mode is the OpenAI wire
-			// protocol.
-			if input.Type != "api_key" || input.Provider != "openai" {
-				t.Fatalf("probe protocol=%q type=%q", input.Provider, input.Type)
+			// DirectAccount.Provider 是账户 vendor（deepseek），不是 wire
+			// protocol；deepseek chat 的协议映射由 profile 决定（openai）。
+			if input.Type != "api_key" || input.Provider != "deepseek" {
+				t.Fatalf("provider=%q type=%q", input.Provider, input.Type)
 			}
 		}
 		if input.AccountID == "w9h-din-2" {
