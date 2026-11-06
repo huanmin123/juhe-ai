@@ -32,10 +32,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // chainRuntimeServices bundles every concrete service the chain assembly
@@ -59,6 +60,9 @@ type chainRuntimeServices struct {
 	AuthzQuota              *gatewayquota.AuthorizationQuotaService
 	InflightQuota           *gatewayquota.InflightQuotaService
 	Accounts                *chainAccountsSelector
+	// OAuthState 是 OAuth 域跨进程锁/凭据版本（crossprocessstate）：
+	// 独立客户端启用 ContextTimeoutEnabled，让 50ms 读预算真正约束命令执行。
+	OAuthState *crossprocessstate.Client
 	// Identity carries the G14 session identity + affinity services (nil is
 	// rejected by the chain assembly: the preflight dereferences them).
 	Identity *sessionIdentityServices
@@ -293,6 +297,24 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// Exposed for siblings that share the runtime-state client (aipublic
 	// penalty-window limiter).
 	services.StateClient = stateClient
+	// B2：账户 OAuth 凭据版本只读端口（jobs/gateway 凭据写提交后 bump）。
+	// 独立客户端打开 ContextTimeoutEnabled：rediscfg 默认关闭时 go-redis 会把
+	// 命令 ctx 换成 Background，50ms 读预算与 2s bump/释放预算不会生效。
+	oauthStateClient, oauthStateErr := rediscfg.NewUniversalClient(rediscfg.Config{
+		URL: cfg.RedisURL, Mode: cfg.RedisMode, Password: cfg.RedisPassword,
+		ContextTimeoutEnabled: true,
+	})
+	if oauthStateErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create oauth state redis client: %w", oauthStateErr)
+	}
+	services.closeFuncs = append(services.closeFuncs, func() { _ = oauthStateClient.Close() })
+	oauthCrossProcessState, oauthStateErr := crossprocessstate.NewRedis(oauthStateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainOAuth))
+	if oauthStateErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create oauth credential version reader: %w", oauthStateErr)
+	}
+	services.OAuthState = oauthCrossProcessState
 	// M5b realtime ephemeral token 面（Realtime 设计 §4）：与状态键空间
 	// 共用同一客户端（键位 realtime_token:<t> 经 namespace 隔离）。
 	services.RealtimeTokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: stateClient}, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRealtime))
@@ -371,6 +393,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache,
 		// /v1/models 分组模型并集装载端口（chain_gatewaykeymodels.go）。
 		Union: unionLoader,
+		// B2：OAuth 凭据版本投影读取端口（jobs/gateway 写入后 bump）。
+		CredentialVersions: gatewayOAuthCredentialVersions{client: oauthCrossProcessState},
 	}
 	// 模型目录 / 分组访问 / 响应检查策略的跨进程事实源固定为 Redis（PG+Redis
 	// 唯一形态）；进程内 LRU 只作易失 L1。Shared 为 nil 时 runtime cache 会把
@@ -634,7 +658,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// PG+Redis 唯一形态，GetGatewayHotQualityRuntime 按 redis 驱动轴构建
 	// store 对）。
 	hotQuality, hotQualityErr := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisURL:  cfg.RedisURL,
+		RedisURL:       cfg.RedisURL,
 		RedisNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainHotQuality),
 	})
 	if hotQualityErr != nil {
@@ -768,7 +792,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	affinityConfig := gatewaysession.AffinityConfig{
 		CacheDriver:        gatewaysession.CacheDriverRedis,
 		RuntimeStateDriver: gatewaysession.RuntimeStateDriverRedis,
-		RedisURL:      cfg.RedisURL,
+		RedisURL:           cfg.RedisURL,
 		RedisNamespace:     rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainSession),
 		Secret:             cfg.Secret,
 	}
@@ -784,7 +808,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// （关闭）不变。
 	groupAffinityConfig := gatewaysession.GroupAffinityConfig{
 		CacheDriver:    gatewaysession.CacheDriverRedis,
-		RedisURL:  cfg.RedisURL,
+		RedisURL:       cfg.RedisURL,
 		RedisNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainSession),
 		Secret:         cfg.Secret,
 	}

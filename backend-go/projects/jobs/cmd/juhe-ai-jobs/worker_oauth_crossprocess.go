@@ -49,8 +49,8 @@ type oauthCredentialVersionBumper struct {
 var _ oauthrefresh.CredentialVersionBumper = oauthCredentialVersionBumper{}
 
 // Bump implements oauthrefresh.CredentialVersionBumper.
-func (b oauthCredentialVersionBumper) Bump(ctx context.Context, accountID string) error {
-	_, err := b.client.BumpVersion(ctx, crossprocessstate.EntityAccountCredentialsVersion, accountID)
+func (b oauthCredentialVersionBumper) Bump(ctx context.Context, accountID string, revision int64) error {
+	_, err := b.client.BumpVersion(ctx, crossprocessstate.EntityAccountCredentialsVersion, accountID, revision)
 	return err
 }
 
@@ -61,7 +61,7 @@ func (a *workerAssembly) oauthCrossProcessState() (*crossprocessstate.Client, re
 	if a.config.RedisURL == "" {
 		return nil, nil, nil
 	}
-	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: a.config.RedisURL})
+	client, err := rediscfg.NewUniversalClient(rediscfg.Config{URL: a.config.RedisURL, ContextTimeoutEnabled: true})
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建 OAuth 跨进程状态 Redis 客户端失败: %w", err)
 	}

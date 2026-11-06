@@ -290,12 +290,18 @@ type Service struct {
 
 	// lastRuntimeSyncMs drives the SyncMinIntervalMs coalescing window.
 	lastRuntimeSyncMs atomic.Int64
+	// credentialVersionWarnAt 限制凭据版本读失败告警频率（Redis 故障时每请求
+	// 一次读，不能逐请求刷日志）。
+	credentialVersionWarnAt time.Time
 }
 
 // gatewayRuntimeCacheEntry mirrors GatewayRuntimeCacheEntry.
 type gatewayRuntimeCacheEntry struct {
 	runtime        GatewayRuntime
 	revalidateAtMs int64
+	// credentialVersions 是运行时快照构建时的账户凭据版本（source account ID ->
+	// version）。nil 表示版本未知，条目退化为既有 60s revalidate 窗口。
+	credentialVersions map[string]int64
 }
 
 // gatewayRuntimeAPIKeyIdentity mirrors GatewayRuntimeApiKeyIdentity.

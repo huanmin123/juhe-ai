@@ -1012,7 +1012,7 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 		return nil, err
 	}
 	// B2：PG 提交成功后递增共享凭据版本（失败只告警，读者按 60s 缓存回退）。
-	s.bumpCredentialVersion(ctx, row.id)
+	s.bumpCredentialVersion(ctx, row.id, row.configRevision+1)
 	rotation := &RotationResult{
 		ID: row.id, ConfigRevision: row.configRevision + 1,
 		UpdatedAt: updatedAt, Changed: true, Credentials: input.Credentials,

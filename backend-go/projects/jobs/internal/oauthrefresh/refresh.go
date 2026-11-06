@@ -92,10 +92,11 @@ const CrossProcessRefreshLockTTL = 60 * time.Second
 // runWithProviderOAuthRefreshLock; failIfLocked mirrors the batch lockMode
 // 'skip').
 type accountLocks struct {
-	mu     sync.Mutex
-	held   map[string]*sync.Mutex
-	remote RefreshLock
-	logger *slog.Logger
+	mu         sync.Mutex
+	held       map[string]*sync.Mutex
+	remote     RefreshLock
+	logger     *slog.Logger
+	lastWarnAt time.Time
 }
 
 func newAccountLocks() *accountLocks {
@@ -205,6 +206,14 @@ func (l *accountLocks) warnRemote(accountID string, err error) {
 	if l.logger == nil {
 		return
 	}
+	// Redis 故障时每账户都会回退；限流到每分钟一条，避免批量任务刷屏。
+	l.mu.Lock()
+	if time.Since(l.lastWarnAt) < time.Minute {
+		l.mu.Unlock()
+		return
+	}
+	l.lastWarnAt = time.Now()
+	l.mu.Unlock()
 	l.logger.Warn("OAuth 刷新跨进程锁不可用，回退进程内锁与 PG 版本 CAS",
 		"event", "oauth_refresh_cross_process_lock_error",
 		"accountId", accountID, "error", err)

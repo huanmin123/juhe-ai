@@ -51,10 +51,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
-	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
+	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // 系统组合根 PG 池默认规格（system-api / chat / codex-context 三池共用）：
@@ -888,19 +887,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		chainServices = services
 		// B1/B2（跨进程共享状态改造 Tier 1）：OAuth 刷新锁 + 凭据版本投影。
-		// StateClient 是恒注入的共享 Redis 运行态客户端；oauthStore 构造早于链
-		// 运行态服务，因此在此接线。Redis 客户端不可用属装配错误（fail-fast），
-		// 不静默退回进程内锁。
-		oauthCrossProcess, crossProcessErr := crossprocessstate.NewRedis(services.StateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainOAuth))
-		if crossProcessErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create oauth cross-process state: %w", crossProcessErr)
-		}
-		oauthStore.SetRefreshLock(gatewayOAuthRefreshLock{client: oauthCrossProcess})
-		oauthStore.SetCredentialVersionBumper(gatewayOAuthCredentialVersionBumper{client: oauthCrossProcess})
+		// services.OAuthState 由链运行态服务构造（独立 Redis 客户端 +
+		// ContextTimeoutEnabled），oauthStore 构造早于它，因此在此接线。
+		oauthStore.SetRefreshLock(gatewayOAuthRefreshLock{client: services.OAuthState})
+		oauthStore.SetCredentialVersionBumper(gatewayOAuthCredentialVersionBumper{client: services.OAuthState})
 		slog.Info("OAuth 跨进程刷新锁与凭据版本投影已接入 Redis 运行态",
 			"event", "oauth_cross_process_state_redis",
-			"namespace", oauthCrossProcess.Namespace())
+			"namespace", services.OAuthState.Namespace())
 		// 列表运行时并发 hydrate 装配（单机 go-only 进程内事实源）：分组列表
 		// accountStats.CurrentConcurrency 与账户列表 currentConcurrency 在列表
 		// 请求时按网关进程内 tracker 实时计数供給（jobs 写侧的 stats
@@ -1073,7 +1066,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 调用方分级影子观测驱动选择（调用方分级调度设计 §6.1/§6.3）：
 			// 与 turn-retry / KeyRotation 同源的 state Redis 客户端判据，
 			// 链装配据此选 Redis / memory 存储（部署形态选择，非运行时回退）。
-			StateClient: chainServices.StateClient,
+			StateClient:         chainServices.StateClient,
 			CallerTierNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainCallerTier),
 			// Codex / Anthropic 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道

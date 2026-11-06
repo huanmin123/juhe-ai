@@ -65,9 +65,15 @@ return 0
 `
 
 const bumpVersionScript = `
-local value = redis.call('INCR', KEYS[1])
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-return value
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+local next = tonumber(ARGV[1])
+local ttl = ARGV[2]
+if next > current then
+	redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+	return next
+end
+redis.call('PEXPIRE', KEYS[1], ttl)
+return current
 `
 
 // Executor 是原语依赖的最小 Redis 面。go-redis 的 UniversalClient 经
@@ -152,11 +158,21 @@ func (c *Client) Unlock(ctx context.Context, entity, id, token string) error {
 	return err
 }
 
-// BumpVersion 原子递增实体版本并续期，返回递增后的版本（首次为 1）。
+// BumpVersion 把实体版本单调推进到 revision（通常为 PG 的 config_revision），
+// 并续期。只有 revision 大于当前值才写入，乱序回写不会让版本后退；键不存在
+// 时直接写入。
+//
 // 写序要求：调用方必须在本实体对应的 PG 事务提交成功之后调用；失败只记录
 // 告警并保留原有可见性窗口，不得回滚已提交的业务写。
-func (c *Client) BumpVersion(ctx context.Context, entity, id string) (int64, error) {
-	raw, err := c.exec.Eval(ctx, bumpVersionScript, []string{c.Key(entity, id)}, DefaultVersionTTL.Milliseconds())
+//
+// 版本号与 PG revision 同值的设计让读者可以在装载数据后检测“读到旧数据、
+// 读到新版本”的竞态：当版本大于数据行的 config_revision 时，说明数据读取
+// 早于最近一次提交，应按需重读一次。
+func (c *Client) BumpVersion(ctx context.Context, entity, id string, revision int64) (int64, error) {
+	if revision <= 0 {
+		return 0, fmt.Errorf("crossprocessstate 版本号必须为正整数: %d", revision)
+	}
+	raw, err := c.exec.Eval(ctx, bumpVersionScript, []string{c.Key(entity, id)}, revision, DefaultVersionTTL.Milliseconds())
 	if err != nil {
 		return 0, err
 	}
@@ -216,16 +232,6 @@ func (c *Client) Versions(ctx context.Context, entity string, ids []string) (map
 // 为准（context.WithTimeout 的既有语义）。
 func ReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, DefaultReadTimeout)
-}
-
-// DetachedContext 返回与请求取消解耦、但仍受原请求 deadline 约束的上下文，
-// 用于锁释放：请求被取消时仍应尽力释放锁，避免占满 TTL。
-func DetachedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	detached := context.WithoutCancel(ctx)
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-	return context.WithTimeout(detached, timeout)
 }
 
 func randomToken() (string, error) {

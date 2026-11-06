@@ -611,6 +611,9 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 		store.SetCredentialVersionBumper(oauthCredentialVersionBumper{client: crossProcess})
 		a.logger.Info("OAuth 凭据版本投影已接入 Redis 运行态",
 			"event", "oauth_credential_version_projection_redis")
+	} else {
+		a.logger.Info("OAuth 跨进程锁/凭据版本未接入（未配置 Redis），保持进程内锁与 60s 缓存窗口",
+			"event", "oauth_cross_process_state_disabled")
 	}
 
 	// P0 修复：OAuth 刷新失败状态存储按运行态部署注入。缺省（无
@@ -1079,7 +1082,7 @@ var errTaskRunStartSkipped = errors.New("background_task_run 启动 CAS 未命�
 
 // withLease 包裹 taskruns.RunWithScheduledLease 与 taskruns.RunWithTaskRun：
 // 每次 job 执行在持调度租约的同时登记 background_task_runs 运行历史
-//（queued→running→终态）。
+// （queued→running→终态）。
 func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsched.Task) jobsched.Task {
 	if a.taskRunsStore == nil || ttl <= 0 {
 		return task

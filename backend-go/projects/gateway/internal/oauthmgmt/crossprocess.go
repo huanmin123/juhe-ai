@@ -10,11 +10,13 @@ package oauthmgmt
 //     其他 gateway 实例/运行态缓存读取（本实例已有 in-process invalidation）。
 //
 // 未注入（nil）时保持既有进程内行为：自动刷新单飞/节流与 PG config_revision
-// CAS 仍是兜底；不得把 nil 当作生产可接受的接线状态（组合根接线守卫测试锁定）。
+// CAS 仍是兜底。生产组合根（cmd/juhe-ai-gateway/compose.go）在共享 Redis
+// StateClient 构造后无条件接线；nil 仅用于测试夹具。
 
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -28,9 +30,10 @@ type RefreshLock interface {
 	Unlock(ctx context.Context, accountID, token string) error
 }
 
-// CredentialVersionBumper 是凭据版本投影写入端口：只在 PG 提交成功后调用。
+// CredentialVersionBumper 是凭据版本投影写入端口：只在 PG 提交成功后调用，
+// revision 传提交后的 config_revision（与版本键同值，读者据此检测装载竞态）。
 type CredentialVersionBumper interface {
-	Bump(ctx context.Context, accountID string) error
+	Bump(ctx context.Context, accountID string, revision int64) error
 }
 
 // RefreshLockBusyError 表示跨进程刷新锁被其他进程持有。调用方（401 自动刷新
@@ -92,19 +95,35 @@ func (s *Store) tryRefreshLock(ctx context.Context, accountID string) (release f
 	return release, false, nil
 }
 
-// bumpCredentialVersion 在 PG 提交成功后递增共享版本；失败只告警，读者按原有
-// 60s 缓存窗口回退。
-func (s *Store) bumpCredentialVersion(ctx context.Context, accountID string) {
+// bumpCredentialVersion 在 PG 提交成功后把共享版本推进到该次提交的
+// config_revision；失败只告警，读者按原有 60s 缓存窗口回退。使用 detached
+// ctx：客户端断连不应吞掉已提交轮换的版本投影（最多多花 2s）。
+func (s *Store) bumpCredentialVersion(ctx context.Context, accountID string, revision int64) {
 	if s.credentialBumper == nil {
 		return
 	}
-	if err := s.credentialBumper.Bump(ctx, accountID); err != nil {
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.credentialBumper.Bump(bumpCtx, accountID, revision); err != nil {
 		warnCrossProcess("oauth_credential_version_bump_failed", accountID, err)
 	}
 }
 
-// warnCrossProcess 统一跨进程状态故障日志；令牌值绝不入日志。
+// warnCrossProcess 统一跨进程状态故障日志；令牌值绝不入日志。Redis 故障时
+// 401 批量请求会反复触发同一条告警，按分钟限流（与 jobs 侧锁告警限流一致）。
+var (
+	crossProcessWarnMu sync.Mutex
+	crossProcessWarnAt time.Time
+)
+
 func warnCrossProcess(event, accountID string, err error) {
-	slog.Warn("OAuth 跨进程状态操作失败，按既有缓存/版本 CAS 路径回退",
+	crossProcessWarnMu.Lock()
+	if time.Since(crossProcessWarnAt) < time.Minute {
+		crossProcessWarnMu.Unlock()
+		return
+	}
+	crossProcessWarnAt = time.Now()
+	crossProcessWarnMu.Unlock()
+	slog.Warn("OAuth 跨进程状态操作失败（刷新/缓存按既有兜底路径继续）",
 		"event", event, "accountId", accountID, "error", err)
 }

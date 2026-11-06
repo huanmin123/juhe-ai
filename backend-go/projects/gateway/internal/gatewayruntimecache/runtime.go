@@ -32,6 +32,15 @@ func (s *Service) ReadCachedGatewayRuntimeAsync(ctx context.Context, apiKey stri
 		// Touch the identity cache exactly like the Node read (keeps the
 		// apiKeyId index hot for targeted invalidations).
 		s.identityCache.get(cacheKey)
+		// B2：jobs/gateway 凭据轮换 bump 版本后，主派发路径下一次读即同步重载
+		// 运行时快照（不等 60s revalidate）。重载失败保留 last-good。
+		if s.runtimeCredentialVersionsChanged(ctx, cached) {
+			if runtime, reloadErr := s.loadGatewayRuntimeOnce(ctx, apiKey, cacheKey); reloadErr == nil {
+				return s.dispatchGatewayRuntimeForSend(ctx, runtime)
+			} else {
+				s.warnCredentialVersionFailure(reloadErr)
+			}
+		}
 		if isEntryFresh(cached.revalidateAtMs, now) {
 			return s.dispatchGatewayRuntimeForSend(ctx, cached.runtime)
 		}
@@ -71,6 +80,13 @@ func (s *Service) ReadCachedGatewayRuntimeStaticAsync(ctx context.Context, apiKe
 	now := s.nowMs()
 	if cached, ok := s.runtimeCache.get(cacheKey); ok {
 		s.identityCache.get(cacheKey)
+		if s.runtimeCredentialVersionsChanged(ctx, cached) {
+			if runtime, reloadErr := s.loadGatewayRuntimeOnce(ctx, apiKey, cacheKey); reloadErr == nil {
+				return s.dispatchGatewayRuntimeStaticForSend(ctx, runtime)
+			} else {
+				s.warnCredentialVersionFailure(reloadErr)
+			}
+		}
 		if isEntryFresh(cached.revalidateAtMs, now) {
 			return s.dispatchGatewayRuntimeStaticForSend(ctx, cached.runtime)
 		}
@@ -188,6 +204,11 @@ func (s *Service) runGatewayRuntimeLoad(apiKey, cacheKey string, generation int6
 	close(pending.done)
 }
 
+// runtimeCredentialVersionsChanged 比较 runtime 条目快照与当前凭据版本。
+func (s *Service) runtimeCredentialVersionsChanged(ctx context.Context, entry gatewayRuntimeCacheEntry) bool {
+	return s.credentialVersionsDiffer(ctx, entry.runtime.Accounts, entry.credentialVersions)
+}
+
 // populateGatewayRuntimeCaches mirrors populateGatewayRuntimeCaches: the
 // runtime entry, the settings entry and (when group access resolved) the
 // group access + accounts entries under the natural cache keys.
@@ -205,10 +226,21 @@ func (s *Service) populateGatewayRuntimeCaches(cacheKey string, runtime GatewayR
 	if err != nil {
 		return err
 	}
-	s.setGatewayRuntimeCacheEntry(cacheKey, gatewayRuntimeCacheEntry{
-		runtime:        cloneStaticGatewayRuntime(runtime),
-		revalidateAtMs: now + ttl.Milliseconds(),
-	})
+	runtimeEntry := gatewayRuntimeCacheEntry{
+		runtime:            cloneStaticGatewayRuntime(runtime),
+		revalidateAtMs:     now + ttl.Milliseconds(),
+		credentialVersions: s.readCredentialVersions(context.Background(), runtime.Accounts),
+	}
+	// 版本领先于数据 revision 说明读到的是旧凭据。runtime 装载路径不做二次
+	// PG 重读：丢弃该条目的版本快照并照常缓存，退回既有 60s revalidate 窗口。
+	// 这样 PG 回滚/旧快照导入导致版本永久领先时不会退化为“永不缓存、每请求
+	// 重装载”；正常竞态由下一次 revalidate 装载收敛。
+	if runtimeEntry.credentialVersions != nil &&
+		credentialSnapshotAhead(runtime.Accounts, runtimeEntry.credentialVersions) {
+		s.warnCredentialVersionFailure(errors.New("凭据版本领先于 runtime 数据 revision，退回 60s 窗口"))
+		runtimeEntry.credentialVersions = nil
+	}
+	s.setGatewayRuntimeCacheEntry(cacheKey, runtimeEntry)
 	s.setSettingsCacheEntry(runtime.Settings)
 	if runtime.GroupAccess != nil {
 		groupKey := gatewayCacheKey(runtime.APIKey.SelectedGroupID, runtime.APIKey.SystemAccountID)
@@ -224,6 +256,8 @@ func (s *Service) populateGatewayRuntimeCaches(cacheKey string, runtime GatewayR
 		if entryErr != nil {
 			return entryErr
 		}
+		// 复用 runtime 条目刚读到的版本快照，避免同一装载重复 MGET。
+		entry.credentialVersions = runtimeEntry.credentialVersions
 		s.accountsCache.set(groupKey, entry, openAIAccountsRetainTTL)
 	}
 	return nil

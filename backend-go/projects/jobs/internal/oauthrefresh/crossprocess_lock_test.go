@@ -165,15 +165,17 @@ func TestAccountLocksReleaseUsesDetachedContext(t *testing.T) {
 
 // fakeBumper 记录凭据版本写入。
 type fakeBumper struct {
-	mu    sync.Mutex
-	calls []string
-	err   error
+	mu        sync.Mutex
+	calls     []string
+	revisions []int64
+	err       error
 }
 
-func (f *fakeBumper) Bump(_ context.Context, accountID string) error {
+func (f *fakeBumper) Bump(_ context.Context, accountID string, revision int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, accountID)
+	f.revisions = append(f.revisions, revision)
 	return f.err
 }
 
@@ -200,8 +202,9 @@ func TestStoreBumpsCredentialVersionAfterRotationCommit(t *testing.T) {
 	if err != nil || result == nil || !result.Changed {
 		t.Fatalf("RotateCredentials result=%+v err=%v", result, err)
 	}
-	if len(bumper.calls) != 1 || bumper.calls[0] != "acc-version-rotate" {
-		t.Fatalf("bump calls = %v, want [acc-version-rotate]", bumper.calls)
+	if len(bumper.calls) != 1 || bumper.calls[0] != "acc-version-rotate" ||
+		len(bumper.revisions) != 1 || bumper.revisions[0] != 2 {
+		t.Fatalf("bump calls = %v revisions = %v, want [acc-version-rotate] revision 2（提交后的 config_revision）", bumper.calls, bumper.revisions)
 	}
 }
 
@@ -223,8 +226,9 @@ func TestStoreBumpsCredentialVersionAfterMergeCommit(t *testing.T) {
 	if _, err := store.UpdateAccountCredentials(context.Background(), "acc-version-merge", credentials, account.ConfigRevision); err != nil {
 		t.Fatalf("UpdateAccountCredentials: %v", err)
 	}
-	if len(bumper.calls) != 1 || bumper.calls[0] != "acc-version-merge" {
-		t.Fatalf("bump calls = %v, want [acc-version-merge]", bumper.calls)
+	if len(bumper.calls) != 1 || bumper.calls[0] != "acc-version-merge" ||
+		len(bumper.revisions) != 1 || bumper.revisions[0] != 2 {
+		t.Fatalf("bump calls = %v revisions = %v, want [acc-version-merge] revision 2", bumper.calls, bumper.revisions)
 	}
 }
 

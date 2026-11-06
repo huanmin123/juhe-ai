@@ -3,7 +3,6 @@ package gatewayruntimecache
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
@@ -47,92 +46,194 @@ func (s *Service) ListCachedOpenAIAccountsForGroup(ctx context.Context, groupID,
 				return accounts, nil
 			}
 			// 重载失败保留 last-good 快照（与既有 stale-while-revalidate 口径
-			// 一致），不把一次版本检查变成请求失败。
-			s.warnEvent("gateway_openai_accounts_credential_version_reload_failed", map[string]any{
-				"groupID": groupID, "systemAccountID": systemAccountID, "err": err.Error(),
-			}, "网关检测到 OAuth 凭据版本变化但重载失败，保留当前有界缓存快照")
-		} else {
-			if !isEntryFresh(cached.revalidateAtMs, s.nowMs()) {
-				s.refreshOpenAIAccountsInBackground(groupID, systemAccountID, cacheKey, opts.RequestedModel, opts.RequestedEndpointFamily)
-			}
-			return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, cached.accounts)
+			// 一致），不把一次版本检查变成请求失败；告警与版本读失败共用
+			// 每分钟一条的限流。
+			s.warnCredentialVersionFailure(err)
+		} else if !isEntryFresh(cached.revalidateAtMs, s.nowMs()) {
+			s.refreshOpenAIAccountsInBackground(groupID, systemAccountID, cacheKey, opts.RequestedModel, opts.RequestedEndpointFamily)
 		}
+		return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, cached.accounts)
 	}
 	return s.loadOpenAIAccountsForGroup(ctx, groupID, systemAccountID, cacheKey, opts)
 }
 
 // loadOpenAIAccountsForGroup 直读 loader 并写入缓存条目（含凭据版本快照）。
+//
+// 装载竞态防护：写方在 PG 提交后才 bump 版本，若“读数据”与“读版本”之间发生
+// 提交，会得到“旧数据 + 新版本”。版本与 config_revision 同值，因此当快照
+// 版本大于数据行的 config_revision 时重读一次；二次仍领先（例如 PG 回滚/旧
+// 快照导入）则丢弃版本快照并照常缓存，退回 60s 窗口，避免永久不缓存。
 func (s *Service) loadOpenAIAccountsForGroup(ctx context.Context, groupID, systemAccountID, cacheKey string, opts CachedOpenAIAccountsForGroupOptions) ([]OpenAIAccountSecret, error) {
-	result, err := s.models.ListOpenAIAccountsForGroupResult(ctx, groupID, systemAccountID, OpenAIAccountsForGroupOptions{
-		RequestedModel:          opts.RequestedModel,
-		RequestedEndpointFamily: opts.RequestedEndpointFamily,
-	})
-	if err != nil {
-		return nil, err
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := s.models.ListOpenAIAccountsForGroupResult(ctx, groupID, systemAccountID, OpenAIAccountsForGroupOptions{
+			RequestedModel:          opts.RequestedModel,
+			RequestedEndpointFamily: opts.RequestedEndpointFamily,
+		})
+		if err != nil {
+			return nil, err
+		}
+		accounts := cloneStaticOpenAIAccounts(result.Accounts)
+		entry, entryErr := s.newOpenAIAccountsCacheEntry(ctx, accounts)
+		if entryErr != nil {
+			return nil, entryErr
+		}
+		if entry.credentialVersions != nil && credentialSnapshotAhead(accounts, entry.credentialVersions) {
+			if attempt == 0 {
+				continue
+			}
+			// 二次仍领先（例如 PG 回滚/旧快照导入导致版本永久高于 revision）：
+			// 丢弃版本快照并照常缓存，退回既有 60s revalidate 口径，避免退化为
+			// “永不缓存、每请求重装载”。
+			s.warnCredentialVersionFailure(errors.New("凭据版本领先于账户数据 revision，退回 60s 窗口"))
+			entry.credentialVersions = nil
+		}
+		s.accountsCache.set(cacheKey, entry, openAIAccountsRetainTTL)
+		return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, result.Accounts)
 	}
-	accounts := cloneStaticOpenAIAccounts(result.Accounts)
-	entry, entryErr := s.newOpenAIAccountsCacheEntry(ctx, accounts)
-	if entryErr != nil {
-		return nil, entryErr
-	}
-	s.accountsCache.set(cacheKey, entry, openAIAccountsRetainTTL)
-	return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, result.Accounts)
+	return nil, errors.New("网关 OpenAI 账户装载在版本竞态下未能收敛")
 }
 
 // newOpenAIAccountsCacheEntry 在基础条目上记录各账户的凭据版本快照。读取失败
 // 或未配置 reader 时版本为 nil，该条目退化为既有 60s 可见性窗口。
+//
+// 共享缓存模式（cacheDriver=redis）下账户进程缓存恒禁用（快照含解密凭据），
+// 每次读都走 loader 现读 PG，此时不读版本键——避免为不会被消费的条目增加
+// 每请求 Redis 往返。
 func (s *Service) newOpenAIAccountsCacheEntry(ctx context.Context, accounts []OpenAIAccountSecret) (openAIAccountsCacheEntry, error) {
 	entry, err := newOpenAIAccountsCacheEntry(accounts, s.nowMs())
 	if err != nil {
 		return entry, err
 	}
+	if s.accountsCache == nil || !s.accountsCache.enabled {
+		return entry, nil
+	}
 	entry.credentialVersions = s.readCredentialVersions(ctx, accounts)
 	return entry, nil
 }
 
-// readCredentialVersions 批量读取账户凭据版本；未配置 reader、无账户或读失败
-// 返回 nil（调用方按未知处理）。
+// cacheReadyOpenAIAccountsEntry 构建可写缓存的条目：版本领先于数据 revision
+// （读数据早于最近提交）时丢弃版本快照并退回 60s 窗口。用于不做二次 PG 重读
+// 的旁路装载（共享 loader / 后台 revalidate），保证“旧数据 + 新版本快照”不会
+// 被写进缓存。
+func (s *Service) cacheReadyOpenAIAccountsEntry(ctx context.Context, accounts []OpenAIAccountSecret) (openAIAccountsCacheEntry, error) {
+	entry, err := s.newOpenAIAccountsCacheEntry(ctx, accounts)
+	if err != nil {
+		return entry, err
+	}
+	if entry.credentialVersions != nil && credentialSnapshotAhead(accounts, entry.credentialVersions) {
+		s.warnCredentialVersionFailure(errors.New("凭据版本领先于账户数据 revision，退回 60s 窗口"))
+		entry.credentialVersions = nil
+	}
+	return entry, nil
+}
+
+// readCredentialVersions 批量读取 OAuth 账户凭据版本；未配置 reader、无
+// OAuth 账户或读失败返回 nil（调用方按未知处理）。key 使用 credential source
+// 账户 ID（授权实例行的凭据来自源账户，轮换 bump 也落在源账户）。
+//
+// 读使用 detached 上下文 + 50ms 预算：请求取消不应把 nil 快照写进缓存形成
+// 盲窗；预算由 crossprocessstate.ReadContext 的同口径常量约束。
 func (s *Service) readCredentialVersions(ctx context.Context, accounts []OpenAIAccountSecret) map[string]int64 {
 	if s.opts.CredentialVersions == nil || len(accounts) == 0 {
 		return nil
 	}
 	ids := make([]string, 0, len(accounts))
+	seen := make(map[string]struct{}, len(accounts))
 	for index := range accounts {
-		if id := strings.TrimSpace(accounts[index].ID); id != "" {
-			ids = append(ids, id)
+		if !isOAuthCredentialAccountType(accounts[index].Type) {
+			continue
 		}
+		id := gatewayAccountConcurrencyAccountID(&accounts[index])
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, credentialVersionReadTimeout)
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialVersionReadTimeout)
 	defer cancel()
 	versions, err := s.opts.CredentialVersions.CredentialVersions(readCtx, ids)
 	if err != nil {
-		s.warnEvent("gateway_openai_accounts_credential_version_read_failed", map[string]any{
-			"err": err.Error(),
-		}, "网关读取 OAuth 凭据版本失败，按既有 60s 缓存窗口回退")
+		if ctx.Err() != nil {
+			// 调用方已取消/超时：不是 Redis 故障，不刷告警。
+			return nil
+		}
+		s.warnCredentialVersionFailure(err)
 		return nil
 	}
 	return versions
 }
 
-// credentialVersionsChanged 比较条目快照与当前版本；只有明确读到版本且与快照
-// 不同才返回 true（版本未知不放行重载，避免 Redis 故障引发重载风暴）。
-func (s *Service) credentialVersionsChanged(ctx context.Context, entry openAIAccountsCacheEntry) bool {
-	if s.opts.CredentialVersions == nil || entry.credentialVersions == nil {
+// isOAuthCredentialAccountType 只对会轮换凭据的 OAuth 账户读版本；api_key
+// 账户没有版本键，读它们是纯浪费。
+func isOAuthCredentialAccountType(accountType string) bool {
+	return accountType == "oauth" || accountType == "google_oauth"
+}
+
+// warnCredentialVersionFailure 把版本读/重载失败告警限流到每分钟一条：Redis
+// 故障或版本频繁变化时不能逐请求刷日志。
+func (s *Service) warnCredentialVersionFailure(err error) {
+	s.mu.Lock()
+	if time.Since(s.credentialVersionWarnAt) < time.Minute {
+		s.mu.Unlock()
+		return
+	}
+	s.credentialVersionWarnAt = time.Now()
+	s.mu.Unlock()
+	s.warnEvent("gateway_openai_accounts_credential_version_read_failed", map[string]any{
+		"err": err.Error(),
+	}, "网关读取 OAuth 凭据版本失败或凭据重载失败，按既有 60s 缓存窗口回退")
+}
+
+// credentialVersionsDiffer 比较快照与当前版本；只有明确读到版本且与快照不同
+// 才返回 true（版本未知不放行重载，避免 Redis 故障引发重载风暴）。
+func (s *Service) credentialVersionsDiffer(ctx context.Context, accounts []OpenAIAccountSecret, snapshot map[string]int64) bool {
+	if s.opts.CredentialVersions == nil || snapshot == nil || len(accounts) == 0 {
 		return false
 	}
-	current := s.readCredentialVersions(ctx, entry.accounts)
+	current := s.readCredentialVersions(ctx, accounts)
 	if current == nil {
 		return false
 	}
-	for id, version := range entry.credentialVersions {
+	for id, version := range snapshot {
 		if current[id] != version {
 			return true
 		}
 	}
 	return false
+}
+
+// credentialSnapshotAhead 报告快照版本是否领先于数据行的 config_revision：
+// 领先说明数据读取早于最近一次凭据提交，调用方应重读。
+//
+// 只对版本键与数据行同一账户（无 credential source 覆盖）的账户生效：授权
+// 实例行的 config_revision 与源账户 revision 不同源，直接比较会误判并造成
+// 每请求重载。
+func credentialSnapshotAhead(accounts []OpenAIAccountSecret, snapshot map[string]int64) bool {
+	for index := range accounts {
+		account := &accounts[index]
+		if account.ConfigRevision == nil {
+			continue
+		}
+		if account.CredentialSourceAccountID != nil && trimSpace(*account.CredentialSourceAccountID) != "" {
+			continue
+		}
+		if version := snapshot[account.ID]; version > *account.ConfigRevision {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialVersionsChanged 比较条目快照与当前版本（accounts 缓存路径）。
+func (s *Service) credentialVersionsChanged(ctx context.Context, entry openAIAccountsCacheEntry) bool {
+	return s.credentialVersionsDiffer(ctx, entry.accounts, entry.credentialVersions)
 }
 
 // ListCachedOpenAIAccountsForGroupAsync mirrors the async read with the stale
@@ -383,7 +484,7 @@ func (s *Service) loadOpenAIAccountsForGroupAndPopulateCache(ctx context.Context
 	}
 	accounts := cloneStaticOpenAIAccounts(result.Accounts)
 	if s.isRuntimeGenerationCurrent(generation) {
-		entry, entryErr := s.newOpenAIAccountsCacheEntry(ctx, accounts)
+		entry, entryErr := s.cacheReadyOpenAIAccountsEntry(ctx, accounts)
 		if entryErr != nil {
 			return nil, entryErr
 		}
@@ -432,7 +533,7 @@ func (s *Service) refreshOpenAIAccountsInBackground(groupID, systemAccountID, ca
 		if !s.isRuntimeGenerationCurrent(generation) {
 			return
 		}
-		entry, entryErr := s.newOpenAIAccountsCacheEntry(ctx, cloneStaticOpenAIAccounts(result.Accounts))
+		entry, entryErr := s.cacheReadyOpenAIAccountsEntry(ctx, cloneStaticOpenAIAccounts(result.Accounts))
 		if entryErr != nil {
 			s.warnEvent("gateway_openai_accounts_stale_refresh_failed", map[string]any{
 				"groupID": groupID, "systemAccountID": systemAccountID, "err": entryErr.Error(),

@@ -10,7 +10,7 @@
 
 三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import；唯一受控例外是 gateway（cmd 层测试专用）经 `maintenance/bootstrap.EnsurePostgres` 为 pgtestkit 隔离库注入 DDL（运行时 schema 引导已随 2026-10-24/25 SQLite 退役删除，唯一入口是 `juhe-ai-maintenance --ensure-schema`；登记于《Go 三项目架构基线》）。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/architecture/Go三项目架构基线.md) 与 [Go 开发手册](../docs/architecture/Go开发手册.md)。
 
-`shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 的 `/v1` 转发链生产上游 client 位于 `projects/gateway/internal/gatewaydispatch/gatewayupstream`（transport.go 等），`maintenance` 当前没有上游请求。
+`shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/crossprocessstate` 是 gateway/jobs 共享的跨进程状态契约：键 shape（`juhe-ai:{<namespace>}:<entity>:<id>`）、账户级锁（SET NX PX + token compare-delete）与单调版本号（与 PG `config_revision` 同值的 max 写入 + 批量 MGET）；只放原语，不放业务判定，也不写 token/密码/完整凭据。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 的 `/v1` 转发链生产上游 client 位于 `projects/gateway/internal/gatewaydispatch/gatewayupstream`（transport.go 等），`maintenance` 当前没有上游请求。
 
 当前常驻入口是 `projects/jobs/cmd/juhe-ai-jobs` 与 `projects/gateway/cmd/juhe-ai-gateway`：
 

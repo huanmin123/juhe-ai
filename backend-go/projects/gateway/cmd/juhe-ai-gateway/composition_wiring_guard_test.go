@@ -120,6 +120,24 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		MissingImpact: "Shared 漏接重新退化为进程内缓存事实源，堆随组合增长且问题只能在生产运行数天后暴露",
 	},
 	{
+		Identifier:    "oauthStore.SetRefreshLock(",
+		Name:          "OAuth 刷新跨进程锁接线",
+		Purpose:       "组合根在共享 Redis StateClient 构造后为 oauthmgmt Store 注入账户级刷新锁（compose.go / compose_oauth_crossprocess.go），与 jobs refresh/keepalive 互斥",
+		MissingImpact: "gateway 手动/401 自动刷新与 jobs 定时刷新可并发换发同一账户的 rotation 型 refresh token，后到者用已作废 token 打上游，账户被迫重新授权",
+	},
+	{
+		Identifier:    "oauthStore.SetCredentialVersionBumper(",
+		Name:          "OAuth 凭据版本投影接线",
+		Purpose:       "gateway 凭据写事务提交后递增共享版本（compose.go / compose_oauth_crossprocess.go），供其他实例与运行态缓存读取",
+		MissingImpact: "网关自身轮换只清本进程缓存；其他 gateway 实例继续用旧 token，轮换可见性退回 60s 窗口",
+	},
+	{
+		Identifier:    "CredentialVersions: gatewayOAuthCredentialVersions{",
+		Name:          "网关运行态账号缓存凭据版本读取端口",
+		Purpose:       "把 OAuth 凭据版本读取端口注入 gatewayruntimecache（chain_runtime.go），进程缓存模式下一次读即可重载 jobs 刷新的新 token",
+		MissingImpact: "gatewayruntimecache 无法感知 jobs 凭据轮换，进程缓存模式重新退回 60s revalidate 可见性窗口",
+	},
+	{
 		Identifier:    "ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache",
 		Name:          "settings 快照跨实例失效回调",
 		Purpose:       "settings_updated 与跨实例失效同步（reason 为空）到达时清空本进程 settings 60s 快照（chain_runtime.go，Node clearSettingsRepositoryCache 对应物）",

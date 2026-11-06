@@ -55,12 +55,17 @@ func (f *fakeExecutor) Eval(_ context.Context, script string, keys []string, arg
 		return nil, f.evalErr
 	}
 	switch {
-	case strings.Contains(script, "INCR"):
+	case strings.Contains(script, "PEXPIRE"):
 		key := keys[0]
+		next := args[0].(int64)
 		current, _ := strconv.ParseInt(f.values[key], 10, 64)
-		current++
-		f.values[key] = strconv.FormatInt(current, 10)
-		f.ttls[key] = time.Duration(args[0].(int64)) * time.Millisecond
+		ttl := time.Duration(args[1].(int64)) * time.Millisecond
+		if next > current {
+			f.values[key] = strconv.FormatInt(next, 10)
+			f.ttls[key] = ttl
+			return next, nil
+		}
+		f.ttls[key] = ttl
 		return current, nil
 	case strings.Contains(script, "DEL"):
 		key := keys[0]
@@ -181,24 +186,33 @@ func TestUnlockEmptyTokenIsNoop(t *testing.T) {
 func TestBumpVersionMonotonic(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := context.Background()
-	for index := int64(1); index <= 3; index++ {
-		value, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-4")
+	for _, revision := range []int64{2, 3, 7} {
+		value, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-4", revision)
 		if err != nil {
 			t.Fatalf("BumpVersion: %v", err)
 		}
-		if value != index {
-			t.Fatalf("BumpVersion = %d, want %d", value, index)
+		if value != revision {
+			t.Fatalf("BumpVersion = %d, want %d", value, revision)
 		}
+	}
+	// 乱序回写（更小的 revision）不得让版本后退。
+	value, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-4", 5)
+	if err != nil || value != 7 {
+		t.Fatalf("回退写 = (%d,%v), want (7,nil)", value, err)
+	}
+	// 非正 revision 是调用方错误。
+	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-4", 0); err == nil {
+		t.Fatalf("revision=0 应返回错误")
 	}
 }
 
 func TestVersionsReadsOneBatchAndDefaultsMissingToZero(t *testing.T) {
 	client, exec := newTestClient(t)
 	ctx := context.Background()
-	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-a"); err != nil {
+	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-a", 4); err != nil {
 		t.Fatalf("BumpVersion: %v", err)
 	}
-	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-b"); err != nil {
+	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-b", 9); err != nil {
 		t.Fatalf("BumpVersion: %v", err)
 	}
 	// 非法值按“无版本”处理。
@@ -214,7 +228,7 @@ func TestVersionsReadsOneBatchAndDefaultsMissingToZero(t *testing.T) {
 	if len(exec.mgetKeys) != 4 {
 		t.Fatalf("MGET 键数 = %d, want 4（去重后）: %v", len(exec.mgetKeys), exec.mgetKeys)
 	}
-	want := map[string]int64{"acc-a": 1, "acc-b": 1, "acc-bad": 0, "missing": 0}
+	want := map[string]int64{"acc-a": 4, "acc-b": 9, "acc-bad": 0, "missing": 0}
 	for id, expected := range want {
 		if versions[id] != expected {
 			t.Fatalf("Versions[%q] = %d, want %d", id, versions[id], expected)
@@ -241,7 +255,7 @@ func TestErrorsSurfaceForCallerFallback(t *testing.T) {
 		t.Fatalf("TryLock 应返回 Redis 错误")
 	}
 	exec.evalErr = errors.New("redis down")
-	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-5"); err == nil {
+	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-5", 1); err == nil {
 		t.Fatalf("BumpVersion 应返回 Redis 错误")
 	}
 	exec.mgetErr = errors.New("redis down")
@@ -260,23 +274,6 @@ func TestReadContextBudget(t *testing.T) {
 	remaining := time.Until(deadline)
 	if remaining > DefaultReadTimeout || remaining <= 0 {
 		t.Fatalf("ReadContext 预算 = %v, want (0, %v]", remaining, DefaultReadTimeout)
-	}
-}
-
-func TestDetachedContextIgnoresParentCancel(t *testing.T) {
-	parent, cancelParent := context.WithCancel(context.Background())
-	cancelParent()
-	detached, cancelDetached := DetachedContext(parent, time.Second)
-	defer cancelDetached()
-	if err := detached.Err(); err != nil {
-		t.Fatalf("DetachedContext 不应继承父取消: %v", err)
-	}
-	deadline, ok := detached.Deadline()
-	if !ok {
-		t.Fatalf("DetachedContext 未设置 deadline")
-	}
-	if time.Until(deadline) > time.Second {
-		t.Fatalf("DetachedContext 超时预算超过指定值")
 	}
 }
 

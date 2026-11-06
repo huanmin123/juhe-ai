@@ -36,8 +36,8 @@ type gatewayOAuthCredentialVersionBumper struct {
 }
 
 // Bump implements oauthmgmt.CredentialVersionBumper.
-func (b gatewayOAuthCredentialVersionBumper) Bump(ctx context.Context, accountID string) error {
-	_, err := b.client.BumpVersion(ctx, crossprocessstate.EntityAccountCredentialsVersion, accountID)
+func (b gatewayOAuthCredentialVersionBumper) Bump(ctx context.Context, accountID string, revision int64) error {
+	_, err := b.client.BumpVersion(ctx, crossprocessstate.EntityAccountCredentialsVersion, accountID, revision)
 	return err
 }
 

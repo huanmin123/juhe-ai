@@ -10,14 +10,15 @@ import (
 	"time"
 )
 
-// CredentialVersionBumper 是 OAuth 凭据版本投影的写入端口：PG 提交成功后
-// 递增共享版本（crossprocessstate.EntityAccountCredentialsVersion），让
-// gateway 运行态账号缓存不必等 60s revalidate。
+// CredentialVersionBumper 是 OAuth 凭据版本投影的写入端口：PG 提交成功后把
+// 共享版本推进到该次提交的 config_revision（crossprocessstate.
+// EntityAccountCredentialsVersion），让 gateway 运行态账号缓存不必等 60s
+// revalidate。
 //
 // 契约（计划 §B2）：只在事务提交成功后调用；bump 失败只记告警，不回滚业务
 // 写，也不阻断刷新——读者在版本缺失时按原有 60s 缓存/PG 路径回退。
 type CredentialVersionBumper interface {
-	Bump(ctx context.Context, accountID string) error
+	Bump(ctx context.Context, accountID string, revision int64) error
 }
 
 // Store is the business database access for the J4 job family. The
@@ -59,13 +60,17 @@ func (s *Store) SetCredentialVersionBumper(bumper CredentialVersionBumper) {
 	s.credentialBumper = bumper
 }
 
-// bumpCredentialVersion 在 PG 提交成功后递增共享版本。失败只告警：读者会在
-// 版本键缺失时回退既有缓存窗口，业务写已提交不可回滚。
-func (s *Store) bumpCredentialVersion(ctx context.Context, accountID string) {
+// bumpCredentialVersion 在 PG 提交成功后把共享版本推进到该次提交的
+// config_revision。失败只告警：读者会在版本键缺失时回退既有缓存窗口，业务
+// 写已提交不可回滚。使用 detached ctx：任务取消/进程收尾不应吞掉已提交写
+// 的版本投影（最多多花 2s）。
+func (s *Store) bumpCredentialVersion(ctx context.Context, accountID string, revision int64) {
 	if s.credentialBumper == nil {
 		return
 	}
-	if err := s.credentialBumper.Bump(ctx, accountID); err != nil {
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.credentialBumper.Bump(bumpCtx, accountID, revision); err != nil {
 		slog.Warn("OAuth 凭据版本投影写入失败，gateway 将按既有缓存窗口回退",
 			"event", "oauth_credential_version_bump_failed",
 			"accountId", accountID, "error", err)
@@ -433,7 +438,7 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	s.bumpCredentialVersion(ctx, id)
+	s.bumpCredentialVersion(ctx, id, configRevision+1)
 	return &RotationResult{
 		ID: id, ConfigRevision: configRevision + 1,
 		UpdatedAt: updatedAt, Changed: true, Credentials: input.Credentials,
@@ -510,7 +515,7 @@ func (s *Store) UpdateAccountCredentials(ctx context.Context, accountID string, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	s.bumpCredentialVersion(ctx, accountID)
+	s.bumpCredentialVersion(ctx, accountID, configRevision+1)
 	return s.FindRotationAccount(ctx, accountID)
 }
 
