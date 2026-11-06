@@ -20,12 +20,15 @@ var J3AProxyLatencyTables = []string{
 
 var J3AProxyLatencyIndexes = map[string]string{
 	"idx_proxy_latency_outcomes_proxy":  "on juhe_jobs.proxy_latency_outcomes using btree (proxy_id, observed_at)",
-		"idx_proxy_latency_outcomes_cursor": "on juhe_jobs.proxy_latency_outcomes using btree (stored_at, outcome_id)",
-		// BUG-0300：过期输入清理子查询（WHERE expires_at < cutoff LIMIT n）无索引
-		// 时逐批全表扫宽表（payload jsonb），单条 DELETE 实测 21s 长事务引发跨组件
-		// 锁风暴（F1/F4 lease 验证 55P03、J2/J3a 超时）。
-		"idx_proxy_latency_inputs_expires_at": "on juhe_jobs.proxy_latency_inputs using btree (expires_at)",
-	}
+	"idx_proxy_latency_outcomes_cursor": "on juhe_jobs.proxy_latency_outcomes using btree (stored_at, outcome_id)",
+	// BUG-0300：过期输入清理子查询（WHERE expires_at < cutoff LIMIT n）无索引
+	// 时逐批全表扫宽表（payload jsonb），单条 DELETE 实测 21s 长事务引发跨组件
+	// 锁风暴（F1/F4 lease 验证 55P03、J2/J3a 超时）。
+	"idx_proxy_latency_inputs_expires_at": "on juhe_jobs.proxy_latency_inputs using btree (expires_at)",
+	// 保留清理外层 DELETE 走 issued_at 批次子查询（WHERE issued_at < cutoff
+	// LIMIT n），生产 13.7 万行宽表实测单条 DELETE 6.2s，与 BUG-0300 同型。
+	"idx_proxy_latency_inputs_issued_at": "on juhe_jobs.proxy_latency_inputs using btree (issued_at)",
+}
 
 var J3AProxyLatencyColumns = map[string]map[string]PostgresColumnSpec{
 	"proxy_latency_owner_leases": {
