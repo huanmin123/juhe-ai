@@ -1871,10 +1871,10 @@ func ValidateBatchUpdateValue(field string, value any) string {
 		if !ok || number != float64(int(number)) || number < 1 {
 			return BatchFieldsPrompt
 		}
-	// 每分钟请求上限（设计 §6.4）：整数且 >= 0，0 = 不限制。
+	// 每分钟请求上限（设计 §6.4）：整数且 0..int4 上界，0 = 不限制（DR-37）。
 	case "rpmLimit":
 		number, ok := value.(float64)
-		if !ok || number != float64(int(number)) || number < 0 {
+		if !ok || number != float64(int(number)) || number < 0 || number > float64(accountscore.MaxRPMLimit) {
 			return BatchFieldsPrompt
 		}
 	case "priority":

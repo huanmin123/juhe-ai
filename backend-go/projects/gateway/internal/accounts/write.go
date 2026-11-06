@@ -797,11 +797,12 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		concurrencyLimit = *input.ConcurrencyLimit
 	}
 	// 每分钟请求上限（AI账户每分钟请求上限设计 §3）：缺省 0（不限制），不套用
-	// concurrency_limit 的默认值；负数按 400 拒绝（与并发校验同风格）。
+	// concurrency_limit 的默认值；负数或超 int4 上界按 400 拒绝（DR-37，避免
+	// 数据库转换错误变成 500）。
 	rpmLimit := 0
 	if input.RPMLimit != nil {
-		if *input.RPMLimit < 0 {
-			return nil, &ValidationError{Message: "每分钟请求上限必须是大于等于 0 的整数"}
+		if *input.RPMLimit < 0 || *input.RPMLimit > accountscore.MaxRPMLimit {
+			return nil, &ValidationError{Message: "每分钟请求上限必须是 0 到 2147483647 的整数"}
 		}
 		rpmLimit = *input.RPMLimit
 	}

@@ -1135,8 +1135,13 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	source.proxyRef = ImportOptionalTextField(record, "proxyRef", "账户 proxyRef", messages)
 	source.proxyProfileID = ImportOptionalTextField(record, "proxyProfileId", "账户 proxyProfileId", messages)
 	source.concurrencyLimit = ImportOptionalPositiveIntegerField(record, "concurrencyLimit", "账户 concurrencyLimit", messages)
-	// 每分钟请求上限（设计 §6.4 导入协议）：可选非负整数，0 = 不限制，缺失落 0。
+	// 每分钟请求上限（设计 §6.4 导入协议）：可选非负整数，0 = 不限制，缺失落 0；
+	// 超 int4 上界按字段错误拒绝（DR-37），不能等到落库变成 500。
 	source.rpmLimit = ImportOptionalNonNegativeIntegerField(record, "rpmLimit", "账户 rpmLimit", messages)
+	if source.rpmLimit > accountscore.MaxRPMLimit {
+		source.Push("账户 rpmLimit 不能超过 2147483647")
+		source.rpmLimit = -1
+	}
 	source.priority = ImportOptionalNonNegativeIntegerField(record, "priority", "账户 priority", messages)
 	source.superPriorityEnabled = ImportOptionalBooleanField(record, "superPriorityEnabled", "账户 superPriorityEnabled", messages)
 	source.fallbackEnabled = ImportOptionalBooleanField(record, "fallbackEnabled", "账户 fallbackEnabled", messages)

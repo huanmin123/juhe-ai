@@ -609,11 +609,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			setArgs = append(setArgs, *input.ConcurrencyLimit)
 		}
 	}
-	// 每分钟请求上限（AI账户每分钟请求上限设计 §6.3）：整数且 >= 0，0 = 解除
-	// 限制；缺失键不改（上方 nil 判定），同值幂等不落变更。
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §6.3）：整数且 0..int4 上界，
+	// 0 = 解除限制；缺失键不改（上方 nil 判定），同值幂等不落变更。DR-37：
+	// 超出 int4 必须在写面 400，不能落到数据库报错变成 500。
 	if input.RPMLimit != nil {
-		if *input.RPMLimit < 0 {
-			return nil, &ValidationError{Message: "每分钟请求上限必须是大于等于 0 的整数"}
+		if *input.RPMLimit < 0 || *input.RPMLimit > accountscore.MaxRPMLimit {
+			return nil, &ValidationError{Message: "每分钟请求上限必须是 0 到 2147483647 的整数"}
 		}
 		if *input.RPMLimit != row.rpmLimit {
 			addChange("rpmLimit", row.rpmLimit, *input.RPMLimit)

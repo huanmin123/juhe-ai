@@ -78,6 +78,21 @@ func TestRPMLimitCreateDefaultsAndValidation(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("浮点应 400：%d %v", code, payload)
 	}
+	// int4 上界合法；上界 + 1 必须写面 400（DR-37，不能落到数据库 500）。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		rpmCreatePayload("rpm-上界", `"rpmLimit":2147483647,`))
+	if code != http.StatusCreated {
+		t.Fatalf("int4 上界应创建成功：%d %v", code, payload)
+	}
+	maxID := dataMap(t, payload)["id"].(string)
+	if got := env.queryCell(t, `SELECT rpm_limit FROM accounts WHERE id = ?`, maxID); got != "2147483647" {
+		t.Fatalf("int4 上界应落库，got %s", got)
+	}
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		rpmCreatePayload("rpm-超上界", `"rpmLimit":2147483648,`))
+	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "每分钟请求上限") {
+		t.Fatalf("超 int4 上界应 400：%d %v", code, payload)
+	}
 }
 
 // TestRPMLimitPatchArms 锁定 PATCH 三态：正整数更新、显式 0 解除、缺失键不改、
@@ -144,6 +159,10 @@ func TestRPMLimitPatchArms(t *testing.T) {
 	code, payload = patch(`{"expectedConfigRevision":4,"rpmLimit":1.5}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("浮点应 400：%d %v", code, payload)
+	}
+	code, payload = patch(`{"expectedConfigRevision":4,"rpmLimit":2147483648}`)
+	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "每分钟请求上限") {
+		t.Fatalf("超 int4 上界应 400：%d %v", code, payload)
 	}
 }
 
@@ -302,7 +321,7 @@ func TestRPMLimitBatchArms(t *testing.T) {
 	if message := validateBatchUpdateValue("rpmLimit", float64(0)); message != "" {
 		t.Fatalf("rpmLimit 0 应合法：%q", message)
 	}
-	for _, invalid := range []any{float64(-1), float64(1.5), "60"} {
+	for _, invalid := range []any{float64(-1), float64(1.5), "60", float64(2147483648)} {
 		if message := validateBatchUpdateValue("rpmLimit", invalid); message == "" {
 			t.Fatalf("rpmLimit %v 应拒绝", invalid)
 		}
@@ -391,6 +410,26 @@ func TestRPMLimitImportExportRoundTrip(t *testing.T) {
 	}
 	if joined := strings.Join(negative.Accounts[0].Messages, ";"); !strings.Contains(joined, "rpmLimit") {
 		t.Fatalf("失败消息应提及 rpmLimit：%v", negative.Accounts[0].Messages)
+	}
+
+	// 超 int4 上界：预览期即按字段错误拒绝，不进入落库 500。
+	overInt4, err := env.store.ExecuteImport(context.Background(), w2NativeDoc(
+		[]map[string]any{
+			withAPIKeyAccountOverrides(w2APIKeyAccount("rpm-imp-over", "rpm-g-over"), map[string]any{"rpmLimit": float64(2147483648)}),
+		},
+		nil,
+	), "", ImportOptions{}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overInt4.Imported || overInt4.CanImport {
+		t.Fatalf("超 int4 rpmLimit 应停在预览不执行：imported=%v canImport=%v", overInt4.Imported, overInt4.CanImport)
+	}
+	if len(overInt4.Accounts) != 1 || overInt4.Accounts[0].Action != importActionFailed {
+		t.Fatalf("超 int4 条目应 failed：%+v", overInt4.Accounts)
+	}
+	if joined := strings.Join(overInt4.Accounts[0].Messages, ";"); !strings.Contains(joined, "2147483647") {
+		t.Fatalf("失败消息应说明 int4 上界：%v", overInt4.Accounts[0].Messages)
 	}
 
 	// 导出：仅 >0 输出。

@@ -219,6 +219,11 @@ const (
 	MaxTagsPerAccount = 24
 )
 
+// MaxRPMLimit 是 accounts.rpm_limit（PostgreSQL int4）可写入的最大值（DR-37）。
+// 管理面 create/PATCH/批量/导入统一按此上界返回 400，避免超出 int4 时由数据库
+// 报错变成 500；公开 API 另有更严格的 0..1000000 契约，UI 另按 9999 硬限展示。
+const MaxRPMLimit = 2147483647
+
 // AccountHealthCheckEndpointModes mirrors the allowed health-check endpoint
 // mode set（原门面 write.go accountHealthCheckEndpointModes 常量表，导入域字段
 // 解析器共用；门面保留同名别名）。M2 媒体生命周期定案：白名单增补
