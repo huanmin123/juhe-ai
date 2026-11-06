@@ -266,13 +266,9 @@ func main() {
 		defer businessConnection.Close()
 		// 升级启动门禁（升级兼容与迁移账本设计 §11.1）：库未被本二进制的
 		// upgrade 收敛时 fail-fast 并给出可执行提示；只读检查，绝不自动迁移
-		// （§2.2-5 不做自动升级）。expand 中断时旧二进制放行并 WARN。
-		gate := schemagate.Check(context.Background(), businessConnection.DB)
-		if !gate.OK {
+		// （§2.2-5 不做自动升级）。
+		if gate := schemagate.Check(context.Background(), businessConnection.DB); !gate.OK {
 			fail(errors.New(gate.Message))
-		}
-		if gate.Warning != "" {
-			logger.Warn("upgrade schema gate warning", "warning", gate.Warning)
 		}
 		businessSource := businessConnection.Source
 		authenticator, authErr := modelcheckauth.New(businessConnection.DB, modelcheckauth.Postgres, time.Now)
