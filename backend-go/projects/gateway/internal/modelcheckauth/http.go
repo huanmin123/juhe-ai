@@ -27,12 +27,26 @@ type SharedLoginGuardDriver interface {
 	Success(ip, username string)
 }
 
+// CaptchaIssuer 是 J3b /auth 验证码驱动契约：*CaptchaService（进程内内存臂）
+// 与主面 authsys.SharedCaptchaService（Redis 运行态）都满足。生产装配必须
+// 注入共享驱动，避免多实例下验证码只在签发进程可验（DR-P15）。
+type CaptchaIssuer interface {
+	Issue(clientIP string) (CaptchaIssueResult, error)
+	Verify(captchaID, code string) bool
+}
+
+// CaptchaErrorVerifier 是共享驱动的 fail-closed 校验面：状态存储故障必须
+// 传播给 handler 并回 500，不得读作“验证码错误”。
+type CaptchaErrorVerifier interface {
+	VerifyWithError(captchaID, code string) (bool, error)
+}
+
 // HTTPHandler is the Gateway-owned authentication lifecycle for the
 // management listener. It only uses the in-process Authenticator and never
 // forwards a request to Node or another Go project.
 type HTTPHandler struct {
 	Auth                       *Authenticator
-	Captcha                    *CaptchaService
+	Captcha                    CaptchaIssuer
 	MaxBody                    int64
 	TTL                        int
 	TemporaryAccessIPAllowlist []string
@@ -293,6 +307,15 @@ func (h *HTTPHandler) recordLoginFailure(w http.ResponseWriter, ip, username str
 	return true
 }
 
+// verifyCaptcha 在共享驱动上走 fail-closed 的 VerifyWithError；内存臂
+// （*CaptchaService）实现该方法且恒无错误，测试/单进程语义不变。
+func (h *HTTPHandler) verifyCaptcha(captchaID, code string) (bool, error) {
+	if verifier, ok := h.Captcha.(CaptchaErrorVerifier); ok {
+		return verifier.VerifyWithError(captchaID, code)
+	}
+	return h.Captcha.Verify(captchaID, code), nil
+}
+
 func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 	var input loginRequest
 	if err := decodeJSON(r, h.maxBody(), &input); err != nil || strings.TrimSpace(input.Username) == "" || input.Password == "" || strings.ContainsAny(input.Username, " \t\r\n") || strings.ContainsAny(input.Password, " \t\r\n") {
@@ -300,7 +323,18 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Captcha != nil {
-		if strings.TrimSpace(input.CaptchaID) == "" || strings.TrimSpace(input.CaptchaCode) == "" || !h.Captcha.Verify(strings.TrimSpace(input.CaptchaID), input.CaptchaCode) {
+		if strings.TrimSpace(input.CaptchaID) == "" || strings.TrimSpace(input.CaptchaCode) == "" {
+			writeJSONError(w, http.StatusBadRequest, "验证码错误或已过期")
+			return
+		}
+		verified, verifyErr := h.verifyCaptcha(strings.TrimSpace(input.CaptchaID), input.CaptchaCode)
+		if verifyErr != nil {
+			slog.Error("J3b 验证码状态存储故障",
+				"event", "j3b_captcha_verify_failed", "error", verifyErr.Error())
+			writeJSONError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !verified {
 			writeJSONError(w, http.StatusBadRequest, "验证码错误或已过期")
 			return
 		}

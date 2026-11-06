@@ -131,6 +131,12 @@ func (s *CaptchaService) Verify(captchaID, code string) bool {
 	return normalizeCaptchaCode(code) == record.answer
 }
 
+// VerifyWithError 是共享驱动 fail-closed 面的内存臂实现：内存存储不会失败，
+// 错误恒为 nil；共享 Redis 驱动会返回真实存储错误。
+func (s *CaptchaService) VerifyWithError(captchaID, code string) (bool, error) {
+	return s.Verify(captchaID, code), nil
+}
+
 // AnswerForTest is intentionally not used by HTTP handlers.
 func (s *CaptchaService) AnswerForTest(captchaID string) string {
 	if s == nil {

@@ -266,9 +266,13 @@ func main() {
 		defer businessConnection.Close()
 		// 升级启动门禁（升级兼容与迁移账本设计 §11.1）：库未被本二进制的
 		// upgrade 收敛时 fail-fast 并给出可执行提示；只读检查，绝不自动迁移
-		// （§2.2-5 不做自动升级）。
-		if gate := schemagate.Check(context.Background(), businessConnection.DB); !gate.OK {
+		// （§2.2-5 不做自动升级）。expand 中断时旧二进制放行并 WARN。
+		gate := schemagate.Check(context.Background(), businessConnection.DB)
+		if !gate.OK {
 			fail(errors.New(gate.Message))
+		}
+		if gate.Warning != "" {
+			logger.Warn("upgrade schema gate warning", "warning", gate.Warning)
 		}
 		businessSource := businessConnection.Source
 		authenticator, authErr := modelcheckauth.New(businessConnection.DB, modelcheckauth.Postgres, time.Now)
@@ -550,9 +554,21 @@ func main() {
 		// 验证码开关只读已加载的 runtimeCfg.CaptchaDisabled（loadRuntimeConfig
 		// 内 strictEnvBool 统一解析），与管理面同判；此处不得再直接解析 env，
 		// 否则两装配面对同一变量各自解析会产生布尔语法漂移（如 `1` 只在一面生效）。
-		var captchaService *modelcheckauth.CaptchaService
+		var captchaService modelcheckauth.CaptchaIssuer
 		if !runtimeCfg.CaptchaDisabled {
-			captchaService = modelcheckauth.NewCaptchaService(time.Now)
+			// DR-P15：J3b /auth 与主管理面共用 auth_captcha Redis 运行态，
+			// 多实例下签发/校验可跨进程；状态存储故障由 handler 按 fail-closed
+			// 回 500，与主面 BUG-0171 口径一致。
+			sharedCaptcha, closeCaptcha, captchaErr := authsys.NewRedisCaptchaService(
+				runtimeCfg.RedisURL,
+				rediscfg.DomainNamespace(runtimeCfg.RedisNamespace, rediscfg.DomainAuthState),
+				time.Now,
+			)
+			if captchaErr != nil {
+				fail(fmt.Errorf("create J3b shared captcha service: %w", captchaErr))
+			}
+			captchaService = sharedCaptcha
+			defer closeCaptcha()
 		}
 		// R7-A A-H1：J3b 登录守卫与主面共享 Redis 运行态驱动（主面 authDeps
 		// 用 DomainAuthState 域，这里必须同域；根 namespace 会让两侧各自计数，
