@@ -78,6 +78,26 @@ func TestScheduleStatusAndBoundaries(t *testing.T) {
 	}
 }
 
+// DR-15：DST 春季跳变缺失的本地分钟必须吸附到跳变后的首个有效分钟，
+// 不能丢弃边界导致 next_check_at 跳过有效窗口。
+func TestNextScheduleCheckAtDSTSpringForwardSnapsMissingStart(t *testing.T) {
+	schedule := mustParseSchedule(t, `{"enabled":true,"timezone":"America/New_York","mode":"allow_windows","windows":[{"daysOfWeek":[7],"start":"02:30","end":"03:30"}]}`)
+	// 2026-03-08 05:00Z = 00:00 EST，早于 02:00→03:00 跳变。
+	now := time.Date(2026, 3, 8, 5, 0, 0, 0, time.UTC)
+	next, ok := NextScheduleCheckAt(schedule, now)
+	if !ok || next != "2026-03-08T07:00:00.000Z" {
+		t.Fatalf("spring-forward next check=%q ok=%v, want 07:00Z (03:00 EDT)", next, ok)
+	}
+	// 不存在的 02:30 吸附到 03:00 EDT（07:00Z），边界处窗口已开放。
+	millis, ok := zonedLocalMinuteToUTC("2026-03-08", 150, "America/New_York")
+	if !ok || time.UnixMilli(millis).UTC() != time.Date(2026, 3, 8, 7, 0, 0, 0, time.UTC) {
+		t.Fatalf("02:30 local snap=%v ok=%v", time.UnixMilli(millis).UTC(), ok)
+	}
+	if status, ok := ScheduleStatus(schedule, time.Date(2026, 3, 8, 7, 0, 0, 0, time.UTC)); !ok || status != "active" {
+		t.Fatalf("03:00 EDT status=%q ok=%v", status, ok)
+	}
+}
+
 func TestDueScheduleEvent(t *testing.T) {
 	schedule := mustParseSchedule(t, `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"09:00","end":"18:00"}]}`)
 

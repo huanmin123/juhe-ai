@@ -751,5 +751,17 @@ func zonedLocalMinuteToUTC(dateKey string, minute int, timezone string) (int64, 
 	if verified.dateKey == dateKey && verified.minuteOfDay == minute {
 		return guess, true
 	}
+	// DST 春季跳变：目标本地分钟不存在（例如 America/New_York 2026-03-08
+	// 02:30）。直接丢弃会让 next_check_at 跳过整个有效窗口（DR-15）；改为
+	// 吸附到跳变后第一个本地分钟（02:30 → 03:00），让闸门在跳变时刻求值。
+	fallbackStart := guess - 4*60*60000
+	fallbackEnd := guess + 4*60*60000
+	for candidate := fallbackStart; candidate <= fallbackEnd; candidate += 60000 {
+		parts := scheduleZonedParts(time.UnixMilli(candidate), timezone)
+		candidateSerial := dateKeyTime(parts.dateKey).UnixMilli()/60000 + int64(parts.minuteOfDay)
+		if candidateSerial >= targetSerial {
+			return candidate, true
+		}
+	}
 	return 0, false
 }
