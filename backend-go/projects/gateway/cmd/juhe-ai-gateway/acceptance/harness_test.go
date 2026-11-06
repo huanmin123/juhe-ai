@@ -30,6 +30,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // ---------------------------------------------------------------------------
@@ -256,8 +257,7 @@ func provisionJobsPostgresSchema(t *testing.T, dsn string) {
 // 四表（幂等）：jobs 的 J2 service 只读取已预置表，不自行建表。
 func runMaintenanceAccountBalancePostgresApply(t *testing.T, dsn string) {
 	t.Helper()
-	cmd := exec.Command(maintenanceBinary, "--apply-account-balance-postgres")
-	cmd.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL="+dsn)
+	cmd := exec.Command(maintenanceBinary, "--apply-account-balance-postgres", "--dsn", dsn)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -270,8 +270,7 @@ func runMaintenanceAccountBalancePostgresApply(t *testing.T, dsn string) {
 // jobs 表（幂等）：jobs 启动只校验已预置表，不自行建表。
 func runMaintenanceProxyLatencyPostgresApply(t *testing.T, dsn string) {
 	t.Helper()
-	cmd := exec.Command(maintenanceBinary, "--apply-j3a-proxy-latency-postgres")
-	cmd.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL="+dsn)
+	cmd := exec.Command(maintenanceBinary, "--apply-j3a-proxy-latency-postgres", "--dsn", dsn)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -284,8 +283,7 @@ func runMaintenanceProxyLatencyPostgresApply(t *testing.T, dsn string) {
 // owner 默认常驻后，juhe_j3b 专属 schema 按契约由 maintenance 显式补齐。
 func runMaintenanceJ3bPostgresApply(t *testing.T, dsn string) {
 	t.Helper()
-	cmd := exec.Command(maintenanceBinary, "--apply-j3b-model-check-postgres")
-	cmd.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL="+dsn)
+	cmd := exec.Command(maintenanceBinary, "--apply-j3b-model-check-postgres", "--dsn", dsn)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -313,7 +311,27 @@ func runMaintenanceEnsureSeed(t *testing.T, dsn string, secret string) map[strin
 	if report["ensureRan"] != true || report["seedRan"] != true {
 		t.Fatalf("maintenance report must record ensure+seed: %#v", report)
 	}
+	// upgrade 账本收敛：gateway 启动要求 schema_state.schema_revision 等于
+	// 二进制契约；ensure-schema 只建结构不写账本，fresh 隔离库必须再跑一次
+	// upgrade（停写/备份确认在一次性测试库里恒为真）。
+	runMaintenanceUpgrade(t, dsn, secret)
 	return report
+}
+
+// runMaintenanceUpgrade 收敛升级账本：gateway 启动要求
+// schema_state.schema_revision 等于二进制契约；ensure-schema 只建结构不写
+// 账本，fresh 隔离库必须再跑一次 upgrade（停写/备份确认在一次性测试库里
+// 恒为真）。
+func runMaintenanceUpgrade(t *testing.T, dsn, secret string) {
+	t.Helper()
+	upgrade := exec.Command(maintenanceBinary, "upgrade", "--dsn", dsn, "--secret", secret,
+		"--stop-write-confirmed", "--backup-confirmed")
+	var stdout, stderr bytes.Buffer
+	upgrade.Stdout = &stdout
+	upgrade.Stderr = &stderr
+	if err := upgrade.Run(); err != nil {
+		t.Fatalf("maintenance upgrade failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +402,7 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 				return err
 			})
 		dsn = testDB.DSN
+		runMaintenanceUpgrade(t, dsn, secret)
 	} else {
 		// 外部库同样走受控 ensure+seed（幂等）。
 		runMaintenanceEnsureSeed(t, dsn, secret)
@@ -419,15 +438,15 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		"JUHE_AI_SECRET":                        secret,
 		// PostgreSQL + Redis 唯一存储形态（2026-10-24 存储形态收口）：三个
 		// 连接串必填；F3/F4 store URL 缺省回落主连接串，实例 ID 显式钉死。
-		"JUHE_AI_POSTGRES_URL":          dsn,
-		"JUHE_AI_BUSINESS_POSTGRES_URL": dsn,
-		"JUHE_AI_REDIS_URL":       redisURL,
-		"JUHE_AI_REDIS_NAMESPACE": namespace,
-		"JUHE_AI_BUSINESS_OWNER":              "gateway",
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":  "true",
-		"JUHE_AI_AUTH_CAPTCHA_DISABLED":       "true",
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":       "acceptance-gateway",
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":    filepath.Join(root, "storage", "audit-blobs"),
+		"JUHE_AI_POSTGRES_URL":               dsn,
+		"JUHE_AI_BUSINESS_POSTGRES_URL":      dsn,
+		"JUHE_AI_REDIS_URL":                  redisURL,
+		"JUHE_AI_REDIS_NAMESPACE":            namespace,
+		"JUHE_AI_BUSINESS_OWNER":             "gateway",
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED": "true",
+		"JUHE_AI_AUTH_CAPTCHA_DISABLED":      "true",
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":      "acceptance-gateway",
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":   filepath.Join(root, "storage", "audit-blobs"),
 		// E2E-FINDING #10：验收链路要求每次成功请求的 attempts 归因都保留，
 		// 采样率 1 = 全采样（成功信封 retention days 默认 3，满足 LoadConfig
 		// 「rate 与 retention days 同时为 0 或同时 > 0」联动校验）。
@@ -466,7 +485,7 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	// J3b circuit runtime owner fence（与部署 jobs 预置 runtime-index-meta
 	// 同一契约）：fresh 验收环境的 state Redis 无历史就绪哈希，harness 按
 	// circuitruntime.Store.CheckReady 的键位契约预置。
-	provisionCircuitRuntimeIndex(t, redisURL, namespace+"-j3b")
+	provisionCircuitRuntimeIndex(t, redisURL, namespace)
 	// X04 logreads：F1 runtime-log 数据集表由 jobs 进程自建（gateway 只读）；
 	// fresh 验收环境由夹具按生产 DDL 预置读面（helper 在 log_faces_test.go）。
 	provisionRuntimeLogDataset(t, dsn)
@@ -490,10 +509,15 @@ func provisionCircuitRuntimeIndex(t *testing.T, redisURL, namespace string) {
 	t.Cleanup(func() { _ = client.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	key := "juhe-ai:" + namespace + ":account-circuit:gateway-account-circuit:runtime-index-meta"
-	if err := client.HSet(ctx, key,
-		"version", "1", "status", "ready", "ownerMode", "go-runtime-state-v1").Err(); err != nil {
-		t.Fatalf("seed circuit runtime index: %v", err)
+	// 主链 circuit 与 J3b 模型检测 owner 各自使用独立域 namespace，两套
+	// runtime-index-meta 都必须就绪（fresh 验收环境无历史哈希）。
+	for _, domain := range []string{rediscfg.DomainCircuit, rediscfg.DomainJ3B} {
+		key := rediscfg.TaggedNamespacedKey("juhe-ai:account-circuit:gateway-account-circuit:runtime-index-meta",
+			rediscfg.DomainNamespace(namespace, domain))
+		if err := client.HSet(ctx, key,
+			"version", "1", "status", "ready", "ownerMode", "go-runtime-state-v1").Err(); err != nil {
+			t.Fatalf("seed circuit runtime index (%s): %v", domain, err)
+		}
 	}
 }
 
