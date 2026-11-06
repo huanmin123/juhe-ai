@@ -213,6 +213,13 @@ else
   fi
   if [ -n "$(git status --porcelain)" ]; then BUILD_VERSION="dev-${COMMIT}-dirty"; else BUILD_VERSION="dev-${COMMIT}"; fi
 fi
+# Docker image tag 必须匹配 [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}；git tag 允许的
+# `/`、`+` 等字符会让 compose build 以晦涩错误失败，也让注入的 shell 变量不
+# 安全。发布版本直接作为镜像 tag，入口处 fail-fast 并给出可操作文案。
+if [[ ! "$BUILD_VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+  echo "[FAIL] 构建版本 \"$BUILD_VERSION\" 不是合法 Docker tag（只允许字母/数字/下划线/点/短横线，且不能以点或短横线开头）；请改用合法 tag 或设置 JUHE_AI_DISABLE_AUTO_TAG=1 走 dev-<sha>。" >&2
+  exit 1
+fi
 GO_LDFLAGS="-s -w -X ${XP}.Version=$BUILD_VERSION -X ${XP}.Commit=$COMMIT -X ${XP}.BuildTime=$BUILD_TIME"
 echo "  构建身份 version=$BUILD_VERSION commit=$COMMIT"
 # 镜像 tag 注入（T84-10）：compose 的 image 使用
