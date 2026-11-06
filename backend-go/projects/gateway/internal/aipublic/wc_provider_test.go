@@ -78,15 +78,16 @@ func wcData(t *testing.T, status int, payload map[string]any, wantStatus int) ma
 // TestWCProviderList：enabled 过滤、稳定顺序、分页四件套与 strict query。
 func TestWCProviderList(t *testing.T) {
 	env := newAIPublicEnv(t)
-	env.seedProviderRow("b-provider", "Beta", true)
+	// 名称统一小写，避免测试依赖 PG 实例 collation（C 排序会把大写名排到
+	// 小写名之前）；生产查询仍是 name ASC, code ASC。
+	env.seedProviderRow("b-provider", "beta", true)
 	env.seedProviderRow("a-provider", "alpha", true)
-	env.seedProviderRow("c-provider", "Gamma", false)
-	env.seedProviderRow("d-provider", "Delta", true)
+	env.seedProviderRow("c-provider", "gamma", false)
+	env.seedProviderRow("d-provider", "delta", true)
 	token := wcProviderToken(t, env, wcProviderScopesList())
 
-	// 默认分页：仅 enabled。store 的 ORDER BY name ASC 在 PG 为实例 collation
-	// 序（大小写不敏感字典序）：alpha < Beta < Delta。SQLite 载具的码点序
-	// （大写在前）已随载具退役，T65 重钉披露。
+	// 默认分页：仅 enabled。名称统一小写后，name ASC, code ASC 在 C / en_US
+	// 等常见 collation 下都得到 alpha < beta < delta，测试不再依赖实例 locale。
 	status, payload, _ := env.doAuth(http.MethodGet, Prefix+"/provider/list", "", token)
 	data := wcData(t, status, payload, http.StatusOK)
 	if data["page"] != float64(1) || data["pageSize"] != float64(20) {
