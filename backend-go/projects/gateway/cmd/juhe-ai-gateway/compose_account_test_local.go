@@ -16,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/manualtestrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // gatewayAccountTestExecutor 是手动账号测试执行链的进程内装配（去跨进程战役：
@@ -136,6 +137,10 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		Source:      savedStore,
 		Secret:      cfg.Secret,
 		Concurrency: probeConcurrency,
+		// 手动账户测试与 /v1 派发共用同一部署级 URL 安全配置（D-192/D-146）：
+		// 请求期 DialGuard 对每次新连接解析-校验-钉扎拨号，strict 模式
+		//（JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false/0）下域名指向内网即拒绝。
+		DialGuard: sharedupstreamhttp.NewDialGuard(cfg.UpstreamURLSecurity, nil, nil),
 	})
 	if err != nil {
 		return err

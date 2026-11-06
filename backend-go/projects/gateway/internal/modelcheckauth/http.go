@@ -149,7 +149,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 	}
 	verified, ok, err := h.Auth.VerifySystemAccountCredentials(r.Context(), input.Username, input.Password)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !ok || (verified.Role != "admin" && verified.Role != "super_admin") {
@@ -165,7 +165,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 	}
 	issued, issuedOK, err := h.Auth.CreateTemporaryAccessToken(r.Context(), verified.SystemAccountID, verified.CredentialRevision, input.TTLSeconds)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !issuedOK {
@@ -191,7 +191,7 @@ func (h *HTTPHandler) revokeTemporaryAccessToken(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := h.Auth.RevokeToken(r.Context(), token); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -315,7 +315,7 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	session, account, ok, err := h.Auth.Login(r.Context(), input.Username, input.Password, ttl)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !ok {
@@ -351,7 +351,7 @@ func (h *HTTPHandler) logout(w http.ResponseWriter, r *http.Request) {
 	token, _ := cookieToken(r)
 	if token != "" {
 		if err := h.Auth.RevokeToken(r.Context(), token); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 	}
@@ -388,7 +388,7 @@ func (h *HTTPHandler) profile(w http.ResponseWriter, r *http.Request) {
 	}
 	changed, err := h.Auth.UpdateDisplayName(r.Context(), actor.SystemAccountID, strings.TrimSpace(input.DisplayName))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !changed {
@@ -421,7 +421,7 @@ func (h *HTTPHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	if !actor.MustChangePassword {
 		verified, ok, verifyErr := h.Auth.VerifySystemAccountCredentials(r.Context(), actor.Username, input.OldPassword)
 		if verifyErr != nil {
-			writeJSONError(w, http.StatusInternalServerError, verifyErr.Error())
+			writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", verifyErr)
 			return
 		}
 		if !ok || verified.CredentialRevision != revision {
@@ -431,7 +431,7 @@ func (h *HTTPHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	changed, err := h.Auth.ChangePassword(r.Context(), actor.SystemAccountID, revision, input.NewPassword, actor.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !changed {
@@ -500,6 +500,16 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"message": message})
+}
+
+// writeJSONErrorCause 写出固定 message 的错误响应，并把内部错误原文只写入
+// 日志（SEC-05）：数据库/存储错误、SQL 片段与内部标识不得回显给客户端。
+func writeJSONErrorCause(w http.ResponseWriter, status int, message string, err error) {
+	if err != nil {
+		slog.Error("J3b 请求处理失败",
+			"event", "j3b_request_failed", "status", status, "error", err.Error())
+	}
+	writeJSONError(w, status, message)
 }
 
 var _ http.Handler = (*HTTPHandler)(nil)

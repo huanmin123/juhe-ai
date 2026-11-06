@@ -10,11 +10,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 )
 
 func TestModeAudioVocabulary(t *testing.T) {
@@ -273,49 +270,6 @@ func TestClassifyResponseGeminiAudioSpeech(t *testing.T) {
 	}
 }
 
-// audio_speech 人工测试自 2026-11-01 用户裁决起改为密钥连通性探测：只 POST
-// {base}/tts/create 空体验证密钥能否访问上游（volcengine_openspeech 模板形态），
-// 不再发起真实 TTS 生成（原 gemini generateContent「生成并验音频」端到端断言
-// 随裁决删除）。请求形状与连通性分类在此实测。
-func TestProbeAudioSpeechConnectivityAgainstMockUpstream(t *testing.T) {
-	var gotPath, gotMethod, gotBody string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotMethod = r.Method
-		raw, _ := io.ReadAll(r.Body)
-		gotBody = string(raw)
-		w.WriteHeader(http.StatusBadRequest)
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"error":{"message":"empty body"}}`))
-	}))
-	defer server.Close()
-
-	// R3：base_url 携带版本根（R1 删除运行时补根），直拼语义下连通性路径为
-	// /v1beta/tts/create。
-	view := probeView(server.URL + "/v1beta")
-	view.ProviderCode = "volcengine"
-	view.HealthCheckModel = "doubao-tts"
-	view.SupportedModels = []string{"doubao-tts"}
-	view.HealthCheckEndpointMode = string(ModeAudioSpeech)
-	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeAudioSpeech: true}
-	service := newTestService(t, &fakeSource{view: view})
-	observation, err := service.Probe(context.Background(), accountquality.ProbeRequest{AccountID: "acc-1", Full: true})
-	if err != nil {
-		t.Fatalf("probe err = %v", err)
-	}
-	if !observation.Result.Success {
-		t.Fatalf("audio_speech connectivity probe failed: %+v", observation.Result)
-	}
-	if gotMethod != http.MethodPost || gotPath != "/v1beta/tts/create" {
-		t.Fatalf("upstream request = %s %s", gotMethod, gotPath)
-	}
-	if gotBody != "" {
-		t.Fatalf("audio_speech 连通性探测应为空体：%q", gotBody)
-	}
-	if observation.Result.Message != "密钥连通性验证通过（上游 HTTP 400）" {
-		t.Fatalf("message = %q", observation.Result.Message)
-	}
-	if !observation.Evidence.Connectivity {
-		t.Fatal("evidence 必须带 connectivity 标记")
-	}
-}
+// audio_speech 人工测试自 2026-11-01 用户裁决起改为密钥连通性探测；volcengine
+// 语音域形状（固定 host + /api/v3 + X-Api-Key + model body）由
+// probe_connectivity_test.go 的 TestConnectivityProbeVolcengineSpeech 覆盖。

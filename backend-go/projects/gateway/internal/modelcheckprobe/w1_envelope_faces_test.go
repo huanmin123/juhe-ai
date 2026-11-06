@@ -219,14 +219,17 @@ func w1RunF4(t *testing.T, form string) w1CapturedFace {
 	now := time.Now().UTC()
 	credentialJSON := `{"api_key":"` + w1CrossFaceToken + `"}`
 	credentialKind := "api_key"
-	profile := "profile_openai_openai_v1"
+	// 2026-11-05 退役裁决：openai 兼容供应商退役，gpt 才是真实厂商；
+	// 旧 profile_openai_openai_v1 / Provider=openai 会先被“未冻结的 provider”
+	// 校验拒绝，测不到 F4 传输失败面。
+	profile := "profile_gpt_openai_v1"
 	typeName := "api_key"
 	input := exactkeyprobe.Input{
 		AccountID:            w1CrossFaceAccountID,
 		InputVersion:         1,
 		ConfigRevision:       1,
 		DispatchRevision:     1,
-		Provider:             "openai",
+		Provider:             "gpt",
 		ProtocolProfileID:    profile,
 		ProtocolCode:         "openai",
 		ProtocolVersion:      "v1",

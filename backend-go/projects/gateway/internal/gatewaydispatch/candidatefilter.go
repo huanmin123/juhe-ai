@@ -57,6 +57,15 @@ func requestCapabilityMismatchMessage(reason string, requestedModel string) stri
 	if reason == "model_unsupported" && trimString(requestedModel) != "" {
 		return "当前分组无账户支持请求模型：" + trimString(requestedModel)
 	}
+	if reason == "speech_credentials_missing" {
+		return "当前分组内的火山语音账户缺少 speech_token 凭据，无法承接语音请求"
+	}
+	if reason == "anthropic_native_unsupported" {
+		return "请求模型仅由 Anthropic 原生账户承接，请改用 Anthropic /v1/messages 入口（或绑定支持 OpenAI Chat/Responses 的分组）"
+	}
+	if reason == "gemini_native_unsupported" {
+		return "请求模型仅由 Gemini 原生账户承接，请改用 Gemini /v1beta/models/{model}:generateContent 入口（或绑定支持 OpenAI Chat/Responses 的分组）"
+	}
 	return "当前分组无账户支持请求路径或客户端协议"
 }
 
@@ -175,10 +184,21 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 			return CandidateFilterOutput{Outcome: gatewaypreauth.CandidateOutcomeCompleted}, nil
 		}
 		message := requestCapabilityMismatchMessage(reason, requestedModel)
+		statusCode := 503
+		errorType := "service_unavailable"
+		// 语音凭据缺失是账户配置缺位（确定性）；原生协议不匹配（仅
+		// Anthropic/Gemini 账户承接的模型走了 OpenAI Chat 入口）是客户端
+		// 协议选择错误——两者都回 400 invalid_request_error，不退化成可
+		// 重试 503（2026-11-06 C8 裁决）。
+		switch reason {
+		case "speech_credentials_missing", "anthropic_native_unsupported", "gemini_native_unsupported":
+			statusCode = 400
+			errorType = "invalid_request_error"
+		}
 		if err := input.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
-			StatusCode: 503,
+			StatusCode: statusCode,
 			Message:    message,
-			ErrorType:  "service_unavailable",
+			ErrorType:  errorType,
 			ErrorCode:  reason,
 			ErrorPhase: "dispatch",
 		}); err != nil {

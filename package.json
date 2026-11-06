@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "test:daily": "node scripts/test-daily-regression.mjs",
+    "test:affected": "node scripts/test-affected.mjs",
+    "test:baseline": "node scripts/test-daily-regression.mjs --tier=fast",
+    "test:baseline:slow": "node scripts/test-daily-regression.mjs --tier=slow",
+    "test:baseline:all": "node scripts/test-daily-regression.mjs --tier=all",
+    "test:scenario": "node scripts/test-scenario.mjs",
+    "test:daily": "node scripts/test-daily-regression.mjs --tier=fast",
     "test:dev-go-project-env": "node scripts/regression/dev-go-project-env-regression.mjs",
     "test:docker-go-project-isolation": "node scripts/regression/docker-go-project-isolation-regression.mjs",
     "test:platform-time-contract": "node scripts/regression/platform-time-contract.test.mjs",

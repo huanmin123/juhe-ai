@@ -106,6 +106,18 @@ gateway/jobs 的全部"路径类"env 未配置时按 datadir 约定派生为 `<D
 - 非 compose 部署（systemd/裸进程直跑）同理：必须让进程 cwd 锚定到含 `data/` 的工作目录，或显式配置绝对路径（`JUHE_AI_DATA_DIR`，必要时 `JUHE_AI_USAGE_SPOOL_DIRECTORY`；旧名 `JUHE_AI_USAGE_SPOOL_DIR` 已删除，不再读取）。
 - 症状速查（BUG-0193）：统计页面全空但接口 200 → 先查 `SELECT count(*) FROM juhe_usage.usage_records;` 是否 0 行，再对比 gateway/jobs 两容器内 `data/usage-record-spool` 是否为同一挂载目录（`docker inspect` 挂载 + `docker exec ls` 实际内容）。
 
+## 安全基线（2026-11-06）
+
+本节约束随 `compose.yml` / `Caddyfile` 固化；改动任一项必须在同一次交付内同步本节，并在发布窗口重新验证容器健康。
+
+- **HSTS**：`Caddyfile` 的 `aijh.huanmin.top` 站点返回 `Strict-Transport-Security: max-age=31536000`。刻意不加 `includeSubDomains`，避免影响同域下其他未全程 HTTPS 的子域；80 端口仍由 Caddy 自动永久跳转 HTTPS。验证：`curl -sI https://aijh.huanmin.top/__aisys__/health | grep -i strict-transport-security`。
+- **容器权限**：
+  - gateway/jobs/maintenance 以镜像内非 root `app` 用户运行，`read_only: true`、`cap_drop: [ALL]`；可写面只有 `./data/app/{data,logs}` 挂载与 `/tmp` tmpfs。
+  - caddy `read_only: true`、`cap_drop: [ALL]` + `cap_add: [NET_BIND_SERVICE]`（绑定 80/443 的 TCP 与 UDP）；可写面仅 `caddy_data` / `caddy_config` 卷与 `/tmp`。
+  - postgres/redis 只加 `no-new-privileges`，**不裁剪 capability、不设只读根**：官方镜像入口需要以 root 完成数据目录属主修正后再降权，裁剪 capability 会破坏首启与升级。
+  - 验证：`docker inspect <container> --format '{{json .HostConfig}}'` 检查 `ReadonlyRootfs` / `CapDrop` / `SecurityOpt`；重启后全部容器 healthy。
+- **请求体与慢连接上限**：管理面 JSON 默认 256 KiB（`internal/kernel`）；`/v1` 文本与媒体请求按车道限制（`internal/gatewaybody`，图片/音频最高 64MB 档），`POST /v1/files`（含裸 `/files` 形态）单文件上限 512 MiB（`openaicompatcore.DefaultMaxFileBytes`）。gateway 主监听 `ReadTimeout` 10 分钟、J3b 管理别名 5 分钟、健康监听 30 秒（2026-11-06 起），用于约束慢速 body 占连；`POST /v1/files`/`/files` 与 64MiB 图片/音频车道（`/v1/images/edits`、`/v1/audio/transcriptions|translations` 及裸形态）在监听最外层分别延长到 60/30 分钟（`large_upload_timeout.go`），避免按带宽下限截断契约允许的大文件。不改变 SSE 响应与 realtime WebSocket 会话语义（后者在 hijack 后由桥接层设置 idle deadline）。
+- **镜像 digest**：当前仍按可变 tag 拉取（`postgres:18-alpine`、`redis:7.4-alpine`、`caddy:2-alpine`、构建 `alpine:3.20`）。digest 固定需要在本机可访问 registry 且有 Docker 验证环境，本批未完成，登记为 T167；完成前不得宣称镜像已按 digest 固定。
 
 ## 构建与部署（本机 Windows → 服务器）
 
@@ -115,6 +127,7 @@ gateway/jobs 的全部"路径类"env 未配置时按 datadir 约定派生为 `<D
 
 ```sh
 # 1. 本地构建（Go 交叉编译 + 前端）
+#    Go 1.26.10 基线由 go.mod 强制；GOTOOLCHAIN=auto 会自动获取补丁工具链。
 for p in gateway jobs maintenance; do
   (cd backend-go/projects/$p && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-s -w" -o ../../../docker/single-server/build/bin/juhe-ai-$p ./cmd/juhe-ai-$p)
@@ -329,7 +342,7 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 - `mem_limit`（cgroup 硬限，最后防线）：gateway `4g`、jobs `1g`——超限 OOM kill 只波及容器自身（restart: unless-stopped 自动拉起），不再拖死整机。PG **有意不设限**：PG 被 OOM 强杀的恢复代价远大于保护收益，其 RSS 由 shared_buffers/work_mem 自控（历史稳定 3.0-3.2GiB）。Redis 设 `--maxmemory 1gb` + `--maxmemory-policy noeviction`：承载全部缓存与运行态域，逐出会破坏熔断/并发等运行态正确性，所以到顶表现为写入失败而不是逐出；当前用量 ~16MiB 无压力。
 - 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/host/README.md` 执行。
 
-- `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。
+- `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。compose 对 gateway/jobs/maintenance 三服务固定同值；maintenance 消费 secret 的一次性命令（`--migrate-account-capability-domain`、`--verify-account-capability-domain`、`--seed`）在 production 缺 `--secret`/`JUHE_AI_SECRET` 时 stderr 报错并 exit 2，**不再回落开发默认密钥**（`juhe-ai-dev-secret-change-me` 是仓库内公开值，生产回退会让凭据信封失去保护）。
 - `JUHE_AI_SECRET`：≥32 位强随机；账号凭据/内建 API Key 加密封套，**有加密数据后不可更换**，务必留档。所有共享 Redis 会话亲和绑定的 Gateway 实例必须使用相同 secret：会话绑定携带上游 Key 的 HMAC 指纹（账户内 Key 会话黏性，见 `docs/functions/账户内APIKey会话亲和设计.md`），组级会话绑定键同样由该 secret 派生（独立 HMAC purpose `group-affinity:v1`，见 `docs/functions/策略路由分组会话亲和设计.md`），不同 secret 实例混跑不是受支持的稳定形态；secret 协调轮换时先统一切换全部实例再恢复流量，旧指纹自然失配并在下一次协议成功后重绑。
 - `JUHE_AI_IMAGE_TAG`（compose 变量，2026-10-30 起）：三服务镜像 tag 前缀（`juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-gateway|jobs|maintenance`）；不配置回落 `latest`，发布时由 `deploy.sh` 注入 tag 版本号实现镜像与 git tag 一一对应。历史镜像名 `juhe-ai-single-server:<role>` 已退役，首次升级到该版后旧 tag 镜像可清理。
 - `JUHE_AI_POSTGRES_URL`：唯一主库连接串，gateway/jobs/maintenance 及全部子系统共用，必填（缺失启动 fail-fast）。审计、操作日志、J3b、J2、J3a、J1 store 等不再有独立 URL；密码只需在 `POSTGRES_PASSWORD` 维护一份（进程启动映射为 `PGPASSWORD`），URL 写 `postgres://juhe_ai@postgres:5432/juhe_ai`。

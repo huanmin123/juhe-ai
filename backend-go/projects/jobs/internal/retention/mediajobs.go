@@ -58,6 +58,12 @@ type MediaJobsStore interface {
 // 行集小——7 天 TTL 的任务行量远低于 usage records）。
 const mediaJobsRetentionBatchSize = 500
 
+// mediaJobsRetentionMaxBatchesPerRun 是单次 Run 的最大批次（2026-11-06
+// 复审 N4）：原实现每轮只清 500 行、间隔 1 小时，积压时清理永久追不上。
+// 单次最多 20 批（1 万行），仍受调度器 2 分钟 timeout 约束；正常零/少量
+// 超期行时第一批即退出，行为与旧实现一致。
+const mediaJobsRetentionMaxBatchesPerRun = 20
+
 // MediaJobsRetentionTTL 与 gatewaymedia.MediaJobRetentionTTL 同值（7 天：
 // openai content 上游时效约 1 小时、GCS 签名 URL 约 2 天，7 天覆盖全部在册
 // 厂商的产物时效余量）；两侧常量镜像，jobs 不 import gateway 模块。
@@ -85,27 +91,42 @@ func (j *MediaJobsRetentionJob) Run(ctx context.Context) (MediaJobsRetentionResu
 	}
 	expiredBefore := clock().UTC().Add(-MediaJobsRetentionTTL).Format("2006-01-02T15:04:05.000Z")
 	result := MediaJobsRetentionResult{}
-	expired, err := j.Store.ExpireNonTerminalBefore(ctx, expiredBefore, batchSize)
-	if err != nil {
-		if IsMediaJobsTableMissing(err) {
-			return result, nil
+	// 分批循环清到空或达到单次上限：积压时（造数/导入/长时间停机）单轮
+	// 500 行会把 TTL 清理永久拖后；每批仍受 batchSize 与 ctx timeout 约束。
+	for batch := 0; batch < mediaJobsRetentionMaxBatchesPerRun; batch++ {
+		if ctx.Err() != nil {
+			break
 		}
-		return result, fmt.Errorf("终态化过期媒体任务失败: %w", err)
-	}
-	result.ExpiredNonTerminal = expired
-	deleted, err := j.Store.DeleteExpiredBefore(ctx, expiredBefore, batchSize)
-	if err != nil {
-		if IsMediaJobsTableMissing(err) {
-			return result, nil
+		expired, err := j.Store.ExpireNonTerminalBefore(ctx, expiredBefore, batchSize)
+		if err != nil {
+			if IsMediaJobsTableMissing(err) {
+				return result, nil
+			}
+			return result, fmt.Errorf("终态化过期媒体任务失败: %w", err)
 		}
-		return result, fmt.Errorf("删除过期媒体任务失败: %w", err)
+		deleted, err := j.Store.DeleteExpiredBefore(ctx, expiredBefore, batchSize)
+		if err != nil {
+			if IsMediaJobsTableMissing(err) {
+				return result, nil
+			}
+			return result, fmt.Errorf("删除过期媒体任务失败: %w", err)
+		}
+		result.ExpiredNonTerminal += expired
+		result.DeletedRows += deleted
+		result.Batches = batch + 1
+		// 两个阶段都未打满说明已清空；否则继续下一批（覆盖上轮已终态化
+		// 未删尽、以及本轮删除后新暴露的行）。
+		if expired < int64(batchSize) && deleted < int64(batchSize) {
+			break
+		}
 	}
-	result.DeletedRows = deleted
 	if result.ExpiredNonTerminal > 0 || result.DeletedRows > 0 {
 		j.logger().Info("媒体任务保留清理完成",
 			"event", "media_jobs_retention_cleanup",
 			"expiredNonTerminal", result.ExpiredNonTerminal,
 			"deletedRows", result.DeletedRows,
+			"batches", result.Batches,
+			"batchSize", batchSize,
 			"retentionTTL", MediaJobsRetentionTTL.String(),
 			"expiredBefore", expiredBefore)
 	}
@@ -123,6 +144,9 @@ func (j *MediaJobsRetentionJob) logger() *slog.Logger {
 type MediaJobsRetentionResult struct {
 	ExpiredNonTerminal int64
 	DeletedRows        int64
+	// Batches 是本次 Run 实际执行的分批轮数（上限
+	// mediaJobsRetentionMaxBatchesPerRun）。
+	Batches int
 }
 
 // ---- 双模 SQL 实现（组合根供 worker_retention.go 装配） ----

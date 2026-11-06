@@ -105,6 +105,10 @@ type Options struct {
 	Concurrency int
 	// RetryTimeouts 覆盖分级超时序列；nil 使用 DiagnosticRetryTimeouts。
 	RetryTimeouts []time.Duration
+	// DialGuard 是探针出站的 SSRF 守卫（请求期解析-校验-钉扎拨号）。nil 表示
+	// 不安装（测试形态或显式放行）；生产装配传入部署级 URLSecurityConfig 构建的
+	// 同一实例，使手动测试与 jobs 健康探针共享同一拒绝面。
+	DialGuard *upstreamhttp.DialGuard
 }
 
 // Service 实现 accountquality.Prober，并为速度优先探针提供单账户探针入口。
@@ -115,6 +119,7 @@ type Service struct {
 	now           func() time.Time
 	slots         chan struct{}
 	retryTimeouts []time.Duration
+	dialGuard     *upstreamhttp.DialGuard
 }
 
 // NewService 构建探针服务；client 为空时使用带代理不感知的默认传输。
@@ -129,7 +134,7 @@ func NewService(options Options) (*Service, error) {
 	client := options.Client
 	if client == nil {
 		var err error
-		client, err = upstreamhttp.SharedClient("", upstreamhttp.TransportOptions{})
+		client, err = upstreamhttp.SharedClient("", upstreamhttp.TransportOptions{DialGuard: options.DialGuard})
 		if err != nil {
 			return nil, fmt.Errorf("创建账户探针受控 HTTP client 失败: %w", err)
 		}
@@ -142,7 +147,7 @@ func NewService(options Options) (*Service, error) {
 	if len(retryTimeouts) == 0 {
 		retryTimeouts = DiagnosticRetryTimeouts
 	}
-	return &Service{source: options.Source, client: client, secret: options.Secret, now: now, slots: slots, retryTimeouts: retryTimeouts}, nil
+	return &Service{source: options.Source, client: client, secret: options.Secret, now: now, slots: slots, retryTimeouts: retryTimeouts, dialGuard: options.DialGuard}, nil
 }
 
 func (s *Service) nowMS() int64 { return s.now().UnixMilli() }
@@ -474,6 +479,12 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		OAuthType:                 credentialText(routedView.Credentials, "oauth_type"),
 		UpstreamHostname:          httpReq.URL.Hostname(),
 	})
+	// 发送前目标 URL 校验（SEC-03）：代理分支的 transport DialGuard 只校验
+	// 代理主机，目标由代理解析；strict 模式下目标域名指向内网必须在本地
+	// 发送前用同一部署级 URLSecurityConfig 拒绝。
+	if targetErr := s.validateProbeTarget(ctx, httpReq); targetErr != nil {
+		return nil, targetErr
+	}
 	// 探针评分跟随请求编码形态（§9.4 2026-10-12 W3 裁决）：A 形态恒 SSE、
 	// Code Assist 线真相恒 SSE——responses_json / generate_content_json 只是
 	// 账户配置模式名，分类模式按请求形态钉住为对应 SSE 端点，禁止"先试
@@ -491,7 +502,7 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	client := s.client
 	if strings.TrimSpace(routedView.ProxyURL) != "" {
 		var err error
-		client, err = upstreamhttp.SharedClient(routedView.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+		client, err = upstreamhttp.SharedClient(routedView.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: s.dialGuard})
 		if err != nil {
 			return nil, err
 		}
@@ -580,6 +591,25 @@ type upstreamResponse struct {
 // framing 未完成；返回 (response, err) 表示 framing 完成但读取中断。
 func (s *Service) readUpstream(ctx context.Context, req *http.Request, timeout time.Duration, firstByteAt *time.Time) (*upstreamResponse, error) {
 	return s.readUpstreamWithClient(ctx, s.client, req, timeout, firstByteAt)
+}
+
+// validateProbeTarget 在发送前用部署级 DialGuard 校验目标 host/port（strict
+// 模式下域名解析到内网会被拒绝）。代理分支的 transport guard 校验的是代理
+// 主机而不是目标，因此目标校验必须在请求构造后单独执行；默认
+// AllowPrivateBaseUrls=true 时 ValidateHost 直接放行，行为与既有出站一致。
+func (s *Service) validateProbeTarget(ctx context.Context, req *http.Request) error {
+	if s == nil || s.dialGuard == nil || req == nil || req.URL == nil {
+		return nil
+	}
+	port := req.URL.Port()
+	if port == "" {
+		if strings.EqualFold(req.URL.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return s.dialGuard.ValidateHost(ctx, req.URL.Hostname(), port)
 }
 
 func (s *Service) readUpstreamWithClient(ctx context.Context, client *http.Client, req *http.Request, timeout time.Duration, firstByteAt *time.Time) (*upstreamResponse, error) {

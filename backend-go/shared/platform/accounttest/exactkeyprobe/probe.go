@@ -144,6 +144,10 @@ type ProbeOptions struct {
 	Timeout          time.Duration
 	MaxResponseBytes int64
 	Now              func() time.Time
+	// DialGuard 是出站 SSRF 守卫（URLSecurityConfig 的请求期一半）：直连与
+	// HTTP(S) 代理路径在每次新连接上解析-校验-钉扎拨号；SOCKS 拨号器自行
+	// 解析（socks5h 远端解析契约）。nil 表示不安装守卫（测试形态或显式放行）。
+	DialGuard *upstreamhttp.DialGuard
 }
 
 // ProbeOpenAI executes one frozen direct probe. The historical exported name is
@@ -166,6 +170,22 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	baseURL, err := parseBaseURL(input.BaseURL, input.AllowInsecureBaseURL)
 	if err != nil {
 		return taskFailure("base_url_invalid", err.Error())
+	}
+	// 发送前目标 URL 校验（SEC-03）：代理分支的 transport DialGuard 只校验
+	// 代理主机，目标由代理解析；strict 模式下目标域名指向内网必须在本地
+	// 发送前用同一部署级 URLSecurityConfig 拒绝。
+	if options.DialGuard != nil {
+		port := baseURL.Port()
+		if port == "" {
+			if strings.EqualFold(baseURL.Scheme, "https") {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		if err := options.DialGuard.ValidateHost(ctx, baseURL.Hostname(), port); err != nil {
+			return taskFailure("base_url_invalid", err.Error())
+		}
 	}
 	client, err := probeHTTPClient(input, options)
 	if err != nil {
@@ -278,7 +298,7 @@ func probeTransport(input Input, options ProbeOptions) (*http.Transport, error) 
 	if err != nil {
 		return nil, err
 	}
-	return upstreamhttp.NewTransport(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+	return upstreamhttp.NewTransport(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: options.DialGuard})
 }
 
 func probeHTTPClient(input Input, options ProbeOptions) (*http.Client, error) {
@@ -289,7 +309,7 @@ func probeHTTPClient(input Input, options ProbeOptions) (*http.Client, error) {
 	if options.Client != nil {
 		return options.Client, nil
 	}
-	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: options.DialGuard})
 }
 
 func probeTransportConfig(input Input, options ProbeOptions) (string, time.Duration, error) {

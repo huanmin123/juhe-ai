@@ -1227,6 +1227,21 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_jobs(status)`,
 	},
 	{
+		// 用户任务中心主读路径（2026-11-06 复审 N1）：owner_system_account_id
+		// 归属过滤 + created_at 倒序分页。2026-10-24 归属列改列后该路径成为
+		// 用户面主查询，旧索引只有 api_key_id，用户面会退化为全表扫描。
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_owner_created ON media_jobs(owner_system_account_id, created_at DESC)`,
+	},
+	{
+		// retention 扫描（2026-11-06 复审 N1/N4）：按 status + created_at
+		// 定位超期终态/非终态行，避免清理任务逐行全表扫描。
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_status_created ON media_jobs(status, created_at)`,
+	},
+	{
 		// 调度偏好索引（调度偏好独立实体 PLAN-20261012T033000000Z）：自定义行
 		// owner 内名称唯一（精确 + lower 归一，route_strategies
 		// owner_name_unique 先例，均挂 WHERE built_in=0 条件——内置行 name

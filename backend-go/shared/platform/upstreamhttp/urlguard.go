@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -203,6 +204,44 @@ type URLSecurityConfig struct {
 // IsAllowedPrivateOrigin mirrors isAllowedPrivateOrigin.
 func (c URLSecurityConfig) IsAllowedPrivateOrigin(originKey string) bool {
 	return c.PrivateOriginAllowlist[originKey]
+}
+
+// URLSecurityConfigFromEnv loads the deployment-level upstream URL security
+// config from the environment with the same semantics as the gateway runtime
+// (runtime.ts:1679-1712 plus the 2026-09-19 decision:
+// JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS defaults to true, so private and
+// loopback upstream base URLs are allowed unless an operator explicitly sets
+// false/0/no/off; the historical "production always refuses" rule is retired).
+// JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST is a comma-separated list of
+// IP-only http/https origins normalized through NormalizePrivateUpstreamOrigin;
+// any invalid entry fails the whole load so a typo cannot silently widen the
+// allowlist. It serves non-gateway processes (jobs probes) that must share the
+// same policy surface.
+func URLSecurityConfigFromEnv(getenv func(string) string) (URLSecurityConfig, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	config := URLSecurityConfig{PrivateOriginAllowlist: map[string]bool{}}
+	switch value := strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"))); value {
+	case "", "true", "1", "yes", "on":
+		config.AllowPrivateBaseUrls = true
+	case "false", "0", "no", "off":
+		config.AllowPrivateBaseUrls = false
+	default:
+		return config, fmt.Errorf("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS 只能配置为 true/false/1/0/yes/no/on/off: %q", value)
+	}
+	for _, part := range strings.Split(getenv("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST"), ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		originKey, err := NormalizePrivateUpstreamOrigin("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST", trimmed)
+		if err != nil {
+			return config, err
+		}
+		config.PrivateOriginAllowlist[originKey] = true
+	}
+	return config, nil
 }
 
 // UpstreamOriginKey mirrors upstreamOriginKey: scheme://host:port with the

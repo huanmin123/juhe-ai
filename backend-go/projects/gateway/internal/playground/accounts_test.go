@@ -299,8 +299,8 @@ func TestAccountsEndpointEnvelopeContract(t *testing.T) {
 	}
 }
 
-// TestIPForbiddenTable SSRF 拒绝面表：私网/环回/链路本地/组播/未指定全部拒绝，
-// 公网 IP（v4/v6）放行；IPv4-mapped IPv6 还原后判定。
+// TestIPForbiddenTable SSRF 拒绝面表：私网/环回/链路本地/组播/CGNAT/保留段
+// 全部拒绝，公网 IP（v4/v6）放行；IPv4-mapped IPv6 还原后判定。
 func TestIPForbiddenTable(t *testing.T) {
 	cases := []struct {
 		ip        string
@@ -313,6 +313,11 @@ func TestIPForbiddenTable(t *testing.T) {
 		{"192.168.1.1", true},
 		{"169.254.1.1", true},
 		{"0.0.0.0", true},
+		{"100.64.0.1", true},
+		{"100.100.100.200", true},
+		{"198.18.0.1", true},
+		{"192.0.0.1", true},
+		{"240.0.0.1", true},
 		{"224.0.0.5", true},
 		{"239.255.255.250", true},
 		{"::1", true},
@@ -352,6 +357,7 @@ func TestValidateFetchURLScheme(t *testing.T) {
 		{"https://192.168.1.1/x", true, "内网"},
 		{"http://[::1]/x", true, "内网"},
 		{"http://169.254.169.254/latest/meta-data", true, "内网"},
+		{"http://100.100.100.200/", true, "内网"},
 		{"https://8.8.8.8/x", false, ""},
 		{"https://example.com/page", false, ""},
 	}

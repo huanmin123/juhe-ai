@@ -11,8 +11,10 @@ package gatewaypreauth
 // 全部纯内存 fake（groupsticky 夹具族），Mock 优先、结果稳定可回放。
 
 import (
+	"context"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -123,5 +125,43 @@ func TestMediaDispatchPreflightIgnoresSeededGroupAffinityKey(t *testing.T) {
 	}
 	if derives, stickies := affinity.counts(); derives != 0 || stickies != 0 {
 		t.Fatalf("媒体域不得查询组亲和: derive=%d sticky=%d", derives, stickies)
+	}
+}
+
+// TestConversationEntryLaneUpgradeToImageClearsAffinity：text 入口请求因候选
+// 账户模型命中图像模型被升级为 image lane 时，升级前已解析的会话/组亲和
+// 必须清空（2026-11-06 复审 F6；媒体域 §5 不变量在升级路径同样成立）。
+func TestConversationEntryLaneUpgradeToImageClearsAffinity(t *testing.T) {
+	affinity := &fakeGroupAffinityPort{bindings: map[string]string{"gak:conv_generic": "grp_b"}}
+	service, _ := mediaDomainPreflightService(t, affinity, &fakeSessionAffinity{fromIdentity: "sak:conv_generic"})
+	service.Images = &fakeImages{result: ImagePermissionPreflightResult{RequestLane: "image"}}
+
+	req, recorder, writer := whAuthorizedChatRequest()
+	body := []byte(`{"model":"gpt-image-2","messages":[{"role":"user","content":"draw"}]}`)
+	req.Body = &gatewaybody.Request{RawBody: body, Body: map[string]any{"model": "gpt-image-2"}}
+	audit := &fakeAuditCapture{}
+	result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
+		Req: req, Res: writer, AuditCapture: audit,
+		Options:   &PreflightOptions{DispatchStaticResolution: true, RequestLane: gatewayproto.LaneText},
+		StartedAt: 1_700_000_000_000, TraceID: "trace_upgrade",
+		Endpoint:        "POST /v1/chat/completions",
+		RequestSnapshot: UsageRequestSnapshot{Method: "POST", Path: "/v1/chat/completions"},
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if recorder.Code >= 400 {
+		t.Fatalf("成功路径不得写失败响应: %d", recorder.Code)
+	}
+	if result.DispatchContext == nil {
+		t.Fatalf("应返回 DispatchContext: %+v", result)
+	}
+	ctx := result.DispatchContext
+	if ctx.RequestLane != gatewayproto.LaneImage {
+		t.Fatalf("requestLane = %q, want image（gpt-image-2 应触发升级）", ctx.RequestLane)
+	}
+	if ctx.SessionAffinityKey != "" || ctx.GroupAffinityKey != "" || ctx.InteractionResourceAffinity != nil {
+		t.Fatalf("升级后亲和未清空: session=%q group=%q interaction=%+v",
+			ctx.SessionAffinityKey, ctx.GroupAffinityKey, ctx.InteractionResourceAffinity)
 	}
 }

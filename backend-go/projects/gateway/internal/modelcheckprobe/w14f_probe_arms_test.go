@@ -486,8 +486,10 @@ func w14fStageSuite(t *testing.T, transport *w14fStageTransport, profile string,
 	t.Helper()
 	suite := Suite{
 		Endpoint:                  "http://w14f-target.test",
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		// 2026-11-05 退役裁决：openai 兼容供应商退役，catalog 事实归 gpt；
+		// token_integrity 只在目录内模型上执行，旧 fixture 会被按范围跳过。
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Client:                    &http.Client{Transport: transport},
 		Model:                     w14fTargetModel,
 		Profile:                   profile,

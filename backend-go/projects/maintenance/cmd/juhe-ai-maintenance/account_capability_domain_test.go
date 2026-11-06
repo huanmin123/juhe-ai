@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
@@ -247,6 +248,28 @@ func TestCapabilityDomainFailureExitCode(t *testing.T) {
 	}
 	if code := runMaintenance(argv); code != 0 {
 		t.Fatalf("repaired migrate exit = %d, want 0", code)
+	}
+}
+
+func TestCapabilityDomainProductionSecretGate(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("JUHE_AI_SECRET", "")
+	// 不可达 DSN：门禁必须在开库前返回 2，不能靠连接失败兜底。
+	dsn := "postgres://user:pass@127.0.0.1:1/unreachable"
+	cases := [][]string{
+		{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--dsn", dsn,
+			"--node-stopped", "--go-stopped", "--backup-confirmed"},
+		{"--verify-account-capability-domain", "--account-capability-domain-stage=m1",
+			"--account-capability-domain-check=preflight", "--dsn", dsn},
+	}
+	for _, argv := range cases {
+		code, _, stderr := wmRunMaintenanceCapture(t, argv...)
+		if code != 2 {
+			t.Fatalf("%v production 缺 secret 应返回退出码 2: %d", argv, code)
+		}
+		if !strings.Contains(stderr, "--secret") || !strings.Contains(stderr, "JUHE_AI_SECRET") {
+			t.Fatalf("%v stderr 应提示显式 --secret/JUHE_AI_SECRET: %q", argv, stderr)
+		}
 	}
 }
 

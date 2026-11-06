@@ -879,3 +879,75 @@ func TestW14fDecodeJSONDefaultBodyLimitArm(t *testing.T) {
 		t.Fatalf("非法 JSON 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+// TestW14fInactiveAccountRunsDummyPBKDF2 用脚本化驱动钉住 SEC-07：inactive
+// 账户在状态拒绝前必须跑一次 dummy PBKDF2，且不触碰存储的 password_hash；
+// 响应保持未认证。结构性断言，不断言墙钟耗时。
+func TestW14fInactiveAccountRunsDummyPBKDF2(t *testing.T) {
+	const inactiveHash = "pbkdf2$sha512$120000$aW5hY3RpdmUtc2FsdA$MB16ie0MUIkgM1Xio7iCM8x9uCDqJJf5rkQ297w84fg"
+	auth := w14fAuthScripted(t, Postgres, &w14fAuthState{queryFn: func(string, []driver.NamedValue) (driver.Rows, error) {
+		return w14fStaticRows(7, "acct", "off", "Off", "admin", "disabled", inactiveHash, 0), nil
+	}})
+
+	original := verifySystemAccountPassword
+	calls := 0
+	dummyHashes := 0
+	storedHashes := 0
+	verifySystemAccountPassword = func(password, passwordHash string) bool {
+		calls++
+		switch passwordHash {
+		case dummySystemAccountPasswordHash:
+			dummyHashes++
+		case inactiveHash:
+			storedHashes++
+		}
+		return original(password, passwordHash)
+	}
+	t.Cleanup(func() { verifySystemAccountPassword = original })
+
+	verified, ok, err := auth.VerifySystemAccountCredentials(context.Background(), "off", "wrong-password")
+	if err != nil || ok || verified != (VerifiedCredentials{}) {
+		t.Fatalf("inactive account = %+v ok=%v err=%v", verified, ok, err)
+	}
+	if calls != 1 || dummyHashes != 1 || storedHashes != 0 {
+		t.Fatalf("inactive arm calls = %d (dummy=%d stored=%d), want exactly 1/1/0", calls, dummyHashes, storedHashes)
+	}
+}
+
+// TestW14fInternalErrorsAreNotEchoedToClient 钉住 SEC-05：500 只回固定文案
+// 「服务器内部错误」，内部错误原文（数据库/存储/驱动细节）不得出现在响应体。
+func TestW14fInternalErrorsAreNotEchoedToClient(t *testing.T) {
+	const leakMarker = "w14f-internal-leak-marker"
+	failingQuery := func(state *w14fAuthState) {
+		state.queryFn = func(query string, args []driver.NamedValue) (driver.Rows, error) {
+			if strings.Contains(query, "lower(username)=lower(") {
+				return nil, errors.New(leakMarker + " credential store failure")
+			}
+			_ = args
+			return &w14fAuthRows{}, nil
+		}
+	}
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"登录", "/login", `{"username":"w14f-admin","password":"w14f-password"}`},
+		{"临时令牌", "/temporary-access-tokens", `{"username":"w14f-admin","password":"w14f-password","ttlSeconds":900}`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			handler, _ := w14fHandlerDispatch(t, failingQuery)
+			recorder := w14fPost(handler, testCase.path, testCase.body)
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("内部错误应 500: %d %s", recorder.Code, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Body.String(), leakMarker) {
+				t.Fatalf("500 响应不得回显内部错误原文: %s", recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "服务器内部错误") {
+				t.Fatalf("500 响应应使用固定文案: %s", recorder.Body.String())
+			}
+		})
+	}
+}

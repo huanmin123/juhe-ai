@@ -22,7 +22,7 @@
 
 | 领域 | 默认选择 | 用途 | 边界 |
 | --- | --- | --- | --- |
-| Go 版本 | 正式落代码时 `go.dev/dl/` 最新稳定版；当前参考 `go1.26.x` | 编译、测试和发布基线 | `go.mod` 固定主次版本；补丁版本按安全和 CI 结果升级 |
+| Go 版本 | 正式落代码时 `go.dev/dl/` 最新稳定版；当前基线 `go1.26.10`（标准库安全修复最低版本） | 编译、测试和发布基线 | `go.mod` 固定到补丁版本；补丁版本按安全和 CI 结果升级 |
 | HTTP server | 标准库 `net/http` | HTTP server、client、SSE、反向代理基础能力 | 网关流式、取消、backpressure 和 header 过滤直接基于标准库 |
 | Router | `github.com/go-chi/chi/v5` | 管理 API、公开 API、健康检查、路由分组和中间件 | 只在 `internal/httpapi` 注册路由；业务模块不直接依赖 chi context |
 | ResponseWriter 包装 | `github.com/felixge/httpsnoop` | HTTP response capture、保留 `Unwrap` / `Flush` / `Hijack` / `ReadFrom` / `Push` 等可选接口组合 | 只允许在 `internal/httpapi` 等 HTTP 基础设施层使用；不得让业务 handler 依赖其类型 |

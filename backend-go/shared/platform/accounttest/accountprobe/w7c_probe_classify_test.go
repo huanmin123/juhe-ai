@@ -195,6 +195,108 @@ func TestW7CExtractOutputTextPerProtocol(t *testing.T) {
 	}
 }
 
+// Responses 流可能把回答拆成多个 message output item（prelude 空文本 +
+// final_answer 正文）。首个 output_text.done 只有空格时不得提前返回，否则
+// 后续正文丢失，表现为「协议完成但输出未包含预期答案」（生产 gpt-6.1-sol
+// 命中：答案 138 位于第二个 item）。钉住「终止事件快照优先」与「多 done 拼接」。
+func TestW7CResponsesMultiOutputItemText(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"delta":" ","type":"response.output_text.delta","output_index":0}`,
+		``,
+		`event: response.output_text.done`,
+		`data: {"text":" ","type":"response.output_text.done","output_index":0}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"delta":"138","type":"response.output_text.delta","output_index":1}`,
+		``,
+		`event: response.output_text.done`,
+		`data: {"text":"138","type":"response.output_text.done","output_index":1}`,
+		``,
+		`event: response.completed`,
+		`data: {"response":{"output":[{"content":[{"text":" ","type":"output_text"}]},{"content":[{"text":"138","type":"output_text"}]}]},"type":"response.completed"}`,
+		``,
+	}, "\n")
+
+	if got := extractOpenAIOutputText(parseResponseContext(stream)); got != "138" {
+		t.Fatalf("completed snapshot must carry every output item: %q", got)
+	}
+
+	// 流被截断、没有终止事件时，全部 output_text.done 必须拼接而非取首个。
+	doneOnly := strings.Join([]string{
+		`event: response.output_text.done`,
+		`data: {"text":" ","type":"response.output_text.done","output_index":0}`,
+		``,
+		`event: response.output_text.done`,
+		`data: {"text":"138","type":"response.output_text.done","output_index":1}`,
+		``,
+	}, "\n")
+	if got := extractOpenAIOutputText(parseResponseContext(doneOnly)); got != "138" {
+		t.Fatalf("done texts must be joined: %q", got)
+	}
+}
+
+// 全协议多 item 矩阵：归一化输出与原始可见输出都必须覆盖全部片段，不能停留
+// 在首个 item / 首条事件。同一批修复同时约束 OpenAI Responses 的 done 拼接
+// 与空白 output_text 投影回退。
+func TestW7CMultiItemExtractionMatrix(t *testing.T) {
+	cases := []struct {
+		name     string
+		context  responseContext
+		protocol DiagnosticProtocol
+		want     string
+	}{
+		{
+			name:     "responses json multi output",
+			context:  parseResponseContext(`{"output":[{"content":[{"type":"output_text","text":"pre"}]},{"content":[{"type":"output_text","text":"138"}]}]}`),
+			protocol: ProtocolOpenAI,
+			want:     "pre138",
+		},
+		{
+			name:     "responses json blank output_text projection",
+			context:  parseResponseContext(`{"output_text":" ","output":[{"content":[{"type":"output_text","text":"138"}]}]}`),
+			protocol: ProtocolOpenAI,
+			want:     "138",
+		},
+		{
+			name:     "chat multi choices",
+			context:  parseResponseContext(`{"choices":[{"message":{"content":"a"}},{"message":{"content":"b"}}]}`),
+			protocol: ProtocolOpenAI,
+			want:     "ab",
+		},
+		{
+			name:     "anthropic multi content blocks",
+			context:  parseResponseContext(`{"content":[{"type":"text","text":"a"},{"type":"thinking","text":"x"},{"type":"text","text":"b"}]}`),
+			protocol: ProtocolAnthropic,
+			want:     "axb",
+		},
+		{
+			name:     "gemini multi candidates",
+			context:  parseResponseContext(`{"candidates":[{"content":{"parts":[{"text":"a"}]}},{"content":{"parts":[{"text":"b"}]}}]}`),
+			protocol: ProtocolGemini,
+			want:     "ab",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractOutputText(tc.context, tc.protocol); got != tc.want {
+				t.Fatalf("extractOutputText=%q want %q", got, tc.want)
+			}
+		})
+	}
+
+	// 原始可见输出（挑战判定实际消费面）：多 output item 不得只取首个。
+	rawResponses := parseResponseContext(`{"output":[{"content":[{"type":"output_text","text":"pre"}]},{"content":[{"type":"output_text","text":"138"}]}]}`)
+	if got, ok := extractRawVisibleOutputText(rawResponses, ProtocolOpenAI); !ok || got != "pre138" {
+		t.Fatalf("raw responses visible=%q ok=%t", got, ok)
+	}
+	// Anthropic 原始可见输出排除非 text block。
+	rawAnthropic := parseResponseContext(`{"content":[{"type":"text","text":"a"},{"type":"thinking","text":"x"},{"type":"text","text":"b"}]}`)
+	if got, ok := extractRawVisibleOutputText(rawAnthropic, ProtocolAnthropic); !ok || got != "ab" {
+		t.Fatalf("raw anthropic visible=%q ok=%t", got, ok)
+	}
+}
+
 func TestW7CRawVisibleTextExtraction(t *testing.T) {
 	// Raw visible chat text keeps the exact bytes (no trim) and content
 	// blocks with explicit types.

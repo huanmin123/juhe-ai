@@ -79,7 +79,7 @@ func runMaintenance(argv []string) int {
 	ensureSchema := fs.Bool("ensure-schema", false, "idempotently apply the full PostgreSQL schema (requires --dsn)")
 	seedDefaults := fs.Bool("seed", false, "idempotently run the default seed (PostgreSQL; runs after --ensure-schema when both are set)")
 	bootstrapDSN := fs.String("dsn", "", "postgres URL for storage-bound commands")
-	seedSecret := fs.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
+	seedSecret := fs.String("secret", "", "encryption secret (or JUHE_AI_SECRET); required in production for commands that consume it; empty selects the Node dev default only outside production")
 	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, --dsn and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY)")
 	mockdataRun := fs.Bool("mockdata", false, "idempotently rebuild the development mockdata set in the target PostgreSQL database (schema ensure + seed + cleanup + per-domain seeding + summary; requires --dsn)")
 	mockdataVerifyCoverage := fs.Bool("verify-mockdata-coverage", false, "read-only verify that every wired mockdata domain store table is non-empty (allowlisted runtime-state tables excepted) and that the key coverage assertions hold (requires --dsn; exit 3 when not ready)")

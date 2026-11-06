@@ -61,10 +61,15 @@ func (s *Service) executeConnectivityAttempt(ctx context.Context, view *View, mo
 		observation.Evidence.Connectivity = true
 		return observation, nil
 	}
+	if targetErr := s.validateProbeTarget(ctx, httpReq); targetErr != nil {
+		observation := classifyAttemptError(view, targetErr, timeout, limited, s.nowMS())
+		observation.Evidence.Connectivity = true
+		return observation, nil
+	}
 	client := s.client
 	if strings.TrimSpace(view.ProxyURL) != "" {
 		var err error
-		client, err = upstreamhttp.SharedClient(view.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+		client, err = upstreamhttp.SharedClient(view.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: s.dialGuard})
 		if err != nil {
 			observation := classifyAttemptError(view, err, timeout, limited, s.nowMS())
 			observation.Evidence.Connectivity = true
@@ -107,9 +112,20 @@ func (s *Service) executeConnectivityAttempt(ctx context.Context, view *View, mo
 //   - images_json：POST {base}/images/generations，body 仅 {"model":<model>}
 //     （空 prompt；上游参数校验拒绝即判密钥有效）；
 //   - audio_speech：POST {base}/tts/create（volcengine_openspeech 模板），空体。
+//
+// volcengineSpeechBaseURL 是火山语音域固定上游：与账户 ark base_url 无关，
+// host 恒 openspeech.bytedance.com、路径 /api/v3/tts/create、鉴权
+// X-Api-Key: speech_token（与 ark 的 Bearer 凭据体系独立，见火山方舟账号
+// 接入「语音合成」节）。变量形态供测试注入 mock host。
+var volcengineSpeechBaseURL = "https://openspeech.bytedance.com"
+
+const volcengineSpeechCreatePath = "/api/v3/tts/create"
+
 func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode, model, apiKey string) (*http.Request, error) {
 	baseURL := strings.TrimSpace(view.BaseURL)
-	if baseURL == "" {
+	// volcengine 的 audio_speech 走独立语音域，不读账户 base_url（ark 版本根）。
+	volcengineSpeech := mode == ModeAudioSpeech && strings.EqualFold(strings.TrimSpace(view.ProviderCode), "volcengine")
+	if baseURL == "" && !volcengineSpeech {
 		return nil, errors.New("账户缺少上游 base_url")
 	}
 	var (
@@ -132,10 +148,26 @@ func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode
 	case ModeAudioSpeech:
 		method = http.MethodPost
 		opPath = "/tts/create"
+		// 火山 openspeech 必须先有 model 才能把请求解析到 resource_id：空体会被
+		// 45000030「fail to convert model to resource_id」挡在授权层，无法证明
+		// 密钥有效；带 model 后缺 prompt 由参数校验拒绝（400/45001116），即穿
+		// 过授权层的预期拒绝。OpenAI /audio/speech 带 model 仍因缺 input 返回
+		// 400，判定口径不变。
+		encoded, err := json.Marshal(map[string]string{"model": model})
+		if err != nil {
+			return nil, fmt.Errorf("编码连通性探测请求体失败: %w", err)
+		}
+		body = encoded
 	default:
 		return nil, fmt.Errorf("未知的连通性探测模式：%s", mode)
 	}
-	target, err := upstreamenvelope.JoinUpstreamURL(baseURL, opPath)
+	var target string
+	var err error
+	if volcengineSpeech {
+		target, err = upstreamenvelope.JoinUpstreamURL(volcengineSpeechBaseURL, volcengineSpeechCreatePath)
+	} else {
+		target, err = upstreamenvelope.JoinUpstreamURL(baseURL, opPath)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +196,15 @@ func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode
 			auth.ExtraHeaders["x-goog-user-project"] = quotaProject
 		}
 	}
-	if err := auth.Apply(request.Header); err != nil {
+	if volcengineSpeech {
+		// 语音域凭据是 speech_token（新版语音控制台 API Key），与 ark api_key
+		// 相互独立；缺失即该账户无语音能力，显式失败不静默回退。
+		token := strings.TrimSpace(credentialText(view.Credentials, "speech_token"))
+		if token == "" {
+			return nil, errors.New("火山方舟语音账户缺少 speech_token 凭据")
+		}
+		request.Header.Set("X-Api-Key", token)
+	} else if err := auth.Apply(request.Header); err != nil {
 		return nil, err
 	}
 	// 系统客户端身份头与真实探针同源（A/B 形态不存在于媒体模式，本调用不会

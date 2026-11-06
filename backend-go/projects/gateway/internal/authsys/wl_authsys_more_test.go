@@ -387,12 +387,12 @@ func (wlSessionCreateUnavailablePort) CreateSession(context.Context, string, str
 	return modelcheckauth.IssuedSession{}, false, nil
 }
 
-type wlRevokeOtherFailingPort struct {
+type wlChangePasswordFailingPort struct {
 	businessauth.Port
 }
 
-func (wlRevokeOtherFailingPort) RevokeOtherSessions(context.Context, string, string) error {
-	return errors.New("revoke-others boom")
+func (wlChangePasswordFailingPort) ChangePassword(context.Context, string, string, string, string) (bool, error) {
+	return false, errors.New("change-password boom")
 }
 
 type wlTempTokenUnavailablePort struct {
@@ -438,8 +438,8 @@ func TestWlRemainingRoute500And401Branches(t *testing.T) {
 		deps.Port = originalPort
 		deps.LoginGuard = modelcheckauth.NewLoginGuard(deps.Now)
 	})
-	t.Run("撤销其他会话失败返回 500", func(t *testing.T) {
-		deps.Port = wlRevokeOtherFailingPort{Port: originalPort}
+	t.Run("修改密码端口失败返回 500", func(t *testing.T) {
+		deps.Port = wlChangePasswordFailingPort{Port: originalPort}
 		request := wlJSONRequest(http.MethodPost, "/change-password", `{"oldPassword":"admin-pass-1","newPassword":"new-pass-1"}`)
 		request = request.WithContext(WithAuthContext(request.Context(), &AuthContext{SystemAccountID: accountID, Username: "wlbranch", Role: "admin", SessionID: "s"}))
 		recorder := httptest.NewRecorder()
@@ -489,6 +489,78 @@ func TestWlRemainingRoute500And401Branches(t *testing.T) {
 			t.Fatalf("status=%d", recorder.Code)
 		}
 	})
+}
+
+// wlChangePasswordSpyPort 委托真实端口并记录 ChangePassword 调用（SEC-06：
+// 主面改密必须走单事务端口，而不是 Accounts.UpdatePassword + 分步吊销）。
+type wlChangePasswordSpyPort struct {
+	businessauth.Port
+	calls int
+}
+
+func (p *wlChangePasswordSpyPort) ChangePassword(ctx context.Context, systemAccountID, expectedRevision, newPassword, keepSessionID string) (bool, error) {
+	p.calls++
+	return p.Port.ChangePassword(ctx, systemAccountID, expectedRevision, newPassword, keepSessionID)
+}
+
+func TestWlPostChangePasswordUsesAtomicPort(t *testing.T) {
+	deps, _, _ := newTestEnv(t)
+	account := seedAccount(t, deps, "wlatomic", "old-pass-1", "admin")
+	spy := &wlChangePasswordSpyPort{Port: deps.Port}
+	deps.Port = spy
+	request := wlJSONRequest(http.MethodPost, "/change-password", `{"oldPassword":"old-pass-1","newPassword":"new-pass-2"}`)
+	request = request.WithContext(WithAuthContext(request.Context(), &AuthContext{SystemAccountID: account.ID, Username: "wlatomic", Role: "admin", SessionID: "s1"}))
+	recorder := httptest.NewRecorder()
+	deps.postChangePassword(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if spy.calls != 1 {
+		t.Fatalf("ChangePassword calls = %d, want 1", spy.calls)
+	}
+	if _, ok, err := deps.Port.VerifyCredentials(context.Background(), "wlatomic", "new-pass-2"); err != nil || !ok {
+		t.Fatalf("新密码必须生效: ok=%v err=%v", ok, err)
+	}
+}
+
+// wlAtomicChangePort 只实现改密端口面：首改分支从 CurrentCredentialRevision
+// 取围栏，ChangePassword 记录入参后成功返回（无 PG 依赖）。
+type wlAtomicChangePort struct {
+	businessauth.Port
+	revision    string
+	changeCalls int
+	gotRevision string
+}
+
+func (p *wlAtomicChangePort) CurrentCredentialRevision(context.Context, string) (string, error) {
+	return p.revision, nil
+}
+
+func (p *wlAtomicChangePort) ChangePassword(_ context.Context, _, expectedRevision, _, _ string) (bool, error) {
+	p.changeCalls++
+	p.gotRevision = expectedRevision
+	return true, nil
+}
+
+func TestWlPostChangePasswordMustChangeUsesPortRevision(t *testing.T) {
+	port := &wlAtomicChangePort{revision: "revision-1"}
+	deps := &Deps{Port: port, Now: time.Now}
+	request := wlJSONRequest(http.MethodPost, "/change-password", `{"newPassword":"new-pass-2"}`)
+	request = request.WithContext(WithAuthContext(request.Context(), &AuthContext{
+		SystemAccountID: "acc", Username: "wlatomic", Role: "admin",
+		MustChangePassword: true, SessionID: "s1",
+	}))
+	recorder := httptest.NewRecorder()
+	deps.postChangePassword(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if port.changeCalls != 1 {
+		t.Fatalf("ChangePassword calls = %d, want 1", port.changeCalls)
+	}
+	if port.gotRevision != "revision-1" {
+		t.Fatalf("ChangePassword revision = %q, want revision-1", port.gotRevision)
+	}
 }
 
 // miniredisRun 启动一个测试专用 miniredis 实例。

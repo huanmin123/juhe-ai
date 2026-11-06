@@ -10,7 +10,7 @@
 | 公网 504 / 流式请求中途断开 | 反代 `proxy_read_timeout`；网关请求预算 | `/v1/` 读超时 ≥ 600s；SSE 必须关闭缓冲；Nginx 见 [Nginx 部署](../nginx/README.md) |
 | SSE 一次性返回或卡住 | `proxy_buffering`、`gzip`、Caddy `flush_interval` | `/v1/` 关闭缓冲与 gzip；Caddy 保留 `flush_interval -1` |
 | WebSocket `/v1/realtime` 400/无法升级 | `Upgrade` / `Connection` 头 | Nginx 透传两 header；Caddy 默认支持 |
-| 413 Request Entity Too Large | 反代 `client_max_body_size` | 设为 `64m`，不要小于网关上限（text 16MB / image+audio 64MB） |
+| 413 Request Entity Too Large | 反代 `client_max_body_size` | 设为 `520m`，不要小于网关上限（text 16MB / image+audio 64MB / files 512MB） |
 | 所有请求来源 IP 相同 | `X-Forwarded-For`、`JUHE_AI_TRUST_PROXY` | 反代追加 XFF；gateway `TRUST_PROXY=true`；不要把 gateway 直接暴露公网并信任转发头 |
 | 证书未生效/续期后仍旧证书 | `openssl s_client`、certbot 日志、reload hook | `certbot renew --dry-run`；续期后 reload Caddy/Nginx |
 | `upstream prematurely closed connection` | 网关客户端交接（锁死/预算耗尽/临时隔离）先 200 再断开 | **预期行为**，不要按该日志告警；未提交响应的崩溃才由反代合成 502 |

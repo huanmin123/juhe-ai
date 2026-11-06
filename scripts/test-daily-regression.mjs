@@ -1,58 +1,74 @@
 #!/usr/bin/env node
 
-// 日常回归链路入口（纯 mock）。串行执行各 Go 模块裁剪后的 -short 单测与前端
-// vitest 单测，全程进程内 mock、免授权，不连接任何外部依赖；总墙钟预算内全绿
-// 即日常回归通过。
-// 范围裁剪规则（2026-10-27 warm 缓存实测基线）：单包 -short 实测 >10s 的包移出
-// 日常链路，移入「扩展 mock 回归」——各模块 ./internal/... 全量、无裁剪，仍是
-// 纯 mock、免授权、按需执行（文档落点 docs/develop/后端测试分层规则.md §3.6）。
-// 运行时先 `go list` 全量发现包，再按 exclude 后缀过滤：新增包默认包含在日常
-// 链路，只有显式列入 exclude 才被裁剪；go list 失败即该阶段失败，不静默降级。
-// 规则源：docs/develop/后端测试分层规则.md §5「测试进程纪律（硬性）」——同一
-// 时刻只允许一个 go test 进程：本脚本各阶段顺序 await 串行执行，go test 统一带
-// -p 1 与显式 -timeout；与授权链路（acceptance / 真实 PG smoke / docker 隔离
-// 回归）互斥：检测到 JUHE_AI_TEST_EXTERNAL=1 时拒绝运行。
-// 用法：node scripts/test-daily-regression.mjs（或 pnpm test:daily）
+// 功能基线入口（test-strategy 功能基线轨道）。串行执行各 Go 模块的 -short
+// 单测与前端 vitest 单测，全程进程内 mock、免授权，不连接任何外部依赖。
+//
+// 分层（2026-11-06 重建）：
+//   --tier=fast（默认）日常全量功能基线：internal 快包 + 前端 unit + 契约比对；
+//   --tier=slow        慢基线：单包 >10s 的重包（gatewaydispatch/schema 等），
+//                      纯 mock、不含 cmd/acceptance；
+//   --tier=all         fast + slow；仍不包含真实 PG/上游（属场景测试）。
+// 按改动范围的最小基线用 `pnpm test:affected`（scripts/test-affected.mjs）。
+//
+// 运行时先 `go list` 全量发现包，再按 include/exclude 后缀过滤：新增包默认
+// 进入 fast 链路，只有显式列入 exclude 才被裁到 slow；go list 失败即该阶段
+// 失败，不静默降级。
+// 规则源：docs/develop/后端测试分层规则.md——同一时刻只允许一个 go test
+// 进程：本脚本各阶段顺序 await 串行执行，go test 统一带 -p 1 与显式
+// -timeout；与授权链路（acceptance / 真实 PG smoke / docker 隔离回归）互斥：
+// 检测到 JUHE_AI_TEST_EXTERNAL=1 时拒绝运行。
+// 用法：node scripts/test-daily-regression.mjs [--tier=fast|slow|all]
 
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { testProcessEnv } from './lib/test-process-env.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 // 总墙钟预算（毫秒）：超出即硬失败（退出码 1）。单阶段另有各自 -timeout 保护。
-const TOTAL_BUDGET_MS = 300000
+// 2026-11-06 复核：原 300s 预算在冷缓存机器上会在 gateway 阶段被截断（实测
+// 300.6s 被杀，后续阶段未执行）；首次 600s 预算下 gateway 冷编译 382.8s，
+// 全量 warm 实测 544.8s，余量不足以覆盖冷缓存重编译，故 fast 提到 15 分钟。
+// 日常改动范围基线仍由 test:affected 控制在 5 分钟内。
+const TIER_BUDGETS_MS = {
+  fast: 900000,
+  slow: 900000,
+  all: 1800000,
+}
 
 // 各 go test 阶段的 -timeout 值，集中放在这里便于按实测调参。行尾为
-// 2026-10-27 验收轮实测，warm 缓存，与 docs/develop/后端测试分层规则.md
-// §3.6.1 同源（六阶段合计 216.8s，预算 300s）。
+// 2026-10-27 验收轮实测（warm）；2026-11-06 冷缓存复核后上调 fast 的
+// gateway 阶段到 480s，避免 74 包全量在 240s 被误杀。
 const GO_STAGE_TIMEOUTS = {
-  gateway: '240s',           // 裁剪后 148.0s
-  jobs: '60s',               // 裁剪后 23.0s
-  maintenance: '60s',        // 裁剪后 8.9s
-  'shared-contracts': '60s', // 全量 1.0s
-  'shared-platform': '60s',  // 全量 27.0s
+  gateway: '480s',           // 裁剪后 warm 148.0s；冷缓存可达 300s+
+  jobs: '120s',              // 裁剪后 23.0s
+  maintenance: '120s',       // 裁剪后 8.9s
+  'shared-contracts': '120s', // 全量 1.0s
+  'shared-platform': '120s',  // 全量 27.0s
+  'gateway-slow': '900s',
+  'jobs-slow': '300s',
+  'maintenance-slow': '300s',
 }
 
 // 日常回归范围（裁剪版）。裁剪规则：单包 warm -short 实测 >10s 的包列入
 // exclude（每项标注实测秒数），去向为「扩展 mock 回归」（./internal/... 全量、
 // 纯 mock、免授权、按需执行，见文件头注释与 docs/develop/后端测试分层规则.md
 // §3.6）。exclude 为导入路径后缀，endsWith 精确匹配（含 '/internal' 前缀段，
-// 不会误伤其他模块或同名前缀包，如 '/internal/chat' 不匹配 '/internal/chat/chatassets'）。
+// 不会误伤其他模块或同名前缀包（如 '/internal/chat' 不会匹配 '/internal/chat/chatassets'）。
 // 不在清单的重量级 / 授权项及原因：gateway|jobs cmd 组合根全量与 acceptance
 // 冒烟属装配验收（gateway cmd 包全量基线约 691s，会独占预算）；真实 PG smoke
 // 需 JUHE_AI_TEST_PG_ADMIN_URL 授权；docker 隔离回归属环境级验收——均属授权
 // 链路，不入日常（见 docs/develop/后端测试分层规则.md）。
-const STAGES = [
+const FAST_STAGES = [
   {
     name: 'gateway:internal',
     cwd: 'backend-go/projects/gateway',
     goTimeout: GO_STAGE_TIMEOUTS.gateway,
     listPattern: './internal/...',
-    // gateway internal 是网关业务逻辑单测主体；下列 10 包单包 >10s，移入扩展 mock 回归。
+    // gateway internal 是网关业务逻辑单测主体；下列 9 包单包 >10s，移入扩展 mock 回归。
     exclude: [
       '/internal/gatewaydispatch',            // 56.4s → 扩展 mock 回归
-      '/internal/chat',                       // 37.7s → 扩展 mock 回归
       '/internal/business/key_model_runtime', // 28.2s → 扩展 mock 回归
       '/internal/auditlog',                   // 20.5s → 扩展 mock 回归
       '/internal/operationlog',               // 14.8s → 扩展 mock 回归
@@ -107,6 +123,49 @@ const STAGES = [
     args: ['--filter', 'juhe-ai-frontend', 'test:unit'],
     // 前端 vitest 单测全部进程内 mock（2026-10-27 验收轮实测 94 个文件 / 1114 用例 / 8.9s）。
   },
+  {
+    name: 'frontend:api-contract',
+    cwd: '.',
+    command: 'pnpm',
+    args: ['--filter', 'juhe-ai-frontend', 'test:api-contract'],
+    // 契约测试属功能基线（后端分层规则 §2）：只读静态比对前端调用面与 Go 注册面。
+  },
+]
+
+// 慢基线（--tier=slow）：单包 warm -short >10s 的纯 mock 包。与 fast 互斥
+// 执行；不包含 cmd / acceptance（组合根/子进程属场景测试）。
+const SLOW_STAGES = [
+  {
+    name: 'gateway:internal-slow',
+    cwd: 'backend-go/projects/gateway',
+    goTimeout: GO_STAGE_TIMEOUTS['gateway-slow'],
+    listPattern: './internal/...',
+    include: [
+      '/internal/gatewaydispatch',
+      '/internal/business/key_model_runtime',
+      '/internal/auditlog',
+      '/internal/operationlog',
+      '/internal/gatewayaccounteffects',
+      '/internal/gatewaysession',
+      '/internal/gatewaycircuit',
+      '/internal/gatewayquota',
+      '/internal/gatewayobs',
+    ],
+  },
+  {
+    name: 'jobs:internal-slow',
+    cwd: 'backend-go/projects/jobs',
+    goTimeout: GO_STAGE_TIMEOUTS['jobs-slow'],
+    listPattern: './internal/...',
+    include: ['/internal/speedfirstrepo', '/internal/usagewriter'],
+  },
+  {
+    name: 'maintenance:internal-slow',
+    cwd: 'backend-go/projects/maintenance',
+    goTimeout: GO_STAGE_TIMEOUTS['maintenance-slow'],
+    listPattern: './internal/...',
+    include: ['/internal/schema'],
+  },
 ]
 
 function log(line) {
@@ -143,6 +202,7 @@ function spawnChild({ label, command, args, cwdAbs, remainingMs, captureStdout =
       stdio: captureStdout ? ['ignore', 'pipe', 'inherit'] : 'inherit',
       // Windows 下 go / pnpm 实际是 .exe / .cmd，shell:true 交由 shell 解析。
       shell: process.platform === 'win32',
+      env: testProcessEnv(),
     })
     let stdout = ''
     if (captureStdout && child.stdout) {
@@ -168,8 +228,9 @@ function spawnChild({ label, command, args, cwdAbs, remainingMs, captureStdout =
 }
 
 // runStage 执行单个阶段并返回子进程结果。带 listPattern 的阶段先 go list 全量
-// 发现包、按 exclude 后缀（endsWith 精确匹配）过滤后再 go test；go list 非零
-// 退出、预算超时或无法启动时该阶段直接失败，不静默降级。
+// 发现包：fast 阶段用 exclude（单包 >10s 的慢包移出），slow 阶段用 include
+// （只跑显式登记的慢包）；go list 非零退出、预算超时或无法启动时该阶段直接
+// 失败，不静默降级。
 async function runStage(stage, deadline) {
   const cwdAbs = path.join(REPO_ROOT, stage.cwd)
 
@@ -191,8 +252,14 @@ async function runStage(stage, deadline) {
       return list
     }
     const allPackages = list.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-    const keptPackages = allPackages.filter(pkg => !stage.exclude.some(suffix => pkg.endsWith(suffix)))
-    log(`[包发现] ${stage.name}: ${stage.listPattern} 共 ${allPackages.length} 包，exclude 裁剪 ${allPackages.length - keptPackages.length} 包，执行 ${keptPackages.length} 包`)
+    let keptPackages
+    if (stage.include !== undefined) {
+      keptPackages = allPackages.filter(pkg => stage.include.some(suffix => pkg.endsWith(suffix)))
+    } else {
+      keptPackages = allPackages.filter(pkg => !stage.exclude.some(suffix => pkg.endsWith(suffix)))
+    }
+    const mode = stage.include !== undefined ? `include 选中 ${keptPackages.length}` : `exclude 裁剪 ${allPackages.length - keptPackages.length}`
+    log(`[包发现] ${stage.name}: ${stage.listPattern} 共 ${allPackages.length} 包，${mode} 包，执行 ${keptPackages.length} 包`)
     testArgs = ['test', '-short', '-count=1', '-p', '1', '-timeout', stage.goTimeout, ...keptPackages]
     if (deadline - Date.now() <= 0) {
       log(`[预算超时] ${stage.name} 包发现后剩余预算已耗尽，跳过执行`)
@@ -209,7 +276,7 @@ async function runStage(stage, deadline) {
   })
 }
 
-function printTimingTable(records, totalMs) {
+function printTimingTable(records, totalMs, budgetMs) {
   log('')
   log('各阶段耗时：')
   for (const record of records) {
@@ -218,26 +285,39 @@ function printTimingTable(records, totalMs) {
       : (record.ok ? '' : `（失败，退出码 ${record.code}）`)
     log(`  ${record.stage.name.padEnd(24)}${formatMs(record.durationMs).padStart(10)}${mark}`)
   }
-  log(`  ${'总计'.padEnd(24)}${formatMs(totalMs).padStart(10)}（预算 ${formatMs(TOTAL_BUDGET_MS)}）`)
+  log(`  ${'总计'.padEnd(24)}${formatMs(totalMs).padStart(10)}（预算 ${formatMs(budgetMs)}）`)
 }
 
 async function main() {
-  // 链路守卫：日常回归必须是纯 mock 链路，与授权链路互斥。
+  // 链路守卫：功能基线必须是纯 mock 链路，与场景（外部依赖）链路互斥。
   if (process.env.JUHE_AI_TEST_EXTERNAL === '1') {
-    log('拒绝运行：检测到 JUHE_AI_TEST_EXTERNAL=1。日常回归必须是纯 mock 链路，请取消该授权变量或改用授权链路入口。')
+    log('拒绝运行：检测到 JUHE_AI_TEST_EXTERNAL=1。功能基线必须是纯 mock 链路，请取消该授权变量或改用 pnpm test:scenario。')
     process.exitCode = 2
     return
   }
 
+  const tierArg = process.argv.find(arg => arg.startsWith('--tier='))
+  const tier = tierArg ? tierArg.slice('--tier='.length) : 'fast'
+  const budgetMs = TIER_BUDGETS_MS[tier]
+  if (budgetMs === undefined) {
+    log(`未知 tier: ${tier}（可选 fast|slow|all）`)
+    process.exitCode = 2
+    return
+  }
+  const stages = tier === 'slow'
+    ? SLOW_STAGES
+    : (tier === 'all' ? [...FAST_STAGES, ...SLOW_STAGES] : FAST_STAGES)
+  log(`功能基线 tier=${tier}（预算 ${formatMs(budgetMs)}，${stages.length} 个阶段）`)
+
   const chainStartedAt = Date.now()
   const records = []
 
-  for (const stage of STAGES) {
-    const remainingMs = TOTAL_BUDGET_MS - (Date.now() - chainStartedAt)
+  for (const stage of stages) {
+    const remainingMs = budgetMs - (Date.now() - chainStartedAt)
     if (remainingMs <= 0) {
       log('')
-      log('日常回归超预算：剩余预算已耗尽，跳过全部后续阶段。')
-      printTimingTable(records, Date.now() - chainStartedAt)
+      log('功能基线超预算：剩余预算已耗尽，跳过全部后续阶段。')
+      printTimingTable(records, Date.now() - chainStartedAt, budgetMs)
       process.exitCode = 1
       return
     }
@@ -255,23 +335,23 @@ async function main() {
         ? '总墙钟预算超时'
         : (result.error !== undefined ? `无法启动（${result.error.message}）` : `退出码 ${result.code}`)
       log('')
-      log(`日常回归失败：阶段 ${stage.name} 未通过（${reason}），后续阶段不再执行。`)
-      printTimingTable(records, Date.now() - chainStartedAt)
+      log(`功能基线失败：阶段 ${stage.name} 未通过（${reason}），后续阶段不再执行。`)
+      printTimingTable(records, Date.now() - chainStartedAt, budgetMs)
       process.exitCode = result.killedByBudget ? 1 : result.code
       return
     }
   }
 
   const totalMs = Date.now() - chainStartedAt
-  printTimingTable(records, totalMs)
-  if (totalMs > TOTAL_BUDGET_MS) {
+  printTimingTable(records, totalMs, budgetMs)
+  if (totalMs > budgetMs) {
     log('')
-    log(`日常回归超预算：总墙钟 ${formatMs(totalMs)} 超过预算 ${formatMs(TOTAL_BUDGET_MS)}。`)
+    log(`功能基线超预算：总墙钟 ${formatMs(totalMs)} 超过预算 ${formatMs(budgetMs)}。`)
     process.exitCode = 1
     return
   }
   log('')
-  log(`日常回归通过：总耗时 ${formatMs(totalMs)}，预算内（≤ ${formatMs(TOTAL_BUDGET_MS)}），退出码 0。`)
+  log(`功能基线通过：tier=${tier}，总耗时 ${formatMs(totalMs)}，预算内（≤ ${formatMs(budgetMs)}），退出码 0。`)
 }
 
 const isDirectRun = process.argv[1]

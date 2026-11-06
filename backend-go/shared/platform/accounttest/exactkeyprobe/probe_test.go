@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -410,6 +411,51 @@ func TestProbeTransportEnablesHTTP2ForCustomDialer(t *testing.T) {
 	if transport.MaxIdleConnsPerHost != upstreamhttp.DefaultMaxIdleConnsPerHost {
 		t.Fatalf("direct provider probe idle pool = %d, want platform default %d", transport.MaxIdleConnsPerHost, upstreamhttp.DefaultMaxIdleConnsPerHost)
 	}
+}
+
+// probeGuardResolver 是 DialGuard 测试的静态解析器：把任意主机解析为固定地址集。
+type probeGuardResolver struct {
+	addresses []net.IPAddr
+	err       error
+}
+
+func (resolver probeGuardResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return resolver.addresses, resolver.err
+}
+
+// TestProbeTransportInstallsDialGuard 钉住 SEC-03：探针出站必须安装
+// DialGuard，域名在拨号期解析并校验，strict 模式（AllowPrivateBaseUrls=false）
+// 下解析到私网/回环的域名不允许建连；probeHTTPClient（共享连接池）与
+// probeTransport（自建 transport）两条路径一致。
+func TestProbeTransportInstallsDialGuard(t *testing.T) {
+	guard := upstreamhttp.NewDialGuard(upstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: false}, probeGuardResolver{
+		addresses: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}},
+	}, nil)
+	assertBlocked := func(t *testing.T, transport *http.Transport) {
+		t.Helper()
+		if transport == nil || transport.DialContext == nil {
+			t.Fatal("probe transport must install the dial guard hook")
+		}
+		_, dialErr := transport.DialContext(context.Background(), "tcp", "blocked.example:443")
+		var resolvedErr *upstreamhttp.UnsafeResolvedUpstreamURLError
+		if !errors.As(dialErr, &resolvedErr) {
+			t.Fatalf("DialContext through guard = %v, want UnsafeResolvedUpstreamURLError", dialErr)
+		}
+	}
+	transport, err := probeTransport(Input{}, ProbeOptions{DialGuard: guard})
+	if err != nil {
+		t.Fatalf("probeTransport() error = %v", err)
+	}
+	assertBlocked(t, transport)
+	client, err := probeHTTPClient(Input{}, ProbeOptions{DialGuard: guard})
+	if err != nil {
+		t.Fatalf("probeHTTPClient() error = %v", err)
+	}
+	clientTransport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("shared probe client transport = %T, want *http.Transport", client.Transport)
+	}
+	assertBlocked(t, clientTransport)
 }
 
 func TestProbeHTTPClientReusesSharedTransportPolicy(t *testing.T) {

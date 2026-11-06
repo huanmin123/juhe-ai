@@ -13,6 +13,7 @@ import (
 	"time"
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 var (
@@ -186,6 +187,14 @@ type Dispatcher struct {
 	Client   Client
 	KeyModel KeyModelGate
 	Circuit  AccountCircuitGate
+	// DialGuard is the optional upstream URL-security guard (T164/D-192). When
+	// set, every attempt validates its target before any key-model/circuit
+	// admission, so a private/reserved target is refused as a configuration
+	// error instead of being recorded as an account transport failure. Direct
+	// clients built over the same guard also pin the validated address at dial
+	// time; the send-time check is what covers proxy-backed clients whose
+	// transport dials the proxy, not the target.
+	DialGuard *sharedupstreamhttp.DialGuard
 }
 
 func (d Dispatcher) Dispatch(ctx context.Context, input Request) (Result, error) {
@@ -204,6 +213,9 @@ func (d Dispatcher) Dispatch(ctx context.Context, input Request) (Result, error)
 	}
 	if d.KeyModel == nil {
 		return Result{}, errors.New("gateway dispatch key-model gate is required")
+	}
+	if err := d.validateTarget(ctx, input.HTTP); err != nil {
+		return Result{}, err
 	}
 	var circuitAttempt AccountCircuitAttempt
 	if d.Circuit != nil {
@@ -257,6 +269,27 @@ func (d Dispatcher) Dispatch(ctx context.Context, input Request) (Result, error)
 		return Result{Attempt: attempt, Response: response, Permit: permit}, errors.New("gateway upstream response/body is missing")
 	}
 	return Result{Attempt: attempt, Response: response, Permit: permit}, nil
+}
+
+// validateTarget applies the upstream URL-security guard before the attempt
+// touches key-model or circuit state. A nil guard keeps the historical
+// passthrough behavior for callers that already police their targets.
+func (d Dispatcher) validateTarget(ctx context.Context, request *http.Request) error {
+	if d.DialGuard == nil || request == nil || request.URL == nil {
+		return nil
+	}
+	scheme := strings.ToLower(request.URL.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("gateway dispatch target scheme %q is not allowed", request.URL.Scheme)
+	}
+	host := sharedupstreamhttp.NormalizeHostToken(request.URL.Hostname())
+	if host == "" {
+		return errors.New("gateway dispatch target host is required")
+	}
+	if err := d.DialGuard.ValidateHost(ctx, host, request.URL.Port()); err != nil {
+		return fmt.Errorf("gateway dispatch target: %w", err)
+	}
+	return nil
 }
 
 // CloseResponse releases the foreground permit after the caller has consumed

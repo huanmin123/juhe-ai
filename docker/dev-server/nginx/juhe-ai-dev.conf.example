@@ -33,7 +33,8 @@ server {
         proxy_cache off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
-        # 图像 lane 上限 64 MiB。
-        client_max_body_size 64m;
+        # 网关请求体上限：text 16MB、image/audio 64MB、/v1/files 512MB；
+        # 520m 为 512MiB 文件 + multipart 边界/字段留余量。
+        client_max_body_size 520m;
     }
 }

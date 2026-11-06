@@ -20,6 +20,7 @@ type connectivityCapture struct {
 	path      string
 	body      string
 	auth      string
+	apiKey    string
 	timedOut  bool
 	observed  bool
 	observedN int
@@ -34,6 +35,7 @@ func newConnectivityServer(t *testing.T, status int, body string, capture *conne
 			capture.path = r.URL.Path
 			capture.body = string(raw)
 			capture.auth = r.Header.Get("Authorization")
+			capture.apiKey = r.Header.Get("X-Api-Key")
 			capture.observed = true
 			capture.observedN++
 		}
@@ -77,7 +79,8 @@ func TestConnectivityProbeClassificationTable(t *testing.T) {
 		{"image 200 通过", ModeImagesJSON, "img-model", http.StatusOK, `{"created":1,"data":[]}`, true, "密钥连通性验证通过（上游 HTTP 200）"},
 		{"image 401 失败", ModeImagesJSON, "img-model", http.StatusUnauthorized, `{"error":{"message":"invalid api key"}}`, false, "上游拒绝访问（HTTP 401）"},
 		{"image 500 失败", ModeImagesJSON, "img-model", http.StatusInternalServerError, `{"error":{"message":"upstream down"}}`, false, "上游服务不可用（HTTP 500）"},
-		// audio_speech：空体 POST /tts/create 同款分类。
+		// audio_speech：带 model 的 POST /tts/create 同款分类。volcengine 缺 model
+		// 会被 45000030 挡在 resource_id 解析层，携带 model 才能进入参数校验。
 		{"audio 400 通过", ModeAudioSpeech, "tts-model", http.StatusBadRequest, `{"error":{"message":"empty body"}}`, true, "密钥连通性验证通过（上游 HTTP 400）"},
 		{"audio 422 通过", ModeAudioSpeech, "tts-model", http.StatusUnprocessableEntity, `unprocessable`, true, "密钥连通性验证通过（上游 HTTP 422）"},
 		{"audio 200 通过", ModeAudioSpeech, "tts-model", http.StatusOK, `ok`, true, "密钥连通性验证通过（上游 HTTP 200）"},
@@ -163,7 +166,7 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		}
 	})
 
-	t.Run("audio_speech 空体 POST tts/create", func(t *testing.T) {
+	t.Run("audio_speech 带 model 的 POST tts/create", func(t *testing.T) {
 		capture := &connectivityCapture{}
 		server := newConnectivityServer(t, http.StatusBadRequest, `{}`, capture)
 		defer server.Close()
@@ -174,10 +177,48 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		if capture.method != http.MethodPost || capture.path != "/tts/create" {
 			t.Fatalf("request = %s %s", capture.method, capture.path)
 		}
-		if capture.body != "" {
-			t.Fatalf("audio 连通性探测应为空体：%q", capture.body)
+		// volcengine openspeech 缺 model 时无法解析 resource_id（45000030），会误判
+		// 密钥无效；必须携带 model 才能进入参数校验层（400 text_prompt required）。
+		if capture.body != `{"model":"tts-model"}` {
+			t.Fatalf("audio 连通性探测应携带 model：%q", capture.body)
 		}
 	})
+}
+
+// TestConnectivityProbeVolcengineSpeech：火山语音域是固定上游（openspeech +
+// /api/v3/tts/create + X-Api-Key speech_token），账户 base_url（ark /api/v3）
+// 不参与拼接；body 必须带 model（缺 model 会被 45000030 挡在 resource_id
+// 解析层，无法证明密钥有效）。
+func TestConnectivityProbeVolcengineSpeech(t *testing.T) {
+	capture := &connectivityCapture{}
+	server := newConnectivityServer(t, http.StatusBadRequest, `{"code":45001116,"message":"text_prompt is required"}`, capture)
+	defer server.Close()
+	original := volcengineSpeechBaseURL
+	volcengineSpeechBaseURL = server.URL
+	t.Cleanup(func() { volcengineSpeechBaseURL = original })
+
+	view := connectivityView("https://ark.cn-beijing.volces.com/api/v3", ModeAudioSpeech, "seed-audio-1.0")
+	view.ProviderCode = "volcengine"
+	view.Credentials = map[string]any{"speech_token": "speech-token-1"}
+	observation, err := newTestService(t, &fakeSource{view: view}).Probe(context.Background(), accountquality.ProbeRequest{AccountID: "acc-1", Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observation.Result.Success {
+		t.Fatalf("火山语音连通性应通过：%+v", observation.Result)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v3/tts/create" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	if capture.apiKey != "speech-token-1" {
+		t.Fatalf("X-Api-Key = %q", capture.apiKey)
+	}
+	if capture.auth != "" {
+		t.Fatalf("语音域不得走 Authorization: %q", capture.auth)
+	}
+	if capture.body != `{"model":"seed-audio-1.0"}` {
+		t.Fatalf("body = %q", capture.body)
+	}
 }
 
 // TestConnectivityProbeLimitedMaskMessage：limited 诊断下的失败文案脱敏沿用

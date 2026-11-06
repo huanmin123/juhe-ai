@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/mockdata"
 )
 
@@ -38,6 +39,12 @@ type mockdataCommandFlags struct {
 func runMockdataCommand(flags mockdataCommandFlags) int {
 	if code := validateMockdataUsage(flags); code != 0 {
 		return code
+	}
+	// SEC-04：production 的造数会写入用 key 密封的测试凭据；缺显式 secret 时
+	// 不得回落仓库内公开的开发默认密钥。只读覆盖率核验不消费 secret，不拦。
+	if !flags.VerifyCoverage && capabilitydomain.IsProduction() && seedSecretValue(flags.Secret) == "" {
+		fmt.Fprintln(os.Stderr, "production 环境 --mockdata 需要 --secret 或 JUHE_AI_SECRET：拒绝回落开发默认密钥")
+		return 2
 	}
 	options := mockdata.Options{
 		DSN:           strings.TrimSpace(flags.DSN),

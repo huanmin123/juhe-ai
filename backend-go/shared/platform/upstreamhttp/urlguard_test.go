@@ -59,6 +59,56 @@ func TestNormalizePrivateUpstreamOrigin(t *testing.T) {
 	}
 }
 
+func TestURLSecurityConfigFromEnv(t *testing.T) {
+	env := func(values map[string]string) func(string) string {
+		return func(name string) string { return values[name] }
+	}
+	// 2026-09-19 决策默认放行私网/本机；空值与 true/1/yes/on 等价。
+	for _, raw := range []string{"", "true", "TRUE", "1", " true ", "yes", "ON"} {
+		config, err := URLSecurityConfigFromEnv(env(map[string]string{"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": raw}))
+		if err != nil {
+			t.Fatalf("allow private %q: %v", raw, err)
+		}
+		if !config.AllowPrivateBaseUrls {
+			t.Fatalf("allow private %q = false, want true", raw)
+		}
+	}
+	for _, raw := range []string{"false", "FALSE", "0", " false ", "no", "OFF"} {
+		config, err := URLSecurityConfigFromEnv(env(map[string]string{"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": raw}))
+		if err != nil {
+			t.Fatalf("deny private %q: %v", raw, err)
+		}
+		if config.AllowPrivateBaseUrls {
+			t.Fatalf("deny private %q = true, want false", raw)
+		}
+	}
+	for _, raw := range []string{"bogus", "maybe"} {
+		if _, err := URLSecurityConfigFromEnv(env(map[string]string{"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": raw})); err == nil {
+			t.Fatalf("illegal boolean %q accepted", raw)
+		}
+	}
+	// Allowlist entries are normalized per origin; empty entries are skipped.
+	config, err := URLSecurityConfigFromEnv(env(map[string]string{
+		"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": " http://10.0.0.5:8080 , , HTTPS://192.168.1.5 ",
+	}))
+	if err != nil {
+		t.Fatalf("allowlist parse: %v", err)
+	}
+	for _, key := range []string{"http://10.0.0.5:8080", "https://192.168.1.5:443"} {
+		if !config.PrivateOriginAllowlist[key] {
+			t.Fatalf("allowlist missing %q: %#v", key, config.PrivateOriginAllowlist)
+		}
+	}
+	// A non-IP / malformed entry fails the whole load (no silent widening).
+	for _, bad := range []string{"http://internal.example.com", "ftp://10.0.0.1", "10.0.0.1"} {
+		if _, err := URLSecurityConfigFromEnv(env(map[string]string{
+			"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": bad,
+		})); err == nil {
+			t.Fatalf("allowlist entry %q accepted", bad)
+		}
+	}
+}
+
 type fakeResolver struct {
 	addresses []net.IPAddr
 	err       error

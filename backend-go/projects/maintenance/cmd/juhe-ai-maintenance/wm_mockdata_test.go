@@ -58,6 +58,22 @@ func TestWMMockdataExitBranches(t *testing.T) {
 	}
 }
 
+// TestWMMockdataProductionRequiresSecret 钉住 SEC-04 的 production 造数门禁：
+// 缺 --secret/JUHE_AI_SECRET 时在开库前 exit 2；只读覆盖率核验不受该门禁影响。
+func TestWMMockdataProductionRequiresSecret(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("JUHE_AI_SECRET", "")
+	code, _, stderr := wmRunMaintenanceCapture(t, "-mockdata", "-dsn", "postgres://u@127.0.0.1:1/db")
+	if code != 2 || !strings.Contains(stderr, "production 环境 --mockdata 需要 --secret") {
+		t.Fatalf("production mockdata 缺 secret 应 exit 2 并提示 secret: exit=%d stderr=%s", code, stderr)
+	}
+	// 只读核验不消费 secret，不应被该门禁拦成 2（不可达 DSN 走运行期失败 1）。
+	code, _, stderr = wmRunMaintenanceCapture(t, "-verify-mockdata-coverage", "-dsn", "postgres://u@127.0.0.1:1/db", "-mockdata-days", "1", "-mockdata-daily-requests", "1")
+	if code == 2 || strings.Contains(stderr, "production 环境 --mockdata 需要 --secret") {
+		t.Fatalf("只读覆盖率核验不应命中 seed secret 门禁: exit=%d stderr=%s", code, stderr)
+	}
+}
+
 // TestWMMockdataRunEndToEnd 是 CLI 全链路验收：pgtestkit 独立库上 exit 0、
 // stdout 一条 Report JSON、摘要文件按显式路径写出。
 func TestWMMockdataRunEndToEnd(t *testing.T) {

@@ -12,6 +12,7 @@ package main
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,8 +116,14 @@ func (c *gatewayChain) serveMediaJobsCenterContent(w http.ResponseWriter, r *htt
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	// 零资源存储（§8.1）：边收边转发，不落盘不缓存。
-	_, _ = io.Copy(w, response.Body)
+	// 零资源存储（§8.1）：边收边转发，不落盘不缓存。中断此前被静默吞掉
+	// （2026-11-06 复审 N3）：补 Warn 与 /v1 content 面同码，便于区分上游
+	// 产物问题与网关/客户端侧中断。
+	if _, copyErr := io.Copy(w, response.Body); copyErr != nil {
+		slog.Default().Warn("媒体任务中心产物流中断",
+			"event", "media_job_content_stream_interrupted",
+			"jobId", record.ID, "error", copyErr.Error())
+	}
 }
 
 // writeMediaJobsCenterError 以 /v1 媒体面同构的平铺错误信封写响应（任务

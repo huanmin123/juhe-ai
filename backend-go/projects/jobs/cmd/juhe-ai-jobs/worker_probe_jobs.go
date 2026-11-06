@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // wireProbeFamily 把探针依赖族的三个任务翻转为 GoWired：
@@ -55,10 +57,18 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return nil
 	}
 
+	// 探针族出站 SSRF 守卫（SEC-03）：与 J1 accounthealth、gateway 手测共用
+	// 部署级 URLSecurityConfig 语义。默认 allow-private 时 ValidateHost 直接
+	// 放行；strict 模式下目标域名解析到内网会在发送前/拨号期被拒绝。
+	probeSecurityConfig, securityErr := upstreamhttp.URLSecurityConfigFromEnv(os.Getenv)
+	if securityErr != nil {
+		return securityErr
+	}
 	probeService, err := accountprobe.NewService(accountprobe.Options{
 		Source:      store,
 		Secret:      a.config.Secret,
 		Concurrency: a.config.ProbeConcurrency,
+		DialGuard:   upstreamhttp.NewDialGuard(probeSecurityConfig, nil, nil),
 	})
 	if err != nil {
 		return err

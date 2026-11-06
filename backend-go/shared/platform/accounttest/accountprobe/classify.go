@@ -374,6 +374,8 @@ func extractOpenAIOutputText(context responseContext) string {
 		return direct
 	}
 	var chunks []string
+	var doneTexts []string
+	var completedText string
 	for _, event := range context.events {
 		payload := event.json
 		if payload == nil {
@@ -389,18 +391,29 @@ func extractOpenAIOutputText(context responseContext) string {
 			}
 		}
 		if eventType == "response.output_text.done" {
+			// Responses 流可能包含多个 message output item（例如 prelude 空文本 +
+			// final_answer 正文）；遇到第一个 done 就返回会丢掉后续 item 的正文，
+			// 表现为「协议完成但输出未包含预期答案」。此处收集全部 done。
 			if text := stringValue(payload["text"]); text != "" {
-				return text
+				doneTexts = append(doneTexts, text)
 			}
 		}
 		if eventType == "response.completed" || eventType == "response.done" {
 			if text := extractOpenAIResponsePayloadText(objectValue(payload["response"])); text != "" {
-				return text
+				completedText = text
 			}
 		}
 		if chatText := extractOpenAIChatPayloadText(payload, "delta"); chatText != "" {
 			chunks = append(chunks, chatText)
 		}
+	}
+	// 终止事件的 response 快照最完整（含全部 output items），优先采用；流被
+	// 截断或上游未发终止事件时才退回到逐个 done / delta 拼接。
+	if completedText != "" {
+		return completedText
+	}
+	if len(doneTexts) > 0 {
+		return joinedText(doneTexts)
 	}
 	return joinedText(chunks)
 }
@@ -409,7 +422,9 @@ func extractOpenAIResponsePayloadText(payload map[string]any) string {
 	if payload == nil {
 		return ""
 	}
-	if direct := stringValue(payload["output_text"]); direct != "" {
+	// output_text 只是便捷投影：空白投影不得掩盖 output 数组里的正文（多 item
+	// 场景下投影可能只覆盖首个 item）。
+	if direct := stringValue(payload["output_text"]); strings.TrimSpace(direct) != "" {
 		return direct
 	}
 	output := arrayValue(payload["output"])
@@ -504,6 +519,9 @@ func extractRawOpenAIVisibleOutputText(context responseContext) (string, bool) {
 		return text, true
 	}
 	var chunks []string
+	var doneTexts []string
+	var completedText string
+	completedOK := false
 	for _, event := range context.events {
 		payload := event.json
 		if payload == nil {
@@ -519,18 +537,26 @@ func extractRawOpenAIVisibleOutputText(context responseContext) (string, bool) {
 			}
 		}
 		if eventType == "response.output_text.done" {
+			// 与 extractOpenAIOutputText 同源：多 output item 时首个 done 只有
+			// 空文本，必须收集全部 done 才能保留后续 item 的正文。
 			if text, ok := rawStringValue(payload["text"]); ok && text != "" {
-				return text, true
+				doneTexts = append(doneTexts, text)
 			}
 		}
 		if eventType == "response.completed" || eventType == "response.done" {
 			if text, ok := extractRawOpenAIResponseVisibleText(objectValue(payload["response"])); ok {
-				return text, true
+				completedText, completedOK = text, true
 			}
 		}
 		if text, ok := extractRawOpenAIChatVisibleText(payload, "delta"); ok {
 			chunks = append(chunks, text)
 		}
+	}
+	if completedOK {
+		return completedText, true
+	}
+	if len(doneTexts) > 0 {
+		return joinedRawText(doneTexts)
 	}
 	return joinedRawText(chunks)
 }
@@ -539,7 +565,8 @@ func extractRawOpenAIResponseVisibleText(payload map[string]any) (string, bool) 
 	if payload == nil {
 		return "", false
 	}
-	if direct, ok := rawStringValue(payload["output_text"]); ok && direct != "" {
+	// 同 extractOpenAIResponsePayloadText：空白投影不算有效可见文本。
+	if direct, ok := rawStringValue(payload["output_text"]); ok && strings.TrimSpace(direct) != "" {
 		return direct, true
 	}
 	output := arrayValue(payload["output"])

@@ -1,6 +1,6 @@
 module github.com/huanminabc/juhe-ai/backend-go-maintenance
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0

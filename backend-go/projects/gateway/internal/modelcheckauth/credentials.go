@@ -58,7 +58,15 @@ func (a *Authenticator) VerifySystemAccountCredentials(ctx context.Context, user
 		}
 		return VerifiedCredentials{}, false, err
 	}
-	if status != "active" || !verifySystemAccountPassword(password, passwordHash) {
+	// Inactive accounts must still pay the full PBKDF2 cost before the status
+	// rejection: skipping the hash work would make "known username but
+	// disabled" measurably faster than both an active account and the
+	// missing-user arm (SEC-07). The stored hash is not exercised.
+	if status != "active" {
+		verifySystemAccountPassword(password, dummySystemAccountPasswordHash)
+		return VerifiedCredentials{}, false, nil
+	}
+	if !verifySystemAccountPassword(password, passwordHash) {
 		return VerifiedCredentials{}, false, nil
 	}
 	verified.MustChangePassword = verified.MustChangePassword && !a.initialPasswordGateDisabled

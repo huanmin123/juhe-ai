@@ -16,6 +16,10 @@ services:
     image: postgres:18-alpine
     container_name: juhe-ai-postgres
     restart: unless-stopped
+    # 安全基线（2026-11-06）：禁止进程通过 setuid/setgid 提权。数据库镜像
+    # 的入口仍以 root 启动并降权到 postgres，no-new-privileges 不阻断降权。
+    security_opt:
+      - no-new-privileges:true
     # 单机专用形态的内存调优（2026-09-30 固化进部署契约；此前默认 shared_buffers=128MB
     # 是 8GB 机器上的隐性瓶颈：两库 juhe_ai 3.3GB + juhe_public 222MB 共享 128MB 缓存，
     # 实测缓存命中率 0.85~0.95、iowait ~9%、checkpoint 5 分钟一轮刷 2-3k 缓冲区）。
@@ -53,6 +57,10 @@ services:
     image: redis:7.4-alpine
     container_name: juhe-ai-redis
     restart: unless-stopped
+    # 安全基线（2026-11-06）：与 postgres 同款，只禁止提权，不裁剪入口降权
+    # 所需的默认 capability。
+    security_opt:
+      - no-new-privileges:true
     command:
       - redis-server
       - --requirepass
@@ -102,6 +110,16 @@ services:
     # + PG ~3GiB + jobs/监控/caddy ~0.5GiB ≈ 6.7GiB，8G 物理仍留页缓存与 swap 兜底。
     mem_limit: "4g"
     restart: unless-stopped
+    # 安全基线（2026-11-06）：gateway 以非 root app 用户运行，根文件系统只读；
+    # 可写面仅 /app/backend/data、/app/backend/logs（下方挂载）与 /tmp（tmpfs）。
+    # 非 root 且监听端口均 >1024，不需要任何 Linux capability。
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
     # 优雅关闭串行预算最坏 20s（main 10s + j3b 5s + health 5s）；默认 10s 宽限
     # 会在在途 SSE 上 SIGKILL，usage/审计尚未构造即丢。必须大于关闭预算。
     stop_grace_period: 30s
@@ -189,6 +207,16 @@ services:
     # BUG-0313 内存治理：jobs 当前 RSS ~114MiB，硬限防异常扩散。
     mem_limit: "1g"
     restart: unless-stopped
+    # 安全基线（2026-11-06）：jobs 以非 root app 用户运行，根文件系统只读；
+    # 可写面仅与 gateway 同源的 data/logs 挂载与 /tmp。监听 3305 >1024，
+    # 不需要任何 capability。
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
     # 与 gateway 同批停写；给任务 finish/租约释放留出排空时间。
     stop_grace_period: 30s
     # 与 gateway 同理：spool drain 目录按相对路径派生，必须锚定 /app/backend
@@ -247,6 +275,15 @@ services:
     image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-maintenance
     container_name: juhe-ai-maintenance
     profiles: ["tool"]
+    # 安全基线（2026-11-06）：一次性维护容器同样以非 root app 用户运行，
+    # 根文件系统只读；维护产物写上方 data 挂载，/tmp 由 tmpfs 提供。
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
     # 与 gateway/jobs 同理：datadir 相对路径按 cwd 解析，一次性容器同样锚定
     # /app/backend，保证维护产物（若有）落在与常驻进程一致的挂载目录。
     working_dir: /app/backend
@@ -260,6 +297,10 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # 与 gateway/jobs 同值：maintenance 的 secret 消费命令（capability-domain
+      # migrate/verify、--seed）在 production 缺 --secret/JUHE_AI_SECRET 时 exit 2，
+      # 不回落到仓库内公开的开发默认密钥。
+      NODE_ENV: production
       TZ: Asia/Shanghai
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
@@ -280,6 +321,18 @@ services:
     # caddy 自身作为 PID 1 不回收（2026-09-29 生产曾堆积 9470 个 zombie 致 docker exec 全败）；
     # init: true 注入 docker 内置 init（tini）负责收割。
     init: true
+    # 安全基线（2026-11-06）：根文件系统只读，可写面仅 /data、/config 卷与
+    # /tmp；capability 只保留 NET_BIND_SERVICE 以绑定 80/443（TCP+UDP），
+    # 其余 capability 全部裁剪。
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
     depends_on:
       gateway:
         condition: service_healthy

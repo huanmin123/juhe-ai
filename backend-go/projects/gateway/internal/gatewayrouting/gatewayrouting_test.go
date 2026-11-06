@@ -806,15 +806,18 @@ func TestFilterAccountsByRequestedModelFamilyArms(t *testing.T) {
 		t.Fatalf("same-family rename rank = %d, want %d (ties with direct)",
 			ranks["acc_same_family_rename"], gatewayAccountModelPriorityRankDirect)
 	}
-	if ranks["acc_cross_protocol"] != gatewayAccountModelPriorityRankMapping {
-		t.Fatalf("cross-protocol rank = %d, want %d",
-			ranks["acc_cross_protocol"], gatewayAccountModelPriorityRankMapping)
+	// 2026-11-05 退役裁决：除 OpenAI v1 responses -> chat_completions 外，
+	// 跨协议映射不再可执行；chat_completions -> messages 的账户按 unsupported
+	// 排序，不进入 mapping 计数。
+	if ranks["acc_cross_protocol"] != gatewayAccountModelPriorityRankUnsupported {
+		t.Fatalf("cross-protocol rank = %d, want %d（跨协议映射已退役）",
+			ranks["acc_cross_protocol"], gatewayAccountModelPriorityRankUnsupported)
 	}
 	if ranks["acc_direct"] != gatewayAccountModelPriorityRankDirect {
 		t.Fatalf("direct rank = %d, want %d", ranks["acc_direct"], gatewayAccountModelPriorityRankDirect)
 	}
-	if result.MappingMatchedCount != 2 || result.DirectMatchedCount != 1 {
-		t.Fatalf("counts = direct:%d mapping:%d, want direct:1 mapping:2",
+	if result.MappingMatchedCount != 1 || result.DirectMatchedCount != 1 {
+		t.Fatalf("counts = direct:%d mapping:%d, want direct:1 mapping:1（跨协议账户不计入 mapping）",
 			result.DirectMatchedCount, result.MappingMatchedCount)
 	}
 }

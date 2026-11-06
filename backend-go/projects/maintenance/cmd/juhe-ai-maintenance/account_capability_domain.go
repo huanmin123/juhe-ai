@@ -9,7 +9,8 @@
 //     preflight|postflight（不根据列是否存在隐式切换核验语义）；
 //   - 存储目标为 --dsn 单形态（PLAN-20261024T051925945Z B4 删除
 //     --driver/--paths 旗标族）；解密密钥沿用 --secret → JUHE_AI_SECRET →
-//     Node dev default 链。
+//     Node dev default 链，但 production 缺显式密钥直接拒绝（exit 2），
+//     不回落公开的开发默认密钥。
 //
 // 退出码契约：0 成功（含 M1 重复执行的「只报告完成」）、1 运行失败（阶段
 // 状态机拒绝、并行竞争、失败清单或核验不通过的运行期错误）、2 用法错误
@@ -70,6 +71,13 @@ func accountCapabilityDomainMigrateResult(dsn, secret, stage string, nodeStopped
 		fmt.Fprintln(os.Stderr, "能力域迁移被拒绝：必须显式携带 --node-stopped --go-stopped --backup-confirmed（停写 gateway/jobs 并验证可恢复备份后才能执行；命令本身不负责停进程）")
 		return 2
 	}
+	// secret 门禁先于开库：production 缺显式密钥是用法错误（exit 2），不得
+	// 在连库后才暴露，也不得回落开发默认密钥。
+	resolvedSecret, secretErr := capabilitydomain.ResolveSecret(secret)
+	if secretErr != nil {
+		fmt.Fprintln(os.Stderr, secretErr)
+		return 2
+	}
 	db, usageCode := openBusinessPostgres(dsn)
 	if usageCode != 0 {
 		return usageCode
@@ -77,7 +85,7 @@ func accountCapabilityDomainMigrateResult(dsn, secret, stage string, nodeStopped
 	defer db.Close()
 	report, err := capabilitydomain.Run(context.Background(), db, capabilitydomain.Options{
 		Target: target,
-		Secret: capabilitydomain.ResolveSecret(secret),
+		Secret: resolvedSecret,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "能力域迁移失败：%v\n", err)
@@ -111,6 +119,11 @@ func accountCapabilityDomainVerifyResult(dsn, secret, stage, check string) int {
 		fmt.Fprintf(os.Stderr, "--verify-account-capability-domain 需要 --account-capability-domain-check=preflight|postflight（preflight 允许域列不存在；postflight 要求列存在；不隐式切换核验语义）\n")
 		return 2
 	}
+	resolvedSecret, secretErr := capabilitydomain.ResolveSecret(secret)
+	if secretErr != nil {
+		fmt.Fprintln(os.Stderr, secretErr)
+		return 2
+	}
 	db, usageCode := openBusinessPostgres(dsn)
 	if usageCode != 0 {
 		return usageCode
@@ -119,7 +132,7 @@ func accountCapabilityDomainVerifyResult(dsn, secret, stage, check string) int {
 	report, err := capabilitydomain.Verify(context.Background(), db, capabilitydomain.Options{
 		Target: target,
 		Check:  normalizedCheck,
-		Secret: capabilitydomain.ResolveSecret(secret),
+		Secret: resolvedSecret,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "能力域核验失败：%v\n", err)

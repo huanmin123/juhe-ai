@@ -26,6 +26,19 @@ func TestRunStorageBootstrapUsageErrors(t *testing.T) {
 	}
 }
 
+// TestRunStorageBootstrapProductionSeedRequiresSecret 钉住 seed 的 secret 生产
+// 门禁（SEC-04）：production 下 --seed 缺 --secret/JUHE_AI_SECRET 是用法错误
+// （exit 2），且在开库前返回，不回落开发默认密钥。ensure-only 不消费 secret，
+// 不受该门禁约束。
+func TestRunStorageBootstrapProductionSeedRequiresSecret(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("JUHE_AI_SECRET", "")
+	// 不可达 DSN：门禁必须在开库前返回 2，不能靠连接失败兜底。
+	if code := runStorageBootstrap(false, true, "postgres://user:pass@127.0.0.1:1/unreachable", ""); code != 2 {
+		t.Fatalf("production --seed 缺 secret exit = %d, want 2", code)
+	}
+}
+
 // TestRunStorageBootstrapEnsureArmSeedsBuiltinSchedulingPreference 覆盖
 // --ensure-schema 补种臂（调度偏好独立实体 PLAN-20261012T033000000Z）：仅
 // ensure（不 seed）也必须落内置调度偏好行——存量库升级 = 跑 ensure-schema 即

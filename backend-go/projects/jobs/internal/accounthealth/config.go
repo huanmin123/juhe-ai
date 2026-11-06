@@ -13,6 +13,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const (
@@ -63,6 +64,12 @@ type Config struct {
 	DBConcurrency                   int
 	DBQueueSize                     int
 	Now                             func() time.Time
+	// DialGuard 是健康探针出站的 SSRF 守卫（部署级 URLSecurityConfig 的请求期
+	// 一半）：LoadConfig 按 JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS /
+	// JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST 构建一次，scheduler 透传到
+	// exactkeyprobe.ProbeOptions。默认放行私网/本机时 rangeCheckAllowed 直接
+	// 放行，安装守卫不改变既有出站行为。
+	DialGuard *upstreamhttp.DialGuard
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -70,6 +77,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		getenv = os.Getenv
 	}
 	cfg := Config{Now: time.Now}
+	// 探针出站 URL 安全配置与 gateway 同源（2026-09-19 决策：默认放行私网/
+	// 本机，显式 false/0 恢复限制；allowlist 逐项规范化）。非法取值启动即失败。
+	securityConfig, securityErr := upstreamhttp.URLSecurityConfigFromEnv(getenv)
+	if securityErr != nil {
+		return Config{}, securityErr
+	}
+	cfg.DialGuard = upstreamhttp.NewDialGuard(securityConfig, nil, nil)
 	// OWNER 缺省视为 go；显式设置非 go 值（trim + 大小写不敏感）拒绝。
 	if owner := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER")); owner != "" && !strings.EqualFold(owner, "go") {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER 仅支持 go")

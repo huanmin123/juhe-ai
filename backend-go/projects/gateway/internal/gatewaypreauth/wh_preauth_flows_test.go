@@ -584,36 +584,46 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 	}
 }
 
-// 模型映射投影与 anthropic 桥接延迟判定。
+// 模型映射投影与已退役 anthropic 桥接的延迟判定。
 func TestWhModelMappingProjection(t *testing.T) {
-	// 跨协议转换是 hybrid 供应商账户能力：VendorCode 必须是 hybrid。
+	// 2026-11-05 退役裁决后，唯一允许的跨协议映射是 OpenAI v1
+	// responses -> chat_completions；同协议别名与该 bridge 之外的
+	// 跨协议映射（含旧 hybrid/anthropic bridge）不再可解析。
 	account := gatewayruntimecache.OpenAIAccountSecret{
-		ID: "acc1", VendorCode: "hybrid", ProtocolCode: "anthropic", ProtocolVersion: "v1",
+		ID: "acc1", VendorCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
+		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
+			SourceModel: "gpt-5.5", SourceEndpointFamily: EndpointFamilyResponses,
+			UpstreamModel: "gpt-5.5-chat", UpstreamEndpointFamily: EndpointFamilyChatCompletions,
+			Enabled: true,
+		}},
+	}
+	mapping := resolveOpenAIAccountModelMapping(account, "gpt-5.5", EndpointFamilyResponses)
+	if mapping == nil || mapping.UpstreamModel != "gpt-5.5-chat" || mapping.UpstreamEndpointFamily != EndpointFamilyChatCompletions {
+		t.Fatalf("映射 = %+v", mapping)
+	}
+	if mapping := resolveOpenAIAccountModelMapping(account, "", EndpointFamilyResponses); mapping != nil {
+		t.Fatal("空模型不得映射")
+	}
+	if mapping := resolveOpenAIAccountModelMapping(account, "unknown", EndpointFamilyResponses); mapping != nil {
+		t.Fatal("未匹配模型不得映射")
+	}
+	service, _, _ := newTestService(t, nil)
+	// 旧 hybrid/anthropic bridge 已退役：此处只断言当前契约为“不延迟”，
+	// 防止桥接延迟分支在退役后重新生效。请求必须带模型提示以驱动映射解析。
+	retiredHybrid := gatewayruntimecache.OpenAIAccountSecret{
+		ID: "acc_hybrid", VendorCode: "hybrid", ProtocolCode: "anthropic", ProtocolVersion: "v1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel: "gpt-4o", SourceEndpointFamily: EndpointFamilyChatCompletions,
 			UpstreamModel: "claude-3-5-sonnet", UpstreamEndpointFamily: EndpointFamilyMessages,
 			Enabled: true,
 		}},
 	}
-	mapping := resolveOpenAIAccountModelMapping(account, "gpt-4o", EndpointFamilyChatCompletions)
-	if mapping == nil || mapping.UpstreamModel != "claude-3-5-sonnet" || mapping.UpstreamEndpointFamily != EndpointFamilyMessages {
-		t.Fatalf("映射 = %+v", mapping)
-	}
-	if mapping := resolveOpenAIAccountModelMapping(account, "", EndpointFamilyChatCompletions); mapping != nil {
-		t.Fatal("空模型不得映射")
-	}
-	if mapping := resolveOpenAIAccountModelMapping(account, "unknown", EndpointFamilyChatCompletions); mapping != nil {
-		t.Fatal("未匹配模型不得映射")
-	}
-	service, _, _ := newTestService(t, nil)
-	// 全部候选都映射到 anthropic messages → 延迟图像工具权限到桥接。
-	// 请求必须带模型提示以驱动映射解析。
 	req := &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/chat/completions", nil), Body: &gatewaybody.Request{Body: map[string]any{"model": "gpt-4o"}, State: gatewaybody.CreateBodyState(gatewaybody.BodyStateInput{JSONParseStatus: gatewaybody.JSONParseStatusParsed, ParsedBody: map[string]any{"model": "gpt-4o"}})}}
-	if !service.shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(req, []gatewayruntimecache.OpenAIAccountSecret{account}, "") {
-		t.Fatal("全 anthropic 候选必须延迟")
+	if service.shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(req, []gatewayruntimecache.OpenAIAccountSecret{retiredHybrid}, "") {
+		t.Fatal("已退役的 hybrid/anthropic bridge 不得再触发延迟")
 	}
 	// 非 anthropic 账户 → 不延迟。
-	openaiAccount := gatewayruntimecache.OpenAIAccountSecret{ID: "acc2", VendorCode: "hybrid", ProtocolCode: "openai", ProtocolVersion: "v1"}
+	openaiAccount := gatewayruntimecache.OpenAIAccountSecret{ID: "acc2", VendorCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1"}
 	if service.shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(req, []gatewayruntimecache.OpenAIAccountSecret{openaiAccount}, "") {
 		t.Fatal("openai 候选不得延迟")
 	}
@@ -621,7 +631,7 @@ func TestWhModelMappingProjection(t *testing.T) {
 		t.Fatal("空候选不得延迟")
 	}
 	// GET /models 请求族不参与延迟。
-	if service.shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(whNewRequest("GET", "/v1/models"), []gatewayruntimecache.OpenAIAccountSecret{account}, "") {
+	if service.shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(whNewRequest("GET", "/v1/models"), []gatewayruntimecache.OpenAIAccountSecret{retiredHybrid}, "") {
 		t.Fatal("models 请求族不得延迟")
 	}
 }

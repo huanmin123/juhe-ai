@@ -42,8 +42,10 @@ type storageBootstrapPostgres struct {
 	Seed   *schema.PGSeedResult `json:"seed,omitempty"`
 }
 
-// seedSecretValue resolves the encryption secret: flag, then JUHE_AI_SECRET,
-// then the Node dev default handled inside schema.SeedOptions.
+// seedSecretValue resolves the encryption secret: flag, then JUHE_AI_SECRET.
+// An empty result falls back to the Node dev default inside
+// schema.SeedOptions; runStorageBootstrap rejects that fallback in production
+// before opening the database.
 func seedSecretValue(flagValue string) string {
 	if strings.TrimSpace(flagValue) != "" {
 		return strings.TrimSpace(flagValue)
@@ -58,6 +60,13 @@ func runStorageBootstrap(ensure, seed bool, dsn, secret string) int {
 	parsedDSN := strings.TrimSpace(dsn)
 	if parsedDSN == "" {
 		fmt.Fprintln(os.Stderr, "--ensure-schema/--seed 需要 --dsn 指向显式的 PostgreSQL URL")
+		return 2
+	}
+	// production 的 --seed 必须显式提供密钥：seed 用该密钥密封默认 API Key，
+	// schema.SeedOptions 空值会回落到仓库内公开的开发默认密钥，生产回退等于
+	// 让内置凭据可被公开密钥解封。门禁先于开库（用法错误，exit 2）。
+	if seed && capabilitydomain.IsProduction() && seedSecretValue(secret) == "" {
+		fmt.Fprintln(os.Stderr, "production 环境 --seed 需要 --secret 或 JUHE_AI_SECRET：拒绝回落开发默认密钥")
 		return 2
 	}
 	db, openErr := openPostgresBootstrap(parsedDSN)

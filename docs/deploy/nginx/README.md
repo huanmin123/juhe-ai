@@ -133,9 +133,11 @@ server {
     ssl_session_tickets off;
 
     server_tokens off;
-    # 网关原始请求体硬上限：text 16MB、image/audio 64MB。
-    # Nginx 默认 1m 会提前 413，这里与网关上限对齐。
-    client_max_body_size 64m;
+    # HSTS（2026-11-06 安全基线）：与内置 Caddy 同款，不加 includeSubDomains。
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    # 网关原始请求体硬上限：text 16MB、image/audio 64MB、/v1/files 512MB。
+    # Nginx 默认 1m 会提前 413；520m 为 512MiB 文件 + multipart 边界/字段留余量。
+    client_max_body_size 520m;
     client_body_timeout  300s;
     keepalive_timeout    75s;
 
@@ -261,9 +263,9 @@ systemctl enable --now certbot.timer 2>/dev/null || true
 | --- | --- | --- |
 | `proxy_http_version` | `1.1` | 客户端交接依赖 `http.Hijacker` 先提交 200 头再断开；h2c upstream 不支持 Hijack，会退化成 503 |
 | `proxy_buffering` | `/v1/` 为 `off` | SSE 必须实时下发；缓冲会攒包 |
-| `proxy_request_buffering` | `/v1/` 为 `off` | 避免 Nginx 先把 64MB 图片/音频请求完整落盘再转发 |
+| `proxy_request_buffering` | `/v1/` 为 `off` | 避免 Nginx 先把 64MB 图片/音频、512MB 文件请求完整落盘再转发 |
 | `proxy_read_timeout` | `600s`（realtime `3600s`） | 网关整请求预算 270s，流式连接可能持续数分钟；Nginx 默认 60s 会截断 |
-| `client_max_body_size` | `64m` | 网关 text 上限 16MB、image/audio 64MB；Nginx 默认 1m 会提前 413 |
+| `client_max_body_size` | `520m` | 网关 text 上限 16MB、image/audio 64MB、`/v1/files` 512MB；multipart 边界有少量开销，故留余量；Nginx 默认 1m 会提前 413 |
 | `X-Forwarded-For` | `$proxy_add_x_forwarded_for` | 在客户端自带 XFF 后追加真实来源；网关 `TRUST_PROXY=true` 取最后一跳，防止伪造 |
 | `Upgrade` / `Connection` | map 后透传 | `/v1/realtime` WebSocket 握手 |
 | `proxy_next_upstream` | `off` | 单上游；重放非幂等 POST 会重复计费/执行 |
@@ -318,7 +320,7 @@ docker logs --tail=100 juhe-ai-go-gateway 2>&1 | grep -E 'ERROR|502|504|panic' |
 | 502 Bad Gateway | gateway 未监听 `127.0.0.1:3000`（未加端口映射）或容器不 healthy | 检查 `docker compose ps`、`curl 127.0.0.1:3000/__aisys__/health`、Nginx error_log |
 | 504 Gateway Timeout | `proxy_read_timeout` 太短，长流式请求被截断 | `/v1/` 设为 `600s`，realtime 设 `3600s` |
 | SSE 一次性返回/卡住 | `proxy_buffering on` 或 gzip 缓冲 | `/v1/` 关闭 `proxy_buffering`、`proxy_cache`、`gzip` |
-| 413 Request Entity Too Large | `client_max_body_size` 小于网关上限 | 设为 `64m`，不要小于网关 |
+| 413 Request Entity Too Large | `client_max_body_size` 小于网关上限 | 设为 `520m`，不要小于网关（text 16MB / image+audio 64MB / files 512MB） |
 | WebSocket 400/无法升级 | 未透传 `Upgrade`/`Connection` | 使用本文 map 与两个 header |
 | 所有请求来源 IP 相同 | 未设置 `X-Forwarded-For`，或 `TRUST_PROXY` 配置错误 | 设置 XFF；gateway `JUHE_AI_TRUST_PROXY=true`；反向代理后不要信任客户端自带头 |
 | 登录 401/CORS 失败 | `ALLOWED_ORIGINS` 不是实际 HTTPS Origin，或 cookie 非 secure | `.env` 改 `https://<domain>`、`JUHE_AI_COOKIE_SECURE=true` |

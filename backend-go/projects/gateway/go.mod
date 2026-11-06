@@ -1,10 +1,10 @@
 module github.com/huanminabc/juhe-ai/backend-go-gateway
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.7
 	github.com/gorilla/websocket v1.5.3
 	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0
 	github.com/huanminabc/juhe-ai/backend-go-maintenance v0.0.0
@@ -12,7 +12,6 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/tiktoken-go/tokenizer v0.8.0
-	golang.org/x/image v0.45.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0

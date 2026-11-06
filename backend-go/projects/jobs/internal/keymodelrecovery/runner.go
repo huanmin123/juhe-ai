@@ -16,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const recoveryBatchLimit int64 = 128
@@ -72,6 +73,12 @@ type Runner struct {
 	// 13 条/s（日志治理终审建议）。
 	inputLoadWarnMu   sync.Mutex
 	inputLoadWarnedAt map[string]time.Time
+
+	// dialGuard 是恢复探针出站的 SSRF 守卫（与 gateway/accounthealth 同源的
+	// 部署级 URLSecurityConfig）；dialGuardErr 记录环境配置构建失败，Run 与
+	// RunCycle 启动即返回，绝不以未加固探针继续恢复。
+	dialGuard    *upstreamhttp.DialGuard
+	dialGuardErr error
 }
 
 func NewRunner(store Store, loader InputLoader, logger *slog.Logger) *Runner {
@@ -81,7 +88,18 @@ func NewRunner(store Store, loader InputLoader, logger *slog.Logger) *Runner {
 	if setter, ok := store.(interface{ SetLogger(*slog.Logger) }); ok {
 		setter.SetLogger(logger)
 	}
-	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, scanDelay: schedulejitter.Delay, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
+	runner := &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, scanDelay: schedulejitter.Delay, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
+	// 恢复探针出站守卫：keymodelrecovery 没有独立的配置加载入口（组合根直接
+	// NewRunner），故在此按进程环境构建一次，与 J1 accounthealth 共用
+	// URLSecurityConfigFromEnv 语义（默认放行私网/本机；显式 false/0 恢复限制）。
+	runner.dialGuard, runner.dialGuardErr = probeDialGuardFromEnv()
+	if runner.dialGuard != nil {
+		guard := runner.dialGuard
+		runner.probe = func(ctx context.Context, state State, input exactkeyprobe.Input) Outcome {
+			return probeWithDialGuard(ctx, state, input, guard)
+		}
+	}
+	return runner
 }
 
 // SetBackgroundProbeDisabled 注入手动模式开关位（扫描层过滤）。
@@ -118,6 +136,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r == nil || r.store == nil || r.loader == nil {
 		return fmt.Errorf("model-recovery runner 未初始化")
 	}
+	if r.dialGuardErr != nil {
+		return fmt.Errorf("加载 model-recovery 探针 URL 安全配置失败: %w", r.dialGuardErr)
+	}
 	// 每轮重随机扫描间隔（对齐 accountbalance.Service.Run 范式）：裸 ticker 的
 	// 相位锁定在进程起跑时刻，重启后多实例同相位扫描、due 候选同相位打上游；
 	// Timer 每轮 Reset 抖动后的延迟可逐轮解耦相位。等待仍从上一轮到期时刻起算
@@ -140,6 +161,9 @@ func (r *Runner) Run(ctx context.Context) error {
 // RunCycle exists for deterministic tests and is bounded: it creates at most
 // 32 local workers, while Redis acquire enforces the shared global/source caps.
 func (r *Runner) RunCycle(ctx context.Context) error {
+	if r.dialGuardErr != nil {
+		return fmt.Errorf("加载 model-recovery 探针 URL 安全配置失败: %w", r.dialGuardErr)
+	}
 	started := time.Now()
 	now, err := r.store.ServerNow(ctx)
 	if err != nil {
@@ -341,11 +365,20 @@ func (r *Runner) executeProbe(ctx context.Context, state State) Outcome {
 }
 
 func defaultProbe(ctx context.Context, state State, input exactkeyprobe.Input) Outcome {
-	// 缺陷修复：此前 ProbeOptions 缺少 Secret，decryptToken 对空 secret 直接
-	// 报"凭据 envelope 缺失"，恢复探针永远只能得到 unknown。凭据 envelope 由
-	// account-health 输入读取器以 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET
-	// 加密（见 accounthealth/config.go），这里读取同一契约变量。
-	result := exactkeyprobe.ProbeExactKeyModel(ctx, input, state.KeyFingerprint, state.FinalUpstreamModel, state.UpstreamEndpointMode, exactkeyprobe.ProbeOptions{Secret: os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"), Timeout: ProbeTimeout, MaxResponseBytes: 256 * 1024})
+	return probeWithDialGuard(ctx, state, input, nil)
+}
+
+// probeWithDialGuard 用给定守卫执行一次精确 Key+模型恢复探针；nil 守卫保持
+// 既有测试/嵌入式调用语义（无 DialGuard）。生产装配经 NewRunner 注入按
+// URLSecurityConfigFromEnv 构建的守卫，域名在拨号期解析并校验，strict 模式
+// 下不允许域名指向内网。
+//
+// 缺陷修复：此前 ProbeOptions 缺少 Secret，decryptToken 对空 secret 直接
+// 报"凭据 envelope 缺失"，恢复探针永远只能得到 unknown。凭据 envelope 由
+// account-health 输入读取器以 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET
+// 加密（见 accounthealth/config.go），这里读取同一契约变量。
+func probeWithDialGuard(ctx context.Context, state State, input exactkeyprobe.Input, guard *upstreamhttp.DialGuard) Outcome {
+	result := exactkeyprobe.ProbeExactKeyModel(ctx, input, state.KeyFingerprint, state.FinalUpstreamModel, state.UpstreamEndpointMode, exactkeyprobe.ProbeOptions{Secret: os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"), Timeout: ProbeTimeout, MaxResponseBytes: 256 * 1024, DialGuard: guard})
 	if result.Outcome == exactkeyprobe.OutcomeSuccess {
 		return CompleteSuccess
 	}
@@ -353,6 +386,17 @@ func defaultProbe(ctx context.Context, state State, input exactkeyprobe.Input) O
 		return Unknown
 	}
 	return UpstreamNotComplete
+}
+
+// probeDialGuardFromEnv 按进程环境构建恢复探针出站守卫（与 J1 accounthealth、
+// gateway 共用 URLSecurityConfigFromEnv 语义）。非法 env 返回错误，由
+// NewRunner 存入 dialGuardErr 并在 Run/RunCycle 启动时 fail-fast 暴露。
+func probeDialGuardFromEnv() (*upstreamhttp.DialGuard, error) {
+	securityConfig, err := upstreamhttp.URLSecurityConfigFromEnv(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return upstreamhttp.NewDialGuard(securityConfig, nil, nil), nil
 }
 
 func asDue(states []State) []Due {

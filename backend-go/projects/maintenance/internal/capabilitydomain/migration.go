@@ -43,16 +43,27 @@ import (
 // 规则回退，保证开发库凭据可解密。
 const DefaultDevSecret = "juhe-ai-dev-secret-change-me"
 
+// IsProduction 报告当前进程是否以生产模式运行（NODE_ENV 小写 trim 后等于
+// production，与 gateway/jobs 的判定口径一致）。
+func IsProduction() bool {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("NODE_ENV"))) == "production"
+}
+
 // ResolveSecret 按 旗标 → JUHE_AI_SECRET → Node dev default 的顺序解析解密
-// 密钥（与 seed/mockdata 同一链）。
-func ResolveSecret(flagValue string) string {
+// 密钥（与 seed/mockdata 同一链）。production 下缺失显式密钥时返回错误：
+// 开发默认密钥是仓库内公开值，生产回退会让凭据信封失去保护，必须由操作者
+// 显式提供 --secret 或 JUHE_AI_SECRET。
+func ResolveSecret(flagValue string) (string, error) {
 	if trimmed := strings.TrimSpace(flagValue); trimmed != "" {
-		return trimmed
+		return trimmed, nil
 	}
 	if env := strings.TrimSpace(os.Getenv("JUHE_AI_SECRET")); env != "" {
-		return env
+		return env, nil
 	}
-	return DefaultDevSecret
+	if IsProduction() {
+		return "", errors.New("production 环境缺少解密密钥：必须显式提供 --secret 或 JUHE_AI_SECRET，拒绝回落开发默认密钥")
+	}
+	return DefaultDevSecret, nil
 }
 
 // OpenPostgres 打开业务 PostgreSQL 连接（显式 maintenance 作用域 URL，无

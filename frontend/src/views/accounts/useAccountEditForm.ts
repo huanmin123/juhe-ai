@@ -55,6 +55,7 @@ import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 import { accountProviderProtocolKind, canCreateOAuthAccount, supportsOAuthAccountType } from './accountProviderCapabilities'
+import { rememberAccountProxyLabel } from './accountProxyDisplay'
 import { authUrl } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { normalizedAccountApiKeys } from './accountCredentials'
@@ -582,6 +583,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   async function openEdit(account: AccountListItem) {
+    // 代理候选是懒加载的：冷会话直接打开编辑时下拉无候选，先用列表行回填标签缓存，
+    // 避免把裸 proxy id 当成最终展示（前端通用组件规范 §3.5）。
+    rememberAccountProxyLabel(account)
     await openEditAtPath(account.id, accountOperationScopeParams(account, options.accountScopeParams.value), account)
   }
 

@@ -970,3 +970,44 @@ func TestSealFreshInstall(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveSecretProductionGate 钉住 secret 解析链的生产门禁（SEC-04）：
+// production 缺 --secret/JUHE_AI_SECRET 必须报错，不得回落仓库内公开的开发
+// 默认密钥；显式 flag/env 始终优先，非 production 保持既有 dev 默认。
+func TestResolveSecretProductionGate(t *testing.T) {
+	t.Run("production 缺显式密钥拒绝开发默认", func(t *testing.T) {
+		t.Setenv("NODE_ENV", " Production ")
+		t.Setenv("JUHE_AI_SECRET", "")
+		secret, err := ResolveSecret("")
+		if err == nil || secret != "" {
+			t.Fatalf("production 缺 secret 必须报错，got secret=%q err=%v", secret, err)
+		}
+		if !strings.Contains(err.Error(), "--secret") || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
+			t.Fatalf("错误文案应提示显式 --secret/JUHE_AI_SECRET: %v", err)
+		}
+	})
+	t.Run("非 production 回落开发默认", func(t *testing.T) {
+		t.Setenv("NODE_ENV", "development")
+		t.Setenv("JUHE_AI_SECRET", "")
+		secret, err := ResolveSecret("")
+		if err != nil || secret != DefaultDevSecret {
+			t.Fatalf("非 production 应回落开发默认，got secret=%q err=%v", secret, err)
+		}
+	})
+	t.Run("显式 flag 优先于 env 与生产门禁", func(t *testing.T) {
+		t.Setenv("NODE_ENV", "production")
+		t.Setenv("JUHE_AI_SECRET", "env-secret")
+		secret, err := ResolveSecret("  flag-secret  ")
+		if err != nil || secret != "flag-secret" {
+			t.Fatalf("flag 必须优先，got secret=%q err=%v", secret, err)
+		}
+	})
+	t.Run("env 优先于生产门禁", func(t *testing.T) {
+		t.Setenv("NODE_ENV", "production")
+		t.Setenv("JUHE_AI_SECRET", "env-secret")
+		secret, err := ResolveSecret("")
+		if err != nil || secret != "env-secret" {
+			t.Fatalf("JUHE_AI_SECRET 必须优先，got secret=%q err=%v", secret, err)
+		}
+	})
+}

@@ -311,6 +311,9 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "登录密码不能包含空格")
 		return
 	}
+	// revision 是改密的凭据版本围栏：非首改分支来自在线旧密码校验结果，
+	// 首改分支取自账户当前行；两者都交给 ChangePassword 在同一事务内复核。
+	revision := ""
 	if !auth.MustChangePassword {
 		if body.OldPassword == nil || *body.OldPassword == "" {
 			kernel.WriteBadRequest(w, "请填写当前密码")
@@ -357,14 +360,21 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d.LoginGuard.Success(clientIP, verified.Username)
+		revision = verified.CredentialRevision
+	} else {
+		// 首改分支不校验旧密码，版本围栏必须取自账户当前行；读失败按改密
+		// 失败处理，不带着空版本进入写事务。
+		currentRevision, revisionErr := d.Port.CurrentCredentialRevision(r.Context(), auth.SystemAccountID)
+		if revisionErr != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "修改密码失败")
+			return
+		}
+		revision = currentRevision
 	}
-	updated, err := d.Accounts.UpdatePassword(r.Context(), auth.SystemAccountID, *body.NewPassword)
-	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "修改密码失败")
-		return
-	}
-	_ = updated
-	if err := d.Port.RevokeOtherSessions(r.Context(), auth.SystemAccountID, auth.SessionID); err != nil {
+	// 口令更新与其他会话吊销在 ChangePassword 的同一事务内完成（SEC-06）：
+	// 两步分写会出现「新口令已生效但旧会话未吊销」或相反的中断态。
+	changed, err := d.Port.ChangePassword(r.Context(), auth.SystemAccountID, revision, *body.NewPassword, auth.SessionID)
+	if err != nil || !changed {
 		kernel.WriteError(w, http.StatusInternalServerError, "修改密码失败")
 		return
 	}
@@ -375,12 +385,12 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 	d.recordOperationLog(r, OperationLogEntry{
 		OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "self",
 		Module: "system_accounts", Action: "change_password", OperationKey: "auth.change_password",
-		ResourceType: "system_account", ResourceID: auth.SystemAccountID, ResourceName: updated.DisplayName,
+		ResourceType: "system_account", ResourceID: auth.SystemAccountID, ResourceName: auth.DisplayName,
 		Summary: "修改登录密码",
 		Changes: []OperationLogChange{{Field: "password", Label: "登录密码", Before: "已设置", After: "已变更", Sensitive: true}},
 	})
 	kernel.WriteOK(w, CurrentUserSummary{
-		ID: updated.ID, Username: auth.Username, DisplayName: auth.DisplayName,
+		ID: auth.SystemAccountID, Username: auth.Username, DisplayName: auth.DisplayName,
 		Role: auth.Role, MustChangePassword: false,
 	}, "")
 }

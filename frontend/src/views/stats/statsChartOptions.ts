@@ -175,7 +175,9 @@ export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsO
     color: [chartSemantic.danger],
     tooltip: {
       trigger: 'item',
-      triggerOn: 'mousemove|click',
+      // echarts 6.1.0 的 TooltipOption.triggerOn 联合类型漏掉了运行时仍生效的 'mousemove|click'
+      // （TooltipView 以 triggerOn.indexOf(currTrigger) 匹配事件），这里断言保留原有交互。
+      triggerOn: 'mousemove|click' as unknown as 'mousemove|click|mousewheel',
       renderMode: 'html',
       enterable: true,
       confine: true,

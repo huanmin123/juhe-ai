@@ -16,7 +16,7 @@
 
 - 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`、`audio_speech`、`audio_transcription_json`、`video_create`；`images_json` 必须有模型目录 `images` 能力证据，两个音频形态必须有模型目录 `audio` 能力证据；`video_create` 是能力域拆分后的视频域默认落值形态（AI 账户能力域拆分 v7 定案），只进入写侧落值白名单，无后台自动探针执行路径。
 - 音频检查形态（M1 已实施，2026-10-04，`accountprobe` 内置，账户表单与健康检查可选）：
-  - `audio_speech`：openai 协议向 `POST /v1/audio/speech` 发起短字符 TTS 请求（`response_format=wav`，最小化计费成本），判活 = 2xx + `audio/*` content-type；gemini 协议上游无该端点（恒 404），按契约 §5.1 改发 `POST /v1beta/models/{model}:generateContent`（contents 文本 + `responseModalities=["AUDIO"]` + `voiceName="Kore"`），判活 = 2xx + 响应 JSON 含 `candidates[0].content.parts[].inlineData`（不要求特定格式）。**2026-11-01 用户裁决起人工测试不再触发上述真实 TTS 生成**：`audio_speech` 人工测试改为密钥连通性探测（`POST {base}/tts/create` 空体，见 §17）；上述真实请求形态仅作为探针包内保留的历史构造路径存在。
+  - `audio_speech`：openai 协议向 `POST /v1/audio/speech` 发起短字符 TTS 请求（`response_format=wav`，最小化计费成本），判活 = 2xx + `audio/*` content-type；gemini 协议上游无该端点（恒 404），按契约 §5.1 改发 `POST /v1beta/models/{model}:generateContent`（contents 文本 + `responseModalities=["AUDIO"]` + `voiceName="Kore"`），判活 = 2xx + 响应 JSON 含 `candidates[0].content.parts[].inlineData`（不要求特定格式）。**2026-11-01 用户裁决起人工测试不再触发上述真实 TTS 生成**：`audio_speech` 人工测试改为密钥连通性探测（volcengine 走固定语音域 `POST https://openspeech.bytedance.com/api/v3/tts/create` + `X-Api-Key: speech_token` + `{"model":<model>}`，其他供应商 `POST {base}/tts/create`，见 §17）；上述真实请求形态仅作为探针包内保留的历史构造路径存在。
   - `audio_transcription_json`：向 `POST /v1/audio/transcriptions` 发起 multipart 请求，`file` 使用探针内置小 WAV 样本（不依赖用户上传）；判活 = 2xx + JSON 信封含 `text` 字段（字段存在即判活，不要求非空——静音样本真实上游可能返回空 `text`）。不在 2026-11-01 裁决范围，保持真实请求语义。
   - `audio_transcription_json` 仍为真实付费小请求（无免费目录探针等价物），走账户保存的精确 mode 与检查模型；判活证据为上述协议成功信号，不以响应体之外的目录事实替代。
 - 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE；其中 `images_json` 使用 `GET /v1/models` 并确认目录含检查模型，避免后台付费生图。
@@ -334,7 +334,7 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 | --- | --- | --- |
 | `video_create` | `GET {base}/contents/generations/tasks/probe-connectivity-check`（volcengine_ark 预设的任务查询形态，固定占位任务 ID） | 无 |
 | `images_json` | `POST {base}/images/generations` | 仅 `{"model":<model>}`（空 prompt） |
-| `audio_speech` | `POST {base}/tts/create`（volcengine_openspeech 模板） | 空体 |
+| `audio_speech` | volcengine：`POST https://openspeech.bytedance.com/api/v3/tts/create`（固定语音域，不读账户 ark base_url；`X-Api-Key: <speech_token>`）；其他供应商沿用 `POST {base}/tts/create` | 仅 `{"model":<model>}`（空 prompt；volcengine 缺 model 会被 45000030 挡在 resource_id 解析层，不能判密钥有效） |
 
 分类表（探测结果 evidence 带 `connectivity: true` 标记；`<code>` 为实际上游状态码）：
 
@@ -342,7 +342,7 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 | --- | --- | --- |
 | 2xx | 通过（极少数上游对探测请求直接放行也接受） | 密钥连通性验证通过（上游 HTTP `<code>`） |
 | 400 / 404（仅 `video_create`） | 通过——查询固定占位任务返回「任务不存在」属预期，证明密钥已通过认证 | 同上 |
-| 400 / 422（`images_json` / `audio_speech`） | 通过——空 prompt / 空体被参数校验拒绝属预期，证明密钥已通过认证 | 同上 |
+| 400 / 422（`images_json` / `audio_speech`） | 通过——空 prompt 被参数校验拒绝属预期，证明密钥已通过认证 | 同上 |
 | 401 / 403 | 失败——密钥无效 | 密钥连通性验证失败：上游拒绝访问（HTTP `<code>`） |
 | 5xx | 失败——上游不可达 | 密钥连通性验证失败：上游服务不可用（HTTP `<code>`） |
 | 其余状态码 | 失败 | 密钥连通性验证失败（HTTP `<code>`） |

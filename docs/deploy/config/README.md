@@ -149,6 +149,8 @@ docker exec juhe-ai-redis-cluster-7001 redis-cli --cluster create <宿主机IP>:
 ```caddy
 <domain> {
 	encode zstd gzip
+	# HSTS（2026-11-06 安全基线）：只声明本站；不要贸然加 includeSubDomains
+	header Strict-Transport-Security "max-age=31536000"
 	redir / /__aisys__/ permanent
 
 	reverse_proxy /v1/* 172.18.0.10:3000 {
@@ -159,6 +161,7 @@ docker exec juhe-ai-redis-cluster-7001 redis-cli --cluster create <宿主机IP>:
 ```
 
 - `<domain>` 替换为你的域名；Caddy 自动 ACME 签发/续期，80 常驻 308 升级 HTTPS。
+- 默认返回 `Strict-Transport-Security: max-age=31536000`，刻意不加 `includeSubDomains`（避免影响同域其他未全程 HTTPS 的子域）；改用外部入口时由该入口补等价 header。
 - `/v1/*` 必须保留 `flush_interval -1`（SSE 不缓冲）。
 - 上游固定 `172.18.0.10:3000`（compose 固定 IP），不要改成容器名，避免 Docker DNS 偶发失败导致 502。
 - 若同机还有其他站点（共享 Caddyfile），保留其 server 块；本项目生产 Caddyfile 含同机公益站块，部署纯本项目时可删除。

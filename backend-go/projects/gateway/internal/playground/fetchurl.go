@@ -1,11 +1,12 @@
 package playground
 
 // fetch_url 工具实现（设计 §3.3/§7）：GET 公网 http(s) URL，20s 超时，下载
-// 上限 512KB，剥 HTML 取正文（≤50KB）；SSRF 防护——仅 http/https、解析后拒绝
-// 私网/环回/链路本地/组播地址。拨号经守卫式 DialContext（解析-校验-钉扎拨号
-// 同一 IP），重定向不跟随（302/30x 一律按非 2xx 失败收敛，避免逐跳重校验的
-// 规避面）。失败不产生 HTTP 错误：由调用方把「抓取失败:<原因>」作为工具结果
-// 回喂模型（chatStream.executeFetchTool）。
+// 上限 512KB，剥 HTML 取正文（≤50KB）；SSRF 防护——仅 http/https、解析后按
+// 共享上游 blocked ranges 拒绝私网/环回/链路本地/组播/CGNAT/保留地址。
+// 拨号经守卫式 DialContext（解析-校验-钉扎拨号同一 IP），重定向不跟随
+// （302/30x 一律按非 2xx 失败收敛，避免逐跳重校验的规避面）。失败不产生
+// HTTP 错误：由调用方把「抓取失败:<原因>」作为工具结果回喂模型
+// （chatStream.executeFetchTool）。
 
 import (
 	"context"
@@ -19,6 +20,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // fetch_url 限额（设计 §3.3，包内常量，无环境开关）。重定向策略在客户端
@@ -31,14 +34,14 @@ const (
 	fetchUserAgentValue = "juhe-ai-playground-fetch-url/1.0"
 )
 
-// ipForbidden 报告 IP 是否属于 SSRF 拒绝面：私网/环回/链路本地单播与组播/
-// 组播/未指定地址（IPv4 与 IPv6 一并覆盖；net.IP 方法族语义）。
+// ipForbidden 报告 IP 是否属于 SSRF 拒绝面：拒绝面以共享上游 blocked ranges
+// 为准（私网/环回/链路本地/组播/CGNAT/保留段，IPv4 与 IPv6 一并覆盖；
+// upstreamhttp.IsPrivateOrReservedIP 是部署级单源）。nil 一律拒绝。
 func ipForbidden(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
+	return sharedupstreamhttp.IsPrivateOrReservedIP(unmapIP(ip).String())
 }
 
 // validateFetchURL 校验抓取目标：仅 http/https、host 非空、解析后的地址全部

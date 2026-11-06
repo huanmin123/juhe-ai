@@ -6,6 +6,10 @@
 aijh.huanmin.top {
 	encode zstd gzip
 
+	# HSTS（2026-11-06 安全基线）：仅主站声明，不加 includeSubDomains，
+	# 避免影响同域下未全程 HTTPS 的子域；80 端请求由 Caddy 自动永久跳转 HTTPS。
+	header Strict-Transport-Security "max-age=31536000"
+
 	redir / /__aisys__/ permanent
 
 	# OpenAI 兼容入口：SSE 流式响应必须关闭缓冲

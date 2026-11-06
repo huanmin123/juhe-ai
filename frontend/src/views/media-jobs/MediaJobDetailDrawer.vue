@@ -71,26 +71,26 @@
 
         <div v-if="isCompleted" class="detail-section">
           <h4 class="section-title">返回内容</h4>
-          <template v-if="detail.artifact?.contentUrl">
+          <template v-if="artifactContentUrl">
             <video
               v-if="detail.kind === 'video'"
-              :key="detail.artifact.contentUrl"
-              :src="detail.artifact.contentUrl"
+              :key="artifactContentUrl"
+              :src="artifactContentUrl"
               controls
               preload="metadata"
               class="artifact-media"
             ></video>
             <audio
               v-else-if="detail.kind === 'audio_speech'"
-              :key="detail.artifact.contentUrl"
-              :src="detail.artifact.contentUrl"
+              :key="artifactContentUrl"
+              :src="artifactContentUrl"
               controls
               preload="metadata"
               class="artifact-audio"
             ></audio>
             <p class="artifact-line">
-              <a :href="detail.artifact.contentUrl" target="_blank" rel="noopener">打开产物内容</a>
-              <span v-if="detail.artifact.expiresAt" class="muted-cell">（上游时效至 {{ formatDateTime(detail.artifact.expiresAt) }}，过期后产物不可再取回）</span>
+              <a :href="artifactContentUrl" target="_blank" rel="noopener">打开产物内容</a>
+              <span v-if="detail.artifact?.expiresAt" class="muted-cell">（上游时效至 {{ formatDateTime(detail.artifact?.expiresAt ?? '') }}，过期后产物不可再取回）</span>
             </p>
           </template>
           <template v-else-if="detail.kind === 'audio_transcription'">
@@ -166,6 +166,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime } from '@/shared/formatters'
 import type { MediaJobDetail } from '@/types/domain'
+import { safeArtifactContentUrl } from './mediaJobArtifact'
 import {
   formatMediaJobCost,
   formatMediaJobKind,
@@ -193,6 +194,8 @@ let fetchSequence = 0
 
 const isPendingStatus = computed(() => detail.value?.status === 'queued' || detail.value?.status === 'in_progress')
 const isCompleted = computed(() => detail.value?.status === 'completed')
+// 产物定位只渲染 http/https 绝对地址（后端已过滤，前端防御性再校验一次）。
+const artifactContentUrl = computed(() => safeArtifactContentUrl(detail.value?.artifact?.contentUrl))
 const hasRequestParams = computed(() => {
   const row = detail.value
   if (!row) return false

@@ -64,3 +64,37 @@ func TestBuildCostBreakdownPerImagePricedRowWithoutCountNoCharge(t *testing.T) {
 		t.Fatalf("account charge = %v, want 0", breakdown.AccountChargeUsd)
 	}
 }
+
+func TestBuildCostBreakdownTokenPricedImageRowBillsImageTokens(t *testing.T) {
+	// gpt-image 族（2026-11-06 深挖复审 F1）：目录只有 outputCostPerImageToken，
+	// 上游 images 响应根带 data[]（张数推导=1）且 usage 报 image tokens。按张价
+	// 缺失不得把整单判成 nil；应走 image token 行项计费。
+	breakdown := BuildCostBreakdown(&Pricing{
+		ProviderCode: "gpt",
+		Model:        "gpt-image-2",
+		Mode:         "image_generation",
+		PriceSet:     PriceSet{ImageOutputUsdPer1M: imageTestFloat(30)},
+	}, CostInput{
+		OutputTokens:     imageTestCount(343),
+		OutputImageCount: imageTestCount(1),
+	})
+	if breakdown == nil {
+		t.Fatal("breakdown = nil（token 价图像行 + data[] 张数不得被判为未定价）")
+	}
+	var imageLine *CostLineItem
+	for index := range breakdown.LineItems {
+		if breakdown.LineItems[index].Kind == LineImageOutput {
+			imageLine = &breakdown.LineItems[index]
+		}
+		if breakdown.LineItems[index].Kind == LineImageOutUnit {
+			t.Fatalf("无按张价时不得出按张行: %+v", breakdown.LineItems[index])
+		}
+	}
+	if imageLine == nil || imageLine.Quantity != 343 {
+		t.Fatalf("image_output line = %+v", imageLine)
+	}
+	want := 343.0 * 30 / 1_000_000
+	if breakdown.AccountChargeUsd == nil || *breakdown.AccountChargeUsd != want {
+		t.Fatalf("account charge = %v, want %v", breakdown.AccountChargeUsd, want)
+	}
+}

@@ -287,9 +287,10 @@ func TestWBParsedCredentialFieldsRejectsNonObjectJSON(t *testing.T) {
 // resolveConfiguredUpstreamModel 是严格映射解析器的兼容 shim，
 // 必须与 resolveConfiguredUpstreamModelMapping 返回同一上游模型。
 func TestWBResolveConfiguredUpstreamModelShimDelegatesToStrictMapping(t *testing.T) {
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	// 2026-11-05 退役裁决：openai 兼容供应商退役，Responses 画像归 gpt。
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
-		t.Fatal("测试前提失败：找不到 openai responses 画像")
+		t.Fatal("测试前提失败：找不到 gpt responses 画像")
 	}
 	// 目标 schema（§4/§9）：支持模型经 model_id 引用 models，映射落
 	// account_entry_mappings。

@@ -45,6 +45,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schemagate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
@@ -413,7 +414,17 @@ func main() {
 		// 与熔断 gate，独立实例同语义，Diagnostic 探针中性结算）；派发语义
 		// 与检测探针链一致，套件侧由 suiteFor 携带 Capability 准入键，
 		// dispatcher 为 nil 时 probe 才回退直连。
-		questionTestRunner := modelcheckowner.NewQuestionTestRunner(businessSource.Resolver(), &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}})
+		// 模型检测探针出站安全（T164/D-192）：与 /v1 主链共用同一
+		// UpstreamURLSecurity 配置。Dispatcher 在准入前校验目标（覆盖
+		// 账户代理分支：代理 transport 校验的是代理主机而非目标），直连
+		// 客户端再用同一 guard 作为拨号钩子钉住已校验地址。
+		probeURLGuard := sharedupstreamhttp.NewDialGuard(runtimeCfg.UpstreamURLSecurity, nil, nil)
+		probeTransport, probeTransportErr := sharedupstreamhttp.NewTransport("", sharedupstreamhttp.TransportOptions{DialGuard: probeURLGuard})
+		if probeTransportErr != nil {
+			fail(fmt.Errorf("create J3b Gateway probe transport: %w", probeTransportErr))
+		}
+		probeHTTPClient := &http.Client{Transport: probeTransport}
+		questionTestRunner := modelcheckowner.NewQuestionTestRunner(businessSource.Resolver(), &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: probeHTTPClient, KeyModel: keyModelGate, Circuit: probeCircuit, DialGuard: probeURLGuard}})
 		questionBankAdmin = modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true, questionTestRunner)
 		questionBankSelf = modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false, questionTestRunner)
 		quality.SetQuestionBankVerifier(questionBankStore)
@@ -468,7 +479,7 @@ func main() {
 			Authorize:         adminAuthorize,
 			Build:             businessSource.BuildRequest,
 			BuildScoped:       businessSource.BuildScopedRequest,
-			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}},
+			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: probeHTTPClient, KeyModel: keyModelGate, Circuit: probeCircuit, DialGuard: probeURLGuard}},
 			Enforcement:       enforcement,
 			Quality:           quality,
 			Tokenizer:         tokenizer,
@@ -598,7 +609,14 @@ func main() {
 			// （main 下方）启动，但其 mux 只挂 /auth/ 与 model-checks 族，不含
 			// /__aisys__/metrics——若未来把 metrics 挂上该 mux，注入顺序即成为
 			// 真竞争，必须把注入移到本 Serve 之前。
-			j3bManagementServer = &http.Server{Handler: managementMux, ReadHeaderTimeout: 5 * time.Second}
+			j3bManagementServer = &http.Server{
+				Handler:           managementMux,
+				ReadHeaderTimeout: 5 * time.Second,
+				// 管理别名只承载 /auth 与 model-checks 族的小 JSON 请求；
+				// 5 分钟覆盖慢客户端，同时给请求体读取一个硬上限（2026-11-06
+				// 安全基线，防慢速 body 占连）。
+				ReadTimeout: 5 * time.Minute,
+			}
 			j3bManagementServeErr = make(chan error, 1)
 			go func() { j3bManagementServeErr <- j3bManagementServer.Serve(j3bManagementListener) }()
 		}
@@ -937,9 +955,19 @@ func main() {
 			rootMux.Handle("/", mainHandler)
 			mainHandler = rootMux
 		}
+		// 大请求体路由在监听最外层延长读 deadline（/v1/files 512MiB、
+		// 图片/音频 64MiB 车道），必须在全部 writer 包装之前执行。
+		mainHandler = withLargeUploadReadTimeout(mainHandler)
 		mainServer = &http.Server{
 			Handler:           mainHandler,
 			ReadHeaderTimeout: 30 * time.Second,
+			// 请求体读取硬上限（2026-11-06 安全基线）：头部慢速攻击已由
+			// ReadHeaderTimeout 覆盖，此处的 10 分钟约束的是常规请求的
+			// body 慢速占连。/v1/files（512MiB）与 64MiB 图片/音频车道由
+			// withLargeUploadReadTimeout 在监听最外层单独延长到 60/30 分钟，
+			// 避免按带宽下限截断契约允许的大文件。SSE 响应不受 ReadTimeout
+			// 影响，realtime WS 在 hijack 后由桥接层覆盖为会话 idle deadline。
+			ReadTimeout: 10 * time.Minute,
 		}
 		mainServeErr = make(chan error, 1)
 		go func() { mainServeErr <- mainServer.Serve(mainListener) }()
@@ -1009,6 +1037,9 @@ func main() {
 	healthServer := &http.Server{
 		Handler:           newHealthServerHandler(healthHandler),
 		ReadHeaderTimeout: 5 * time.Second,
+		// 健康监听只接受 GET /health 与只读诊断端点；30s 覆盖探测并限制
+		// body 慢速占连（2026-11-06 安全基线）。
+		ReadTimeout: 30 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -1119,7 +1150,11 @@ func runPassiveGateway(healthAddress string, ownerMode ownermode.Mode, logger *s
 		fail(fmt.Errorf("listen passive gateway health endpoint %q: %w", healthAddress, err))
 	}
 	defer listener.Close()
-	server := &http.Server{Handler: passiveGatewayHealthHandler(ownerMode), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Handler:           passiveGatewayHealthHandler(ownerMode),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)

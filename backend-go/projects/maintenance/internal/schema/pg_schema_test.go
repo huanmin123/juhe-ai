@@ -130,8 +130,11 @@ import (
 // 扩展与 idx_accounts_name_c_trgm_lookup 保留）。
 // 622→623：2026-11-05 九家真实厂商收口——juhe_business +1（accounts
 // vendor_code/connection_driver_code 一致性 CHECK 的幂等 ALTER DO 块）。
+// 623→625：2026-11-06 媒体任务索引批——juhe_business +2（media_jobs
+// owner_system_account_id+created_at 与 status+created_at 两条幂等 CREATE
+// INDEX）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 623
+const goldenPostgresSchemaStatementCount = 625
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -157,7 +160,9 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// availability_schedule_gate 幂等 ALTER）。324→312：账户名称搜索
 	// 去索引化批 -12（3 TABLE + 9 INDEX）。312→313：2026-11-05 九家真实
 	// 厂商收口 +1（accounts vendor/driver 一致性 CHECK 幂等 ALTER）。
-	"juhe_business": 313,
+	// 313→315：2026-11-06 媒体任务索引批 +2（media_jobs owner+created、
+	// status+created 幂等 CREATE INDEX）。
+	"juhe_business": 315,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
@@ -266,5 +267,78 @@ func TestBug0325PartialCapabilityRejectionStillDispatches(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("preFilterSkipped missing chat-a: %#v", result.PreFilterSkipped)
+	}
+}
+
+// 2026-11-06 复审 F2：全池语音账户缺 speech_token 时保持 400
+// invalid_request_error（配置缺位），不退化为可重试 503。
+func TestSpeechCredentialsMissingExhaustionReturns400(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	engine.Driver = &bug0325ReasonDriver{fakeDriver: &fakeDriver{}, reasonByAccountID: map[string]string{
+		"bad-speech": "speech_credentials_missing",
+	}}
+	req := newTestRequest(t, `{"model":"volc.seedasr.auc"}`)
+	accounts := []AccountCandidate{
+		{ID: "bad-speech", Name: "bad-speech", Type: "api_key", SupportedModels: []string{"volc.seedasr.auc"}},
+	}
+	coordinator := &capturingCoordinator{}
+	args := bug0325CandidateArgs(req, accounts, coordinator)
+	result, err := pipeline.FilterOpenAIGatewayRequestCandidateAccounts(context.Background(), args)
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
+		t.Fatalf("outcome = %s", result.Outcome)
+	}
+	if coordinator.failure == nil {
+		t.Fatal("completeFailure missing")
+	}
+	failure := coordinator.failure
+	if failure.StatusCode != 400 || failure.ErrorType != "invalid_request_error" || failure.ErrorCode != "speech_credentials_missing" {
+		t.Fatalf("failure = %+v, want 400 invalid_request_error speech_credentials_missing", failure)
+	}
+}
+
+// 2026-11-06 C8：仅原生协议账户承接的模型走 OpenAI Chat 入口时，按
+// 400 invalid_request_error 终态（不再 503 可重试），并带协议入口提示。
+func TestNativeProtocolMismatchExhaustionReturns400(t *testing.T) {
+	cases := []struct {
+		reason  string
+		model   string
+		message string
+	}{
+		{"anthropic_native_unsupported", "claude-sonnet-5", "Anthropic /v1/messages"},
+		{"gemini_native_unsupported", "gemini-3.8-flash", "Gemini /v1beta/models"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.reason, func(t *testing.T) {
+			pipeline, engine, _, _ := newPipeline(t)
+			engine.Driver = &bug0325ReasonDriver{fakeDriver: &fakeDriver{}, reasonByAccountID: map[string]string{
+				"native": tc.reason,
+			}}
+			req := newTestRequest(t, `{"model":"`+tc.model+`"}`)
+			accounts := []AccountCandidate{
+				{ID: "native", Name: "native", Type: "api_key", SupportedModels: []string{tc.model}},
+			}
+			coordinator := &capturingCoordinator{}
+			args := bug0325CandidateArgs(req, accounts, coordinator)
+			result, err := pipeline.FilterOpenAIGatewayRequestCandidateAccounts(context.Background(), args)
+			if err != nil {
+				t.Fatalf("filter: %v", err)
+			}
+			if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
+				t.Fatalf("outcome = %s", result.Outcome)
+			}
+			if coordinator.failure == nil {
+				t.Fatal("completeFailure missing")
+			}
+			failure := coordinator.failure
+			if failure.StatusCode != 400 || failure.ErrorType != "invalid_request_error" || failure.ErrorCode != tc.reason {
+				t.Fatalf("failure = %+v, want 400 invalid_request_error %s", failure, tc.reason)
+			}
+			if !strings.Contains(failure.Message, tc.message) {
+				t.Fatalf("message = %q, want contains %q", failure.Message, tc.message)
+			}
+		})
 	}
 }

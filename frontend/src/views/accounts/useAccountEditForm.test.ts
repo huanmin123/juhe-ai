@@ -17,7 +17,8 @@ import {
   VOLCENGINE_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
 import { api } from '@/api/client'
-import type { AccountEditBasicDetail, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import { proxyLabelForId } from '@/shared/proxyLabelCache'
+import type { AccountEditBasicDetail, AccountListItem, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
 import {
   applyProviderDefinitionDefaultsAfterLoad,
@@ -498,6 +499,52 @@ describe('useAccountEditForm.reopenCreatedAccountForEdit（方案 B：创建成�
     } finally {
       unmount()
       adminDetailSpy.mockRestore()
+    }
+  })
+})
+
+// ---- 列表编辑：冷会话打开编辑弹窗时的代理标签回填 ----
+
+function accountListRow(overrides: Partial<AccountListItem> = {}): AccountListItem {
+  return {
+    id: 'account-open-edit-proxy',
+    providerCode: 'gpt',
+    name: '代理回填账户',
+    type: 'api_key',
+    credentials: {},
+    status: 'active',
+    concurrencyLimit: 1,
+    rpmLimit: 0,
+    currentConcurrency: 0,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'openai_standard',
+    schedulable: true,
+    ...overrides
+  } as AccountListItem
+}
+
+describe('useAccountEditForm.openEdit（代理标签回填）', () => {
+  it('冷缓存打开编辑：用列表行的代理展示字段回填标签，不依赖下拉候选加载', async () => {
+    const detailSpy = vi.spyOn(api.myAccounts, 'editBasicDetail').mockResolvedValue(createdOAuthDetail)
+    const { ctx, unmount } = mountMediaEditForm(() => async () => undefined)
+    try {
+      await ctx.openEdit(accountListRow({
+        id: createdOAuthDetail.id,
+        proxyProfileId: 'proxy-cold-open-edit',
+        proxyProfileName: '出海代理',
+        proxyProfileType: 'socks5h',
+        proxyProfileEnabled: true
+      }))
+      await flushTicks()
+      expect(detailSpy).toHaveBeenCalledWith(createdOAuthDetail.id)
+      expect(ctx.editingId.value).toBe(createdOAuthDetail.id)
+      // 代理候选尚未加载（未展开下拉）时，编辑框也必须拿到名称而不是裸 ID。
+      expect(proxyLabelForId('proxy-cold-open-edit')).toBe('出海代理（socks5h）')
+    } finally {
+      unmount()
+      detailSpy.mockRestore()
     }
   })
 })

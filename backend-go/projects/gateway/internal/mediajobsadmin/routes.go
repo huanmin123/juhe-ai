@@ -296,7 +296,10 @@ func mediaJobDetailPayload(record *gatewaymedia.MediaJobRecord, includeProviderJ
 	if includeProviderJobID {
 		row.ProviderJobID = record.UpstreamJobID
 	}
-	if contentURL := strings.TrimSpace(record.Artifact.ContentURL); contentURL != "" || record.Artifact.ExpiresAt != nil {
+	// 产物定位指针按 scheme 白名单过滤（SEC-01）：存量行可能带有非法 scheme
+	// （javascript:/data: 等）或相对路径，只在可安全渲染时回显 contentUrl；
+	// expiresAt 是时间字段，逻辑不变（两者皆空时整对象仍省略）。
+	if contentURL, ok := gatewaymedia.SafeArtifactURL(record.Artifact.ContentURL); ok || record.Artifact.ExpiresAt != nil {
 		artifact := &mediaJobDetailArtifact{ContentURL: contentURL}
 		if record.Artifact.ExpiresAt != nil {
 			artifact.ExpiresAt = mediaJobListTime(*record.Artifact.ExpiresAt)

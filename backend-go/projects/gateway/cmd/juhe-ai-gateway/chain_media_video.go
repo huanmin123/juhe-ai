@@ -1062,6 +1062,18 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
+	// 产物下载地址 scheme 白名单（SEC-01）：创建响应里的产物定位只接受
+	// http/https 绝对地址，javascript:/data:/file: 等其他 scheme（或相对路径、
+	// 无 host 形态）按上游协议违约拒绝——受理凭据虽已确立但不落库，避免非法
+	// 地址进入 media_jobs 后被管理面/前端当作裸链接渲染。
+	if ir != nil && ir.Artifact.ContentURL != "" {
+		if urlErr := gatewaymedia.ValidateArtifactURL(ir.Artifact.ContentURL); urlErr != nil {
+			message := "上游" + jobLabel + "任务响应包含无效的产物下载地址"
+			c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusBadGateway, nil, "", gatewaypreauth.AuditPartGatewayError, "upstream_response", "upstream_error", message)
+			c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
+			return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
+		}
+	}
 	// 归一参数复读（与 driver 出站构造同源解析，确定性纯函数）。失败属防御
 	// 分支（派发侧已成功构造过同源报文）。
 	plan, planErr := chainMediaJobCreatePlanOf(chainVideoRequestBodyOf(req), req, dispatched.Account, kind)
@@ -1488,6 +1500,15 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游媒体任务响应解析失败: "+parseErr.Error(), "upstream_error")
 		return
 	}
+	// 产物下载地址 scheme 白名单（SEC-01）：轮询响应里的产物定位同样只接受
+	// http/https 绝对地址；非法协议按上游协议违约 502 直接返回，不推进本地
+	// 状态、不进入 UpdateTerminal（非法 URL 不落库）。
+	if ir != nil && ir.Artifact.ContentURL != "" {
+		if urlErr := gatewaymedia.ValidateArtifactURL(ir.Artifact.ContentURL); urlErr != nil {
+			c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游媒体任务响应包含无效的产物下载地址", "upstream_error")
+			return
+		}
+	}
 	if ir.Status.Terminal() {
 		// 终态计费（媒体设计 §10：任务终态由轮询响应驱动回填）：completed 按
 		// 静态目录价估成本——视频先按次（目录行有按次价 → PerCall × 1），再
@@ -1625,10 +1646,19 @@ func (c *gatewayChain) serveMediaJobCancel(ctx context.Context, res *gatewayprea
 	if !adapter.SupportsCancel() {
 		// UpdateStatus 的非终态守卫：0 行 = 行已终态（并发轮询/清理先落终态），
 		// 不把终态行回退为 cancelled；本地收敛语义已达成，仍回 204。
-		if _, updateErr := c.mediaJobs.repo.UpdateStatus(ctx, record.ID, gatewaymedia.JobStatusCancelled); updateErr != nil {
+		updated, updateErr := c.mediaJobs.repo.UpdateStatus(ctx, record.ID, gatewaymedia.JobStatusCancelled)
+		if updateErr != nil {
 			c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "更新媒体任务取消状态失败", "internal_error")
 			return
 		}
+		// 取消/过期不计上游实际成本是已知口径缺口（2026-11-06 复审 F3）：
+		// 上游没有取消端点时本地 cancelled 只是客户端语义，厂商仍可能继续
+		// 生成并计费。补 Warn 供对账，不改变 204 行为。
+		slog.Default().Warn("媒体任务仅本地取消（上游无取消端点）",
+			"event", "media_job_cancel_local_only",
+			"jobId", record.ID, "kind", string(record.Kind),
+			"provider", account.ProviderCode, "previousStatus", string(record.Status),
+			"localRowsUpdated", updated)
 		res.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -2106,9 +2136,18 @@ func (c *gatewayChain) renderMediaVideoLocalError(res *gatewaypreauth.TrackingWr
 func (c *gatewayChain) renderMediaVideoTransportError(res *gatewaypreauth.TrackingWriter, req *gatewaypreauth.GatewayRequest, err error) {
 	var proxyErr *mediaJobProxyUnavailableError
 	if errors.As(err, &proxyErr) {
+		slog.Default().Warn("媒体任务面代理不可用",
+			"event", "media_job_task_proxy_unavailable",
+			"method", req.MethodUpper(), "path", req.PathAndQuery(), "error", proxyErr.Error())
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, proxyErr.Error(), "proxy_unavailable")
 		return
 	}
+	// 任务面直连的上游传输失败此前只回泛化 503、服务端零日志（2026-11-06
+	// 复审 N2）：轮询/取消/下载的 dial/timeout/TLS/代理故障无法定位账户与
+	// 成因。客户端文案保持不变，服务端补一条 Warn。
+	slog.Default().Warn("媒体任务面上游传输失败",
+		"event", "media_job_task_upstream_transport_failed",
+		"method", req.MethodUpper(), "path", req.PathAndQuery(), "error", err.Error())
 	c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "上游暂时不可用，请重试", "upstream_unavailable")
 }
 

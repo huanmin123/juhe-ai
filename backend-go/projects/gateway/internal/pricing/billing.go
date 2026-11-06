@@ -508,8 +508,16 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	if rates.OutputUsdPerImage != nil {
 		outputImageCount = nonNegative(input.OutputImageCount)
 	}
+	// 张数计量在图像模型缺按张价时的裁决：token 计价的图像行（gpt-image 族，
+	// Mode=image_generation 且 ImageOutputUsdPer1M 有价）由 image token 行项
+	// 承接，data[] 张数只是可选计量，不得因缺按张价把上游 200 的成功出图判成
+	// 零计费（2026-11-06 dev 复现：gpt-image-2 返回 1 张 + 343 image tokens，
+	// costUsd 为 NULL）。非图像模型或完全没有图像 token 价的配置仍按
+	// “未定价张数”拒绝整单（既有契约测试 gpt-5.5 合成张数场景）。
 	if nonNegative(input.OutputImageCount) > 0 && rates.OutputUsdPerImage == nil {
-		return nil
+		if !(pricing.Mode == "image_generation" && rates.ImageOutputUsdPer1M != nil) {
+			return nil
+		}
 	}
 	cacheReadRate := rates.CachedInputUsdPer1M
 	if cacheReadRate == nil && options.cacheReadFallbackToInput {

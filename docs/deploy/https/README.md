@@ -9,6 +9,7 @@
 - DNS A 记录指向服务器公网 IP；安全组放行 80/443（及 443/udp，若启用 HTTP/3）。
 - Caddy 自动 ACME 申请/续期证书；证书存 Docker 命名卷 `juhe-ai_caddy_data`，丢失会自动重签。
 - 80 常驻 308 升级 HTTPS；根路径 301 到 `/__aisys__/`。
+- 站点返回 `Strict-Transport-Security: max-age=31536000`（2026-11-06 安全基线，不加 `includeSubDomains`）；外部 TLS 终止时由该入口补等价 header。
 - `/v1/*` 必须 `flush_interval -1`（SSE 不缓冲）。
 - 上游固定 `172.18.0.10:3000`（compose 固定 IP），不要改成容器名。
 - 如果 Caddyfile 与同机其他站点共享，修改前备份、改后 `docker exec juhe-ai-caddy caddy validate --config /etc/caddy/Caddyfile` 再 `caddy reload`。
@@ -17,6 +18,7 @@
 
 ```sh
 curl -fsS -o /dev/null -w '%{http_code}\n' https://<domain>/__aisys__/health
+curl -sI https://<domain>/__aisys__/health | grep -i strict-transport-security
 echo | openssl s_client -servername <domain> -connect <domain>:443 2>/dev/null | openssl x509 -noout -dates
 ```
 
@@ -45,7 +47,7 @@ echo | openssl s_client -servername <domain> -connect <domain>:443 2>/dev/null |
 - `proxy_http_version 1.1`，不要用 h2c；
 - `/v1/` 关闭 `proxy_buffering`/`gzip`，`proxy_read_timeout` ≥ 600s；
 - 透传 `Upgrade`/`Connection` 与 `X-Forwarded-For`；
-- `client_max_body_size` 不小于网关上限（64m）。
+- `client_max_body_size` 不小于网关上限（`/v1/files` 512MiB，建议 `520m`；图片/音频 64MiB、文本 16MiB）。
 
 ### 2.2 外部 Caddy 示例
 

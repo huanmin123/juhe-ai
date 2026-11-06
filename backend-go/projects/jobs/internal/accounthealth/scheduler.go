@@ -577,7 +577,7 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 		}
 	}
 	probeCtx, cancel := context.WithDeadline(ctx, request.Deadline)
-	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, exactkeyprobe.ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now})
+	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, exactkeyprobe.ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now, DialGuard: r.cfg.DialGuard})
 	cancel()
 	if err != nil {
 		return err
@@ -874,6 +874,7 @@ func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, in
 		Timeout:          r.cfg.ProbeTimeout,
 		MaxResponseBytes: r.cfg.MaxResponseBytes,
 		Now:              r.cfg.Now,
+		DialGuard:        r.cfg.DialGuard,
 	})
 	cancel()
 	if err != nil {

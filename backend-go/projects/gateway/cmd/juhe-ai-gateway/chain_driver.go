@@ -970,6 +970,14 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	if reason := d.endpointModeMismatchReason(req, account, requestClientCompatibility); reason != "" {
 		return reason
 	}
+	// 火山语音域凭据门（2026-11-06 深挖复审 F2）：账户声明了 audio_speech /
+	// audio_job_* 端点但没有 speech_token 时，它对语音请求本就不具备能力。
+	// 只在派发后校验会把整组候选拖入终态 400（同组健康账户也接不到请求），
+	// 因此在候选过滤阶段按能力不匹配剔除；派发层
+	// chainVolcengineSpeechCredentials 的 400 仍保留为最后防线。
+	if reason := chainVolcengineSpeechCredentialMismatchReason(req, account); reason != "" {
+		return reason
+	}
 	requestedModel := ""
 	if req != nil {
 		if model, ok := gatewaypreauth.RequestModel(req); ok {
@@ -1891,6 +1899,34 @@ func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayR
 		return nil, false
 	}
 	return encoded, true
+}
+
+// chainVolcengineSpeechCredentialMismatchReason 把「火山账户声明了语音域端点
+// 但缺少 speech_token」判为能力不匹配（2026-11-06 深挖复审 F2）。该账户对
+// 语音请求本就不具备能力；只在派发后校验会让缺凭据账户作为候选把整组拖入
+// 终态 400，同组健康账户也接不到请求。候选过滤阶段剔除后，全池仅剩缺凭据
+// 账户时仍以 speech_credentials_missing 错误码终态说明原因。
+func chainVolcengineSpeechCredentialMismatchReason(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) string {
+	if req == nil || chainNormalizeProviderToken(account.VendorCode) != "volcengine" {
+		return ""
+	}
+	if !chainRequestNeedsVolcengineSpeechCredential(req) {
+		return ""
+	}
+	if accountCredentialText(account, "speech_token") != "" {
+		return ""
+	}
+	return chainSpeechCredentialsMissingErrorCode
+}
+
+// chainRequestNeedsVolcengineSpeechCredential 报告请求是否落在火山语音域
+// （同步 TTS/STT 或长音频任务创建）；视频/图像/对话请求不需要 speech_token。
+func chainRequestNeedsVolcengineSpeechCredential(req *gatewaypreauth.GatewayRequest) bool {
+	path := req.PathAndQuery()
+	if gatewaymedia.IsSpeechPath(path) || gatewaymedia.IsTranscriptionPath(path) {
+		return true
+	}
+	return chainIsAudioJobCreateRequest(req)
 }
 
 // chainVolcengineSpeechCredentials 提取火山语音凭据（契约 §9.2，2026-10-17

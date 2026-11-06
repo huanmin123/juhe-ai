@@ -448,6 +448,72 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	}
 }
 
+func TestMediaJobsDetailFiltersUnsafeArtifactURL(t *testing.T) {
+	env := newTestEnv(t)
+	expires := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	type seededArtifact struct {
+		id         string
+		contentURL string
+		expiresAt  *time.Time
+	}
+	// SEC-01：存量脏数据（历史落库的非法 scheme/相对路径）不得经管理面回显。
+	seeded := []seededArtifact{
+		{id: "video_artifact_https", contentURL: "https://upstream.example/content.mp4", expiresAt: &expires},
+		{id: "video_artifact_javascript", contentURL: "javascript:alert(1)", expiresAt: &expires},
+		{id: "video_artifact_data", contentURL: "data:text/html;base64,PHNjcmlwdD4=", expiresAt: &expires},
+		{id: "video_artifact_relative", contentURL: "/content/video.mp4", expiresAt: &expires},
+		{id: "video_artifact_invalid_only", contentURL: "javascript:alert(1)"},
+	}
+	for _, item := range seeded {
+		env.seedJob(t, gatewaymedia.MediaJobRecord{
+			ID: item.id, Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_artifact", AccountID: "acc_artifact",
+			UpstreamJobID: "up_" + item.id, Status: gatewaymedia.JobStatusQueued,
+			RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "产物地址过滤"},
+		})
+		if _, err := env.repo.UpdateTerminal(context.Background(), item.id, gatewaymedia.JobStatusCompleted, nil,
+			gatewaymedia.MediaJobArtifact{ContentURL: item.contentURL, ExpiresAt: item.expiresAt}, gatewaymedia.MediaJobUsage{}, 0); err != nil {
+			t.Fatalf("update terminal %s: %v", item.id, err)
+		}
+	}
+	env.login(t, "adminuser", "pass-123456", "admin")
+
+	// https 合法地址正常保留（expiresAt 同源展示）。
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_artifact_https")
+	if code != http.StatusOK {
+		t.Fatalf("https detail status = %d %v", code, payload)
+	}
+	artifact, _ := dataMap(t, payload)["artifact"].(map[string]any)
+	if artifact == nil || artifact["contentUrl"] != "https://upstream.example/content.mp4" ||
+		artifact["expiresAt"] != "2026-10-17T12:00:00.000Z" {
+		t.Fatalf("合法 http(s) 产物地址应保留: %#v", dataMap(t, payload)["artifact"])
+	}
+
+	// 非法地址：contentUrl 省略，expiresAt 逻辑不变。
+	for _, id := range []string{"video_artifact_javascript", "video_artifact_data", "video_artifact_relative"} {
+		code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/"+id)
+		if code != http.StatusOK {
+			t.Fatalf("%s status = %d %v", id, code, payload)
+		}
+		detail := dataMap(t, payload)
+		artifact, _ = detail["artifact"].(map[string]any)
+		if artifact == nil || artifact["expiresAt"] != "2026-10-17T12:00:00.000Z" {
+			t.Fatalf("%s 非法地址仍应返回 expiresAt: %#v", id, detail["artifact"])
+		}
+		if _, has := artifact["contentUrl"]; has {
+			t.Fatalf("%s 非法 contentUrl 不应回显: %#v", id, artifact)
+		}
+	}
+
+	// 非法地址且无过期时间：artifact 整对象省略（不凑空对象）。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_artifact_invalid_only")
+	if code != http.StatusOK {
+		t.Fatalf("invalid-only status = %d %v", code, payload)
+	}
+	if _, has := dataMap(t, payload)["artifact"]; has {
+		t.Fatalf("无合法 contentUrl 且无 expiresAt 时应省略 artifact: %#v", dataMap(t, payload))
+	}
+}
+
 func TestMyMediaJobsScopesToCaller(t *testing.T) {
 	env := newTestEnv(t)
 	// 匿名：401（先于任何登录，jar 为空才成立）。

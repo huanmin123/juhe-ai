@@ -563,13 +563,8 @@ func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
 	if err != nil || glmOpenAIHeaders.Get("Authorization") != "Bearer key" || glmOpenAIHeaders.Get("user-agent") != "ZCode/"+upstreamidentity.ZCodeVersion {
 		t.Fatalf("GLM Coding OpenAI headers=%v err=%v", glmOpenAIHeaders, err)
 	}
-	// BUG-0201：hybrid 桥接档案归 GLM 家族，系统请求使用 ZCode 身份，
-	// OpenCode 兜底删除。
-	hybridHeaders, err := credentialHeaders("hybrid", "profile_hybrid_openai_chat_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
-	applySystemIdentity(hybridHeaders, "hybrid", "profile_hybrid_openai_chat_v1", "api_key", "", "https://upstream.test/v1")
-	if err != nil || hybridHeaders.Get("Authorization") != "Bearer key" || hybridHeaders.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || hybridHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
-		t.Fatalf("hybrid system API-key headers=%v err=%v", hybridHeaders, err)
-	}
+	// 2026-11-05 退役裁决：hybrid 供应商已退役，不再有该档案的凭据头契约；
+	// BUG-0201 的 hybrid 桥接身份断言随契约一并删除，不得保留旧 fixture。
 }
 
 func TestDecryptProxyPasswordUsesPasswordField(t *testing.T) {
