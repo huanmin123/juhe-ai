@@ -182,8 +182,8 @@ assertTrue(
   template.accounts?.every((account) => account.rpmLimit === 0) === true,
   '导入模板每个账号都必须显式补 rpmLimit: 0（每分钟请求上限，0 表示不限制）'
 )
-assertMatch(accountImportProtocolMarkdown, /\| `rpmLimit` \| 否 \| number \| 每分钟请求上限；非负整数，0 或缺省表示不限制。 \|/, '协议 Markdown 应把 rpmLimit 暴露为导入字段')
-assertMatch(accountImportProtocolMarkdown, /`rpmLimit` 必须是非负整数/, '协议 Markdown 应说明 rpmLimit 非负整数规则')
+assertMatch(accountImportProtocolMarkdown, /\| `rpmLimit` \| 否 \| number \| 每分钟请求上限；非负整数且不超过 2147483647（int4 上限），0 或缺省表示不限制。 \|/, '协议 Markdown 应把 rpmLimit 暴露为导入字段')
+assertMatch(accountImportProtocolMarkdown, /`rpmLimit` 必须是非负整数且不超过 2147483647/, '协议 Markdown 应说明 rpmLimit 非负整数与 int4 上界')
 
 // ---- 来源格式示例（DR-39）：四个来源示例都必须携带模型列表，否则后端按
 // 「来源账户缺少模型列表，无法按模型名推断厂商」逐条跳过，复制示例 0 条可导入 ----
