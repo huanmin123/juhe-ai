@@ -54,25 +54,25 @@ type CloneContext struct {
 	ConcurrencyLimit  int                    `json:"concurrencyLimit"`
 	// RPMLimit 是源账户每分钟请求上限配置值（AI账户每分钟请求上限设计 §3 克隆
 	// 契约）：克隆是配置复制，不复制运行态计数。
-	RPMLimit                int                   `json:"rpmLimit"`
-	Priority                int                   `json:"priority"`
-	SuperPriorityEnabled    bool                  `json:"superPriorityEnabled"`
-	FallbackEnabled         bool                  `json:"fallbackEnabled"`
-	ClientCompatibility     string                `json:"clientCompatibility"`
-	SupportedModels         []string              `json:"supportedModels"`
-	Tags                    []TagSummary          `json:"tags"`
-	HealthCheckModel        string                `json:"healthCheckModel"`
-	HealthCheckEndpointMode string                `json:"healthCheckEndpointMode"`
+	RPMLimit                int          `json:"rpmLimit"`
+	Priority                int          `json:"priority"`
+	SuperPriorityEnabled    bool         `json:"superPriorityEnabled"`
+	FallbackEnabled         bool         `json:"fallbackEnabled"`
+	ClientCompatibility     string       `json:"clientCompatibility"`
+	SupportedModels         []string     `json:"supportedModels"`
+	Tags                    []TagSummary `json:"tags"`
+	HealthCheckModel        string       `json:"healthCheckModel"`
+	HealthCheckEndpointMode string       `json:"healthCheckEndpointMode"`
 	// ConnectionPresetCode 回显健康检查连接的 preset（DR-40）：providerProtocolProfileId
 	// 由探针表反查，媒体 preset（ark/openspeech/minimax/qwen）不在表内会得到空串；
 	// 前端用本字段经共享反查表补齐供应商身份，避免克隆媒体账户回落供应商默认档案。
 	ConnectionPresetCode string                `json:"connectionPresetCode,omitempty"`
 	BoundGroupID         *string               `json:"boundGroupId,omitempty"`
-	BoundGroupName          *string               `json:"boundGroupName,omitempty"`
-	ModelMappings           []ModelMapping        `json:"modelMappings"`
-	ProxyProfileID          *string               `json:"proxyProfileId,omitempty"`
-	AvailabilitySchedule    *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt        *string               `json:"accountExpiresAt,omitempty"`
+	BoundGroupName       *string               `json:"boundGroupName,omitempty"`
+	ModelMappings        []ModelMapping        `json:"modelMappings"`
+	ProxyProfileID       *string               `json:"proxyProfileId,omitempty"`
+	AvailabilitySchedule *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt     *string               `json:"accountExpiresAt,omitempty"`
 	// BackgroundProbeEnabled 回显源账户后台自动探测总开关（总开关设计 §8 克隆
 	// 语义）：克隆创建载荷缺省时由写面继承源账户值，克隆体与源账户同模式。
 	BackgroundProbeEnabled                     bool           `json:"backgroundProbeEnabled"`
