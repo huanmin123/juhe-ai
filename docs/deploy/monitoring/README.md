@@ -172,6 +172,8 @@ scrape_configs:
 
 所有 JSON 均不含服务器地址、账号、密钥或数据源 UID（`DS_PROMETHEUS` / `DS_POSTGRES_EXPORTER` 由导入变量选择）。
 
+交付记录（2026-11-07 复核 DR-14/DR-38）：提交 `a4c1d07d7` 的标题与正文称“删除”应用总览面板，实际动作是把文件从 `monitoring/` 迁移到 `monitoring/stack/dashboards/`，Grafana provisioning 仍加载它。当前面板是刻意保留的核心面板，本文描述与实际交付一致；该提交标题/正文属交付记录错误，不按面板删除处理。
+
 ### 5.2 应用总览面板结构
 
 | 行 | 面板 | 依赖 |

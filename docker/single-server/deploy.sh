@@ -215,6 +215,13 @@ else
 fi
 GO_LDFLAGS="-s -w -X ${XP}.Version=$BUILD_VERSION -X ${XP}.Commit=$COMMIT -X ${XP}.BuildTime=$BUILD_TIME"
 echo "  构建身份 version=$BUILD_VERSION commit=$COMMIT"
+# 镜像 tag 注入（T84-10）：compose 的 image 使用
+# juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-<role>。此前脚本从未导出该
+# 变量，所有发布都覆盖 latest，README 声称的「deploy.sh 注入 tag 版本号」并不
+# 存在，镜像无法按版本追溯/回滚。这里把同一 BUILD_VERSION 注入此后每一次远端
+# compose 调用（dry-run/build/stop/run/up），保证构建、校验、运行看到同一镜像；
+# 不写入服务器 .env，避免把发布版本固化成实例配置。
+REMOTE_COMPOSE_ENV="export JUHE_AI_IMAGE_TAG=$BUILD_VERSION;"
 BUILD_BIN=docker/single-server/build/bin
 mkdir -p "$BUILD_BIN"
 declare -A LOCAL_MD5
@@ -303,7 +310,7 @@ if [ "$TARGET" != "maintenance" ] && [ "${UPGRADE_MODE:-0}" != "1" ]; then
   # 旧镜像看不见新 revision 步骤。
   BUILD_FIRST="docker compose --profile tool build maintenance 2>&1 | tail -1"
   DRY_RUN="docker compose --profile tool run --rm --no-deps maintenance upgrade --dry-run --dsn \"\$JUHE_AI_POSTGRES_URL\""
-  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && bash -c 'set -o pipefail; $BUILD_FIRST && $DRY_RUN'"; then
+  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && bash -c 'set -o pipefail; $REMOTE_COMPOSE_ENV $BUILD_FIRST && $DRY_RUN'"; then
     echo "[FAIL] upgrade --dry-run 未就绪（blocked）：库落后于本次发布或上次升级中断，新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
     echo "       先执行 ./deploy.sh upgrade 完成停写窗口升级（备份确认内置），或按报告提示处理后再重新发布。" >&2
     exit 1
@@ -322,7 +329,7 @@ done
 # login shell 默认无 pipefail 时，`build | tail` 管道退出码由 tail 决定，build
 # 失败仍返回 0 且 && 会继续用旧镜像 up 滚动重启生产容器（假成功）。显式 bash -c
 # + pipefail 让真实退出码经 ssh 返回本地，tail 摘要输出体验不变。
-REMOTE_CMD="set -o pipefail; cd $SERVER_DIR && docker compose build ${TARGETS[*]} 2>&1 | tail -1"
+REMOTE_CMD="set -o pipefail; cd $SERVER_DIR && $REMOTE_COMPOSE_ENV docker compose build ${TARGETS[*]} 2>&1 | tail -1"
 
 if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   # ---- upgrade 模式（§11.3）：build → 停写 → 备份确认 → upgrade → 拉起 ----
@@ -343,7 +350,7 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   fi
 
   echo "== 执行 maintenance upgrade（账本编排；失败即中止且不拉起）=="
-  UPGRADE_CMD="set -a && . ./.env && set +a && docker compose --profile tool run --rm maintenance upgrade --dsn \"\$JUHE_AI_POSTGRES_URL\" --secret \"\$JUHE_AI_SECRET\" --stop-write-confirmed --backup-confirmed"
+  UPGRADE_CMD="set -a && . ./.env && set +a && $REMOTE_COMPOSE_ENV docker compose --profile tool run --rm maintenance upgrade --dsn \"\$JUHE_AI_POSTGRES_URL\" --secret \"\$JUHE_AI_SECRET\" --stop-write-confirmed --backup-confirmed"
   if ! $SSH "$SERVER" "bash -c '$UPGRADE_CMD'"; then
     echo "[FAIL] upgrade 失败：gateway/jobs 保持停止。二选一：" >&2
     echo "       ① 重跑本命令前向续跑（账本断点，推荐）：./deploy.sh upgrade" >&2
@@ -352,13 +359,13 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   fi
 
   echo "== 重建账户电路运行态索引（Redis namespace 变更后必需）=="
-  INIT_CMD="set -a && . ./.env && set +a && docker compose run --rm gateway -init-account-circuit-runtime-index"
+  INIT_CMD="set -a && . ./.env && set +a && $REMOTE_COMPOSE_ENV docker compose run --rm gateway -init-account-circuit-runtime-index"
   if ! $SSH "$SERVER" "bash -c 'cd $SERVER_DIR && set -o pipefail; $INIT_CMD'"; then
     echo "[FAIL] 电路索引重建失败：gateway 启动会 fail-fast。修复后重跑该命令再拉起。" >&2
     exit 1
   fi
 
-  RESUME_CMD="docker compose up -d gateway jobs 2>&1 | tail -1"
+  RESUME_CMD="$REMOTE_COMPOSE_ENV docker compose up -d gateway jobs 2>&1 | tail -1"
   if ! $SSH "$SERVER" "bash -c 'cd $SERVER_DIR && set -o pipefail; $RESUME_CMD'"; then
     echo "[FAIL] 升级完成但拉起失败：ssh 到服务器 cd $SERVER_DIR 手动 docker compose up -d gateway jobs。" >&2
     exit 1
@@ -379,7 +386,7 @@ if [ "$TARGET" = "maintenance" ]; then
   # 一次性 CLI 的镜像校验独立于常驻进程：维护窗口内 jobs 必须保持停止。
   # 覆盖 entrypoint 并禁止启动依赖，只读取新镜像二进制，不执行迁移。
   echo "== [5/6] maintenance 镜像内二进制闭环校验 =="
-  CONTAINER_MD5=$($SSH "$SERVER" "cd $SERVER_DIR && docker compose --profile tool run --rm --no-deps --entrypoint md5sum maintenance /usr/local/bin/juhe-ai-go-project" | awk '{print $1}')
+  CONTAINER_MD5=$($SSH "$SERVER" "cd $SERVER_DIR && $REMOTE_COMPOSE_ENV docker compose --profile tool run --rm --no-deps --entrypoint md5sum maintenance /usr/local/bin/juhe-ai-go-project" | awk '{print $1}')
   if [ "$CONTAINER_MD5" != "${LOCAL_MD5[maintenance]}" ]; then
     echo "[FAIL] maintenance 镜像内二进制与本地新编译不一致: 本地 ${LOCAL_MD5[maintenance]} vs 镜像 $CONTAINER_MD5" >&2
     exit 1
