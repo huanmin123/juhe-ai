@@ -119,8 +119,8 @@ func TestWlRunSuiteFullUniversalWithTrustedComparison(t *testing.T) {
 	//（juice/astra/identity/自配 cross_model）已退役，不再产生证据项。
 	newSuite := func(endpoint string, transport *wlEchoTransport, model string) Suite {
 		return Suite{
-			Endpoint:                  endpoint,
-			Client:                    &http.Client{Transport: transport},
+			Endpoint: endpoint,
+			Client:   &http.Client{Transport: transport},
 			// 2026-11-05 退役裁决：openai 兼容供应商退役，catalog 事实归 gpt。
 			ProviderCode:              "gpt",
 			ProviderProtocolProfileID: "profile_gpt_openai_v1",
@@ -329,7 +329,7 @@ func TestWlSuiteFamilyRunnerStopsAtTerminal(t *testing.T) {
 }
 
 func TestWlRunTrustedComparisonValidation(t *testing.T) {
-	valid := Suite{Endpoint: "https://a.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "openai", ProviderProtocolProfileID: "p1"}
+	valid := Suite{Endpoint: "https://a.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "gpt", ProviderProtocolProfileID: "p1"}
 	tests := []struct {
 		name       string
 		target     Suite
@@ -337,10 +337,10 @@ func TestWlRunTrustedComparisonValidation(t *testing.T) {
 		wantErr    string
 	}{
 		{"目标缺端点", Suite{Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses}, valid, "incomplete"},
-		{"对比缺模型", valid, Suite{Endpoint: "https://b.example", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "openai", ProviderProtocolProfileID: "p1"}, "incomplete"},
+		{"对比缺模型", valid, Suite{Endpoint: "https://b.example", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "gpt", ProviderProtocolProfileID: "p1"}, "incomplete"},
 		{"供应商不匹配", valid, Suite{Endpoint: "https://b.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "anthropic", ProviderProtocolProfileID: "p1"}, "provider is incompatible"},
-		{"协议不匹配", valid, Suite{Endpoint: "https://b.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIChat, ProviderCode: "openai", ProviderProtocolProfileID: "p1"}, "protocol is incompatible"},
-		{"配置档案不匹配", valid, Suite{Endpoint: "https://b.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "openai", ProviderProtocolProfileID: "p2"}, "profile is incompatible"},
+		{"协议不匹配", valid, Suite{Endpoint: "https://b.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIChat, ProviderCode: "gpt", ProviderProtocolProfileID: "p1"}, "protocol is incompatible"},
+		{"配置档案不匹配", valid, Suite{Endpoint: "https://b.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "gpt", ProviderProtocolProfileID: "p2"}, "profile is incompatible"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -351,7 +351,7 @@ func TestWlRunTrustedComparisonValidation(t *testing.T) {
 		})
 	}
 	t.Run("端点模式不匹配上抛", func(t *testing.T) {
-		target := Suite{Endpoint: "https://a.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "openai", ProviderProtocolProfileID: "p1", EndpointMode: modelcheckprofile.EndpointModeChatJSON}
+		target := Suite{Endpoint: "https://a.example", Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "gpt", ProviderProtocolProfileID: "p1", EndpointMode: modelcheckprofile.EndpointModeChatJSON}
 		_, err := RunTrustedComparison(context.Background(), target, valid, time.Second)
 		if err == nil || !strings.Contains(err.Error(), "does not match protocol") {
 			t.Fatalf("err=%v", err)
@@ -362,8 +362,8 @@ func TestWlRunTrustedComparisonValidation(t *testing.T) {
 func TestWlRunTrustedComparisonModelUnavailable(t *testing.T) {
 	transport := &wlStubTransport{status: http.StatusNotFound, body: `{"error":{"code":"model_not_found"}}`}
 	items, err := RunTrustedComparison(context.Background(),
-		Suite{Endpoint: "https://a.example", Client: &http.Client{Transport: transport}, Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "openai", ProviderProtocolProfileID: "p1"},
-		Suite{Endpoint: "https://b.example", Client: &http.Client{Transport: transport}, Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "openai", ProviderProtocolProfileID: "p1"},
+		Suite{Endpoint: "https://a.example", Client: &http.Client{Transport: transport}, Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "gpt", ProviderProtocolProfileID: "p1"},
+		Suite{Endpoint: "https://b.example", Client: &http.Client{Transport: transport}, Model: "m", Protocol: modelcheckprofile.ProtocolOpenAIResponses, ProviderCode: "gpt", ProviderProtocolProfileID: "p1"},
 		time.Second)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -385,13 +385,13 @@ func TestWlRunTrustedComparisonFullIncompleteErrors(t *testing.T) {
 	// 对比账户核心证据不完整且非模型不可用时必须失败关闭。
 	target := Suite{
 		Endpoint: "https://a.example", Client: &http.Client{Transport: &wlEchoTransport{}},
-		Model: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "p1",
+		Model: "gpt-5.6-sol", ProviderCode: "gpt", ProviderProtocolProfileID: "p1",
 		Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{},
 	}
 	comparison := Suite{
 		Endpoint: "https://b.example", Client: &http.Client{Transport: &wlStubTransport{status: 503, body: `{"error":"down"}`}},
-		Model: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "p1",
+		Model: "gpt-5.6-terra", ProviderCode: "gpt", ProviderProtocolProfileID: "p1",
 		Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 	}
 	if _, err := RunTrustedComparison(context.Background(), target, comparison, time.Second); err == nil || !strings.Contains(err.Error(), "incomplete") {
@@ -405,14 +405,14 @@ func TestWlRunTrustedComparisonFullNegativeMarksWarning(t *testing.T) {
 	// 证据，而不是硬失败。
 	target := Suite{
 		Endpoint: "https://a.example", Client: &http.Client{Transport: &wlEchoTransport{}},
-		Model: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "p1",
+		Model: "gpt-5.6-sol", ProviderCode: "gpt", ProviderProtocolProfileID: "p1",
 		Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{},
 	}
 	comparisonTransport := &wlEchoTransport{}
 	comparison := Suite{
 		Endpoint: "https://b.example", Client: &http.Client{Transport: &wlStabilitySoftFailTransport{inner: comparisonTransport}},
-		Model: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "p1",
+		Model: "gpt-5.6-terra", ProviderCode: "gpt", ProviderProtocolProfileID: "p1",
 		Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{},
 	}

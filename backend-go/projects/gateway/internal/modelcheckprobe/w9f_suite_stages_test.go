@@ -37,7 +37,7 @@ func w9fScriptedServer(t *testing.T, script []int) *httptest.Server {
 
 func w9fSuite(endpoint string, profile string) Suite {
 	return Suite{
-		Endpoint: endpoint, ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1",
+		Endpoint: endpoint, ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Client: &http.Client{}, Model: "gpt-5.6-sol", Profile: profile,
 		Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 	}

@@ -53,7 +53,7 @@ func TestRunTrustedComparisonUsesBothResolvedModels(t *testing.T) {
 	defer comparison.Close()
 	targetTransport := &countingTransport{base: http.DefaultTransport}
 	comparisonTransport := &countingTransport{base: http.DefaultTransport}
-	items, err := RunSuite(context.Background(), Suite{Endpoint: target.URL, ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Client: &http.Client{Transport: targetTransport}, Model: "gpt-5.6-sol", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{}, Comparison: &Suite{Endpoint: comparison.URL, ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Client: &http.Client{Transport: comparisonTransport}, Model: "gpt-5.6-terra", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{}}}, time.Second)
+	items, err := RunSuite(context.Background(), Suite{Endpoint: target.URL, ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", Client: &http.Client{Transport: targetTransport}, Model: "gpt-5.6-sol", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{}, Comparison: &Suite{Endpoint: comparison.URL, ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", Client: &http.Client{Transport: comparisonTransport}, Model: "gpt-5.6-terra", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{}}}, time.Second)
 	var distribution, cross Evaluation
 	for _, item := range items {
 		switch item.Kind {
@@ -243,12 +243,12 @@ func TestRunSuiteQuickIncludesTrustedAggregate(t *testing.T) {
 	targetTransport := &comparisonTransport{expectedAuthorization: "Bearer target", expectedModel: "gpt-5.6-sol"}
 	comparisonTransport := &comparisonTransport{expectedAuthorization: "Bearer comparison", expectedModel: "gpt-5.6-terra"}
 	items, err := RunSuite(context.Background(), Suite{
-		Endpoint:                  "https://target.example",
-		Headers:                   http.Header{"Authorization": []string{"Bearer target"}},
-		Client:                    &http.Client{Transport: targetTransport},
-		Model:                     "gpt-5.6-sol",
-		Profile:                   "quick",
-		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		Endpoint: "https://target.example",
+		Headers:  http.Header{"Authorization": []string{"Bearer target"}},
+		Client:   &http.Client{Transport: targetTransport},
+		Model:    "gpt-5.6-sol",
+		Profile:  "quick",
+		Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		// 2026-11-05 退役裁决：openai 兼容供应商退役，catalog 事实归 gpt。
 		ProviderCode:              "gpt",
 		ProviderProtocolProfileID: "profile_gpt_openai_v1",
@@ -545,16 +545,16 @@ func TestRunTrustedComparisonKeepsOwnersDistinctWhenEndpointMatches(t *testing.T
 		Headers:                   http.Header{"Authorization": []string{"Bearer target"}},
 		Client:                    &http.Client{Transport: targetTransport},
 		Model:                     "gpt-5.6-sol",
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
 	}, Suite{
 		Endpoint:                  "https://shared.example",
 		Headers:                   http.Header{"Authorization": []string{"Bearer comparison"}},
 		Client:                    &http.Client{Transport: comparisonTransport},
 		Model:                     "gpt-5.6-terra",
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
 	}, time.Second)
 	if err != nil {

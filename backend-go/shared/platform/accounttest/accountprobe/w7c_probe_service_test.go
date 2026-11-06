@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,9 +140,9 @@ func TestW7CManualDiagnosticsDispatch(t *testing.T) {
 }
 
 func TestW7CStagedEscalationOnRealUpstreamTimeout(t *testing.T) {
-	attempts := 0
+	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
+		attempts.Add(1)
 		// A slow but real upstream attempt: headers flushed first, body after
 		// the stage budget elapsed.
 		w.Header().Set("content-type", "application/json")
@@ -169,8 +170,8 @@ func TestW7CStagedEscalationOnRealUpstreamTimeout(t *testing.T) {
 	if observation == nil {
 		t.Fatal("observation missing")
 	}
-	if attempts < 2 {
-		t.Fatalf("real-upstream timeout must escalate stages, attempts=%d", attempts)
+	if attempts.Load() < 2 {
+		t.Fatalf("real-upstream timeout must escalate stages, attempts=%d", attempts.Load())
 	}
 }
 

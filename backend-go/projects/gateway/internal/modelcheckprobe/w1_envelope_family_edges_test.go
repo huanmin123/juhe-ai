@@ -146,8 +146,8 @@ func w1SamplingSuite(endpoint string, transport http.RoundTripper, model string)
 	return Suite{
 		Endpoint:                  endpoint,
 		Client:                    &http.Client{Transport: transport},
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Model:                     model,
 		Profile:                   "full",
 		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
@@ -287,8 +287,8 @@ func w1TrustedSuite(endpoint, model string, transport http.RoundTripper) Suite {
 	return Suite{
 		Endpoint:                  endpoint,
 		Client:                    &http.Client{Transport: transport},
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Model:                     model,
 		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
 		EndpointMode:              modelcheckprofile.EndpointModeResponsesJSON,

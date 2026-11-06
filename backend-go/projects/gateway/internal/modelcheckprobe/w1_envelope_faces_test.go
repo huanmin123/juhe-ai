@@ -143,10 +143,10 @@ func w1F2View(form string) *accountprobe.View {
 		AccountName:               w1CrossFaceAccountID,
 		Type:                      "api_key",
 		Status:                    "active",
-		ProviderCode:              "openai",
+		ProviderCode:              "gpt",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		HealthCheckModel:          w1CrossFaceModel,
 		HealthCheckEndpointMode:   string(accountprobe.ModeResponsesSSE),
 		SupportedModels:           []string{w1CrossFaceModel},
@@ -183,7 +183,7 @@ func w1RunF3(t *testing.T, form string) w1CapturedFace {
 		Headers:           headers,
 		Client:            &http.Client{Transport: transport},
 		Timeout:           time.Second,
-		ProtocolProfileID: "profile_openai_openai_v1",
+		ProtocolProfileID: "profile_gpt_openai_v1",
 		CredentialType:    "api_key",
 	}
 	switch form {
@@ -220,8 +220,8 @@ func w1RunF4(t *testing.T, form string) w1CapturedFace {
 	credentialJSON := `{"api_key":"` + w1CrossFaceToken + `"}`
 	credentialKind := "api_key"
 	// 2026-11-05 退役裁决：openai 兼容供应商退役，gpt 才是真实厂商；
-	// 旧 profile_openai_openai_v1 / Provider=openai 会先被“未冻结的 provider”
-	// 校验拒绝，测不到 F4 传输失败面。
+	// F4 必须使用现役 gpt 档案，否则会先被“未冻结的 provider”校验拒绝，
+	// 测不到传输失败面。
 	profile := "profile_gpt_openai_v1"
 	typeName := "api_key"
 	input := exactkeyprobe.Input{

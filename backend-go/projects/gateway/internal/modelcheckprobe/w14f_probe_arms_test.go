@@ -86,7 +86,7 @@ func TestW14fSuiteHelperArms(t *testing.T) {
 	}
 	// 同协议目录外模型（账户支持模型）必须被目录门跳过，避免 GPT tokenizer
 	// 差分基线混入非 GPT 模型评分。
-	external := Suite{ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Model: "deepseek-v4.1-flash", Protocol: modelcheckprofile.ProtocolOpenAIResponses}
+	external := Suite{ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", Model: "deepseek-v4.1-flash", Protocol: modelcheckprofile.ProtocolOpenAIResponses}
 	if external.supportsTokenIdentityProbes() {
 		t.Fatalf("目录外模型不应支持 token identity 探针")
 	}
@@ -485,7 +485,7 @@ func (t *w14fStageTransport) RoundTrip(request *http.Request) (*http.Response, e
 func w14fStageSuite(t *testing.T, transport *w14fStageTransport, profile string, mutate func(*Suite)) Suite {
 	t.Helper()
 	suite := Suite{
-		Endpoint:                  "http://w14f-target.test",
+		Endpoint: "http://w14f-target.test",
 		// 2026-11-05 退役裁决：openai 兼容供应商退役，catalog 事实归 gpt；
 		// token_integrity 只在目录内模型上执行，旧 fixture 会被按范围跳过。
 		ProviderCode:              "gpt",
@@ -642,8 +642,8 @@ func TestW14fRunTrustedComparisonArms(t *testing.T) {
 	newSuite := func(transport *w14fStageTransport, model string) Suite {
 		return Suite{
 			Endpoint:                  "http://w14f-" + model + ".test",
-			ProviderCode:              "openai",
-			ProviderProtocolProfileID: "profile_openai_openai_v1",
+			ProviderCode:              "gpt",
+			ProviderProtocolProfileID: "profile_gpt_openai_v1",
 			Client:                    &http.Client{Transport: transport},
 			Model:                     model,
 			Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,

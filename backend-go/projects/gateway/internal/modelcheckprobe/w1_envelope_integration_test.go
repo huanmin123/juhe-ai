@@ -1018,7 +1018,7 @@ func w1IdentitySuite(transport http.RoundTripper) Suite {
 	anchor := IdentityAnchorProbe{Question: "仓库清点锚点题：甲仓库有 3 个红箱，每个红箱装 5 个零件；乙仓库有 4 个蓝箱，每个蓝箱比每个红箱多装 2 个零件。现在从乙仓库运走 1 个蓝箱。只输出甲乙两仓库剩余零件总数（只输出一个数字，不要输出其他内容）。", Answer: 40}
 	return Suite{
 		Endpoint: "https://identity.example", Client: &http.Client{Transport: transport},
-		ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Model: "gpt-6-luna", Profile: "quick", Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		Tokenizer: deterministicTokenizer{}, anchorProbe: &anchor,
 	}

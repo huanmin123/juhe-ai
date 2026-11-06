@@ -202,8 +202,8 @@ func TestRunIdentityFamilyEmitsThreeItemsAndRecordsAnchor(t *testing.T) {
 	suite := Suite{
 		Endpoint:                  "https://identity.example",
 		Client:                    &http.Client{Transport: transport},
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Model:                     "gpt-5.6-sol",
 		Profile:                   "quick",
 		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
