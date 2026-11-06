@@ -161,8 +161,9 @@ func (s *Store) resolveEntryModelID(ctx context.Context, q queryer, vendor, owne
 // 解析谓词与 resolveEntryModelID 完全同键同序（单条 SQL，不重复查询）。
 //
 // priced 判定委托 pricing.HasCatalogDirectPrice——与网关目录 priced 过滤
-// （chainHasDirectCatalogPrice）同一函数、同一入参口径：直价列 / 静态媒体层
-// （TTS 字符、音频秒、视频秒、视频按次）/ 档位价三选一。静态媒体层按
+// （chainHasDirectCatalogPrice）同一函数、同一入参口径：基础直价列 / 静态媒体层
+// （TTS 字符、音频秒、视频秒、视频按次）二选一；仅档位价或仅缓存价不算可计价
+// （DR-P7：默认流量不会必然选中档位或产生缓存 token）。静态媒体层按
 // (vendor, public_model) 查（catalogdata 键为目录行 public_model，与链面
 // item.Model 一致）。
 func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, owner, model string) (string, bool, error) {
@@ -173,7 +174,6 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		inputUsd, outputUsd, cachedInputUsd, cacheWriteUsd, cacheWrite1hUsd sql.NullFloat64
 		cacheStorageUsd, imageInputUsd, imageOutputUsd                      sql.NullFloat64
 		audioInputUsd, audioOutputUsd, outputUsdPerImage                    sql.NullFloat64
-		serviceTierPricesJSON                                               sql.NullString
 	)
 	// 身份键严格按账户 vendor 解析：九家真实厂商账户只能绑定本厂商的模型行
 	// （vendor_code 相等，含 NULL→'' 归一），不再有 generic_http 账户的空 vendor
@@ -186,7 +186,7 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
 			cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour,
 			image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
-			audio_output_usd_per_1m, output_usd_per_image, service_tier_prices_json
+			audio_output_usd_per_1m, output_usd_per_image
 		FROM `+s.table("models")+`
 		WHERE COALESCE(vendor_code,'') = ? AND upstream_model = ? AND status = 'active'
 		  AND (scope IN ('builtin','global') OR (scope = 'personal' AND system_account_id = ?))
@@ -195,7 +195,7 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		&id, &publicModel, &rowVendor,
 		&inputUsd, &outputUsd, &cachedInputUsd, &cacheWriteUsd, &cacheWrite1hUsd,
 		&cacheStorageUsd, &imageInputUsd, &imageOutputUsd, &audioInputUsd,
-		&audioOutputUsd, &outputUsdPerImage, &serviceTierPricesJSON,
+		&audioOutputUsd, &outputUsdPerImage,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -221,7 +221,7 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		AudioOutputUsdPer1M:         nullablePriceValue(audioOutputUsd),
 		OutputUsdPerImage:           nullablePriceValue(outputUsdPerImage),
 	}
-	return id, pricing.HasCatalogDirectPrice(rowVendor, publicModel, priceSet, serviceTierPriceCount(serviceTierPricesJSON.String)), nil
+	return id, pricing.HasCatalogDirectPrice(rowVendor, publicModel, priceSet), nil
 }
 
 // nullablePriceValue 把可空价格列收敛成 *float64（NULL → nil，0 是真实免费价）。
@@ -231,20 +231,6 @@ func nullablePriceValue(value sql.NullFloat64) *float64 {
 	}
 	out := value.Float64
 	return &out
-}
-
-// serviceTierPriceCount 统计档位价 JSON 的条目数；空/无效/null 均为 0，
-// 与链面 chainCatalogTierPriceCount 同语义。
-func serviceTierPriceCount(raw string) int {
-	trimmed := strings.TrimSpace(raw)
-	if len(trimmed) < 2 || trimmed == "null" {
-		return 0
-	}
-	var prices map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(trimmed), &prices); err != nil {
-		return 0
-	}
-	return len(prices)
 }
 
 // entryConnectionEndpointModes 读目标连接的 account_endpoint_modes 实际集合

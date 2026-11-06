@@ -70,9 +70,9 @@ func credentialEndpointModes(credentials Credentials) []string {
 //     可见且 active 的 models 行（vendor_code + upstream_model，与写入面
 //     resolveEntryModelID 同键）。来源模型是客户端 wire model 字符串、不作
 //     models 外键（§5.1），旧来源目录段与协议池段随 legacy 面拆除。
-//   - 计价段（BUG-0344 根治）：target 行必须可被计价引擎直接消费（直价列 /
-//     静态媒体层 / 档位价，判据与网关目录 priced 过滤同一函数）。无价行可绑定
-//     而计价目录查不到 → 成功流量 cost NULL（免费用量），故在此显式拒绝。
+//   - 计价段（BUG-0344/DR-P7 根治）：target 行必须可被计价引擎直接消费（基础
+//     直价列 / 静态媒体层，判据与网关目录 priced 过滤同一函数）。仅档位价或仅
+//     缓存价的行可绑定但默认流量 cost 为空/零，故在此显式拒绝。
 func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, mappings []ModelMapping, supportedEndpointModes []string) error {
 	if len(mappings) == 0 {
 		return nil
@@ -105,7 +105,7 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 		return &ValidationError{Message: "账号模型别名目标模型不在当前供应商模型目录中：" + joinMappingModelSample(invalidUpstreamModels)}
 	}
 	if len(unpricedUpstreamModels) > 0 {
-		return &ValidationError{Message: "账号模型别名目标模型未配置价格，不能绑定（计价会得到空成本）：" + joinMappingModelSample(unpricedUpstreamModels)}
+		return &ValidationError{Message: "账号模型别名目标模型未配置基础价格，不能绑定（计价会得到空成本）：" + joinMappingModelSample(unpricedUpstreamModels)}
 	}
 	return nil
 }
@@ -117,11 +117,9 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 // ValidationError（400 族）列出越界样本。空集直通（非空由
 // assertSupportedModelsRequired 在各消费链前置拒绝）。
 //
-// 计价段（BUG-0344 根治）：解析到的行还必须可被计价引擎直接消费（直价列 /
-// 静态媒体层 / 档位价）。此前只校验身份不校验价格，回迁 CLI 补建的无价
-// personal 行因此可绑定、可调度，而计价目录以 priced 过滤把同一行剔除 → 目录
-// miss → 成功流量 cost NULL。判据与网关目录 priced 过滤共用
-// pricing.HasCatalogDirectPrice，不再各维护一套。
+// 计价段（BUG-0344/DR-P7 根治）：解析到的行还必须可被计价引擎直接消费（基础
+// 直价列 / 静态媒体层）。仅档位价或仅缓存价不足以结算默认流量，判据与网关目录
+// priced 过滤共用 pricing.HasCatalogDirectPrice，不再各维护一套。
 func (s *Store) assertAccountSupportedModelsInProviderCatalog(ctx context.Context, q queryer, models []string, providerCode, systemAccountID string) error {
 	if len(models) == 0 {
 		return nil
@@ -149,7 +147,7 @@ func (s *Store) assertAccountSupportedModelsInProviderCatalog(ctx context.Contex
 		return &ValidationError{Message: "账户支持模型不在供应商模型目录中：" + joinMappingModelSample(invalidModels)}
 	}
 	if len(unpricedModels) > 0 {
-		return &ValidationError{Message: "账户支持模型未配置价格，不能绑定（计价会得到空成本）：" + joinMappingModelSample(unpricedModels)}
+		return &ValidationError{Message: "账户支持模型未配置基础价格，不能绑定（计价会得到空成本）：" + joinMappingModelSample(unpricedModels)}
 	}
 	return nil
 }

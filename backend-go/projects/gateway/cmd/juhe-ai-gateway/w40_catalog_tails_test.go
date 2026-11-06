@@ -72,29 +72,35 @@ func TestChainCatalogModelMatchesToken(t *testing.T) {
 	}
 }
 
-func TestChainCatalogTierPriceCount(t *testing.T) {
-	if got := chainCatalogTierPriceCount(json.RawMessage(" ")); got != 0 {
-		t.Fatalf("空白 = %d", got)
-	}
-	if got := chainCatalogTierPriceCount(json.RawMessage("null")); got != 0 {
-		t.Fatalf("null = %d", got)
-	}
-	if got := chainCatalogTierPriceCount(json.RawMessage("[1,2]")); got != 0 {
-		t.Fatalf("非对象 JSON = %d", got)
-	}
-	if got := chainCatalogTierPriceCount(json.RawMessage(`{"flex":{},"priority":{}}`)); got != 2 {
-		t.Fatalf("两档 = %d", got)
-	}
-}
-
-func TestChainHasDirectCatalogPriceTierFallback(t *testing.T) {
-	item := gatewayruntimecache.ProviderModelCatalogItem{Model: "m", ServiceTierPrices: json.RawMessage("null")}
+func TestChainHasDirectCatalogPriceRequiresBaseRate(t *testing.T) {
+	item := gatewayruntimecache.ProviderModelCatalogItem{Model: "m"}
 	if chainHasDirectCatalogPrice(item) {
-		t.Fatal("空定价与空档位必须判无价")
+		t.Fatal("空定价必须判无价")
 	}
-	item.ServiceTierPrices = json.RawMessage(`{"flex":{}}`)
-	if !chainHasDirectCatalogPrice(item) {
-		t.Fatal("档位价存在必须判有价")
+	// DR-P7：仅档位价/仅缓存价不能保证默认流量可结算，不算直接可计价。
+	if chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		Model: "m", ServiceTierPrices: json.RawMessage(`{"flex":{"inputUsdPer1M":1}}`),
+	}) {
+		t.Fatal("仅档位价必须判无价")
+	}
+	cacheWrite := 1.0
+	if chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		Model: "m", CacheWriteUsdPer1M: &cacheWrite,
+	}) {
+		t.Fatal("仅缓存写价必须判无价")
+	}
+	// 基础价（显式 0 也算）或任一非缓存基础维度可计价。
+	zero := 0.0
+	if !chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		Model: "m", InputUsdPer1M: &zero,
+	}) {
+		t.Fatal("显式 0 基础价必须判有价")
+	}
+	input := 1.5
+	if !chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		Model: "m", InputUsdPer1M: &input,
+	}) {
+		t.Fatal("基础输入价必须判有价")
 	}
 }
 

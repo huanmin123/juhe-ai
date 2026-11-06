@@ -362,18 +362,41 @@ func hasAnyRate(set PriceSet) bool {
 	return false
 }
 
+// hasDirectBaseRate 报告是否存在“默认流量必然使用”的基础计价维度。
+// 与 hasAnyRate 的区别：缓存读/写/存储价以及档位价单独存在时不算直接可计价——
+// 普通请求不会必然命中缓存或选中某个 service tier，只有这些价格的行在默认
+// 流量下会得到空/零成本（DR-P7）。
+func hasDirectBaseRate(set PriceSet) bool {
+	for _, v := range []*float64{
+		set.InputUsdPer1M, set.OutputUsdPer1M,
+		set.ImageInputUsdPer1M, set.ImageOutputUsdPer1M,
+		set.AudioInputUsdPer1M, set.AudioOutputUsdPer1M,
+		set.OutputUsdPerImage,
+		set.TtsInputUsdPer1MChars, set.AudioInputUsdPerSecond,
+		set.VideoOutputUsdPerSecond, set.VideoOutputUsdPerCall,
+	} {
+		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasCatalogDirectPrice 报告一行目录价格事实是否可被计价引擎直接消费——
 // 「可绑定」与「计价目录可见」必须共用这一判据（BUG-0344 根治）：
 //
-//  1. 任一直价维度（token / 缓存 / 图片 / 音频 / 按张）非空；
+//  1. 任一基础直价维度（文本输入/输出、图片/音频 token、按张、TTS 字符、
+//     音频秒、视频秒/按次）非空；
 //  2. 否则按静态媒体层补查（TTS 字符 / 音频秒 / 视频秒 / 视频按次——这四维
-//     不在 models 列集内，唯一权威源是 catalogdata 静态快照）；
-//  3. 否则存在任一档位价（tierPriceCount > 0，档位可被请求选中）。
+//     不在 models 列集内，唯一权威源是 catalogdata 静态快照）。
+//
+// 仅档位价或仅缓存价（cache read/write/storage）不构成可绑定价格：普通请求
+// 不会必然选中档位，也不一定产生缓存 token，默认流量仍会落空成本（DR-P7）。
 //
 // chain_catalog.go 的 priced 过滤与 accounts 的绑定断言都调用本函数；两处若
 // 各自维护判据，就会出现「能绑定但计价查不到 → 成功流量 cost NULL」的裂缝。
-func HasCatalogDirectPrice(providerCode, model string, set PriceSet, tierPriceCount int) bool {
-	if hasAnyRate(set) {
+func HasCatalogDirectPrice(providerCode, model string, set PriceSet) bool {
+	if hasDirectBaseRate(set) {
 		return true
 	}
 	if media := FindProviderModelPricing(providerCode, model); media != nil {
@@ -382,7 +405,7 @@ func HasCatalogDirectPrice(providerCode, model string, set PriceSet, tierPriceCo
 			return true
 		}
 	}
-	return tierPriceCount > 0
+	return false
 }
 
 // hasAnyCostDimension mirrors hasAnyCostDimension. M1 音频计量维度、M2 视频

@@ -610,8 +610,9 @@ func chainCatalogTokenBoundaryEnd(model string, index int) bool {
 
 // chainHasDirectCatalogPrice mirrors hasDirectPrice. 判据单一真源在
 // pricing.HasCatalogDirectPrice（accounts 绑定断言共用同一函数）：
-// 直价列 / 静态媒体层 / 档位价三选一。两处若各自维护，就会出现「能绑定但
-// 计价目录查不到」的裂缝（BUG-0344：成功流量 cost NULL）。
+// 基础直价列 / 静态媒体层二选一；仅档位价或仅缓存价不算可计价（DR-P7）。
+// 两处若各自维护，就会出现「能绑定但计价目录查不到」的裂缝
+// （BUG-0344：成功流量 cost NULL）。
 func chainHasDirectCatalogPrice(item gatewayruntimecache.ProviderModelCatalogItem) bool {
 	return pricing.HasCatalogDirectPrice(item.ProviderCode, item.Model, pricing.PriceSet{
 		InputUsdPer1M:               item.InputUsdPer1M,
@@ -625,19 +626,7 @@ func chainHasDirectCatalogPrice(item gatewayruntimecache.ProviderModelCatalogIte
 		AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
 		AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
 		OutputUsdPerImage:           item.OutputUsdPerImage,
-	}, chainCatalogTierPriceCount(item.ServiceTierPrices))
-}
-
-func chainCatalogTierPriceCount(raw json.RawMessage) int {
-	trimmed := strings.TrimSpace(string(raw))
-	if len(trimmed) < 2 || trimmed == "null" {
-		return 0
-	}
-	var prices map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &prices); err != nil {
-		return 0
-	}
-	return len(prices)
+	})
 }
 
 // chainCompareCatalogItems mirrors compareProviderModelCatalogItems: newer

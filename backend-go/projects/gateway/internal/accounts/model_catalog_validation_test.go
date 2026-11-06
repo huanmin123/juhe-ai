@@ -495,7 +495,8 @@ func TestPatchWiresSupportedModelsCatalogAssertion(t *testing.T) {
 // active），不校验价格；回迁 CLI 补建的无价 personal 行因此可绑定、可调度，
 // 而计价目录以 priced 过滤把同一行剔除 → 目录 miss → 成功流量 cost_usd 恒
 // NULL（生产 4,878 条成功行、应计约 22.20 USD）。本组用例钉住新判据：
-// 目标行必须可被计价引擎直接消费（直价列 / 静态媒体层 / 档位价）。
+// 目标行必须可被计价引擎直接消费（基础直价列 / 静态媒体层）；仅档位价或仅
+// 缓存价不算可计价（DR-P7）。
 
 func TestCreateRejectsUnpricedSupportedModel(t *testing.T) {
 	env := newTestEnv(t)
@@ -512,15 +513,27 @@ func TestCreateRejectsUnpricedSupportedModel(t *testing.T) {
 
 	_, err := store.Create(context.Background(), catalogWiringCreateInput("unpriced-supported",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"unpriced-model"}, nil), scope)
-	assertValidationError(t, err, "账户支持模型未配置价格，不能绑定（计价会得到空成本）：unpriced-model")
+	assertValidationError(t, err, "账户支持模型未配置基础价格，不能绑定（计价会得到空成本）：unpriced-model")
 
-	// 只配了档位价的同一行 → 可绑定（档位价可被请求选中，计价目录 priced
-	// 过滤同样放行）。
+	// 只配档位价 → 仍不可绑定（DR-P7：默认流量不选档位，成本为空/零）。
 	env.exec(t, `UPDATE models SET service_tier_prices_json =
 		'{"priority":{"inputUsdPer1M":1,"outputUsdPer1M":2}}' WHERE id = 'mdl-unpriced-personal'`)
-	if _, err := store.Create(context.Background(), catalogWiringCreateInput("tier-priced-supported",
+	_, err = store.Create(context.Background(), catalogWiringCreateInput("tier-only-supported",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"unpriced-model"}, nil), scope)
+	assertValidationError(t, err, "账户支持模型未配置基础价格，不能绑定（计价会得到空成本）：unpriced-model")
+
+	// 只配缓存价 → 同样不可绑定（默认流量不必然产生缓存 token）。
+	env.exec(t, `UPDATE models SET service_tier_prices_json = '{}',
+		cache_write_usd_per_1m = 1.25, cached_input_usd_per_1m = 0.1 WHERE id = 'mdl-unpriced-personal'`)
+	_, err = store.Create(context.Background(), catalogWiringCreateInput("cache-only-supported",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"unpriced-model"}, nil), scope)
+	assertValidationError(t, err, "账户支持模型未配置基础价格，不能绑定（计价会得到空成本）：unpriced-model")
+
+	// 显式 0 基础价是真实免费价，可绑定；缺省 NULL 才表示无价。
+	env.exec(t, `UPDATE models SET input_usd_per_1m = 0, output_usd_per_1m = 0 WHERE id = 'mdl-unpriced-personal'`)
+	if _, err := store.Create(context.Background(), catalogWiringCreateInput("free-supported",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"unpriced-model"}, nil), scope); err != nil {
-		t.Fatalf("only tier-priced model must stay bindable: %v", err)
+		t.Fatalf("explicit zero base price must stay bindable: %v", err)
 	}
 }
 
@@ -538,7 +551,7 @@ func TestCreateRejectsUnpricedMappingTarget(t *testing.T) {
 	_, err := store.Create(context.Background(), catalogWiringCreateInput("unpriced-mapping",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "unpriced-target", "chat_completions")}), scope)
-	assertValidationError(t, err, "账号模型别名目标模型未配置价格，不能绑定（计价会得到空成本）：unpriced-target")
+	assertValidationError(t, err, "账号模型别名目标模型未配置基础价格，不能绑定（计价会得到空成本）：unpriced-target")
 }
 
 // 真实厂商账户只能绑定本厂商的有价模型：跨厂商行与未归属厂商（vendor_code
