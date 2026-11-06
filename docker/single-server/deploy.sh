@@ -222,6 +222,25 @@ echo "  构建身份 version=$BUILD_VERSION commit=$COMMIT"
 # compose 调用（dry-run/build/stop/run/up），保证构建、校验、运行看到同一镜像；
 # 不写入服务器 .env，避免把发布版本固化成实例配置。
 REMOTE_COMPOSE_ENV="export JUHE_AI_IMAGE_TAG=$BUILD_VERSION;"
+
+# latest 别名（T84-10 兼容面）：现有 .env 模板与大量运维手册命令仍使用
+# `docker compose`（未显式带 JUHE_AI_IMAGE_TAG，compose 会取 latest）。版本化构建
+# 只产生 <BUILD_VERSION>-<role>，不会自动更新 latest；若不维护别名，发布后手工
+# compose 会启动旧 latest 或找不到镜像。这里只在本次发布全部验证通过后把
+# latest-<role> 指到同一镜像；版本 tag 仍是不可变回滚锚点，latest 只是可变别名。
+tag_latest_image_aliases() {
+  local cmd="set -e"
+  local p
+  for p in "$@"; do
+    cmd="$cmd; docker tag juhe-ai-single-server:${BUILD_VERSION}-${p} juhe-ai-single-server:latest-${p}"
+  done
+  if ! $SSH "$SERVER" "$cmd"; then
+    echo "[FAIL] latest 镜像别名更新失败：版本化镜像未受影响，但手工 compose 会继续使用旧 latest。" >&2
+    echo "       修复后手工执行：for p in $*; do docker tag juhe-ai-single-server:${BUILD_VERSION}-\$p juhe-ai-single-server:latest-\$p; done" >&2
+    exit 1
+  fi
+  echo "  latest 别名已指向本次版本：$BUILD_VERSION"
+}
 BUILD_BIN=docker/single-server/build/bin
 mkdir -p "$BUILD_BIN"
 declare -A LOCAL_MD5
@@ -392,6 +411,7 @@ if [ "$TARGET" = "maintenance" ]; then
     exit 1
   fi
   echo "== [6/6] maintenance 镜像更新并校验完成；回填完成、恢复 gateway/jobs 后执行运行验证 =="
+  tag_latest_image_aliases "${TARGETS[@]}"
   exit 0
 fi
 
@@ -447,6 +467,8 @@ if ! $SSH "$SERVER" "cd $SERVER_DIR && bash verify-release.sh"; then
   echo "       发布产物本身已完成 build+up，按验证输出定位问题后重跑：ssh 到服务器 cd $SERVER_DIR && bash verify-release.sh" >&2
   exit 1
 fi
+
+tag_latest_image_aliases "${TARGETS[@]}"
 
 echo "== 发布完成：${TARGETS[*]}，公网健康 $CODE，发布后验证通过 =="
 echo "提示：发布后按运维手册跑一次 maintenance --ensure-schema（已恢复幂等加法；studio 退场清理已移出普通 ensure，走显式 --apply-studio-retirement；含删列等破坏性收敛的 ensure 步骤必须在写者停止后执行——先看 docker/single-server/README.md「更新发布」节维护窗口，勿在 gateway/jobs 运行时直接跑）。"

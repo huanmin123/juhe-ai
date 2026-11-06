@@ -55,7 +55,7 @@
 # ---- compose / deploy ----
 POSTGRES_PASSWORD=<PG强密码>
 REDIS_PASSWORD=<Redis强密码>
-JUHE_AI_IMAGE_TAG=latest
+JUHE_AI_IMAGE_TAG=latest  # deploy.sh 发布时注入本次版本，成功后把 latest-<role> 指向同一镜像；回滚时显式改为目标版本
 # 旧隧道域名 IP 钉死（compose :?required 引用；删除 extra_hosts 前必须填写）
 JUHE_AI_PROXY_IP_A=<代理IP或服务器IP>
 JUHE_AI_PROXY_IP_B=<代理IP或服务器IP>
