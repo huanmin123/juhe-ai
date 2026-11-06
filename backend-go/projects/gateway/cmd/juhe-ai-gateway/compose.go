@@ -52,6 +52,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
 	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
@@ -886,6 +887,20 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			return nil, turnRetryStateErr
 		}
 		chainServices = services
+		// B1/B2（跨进程共享状态改造 Tier 1）：OAuth 刷新锁 + 凭据版本投影。
+		// StateClient 是恒注入的共享 Redis 运行态客户端；oauthStore 构造早于链
+		// 运行态服务，因此在此接线。Redis 客户端不可用属装配错误（fail-fast），
+		// 不静默退回进程内锁。
+		oauthCrossProcess, crossProcessErr := crossprocessstate.NewRedis(services.StateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainOAuth))
+		if crossProcessErr != nil {
+			services.Close()
+			return nil, fmt.Errorf("create oauth cross-process state: %w", crossProcessErr)
+		}
+		oauthStore.SetRefreshLock(gatewayOAuthRefreshLock{client: oauthCrossProcess})
+		oauthStore.SetCredentialVersionBumper(gatewayOAuthCredentialVersionBumper{client: oauthCrossProcess})
+		slog.Info("OAuth 跨进程刷新锁与凭据版本投影已接入 Redis 运行态",
+			"event", "oauth_cross_process_state_redis",
+			"namespace", oauthCrossProcess.Namespace())
 		// 列表运行时并发 hydrate 装配（单机 go-only 进程内事实源）：分组列表
 		// accountStats.CurrentConcurrency 与账户列表 currentConcurrency 在列表
 		// 请求时按网关进程内 tracker 实时计数供給（jobs 写侧的 stats

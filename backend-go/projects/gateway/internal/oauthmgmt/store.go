@@ -85,6 +85,10 @@ type Store struct {
 	// 的建户/刷新/重授权绑定代理：未绑定直接 400。生产默认开启；测试可通过
 	// WithProxyRequired(false) 关闭以保持既有无代理夹具可用。
 	proxyRequired bool
+	// refreshLock / credentialBumper 是跨进程刷新互斥与凭据版本投影端口
+	// （crossprocess.go）。nil 保持既有进程内行为；生产组合根必须接线。
+	refreshLock      RefreshLock
+	credentialBumper CredentialVersionBumper
 }
 
 // Option configures optional collaborators.
@@ -1007,6 +1011,8 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// B2：PG 提交成功后递增共享凭据版本（失败只告警，读者按 60s 缓存回退）。
+	s.bumpCredentialVersion(ctx, row.id)
 	rotation := &RotationResult{
 		ID: row.id, ConfigRevision: row.configRevision + 1,
 		UpdatedAt: updatedAt, Changed: true, Credentials: input.Credentials,

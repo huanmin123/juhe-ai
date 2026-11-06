@@ -222,6 +222,9 @@ type Options struct {
 	// 数据面为聚合 SQL + 授权门 + 映射有效性过滤）。nil 合法：读取返回
 	// ErrGroupModelUnionLoaderUnavailable。
 	Union GroupModelUnionLoader
+	// CredentialVersions 是账户 OAuth 凭据版本的只读端口（跨进程共享 Redis
+	// 投影）。nil 合法：保持既有 60s revalidate 可见性窗口；生产组合根恒接线。
+	CredentialVersions CredentialVersionReader
 }
 
 // Service is the Go gateway runtime read-only cache. All exported methods
@@ -311,6 +314,9 @@ type groupUsageAccessCacheEntry struct {
 type openAIAccountsCacheEntry struct {
 	accounts       []OpenAIAccountSecret
 	revalidateAtMs int64
+	// credentialVersions 是条目构建时的账户凭据版本快照（accountID -> version）。
+	// nil 表示版本未知（未配置 reader 或读取失败），该条目退化为 60s 窗口。
+	credentialVersions map[string]int64
 }
 
 // responseInspectionPolicyCacheEntry mirrors ResponseInspectionPolicyCacheEntry.

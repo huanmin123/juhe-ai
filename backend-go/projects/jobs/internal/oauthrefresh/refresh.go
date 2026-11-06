@@ -75,48 +75,139 @@ type LockBusyError struct{ Message string }
 
 func (e *LockBusyError) Error() string { return e.Message }
 
-// accountLocks is the in-process per-account refresh lock registry (the jobs
-// equivalent of runWithProviderOAuthRefreshLock; failIfLocked mirrors the
-// batch lockMode 'skip').
+// RefreshLock 是账户级刷新互斥的跨进程实现（gateway/jobs 共用同一 Redis
+// 契约，键见 crossprocessstate.EntityOAuthRefreshLock）。TryLock 不等待：
+// acquired=false 表示其他持有者正在刷新，本轮跳过。
+type RefreshLock interface {
+	TryLock(ctx context.Context, accountID string, ttl time.Duration) (token string, acquired bool, err error)
+	Unlock(ctx context.Context, accountID, token string) error
+}
+
+// CrossProcessRefreshLockTTL 与单次刷新预算（transport 25s/60s）对齐；
+// PG config_revision CAS 仍是兜底，锁过期不会造成静默覆盖。
+const CrossProcessRefreshLockTTL = 60 * time.Second
+
+// accountLocks is the per-account refresh lock registry: an in-process mutex
+// plus the optional cross-process RefreshLock (the jobs equivalent of
+// runWithProviderOAuthRefreshLock; failIfLocked mirrors the batch lockMode
+// 'skip').
 type accountLocks struct {
-	mu   sync.Mutex
-	held map[string]*sync.Mutex
+	mu     sync.Mutex
+	held   map[string]*sync.Mutex
+	remote RefreshLock
+	logger *slog.Logger
 }
 
 func newAccountLocks() *accountLocks {
 	return &accountLocks{held: map[string]*sync.Mutex{}}
 }
 
-// TryLock runs task under the account lock; when the lock is taken it fails
-// with LockBusyError without waiting.
-func (l *accountLocks) TryLock(accountID string, task func() error) error {
+func (l *accountLocks) mutexFor(accountID string) *sync.Mutex {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	mutex, ok := l.held[accountID]
 	if !ok {
 		mutex = &sync.Mutex{}
 		l.held[accountID] = mutex
 	}
-	l.mu.Unlock()
+	return mutex
+}
+
+// TryLock runs task under the account lock; when the lock is taken it fails
+// with LockBusyError without waiting.
+func (l *accountLocks) TryLock(accountID string, task func() error) error {
+	return l.TryLockContext(context.Background(), accountID, task)
+}
+
+// TryLockContext is TryLock with a caller context for the cross-process lock.
+func (l *accountLocks) TryLockContext(ctx context.Context, accountID string, task func() error) error {
+	mutex := l.mutexFor(accountID)
 	if !mutex.TryLock() {
 		return &LockBusyError{Message: "供应商 OAuth 刷新锁被占用"}
 	}
 	defer mutex.Unlock()
+	acquired, release, err := l.acquireRemote(ctx, accountID)
+	if err != nil {
+		// 锁后端不可用：回退进程内锁 + PG config_revision CAS（计划 §B1），
+		// 不因 Redis 故障阻断刷新。
+		l.warnRemote(accountID, err)
+	} else if !acquired {
+		return &LockBusyError{Message: "供应商 OAuth 刷新锁被占用"}
+	}
+	if release != nil {
+		defer release()
+	}
 	return task()
 }
 
 // Lock runs task under the account lock, waiting when taken (the manual
 // refresh path).
 func (l *accountLocks) Lock(accountID string, task func() error) error {
-	l.mu.Lock()
-	mutex, ok := l.held[accountID]
-	if !ok {
-		mutex = &sync.Mutex{}
-		l.held[accountID] = mutex
-	}
-	l.mu.Unlock()
+	return l.LockContext(context.Background(), accountID, task)
+}
+
+// LockContext waits for both the process-local and the cross-process lock.
+// 跨进程锁后端错误按不可用处理（告警后继续），等待期间 ctx 取消则放弃执行。
+func (l *accountLocks) LockContext(ctx context.Context, accountID string, task func() error) error {
+	mutex := l.mutexFor(accountID)
 	mutex.Lock()
 	defer mutex.Unlock()
+	var release func()
+	if l.remote != nil {
+		for {
+			acquired, remoteRelease, err := l.acquireRemote(ctx, accountID)
+			if err != nil {
+				l.warnRemote(accountID, err)
+				break
+			}
+			if acquired {
+				release = remoteRelease
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	if release != nil {
+		defer release()
+	}
 	return task()
+}
+
+// acquireRemote 返回 (是否可执行, 释放函数, 错误)。l.remote 未装配时恒可执行；
+// 错误表示锁后端不可用，由调用方回退进程内锁。
+func (l *accountLocks) acquireRemote(ctx context.Context, accountID string) (bool, func(), error) {
+	if l.remote == nil {
+		return true, nil, nil
+	}
+	token, acquired, err := l.remote.TryLock(ctx, accountID, CrossProcessRefreshLockTTL)
+	if err != nil {
+		return false, nil, err
+	}
+	if !acquired {
+		return false, nil, nil
+	}
+	release := func() {
+		// 请求 ctx 可能已取消，释放锁用 detached 上下文，避免锁占到 TTL 过期。
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if err := l.remote.Unlock(releaseCtx, accountID, token); err != nil {
+			l.warnRemote(accountID, err)
+		}
+	}
+	return true, release, nil
+}
+
+func (l *accountLocks) warnRemote(accountID string, err error) {
+	if l.logger == nil {
+		return
+	}
+	l.logger.Warn("OAuth 刷新跨进程锁不可用，回退进程内锁与 PG 版本 CAS",
+		"event", "oauth_refresh_cross_process_lock_error",
+		"accountId", accountID, "error", err)
 }
 
 // SettingsReader mirrors the settings lookups (settingsInteger): absent keys
@@ -183,7 +274,15 @@ func NewRefreshJob(store *Store, exchanger TokenExchanger, opts ...func(*Refresh
 	for _, opt := range opts {
 		opt(job)
 	}
+	job.locks.logger = job.logger
 	return job
+}
+
+// WithCrossProcessLock 注入账户级跨进程刷新锁（redis-state 部署传共享 Redis
+// 实现；nil 保持进程内锁语义，测试夹具不受影响）。锁后端错误时任务回退
+// 进程内锁与既有 PG CAS，不阻断刷新。
+func WithCrossProcessLock(lock RefreshLock) func(*RefreshJob) {
+	return func(job *RefreshJob) { job.locks.remote = lock }
 }
 
 // WithFailureStateStore overrides the failure state store (Redis in
@@ -448,7 +547,7 @@ func (j *RefreshJob) processCandidate(ctx context.Context, candidate RefreshCand
 			refreshErr = errors.New("OpenAI OAuth 凭据存储当前不可验证，未改变账户调度状态")
 		}
 	} else {
-		refreshErr = j.locks.TryLock(accountID, func() error {
+		refreshErr = j.locks.TryLockContext(ctx, accountID, func() error {
 			markStarted()
 			_, refreshErr := j.refreshWithRaceRetry(ctx, candidate.Account, RefreshAccountOptions{})
 			return refreshErr
@@ -586,7 +685,7 @@ type RefreshAccountOptions struct {
 // (waiting on the per-account lock, manual path).
 func (j *RefreshJob) RefreshAccount(ctx context.Context, account *RotationAccount, options RefreshAccountOptions) (*RotationAccount, error) {
 	var refreshed *RotationAccount
-	err := j.locks.Lock(account.ID, func() error {
+	err := j.locks.LockContext(ctx, account.ID, func() error {
 		result, taskErr := j.refreshWithRaceRetry(ctx, account, options)
 		refreshed = result
 		return taskErr

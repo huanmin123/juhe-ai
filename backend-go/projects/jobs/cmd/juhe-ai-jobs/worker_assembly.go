@@ -597,6 +597,22 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	}
 	a.oauthStore = store
 
+	// B1/B2（跨进程共享状态改造 Tier 1）：OAuth 域共享锁 + 凭据版本投影。
+	// redis-state 部署注入；Store 的凭据写事务提交后 bump 版本，gateway 运行态
+	// 账号缓存下一次读即可重载。未配置 Redis 时保持既有进程内锁/60s 窗口。
+	crossProcess, crossProcessClient, crossProcessErr := a.oauthCrossProcessState()
+	if crossProcessErr != nil {
+		return crossProcessErr
+	}
+	if crossProcessClient != nil {
+		a.addCloser(func() error { return crossProcessClient.Close() })
+	}
+	if crossProcess != nil {
+		store.SetCredentialVersionBumper(oauthCredentialVersionBumper{client: crossProcess})
+		a.logger.Info("OAuth 凭据版本投影已接入 Redis 运行态",
+			"event", "oauth_credential_version_projection_redis")
+	}
+
 	// P0 修复：OAuth 刷新失败状态存储按运行态部署注入。缺省（无
 	// JUHE_AI_REDIS_URL）保持各 job 的内存版默认；redis-state 部署注入
 	// Redis 版（refresh 注入 OpenAI 族既有 key 前缀、keepalive 注入独立
@@ -618,6 +634,9 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 			"event", "oauth_refresh_failure_state_store_redis")
 	}
 	refreshOptions = append(refreshOptions, oauthrefresh.WithLogger(a.logger))
+	if crossProcess != nil {
+		refreshOptions = append(refreshOptions, oauthrefresh.WithCrossProcessLock(oauthCrossProcessLock{client: crossProcess}))
+	}
 	refreshJob := oauthrefresh.NewRefreshJob(store, oauthrefresh.NewHTTPTokenExchanger(), refreshOptions...)
 	a.scheduleWiredJob("openai-oauth-access-token-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		started := time.Now()
@@ -638,6 +657,9 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	// WithKeepaliveFailureStateStore 注入族隔离前缀的 Redis 存储，失败退避
 	// 与本地配置终态口径与 openai-oauth-access-token-refresh 一致。
 	keepaliveOptions := []func(*oauthrefresh.KeepaliveJob){oauthrefresh.WithKeepaliveLogger(a.logger)}
+	if crossProcess != nil {
+		keepaliveOptions = append(keepaliveOptions, oauthrefresh.WithKeepaliveCrossProcessLock(oauthCrossProcessLock{client: crossProcess}))
+	}
 	if keepaliveFailures != nil {
 		keepaliveOptions = append(keepaliveOptions, oauthrefresh.WithKeepaliveFailureStateStore(keepaliveFailures))
 		a.logger.Info("OAuth keepalive 失败状态存储已接入 Redis 运行态",

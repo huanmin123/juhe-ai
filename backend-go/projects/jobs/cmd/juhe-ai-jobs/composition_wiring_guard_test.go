@@ -91,6 +91,24 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		MissingImpact: "keepalive 失败退避只在进程内存：重启清零、多副本不共享，故障账号被重复保活打上游；本地配置终态与恢复通道缺失，三族口径与 OpenAI 族脱节",
 	},
 	{
+		Identifier:    "WithCrossProcessLock(",
+		Name:          "OAuth 刷新跨进程锁接入",
+		Purpose:       "redis-state 部署必须为 OpenAI 刷新族注入共享 Redis 账户锁（WithCrossProcessLock，worker_assembly.go / worker_oauth_crossprocess.go），与 gateway 401 自动刷新互斥",
+		MissingImpact: "gateway 与 jobs 可并发刷新同一账户的 rotation 型 refresh token，后到请求用已作废 token 打上游，账户被迫重新授权",
+	},
+	{
+		Identifier:    "WithKeepaliveCrossProcessLock(",
+		Name:          "OAuth keepalive 跨进程锁接入",
+		Purpose:       "anthropic/gemini/grok keepalive 必须与 OpenAI 族共用同一 oauth 域账户锁（WithKeepaliveCrossProcessLock），与 gateway 自动刷新互斥",
+		MissingImpact: "keepalive 与 gateway 401 自动刷新并发换发同一账户令牌，rotation 型 refresh token 单次作废导致账户异常",
+	},
+	{
+		Identifier:    "SetCredentialVersionBumper(",
+		Name:          "OAuth 凭据版本投影接入",
+		Purpose:       "jobs 凭据写事务提交后必须 bump 共享版本（SetCredentialVersionBumper，worker_assembly.go / worker_oauth_crossprocess.go），gateway 运行态账号缓存据此提前重载",
+		MissingImpact: "jobs 刷新的新 token 最长 60s 才被 gateway 看到，期间网关继续用旧 token 打上游触发 401 与无谓重试",
+	},
+	{
 		Identifier:    "newAccountScheduleActivationHook(",
 		Name:          "排期激活 dispatch revision 推进 hook",
 		Purpose:       "account-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时推进 circuit dispatch revision 家族",

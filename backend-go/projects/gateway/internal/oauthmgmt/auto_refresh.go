@@ -85,6 +85,18 @@ func (s *Store) RotateAccountTokensFromStored(ctx context.Context, accountID str
 	if err != nil {
 		return nil, err
 	}
+	// B1：与 jobs 定时刷新/保活及其他 gateway 实例互斥。锁后端不可用时按
+	// 既有流程继续（PG CAS 兜底）；锁被占用则本轮跳过，调用方维持现状。
+	release, busy, lockErr := s.tryRefreshLock(ctx, current.ID)
+	if lockErr != nil {
+		warnCrossProcess("oauth_refresh_cross_process_lock_unavailable", current.ID, lockErr)
+	}
+	if busy {
+		return nil, &RefreshLockBusyError{Message: "OAuth 账户正在刷新中，请稍后重试"}
+	}
+	if release != nil {
+		defer release()
+	}
 	tokenCredentials, err := plan.refreshStored(ctx, s, current, proxyURL)
 	if err != nil {
 		return nil, &AutoRefreshUpstreamError{Err: err}

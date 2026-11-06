@@ -77,7 +77,14 @@ func NewKeepaliveJob(store *Store, exchanger TokenExchanger, opts ...func(*Keepa
 	for _, opt := range opts {
 		opt(job)
 	}
+	job.locks.logger = job.logger
 	return job
+}
+
+// WithKeepaliveCrossProcessLock 注入账户级跨进程刷新锁（与 OpenAI 刷新族
+// 共用同一 oauth 域锁契约；nil 保持进程内锁语义）。
+func WithKeepaliveCrossProcessLock(lock RefreshLock) func(*KeepaliveJob) {
+	return func(job *KeepaliveJob) { job.locks.remote = lock }
 }
 
 // WithClock overrides the clock (tests).
@@ -154,7 +161,7 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 		}
 		result.Due++
 		refreshed := false
-		lockErr := j.locks.TryLock(account.ID, func() error {
+		lockErr := j.locks.TryLockContext(ctx, account.ID, func() error {
 			flag, err := j.refreshOne(ctx, plan, account, now)
 			refreshed = flag
 			return err

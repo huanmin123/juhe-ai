@@ -827,6 +827,20 @@ func (d *Deps) refreshToken(plan providerPlan, selfOnly bool) http.HandlerFunc {
 			d.writeProfileError(w, err)
 			return
 		}
+		// B1：与 jobs 定时刷新/保活及自动刷新互斥；锁被占用时返回 409，避免
+		// 重复换发作废 rotation 型 refresh token。锁后端不可用时按既有流程继续
+		// （PG config_revision CAS 兜底）。
+		release, busy, lockErr := d.Store.tryRefreshLock(r.Context(), current.ID)
+		if lockErr != nil {
+			warnCrossProcess("oauth_refresh_cross_process_lock_unavailable", current.ID, lockErr)
+		}
+		if busy {
+			kernel.WriteError(w, http.StatusConflict, plan.label+" OAuth 账户正在刷新中，请稍后重试")
+			return
+		}
+		if release != nil {
+			defer release()
+		}
 		tokenCredentials, err := plan.refreshStored(r.Context(), d.Store, current, proxyURL)
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" 访问令牌刷新失败", plan.revisionConflictMessage)

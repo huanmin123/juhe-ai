@@ -5,9 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 )
+
+// CredentialVersionBumper 是 OAuth 凭据版本投影的写入端口：PG 提交成功后
+// 递增共享版本（crossprocessstate.EntityAccountCredentialsVersion），让
+// gateway 运行态账号缓存不必等 60s revalidate。
+//
+// 契约（计划 §B2）：只在事务提交成功后调用；bump 失败只记告警，不回滚业务
+// 写，也不阻断刷新——读者在版本缺失时按原有 60s 缓存/PG 路径回退。
+type CredentialVersionBumper interface {
+	Bump(ctx context.Context, accountID string) error
+}
 
 // Store is the business database access for the J4 job family. The
 // jobs process owns the narrow credential writers (rotation CAS + keepalive
@@ -15,9 +26,10 @@ import (
 //
 // 行以 juhe_business schema 限定，`?` 占位符改写为 $n（PG 唯一形态）。
 type Store struct {
-	db     *sql.DB
-	secret string
-	now    func() time.Time
+	db               *sql.DB
+	secret           string
+	now              func() time.Time
+	credentialBumper CredentialVersionBumper
 }
 
 // OpenStore wraps an opened database handle. secret is the Node
@@ -39,6 +51,25 @@ func (s *Store) WithClock(clock func() time.Time) *Store {
 		s.now = clock
 	}
 	return s
+}
+
+// SetCredentialVersionBumper 注入凭据版本投影写入端口。未接线（nil）时保持
+// 既有 60s 可见性窗口，不影响刷新正确性。
+func (s *Store) SetCredentialVersionBumper(bumper CredentialVersionBumper) {
+	s.credentialBumper = bumper
+}
+
+// bumpCredentialVersion 在 PG 提交成功后递增共享版本。失败只告警：读者会在
+// 版本键缺失时回退既有缓存窗口，业务写已提交不可回滚。
+func (s *Store) bumpCredentialVersion(ctx context.Context, accountID string) {
+	if s.credentialBumper == nil {
+		return
+	}
+	if err := s.credentialBumper.Bump(ctx, accountID); err != nil {
+		slog.Warn("OAuth 凭据版本投影写入失败，gateway 将按既有缓存窗口回退",
+			"event", "oauth_credential_version_bump_failed",
+			"accountId", accountID, "error", err)
+	}
 }
 
 // Close closes the underlying handle.
@@ -402,6 +433,7 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.bumpCredentialVersion(ctx, id)
 	return &RotationResult{
 		ID: id, ConfigRevision: configRevision + 1,
 		UpdatedAt: updatedAt, Changed: true, Credentials: input.Credentials,
@@ -478,6 +510,7 @@ func (s *Store) UpdateAccountCredentials(ctx context.Context, accountID string, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.bumpCredentialVersion(ctx, accountID)
 	return s.FindRotationAccount(ctx, accountID)
 }
 
