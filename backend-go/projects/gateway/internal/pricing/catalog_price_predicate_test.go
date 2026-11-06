@@ -31,7 +31,11 @@ func TestHasCatalogDirectPriceRequiresBaseRate(t *testing.T) {
 		})
 	}
 	// 静态媒体价（catalogdata）仍可计价：DR-P7 只收紧档位/缓存，不误伤 TTS/音频/视频。
-	if !HasCatalogDirectPrice("volcengine", "seed-tts-2.0", PriceSet{}) {
-		t.Fatal("static media price must remain directly priced")
+	// glm/cogtts 是只有 ttsInputCostPerChar、没有任何基础直价列的真实在售 TTS 行，
+	// 必须由静态层放行；volcengine/seed-tts-2.0 覆盖同一分支的另一厂商快照。
+	for _, media := range [][2]string{{"glm", "cogtts"}, {"volcengine", "seed-tts-2.0"}} {
+		if !HasCatalogDirectPrice(media[0], media[1], PriceSet{}) {
+			t.Fatalf("static media price must remain directly priced: %s/%s", media[0], media[1])
+		}
 	}
 }

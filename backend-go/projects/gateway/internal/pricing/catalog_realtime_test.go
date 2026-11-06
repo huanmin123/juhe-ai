@@ -54,7 +54,8 @@ func TestGptRealtimeSnapshotPricing(t *testing.T) {
 	if got.ImageOutputUsdPer1M != nil || got.OutputUsdPerImage != nil {
 		t.Fatalf("gpt-realtime 不应有 image 输出价: %+v", got.PriceSet)
 	}
-	// audio 价是已落单价：hasAnyRate 必须为真（否则纯 audio 行被目录过滤）。
+	// audio 价是已落单价：hasAnyRate 必须为真（计价引擎据此生成音频行项；目录
+	// priced 过滤另由 HasCatalogDirectPrice 的静态媒体层放行，不是同一判据）。
 	if !hasAnyRate(got.PriceSet) {
 		t.Fatal("gpt-realtime must carry a rate (audio token prices only)")
 	}

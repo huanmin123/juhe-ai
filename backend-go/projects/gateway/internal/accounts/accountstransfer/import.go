@@ -1139,7 +1139,7 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	// 超 int4 上界按字段错误拒绝（DR-37），不能等到落库变成 500。
 	source.rpmLimit = ImportOptionalNonNegativeIntegerField(record, "rpmLimit", "账户 rpmLimit", messages)
 	if source.rpmLimit > accountscore.MaxRPMLimit {
-		source.Push("账户 rpmLimit 不能超过 2147483647")
+		source.Push(fmt.Sprintf("账户 rpmLimit 不能超过 %d", accountscore.MaxRPMLimit))
 		source.rpmLimit = -1
 	}
 	source.priority = ImportOptionalNonNegativeIntegerField(record, "priority", "账户 priority", messages)

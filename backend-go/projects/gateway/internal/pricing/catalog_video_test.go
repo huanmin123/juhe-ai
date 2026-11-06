@@ -3,7 +3,8 @@ package pricing
 // M2 视频静态快照测试（媒体设计 §10 / 任务书 §4）：sora-2 / sora-2-pro 收录
 // 进 openai 静态目录（mode=video、协议 ["video"]、OutputModalities
 // ["video"]），720p 基准秒价经 PriceSet.VideoOutputUsdPerSecond 呈现；
-// 秒价是唯一单价（纯视频模型，hasAnyRate 口径）。行项生成（CostLineKind
+// 秒价是唯一单价（纯视频模型；hasAnyRate 供计费引擎与 PriceSet 断言使用，
+// 目录 priced 过滤由 HasCatalogDirectPrice 的静态媒体层放行）。行项生成（CostLineKind
 // video_output_seconds 的计费引擎消费）由后续终态计费任务交付，此处只锁
 // 目录结构。
 // 2026-10-05 全厂商补全批：sora-2/sora-2-pro 官方 deprecations.md 明文
@@ -53,7 +54,8 @@ func TestSoraVideoSnapshotPricing(t *testing.T) {
 		if got.VideoOutputUsdPerSecond == nil || *got.VideoOutputUsdPerSecond != tc.usdPerSecond {
 			t.Fatalf("%s videoOutputUsdPerSecond = %v want %v", tc.model, got.VideoOutputUsdPerSecond, tc.usdPerSecond)
 		}
-		// 秒价是唯一单价：hasAnyRate 必须为真（否则纯视频模型被目录过滤）。
+		// 秒价是唯一单价：hasAnyRate 必须为真（供计费引擎生成视频秒行项；目录
+		// priced 过滤由 HasCatalogDirectPrice 静态媒体层放行）。
 		if !hasAnyRate(got.PriceSet) {
 			t.Fatalf("%s must carry a rate (video second price only)", tc.model)
 		}
