@@ -96,6 +96,21 @@ func (s *Store) bumpCredentialVersion(ctx context.Context, accountID string, rev
 	}
 }
 
+// bumpAccountStateVersion 在账户状态写提交后递增共享序号（B4）：让 gateway
+// runtime 缓存下一次读重载 PG 快照，不必等 60s revalidate。失败只告警。
+func (s *Store) bumpAccountStateVersion(ctx context.Context, accountID string) {
+	if s.accountState == nil || strings.TrimSpace(accountID) == "" {
+		return
+	}
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.accountState.BumpAccountState(bumpCtx, accountID); err != nil {
+		slog.Warn("账户运行态版本栅栏写入失败，gateway 按既有缓存窗口回退",
+			"event", "account_state_version_bump_failed",
+			"accountId", accountID, "error", err)
+	}
+}
+
 // Close closes the underlying handle.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -557,7 +572,11 @@ func (s *Store) MarkAccountFailureState(ctx context.Context, accountID, errorCod
 	if err != nil {
 		return false, err
 	}
-	return affected == 1, nil
+	if affected != 1 {
+		return false, nil
+	}
+	s.bumpAccountStateVersion(ctx, accountID)
+	return true, nil
 }
 
 // ClearAccountFailureState mirrors clear_account_failure_state with the
@@ -593,6 +612,7 @@ func (s *Store) ClearAccountFailureState(ctx context.Context, accountID string, 
 	if affected != 1 {
 		return false, "", nil
 	}
+	s.bumpAccountStateVersion(ctx, accountID)
 	var status string
 	if err := s.db.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&status); err != nil {
 		return true, "", err

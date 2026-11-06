@@ -81,3 +81,36 @@ func TestScheduleSyncNoBumpWhenGateUnchanged(t *testing.T) {
 		t.Fatalf("同值闸门不应 bump: %v", bumper.accounts)
 	}
 }
+
+// B4：J4 刷新家族的账户状态迁移（error/恢复 active）同样必须 bump 账户状态
+// 序号；否则 gateway 在 60s 内仍可能派发已判定 error 的账户，或继续跳过已
+// 恢复的账户。
+func TestAccountFailureStateChangesBumpStateVersion(t *testing.T) {
+	store, db, _ := newTestStore(t)
+	bumper := &fakeStateVersionBumper{}
+	store.SetStateVersionBumpers(bumper, bumper)
+	seedAccountRow(t, db, accountRowSeed{ID: "acc-failure-bump", ProviderCode: "gpt", Type: "oauth",
+		Status: "active", Credentials: openAICredentials(expiresInMillis(0)), Now: defaultNow()})
+
+	updated, err := store.MarkAccountFailureState(context.Background(), "acc-failure-bump",
+		OpenAIOAuthTokenRefreshFailedErrorCode, "refresh failed", 1, "active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated {
+		t.Fatal("MarkAccountFailureState must update active account")
+	}
+	changed, status, err := store.ClearAccountFailureState(context.Background(), "acc-failure-bump", ManagedRefreshErrorCodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || status != "active" {
+		t.Fatalf("ClearAccountFailureState = (changed=%v status=%q), want active", changed, status)
+	}
+
+	bumper.mu.Lock()
+	defer bumper.mu.Unlock()
+	if len(bumper.accounts) != 2 || bumper.accounts[0] != "acc-failure-bump" || bumper.accounts[1] != "acc-failure-bump" {
+		t.Fatalf("account bumps = %v, want 2 次 acc-failure-bump", bumper.accounts)
+	}
+}

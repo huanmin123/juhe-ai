@@ -55,7 +55,9 @@ func TestW12fSyncApiKeyScheduleFlipAndEventIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replay.Scanned != 3 || replay.Unchanged != 3 || replay.Disabled != 0 || replay.Activated != 0 {
+	// 非法行按设计 §4.1 已排到 1 小时后，未到期不参与本轮；两条合法行闸门
+	// 已一致，只推进 next_check_at，不新增审计事件。
+	if replay.Scanned != 2 || replay.Unchanged != 2 || replay.Disabled != 0 || replay.Activated != 0 {
 		t.Fatalf("replay=%+v", replay)
 	}
 	var events int

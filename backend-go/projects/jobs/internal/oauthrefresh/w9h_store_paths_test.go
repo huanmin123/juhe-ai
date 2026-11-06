@@ -734,8 +734,10 @@ func TestW9HSyncApiKeyInvalidDisabledClosesGateOnly(t *testing.T) {
 		t.Fatalf("非法计划只关闸不改写 status：status=%q want disabled", status)
 	}
 	requireGate(t, "w9h-key-invalid-disabled", readApiKeyGate(t, db, "w9h-key-invalid-disabled"), "0")
-	if nextCheck != "" {
-		t.Fatalf("next=%q want 空（非法计划不产生下次检查）", nextCheck)
+	// 设计 §4.1：非法计划 fail-closed 关闸，但 next_check_at 写到 1 小时后，
+	// 避免坏行因 IS NULL OR <= now 永久 due 占满批次；PATCH 修正后立即重算。
+	if want := isoMillis(defaultNow().Add(time.Hour)); nextCheck != want {
+		t.Fatalf("next=%q want %q（非法计划 1 小时后重试）", nextCheck, want)
 	}
 	// The empty schedule drops only the JSON; a nil next-check is fine.
 	_, _ = db.Exec(`UPDATE juhe_business.api_keys SET availability_schedule_json = NULL WHERE id = 'w9h-key-invalid-disabled'`)

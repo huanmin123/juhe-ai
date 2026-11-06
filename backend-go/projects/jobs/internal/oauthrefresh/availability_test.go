@@ -244,13 +244,16 @@ func TestSyncApiKeyScheduleInvalidClosesGate(t *testing.T) {
 		t.Fatalf("非法计划只关闸不改写 status：status=%q want active", status)
 	}
 	requireGate(t, "key-invalid", readApiKeyGate(t, db, "key-invalid"), "0")
-	if nextCheck != "" {
-		t.Fatalf("非法计划不产生下次检查：next=%q", nextCheck)
+	// 设计 §4.1：非法计划 fail-closed 关闸，同时把 next_check_at 写到 1 小时后
+	// 避免坏行永久 due；这里断言该值而不是“空”。
+	if want := isoMillis(defaultNow().Add(time.Hour)); nextCheck != want {
+		t.Fatalf("非法计划下次检查 next=%q want %q", nextCheck, want)
 	}
 
-	// 已落库为 disabled 的非法行同样只关闸，status 保持 disabled。
+	// 已落库为 disabled 的非法行同样只关闸，status 保持 disabled。第二行首次
+	// 入候选；第一行已排到 1 小时后，推进到该时刻后两行同时到期。
 	seedApiKeyWithSchedule(t, db, "key-invalid-disabled", `{"enabled":true,"mode":"bogus"}`, "", "disabled")
-	result, err = store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0, nil)
+	result, err = store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow().Add(2*time.Hour), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
