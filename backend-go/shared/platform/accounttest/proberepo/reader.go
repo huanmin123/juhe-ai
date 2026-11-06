@@ -52,6 +52,10 @@ type AccountForTestView struct {
 	// W1 起授权实例行跟随来源账户同步，读本行列即为生效值。nil 表示列异常
 	// 缺失（理论不可达，NOT NULL DEFAULT 1），消费端按开启处理。
 	BackgroundProbeEnabled *bool
+	// AvailabilityScheduleGate 是时间计划闸门（accounts.availability_schedule_gate）：
+	// nil / 1 = 当前在计划窗口内或未配置，0 = 时段外。恢复探针必须尊重该闸门，
+	// 不得在时段外向上游发真实诊断（DR-30）。
+	AvailabilityScheduleGate *int
 }
 
 // accountRowSQL 是账户主查询（owner + authorized instance 双路径合一）。
@@ -77,7 +81,8 @@ const accountRowSQL = `
         WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = 1
         ORDER BY ga.updated_at DESC, ga.group_id ASC, ga.account_id ASC
         LIMIT 1) AS bound_group_id,
-      a.background_probe_enabled
+      a.background_probe_enabled,
+      a.availability_schedule_gate
     FROM %s a
     LEFT JOIN %s src ON src.id = a.authorization_instance_source_account_id AND src.deleted_at IS NULL
     LEFT JOIN %s auth ON auth.id = a.authorization_instance_authorization_id
@@ -128,6 +133,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		authzResourceOwner                   sql.NullString
 		boundGroupID                         sql.NullString
 		backgroundProbeEnabled               any
+		availabilityScheduleGate             sql.NullInt64
 	)
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &schedulable,
@@ -138,7 +144,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		&sourceStatus, &sourceSchedulable,
 		&sourceExpiresAt, &sourceCooldownUntil, &sourceErrorCode, &sourceErrorMessage,
 		&authorizationStatus, &authzExpiresAt, &authzResourceOwner,
-		&boundGroupID, &backgroundProbeEnabled); err != nil {
+		&boundGroupID, &backgroundProbeEnabled, &availabilityScheduleGate); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -192,6 +198,12 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		enabled := truthy(backgroundProbeEnabled)
 		backgroundProbeEnabledPtr = &enabled
 	}
+	// 闸门列可空：NULL 表示未配置/无计划（按开放处理）；显式 0 才是时段外。
+	var availabilityScheduleGatePtr *int
+	if availabilityScheduleGate.Valid {
+		gate := int(availabilityScheduleGate.Int64)
+		availabilityScheduleGatePtr = &gate
+	}
 	view.AccountForTest = accountquality.AccountForTest{
 		ID:                     id.String,
 		Name:                   name.String,
@@ -207,6 +219,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		HasEffectiveAvail:      true,
 		BackgroundProbeEnabled: backgroundProbeEnabledPtr,
 	}
+	view.AvailabilityScheduleGate = availabilityScheduleGatePtr
 	view.ProviderCode = vendorCode.String
 	view.OAuthType = oauthType.String
 	view.ProtocolVersion = protocolVersion.String
@@ -507,6 +520,9 @@ type CandidateAccount struct {
 	// ModelMappings 仅用于 hybrid OpenAI 档案。完整载入后由 accountprobe
 	// 按本次手动测试选择的 model/mode 决定一跳上游路由。
 	ModelMappings []accountprobe.ModelMapping
+	// AvailabilityScheduleGate 是账户时间计划闸门（nil/1 开放，0 时段外）；
+	// 恢复探针据此跳过时段外上游诊断（DR-30）。
+	AvailabilityScheduleGate *int
 }
 
 // FindAccountForGroup 实现 accountquality.AccountReader（ignoreAvailability=true
@@ -545,6 +561,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
     SELECT a.id, a.system_account_id, a.name, a.type, a.status, a.vendor_code, a.oauth_type,
 	  a.protocol_code, a.protocol_version,
 	      a.config_revision, a.dispatch_revision, a.credentials_encrypted, a.proxy_profile_id,
+      a.availability_schedule_gate,
       a.authorization_instance_authorization_id, a.authorization_instance_source_account_id,
       a.authorization_instance_owner_system_account_id,
 	  src.id AS resource_account_id, src.vendor_code AS resource_vendor_code,
@@ -561,6 +578,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		vendor, oauthType, protocolCode, protocolVersion     sql.NullString
 		credentials                                          sql.NullString
 		proxyProfileID                                       sql.NullString
+		availabilityScheduleGate                             sql.NullInt64
 		authzID, sourceID, authzOwner                        sql.NullString
 		resourceAccountID, resourceVendor, resourceOAuthType sql.NullString
 		resourceProtocol, resourceProtocolVersion            sql.NullString
@@ -572,7 +590,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &vendor, &oauthType,
 		&protocolCode, &protocolVersion,
-		&configRevision, &dispatchRevision, &credentials, &proxyProfileID,
+		&configRevision, &dispatchRevision, &credentials, &proxyProfileID, &availabilityScheduleGate,
 		&authzID, &sourceID, &authzOwner,
 		&resourceAccountID, &resourceVendor, &resourceOAuthType,
 		&resourceProtocol, &resourceProtocolVersion,
@@ -682,6 +700,11 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 			apiKeys = append(apiKeys, entry.Key)
 		}
 	}
+	var availabilityScheduleGatePtr *int
+	if availabilityScheduleGate.Valid {
+		gate := int(availabilityScheduleGate.Int64)
+		availabilityScheduleGatePtr = &gate
+	}
 	candidate := &CandidateAccount{
 		OpenAIAccountCandidate: accountquality.OpenAIAccountCandidate{
 			ID:                  id.String,
@@ -707,6 +730,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		APIKeys:                     apiKeys,
 		SelectedAPIKey:              selectedKey,
 		APIKeyEntries:               entries,
+		AvailabilityScheduleGate:    availabilityScheduleGatePtr,
 	}
 	_ = accountAccessType
 	_ = resourceStatus

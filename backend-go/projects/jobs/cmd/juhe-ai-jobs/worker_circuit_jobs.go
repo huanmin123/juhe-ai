@@ -223,6 +223,11 @@ func (r circuitRecoveryTargetResolver) Resolve(ctx context.Context, state opsjob
 	if candidate == nil {
 		return opsjobs.CircuitRecoveryProbeTarget{}, false, nil
 	}
+	// 时间计划时段外不得向上游发真实恢复诊断（DR-30）；目标缺失沿用既有
+	// releaseUnknown 语义，不伪造成功/失败。
+	if candidate.AvailabilityScheduleGate != nil && *candidate.AvailabilityScheduleGate == 0 {
+		return opsjobs.CircuitRecoveryProbeTarget{}, false, nil
+	}
 	if !candidate.HasDispatchRevision || candidate.DispatchRevision <= 0 {
 		return opsjobs.CircuitRecoveryProbeTarget{}, false, nil
 	}

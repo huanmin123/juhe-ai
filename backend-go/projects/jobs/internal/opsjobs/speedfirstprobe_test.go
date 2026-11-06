@@ -65,6 +65,16 @@ func TestProbeFailureReasonFormat(t *testing.T) {
 	}
 }
 
+func TestSpeedFirstProbeScheduleGateClosed(t *testing.T) {
+	closed, open := 0, 1
+	if SpeedFirstProbeScheduleGateClosed(nil) || SpeedFirstProbeScheduleGateClosed(&open) {
+		t.Fatal("nil/1 应视为闸门开放")
+	}
+	if !SpeedFirstProbeScheduleGateClosed(&closed) {
+		t.Fatal("显式 0 应视为时段外")
+	}
+}
+
 func TestSpeedFirstProbeAccountEligible(t *testing.T) {
 	expiresSoon := int64(500)
 	expiresLater := int64(10_000_000)
@@ -210,6 +220,25 @@ func TestSpeedFirstProbeRunnerFlows(t *testing.T) {
 		}
 		if store.discarded != 1 {
 			t.Fatalf("discard 次数 = %d", store.discarded)
+		}
+	})
+
+	t.Run("时间计划关闭→Defer 且不发探针", func(t *testing.T) {
+		closed := 0
+		gateClosed := *activeAccount
+		gateClosed.AvailabilityScheduleGate = &closed
+		store := &fakeClaimStore{renewed: true}
+		probes := 0
+		runner := newTestSpeedFirstRunner(t, store, &fakeCandidateSource{account: &gateClosed, candidate: candidateRef},
+			func(context.Context, *SpeedFirstAccountSummary, ProbeCandidate, *ProbeAccountRef) (ProbeResultSnapshot, TransportProbeOutcome) {
+				probes++
+				return ProbeResultSnapshot{}, TransportProbeOutcome{Kind: ProbeOutcomeUnknown, FailureKind: ProbeFailureTaskFailure}
+			})
+		if _, err := runner.Run(context.Background(), testCandidate()); err != nil {
+			t.Fatal(err)
+		}
+		if store.deferred != 1 || store.discarded != 0 || probes != 0 {
+			t.Fatalf("时段外应 Defer 不探针: deferred=%d discarded=%d probes=%d", store.deferred, store.discarded, probes)
 		}
 	})
 

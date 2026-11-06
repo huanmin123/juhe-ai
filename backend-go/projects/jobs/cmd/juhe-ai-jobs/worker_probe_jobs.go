@@ -286,10 +286,11 @@ func (s speedFirstCandidateSource) FindAccountForTest(ctx context.Context, accou
 		return nil, nil
 	}
 	summary := &opsjobs.SpeedFirstAccountSummary{
-		Status:                 view.Status,
-		Schedulable:            view.Schedulable,
-		AccountExpiresAt:       view.AccountExpiresAt,
-		BackgroundProbeEnabled: view.BackgroundProbeEnabled,
+		Status:                   view.Status,
+		Schedulable:              view.Schedulable,
+		AccountExpiresAt:         view.AccountExpiresAt,
+		BackgroundProbeEnabled:   view.BackgroundProbeEnabled,
+		AvailabilityScheduleGate: view.AvailabilityScheduleGate,
 	}
 	if view.AccountExpiresAt != "" {
 		expiresAtMS, err := parseRFC3339Millis(view.AccountExpiresAt)

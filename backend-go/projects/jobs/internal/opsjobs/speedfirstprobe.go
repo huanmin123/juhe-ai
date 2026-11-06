@@ -98,6 +98,9 @@ type SpeedFirstAccountSummary struct {
 	// 总开关设计 §5）：nil = 读取面未带出（视为开启，默认路径不变）；false =
 	// 手动模式，恢复探针不运行，降级状态保留（TTL/真实流量自然恢复）。
 	BackgroundProbeEnabled *bool
+	// AvailabilityScheduleGate 是时间计划闸门（nil/1 开放，0 时段外）：
+	// 时段外跳过真实上游诊断并 Defer 保留降级状态（DR-30）。
+	AvailabilityScheduleGate *int
 }
 
 // SpeedFirstCandidateSource 提供账户与候选凭据解析。
@@ -141,6 +144,12 @@ func ProbeTimeoutSeconds(firstByteDeadlineMS int64) int64 {
 // NormalRouteSpeedFirstRecoveryProbeRequiresWindowReset 对齐 Node 同名导出。
 func NormalRouteSpeedFirstRecoveryProbeRequiresWindowReset(result ProbeResultSnapshot, outcome TransportProbeOutcome) bool {
 	return outcome.Kind != ProbeOutcomeFramingComplete || !result.Success
+}
+
+// SpeedFirstProbeScheduleGateClosed 报告时间计划闸门是否明确关闭（0）。
+// nil / 1 都视为开放；只有显式 0 才跳过探针。
+func SpeedFirstProbeScheduleGateClosed(gate *int) bool {
+	return gate != nil && *gate == 0
 }
 
 // SpeedFirstProbeAccountEligible 对齐 isNormalRouteSpeedFirstProbeAccountEligible。
@@ -263,6 +272,17 @@ func (r *SpeedFirstProbeRunner) Run(ctx context.Context, candidate ProbeCandidat
 	// （Defer）保持降级排序与 TTL 语义，仅推后下次探针。
 	if account != nil && account.BackgroundProbeEnabled != nil && !*account.BackgroundProbeEnabled {
 		if !ensureClaim("before_defer_manual_mode") {
+			return true, nil
+		}
+		if _, err := r.store.Defer(ctx, candidate); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	// 时间计划时段外：不得向上游发真实诊断；Defer 保留降级状态，窗口恢复后
+	// 再按既有节奏探测（DR-30）。
+	if account != nil && SpeedFirstProbeScheduleGateClosed(account.AvailabilityScheduleGate) {
+		if !ensureClaim("before_defer_schedule_gate_closed") {
 			return true, nil
 		}
 		if _, err := r.store.Defer(ctx, candidate); err != nil {

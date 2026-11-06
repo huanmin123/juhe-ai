@@ -64,6 +64,17 @@ func TestW12CCircuitRecoveryResolverArms(t *testing.T) {
 		t.Fatalf("owner 命中: found=%v target=%v err=%v", found, target, err)
 	}
 
+	// 时间计划闸门关闭（0）：不解析恢复目标，避免时段外真实上游诊断。
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET availability_schedule_gate = 0 WHERE id = 'acc-rt'`); err != nil {
+		t.Fatal(err)
+	}
+	if target, found, err := resolver.Resolve(ctx, w12cStateWithRuntimeKey(runtimeKey)); err != nil || found || target.Probe != nil {
+		t.Fatalf("时段外必须 found=false: found=%v target=%+v err=%v", found, target, err)
+	}
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET availability_schedule_gate = 1 WHERE id = 'acc-rt'`); err != nil {
+		t.Fatal(err)
+	}
+
 	// authorized 身份：group/system 来自 identity（fixture 绑定 g-rt 命中）。
 	authorizedKey := "acc-rt:authorized:sys-rt:g-rt:auth-1"
 	authorizedTarget, found, err := resolver.Resolve(ctx, w12cStateWithRuntimeKey(authorizedKey))
@@ -115,6 +126,21 @@ func TestW12CSpeedFirstCandidateSourceExpiryArms(t *testing.T) {
 	summary, err = source.FindAccountForTest(ctx, "acc-rt", runtimeKey)
 	if err != nil || summary == nil || summary.Status != "active" {
 		t.Fatalf("透传: %+v %v", summary, err)
+	}
+	// 时间计划闸门透传：0 表示时段外，SpeedFirstProbeRunner 据此 Defer 不探针。
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET availability_schedule_gate = 0 WHERE id = 'acc-rt'`); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = source.FindAccountForTest(ctx, "acc-rt", runtimeKey)
+	if err != nil || summary == nil || summary.AvailabilityScheduleGate == nil || *summary.AvailabilityScheduleGate != 0 {
+		t.Fatalf("闸门关闭透传: %+v %v", summary, err)
+	}
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET availability_schedule_gate = 1 WHERE id = 'acc-rt'`); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = source.FindAccountForTest(ctx, "acc-rt", runtimeKey)
+	if err != nil || summary == nil || summary.AvailabilityScheduleGate == nil || *summary.AvailabilityScheduleGate != 1 {
+		t.Fatalf("闸门开放透传: %+v %v", summary, err)
 	}
 }
 
