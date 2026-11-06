@@ -24,7 +24,7 @@ docker version
 docker compose version
 ```
 
-国内网络拉取镜像失败时，改用云厂商镜像源或 Docker 官方 apt 仓库；`compose.yml` 的构建基础镜像已指向 `docker.m.daocloud.io`。如果 BuildKit 解析基础镜像 HEAD 返回 502，先手动 `docker pull docker.m.daocloud.io/library/alpine:3.20` 预热再重试。
+国内网络拉取镜像失败时，改用云厂商镜像源或 Docker 官方 apt 仓库；`compose.yml` 的构建基础镜像已指向 `docker.m.daocloud.io` 并固定 digest。如果 BuildKit 解析基础镜像 HEAD 返回 502，先手动 `docker pull docker.m.daocloud.io/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc` 预热再重试。
 
 ## 3. 域名与 DNS
 

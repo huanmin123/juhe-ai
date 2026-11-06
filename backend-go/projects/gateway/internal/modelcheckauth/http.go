@@ -413,19 +413,25 @@ func (h *HTTPHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "密码参数无效")
 		return
 	}
-	revision, err := h.Auth.CurrentCredentialRevision(r.Context(), actor.SystemAccountID)
-	if err != nil || revision == "" {
-		writeJSONError(w, http.StatusNotFound, "系统账户不存在")
-		return
-	}
+	var revision string
 	if !actor.MustChangePassword {
 		verified, ok, verifyErr := h.Auth.VerifySystemAccountCredentials(r.Context(), actor.Username, input.OldPassword)
 		if verifyErr != nil {
 			writeJSONErrorCause(w, http.StatusInternalServerError, "服务器内部错误", verifyErr)
 			return
 		}
-		if !ok || verified.CredentialRevision != revision {
+		if !ok {
 			writeJSONError(w, http.StatusBadRequest, "当前密码不正确")
+			return
+		}
+		// Verify may have transparently rehashed a legacy PBKDF2 hash; the
+		// returned revision is the post-upgrade fence and must be used for
+		// the CAS change instead of the pre-verification revision.
+		revision = verified.CredentialRevision
+	} else {
+		revision, err = h.Auth.CurrentCredentialRevision(r.Context(), actor.SystemAccountID)
+		if err != nil || revision == "" {
+			writeJSONError(w, http.StatusNotFound, "系统账户不存在")
 			return
 		}
 	}

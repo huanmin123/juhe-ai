@@ -164,11 +164,11 @@ func newNodePasswordHash(password string) (string, error) {
 		return "", fmt.Errorf("generate password salt: %w", err)
 	}
 	salt := base64.RawURLEncoding.EncodeToString(saltBytes[:])
-	derived, err := pbkdf2.Key(sha512.New, password, []byte(salt), 120000, 32)
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(salt), NodePasswordHashIterations, 32)
 	if err != nil {
 		return "", fmt.Errorf("derive password hash: %w", err)
 	}
-	return "pbkdf2$sha512$120000$" + salt + "$" + base64.RawURLEncoding.EncodeToString(derived), nil
+	return fmt.Sprintf("pbkdf2$sha512$%d$%s$%s", NodePasswordHashIterations, salt, base64.RawURLEncoding.EncodeToString(derived)), nil
 }
 
 func (a *Authenticator) UpdateDisplayName(ctx context.Context, systemAccountID, displayName string) (bool, error) {
@@ -251,6 +251,7 @@ func maxInt(value, minimum int) int {
 	return value
 }
 
-// HashNodePassword exposes the Node-compatible pbkdf2$sha512$120000$ hash so
-// management slices (authsys) create accounts with identical credentials.
+// HashNodePassword exposes the Node-compatible
+// pbkdf2$sha512$<NodePasswordHashIterations>$ hash so management slices
+// (authsys) create accounts with identical credentials.
 func HashNodePassword(password string) (string, error) { return newNodePasswordHash(password) }

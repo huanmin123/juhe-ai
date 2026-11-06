@@ -96,8 +96,8 @@ func businessRuntimeSecret(secret string) string {
 // 否则同一批造数数据在不同进程里解不开凭据。
 const mockDefaultRuntimeSecret = "juhe-ai-dev-secret-change-me"
 
-// mockPasswordIterations 与 gateway authsys 的 pbkdf2$sha512$120000 口令约定一致。
-const mockPasswordIterations = 120000
+// mockPasswordIterations 与 gateway 当前 PBKDF2 目标迭代数一致（T169）。
+const mockPasswordIterations = 600000
 
 // businessGuard 是域前置条件：没有 schema 或没有 seed 的库不造业务数据。
 //
@@ -422,7 +422,7 @@ func (w *businessWriter) seal(value any) (string, error) {
 	return accountcrypto.EncryptJSON(w.secret, value)
 }
 
-// mockPasswordHash 生成 pbkdf2$sha512$120000$salt$digest 信封（Node hashPassword
+// mockPasswordHash 生成 pbkdf2$sha512$600000$salt$digest 信封（Node hashPassword
 // 的格式；salt 与 digest 都是 raw base64url），配套用户才能用固定口令登录。
 func mockPasswordHash(password string) (string, error) {
 	salt := make([]byte, 16)

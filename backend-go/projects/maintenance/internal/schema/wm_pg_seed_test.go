@@ -98,7 +98,7 @@ func TestWMSeedPostgresDefaultsProducesStableStatementStream(t *testing.T) {
 		t.Fatalf("超管插入应为 11 参: %d", len(first.args))
 	}
 	passwordHash, _ := first.args[6].(string)
-	if !strings.HasPrefix(passwordHash, "pbkdf2$sha512$120000$") {
+	if !strings.HasPrefix(passwordHash, "pbkdf2$sha512$600000$") {
 		t.Fatalf("seed 管理员密码哈希格式错误: %q", passwordHash)
 	}
 	// BUG-0224：超管插入的 must_change_password 必须为 1，首登强制改密。
@@ -149,7 +149,7 @@ func TestWMHashSeedPasswordIsNodeVerifiableEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts := strings.Split(hash, "$")
-	if len(parts) != 5 || parts[0] != "pbkdf2" || parts[1] != "sha512" || parts[2] != "120000" {
+	if len(parts) != 5 || parts[0] != "pbkdf2" || parts[1] != "sha512" || parts[2] != "600000" {
 		t.Fatalf("哈希信封格式错误: %q", hash)
 	}
 	// 盐必须是 base64url 文本（Node 直接把盐文本喂给 pbkdf2Sync）。

@@ -546,8 +546,10 @@ const pgSeedSystemSettingInsert = `
         ON CONFLICT DO NOTHING
       `
 
-// pgSeedPasswordIterations mirrors passwordIterations in Node src/storage/crypto.ts.
-const pgSeedPasswordIterations = 120000
+// pgSeedPasswordIterations is the current PBKDF2 target (T169, 2026-11-06).
+// Existing seeded rows with the historical 120000 count are upgraded by the
+// gateway on the first successful login.
+const pgSeedPasswordIterations = 600000
 
 // pgSeedGlobalSettings mirrors DEFAULT_GLOBAL_SETTINGS (value_json already JSON-encoded).
 var pgSeedGlobalSettings = []pgSeedKeyValue{
@@ -911,10 +913,10 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 }
 
 // hashSeedPassword mirrors hashPassword in Node src/storage/crypto.ts
-// (pbkdf2-sha512, 120000 iterations, base64url salt and digest). Node passes
-// the base64url salt TEXT itself to pbkdf2Sync, so the derivation input is
-// the UTF-8 bytes of the encoded salt — never the decoded raw bytes. The
-// Go gateway verify path (modelcheckauth verifyNodePBKDF2Password) mirrors
+// (pbkdf2-sha512, current target iterations, base64url salt and digest). Node
+// passes the base64url salt TEXT itself to pbkdf2Sync, so the derivation
+// input is the UTF-8 bytes of the encoded salt — never the decoded raw bytes.
+// The Go gateway verify path (modelcheckauth verifyNodePBKDF2Password) mirrors
 // the same semantics.
 func hashSeedPassword(password string) (string, error) {
 	salt := make([]byte, 16)

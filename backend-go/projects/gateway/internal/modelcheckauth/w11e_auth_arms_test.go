@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,11 +21,11 @@ import (
 
 func w11ePasswordHash(password string) string {
 	salt := "MDEyMzQ1Njc4OWFiY2RlZg"
-	derived, err := pbkdf2.Key(sha512.New, password, []byte(salt), 120000, 32)
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(salt), NodePasswordHashIterations, 32)
 	if err != nil {
 		panic(err)
 	}
-	return "pbkdf2$sha512$120000$" + salt + "$" + base64.RawURLEncoding.EncodeToString(derived)
+	return "pbkdf2$sha512$" + strconv.Itoa(NodePasswordHashIterations) + "$" + salt + "$" + base64.RawURLEncoding.EncodeToString(derived)
 }
 
 func w11eAuthDB(t *testing.T) *sql.DB {

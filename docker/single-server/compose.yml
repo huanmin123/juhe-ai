@@ -13,7 +13,7 @@ name: juhe-ai
 
 services:
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     container_name: juhe-ai-postgres
     restart: unless-stopped
     # 安全基线（2026-11-06）：禁止进程通过 setuid/setgid 提权。数据库镜像
@@ -54,7 +54,7 @@ services:
       start_period: 10s
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: juhe-ai-redis
     restart: unless-stopped
     # 安全基线（2026-11-06）：与 postgres 同款，只禁止提权，不裁剪入口降权
@@ -99,7 +99,7 @@ services:
       context: .
       dockerfile: Dockerfile.runtime
       args:
-        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
+        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
         TARGET_BINARY: juhe-ai-gateway
     image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-gateway
     container_name: juhe-ai-go-gateway
@@ -200,7 +200,7 @@ services:
       context: .
       dockerfile: Dockerfile.runtime
       args:
-        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
+        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
         TARGET_BINARY: juhe-ai-jobs
     image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-jobs
     container_name: juhe-ai-go-jobs
@@ -270,7 +270,7 @@ services:
       context: .
       dockerfile: Dockerfile.runtime
       args:
-        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
+        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
         TARGET_BINARY: juhe-ai-maintenance
     image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-maintenance
     container_name: juhe-ai-maintenance
@@ -314,7 +314,7 @@ services:
     env_file: .env
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
     container_name: juhe-ai-caddy
     restart: unless-stopped
     # healthcheck 的 busybox wget 走 https 每次泄漏 1 个 ssl_client 子进程（busybox 固有行为），

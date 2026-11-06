@@ -314,6 +314,40 @@ func TestW11AListArms(t *testing.T) {
 	}
 }
 
+// TestW11AUpdatePasswordUsesTargetIterations pins T169 on the authsys writer:
+// both Create and UpdatePassword persist 600000-iteration hashes that
+// verifyNodePassword accepts.
+func TestW11AUpdatePasswordUsesTargetIterations(t *testing.T) {
+	store, db := w11aNewStore(t)
+	item := w11aCreate(t, store, "w11a-t169")
+	var createdHash string
+	if err := db.QueryRow(`SELECT password_hash FROM system_accounts WHERE id = ?`, item.ID).Scan(&createdHash); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(createdHash, "pbkdf2$sha512$600000$") {
+		t.Fatalf("created hash = %q", createdHash)
+	}
+	if ok, err := verifyNodePassword("w11a-pass", createdHash); err != nil || !ok {
+		t.Fatalf("created hash verify ok=%v err=%v", ok, err)
+	}
+	if _, err := store.UpdatePassword(nil, item.ID, "w11a-t169-new"); err != nil {
+		t.Fatal(err)
+	}
+	var updatedHash string
+	if err := db.QueryRow(`SELECT password_hash FROM system_accounts WHERE id = ?`, item.ID).Scan(&updatedHash); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(updatedHash, "pbkdf2$sha512$600000$") {
+		t.Fatalf("updated hash = %q", updatedHash)
+	}
+	if ok, err := verifyNodePassword("w11a-t169-new", updatedHash); err != nil || !ok {
+		t.Fatalf("updated hash verify ok=%v err=%v", ok, err)
+	}
+	if ok, _ := verifyNodePassword("w11a-pass", updatedHash); ok {
+		t.Fatal("old password must not verify after rotation")
+	}
+}
+
 func TestW11AUpdatePasswordArms(t *testing.T) {
 	store, db := w11aNewStore(t)
 	item := w11aCreate(t, store, "w11a-user")

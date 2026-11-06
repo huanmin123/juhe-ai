@@ -670,7 +670,9 @@ func TestW14fTemporaryAccessTokenErrorArms(t *testing.T) {
 
 // w14fHandlerPasswordHash 是处理器脚本行使用的真实 PBKDF2 哈希（对应口令
 // "w14f-password"），保证 VerifySystemAccountCredentials 的真实验证路径可通过。
-var w14fHandlerPasswordHash = w11ePasswordHash("w14f-password")
+// T169 后必须已是目标迭代数（600000）：旧哈希会在 Verify 内升级并返回新
+// revision，而本处理器先取 revision 再校验旧口令，会让脚本臂误判为口令错误。
+var w14fHandlerPasswordHash = "pbkdf2$sha512$600000$MDEyMzQ1Njc4OWFiY2RlZg$5pawR5i0Wn6WBNKRcLKy0UqVliFqpR9ZkWBzBdbo9zU"
 
 // w14fHandlerBaseQuery 是处理器分发的默认查询面（供局部覆写时复用）。
 func w14fHandlerBaseQuery(query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -814,21 +816,23 @@ func TestW14fChangePasswordHandlerArms(t *testing.T) {
 		t.Fatalf("无令牌改密应 401: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// 当前版本读取失败 → 404。
+	// must-change 账户：不校验旧口令，直接读当前 revision；读取失败 → 404。
+	mustChangeValues := w14fSessionValues("admin")
+	mustChangeValues[7] = 1
 	handler = withAuth(func(state *w14fAuthState) {
 		state.queryFn = func(query string, args []driver.NamedValue) (driver.Rows, error) {
 			if strings.Contains(query, "SELECT password_hash FROM") {
 				return nil, errors.New("w14f revision failure")
 			}
 			if strings.Contains(query, "SELECT ss.id,ss.expires_at") {
-				return w14fStaticRows(8, w14fSessionValues("admin")...), nil
+				return w14fStaticRows(8, mustChangeValues...), nil
 			}
 			_ = args
 			return &w14fAuthRows{}, nil
 		}
 	})
 	if recorder := doRequest(handler); recorder.Code != http.StatusNotFound {
-		t.Fatalf("版本读取失败应 404: %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("must-change 版本读取失败应 404: %d %s", recorder.Code, recorder.Body.String())
 	}
 
 	// 旧密码验证查询失败 → 500。

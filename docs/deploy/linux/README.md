@@ -67,7 +67,7 @@ systemctl enable --now juhe-ai-gateway juhe-ai-jobs
 - `JUHE_AI_FRONTEND_DIST_PATH` 指向前端 `dist` 绝对路径（不配则不挂管理 SPA）。
 - `JUHE_AI_LOG_DIR` 显式指向与 jobs 索引器相同的日志目录。
 - 直跑形态没有内置 Caddy：HSTS 必须由前置反代（Caddy/Nginx）提供，等价 `Strict-Transport-Security: max-age=31536000`（不要贸然加 `includeSubDomains`）；compose 的 `read_only`/`cap_drop` 容器基线不适用，需用 systemd 沙箱或主机加固替代。
-- 应用层请求体上限与 `ReadTimeout`（主监听默认 10 分钟、J3b 管理别名 5 分钟、健康监听 30 秒；`/v1/files`/`/files` 与 64MiB 图片/音频车道路由在监听层分别延长到 60/30 分钟）在直跑形态同样生效，不依赖 Docker。
+- 应用层请求体上限与 `ReadTimeout`（主监听默认 10 分钟、J3b 管理别名 5 分钟、健康监听 30 秒；`/v1/files`/`/files` 与 64MiB 图片/音频车道路由在监听层分别延长到 60/30 分钟，最多 8 个并发，超出 503）在直跑形态同样生效，不依赖 Docker。
 
 ## 5. 首次初始化（直跑）
 

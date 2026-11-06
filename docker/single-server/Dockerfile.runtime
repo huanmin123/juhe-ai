@@ -1,7 +1,7 @@
 # 单机 Docker 运行时镜像：只装载本地交叉编译好的 linux/amd64 二进制，
 # 不在服务器上做 Go/前端构建（构建步骤见 docker/single-server/README.md）。
 # TARGET_BINARY 取 build/bin/ 下三个二进制之一：juhe-ai-gateway / juhe-ai-jobs / juhe-ai-maintenance。
-ARG BASE_IMAGE=alpine:3.20
+ARG BASE_IMAGE=docker.m.daocloud.io/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
 FROM ${BASE_IMAGE}
 ARG ALPINE_MIRROR=mirrors.ustc.edu.cn

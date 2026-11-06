@@ -14,11 +14,53 @@ import (
 const (
 	defaultLargeUploadReadTimeout = 60 * time.Minute // /v1/files：512MiB ≈ 146KiB/s
 	mediaUploadReadTimeout        = 30 * time.Minute // 64MiB 媒体车道 ≈ 36KiB/s
+	// largeUploadConcurrencyLimit bounds how many extended-deadline uploads
+	// may hold a connection at once. The extension runs before authentication,
+	// so without this cap an unauthenticated client could pin many goroutines
+	// for up to 60 minutes with a trickled body.
+	largeUploadConcurrencyLimit = 8
 )
+
+type uploadConcurrencyLimiter struct{ slots chan struct{} }
+
+func newUploadConcurrencyLimiter(limit int) *uploadConcurrencyLimiter {
+	if limit < 1 {
+		limit = 1
+	}
+	return &uploadConcurrencyLimiter{slots: make(chan struct{}, limit)}
+}
+
+func (l *uploadConcurrencyLimiter) tryAcquire() bool {
+	if l == nil {
+		return true
+	}
+	select {
+	case l.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *uploadConcurrencyLimiter) release() {
+	if l != nil {
+		<-l.slots
+	}
+}
+
+var largeUploadSlots = newUploadConcurrencyLimiter(largeUploadConcurrencyLimit)
 
 func withLargeUploadReadTimeout(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if timeout, ok := largeUploadReadTimeout(r); ok {
+			if !largeUploadSlots.tryAcquire() {
+				w.Header().Set("Retry-After", "5")
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"message":"大文件上传并发已满，请稍后重试"}`))
+				return
+			}
+			defer largeUploadSlots.release()
 			// HTTP/2 或测试 writer 可能不支持 SetReadDeadline；不支持时保留
 			// 服务级 ReadTimeout，不改变请求处理。
 			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(timeout))

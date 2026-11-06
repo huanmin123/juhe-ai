@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1156,27 +1157,34 @@ func nowPlusOneMilli(now time.Time, previousRFC3339 string) string {
 	return now.UTC().Format(time.RFC3339Nano)
 }
 
-// nodePasswordHashSegments matches the pbkdf2$sha512$120000$salt$digest
+// nodePasswordHashSegments matches the pbkdf2$sha512$<iterations>$salt$digest
 // envelope produced by modelcheckauth.newNodePasswordHash (the Node
-// storage/crypto.ts format).
-var nodePasswordHashSegments = regexp.MustCompile(`^pbkdf2\$sha512\$120000\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$`)
+// storage/crypto.ts format). The iteration count is data, not a constant:
+// hashes written before T169 carry 120000 and stay verifiable, while every
+// new hash carries NodePasswordHashIterations (600000).
+var nodePasswordHashSegments = regexp.MustCompile(`^pbkdf2\$sha512\$([0-9]+)\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$`)
 
 // verifyNodePassword mirrors Node verifyPassword (storage/crypto.ts): the
 // candidate is re-derived with the stored parameters and compared in constant
 // time. The PBKDF2 salt is the base64 segment text itself — exactly like
 // newNodePasswordHash passes []byte(salt) — and the digest is the base64
-// decoded raw bytes. A malformed stored hash reports an error instead of
-// silently rotating the password.
+// decoded raw bytes. A malformed stored hash — including a non-numeric or
+// out-of-range iteration count — reports an error instead of silently
+// rotating the password.
 func verifyNodePassword(password, storedHash string) (bool, error) {
 	match := nodePasswordHashSegments.FindStringSubmatch(storedHash)
 	if match == nil {
 		return false, errors.New("stored password hash format is invalid")
 	}
-	expected, err := base64.RawURLEncoding.DecodeString(match[2])
+	iterations, err := strconv.Atoi(match[1])
+	if err != nil || iterations < 1 {
+		return false, errors.New("stored password hash format is invalid")
+	}
+	expected, err := base64.RawURLEncoding.DecodeString(match[3])
 	if err != nil {
 		return false, errors.New("stored password hash digest is invalid")
 	}
-	derived, err := pbkdf2.Key(sha512.New, password, []byte(match[1]), 120000, len(expected))
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(match[2]), iterations, len(expected))
 	if err != nil {
 		return false, err
 	}

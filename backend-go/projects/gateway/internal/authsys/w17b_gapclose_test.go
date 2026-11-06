@@ -34,6 +34,36 @@ func TestW17BSmallPureArms(t *testing.T) {
 	}
 }
 
+// TestW17BVerifyNodePasswordIterationCounts pins T169 on the authsys verifier:
+// the envelope carries a data iteration count, new hashes use 600000, legacy
+// 120000 hashes stay verifiable, and invalid counts are rejected under the
+// existing malformed-hash error contract.
+func TestW17BVerifyNodePasswordIterationCounts(t *testing.T) {
+	passwordHash, err := HashNodePassword("w17b-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(passwordHash, "pbkdf2$sha512$600000$") {
+		t.Fatalf("new hash = %q", passwordHash)
+	}
+	if ok, err := verifyNodePassword("w17b-password", passwordHash); err != nil || !ok {
+		t.Fatalf("new hash verify ok=%v err=%v", ok, err)
+	}
+	// Historical Node hash generated at 120000 iterations.
+	const legacyHash = "pbkdf2$sha512$120000$MDEyMzQ1Njc4OWFiY2RlZg$MB16ie0MUIkgM1Xio7iCM8x9uCDqJJf5rkQ297w84fg"
+	if ok, err := verifyNodePassword("correct horse battery staple", legacyHash); err != nil || !ok {
+		t.Fatalf("legacy hash verify ok=%v err=%v", ok, err)
+	}
+	// 32 zero bytes base64url-encoded without padding.
+	const digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	for _, iterations := range []string{"0", "-1", "abc", "1e6", "99999999999999999999", ""} {
+		_, err := verifyNodePassword("pw", "pbkdf2$sha512$"+iterations+"$salt$"+digest)
+		if err == nil || !strings.Contains(err.Error(), "format is invalid") {
+			t.Fatalf("iterations %q err=%v, want format error", iterations, err)
+		}
+	}
+}
+
 func TestW17BPatchMeDisplayNameConflict(t *testing.T) {
 	deps, _, _ := newTestEnv(t)
 	account := seedAccount(t, deps, "w17aown", "pass-1234", "admin")

@@ -78,10 +78,13 @@ func TestW7BBusinessAuthFullSurface(t *testing.T) {
 		t.Fatalf("reject=false touch = %+v err=%v", actor, err)
 	}
 
-	// VerifyCredentials：大小写归一 + 错误密码。
-	if creds, ok, err := service.VerifyCredentials(ctx, " ADMIN ", "correct horse battery staple"); err != nil || !ok || creds.SystemAccountID != "acct" {
+	// VerifyCredentials：大小写归一 + 错误密码。首次校验会把 120000 旧哈希
+	// 升级到目标迭代数，后续 CreateSession 必须使用升级后的 revision。
+	creds, ok, err := service.VerifyCredentials(ctx, " ADMIN ", "correct horse battery staple")
+	if err != nil || !ok || creds.SystemAccountID != "acct" {
 		t.Fatalf("VerifyCredentials = %+v ok=%v err=%v", creds, ok, err)
 	}
+	revision = creds.CredentialRevision
 	if _, ok, err := service.VerifyCredentials(ctx, "admin", "wrong"); err != nil || ok {
 		t.Fatalf("错误密码 ok=%v err=%v", ok, err)
 	}
