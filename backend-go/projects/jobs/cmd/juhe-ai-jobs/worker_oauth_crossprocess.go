@@ -54,6 +54,24 @@ func (b oauthCredentialVersionBumper) Bump(ctx context.Context, accountID string
 	return err
 }
 
+// oauthRuntimeStateBumper 适配账户健康/API Key 运行态版本栅栏写入端口
+// （B3/B4）：状态 PG 提交后递增共享序号，gateway runtime 缓存下一次读重载。
+type oauthRuntimeStateBumper struct {
+	client *crossprocessstate.Client
+}
+
+// BumpAccountState implements accounthealth.AccountStateVersionBumper.
+func (b oauthRuntimeStateBumper) BumpAccountState(ctx context.Context, accountID string) error {
+	_, err := b.client.BumpSeqVersion(ctx, crossprocessstate.EntityGatewayStateVersion, "account:"+accountID)
+	return err
+}
+
+// BumpAPIKeyState implements oauthrefresh.APIKeyStateVersionBumper.
+func (b oauthRuntimeStateBumper) BumpAPIKeyState(ctx context.Context, apiKeyID string) error {
+	_, err := b.client.BumpSeqVersion(ctx, crossprocessstate.EntityGatewayStateVersion, "apikey:"+apiKeyID)
+	return err
+}
+
 // oauthCrossProcessState 构造 OAuth 域的共享状态客户端；未配置 Redis 时返回
 // (nil, nil, nil)，调用方保持既有内存/进程内语义。Redis URL 非法时 fail-fast，
 // 不静默退回掩盖配置错误。

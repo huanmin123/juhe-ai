@@ -395,6 +395,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Union: unionLoader,
 		// B2：OAuth 凭据版本投影读取端口（jobs/gateway 写入后 bump）。
 		CredentialVersions: gatewayOAuthCredentialVersions{client: oauthCrossProcessState},
+		// B3/B4：runtime 合并版本读取（凭据版本 + 账户/API Key 运行态序号，一次 MGET）。
+		RuntimeVersions: gatewayRuntimeVersions{client: oauthCrossProcessState},
 	}
 	// 模型目录 / 分组访问 / 响应检查策略的跨进程事实源固定为 Redis（PG+Redis
 	// 唯一形态）；进程内 LRU 只作易失 L1。Shared 为 nil 时 runtime cache 会把

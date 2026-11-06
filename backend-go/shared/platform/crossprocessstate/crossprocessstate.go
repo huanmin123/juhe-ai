@@ -55,7 +55,17 @@ const (
 	// EntityAccountCredentialsVersion 是账户 OAuth 凭据版本：每次 PG 凭据提交
 	// 后递增，gateway 运行态账号缓存据此提前重载（不必等 60s revalidate）。
 	EntityAccountCredentialsVersion = "version:account-credentials"
+	// EntityGatewayStateVersion 是账户/API Key 运行态变化序号（B3/B4 状态版本
+	// 栅栏）：id 约定为 `account:<account_id>` / `apikey:<api_key_id>`。写方在
+	// 状态 PG 提交后 INCR；读者比较序号变化后重载 PG 快照，不复制状态字段。
+	EntityGatewayStateVersion = "version:state"
 )
+
+const bumpSeqScript = `
+local value = redis.call('INCR', KEYS[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return value
+`
 
 const unlockScript = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -183,6 +193,21 @@ func (c *Client) BumpVersion(ctx context.Context, entity, id string, revision in
 	return value, nil
 }
 
+// BumpSeqVersion 是纯序号版本（INCR + PEXPIRE），用于账户/API Key 运行态变化
+// 栅栏：读者只需要“是否变化”，不需要与 PG revision 对值。写方必须在状态 PG
+// 提交成功后调用；失败只告警，读者按既有缓存窗口回退。
+func (c *Client) BumpSeqVersion(ctx context.Context, entity, id string) (int64, error) {
+	raw, err := c.exec.Eval(ctx, bumpSeqScript, []string{c.Key(entity, id)}, DefaultVersionTTL.Milliseconds())
+	if err != nil {
+		return 0, err
+	}
+	value, ok := toInt64(raw)
+	if !ok {
+		return 0, fmt.Errorf("crossprocessstate 序号返回值不是整数: %v", raw)
+	}
+	return value, nil
+}
+
 // Versions 批量读取实体版本。返回值覆盖全部入参 id：键缺失、值为空或非法
 // 一律记 0（“无已记录版本”），调用方把 0 与缓存条目记录的快照比较即可。
 // 只有 Redis 调用失败才返回 error；调用方必须按错误回退原有缓存/PG 路径。
@@ -223,6 +248,56 @@ func (c *Client) Versions(ctx context.Context, entity string, ids []string) (map
 		}
 		if value, ok := toInt64(values[index]); ok {
 			out[id] = value
+		}
+	}
+	return out, nil
+}
+
+// VersionRef 是跨实体批量读的一项（同一 namespace 下所有键同 slot）。
+type VersionRef struct {
+	Entity string
+	ID     string
+}
+
+// VersionsMulti 在单个 MGET 中读取多个实体的版本（请求路径合并凭据版本与
+// 运行态序号读取，避免多次 Redis 往返）。返回值覆盖全部合法 ref，缺失/非法
+// 记 0；只有 Redis 调用失败才返回 error。
+func (c *Client) VersionsMulti(ctx context.Context, refs []VersionRef) (map[VersionRef]int64, error) {
+	out := make(map[VersionRef]int64, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	keys := make([]string, 0, len(refs))
+	keyRefs := make([]VersionRef, 0, len(refs))
+	seen := make(map[VersionRef]struct{}, len(refs))
+	for _, ref := range refs {
+		entity := strings.TrimSpace(ref.Entity)
+		id := strings.TrimSpace(ref.ID)
+		if entity == "" || id == "" {
+			continue
+		}
+		ref = VersionRef{Entity: entity, ID: id}
+		if _, exists := seen[ref]; exists {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out[ref] = 0
+		keys = append(keys, c.Key(entity, id))
+		keyRefs = append(keyRefs, ref)
+	}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	values, err := c.exec.MGet(ctx, keys...)
+	if err != nil {
+		return nil, err
+	}
+	for index, ref := range keyRefs {
+		if index >= len(values) {
+			break
+		}
+		if value, ok := toInt64(values[index]); ok {
+			out[ref] = value
 		}
 	}
 	return out, nil

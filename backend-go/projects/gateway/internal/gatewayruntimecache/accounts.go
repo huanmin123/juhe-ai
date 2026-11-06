@@ -20,6 +20,13 @@ type CredentialVersionReader interface {
 	CredentialVersions(ctx context.Context, accountIDs []string) (map[string]int64, error)
 }
 
+// RuntimeVersionReader 是 runtime 缓存一次批量读取的合并端口：凭据版本
+// （source account ID）+ 账户运行态序号（physical account ID）+ API Key 运行态
+// 序号。一次 MGET 完成，满足请求路径最多一次批量读的约束。
+type RuntimeVersionReader interface {
+	RuntimeVersions(ctx context.Context, credentialAccountIDs, stateAccountIDs []string, apiKeyID string) (credentials map[string]int64, state map[string]int64, apiKeyVersion int64, err error)
+}
+
 // ---------------------------------------------------------------------------
 // openai accounts for group cache (Node listCachedOpenAIAccountsForGroup /
 // listCachedOpenAIAccountsForGroupAsync / listFreshOpenAIAccountsForGroupAsync /

@@ -138,6 +138,12 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		MissingImpact: "gatewayruntimecache 无法感知 jobs 凭据轮换，进程缓存模式重新退回 60s revalidate 可见性窗口",
 	},
 	{
+		Identifier:    "RuntimeVersions: gatewayRuntimeVersions{",
+		Name:          "网关 runtime 合并版本读取端口",
+		Purpose:       "把凭据版本 + 账户/API Key 运行态序号合并读取端口注入 gatewayruntimecache（chain_runtime.go），一次 MGET 感知 jobs 闸门/状态变化",
+		MissingImpact: "jobs 翻转时间计划闸门或写入账户状态后，gateway 主派发继续使用 60s 旧 runtime 快照",
+	},
+	{
 		Identifier:    "ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache",
 		Name:          "settings 快照跨实例失效回调",
 		Purpose:       "settings_updated 与跨实例失效同步（reason 为空）到达时清空本进程 settings 60s 快照（chain_runtime.go，Node clearSettingsRepositoryCache 对应物）",

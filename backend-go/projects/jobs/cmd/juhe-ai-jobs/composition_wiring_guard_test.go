@@ -109,6 +109,18 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		MissingImpact: "jobs 刷新的新 token 最长 60s 才被 gateway 看到，期间网关继续用旧 token 打上游触发 401 与无谓重试",
 	},
 	{
+		Identifier:    "SetStateVersionBumpers(",
+		Name:          "账户/API Key 运行态版本栅栏接入",
+		Purpose:       "jobs 闸门同步事务提交后必须按 ChangedIDs bump 账户/Key 状态序号（SetStateVersionBumpers，worker_assembly.go / worker_oauth_crossprocess.go），gateway runtime 缓存下一次读重载",
+		MissingImpact: "jobs 翻转时间计划闸门/Key 状态后，gateway 最长 60s 仍按旧快照派发，时段外账户继续被请求",
+	},
+	{
+		Identifier:    "StateVersion:",
+		Name:          "账户健康投影状态版本栅栏接入",
+		Purpose:       "J1 outcome 投影提交后必须 bump 账户状态序号（OutcomeProjectorConfig.StateVersion，worker_health_projection.go）",
+		MissingImpact: "jobs 将账户标记临时不可用/冷却/恢复后，gateway runtime 缓存最长 60s 不感知，继续使用旧状态候选",
+	},
+	{
 		Identifier:    "newAccountScheduleActivationHook(",
 		Name:          "排期激活 dispatch revision 推进 hook",
 		Purpose:       "account-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时推进 circuit dispatch revision 家族",

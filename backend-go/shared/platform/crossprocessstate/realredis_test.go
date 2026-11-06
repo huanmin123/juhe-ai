@@ -75,4 +75,13 @@ func TestRealRedisLockAndVersionRoundTrip(t *testing.T) {
 	if versions[accountID] != 3 || versions["acc-missing"] != 0 {
 		t.Fatalf("Versions = %v, want %s=3 missing=0", versions, accountID)
 	}
+	seqID := "account:" + accountID
+	seqKey := state.Key(EntityGatewayStateVersion, seqID)
+	defer client.Del(context.Background(), seqKey)
+	for want := int64(1); want <= 2; want++ {
+		got, err := state.BumpSeqVersion(ctx, EntityGatewayStateVersion, seqID)
+		if err != nil || got != want {
+			t.Fatalf("BumpSeqVersion = (%d,%v), want (%d,nil)", got, err, want)
+		}
+	}
 }

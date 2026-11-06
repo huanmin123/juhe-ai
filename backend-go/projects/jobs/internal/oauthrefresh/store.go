@@ -21,6 +21,17 @@ type CredentialVersionBumper interface {
 	Bump(ctx context.Context, accountID string, revision int64) error
 }
 
+// AccountStateVersionBumper / APIKeyStateVersionBumper 是运行态版本栅栏的写入
+// 端口（B3/B4）：闸门事务提交成功后递增共享序号，gateway runtime 缓存下一次
+// 读重载 PG 快照。未接线时保持既有 60s 可见性窗口。
+type AccountStateVersionBumper interface {
+	BumpAccountState(ctx context.Context, accountID string) error
+}
+
+type APIKeyStateVersionBumper interface {
+	BumpAPIKeyState(ctx context.Context, apiKeyID string) error
+}
+
 // Store is the business database access for the J4 job family. The
 // jobs process owns the narrow credential writers (rotation CAS + keepalive
 // merge writer) and the maintenance queries; it never routes gateway traffic.
@@ -31,6 +42,8 @@ type Store struct {
 	secret           string
 	now              func() time.Time
 	credentialBumper CredentialVersionBumper
+	accountState     AccountStateVersionBumper
+	apiKeyState      APIKeyStateVersionBumper
 }
 
 // OpenStore wraps an opened database handle. secret is the Node
@@ -58,6 +71,12 @@ func (s *Store) WithClock(clock func() time.Time) *Store {
 // 既有 60s 可见性窗口，不影响刷新正确性。
 func (s *Store) SetCredentialVersionBumper(bumper CredentialVersionBumper) {
 	s.credentialBumper = bumper
+}
+
+// SetStateVersionBumpers 注入账户/API Key 运行态版本栅栏写入端口（B3/B4）。
+func (s *Store) SetStateVersionBumpers(account AccountStateVersionBumper, apiKey APIKeyStateVersionBumper) {
+	s.accountState = account
+	s.apiKeyState = apiKey
 }
 
 // bumpCredentialVersion 在 PG 提交成功后把共享版本推进到该次提交的

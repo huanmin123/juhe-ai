@@ -609,6 +609,7 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	}
 	if crossProcess != nil {
 		store.SetCredentialVersionBumper(oauthCredentialVersionBumper{client: crossProcess})
+		store.SetStateVersionBumpers(oauthRuntimeStateBumper{client: crossProcess}, oauthRuntimeStateBumper{client: crossProcess})
 		a.logger.Info("OAuth 凭据版本投影已接入 Redis 运行态",
 			"event", "oauth_credential_version_projection_redis")
 	} else {

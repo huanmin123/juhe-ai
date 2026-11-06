@@ -3,6 +3,7 @@ package oauthrefresh
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -139,6 +140,7 @@ func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, b
 	if err := s.applyScheduleUpdates(ctx, s.table("api_keys"), s.table("api_key_schedule_status_events"), "api_key_id", false, updates, isoMillis(now), &result, activation); err != nil {
 		return ScheduleStatusSyncResult{}, err
 	}
+	bumpScheduleVersions(ctx, result.ChangedIDs, s.apiKeyStateBumpFunc(), "api-key")
 	return result, nil
 }
 
@@ -163,6 +165,7 @@ func (s *Store) SyncAccountScheduleStatuses(ctx context.Context, now time.Time, 
 	if err := s.applyScheduleUpdates(ctx, s.table("accounts"), s.table("account_schedule_status_events"), "account_id", true, updates, isoMillis(now), &result, activation); err != nil {
 		return ScheduleStatusSyncResult{}, err
 	}
+	bumpScheduleVersions(ctx, result.ChangedIDs, s.accountStateBumpFunc(), "account")
 	return result, nil
 }
 
@@ -471,4 +474,35 @@ func (s *Store) updateScheduleNextCheckAt(ctx context.Context, tx *sql.Tx, table
 			AND availability_schedule_json = ?`
 	_, err := tx.ExecContext(ctx, s.bind(query), nextCheckAt, id, nextCheckAt, scheduleJSON)
 	return err
+}
+
+// accountStateBumpFunc / apiKeyStateBumpFunc 把可选端口转成 bump 函数（nil 安全）。
+func (s *Store) accountStateBumpFunc() func(context.Context, string) error {
+	if s.accountState == nil {
+		return nil
+	}
+	return s.accountState.BumpAccountState
+}
+
+func (s *Store) apiKeyStateBumpFunc() func(context.Context, string) error {
+	if s.apiKeyState == nil {
+		return nil
+	}
+	return s.apiKeyState.BumpAPIKeyState
+}
+
+// bumpScheduleVersions 在闸门事务提交后按变更 ID 递增共享序号；失败只告警。
+func bumpScheduleVersions(ctx context.Context, ids []string, bump func(context.Context, string) error, kind string) {
+	if bump == nil || len(ids) == 0 {
+		return
+	}
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	for _, id := range ids {
+		if err := bump(bumpCtx, id); err != nil {
+			slog.Warn("运行态版本栅栏写入失败，gateway 按既有缓存窗口回退",
+				"event", "runtime_state_version_bump_failed",
+				"kind", kind, "id", id, "error", err)
+		}
+	}
 }

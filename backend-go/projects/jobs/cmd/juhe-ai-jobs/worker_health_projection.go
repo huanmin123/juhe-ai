@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
 )
 
 const (
@@ -84,6 +85,17 @@ func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, 
 		_ = business.close()
 		return nil, hourlyErr
 	}
+	// B4：账户运行态版本栅栏（状态 PG 提交后递增共享序号）。未配置 Redis
+	// 时保持既有 60s 可见性窗口。
+	stateClient, stateRedisClient, stateErr := a.oauthCrossProcessState()
+	if stateErr != nil {
+		_ = business.close()
+		_ = hourly.close()
+		return nil, stateErr
+	}
+	if stateRedisClient != nil {
+		a.addCloser(func() error { return stateRedisClient.Close() })
+	}
 	projector, projectorErr := accounthealth.NewOutcomeProjector(store, accounthealth.OutcomeProjectorConfig{
 		Business:         handle,
 		CredentialSecret: config.CredentialSecret,
@@ -93,6 +105,7 @@ func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, 
 		Hourly:           hourly,
 		Logger:           a.logger,
 		Now:              config.Now,
+		StateVersion:     accountStateVersionBumperOrNil(stateClient),
 	})
 	if projectorErr != nil {
 		_ = business.close()
@@ -132,4 +145,12 @@ func healthProjectionBatchSize(getenv func(string) string) (int, error) {
 		return 0, errors.New(healthProjectionBatchEnvVar + " 必须在 1..1000")
 	}
 	return value, nil
+}
+
+// accountStateVersionBumperOrNil 把共享客户端适配为账户状态版本端口（nil 安全）。
+func accountStateVersionBumperOrNil(client *crossprocessstate.Client) accounthealth.AccountStateVersionBumper {
+	if client == nil {
+		return nil
+	}
+	return oauthRuntimeStateBumper{client: client}
 }

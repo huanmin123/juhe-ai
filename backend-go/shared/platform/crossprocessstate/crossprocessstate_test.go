@@ -55,6 +55,13 @@ func (f *fakeExecutor) Eval(_ context.Context, script string, keys []string, arg
 		return nil, f.evalErr
 	}
 	switch {
+	case strings.Contains(script, "INCR"):
+		key := keys[0]
+		current, _ := strconv.ParseInt(f.values[key], 10, 64)
+		current++
+		f.values[key] = strconv.FormatInt(current, 10)
+		f.ttls[key] = time.Duration(args[0].(int64)) * time.Millisecond
+		return current, nil
 	case strings.Contains(script, "PEXPIRE"):
 		key := keys[0]
 		next := args[0].(int64)
@@ -206,6 +213,17 @@ func TestBumpVersionMonotonic(t *testing.T) {
 	}
 }
 
+func TestBumpSeqVersionMonotonic(t *testing.T) {
+	client, _ := newTestClient(t)
+	ctx := context.Background()
+	for want := int64(1); want <= 3; want++ {
+		got, err := client.BumpSeqVersion(ctx, EntityGatewayStateVersion, "account:acc-1")
+		if err != nil || got != want {
+			t.Fatalf("BumpSeqVersion = (%d,%v), want (%d,nil)", got, err, want)
+		}
+	}
+}
+
 func TestVersionsReadsOneBatchAndDefaultsMissingToZero(t *testing.T) {
 	client, exec := newTestClient(t)
 	ctx := context.Background()
@@ -232,6 +250,45 @@ func TestVersionsReadsOneBatchAndDefaultsMissingToZero(t *testing.T) {
 	for id, expected := range want {
 		if versions[id] != expected {
 			t.Fatalf("Versions[%q] = %d, want %d", id, versions[id], expected)
+		}
+	}
+}
+
+func TestVersionsMultiReadsOneBatchAcrossEntities(t *testing.T) {
+	client, exec := newTestClient(t)
+	ctx := context.Background()
+	if _, err := client.BumpVersion(ctx, EntityAccountCredentialsVersion, "acc-a", 3); err != nil {
+		t.Fatalf("BumpVersion: %v", err)
+	}
+	if _, err := client.BumpSeqVersion(ctx, EntityGatewayStateVersion, "account:acc-a"); err != nil {
+		t.Fatalf("BumpSeqVersion: %v", err)
+	}
+	if _, err := client.BumpSeqVersion(ctx, EntityGatewayStateVersion, "apikey:key-a"); err != nil {
+		t.Fatalf("BumpSeqVersion: %v", err)
+	}
+	refs := []VersionRef{
+		{Entity: EntityAccountCredentialsVersion, ID: "acc-a"},
+		{Entity: EntityGatewayStateVersion, ID: "account:acc-a"},
+		{Entity: EntityGatewayStateVersion, ID: "apikey:key-a"},
+		{Entity: EntityGatewayStateVersion, ID: "missing"},
+		{Entity: EntityGatewayStateVersion, ID: "account:acc-a"},
+	}
+	versions, err := client.VersionsMulti(ctx, refs)
+	if err != nil {
+		t.Fatalf("VersionsMulti: %v", err)
+	}
+	if exec.mgetCalls != 1 || len(exec.mgetKeys) != 4 {
+		t.Fatalf("MGET calls=%d keys=%d, want 1/4（跨实体一次批量、去重）", exec.mgetCalls, len(exec.mgetKeys))
+	}
+	want := map[VersionRef]int64{
+		{Entity: EntityAccountCredentialsVersion, ID: "acc-a"}:   3,
+		{Entity: EntityGatewayStateVersion, ID: "account:acc-a"}: 1,
+		{Entity: EntityGatewayStateVersion, ID: "apikey:key-a"}:  1,
+		{Entity: EntityGatewayStateVersion, ID: "missing"}:       0,
+	}
+	for ref, expected := range want {
+		if versions[ref] != expected {
+			t.Fatalf("VersionsMulti[%+v] = %d, want %d", ref, versions[ref], expected)
 		}
 	}
 }

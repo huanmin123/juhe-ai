@@ -166,10 +166,19 @@ type GroupStatsDirtyMarker interface {
 	MarkAllGroupAccountStatsDirty(ctx context.Context, reason string, now time.Time) error
 }
 
+// AccountStateVersionBumper 是账户运行态版本栅栏的写入端口（B4）：投影事务
+// 提交成功后递增共享序号，gateway runtime 缓存下一次读重载 PG 快照。未接线
+// 时保持既有 60s 可见性窗口。
+type AccountStateVersionBumper interface {
+	BumpAccountState(ctx context.Context, accountID string) error
+}
+
 // OutcomeProjectorConfig 组合投影器依赖。
 type OutcomeProjectorConfig struct {
 	Business         *ProjectionBusinessDB
 	CredentialSecret string
+	// StateVersion 是账户运行态版本栅栏写入端口；nil 保持既有窗口。
+	StateVersion AccountStateVersionBumper
 	// PollInterval 是归档 projectionPollMs 的等价物（持续轮询节拍）。
 	PollInterval time.Duration
 	// BatchSize 是归档 projectionBatchSize（单轮 drain 的 outcome 上限）。
@@ -206,6 +215,7 @@ type OutcomeProjector struct {
 	consumerKey string
 	stats       GroupStatsDirtyMarker
 	hourly      AccountHealthHourlySink
+	stateBumper AccountStateVersionBumper
 	logger      *slog.Logger
 	now         func() time.Time
 }
@@ -249,7 +259,7 @@ func NewOutcomeProjector(store *Store, config OutcomeProjectorConfig) (*OutcomeP
 	if now == nil {
 		now = time.Now
 	}
-	return &OutcomeProjector{store: store, business: config.Business, secret: config.CredentialSecret, poll: poll, batch: batch, consumerKey: consumerKey, stats: config.Stats, hourly: config.Hourly, logger: logger, now: now}, nil
+	return &OutcomeProjector{store: store, business: config.Business, secret: config.CredentialSecret, poll: poll, batch: batch, consumerKey: consumerKey, stats: config.Stats, hourly: config.Hourly, stateBumper: config.StateVersion, logger: logger, now: now}, nil
 }
 
 // Run 是持续轮询投影循环（归档 runProjectionLoop 的 Go 等价；passive jitter
@@ -644,7 +654,26 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	if err := p.insertReceipt(ctx, tx, base, ProjectionApplied, ""); err != nil {
 		return base, err
 	}
-	return ProjectionResult{OutcomeID: base.OutcomeID, AccountID: base.AccountID, InputVersion: base.InputVersion, Disposition: ProjectionApplied, Changed: true}, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return base, err
+	}
+	p.bumpAccountStateVersion(ctx, record.AccountID)
+	return ProjectionResult{OutcomeID: base.OutcomeID, AccountID: base.AccountID, InputVersion: base.InputVersion, Disposition: ProjectionApplied, Changed: true}, nil
+}
+
+// bumpAccountStateVersion 在投影事务提交后递增共享序号；失败只告警，读者按
+// 既有 60s 缓存窗口回退。
+func (p *OutcomeProjector) bumpAccountStateVersion(ctx context.Context, accountID string) {
+	if p.stateBumper == nil {
+		return
+	}
+	bumpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := p.stateBumper.BumpAccountState(bumpCtx, accountID); err != nil {
+		p.logger.Warn("账户运行态版本栅栏写入失败，gateway 按既有缓存窗口回退",
+			"event", "account_state_version_bump_failed",
+			"accountId", accountID, "error", err)
+	}
 }
 
 // markGroupStatsDirty 对齐归档 availability 变化后的 group stats 失效；marker

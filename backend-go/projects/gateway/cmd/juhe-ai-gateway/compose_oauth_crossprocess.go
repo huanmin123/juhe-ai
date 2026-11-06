@@ -53,3 +53,39 @@ func (v gatewayOAuthCredentialVersions) CredentialVersions(ctx context.Context, 
 	defer cancel()
 	return v.client.Versions(readCtx, crossprocessstate.EntityAccountCredentialsVersion, accountIDs)
 }
+
+// gatewayRuntimeVersions 适配 gatewayruntimecache.RuntimeVersionReader：把凭据
+// 版本与账户/API Key 运行态序号合并成一次 MGET。
+type gatewayRuntimeVersions struct {
+	client *crossprocessstate.Client
+}
+
+// RuntimeVersions implements gatewayruntimecache.RuntimeVersionReader.
+func (v gatewayRuntimeVersions) RuntimeVersions(ctx context.Context, credentialAccountIDs, stateAccountIDs []string, apiKeyID string) (map[string]int64, map[string]int64, int64, error) {
+	refs := make([]crossprocessstate.VersionRef, 0, len(credentialAccountIDs)+len(stateAccountIDs)+1)
+	for _, id := range credentialAccountIDs {
+		refs = append(refs, crossprocessstate.VersionRef{Entity: crossprocessstate.EntityAccountCredentialsVersion, ID: id})
+	}
+	for _, id := range stateAccountIDs {
+		refs = append(refs, crossprocessstate.VersionRef{Entity: crossprocessstate.EntityGatewayStateVersion, ID: "account:" + id})
+	}
+	if apiKeyID != "" {
+		refs = append(refs, crossprocessstate.VersionRef{Entity: crossprocessstate.EntityGatewayStateVersion, ID: "apikey:" + apiKeyID})
+	}
+	readCtx, cancel := crossprocessstate.ReadContext(ctx)
+	defer cancel()
+	versions, err := v.client.VersionsMulti(readCtx, refs)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	credentials := make(map[string]int64, len(credentialAccountIDs))
+	for _, id := range credentialAccountIDs {
+		credentials[id] = versions[crossprocessstate.VersionRef{Entity: crossprocessstate.EntityAccountCredentialsVersion, ID: id}]
+	}
+	state := make(map[string]int64, len(stateAccountIDs))
+	for _, id := range stateAccountIDs {
+		state[id] = versions[crossprocessstate.VersionRef{Entity: crossprocessstate.EntityGatewayStateVersion, ID: "account:" + id}]
+	}
+	apiKeyVersion := versions[crossprocessstate.VersionRef{Entity: crossprocessstate.EntityGatewayStateVersion, ID: "apikey:" + apiKeyID}]
+	return credentials, state, apiKeyVersion, nil
+}

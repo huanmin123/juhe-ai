@@ -3,6 +3,7 @@ package gatewayruntimecache
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
@@ -34,7 +35,7 @@ func (s *Service) ReadCachedGatewayRuntimeAsync(ctx context.Context, apiKey stri
 		s.identityCache.get(cacheKey)
 		// B2：jobs/gateway 凭据轮换 bump 版本后，主派发路径下一次读即同步重载
 		// 运行时快照（不等 60s revalidate）。重载失败保留 last-good。
-		if s.runtimeCredentialVersionsChanged(ctx, cached) {
+		if s.runtimeVersionsChanged(ctx, cached) {
 			if runtime, reloadErr := s.loadGatewayRuntimeOnce(ctx, apiKey, cacheKey); reloadErr == nil {
 				return s.dispatchGatewayRuntimeForSend(ctx, runtime)
 			} else {
@@ -80,7 +81,7 @@ func (s *Service) ReadCachedGatewayRuntimeStaticAsync(ctx context.Context, apiKe
 	now := s.nowMs()
 	if cached, ok := s.runtimeCache.get(cacheKey); ok {
 		s.identityCache.get(cacheKey)
-		if s.runtimeCredentialVersionsChanged(ctx, cached) {
+		if s.runtimeVersionsChanged(ctx, cached) {
 			if runtime, reloadErr := s.loadGatewayRuntimeOnce(ctx, apiKey, cacheKey); reloadErr == nil {
 				return s.dispatchGatewayRuntimeStaticForSend(ctx, runtime)
 			} else {
@@ -204,9 +205,90 @@ func (s *Service) runGatewayRuntimeLoad(apiKey, cacheKey string, generation int6
 	close(pending.done)
 }
 
-// runtimeCredentialVersionsChanged 比较 runtime 条目快照与当前凭据版本。
-func (s *Service) runtimeCredentialVersionsChanged(ctx context.Context, entry gatewayRuntimeCacheEntry) bool {
-	return s.credentialVersionsDiffer(ctx, entry.runtime.Accounts, entry.credentialVersions)
+// runtimeVersionsChanged 一次批量比较 runtime 条目的凭据版本与账户/API Key
+// 运行态序号；任一变化即重载 PG 快照（复用既有 runtime 单飞）。读取失败/版本
+// 未知不触发重载，保持既有 60s 窗口。
+func (s *Service) runtimeVersionsChanged(ctx context.Context, entry gatewayRuntimeCacheEntry) bool {
+	if s.opts.RuntimeVersions == nil {
+		return s.credentialVersionsDiffer(ctx, entry.runtime.Accounts, entry.credentialVersions)
+	}
+	if entry.credentialVersions == nil && !entry.stateVersionsKnown {
+		return false
+	}
+	apiKeyID := ""
+	if entry.runtime.APIKey != nil {
+		apiKeyID = entry.runtime.APIKey.ID
+	}
+	credentials, state, apiKeyVersion, known, err := s.readRuntimeVersions(ctx, entry.runtime.Accounts, apiKeyID)
+	if err != nil {
+		s.warnCredentialVersionFailure(err)
+		return false
+	}
+	if !known {
+		return false
+	}
+	if entry.credentialVersions != nil {
+		for id, version := range entry.credentialVersions {
+			if credentials[id] != version {
+				return true
+			}
+		}
+	}
+	if entry.stateVersionsKnown {
+		for id, version := range entry.accountStateVersions {
+			if state[id] != version {
+				return true
+			}
+		}
+		if apiKeyVersion != entry.apiKeyStateVersion {
+			return true
+		}
+	}
+	return false
+}
+
+// readRuntimeVersions 合并读取凭据版本与运行态序号（一次 MGET）。accounts 的
+// 凭据键用 source account ID，状态键用 physical account ID（状态写在本实例行）。
+func (s *Service) readRuntimeVersions(ctx context.Context, accounts []OpenAIAccountSecret, apiKeyID string) (map[string]int64, map[string]int64, int64, bool, error) {
+	if s.opts.RuntimeVersions == nil {
+		return nil, nil, 0, false, nil
+	}
+	credentialIDs := make([]string, 0, len(accounts))
+	stateIDs := make([]string, 0, len(accounts))
+	credentialSeen := make(map[string]struct{}, len(accounts))
+	stateSeen := make(map[string]struct{}, len(accounts))
+	for index := range accounts {
+		account := &accounts[index]
+		if isOAuthCredentialAccountType(account.Type) {
+			id := gatewayAccountConcurrencyAccountID(account)
+			if id != "" {
+				if _, exists := credentialSeen[id]; !exists {
+					credentialSeen[id] = struct{}{}
+					credentialIDs = append(credentialIDs, id)
+				}
+			}
+		}
+		if id := strings.TrimSpace(account.ID); id != "" {
+			if _, exists := stateSeen[id]; !exists {
+				stateSeen[id] = struct{}{}
+				stateIDs = append(stateIDs, id)
+			}
+		}
+	}
+	apiKeyID = strings.TrimSpace(apiKeyID)
+	if len(credentialIDs) == 0 && len(stateIDs) == 0 && apiKeyID == "" {
+		return nil, nil, 0, false, nil
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialVersionReadTimeout)
+	defer cancel()
+	credentials, state, apiKeyVersion, err := s.opts.RuntimeVersions.RuntimeVersions(readCtx, credentialIDs, stateIDs, apiKeyID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, 0, false, nil
+		}
+		return nil, nil, 0, false, err
+	}
+	return credentials, state, apiKeyVersion, true, nil
 }
 
 // populateGatewayRuntimeCaches mirrors populateGatewayRuntimeCaches: the
@@ -230,6 +312,20 @@ func (s *Service) populateGatewayRuntimeCaches(cacheKey string, runtime GatewayR
 		runtime:            cloneStaticGatewayRuntime(runtime),
 		revalidateAtMs:     now + ttl.Milliseconds(),
 		credentialVersions: s.readCredentialVersions(context.Background(), runtime.Accounts),
+	}
+	if s.opts.RuntimeVersions != nil {
+		apiKeyID := ""
+		if runtime.APIKey != nil {
+			apiKeyID = runtime.APIKey.ID
+		}
+		_, state, apiKeyVersion, known, stateErr := s.readRuntimeVersions(context.Background(), runtime.Accounts, apiKeyID)
+		if stateErr != nil {
+			s.warnCredentialVersionFailure(stateErr)
+		} else if known {
+			runtimeEntry.stateVersionsKnown = true
+			runtimeEntry.accountStateVersions = state
+			runtimeEntry.apiKeyStateVersion = apiKeyVersion
+		}
 	}
 	// 版本领先于数据 revision 说明读到的是旧凭据。runtime 装载路径不做二次
 	// PG 重读：丢弃该条目的版本快照并照常缓存，退回既有 60s revalidate 窗口。

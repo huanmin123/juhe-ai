@@ -225,6 +225,9 @@ type Options struct {
 	// CredentialVersions 是账户 OAuth 凭据版本的只读端口（跨进程共享 Redis
 	// 投影）。nil 合法：保持既有 60s revalidate 可见性窗口；生产组合根恒接线。
 	CredentialVersions CredentialVersionReader
+	// RuntimeVersions 是 runtime 缓存的合并版本读取端口（凭据版本 + 账户/
+	// API Key 运行态序号，一次 MGET）。nil 时退回 CredentialVersions。
+	RuntimeVersions RuntimeVersionReader
 }
 
 // Service is the Go gateway runtime read-only cache. All exported methods
@@ -302,6 +305,11 @@ type gatewayRuntimeCacheEntry struct {
 	// credentialVersions 是运行时快照构建时的账户凭据版本（source account ID ->
 	// version）。nil 表示版本未知，条目退化为既有 60s revalidate 窗口。
 	credentialVersions map[string]int64
+	// stateVersionsKnown 表示条目记录了账户/API Key 运行态序号快照；false 时
+	// B3/B4 版本栅栏不生效（保持既有缓存窗口）。
+	stateVersionsKnown   bool
+	accountStateVersions map[string]int64
+	apiKeyStateVersion   int64
 }
 
 // gatewayRuntimeAPIKeyIdentity mirrors GatewayRuntimeApiKeyIdentity.
