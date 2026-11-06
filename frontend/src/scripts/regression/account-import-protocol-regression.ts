@@ -10,7 +10,16 @@ import {
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE
 } from '@/shared/providerProtocol'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { accountImportProtocolMarkdown, aiConversionPrompt, importTemplate } from '../../views/accounts/accountImportProtocol'
+
+const importModalSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../views/accounts/AccountImportModal.vue'),
+  'utf8'
+)
+const sourceExampleBlock = sourceBetween(importModalSource, 'const sourceExample = computed', 'const accountColumns')
 
 interface ImportTemplateAccount {
   ref?: string
@@ -176,6 +185,12 @@ assertTrue(
 assertMatch(accountImportProtocolMarkdown, /\| `rpmLimit` \| 否 \| number \| 每分钟请求上限；非负整数，0 或缺省表示不限制。 \|/, '协议 Markdown 应把 rpmLimit 暴露为导入字段')
 assertMatch(accountImportProtocolMarkdown, /`rpmLimit` 必须是非负整数/, '协议 Markdown 应说明 rpmLimit 非负整数规则')
 
+// ---- 来源格式示例（DR-39）：四个来源示例都必须携带模型列表，否则后端按
+// 「来源账户缺少模型列表，无法按模型名推断厂商」逐条跳过，复制示例 0 条可导入 ----
+assertMatch(sourceExampleBlock, /"supportedModels": \["gpt-5\.2"\]/, 'Sub2API 示例必须携带 supportedModels')
+assertEqual((sourceExampleBlock.match(/"models": "gpt-5\.2"/g) ?? []).length, 2, 'NewAPI/One-API 示例必须各携带 models')
+assertMatch(sourceExampleBlock, /models:\r?\n\s+- gpt-5\.2/, 'CLIProxyAPI 示例必须携带 models 列表')
+
 assertMatch(aiConversionPrompt, /juhe-ai-account-import v1 JSON/, 'AI 提示词应继续要求输出当前导入协议 JSON')
 assertMatch(aiConversionPrompt, /只输出合法 JSON/, 'AI 提示词应继续禁止输出解释或 Markdown')
 assertMatch(aiConversionPrompt, /不要编造来源数据里不存在的 token/, 'AI 提示词应继续约束 token 不可编造')
@@ -255,6 +270,15 @@ function assertMatch(value: string, pattern: RegExp, message: string): void {
   if (!pattern.test(value)) {
     throw new Error(message)
   }
+}
+
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker)
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  if (start < 0 || end <= start) {
+    throw new Error(`无法定位源码片段: ${startMarker}`)
+  }
+  return source.slice(start, end)
 }
 
 function assertDefined<T>(value: T | undefined, message: string): asserts value is T {

@@ -298,6 +298,7 @@ const sourceExample = computed(() => {
     "name": "OpenAI API Key",
     "platform": "openai",
     "type": "apikey",
+    "supportedModels": ["gpt-5.2"],
     "credentials": {
       "api_key": "<API_KEY>",
       "base_url": "https://api.openai.com/v1"
@@ -310,6 +311,7 @@ const sourceExample = computed(() => {
     "name": "OpenAI Channel",
     "key": "<API_KEY>",
     "base_url": "https://api.openai.com/v1",
+    "models": "gpt-5.2",
     "group": "默认分组",
     "status": 1
   }
@@ -320,6 +322,7 @@ const sourceExample = computed(() => {
     "name": "OpenAI Channel",
     "key": "<API_KEY>",
     "base_url": "https://api.openai.com/v1",
+    "models": "gpt-5.2",
     "group": "默认分组",
     "status": 1
   }
@@ -327,6 +330,8 @@ const sourceExample = computed(() => {
   return `openai-compatibility:
   - name: OpenAI 上游
     base-url: https://api.openai.com/v1
+    models:
+      - gpt-5.2
     api-key-entries:
       - api-key: <API_KEY>`
 })

@@ -1451,6 +1451,11 @@ func TestAccountCloneContext(t *testing.T) {
 	if data["providerProtocolProfileId"] != "profile_gpt_openai_v1" {
 		t.Fatalf("clone context must derive profile id from health check preset: %v", data["providerProtocolProfileId"])
 	}
+	// DR-40：媒体 preset 不在探针表、profile 为空，clone-context 必须回显健康检查
+	// 连接 preset，前端才能反查供应商档案。
+	if data["connectionPresetCode"] != "gpt_openai_v1" {
+		t.Fatalf("clone context must expose health check connection preset: %v", data["connectionPresetCode"])
+	}
 	raw, _ := json.Marshal(payload)
 	if strings.Contains(string(raw), "sk-live-secret-1234567890") {
 		t.Fatal("clone context leaked raw credential material")

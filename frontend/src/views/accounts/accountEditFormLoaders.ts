@@ -190,13 +190,13 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     account.availabilitySchedule,
     '克隆来源账户数据结构异常，请清理后再克隆'
   )
-  // T102：克隆上下文与编辑详情同源派生档案（后端 clone.go 同一探针表），媒体四档
-  // 返回空档案。克隆响应暂无连接 preset 字段可反查，退账户行 providerCode（vendor
-  // 账户），档案缺失时由 defaults 落供应商默认档案；generic_http 来源（providerCode
-  // 空）保持 fail-closed，由保存校验给出可操作文案。
+  // T102/DR-40：克隆上下文与编辑详情同源派生档案（后端 clone.go 同一探针表），
+  // 媒体四档返回空档案。clone-context 回显健康检查连接 preset，前端按它经共享
+  // 反查表补齐供应商身份；无 preset 时退账户行 providerCode，均缺保持 fail-closed。
   const providerIdentity = resolveEditAccountProviderIdentity({
     providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    connectionPresetCode: account.connectionPresetCode
   })
   const patch: AccountFormModel = {
     ...defaults,

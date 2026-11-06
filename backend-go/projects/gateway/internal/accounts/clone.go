@@ -63,7 +63,11 @@ type CloneContext struct {
 	Tags                    []TagSummary          `json:"tags"`
 	HealthCheckModel        string                `json:"healthCheckModel"`
 	HealthCheckEndpointMode string                `json:"healthCheckEndpointMode"`
-	BoundGroupID            *string               `json:"boundGroupId,omitempty"`
+	// ConnectionPresetCode 回显健康检查连接的 preset（DR-40）：providerProtocolProfileId
+	// 由探针表反查，媒体 preset（ark/openspeech/minimax/qwen）不在表内会得到空串；
+	// 前端用本字段经共享反查表补齐供应商身份，避免克隆媒体账户回落供应商默认档案。
+	ConnectionPresetCode string                `json:"connectionPresetCode,omitempty"`
+	BoundGroupID         *string               `json:"boundGroupId,omitempty"`
 	BoundGroupName          *string               `json:"boundGroupName,omitempty"`
 	ModelMappings           []ModelMapping        `json:"modelMappings"`
 	ProxyProfileID          *string               `json:"proxyProfileId,omitempty"`
@@ -388,6 +392,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		Tags:                      tags,
 		HealthCheckModel:          strings.TrimSpace(row.healthCheckModel),
 		HealthCheckEndpointMode:   row.healthCheckEndpointMode,
+		ConnectionPresetCode:      strings.TrimSpace(row.currentHealthCheckPreset),
 		BoundGroupID:              nullPtrString(row.boundGroupID),
 		BoundGroupName:            nullPtrString(row.boundGroupName),
 		ModelMappings:             mappings,

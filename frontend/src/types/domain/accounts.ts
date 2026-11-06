@@ -726,6 +726,11 @@ export interface AccountCloneContext {
   tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
   healthCheckModel: string
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  /**
+   * 健康检查连接 preset（DR-40）：后端 clone-context 回显，供前端在
+   * providerProtocolProfileId 为空（媒体 preset 不在探针表）时反查供应商身份。
+   */
+  connectionPresetCode?: string
   boundGroupId?: string
   boundGroupName?: string
   modelMappings: AccountModelMapping[]

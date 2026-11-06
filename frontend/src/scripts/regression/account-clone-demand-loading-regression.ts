@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccountCloneContext } from '../../types/domain'
+import { VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID } from '../../shared/providerProtocol'
 import { buildAccountCloneFormLoad } from '../../views/accounts/accountEditFormLoaders'
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
 import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
@@ -59,6 +60,7 @@ assert.doesNotMatch(
 assert.match(loaderSource, /const credentials = account\.credentialOptions/)
 assert.match(basicLoaderSource, /apiKeyStrategy:\s*parseAccountApiKeyStrategy\(credentials\)/, '编辑 loader 必须使用统一 API Key 策略解析')
 assert.match(cloneLoaderSource, /apiKeyStrategy:\s*parseAccountApiKeyStrategy\(credentials\)/, '克隆 loader 必须使用统一 API Key 策略解析')
+assert.match(cloneLoaderSource, /connectionPresetCode:\s*account\.connectionPresetCode/, '克隆 loader 必须用回显 preset 反查媒体供应商档案')
 assert.equal((loaderSource.match(/function parseAccountApiKeyStrategy\(/g) ?? []).length, 1, 'API Key 策略解析函数只能定义一处')
 
 const defaults = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
@@ -178,7 +180,39 @@ const roundRobinSavePayload = buildAccountSavePayload({
 })
 assert.equal(roundRobinSavePayload.credentials.api_key_strategy, 'round_robin', '克隆保存请求必须保留轮询策略')
 
-console.log('账户克隆按需加载回归通过：单 clone-context 请求、窄 credentialOptions、建号秘密不回填')
+// DR-40：媒体 preset（openspeech/ark 等）不在后端探针映射表，clone-context 的
+// providerProtocolProfileId 为空；前端必须用回显的 connectionPresetCode 反查档案，
+// 不能回落供应商默认档案（OpenSpeech 会被 defaultValue ark 组合校验拒绝）。
+const mediaDefaults = defaultAccountForm('volcengine', 'api_key', FALLBACK_PROVIDERS)
+const mediaContext: AccountCloneContext = {
+  ...context,
+  id: 'account-clone-media-source',
+  providerCode: 'volcengine',
+  providerProtocolProfileId: '',
+  connectionPresetCode: 'volcengine_openspeech',
+  type: 'api_key',
+  clientCompatibility: 'openai_standard',
+  supportedModels: ['seed-tts-2.0'],
+  healthCheckModel: 'seed-tts-2.0',
+  healthCheckEndpointMode: 'audio_speech',
+  credentialOptions: {
+    ...context.credentialOptions,
+    base_url: 'https://openspeech.bytedance.com',
+    supported_endpoint_modes: ['audio_speech']
+  }
+}
+const mediaLoaded = buildAccountCloneFormLoad({
+  account: mediaContext,
+  defaults: mediaDefaults,
+  selectedGroup: { id: context.boundGroupId!, name: context.boundGroupName! }
+})
+assert.equal(
+  mediaLoaded.patch.providerProtocolProfileId,
+  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
+  '媒体账户克隆必须按连接 preset 反查 OpenSpeech 档案，而非供应商默认 ark 档案'
+)
+
+console.log('账户克隆按需加载回归通过：单 clone-context 请求、窄 credentialOptions、建号秘密不回填、媒体 preset 反查')
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(frontendRoot, relativePath), 'utf8')
