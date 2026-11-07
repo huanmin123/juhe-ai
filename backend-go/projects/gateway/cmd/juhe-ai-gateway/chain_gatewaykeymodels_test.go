@@ -497,10 +497,10 @@ func TestGKMUnionLoaderMappingValidity(t *testing.T) {
 	gkmSeedMapping(t, db, "acc_map", "openai", "m-gemini", "stream_generate_content", "gpt-test", "generate_content", 1)
 	// 禁用映射 → 不并入。
 	gkmSeedMapping(t, db, "acc_map", "openai", "m-disabled", "chat_completions", "gpt-test", "chat_completions", 0)
-	// 跨端点族同源模型 → 去重为单条目（responses → chat_completions 依赖
-	// openai 协议档案，夹具账户 prof_1/openai/v1 命中）。
+	// 映射源并入按协议等价判定：同族改名并入；跨族源（responses → chat）
+	// 已随 2026-11-07 跨协议映射退役，不得并入。
 	gkmSeedMapping(t, db, "acc_map", "openai", "m-fam", "chat_completions", "gpt-test", "chat_completions", 1)
-	gkmSeedMapping(t, db, "acc_map", "openai", "m-fam", "responses", "gpt-test", "chat_completions", 1)
+	gkmSeedMapping(t, db, "acc_map", "openai", "m-cross-only", "responses", "gpt-test", "chat_completions", 1)
 	gkmSeedBinding(t, db, "gkm_map", "sys_owner", "acc_map", "", 1)
 
 	// 空 SM 事实主体：直接模型与映射源都不产出（§4.3/§8.18）。
@@ -511,18 +511,17 @@ func TestGKMUnionLoaderMappingValidity(t *testing.T) {
 	entry := gkmLoad(t, loader, "sys_owner", "gkm_map")
 	gkmAssertModels(t, entry, "gpt-test", "m-cross", "m-fam", "m-gemini")
 
-	// B4 W2 拆门：Gemini OpenAI-chat 档案 + anthropic messages 源族不再被
-	// 协议档案前置排除（§5.2 矩阵内族对按账户声明放行，替代约束为写侧
-	// §5.3 family 联动校验）；矩阵外族对（chat_completions → responses 之外的
-	// 逆向对，如 messages → responses）仍被矩阵拒绝。
+	// 2026-11-07 跨协议映射退役：Gemini OpenAI-chat 档案只允许 Chat 同族
+	// 映射；messages→chat、chat→responses 均不并入并集。
 	gkmSeedGroup(t, db, "gkm_profile", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_gemini", owner: "sys_owner", profile: "profile_gemini_openai_chat_v1beta"})
 	gkmSeedSupportedModel(t, db, "acc_gemini", "openai", "gpt-x")
-	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-kept", "messages", "gpt-x", "chat_completions", 1)
+	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-chat", "chat_completions", "gpt-x", "chat_completions", 1)
+	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-retired-messages", "messages", "gpt-x", "chat_completions", 1)
 	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-matrix-out", "chat_completions", "gpt-x", "responses", 1)
 	gkmSeedBinding(t, db, "gkm_profile", "sys_owner", "acc_gemini", "", 1)
 	entry = gkmLoad(t, loader, "sys_owner", "gkm_profile")
-	gkmAssertModels(t, entry, "gpt-x", "m-gem-kept")
+	gkmAssertModels(t, entry, "gpt-x", "m-gem-chat")
 }
 
 // ---------------------------------------------------------------------------

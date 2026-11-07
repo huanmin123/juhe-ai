@@ -11,14 +11,14 @@ package main
 // w1bRunScenario / w1bFreePort）。
 //
 // 根因背景：dev 启动器在 Windows 上用 taskkill /t /f 强杀 gateway，进程
-// defer 链不执行，F3/F4 owner 租约（PG lease 表一行，lease_until =
-// 最后续租 + TTL 30s）未释放；TTL 过期前重启 gateway 会在 StartLeaseKeeper
-// 的 ok=false 分支 fail-fast。修复契约：启动获取点外围新增有界等待重试，env
-// 显式开启（默认空 / 0 保持既有 fail-fast 契约）。
+// defer 链不执行，F3/F4 写入 lease（PG lease 表一行，lease_until =
+// 最后续租 + TTL 30s）未释放。2026-11-07 多副本改造后写入 lease 键含
+// instanceID，不同实例互不竞争；同一实例的重启仍走有界等待/接管，env
+// 显式开启（默认空 / 0 保持既有快速失败契约）。
 //
 // 获取冲突分支的两条路径（store.go AcquireOwnerLease）：
-//   - 跨 owner：必须等 lease_until 过期，过期前 acquire ok=false，等待预算
-//     耗尽维持 fail-fast 原文案（BUG-0228 发布窗口契约，子场景 B）；
+//   - 跨 owner：写入 lease 键已按实例隔离，跨实例不再冲突；全局 retention
+//     lease 冲突由组件内 5s 重试等待接管（子场景 B）；
 //   - 同 owner_id（进程身份，默认主机名）：未过期租约直接接管并自增
 //     fence_token——同 owner 的再获取只可能来自本实例自己的重启/失租恢复，
 //     旧世代写入由 fence 挡在外面，无需等 TTL 到期（子场景 D）。
@@ -34,10 +34,10 @@ package main
 //	  两份租约同时处于过期态，F4 行不改则进程 2 的 F4 启动获取在 10s 预算内
 //	  等不到 30s TTL 过期）；进程 2 同 env（仅监听端口换新）+ wait=10s 启动
 //	  → health ready → 优雅关闭收割覆盖。
-//	B F3 跨 owner 未过期租约等待后超时 fail：进程 1（M1 同款构造）就绪后
-//	  强杀，不改 lease 行（lease_until 仍在未来）；进程 2 换一个 audit 实例
-//	  ID（跨 owner——同 owner_id 会被直接接管，见下）带 wait=2s 同步运行 →
-//	  exit 1 且 stderr 含 F3 快速失败原文案（默认契约不变）。
+//	B 第二实例独立写入 lease：进程 1（M1 同款构造）就绪后强杀，不改 lease
+//	  行；进程 2 换一个 audit 实例 ID（写入 lease 键不同，必须成功获取）带
+//	  wait=2s 启动 → health ready，旧全局 retention lease 未过期时日志出现
+//	  "retention owner lease held by another gateway instance"，随后优雅关闭。
 //	C F4 过期租约接管成功：进程 1（M1 同款"同时持有 F3+F4"构造，F4 走
 //	  组件专有租约分支）就绪后强杀；F4 lease 行置为明确过去；进程 2（独立
 //	  F3 审计库 + 共享 F4 库 + system api 组合根走 main 启动获取点）带
@@ -61,7 +61,6 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
-	"strconv"
 	"testing"
 	"time"
 
@@ -154,7 +153,7 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-lease-wait-a-owner2")
 	})
 
-	t.Run("B-F3未过期租约等待超时fail", func(t *testing.T) {
+	t.Run("B-第二实例独立lease启动并等待retention", func(t *testing.T) {
 		root := w1mAuditRoot(t, "lease-wait-b")
 		business := w1mBusinessPostgres(t)
 		audit := pgtestkit.NewTestDatabase(t)
@@ -175,20 +174,32 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		w1mWaitHealthReady(t, client, healthAddr1)
 		w1mKillOwnerProcess(t, cmd1, done1, cancel1, "M1-lease-wait-b-owner1")
 
-		// 进程 2：换一个 audit 实例 ID（跨 owner——同 owner_id 的未过期租约
-		// 会被直接接管，见文件头契约）+ 不改 lease 行（lease_until 仍在未来）
-		// + wait=2s → 等待预算耗尽仍被持有，走既有 fail-fast 原文案。
-		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-b-timeout")
+		// 进程 2：换一个 audit 实例 ID。写入 lease 每实例独立，进程必须正常
+		// 启动；旧全局 retention lease 因进程 1 强杀尚未过期，进程 2 只等待
+		// 接管，不退出。JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT 不再影响该路径。
+		healthAddr2 := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
+		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-b-rival")
 		env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 			w1mRuntimeBaseEnvPairs(t),
 			w1mAuditEnvPairs(t, root, "w1m-wait-b-rival", audit.DSN, business.DSN)...,
 		), "JUHE_AI_POSTGRES_URL="+business.DSN, "JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
 		env2 = append(env2,
-			"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)),
+			"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,
 			"JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=2s")
-		_, stderr2, code2 := w1bRunScenario(t, "M1-lease-wait-b-timeout", env2)
-		w1bRequireExitCode(t, "M1-lease-wait-b-timeout", code2, 1)
-		w1bRequireContains(t, "M1-lease-wait-b-timeout", stderr2, "F3 audit owner lease held by another owner process")
+		cmd2, done2, cancel2, stdout2, stderr2 := w1mStartOwnerProcess(t, coverageDir2, env2)
+		if !w1mTryWaitHealthReady(t, client, healthAddr2, 20*time.Second) {
+			cancel2()
+			_ = cmd2.Process.Kill()
+			<-done2
+			t.Fatalf("第二实例未在 20s 内就绪 stdout: %s stderr: %s", stdout2.String(), stderr2.String())
+		}
+		if !w1mWaitOutputContains(t, stdout2, "retention owner lease held by another gateway instance", 15*time.Second) {
+			cancel2()
+			_ = cmd2.Process.Kill()
+			<-done2
+			t.Fatalf("第二实例的 retention 等待提示未出现 stdout: %s stderr: %s", stdout2.String(), stderr2.String())
+		}
+		w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-lease-wait-b-rival")
 	})
 
 	t.Run("C-F4过期租约接管成功", func(t *testing.T) {

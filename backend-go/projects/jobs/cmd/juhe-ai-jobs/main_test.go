@@ -14,6 +14,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 func TestValidateHealthListenAddress(t *testing.T) {
@@ -115,6 +116,63 @@ func TestPassiveJobsHealthNeverClaimsOwnerReadiness(t *testing.T) {
 	}
 }
 
+func TestJobsBuildInfoMetric(t *testing.T) {
+	registry := prommetrics.NewRegistry()
+	bindJobsBuildInfo(registry, "jobs-build-info-test")
+	text, err := registry.GatherText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"juhe_ai_build_info{",
+		`service="jobs"`,
+		`instance_id="jobs-build-info-test"`,
+		`version="` + version.Version + `"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("build_info missing %q in:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(text, `schema_revision="`) {
+		t.Fatalf("build_info missing schema_revision in:\n%s", text)
+	}
+}
+
+func TestHealthLeaderGateControlsReadiness(t *testing.T) {
+	runtimeRunning := &atomic.Bool{}
+	runtimeRunning.Store(true)
+	leader := false
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:      ownermode.Active,
+		RuntimeRunning: runtimeRunning,
+		WorkerReady:    func() bool { return true },
+		LeaderReady:    func() bool { return leader },
+		LeaderStatus:   func() map[string]any { return map[string]any{"leaseKey": "scheduled:jobs-global-leader:global"} },
+	})
+	read := func() map[string]any {
+		request := httptest.NewRequest(http.MethodGet, "/health", nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("health status = %d", response.Code)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode health: %v", err)
+		}
+		return payload
+	}
+	payload := read()
+	if payload["leader"] != false || payload["ready"] != false || payload["ownerReady"] != false {
+		t.Fatalf("standby health payload = %+v", payload)
+	}
+	leader = true
+	payload = read()
+	if payload["leader"] != true || payload["ready"] != true || payload["ownerReady"] != true {
+		t.Fatalf("leader health payload = %+v", payload)
+	}
+}
+
 func TestHealthWiresProxyLatencyStatus(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
@@ -123,11 +181,11 @@ func TestHealthWiresProxyLatencyStatus(t *testing.T) {
 		return proxylatency.RunnerStatus{OwnerHeld: true, LastCycleAt: now, LastSuccess: now, Inputs: 2, Executed: 2}
 	}
 	handler := healthHandler(healthDeps{
-		OwnerMode:             ownermode.Active,
-		RuntimeRunning:        &running,
-		ProxyLatencyEnabled:   true,
-		ProxyLatencyReady:     func() bool { return true },
-		ProxyLatencyStatus:    status,
+		OwnerMode:           ownermode.Active,
+		RuntimeRunning:      &running,
+		ProxyLatencyEnabled: true,
+		ProxyLatencyReady:   func() bool { return true },
+		ProxyLatencyStatus:  status,
 	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -166,10 +224,10 @@ func TestHealthDisabledProxyLatencyDoesNotBlock(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
 	handler := healthHandler(healthDeps{
-		OwnerMode:           ownermode.Active,
-		RuntimeRunning:      &running,
-		ProxyLatencyReady:   func() bool { return false },
-		ProxyLatencyStatus:  func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
+		OwnerMode:          ownermode.Active,
+		RuntimeRunning:     &running,
+		ProxyLatencyReady:  func() bool { return false },
+		ProxyLatencyStatus: func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))

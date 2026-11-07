@@ -1,16 +1,16 @@
 package apikeys
 
-// API Key「非时间段」服务端筛选（《时间计划闸门与账户状态解耦设计》§5.4）：
-// status=out_of_window 是虚拟筛选值，等价 status='active' AND
-// availability_schedule_gate=0；它与 active / disabled 互斥。此前该筛选只在
-// 前端对当前页做本地过滤，跨页会给出假阴性（总数按 active 算、匹配项在其他页）。
+// API Key 状态筛选与时间计划闸门的收敛（《时间计划闸门与账户状态解耦设计》
+// §5.4，2026-11-07 修正）：虚拟筛选值 status=out_of_window 已退役，
+// status='active' 天然包含时段外（gate=0）行；非时间段子状态由列表展示层
+// 表达，不再有独立筛选臂。
 
 import (
 	"context"
 	"testing"
 )
 
-func TestListPageScheduleOutOfWindowFilter(t *testing.T) {
+func TestListPageStatusFilterCoversScheduleGate(t *testing.T) {
 	env := newTestEnv(t)
 	ownerID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, ownerID, "rs-gate")
@@ -36,8 +36,8 @@ func TestListPageScheduleOutOfWindowFilter(t *testing.T) {
 		status string
 		want   []string
 	}{
-		{"非时间段只命中 active+gate=0", "out_of_window", []string{outside.ID}},
-		{"active 命中全部启用 Key（含时段外）", "active", []string{active.ID, outside.ID}},
+		{"active 命中全部启用 Key（天然包含时段外）", "active", []string{active.ID, outside.ID}},
+		{"out_of_window 已退役：按不过滤处理返回全量", "out_of_window", []string{active.ID, outside.ID, disabled.ID}},
 		{"disabled 只命中人工停用", "disabled", []string{disabled.ID}},
 	}
 	for _, tc := range cases {
@@ -62,8 +62,8 @@ func TestListPageScheduleOutOfWindowFilter(t *testing.T) {
 	}
 }
 
-func TestAPIKeyStatusQueryValueAcceptsOutOfWindow(t *testing.T) {
-	if got := apiKeyStatusQueryValue("out_of_window"); got != "out_of_window" {
-		t.Fatalf("out_of_window = %q（必须是服务端虚拟筛选值，不能归一为空）", got)
+func TestAPIKeyStatusQueryValueRetiresOutOfWindow(t *testing.T) {
+	if got := apiKeyStatusQueryValue("out_of_window"); got != "" {
+		t.Fatalf("out_of_window 已退役，应归一为空（不过滤），得到 %q", got)
 	}
 }

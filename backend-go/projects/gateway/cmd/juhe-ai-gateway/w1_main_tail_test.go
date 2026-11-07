@@ -964,10 +964,24 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 			"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-lease",
 			"JUHE_AI_OPERATION_LOG_POSTGRES_URL="+tempAppURL,
 			"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-lease-holder")...)
-	_, stderr, code := w1bRunScenario(t, "W1W-f4-lease-held", env,
-		"-health-listen-address", fmt.Sprintf("127.0.0.1:%d", healthPort))
-	w1bRequireExitCode(t, "f4-lease-held", code, 1)
-	w1bRequireContains(t, "f4-lease-held", stderr, "F4 operation log owner lease held by another owner process")
+	// 新契约：F4 写入 lease 每实例独立，预插的旧全局键只阻塞 retention；
+	// 进程必须正常就绪并等待接管，不得 fail-fast。
+	healthAddr := fmt.Sprintf("127.0.0.1:%d", healthPort)
+	cmd, done, cancel, stdout, stderr := w1mStartOwnerProcess(t, coverageDir, env,
+		"-health-listen-address", healthAddr)
+	if !w1mTryWaitHealthReady(t, &http.Client{Timeout: 2 * time.Second}, healthAddr, 20*time.Second) {
+		cancel()
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("F4 旧全局租约存在时进程未就绪 stdout: %s stderr: %s", stdout.String(), stderr.String())
+	}
+	if !w1mWaitOutputContains(t, stdout, "retention owner lease held by another gateway instance", 15*time.Second) {
+		cancel()
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("F4 retention 等待提示未出现 stdout: %s stderr: %s", stdout.String(), stderr.String())
+	}
+	w1mGracefulShutdownOwner(t, cmd, done, cancel, coverageDir, "W1W-f4-lease-held")
 }
 
 // ---------------------------------------------------------------------------

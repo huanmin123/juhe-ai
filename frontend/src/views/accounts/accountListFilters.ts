@@ -36,9 +36,10 @@ function accountFilterStatuses(account: AccountListItem): Set<AccountStatusFilte
   if (account.authorizationQuotaExceeded) {
     return new Set(['rate_limited'])
   }
-  // 时间计划闸门：status='active' 且 gate=0 只归入「非时间段」，既不算正常也不算停用。
+  // 时间计划闸门：status='active' 且 gate=0 的时段外是「可调度」的子集（蓝色徽章区分子状态），
+  // 筛选归入 active（时间计划闸门设计 §5.4，2026-11-07 裁决）。
   if (isAccountScheduleOutOfWindow(account)) {
-    return new Set(['out_of_window'])
+    return new Set(['active'])
   }
   if (account.status === 'active' && account.effectiveAvailability?.available === false) {
     return new Set()
@@ -48,8 +49,8 @@ function accountFilterStatuses(account: AccountListItem): Set<AccountStatusFilte
 
 function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabilityStatus): AccountStatusFilterValue | undefined {
   if (status === 'available' || status === 'runtime_degraded') return 'active'
-  // 时间计划闸门（时间计划闸门设计 §5.4）：时段外是正常状态的子集，独立筛选值。
-  if (status === 'schedule_out_of_window') return 'out_of_window'
+  // 时间计划闸门（时间计划闸门设计 §5.4，2026-11-07 裁决）：时段外是可调度的子集，归入 active。
+  if (status === 'schedule_out_of_window') return 'active'
   if (status === 'source_pending_test' || status === 'instance_pending_test') return 'pending_test'
   if (status === 'source_error' || status === 'instance_error') return 'error'
   if (
@@ -91,7 +92,7 @@ function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabili
   return undefined
 }
 
-/** 状态筛选可选项校验：真实账户状态 + 时间计划闸门派生值「非时间段」。 */
+/** 状态筛选可选项校验：真实账户状态（时段外并入「可调度」，时间计划闸门设计 §5.4，2026-11-07 裁决）。 */
 const accountStatusValues = new Set<AccountStatus>([
   'active',
   'pending_test',
@@ -103,23 +104,18 @@ const accountStatusValues = new Set<AccountStatus>([
 ])
 
 export function isAccountStatusFilterValue(value: string): value is AccountStatusFilterValue {
-  return value === 'out_of_window' || accountStatusValues.has(value as AccountStatus)
+  return accountStatusValues.has(value as AccountStatus)
 }
 
 /**
- * 拆分账户状态筛选为列表接口参数（时间计划闸门设计 §5.4）：
- * - 真实账户状态走 `status`（多值 OR）；
- * - 「非时间段」不是账户状态，走 `schedulable=out_of_window`；
- * - 两者同时选中时按列表接口既有的 AND 语义叠加。
+ * 账户状态筛选即列表接口 `status` 参数（多值 OR；时间计划闸门设计 §5.4，2026-11-07 裁决）：
+ * 时段外并入 `status='active'` 子集，不再经 `schedulable=out_of_window` 拆分下发。
  */
 export function accountStatusFilterQuery(values: AccountStatusFilterValue[]): {
   status?: AccountStatus[]
-  schedulable?: 'out_of_window'
 } {
-  const statuses = values.filter((value): value is AccountStatus => value !== 'out_of_window')
   return {
-    status: statuses.length ? statuses : undefined,
-    schedulable: values.includes('out_of_window') ? 'out_of_window' : undefined
+    status: values.length ? values : undefined
   }
 }
 

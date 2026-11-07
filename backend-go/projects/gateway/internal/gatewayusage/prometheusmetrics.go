@@ -3,12 +3,16 @@ package gatewayusage
 import (
 	"database/sql"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 // Prometheus HTTP / gateway metrics family, migrated from the line-by-line
@@ -145,9 +149,9 @@ func newPrometheusMetrics() *prometheusMetrics {
 	registry := prommetrics.NewRegistry()
 	metrics := &prometheusMetrics{
 		registry:         registry,
-		requestsTotal:    prommetrics.NewCounterVec(registry, "juhe_ai_http_requests_total", "Completed HTTP requests grouped without paths, identifiers, or error text.", prometheusServiceLabels, []string{"route_group", "method", "status_class", "outcome", "failure_scope"}),
-		requestDuration:  prommetrics.NewHistogramVec(registry, "juhe_ai_http_request_duration_seconds", "HTTP request duration grouped without paths, identifiers, or error text.", prometheusServiceLabels, []string{"route_group", "method", "status_class", "outcome", "failure_scope"}, prometheusDurationBuckets),
-		inFlight:         prommetrics.NewGaugeVec(registry, "juhe_ai_http_requests_in_flight", "In-flight HTTP requests grouped without paths or identifiers.", prometheusServiceLabels, []string{"route_group", "method"}),
+		requestsTotal:    prommetrics.NewCounterVec(registry, "juhe_ai_http_requests_total", "Completed HTTP requests grouped without paths, identifiers, or error text.", prometheusServiceLabels, []string{"route_group", "method", "status_class", "outcome", "failure_scope", "version"}),
+		requestDuration:  prommetrics.NewHistogramVec(registry, "juhe_ai_http_request_duration_seconds", "HTTP request duration grouped without paths, identifiers, or error text.", prometheusServiceLabels, []string{"route_group", "method", "status_class", "outcome", "failure_scope", "version"}, prometheusDurationBuckets),
+		inFlight:         prommetrics.NewGaugeVec(registry, "juhe_ai_http_requests_in_flight", "In-flight HTTP requests grouped without paths or identifiers.", prometheusServiceLabels, []string{"route_group", "method", "version"}),
 		upstreamFailures: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_upstream_failures_total", "Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.", prometheusServiceLabels, []string{"failure_class", "reason_class", "status_class"}),
 		firstOutput:      prommetrics.NewHistogramVec(registry, "juhe_ai_gateway_first_output_duration_seconds", "Time to first upstream output for gateway requests, excluding full stream duration.", prometheusServiceLabels, []string{"method"}, prometheusFirstOutputBuckets),
 
@@ -156,6 +160,17 @@ func newPrometheusMetrics() *prometheusMetrics {
 		negativeCacheCapacityRejects: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_capacity_rejected_total", "Request negative-cache writes rejected because the bounded in-process store was at capacity.", prometheusServiceLabels, nil),
 		accountRPMLimited:            prommetrics.NewCounterVec(registry, "juhe_ai_gateway_account_rpm_limited_total", "Account per-minute request (RPM) limit rejections at dispatch acquire time.", prometheusServiceLabels, nil),
 	}
+	// build_info 是发布观测面：version/commit/schema_revision/instance_id 作为
+	// 标签，值恒 1；多副本按 instance_id 区分，滚动发布时可按 version 聚合。
+	prommetrics.NewGaugeVec(registry, "juhe_ai_build_info",
+		"Build identity of this gateway process: version, commit, schema revision and instance.",
+		prometheusServiceLabels, []string{"version", "commit", "schema_revision", "instance_id"},
+	).WithLabelValues(
+		version.Version,
+		version.Commit,
+		strconv.FormatInt(contracts.SchemaRevision, 10),
+		gatewayMetricInstanceID(),
+	).Set(1)
 	// The upstream-failure capability gauges keep the D-190 contract
 	// declaration series (client_golang gauges stay resident at their set
 	// value). service stays a dynamic label here (one child per service).
@@ -165,6 +180,15 @@ func newPrometheusMetrics() *prometheusMetrics {
 }
 
 var prometheusDefault = newPrometheusMetrics()
+
+// gatewayMetricInstanceID 是 build_info 的 instance_id 标签：显式
+// JUHE_AI_INSTANCE_ID 优先，否则复用 gateway 的 stable hostname 默认。
+func gatewayMetricInstanceID() string {
+	if value := strings.TrimSpace(os.Getenv("JUHE_AI_INSTANCE_ID")); value != "" {
+		return value
+	}
+	return datadir.DefaultInstanceID()
+}
 
 // MetricsHandler returns the exposition handler for the process registry
 // (promhttp rendering). The composition root mounts it on the health
@@ -197,7 +221,7 @@ func (m *prometheusMetrics) startRequest(path string, method string, startedAtMs
 		return nil
 	}
 	normalized := normalizeHTTPMetricMethod(method)
-	m.inFlight.WithLabelValues(routeGroup, normalized).Inc()
+	m.inFlight.WithLabelValues(routeGroup, normalized, version.Version).Inc()
 	return &HTTPMetricRequest{RouteGroup: routeGroup, Method: normalized, StartedAtMs: startedAtMs}
 }
 
@@ -211,8 +235,8 @@ func (m *prometheusMetrics) finishRequest(request *HTTPMetricRequest, statusCode
 	statusClass := classifyHTTPMetricStatus(statusCode)
 	failureScopeValue := classifyHTTPMetricFailureScope(statusCode, outcome, failureScope)
 	durationSeconds := float64(maxInt64(0, finishedAtMs-request.StartedAtMs)) / 1_000
-	m.inFlight.WithLabelValues(request.RouteGroup, request.Method).Dec()
-	labels := []string{request.RouteGroup, request.Method, statusClass, outcome, failureScopeValue}
+	m.inFlight.WithLabelValues(request.RouteGroup, request.Method, version.Version).Dec()
+	labels := []string{request.RouteGroup, request.Method, statusClass, outcome, failureScopeValue, version.Version}
 	m.requestsTotal.WithLabelValues(labels...).Inc()
 	m.requestDuration.WithLabelValues(labels...).Observe(durationSeconds)
 }

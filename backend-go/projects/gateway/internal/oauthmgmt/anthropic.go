@@ -43,7 +43,9 @@ func (s *Store) generateAnthropicAuthURL(ownerID string) (map[string]any, error)
 		ClientID:             AnthropicOAuthClientID,
 		OwnerSystemAccountID: ownerID,
 	}
-	s.sessions.set(anthropicSessionNamespace, sessionID, session, oauthSessionTTL)
+	if err := s.sessions.setJSON(context.Background(), anthropicSessionNamespace, sessionID, session, oauthSessionTTL); err != nil {
+		return nil, &SessionStoreError{Op: "保存", Err: err}
+	}
 	return map[string]any{
 		"authUrl":   buildAnthropicAuthorizeURL(session.ClientID, session.RedirectURI, state, codeChallenge, AnthropicOAuthBrowserScope),
 		"sessionId": sessionID,
@@ -135,7 +137,10 @@ func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionI
 	if err != nil {
 		return nil, err
 	}
-	raw := s.sessions.get(anthropicSessionNamespace, sessionID)
+	raw, err := s.sessions.getJSON(ctx, anthropicSessionNamespace, sessionID)
+	if err != nil {
+		return nil, &SessionStoreError{Op: "读取", Err: err}
+	}
 	if raw == nil {
 		return nil, errors.New("Anthropic OAuth 会话不存在或已过期")
 	}
@@ -168,7 +173,11 @@ func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionI
 	if authorization.state == "" {
 		authorization.state = session.State
 	}
-	if !s.sessions.compareDelete(anthropicSessionNamespace, sessionID, session) {
+	consumed, err := s.sessions.compareDeleteJSON(ctx, anthropicSessionNamespace, sessionID, session)
+	if err != nil {
+		return nil, &SessionStoreError{Op: "消费", Err: err}
+	}
+	if !consumed {
 		return nil, errors.New("Anthropic OAuth 会话已消费，请重新发起授权")
 	}
 	return info, nil

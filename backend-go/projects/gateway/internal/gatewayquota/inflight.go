@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	redis "github.com/redis/go-redis/v9"
 )
 
 // In-flight quota constants mirror api-key-inflight-quota.service.ts.
@@ -127,18 +129,23 @@ type InflightQuotaConfig struct {
 	Log       LogHook
 	// Timer overrides the release scheduler (tests); nil uses time.AfterFunc.
 	Timer TimerScheduler
+	// Redis 非 nil 时把在途预留放到 Redis（多副本共享）；nil 保持进程内，
+	// 供测试与 chain-disabled 组合使用。
+	Redis          redis.UniversalClient
+	RedisNamespace string
 }
 
 // InflightQuotaService ports api-key-inflight-quota.service.ts: per api-key
-// reserved cost accumulation with leak-guarded reservations. The state is
-// intentionally process-local exactly like the Node module (the in-flight
-// counter never crosses the runtime state driver).
+// reserved cost accumulation with leak-guarded reservations. Production uses
+// a Redis-backed store so reservations from all gateway replicas are visible;
+// tests and chain-disabled compositions keep the process-local map.
 type InflightQuotaService struct {
 	apiKeys   *APIKeyQuotaService
 	dbService DBServiceClient
 	estimator CostEstimator
 	log       LogHook
 	timer     TimerScheduler
+	remote    *redisInflightQuota
 
 	mu     sync.Mutex
 	states map[string]*inflightState
@@ -154,12 +161,21 @@ func NewInflightQuotaService(cfg InflightQuotaConfig) (*InflightQuotaService, er
 	if timer == nil {
 		timer = defaultTimerScheduler
 	}
+	var remote *redisInflightQuota
+	if cfg.Redis != nil {
+		var err error
+		remote, err = newRedisInflightQuota(cfg.Redis, cfg.RedisNamespace)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &InflightQuotaService{
 		apiKeys:   cfg.APIKeys,
 		dbService: cfg.DBService,
 		estimator: cfg.Estimator,
 		log:       log,
 		timer:     timer,
+		remote:    remote,
 		states:    map[string]*inflightState{},
 	}, nil
 }
@@ -225,11 +241,39 @@ func reserveStateKey(input ReserveInput) string {
 	return input.APIKeyID
 }
 
-// Reserve mirrors reserveApiKeyInflightCost: project current + reserved +
+// Reserve keeps the historical synchronous contract for memory-backed tests;
+// production callers that can surface infrastructure failures use
+// ReserveContext.
+func (s *InflightQuotaService) Reserve(input ReserveInput) InflightDecision {
+	decision, _ := s.ReserveContext(context.Background(), input)
+	return decision
+}
+
+// ReserveContext reserves one API-key/scope state. Redis failures are returned
+// to the caller (fail-closed); the memory driver never errors.
+func (s *InflightQuotaService) ReserveContext(ctx context.Context, input ReserveInput) (InflightDecision, error) {
+	if s.remote != nil {
+		decision, releases, err := s.remote.reserve(ctx, input)
+		if err != nil {
+			return decision, err
+		}
+		if decision.Allowed && len(releases) > 0 {
+			delay := DefaultReleaseDelayMs
+			if input.ReleaseDelayMs != nil {
+				delay = *input.ReleaseDelayMs
+			}
+			decision.Reservation = s.createReservation(releases, delay)
+		}
+		return decision, nil
+	}
+	return s.reserveMemory(input), nil
+}
+
+// reserveMemory mirrors reserveApiKeyInflightCost: project current + reserved +
 // estimate against every enabled window, reserve on pass. The check and the
 // reservation share one critical section so concurrent reservations observe
 // each other (Node is single-threaded, where this ordering is implicit).
-func (s *InflightQuotaService) Reserve(input ReserveInput) InflightDecision {
+func (s *InflightQuotaService) reserveMemory(input ReserveInput) InflightDecision {
 	estimatedCostUsd := normalizedCost(input.EstimatedCostUsd)
 	if estimatedCostUsd <= 0 {
 		return InflightDecision{Allowed: true}
@@ -276,11 +320,36 @@ type ScopeReserveInput struct {
 	ReleaseDelayMs *int
 }
 
-// ReserveScopes 对一组 scope 做原子在途预留（T93-4 / C3-H8）：先统一校验
-// 所有 scope 的投影（已结算 + 已在途 + 本次估算）是否超限，任一超限即整体
-// 拒绝且不写入任何状态；全部通过后统一累加并返回一次性释放全部 scope 的
-// 预留句柄。检查与写入同处一个临界区，保证并发预留互相可见。
+// ReserveScopes keeps the historical synchronous contract for memory-backed
+// tests; production callers use ReserveScopesContext.
 func (s *InflightQuotaService) ReserveScopes(input ScopeReserveInput) InflightDecision {
+	decision, _ := s.ReserveScopesContext(context.Background(), input)
+	return decision
+}
+
+// ReserveScopesContext 对一组 scope 做原子在途预留（T93-4 / C3-H8）：先统一
+// 校验所有 scope 的投影（已结算 + 已在途 + 本次估算）是否超限，任一超限即
+// 整体拒绝且不写入任何状态；全部通过后统一累加并返回一次性释放全部 scope
+// 的预留句柄。Redis 实现用单 Lua 脚本保证跨实例原子性。
+func (s *InflightQuotaService) ReserveScopesContext(ctx context.Context, input ScopeReserveInput) (InflightDecision, error) {
+	if s.remote != nil {
+		decision, releases, err := s.remote.reserveScopes(ctx, input)
+		if err != nil {
+			return decision, err
+		}
+		if decision.Allowed && len(releases) > 0 {
+			delay := DefaultReleaseDelayMs
+			if input.ReleaseDelayMs != nil {
+				delay = *input.ReleaseDelayMs
+			}
+			decision.Reservation = s.createReservation(releases, delay)
+		}
+		return decision, nil
+	}
+	return s.reserveScopesMemory(input), nil
+}
+
+func (s *InflightQuotaService) reserveScopesMemory(input ScopeReserveInput) InflightDecision {
 	estimatedCostUsd := normalizedCost(input.EstimatedCostUsd)
 	scopes := make([]InflightScope, 0, len(input.Scopes))
 	for _, scope := range input.Scopes {
@@ -379,12 +448,12 @@ func (s *InflightQuotaService) ReserveGatewayCost(ctx context.Context, input Gat
 			return InflightDecision{Allowed: false, EstimatedCostUsd: estimatedCostUsd, HasEstimatedCostUsd: true}, nil
 		}
 	}
-	return s.Reserve(ReserveInput{
+	return s.ReserveContext(ctx, ReserveInput{
 		APIKeyID:         input.APIKey.ID,
 		Limits:           limits,
 		CurrentCosts:     currentCosts,
 		EstimatedCostUsd: estimatedCostUsd,
-	}), nil
+	})
 }
 
 // inflightRelease 是一条待释放在途预留（状态键 + 本次预留成本）。
@@ -419,6 +488,16 @@ func (s *InflightQuotaService) createReservation(releases []inflightRelease, rel
 }
 
 func (s *InflightQuotaService) release(releases []inflightRelease) {
+	if s.remote != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.remote.release(releaseCtx, releases); err != nil {
+			s.log("gateway_api_key_inflight_quota_release_failed", map[string]any{
+				"error": err.Error(),
+			}, "API Key 在途额度 Redis 释放失败，等待 TTL 兜底")
+		}
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, entry := range releases {
@@ -442,6 +521,20 @@ type APIKeyInflightQuotaState struct {
 // Snapshot mirrors apiKeyInflightQuotaSnapshot: 只返回 API Key scope 的在途
 // 状态（授权/团队 scope 走 ScopeSnapshot，保持既有快照契约不变）。
 func (s *InflightQuotaService) Snapshot() []APIKeyInflightQuotaState {
+	if s.remote != nil {
+		states, err := s.remote.snapshot(context.Background())
+		if err != nil {
+			s.log("gateway_api_key_inflight_quota_snapshot_failed", map[string]any{"error": err.Error()}, "API Key 在途额度快照读取失败")
+			return nil
+		}
+		out := make([]APIKeyInflightQuotaState, 0, len(states))
+		for _, state := range states {
+			if !isAuthorizationInflightScopeKey(state.ScopeKey) {
+				out = append(out, APIKeyInflightQuotaState{APIKeyID: state.ScopeKey, ReservedCostUsd: state.ReservedCostUsd})
+			}
+		}
+		return out
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]APIKeyInflightQuotaState, 0, len(s.states))
@@ -456,6 +549,20 @@ func (s *InflightQuotaService) Snapshot() []APIKeyInflightQuotaState {
 
 // ScopeSnapshot 返回授权/团队 scope 的在途状态（T93-4）。
 func (s *InflightQuotaService) ScopeSnapshot() []InflightScopeState {
+	if s.remote != nil {
+		states, err := s.remote.snapshot(context.Background())
+		if err != nil {
+			s.log("gateway_api_key_inflight_quota_snapshot_failed", map[string]any{"error": err.Error()}, "授权 scope 在途额度快照读取失败")
+			return nil
+		}
+		out := make([]InflightScopeState, 0, len(states))
+		for _, state := range states {
+			if isAuthorizationInflightScopeKey(state.ScopeKey) {
+				out = append(out, InflightScopeState{ScopeKey: state.ScopeKey, ReservedCostUsd: state.ReservedCostUsd})
+			}
+		}
+		return out
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]InflightScopeState, 0, len(s.states))
@@ -476,6 +583,11 @@ type InflightScopeState struct {
 
 // ClearForTest mirrors clearApiKeyInflightQuotaReservationsForTest.
 func (s *InflightQuotaService) ClearForTest() {
+	if s.remote != nil {
+		if err := s.remote.clear(context.Background()); err != nil {
+			s.log("gateway_api_key_inflight_quota_clear_failed", map[string]any{"error": err.Error()}, "在途额度 Redis 清理失败")
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.states = map[string]*inflightState{}

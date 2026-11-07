@@ -409,9 +409,8 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	}
 	fixture.dsn = dsn
 
-	codexRoot := filepath.Join(root, "storage", "codex-context")
 	usageShardRoot := filepath.Join(root, "storage", "usage-shards")
-	mustMkdirAll(t, codexRoot, usageShardRoot,
+	mustMkdirAll(t, usageShardRoot,
 		filepath.Join(root, "storage", "audit-blobs"),
 		filepath.Join(root, "openai-files"),
 		filepath.Join(root, "logs"),
@@ -457,7 +456,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	}
 	fixture.storage = map[string]string{
 		"dsn":          dsn,
-		"codex-root":   codexRoot,
 		"usage-shards": usageShardRoot,
 		"logs":         filepath.Join(root, "logs"),
 	}

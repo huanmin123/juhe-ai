@@ -170,11 +170,14 @@ func (r *RequestInflightReserver) ReserveRequest(ctx context.Context, input Requ
 	if len(scopes) == 0 {
 		return RequestInflightReserveOutcome{Allowed: true, EstimatedCostUsd: estimatedCostUsd, HasEstimatedCostUsd: true}, nil
 	}
-	decision := r.inflight.ReserveScopes(ScopeReserveInput{
+	decision, err := r.inflight.ReserveScopesContext(ctx, ScopeReserveInput{
 		Scopes:           scopes,
 		EstimatedCostUsd: estimatedCostUsd,
 		ReleaseDelayMs:   input.ReleaseDelayMs,
 	})
+	if err != nil {
+		return RequestInflightReserveOutcome{}, err
+	}
 	outcome := RequestInflightReserveOutcome{
 		Allowed:             decision.Allowed,
 		EstimatedCostUsd:    decision.EstimatedCostUsd,

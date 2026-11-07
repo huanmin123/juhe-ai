@@ -79,6 +79,53 @@ func TestFileSinkRotatesBySizeAndKeepsJSONLLinesIntact(t *testing.T) {
 	}
 }
 
+func TestFileSinkCustomInstanceFileNameAndRotation(t *testing.T) {
+	dir := t.TempDir()
+	sink, err := NewFileSink(dir, FileSinkOptions{
+		FileName:     "juhe-ai.instance-9.log",
+		MaxFileBytes: 180,
+		Now:          func() time.Time { return time.Date(2026, 9, 28, 8, 30, 0, 0, time.UTC) },
+		NewToken:     func() string { return "0f1e2d3c-0000-0000-0000-000000000001" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sink.Close() }()
+	if want := filepath.Join(dir, "juhe-ai.instance-9.log"); sink.CurrentPath() != want {
+		t.Fatalf("current path = %q, want %q", sink.CurrentPath(), want)
+	}
+	logger := slog.New(slog.NewJSONHandler(sink, nil))
+	for index := 0; index < 5; index++ {
+		logger.Info("instance file rotation", "event", "filesink_instance_probe", "index", index)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentSeen := false
+	rotatedSeen := false
+	for _, entry := range entries {
+		if entry.Name() == "juhe-ai.instance-9.log" {
+			currentSeen = true
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "juhe-ai.instance-9.") && filesinkRotationNamePattern.MatchString(entry.Name()) {
+			rotatedSeen = true
+		}
+	}
+	if !currentSeen || !rotatedSeen {
+		t.Fatalf("instance file/rotation missing: current=%v rotated=%v entries=%v", currentSeen, rotatedSeen, entries)
+	}
+}
+
+func TestFileSinkRejectsPathInFileName(t *testing.T) {
+	for _, name := range []string{"../juhe-ai.log", "sub/juhe-ai.log", "juhe-ai.txt"} {
+		if _, err := NewFileSink(t.TempDir(), FileSinkOptions{FileName: name}); err == nil {
+			t.Fatalf("FileName %q must be rejected", name)
+		}
+	}
+}
+
 func TestFileSinkResumesFromExistingSizeOnReopen(t *testing.T) {
 	dir := t.TempDir()
 	sink, err := NewFileSink(dir, FileSinkOptions{MaxFileBytes: 1 << 20})

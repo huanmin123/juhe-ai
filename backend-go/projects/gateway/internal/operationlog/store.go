@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -40,6 +41,20 @@ const (
 	legacyMigrationIdleTimeout      = "10min"
 )
 
+// DefaultLeaseKey 是单实例/旧配置的租约键；多副本由 main 注入
+// LeaseKeyForInstance 生成的每实例键。
+const DefaultLeaseKey = "f4-operation-log-persistence"
+
+// LeaseKeyForInstance 为每个 gateway 实例生成独立写入 lease 键。同一
+// instanceID 的两个进程会互相 fence，部署侧必须保证实例 ID 唯一。
+func LeaseKeyForInstance(instanceID string) string {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return DefaultLeaseKey
+	}
+	return DefaultLeaseKey + ":" + instanceID
+}
+
 type OwnerLease struct {
 	OwnerID    string
 	FenceToken int64
@@ -58,6 +73,7 @@ type Store interface {
 }
 type sqlStore struct {
 	db          *sql.DB
+	leaseKey    string
 	schemaMu    sync.Mutex
 	schemaReady bool
 	pool        *pgpool.Handle
@@ -93,7 +109,11 @@ func OpenStore(cfg Config) (Store, error) {
 			return nil, fmt.Errorf("open F4 PostgreSQL pool: %w", err)
 		}
 	}
-	return &sqlStore{db: pool.DB(), pool: pool}, nil
+	leaseKey := strings.TrimSpace(cfg.LeaseKey)
+	if leaseKey == "" {
+		leaseKey = DefaultLeaseKey
+	}
+	return &sqlStore{db: pool.DB(), leaseKey: leaseKey, pool: pool}, nil
 }
 
 func (s *sqlStore) beginTx(ctx context.Context) (*sql.Tx, error) {
@@ -183,7 +203,7 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 			return err
 		}
 		defer tx.Rollback()
-		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(763847296)"); err != nil {
+		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", advisorylock.SchemaBootstrap); err != nil {
 			return err
 		}
 		if err = applyPostgresSchema(ctx, tx); err != nil {
@@ -384,9 +404,9 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 		// （hostname，同一容器跨整机重启不变），同 owner 再获取只可能来自本实例自己的
 		// 重启/失租恢复：fence_token 自增把旧世代写入挡在外面。跨 owner 仍必须等过期
 		// （BUG-0228 发布窗口等待契约不变）。与 F3 audit 同键同语义。
-		q := `INSERT INTO juhe_dataset.operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,clock_timestamp()+(? * INTERVAL '1 millisecond'),clock_timestamp()) ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_dataset.operation_log_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=clock_timestamp() WHERE juhe_dataset.operation_log_owner_leases.lease_until<=clock_timestamp() OR juhe_dataset.operation_log_owner_leases.owner_id=EXCLUDED.owner_id RETURNING fence_token`
+		q := `INSERT INTO juhe_dataset.operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES (?,?,1,clock_timestamp()+(? * INTERVAL '1 millisecond'),clock_timestamp()) ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_dataset.operation_log_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=clock_timestamp() WHERE juhe_dataset.operation_log_owner_leases.lease_until<=clock_timestamp() OR juhe_dataset.operation_log_owner_leases.owner_id=EXCLUDED.owner_id RETURNING fence_token`
 		var token int64
-		err = tx.QueryRowContext(ctx, s.bind(q), owner, d.Milliseconds()).Scan(&token)
+		err = tx.QueryRowContext(ctx, s.bind(q), s.leaseKey, owner, d.Milliseconds()).Scan(&token)
 		if errors.Is(err, sql.ErrNoRows) {
 			return OwnerLease{}, false, tx.Commit()
 		}
@@ -402,8 +422,8 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 func (s *sqlStore) RenewOwnerLease(ctx context.Context, l OwnerLease, d time.Duration) (bool, error) {
 	ctx, cancel := storeContext(ctx)
 	defer cancel()
-	q := `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=clock_timestamp()+(? * INTERVAL '1 millisecond'),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp()`
-	args := []any{d.Milliseconds(), l.OwnerID, l.FenceToken}
+	q := `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=clock_timestamp()+(? * INTERVAL '1 millisecond'),updated_at=clock_timestamp() WHERE lease_key=? AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp()`
+	args := []any{d.Milliseconds(), s.leaseKey, l.OwnerID, l.FenceToken}
 	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return false, err
@@ -422,8 +442,8 @@ func (s *sqlStore) RenewOwnerLease(ctx context.Context, l OwnerLease, d time.Dur
 func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, l OwnerLease) error {
 	ctx, cancel := storeContext(ctx)
 	defer cancel()
-	q := `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=?`
-	args := []any{l.OwnerID, l.FenceToken}
+	q := `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key=? AND owner_id=? AND fence_token=?`
+	args := []any{s.leaseKey, l.OwnerID, l.FenceToken}
 	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
@@ -440,8 +460,8 @@ func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, l OwnerLease) error {
 	return tx.Commit()
 }
 func (s *sqlStore) verifyLease(ctx context.Context, tx *sql.Tx, l OwnerLease) error {
-	q := `SELECT 1 FROM juhe_dataset.operation_log_owner_leases WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp() FOR UPDATE`
-	args := []any{l.OwnerID, l.FenceToken}
+	q := `SELECT 1 FROM juhe_dataset.operation_log_owner_leases WHERE lease_key=? AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp() FOR UPDATE`
+	args := []any{s.leaseKey, l.OwnerID, l.FenceToken}
 	var one int
 	if err := tx.QueryRowContext(ctx, s.bind(q), args...).Scan(&one); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

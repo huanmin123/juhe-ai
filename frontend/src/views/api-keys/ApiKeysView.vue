@@ -341,8 +341,8 @@ const {
   minVisible: 1
 })
 
-// 非时间段已下沉为服务端筛选值 status=out_of_window（时间计划闸门设计 §5.4）；
-// 本地过滤只用于行内编辑后即时反映闸门变化。
+// 「启用」筛选天然包含时段外（gate=0），out_of_window 独立筛选值已退役
+// （时间计划闸门设计 §5.4，2026-11-07 裁决）；本地过滤只用于行内编辑后即时反映闸门变化。
 const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => apiKeyMatchesListStatusFilter(apiKey, statusFilter.value)))
 const mobileApiKeys = computed(() => filteredApiKeys.value)
 const activeFilterCount = computed(() => [

@@ -138,6 +138,35 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	if upgradeReport.Rollback != upgradepipeline.RollbackBackupRequired {
 		t.Fatalf("升级后 rollback = %s, want backup-required（破坏相已执行）", upgradeReport.Rollback)
 	}
+	// 3.4) 代理池 revision 18 的真实 schema 落地：升级后表/列必须存在。
+	for _, table := range []string{"proxy_pools", "proxy_pool_members", "account_proxy_leases"} {
+		var count int
+		if err := td.DB.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM information_schema.tables
+			 WHERE table_schema = 'juhe_business' AND table_name = $1`, table).Scan(&count); err != nil {
+			t.Fatalf("查询代理池表 %s 失败: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("升级后缺少代理池表 %s", table)
+		}
+	}
+	for _, column := range []struct{ table, name string }{
+		{"accounts", "proxy_pool_id"},
+		{"proxy_profiles", "pool_health_status"},
+		{"proxy_profiles", "pool_health_failure_streak"},
+		{"proxy_profiles", "pool_health_checked_at"},
+	} {
+		var count int
+		if err := td.DB.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM information_schema.columns
+			 WHERE table_schema = 'juhe_business' AND table_name = $1 AND column_name = $2`,
+			column.table, column.name).Scan(&count); err != nil {
+			t.Fatalf("查询代理池列 %s.%s 失败: %v", column.table, column.name, err)
+		}
+		if count != 1 {
+			t.Fatalf("升级后缺少代理池列 %s.%s", column.table, column.name)
+		}
+	}
 
 	// 3.5) 关键启动门禁前置事实直查（演练诊断锚点）：阶段记录必须已存在。
 	var stageJSON string
@@ -213,6 +242,7 @@ func rehearsalBaseEnv(t *testing.T) []string {
 	values := sharedEnvValues(t, "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL")
 	dataDir := t.TempDir()
 	return []string{
+		"JUHE_AI_REDIS_URL=" + values["JUHE_AI_REDIS_CACHE_URL"],
 		"JUHE_AI_REDIS_CACHE_URL=" + values["JUHE_AI_REDIS_CACHE_URL"],
 		"JUHE_AI_REDIS_STATE_URL=" + values["JUHE_AI_REDIS_STATE_URL"],
 		// 演练抓到的真实要求（§11.3 fresh 序列补充）：J3b 电路 Redis 必须

@@ -19,7 +19,7 @@
 | 非 Docker 直跑 | [linux/README.md](linux/README.md)：systemd/裸进程差异、cwd/数据目录契约、升级等价操作 |
 | 发布包构建（非生产主流程） | [构建指南](构建指南.md)：跨平台构建 Go 三项目 + 前端，生成 go-only 发布包 |
 | 出海网络代理（AI 上游） | [proxy/README.md](proxy/README.md) → [sing-box 指南](proxy/sing-box网络代理部署指南.md) |
-| 多节点部署与不停机发布（实施中） | [functions/多节点部署与不停机发布设计.md](../functions/多节点部署与不停机发布设计.md)：多机 Docker + 外部 LB + expand/contract 滚动发布；P1 门禁/账本/在线 DDL、P2 gateway 无状态、P3 jobs 全局 leader 已落地并通过 dev 演练，**尚未达到多节点生产就绪**（共享文件/前端/LB/发布脚本未完成），当前生产仍以单机流程为准 |
+| 多节点部署与不停机发布（实施中） | [functions/多节点部署与不停机发布设计.md](../functions/多节点部署与不停机发布设计.md)：多机 Docker + 外部 LB + expand/contract 滚动发布；P1 门禁/账本/在线 DDL、P2 gateway 无状态、P3 jobs 全局 leader/运行日志按实例拆分/build_info 与按版本指标已落地并通过 dev 演练，**尚未达到多节点生产就绪**（共享文件 NFS 验证/前端/LB/发布脚本未完成），当前生产仍以单机流程为准 |
 | 集群上线与开发兼容（实施中） | [集群上线与开发兼容指南](集群上线与开发兼容指南.md)：集群 expand/switch/contract、单机停写窗口、开发需求评估表与禁止项；`rolling/contract` 在剩余 P3 完成后可用 |
 
 ## 权威位置

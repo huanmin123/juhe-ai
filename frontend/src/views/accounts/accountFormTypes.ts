@@ -109,10 +109,10 @@ export type AccountOAuthAuthorizeForm = Pick<
 >
 
 /**
- * 账户列表状态筛选值：「非时间段」不是账户状态，而是时间计划闸门的派生筛选值
- * （等价 `status='active' AND availability_schedule_gate=0`，时间计划闸门设计 §5.4）。
+ * 账户列表状态筛选值：真实账户状态。时段外并入「可调度」子集（蓝色徽章区分子状态），
+ * 不再设独立筛选值（时间计划闸门设计 §5.4，2026-11-07 裁决）。
  */
-export type AccountStatusFilterValue = AccountStatus | 'out_of_window'
+export type AccountStatusFilterValue = AccountStatus
 
 export interface AccountFilters {
   keyword: string

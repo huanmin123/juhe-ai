@@ -1,6 +1,6 @@
 import type { ApiKeySummary } from '@/types/domain'
 
-export type ApiKeyStatusFilter = 'all' | 'active' | 'disabled' | 'out_of_window'
+export type ApiKeyStatusFilter = 'all' | 'active' | 'disabled'
 
 export function buildApiKeyTableColumns(isManagementView: boolean): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -36,9 +36,8 @@ export const apiKeyStatusOptions: Array<{ label: string; value: 'active' | 'disa
 
 export const apiKeyListStatusOptions: Array<{ label: string; value: ApiKeyStatusFilter }> = [
   { label: '全部状态', value: 'all' },
-  ...apiKeyStatusOptions,
-  // 时间计划闸门（设计 §5.4）：时段外是启用状态的子集，独立筛选值。
-  { label: '非时间段', value: 'out_of_window' }
+  { label: '启用', value: 'active' },
+  { label: '停用', value: 'disabled' }
 ]
 
 export const apiKeyBindingStatusOptions: Array<{ label: string; value: 'active' | 'disabled' }> = [
@@ -47,21 +46,20 @@ export const apiKeyBindingStatusOptions: Array<{ label: string; value: 'active' 
 ]
 
 /**
- * 列表接口接受 active/disabled/out_of_window/all；「非时间段」自 2026-11-03 起
- * 下沉为服务端虚拟筛选值（等价 status='active' AND availability_schedule_gate=0，
- * 时间计划闸门设计 §5.4），避免只过滤当前页造成跨页假阴性。
+ * 列表接口只接受 active/disabled/all；「启用」天然包含时段外（gate=0），
+ * out_of_window 服务端虚拟筛选值已退役（时间计划闸门设计 §5.4，2026-11-07 裁决）。
  */
 export function apiKeyListStatusQueryValue(
   filter: ApiKeyStatusFilter
-): 'all' | 'active' | 'disabled' | 'out_of_window' {
+): 'all' | 'active' | 'disabled' {
   return filter
 }
 
 export function apiKeyMatchesListStatusFilter(
-  apiKey: Pick<ApiKeySummary, 'status' | 'availabilityScheduleGate'>,
+  apiKey: Pick<ApiKeySummary, 'status'>,
   filter: ApiKeyStatusFilter
 ): boolean {
   if (filter === 'all') return true
-  if (filter === 'out_of_window') return apiKey.status === 'active' && apiKey.availabilityScheduleGate === 0
+  // 「启用」天然包含时段外（gate=0）：运行状态仍为 active（时间计划闸门设计 §5.4，2026-11-07 裁决）。
   return apiKey.status === filter
 }

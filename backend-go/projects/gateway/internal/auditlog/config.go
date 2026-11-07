@@ -51,6 +51,9 @@ type Config struct {
 	PostgresMaxIdleConns     int
 	PostgresPool             *pgpool.Handle
 	BusinessSettingsURL      string
+	// LeaseKey 是写入 owner lease 的账本键；空值使用 DefaultLeaseKey。
+	// 多副本由 main 注入 LeaseKeyForInstance(InstanceID) 以保证每实例独立。
+	LeaseKey string
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {

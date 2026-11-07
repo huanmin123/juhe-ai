@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -222,27 +223,39 @@ func (q *chainDispatchQuota) CheckBatchAsync(ctx context.Context, groupAccess ga
 	return out, nil
 }
 
-// chainConcurrencyStore adapts the process-local account concurrency tracker
-// onto the dispatch AccountConcurrencyStore port (Node shared/account-concurrency
-// memory driver: state stays process-local, acquire/release per lane).
+// accountConcurrencyTracker 是 memory / Redis 两种账户并发事实源的共同接口。
+// 读面与 RPM 逐次消费由 gatewayclientip 契约提供；TryAcquire/Release 的
+// 驱动差异在 chainConcurrencyStore 内适配。
+type accountConcurrencyTracker interface {
+	gatewayclientip.AccountConcurrencySource
+	ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error)
+}
+
+// redisAccountConcurrencySlotTTL 是 Redis 并发槽的泄漏兜底 TTL。正常请求
+// 结束时 Release 会立即递减；TTL 只覆盖进程崩溃/释放丢失，取值需大于最长
+// SSE/视频请求时长，同时避免故障后永久占槽。
+const redisAccountConcurrencySlotTTL = 6 * time.Hour
+
+// chainConcurrencyStore adapts the account concurrency tracker onto the
+// dispatch AccountConcurrencyStore port. Production uses the Redis driver so
+// total/lane/RPM counters are shared across gateway replicas; tests and
+// chain-disabled compositions keep the memory driver.
 type chainConcurrencyStore struct {
-	tracker *gatewayclientip.MemoryAccountConcurrency
+	tracker accountConcurrencyTracker
 }
 
 // T161：组合根必须同时实现 RPM 逐次消费端口，避免同一并发槽内的重试少计。
 var _ gatewaydispatch.AccountRPMConsumer = (*chainConcurrencyStore)(nil)
 
-func newChainConcurrencyStore(tracker *gatewayclientip.MemoryAccountConcurrency) *chainConcurrencyStore {
+func newChainConcurrencyStore(tracker accountConcurrencyTracker) *chainConcurrencyStore {
 	return &chainConcurrencyStore{tracker: tracker}
 }
 
-// chainAccountConcurrencyReader adapts the same process-local tracker onto the
-// management-list concurrency read ports (groups AccountConcurrencyReader /
-// accounts AccountConcurrencyReader): 分组与账户列表的“当前并发”在列表请求时
-// 按运行时实时计数 hydrate（Node standalone 语义），与 dispatch 引擎共用同一
-// 进程内事实源。
+// chainAccountConcurrencyReader adapts the same tracker onto the management-list
+// concurrency read ports (groups AccountConcurrencyReader / accounts
+// AccountConcurrencyReader) so list views and dispatch share one fact source.
 type chainAccountConcurrencyReader struct {
-	tracker *gatewayclientip.MemoryAccountConcurrency
+	tracker accountConcurrencyTracker
 }
 
 func (r chainAccountConcurrencyReader) LoadCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error) {
@@ -294,12 +307,25 @@ func (s *chainConcurrencyStore) LoadCurrentRPMAsync(ctx context.Context, account
 // 账户每分钟请求上限（options.RPMLimit，0 视为不限制；AI 账户每分钟请求上
 // 限设计 §4.3：同一临界区内并发在前、RPM 在后，拒绝不自增，通过才同时 +1）；
 // 拒绝时计数都不自增，slot 仅携带观测值（含 RPM 窗口与重置时刻）。
-func (s *chainConcurrencyStore) TryAcquireAsync(_ context.Context, accountID string, concurrencyLimit int, options gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
+func (s *chainConcurrencyStore) TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	laneLimit := concurrencyLimit
 	if options.LaneLimit != nil {
 		laneLimit = *options.LaneLimit
 	}
-	outcome := s.tracker.TryAcquire(accountID, concurrencyLimit, options.Lane, laneLimit, options.RPMLimit)
+	var outcome gatewayclientip.AccountConcurrencyAcquireOutcome
+	switch tracker := s.tracker.(type) {
+	case *gatewayclientip.MemoryAccountConcurrency:
+		outcome = tracker.TryAcquire(accountID, concurrencyLimit, options.Lane, laneLimit, options.RPMLimit)
+	case *gatewayclientip.RedisAccountConcurrency:
+		var err error
+		outcome, err = tracker.AcquireAccountConcurrency(ctx, accountID, options.Lane,
+			redisAccountConcurrencySlotTTL.Milliseconds(), concurrencyLimit, laneLimit, options.RPMLimit)
+		if err != nil {
+			return gatewaydispatch.ConcurrencySlot{}, err
+		}
+	default:
+		return gatewaydispatch.ConcurrencySlot{}, fmt.Errorf("unsupported account concurrency tracker %T", s.tracker)
+	}
 	slot := gatewaydispatch.ConcurrencySlot{
 		Current:      outcome.Total,
 		Limit:        concurrencyLimit,
@@ -316,12 +342,24 @@ func (s *chainConcurrencyStore) TryAcquireAsync(_ context.Context, accountID str
 	slot.Acquired = true
 	accountIDCopy := accountID
 	laneCopy := options.Lane
-	slot.Release = func() { s.tracker.Release(accountIDCopy, laneCopy) }
+	slot.Release = func() {
+		switch tracker := s.tracker.(type) {
+		case *gatewayclientip.MemoryAccountConcurrency:
+			tracker.Release(accountIDCopy, laneCopy)
+		case *gatewayclientip.RedisAccountConcurrency:
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := tracker.ReleaseAccountConcurrency(releaseCtx, accountIDCopy, laneCopy); err != nil {
+				slog.Warn("account concurrency Redis release failed; slot TTL will recover",
+					"accountId", accountIDCopy, "lane", laneCopy, "error", err)
+			}
+		}
+	}
 	return slot, nil
 }
 
-// ConsumeRPM 把同一并发槽内后续真实上游尝试的 RPM 消费委托给进程内
-// tracker（T161）；首次占位的计数仍由 TryAcquireAsync 原子完成。
+// ConsumeRPM 把同一并发槽内后续真实上游尝试的 RPM 消费委托给当前 tracker
+// （T161，memory/Redis 同契约）；首次占位的计数仍由 TryAcquireAsync 原子完成。
 func (s *chainConcurrencyStore) ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error) {
 	return s.tracker.ConsumeRPM(ctx, accountID, rpmLimit)
 }

@@ -58,20 +58,22 @@
         <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'model'">
-        <span v-if="record.model || record.upstreamModelMismatch || usageRecordServiceTierText(record) || usageRecordReasoningEffortText(record) || usageRecordPiiHitSummary(record)" class="model-cell">
+        <span v-if="record.model || record.upstreamModelMismatch || usageRecordServiceTierText(record) || usageRecordReasoningEffortText(record)" class="model-cell">
           <a-tag v-if="record.model" color="blue"><ProviderIcon v-if="record.providerCode" :provider-code="record.providerCode" :name="providerDisplayName(record.providerCode)" :size="13" /> {{ record.model }}</a-tag>
           <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
           <a-tag v-if="record.upstreamModelMismatch && record.upstreamResponseModel" color="red">上游响应 {{ record.upstreamResponseModel }}</a-tag>
           <a-tag v-if="usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
           <a-tag v-if="usageRecordReasoningEffortText(record)" color="cyan">思考 {{ usageRecordReasoningEffortText(record) }}</a-tag>
-          <a-tooltip v-if="usageRecordPiiHitSummary(record)" :title="usageRecordPiiHitDetail(record)">
-            <a-tag color="volcano">{{ usageRecordPiiHitSummary(record) }}</a-tag>
-          </a-tooltip>
         </span>
         <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'stream'">
-        <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
+        <span class="stream-cell">
+          <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
+          <a-tooltip v-if="record.securityPolicyApplied" :title="usageRecordHasPiiHit(record) ? usageRecordPiiHitDetail(record) : '该请求已开启安全防护，未发现敏感信息'">
+            <a-tag :color="usageRecordHasPiiHit(record) ? 'volcano' : 'blue'">{{ usageRecordHasPiiHit(record) ? '敏' + usageRecordPiiHitTotal(record) : '敏' }}</a-tag>
+          </a-tooltip>
+        </span>
       </template>
       <template v-else-if="column.key === 'status'">
         <span class="status-cell">
@@ -161,13 +163,14 @@ import {
   trafficSourceColor,
   trafficSourceText,
   usageRecordHasMediaMetering,
+  usageRecordHasPiiHit,
   usageRecordIsCompaction,
   usageRecordMediaParts,
   usageRecordPiiHitDetail,
-  usageRecordPiiHitSummary,
+  usageRecordPiiHitTotal,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
-  usageRecordSystemAccountText
+  usageRecordSystemAccountText,
 } from './usageRecordFormatters'
 
 function latencySeverityClass(severity: LatencySeverity): string {
@@ -257,6 +260,12 @@ function handleTableChange(...args: unknown[]): void {
   white-space: normal;
 }
 
+.stream-cell {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  white-space: normal;
+}
 .status-cell {
   display: inline-flex;
   align-items: flex-start;

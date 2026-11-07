@@ -21,6 +21,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -35,8 +36,23 @@ const (
 
 var ErrOwnerLeaseLost = errors.New("F3 audit owner lease 已失效或已移交")
 
+// DefaultLeaseKey 是单实例/旧配置的租约键；多副本由 main 注入
+// LeaseKeyForInstance 生成的每实例键，retention 单活不再依赖该行。
+const DefaultLeaseKey = "f3-audit-log-persistence"
+
+// LeaseKeyForInstance 为每个 gateway 实例生成独立写入 lease 键。同一
+// instanceID 的两个进程会互相 fence，部署侧必须保证实例 ID 唯一。
+func LeaseKeyForInstance(instanceID string) string {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return DefaultLeaseKey
+	}
+	return DefaultLeaseKey + ":" + instanceID
+}
+
 type sqlStore struct {
 	db          *sql.DB
+	leaseKey    string
 	blobDir     string
 	hotDir      string
 	hotMu       sync.Mutex
@@ -118,7 +134,11 @@ func OpenStore(cfg Config) (Store, error) {
 	if hotDir == "" {
 		hotDir = filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")
 	}
-	return &sqlStore{db: pool.DB(), pool: pool, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
+	leaseKey := strings.TrimSpace(cfg.LeaseKey)
+	if leaseKey == "" {
+		leaseKey = DefaultLeaseKey
+	}
+	return &sqlStore{db: pool.DB(), leaseKey: leaseKey, pool: pool, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
 }
 
 func (s *sqlStore) Close() error {
@@ -143,7 +163,7 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 			return fmt.Errorf("开始 F3 PostgreSQL schema 事务失败: %w", err)
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(763847293)"); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("SELECT pg_advisory_xact_lock(%d)", advisorylock.SchemaBootstrap)); err != nil {
 			return fmt.Errorf("获取 F3 PostgreSQL schema 锁失败: %w", err)
 		}
 		for _, statement := range strings.Split(postgresSchema, ";") {
@@ -184,7 +204,7 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, ownerID string, durati
 		return OwnerLease{}, false, err
 	}
 	var token int64
-	err := s.db.QueryRowContext(ctx, s.bind(postgresAcquireLeaseSQL), "f3-audit-log-persistence", ownerID, duration.Milliseconds()).Scan(&token)
+	err := s.db.QueryRowContext(ctx, s.bind(postgresAcquireLeaseSQL), s.leaseKey, ownerID, duration.Milliseconds()).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -198,7 +218,7 @@ func (s *sqlStore) RenewOwnerLease(ctx context.Context, lease OwnerLease, durati
 	if err := s.EnsureSchema(ctx); err != nil {
 		return false, err
 	}
-	result, err := s.db.ExecContext(ctx, s.bind(postgresRenewLeaseSQL), duration.Milliseconds(), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken)
+	result, err := s.db.ExecContext(ctx, s.bind(postgresRenewLeaseSQL), duration.Milliseconds(), s.leaseKey, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return false, fmt.Errorf("续约 F3 PostgreSQL owner lease 失败: %w", err)
 	}
@@ -214,7 +234,7 @@ func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) erro
 	// token to 1, allowing a delayed former owner to become indistinguishable
 	// from a new owner after a voluntary handoff.
 	query := `UPDATE ` + s.table("audit_log_owner_leases") + ` SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key=? AND owner_id=? AND fence_token=?`
-	arguments := []any{"f3-audit-log-persistence", lease.OwnerID, lease.FenceToken}
+	arguments := []any{s.leaseKey, lease.OwnerID, lease.FenceToken}
 	result, err := s.db.ExecContext(ctx, s.bind(query), arguments...)
 	if err != nil {
 		return fmt.Errorf("释放 F3 owner lease 失败: %w", err)
@@ -467,7 +487,7 @@ func (s *sqlStore) verifyLeaseTx(ctx context.Context, tx *sql.Tx, lease OwnerLea
 		return ErrOwnerLeaseLost
 	}
 	var found int
-	err := tx.QueryRowContext(ctx, s.bind(postgresInitialFenceSQL), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken).Scan(&found)
+	err := tx.QueryRowContext(ctx, s.bind(postgresInitialFenceSQL), s.leaseKey, lease.OwnerID, lease.FenceToken).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrOwnerLeaseLost
 	}
@@ -479,7 +499,7 @@ func (s *sqlStore) verifyLeaseTx(ctx context.Context, tx *sql.Tx, lease OwnerLea
 
 func (s *sqlStore) verifyLeaseBeforeCommit(ctx context.Context, tx *sql.Tx, lease OwnerLease) error {
 	var token int64
-	err := tx.QueryRowContext(ctx, s.bind(postgresCommitFenceSQL), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken).Scan(&token)
+	err := tx.QueryRowContext(ctx, s.bind(postgresCommitFenceSQL), s.leaseKey, lease.OwnerID, lease.FenceToken).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrOwnerLeaseLost
 	}

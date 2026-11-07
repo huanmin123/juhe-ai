@@ -34,6 +34,15 @@ const AccountListDirty int64 = 7001001
 // 732946110271044015/…016。
 const UpgradeOrchestration int64 = 7001002
 
+// SchemaBootstrap 串行化 gateway 启动期的幂等 schema 初始化。F3/F4 两个
+// store 都会执行 `CREATE SCHEMA IF NOT EXISTS juhe_dataset`；即使带 IF NOT
+// EXISTS，并发创建仍可能撞 pg_namespace 唯一索引（多副本同时启动时实测
+// 23505）。gateway F3/F4 必须使用本键；jobs/maintenance 的 dataset ensure
+// 尚未接入本键，全新库上跨进程并发 bootstrap 仍需在 P3/P4 补齐。旧 gateway
+// 二进制仍使用 763847293/763847296，与新键在混合版本滚动窗口互不互斥；
+// schema 已存在时 IF NOT EXISTS 不触发该竞态，仅全新库+新旧并发首启需避免。
+const SchemaBootstrap int64 = 7001005
+
 // ListDirtyLockWaitTimeout 是应用侧投影写事务取 AccountListDirty 锁的等待
 // 上限（经事务级 lock_timeout 生效）。BUG-0313：主机资源饱和时持锁事务可
 // 被饿死在事务中间不放手（生产曾观测单个事务持锁 24 分钟、37+ 事务排队），

@@ -30,7 +30,10 @@ import (
 )
 
 // readSource loads a composition-root source file for the text-level wiring
-// assertions (gofmt-stable needles only).
+// assertions. Needles that pin struct-literal fields must be matched through
+// sourceContains: gofmt aligns "Field: value" spacing relative to sibling
+// fields, so a plain strings.Contains brakes whenever an unrelated field is
+// added (BUG-0175 后遗症：DBService 对齐漂移曾使本文件测试在干净 HEAD 上失败).
 func readSource(t *testing.T, name string) string {
 	t.Helper()
 	source, err := os.ReadFile(name)
@@ -38,6 +41,14 @@ func readSource(t *testing.T, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(source)
+}
+
+// sourceContains 在忽略空白差异（全部折叠为单空格）后判断源码是否包含书签。
+// 组合根断言里有大量 "Field: value" 形式的结构体字面量书签，gofmt 会按相邻
+// 字段的最长键对齐冒号后的空格；直接 Contains 会随无关字段增删而误报失败。
+func sourceContains(source, needle string) bool {
+	normalize := func(text string) string { return strings.Join(strings.Fields(text), " ") }
+	return strings.Contains(normalize(source), normalize(needle))
 }
 
 func strPtrOf(value string) *string { return &value }
@@ -88,7 +99,7 @@ func TestComposeWiresDynamicRouteOrderer(t *testing.T) {
 		"gatewayrouting.NewAPIKeyGroupRouteSelector(\"redis\"",
 		"Orderer: newChainGroupBindingOrderer(routeSelector)",
 	} {
-		if !strings.Contains(runtime, needle) {
+		if !sourceContains(runtime, needle) {
 			t.Fatalf("chain_runtime.go must wire the dynamic route orderer: %s", needle)
 		}
 	}
@@ -691,7 +702,7 @@ func TestChainHotQualityLifecycleScopeMatchesOrderingScope(t *testing.T) {
 	// 本锁的前置契约：引擎侧 input 的协议画像键仍由 hotQualityProtocolProfileOf
 	// 预组合（若引擎改变该语义，上表的 engineProfile 复写即失真，须同步更新）。
 	source := readSource(t, "../../internal/gatewaydispatch/dispatchsingle.go")
-	if !strings.Contains(source, "ProtocolProfile: hotQualityProtocolProfileOf(c.account)") {
+	if !sourceContains(source, "ProtocolProfile: hotQualityProtocolProfileOf(c.account)") {
 		t.Fatal("dispatchsingle.go must keep the engine-side protocol profile projection (hotQualityProtocolProfileOf)")
 	}
 }
@@ -742,7 +753,7 @@ func TestChainHotQualityLifecycleAuthorizedRuntimeKeyMatches(t *testing.T) {
 func TestChainQuotaDBServiceBridgesInProcessReads(t *testing.T) {
 	runtime := readSource(t, "chain_runtime.go")
 	needle := "DBService: newChainQuotaDBService(apiKeyQuota, authzQuota)"
-	if !strings.Contains(runtime, needle) {
+	if !sourceContains(runtime, needle) {
 		t.Fatalf("chain_runtime.go must inject the process-local quota db-service fallback: %s", needle)
 	}
 	// The compile-time port satisfaction rides chain_wiring_w2c.go.
@@ -767,7 +778,7 @@ func TestComposeWiresW2CChainPorts(t *testing.T) {
 		"newChainHotQualityLifecycleFactory(chainServices.HotQuality)",
 		"store:  chainServices.SuppressionStore",
 	} {
-		if !strings.Contains(compose, needle) {
+		if !sourceContains(compose, needle) {
 			t.Fatalf("compose.go must wire the W2-C chain port: %s", needle)
 		}
 	}

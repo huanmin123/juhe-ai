@@ -73,7 +73,7 @@ func TestDestructiveTargetsParse(t *testing.T) {
 		if target.Column != "" {
 			t.Fatalf("DROP TABLE 目标不应带列名: %+v", target)
 		}
-		if target.Schema != "juhe_business" && target.Schema != "juhe_codex_context" && target.Schema != "juhe_stats" {
+		if target.Schema != "juhe_business" && target.Schema != "juhe_stats" {
 			t.Fatalf("目标 schema 越界: %+v", target)
 		}
 	}

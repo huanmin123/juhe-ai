@@ -54,8 +54,8 @@ func TestT30LatestCatalogModelsFromModelsTable(t *testing.T) {
 	}
 	for _, row := range rows {
 		env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
-			supported_endpoint_modes_json, release_date, created_at, updated_at)
-			VALUES (?, 't30vendor', ?, ?, 'builtin', ?, ?, ?, ?, ?)`,
+			supported_endpoint_modes_json, release_date, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+			VALUES (?, 't30vendor', ?, ?, 'builtin', ?, ?, ?, 1, 1, ?, ?)`,
 			"mod-t30-"+row.name, row.name, row.name, row.status, row.modes, row.release, now, now)
 	}
 	models, err := env.store.latestCatalogModels(context.Background(), "t30vendor", 5)
@@ -83,8 +83,8 @@ func TestT30CreateAccountDefaultsFollowModelsCatalog(t *testing.T) {
 		{"mod-t30-cat-off", "t30-cat-off", "2026-09-02", "disabled", `["chat_json"]`},
 	} {
 		env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
-			supported_endpoint_modes_json, release_date, created_at, updated_at)
-			VALUES (?, 'gpt', ?, ?, 'builtin', ?, ?, ?, ?, ?)`,
+			supported_endpoint_modes_json, release_date, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+			VALUES (?, 'gpt', ?, ?, 'builtin', ?, ?, ?, 1, 1, ?, ?)`,
 			row.id, row.name, row.name, row.status, row.modes, row.release, now, now)
 	}
 	// gpt 目录行集：seedOAuthCatalog 的 gpt-4o-mini/gpt-5/m1/m2（无

@@ -127,13 +127,18 @@ func TestRedisAccountConcurrencyConsumeRPM(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-consume", AccountConcurrencyLaneText, 120_000, 5, 5, 2)
+	outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-consume", AccountConcurrencyLaneText, (6 * time.Hour).Milliseconds(), 5, 5, 2)
 	if err != nil || !outcome.Acquired || outcome.RPMCurrent != 1 {
 		t.Fatalf("首次占位 = %+v err %v, want RPM 1", outcome, err)
 	}
 	allowed, current, resetAtMs, err := instance.ConsumeRPM(ctx, "acc-consume", 2)
 	if err != nil || !allowed || current != 2 || resetAtMs != 1_860_000 {
 		t.Fatalf("第二次消费 = allowed=%v current=%d reset=%d err=%v, want 2", allowed, current, resetAtMs, err)
+	}
+	// ConsumeRPM 只延长不足 120s 的 TTL，不能把并发槽的 6h 泄漏兜底缩短。
+	ttl, err := client.PTTL(ctx, instance.accountConcurrencyKey("acc-consume")).Result()
+	if err != nil || ttl < 5*time.Hour {
+		t.Fatalf("consume 后 key TTL = %v err %v, want 仍接近 6h", ttl, err)
 	}
 	allowed, current, resetAtMs, err = instance.ConsumeRPM(ctx, "acc-consume", 2)
 	if err != nil || allowed || current != 2 || resetAtMs != 1_860_000 {

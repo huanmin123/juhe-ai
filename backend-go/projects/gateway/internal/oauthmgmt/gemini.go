@@ -230,7 +230,9 @@ func (s *Store) generateGeminiAuthURL(input geminiAuthURLOptions) (map[string]an
 		BaseURL:              baseURL,
 		OwnerSystemAccountID: input.OwnerID,
 	}
-	s.sessions.set(geminiSessionNamespace, sessionID, session, oauthSessionTTL)
+	if err := s.sessions.setJSON(context.Background(), geminiSessionNamespace, sessionID, session, oauthSessionTTL); err != nil {
+		return nil, &SessionStoreError{Op: "保存", Err: err}
+	}
 	return map[string]any{
 		"authUrl":   buildGeminiAuthorizeURL(clientID, redirectURI, scope, state, codeChallenge, projectID),
 		"sessionId": sessionID,
@@ -345,7 +347,10 @@ func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input gemin
 	if err != nil {
 		return nil, err
 	}
-	raw := s.sessions.get(geminiSessionNamespace, input.SessionID)
+	raw, err := s.sessions.getJSON(ctx, geminiSessionNamespace, input.SessionID)
+	if err != nil {
+		return nil, &SessionStoreError{Op: "读取", Err: err}
+	}
 	if raw == nil {
 		return nil, errors.New("Gemini OAuth 会话不存在或已过期")
 	}
@@ -396,7 +401,11 @@ func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input gemin
 	if err != nil {
 		return nil, err
 	}
-	if !s.sessions.compareDelete(geminiSessionNamespace, input.SessionID, session) {
+	consumed, err := s.sessions.compareDeleteJSON(ctx, geminiSessionNamespace, input.SessionID, session)
+	if err != nil {
+		return nil, &SessionStoreError{Op: "消费", Err: err}
+	}
+	if !consumed {
 		return nil, errors.New("Gemini OAuth 会话已消费，请重新发起授权")
 	}
 	return enrichGeminiTokenInfo(info), nil
@@ -548,7 +557,7 @@ func enrichGeminiTokenInfo(info *geminiTokenInfo) *geminiTokenInfo {
 
 // geminiCodeAssistProbeTimeout 与包内既有上游 token 调用同一量级（token 端点
 // 25s，见 transport.go defaultTokenTimeout）；响应体超限由共用 exchanger 报错
-//（transport.go 的 256KiB 上限）。
+// （transport.go 的 256KiB 上限）。
 const geminiCodeAssistProbeTimeout = defaultTokenTimeout
 
 // geminiOnboardingError 标记建号链 Code Assist 探测/onboarding 的确定性失败：
@@ -904,4 +913,3 @@ func geminiRotationAccountOAuthType(current *rotationAccount, _ map[string]any) 
 	}
 	return ""
 }
-

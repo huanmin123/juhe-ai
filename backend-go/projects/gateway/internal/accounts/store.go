@@ -291,6 +291,26 @@ func accountStatusFilterValues(status string) []string {
 	return values
 }
 
+// expandScheduleOutOfWindowStatuses（2026-11-07 裁决，时间计划闸门与账户状态
+// 解耦设计 §5.4 修正）：状态筛选词表里的 active 按「正常状态」语义命中——
+// 生效状态派生把 active+gate=0 写为 schedule_out_of_window（正常状态子集），
+// 筛选随展示口径展开命中；「停用」等其余词目不展开。
+func expandScheduleOutOfWindowStatuses(statuses []string) []string {
+	hasActive, hasDerived := false, false
+	for _, status := range statuses {
+		switch status {
+		case "active":
+			hasActive = true
+		case "schedule_out_of_window":
+			hasDerived = true
+		}
+	}
+	if !hasActive || hasDerived {
+		return statuses
+	}
+	return append(statuses, "schedule_out_of_window")
+}
+
 // normalizeTextList mirrors normalizeTextList: trimmed, deduplicated, sorted,
 // capped.
 func normalizeTextList(values []string, cap int) []string {

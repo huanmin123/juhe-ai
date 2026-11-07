@@ -148,7 +148,7 @@ scrape_configs:
 
 容器内必须监听 `0.0.0.0` 才能被 compose 端口映射转发；宿主侧发布固定为 `127.0.0.1:<port>:<port>`，公网与容器网络都不能直接访问。不要为“方便抓取”改成全网卡发布，也不要在 Caddy 反代。
 
-输出应包含 `go_goroutines`、`process_start_time_seconds` 等标准族；gateway 还应出现 `juhe_ai_http_requests_total`。`curl` 失败时先查容器是否 healthy、端口映射是否存在，不要先改 Prometheus。
+输出应包含 `go_goroutines`、`process_start_time_seconds` 等标准族；gateway 还应出现 `juhe_ai_build_info` 与 `juhe_ai_http_requests_total`（后者带 `version` 标签，可用于核对滚动发布版本分布）。`curl` 失败时先查容器是否 healthy、端口映射是否存在，不要先改 Prometheus。
 
 ## 4. Prometheus 抓取约定
 

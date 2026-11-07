@@ -36,6 +36,34 @@ export const securityPolicyRuleActionOptions: Array<{ label: string; value: Secu
   { label: '占位符（响应自动还原）', value: 'placeholder' }
 ]
 
+/** 编辑弹窗「内置敏感信息」矩阵行的动作三选一：off = 不处理（该 type 不生成规则）。 */
+export type SecurityPolicyMatrixActionValue = 'off' | SecurityPolicyRuleAction
+
+export const securityPolicyMatrixActionOptions: Array<{ label: string; value: SecurityPolicyMatrixActionValue }> = [
+  { label: '不处理', value: 'off' },
+  { label: '打码（不可逆）', value: 'mask' },
+  { label: '占位符（响应自动还原）', value: 'placeholder' }
+]
+
+/** 内置敏感信息矩阵固定行序与展示名（编辑弹窗「内置敏感信息」区，每行唯一由矩阵结构保证）。 */
+export const securityPolicyBuiltInMatrixTypes = ['phone', 'email', 'id_card', 'bank_card', 'ipv4', 'secret'] as const
+
+export type SecurityPolicyBuiltInMatrixType = (typeof securityPolicyBuiltInMatrixTypes)[number]
+
+export const securityPolicyBuiltInMatrixLabels: Record<SecurityPolicyBuiltInMatrixType, string> = {
+  phone: '手机号',
+  email: '邮箱',
+  id_card: '身份证号',
+  bank_card: '银行卡号',
+  ipv4: 'IPv4 地址',
+  secret: '密钥形态'
+}
+
+/** 是否内置敏感信息类型（矩阵 6 类；custom 两类与未知/脏 type 都不属于矩阵槽位）。 */
+export function isSecurityPolicyBuiltInRuleType(type: SecurityPolicyRuleType): boolean {
+  return (securityPolicyBuiltInMatrixTypes as readonly string[]).includes(type)
+}
+
 /** placeholder 标签默认词表（契约 §3.3）；label 缺省时按 type 下发默认，前端仅在用户填写时提交。 */
 export const securityPolicyDefaultRuleLabel: Record<SecurityPolicyRuleType, string> = {
   phone: 'PHONE',
@@ -67,12 +95,13 @@ export const securityPolicyBounds = {
 
 const securityPolicyLabelPattern = /^[A-Z][A-Z0-9_]{0,30}$/
 
-/** 编辑弹窗单行规则表单模型：custom_keywords 用 tag 输入（string[]），maskKeep 缺省表示跟随 type 默认。 */
+/** 编辑弹窗单行规则表单模型：custom_keywords 用 tag 输入（string[]），maskKeep 缺省表示跟随 type 默认。
+ *  overflowBuiltIn：读入兜底标记——同一内置 type 的第二条起保真留在自定义区展示，不占矩阵槽位。 */
 export interface SecurityPolicyRuleRowForm {
   id: string
   type: SecurityPolicyRuleType
   action: SecurityPolicyRuleAction
-  /** placeholder 动作的可选标签；空串表示按 type 默认词表。 */
+  /** placeholder 动作的可选标签；内置矩阵行按词表预填默认（必填），自定义行可空按 type 默认。 */
   label: string
   /** custom_regex 专属输入。 */
   pattern: string
@@ -80,6 +109,8 @@ export interface SecurityPolicyRuleRowForm {
   keywords: string[]
   /** mask 动作可选保留位数；undefined = 按 type 默认。 */
   maskKeep?: number
+  /** 内置类型重复行的保真兜底标记；仅读入分流时设置。 */
+  overflowBuiltIn?: boolean
 }
 
 export interface SecurityPolicyFormModel {
@@ -97,11 +128,11 @@ export interface SecurityPolicyFormPayload {
 
 let ruleRowSequence = 0
 
-/** 新建空规则行：默认手机号 + 打码（首个类型的可用默认组合）。 */
-export function emptySecurityPolicyRuleRow(id?: string): SecurityPolicyRuleRowForm {
+/** 新建自定义规则行：默认自定义正则 + 打码（自定义区首个可用默认组合）。 */
+export function emptySecurityPolicyCustomRuleRow(id?: string): SecurityPolicyRuleRowForm {
   return {
     id: id ?? `rule-${++ruleRowSequence}`,
-    type: 'phone',
+    type: 'custom_regex',
     action: 'mask',
     label: '',
     pattern: '',
@@ -110,17 +141,106 @@ export function emptySecurityPolicyRuleRow(id?: string): SecurityPolicyRuleRowFo
   }
 }
 
-/** 列表行 rules 还原为编辑行模型；非 custom 类型的 pattern/keywords 字段丢弃。 */
+/** 新建内置矩阵规则行：占位符动作按词表预填默认 label（矩阵占位标签必填），打码动作 label 留空。 */
+export function builtinSecurityPolicyRuleRow(
+  type: SecurityPolicyBuiltInMatrixType,
+  action: SecurityPolicyRuleAction,
+  id?: string
+): SecurityPolicyRuleRowForm {
+  return {
+    id: id ?? `rule-${++ruleRowSequence}`,
+    type,
+    action,
+    label: action === 'placeholder' ? securityPolicyDefaultRuleLabel[type] : '',
+    pattern: '',
+    keywords: [],
+    maskKeep: undefined
+  }
+}
+
+/** 内置敏感信息矩阵槽位投影：固定 6 行；row = 该 type 在 rules 中的生效规则行（「不处理」时缺席）。 */
+export interface SecurityPolicyMatrixSlot {
+  type: SecurityPolicyBuiltInMatrixType
+  name: string
+  row?: SecurityPolicyRuleRowForm
+  action: SecurityPolicyMatrixActionValue
+}
+
+/** rules 数组是唯一数据源：矩阵槽位是按 type 的投影（overflow 保真行不占槽位）。 */
+export function securityPolicyMatrixSlots(rules: SecurityPolicyRuleRowForm[]): SecurityPolicyMatrixSlot[] {
+  return securityPolicyBuiltInMatrixTypes.map((type) => {
+    const row = rules.find((candidate) => candidate.type === type && !candidate.overflowBuiltIn)
+    return row
+      ? { type, name: securityPolicyBuiltInMatrixLabels[type], row, action: row.action }
+      : { type, name: securityPolicyBuiltInMatrixLabels[type], action: 'off' }
+  })
+}
+
+/** 矩阵行动作变化 → rules upsert/remove（保存 payload 契约不变）：
+ *  off = 移除该 type 的槽位行；mask/placeholder = 已有行改 action（切占位符补默认 label，切打码保留 label
+ *  备用但不使用），无行则尾部新增；overflow 保真行不参与槽位 upsert。 */
+export function applySecurityPolicyMatrixAction(
+  rules: SecurityPolicyRuleRowForm[],
+  type: SecurityPolicyBuiltInMatrixType,
+  action: SecurityPolicyMatrixActionValue
+): SecurityPolicyRuleRowForm[] {
+  const index = rules.findIndex((row) => row.type === type && !row.overflowBuiltIn)
+  if (action === 'off') {
+    return index < 0 ? rules : rules.filter((_, position) => position !== index)
+  }
+  if (index >= 0) {
+    return rules.map((row, position) => {
+      if (position !== index) return row
+      const label = action === 'placeholder' && !row.label.trim()
+        ? securityPolicyDefaultRuleLabel[type]
+        : row.label
+      return { ...row, action, label }
+    })
+  }
+  return [...rules, builtinSecurityPolicyRuleRow(type, action)]
+}
+
+/** 自定义区行判定：custom 两类 + 未知/脏 type 兜底 + 内置同 type 重复的保真行。 */
+export function isSecurityPolicyMatrixSlotRow(row: Pick<SecurityPolicyRuleRowForm, 'type' | 'overflowBuiltIn'>): boolean {
+  return !row.overflowBuiltIn && isSecurityPolicyBuiltInRuleType(row.type)
+}
+
+/** 自定义规则行类型选项：仅自定义正则/关键词两类；overflow 或未知 type 的兜底行原样展示自身 type。 */
+export function securityPolicyCustomRuleTypeOptions(
+  row: Pick<SecurityPolicyRuleRowForm, 'type'>
+): Array<{ label: string; value: SecurityPolicyRuleType }> {
+  const options = securityPolicyRuleTypeOptions.filter(
+    (option) => option.value === 'custom_regex' || option.value === 'custom_keywords'
+  )
+  if (options.some((option) => option.value === row.type)) return options
+  const label = securityPolicyRuleTypeLabels[row.type] ?? String(row.type)
+  return [{ label, value: row.type }, ...options]
+}
+
+/** 列表行 rules 还原为编辑行模型；非 custom 类型的 pattern/keywords 字段丢弃。
+ *  内置槽位行占位符 label 缺省时按词表补默认（矩阵占位标签必填且有默认值）；同内置 type
+ *  第二条起标记 overflowBuiltIn 保真留在自定义区，未知/脏 type 一并兜底进自定义区不丢数据。 */
 export function securityPolicyRuleRowsFromRules(rules: SecurityPolicyRule[]): SecurityPolicyRuleRowForm[] {
-  return rules.map((rule) => ({
-    id: rule.id,
-    type: rule.type,
-    action: rule.action,
-    label: rule.label ?? '',
-    pattern: rule.type === 'custom_regex' ? rule.pattern ?? '' : '',
-    keywords: rule.type === 'custom_keywords' ? [...rule.keywords ?? []] : [],
-    maskKeep: rule.action === 'mask' ? rule.maskKeep : undefined
-  }))
+  const seenBuiltInTypes = new Set<string>()
+  return rules.map((rule) => {
+    const builtIn = isSecurityPolicyBuiltInRuleType(rule.type)
+    const overflowBuiltIn = builtIn && seenBuiltInTypes.has(rule.type)
+    if (builtIn) seenBuiltInTypes.add(rule.type)
+    const label = rule.label ?? ''
+    const row: SecurityPolicyRuleRowForm = {
+      id: rule.id,
+      type: rule.type,
+      action: rule.action,
+      label: builtIn && !overflowBuiltIn && rule.action === 'placeholder' && !label.trim()
+        ? securityPolicyDefaultRuleLabel[rule.type as SecurityPolicyBuiltInMatrixType]
+        : label,
+      pattern: rule.type === 'custom_regex' ? rule.pattern ?? '' : '',
+      keywords: rule.type === 'custom_keywords' ? [...rule.keywords ?? []] : [],
+      maskKeep: rule.action === 'mask' ? rule.maskKeep : undefined
+    }
+    if (overflowBuiltIn) row.overflowBuiltIn = true
+    return row
+  })
 }
 
 export function defaultSecurityPolicyFormModel(): SecurityPolicyFormModel {
@@ -154,6 +274,14 @@ export function validateSecurityPolicyRuleRow(row: SecurityPolicyRuleRowForm): s
     const oversized = keywords.find((keyword) => utf8ByteLength(keyword) > securityPolicyBounds.keywordMaxBytes)
     if (oversized) return `单个关键词不能超过 ${securityPolicyBounds.keywordMaxBytes} 字节：${oversized}`
   }
+  if (
+    row.action === 'placeholder'
+    && isSecurityPolicyBuiltInRuleType(row.type)
+    && !row.overflowBuiltIn
+    && !row.label.trim()
+  ) {
+    return '内置敏感信息的占位标签不能为空'
+  }
   const label = row.label.trim()
   if (label && !securityPolicyLabelPattern.test(label)) {
     return '标签需以大写字母开头，仅含大写字母、数字与下划线，长度 ≤31'
@@ -179,7 +307,7 @@ export function validateSecurityPolicyForm(form: Pick<SecurityPolicyFormModel, '
   return undefined
 }
 
-/** 行模型 → 提交规则：trim、丢弃空 label、非 custom 类型丢弃专属字段。 */
+/** 行模型 → 提交规则：trim、丢弃空 label、非 custom 类型丢弃专属字段；overflow 标记不进 payload。 */
 export function securityPolicyRuleFromRow(row: SecurityPolicyRuleRowForm): SecurityPolicyRule {
   const rule: SecurityPolicyRule = { id: row.id, type: row.type, action: row.action }
   const label = row.label.trim()

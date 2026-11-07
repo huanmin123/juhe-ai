@@ -484,7 +484,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   function accountListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }): AccountListParams {
-    // 「非时间段」不是账户状态：经 schedulable=out_of_window 下发（时间计划闸门设计 §5.4）。
+    // 状态筛选直接映射 status 多值参数；时段外并入 active（时间计划闸门设计 §5.4，2026-11-07 裁决）。
     const statusQuery = accountStatusFilterQuery(filters.status)
     return {
       systemAccountId,
@@ -497,8 +497,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       type: filters.type && filters.type !== 'all' ? filters.type : undefined,
       groupId: filters.groupId || undefined,
       tagIds: filters.tagIds,
-      status: statusQuery.status,
-      schedulable: statusQuery.schedulable
+      status: statusQuery.status
     }
   }
 

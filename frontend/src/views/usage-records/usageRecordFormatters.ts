@@ -168,10 +168,9 @@ export function usageRecordPiiHitTotal(record: Pick<UsageRecordListItem, 'piiHit
   return total
 }
 
-/** 命中徽标文案：总命中 N>0 → 「脱敏 N」；否则 undefined（不显示徽标）。 */
-export function usageRecordPiiHitSummary(record: Pick<UsageRecordListItem, 'piiHits'>): string | undefined {
-  const total = usageRecordPiiHitTotal(record)
-  return total > 0 ? `脱敏 ${formatTokens(total)}` : undefined
+/** 类型列「敏」标记：该请求经过安全策略脱敏（applied 且总命中 >0）。 */
+export function usageRecordHasPiiHit(record: Pick<UsageRecordListItem, 'piiHits'>): boolean {
+  return usageRecordPiiHitTotal(record) > 0
 }
 
 /** 徽标 tooltip 明细：按规则 label 计数列出，如 `PHONE×2、SECRET×1`。 */

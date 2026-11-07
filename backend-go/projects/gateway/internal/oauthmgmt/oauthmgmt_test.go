@@ -260,8 +260,8 @@ func seedOAuthCatalog(db *sql.DB) error {
 		{"xai", "grok-4", `["chat_json","chat_sse","responses_json","responses_sse"]`},
 	} {
 		if _, err := db.Exec(fixtureBind(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
-			status, supported_endpoint_modes_json, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`),
+			status, supported_endpoint_modes_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', ?, 1, 1, ?, ?)`),
 			"mod-"+model.vendor+"-"+model.name, model.vendor, model.name, model.name,
 			model.modes, now, now); err != nil {
 			return err

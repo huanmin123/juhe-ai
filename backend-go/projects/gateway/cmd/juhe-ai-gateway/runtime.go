@@ -202,7 +202,12 @@ type runtimeConfig struct {
 	// JUHE_AI_LOG_RETENTION_DAYS；JUHE_AI_LOG_FILE_ENABLED 开关已于 2026-09-21
 	// 移除，文件日志恒开). The gateway only scans these files; an empty
 	// directory simply yields no matches.
-	LogDir           string
+	LogDir string
+	// LogInstanceID 是运行日志文件名中的实例段：显式
+	// JUHE_AI_LOG_INSTANCE_ID 优先，未配置时取 datadir.DefaultInstanceID()
+	// （hostname）。多 gateway 共享日志目录时写各自的
+	// juhe-ai.<instanceID>.log，避免同一文件并发写。
+	LogInstanceID    string
 	LogFileEnabled   bool
 	LogMaxFiles      int
 	LogRetentionDays int
@@ -605,6 +610,12 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.LogDir = datadir.Path(getenv, dataDir, "JUHE_AI_LOG_DIR", datadir.RuntimeLogsDirectory)
 	if strings.EqualFold(cfg.LogDir, "disabled") {
 		cfg.LogDir = ""
+	}
+	// 多实例日志文件名实例段：显式 env 优先，否则用 hostname；空 LogDir
+	// （disabled）时仍保留该值，启动日志可观测。
+	cfg.LogInstanceID = strings.TrimSpace(getenv("JUHE_AI_LOG_INSTANCE_ID"))
+	if cfg.LogInstanceID == "" {
+		cfg.LogInstanceID = datadir.DefaultInstanceID()
 	}
 	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
 	cfg.LogFileEnabled = true

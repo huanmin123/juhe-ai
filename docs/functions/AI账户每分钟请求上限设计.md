@@ -28,7 +28,7 @@
 | --- | --- |
 | 账户并发字段 `accounts.concurrency_limit integer NOT NULL DEFAULT 5000` | `backend-go/projects/maintenance/internal/schema/pg_schema_business_tables.go:610` |
 | 进程内并发 tracker：`map[accountID] → {total, text, image}` + 单互斥锁，`TryAcquire` 同锁校验并自增 | `backend-go/projects/gateway/internal/gatewayclientip/accountconcurrency.go:42-95` |
-| Redis 并发实现有 acquire/release Lua，但生产组合根未装配（仅 memory tracker 生效） | `backend-go/projects/gateway/internal/gatewayclientip/accountconcurrency_store_redis.go:160-238`、`cmd/juhe-ai-gateway/chain_runtime.go:343-348` |
+| Redis 并发实现有 acquire/consume/release Lua，生产组合根已装配（共享 runtime-state client + `concurrency` 域 namespace）；memory tracker 仅用于测试/非生产组合 | `backend-go/projects/gateway/internal/gatewayclientip/accountconcurrency_store_redis.go`、`cmd/juhe-ai-gateway/chain_runtime.go:422-434` |
 | 派发首取与 Key 轮换重取都走 `TryAcquireAsync`；失败记入 `capacityLimitFailures` 并跳过账户 | `backend-go/projects/gateway/internal/gatewaydispatch/dispatchsingle.go:137-260` |
 | 候选运行时上限来源：授权实例取来源账户 `source_accounts.concurrency_limit` | `backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_accounts.go:239/:270`、`:1466-1471` |
 | 高并发分组容量等待：`WaitForCapacity` 只认并发计数，ready 判定按账户 total/lane | `backend-go/projects/gateway/internal/gatewaydispatch/upstreamdispatch.go:1119-1208`、`internal/gatewayclientip/queue.go:424-458/:656-682/:859-874` |
@@ -214,7 +214,7 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 
 ### 7.3 回滚
 
-新列为纯加法、带默认值，旧二进制不读；回滚只需换回旧二进制，不需要删列。运行态 RPM 计数在进程内存，重启清零，不存在数据迁移。
+新列为纯加法、带默认值，旧二进制不读；回滚只需换回旧二进制，不需要删列。运行态 RPM 计数自 2026-11-07 起与并发槽同存 Redis HASH，重启不清零；窗口按自然分钟滚动，残留字段由 acquire/consume 的 TTL 兜底，不存在数据迁移。
 
 ## 8. 实施范围（最小非重叠）
 
@@ -236,5 +236,5 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 
 - 固定窗口在分钟边界可能出现短时双倍突发（例如 10:59:59 用满 60 次、11:00:00 再用 60 次）；上游仍可能在边界返回 429，走既有错误策略。
 - 占槽后未出站的少见跳过路径会消耗 1 次 RPM（保守，不超配额）。
-- 生产当前只有 memory tracker；Redis 实现同步扩展但未装配，多副本部署前需另行接线并验证跨节点 RPM 一致性。
+- 生产已装配 Redis tracker（共享 runtime-state client）；跨实例 acquire/ConsumeRPM/release 由 `chain_concurrency_redis_test.go` 与真实 dev Redis 外部用例覆盖。ConsumeRPM 只延长不足 2 个窗口的 TTL，不会缩短并发槽的 6h 泄漏兜底。
 - 授权实例的列表 `rpmCurrent` 按来源账户读；现有 `currentConcurrency` 叠加仍按行 ID，二者口径差异在本批不改动 `concurrency` 历史行为。

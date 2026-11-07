@@ -1,10 +1,11 @@
 package main
 
-// W62 方案B（2026-10-24 用户裁决）：listModelCandidateRows 候选窗口的
-// 同族/跨族 rank 判定——同族改名映射（target_endpoint_family =
-// source_endpoint_family，保留非恒等门）与直连同权 rank 0；跨协议转换映射
-// （两族不同）rank 1。排序语义同批覆盖：同秩桶内 local_super_priority_enabled
-// DESC 生效，同族改名映射账户的超级优先压过无特权的直连账户。
+// W62 方案B（2026-10-24 用户裁决）+ 2026-11-07 跨协议映射退役：
+// listModelCandidateRows 候选窗口的 rank 判定——直连与协议等价映射（同族
+// 改名或 Gemini stream 归一）同权 rank 0；跨协议映射在写侧/运行时已拒绝，
+// 不再进入候选窗口（无 rank 1 生产者）。排序语义同批覆盖：同秩桶内
+// local_super_priority_enabled DESC 生效，同族改名映射账户的超级优先压过
+// 无特权的直连账户。
 // 权威口径：docs/functions/AI账户模型映射选择规则.md §2.4、
 // docs/functions/超级分组设计.md §4.2。
 
@@ -51,8 +52,8 @@ func seedW62MappingAccount(t *testing.T, fixture *chainFixture, accountID, sourc
 		"aem_"+accountID+"_"+sourceModel, accountID, sourceModel, sourceFamily, connID, "mdl_"+upstreamModel, upstreamFamily, now, now)
 }
 
-// TestW62ModelRankFamilyArms 断言候选窗口 SQL 的三臂：直连 rank 0、同族改名
-// 映射 rank 0、跨协议转换映射 rank 1。
+// TestW62ModelRankFamilyArms 断言候选窗口：直连与同族改名映射均 rank 0；
+// 跨协议映射（chat→messages）已被运行时拒绝，不进入候选窗口，不存在 rank 1。
 func TestW62ModelRankFamilyArms(t *testing.T) {
 	fixture := newChainFixture(t)
 	// 直连账户（fixture 自带 acc_1 支持 gpt-test；补 gpt-w62 支持行）。
@@ -74,7 +75,7 @@ func TestW62ModelRankFamilyArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve group access: %v", err)
 	}
-	_, ranks, err := fixture.selector.listModelCandidateRows(context.Background(), fixture.groupID, groupAccess,
+	rows, ranks, err := fixture.selector.listModelCandidateRows(context.Background(), fixture.groupID, groupAccess,
 		now, "gpt-w62", "chat_completions", false, false)
 	if err != nil {
 		t.Fatalf("list model candidate rows: %v", err)
@@ -85,8 +86,13 @@ func TestW62ModelRankFamilyArms(t *testing.T) {
 	if got := ranks["acc_w62_rename"]; got != 0 {
 		t.Fatalf("same-family rename rank = %d, want 0 (plan B: ties with direct)", got)
 	}
-	if got := ranks["acc_w62_cross"]; got != 1 {
-		t.Fatalf("cross-protocol rank = %d, want 1", got)
+	if _, ok := ranks["acc_w62_cross"]; ok {
+		t.Fatalf("retired cross-protocol mapping must not enter candidate window: ranks=%v", ranks)
+	}
+	for _, row := range rows {
+		if row.AccountID == "acc_w62_cross" || row.ID == "acc_w62_cross" {
+			t.Fatalf("retired cross-protocol mapping account must not enter candidate rows: %+v", row)
+		}
 	}
 }
 

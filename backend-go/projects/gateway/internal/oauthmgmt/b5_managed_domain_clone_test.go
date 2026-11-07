@@ -32,8 +32,8 @@ func b5SeedGeminiMediaModels(t *testing.T, env *testEnv) {
 		{"gemini-media-audio", `["audio_speech"]`},
 	} {
 		env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
-			status, supported_endpoint_modes_json, created_at, updated_at)
-			VALUES (?, 'gemini', ?, ?, 'builtin', 'active', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+			status, supported_endpoint_modes_json, input_usd_per_1m, output_usd_per_1m, created_at, updated_at)
+			VALUES (?, 'gemini', ?, ?, 'builtin', 'active', ?, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 			"mod-gemini-"+model.name, model.name, model.name, model.modes)
 	}
 }

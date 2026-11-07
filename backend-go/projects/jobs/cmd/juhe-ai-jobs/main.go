@@ -573,6 +573,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	// 注册，taskruns runner 埋点与 /__aisys__/metrics 暴露共用同一 registry。
 	promRegistry := prommetrics.NewRegistry()
 	taskruns.BindMetrics(promRegistry)
+	bindJobsBuildInfo(promRegistry, jobsMetricInstanceID(workerCfg))
 	runtimeIndexer := runtimelog.NewIndexer(runtimeConfig, runtimeStore)
 	var runtimeRunning atomic.Bool
 	components := []supervisor.Component{
@@ -898,6 +899,33 @@ type jobsHTTPDeps struct {
 	// LeaderReady/LeaderStatus 是 jobs 全局 leader lease 的只读观测面。
 	LeaderReady  func() bool
 	LeaderStatus func() map[string]any
+}
+
+// bindJobsBuildInfo 发布 jobs 进程的构建身份；多副本按 instance_id 区分，
+// 滚动发布时可按 version 聚合。
+func bindJobsBuildInfo(registry *prommetrics.Registry, instanceID string) {
+	prommetrics.NewGaugeVec(registry, "juhe_ai_build_info",
+		"Build identity of this jobs process: version, commit, schema revision and instance.",
+		nil, []string{"service", "version", "commit", "schema_revision", "instance_id"},
+	).WithLabelValues(
+		"jobs",
+		version.Version,
+		version.Commit,
+		strconv.FormatInt(contracts.SchemaRevision, 10),
+		instanceID,
+	).Set(1)
+}
+
+func jobsMetricInstanceID(config workerConfig) string {
+	if strings.TrimSpace(os.Getenv("JUHE_AI_INSTANCE_ID")) != "" {
+		return config.InstanceID
+	}
+	hostname, err := os.Hostname()
+	hostname = strings.TrimSpace(hostname)
+	if err == nil && hostname != "" {
+		return config.InstanceID + "@" + hostname
+	}
+	return config.InstanceID
 }
 
 // metricsHandlerOrDefault 返回注入的 /__aisys__/metrics handler；未注入时

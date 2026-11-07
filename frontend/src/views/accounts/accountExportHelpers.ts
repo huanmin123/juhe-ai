@@ -26,7 +26,7 @@ export interface AccountExportTargetState {
 }
 
 export function accountExportFiltersFromState(filters: AccountExportFilterState, sorts: AccountListSortParam[]): AccountExportFilters {
-  // 导出与列表同口径：「非时间段」经 schedulable 下发，不混入 status。
+  // 导出与列表同口径：状态筛选直接映射 status；时段外并入 active（时间计划闸门设计 §5.4，2026-11-07 裁决）。
   const statusQuery = accountStatusFilterQuery(filters.status)
   return {
     sorts,
@@ -35,8 +35,7 @@ export function accountExportFiltersFromState(filters: AccountExportFilterState,
     type: filters.type && filters.type !== 'all' ? filters.type : undefined,
     groupId: filters.groupId || undefined,
     tagIds: filters.tagIds.length ? filters.tagIds : undefined,
-    status: statusQuery.status,
-    schedulable: statusQuery.schedulable
+    status: statusQuery.status
   }
 }
 

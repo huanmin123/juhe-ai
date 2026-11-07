@@ -332,16 +332,7 @@ function handleSystemAccountUpdate(value: SelectValue) {
 
 function handleStatusChange(value: SelectValue) {
   const next = Array.isArray(value) ? value.filter(isAccountStatusFilterValue) : []
-  const previous = props.filters.status
-  const added = next.find((item) => !previous.includes(item))
-  if (added === 'out_of_window') {
-    // 「非时间段」与具体账户状态互斥：列表接口只有单值 schedulable，混选会被后端 AND 成空集。
-    emit('update:status', [added])
-  } else if (added && previous.includes('out_of_window')) {
-    emit('update:status', next.filter((item) => item !== 'out_of_window'))
-  } else {
-    emit('update:status', next)
-  }
+  emit('update:status', next)
   emit('search')
 }
 

@@ -9,6 +9,20 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
+// SessionStoreError marks OAuth session backend failures (Redis unavailable,
+// timeout) so the HTTP layer can return 500 instead of the generic 502
+// upstream-failure fallback. The original error is retained for logs.
+type SessionStoreError struct {
+	Op  string
+	Err error
+}
+
+func (e *SessionStoreError) Error() string {
+	return "OAuth 会话存储" + e.Op + "失败: " + e.Err.Error()
+}
+
+func (e *SessionStoreError) Unwrap() error { return e.Err }
+
 // writeCreated mirrors res.status(201).json(ok(data)): the {data} envelope at
 // 201.
 func writeCreated(w http.ResponseWriter, data any) {
@@ -129,6 +143,14 @@ func (d *Deps) writeOAuthError(w http.ResponseWriter, err error, fallback, revis
 	var onboarding *geminiOnboardingError
 	if errors.As(err, &onboarding) {
 		kernel.WriteBadRequest(w, onboarding.Error())
+		return
+	}
+	var sessionStore *SessionStoreError
+	if errors.As(err, &sessionStore) {
+		slog.Error("OAuth 会话存储不可用",
+			"event", "oauth_session_store_unavailable",
+			"operation", sessionStore.Op, "error", err)
+		kernel.WriteError(w, http.StatusInternalServerError, "OAuth 会话存储暂时不可用，请稍后重试")
 		return
 	}
 	// 未分类错误：把原始错误落日志，否则前端只见兜底文案无法排障。

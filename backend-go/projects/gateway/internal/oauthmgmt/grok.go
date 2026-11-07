@@ -58,7 +58,9 @@ func (s *Store) generateGrokAuthURL(ownerID string) (map[string]any, error) {
 		RedirectURI:          GrokOAuthRedirectURI,
 		OwnerSystemAccountID: ownerID,
 	}
-	s.sessions.set(grokSessionNamespace, sessionID, session, oauthSessionTTL)
+	if err := s.sessions.setJSON(context.Background(), grokSessionNamespace, sessionID, session, oauthSessionTTL); err != nil {
+		return nil, &SessionStoreError{Op: "保存", Err: err}
+	}
 	return map[string]any{
 		"authUrl":   buildGrokAuthorizeURL(state, nonce, codeChallenge),
 		"sessionId": sessionID,
@@ -184,7 +186,10 @@ func (s *Store) exchangeGrokAuthorizationCode(ctx context.Context, sessionID, ca
 	if authorization.code == "" {
 		return nil, &grokOAuthError{Message: "Grok OAuth 授权码不能为空", StatusCode: 400}
 	}
-	raw := s.sessions.get(grokSessionNamespace, sessionID)
+	raw, err := s.sessions.getJSON(ctx, grokSessionNamespace, sessionID)
+	if err != nil {
+		return nil, &SessionStoreError{Op: "读取", Err: err}
+	}
 	if raw == nil {
 		return nil, &grokOAuthError{Message: "Grok OAuth 会话不存在或已过期", StatusCode: 400}
 	}
@@ -211,7 +216,11 @@ func (s *Store) exchangeGrokAuthorizationCode(ctx context.Context, sessionID, ca
 	if err != nil {
 		return nil, err
 	}
-	if !s.sessions.compareDelete(grokSessionNamespace, sessionID, session) {
+	consumed, err := s.sessions.compareDeleteJSON(ctx, grokSessionNamespace, sessionID, session)
+	if err != nil {
+		return nil, &SessionStoreError{Op: "消费", Err: err}
+	}
+	if !consumed {
 		return nil, &grokOAuthError{Message: "Grok OAuth 会话已消费，请重新发起授权", StatusCode: 400}
 	}
 	return info, nil

@@ -24,6 +24,10 @@ const DefaultMaxFileBytes int64 = 100 * 1024 * 1024
 
 // FileSinkOptions 是 FileSink 的构造参数；零值即生产默认。
 type FileSinkOptions struct {
+	// FileName 是 current 日志文件名（须为不含路径的 .log 文件名）；空值取
+	// CurrentLogFileName。多实例共享日志目录时由调用方传入
+	// `juhe-ai.<instanceID>.log`。
+	FileName string
 	// MaxFileBytes 是大小轮转阈值；<=0 时取 DefaultMaxFileBytes。
 	MaxFileBytes int64
 	// Now 与 NewToken 是轮转文件名的时间戳/token 注入点（测试用）。nil 时
@@ -40,6 +44,7 @@ type FileSinkOptions struct {
 type FileSink struct {
 	mu           sync.Mutex
 	dir          string
+	fileName     string
 	maxFileBytes int64
 	now          func() time.Time
 	newToken     func() string
@@ -53,11 +58,19 @@ type FileSink struct {
 // 大小作为轮转基线（进程重启后从真实文件大小继续判定阈值）。目录创建或
 // 文件打开失败返回 error，由调用方决定降级路径。
 func NewFileSink(dir string, options FileSinkOptions) (*FileSink, error) {
+	fileName := strings.TrimSpace(options.FileName)
+	if fileName == "" {
+		fileName = CurrentLogFileName
+	}
+	if fileName != filepath.Base(fileName) || !strings.HasSuffix(fileName, ".log") {
+		return nil, fmt.Errorf("运行日志文件名无效（必须是单段 .log 文件名）: %q", options.FileName)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建运行日志目录 %s 失败: %w", dir, err)
 	}
 	sink := &FileSink{
 		dir:          dir,
+		fileName:     fileName,
 		maxFileBytes: options.MaxFileBytes,
 		now:          options.Now,
 		newToken:     options.NewToken,
@@ -140,7 +153,7 @@ func (s *FileSink) CurrentSize() int64 {
 // openCurrentLocked 以 append 模式打开 current 文件并回读大小；调用方须已
 // 持有 mu。
 func (s *FileSink) openCurrentLocked() error {
-	path := filepath.Join(s.dir, CurrentLogFileName)
+	path := filepath.Join(s.dir, s.fileName)
 	handle, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return fmt.Errorf("打开运行日志文件 %s 失败: %w", path, err)
@@ -167,7 +180,7 @@ func (s *FileSink) rotateLocked() error {
 		}
 		s.file = nil
 	}
-	rotated := filepath.Join(s.dir, rotatedLogFileName(CurrentLogFileName, s.now(), s.newToken()))
+	rotated := filepath.Join(s.dir, rotatedLogFileName(s.fileName, s.now(), s.newToken()))
 	if err := os.Rename(s.currentPath, rotated); err != nil {
 		reopenErr := s.openCurrentLocked()
 		renamed := fmt.Errorf("轮转运行日志文件到 %s 失败: %w", rotated, err)

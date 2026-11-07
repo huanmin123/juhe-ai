@@ -237,7 +237,8 @@ services:
       TZ: Asia/Shanghai
       NODE_ENV: production
       JUHE_AI_INSTANCE_ID: juhe-ai-jobs
-      # 与 gateway 同目录：F1 索引器按文件 cursor 消费 juhe-ai.log 与轮转文件，
+      # 与 gateway 同目录：F1 索引器按文件 cursor 消费
+      # juhe-ai.<instanceID>.log（及升级前遗留 juhe-ai.log）与轮转文件，
       # 保留清理也只删该目录下的 rotated 文件
       JUHE_AI_LOG_DIR: /app/backend/logs
       # jobs 健康监听绑全接口（BUG-0226：代码默认仍是 127.0.0.1；容器网络无公网

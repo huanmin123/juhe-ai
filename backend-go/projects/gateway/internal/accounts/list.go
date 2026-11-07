@@ -107,9 +107,9 @@ func normalizeListOptions(options ListOptions) NormalizedListOptions {
 		page = minInt(pageCap, maxInt(1, options.Page))
 	}
 	schedulable := options.Schedulable
-	// out_of_window 是时间计划闸门筛选（设计 §5.4）：等价 status=active 且
-	// gate=0，独立于 enabled/disabled。
-	if schedulable != "enabled" && schedulable != "disabled" && schedulable != "cooling" && schedulable != "out_of_window" {
+	// 2026-11-07 裁决（设计 §5.4 修正）：非时间段不设独立筛选值，out_of_window
+	// 退役归一为 all；可调度筛选（enabled）包含时段外（gate=0）行。
+	if schedulable != "enabled" && schedulable != "disabled" && schedulable != "cooling" {
 		schedulable = "all"
 	}
 	// domain 过滤（M1 读通道）：路由面已对非法值 400，这里兜底为不过滤（与
@@ -979,16 +979,20 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 		*args = append(*args, options.Domain)
 	}
 	effective := ownerEffectiveStatusSQL("accounts", sqlQuoteISO(now))
-	statuses := accountStatusFilterValues(options.Status)
+	statuses := expandScheduleOutOfWindowStatuses(accountStatusFilterValues(options.Status))
 	if len(statuses) > 0 {
 		clauses = append(clauses, effective+" IN ("+placeholders(len(statuses))+")")
 		*args = append(*args, anySlice(statuses)...)
 	}
 	switch options.Schedulable {
 	case "enabled":
-		// 时间计划闸门（设计 §5.4）：可调度排除时段外（gate=0）；NULL/1 放行。
-		clauses = append(clauses, effective+" = 'active'",
-			"(accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)")
+		// 2026-11-07 裁决（设计 §5.4 修正）：可调度包含时段外（gate=0），
+		// 子状态由列表「非时间段」徽章表达。时段外行在生效状态中派生为
+		// schedule_out_of_window（正常状态子集，与 active 同档），必须与
+		// active 一并纳入；accounts.schedulable = 1 维持人工禁调度行不入选
+		// （gate=0 优先于 schedulable 派生，与 owner options 完整条件同口径）。
+		clauses = append(clauses, effective+" IN ('active', 'schedule_out_of_window')",
+			"accounts.schedulable = 1")
 	case "disabled":
 		// 「停用 / 不可调度」不再命中非时间段（active + gate=0 已由 effective
 		// 状态独立表达）。
@@ -996,8 +1000,6 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 			"NOT (accounts.status = 'active' AND accounts.availability_schedule_gate = 0)")
 	case "cooling":
 		clauses = append(clauses, effective+" IN ('rate_limited', 'temporary_unavailable')")
-	case "out_of_window":
-		clauses = append(clauses, "accounts.status = 'active' AND accounts.availability_schedule_gate = 0")
 	}
 	return " WHERE " + strings.Join(clauses, " AND ")
 }
@@ -1763,16 +1765,17 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		args = append(args, normalized.Type)
 	}
 	effective := ownerEffectiveStatusSQL("accounts", sqlQuoteISO(now))
-	statuses := accountStatusFilterValues(normalized.Status)
+	statuses := expandScheduleOutOfWindowStatuses(accountStatusFilterValues(normalized.Status))
 	if len(statuses) > 0 {
 		clauses = append(clauses, effective+" IN ("+placeholders(len(statuses))+")")
 		args = append(args, anySlice(statuses)...)
 	}
 	switch normalized.Schedulable {
 	case "enabled":
+		// 2026-11-07 裁决（设计 §5.4 修正）：可调度包含时段外（gate=0），
+		// 子状态由列表「非时间段」徽章表达。
 		clauses = append(clauses, `accounts.status = 'active'
 			AND accounts.schedulable = 1
-			AND (accounts.availability_schedule_gate IS NULL OR accounts.availability_schedule_gate = 1)
 			AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= `+sqlQuoteISO(now)+`)
 			AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > `+sqlQuoteISO(now)+`)
 			AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')`)
@@ -1785,8 +1788,6 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 	case "cooling":
 		clauses = append(clauses, `(accounts.status IN ('rate_limited', 'temporary_unavailable')
 			OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > `+sqlQuoteISO(now)+`))`)
-	case "out_of_window":
-		clauses = append(clauses, `accounts.status = 'active' AND accounts.availability_schedule_gate = 0`)
 	}
 	args = append(args, normalized.PageSize, (normalized.Page-1)*normalized.PageSize)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT accounts.id, accounts.system_account_id,

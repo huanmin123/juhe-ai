@@ -6,8 +6,9 @@ package accounts
 //     status（§4.2）；
 //   - 人工恢复（clearFailureState / ForceActivatePending）时段外恢复为
 //     active + gate=0（§4.2）；
-//   - 列表派生子状态 schedule_out_of_window、筛选归组与 presentation 词汇
-//     （§5.4）。
+//   - 列表派生子状态 schedule_out_of_window、presentation 词汇与筛选归组
+//     （§5.4；2026-11-07 修正：可调度筛选包含时段外，out_of_window 筛选值
+//     退役）。
 
 import (
 	"context"
@@ -181,7 +182,8 @@ func TestScheduleGateBatchAndForceActivate(t *testing.T) {
 }
 
 // TestScheduleGateListAvailabilityAndFilters：列表派生子状态、presentation
-// 词汇与筛选归组（设计 §5.4）。
+// 词汇与筛选归组（设计 §5.4；2026-11-07 修正：可调度包含时段外，
+// out_of_window 筛选值退役）。
 func TestScheduleGateListAvailabilityAndFilters(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -190,6 +192,9 @@ func TestScheduleGateListAvailabilityAndFilters(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET availability_schedule_json = ?, availability_schedule_next_check_at = ?,
 		availability_schedule_gate = 0 WHERE id = ?`,
 		scheduleGateClosedSchedule, "2026-11-04T00:00:00.000Z", "acc-gate-own")
+	// 对照行：无计划的正常 active（gate NULL、schedulable 默认 1），用于区分
+	// 「可调度筛选包含时段外」与「只剩时段外子集」。
+	env.seedAccount(t, "acc-gate-normal", adminID, "闸门正常", "active")
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts?page=1&pageSize=20", "")
 	if code != http.StatusOK {
@@ -216,15 +221,45 @@ func TestScheduleGateListAvailabilityAndFilters(t *testing.T) {
 		t.Fatalf("statusBoundary 必须为 schedule_window_open：%v", presentation["statusBoundary"])
 	}
 
-	// 筛选归组：out_of_window 命中；enabled / disabled / status=active /
-	// status=disabled 均不命中（非时间段是正常状态的子集，独立归组）。
-	if n := listItemCountForQuery(t, env, "schedulable=out_of_window"); n != 1 {
-		t.Fatalf("schedulable=out_of_window 应命中 1 条，得到 %d", n)
+	// 筛选归组（2026-11-07 裁决 §5.4 修正）：可调度（enabled）包含时段外行；
+	// out_of_window 筛选值退役，请求归一为 all 不过滤；disabled 仍不命中
+	// gate=0 actives；status=active 按「正常状态」语义展开命中全部正常行
+	// （词表展开为 active + schedule_out_of_window）。
+	if n := listItemCountForQuery(t, env, "schedulable=enabled"); n != 2 {
+		t.Fatalf("schedulable=enabled 应命中 2 条（gate NULL + gate=0），得到 %d", n)
 	}
-	for _, query := range []string{"schedulable=enabled", "schedulable=disabled", "status=active", "status=disabled"} {
-		if n := listItemCountForQuery(t, env, query); n != 0 {
-			t.Fatalf("%s 不得命中非时间段账户，得到 %d", query, n)
-		}
+	if n := listItemCountForQuery(t, env, "schedulable=out_of_window"); n != 2 {
+		t.Fatalf("schedulable=out_of_window 已退役，应按不过滤处理命中 2 条，得到 %d", n)
+	}
+	if n := listItemCountForQuery(t, env, "schedulable=disabled"); n != 0 {
+		t.Fatalf("schedulable=disabled 不得命中 gate=0 actives，得到 %d", n)
+	}
+	if n := listItemCountForQuery(t, env, "status=active"); n != 2 {
+		t.Fatalf("status=active 应按正常状态语义命中 2 条（含时段外），得到 %d", n)
+	}
+	if n := listItemCountForQuery(t, env, "status=pending_test"); n != 0 {
+		t.Fatalf("status=pending_test 不得命中正常/时段外行，得到 %d", n)
+	}
+	if n := listItemCountForQuery(t, env, "status=disabled"); n != 0 {
+		t.Fatalf("status=disabled 应命中 0 条，得到 %d", n)
+	}
+	// owner options 完整条件同口径：enabled 命中两条（schedulable=1 的
+	// gate=0 与 gate NULL）。
+	code, optionsPayload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/options?schedulable=enabled", "")
+	if code != http.StatusOK {
+		t.Fatalf("options enabled: %d %v", code, optionsPayload)
+	}
+	if n := len(dataArray(t, optionsPayload)); n != 2 {
+		t.Fatalf("options schedulable=enabled 应命中 2 条（含时段外），得到 %d", n)
+	}
+	// owner 臂 status 词表同样展开：status=active 命中正常 + 时段外两条
+	// （null 掉本断言即失去对 list.go owner 臂展开的覆盖）。
+	code, optionsStatusPayload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/options?status=active", "")
+	if code != http.StatusOK {
+		t.Fatalf("options status=active: %d %v", code, optionsStatusPayload)
+	}
+	if n := len(dataArray(t, optionsStatusPayload)); n != 2 {
+		t.Fatalf("options status=active 应命中 2 条（含时段外），得到 %d", n)
 	}
 }
 

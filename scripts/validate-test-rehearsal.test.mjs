@@ -396,10 +396,6 @@ for (const [index, table] of validEvidence.accounts.tables.entries()) {
   table.readbackDigest = `${String.fromCharCode(97 + ((index + 2) % 6))}`.repeat(64)
   table.evidenceRefs = [`accounts/tables/${table.name}.json`]
 }
-const validProvidersTable = validEvidence.accounts.tables.find(table => table.name === 'providers')
-validProvidersTable.selfForeignKeyPolicy = 'parent-before-child'
-validProvidersTable.parentBeforeChildVerified = true
-validProvidersTable.copiedColumns = ['id', 'code', 'parent_code']
 validEvidence.accounts.runtimeResetTables = RUNTIME_RESET_EVIDENCE_TABLE_NAMES.map((name, index) => ({
   name,
   beforeRows: 0,
@@ -673,19 +669,6 @@ const deferredSourceOrder = structuredClone(validEvidence)
 deferredSourceOrder.accounts.tables.find(table => table.name === 'accounts').selfForeignKeyPolicy = 'deferred-constraints-verified'
 assert.equal(validateTestRehearsalEvidence(deferredSourceOrder).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(deferredSourceOrder).blockers.join('\n'), /执行器未实现 deferred/)
-
-const unsafeProviderOrder = structuredClone(validEvidence)
-const unsafeProvidersTable = unsafeProviderOrder.accounts.tables.find(table => table.name === 'providers')
-unsafeProvidersTable.selfForeignKeyPolicy = 'primary-key-order'
-unsafeProvidersTable.parentBeforeChildVerified = false
-assert.equal(validateTestRehearsalEvidence(unsafeProviderOrder).status, 'blocked')
-assert.match(validateTestRehearsalEvidence(unsafeProviderOrder).blockers.join('\n'), /selfForeignKeyPolicy|parentBeforeChildVerified/)
-
-const incompleteProviderColumns = structuredClone(validEvidence)
-const incompleteProvidersTable = incompleteProviderColumns.accounts.tables.find(table => table.name === 'providers')
-incompleteProvidersTable.copiedColumns = ['id']
-assert.equal(validateTestRehearsalEvidence(incompleteProviderColumns).status, 'blocked')
-assert.match(validateTestRehearsalEvidence(incompleteProviderColumns).blockers.join('\n'), /providers 自引用拓扑列 code|providers 自引用拓扑列 parent_code/)
 
 const duplicateImportOrder = structuredClone(validEvidence)
 duplicateImportOrder.accounts.tables.find(table => table.name === 'model_quality_schedules').importOrder = 3

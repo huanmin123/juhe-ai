@@ -31,6 +31,7 @@ const (
 	DomainCircuit      = "circuit"
 	DomainJ3B          = "j3b"
 	DomainKeyModel     = "keymodel"
+	DomainConcurrency  = "concurrency"
 	DomainHotQuality   = "hotquality"
 	DomainClientIP     = "clientip"
 	DomainSession      = "session"

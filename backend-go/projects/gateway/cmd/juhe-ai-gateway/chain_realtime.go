@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -88,27 +89,39 @@ var realtimeClientUpgrader = websocket.Upgrader{
 	CheckOrigin:     func(*http.Request) bool { return true },
 }
 
-// chainRealtimeConnectionLimiter 是每 API Key 并发 WS 连接的进程内计数器
-// （设计 §3：realtimeMaxConnectionsPerApiKey）。多实例部署下各进程独立计
-// 数——设置键语义是网关进程级限流，与账户并发槽（进程内 tracker + Redis
-// 读模型）同层不共享。
+// chainRealtimeConnectionLimiter 是每 API Key 并发 WS 连接计数器（设计 §3：
+// realtimeMaxConnectionsPerApiKey）。生产用 Redis 全局计数（多副本共享同一
+// 上限）；remote 为 nil 时保持进程内实现，供组合测试/非生产组合使用。
 //
-// DD-G9：计数与键生命周期整段互斥（sync.Mutex + map）。原先 sync.Map +
+// DD-G9：进程内计数的键生命周期整段互斥（sync.Mutex + map）。原先 sync.Map +
 // atomic 的「release 只减不删」让出现过的 apiKeyID 条目在进程生命期内无界
 // 累积；而直接在 release 里删键会与 acquire 的 LoadOrStore 交错出孤儿计数
 // （release 删键瞬间 acquire 拿到旧 counter Add(1)，下一个 acquire 新建
 // counter，两个活跃连接分属两个计数器——限额被绕过）。锁内「减到 0 即删」
 // 天然排除该竞态：acquire/release/count 对同一 key 的读改删全串行化，WS
-// 连接建立/断开的频率下无热点。
+// 连接建立/断开的频率下无热点。Redis 路径由 Lua 脚本保证同一原子性。
 type chainRealtimeConnectionLimiter struct {
 	mutex  sync.Mutex
 	counts map[string]int64 // api key id -> 活跃连接数（0/缺键=无活跃连接）
+	// remote 非 nil 时使用 Redis 全局计数（多副本）；nil 保持进程内实现
+	// 供组合测试/非生产组合使用。
+	remote *realtimeConnectionRedis
 }
 
-// acquire 原子占一个连接位；超出 limit 回退并返回 false。
+// acquire 原子占一个连接位；超出 limit 回退并返回 false。Redis 错误按
+// “未占位”返回；需要区分基础设施失败的调用方使用 acquireContext。
 func (l *chainRealtimeConnectionLimiter) acquire(apiKeyID string, limit int64) bool {
+	ok, _ := l.acquireContext(context.Background(), apiKeyID, limit)
+	return ok
+}
+
+// acquireContext 是生产入口：Redis 故障返回 error，调用方必须 fail-closed。
+func (l *chainRealtimeConnectionLimiter) acquireContext(ctx context.Context, apiKeyID string, limit int64) (bool, error) {
 	if l == nil || apiKeyID == "" || limit <= 0 {
-		return true
+		return true, nil
+	}
+	if l.remote != nil {
+		return l.remote.acquire(ctx, apiKeyID, limit)
 	}
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
@@ -117,16 +130,25 @@ func (l *chainRealtimeConnectionLimiter) acquire(apiKeyID string, limit int64) b
 	}
 	current := l.counts[apiKeyID]
 	if current+1 > limit {
-		return false
+		return false, nil
 	}
 	l.counts[apiKeyID] = current + 1
-	return true
+	return true, nil
 }
 
 // release 释放一个连接位；减到 0 即删除键（DD-G9：键集合只反映有活跃连接
 // 的 apiKeyID，不再无界累积）。
 func (l *chainRealtimeConnectionLimiter) release(apiKeyID string) {
 	if l == nil || apiKeyID == "" {
+		return
+	}
+	if l.remote != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := l.remote.release(releaseCtx, apiKeyID); err != nil {
+			slog.Warn("realtime Redis connection release failed; TTL will recover",
+				"apiKeyId", apiKeyID, "error", err)
+		}
 		return
 	}
 	l.mutex.Lock()
@@ -137,6 +159,20 @@ func (l *chainRealtimeConnectionLimiter) release(apiKeyID string) {
 			return
 		}
 		l.counts[apiKeyID] = current - 1
+	}
+}
+
+// refresh 续租连接计数 key（Redis 路径），由 WS ping 循环周期调用。失败只
+// 记录日志并依赖短 TTL 兜底；不改变已持有的连接位。
+func (l *chainRealtimeConnectionLimiter) refresh(apiKeyID string) {
+	if l == nil || l.remote == nil || apiKeyID == "" {
+		return
+	}
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := l.remote.refresh(refreshCtx, apiKeyID); err != nil {
+		slog.Warn("realtime Redis connection refresh failed; TTL will recover",
+			"apiKeyId", apiKeyID, "error", err)
 	}
 }
 
@@ -226,6 +262,9 @@ type realtimeSession struct {
 	runtime       *gatewayruntimecache.GatewayRuntime
 	// concurrencySlot 是账户并发槽（受理前获取，终态释放）。
 	concurrencySlot *gatewaydispatch.ConcurrencySlot
+	// connections 是每 API Key 连接计数器的引用，用于 ping 周期续租 Redis
+	// 连接位 TTL；nil 表示测试/非生产组合，无需续租。
+	connections *chainRealtimeConnectionLimiter
 	// usage 是会话级汇总器（含目录行引用，终态计费用）。
 	usage          realtimeUsageAccumulator
 	catalogItem    *gatewayruntimecache.ProviderModelCatalogItem
@@ -343,7 +382,13 @@ func (c *gatewayChain) prepareRealtimeSession(ctx context.Context, req *gatewayp
 	}
 
 	// 每 API Key 并发连接数检查（受理前拒绝，不占任何账户资源）。
-	if !c.realtimeConnections.acquire(apiKey.ID, connectionLimit) {
+	connectionAcquired, connectionErr := c.realtimeConnections.acquireContext(ctx, apiKey.ID, connectionLimit)
+	if connectionErr != nil {
+		c.renderRealtimeError(res, http.StatusServiceUnavailable,
+			"realtime 连接计数暂不可用，请稍后重试", "server_error", "realtime_connection_limit_unavailable")
+		return nil, &realtimePrepareFailure{status: http.StatusServiceUnavailable}
+	}
+	if !connectionAcquired {
 		c.renderRealtimeError(res, http.StatusTooManyRequests,
 			fmt.Sprintf("realtime 并发连接数已达上限（%d）", connectionLimit), "invalid_request_error", "realtime_connection_limit")
 		return nil, &realtimePrepareFailure{status: http.StatusTooManyRequests}
@@ -393,6 +438,7 @@ func (c *gatewayChain) prepareRealtimeSession(ctx context.Context, req *gatewayp
 		client:          clientConn,
 		runtime:         runtime,
 		concurrencySlot: dial.slot,
+		connections:     c.realtimeConnections,
 		catalogItem:     catalogItem,
 		idleTimeout:     idleTimeout,
 		maxSession:      maxSession,
@@ -616,6 +662,10 @@ func (b *realtimeBridge) run() {
 			return
 		case <-pingTicker.C:
 			b.sendClientPing()
+			// 异步续租，避免 Redis 抖动阻塞帧转发；失败由短 TTL 兜底。
+			if s.connections != nil {
+				go s.connections.refresh(s.apiKeyID)
+			}
 		case result := <-clientReads:
 			if result.err != nil {
 				if isRealtimeTimeoutError(result.err) {

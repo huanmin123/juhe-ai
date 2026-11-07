@@ -213,7 +213,7 @@ function accountStatusFilterFactsChanged(previous: AccountListItem, updated: Acc
   return JSON.stringify([
     previous.status,
     previous.schedulable,
-    // 时间计划闸门是「非时间段」筛选的事实来源（时间计划闸门设计 §5.4）。
+    // 时间计划闸门变化触发列表重过滤；时段外并入可调度子集（时间计划闸门设计 §5.4，2026-11-07 裁决）。
     previous.availabilityScheduleGate,
     previous.effectiveAvailability,
     previous.authorizationQuotaExceeded,

@@ -599,7 +599,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 	t.Run("proxyUnavailable", func(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
-		if _, err := db.Exec(`INSERT INTO proxy_profiles(id,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-broken', FALSE,'http','127.0.0.1',1,'','')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO proxy_profiles(id,system_account_id,name,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-broken','sys-1','proxy-broken', FALSE,'http','127.0.0.1',1,'','')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-broken' WHERE id='acct-source'`); err != nil {
@@ -615,7 +615,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 	t.Run("proxyUnsupportedProtocol", func(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
-		if _, err := db.Exec(`INSERT INTO proxy_profiles(id,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-socks6', TRUE,'socks6','127.0.0.1',1,'','')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO proxy_profiles(id,system_account_id,name,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-socks6','sys-1','proxy-socks6', TRUE,'socks6','127.0.0.1',1,'','')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-socks6' WHERE id='acct-source'`); err != nil {
@@ -623,7 +623,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 		}
 		source := w11eNewSource(t, db)
 		defer fp.disarm()
-		if _, err := source.Resolve(ctx, request); err == nil || !strings.Contains(err.Error(), "proxy protocol is unsupported") {
+		if _, err := source.Resolve(ctx, request); err == nil || !strings.Contains(err.Error(), "不支持的代理协议") {
 			t.Fatalf("err = %v", err)
 		}
 	})

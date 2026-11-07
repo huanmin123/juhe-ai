@@ -42,9 +42,10 @@
 
 | 指标 | 类型 | 标签 | 含义 |
 | --- | --- | --- | --- |
-| `juhe_ai_http_requests_total` | counter | `route_group`、`method`、`status_class`、`outcome`、`failure_scope` | 管理面 / 公开面 / `/v1` 网关链 HTTP 请求计数。`status_class` 按状态码百位归类为 `1xx/2xx/3xx/4xx/5xx/unknown` 六类（无 `499` 等单码，状态码缺失或越界归 `unknown`）；`outcome` 只有 `completed`（正常返回）/ `aborted`（请求上下文取消）两值；`failure_scope` 只有 `none/gateway/upstream` 三值，仅 `completed` 且 `5xx` 时可取非 `none`（未给出时归 `gateway`），其余组合恒为 `none` |
+| `juhe_ai_http_requests_total` | counter | `route_group`、`method`、`status_class`、`outcome`、`failure_scope`、`version` | 管理面 / 公开面 / `/v1` 网关链 HTTP 请求计数。`status_class` 按状态码百位归类为 `1xx/2xx/3xx/4xx/5xx/unknown` 六类（无 `499` 等单码，状态码缺失或越界归 `unknown`）；`outcome` 只有 `completed`（正常返回）/ `aborted`（请求上下文取消）两值；`failure_scope` 只有 `none/gateway/upstream` 三值，仅 `completed` 且 `5xx` 时可取非 `none`（未给出时归 `gateway`），其余组合恒为 `none`；`version` 是本进程构建版本，用于滚动发布按版本核对 |
 | `juhe_ai_http_request_duration_seconds` | histogram | 同 `juhe_ai_http_requests_total` | 同一标签集的请求耗时直方图 |
-| `juhe_ai_http_requests_in_flight` | gauge | `route_group`、`method` | 当前在途请求数 |
+| `juhe_ai_http_requests_in_flight` | gauge | `route_group`、`method`、`version` | 当前在途请求数 |
+| `juhe_ai_build_info` | gauge | `service`、`version`、`commit`、`schema_revision`、`instance_id` | 构建身份（值恒 1）；gateway 与 jobs 共用族，`service` 区分 `juhe-ai`/`jobs`，`instance_id` 为实例标识 |
 | `juhe_ai_gateway_upstream_failures_total` | counter | `failure_class`、`reason_class`、`status_class` | 网关上游失败分类计数，用于区分"尚无失败"与"实现未暴露"的恒定契约信号保留在该族暴露面内 |
 | `juhe_ai_gateway_first_output_duration_seconds` | histogram | `method` | 首输出（首 token / 首响应）耗时直方图 |
 | `juhe_ai_audit_log_captured_dropped_total` | counter | `service` | 审计日志捕获丢弃计数（活跃捕获超限等），只暴露丢弃事实，不承载正文 |
@@ -67,6 +68,7 @@
 | `juhe_ai_jobs_task_runs_total` | counter | `job_name`、`job_type`、`status` | 按 jobregistry 任务名 / 类型 / 执行结局（成功、失败、跳过等）计数的任务执行累计 |
 | `juhe_ai_jobs_task_run_duration_seconds` | histogram | `job_name`、`job_type` | 任务单轮执行耗时直方图 |
 | `juhe_ai_jobs_task_last_success_timestamp_seconds` | gauge | `job_name`、`job_type` | 每个任务最近一次成功执行的 Unix 时间戳，用于"任务停摆"类告警（`time() - 指标值 > 预期间隔 × 容忍倍数`；适用边界见下） |
+| `juhe_ai_build_info` | gauge | `service`、`version`、`commit`、`schema_revision`、`instance_id` | jobs 构建身份（值恒 1），`service="jobs"`；用于确认当前活跃 leader/standby 版本 |
 
 任务指标适用边界（2026-10-16 登记）：
 
@@ -80,13 +82,14 @@
 - 自定义族标签只允许上表枚举值；禁止把路由路径、模型名、账户 / 用户 / API Key ID、上游地址、错误正文等高基数或敏感值放入标签。
 - `route_group` 枚举为 `health` / `management` / `public_api` / `gateway` / `other` / `observability` 六值；`/__aisys__/metrics` 自身归 `observability` 且**不参与计量**（双重排除：分类器短路 + 端点挂健康监听不经指标中间件），因此有效 `route_group` 为五类。`method` 归一化为七个标准 HTTP 方法 + `OTHER`；`status_class` / `outcome` / `failure_scope` 取值见指标族表；`reason_class`（十值：`quota`/`rate_limit`/`authorization`/`protocol`/`timeout`/`transport`/`upstream_5xx`/`upstream_4xx`/`version_gate`/`unknown`）与 `failure_class`（三值：`opaque_upstream_response`/`transport`/`unknown`）为固定分类词表。新增标签值前必须先在本文登记基数上界。
 - `version_gate`（2026-11-06 登记）：上游返回 HTTP 426（Upgrade Required）的版本门槛失败。纯状态码判定、零文案解析（遵循《客户端版本自动跟版设计》§8.3 裁决）；仅诊断计数面，不写账户状态、不触发自动处置——反应式跟版触发仅限 jobs xai 用量路径既有白名单。
-- 单实例序列上界（标签笛卡尔积理论值，实际受语义约束更小）：
-  - `juhe_ai_http_requests_total`：5 类有效 `route_group` × 8 `method` × 13 个有效 (status_class, outcome, failure_scope) 组合（12 个 (status_class, outcome) 组合中 11 个恒配 `none`，`5xx`+`completed` 发射 `gateway/upstream` 两值——`none` 在该组合被归一为 `gateway`，不可达）= **520**。
-  - `juhe_ai_http_request_duration_seconds`：同标签集，每组合 8 桶 + `+Inf` + `_sum` + `_count` = 11 序列，上界 **5720**。
-  - `juhe_ai_http_requests_in_flight`：5 × 8 = **40**。
+- 单实例序列上界（标签笛卡尔积理论值，实际受语义约束更小；V 为滚动窗口内同时存活的构建版本数，通常 ≤2）：
+  - `juhe_ai_http_requests_total`：5 类有效 `route_group` × 8 `method` × 13 个有效 (status_class, outcome, failure_scope) 组合 × V（12 个 (status_class, outcome) 组合中 11 个恒配 `none`，`5xx`+`completed` 发射 `gateway/upstream` 两值——`none` 在该组合被归一为 `gateway`，不可达）= **520 × V**。
+  - `juhe_ai_http_request_duration_seconds`：同标签集，每组合 8 桶 + `+Inf` + `_sum` + `_count` = 11 序列，上界 **5720 × V**。
+  - `juhe_ai_http_requests_in_flight`：5 × 8 × V = **40 × V**。
   - `juhe_ai_gateway_upstream_failures_total`：3 `failure_class` × 10 `reason_class` × 6 `status_class` = **180**。
   - `juhe_ai_gateway_first_output_duration_seconds`：8 `method` × 11 = **88**。
   - `juhe_ai_gateway_db_pool_*`：主业务池固定 **6** 序列（无标签）。
+  - `juhe_ai_build_info`：每个进程 1 序列；gateway/jobs 各按实例数计。
   - `juhe_ai_jobs_task_runs_total`：注册任务数 × 状态数（3 终态）；`juhe_ai_jobs_task_last_success_timestamp_seconds`：注册任务数（仅出现过的 job_name/job_type 组合）。
 - 指标不含任何请求内容、追踪号或凭据；错误正文只允许进入分类词表，不允许进入标签或指标名。
 - 队列深度类指标（2026-10-16 裁决）**暂缓**：队列对象、生命周期与既有原子计数 seam 未登记前不新增族；明确后按本节流程补登基数与语义再实现。

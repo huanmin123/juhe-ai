@@ -28,8 +28,18 @@ const proxySchema = `
 		type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT,
 		password_encrypted TEXT, enabled BOOLEAN NOT NULL DEFAULT true, test_status TEXT NOT NULL DEFAULT 'unknown',
 		latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT,
-		last_tested_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
+		last_tested_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
+		pool_health_status TEXT, pool_health_failure_streak INTEGER NOT NULL DEFAULT 0, pool_health_checked_at TIMESTAMPTZ);
 	CREATE UNIQUE INDEX idx_proxy_profiles_name_unique ON juhe_business.proxy_profiles(name);
+	CREATE TABLE juhe_business.proxy_pools (
+		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+		strategy TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT true,
+		created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
+	CREATE TABLE juhe_business.proxy_pool_members (
+		pool_id TEXT NOT NULL, proxy_profile_id TEXT NOT NULL, priority INTEGER NOT NULL,
+		weight INTEGER NOT NULL DEFAULT 1, enabled BOOLEAN NOT NULL DEFAULT true,
+		created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (pool_id, proxy_profile_id), UNIQUE (pool_id, priority));
 	CREATE TABLE juhe_business.accounts (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT, proxy_profile_id TEXT);
 `

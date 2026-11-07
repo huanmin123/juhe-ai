@@ -149,6 +149,50 @@ func TestWNBug0195NewRuntimeLoggerReadyWritesFileAndDefault(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoggerUsesInstanceFileName(t *testing.T) {
+	dir := t.TempDir()
+	var stdout bytes.Buffer
+	_, sink, err := newRuntimeLogger(runtimeConfig{
+		LogDir:        dir,
+		LogInstanceID: "gateway-01",
+		LogMaxFileMB:  1,
+	}, &stdout, slog.LevelInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sink.Close() }()
+	want := filepath.Join(dir, "juhe-ai.gateway-01.log")
+	if sink.CurrentPath() != want {
+		t.Fatalf("instance current path = %q, want %q", sink.CurrentPath(), want)
+	}
+	event := wnBug0195EventLine(t, &stdout, "runtime_log_file_sink_ready")
+	if event["currentFile"] != want {
+		t.Fatalf("ready event currentFile = %v, want %s", event["currentFile"], want)
+	}
+}
+
+func TestRuntimeLogInstanceIDSanitization(t *testing.T) {
+	cases := map[string]string{
+		"":                    "gateway",
+		"  ":                  "gateway",
+		"gateway-01":          "gateway-01",
+		"host_name.example-1": "host_name.example-1",
+		"gw/实例":               "gw",
+		"../escape":           "escape",
+		"-leading":            "leading",
+		"a.b.c":               "a.b.c",
+	}
+	for input, want := range cases {
+		if got := sanitizeRuntimeLogInstanceID(input); got != want {
+			t.Fatalf("sanitize(%q) = %q, want %q", input, got, want)
+		}
+	}
+	long := strings.Repeat("a", 100)
+	if got := sanitizeRuntimeLogInstanceID(long); len(got) != 64 {
+		t.Fatalf("long instance ID length = %d, want 64", len(got))
+	}
+}
+
 func TestWNBug0195NewRuntimeLoggerUnavailableWhenDirIsFile(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {

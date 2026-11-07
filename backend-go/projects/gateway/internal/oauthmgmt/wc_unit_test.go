@@ -204,6 +204,7 @@ func TestWCTestErrorWriters(t *testing.T) {
 		{"conflict", &ConflictError{Message: "重复"}, "fb", "", http.StatusConflict, "重复"},
 		{"revision 专用文案", &RevisionConflictError{Message: "冲突"}, "fb", "专用文案", http.StatusConflict, "专用文案"},
 		{"revision 回退", &RevisionConflictError{Message: "冲突"}, "路由冲突回退", "", http.StatusConflict, "路由冲突回退"},
+		{"session 存储不可用", &SessionStoreError{Op: "读取", Err: errors.New("redis down")}, "兜底", "", http.StatusInternalServerError, "OAuth 会话存储暂时不可用"},
 		{"默认", errors.New("mystery"), "兜底", "", http.StatusBadGateway, "兜底"},
 	}
 	for _, testCase := range cases {

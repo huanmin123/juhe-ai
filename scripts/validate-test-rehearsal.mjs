@@ -115,19 +115,19 @@ const REQUIRED_ACCOUNT_COLUMNS = new Map([
   ])]
 ])
 
-// 与 rehearsal-account-sync-preflight.ts 保持同一份闭包；证据不得只挑选少数关键表。
+// 账户同步证据表闭包（2026-11-07 对齐当前 schema：供应商协议面退役后 vendors/models
+// 为基础目录，账户连接面三表 + api_keys 两个绑定目标 + 超级分组成员入闭包；
+// 证据不得只挑选少数关键表）。
 export const ACCOUNT_SYNC_EVIDENCE_TABLE_NAMES = Object.freeze([
-  'system_accounts', 'providers', 'protocols', 'protocol_endpoint_families',
-  'provider_protocol_profiles', 'provider_protocol_profile_families', 'provider_model_catalog',
-  'custom_provider_models', 'provider_default_health_check_models',
-  'provider_system_default_health_check_models', 'proxy_profiles', 'proxy_pools', 'proxy_pool_members',
+  'system_accounts', 'vendors', 'models', 'protocols', 'protocol_endpoint_families',
+  'scheduling_preferences', 'security_policies', 'proxy_profiles', 'proxy_pools', 'proxy_pool_members',
   'model_quality_policies',
   'model_quality_schedules', 'account_quality_enforcements', 'account_supported_models',
-  'account_model_mappings',
+  'account_connections', 'account_endpoint_modes', 'account_entry_mappings',
   'account_tags', 'account_tag_bindings', 'system_teams', 'system_team_members',
   'resource_authorizations', 'resource_authorization_sources', 'resource_authorization_grants',
   'accounts', 'groups', 'group_authorization_settings', 'group_accounts',
-  'group_account_stats_dirty',
+  'group_account_stats_dirty', 'super_group_members',
   'route_strategies', 'route_strategy_groups', 'response_inspection_policies', 'global_settings',
   'system_settings', 'request_quota_hourly_window_configs', 'request_quota_hourly_window_scope_bindings',
   'api_keys', 'account_schedule_status_events', 'api_key_schedule_status_events'
@@ -622,18 +622,6 @@ function validateAccounts(evidence, blockers) {
         }
         if (table.selfForeignKeyPolicy === 'source-before-authorization-instance' && table.authorizationInstanceRows > 0 && table.sourceAccountRows < 1) {
           addBlocker(blockers, `accounts.tables[${index}]`, '存在 authorization-instance accounts 时必须先导入至少一个 source account')
-        }
-      }
-      if (table.name === 'providers') {
-        if (table.selfForeignKeyPolicy !== 'parent-before-child') {
-          addBlocker(blockers, `${tablePath}.selfForeignKeyPolicy`, 'providers.parent_code 自引用必须按 parent-before-child 拓扑导入')
-        }
-        requireBoolean(table, 'parentBeforeChildVerified', tablePath, blockers)
-        const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
-        for (const relationshipColumn of ['code', 'parent_code']) {
-          if (!copiedColumns.has(relationshipColumn)) {
-            addBlocker(blockers, `${tablePath}.copiedColumns`, `providers 自引用拓扑列 ${relationshipColumn} 必须原值复制`)
-          }
         }
       }
       if (table.name === 'model_quality_schedules') {

@@ -768,10 +768,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		clauses = append(clauses, clause)
 		args = append(args, keywordArgs...)
 	}
-	if normalized.Status == "out_of_window" {
-		// 时间计划闸门虚拟筛选：active 且时段外。与 active / disabled 互斥。
-		clauses = append(clauses, "api_keys.status = 'active' AND api_keys.availability_schedule_gate = 0")
-	} else if normalized.Status != "" {
+	// 2026-11-07 裁决（设计 §5.4 修正）：status='active' 天然包含时段外
+	// （gate=0）行，非时间段子状态由列表展示层表达，不再有独立筛选值。
+	if normalized.Status != "" {
 		clauses = append(clauses, "api_keys.status = ?")
 		args = append(args, normalized.Status)
 	}
@@ -859,9 +858,9 @@ func normalizeListOptions(options ListOptions) ListOptions {
 	}
 	keyword := strings.TrimSpace(options.Keyword)
 	status := options.Status
-	// out_of_window 是虚拟筛选值（status='active' AND gate=0），不是 status 词表，
-	// 保留原值交由 ListPage 转换成闸门条件（设计 §5.4）。
-	if status != "active" && status != "disabled" && status != "out_of_window" {
+	// 2026-11-07 裁决（设计 §5.4 修正）：虚拟筛选值 out_of_window 退役，status
+	// 词表收敛为 active/disabled；status='active' 天然包含时段外（gate=0）行。
+	if status != "active" && status != "disabled" {
 		status = ""
 	}
 	return ListOptions{

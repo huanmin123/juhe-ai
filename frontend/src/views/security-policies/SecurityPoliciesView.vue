@@ -155,22 +155,63 @@
         </a-form-item>
         <div class="modal-section-title">
           <span>脱敏规则</span>
-          <a-tooltip title="规则按数组顺序执行，先命中先替换；内置类型的匹配 pattern 由服务端代码提供，不可改写。">
+          <a-tooltip title="内置敏感信息每行命中即按所选方式处理；自定义规则按数组顺序执行，先命中先替换。内置类型的匹配 pattern 由服务端代码提供，不可改写。">
             <InfoCircleOutlined class="security-policy-field-help-icon" />
           </a-tooltip>
         </div>
-        <div v-if="!form.rules.length" class="security-policy-rules-empty">暂无规则；空规则集 = 请求原样转发（与内置默认策略一致）。</div>
-        <div v-for="(row, index) in form.rules" :key="row.id" class="security-policy-rule-row">
+        <div class="security-policy-rules-subtitle">
+          <span>内置敏感信息</span>
+          <span class="security-policy-rules-subtitle-hint">命中即按所选方式处理；「不处理」表示不生成该类规则</span>
+        </div>
+        <div class="security-policy-matrix">
+          <div
+            v-for="slot in builtInMatrixSlots"
+            :key="slot.type"
+            class="security-policy-matrix-row"
+            :class="{ 'security-policy-matrix-row-off': slot.action === 'off' }"
+          >
+            <span class="security-policy-matrix-name">{{ slot.name }}</span>
+            <a-select
+              class="security-policy-matrix-action"
+              :value="slot.action"
+              :options="securityPolicyMatrixActionOptions"
+              @update:value="(value: unknown) => handleMatrixActionChange(slot.type, value)"
+            />
+            <div v-if="slot.row" class="security-policy-matrix-param">
+              <a-input-number
+                v-if="slot.row.action === 'mask'"
+                v-model:value="slot.row.maskKeep"
+                class="security-policy-rule-keep"
+                :min="securityPolicyBounds.maskKeepMin"
+                :max="securityPolicyBounds.maskKeepMax"
+                :precision="0"
+                placeholder="保留位数（可选）"
+              />
+              <a-input
+                v-else
+                v-model:value="slot.row.label"
+                class="security-policy-rule-label"
+                :placeholder="`占位标签（默认 ${securityPolicyDefaultRuleLabel[slot.type]}）`"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="security-policy-rules-subtitle">
+          <span>自定义规则</span>
+          <span class="security-policy-rules-subtitle-hint">自定义正则 / 关键词，按数组顺序执行，先命中先替换</span>
+        </div>
+        <div v-if="!form.rules.length" class="security-policy-rules-empty">暂无生效规则；全部「不处理」且无自定义规则 = 请求原样转发（与内置默认策略一致）。</div>
+        <div v-for="(row, index) in customRuleRows" :key="row.id" class="security-policy-rule-row">
           <span class="security-policy-rule-index">{{ index + 1 }}</span>
-          <a-select v-model:value="row.type" class="security-policy-rule-type" :options="securityPolicyRuleTypeOptions" />
+          <a-select v-model:value="row.type" class="security-policy-rule-type" :options="securityPolicyCustomRuleTypeOptions(row)" />
           <a-radio-group v-model:value="row.action" class="security-policy-rule-action" :options="securityPolicyRuleActionOptions" />
-          <a-button class="security-policy-rule-remove" type="text" danger @click="removeRuleRow(index)">删除</a-button>
+          <a-button class="security-policy-rule-remove" type="text" danger @click="removeRuleRow(row.id)">删除</a-button>
           <div class="security-policy-rule-fields">
             <a-input
               v-if="row.action === 'placeholder'"
               v-model:value="row.label"
               class="security-policy-rule-label"
-              :placeholder="`占位符标签（默认 ${securityPolicyDefaultRuleLabel[row.type]}）`"
+              :placeholder="`占位标签（可选，默认 ${securityPolicyDefaultRuleLabel[row.type]}）`"
             />
             <a-input-number
               v-if="row.action === 'mask'"
@@ -204,7 +245,7 @@
           @click="addRuleRow"
         >
           <template #icon><PlusOutlined /></template>
-          添加规则（{{ form.rules.length }}/{{ securityPolicyBounds.ruleCountMax }}）
+          添加自定义规则（{{ form.rules.length }}/{{ securityPolicyBounds.ruleCountMax }}）
         </a-button>
         <a-collapse class="security-policy-trial-scan" ghost>
           <a-collapse-panel key="trial" header="试扫（本地演示，以服务端规则为准）">
@@ -256,19 +297,24 @@ import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelectio
 import type { SecurityPolicyListItem, SecurityPolicyMutationResult } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import {
+  applySecurityPolicyMatrixAction,
   buildSecurityPolicyFormPayload,
   buildSecurityPolicyMutationPatch,
   defaultSecurityPolicyFormModel,
-  emptySecurityPolicyRuleRow,
+  emptySecurityPolicyCustomRuleRow,
   hasSecurityPolicyMutationChanges,
+  isSecurityPolicyMatrixSlotRow,
   mergeSecurityPolicyMutationResult,
   securityPolicyBounds,
+  securityPolicyCustomRuleTypeOptions,
   securityPolicyDefaultRuleLabel,
+  securityPolicyMatrixActionOptions,
+  securityPolicyMatrixSlots,
   securityPolicyRuleActionOptions,
   securityPolicyRuleRowsFromRules,
-  securityPolicyRuleTypeOptions,
   securityPolicyRulesSummaryText,
   validateSecurityPolicyForm,
+  type SecurityPolicyBuiltInMatrixType,
   type SecurityPolicyFormModel,
   type SecurityPolicyFormPayload
 } from './securityPoliciesForm'
@@ -360,6 +406,12 @@ const trialScan = computed(() => {
   if (!sampleText.trim() || !form.rules.length) return undefined
   return trialScanSecurityPolicyText(buildSecurityPolicyFormPayload(form).rules, sampleText)
 })
+
+/** 内置敏感信息预设矩阵：固定 6 行槽位投影（rules 数组仍是唯一数据源）。 */
+const builtInMatrixSlots = computed(() => securityPolicyMatrixSlots(form.rules))
+
+/** 自定义规则区：custom 两类 + 未知/脏 type 兜底 + 内置同 type 重复的保真行。 */
+const customRuleRows = computed(() => form.rules.filter((row) => !isSecurityPolicyMatrixSlotRow(row)))
 
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -535,13 +587,20 @@ function snapshotPageState(): SecurityPoliciesPageState {
   }
 }
 
-function addRuleRow() {
-  if (form.rules.length >= securityPolicyBounds.ruleCountMax) return
-  form.rules.push(emptySecurityPolicyRuleRow())
+/** 矩阵行动作变化 → rules upsert/remove；off = 不处理（移除该 type 规则）。 */
+function handleMatrixActionChange(type: SecurityPolicyBuiltInMatrixType, action: unknown) {
+  if (action !== 'off' && action !== 'mask' && action !== 'placeholder') return
+  form.rules = applySecurityPolicyMatrixAction(form.rules, type, action)
 }
 
-function removeRuleRow(index: number) {
-  form.rules.splice(index, 1)
+function addRuleRow() {
+  if (form.rules.length >= securityPolicyBounds.ruleCountMax) return
+  form.rules.push(emptySecurityPolicyCustomRuleRow())
+}
+
+function removeRuleRow(id: string) {
+  const index = form.rules.findIndex((row) => row.id === id)
+  if (index >= 0) form.rules.splice(index, 1)
 }
 
 function openCreate() {
@@ -826,6 +885,64 @@ function securityPolicySystemAccountText(record: SecurityPolicyListItem): string
   border-radius: 8px;
   color: var(--juhe-faint);
   font-size: 13px;
+}
+
+.security-policy-rules-subtitle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 12px 0 6px;
+  color: var(--juhe-fg-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.security-policy-rules-subtitle-hint {
+  color: var(--juhe-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.security-policy-matrix {
+  padding: 2px 10px;
+  border: 1px solid var(--juhe-border);
+  border-radius: 8px;
+}
+
+.security-policy-matrix-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 2px;
+}
+
+.security-policy-matrix-row + .security-policy-matrix-row {
+  border-top: 1px solid var(--juhe-border);
+}
+
+.security-policy-matrix-name {
+  flex: none;
+  width: 72px;
+  color: var(--juhe-fg);
+  font-size: 13px;
+}
+
+.security-policy-matrix-row-off .security-policy-matrix-name {
+  color: var(--juhe-faint);
+}
+
+.security-policy-matrix-action {
+  flex: none;
+  width: 200px;
+}
+
+.security-policy-matrix-param {
+  display: flex;
+  flex: 1 1 220px;
+  gap: 8px;
+  align-items: center;
+  min-width: 200px;
 }
 
 .security-policy-rule-row {

@@ -1,9 +1,32 @@
 package gatewayusage
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
+
+func TestBuildInfoMetric(t *testing.T) {
+	t.Setenv("JUHE_AI_INSTANCE_ID", "gw-build-info-test")
+	metrics := newPrometheusMetrics()
+	render := metrics.gatherText()
+	for _, want := range []string{
+		"juhe_ai_build_info{",
+		`instance_id="gw-build-info-test"`,
+		`service="juhe-ai"`,
+		`version="` + version.Version + `"`,
+		`commit="` + version.Commit + `"`,
+		`schema_revision="` + strconv.FormatInt(contracts.SchemaRevision, 10) + `"`,
+		"} 1",
+	} {
+		if !strings.Contains(render, want) {
+			t.Fatalf("build_info missing %q in:\n%s", want, render)
+		}
+	}
+}
 
 // Golden shapes locked against
 // Node 归档 shared/prometheus-metrics.ts
@@ -45,30 +68,30 @@ func TestHTTPMetricsRequestLifecycle(t *testing.T) {
 		t.Fatal("gateway request must be measured")
 	}
 	render := metrics.gatherText()
-	if !strings.Contains(render, `juhe_ai_http_requests_in_flight{method="POST",route_group="gateway",service="juhe-ai"} 1`) {
+	if !strings.Contains(render, `juhe_ai_http_requests_in_flight{method="POST",route_group="gateway",service="juhe-ai",version="`+version.Version+`"} 1`) {
 		t.Fatalf("in-flight gauge missing after start:\n%s", render)
 	}
 	metrics.finishRequest(request, intPtr(200), HTTPMetricOutcomeCompleted, 2_500, HTTPMetricFailureScopeNone)
 	render = metrics.gatherText()
 	for _, want := range []string{
-		`juhe_ai_http_requests_total{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx"} 1`,
-		`juhe_ai_http_request_duration_seconds_bucket{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",le="1"} 0`,
-		`juhe_ai_http_request_duration_seconds_bucket{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",le="2"} 1`,
-		`juhe_ai_http_request_duration_seconds_bucket{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",le="+Inf"} 1`,
-		`juhe_ai_http_request_duration_seconds_sum{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx"} 1.5`,
-		`juhe_ai_http_request_duration_seconds_count{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx"} 1`,
+		`juhe_ai_http_requests_total{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="` + version.Version + `"} 1`,
+		`juhe_ai_http_request_duration_seconds_bucket{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="` + version.Version + `",le="1"} 0`,
+		`juhe_ai_http_request_duration_seconds_bucket{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="` + version.Version + `",le="2"} 1`,
+		`juhe_ai_http_request_duration_seconds_bucket{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="` + version.Version + `",le="+Inf"} 1`,
+		`juhe_ai_http_request_duration_seconds_sum{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="` + version.Version + `"} 1.5`,
+		`juhe_ai_http_request_duration_seconds_count{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="` + version.Version + `"} 1`,
 	} {
 		if !strings.Contains(render, want) {
 			t.Fatalf("render missing %q:\n%s", want, render)
 		}
 	}
 	// series 归零常驻（client_golang gauge 语义，不删除）。
-	if !strings.Contains(render, `juhe_ai_http_requests_in_flight{method="POST",route_group="gateway",service="juhe-ai"} 0`) {
+	if !strings.Contains(render, `juhe_ai_http_requests_in_flight{method="POST",route_group="gateway",service="juhe-ai",version="`+version.Version+`"} 0`) {
 		t.Fatalf("in-flight gauge must drain to a resident zero series:\n%s", render)
 	}
 	// Double finish stays single-shot.
 	metrics.finishRequest(request, intPtr(500), HTTPMetricOutcomeCompleted, 3_000, HTTPMetricFailureScopeNone)
-	if !strings.Contains(metrics.gatherText(), `juhe_ai_http_requests_total{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx"} 1`) {
+	if !strings.Contains(metrics.gatherText(), `juhe_ai_http_requests_total{failure_scope="none",method="POST",outcome="completed",route_group="gateway",service="juhe-ai",status_class="2xx",version="`+version.Version+`"} 1`) {
 		t.Fatal("double finish must not double count")
 	}
 }
@@ -78,7 +101,7 @@ func TestHTTPMetricsFiveHundredDefaultsToGatewayScope(t *testing.T) {
 	request := metrics.startRequest("/v1/models", "GET", 0)
 	metrics.finishRequest(request, intPtr(503), HTTPMetricOutcomeCompleted, 10, HTTPMetricFailureScopeNone)
 	render := metrics.gatherText()
-	if !strings.Contains(render, `juhe_ai_http_requests_total{failure_scope="gateway",method="GET",outcome="completed",route_group="gateway",service="juhe-ai",status_class="5xx"} 1`) {
+	if !strings.Contains(render, `juhe_ai_http_requests_total{failure_scope="gateway",method="GET",outcome="completed",route_group="gateway",service="juhe-ai",status_class="5xx",version="`+version.Version+`"} 1`) {
 		t.Fatalf("5xx must default to gateway failure scope:\n%s", render)
 	}
 }
@@ -88,7 +111,7 @@ func TestHTTPMetricsAbortKeepsScopeNone(t *testing.T) {
 	request := metrics.startRequest("/v1/chat/completions", "POST", 0)
 	metrics.finishRequest(request, nil, HTTPMetricOutcomeAborted, 5, HTTPMetricFailureScopeNone)
 	render := metrics.gatherText()
-	if !strings.Contains(render, `juhe_ai_http_requests_total{failure_scope="none",method="POST",outcome="aborted",route_group="gateway",service="juhe-ai",status_class="unknown"} 1`) {
+	if !strings.Contains(render, `juhe_ai_http_requests_total{failure_scope="none",method="POST",outcome="aborted",route_group="gateway",service="juhe-ai",status_class="unknown",version="`+version.Version+`"} 1`) {
 		t.Fatalf("abort contract mismatch:\n%s", render)
 	}
 }

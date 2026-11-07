@@ -14,15 +14,15 @@ package main
 //
 // 场景清单（对应 main.go 的剩余快速失败臂与常驻 owner 生命周期）：
 //
-//	M1 owner + F4 专有租约生命周期（PG 共享库语义不变）：
-//		- 进程 1：system api 组合根 + F4 启用 → F4 组件走专有租约分支，
-//		  健康端点就绪；
+//	M1 owner + F4 租约生命周期（PG 共享库语义不变）：
+//		- 进程 1：system api 组合根 + F4 启用 → 写入 lease 每实例独立，
+//		  retention 持有全局键，健康端点就绪；
 //		- 进程 2：独立 F3 审计库 + 复用进程 1 的 F4 PG 库 + 换实例 ID →
-//		  F4 专有租约被持有，supervisor 对组件失败按有界退避无限重试，
-//		  stderr 持续出现 "F4 operation log owner lease held by another
-//		  owner process"，随后有界终止进程 2 收割覆盖；
-//		- 进程 3：复用进程 1 的 F3 审计 PG 库 + 换实例 ID → F3 租约被持有
-//		  快速失败；
+//		  写入 lease 独立获取成功，retention 全局键被进程 1 持有，日志出现
+//		  "retention owner lease held by another gateway instance" 后继续
+//		  就绪服务，随后优雅关闭；
+//		- 进程 3：复用进程 1 的 F3 审计 PG 库 + 换实例 ID → 同样正常启动，
+//		  F3 retention 等待进程 1 释放；
 //		- 进程 1 CTRL_BREAK 优雅关闭。
 //	M2 配置快速失败臂：F3 EnsureSchema（不可达 URL）、F4 EnsureSchema（不可达
 //		URL，PG store 打开惰性连接后首次连库的确定性失败面）、owner 侧健康
@@ -270,11 +270,11 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	w1bBuildCoverBinary(t)
 	client := &http.Client{Timeout: 2 * time.Second}
 
-	// 共享 PG 库：业务库（settings/compose preflight 消费）与 F4 专有租约库。
+	// 共享 PG 库：业务库（settings/compose preflight 消费）与 F4 租约库。
 	business := w1mBusinessPostgres(t)
 	f4 := pgtestkit.NewTestDatabase(t)
 
-	// 进程 1：F4 启用 + 独立 F3 审计库 → F4 组件走专有租约分支。
+	// 进程 1：F4 启用 + 独立 F3 审计库 → F4 写入与 retention 各自持有 lease。
 	root1 := w1mAuditRoot(t, "m1-owner1")
 	audit1 := pgtestkit.NewTestDatabase(t)
 	healthAddr := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
@@ -288,7 +288,7 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr,
 	)
-	// F4 专有租约分支成为唯一路径，进程照常只暴露 gateway health 监听。
+	// F4 写入 lease + 全局 retention lease 同时装配，进程只暴露 gateway health 监听。
 	cmd1, done1, cancel1, bootStdout1, bootStderr1 := w1mStartOwnerProcess(t, coverageDir1, env1)
 	if !w1mTryWaitHealthReady(t, client, healthAddr, 20*time.Second) {
 		t.Fatalf("健康端点 %s 在 20s 内未就绪\n--- 子进程 stdout ---\n%s\n--- 子进程 stderr ---\n%s",
@@ -322,15 +322,13 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 		}
 	}
 
-	// 进程 2：独立 F3 审计库 + 复用进程 1 的 F4 PG 库，但换一个 F4 实例 ID →
-	// F4 专有租约被跨 owner 持有。同 owner_id 的未过期行会被直接接管
-	// （operationlog store 的 owner_id = excluded.owner_id 分支），只有跨
-	// owner 才走冲突文案。契约：supervisor 对组件失败按有界退避无限重试
-	// 而非进程停机，因此 F4 owner Run 闭包的专有租约 !ok 分支表现为
-	// stderr 持续出现租约冲突文案；断言后终止进程 2 以收割其覆盖数据。
+	// 进程 2：独立 F3 审计库 + 复用进程 1 的 F4 PG 库，换一个 F4 实例 ID。
+	// 新契约：写入 lease 每实例独立，进程 2 必须正常启动并写入；只有 retention
+	// 的全局 lease 被进程 1 持有，进程 2 应等待并在日志中提示接管，而不是退出。
 	root2 := w1mAuditRoot(t, "m1-owner2")
 	audit2 := pgtestkit.NewTestDatabase(t)
-	coverageDir2 := w1bCoverageDir(t, "M1-f4-lease-conflict")
+	coverageDir2 := w1bCoverageDir(t, "M1-f4-retention-wait")
+	healthAddr2 := "127.0.0.1:" + strconv.Itoa(w1bFreePort(t))
 	env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 		w1mRuntimeBaseEnvPairs(t),
 		w1mAuditEnvPairs(t, root2, "w1m-m1-audit-2", audit2.DSN, business.DSN)...,
@@ -338,52 +336,47 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	env2 = append(env2,
 		"JUHE_AI_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
-		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)),
+		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,
 	)
 	cmd2, done2, cancel2, stdout2, stderr2 := w1mStartOwnerProcess(t, coverageDir2, env2)
-	// 组合根恒开后租约冲突文案进入 stderr，等待目标从 stdout 改为 stderr。
-	if !w1mWaitOutputContains(t, stderr2, "F4 operation log owner lease held by another owner process", 15*time.Second) {
+	if !w1mTryWaitHealthReady(t, client, healthAddr2, 20*time.Second) {
 		cancel2()
 		_ = cmd2.Process.Kill()
 		<-done2
-		t.Fatalf("进程 2 的 F4 专有租约冲突未在 15s 内出现，stdout: %s stderr: %s", stdout2.String(), stderr2.String())
+		t.Fatalf("进程 2 未在 20s 内就绪（第二实例必须可启动）stdout: %s stderr: %s", stdout2.String(), stderr2.String())
 	}
-	// P2 的 F4 supervisor 有界重试可能在投递 CTRL_BREAK 之前就自行终结进程
-	// （GenerateConsoleCtrlEvent 对已退出进程报「参数不正确」），故发送失败
-	// 按「已退出」处理。稳定契约：进程有界终止（自退或关停），stderr 已含
-	// 租约冲突重试文案，退出码 0（健康关停）/1（组件不健康上报）均合法。
-	_ = w1bSendCtrlBreak(cmd2.Process.Pid)
-	select {
-	case waitErr := <-done2:
+	if !w1mWaitOutputContains(t, stdout2, "retention owner lease held by another gateway instance", 15*time.Second) {
 		cancel2()
-		if waitErr != nil {
-			if exitErr, ok := waitErr.(*exec.ExitError); !ok {
-				t.Fatalf("场景 M1-f4-lease-conflict 等待进程退出失败: %v", waitErr)
-			} else if code := exitErr.ExitCode(); code != 0 && code != 1 {
-				t.Fatalf("场景 M1-f4-lease-conflict 退出码 %d 超出健康关停（0）与组件不健康上报（1）范围", code)
-			}
-		}
-	case <-time.After(15 * time.Second):
 		_ = cmd2.Process.Kill()
-		cancel2()
-		t.Fatalf("场景 M1-f4-lease-conflict 15s 内未终止，已强杀")
+		<-done2
+		t.Fatalf("进程 2 的 F4 retention 等待提示未在 15s 内出现，stdout: %s stderr: %s", stdout2.String(), stderr2.String())
 	}
-	w1bAppendCoverageManifest(t, coverageDir2)
+	w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-f4-retention-wait")
 
-	// 进程 3：复用进程 1 的 F3 审计 PG 库 + 换一个 audit 实例 ID → F3 租约被
-	// 跨 owner 持有快速失败。实例 ID 必须与进程 1 不同：F3 获取的冲突分支
-	// 对同 owner_id（进程身份）的未过期租约直接接管（store.go
-	// AcquireOwnerLease 的 owner_id = excluded.owner_id 分支），只有跨 owner
-	// 才走 fail-fast 原文案。health 监听显式用空闲端口。
-	coverageDir3 := w1bCoverageDir(t, "M1-f3-lease-conflict")
+	// 进程 3：复用进程 1 的 F3 审计 PG 库 + 换一个 audit 实例 ID。
+	// F3 写入 lease 每实例独立，进程 3 正常启动；仅 retention 全局 lease 等待
+	// 进程 1 释放。health 监听显式用空闲端口。
+	coverageDir3 := w1bCoverageDir(t, "M1-f3-retention-wait")
+	healthAddr3 := "127.0.0.1:" + strconv.Itoa(w1bFreePort(t))
 	env3 := w1bScenarioEnv(t, coverageDir3, append(append(
 		w1mRuntimeBaseEnvPairs(t),
 		w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1-rival", audit1.DSN, business.DSN)...,
 	), "JUHE_AI_POSTGRES_URL="+business.DSN, "JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
-	env3 = append(env3, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
-	_, stderr3, code3 := w1bRunScenario(t, "M1-f3-lease-conflict", env3)
-	w1bRequireExitCode(t, "M1-f3-lease-conflict", code3, 1)
-	w1bRequireContains(t, "M1-f3-lease-conflict", stderr3, "F3 audit owner lease held by another owner process")
+	env3 = append(env3, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr3)
+	cmd3, done3, cancel3, stdout3, stderr3 := w1mStartOwnerProcess(t, coverageDir3, env3)
+	if !w1mTryWaitHealthReady(t, client, healthAddr3, 20*time.Second) {
+		cancel3()
+		_ = cmd3.Process.Kill()
+		<-done3
+		t.Fatalf("进程 3 未在 20s 内就绪（F3 第二实例必须可启动）stdout: %s stderr: %s", stdout3.String(), stderr3.String())
+	}
+	if !w1mWaitOutputContains(t, stdout3, "retention owner lease held by another gateway instance", 15*time.Second) {
+		cancel3()
+		_ = cmd3.Process.Kill()
+		<-done3
+		t.Fatalf("进程 3 的 F3 retention 等待提示未在 15s 内出现，stdout: %s stderr: %s", stdout3.String(), stderr3.String())
+	}
+	w1mGracefulShutdownOwner(t, cmd3, done3, cancel3, coverageDir3, "M1-f3-retention-wait")
 
 	// 进程 1 优雅关闭（CTRL_BREAK）。
 	w1mGracefulShutdownOwner(t, cmd1, done1, cancel1, coverageDir1, "M1-owner-f4-private-lease")

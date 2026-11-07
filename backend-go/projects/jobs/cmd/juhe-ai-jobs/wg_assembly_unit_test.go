@@ -126,6 +126,40 @@ func TestWithLeaseSkipsWhenSQLiteOrNoStore(t *testing.T) {
 	}
 }
 
+func TestWithLeaseSkipsWhenStandbyLeaderAbsent(t *testing.T) {
+	gate := &fakeWorkerLeaderGate{}
+	assembly := &workerAssembly{config: workerConfig{}, leaderGate: gate}
+	called := false
+	wrapped := assembly.withLease("usage-stats-aggregation", 0, func(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		called = true
+		return jobsched.TaskResult{Outcome: jobsched.OutcomeSuccess}, nil
+	})
+	result, err := wrapped(context.Background(), jobsched.TaskContext{})
+	if err != nil || result.Outcome != jobsched.OutcomeSkipped || result.Warning != "jobs_standby_no_leader" {
+		t.Fatalf("standby must skip task: result=%+v err=%v", result, err)
+	}
+	if called {
+		t.Fatal("standby must not execute task")
+	}
+
+	gate.leader = true
+	result, err = wrapped(context.Background(), jobsched.TaskContext{})
+	if err != nil || result.Outcome != jobsched.OutcomeSuccess || !called {
+		t.Fatalf("leader must execute task: result=%+v called=%v err=%v", result, called, err)
+	}
+
+	gate.leader = false
+	assembly.allowStandbyRuns()
+	called = false
+	if _, err := wrapped(context.Background(), jobsched.TaskContext{}); err != nil || !called {
+		t.Fatalf("--run-jobs-once bypass must execute: called=%v err=%v", called, err)
+	}
+}
+
+type fakeWorkerLeaderGate struct{ leader bool }
+
+func (g *fakeWorkerLeaderGate) IsLeader() bool { return g.leader }
+
 func TestIngestDrainGateWithoutWriter(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{}, nil)
 	probe := assembly.ingestDrainProbe()

@@ -72,7 +72,9 @@ func NewRedisAccountConcurrency(opts RedisAccountConcurrencyOptions) (*RedisAcco
 	}, nil
 }
 
-// Close closes the Redis client if this instance owns it.
+// Close closes the Redis client. The production chain constructs the tracker
+// with the shared runtime-state client and therefore never calls Close; the
+// client is owned by chainRuntimeServices.
 func (r *RedisAccountConcurrency) Close() {
 	if r.client != nil {
 		_ = r.client.Close()
@@ -137,6 +139,9 @@ func (r *RedisAccountConcurrency) CurrentAccountConcurrency(accountID string, la
 	}
 	val, err := r.client.HGet(context.Background(), r.accountConcurrencyKey(accountID), field).Result()
 	if err != nil {
+		if !errors.Is(err, redis.Nil) {
+			r.warnReadFailure("redis_account_concurrency_read_failed", accountID, err)
+		}
 		return 0
 	}
 	concurrency, _ := strconv.Atoi(val)
@@ -153,6 +158,7 @@ func (r *RedisAccountConcurrency) CurrentAccountRPM(accountID string) AccountRPM
 	bucket := nowMs / 60_000
 	values, err := r.client.HMGet(context.Background(), r.accountConcurrencyKey(accountID), "rpm_bucket", "rpm_count").Result()
 	if err != nil {
+		r.warnReadFailure("redis_account_rpm_read_failed", accountID, err)
 		return AccountRPMState{}
 	}
 	state := AccountRPMState{ResetAtMs: rpmWindowResetAtMs(bucket)}
@@ -167,6 +173,18 @@ func (r *RedisAccountConcurrency) CurrentAccountRPM(accountID string) AccountRPM
 		}
 	}
 	return state
+}
+
+// warnReadFailure 记录同步读面 Redis 失败。同步读面为展示/抑制投影，失败按
+// 0 降级不会放行请求；日志用于发现基础设施异常。
+func (r *RedisAccountConcurrency) warnReadFailure(event, accountID string, err error) {
+	if r == nil || r.logger == nil || err == nil {
+		return
+	}
+	r.logger.Warn(event, map[string]any{
+		"accountId": accountID,
+		"err":       err.Error(),
+	}, "Redis 账户并发读面失败，按 0 降级")
 }
 
 // LoadAccountRPMByID implements AccountConcurrencySource. HGET 同一 HASH 的
@@ -301,10 +319,18 @@ if count >= limit then
 end
 count = redis.call('HINCRBY', key, 'rpm_count', 1)
 redis.call('HSET', key, 'rpm_bucket', bucket)
-redis.call('PEXPIRE', key, ttl_ms)
+-- 同一 HASH 还承载并发槽（6h 泄漏兜底 TTL）；这里只允许把 TTL 延长到
+-- 至少覆盖当前 RPM 窗口，绝不能把并发槽的长 TTL 缩短。
+local remaining = redis.call('PTTL', key)
+if remaining < ttl_ms then
+  redis.call('PEXPIRE', key, ttl_ms)
+end
 return {1, count, reset_at_ms}
 `
 
+// redisAccountConcurrencyRPMTTLMs 是 RPM 窗口字段的最小兜底 TTL（2 个窗口），
+// 只在现有 key TTL 更短时延长；并发槽的 6h 泄漏兜底由 acquire 负责，不能被
+// ConsumeRPM 缩短。
 const redisAccountConcurrencyRPMTTLMs = 120_000
 
 // AcquireAccountConcurrency 在单个 Lua 脚本内原子完成“账户总量 + lane + RPM”
@@ -343,7 +369,8 @@ func (r *RedisAccountConcurrency) AcquireAccountConcurrency(ctx context.Context,
 // ConsumeRPM 在 Redis HASH 内原子消费一次 RPM（T161）：与 acquire 共用
 // rpm_bucket/rpm_count 字段；首次占位由 AcquireAccountConcurrency 计数，本方法
 // 只服务同一并发槽内的后续真实上游尝试。达到上限返回 allowed=false 与当前
-// 窗口观测，计数不变；通过则 HINCRBY 并续 120s TTL。
+// 窗口观测，计数不变；通过则 HINCRBY，并在现有 TTL 短于 RPM 兜底时延长，
+// 不覆盖并发槽更长的泄漏兜底 TTL。
 func (r *RedisAccountConcurrency) ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error) {
 	if rpmLimit <= 0 {
 		return true, 0, 0, nil
