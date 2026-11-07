@@ -61,6 +61,7 @@ func (f *fullchainFixture) fullchainEnsureQwenASRCatalogModel(model string) {
 
 func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
+	f.fullchainEnsureQwenASRCatalogModel("paraformer-v2")
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
 		"providerCode":              "qwen",
 		"providerProtocolProfileId": "profile_qwen_openai_v1",
@@ -243,6 +244,15 @@ func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, gr
 			},
 		},
 		"supportedModels": []string{"cogtts"},
+		"connections": []map[string]any{{
+			"connectionPresetCode": "glm_general_openai_v1",
+			"baseUrl":              f.mock.server.URL + "/api/paas/v4",
+			"endpointModes":        []string{"audio_speech"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "glm_general_openai_v1",
+		"healthCheckEndpointMode":         "audio_speech",
+		"healthCheckModel":                "cogtts",
 		"status":          "active",
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))
@@ -370,6 +380,15 @@ func (f *fullchainFixture) fullchainCreateVolcengineSpeechAccount(name, arkKey, 
 			},
 		},
 		"supportedModels": []string{"doubao-tts"},
+		"connections": []map[string]any{{
+			"connectionPresetCode": "volcengine_openspeech",
+			"baseUrl":              f.mock.server.URL,
+			"endpointModes":        []string{"audio_speech"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "volcengine_openspeech",
+		"healthCheckEndpointMode":         "audio_speech",
+		"healthCheckModel":                "doubao-tts",
 		"status":          "active",
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))
@@ -494,6 +513,15 @@ func (f *fullchainFixture) fullchainCreateVolcengineASRAccount(name, arkKey, spe
 			},
 		},
 		"supportedModels": []string{"volc.seedasr.auc"},
+		"connections": []map[string]any{{
+			"connectionPresetCode": "volcengine_openspeech",
+			"baseUrl":              f.mock.server.URL,
+			"endpointModes":        []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "volcengine_openspeech",
+		"healthCheckEndpointMode":         "audio_job_create",
+		"healthCheckModel":                "volc.seedasr.auc",
 		"status":          "active",
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))

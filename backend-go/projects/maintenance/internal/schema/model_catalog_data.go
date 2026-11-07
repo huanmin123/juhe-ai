@@ -262,7 +262,7 @@ var modelSeedProtocolEndpointModes = map[string][]string{
 	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
 	"realtime":                {"realtime_session"},
 	"audio_speech":            {"audio_speech"},
-	"audio_transcription":     {"audio_transcription_json"},
+	"audio_transcription":     {"audio_transcription_json", "audio_job_create"},
 	"completions":             {},
 }
 

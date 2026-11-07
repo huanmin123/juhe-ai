@@ -820,10 +820,40 @@ func (f *fullchainFixture) createAccount(name, upstreamKey, groupID string, extr
 	}
 	// §8 连接集合 + 健康检查三件套显式提交（写链必填）：mock 账户按
 	// provider 派生连接 preset，base URL 跟随 credentials 的 mock 地址。
+	// 媒体域连接模式必须落在域 lane 内（chat 模式与 video/audio/image 账户
+	// 不相交），健康检查形态与模型也按域选取。
 	providerCode := str(payload["providerCode"])
 	preset := presetForProvider(providerCode)
 	baseURL := str(credentials["base_url"])
 	connectionModes, healthMode := acceptanceChatConnectionModes(preset)
+	healthModel := fullchainProbeModel
+	supported := stringSliceOfAny(payload["supportedModels"])
+	if len(supported) > 0 {
+		healthModel = supported[0]
+	}
+	switch str(payload["capabilityDomain"]) {
+	case "video":
+		connectionModes = []string{"video_create", "video_get", "video_content", "video_cancel"}
+		healthMode = "video_create"
+	case "audio":
+		modes := stringSliceOfAny(credentials["supported_endpoint_modes"])
+		if len(modes) > 0 {
+			connectionModes = modes
+		}
+		switch {
+		case containsString(connectionModes, "audio_speech"):
+			healthMode = "audio_speech"
+		case containsString(connectionModes, "audio_job_create"):
+			healthMode = "audio_job_create"
+		case containsString(connectionModes, "realtime_session"):
+			healthMode = "realtime_session"
+		default:
+			healthMode = "audio_transcription_json"
+		}
+	case "image":
+		connectionModes = []string{"images_json"}
+		healthMode = "images_json"
+	}
 	payload["connections"] = []map[string]any{{
 		"connectionPresetCode": preset,
 		"baseUrl":              baseURL,
@@ -832,13 +862,38 @@ func (f *fullchainFixture) createAccount(name, upstreamKey, groupID string, extr
 	}}
 	payload["healthCheckConnectionPresetCode"] = preset
 	payload["healthCheckEndpointMode"] = healthMode
-	payload["healthCheckModel"] = fullchainProbeModel
+	payload["healthCheckModel"] = healthModel
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", payload, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
 		f.t.Fatalf("fullchain account create payload wrong: %#v", created)
 	}
 	return accountID
+}
+
+// stringSliceOfAny 归一测试夹具里的 []string / []any 形态。
+func stringSliceOfAny(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, str(item))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // presetForProvider 返回 chat 场景的 connection preset（设计 §1.1 registry

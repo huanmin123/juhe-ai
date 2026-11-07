@@ -204,7 +204,7 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 	}
 	want := map[string]int{
 		`["audio_speech"]`:             17,
-		`["audio_transcription_json"]`: 7,
+		`["audio_job_create","audio_transcription_json"]`: 7,
 		`["chat_json","chat_sse"]`:     43,
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse"]`:                                        1,
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse","interactions_json","interactions_sse"]`: 11,

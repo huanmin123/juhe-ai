@@ -258,6 +258,9 @@ var AccountHealthCheckEndpointModes = map[string]bool{
 	// 同步，maintenance pg_schema_business_tables.go）；audio_job_create 是
 	// 长音频任务账户（qwen paraformer 等）唯一可落地的持久化诊断形态。
 	"audio_speech": true, "audio_transcription_json": true, "audio_job_create": true,
+	// realtime 账户只声明 realtime_session；该值仅作持久化诊断形态，J1
+	// 候选白名单不含它，不派发自动真实会话探针。
+	"realtime_session": true,
 	// M2 视频域默认落值（仅写侧白名单；J1 候选白名单不含该值，视频域账户
 	// 天然豁免周期检查）。
 	"video_create": true,

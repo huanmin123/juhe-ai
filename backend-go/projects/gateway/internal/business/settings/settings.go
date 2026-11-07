@@ -251,7 +251,7 @@ var forwardProtocolEndpointModes = map[string][]string{
 	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
 	"realtime":                {"realtime_session"},
 	"audio_speech":            {"audio_speech"},
-	"audio_transcription":     {"audio_transcription_json"},
+	"audio_transcription":     {"audio_transcription_json", "audio_job_create"},
 	"completions":             {},
 }
 
@@ -273,6 +273,7 @@ var endpointModeLegacyProjection = map[string][][2]string{
 	"video_cancel":             {{"video", "video"}},
 	"audio_speech":             {{"audio", "audio_speech"}},
 	"audio_transcription_json": {{"audio", "audio_transcription"}},
+	"audio_job_create":         {{"audio", "audio_transcription"}},
 	"realtime_session":         {{"audio", "realtime"}},
 	"message_token_counting":   {{"embedding", "message_token_counting"}},
 	"count_tokens":             {{"embedding", "count_tokens"}},
