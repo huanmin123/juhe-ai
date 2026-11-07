@@ -104,12 +104,12 @@ func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFun
 		"providerCode": "gpt",
 		"name":         "链路验收账户",
 		"type":         "api_key",
-		"credentials":  map[string]any{"api_key": upstreamAccountKey, "base_url": upstream.URL},
+		"credentials":  map[string]any{"api_key": upstreamAccountKey, "base_url": upstream.URL + "/v1"},
 		// §8 连接集合 + 健康检查三件套：mock 上游按 /v1/{chat/completions,
 		// responses} 两种入口服务两条链路。
 		"connections": []map[string]any{{
 			"connectionPresetCode": "gpt_openai_v1",
-			"baseUrl":              upstream.URL,
+			"baseUrl":              upstream.URL + "/v1",
 			"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
 			"enabled":              true,
 		}},

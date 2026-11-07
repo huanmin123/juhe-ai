@@ -162,11 +162,11 @@ func TestW31StreamTopLevelErrorFrameBeforeCommitSwitchesCandidate(t *testing.T) 
 		"providerCode": "gpt",
 		"name":         "W31 正常候选账户",
 		"type":         "api_key",
-		"credentials":  map[string]any{"api_key": w31OKUpstreamKey, "base_url": upstream.upstream.URL},
+		"credentials":  map[string]any{"api_key": w31OKUpstreamKey, "base_url": upstream.upstream.URL + "/v1"},
 		// §8 连接集合 + 健康检查三件套显式提交（写链必填）。
 		"connections": []map[string]any{{
 			"connectionPresetCode": "gpt_openai_v1",
-			"baseUrl":              upstream.upstream.URL,
+			"baseUrl":              upstream.upstream.URL + "/v1",
 			"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
 			"enabled":              true,
 		}},

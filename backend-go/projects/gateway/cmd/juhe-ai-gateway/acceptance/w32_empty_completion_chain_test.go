@@ -64,10 +64,10 @@ func TestW32EmptyCompletionShellStreamBeforeCommitSwitchesCandidate(t *testing.T
 		"providerCode": "gpt",
 		"name":         "W32 正常候选账户",
 		"type":         "api_key",
-		"credentials":  map[string]any{"api_key": w32OKUpstreamKey, "base_url": upstream.upstream.URL},
+		"credentials":  map[string]any{"api_key": w32OKUpstreamKey, "base_url": upstream.upstream.URL + "/v1"},
 		"connections": []map[string]any{{
 			"connectionPresetCode": "gpt_openai_v1",
-			"baseUrl":              upstream.upstream.URL,
+			"baseUrl":              upstream.upstream.URL + "/v1",
 			"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
 			"enabled":              true,
 		}},

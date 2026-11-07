@@ -109,10 +109,10 @@ func TestChainSlowFailDirectSwitchAvoidanceSinkAndWallBudgetTerminal(t *testing.
 			"providerCode": "gpt",
 			"name":         name,
 			"type":         "api_key",
-			"credentials":  map[string]any{"api_key": upstreamKey, "base_url": upstreamServer.URL},
+			"credentials":  map[string]any{"api_key": upstreamKey, "base_url": upstreamServer.URL + "/v1"},
 			"connections": []map[string]any{{
 				"connectionPresetCode": "gpt_openai_v1",
-				"baseUrl":              upstreamServer.URL,
+				"baseUrl":              upstreamServer.URL + "/v1",
 				"endpointModes":        []string{"chat_json", "chat_sse"},
 				"enabled":              true,
 			}},

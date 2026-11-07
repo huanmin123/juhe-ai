@@ -797,7 +797,8 @@ func fullchainUpstreamKey(t *testing.T, tag string) string {
 // credentials 覆盖项。
 func (f *fullchainFixture) createAccount(name, upstreamKey, groupID string, extra map[string]any) string {
 	f.t.Helper()
-	credentials := map[string]any{"api_key": upstreamKey, "base_url": f.mock.server.URL}
+	// v2 直拼契约：OpenAI 族 base_url 是版本根，mock 路由在 /v1 下。
+	credentials := map[string]any{"api_key": upstreamKey, "base_url": f.mock.server.URL + "/v1"}
 	payload := map[string]any{
 		"providerCode":    "gpt",
 		"name":            name,
