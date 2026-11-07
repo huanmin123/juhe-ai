@@ -97,15 +97,24 @@ func resolveSchedulingPreferenceSnapshot(purpose, bindingID, joinedID, chatMode,
 func synthesizeSchedulingPreferenceSnapshot(preferenceID, chatMode, speedConfigJSON string) (*schedulingPreferenceSnapshot, error) {
 	record := map[string]any{"schedulingPreference": chatMode}
 	if chatMode == "speed_first" {
-		speedConfigValue := any(nil)
 		if speedConfigJSON != "" {
-			var decoded any
+			// 存储文档形状是 {firstByteDeadlineMs, speedFirstConfig}；normalize
+			// 的输入要求 firstByteDeadlineMs 在根、speedFirstConfig 为嵌套对象。
+			// 整体塞进 speedFirstConfig 会让 normalize 忽略配置并回落默认值
+			//（R5：10000/2 被吞成 30000/3）。
+			var decoded map[string]any
 			if err := json.Unmarshal([]byte(speedConfigJSON), &decoded); err != nil {
 				return nil, fmt.Errorf("调度偏好速度优先配置 JSON 损坏: %w", err)
 			}
-			speedConfigValue = decoded
+			if value, ok := decoded["firstByteDeadlineMs"]; ok {
+				record["firstByteDeadlineMs"] = value
+			}
+			if value, ok := decoded["speedFirstConfig"]; ok {
+				record["speedFirstConfig"] = value
+			}
+		} else {
+			record["speedFirstConfig"] = nil
 		}
-		record["speedFirstConfig"] = speedConfigValue
 	}
 	normalized, err := routestrategies.NormalizeNormalRoutingConfig(record)
 	if err != nil {

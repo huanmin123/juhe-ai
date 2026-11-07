@@ -590,36 +590,31 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 		// 进入速度优先决策链（零值缺陷下该审计不存在）。切号链路由 R5 主测
 		// （同闭包、喂满降级）覆盖。
 		headerSlowKey := fullchainUpstreamKey(t, "R5-headerslow")
+		probePreferenceID := f.createSpeedFirstPreference("R5B-速度优先", 10000, 2)
 		probe := f.newRoute("R5B", "normal", []fullchainGroupSpec{
 			{accounts: []fullchainAccountSpec{
 				{key: headerSlowKey, defaultScenario: platformmock.ScenarioSlowFirstByte},
 				{},
 			}},
-		}, nil, map[string]any{
-			"normalRoutingConfig": map[string]any{
-				"schedulingPreference": "speed_first",
-				"firstByteDeadlineMs":  10000,
-				"speedFirstConfig":     map[string]any{"slowTriggerCount": 2},
-			},
-		})
+		}, nil, nil)
+		f.bindSchedulingPreference(probe.apiKeyID, probePreferenceID)
 		startedAt := time.Now()
 		response := f.chat(probe.apiKey, chatBody(acceptanceModel, "R5B-慢头探针"))
 		elapsed := time.Since(startedAt)
 		if response.Status != http.StatusOK {
 			t.Fatalf("R5B probe status=%d body=%s", response.Status, response.Body)
 		}
-		// 修复后确定性时线：10s 头阶段截止 → 首次慢观测（未降级）Continue；
-		// 12s 慢头返回 → body 竞速立即第二次决策（实测已慢 → degraded →
-		// cutover）→ 慢账户排除、fast 接管。请求总时长 ≈ 12s（慢头决定），
-		// fast 恰好 1 次（切号接管）、slow 恰好 1 次（切号后排除）。
+		// 单请求只有一次首字慢观测：10s 头阶段截止 → slowCount=1 未达
+		// slowTriggerCount=2，决策 Continue；12s 慢头返回后本次请求正常完成，
+		// 不应当场换号。切号由 R5 主测的跨请求降级覆盖。
 		if elapsed < 11*time.Second {
 			t.Fatalf("R5B probe expected full slow-header wait (elapsed>=11s) but got %s", elapsed)
 		}
-		if got := len(f.mock.protocolCallsByKey(probe.upstreamKeys[1])); got != 1 {
-			t.Fatalf("R5B probe expected fast takeover after second slow observation; fast hits=%d", got)
+		if got := len(f.mock.protocolCallsByKey(probe.upstreamKeys[1])); got != 0 {
+			t.Fatalf("R5B probe single slow observation must not cut over; fast hits=%d", got)
 		}
 		if got := len(f.mock.protocolCallsByKey(probe.upstreamKeys[0])); got != 1 {
-			t.Fatalf("R5B probe expected slow account hit exactly once (excluded after cutover); slow hits=%d", got)
+			t.Fatalf("R5B probe expected slow account hit exactly once; slow hits=%d", got)
 		}
 		deadline := time.Now().Add(20 * time.Second)
 		var observed []map[string]any
@@ -627,6 +622,12 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 			for _, log := range f.findAuditLogs(probe.apiKeyID) {
 				observed = f.fullchainGatewayMetadataByLabel(f.auditLogDetail(str(log["id"])), "normal_route_speed_first_slow_observed")
 				if len(observed) > 0 {
+					if degraded, _ := observed[0]["degraded"].(bool); degraded {
+						t.Fatalf("R5B probe single observation must not degrade: %v", observed[0])
+					}
+					if got := fmt.Sprint(observed[0]["slowCount"]); got != "1" {
+						t.Fatalf("R5B probe slowCount=%s, want 1: %v", got, observed[0])
+					}
 					return
 				}
 			}
