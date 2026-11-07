@@ -23,6 +23,14 @@ var postgresSchemaBusinessIndexes = []PGStatement{
       ON models ((COALESCE(vendor_code, '')), scope, (COALESCE(system_account_id, '')), upstream_model)`,
 	},
 	{
+		// 个人模型 owner 读路径（T117b，2026-11-08 裁决）：scope='personal'
+		// 按 system_account_id 过滤的列表/引用查询；身份唯一索引前导列是
+		// vendor，owner 维度查询无法命中。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_models_owner_scope_vendor ON models(system_account_id, scope, vendor_code)`,
+	},
+	{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_lock_states_deadline ON account_lock_states(lock_state, deadline_at)`,
@@ -43,6 +51,13 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at)`,
+	},
+	{
+		// 会话管理/账户删除路径（T117b，2026-11-08 裁决）：按归属人删会话与
+		// 管理会话列表按 system_account_id 命中，附 last_seen_at 倒序展示。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_sessions_account_last_seen ON system_sessions(system_account_id, last_seen_at DESC)`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -138,6 +153,22 @@ var postgresSchemaBusinessIndexes = []PGStatement{
         created_at_sort_key ASC,
         account_id ASC
       )`,
+	},
+	{
+		// 账户/授权删除的 FK 级联校验路径（T117b，2026-11-08 裁决）：PK 前导
+		// 是 viewer_system_account_id，按 account_id 删账户时需单列前导索引，
+		// 避免级联校验全表扫描。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_account ON account_list_availability_projections(account_id)`,
+	},
+	{
+		// 模型删除/引用校验路径（T117b，2026-11-08 裁决）：model_id 是 FK，
+		// PK 前导是 account_id；补 (model_id, account_id) 同时服务
+		// 「哪些账户支持模型 X」反查。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_supported_models_model_account ON account_supported_models(model_id, account_id)`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -1260,9 +1291,11 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		// 用户任务中心主读路径（2026-11-06 复审 N1）：owner_system_account_id
 		// 归属过滤 + created_at 倒序分页。2026-10-24 归属列改列后该路径成为
 		// 用户面主查询，旧索引只有 api_key_id，用户面会退化为全表扫描。
+		// T117b（2026-11-08 裁决）：补 id DESC 后缀使分页排序确定化，
+		// 同 created_at 行不再依赖堆序。
 		SchemaName: "juhe_business",
 		Source:     "media-jobs-indexes",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_owner_created ON media_jobs(owner_system_account_id, created_at DESC)`,
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_owner_created ON media_jobs(owner_system_account_id, created_at DESC, id DESC)`,
 	},
 	{
 		// retention 扫描（2026-11-06 复审 N1/N4）：按 status + created_at

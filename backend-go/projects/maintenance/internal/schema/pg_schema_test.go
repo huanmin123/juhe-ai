@@ -147,8 +147,13 @@ import (
 // 637→638：2026-11-07 防护次数写后缓存批（API Key 安全策略与出站内容脱敏
 // 设计 §4.3.1）——juhe_business +1（security_policies.protection_count 幂等
 // ALTER；revision 21 纯 DDL 空号）。
+// 638→642：T117b 支撑索引批（账户域表结构与索引审计报告-2026-11-04 §一）——
+// juhe_business +4（account_supported_models(model_id,account_id)、可用性投影
+// account_id、models(system_account_id,scope,vendor_code)、
+// system_sessions(system_account_id,last_seen_at DESC)；media_jobs
+// owner_created 原位补 id DESC 后缀不改计数）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 638
+const goldenPostgresSchemaStatementCount = 642
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -180,7 +185,10 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	//（security_policies 建表 + api_keys.security_policy_id 幂等 ALTER +
 	// 索引组 5 条，详见总数注释）。338→339：2026-11-07 防护次数写后缓存批
 	// +1（security_policies.protection_count 幂等 ALTER，详见总数注释）。
-	"juhe_business": 339,
+	// 339→343：T117b 支撑索引批 +4（account_supported_models(model_id,account_id)、
+	// 可用性投影 account_id、models owner 三列、system_sessions owner 两列；
+	// media_jobs owner_created 原位升级三列不改计数）。
+	"juhe_business": 343,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
