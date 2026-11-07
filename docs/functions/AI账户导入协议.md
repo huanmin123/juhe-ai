@@ -316,9 +316,9 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `groupName` | 二选一 | 绑定或自动创建同名分组。 |
 | `proxyRef` | 否 | 引用 `proxies[].ref` 或已有代理 ID。 |
 | `proxyProfileId` | 否 | 直接引用已有代理 ID；不能和 `proxyRef` 同时填写。 |
-| `concurrencyLimit` | 否 | 账户并发上限。 |
+| `concurrencyLimit` | 否 | 账户并发上限；正整数且不超过 `2147483647`（int4 上限）。 |
 | `rpmLimit` | 否 | 每分钟请求上限（RPM）；非负整数且不超过 `2147483647`（int4 上限），`0` 或缺省表示不限制。按自然分钟固定窗口统计真实向上游派发的次数（含 Key 轮换重试与失败尝试），与并发上限同时生效。 |
-| `priority` | 否 | 调度优先级。 |
+| `priority` | 否 | 调度优先级；非负整数且不超过 `2147483647`（int4 上限）。 |
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。填写 `healthCheckModel` 时建议同时显式给出本字段，便于核对成员关系。 |
@@ -337,7 +337,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 
 - `groupId` 和 `groupName` 同时存在时优先使用 `groupId`。
 - `proxyRef` 和 `proxyProfileId` 不能同时填写。
-- `concurrencyLimit` 必须是正整数；`rpmLimit` 必须是非负整数且不超过 `2147483647`（`0` 表示不限制）；`priority` 必须是非负整数。
+- `concurrencyLimit` 必须是正整数且不超过 `2147483647`（int4 上限）；`rpmLimit` 必须是非负整数且不超过 `2147483647`（`0` 表示不限制）；`priority` 必须是非负整数且不超过 `2147483647`。超界均在预览期按字段错误拒绝，不等落库报 500。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。
 - 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 `native` 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`，检查模型属于 `supportedModels`。
 - `healthCheckModel` 只在账户创建阶段使用默认链补齐；账户落库后后台系统检查严格读取该字段，不动态跟随供应商默认值。

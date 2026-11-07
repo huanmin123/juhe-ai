@@ -791,8 +791,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// Dispatch fields.
 	concurrencyLimit := defaultAccountConcurrencyLimit
 	if input.ConcurrencyLimit != nil {
-		if *input.ConcurrencyLimit < 1 {
-			return nil, &ValidationError{Message: "并发限制必须是大于 0 的整数"}
+		if *input.ConcurrencyLimit < 1 || *input.ConcurrencyLimit > accountscore.MaxInt4 {
+			return nil, &ValidationError{Message: "并发限制必须是 1 到 2147483647 的整数"}
 		}
 		concurrencyLimit = *input.ConcurrencyLimit
 	}
@@ -808,8 +808,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 	priority := 0
 	if input.Priority != nil {
-		if *input.Priority < 0 {
-			return nil, &ValidationError{Message: "优先级必须是大于等于 0 的整数"}
+		if *input.Priority < 0 || *input.Priority > accountscore.MaxInt4 {
+			return nil, &ValidationError{Message: "优先级必须是 0 到 2147483647 的整数"}
 		}
 		priority = *input.Priority
 	}

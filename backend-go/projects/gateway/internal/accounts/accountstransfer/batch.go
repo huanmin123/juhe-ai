@@ -1868,7 +1868,7 @@ func ValidateBatchUpdateValue(field string, value any) string {
 		}
 	case "concurrencyLimit":
 		number, ok := value.(float64)
-		if !ok || number != float64(int(number)) || number < 1 {
+		if !ok || number != float64(int(number)) || number < 1 || number > float64(accountscore.MaxInt4) {
 			return BatchFieldsPrompt
 		}
 	// 每分钟请求上限（设计 §6.4）：整数且 0..int4 上界，0 = 不限制（DR-37）。
@@ -1879,7 +1879,7 @@ func ValidateBatchUpdateValue(field string, value any) string {
 		}
 	case "priority":
 		number, ok := value.(float64)
-		if !ok || number != float64(int(number)) || number < 0 {
+		if !ok || number != float64(int(number)) || number < 0 || number > float64(accountscore.MaxInt4) {
 			return BatchFieldsPrompt
 		}
 	case "superPriorityEnabled", "fallbackEnabled":

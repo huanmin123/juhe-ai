@@ -219,10 +219,14 @@ const (
 	MaxTagsPerAccount = 24
 )
 
+// MaxInt4 是 accounts 表 PostgreSQL int4 配置列可写入的最大值（T173：并发上限/
+// 优先级与 rpmLimit 同型收口，避免超界由数据库转换错误变成 500）。
+const MaxInt4 = 2147483647
+
 // MaxRPMLimit 是 accounts.rpm_limit（PostgreSQL int4）可写入的最大值（DR-37）。
 // 管理面 create/PATCH/批量/导入统一按此上界返回 400，避免超出 int4 时由数据库
 // 报错变成 500；公开 API 另有更严格的 0..1000000 契约，UI 另按 9999 硬限展示。
-const MaxRPMLimit = 2147483647
+const MaxRPMLimit = MaxInt4
 
 // AccountHealthCheckEndpointModes mirrors the allowed health-check endpoint
 // mode set（原门面 write.go accountHealthCheckEndpointModes 常量表，导入域字段

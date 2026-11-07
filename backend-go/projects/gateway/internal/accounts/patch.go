@@ -600,8 +600,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 	if input.ConcurrencyLimit != nil {
-		if *input.ConcurrencyLimit < 1 {
-			return nil, &ValidationError{Message: "并发限制必须是大于 0 的整数"}
+		if *input.ConcurrencyLimit < 1 || *input.ConcurrencyLimit > accountscore.MaxInt4 {
+			return nil, &ValidationError{Message: "并发限制必须是 1 到 2147483647 的整数"}
 		}
 		if *input.ConcurrencyLimit != row.concurrencyLimit {
 			addChange("concurrencyLimit", row.concurrencyLimit, *input.ConcurrencyLimit)
@@ -623,8 +623,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 	if input.Priority != nil {
-		if *input.Priority < 0 {
-			return nil, &ValidationError{Message: "优先级必须是大于等于 0 的整数"}
+		if *input.Priority < 0 || *input.Priority > accountscore.MaxInt4 {
+			return nil, &ValidationError{Message: "优先级必须是 0 到 2147483647 的整数"}
 		}
 		if *input.Priority != row.priority {
 			addChange("priority", row.priority, *input.Priority)

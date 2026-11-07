@@ -210,6 +210,9 @@ export function buildAccountBatchEditRequest(
   if (form.enabled.priority && (!Number.isInteger(form.priority) || form.priority < 0)) {
     return { message: '优先级必须是大于等于 0 的整数' }
   }
+  if (form.enabled.priority && form.priority > 2147483647) {
+    return { message: '优先级最大为 2147483647' }
+  }
   if (
     form.enabled.superPriorityEnabled
     && form.enabled.fallbackEnabled

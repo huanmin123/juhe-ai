@@ -648,6 +648,10 @@ func ImportOptionalPositiveIntegerField(record map[string]any, key, label string
 		*messages = append(*messages, label+"必须是整数")
 		return 0
 	}
+	if number > float64(accountscore.MaxInt4) {
+		*messages = append(*messages, label+"不能超过 2147483647")
+		return 0
+	}
 	if int(number) <= 0 {
 		*messages = append(*messages, label+"必须是大于 0 的整数")
 		return 0
@@ -667,6 +671,10 @@ func ImportOptionalNonNegativeIntegerField(record map[string]any, key, label str
 	}
 	if number < 0 {
 		*messages = append(*messages, label+"必须是大于等于 0 的整数")
+		return -1
+	}
+	if number > float64(accountscore.MaxInt4) {
+		*messages = append(*messages, label+"不能超过 2147483647")
 		return -1
 	}
 	return int(number)

@@ -111,6 +111,7 @@
                       v-model:value="form.priority"
                       :disabled="disabled"
                       :min="0"
+                      :max="2147483647"
                       :precision="0"
                     />
                   </template>
