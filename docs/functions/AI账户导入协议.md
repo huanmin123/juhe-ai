@@ -323,7 +323,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。填写 `healthCheckModel` 时建议同时显式给出本字段，便于核对成员关系。 |
 | `connections` | 是 | 连接集合，必须恰好一条；描述该账户唯一的上游连接（见下文「connections 条目字段」）。多个 API Key 放在 `credentials` 中，不支持多条连接。 |
-| `healthCheckConnectionPresetCode` | 是 | 健康检查三件套之一；必须等于本账户 `connections` 中一条 `enabled: true` 连接的 `connectionPresetCode`，落库时同事务解析为 `health_check_connection_id`。 |
+| `healthCheckConnectionPresetCode` | 是 | 健康检查三件套之一；必须等于本账户唯一一条 `enabled: true` 连接的 `connectionPresetCode`，落库时同事务解析为 `health_check_connection_id`。 |
 | `healthCheckModel` | 是 | 健康检查三件套之一；账户级检查模型，必须属于账户 `supportedModels`（含供应商默认回填后的集合）。管理面手动创建时才允许省略并由创建事务在最终支持模型集内解析；`native` 导入必须显式提交。 |
 | `healthCheckEndpointMode` | 是 | 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 |
 | `modelMappings` | 否 | 账号模型映射列表；只允许当前账号供应商模型目录内的同族模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
