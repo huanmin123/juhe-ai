@@ -285,17 +285,14 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 			"gatewayUserRequestLimitPerMinute": 0,
 		}, wantStatus(http.StatusOK))
 
-		// usageStatsTimezone 在线修改（六库拆分形态：guard 探针必须落在
-		// 专库 stats 句柄上；fresh 统计库无数据 → 允许修改并持久化）。
-		_, timezonePatched := client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
+		// PG 形态契约：统计时区不允许在线修改（任何在线变更一律 400，
+		// 需停机后走离线迁移 / 重建流程）；不再断言可写并持久化。
+		_, timezoneRejected := client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
 			"usageStatsTimezone": "Asia/Shanghai",
-		}, wantStatus(http.StatusOK))
-		if data(timezonePatched)["usageStatsTimezone"] != "Asia/Shanghai" {
-			t.Fatalf("timezone patch payload wrong: %#v", timezonePatched)
+		}, wantStatus(http.StatusBadRequest))
+		if message := str(timezoneRejected["message"]); !strings.Contains(message, "暂不支持在线修改统计时区") {
+			t.Fatalf("timezone patch rejection message wrong: %#v", timezoneRejected)
 		}
-		client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
-			"usageStatsTimezone": "UTC",
-		}, wantStatus(http.StatusOK))
 	})
 
 	t.Run("system_teams", func(t *testing.T) {
