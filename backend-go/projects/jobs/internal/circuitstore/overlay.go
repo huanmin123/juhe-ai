@@ -27,6 +27,10 @@ import (
 type OverlayRedisConfig struct {
 	URL       string
 	Namespace string
+	// ConcurrencyNamespace 是 gateway 并发计数键的命名空间（DomainConcurrency
+	// 域）：jobs 快照读 gateway live HASH，不再读 Node 时代
+	// account-concurrency-v2 槽位键。空值回落 Namespace（兼容旧调用/测试）。
+	ConcurrencyNamespace string
 }
 
 // OverlayRedisStore 是 account-concurrency 投影 dirty/快照的只读 Redis 面。
@@ -35,8 +39,9 @@ type OverlayRedisConfig struct {
 // AccountID/NextReconcileAt 两个出口字段；为不改 port 契约，本 store 以实例
 // 内 map 保存（对账在单 goroutine 内顺序调用 ListDirtyEntries → Acknowledge）。
 type OverlayRedisStore struct {
-	client    redis.Cmdable
-	namespace string
+	client               redis.Cmdable
+	namespace            string
+	concurrencyNamespace string
 
 	generationsMu sync.Mutex
 	// generationsMu 保护 generations。
@@ -48,6 +53,10 @@ func NewOverlayRedisStore(config OverlayRedisConfig, client redis.Cmdable) (*Ove
 	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
 	// `juhe-ai:` 全前缀配置，避免键空间双根前缀；短名输入逐字节不变。
 	config.Namespace = canonicalRedisNamespace(config.Namespace)
+	config.ConcurrencyNamespace = canonicalRedisNamespace(config.ConcurrencyNamespace)
+	if config.ConcurrencyNamespace == "" {
+		config.ConcurrencyNamespace = config.Namespace
+	}
 	var cmdable redis.Cmdable = client
 	if cmdable == nil {
 		if strings.TrimSpace(config.URL) == "" {
@@ -59,7 +68,12 @@ func NewOverlayRedisStore(config OverlayRedisConfig, client redis.Cmdable) (*Ove
 		}
 		cmdable = client
 	}
-	return &OverlayRedisStore{client: cmdable, namespace: config.Namespace, generations: map[string]int64{}}, nil
+	return &OverlayRedisStore{
+		client:               cmdable,
+		namespace:            config.Namespace,
+		concurrencyNamespace: config.ConcurrencyNamespace,
+		generations:          map[string]int64{},
+	}, nil
 }
 
 // Close 释放连接（Client 注入时 no-op 的保守实现：go-redis 的 Cmdable 无法
@@ -75,8 +89,11 @@ func (s *OverlayRedisStore) namespaced(key string) string {
 	return redisNamespacedKey(key, s.namespace)
 }
 
-func (s *OverlayRedisStore) concurrencyKey(accountID, suffix string) string {
-	return s.namespaced("juhe-ai:account-concurrency-v2:" + accountID + ":" + suffix)
+// concurrencyKey 指向 gateway 并发计数 HASH（DomainConcurrency 域，键名与
+// gatewayclientip.RedisAccountConcurrency 写入面一致）：v2 槽位键仅 Node 时代
+// 存在，Go 网关不再写，jobs 必须读 live 键才能看到当前并发。
+func (s *OverlayRedisStore) concurrencyKey(accountID string) string {
+	return redisNamespacedKey("juhe-ai:gateway-account-concurrency:account-concurrency:"+accountID, s.concurrencyNamespace)
 }
 
 func (s *OverlayRedisStore) dirtyKey() string {
@@ -104,36 +121,16 @@ end
 return results
 `
 
-// snapshotScript 对齐 redisLoadAccountConcurrencyProjectionSnapshotScript。
-const snapshotScript = `
-local redis_time = redis.call('TIME')
-local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+// gatewayConcurrencySnapshotScript 读 gateway live 并发 HASH：每个 key 返回
+// [total, PTTL 毫秒]。PTTL 作为 next_reconcile_at（key 级 6h 泄漏兜底 TTL 到期
+// 时重新对账）；key 不存在时 total=0、PTTL=-2。
+const gatewayConcurrencySnapshotScript = `
 local results = {}
-
-local function hdel_expired(metadata_key, expired)
-  local index = 1
-  while index <= #expired do
-    local last = math.min(index + 199, #expired)
-    redis.call('HDEL', metadata_key, unpack(expired, index, last))
-    index = last + 1
-  end
-end
-
-for key_index = 1, #KEYS, 5 do
-  local expired = redis.call('ZRANGEBYSCORE', KEYS[key_index], '-inf', now_ms)
-  if #expired > 0 then
-    hdel_expired(KEYS[key_index + 4], expired)
-  end
-  redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', now_ms)
-  redis.call('ZREMRANGEBYSCORE', KEYS[key_index + 1], '-inf', now_ms)
-  redis.call('ZREMRANGEBYSCORE', KEYS[key_index + 2], '-inf', now_ms)
-  if redis.call('ZCARD', KEYS[key_index]) == 0 then redis.call('DEL', KEYS[key_index]) end
-  if redis.call('ZCARD', KEYS[key_index + 1]) == 0 then redis.call('DEL', KEYS[key_index + 1]) end
-  if redis.call('ZCARD', KEYS[key_index + 2]) == 0 then redis.call('DEL', KEYS[key_index + 2]) end
-  if redis.call('HLEN', KEYS[key_index + 4]) == 0 then redis.call('DEL', KEYS[key_index + 4]) end
-  table.insert(results, redis.call('ZCARD', KEYS[key_index + 3]))
-  local next_expiry = redis.call('ZRANGE', KEYS[key_index], 0, 0, 'WITHSCORES')
-  table.insert(results, tonumber(next_expiry[2]) or 0)
+for i = 1, #KEYS do
+  local total = tonumber(redis.call('HGET', KEYS[i], 'total') or '0')
+  local ttl = redis.call('PTTL', KEYS[i])
+  table.insert(results, total)
+  table.insert(results, ttl)
 end
 return results
 `
@@ -221,8 +218,9 @@ func (s *OverlayRedisStore) Acknowledge(ctx context.Context, entries []opsjobs.O
 	return s.client.Eval(ctx, acknowledgeScript, []string{s.dirtyKey(), s.generationKey()}, args...).Err()
 }
 
-// LoadSnapshots 对齐 loadAccountConcurrencyProjectionSnapshotsAsync（分批
-// 100、Redis TIME 清理过期槽、返回当前并发与最早槽到期）。
+// LoadSnapshots 读 gateway live 并发 HASH（DomainConcurrency 域）：返回当前
+// total 并发与 key 剩余 TTL（作为 nextReconcileAt）。分批 100，与 jobs 投影
+// 批量一致；不再依赖 Node 时代 account-concurrency-v2 槽位 ZSET。
 func (s *OverlayRedisStore) LoadSnapshots(ctx context.Context, accountIDs []string) ([]opsjobs.OverlaySnapshot, error) {
 	ids, err := normalizedIDList(accountIDs)
 	if err != nil {
@@ -235,16 +233,11 @@ func (s *OverlayRedisStore) LoadSnapshots(ctx context.Context, accountIDs []stri
 			end = len(ids)
 		}
 		chunk := ids[index:end]
-		var keys []string
+		keys := make([]string, 0, len(chunk))
 		for _, accountID := range chunk {
-			keys = append(keys,
-				s.concurrencyKey(accountID, "total"),
-				s.concurrencyKey(accountID, "text"),
-				s.concurrencyKey(accountID, "image"),
-				s.concurrencyKey(accountID, "total"),
-				s.concurrencyKey(accountID, "metadata"))
+			keys = append(keys, s.concurrencyKey(accountID))
 		}
-		raw, err := s.client.Eval(ctx, snapshotScript, keys).Result()
+		raw, err := s.client.Eval(ctx, gatewayConcurrencySnapshotScript, keys).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -252,19 +245,20 @@ func (s *OverlayRedisStore) LoadSnapshots(ctx context.Context, accountIDs []stri
 		if err != nil {
 			return nil, err
 		}
+		nowMS := time.Now().UnixMilli()
 		for chunkIndex, accountID := range chunk {
 			valueOffset := chunkIndex * 2
 			current := int64(0)
-			nextExpiry := int64(0)
+			ttlMS := int64(-2)
 			if valueOffset < len(values) {
 				current = values[valueOffset]
 			}
 			if valueOffset+1 < len(values) {
-				nextExpiry = values[valueOffset+1]
+				ttlMS = values[valueOffset+1]
 			}
 			snapshot := opsjobs.OverlaySnapshot{AccountID: accountID, CurrentConcurrency: int(current)}
-			if nextExpiry > time.Now().UnixMilli() {
-				value := time.UnixMilli(nextExpiry).UTC().Format(time.RFC3339Nano)
+			if ttlMS > 0 {
+				value := time.UnixMilli(nowMS + ttlMS).UTC().Format(time.RFC3339Nano)
 				snapshot.NextReconcileAt = &value
 			}
 			output = append(output, snapshot)

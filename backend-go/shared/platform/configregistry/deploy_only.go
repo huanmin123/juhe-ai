@@ -11,6 +11,20 @@ var deployOnlyNames = map[string]struct{}{
 	// proxy_profiles.host 核对完成前随 compose 一起保留。
 	"JUHE_AI_PROXY_IP_A": {},
 	"JUHE_AI_PROXY_IP_B": {},
+	// 集群模式部署面（docker/cluster/，2026-11-07）：镜像引用、共享存储、
+	// 入口上游与实例标识全部由 compose 插值消费，不进入应用进程配置；
+	// compose env_file 会把它们一并注入容器，登记为部署侧变量避免
+	// check-config 误判为未知残留。
+	"JUHE_AI_REGISTRY":          {},
+	"JUHE_AI_GATEWAY_IMAGE":     {},
+	"JUHE_AI_JOBS_IMAGE":        {},
+	"JUHE_AI_MAINTENANCE_IMAGE": {},
+	"JUHE_AI_SHARED_ROOT":       {},
+	"JUHE_AI_JOBS_INSTANCE_ID":  {},
+	"JUHE_AI_GATEWAY_BIND":      {},
+	"JUHE_AI_EDGE_DOMAIN":       {},
+	"JUHE_AI_GATEWAY_UPSTREAMS": {},
+	"JUHE_AI_FRONTEND_UPSTREAM": {},
 }
 
 // DeployOnly 报告 name 是否为部署侧专用变量。

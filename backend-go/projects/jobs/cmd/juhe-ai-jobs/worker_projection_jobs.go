@@ -62,8 +62,9 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	// Redis 运行态读面：overlay（concurrency-v2 同键 Lua）+ recovery probe
 	// 状态机/policy avoidance 只读（与 Node 网关同键空间）。
 	overlayStore, err := circuitstore.NewOverlayRedisStore(circuitstore.OverlayRedisConfig{
-		URL:       a.config.RedisURL,
-		Namespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainCircuit),
+		URL:                  a.config.RedisURL,
+		Namespace:            rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainCircuit),
+		ConcurrencyNamespace: rediscfg.DomainNamespace(a.config.RedisNamespace, rediscfg.DomainConcurrency),
 	}, nil)
 	if err != nil {
 		return err

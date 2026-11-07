@@ -89,6 +89,8 @@ func newVolcengineRecordedUpstream(t *testing.T) (*volcengineUpstreamRecorder, *
 // 只声明视频，无 chat/audio 模式）。模型约束种 doubao-seedance-1-0-pro-250528。
 func seedMediaVolcengineAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：ark base_url 承载 /api/v3，adapter opPath 不含版本段。
+	baseURL = strings.TrimRight(baseURL, "/") + "/api/v3"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {

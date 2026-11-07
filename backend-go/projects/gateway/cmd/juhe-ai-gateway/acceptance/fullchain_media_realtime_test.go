@@ -18,6 +18,7 @@ package acceptance
 // standalone 形态的热质量门禁强制 memory 运行态驱动（gatewayhotquality/
 // runtime.go），token 面在隔离 gateway 二进制内不可装配。
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,12 +37,14 @@ func realtimeAccountExtra(baseURL string) map[string]any {
 	// v8-A 域语义：realtime_session 自对话域移入音频域——realtime 账户显式
 	// 声明 audio 域 + realtime_session 单模式（对话四值在 audio 域越界，
 	// realtime 派发只按 realtime_session 端点模式过滤候选）。
+	// v2 版本根语义：base_url 是版本根（mock 引擎路由在 /v1 下），拨号操作
+	// 路径 /realtime 直拼，不再由 URL builder 补 /v1。
 	return map[string]any{
 		"capabilityDomain": "audio",
 		"supportedModels":  []string{"gpt-realtime"},
 		"healthCheckModel": "gpt-realtime",
 		"credentials": map[string]any{
-			"base_url": baseURL,
+			"base_url": baseURL + "/v1",
 			"supported_endpoint_modes": []string{
 				"realtime_session",
 			},
@@ -115,10 +118,16 @@ func TestFullchainMediaRealtimeSession(t *testing.T) {
 		"/v1/realtime?model=gpt-realtime&scenario=media_realtime_echo&usage_events=1,2&close_after=3", route.apiKey)
 	if err != nil {
 		status := 0
+		body := ""
 		if response != nil {
 			status = response.StatusCode
+			if response.Body != nil {
+				raw, _ := io.ReadAll(response.Body)
+				_ = response.Body.Close()
+				body = string(raw)
+			}
 		}
-		t.Fatalf("realtime 会话拨号失败: %v (status=%d)", err, status)
+		t.Fatalf("realtime 会话拨号失败: %v (status=%d body=%s)", err, status, body)
 	}
 	frames := []string{
 		`{"type":"session.update","session":{"voice":"alloy"}}`,

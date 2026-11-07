@@ -177,11 +177,17 @@ services:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
       # 即报错（与 POSTGRES_PASSWORD 的 :?required 同模式）。
-      - "host.docker.internal:host-gateway"
-      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
-      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
-      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
-      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      # 采用「域名映射到 IP 列表」形式保留同域名多 A 记录：Compose v2.40+ 会把字符串列表
+      # 归一化为映射，A/B 取相同 IP（.env 占位值）时列表出现重复键，报
+      # "extra_hosts must be a mapping"；本形式在 A/B 相同或不同时都能通过 config，
+      # 容器 /etc/hosts 仍写入两条记录（2026-11-07 修复）。
+      host.docker.internal: host-gateway
+      data.aijh.huanmin.top:
+        - "${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+        - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      egress.aijh.huanmin.top:
+        - "${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+        - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
     volumes:
       # PG 模式下该目录仍承载 usage spool 等文件数据（codex-context 目录已随
@@ -250,11 +256,17 @@ services:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
       # 即报错（与 POSTGRES_PASSWORD 的 :?required 同模式）。
-      - "host.docker.internal:host-gateway"
-      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
-      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
-      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
-      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      # 采用「域名映射到 IP 列表」形式保留同域名多 A 记录：Compose v2.40+ 会把字符串列表
+      # 归一化为映射，A/B 取相同 IP（.env 占位值）时列表出现重复键，报
+      # "extra_hosts must be a mapping"；本形式在 A/B 相同或不同时都能通过 config，
+      # 容器 /etc/hosts 仍写入两条记录（2026-11-07 修复）。
+      host.docker.internal: host-gateway
+      data.aijh.huanmin.top:
+        - "${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+        - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      egress.aijh.huanmin.top:
+        - "${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+        - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
     volumes:
       - ./data/app/data:/app/backend/data
@@ -309,11 +321,17 @@ services:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
       # 即报错（与 POSTGRES_PASSWORD 的 :?required 同模式）。
-      - "host.docker.internal:host-gateway"
-      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
-      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
-      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
-      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      # 采用「域名映射到 IP 列表」形式保留同域名多 A 记录：Compose v2.40+ 会把字符串列表
+      # 归一化为映射，A/B 取相同 IP（.env 占位值）时列表出现重复键，报
+      # "extra_hosts must be a mapping"；本形式在 A/B 相同或不同时都能通过 config，
+      # 容器 /etc/hosts 仍写入两条记录（2026-11-07 修复）。
+      host.docker.internal: host-gateway
+      data.aijh.huanmin.top:
+        - "${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+        - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      egress.aijh.huanmin.top:
+        - "${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+        - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
 
   caddy:

@@ -89,6 +89,8 @@ func newGeminiRecordedUpstream(t *testing.T) (*geminiUpstreamRecorder, *platform
 // veo-3.0-generate-preview。
 func seedMediaGeminiVideoAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：gemini base_url 承载 /v1beta，adapter opPath 不含版本段。
+	baseURL = strings.TrimRight(baseURL, "/") + "/v1beta"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {

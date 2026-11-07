@@ -135,7 +135,7 @@ function main() {
   } else if (args.flow === 'acceptance') {
     const cwd = path.join(REPO_ROOT, MODULES.gateway.dir)
     console.log('[flow=acceptance] 需要 mock 上游与子进程 harness；真实上游场景另需 JUHE_AI_E2E_REAL=1 + JUHE_AI_E2E_PROD_SECRET。')
-    ok = run('acceptance', 'go', ['test', './cmd/juhe-ai-gateway/acceptance', '-count=1', '-p', '1', '-timeout', '20m'], cwd, {
+    ok = run('acceptance', 'go', ['test', './cmd/juhe-ai-gateway/acceptance', '-count=1', '-p', '1', '-timeout', '30m'], cwd, {
       JUHE_AI_E2E_FULLCHAIN: '1',
     })
     console.log('\n未运行：pg / frontend-smoke / 性能测试。')

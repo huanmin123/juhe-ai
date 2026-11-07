@@ -1059,8 +1059,10 @@ func fullchainG1(t *testing.T, f *fullchainFixture) {
 	if connectionDropped > 0 {
 		t.Fatalf("G1 queue path dropped %d/%d connections（E2E-FINDING #13 并发事实源接线已修复，连接中断不再是合法结局）", connectionDropped, parallel)
 	}
-	// 队列生效路径：全部成功后必须有排队审计。
-	f.waitAuditLabels(t, route.apiKeyID, []string{"high_concurrency_dispatch_queue"}, "high-concurrency queue event")
+	// 队列生效路径：全部成功后必须有排队审计。排队的首选落点是预派发分组
+	// 短队列（high_concurrency_group_queue）；引擎侧硬并发等待
+	// （high_concurrency_dispatch_queue）只在预派发放行后仍被抢占时出现。
+	f.waitAuditLabels(t, route.apiKeyID, []string{"high_concurrency_group_queue"}, "high-concurrency queue event")
 }
 
 // G2 普通组并发满：切组内下一账户。

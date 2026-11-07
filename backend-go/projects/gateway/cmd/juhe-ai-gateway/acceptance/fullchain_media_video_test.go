@@ -202,7 +202,7 @@ func TestFullchainMediaVideoLifecycle(t *testing.T) {
 	// params_ignored 含 negative_prompt、params_applied 覆盖核心参数）。
 	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos", fullchainVideoCreateBody)
 	if created.Status != http.StatusOK {
-		t.Fatalf("MV lifecycle create status=%d body=%s", created.Status, created.Body)
+		t.Fatalf("MV lifecycle create status=%d body=%s calls=%+v", created.Status, created.Body, f.mock.callsByKey(route.upstreamKeys[0]))
 	}
 	job := decodeVideoJob(t, created)
 	jobID := str(job["id"])
@@ -822,8 +822,17 @@ func (f *fullchainFixture) fullchainCreateQwenVideoAccount(name, upstreamKey, gr
 			},
 		},
 		"supportedModels": []string{"wan2.2-t2v-plus"},
-		"status":          "active",
-		"groupId":         groupID,
+		"connections": []map[string]any{{
+			"connectionPresetCode": "qwen_dashscope",
+			"baseUrl":              f.mock.server.URL,
+			"endpointModes":        []string{"video_create", "video_get", "video_content", "video_cancel"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "qwen_dashscope",
+		"healthCheckEndpointMode":         "video_create",
+		"healthCheckModel":                "wan2.2-t2v-plus",
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
@@ -983,14 +992,23 @@ func (f *fullchainFixture) fullchainCreateXaiVideoAccount(name, upstreamKey, gro
 		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
-			"base_url": f.mock.server.URL,
+			"base_url": f.mock.server.URL + "/v1",
 			"supported_endpoint_modes": []string{
 				"video_create", "video_get", "video_content", "video_cancel",
 			},
 		},
 		"supportedModels": []string{"grok-imagine-video-1.5"},
-		"status":          "active",
-		"groupId":         groupID,
+		"connections": []map[string]any{{
+			"connectionPresetCode": "xai_openai_v1",
+			"baseUrl":              f.mock.server.URL + "/v1",
+			"endpointModes":        []string{"video_create", "video_get", "video_content", "video_cancel"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "xai_openai_v1",
+		"healthCheckEndpointMode":         "video_create",
+		"healthCheckModel":                "grok-imagine-video-1.5",
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {

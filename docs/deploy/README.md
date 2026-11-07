@@ -19,12 +19,13 @@
 | 非 Docker 直跑 | [linux/README.md](linux/README.md)：systemd/裸进程差异、cwd/数据目录契约、升级等价操作 |
 | 发布包构建（非生产主流程） | [构建指南](构建指南.md)：跨平台构建 Go 三项目 + 前端，生成 go-only 发布包 |
 | 出海网络代理（AI 上游） | [proxy/README.md](proxy/README.md) → [sing-box 指南](proxy/sing-box网络代理部署指南.md) |
-| 多节点部署与不停机发布（实施中） | [functions/多节点部署与不停机发布设计.md](../functions/多节点部署与不停机发布设计.md)：多机 Docker + 外部 LB + expand/contract 滚动发布；P1 门禁/账本/在线 DDL、P2 gateway 无状态、P3 jobs 全局 leader/运行日志按实例拆分/build_info 与按版本指标已落地并通过 dev 演练，**尚未达到多节点生产就绪**（共享文件 NFS 验证/前端/LB/发布脚本未完成），当前生产仍以单机流程为准 |
-| 集群上线与开发兼容（实施中） | [集群上线与开发兼容指南](集群上线与开发兼容指南.md)：集群 expand/switch/contract、单机停写窗口、开发需求评估表与禁止项；`rolling/contract` 在剩余 P3 完成后可用 |
+| 多节点部署与不停机发布（dev 验收完成，打底模板） | [functions/多节点部署与不停机发布设计.md](../functions/多节点部署与不停机发布设计.md)：多机 Docker + 外部 LB + expand/contract 滚动发布；P1 门禁/账本/在线 DDL、P2 gateway 无状态、P3 jobs 全局 leader/运行日志按实例拆分/build_info 与按版本指标已落地并通过 dev 演练；部署物隔离在 [`docker/cluster/`](../../docker/cluster/README.md)，**当前生产仍以单机流程为准** |
+| 集群上线与开发兼容（打底，dev 验收） | [集群上线与开发兼容指南](集群上线与开发兼容指南.md)：集群 expand/switch/contract、单机停写窗口、开发需求评估表与禁止项；滚动命令已对齐 [`docker/cluster/rolling-release.sh`](../../docker/cluster/README.md) |
 
 ## 权威位置
 
 - 部署配置源文件：仓库 [`docker/single-server/`](../../docker/single-server/)（`compose.yml` / `Caddyfile` / `Dockerfile.runtime` / `deploy.sh` / `verify-release.sh` / `host-init.sh`）。
+- 集群形态配置（非现役，打底模板）：仓库 [`docker/cluster/`](../../docker/cluster/README.md)（按角色拆分 compose + 独立 Caddyfile/frontend + `build-images.sh` / `rolling-release.sh` / `verify-cluster.sh`）；与单机目录完全隔离，互不引用。
 - 配置契约（`.env` 变量、运行时目录、更新发布、监控端口、schema 升级门禁）：[`docker/single-server/README.md`](../../docker/single-server/README.md)。
 - 监控交付物（采集端 compose/脚本、监控栈 compose、Grafana 面板 JSON、postgres_exporter 查询、告警基线）：[`docker/single-server/monitoring/`](../../docker/single-server/monitoring/)；接入、复用与验收说明见 [monitoring/README.md](monitoring/README.md)。
 - 生产环境的服务器地址、密钥、备份账号等实例事实：私有目录 `.local/project-resources/prod/`，不进入本目录。
@@ -33,5 +34,6 @@
 
 - 本文档面向“拿到仓库即可部署”的维护者：主文档走流程，组件细节按上表进入对应文档。
 - 内网生产演练变体不在 `docs/deploy/` 下单独成文：复用外部 PostgreSQL/Redis 的 compose、生产语义配置、备份与边界统一由 [`docker/dev-server/README.md`](../../docker/dev-server/README.md) 维护；它不是生产实例，也不替代生产部署。
+- `docker/cluster/` 是未来多机形态的隔离部署目录（dev 演练验收、生产未启用）；单机生产变更不得修改该目录，集群变更不得修改 `docker/single-server/`。
 - 不覆盖已退役形态：K3s/K8s、Harbor/Jenkins、家庭宽带反代、Edge/WireGuard 回源、macOS/Windows 本机部署、SQLite/内存存储模式、Node 后端。看到旧文档或旧命令时以本目录为准。
 - 修改部署行为（compose / Caddyfile / Dockerfile / 环境变量契约 / 运行时目录 / 初始化与升级序列）时，必须同批更新本目录、对应组件文档与 `docker/single-server/README.md`。

@@ -7,6 +7,7 @@ package circuitstore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func newOverlayStore(t *testing.T, server *miniredis.Miniredis) *OverlayRedisSto
 	t.Helper()
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	store, err := NewOverlayRedisStore(OverlayRedisConfig{Namespace: "ns"}, client)
+	store, err := NewOverlayRedisStore(OverlayRedisConfig{Namespace: "ns", ConcurrencyNamespace: "ns:concurrency"}, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,9 +51,10 @@ func TestOverlayRedisStoreKeysAndConstruction(t *testing.T) {
 		t.Fatalf("自建连接 Close: %v", err)
 	}
 	store := newOverlayStore(t, server)
-	// redisNamespacedKey 对 juhe-ai: 根前缀键在根后插入 namespace（单根前缀）。
-	if store.concurrencyKey("acc-1", "total") != "juhe-ai:{ns}:account-concurrency-v2:acc-1:total" {
-		t.Fatalf("并发键形状不符: %s", store.concurrencyKey("acc-1", "total"))
+	// 并发键指向 gateway live HASH（DomainConcurrency 域，键名与 gateway 写面一致）。
+	expectedConcurrencyKey := "juhe-ai:{ns:concurrency}:gateway-account-concurrency:account-concurrency:acc-1"
+	if store.concurrencyKey("acc-1") != expectedConcurrencyKey {
+		t.Fatalf("并发键形状不符: %s", store.concurrencyKey("acc-1"))
 	}
 	if store.dirtyKey() != "juhe-ai:{ns}:account-concurrency-projection-dirty" {
 		t.Fatalf("dirty 键形状不符: %s", store.dirtyKey())
@@ -183,7 +185,8 @@ func TestOverlayAcknowledgeKeepsFutureReconcile(t *testing.T) {
 	}
 }
 
-// TestOverlayLoadSnapshots 覆盖并发快照 Lua（TIME 清理、当前并发、到期计划）。
+// TestOverlayLoadSnapshots 覆盖 gateway live 并发 HASH 快照：total 为当前并发，
+// key PTTL 作为下次对账时间；缺失 key 为零值。
 func TestOverlayLoadSnapshots(t *testing.T) {
 	server := miniredis.RunT(t)
 	t.Cleanup(func() { server.Close() })
@@ -192,21 +195,9 @@ func TestOverlayLoadSnapshots(t *testing.T) {
 	store := newOverlayStore(t, server)
 	ctx := context.Background()
 
-	totalKey := store.concurrencyKey("acc-1", "total")
-	// 两个活跃槽位（未来到期）+ 一个已过期槽位（应被清理）；metadata 是
-	// HASH 面（网关写侧的槽位元数据），本读面只对它做 HDEL 清理。
-	metadataKey := store.concurrencyKey("acc-1", "metadata")
-	// 活跃槽位 score 用真实未来（LoadSnapshots 以真实时钟判定 NextReconcileAt
-	// 是否呈现）；过期槽用 base 之前（SetTime 已把服务端 now 固定在 base）。
-	futureScore := float64(time.Now().Add(30 * time.Minute).UnixMilli())
-	pastScore := float64(base.Add(-time.Minute).UnixMilli())
-	if _, err := server.ZAdd(totalKey, futureScore, "lease-a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := server.ZAdd(totalKey, pastScore, "lease-expired"); err != nil {
-		t.Fatal(err)
-	}
-	server.HSet(metadataKey, "lease-a", "{}", "lease-expired", "{}")
+	concurrencyKey := store.concurrencyKey("acc-1")
+	server.HSet(concurrencyKey, "total", "1", "text", "1")
+	server.SetTTL(concurrencyKey, 6*time.Hour)
 
 	snapshots, err := store.LoadSnapshots(ctx, []string{"acc-1", "acc-empty"})
 	if err != nil {
@@ -217,20 +208,16 @@ func TestOverlayLoadSnapshots(t *testing.T) {
 	}
 	first := snapshots[0]
 	if first.AccountID != "acc-1" || first.CurrentConcurrency != 1 {
-		t.Fatalf("过期槽清理后当前并发应为 1: %+v", first)
+		t.Fatalf("当前并发应为 1: %+v", first)
 	}
 	if first.NextReconcileAt == nil {
-		t.Fatalf("未来到期槽必须给出 NextReconcileAt: %+v", first)
+		t.Fatalf("有 TTL 的 key 必须给出 NextReconcileAt: %+v", first)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, *first.NextReconcileAt); err != nil {
 		t.Fatalf("NextReconcileAt 必须是 RFC3339: %s", *first.NextReconcileAt)
 	}
 	if snapshots[1].CurrentConcurrency != 0 || snapshots[1].NextReconcileAt != nil {
 		t.Fatalf("空账户快照应为零值: %+v", snapshots[1])
-	}
-	// 过期槽应已被删除。
-	if members, _ := server.ZMembers(totalKey); len(members) != 1 {
-		t.Fatalf("过期槽必须被清理: %v", members)
 	}
 	// 非法 id → 报错。
 	if _, err := store.LoadSnapshots(ctx, []string{"   "}); err == nil {
@@ -641,22 +628,19 @@ func TestUniqueRuntimeKeys(t *testing.T) {
 	}
 }
 
-// TestOverlayConcurrencySource 覆盖并发读源适配。
+// TestOverlayConcurrencySource 覆盖并发读源适配：读 gateway live 并发 HASH
+// （DomainConcurrency 域，键名与 gatewayclientip 写面一致），total 字段为当前
+// 并发，PTTL 作为下次对账时间。
 func TestOverlayConcurrencySource(t *testing.T) {
 	server := miniredis.RunT(t)
 	t.Cleanup(func() { server.Close() })
 	base := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 	server.SetTime(base)
 	store := newOverlayStore(t, server)
-	futureScore := float64(base.Add(time.Minute).UnixMilli())
-	if _, err := server.ZAdd(store.concurrencyKey("acc-1", "total"), futureScore, "lease-1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := server.ZAdd(store.concurrencyKey("acc-2", "total"), futureScore, "a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := server.ZAdd(store.concurrencyKey("acc-2", "total"), futureScore, "b"); err != nil {
-		t.Fatal(err)
+	for accountID, total := range map[string]int{"acc-1": 1, "acc-2": 2} {
+		key := store.concurrencyKey(accountID)
+		server.HSet(key, "total", fmt.Sprintf("%d", total))
+		server.SetTTL(key, 6*time.Hour)
 	}
 	source := NewOverlayConcurrencySource(store)
 	values, err := source.LoadConcurrency(context.Background(), []string{"acc-1", "acc-2", "acc-empty"})
@@ -665,6 +649,16 @@ func TestOverlayConcurrencySource(t *testing.T) {
 	}
 	if values["acc-1"] != 1 || values["acc-2"] != 2 || values["acc-empty"] != 0 {
 		t.Fatalf("并发快照适配不符: %v", values)
+	}
+	snapshots, err := store.LoadSnapshots(context.Background(), []string{"acc-1", "acc-empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 || snapshots[0].CurrentConcurrency != 1 || snapshots[0].NextReconcileAt == nil {
+		t.Fatalf("快照语义不符: %+v", snapshots)
+	}
+	if snapshots[1].CurrentConcurrency != 0 || snapshots[1].NextReconcileAt != nil {
+		t.Fatalf("缺失 key 应 total=0 且无对账时间: %+v", snapshots[1])
 	}
 }
 

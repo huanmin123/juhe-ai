@@ -987,8 +987,11 @@ func (c *gatewayChain) resolveRealtimeCatalogModel(ctx context.Context, systemAc
 	if c.cache == nil {
 		return nil
 	}
+	// 目录按 vendor_code 维度读取（供应商与上游协议面重构设计 §3）：realtime
+	// 账户只属于 gpt vendor；openai 兼容供应商已退役，旧 openai 聚合键不再有
+	// 任何目录行，继续按协议码读取会让所有 realtime 会话 400。
 	items, err := c.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{
-		ProviderCode:    gatewaypreauth.ProtocolCodeOpenAI,
+		ProviderCode:    "gpt",
 		SystemAccountID: systemAccountID,
 		IncludeUnpriced: true,
 	})

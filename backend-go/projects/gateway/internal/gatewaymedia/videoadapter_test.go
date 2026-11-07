@@ -80,7 +80,7 @@ func TestOpenAIVideoAdapterCreateRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create err = %v", err)
 	}
-	if out.Method != http.MethodPost || out.Path != "/v1/videos" {
+	if out.Method != http.MethodPost || out.Path != "/videos" {
 		t.Fatalf("method/path = %s %s", out.Method, out.Path)
 	}
 	var body map[string]any
@@ -169,15 +169,15 @@ func TestOpenAIVideoAdapterBuildRequests(t *testing.T) {
 	const id = "video_0123456789abcdef"
 
 	method, path, body := adapter.BuildPollRequest(id)
-	if method != http.MethodGet || path != "/v1/videos/"+id || body != nil {
+	if method != http.MethodGet || path != "/videos/"+id || body != nil {
 		t.Fatalf("poll = %s %s %v", method, path, body)
 	}
 	method, path = adapter.BuildContentRequest(id)
-	if method != http.MethodGet || path != "/v1/videos/"+id+"/content" {
+	if method != http.MethodGet || path != "/videos/"+id+"/content" {
 		t.Fatalf("content = %s %s", method, path)
 	}
 	method, path = adapter.BuildCancelRequest(id)
-	if method != http.MethodDelete || path != "/v1/videos/"+id {
+	if method != http.MethodDelete || path != "/videos/"+id {
 		t.Fatalf("cancel = %s %s", method, path)
 	}
 }

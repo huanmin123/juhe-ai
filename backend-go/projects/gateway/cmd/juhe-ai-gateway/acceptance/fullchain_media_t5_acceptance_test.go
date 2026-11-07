@@ -185,8 +185,9 @@ func TestFullchainT5QwenAudioJobCancel(t *testing.T) {
 
 // fullchainT5CreateImageOnlyAccount 经管理面创建 images_json-only 的图像
 // 账户（gpt 供应商 + 既有 profile_gpt_openai_v1；能力域显式 image——image
-// 域 lanes = images_json；模型约束种 gpt-image-1 自定义目录行）。无健康检查
-// 模型、status active 跳过首检（与媒体账户同款创建形态）。
+// 域 lanes = images_json；模型约束种现行启用态内置行 gpt-image-2——
+// gpt-image-1 已于 2026-10-23 关停，目录行按 shutdown_date 投影为 disabled，
+// 不再回补停用模型）。健康检查三件套显式提交（与媒体账户同款创建形态）。
 func (f *fullchainFixture) fullchainT5CreateImageOnlyAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
@@ -197,12 +198,12 @@ func (f *fullchainFixture) fullchainT5CreateImageOnlyAccount(name, upstreamKey, 
 		"capabilityDomain":          "image",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
-			"base_url": f.mock.server.URL,
+			"base_url": f.mock.server.URL + "/v1",
 			"supported_endpoint_modes": []string{
 				"images_json",
 			},
 		},
-		"supportedModels": []string{"gpt-image-1"},
+		"supportedModels": []string{"gpt-image-2"},
 		"connections": []map[string]any{{
 			"connectionPresetCode": "gpt_openai_v1",
 			"baseUrl":              f.mock.server.URL + "/v1",
@@ -211,7 +212,7 @@ func (f *fullchainFixture) fullchainT5CreateImageOnlyAccount(name, upstreamKey, 
 		}},
 		"healthCheckConnectionPresetCode": "gpt_openai_v1",
 		"healthCheckEndpointMode":         "images_json",
-		"healthCheckModel":                "gpt-image-1",
+		"healthCheckModel":                "gpt-image-2",
 		"status":          "active",
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))
@@ -220,31 +221,6 @@ func (f *fullchainFixture) fullchainT5CreateImageOnlyAccount(name, upstreamKey, 
 		f.t.Fatalf("T5 image-only account create payload wrong: %#v", created)
 	}
 	return accountID
-}
-
-// fullchainT5EnsureImageCatalogModel 确保 gpt-image-1 在 gpt 供应商目录可用
-// （mode=image + images 协议声明过档案协议承接校验）：先查目录已有该模型
-// （含未定价/未启用行）则跳过创建；缺失时沿 ensureProbeModelInCatalog 先例
-// 补零价自定义行（outputUsdPerImage=0 满足启用态价格校验，零价不虚计）。
-func (f *fullchainFixture) fullchainT5EnsureImageCatalogModel(model string) {
-	f.t.Helper()
-	_, payload := f.admin.do(http.MethodGet,
-		"/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true",
-		nil, wantStatus(http.StatusOK))
-	items, _ := payload["data"].([]any)
-	for _, raw := range items {
-		if item, ok := raw.(map[string]any); ok && str(item["model"]) == model {
-			return
-		}
-	}
-	f.admin.do(http.MethodPost, "/__aisys__/api/providers/gpt/models", map[string]any{
-		"model":                 model,
-		"scope":                 "global",
-		"status":                "active",
-		"mode":                  "image",
-		"supportedApiProtocols": []string{"images"},
-		"outputUsdPerImage":     0,
-	}, wantStatus(http.StatusCreated))
 }
 
 // fullchainT5EnableOwnerImageGeneration 打开 sys_admin 的图像生成开关
@@ -279,14 +255,13 @@ func (f *fullchainFixture) fullchainT5EnableOwnerImageGeneration() {
 // lane 对照随域纯粹化裁撤）：同分组内两个 image 形态账户（images_json-only）
 // 对 POST /v1/images/generations 按候选顺序共同候选——A 先尝试（mock 429
 // 可切换故障）→ 换 B 成功受理；断言两账户各收到出站创建请求（共同候选
-// 证据）、出站路径 /v1/images/generations、Bearer 鉴权、模型名 gpt-image-1、
+// 证据）、出站路径 /v1/images/generations、Bearer 鉴权、模型名 gpt-image-2、
 // 客户端响应为 mock images url 形态透传。
 func TestFullchainT5ImagesSharedLaneCoCandidates(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
 
 	f.fullchainT5EnableOwnerImageGeneration()
-	f.fullchainT5EnsureImageCatalogModel("gpt-image-1")
 
 	// A/B 均为 image 域 images_json-only 图像形态账户。组内同优先级按既定
 	// 候选顺序，A 先尝试（429 可切换）→ B 受理成功；派发按端点模式过滤，
@@ -303,7 +278,7 @@ func TestFullchainT5ImagesSharedLaneCoCandidates(t *testing.T) {
 	}, nil)
 	apiKey := f.createAPIKey("T5图像共享-Key", strategyID)
 
-	body := `{"model":"gpt-image-1","prompt":"一只猫在弹钢琴","n":1}`
+	body := `{"model":"gpt-image-2","prompt":"一只猫在弹钢琴","n":1}`
 	response := f.videoT(t, apiKey, http.MethodPost, "/v1/images/generations", body)
 	if response.Status != http.StatusOK {
 		t.Fatalf("T5 images shared lane status=%d body=%s, want 200", response.Status, response.Body)
@@ -315,7 +290,7 @@ func TestFullchainT5ImagesSharedLaneCoCandidates(t *testing.T) {
 	}
 
 	// 共同候选证据：A 收到 429 尝试、B 收到成功受理，均为 POST
-	// /v1/images/generations；出站模型名 gpt-image-1、Bearer 鉴权各自账户 key。
+	// /v1/images/generations；出站模型名 gpt-image-2、Bearer 鉴权各自账户 key。
 	hitsA, hitsB := 0, 0
 	for _, call := range f.mock.callsByKey(keyA) {
 		if call.Method == http.MethodPost && call.Path == "/v1/images/generations" {
@@ -326,8 +301,8 @@ func TestFullchainT5ImagesSharedLaneCoCandidates(t *testing.T) {
 		if call.Method != http.MethodPost || call.Path != "/v1/images/generations" {
 			t.Fatalf("T5 images shared lane B 未预期出站: %#v", call)
 		}
-		if call.Model != "gpt-image-1" {
-			t.Fatalf("T5 images shared lane B 出站 model=%q, want gpt-image-1", call.Model)
+		if call.Model != "gpt-image-2" {
+			t.Fatalf("T5 images shared lane B 出站 model=%q, want gpt-image-2", call.Model)
 		}
 		if call.AuthHeader != "Bearer "+keyB {
 			t.Fatalf("T5 images shared lane B Authorization=%q, want Bearer <B key>", call.AuthHeader)

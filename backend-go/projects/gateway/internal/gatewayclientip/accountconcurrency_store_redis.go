@@ -13,13 +13,17 @@ import (
 
 // RedisAccountConcurrencyOptions configures Redis-backed account concurrency.
 type RedisAccountConcurrencyOptions struct {
-	RedisURL         string
-	Client           redis.UniversalClient
-	Namespace        string
-	Name             string
-	Clock            func() int64
-	Logger           Logger
-	StateOperationTO time.Duration
+	RedisURL   string
+	Client     redis.UniversalClient
+	Namespace  string
+	Name       string
+	// ProjectionNamespace 是账户列表投影 dirty/generation 队列的命名空间
+	// （DomainCircuit 域，与 jobs account-list-availability-projection 读取面
+	// 一致）；空值关闭投影通知写入（单测/旧组合零开销）。
+	ProjectionNamespace string
+	Clock               func() int64
+	Logger              Logger
+	StateOperationTO    time.Duration
 }
 
 // RedisAccountConcurrency implements AccountConcurrencySource using Redis.
@@ -33,13 +37,25 @@ type RedisAccountConcurrency struct {
 }
 
 type redisAccountConcurrencyKeys struct {
-	accountConcurrency string
+	accountConcurrency   string
+	projectionGeneration string
+	projectionDirty      string
 }
 
-func redisAccountConcurrencyStoreKeys(name, namespace string) redisAccountConcurrencyKeys {
-	return redisAccountConcurrencyKeys{
+func redisAccountConcurrencyStoreKeys(name, namespace, projectionNamespace string) redisAccountConcurrencyKeys {
+	keys := redisAccountConcurrencyKeys{
 		accountConcurrency: rediscfg.NamespacedKey("juhe-ai:"+name+":account-concurrency", namespace),
 	}
+	if strings.TrimSpace(projectionNamespace) != "" {
+		keys.projectionGeneration = rediscfg.NamespacedKey("juhe-ai:account-concurrency-projection-generation", projectionNamespace)
+		keys.projectionDirty = rediscfg.NamespacedKey("juhe-ai:account-concurrency-projection-dirty", projectionNamespace)
+	}
+	return keys
+}
+
+// projectionEnabled 报告投影通知键是否已配置。
+func (k redisAccountConcurrencyKeys) projectionEnabled() bool {
+	return k.projectionDirty != "" && k.projectionGeneration != ""
 }
 
 // NewRedisAccountConcurrency creates a Redis-backed account concurrency source.
@@ -66,7 +82,7 @@ func NewRedisAccountConcurrency(opts RedisAccountConcurrencyOptions) (*RedisAcco
 	namespace := opts.Namespace
 	return &RedisAccountConcurrency{
 		client: client,
-		keys:   redisAccountConcurrencyStoreKeys(name, namespace),
+		keys:   redisAccountConcurrencyStoreKeys(name, namespace, opts.ProjectionNamespace),
 		clock:  clock,
 		logger: opts.Logger,
 	}, nil
@@ -242,6 +258,10 @@ local total_limit = tonumber(ARGV[3])
 local lane_limit = tonumber(ARGV[4])
 local rpm_limit = tonumber(ARGV[5])
 local now_ms = tonumber(ARGV[6])
+-- ARGV[7]=投影通知开关（'1' 启用）；ARGV[8]=account_id。启用时 KEYS[2]=
+-- generation HASH、KEYS[3]=dirty ZSET（DomainCircuit 域，jobs 投影读面）。
+local projection = ARGV[7]
+local account_id = ARGV[8]
 local total = tonumber(redis.call('HGET', key, 'total') or '0')
 local lane_current = tonumber(redis.call('HGET', key, field) or '0')
 -- RPM 窗口观测（bucket 过期即就地重置：窗口计数先落存储归零，成功路径的
@@ -279,12 +299,19 @@ if rpm_limit > 0 then
   redis.call('HSET', key, 'rpm_bucket', bucket)
 end
 redis.call('PEXPIRE', key, ttl_ms)
+if projection == '1' then
+  redis.call('HINCRBY', KEYS[2], account_id, 1)
+  redis.call('ZADD', KEYS[3], now_ms, account_id)
+end
 return {1, total, lane_current, rpm_count, rpm_reset_at_ms}
 `
 
 const redisAccountConcurrencyReleaseScript = `
 local key = KEYS[1]
 local field = ARGV[1]
+local projection = ARGV[2]
+local account_id = ARGV[3]
+local now_ms = ARGV[4]
 local new_total = redis.call('HINCRBY', key, 'total', -1)
 local new_lane = redis.call('HINCRBY', key, field, -1)
 if new_total <= 0 then
@@ -294,6 +321,10 @@ if new_total <= 0 then
   -- TTL 自然过期。
   redis.call('HDEL', key, 'total')
   redis.call('HDEL', key, field)
+end
+if projection == '1' then
+  redis.call('HINCRBY', KEYS[2], account_id, 1)
+  redis.call('ZADD', KEYS[3], now_ms, account_id)
 end
 return {new_lane}
 `
@@ -346,9 +377,15 @@ func (r *RedisAccountConcurrency) AcquireAccountConcurrency(ctx context.Context,
 		field = AccountConcurrencyLaneText
 	}
 	nowMs := r.clock()
-	values, err := r.client.Eval(ctx, redisAccountConcurrencyAcquireScript, []string{key},
+	projection := ""
+	projectionKeys := []string{key, key}
+	if r.keys.projectionEnabled() {
+		projection = "1"
+		projectionKeys = []string{key, r.keys.projectionGeneration, r.keys.projectionDirty}
+	}
+	values, err := r.client.Eval(ctx, redisAccountConcurrencyAcquireScript, projectionKeys,
 		field, strconv.Itoa(int(ttlMs)), strconv.Itoa(totalLimit), strconv.Itoa(laneLimit),
-		strconv.Itoa(rpmLimit), strconv.FormatInt(nowMs, 10)).Result()
+		strconv.Itoa(rpmLimit), strconv.FormatInt(nowMs, 10), projection, accountID).Result()
 	if err != nil {
 		return AccountConcurrencyAcquireOutcome{}, err
 	}
@@ -425,6 +462,13 @@ func (r *RedisAccountConcurrency) ReleaseAccountConcurrency(ctx context.Context,
 	if field == "" {
 		field = AccountConcurrencyLaneText
 	}
-	_, err := r.client.Eval(ctx, redisAccountConcurrencyReleaseScript, []string{key}, field).Result()
+	projection := ""
+	projectionKeys := []string{key, key}
+	if r.keys.projectionEnabled() {
+		projection = "1"
+		projectionKeys = []string{key, r.keys.projectionGeneration, r.keys.projectionDirty}
+	}
+	_, err := r.client.Eval(ctx, redisAccountConcurrencyReleaseScript, projectionKeys,
+		field, projection, accountID, strconv.FormatInt(r.clock(), 10)).Result()
 	return err
 }

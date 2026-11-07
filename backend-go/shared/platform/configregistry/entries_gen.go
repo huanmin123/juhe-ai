@@ -70,6 +70,7 @@ func init() {
 	register(Entry{Name: "JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", Process: []string{"jobs"}})
 	register(Entry{Name: "JUHE_AI_JOBS_PROBE_CONCURRENCY", Process: []string{"gateway", "jobs"}})
 	register(Entry{Name: "JUHE_AI_LOG_DIR", Process: []string{"gateway", "jobs"}})
+	register(Entry{Name: "JUHE_AI_LOG_INSTANCE_ID", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_LOG_MAX_FILES", Process: []string{"gateway", "jobs"}})
 	register(Entry{Name: "JUHE_AI_LOG_MAX_FILE_MB", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_LOG_RETENTION_DAYS", Process: []string{"gateway", "jobs"}})

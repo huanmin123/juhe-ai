@@ -30,28 +30,44 @@ type FileSinkOptions struct {
 	FileName string
 	// MaxFileBytes 是大小轮转阈值；<=0 时取 DefaultMaxFileBytes。
 	MaxFileBytes int64
+	// RetryInterval 是写失败/句柄失效后重开文件的节流间隔；<=0 时取
+	// DefaultFileSinkRetryInterval（多机 NFS 断连恢复后无需重启进程即可自愈）。
+	RetryInterval time.Duration
 	// Now 与 NewToken 是轮转文件名的时间戳/token 注入点（测试用）。nil 时
 	// 分别取 UTC time.Now 与 crypto/rand 派生的 8-4-4-4-12 小写 hex。
 	Now      func() time.Time
 	NewToken func() string
 }
 
+// DefaultFileSinkRetryInterval 是写失败后重开文件的默认节流间隔：避免持续
+// 失败时每次写都触发 open 系统调用（NFS 黑洞场景下 open 可能阻塞），同时
+// 保证共享目录恢复后在约 5s 内自动续写。
+const DefaultFileSinkRetryInterval = 5 * time.Second
+
 // FileSink 是按大小滚动的 append-only JSONL 文件写侧。轮转判定与 Node
 // RotatingLogStream._write 相同：currentSize > 0 且追加后超出阈值才轮转，
 // 因此单条超阈记录仍完整写入而非拒写。文件清理由 jobs runtimelog 索引器的
 // 保留清理负责，写侧不做任何删除。Write 保证每条记录一次 write 落盘
 // (O_APPEND 单写原子性)，进程内不会出现交叉写撕裂行。
+//
+// 失败恢复：写入错误（EIO/ESTALE/句柄失效）或轮转重开失败后关闭并置空
+// 句柄，按 retryInterval 节流重试 open；共享目录（NFS/云 NAS）恢复后无需
+// 重启进程即可自愈。节流期内 Write 返回"不可用"错误，slog handler 丢弃该
+// 条记录（不中断进程），恢复后后续记录正常落盘。
 type FileSink struct {
-	mu           sync.Mutex
-	dir          string
-	fileName     string
-	maxFileBytes int64
-	now          func() time.Time
-	newToken     func() string
-	currentPath  string
-	file         *os.File
-	currentSize  int64
-	closed       bool
+	mu            sync.Mutex
+	dir           string
+	fileName      string
+	maxFileBytes  int64
+	retryInterval time.Duration
+	now           func() time.Time
+	newToken      func() string
+	openFile      func(name string, flag int, perm os.FileMode) (*os.File, error)
+	currentPath   string
+	file          *os.File
+	currentSize   int64
+	nextReopenAt  time.Time
+	closed        bool
 }
 
 // NewFileSink 创建（必要时）并打开 dir 下的 current 日志文件，回读现有
@@ -69,14 +85,19 @@ func NewFileSink(dir string, options FileSinkOptions) (*FileSink, error) {
 		return nil, fmt.Errorf("创建运行日志目录 %s 失败: %w", dir, err)
 	}
 	sink := &FileSink{
-		dir:          dir,
-		fileName:     fileName,
-		maxFileBytes: options.MaxFileBytes,
-		now:          options.Now,
-		newToken:     options.NewToken,
+		dir:           dir,
+		fileName:      fileName,
+		maxFileBytes:  options.MaxFileBytes,
+		retryInterval: options.RetryInterval,
+		now:           options.Now,
+		newToken:      options.NewToken,
+		openFile:      os.OpenFile,
 	}
 	if sink.maxFileBytes <= 0 {
 		sink.maxFileBytes = DefaultMaxFileBytes
+	}
+	if sink.retryInterval <= 0 {
+		sink.retryInterval = DefaultFileSinkRetryInterval
 	}
 	if sink.now == nil {
 		sink.now = func() time.Time { return time.Now().UTC() }
@@ -92,7 +113,8 @@ func NewFileSink(dir string, options FileSinkOptions) (*FileSink, error) {
 
 // Write 追加一条记录；写前按阈值先轮转。轮转失败与写入失败都以 error
 // 返回（slog handler 会丢弃该条记录但不中断进程），不 panic、不在 Write
-// 内部递归打日志。
+// 内部递归打日志。句柄失效/写失败后按 retryInterval 节流重开，恢复后
+// 后续记录继续落盘。
 func (s *FileSink) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -100,7 +122,9 @@ func (s *FileSink) Write(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 	if s.file == nil {
-		return 0, fmt.Errorf("运行日志文件 %s 不可用（此前轮转失败未恢复）", s.currentPath)
+		if err := s.reopenIfDueLocked(); err != nil {
+			return 0, err
+		}
 	}
 	if s.currentSize > 0 && s.currentSize+int64(len(p)) > s.maxFileBytes {
 		if err := s.rotateLocked(); err != nil {
@@ -110,10 +134,15 @@ func (s *FileSink) Write(p []byte) (int, error) {
 	written, err := s.file.Write(p)
 	s.currentSize += int64(written)
 	if err != nil {
+		// 句柄可能已失效（NFS 断连/ESTALE）：关闭并置空，下一次按节流重开。
+		_ = s.file.Close()
+		s.file = nil
+		s.scheduleReopenLocked()
 		return written, fmt.Errorf("写入运行日志文件 %s 失败: %w", s.currentPath, err)
 	}
 	return written, nil
 }
+
 
 // Close 幂等关闭 current 文件句柄。
 func (s *FileSink) Close() error {
@@ -154,7 +183,7 @@ func (s *FileSink) CurrentSize() int64 {
 // 持有 mu。
 func (s *FileSink) openCurrentLocked() error {
 	path := filepath.Join(s.dir, s.fileName)
-	handle, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	handle, err := s.openFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return fmt.Errorf("打开运行日志文件 %s 失败: %w", path, err)
 	}
@@ -166,6 +195,26 @@ func (s *FileSink) openCurrentLocked() error {
 	s.currentPath = path
 	s.file = handle
 	s.currentSize = info.Size()
+	s.nextReopenAt = time.Time{}
+	return nil
+}
+
+// scheduleReopenLocked 记录下一次允许重开的时间点；调用方须已持有 mu。
+func (s *FileSink) scheduleReopenLocked() {
+	s.nextReopenAt = s.now().Add(s.retryInterval)
+}
+
+// reopenIfDueLocked 在句柄为空时按节流间隔尝试重开；调用方须已持有 mu。
+// 节流期内返回不可用错误（附带上次路径信息），到点后真正 open 一次。
+func (s *FileSink) reopenIfDueLocked() error {
+	now := s.now()
+	if !s.nextReopenAt.IsZero() && now.Before(s.nextReopenAt) {
+		return fmt.Errorf("运行日志文件 %s 暂不可用（等待重开，下次重试 %s）", s.currentPath, s.nextReopenAt.Format(time.RFC3339))
+	}
+	if err := s.openCurrentLocked(); err != nil {
+		s.scheduleReopenLocked()
+		return err
+	}
 	return nil
 }
 
@@ -185,11 +234,16 @@ func (s *FileSink) rotateLocked() error {
 		reopenErr := s.openCurrentLocked()
 		renamed := fmt.Errorf("轮转运行日志文件到 %s 失败: %w", rotated, err)
 		if reopenErr != nil {
+			s.scheduleReopenLocked()
 			return errors.Join(renamed, reopenErr)
 		}
 		return renamed
 	}
-	return s.openCurrentLocked()
+	if err := s.openCurrentLocked(); err != nil {
+		s.scheduleReopenLocked()
+		return err
+	}
+	return nil
 }
 
 // rotatedLogFileName 产出与 Node rotatedLogFileName (archived

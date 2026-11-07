@@ -89,6 +89,8 @@ func newXaiRecordedUpstream(t *testing.T) (*xaiUpstreamRecorder, *platformmock.S
 // 模型约束种 grok-imagine-video-1.5（目录 seed 预置行）。
 func seedMediaXaiAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：xai base_url 承载 /v1，adapter opPath 不含版本段。
+	baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {

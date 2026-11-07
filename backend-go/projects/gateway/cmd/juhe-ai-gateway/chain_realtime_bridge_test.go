@@ -35,22 +35,15 @@ import (
 func seedRealtimeCatalogRow(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := "2026-10-04T00:00:00.000Z"
-	// 双行过渡形态：realtime 目录门（chain_realtime.go
-	// resolveRealtimeCatalogModel）暂按 openai 兼容聚合键读取，终态计价目录
-	// 按账户 vendor（gpt）读取——两消费键各自需要同名 provider_code 行；聚合
-	// 门切 vendor 身份属后续 realtime 切片，彼时删除 openai 键行。
-	for _, row := range []struct{ id, vendorCode string }{
-		{"cat_realtime_1", "gpt"},
-		{"cat_realtime_1_openai_gate", "openai"},
-	} {
-		if _, err := db.Exec(fixtureBind(`INSERT INTO models (
-				id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
-				supported_endpoint_modes_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
-				created_at, updated_at)
-			VALUES (?, ?, 'gpt-realtime', 'gpt-realtime', 'global', 'active', TRUE,
-				'["realtime_session"]', 32, 64, ?, ?)`), row.id, row.vendorCode, now, now); err != nil {
-			t.Fatalf("seed realtime catalog: %v", err)
-		}
+	// realtime 目录门（resolveRealtimeCatalogModel）与终态计价目录统一按账户
+	// vendor（gpt）读取；openai 兼容聚合键随供应商退役删除。
+	if _, err := db.Exec(fixtureBind(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
+			supported_endpoint_modes_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
+			created_at, updated_at)
+		VALUES ('cat_realtime_1', 'gpt', 'gpt-realtime', 'gpt-realtime', 'global', 'active', TRUE,
+			'["realtime_session"]', 32, 64, ?, ?)`), now, now); err != nil {
+		t.Fatalf("seed realtime catalog: %v", err)
 	}
 }
 
@@ -59,6 +52,8 @@ func seedRealtimeCatalogRow(t *testing.T, db *sql.DB) {
 // 语义）。模型约束种 gpt-realtime。
 func seedRealtimeAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string, priority int) {
 	t.Helper()
+	// v2 版本根语义：realtime 拨号 opPath 为 /realtime，/v1 由 base_url 承载。
+	baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 	credentials := map[string]any{
 		"api_key":  apiKey,
 		"base_url": baseURL,

@@ -23,7 +23,7 @@
 | `JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL` | jobs 的 J1 账户健康 PG 输入；**必须显式，不回退主库** |
 | `JUHE_AI_ALLOWED_ORIGINS` | 后台访问 Origin，逗号分隔，如 `https://<domain>`；生产环境为空或 `*` 都会启动失败 |
 | `JUHE_AI_TRUST_PROXY` | `true`；缺失时默认 false，所有请求的来源 IP 都会变成反代容器地址，来源限流/封禁/调度避让全部失真 |
-| `JUHE_AI_PROXY_IP_A` / `JUHE_AI_PROXY_IP_B` | 旧出海隧道域名的 IP 钉死；compose `extra_hosts` 的 `:?required` 引用，**过渡保留**，生产 `proxy_profiles.host` 核对完成后再删除 |
+| `JUHE_AI_PROXY_IP_A` / `JUHE_AI_PROXY_IP_B` | 旧出海隧道域名的 IP 钉死；compose `extra_hosts` 的 `:?required` 引用（「域名 → IP 列表」映射形式，A/B 可相同），**过渡保留**，生产 `proxy_profiles.host` 核对完成后再删除 |
 
 ## 2. 建议显式配置
 

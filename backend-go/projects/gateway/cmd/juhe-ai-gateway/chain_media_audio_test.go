@@ -381,6 +381,8 @@ func TestChainMediaAudioJobCancel(t *testing.T) {
 // 语义）；模型约束种 cogtts（目录 seed M6 增补行）。
 func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：glm base_url 承载 /api/paas/v4，speech opPath 为 /audio/speech。
+	baseURL = strings.TrimRight(baseURL, "/") + "/api/paas/v4"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
@@ -638,7 +640,7 @@ func TestChainMediaVolcengineSpeechMissingCredentials(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("缺凭据 speech status=%d, want 400（确定性配置错误，非 503 retryable/未预期异常）body=%s", response.StatusCode, payload)
 	}
-	if !strings.Contains(string(payload), "speech_credentials_missing") || !strings.Contains(string(payload), "缺少火山语音凭据") {
+	if !strings.Contains(string(payload), "speech_credentials_missing") || !strings.Contains(string(payload), "speech_token") {
 		t.Fatalf("缺凭据 speech 错误载荷缺少确定性 code/message: %s", payload)
 	}
 	if len(mock.Requests()) != 0 {
@@ -652,6 +654,8 @@ func TestChainMediaVolcengineSpeechMissingCredentials(t *testing.T) {
 // supported_endpoint_modes（audio_speech opt-in），模型约束种 tts-1。
 func seedMediaOpenAISpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：openai base_url 承载 /v1，speech opPath 为 /audio/speech。
+	baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {

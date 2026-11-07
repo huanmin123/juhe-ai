@@ -87,6 +87,8 @@ func newGlmRecordedUpstream(t *testing.T) (*glmUpstreamRecorder, *platformmock.S
 // 模型约束种 cogvideox-3。
 func seedMediaGlmVideoAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：glm base_url 承载 /api/paas/v4，adapter opPath 不含版本段。
+	baseURL = strings.TrimRight(baseURL, "/") + "/api/paas/v4"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {

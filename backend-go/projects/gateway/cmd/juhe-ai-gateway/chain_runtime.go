@@ -422,6 +422,9 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	concurrencyTracker, concurrencyErr := gatewayclientip.NewRedisAccountConcurrency(gatewayclientip.RedisAccountConcurrencyOptions{
 		Client:    stateClient,
 		Namespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainConcurrency),
+		// 账户列表投影 dirty/generation 与 jobs 读取面同域（DomainCircuit）：
+		// 并发槽 acquire/release 时同脚本原子写脏标记，jobs 投影据此增量对账。
+		ProjectionNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainCircuit),
 	})
 	if concurrencyErr != nil {
 		services.Close()

@@ -90,6 +90,8 @@ func newMinimaxRecordedUpstream(t *testing.T) (*minimaxUpstreamRecorder, *platfo
 // speech-02-turbo。
 func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
+	// v2 版本根语义：minimax base_url 承载 /v1，adapter opPath 不含版本段。
+	baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 	seed := func(query string, args ...any) {
 		t.Helper()
 		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {

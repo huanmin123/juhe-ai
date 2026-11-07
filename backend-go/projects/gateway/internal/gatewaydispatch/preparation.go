@@ -1132,11 +1132,32 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 	}
 
-	highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
-	if err != nil {
-		return fail(err)
-	}
-	if highConcurrencyBusy {
+	// 重排队上界以「无进展等待」计：队列判定有容量但没有真正排到队
+	//（WaitedMs=0，通常是队列为空时的立即可用窗口被竞争请求抢走）连续
+	// 达到上限才失败；一旦经历过真实排队（WaitedMs>0），按剩余
+	// maxQueueWaitMs 预算继续等待，不能在唤醒竞争下落成提前 429。
+	//
+	// 循环顶部的 busy 复查同时覆盖「首次检查通过、最终派发前被并发请求
+	// 抢先占槽」窗口：此时尚未发生任何排队，必须进入短队列等待而不是直接
+	// 返回 429（429 只属于等待超时/队列满/取消）。
+	const maxHighConcurrencyQueueNoProgressWaits = 3
+	queueNoProgressWaits := 0
+	for {
+		highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
+		if err != nil {
+			return fail(err)
+		}
+		if !highConcurrencyBusy {
+			// 派发前最终复查：首次检查与最终派发之间仍可能被并发请求抢先
+			// 占槽，此时尚未排过队，必须进入短队列而不是直接 429。
+			highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
+			if err != nil {
+				return fail(err)
+			}
+		}
+		if !highConcurrencyBusy || queueNoProgressWaits >= maxHighConcurrencyQueueNoProgressWaits {
+			break
+		}
 		queueWaitStartedAtMs := gatewayupstream.NowMs()
 		req.ServerRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
 		queueWait, waitErr := func() (QueueWaitResult, error) {
@@ -1170,6 +1191,14 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		if waitErr != nil {
 			return fail(waitErr)
 		}
+		if !queueWait.Ready {
+			break
+		}
+		if queueWait.WaitedMs <= 0 {
+			queueNoProgressWaits++
+		} else {
+			queueNoProgressWaits = 0
+		}
 		req.AuditCapture.AddGatewayMetadata("high_concurrency_group_queue", map[string]any{
 			"ready":     queueWait.Ready,
 			"reason":    queueWait.Reason,
@@ -1195,11 +1224,6 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		// 该次亲和排序可能覆盖 905 那次热质量顺序（缓存率设计第 7 节）：
 		// busy 复查通过后、return 前重应用层内排序。
 		hotQualityReorderPending = true
-	}
-
-	highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
-	if err != nil {
-		return fail(err)
 	}
 	if highConcurrencyBusy {
 		fallbackAttempted, fallbackContext, err := p.requestRouteFallback(ctx, req, accounts, "high_concurrency_group_busy")

@@ -408,3 +408,46 @@ func TestMemoryAccountConcurrencyReadCleansExpiredWindow(t *testing.T) {
 		t.Fatalf("跨分钟读取后条目应被清理: %d/%d", len(tracker.rpmBucket), len(tracker.rpmCount))
 	}
 }
+
+// TestRedisAccountConcurrencyWritesProjectionDirty 覆盖账户列表投影通知：
+// 配置 ProjectionNamespace 后，acquire/release 在同一 Lua 内原子写
+// generation HASH 与 dirty ZSET（DomainCircuit 域，jobs 投影读面）。
+func TestRedisAccountConcurrencyWritesProjectionDirty(t *testing.T) {
+	server := miniredis.RunT(t)
+	nowMs := int64(1_800_000)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	instance, err := NewRedisAccountConcurrency(RedisAccountConcurrencyOptions{
+		Client:              client,
+		Namespace:           "dev:concurrency",
+		ProjectionNamespace: "dev:circuit",
+		Clock:               func() int64 { return nowMs },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-dirty", AccountConcurrencyLaneText, (6 * time.Hour).Milliseconds(), 5, 5, 0)
+	if err != nil || !outcome.Acquired {
+		t.Fatalf("acquire = %+v err %v", outcome, err)
+	}
+	genKey := instance.keys.projectionGeneration
+	dirtyKey := instance.keys.projectionDirty
+	if genKey == "" || dirtyKey == "" {
+		t.Fatal("投影键必须已启用")
+	}
+	generation, err := client.HGet(ctx, genKey, "acc-dirty").Result()
+	if err != nil || generation != "1" {
+		t.Fatalf("acquire 后 generation = %q err %v, want 1", generation, err)
+	}
+	if _, err := client.ZScore(ctx, dirtyKey, "acc-dirty").Result(); err != nil {
+		t.Fatalf("acquire 后 dirty 队列缺少账户: %v", err)
+	}
+	if err := instance.ReleaseAccountConcurrency(ctx, "acc-dirty", AccountConcurrencyLaneText); err != nil {
+		t.Fatal(err)
+	}
+	generation, err = client.HGet(ctx, genKey, "acc-dirty").Result()
+	if err != nil || generation != "2" {
+		t.Fatalf("release 后 generation = %q err %v, want 2", generation, err)
+	}
+}

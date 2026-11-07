@@ -131,7 +131,8 @@ func (openaiVideoAdapter) Capabilities() VideoCapabilities {
 	}
 }
 
-// Create 构造契约 §4.3 创建报文：POST /v1/videos，body 为
+// Create 构造契约 §4.3 创建报文：POST /videos（base_url 版本根 /v1 + opPath
+// /videos，v2 直拼契约；adapter opPath 不含版本段），body 为
 // {model,prompt,seconds,size,n,input_reference}。seconds 序列化为 openai
 // 原生字符串形态（§4.3 示例 "seconds":"4"；归一层兼容的数字形态在此统一
 // 回归字符串）；归一层判为 ignored 的词表外字段（negative_prompt/seed/
@@ -167,25 +168,27 @@ func (a openaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vide
 	}
 	return VideoCreateOutput{
 		Method: http.MethodPost,
-		Path:   "/v1/videos",
+		Path:   "/videos",
 		Body:   encoded,
 	}, nil
 }
 
-// BuildPollRequest 构造轮询请求：GET /v1/videos/{id}（契约 §4.3）。
+// BuildPollRequest 构造轮询请求：GET /videos/{id}（契约 §4.3；opPath 不含
+// 版本段，版本根由账户 base_url 承载）。
 func (openaiVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
-	return http.MethodGet, "/v1/videos/" + upstreamJobID, nil
+	return http.MethodGet, "/videos/" + upstreamJobID, nil
 }
 
-// BuildContentRequest 构造产物下载请求：GET /v1/videos/{id}/content（契约
+// BuildContentRequest 构造产物下载请求：GET /videos/{id}/content（契约
 // §4.3，视频字节流，保留时效约 1 小时）。
 func (openaiVideoAdapter) BuildContentRequest(upstreamJobID string) (string, string) {
-	return http.MethodGet, "/v1/videos/" + upstreamJobID + "/content"
+	return http.MethodGet, "/videos/" + upstreamJobID + "/content"
 }
 
-// BuildCancelRequest 构造取消/删除请求：DELETE /v1/videos/{id}（契约 §4.3）。
+// BuildCancelRequest 构造取消/删除请求：DELETE /videos/{id}（契约 §4.3；
+// opPath 不含版本段）。
 func (openaiVideoAdapter) BuildCancelRequest(upstreamJobID string) (string, string) {
-	return http.MethodDelete, "/v1/videos/" + upstreamJobID
+	return http.MethodDelete, "/videos/" + upstreamJobID
 }
 
 // SupportsCancel：openai videos 族有 DELETE 取消端点（契约 §4.3）→ true。

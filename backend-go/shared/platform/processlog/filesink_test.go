@@ -245,3 +245,94 @@ func countCompleteJSONLLines(t *testing.T, raw []byte) int {
 	}
 	return lines
 }
+
+// TestFileSinkReopensAfterWriteFailure 覆盖 NFS/共享目录断连语义：句柄失效
+// 后 Write 返回错误并置空句柄，节流期内不反复 open；到点后自动重开并续写，
+// 无需重启进程。
+func TestFileSinkReopensAfterWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	sink, err := NewFileSink(dir, FileSinkOptions{
+		RetryInterval: 5 * time.Second,
+		Now:           func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	if _, err := sink.Write([]byte("{\"n\":1}\n")); err != nil {
+		t.Fatalf("首次写入失败: %v", err)
+	}
+	// 模拟句柄失效（ESTALE/底层文件被关闭）。
+	if err := sink.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sink.Write([]byte("{\"n\":2}\n")); err == nil {
+		t.Fatal("失效句柄写入应返回错误")
+	}
+	// 节流期内不得重开：错误信息应提示等待重开。
+	if _, err := sink.Write([]byte("{\"n\":3}\n")); err == nil || !strings.Contains(err.Error(), "暂不可用") {
+		t.Fatalf("节流期内应返回不可用错误，got %v", err)
+	}
+	// 到点后自动重开并续写（模拟 NFS 恢复）。
+	now = now.Add(6 * time.Second)
+	if _, err := sink.Write([]byte("{\"n\":4}\n")); err != nil {
+		t.Fatalf("恢复后写入失败: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, CurrentLogFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "\"n\":1") || !strings.Contains(string(raw), "\"n\":4") {
+		t.Fatalf("恢复后内容不完整: %s", raw)
+	}
+}
+
+// TestFileSinkReopenRetryIsThrottled 用注入的 openFile 断言重试只按节流
+// 间隔发生（不会每次写都 open），恢复后立即续写。
+func TestFileSinkReopenRetryIsThrottled(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 11, 7, 11, 0, 0, 0, time.UTC)
+	realOpen := os.OpenFile
+	opens, failing := 0, true
+	sink, err := NewFileSink(dir, FileSinkOptions{
+		RetryInterval: 5 * time.Second,
+		Now:           func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	sink.openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		opens++
+		if failing {
+			return nil, os.ErrPermission
+		}
+		return realOpen(name, flag, perm)
+	}
+	// 让句柄失效，触发重开路径。
+	_ = sink.file.Close()
+	sink.file = nil
+	sink.scheduleReopenLocked()
+	if _, err := sink.Write([]byte("x\n")); err == nil {
+		t.Fatal("节流期内写入应失败")
+	}
+	if opens != 0 {
+		t.Fatalf("节流期内不应 open，got %d", opens)
+	}
+	now = now.Add(6 * time.Second)
+	if _, err := sink.Write([]byte("y\n")); err == nil {
+		t.Fatal("open 仍失败时应返回错误")
+	}
+	if opens != 1 {
+		t.Fatalf("到点后应恰好 open 一次，got %d", opens)
+	}
+	failing = false
+	now = now.Add(6 * time.Second)
+	if _, err := sink.Write([]byte("z\n")); err != nil {
+		t.Fatalf("恢复后写入失败: %v", err)
+	}
+	if opens != 2 {
+		t.Fatalf("恢复时应再 open 一次，got %d", opens)
+	}
+}
