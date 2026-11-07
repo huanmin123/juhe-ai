@@ -75,6 +75,15 @@ func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, grou
 			},
 		},
 		"supportedModels": []string{"paraformer-v2"},
+		"connections": []map[string]any{{
+			"connectionPresetCode": "qwen_dashscope",
+			"baseUrl":              f.mock.server.URL,
+			"endpointModes":        []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "qwen_dashscope",
+		"healthCheckEndpointMode":         "audio_job_create",
+		"healthCheckModel":                "paraformer-v2",
 		"status":          "active",
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))

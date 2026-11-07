@@ -255,8 +255,9 @@ var AccountHealthCheckEndpointModes = map[string]bool{
 	"generate_content_json": true, "generate_content_sse": true,
 	"interactions_json": true, "interactions_sse": true,
 	// M1 同步音频探针形态（与 accounts.health_check_endpoint_mode CHECK
-	// 同步，maintenance pg_schema_business_tables.go）。
-	"audio_speech": true, "audio_transcription_json": true,
+	// 同步，maintenance pg_schema_business_tables.go）；audio_job_create 是
+	// 长音频任务账户（qwen paraformer 等）唯一可落地的持久化诊断形态。
+	"audio_speech": true, "audio_transcription_json": true, "audio_job_create": true,
 	// M2 视频域默认落值（仅写侧白名单；J1 候选白名单不含该值，视频域账户
 	// 天然豁免周期检查）。
 	"video_create": true,
