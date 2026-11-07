@@ -56,11 +56,17 @@ accounts.rpm_limit integer NOT NULL DEFAULT 0
 
 ### 4.1 计数单位
 
-一次「成功占用账户并发槽并进入上游派发准备」计 1 次。具体包含：
+RPM 按每次真实向上游出站的尝试计 1 次，不按客户端请求或并发占槽次数计。实现分两段：
+
+- 首次出站：`TryAcquire` 在同一原子临界区完成并发 + RPM 判定并预记 1 次；该预记由当前并发槽的首次真实出站消费，不重复计数。
+- 同一并发槽内的后续出站：同账户瞬态重试、API Key 轮换、OAuth 401 刷新后的同账户重试、多 URL 轮询等，在 `PerformUpstreamRequestAttempt` 前调用 `ConsumeRPM` 原子消费 1 次。`ConsumeRPM` 拒绝时释放本次并发槽，按本地容量失败跳过候选，不发出该次上游请求。
+
+具体包含：
 
 - 首次账户尝试；
 - 同账户 API Key 轮换后的重新尝试（每次重取计 1 次，因为每次都会真实出站）；
-- 上游 4xx/5xx/传输失败的尝试（上游配额按收到的请求计费，不按成功计费）。
+- 上游 4xx/5xx/传输失败的尝试（上游配额按收到的请求计费，不按成功计费）；
+- OAuth 401 刷新后的同账户重试，以及多 URL 轮询的每次真实出站。
 
 不计：
 
@@ -98,7 +104,8 @@ TryAcquire(accountID, totalLimit, lane, laneLimit, rpmLimit, nowMs):
 - 拒绝时**不得**自增任何计数。
 - `Release` 只回退 `total` 与 lane 计数，**不回退** `rpmCount`（请求已经出站或已占用配额）。
 - 返回结构新增 `RPMCurrent`、`RPMLimit`、`RPMResetAtMs`，供错误文案、审计和列表展示使用。
-- `MemoryAccountConcurrency` 是生产唯一装配实现，必须先改；`RedisAccountConcurrency` 同步扩展同一 HASH 的 acquire Lua（多两个参数与两个字段），保持契约完整，虽然当前组合根未装配。
+- `ConsumeRPM` 与 `TryAcquire` 共用同一窗口字段（memory map / Redis HASH），只自增 `rpmCount`，不碰并发与 lane；窗口滚动就地重置，Redis TTL 续 120s。首次占位的预记由调用方消费，后续每次真实出站再调用一次，避免双重计数。
+- `MemoryAccountConcurrency` 是生产唯一装配实现，必须先改；`RedisAccountConcurrency` 同步扩展同一 HASH 的 acquire Lua 与 `ConsumeRPM` 脚本，保持契约完整，虽然当前组合根未装配。
 
 ### 4.4 预留槽
 

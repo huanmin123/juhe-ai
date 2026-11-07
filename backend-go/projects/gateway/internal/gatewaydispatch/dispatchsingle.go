@@ -139,6 +139,10 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 
 	// Concurrency acquire with short retry.
 	concurrencyAccountID := gatewaySessionConcurrencyID(originalAccount)
+	// rpmAttemptCovered 表示当前并发槽的 RPM 计数尚未被一次真实出站消费：
+	// TryAcquire/预留槽已计 1 次，首个到达出站点的尝试直接清零，后续同槽尝试
+	// 在出站前逐次 ConsumeRPM（T161）。
+	rpmAttemptCovered := false
 	reservedSlot := e.takeReservedSlot(in.args.PreAcquiredConcurrency, originalAccount)
 	var concurrencySlot ConcurrencySlot
 	var concurrencyAcquireWaitedMs int64
@@ -171,6 +175,8 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		*in.capacityLimitFailures = append(*in.capacityLimitFailures, failure)
 		return dispatchResultContinue, nil, nil
 	}
+	// 预留槽与成功占位都已计入首次出站的 RPM；首个出站点消费该标记。
+	rpmAttemptCovered = true
 	if concurrencySlot.MarkFirstOutput == nil {
 		concurrencySlot.MarkFirstOutput = func() {}
 	}
@@ -264,6 +270,8 @@ rotationLoop:
 				skipAccount = true
 				break rotationLoop
 			}
+			// 新槽的首次出站由 TryAcquire 计数覆盖。
+			rpmAttemptCovered = true
 		}
 
 		account := originalAccount
@@ -443,6 +451,8 @@ rotationLoop:
 		kind, stop, loopErr := e.runUpstreamAttemptLoop(ctx, upstreamAttemptLoopContext{
 			in:                                   &in,
 			account:                              account,
+			concurrencyAccountID:                 concurrencyAccountID,
+			rpmAttemptCovered:                    &rpmAttemptCovered,
 			headers:                              headers,
 			body:                                 body,
 			upstreamUrls:                         upstreamUrls,
@@ -895,6 +905,43 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				}
 			}
 
+			// T161：TryAcquire 已为当前并发槽的首次出站计 1 次 RPM；同一槽内
+			// 后续真实上游尝试（同账户重试、Key 轮换、OAuth 刷新、多 URL 轮询）
+			// 在出站前逐次消费。消费失败时释放并发槽并按本地容量失败跳候选。
+			if c.rpmAttemptCovered != nil && *c.rpmAttemptCovered {
+				*c.rpmAttemptCovered = false
+			} else if rpmLimit := c.concurrencySlot.RPMLimit; rpmLimit > 0 || c.account.RPMLimit > 0 {
+				if rpmLimit <= 0 {
+					rpmLimit = c.account.RPMLimit
+				}
+				allowed, current, resetAtMs, consumeErr := e.consumeAccountRPM(ctx, c.concurrencyAccountID, rpmLimit)
+				if consumeErr != nil {
+					if keyModelAttempt != nil {
+						_ = keyModelAttempt.ReportUnknown(ctx)
+					}
+					return attemptLoopExhausted, attemptStopNone, consumeErr
+				}
+				if !allowed {
+					if keyModelAttempt != nil {
+						_ = keyModelAttempt.ReportUnknown(ctx)
+					}
+					if c.concurrencySlot.Release != nil {
+						c.concurrencySlot.Release()
+					}
+					c.concurrencySlot.Release = func() {}
+					rpmSlot := ConcurrencySlot{
+						Lane:         string(gatewayprotoLane(in.requestLane)),
+						RPMCurrent:   current,
+						RPMLimit:     rpmLimit,
+						RPMResetAtMs: resetAtMs,
+					}
+					attempt, failure := accountCapacityLimitRejection(c.account, rpmSlot, 0)
+					*in.lastAttempt = attempt
+					*in.capacityLimitFailures = append(*in.capacityLimitFailures, failure)
+					return attemptLoopExhausted, attemptStopAccount, nil
+				}
+			}
+
 			*in.auditAttemptIndex++
 			auditAttemptID := auditCapture.StartAttempt(StartAttemptInput{
 				Account:                   c.account,
@@ -1058,6 +1105,8 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 type upstreamAttemptLoopContext struct {
 	in                         *dispatchSingleAccountInput
 	account                    AccountCandidate
+	concurrencyAccountID       string
+	rpmAttemptCovered          *bool
 	headers                    http.Header
 	body                       []byte
 	upstreamUrls               []string

@@ -294,6 +294,20 @@ func accountCapacityLimitAttempt(account AccountCandidate, upstreamURL string, m
 	return attemptWithIdentity(account, upstreamURL, message)
 }
 
+// consumeAccountRPM 为同一并发槽内的后续真实上游尝试消费一次 RPM（T161）。
+// 首次占位的计数由 TryAcquire 原子完成，调用方用 rpmAttemptCovered 跳过消费；
+// 存储未实现消费端口时 fail-closed，避免 RPM 计数静默少计。
+func (e *Engine) consumeAccountRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error) {
+	if rpmLimit <= 0 {
+		return true, 0, 0, nil
+	}
+	consumer, ok := e.Concurrency.(AccountRPMConsumer)
+	if !ok {
+		return false, 0, 0, errors.New("账户 RPM 消费端口未装配")
+	}
+	return consumer.ConsumeRPM(ctx, accountID, rpmLimit)
+}
+
 // accountCapacityLimitRejection 把一次并发占位拒绝投影为 attempt + 容量失败
 // 记录（AI 账户每分钟请求上限设计 §5.1）：UpstreamURL 与 Kind 按归属分流
 // （concurrency:limit / rpm:limit），RPM 携带 RetryAfterMs = max(1,

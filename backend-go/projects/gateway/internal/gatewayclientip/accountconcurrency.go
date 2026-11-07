@@ -55,7 +55,8 @@ type AccountRPMState struct {
 // behind the seam: acquire/release slots with total + lane counters and
 // release notifications (Node tryAcquire/releaseAccountConcurrency local
 // behavior). RPM（AI 账户每分钟请求上限设计 §4）与并发共用同一互斥临界区：
-// rpmBucket/rpmCount 按自然分钟固定窗口计数，只随成功占位自增，Release 不回退。
+// rpmBucket/rpmCount 按自然分钟固定窗口计数，只随成功占位或同一并发槽内的
+// 后续真实出站消费自增，Release 不回退。
 type MemoryAccountConcurrency struct {
 	clock Clock
 
@@ -146,6 +147,27 @@ func (m *MemoryAccountConcurrency) TryAcquire(accountID string, totalLimit int, 
 		outcomeRPMCurrent = rpmCurrent + 1
 	}
 	return AccountConcurrencyAcquireOutcome{Acquired: true, Total: total + 1, LaneCurrent: laneCurrent + 1, RPMCurrent: outcomeRPMCurrent, RPMLimit: rpmLimit, RPMResetAtMs: rpmResetAtMs}
+}
+
+// ConsumeRPM 在同一账户 RPM 窗口内原子消费 1 次（T161）：首次占位已由
+// TryAcquire 计数，同一并发槽内的后续真实上游尝试在出站前调用本方法。窗口
+// 判定/惰性重置与 TryAcquire 共用 normalizeRPMWindowLocked；达到上限返回
+// allowed=false 并回带当前计数与窗口结束时刻，不修改任何计数。
+func (m *MemoryAccountConcurrency) ConsumeRPM(_ context.Context, accountID string, rpmLimit int) (bool, int, int64, error) {
+	if rpmLimit <= 0 {
+		return true, 0, 0, nil
+	}
+	bucket := m.clock.Now().UnixMilli() / 60_000
+	resetAtMs := rpmWindowResetAtMs(bucket)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current := m.normalizeRPMWindowLocked(accountID, bucket)
+	if current >= rpmLimit {
+		return false, current, resetAtMs, nil
+	}
+	m.rpmCount[accountID] = current + 1
+	m.rpmBucket[accountID] = bucket
+	return true, current + 1, resetAtMs, nil
 }
 
 // normalizeRPMWindowLocked 是判定路径的就地惰性重置（设计 §4.2：判定时发现

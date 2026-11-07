@@ -77,6 +77,80 @@ func TestMemoryAccountConcurrencyRPMAtomicJudgement(t *testing.T) {
 	}
 }
 
+func TestMemoryAccountConcurrencyConsumeRPM(t *testing.T) {
+	clock := newManualClock(time.UnixMilli(1_800_000)) // bucket = 30
+	tracker := NewMemoryAccountConcurrency(clock)
+	ctx := context.Background()
+
+	// TryAcquire 已为首次出站计 1 次；同一槽内的后续消费继续累加。
+	acquired := tracker.TryAcquire("acc-consume", 5, AccountConcurrencyLaneText, 5, 2)
+	if !acquired.Acquired || acquired.RPMCurrent != 1 {
+		t.Fatalf("首次占位 = %+v, want RPM 1", acquired)
+	}
+	allowed, current, resetAtMs, err := tracker.ConsumeRPM(ctx, "acc-consume", 2)
+	if err != nil || !allowed || current != 2 || resetAtMs != 1_860_000 {
+		t.Fatalf("第二次真实出站消费 = allowed=%v current=%d reset=%d err=%v, want 2", allowed, current, resetAtMs, err)
+	}
+	allowed, current, resetAtMs, err = tracker.ConsumeRPM(ctx, "acc-consume", 2)
+	if err != nil || allowed || current != 2 || resetAtMs != 1_860_000 {
+		t.Fatalf("RPM 满消费 = allowed=%v current=%d reset=%d err=%v, want 拒绝且计数不变", allowed, current, resetAtMs, err)
+	}
+	// 消费不动并发计数；RPM 满时 TryAcquire 仍按原语义拒绝且不再自增。
+	if got := tracker.CurrentAccountConcurrency("acc-consume", ""); got != 1 {
+		t.Fatalf("ConsumeRPM 后并发 = %d, want 1", got)
+	}
+	rejected := tracker.TryAcquire("acc-consume", 5, AccountConcurrencyLaneText, 5, 2)
+	if rejected.Acquired || rejected.RPMCurrent != 2 || rejected.Total != 1 {
+		t.Fatalf("RPM 满占位 = %+v, want 拒绝且计数不变", rejected)
+	}
+
+	// 窗口滚动后消费从 0 重新累加。
+	clock.advance(2 * time.Minute)
+	allowed, current, resetAtMs, err = tracker.ConsumeRPM(ctx, "acc-consume", 2)
+	if err != nil || !allowed || current != 1 || resetAtMs != 1_980_000 {
+		t.Fatalf("滚动后消费 = allowed=%v current=%d reset=%d err=%v, want 新窗口 1", allowed, current, resetAtMs, err)
+	}
+}
+
+func TestRedisAccountConcurrencyConsumeRPM(t *testing.T) {
+	server := miniredis.RunT(t)
+	nowMs := int64(1_800_000)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	instance, err := NewRedisAccountConcurrency(RedisAccountConcurrencyOptions{
+		Client:    client,
+		Namespace: "dev",
+		Clock:     func() int64 { return nowMs },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-consume", AccountConcurrencyLaneText, 120_000, 5, 5, 2)
+	if err != nil || !outcome.Acquired || outcome.RPMCurrent != 1 {
+		t.Fatalf("首次占位 = %+v err %v, want RPM 1", outcome, err)
+	}
+	allowed, current, resetAtMs, err := instance.ConsumeRPM(ctx, "acc-consume", 2)
+	if err != nil || !allowed || current != 2 || resetAtMs != 1_860_000 {
+		t.Fatalf("第二次消费 = allowed=%v current=%d reset=%d err=%v, want 2", allowed, current, resetAtMs, err)
+	}
+	allowed, current, resetAtMs, err = instance.ConsumeRPM(ctx, "acc-consume", 2)
+	if err != nil || allowed || current != 2 || resetAtMs != 1_860_000 {
+		t.Fatalf("RPM 满消费 = allowed=%v current=%d reset=%d err=%v, want 拒绝", allowed, current, resetAtMs, err)
+	}
+	states, err := instance.LoadAccountRPMByID(ctx, []string{"acc-consume"})
+	if err != nil || states["acc-consume"].Used != 2 {
+		t.Fatalf("消费后读取 = %v err %v, want 2", states, err)
+	}
+
+	nowMs = 2_400_000
+	allowed, current, resetAtMs, err = instance.ConsumeRPM(ctx, "acc-consume", 2)
+	if err != nil || !allowed || current != 1 || resetAtMs != 2_460_000 {
+		t.Fatalf("滚动后消费 = allowed=%v current=%d reset=%d err=%v, want 新窗口 1", allowed, current, resetAtMs, err)
+	}
+}
+
 func TestMemoryAccountConcurrencyRPMLoadByIDLazyReset(t *testing.T) {
 	clock := newManualClock(time.UnixMilli(1_800_000))
 	tracker := NewMemoryAccountConcurrency(clock)

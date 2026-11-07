@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	redis "github.com/redis/go-redis/v9"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
+	redis "github.com/redis/go-redis/v9"
 )
 
 // RedisAccountConcurrencyOptions configures Redis-backed account concurrency.
@@ -280,6 +280,33 @@ end
 return {new_lane}
 `
 
+// redisAccountConcurrencyConsumeRPMScript 是同一并发槽内后续真实上游尝试的
+// RPM 消费脚本（T161）：只动 rpm_bucket/rpm_count，不改并发计数；窗口按
+// bucket 就地惰性重置，达到上限拒绝且不自增，通过则 HINCRBY 并续 TTL。
+const redisAccountConcurrencyConsumeRPMScript = `
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local ttl_ms = tonumber(ARGV[3])
+local bucket = math.floor(now_ms / 60000)
+local reset_at_ms = (bucket + 1) * 60000
+local stored_bucket = tonumber(redis.call('HGET', key, 'rpm_bucket') or '0')
+local count = tonumber(redis.call('HGET', key, 'rpm_count') or '0')
+if stored_bucket ~= bucket then
+  redis.call('HSET', key, 'rpm_count', 0)
+  count = 0
+end
+if count >= limit then
+  return {0, count, reset_at_ms}
+end
+count = redis.call('HINCRBY', key, 'rpm_count', 1)
+redis.call('HSET', key, 'rpm_bucket', bucket)
+redis.call('PEXPIRE', key, ttl_ms)
+return {1, count, reset_at_ms}
+`
+
+const redisAccountConcurrencyRPMTTLMs = 120_000
+
 // AcquireAccountConcurrency 在单个 Lua 脚本内原子完成“账户总量 + lane + RPM”
 // 三重校验并自增 total、lane 与 rpm_count 计数（与内存驱动 TryAcquire 同一
 // 契约：total >= totalLimit、laneCurrent >= laneLimit 或 rpmCount >= rpmLimit
@@ -311,6 +338,29 @@ func (r *RedisAccountConcurrency) AcquireAccountConcurrency(ctx context.Context,
 		RPMLimit:     rpmLimit,
 		RPMResetAtMs: replyInt64(reply[4]),
 	}, nil
+}
+
+// ConsumeRPM 在 Redis HASH 内原子消费一次 RPM（T161）：与 acquire 共用
+// rpm_bucket/rpm_count 字段；首次占位由 AcquireAccountConcurrency 计数，本方法
+// 只服务同一并发槽内的后续真实上游尝试。达到上限返回 allowed=false 与当前
+// 窗口观测，计数不变；通过则 HINCRBY 并续 120s TTL。
+func (r *RedisAccountConcurrency) ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error) {
+	if rpmLimit <= 0 {
+		return true, 0, 0, nil
+	}
+	nowMs := r.clock()
+	values, err := r.client.Eval(ctx, redisAccountConcurrencyConsumeRPMScript,
+		[]string{r.accountConcurrencyKey(accountID)},
+		strconv.FormatInt(nowMs, 10), strconv.Itoa(rpmLimit),
+		strconv.Itoa(redisAccountConcurrencyRPMTTLMs)).Result()
+	if err != nil {
+		return false, 0, 0, err
+	}
+	reply, ok := values.([]interface{})
+	if !ok || len(reply) != 3 {
+		return false, 0, 0, errors.New("账户 RPM 消费脚本返回格式错误")
+	}
+	return replyInt(reply[0]) == 1, replyInt(reply[1]), replyInt64(reply[2]), nil
 }
 
 // replyInt 把 Lua 返回的整数应答转成 int（go-redis 对 Lua integer 返回 int64）。

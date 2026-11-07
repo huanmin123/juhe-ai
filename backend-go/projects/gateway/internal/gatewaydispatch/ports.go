@@ -778,6 +778,15 @@ type AccountConcurrencyStore interface {
 	TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error)
 }
 
+// AccountRPMConsumer 是 RPM 逐次消费端口（T161）：TryAcquire 已为首次出站
+// 占位计 1 次；同一并发槽内后续每次真实上游尝试（同账户重试、Key 轮换、
+// OAuth 刷新、多 URL 轮询）在出站前再原子消费 1 次。存储实现必须与
+// TryAcquire 共用同一 RPM 窗口计数；拒绝时返回当前窗口观测，调用方释放
+// 并发槽并按本地容量失败跳候选。
+type AccountRPMConsumer interface {
+	ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (allowed bool, current int, resetAtMs int64, err error)
+}
+
 // RuntimeCachePort mirrors the runtime-cache loaders the pipeline consumes
 // (runtime/runtime-cache.service.ts).
 type RuntimeCachePort interface {

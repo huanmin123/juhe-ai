@@ -229,6 +229,9 @@ type chainConcurrencyStore struct {
 	tracker *gatewayclientip.MemoryAccountConcurrency
 }
 
+// T161：组合根必须同时实现 RPM 逐次消费端口，避免同一并发槽内的重试少计。
+var _ gatewaydispatch.AccountRPMConsumer = (*chainConcurrencyStore)(nil)
+
 func newChainConcurrencyStore(tracker *gatewayclientip.MemoryAccountConcurrency) *chainConcurrencyStore {
 	return &chainConcurrencyStore{tracker: tracker}
 }
@@ -315,6 +318,12 @@ func (s *chainConcurrencyStore) TryAcquireAsync(_ context.Context, accountID str
 	laneCopy := options.Lane
 	slot.Release = func() { s.tracker.Release(accountIDCopy, laneCopy) }
 	return slot, nil
+}
+
+// ConsumeRPM 把同一并发槽内后续真实上游尝试的 RPM 消费委托给进程内
+// tracker（T161）；首次占位的计数仍由 TryAcquireAsync 原子完成。
+func (s *chainConcurrencyStore) ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error) {
+	return s.tracker.ConsumeRPM(ctx, accountID, rpmLimit)
 }
 
 // chainRuntimeCachePort adapts the G10 runtime cache onto the dispatch
