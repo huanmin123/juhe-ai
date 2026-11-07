@@ -1,0 +1,87 @@
+# 集群模式 · 入口机（frontend 静态站 + Caddy；与 gateway/jobs 节点隔离）。
+#
+#   cp .env.example .env && vi .env          # 填 EDGE_DOMAIN/GATEWAY_UPSTREAMS/FRONTEND_DIST_PATH
+#   docker compose -f compose.edge.yml up -d
+#
+# Caddy 只把网关路由面（/v1、/__aisys__/api、/__aisys__/health、/__aipublic__）
+# 反代到 gateway 池；管理面 SPA 与帮助中心由 frontend 服务承载。
+# 上游池以主动健康检查摘流/接回，滚动发布不需要改 Caddy 配置。
+name: juhe-ai-edge
+
+services:
+  frontend:
+    image: nginx:alpine
+    container_name: juhe-ai-go-frontend
+    restart: unless-stopped
+    # 官方 nginx 入口以 root 启动再降权到 nginx worker；只读根文件系统 + cap_drop ALL
+    # 组合保留最小集合：绑定 80、写 pid/cache tmpfs、chown cache、setuid/setgid 降权。
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+      - /var/cache/nginx:size=32m
+      - /var/run:size=8m
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # dist 发布到命名卷（挂到 /__aisys__ 子目录：vite base=/__aisys__/，URI 与文件路径同构）。
+      # 发布时先用一次性容器把新 dist 同步进卷（assets 先、index.html 最后），
+      # 再无需重启 nginx 即生效；详见 README §5.4。
+      - frontend_dist:/usr/share/nginx/html/__aisys__:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/__aisys__/index.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  edge:
+    image: caddy:2-alpine
+    container_name: juhe-ai-edge
+    restart: unless-stopped
+    # healthcheck 的 busybox wget 走 https 每次泄漏 1 个 ssl_client 子进程，
+    # caddy 作为 PID 1 不回收；init 注入 docker 内置 init（tini）负责收割。
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
+    ports:
+      - "80:80"
+      - "443:443"
+      # HTTP/3 (QUIC over UDP)
+      - "443:443/udp"
+    environment:
+      JUHE_AI_EDGE_DOMAIN: ${JUHE_AI_EDGE_DOMAIN:?JUHE_AI_EDGE_DOMAIN is required}
+      # 空格分隔的 gateway 地址列表；Caddy 主动健康检查 + least_conn + 失败换台重试。
+      JUHE_AI_GATEWAY_UPSTREAMS: ${JUHE_AI_GATEWAY_UPSTREAMS:?JUHE_AI_GATEWAY_UPSTREAMS is required}
+      # 同机 frontend 服务固定为 frontend:80；前端独立部署到别处时显式覆盖。
+      JUHE_AI_FRONTEND_UPSTREAM: ${JUHE_AI_FRONTEND_UPSTREAM:-frontend:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      # 经域名 hairpin 走完整链路（TLS 终止 + 路由 + 上游）；DNS 必须已指向本机。
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://${JUHE_AI_EDGE_DOMAIN:?JUHE_AI_EDGE_DOMAIN is required}/__aisys__/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  frontend_dist:
+  caddy_data:
+  caddy_config:

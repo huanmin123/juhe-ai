@@ -1,0 +1,46 @@
+# 集群模式 · jobs 节点（全局单活：PG leader lease 决定 leader，其余自动 standby）。
+#
+#   cp .env.example .env && vi .env          # 至少填 JOBS_IMAGE/SHARED_ROOT
+#   docker compose -f compose.jobs.yml up -d
+#
+# 单点或双机均可：每台都起一份，只有一台持有 leader（30s TTL/10s 续约）；
+# 持有者崩溃后另一台在约 25s 内接管。standby 仍提供健康面，不消费任务。
+name: juhe-ai-jobs
+
+services:
+  jobs:
+    image: ${JUHE_AI_JOBS_IMAGE:?JUHE_AI_JOBS_IMAGE is required}
+    container_name: juhe-ai-jobs
+    restart: unless-stopped
+    # jobs RSS ~114MiB，硬限防异常扩散。
+    mem_limit: "1g"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m
+    stop_grace_period: 30s
+    working_dir: /app/backend
+    ports:
+      # 健康监听仅回环，Prometheus 经 SSH 隧道抓取。
+      - "127.0.0.1:3305:3305"
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      # 集群内唯一；standby 与 leader 必须不同，否则日志文件会互相覆盖。
+      JUHE_AI_INSTANCE_ID: ${JUHE_AI_JOBS_INSTANCE_ID:-juhe-ai-jobs}
+      JUHE_AI_LOG_DIR: /app/backend/logs
+      JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3305
+    env_file: .env
+    volumes:
+      # 与 gateway 同源：usage spool 交接与运行日志消费依赖同一目录。
+      - ${JUHE_AI_SHARED_ROOT:?JUHE_AI_SHARED_ROOT is required}/data:/app/backend/data
+      - ${JUHE_AI_SHARED_ROOT:?JUHE_AI_SHARED_ROOT is required}/logs:/app/backend/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3305/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

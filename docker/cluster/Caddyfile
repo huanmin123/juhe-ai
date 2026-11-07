@@ -1,0 +1,45 @@
+# 集群模式入口（与 docker/single-server/Caddyfile 完全独立，2026-11-07）。
+#
+# 站点域名与上游全部来自环境变量（compose edge 服务注入）：
+#   JUHE_AI_EDGE_DOMAIN        入口域名，如 api.example.com（自动 HTTPS 签发续期）
+#   JUHE_AI_GATEWAY_UPSTREAMS  空格分隔的 gateway 地址列表，如 "10.0.0.11:3000 10.0.0.12:3000"
+#   JUHE_AI_FRONTEND_UPSTREAM  管理面 SPA 静态站地址，默认 frontend:80（同一 edge compose 网络）
+#
+# 与单机的关键差异：前端已从 gateway 镜像拆出，因此只有网关路由面走 gateway，
+# 管理面 SPA（/__aisys__/ 及其客户端路由）与帮助中心（dist/help）走 frontend；
+# 单机形态由 gateway 内嵌 dist 承接这些路径。
+#
+# 多入口机时每台各自跑一份本配置，DNS 轮询或前级云 LB 负责入口间分流。
+
+{$JUHE_AI_EDGE_DOMAIN} {
+	encode zstd gzip
+
+	# HSTS（2026-11-06 安全基线）：仅主站声明，不加 includeSubDomains。
+	header Strict-Transport-Security "max-age=31536000"
+
+	redir / /__aisys__/ permanent
+
+	# 网关路由面（其余全部走前端静态站）：
+	#   /v1、/v1/*                  OpenAI 兼容入口（含 SSE 流式与 realtime WS Upgrade）
+	#   /__aisys__/api、.../api/*   管理面 API
+	#   /__aisys__/health           readiness/liveness 探针
+	#   /__aipublic__/*             外部集成公开 API（scope 鉴权在 gateway 内完成）
+	@gateway path /v1 /v1/* /__aisys__/api /__aisys__/api/* /__aisys__/health /__aipublic__/*
+	reverse_proxy @gateway {$JUHE_AI_GATEWAY_UPSTREAMS} {
+		# SSE 流式响应必须关闭缓冲；管理 API 立即 flush 无副作用。
+		flush_interval -1
+		lb_policy least_conn
+		# 不做非幂等请求的自动重试（与设计 §8.1 契约一致）：网关真实崩溃时
+		# Caddy 不会把已发送的 POST 重放到另一实例；节点失效依赖主动健康检查剔除。
+		# 主动健康检查：节点摘流或崩溃后 10s 级剔除，恢复后自动接回
+		# （滚动发布即依赖该机制完成摘流/接回，无需改 Caddy 配置）。
+		health_uri /__aisys__/health
+		health_interval 10s
+		health_timeout 3s
+		fail_duration 30s
+		max_fails 2
+	}
+
+	# 管理面 SPA 静态资源与帮助中心（dist/help）由独立 frontend 服务承载。
+	reverse_proxy {$JUHE_AI_FRONTEND_UPSTREAM}
+}

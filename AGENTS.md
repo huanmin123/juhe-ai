@@ -5,7 +5,7 @@
 - 本文件只承担项目级导航、核心业务边界和高频事件入口，不复制专题文档正文。
 - 具体架构、功能、前后端实现、测试、问题、重构、迁移和报告规则以 `docs/` 下对应权威文档为准。
 - 本文件不自动触发生产部署或线上运维流程；只有用户主动提出生产操作并明确提供适用资料后，才读取和执行对应范围内的外部操作规范。
-- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端已于 2026-09-05 完成全量迁移并清零，2026-09-30 Node 足迹清理后仓库内不再保留归档（git 历史可溯），不得恢复，运行事实以 Go 实现为准。现行生产形态为国内单机 Docker go-only（服务器与凭据见 `.local/project-resources/prod/assets/国内单机-103.36.63.105.md`，部署配置在 `docker/single-server/`，运维入口见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）；PG/Redis 为云机本机 compose 容器，出海代理隧道为用户自管外部资产；旧 Mac + K3s + Edge 混合形态已下线，平台配置仓 `F:\k8s` 中 juhe-ai 现役配置已清理（历史报告类文档保留），残留核查另行任务。
+- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端已于 2026-09-05 完成全量迁移并清零，2026-09-30 Node 足迹清理后仓库内不再保留归档（git 历史可溯），不得恢复，运行事实以 Go 实现为准。现行生产形态为国内单机 Docker go-only（服务器与凭据见 `.local/project-resources/prod/assets/国内单机-103.36.63.105.md`，部署配置在 `docker/single-server/`，运维入口见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）；PG/Redis 为云机本机 compose 容器，出海代理隧道为用户自管外部资产；多机/滚动发布为打底能力（dev 演练验收，生产未启用），部署物完全隔离在 `docker/cluster/`，口径见 [docker/cluster/README.md](docker/cluster/README.md)；旧 Mac + K3s + Edge 混合形态已下线，平台配置仓 `F:\k8s` 中 juhe-ai 现役配置已清理（历史报告类文档保留），残留核查另行任务。
 
 ## 文档与代码一致性
 
@@ -83,7 +83,7 @@
 - `dev/` 当前承载 `192.168.40.195` 的**生产演练实例**：`server.env` 为 `NODE_ENV=production`、验证码开启、首登强制改密门禁开启，仅内网 HTTP 使用 `COOKIE_SECURE=false`；`shared.env` 仍是本机 `pnpm dev` 的 `development` 配置，两者不得混用。演练实例每日 03:40 备份 `juhe_ai_dev`，但备份与数据库同机，异机灾备未接入（T155）。
 - `F:\juhe-ai-public-welfare\.local` 仅供目录设计参考；当前项目不读取或复用其中的数据库、Redis、连接串或命名空间。
 - `prod` 只保存当前唯一生产形态（国内单机 Docker，`103.36.63.105`）的私有资料：资产台账 `assets/国内单机-103.36.63.105.md`（含 SSH 密钥）、数据库事实 `database/国内单机-postgresql-redis.md`、唯一运维手册 `runbooks/国内单机Docker部署与运维.md`。旧 Mac + K3s + Edge 形态资料已清理，不另留备份。单机形态的变更通过 `docker/single-server/` 配置 + 上传发布；在当前任务获得明确授权时，允许在目标服务器上以受控方式执行限定的数据修复、回填和向前兼容的加法式 schema 变更（执行前先备份）。不允许把 Secret、env、logs、releases、backups 数据复制到本目录之外的任何位置。
-- **当前检出未包含 `.local/project-resources/prod/`**：生产资产台账、备份脚本与运维手册缺失，`docker/single-server/deploy.sh` 不可执行；恢复前不得进行生产发布/备份操作。该缺口已登记到 `docs/待办与阻塞事项.md`。
+- **当前检出已包含 `.local/project-resources/prod/`**（2026-11-07 核实）：资产台账、数据库事实与运维手册在位，`docker/single-server/deploy.sh` 发布路径可执行；生产发布/备份仍须用户发布窗授权，执行清单见 `docs/待办与阻塞事项.md` T178。
 - 操作 `.local` 后必须验证 `git check-ignore -v --no-index .local/<探针路径>` 命中忽略规则，并确认 `git ls-files -- .local` 没有输出。
 
 ## 事件导航

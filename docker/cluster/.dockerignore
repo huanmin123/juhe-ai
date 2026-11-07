@@ -1,0 +1,6 @@
+# 镜像构建上下文：只保留 Dockerfile.runtime 需要的 build/bin；
+# 前端产物单独分发给入口机，不进入 gateway/jobs 镜像（区别于单机镜像）。
+build/frontend-dist
+.env
+releases.jsonl
+frontend

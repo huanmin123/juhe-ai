@@ -1,0 +1,5 @@
+# 集群模式本机构建产物与密钥，不入库（镜像由 build-images.sh 推送仓库）
+build/
+.env
+releases.jsonl
+frontend-dist/
