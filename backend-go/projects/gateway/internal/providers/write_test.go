@@ -220,7 +220,7 @@ func TestProvidersCreateCustomModelTemplate(t *testing.T) {
 	env.login(t, "user1", "user-pass", "user")
 
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"from-template","configurationTemplateId":"cat-2"}`)
+		`{"model":"from-template","configurationTemplateId":"cat-2","outputUsdPer1M":0}`)
 	if code != http.StatusCreated {
 		t.Fatalf("template create: %d %v", code, created)
 	}
@@ -470,7 +470,7 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 
 	// Another user's personal model is invisible.
 	env.login(t, "user1", "user-pass", "user")
-	second := `{"model":"user1-private","inputUsdPer1M":1}`
+	second := `{"model":"user1-private","inputUsdPer1M":1,"outputUsdPer1M":2}`
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", second)
 	if code != http.StatusCreated {
 		t.Fatalf("second personal model: %d %v", code, created)

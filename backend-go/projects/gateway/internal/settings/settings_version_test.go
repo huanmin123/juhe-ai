@@ -27,7 +27,7 @@ func TestSettingsUpdateBumpsVersion(t *testing.T) {
 	env.store.SetVersionBumper(bumper)
 
 	if _, err := env.store.Update(context.Background(), map[string]any{
-		"gatewayTextRawBodyLimitMegabytes": 32,
+		"gatewayTextRawBodyLimitMegabytes": float64(32),
 	}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestSettingsUpdateBumpsVersion(t *testing.T) {
 
 	bumper.err = errors.New("redis down")
 	if _, err := env.store.Update(context.Background(), map[string]any{
-		"gatewayTextRawBodyLimitMegabytes": 33,
+		"gatewayTextRawBodyLimitMegabytes": float64(33),
 	}); err != nil {
 		t.Fatalf("bump failure must not fail Update: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestSettingsUpdateBumpsVersion(t *testing.T) {
 	// 不接入跨进程版本序列。
 	bumper.err = nil
 	if _, err := env.store.UpdateSection(context.Background(), "gateway-core", map[string]any{
-		"gatewayTextRawBodyLimitMegabytes": 34,
+		"gatewayTextRawBodyLimitMegabytes": float64(34),
 	}); err != nil {
 		t.Fatalf("UpdateSection: %v", err)
 	}
