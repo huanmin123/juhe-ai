@@ -84,6 +84,7 @@ func runUpgradeCommand(argv []string) int {
 		OldWritersDrained:  *oldWritersDrained,
 		StepTimeout:        timeout,
 		AppVersion:         appVersion,
+		AppCommit:          commit,
 	}
 	if opts.Secret == "" {
 		opts.Secret = strings.TrimSpace(os.Getenv("JUHE_AI_SECRET"))

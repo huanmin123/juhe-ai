@@ -90,6 +90,17 @@ type binaryIdentity struct {
 	SchemaRevision int64  `json:"schemaRevision"`
 }
 
+// newBinaryIdentity 组装报告中的构建身份（§9.3）：version/commit/schemaRevision
+// 三项同源。commit 由命令层从 version.Commit 注入；历史实现对空导致报告
+// 恒为 commit:""（2026-11-07 dev 验证发现）。
+func newBinaryIdentity(opts Options) binaryIdentity {
+	return binaryIdentity{
+		Version:        opts.AppVersion,
+		Commit:         opts.AppCommit,
+		SchemaRevision: int64(contracts.SchemaRevision),
+	}
+}
+
 type databaseState struct {
 	SchemaRevision int64  `json:"schemaRevision"`
 	AppliedSteps   int64  `json:"appliedSteps"`
@@ -205,6 +216,7 @@ type Options struct {
 	OldWritersDrained  bool
 	StepTimeout        time.Duration // 钳制 1m..4h（命令层钳制后传入）
 	AppVersion         string
+	AppCommit          string        // 构建 commit（报告 binary.commit；命令层取 version.Commit）
 	Now                func() time.Time // 测试注入；nil 用 time.Now
 }
 
@@ -241,10 +253,7 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		Driver:     "postgres",
 		Phase:      string(phase),
 		OnlineSafe: phase == PhaseExpand && opts.Online,
-		Binary: binaryIdentity{
-			Version:        opts.AppVersion,
-			SchemaRevision: int64(contracts.SchemaRevision),
-		},
+		Binary:     newBinaryIdentity(opts),
 		Plan: planInfo{
 			Pending:                  []pendingStep{},
 			Adopt:                    []adoptStep{},

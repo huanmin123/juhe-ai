@@ -357,6 +357,15 @@ done
 # + pipefail 让真实退出码经 ssh 返回本地，tail 摘要输出体验不变。
 REMOTE_CMD="set -o pipefail; cd $SERVER_DIR && $REMOTE_COMPOSE_ENV docker compose build ${TARGETS[*]} 2>&1 | tail -1"
 
+# 部署配置预检（2026-11-07）：先用服务器上的生产 compose 版本校验
+# compose.yml/.env 插值（含 extra_hosts 映射形式），失败立即中止——此时
+# 尚未构建、未停容器，生产状态不变；避免配置不兼容在停写/重建之后才暴露。
+PREFLIGHT_CMD="cd $SERVER_DIR && $REMOTE_COMPOSE_ENV docker compose config -q"
+if ! $SSH "$SERVER" "bash -c '$PREFLIGHT_CMD'"; then
+  echo "[FAIL] 服务器 compose 配置校验失败（docker compose 版本不兼容或 .env 缺项）；未构建、未改动容器。" >&2
+  exit 1
+fi
+
 if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   # ---- upgrade 模式（§11.3）：build → 停写 → 备份确认 → upgrade → 拉起 ----
   REMOTE_CMD="$REMOTE_CMD && docker compose stop -t 30 gateway jobs 2>&1 | tail -1"
