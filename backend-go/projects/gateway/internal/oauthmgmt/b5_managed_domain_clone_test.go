@@ -356,3 +356,49 @@ func TestB5SsoToOAuthCloneValidationErrorSurfacesVerbatim(t *testing.T) {
 		t.Fatalf("失败项必须直写 400 具体文案而非兜底: %v", item)
 	}
 }
+
+// TestB5ManagedOAuthUIFullShapeEmptySupportedModels 固化 B5 真机验证（2026-11-08）
+// 发现的第二处键形状缺陷：UI 创建向导恒发 `supportedModels: []`（未选模型），
+// parseManagedFields 曾把合法空集按「参数无效」400 拒绝，与下游
+// CreateOAuthAccount 的空集缺省链（目录最新 5 模型 → 档案默认）直接矛盾。
+// 用例以 UI 实测捕获的 20 键全形状载荷（空数组/空串/null 俱全）断言 201 且
+// 缺省链落库非空。
+func TestB5ManagedOAuthUIFullShapeEmptySupportedModels(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t, "root", "root-pass", "super_admin")
+	env.exchanger.respond = staticToken(openAITokenPayload("b5-ui-shape"))
+
+	// UI 捕获形状逐键还原（openai-oauth create-from-code 的 managed 面键集；
+	// sessionId/callbackUrl 属 code 流，refresh 流以 refreshToken 等价替代）。
+	uiShape := `{
+		"name":"B5 UI Empty Models",
+		"capabilityDomain":"chat",
+		"concurrencyLimit":20,
+		"rpmLimit":0,
+		"priority":0,
+		"status":"pending_test",
+		"superPriorityEnabled":false,
+		"fallbackEnabled":false,
+		"supportedModels":[],
+		"healthCheckEndpointMode":"responses_sse",
+		"temporaryUnavailableContinuousProbeEnabled":true,
+		"backgroundProbeEnabled":true,
+		"modelMappings":[],
+		"tags":[],
+		"proxyProfileId":"",
+		"proxyPoolId":"",
+		"accountExpiresAt":null,
+		"availabilitySchedule":null,
+		"credentialsPatch":{"supported_endpoint_modes":["responses_json","responses_sse"]},
+		"refreshToken":"b5-ui-empty-models"
+	}`
+	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token", uiShape)
+	if code != http.StatusCreated {
+		t.Fatalf("ui full shape create: %d %v", code, created)
+	}
+	createdID := dataMap(t, created)["id"].(string)
+	// 空数组不得落「无支持模型」账户：缺省链（目录/档案默认）必须补齐非空集合。
+	if models := supportedModelSet(t, env, createdID); len(models) == 0 {
+		t.Fatalf("empty supportedModels 必须走缺省链落非空集合")
+	}
+}

@@ -554,7 +554,8 @@ func TestWCParseManagedFields(t *testing.T) {
 		{"status": 1.5},
 		{"superPriorityEnabled": "x"},
 		{"fallbackEnabled": "x"},
-		{"supportedModels": []any{}},
+		// supportedModels 空数组自 B5 真机验证（2026-11-08）起为合法「未选」
+		// 形态（走 CreateOAuthAccount 缺省链），不再入拒绝面；空串元素/非数组仍拒绝。
 		{"supportedModels": []any{""}},
 		{"supportedModels": "x"},
 		{"healthCheckModel": "  "},
@@ -595,6 +596,11 @@ func TestWCParseManagedFields(t *testing.T) {
 		len(good.Tags) != 1 || good.ProxyProfileID == nil || good.AccountExpiresAt == nil ||
 		good.AvailabilitySchedule == nil || good.Notes == nil {
 		t.Fatalf("全字段解析: %+v %v", good, ok)
+	}
+	// 空数组 = 未选：解析通过且不设置（下游 CreateOAuthAccount 走缺省链）。
+	emptyOK, okEmpty := parseManagedFields(map[string]any{"supportedModels": []any{}})
+	if !okEmpty || len(emptyOK.SupportedModels) != 0 {
+		t.Fatalf("空数组必须放行且不设置: %+v %v", emptyOK, okEmpty)
 	}
 }
 

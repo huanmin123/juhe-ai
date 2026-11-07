@@ -376,10 +376,15 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 	}
 	if value, present := body["supportedModels"]; present && value != nil {
 		models, ok := parseStringSlice(value, 500)
-		if !ok || len(models) == 0 {
+		if !ok {
 			return input, false
 		}
-		input.SupportedModels = models
+		// 空数组 = 未选（B5 真机验证 2026-11-08）：UI 创建向导恒发 []，
+		// 下游 CreateOAuthAccount 对空集走目录最新 5 模型 → 档案默认的缺省链
+		//（store.go），上游不得把合法空集按参数无效拒绝；非空集原样透传。
+		if len(models) > 0 {
+			input.SupportedModels = models
+		}
 	}
 	if text, present := bodyString(body, "healthCheckModel"); present {
 		if strings.TrimSpace(text) == "" {
