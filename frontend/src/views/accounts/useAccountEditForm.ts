@@ -147,53 +147,26 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isManagementView: options.isManagementView,
     modelScopeParams: allProviderModelScopeParams
   })
+  // 映射客户端模型候选池（2026-11-07 跨协议退役契约）：source 可跨供应商，
+  // 池不传 providerCode（全供应商目录），也不传 protocol（目录全量行，前端按
+  // 映射行协议 token 过滤）；打开弹窗/装载编辑详情时主动加载，保存校验在
+  // 池未就绪/加载失败时阻止保存（mappingSourceModelOptionsReady）。
   const {
-    loading: allProviderModelsLoading,
-    loadModelOptions: loadAllProviderModelOptions,
-    modelOptionsTruncated: allProviderModelOptionsTruncated,
-    resetModelOptions: resetAllProviderModelOptions,
+    loading: mappingPoolModelsLoading,
+    loadFailed: mappingPoolLoadFailed,
+    loadModelOptions: loadMappingPoolModelOptions,
+    modelOptionsTruncated: mappingPoolModelOptionsTruncated,
+    resetModelOptions: resetMappingPoolModelOptions,
     selectOptions: mappingSourceModelOptions
   } = useProviderModelSelectOptions({
-    protocol: 'openai',
     scopeParams: allProviderModelScopeParams,
     onLoadError: (error) => {
-      message.error(options.extractApiErrorMessage(error, '加载 OpenAI 协议模型池失败'))
+      message.error(options.extractApiErrorMessage(error, '加载客户端模型目录失败'))
     }
   })
-  const {
-    loading: anthropicProviderModelsLoading,
-    loadModelOptions: loadAnthropicProviderModelOptions,
-    modelOptionsTruncated: anthropicProviderModelOptionsTruncated,
-    resetModelOptions: resetAnthropicProviderModelOptions,
-    selectOptions: mappingAnthropicSourceModelOptions
-  } = useProviderModelSelectOptions({
-    protocol: 'anthropic',
-    scopeParams: allProviderModelScopeParams,
-    onLoadError: (error) => {
-      message.error(options.extractApiErrorMessage(error, '加载 Anthropic 协议模型池失败'))
-    }
-  })
-  const {
-    loading: geminiProviderModelsLoading,
-    loadModelOptions: loadGeminiProviderModelOptions,
-    modelOptionsTruncated: geminiProviderModelOptionsTruncated,
-    resetModelOptions: resetGeminiProviderModelOptions,
-    selectOptions: mappingGeminiSourceModelOptions
-  } = useProviderModelSelectOptions({
-    protocol: 'gemini',
-    scopeParams: allProviderModelScopeParams,
-    onLoadError: (error) => {
-      message.error(options.extractApiErrorMessage(error, '加载 Gemini 协议模型池失败'))
-    }
-  })
-  // T23：映射源模型下拉按协议取实例候选；这些实例是同一目录
-  // （同 scope、同供应商窗口）的协议切片，服务端截断判定一致，取或即可。
-  const mappingSourceModelOptionsTruncated = computed(() => (
-    allProviderModelOptionsTruncated.value
-    || anthropicProviderModelOptionsTruncated.value
-    || geminiProviderModelOptionsTruncated.value
-  ))
-  const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value || anthropicProviderModelsLoading.value || geminiProviderModelsLoading.value)
+  const mappingSourceModelOptionsReady = ref(false)
+  const mappingSourceModelOptionsTruncated = mappingPoolModelOptionsTruncated
+  const strategyModelsLoading = computed(() => providerModelsLoading.value || mappingPoolModelsLoading.value)
   const {
     accountTagOptions,
     accountTagOptionsLoading,
@@ -232,7 +205,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       loadedProviderModelOptions.value,
       selectedProtocolProfile.value
     ))
-  const mappingCurrentProviderSourceModelOptions = computed(() => loadedProviderModelOptions.value)
   const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
   const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
@@ -280,10 +252,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isManagementView: options.isManagementView,
     loadData: options.loadData,
     refreshAccountMutationRows: options.refreshAccountMutationRows,
-    mappingAnthropicSourceModelOptions,
-    mappingCurrentProviderSourceModelOptions,
-    mappingGeminiSourceModelOptions,
     mappingSourceModelOptions,
+    mappingSourceModelOptionsReady,
+    ensureMappingSourceModelOptions: loadMappingSourceModelOptions,
     providerModelOptions,
     modalOpen,
     providers: availableProviders,
@@ -540,6 +511,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: keepCurrentGroup ? form.groupId : undefined,
       group: keepCurrentGroup ? form.group : undefined,
       proxyProfileId: form.proxyProfileId,
+      proxyPoolId: form.proxyPoolId,
       notes: form.notes,
       supportedModels: form.supportedModels.length ? form.supportedModels : defaults.supportedModels,
       serviceTierOverride: form.serviceTierOverride,
@@ -753,7 +725,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   // 「上游请求覆盖」按供应商级声明能力显示，判定依赖 providerModelOptions 这份
   // 当前供应商模型目录；只在点开模型下拉时加载，编辑既有账户会在详情回填改写
   // providerCode 后永远拿到空目录（scope watch 已清空、无人重新加载），整块隐藏。
-  // 因此弹窗内供应商确定/切换后自动加载该供应商目录。
+  // 因此弹窗内供应商确定/切换后自动加载该供应商目录。映射 source 候选池（跨供应商）
+  // 不依赖供应商选择，打开弹窗/装载编辑详情时主动加载（跨协议退役契约）。
   watch(
     [
       () => modalOpen.value,
@@ -762,38 +735,24 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       () => editingAccountDetail.value
     ],
     ([open, providerCode]) => {
-      if (!open || !providerCode) return
+      if (!open) return
       // 编辑态详情回填前 providerCode 是上一个表单的残留值：跳过这次错误请求，
       // 等详情回填后由 providerCode/editingAccountDetail 变化触发一次正确加载。
       if (editingId.value && !editingAccountDetail.value) return
-      void loadCurrentProviderModelOptions()
+      if (providerCode) void loadCurrentProviderModelOptions()
+      void loadMappingSourceModelOptions()
     }
   )
 
-  async function loadMappingSourceModelOptions(protocol: 'openai' | 'anthropic' | 'gemini', keyword = ''): Promise<void> {
+  async function loadMappingSourceModelOptions(keyword = ''): Promise<void> {
     const selectedIds = form.modelMappings
-      .filter((mapping) => sourceProtocol(mapping.sourceEndpointFamily) === protocol)
       .map((mapping) => mapping.sourceModel.trim())
       .filter(Boolean)
-    const request = {
+    await loadMappingPoolModelOptions({
       ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
       selectedIds
-    }
-    if (protocol === 'anthropic') {
-      await loadAnthropicProviderModelOptions(request)
-      return
-    }
-    if (protocol === 'gemini') {
-      await loadGeminiProviderModelOptions(request)
-      return
-    }
-    await loadAllProviderModelOptions(request)
-  }
-
-  function sourceProtocol(endpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): 'openai' | 'anthropic' | 'gemini' {
-    if (endpointFamily === 'messages') return 'anthropic'
-    if (endpointFamily === 'generate_content' || endpointFamily === 'stream_generate_content') return 'gemini'
-    return 'openai'
+    })
+    mappingSourceModelOptionsReady.value = !mappingPoolLoadFailed.value
   }
 
   function applyLoadedAccountDetailToEditForm(
@@ -1069,9 +1028,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function resetDeferredAccountOptionState(): void {
     resetProviderModelOptions()
-    resetAllProviderModelOptions()
-    resetAnthropicProviderModelOptions()
-    resetGeminiProviderModelOptions()
+    resetMappingPoolModelOptions()
+    mappingSourceModelOptionsReady.value = false
     resetAccountTagOptions()
   }
 
@@ -1124,10 +1082,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isOpenAIOAuthForm,
     isSupportedOAuthForm,
     isTokenCredentialForm,
-    mappingAnthropicSourceModelOptions,
-    mappingCurrentProviderSourceModelOptions,
-    mappingGeminiSourceModelOptions,
     mappingSourceModelOptions,
+    mappingSourceModelOptionsReady,
     modalConfirmLoading,
     modalOkButtonProps,
     modalOpen,
@@ -1221,9 +1177,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         form,
         errorPolicyRules: accountErrorPolicyRules.value,
         responseInspectionRules: accountResponseInspectionRules.value,
-        mappingAnthropicSourceModelOptions: mappingAnthropicSourceModelOptions.value,
-        mappingCurrentProviderSourceModelOptions: mappingCurrentProviderSourceModelOptions.value,
-        mappingGeminiSourceModelOptions: mappingGeminiSourceModelOptions.value,
         mappingSourceModelOptions: mappingSourceModelOptions.value,
         mappingUpstreamModelOptions: providerModelOptions.value,
         providers: availableProviders.value

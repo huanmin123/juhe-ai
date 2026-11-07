@@ -59,7 +59,6 @@ type workerConfig struct {
 	// 同源，drain 才能读到 gateway 写出的交接文件）。
 	UsageSpoolDirectory string
 
-	CodexContextRoot               string
 	RecordMaintenanceQueueMaxItems int
 	RecordMaintenanceQueueMaxMb    int
 
@@ -187,14 +186,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if config.UsageSpoolDirectory == "" {
 		config.UsageSpoolDirectory = filepath.Join(config.DataDir, "usage-record-spool")
 	}
-	// 与 gateway runtime.go 同口径派生（显式优先，缺省 <DATA_DIR> 下固定名）：
-	// codex-context segments 根：retention 的 codex storage 清理按它解析
-	// storageKey（相对该根的 segments 相对路径，gateway
-	// gatewaycodex.SegmentStorageKey 语义）；根与 gateway 写侧不同源会让
-	// 删除永远 miss 而按「不存在=成功」结算（segment 文件永不清理，存储
-	// 泄漏）。原 sqlite state-shards 分片子面已随 sqlite 形态退役删除
-	// （D2：删子不伤父，segments 文件根保留）。
-	config.CodexContextRoot = datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_ROOT", "codex-context")
+	// 2026-11-07 codex-context 退役：原 JUHE_AI_CODEX_CONTEXT_ROOT /
+	// CodexContextRoot 装配随桥删除（历史 codex-context/ 目录按部署文档
+	// 人工备份后清理，运行时不读取）。
 	// record maintenance 内部队列/批量参数（原 env
 	// JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_ITEMS /
 	// QUEUE_MAX_MB / BATCH_SIZE / SHUTDOWN_FLUSH_MAX_BATCHES）五源零引用，

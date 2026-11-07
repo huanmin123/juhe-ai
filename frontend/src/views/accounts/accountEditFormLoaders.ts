@@ -19,6 +19,7 @@ import { loadAccountResponseInspectionRules } from './accountResponseInspectionP
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { asString } from './accountBasicFormatters'
 import { parseStrictDatePickerValue } from './accountFormatters'
+import { rememberProxyPoolLabel } from '@/shared/proxyLabelCache'
 import { resolveEditAccountProviderIdentity } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
 import {
@@ -92,6 +93,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
   const patch: AccountFormModel = {
     ...basicPatch,
     proxyProfileId: advanced.proxyProfileId,
+    // 池绑定回填配置绑定（代理池设计 §9.2）：不能回填有效成员，否则保存会把池改成直接代理。
+    proxyPoolId: advanced.proxyPoolId,
     accountExpiresAt,
     temporaryUnavailableContinuousProbeEnabled: advanced.temporaryUnavailableContinuousProbeEnabled !== false,
     // 后台自动探测总开关（总开关设计 §2）：授权实例行回显来源值；缺省视作开启。
@@ -106,6 +109,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     quotaRecoveryPolicy,
     errorHandlingRuleOverrides: Array.isArray(credentials.error_handling_rule_overrides) ? credentials.error_handling_rule_overrides as AccountFormModel['errorHandlingRuleOverrides'] : []
   }
+
+  rememberPoolBindingLabel(advanced.proxyPoolId, advanced.proxyPoolName)
 
   return {
     patch,
@@ -217,6 +222,8 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
       credentials
     ),
     proxyProfileId: account.proxyProfileId,
+    // 克隆复制配置绑定（代理池设计 §8.4）：复制 proxyPoolId（不复制租约），新账户按策略分配。
+    proxyPoolId: account.proxyPoolId,
     accountExpiresAt,
     groupId: selectedGroup?.id,
     group: selectedGroup,
@@ -251,6 +258,8 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     errorHandlingRuleOverrides: []
   }
 
+  rememberPoolBindingLabel(account.proxyPoolId, account.proxyPoolName)
+
   return {
     patch,
     errorPolicyRules,
@@ -258,6 +267,12 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     responseInspectionRules,
     scheduleFingerprint: accountAvailabilityScheduleFormFingerprint(patch.availabilitySchedule)
   }
+}
+
+/** 池绑定回填池名（代理池设计 §9.2）：候选未加载时 ProxySelect 按池标签缓存注入选中项。 */
+function rememberPoolBindingLabel(poolId: string | undefined, poolName: string | undefined): void {
+  if (!poolId?.trim() || !poolName?.trim()) return
+  rememberProxyPoolLabel(poolId, poolName.trim())
 }
 
 function loadInheritedErrorPolicyRules(

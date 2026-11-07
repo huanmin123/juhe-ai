@@ -170,6 +170,27 @@
             </template>
           </template>
         </a-table>
+
+        <!-- 池引用预览行（代理池设计 §9.4）：只读引用不建池；缺失/停用池按条目失败提示，
+             不展示成员与敏感信息。字段未交付时不渲染（与域预览同口径，前端不本地推导）。 -->
+        <a-table
+          v-if="previewResult.pools?.length"
+          class="proxy-preview-table"
+          size="small"
+          :columns="poolColumns"
+          :data-source="previewResult.pools"
+          :pagination="false"
+          row-key="index"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'action'">
+              <a-tag :color="actionColor(record.action)">{{ actionText(record.action) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'message'">
+              <span :class="{ 'row-error': record.messages.length }">{{ itemMessage(record) }}</span>
+            </template>
+          </template>
+        </a-table>
       </div>
     </div>
   </a-modal>
@@ -184,7 +205,7 @@ import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountImportItem, AccountImportOptions, AccountImportProxyItem, AccountImportResult, AccountImportSourceMode } from '@/types/domain'
+import type { AccountImportItem, AccountImportOptions, AccountImportPoolItem, AccountImportProxyItem, AccountImportResult, AccountImportSourceMode } from '@/types/domain'
 import {
   ACCOUNT_CAPABILITY_DOMAINS,
   ACCOUNT_CAPABILITY_DOMAIN_LABELS,
@@ -354,6 +375,14 @@ const proxyColumns = [
   { title: '提示', key: 'message' }
 ]
 
+const poolColumns = [
+  { title: '#', dataIndex: 'index', key: 'index', width: 64 },
+  { title: '池 ref', dataIndex: 'ref', key: 'ref', width: 160 },
+  { title: '池名称', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '动作', key: 'action', width: 100 },
+  { title: '提示', key: 'message' }
+]
+
 watch(() => props.open, (open) => {
   if (!open) return
   previewResult.value = undefined
@@ -456,7 +485,7 @@ function actionColor(action: AccountImportItem['action']): string {
   return 'red'
 }
 
-function itemMessage(item: AccountImportItem | AccountImportProxyItem): string {
+function itemMessage(item: AccountImportItem | AccountImportProxyItem | AccountImportPoolItem): string {
   if (item.messages.length) return item.messages.join('；')
   if (item.warnings.length) return item.warnings.join('；')
   return '校验通过'

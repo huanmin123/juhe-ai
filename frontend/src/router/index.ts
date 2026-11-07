@@ -146,6 +146,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-security-policies',
+    component: () => import('@/views/security-policies/SecurityPoliciesView.vue'),
+    meta: {
+      title: '我的安全策略',
+      description: '维护自己的出站内容脱敏策略（打码 / 占位符），供 API Key 绑定。',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
     path: '/my-model-checks',
     component: () => import('@/views/model-checks/ModelChecksView.vue'),
     meta: {
@@ -606,6 +616,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '调度偏好',
       description: '按系统账户管理对话域调度偏好（成本优先 / 速度优先），供 API Key 绑定。',
+      menuGroup: 'ai-dispatch',
+      menuGroupTitle: '密钥与调度',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
+    path: '/security-policies',
+    component: () => import('@/views/security-policies/SecurityPoliciesView.vue'),
+    meta: {
+      title: '安全策略',
+      description: '按系统账户管理出站内容脱敏策略（打码 / 占位符），供 API Key 绑定。',
       menuGroup: 'ai-dispatch',
       menuGroupTitle: '密钥与调度',
       viewScope: 'admin',

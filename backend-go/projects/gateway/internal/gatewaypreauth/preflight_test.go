@@ -2,10 +2,8 @@ package gatewaypreauth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -336,7 +334,7 @@ func TestPreflight_SuccessfulDispatchContext(t *testing.T) {
 				ReleaseClientIPConcurrency: func() {},
 			},
 		}
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 		s.RuntimeCache = &fakeRuntimeCache{
 			groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: "owner"},
 			accounts:    []gatewayruntimecache.OpenAIAccountSecret{account},
@@ -589,31 +587,6 @@ func TestGatewayModelsBindingsExpandsSuperMembers(t *testing.T) {
 	}
 }
 
-func TestPreflightErrorPropagation(t *testing.T) {
-	service, _, _ := newTestService(t, func(s *Service) {
-		s.Codex = &fakeCodex{compactErr: errors.New("codex 预检失败")}
-		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
-		s.Candidates = &fakeCandidates{
-			filterResult: CandidateFilterResult{
-				Outcome:  CandidateOutcomeAccounts,
-				Accounts: []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_1", VendorCode: "openai"}},
-			},
-			preparation: DispatchPreparationResult{
-				Outcome:  CandidateOutcomeAccounts,
-				Accounts: []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_1", VendorCode: "openai"}},
-			},
-		}
-	})
-	audit := &fakeAuditCapture{}
-	req, _, writer := newTestRequest("POST", "/v1/chat/completions")
-	if _, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Req: req, Res: writer, AuditCapture: audit,
-		Options: plainPreflightOptions(), StartedAt: time.Now().UnixMilli(), TraceID: "trace",
-		Endpoint: "POST /v1/chat/completions", RequestSnapshot: UsageRequestSnapshot{},
-	}); err == nil {
-		t.Fatal("codex 预检错误应向上传播")
-	}
-}
 
 func TestPreflightResultIsRouteAction(t *testing.T) {
 	if (PreflightResult{}).IsRouteAction() {

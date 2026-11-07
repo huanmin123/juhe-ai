@@ -71,11 +71,6 @@
         :group-options-loading="groupOptionsLoading"
         :inherited-error-policy-rules="inheritedErrorPolicyRules"
         :is-management-view="isManagementView"
-        :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
-        :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
-        :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
-        :mapping-source-model-options="mappingSourceModelOptions"
-        :mapping-upstream-model-options="mappingUpstreamModelOptions"
         :model-options="modelOptions"
         :models-loading="modelsLoading"
         :models-settled="modelsSettled"
@@ -84,6 +79,7 @@
         :open="open"
         :providers="mediaProviders"
         :proxy-options="proxyOptions"
+        :proxy-pools="proxyPools"
         :proxy-options-loading="proxyOptionsLoading"
         :selected-protocol-profile="selectedProtocolProfile"
         :selected-provider="selectedProvider"
@@ -96,8 +92,6 @@
         @generate-auth-url="$emit('generate-auth-url')"
         @group-options-dropdown="$emit('group-options-dropdown', $event)"
         @group-options-search="$emit('group-options-search', $event)"
-        @mapping-source-model-options-open="(protocol, value) => $emit('mapping-model-options-open', protocol, value)"
-        @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
         @model-options-open="$emit('model-options-open', $event)"
         @model-options-search="$emit('model-options-search', $event)"
         @open-auth-url="$emit('open-auth-url')"
@@ -233,7 +227,7 @@
                   <a-descriptions-item label="模型映射" :span="2">
                     <div v-if="readonlyModelMappings.length" class="readonly-model-mappings">
                       <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.sourceEndpointFamily}:${item.upstreamModel}:${item.upstreamEndpointFamily}`">
-                        {{ item.sourceModel }} / {{ endpointFamilyText(item.sourceEndpointFamily) }} -> {{ item.upstreamModel }} / {{ endpointFamilyText(item.upstreamEndpointFamily) }}{{ item.enabled === false ? '（停用）' : '' }}
+                        {{ item.sourceModel }} / {{ readonlyMappingProtocolText(item) }} -> {{ item.upstreamModel }}{{ item.enabled === false ? '（停用）' : '' }}
                       </a-tag>
                     </div>
                     <span v-else>-</span>
@@ -259,6 +253,7 @@
                 :form="form"
                 :is-o-auth-form="isOAuthForm"
                 :proxy-options="proxyOptions"
+                :proxy-pools="proxyPools"
                 :proxy-options-loading="proxyOptionsLoading"
                 @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
                 @proxy-options-search="$emit('proxyOptionsSearch', $event)"
@@ -331,7 +326,7 @@
                         <a-form-item label="每分钟请求上限" tooltip="按真实派发到上游的请求计数，每分钟重置；0 表示不限制（0–9999）。达到上限后会先尝试其他账户，全池耗尽时返回 429。">
                           <a-input-number v-model:value="form.rpmLimit" :disabled="authorizedEditing" :min="0" :max="9999" :precision="0" placeholder="0 = 不限制" style="width: 100%" />
                         </a-form-item>
-                        <a-form-item label="特权" tooltip="调度先比较模型命中方式：直连与同族改名映射同层、优先于跨协议转换映射；超级优先 / 降级备用等特权只在同一命中方式层级之内比较，不会越过该维度。">
+                        <a-form-item label="特权" tooltip="调度先比较模型命中方式：直连与协议等价映射（同族改名或 Gemini stream 归一）同层；跨协议转换映射已随 2026-11-07 退役；超级优先 / 降级备用等特权只在同一命中方式层级之内比较，不会越过该维度。">
                           <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
                             <a-select-option value="normal">无</a-select-option>
                             <a-select-option value="super_priority">超级优先</a-select-option>
@@ -369,9 +364,6 @@
                         :form="form"
                         :is-management-view="isManagementView"
                         :is-o-auth-form="isOAuthForm"
-                        :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
-                        :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
-                        :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
                         :mapping-source-model-options="mappingSourceModelOptions"
                         :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
                         :mapping-upstream-model-options="mappingUpstreamModelOptions"
@@ -379,8 +371,8 @@
                         :authorized-editing="authorizedEditing"
                         @current-provider-model-options-open="$emit('model-options-open', $event)"
                         @current-provider-model-options-search="$emit('model-options-search', $event)"
-                        @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
-                        @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
+                        @mapping-source-model-options-open="$emit('mapping-model-options-open', $event)"
+                        @mapping-source-model-options-search="$emit('mapping-model-options-search', $event)"
                       />
                     </div>
                 </AccountAdvancedCard>
@@ -579,9 +571,6 @@
                       :form="form"
                       :is-management-view="isManagementView"
                       :is-o-auth-form="isOAuthForm"
-                      :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
-                      :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
-                      :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
                       :mapping-source-model-options="mappingSourceModelOptions"
                       :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
                       :mapping-upstream-model-options="mappingUpstreamModelOptions"
@@ -589,8 +578,8 @@
                       :authorized-editing="authorizedEditing"
                       @current-provider-model-options-open="$emit('model-options-open', $event)"
                       @current-provider-model-options-search="$emit('model-options-search', $event)"
-                      @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
-                      @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
+                      @mapping-source-model-options-open="$emit('mapping-model-options-open', $event)"
+                      @mapping-source-model-options-search="$emit('mapping-model-options-search', $event)"
                     />
                   </div>
                 </AccountAdvancedCard>
@@ -768,7 +757,7 @@ import { message } from '@/lib/antd'
 import { formatDateTime } from '@/shared/formatters'
 import { api } from '@/api/client'
 import { defaultAccountNameFromBaseUrl } from './accountNameSuggestion'
-import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProxyPoolOptionSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountAdvancedCard from './AccountAdvancedCard.vue'
@@ -792,6 +781,7 @@ import {
   endpointModesEqual
 } from './accountEndpointModes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
+import { accountModelMappingEndpointFamilyText } from './accountModelMappingProtocolMatrix'
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
@@ -871,12 +861,9 @@ const props = withDefaults(defineProps<{
   isTokenCredentialForm: boolean
   isOpenAIOAuthForm: boolean
   loading?: boolean
-  mappingAnthropicSourceModelOptions: SelectOption[]
-  mappingCurrentProviderSourceModelOptions: SelectOption[]
-  mappingGeminiSourceModelOptions: SelectOption[]
+  /** 映射客户端模型候选：跨供应商全量目录（按行协议过滤后供下拉使用）。 */
   mappingSourceModelOptions: SelectOption[]
-  /** 映射源模型下拉的服务端截断标志（T25 hasMore）；openai/hybrid 退役后
-   *  账户只走当前供应商目录，本字段保留给仍在下发该事件的父链。 */
+  /** 映射源模型下拉的服务端截断标志（T25 hasMore）。 */
   mappingSourceModelOptionsTruncated?: boolean
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
@@ -888,6 +875,8 @@ const props = withDefaults(defineProps<{
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  /** 代理池候选（代理池设计 §8.2）：kinds=profile,pool 时由父链透传。 */
+  proxyPools?: ProxyPoolOptionSummary[]
   proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
@@ -1059,14 +1048,12 @@ const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
   return output
 })
 
-function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']): string {
-  if (value === 'responses') return 'Responses'
-  if (value === 'messages') return 'Messages'
-  if (value === 'generate_content') return 'Gemini GenerateContent'
-  if (value === 'stream_generate_content') return 'Gemini StreamGenerateContent'
-  if (value === 'video_generation') return '视频生成'
-  if (value === 'tts') return '语音合成'
-  return 'Chat Completions'
+// 只读展示单协议（跨协议退役契约）：协议等价行（同族改名 / Gemini 流式归一）
+// 只显示一个协议；升级前遗留的双族行仍按「source -> target」显示两族。
+function readonlyMappingProtocolText(item: AccountFormModel['modelMappings'][number]): string {
+  const sourceText = accountModelMappingEndpointFamilyText(item.sourceEndpointFamily)
+  if (item.sourceEndpointFamily === item.upstreamEndpointFamily) return sourceText
+  return `${sourceText} -> ${accountModelMappingEndpointFamilyText(item.upstreamEndpointFamily)}`
 }
 const confirmButtonProps = computed(() => ({
   ...props.okButtonProps,
@@ -1221,9 +1208,6 @@ function goToNextWizardStep(): void {
       errorPolicyRules: errorPolicyRules.value,
       responseInspectionRules: responseInspectionRules.value,
       providers: props.providers,
-      mappingAnthropicSourceModelOptions: props.mappingAnthropicSourceModelOptions,
-      mappingCurrentProviderSourceModelOptions: props.mappingCurrentProviderSourceModelOptions,
-      mappingGeminiSourceModelOptions: props.mappingGeminiSourceModelOptions,
       mappingSourceModelOptions: props.mappingSourceModelOptions,
       mappingUpstreamModelOptions: props.modelOptions
     })
@@ -1260,8 +1244,8 @@ const emit = defineEmits<{
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
   (event: 'tag-options-dropdown', open: boolean): void
-  (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
-  (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
+  (event: 'mapping-model-options-open', open: boolean): void
+  (event: 'mapping-model-options-search', value: string): void
   (event: 'proxyOptionsDropdown', open: boolean): void
   (event: 'proxyOptionsSearch', value: string): void
   (event: 'ok'): void

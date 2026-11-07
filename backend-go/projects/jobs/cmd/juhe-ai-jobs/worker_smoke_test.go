@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,7 +16,6 @@ import (
 // PG 连接串指向保留 TLD .invalid，配置装载只做形态校验不真正连接）。
 func workerSmokeTestEnv(t *testing.T) map[string]string {
 	t.Helper()
-	root := t.TempDir()
 	return map[string]string{
 		"JUHE_AI_POSTGRES_URL":          "postgres://smoke-test.invalid/juhe_ai_smoke",
 		"JUHE_AI_REDIS_URL":             "redis://smoke-test.invalid:6379/0",
@@ -25,7 +23,6 @@ func workerSmokeTestEnv(t *testing.T) map[string]string {
 		"JUHE_AI_WORKER_ROLE":           "stats-worker",
 		"JUHE_AI_SECRET":                "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS": "5000",
-		"JUHE_AI_CODEX_CONTEXT_ROOT":    filepath.Join(root, "codex-context"),
 	}
 }
 

@@ -391,6 +391,7 @@ var patchChangeLabels = []struct{ Field, Label string }{
 	{"status", "状态"},
 	{"routeStrategyId", "策略路由"},
 	{"schedulingPreferenceId", "调度偏好"},
+	{"securityPolicyId", "安全策略"},
 	{"expiresAt", "过期时间"},
 	{"quotaLimits", "额度限制"},
 	{"availabilitySchedule", "时间计划"},
@@ -641,7 +642,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 	}
 	for key := range body {
 		switch key {
-		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule":
+		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule":
 		default:
 			return CreateInput{}, "API Key 参数无效"
 		}
@@ -677,6 +678,17 @@ func createBody(body map[string]any) (CreateInput, string) {
 		}
 		trimmed := strings.TrimSpace(text)
 		input.SchedulingPreferenceID = &trimmed
+	}
+	if value, exists := body["securityPolicyId"]; exists && value != nil {
+		// 安全策略绑定（批A 五写入口矩阵·创建，§4.2）：缺省或 null → 内置固
+		// 定 ID（store 层对 nil 输入落内置常量，此处只在显式提交值时携带）；
+		// 非字符串或空字符串按绑定契约统一 400。
+		text, isString := value.(string)
+		if !isString {
+			return CreateInput{}, SecurityPolicyUnavailableMessage
+		}
+		trimmed := strings.TrimSpace(text)
+		input.SecurityPolicyID = &trimmed
 	}
 	if value, exists := body["status"]; exists {
 		text, isString := value.(string)

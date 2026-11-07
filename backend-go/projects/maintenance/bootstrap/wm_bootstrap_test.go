@@ -166,12 +166,13 @@ func TestWMEnsurePostgresWrapperMirrorsSchemaCounts(t *testing.T) {
 	if count <= 0 {
 		t.Fatalf("语句计数必须为正: %d", count)
 	}
-	// +5 个 CREATE SCHEMA（juhe_chat 随 my-chat 会话面退役——演练场设计 §8）
+	// +4 个 CREATE SCHEMA（juhe_chat 随 my-chat 会话面退役——演练场设计 §8；
+	// juhe_codex_context 随 2026-11-07 bridge 退役删除）
 	// 之外还有 1 条能力域形状只读校验查询（M1 起 EnsurePostgres 末尾追加
 	// VerifyPostgresBusinessCapabilityDomainShape，982ed8f2f），录制器按执行
 	// 计数一并收录。
-	if len(rec.execs) != count+6 {
-		t.Fatalf("执行数应等于语句数 + 5 个 CREATE SCHEMA + 1 个能力域形状校验: %d vs %d", len(rec.execs), count)
+	if len(rec.execs) != count+5 {
+		t.Fatalf("执行数应等于语句数 + 4 个 CREATE SCHEMA + 1 个能力域形状校验: %d vs %d", len(rec.execs), count)
 	}
 	rec.fail = true
 	if _, err := EnsurePostgres(context.Background(), db); err == nil {

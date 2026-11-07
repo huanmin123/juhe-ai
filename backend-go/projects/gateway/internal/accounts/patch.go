@@ -14,6 +14,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountstransfer"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
 // PatchChange mirrors AccountManagementPatchChange（REFACTOR-0005 阶段 B 下沉
@@ -109,6 +110,12 @@ type PatchInput struct {
 	// ProxyProfileID mirrors input.proxyProfileId (nullable id tri-state).
 	ProxyProfileID        *string
 	ProxyProfileIDPresent bool
+	// ProxyPoolID mirrors input.proxyPoolId（代理池设计 §8.3，nullable id
+	// tri-state）：缺省 = 不修改、null = 清除（含解除绑定）、值 = 设置/改绑。
+	// 与 ProxyProfileID 互斥（写入面同时非空 400 proxy_target_conflict）；
+	// 绑定/解绑在同一补丁事务内替换/删除粘性租约（§6.1）。
+	ProxyPoolID        *string
+	ProxyPoolIDPresent bool
 	// GroupID mirrors input.groupId (required non-empty string when present).
 	GroupID        *string
 	GroupIDPresent bool
@@ -206,6 +213,8 @@ func accountPatchChangeLabel(field string) string {
 		return "标签"
 	case "proxyProfileId":
 		return "代理"
+	case "proxyPoolId":
+		return "代理池"
 	case "schedulable":
 		return "参与调度"
 	case "accountExpiresAt":
@@ -290,6 +299,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		clientCompatibility       string
 		oauthType                 string
 		proxyProfileID            sql.NullString
+		proxyPoolID               sql.NullString
 		balanceQueryEnabled       int
 		balanceQueryConfigJSON    string
 		balanceQueryNextRefreshAt sql.NullString
@@ -335,6 +345,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			-- oauth_type 物理列（设计 §2.1）：registry 判定读列优先、credentials
 			-- 回落（兼容存量行）。
 			COALESCE(accounts.oauth_type, '') AS oauth_type, accounts.proxy_profile_id,
+			accounts.proxy_pool_id,
 			accounts.balance_query_enabled, accounts.balance_query_config_json,
 			accounts.balance_query_next_refresh_at,
 			accounts.temporary_unavailable_continuous_probe_enabled, accounts.next_health_check_at,
@@ -360,7 +371,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.healthCheckConnectionID, &row.currentHealthCheckPreset, &row.providerCode,
 		&row.connectionDriverCode,
 		&row.protocolCode, &row.protocolVersion,
-		&row.clientCompatibility, &row.oauthType, &row.proxyProfileID, &row.balanceQueryEnabled,
+		&row.clientCompatibility, &row.oauthType, &row.proxyProfileID, &row.proxyPoolID, &row.balanceQueryEnabled,
 		&row.balanceQueryConfigJSON, &row.balanceQueryNextRefreshAt, &row.temporaryProbeEnabled,
 		&row.nextHealthCheckAt,
 		&row.lastHealthCheckAt, &row.lastHealthSuccessAt, &row.healthCheckFailureCount,
@@ -735,37 +746,115 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
-	// Proxy profile: nullable id tri-state; a switch must resolve to an
-	// enabled profile (Node resolveEnabledProxyProfileIdInClient →
-	// ProxyProfileUnavailableError). Counts as a connection change.
-	if input.ProxyProfileIDPresent {
-		var requested *string
-		if input.ProxyProfileID != nil {
-			trimmed := strings.TrimSpace(*input.ProxyProfileID)
-			if trimmed == "" {
-				return nil, &ValidationError{Message: "代理配置无效"}
-			}
-			requested = &trimmed
+	// Proxy profile / proxy pool（代理池设计 §8.3）：各自 nullable id tri-state
+	//（缺省 = 不修改、null = 清除该目标、值 = 设置），两者互斥（写入面同时
+	// 非空 400 proxy_target_conflict）。设置目标必须解析到 enabled 的代理/池；
+	// 池绑定/解绑在同一补丁事务内替换/删除粘性租约（§6.1，锁序 池→账户，
+	// 池行 FOR UPDATE 先于下方 accounts UPDATE）；直接代理绑定不得残留租约。
+	// 计入连接面变化（connectionChanged）与余额身份（§10.3）。
+	profileSubmitted := false
+	poolSubmitted := false
+	var requestedProfile *string
+	var requestedPool *string
+	if input.ProxyProfileIDPresent && input.ProxyProfileID != nil {
+		trimmed := strings.TrimSpace(*input.ProxyProfileID)
+		if trimmed == "" {
+			return nil, &ValidationError{Message: "代理配置无效"}
 		}
-		current := row.proxyProfileID
-		changed := (requested != nil) != current.Valid ||
-			(requested != nil && (!current.Valid || *requested != current.String))
+		requestedProfile = &trimmed
+		profileSubmitted = true
+	}
+	if input.ProxyPoolIDPresent && input.ProxyPoolID != nil {
+		trimmed := strings.TrimSpace(*input.ProxyPoolID)
+		if trimmed == "" {
+			return nil, &ValidationError{Message: "代理池配置无效"}
+		}
+		requestedPool = &trimmed
+		poolSubmitted = true
+	}
+	if profileSubmitted && poolSubmitted {
+		return nil, proxyTargetConflictError()
+	}
+	// proxyLeasePlan 汇总本次补丁的租约动作（在 accounts UPDATE 之后执行，
+	// 届时账户行已持有锁且 proxy_pool_id 列已是新值）：
+	//   assign = 绑定/改绑池（写/替换租约，reason=pool_reassigned）
+	//   clear  = 解绑/改走直接代理（删除租约；直接代理不残留租约）
+	proxyLeaseAction := ""
+	proxyLeasePoolID := ""
+	proxyLeaseMember := ""
+	switch {
+	case poolSubmitted:
+		changed := !row.proxyPoolID.Valid || row.proxyPoolID.String != *requestedPool
 		if changed {
-			var next sql.NullString
-			if requested != nil {
-				enabled, err := s.resolveEnabledProxyProfile(ctx, tx, *requested)
-				if err != nil {
-					return nil, err
-				}
-				if !enabled {
-					return nil, &ValidationError{Message: "代理不存在或已停用，请选择一个已启用的代理"}
-				}
-				next = sql.NullString{String: *requested, Valid: true}
+			// 池行锁先于账户 UPDATE（锁序 池→账户→租约）；§8.6 校验与成员
+			// 选择同事务执行。健康全 dead 允许绑定但无租约（§6.1）。
+			if err := s.lockProxyPoolForWrite(ctx, tx, *requestedPool); err != nil {
+				return nil, err
 			}
+			memberID, err := s.selectProxyPoolMemberForWrite(ctx, tx, *requestedPool)
+			if err != nil {
+				return nil, err
+			}
+			proxyLeaseAction = "assign"
+			proxyLeasePoolID = *requestedPool
+			proxyLeaseMember = memberID
+			next := sql.NullString{String: *requestedPool, Valid: true}
 			proxyChanged = true
-			addChange("proxyProfileId", nullPtrString(current), nullPtrString(next))
-			sets = append(sets, "proxy_profile_id = ?")
+			addChange("proxyPoolId", nullPtrString(row.proxyPoolID), nullPtrString(next))
+			sets = append(sets, "proxy_pool_id = ?")
 			setArgs = append(setArgs, next)
+			if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
+				// 至多一个非空（§4.4 CHECK）：改绑池清除既有直接代理。
+				sets = append(sets, "proxy_profile_id = NULL")
+			}
+		}
+	case profileSubmitted:
+		changed := !row.proxyProfileID.Valid || row.proxyProfileID.String != *requestedProfile
+		if changed {
+			enabled, err := s.resolveEnabledProxyProfile(ctx, tx, *requestedProfile)
+			if err != nil {
+				return nil, err
+			}
+			if !enabled {
+				return nil, &ValidationError{Message: "代理不存在或已停用，请选择一个已启用的代理"}
+			}
+			// 直接代理绑定不得残留池租约（协调人约束 + §4.3/§6.5）：改绑
+			// 直接代理时删除既有租约并清空池列。
+			proxyChanged = true
+			addChange("proxyProfileId", nullPtrString(row.proxyProfileID),
+				nullPtrString(sql.NullString{String: *requestedProfile, Valid: true}))
+			sets = append(sets, "proxy_profile_id = ?")
+			setArgs = append(setArgs, sql.NullString{String: *requestedProfile, Valid: true})
+			if row.proxyPoolID.Valid && row.proxyPoolID.String != "" {
+				proxyLeaseAction = "clear"
+				sets = append(sets, "proxy_pool_id = NULL")
+			}
+		}
+	case input.ProxyProfileIDPresent:
+		// proxyProfileId:null = 清除直接代理（旧三态行为）；若同时提交
+		// proxyPoolId:null，则两列一起解除绑定（§8.3）。非空值已在
+		// profileSubmitted 分支处理。
+		if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
+			proxyChanged = true
+			addChange("proxyProfileId", nullPtrString(row.proxyProfileID), nil)
+			sets = append(sets, "proxy_profile_id = NULL")
+		}
+		if input.ProxyPoolIDPresent {
+			if row.proxyPoolID.Valid && row.proxyPoolID.String != "" {
+				proxyLeaseAction = "clear"
+				proxyChanged = true
+				addChange("proxyPoolId", nullPtrString(row.proxyPoolID), nil)
+				sets = append(sets, "proxy_pool_id = NULL")
+			}
+		}
+	case input.ProxyPoolIDPresent:
+		// proxyPoolId:null = 清除该目标（与 proxyProfileId:null 同时提交 =
+		// 解除绑定，§8.3）。行内无池绑定时为幂等 no-op。
+		if row.proxyPoolID.Valid && row.proxyPoolID.String != "" {
+			proxyLeaseAction = "clear"
+			proxyChanged = true
+			addChange("proxyPoolId", nullPtrString(row.proxyPoolID), nil)
+			sets = append(sets, "proxy_pool_id = NULL")
 		}
 	}
 
@@ -1590,15 +1679,28 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				nextProxyProfileID = strings.TrimSpace(*input.ProxyProfileID)
 			}
 		}
+		// 代理池设计 §10.3：池绑定参与余额身份；池列变化重置刷新代次。
+		nextProxyPoolID := row.proxyPoolID.String
+		if input.ProxyPoolIDPresent {
+			if input.ProxyPoolID == nil {
+				nextProxyPoolID = ""
+			} else {
+				nextProxyPoolID = strings.TrimSpace(*input.ProxyPoolID)
+			}
+		}
 		nextProxyValue := any(nil)
 		if nextProxyProfileID != "" {
 			nextProxyValue = nextProxyProfileID
 		}
+		nextProxyPoolValue := any(nil)
+		if nextProxyPoolID != "" {
+			nextProxyPoolValue = nextProxyPoolID
+		}
 		identityChanged := !balanceIdentityEqual(
 			s.balanceIdentityValue(row.balanceQueryEnabled == 1, currentBalanceConfig, row.providerCode,
-				row.accountType, currentCredentialsForBalance, row.proxyProfileID.String),
+				row.accountType, currentCredentialsForBalance, row.proxyProfileID.String, row.proxyPoolID.String),
 			s.balanceIdentityValue(enabled, nextBalanceConfig, row.providerCode,
-				row.accountType, currentCredentialsForBalance, nextProxyValue),
+				row.accountType, currentCredentialsForBalance, nextProxyValue, nextProxyPoolValue),
 		)
 		if identityChanged {
 			balanceIdentityChangedFlag = true
@@ -1771,6 +1873,25 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	if affected, _ := exec.RowsAffected(); affected != 1 {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
+	}
+	// 代理池粘性租约替换/删除（代理池设计 §6.1「账户 PATCH 改绑池」）：账户
+	// UPDATE 与租约写入同一事务。assign = 绑定/改绑池（reason=pool_reassigned，
+	// generation 取共享序列；健康全 dead 时 proxyLeaseMember 为空——绑定生效
+	// 无租约，首次请求解析补租约）；clear = 解绑/改走直接代理（删除租约，
+	// 直接代理绑定不残留租约）。池行锁已在上方变更探测段获取（锁序
+	// 池→账户→租约）；assign 助手内的重入加锁为同事务 no-op。
+	switch proxyLeaseAction {
+	case "assign":
+		if proxyLeaseMember != "" {
+			if err := s.assignAccountProxyPoolLease(ctx, tx, row.id, proxyLeasePoolID,
+				proxyLeaseMember, proxyresolve.AssignmentPoolReassigned); err != nil {
+				return nil, err
+			}
+		}
+	case "clear":
+		if err := s.clearAccountProxyPoolLease(ctx, tx, row.id); err != nil {
+			return nil, err
+		}
 	}
 	// 禁用臂连带清理（总开关设计 §4/§7，同事务）：锁死自动解除（generation+1
 	// 使在途锁租约失效）、质量隔离 enforcement 活动行清理（质量处罚语义由
@@ -2495,7 +2616,10 @@ func parseStoredBalanceConfig(raw string) (map[string]any, error) {
 // balanceIdentityValue mirrors accountBalanceQueryIdentity: the observable
 // balance query identity (enabled flag, normalized config, provider/type,
 // effective Key fingerprints, normalized base URL and proxy reference).
-func (s *Store) balanceIdentityValue(enabled bool, config map[string]any, providerCode, accountType string, credentials Credentials, proxyProfileID any) map[string]any {
+// proxyPoolID 是代理池设计 §10.3 的池绑定维度：池绑定/改绑改变有效出口，
+// 身份比较必须包含配置池 ID（租约成员迁移的代次重置由余额读面承载，本写面
+// 以配置绑定参与身份，任何池列变化都会重置刷新代次）。
+func (s *Store) balanceIdentityValue(enabled bool, config map[string]any, providerCode, accountType string, credentials Credentials, proxyProfileID any, proxyPoolID any) map[string]any {
 	fingerprints := []any{}
 	for _, key := range EffectiveAccountApiKeys(credentials) {
 		fingerprints = append(fingerprints, s.balanceAPIKeyFingerprint(key))
@@ -2512,6 +2636,9 @@ func (s *Store) balanceIdentityValue(enabled bool, config map[string]any, provid
 	identity["normalizedBaseUrl"] = normalizedBalanceBaseURL(credentials["base_url"])
 	if text, ok := proxyProfileID.(string); ok && strings.TrimSpace(text) != "" {
 		identity["proxyProfileId"] = strings.TrimSpace(text)
+	}
+	if text, ok := proxyPoolID.(string); ok && strings.TrimSpace(text) != "" {
+		identity["proxyPoolId"] = strings.TrimSpace(text)
 	}
 	return identity
 }
@@ -2574,6 +2701,7 @@ func patchHasMixedEditField(input PatchInput) bool {
 		input.AvailabilitySchedulePresent ||
 		input.ModelMappingsPresent ||
 		input.ProxyProfileIDPresent ||
+		input.ProxyPoolIDPresent ||
 		input.GroupIDPresent ||
 		input.BalanceQueryEnabled != nil ||
 		input.BalanceQueryConfigPresent ||

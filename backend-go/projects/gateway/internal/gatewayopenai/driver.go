@@ -2,12 +2,10 @@ package gatewayopenai
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // DriverID mirrors the Node driver id.
@@ -134,43 +132,10 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 		}
 		body = transformed
 
-		// B-4 (BUG-0175 D-149/D-157): cross-protocol bridge conversion. When the
-		// mapping targets a different protocol family (anthropic messages /
-		// gemini generateContent), rebuild the body through the matching archived
-		// bridge (openai-anthropic-bridge / gemini bridges / anthropic-openai-chat
-		// / codex-responses-chat).
-		sourceFamily := input.ModelMapping.SourceEndpointFamily
-		upstreamFamily := input.ModelMapping.UpstreamEndpointFamily
-		if sourceFamily != "" && upstreamFamily != "" && sourceFamily != upstreamFamily &&
-			openaicompatbridge.IsCrossProtocolBridgeRequired(sourceFamily, upstreamFamily) {
-			bridgeRoot, ok := parsedBody.(map[string]any)
-			if !ok {
-				var decodeErr error
-				bridgeRoot, decodeErr = unmarshalJSONObject(transformed)
-				if decodeErr != nil {
-					return nil, &gatewayproto.BuildUpstreamError{
-						Code:    gatewayproto.ErrCodeModelMappingRequestInvalid,
-						Message: "跨协议模型映射要求请求体是 JSON 对象",
-					}
-				}
-			}
-			bridgeBody, err := openaicompatbridge.BuildBridgeRequestBody(sourceFamily, upstreamFamily, bridgeRoot, openaicompatbridge.BridgeRequestBodyOptions{
-				ModelOverride:      upstreamModel,
-				TargetPathAndQuery: input.ClientPathAndQuery,
-				Stream:             stream,
-			})
-			if err != nil {
-				return nil, bridgeBuildError(err)
-			}
-			encoded, err := json.Marshal(bridgeBody)
-			if err != nil {
-				return nil, &gatewayproto.BuildUpstreamError{
-					Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,
-					Message: "跨协议模型映射请求体编码失败",
-				}
-			}
-			body = encoded
-		}
+		// 2026-11-07 跨协议 Responses→Chat 桥退役：原 B-4（BUG-0175
+		// D-149/D-157）跨协议 body 桥转换块随桥删除。映射矩阵收口为协议等价
+		// pair（同族改名 + Gemini stream 归一）后，本分支只剩模型改名改写，
+		// 不存在需要重建 body 的跨协议形态。
 	}
 
 	upstreamPathAndQuery := input.ClientPathAndQuery
@@ -252,48 +217,6 @@ func parseJSONBodyBytes(body []byte) any {
 		return nil
 	}
 	return value
-}
-
-// unmarshalJSONObject parses a bridge body that must be a JSON object.
-func unmarshalJSONObject(body []byte) (map[string]any, error) {
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
-		return nil, err
-	}
-	object, ok := value.(map[string]any)
-	if !ok {
-		return nil, errBridgeBodyNotObject
-	}
-	return object, nil
-}
-
-var errBridgeBodyNotObject = errBridgeBodyObject{}
-
-type errBridgeBodyObject struct{}
-
-func (errBridgeBodyObject) Error() string { return "bridge body must be a JSON object" }
-
-// bridgeBuildError maps a bridge conversion failure onto the dispatcher error
-// contract: agent-guidance errors pass through for the engine's errors.As
-// recognition (Node guidance 200 agent_guidance), BridgeRequestError surfaces
-// its message under the mapping conversion code (the D-149 raise point),
-// everything else keeps the code.
-func bridgeBuildError(err error) error {
-	var guidanceErr *openaicompatbridge.BridgeGuidanceError
-	if errors.As(err, &guidanceErr) {
-		return err
-	}
-	bridgeErr, ok := err.(*openaicompatbridge.BridgeRequestError)
-	if !ok {
-		return &gatewayproto.BuildUpstreamError{
-			Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,
-			Message: "跨协议模型映射请求转换失败",
-		}
-	}
-	return &gatewayproto.BuildUpstreamError{
-		Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,
-		Message: bridgeErr.Message,
-	}
 }
 
 func jsonValid(text string) bool {

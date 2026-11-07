@@ -86,6 +86,10 @@ export interface UsageRecordSummary {
   success: boolean
   /** 压缩预期：网关入库时单点判定并随用量记录全链路透传；历史存量行恒为 false。 */
   compactionExpected: boolean
+  /** 该请求绑定了非默认安全策略（与是否命中无关）；未绑定或历史行缺省。 */
+  securityPolicyApplied?: boolean
+  /** 出站脱敏命中计数（按规则 label，如 {"PHONE":2}，无原文）；仅命中数 > 0 时下发。 */
+  piiHits?: Record<string, number>
   failureAttribution?: UsageFailureAttribution
   /** Bounded list-only diagnostic category retained as a compatibility fallback. */
   failureReason?: string
@@ -152,6 +156,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'errorCode'
   | 'errorMessage'
   | 'compactionExpected'
+  | 'securityPolicyApplied'
+  | 'piiHits'
   | 'firstTokenMs'
   | 'durationMs'
   | 'inputTokens'

@@ -59,6 +59,46 @@ export interface ProxyOptionParams {
   keyword?: string
   limit?: number
   selectedIds?: string[]
+  /** 账户下拉（§8.2）：缺省 profile 保持既有调用方行为；pool 项仅在显式请求时返回。 */
+  kinds?: Array<'profile' | 'pool'>
+  /** 与 selectedIds 分开：只匹配代理池，均最多 20 个。 */
+  selectedPoolIds?: string[]
+}
+
+export interface ProxyPoolListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+}
+
+export interface ProxyPoolMemberOptionsParams {
+  keyword?: string
+  limit?: number
+  selectedIds?: string[]
+}
+
+export interface ProxyPoolMemberPayload {
+  proxyProfileId: string
+  weight: number
+  memberEnabled: boolean
+}
+
+export interface ProxyPoolCreatePayload {
+  name: string
+  description?: string
+  strategy: 'round_robin' | 'weighted'
+  enabled: boolean
+  members: ProxyPoolMemberPayload[]
+}
+
+export interface ProxyPoolPatchPayload {
+  name?: string
+  /** members 出现即完整替换成员集合（§8.1）；CAS 版本必带。 */
+  members?: ProxyPoolMemberPayload[]
+  description?: string | null
+  strategy?: 'round_robin' | 'weighted'
+  enabled?: boolean
+  expectedUpdatedAt: string
 }
 
 export interface SystemAccountOptionsParams {
@@ -204,6 +244,7 @@ export interface AccountDraftTestAccountPayload {
   healthCheckEndpointMode: import('@/types/domain').AccountHealthCheckEndpointMode
   modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'video_generation' | 'tts'; enabled: boolean }>
   proxyProfileId?: string | null
+  proxyPoolId?: string | null
   groupId: string
   accountExpiresAt?: string | null
   availabilitySchedule?: Record<string, unknown> | null

@@ -529,18 +529,14 @@ func IsTestMappingSourceFamily(value string) bool {
 
 // IsOpenAIModelMappingRuntimeConversionSupported mirrors the same-named
 // helper (model-mapping.ts; also ported in gatewayopenai/mapping.go)
-// （原根包私有函数，根包测试经由转发访问）. legacy hybrid 跨协议转换矩阵已随
-// §555 终态扫描拆除：转换支持只由映射族配对与协议面（连接 preset 推导）判定。
-func IsOpenAIModelMappingRuntimeConversionSupported(mapping accountscore.ModelMapping, source ManualTestModeSource) bool {
+// （原根包私有函数，根包测试经由转发访问）. 转换支持收敛为 §5.2 7 pair 协议
+// 等价判定（同族改名 + Gemini stream_generate_content→generate_content 归一）；
+// legacy hybrid 跨协议转换矩阵与 responses→chat_completions bridge 已随协议面
+// 收窄（2026-11-05/11-07）退役。
+func IsOpenAIModelMappingRuntimeConversionSupported(mapping accountscore.ModelMapping, _ ManualTestModeSource) bool {
 	src := mapping.SourceEndpointFamily
 	upstream := mapping.UpstreamEndpointFamily
-	if src == upstream || (src == "stream_generate_content" && upstream == "generate_content") {
-		return true
-	}
-	if src == "responses" && upstream == "chat_completions" && accountscore.IsOpenAIProtocolProfileOf(source.predicate()) {
-		return true
-	}
-	return false
+	return src == upstream || (src == "stream_generate_content" && upstream == "generate_content")
 }
 
 // ResolveTestAccountModelMapping mirrors resolveOpenAIAccountModelMapping for

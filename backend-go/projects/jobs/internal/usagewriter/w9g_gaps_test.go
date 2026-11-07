@@ -118,6 +118,66 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 	}
 }
 
+// TestW9GPostgresStoreSecurityPolicyColumns 是批D 端到端写臂（API Key 安全
+// 策略与出站内容脱敏设计 §8）：真实 PG 上经 BuildWritePlan + WriteBatch 落
+// security_policy_applied / pii_hits_json 两列——全值记录 1 / 紧凑 JSON，
+// 无值记录 0 / NULL。
+func TestW9GPostgresStoreSecurityPolicyColumns(t *testing.T) {
+	db := openKitPostgresDB(t)
+	store := NewPostgresShardStore(PostgresShardStoreConfig{
+		DB:         db,
+		ShardCount: 4,
+		Now:        func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
+	})
+	ctx := context.Background()
+
+	today := time.Now().UTC().Format("2006-01-02")
+	runToken := fmt.Sprintf("%d", time.Now().UnixNano())
+	createdAt := today + "T02:03:04.000Z"
+	input := func(id string, applied bool, hits map[string]int) UsageRecordInput {
+		record := gatewayInput("w9g-sp-" + runToken + "-" + id)
+		record.ID = "usage_" + strings.ReplaceAll(today, "-", "") + "_s01_" + runToken + "_" + id
+		record.CreatedAt = createdAt
+		record.SecurityPolicyApplied = applied
+		record.PIIHits = hits
+		return record
+	}
+
+	plan, err := BuildWritePlan(ctx, []UsageRecordInput{
+		input("hit", true, map[string]int{"PHONE": 2}),
+		input("plain", false, nil),
+	}, WritePlanOptions{ShardCount: 4}, fixedClock(createdAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted, err := store.WriteBatch(ctx, plan); err != nil || inserted != 2 {
+		t.Fatalf("WriteBatch inserted=%d err=%v", inserted, err)
+	}
+
+	var applied int
+	var hits any
+	if err := db.QueryRowContext(ctx,
+		`SELECT security_policy_applied, pii_hits_json FROM juhe_usage.usage_records WHERE trace_id = $1`,
+		"w9g-sp-"+runToken+"-hit").Scan(&applied, &hits); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("security_policy_applied = %d, want 1", applied)
+	}
+	if hitsText, ok := hits.(string); !ok || hitsText != `{"PHONE":2}` {
+		t.Fatalf("pii_hits_json = %#v, want {\"PHONE\":2}", hits)
+	}
+
+	if err := db.QueryRowContext(ctx,
+		`SELECT security_policy_applied, pii_hits_json FROM juhe_usage.usage_records WHERE trace_id = $1`,
+		"w9g-sp-"+runToken+"-plain").Scan(&applied, &hits); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 0 || hits != nil {
+		t.Fatalf("plain record security_policy_applied=%d pii_hits_json=%#v, want 0/NULL", applied, hits)
+	}
+}
+
 // TestW9GPostgresStoreEnsurePartitionsInvalidDate 覆盖分区日期解析对
 // 非法值的静默跳过分支（ensure 层不报错，由 INSERT 承载错误）。
 func TestW9GPostgresStoreEnsurePartitionsInvalidDate(t *testing.T) {

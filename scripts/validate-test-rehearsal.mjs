@@ -31,7 +31,10 @@ const PROXY_RUNTIME_COLUMNS = Object.freeze([
   'outbound_ip',
   'outbound_region',
   'last_test_message',
-  'last_tested_at'
+  'last_tested_at',
+  'pool_health_status',
+  'pool_health_failure_streak',
+  'pool_health_checked_at'
 ])
 const API_KEY_DERIVED_COLUMNS = Object.freeze([
   'key_hash',
@@ -117,7 +120,8 @@ export const ACCOUNT_SYNC_EVIDENCE_TABLE_NAMES = Object.freeze([
   'system_accounts', 'providers', 'protocols', 'protocol_endpoint_families',
   'provider_protocol_profiles', 'provider_protocol_profile_families', 'provider_model_catalog',
   'custom_provider_models', 'provider_default_health_check_models',
-  'provider_system_default_health_check_models', 'proxy_profiles', 'model_quality_policies',
+  'provider_system_default_health_check_models', 'proxy_profiles', 'proxy_pools', 'proxy_pool_members',
+  'model_quality_policies',
   'model_quality_schedules', 'account_quality_enforcements', 'account_supported_models',
   'account_model_mappings',
   'account_tags', 'account_tag_bindings', 'system_teams', 'system_team_members',
@@ -140,7 +144,7 @@ export const RUNTIME_RESET_EVIDENCE_TABLE_NAMES = Object.freeze([
   'account_list_availability_projection_viewer_health',
   'account_list_availability_runtime_overlays', 'account_list_availability_projection_dependency_health',
   'account_list_availability_dirty', 'account_test_tasks', 'account_test_sessions',
-  'account_test_session_tasks', 'proxy_latency_projection_receipts', 'proxy_latency_projection_cursors',
+  'account_test_session_tasks', 'account_proxy_leases', 'proxy_latency_projection_receipts', 'proxy_latency_projection_cursors',
   'account_schedule_status_events', 'api_key_schedule_status_events'
 ])
 
@@ -688,7 +692,7 @@ function validateAccounts(evidence, blockers) {
     }
   }
   if (!Array.isArray(accounts.runtimeResetTables)) {
-    addBlocker(blockers, 'accounts.runtimeResetTables', '必须逐表记录 28 张运行态清空表的清理前后行数与 checksum')
+    addBlocker(blockers, 'accounts.runtimeResetTables', `必须逐表记录 ${RUNTIME_RESET_EVIDENCE_TABLE_NAMES.length} 张运行态清空表的清理前后行数与 checksum`)
   } else {
     const runtimeNames = new Set()
     for (const [index, table] of accounts.runtimeResetTables.entries()) {

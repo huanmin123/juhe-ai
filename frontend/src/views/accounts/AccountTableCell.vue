@@ -121,7 +121,7 @@ import {
 import { formatDateTime, isAuthorizedAccount } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
 import { authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip } from './accountRules'
-import { accountProxyDisplay } from './accountProxyDisplay'
+import { accountProxyPresentation } from './accountProxyDisplay'
 
 defineEmits<{
   (event: 'bind-group', account: AccountListItem): void
@@ -162,24 +162,19 @@ const props = defineProps<{
 
 const currentGroupName = computed(() => props.groupName(props.account.id))
 
-const currentProxy = computed(() => accountProxyDisplay(props.account, props.proxy(props.account.proxyProfileId)))
+// 池绑定四态展示（代理池设计 §9.3）：proxyTargetType + proxyMember*/proxyPool* 驱动，
+// 池账户不再误显示「不使用」；直接代理保持原有名称（类型）标签与 tooltip。
+const proxyView = computed(() => accountProxyPresentation(props.account, props.proxy(props.account.proxyProfileId)))
 
-const proxyText = computed(() => {
-  if (!props.account.proxyProfileId) return ''
-  return currentProxy.value?.name ?? '代理已配置'
-})
+const proxyText = computed(() => proxyView.value.text ?? '')
 const proxyTagColor = computed(() => {
-  if (props.account.proxyProfileUnavailable) return 'red'
-  if (currentProxy.value?.enabled === false) return 'red'
-  return currentProxy.value ? 'cyan' : 'orange'
+  if (proxyView.value.tone === 'error') return 'red'
+  if (proxyView.value.tone === 'pending') return 'gold'
+  if (proxyView.value.unknown) return 'orange'
+  if (proxyView.value.unavailable) return 'red'
+  return proxyView.value.text ? 'cyan' : 'orange'
 })
-const proxyTooltip = computed(() => {
-  if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
-  if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
-  if (currentProxy.value?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
-  if (currentProxy.value) return `${currentProxy.value.name}（${currentProxy.value.type}）`
-  return '代理配置不存在或当前不可见'
-})
+const proxyTooltip = computed(() => proxyView.value.tooltip)
 </script>
 
 <style scoped>

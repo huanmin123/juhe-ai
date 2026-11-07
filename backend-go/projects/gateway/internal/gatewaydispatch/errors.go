@@ -83,15 +83,9 @@ type AccountLockHoldError struct {
 
 func (e *AccountLockHoldError) Error() string { return e.Message }
 
-// GatewayClientRetryMessage implements the gatewaycodex.GatewayClientRetryError
-// narrow interface so the Codex compact summary path renders the same 503
-// client-retry handoff instead of 502 (设计 §3.4/§10.6).
-func (e *AccountLockHoldError) GatewayClientRetryMessage() string {
-	if e.Message != "" {
-		return e.Message
-	}
-	return "账户处于锁死窗口，窗口内不切换其他账户，请客户端重试"
-}
+// 2026-11-07 codex-context 退役：原 GatewayClientRetryMessage（codex 桥摘要
+// compact 面的 503 client-retry 识别接口实现）随桥删除；AccountLockHoldError
+// 本体的锁死语义不变（设计 §3.4）。
 
 // NormalRouteFirstByteCutoverError mirrors
 // dispatch/upstream-dispatch.ts NormalRouteFirstByteCutoverError.

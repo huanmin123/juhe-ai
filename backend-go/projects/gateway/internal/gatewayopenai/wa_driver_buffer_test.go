@@ -2,7 +2,6 @@ package gatewayopenai
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // Driver 身份与协议面（G02 编排层契约）。
@@ -141,8 +139,12 @@ func TestWAOpenAIDriverBuildUpstreamRequestMappingSameFamily(t *testing.T) {
 	}
 }
 
-// 跨协议桥：chat → anthropic messages（混合账户）。
-func TestWAOpenAIDriverBuildUpstreamRequestBridge(t *testing.T) {
+// 退役不变量：chat → anthropic messages 跨协议映射已随 7 pair 矩阵退役
+// （2026-11-07）。绕过 resolver 手工构造的该映射行绝不产生桥路径改写
+// （/messages），只可能显式报错或保持客户端原路径——不允许把客户端形态的
+// 请求悄悄打到另一种协议的路径上。桥请求体转换臂随 bridge 退役批整体删除，
+// 本断言对两种状态都成立。
+func TestWAOpenAIDriverBuildUpstreamRequestBridgeRetired(t *testing.T) {
 	driver := NewDriver()
 	input := gatewayproto.BuildUpstreamRequestInput{
 		ClientPathAndQuery: "/v1/chat/completions?beta=1",
@@ -158,59 +160,13 @@ func TestWAOpenAIDriverBuildUpstreamRequestBridge(t *testing.T) {
 	}
 	result, err := driver.BuildUpstreamRequest(input)
 	if err != nil {
-		t.Fatalf("BuildUpstreamRequest error: %v", err)
+		return // 显式失败是合法退役行为（bridge 拒绝该组合）。
 	}
-	if result.PathAndQuery != "/messages?beta=1" {
-		t.Fatalf("桥目标路径 = %q", result.PathAndQuery)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(result.Body, &body); err != nil {
-		t.Fatalf("桥 body 非法: %v", err)
-	}
-	if body["model"] != "claude-up" {
-		t.Fatalf("桥 model = %v", body["model"])
-	}
-	if body["max_tokens"] == nil {
-		t.Fatal("max_tokens 应由桥推导")
-	}
-	if result.EndpointMode != gatewayproto.EndpointModeChatJSON {
-		t.Fatalf("端点模式 = %q", result.EndpointMode)
+	if result.PathAndQuery != "/v1/chat/completions?beta=1" {
+		t.Fatalf("退役跨族映射不得改写上游路径：path = %q", result.PathAndQuery)
 	}
 }
 
-// 桥错误语义：guidance 原样透传、BridgeRequestError 归一转换、未知错误。
-func TestWAOpenAIBridgeBuildError(t *testing.T) {
-	guidance := &openaicompatbridge.BridgeGuidanceError{Message: "guidance", Code: "agent_guidance"}
-	if got := bridgeBuildError(guidance); got != error(guidance) {
-		t.Fatalf("guidance 错误应原样透传: %v", got)
-	}
-	bridgeErr := bridgeBuildError(&openaicompatbridge.BridgeRequestError{Message: "负载无效", Code: "bad"})
-	var buildErr *gatewayproto.BuildUpstreamError
-	if !errors.As(bridgeErr, &buildErr) {
-		t.Fatalf("BridgeRequestError 应转为 BuildUpstreamError: %v", bridgeErr)
-	}
-	if buildErr.Code != gatewayproto.ErrCodeUnsupportedModelMappingConversion || buildErr.Message != "负载无效" {
-		t.Fatalf("转换错误 = %+v", buildErr)
-	}
-	unknown := bridgeBuildError(errors.New("boom"))
-	if !errors.As(unknown, &buildErr) || buildErr.Message == "boom" {
-		t.Fatalf("未知错误应转为固定文案: %+v", buildErr)
-	}
-	// errBridgeBodyNotObject 错误值文本。
-	if got := errBridgeBodyNotObject.Error(); got != "bridge body must be a JSON object" {
-		t.Fatalf("桥 body 错误文本 = %q", got)
-	}
-	if _, err := unmarshalJSONObject([]byte(`[1]`)); err == nil {
-		t.Fatal("非对象桥 body 应报错")
-	}
-	if _, err := unmarshalJSONObject([]byte(`{bad`)); err == nil {
-		t.Fatal("非法 JSON 桥 body 应报错")
-	}
-	obj, err := unmarshalJSONObject([]byte(`{"a":1}`))
-	if err != nil || obj["a"] == nil {
-		t.Fatalf("合法对象应解析: %+v/%v", obj, err)
-	}
-}
 
 // 模型映射请求体约束：必须为 JSON 对象。
 func TestWABuildModelMappedJSONBody(t *testing.T) {

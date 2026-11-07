@@ -58,7 +58,10 @@ type ExportAccount struct {
 	GroupID                   *string `json:"groupId,omitempty"`
 	GroupName                 *string `json:"groupName,omitempty"`
 	ProxyRef                  *string `json:"proxyRef,omitempty"`
-	ConcurrencyLimit          *int    `json:"concurrencyLimit,omitempty"`
+	// ProxyPoolRef 是代理池绑定的 wire 字段（代理池设计 §8.4）：绑池账户写
+	// "proxy-pool-<id>"，与 ProxyRef 互斥；池明细在顶层 proxyPools 段。
+	ProxyPoolRef     *string `json:"proxyPoolRef,omitempty"`
+	ConcurrencyLimit *int    `json:"concurrencyLimit,omitempty"`
 	// RPMLimit 是每分钟请求上限的 wire 字段（AI账户每分钟请求上限设计 §6.4）：
 	// 仅 >0 时输出，缺省落 0（导入侧），旧版导入包兼容规则与 BackgroundProbe
 	// 开关一致按发布说明处理。
@@ -84,18 +87,38 @@ type ExportAccount struct {
 	Notes                                      *string                            `json:"notes,omitempty"`
 }
 
+// ExportProxyPoolMember 是导出池明细的成员引用（代理池设计 §8.4）：成员用
+// proxyProfileId（不导出成员密码；成员代理明细随账户 proxyRef 段或缺失时
+// 目标环境按已存在代理解析）。
+type ExportProxyPoolMember struct {
+	ProxyProfileID string `json:"proxyProfileId"`
+	Enabled        bool   `json:"enabled"`
+}
+
+// ExportProxyPool 是顶层 proxyPools 段条目（§8.4）：池名/策略/成员引用，
+// 供文档可读性与一致性校验；第一版导入不据此创建池。
+type ExportProxyPool struct {
+	Ref      string                  `json:"ref"`
+	Name     string                  `json:"name"`
+	Strategy string                  `json:"strategy"`
+	Enabled  bool                    `json:"enabled"`
+	Members  []ExportProxyPoolMember `json:"members"`
+}
+
 // ExportDocument mirrors AccountExportDocument.
 type ExportDocument struct {
-	Type     string          `json:"type"`
-	Version  int             `json:"version"`
-	Proxies  []ExportProxy   `json:"proxies,omitempty"`
-	Accounts []ExportAccount `json:"accounts"`
+	Type       string            `json:"type"`
+	Version    int               `json:"version"`
+	Proxies    []ExportProxy     `json:"proxies,omitempty"`
+	ProxyPools []ExportProxyPool `json:"proxyPools,omitempty"`
+	Accounts   []ExportAccount   `json:"accounts"`
 }
 
 // ExportSummary mirrors the result summary block.
 type ExportSummary struct {
 	Accounts        int   `json:"accounts"`
 	Proxies         int   `json:"proxies"`
+	ProxyPools      int   `json:"proxyPools"`
 	SkippedAccounts int   `json:"skippedAccounts"`
 	MatchedAccounts *int  `json:"matchedAccounts,omitempty"`
 	Truncated       *bool `json:"truncated,omitempty"`
@@ -156,8 +179,10 @@ func (s *Service) ExportAccounts(ctx context.Context, options ExportOptions, acc
 	result.Document.Version = AccountImportProtocolVersion
 	result.Document.Accounts = []ExportAccount{}
 	proxyRefs := map[string]string{}
+	poolRefs := map[string]bool{}
 	for _, row := range ordered {
-		exported, err := s.buildExportAccount(ctx, row, proxyRefs, &result.Document.Proxies)
+		exported, err := s.buildExportAccount(ctx, row, proxyRefs, poolRefs,
+			&result.Document.Proxies, &result.Document.ProxyPools)
 		if err != nil {
 			return nil, err
 		}
@@ -165,6 +190,7 @@ func (s *Service) ExportAccounts(ctx context.Context, options ExportOptions, acc
 	}
 	result.Summary.Accounts = len(result.Document.Accounts)
 	result.Summary.Proxies = len(result.Document.Proxies)
+	result.Summary.ProxyPools = len(result.Document.ProxyPools)
 	result.Summary.SkippedAccounts = len(ids) - len(result.Document.Accounts)
 	if result.Summary.SkippedAccounts < 0 {
 		result.Summary.SkippedAccounts = 0
@@ -204,6 +230,7 @@ type ExportAccountRow struct {
 	healthCheckModel          string
 	healthCheckEndpointMode   string
 	proxyProfileID            sql.NullString
+	proxyPoolID               sql.NullString
 	availabilitySchedule      sql.NullString
 	accountExpiresAt          sql.NullString
 	concurrencyLimit          int
@@ -237,6 +264,7 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 			'' AS provider_protocol_profile_id, accounts.name, accounts.notes, accounts.type,
 			accounts.status, accounts.schedulable, accounts.credentials_encrypted,
 			accounts.health_check_model, accounts.health_check_endpoint_mode, accounts.proxy_profile_id,
+			accounts.proxy_pool_id,
 			accounts.availability_schedule_json, accounts.account_expires_at, accounts.concurrency_limit,
 			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
@@ -265,6 +293,7 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 		if err := rows.Scan(&row.id, &row.providerCode, &row.providerProtocolProfileID, &row.name,
 			&row.notes, &row.accountType, &row.Status, &schedulable, &row.credentialsEncrypted,
 			&row.healthCheckModel, &row.healthCheckEndpointMode, &row.proxyProfileID,
+			&row.proxyPoolID,
 			&row.availabilitySchedule, &row.accountExpiresAt, &row.concurrencyLimit,
 			&row.rpmLimit,
 			&row.priority, &superPriority, &fallback, &backgroundProbe, &continuousProbe,
@@ -289,8 +318,9 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 }
 
 // buildExportAccount mirrors buildExportAccount + exportAccount's proxy-ref
-// materialization.
-func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow, proxyRefs map[string]string, proxies *[]ExportProxy) (ExportAccount, error) {
+// materialization（含代理池引用，代理池设计 §8.4）：绑池账户写
+// proxyPoolRef="proxy-pool-<id>" 并把池明细去重收集到顶层 proxyPools 段。
+func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow, proxyRefs map[string]string, poolRefs map[string]bool, proxies *[]ExportProxy, pools *[]ExportProxyPool) (ExportAccount, error) {
 	status := ExportAccountStatus(row)
 	exported := ExportAccount{
 		Ref:                       row.id,
@@ -318,6 +348,23 @@ func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow,
 			return ExportAccount{}, err
 		} else if ref != nil {
 			exported.ProxyRef = ref
+		}
+	}
+	// 代理池绑定（代理池设计 §8.4）：proxyPoolRef 与 ProxyRef 互斥（行级
+	// CHECK 至多一个非空）；池明细按池 ID 去重收集一次。
+	if row.proxyPoolID.Valid && row.proxyPoolID.String != "" {
+		poolID := row.proxyPoolID.String
+		ref := "proxy-pool-" + poolID
+		exported.ProxyPoolRef = &ref
+		if !poolRefs[poolID] {
+			pool, err := s.exportProxyPool(ctx, poolID)
+			if err != nil {
+				return ExportAccount{}, err
+			}
+			if pool != nil {
+				poolRefs[poolID] = true
+				*pools = append(*pools, *pool)
+			}
 		}
 	}
 	if row.concurrencyLimit > 0 {
@@ -554,6 +601,57 @@ func OrderedKeys(c accountscore.Credentials) []string {
 	}
 	accountscore.SortStrings(keys)
 	return keys
+}
+
+// exportProxyPool 是顶层 proxyPools 段的池明细收集器（代理池设计 §8.4）：
+// 池名/策略/启用 + 成员引用（成员用 proxyProfileId，不重复导出成员密码；
+// 成员代理明细由账户 proxyRef 段承载）。池行缺失返回 nil（FK 保证存在，
+// 兜底静默跳过）。
+func (s *Service) exportProxyPool(ctx context.Context, poolID string) (*ExportProxyPool, error) {
+	var pool struct {
+		name     string
+		strategy string
+		enabled  bool
+	}
+	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT name, strategy, enabled
+		FROM `+s.store.Table("proxy_pools")+` WHERE id = ? LIMIT 1`), poolID).
+		Scan(&pool.name, &pool.strategy, &pool.enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	memberRows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT proxy_pool_members.proxy_profile_id,
+			proxy_pool_members.enabled, proxy_profiles.enabled
+		FROM `+s.store.Table("proxy_pool_members")+` proxy_pool_members
+		INNER JOIN `+s.store.Table("proxy_profiles")+` proxy_profiles
+			ON proxy_profiles.id = proxy_pool_members.proxy_profile_id
+		WHERE proxy_pool_members.pool_id = ?
+		ORDER BY proxy_pool_members.priority ASC, proxy_pool_members.proxy_profile_id ASC`), poolID)
+	if err != nil {
+		return nil, err
+	}
+	defer memberRows.Close()
+	members := []ExportProxyPoolMember{}
+	for memberRows.Next() {
+		var profileID string
+		var memberEnabled, profileEnabled bool
+		if err := memberRows.Scan(&profileID, &memberEnabled, &profileEnabled); err != nil {
+			return nil, err
+		}
+		members = append(members, ExportProxyPoolMember{ProxyProfileID: profileID, Enabled: memberEnabled && profileEnabled})
+	}
+	if err := memberRows.Err(); err != nil {
+		return nil, err
+	}
+	return &ExportProxyPool{
+		Ref:      "proxy-pool-" + poolID,
+		Name:     pool.name,
+		Strategy: pool.strategy,
+		Enabled:  pool.enabled,
+		Members:  members,
+	}, nil
 }
 
 // exportProxyRef mirrors exportProxyRef: one shared ref per enabled profile.

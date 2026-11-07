@@ -383,7 +383,7 @@ for (const [index, name] of ACCOUNT_SYNC_EVIDENCE_TABLE_NAMES.entries()) {
 const validProxyTable = validEvidence.accounts.tables.find(table => table.name === 'proxy_profiles')
 validProxyTable.copiedColumns = ['id']
 validProxyTable.generatedColumns = ['password_encrypted']
-validProxyTable.clearedColumns = ['test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at']
+validProxyTable.clearedColumns = ['test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at', 'pool_health_status', 'pool_health_failure_streak', 'pool_health_checked_at']
 const validApiKeysTable = validEvidence.accounts.tables.find(table => table.name === 'api_keys')
 validApiKeysTable.copiedColumns = ['id']
 validApiKeysTable.generatedColumns = ['key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted']

@@ -44,9 +44,8 @@ func NormalizeEndpointFamily(family string) string {
 	return openaicompatcore.NormalizeEndpointFamily(family)
 }
 
-func IsCrossProtocolBridgeRequired(source, upstream string) bool {
-	return openaicompatcore.IsCrossProtocolBridgeRequired(source, upstream)
-}
+// 2026-11-07 跨协议桥退役：IsCrossProtocolBridgeRequired 转发随
+// openaicompatcore 删除（本包桥接线已不存在，无消费方）。
 
 // Error vocabulary forwards (errors.go).
 var errUnhandled = openaicompatcore.ErrUnhandled

@@ -120,7 +120,10 @@ func (s *Store) balanceService() *accountsbalance.Service {
 		// 读端行带凭据密文列原文：此处解密提取逻辑身份（base_url + 有效
 		// Key 全池，与 J2 执行核同一 CredentialBalanceIdentity），解密失败
 		// 该账户摘要置空 = 不显示快照（安全方向降级），warn 留痕。
-		BalanceInputDigest: func(providerCode, credentialFingerprint, configJSON, credentialsEnvelope, proxyProfileID string) string {
+		// 代理池设计 §10.3：proxyProfileID/proxyPoolID/proxyMemberProfileID
+		// 是子域按 §5.2 有效目标解析后的三段（池绑定 = 池 ID + 当前租约成员，
+		// 实例行按 source 覆盖），本桥只透传。
+		BalanceInputDigest: func(providerCode, credentialFingerprint, configJSON, credentialsEnvelope, proxyProfileID, proxyPoolID, proxyMemberProfileID string) string {
 			identity, err := s.balanceCredentialIdentity(credentialsEnvelope)
 			if err != nil {
 				slog.Warn("账户余额输入凭据身份提取失败，该账户余额显示回退待查询",
@@ -128,7 +131,7 @@ func (s *Store) balanceService() *accountsbalance.Service {
 					"error", err)
 				return ""
 			}
-			return accountbalance.BalanceInputDigest(providerCode, credentialFingerprint, configJSON, identity, proxyProfileID)
+			return accountbalance.BalanceInputDigest(providerCode, credentialFingerprint, configJSON, identity, proxyProfileID, proxyPoolID, proxyMemberProfileID)
 		},
 		NewDispatchID: func() string {
 			return newID("dispatch")

@@ -1,10 +1,10 @@
 package mockdata
 
-// seedChatCodexModelCheck 是 codex context / J3b 模型检测域（PG 形态，T66
-// 第二波）：codex context 三表、J3b 模型检测专库（runs/items/observations/
-// 可信度投影/基线/调度/小时健康/持久化输入闭环）、juhe_stats.background_task_
-// runs 与 juhe_jobs.account_health_outcomes。（chat 会话与消息、图片与媒体资
-// 产段已随 my-chat 会话面退役整体移除——演练场设计 §8。）
+// seedChatCodexModelCheck 是 J3b 模型检测域（PG 形态，T66 第二波）：J3b 模型
+// 检测专库（runs/items/observations/可信度投影/基线/调度/小时健康/持久化输入
+// 闭环）、juhe_stats.background_task_runs 与 juhe_jobs.account_health_outcomes。
+// codex context 三表已随 2026-11-07 Chat bridge 退役删除；chat 会话与消息、
+// 图片与媒体资产段已随 my-chat 会话面退役整体移除（演练场设计 §8）。
 //
 // 样本形状、数量与状态矩阵沿 2026-10-24 sqlite 造数链删除前的实现
 // （git 4645eb259^ 的 domain_chat_codex_modelcheck.go）取证复刻，落库按 PG
@@ -38,7 +38,6 @@ package mockdata
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -76,11 +75,12 @@ const (
 	chatCodexFallbackProfile     = "gpt_openai_v1"
 	chatCodexEndpointFamily      = "openai_responses"
 	chatCodexTurnLimit           = 50
-	chatCodexRetentionDays       = 30
-	chatCodexCodexContextTTLDays = 7)
+	chatCodexRetentionDays       = 30)
 
-// seedChatCodexModelCheck 是域入口：资源解析 → codex context → J3b →
-// background_task_runs → account health（chat 段已随会话面退役）。
+// seedChatCodexModelCheck 是域入口：资源解析 → J3b → background_task_runs →
+// account health（chat 段已随会话面退役；codex context 段已随 2026-11-07
+// 跨协议桥退役整体删除，juhe_codex_context schema 由 maintenance revision 20
+// DROP）。
 //
 // 各段独立判存、独立跳过：某段的属主存储或前置资源缺失只让该段留空并记日志，
 // 不影响其他段；全部段都跳过时 Counts 为空，覆盖报告据此把本域断言判成
@@ -100,7 +100,6 @@ func seedChatCodexModelCheck(ctx context.Context, e *env) (DomainResult, error) 
 		name string
 		run  func(*chatCodexWriter, chatCodexResources) error
 	}{
-		{"codex context", seedCodexContextSection},
 		{"J3b 模型检测", seedModelCheckSection},
 		{"账户健康", seedAccountHealthSection},
 	}
@@ -501,233 +500,6 @@ func chatCodexNullable(value string) any {
 
 // （chat 会话与消息样本段已随 my-chat 会话面退役整体移除——演练场设计 §8；
 // chat_* 表不再进 mockdata 写面。）
-
-// ---------------------------------------------------------------------------
-// codex context 段
-// ---------------------------------------------------------------------------
-
-// chatCodexCodexRow 是一条待写 codex 行（响应 / 摘要共用）。
-type chatCodexCodexRow struct {
-	id         string
-	sessionID  string
-	previousID string
-	model      string
-	payload    map[string]any
-	createdAt  time.Time
-	lastUsedAt time.Time
-}
-
-// chatCodexSessionSeed 是一组 codex 会话样本（会话 + 响应 + 摘要）。
-type chatCodexSessionSeed struct {
-	id           string
-	groupID      string
-	responses    []chatCodexCodexRow
-	compacts     []chatCodexCodexRow
-	sourceRespID string
-	createdAt    time.Time
-}
-
-// chatCodexNaturalSessions 返回固定 ID 的两组样本：响应链（previous 链）与
-// 会话的 latest 指针自洽。PG 形态下 codex context 是单 schema 三表，sqlite
-// 时代的分片对齐组已随分片拓扑退役。
-func chatCodexNaturalSessions(account chatCodexAccount, resources chatCodexResources, now time.Time) []chatCodexSessionSeed {
-	return []chatCodexSessionSeed{
-		{
-			id: "mockdata_codex_session_responses", groupID: resources.groupAt(0),
-			createdAt: now.Add(-20 * time.Hour),
-			responses: []chatCodexCodexRow{
-				{
-					id: "mockdata_codex_response_1", sessionID: "mockdata_codex_session_responses",
-					model: account.Model, createdAt: now.Add(-20 * time.Hour), lastUsedAt: now.Add(-18 * time.Hour),
-					payload: map[string]any{"responseId": "mockdata_codex_response_1", "model": account.Model, "output": "造数-首次响应"},
-				},
-				{
-					id: "mockdata_codex_response_2", sessionID: "mockdata_codex_session_responses",
-					previousID: "mockdata_codex_response_1", model: account.Model,
-					createdAt: now.Add(-18 * time.Hour), lastUsedAt: now.Add(-17 * time.Hour),
-					payload: map[string]any{"responseId": "mockdata_codex_response_2", "model": account.Model, "output": "造数-续写响应"},
-				},
-			},
-			compacts: []chatCodexCodexRow{
-				{
-					id: "mockdata_codex_compact_1", sessionID: "mockdata_codex_session_responses",
-					previousID: "mockdata_codex_response_2", model: account.Model,
-					createdAt: now.Add(-17 * time.Hour), lastUsedAt: now.Add(-16 * time.Hour),
-					payload: map[string]any{"compactId": "mockdata_codex_compact_1", "summary": "造数-上下文压缩摘要"},
-				},
-			},
-		},
-		{
-			id: "mockdata_codex_session_compacted", groupID: resources.groupAt(1),
-			createdAt: now.Add(-6 * time.Hour), sourceRespID: "mockdata_codex_response_3",
-			responses: []chatCodexCodexRow{
-				{
-					id: "mockdata_codex_response_3", sessionID: "mockdata_codex_session_compacted",
-					model: account.Model, createdAt: now.Add(-6 * time.Hour), lastUsedAt: now.Add(-5 * time.Hour),
-					payload: map[string]any{"responseId": "mockdata_codex_response_3", "model": account.Model, "output": "造数-新会话响应"},
-				},
-			},
-			compacts: []chatCodexCodexRow{
-				{
-					id: "mockdata_codex_compact_2", sessionID: "mockdata_codex_session_compacted",
-					previousID: "mockdata_codex_response_3", model: account.Model,
-					createdAt: now.Add(-5 * time.Hour), lastUsedAt: now.Add(-4 * time.Hour),
-					payload: map[string]any{"compactId": "mockdata_codex_compact_2", "summary": "造数-新会话压缩摘要"},
-				},
-			},
-		},
-	}
-}
-
-// seedCodexContextSection 写 juhe_codex_context 三表。缺 mock AI 账户或分组时
-// 跳过并记日志（sessions.group_id 非空，运行必须绑定真实分组）。
-func seedCodexContextSection(w *chatCodexWriter, resources chatCodexResources) error {
-	account, ok := resources.accountAt(0)
-	if !ok {
-		w.e.logger.Info("mockdata codex context 段跳过", "reason", "juhe_business 没有 mock AI 账户")
-		return nil
-	}
-	if len(resources.groups) == 0 {
-		w.e.logger.Info("mockdata codex context 段跳过", "reason", "juhe_business 没有 mock 分组")
-		return nil
-	}
-	owner := resources.userAt(0)
-	key, hasKey := resources.keyForOwner(owner.ID)
-	apiKeyID := chatCodexNullable(keyOrEmpty(key, hasKey))
-	sessions := chatCodexNaturalSessions(account, resources, w.now)
-	now := w.now
-
-	// 段文件偏移：同一 (session, 小时) 段内的多行按写入顺序追加，与运行时
-	// appendSegmentBytes 的语义一致；sha256 按压缩字节计算。
-	segmentOffsets := map[string]int{}
-	latestResponse := map[string]string{}
-	latestCompact := map[string]string{}
-	return w.e.tx(w.ctx, func(tx *sql.Tx) error {
-		for _, session := range sessions {
-			for _, response := range session.responses {
-				compressed, digest, rawSize, err := chatCodexCompressPayload(response.payload)
-				if err != nil {
-					return err
-				}
-				storageKey := chatCodexSegmentKey(response.sessionID, response.createdAt)
-				offset := segmentOffsets[storageKey]
-				segmentOffsets[storageKey] += len(compressed)
-				if err := w.putTx(tx, qualified(SchemaCodexContext, "codex_context_responses"), map[string]any{
-					"response_id": response.id, "session_id": response.sessionID,
-					"previous_response_id": chatCodexNullable(response.previousID),
-					"system_account_id":    owner.ID, "api_key_id": apiKeyID,
-					"group_id":            session.groupID,
-					"upstream_account_id": account.ID, "model": response.model, "upstream_model": response.model,
-					"storage_key": storageKey, "storage_offset_bytes": offset, "sha256": digest,
-					"raw_size_bytes": rawSize, "compressed_size_bytes": len(compressed),
-					"compression": "gzip", "schema_version": 1,
-					"created_at": chatCodexStamp(response.createdAt), "updated_at": chatCodexStamp(response.lastUsedAt),
-					"last_used_at": chatCodexStamp(response.lastUsedAt),
-					"expires_at":   chatCodexStamp(response.createdAt.Add(chatCodexCodexContextTTLDays * 24 * time.Hour)),
-				}); err != nil {
-					return err
-				}
-				latestResponse[session.id] = response.id
-			}
-			for _, compact := range session.compacts {
-				compressed, digest, rawSize, err := chatCodexCompressPayload(compact.payload)
-				if err != nil {
-					return err
-				}
-				storageKey := chatCodexSegmentKey(compact.sessionID, compact.createdAt)
-				offset := segmentOffsets[storageKey]
-				segmentOffsets[storageKey] += len(compressed)
-				if err := w.putTx(tx, qualified(SchemaCodexContext, "codex_context_compacts"), map[string]any{
-					"compact_id": compact.id, "session_id": compact.sessionID,
-					"source_response_id": chatCodexNullable(compact.previousID),
-					"summary_digest":     chatCodexDigest([]byte(compact.id + "-summary")),
-					"system_account_id":  owner.ID, "api_key_id": apiKeyID,
-					"group_id":            session.groupID,
-					"upstream_account_id": account.ID, "model": compact.model, "upstream_model": compact.model,
-					"storage_key": storageKey, "storage_offset_bytes": offset, "sha256": digest,
-					"raw_size_bytes": rawSize, "compressed_size_bytes": len(compressed),
-					"compression": "gzip", "schema_version": 1,
-					"created_at": chatCodexStamp(compact.createdAt), "updated_at": chatCodexStamp(compact.lastUsedAt),
-					"last_used_at": chatCodexStamp(compact.lastUsedAt),
-					"expires_at":   chatCodexStamp(compact.createdAt.Add(chatCodexCodexContextTTLDays * 24 * time.Hour)),
-				}); err != nil {
-					return err
-				}
-				latestCompact[session.id] = compact.id
-			}
-			if err := w.putTx(tx, qualified(SchemaCodexContext, "codex_context_sessions"), map[string]any{
-				"id": session.id, "system_account_id": owner.ID, "api_key_id": apiKeyID,
-				"group_id":           session.groupID,
-				"source_response_id": chatCodexNullable(session.sourceRespID),
-				"latest_response_id": chatCodexNullable(latestResponse[session.id]),
-				"latest_compact_id":  chatCodexNullable(latestCompact[session.id]),
-				"created_at":         chatCodexStamp(session.createdAt),
-				"updated_at":         chatCodexStamp(now.Add(-time.Hour)),
-				"last_used_at":       chatCodexStamp(now.Add(-time.Hour)),
-				"expires_at":         chatCodexStamp(session.createdAt.Add(chatCodexCodexContextTTLDays * 24 * time.Hour)),
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// chatCodexSegmentKey 复刻 SegmentStorageKey：sessions/<segment>/segments/<YYYYMMDDHH>.json.gz。
-// 段文件按小时分段，同一段内的多行按写入顺序追加，偏移由调用方累加。
-func chatCodexSegmentKey(sessionID string, at time.Time) string {
-	hourKey := strings.NewReplacer("-", "", "T", "", ":", "").Replace(at.UTC().Format("2006-01-02T15"))
-	return fmt.Sprintf("sessions/%s/segments/%s.json.gz", chatCodexSafePathSegment(sessionID), hourKey)
-}
-
-// chatCodexSafePathSegment 复刻 safePathSegment：可读前缀 + 24 位十六进制摘要。
-func chatCodexSafePathSegment(input string) string {
-	normalized := strings.TrimSpace(input)
-	var readable strings.Builder
-	for _, char := range normalized {
-		switch {
-		case char >= 'A' && char <= 'Z', char >= 'a' && char <= 'z', char >= '0' && char <= '9',
-			char == '_', char == '.', char == '-':
-			readable.WriteRune(char)
-		default:
-			readable.WriteRune('_')
-		}
-	}
-	prefix := readable.String()
-	if len(prefix) > 96 {
-		prefix = prefix[:96]
-	}
-	if prefix == "" {
-		prefix = "session"
-	}
-	return prefix + "-" + chatCodexDigest([]byte(normalized))[:24]
-}
-
-// chatCodexCompressPayload 按运行时语义计算 payload 引用：compact JSON → gzip →
-// sha256（对压缩字节）；返回压缩字节、摘要与原始大小。
-func chatCodexCompressPayload(payload map[string]any) ([]byte, string, int, error) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", 0, err
-	}
-	buffer := &bytes.Buffer{}
-	writer := gzip.NewWriter(buffer)
-	if _, err := writer.Write(raw); err != nil {
-		return nil, "", 0, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", 0, err
-	}
-	compressed := buffer.Bytes()
-	return compressed, chatCodexDigest(compressed), len(raw), nil
-}
-
-func keyOrEmpty(key chatCodexAPIKey, ok bool) string {
-	if !ok {
-		return ""
-	}
-	return key.ID
-}
 
 // ---------------------------------------------------------------------------
 // J3b 模型检测段

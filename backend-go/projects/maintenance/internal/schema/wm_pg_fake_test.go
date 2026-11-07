@@ -264,12 +264,12 @@ func TestWMEnsurePostgresExecutesContractStatements(t *testing.T) {
 		t.Fatalf("StatementCount=%d want %d", result.StatementCount, len(postgresSchemaStatements))
 	}
 	// 6→5：juhe_chat schema 随 my-chat 会话面退役（演练场设计 §8）。
-	if result.SchemaCount != 5 {
-		t.Fatalf("SchemaCount=%d want 5（原 Node 六库，chat 库已退役）", result.SchemaCount)
+	if result.SchemaCount != 4 {
+		t.Fatalf("SchemaCount=%d want 4（原 Node 六库，chat/codex_context 库已退役）", result.SchemaCount)
 	}
 	// CREATE SCHEMA 次数 6→5：juhe_chat schema 随会话面退役（演练场设计 §8）。
-	if got := rec.execCount(); got != len(postgresSchemaStatements)+5 {
-		t.Fatalf("执行次数=%d want %d（语句数 + 5 CREATE SCHEMA）", got, len(postgresSchemaStatements)+5)
+	if got := rec.execCount(); got != len(postgresSchemaStatements)+4 {
+		t.Fatalf("执行次数=%d want %d（语句数 + 4 CREATE SCHEMA）", got, len(postgresSchemaStatements)+4)
 	}
 	queries := rec.execQueries()
 	if !strings.HasPrefix(queries[0], `CREATE SCHEMA IF NOT EXISTS "juhe_business"`) {

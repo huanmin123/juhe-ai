@@ -24,6 +24,15 @@ type UsageRecordInput struct {
 	// 非探针请求经 spool JSON 透传落列 compaction_expected。与 jobs
 	// usagewriter 镜像结构同名同 tag、字段序同样紧邻 RouteGroupID。
 	CompactionExpected bool `json:"compactionExpected"`
+	// SecurityPolicyApplied / PIIHits 是 API Key 安全策略的请求级事实（API
+	// Key 安全策略与出站内容脱敏设计 §8）：applied = 该请求挂载了非默认安全
+	// 策略（与是否命中无关）；piiHits 按规则 label 计数（无任何原文），仅命
+	// 中数 > 0 时非空（omitempty 不写）。与 jobs usagewriter 镜像结构同名同
+	// tag（jobs 侧镜像属下一批）；spool JSON 前向兼容——旧 jobs 反序列化忽
+	// 略未知字段，新 jobs 读旧网关缺字段为零值。字段序紧邻 CompactionExpected
+	// 事实块。
+	SecurityPolicyApplied bool           `json:"securityPolicyApplied"`
+	PIIHits               map[string]int `json:"piiHits,omitempty"`
 	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
 	// 只在进程内随记录传播到持久化唯一闸口（FinalizationDispatch.
 	// DispatchUsageRecord 入口第一步即丢弃，覆盖正常入队与溢出 spool 两臂），

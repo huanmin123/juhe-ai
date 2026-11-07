@@ -1,5 +1,7 @@
 package accounts
 
+import "fmt"
+
 // 账户模型映射协议矩阵（写侧校验域）。对照归档实现：
 //
 //   - storage/account-model-mapping-protocol-matrix.ts：普通账户 6 条源→上游
@@ -62,11 +64,11 @@ type protocolConversionRule struct {
 }
 
 // accountModelMappingProtocolRules mirrors the same-named table: 普通账户的
-// 源→上游协议转换白名单（同协议为主，responses→chat_completions 桥接与
-// stream_generate_content→generate_content 归一）。
+// 源→上游协议转换白名单（7 个协议等价 pair：同族改名 + Gemini
+// stream_generate_content→generate_content 归一）。跨协议模型映射随
+// responses→chat_completions bridge 一起于 2026-11-07 退役。
 var accountModelMappingProtocolRules = []protocolConversionRule{
 	{source: mappingFamilyChatCompletions, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
-	{source: mappingFamilyResponses, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
 	{source: mappingFamilyResponses, upstream: mappingFamilyResponses, upstreamProfile: "openai", requiresNativeResponses: true},
 	{source: mappingFamilyMessages, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
 	{source: mappingFamilyGenerateContent, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
@@ -158,15 +160,13 @@ func mappingEnabled(mapping ModelMapping) bool {
 
 // ---- error copy ----
 
+// unsupportedProtocolConversionMessage 是矩阵外 pair 的统一中文 400 文案（与
+// 写侧 validateEntryMappingFamilyLinkage 共用）：中文过 kernel localize 不被
+// 改写（BUG-0337 口径），并点名两端族保证可归因。混合供应商账户已随 §555
+// 退役，不再引导用户切换。
 func unsupportedProtocolConversionMessage(source, upstream string) string {
-	if source == mappingFamilyMessages {
-		return "账号模型别名不支持 Anthropic Messages 跨协议映射，请改用混合供应商账户"
-	}
-	if isGeminiGenerateContentMappingSource(source) {
-		return "账号模型别名不支持 Gemini GenerateContent 跨协议映射，请改用混合供应商账户"
-	}
-	return "账号模型别名只支持同协议映射；跨协议 " + accountModelMappingEndpointFamilyLabel(source) +
-		" 到 " + accountModelMappingEndpointFamilyLabel(upstream) + " 请改用混合供应商账户"
+	return fmt.Sprintf("账号模型别名协议矩阵外组合 %s 到 %s：客户端协议与上游协议必须一致，不支持跨协议模型映射",
+		accountModelMappingEndpointFamilyLabel(source), accountModelMappingEndpointFamilyLabel(upstream))
 }
 
 func missingUpstreamEndpointFamilyCapabilityMessage(upstream string) string {
@@ -205,10 +205,10 @@ func assertAccountModelMappingProtocolAllowed(mapping ModelMapping, profile prot
 	if !openAIProfile && !anthropicProfile && !geminiProfile {
 		return &ValidationError{Message: "当前供应商协议不支持模型映射"}
 	}
-	if geminiOpenAIChatProfile &&
-		mapping.SourceEndpointFamily != mappingFamilyChatCompletions &&
-		mapping.SourceEndpointFamily != mappingFamilyResponses {
-		return &ValidationError{Message: "Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions 或 Responses 到 Chat bridge"}
+	// 7 pair 矩阵下 Gemini OpenAI Chat 档案只允许 Chat 同族改名映射：旧的
+	// source=responses 放行服务已退役的 Responses→Chat bridge，一并删除。
+	if geminiOpenAIChatProfile && mapping.SourceEndpointFamily != mappingFamilyChatCompletions {
+		return &ValidationError{Message: "Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions 同族映射"}
 	}
 	if geminiOpenAIChatProfile && mapping.UpstreamEndpointFamily != mappingFamilyChatCompletions {
 		return &ValidationError{Message: "Gemini OpenAI Chat 档案的账号模型别名上游协议只能是 Chat Completions"}

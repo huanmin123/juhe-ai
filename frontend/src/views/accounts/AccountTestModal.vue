@@ -182,10 +182,19 @@ const currentProviderName = computed(() => props.account
   ? props.providerName?.(props.account.providerCode) ?? '未知供应商'
   : ''
 )
-const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
+// 池绑定同样算「有代理」（代理池设计 §9.2）：proxyTargetType=pool 或配置了 proxyPoolId。
+const hasProxyTarget = computed(() => Boolean(
+  props.account?.proxyProfileId
+  || props.account?.proxyPoolId
+  || props.account?.proxyTargetType === 'pool'
+))
+const proxyTagText = computed(() => {
+  if (props.account?.proxyTargetType === 'pool' || (!props.account?.proxyProfileId && props.account?.proxyPoolId)) return '代理池'
+  return hasProxyTarget.value ? '有代理' : '无代理'
+})
 const proxyTagColor = computed(() => {
   if (props.account?.proxyProfileUnavailable) return 'red'
-  return props.account?.proxyProfileId ? 'cyan' : 'default'
+  return hasProxyTarget.value ? 'cyan' : 'default'
 })
 const outputLines = computed<AccountTestOutputLine[]>(() => accountTestSingleOutputLines({
   account: props.account,

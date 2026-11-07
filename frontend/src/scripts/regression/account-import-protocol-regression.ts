@@ -101,8 +101,8 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   },
   {
     name: '模型映射与跨协议边界',
-    exportedPattern: /`modelMappings` 只做账号模型别名和 OpenAI v1 bridge：Chat Completions → Chat Completions，Responses → Responses，Responses → Chat Completions（仅 stream=true），Messages → Messages，GenerateContent \/ 流式 GenerateContent → GenerateContent，video_generation → video_generation，tts → tts。其他跨协议方向会被拒绝/,
-    formalPattern: /`modelMappings` 只做账号模型别名和 OpenAI v1 bridge：Chat Completions → Chat Completions，Responses → Responses，Responses → Chat Completions（仅 stream=true），Messages → Messages，GenerateContent \/ 流式 GenerateContent → GenerateContent，video_generation → video_generation，tts → tts。其他跨协议方向会被拒绝/
+    exportedPattern: /`modelMappings` 只做协议等价的账号模型别名：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts。跨协议方向（含原 Responses → Chat Completions bridge）已退役，一律被拒绝/,
+    formalPattern: /`modelMappings` 只做协议等价的账号模型别名（2026-11-07 跨协议退役后口径）：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts。跨协议方向（含原 Responses → Chat Completions bridge）一律返回中文 400/
   },
   {
     name: '来源模型映射与模型目录拦截',
@@ -195,9 +195,9 @@ assertMatch(aiConversionPrompt, /juhe-ai-account-import v1 JSON/, 'AI 提示词�
 assertMatch(aiConversionPrompt, /只输出合法 JSON/, 'AI 提示词应继续禁止输出解释或 Markdown')
 assertMatch(aiConversionPrompt, /不要编造来源数据里不存在的 token/, 'AI 提示词应继续约束 token 不可编造')
 assertMatch(aiConversionPrompt, /pending_test 或 disabled/, 'AI 提示词应允许不确定账户导入为待检查或停用')
-assertMatch(aiConversionPrompt, /普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -> Chat Completions/, 'AI 提示词应说明普通 OpenAI v1 账户可导入 Responses 到 Chat 映射')
+assertMatch(aiConversionPrompt, /跨协议映射（含 Responses -> Chat Completions）已退役，提交会被拒绝/, 'AI 提示词应说明 Responses 到 Chat 跨协议映射已退役')
 assertMatch(aiConversionPrompt, /每个账户必须显式提交恰好一条 connections 数组/, 'AI 提示词应要求每个账户显式提交单条 connections')
-assertMatch(aiConversionPrompt, /healthCheckConnectionPresetCode（指向该账户一条 enabled 连接的 connectionPresetCode）、healthCheckModel（必须属于 supportedModels）和 healthCheckEndpointMode/, 'AI 提示词应说明健康检查三件套的键名与指向约束')
+assertMatch(aiConversionPrompt, /healthCheckConnectionPresetCode（指向该账户唯一一条 enabled 连接的 connectionPresetCode）、healthCheckModel（必须属于 supportedModels）和 healthCheckEndpointMode/, 'AI 提示词应说明健康检查三件套的键名与指向约束')
 
 assertMatch(accountImportProtocolMarkdown, /# juhe-ai AI 账户导入协议 v1/, '协议 Markdown 应继续保留标题')
 assertMatch(accountImportProtocolMarkdown, /```json[\s\S]+juhe-ai-account-import[\s\S]+```/, '协议 Markdown 应继续包含 JSON 示例代码块')
@@ -221,11 +221,11 @@ assertMatch(accountImportProtocolMarkdown, /下游客户端画像由网关运行
 assertFalse(new RegExp(deprecatedGlmProfileField).test(accountImportProtocolMarkdown), '协议 Markdown 不应再暴露已废弃的 GLM 接入类型字段')
 assertMatch(accountImportProtocolMarkdown, /"providerProtocolProfileId": "profile_glm_coding_anthropic_v1"/, '协议 Markdown 应说明 GLM Coding Anthropic profile')
 assertMatch(accountImportProtocolMarkdown, /profile_deepseek_anthropic_v1/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
-assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '协议 Markdown 应说明 modelMappings 只做账号模型别名')
-assertMatch(accountImportProtocolMarkdown, /其他跨协议方向会被拒绝/, '协议 Markdown 应说明跨协议方向会被拒绝')
-assertMatch(accountImportProtocolMarkdown, /Responses → Responses，Responses → Chat Completions（仅 stream=true）/, '协议 Markdown 应说明普通 OpenAI v1 账户可声明 Responses 同族改名与 Responses 到 Chat 映射')
-assertMatch(accountImportProtocolMarkdown, /左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型/, '协议 Markdown 应说明 OpenAI v1 Responses 到 Chat 映射可用 Chat-only 模型作为下游别名')
-assertMatch(accountImportProtocolMarkdown, /两者都必须来自当前账户供应商模型目录/, '协议 Markdown 应说明 source/upstream 均受当前供应商目录约束')
+assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做协议等价的账号模型别名/, '协议 Markdown 应说明 modelMappings 只做协议等价的账号模型别名')
+assertMatch(accountImportProtocolMarkdown, /跨协议方向（含原 Responses → Chat Completions bridge）已退役，一律被拒绝/, '协议 Markdown 应说明跨协议方向已退役并被拒绝')
+assertMatch(accountImportProtocolMarkdown, /Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一）/, '协议 Markdown 应说明 7 个协议等价 pair 清单（不含 Responses 到 Chat bridge）')
+assertMatch(accountImportProtocolMarkdown, /右侧 `upstreamEndpointFamily: "responses"` 只允许 `sourceEndpointFamily: "responses"` 的原生 Responses 别名/, '协议 Markdown 应说明 Responses 目标只允许原生 Responses 同族别名（bridge 退役）')
+assertMatch(accountImportProtocolMarkdown, /`sourceModel` 是客户端请求模型，可跨供应商选择但必须支持所选协议；`upstreamModel` 是该账户实际转发模型，必须来自当前账户供应商模型目录/, '协议 Markdown 应说明 source 可跨供应商但须支持所选协议、上游限当前账户目录')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 与 GLM Coding Anthropic 使用 Anthropic v1 Messages 原生协议，`credentials\.supported_endpoint_modes` 填 `messages_json`、`messages_sse`，不要填 `message_token_counting`/, '协议 Markdown 应说明第三方 Anthropic 档案不支持 count_tokens')
 assertMatch(accountImportProtocolMarkdown, /`credentials\.supported_endpoint_modes` 用于声明上游接口能力/, '协议 Markdown 应使用上游接口能力说明 supported_endpoint_modes')
 assertFalse(/接口能力限制/.test(accountImportProtocolMarkdown), '协议 Markdown 不应继续使用接口能力限制旧文案')

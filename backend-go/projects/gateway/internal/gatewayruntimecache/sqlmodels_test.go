@@ -19,9 +19,12 @@ const gatewayRuntimeCacheFixtureSchema = `
 	CREATE SCHEMA IF NOT EXISTS juhe_business;
 	CREATE TABLE juhe_business.system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin');
 	CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT);
-	CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, availability_schedule_gate INTEGER, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT);
+	CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, availability_schedule_gate INTEGER, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT, security_policy_id TEXT);
 	-- 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
 	CREATE TABLE juhe_business.scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
+	-- API Key 安全策略实体（安全策略设计 §4.1，批A 存储；loadGatewayAPIKeyRow
+	-- LEFT JOIN 的引用目标，与 maintenance 权威 DDL 同构去 FK）。
+	CREATE TABLE juhe_business.security_policies (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, description TEXT, rules_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
 	CREATE TABLE juhe_business.route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL);
 	CREATE TABLE juhe_business.route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '');
 	-- groups 目标形态（供应商与上游协议面重构设计 §8，迁移窗口 shim 已按

@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // EndpointMode 与 Node AccountSupportedEndpointMode 的探针子集一致。
@@ -280,8 +279,10 @@ func protocolFamilyForMode(mode EndpointMode) string {
 // anthropicMessagesBodyFields 装配 Anthropic Messages 探针语义 body（等价原
 // createAnthropicClaudeCodeAccountTestPayload 的字段集；W4 起不再私有编码，
 // max_tokens 由 Build 按 catalog 必填字段注入——BUG-0201 下 1024、无
-// thinking/effort 的轻量探针契约不变，见信封统一设计 §4.3）。
-func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID string) ([]upstreamenvelope.BodyField, error) {
+// thinking/effort 的轻量探针契约不变，见信封统一设计 §4.3）。claudeCodeVersion
+// 由调用方从请求内身份快照派生传入（上游客户端身份版本覆盖文档「请求内身份
+// 快照」节）：body cc_version 与同请求头 UA 消费同一对覆盖层 map 实例。
+func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID string, claudeCodeVersion string) ([]upstreamenvelope.BodyField, error) {
 	messages := []map[string]any{
 		{
 			"role": "user",
@@ -292,7 +293,7 @@ func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID st
 		},
 	}
 	system := []map[string]any{
-		{"type": "text", "text": fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli;", upstreamidentity.EffectiveClaudeCodeVersion(), anthropicBuildID)},
+		{"type": "text", "text": fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli;", claudeCodeVersion, anthropicBuildID)},
 		{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.", "cache_control": map[string]any{"type": "ephemeral"}},
 		{"type": "text", "text": fmt.Sprintf("CWD: %s\nDate: %s", cwdOrEmpty(), time.Now().UTC().Format("2006-01-02"))},
 	}

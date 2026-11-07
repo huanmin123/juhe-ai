@@ -23,6 +23,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobleader"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/keymodelrecovery"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
@@ -124,6 +125,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if !ownerMode.OwnsWork() {
 		return runPassiveJobs(*healthAddress, ownerMode, logger, stdout, stderr)
 	}
+	// active 路径的进程根 ctx 提前到 leader gate 之前创建：gate 的获取/续租
+	// 循环与后续 supervisor 共用同一停机信号。
+	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	// 构建身份首行（升级兼容与迁移账本设计 §6.3）：常驻主路径一次性输出；
 	// passive 与 --run-jobs-once 的 stdout 契约不经过此行。
 	logger.Info("juhe-ai-jobs starting",
@@ -141,6 +146,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			gateDB.Close()
 			if !gate.OK {
 				return failWith(stderr, errors.New(gate.Message))
+			}
+			if gate.Warning != "" {
+				fmt.Fprintf(stderr, "WARN: %s\n", gate.Warning)
 			}
 		}
 	}
@@ -438,7 +446,52 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err := checkSchedulingPreferenceSchemaAtStartup(context.Background(), workerCfg); err != nil {
 		return failWith(stderr, fmt.Errorf("verify scheduling preference schema: %w", err))
 	}
-	worker, err := buildWorkerAssembly(workerCfg, logger)
+	// 进程级全局 leader（多节点单活）：复用 background_job_leases，30s TTL、
+	// 10s 续租；standby 只保留健康面，任务与常驻组件在 leader 租约下才运行。
+	// owner ID 追加进程随机 token，避免两个副本共用 JUHE_AI_INSTANCE_ID 时
+	// 互相续租同一把锁。
+	leaderStore, err := taskruns.OpenStore(taskruns.StoreConfig{
+		Mode:                 taskruns.ModePostgres,
+		PostgresURL:          workerCfg.PostgresURL,
+		PostgresMaxOpenConns: 4,
+		PostgresMaxIdleConns: 4,
+	})
+	if err != nil {
+		return failWith(stderr, fmt.Errorf("open jobs leader lease store: %w", err))
+	}
+	if err := leaderStore.EnsureSchema(ctx); err != nil {
+		_ = leaderStore.Close()
+		return failWith(stderr, fmt.Errorf("ensure jobs leader lease schema: %w", err))
+	}
+	leaderOwnerID, err := jobleader.UniqueOwnerID(workerCfg.InstanceID)
+	if err != nil {
+		_ = leaderStore.Close()
+		return failWith(stderr, fmt.Errorf("create jobs leader owner ID: %w", err))
+	}
+	leaderGate, err := jobleader.New(jobleader.Options{
+		Store:         leaderStore,
+		OwnerID:       leaderOwnerID,
+		TTL:           30 * time.Second,
+		RetryInterval: 5 * time.Second,
+		RenewInterval: 10 * time.Second,
+		Logger:        logger,
+	})
+	if err != nil {
+		_ = leaderStore.Close()
+		return failWith(stderr, fmt.Errorf("create jobs leader gate: %w", err))
+	}
+	gateCtx, gateCancel := context.WithCancel(ctx)
+	leaderGate.Start(gateCtx)
+	defer func() {
+		gateCancel()
+		<-leaderGate.Done()
+		_ = leaderStore.Close()
+	}()
+	logger.Info("jobs leader gate started",
+		"event", "jobs_leader_gate_started",
+		"leaseKey", "scheduled:jobs-global-leader:global",
+		"ownerId", leaderOwnerID)
+	worker, err := buildWorkerAssembly(workerCfg, logger, leaderGate)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("assemble jobs worker: %w", err))
 	}
@@ -500,6 +553,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	// --run-jobs-once 分发点：worker 装配（wireFamilies、wiredTasks）完成后、
 	// health server 创建/监听之前逐个执行请求任务并退出，不启动任何常驻面。
 	if *runJobsOnce != "" {
+		// 运维单轮执行不受全局 leader 限制；进程随后退出。
+		worker.allowStandbyRuns()
 		return runJobsOnceExit(worker, *runJobsOnce, stdout, stderr)
 	}
 
@@ -686,15 +741,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			},
 			WorkerReady:  workerReady,
 			WorkerStatus: workerStatus,
+			LeaderReady:  leaderGate.IsLeader,
+			LeaderStatus: leaderGate.Status,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
 	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "accountHealthEnabled", true, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
 	components = append(components, worker.components()...)
+	components = wrapLeaderComponents(leaderGate, components)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
@@ -715,6 +771,24 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 // runPassiveJobs never initializes stores or leases. It exists only for a
 // candidate readiness endpoint during standby/drain; ownerReady stays false.
 // 返回进程退出码（原 fail() 出口收敛为返回值，stderr 文案不变）。
+// wrapLeaderComponents 把每个常驻组件的 Run 包进全局 leader 门禁：standby
+// 阻塞在 Wait，拿到租约后才启动；租约丢失时取消组件 ctx 并返回
+// jobleader.ErrLeaderLost，由 supervisor 收口并让进程退出。
+func wrapLeaderComponents(gate *jobleader.Gate, components []supervisor.Component) []supervisor.Component {
+	if gate == nil {
+		return components
+	}
+	wrapped := make([]supervisor.Component, 0, len(components))
+	for _, component := range components {
+		run := component.Run
+		component.Run = func(ctx context.Context) error {
+			return gate.RunComponent(ctx, run)
+		}
+		wrapped = append(wrapped, component)
+	}
+	return wrapped
+}
+
 func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger, stdout io.Writer, stderr io.Writer) int {
 	listener, err := listenLoopback(healthAddress)
 	if err != nil {
@@ -821,6 +895,9 @@ type jobsHTTPDeps struct {
 	// worker 机制强制常开（2026-09-19 决策），无 Enabled 开关。
 	WorkerReady  func() bool
 	WorkerStatus func() map[string]any
+	// LeaderReady/LeaderStatus 是 jobs 全局 leader lease 的只读观测面。
+	LeaderReady  func() bool
+	LeaderStatus func() map[string]any
 }
 
 // metricsHandlerOrDefault 返回注入的 /__aisys__/metrics handler；未注入时
@@ -860,6 +937,8 @@ func jobsHTTPHandler(deps jobsHTTPDeps) http.Handler {
 		ProxyLatencySnapshot:  deps.ProxyLatencySnapshot,
 		WorkerReady:           deps.WorkerReady,
 		WorkerStatus:          deps.WorkerStatus,
+		LeaderReady:           deps.LeaderReady,
+		LeaderStatus:          deps.LeaderStatus,
 	}))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || deps.AccountBalanceService == nil {
@@ -969,6 +1048,8 @@ type healthDeps struct {
 	ProxyLatencySnapshot  func() (proxylatency.RunnerStatus, bool)
 	WorkerReady           func() bool
 	WorkerStatus          func() map[string]any
+	LeaderReady           func() bool
+	LeaderStatus          func() map[string]any
 }
 
 func healthHandler(deps healthDeps) http.Handler {
@@ -1002,6 +1083,14 @@ func healthHandler(deps healthDeps) http.Handler {
 	if workerStatus == nil {
 		workerStatus = func() map[string]any { return nil }
 	}
+	leaderReady := deps.LeaderReady
+	if leaderReady == nil {
+		leaderReady = func() bool { return true }
+	}
+	leaderStatus := deps.LeaderStatus
+	if leaderStatus == nil {
+		leaderStatus = func() map[string]any { return nil }
+	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -1013,12 +1102,15 @@ func healthHandler(deps healthDeps) http.Handler {
 		proxyStatus, proxyReady := proxyLatencySnapshot()
 		proxyLatencyIsReady := !deps.ProxyLatencyEnabled || proxyReady
 		workerIsReady := workerReady()
+		leaderIsReady := leaderReady()
 		response.Header().Set("Content-Type", "application/json")
-		ready := runtimeLogOwnerHeld && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && workerIsReady
+		ready := leaderIsReady && runtimeLogOwnerHeld && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && workerIsReady
 		payload := map[string]any{
-			"ready":      ready,
-			"ownerReady": ready,
-			"ownerMode":  deps.OwnerMode,
+			"ready":        ready,
+			"ownerReady":   ready,
+			"ownerMode":    deps.OwnerMode,
+			"leader":       leaderIsReady,
+			"leaderStatus": leaderStatus(),
 			// 构建身份（升级兼容与迁移账本设计 §6.3）：纯加法键，编排探测只读 ready。
 			"version":                       version.Version,
 			"commit":                        version.Commit,

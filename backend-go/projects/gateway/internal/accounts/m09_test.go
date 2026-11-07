@@ -169,7 +169,7 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 			"supportedModels":{"enabled":true,"value":["gpt-4o-mini","gpt-4.1","o3-mini"]},
 			"healthCheckModel":{"enabled":true,"value":"gpt-4o-mini"},
 			"healthCheckEndpointMode":{"enabled":true,"value":"chat_sse"},
-			"modelMappings":{"enabled":true,"value":[{"sourceModel":"o3-mini","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":true}]},
+			"modelMappings":{"enabled":true,"value":[{"sourceModel":"o3-mini","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":true}]},
 			"serviceTierOverride":{"enabled":false}}}`
 	// B4 W2（设计 §8）：映射携带 preset；批量前为两个目标种连接 + 双 chat
 	// 形态（target upstream gpt-4o-mini 的支持成员随本批 supportedModels

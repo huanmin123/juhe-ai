@@ -195,17 +195,11 @@ func TestPreCommitReplayWindowDisabledOf(t *testing.T) {
 			wantBlank: true,
 		},
 		{
-			name:      "responses 桥回转（chat-only 账户）排除",
+			// 2026-11-07 桥退役：responses_sse 恢复窗口资格（原桥回转排除臂
+			// 随 accountHasNativeResponsesModes 守卫删除）。
+			name:      "responses 原生直通不排除",
 			req:       request(nil),
 			protocol:  "responses_sse",
-			account:   chatOnlyAccount,
-			wantBlank: true,
-		},
-		{
-			name:      "responses 原生直通（持有原生端点）不排除",
-			req:       request(nil),
-			protocol:  "responses_sse",
-			account:   nativeResponsesAccount,
 			wantBlank: false,
 		},
 		{
@@ -220,7 +214,7 @@ func TestPreCommitReplayWindowDisabledOf(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			context := &gatewaypreauth.DispatchContext{RequestLane: testCase.lane}
 			context.ClientStrategy.DownstreamProtocol = testCase.protocol
-			got := preCommitReplayWindowDisabledOf(testCase.req, context, testCase.account)
+			got := preCommitReplayWindowDisabledOf(testCase.req, context)
 			if got != testCase.wantBlank {
 				t.Fatalf("preCommitReplayWindowDisabledOf = %v, want %v", got, testCase.wantBlank)
 			}
@@ -228,7 +222,7 @@ func TestPreCommitReplayWindowDisabledOf(t *testing.T) {
 	}
 	// purpose 头大小写不敏感（写入方是内部身份通道，读取面保持宽容）。
 	if !preCommitReplayWindowDisabledOf(request(map[string]string{"x-juhe-ai-purpose": "Chat_Web_Search"}),
-		&gatewaypreauth.DispatchContext{}, nativeResponsesAccount) {
+		&gatewaypreauth.DispatchContext{}) {
 		t.Fatal("purpose 头应大小写不敏感排除窗口")
 	}
 }

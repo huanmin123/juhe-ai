@@ -242,24 +242,39 @@ type ListItem struct {
 	// （授权实例行取来源账户值，与 ConcurrencyLimit 同规则）；RPMCurrent /
 	// RPMResetAt 由 hydrateCurrentConcurrency 按运行态端口叠加（ResetAt 为当前
 	// 窗口结束时刻 RFC3339，未配置/缺读时省略）。
-	RPMLimit                 int                   `json:"rpmLimit"`
-	RPMCurrent               int                   `json:"rpmCurrent"`
-	RPMResetAt               *string               `json:"rpmResetAt,omitempty"`
-	Priority                 int                   `json:"priority"`
-	SuperPriorityEnabled     bool                  `json:"superPriorityEnabled"`
-	FallbackEnabled          bool                  `json:"fallbackEnabled"`
-	ClientCompatibility      string                `json:"clientCompatibility"`
-	Tags                     []TagSummary          `json:"tags"`
-	HealthCheckModel         string                `json:"healthCheckModel"`
-	HealthCheckEndpointMode  string                `json:"healthCheckEndpointMode"`
-	ProxyProfileID           *string               `json:"proxyProfileId,omitempty"`
-	ProxyProfileName         *string               `json:"proxyProfileName,omitempty"`
-	ProxyProfileType         *string               `json:"proxyProfileType,omitempty"`
-	ProxyProfileEnabled      *bool                 `json:"proxyProfileEnabled,omitempty"`
-	ProxyProfileUnavailable  *bool                 `json:"proxyProfileUnavailable,omitempty"`
-	ProxyProfileErrorMessage *string               `json:"proxyProfileErrorMessage,omitempty"`
-	Schedulable              bool                  `json:"schedulable"`
-	AvailabilitySchedule     *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	RPMLimit                 int          `json:"rpmLimit"`
+	RPMCurrent               int          `json:"rpmCurrent"`
+	RPMResetAt               *string      `json:"rpmResetAt,omitempty"`
+	Priority                 int          `json:"priority"`
+	SuperPriorityEnabled     bool         `json:"superPriorityEnabled"`
+	FallbackEnabled          bool         `json:"fallbackEnabled"`
+	ClientCompatibility      string       `json:"clientCompatibility"`
+	Tags                     []TagSummary `json:"tags"`
+	HealthCheckModel         string       `json:"healthCheckModel"`
+	HealthCheckEndpointMode  string       `json:"healthCheckEndpointMode"`
+	ProxyProfileID           *string      `json:"proxyProfileId,omitempty"`
+	ProxyProfileName         *string      `json:"proxyProfileName,omitempty"`
+	ProxyProfileType         *string      `json:"proxyProfileType,omitempty"`
+	ProxyProfileEnabled      *bool        `json:"proxyProfileEnabled,omitempty"`
+	ProxyProfileUnavailable  *bool        `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage *string      `json:"proxyProfileErrorMessage,omitempty"`
+	// 代理池绑定呈现（代理池设计 §8.5）：proxyTargetType 是判别字段（"profile"
+	// = 配置的直接代理 / "pool" = 配置的代理池；无代理缺席）。池绑定时
+	// proxyProfileId 保持 null，配置绑定在 proxyPool*，有效成员（粘性租约）
+	// 在 proxyMemberProfile*；proxyPoolAssignableMemberCount 供前端区分
+	// 「待分配 / 待切换 / 无可用成员」。字段名 proxyProfileUnavailable 沿用
+	// 历史兼容（池绑定下语义扩展为「有效代理目标不可用」）。
+	ProxyTargetType                *string               `json:"proxyTargetType,omitempty"`
+	ProxyPoolID                    *string               `json:"proxyPoolId,omitempty"`
+	ProxyPoolName                  *string               `json:"proxyPoolName,omitempty"`
+	ProxyPoolEnabled               *bool                 `json:"proxyPoolEnabled,omitempty"`
+	ProxyMemberProfileID           *string               `json:"proxyMemberProfileId,omitempty"`
+	ProxyMemberProfileName         *string               `json:"proxyMemberProfileName,omitempty"`
+	ProxyMemberProfileType         *string               `json:"proxyMemberProfileType,omitempty"`
+	ProxyMemberProfileEnabled      *bool                 `json:"proxyMemberProfileEnabled,omitempty"`
+	ProxyPoolAssignableMemberCount *int                  `json:"proxyPoolAssignableMemberCount,omitempty"`
+	Schedulable                    bool                  `json:"schedulable"`
+	AvailabilitySchedule           *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
 	// AvailabilityScheduleGate 是 accounts.availability_schedule_gate 派生列
 	// （《时间计划闸门与账户状态解耦设计》§3.1/§5.4）：NULL = 无计划（恒开）/
 	// 1 = 时段内 / 0 = 时段外。前端以 status=active && gate=0 展示「非时间段」。
@@ -566,9 +581,29 @@ type listRow struct {
 	// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用 NullBool
 	// 对齐驱动类型。
 	proxyProfileEnabled    sql.NullBool
-	bindingSystemAccountID sql.NullString
-	boundGroupID           sql.NullString
-	boundGroupName         sql.NullString
+	proxyPoolID            sql.NullString
+	proxyPoolName          sql.NullString
+	proxyPoolEnabled       sql.NullBool
+	sourceProxyPoolID      sql.NullString
+	sourceProxyPoolName    sql.NullString
+	sourceProxyPoolEnabled sql.NullBool
+	// 代理池租约成员行（§8.5）：租约键 = source account（授权实例）或账户
+	// 自身；成员可用性 = member.enabled && profile.enabled && 健康非 dead
+	// 且 pool_health_failure_streak < 3。
+	leasePoolID               sql.NullString
+	leaseProfileID            sql.NullString
+	leaseMemberEnabled        sql.NullBool
+	leaseMemberName           sql.NullString
+	leaseMemberType           sql.NullString
+	leaseMemberProfileEnabled sql.NullBool
+	leaseMemberPoolHealth     sql.NullString
+	// 有效池的可分配成员数（§8.5）：member.enabled && proxy.enabled 且健康
+	// 非 dead 的成员计数；无有效池时为 0/NULL。
+	effectivePoolID           sql.NullString
+	poolAssignableMemberCount sql.NullInt64
+	bindingSystemAccountID    sql.NullString
+	boundGroupID              sql.NullString
+	boundGroupName            sql.NullString
 	// M10 authorized-instance projection columns: the runtime authorization
 	// stamp plus the source account's live values and the bound group's local
 	// scheduling overrides (Node account-management-list.repository.ts:290-322,
@@ -663,6 +698,23 @@ func listItemColumns(alias string) []string {
 		"proxy_profiles.name AS proxy_profile_name",
 		"proxy_profiles.type AS proxy_profile_type",
 		"proxy_profiles.enabled AS proxy_profile_enabled",
+		// 代理池绑定呈现（代理池设计 §8.5）：配置池行（自身 + source）、租约
+		// 成员行与有效池可分配成员数。
+		alias + ".proxy_pool_id",
+		"account_pools.name AS proxy_pool_name",
+		"account_pools.enabled AS proxy_pool_enabled",
+		"source_accounts.proxy_pool_id AS source_proxy_pool_id",
+		"source_proxy_pools.name AS source_proxy_pool_name",
+		"source_proxy_pools.enabled AS source_proxy_pool_enabled",
+		"account_leases.pool_id AS lease_pool_id",
+		"account_leases.proxy_profile_id AS lease_profile_id",
+		"lease_members.enabled AS lease_member_enabled",
+		"lease_profiles.name AS lease_member_name",
+		"lease_profiles.type AS lease_member_type",
+		"lease_profiles.enabled AS lease_member_profile_enabled",
+		"COALESCE(lease_profiles.pool_health_status, 'unknown') AS lease_member_pool_health",
+		"pool_member_counts.effective_pool_id AS effective_proxy_pool_id",
+		"pool_member_counts.assignable_member_count AS proxy_pool_assignable_member_count",
 		"group_bindings.system_account_id AS binding_system_account_id",
 		"group_bindings.group_id AS bound_group_id",
 		"bound_groups.name AS bound_group_name",
@@ -750,7 +802,48 @@ func (s *Store) listJoins() (cte, joins string) {
 		LEFT JOIN ` + s.table("vendors") + ` source_vendors
 			ON source_vendors.code = COALESCE(source_accounts.vendor_code, '')
 		LEFT JOIN ` + s.table("proxy_profiles") + ` source_proxy_profiles
-			ON source_proxy_profiles.id = source_accounts.proxy_profile_id`
+			ON source_proxy_profiles.id = source_accounts.proxy_profile_id
+		-- 代理池绑定呈现（代理池设计 §8.5）：配置池行（自身 + source）、粘性
+		-- 租约（租约键 = source account 或账户自身，§5.2）及其成员/档案行、
+		-- 有效池可分配成员数。每个 JOIN 均按唯一键且 LATERAL 聚合恒返回一行，
+		-- 分页 pageSize+1 探针不会 fan out。
+		LEFT JOIN ` + s.table("proxy_pools") + ` account_pools
+			ON account_pools.id = accounts.proxy_pool_id
+		LEFT JOIN ` + s.table("proxy_pools") + ` source_proxy_pools
+			ON source_proxy_pools.id = source_accounts.proxy_pool_id
+		LEFT JOIN ` + s.table("account_proxy_leases") + ` account_leases
+			ON account_leases.account_id = COALESCE(accounts.authorization_instance_source_account_id, accounts.id)
+			AND account_leases.pool_id = CASE
+					WHEN accounts.authorization_instance_source_account_id IS NOT NULL
+						THEN source_accounts.proxy_pool_id
+					ELSE accounts.proxy_pool_id
+				END
+		LEFT JOIN ` + s.table("proxy_pool_members") + ` lease_members
+			ON lease_members.pool_id = account_leases.pool_id
+			AND lease_members.proxy_profile_id = account_leases.proxy_profile_id
+		LEFT JOIN ` + s.table("proxy_profiles") + ` lease_profiles
+			ON lease_profiles.id = account_leases.proxy_profile_id
+			AND lease_profiles.pool_health_failure_streak < 3
+		LEFT JOIN LATERAL (
+			SELECT CASE
+					WHEN accounts.authorization_instance_source_account_id IS NOT NULL
+						THEN source_accounts.proxy_pool_id
+					ELSE accounts.proxy_pool_id
+				END AS effective_pool_id,
+				COUNT(*) AS assignable_member_count
+			FROM ` + s.table("proxy_pool_members") + ` pool_member_rows
+			INNER JOIN ` + s.table("proxy_profiles") + ` pool_member_profiles
+				ON pool_member_profiles.id = pool_member_rows.proxy_profile_id
+			WHERE pool_member_rows.pool_id = CASE
+					WHEN accounts.authorization_instance_source_account_id IS NOT NULL
+						THEN source_accounts.proxy_pool_id
+					ELSE accounts.proxy_pool_id
+				END
+				AND pool_member_rows.enabled = TRUE
+				AND pool_member_profiles.enabled = TRUE
+				AND COALESCE(pool_member_profiles.pool_health_status, 'unknown') <> 'dead'
+				AND pool_member_profiles.pool_health_failure_streak < 3
+		) pool_member_counts ON TRUE`
 	return cte, joins
 }
 
@@ -773,6 +866,12 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.healthCheckModel,
 		&row.healthCheckEndpointMode, &row.proxyProfileID, &row.proxyProfileName,
 		&row.proxyProfileType, &row.proxyProfileEnabled,
+		&row.proxyPoolID, &row.proxyPoolName, &row.proxyPoolEnabled,
+		&row.sourceProxyPoolID, &row.sourceProxyPoolName, &row.sourceProxyPoolEnabled,
+		&row.leasePoolID, &row.leaseProfileID, &row.leaseMemberEnabled,
+		&row.leaseMemberName, &row.leaseMemberType, &row.leaseMemberProfileEnabled,
+		&row.leaseMemberPoolHealth,
+		&row.effectivePoolID, &row.poolAssignableMemberCount,
 		&row.bindingSystemAccountID, &row.boundGroupID, &row.boundGroupName,
 		&row.authorizationID, &row.sourceAccountID, &row.authorizationEffectiveSourceType,
 		&row.sourceProviderCode, &row.sourceProviderName, &row.sourceProviderProtocolProfileID,
@@ -1205,13 +1304,90 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 			item.BindingSystemAccountID = &binding
 		}
 	}
+	// 代理目标呈现（代理池设计 §8.5 + §5.2 解析顺序）：source pool > source
+	// profile > 实例自身 direct profile；实例自身的池绑定不参与解析（普通账
+	// 户使用自身绑定）。池绑定行 proxyProfileId 恒 null（配置绑定在 proxyPool*，
+	// 有效成员在 proxyMemberProfile*）；直接代理行补 proxyTargetType="profile"；
+	// 无代理行不写 targetType。
+	effectivePoolID := ""
+	effectivePoolName := sql.NullString{}
+	effectivePoolEnabled := sql.NullBool{}
 	if authorized {
+		if row.sourceProxyPoolID.Valid && row.sourceProxyPoolID.String != "" {
+			effectivePoolID = row.sourceProxyPoolID.String
+			effectivePoolName = row.sourceProxyPoolName
+			effectivePoolEnabled = row.sourceProxyPoolEnabled
+		}
+	} else if row.proxyPoolID.Valid && row.proxyPoolID.String != "" {
+		effectivePoolID = row.proxyPoolID.String
+		effectivePoolName = row.proxyPoolName
+		effectivePoolEnabled = row.proxyPoolEnabled
+	}
+	if effectivePoolID != "" {
+		targetType := "pool"
+		item.ProxyTargetType = &targetType
+		poolID := effectivePoolID
+		item.ProxyPoolID = &poolID
+		if effectivePoolName.Valid && effectivePoolName.String != "" {
+			item.ProxyPoolName = &effectivePoolName.String
+		}
+		if effectivePoolEnabled.Valid {
+			enabled := effectivePoolEnabled.Bool
+			item.ProxyPoolEnabled = &enabled
+		}
+		assignable := int(row.poolAssignableMemberCount.Int64)
+		item.ProxyPoolAssignableMemberCount = &assignable
+		// 有效成员（粘性租约，§8.5）：租约必须指向当前有效池，且成员可用
+		//（member.enabled && profile.enabled && 健康非 dead；NULL 按 unknown）。
+		hasLease := row.leaseProfileID.Valid && row.leaseProfileID.String != ""
+		memberUsable := false
+		if hasLease && row.leasePoolID.Valid && row.leasePoolID.String == effectivePoolID {
+			if row.leaseMemberEnabled.Valid && row.leaseMemberEnabled.Bool &&
+				row.leaseMemberProfileEnabled.Valid && row.leaseMemberProfileEnabled.Bool &&
+				!strings.EqualFold(strings.TrimSpace(row.leaseMemberPoolHealth.String), "dead") {
+				memberUsable = true
+				memberID := row.leaseProfileID.String
+				item.ProxyMemberProfileID = &memberID
+				item.ProxyMemberProfileName = nullPtrString(row.leaseMemberName)
+				if memberType := normalizedProxyType(row.leaseMemberType); memberType != nil {
+					item.ProxyMemberProfileType = memberType
+				}
+				memberEnabled := row.leaseMemberProfileEnabled.Bool
+				item.ProxyMemberProfileEnabled = &memberEnabled
+			}
+		}
+		// 不可用决策（§8.5）：池停用/缺失与池无可分配成员是池级不可用；有
+		// 租约但成员不可用且池内仍有可分配成员是「待切换」；无租约且有可分
+		// 配成员是「待分配」——两者都不标红（proxyProfileUnavailable=false）。
+		poolEnabled := effectivePoolEnabled.Valid && effectivePoolEnabled.Bool
+		var unavailable bool
+		var message string
+		switch {
+		case !poolEnabled:
+			unavailable = true
+			message = "代理池不存在或已停用，请选择已启用的代理池"
+		case assignable == 0:
+			unavailable = true
+			message = "代理池没有可用成员"
+		case hasLease && !memberUsable:
+			unavailable = true
+			message = "当前代理成员不可用，将在下次请求时重新分配"
+		}
+		if unavailable {
+			item.ProxyProfileUnavailable = &unavailable
+			if access.CanAccessAll() && message != "" {
+				item.ProxyProfileErrorMessage = &message
+			}
+		}
+	} else if authorized {
 		// Node :525-528 + :561-565: the authorized proxy id is source-only
 		// while the display row resolves through
 		// COALESCE(source_proxy_profile_id, configured_proxy_profile_id)
 		// (:451-452). With no source proxy the display row falls back to the
 		// configured profile and the id stays undefined.
 		if row.sourceProxyProfileID.Valid && row.sourceProxyProfileID.String != "" {
+			profileTargetType := "profile"
+			item.ProxyTargetType = &profileTargetType
 			proxyID := row.sourceProxyProfileID.String
 			item.ProxyProfileID = &proxyID
 			resolved := row.resolvedSourceProxyProfileID.Valid && row.resolvedSourceProxyProfileID.String != ""
@@ -1234,6 +1410,8 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 				}
 			}
 		} else if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
+			profileTargetType := "profile"
+			item.ProxyTargetType = &profileTargetType
 			item.ProxyProfileName = nullPtrString(row.proxyProfileName)
 			if proxyType := normalizedProxyType(row.proxyProfileType); proxyType != nil {
 				item.ProxyProfileType = proxyType
@@ -1244,6 +1422,8 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 			}
 		}
 	} else if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
+		profileTargetType := "profile"
+		item.ProxyTargetType = &profileTargetType
 		item.ProxyProfileID = &row.proxyProfileID.String
 		item.ProxyProfileName = nullPtrString(row.proxyProfileName)
 		if proxyType := normalizedProxyType(row.proxyProfileType); proxyType != nil {

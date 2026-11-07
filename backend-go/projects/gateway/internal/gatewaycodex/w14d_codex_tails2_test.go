@@ -1,35 +1,16 @@
 // w14d_codex_tails2_test.go covers strategy protocol detection, codex usage
 // header plumbing, encrypted-content sanitizers, compaction contract search
-// arms, source identity fallbacks and the remaining bridge tails.
+// arms and source identity fallbacks. 2026-11-07 bridge retirement removed
+// the bridge tails cases and the contextstore/segments/chatbridgestate notes below.
 //
 // w14d 剩余未覆盖语句登记（go test ./internal/gatewaycodex/ -cover，共 125
 // 条，均为防御分支、需单请求中途注入 store 故障、或需要真实 PostgreSQL
 // driver 的路径，不构成业务缺口）：
-//   - contextstore.go：Touch 前后端 UPDATE 错误臂（460-480，Touch 吞掉
-//     session 写错误、行级错误需在读取成功后令写入失败）、Close 错误聚合
-//     （493）、shard sql.Open/schema 应用错误臂（355/358，MkdirAll 已拦）、
-//     Save 内部 tx/upsert 错误臂（381-418，错误只能来自坏根目录且已在
-//     databaseForKey 拦截）、postgres driver 全部行（526-590，需真实 PG
-//     juhe_codex_context schema，SQLite 承载时 schema 缺失已在既有测试断言
-//     错误透传）。
-//   - segments.go：gzip write/close（70/73）、Seek/WriteAt（114/117，需底层
-//     io 故障注入）、n==0 读（161）、resolve 相对回退臂（198-209 的 Abs/Rel
-//     失败与 rel=="." 判定，Windows 下 prefix 已拦）、读路径解码/大小尾臂
-//     （173-183，损坏文件先在校验或 EOF 臂返回）、base36 负数/零（272-286，
-//     无调用方传负值）。
 //   - turnretry.go：CAS 错误透传与耗尽（437、543、549-551、621、627-629，
 //     fake 注入的 CAS=false 已覆盖 remember 侧，clear 侧需先写入再换成
 //     失败 store 的组合）、memory 清理循环（485-499、644、669、722）、
 //     观察窗口尾部（835/855/875 需 32+ 条观测）。
-//   - chatbridgestate.go：parseGatewayJSONObject 错误臂（228，函数恒返回
-//     nil error）、startIndex<0（340，恢复输入恒不短于当前输入）、32MB 尺寸
-//     断言（373）、preflight 摘要读的 store/段错误臂（614/651/663/671/678 需
-//     精确到层的故障注入，663 已由段损坏覆盖变体）、mapping 非 responses 家
-//     族（752）、nativeResponsesInputFromMaterialized 错误臂（783）、
-//     currentInputFromMaterializedMutation 非数组臂（866，需 LastRenderedBody
-//     且字符串输入的组合）、encodeInline marshal 错误臂（957）。
-//   - 其余：compactpreflight 摘要调度错误/nil exchange 组合（164/178/187/
-//     230/257）、turnprobe 协调错误臂（166-212、302/326/380 需 handoff 故障
+//   - turnprobe 协调错误臂（166-212、302/326/380 需 handoff 故障
 //     注入）、compactioncontract 前缀匹配（116，前缘字节序依赖）、
 //     strategy.go derive state key（274，需已解析的 official session）、
 //     gemini 空路径归一（581）、sourceidentity gemini interaction 回调
@@ -39,12 +20,8 @@ package gatewaycodex
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -347,122 +324,3 @@ func TestW14dPortsAuditMetadataFallback(t *testing.T) {
 		t.Fatal("fallback metadata must render")
 	}
 }
-
-func TestW14dBridgeInvalidJSONBodyState(t *testing.T) {
-	service, _, _, _, _ := newBridgeService(t)
-	req := newTestRequest(t, "POST", "/v1/responses", nil, nil)
-	req.Body = &gatewaybody.Request{
-		RawBody: []byte("{broken"),
-		State:   &gatewaybody.BodyState{JSONParseStatus: gatewaybody.JSONParseStatusInvalidJSON},
-	}
-	record, err := service.ParseGatewayJSONObjectPublic(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(record) != 0 {
-		t.Fatalf("invalid json body = %v", record)
-	}
-}
-
-func TestW14dBridgeCompactExternalPrevious(t *testing.T) {
-	service, registry, _, _, _ := newBridgeService(t)
-	ctx := context.Background()
-	req := newTestRequest(t, "POST", "/v1/responses/compact", nil, nil)
-	body := map[string]any{"model": "gpt-5", "previous_response_id": "resp_external_1", "input": []any{}}
-	raw, _ := json.Marshal(body)
-	attachBody(req, body, raw)
-	res, resWriter := newTrackedWriter()
-	completed, err := service.ApplyContextStatePreflight(ctx, registry, bridgeBaseInput(req, resWriter, &recordedAudit{}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = res
-	_ = completed
-	state, ok := registry.Get(req)
-	if !ok || state.PreviousResponseKind != PreviousKindExternal {
-		t.Fatalf("state = %+v", state)
-	}
-}
-
-func TestW14dBridgeCompactSummaryReadArms(t *testing.T) {
-	store := newPostgresContextStateStore(t)
-	segmentsRoot := t.TempDir()
-	clock := newFakeClock(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC))
-	service, err := NewChatBridgeStateService(ChatBridgeStateConfig{CodexContextRoot: segmentsRoot}, store, nil, clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.Logger = &recordingLogger{}
-	service.Sink = &recordedSink{}
-	registry := NewContextRequestStateRegistry()
-	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
-
-	// A stored compact whose summary digest does not match the payload
-	// renders payload_unavailable through the preflight (L663/671/678).
-	snapshot, err := service.CreateChatBridgeCompactSnapshot(ctx, CreateChatBridgeCompactSnapshotInput{
-		SessionID: "w14d-sess-cx", Boundary: boundary, Summary: "真实摘要",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Corrupt the stored segment bytes so the read fails (L663).
-	corruptPath := ""
-	entries, _ := os.ReadDir(filepath.Join(segmentsRoot, "sessions"))
-	for _, entry := range entries {
-		hourDirs, _ := os.ReadDir(filepath.Join(segmentsRoot, "sessions", entry.Name(), "segments"))
-		for _, hour := range hourDirs {
-			corruptPath = filepath.Join(segmentsRoot, "sessions", entry.Name(), "segments", hour.Name())
-		}
-	}
-	if corruptPath != "" {
-		if err := os.WriteFile(corruptPath, []byte("garbage"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, encrypted := range []string{
-		snapshot.EncryptedContent,
-		codexCompactionReferencePrefix + "w14d-compact-missing." + strings.Repeat("b", 64),
-	} {
-		req := newTestRequest(t, "POST", "/v1/responses", nil, nil)
-		reqBody := map[string]any{"model": "gpt-5", "input": []any{
-			map[string]any{"type": "compaction", "encrypted_content": encrypted},
-		}}
-		rawBody, _ := json.Marshal(reqBody)
-		attachBody(req, reqBody, rawBody)
-		if _, err := service.ApplyContextStatePreflight(ctx, registry, bridgeBaseInput(req, func() *gatewaypreauth.TrackingWriter {
-			_, writer := newTrackedWriter()
-			return writer
-		}(), &recordedAudit{})); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// RestoreChatBridgeInputForCompact with a broken payload reference
-	// renders the payload_unavailable outcome (L494).
-	missing := CodexContextResponseStateIndex{
-		CodexContextStateBoundary: boundary,
-		ResponseID:                "resp_chat_bridge_miss2", SessionID: "w14d-sess-m2",
-		ExpiresAt: expiresAtFromISO(clock.Now()),
-		CodexContextPayloadReference: CodexContextPayloadReference{
-			StorageKey: "sessions/none/segments/none.json.gz", SHA256: strings.Repeat("0", 64),
-			Compression: "gzip", SchemaVersion: 2,
-		},
-	}
-	if err := store.SaveResponseStateRow(ctx, missing); err != nil {
-		t.Fatal(err)
-	}
-	result, err := service.RestoreChatBridgeInputForCompact(ctx, struct {
-		PreviousResponseID string
-		Boundary           CodexContextStateBoundary
-		CurrentInput       any
-	}{PreviousResponseID: "resp_chat_bridge_miss2", Boundary: boundary, CurrentInput: []any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Outcome != RestoreOutcomePayloadUnavail {
-		t.Fatalf("outcome = %q", result.Outcome)
-	}
-}
-
-var _ = errors.New

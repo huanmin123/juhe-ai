@@ -28,6 +28,7 @@ const (
 	MetricReasonTransport     GatewayUpstreamFailureMetricReasonClass = "transport"
 	MetricReasonUpstream5xx   GatewayUpstreamFailureMetricReasonClass = "upstream_5xx"
 	MetricReasonUpstream4xx   GatewayUpstreamFailureMetricReasonClass = "upstream_4xx"
+	MetricReasonVersionGate   GatewayUpstreamFailureMetricReasonClass = "version_gate"
 	MetricReasonUnknown       GatewayUpstreamFailureMetricReasonClass = "unknown"
 )
 
@@ -89,6 +90,11 @@ func classifyMetricReason(input GatewayUpstreamFailureClassificationInput) Gatew
 			return MetricReasonRateLimit
 		case *input.StatusCode == 401 || *input.StatusCode == 403:
 			return MetricReasonAuthorization
+		case *input.StatusCode == 426:
+			// 版本门槛：与 gatewayusage classifier 同步（Prometheus指标暴露设计
+			// 基数约束 2026-11-06 登记）。上游 HTTP 426 归 version_gate，纯状态码
+			// 判定，零文案解析；仅诊断计数面，不写账户状态、不触发自动处置。
+			return MetricReasonVersionGate
 		case *input.StatusCode >= 500:
 			return MetricReasonUpstream5xx
 		case *input.StatusCode >= 400:

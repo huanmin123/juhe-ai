@@ -39,7 +39,7 @@ func mediaDomainPreflightService(t *testing.T, affinity *fakeGroupAffinityPort, 
 		s.SessionAffinity = sessionAffinity
 		s.SessionIdentity = &fixedSessionIdentity{identity: SessionIdentity{SessionID: "session_1", ConversationKey: "conv_generic"}}
 		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 	return service, cache
 }

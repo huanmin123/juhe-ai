@@ -27,7 +27,7 @@ const w9hFixtureNow = "2026-09-06T12:00:00.000Z"
 // w9hBusinessTables 是 fresh 库需要预置的 juhe_business 权威表，按 FK 依赖
 // 序排列（fixtures 以 sys_admin/gpt/deepseek 写行，相关外键全部落在集合内）。
 var w9hBusinessTables = []string{
-	"system_accounts", "system_teams", "vendors", "system_settings", "proxy_profiles",
+	"system_accounts", "system_teams", "vendors", "system_settings", "proxy_profiles", "proxy_pools",
 	"resource_authorizations", "resource_authorization_grants", "account_connections",
 	"account_endpoint_modes", "accounts", "account_api_key_runtime_states", "groups", "group_accounts",
 	"group_account_stats_dirty",

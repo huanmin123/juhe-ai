@@ -89,6 +89,14 @@ func TestEntryMappingPairsGoldenMatchesWriteMatrix(t *testing.T) {
 		rows = append(rows, goldenRow{source: source, target: target, modes: item.TargetModes})
 	}
 
+	// 协议等价判定不变量：7 pair 矩阵内全部 pair 必须满足同族改名或 Gemini
+	// stream 归一（2026-11-07 跨协议映射退役）。矩阵若重新引入跨族 pair 在此转红。
+	for _, row := range rows {
+		if !isProtocolEquivalentEntryMappingFamily(row.source, row.target) {
+			t.Fatalf("golden pair %s -> %s 不满足协议等价判定 isProtocolEquivalentEntryMappingFamily（矩阵只允许同族改名与 Gemini stream 归一）", row.source, row.target)
+		}
+	}
+
 	// 正向：golden 每对必须在写侧矩阵中且 modes 集合完全相等。
 	for _, row := range rows {
 		key := row.source + "\x00" + row.target
@@ -130,7 +138,7 @@ func TestEntryMappingPairsGoldenMatchesWriteMatrix(t *testing.T) {
 // TestEntryMappingPairsGoldenMatchesRuntimeAdmissibility 断言运行时
 // IsAdmissibleModelMapping 与 golden 矩阵一致：
 //
-//  1. golden 每对的同族改名（source==upstream 分支）与桥接行都放行；
+//  1. golden 每对（全部是协议等价 pair）运行时都放行；
 //  2. 以 golden 全体 source/target family 穷举全组合，运行时 admissible 的
 //     pair 集合恰等于 golden（运行时单方面扩权或缩权都转红）。
 func TestEntryMappingPairsGoldenMatchesRuntimeAdmissibility(t *testing.T) {

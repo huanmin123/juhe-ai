@@ -265,7 +265,8 @@ for (const name of removedCutoverGateEnvNames) delete env[name]
 
 // 2026-09-19 零配置收口（2026-10-25 存储收口后收窄为 PG 恒定语义）：Go 侧在未
 // 配置时自动派生普通文件目录（JUHE_AI_DATA_DIR 缺省 ./data 下派生
-// usage-record-spool / codex-context / logs / chat-assets / audit-blob）与
+// usage-record-spool / logs / audit-blob；codex-context 已随 2026-11-07 跨协议
+// 桥退役停止派生）与
 // listen address / log dir 两个启动期默认值；PG/Redis 连接串缺失由 Go 侧
 // fail-fast，launcher 不注入任何存储语义。
 if (project === 'jobs') {

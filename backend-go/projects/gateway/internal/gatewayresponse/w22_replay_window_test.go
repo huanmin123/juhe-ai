@@ -778,3 +778,21 @@ func (l *w22CaptureLogger) warnOf(event string) *w22LogEvent {
 	}
 	return nil
 }
+
+func TestW22IsolatorHeldBytesSurviveFullDrain(t *testing.T) {
+	// 2026-11-07 批C 回归：push 快路径（dropped 未增 && pending 排空 → 原样返
+	// 回入参切片）在「入口 pending 已持有跨 push 字节」时不得生效——此前判据
+	// 无法区分两种形态，持有后恰好排空会静默丢弃此前字节（上游 TCP 分片切断
+	// SSE 事件行 / 响应侧占位符悬挂还原改变分片边界时必现）。
+	iso := &parseErrorEventIsolator{}
+	head := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"来电 ")
+	rest := []byte("你好\"}}]}\n\n")
+	if out := iso.push(head); len(out) != 0 {
+		t.Fatalf("未完结事件前缀应被持有: %q", string(out))
+	}
+	out := iso.push(rest)
+	want := string(head) + string(rest)
+	if string(out) != want {
+		t.Fatalf("排空时必须返回重组字节（含此前持有前缀）：\nwant=%q\ngot =%q", want, string(out))
+	}
+}

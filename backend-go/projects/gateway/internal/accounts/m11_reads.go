@@ -201,8 +201,19 @@ type AdvancedDetail struct {
 	EffectiveErrorHandlingRules  []EffectiveAccountErrorHandlingRule `json:"effectiveErrorHandlingRules"`
 	ModelMappings                []ModelMapping                      `json:"modelMappings"`
 	ProxyProfileID               *string                             `json:"proxyProfileId,omitempty"`
-	AvailabilitySchedule         *AvailabilitySchedule               `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt             *string                             `json:"accountExpiresAt,omitempty"`
+	// 代理池配置绑定摘要（代理池设计 §8.3）：配置绑定 proxyPoolId 与池摘要
+	//（名称/策略/成员数/可分配成员数）及当前租约有效成员。编辑回填必须使用
+	// 配置绑定（proxyProfileId/proxyPoolId），不得回填有效成员——否则保存会
+	// 把池改成直接代理。授权实例行读来源账户绑定（§5.2 source 覆盖）。
+	ProxyPoolID                    *string               `json:"proxyPoolId,omitempty"`
+	ProxyPoolName                  *string               `json:"proxyPoolName,omitempty"`
+	ProxyPoolStrategy              *string               `json:"proxyPoolStrategy,omitempty"`
+	ProxyPoolMemberCount           *int                  `json:"proxyPoolMemberCount,omitempty"`
+	ProxyPoolAssignableMemberCount *int                  `json:"proxyPoolAssignableMemberCount,omitempty"`
+	ProxyMemberProfileID           *string               `json:"proxyMemberProfileId,omitempty"`
+	ProxyMemberProfileName         *string               `json:"proxyMemberProfileName,omitempty"`
+	AvailabilitySchedule           *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt               *string               `json:"accountExpiresAt,omitempty"`
 	// BackgroundProbeEnabled 回显后台自动探测总开关（总开关设计 §2）：授权实例
 	// 行跟随来源账户值（与持续恢复探活同款 source 投影）。
 	BackgroundProbeEnabled                        bool           `json:"backgroundProbeEnabled"`
@@ -238,6 +249,8 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		credentialsEncrypted       sql.NullString
 		sourceCredentialsEncrypted sql.NullString
 		proxyProfileID             sql.NullString
+		proxyPoolID                sql.NullString
+		sourceProxyPoolID          sql.NullString
 		availabilityScheduleJSON   sql.NullString
 		accountExpiresAt           sql.NullString
 		backgroundProbeEnabled     int
@@ -273,6 +286,8 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 			END AS credentials_encrypted,
 			source_accounts.credentials_encrypted AS source_credentials_encrypted,
 			accounts.proxy_profile_id,
+			accounts.proxy_pool_id,
+			source_accounts.proxy_pool_id AS source_proxy_pool_id,
 			accounts.availability_schedule_json,
 			accounts.account_expires_at,
 			accounts.background_probe_enabled,
@@ -309,7 +324,8 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID,
 		&row.credentialsEncrypted, &row.sourceCredentialsEncrypted,
-		&row.proxyProfileID, &row.availabilityScheduleJSON, &row.accountExpiresAt,
+		&row.proxyProfileID, &row.proxyPoolID, &row.sourceProxyPoolID,
+		&row.availabilityScheduleJSON, &row.accountExpiresAt,
 		&row.backgroundProbeEnabled, &row.probeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
 		&row.authorizationID, &row.sourceAccountID, &row.activeAuthorizationID,
 		&row.sourceStatus, &row.sourceSchedulable,
@@ -418,6 +434,79 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		LockState:                                  "UNLOCKED",
 		LockDeathTimeoutSeconds:                    300,
 		LockRetryIntervalSeconds:                   5,
+	}
+	// 代理池配置绑定摘要（代理池设计 §8.3）：配置绑定按 §5.2 解析（授权实例
+	// 读来源账户池；实例自身的池绑定不参与）；池行缺失（FK 保证存在，兜底
+	// 静默跳过摘要）不阻断详情。编辑回填使用配置绑定，不回填有效成员。
+	effectivePoolID := ""
+	effectiveLeaseKey := row.id
+	if isAuthorized {
+		effectivePoolID = strings.TrimSpace(row.sourceProxyPoolID.String)
+		effectiveLeaseKey = row.sourceAccountID.String
+	} else {
+		effectivePoolID = strings.TrimSpace(row.proxyPoolID.String)
+	}
+	if effectivePoolID != "" {
+		var pool struct {
+			id       string
+			name     string
+			strategy string
+			enabled  bool
+		}
+		err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, name, strategy, enabled
+			FROM `+s.table("proxy_pools")+` WHERE id = ? LIMIT 1`), effectivePoolID).
+			Scan(&pool.id, &pool.name, &pool.strategy, &pool.enabled)
+		if !errors.Is(err, sql.ErrNoRows) {
+			if err != nil {
+				return nil, err
+			}
+			poolID := pool.id
+			poolName := pool.name
+			poolStrategy := pool.strategy
+			detail.ProxyPoolID = &poolID
+			detail.ProxyPoolName = &poolName
+			detail.ProxyPoolStrategy = &poolStrategy
+			var totalMembers, assignableMembers int
+			// proxy_profiles.enabled/pool_health_status 为 boolean/text 列：
+			// 成员可分配 = member.enabled && profile.enabled && 健康非 dead 且
+			// streak < 3（NULL 按 unknown，§6.2）。
+			if err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*),
+					COUNT(*) FILTER (
+						WHERE pool_members.enabled = TRUE
+							AND pool_profiles.enabled = TRUE
+							AND COALESCE(pool_profiles.pool_health_status, 'unknown') <> 'dead'
+							AND pool_profiles.pool_health_failure_streak < 3)
+				FROM `+s.table("proxy_pool_members")+` pool_members
+				INNER JOIN `+s.table("proxy_profiles")+` pool_profiles
+					ON pool_profiles.id = pool_members.proxy_profile_id
+				WHERE pool_members.pool_id = ?`), effectivePoolID).
+				Scan(&totalMembers, &assignableMembers); err != nil {
+				return nil, err
+			}
+			detail.ProxyPoolMemberCount = &totalMembers
+			detail.ProxyPoolAssignableMemberCount = &assignableMembers
+			// 有效成员摘要（粘性租约，租约键 = source account 或账户自身）。
+			var leaseMember struct {
+				profileID string
+				name      sql.NullString
+			}
+			err := s.db.QueryRowContext(ctx, s.bind(`SELECT account_leases.proxy_profile_id,
+					lease_profiles.name
+				FROM `+s.table("account_proxy_leases")+` account_leases
+				LEFT JOIN `+s.table("proxy_profiles")+` lease_profiles
+					ON lease_profiles.id = account_leases.proxy_profile_id
+				WHERE account_leases.account_id = ? AND account_leases.pool_id = ?
+				LIMIT 1`), effectiveLeaseKey, effectivePoolID).
+				Scan(&leaseMember.profileID, &leaseMember.name)
+			if !errors.Is(err, sql.ErrNoRows) {
+				if err != nil {
+					return nil, err
+				}
+				memberID := leaseMember.profileID
+				detail.ProxyMemberProfileID = &memberID
+				detail.ProxyMemberProfileName = nullPtrString(leaseMember.name)
+			}
+		}
 	}
 	if isAuthorized {
 		detail.AccessType = "authorized"

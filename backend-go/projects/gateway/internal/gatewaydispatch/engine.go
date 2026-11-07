@@ -96,10 +96,13 @@ type Engine struct {
 	// request capture does not implement it (G17).
 	AttemptAuditSinkFactory func() AttemptAuditSink
 
-	Suppression           SuppressionPort
-	Degradation           DegradationPort
-	Latency               LatencyDegradationPort
-	ProxyHealth           ProxyHealthPort
+	Suppression SuppressionPort
+	Degradation DegradationPort
+	Latency     LatencyDegradationPort
+	ProxyHealth ProxyHealthPort
+	// ProxyTargets 是池绑定账户的请求时健康门/租约修复端口（代理池设计
+	// §10.1）：nil = 未装配（组合测试/旧形态），直接代理不受影响。
+	ProxyTargets          AccountProxyTargetResolver
 	ClientIPAvoidance     ClientIPAvoidancePort
 	ClientSourceAvoidance ClientSourceAvoidancePort
 	HotQuality            HotQualityPort
@@ -112,16 +115,15 @@ type Engine struct {
 	Quota                AuthorizationQuotaChecker
 	// InflightQuota 是请求级在途额度预占端口（T93-1/T93-4）：nil = 未装配，
 	// 只保留 preflight 的已结算额度拒绝，不做在途预留。
-	InflightQuota InflightQuotaPort
-	Concurrency   AccountConcurrencyStore
-	Cache                RuntimeCachePort
-	Locks                AccountLocks
-	RecoverableWait      RecoverableSuppressionWaiter
-	KeyModel             KeyModelAdmission
-	KeyModelStore        gatewayaccounteffects.KeyModelRuntimeStore
-	Circuits             *gatewaycircuit.CircuitService
-	APIKeyEffects        APIKeyEffectsPort
-	CodexBridge          CodexBridgePort
+	InflightQuota   InflightQuotaPort
+	Concurrency     AccountConcurrencyStore
+	Cache           RuntimeCachePort
+	Locks           AccountLocks
+	RecoverableWait RecoverableSuppressionWaiter
+	KeyModel        KeyModelAdmission
+	KeyModelStore   gatewayaccounteffects.KeyModelRuntimeStore
+	Circuits        *gatewaycircuit.CircuitService
+	APIKeyEffects   APIKeyEffectsPort
 	// ResponseTransformer 挂 B-4 跨协议桥响应面（Node transformUpstreamResponse
 	// driver 链；UpstreamResponseTransformer 端口定义在 ports.go）。nil 时上游
 	// 响应按协议直通（B-4 之前的透传行为）。

@@ -36,6 +36,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
@@ -60,6 +61,9 @@ type chainRuntimeServices struct {
 	AuthzQuota              *gatewayquota.AuthorizationQuotaService
 	InflightQuota           *gatewayquota.InflightQuotaService
 	Accounts                *chainAccountsSelector
+	// ProxyPoolTargets 是 dispatch 准备阶段的池绑定请求时健康门/租约修复
+	// （代理池设计 §10.1）。nil = 未装配（组合测试），直接代理不受影响。
+	ProxyPoolTargets *chainProxyPoolTargetResolver
 	// OAuthState 是 OAuth 域跨进程锁/凭据版本（crossprocessstate）：
 	// 独立客户端启用 ContextTimeoutEnabled，让 50ms 读预算真正约束命令执行。
 	OAuthState *crossprocessstate.Client
@@ -127,8 +131,10 @@ type chainRuntimeServices struct {
 	// 必须把同一实例传给 engine.Concurrency（chainRuntimeDeps.
 	// ConcurrencyTracker）与本 HighConcurrencyQueue；事实源分裂会让 queue
 	// 读数恒 0、WaitForCapacity 永远立即 Ready、请求永不入队且排队者
-	// 永不被唤醒。
-	ConcurrencyTracker *gatewayclientip.MemoryAccountConcurrency
+	// 永不被唤醒。生产为 Redis 驱动，组合测试可为 memory 驱动。
+	ConcurrencyTracker accountConcurrencyTracker
+	// RealtimeConnections 是每 API Key WS 并发连接计数（生产 Redis 全局）。
+	RealtimeConnections *chainRealtimeConnectionLimiter
 	// SuppressionStore is the D-134 local account suppression state.
 	SuppressionStore *gatewaycircuit.LocalSuppressionStore
 	// SuppressionWaiter is the D-134 recoverable wait engine behind the
@@ -359,6 +365,38 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway accounts selector: %w", selectorErr)
 	}
 	services.Accounts = selector
+	// 代理池（代理池设计 §10.1）：候选 hydration 用只读解析器（不写租约）；
+	// dispatch 准备阶段用带 PG 租约写入器的解析器，在本次请求内执行健康门与
+	// CAS 重分配。健康读 Redis 共享领域键（C7-R），缺失/失败回退 PG。
+	proxyStore, proxyStoreErr := proxyresolve.NewPostgresStore(composed.db)
+	if proxyStoreErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create proxy pool store: %w", proxyStoreErr)
+	}
+	proxyHealthReader := proxyresolve.NewRedisHealthReader(oauthStateClient, cfg.RedisNamespace).
+		WithTimeout(100 * time.Millisecond)
+	proxyDecrypter := chainProxyPasswordDecrypter{secret: cfg.Secret}
+	proxyReadResolver, proxyReadErr := proxyresolve.New(proxyresolve.Options{
+		Store: proxyStore, Health: proxyHealthReader, Decrypter: proxyDecrypter,
+	})
+	if proxyReadErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create proxy pool read resolver: %w", proxyReadErr)
+	}
+	selector.SetProxyTargets(proxyReadResolver)
+	proxyLeaseWriter, proxyLeaseErr := proxyresolve.NewPGLeaseWriter(composed.db)
+	if proxyLeaseErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create proxy pool lease writer: %w", proxyLeaseErr)
+	}
+	proxyRequestResolver, proxyRequestErr := proxyresolve.New(proxyresolve.Options{
+		Store: proxyStore, Health: proxyHealthReader, Decrypter: proxyDecrypter, Writer: proxyLeaseWriter,
+	})
+	if proxyRequestErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create proxy pool request resolver: %w", proxyRequestErr)
+	}
+	services.ProxyPoolTargets = newChainProxyPoolTargetResolver(proxyRequestResolver, slog.Default())
 	models.SetAccountsSelector(selector)
 	// /v1/models 账户并集装载器（网关模型列表账户并集设计 §6.3/§6.4）：复用
 	// 同一 selector 实例——db 句柄、table/bind 方言与授权臂判定同源，避免第二
@@ -378,16 +416,24 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway model catalog source: %w", catalogErr)
 	}
 	models.SetCatalogSource(catalogSource)
-	// Live concurrency stays process-local (Node standalone semantics; the
-	// redis-driver live counter lands with the concurrency flip slice). One
-	// tracker instance is shared by the cache overlay, the dispatch store and
-	// the suppression precheck projection.
-	concurrencyTracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
+	// 多副本账户并发/RPM 事实源：生产恒用 Redis（与 HighConcurrencyQueue、
+	// 管理列表、dispatch 共用同一 tracker）；Redis 失败在 acquire 路径显式
+	// 上抛，不静默按空闲处理。组合测试仍可注入 memory 驱动。
+	concurrencyTracker, concurrencyErr := gatewayclientip.NewRedisAccountConcurrency(gatewayclientip.RedisAccountConcurrencyOptions{
+		Client:    stateClient,
+		Namespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainConcurrency),
+	})
+	if concurrencyErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create Redis account concurrency tracker: %w", concurrencyErr)
+	}
 	// E2E-FINDING #13：tracker 同步暴露到 services，供生产组合根传入
 	// chainRuntimeDeps.ConcurrencyTracker（engine.Concurrency），与
 	// HighConcurrencyQueue 共用同一事实源。
 	services.ConcurrencyTracker = concurrencyTracker
 	models.SetConcurrencySource(concurrencyTracker)
+	services.RealtimeConnections = newChainRealtimeConnectionLimiter(stateClient,
+		rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRealtime))
 	cacheOptions2 := gatewayruntimecache.Options{
 		Bus:    composed.Bus,
 		Logger: chainCacheEventLogger{inner: slog.Default()},
@@ -574,7 +620,9 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// D-129（BUG-0175）：快照 miss 的精确成本兜底走进程内 stats 数据库
 		// 直读（Node 为 db-service IPC；Go 无跨进程，同一进程共享数据库），
 		// 避免「快照恒 miss → 保护性恒 429」的反向破坏。
-		DBService: newChainQuotaDBService(apiKeyQuota, authzQuota),
+		DBService:      newChainQuotaDBService(apiKeyQuota, authzQuota),
+		Redis:          stateClient,
+		RedisNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainQuota),
 	})
 	if err != nil {
 		services.Close()

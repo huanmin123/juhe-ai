@@ -85,12 +85,6 @@ type HandleUpstreamResponseInput struct {
 	Account          AccountView
 	UpstreamResponse *GatewayUpstreamResponse
 	UpstreamURL      string
-	// BridgeUsage 是跨协议桥接流（DD-C6）的 usage 快照供给：桥泵把上游协议
-	// usage 重渲染为客户端形态后写下游字节，inspector 按账户协议解析桥接后
-	// 字节取不到 usage，桥内计算的 usage 经本口交给结算链（流式正常完成与
-	// 正文中断共用）。nil（未接线）或返回 false（本次 attempt 非桥接 / 上游
-	// 未发 usage）时保持既有 inspector/估算兜底路径。
-	BridgeUsage func() (gatewayproto.ParsedUsage, bool)
 	AuditAttemptID   string
 	AuditCapture     AttemptAuditCapture
 	Settings         gatewayruntimecache.GatewaySettings
@@ -282,6 +276,20 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 	clientStrategy := input.ClientStrategy
 	logger := input.logger()
 
+	// 响应侧占位符还原（安全策略设计 §7，批C）：仅 placeholder 映射非空的请求
+	// 装配（mask-only 与未绑定 Key 恒 nil，零响应侧成本）。挂载经既有
+	// TransformUpstreamChunk / FlushTransformedUpstreamChunks 通道，语义见
+	// securitypolicy.go 头注：upstream_response 审计还原前原文、gateway_response
+	// 审计还原后字节、EOF 段冲刷走标准写路径。
+	var placeholderRestorer *securityPolicyStreamRestorer
+	var placeholderTransform func(chunk []byte) [][]byte
+	var placeholderFlush func() [][]byte
+	if mapping := securityPolicyPlaceholderMapping(input.Req); mapping != nil {
+		placeholderRestorer = newSecurityPolicyStreamRestorer(mapping)
+		placeholderTransform = placeholderRestorer.Transform
+		placeholderFlush = placeholderRestorer.Flush
+	}
+
 	shouldMutateAccountForStreamFailure := func(errorCode string, context StreamFailureContext) bool {
 		if input.firstByteBudgeted() {
 			if errorCode == FirstByteTimeoutErrorCode &&
@@ -357,8 +365,20 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 			// 受限重放窗口资格排除面（设计 §3.1）：调度层判定透传，缺省启用。
 			PreCommitReplayWindowDisabled: input.PreCommitReplayWindowDisabled,
 			NowMs:                         input.nowMs(),
+			// 响应侧占位符还原（§7）：事件级跨 SSE 拆分拼合 + per-chunk 悬挂
+			// 缓冲还原 + EOF 段冲刷（nil = 未挂载，管道透传零改动）。
+			TransformUpstreamChunk:         placeholderTransform,
+			FlushTransformedUpstreamChunks: placeholderFlush,
 		},
 	})
+	// 悬挂缓冲超限观测（§7.2 第 3 条）：放弃匹配的累计次数，运行日志仅含
+	// traceId 与计数（不含任何内容）；管道错误路径同样记录。
+	if placeholderRestorer != nil && placeholderRestorer.Overflowed() > 0 {
+		logger.Warn("gateway_security_policy_placeholder_flush_overflow", map[string]any{
+			"traceId": input.UsageContext.TraceID,
+			"count":   placeholderRestorer.Overflowed(),
+		}, "响应侧占位符悬挂缓冲超限放弃匹配，残留已原样放行")
+	}
 	if pipeErr != nil {
 		if IsUpstreamRequestAbortedError(pipeErr) || signalAborted(input.Signal) {
 			if input.Deps != nil && input.Deps.AccountEffects != nil {
@@ -397,23 +417,10 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 
 	// ---- usage fallback ----
 	usage := pipeResult.Usage
-	// DD-C6：跨协议桥接流的 usage 由桥内转换状态机计算（上游协议 usage 已在
-	// 桥转换中重渲染为客户端形态，inspector 按账户协议解析桥接后字节取不到
-	// usage），桥接快照是本次 attempt 的权威值——优先于估算兜底消费。
-	// DD2-B1/B2：快照消费以完成流为条件（pipeResult.Completed——协议终止事
-	// 件到场 + 干净 EOF；截断/失败终态臂 finishStreamResult 不传 completed，
-	// 均为 false）。中途 usage 的截断流（missing_terminal 等失败结算）不消费
-	// 快照——半程 {N,0} 快照会把已产生的可见输出计费成 0——回落下方既有估算
-	// 兜底；正常完成流快照保持权威（含上游全 0 usage 的合法形态，计 0 是上
-	// 游事实）。
-	bridgedUsage := false
-	if input.BridgeUsage != nil && pipeResult.Completed {
-		if snapshot, ok := input.BridgeUsage(); ok {
-			usage = usageWithObservedModel(snapshot, input.UpstreamResponse.UpstreamResponseModel)
-			bridgedUsage = true
-		}
-	}
-	if !bridgedUsage && input.Deps != nil && input.Deps.UsageFallback != nil {
+	// 2026-11-07 跨协议桥退役：原 DD-C6 桥接 usage 快照消费臂随桥删除（唯一
+	// 生产者 chainBridgeUsageSlot/carrier 已删）；结算回到 driver 抽取与估算
+	// 兜底（DD2-B1/B2 的完成流条件语义由 UsageFallback 承接）。
+	if input.Deps != nil && input.Deps.UsageFallback != nil {
 		fallbackUsage, estimated, _, _ := input.Deps.UsageFallback(driver, pipeResult.Usage, UsageFallbackInput{
 			Completed:             pipeResult.Completed,
 			OutputReceived:        pipeResult.OutputReceived,

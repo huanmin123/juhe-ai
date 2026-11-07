@@ -229,44 +229,6 @@ func TestSubtractPostgresRowsErrorStages(t *testing.T) {
 	})
 }
 
-// TestCodexPGErrorStages：codex PG 清理与结算逐阶段失败。
-func TestCodexPGErrorStages(t *testing.T) {
-	stages := []pgStage{
-		{"sessions select", "FROM juhe_codex_context.codex_context_sessions"},
-		{"responses select", "juhe_codex_context.codex_context_responses\n      WHERE session_id IN"},
-		{"compacts select", "juhe_codex_context.codex_context_compacts\n      WHERE session_id IN"},
-		{"queue enqueue", "INSERT INTO juhe_codex_context.codex_context_storage_cleanup_queue"},
-		{"responses delete", "DELETE FROM juhe_codex_context.codex_context_responses"},
-		{"compacts delete", "DELETE FROM juhe_codex_context.codex_context_compacts"},
-		{"remaining select", "SELECT session_id, MAX(expires_at)"},
-		{"session refresh", "UPDATE juhe_codex_context.codex_context_sessions"},
-		{"session delete", "DELETE FROM juhe_codex_context.codex_context_sessions"},
-		{"pending select", "WHERE next_attempt_at <="},
-		{"referenced delete", "DELETE FROM codex_context_storage_cleanup_queue"},
-	}
-	seed := func(rec *pgRecorder) {
-		rec.script("FROM juhe_codex_context.codex_context_sessions", []string{"id", "expires_at"},
-			[][]driver.Value{{"s-1", "2026-09-01T00:00:00.000Z"}, {"s-2", "2026-09-02T00:00:00.000Z"}})
-		rec.script("juhe_codex_context.codex_context_responses\n      WHERE session_id IN", []string{"storage_key"},
-			[][]driver.Value{{"k-1"}})
-		rec.script("juhe_codex_context.codex_context_compacts\n      WHERE session_id IN", []string{"storage_key"}, nil)
-		rec.script("juhe_codex_context.codex_context_responses\n        WHERE session_id IN", []string{"session_id", "expires_at"},
-			[][]driver.Value{{"s-2", "2026-12-01T00:00:00.000Z"}})
-		rec.script("juhe_codex_context.codex_context_compacts\n        WHERE session_id IN", []string{"session_id", "expires_at"}, nil)
-		rec.script("WHERE next_attempt_at <=", []string{"storage_key"}, [][]driver.Value{{"k-1"}})
-		rec.script("juhe_codex_context.codex_context_responses\n        WHERE storage_key IN", []string{"storage_key"},
-			[][]driver.Value{{"k-1"}})
-		rec.script("juhe_codex_context.codex_context_compacts\n        WHERE storage_key IN", []string{"storage_key"}, nil)
-	}
-	runPGStages(t, stages, func(t *testing.T, stage pgStage) error {
-		rec := newPGRecorder()
-		seed(rec)
-		store := &CodexContextStore{PG: openKitFailingRecorderPG(rec, stage.failOn), Now: kitNow}
-		_, err := store.CleanupExpiredStates(context.Background(), "2026-09-10T00:00:00.000Z", 5)
-		return err
-	})
-}
-
 func TestDeleteAccountPGErrorStages(t *testing.T) {
 	stages := []pgStage{
 		{"orphan select", "SELECT accounts.id"},

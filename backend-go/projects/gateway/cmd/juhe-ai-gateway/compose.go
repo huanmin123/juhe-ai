@@ -41,22 +41,26 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/policyreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/proxypools"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/proxyprofiles"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/schedulingpreferences"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/securitypolicies"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
+	redis "github.com/redis/go-redis/v9"
 )
 
-// 系统组合根 PG 池默认规格（system-api / chat / codex-context 三池共用）：
+// 系统组合根 PG 池默认规格（system-api / chat 两池共用）：
 // idle 取 sqlpool 全局上限。sqlpool.ValidatePoolLimits 拒绝 0/0（"无上限"不
 // 是合法池规格），此前两处 0/0 使 PG 模式下业务与 chat 池永远打不开。
 // 2026-10-17 取值收敛 5096→32（BUG-0313 治理批次 3，生产 pg_stat_activity
@@ -102,6 +106,7 @@ const (
 //	/__aisys__/api/usage-records + /my-*           -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/authorization-options + /my-*   -> authz.Deps.MountAuthorizationOptions (X04)
 //	/__aisys__/api/proxies (CRUD/options/test; J3a jobs cutover pending) -> proxyprofiles.Mount (X04)
+//	/__aisys__/api/proxy-pools (CRUD/member-options; 代理池设计 §8.1) -> proxypools.Mount
 //	/__aisys__/api/ui-bootstrap + /my-*            -> uibootstrap.Deps.Mount (X04)
 //	/__aisys__/help (static help center)           -> helpweb.Deps.Mount (X04; disabled
 //	  unless JUHE_AI_FRONTEND_DIST_PATH points at the frontend dist)
@@ -495,6 +500,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create scheduling-preference store: %w", err)
 	}
+	// API Key 安全策略实体（安全策略设计 §4.1，批A 存储 + 批B2 运行链接入）：
+	// Store 与调度偏好同一业务库句柄与 K5 总线（rules 变更/删除解绑提交成功后
+	// 由 store 发布 topic:gateway_runtime_cache 全局失效——绑定 Key 的出站脱敏
+	// 行为依赖策略内容，理由与订阅判据见 compose_security_policies_wiring.go）。
+	securityPolicyStore, err := securitypolicies.NewStore(composed.db, time.Now, newCompositionID, bus)
+	if err != nil {
+		return nil, fmt.Errorf("create security-policy store: %w", err)
+	}
 	apiKeyStore, err := apikeys.NewStore(composed.db, cfg.Secret, time.Now, newCompositionID, apikeys.BusInvalidator{Bus: bus})
 	if err != nil {
 		return nil, fmt.Errorf("create api-key store: %w", err)
@@ -793,16 +806,47 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	authzDeps := &authz.Deps{Store: authzStore, Sink: sink, Auth: authDeps}
 	authzDeps.Mount(kern)
 	authzDeps.MountAuthorizationOptions(kern)
+	// 代理池管理面（代理池设计 §8.1/§10.2）：池 CRUD 与代理档案写入共用
+	// K5 bus 失效（proxy_pool_updated / proxy_profile_updated）与 Redis
+	// 成员健康键 best-effort 清理（§6.2/§7.4，根 namespace 与 jobs 写入、
+	// gateway 解析读取同源）。Redis 是唯一运行态形态（登录守卫已强制），
+	// 清理失败只告警、靠 TTL 过期兜底。
+	memberHealthClient, err := rediscfg.NewUniversalClient(rediscfg.Config{
+		URL: cfg.RedisURL, Mode: cfg.RedisMode, Password: cfg.RedisPassword,
+		ContextTimeoutEnabled: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create proxy member health redis client: %w", err)
+	}
+	composed.shutdowns = append(composed.shutdowns, func() { _ = memberHealthClient.Close() })
+	memberHealthResetter := proxyMemberHealthResetter{
+		client:    memberHealthClient,
+		namespace: cfg.RedisNamespace,
+		logger:    slog.Default(),
+	}
 	proxyStore, err := proxyprofiles.NewStore(proxyprofiles.Deps{
-		DB:     composed.db,
-		Secret: cfg.Secret,
-		Now:    time.Now,
-		NewID:  newCompositionID,
+		DB:           composed.db,
+		Secret:       cfg.Secret,
+		Now:          time.Now,
+		NewID:        newCompositionID,
+		Inval:        bus,
+		MemberHealth: memberHealthResetter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create proxy store: %w", err)
 	}
 	proxyprofiles.Mount(kern, authDeps, proxyStore, sink)
+	poolStore, err := proxypools.NewStore(proxypools.Deps{
+		DB:     composed.db,
+		Now:    time.Now,
+		NewID:  newCompositionID,
+		Inval:  bus,
+		Health: memberHealthResetter,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create proxy pool store: %w", err)
+	}
+	proxypools.Mount(kern, authDeps, poolStore, sink)
 	(&uibootstrap.Deps{DB: composed.db, Auth: authDeps}).Mount(kern)
 	// record_maintenance_jobs 持久交接通道（internal/recordmaintenance）：
 	// codex / anthropic 用量快照 job 由组合根写入业务库 juhe_dataset，
@@ -856,6 +900,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// block) can share the runtime-state redis client for its penalty-window
 	// limiter.
 	var chainServices *chainRuntimeServices
+	// securityPolicyProtection 是安全策略防护次数计数面（写后缓存设计
+	// §4.3.1）：链条启用时经 chainServices.StateClient 构造（终态 INCRBY 写
+	// 侧、管理面删键与刷写任务共用同一 Redis 客户端与 routestate 域
+	// namespace，键空间单一来源）；链条关闭（组合测试）恒 nil，全部侧面无操
+	// 作，管理面读侧走 PG 列不依赖 Redis。
+	var securityPolicyProtection *securitypolicies.ProtectionCountStore
 	if cfg.ChainEnabled {
 		// D1（存储形态收口）：spool 目录已由 loadRuntimeConfig 派生到
 		// JUHE_AI_DATA_DIR（缺省 <cwd>/data）下的 usage-record-spool（显式
@@ -891,7 +941,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// ContextTimeoutEnabled），oauthStore 构造早于它，因此在此接线。
 		oauthStore.SetRefreshLock(gatewayOAuthRefreshLock{client: services.OAuthState})
 		oauthStore.SetCredentialVersionBumper(gatewayOAuthCredentialVersionBumper{client: services.OAuthState})
-		slog.Info("OAuth 跨进程刷新锁与凭据版本投影已接入 Redis 运行态",
+		// 多节点 gateway：授权发起与回调可能落在不同实例，session 必须跨进程
+		// 共享；复用 OAuth 域的 Redis 客户端与 namespace，失败即启动失败，
+		// 不静默回退到进程内 map。
+		if err := oauthStore.UseRedisSessionStore(services.OAuthStateClient, cfg.RedisNamespace); err != nil {
+			services.Close()
+			return nil, fmt.Errorf("wire OAuth Redis session store: %w", err)
+		}
+		slog.Info("OAuth 跨进程刷新锁、凭据版本投影与会话已接入 Redis 运行态",
 			"event", "oauth_cross_process_state_redis",
 			"namespace", services.OAuthState.Namespace())
 		// 列表运行时并发 hydrate 装配（单机 go-only 进程内事实源）：分组列表
@@ -952,25 +1009,19 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			chainServices.Close()
 			return nil, fmt.Errorf("compose gateway account locks port: %w", locksErr)
 		}
-		// Codex Responses↔Chat 桥状态装配（G18 chat-bridge-state.ts，迁移漏
-		// 装配修复）：组合根按数据库驱动装配双模行存储（sqlite 分片 /
-		// postgres juhe_codex_context schema，PG 缺 schema 启动期探针
-		// fail-fast）；segments 根为空仅直接构造配置可发生，保持既有 no-op
-		// 退出。失败按组合根惯例关闭已装配的 chainServices 后报错。
-		codexContextStore, codexContextStoreErr := newChainCodexContextStateStore(cfg, postgresPools)
-		if codexContextStoreErr != nil {
-			chainServices.Close()
-			return nil, fmt.Errorf("compose gateway codex context state store: %w", codexContextStoreErr)
-		}
-		// sqlite 分片行存储持有惰性打开的 shard 句柄，注册进 shutdown（LIFO：
-		// chainServices.Close 之后、组合根其余资源之前关闭），避免 Windows 下
-		// 句柄泄漏阻塞数据目录清理；postgres 驱动共享池句柄无独立关闭面。
-		if codexContextStoreCloser, ok := codexContextStore.(interface{ Close() error }); ok {
-			composed.shutdowns = append(composed.shutdowns, func() { _ = codexContextStoreCloser.Close() })
-		}
+		// 2026-11-07 跨协议 Responses→Chat 桥退役：原 codex context 行存储装配
+		// （newChainCodexContextStateStore，juhe_codex_context schema）随桥删除。
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)
+		// 防护次数写后缓存装配（设计 §4.3.1）：终态 INCRBY 写侧（链条）与管
+		// 理面删键共用同一实例；刷写任务共用同一客户端与 namespace，cancel 登
+		// 记进 shutdowns 随进程停机退出（本 ticker 先例：
+		// startUpstreamClientVersionAutoRefresh）。
+		securityPolicyProtectionNamespace := rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainRouteState)
+		securityPolicyProtection = securitypolicies.NewProtectionCountStore(chainServices.StateClient, securityPolicyProtectionNamespace)
+		securityPolicyProtectionFlusher := securitypolicies.NewProtectionFlusher(chainServices.StateClient, securityPolicyProtectionNamespace, composed.db)
+		composed.shutdowns = append(composed.shutdowns, startSecurityPolicyProtectionFlush(securityPolicyProtectionFlusher))
 		chain, chainShutdown, chainAssembleErr := composeGatewayChain(chainRuntimeDeps{
 			Cache: chainServices.Cache,
 			// T65-①：OAuth 401 自动刷新协调器——刷新写侧是 :620 的 oauthStore
@@ -1011,15 +1062,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			UpstreamURLSecurity:          cfg.UpstreamURLSecurity,
 			UpstreamRetryBackoffDelaysMs: cfg.UpstreamRetryBackoffDelaysMs,
 			Circuits:                     chainServices.Circuits,
-			IPPolicy:                     chainServices.IPPolicy,
-			UserLimits:                   chainServices.UserLimits,
-			ModelsRateLimit:              chainServices.ModelsRateLimit,
-			APIKeyQuota:                  chainServices.APIKeyQuota,
-			AuthzQuota:                   chainServices.AuthzQuota,
-			InflightQuota:                chainServices.InflightQuota,
-			Avoidance:                    chainServices.Avoidance,
-			Affinity:                     chainServices.Affinity,
-			Recoverable:                  chainServices.Recoverable,
+			// 代理池请求时健康门/租约修复（代理池设计 §10.1）：writer-backed
+			// 解析器；nil 保持直接代理既有语义。
+			ProxyPoolTargets: chainServices.ProxyPoolTargets,
+			IPPolicy:         chainServices.IPPolicy,
+			UserLimits:       chainServices.UserLimits,
+			ModelsRateLimit:  chainServices.ModelsRateLimit,
+			APIKeyQuota:      chainServices.APIKeyQuota,
+			AuthzQuota:       chainServices.AuthzQuota,
+			InflightQuota:    chainServices.InflightQuota,
+			Avoidance:        chainServices.Avoidance,
+			Affinity:         chainServices.Affinity,
+			Recoverable:      chainServices.Recoverable,
 			// dispatch 引擎恢复等待（G11 同一实例；engine.RecoverableWait
 			// 此前生产缺席——抑制耗尽路径快速退出、无等待恢复能力）。
 			DispatchRecoverableWait: chainServices.DispatchRecoverableWait,
@@ -1028,12 +1082,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 组级会话绑定服务（策略路由分组会话亲和设计 §3）：独立数据面，
 			// 与账户级亲和同驱动来源（redisCache 置位走 Redis）。
 			GroupAffinity: chainServices.GroupAffinity,
-			// G18 Codex Responses↔Chat 桥状态（迁移漏装配修复）：segments 根 +
-			// 双模行存储由组合根装配（codex_context_store.go）；两者齐备时链
-			// 组装构造真实桥（newChainCodexBridgePreflight），任一缺席保持
-			// 既有 no-op 降级（组合测试语义不变）。
-			CodexContextRoot:       cfg.CodexContextRoot,
-			CodexContextStateStore: codexContextStore,
 			// 显式账户错误策略：failureKind / 换 Key 授权 / cooldown-disable
 			// 状态变更 / system quota 归因（Node decideAccountErrorPolicy 接线）。
 			AccountErrorPolicy:        errorPolicyService,
@@ -1069,6 +1117,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 链装配据此选 Redis / memory 存储（部署形态选择，非运行时回退）。
 			StateClient:         chainServices.StateClient,
 			CallerTierNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainCallerTier),
+			// 防护次数终态 INCRBY 写侧（写后缓存设计 §4.3.1；与上方管理面删
+			// 键、刷写任务同一实例）。nil（链条关闭 / 组合测试）时终态计数整
+			// 体无操作。
+			SecurityPolicyProtection: securityPolicyProtection,
 			// Codex / Anthropic 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道
 			// （同一适配器实例同时实现 codex / anthropic 两个派发窄口）。
@@ -1085,10 +1137,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			HighConcurrencyQueue: newChainHighConcurrencyQueue(chainServices.HighConcurrencyQueue),
 			// E2E-FINDING #13：engine.Concurrency 与 HighConcurrencyQueue
 			// 共用同一并发事实源（chainServices.ConcurrencyTracker）。
-			ConcurrencyTracker: chainServices.ConcurrencyTracker,
-			AccountCircuits:    chainServices.AccountCircuits,
-			KeyModelStore:      chainServices.KeyModelStore,
-			ProxyHealth:        chainProxyHealthPort{service: chainServices.ProxyHealth},
+			ConcurrencyTracker:  chainServices.ConcurrencyTracker,
+			RealtimeConnections: chainServices.RealtimeConnections,
+			AccountCircuits:     chainServices.AccountCircuits,
+			KeyModelStore:       chainServices.KeyModelStore,
+			ProxyHealth:         chainProxyHealthPort{service: chainServices.ProxyHealth},
 			// 期二（缓存率设计 8.1/7）：热质量端口注入缓存率快照取数口——
 			// 每次排序调用取最新内存快照，stale/未加载不喂 CacheRates。
 			HotQuality:        &chainHotQualityPort{runtime: chainServices.HotQuality, cacheRates: cacheRateSource.Snapshot},
@@ -1165,6 +1218,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 拒绝内置行（403）；装配理由与失效注入见 compose_scheduling_preferences_
 	// wiring.go。
 	mountSchedulingPreferences(kern, schedulingPreferenceStore, authDeps, sink)
+
+	// 安全策略双面 CRUD（安全策略设计 §4.3，批B2 运行链接入）：同构挂载判据
+	// 见 compose_security_policies_wiring.go。Protection 为删除清键侧面（读
+	// 侧走 PG 列）；链条关闭时 nil（nil 安全降级）。
+	mountSecurityPolicies(kern, securityPolicyStore, authDeps, sink, securityPolicyProtection)
 
 	// X04: the /__aipublic__ externally maintained legacy family mounts after
 	// the chain runtime services exist (the penalty-window limiter shares the
@@ -1301,6 +1359,35 @@ type producerLogger struct{}
 
 func (producerLogger) Warn(msg string, args ...any)  { slog.Warn(msg, args...) }
 func (producerLogger) Error(msg string, args ...any) { slog.Error(msg, args...) }
+
+// proxyMemberHealthResetter 删除共享 Redis 成员健康投影键
+// （juhe-ai:{<namespace>}:proxy-pool:member-health:<id>，代理池设计
+// §6.2/§7.4）：代理连接变更、成员移除与池删除后，gateway 回退 PG
+// pool_health_* 事实源，直到下一轮 jobs 池健康探测重新写键。删除失败只
+// 告警不回滚，键最多保留到 TTL 过期；namespace 用根 namespace（与 jobs
+// poolhealth 写入、gateway proxyresolve 读取同源）。
+type proxyMemberHealthResetter struct {
+	client    redis.UniversalClient
+	namespace string
+	logger    *slog.Logger
+}
+
+func (r proxyMemberHealthResetter) ResetMemberHealth(profileID string) {
+	key := proxyresolve.MemberHealthKey(r.namespace, profileID)
+	if key == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.client.Del(ctx, key).Err(); err != nil {
+		logger := r.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("删除代理池成员健康键失败，等待 TTL 过期",
+			"event", "proxy_pool_member_health_key_delete_failed", "error", err.Error())
+	}
+}
 
 // authsysBusInvalidator adapts the K5 invalidation bus to the authsys
 // post-commit account invalidation channels (BUG-0170.5): runtime cache and

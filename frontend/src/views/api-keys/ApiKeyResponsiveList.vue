@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2180 : 2000"
+    :scroll-x="isManagementView ? 2330 : 2150"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -82,6 +82,12 @@
           <a-tag v-if="record.schedulingPreferenceBuiltIn" color="blue">内置</a-tag>
         </div>
       </template>
+      <template v-else-if="column.key === 'securityPolicy'">
+        <div class="security-policy-cell">
+          <span>{{ apiKeySecurityPolicyText(record) }}</span>
+          <a-tag v-if="record.securityPolicyBuiltIn" color="blue">内置</a-tag>
+        </div>
+      </template>
       <template v-else-if="column.key === 'systemAccount'">
         <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
       </template>
@@ -151,6 +157,10 @@
             <span>调度偏好</span>
             <strong>{{ apiKeySchedulingPreferenceText(record) }}</strong>
           </div>
+          <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>安全策略</span>
+            <strong>{{ apiKeySecurityPolicyText(record) }}</strong>
+          </div>
           <div v-if="record.description" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
             <strong>{{ record.description }}</strong>
@@ -183,6 +193,7 @@ import {
   apiKeyScheduleSummary,
   apiKeyScheduleTagColor,
   apiKeySchedulingPreferenceText,
+  apiKeySecurityPolicyText,
   apiKeyStatusTag,
   apiKeyStatusTooltipLines,
   apiKeySystemAccountText,
@@ -261,6 +272,20 @@ const emit = defineEmits<{
 }
 
 .scheduling-preference-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.security-policy-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 150px;
+}
+
+.security-policy-cell span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

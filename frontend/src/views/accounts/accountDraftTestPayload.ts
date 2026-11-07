@@ -22,9 +22,7 @@ interface AccountDraftTestPayloadInput {
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   form: AccountFormModel
-  mappingAnthropicSourceModelOptions?: AccountModelSelectOption[]
-  mappingCurrentProviderSourceModelOptions?: AccountModelSelectOption[]
-  mappingGeminiSourceModelOptions?: AccountModelSelectOption[]
+  /** 映射客户端模型候选：跨供应商全量目录。 */
   mappingSourceModelOptions?: AccountModelSelectOption[]
   mappingUpstreamModelOptions?: AccountModelSelectOption[]
   providers?: ProviderDefinition[]
@@ -72,6 +70,7 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
     healthCheckEndpointMode: payload.healthCheckEndpointMode,
     modelMappings: payload.modelMappings,
     proxyProfileId: payload.proxyProfileId,
+    proxyPoolId: payload.proxyPoolId,
     groupId: payload.groupId ?? '',
     accountExpiresAt: payload.accountExpiresAt,
     availabilitySchedule: payload.availabilitySchedule as AccountDraftTestAccountPayload['availabilitySchedule'],
@@ -108,6 +107,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     healthCheckEndpointMode: input.draftPayload.healthCheckEndpointMode,
     modelMappings: input.draftPayload.modelMappings,
     proxyProfileId: input.draftPayload.proxyProfileId ?? undefined,
+    proxyPoolId: input.draftPayload.proxyPoolId ?? undefined,
     schedulable: true,
     accountExpiresAt: input.draftPayload.accountExpiresAt ?? undefined,
     todayUsage: usage,

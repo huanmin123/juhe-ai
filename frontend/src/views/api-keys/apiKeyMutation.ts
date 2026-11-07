@@ -5,6 +5,7 @@ import type {
   ApiKeySummary
 } from '@/types/domain'
 import type { ApiKeyMutationPayload } from '@/api/domains/apiKeys'
+import { BUILTIN_SECURITY_POLICY_ID } from '@/api/domains/securityPolicies'
 import { SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID } from '@/api/domains/schedulingPreferences'
 
 export interface ApiKeyEditableSnapshot {
@@ -12,6 +13,8 @@ export interface ApiKeyEditableSnapshot {
   routeStrategyId?: string
   /** 绑定调度偏好；undefined 表示历史「沿用策略路由（迁移期）」或 purpose=chat，delta 中清空时回内置 ID。 */
   schedulingPreferenceId?: string
+  /** 绑定安全策略；undefined 归一为内置「默认安全策略」（空规则 = 原样转发）。 */
+  securityPolicyId?: string
   status: 'active' | 'disabled'
   expiresAt: string | null
   description: string
@@ -31,6 +34,8 @@ export function buildApiKeyCreatePayload(
       : {}),
     // 契约要求创建总是提交显式偏好 ID：预选内置行（显式默认）或用户选择的偏好。
     schedulingPreferenceId: snapshot.schedulingPreferenceId || SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
+    // 安全策略无迁移期：创建缺省内置 ID（null = 默认策略），未绑定与显式默认同义。
+    securityPolicyId: snapshot.securityPolicyId || BUILTIN_SECURITY_POLICY_ID,
     ...(snapshot.status === 'disabled' ? { status: snapshot.status } : {}),
     ...(snapshot.expiresAt ? { expiresAt: snapshot.expiresAt } : {}),
     ...(description ? { description } : {}),
@@ -43,6 +48,7 @@ const editableFields = [
   'name',
   'routeStrategyId',
   'schedulingPreferenceId',
+  'securityPolicyId',
   'status',
   'expiresAt',
   'description',
@@ -64,6 +70,9 @@ const rowPatchFields = [
   'schedulingPreferenceId',
   'schedulingPreferenceName',
   'schedulingPreferenceBuiltIn',
+  'securityPolicyId',
+  'securityPolicyName',
+  'securityPolicyBuiltIn',
   'expiresAt',
   'quotaLimits',
   'availabilitySchedule'
@@ -80,7 +89,9 @@ export function buildApiKeyMutationPatch(
     // 偏好清空不是「缺失保持原值」：契约要求显式回默认（内置 ID），避免空串/undefined 被丢弃后沿用旧绑定。
     writablePatch[field] = field === 'schedulingPreferenceId'
       ? (current.schedulingPreferenceId || SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID)
-      : current[field]
+      : field === 'securityPolicyId'
+        ? (current.securityPolicyId || BUILTIN_SECURITY_POLICY_ID)
+        : current[field]
   }
   return patch
 }
@@ -102,7 +113,8 @@ export function mergeApiKeyMutationResult(
     const value = rowPatch[field]
     if (value === undefined) continue
     if (value === null && (field === 'description' || field === 'expiresAt' || field === 'availabilitySchedule'
-      || field === 'schedulingPreferenceId' || field === 'schedulingPreferenceName' || field === 'schedulingPreferenceBuiltIn')) {
+      || field === 'schedulingPreferenceId' || field === 'schedulingPreferenceName' || field === 'schedulingPreferenceBuiltIn'
+      || field === 'securityPolicyId' || field === 'securityPolicyName' || field === 'securityPolicyBuiltIn')) {
       delete writableNext[field]
       continue
     }

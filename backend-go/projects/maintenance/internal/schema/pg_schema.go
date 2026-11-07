@@ -73,7 +73,7 @@ type PGStatement struct {
 // collectPostgresSchemaStatements() in execution order (per-schema table
 // dependency order, then ALTER/DO phase, then CREATE FUNCTION blocks, then
 // indexes; schema groups in Node first-seen order: juhe_business,
-// juhe_dataset, juhe_usage, juhe_stats, juhe_codex_context。原 juhe_chat 组
+// juhe_dataset, juhe_usage, juhe_stats。原 juhe_chat 组
 // 随 my-chat 会话面退役整体移除——11 张 chat_* 表不再进当前 schema，演练场
 // 设计 §8). The group slices live in the pg_schema_<group>.go data files and
 // are concatenated below in that same Node first-seen order; the
@@ -84,7 +84,8 @@ var postgresSchemaStatements = slices.Concat(
 	postgresSchemaDataset,
 	postgresSchemaUsage,
 	postgresSchemaStats,
-	postgresSchemaCodexContext,
+	// postgresSchemaCodexContext 已随 2026-11-07 跨协议桥退役从 ensure-schema
+	// 清单撤除；存量 juhe_codex_context schema 由 revision 20 升级步骤 DROP。
 )
 
 // Statements returns the raw PostgreSQL statement list in execution order.
@@ -106,7 +107,7 @@ type PGResult struct {
 }
 
 // EnsurePostgres applies the full PostgreSQL schema (business, dataset,
-// usage, stats, codex_context) to db, executing CREATE SCHEMA once per
+// usage, stats) to db, executing CREATE SCHEMA once per
 // schema group and every DDL statement in the Node applyPostgresSchema order.
 // All statements are idempotent, so repeated calls are no-ops. Transient lock
 // conflicts (deadlock_detected 40P01 / lock_not_available 55P03 / statement

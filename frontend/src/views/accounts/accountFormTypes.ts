@@ -64,6 +64,11 @@ export interface AccountFormModel {
   modelMappings: AccountModelMapping[]
   tags: string[]
   proxyProfileId?: string
+  /**
+   * 代理池绑定（代理池设计 §9.2）：与 proxyProfileId 互斥，由 ProxySelect 复合值
+   * 拆分写入；保存 payload 只输出裸 id，复合值绝不发给 API。
+   */
+  proxyPoolId?: string
   availabilitySchedule: AccountAvailabilityScheduleForm
   notes: string
   balanceQueryEnabled: boolean

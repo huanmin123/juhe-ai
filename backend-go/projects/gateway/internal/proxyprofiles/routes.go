@@ -90,14 +90,114 @@ func optionsHandler(w http.ResponseWriter, r *http.Request, store *Store) {
 		kernel.WriteBadRequest(w, badRequest)
 		return
 	}
-	limitValue, hasLimit := integerQueryValue(values.Get("limit"))
-	limit := optionLimitValue(limitValue, hasLimit)
-	options, err := store.ListOptions(r.Context(), strings.TrimSpace(values.Get("keyword")), limit, selectedIds)
-	if err != nil {
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+	// 代理池设计 §8.2：kinds 缺省 profile（现有调用方行为不变）；
+	// selectedPoolIds 与 selectedIds 分开，规则一致。
+	kinds, badRequest := parseProxyOptionKinds(values)
+	if badRequest != "" {
+		kernel.WriteBadRequest(w, badRequest)
 		return
 	}
-	kernel.WriteOK(w, options, "")
+	selectedPoolIds, badRequest := parseSelectedPoolOptionIds(values)
+	if badRequest != "" {
+		kernel.WriteBadRequest(w, badRequest)
+		return
+	}
+	limitValue, hasLimit := integerQueryValue(values.Get("limit"))
+	limit := optionLimitValue(limitValue, hasLimit)
+	keyword := strings.TrimSpace(values.Get("keyword"))
+	merged := []optionRow{}
+	if kinds.profile {
+		profileRows, err := store.profileOptionRows(r.Context(), keyword, limit, selectedIds)
+		if err != nil {
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+			return
+		}
+		merged = append(merged, profileRows...)
+	}
+	if kinds.pool {
+		poolRows, err := store.poolOptionRows(r.Context(), keyword, limit, selectedPoolIds)
+		if err != nil {
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+			return
+		}
+		merged = append(merged, poolRows...)
+	}
+	sortMergedOptionRows(merged)
+	kernel.WriteOK(w, optionSummaries(merged), "")
+}
+
+// proxyOptionKinds is the parsed §8.2 kinds query (default: profile only).
+type proxyOptionKinds struct {
+	profile bool
+	pool    bool
+}
+
+// parseProxyOptionKinds mirrors the kinds contract: absent/empty resolves to
+// the profile-only default; otherwise a comma-separated combination of
+// profile/pool (duplicates collapse, unknown values are rejected).
+func parseProxyOptionKinds(values url.Values) (proxyOptionKinds, string) {
+	raw := strings.TrimSpace(values.Get("kinds"))
+	if raw == "" {
+		return proxyOptionKinds{profile: true}, ""
+	}
+	kinds := proxyOptionKinds{}
+	for _, piece := range strings.Split(raw, ",") {
+		switch strings.TrimSpace(piece) {
+		case "profile":
+			kinds.profile = true
+		case "pool":
+			kinds.pool = true
+		case "":
+			return proxyOptionKinds{}, "代理选项 kinds 无效"
+		default:
+			return proxyOptionKinds{}, "代理选项 kinds 无效"
+		}
+	}
+	if !kinds.profile && !kinds.pool {
+		return proxyOptionKinds{}, "代理选项 kinds 无效"
+	}
+	return kinds, ""
+}
+
+// parseSelectedPoolOptionIds mirrors parseSelectedProxyOptionIds for the
+// pool arm: only selectedPoolIds / selectedPoolIds[] keys are accepted,
+// scalar strings without commas, deduped, sorted, max 20.
+func parseSelectedPoolOptionIds(values url.Values) ([]string, string) {
+	for key := range values {
+		if key == "selectedPoolIds" || key == "selectedPoolIds[]" {
+			continue
+		}
+		if strings.HasPrefix(key, "selectedPoolIds[") {
+			return nil, "代理选项 selectedPoolIds 无效"
+		}
+	}
+	rawValues := []string{}
+	rawValues = append(rawValues, values["selectedPoolIds"]...)
+	rawValues = append(rawValues, values["selectedPoolIds[]"]...)
+	if len(rawValues) == 0 {
+		return nil, ""
+	}
+	selectedIds := []string{}
+	seen := map[string]bool{}
+	for _, value := range rawValues {
+		text := strings.TrimSpace(value)
+		if text == "" {
+			continue
+		}
+		if strings.Contains(text, ",") || strings.HasPrefix(text, "[") || len(text) > 120 {
+			return nil, "代理选项 selectedPoolIds 无效"
+		}
+		if seen[text] {
+			continue
+		}
+		seen[text] = true
+		selectedIds = append(selectedIds, text)
+	}
+	sort.Strings(selectedIds)
+	if len(selectedIds) > 20 {
+		return nil, "代理选项 selectedPoolIds 最多 20 个"
+	}
+	return selectedIds, ""
 }
 
 // parseSelectedProxyOptionIds mirrors parseSelectedProxyOptionIds: only the
@@ -737,6 +837,15 @@ func writeMutationError(w http.ResponseWriter, err error, fallback string) {
 	var inUse *InUseError
 	if errors.As(err, &inUse) {
 		kernel.WriteJSON(w, http.StatusConflict, map[string]string{"message": inUse.Error()})
+		return
+	}
+	// 代理池设计 §8.6：代理被池引用 → 409 proxy_pool_member_reference_conflict。
+	var referenced *PoolMemberReferenceError
+	if errors.As(err, &referenced) {
+		kernel.WriteJSON(w, http.StatusConflict, map[string]string{
+			"code":    referenced.ErrorCode(),
+			"message": referenced.Error(),
+		})
 		return
 	}
 	_ = conflict

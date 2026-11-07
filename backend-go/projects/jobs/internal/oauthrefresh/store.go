@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
 // CredentialVersionBumper 是 OAuth 凭据版本投影的写入端口：PG 提交成功后把
@@ -44,6 +46,10 @@ type Store struct {
 	credentialBumper CredentialVersionBumper
 	accountState     AccountStateVersionBumper
 	apiKeyState      APIKeyStateVersionBumper
+	// proxyResolver 是代理池有效目标的只读解析器（代理池设计 §5.3）：Writer
+	// 恒为 nil——刷新/保活不补租约、不写任何代理池状态；Health 为 nil（PG
+	// proxy_profiles.pool_health_status 为事实源，Redis 快照缺失即回退 PG）。
+	proxyResolver *proxyresolve.Resolver
 }
 
 // OpenStore wraps an opened database handle. secret is the Node
@@ -56,7 +62,37 @@ func OpenStore(db *sql.DB, secret string) (*Store, error) {
 	if strings.TrimSpace(secret) == "" {
 		return nil, errors.New("oauthrefresh store requires the runtime secret")
 	}
-	return &Store{db: db, secret: secret, now: func() time.Time { return time.Now() }}, nil
+	proxyStore, err := proxyresolve.NewPostgresStore(db)
+	if err != nil {
+		return nil, err
+	}
+	proxyResolver, err := proxyresolve.New(proxyresolve.Options{
+		Store:     proxyStore,
+		Decrypter: storeProxyPasswordDecrypter{secret: secret},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db, secret: secret, now: func() time.Time { return time.Now() }, proxyResolver: proxyResolver}, nil
+}
+
+// storeProxyPasswordDecrypter 用与凭据同一套 v1 AES-GCM 封套（DecryptJSON）
+// 解开 proxy_profiles.password_encrypted（明文 {"password": "..."}）。
+type storeProxyPasswordDecrypter struct {
+	secret string
+}
+
+func (d storeProxyPasswordDecrypter) DecryptProxyPassword(_ context.Context, encrypted string) (string, error) {
+	var envelope struct {
+		Password *string `json:"password"`
+	}
+	if err := DecryptJSON(d.secret, encrypted, &envelope); err != nil {
+		return "", err
+	}
+	if envelope.Password == nil {
+		return "", errors.New("代理密码缺失")
+	}
+	return *envelope.Password, nil
 }
 
 // WithClock overrides the store clock (tests).
@@ -172,22 +208,28 @@ func (c RefreshCandidate) IsDecryptFailure() bool { return c.Account == nil }
 func (s *Store) ListDueOpenAIRefreshAccounts(ctx context.Context, leadSeconds int, limit int, stoppedErrorCode string, now time.Time) ([]RefreshCandidate, error) {
 	dueBefore := isoMillis(now.Add(time.Duration(leadSeconds) * time.Second))
 	limit = clampInt(limit, 1, 500)
-	query := `SELECT id, system_account_id, COALESCE(vendor_code, ''), protocol_code, protocol_version, name, type, status, credentials_encrypted,
-		proxy_profile_id, concurrency_limit, priority,
-		super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
-		last_error_code, last_error_message, health_check_model, health_check_endpoint_mode, config_revision
-	FROM ` + s.table("accounts") + `
-	WHERE authorization_instance_authorization_id IS NULL
-		AND deleted_at IS NULL
-		AND COALESCE(vendor_code, '') = ?
-		AND type = 'oauth'
-		AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
-		AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
-	ORDER BY oauth_refresh_token_present ASC,
-		(oauth_access_token_expires_at IS NOT NULL) ASC,
-		oauth_access_token_expires_at ASC,
-		updated_at ASC,
-		id ASC
+	query := `SELECT a.id, a.system_account_id, COALESCE(a.vendor_code, ''), a.protocol_code, a.protocol_version, a.name, a.type, a.status, a.credentials_encrypted,
+		a.proxy_profile_id, COALESCE(a.proxy_pool_id, ''),
+		a.authorization_instance_source_account_id,
+		COALESCE(source_account.proxy_profile_id, ''), COALESCE(source_account.proxy_pool_id, ''),
+		a.concurrency_limit, a.priority,
+		a.super_priority_enabled, a.fallback_enabled, a.schedulable, a.account_expires_at, a.cooldown_until,
+		a.last_error_code, a.last_error_message, a.health_check_model, a.health_check_endpoint_mode, a.config_revision
+	FROM ` + s.table("accounts") + ` a
+	LEFT JOIN ` + s.table("accounts") + ` source_account
+	  ON source_account.id = a.authorization_instance_source_account_id
+	 AND source_account.deleted_at IS NULL
+	WHERE a.authorization_instance_authorization_id IS NULL
+		AND a.deleted_at IS NULL
+		AND COALESCE(a.vendor_code, '') = ?
+		AND a.type = 'oauth'
+		AND (a.status <> 'error' OR a.last_error_code IS NULL OR a.last_error_code <> ?)
+		AND (a.oauth_access_token_expires_at IS NULL OR a.oauth_access_token_expires_at <= ?)
+	ORDER BY a.oauth_refresh_token_present ASC,
+		(a.oauth_access_token_expires_at IS NOT NULL) ASC,
+		a.oauth_access_token_expires_at ASC,
+		a.updated_at ASC,
+		a.id ASC
 	LIMIT ?`
 	args := []any{ProviderGPT, stoppedErrorCode, dueBefore, limit}
 	return s.listRefreshCandidates(ctx, query, args...)
@@ -212,6 +254,10 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 			status           string
 			encrypted        string
 			proxyProfileID   sql.NullString
+			proxyPoolID      sql.NullString
+			sourceAccountID  sql.NullString
+			sourceProfileID  sql.NullString
+			sourcePoolID     sql.NullString
 			accountExpiresAt sql.NullString
 			lastErrorCode    sql.NullString
 			lastErrorMessage sql.NullString
@@ -220,7 +266,8 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 		var concurrencyLimit, priority, superPriority, fallbackEnabled, schedulable, cooldownUntil any
 		var healthCheckModel, healthCheckEndpointMode any
 		if err := rows.Scan(&id, &systemAccountID, &providerCode, &protocolCode, &protocolVersion, &name, &accountType, &status, &encrypted,
-			&proxyProfileID, &concurrencyLimit, &priority,
+			&proxyProfileID, &proxyPoolID, &sourceAccountID, &sourceProfileID, &sourcePoolID,
+			&concurrencyLimit, &priority,
 			&superPriority, &fallbackEnabled, &schedulable, &accountExpiresAt, &cooldownUntil,
 			&lastErrorCode, &lastErrorMessage, &healthCheckModel, &healthCheckEndpointMode, &configRevision); err != nil {
 			return nil, err
@@ -247,6 +294,10 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 			Name: name, Type: accountType, Status: status,
 			LastErrorCode:    lastErrorCode.String,
 			ProxyProfileID:   proxyProfileID.String,
+			ProxyPoolID:      proxyPoolID.String,
+			SourceAccountID:  sourceAccountID.String,
+			SourceProfileID:  sourceProfileID.String,
+			SourcePoolID:     sourcePoolID.String,
 			Credentials:      credentials,
 			AccountExpiresAt: accountExpiresAt.String,
 			ConfigRevision:   configRevision,
@@ -267,16 +318,24 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 // provider_code；§9.11 目标列集无 provider_code / provider_protocol_profile_id，
 // profile 维度已删除）。
 type RotationAccount struct {
-	ID               string
-	SystemAccountID  string
-	ProviderCode     string
-	ProtocolCode     string
-	ProtocolVersion  string
-	Name             string
-	Type             string
-	Status           string
-	LastErrorCode    string
-	ProxyProfileID   string
+	ID              string
+	SystemAccountID string
+	ProviderCode    string
+	ProtocolCode    string
+	ProtocolVersion string
+	Name            string
+	Type            string
+	Status          string
+	LastErrorCode   string
+	ProxyProfileID  string
+	// ProxyPoolID / Source* 四列承载代理池有效目标的行事实（代理池设计
+	// §5.2）：ConfiguredPoolID 参与普通账户解析；授权实例（本族候选查询恒
+	// authorization_instance_authorization_id IS NULL，防御性带上）按
+	// source pool > source profile > 自身直接代理解析，实例自身池绑定不参与。
+	ProxyPoolID      string
+	SourceAccountID  string
+	SourceProfileID  string
+	SourcePoolID     string
 	Credentials      map[string]any
 	AccountExpiresAt string
 	ConfigRevision   int64
@@ -309,6 +368,10 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 		status           string
 		lastErrorCode    sql.NullString
 		proxyProfileID   sql.NullString
+		proxyPoolID      sql.NullString
+		sourceAccountID  sql.NullString
+		sourceProfileID  sql.NullString
+		sourcePoolID     sql.NullString
 		encrypted        string
 		accountExpiresAt sql.NullString
 		configRevision   int64
@@ -316,19 +379,24 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 	)
 	// 身份读键 = COALESCE(vendor_code,'')（§9.11 目标列集无 provider_code /
 	// provider_protocol_profile_id；与 gateway oauthmgmt T30 轮换读面同口径）。
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, COALESCE(vendor_code, ''),
-			protocol_code, protocol_version, name, type, status,
-			last_error_code, proxy_profile_id, credentials_encrypted,
-			account_expires_at, config_revision, updated_at
-		FROM `+s.table("accounts")+`
-		WHERE id = ?
-			AND deleted_at IS NULL
-			AND authorization_instance_authorization_id IS NULL
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT a.id, a.system_account_id, COALESCE(a.vendor_code, ''),
+			a.protocol_code, a.protocol_version, a.name, a.type, a.status,
+			a.last_error_code, a.proxy_profile_id, COALESCE(a.proxy_pool_id, ''),
+			a.authorization_instance_source_account_id,
+			COALESCE(source_account.proxy_profile_id, ''), COALESCE(source_account.proxy_pool_id, ''),
+			a.credentials_encrypted, a.account_expires_at, a.config_revision, a.updated_at
+		FROM `+s.table("accounts")+` a
+		LEFT JOIN `+s.table("accounts")+` source_account
+		  ON source_account.id = a.authorization_instance_source_account_id
+		 AND source_account.deleted_at IS NULL
+		WHERE a.id = ?
+			AND a.deleted_at IS NULL
+			AND a.authorization_instance_authorization_id IS NULL
 		LIMIT 1`), accountID).Scan(
 		&id, &systemAccountID, &providerCode,
 		&protocolCode, &protocolVersion, &name, &accountType, &status,
-		&lastErrorCode, &proxyProfileID, &encrypted,
-		&accountExpiresAt, &configRevision, &updatedAt)
+		&lastErrorCode, &proxyProfileID, &proxyPoolID, &sourceAccountID, &sourceProfileID, &sourcePoolID,
+		&encrypted, &accountExpiresAt, &configRevision, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -352,10 +420,63 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 		Name: name, Type: accountType, Status: status,
 		LastErrorCode:    lastErrorCode.String,
 		ProxyProfileID:   proxyProfileID.String,
+		ProxyPoolID:      proxyPoolID.String,
+		SourceAccountID:  sourceAccountID.String,
+		SourceProfileID:  sourceProfileID.String,
+		SourcePoolID:     sourcePoolID.String,
 		Credentials:      credentials,
 		AccountExpiresAt: accountExpiresAt.String,
 		ConfigRevision:   configRevision, UpdatedAt: updatedAt,
 	}, nil
+}
+
+// ProxyTargetUnavailableError 标记池绑定账户的有效代理目标在本地解析阶段不可用
+// （池不存在/停用、无有效租约、租约成员不可分配、配置双列冲突；代理池设计
+// §5.4/§7.5）。它刻意不是 LocalConfigurationError：两个刷新族按既有“非本地
+// 配置失败”分支处理——记录 300s 退避重试，不计入 OAuth 本地终态停刷；同时
+// 任何分支都不回落直连。
+type ProxyTargetUnavailableError struct{ Message string }
+
+func (e *ProxyTargetUnavailableError) Error() string { return e.Message }
+
+// proxyRequestURLForAccount 解析账户的有效代理出站 URL（代理池设计 §5.2/§5.3
+// 只读入口）：source pool > source profile > 实例自身直接代理绑定（实例自身
+// 池绑定不参与）；普通账户用自身池或直接代理绑定。池绑定走共享解析器只读
+// 解析当前租约成员（Writer=nil，不补租约、不在刷新中途换出口）；无有效租约/
+// 池不可用返回 ProxyTargetUnavailableError，绝不直连。直接代理与无绑定保持
+// 既有 proxyProfileRequestURL 语义（含 LocalConfigurationError 分类）。
+func (s *Store) proxyRequestURLForAccount(ctx context.Context, account *RotationAccount) (string, error) {
+	ctx = ensureCtx(ctx)
+	if account == nil {
+		return "", errors.New("OAuth 账户为空，无法解析代理目标")
+	}
+	binding := proxyresolve.AccountBinding{
+		AccountID:           account.ID,
+		SourceAccountID:     account.SourceAccountID,
+		ConfiguredProfileID: account.ProxyProfileID,
+		ConfiguredPoolID:    account.ProxyPoolID,
+		SourceProfileID:     account.SourceProfileID,
+		SourcePoolID:        account.SourcePoolID,
+	}
+	kind, targetID := binding.Effective()
+	switch kind {
+	case proxyresolve.BindingPool:
+		targets, err := s.proxyResolver.ResolveBatch(ctx, []string{account.ID})
+		if err != nil {
+			return "", err
+		}
+		target := targets[account.ID]
+		if target.Available() {
+			return target.URL, nil
+		}
+		return "", &ProxyTargetUnavailableError{Message: "账户代理池租约不可用（" + target.UnavailableCode + "）：" + target.UnavailableMessage}
+	case proxyresolve.BindingConflict:
+		return "", &ProxyTargetUnavailableError{Message: "账户代理与代理池同时绑定（数据损坏），请先修复账户代理配置"}
+	case proxyresolve.BindingProfile:
+		return s.proxyProfileRequestURL(ctx, targetID)
+	default:
+		return s.proxyProfileRequestURL(ctx, "")
+	}
 }
 
 // RotateCredentialsInput mirrors rotateOAuthCredentialsAsync input (jobs
@@ -638,19 +759,25 @@ type KeepaliveCandidate struct {
 func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, accountType string, lead time.Duration, limit int, now time.Time) ([]KeepaliveCandidate, error) {
 	dueBefore := isoMillis(now.Add(lead))
 	limit = clampInt(limit, 1, 500)
-	query := `SELECT id, system_account_id, COALESCE(vendor_code, ''), protocol_code, protocol_version, name, type, status, credentials_encrypted,
-		proxy_profile_id, account_expires_at, last_error_code, config_revision, updated_at
-	FROM ` + s.table("accounts") + `
-	WHERE authorization_instance_authorization_id IS NULL
-		AND deleted_at IS NULL
-		AND COALESCE(vendor_code, '') = ?
-		AND type = ?
-		AND (status <> 'error' OR last_error_code IS NULL OR last_error_code NOT IN ('oauth_token_refresh_failed', 'oauth_token_refresh_local_configuration_invalid'))
-		AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
-		AND oauth_refresh_token_present = 1`
+	query := `SELECT a.id, a.system_account_id, COALESCE(a.vendor_code, ''), a.protocol_code, a.protocol_version, a.name, a.type, a.status, a.credentials_encrypted,
+		a.proxy_profile_id, COALESCE(a.proxy_pool_id, ''),
+		a.authorization_instance_source_account_id,
+		COALESCE(source_account.proxy_profile_id, ''), COALESCE(source_account.proxy_pool_id, ''),
+		a.account_expires_at, a.last_error_code, a.config_revision, a.updated_at
+	FROM ` + s.table("accounts") + ` a
+	LEFT JOIN ` + s.table("accounts") + ` source_account
+	  ON source_account.id = a.authorization_instance_source_account_id
+	 AND source_account.deleted_at IS NULL
+	WHERE a.authorization_instance_authorization_id IS NULL
+		AND a.deleted_at IS NULL
+		AND COALESCE(a.vendor_code, '') = ?
+		AND a.type = ?
+		AND (a.status <> 'error' OR a.last_error_code IS NULL OR a.last_error_code NOT IN ('oauth_token_refresh_failed', 'oauth_token_refresh_local_configuration_invalid'))
+		AND (a.oauth_access_token_expires_at IS NULL OR a.oauth_access_token_expires_at <= ?)
+		AND a.oauth_refresh_token_present = 1`
 	args := []any{providerCode, accountType, dueBefore}
 	query += `
-	ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
+	ORDER BY a.oauth_access_token_expires_at IS NOT NULL ASC, a.oauth_access_token_expires_at ASC, a.updated_at ASC, a.id ASC
 	LIMIT ?`
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
@@ -671,13 +798,18 @@ func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, acco
 			status          string
 			encrypted       string
 			proxyProfileID  sql.NullString
+			proxyPoolID     sql.NullString
+			sourceAccountID sql.NullString
+			sourceProfileID sql.NullString
+			sourcePoolID    sql.NullString
 			accountExpires  sql.NullString
 			lastErrorCode   sql.NullString
 			configRevision  int64
 			updatedAt       string
 		)
 		if err := rows.Scan(&id, &systemAccountID, &rowProviderCode, &protocolCode, &protocolVersion, &name, &rowAccountType, &status, &encrypted,
-			&proxyProfileID, &accountExpires, &lastErrorCode, &configRevision, &updatedAt); err != nil {
+			&proxyProfileID, &proxyPoolID, &sourceAccountID, &sourceProfileID, &sourcePoolID,
+			&accountExpires, &lastErrorCode, &configRevision, &updatedAt); err != nil {
 			return nil, err
 		}
 		if configRevision < 1 {
@@ -696,6 +828,10 @@ func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, acco
 			Name: name, Type: rowAccountType, Status: status,
 			LastErrorCode:    lastErrorCode.String,
 			ProxyProfileID:   proxyProfileID.String,
+			ProxyPoolID:      proxyPoolID.String,
+			SourceAccountID:  sourceAccountID.String,
+			SourceProfileID:  sourceProfileID.String,
+			SourcePoolID:     sourcePoolID.String,
 			Credentials:      credentials,
 			AccountExpiresAt: accountExpires.String,
 			ConfigRevision:   configRevision, UpdatedAt: updatedAt,

@@ -32,19 +32,27 @@ import (
 // 无法确定计价厂商）原样上抛，避免被折叠成「不在目录中」。
 const validationCodeModelNotFound = "model_not_found"
 
-// entryMappingPairTargetModes 是账号模型别名允许的 8 个 (source, target) pair
-// 及其全部可执行 target mode 形态（§5.3 唯一选择函数的写侧输入）。同一协议面
-// 内的同族改名 + OpenAI v1 Responses→Chat Completions 显式 bridge；跨协议
-// 方向随 openai/hybrid/generic_http 一起退役，矩阵外的 pair 一律拒绝。
+// isProtocolEquivalentEntryMappingFamily 是 §5.2 7 pair 矩阵的协议等价判定：
+// 同族改名，或 Gemini stream_generate_content→generate_content 流式归一。
+// 2026-11-07 跨协议模型映射退役（responses→chat_completions bridge 删除）后，
+// 矩阵内全部 pair 都满足该判定；矩阵外 pair 一律中文 400。运行时投影是
+// gatewayopenai.isOpenAIModelMappingRuntimeConversionSupported，两者由
+// testdata/entry_mapping_pairs.json golden 断言锁定一致。
+func isProtocolEquivalentEntryMappingFamily(source, target string) bool {
+	return source == target ||
+		(source == "stream_generate_content" && target == "generate_content")
+}
+
+// entryMappingPairTargetModes 是账号模型别名允许的 7 个 (source, target) pair
+// 及其全部可执行 target mode 形态（§5.3 唯一选择函数的写侧输入）。协议等价
+// 映射（同族改名 + Gemini stream 归一）之外的方向全部退役，矩阵外的 pair
+// 一律拒绝。
 var entryMappingPairTargetModes = map[string][]string{
 	"chat_completions\x00chat_completions": {"chat_json", "chat_sse"},
-	// §5.2 #18：responses→responses 是同族改名映射（Responses 原生上游的
-	// 客户端模型别名），不是跨协议 bridge；运行时
-	// isOpenAIModelMappingRuntimeConversionSupported 的 source==upstream 分支
-	// 已按同族放行，前端下拉与生产存量（144 行）也按同族配置，写侧矩阵曾漏
-	// 该项导致此类映射保存恒 400。
+	// responses→responses 是同族改名映射（Responses 原生上游的客户端模型
+	// 别名），不是跨协议 bridge；写侧矩阵曾漏该项导致此类映射保存恒 400
+	// （BUG-0342，2026-11-02 修复）。
 	"responses\x00responses":                      {"responses_json", "responses_sse"},
-	"responses\x00chat_completions":               {"chat_sse"},
 	"messages\x00messages":                        {"messages_json", "messages_sse"},
 	"generate_content\x00generate_content":        {"generate_content_json"},
 	"stream_generate_content\x00generate_content": {"generate_content_sse"},
@@ -65,8 +73,9 @@ var entryMappingPairTargetModes = map[string][]string{
 func validateEntryMappingFamilyLinkage(sourceFamily, targetFamily string, connectionModes, modelModes []string) error {
 	pairModes, ok := entryMappingPairTargetModes[sourceFamily+"\x00"+targetFamily]
 	if !ok {
-		return &ValidationError{Message: fmt.Sprintf("账号模型别名不支持 %s 到 %s 的上游协议转换",
-			accountModelMappingEndpointFamilyLabel(sourceFamily), accountModelMappingEndpointFamilyLabel(targetFamily))}
+		// 矩阵外 pair 与协议矩阵门（assertAccountModelMappingProtocolAllowed）
+		// 共用同一可归因文案：中文 + 点名两端族，过 kernel localize 直达用户。
+		return &ValidationError{Message: unsupportedProtocolConversionMessage(sourceFamily, targetFamily)}
 	}
 	connectionSet := entryModeSet(connectionModes)
 	modelSet := entryModeSet(modelModes)

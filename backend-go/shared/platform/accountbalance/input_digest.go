@@ -29,27 +29,36 @@ func CredentialBalanceIdentity(credentials map[string]any) string {
 // 的、以什么配置查出来的"字段——provider、凭据指纹（credential_fingerprint，
 // 主键材料变化必然变化）、balance_query_config_json 原文（适配器/自定义
 // 指针）、凭据逻辑身份（base_url + 有效 Key 全池，CredentialBalanceIdentity）、
-// proxy_profile_id（换绑代理改变查询出口与可达性）。刻意不纳入
-// config_revision（全账户级版本，任何编辑——改名/备注/状态等非余额字段
-// ——都会推进）与 intervalMinutes 之外的调度语义。代理档案行内字段编辑
-// （host/port/密码）不改变本摘要：账户行未动，与原 config_revision 判据
-// 的覆盖面对称，J2 下一轮查询自然刷新。
+// proxy_profile_id（直接代理绑定：换绑代理改变查询出口与可达性）、
+// proxy_pool_id + 有效租约成员档案 ID（池绑定：代理池设计 §10.3——池绑定
+// 账户的查询出口是租约成员，租约迁移到另一成员视为不同输入并重置刷新代次；
+// 无租约时成员段为空串）。刻意不纳入 config_revision（全账户级版本，任何
+// 编辑——改名/备注/状态等非余额字段——都会推进）与 intervalMinutes 之外的
+// 调度语义。代理档案行内字段编辑（host/port/密码）不改变本摘要：账户行未
+// 动，与原 config_revision 判据的覆盖面对称，J2 下一轮查询自然刷新。
+//
+// 版本 v2（代理池设计 §10.3 同批改）：摘要规范串加入池/成员两段，全部存量
+// 快照摘要一次性失效（读端按不匹配处理 = 不显示快照），下一轮查询（≤5 分钟）
+// 自愈；与既有「换绑定立即失效」语义同型，无额外清理动作。
 //
 // 消费契约（BUG-0286，用户裁决"任何修改都打掉缓存是全局性缺陷"）：J2/自动
 // 探测/手动刷新三个写入方在快照负载内落 inputDigest；gateway 列表 hydrate
 // 对账户当前列值现算同一摘要并与之匹配。非余额相关编辑不再打断余额显示；
-// 换 Key（主 Key 或池内成员）/ 改 base_url / 改适配器配置 / 换绑代理仍然
-// 立即失效（摘要变化），下一轮查询（≤5 分钟）自愈。configJSON 两侧都取
-// balance_query_config_json 列原文（trim 后），单一事实源是数据库列值，
-// 不做结构化再序列化（避免键序/默认值填充造成字节漂移）。
-func BalanceInputDigest(providerCode, credentialFingerprint, configJSON, credentialIdentity, proxyProfileID string) string {
+// 换 Key（主 Key 或池内成员）/ 改 base_url / 改适配器配置 / 换绑代理或
+// 换绑池 / 租约迁移成员仍然立即失效（摘要变化），下一轮查询（≤5 分钟）
+// 自愈。configJSON 两侧都取 balance_query_config_json 列原文（trim 后），
+// 单一事实源是数据库列值，不做结构化再序列化（避免键序/默认值填充造成
+// 字节漂移）。
+func BalanceInputDigest(providerCode, credentialFingerprint, configJSON, credentialIdentity, proxyProfileID, proxyPoolID, proxyMemberProfileID string) string {
 	canonical := strings.Join([]string{
-		"v1",
+		"v2",
 		strings.TrimSpace(providerCode),
 		strings.TrimSpace(credentialFingerprint),
 		strings.TrimSpace(configJSON),
 		strings.TrimSpace(credentialIdentity),
 		strings.TrimSpace(proxyProfileID),
+		strings.TrimSpace(proxyPoolID),
+		strings.TrimSpace(proxyMemberProfileID),
 	}, "\x1f")
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:8])

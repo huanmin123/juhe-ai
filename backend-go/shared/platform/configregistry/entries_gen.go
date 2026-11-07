@@ -45,7 +45,7 @@ func init() {
 	register(Entry{Name: "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS", Process: []string{"jobs"}})
 	register(Entry{Name: "JUHE_AI_BACKGROUND_DIAGNOSTIC_TASK_MAX_IN_FLIGHT", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_BACKGROUND_PROXY_MANUAL_TEST_DEADLINE_MS", Process: []string{"gateway"}})
-	register(Entry{Name: "JUHE_AI_CODEX_CONTEXT_ROOT", Process: []string{"gateway", "jobs"}})
+	// JUHE_AI_CODEX_CONTEXT_ROOT 随 2026-11-07 跨协议桥退役删除（残留值由 check-config 按未知变量拒绝）。
 	register(Entry{Name: "JUHE_AI_CONCURRENCY_GLOBAL_MAX", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_CONFIRM_USAGE_STATS_REBUILD", Process: []string{"maintenance"}})
 	register(Entry{Name: "JUHE_AI_COOKIE_SECURE", Process: []string{"gateway"}})

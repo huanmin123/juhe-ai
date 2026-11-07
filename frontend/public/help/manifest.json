@@ -101,7 +101,7 @@
         {
           "id": "20-provider-differences",
           "title": "各供应商参数差异速查",
-          "summary": "九类供应商逐家：特有参数、回包差异、思考级别字段对照、跨协议限制。",
+          "summary": "九类供应商逐家：特有参数、回包差异、思考级别字段对照、协议一致性说明。",
           "file": "user/20-provider-differences.md"
         },
         {

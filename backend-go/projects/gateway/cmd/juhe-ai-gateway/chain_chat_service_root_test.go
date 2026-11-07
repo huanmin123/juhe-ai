@@ -21,8 +21,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
@@ -258,26 +256,9 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 		t.Fatalf("qwen chat url = %#v", urls)
 	}
 
-	// 模型映射改写（responses→chat bridge）后的 /chat/completions 路径一并
-	// 走前缀直拼。
-	qwenAccount.ModelMappings = []gatewayruntimecache.AccountModelMapping{{
-		SourceModel:            "ext-model",
-		SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
-		UpstreamModel:          "qwen-max",
-		UpstreamEndpointFamily: gatewayrouting.EndpointFamilyChatCompletions,
-		Enabled:                true,
-	}}
-	mappedBody := `{"model":"ext-model","input":"hi"}`
-	mappedRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(mappedBody))
-	req := gatewaypreauth.NewGatewayRequest(mappedRequest)
-	req.Body = &gatewaybody.Request{RawBody: []byte(mappedBody), Body: mustJSONMap(t, mappedBody)}
-	urls, err = driver.BuildGatewayUpstreamURLsForAccount(context.Background(), qwenAccount, req)
-	if err != nil {
-		t.Fatalf("mapped chat build urls: %v", err)
-	}
-	if len(urls) != 1 || urls[0] != "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" {
-		t.Fatalf("mapped chat url = %#v", urls)
-	}
+	// 2026-11-07 跨协议桥退役：原「responses→chat 映射改写后路径一并走前缀
+	// 直拼」用例随桥删除；responses 路径不再改写到 /chat/completions，跨协议
+	// 映射在写侧即被拒绝。
 
 	// 非 chat 路径维持 openai 归一（零回归钉值）：/v1/responses 无映射时按
 	// v2 直拼拼接（动机：裸域不再补 /v1，base_url 为版本根时原样直拼）。
@@ -292,7 +273,7 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 	}
 	responsesBody := `{"model":"m","input":"hi"}`
 	responsesRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(responsesBody))
-	req = gatewaypreauth.NewGatewayRequest(responsesRequest)
+	req := gatewaypreauth.NewGatewayRequest(responsesRequest)
 	req.Body = &gatewaybody.Request{RawBody: []byte(responsesBody), Body: mustJSONMap(t, responsesBody)}
 	urls, err = driver.BuildGatewayUpstreamURLsForAccount(context.Background(), plainAccount, req)
 	if err != nil {

@@ -45,59 +45,9 @@ func sseModelUpstream(t *testing.T, contentType, payload string) *httptest.Serve
 	return server
 }
 
-// TestUpstreamModelObservedBeforeBridgeTransformReachesSlot 钉住桥路径归因
-// （P2 核心）：保留的 responses -> chat_completions 桥请求下，观察挂在桥转换
-// 之前的原始上游流上——slot 归因的是上游原生 model，而不是空值、映射名或
-// 转换后的客户端形态；发布值经 slot Bind 进入响应快照（usage/audit 的
-// UpstreamResponseModel 数据源）。
-func TestUpstreamModelObservedBeforeBridgeTransformReachesSlot(t *testing.T) {
-	server := sseModelUpstream(t, "text/event-stream",
-		"data: {\"id\":\"chatcmpl-obs\",\"object\":\"chat.completion.chunk\",\"model\":\"real-upstream-model-v1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"}}]}\n\n"+
-			"data: [DONE]\n\n")
-	engine := upstreamModelObserverEngine()
-
-	request := bodyAttachedRequest(t, http.MethodPost, "/v1/responses",
-		`{"model":"client-model","stream":true,"input":"hi"}`)
-	slot := &gatewaydispatch.UpstreamResponseModelSlot{}
-	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), gatewaydispatch.AttemptInput{
-		Req:                       request,
-		Account:                   bridgeStreamMappingAccount(),
-		UpstreamURL:               server.URL + "/v1/chat/completions",
-		Headers:                   http.Header{},
-		Body:                      []byte(`{"model":"client-model","stream":true,"input":"hi"}`),
-		Signal:                    context.Background(),
-		TimeoutProfile:            gatewayrouting.GatewayTimeoutProfile{TimeoutsDisabled: true},
-		UpstreamResponseModelSlot: slot,
-	})
-	if err != nil {
-		t.Fatalf("attempt: %v", err)
-	}
-
-	// 排空转换后的下游流（驱动 pump 消费原始上游体至 EOF，发布先于下游
-	// EOF）。
-	transformed, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("read transformed body: %v", err)
-	}
-	text := string(transformed)
-	if !strings.Contains(text, "event: response.completed") {
-		t.Fatalf("桥转换必须产出 Responses SSE, got %q", text)
-	}
-	// 下游载荷可能保留上游 model 字段；这里只钉住观察 slot 归因于原始上游流。
-	if slot.Get() != "real-upstream-model-v1" {
-		t.Fatalf("slot 必须归因上游原始 model, got %q", slot.Get())
-	}
-
-	// chain 响应面消费契约：Bind 把发布接入响应快照（发布先于绑定也要能看到）。
-	snapshotModel := ""
-	slot.Bind(func(model string) { snapshotModel = model })
-	if snapshotModel != "real-upstream-model-v1" {
-		t.Fatalf("响应快照必须拿到上游原始模型, got %q", snapshotModel)
-	}
-}
-
 // TestUpstreamModelObservedGeminiNativeRegression 钉住 gemini 原生路径回归：
-// 无桥映射的 gemini 账户仍按 gemini 协议观察 modelVersion。
+// 无映射的 gemini 账户仍按 gemini 协议观察 modelVersion（2026-11-07 桥退役：
+// 原桥路径观察归因用例随桥删除；gemini 映射路径的观察由引擎直通承载）。
 func TestUpstreamModelObservedGeminiNativeRegression(t *testing.T) {
 	server := sseModelUpstream(t, "text/event-stream",
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}],\"modelVersion\":\"gemini-native-obs-v3\"}\n\n")

@@ -1,5 +1,7 @@
 # AI 账户上游接口能力设计
 
+> **2026-11-07 退役标注：** 跨协议模型映射与 `Responses -> Chat` bridge 已整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）。本文的接口能力门（映射右侧协议必须在账户已启用的上游能力内）仍然现行；文中 `Responses -> Chat Completions` 映射、bridge `chat_sse` 载体与 Chat 跨供应商切号上下文物化的表述已随 bridge 退役作废，`credentials.supported_endpoint_modes` 的现行配置面为 `account_endpoint_modes`（`credentials.supported_endpoint_modes` 为历史字段名）。
+
 ## 1. 目标
 
 本文固定 AI 账户 `credentials.supported_endpoint_modes`、账号模型别名、客户端画像和人工测试请求形态之间的边界，避免把“真实上游支持什么”和“客户端以什么形态请求”混成同一层。
@@ -33,7 +35,7 @@
 
 接口能力约束映射右侧的真实上游协议，不约束映射左侧的客户端入口协议：
 
-- `Responses -> Chat Completions` 只要求账户启用至少一种 Chat Completions 上游能力；关闭原生 Responses 不影响该映射。
+- （已随 2026-11-07 退役）`Responses -> Chat Completions` 只要求账户启用至少一种 Chat Completions 上游能力；关闭原生 Responses 不影响该映射。跨协议映射退役后该方向不再可保存，Responses 映射只能回到 `Responses -> Responses`。
 - `Responses -> Responses` 要求账户启用至少一种 Responses 上游能力。
 - Messages 或 Gemini native 映射同样按右侧协议族检查真实上游能力。
 - Gemini Interactions 是原生 endpoint family，不参与普通 OpenAI v1 模型映射；模型目录声明 `interactions` 且账户启用对应 JSON / SSE mode 时才进入人工测试和网关候选。
@@ -57,18 +59,18 @@ upstreamEndpointMode     # 例如 chat_json、chat_sse、responses_json、respon
 contextContract          # 例如 chat_messages_v1、native_responses_v1
 ```
 
-`upstreamEndpointMode` 是实际上游采用的精确 JSON / SSE 形态，不是客户端形态的别名。`Responses -> Chat` bridge 当前以 `chat_sse` 作为上游载体；只有 bridge 明确选择并构造 `chat_json` 时，才可形成 `chat_json` 目标。`chat_json` 和 `chat_sse`、`responses_json` 和 `responses_sse` 不能在切号时互换。
+`upstreamEndpointMode` 是实际上游采用的精确 JSON / SSE 形态，不是客户端形态的别名。（已随 2026-11-07 退役）原 `Responses -> Chat` bridge 以 `chat_sse` 作为上游载体的表述随 bridge 删除作废。`chat_json` 和 `chat_sse`、`responses_json` 和 `responses_sse` 不能在切号时互换。
 
 切号候选只检查两类账号事实：
 
 1. `supported_endpoint_modes` 是否包含冻结的精确 mode；
 2. `supportedModels` 是否直接支持冻结的 `upstreamModel`，或启用且有效的账号模型别名 RHS 是否同时匹配冻结的 `upstreamModel + upstreamEndpointFamily`。
 
-mapping 左侧 `SourceModel`、`SourceEndpointFamily`、客户端协议和客户端画像不参与切号资格判断；不能复用只按 source 查找的 `ResolveAccountModelMapping`。候选被选中后，provider driver 必须使用已经物化的 `contextContract` 或冻结的 bridge 执行计划重建请求，不能再把原始客户端 body 交给候选账号。
+mapping 左侧 `SourceModel`、`SourceEndpointFamily`、客户端协议和客户端画像不参与切号资格判断；不能复用只按 source 查找的 `ResolveAccountModelMapping`。候选被选中后，provider driver 必须使用冻结的同族目标重建请求（bridge 执行计划已随 2026-11-07 退役删除），不能再把原始客户端 body 交给候选账号。
 
 供应商边界固定为：冻结目标是 `chat_completions` 时允许跨供应商，但模型、Chat 协议族、精确 mode 和上下文形态必须一致；冻结目标是 `responses` 或其他非 Chat 协议时必须保持同一供应商，并保持兼容的 provider profile、模型、协议族和 mode。目标缺失或无法证明时不放宽为客户端协议，停止跨账号切换。
 
-`Responses -> Chat` 只有在 `previous_response_id`、网关 compact envelope 和其他可转换状态已由网关状态层消费，并且不存在仍需原上游解开的必需 opaque `encrypted_content`，形成自包含的 Chat / canonical 上下文后，才可以按 Chat 目标跨供应商切号。外部原生 `previous_response_id` 或仍需原上游解开的 opaque `encrypted_content` 不能交给 Chat 候选；只能保持原生 Responses 的同供应商约束，否则受控失败。
+（已随 2026-11-07 退役）原 `Responses -> Chat` 上下文物化后跨供应商切号的例外已随 bridge 与网关状态层（`juhe_codex_context`）删除；`previous_response_id` 状态与 opaque `encrypted_content` 请求只能保持原生 Responses 的同供应商约束。
 
 完整契约见 [切号时有效上游目标与上下文迁移设计](切号时有效上游目标与上下文迁移设计.md)。
 

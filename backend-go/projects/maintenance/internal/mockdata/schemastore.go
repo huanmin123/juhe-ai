@@ -14,7 +14,6 @@ const (
 	SchemaUsage        = "juhe_usage"
 	SchemaStats        = "juhe_stats"
 	SchemaDataset      = "juhe_dataset"
-	SchemaCodexContext = "juhe_codex_context"
 	// SchemaJ3B 是 J3b 模型检测专库：由 j3bmodelcheck 的受控 bootstrap 建表，
 	// schema 本体缺失时记 OwnerStoresPending 而不是失败。
 	SchemaJ3B = "juhe_j3b"
@@ -43,7 +42,6 @@ var maintenanceSchemas = []string{
 	SchemaDataset,
 	SchemaUsage,
 	SchemaStats,
-	SchemaCodexContext,
 }
 
 // schemaDomain 返回 schema 归属的造数域（覆盖报告按域判定「未接线」）。
@@ -57,8 +55,6 @@ func schemaDomain(schema string) string {
 		return DomainStats
 	case SchemaDataset:
 		return DomainObservability
-	case SchemaCodexContext:
-		return DomainChatCodexModelCheck
 	default:
 		return ""
 	}

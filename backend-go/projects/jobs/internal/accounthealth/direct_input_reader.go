@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 	"strconv"
 	"strings"
 	"sync"
@@ -288,9 +290,32 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 		if err := rows.Err(); err != nil {
 			return 0, fmt.Errorf("遍历 PG direct input 候选失败: %w", err)
 		}
+		poolMemberProxies, poolUnavailable, err := r.resolvePoolMemberProxies(ctx, tx, candidates)
+		if err != nil {
+			return 0, err
+		}
 		for _, candidate := range candidates {
 			if len(result.Inputs) >= limit {
 				break
+			}
+			// 池绑定候选的有效目标解析（代理池设计 §5.2/§5.3 只读入口）：先于
+			// 输入构造执行；不可用候选隔离为该输入失败（保留 suppression 重试
+			// 机制），不直连、不写账户状态。
+			if reason, blocked := poolUnavailable[candidate.account.ID]; blocked {
+				failure, ok := directInputFailureForCandidate(candidate)
+				if !ok {
+					return 0, fmt.Errorf("PG direct input 池不可用候选缺少可持久化的 account/revision fence")
+				}
+				failure.Reason = reason
+				result.Failures = append(result.Failures, failure)
+				if len(result.Inputs) >= limit {
+					break
+				}
+				continue
+			}
+			if memberProxy, hasMember := poolMemberProxies[candidate.account.ID]; hasMember {
+				member := memberProxy
+				candidate.proxy = &member
 			}
 			if candidate.authorization != nil {
 				eligible, err := authorizationQuotaEligible(ctx, tx, candidate, now, timezone)
@@ -370,6 +395,97 @@ func buildDirectCandidateInput(candidate directCandidate, direct exactkeyprobe.D
 	return exactkeyprobe.Input{}, &failure, nil
 }
 
+// directInputProxyDecrypter 用与凭据同一套 v1 AES-GCM 封套
+// （accountcrypto.DecryptJSON）解开 proxy_profiles.password_encrypted（明文
+// {"password": "..."}），供共享 proxyresolve 解析器校验成员代理可解密。
+type directInputProxyDecrypter struct {
+	secret string
+}
+
+func (d directInputProxyDecrypter) DecryptProxyPassword(_ context.Context, encrypted string) (string, error) {
+	var envelope struct {
+		Password *string `json:"password"`
+	}
+	if err := accountcrypto.DecryptJSON(d.secret, encrypted, &envelope); err != nil {
+		return "", err
+	}
+	if envelope.Password == nil {
+		return "", fmt.Errorf("代理密码缺失")
+	}
+	return *envelope.Password, nil
+}
+
+// directCandidateEffectivePoolID 应用 §5.2 授权实例覆盖：实例（授权臂行）取
+// source 池绑定，实例自身池绑定不参与；普通账户取自身池绑定。空串 = 无池
+// 绑定（保持既有直接代理/直连读面不变）。
+func directCandidateEffectivePoolID(candidate directCandidate) string {
+	if candidate.authorization != nil {
+		return candidate.sourceProxyPoolID
+	}
+	return candidate.proxyPoolID
+}
+
+// resolvePoolMemberProxies 解析池绑定候选的有效代理目标（代理池设计 §5.2/
+// §5.3/§6.6 只读入口）：在当前只读事务内经共享 proxyresolve 解析器读取当前
+// 租约成员（Writer=nil，不补租约；Health=nil，PG pool_health_status 为事实
+// 源）。可用成员映射为冻结进探测输入的 DirectProxy；无有效租约/池不可用以
+// 明确原因隔离为该输入失败（保留 suppression 重试机制），绝不直连、绝不写
+// 账户状态。
+func (r *PostgresDirectInputReader) resolvePoolMemberProxies(ctx context.Context, tx *sql.Tx, candidates []directCandidate) (map[string]exactkeyprobe.DirectProxy, map[string]string, error) {
+	poolAccountIDs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if directCandidateEffectivePoolID(candidate) == "" {
+			continue
+		}
+		poolAccountIDs = append(poolAccountIDs, candidate.account.ID)
+	}
+	proxies := map[string]exactkeyprobe.DirectProxy{}
+	unavailable := map[string]string{}
+	if len(poolAccountIDs) == 0 {
+		return proxies, unavailable, nil
+	}
+	store, err := proxyresolve.NewPostgresStore(tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolver, err := proxyresolve.New(proxyresolve.Options{
+		Store:     store,
+		Decrypter: directInputProxyDecrypter{secret: r.credentialSecret},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	targets, err := resolver.ResolveBatch(ctx, poolAccountIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取 PG direct input 池成员代理失败: %w", err)
+	}
+	memberProfileIDs := make([]string, 0, len(poolAccountIDs))
+	for _, accountID := range poolAccountIDs {
+		target := targets[accountID]
+		if !target.Available() {
+			unavailable[accountID] = "代理池有效目标不可用（" + target.UnavailableCode + "）：" + target.UnavailableMessage
+			continue
+		}
+		memberProfileIDs = append(memberProfileIDs, target.ProfileID)
+	}
+	profiles, err := store.LoadProfiles(ctx, memberProfileIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取 PG direct input 池成员代理档案失败: %w", err)
+	}
+	for _, accountID := range poolAccountIDs {
+		if _, blocked := unavailable[accountID]; blocked {
+			continue
+		}
+		profile, ok := profiles[targets[accountID].ProfileID]
+		if !ok {
+			unavailable[accountID] = "代理池成员代理档案不存在：" + targets[accountID].ProfileID
+			continue
+		}
+		proxies[accountID] = exactkeyprobe.DirectProxy{ID: profile.ID, Enabled: profile.Enabled, Type: profile.Type, Host: profile.Host, Port: profile.Port, Username: profile.Username, PasswordEncrypted: profile.PasswordEncrypted}
+	}
+	return proxies, unavailable, nil
+}
+
 type directCandidate struct {
 	account                 exactkeyprobe.DirectAccount
 	authorization           *exactkeyprobe.DirectAuthorization
@@ -383,6 +499,11 @@ type directCandidate struct {
 	authorizationResourceID string
 	authorizationOwner      string
 	authorizationTeam       string
+	// proxyPoolID / sourceProxyPoolID 是配置池绑定行事实（代理池设计 §5.2）：
+	// 授权实例取 source 池（实例自身池绑定不参与），普通账户取自身池；非空
+	// 即走共享解析器的池成员只读解析。
+	proxyPoolID       string
+	sourceProxyPoolID string
 	// backgroundProbeEnabled / sourceBackgroundProbeEnabled 是后台自动探测
 	// 总开关的候选行事实（实例行恒随来源，WHERE 已按生效值过滤；scan 仅承载
 	// 该事实供测试断言，不参与构造）。
@@ -502,7 +623,8 @@ SELECT
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
   COALESCE(source.background_probe_enabled, 1) AS source_background_probe_enabled,
   binding.group_id, binding.account_authorization_id,
-  proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted
+  proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted,
+  a.proxy_pool_id, source.proxy_pool_id
 FROM juhe_business.accounts a
 JOIN juhe_business.account_health_jobs_input_versions iv ON iv.account_id = a.id
 LEFT JOIN juhe_business.resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
@@ -631,6 +753,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var accountBackgroundProbe, sourceBackgroundProbe sql.NullInt64
 	var groupID, bindingAuthorizationID sql.NullString
 	var proxyID, proxyType, proxyHost, proxyUsername, proxyPassword sql.NullString
+	var accountPoolID, sourcePoolID sql.NullString
 	var proxyEnabled sql.NullBool
 	var proxyPort sql.NullInt64
 	if err := rows.Scan(
@@ -648,6 +771,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		&sourceBackgroundProbe,
 		&groupID, &bindingAuthorizationID,
 		&proxyID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword,
+		&accountPoolID, &sourcePoolID,
 	); err != nil {
 		return directCandidate{}, fmt.Errorf("解码 PG direct input 候选失败: %w", err)
 	}
@@ -719,6 +843,8 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	if proxyID.Valid {
 		result.proxy = &exactkeyprobe.DirectProxy{ID: proxyID.String, Enabled: proxyEnabled.Bool, Type: proxyType.String, Host: proxyHost.String, Port: int(proxyPort.Int64), Username: proxyUsername.String, PasswordEncrypted: proxyPassword.String}
 	}
+	result.proxyPoolID = accountPoolID.String
+	result.sourceProxyPoolID = sourcePoolID.String
 	return result, nil
 }
 

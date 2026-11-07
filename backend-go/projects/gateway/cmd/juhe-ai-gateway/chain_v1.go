@@ -47,6 +47,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/securitypolicies"
 )
 
 // gatewayTrafficSource mirrors normalizeOpenAIGatewayTrafficSource(undefined).
@@ -124,6 +125,14 @@ type gatewayChain struct {
 	// 警。zero value 可用（channel 首次 dispatch 惰性初始化），组合测试直接
 	// 构造 gatewayChain 字面量时无需装配。
 	compatPreAuthFailureQueue chainCompatPreAuthFailureQueue
+	// securityPolicyProtection 是 API Key 安全策略防护次数的 Redis 增量计数
+	// 面（写后缓存设计 §4.3.1）：终态消费点（FinalizationDeps 构造点）经
+	// recordSecurityPolicyProtectionOnce 以 fire-and-forget INCRBY 累加
+	// TotalHits 原始命中总数，gateway 进程内刷写任务周期 GETDEL 合并进
+	// security_policies.protection_count 列；与刷写任务共用组合根同一 Redis
+	// 客户端与 namespace（键空间单一来源）。nil（组合测试 / 未装配 Redis）时
+	// 整体无操作，请求行为不变。
+	securityPolicyProtection *securitypolicies.ProtectionCountStore
 }
 
 // ServeHTTP implements http.Handler over the /v1 prefix.
@@ -143,11 +152,6 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// E2E-FINDING #6：门面是三协议并集（Node isGatewayProtocolRequest），
 	// anthropic / gemini native 面放行进同一条分发链。
 	req := gatewaypreauth.NewGatewayRequest(r)
-	// DD-C6：桥接流 usage 结算载体安装（WithContext 重建请求对象，context 值
-	// 链式保留；与下方 req.HTTP = r 先例同型）。桥转换面（chain_bridge_response.go）
-	// 每 attempt 换入本次快照槽，handleUpstreamResponse 经 supplier 交
-	// finalization 消费。
-	r = chainBridgeUsageCarrierInstall(r)
 	req.HTTP = r
 	if !gatewayIsProtocolRequest(req) {
 		if c.compat != nil {
@@ -311,6 +315,17 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		// 413（chain_preflight rejectOversizedAutoDowngrade）等中途已释放的路径
 		// 这里是 no-op，不会双重退还预算。
 		defer bodyReq.ReleaseInFlight()
+	}
+
+	// ---- API Key 安全策略出站脱敏（安全策略设计 §2/§5，批B2）----
+	// body 定型后的单点接入：多账户重试与协议桥接都从 sanitized body 派生
+	// （UpstreamBodyCache / 读物化对象，§2），映射表请求级一次定型；RawBody
+	// 保持客户端原文，紧随其后的 request.accepted 日志、usage 请求快照与审计
+	// client_request 捕获看到的仍是原文契约。未绑定/内置默认/空规则集零开销
+	// 返回，现有行为逐字节不变（验收 1）。
+	if err := applySecurityPolicyIfNeeded(req, traceID); err != nil {
+		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
+		return
 	}
 
 	// ---- request acceptance + audit capture (routes.ts:287 / :296 / :297) ----
@@ -722,10 +737,6 @@ func (c *gatewayChain) handleUpstreamResponse(
 		Account:          gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
 		UpstreamResponse: responseSnapshot,
 		UpstreamURL:      dispatched.UpstreamURL,
-		// DD-C6：桥接流 usage 快照供给（桥泵完成时写入当前 attempt 槽）。nil
-		// supplier（未装载体）与无快照（本次 attempt 非桥接 / 上游未发 usage）
-		// 时结算链保持 inspector/估算兜底既有路径。
-		BridgeUsage: chainBridgeUsageCarrierOf(req.HTTP).supplier(),
 		// BUG-0289：带出本次 attempt 实际发送的请求体（引擎
 		// UpstreamDispatchResult.RequestBody，attemptoutcomes.go:63/:201 由
 		// c.loop.body 填充）。该 body 在 dispatchsingle.go:397 取自
@@ -749,7 +760,7 @@ func (c *gatewayChain) handleUpstreamResponse(
 		// 受限重放窗口资格排除面（流式提交边界受限重放与异常终局处置设计 §3.1）：
 		// 媒体域 / 桥接流 / chat_web_search 副作用子调用禁用窗口，文本主路径
 		// 缺省启用。ParseError 隔离与异常终局判定不受本判定影响。
-		PreCommitReplayWindowDisabled: preCommitReplayWindowDisabledOf(req, context, dispatched.Account),
+		PreCommitReplayWindowDisabled: preCommitReplayWindowDisabledOf(req, context),
 		MarkFirstOutput:               firstOutputMetricMarkOf(dispatched.MarkFirstOutput, startedAt, req.MethodUpper()),
 		// Gemini interactions 创建成功的提交前亲和写入回调（Node
 		// finalization.ts:483/:1054）；非 create / 非 2xx / 非 gemini 时 nil。
@@ -764,11 +775,15 @@ func (c *gatewayChain) handleUpstreamResponse(
 				// 请求模型、请求侧 endpoint family 与模型解析器按请求注入：
 				// finalize 侧映射记账必须与派发链改写同源（requestedModel 供
 				// 失败行使用，完成行自带 RequestedModel）。压缩期望取 preflight
-				// 冻结的请求级值（用量记录压缩标记设计 §压缩请求识别）。
-				requestedModel:       requestModelHintOf(req),
-				sourceEndpointFamily: requestMappingSourceFamilyOf(req),
-				compactionExpected:   context.UsageContext.CompactionExpected,
-				models:               c.usageModelResolver,
+				// 冻结的请求级值（用量记录压缩标记设计 §压缩请求识别）。安全
+				// 策略事实取出站脱敏点定型的请求级状态（安全策略设计 §8：
+				// applied 与命中无关，命中计数请求终态才完整，构造点即终态）。
+				requestedModel:        requestModelHintOf(req),
+				sourceEndpointFamily:  requestMappingSourceFamilyOf(req),
+				compactionExpected:    context.UsageContext.CompactionExpected,
+				securityPolicyApplied: req.SecurityPolicy != nil,
+				piiHits:               securityPolicyHitsOf(req),
+				models:                c.usageModelResolver,
 			},
 			Logger: gatewayResponseLogger{inner: slog.Default()},
 			NowMs:  func() int64 { return c.preauth.NowMs() },
@@ -782,6 +797,11 @@ func (c *gatewayChain) handleUpstreamResponse(
 			UsageFallback: streamUsageFallbackHookOf(req),
 		},
 	}
+	// 防护次数终态计数（写后缓存设计 §4.3.1）：FinalizationDeps 注入 usage
+	// 的同一构造点即请求首个终态处理入口——TotalHits 已随脱敏点定型，此处
+	// CAS 后 fire-and-forget INCRBY（每请求至多一次，重试/多 attempt 不重复；
+	// 失败仅 debug 日志，不影响响应）。
+	c.recordSecurityPolicyProtectionOnce(req, context.UsageContext.TraceID)
 	if dispatched.ResponsePrecommitDeadlineAtMs != nil {
 		input.ResponsePrecommitDeadlineAtMs = dispatched.ResponsePrecommitDeadlineAtMs
 	}

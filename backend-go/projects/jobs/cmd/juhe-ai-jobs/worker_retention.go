@@ -118,15 +118,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		deletedAccounts.StateVersion = oauthRuntimeStateBumper{client: stateClient}
 	}
 
-	codexStore := &cleanuprepo.CodexContextStore{
-		PG:  usageCatalog,
-		Now: family.now,
-	}
-	if codexStore.PG == nil {
-		return fmt.Errorf("retention codex context PG 句柄未初始化")
-	}
-	family.codex = codexStore
-
 	publicApiLogs := &cleanuprepo.PublicApiLogsStore{DB: dataset}
 	systemSessions := &cleanuprepo.SystemSessionsStore{DB: business}
 	nonBusinessDataset := &cleanuprepo.NonBusinessDatasetStore{
@@ -169,7 +160,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	dbService := &familyDbService{
 		family:         family,
 		systemSessions: systemSessions,
-		codex:          codexStore,
 		deleted:        deletedAccounts,
 		logger:         a.logger,
 	}
@@ -186,7 +176,8 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	dataRetentionJob.Stats = &familyStatsWriter{family: family}
 	dataRetentionJob.DB = dbService
 	dataRetentionJob.Enqueuer = &queueEnqueuer{queue: queue}
-	dataRetentionJob.CodexStorage = &codexStorageProcessor{db: dbService, store: codexStore, segmentRoot: a.config.CodexContextRoot, logger: a.logger}
+	// 2026-11-07 codex-context 退役：原 CodexStorage segments 清理处理器与
+	// JUHE_AI_CODEX_CONTEXT_ROOT 装配随桥删除。
 	// W13 兜底（2026-10-29）：陈旧 in_progress 元数据空壳清扫，复用 dataset 句柄。
 	dataRetentionJob.AuditShells = &cleanuprepo.AuditShellStore{DB: dataset}
 
@@ -295,7 +286,6 @@ type retentionFamily struct {
 	accountHealthOutcomesDB *cleanuprepo.DB
 
 	recordCleanup *cleanuprepo.RecordCleanupStore
-	codex         *cleanuprepo.CodexContextStore
 	dbService     *familyDbService
 	queue         *recordMaintenanceQueue
 	runner        *retention.RecordMaintenanceRunner
@@ -684,7 +674,6 @@ func (w *familyStatsWriter) UpsertAccountUsageSnapshots(ctx context.Context, inp
 type familyDbService struct {
 	family         *retentionFamily
 	systemSessions *cleanuprepo.SystemSessionsStore
-	codex          *cleanuprepo.CodexContextStore
 	deleted        *cleanuprepo.DeletedAccountStore
 	logger         interface{ Warn(msg string, args ...any) }
 }
@@ -693,73 +682,8 @@ func (d *familyDbService) CleanupExpiredSystemSessions(ctx context.Context, expi
 	return d.systemSessions.CleanupExpired(ctx, expiredBefore, limit)
 }
 
-func (d *familyDbService) CleanupExpiredCodexContextStates(ctx context.Context, expiredBefore string, limit int) (*retention.CodexContextExpiredCleanup, error) {
-	result, err := d.codex.CleanupExpiredStates(ctx, expiredBefore, limit)
-	if err != nil || result == nil {
-		return nil, err
-	}
-	return &retention.CodexContextExpiredCleanup{
-		DeletedSessions:  result.DeletedSessions,
-		DeletedResponses: result.DeletedResponses,
-		DeletedCompacts:  result.DeletedCompacts,
-		StorageKeys:      result.StorageKeys,
-		HasMore:          result.HasMore,
-	}, nil
-}
-
-func (d *familyDbService) SettleCodexContextStorageCleanup(ctx context.Context, settlement retention.CodexContextSettlement) (retention.CodexContextSettlementResult, error) {
-	failures := make([]cleanuprepo.SettlementFailure, 0, len(settlement.Failures))
-	for _, failure := range settlement.Failures {
-		failures = append(failures, cleanuprepo.SettlementFailure{StorageKey: failure.StorageKey, Error: failure.Error})
-	}
-	result, err := d.codex.SettleStorageCleanup(ctx, cleanuprepo.Settlement{
-		SucceededStorageKeys: settlement.SucceededStorageKeys,
-		Failures:             failures,
-		Now:                  settlement.Now,
-	})
-	if err != nil {
-		return retention.CodexContextSettlementResult{}, err
-	}
-	return retention.CodexContextSettlementResult{Acknowledged: result.Acknowledged, Deferred: result.Deferred}, nil
-}
-
 func (d *familyDbService) CleanupExpiredDeletedAccounts(ctx context.Context) (*retention.ExpiredDeletedAccountSummary, error) {
 	return d.deleted.CleanupExpired(ctx)
-}
-
-// codexStorageProcessor 复用 retention.FilesystemKeyDeleter 的文件删除 +
-// DB service 结算（Node processCodexContextStorageCleanupBatch 等价）。
-type codexStorageProcessor struct {
-	db     retention.DbService
-	store  *cleanuprepo.CodexContextStore
-	logger interface{ Warn(msg string, args ...any) }
-	// segmentRoot 是 codex-context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，
-	// gateway runtime.go 同名 env 同派生默认）。storageKey 是相对该根的路径
-	// （sessions/<safe>/segments/<hour>.json.gz，gateway
-	// gatewaycodex.SegmentStorageKey），不能用 store.ShardRoot（state-shards
-	// 根）——根错位时删除永远 miss 并按「不存在=成功」结算，segment 文件
-	// 永不清理（存储泄漏）。
-	segmentRoot string
-}
-
-func (p *codexStorageProcessor) ProcessBatch(ctx context.Context, storageKeys []string) (int64, error) {
-	deleter := retention.NewCodexContextStorageProcessor(p.segmentRoot, nil, nil)
-	deletion, err := deleter.Deleter.DeleteStorageKeys(ctx, storageKeys)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := p.db.SettleCodexContextStorageCleanup(ctx, retention.CodexContextSettlement{
-		SucceededStorageKeys: deletion.SucceededStorageKeys,
-		Failures:             deletion.Failures,
-	}); err != nil {
-		return deletion.Deleted, err
-	}
-	if len(deletion.Failures) > 0 {
-		p.logger.Warn("Codex Context 状态文件删除失败，已持久化等待重试",
-			"event", "codex_context_storage_cleanup_deferred",
-			"failedCount", len(deletion.Failures))
-	}
-	return deletion.Deleted, nil
 }
 
 // ---- 本地 record maintenance 队列 ----

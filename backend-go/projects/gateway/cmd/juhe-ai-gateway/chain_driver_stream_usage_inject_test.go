@@ -19,7 +19,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 func streamUsageInjectAccount() gatewaydispatch.AccountCandidate {
@@ -179,44 +178,6 @@ func TestChainDriverSkipsInjectForNonOpenAIProtocol(t *testing.T) {
 	}
 	if bytes.Contains(parts.Body, []byte(`"stream_options"`)) {
 		t.Fatalf("非 openai 协议不得注入 stream_options: %s", parts.Body)
-	}
-}
-
-// TestChainDriverInjectsForResponsesToChatBridge：模型映射 responses→chat
-// 改写后的最终出站路径为 /chat/completions，注入照常生效（出站模型为映射
-// 上游拼写，include_usage 补齐）。
-func TestChainDriverInjectsForResponsesToChatBridge(t *testing.T) {
-	driver := newChainProviderDriver()
-	account := streamUsageInjectAccount()
-	account.VendorCode = "hybrid"
-	account.ModelMappings = []gatewayruntimecache.AccountModelMapping{{
-		SourceModel:            "gpt-x",
-		SourceEndpointFamily:   "responses",
-		UpstreamModel:          "doubao-seed",
-		UpstreamEndpointFamily: "chat_completions",
-		Enabled:                true,
-	}}
-	clientBody := `{"model":"gpt-x","stream":true,"input":"hi"}`
-	req := mappedURLTestRequest(t, http.MethodPost, "/v1/responses", clientBody)
-
-	urls, err := driver.BuildGatewayUpstreamURLsForAccount(context.Background(), account, req)
-	if err != nil {
-		t.Fatalf("build urls: %v", err)
-	}
-	if len(urls) != 1 || !strings.Contains(urls[0], "/chat/completions") {
-		t.Fatalf("urls = %#v, want responses→chat 改写", urls)
-	}
-	parts, err := driver.buildGatewayUpstreamRequestParts(context.Background(), req, account, gatewaydispatch.UsageIdentity{}, "")
-	if err != nil {
-		t.Fatalf("build parts: %v", err)
-	}
-	body := decodePartsBodyObject(t, parts.Body)
-	if body["model"] != "doubao-seed" {
-		t.Fatalf("model = %#v, want 映射上游拼写 doubao-seed", body["model"])
-	}
-	options := streamOptionsOf(t, body)
-	if options["include_usage"] != true {
-		t.Fatalf("include_usage = %#v, want true（桥改写后的 chat 流式出站同样注入）", options["include_usage"])
 	}
 }
 

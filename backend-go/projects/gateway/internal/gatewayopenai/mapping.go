@@ -1,7 +1,6 @@
 package gatewayopenai
 
 import (
-	"net/url"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -126,57 +125,23 @@ func accountMappings(account *RuntimeAccount) []AccountModelMapping {
 	return account.ModelMappings
 }
 
-// isOpenAIModelMappingRuntimeConversionSupported mirrors
-// isOpenAIModelMappingRuntimeConversionSupported.
+// IsProtocolEquivalentEndpointFamily reports whether source / target form one of
+// the 7 allowed protocol-equivalent mapping pairs: the same family, or the
+// Gemini native stream→generate normalization. Cross-protocol pairs (including
+// the retired responses→chat_completions bridge) return false.
+func IsProtocolEquivalentEndpointFamily(source, target string) bool {
+	return source == target ||
+		(source == FamilyGeminiStreamGenerate && target == FamilyGeminiGenerateContent)
+}
+
+// isOpenAIModelMappingRuntimeConversionSupported 是 §5.2 7 pair 矩阵的运行时
+// 投影：只放行协议等价映射（同族改名，或 Gemini
+// stream_generate_content→generate_content 流式归一）。2026-11-07 跨协议模型
+// 映射退役，OpenAI v1 Responses→Chat Completions bridge 放行一并删除；写侧
+// accounts.entryMappingPairTargetModes 与本处由 golden
+// （accounts/testdata/entry_mapping_pairs.json）锁定同一口径。
 func isOpenAIModelMappingRuntimeConversionSupported(mapping *AccountModelMapping, account *RuntimeAccount) bool {
-	source := mapping.SourceEndpointFamily
-	upstream := mapping.UpstreamEndpointFamily
-	if source == upstream ||
-		(source == FamilyGeminiStreamGenerate && upstream == FamilyGeminiGenerateContent) {
-		return true
-	}
-	// 跨协议转换矩阵已随 openai/hybrid/generic_http 退役（2026-11-05 用户
-	// 裁决）：只保留 OpenAI v1 Responses -> Chat Completions 的显式 bridge，
-	// 其余跨族映射不再放行。写侧 §5.2 矩阵与本处保持同一 8 pair 口径。
-	return source == FamilyResponses && upstream == FamilyChatCompletions
-}
-
-// isOpenAIResponsesToChatCompletionsModelMapping mirrors the same-named Node
-// helper.
-func isOpenAIResponsesToChatCompletionsModelMapping(mapping *gatewayproto.ResolvedModelMapping) bool {
-	return mapping != nil &&
-		mapping.SourceEndpointFamily == FamilyResponses &&
-		mapping.UpstreamEndpointFamily == FamilyChatCompletions
-}
-
-// isAnthropicMessagesToChatCompletionsModelMapping mirrors the Node helper.
-func isAnthropicMessagesToChatCompletionsModelMapping(mapping *gatewayproto.ResolvedModelMapping) bool {
-	return mapping != nil &&
-		mapping.SourceEndpointFamily == FamilyAnthropicMessages &&
-		mapping.UpstreamEndpointFamily == FamilyChatCompletions
-}
-
-// isGeminiGenerateContentToChatCompletionsModelMapping mirrors the Node helper.
-func isGeminiGenerateContentToChatCompletionsModelMapping(mapping *gatewayproto.ResolvedModelMapping) bool {
-	if mapping == nil {
-		return false
-	}
-	sourceIsGemini := mapping.SourceEndpointFamily == FamilyGeminiGenerateContent ||
-		mapping.SourceEndpointFamily == FamilyGeminiStreamGenerate
-	return sourceIsGemini && mapping.UpstreamEndpointFamily == FamilyChatCompletions
-}
-
-// isCrossProtocolBridgeToAnthropicMessagesModelMapping mirrors
-// isOpenAIToAnthropicMessagesModelMapping (openai-anthropic-bridge.ts:410-416):
-// an openai chat/responses source mapped onto the anthropic messages upstream
-// family.
-func isCrossProtocolBridgeToAnthropicMessagesModelMapping(mapping *gatewayproto.ResolvedModelMapping) bool {
-	if mapping == nil {
-		return false
-	}
-	source := mapping.SourceEndpointFamily
-	return (source == FamilyChatCompletions || source == FamilyResponses) &&
-		NormalizeAnthropicFamily(mapping.UpstreamEndpointFamily)
+	return IsProtocolEquivalentEndpointFamily(mapping.SourceEndpointFamily, mapping.UpstreamEndpointFamily)
 }
 
 // NormalizeAnthropicFamily reports whether the token is the anthropic
@@ -185,42 +150,14 @@ func NormalizeAnthropicFamily(family string) bool {
 	return family == "anthropic_messages" || family == "messages"
 }
 
-// ModelMappedUpstreamPathAndQuery mirrors openAIModelMappedUpstreamPathAndQuery
-// for the chat_completions-targeted rewrites, plus the cross-protocol
-// anthropic target rewrite (Node openAIToAnthropicBridgeUpstreamPath:
-// /messages + the client query; audit B-10 openAIToAnthropicBridgeUpstreamPath).
-// Exported for the chain URL builder so the upstream path carries the same
-// mapping rewrite as the driver body transform (BUG-0178).
-func ModelMappedUpstreamPathAndQuery(originalPathAndQuery string, mapping *gatewayproto.ResolvedModelMapping) (string, bool) {
-	_, query := SplitPathAndQuery(originalPathAndQuery)
-	switch {
-	case isOpenAIResponsesToChatCompletionsModelMapping(mapping):
-		return "/chat/completions" + query, true
-	case isAnthropicMessagesToChatCompletionsModelMapping(mapping):
-		return "/chat/completions" + query, true
-	case isGeminiGenerateContentToChatCompletionsModelMapping(mapping):
-		return "/chat/completions" + geminiGenerateContentBridgeQuery(query), true
-	case isCrossProtocolBridgeToAnthropicMessagesModelMapping(mapping):
-		return "/messages" + query, true
-	}
+// ModelMappedUpstreamPathAndQuery 保留作为 chain URL 构建器的映射改写挂钩
+// （BUG-0178）。7 pair 协议等价矩阵下不再有任何需要改写上游路径的映射组合：
+// 同族改名沿用客户端路径；Gemini stream 归一与原生 Code Assist 的路径/mode
+// 改写由 chain_driver 的 gemini 原生分支
+// （geminiGenerateContentModelMappedUpstreamPathAndQuery）承担。跨族 case
+// （responses→chat_completions 的 /chat/completions 改写、anthropic/gemini
+// 桥路径改写）随 2026-11-07 跨协议映射退役删除；即使上游传入退役组合，也
+// 保持原路径返回 false，不再为其合成桥路径。
+func ModelMappedUpstreamPathAndQuery(originalPathAndQuery string, _ *gatewayproto.ResolvedModelMapping) (string, bool) {
 	return originalPathAndQuery, false
-}
-
-// geminiGenerateContentBridgeQuery mirrors geminiGenerateContentBridgeQuery:
-// drop alt/key, keep the rest.
-func geminiGenerateContentBridgeQuery(query string) string {
-	if query == "" {
-		return ""
-	}
-	values, err := url.ParseQuery(strings.TrimPrefix(query, "?"))
-	if err != nil {
-		return ""
-	}
-	values.Del("alt")
-	values.Del("key")
-	encoded := values.Encode()
-	if encoded == "" {
-		return ""
-	}
-	return "?" + encoded
 }

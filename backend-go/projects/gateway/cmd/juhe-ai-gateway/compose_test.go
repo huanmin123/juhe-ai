@@ -502,9 +502,8 @@ func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 	if cfg.UsageSpoolDirectory != filepath.Join("data", "usage-record-spool") {
 		t.Fatalf("derived spool directory = %q", cfg.UsageSpoolDirectory)
 	}
-	if cfg.CodexContextRoot != filepath.Join("data", "codex-context") {
-		t.Fatalf("derived codex context root = %q", cfg.CodexContextRoot)
-	}
+	// 2026-11-07 桥退役：JUHE_AI_CODEX_CONTEXT_ROOT 与派生目录已从运行时配置
+	// 删除（历史 codex-context/ 目录按部署文档人工清理，不再断言派生）。
 	// Missing任一连接串启动即失败（错误信息可定位）。
 	for _, missing := range []string{"JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_URL"} {
 		partial := map[string]string{}

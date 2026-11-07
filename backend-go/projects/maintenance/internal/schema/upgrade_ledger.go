@@ -16,7 +16,8 @@ import (
 	"strings"
 )
 
-// UpgradeLedgerStatements 是账本两表的幂等 DDL（顺序即执行顺序）。
+// UpgradeLedgerStatements 是账本两表的幂等 DDL（顺序即执行顺序）：
+// CREATE 供新库建表，ALTER 供旧库补多节点发布所需的状态列。
 func UpgradeLedgerStatements() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS juhe_business.schema_state (
@@ -24,7 +25,9 @@ func UpgradeLedgerStatements() []string {
   schema_revision bigint NOT NULL,
   schema_digest   text NOT NULL,
   app_version     text NOT NULL,
-  converged_at    text NOT NULL
+  converged_at    text NOT NULL,
+  min_readable_binary_revision bigint NOT NULL DEFAULT 0,
+  expand_completed boolean NOT NULL DEFAULT true
 )`,
 		`CREATE TABLE IF NOT EXISTS juhe_business.schema_migrations (
   revision     bigint PRIMARY KEY,
@@ -40,8 +43,16 @@ func UpgradeLedgerStatements() []string {
   applied_at   text,
   duration_ms  integer,
   app_version  text,
-  detail_json  text
+  detail_json  text,
+  phase        text NOT NULL DEFAULT 'expand',
+  online_safe  boolean NOT NULL DEFAULT false
 )`,
+		`ALTER TABLE juhe_business.schema_state
+  ADD COLUMN IF NOT EXISTS min_readable_binary_revision bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS expand_completed boolean NOT NULL DEFAULT true`,
+		`ALTER TABLE juhe_business.schema_migrations
+  ADD COLUMN IF NOT EXISTS phase text NOT NULL DEFAULT 'expand',
+  ADD COLUMN IF NOT EXISTS online_safe boolean NOT NULL DEFAULT false`,
 	}
 }
 

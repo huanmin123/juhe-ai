@@ -1,6 +1,7 @@
 # OpenAI 到 Anthropic Messages 协议桥接设计
 
-> 2026-06-27 路由分层更新：API Key 只绑定策略路由，策略路由负责分组和模型调度，API Key/策略路由层不保存显式跨协议桥接规则；OpenAI/Anthropic 跨协议转换由混合供应商账户的模型映射承接。本文是 chat_completions|responses -> messages 桥接线的权威设计（PLAN-0058），现行实现为 Go `backend-go/projects/gateway/internal/openaicompat/openaicompatbridge/` 与供应商侧 `backend-go/projects/gateway/internal/gatewayanthropic/`。
+> **与本次退役无关（2026-11-07 标注）：** 本次退役只删除 `responses -> chat_completions` bridge 与 gateway summary compact；本文描述的 OpenAI -> Anthropic Messages 桥接方向与本次退役无关，保留为设计截面。但其账户载体混合供应商账户已于 2026-11-05 退役，且 2026-11-07 起跨协议模型映射整体退役（映射协议强制同族）——该方向不在现行映射矩阵内，本文不得作为恢复跨协议映射的实现依据；文中引用的 `responses -> chat_completions` 既有 bridge 也已随本次退役删除。
+> 2026-06-27 路由分层更新（历史）：API Key 只绑定策略路由，策略路由负责分组和模型调度，API Key/策略路由层不保存显式跨协议桥接规则；OpenAI/Anthropic 跨协议转换由混合供应商账户的模型映射承接。本文是 chat_completions|responses -> messages 桥接线的权威设计（PLAN-0058），当时实现为 Go `backend-go/projects/gateway/internal/openaicompat/openaicompatbridge/` 与供应商侧 `backend-go/projects/gateway/internal/gatewayanthropic/`。
 
 ## 1. 背景
 

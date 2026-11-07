@@ -116,9 +116,10 @@ func runMatrixForRef(t *testing.T, ref, matrixSecret string, mockdata bool) {
 		t.Fatalf("[%s] 读 schema_state 失败: %v", ref, err)
 	}
 	// applied 是「注册表步骤数」而非 SchemaRevision：revision 序列有断号
-	//（rev7 已随退役删除），当前 12 步；schema_state 才按最高 revision 落值。
-	if applied != 12 || stateRevision != contracts.SchemaRevision {
-		t.Fatalf("[%s] 账本 applied=%d（want 12 步）/ state revision=%d（want %d）",
+	//（rev7 已随退役删除；14..19 为纯 DDL 空号不入账本），当前 13 步；
+	// schema_state 才按最高 revision 落值。
+	if applied != 13 || stateRevision != contracts.SchemaRevision {
+		t.Fatalf("[%s] 账本 applied=%d（want 13 步）/ state revision=%d（want %d）",
 			ref, applied, stateRevision, contracts.SchemaRevision)
 	}
 

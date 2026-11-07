@@ -83,14 +83,16 @@ type ImportItem struct {
 	// 经共享包 ParseEndpointModes + DeriveDomain 推导；声明缺失按 chat；声明
 	// 缺失/空/null/非数组/含未知值等无法推导的形态不回显（由既有归一化错误
 	// 报失败）。
-	CapabilityDomain *string  `json:"capabilityDomain,omitempty"`
-	GroupName        *string  `json:"groupName,omitempty"`
-	GroupID          *string  `json:"groupId,omitempty"`
-	ProxyRef         *string  `json:"proxyRef,omitempty"`
-	Action           string   `json:"action"`
-	Messages         []string `json:"messages"`
-	Warnings         []string `json:"warnings"`
-	AccountID        *string  `json:"accountId,omitempty"`
+	CapabilityDomain *string `json:"capabilityDomain,omitempty"`
+	GroupName        *string `json:"groupName,omitempty"`
+	GroupID          *string `json:"groupId,omitempty"`
+	ProxyRef         *string `json:"proxyRef,omitempty"`
+	// ProxyPoolRef 是代理池导入引用回显（代理池设计 §8.4 导入预览）。
+	ProxyPoolRef *string  `json:"proxyPoolRef,omitempty"`
+	Action       string   `json:"action"`
+	Messages     []string `json:"messages"`
+	Warnings     []string `json:"warnings"`
+	AccountID    *string  `json:"accountId,omitempty"`
 }
 
 // ImportProxyItem mirrors AccountImportProxyItem.
@@ -332,7 +334,12 @@ type NormalizedImportAccount struct {
 	groupName                 string
 	proxyRef                  string
 	proxyProfileID            string
-	concurrencyLimit          int
+	// proxyPoolRef / proxyPoolID 是代理池导入引用（代理池设计 §8.4）：与
+	// proxyRef/proxyProfileId 互斥；proxyPoolRef 是导出侧 "proxy-pool-<id>"
+	// 引用。解析后的池 ID 落 plan.proxyPoolID，经 Store.Create 分配租约。
+	proxyPoolRef     string
+	proxyPoolID      string
+	concurrencyLimit int
 	// rpmLimit 是导入包的每分钟请求上限（AI账户每分钟请求上限设计 §6.4）：非负
 	// 整数，0 合法（不限制），-1 哨兵 = 键缺失（落列 0）。
 	rpmLimit                int
@@ -380,6 +387,9 @@ type importAccountPlan struct {
 	item           ImportItem
 	groupID        string
 	proxyProfileID string
+	// proxyPoolID 是解析后的已存在池 ID（§8.4）：执行链经 Store.Create 分配
+	// 租约（reason=initial）；缺失/停用池时账户条目失败，不静默丢绑。
+	proxyPoolID string
 }
 
 // ImportPlan mirrors the full import plan (facade test literals consume the
@@ -548,7 +558,10 @@ func (s *Service) buildImportPlan(ctx context.Context, data any, sourceMode stri
 
 // ---- root validation (account-import-root-validation.ts) ----
 
-var importRootKeys = map[string]bool{"type": true, "version": true, "proxies": true, "accounts": true}
+// importRootKeys 增加顶层 proxyPools（代理池设计 §8.4 导入协议）：第一版只读
+// 引用，不创建池；目标环境缺失/停用池时按账户级失败明确拒绝（不静默丢绑、
+// 不直连）。
+var importRootKeys = map[string]bool{"type": true, "version": true, "proxies": true, "proxyPools": true, "accounts": true}
 
 func validateImportRoot(data any, messages *[]string) (rawAccounts, rawProxies []any, ok bool) {
 	record, isRecord := data.(map[string]any)
@@ -571,6 +584,13 @@ func validateImportRoot(data any, messages *[]string) (rawAccounts, rawProxies [
 	if _, exists := record["proxies"]; exists {
 		if _, isArray := record["proxies"].([]any); !isArray {
 			*messages = append(*messages, "proxies 必须是数组")
+		}
+	}
+	// 顶层 proxyPools（代理池设计 §8.4）：第一版只读引用段，只校验数组形态
+	//（条目在账户池引用解析时按已存在池消费，不创建、不据此建池）。
+	if raw, exists := record["proxyPools"]; exists {
+		if _, isArray := raw.([]any); !isArray {
+			*messages = append(*messages, "proxyPools 必须是数组")
 		}
 	}
 	rawAccounts, _ = record["accounts"].([]any)
@@ -1074,6 +1094,45 @@ func (s *Service) FindImportProxyByID(ctx context.Context, id string) (*ImportPr
 	return &ImportProxyOption{id: row.id, name: row.name, enabled: row.enabled}, nil
 }
 
+// ImportPoolOption 是导入链的代理池只读引用（代理池设计 §8.4）：全局 id
+// 查找，enabled 由调用方判定。
+type ImportPoolOption struct {
+	id      string
+	name    string
+	enabled bool
+}
+
+// FindImportPoolByID mirrors FindImportProxyByID for proxy_pools（§8.4）：
+// 第一版导入只引用已存在池，不创建。
+func (s *Service) FindImportPoolByID(ctx context.Context, id string) (*ImportPoolOption, error) {
+	// proxy_pools.enabled 在 PostgreSQL 为 boolean，扫描目标用 bool 对齐驱动
+	// 类型。
+	var row struct {
+		id      string
+		name    string
+		enabled bool
+	}
+	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, name, enabled FROM `+s.store.Table("proxy_pools")+`
+		WHERE id = ? LIMIT 1`), id).Scan(&row.id, &row.name, &row.enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ImportPoolOption{id: row.id, name: row.name, enabled: row.enabled}, nil
+}
+
+// importProxyPoolRefID 解析导出侧 proxyPoolRef 引用（"proxy-pool-<id>"）为
+// 池 ID；非该形态返回空串由调用方按无效引用报错。
+func importProxyPoolRefID(ref string) string {
+	const prefix = "proxy-pool-"
+	if !strings.HasPrefix(ref, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(ref, prefix))
+}
+
 // ---- account planning (account-import-account-plan.ts) ----
 
 var importAccountKeys = map[string]bool{
@@ -1087,6 +1146,10 @@ var importAccountKeys = map[string]bool{
 	"accountExpiresAt": true, "availabilitySchedule": true, "notes": true,
 	// B1 断点批（设计 §8 wire schema）：连接集合与健康检查三件套的连接维度入参。
 	"connections": true, "healthCheckConnectionPresetCode": true,
+	// 代理池设计 §8.4 导入协议：账户字段 proxyPoolRef/proxyPoolId 与
+	// proxyRef/proxyProfileId 互斥；只引用已存在且 enabled 的池，缺失/停用
+	// 明确失败（不静默丢绑、不直连）。
+	"proxyPoolRef": true, "proxyPoolId": true,
 }
 
 func (s *Service) planImportAccount(ctx context.Context, value any, index int, planCtx *importPlanContext,
@@ -1142,6 +1205,9 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	source.groupName = ImportOptionalTextField(record, "groupName", "账户 groupName", messages)
 	source.proxyRef = ImportOptionalTextField(record, "proxyRef", "账户 proxyRef", messages)
 	source.proxyProfileID = ImportOptionalTextField(record, "proxyProfileId", "账户 proxyProfileId", messages)
+	// 代理池导入引用（代理池设计 §8.4）：与 proxyRef/proxyProfileId 互斥。
+	source.proxyPoolRef = ImportOptionalTextField(record, "proxyPoolRef", "账户 proxyPoolRef", messages)
+	source.proxyPoolID = ImportOptionalTextField(record, "proxyPoolId", "账户 proxyPoolId", messages)
 	source.concurrencyLimit = ImportOptionalPositiveIntegerField(record, "concurrencyLimit", "账户 concurrencyLimit", messages)
 	// 每分钟请求上限（设计 §6.4 导入协议）：可选非负整数，0 = 不限制，缺失落 0；
 	// 超 int4 上界按字段错误拒绝（DR-37），不能等到落库变成 500。
@@ -1190,6 +1256,7 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	plan.item.GroupName = TextPointerOrNil(source.groupName)
 	plan.item.GroupID = TextPointerOrNil(source.groupID)
 	plan.item.ProxyRef = TextPointerOrNil(source.proxyRef)
+	plan.item.ProxyPoolRef = TextPointerOrNil(source.proxyPoolRef)
 
 	validateImportProviderAndBasics(source, planCtx.providers)
 	plan.item.ProviderProtocolProfileID = TextPointerOrNil(source.providerProtocolProfileID)
@@ -1583,10 +1650,47 @@ func (s *Service) resolveImportAccountGroup(ctx context.Context, plan *importAcc
 	return nil
 }
 
-// resolveImportAccountProxy mirrors resolveAccountProxyAsync.
+// resolveImportAccountProxy mirrors resolveAccountProxyAsync（含代理池引用，
+// 代理池设计 §8.4）：proxyRef/proxyProfileId 与 proxyPoolRef/proxyPoolId 互
+// 斥；池只引用已存在且 enabled 的池，缺失/停用按账户级 message 明确失败，
+// 不静默丢绑、不直连。proxyPoolRef 解析导出侧 "proxy-pool-<id>" 形态。
 func (s *Service) resolveImportAccountProxy(ctx context.Context, plan *importAccountPlan, proxyByRef map[string]*importProxyPlan) error {
 	source := &plan.source
 	item := &plan.item
+	hasProfileTarget := source.proxyRef != "" || source.proxyProfileID != ""
+	hasPoolTarget := source.proxyPoolRef != "" || source.proxyPoolID != ""
+	if hasProfileTarget && hasPoolTarget {
+		item.Messages = append(item.Messages, "proxyRef/proxyProfileId 与 proxyPoolRef/proxyPoolId 只能填写一个")
+		return nil
+	}
+	if source.proxyPoolRef != "" && source.proxyPoolID != "" {
+		item.Messages = append(item.Messages, "proxyPoolRef 和 proxyPoolId 只能填写一个")
+		return nil
+	}
+	if hasPoolTarget {
+		requested := source.proxyPoolID
+		if requested == "" {
+			requested = importProxyPoolRefID(source.proxyPoolRef)
+		}
+		if requested == "" {
+			item.Messages = append(item.Messages, "代理池引用无效："+source.proxyPoolRef)
+			return nil
+		}
+		pool, err := s.FindImportPoolByID(ctx, requested)
+		if err != nil {
+			return err
+		}
+		if pool == nil {
+			item.Messages = append(item.Messages, "代理池不存在："+requested)
+			return nil
+		}
+		if !pool.enabled {
+			item.Messages = append(item.Messages, "代理池已停用："+pool.name)
+			return nil
+		}
+		plan.proxyPoolID = pool.id
+		return nil
+	}
 	if source.proxyRef != "" && source.proxyProfileID != "" {
 		item.Messages = append(item.Messages, "proxyRef 和 proxyProfileId 只能填写一个")
 		return nil
@@ -1923,7 +2027,7 @@ func (s *Service) executeImportPlan(ctx context.Context, plan *ImportPlan, acces
 		if groupID == "" && account.source.groupName != "" && account.source.providerCode != "" {
 			groupID = plan.groupIDsByKey[accountImportGroupKey(account.source.providerCode, account.source.groupName)]
 		}
-		input := ImportCreateInput(&account.source, groupID, account.proxyProfileID)
+		input := ImportCreateInput(&account.source, groupID, account.proxyProfileID, account.proxyPoolID)
 		createdID, createdStatus, err := s.deps.Writer.CreateAccount(ctx, input, access)
 		if err != nil {
 			// 重名分类（BUG-0294/A15）：Create 已把原始 UNIQUE 冲突预转为
@@ -2038,8 +2142,9 @@ func (s *Service) CreateImportGroup(ctx context.Context, group ImportGroupCreate
 
 // ImportCreateInput mirrors buildAccountImportCreatePayload + the create
 // status remap (active imports start as pending_test for the initial health
-// check).
-func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID string) accountscore.CreateInput {
+// check). proxyPoolID 是已解析的池绑定（代理池设计 §8.4，空串 = 无池绑定）；
+// 创建事务按池策略分配粘性租约（reason=initial）。
+func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID, proxyPoolID string) accountscore.CreateInput {
 	input := accountscore.CreateInput{
 		ProviderCode:              source.providerCode,
 		ProviderProtocolProfileID: source.providerProtocolProfileID,
@@ -2116,6 +2221,9 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 	}
 	if proxyProfileID != "" {
 		input.ProxyProfileID = &proxyProfileID
+	}
+	if proxyPoolID != "" {
+		input.ProxyPoolID = &proxyPoolID
 	}
 	if source.accountExpiresAt != "" {
 		text := source.accountExpiresAt

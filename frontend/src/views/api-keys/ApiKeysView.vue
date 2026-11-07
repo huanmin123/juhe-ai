@@ -116,6 +116,7 @@
       :api-keys-api="apiKeysApi"
       :route-strategies-api="routeStrategiesApi"
       :scheduling-preferences-api="schedulingPreferencesApi"
+      :security-policies-api="securityPoliciesApi"
       :is-management-view="isManagementView"
       :scope-params="apiKeyScopeParams"
       :target-system-account-label="targetSystemAccountLabel"
@@ -168,7 +169,7 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
 import { loadUserReferenceData } from '@/composables/useUserReferenceData'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { useScopedApiKeysApi, useScopedRouteStrategiesApi, useScopedSchedulingPreferencesApi } from '@/composables/useScopedDomainApi'
+import { useScopedApiKeysApi, useScopedRouteStrategiesApi, useScopedSchedulingPreferencesApi, useScopedSecurityPoliciesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
@@ -212,6 +213,7 @@ const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const schedulingPreferencesApi = useScopedSchedulingPreferencesApi(isManagementView)
+const securityPoliciesApi = useScopedSecurityPoliciesApi(isManagementView)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)

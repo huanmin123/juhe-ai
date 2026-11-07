@@ -38,7 +38,7 @@ func (r *fakeAuditShellReaper) ReapStaleInProgress(_ context.Context, cutoff tim
 func TestW13AuditShellStageCutsOffAtTwoHours(t *testing.T) {
 	ctx := context.Background()
 	reaper := &fakeAuditShellReaper{script: []int64{5}}
-	job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+	job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 		j.AuditShells = reaper
 	})
 	if _, err := job.Run(ctx); err != nil {
@@ -62,7 +62,7 @@ func TestW13AuditShellStageRunsFullBatchQuota(t *testing.T) {
 	for index := range reaper.script {
 		reaper.script[index] = CleanupBatchSize
 	}
-	job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+	job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 		j.AuditShells = reaper
 	})
 	if _, err := job.Run(ctx); err != nil {
@@ -75,7 +75,7 @@ func TestW13AuditShellStageRunsFullBatchQuota(t *testing.T) {
 
 func TestW13AuditShellStageSkippedWhenUnwired(t *testing.T) {
 	ctx := context.Background()
-	job, _, _, _, _, _ := w9gBaseJob(t, nil)
+	job, _, _, _, _ := w9gBaseJob(t, nil)
 	if _, err := job.Run(ctx); err != nil {
 		t.Fatalf("未注入端口时阶段必须跳过，err = %v", err)
 	}
@@ -84,7 +84,7 @@ func TestW13AuditShellStageSkippedWhenUnwired(t *testing.T) {
 func TestW13AuditShellStagePropagatesError(t *testing.T) {
 	ctx := context.Background()
 	reaper := &fakeAuditShellReaper{err: errors.New("dataset down")}
-	job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+	job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 		j.AuditShells = reaper
 	})
 	if _, err := job.Run(ctx); err == nil || err.Error() != "dataset down" {
@@ -95,7 +95,7 @@ func TestW13AuditShellStagePropagatesError(t *testing.T) {
 func TestW13AuditShellStageSkippedForNonWorker(t *testing.T) {
 	ctx := context.Background()
 	reaper := &fakeAuditShellReaper{}
-	job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+	job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 		j.ProcessRole = "server"
 		j.AuditShells = reaper
 	})

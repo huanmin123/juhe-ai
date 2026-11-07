@@ -41,14 +41,13 @@ export function accountModelMappingUpstreamModelOptions(
   return filterAccountModelMappingOptionsByEndpointFamily(options, upstreamEndpointFamily)
 }
 
+// 客户端模型候选（2026-11-07 跨协议退役契约）：source 可跨供应商，但必须支持
+// 所选协议——候选池是跨供应商全量目录（useProviderModelSelectOptions 不传
+// providerCode），按映射行 source 端点族对应的目录协议 token 过滤；未声明协议
+// 的目录行（含空协议数组）视为不支持，不进入候选。
 export function accountModelMappingSourceModelOptions(input: {
-  providerCode?: string
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
-  currentProviderOptions: AccountModelMappingModelOption[]
-  openAIProtocolOptions: AccountModelMappingModelOption[]
-  anthropicProtocolOptions: AccountModelMappingModelOption[]
-  geminiProtocolOptions: AccountModelMappingModelOption[]
+  options: AccountModelMappingModelOption[]
 }): AccountModelMappingModelOption[] {
-  return input.currentProviderOptions
+  return filterAccountModelMappingOptionsByEndpointFamily(input.options, input.sourceEndpointFamily)
 }
-

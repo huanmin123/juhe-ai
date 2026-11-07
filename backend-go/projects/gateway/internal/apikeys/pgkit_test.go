@@ -125,6 +125,7 @@ const apiKeysPGFixtureSchema = `
       availability_schedule_next_check_at text,
       availability_schedule_gate integer,
       scheduling_preference_id text,
+      security_policy_id text,
       last_used_at text,
       created_at text NOT NULL,
       updated_at text NOT NULL
@@ -137,6 +138,17 @@ const apiKeysPGFixtureSchema = `
       name text NOT NULL,
       chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
       chat_speed_first_config_json text,
+      built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
+      created_at text NOT NULL,
+      updated_at text NOT NULL
+    );
+	-- 安全策略实体（批A，§4.1；api_keys.security_policy_id 引用目标）。
+	CREATE TABLE IF NOT EXISTS juhe_business.security_policies (
+      id text PRIMARY KEY,
+      system_account_id text,
+      name text NOT NULL,
+      description text,
+      rules_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
       created_at text NOT NULL,
       updated_at text NOT NULL

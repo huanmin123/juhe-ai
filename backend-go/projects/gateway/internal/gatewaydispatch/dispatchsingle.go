@@ -106,6 +106,19 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		return dispatchResultContinue, nil, nil
 	}
 
+	// Request-time pool target gate (proxy design §10.1/§7.4): the cached
+	// candidate's member URL is not the health authority. Resolve the current
+	// lease against Redis/PG health before the proxy-unavailable and failed-proxy
+	// skip checks; a dead/missing lease is repaired inside this request.
+	if e.ProxyTargets != nil {
+		resolvedAccount, resolveErr := e.ProxyTargets.ResolveAccountProxyTarget(ctx, originalAccount)
+		if resolveErr != nil {
+			_ = releaseHalfOpenLease(ctx, halfOpenLease)
+			return dispatchResultContinue, nil, resolveErr
+		}
+		originalAccount = resolvedAccount
+	}
+
 	// Failed proxy skip.
 	skippedProxyAttempt := e.SkipAccountForFailedProxyDispatch(in.failedProxyDispatchKeys, originalAccount)
 	if skippedProxyAttempt != nil {

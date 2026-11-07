@@ -1,5 +1,7 @@
 # 问题-0274：Codex Responses↔Chat 桥状态在生产从未装配（含 retention segments 根错位）
 
+> **退役标注（2026-11-07）：** 本文涉及的 Codex Responses↔Chat 桥、`juhe_codex_context` 状态存储、`JUHE_AI_CODEX_CONTEXT_ROOT` 与 jobs retention 清理任务已随跨协议模型映射退役全链删除（见 [供应商与上游协议面重构设计](../functions/供应商与上游协议面重构设计.md) §5.2）；本文仅作历史缺陷记录，不改写历史事实，所述机制不再存在。
+
 - 编号：BUG-0274
 - 状态：已修复（2026-10-03），待发布
 - 发现：BUG-0269 后的全量排查（接线断线审计）。本缺陷代码注释自证："2026-09-28 哲学裁定补齐（功能默认开启）……迁移漏装配，与终局波 TrafficRuntimeMigrator 同类断线"——补齐只写了消费侧，组合根装配从未落地。

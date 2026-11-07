@@ -41,6 +41,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
 // dispatchCandidateScanLimitFor mirrors
@@ -65,6 +66,22 @@ type chainAccountsSelector struct {
 	// concurrency.globalMax); candidateScanLimit = finalLimit * 2.
 	candidateFinalLimit int
 	candidateScanLimit  int
+	// proxyTargets 是池绑定候选的只读解析器（代理池设计 §10.1）：
+	// 非 nil 时 hydration 批内批量解析池租约成员；nil 保持旧行为（测试/未装配）。
+	proxyTargets chainProxyTargetResolver
+}
+
+// chainProxyTargetResolver is the read-only pool resolution surface used by
+// candidate hydration. The gateway supplies a writer-backed resolver only at
+// dispatch preparation, never here: request-time lease repair must not run for
+// accounts outside the current request (proxy design §10.1).
+type chainProxyTargetResolver interface {
+	ResolveBatch(ctx context.Context, accountIDs []string) (map[string]proxyresolve.Target, error)
+	CheckMemberHealth(ctx context.Context, profileID string) (proxyresolve.HealthState, string, error)
+}
+
+func (s *chainAccountsSelector) SetProxyTargets(resolver chainProxyTargetResolver) {
+	s.proxyTargets = resolver
 }
 
 // newChainAccountsSelector keeps the phase-2 constructor signature; quality
@@ -178,6 +195,7 @@ type chainCandidateRow struct {
 	DispatchRevision                         sql.NullInt64
 	CredentialsEncrypted                     sql.NullString
 	ProxyProfileID                           sql.NullString
+	ProxyPoolID                              sql.NullString
 	CooldownUntil                            sql.NullString
 	LastErrorMessage                         sql.NullString
 	StreamFailureCount                       sql.NullInt64
@@ -209,6 +227,7 @@ type chainCandidateRow struct {
 	ResourceLastErrorCode        sql.NullString
 	ResourceCredentialsEncrypted sql.NullString
 	ResourceProxyProfileID       sql.NullString
+	ResourceProxyPoolID          sql.NullString
 	ResourceConcurrencyLimit     sql.NullInt64
 	ResourceRPMLimit             sql.NullInt64
 	ResourceClientCompatibility  sql.NullString
@@ -241,7 +260,7 @@ const chainCandidateColumns = `group_accounts.account_id,
 			accounts.schedulable, accounts.concurrency_limit, accounts.rpm_limit, accounts.priority, accounts.super_priority_enabled,
 			accounts.fallback_enabled,
 			accounts.config_revision, accounts.dispatch_revision, accounts.credentials_encrypted,
-			accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message,
+			accounts.proxy_profile_id, accounts.proxy_pool_id, accounts.cooldown_until, accounts.last_error_message,
 			accounts.stream_failure_count, accounts.stream_failure_window_started_at,
 			accounts.account_expires_at, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id,
@@ -269,6 +288,7 @@ const chainCandidateColumns = `group_accounts.account_id,
 			source_accounts.last_error_code AS resource_last_error_code,
 			source_accounts.credentials_encrypted AS resource_credentials_encrypted,
 			source_accounts.proxy_profile_id AS resource_proxy_profile_id,
+			source_accounts.proxy_pool_id AS resource_proxy_pool_id,
 			source_accounts.concurrency_limit AS resource_concurrency_limit,
 			source_accounts.rpm_limit AS resource_rpm_limit`
 
@@ -529,18 +549,33 @@ func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context
 			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
 		}
 		proxyProfileIDs := make([]string, 0, len(batch))
+		poolAccountIDs := make([]string, 0, len(batch))
 		for _, item := range batch {
-			if id := item.row.resourceProxyProfileID(); id != "" {
-				proxyProfileIDs = append(proxyProfileIDs, id)
+			profileID, poolID := item.row.effectiveProxyBinding()
+			if profileID != "" {
+				proxyProfileIDs = append(proxyProfileIDs, profileID)
+			}
+			if poolID != "" {
+				poolAccountIDs = append(poolAccountIDs, item.row.ID)
 			}
 		}
 		proxyProfiles, err := s.resolveProxyURLsForProfiles(ctx, proxyProfileIDs)
 		if err != nil {
 			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
 		}
+		// 池绑定候选的只读解析（代理池设计 §10.1）：这里只解析当前租约与 URL，
+		// 不写租约；请求时健康门与重分配由 dispatch 准备阶段完成。
+		var proxyTargets map[string]proxyresolve.Target
+		if s.proxyTargets != nil && len(poolAccountIDs) > 0 {
+			proxyTargets, err = s.proxyTargets.ResolveBatch(ctx, poolAccountIDs)
+			if err != nil {
+				return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
+			}
+		}
 		for _, item := range batch {
 			account, err := s.openAIAccountSecretFromRow(ctx, item.row, groupAccess, item.access, chainSecretOptions{
 				proxyProfiles:      proxyProfiles,
+				proxyTargets:       proxyTargets,
 				supportedModels:    supportedModels,
 				modelMappings:      modelMappings,
 				apiKeyRuntimeState: apiKeyRuntimeStates,
@@ -649,7 +684,7 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.Schedulable, &row.ConcurrencyLimit, &row.RPMLimit, &row.Priority, &row.SuperPriorityEnabled,
 		&row.FallbackEnabled,
 		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEncrypted,
-		&row.ProxyProfileID, &row.CooldownUntil, &row.LastErrorMessage,
+		&row.ProxyProfileID, &row.ProxyPoolID, &row.CooldownUntil, &row.LastErrorMessage,
 		&row.StreamFailureCount, &row.StreamFailureWindowStartedAt,
 		&row.AccountExpiresAt, &row.HealthCheckModel, &row.HealthCheckEndpointMode,
 		&row.AuthorizationInstanceSourceAccountID, &row.AuthorizationInstanceAuthorizationID,
@@ -669,6 +704,7 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.ResourceLastErrorCode,
 		&row.ResourceCredentialsEncrypted,
 		&row.ResourceProxyProfileID,
+		&row.ResourceProxyPoolID,
 		&row.ResourceConcurrencyLimit,
 		&row.ResourceRPMLimit,
 	}
@@ -727,12 +763,11 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 }
 
 // listModelCandidateRows ports listGatewayDispatchModelCandidateRows: the
-// CTE model-rank window (0 = direct supported model, 1 = enabled mapping,
+// CTE model-rank window (0 = direct supported model or protocol-equivalent mapping,
 // 2 = no supported-model list, everything else dropped). mediaAdmission 仅由
-// video_generation 请求武装视频恢复准入臂。方案B（2026-10-24 用户裁决）：映射
-// 臂拆两档——同族改名映射（target_endpoint_family = source_endpoint_family，
-// 保留非恒等门）与直连同权记 0，跨协议转换映射（两族不同）记 1；口径与
-// gatewayrouting/gatewaydispatch 两层 Go 过滤器一致
+// video_generation 请求武装视频恢复准入臂。2026-11-07 跨协议映射退役后只有
+// 一个映射臂（同族改名或 Gemini stream 归一，含非恒等门），与直连同权记 0；
+// 跨协议映射不再进入候选。口径与 gatewayrouting/gatewaydispatch 两层 Go 过滤器一致
 // （docs/functions/AI账户模型映射选择规则.md §2.4）。
 func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now, requestedModel, requestedEndpointFamily string, includeUnavailable bool, mediaAdmission bool) ([]chainCandidateRow, map[string]int, error) {
 	model := strings.TrimSpace(requestedModel)
@@ -816,7 +851,11 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 							AND model_mappings.source_model = ?
 							AND model_mappings.source_endpoint_family = ?
 							AND model_mappings.enabled = 1
-							AND model_mappings.target_endpoint_family = model_mappings.source_endpoint_family
+							AND (
+								model_mappings.target_endpoint_family = model_mappings.source_endpoint_family
+								OR (model_mappings.source_endpoint_family = 'stream_generate_content'
+									AND model_mappings.target_endpoint_family = 'generate_content')
+							)
 							AND (
 								mapped_models.upstream_model <> model_mappings.source_model
 								OR model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
@@ -834,31 +873,6 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 								)
 							)
 					) THEN 0
-					WHEN EXISTS (
-						SELECT 1 FROM {mappings} model_mappings
-						INNER JOIN {models} mapped_models ON mapped_models.id = model_mappings.target_model_id
-						WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
-							AND model_mappings.source_model = ?
-							AND model_mappings.source_endpoint_family = ?
-							AND model_mappings.enabled = 1
-							AND model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
-							AND (
-								mapped_models.upstream_model <> model_mappings.source_model
-								OR model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
-							)
-							AND (
-								NOT EXISTS (
-									SELECT 1 FROM {supportedModels} limited_supported
-									WHERE limited_supported.account_id = eligible_rows.model_resource_account_id
-								)
-								OR EXISTS (
-									SELECT 1 FROM {supportedModels} mapped_supported
-									INNER JOIN {models} mapped_alias_models ON mapped_alias_models.id = mapped_supported.model_id
-									WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
-										AND ({mappedAliasPredicate})
-								)
-							)
-					) THEN 1
 					WHEN NOT EXISTS (
 						SELECT 1 FROM {supportedModels} limited_models
 						WHERE limited_models.account_id = eligible_rows.model_resource_account_id
@@ -887,9 +901,10 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 	for _, variant := range directModelArgs {
 		args = append(args, variant)
 	}
-	// 方案B：同族改名臂与跨协议臂各带一份 (source_model, source_endpoint_family)
-	// 与 mappedAlias 等价组参数，顺序与 SQL 文本中两臂占位符出现顺序一致。
-	for arm := 0; arm < 2; arm++ {
+	// 2026-11-07：跨协议映射退役后只剩一个映射臂（同族改名或 Gemini stream
+	// 归一），每个候选只带一份 (source_model, source_endpoint_family) 与
+	// mappedAlias 等价组参数。
+	for arm := 0; arm < 1; arm++ {
 		args = append(args, model, requestedEndpointFamily)
 		for _, variant := range mappedAliasArgs {
 			args = append(args, variant)
@@ -935,8 +950,9 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 	}
 	// 调度排序观测（T62，2026-10-24 引入，长期保留）：候选窗口 SQL 秩逐账户
 	// 落盘，是排序问题三段排查链的第一段（后两段见 chain_wiring_w2c.go
-	// chain_hotquality_tier_input 与 gateway_dispatch_decision）——0=直连/同族
-	// 改名映射，1=跨协议转换映射，2=无支持模型放行档。
+	// chain_hotquality_tier_input 与 gateway_dispatch_decision）——0=直连/协议
+	// 等价映射（同族改名或 Gemini stream 归一），2=无支持模型放行档；rank 1
+	// 跨协议转换已随 2026-11-07 退役不再产生。
 	if len(modelRankByAccountID) > 0 {
 		slog.Info("chain_model_rank_window",
 			"groupId", groupID,
@@ -1419,6 +1435,57 @@ func (row *chainCandidateRow) resourceProxyProfileID() string {
 		return row.ProxyProfileID.String
 	}
 	return ""
+}
+
+// isAuthorizationInstance reports whether the row is an authorization
+// instance. Its own proxy_pool_id never participates in target resolution
+// (proxy design §5.2), even when the source account row is missing.
+func (row *chainCandidateRow) isAuthorizationInstance() bool {
+	return row.AuthorizationInstanceSourceAccountID.Valid &&
+		strings.TrimSpace(row.AuthorizationInstanceSourceAccountID.String) != ""
+}
+
+func (row *chainCandidateRow) configuredProxyPoolID() string {
+	if row.ProxyPoolID.Valid {
+		return strings.TrimSpace(row.ProxyPoolID.String)
+	}
+	return ""
+}
+
+// effectiveProxyBinding applies the §5.2 precedence without mixing the two
+// target kinds:
+//   - source pool wins (a source pool+profile pair is a conflict for the
+//     resolver to reject, not to silently choose);
+//   - otherwise source profile wins;
+//   - authorization instances fall back to their own direct profile and never
+//     to their own pool;
+//   - ordinary accounts prefer their own pool, then their own profile.
+func (row *chainCandidateRow) effectiveProxyBinding() (profileID, poolID string) {
+	sourcePoolID := ""
+	if row.ResourceProxyPoolID.Valid {
+		sourcePoolID = strings.TrimSpace(row.ResourceProxyPoolID.String)
+	}
+	sourceProfileID := ""
+	if row.ResourceProxyProfileID.Valid {
+		sourceProfileID = strings.TrimSpace(row.ResourceProxyProfileID.String)
+	}
+	if sourcePoolID != "" {
+		return "", sourcePoolID
+	}
+	if sourceProfileID != "" {
+		return sourceProfileID, ""
+	}
+	configuredProfileID := ""
+	if row.ProxyProfileID.Valid {
+		configuredProfileID = strings.TrimSpace(row.ProxyProfileID.String)
+	}
+	if row.isAuthorizationInstance() {
+		return configuredProfileID, ""
+	}
+	if ownPoolID := row.configuredProxyPoolID(); ownPoolID != "" {
+		return "", ownPoolID
+	}
+	return configuredProfileID, ""
 }
 
 // resourceVendorCode / resourceConnectionDriverCode 返回模型事实主体的连接

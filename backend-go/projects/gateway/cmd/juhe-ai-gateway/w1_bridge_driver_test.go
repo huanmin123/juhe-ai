@@ -1,31 +1,17 @@
 package main
 
-// w1: chain_bridge_response.go / chain_driver.go 的纯函数与投影直测。
+// w1: chain_driver.go 的纯函数与投影直测。2026-11-07 桥退役批删除了原
+// chain_bridge_response 桥纯函数（chainBridgePreviousResponseIDOf /
+// bridgeChatUpstreamInvalidJSONErrorBody）用例；Code Assist 解包面由
+// chain_bridge_response_native_codeassist_test.go 覆盖。
 
 import (
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
-
-func TestW1BridgePureHelpers(t *testing.T) {
-	if got := chainBridgePreviousResponseIDOf(nil); got != "" {
-		t.Fatalf("nil body = %q", got)
-	}
-	if got := chainBridgePreviousResponseIDOf(map[string]any{"previous_response_id": "resp_1"}); got != "resp_1" {
-		t.Fatalf("id = %q", got)
-	}
-	if got := chainBridgePreviousResponseIDOf(map[string]any{"previous_response_id": 42}); got != "" {
-		t.Fatalf("非字符串 = %q", got)
-	}
-	rendered := bridgeChatUpstreamInvalidJSONErrorBody("gemini-2", "解析失败")
-	if !strings.Contains(rendered, `"modelVersion":"gemini-2"`) || !strings.Contains(rendered, `"finishReason":"STOP"`) || !strings.Contains(rendered, "解析失败") {
-		t.Fatalf("guidance = %s", rendered)
-	}
-}
 
 func TestW1DriverCodexProjections(t *testing.T) {
 	boundGroup := "grp_1"

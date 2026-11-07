@@ -140,17 +140,18 @@ func TestChainDriverSwitchTargetDerivation(t *testing.T) {
 			wantMode:      "responses_sse",
 		},
 		{
-			// Responses → Chat 桥：上游 Chat SSE 为桥接载体（即使下游非流式，
-			// bridge 分支仍要求 chat_sse——与 requiredSupportedEndpointMode 一致）。
-			name:          "mapping_responses_to_chat_bridge",
-			path:          "/v1/responses",
-			body:          `{"model":"gpt-5","stream":false}`,
-			requestModel:  "gpt-5",
-			requestStream: false,
-			mappings:      []gatewayruntimecache.AccountModelMapping{switchTargetMapping("gpt-5", "responses", "gpt-5-chat", "chat_completions")},
-			wantModel:     "gpt-5-chat",
-			wantFamily:    "chat_completions",
-			wantMode:      "chat_sse",
+			// 2026-11-07 跨协议桥退役：responses→chat 桥改写用例随桥删除；
+			// 唯一保留的跨族形态是 Gemini 同族归一 pair 5（stream→generate），
+			// 冻结目标按映射上游族/形态派生。
+			name:          "mapping_gemini_stream_to_generate_pair5",
+			path:          "/v1beta/models/gm-2.5:streamGenerateContent?alt=sse",
+			body:          `{"contents":[{"parts":[{"text":"hi"}]}]}`,
+			requestModel:  "gm-2.5",
+			requestStream: true,
+			mappings:      []gatewayruntimecache.AccountModelMapping{switchTargetMapping("gm-2.5", "stream_generate_content", "gm-2.5-air", "generate_content")},
+			wantModel:     "gm-2.5-air",
+			wantFamily:    "generate_content",
+			wantMode:      "generate_content_sse",
 		},
 	}
 	for _, tt := range tests {

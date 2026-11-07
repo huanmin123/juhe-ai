@@ -26,10 +26,10 @@ const (
 
 // Fixed names under the data root (gateway-side table, 2026-09-19;
 // 2026-10-24 存储形态收口：全部 *.sqlite3 专库文件名与 usage-shards /
-// codex-context/state-shards 分片子目录随 sqlite 存储形态删除，保留的只有
-// PG+Redis 形态仍消费的普通文件目录面).
+// codex-context/state-shards 分片子目录随 sqlite 存储形态删除；2026-11-07
+// codex-context 根常量随跨协议桥退役删除，磁盘历史目录按部署文档人工清理).
+// 保留的只有 PG+Redis 形态仍消费的普通文件目录面.
 const (
-	CodexContextRoot = "codex-context"
 	// UsageRecordSpoolDirectory 是 gateway↔jobs 用量记录 spool 交接目录
 	// （D1，PLAN-20261024T051925945Z）：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置
 	// 时组合根派生 <DATA_DIR>/usage-record-spool（显式配置优先；旧名

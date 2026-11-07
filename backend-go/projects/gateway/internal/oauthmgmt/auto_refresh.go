@@ -76,14 +76,15 @@ func (s *Store) RotateAccountTokensFromStored(ctx context.Context, accountID str
 	if plan.slug == "openai" && isOpenAIBlockedErrorAccount(current) {
 		return nil, &ValidationError{Message: "异常账户请先执行异常恢复后再操作"}
 	}
-	// 存量刷新走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物，与
-	// refreshToken handler 同语义）：配置不可用直接报错，不做直连回退。
-	if plan.requiresProxy && s.proxyRequired && strings.TrimSpace(current.ProxyProfileID) == "" {
-		return nil, &ValidationError{Message: plan.label + " OAuth 账户未绑定代理，无法刷新：请先为账户配置出海代理"}
-	}
-	proxyURL, err := s.proxyProfileRequestURL(ctx, current.ProxyProfileID)
+	// 存量刷新走账户有效代理目标（代理池设计 §8.3：池绑定账户使用已固化租约
+	// 成员；无租约/池不可用明确失败，不直连、不在刷新中途换 IP；与
+	// refreshToken handler 同语义），配置不可用直接报错，不做直连回退。
+	proxyURL, err := s.oauthProxyRequestURL(ctx, current.ID, "")
 	if err != nil {
 		return nil, err
+	}
+	if plan.requiresProxy && s.proxyRequired && strings.TrimSpace(proxyURL) == "" {
+		return nil, &ValidationError{Message: plan.label + " OAuth 账户未绑定代理，无法刷新：请先为账户配置出海代理"}
 	}
 	// B1：与 jobs 定时刷新/保活及其他 gateway 实例互斥。锁后端不可用时按
 	// 既有流程继续（PG CAS 兜底）；锁被占用则本轮跳过，调用方维持现状。

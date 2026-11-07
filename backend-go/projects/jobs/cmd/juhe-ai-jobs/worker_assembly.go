@@ -32,6 +32,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// workerLeaderGate 是 jobs 进程级 leader 的最小读面；具体租约由
+// internal/jobleader.Gate 提供。
+type workerLeaderGate interface {
+	IsLeader() bool
+}
+
 // workerAssembly 是 jobs 二进制 worker 侧的组合根：按 jobregistry 的
 // GoWired 绑定装配 store/runner，经 jobsched 调度器复现 Node worker 的
 // 调度语义（passive jitter、lease、退避、lane、停机排空）。
@@ -41,6 +47,10 @@ type workerAssembly struct {
 	logger    *slog.Logger
 
 	running atomic.Bool
+	// leaderGate 是 jobs 进程级 leader 门禁；nil 时保持旧单进程行为
+	// （测试/单实例组合）。scheduler 任务在 standby 直接返回 skipped。
+	leaderGate  workerLeaderGate
+	standbyRuns atomic.Bool
 
 	taskRunsStore *taskruns.Store
 	statsStore    *statsverify.Store
@@ -187,8 +197,13 @@ func newWorkerAssembly(config workerConfig, logger *slog.Logger) *workerAssembly
 
 // buildWorkerAssembly 装配 worker 组合根（机制强制常开，无总开关门禁）；
 // 装配失败返回 error，由调用方 fail-fast。
-func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssembly, error) {
+func buildWorkerAssembly(config workerConfig, logger *slog.Logger, leaderGate ...workerLeaderGate) (*workerAssembly, error) {
 	assembly := newWorkerAssembly(config, logger)
+	// leaderGate 必须在 wireFamilies 注册首批任务之前安装：scheduler 首轮
+	// initial delay 最短 1s，但测试/低延迟路径仍可能立即触发。
+	if len(leaderGate) > 0 {
+		assembly.leaderGate = leaderGate[0]
+	}
 	if err := assembly.wireFamilies(context.Background()); err != nil {
 		assembly.closeStores()
 		return nil, err
@@ -241,6 +256,9 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 		return err
 	}
 	if err := a.wireProbeFamily(ctx); err != nil {
+		return err
+	}
+	if err := a.wirePoolHealthFamily(ctx); err != nil {
 		return err
 	}
 	registerDisabledJobsStartup(a, a.logger)
@@ -1092,11 +1110,26 @@ var errTaskRunStartSkipped = errors.New("background_task_run 启动 CAS 未命�
 // 每次 job 执行在持调度租约的同时登记 background_task_runs 运行历史
 // （queued→running→终态）。
 func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsched.Task) jobsched.Task {
+	gated := func(ctx context.Context, taskCtx jobsched.TaskContext) (jobsched.TaskResult, error) {
+		if a.leaderGate != nil && !a.leaderGate.IsLeader() && !a.standbyRuns.Load() {
+			return jobsched.TaskResult{
+				Outcome: jobsched.OutcomeSkipped,
+				Warning: "jobs_standby_no_leader",
+			}, nil
+		}
+		return task(ctx, taskCtx)
+	}
 	if a.taskRunsStore == nil || ttl <= 0 {
-		return task
+		return gated
 	}
 	store := a.taskRunsStore
 	return func(ctx context.Context, taskCtx jobsched.TaskContext) (jobsched.TaskResult, error) {
+		if a.leaderGate != nil && !a.leaderGate.IsLeader() && !a.standbyRuns.Load() {
+			return jobsched.TaskResult{
+				Outcome: jobsched.OutcomeSkipped,
+				Warning: "jobs_standby_no_leader",
+			}, nil
+		}
 		ownerID := a.ownerID()
 		outcome, err := taskruns.RunWithScheduledLease(ctx, store, taskruns.ScheduledLeaseRunnerOptions{
 			JobName: jobName,
@@ -1104,7 +1137,7 @@ func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsc
 			RunID:   newRandomToken(),
 			TTL:     ttl,
 		}, func(runCtx context.Context, lease taskruns.LeaseIdentity) error {
-			taskErr := a.runWithTaskRunHistory(store, jobName, ownerID, ttl, runCtx, taskCtx, task)
+			taskErr := a.runWithTaskRunHistory(store, jobName, ownerID, ttl, runCtx, taskCtx, gated)
 			_ = lease
 			return taskErr
 		})
@@ -1262,8 +1295,22 @@ func (a *workerAssembly) components() []supervisor.Component {
 	return components
 }
 
-// ready 报告调度循环是否在运行（owner 门禁由 main 的 ownermode 承担）。
-func (a *workerAssembly) ready() bool { return a.running.Load() }
+// setLeaderGate 安装进程级 leader 门禁。必须在 scheduler 首轮任务（最短
+// initial delay 1s）之前调用；生产组合根在 buildWorkerAssembly 后立即安装。
+func (a *workerAssembly) setLeaderGate(gate workerLeaderGate) {
+	a.leaderGate = gate
+}
+
+// allowStandbyRuns 只供 --run-jobs-once 运维入口使用：显式单轮执行不受
+// leader 门禁限制，进程随后退出。
+func (a *workerAssembly) allowStandbyRuns() {
+	a.standbyRuns.Store(true)
+}
+
+// ready 报告调度循环是否在运行且本进程持有全局 leader。
+func (a *workerAssembly) ready() bool {
+	return a.running.Load() && (a.leaderGate == nil || a.leaderGate.IsLeader())
+}
 
 // statusPayload 输出 worker 健康载荷：wired/未接线任务清单与各任务快照。
 func (a *workerAssembly) statusPayload() map[string]any {

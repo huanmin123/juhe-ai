@@ -181,9 +181,6 @@ func TestVerifyCoverageSemantics(t *testing.T) {
 	if !assertionEvaluated("accounts.status.active") {
 		t.Fatalf("business 断言被标 NotCovered: %v", report.NotCovered)
 	}
-	if !assertionEvaluated("codex_context_sessions") {
-		t.Fatalf("codex 断言被标 NotCovered: %v", report.NotCovered)
-	}
 	// 断言评估状态按「摘要接线快照 + 属主 pending」同源推导（跨波次稳定）：
 	// 已接线域的非属主断言必须已评估；已接线域的属主断言在本库（无属主表）
 	// 按属主缺失进 NotCovered；未接线域的断言按域未接线进 NotCovered。
@@ -260,7 +257,7 @@ func TestVerifyCoverageSemantics(t *testing.T) {
 			t.Fatalf("已接线域 %s 不应留空表: %v", schemaName, item)
 		}
 		if strings.HasPrefix(item, SchemaBusiness+".") ||
-			strings.HasPrefix(item, SchemaCodexContext+".") || strings.HasPrefix(item, SchemaUsage+".") ||
+			strings.HasPrefix(item, SchemaUsage+".") ||
 			strings.HasPrefix(item, SchemaStats+".") || strings.HasPrefix(item, SchemaDataset+".") {
 			if allWired {
 				t.Fatalf("已产出数据的不应留空表: %v", report.Empty)

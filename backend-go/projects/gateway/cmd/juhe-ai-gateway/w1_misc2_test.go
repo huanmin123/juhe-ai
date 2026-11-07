@@ -245,12 +245,5 @@ func TestW1BridgePathAndPrevID(t *testing.T) {
 	if !geminiCodeAssistDownstreamStreamForMapping(streamReq, &mappingFamily) {
 		t.Fatal("chat 源映射必须跟随请求流式位")
 	}
-	// 上一响应 ID 提取。
-	if got := chainBridgePreviousResponseIDOf(nil); got != "" {
-		t.Fatalf("nil body = %q", got)
-	}
-	if got := chainBridgePreviousResponseIDOf(map[string]any{"previous_response_id": "resp_9"}); got != "resp_9" {
-		t.Fatalf("prev id = %q", got)
-	}
 	_ = errors.New
 }

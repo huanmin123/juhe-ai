@@ -205,9 +205,20 @@ type GatewayAPIKeyRow struct {
 	// 态键，行为与旧版逐项一致）；SchedulingPreferenceFingerprint 非空 = 合成
 	// 配置的规范化调度参数 sha256 前 12 位（速度运行态 v2 键材料）；
 	// SchedulingPreferenceChatMode 是合成的有效对话形态（成本/速度，仅信息用途）。
-	SchedulingPreferenceID              string                            `json:"scheduling_preference_id,omitempty"`
-	SchedulingPreferenceFingerprint     string                            `json:"scheduling_preference_fingerprint,omitempty"`
-	SchedulingPreferenceChatMode        string                            `json:"scheduling_preference_chat_mode,omitempty"`
+	SchedulingPreferenceID          string `json:"scheduling_preference_id,omitempty"`
+	SchedulingPreferenceFingerprint string `json:"scheduling_preference_fingerprint,omitempty"`
+	SchedulingPreferenceChatMode    string `json:"scheduling_preference_chat_mode,omitempty"`
+	// API Key 安全策略绑定快照（API Key 安全策略与出站内容脱敏设计 §4.1/§10，
+	// 批B2 运行链接入）：SecurityPolicyID 空 = api_keys.security_policy_id 为
+	// NULL（未绑定）= 内置默认行为（请求原样转发）；非空时 SecurityPolicyRules
+	// JSON 携带 security_policies.rules_json **原文**（内置行即 `{"rules":[]}`
+	// 字面；空规则集语义 = 不处理）。json tag 即 Redis 序列化形态：快照经
+	// json.Marshal 跨进程共享，编译产物（regexp.Regexp 不可序列化）绝不进本
+	// 结构——编译缓存在 securitypolicy.go，键为 rulesJSON 内容摘要。引用损坏
+	// 语义对齐调度偏好 P2：ID 非空但 JOIN 无行 / rules_json 损坏在快照构建
+	// （loadGatewayAPIKeyRow）显式上抛，禁止静默回落内置。
+	SecurityPolicyID                    string                            `json:"security_policy_id,omitempty"`
+	SecurityPolicyRulesJSON             string                            `json:"security_policy_rules_json,omitempty"`
 	NormalRoutingConfig                 *RouteStrategyNormalRoutingConfig `json:"normal_routing_config,omitempty"`
 	SystemAccountImageGenerationEnabled int                               `json:"system_account_image_generation_enabled"`
 	SystemAccountRequestLimitsJSON      *string                           `json:"system_account_request_limits_json,omitempty"`
@@ -215,9 +226,10 @@ type GatewayAPIKeyRow struct {
 	GroupBindings                       []GatewayAPIKeyGroupBindingRow    `json:"group_bindings,omitempty"`
 }
 
-// CloneGatewayAPIKeyRow mirrors cloneGatewayApiKeyRow. 调度偏好快照三字段是
-// 非指针 string，随 `out := row` 结构体拷贝即为值拷贝（Clone 语义冻结：与
-// SP-C2 约定一致，无需深拷贝）。
+// CloneGatewayAPIKeyRow mirrors cloneGatewayApiKeyRow. 调度偏好快照三字段与
+// 安全策略绑定两字段（SecurityPolicyID / SecurityPolicyRulesJSON）都是非指
+// 针 string，随 `out := row` 结构体拷贝即为值拷贝（Clone 语义冻结：与 SP-C2
+// 约定一致，无需深拷贝；安全策略编译产物不进快照，见 securitypolicy.go）。
 func CloneGatewayAPIKeyRow(row GatewayAPIKeyRow) GatewayAPIKeyRow {
 	out := row
 	out.RouteStrategyConfigJSON = cloneString(row.RouteStrategyConfigJSON)
@@ -357,16 +369,22 @@ type OpenAIAccountSecret struct {
 	ClientID                          *string                              `json:"clientId,omitempty"`
 	CredentialSourceAccountID         *string                              `json:"credentialSourceAccountId,omitempty"`
 	ProxyProfileID                    *string                              `json:"proxyProfileId,omitempty"`
-	ProxyURL                          *string                              `json:"proxyUrl,omitempty"`
-	ProxyProfileUnavailable           *bool                                `json:"proxyProfileUnavailable,omitempty"`
-	ProxyProfileErrorMessage          *string                              `json:"proxyProfileErrorMessage,omitempty"`
-	CooldownUntil                     *string                              `json:"cooldownUntil,omitempty"`
-	LastErrorMessage                  *string                              `json:"lastErrorMessage,omitempty"`
-	StreamFailureCount                int                                  `json:"streamFailureCount"`
-	StreamFailureWindowStartedAt      *string                              `json:"streamFailureWindowStartedAt,omitempty"`
-	AccountExpiresAt                  *string                              `json:"accountExpiresAt,omitempty"`
-	ExpiresAt                         *string                              `json:"expiresAt,omitempty"`
-	Credentials                       map[string]any                       `json:"credentials"`
+	// ProxyPoolID / ProxyMemberProfileID 是池绑定账户的运行态判别与有效成员
+	// （代理池设计 §10.1）：池绑定账户的 ProxyProfileID 为有效成员档案；直接
+	// 代理账户两字段为空。ProxyPoolID 非空触发 dispatch 准备阶段的请求时健康门
+	// 与租约修复。
+	ProxyPoolID                  *string        `json:"proxyPoolId,omitempty"`
+	ProxyMemberProfileID         *string        `json:"proxyMemberProfileId,omitempty"`
+	ProxyURL                     *string        `json:"proxyUrl,omitempty"`
+	ProxyProfileUnavailable      *bool          `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage     *string        `json:"proxyProfileErrorMessage,omitempty"`
+	CooldownUntil                *string        `json:"cooldownUntil,omitempty"`
+	LastErrorMessage             *string        `json:"lastErrorMessage,omitempty"`
+	StreamFailureCount           int            `json:"streamFailureCount"`
+	StreamFailureWindowStartedAt *string        `json:"streamFailureWindowStartedAt,omitempty"`
+	AccountExpiresAt             *string        `json:"accountExpiresAt,omitempty"`
+	ExpiresAt                    *string        `json:"expiresAt,omitempty"`
+	Credentials                  map[string]any `json:"credentials"`
 
 	// VendorCode / ConnectionDriverCode 是供应商解耦后的账户连接身份（供应商
 	// 与上游协议面重构设计 §1.1/§2.1）：组合根按账户行 vendor_code /

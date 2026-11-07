@@ -150,7 +150,8 @@ const pgTestSchema = `
 	CREATE TABLE juhe_usage.usage_records (
 		id TEXT, system_account_id TEXT, trace_id TEXT, traffic_source TEXT,
 		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT,
-		compaction_expected INTEGER DEFAULT 0, account_id TEXT, provider_code TEXT, endpoint TEXT,
+		compaction_expected INTEGER DEFAULT 0, security_policy_applied INTEGER DEFAULT 0,
+		pii_hits_json TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT,
 		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
 		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0,
 		stream INTEGER DEFAULT 0, status_code INTEGER, success INTEGER DEFAULT 0,

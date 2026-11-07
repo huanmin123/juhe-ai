@@ -45,10 +45,6 @@ type CleanupResult struct {
 	ClientIpAccountRangeWindowDirtyIps int64
 	AccountUsageSnapshots              int64
 	SystemSessions                     int64
-	CodexContextSessions               int64
-	CodexContextResponses              int64
-	CodexContextCompacts               int64
-	CodexContextFiles                  int64
 }
 
 // EmptyCleanupResult mirrors emptyCleanupResult: every counter starts at 0.
@@ -97,10 +93,6 @@ func (r *CleanupResult) Add(other CleanupResult) {
 	r.ClientIpAccountRangeWindowDirtyIps += other.ClientIpAccountRangeWindowDirtyIps
 	r.AccountUsageSnapshots += other.AccountUsageSnapshots
 	r.SystemSessions += other.SystemSessions
-	r.CodexContextSessions += other.CodexContextSessions
-	r.CodexContextResponses += other.CodexContextResponses
-	r.CodexContextCompacts += other.CodexContextCompacts
-	r.CodexContextFiles += other.CodexContextFiles
 }
 
 // AddUsageStats mirrors addCleanupResult over a stats-writer
@@ -191,10 +183,6 @@ func (r CleanupResult) Sum() int64 {
 	sum += r.ClientIpAccountRangeWindowDirtyIps
 	sum += r.AccountUsageSnapshots
 	sum += r.SystemSessions
-	sum += r.CodexContextSessions
-	sum += r.CodexContextResponses
-	sum += r.CodexContextCompacts
-	sum += r.CodexContextFiles
 	return sum
 }
 
@@ -243,10 +231,6 @@ func (r CleanupResult) Values() []any {
 		"clientIpAccountRangeWindowDirtyIps", r.ClientIpAccountRangeWindowDirtyIps,
 		"accountUsageSnapshots", r.AccountUsageSnapshots,
 		"systemSessions", r.SystemSessions,
-		"codexContextSessions", r.CodexContextSessions,
-		"codexContextResponses", r.CodexContextResponses,
-		"codexContextCompacts", r.CodexContextCompacts,
-		"codexContextFiles", r.CodexContextFiles,
 	}
 }
 

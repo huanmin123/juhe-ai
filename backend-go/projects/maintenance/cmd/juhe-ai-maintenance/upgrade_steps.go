@@ -1,4 +1,4 @@
-// `maintenance upgrade` 的 12 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 13 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
@@ -8,7 +8,11 @@
 // 不受注册表删步影响）；golden 测试钉死
 // (revision, step_id, implVersion) 有序对。低序步骤不得依赖高序产物（§8.4-3）。
 // revision 13（account-schedulable-normalization，T91-3 / B1-10）是纯数据
-// 归一：active 账户的派生 schedulable 收敛为 1。
+// 归一：active 账户的派生 schedulable 收敛为 1。revision 20
+// （retire-cross-protocol-entry-mappings，PLAN-20261106T162344524Z 批次C）是
+// 跨协议入口映射退役：一个 Destructive 步骤按序执行归一→删除→删 schema 三个
+// 阶段（账本 revision 主键 + 注册表唯一校验决定一个 revision 只能注册一个
+// 步骤，阶段 ID 与逐阶段计数进 detail_json / stderr / dry-run 输出）。
 package main
 
 import (
@@ -16,6 +20,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -125,6 +130,416 @@ func columnExists(ctx context.Context, dsn, schemaName, table, column string) (b
 		`SELECT count(*) FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3`,
 		schemaName, table, column)
 	return value > 0, err
+}
+
+// ---------- revision 20：跨协议入口映射退役与 codex context schema 清退 ----------
+//
+// PLAN-20261106T162344524Z 批次C（2026-11-07 用户裁决：不支持跨协议模型映射，
+// 强制客户端协议与上游协议一致）。一个 Destructive 步骤在 contract/all 相按序
+// 执行三个阶段；每阶段独立幂等、中断重跑安全（阶段 0/1 按库内现值收敛，阶段
+// 2 是 IF EXISTS 空操作安全）：
+//  0. normalize-legacy-entry-mapping-families：两侧按反向别名表归一历史
+//     token（anthropic_messages→messages、gemini_generate_content→
+//     generate_content、gemini_stream_generate→stream_generate_content）。
+//     归一前先处理 (account_id, source_model, source_endpoint_family) 唯一键
+//     冲突：canonical 行（现行词表 token）已存在时删除 legacy 重复行
+//     （canonical 优先），禁止 UPDATE 撞唯一键；Gemini legacy pair
+//     （gemini_stream_generate → gemini_generate_content）归一后即现行写侧
+//     合法 pair（协议等价，保留），报告中单列保留数；未知 token 不改写，计数
+//     进 dry-run/detail 报告。
+//  1. retire-cross-protocol-entry-mappings：删除规范化后仍非合规的行——
+//     normalized(source) <> normalized(target) 且非 normalized(source) =
+//     'stream_generate_content' AND normalized(target) = 'generate_content'
+//     （normalized() 以显式 CASE 表达，不依赖运行时词表隐式转换）。
+//  2. retire-codex-context-schema：DROP SCHEMA IF EXISTS juhe_codex_context
+//     CASCADE（4 表 9 索引；磁盘历史 codex-context/ 目录由部署文档要求人工
+//     备份后清理，不在本步骤范围）。
+
+// entryMappingLegacyFamilyTokenList 是反向别名表的键（现行写侧词表之外的
+// 历史 family token）；entryMappingCurrentFamilyTokenList 是现行 7 协议词表。
+// 两者均为包内常量，仅供 SQL 文本拼接，无注入面。
+const entryMappingLegacyFamilyTokenList = `'anthropic_messages','gemini_generate_content','gemini_stream_generate'`
+
+const entryMappingCurrentFamilyTokenList = `'chat_completions','responses','messages','generate_content','stream_generate_content','video_generation','tts'`
+
+// entryMappingFamilyNormalizeExpr 生成单列的显式 CASE 归一投影（计划裁决：
+// normalized() 必须显式表达）。column 为包内拼装的固定列名/别名。
+func entryMappingFamilyNormalizeExpr(column string) string {
+	return `CASE ` + column + `
+				 WHEN 'anthropic_messages' THEN 'messages'
+				 WHEN 'gemini_generate_content' THEN 'generate_content'
+				 WHEN 'gemini_stream_generate' THEN 'stream_generate_content'
+				 ELSE ` + column + ` END`
+}
+
+// entryMappingConflictPredicate 是「legacy 源族行与既有 canonical 行在
+// (account_id, source_model, 归一后源族) 上冲突」的 EXISTS 片段。调用方必须
+// 已把外层行限定为 source_endpoint_family ∈ 历史 token（canonical 行的自匹配
+// 不可能：CASE(legacy) ≠ legacy）。outerRef 为外层行的列限定前缀。
+func entryMappingConflictPredicate(outerRef string) string {
+	return `EXISTS (
+					SELECT 1 FROM juhe_business.account_entry_mappings canonical
+					 WHERE canonical.account_id = ` + outerRef + `account_id
+					   AND canonical.source_model = ` + outerRef + `source_model
+					   AND canonical.source_endpoint_family = ` + entryMappingFamilyNormalizeExpr(outerRef+`source_endpoint_family`) + `)`
+}
+
+// entryMappingRetirePredicate 是阶段 1 的删除谓词：归一后仍非合规（跨族且非
+// Gemini stream 归一 pair）。Satisfied / Apply / Verify 共用本片段（同源）。
+func entryMappingRetirePredicate() string {
+	source := entryMappingFamilyNormalizeExpr(`source_endpoint_family`)
+	target := entryMappingFamilyNormalizeExpr(`target_endpoint_family`)
+	return source + ` <> ` + target + `
+				 AND NOT (` + source + ` = 'stream_generate_content'
+				          AND ` + target + ` = 'generate_content')`
+}
+
+// entryMigrationCounters 是三阶段的只读计数投影（dry-run / Apply 预检共用；
+// 计数语义模拟「阶段 0 → 1 → 2」执行后的库态：冲突行计入删除、归一计数排除
+// 冲突行、阶段 1 计数按归一投影求值）。
+type entryMigrationCounters struct {
+	LegacyTokenRows      int            // 两侧仍带历史 token 的行数（阶段 0 完成态谓词）
+	ConflictsByAlias     map[string]int // 唯一键冲突待删（按历史别名）
+	ConflictRows         int
+	NormalizedSource     map[string]int // 待归一 source 侧（按历史别名，排除冲突行）
+	NormalizedTarget     map[string]int // 待归一 target 侧（按历史别名）
+	PendingUpdateRows    int            // 阶段 0 预计 UPDATE 行数
+	GeminiLegacyPairKept int            // gemini_stream_generate → gemini_generate_content 归一后保留数
+	UnknownTokens        map[string]int // 归一后仍不在现行词表的 token（不改写，只报告）
+	NonCompliantRows     int            // 阶段 1 待删行数（完成态谓词）
+	NonCompliantByPair   map[string]int // 阶段 1 待删行按「归一 source->target」分布
+	CodexSchemaExists    bool           // 阶段 2 完成态谓词
+	CodexSchemaTables    int
+	CodexSchemaIndexes   int
+}
+
+func newEntryMigrationCounters() *entryMigrationCounters {
+	return &entryMigrationCounters{
+		ConflictsByAlias:   map[string]int{},
+		NormalizedSource:   map[string]int{},
+		NormalizedTarget:   map[string]int{},
+		UnknownTokens:      map[string]int{},
+		NonCompliantByPair: map[string]int{},
+	}
+}
+
+// sqlCountByKey 执行 (key text, n integer) 两列查询并聚合为 map（42P01 按
+// 空集处理，与 sqlScalar 的 fresh 库语义一致）。
+func sqlCountByKey(ctx context.Context, dsn, query string, args ...any) (map[string]int, error) {
+	db, err := openPG(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return map[string]int{}, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var key string
+		var count int
+		if err := rows.Scan(&key, &count); err != nil {
+			return nil, err
+		}
+		out[key] = count
+	}
+	return out, rows.Err()
+}
+
+// countEntryMigrationState 只读求值三阶段计数。查询形状模拟执行顺序：
+// 冲突行计入删除计数；归一/保留/未知 token/阶段 1 计数都排除冲突删除行
+// （NOT (source ∈ legacy AND 冲突)），未知 token 再排除阶段 1 将删除的行，
+// 使 dry-run 计数与 Apply 实际值同形状。
+func countEntryMigrationState(ctx context.Context, dsn string) (*entryMigrationCounters, error) {
+	counters := newEntryMigrationCounters()
+
+	// 行级存活谓词：不被阶段 0a 冲突删除，且不会命中阶段 1 删除谓词。
+	surviving := ` NOT (source_endpoint_family IN (` + entryMappingLegacyFamilyTokenList + `)
+		   AND ` + entryMappingConflictPredicate(`account_entry_mappings.`) + `)
+		   AND NOT (` + entryMappingRetirePredicate() + `)`
+
+	legacySource, err := sqlCountByKey(ctx, dsn, `
+		SELECT source_endpoint_family AS key, count(*) AS n
+		  FROM juhe_business.account_entry_mappings
+		 WHERE source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND NOT `+entryMappingConflictPredicate(`account_entry_mappings.`)+`
+		 GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("统计待归一 source 侧 family 失败: %w", err)
+	}
+	counters.NormalizedSource = legacySource
+
+	legacyTarget, err := sqlCountByKey(ctx, dsn, `
+		SELECT target_endpoint_family AS key, count(*) AS n
+		  FROM juhe_business.account_entry_mappings
+		 WHERE target_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND NOT (source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND `+entryMappingConflictPredicate(`account_entry_mappings.`)+`)
+		 GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("统计待归一 target 侧 family 失败: %w", err)
+	}
+	counters.NormalizedTarget = legacyTarget
+
+	conflicts, err := sqlCountByKey(ctx, dsn, `
+		SELECT legacy.source_endpoint_family AS key, count(*) AS n
+		  FROM juhe_business.account_entry_mappings legacy
+		 WHERE legacy.source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND `+entryMappingConflictPredicate(`legacy.`)+`
+		 GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("统计 family 归一唯一键冲突失败: %w", err)
+	}
+	counters.ConflictsByAlias = conflicts
+	for _, count := range conflicts {
+		counters.ConflictRows += count
+	}
+
+	// 阶段 0 预计 UPDATE 行数 = 带历史 token 且不被冲突删除的行。
+	pendingUpdate, err := sqlScalar(ctx, dsn, `
+		SELECT count(*) FROM juhe_business.account_entry_mappings m
+		 WHERE (m.source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		    OR m.target_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`))
+		   AND NOT (m.source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND `+entryMappingConflictPredicate(`m.`)+`)`)
+	if err != nil {
+		return nil, fmt.Errorf("统计待归一行数失败: %w", err)
+	}
+	counters.PendingUpdateRows = pendingUpdate
+
+	legacyTokenRows, err := sqlScalar(ctx, dsn, `
+		SELECT count(*) FROM juhe_business.account_entry_mappings
+		 WHERE source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		    OR target_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)`)
+	if err != nil {
+		return nil, fmt.Errorf("统计历史 family token 残留失败: %w", err)
+	}
+	counters.LegacyTokenRows = legacyTokenRows
+
+	geminiPairKept, err := sqlScalar(ctx, dsn, `
+		SELECT count(*) FROM juhe_business.account_entry_mappings
+		 WHERE source_endpoint_family = 'gemini_stream_generate'
+		   AND target_endpoint_family = 'gemini_generate_content'
+		   AND NOT `+entryMappingConflictPredicate(`account_entry_mappings.`))
+	if err != nil {
+		return nil, fmt.Errorf("统计 Gemini legacy pair 保留数失败: %w", err)
+	}
+	counters.GeminiLegacyPairKept = geminiPairKept
+
+	unknownTokens, err := sqlCountByKey(ctx, dsn, `
+		SELECT token, count(*) AS n FROM (
+			SELECT `+entryMappingFamilyNormalizeExpr(`source_endpoint_family`)+` AS token
+			  FROM juhe_business.account_entry_mappings
+			 WHERE `+surviving+`
+			UNION ALL
+			SELECT `+entryMappingFamilyNormalizeExpr(`target_endpoint_family`)+` AS token
+			  FROM juhe_business.account_entry_mappings
+			 WHERE `+surviving+`
+		) projected
+		 WHERE token NOT IN (`+entryMappingCurrentFamilyTokenList+`)
+		 GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("统计未知 family token 失败: %w", err)
+	}
+	counters.UnknownTokens = unknownTokens
+
+	normalizedPairExpr := entryMappingFamilyNormalizeExpr(`source_endpoint_family`) + ` || '->' || ` + entryMappingFamilyNormalizeExpr(`target_endpoint_family`)
+	nonCompliantByPair, err := sqlCountByKey(ctx, dsn, `
+		SELECT `+normalizedPairExpr+` AS key, count(*) AS n
+		  FROM juhe_business.account_entry_mappings
+		 WHERE NOT (source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND `+entryMappingConflictPredicate(`account_entry_mappings.`)+`)
+		   AND `+entryMappingRetirePredicate()+`
+		 GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("统计非合规映射分布失败: %w", err)
+	}
+	counters.NonCompliantByPair = nonCompliantByPair
+	for _, count := range nonCompliantByPair {
+		counters.NonCompliantRows += count
+	}
+
+	codexTables, err := sqlScalar(ctx, dsn,
+		`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'juhe_codex_context'`)
+	if err != nil {
+		return nil, fmt.Errorf("探测 juhe_codex_context 表失败: %w", err)
+	}
+	counters.CodexSchemaTables = codexTables
+	// 索引按非主键口径计数（9 条显式 CREATE INDEX；主键约束索引不计，与计划
+	// 「4 表 9 索引」口径一致）。
+	codexIndexes, err := sqlScalar(ctx, dsn, `
+		SELECT count(*) FROM pg_index x
+		  JOIN pg_class tbl ON tbl.oid = x.indrelid
+		  JOIN pg_namespace n ON n.oid = tbl.relnamespace
+		 WHERE n.nspname = 'juhe_codex_context' AND NOT x.indisprimary`)
+	if err != nil {
+		return nil, fmt.Errorf("探测 juhe_codex_context 索引失败: %w", err)
+	}
+	counters.CodexSchemaIndexes = codexIndexes
+	codexSchema, err := sqlScalar(ctx, dsn,
+		`SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'juhe_codex_context'`)
+	if err != nil {
+		return nil, fmt.Errorf("探测 juhe_codex_context schema 失败: %w", err)
+	}
+	counters.CodexSchemaExists = codexSchema > 0
+
+	return counters, nil
+}
+
+// logPending 把待执行计数写到 w（Satisfied 求值于 dry-run 计划阶段，运维由此
+// 核对各别名归一数/冲突数/删除数与 Gemini legacy pair 保留数；stdout 保持单行
+// JSON 报告，计数走 stderr）。
+func (c *entryMigrationCounters) logPending(w io.Writer) {
+	fmt.Fprintf(w, "revision 20 normalize-legacy-entry-mapping-families：待归一 source 侧 %v / target 侧 %v；唯一键冲突待删 %d 行 %v；Gemini legacy pair（gemini_stream_generate -> gemini_generate_content）待保留 %d 行；未知 token（不改写，只报告）%v\n",
+		c.NormalizedSource, c.NormalizedTarget, c.ConflictRows, c.ConflictsByAlias, c.GeminiLegacyPairKept, c.UnknownTokens)
+	fmt.Fprintf(w, "revision 20 retire-cross-protocol-entry-mappings：待删除非合规映射 %d 行 %v\n",
+		c.NonCompliantRows, c.NonCompliantByPair)
+	if c.CodexSchemaExists {
+		fmt.Fprintf(w, "revision 20 retire-codex-context-schema：juhe_codex_context 待删除（表 %d、索引 %d）\n",
+			c.CodexSchemaTables, c.CodexSchemaIndexes)
+	}
+}
+
+// entryMigrationRetirementSatisfied 是三阶段共享的完成态谓词（Satisfied 与
+// Verify 同源）：无历史 token 残留、无非合规映射、juhe_codex_context schema
+// 不存在。未知 token 不参与本谓词（按计划裁决只报告不改写）。
+func entryMigrationRetirementSatisfied(ctx context.Context, dsn string) (bool, *entryMigrationCounters, error) {
+	legacyTokenRows, err := sqlScalar(ctx, dsn, `
+		SELECT count(*) FROM juhe_business.account_entry_mappings
+		 WHERE source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		    OR target_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)`)
+	if err != nil {
+		return false, nil, fmt.Errorf("统计历史 family token 残留失败: %w", err)
+	}
+	nonCompliantRows, err := sqlScalar(ctx, dsn, `
+		SELECT count(*) FROM juhe_business.account_entry_mappings
+		 WHERE `+entryMappingRetirePredicate())
+	if err != nil {
+		return false, nil, fmt.Errorf("统计非合规映射失败: %w", err)
+	}
+	codexSchema, err := sqlScalar(ctx, dsn,
+		`SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'juhe_codex_context'`)
+	if err != nil {
+		return false, nil, fmt.Errorf("探测 juhe_codex_context schema 失败: %w", err)
+	}
+	satisfied := legacyTokenRows == 0 && nonCompliantRows == 0 && codexSchema == 0
+	if satisfied {
+		return true, nil, nil
+	}
+	counters, err := countEntryMigrationState(ctx, dsn)
+	if err != nil {
+		return false, nil, err
+	}
+	return false, counters, nil
+}
+
+// applyEntryMigrationRetirement 按序执行三阶段并返回逐阶段 detail（进入账本
+// detail_json）。写入用 RowsAffected 作权威计数，预检计数作分布明细；幂等
+// 重跑在完成态上零写入。
+func applyEntryMigrationRetirement(ctx context.Context, dsn string) (upgradepipeline.Detail, error) {
+	counters, err := countEntryMigrationState(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	// 阶段 0a：唯一键冲突——canonical 优先，删除 legacy 重复行。
+	deletedConflictRows, err := sqlExecCount(ctx, dsn, `
+		DELETE FROM juhe_business.account_entry_mappings legacy
+		 WHERE legacy.source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		   AND `+entryMappingConflictPredicate(`legacy.`))
+	if err != nil {
+		return nil, fmt.Errorf("删除 family 归一冲突行失败: %w", err)
+	}
+
+	// 阶段 0b：两侧全量归一（只改 family 两列，不动 updated_at——与 revision 13
+	// 同款「存量收敛非用户配置变更」口径）。
+	updatedRows, err := sqlExecCount(ctx, dsn, `
+		UPDATE juhe_business.account_entry_mappings
+		   SET source_endpoint_family = `+entryMappingFamilyNormalizeExpr(`source_endpoint_family`)+`,
+		       target_endpoint_family = `+entryMappingFamilyNormalizeExpr(`target_endpoint_family`)+`
+		 WHERE source_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)
+		    OR target_endpoint_family IN (`+entryMappingLegacyFamilyTokenList+`)`)
+	if err != nil {
+		return nil, fmt.Errorf("归一历史 family token 失败: %w", err)
+	}
+
+	// 阶段 1：删除规范化后仍非合规的映射行。
+	deletedNonCompliantRows, err := sqlExecCount(ctx, dsn, `
+		DELETE FROM juhe_business.account_entry_mappings
+		 WHERE `+entryMappingRetirePredicate())
+	if err != nil {
+		return nil, fmt.Errorf("删除非合规跨协议映射失败: %w", err)
+	}
+
+	// 阶段 2：删除 juhe_codex_context schema。
+	droppedSchema := false
+	if counters.CodexSchemaExists {
+		if _, err := sqlExecCount(ctx, dsn, `DROP SCHEMA IF EXISTS juhe_codex_context CASCADE`); err != nil {
+			return nil, fmt.Errorf("删除 juhe_codex_context schema 失败: %w", err)
+		}
+		droppedSchema = true
+	}
+
+	fmt.Fprintf(os.Stderr, "revision 20 归一：唯一键冲突删除 %d 行（预检 %d），family 归一 %d 行（预检 %d）\n",
+		deletedConflictRows, counters.ConflictRows, updatedRows, counters.PendingUpdateRows)
+	fmt.Fprintf(os.Stderr, "revision 20 非合规映射删除：%d 行（预检 %d）\n", deletedNonCompliantRows, counters.NonCompliantRows)
+	fmt.Fprintf(os.Stderr, "revision 20 juhe_codex_context schema 清退：%v（表 %d、索引 %d）\n",
+		droppedSchema, counters.CodexSchemaTables, counters.CodexSchemaIndexes)
+
+	return upgradepipeline.Detail{
+		"normalize-legacy-entry-mapping-families": map[string]any{
+			"conflictsByAlias":        counters.ConflictsByAlias,
+			"deletedConflictRows":     deletedConflictRows,
+			"normalizedSourceByAlias": counters.NormalizedSource,
+			"normalizedTargetByAlias": counters.NormalizedTarget,
+			"updatedRows":             updatedRows,
+			"geminiLegacyPairKept":    counters.GeminiLegacyPairKept,
+			"unknownTokens":           counters.UnknownTokens,
+		},
+		"retire-cross-protocol-entry-mappings": map[string]any{
+			"deletedRows": deletedNonCompliantRows,
+			"byPair":      counters.NonCompliantByPair,
+		},
+		"retire-codex-context-schema": map[string]any{
+			"schemaExistsBefore": counters.CodexSchemaExists,
+			"tables":             counters.CodexSchemaTables,
+			"indexes":            counters.CodexSchemaIndexes,
+			"dropped":            droppedSchema,
+		},
+	}, nil
+}
+
+// verifyEntryMigrationRetirement 是 Apply 后的完成态核验（与
+// entryMigrationRetirementSatisfied 同一谓词，逐阶段给出可归因错误）。
+func verifyEntryMigrationRetirement(ctx context.Context, dsn string) error {
+	satisfied, counters, err := entryMigrationRetirementSatisfied(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	if satisfied {
+		return nil
+	}
+	if counters == nil {
+		return errors.New("revision 20 完成态谓词未满足但无计数明细")
+	}
+	if counters.LegacyTokenRows > 0 {
+		return fmt.Errorf("revision 20 归一未完成：仍有 %d 行历史 family token（source %v / target %v）",
+			counters.LegacyTokenRows, counters.NormalizedSource, counters.NormalizedTarget)
+	}
+	if counters.NonCompliantRows > 0 {
+		return fmt.Errorf("revision 20 仍存在 %d 条非合规跨协议映射 %v", counters.NonCompliantRows, counters.NonCompliantByPair)
+	}
+	if counters.CodexSchemaExists {
+		return fmt.Errorf("revision 20 juhe_codex_context schema 仍存在（表 %d、索引 %d）",
+			counters.CodexSchemaTables, counters.CodexSchemaIndexes)
+	}
+	return errors.New("revision 20 完成态谓词未满足")
 }
 
 // upgradeSteps 返回 13 步骤注册表（revision 升序；引擎再做一次排序校验）。
@@ -590,6 +1005,42 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 					return fmt.Errorf("仍有 %d 个 active 账户 schedulable=0 未归一", pending)
 				}
 				return nil
+			},
+		},
+		{
+			// PLAN-20261106T162344524Z 批次C（2026-11-07 裁决：不支持跨协议模型
+			// 映射）。Destructive=true：expand 相被引擎过滤（只推进
+			// schema_revision=20、旧二进制保持可读），contract/all 相执行归一→
+			// 删除→删 schema 并把 min_readable 推到 20。Satisfied/Verify 与
+			// Apply 同源（entryMigrationRetirementSatisfied /
+			// verifyEntryMigrationRetirement 共用谓词）；dry-run 由 Satisfied
+			// 求值时把逐阶段计数打到 stderr 供停写窗口前核对。批次 D 撤除了
+			// ensure-schema 的 juhe_codex_context 预建 DDL：fresh 库 schema 恒
+			// 不存在，Satisfied 即刻为真（无行可删、无 schema 可清退）；存量库
+			// 升级时由本步骤实际执行 Apply 并清退，终态无 schema。
+			// 账本契约一个 revision 只能注册一个步骤（schema_migrations.revision
+			// 主键 + validateRegistry 唯一校验），三个阶段合入本条目，逐阶段 ID
+			// 与计数进 detail_json。
+			Revision: 20, ID: "retire-cross-protocol-entry-mappings",
+			Title:       "退役跨协议入口映射：legacy family 归一、非合规行删除与 juhe_codex_context schema 清退",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				satisfied, counters, err := entryMigrationRetirementSatisfied(ctx, primaryDSN)
+				if err != nil {
+					return false, err
+				}
+				if !satisfied && counters != nil {
+					counters.logPending(os.Stderr)
+				}
+				return satisfied, nil
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyEntryMigrationRetirement(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				return verifyEntryMigrationRetirement(ctx, primaryDSN)
 			},
 		},
 	}

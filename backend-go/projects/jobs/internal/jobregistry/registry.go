@@ -295,6 +295,13 @@ func ScheduledEntries() []Entry {
 			GoBinding: "ControlPlaneMaintenance 经组合根接线：Redis CircuitStore 由 circuitstore 提供（Lua 与键形状逐字节对照 gatewaycircuit/Node account-circuit-redis-store.ts，同键空间单实现；容量随 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY），ControlPlaneLedger/Outbox 由 circuitstore 业务库双模适配器提供（ack 回写投影 revision 水位）；reconcile 游标持久化为加法扩展（Node 内存语义保留：游标缺失即从头幂等回放）；2026-10-08 起追加孤儿 incident 结清职责：OrphanIncidentCloser 对运行态缺键且超宽限期的活动行按 CLOSED CAS 结清（写 incidents/outbox），随后 Cleanup 删除保留期到期的 CLOSED 行与账户行缺失/已软删的遗留行（BUG-0295 遗留项②，2026-10-19 起，同一无未 dispatched outbox 守卫）；缺 JUHE_AI_REDIS_URL 时组合根登记 disabled",
 		},
 		{
+			JobName: "proxy-pool-health", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
+			Writes:   []string{"business:proxy_profiles.pool_health_*", "redis:proxy-pool:member-health:*"},
+			GoStatus: GoWired, GoPackage: "poolhealth",
+			GoBinding: "Runner.RunOnce：固定高额度 204 端点、每代理 60s 一次、5s 超时、批次 128/并发 8；只写 proxy_profiles.pool_health_status/pool_health_failure_streak/pool_health_checked_at 与 Redis 共享领域键 juhe-ai:{<namespace>}:proxy-pool:member-health:<id>（TTL 5min，非 gateway inval 键）；连续 3 次失败 dead、一次成功恢复，配置错误/取消/投影失败不改变状态和 streak",
+		},
+		{
 			JobName: "account-list-availability-projection-maintenance", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_list_availability_projections", "business:account_list_availability_projection_tags", "business:account_list_availability_dirty"},
@@ -320,7 +327,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"dataset:*", "stats:*", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
-			GoBinding: "DataRetentionJob + cleanuprepo（public_api_logs/usage records 分区裁剪/stats+metrics 保留/system_sessions/codex-context 清理结算/非业务数据硬清理）PG 接线（原分片清理与 SQLite settings 读模型回退随 sqlite 形态退役删除）",
+			GoBinding: "DataRetentionJob + cleanuprepo（public_api_logs/usage records 分区裁剪/stats+metrics 保留/system_sessions/非业务数据硬清理；codex-context 清理结算已随 2026-11-07 桥退役删除）PG 接线（原分片清理与 SQLite settings 读模型回退随 sqlite 形态退役删除）",
 		},
 		{
 			JobName: "expired-deleted-account-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",

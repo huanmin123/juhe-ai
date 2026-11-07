@@ -259,10 +259,11 @@ func TestW13g3KeyModelCapabilityForRoute(t *testing.T) {
 			SelectedAPIKeyFingerprint: &fingerprint,
 			DispatchRevision:          &revision,
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
+				// responses 同族改名（7 pair 矩阵；responses→chat_completions 已退役）。
 				SourceModel:            "gpt-test",
 				SourceEndpointFamily:   "responses",
 				UpstreamModel:          "gpt-upstream",
-				UpstreamEndpointFamily: "chat_completions",
+				UpstreamEndpointFamily: "responses",
 				Enabled:                true,
 			}},
 		}

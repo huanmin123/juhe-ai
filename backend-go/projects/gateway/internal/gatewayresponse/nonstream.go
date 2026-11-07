@@ -16,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysecpol"
 )
 
 // 非流式管道与终态，对齐 finalization.ts 的 handleNonStreamUpstreamResponse /
@@ -594,6 +595,11 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 
 	responseBody := pipeResult.CapturedBody
 	responseBodyText := pipeResult.CapturedBodyText
+	// 响应侧占位符还原两态标记（安全策略设计 §8 审计如实）：还原未发生时
+	// 保持零值，下方审计接线零变化；还原发生时 secPolOriginalBody = 还原前
+	// 上游原文（upstream_response 审计态）。
+	secPolRestored := false
+	var secPolOriginalBody []byte
 	if !input.UpstreamResponse.OK() && responseBodyText == "" {
 		responseBodyText = pipeResult.DiagnosticBodyText
 	}
@@ -704,6 +710,19 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				return UpstreamResponseHandlingResult{}, err
 			}
 		}
+		// 响应侧占位符还原（安全策略设计 §7.1，批C）：完整缓冲 JSON 成功响应
+		// 在发送前整体还原；上游错误体（§7.1 错误帧不还原）与非 JSON 响应
+		// fail-open 原样。还原发生时 secPolOriginalBody 保留还原前上游原文
+		// （CompleteAttempt 的 upstream_response 审计消费），pipeResult.CapturedBody
+		// 覆盖为还原后字节（发送与 Finalize 的 gateway_response 审计消费链
+		// 同源，§8 两态如实）；usage 抽取消费还原前 responseBodyText（usage 字
+		// 段无占位符语义），检查策略与协议校验均在本还原点之前按上游原文执行。
+		if mapping := securityPolicyPlaceholderMapping(input.Req); mapping != nil &&
+			input.UpstreamResponse.OK() && parsedForInspection.Status == NonStreamJSONStatusValid {
+			secPolOriginalBody = pipeResult.CapturedBody
+			pipeResult.CapturedBody = gatewaysecpol.RewriteFull(mapping, pipeResult.CapturedBody)
+			secPolRestored = true
+		}
 		// 检查通过（或校验关闭）：发送完整正文（Node res.send(downstreamBody)）。
 		if pipeResult.FirstByteMs == nil {
 			value := nowMsOf(&input)() - input.StartedAtMs
@@ -756,19 +775,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	} else if pipeResult.UsageTailText != "" {
 		usage = driver.ExtractUsageFromJSONTextFragment(pipeResult.UsageTailText, parsedJsonBody.Status == NonStreamJSONStatusInvalid)
 	}
-	// DD-C6（T86 非流式桥接臂）：跨协议桥接非流式响应的 usage 由桥转换面在缓冲
-	// 变换前从上游协议 JSON 提取并写入本次 attempt 槽（账户协议形态，经
-	// HandleUpstreamResponseInput.BridgeUsage 供给）；结算 driver 按账户协议解
-	// 析的是桥转换后的客户端协议字节，取不到 usage——桥内快照是本次 attempt 的
-	// 权威值，优先于 driver 抽取。ok=false（本次 attempt 非桥接 / 上游未发
-	// usage）时保持既有 driver 抽取与估算兜底路径。失败终态门（流式 DD2-B1/B2
-	// 的非流式对称位）：渲染后的 Responses 失败终态（responsesFailedTerminal）
-	// 不消费快照——失败终态记账不按半程 usage 口径，与流式 Completed 门同哲学。
-	if input.BridgeUsage != nil && !responsesFailedTerminal {
-		if snapshot, ok := input.BridgeUsage(); ok {
-			usage = usageWithObservedModel(snapshot, input.UpstreamResponse.UpstreamResponseModel)
-		}
-	}
+	// 2026-11-07 跨协议桥退役：原 DD-C6（T86）非流式桥接 usage 快照消费臂随
+	// 桥删除（唯一生产者 chainBridgeUsageSlot/carrier 已删）；结算回到上方
+	// driver 抽取与估算兜底路径。
 	// M1 同步音频计量注入（契约 §2.8 计量来源表，仅成功转发计量）：
 	//   - TTS speech：上游无 usage 回报，网关按请求 input 字符数自算；
 	//     token 口径模型（gpt-4o-mini-tts / gpt-4o-tts 系）无 token 事实时
@@ -867,9 +876,20 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			responseBodyText = ""
 			pipeResult.CapturedBody = nil
 			pipeResult.CapturedBodyText = ""
+			// 正文省略时两态还原不参与审计接线：CompleteAttempt 与
+			// result.ResponseBodyText 均回落到置空后的现状（与未还原一致）。
+			secPolRestored = false
 		}
 	}
 	responseBody = pipeResult.CapturedBody
+	if secPolRestored {
+		// 审计两态回正（安全策略设计 §8）：upstream_response 消费还原前上游
+		// 原文；result.ResponseBodyText（Finalize 的 gateway_response 消费链）
+		// 回写为还原后文本，与客户端所见同源。usage 抽取、errorPayload 解析
+		// 与图像省略判定已在上方按还原前文本完成，不受回写影响。
+		responseBody = secPolOriginalBody
+		responseBodyText = string(pipeResult.CapturedBody)
+	}
 	input.AuditCapture.CompleteAttempt(input.AuditAttemptID, AttemptAuditInput{
 		StatusCode:      input.UpstreamResponse.Status,
 		ResponseHeaders: input.UpstreamResponse.Header,

@@ -76,6 +76,7 @@
       :is-management-view="isManagementView"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
+      :proxy-pools="proxyOptionPools"
       :proxy-options-loading="proxyOptionsLoading"
       @proxy-options-dropdown="handleProxyOptionsDropdown"
       @proxy-options-search="handleProxyOptionsSearch"
@@ -229,9 +230,6 @@
       :is-token-credential-form="isTokenCredentialForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
       :loading="accountEditDetailLoading"
-      :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
-      :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
-      :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
       :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
       :model-options="providerModelOptions"
@@ -242,6 +240,7 @@
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
+      :proxy-pools="proxyOptionPools"
       :proxy-options-loading="proxyOptionsLoading"
       @proxy-options-dropdown="handleProxyOptionsDropdown"
       @proxy-options-search="handleProxyOptionsSearch"
@@ -490,16 +489,20 @@ watch(
 
 const {
   proxies,
+  pools: proxyOptionPools,
   loading: proxyOptionsLoading,
   handleDropdown: handleProxyOptionsDropdown,
   handleSearch: handleProxyOptionsSearch
 } = useAccountProxyOptions({
   errorMessage: '加载代理选项失败',
+  // 账户表单代理字段 kind-aware（代理池设计 §8.2/§9.2）：同时拉取代理与代理池候选。
+  kinds: ['profile', 'pool'],
   scope: () => ({
     // Only the currently edited form selection needs options backfill.
     // Account list rows already carry proxy display fields and must not
     // inflate selectedIds past the server cap of 20.
-    selectedIds: [form.proxyProfileId]
+    selectedIds: [form.proxyProfileId],
+    selectedPoolIds: [form.proxyPoolId]
   })
 })
 const {
@@ -1041,9 +1044,6 @@ const {
   isOAuthForm,
   isTokenCredentialForm,
   isOpenAIOAuthForm,
-  mappingAnthropicSourceModelOptions,
-  mappingCurrentProviderSourceModelOptions,
-  mappingGeminiSourceModelOptions,
   mappingSourceModelOptions,
   mappingSourceModelOptionsTruncated,
   modalConfirmLoading,
@@ -1212,19 +1212,19 @@ function handleAccountModelOptionsSearch(value: string): void {
   }, 250)
 }
 
-function handleMappingModelOptionsOpen(protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void {
+function handleMappingModelOptionsOpen(open: boolean): void {
   if (!open) {
     clearAccountModelOptionsSearchTimer()
     return
   }
-  void loadMappingSourceModelOptions(protocol)
+  void loadMappingSourceModelOptions()
 }
 
-function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gemini', value: string): void {
+function handleMappingModelOptionsSearch(value: string): void {
   clearAccountModelOptionsSearchTimer()
   accountModelOptionsSearchTimer = setTimeout(() => {
     accountModelOptionsSearchTimer = undefined
-    void loadMappingSourceModelOptions(protocol, value)
+    void loadMappingSourceModelOptions(value)
   }, 250)
 }
 
@@ -1426,9 +1426,6 @@ const {
   ensureAdvancedAccountDetailLoaded: loadAdvancedAccountDetail,
   errorPolicyRules: accountErrorPolicyRules,
   form,
-  mappingAnthropicSourceModelOptions,
-  mappingCurrentProviderSourceModelOptions,
-  mappingGeminiSourceModelOptions,
   mappingSourceModelOptions,
   mappingUpstreamModelOptions: providerModelOptions,
   openDraftTestModal,

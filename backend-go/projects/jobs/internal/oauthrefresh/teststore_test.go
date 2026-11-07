@@ -56,6 +56,7 @@ const oauthRefreshFixtureSchema = `CREATE TABLE juhe_business.accounts (
 	oauth_access_token_expires_at text,
 	oauth_refresh_token_present integer NOT NULL DEFAULT 0,
 	proxy_profile_id text,
+	proxy_pool_id text,
 	concurrency_limit integer NOT NULL DEFAULT 5000,
 	priority integer NOT NULL DEFAULT 0,
 	super_priority_enabled integer NOT NULL DEFAULT 0,

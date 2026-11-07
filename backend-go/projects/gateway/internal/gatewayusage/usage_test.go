@@ -112,6 +112,8 @@ func TestClassifyGatewayUpstreamFailure(t *testing.T) {
 	status401 := 401
 	status502 := 502
 	status400 := 400
+	status426 := 426
+	status422 := 422
 	tests := []struct {
 		name           string
 		input          GatewayUpstreamFailureClassificationInput
@@ -126,6 +128,8 @@ func TestClassifyGatewayUpstreamFailure(t *testing.T) {
 		{"response 401", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, StatusCode: &status401}, FailureClassOpaqueUpstreamResponse, MetricReasonAuth, "opaque_upstream_response_failure"},
 		{"response 502", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, StatusCode: &status502}, FailureClassOpaqueUpstreamResponse, MetricReasonUpstream5xx, "opaque_upstream_response_failure"},
 		{"response 400", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, StatusCode: &status400}, FailureClassOpaqueUpstreamResponse, MetricReasonUpstream4xx, "opaque_upstream_response_failure"},
+		{"response 426 version gate", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, StatusCode: &status426}, FailureClassOpaqueUpstreamResponse, MetricReasonVersionGate, "opaque_upstream_response_failure"},
+		{"response 422 stays upstream 4xx", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, StatusCode: &status422}, FailureClassOpaqueUpstreamResponse, MetricReasonUpstream4xx, "opaque_upstream_response_failure"},
 		{"timeout code wins over status", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, StatusCode: &status502, ErrorCode: "ETIMEDOUT"}, FailureClassOpaqueUpstreamResponse, MetricReasonTimeout, "opaque_upstream_response_failure"},
 		{"rate limit code", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, ErrorCode: "rate_limit_exceeded"}, FailureClassOpaqueUpstreamResponse, MetricReasonRateLimit, "opaque_upstream_response_failure"},
 		{"auth code", GatewayUpstreamFailureClassificationInput{Phase: FailurePhaseUpstreamResponse, ErrorCode: "permission_denied"}, FailureClassOpaqueUpstreamResponse, MetricReasonAuth, "opaque_upstream_response_failure"},

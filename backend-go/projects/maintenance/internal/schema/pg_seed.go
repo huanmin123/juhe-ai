@@ -131,6 +131,14 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		return PGSeedResult{}, err
 	}
 
+	// 内置安全策略（API Key 安全策略与出站内容脱敏设计 §4.1，批A 存储）：固定
+	// id 恢复式幂等预置（与 --ensure-schema 补种臂共用
+	// pgSeedBuiltinSecurityPolicyUpsert，权威值单源于 security_policy.go）。
+	if err := exec(pgSeedBuiltinSecurityPolicyUpsert,
+		BuiltinSecurityPolicyID, BuiltinSecurityPolicyName, now, now); err != nil {
+		return PGSeedResult{}, err
+	}
+
 	// 全新空库自动写调度偏好迁移完成记录（调度偏好独立实体 P2 设计门裁决②）：
 	// 与 SQLite 臂同语义——迁移记录不存在且 api_keys 无行（本时点在默认路由
 	// 策略/Key 预置之前）时原子写入 completed 记录（counts 全零）；记录已存在

@@ -26,8 +26,38 @@ const ArchitectureVersion = "go-projects-v1"
 // accounts 新增 vendor_code NOT NULL + connection_driver_code = vendor_code
 // 的一致性 CHECK（generic_http / vendor NULL 账户退役），纯 DDL 空号；必须
 // 先由 --purge-unsupported-vendor-accounts 清退存量 NULL vendor 账户，再由
-// ensure-schema/upgrade 添加约束。当前值 17。
-const SchemaRevision int64 = 17
+// ensure-schema/upgrade 添加约束。2026-11-06 revision 18 代理池（代理池设计
+// §4.6/§11.2）：proxy_pools / proxy_pool_members / account_proxy_leases 三表、
+// 租约生成序列、accounts.proxy_pool_id 与二选一 CHECK、proxy_profiles 三列
+// 健康投影及索引/触发器，纯 DDL 加法相；无新数据步骤，不写入
+// schema_migrations。2026-11-07 revision 19 API Key 安全策略批A 存储（API
+// Key 安全策略与出站内容脱敏设计 §4.1）：juhe_business 新表
+// security_policies、api_keys 加列 security_policy_id、juhe_usage.usage_records
+// 加列 security_policy_applied / pii_hits_json，纯 DDL 空号；内置安全策略行
+// 由 maintenance seed / ensure-schema 补种臂恢复式预置（不是升级步骤），不写
+// 入 schema_migrations。2026-11-07 revision 20 跨协议模型映射退役与
+// codex_context schema 清退（退役跨协议模型映射与 ChatBridge 清理计划
+// PLAN-20261106T162344524Z 批次C）：注册表新增 revision 20 数据/破坏步骤，
+// 按序执行三个阶段——legacy endpoint family 归一
+// （normalize-legacy-entry-mapping-families）、非合规 account_entry_mappings
+// 行删除（retire-cross-protocol-entry-mappings）、juhe_codex_context schema
+// 删除（retire-codex-context-schema，4 表 9 索引）；账本契约一个 revision 只
+// 能注册一个步骤（schema_migrations.revision 主键 + 注册表唯一校验），三个
+// 阶段合入同一 Destructive 步骤、逐阶段计数进 detail_json 与 dry-run 输出，
+// 步骤写入 schema_migrations，只在 contract/all 相执行。2026-11-07 revision
+// 21 防护次数写后缓存（API Key 安全策略与出站内容脱敏设计 §4.3.1）：
+// security_policies 新增 protection_count bigint NOT NULL DEFAULT 0 加法列
+// （gateway Redis 增量经进程内刷写任务合并入库），纯 DDL 空号，按《升级兼容
+// 与迁移账本设计》§6.4 不写入 schema_migrations，由 DDL golden 与本常量共同
+// 表达。当前值 21。
+const SchemaRevision int64 = 21
+
+// MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
+// 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时
+// 新二进制必须 fail-fast，先执行本批 expand。旧二进制在 expand 后能否继续
+// 运行由库侧 schema_state.min_readable_binary_revision 决定，不由本常量表达。
+// 每次发布随 SchemaRevision 同步更新。
+const MinRequiredRevision int64 = SchemaRevision
 
 type ProjectID string
 

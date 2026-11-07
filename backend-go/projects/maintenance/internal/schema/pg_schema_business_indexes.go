@@ -277,6 +277,11 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_proxy_pool ON accounts(proxy_pool_id, id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at)`,
 	},
 	{
@@ -974,6 +979,31 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_proxy_profiles_pool_health_due ON proxy_profiles(pool_health_checked_at NULLS FIRST, id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_pools_name_unique ON proxy_pools(name)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_proxy_pools_updated ON proxy_pools(updated_at DESC, id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_proxy_pool_members_profile ON proxy_pool_members(proxy_profile_id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_proxy_leases_pool_member ON account_proxy_leases(pool_id, proxy_profile_id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
 		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_profiles_name_unique ON proxy_profiles(name)`,
 	},
 	{
@@ -1271,6 +1301,36 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "scheduling-preferences-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)`,
+	},
+	{
+		// 安全策略索引（API Key 安全策略与出站内容脱敏设计 §4.1，批A 存储）：
+		// 与调度偏好索引组同构——自定义行 owner 内名称唯一（精确 + lower 归一，
+		// 均挂 WHERE built_in=0 条件——内置行 name 权威且不参与查重）；UNIQUE(id)
+		// WHERE built_in=1 固定内置身份唯一；owner 列支撑管理面按 owner 收窄列
+		// 表；api_keys 绑定列查询索引。
+		SchemaName: "juhe_business",
+		Source:     "security-policies-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_security_policies_owner_name_unique ON security_policies(system_account_id, name) WHERE built_in = 0`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "security-policies-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_security_policies_owner_name_unique_lower ON security_policies(system_account_id, lower(name)) WHERE built_in = 0`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "security-policies-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_security_policies_builtin_id_unique ON security_policies(id) WHERE built_in = 1`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "security-policies-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_security_policies_owner ON security_policies(system_account_id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "security-policies-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_api_keys_security_policy ON api_keys(security_policy_id)`,
 	},
 	// 媒体工作室退场（2026-10-14 契约修订）：本清单从不为新建库创建任何
 	// studio 索引（studio 表已从建表清单移除；idx_api_keys_studio_purpose_

@@ -32,6 +32,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
@@ -227,6 +228,10 @@ type xaiGrokUsageRuntime struct {
 	secret   string
 	nowFunc  func() time.Time
 	logger   *slog.Logger
+	// proxyResolver 是池绑定候选的只读解析器（代理池设计 §5.2/§5.3）：
+	// Writer=nil 不补租约；Health=nil（PG pool_health_status 为事实源）。
+	// 惰性构造，见 xaiGrokProxyResolveTargets。
+	proxyResolver *proxyresolve.Resolver
 	// clientFactory 可注入测试客户端工厂；nil 时按账户代理经
 	// upstreamhttp.SharedClient 取进程级共享客户端（支持 socks5h）。
 	clientFactory func(proxyURL string) (*http.Client, error)
@@ -247,12 +252,64 @@ func (r *xaiGrokUsageRuntime) clientFor(proxyURL string) (*http.Client, error) {
 	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{})
 }
 
-// xaiGrokUsageAccount 是候选账户行的窄投影。
+// xaiGrokProxyPasswordDecrypter 用同一 v1 AES-GCM 封套解开
+// proxy_profiles.password_encrypted（明文 {"password": "..."}）。
+type xaiGrokProxyPasswordDecrypter struct {
+	secret string
+}
+
+func (d xaiGrokProxyPasswordDecrypter) DecryptProxyPassword(_ context.Context, encrypted string) (string, error) {
+	plain, err := accountbalance.DecryptV1Envelope(d.secret, encrypted)
+	if err != nil {
+		return "", err
+	}
+	var envelope struct {
+		Password *string `json:"password"`
+	}
+	if err := json.Unmarshal(plain, &envelope); err != nil {
+		return "", err
+	}
+	if envelope.Password == nil {
+		return "", errors.New("代理密码缺失")
+	}
+	return *envelope.Password, nil
+}
+
+// xaiGrokProxyResolveTargets 惰性构造只读解析器并批量解析池绑定候选。
+// business 句柄缺失（未接 DB 的纯单测运行态）返回错误，不得静默回退直连。
+func (r *xaiGrokUsageRuntime) xaiGrokProxyResolveTargets(ctx context.Context, accountIDs []string) (map[string]proxyresolve.Target, error) {
+	if r.proxyResolver == nil {
+		if r.business == nil || r.business.db == nil {
+			return nil, errors.New("Grok 用量代理解析器未初始化（缺业务库句柄）")
+		}
+		store, err := proxyresolve.NewPostgresStore(r.business.db)
+		if err != nil {
+			return nil, err
+		}
+		resolver, err := proxyresolve.New(proxyresolve.Options{
+			Store:     store,
+			Decrypter: xaiGrokProxyPasswordDecrypter{secret: r.secret},
+		})
+		if err != nil {
+			return nil, err
+		}
+		r.proxyResolver = resolver
+	}
+	return r.proxyResolver.ResolveBatch(ctx, accountIDs)
+}
+
+// xaiGrokUsageAccount 是候选账户行的窄投影。池列与来源账户列承载有效目标
+// 解析（代理池设计 §5.2）：授权实例（source 非空）取 source 池且租约键 =
+// source account，实例自身池绑定不参与；普通账户用自身池绑定。
 type xaiGrokUsageAccount struct {
 	id                   string
 	systemAccountID      string
 	credentialsEncrypted string
 	proxyProfileID       sql.NullString
+	proxyPoolID          sql.NullString
+	sourceAccountID      sql.NullString
+	sourceProxyProfileID sql.NullString
+	sourceProxyPoolID    sql.NullString
 }
 
 // listCandidates 全量查询活跃 xai oauth 账户（设计 §4：每轮全量处理）。
@@ -260,14 +317,20 @@ type xaiGrokUsageAccount struct {
 // 出站超时并制造失败噪音；账户重新启用后下一轮自动恢复采集。
 func (r *xaiGrokUsageRuntime) listCandidates(ctx context.Context) ([]xaiGrokUsageAccount, error) {
 	query := fmt.Sprintf(`
-      SELECT id, system_account_id, credentials_encrypted, proxy_profile_id
-      FROM %s
-      WHERE COALESCE(vendor_code, '') = ?
-        AND type = 'oauth'
-        AND status = 'active'
-        AND deleted_at IS NULL
-      ORDER BY id ASC
-    `, r.business.table("accounts"))
+      SELECT a.id, a.system_account_id, a.credentials_encrypted, a.proxy_profile_id,
+             COALESCE(a.proxy_pool_id, ''), a.authorization_instance_source_account_id,
+             COALESCE(source_account.proxy_profile_id, ''),
+             COALESCE(source_account.proxy_pool_id, '')
+      FROM %s a
+      LEFT JOIN %s source_account
+        ON source_account.id = a.authorization_instance_source_account_id
+       AND source_account.deleted_at IS NULL
+      WHERE COALESCE(a.vendor_code, '') = ?
+        AND a.type = 'oauth'
+        AND a.status = 'active'
+        AND a.deleted_at IS NULL
+      ORDER BY a.id ASC
+    `, r.business.table("accounts"), r.business.table("accounts"))
 	rows, err := r.business.db.QueryContext(ctx, query, textParam("xai"))
 	if err != nil {
 		return nil, fmt.Errorf("读取 Grok 用量快照候选失败: %w", err)
@@ -280,7 +343,9 @@ func (r *xaiGrokUsageRuntime) listCandidates(ctx context.Context) ([]xaiGrokUsag
 			id, sysID   sql.NullString
 			credentials sql.NullString
 		)
-		if err := rows.Scan(&id, &sysID, &credentials, &account.proxyProfileID); err != nil {
+		if err := rows.Scan(&id, &sysID, &credentials, &account.proxyProfileID,
+			&account.proxyPoolID, &account.sourceAccountID,
+			&account.sourceProxyProfileID, &account.sourceProxyPoolID); err != nil {
 			return nil, err
 		}
 		account.id = id.String
@@ -292,6 +357,45 @@ func (r *xaiGrokUsageRuntime) listCandidates(ctx context.Context) ([]xaiGrokUsag
 		return nil, err
 	}
 	return accounts, nil
+}
+
+// xaiGrokEffectiveProxyURL 解析候选账户的有效代理出站 URL（代理池设计 §5.2/
+// §5.3 只读入口）：池绑定（授权实例按 source 池，租约键 = source account，
+// 实例自身池绑定不参与）走共享解析器只读解析当前租约成员；无有效租约/池不可
+// 用返回明确错误（该候选按既有 failed 状态机落库并计数，不直连、不用旧成
+// 员）。直接代理与无绑定保持既有 xaiGrokProxyRequestURL 语义（空 profileID
+// 直连）。
+func (r *xaiGrokUsageRuntime) xaiGrokEffectiveProxyURL(ctx context.Context, account xaiGrokUsageAccount) (string, error) {
+	binding := proxyresolve.AccountBinding{
+		AccountID:           account.id,
+		SourceAccountID:     account.sourceAccountID.String,
+		ConfiguredProfileID: account.proxyProfileID.String,
+		ConfiguredPoolID:    account.proxyPoolID.String,
+		SourceProfileID:     account.sourceProxyProfileID.String,
+		SourcePoolID:        account.sourceProxyPoolID.String,
+	}
+	kind, targetID := binding.Effective()
+	switch kind {
+	case proxyresolve.BindingPool:
+		targets, err := r.xaiGrokProxyResolveTargets(ctx, []string{account.id})
+		if err != nil {
+			return "", err
+		}
+		target := targets[account.id]
+		if target.Available() {
+			return target.URL, nil
+		}
+		return "", fmt.Errorf("Grok 用量候选 %s 的代理池租约不可用（%s）：%s，不直连",
+			account.id, target.UnavailableCode, target.UnavailableMessage)
+	case proxyresolve.BindingConflict:
+		return "", fmt.Errorf("Grok 用量候选 %s 的代理与代理池同时绑定（数据损坏），不直连", account.id)
+	case proxyresolve.BindingProfile:
+		// 直接代理也按 Effective 的目标 ID 出站：授权实例必须使用 source
+		// profile，而不是实例自身残留列（代理池设计 §5.2）。
+		return r.xaiGrokProxyRequestURL(ctx, targetID)
+	default:
+		return r.xaiGrokProxyRequestURL(ctx, "")
+	}
 }
 
 // xaiGrokProxyRequestURL 照 oauthrefresh.Store.proxyProfileRequestURL
@@ -374,8 +478,12 @@ func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("x-xai-token-auth", "xai-grok-cli")
-	request.Header.Set("User-Agent", "xai-grok-workspace/"+upstreamidentity.EffectiveGrokCLIVersion())
-	request.Header.Set("x-grok-client-version", upstreamidentity.EffectiveGrokCLIVersion())
+	// 请求内身份快照（2026-11-06）：UA 与 x-grok-client-version 同一次请求
+	// 消费两个身份值，构造处取一次快照用 GrokCLIVersion 两处复用，热刷新
+	// 不再拆散两个头（旧实现两条独立 EffectiveGrokCLIVersion() 取值链）。
+	grokIdentity := upstreamidentity.NewSnapshot()
+	request.Header.Set("User-Agent", "xai-grok-workspace/"+grokIdentity.GrokCLIVersion())
+	request.Header.Set("x-grok-client-version", grokIdentity.GrokCLIVersion())
 	request.Header.Set("accept", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
@@ -389,8 +497,11 @@ func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusUpgradeRequired {
 			// Grok 上游 426 版本门（设计 §8.3）：记录告警 + 触发版本刷新；
-			// 不改变本函数的错误返回与调用方快照落库语义。
-			r.observeGrokVersionGate426(response.StatusCode, body)
+			// 不改变本函数的错误返回与调用方快照落库语义。日志里的
+			// grok_cli_version 传入本次请求头消费的快照值，与实际请求头
+			// 严格同源（观测时刻读 EffectiveGrokCLIVersion() 会在热刷新
+			// 窗口与请求头分叉）。
+			r.observeGrokVersionGate426(response.StatusCode, body, grokIdentity.GrokCLIVersion())
 		}
 		return nil, fmt.Errorf("上游用量端点返回 HTTP %d：%s",
 			response.StatusCode, truncateXAIGrokErrorMessage(string(body)))
@@ -400,16 +511,18 @@ func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http
 
 // observeGrokVersionGate426 记录一次 Grok 上游 426 版本门观测（设计 §8.3，
 // 零解析文案）：①结构化告警日志 `grok_version_gate_426_observed`（状态码 +
-// ≤300 字节响应体原文摘录 + 当前生效 grokCLI 版本）；②经冷却去重后异步
-// 触发一次版本跟版刷新——尽力而为：失败仅记日志，不影响调用方错误返回
-// 路径；冷却 ≥10 分钟由原子时间戳保证，并发 426 至多触发一次。
-func (r *xaiGrokUsageRuntime) observeGrokVersionGate426(statusCode int, responseBody []byte) {
+// ≤300 字节响应体原文摘录 + 本次请求头实际使用的 grokCLI 快照版本）；②经
+// 冷却去重后异步触发一次版本跟版刷新——尽力而为：失败仅记日志，不影响
+// 调用方错误返回路径；冷却 ≥10 分钟由原子时间戳保证，并发 426 至多触发
+// 一次。grokCLIVersion 由调用方从请求内身份快照传入（fetchXAIGrokJSON 的
+// NewSnapshot），日志字段与请求头严格同源。
+func (r *xaiGrokUsageRuntime) observeGrokVersionGate426(statusCode int, responseBody []byte, grokCLIVersion string) {
 	if r.logger != nil {
 		r.logger.Warn("Grok 上游返回 HTTP 426 版本门，已按冷却窗口触发版本跟版刷新",
 			"event", "grok_version_gate_426_observed",
 			"status_code", statusCode,
 			"response_excerpt", truncateGrokVersionGateExcerpt(responseBody),
-			"grok_cli_version", upstreamidentity.EffectiveGrokCLIVersion())
+			"grok_cli_version", grokCLIVersion)
 	}
 	trigger := r.versionRefreshTrigger
 	if trigger == nil {
@@ -447,7 +560,7 @@ func (r *xaiGrokUsageRuntime) claimGrokVersionGateRefresh(now time.Time) bool {
 }
 
 // truncateGrokVersionGateExcerpt 把 426 响应体按字节截断到告警摘录上限
-//（原文留痕不解析；超限截断不补省略号，保持"≤300 字节"严格成立）。
+// （原文留痕不解析；超限截断不补省略号，保持"≤300 字节"严格成立）。
 func truncateGrokVersionGateExcerpt(responseBody []byte) string {
 	if len(responseBody) <= grokVersionGateExcerptLimit {
 		return string(responseBody)
@@ -538,7 +651,7 @@ func (r *xaiGrokUsageRuntime) attemptAccount(ctx context.Context, account xaiGro
 	if baseURL == "" {
 		return nil, errors.New("凭据缺少 base_url")
 	}
-	proxyURL, err := r.xaiGrokProxyRequestURL(ctx, account.proxyProfileID.String)
+	proxyURL, err := r.xaiGrokEffectiveProxyURL(ctx, account)
 	if err != nil {
 		return nil, err
 	}

@@ -13,20 +13,23 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
+// TestResolveConfiguredUpstreamModelMappingPreservesFamilies 锁定 7 pair 矩阵
+// 唯一跨族形态：Gemini native 档案下 stream_generate_content → generate_content
+// 流式归一保持 source/upstream family 投影（协议等价，rank 0 同权）。
 func TestResolveConfiguredUpstreamModelMappingPreservesFamilies(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
+	profile, ok := modelcheckprofile.Find("gemini", "profile_gemini_native_v1beta")
 	if !ok {
-		t.Fatal("OpenAI Responses profile is required")
+		t.Fatal("Gemini native profile is required")
 	}
-	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
-	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
+	seedMappingSupported(t, db, "acct-1", "gemini-3.1-pro-preview")
+	seedMappingEntry(t, db, "acct-1", "gemini-3.5-flash", "stream_generate_content", "gemini-3.1-pro-preview", "generate_content")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gemini-3.5-flash")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.UpstreamModel != "gpt-5.6-terra" || resolved.SourceEndpointFamily != modelcheckprofile.EndpointResponses || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions {
+	if resolved.UpstreamModel != "gemini-3.1-pro-preview" || resolved.SourceEndpointFamily != modelcheckprofile.EndpointStreamGenerate || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointGenerateContent {
 		t.Fatalf("resolution=%+v", resolved)
 	}
 }
@@ -43,6 +46,24 @@ func TestResolveConfiguredUpstreamModelMappingRejectsUnsupportedCrossFamily(t *t
 	_, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported cross-family mapping must fail closed, err=%v", err)
+	}
+}
+
+// TestResolveConfiguredUpstreamModelMappingRejectsRetiredResponsesToChat 锁定
+// 2026-11-07 退役边界：responses → chat_completions 桥接映射在 J3b 健康检查
+// 读路径同样 fail closed，不得把退役跨族行当合法映射执行。
+func TestResolveConfiguredUpstreamModelMappingRejectsRetiredResponsesToChat(t *testing.T) {
+	db := newModelMappingDatabase(t)
+	defer db.Close()
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
+	if !ok {
+		t.Fatal("OpenAI Responses profile is required")
+	}
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
+	_, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("retired responses->chat mapping must fail closed, err=%v", err)
 	}
 }
 
@@ -71,12 +92,12 @@ func TestResolveConfiguredUpstreamModelMappingReadsMappingWithoutModelRestrictio
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "responses")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.UpstreamModel != "gpt-5.6-terra" || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions {
+	if resolved.UpstreamModel != "gpt-5.6-terra" || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointResponses {
 		t.Fatalf("mapping must apply when supported model list is empty: %+v", resolved)
 	}
 }
@@ -90,12 +111,12 @@ func TestResolveConfiguredUpstreamModelMappingMappingPrecedesDirectMatch(t *test
 	}
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-sol")
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
-	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "responses")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.UpstreamModel != "gpt-5.6-terra" || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions {
+	if resolved.UpstreamModel != "gpt-5.6-terra" || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointResponses {
 		t.Fatalf("explicit mapping must precede direct match: %+v", resolved)
 	}
 }

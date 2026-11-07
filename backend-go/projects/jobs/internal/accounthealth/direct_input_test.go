@@ -131,7 +131,7 @@ func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
 }
 
 func directInputLifecycleCandidateColumns() []string {
-	columns := make([]string, 56)
+	columns := make([]string, 58)
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -146,14 +146,16 @@ func directInputLifecycleCandidateValues() []driver.Value {
 // SELECT 投影逐列对齐（供应商解耦形态 + 后台探测开关两列）：身份
 // vendor_code/preset，连接面 preset/base_url 位于 13/14，expedited_recovery_enabled
 // 位于 index 19，cooldown fence 位于 20/21，a.background_probe_enabled 位于 23，
-// source_background_probe_enabled 位于 46，binding 两列后接 proxy 七列（共 56 列）。
+// source_background_probe_enabled 位于 46，binding 两列后接 proxy 七列，池绑定
+// 两列（a.proxy_pool_id/source.proxy_pool_id）位于 56/57（共 58 列；本夹具为
+// 直接代理候选，池列为 NULL，不触发池解析路径）。
 func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	secret := "direct-input-rows-lifecycle-secret"
 	credentials, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"]}`))
 	if err != nil {
 		panic(err)
 	}
-	values := make([]driver.Value, 56)
+	values := make([]driver.Value, 58)
 	values[0] = accountID
 	values[1] = int64(1)
 	values[2] = int64(2)

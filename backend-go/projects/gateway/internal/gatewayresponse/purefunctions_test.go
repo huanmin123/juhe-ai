@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 func TestResponsesRootStatusTracker(t *testing.T) {
@@ -248,6 +249,8 @@ func TestClassifyGatewayUpstreamFailure(t *testing.T) {
 	status429 := 429
 	status502 := 502
 	status400 := 400
+	status426 := 426
+	status422 := 422
 	tests := []struct {
 		name       string
 		input      GatewayUpstreamFailureClassificationInput
@@ -261,6 +264,8 @@ func TestClassifyGatewayUpstreamFailure(t *testing.T) {
 		{"鉴权", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response", StatusCode: status401()}, FailureClassOpaqueUpstreamResponse, MetricReasonAuthorization},
 		{"5xx", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response", StatusCode: &status502}, FailureClassOpaqueUpstreamResponse, MetricReasonUpstream5xx},
 		{"4xx", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response", StatusCode: &status400}, FailureClassOpaqueUpstreamResponse, MetricReasonUpstream4xx},
+		{"版本门槛 426", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response", StatusCode: &status426}, FailureClassOpaqueUpstreamResponse, MetricReasonVersionGate},
+		{"426 之外的 4xx", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response", StatusCode: &status422}, FailureClassOpaqueUpstreamResponse, MetricReasonUpstream4xx},
 		{"超时码", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response", ErrorCode: "ETIMEDOUT"}, FailureClassOpaqueUpstreamResponse, MetricReasonTimeout},
 		{"未知阶段", GatewayUpstreamFailureClassificationInput{Phase: "elsewhere"}, FailureClassUnknown, MetricReasonUnknown},
 	}
@@ -271,6 +276,49 @@ func TestClassifyGatewayUpstreamFailure(t *testing.T) {
 				t.Fatalf("got %+v", obs)
 			}
 		})
+	}
+}
+
+// TestClassifyGatewayUpstreamFailureMatchesGatewayusageClassifier 钉住本包
+// failclass.go 与 gatewayusage classifier.go 的同义归类同步：两包消费方不同，
+// 词表漂移会让同一上游失败在用量面与响应面得到不同 reason_class。
+func TestClassifyGatewayUpstreamFailureMatchesGatewayusageClassifier(t *testing.T) {
+	status426 := 426
+	status429 := 429
+	status401 := 401
+	status403 := 403
+	status400 := 400
+	status502 := 502
+	inputs := []GatewayUpstreamFailureClassificationInput{
+		{Phase: "upstream_request"},
+		{Phase: "upstream_request", ErrorCode: "insufficient_quota"},
+		{Phase: "upstream_request", StatusCode: &status502},
+		{Phase: "upstream_response"},
+		{Phase: "upstream_response", StatusCode: &status426},
+		{Phase: "upstream_response", StatusCode: &status429},
+		{Phase: "upstream_response", StatusCode: &status401},
+		{Phase: "upstream_response", StatusCode: &status403},
+		{Phase: "upstream_response", StatusCode: &status400},
+		{Phase: "upstream_response", StatusCode: &status502},
+		{Phase: "upstream_response", ErrorCode: "insufficient_quota"},
+		{Phase: "upstream_response", ErrorCode: "rate_limit_exceeded"},
+		{Phase: "upstream_response", ErrorCode: "permission_denied"},
+		{Phase: "upstream_response", ErrorCode: "upstream_protocol_failure"},
+		{Phase: "upstream_response", ErrorCode: "ETIMEDOUT"},
+		{Phase: "elsewhere"},
+	}
+	for _, input := range inputs {
+		local := ClassifyGatewayUpstreamFailure(input)
+		remote := gatewayusage.ClassifyGatewayUpstreamFailure(gatewayusage.GatewayUpstreamFailureClassificationInput{
+			Phase:      input.Phase,
+			StatusCode: input.StatusCode,
+			ErrorCode:  input.ErrorCode,
+		})
+		if string(local.FailureClass) != remote.FailureClass ||
+			string(local.MetricReasonClass) != remote.MetricReasonClass ||
+			local.ClassificationReason != remote.ClassificationReason {
+			t.Fatalf("两包分类不同步: input=%+v local=%+v remote=%+v", input, local, remote)
+		}
 	}
 }
 

@@ -74,7 +74,7 @@ func TestW9ABusinessSchemaContract(t *testing.T) {
 // TestW9ABusinessSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
-	if BusinessSchemaVersion != "business-postgres-gateway-v22" {
+	if BusinessSchemaVersion != "business-postgres-gateway-v23" {
 		t.Fatalf("schema version drifted: %q", BusinessSchemaVersion)
 	}
 	for _, table := range []string{
@@ -82,6 +82,7 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 		"vendors", "models", "account_connections", "account_endpoint_modes",
 		"account_entry_mappings", "account_supported_models", "announcements",
 		"account_circuit_incidents", "account_circuit_outbox",
+		"proxy_profiles", "proxy_pools", "proxy_pool_members", "account_proxy_leases",
 	} {
 		if _, ok := BusinessSchema[table]; !ok {
 			t.Fatalf("required table %s missing from contract", table)
@@ -131,6 +132,44 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 	}
 	if !compositeHealthCheckFK {
 		t.Fatalf("accounts composite health-check connection foreign key drifted: %+v", accounts.ForeignKeys)
+	}
+	// v23 冻结：代理池目标形态（accounts.proxy_pool_id 二选一、代理池三表、
+	// proxy_profiles 池健康投影列）。这些对象是 Gateway 请求解析的启动依赖。
+	if !containsString(accounts.Columns, "proxy_pool_id") {
+		t.Fatal("accounts column proxy_pool_id missing from contract")
+	}
+	hasProxyPoolFK := false
+	for _, fk := range accounts.ForeignKeys {
+		if strings.Join(fk.Columns, ",") == "proxy_pool_id" && fk.RefTable == "proxy_pools" &&
+			strings.Join(fk.RefColumns, ",") == "id" && fk.OnDelete == "RESTRICT" {
+			hasProxyPoolFK = true
+		}
+	}
+	if !hasProxyPoolFK {
+		t.Fatalf("accounts proxy_pool_id foreign key drifted: %+v", accounts.ForeignKeys)
+	}
+	proxyProfiles := BusinessSchema["proxy_profiles"]
+	for _, required := range []string{"pool_health_status", "pool_health_failure_streak", "pool_health_checked_at"} {
+		if !containsString(proxyProfiles.Columns, required) {
+			t.Fatalf("proxy_profiles column %s missing from contract", required)
+		}
+	}
+	proxyPools := BusinessSchema["proxy_pools"]
+	if len(proxyPools.IndexDefinitions) != 1 || !proxyPools.IndexDefinitions[0].Unique ||
+		proxyPools.IndexDefinitions[0].Name != "idx_proxy_pools_name_unique" {
+		t.Fatalf("proxy_pools name unique index drifted: %+v", proxyPools.IndexDefinitions)
+	}
+	leases := BusinessSchema["account_proxy_leases"]
+	hasLeaseMemberFK := false
+	for _, fk := range leases.ForeignKeys {
+		if strings.Join(fk.Columns, ",") == "pool_id,proxy_profile_id" &&
+			fk.RefTable == "proxy_pool_members" && strings.Join(fk.RefColumns, ",") == "pool_id,proxy_profile_id" &&
+			fk.OnDelete == "RESTRICT" {
+			hasLeaseMemberFK = true
+		}
+	}
+	if !hasLeaseMemberFK {
+		t.Fatalf("account_proxy_leases composite member foreign key drifted: %+v", leases.ForeignKeys)
 	}
 	groups := BusinessSchema["groups"]
 	for _, column := range groups.Columns {

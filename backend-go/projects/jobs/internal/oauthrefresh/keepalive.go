@@ -293,10 +293,13 @@ func (j *KeepaliveJob) refreshOne(ctx context.Context, plan KeepalivePlan, accou
 	if refreshToken == "" {
 		return false, &LocalConfigurationError{Message: providerMissingRefreshTokenMessage(plan.Provider), ExpectedConfigRevision: source.ConfigRevision}
 	}
-	// Resolve the account-bound proxy before any token request. A resolution
-	// failure surfaces as this account's refresh failure (local configuration
-	// kind); it never falls back to a direct dial.
-	proxyURL, proxyErr := j.store.proxyProfileRequestURL(ctx, source.ProxyProfileID)
+	// Resolve the effective proxy target before any token request: a direct
+	// profile keeps the legacy semantics; a pool binding resolves its current
+	// lease member read-only (proxy design §5.2/§5.3). A resolution failure
+	// surfaces as this account's refresh failure (local configuration kind for
+	// direct profile defects, retriable proxy-target unavailability for pools);
+	// it never falls back to a direct dial and never switches egress mid-refresh.
+	proxyURL, proxyErr := j.store.proxyRequestURLForAccount(ctx, source)
 	if proxyErr != nil {
 		return false, proxyErr
 	}

@@ -1,5 +1,7 @@
 # OpenAI 到 Anthropic 高兼容能力矩阵
 
+> **与本次退役无关（2026-11-07 标注）：** 本次退役只删除 `responses -> chat_completions` bridge 与 gateway summary compact；本文描述的 OpenAI -> Anthropic 高兼容能力矩阵与本次退役无关，保留为设计截面。其账户载体混合供应商账户已于 2026-11-05 退役、跨协议模型映射已随 2026-11-07 裁决整体退役，该能力矩阵不在现行映射矩阵内；文中引用的 `responses -> chat_completions` 既有 bridge 也已随本次退役删除。
+
 ## 1. 背景
 
 `PLAN-0058` 已完成 OpenAI Chat / Responses 到 Anthropic Messages 的基础桥接，覆盖四类入口：

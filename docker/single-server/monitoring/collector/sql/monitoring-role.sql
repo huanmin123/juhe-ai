@@ -29,7 +29,7 @@ DECLARE s text;
 BEGIN
   FOREACH s IN ARRAY ARRAY[
     'juhe_business', 'juhe_stats', 'juhe_usage', 'juhe_dataset',
-    'juhe_jobs', 'juhe_j3b', 'juhe_codex_context'
+    'juhe_jobs', 'juhe_j3b'
   ] LOOP
     IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = s) THEN
       EXECUTE format('GRANT USAGE ON SCHEMA %I TO juhe_monitor', s);

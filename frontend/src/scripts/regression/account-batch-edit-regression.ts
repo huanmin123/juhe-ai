@@ -92,11 +92,13 @@ assert.deepEqual(
   [],
   '所选同构账户的目标能力上下文必须取全部账户交集'
 )
+// 2026-11-07 跨协议退役：映射行只保留单协议（source=target），跨协议组合在结构门拒绝；
+// 这组用例改用 Chat 同协议映射锁定「按全部所选账户能力交集校验目标族能力」语义。
 const conflictingMappingForm = createAccountBatchEditForm()
 conflictingMappingForm.enabled.modelMappings = true
 conflictingMappingForm.modelMappings = [{
   sourceModel: 'gpt-source',
-  sourceEndpointFamily: 'responses',
+  sourceEndpointFamily: 'chat_completions',
   upstreamModel: 'gpt-5.5',
   upstreamEndpointFamily: 'chat_completions',
   enabled: true
@@ -110,8 +112,14 @@ assert.match(
 const disabledConflictingMappingForm = createAccountBatchEditForm()
 disabledConflictingMappingForm.enabled.modelMappings = true
 disabledConflictingMappingForm.modelMappings = conflictingMappingForm.modelMappings.map((mapping) => ({ ...mapping, enabled: false }))
+const disabledMappingReadyPools = {
+  mappingSourceModelOptions: [{ value: 'gpt-source', supportedApiProtocols: ['chat_completions'] as const }],
+  mappingSourceModelOptionsReady: true,
+  mappingUpstreamModelOptions: [{ value: 'gpt-5.5', supportedApiProtocols: ['chat_completions'] as const }],
+  mappingUpstreamModelOptionsReady: true
+}
 assert.ok(
-  buildAccountBatchEditRequest(differingEndpointModeAccounts, disabledConflictingMappingForm).payload,
+  buildAccountBatchEditRequest(differingEndpointModeAccounts, disabledConflictingMappingForm, disabledMappingReadyPools).payload,
   '停用映射应允许在目标族能力交集为空时原样提交'
 )
 
@@ -121,7 +129,7 @@ overwrittenEndpointModeForm.modelMappings = conflictingMappingForm.modelMappings
 overwrittenEndpointModeForm.enabled.supportedEndpointModes = true
 overwrittenEndpointModeForm.supportedEndpointModes = ['chat_json']
 assert.ok(
-  buildAccountBatchEditRequest(differingEndpointModeAccounts, overwrittenEndpointModeForm).payload,
+  buildAccountBatchEditRequest(differingEndpointModeAccounts, overwrittenEndpointModeForm, disabledMappingReadyPools).payload,
   '显式覆盖接口能力时，批量映射必须使用表单中的目标能力校验'
 )
 
@@ -136,8 +144,96 @@ structurallyInvalidDisabledMappingForm.modelMappings = [{
 }]
 assert.match(
   buildAccountBatchEditRequest(differingEndpointModeAccounts, structurallyInvalidDisabledMappingForm).message ?? '',
-  /账号模型别名只支持同协议映射/,
-  '停用映射只豁免目标能力冲突，不能豁免 provider/profile 转换结构冲突'
+  /模型映射客户端协议与上游协议必须一致/,
+  '停用映射只豁免目标能力冲突，不能豁免协议结构冲突（跨协议退役后一律拒绝）'
+)
+
+// ---- 批量单下拉 + 跨供应商 source（批次 E 契约）----
+
+const crossProviderSourceOptions = [
+  { value: 'gpt-source', supportedApiProtocols: ['chat_completions'] as const },
+  { value: 'claude-messages', supportedApiProtocols: ['messages'] as const }
+]
+const crossProviderUpstreamOptions = [{ value: 'gpt-5.5', supportedApiProtocols: ['chat_completions'] as const }]
+
+// 跨供应商 source 协议不符被拒：Messages-only 目录模型不能作为 Chat 映射的客户端模型。
+const protocolMismatchSourceForm = createAccountBatchEditForm()
+protocolMismatchSourceForm.enabled.modelMappings = true
+protocolMismatchSourceForm.modelMappings = [{
+  sourceModel: 'claude-messages',
+  sourceEndpointFamily: 'chat_completions',
+  upstreamModel: 'gpt-5.5',
+  upstreamEndpointFamily: 'chat_completions',
+  enabled: true
+}]
+assert.match(
+  buildAccountBatchEditRequest(accounts, protocolMismatchSourceForm, {
+    mappingSourceModelOptions: crossProviderSourceOptions,
+    mappingSourceModelOptionsReady: true,
+    mappingUpstreamModelOptions: crossProviderUpstreamOptions,
+    mappingUpstreamModelOptionsReady: true,
+    providerProfile: { protocolCode: 'openai', protocolVersion: 'v1' }
+  }).message ?? '',
+  /模型映射客户端模型 claude-messages 不支持 Chat Completions 协议/,
+  '批量映射的跨供应商 source 声明协议与所选协议不一致时必须拒绝'
+)
+
+// 跨供应商同协议 source 正常通过（source 池跨供应商、上游限账户支持模型）。
+const crossProviderSourceForm = createAccountBatchEditForm()
+crossProviderSourceForm.enabled.modelMappings = true
+crossProviderSourceForm.modelMappings = [{
+  sourceModel: 'gpt-source',
+  sourceEndpointFamily: 'chat_completions',
+  upstreamModel: 'gpt-5.5',
+  upstreamEndpointFamily: 'chat_completions',
+  enabled: true
+}]
+const crossProviderResult = buildAccountBatchEditRequest(accounts, crossProviderSourceForm, {
+  mappingSourceModelOptions: crossProviderSourceOptions,
+  mappingSourceModelOptionsReady: true,
+  mappingUpstreamModelOptions: crossProviderUpstreamOptions,
+  mappingUpstreamModelOptionsReady: true,
+  providerProfile: { protocolCode: 'openai', protocolVersion: 'v1' }
+})
+assert.ok(crossProviderResult.payload, `跨供应商同协议 source 必须可保存：${crossProviderResult.message}`)
+assert.deepEqual(
+  crossProviderResult.payload?.updates.modelMappings?.value,
+  [{ ...crossProviderSourceForm.modelMappings[0] }],
+  '批量映射覆盖载荷必须按单协议映射行提交'
+)
+
+// 池未就绪阻止保存：source 跨供应商池 / 上游候选未就绪时给中文加载错误，不空池放行。
+const unreadyPoolForm = createAccountBatchEditForm()
+unreadyPoolForm.enabled.modelMappings = true
+unreadyPoolForm.modelMappings = conflictingMappingForm.modelMappings.map((mapping) => ({ ...mapping }))
+assert.match(
+  buildAccountBatchEditRequest(accounts, unreadyPoolForm, {
+    mappingSourceModelOptionsReady: false
+  }).message ?? '',
+  /模型映射的客户端模型目录尚未加载完成/,
+  'source 跨供应商候选池未就绪时批量保存必须被阻止'
+)
+assert.match(
+  buildAccountBatchEditRequest(accounts, unreadyPoolForm, {
+    mappingSourceModelOptions: crossProviderSourceOptions,
+    mappingSourceModelOptionsReady: true,
+    mappingUpstreamModelOptionsReady: false
+  }).message ?? '',
+  /模型映射的上游模型目录尚未加载完成/,
+  '上游候选未就绪时批量保存必须被阻止'
+)
+
+// 基线外无候选池放行语义删除：就绪但为空的 source 池按「目录无该模型」拒绝。
+assert.match(
+  buildAccountBatchEditRequest(accounts, unreadyPoolForm, {
+    mappingSourceModelOptions: [],
+    mappingSourceModelOptionsReady: true,
+    mappingUpstreamModelOptions: crossProviderUpstreamOptions,
+    mappingUpstreamModelOptionsReady: true,
+    providerProfile: { protocolCode: 'openai', protocolVersion: 'v1' }
+  }).message ?? '',
+  /模型映射客户端模型 gpt-source 不在可选模型目录中/,
+  '就绪但为空的 source 池不得沿用空池放行'
 )
 
 const missingVersionAccounts = accounts.map((account) => ({ ...account, configRevision: undefined }))
@@ -205,11 +301,15 @@ for (const [source, expectedText] of [
   assert.ok(source.includes(expectedText), `单编辑必须保留统一文案：${expectedText}`)
   assert.ok(modalSource.includes(expectedText), `批量编辑必须使用统一文案：${expectedText}`)
 }
-assert.match(modalSource, /isAccountModelMappingSourceEndpointFamilyAllowed/, '批量来源协议选项必须复用结构矩阵过滤')
-assert.match(modalSource, /mappingSourceModelOptionsFor\(mapping\)/, '批量客户端模型必须复用单编辑来源模型策略')
+assert.match(modalSource, /isAccountModelMappingProtocolOptionAllowed/, '批量协议选项必须复用单协议结构矩阵过滤')
+assert.match(modalSource, /:options="mappingProtocolOptions"/, '批量映射行必须只保留一个协议下拉')
+assert.doesNotMatch(modalSource, /placeholder="上游协议"/, '批量映射行不得保留上游协议下拉')
+assert.match(modalSource, /handleMappingProtocolChange\(mapping\)/, '批量修改协议必须触发 source/target 同步写入')
+assert.match(modalSource, /accountModelMappingTargetForSource/, '批量协议派生必须复用协议等价选项表')
+assert.match(modalSource, /mappingSourceModelOptionsFor\(mapping\)/, '批量客户端模型必须复用单编辑来源模型策略（跨供应商池按协议过滤）')
 assert.match(modalSource, /mappingUpstreamModelOptionsFor\(mapping\)/, '批量上游模型必须按每行上游协议过滤')
-assert.match(modalSource, /enabled: mapping\.enabled/, '批量目标协议选项必须传入每条映射启停状态')
-assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量目标协议选项必须使用全部账户能力交集')
+assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量协议选项必须使用全部账户能力交集')
+assert.match(modalSource, /mappingSourcePoolReady/, '批量保存必须维护跨供应商 source 池就绪标志')
 assert.doesNotMatch(modalSource, /advancedDetail\(/, '批量编辑不得逐账户读取高级详情')
 const modalOpenWatchSource = modalSource.slice(
   modalSource.indexOf('watch(open,'),
@@ -270,6 +370,7 @@ const saveSource = modalSource.slice(
   modalSource.indexOf('function close')
 )
 assert.match(saveSource, /const token = loadToken[\s\S]*await ensureModelContext[\s\S]*token !== loadToken \|\| !open\.value/, '保存等待模型上下文期间关闭或重开弹窗后不得继续提交旧表单')
+assert.match(saveSource, /await Promise\.all\(\[loadModelOptions\(token\), loadMappingSourcePool\(\)\]\)/, '覆盖模型别名保存前必须补拉跨供应商 source 池与当前供应商目录')
 assert.match(formSource, /configRevision/, '批量编辑请求必须使用乐观版本')
 assert.match(accountsViewSource, /@edit="openBatchEdit"/, '账户列表批量工具栏应接入批量编辑入口')
 assert.match(accountsViewSource, /AccountBatchDisableConfirmModal/, '批量停用必须使用独立二次确认弹窗')

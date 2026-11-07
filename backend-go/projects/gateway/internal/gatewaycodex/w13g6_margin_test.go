@@ -5,28 +5,14 @@
 //   - clock.go:39 randomUUID 的 rand.Read 失败臂：crypto/rand 在支持平台不失败（与源码注释一致）。
 //   - compactioncontract.go:120 tailStart<0 守卫：该分支仅在 len(rawBody) >
 //     2*codexCompactionRawBodyScanEdgeBytes 时可达，此时 tailStart > edge > 0，恒为假。
-//   - segments.go:70/73 gzip.Writer 写入 bytes.Buffer 的错误臂：内存缓冲写入与 gzip
-//     Close 对内存流不返回错误。
-//   - segments.go:114/117 appendSegmentBytes 的 Seek/WriteAt 错误臂：临时目录内打开的
-//     本地文件不产生 Seek 失败；WriteAt 失败需要 OS 级磁盘故障，无注入点。
-//   - segments.go:161 ReadAt 返回 n==0 且 err==nil 臂：os.File.ReadAt 契约保证
-//     n<len(b) 时 err 非空，该组合不可达。
 //   - strategy.go:581 rawPath=="" 兜底：PathAndQuery 契约保证返回值带前导斜杠（恒非空）。
-//   - chatbridgestate.go:957 encodeInlineCodexCompactionSummary 序列化错误臂：
-//     序列化对象仅含一个 string 字段，json.Marshal 恒成功。
 package gatewaycodex
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -220,112 +206,6 @@ func TestW13g6TurnRetryEvidenceCounters(t *testing.T) {
 	}
 }
 
-func hexEncodeInt(value int) string {
-	return strings.TrimSpace(strings.Join([]string{"o", string(rune('a' + value%26))}, ""))
-}
-
-// ---------------------------------------------------------------------------
-// segments：格式化 / 存储路径 / 载荷读取错误臂
-// ---------------------------------------------------------------------------
-
-func TestW13g6SegmentHelpers(t *testing.T) {
-	if base36(0) != "0" || base36(-35) != "-z" || base36(35) != "z" {
-		t.Fatal("base36 arms")
-	}
-	store, err := NewSegmentStore(SegmentStoreConfig{Root: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 空存储 key -> 相对路径 "." -> 超出数据目录（209-211）。
-	if _, err := store.resolveStoragePath(""); err == nil || !strings.Contains(err.Error(), "超出数据目录") {
-		t.Fatalf("blank storage key: %v", err)
-	}
-
-	segmentKey := SegmentStorageKey("w13g6-session", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fullPath := filepath.Join(store.config.Root, segmentKey)
-	reference := func(raw []byte) CodexContextPayloadReference {
-		sum := sha256.Sum256(raw)
-		return CodexContextPayloadReference{
-			StorageKey: segmentKey, StorageOffsetBytes: 0,
-			SHA256: hex.EncodeToString(sum[:]), RawSizeBytes: int64(len(raw)),
-			CompressedSizeBytes: int64(len(raw)), Compression: "gzip", SchemaVersion: 2,
-		}
-	}
-	// 非法 gzip 头 -> gzip.NewReader 错误（173-175）。
-	corrupt := []byte("this is not gzip data")
-	if err := writeFileAt(fullPath, corrupt); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.ReadSegmentPayload(reference(corrupt)); err == nil {
-		t.Fatal("corrupt gzip must fail")
-	}
-
-	// 解压大小与记录不符（180-182）。
-	var sized bytes.Buffer
-	writer := gzip.NewWriter(&sized)
-	_, _ = writer.Write([]byte(`{"ok":true}`))
-	_ = writer.Close()
-	if err := writeFileAt(fullPath, sized.Bytes()); err != nil {
-		t.Fatal(err)
-	}
-	sizedRef := reference(sized.Bytes())
-	sizedRef.RawSizeBytes = 3
-	if _, err := store.ReadSegmentPayload(sizedRef); err == nil || !strings.Contains(err.Error(), "解压大小异常") {
-		t.Fatalf("size mismatch: %v", err)
-	}
-
-	// 解压结果非 JSON（183-185）。
-	invalidSource := []byte("not json at all")
-	var invalid bytes.Buffer
-	invalidWriter := gzip.NewWriter(&invalid)
-	_, _ = invalidWriter.Write(invalidSource)
-	_ = invalidWriter.Close()
-	if err := writeFileAt(fullPath, invalid.Bytes()); err != nil {
-		t.Fatal(err)
-	}
-	invalidRef := reference(invalid.Bytes())
-	invalidRef.RawSizeBytes = int64(len(invalidSource))
-	if _, err := store.ReadSegmentPayload(invalidRef); err == nil || !strings.Contains(err.Error(), "结构无效") {
-		t.Fatalf("invalid json payload: %v", err)
-	}
-
-	// 正常往返保持可用。
-	if err := writeFileAt(fullPath, sized.Bytes()); err != nil {
-		t.Fatal(err)
-	}
-	goodRef := reference(sized.Bytes())
-	goodRef.RawSizeBytes = 11
-	payload, err := store.ReadSegmentPayload(goodRef)
-	if err != nil || string(payload) != `{"ok":true}` {
-		t.Fatalf("valid payload: %s %v", string(payload), err)
-	}
-}
-
-func writeFileAt(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, werr := file.WriteAt(data, 0)
-	return werr
-}
-
-// TestW13g6MaterializedMutationNonArray 覆盖非数组物化输入的原样返回臂。
-func TestW13g6MaterializedMutationNonArray(t *testing.T) {
-	start := 2
-	state := &CodexResponsesContextRequestState{
-		PreviousResponseKind:               PreviousKindInternal,
-		MaterializedCurrentInputStartIndex: &start,
-	}
-	input := "scalar-input"
-	if got := currentInputFromMaterializedMutation(state, input); got != input {
-		t.Fatalf("non-array input: %v", got)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // 压缩契约 / 请求头 / 来源身份

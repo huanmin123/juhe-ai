@@ -144,15 +144,18 @@ type postflightInfo struct {
 // Report 是 stdout 单行 JSON（§9.3）。字段存在性由 omitempty 与场景装配共同
 // 保证；连接不可达/旗标解析失败路径不产出报告（命令层 stderr + exit）。
 type Report struct {
-	Driver     string          `json:"driver"`
-	Binary     binaryIdentity  `json:"binary"`
-	Database   databaseState   `json:"database"`
-	Plan       planInfo        `json:"plan"`
-	Estimate   estimateInfo    `json:"estimate"`
-	Executed   []executedStep  `json:"executed,omitempty"`
-	Postflight *postflightInfo `json:"postflight,omitempty"`
-	Rollback   string          `json:"rollback"`
-	Result     string          `json:"result"`
+	Driver                string          `json:"driver"`
+	Phase                 string          `json:"phase,omitempty"`
+	OnlineSafe            bool            `json:"onlineSafe"`
+	CompatibleBinaryRange string          `json:"compatibleBinaryRange,omitempty"`
+	Binary                binaryIdentity  `json:"binary"`
+	Database              databaseState   `json:"database"`
+	Plan                  planInfo        `json:"plan"`
+	Estimate              estimateInfo    `json:"estimate"`
+	Executed              []executedStep  `json:"executed,omitempty"`
+	Postflight            *postflightInfo `json:"postflight,omitempty"`
+	Rollback              string          `json:"rollback"`
+	Result                string          `json:"result"`
 }
 
 // Result 取值与退出码映射（§9.2/§9.3）：planned/up-to-date/upgraded→0，
@@ -182,12 +185,24 @@ const (
 
 // ---------- 选项与运行 ----------
 
+// UpgradePhase 选择 upgrade 的迁移相（多节点发布设计 §6.1/§6.2）。
+type UpgradePhase string
+
+const (
+	PhaseAll      UpgradePhase = "all"
+	PhaseExpand   UpgradePhase = "expand"
+	PhaseContract UpgradePhase = "contract"
+)
+
 type Options struct {
 	PrimaryDSN         string
 	Secret             string
 	DryRun             bool
 	StopWriteConfirmed bool
 	BackupConfirmed    bool
+	Phase              UpgradePhase
+	Online             bool
+	OldWritersDrained  bool
 	StepTimeout        time.Duration // 钳制 1m..4h（命令层钳制后传入）
 	AppVersion         string
 	Now                func() time.Time // 测试注入；nil 用 time.Now
@@ -207,12 +222,25 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	if now == nil {
 		now = time.Now
 	}
+	phase := opts.Phase
+	onlineSafe := phase == PhaseExpand && opts.Online
+	if phase == "" {
+		phase = PhaseAll
+	}
+	switch phase {
+	case PhaseAll, PhaseExpand, PhaseContract:
+	default:
+		return outcome{ExitCode: ExitUsage, Stderr: "upgrade phase 必须是 all|expand|contract"}
+	}
 	steps = sortStepsByRevision(steps)
+	phaseSteps := filterStepsForPhase(steps, phase)
 	if err := validateRegistry(steps); err != nil {
 		return outcome{ExitCode: ExitRuntimeFailure, Stderr: err.Error()}
 	}
 	report := &Report{
-		Driver: "postgres",
+		Driver:     "postgres",
+		Phase:      string(phase),
+		OnlineSafe: phase == PhaseExpand && opts.Online,
 		Binary: binaryIdentity{
 			Version:        opts.AppVersion,
 			SchemaRevision: int64(contracts.SchemaRevision),
@@ -278,6 +306,11 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		AppliedSteps:   appliedSteps,
 		Digest:         schema.PostgresSchemaDigest(),
 	}
+	stateMinReadable := state.MinReadableBinaryRevision
+	if stateMinReadable == 0 {
+		stateMinReadable = dbRevision
+	}
+	report.CompatibleBinaryRange = fmt.Sprintf("%d..%d", stateMinReadable, contracts.SchemaRevision)
 	env := Env{PrimaryDSN: opts.PrimaryDSN, Secret: opts.Secret}
 
 	// 5. 方向校验：库领先于二进制（state 或账本任一）即 blocked。
@@ -288,9 +321,9 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 				"）：请升级二进制后再执行 upgrade", true)
 	}
 
-	// 6. 计划（只读求值，不写账本）。
+	// 6. 计划（只读求值，不写账本）。只列本 phase 的步骤。
 	pending := []stepWithRow{}
-	for _, step := range steps {
+	for _, step := range phaseSteps {
 		row, exists := rows[step.Revision]
 		status := "absent"
 		if exists {
@@ -340,29 +373,69 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		TotalUpperBoundMinutes:      needsApplyCount(pending, report.Plan.Adopt)*minutes(opts.StepTimeout) + 60,
 	}
 
-	// 7. dry-run：输出计划并退出（只读；库落后/领先均 blocked/3，供自查）。
+	// 7. dry-run：输出计划并退出（只读）。all 保持旧 blocked/3 语义；
+	// expand/contract 输出本 phase 计划并返回 planned/0，供发布预演。
 	if opts.DryRun {
-		if dbRevision < int64(contracts.SchemaRevision) || stepMax > int64(contracts.SchemaRevision) {
+		if phase == PhaseAll && (dbRevision < int64(contracts.SchemaRevision) || stepMax > int64(contracts.SchemaRevision)) {
 			return fail(ResultBlocked, ExitNeedsHuman, "存在待执行升级步骤（dry-run 预演）", true)
 		}
 		return fail(ResultPlanned, ExitOK, "", true)
 	}
 
-	// 8. 确认门禁（§9.1）：待 Apply 步骤或库落后 → 两确认 + secret 必填。
-	if needsApply || dbRevision < int64(contracts.SchemaRevision) {
-		if !opts.StopWriteConfirmed || !opts.BackupConfirmed {
-			return fail(ResultBlocked, ExitUsage,
-				"存在待执行升级步骤：需要 --stop-write-confirmed 与 --backup-confirmed（先停止 gateway/jobs 并完成可恢复备份）", true)
+	// 8. 确认门禁（§9.1）：
+	//   all      → 停写 + 备份 + secret；
+	//   expand   → 备份 + secret；未声明 --online 时还要停写；
+	//   contract → 旧实例已下线 + 备份 + secret；库未 expand 完成时拒绝。
+	needsStructural := dbRevision < int64(contracts.SchemaRevision)
+	switch phase {
+	case PhaseExpand:
+		if needsApply || needsStructural {
+			if !opts.BackupConfirmed {
+				return fail(ResultBlocked, ExitUsage,
+					"expand 需要 --backup-confirmed（先完成可恢复备份）", true)
+			}
+			if !opts.Online && !opts.StopWriteConfirmed {
+				return fail(ResultBlocked, ExitUsage,
+					"expand 未声明 --online 时需要 --stop-write-confirmed（停止 gateway/jobs）", true)
+			}
+			if opts.Secret == "" {
+				return fail(ResultBlocked, ExitUsage,
+					"expand 需要 --secret（或 JUHE_AI_SECRET）供 seed 与凭据类步骤使用", true)
+			}
 		}
-		if opts.Secret == "" {
-			return fail(ResultBlocked, ExitUsage,
-				"存在待执行升级步骤：需要 --secret（或 JUHE_AI_SECRET）供 seed 与凭据类步骤使用", true)
+	case PhaseContract:
+		if needsStructural {
+			return fail(ResultBlocked, ExitNeedsHuman,
+				"contract 前库尚未 expand 到本版本：请先执行 upgrade --phase=expand", true)
+		}
+		if needsApply {
+			if !opts.OldWritersDrained || !opts.BackupConfirmed {
+				return fail(ResultBlocked, ExitUsage,
+					"contract 需要 --old-writers-drained 与 --backup-confirmed（旧 gateway/jobs 已全部下线且备份可恢复）", true)
+			}
+			if opts.Secret == "" {
+				return fail(ResultBlocked, ExitUsage,
+					"contract 需要 --secret（或 JUHE_AI_SECRET）", true)
+			}
+		}
+	default:
+		if needsApply || needsStructural {
+			if !opts.StopWriteConfirmed || !opts.BackupConfirmed {
+				return fail(ResultBlocked, ExitUsage,
+					"存在待执行升级步骤：需要 --stop-write-confirmed 与 --backup-confirmed（先停止 gateway/jobs 并完成可恢复备份）", true)
+			}
+			if opts.Secret == "" {
+				return fail(ResultBlocked, ExitUsage,
+					"存在待执行升级步骤：需要 --secret（或 JUHE_AI_SECRET）供 seed 与凭据类步骤使用", true)
+			}
 		}
 	}
 
-	// 9. 已最新短路：只读核验（全步骤 Check + 语句计数），不写任何表。
-	if !needsApply && dbRevision == int64(contracts.SchemaRevision) && stepMax <= int64(contracts.SchemaRevision) {
-		post := verifyAllSteps(ctx, env, steps, opts.StepTimeout)
+	// 9. 已最新短路：只读核验（本 phase 步骤 + 语句计数），不写任何表。
+	// contract 不短路：即使破坏性步骤已 applied，仍要执行 EnsureDestructive
+	//（破坏性 DDL 不在步骤注册表里）并推进 min_readable_binary_revision。
+	if !needsApply && phase != PhaseContract && dbRevision == int64(contracts.SchemaRevision) && stepMax <= int64(contracts.SchemaRevision) {
+		post := verifyAllSteps(ctx, env, phaseSteps, opts.StepTimeout)
 		report.Postflight = &post
 		if !post.OK {
 			return fail(ResultFailed, ExitNeedsHuman, "up-to-date 核验未通过（见报告 postflight）", true)
@@ -371,16 +444,27 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		return outcome{ExitCode: ExitOK, Report: report}
 	}
 
-	// 10. 结构收敛·加法相（建表/补列/补种；P2 起分相——§7.3）。
+	// 10. 结构收敛·加法相（建表/补列/补种；§7.3）。
+	// expand/all 执行；contract 只处理破坏相，不再重放加法。
 	// 加法相失败：破坏性 DDL 未执行，rollback 保持 binary-only（换回旧二进制即可）。
-	additiveResult, err := schema.EnsurePostgresFiltered(ctx, db, schema.EnsureAdditive)
-	if err != nil {
-		return fail(ResultFailed, ExitRuntimeFailure, "ensure-schema 加法相失败: "+err.Error(), true)
+	additiveResult := schema.PGResult{}
+	if phase != PhaseContract {
+		var additiveErr error
+		if phase == PhaseExpand && opts.Online {
+			additiveResult, additiveErr = schema.EnsurePostgresFilteredOnline(ctx, db, schema.EnsureAdditive)
+		} else {
+			additiveResult, additiveErr = schema.EnsurePostgresFiltered(ctx, db, schema.EnsureAdditive)
+		}
+		if additiveErr != nil {
+			return fail(ResultFailed, ExitRuntimeFailure, "ensure-schema 加法相失败: "+additiveErr.Error(), true)
+		}
 	}
 
-	// 11. seed（幂等补种内置行；secret 已在第 8 步校验存在）。
-	if _, err := schema.SeedPostgresDefaults(ctx, db, schema.SeedOptions{Secret: opts.Secret}); err != nil {
-		return fail(ResultFailed, ExitRuntimeFailure, "seed 失败: "+err.Error(), true)
+	// 11. seed（幂等补种内置行；secret 已在第 8 步校验存在）。contract 不补种。
+	if phase != PhaseContract {
+		if _, err := schema.SeedPostgresDefaults(ctx, db, schema.SeedOptions{Secret: opts.Secret}); err != nil {
+			return fail(ResultFailed, ExitRuntimeFailure, "seed 失败: "+err.Error(), true)
+		}
 	}
 
 	// 12. 逐步骤（revision 升序）：Satisfied→adopt；否则 running→Apply→Verify→applied。
@@ -398,7 +482,7 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 				fmt.Sprintf("步骤 %s Satisfied 求值失败: %v", step.ID, err), true)
 		}
 		if satisfied {
-			if err := MarkAdopted(ctx, db, step, opts.AppVersion, now()); err != nil {
+			if err := MarkAdopted(ctx, db, step, phase, onlineSafe, opts.AppVersion, now()); err != nil {
 				return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
 			}
 			report.Executed = append(report.Executed, executedStep{Revision: step.Revision, Status: "adopted"})
@@ -411,7 +495,7 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 			report.Rollback = RollbackBackupRequired
 		}
 		started := now()
-		if err := MarkRunning(ctx, db, step, opts.AppVersion, started); err != nil {
+		if err := MarkRunning(ctx, db, step, phase, onlineSafe, opts.AppVersion, started); err != nil {
 			return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
 		}
 		stepErr := executeStep(ctx, db, step, env, opts, report, started, now)
@@ -420,31 +504,57 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		}
 	}
 
-	// 13. 结构收敛·破坏相（删列/删表）：进入本相即 backup-required
-	//（语句级口径：部分执行亦然，§14）。
-	report.Rollback = RollbackBackupRequired
-	destructiveResult, err := schema.EnsurePostgresFiltered(ctx, db, schema.EnsureDestructive)
-	if err != nil {
-		return fail(ResultFailed, ExitRuntimeFailure, "ensure-schema 破坏相失败: "+err.Error(), true)
+	// 13. 结构收敛·破坏相（删列/删表）：contract/all 执行；expand 不执行。
+	// 进入本相即 backup-required（语句级口径：部分执行亦然，§14）。
+	destructiveResult := schema.PGResult{}
+	if phase != PhaseExpand {
+		report.Rollback = RollbackBackupRequired
+		var destructiveErr error
+		destructiveResult, destructiveErr = schema.EnsurePostgresFiltered(ctx, db, schema.EnsureDestructive)
+		if destructiveErr != nil {
+			return fail(ResultFailed, ExitRuntimeFailure, "ensure-schema 破坏相失败: "+destructiveErr.Error(), true)
+		}
+		// 本相步骤已全部 applied、破坏相 DDL 已收敛：清除账本残留的破坏性/
+		// contract 中断标记（含历史中断库重跑时 pending 为空、未经 MarkApplied
+		// 的残留行），否则 schemagate 会在 contract 完成后继续拦截所有二进制。
+		if _, clearErr := ClearCompletedDestructiveMarkers(ctx, db); clearErr != nil {
+			return fail(ResultFailed, ExitRuntimeFailure, clearErr.Error(), true)
+		}
 	}
-	// 14. postflight：全步骤 Check + 语句计数 + 账本一致性。
-	post := verifyAllSteps(ctx, env, steps, opts.StepTimeout)
+	// 14. postflight：本 phase 步骤 Check + 语句计数 + 账本一致性。
+	verifySteps := steps
+	if phase == PhaseExpand {
+		verifySteps = phaseSteps
+	}
+	post := verifyAllSteps(ctx, env, verifySteps, opts.StepTimeout)
 	totalStatements, destructiveStatements := schema.PostgresStatementCounts()
 	if destructiveStatements != report.Plan.DestructiveDDLStatements || totalStatements <= 0 {
 		post.OK = false
 		post.Checks = append(post.Checks, postflightCheck{Name: "statement-counts", OK: false})
 	}
-	// 执行侧完整性：两相实际执行条数之和必须等于静态清单总数（防相间过滤
-	// 漏语句的 623/624 形态；设计 §9.4-14）。
-	if additiveResult.StatementCount+destructiveResult.StatementCount != totalStatements {
-		post.OK = false
-		post.Checks = append(post.Checks, postflightCheck{Name: "executed-statement-counts", OK: false})
+	// 执行侧完整性：按 phase 校验实际执行条数，防相间过滤漏语句（§9.4-14）。
+	switch phase {
+	case PhaseExpand:
+		if additiveResult.StatementCount != totalStatements-destructiveStatements {
+			post.OK = false
+			post.Checks = append(post.Checks, postflightCheck{Name: "executed-statement-counts", OK: false})
+		}
+	case PhaseContract:
+		if destructiveResult.StatementCount != destructiveStatements {
+			post.OK = false
+			post.Checks = append(post.Checks, postflightCheck{Name: "executed-statement-counts", OK: false})
+		}
+	default:
+		if additiveResult.StatementCount+destructiveResult.StatementCount != totalStatements {
+			post.OK = false
+			post.Checks = append(post.Checks, postflightCheck{Name: "executed-statement-counts", OK: false})
+		}
 	}
 	afterRows, err := ReadMigrations(ctx, db)
 	if err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
 	}
-	for _, step := range steps {
+	for _, step := range verifySteps {
 		if row, exists := afterRows[step.Revision]; !exists || row.Status != "applied" {
 			post.OK = false
 			post.Checks = append(post.Checks, postflightCheck{Name: "ledger-" + step.ID, OK: false})
@@ -455,13 +565,36 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		return fail(ResultFailed, ExitNeedsHuman, "postflight 未就绪（见报告 postflight）", true)
 	}
 
-	// 15. 写 schema_state，输出报告。
-	if err := WriteSchemaState(ctx, db, int64(contracts.SchemaRevision), schema.PostgresSchemaDigest(), opts.AppVersion, now()); err != nil {
+	// 15. 写 schema_state，输出报告。expand 保持旧二进制可读；contract/all 推进。
+	minReadable := int64(contracts.SchemaRevision)
+	if phase == PhaseExpand {
+		minReadable = state.MinReadableBinaryRevision
+		if minReadable == 0 {
+			minReadable = dbRevision
+		}
+	}
+	if err := WriteSchemaState(ctx, db, int64(contracts.SchemaRevision), minReadable, true, schema.PostgresSchemaDigest(), opts.AppVersion, now()); err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
 	}
+	report.CompatibleBinaryRange = fmt.Sprintf("%d..%d", minReadable, contracts.SchemaRevision)
 	report.Database.SchemaRevision = int64(contracts.SchemaRevision)
 	report.Result = ResultUpgraded
 	return outcome{ExitCode: ExitOK, Report: report}
+}
+
+// filterStepsForPhase 按迁移相过滤步骤：expand 只含非破坏步骤，contract 只含
+// 破坏步骤，all 返回全量。
+func filterStepsForPhase(steps []Step, phase UpgradePhase) []Step {
+	if phase == PhaseAll {
+		return steps
+	}
+	filtered := make([]Step, 0, len(steps))
+	for _, step := range steps {
+		if (phase == PhaseContract) == step.Destructive {
+			filtered = append(filtered, step)
+		}
+	}
+	return filtered
 }
 
 // stepWithRow 是计划求值的待执行步骤载体（行信息在 P1 仅供 pending 呈现）。

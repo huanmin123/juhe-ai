@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
 // account-balance-auto-detect-recovery 组合根适配器，逐语义对齐 Node
@@ -178,6 +180,14 @@ type balanceDetectRuntime struct {
 	client     *http.Client
 	nowFunc    func() time.Time
 	leasestore *taskruns.Store
+	// logger 由装配注入（wired assembly 的 a.logger）；nil 时池不可用原因
+	// 仅进入候选失败链路，不额外打日志。
+	logger *slog.Logger
+
+	// proxyResolver 是池绑定候选的只读解析器（代理池设计 §5.2/§5.3/
+	// §10.3）：Writer=nil 不补租约，Health=nil（PG pool_health_status 为事实
+	// 源）。惰性构造，见 proxyResolveTargets。
+	proxyResolver *proxyresolve.Resolver
 
 	mu sync.Mutex
 	// cursor 对齐 Node postgresBalanceDetectionDueCursor 模块级游标
@@ -187,6 +197,29 @@ type balanceDetectRuntime struct {
 	// （remainingUsd 等丰富字段），快照写入优先使用它持久化 Node 等价
 	// JSON。键为 "credentials:{id}" / "snapshot:{id}"。
 	detected sync.Map
+}
+
+// balanceProxyPasswordDecrypter 用同一 v1 AES-GCM 封套解开
+// proxy_profiles.password_encrypted（明文 {"password": "..."}）。
+type balanceProxyPasswordDecrypter struct {
+	secret string
+}
+
+func (d balanceProxyPasswordDecrypter) DecryptProxyPassword(_ context.Context, encrypted string) (string, error) {
+	plain, err := accountbalance.DecryptV1Envelope(d.secret, encrypted)
+	if err != nil {
+		return "", err
+	}
+	var envelope struct {
+		Password *string `json:"password"`
+	}
+	if err := json.Unmarshal(plain, &envelope); err != nil {
+		return "", err
+	}
+	if envelope.Password == nil {
+		return "", errors.New("代理密码缺失")
+	}
+	return *envelope.Password, nil
 }
 
 type balanceDueCursor struct {
@@ -219,6 +252,59 @@ type balanceDetectionRow struct {
 	credentials     string
 	nextRefreshAt   *time.Time
 	proxyProfileID  sql.NullString
+	proxyPoolID     sql.NullString
+	// proxyMemberProfileID 是候选的有效池成员（只读解析结果；空 = 池不可用
+	// 或非池绑定，见 resolveBalancePoolTargets）。
+	proxyMemberProfileID string
+}
+
+// proxyResolveTargets 惰性构造只读解析器并批量解析池绑定候选（Writer=nil，
+// 不补租约；Health=nil，PG pool_health_status 为事实源）。business 句柄缺失
+// （未接 DB 的纯单测运行态）返回错误，不得静默回退直连。
+func (r *balanceDetectRuntime) proxyResolveTargets(ctx context.Context, accountIDs []string) (map[string]proxyresolve.Target, error) {
+	if r.proxyResolver == nil {
+		if r.business == nil || r.business.db == nil {
+			return nil, errors.New("余额探测代理解析器未初始化（缺业务库句柄）")
+		}
+		store, err := proxyresolve.NewPostgresStore(r.business.db)
+		if err != nil {
+			return nil, err
+		}
+		resolver, err := proxyresolve.New(proxyresolve.Options{
+			Store:     store,
+			Decrypter: balanceProxyPasswordDecrypter{secret: r.secret},
+		})
+		if err != nil {
+			return nil, err
+		}
+		r.proxyResolver = resolver
+	}
+	return r.proxyResolver.ResolveBatch(ctx, accountIDs)
+}
+
+// resolveBalancePoolTargets 解析本页池绑定候选的有效目标（只读）。非池行不进
+// 解析；池行目标不可用时保留占位（ProxyMemberProfileID 空），由
+// buildQueryInput 明确失败走既有重试机制。
+func (r *balanceDetectRuntime) resolveBalancePoolTargets(ctx context.Context, pageRows []balanceDetectionRow) (map[string]proxyresolve.Target, error) {
+	poolAccountIDs := make([]string, 0, len(pageRows))
+	for _, row := range pageRows {
+		if strings.TrimSpace(row.proxyPoolID.String) == "" {
+			continue
+		}
+		poolAccountIDs = append(poolAccountIDs, row.id)
+	}
+	targets := map[string]proxyresolve.Target{}
+	if len(poolAccountIDs) == 0 {
+		return targets, nil
+	}
+	resolved, err := r.proxyResolveTargets(ctx, poolAccountIDs)
+	if err != nil {
+		return nil, fmt.Errorf("解析余额探测候选代理池目标失败: %w", err)
+	}
+	for _, accountID := range poolAccountIDs {
+		targets[accountID] = resolved[accountID]
+	}
+	return targets, nil
 }
 
 func (r *balanceDetectRuntime) decryptCredentials(envelope string) (map[string]any, bool) {
@@ -277,7 +363,7 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 		dueGTSQL, dueGTArg := balanceDueCompare(">", cursorText)
 		dueEQSQL, dueEQArg := balanceDueCompare("=", cursorText)
 		query := fmt.Sprintf(`
-      SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
+      SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id, COALESCE(proxy_pool_id, '')
       FROM %s
       WHERE balance_query_next_refresh_at IS NOT NULL
         AND %s <= ?
@@ -300,7 +386,7 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 				credentials        sql.NullString
 				dueRaw             any
 			)
-			if err := rows.Scan(&id, &systemID, &dispatch, &revision, &credentials, &dueRaw, &row.proxyProfileID); err != nil {
+			if err := rows.Scan(&id, &systemID, &dispatch, &revision, &credentials, &dueRaw, &row.proxyProfileID, &row.proxyPoolID); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -336,6 +422,13 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 		}
 		var lastExamined *balanceDetectionRow
 		consumedAll := true
+		// 池绑定候选的有效目标只读解析（代理池设计 §5.2/§10.3）：逐页批量
+		// 解析当前租约成员；不可用目标保留候选（ProxyMemberProfileID 置空），
+		// 由 buildQueryInput 明确失败走既有 retry 机制，并在此记录原因。
+		proxyTargets, resolveErr := r.resolveBalancePoolTargets(ctx, pageRows)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
 		for index := range pageRows {
 			row := pageRows[index]
 			lastExamined = &pageRows[index]
@@ -351,14 +444,27 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 			if row.nextRefreshAt != nil {
 				next = row.nextRefreshAt.UTC().Format(time.RFC3339Nano)
 			}
-			selected = append(selected, opsjobs.BalanceDetectionCandidate{
+			candidate := opsjobs.BalanceDetectionCandidate{
 				ID:              row.id,
 				SystemAccountID: row.systemAccountID,
 				InputVersion:    row.dispatchVersion,
 				ConfigRevision:  row.configRevision,
 				NextRefreshAt:   ptrString(next),
 				ProxyProfileID:  row.proxyProfileID.String,
-			})
+				ProxyPoolID:     row.proxyPoolID.String,
+			}
+			if target, hasTarget := proxyTargets[row.id]; hasTarget {
+				if target.Available() {
+					candidate.ProxyMemberProfileID = target.ProfileID
+				} else if r.logger != nil {
+					r.logger.Warn("余额自动探测候选的代理池租约不可用，本轮按重试处理",
+						"event", "account_balance_detect_proxy_pool_unavailable",
+						"accountId", row.id,
+						"poolId", row.proxyPoolID.String,
+						"reason", target.UnavailableCode+": "+target.UnavailableMessage)
+				}
+			}
+			selected = append(selected, candidate)
 			r.detected.Store("credentials:"+row.id, parsedCredentials)
 			r.detected.Store("envelope:"+row.id, row.credentials)
 			if len(selected) >= limit {
@@ -484,7 +590,7 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 // 前端「刷新暂时失败（N/3）」提示的数据源；成功快照零值省略（JSON 形状零
 // 变化）。
 type balanceSnapshotPersist struct {
-	Status         string  `json:"status"`
+	Status string `json:"status"`
 	// InputDigest 是余额输入身份摘要（BUG-0286）：gateway 读端以账户当前
 	// 列值现算同一摘要做显示匹配；投影与探测两个写入方都
 	// 从 shared J2 快照透传。
@@ -813,6 +919,28 @@ func (r *balanceDetectRuntime) buildQueryInput(ctx context.Context, candidate op
 		}
 		input.NextRefreshAt = &parsed
 	}
+	// 池绑定候选的有效目标出站（代理池设计 §5.2/§10.3）：出站走当前租约
+	// 成员档案，身份摘要槽含 proxy_pool_id + 有效成员档案 ID（租约迁移视为
+	// 不同输入）。列表阶段解析确认无有效租约/池不可用时明确失败走既有
+	// retry 机制，不直连、不直连旧成员。
+	if poolID := strings.TrimSpace(candidate.ProxyPoolID); poolID != "" {
+		memberID := strings.TrimSpace(candidate.ProxyMemberProfileID)
+		if memberID == "" {
+			return accountbalance.Input{}, fmt.Errorf("余额自动探测候选 %s 的代理池租约不可用（proxy_pool_unavailable），本轮按重试处理且不直连", candidate.ID)
+		}
+		member, err := r.loadBalanceProxyProfile(ctx, memberID)
+		if err != nil {
+			return accountbalance.Input{}, err
+		}
+		input.ProxyProfileID = balancePoolProxyIdentity(poolID, memberID)
+		proxy, err := r.proxyEnvelope(member.id, member.kind, member.host, member.port, member.user, member.password)
+		if err != nil {
+			return accountbalance.Input{}, err
+		}
+		input.Proxy = proxy
+		return input, nil
+	}
+	// 直接代理/未绑定保持既有语义：配置档案行原样构造出站信封。
 	if strings.TrimSpace(candidate.ProxyProfileID) != "" && proxyHost.Valid {
 		proxy, err := r.proxyEnvelope(proxyID.String, proxyKind.String, proxyHost.String, proxyPort.Int64, proxyUser.String, proxyPassword.String)
 		if err != nil {
@@ -821,6 +949,46 @@ func (r *balanceDetectRuntime) buildQueryInput(ctx context.Context, candidate op
 		input.Proxy = proxy
 	}
 	return input, nil
+}
+
+// balanceProxyProfileRow 是 loadBalanceProxyProfile 的行投影。
+type balanceProxyProfileRow struct {
+	id       string
+	kind     string
+	host     string
+	port     int64
+	user     string
+	password string
+}
+
+// loadBalanceProxyProfile 读取池成员代理档案行（必须启用）。缺失/停用即
+// 池成员不可分配，明确失败，不回退直连。
+func (r *balanceDetectRuntime) loadBalanceProxyProfile(ctx context.Context, profileID string) (balanceProxyProfileRow, error) {
+	var row balanceProxyProfileRow
+	query := fmt.Sprintf(`
+      SELECT id, type, host, port, COALESCE(username, ''), COALESCE(password_encrypted, '')
+      FROM %s
+      WHERE id = ? AND enabled
+      LIMIT 1
+    `, r.business.table("proxy_profiles"))
+	err := r.business.db.QueryRowContext(ctx, query, textParam(profileID)).
+		Scan(&row.id, &row.kind, &row.host, &row.port, &row.user, &row.password)
+	if errors.Is(err, sql.ErrNoRows) {
+		return balanceProxyProfileRow{}, fmt.Errorf("代理池成员代理档案不存在或已停用：%s", profileID)
+	}
+	if err != nil {
+		return balanceProxyProfileRow{}, fmt.Errorf("读取代理池成员代理档案失败: %w", err)
+	}
+	return row, nil
+}
+
+// balancePoolProxyIdentity 生成余额输入身份摘要的代理槽值（代理池设计
+// §10.3）：池绑定 = "pool:<poolID>:<有效成员档案 ID>"，租约迁移（成员变化）
+// 与换绑池都改变摘要；gateway 读端（LoadBalanceInputDigests /
+// balance_subdomain_bridge）必须产出同一槽值。直接代理保持配置档案 ID，
+// 未绑定保持空串。
+func balancePoolProxyIdentity(poolID, memberProfileID string) string {
+	return "pool:" + strings.TrimSpace(poolID) + ":" + strings.TrimSpace(memberProfileID)
 }
 
 func (r *balanceDetectRuntime) cachedCredentials(accountID, envelopeText string) map[string]any {
@@ -905,6 +1073,7 @@ func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 		secret:     a.config.Secret,
 		nowFunc:    func() time.Time { return time.Now().UTC() },
 		leasestore: a.taskRunsStore,
+		logger:     a.logger,
 	}
 	deps := opsjobs.BalanceAutoDetectDependencies{
 		Repo:     runtimeState,

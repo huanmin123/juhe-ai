@@ -1,6 +1,7 @@
 # Codex Responses 转 Chat 协议转换设计
 
-> 2026-06-27 路由分层更新：本文描述的是可复用协议转换能力和历史桥接测试背景，不表示 API Key 或策略路由可以保存显式跨协议规则。当前目标是 API Key 只绑定策略路由，策略路由只负责分组和模型调度；OpenAI v1 普通账号可通过 `modelMappings` 显式声明 `responses -> chat_completions`，其他跨协议承接落到混合供应商账户。
+> **已退役（2026-11-07）。** 跨协议模型映射随 2026-11-07 用户裁决整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）：映射协议强制同族，唯一例外 Gemini `stream_generate_content → generate_content` 归一；本文描述的 `responses -> chat_completions` bridge、`gatewaycodex` 桥接状态 / compact preflight、`openaicompatbridge` 桥接链与 gateway summary compact 已同批全链删除（schema revision 20 删除 `juhe_codex_context`）。Responses 客户端此后只能落到原生 Responses 账户（gpt、xai、deepseek）。本文全文保留为历史设计截面，不再描述现行行为；历史 bridge 会话（携带 `juhecmp.v1/v2` 或内部 bridge response id）不再恢复。
+> 2026-06-27 路由分层更新（历史截面）：本文描述的是可复用协议转换能力和历史桥接测试背景，不表示 API Key 或策略路由可以保存显式跨协议规则。当时目标是 API Key 只绑定策略路由，策略路由只负责分组和模型调度；OpenAI v1 普通账号可通过 `modelMappings` 显式声明 `responses -> chat_completions`，其他跨协议承接落到混合供应商账户。
 
 ## 范围
 

@@ -58,12 +58,15 @@
         <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'model'">
-        <span v-if="record.model || record.upstreamModelMismatch || usageRecordServiceTierText(record) || usageRecordReasoningEffortText(record)" class="model-cell">
+        <span v-if="record.model || record.upstreamModelMismatch || usageRecordServiceTierText(record) || usageRecordReasoningEffortText(record) || usageRecordPiiHitSummary(record)" class="model-cell">
           <a-tag v-if="record.model" color="blue"><ProviderIcon v-if="record.providerCode" :provider-code="record.providerCode" :name="providerDisplayName(record.providerCode)" :size="13" /> {{ record.model }}</a-tag>
           <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
           <a-tag v-if="record.upstreamModelMismatch && record.upstreamResponseModel" color="red">上游响应 {{ record.upstreamResponseModel }}</a-tag>
           <a-tag v-if="usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
           <a-tag v-if="usageRecordReasoningEffortText(record)" color="cyan">思考 {{ usageRecordReasoningEffortText(record) }}</a-tag>
+          <a-tooltip v-if="usageRecordPiiHitSummary(record)" :title="usageRecordPiiHitDetail(record)">
+            <a-tag color="volcano">{{ usageRecordPiiHitSummary(record) }}</a-tag>
+          </a-tooltip>
         </span>
         <span v-else class="muted-cell">-</span>
       </template>
@@ -160,6 +163,8 @@ import {
   usageRecordHasMediaMetering,
   usageRecordIsCompaction,
   usageRecordMediaParts,
+  usageRecordPiiHitDetail,
+  usageRecordPiiHitSummary,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
   usageRecordSystemAccountText

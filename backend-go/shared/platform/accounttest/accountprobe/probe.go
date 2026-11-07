@@ -465,20 +465,17 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	if isConnectivityProbeMode(endpointMode) {
 		return s.executeConnectivityAttempt(ctx, routedView, endpointMode, model, apiKey, timeout, limited)
 	}
-	httpReq, buildErr := buildTestRequest(ctx, routedView, endpointMode, model, challenge, apiKey)
+	// 请求内身份快照（2026-11-06）：Anthropic OAuth 探针一次请求构造消费
+	// body cc_version 与头 UA 两个身份值，构造入口取一次快照，两处同源。
+	identitySnapshot := upstreamidentity.NewSnapshot()
+	httpReq, buildErr := buildTestRequestWithIdentity(ctx, routedView, endpointMode, model, challenge, apiKey, identitySnapshot.ClaudeCodeVersion())
 	if buildErr != nil {
 		return nil, buildErr
 	}
 	// 系统客户端身份头保留调用方职责（§9.4：是否上收由 M2–M5 另行裁决）：
 	// 在 Build 之后应用；A/B 形态 Build 已写 Codex UA，本调用对已带 UA 的
 	// 请求保持沉默（upstreamidentity 契约），不会覆盖身份头。
-	upstreamidentity.ApplySystemClientHeaders(httpReq.Header, upstreamidentity.Input{
-		ProviderCode:              routedView.ProviderCode,
-		ProviderProtocolProfileID: routedView.ProviderProtocolProfileID,
-		CredentialType:            routedView.Type,
-		OAuthType:                 credentialText(routedView.Credentials, "oauth_type"),
-		UpstreamHostname:          httpReq.URL.Hostname(),
-	})
+	applyProbeIdentityHeaders(httpReq.Header, probeIdentityInput(routedView, httpReq), identitySnapshot)
 	// 发送前目标 URL 校验（SEC-03）：代理分支的 transport DialGuard 只校验
 	// 代理主机，目标由代理解析；strict 模式下目标域名指向内网必须在本地
 	// 发送前用同一部署级 URLSecurityConfig 拒绝。
@@ -1117,6 +1114,11 @@ func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
 		if mapping.UpstreamModel == sourceModel && mapping.UpstreamEndpointFamily == sourceFamily {
 			continue
 		}
+		if !isProtocolEquivalentProbeFamily(sourceFamily, mapping.UpstreamEndpointFamily) {
+			// 2026-11-07 跨协议模型映射退役：探针与网关使用同一口径，跳过
+			// 非协议等价的存量行，不能把它当作合法上游形态。
+			continue
+		}
 		routedModel = strings.TrimSpace(mapping.UpstreamModel)
 		if mapping.UpstreamEndpointFamily != sourceFamily {
 			mappedMode, ok := endpointModeForUpstreamFamily(mapping.UpstreamEndpointFamily, sourceMode.streaming())
@@ -1131,6 +1133,13 @@ func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
 	routed.HealthCheckEndpointMode = string(routedMode)
 	routed.HealthCheckModel = routedModel
 	return &routed, routedMode, routedModel, nil
+}
+
+// isProtocolEquivalentProbeFamily 与网关运行时同口径：同族，或 Gemini
+// stream_generate_content → generate_content 归一。跨协议映射返回 false。
+func isProtocolEquivalentProbeFamily(source, upstream string) bool {
+	return source == upstream ||
+		(source == "stream_generate_content" && upstream == "generate_content")
 }
 
 func endpointFamilyForProbeMode(mode EndpointMode) string {
@@ -1247,16 +1256,57 @@ func isCodexCompatibilityForm(view *View, mode EndpointMode) bool {
 // 传入 Spec，不再屏蔽——GLM 档案寻址与共享规则同规（官方版本根剥请求 /v1、
 // 代理 /v1 根与空根保留），原"多拼 /v1"差异是 §9.2-5 裁决的寻址修正。
 func buildTestRequest(ctx context.Context, view *View, mode EndpointMode, model string, challenge OutputChallenge, apiKey string) (*http.Request, error) {
-	spec, err := buildProbeSpec(view, mode, model, challenge, apiKey)
+	// body 侧 claudeCode 版本是单值消费点（探针默认入口与既有测试调用面），
+	// 继续走 Effective*（请求内身份快照契约：单值点不强制迁移）；
+	// executeAttempt 的 Anthropic OAuth 请求经 buildTestRequestWithIdentity
+	// 携带请求内快照版本，与同请求 UA 头同源。
+	return buildTestRequestWithIdentity(ctx, view, mode, model, challenge, apiKey, upstreamidentity.EffectiveClaudeCodeVersion())
+}
+
+// buildTestRequestWithIdentity 是 buildTestRequest 的请求内快照变体：
+// claudeCodeVersion 由调用方从同一份 upstreamidentity.Snapshot 派生传入
+// （Anthropic messages 形态 body 的 cc_version 消费它），使 body 版本字段
+// 与头 UA 消费同一对覆盖层 map 实例。
+func buildTestRequestWithIdentity(ctx context.Context, view *View, mode EndpointMode, model string, challenge OutputChallenge, apiKey string, claudeCodeVersion string) (*http.Request, error) {
+	spec, err := buildProbeSpec(view, mode, model, challenge, apiKey, claudeCodeVersion)
 	if err != nil {
 		return nil, err
 	}
 	return upstreamenvelope.Build(ctx, spec)
 }
 
+// probeIdentityInput 汇集探针系统身份头判定输入（executeAttempt 与测试共用
+// 同一字段口径）。
+func probeIdentityInput(view *View, request *http.Request) upstreamidentity.Input {
+	return upstreamidentity.Input{
+		ProviderCode:              view.ProviderCode,
+		ProviderProtocolProfileID: view.ProviderProtocolProfileID,
+		CredentialType:            view.Type,
+		OAuthType:                 credentialText(view.Credentials, "oauth_type"),
+		UpstreamHostname:          request.URL.Hostname(),
+	}
+}
+
+// applyProbeIdentityHeaders 应用系统客户端身份头（请求内身份快照，2026-11-06）：
+// Anthropic 家族 OAuth 探针一次请求构造消费两个身份值——头 UA 与 body
+// cc_version。ApplySystemClientHeaders 先按既有语义落齐完整 Claude Code 头
+// 集合（UA 取 Effective*），随后用同一份请求内快照派生的 UA 原位覆盖，两处
+// 身份值不再被热刷新拆散；其余家族分支单值取值，继续走 Effective*，不在
+// 迁移范围。调用方已设置显式 User-Agent 时沉默语义保持不变（不覆盖，A/B
+// 形态 Build 已写 Codex UA 的请求不受影响）。
+func applyProbeIdentityHeaders(headers http.Header, input upstreamidentity.Input, identitySnapshot upstreamidentity.Snapshot) {
+	callerSetUserAgent := strings.TrimSpace(headers.Get("User-Agent")) != ""
+	upstreamidentity.ApplySystemClientHeaders(headers, input)
+	if !callerSetUserAgent {
+		identitySnapshot.OverwriteAnthropicOAuthUserAgent(headers, input)
+	}
+}
+
 // buildProbeSpec 把账户视图与 endpoint 形态映射为信封 Spec 输入（§9.1 三形态
-// 矩阵按账户形态分列，不按调用面分列）。
-func buildProbeSpec(view *View, mode EndpointMode, model string, challenge OutputChallenge, apiKey string) (upstreamenvelope.Spec, error) {
+// 矩阵按账户形态分列，不按调用面分列）。claudeCodeVersion 供 Anthropic
+// messages 形态 body 的 cc_version 消费（请求内身份快照：由调用方从同一份
+// Snapshot 派生传入）。
+func buildProbeSpec(view *View, mode EndpointMode, model string, challenge OutputChallenge, apiKey string, claudeCodeVersion string) (upstreamenvelope.Spec, error) {
 	oauthCodex := isOAuthCodexForm(view, mode)
 	codeAssist := isCodeAssistForm(view, mode)
 	codexCompatibility := isCodexCompatibilityForm(view, mode)
@@ -1326,7 +1376,7 @@ func buildProbeSpec(view *View, mode EndpointMode, model string, challenge Outpu
 		}
 	case mode.anthropic():
 		sessionID := newUUID()
-		fields, err := anthropicMessagesBodyFields(model, challenge.Prompt, mode.streaming(), sessionID)
+		fields, err := anthropicMessagesBodyFields(model, challenge.Prompt, mode.streaming(), sessionID, claudeCodeVersion)
 		if err != nil {
 			return upstreamenvelope.Spec{}, err
 		}

@@ -102,10 +102,10 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	}
 	w11eExec(t, db, w11eSeedModelDDL("model-terra", "gpt-5.6-terra"))
 	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','model-terra')`)
-	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','chat_completions', 1)`)
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','responses', 1)`)
 	mappedOwner, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
-	if err != nil || mappedOwner.UpstreamModel != "gpt-5.6-terra" || mappedOwner.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedOwner.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions || mappedOwner.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIChat || mappedOwner.UpstreamEndpointMode != modelcheckprofile.EndpointModeChatSSE {
-		t.Fatalf("owner Responses to Chat mapping must freeze family and request shape: target=%+v err=%v", mappedOwner, err)
+	if err != nil || mappedOwner.UpstreamModel != "gpt-5.6-terra" || mappedOwner.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedOwner.UpstreamEndpointFamily != modelcheckprofile.EndpointResponses || mappedOwner.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIResponses || mappedOwner.UpstreamEndpointMode != modelcheckprofile.EndpointModeResponsesSSE {
+		t.Fatalf("owner Responses same-family mapping must freeze family and request shape: target=%+v err=%v", mappedOwner, err)
 	}
 	w11eExec(t, db, `DELETE FROM account_entry_mappings WHERE account_id='acct-1'`)
 	w11eExec(t, db, `DELETE FROM account_supported_models WHERE account_id='acct-1'`)
@@ -182,9 +182,9 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 		t.Fatalf("authorized target must use source credentials: target=%+v err=%v", authorizedTarget, err)
 	}
 	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('source-account-1','model-terra')`)
-	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-source-1','source-account-1','gpt-5.6-sol','responses','conn-source-1','model-terra','chat_completions', 1)`)
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-source-1','source-account-1','gpt-5.6-sol','responses','conn-source-1','model-terra','responses', 1)`)
 	mappedAuthorized, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
-	if err != nil || mappedAuthorized.UpstreamModel != "gpt-5.6-terra" || mappedAuthorized.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedAuthorized.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions || mappedAuthorized.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIChat || mappedAuthorized.UpstreamEndpointMode != modelcheckprofile.EndpointModeChatSSE || mappedAuthorized.CredentialSourceAccountID != "source-account-1" {
+	if err != nil || mappedAuthorized.UpstreamModel != "gpt-5.6-terra" || mappedAuthorized.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedAuthorized.UpstreamEndpointFamily != modelcheckprofile.EndpointResponses || mappedAuthorized.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIResponses || mappedAuthorized.UpstreamEndpointMode != modelcheckprofile.EndpointModeResponsesSSE || mappedAuthorized.CredentialSourceAccountID != "source-account-1" {
 		t.Fatalf("authorized source mapping must freeze source identity and upstream family: target=%+v err=%v", mappedAuthorized, err)
 	}
 	w11eExec(t, db, `DELETE FROM account_entry_mappings WHERE account_id='source-account-1'`)
@@ -287,7 +287,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil || !strings.Contains(err.Error(), "proxy profile") {
 		t.Fatalf("proxy-configured account with missing profile must fail closed, err=%v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO proxy_profiles(id,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-1', TRUE,'http','127.0.0.1',8080,'',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO proxy_profiles(id,system_account_id,name,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-1','sys-1','proxy-1', TRUE,'http','127.0.0.1',8080,'',NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	proxied, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})

@@ -110,20 +110,8 @@ func TestNormalizeEndpointFamily(t *testing.T) {
 	}
 }
 
-func TestIsCrossProtocolBridgeRequired(t *testing.T) {
-	if !IsCrossProtocolBridgeRequired(FamilyResponses, FamilyChatCompletions) {
-		t.Errorf("Responses -> Chat Completions 是保留的跨协议桥")
-	}
-	if IsCrossProtocolBridgeRequired("messages", FamilyChatCompletions) {
-		t.Errorf("messages -> chat 已随供应商协议面收窄退役")
-	}
-	if IsCrossProtocolBridgeRequired(FamilyChatCompletions, FamilyChatCompletions) {
-		t.Errorf("同协议不应桥接")
-	}
-	if IsCrossProtocolBridgeRequired(FamilyResponses, "unknown") {
-		t.Errorf("未知上游不应桥接")
-	}
-}
+// 2026-11-07 批次 D：IsCrossProtocolBridgeRequired 判定与其测试随桥删除
+// （桥接线已不存在，7 pair 协议等价矩阵在写侧/运行时收口）。
 
 func TestQueryPrimitives(t *testing.T) {
 	query := url.Values{"n": []string{"42"}}

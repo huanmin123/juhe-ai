@@ -178,10 +178,7 @@ func TestWhPreflightCompactionTimeoutsDisabled(t *testing.T) {
 				s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 				s.Candidates = whSuccessfulCandidates(account)
 				s.ClientStrategy = &fakeClientStrategy{strategy: tt.strategy}
-				s.Codex = &fakeCodex{
-					compactionExpected: tt.compactionExpected,
-					compactResult:      CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
-				}
+				s.Codex = &fakeCodex{compactionExpected: tt.compactionExpected}
 			})
 			audit := &fakeAuditCapture{}
 			req, _, writer := whAuthorizedChatRequest()
@@ -212,23 +209,6 @@ func TestWhPreflightCompactionTimeoutsDisabled(t *testing.T) {
 	}
 }
 
-// codex 上下文状态预检就地完成请求。
-func TestWhPreflightCodexStateCompleted(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
-	service, _, _ := newTestService(t, func(s *Service) {
-		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
-		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{stateCompleted: true}
-	})
-	req, _, writer := whAuthorizedChatRequest()
-	result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Req: req, Res: writer, AuditCapture: &fakeAuditCapture{}, Options: &PreflightOptions{},
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	})
-	if err != nil || result.DispatchContext != nil {
-		t.Fatalf("codex 完成后必须就地返回: %+v err=%v", result, err)
-	}
-}
 
 // 已认证模型列表：identity 场景下按协议分支发送模型响应。
 func TestWhPreflightModelsProtocolBranches(t *testing.T) {
@@ -335,7 +315,7 @@ func TestWhPreflightSessionAffinity(t *testing.T) {
 		service, _, _ := newTestService(t, func(s *Service) {
 			s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 			s.Candidates = whSuccessfulCandidates(account)
-			s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+			s.Codex = &fakeCodex{}
 			s.SessionAffinity = affinity
 		})
 		return service, audit

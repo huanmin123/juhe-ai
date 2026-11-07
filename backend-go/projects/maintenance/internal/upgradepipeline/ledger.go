@@ -23,10 +23,12 @@ type MigrationRow struct {
 
 // SchemaState 是 schema_state 单行的读取投影。
 type SchemaState struct {
-	Revision int64
-	Digest   string
-	AppVersion string
-	ConvergedAt string
+	Revision                  int64
+	Digest                    string
+	AppVersion                string
+	ConvergedAt               string
+	MinReadableBinaryRevision int64
+	ExpandCompleted           bool
 }
 
 // EnsureLedger 幂等创建账本两表（幂等 DDL 见 schema 包；upgrade 每次运行先执行）。
@@ -37,11 +39,24 @@ func EnsureLedger(ctx context.Context, db *sql.DB) error {
 // ReadSchemaState 读取单行 state；表缺失/无行返回 Revision=0（零值语义，
 // §9.4-4）。
 func ReadSchemaState(ctx context.Context, db *sql.DB) (SchemaState, error) {
-	state := SchemaState{}
-	var id int
-	err := db.QueryRowContext(ctx,
-		`SELECT id, schema_revision, schema_digest, app_version, converged_at FROM juhe_business.schema_state WHERE id = 1`,
-	).Scan(&id, &state.Revision, &state.Digest, &state.AppVersion, &state.ConvergedAt)
+	state := SchemaState{ExpandCompleted: true}
+	var stateID int
+	hasNewColumns, err := ledgerColumnReady(ctx, db, "schema_state", "min_readable_binary_revision")
+	if err != nil {
+		return SchemaState{}, err
+	}
+	if hasNewColumns {
+		err = db.QueryRowContext(ctx,
+			`SELECT id, schema_revision, schema_digest, app_version, converged_at,
+			        min_readable_binary_revision, expand_completed
+			 FROM juhe_business.schema_state WHERE id = 1`,
+		).Scan(&stateID, &state.Revision, &state.Digest, &state.AppVersion, &state.ConvergedAt,
+			&state.MinReadableBinaryRevision, &state.ExpandCompleted)
+	} else {
+		err = db.QueryRowContext(ctx,
+			`SELECT id, schema_revision, schema_digest, app_version, converged_at FROM juhe_business.schema_state WHERE id = 1`,
+		).Scan(&stateID, &state.Revision, &state.Digest, &state.AppVersion, &state.ConvergedAt)
+	}
 	if err == sql.ErrNoRows {
 		return SchemaState{}, nil
 	}
@@ -83,27 +98,31 @@ func ReadMigrations(ctx context.Context, db *sql.DB) (map[int64]MigrationRow, er
 }
 
 // MarkRunning 写入/改写 running 行（幂等重跑直接覆盖 started_at 与 checksum）。
-func MarkRunning(ctx context.Context, db *sql.DB, step Step, appVersion string, started time.Time) error {
+func MarkRunning(ctx context.Context, db *sql.DB, step Step, phase UpgradePhase, onlineSafe bool, appVersion string, started time.Time) error {
 	_, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.schema_migrations
-  (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, app_version)
-VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, false, $8, $9)
+  (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, app_version, phase, online_safe)
+VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, false, $8, $9, $10, $11)
 ON CONFLICT (revision) DO UPDATE SET
   status = 'running', checksum = EXCLUDED.checksum, impl_version = EXCLUDED.impl_version,
-  started_at = EXCLUDED.started_at, app_version = EXCLUDED.app_version, detail_json = NULL`,
+  started_at = EXCLUDED.started_at, app_version = EXCLUDED.app_version,
+  phase = EXCLUDED.phase, online_safe = EXCLUDED.online_safe, detail_json = NULL`,
 		step.Revision, step.ID, step.Title, string(step.Target), step.Destructive,
-		step.Checksum(), step.ImplVersion, formatTime(started), appVersion)
+		step.Checksum(), step.ImplVersion, formatTime(started), appVersion, string(phase), onlineSafe)
 	if err != nil {
 		return fmt.Errorf("写步骤 running 行失败（%s）: %w", step.ID, err)
 	}
 	return nil
 }
 
-// MarkApplied 将 running 行推进为 applied（§7.2 状态机唯一终态）。
+// MarkApplied 将 running 行推进为 applied（§7.2 状态机唯一终态）。applied 即
+// 步骤成功完成：同语句清除 destructive/phase 中断标记——schemagate 以
+// max(revision) 行的这两个字段判定升级是否中断，applied 残留标记会让 contract
+// 完成后的所有二进制 fail-fast。
 func MarkApplied(ctx context.Context, db *sql.DB, step Step, durationMs int64, appVersion string, applied time.Time) error {
 	result, err := db.ExecContext(ctx, `
 UPDATE juhe_business.schema_migrations
-SET status = 'applied', applied_at = $1, duration_ms = $2, app_version = $3, detail_json = NULL
+SET status = 'applied', destructive = false, phase = '', applied_at = $1, duration_ms = $2, app_version = $3, detail_json = NULL
 WHERE revision = $4::bigint AND status = 'running'`,
 		formatTime(applied), durationMs, appVersion, step.Revision)
 	if err != nil {
@@ -115,18 +134,34 @@ WHERE revision = $4::bigint AND status = 'running'`,
 	return nil
 }
 
+// ClearCompletedDestructiveMarkers 清除已完成（applied）破坏性步骤行上残留的
+// 中断标记（destructive=true / phase='contract'）。历史中断库重跑 contract 时
+// pending 为空、不会经过 MarkApplied，残留标记会让 schemagate 永久拦截所有
+// 二进制——contract/all 收尾统一调用兜底。
+func ClearCompletedDestructiveMarkers(ctx context.Context, db *sql.DB) (int64, error) {
+	result, err := db.ExecContext(ctx, `
+UPDATE juhe_business.schema_migrations
+SET destructive = false, phase = ''
+WHERE status = 'applied' AND (destructive = true OR phase = 'contract')`)
+	if err != nil {
+		return 0, fmt.Errorf("清理已完成破坏性步骤中断标记失败: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // MarkAdopted 记账 adopt（Satisfied 为真，未执行 Apply；impl_version 漂移时
 // 重求值后同步更新 impl_version，§7.4）。已存在行走 UPDATE（不翻转历史证据，
 // I8 裁决口径），无行则插入。
-func MarkAdopted(ctx context.Context, db *sql.DB, step Step, appVersion string, adopted time.Time) error {
+func MarkAdopted(ctx context.Context, db *sql.DB, step Step, phase UpgradePhase, onlineSafe bool, appVersion string, adopted time.Time) error {
 	_, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.schema_migrations
-  (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, applied_at, duration_ms, app_version)
-VALUES ($1, $2, $3, $4, $5, 'applied', $6, $7, true, $8, $8, 0, $9)
+  (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, applied_at, duration_ms, app_version, phase, online_safe)
+VALUES ($1, $2, $3, $4, $5, 'applied', $6, $7, true, $8, $8, 0, $9, $10, $11)
 ON CONFLICT (revision) DO UPDATE SET
-  status = 'applied', adopted = true, impl_version = EXCLUDED.impl_version`,
+  status = 'applied', adopted = true, impl_version = EXCLUDED.impl_version, phase = EXCLUDED.phase,
+  online_safe = EXCLUDED.online_safe`,
 		step.Revision, step.ID, step.Title, string(step.Target), step.Destructive,
-		step.Checksum(), step.ImplVersion, formatTime(adopted), appVersion)
+		step.Checksum(), step.ImplVersion, formatTime(adopted), appVersion, string(phase), onlineSafe)
 	if err != nil {
 		return fmt.Errorf("写步骤 adopted 行失败（%s）: %w", step.ID, err)
 	}
@@ -154,19 +189,35 @@ func RecordStepFailure(ctx context.Context, db *sql.DB, step Step, detail Detail
 }
 
 // WriteSchemaState 在 upgrade 完整跑完 postflight 后写入单行 state（§11.1：
-// 只有 upgrade 写；--ensure-schema 不写）。
-func WriteSchemaState(ctx context.Context, db *sql.DB, revision int64, digest, appVersion string, converged time.Time) error {
+// 只有 upgrade 写；--ensure-schema 不写）。minReadable 与 expandCompleted 由
+// phase 决定：expand 保持旧二进制可读，contract/all 推进到本 revision。
+func WriteSchemaState(ctx context.Context, db *sql.DB, revision, minReadable int64, expandCompleted bool, digest, appVersion string, converged time.Time) error {
 	_, err := db.ExecContext(ctx, `
-INSERT INTO juhe_business.schema_state (id, schema_revision, schema_digest, app_version, converged_at)
-VALUES (1, $1, $2, $3, $4)
+INSERT INTO juhe_business.schema_state
+  (id, schema_revision, schema_digest, app_version, converged_at, min_readable_binary_revision, expand_completed)
+VALUES (1, $1, $2, $3, $4, $5, $6)
 ON CONFLICT (id) DO UPDATE SET
   schema_revision = EXCLUDED.schema_revision, schema_digest = EXCLUDED.schema_digest,
-  app_version = EXCLUDED.app_version, converged_at = EXCLUDED.converged_at`,
-		revision, digest, appVersion, formatTime(converged))
+  app_version = EXCLUDED.app_version, converged_at = EXCLUDED.converged_at,
+  min_readable_binary_revision = EXCLUDED.min_readable_binary_revision,
+  expand_completed = EXCLUDED.expand_completed`,
+		revision, digest, appVersion, formatTime(converged), minReadable, expandCompleted)
 	if err != nil {
 		return fmt.Errorf("写 schema_state 失败: %w", err)
 	}
 	return nil
+}
+
+func ledgerColumnReady(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var count int
+	err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema = 'juhe_business' AND table_name = $1 AND column_name = $2`,
+		table, column).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func formatTime(value time.Time) string {

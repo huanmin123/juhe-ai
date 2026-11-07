@@ -35,18 +35,12 @@ type DataRetentionJob struct {
 	Stats         StatsWriter
 	DB            DbService
 	Enqueuer      RecordMaintenanceEnqueuer
-	CodexStorage  CodexContextStorageBatchProcessor
 	// AuditShells 可选：陈旧 in_progress 元数据空壳兜底清扫（W13）。未注入时
 	// 该阶段跳过（测试与降级装配保持零依赖）；生产组合根必须注入。
 	AuditShells AuditShellReaper
 
 	postgresRunning bool
 	runningMutex    sync.Mutex
-}
-
-// CodexContextStorageBatchProcessor mirrors processCodexContextStorageCleanupBatch.
-type CodexContextStorageBatchProcessor interface {
-	ProcessBatch(ctx context.Context, storageKeys []string) (int64, error)
 }
 
 // NewDataRetentionJob builds the job; now/sleep/logger fall back to real
@@ -202,13 +196,7 @@ func (missingDbService) CleanupExpiredSystemSessions(context.Context, string, in
 	return 0, errors.New("retention db service 未初始化")
 }
 
-func (missingDbService) CleanupExpiredCodexContextStates(context.Context, string, int) (*CodexContextExpiredCleanup, error) {
-	return nil, errors.New("retention db service 未初始化")
-}
 
-func (missingDbService) SettleCodexContextStorageCleanup(context.Context, CodexContextSettlement) (CodexContextSettlementResult, error) {
-	return CodexContextSettlementResult{}, errors.New("retention db service 未初始化")
-}
 
 func (missingDbService) CleanupExpiredDeletedAccounts(context.Context) (*ExpiredDeletedAccountSummary, error) {
 	return nil, errors.New("retention db service 未初始化")
@@ -274,19 +262,6 @@ func (j *DataRetentionJob) cleanupRetentionInBatches(ctx context.Context, result
 		}
 	}
 	return nil
-}
-
-type missingCodexStorage struct{}
-
-func (missingCodexStorage) ProcessBatch(context.Context, []string) (int64, error) {
-	return 0, errors.New("retention codex context storage processor 未初始化")
-}
-
-func (j *DataRetentionJob) codexStorage() CodexContextStorageBatchProcessor {
-	if j.CodexStorage != nil {
-		return j.CodexStorage
-	}
-	return missingCodexStorage{}
 }
 
 func (j *DataRetentionJob) EnqueuePostgresMaintenanceJobs(ctx context.Context) error {
@@ -395,29 +370,9 @@ func (j *DataRetentionJob) runPostgresStages(ctx context.Context) (CleanupResult
 	}, j.sleep); err != nil {
 		return result, err
 	}
-	if err := runRetentionBatches(ctx, maxBatches, batchSize, func(ctx context.Context) (int64, error) {
-		cleanup, err := j.db().CleanupExpiredCodexContextStates(ctx, nowAt, batchSize)
-		if err != nil {
-			return 0, err
-		}
-		if cleanup == nil {
-			return 0, nil
-		}
-		result.CodexContextSessions += cleanup.DeletedSessions
-		result.CodexContextResponses += cleanup.DeletedResponses
-		result.CodexContextCompacts += cleanup.DeletedCompacts
-		files, err := j.codexStorage().ProcessBatch(ctx, cleanup.StorageKeys)
-		result.CodexContextFiles += files
-		if err != nil {
-			return 0, err
-		}
-		if cleanup.HasMore {
-			return int64(batchSize), nil
-		}
-		return 0, nil
-	}, j.sleep); err != nil {
-		return result, err
-	}
+	// 2026-11-07 codex-context 退役：原 CodexContext 过期状态批量清理阶段
+	// （DB 行 + segments 文件）随桥删除；juhe_codex_context schema 由
+	// maintenance revision 20 DROP。
 
 	j.logger().Info("PostgreSQL 高性能使用记录、审计、日志与统计保留维护任务已投递",
 		"event", "postgres_data_retention_maintenance_jobs_enqueued",

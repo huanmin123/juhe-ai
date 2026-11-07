@@ -120,12 +120,26 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 	})
 }
 
-// TestEndpointModeCodexResponsesMappingBranchPriority 锁 BUG-0179 修复语义：
-// 跨族映射分支先于 codex_responses 首分支（Node 各 driver 映射分支先行），
+// TestEndpointModeGeminiStreamMappingBranch 锁 2026-11-07 桥退役后的映射分支
+// 契约：唯一保留的跨族形态是 Gemini 同族归一 pair 5（source=stream_generate_
+// content → upstream=generate_content），账户按目标族要求 generate_content
+// 模式；原 BUG-0179 的 responses→chat 桥分流随桥退役——跨协议映射在运行时
+// 解析即被拒绝，codex_responses 客户端请求不再被映射分支改闸 chat_sse。
 // OAuth 账户经 account.type !== 'oauth' 守卫仍走 codex_responses 强制分支。
-func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
+func TestEndpointModeGeminiStreamMappingBranch(t *testing.T) {
 	driver := newChainProviderDriver()
-	responsesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"glm-4.6","input":"hi"}`)
+	geminiStreamReq := newEndpointGateRequest(t, http.MethodPost, "/v1beta/models/gm-2.5:streamGenerateContent?alt=sse", `{"contents":[{"parts":[{"text":"hi"}]}]}`)
+	geminiStreamReq.Body = &gatewaybody.Request{
+		RawBody: []byte(`{"contents":[{"parts":[{"text":"hi"}]}]}`),
+		State:   &gatewaybody.BodyState{Stream: boolPtr(true)},
+	}
+	pair5Mapping := []gatewayruntimecache.AccountModelMapping{{
+		SourceModel:            "gm-2.5",
+		SourceEndpointFamily:   "stream_generate_content",
+		UpstreamModel:          "gm-2.5-air",
+		UpstreamEndpointFamily: "generate_content",
+		Enabled:                true,
+	}}
 	responsesToChatMapping := []gatewayruntimecache.AccountModelMapping{{
 		SourceModel:            "glm-4.6",
 		SourceEndpointFamily:   "responses",
@@ -134,28 +148,48 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 		Enabled:                true,
 	}}
 
-	t.Run("codex_responses passes mapped chat-only account with chat_sse", func(t *testing.T) {
-		// 主回归：Codex CLI 请求 + chat-only 桥账户（显式 responses ->
-		// chat_completions 映射）不再被 responses_sse 强制淘汰，改闸 chat_sse。
+	t.Run("pair5_mapped_gemini_account_requires_generate_content_sse", func(t *testing.T) {
+		// 主回归：pair 5 映射账户按目标族要求 generate_content_sse，不被
+		// 既有 modes 淘汰（映射分支保留的唯一形态）。
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-1", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "glm", Type: "api_key",
+			ID: "pair5-1", ProtocolCode: "gemini", VendorCode: "gemini", Type: "api_key",
+			SupportedEndpointModes: []string{"generate_content_json", "generate_content_sse"},
+			ModelMappings:          pair5Mapping,
+		}
+		mode, required := driver.requiredSupportedEndpointMode(geminiStreamReq, account, "openai_standard")
+		if !required || mode != gatewaypreauth.EndpointModeGenerateContentSSE {
+			t.Fatalf("mode=%q required=%v, want generate_content_sse", mode, required)
+		}
+		if reason := driver.endpointModeMismatchReason(geminiStreamReq, account, "openai_standard"); reason != "" {
+			t.Fatalf("reason = %q, want empty (pair5 mapped account must serve stream request)", reason)
+		}
+	})
+
+	t.Run("retired_responses_to_chat_mapping_no_longer_diverts", func(t *testing.T) {
+		// 退役形态：responses→chat 映射在运行时解析即被拒绝，映射分支不再
+		// 命中；codex_responses 强制分支要求 responses_sse，chat-only 账户
+		// 被淘汰（不再有「改闸 chat_sse 放行」的桥语义）。
+		responsesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"glm-4.6","input":"hi"}`)
+		account := gatewaydispatch.AccountCandidate{
+			ID: "retired-1", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 			ModelMappings:          responsesToChatMapping,
 		}
 		mode, required := driver.requiredSupportedEndpointMode(responsesReq, account, "codex_responses")
-		if !required || mode != gatewaypreauth.EndpointModeChatSSE {
-			t.Fatalf("mode=%q required=%v, want chat_sse", mode, required)
+		if !required || mode != gatewaypreauth.EndpointModeResponsesSSE {
+			t.Fatalf("mode=%q required=%v, want responses_sse (bridge divert retired)", mode, required)
 		}
-		if reason := driver.endpointModeMismatchReason(responsesReq, account, "codex_responses"); reason != "" {
-			t.Fatalf("reason = %q, want empty (mapped chat account must serve codex_responses)", reason)
+		if reason := driver.endpointModeMismatchReason(responsesReq, account, "codex_responses"); reason != "endpoint_mode_unsupported" {
+			t.Fatalf("reason = %q, want endpoint_mode_unsupported", reason)
 		}
 	})
 
 	t.Run("codex_responses still eliminates unmapped chat-only account", func(t *testing.T) {
 		// 无映射 chat-only 账户仍被 codex_responses 强制分支淘汰（a3/a4 语义
-		// 保留，顺序调整未放松强制）。
+		// 保留）。
+		responsesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"glm-4.6","input":"hi"}`)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-2", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
+			ID: "retired-2", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 		}
 		mode, required := driver.requiredSupportedEndpointMode(responsesReq, account, "codex_responses")
@@ -169,9 +203,10 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 
 	t.Run("oauth account keeps codex_responses force despite mapping", func(t *testing.T) {
 		// Node gpt driver account.type !== 'oauth' 守卫：OAuth + 映射不走映射
-		// 分支，裁决来自 codex_responses 强制分支（responses_sse 而非 chat_sse）。
+		// 分支，裁决来自 codex_responses 强制分支。
+		responsesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"glm-4.6","input":"hi"}`)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-3", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "gpt", Type: "oauth",
+			ID: "retired-3", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "gpt", Type: "oauth",
 			SupportedEndpointModes: []string{"responses_json", "responses_sse"},
 			ModelMappings:          responsesToChatMapping,
 		}
@@ -183,29 +218,12 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 			t.Fatalf("reason = %q, want empty for responses-mode oauth account", reason)
 		}
 		// 守卫判别：同账户若只持 chat 模式集，codex_responses 下必须被淘汰
-		// （证明要求的是 responses_sse 而非映射分支的 chat_sse）。
+		//（证明要求的是 responses_sse 而非映射分支的 chat_sse）。
 		chatOnlyOAuth := account
-		chatOnlyOAuth.ID = "bug0179-3b"
+		chatOnlyOAuth.ID = "retired-3b"
 		chatOnlyOAuth.SupportedEndpointModes = []string{"chat_json", "chat_sse"}
 		if reason := driver.endpointModeMismatchReason(responsesReq, chatOnlyOAuth, "codex_responses"); reason != "endpoint_mode_unsupported" {
 			t.Fatalf("chat-only oauth reason = %q, want endpoint_mode_unsupported", reason)
-		}
-	})
-
-	t.Run("openai_standard mapped account unchanged", func(t *testing.T) {
-		// 普通 Responses 客户端 + 映射账户：映射分支放行 chat_sse（确认顺序
-		// 调整不改变既有 openai_standard 语义）。
-		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-4", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "glm", Type: "api_key",
-			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
-			ModelMappings:          responsesToChatMapping,
-		}
-		mode, required := driver.requiredSupportedEndpointMode(responsesReq, account, "openai_standard")
-		if !required || mode != gatewaypreauth.EndpointModeChatSSE {
-			t.Fatalf("mode=%q required=%v, want chat_sse", mode, required)
-		}
-		if reason := driver.endpointModeMismatchReason(responsesReq, account, "openai_standard"); reason != "" {
-			t.Fatalf("reason = %q, want empty", reason)
 		}
 	})
 }

@@ -142,3 +142,75 @@ func TestModelIndexPrefersUpstreamThenPublic(t *testing.T) {
 		t.Fatal("跨 vendor 不得命中")
 	}
 }
+
+// TestLegacyEndpointFamilyAliasesPinsRetirementBatch 钉死 revision 20 退役批的
+// 反向别名表：三个历史 token 各归一到唯一现行 token（与 upgrade_steps.go 的
+// 归一 CASE 同源，两处必须一起改）。
+func TestLegacyEndpointFamilyAliasesPinsRetirementBatch(t *testing.T) {
+	want := map[string]string{
+		"anthropic_messages":      "messages",
+		"gemini_generate_content": "generate_content",
+		"gemini_stream_generate":  "stream_generate_content",
+	}
+	if len(legacyEndpointFamilyAliases) != len(want) {
+		t.Fatalf("反向别名表条目数 = %d, want %d（新增别名须同步 revision 20 升级步骤的归一 CASE）",
+			len(legacyEndpointFamilyAliases), len(want))
+	}
+	for legacy, canonical := range want {
+		got, ok := legacyEndpointFamilyAliases[legacy]
+		if !ok || got != canonical {
+			t.Fatalf("别名 %q = %q,%v, want %q", legacy, got, ok, canonical)
+		}
+	}
+}
+
+// TestNormalizeEntryMappingFamilies 锁定归一行为：两侧全量归一，未知 token
+// 原样返回（不静默改写）。
+func TestNormalizeEntryMappingFamilies(t *testing.T) {
+	cases := []struct{ source, target, wantSource, wantTarget string }{
+		{"anthropic_messages", "anthropic_messages", "messages", "messages"},
+		{"gemini_generate_content", "gemini_generate_content", "generate_content", "generate_content"},
+		{"gemini_stream_generate", "gemini_generate_content", "stream_generate_content", "generate_content"},
+		{"gemini_stream_generate", "gemini_stream_generate", "stream_generate_content", "stream_generate_content"},
+		{"chat_completions", "responses", "chat_completions", "responses"},
+		{"unknown_legacy_token", "messages", "unknown_legacy_token", "messages"},
+	}
+	for _, item := range cases {
+		gotSource, gotTarget := normalizeEntryMappingFamilies(item.source, item.target)
+		if gotSource != item.wantSource || gotTarget != item.wantTarget {
+			t.Fatalf("normalize(%q, %q) = (%q, %q), want (%q, %q)",
+				item.source, item.target, gotSource, gotTarget, item.wantSource, item.wantTarget)
+		}
+	}
+}
+
+// TestEntryMappingPairAdmissible 锁定协议等价判定：同族或 Gemini stream 归一
+// pair 合规；矩阵外（含已退役 responses→chat_completions）一律不合规。
+func TestEntryMappingPairAdmissible(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"chat_completions", "chat_completions"},
+		{"responses", "responses"},
+		{"messages", "messages"},
+		{"generate_content", "generate_content"},
+		{"stream_generate_content", "generate_content"},
+		{"video_generation", "video_generation"},
+		{"tts", "tts"},
+		{"anthropic_messages", "anthropic_messages"},
+	} {
+		if !entryMappingPairAdmissible(pair[0], pair[1]) {
+			t.Fatalf("合规 pair %v 被误判为不合规", pair)
+		}
+	}
+	for _, pair := range [][2]string{
+		{"responses", "chat_completions"},
+		{"chat_completions", "responses"},
+		{"messages", "chat_completions"},
+		{"generate_content", "stream_generate_content"},
+		{"anthropic_messages", "chat_completions"},
+		{"unknown_legacy_token", "responses"},
+	} {
+		if entryMappingPairAdmissible(pair[0], pair[1]) {
+			t.Fatalf("跨协议 pair %v 被误判为合规", pair)
+		}
+	}
+}

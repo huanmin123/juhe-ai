@@ -289,6 +289,86 @@ export interface SchedulingPreferenceMutationResult {
   updatedAt: string
 }
 
+// ---- 安全策略（API Key 安全策略与出站内容脱敏设计 §3/§4）----
+
+export type SecurityPolicyRuleType =
+  | 'phone'
+  | 'id_card'
+  | 'bank_card'
+  | 'email'
+  | 'ipv4'
+  | 'secret'
+  | 'custom_regex'
+  | 'custom_keywords'
+
+export type SecurityPolicyRuleAction = 'mask' | 'placeholder'
+
+/** 单条规则（rules_json.rules[]）。内置类型 pattern 由服务端代码提供，请求不携带、不可改写。 */
+export interface SecurityPolicyRule {
+  id: string
+  /** placeholder 标签；缺省按 type 默认词表（PHONE / ID_CARD / BANK_CARD / EMAIL / IPV4 / SECRET / CUSTOM）。 */
+  label?: string
+  type: SecurityPolicyRuleType
+  action: SecurityPolicyRuleAction
+  /** custom_regex 专属：RE2 语法，≤256 字节。 */
+  pattern?: string
+  /** custom_keywords 专属：字面关键词，≤100 个，单个 ≤64 字节，大小写敏感。 */
+  keywords?: string[]
+  /** mask 动作可选保留位数（0..8）；缺省按 type 默认，自定义规则默认整体 ****。 */
+  maskKeep?: number
+}
+
+export interface SecurityPolicyListItem {
+  id: string
+  /** 管理面 owner 摘要；内置行缺席。个人面不返回。 */
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  description?: string
+  rules: SecurityPolicyRule[]
+  builtIn: boolean
+  /** 未删除且绑定该策略的 API Key 精确计数（含停用 Key）。 */
+  boundApiKeyCount: number
+  /** 运行态累计防护次数（原始命中数口径，不去重；写后缓存按周期合并入库，内置行恒 0）。 */
+  protectionCount: number
+  updatedAt: string
+}
+
+/** 详情与列表行同型（低增长配置类资源，无独立 detail 投影）。 */
+export type SecurityPolicyDetail = SecurityPolicyListItem
+
+export interface SecurityPolicyOptionSummary {
+  id: string
+  name: string
+  builtIn: boolean
+  /** 运行态累计防护次数（写后缓存按周期合并入库，内置行恒 0）。 */
+  protectionCount: number
+  /** 管理面 options 返回 owner；个人面无 owner 字段。 */
+  systemAccountId?: string
+  systemAccountName?: string
+}
+
+export interface SecurityPolicyListResult {
+  items: SecurityPolicyListItem[]
+  total: number
+  hasMore?: boolean
+  page: number
+  pageSize: number
+}
+
+export interface SecurityPolicyRowPatch {
+  name?: string
+  description?: string | null
+  rules?: SecurityPolicyRule[]
+}
+
+export interface SecurityPolicyMutationResult {
+  id: string
+  changedFields: string[]
+  rowPatch: SecurityPolicyRowPatch
+  updatedAt: string
+}
+
 export interface ApiKeyUsageListSummary {
   requestCount: number
   totalTokens: number
@@ -320,6 +400,10 @@ export interface ApiKeySummary {
   schedulingPreferenceId?: string | null
   schedulingPreferenceName?: string
   schedulingPreferenceBuiltIn?: boolean
+  /** 绑定安全策略 ID；null/缺失 = 内置「默认安全策略」（空规则 = 原样转发）。 */
+  securityPolicyId?: string | null
+  securityPolicyName?: string
+  securityPolicyBuiltIn?: boolean
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule
@@ -356,6 +440,9 @@ export interface ApiKeyMutationRowPatch {
   schedulingPreferenceId?: string | null
   schedulingPreferenceName?: string
   schedulingPreferenceBuiltIn?: boolean
+  securityPolicyId?: string | null
+  securityPolicyName?: string
+  securityPolicyBuiltIn?: boolean
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule | null
@@ -428,6 +515,79 @@ export interface ProxyProfileMutationResult {
 }
 
 export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>
+
+// 代理池（代理池设计 §4.1/§8.1）：管理面列表项与详情成员契约。
+export type ProxyPoolStrategy = 'round_robin' | 'weighted'
+
+export type ProxyPoolHealthStatus = 'healthy' | 'degraded' | 'dead' | 'unknown' | string
+
+export interface ProxyPoolSummary {
+  id: string
+  name: string
+  description?: string
+  strategy: ProxyPoolStrategy
+  enabled: boolean
+  memberCount: number
+  assignableMemberCount: number
+  leaseCount: number
+  updatedAt: string
+}
+
+export interface ProxyPoolListResult {
+  items: ProxyPoolSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
+export interface ProxyPoolMemberDetail {
+  proxyProfileId: string
+  name: string
+  type: string
+  enabled: boolean
+  testStatus: string
+  lastTestedAt?: string
+  latencyMs?: number
+  poolHealthStatus: ProxyPoolHealthStatus
+  poolHealthFailureStreak: number
+  poolHealthCheckedAt?: string
+  priority: number
+  weight: number
+  memberEnabled: boolean
+  leaseCount: number
+  assignable: boolean
+}
+
+export interface ProxyPoolDetail extends ProxyPoolSummary {
+  members: ProxyPoolMemberDetail[]
+}
+
+/** 管理员成员选择器（§8.1 member-options）：不返回 host/port/用户名/密码。 */
+export interface ProxyPoolMemberOptionSummary {
+  id: string
+  name: string
+  type: string
+  enabled: boolean
+  testStatus: string
+}
+
+/** 账户下拉（§8.2）：kinds 显式请求 pool 时返回池摘要项，不含成员与敏感字段。 */
+export interface ProxyPoolOptionSummary {
+  id: string
+  name: string
+  kind: 'pool'
+  enabled: boolean
+  memberCount: number
+  assignableMemberCount: number
+}
+
+export type ProxyOptionKind = 'profile' | 'pool'
+
+/** /proxies/options 响应项（§8.2）：按 kind 判别；缺省调用方拿到 profile 项（kind 可缺省）。 */
+export type ProxyOptionItem =
+  | (ProxyProfileOptionSummary & { kind?: 'profile' })
+  | ProxyPoolOptionSummary
 
 export interface ProxyProfileListResult {
   items: ProxyProfileSummary[]

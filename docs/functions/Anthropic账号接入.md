@@ -1,6 +1,7 @@
 # Anthropic 账号接入
 
-> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景，不得作为新增实现、测试断言或页面配置依据。当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，OpenAI / Anthropic 跨协议转换落到混合供应商账户。
+> **2026-11-07 退役标注（与本次退役的关系）：** 本次退役只删除 `responses -> chat_completions` bridge 与 gateway summary compact；本文描述的 OpenAI -> Anthropic Messages bridge 方向与本次退役无关，保留为历史桥接设计截面。但其账户载体混合供应商账户已于 2026-11-05 退役，跨协议模型映射也已随 2026-11-07 裁决整体退役（映射协议强制同族）——因此 OpenAI / Responses 客户端请求不再由 Anthropic 账户承接，Claude 账户只承接 Anthropic Messages 原生请求。
+> 2026-06-27 路由分层更新（历史）：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景，不得作为新增实现、测试断言或页面配置依据。当时目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，OpenAI / Anthropic 跨协议转换落到混合供应商账户。
 
 ## 范围
 

@@ -820,6 +820,37 @@ func TestFilterAccountsByRequestedModelFamilyArms(t *testing.T) {
 		t.Fatalf("counts = direct:%d mapping:%d, want direct:1 mapping:1（跨协议账户不计入 mapping）",
 			result.DirectMatchedCount, result.MappingMatchedCount)
 	}
+
+	// 2026-11-07：Gemini stream_generate_content→generate_content 是协议等价
+	// 归一，与直连同权 rank 0，不得落 rank 1/2。
+	geminiStream := UpstreamAccount{
+		ID: "acc_gemini_stream", ProtocolCode: "gemini", ProtocolVersion: "v1beta",
+		SupportedModels: []string{"up-gemini"},
+		ModelMappings: []gatewayAccountModelMapping{{
+			SourceModel: "gemini-alias", SourceEndpointFamily: EndpointFamilyStreamGenerate,
+			UpstreamModel: "up-gemini", UpstreamEndpointFamily: EndpointFamilyGenerateContent,
+		}},
+	}
+	geminiResult := FilterAccountsByRequestedModel(
+		[]UpstreamAccount{geminiStream}, "gemini-alias", EndpointFamilyStreamGenerate)
+	if got := geminiResult.ModelPriority.RankByAccountID["acc_gemini_stream"]; got != gatewayAccountModelPriorityRankDirect {
+		t.Fatalf("gemini stream normalization rank = %d, want %d", got, gatewayAccountModelPriorityRankDirect)
+	}
+
+	// responses→chat_completions 已退役：运行时不解析、不计入 mapping。
+	retiredBridge := UpstreamAccount{
+		ID: "acc_retired_bridge", ProtocolCode: "openai", ProtocolVersion: "v1",
+		SupportedModels: []string{"up-cross"},
+		ModelMappings: []gatewayAccountModelMapping{{
+			SourceModel: "client-model", SourceEndpointFamily: EndpointFamilyResponses,
+			UpstreamModel: "up-cross", UpstreamEndpointFamily: EndpointFamilyChatCompletions,
+		}},
+	}
+	retiredResult := FilterAccountsByRequestedModel(
+		[]UpstreamAccount{retiredBridge}, "client-model", EndpointFamilyResponses)
+	if got := retiredResult.ModelPriority.RankByAccountID["acc_retired_bridge"]; got != gatewayAccountModelPriorityRankUnsupported {
+		t.Fatalf("retired responses→chat rank = %d, want unsupported", got)
+	}
 }
 
 func TestGatewayModelFilterFailureMessage(t *testing.T) {

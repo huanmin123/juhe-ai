@@ -16,9 +16,9 @@ package main
 // api_key 账户）：1 provider profile（复用种子 openai/openai/v1）、1 system
 // account、3 enabled 分组 × 100 active 账户 = 300 账户、每账户 64 行
 // account_supported_models（19200 行，相邻账户 50% 重叠测去重）、每账户 10 行
-// 启用映射（8 行可被 gatewayopenai.IsAdmissibleModelMapping 接受：responses→
-// chat_completions 跨族改写且 upstream ∈ SM + 同族跨模型改写；2 行恒等行被
-// 排除）= 3000 行。加压场景把映射加到每账户 64 行（19200 行）复测。
+// 启用映射（8 行可被 gatewayopenai.IsAdmissibleModelMapping 接受：chat 同族
+// 跨模型改写且 upstream ∈ SM；2 行恒等行被排除）= 3000 行。加压场景把映射加到
+// 每账户 64 行（19200 行）复测。
 //
 // 构造方式对齐生产（chain_runtime.go:329 → newChainAccountsSelectorWithStats →
 // newChainGroupModelUnionLoader 同一 selector 注入）：postgres 方言、secret 置空
@@ -75,23 +75,24 @@ func unionPerfSourceNameB(accountIndex, k int) string {
 }
 
 // unionPerfMappingRowA 返回账户 i 的第 k 条映射（source, sourceFamily, upstream,
-// upstreamFamily）。k < 8：responses→chat_completions 跨族改写（openai/v1 协议
-// 档案经 isOpenAIModelMappingRuntimeConversionSupported 放行）且 upstream ∈ 本
-// 账户 64 宽 SM 窗口；k = 8/9：恒等行（source == upstream 且同族），取窗口末尾
-// 两个模型，IsAdmissibleModelMapping 恒拒。
+// upstreamFamily）。k < 8：chat 同族改名（2026-11-07 跨协议映射退役，原
+// responses→chat_completions 跨族改写夹具随 7 pair 矩阵移除；协议等价映射与
+// 直连同权 rank 0）且 upstream ∈ 本账户 64 宽 SM 窗口；k = 8/9：恒等行
+//（source == upstream 且同族），取窗口末尾两个模型，IsAdmissibleModelMapping
+// 恒拒。
 func unionPerfMappingRowA(i, k int) (string, string, string, string) {
 	if k < unionPerfAdmissibleA {
-		return unionPerfSourceNameA(i, k), "responses",
+		return unionPerfSourceNameA(i, k), "chat_completions",
 			unionPerfModelName((i*32 + k*8) % unionPerfPoolSize), "chat_completions"
 	}
 	model := unionPerfModelName((i*32 + 62 + k - unionPerfAdmissibleA) % unionPerfPoolSize)
 	return model, "chat_completions", model, "chat_completions"
 }
 
-// unionPerfMappingRowB 返回加压场景第 k 条（k = 0..53）全可接受映射：跨族改写
-// 且 upstream = (i*32+k) ∈ 本账户 SM 窗口。
+// unionPerfMappingRowB 返回加压场景第 k 条（k = 0..53）全可接受映射：chat 同族
+// 改名且 upstream = (i*32+k) ∈ 本账户 SM 窗口。
 func unionPerfMappingRowB(i, k int) (string, string, string, string) {
-	return unionPerfSourceNameB(i, k), "responses",
+	return unionPerfSourceNameB(i, k), "chat_completions",
 		unionPerfModelName((i*32 + k) % unionPerfPoolSize), "chat_completions"
 }
 
@@ -180,7 +181,7 @@ func unionPerfSeed(t *testing.T, db *sql.DB) (sysID, providerCode, profileID str
 	}
 
 	// provider/protocol profile 动态取库里已有行（accounts 两列有 FK）；限定
-	// openai/openai/v1 使 responses→chat_completions 跨族改写被运行时矩阵放行。
+	// openai/openai/v1 使 chat 同族改名映射被运行时矩阵放行。
 	if err := db.QueryRow(`
 		SELECT pp.provider_code, pp.id FROM juhe_business.provider_protocol_profiles pp
 		WHERE pp.enabled = 1 AND pp.protocol_code = 'openai' AND pp.protocol_version = 'v1'
@@ -437,8 +438,8 @@ func TestUnionPerfManual(t *testing.T) {
 
 	sysID, providerCode, _ := unionPerfSeed(t, db)
 
-	// 夹具映射有效性 sanity（B4 W2 拆门后判定只依赖映射行：跨族行必须被
-	// 接受、恒等行必须被拒绝——防止夹具本身构造出无效场景）。
+	// 夹具映射有效性 sanity（B4 W2 拆门后判定只依赖映射行：协议等价改名行
+	// 必须被接受、恒等行必须被拒绝——防止夹具本身构造出无效场景）。
 	runtimeAccount := &gatewayopenai.RuntimeAccount{}
 	source, sourceFamily, upstream, upstreamFamily := unionPerfMappingRowA(0, 0)
 	admissible := gatewayopenai.IsAdmissibleModelMapping(gatewayopenai.AccountModelMapping{

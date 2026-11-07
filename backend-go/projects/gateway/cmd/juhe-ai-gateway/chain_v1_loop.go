@@ -414,20 +414,17 @@ func dispatchDomainStatelessMediaOf(current *gatewaypreauth.DispatchContext) boo
 		gatewayproto.DispatchDomainOfLane(current.RequestLane) == gatewayproto.DispatchDomainStatelessMedia
 }
 
-// streamBridgeDownstreamProtocolOf 判定下游协议是否属于桥接流方向（流式提交
-// 边界受限重放与异常终局处置设计 §3.1 窗口资格）：chat 上游 → anthropic /
-// gemini 客户端（messages_sse / gemini 系 SSE），以及 responses_sse 且账户无
-// 原生 Responses 端点（codex responses 桥回转，与 chain_bridge_response.go
-// BUG-0178 的 accountHasNativeResponsesModes 守卫同源——原生直通不落桥）。
-// 桥接管道有自己的 EOF 合成收尾契约（W7），窗口会改变其时序前提。
-func streamBridgeDownstreamProtocolOf(downstreamProtocol string, account gatewaydispatch.AccountCandidate) bool {
+// streamBridgeDownstreamProtocolOf 判定下游协议是否属于受限窗口排除面（流式
+// 提交边界受限重放与异常终局处置设计 §3.1 窗口资格）：messages_sse / gemini
+// 系 SSE 保持既有排除语义（窗口资格不随协议退役改变）。2026-11-07 跨协议
+// Responses→Chat 桥退役：原 responses_sse 桥回转臂（账户无原生 Responses
+// 端点时排除窗口）随桥删除——Responses 下游恒原生直通，恢复窗口资格。
+func streamBridgeDownstreamProtocolOf(downstreamProtocol string) bool {
 	switch downstreamProtocol {
 	case gatewaycodex.DownstreamMessagesSSE,
 		gatewaycodex.DownstreamGeminiStreamGenerateSSE,
 		gatewaycodex.DownstreamGeminiInteractionsSSE:
 		return true
-	case gatewaycodex.DownstreamResponsesSSE:
-		return !accountHasNativeResponsesModes(account)
 	default:
 		return false
 	}
@@ -440,11 +437,11 @@ func streamBridgeDownstreamProtocolOf(downstreamProtocol string, account gateway
 // （身份头 x-juhe-ai-purpose: chat_web_search，internal/chat/generation_websearch.go
 // 的既有读取）：副作用请求即使尚未输出也禁止隐式重放（调研文档 L123 硬禁令）。
 // nil 上下文按对话域处理；ParseError 隔离与异常终局判定不受本判定影响。
-func preCommitReplayWindowDisabledOf(req *gatewaypreauth.GatewayRequest, context *gatewaypreauth.DispatchContext, account gatewaydispatch.AccountCandidate) bool {
+func preCommitReplayWindowDisabledOf(req *gatewaypreauth.GatewayRequest, context *gatewaypreauth.DispatchContext) bool {
 	if dispatchDomainStatelessMediaOf(context) {
 		return true
 	}
-	if streamBridgeDownstreamProtocolOf(clientStrategyViewOf(context).DownstreamProtocol, account) {
+	if streamBridgeDownstreamProtocolOf(clientStrategyViewOf(context).DownstreamProtocol) {
 		return true
 	}
 	return req != nil &&

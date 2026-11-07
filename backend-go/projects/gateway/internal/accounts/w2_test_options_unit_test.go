@@ -111,7 +111,7 @@ func TestW2OpenAIModelMappingRuntimeConversion(t *testing.T) {
 	}{
 		{"同族恒等", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, openAI, true},
 		{"gemini 流式到非流式", ModelMapping{SourceEndpointFamily: "stream_generate_content", UpstreamEndpointFamily: "generate_content"}, openAI, true},
-		{"openai responses 到 chat", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "chat_completions"}, openAI, true},
+		{"openai responses 到 chat 退役", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "chat_completions"}, openAI, false},
 		{"openai messages 到 chat 不支持", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, openAI, false},
 		{"hybrid 同族直通保留", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, hybrid, true},
 		{"hybrid messages 到 chat 退役", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, hybrid, false},
@@ -138,13 +138,16 @@ func TestW2ResolveTestAccountModelMapping(t *testing.T) {
 	source := manualTestModeSource{
 		ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion,
 		ModelMappings: []ModelMapping{
-			{SourceModel: "m1", SourceEndpointFamily: "responses", UpstreamModel: "u1", UpstreamEndpointFamily: "chat_completions", Enabled: boolPtr(true)},
+			{SourceModel: "m1", SourceEndpointFamily: "chat_completions", UpstreamModel: "u1", UpstreamEndpointFamily: "chat_completions", Enabled: boolPtr(true)},
 			{SourceModel: "m2", SourceEndpointFamily: "chat_completions", UpstreamModel: "u2", UpstreamEndpointFamily: "responses", Enabled: boolPtr(false)},
 			{SourceModel: "m3", SourceEndpointFamily: "chat_completions", UpstreamModel: "m3", UpstreamEndpointFamily: "chat_completions"},
 			{SourceModel: "m4", SourceEndpointFamily: "chat_completions", UpstreamModel: "u4", UpstreamEndpointFamily: "messages"},
+			// 已退役组合：responses→chat_completions 行存在也不再解析。
+			{SourceModel: "m5", SourceEndpointFamily: "responses", UpstreamModel: "u5", UpstreamEndpointFamily: "chat_completions", Enabled: boolPtr(true)},
+			{SourceModel: "m6", SourceEndpointFamily: "messages", UpstreamModel: "u6", UpstreamEndpointFamily: "messages", Enabled: boolPtr(true)},
 		},
 	}
-	if got := resolveTestAccountModelMapping(source, "", "responses"); got != nil {
+	if got := resolveTestAccountModelMapping(source, "", "chat_completions"); got != nil {
 		t.Fatalf("空模型应返回 nil：%v", got)
 	}
 	if got := resolveTestAccountModelMapping(source, "m1", ""); got != nil {
@@ -153,7 +156,7 @@ func TestW2ResolveTestAccountModelMapping(t *testing.T) {
 	if got := resolveTestAccountModelMapping(source, "m1", "unknown_family"); got != nil {
 		t.Fatalf("不支持 family 应返回 nil：%v", got)
 	}
-	if got := resolveTestAccountModelMapping(source, "missing", "responses"); got != nil {
+	if got := resolveTestAccountModelMapping(source, "missing", "chat_completions"); got != nil {
 		t.Fatalf("无映射应返回 nil：%v", got)
 	}
 	if got := resolveTestAccountModelMapping(source, "m2", "chat_completions"); got != nil {
@@ -165,7 +168,10 @@ func TestW2ResolveTestAccountModelMapping(t *testing.T) {
 	if got := resolveTestAccountModelMapping(source, "m4", "chat_completions"); got != nil {
 		t.Fatalf("不支持的转换应返回 nil：%v", got)
 	}
-	resolved := resolveTestAccountModelMapping(source, "m1", "responses")
+	if got := resolveTestAccountModelMapping(source, "m5", "responses"); got != nil {
+		t.Fatalf("已退役 responses→chat 映射应返回 nil：%v", got)
+	}
+	resolved := resolveTestAccountModelMapping(source, "m1", "chat_completions")
 	if resolved == nil || resolved.UpstreamModel != "u1" || resolved.UpstreamEndpointFamily != "chat_completions" {
 		t.Fatalf("正常解析不一致：%v", resolved)
 	}
@@ -173,8 +179,12 @@ func TestW2ResolveTestAccountModelMapping(t *testing.T) {
 	geminiChat := manualTestModeSource{ProviderCode: geminiProviderCode,
 		ProviderProtocolProfileID: geminiOpenAIChatV1BetaProfile,
 		ModelMappings:             source.ModelMappings}
-	if got := resolveTestAccountModelMapping(geminiChat, "m1", "messages"); got != nil {
+	if got := resolveTestAccountModelMapping(geminiChat, "m6", "messages"); got != nil {
 		t.Fatalf("gemini chat 档案 messages 源应返回 nil：%v", got)
+	}
+	// openai 档案下 messages 同族可解析（证明上面的 nil 来自档案门而非矩阵）。
+	if got := resolveTestAccountModelMapping(source, "m6", "messages"); got == nil || got.UpstreamModel != "u6" {
+		t.Fatalf("openai 档案 messages 同族应解析：%v", got)
 	}
 }
 

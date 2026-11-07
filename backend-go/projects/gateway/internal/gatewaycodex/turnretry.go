@@ -458,6 +458,16 @@ func orElseEvidence(evidence string) string {
 	return evidence
 }
 
+// derefString 读取可空字符串指针（nil 读作空串）；turn retry 与探活两处
+// 账户行可空字段共用。原定义在已退役的 chatbridgestate.go（2026-11-07 桥
+// 删除批迁入本文件）。
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 // ---------------------------------------------------------------------------
 // clear
 // ---------------------------------------------------------------------------

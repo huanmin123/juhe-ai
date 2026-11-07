@@ -31,8 +31,9 @@ func TestW10AProtocolMappingMatrix(t *testing.T) {
 	// 协议池映射段已随目录断言切 models 表拆除（protocolPoolForMapping 是
 	// legacy 协议池维度），此处仅保留矩阵/文案断言。
 
-	// 不可转换消息（三形态）。
-	if msg := unsupportedProtocolConversionMessage(mappingFamilyMessages, mappingFamilyResponses); !strings.Contains(msg, "Anthropic Messages") {
+	// 矩阵外统一可归因文案：中文 + 点名两端族（2026-11-07 退役后不再分支）。
+	if msg := unsupportedProtocolConversionMessage(mappingFamilyMessages, mappingFamilyResponses); !strings.Contains(msg, "Messages 到 Responses") ||
+		!strings.Contains(msg, "客户端协议与上游协议必须一致") {
 		t.Fatalf("Messages 跨协议消息不一致：%s", msg)
 	}
 	if msg := unsupportedProtocolConversionMessage(mappingFamilyGenerateContent, mappingFamilyResponses); !strings.Contains(msg, "Gemini GenerateContent") {
@@ -40,6 +41,11 @@ func TestW10AProtocolMappingMatrix(t *testing.T) {
 	}
 	if msg := unsupportedProtocolConversionMessage(mappingFamilyChatCompletions, mappingFamilyResponses); !strings.Contains(msg, "Chat Completions 到 Responses") {
 		t.Fatalf("默认跨协议消息不一致：%s", msg)
+	}
+	// 已退役的 responses→chat_completions 组合按同一文案拒绝，不再有专门分支。
+	if msg := unsupportedProtocolConversionMessage(mappingFamilyResponses, mappingFamilyChatCompletions); !strings.Contains(msg, "Responses 到 Chat Completions") ||
+		!strings.Contains(msg, "不支持跨协议模型映射") {
+		t.Fatalf("退役 responses→chat 文案不一致：%s", msg)
 	}
 	if msg := missingUpstreamEndpointFamilyCapabilityMessage(mappingFamilyResponses); !strings.Contains(msg, "Responses") {
 		t.Fatalf("缺失上游能力消息不一致：%s", msg)
@@ -69,6 +75,17 @@ func TestW10AProtocolMappingMatrix(t *testing.T) {
 		SourceEndpointFamily: mappingFamilyGenerateContent, UpstreamEndpointFamily: mappingFamilyGenerateContent,
 	}, geminiOpenAIChat, nil); err == nil || !strings.Contains(err.Error(), "Gemini OpenAI Chat") {
 		t.Fatalf("Gemini OpenAI Chat 来源限制：%v", err)
+	}
+	// 7 pair 退役：Gemini OpenAI Chat 档案不再接受 responses 源（旧 Responses→Chat bridge 结构门拆除）。
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyResponses, UpstreamEndpointFamily: mappingFamilyChatCompletions,
+	}, geminiOpenAIChat, nil); err == nil || !strings.Contains(err.Error(), "Gemini OpenAI Chat") {
+		t.Fatalf("Gemini OpenAI Chat responses 源应拒绝：%v", err)
+	}
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyResponses, UpstreamEndpointFamily: mappingFamilyResponses,
+	}, geminiOpenAIChat, []string{"responses_json"}); err == nil || !strings.Contains(err.Error(), "同族映射") {
+		t.Fatalf("Gemini OpenAI Chat responses 同族应拒绝：%v", err)
 	}
 	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
 		SourceEndpointFamily: mappingFamilyChatCompletions, UpstreamEndpointFamily: mappingFamilyResponses,
@@ -366,8 +383,8 @@ func TestW10AMediaMappingMatrix(t *testing.T) {
 
 	// chat 语义零变化回归：普通账户规则行数不变（媒体族映射只经 openai 档案
 	// 白名单声明），chat 拒绝臂不受媒体族影响。
-	if len(accountModelMappingProtocolRules) != 8 {
-		t.Fatalf("普通账户规则行数 = %d, want 8（6 chat + 2 媒体）", len(accountModelMappingProtocolRules))
+	if len(accountModelMappingProtocolRules) != 7 {
+		t.Fatalf("普通账户规则行数 = %d, want 7（4 文本族 + 1 Gemini stream 归一 + 2 媒体）", len(accountModelMappingProtocolRules))
 	}
 	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
 		SourceEndpointFamily: mappingFamilyChatCompletions, UpstreamEndpointFamily: mappingFamilyChatCompletions,

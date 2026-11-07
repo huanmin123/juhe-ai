@@ -2,6 +2,7 @@ package gatewaydispatch
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/anthropicfp"
 )
 
 // performUpstreamRequestAttempt, migrated from dispatch/upstream-attempts.ts.
@@ -43,6 +45,7 @@ type AttemptInput struct {
 func (e *Engine) PerformUpstreamRequestAttempt(ctx context.Context, input AttemptInput) (*GatewayUpstreamResponse, error) {
 	headers := input.Headers
 	upstreamBody := PrepareAnthropicMessagesBodyForAttempt(input.Req, headers, input.UpstreamURL, input.Body)
+	upstreamBody = normalizeDatelineForAttempt(input.Account, upstreamBody)
 
 	response, err := e.requestUpstreamForAttempt(ctx, input, headers, upstreamBody, input.UpstreamURL)
 	if err != nil {
@@ -70,6 +73,41 @@ func (e *Engine) PerformUpstreamRequestAttempt(ctx context.Context, input Attemp
 	}
 
 	return e.transformUpstreamResponseForAccount(ctx, input, headers, upstreamBody, response)
+}
+
+// normalizeDatelineForAttempt 对 anthropic 家族 OAuth 账户的出站 attempt
+// body 做 dateline 隐写句归一化（Anthropic透传dateline隐写清洗设计）。
+// 门控判定与 chain_driver.go 的 anthropic 出站分支同口径：协议码归一化
+// （NormalizeProviderToken = ToLower(TrimSpace)，chain_driver 的
+// normalizeProtocol 同义）后等于 "anthropic"（gatewayanthropic.ProtocolCode）
+// 且 account.Type == "oauth"；API Key 账户上游是标准公开 API，不清洗。
+// 改写只作用于本次 attempt 即将发出的 body，不回写 req.Body / RawBody
+// （usage 统计、审计快照、内容指纹继续消费客户端原始体）；无命中恒等
+// 返回原切片，零拷贝零额外开销。
+func normalizeDatelineForAttempt(account AccountCandidate, body []byte) []byte {
+	if len(body) == 0 || account.Type != "oauth" {
+		return body
+	}
+	if gatewayupstream.NormalizeProviderToken(account.ProtocolCode) != "anthropic" {
+		return body
+	}
+	normalized, hits, changed := anthropicfp.NormalizeDateline(body)
+	if !changed {
+		return body
+	}
+	variants := make([]string, 0, len(hits))
+	separators := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		variants = append(variants, hit.Variant)
+		separators = append(separators, hit.Separator)
+	}
+	slog.Debug("Anthropic 出站 dateline 隐写句已归一化",
+		"event", "gateway_anthropic_dateline_normalized",
+		"accountId", account.ID,
+		"hits", len(hits),
+		"apostropheVariants", variants,
+		"dateSeparators", separators)
+	return normalized
 }
 
 // requestUpstreamForAttempt builds the transport options shared by the

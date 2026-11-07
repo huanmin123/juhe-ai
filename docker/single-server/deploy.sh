@@ -366,7 +366,7 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   fi
 
   echo "== 停写窗口备份确认 =="
-  echo "  升级备份维度（§20.5）：business/chat/codex_context 必备；建议命令："
+  echo "  升级备份维度（§20.5）：business 必备（chat/codex_context schema 已退役，revision 20 升级会 DROP juhe_codex_context——整库 pg_dump 已覆盖备份义务）；建议命令："
   echo "    ssh $SERVER 'docker exec juhe-ai-postgres pg_dump -U juhe_ai -Fc juhe_ai > /opt/juhe-ai/backup/juhe_ai-pre-upgrade-\$(date +%Y%m%d-%H%M).dump'"
   printf "  已完成并验证可恢复备份？输入 YES 继续（其他输入中止，gateway/jobs 保持停止）："
   read -r ANSWER || ANSWER=""

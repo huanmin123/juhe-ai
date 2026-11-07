@@ -62,6 +62,13 @@ type BalanceDetectionCandidate struct {
 	ConfigRevision  int64   `json:"config_revision"`
 	NextRefreshAt   *string `json:"next_refresh_at,omitempty"`
 	ProxyProfileID  string  `json:"proxy_profile_id,omitempty"`
+	// ProxyPoolID / ProxyMemberProfileID 是池绑定候选的有效目标（代理池设计
+	// §5.2/§10.3 只读入口）：ProxyPoolID 非空 = 池绑定候选，出站走
+	// ProxyMemberProfileID 指向的当前租约成员；ProxyMemberProfileID 为空 =
+	// 解析阶段确认无有效租约/池不可用，该候选必须明确失败，不直连、不直连
+	// 旧成员。直接代理候选两列为空，ProxyProfileID 保持既有语义。
+	ProxyPoolID          string `json:"proxy_pool_id,omitempty"`
+	ProxyMemberProfileID string `json:"proxy_member_profile_id,omitempty"`
 }
 
 // BalanceBuiltinQueryResult 是 builtin 适配器查询结果。

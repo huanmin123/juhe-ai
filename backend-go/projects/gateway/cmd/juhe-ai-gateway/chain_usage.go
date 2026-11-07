@@ -350,6 +350,13 @@ type chainFinalizationUsage struct {
 	// 败两条记账同源直传 UsageRecordInput.CompactionExpected，普通请求零值
 	// false。
 	compactionExpected bool
+	// securityPolicyApplied / piiHits 是构造点从 req.SecurityPolicy 注入的
+	// API Key 安全策略请求级事实（安全策略设计 §8，批B2）：出站脱敏在 preflight
+	// 之前单点定型，构造点取值即请求终态完整值（UsageContext 不加该字段——
+	// 命中计数是请求终态才完整的实事，不属于 preflight 阶段事实）。完成与失
+	// 败两条记账同源直传 UsageRecordInput 同名字段。
+	securityPolicyApplied bool
+	piiHits               map[string]int
 	// enqueueFailures 统计 EnqueueUsageRecord 失败次数并驱动采样告警（前 10
 	// 条逐条、之后每 100 条一条，对齐本文件 spooledUsageRecorder 既有采样
 	// 模式）。方法为指针接收者：值接收者会在每次接口调用时复制接收者，计数
@@ -497,6 +504,9 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		RouteGroupID:    input.UsageContext.RouteGroupID,
 		// 压缩期望随请求级上下文直传（与 RouteGroupID 同源）。
 		CompactionExpected: u.compactionExpected,
+		// 安全策略事实随请求级状态直传（构造点注入，安全策略设计 §8）。
+		SecurityPolicyApplied: u.securityPolicyApplied,
+		PIIHits:               u.piiHits,
 		// 内部通道抑制标记随 usage 上下文直传（持久化唯一闸口据此丢弃）。
 		SuppressUsage: input.UsageContext.SuppressUsage,
 		Endpoint:      input.UsageContext.Endpoint,
@@ -762,6 +772,9 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		GroupID:         input.UsageContext.GroupID,
 		// 压缩期望随请求级上下文直传（与完成路径同源）。
 		CompactionExpected: u.compactionExpected,
+		// 安全策略事实随请求级状态直传（与完成路径同源，安全策略设计 §8）。
+		SecurityPolicyApplied: u.securityPolicyApplied,
+		PIIHits:               u.piiHits,
 		// 内部通道抑制标记随 usage 上下文直传（持久化唯一闸口据此丢弃）。
 		SuppressUsage: input.UsageContext.SuppressUsage,
 		Endpoint:      input.UsageContext.Endpoint,
@@ -981,4 +994,3 @@ func usageStableHash(value string) int {
 	}
 	return int(hash)
 }
-

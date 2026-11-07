@@ -890,3 +890,9 @@ func newEventID() string {
 func (s *DeletedAccountStore) hasRelatedRecordData(ctx context.Context, target *cleanupTarget) (bool, error) {
 	return s.hasRelatedRecordDataPostgres(ctx, target)
 }
+
+// ISOOf 是 cleanuprepo 共享的 UTC 毫秒精度时间戳格式化（原定义在已退役的
+// codexcontext.go，2026-11-07 codex-context 退役批迁入 deleteaccount.go）。
+func ISOOf(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}

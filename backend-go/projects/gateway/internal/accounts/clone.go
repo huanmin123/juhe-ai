@@ -66,11 +66,16 @@ type CloneContext struct {
 	// ConnectionPresetCode 回显健康检查连接的 preset（DR-40）：providerProtocolProfileId
 	// 由探针表反查，媒体 preset（ark/openspeech/minimax/qwen）不在表内会得到空串；
 	// 前端用本字段经共享反查表补齐供应商身份，避免克隆媒体账户回落供应商默认档案。
-	ConnectionPresetCode string                `json:"connectionPresetCode,omitempty"`
-	BoundGroupID         *string               `json:"boundGroupId,omitempty"`
-	BoundGroupName       *string               `json:"boundGroupName,omitempty"`
-	ModelMappings        []ModelMapping        `json:"modelMappings"`
-	ProxyProfileID       *string               `json:"proxyProfileId,omitempty"`
+	ConnectionPresetCode string         `json:"connectionPresetCode,omitempty"`
+	BoundGroupID         *string        `json:"boundGroupId,omitempty"`
+	BoundGroupName       *string        `json:"boundGroupName,omitempty"`
+	ModelMappings        []ModelMapping `json:"modelMappings"`
+	ProxyProfileID       *string        `json:"proxyProfileId,omitempty"`
+	// ProxyPoolID / ProxyPoolName 是源账户代理池配置绑定与池名（代理池设计
+	// §8.3 克隆契约）：克隆复制 proxyPoolId（或 proxyProfileId），不复制租约
+	//（C9 A），新账户由创建事务按池策略重新分配。池名供前端克隆上下文展示。
+	ProxyPoolID          *string               `json:"proxyPoolId,omitempty"`
+	ProxyPoolName        *string               `json:"proxyPoolName,omitempty"`
 	AvailabilitySchedule *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
 	AccountExpiresAt     *string               `json:"accountExpiresAt,omitempty"`
 	// BackgroundProbeEnabled 回显源账户后台自动探测总开关（总开关设计 §8 克隆
@@ -185,6 +190,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		healthCheckConnectionID  sql.NullString
 		currentHealthCheckPreset string
 		proxyProfileID           sql.NullString
+		proxyPoolID              sql.NullString
+		proxyPoolName            sql.NullString
 		availabilitySchedule     sql.NullString
 		accountExpiresAt         sql.NullString
 		backgroundProbeEnabled   int64
@@ -213,7 +220,9 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
-			accounts.proxy_profile_id, accounts.availability_schedule_json, accounts.account_expires_at,
+			accounts.proxy_profile_id, accounts.proxy_pool_id,
+			clone_pools.name AS proxy_pool_name,
+			accounts.availability_schedule_json, accounts.account_expires_at,
 			accounts.background_probe_enabled,
 			accounts.temporary_unavailable_continuous_probe_enabled, accounts.balance_query_enabled,
 			accounts.balance_query_config_json,
@@ -223,6 +232,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			`+s.boundGroupBindingUpdatedAtProjection()+` AS bound_group_binding_updated_at,
 			`+s.boundGroupProjection("groups.updated_at")+` AS bound_group_record_updated_at
 		FROM `+s.table("accounts")+` accounts
+		LEFT JOIN `+s.table("proxy_pools")+` clone_pools
+			ON clone_pools.id = accounts.proxy_pool_id
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL`+scopeClause+`
 		LIMIT 1`), args...).Scan(
@@ -234,7 +245,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		&row.oauthType, &row.concurrencyLimit, &row.rpmLimit,
 		&row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
 		&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
-		&row.proxyProfileID, &row.availabilitySchedule, &row.accountExpiresAt,
+		&row.proxyProfileID, &row.proxyPoolID, &row.proxyPoolName,
+		&row.availabilitySchedule, &row.accountExpiresAt,
 		&row.backgroundProbeEnabled, &row.continuousProbeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
 		&row.authorizationID, &row.sourceAccountID, &row.boundGroupID, &row.boundGroupName,
 		&row.boundGroupBindingUpdAt, &row.boundGroupRecordUpdAt)
@@ -397,6 +409,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		BoundGroupName:            nullPtrString(row.boundGroupName),
 		ModelMappings:             mappings,
 		ProxyProfileID:            nullPtrString(row.proxyProfileID),
+		ProxyPoolID:               nullPtrString(row.proxyPoolID),
+		ProxyPoolName:             nullPtrString(row.proxyPoolName),
 		AccountExpiresAt:          nullPtrString(row.accountExpiresAt),
 		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
 		TemporaryUnavailableContinuousProbeEnabled: row.continuousProbeEnabled == 1,

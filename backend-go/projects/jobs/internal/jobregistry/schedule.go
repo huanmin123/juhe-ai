@@ -227,6 +227,11 @@ func schedules() map[string]Schedule {
 		"account-circuit-control-plane-maintenance": {
 			Interval: 5 * second, InitialDelay: second, PassiveJitter: true,
 		},
+		"proxy-pool-health": {
+			Interval: 60 * second, InitialDelay: 20 * second, StablePhaseWindow: 5 * second,
+			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance",
+			Timeout: 2 * minute, BackoffBase: 5 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
+		},
 		"account-list-availability-projection-maintenance": {
 			Interval: second, InitialDelay: second, StablePhaseWindow: second,
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "account-list-projection", Timeout: 60 * second,

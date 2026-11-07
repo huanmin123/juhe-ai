@@ -377,21 +377,11 @@ func (f *fakeSessionAffinity) ResolveKey(SessionIdentity, SessionAffinityScope) 
 
 type fakeCodex struct {
 	compactionExpected bool
-	stateCompleted     bool
-	compactResult      CodexCompactPreflightResult
-	compactErr         error
 }
 
+// 2026-11-07 桥退役：fakeCodex 只剩 compaction contract 单点判定；
+// 原 context-state / compact preflight fake 臂随端口方法删除。
 func (f *fakeCodex) CompactionExpectedForRequest(*GatewayRequest) bool { return f.compactionExpected }
-func (f *fakeCodex) ApplyContextStatePreflight(context.Context, CodexContextStateInput) (bool, error) {
-	return f.stateCompleted, nil
-}
-func (f *fakeCodex) ApplyChatBridgeCompactPreflight(context.Context, CodexCompactPreflightInput) (CodexCompactPreflightResult, error) {
-	if f.compactErr != nil {
-		return CodexCompactPreflightResult{}, f.compactErr
-	}
-	return f.compactResult, nil
-}
 
 type fakeCandidates struct {
 	filterResult         CandidateFilterResult

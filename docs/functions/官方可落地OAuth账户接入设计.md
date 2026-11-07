@@ -150,6 +150,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
 - Anthropic OAuth 暴露独立的“刷新令牌”和“重新授权”操作，但语义绑定到 Anthropic 路由而不是复用 OpenAI 文案。
 - Gemini / Grok 同样调用各自路由；重新授权保留账户名称、分组、代理、并发和自定义 Base URL。
+- OAuth 建号支持 `proxyPoolId`（代理池设计 §6.1/§8.3）：建号前用池做一次临时成员分配（不落租约），token 交换固定使用该成员；账户落库时重新校验成员仍可分配并把同一成员固化为租约（reason=`initial`），校验失败明确失败、不静默换出口或直连。重新授权/轮换/自动刷新/jobs 保活使用账户已固化租约成员；租约不可用时失败，不在 token 刷新中途换 IP。
 - 编辑时仍允许直接替换 access token；若仅替换裸 access token，继续通过编辑保存而不是“重新授权”接口。
 
 ## 测试策略

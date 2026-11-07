@@ -41,6 +41,7 @@ describe('api 客户端 barrel', () => {
       'playground',
       'providers',
       'proxies',
+      'proxyPools',
       'publicApiLogs',
       'responseInspectionPolicies',
       'routeStrategies',

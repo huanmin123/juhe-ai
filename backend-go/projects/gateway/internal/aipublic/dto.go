@@ -88,6 +88,11 @@ type PublicApiKeySummary struct {
 	SchedulingPreferenceID      *string `json:"schedulingPreferenceId"`
 	SchedulingPreferenceName    *string `json:"schedulingPreferenceName"`
 	SchedulingPreferenceBuiltIn *bool   `json:"schedulingPreferenceBuiltIn"`
+	// 安全策略绑定投影（批A，§4.2）：与内面 ApiKeyListItem 同规则，创建缺省
+	// /null 即内置固定 ID；存量行 NULL 回显 null 由前端按内置行渲染。
+	SecurityPolicyID      *string `json:"securityPolicyId"`
+	SecurityPolicyName    *string `json:"securityPolicyName"`
+	SecurityPolicyBuiltIn *bool   `json:"securityPolicyBuiltIn"`
 }
 
 // PublicAccountSummary mirrors PublicAccountPushResponse.account.
@@ -242,6 +247,9 @@ func sanitizeApiKeyItem(item *apikeys.ListItem) PublicApiKeySummary {
 		SchedulingPreferenceID:      item.SchedulingPreferenceID,
 		SchedulingPreferenceName:    item.SchedulingPreferenceName,
 		SchedulingPreferenceBuiltIn: item.SchedulingPreferenceBuiltIn,
+		SecurityPolicyID:            item.SecurityPolicyID,
+		SecurityPolicyName:          item.SecurityPolicyName,
+		SecurityPolicyBuiltIn:       item.SecurityPolicyBuiltIn,
 	}
 }
 

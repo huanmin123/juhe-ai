@@ -231,6 +231,10 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
+	// 多副本：每个 gateway 实例持有自己的写入 lease，避免第二个实例在
+	// 启动期被单 owner 租约拒绝；retention 单活由 PG advisory lock 保证
+	// （见 F4 operation-log-owner 组件）。
+	operationConfig.LeaseKey = operationlog.LeaseKeyForInstance(operationConfig.InstanceID)
 	// 2026-10-24 存储形态收口：零配置 sqlite seed preflight 块（业务库文件
 	// ensure+seed 自举）随 sqlite 存储形态删除——业务 schema/seed 预置由外部
 	// juhe-ai-maintenance --ensure-schema --seed 流程承担，组合根启动期不做
@@ -266,9 +270,13 @@ func main() {
 		defer businessConnection.Close()
 		// 升级启动门禁（升级兼容与迁移账本设计 §11.1）：库未被本二进制的
 		// upgrade 收敛时 fail-fast 并给出可执行提示；只读检查，绝不自动迁移
-		// （§2.2-5 不做自动升级）。
-		if gate := schemagate.Check(context.Background(), businessConnection.DB); !gate.OK {
+		// （§2.2-5 不做自动升级）。expand 中断时旧二进制放行并 WARN。
+		gate := schemagate.Check(context.Background(), businessConnection.DB)
+		if !gate.OK {
 			fail(errors.New(gate.Message))
+		}
+		if gate.Warning != "" {
+			logger.Warn("upgrade schema gate warning", "warning", gate.Warning)
 		}
 		businessSource := businessConnection.Source
 		authenticator, authErr := modelcheckauth.New(businessConnection.DB, modelcheckauth.Postgres, time.Now)
@@ -665,6 +673,10 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F3 audit-log config: %w", err))
 	}
+	// 多副本：写入 lease 每实例独立；retention 使用独立的全局 lease 键，
+	// 由 F3 audit-log-owner 组件单独获取（与旧二进制的单 owner 键相同，
+	// 滚动升级期间不会与新实例同时跑 retention）。
+	auditConfig.LeaseKey = auditlog.LeaseKeyForInstance(auditConfig.InstanceID)
 	auditConfig.PostgresPool, err = postgresPools.Acquire(auditConfig.PostgresURL, "gateway-store", auditConfig.PostgresMaxOpenConns, auditConfig.PostgresMaxIdleConns)
 	if err != nil {
 		fail(fmt.Errorf("open shared F3 PostgreSQL pool: %w", err))
@@ -677,6 +689,19 @@ func main() {
 	if err := auditStore.EnsureSchema(context.Background()); err != nil {
 		fail(fmt.Errorf("initialize F3 audit-log schema: %w", err))
 	}
+	// retention 使用独立的 store 句柄和全局 lease 键，避免与 producer 的
+	// 每实例写入 lease 混用；首次滚动时它仍会等待旧二进制释放旧键。
+	auditRetentionConfig := auditConfig
+	auditRetentionConfig.LeaseKey = auditlog.DefaultLeaseKey
+	auditRetentionConfig.PostgresPool, err = postgresPools.Acquire(auditConfig.PostgresURL, "gateway-store", auditConfig.PostgresMaxOpenConns, auditConfig.PostgresMaxIdleConns)
+	if err != nil {
+		fail(fmt.Errorf("open F3 retention PostgreSQL pool: %w", err))
+	}
+	auditRetentionStore, err := auditlog.OpenStore(auditRetentionConfig)
+	if err != nil {
+		fail(fmt.Errorf("open F3 audit-log retention store: %w", err))
+	}
+	defer auditRetentionStore.Close()
 	// The F3 persistence lease is acquired once per process and shared by
 	// the in-process audit producer (chain dispatch, compose.go) and the
 	// resident owner (retention): both writers must fence under the same
@@ -718,6 +743,7 @@ func main() {
 		gatewayusage.RecordAuditLogPersistDuration(result, float64(durationMS)/1000)
 	})
 	var operationStore operationlog.Store
+	var operationRetentionStore operationlog.Store
 	if operationConfig.Enabled {
 		operationConfig.PostgresPool, err = postgresPools.Acquire(operationConfig.PostgresURL, "gateway-store", operationConfig.PostgresMaxOpenConns, operationConfig.PostgresMaxIdleConns)
 		if err != nil {
@@ -731,6 +757,19 @@ func main() {
 		if err := operationStore.EnsureSchema(context.Background()); err != nil {
 			fail(fmt.Errorf("initialize F4 operation-log schema: %w", err))
 		}
+		// retention 使用独立的全局 lease 键，避免与 producer 的每实例写入
+		// lease 混用；滚动升级时仍与旧二进制的单 owner 键互斥。
+		operationRetentionConfig := operationConfig
+		operationRetentionConfig.LeaseKey = operationlog.DefaultLeaseKey
+		operationRetentionConfig.PostgresPool, err = postgresPools.Acquire(operationConfig.PostgresURL, "gateway-store", operationConfig.PostgresMaxOpenConns, operationConfig.PostgresMaxIdleConns)
+		if err != nil {
+			fail(fmt.Errorf("open F4 retention PostgreSQL pool: %w", err))
+		}
+		operationRetentionStore, err = operationlog.OpenStore(operationRetentionConfig)
+		if err != nil {
+			fail(fmt.Errorf("open F4 operation-log retention store: %w", err))
+		}
+		defer operationRetentionStore.Close()
 	}
 
 	var auditRunning atomic.Bool
@@ -791,7 +830,16 @@ func main() {
 			Run: func(runCtx context.Context) error {
 				auditRunning.Store(true)
 				defer auditRunning.Store(false)
-				return auditlog.RunOwner(runCtx, auditStore, auditLease, auditConfig, logger)
+				// 写入 lease 每实例独立；retention 使用全局 lease 单活。
+				return runRetentionOwnerWithLease(runCtx, "F3 audit-log", logger,
+					func(startCtx context.Context) (*auditlog.LeaseKeeper, bool, error) {
+						return auditlog.StartLeaseKeeper(startCtx, auditRetentionStore,
+							auditConfig.InstanceID, auditConfig.OwnerLease, logger)
+					},
+					func(ownerCtx context.Context, keeper *auditlog.LeaseKeeper) error {
+						return auditlog.RunOwner(ownerCtx, auditRetentionStore, keeper, auditConfig, logger)
+					},
+					func(keeper *auditlog.LeaseKeeper) { keeper.Close() })
 			},
 			// DD3-F1：Close 必须先释放共享 F3 lease 再关 store（f3OwnerClose，
 			// 与 F4 组件 Close 内联实现同构）——store.Close 释放共享
@@ -828,22 +876,17 @@ func main() {
 			Run: func(runCtx context.Context) error {
 				operationRunning.Store(true)
 				defer operationRunning.Store(false)
-				keeper := operationLease
-				if keeper == nil {
-					// F4 runs without the system-api composition: the
-					// component owns a private lease (the retired
-					// RunInputServer semantics) instead of the shared one.
-					owned, ok, keeperErr := operationlog.StartLeaseKeeper(runCtx, operationStore, operationConfig.InstanceID, operationConfig.OwnerLease, logger)
-					if keeperErr != nil {
-						return fmt.Errorf("acquire F4 operation-log owner lease: %w", keeperErr)
-					}
-					if !ok {
-						return errors.New("F4 operation log owner lease held by another owner process")
-					}
-					defer owned.Close()
-					keeper = owned
-				}
-				return operationlog.RunOwner(runCtx, operationStore, keeper, operationConfig, logger)
+				// 写入 lease 每实例独立；retention 使用全局 lease 单活，
+				// 未抢到的实例只等待重试，不阻止启动。
+				return runRetentionOwnerWithLease(runCtx, "F4 operation-log", logger,
+					func(startCtx context.Context) (*operationlog.LeaseKeeper, bool, error) {
+						return operationlog.StartLeaseKeeper(startCtx, operationRetentionStore,
+							operationConfig.InstanceID, operationConfig.OwnerLease, logger)
+					},
+					func(ownerCtx context.Context, keeper *operationlog.LeaseKeeper) error {
+						return operationlog.RunOwner(ownerCtx, operationRetentionStore, keeper, operationConfig, logger)
+					},
+					func(keeper *operationlog.LeaseKeeper) { keeper.Close() })
 			},
 			Close: func() error {
 				// Release the shared lease while the store handle is still

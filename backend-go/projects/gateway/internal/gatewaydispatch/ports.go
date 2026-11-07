@@ -20,6 +20,16 @@ import (
 // OpenAIAccountSecret directly).
 type AccountCandidate = gatewayruntimecache.OpenAIAccountSecret
 
+// AccountProxyTargetResolver is the request-time pool target gate (proxy design
+// §10.1/§7.4): resolve the current lease member against the fresh Redis/PG
+// health, repair an invalid lease inside this request, and return the candidate
+// with ProxyProfileID/ProxyURL/ProxyPoolID/ProxyMemberProfileID overridden.
+// Direct-proxy candidates are returned unchanged. Nil = not wired (tests and
+// pre-proxy-pool compositions).
+type AccountProxyTargetResolver interface {
+	ResolveAccountProxyTarget(ctx context.Context, account AccountCandidate) (AccountCandidate, error)
+}
+
 // ModelPriority mirrors GatewayAccountModelPriority with rank lookup.
 type ModelPriority = gatewayrouting.GatewayAccountModelPriority
 
@@ -884,29 +894,6 @@ type SuppressionWaitInput struct {
 	RouteCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
 	GatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
 	Signal                   context.Context
-}
-
-// ---------------------------------------------------------------------------
-// Codex bridge (codex-responses/chat-bridge-state.ts, G18)
-// ---------------------------------------------------------------------------
-
-// CodexBridgeState mirrors getCodexResponsesContextState's consumed fields.
-type CodexBridgeState struct {
-	PreviousResponseID string
-}
-
-// CodexBridgeCompletionHandler mirrors the per-request completion handler.
-type CodexBridgeCompletionHandler interface{}
-
-// CodexBridgePort mirrors the consumed chat-bridge-state surface.
-type CodexBridgePort interface {
-	// GetContextState mirrors getCodexResponsesContextState.
-	GetContextState(req *gatewaypreauth.GatewayRequest) *CodexBridgeState
-	// CompletionHandlerForRequest mirrors
-	// codexResponsesChatBridgeCompletionHandlerForRequest (nil = none).
-	CompletionHandlerForRequest(req *gatewaypreauth.GatewayRequest, account AccountCandidate) CodexBridgeCompletionHandler
-	// PrepareContextForAccount mirrors prepareCodexResponsesContextForAccount.
-	PrepareContextForAccount(req *gatewaypreauth.GatewayRequest, account AccountCandidate) error
 }
 
 // APIKeyEffectsPort mirrors runtime/account-api-key-effects.service.ts.

@@ -55,7 +55,8 @@ const (
 // account_connections 先建；system_accounts 是 resource_authorizations 的
 // 外键目标。只取 CREATE TABLE 原文，守卫 DO 块/触发器不在本包读写面。
 var w7cBusinessDDLTables = []string{
-	"system_accounts", "vendors", "proxy_profiles", "resource_authorizations", "account_connections", "accounts",
+	"system_accounts", "vendors", "proxy_profiles", "proxy_pools", "proxy_pool_members",
+	"resource_authorizations", "account_connections", "accounts", "account_proxy_leases",
 }
 
 // w7cGoldenBusinessDDL 从 maintenance 权威源文件逐表提取 CREATE TABLE 原文
@@ -87,6 +88,10 @@ func w7cGoldenBusinessDDL(t *testing.T) []string {
 func w7cBusinessGoldenPrepare(statements []string) pgtestkit.PrepareFunc {
 	return func(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+			return err
+		}
+		// 租约 DDL 的 generation 默认值依赖共享序列（生产 schema 独立语句）。
+		if _, err := db.ExecContext(ctx, `CREATE SEQUENCE IF NOT EXISTS juhe_business.account_proxy_lease_generation_seq`); err != nil {
 			return err
 		}
 		conn, err := db.Conn(ctx)

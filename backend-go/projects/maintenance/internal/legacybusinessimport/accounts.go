@@ -547,6 +547,12 @@ func importSupportedModels(ctx context.Context, source *sql.DB, tx *sql.Tx, acco
 // importMappings rewrites legacy account_model_mappings into
 // account_entry_mappings: family-only legacy rows lose their upstream model and
 // are re-pointed at the target connection plus the resolved target model.
+//
+// 跨协议退役（PLAN-20261106T162344524Z 批次C，2026-11-07 裁决）：revision 20
+// 之后数据库不存在跨族映射行，回迁不得重建。写入前先按反向别名表归一两侧
+// family token，再按协议等价判定（同族或 Gemini stream 归一）校验；非合规行
+// 显式拒绝（跳过并逐条写中文原因进报告），禁止回迁；合规行以归一后的现行
+// token 落库。
 func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts map[string]struct{}, owners map[string]string, accountVendors map[string]string, report *Report) error {
 	models, err := loadModelIndex(ctx, tx)
 	if err != nil {
@@ -580,10 +586,23 @@ func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts ma
 	count := 0
 	created := 0
 	skippedUnpriced := 0
+	rejectedCrossProtocol := 0
 	for index, item := range collected {
 		if _, ok := accounts[item.accountID]; !ok {
 			continue
 		}
+		// 先归一并校验协议等价，再解析模型：拒绝行不产生任何副作用（不得为
+		// 被拒绝的映射补建 personal 模型或支持模型绑定）。
+		sourceFamily, targetFamily := normalizeEntryMappingFamilies(item.sourceFamily, item.upstreamFamily)
+		if !entryMappingPairAdmissible(sourceFamily, targetFamily) {
+			rejectedCrossProtocol++
+			report.Notes = append(report.Notes, fmt.Sprintf(
+				"模型映射：拒绝回迁账户 %s 的跨协议映射（%s → %s，源模型 %s → 上游模型 %s）：跨协议模型映射已退役（2026-11-07），客户端协议与上游协议必须一致，请在系统中按同族协议重建",
+				item.accountID, item.sourceFamily, item.upstreamFamily, item.sourceModel, item.upstreamModel))
+			continue
+		}
+		item.sourceFamily = sourceFamily
+		item.upstreamFamily = targetFamily
 		vendor := accountVendors[item.accountID]
 		if vendor == "" {
 			vendor = vendorForLegacyProvider(item.provider)
@@ -626,6 +645,11 @@ func importMappings(ctx context.Context, source *sql.DB, tx *sql.Tx, accounts ma
 		count++
 	}
 	report.Tables["account_entry_mappings"] = count
+	report.Tables["account_entry_mappings_rejected_cross_protocol"] = rejectedCrossProtocol
+	if rejectedCrossProtocol > 0 {
+		report.Notes = append(report.Notes,
+			fmt.Sprintf("模型映射：%d 条跨协议映射已拒绝回迁（跨协议映射已退役），详见上方逐条原因", rejectedCrossProtocol))
+	}
 	if created > 0 {
 		report.Notes = append(report.Notes,
 			fmt.Sprintf("模型目录：%d 个映射目标模型名在新目录中不存在，已按 personal scope 补建为 draft（映射未绑定）", created))

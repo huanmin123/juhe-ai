@@ -11,7 +11,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,7 +62,6 @@ func w16iBaseEnv(t *testing.T, pgURL string) map[string]string {
 		"JUHE_AI_REDIS_NAMESPACE":                   "juhe-ai:w16i",
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "w16i-run",
 		"JUHE_AI_LOG_DIR":                           t.TempDir(),
-		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(t.TempDir(), "codex-context"),
 		"JUHE_AI_SECRET":                            "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "w16i-j1",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),

@@ -189,7 +189,7 @@
         <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。">
           <a-input-number v-model:value="form.priority" :disabled="authorizedEditing" :min="0" style="width: 100%" />
         </a-form-item>
-        <a-form-item label="特权" tooltip="调度先比较模型命中方式：直连与同族改名映射同层、优先于跨协议转换映射；超级优先 / 降级备用等特权只在同一命中方式层级之内比较，不会越过该维度。">
+        <a-form-item label="特权" tooltip="调度先比较模型命中方式：直连与协议等价映射（同族改名或 Gemini stream 归一）同层；跨协议转换映射已随 2026-11-07 退役；超级优先 / 降级备用等特权只在同一命中方式层级之内比较，不会越过该维度。">
           <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
             <a-select-option value="normal">无</a-select-option>
             <a-select-option value="super_priority">超级优先</a-select-option>
@@ -208,16 +208,17 @@
           :required="oauthProxyRequired"
           :label="oauthProxyRequired ? '代理（必选）' : '代理'"
           :tooltip="oauthProxyRequired
-            ? '该供应商的 OAuth 账户上游必须经代理访问：不绑定代理时后端会拒绝创建、刷新和重新授权。'
-            : '仅影响这个账号访问上游供应商时使用的代理；不使用代理时直接按 Base URL 访问上游。'"
+            ? '该供应商的 OAuth 账户上游必须经代理访问：不绑定代理或代理池时后端会拒绝创建、刷新和重新授权。'
+            : '仅影响这个账号访问上游供应商时使用的代理；选择代理池后每次请求按池策略分配成员。不使用代理时直接按 Base URL 访问上游。'"
         >
           <ProxySelect
-            v-model:value="form.proxyProfileId"
+            v-model:value="proxyTargetValue"
             allow-clear
             :disabled="authorizedEditing"
             :loading="proxyOptionsLoading"
-            :placeholder="oauthProxyRequired ? '必须选择出海代理' : '不使用代理'"
+            :placeholder="oauthProxyRequired ? '必须选择出海代理或代理池' : '不使用代理'"
             :options="proxyOptions"
+            :pools="proxyPools"
             @dropdown-visible-change="$emit('proxyOptionsDropdown', $event)"
             @search="$emit('proxyOptionsSearch', $event)"
           />
@@ -315,7 +316,8 @@ import type { SelectOption } from '@/shared/selectLabelCache'
 import {
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
-import type { AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProxyPoolOptionSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
+import { joinProxyCompositeValue, splitProxyCompositeValue } from '@/shared/proxyLabelCache'
 import AccountAdvancedCard from './AccountAdvancedCard.vue'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
@@ -341,12 +343,7 @@ import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
-import {
-  type AccountModelMappingModelOption
-} from './accountModelMappingModelOptions'
 import type { AccountFormModel } from './accountFormTypes'
-
-type MappingSourceModelOption = AccountModelMappingModelOption
 
 interface SimpleSelectOption {
   label: string
@@ -376,11 +373,6 @@ const props = withDefaults(defineProps<{
   groupOptions: SimpleSelectOption[]
   groupOptionsLoading: boolean
   isManagementView: boolean
-  mappingAnthropicSourceModelOptions?: MappingSourceModelOption[]
-  mappingCurrentProviderSourceModelOptions?: MappingSourceModelOption[]
-  mappingGeminiSourceModelOptions?: MappingSourceModelOption[]
-  mappingSourceModelOptions?: MappingSourceModelOption[]
-  mappingUpstreamModelOptions?: AccountModelSelectOption[]
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
   /** 当前目录 scope 下候选是否完成过至少一次加载（v8-D 空态提示判据）。 */
@@ -391,6 +383,8 @@ const props = withDefaults(defineProps<{
   open: boolean
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  /** 代理池候选（代理池设计 §9.2 媒体域表单同样支持池）。 */
+  proxyPools?: ProxyPoolOptionSummary[]
   proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
@@ -405,11 +399,6 @@ const props = withDefaults(defineProps<{
   balanceQueryCanRun: false,
   balanceQueryLoading: false,
   cloning: false,
-  mappingAnthropicSourceModelOptions: () => [],
-  mappingCurrentProviderSourceModelOptions: () => [],
-  mappingGeminiSourceModelOptions: () => [],
-  mappingSourceModelOptions: () => [],
-  mappingUpstreamModelOptions: () => [],
   modelSyncing: false,
   proxyOptionsLoading: false
 })
@@ -437,8 +426,6 @@ const emit = defineEmits<{
   (event: 'generate-auth-url'): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
-  (event: 'mapping-source-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
-  (event: 'mapping-source-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'open-auth-url'): void
@@ -542,6 +529,16 @@ const domainAccountTypeChoices = computed(() => {
 const oauthProxyRequired = computed(() =>
   props.form.type === 'google_oauth'
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode))
+
+// kind-aware 复合值绑定（代理池设计 §9.2 媒体域表单）：拆装为裸 proxyProfileId / proxyPoolId。
+const proxyTargetValue = computed<string | undefined>({
+  get: () => joinProxyCompositeValue(props.form.proxyProfileId, props.form.proxyPoolId),
+  set: (value) => {
+    const { profileId, poolId } = splitProxyCompositeValue(value)
+    props.form.proxyProfileId = profileId
+    props.form.proxyPoolId = poolId
+  }
+})
 
 // ---- 段2：支持模型按域 modes 过滤 + 媒体域内映射 ----
 

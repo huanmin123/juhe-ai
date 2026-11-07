@@ -43,6 +43,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/securitypolicies"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/redis/go-redis/v9"
@@ -121,6 +122,9 @@ type chainRuntimeDeps struct {
 	// 设计 §4；runtimeStateDriver!=='redis' 时 nil——client_secrets 端点显式
 	// 503 降级，同 MediaJobsDB nil 的降级先例）。
 	RealtimeTokens *realtimetoken.Service
+	// RealtimeConnections 是每 API Key WS 并发连接计数（生产 Redis 全局，
+	// 组合测试 nil 时退回进程内）。
+	RealtimeConnections *chainRealtimeConnectionLimiter
 
 	// G13 runtime services (required: preflight hot path).
 	Circuits        gatewaypreauth.PreAuthCircuits
@@ -139,7 +143,7 @@ type chainRuntimeDeps struct {
 	// Dispatch collaborator services (optional: the assembly degrades the
 	// avoidance / concurrency trackers to process-local implementations).
 	AvoidanceTracker   *gatewayclientip.Avoidance
-	ConcurrencyTracker *gatewayclientip.MemoryAccountConcurrency
+	ConcurrencyTracker accountConcurrencyTracker
 
 	// G14/G18 session + codex collaborators (optional; the adapters degrade
 	// to the header-only identities Node serves when the resolver is absent).
@@ -148,21 +152,10 @@ type chainRuntimeDeps struct {
 	// 数据面，消费方为 preauth 键派生/黏住端口、引擎最终成功写回端口与响应层
 	// 三层删除。nil = 未装配（组合测试），组黏性整体不生效（零改动路径）。
 	GroupAffinity *gatewaysession.GroupAffinityService
-	CodexBridge   gatewaypreauth.CodexBridgePreflight
-	// CodexContextRoot / CodexContextStateStore 是 Codex Responses↔Chat 桥
-	// 会话状态（gatewaycodex.ChatBridgeStateService，Node codex-responses/
-	// chat-bridge-state.ts）的组合根装配输入：CodexContextRoot 携带
-	// JUHE_AI_CODEX_CONTEXT_ROOT（Node runtimeConfig.codexContextRoot，
-	// segments 根目录），CodexContextStateStore 是 codex context 行存储
-	//（gatewaycodex.CodexContextRowStore 的 PostgreSQL 实现）。
-	// 背景迁移漏装配（与终局波 TrafficRuntimeMigrator 同类断线）：
-	// NewChatBridgeStateService 实现完整但组合根从未装配，CodexBridge 恒
-	// nil 使 preflight 恒走 no-op 适配器；2026-09-28 哲学裁定（功能默认
-	// 开启）：生产组合根默认提供两者，链组装构造真实桥；任一缺席保持
-	// 既有 no-op 降级（组合测试语义不变）。
-	CodexContextRoot       string
-	CodexContextStateStore gatewaycodex.CodexContextRowStore
-	Recoverable            gatewaypreauth.RecoverableWait
+	// CodexBridge 组合注入点已随 2026-11-07 跨协议 Responses→Chat 桥退役删除；
+	// preauth 的 Codex 端口在生产装配为原生 compaction contract 单点
+	//（codexCompactionExpectedPort，chain_ports.go），不再有 bridge 服务注入。
+	Recoverable gatewaypreauth.RecoverableWait
 	// DispatchRecoverableWait 是 G11 等待引擎的 dispatch 侧句柄（nil 仅组合
 	// 测试——engine.RecoverableWait 保持缺席语义，抑制耗尽路径快速退出）。
 	DispatchRecoverableWait *gatewaycircuit.PreAuthRecoverableWait
@@ -201,6 +194,11 @@ type chainRuntimeDeps struct {
 	StateClient redis.UniversalClient
 	// CallerTierNamespace 是调用方分级域的带 tag namespace。
 	CallerTierNamespace string
+	// SecurityPolicyProtection 是 API Key 安全策略防护次数的 Redis 增量计数
+	// 面（写后缓存设计 §4.3.1；组合根与 securitypolicies 管理面构造同一实
+	// 例，刷写任务共用同一客户端与 namespace）。nil（StateClient 缺席 / 组合
+	// 测试）时终态 INCRBY 整体无操作。
+	SecurityPolicyProtection *securitypolicies.ProtectionCountStore
 
 	// 显式账户错误策略（chain_error_policy*.go）：决策服务 + 状态写侧窄口
 	// （optional；nil 时派发器保留决策事实，状态变更加显式降级日志）。生产
@@ -259,6 +257,9 @@ type chainRuntimeDeps struct {
 	KeyModelStore gatewayaccounteffects.KeyModelRuntimeStore
 	// ProxyHealth 是 D-136 的上游桶健康端口。
 	ProxyHealth gatewaydispatch.ProxyHealthPort
+	// ProxyPoolTargets 是池绑定账户的请求时健康门/租约修复端口（代理池设计
+	// §10.1）。nil 仅在组合测试/未装配时保持既有直接代理语义。
+	ProxyPoolTargets gatewaydispatch.AccountProxyTargetResolver
 	// HotQuality 是 D-137 的热质量排序端口。
 	HotQuality gatewaydispatch.HotQualityPort
 	// HotQualityFactory 是 D-137 的 attempt 记账生命周期工厂。
@@ -424,7 +425,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// ---- caller tier shadow observation（调用方分级调度设计 §8 M1）----
 	// 驱动选择跟随该链 state Redis 客户端可用性（newCallerTierStore）。
 	// 指标回调接 gatewaycallertier 进程注册表（/__aisys__/metrics 暴露）；
-	// 构造失败 fail-fast（对齐 recorder/codexBridge 的装配惯例）。影子运行，
+	// 构造失败 fail-fast（对齐 recorder 的装配惯例）。影子运行，
 	// 零资源效果，不新增任何配置项。
 	callerTier, err := gatewaycallertier.NewRecorder(newCallerTierStore(deps.StateClient, deps.CallerTierNamespace), gatewaycallertier.PrometheusMetrics(), nil)
 	if err != nil {
@@ -482,35 +483,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	var dispatchSessionAffinity gatewaydispatch.SessionAffinityPort = sessionAffinity
 	if redisBacked := newChainSessionAffinityDispatchPort(sessionAffinity, deps.Identity); redisBacked != nil {
 		dispatchSessionAffinity = redisBacked
-	}
-	// ---- Codex Responses↔Chat bridge state (G18 chat-bridge-state.ts) ----
-	// 2026-09-28 哲学裁定补齐（功能默认开启）：ChatBridgeStateService 实现
-	// 完整但组合根从未装配（迁移漏装配，与终局波 TrafficRuntimeMigrator 同
-	// 类断线），deps.CodexBridge 恒 nil → chainCodexBridgePreflight 恒走
-	// no-op 适配器，restore/compaction preflight 恒缺席。装配优先级：
-	// CodexBridge 显式提供（组合测试注入）优先；否则依赖齐备（双模行存储
-	// + segments 根）时构造真实桥——构造失败 fail-fast（recorder 已建，
-	// 对齐 gatewaypreauth.New 的错误处理惯例）；依赖缺席保持 no-op 降级
-	// （与 Identity 缺席时 codexClientStrategy 的降级分支一致）。
-	codexBridge := deps.CodexBridge
-	if codexBridge == nil && deps.CodexContextStateStore != nil && strings.TrimSpace(deps.CodexContextRoot) != "" {
-		bridge, bridgeErr := newChainCodexBridgePreflight(chainCodexBridgeDeps{
-			Root:   deps.CodexContextRoot,
-			Store:  deps.CodexContextStateStore,
-			Clock:  clock,
-			Logger: slogWarnLogger{inner: logger},
-			Sink:   sink,
-			OnSummaryUsage: chainCompactUsageRecorder{
-				recorder:           recorder,
-				pricing:            chainPricingCatalog,
-				syncPricingAllowed: chainSyncPricingAllowed,
-			}.Record,
-		})
-		if bridgeErr != nil {
-			recorder.Close()
-			return nil, nil, fmt.Errorf("compose codex chat bridge state: %w", bridgeErr)
-		}
-		codexBridge = bridge
 	}
 	// G18 client-source avoidance collaborators: the source-identity resolver
 	// plugs into the shared client-strategy deps (preauth resolution and the
@@ -645,6 +617,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	} else {
 		engine.ProxyHealth = &degradedProxyHealth{}
 	}
+	// 池绑定请求时健康门/租约修复（代理池设计 §10.1）：nil 保持直接代理
+	// 既有语义；生产组合根传入 writer-backed 解析器。
+	engine.ProxyTargets = deps.ProxyPoolTargets
 	// D-137（BUG-0175）接线：热质量排序 + attempt 记账生命周期（nil 保持
 	// 显式降级 / 中性 no-op 生命周期）。
 	if deps.HotQuality != nil {
@@ -777,7 +752,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// 调用方分级影子观测信号口（调用方分级调度设计 §3/§5.4）：preflight
 		// 在本地模型过滤失败按调用方责任渲染终态时透传 model_filter_failed。
 		CallerTier:  callerTier,
-		Codex:       chainCodexBridgePreflight(codexBridge),
+		Codex:       codexCompactionExpectedPort{},
 		Recoverable: deps.Recoverable,
 	})
 	if err != nil {
@@ -785,6 +760,13 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		return nil, nil, err
 	}
 	imagePreflight.preauth = preauthService
+
+	// 多副本 realtime 每 API Key 连接计数：生产由 chain runtime 注入 Redis
+	// 实现；组合测试未注入时保持进程内，避免测试依赖外部 Redis。
+	realtimeConnections := deps.RealtimeConnections
+	if realtimeConnections == nil {
+		realtimeConnections = &chainRealtimeConnectionLimiter{}
+	}
 
 	chain := &gatewayChain{
 		preauth:       preauthService,
@@ -826,9 +808,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// M5b realtime ephemeral token 面（Realtime 设计 §2/§4）。
 		realtimeTokens: deps.RealtimeTokens,
 		// M5b2 realtime WS 桥接面（Realtime 设计 §3）：运行时缓存句柄 +
-		// 每 API Key 并发连接计数器（进程内原子）。
+		// 每 API Key 并发连接计数器（生产 Redis 全局计数）。
 		cache:               deps.Cache,
-		realtimeConnections: &chainRealtimeConnectionLimiter{},
+		realtimeConnections: realtimeConnections,
+		// 防护次数 Redis 计数面（安全策略防护次数计数 V1）：终态消费点
+		// fire-and-forget INCRBY；nil（组合测试 / StateClient 缺席）无操作。
+		securityPolicyProtection: deps.SecurityPolicyProtection,
 	}
 	// W4-B（BUG-0175）D-132 接线：响应层账户副作用面（配置策略避让 +
 	// 上游桶避让写侧）。nil 服务（组合测试）保持 nil——finalization 对 nil
@@ -840,27 +825,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			cache:         deps.Cache,
 			affinity:      dispatchSessionAffinity,
 			groupAffinity: deps.GroupAffinity,
-		}
-	}
-
-	// T32：同一真实桥适配器同时接入 engine.CodexBridge（此前只有 preauth
-	// 适配器接线，engine 侧恒 nil，bridge 账户的 dispatch body 拿不到恢复
-	// 历史）。显式注入的非本适配器类型保持注入方语义。
-	if adapter, ok := codexBridge.(codexPreflightAdapter); ok && adapter.bridge != nil {
-		engine.CodexBridge = adapter
-	}
-
-	// T5（BUG-0274 残余）接线：compact 合成摘要 dispatcher。桥装配（本函数
-	// 前段 newChainCodexBridgePreflight）先于 engine 构造，为不重排桥装配
-	// 顺序，引擎（含 Transport）就绪后经具体适配器类型断言晚绑定回填
-	// Dispatcher——compact 是 *CompactPreflightService 指针，preauth 持有的
-	// 适配器副本与 codexBridge 指向同一 service，回填对全链可见。deps.CodexBridge
-	// 显式注入（组合测试）断言不命中，保持注入方自带语义；未绑定时合成路径
-	// 显式报「codex compact summary dispatcher 未配置」，不静默降级。
-	if adapter, ok := codexBridge.(codexPreflightAdapter); ok && adapter.compact != nil {
-		adapter.compact.Dispatcher = &chainCompactSummaryDispatcher{
-			engine:  engine,
-			auditOf: chain.engineAuditCapture,
 		}
 	}
 

@@ -183,7 +183,11 @@ func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time)
 	var proxyRequired, proxyID, proxyType, proxyHost, proxyUser, proxyPassword sql.NullString
 	var proxyPort sql.NullInt64
 	var proxyEnabled sql.NullBool
-	if err := rows.Scan(&id, &systemID, &revision, &dispatch, &provider, &typ, &status, &schedulable, &enabled, &configJSON, &next, &credentials, &fingerprint, &proxyRequired, &proxyID, &proxyType, &proxyHost, &proxyPort, &proxyUser, &proxyPassword, &proxyEnabled); err != nil {
+	var proxyPoolID, leaseMemberID, leaseType, leaseHost, leaseUser, leasePassword, leaseHealth sql.NullString
+	var leasePort, leaseStreak sql.NullInt64
+	var poolEnabled, leaseEnabled, leaseMemberEnabled sql.NullBool
+	if err := rows.Scan(&id, &systemID, &revision, &dispatch, &provider, &typ, &status, &schedulable, &enabled, &configJSON, &next, &credentials, &fingerprint, &proxyRequired, &proxyID, &proxyType, &proxyHost, &proxyPort, &proxyUser, &proxyPassword, &proxyEnabled,
+		&proxyPoolID, &poolEnabled, &leaseMemberID, &leaseType, &leaseHost, &leasePort, &leaseUser, &leasePassword, &leaseEnabled, &leaseHealth, &leaseMemberEnabled, &leaseStreak); err != nil {
 		return Candidate{}, fmt.Errorf("解码 J2 PG 候选失败: %w", err)
 	}
 	if !id.Valid || !systemID.Valid || !credentials.Valid {
@@ -218,6 +222,34 @@ func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time)
 		}
 		value = value.UTC()
 		candidate.NextRefreshAt = &value
+	}
+	if proxyPoolID.Valid && strings.TrimSpace(proxyPoolID.String) != "" {
+		// 池绑定（代理池设计 §7.5/§10.3）：只读任务不补租约；无有效租约、
+		// 池停用或成员不可分配时该候选明确失败，绝不直连或用旧成员。
+		if proxyID.Valid && strings.TrimSpace(proxyID.String) != "" {
+			return Candidate{}, fmt.Errorf("J2 account=%s 代理与代理池同时绑定（数据损坏）", id.String)
+		}
+		if !poolEnabled.Valid || !poolEnabled.Bool {
+			return Candidate{}, fmt.Errorf("J2 account=%s 代理池不存在或已停用", id.String)
+		}
+		if !leaseMemberID.Valid || strings.TrimSpace(leaseMemberID.String) == "" {
+			return Candidate{}, fmt.Errorf("J2 account=%s 代理池租约不可用", id.String)
+		}
+		if !leaseEnabled.Valid || !leaseEnabled.Bool ||
+			!leaseMemberEnabled.Valid || !leaseMemberEnabled.Bool ||
+			!leaseStreak.Valid || leaseStreak.Int64 >= 3 ||
+			strings.EqualFold(strings.TrimSpace(leaseHealth.String), "dead") {
+			return Candidate{}, fmt.Errorf("J2 account=%s 代理池成员不可分配", id.String)
+		}
+		candidate.ProxyPoolID = strings.TrimSpace(proxyPoolID.String)
+		candidate.ProxyMemberProfileID = strings.TrimSpace(leaseMemberID.String)
+		candidate.ProxyProfileID = candidate.ProxyMemberProfileID
+		proxy, err := r.makeProxy(leaseType.String, leaseHost.String, leasePort.Int64, leaseUser.String, leasePassword.String)
+		if err != nil {
+			return Candidate{}, fmt.Errorf("J2 account=%s 池成员代理无效: %w", id.String, err)
+		}
+		candidate.Proxy = proxy
+		return candidate, nil
 	}
 	if proxyRequired.Valid && (!proxyID.Valid || !proxyEnabled.Valid || !proxyEnabled.Bool) {
 		return Candidate{}, fmt.Errorf("J2 account=%s 代理配置不存在或已禁用", id.String)
@@ -295,7 +327,15 @@ func j2CandidateSQL(kind candidateReadKind) string {
 	// 供应商解耦读侧（设计 §9.11 目标列集无 provider_code）：身份列改
 	// COALESCE(vendor_code,'')，与 jobs cmd SQLite 侧 balanceDetectRuntime 同口径；
 	// 真实厂商账户 vendor 恒非空。
-	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,COALESCE(a.vendor_code,''),a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.credential_fingerprint,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND (a.availability_schedule_gate IS NULL OR a.availability_schedule_gate = 1) AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
+	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,COALESCE(a.vendor_code,''),a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.credential_fingerprint,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled,
+		COALESCE(a.proxy_pool_id,''),pool.enabled,lease.proxy_profile_id,lease_profile.type,lease_profile.host,lease_profile.port,lease_profile.username,lease_profile.password_encrypted,lease_profile.enabled,COALESCE(lease_profile.pool_health_status,'unknown'),lease_member.enabled,lease_profile.pool_health_failure_streak
+		FROM juhe_business.accounts a
+		LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id
+		LEFT JOIN juhe_business.proxy_pools pool ON pool.id=a.proxy_pool_id
+		LEFT JOIN juhe_business.account_proxy_leases lease ON lease.account_id=a.id AND lease.pool_id=a.proxy_pool_id
+		LEFT JOIN juhe_business.proxy_pool_members lease_member ON lease_member.pool_id=lease.pool_id AND lease_member.proxy_profile_id=lease.proxy_profile_id
+		LEFT JOIN juhe_business.proxy_profiles lease_profile ON lease_profile.id=lease.proxy_profile_id
+		WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND (a.availability_schedule_gate IS NULL OR a.availability_schedule_gate = 1) AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
 }
 
 func j2CandidateByIDSQL(kind candidateReadKind) string {

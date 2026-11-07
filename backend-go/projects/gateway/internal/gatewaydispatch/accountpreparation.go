@@ -16,7 +16,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // Account preparation, migrated from dispatch/account-preparation.ts.
@@ -449,6 +448,9 @@ func cooldownUntilActive(cooldownUntil string) bool {
 }
 
 // BuildPreparedUpstreamRequestParts mirrors buildPreparedUpstreamRequestParts.
+// 2026-11-07 跨协议 Responses→Chat 桥退役：原 e.CodexBridge 的
+// PrepareContextForAccount（桥恢复历史物化）与 BridgeGuidanceError →
+// agent_guidance 的错误提升随桥删除；准备链只剩历史清理与 driver 组装。
 func (e *Engine) BuildPreparedUpstreamRequestParts(
 	ctx context.Context,
 	req *gatewaypreauth.GatewayRequest,
@@ -456,14 +458,9 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 	usageContext gatewaypreauth.GatewayFailureUsageContext,
 	requestClientCompatibility string,
 ) (PreparedRequestParts, error) {
-	if e.CodexBridge != nil {
-		if err := e.CodexBridge.PrepareContextForAccount(req, account); err != nil {
-			return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, err)
-		}
-	}
 	// 历史准备策略在准备链入口由纯函数计算一次（调度内核通用化批次 3b，
-	// HistoryPrepPolicyForRequest）；计算位置与改造前 defer 判定的读取点一致
-	//（bridge 准备之后、Front 之前），endpoint family 为请求行纯函数。
+	// HistoryPrepPolicyForRequest）；计算位置在 driver 组装之前，
+	// endpoint family 为请求行纯函数。
 	historyPrepPolicy := HistoryPrepPolicyForRequest(account, requestClientCompatibility, GatewayRequestEndpointFamily(req))
 	if historyPrepPolicy.Front == HistoryPrepStageSanitizeInline {
 		e.sanitizeCodexResponsesHistoryForAccount(req, account, historyPrepPolicy)
@@ -474,7 +471,7 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 		GroupID:         usageContext.GroupID,
 	}, requestClientCompatibility)
 	if err != nil {
-		return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, convertBridgeGuidanceError(err))
+		return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, err)
 	}
 	body := e.SanitizePreparedCodexResponsesHistoryForAccount(account, parts.Body, historyPrepPolicy)
 	metadata := PreparedUpstreamBodyMetadata(req, body)
@@ -487,25 +484,6 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 		parts.EffectiveReasoningEffort = derefStringPtr(metadata.ReasoningEffort)
 	}
 	return parts, nil
-}
-
-// convertBridgeGuidanceError lifts the openaicompatbridge.BridgeGuidanceError
-// payload (Node GatewayAgentGuidanceResponse: 200 agent_guidance) onto the
-// gatewaypreauth error the engine's errors.As recognition consumes
-// (dispatchsingle / attemptoutcomes guidance branches). accountScoped keeps
-// the Node `accountScoped !== false` default (nil reads as true).
-func convertBridgeGuidanceError(err error) error {
-	var guidanceErr *openaicompatbridge.BridgeGuidanceError
-	if !errors.As(err, &guidanceErr) {
-		return err
-	}
-	return &gatewaypreauth.GatewayAgentGuidanceResponse{
-		Message:  guidanceErr.Message,
-		Code:     guidanceErr.Code,
-		Protocol: gatewaypreauth.GatewayAgentGuidanceProtocol(guidanceErr.Protocol),
-		Stream:   guidanceErr.Stream,
-		Model:    guidanceErr.Model,
-	}
 }
 
 // wrapCodexPreparationError mirrors the upstream adapter contract error branch

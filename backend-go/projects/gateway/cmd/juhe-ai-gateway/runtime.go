@@ -61,12 +61,9 @@ type runtimeConfig struct {
 	RedisNamespace string
 	Secret         string
 
-	// CodexContextRoot is the codex-context segments root (Node
-	// runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_ROOT, default
-	// <DATA_DIR>/codex-context): the Responses↔Chat bridge SegmentStore root
-	// on the gateway and the retention segments cleanup root on jobs — both
-	// processes must derive the same directory.
-	CodexContextRoot string
+	// 2026-11-07 跨协议 Responses→Chat 桥退役：原 CodexContextRoot
+	//（JUHE_AI_CODEX_CONTEXT_ROOT，segments 根）随桥删除；历史 codex-context/
+	// 目录按部署文档人工备份后清理，运行时不读取。
 
 	OpenAICompatibleFilesRoot string
 
@@ -324,11 +321,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// segments 根、logs 均落 <JUHE_AI_DATA_DIR=./data>/<固定名>。
 	// sqlite 专库文件族路径派生已随存储形态退役删除。
 	dataDir := datadir.Dir(getenv)
-	// Codex Context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，缺省
-	// <DATA_DIR>/codex-context）：gateway Responses↔Chat 桥 SegmentStore 与
-	// jobs retention segments 清理的同源根，两侧派生规则必须一致。
-	cfg.CodexContextRoot = datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_ROOT", datadir.CodexContextRoot)
-
 	cfg.OpenAICompatibleFilesRoot = strings.TrimSpace(getenv("JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT"))
 
 	// 演练场产物暂存根（演练场设计 §3.8，零新 env：固定派生

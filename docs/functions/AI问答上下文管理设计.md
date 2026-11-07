@@ -228,7 +228,7 @@ historyBudget = effectiveInputLimit
 6. 保留最近完整成功轮次原文尾部。
 7. 对新 checkpoint 重新计数并执行质量校验。
 
-站内 AI 问答默认使用可跨同一 API Key 候选账户安全重建的本站结构化摘要 checkpoint。只有路由能够保证后续请求继续命中兼容的 provider / protocol profile / endpoint family / 模型兼容组，并且 capability probe 已验证时，才允许使用官方 `context_management` 或 `/responses/compact`；opaque compaction item 必须原样保存，不能编辑、跨供应商或交给 Chat bridge。
+站内 AI 问答默认使用可跨同一 API Key 候选账户安全重建的本站结构化摘要 checkpoint。只有路由能够保证后续请求继续命中兼容的 provider / protocol profile / endpoint family / 模型兼容组，并且 capability probe 已验证时，才允许使用官方 `context_management` 或 `/responses/compact`；opaque compaction item 必须原样保存，不能编辑或跨供应商（Chat bridge 已随 2026-11-07 跨协议映射退役删除，“交给 Chat bridge”路径不存在；AI 问答本身已于 2026-10-31 退役，本文为历史功能契约）。
 
 ### 7.3 质量门禁
 

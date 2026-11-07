@@ -56,3 +56,78 @@ func TestEvaluateFreshKeepsDryRunGuidance(t *testing.T) {
 		t.Fatalf("fresh 未升级应引导 dry-run 预演: %+v", decision)
 	}
 }
+
+// 多节点发布门禁（设计 §5.2）：N/N-1 共存、expand 中断放行旧二进制、
+// contract 后拒绝旧二进制、expand 未完成拒绝新二进制。
+func TestEvaluateWithStateMultiNodeWindow(t *testing.T) {
+	binary := int64(contracts.SchemaRevision)
+	cases := []struct {
+		name        string
+		state       State
+		wantOK      bool
+		wantWarning bool
+		wantInMsg   []string
+	}{
+		{
+			name:   "N/N-1 共存",
+			state:  State{DBRevision: binary, StepMax: binary, BinaryRevision: binary - 1, MinRequiredRevision: binary - 1, MinReadableBinaryRevision: binary - 1, ExpandCompleted: true},
+			wantOK: true,
+		},
+		{
+			name:      "contract 后旧二进制",
+			state:     State{DBRevision: binary, StepMax: binary, BinaryRevision: binary - 1, MinRequiredRevision: binary - 1, MinReadableBinaryRevision: binary, ExpandCompleted: true},
+			wantOK:    false,
+			wantInMsg: []string{"最小可读版本"},
+		},
+		{
+			name:        "expand 中断旧二进制放行",
+			state:       State{DBRevision: binary - 1, StepMax: binary, BinaryRevision: binary - 1, MinRequiredRevision: binary - 1, MinReadableBinaryRevision: binary - 1, ExpandCompleted: false, InterruptedPhase: "expand"},
+			wantOK:      true,
+			wantWarning: true,
+		},
+		{
+			name:      "expand 中断新二进制拒绝",
+			state:     State{DBRevision: binary - 1, StepMax: binary, BinaryRevision: binary, MinRequiredRevision: binary, MinReadableBinaryRevision: binary - 1, ExpandCompleted: false, InterruptedPhase: "expand"},
+			wantOK:    false,
+			wantInMsg: []string{"expand 完成后启动"},
+		},
+		{
+			name:      "contract 中断全拒绝",
+			state:     State{DBRevision: binary - 1, StepMax: binary, BinaryRevision: binary, MinRequiredRevision: binary, MinReadableBinaryRevision: binary - 1, ExpandCompleted: false, InterruptedPhase: "contract"},
+			wantOK:    false,
+			wantInMsg: []string{"contract/破坏性"},
+		},
+		{
+			name:      "库太旧新二进制拒绝",
+			state:     State{DBRevision: binary - 1, StepMax: binary - 1, BinaryRevision: binary, MinRequiredRevision: binary, MinReadableBinaryRevision: binary - 1, ExpandCompleted: true},
+			wantOK:    false,
+			wantInMsg: []string{"尚未升级"},
+		},
+		{
+			name:      "账本缺失",
+			state:     State{DBRevision: binary, StepMax: 0, BinaryRevision: binary, MinRequiredRevision: binary, MinReadableBinaryRevision: binary - 1, ExpandCompleted: true},
+			wantOK:    false,
+			wantInMsg: []string{"账本缺失"},
+		},
+		{
+			name:      "fresh 保持 dry-run 引导",
+			state:     State{DBRevision: 0, StepMax: 0, BinaryRevision: binary, MinRequiredRevision: binary},
+			wantOK:    false,
+			wantInMsg: []string{"dry-run"},
+		},
+	}
+	for _, tc := range cases {
+		decision := EvaluateWithState(tc.state)
+		if decision.OK != tc.wantOK {
+			t.Fatalf("%s: OK = %v, want %v（message=%q warning=%q）", tc.name, decision.OK, tc.wantOK, decision.Message, decision.Warning)
+		}
+		if (decision.Warning != "") != tc.wantWarning {
+			t.Fatalf("%s: warning = %q, wantWarning = %v", tc.name, decision.Warning, tc.wantWarning)
+		}
+		for _, fragment := range tc.wantInMsg {
+			if !strings.Contains(decision.Message, fragment) {
+				t.Fatalf("%s: 文案缺 %q（message=%q）", tc.name, fragment, decision.Message)
+			}
+		}
+	}
+}

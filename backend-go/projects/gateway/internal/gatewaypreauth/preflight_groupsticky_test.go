@@ -174,7 +174,7 @@ func groupStickyAffinityTestService(t *testing.T, affinity *fakeGroupAffinityPor
 		s.GroupAffinity = affinity
 		s.SessionIdentity = identity
 		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 	return service, cache
 }

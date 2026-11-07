@@ -309,3 +309,130 @@ func itoa(value int) string {
 	}
 	return string(digits)
 }
+
+// capturingLogHandler 捕获 slog 记录，用于断言 logRefresh 的级别与结构化字段
+//（包内既有测试用 slog.DiscardHandler，不消费日志）。
+type capturingLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingLogHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, record)
+	return nil
+}
+
+func (h *capturingLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *capturingLogHandler) WithGroup(name string) slog.Handler       { return h }
+
+func logAttrValue(record slog.Record, key string) (slog.Value, bool) {
+	value := slog.Value{}
+	found := false
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == key {
+			value = attr.Value
+			found = true
+			return false
+		}
+		return true
+	})
+	return value, found
+}
+
+func requireRefreshLogRecord(t *testing.T, handler *capturingLogHandler, level slog.Level) slog.Record {
+	t.Helper()
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	for _, record := range handler.records {
+		if record.Level != level {
+			continue
+		}
+		if value, ok := logAttrValue(record, "event"); ok && value.String() == eventRefreshCompleted {
+			return record
+		}
+	}
+	t.Fatalf("未找到 level=%v 的 %s 记录, records=%d", level, eventRefreshCompleted, len(handler.records))
+	return slog.Record{}
+}
+
+func TestRefreshPartialFailureLogsWarnWithFailedSources(t *testing.T) {
+	handler := &capturingLogHandler{}
+	deps := testDeps(t, map[string]string{FamilyClaudeCode: "2.1.300"}, func(map[string]string) {}, func(map[string]string) {})
+	deps.Logger = slog.New(handler)
+	deps.HTTP = scriptedDoer{
+		FamilyCodex:      releaseResponse(http.StatusTooManyRequests, "rate limited"),
+		FamilyClaudeCode: releaseResponse(http.StatusOK, npmJSON("@anthropic-ai/claude-code", "2.1.301")),
+		FamilyGeminiCLI:  releaseResponse(http.StatusBadGateway, "bad gateway"),
+		FamilyZCode:      releaseResponse(http.StatusOK, zcodeJSON("v9.9.9", "https://github.com/zai-org/ZCode/releases/tag/v9.9.9")),
+		FamilyGrokCLI:    releaseResponse(http.StatusOK, "[package]\nname = \"xai-grok-shell\"\nversion = \"9.9.9\"\n"),
+	}
+
+	result, err := Refresh(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("部分成功不得返回 error: %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("claudeCode 上升应写库")
+	}
+	record := requireRefreshLogRecord(t, handler, slog.LevelWarn)
+	if value, ok := logAttrValue(record, "ok"); !ok || !value.Bool() {
+		t.Fatal("部分成功返回 nil 的完成事件 ok 应为 true")
+	}
+	failed, ok := logAttrValue(record, "failed_sources")
+	if !ok {
+		t.Fatal("Warn 记录缺少 failed_sources 字段")
+	}
+	failedSet := map[string]bool{}
+	for _, family := range strings.Split(failed.String(), ",") {
+		failedSet[family] = true
+	}
+	if len(failedSet) != 2 || !failedSet[FamilyCodex] || !failedSet[FamilyGeminiCLI] {
+		t.Fatalf("failed_sources = %s, want codex,geminiCLI", failed.String())
+	}
+}
+
+func TestRefreshAllSourcesFailedLogStaysInfo(t *testing.T) {
+	handler := &capturingLogHandler{}
+	deps := testDeps(t, map[string]string{}, func(map[string]string) {}, func(map[string]string) {})
+	deps.Logger = slog.New(handler)
+	deps.HTTP = scriptedDoer{}
+
+	if _, err := Refresh(context.Background(), deps); err == nil {
+		t.Fatal("全部源失败应返回 error")
+	}
+	record := requireRefreshLogRecord(t, handler, slog.LevelInfo)
+	if _, has := logAttrValue(record, "failed_sources"); has {
+		t.Fatal("全部源失败路径不得携带 failed_sources（失败可见性由调度层兜底）")
+	}
+}
+
+func TestRefreshFullSuccessLogsInfo(t *testing.T) {
+	handler := &capturingLogHandler{}
+	deps := testDeps(t, map[string]string{
+		FamilyCodex:      "0.200.0",
+		FamilyClaudeCode: "2.1.300",
+		FamilyGeminiCLI:  "0.70.0",
+		FamilyZCode:      "3.20.0",
+		FamilyGrokCLI:    "1.0.45",
+	}, func(map[string]string) {}, func(map[string]string) {})
+	deps.Logger = slog.New(handler)
+	deps.HTTP = scriptedDoer{
+		FamilyCodex:      releaseResponse(http.StatusOK, githubReleaseJSON("0.200.0", "https://github.com/openai/codex/releases/tag/rust-v0.200.0")),
+		FamilyClaudeCode: releaseResponse(http.StatusOK, npmJSON("@anthropic-ai/claude-code", "2.1.300")),
+		FamilyGeminiCLI:  releaseResponse(http.StatusOK, npmJSON("@google/gemini-cli", "0.70.0")),
+		FamilyZCode:      releaseResponse(http.StatusOK, zcodeJSON("v3.20.0", "https://github.com/zai-org/ZCode/releases/tag/v3.20.0")),
+		FamilyGrokCLI:    releaseResponse(http.StatusOK, "[package]\nname = \"xai-grok-shell\"\nversion = \"1.0.45\"\n"),
+	}
+
+	if _, err := Refresh(context.Background(), deps); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	record := requireRefreshLogRecord(t, handler, slog.LevelInfo)
+	if _, has := logAttrValue(record, "failed_sources"); has {
+		t.Fatal("全成功路径不得携带 failed_sources")
+	}
+}

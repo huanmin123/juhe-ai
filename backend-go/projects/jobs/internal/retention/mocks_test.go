@@ -126,11 +126,6 @@ type fakeDbService struct {
 	sessionCalls    int
 	sessionsErr     error
 
-	codexScript  []*CodexContextExpiredCleanup
-	codexCutoffs []string
-	codexCalls   int
-	codexErr     error
-
 	chatErr    error
 
 	expiredSummary *ExpiredDeletedAccountSummary
@@ -154,24 +149,7 @@ func (f *fakeDbService) CleanupExpiredSystemSessions(_ context.Context, expiredB
 	return deleted, nil
 }
 
-func (f *fakeDbService) CleanupExpiredCodexContextStates(_ context.Context, expiredBefore string, _ int) (*CodexContextExpiredCleanup, error) {
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
-	f.codexCutoffs = append(f.codexCutoffs, expiredBefore)
-	result := &CodexContextExpiredCleanup{}
-	if f.codexCalls < len(f.codexScript) {
-		result = f.codexScript[f.codexCalls]
-	}
-	f.codexCalls++
-	if f.codexErr != nil {
-		return nil, f.codexErr
-	}
-	return result, nil
-}
 
-func (f *fakeDbService) SettleCodexContextStorageCleanup(context.Context, CodexContextSettlement) (CodexContextSettlementResult, error) {
-	return CodexContextSettlementResult{}, nil
-}
 
 func (f *fakeDbService) CleanupExpiredDeletedAccounts(context.Context) (*ExpiredDeletedAccountSummary, error) {
 	f.mutex.Lock()
@@ -183,28 +161,6 @@ func (f *fakeDbService) CleanupExpiredDeletedAccounts(context.Context) (*Expired
 	return f.expiredSummary, nil
 }
 
-type fakeCodexStorage struct {
-	mutex      sync.Mutex
-	keys       [][]string
-	deleted    []int64
-	calls      int
-	processErr error
-}
-
-func (f *fakeCodexStorage) ProcessBatch(_ context.Context, storageKeys []string) (int64, error) {
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
-	f.keys = append(f.keys, storageKeys)
-	deleted := int64(0)
-	if f.calls < len(f.deleted) {
-		deleted = f.deleted[f.calls]
-	}
-	f.calls++
-	if f.processErr != nil {
-		return 0, f.processErr
-	}
-	return deleted, nil
-}
 
 type fakeEnqueuer struct {
 	mutex    sync.Mutex

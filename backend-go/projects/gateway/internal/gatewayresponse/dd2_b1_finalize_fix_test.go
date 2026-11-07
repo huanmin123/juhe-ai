@@ -21,7 +21,7 @@ import (
 // 记账（RecordCompletedUpstreamAttempt，Success=false）的计费 usage——不得
 // 按快照 {100,50} 或 {N,0} 计费。失败终态 return 不携带 result.Usage，计费
 // 面在 UsageRecords 记账入参。
-func TestDD2B1TruncatedStreamSkipsBridgeSnapshotFallsBackToEstimate(t *testing.T) {
+func TestDD2B1TruncatedStreamFallsBackToEstimate(t *testing.T) {
 	input, _ := newInputFixture(NewSliceUpstreamBody([]byte(chatDeltaChunk)), 200, nil)
 	usageRecords := &mockUsageRecords{}
 	fallbackCalls := 0
@@ -38,11 +38,9 @@ func TestDD2B1TruncatedStreamSkipsBridgeSnapshotFallsBackToEstimate(t *testing.T
 			return gatewayproto.ParsedUsage{OutputTokens: &estimatedOutput}, true, nil, &estimatedOutput
 		},
 	}
-	snapshotInput, snapshotOutput := 100, 50
-	input.BridgeUsage = func() (gatewayproto.ParsedUsage, bool) {
-		// 桥泵在 pump err==nil（clean EOF）时已写入的半程 usage 快照。
-		return gatewayproto.ParsedUsage{InputTokens: &snapshotInput, OutputTokens: &snapshotOutput}, true
-	}
+	// 2026-11-07 跨协议桥退役：原 BridgeUsage 半程快照供给随桥删除；本测试
+	// 锁定的 DD2-B1 语义（截断流不得按半程 usage 计费、必须回落估算兜底）由
+	// UsageFallback 单独承载。
 
 	result, err := HandleStreamUpstreamResponse(input)
 	if err != nil {

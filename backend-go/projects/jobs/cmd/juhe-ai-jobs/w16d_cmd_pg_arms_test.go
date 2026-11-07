@@ -2,7 +2,8 @@
 // 门禁已退役）与深臂：
 //   - worker_retention.go 家族适配器的 postgres 分支（CleanupApiKeyRelated /
 //     CleanupAccountRelated / CleanupPendingTargets / ProcessBatch /
-//     SettleCodexContextStorageCleanup / flushLoop 失败重排）；
+//     record_maintenance drain / flushLoop 失败重排；codex settle 臂随
+//     2026-11-07 codex-context 退役删除）；
 //   - worker_projection_jobs.go 的 PG 完整装配链与任务闭包；
 //   - worker_record_maintenance_table_drain 的 PG drain 接线；
 //   - main.go jobsHTTPHandler 的 J2 手动桥（401/400/尾随 JSON/RunManual 错误）；
@@ -106,29 +107,14 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 	}
 }
 
-func TestW16DPGCodexSettleAndDrainArms(t *testing.T) {
+func TestW16DPGRecordMaintenanceDrainArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
 	pgDB, _ := w16dPGOpen(t)
 	pgHandle := &cleanuprepo.DB{DB: pgDB}
-	// SettleCodexContextStorageCleanup 错误臂：PG 句柄指向关闭连接（700-702；
-	// 原 sqlite closed 句柄夹具随 sqlite 形态退役删除，改隔离库 DSN 的关闭句柄）。
-	_, closedDSN := wgOpenPGDialectDB(t, nil)
-	closed, err := sql.Open("pgx", closedDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
-	closedPG := &cleanuprepo.DB{DB: closed}
-	dbService := &familyDbService{
-		codex: &cleanuprepo.CodexContextStore{PG: closedPG},
-	}
-	if _, err := dbService.SettleCodexContextStorageCleanup(context.Background(), retention.CodexContextSettlement{
-		SucceededStorageKeys: []string{"w16d-key"},
-	}); err == nil {
-		t.Fatal("关闭 PG 句柄结算必须报错")
-	}
+	// 2026-11-07 codex-context 退役：原 SettleCodexContextStorageCleanup 关闭
+	// 句柄错误臂随桥删除。
 	// record_maintenance 表 drain 的 PG 接线（50-52）与 closer 排空（74-78）。
 	assembly := newWorkerAssembly(workerConfig{InstanceID: "w16d-drain",
 		RecordMaintenanceBatchSize:               5,

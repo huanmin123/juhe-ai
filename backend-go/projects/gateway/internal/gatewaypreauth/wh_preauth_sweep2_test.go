@@ -94,7 +94,7 @@ func TestWhPreflightDispatchDiagnosticsMetadata(t *testing.T) {
 			accounts:     []gatewayruntimecache.OpenAIAccountSecret{account},
 		}
 		s.Candidates = whFullDispatchCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 	audit := &fakeAuditCapture{}
 	req, _, writer := whAuthorizedChatRequest()
@@ -219,26 +219,6 @@ func TestWhPreflightPreparationCoordinatorFailure(t *testing.T) {
 	}
 }
 
-// whCodexCompact 触发派发账号回调并按配置就地完成。
-type whCodexCompact struct {
-	fakeCodex
-	complete bool
-	account  gatewayAccountFixtureAlias
-	sawCall  *bool
-}
-
-type gatewayAccountFixtureAlias = gatewayruntimecache.OpenAIAccountSecret
-
-func (f *whCodexCompact) ApplyChatBridgeCompactPreflight(ctx context.Context, input CodexCompactPreflightInput) (CodexCompactPreflightResult, error) {
-	if input.OnDispatchedAccount != nil && len(input.DispatchAccounts) > 0 {
-		input.OnDispatchedAccount(input.DispatchAccounts[0])
-	}
-	if f.complete {
-		return CodexCompactPreflightResult{Completed: true, Accounts: input.DispatchAccounts}, nil
-	}
-	return f.fakeCodex.ApplyChatBridgeCompactPreflight(ctx, input)
-}
-
 // whPoliciesErrCache 注入策略列表错误。
 type whPoliciesErrCache struct {
 	*fakeRuntimeCache
@@ -248,48 +228,15 @@ func (c *whPoliciesErrCache) ListCachedActiveResponseInspectionPoliciesForAccoun
 	return nil, errors.New("wh 注入策略读取失败")
 }
 
-// 热门质量探索结算与压缩预检完成/策略读取错误的清理路径。
+// 策略读取错误的清理路径（探索预约悬空结算 + 并发占位释放 + 错误传播）。
+// 2026-11-07 桥退役：原「压缩预检就地完成」清理臂随 ApplyChatBridgeCompact-
+// Preflight 删除，探索结算的 dispatched 臂下沉到派发引擎消费 DispatchContext。
 func TestWhPreflightSettleAndCleanupPaths(t *testing.T) {
 	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
-	settled := []string{}
-	// 1. 派发账号命中探索预留 → 结算 dispatched。
-	called := false
-	service, _, _ := newTestService(t, func(s *Service) {
-		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
-		s.Candidates = &fakeCandidates{
-			filterResult: CandidateFilterResult{Outcome: CandidateOutcomeAccounts, Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
-			preparation: DispatchPreparationResult{
-				Outcome:                    CandidateOutcomeAccounts,
-				Accounts:                   []gatewayruntimecache.OpenAIAccountSecret{account},
-				ReleaseClientIPConcurrency: func() {},
-				SettleHotQualityExplorationAfterDispatch: func(outcome string) error {
-					settled = append(settled, outcome)
-					return nil
-				},
-				HotQualityExplorationReservation: &HotQualityExplorationReservation{AccountRuntimeKey: "acc_1"},
-			},
-		}
-		s.Codex = &whCodexCompact{
-			account: account,
-			sawCall: &called,
-		}
-	})
-	req, _, writer := whAuthorizedChatRequest()
-	if _, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Req: req, Res: writer, AuditCapture: &fakeAuditCapture{}, Options: &PreflightOptions{},
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(settled) != 1 || settled[0] != "dispatched" {
-		t.Fatalf("结算 = %v", settled)
-	}
-
-	// 2. 压缩预检就地完成 → 结算 not_dispatched 并释放并发占位。
 	released := false
-	settled2 := []string{}
-	service2, _, _ := newTestService(t, func(s *Service) {
-		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
+	settled := []string{}
+	service, _, _ := newTestService(t, func(s *Service) {
+		s.RuntimeCache = &whPoliciesErrCache{fakeRuntimeCache: whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})}
 		s.Candidates = &fakeCandidates{
 			filterResult: CandidateFilterResult{Outcome: CandidateOutcomeAccounts, Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
 			preparation: DispatchPreparationResult{
@@ -297,37 +244,22 @@ func TestWhPreflightSettleAndCleanupPaths(t *testing.T) {
 				Accounts:                   []gatewayruntimecache.OpenAIAccountSecret{account},
 				ReleaseClientIPConcurrency: func() { released = true },
 				SettleHotQualityExplorationAfterDispatch: func(outcome string) error {
-					settled2 = append(settled2, outcome)
+					settled = append(settled, outcome)
 					return nil
 				},
 			},
 		}
-		s.Codex = &whCodexCompact{complete: true}
+		s.Codex = &fakeCodex{}
 	})
-	req2, _, writer2 := whAuthorizedChatRequest()
-	result2, err := service2.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Req: req2, Res: writer2, AuditCapture: &fakeAuditCapture{}, Options: &PreflightOptions{},
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	})
-	if err != nil || result2.DispatchContext != nil {
-		t.Fatalf("压缩完成 = %+v err=%v", result2, err)
-	}
-	if !released || len(settled2) != 1 || settled2[0] != "not_dispatched" {
-		t.Fatalf("清理路径 released=%v settled=%v", released, settled2)
-	}
-
-	// 3. 策略读取错误 → 结算并传播错误。
-	service3, _, _ := newTestService(t, func(s *Service) {
-		s.RuntimeCache = &whPoliciesErrCache{fakeRuntimeCache: whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})}
-		s.Candidates = whFullDispatchCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
-	})
-	req3, _, writer3 := whAuthorizedChatRequest()
-	if _, err := service3.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Req: req3, Res: writer3, AuditCapture: &fakeAuditCapture{}, Options: &PreflightOptions{},
+	req, _, writer := whAuthorizedChatRequest()
+	if _, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
+		Req: req, Res: writer, AuditCapture: &fakeAuditCapture{}, Options: &PreflightOptions{},
 		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
 	}); err == nil {
 		t.Fatal("策略读取错误必须传播")
+	}
+	if !released || len(settled) != 1 || settled[0] != "not_dispatched" {
+		t.Fatalf("清理路径 released=%v settled=%v", released, settled)
 	}
 }
 
@@ -337,7 +269,7 @@ func TestWhPreflightClientStrategyAuditMetadata(t *testing.T) {
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whFullDispatchCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 		s.ClientStrategy = &fakeClientStrategy{strategy: ClientStrategyContext{ClientProfile: "codex"}}
 	})
 	audit := &fakeAuditCapture{}

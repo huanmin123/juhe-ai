@@ -26,6 +26,9 @@ func runUpgradeCommand(argv []string) int {
 	dryRun := fs.Bool("dry-run", false, "read-only: print the plan (pending/adopt/destructive disclosure/rollback level/estimate) and exit")
 	stopWrite := fs.Bool("stop-write-confirmed", false, "confirm gateway and jobs are stopped")
 	backupConfirmed := fs.Bool("backup-confirmed", false, "confirm a recoverable backup exists")
+	phase := fs.String("phase", "all", "migration phase: all|expand|contract (expand keeps old binaries readable; contract removes old structure)")
+	online := fs.Bool("online", false, "expand phase: allow gateway/jobs writers to keep running (requires --backup-confirmed; default requires --stop-write-confirmed)")
+	oldWritersDrained := fs.Bool("old-writers-drained", false, "contract phase: confirm all old gateway/jobs instances are stopped and no old-version requests remain")
 	secret := fs.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET)")
 	reportOut := fs.String("report-out", "", "additionally write the JSON report to this file (write failure is a WARN, never flips the exit code)")
 	stepTimeout := fs.Duration("step-timeout", 30*time.Minute, "per-step apply/verify timeout, clamped to 1m..4h")
@@ -38,6 +41,21 @@ func runUpgradeCommand(argv []string) int {
 	}
 	if strings.TrimSpace(*bootstrapDSN) == "" {
 		fmt.Fprintln(os.Stderr, "upgrade 需要 --dsn 指向主库 PostgreSQL URL")
+		return ExitUsageCode
+	}
+	phaseValue := upgradepipeline.UpgradePhase(strings.ToLower(strings.TrimSpace(*phase)))
+	switch phaseValue {
+	case upgradepipeline.PhaseAll, upgradepipeline.PhaseExpand, upgradepipeline.PhaseContract:
+	default:
+		fmt.Fprintln(os.Stderr, "upgrade --phase 必须是 all|expand|contract")
+		return ExitUsageCode
+	}
+	if *online && phaseValue != upgradepipeline.PhaseExpand {
+		fmt.Fprintln(os.Stderr, "upgrade --online 只能与 --phase=expand 一起使用")
+		return ExitUsageCode
+	}
+	if *oldWritersDrained && phaseValue != upgradepipeline.PhaseContract {
+		fmt.Fprintln(os.Stderr, "upgrade --old-writers-drained 只能与 --phase=contract 一起使用")
 		return ExitUsageCode
 	}
 	// --step-timeout 钳制 1m..4h（§9.1）。
@@ -61,6 +79,9 @@ func runUpgradeCommand(argv []string) int {
 		DryRun:             *dryRun,
 		StopWriteConfirmed: *stopWrite,
 		BackupConfirmed:    *backupConfirmed,
+		Phase:              phaseValue,
+		Online:             *online,
+		OldWritersDrained:  *oldWritersDrained,
 		StepTimeout:        timeout,
 		AppVersion:         appVersion,
 	}

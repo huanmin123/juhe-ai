@@ -17,10 +17,6 @@ type Config struct {
 	// WorkerRole mirrors JUHE_AI_WORKER_ROLE (Node default worker). The
 	// data-retention stages additionally require "ingest-worker".
 	WorkerRole string
-	// CodexContextRoot mirrors JUHE_AI_CODEX_CONTEXT_ROOT; required for the
-	// codex-context storage cleanup.
-	CodexContextRoot string
-
 	// Now/Sleep inject the clock and the batch pause in tests.
 	Now   Clock
 	Sleep Sleeper
@@ -39,6 +35,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if value := strings.TrimSpace(getenv("JUHE_AI_WORKER_ROLE")); value != "" {
 		cfg.WorkerRole = value
 	}
-	cfg.CodexContextRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_ROOT"))
+	// 2026-11-07 codex-context 退役：JUHE_AI_CODEX_CONTEXT_ROOT 不再读取。
 	return cfg, nil
 }

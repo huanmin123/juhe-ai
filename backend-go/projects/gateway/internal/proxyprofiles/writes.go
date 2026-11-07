@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -131,6 +132,8 @@ func (s *Store) Create(ctx context.Context, input proxyInput, systemAccountID st
 		}
 		return ProfileSummary{}, err
 	}
+	// 代理池设计 §10.2：代理档案写入提交后补上 gateway runtime 失效。
+	s.notifyRuntimeUpdated()
 	return profile, nil
 }
 
@@ -316,6 +319,36 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 		values["outboundRegion"] = nil
 		values["lastTestMessage"] = nil
 		values["lastTestedAt"] = nil
+		// 代理池设计 §6.2：连接变更重置池健康投影，旧连接的检测结果不得
+		// 继续决定新连接的分配状态；Redis 成员健康键在提交后 best-effort
+		// 删除（见下方提交成功路径）。
+		assignments = append(assignments,
+			struct {
+				column string
+				value  any
+			}{"pool_health_status", poolHealthResetStatus},
+			struct {
+				column string
+				value  any
+			}{"pool_health_failure_streak", poolHealthResetStreak},
+			struct {
+				column string
+				value  any
+			}{"pool_health_checked_at", nil},
+		)
+		values["poolHealthStatus"] = poolHealthResetStatus
+		values["poolHealthFailureStreak"] = poolHealthResetStreak
+		values["poolHealthCheckedAt"] = nil
+	} else if input.Enabled != nil && *input.Enabled && !current.enabled {
+		// 代理池设计 §6.2/§7.2：停用代理不探测；重新启用时把检测时间清空，
+		// 让下一轮池健康任务立即调度（状态与 streak 保留既有检测事实）。
+		assignments = append(assignments,
+			struct {
+				column string
+				value  any
+			}{"pool_health_checked_at", nil},
+		)
+		values["poolHealthCheckedAt"] = nil
 	}
 	// 微秒形态与 revisionSelectExpression 的 to_char US 读回逐字一致。
 	updatedAtCandidate := s.now().UTC().Format("2006-01-02T15:04:05.000000Z")
@@ -354,6 +387,12 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 	updated, err := s.loadProfileRow(ctx, id)
 	if err != nil || updated == nil {
 		return nil, err
+	}
+	// 代理池设计 §10.2：代理档案写入提交后补上 gateway runtime 失效；
+	// 连接变更同时 best-effort 删除成员健康键（§6.2）。
+	s.notifyRuntimeUpdated()
+	if connectionChanged {
+		s.resetMemberHealth(id)
 	}
 	return &patchOutcome{
 		Mutation: ProfileMutationResult{
@@ -433,6 +472,22 @@ func (s *Store) Delete(ctx context.Context, id string) (string, error) {
 			AccountCountIsLowerBound: len(usage) >= proxyUsageWindowLimit,
 		}
 	}
+	// 代理池设计 §4.5/§8.6：代理档案仍被任一池成员引用时 409
+	// proxy_pool_member_reference_conflict，先解除成员关系才能删除。
+	// 与在用守卫同一事务（池行删除与成员行写入因此串行化）。
+	var memberPoolID string
+	memberErr := tx.QueryRowContext(ctx, s.bind(`
+		SELECT pool_id
+		FROM `+s.table("proxy_pool_members")+`
+		WHERE proxy_profile_id = ?
+		LIMIT 1
+	`), id).Scan(&memberPoolID)
+	if memberErr == nil {
+		return "", &PoolMemberReferenceError{}
+	}
+	if !errors.Is(memberErr, sql.ErrNoRows) {
+		return "", memberErr
+	}
 	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("proxy_profiles")+` WHERE id = ?`), id)
 	if err != nil {
 		return "", err
@@ -447,6 +502,10 @@ func (s *Store) Delete(ctx context.Context, id string) (string, error) {
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	// 代理池设计 §10.2：档案删除后补上 gateway runtime 失效；§7.4 成员
+	// 删除清理成员健康键（best-effort，失败靠 TTL）。
+	s.notifyRuntimeUpdated()
+	s.resetMemberHealth(id)
 	return current.name, nil
 }
 

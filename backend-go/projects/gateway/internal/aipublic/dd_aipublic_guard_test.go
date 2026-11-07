@@ -67,7 +67,7 @@ func TestDDA3SingleInvalidTokenFailureNoPenalty(t *testing.T) {
 }
 
 // TestDDA4BodyOverLimitReturns413：超限 body → 413 {"message":"请求体过大"}
-//（与管理面 DecodeJSON 同款形态）；正常 body 同 token 无感。
+// （与管理面 DecodeJSON 同款形态）；正常 body 同 token 无感。
 func TestDDA4BodyOverLimitReturns413(t *testing.T) {
 	env := newAIPublicEnv(t)
 	env.seedTargetUser("user_dd_a4", "dd_a4_user", "active")

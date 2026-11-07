@@ -58,7 +58,7 @@ func w14jSharedEnvValue(t *testing.T, key string) string {
 // 序排列（组合根装配链与各 cmd 测试夹具的外键全部落在集合内）。
 var wgCmdBusinessTables = []string{
 	"system_accounts", "system_teams", "vendors", "global_settings", "system_settings",
-	"route_strategies", "scheduling_preferences", "proxy_profiles", "account_tags",
+	"route_strategies", "scheduling_preferences", "proxy_profiles", "proxy_pools", "account_tags",
 	"resource_authorizations", "resource_authorization_grants", "account_connections",
 	"account_endpoint_modes", "accounts", "groups", "group_accounts",
 	"group_account_stats_dirty",

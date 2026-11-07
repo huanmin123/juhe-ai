@@ -133,6 +133,11 @@ export function proxyOptionParams(params?: ProxyOptionParams): Record<string, un
   if (params.limit) output.limit = params.limit
   const selectedIds = [...new Set(params.selectedIds?.map((id) => id.trim()).filter(Boolean) ?? [])].sort()
   if (selectedIds.length) output.selectedIds = selectedIds
+  // kinds=profile,pool（§8.2）：逗号合并单键；池选中回填与 selectedIds 分键，均为裸重复键。
+  const kinds = params.kinds?.length ? params.kinds : undefined
+  if (kinds?.length) output.kinds = kinds.join(',')
+  const selectedPoolIds = [...new Set(params.selectedPoolIds?.map((id) => id.trim()).filter(Boolean) ?? [])].sort()
+  if (selectedPoolIds.length) output.selectedPoolIds = selectedPoolIds
   return Object.keys(output).length ? output : undefined
 }
 export function scopedListParams<T extends object>(params?: T, includeSystemAccount = true): Record<string, unknown> | undefined {

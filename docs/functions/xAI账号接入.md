@@ -1,5 +1,7 @@
 # xAI / Grok 账号接入
 
+> **2026-11-07 退役标注：** 跨协议模型映射已整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）。xAI 账户本就只承接 OpenAI v1 原生请求（Chat / Responses 直连），映射协议强制同族后行为不变；“跨协议拒绝”测试语义不变，混合供应商账户载体已随 2026-11-05 退役消失。
+
 ## 范围与结论
 
 本文记录 xAI 官方 API Key、Grok OAuth、Grok Web SSO 转 OAuth、协议档案、Grok 模型目录、usage / 计价口径和当前限制。xAI 与 OpenAI-compatible 只是接口形态复用关系，供应商、凭据、模型目录和价格必须保持独立。
@@ -65,7 +67,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 当前禁止：
 
 - xAI 账号承接 Anthropic Messages、Gemini native、Gemini Interactions 或其他非 OpenAI v1 原生请求。
-- 通过模型名把 OpenAI Chat / Responses 自动转换为另一协议；需要跨协议时必须使用混合供应商账户表达真实上游和映射。
+- 通过模型名把 OpenAI Chat / Responses 自动转换为另一协议。跨协议承接已整体退役（2026-11-07）：模型映射协议强制同族，且混合供应商账户已于 2026-11-05 退役——不存在任何可表达跨协议映射的账户载体。
 - 让 Grok OAuth 承接 `/chat/completions`，或把它当成 GPT/Codex OAuth 套用 compact、attestation 和客户端兼容逻辑。
 - 把 xAI API Key / Grok OAuth 作为 GPT OAuth、Claude 订阅 OAuth 或 Gemini Google OAuth 凭据处理。
 

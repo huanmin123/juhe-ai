@@ -15,6 +15,6 @@
 
 ## 适用边界
 
-- juhe-ai 中转请求上游 API 时，推荐使用后台“代理管理”配置账号级代理。
-- `JUHE_AI_OAUTH_PROXY_URL` 只作为 OpenAI OAuth token 换取 / 刷新的兜底代理，不是所有模型请求的全局代理。
+- juhe-ai 中转请求上游 API 时，推荐使用后台“代理管理”配置账号级代理或代理池；代理池成员由 jobs `proxy-pool-health` 做应用层可用性探测（固定 204 端点、每代理 60s、连续 3 次失败 dead、一次成功恢复），`pool_health_status` 只影响池成员分配，不改变直接代理语义。
+- `JUHE_AI_OAUTH_PROXY_URL` 只作为 OpenAI OAuth token 换取 / 刷新的兜底代理，不是所有模型请求的全局代理；账户绑定代理池时 OAuth 建号/刷新使用池租约成员，租约不可用即失败，不直连。
 - 系统安装依赖、Docker 拉镜像属于服务器自身网络代理，和账号级上游代理是两件事。

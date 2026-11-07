@@ -134,3 +134,32 @@ var presetVocabulary = map[string][]string{
 		"count_tokens", "embed_content", "audio_speech",
 	},
 }
+
+// legacyEndpointFamilyAliases 是 endpoint family 的反向别名表（PLAN-20261106T162344524Z
+// 批次C，2026-11-07 跨协议映射退役）：历史 family token 语义同族但不在现行
+// 写侧 7 协议词表内，回迁前按映射归一到现行 token。与 revision 20 升级步骤
+// normalize-legacy-entry-mapping-families 的归一表同源，两处必须一起改。
+var legacyEndpointFamilyAliases = map[string]string{
+	"anthropic_messages":      "messages",
+	"gemini_generate_content": "generate_content",
+	"gemini_stream_generate":  "stream_generate_content",
+}
+
+// normalizeEntryMappingFamilies 把一对历史 source/target family token 归一到
+// 现行词表；未知 token 原样返回（不静默改写）。
+func normalizeEntryMappingFamilies(source, target string) (string, string) {
+	if normalized, ok := legacyEndpointFamilyAliases[source]; ok {
+		source = normalized
+	}
+	if normalized, ok := legacyEndpointFamilyAliases[target]; ok {
+		target = normalized
+	}
+	return source, target
+}
+
+// entryMappingPairAdmissible 是协议等价判定（与 revision 20 升级步骤的删除
+// 谓词同源）：同族，或 Gemini 同协议的 stream 归一 pair
+// stream_generate_content → generate_content。矩阵外（跨协议）一律不合规。
+func entryMappingPairAdmissible(source, target string) bool {
+	return source == target || (source == "stream_generate_content" && target == "generate_content")
+}

@@ -34,7 +34,7 @@ import {
   connectionPresetCodeForProfile,
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
-import { accountModelMappingEndpointFamilyProtocol, accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
+import { accountModelMappingEndpointFamilyProtocol } from './accountModelMappingModelOptions'
 import { buildAccountBalancePayload, validateAccountBalanceForm } from './accountBalanceQuery'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import { normalizeGrokSsoTokens } from './grokSsoTokens'
@@ -89,6 +89,8 @@ export type AccountSavePayload = {
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
+  /** 代理池绑定（代理池设计 §8.3）：与 proxyProfileId 互斥；null=清除该目标。 */
+  proxyPoolId?: string | null
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
   groupId?: string
@@ -132,6 +134,8 @@ export type AccountOAuthCreateCommonPayload = {
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
+  /** OAuth 建号池绑定（§8.3）：与 proxyProfileId 互斥；建号前临时分配成员，创建时固化租约。 */
+  proxyPoolId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
   cloneSourceId?: string
@@ -169,11 +173,13 @@ export function validateAccountSaveForm(input: {
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   providers?: ProviderDefinition[]
-  mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
-  mappingCurrentProviderSourceModelOptions?: ModelMappingProtocolOption[]
-  mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+  /** 映射客户端模型候选：跨供应商全量目录（按行协议过滤后供下拉使用）。 */
   mappingSourceModelOptions?: ModelMappingProtocolOption[]
+  /** 映射 source 候选池就绪标志：false = 池未就绪/加载失败，非基线行阻止保存。 */
+  mappingSourceModelOptionsReady?: boolean
   mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
+  /** 账户上游候选就绪标志（批量编辑链传入；单账户编辑目录已随弹窗打开加载）。 */
+  mappingUpstreamModelOptionsReady?: boolean
   /** 完整编辑保存基线：映射与基线一致的存量行放行候选窗口校验（后端 PATCH「映射未变不校验」，前端对齐）。 */
   editingAdvancedBaseline?: AccountSavePayload
 }): string | undefined {
@@ -241,14 +247,21 @@ export function validateAccountSaveForm(input: {
     && (form.type === 'oauth' || form.type === 'google_oauth')
     && Boolean(managedOAuthProvider)
     && form.oauthMode !== 'access_token'
+  // 代理/代理池互斥（代理池设计 §8.3）：两者同时非空后端 400 proxy_target_conflict，
+  // 前端在提交前拦截并给出可操作文案。
+  if (form.proxyProfileId?.trim() && form.proxyPoolId?.trim()) {
+    return '代理与代理池不能同时选择：请只保留一个绑定目标'
+  }
   // 国外 OAuth 供应商（Grok/GPT/Anthropic/Gemini）的上游必须经代理可达：
-  // 创建与 OAuth 授权录入（refresh/SSO 模式）强制绑定代理，与后端拦截一致。
+  // 创建与 OAuth 授权录入（refresh/SSO 模式）强制绑定代理，与后端拦截一致；
+  // 代理池与代理等价（§9.2：profile 或 pool 至少一个）。
   if (
     (managedOAuthCreation || form.oauthMode === 'refresh_token' || form.oauthMode === 'sso_cookie')
     && ['gpt', 'anthropic', 'gemini', 'xai'].includes(form.providerCode)
     && !form.proxyProfileId?.trim()
+    && !form.proxyPoolId?.trim()
   ) {
-    return '该供应商的 OAuth 账户必须绑定出海代理：请在下方“代理”中选择后再提交'
+    return '该供应商的 OAuth 账户必须绑定出海代理：请在下方“代理”中选择代理或代理池后再提交'
   }
   if (managedOAuthCreation && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (managedOAuthCreation && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
@@ -312,12 +325,10 @@ export function validateAccountSaveForm(input: {
     form.supportedEndpointModes,
     formProviderProfile.profile ?? formProviderProfile.provider,
     {
-      mappingAnthropicSourceModelOptions: input.mappingAnthropicSourceModelOptions,
-      mappingCurrentProviderSourceModelOptions: input.mappingCurrentProviderSourceModelOptions,
-      mappingGeminiSourceModelOptions: input.mappingGeminiSourceModelOptions,
       mappingSourceModelOptions: input.mappingSourceModelOptions,
+      mappingSourceModelOptionsReady: input.mappingSourceModelOptionsReady,
       mappingUpstreamModelOptions: input.mappingUpstreamModelOptions,
-      providerCode: form.providerCode,
+      mappingUpstreamModelOptionsReady: input.mappingUpstreamModelOptionsReady,
       baselineMappings: input.editingAdvancedBaseline?.modelMappings
     }
   )
@@ -388,7 +399,10 @@ export function buildAccountSavePayload(input: {
       : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
-    proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
+    // 互斥输出（§8.3/§9.2）：裸 id 二选一；编辑链未勾选的目标显式传 null 清除，
+    // 保证「池改代理/代理改池」都能整替生效（后端 proxy_target_conflict 不会触发）。
+    proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId), input.form.proxyPoolId),
+    proxyPoolId: saveProxyPoolId(input.form.proxyPoolId, Boolean(input.editingId), input.form.proxyProfileId),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     groupId: input.form.groupId,
@@ -429,6 +443,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
+    proxyPoolId: payload.proxyPoolId,
     accountExpiresAt: payload.accountExpiresAt,
     availabilitySchedule: payload.availabilitySchedule,
     groupId: payload.groupId,
@@ -475,6 +490,7 @@ export function buildOAuthCreateCommonPayload(input: {
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,
+    proxyPoolId: input.form.proxyPoolId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     notes: input.form.notes || undefined
@@ -507,8 +523,20 @@ export function buildOAuthCreateCommonPayload(input: {
   return payload
 }
 
-function saveProxyProfileId(proxyProfileId: string | undefined, editing: boolean): string | null | undefined {
+/**
+ * 代理目标裸 id 输出（代理池设计 §8.3/§9.2）：
+ * - 自身有值时输出裸 id；互斥目标的字段显式输出 null（编辑链），保证改绑整替生效；
+ * - 两个目标都为空：创建不携带（无代理），编辑输出 null（清空回直连）。
+ */
+function saveProxyProfileId(proxyProfileId: string | undefined, editing: boolean, proxyPoolId?: string): string | null | undefined {
   if (proxyProfileId) return proxyProfileId
+  if (proxyPoolId) return null
+  return editing ? null : undefined
+}
+
+function saveProxyPoolId(proxyPoolId: string | undefined, editing: boolean, proxyProfileId?: string): string | null | undefined {
+  if (proxyPoolId) return proxyPoolId
+  if (proxyProfileId) return null
   return editing ? null : undefined
 }
 
@@ -585,18 +613,24 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
   return output
 }
 
+// source 跨供应商候选池 / 上游候选池未就绪的保存拦截文案（跨协议退役契约：
+// 删除空池放行；文案携带「映射」关键词，创建向导校验失败回跳第 3 步）。
+export const ACCOUNT_MODEL_MAPPING_SOURCE_POOL_UNREADY_MESSAGE = '模型映射的客户端模型目录尚未加载完成或加载失败，请重试保存；若持续失败请关闭弹窗刷新页面'
+export const ACCOUNT_MODEL_MAPPING_UPSTREAM_POOL_UNREADY_MESSAGE = '模型映射的上游模型目录尚未加载完成或加载失败，请重试保存；若持续失败请关闭弹窗刷新页面'
+
 export function validateAccountModelMappings(
   value: AccountFormModel['modelMappings'],
   supportedModels: string[],
   supportedEndpointModes: AccountFormModel['supportedEndpointModes'],
   providerProfile?: AccountModelMappingProviderProfile,
   options: {
-    mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
-    mappingCurrentProviderSourceModelOptions?: ModelMappingProtocolOption[]
-    mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+    /** 映射客户端模型候选：跨供应商全量目录。 */
     mappingSourceModelOptions?: ModelMappingProtocolOption[]
+    /** source 候选池就绪标志：false = 未就绪/加载失败，非基线行阻止保存。 */
+    mappingSourceModelOptionsReady?: boolean
     mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
-    providerCode?: string
+    /** 上游候选就绪标志：false = 未就绪/加载失败，非基线行阻止保存。 */
+    mappingUpstreamModelOptionsReady?: boolean
     /** 编辑保存基线中的存量映射：行键与上游都未变的原样行放行，仅「基线中不存在或已变更」的行做候选窗口与支持模型校验（R6）。 */
     baselineMappings?: AccountFormModel['modelMappings']
   } = {}
@@ -633,19 +667,25 @@ export function validateAccountModelMappings(
       return '模型映射的下游模型和上游模型不能完全相同'
     }
     if (!isPristineBaselineMappingRow(item, baselineRowsByKey)) {
-      const sourceModelOptions = accountModelMappingSourceModelOptions({
-        providerCode: options.providerCode,
-        sourceEndpointFamily,
-        currentProviderOptions: options.mappingCurrentProviderSourceModelOptions ?? [],
-        openAIProtocolOptions: options.mappingSourceModelOptions ?? [],
-        anthropicProtocolOptions: options.mappingAnthropicSourceModelOptions ?? [],
-        geminiProtocolOptions: options.mappingGeminiSourceModelOptions ?? []
-      })
+      // 候选池就绪门（跨协议退役契约：删除空池放行）：池未就绪/加载失败时阻止
+      // 保存并给出中文加载错误，不静默沿用空目录放行。
+      if (options.mappingSourceModelOptionsReady === false) {
+        return ACCOUNT_MODEL_MAPPING_SOURCE_POOL_UNREADY_MESSAGE
+      }
+      if (options.mappingUpstreamModelOptionsReady === false) {
+        return ACCOUNT_MODEL_MAPPING_UPSTREAM_POOL_UNREADY_MESSAGE
+      }
+      const sourceModelOptions = options.mappingSourceModelOptions ?? []
+      // source 必须在协议过滤后的候选池内：先验证存在，再验证声明协议与所选
+      // 协议等价 pair 一致（跨供应商 source 的协议不符在此拒绝）。
       if (!modelExistsInOptions(sourceModel, sourceModelOptions)) {
-        return `客户端模型 ${sourceModel} 不在当前可选模型目录中`
+        return `模型映射客户端模型 ${sourceModel} 不在可选模型目录中`
+      }
+      if (!modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)) {
+        return `模型映射客户端模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议一致的模型`
       }
       if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
-        return `上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
+        return `模型映射上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
       }
       if (!supportedModelSet.has(upstreamModel)) {
         return `模型映射的上游模型必须从支持模型中选择：${upstreamModel}`
@@ -690,6 +730,7 @@ function modelOptionSupportsProtocol(
 }
 
 function modelExistsInOptions(model: string, options: ModelMappingProtocolOption[] | undefined): boolean {
-  if (!options?.length) return true
-  return options.some((option) => option.value === model)
+  // 空池不再放行：就绪但为空的目录意味着候选确无该模型，按不存在拒绝；
+  // 「未就绪」场景由 mappingSourceModelOptionsReady 门在前一步拦截。
+  return Boolean(options?.some((option) => option.value === model))
 }

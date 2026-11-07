@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 )
+
 func planOptions() WritePlanOptions {
 	return WritePlanOptions{
 		ShardCount: 16,
 	}
 }
-
 
 func TestBuildWritePlanCompactionExpectedParam(t *testing.T) {
 	clock := fixedClock("2026-01-02T03:04:05.000Z")
@@ -41,6 +41,60 @@ func TestBuildWritePlanCompactionExpectedParam(t *testing.T) {
 	}
 	if got := plan.RowsByShard[0].Rows[0].Params[columnIndexOf("compaction_expected")]; got != 0 {
 		t.Fatalf("default compaction_expected = %v, want 0", got)
+	}
+}
+
+// 安全策略两列落库 golden（API Key 安全策略与出站内容脱敏设计 §8，批D）：
+// 列序紧邻 compaction_expected（与 pg_schema_usage.go DDL、mockdata
+// usageRecordColumns 一致）；applied 走 boolToInt，pii_hits_json nil/空 map
+// 落 NULL、非空落紧凑 JSON。
+func TestBuildWritePlanSecurityPolicyParams(t *testing.T) {
+	clock := fixedClock("2026-01-02T03:04:05.000Z")
+	if columnIndexOf("security_policy_applied") != columnIndexOf("compaction_expected")+1 ||
+		columnIndexOf("pii_hits_json") != columnIndexOf("security_policy_applied")+1 {
+		t.Fatalf("security policy columns must follow compaction_expected (security_policy_applied at %d, pii_hits_json at %d, compaction_expected at %d)",
+			columnIndexOf("security_policy_applied"), columnIndexOf("pii_hits_json"), columnIndexOf("compaction_expected"))
+	}
+	applied := UsageRecordInput{
+		SystemAccountID: "sys1", TraceID: "t1", TrafficSource: TrafficSourceGateway,
+		Success: true, SecurityPolicyApplied: true, PIIHits: map[string]int{"PHONE": 2},
+	}
+	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{applied}, planOptions(), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := plan.RowsByShard[0].Rows[0].Params
+	if len(params) != len(UsageRecordColumns) {
+		t.Fatalf("column/param count mismatch: %d vs %d", len(UsageRecordColumns), len(params))
+	}
+	if got := params[columnIndexOf("security_policy_applied")]; got != 1 {
+		t.Fatalf("security_policy_applied = %v, want 1", got)
+	}
+	if got := params[columnIndexOf("pii_hits_json")]; got != `{"PHONE":2}` {
+		t.Fatalf(`pii_hits_json = %v, want {"PHONE":2}`, got)
+	}
+
+	// 无值记录两字段零值：applied 0、hits NULL；空 map 同样落 NULL。
+	plain := UsageRecordInput{SystemAccountID: "sys1", TraceID: "t2", TrafficSource: TrafficSourceGateway, Success: true, PIIHits: map[string]int{}}
+	plan, err = BuildWritePlan(context.Background(), []UsageRecordInput{plain}, planOptions(), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params = plan.RowsByShard[0].Rows[0].Params
+	if got := params[columnIndexOf("security_policy_applied")]; got != 0 {
+		t.Fatalf("default security_policy_applied = %v, want 0", got)
+	}
+	if got := params[columnIndexOf("pii_hits_json")]; got != nil {
+		t.Fatalf("empty pii_hits_json = %v, want NULL", got)
+	}
+
+	// NormalizeUsageRecordInput 归一化：nil/空 map 一律归一为 nil。
+	normalized, err := NormalizeUsageRecordInput(UsageRecordInput{PIIHits: map[string]int{}}, clock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.PIIHits != nil {
+		t.Fatalf("normalized empty PIIHits = %#v, want nil", normalized.PIIHits)
 	}
 }
 

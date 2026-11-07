@@ -45,6 +45,8 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 代理连通性检测同样只观察 transport。任意状态码的完整 HTTP framing 都证明本次代理链路可达，状态码只作诊断；只有连接、DNS、TLS、代理隧道、绝对 hard timeout、响应中断或 EOF 前 framing 未完成才能写代理检测 `failed`。没有可测试供应商、worker / 配置异常或预算到期前未形成真实请求时写 `unknown`，不得伪装成代理故障。代理检测结果是诊断元数据，不得因单次状态更新刷新无关的全局选路配置；迟到检测写回必须受代理配置 revision / generation 约束。
 
+代理池（[代理池设计](代理池设计.md) §7.5/§7.6）：池停用、无可用成员、租约缺失/失效是 gateway/只读入口本地解析阶段可确认的 `proxy_pool_unavailable`，属于代理准备失败，不写 `accounts.status`、`cooldown_until`、`schedulable`、优先级、账户健康计数或 OAuth 终态停刷；实际请求已经出站后的 HTTP/transport/协议错误仍按原有账户错误策略执行，不因绑定池而豁免或新增处罚。单次出站失败不得立即改租约或下架成员，池健康只由 `proxy-pool-health` 的可用性探测投影（连续 3 次失败 dead、一次成功恢复）。
+
 ## 3. 允许的请求侧动作
 
 未知上游响应必须先终止当前候选，允许的动作只有：

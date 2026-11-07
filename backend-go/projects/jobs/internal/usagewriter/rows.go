@@ -74,6 +74,11 @@ var UsageRecordColumns = []string{
 	"group_id",
 	"route_group_id",
 	"compaction_expected",
+	// 安全策略请求级事实两列（API Key 安全策略与出站内容脱敏设计 §8）：列序
+	// 紧邻 compaction_expected，与 maintenance pg_schema_usage.go 建表内联、
+	// mockdata usageRecordColumns、下方 Params 序严格一致。
+	"security_policy_applied",
+	"pii_hits_json",
 	"account_id",
 	"endpoint",
 	"provider_code",
@@ -198,6 +203,8 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 				nilableString(input.GroupID),
 				nilableString(input.RouteGroupID),
 				boolToInt(&input.CompactionExpected),
+				boolToInt(&input.SecurityPolicyApplied),
+				piiHitsJSON(input.PIIHits),
 				nilableString(input.AccountID),
 				nilableString(input.Endpoint),
 				nilableString(input.ProviderCode),
@@ -438,6 +445,16 @@ func jsonSnapshotOrNil(snapshot *CostBreakdown) any {
 		return nil
 	}
 	return jsonSnapshot(snapshot)
+}
+
+// piiHitsJSON 落 pii_hits_json（API Key 安全策略与出站内容脱敏设计 §8）：
+// nil/空 map → NULL（「无命中不写」契约），非空 map → 紧凑 JSON 字节串；
+// 序列化失败按 jsonSnapshot 先例退化 NULL。
+func piiHitsJSON(hits map[string]int) any {
+	if len(hits) == 0 {
+		return nil
+	}
+	return jsonSnapshot(hits)
 }
 
 // jsonSnapshot mirrors `value ? JSON.stringify(value) : null`; an object

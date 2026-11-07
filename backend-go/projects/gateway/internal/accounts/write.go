@@ -9,6 +9,7 @@ import (
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -821,15 +822,39 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 
 	// Proxy profile (must exist and stay enabled).
 	proxyProfileID := sql.NullString{}
+	proxyProfileTarget := ""
 	if input.ProxyProfileID != nil && strings.TrimSpace(*input.ProxyProfileID) != "" {
-		enabled, err := s.resolveEnabledProxyProfile(ctx, tx, strings.TrimSpace(*input.ProxyProfileID))
+		proxyProfileTarget = strings.TrimSpace(*input.ProxyProfileID)
+		enabled, err := s.resolveEnabledProxyProfile(ctx, tx, proxyProfileTarget)
 		if err != nil {
 			return nil, err
 		}
 		if !enabled {
 			return nil, &ValidationError{Message: "代理不存在或已停用，请选择一个已启用的代理"}
 		}
-		proxyProfileID = sql.NullString{String: strings.TrimSpace(*input.ProxyProfileID), Valid: true}
+		proxyProfileID = sql.NullString{String: proxyProfileTarget, Valid: true}
+	}
+	// 代理池绑定（代理池设计 §8.3）：与 proxyProfileId 互斥（同时非空 400
+	// proxy_target_conflict）；缺省/null = 无代理。池必须存在且 enabled、至少
+	// 一个 enabled 成员（proxy_pool_empty）；健康全 dead 允许创建但无租约。
+	// 池行锁在账户 INSERT 之前获取（锁序 池→账户→租约，与请求时重分配同序）。
+	proxyPoolID := sql.NullString{}
+	proxyPoolTarget := ""
+	proxyPoolLeaseMember := ""
+	if trimmedPool, poolSet := trimmedProxyTarget(input.ProxyPoolID); poolSet {
+		if err := assertProxyWriteTargetConflict(proxyProfileTarget, trimmedPool); err != nil {
+			return nil, err
+		}
+		if err := s.lockProxyPoolForWrite(ctx, tx, trimmedPool); err != nil {
+			return nil, err
+		}
+		memberID, err := s.selectProxyPoolMemberForWrite(ctx, tx, trimmedPool)
+		if err != nil {
+			return nil, err
+		}
+		proxyPoolTarget = trimmedPool
+		proxyPoolLeaseMember = memberID
+		proxyPoolID = sql.NullString{String: trimmedPool, Valid: true}
 	}
 
 	// Notes.
@@ -941,7 +966,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		(id, system_account_id, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		 oauth_type,
-		 oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
+		 oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, proxy_pool_id,
+		 concurrency_limit,
 		 rpm_limit,
 		 priority, super_priority_enabled, fallback_enabled, schedulable,
 		 availability_schedule_json, availability_schedule_next_check_at, availability_schedule_gate,
@@ -952,11 +978,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, protocol.protocolCode, protocol.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		nullStringForOAuthType(oauthType),
-		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit, rpmLimit,
+		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, proxyPoolID, concurrencyLimit, rpmLimit,
 		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, scheduleGate, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage,
@@ -976,6 +1002,16 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		systemAccountID, group.id, id, priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled),
 		nowISO, nowISO); err != nil {
 		return nil, err
+	}
+	// 代理池粘性租约（代理池设计 §6.1「账户创建绑池」）：账户行与租约同一
+	// 事务；新绑 reason=initial，generation 取共享序列。健康全 dead 时
+	// proxyPoolLeaseMember 为空——允许创建但无租约，首次 gateway 请求解析时
+	// 补租约。直接代理/无代理账户不产生租约行。
+	if proxyPoolLeaseMember != "" {
+		if err := s.assignAccountProxyPoolLease(ctx, tx, id, proxyPoolTarget, proxyPoolLeaseMember,
+			proxyresolve.AssignmentInitial); err != nil {
+			return nil, err
+		}
 	}
 	// 连接行写入（§2.1 写入序第二、三步）：account_connections（确定性行 ID）
 	// + account_endpoint_modes——先于支持模型与入口映射，映射解析（§5.1 preset

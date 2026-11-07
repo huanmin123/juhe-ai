@@ -117,6 +117,14 @@ func runStorageBootstrap(ensure, seed bool, dsn, secret string) int {
 			fmt.Fprintf(os.Stderr, "postgres ensure-schema 内置调度偏好补种失败：%v\n", seedErr)
 			return 1
 		}
+		// 安全策略实体（API Key 安全策略与出站内容脱敏设计 §4.1，批A 存储）：
+		// ensure 臂恢复式补种内置安全策略行，保证存量库「升级 = 跑 ensure-schema
+		// 即得内置行」；与 --seed 链共用同一权威值，幂等可重入，重复执行不推进
+		// 时间戳。
+		if seedErr := schema.SeedBuiltinSecurityPolicyPostgres(context.Background(), db); seedErr != nil {
+			fmt.Fprintf(os.Stderr, "postgres ensure-schema 内置安全策略补种失败：%v\n", seedErr)
+			return 1
+		}
 	}
 	if seed {
 		seedResult, seedErr := schema.SeedPostgresDefaults(context.Background(), db, schema.SeedOptions{Secret: seedSecretValue(secret)})

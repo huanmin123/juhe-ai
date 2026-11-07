@@ -1,7 +1,8 @@
 # Gemini 协议兼容设计
 
-> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，Gemini native 与 OpenAI / Anthropic 之间的跨协议转换落到混合供应商账户。
-> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+> **2026-11-07 退役标注：** 跨协议模型映射已整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）：Gemini OpenAI Chat 账号的 `responses -> chat_completions` 桥接已删除，OpenAI / Anthropic 与 Gemini native 之间的跨协议转换不再由任何账户承接（混合供应商账户已随 2026-11-05 退役，文中相关段落为双重过期历史截面）；Gemini native 同族归一 `stream_generate_content → generate_content` 映射仍然现行，其余 Gemini 请求按协议档案直连。
+> 2026-06-27 路由分层更新（历史）：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当时目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，Gemini native 与 OpenAI / Anthropic 之间的跨协议转换落到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。
 
 ## 范围
 
@@ -75,13 +76,13 @@ Gemini 相关模型映射只允许下面这些生成类方向：
 | 客户端协议 | Gemini 上游档案 | 上游协议 | 是否支持 | 说明 |
 | --- | --- | --- | --- | --- |
 | OpenAI Chat Completions | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 直连，不需要协议转换 |
-| OpenAI Responses / Codex | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 必须在普通 Gemini OpenAI Chat 账户配置 `responses -> chat_completions` |
-| OpenAI Chat Completions | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 支持范围内 | 必须在混合供应商账户配置 `chat_completions -> generate_content`，响应还原为 Chat Completion JSON / SSE |
-| OpenAI Responses / Codex | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 支持范围内 | 必须在混合供应商账户配置 `responses -> generate_content`，Responses 状态和 hosted tools 不可保真时走 guidance-first |
-| Anthropic Messages | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 支持范围内 | 必须在混合供应商账户配置 `messages -> generate_content`，响应还原为 Anthropic Messages JSON / SSE |
+| OpenAI Responses / Codex | `profile_gemini_openai_chat_v1beta` | Chat Completions | **不支持（已随 2026-11-07 退役）** | 原“必须在普通 Gemini OpenAI Chat 账户配置 `responses -> chat_completions`”已随跨协议映射退役删除，该账户不再承接 Responses 入站 |
+| OpenAI Chat Completions | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 不支持（历史截面，混合供应商已退役） | 原“混合供应商账户配置 `chat_completions -> generate_content`”路径已失效 |
+| OpenAI Responses / Codex | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 不支持（历史截面） | 原“混合供应商账户配置 `responses -> generate_content`”路径已失效 |
+| Anthropic Messages | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 不支持（历史截面） | 原“混合供应商账户配置 `messages -> generate_content`”路径已失效 |
 | Gemini native | `profile_gemini_native_v1beta` | Gemini native | 支持 | 原生直连，不进入模型映射协议转换 |
-| Gemini native GenerateContent / StreamGenerateContent | OpenAI 协议 Chat 上游档案 | Chat Completions | 支持范围内 | 必须在混合供应商账户配置 `generate_content|stream_generate_content -> chat_completions`，响应还原为 Gemini JSON / SSE |
-| Gemini native GenerateContent / StreamGenerateContent | Anthropic 协议 Messages 上游档案 | Anthropic Messages | 支持范围内 | 必须在混合供应商账户配置 `generate_content|stream_generate_content -> messages`，响应还原为 Gemini JSON / SSE |
+| Gemini native GenerateContent / StreamGenerateContent | OpenAI 协议 Chat 上游档案 | Chat Completions | 不支持（历史截面） | 原“混合供应商账户配置”路径已失效；现行仅保留 Gemini 同族归一 `stream_generate_content → generate_content` |
+| Gemini native GenerateContent / StreamGenerateContent | Anthropic 协议 Messages 上游档案 | Anthropic Messages | 不支持（历史截面） | 原“混合供应商账户配置”路径已失效 |
 | Anthropic Messages | `profile_gemini_openai_chat_v1beta` | OpenAI Chat compatibility | 不支持 | 不做 `messages -> chat_completions` 到 Gemini OpenAI Chat，避免绕过 Anthropic 到 Chat 桥接矩阵 |
 | Gemini native CountTokens / EmbedContent / Files / Cache / Live / Interactions | OpenAI / Anthropic 上游 | 任意 | 不支持 | Interactions 保留为 Gemini 原生端点；不把它转换成 Chat / Messages |
 
@@ -251,7 +252,7 @@ Gemini 官方 OpenAI compatibility 允许 OpenAI Chat Completions 客户端直�
 
 - 不在 Gemini native adapter 中做无映射的 `messages[] -> contents[]` 自动转换。
 - 只有显式 `generate_content|stream_generate_content -> chat_completions/messages` 桥接实现 `contents[] -> messages[]`，只有显式 `chat_completions|responses|messages -> generate_content` 桥接实现 OpenAI / Anthropic 请求到 Gemini native；两边都不做无映射自动转换。
-- Codex Responses 使用 Gemini 时优先走普通 Gemini OpenAI Chat 账号的 `responses -> chat_completions` 模型别名；只有用户在混合供应商账户显式配置 `responses -> generate_content` 时才进入 Gemini native，且不可保真的 Responses 状态 / hosted tools / compact 走 guidance-first。
+- （已随 2026-11-07 退役）Codex Responses 不再承接 Gemini 账户：原“优先走普通 Gemini OpenAI Chat 账号的 `responses -> chat_completions` 模型别名”与“混合供应商账户显式配置 `responses -> generate_content` 进入 Gemini native”两条路径均已删除；不可保真的 Responses 状态 / hosted tools / compact 不再产生 guidance-first 场景。
 - 不把 Anthropic Messages 请求桥接到 Gemini OpenAI Chat。
 - 不在显式桥接之外转换工具、usage 或响应形态。
 
@@ -333,7 +334,7 @@ endpointFamilies = [chat_completions]
 | CLI 专属可重试错误 | `gemini_cli` + 可安全重放文本 GenerateContent + `error.status=UNAVAILABLE` | 写出前请求下一个账号，成功后返回 Gemini native 响应；Interactions 不重放 |
 | OpenAI 路径隔离 | `/v1/chat/completions` 且无 `chat_completions -> generate_content` 映射 | 不进入 Gemini native |
 | Gemini OpenAI Chat | `/v1/chat/completions` | 命中 `/v1beta/openai/chat/completions`，使用账号 Bearer Key |
-| Codex / Responses 到 Gemini OpenAI Chat | `/v1/responses` + 普通账号模型别名 `responses -> chat_completions` | 命中 Gemini OpenAI Chat，不命中 Gemini native |
+| （已随 2026-11-07 退役）Codex / Responses 到 Gemini OpenAI Chat | 历史截面：`/v1/responses` + 普通账号模型别名 `responses -> chat_completions` | 该映射已删除；Gemini OpenAI Chat 账户对 `/v1/responses` 无候选，不命中 Gemini native |
 | OpenAI Chat 到 Gemini native | `/v1/chat/completions` + API Key 规则 `chat_completions -> generate_content` | 命中 Gemini native `generateContent` / `streamGenerateContent`，返回 Chat 形态 |
 | OpenAI Responses 到 Gemini native | `/v1/responses` + API Key 规则 `responses -> generate_content` | 命中 Gemini native，返回 Responses 形态；不可保真能力 guidance-first |
 | Anthropic Messages 到 Gemini native | `/v1/messages` + API Key 规则 `messages -> generate_content` | 命中 Gemini native，返回 Anthropic Messages 形态 |

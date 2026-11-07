@@ -164,6 +164,12 @@ type CreateInput struct {
 	SuperPriorityEnabled *bool
 	FallbackEnabled      *bool
 	ProxyProfileID       *string
+	// ProxyPoolID 是代理池绑定入参（代理池设计 §8.3，camelCase proxyPoolId）：
+	// 与 ProxyProfileID 互斥（写入面同时非空 400 proxy_target_conflict）；
+	// nil/空白 = 无池绑定。绑池账户的粘性租约由创建事务写入
+	// account_proxy_leases（reason=initial；健康全 dead 时无租约，首次请求
+	// 解析时补租约）。
+	ProxyPoolID          *string
 	GroupID              *string
 	AccountExpiresAt     *string
 	AvailabilitySchedule any

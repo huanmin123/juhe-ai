@@ -306,7 +306,7 @@ var managedFields = []string{
 	"status", "superPriorityEnabled", "fallbackEnabled", "supportedModels",
 	"healthCheckModel", "healthCheckEndpointMode", "temporaryUnavailableContinuousProbeEnabled",
 	"backgroundProbeEnabled",
-	"modelMappings", "tags", "proxyProfileId", "accountExpiresAt", "availabilitySchedule",
+	"modelMappings", "tags", "proxyProfileId", "proxyPoolId", "accountExpiresAt", "availabilitySchedule",
 	"credentialsPatch", "notes",
 	"capabilityDomain", "cloneSourceId",
 }
@@ -450,6 +450,12 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 		trimmed := strings.TrimSpace(text)
 		input.ProxyProfileID = &trimmed
 	}
+	// proxyPoolId（代理池设计 §8.3）：可选；空串 = 未提交（与 proxyProfileId
+	// 同折叠语义）。与 proxyProfileId 的互斥由调用方在 parse 后统一 400。
+	if text, present := bodyString(body, "proxyPoolId"); present && strings.TrimSpace(text) != "" {
+		trimmed := strings.TrimSpace(text)
+		input.ProxyPoolID = &trimmed
+	}
 	if value, present := body["accountExpiresAt"]; present && value != nil {
 		text, ok := value.(string)
 		if !ok {
@@ -534,9 +540,12 @@ type managedInput struct {
 	ModelMappings          []accounts.ModelMapping
 	Tags                   []string
 	ProxyProfileID         *string
-	AccountExpiresAt       *string
-	AvailabilitySchedule   any
-	Notes                  *string
+	// ProxyPoolID 是建号池绑定入参（proxyPoolId，代理池设计 §8.3）：与
+	// ProxyProfileID 互斥（handleCreate / ssoToOAuth 在 parse 后统一 400）。
+	ProxyPoolID          *string
+	AccountExpiresAt     *string
+	AvailabilitySchedule any
+	Notes                *string
 }
 
 // managedProfileID 渲染创建端点（create-from-*、sso-to-oauth）的 profile 入参：
@@ -642,10 +651,16 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		kernel.WriteBadRequest(w, plan.label+" "+kind+"参数无效")
 		return
 	}
+	// 代理目标互斥（代理池设计 §8.3/§8.6 proxy_target_conflict）：同时提交
+	// 非空 proxyProfileId 与 proxyPoolId 统一 400，不静默选边。
+	if managed.ProxyProfileID != nil && managed.ProxyPoolID != nil {
+		kernel.WriteBadRequest(w, "代理与代理池不能同时选择")
+		return
+	}
 	// 建户 token 请求走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
-	// requiresProxy 供应商未绑定代理直接 400（fail-fast，先于 profile 解析
-	// 与上游兑换），不做直连回退。
-	if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(requestProxyProfileID(body, nil)) == "" {
+	// requiresProxy 供应商未绑定代理/代理池直接 400（fail-fast，先于 profile
+	// 解析与上游兑换），不做直连回退。
+	if plan.requiresProxy && d.Store.proxyRequired && managed.ProxyProfileID == nil && managed.ProxyPoolID == nil {
 		kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理：请在表单中选择出海代理后再提交（上游需要经代理访问）")
 		return
 	}
@@ -672,10 +687,28 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 	if kind == "刷新令牌" {
 		fallback = plan.label + " 刷新令牌授权失败"
 	}
-	proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, nil))
-	if err != nil {
-		d.writeProfileError(w, err)
-		return
+	// token 出站代理（代理池设计 §6.1 OAuth 建号行）：body 显式 proxyProfileId
+	// → 既有 profile 直读（互斥已保证此时无池绑定）；proxyPoolId → 建号临时
+	// 分配一个池成员（不落租约），token 交换固定使用该成员 URL；两者皆无 →
+	// ""（直连/环境变量）。分配失败（池停用/无成员/无可分配成员）按 400 明确
+	// 失败，不直连回退。
+	proxyURL := ""
+	poolMemberID := ""
+	if managed.ProxyPoolID != nil {
+		memberID, memberURL, allocErr := d.Store.allocateOAuthPoolMemberURL(r.Context(), *managed.ProxyPoolID)
+		if allocErr != nil {
+			d.writeProfileError(w, allocErr)
+			return
+		}
+		poolMemberID = memberID
+		proxyURL = memberURL
+	} else {
+		resolved, resolveErr := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, nil))
+		if resolveErr != nil {
+			d.writeProfileError(w, resolveErr)
+			return
+		}
+		proxyURL = resolved
 	}
 	outcome, err := exchange(body, proxyURL)
 	if err != nil {
@@ -715,6 +748,8 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		ModelMappings:             managed.ModelMappings,
 		Tags:                      managed.Tags,
 		ProxyProfileID:            managed.ProxyProfileID,
+		ProxyPoolID:               managed.ProxyPoolID,
+		PinPoolMemberProfileID:    poolMemberID,
 		GroupID:                   managed.GroupID,
 		AccountExpiresAt:          managed.AccountExpiresAt,
 		AvailabilitySchedule:      managed.AvailabilitySchedule,
@@ -816,15 +851,16 @@ func (d *Deps) refreshToken(plan providerPlan, selfOnly bool) http.HandlerFunc {
 			kernel.WriteError(w, http.StatusConflict, plan.label+" OAuth 账户已被其他操作更新，请刷新页面后重试")
 			return
 		}
-		// 存量刷新走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
+		// 存量刷新走账户有效代理目标（代理池设计 §8.3：池绑定账户用已固化
+		// 租约成员；无租约/池不可用明确失败，不直连、不在刷新中途换 IP）。
 		// 配置不可用直接 400，不做直连回退。
-		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(current.ProxyProfileID) == "" {
-			kernel.WriteBadRequest(w, plan.label+" OAuth 账户未绑定代理，无法刷新：请先为账户配置出海代理")
-			return
-		}
-		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), current.ProxyProfileID)
+		proxyURL, err := d.Store.oauthProxyRequestURL(r.Context(), current.ID, "")
 		if err != nil {
 			d.writeProfileError(w, err)
+			return
+		}
+		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(proxyURL) == "" {
+			kernel.WriteBadRequest(w, plan.label+" OAuth 账户未绑定代理，无法刷新：请先为账户配置出海代理")
 			return
 		}
 		// B1：与 jobs 定时刷新/保活及自动刷新互斥；锁被占用时返回 409，避免
@@ -906,15 +942,16 @@ func (d *Deps) reauthorizeFromCode(plan providerPlan, selfOnly bool) http.Handle
 			kernel.WriteError(w, http.StatusConflict, plan.revisionMessage(plan.label+" OAuth 重新授权失败"))
 			return
 		}
-		// 重新授权 token 请求走账户绑定代理；该路由 strict body 不收
-		// proxyProfileId，requestProxyProfileID 回落到存量绑定。
-		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(requestProxyProfileID(body, current)) == "" {
-			kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理才能重新授权：请先为账户配置出海代理")
-			return
-		}
-		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, current))
+		// 重新授权 token 请求走账户有效代理目标（代理池设计 §8.3：池绑定账户
+		// 用已固化租约成员，不可用即失败不直连）；该路由 strict body 不收
+		// proxyProfileId，按账户行绑定解析。
+		proxyURL, err := d.Store.oauthProxyRequestURL(r.Context(), current.ID, "")
 		if err != nil {
 			d.writeProfileError(w, err)
+			return
+		}
+		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(proxyURL) == "" {
+			kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理才能重新授权：请先为账户配置出海代理")
 			return
 		}
 		tokenCredentials, err := plan.exchangeCode(r.Context(), d.Store, body, access.ViewerID, proxyURL)
@@ -980,16 +1017,16 @@ func (d *Deps) reauthorizeFromRefreshToken(plan providerPlan, selfOnly bool) htt
 			kernel.WriteError(w, http.StatusConflict, plan.revisionMessage(plan.label+" 刷新令牌重新授权失败"))
 			return
 		}
-		// 刷新令牌重新授权走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应
-		// 物）：请求 proxyProfileId 优先（该路由 strict body 不收该字段，实际
-		// 回落存量绑定），配置不可用直接 400，不做直连回退。
-		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(requestProxyProfileID(body, current)) == "" {
-			kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理才能重新授权：请先为账户配置出海代理")
-			return
-		}
-		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, current))
+		// 刷新令牌重新授权走账户有效代理目标（代理池设计 §8.3：池绑定账户用
+		// 已固化租约成员，不可用即失败不直连；该路由 strict body 不收
+		// proxyProfileId，按账户行绑定解析），配置不可用直接 400。
+		proxyURL, err := d.Store.oauthProxyRequestURL(r.Context(), current.ID, "")
 		if err != nil {
 			d.writeProfileError(w, err)
+			return
+		}
+		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(proxyURL) == "" {
+			kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理才能重新授权：请先为账户配置出海代理")
 			return
 		}
 		tokenCredentials, err := plan.refreshInput(r.Context(), d.Store, body, current, proxyURL)
@@ -1081,7 +1118,12 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 			kernel.WriteBadRequest(w, "credentialsPatch 无效")
 			return
 		}
-		if plan.requiresProxy && d.Store.proxyRequired && (managed.ProxyProfileID == nil || strings.TrimSpace(*managed.ProxyProfileID) == "") {
+		// 代理目标互斥（代理池设计 §8.3/§8.6 proxy_target_conflict）。
+		if managed.ProxyProfileID != nil && managed.ProxyPoolID != nil {
+			kernel.WriteBadRequest(w, "代理与代理池不能同时选择")
+			return
+		}
+		if plan.requiresProxy && d.Store.proxyRequired && managed.ProxyProfileID == nil && managed.ProxyPoolID == nil {
 			kernel.WriteBadRequest(w, "Grok SSO 导入必须绑定代理：请在表单中选择出海代理后再提交")
 			return
 		}
@@ -1106,6 +1148,22 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 		failed := []map[string]any{}
 		for index, token := range tokens {
 			position := index + 1
+			// 池绑定建号（代理池设计 §6.1 OAuth 建号行）：每个 SSO 账户独立做
+			// 一次临时成员分配（不落租约；SSO 转换不经代理出站，分配结果只用于
+			// 落库时固化同一成员为租约）；池不可用按该 token 明确失败，不换出口
+			// 不直连。
+			poolMemberID := ""
+			if managed.ProxyPoolID != nil {
+				memberID, _, allocErr := d.Store.allocateOAuthPoolMemberURL(r.Context(), *managed.ProxyPoolID)
+				if allocErr != nil {
+					failed = append(failed, map[string]any{
+						"index": position,
+						"error": allocErr.Error(),
+					})
+					continue
+				}
+				poolMemberID = memberID
+			}
 			outcome, convertErr := d.Store.exchangeGrokSSOToken(r.Context(), token)
 			if convertErr != nil {
 				failed = append(failed, map[string]any{
@@ -1148,6 +1206,8 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 				ModelMappings:           managed.ModelMappings,
 				Tags:                    managed.Tags,
 				ProxyProfileID:          managed.ProxyProfileID,
+				ProxyPoolID:             managed.ProxyPoolID,
+				PinPoolMemberProfileID:  poolMemberID,
 				GroupID:                 managed.GroupID,
 				AccountExpiresAt:        accountExpiresAt,
 				AvailabilitySchedule:    managed.AvailabilitySchedule,

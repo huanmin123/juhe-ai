@@ -567,12 +567,26 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	  src.id AS resource_account_id, src.vendor_code AS resource_vendor_code,
 	  src.oauth_type AS resource_oauth_type, src.protocol_code AS resource_protocol_code, src.protocol_version AS resource_protocol_version,
       src.type AS resource_type, src.status AS resource_status,
-	      src.credentials_encrypted AS resource_credentials_encrypted, src.proxy_profile_id AS resource_proxy_profile_id
+	      src.credentials_encrypted AS resource_credentials_encrypted, src.proxy_profile_id AS resource_proxy_profile_id,
+	      COALESCE(a.proxy_pool_id, ''), COALESCE(src.proxy_pool_id, ''),
+	      pool.enabled, lease.proxy_profile_id,
+	      lease_profile.enabled, COALESCE(lease_profile.pool_health_status, 'unknown'),
+	      lease_member.enabled, lease_profile.pool_health_failure_streak
     FROM %s a
     LEFT JOIN %s src ON src.id = a.authorization_instance_source_account_id AND src.deleted_at IS NULL
+    LEFT JOIN %s pool ON pool.id = CASE
+        WHEN COALESCE(src.proxy_pool_id, '') <> '' THEN src.proxy_pool_id
+        WHEN a.authorization_instance_source_account_id IS NOT NULL THEN NULL
+        ELSE a.proxy_pool_id
+      END
+    LEFT JOIN %s lease ON lease.account_id = COALESCE(a.authorization_instance_source_account_id, a.id)
+      AND lease.pool_id = pool.id
+    LEFT JOIN %s lease_member ON lease_member.pool_id = lease.pool_id
+      AND lease_member.proxy_profile_id = lease.proxy_profile_id
+    LEFT JOIN %s lease_profile ON lease_profile.id = lease.proxy_profile_id
     WHERE a.id = ? AND a.deleted_at IS NULL
     LIMIT 1
-  `, s.table("accounts"), s.table("accounts"))
+  `, s.table("accounts"), s.table("accounts"), s.table("proxy_pools"), s.table("account_proxy_leases"), s.table("proxy_pool_members"), s.table("proxy_profiles"))
 	var (
 		id, systemID, name, accountType, status              sql.NullString
 		vendor, oauthType, protocolCode, protocolVersion     sql.NullString
@@ -585,6 +599,12 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		resourceType, resourceStatus                         sql.NullString
 		resourceCredentials                                  sql.NullString
 		resourceProxyProfileID                               sql.NullString
+		proxyPoolID, resourceProxyPoolID                     sql.NullString
+		leaseProxyProfileID                                  sql.NullString
+		leaseProxyHealth                                     sql.NullString
+		proxyPoolEnabled, leaseProxyEnabled                  sql.NullBool
+		leaseMemberEnabled                                   sql.NullBool
+		leaseProxyStreak                                     sql.NullInt64
 		configRevision, dispatchRevision                     sql.NullInt64
 	)
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
@@ -595,7 +615,9 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		&resourceAccountID, &resourceVendor, &resourceOAuthType,
 		&resourceProtocol, &resourceProtocolVersion,
 		&resourceType, &resourceStatus,
-		&resourceCredentials, &resourceProxyProfileID); err != nil {
+		&resourceCredentials, &resourceProxyProfileID,
+		&proxyPoolID, &resourceProxyPoolID, &proxyPoolEnabled, &leaseProxyProfileID,
+		&leaseProxyEnabled, &leaseProxyHealth, &leaseMemberEnabled, &leaseProxyStreak); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -653,9 +675,41 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	// 重加密事务已删除 oauth_type 键）；探针请求构造从凭据投影读取该键，
 	// 这里把列值叠入凭据投影，探针侧取值形状保持不变。
 	credentialsMap["oauth_type"] = resourceOAuthTypeValue
-	resolvedProxyProfileID := proxyProfileID.String
+	// 有效代理目标（代理池设计 §5.2/§7.5）：source pool > source profile >
+	// 实例自身 direct profile；实例自身 pool 不参与。池绑定只使用已固化租约
+	// 成员；池停用/租约缺失/成员不可分配时该探针明确失败，不直连。
+	effectivePoolID := proxyPoolID.String
 	if resourceAccountID.String != "" {
-		resolvedProxyProfileID = resourceProxyProfileID.String
+		effectivePoolID = resourceProxyPoolID.String
+	}
+	if strings.TrimSpace(effectivePoolID) != "" {
+		configuredProfile := proxyProfileID.String
+		if resourceAccountID.String != "" {
+			configuredProfile = resourceProxyProfileID.String
+		}
+		if strings.TrimSpace(configuredProfile) != "" {
+			return nil, fmt.Errorf("账户 %s 代理与代理池同时绑定（数据损坏），探针不直连", id.String)
+		}
+	}
+	resolvedProxyProfileID := ""
+	if strings.TrimSpace(effectivePoolID) != "" {
+		if !proxyPoolEnabled.Valid || !proxyPoolEnabled.Bool {
+			return nil, fmt.Errorf("账户 %s 代理池不存在或已停用，探针不直连", id.String)
+		}
+		if !leaseProxyProfileID.Valid || strings.TrimSpace(leaseProxyProfileID.String) == "" {
+			return nil, fmt.Errorf("账户 %s 代理池租约不可用，探针不直连", id.String)
+		}
+		if !leaseProxyEnabled.Valid || !leaseProxyEnabled.Bool ||
+			!leaseMemberEnabled.Valid || !leaseMemberEnabled.Bool ||
+			!leaseProxyStreak.Valid || leaseProxyStreak.Int64 >= 3 ||
+			strings.EqualFold(strings.TrimSpace(leaseProxyHealth.String), "dead") {
+			return nil, fmt.Errorf("账户 %s 代理池成员不可分配，探针不直连", id.String)
+		}
+		resolvedProxyProfileID = strings.TrimSpace(leaseProxyProfileID.String)
+	} else if resourceAccountID.String != "" && strings.TrimSpace(resourceProxyProfileID.String) != "" {
+		resolvedProxyProfileID = strings.TrimSpace(resourceProxyProfileID.String)
+	} else {
+		resolvedProxyProfileID = strings.TrimSpace(proxyProfileID.String)
 	}
 	proxyURL, err := s.loadProxyURL(ctx, resolvedProxyProfileID)
 	if err != nil {

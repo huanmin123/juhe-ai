@@ -58,6 +58,12 @@ type PatchInput struct {
 	SchedulingPreferenceID    *string
 	HasSchedulingPreferenceID bool
 
+	// 安全策略绑定（批A Has 语义，§4.2）：缺失 = 保持原值（含历史 NULL）；
+	// 显式 null（SecurityPolicyID 为 nil 且 HasSecurityPolicyID）= 持久化内置
+	// 固定 ID（显式回默认）；非空 ID = 校验后持久化。
+	SecurityPolicyID    *string
+	HasSecurityPolicyID bool
+
 	Status    string
 	HasStatus bool
 
@@ -197,6 +203,25 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 			input.SchedulingPreferenceID = &trimmed
 		}
 	}
+	if value, exists := body["securityPolicyId"]; exists {
+		input.HasSecurityPolicyID = true
+		if value == nil {
+			// 显式 null：回默认（内置固定 ID）。
+			input.SecurityPolicyID = nil
+		} else {
+			text, isString := value.(string)
+			// 契约 §4.2：非法类型、空字符串与不存在/跨 owner 统一 400，不区分
+			// 提示（安全策略无停用态，无停用分支）。
+			if !isString {
+				return nil, SecurityPolicyUnavailableMessage
+			}
+			trimmed := strings.TrimSpace(text)
+			if trimmed == "" {
+				return nil, SecurityPolicyUnavailableMessage
+			}
+			input.SecurityPolicyID = &trimmed
+		}
+	}
 	if value, exists := body["status"]; exists {
 		text, isString := value.(string)
 		if !isString || (text != "active" && text != "disabled") {
@@ -251,7 +276,7 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 	var unknown []string
 	for key := range body {
 		switch key {
-		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "expectedRevision":
+		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "expectedRevision":
 		default:
 			unknown = append(unknown, key)
 		}
@@ -267,7 +292,7 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 		return nil, "Unrecognized key(s) in object: " + strings.Join(quoted, ", ")
 	}
 	if !input.HasName && !input.HasDescription && !input.HasRouteStrategyID &&
-		!input.HasSchedulingPreferenceID && !input.HasStatus && !input.HasExpiresAt &&
+		!input.HasSchedulingPreferenceID && !input.HasSecurityPolicyID && !input.HasStatus && !input.HasExpiresAt &&
 		!input.HasQuotaLimits && !input.HasSchedule {
 		return nil, "请提供要修改的 API Key 内容"
 	}
@@ -323,16 +348,16 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		args = append(args, scoped)
 	}
 	var rowID, ownerID, name, routeStrategyID, status, keyHash string
-	var description, purpose, expiresAt, quotaJSON, scheduleJSON, updatedAt, schedulingPreferenceID sql.NullString
+	var description, purpose, expiresAt, quotaJSON, scheduleJSON, updatedAt, schedulingPreferenceID, securityPolicyID sql.NullString
 	var isDefault int
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.description, api_keys.route_strategy_id, api_keys.status, api_keys.is_default, api_keys.purpose,
 			api_keys.key_hash, api_keys.expires_at, api_keys.quota_limits_json, api_keys.availability_schedule_json,
-			api_keys.scheduling_preference_id, api_keys.updated_at
+			api_keys.scheduling_preference_id, api_keys.security_policy_id, api_keys.updated_at
 		FROM `+s.table("api_keys")+` api_keys
 		WHERE api_keys.id = ?`+where+` LIMIT 1`+lock), args...).
 		Scan(&rowID, &ownerID, &name, &description, &routeStrategyID, &status, &isDefault, &purpose,
-			&keyHash, &expiresAt, &quotaJSON, &scheduleJSON, &schedulingPreferenceID, &updatedAt)
+			&keyHash, &expiresAt, &quotaJSON, &scheduleJSON, &schedulingPreferenceID, &securityPolicyID, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -450,6 +475,30 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 			rowPatch["schedulingPreferenceId"] = binding.id
 			rowPatch["schedulingPreferenceName"] = binding.name
 			rowPatch["schedulingPreferenceBuiltIn"] = binding.builtIn
+		}
+	}
+
+	// 安全策略绑定（批A Has 语义，§4.2）。「默认 Key 不允许更换策略路由」限制
+	// 不扩展到本字段；无 purpose 豁免（契约 §4.2：所有 purpose 的 Key 均可绑
+	// 定）。期望存储值：显式 null/缺省提交位 → 内置固定 ID；非空 ID → trim 后
+	// 的值（空字符串经绑定解析统一拒绝）。同值提交是 no-op：不 bump revision、
+	// 不失效、不写操作日志。
+	if input.HasSecurityPolicyID {
+		desired := sql.NullString{String: BuiltinSecurityPolicyID, Valid: true}
+		if input.SecurityPolicyID != nil {
+			desired = sql.NullString{String: strings.TrimSpace(*input.SecurityPolicyID), Valid: true}
+		}
+		if desired != securityPolicyID {
+			binding, err := s.resolveSecurityPolicyBinding(ctx, tx, ownerID, input.SecurityPolicyID)
+			if err != nil {
+				return nil, err
+			}
+			addChange("securityPolicyId", nullStringValue(securityPolicyID), binding.id)
+			setClauses = append(setClauses, "security_policy_id = ?")
+			setArgs = append(setArgs, binding.id)
+			rowPatch["securityPolicyId"] = binding.id
+			rowPatch["securityPolicyName"] = binding.name
+			rowPatch["securityPolicyBuiltIn"] = binding.builtIn
 		}
 	}
 
@@ -594,6 +643,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	}
 	if s.inval != nil {
 		validationChanged := containsString(changed, "routeStrategyId") || containsString(changed, "schedulingPreferenceId") ||
+			containsString(changed, "securityPolicyId") ||
 			containsString(changed, "status") ||
 			containsString(changed, "expiresAt") || containsString(changed, "quotaLimits")
 		if validationChanged {

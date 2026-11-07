@@ -127,24 +127,13 @@ func TestPostgresExistenceHelpers(t *testing.T) {
 	}
 }
 
-// TestCodexNowDefaults：未注入时钟时的缺省路径（chat 清理链已随 chat_* 表退役）。
-func TestCodexNowDefaults(t *testing.T) {
-	codex := &CodexContextStore{}
-	if codex.now().IsZero() {
-		t.Fatalf("codex 缺省时钟不应为零值")
-	}
-	if !okInstant(codex.nowIso()) {
-		t.Fatalf("codex nowIso 应产出可解析时间")
-	}
+// TestDeletedNowDefaults：未注入时钟时的缺省路径（原 TestCodexNowDefaults 的
+// codex 半区随 codexcontext.go 退役删除，2026-11-07）。
+func TestDeletedNowDefaults(t *testing.T) {
 	deleted := &DeletedAccountStore{}
 	if deleted.now().IsZero() {
 		t.Fatalf("deleted 缺省时钟不应为零值")
 	}
-}
-
-func okInstant(value string) bool {
-	_, ok := parseInstant(value)
-	return ok
 }
 
 // TestExecChangedQError：执行失败透传（覆盖 execChangedQ 错误分支）。

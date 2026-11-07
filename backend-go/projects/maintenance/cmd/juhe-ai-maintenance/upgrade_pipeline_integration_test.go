@@ -38,18 +38,19 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 		return upgradeSteps(td.DSN, testSecret)
 	}
 
-	// 1) 落后库 dry-run：blocked/3，pending 应为 7 步 = 注册表 12 步中排除
-	// fresh-adopt 的 5 步（rev8 upstream-base-url 空库无行、rev10 studio 无遗留、
+	// 1) 落后库 dry-run：blocked/3，pending 应为 7 步 = 注册表 13 步中排除
+	// fresh-adopt 的 6 步（rev8 upstream-base-url 空库无行、rev10 studio 无遗留、
 	// rev11 退役监控表不存在、rev12 无系统账户即满足、rev13 空库无
-	// active+schedulable=0 行——各自 Satisfied 在空库按目标态判据即为真，见
-	// upgrade_steps.go 各步注释）。revision 7 chat-account-only-binding 已随
-	// AI 问答退役删除，revision 序列 6 后直接 8。
+	// active+schedulable=0 行、rev20 空库无映射行且 juhe_codex_context schema
+	// 不存在——各自 Satisfied 在空库按目标态判据即为真，见 upgrade_steps.go
+	// 各步注释；存量库 schema 已存在则 rev20 正常 pending）。revision 7
+	// chat-account-only-binding 已随 AI 问答退役删除，revision 序列 6 后直接 8。
 	out := upgradepipeline.Run(context.Background(), newOpts(true, false, false), steps())
 	if out.ExitCode != upgradepipeline.ExitNeedsHuman || out.Report == nil || out.Report.Result != upgradepipeline.ResultBlocked {
 		t.Fatalf("dry-run 应 blocked/3，got code=%d result=%v", out.ExitCode, reportResult(out.Report))
 	}
 	if len(out.Report.Plan.Pending) != 7 {
-		t.Fatalf("fresh 库 pending 步骤数 = %d, want 7（11 步 - 4 步 fresh-adopt）", len(out.Report.Plan.Pending))
+		t.Fatalf("fresh 库 pending 步骤数 = %d, want 7（13 步 - 6 步 fresh-adopt）", len(out.Report.Plan.Pending))
 	}
 
 	// 2) 缺确认：exit 2。
@@ -68,16 +69,16 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 			reportResult(out.Report), reportPostflightOK(out.Report))
 	}
 
-	// 4) 账本：12 行全 applied（rev7 chat-account-only-binding 已随退役删除，
-	// 注册表 12 步）；schema_state revision = SchemaRevision。
+	// 4) 账本：13 行全 applied（rev7 chat-account-only-binding 已随退役删除，
+	// 注册表 13 步）；schema_state revision = SchemaRevision。
 	db := td.DB
 	var applied int
 	if err := db.QueryRowContext(context.Background(),
 		`SELECT count(*) FROM juhe_business.schema_migrations WHERE status = 'applied'`).Scan(&applied); err != nil {
 		t.Fatalf("读账本失败: %v", err)
 	}
-	if applied != 12 {
-		t.Fatalf("applied 行数 = %d, want 12", applied)
+	if applied != 13 {
+		t.Fatalf("applied 行数 = %d, want 13", applied)
 	}
 	var stateRevision int64
 	if err := db.QueryRowContext(context.Background(),

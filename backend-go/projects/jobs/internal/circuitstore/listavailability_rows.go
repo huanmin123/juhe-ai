@@ -100,8 +100,24 @@ type managementRow struct {
 	seedBindingSystemAccountID sql.NullString
 	// background_probe_enabled 是后台自动探测总开关（accounts 列，总开关设计
 	// §9）：前端「手动」标签与状态抑制依据。两列恒 NOT NULL（契约 v20）。
-	backgroundProbeEnabled        any
-	sourceBackgroundProbeEnabled  any
+	backgroundProbeEnabled       any
+	sourceBackgroundProbeEnabled any
+	// 代理池投影字段（代理池设计 §5.2/§8.5）：有效绑定在 account_rows CTE 内
+	// 解析；pool/lease/member/lease_profile 来自外层 LEFT JOIN，非池绑定时为
+	// NULL。leaseMemberEnabled（proxy_pool_members.enabled）与
+	// leaseMemberProfileEnabled（proxy_profiles.enabled）分开保留：成员不可分
+	// 配判定需要两者加 pool_health_status（§6.2）。
+	effectiveProxyPoolID           sql.NullString
+	proxyPoolName                  sql.NullString
+	proxyPoolEnabled               any
+	proxyPoolAssignableMemberCount sql.NullInt64
+	leaseMemberProfileID           sql.NullString
+	leaseMemberProfileName         sql.NullString
+	leaseMemberProfileType         sql.NullString
+	leaseMemberProfileEnabled      any
+	leaseMemberEnabled             any
+	leaseMemberPoolHealthStatus    sql.NullString
+	leaseMemberPoolHealthStreak    sql.NullInt64
 }
 
 type managementPage struct {
@@ -283,6 +299,22 @@ func managementAccountRowsCTE(table func(string) string) string {
         source_accounts.last_health_check_trace_id AS source_last_health_check_trace_id,
         source_accounts.proxy_profile_id AS source_proxy_profile_id,
         source_accounts.concurrency_limit AS source_concurrency_limit,
+        accounts.proxy_pool_id AS configured_proxy_pool_id,
+        source_accounts.proxy_pool_id AS source_proxy_pool_id,
+        COALESCE(accounts.authorization_instance_source_account_id, accounts.id) AS proxy_lease_account_id,
+        -- 有效绑定解析（代理池设计 §5.2）：source 有池用 source 池；source 有直接
+        -- 代理用 source 代理；实例自身既有的池绑定任何情况下都不参与解析（即使
+        -- source 行缺失或 source 无绑定）。普通账户使用自身配置。
+        CASE
+          WHEN source_accounts.proxy_pool_id IS NOT NULL THEN source_accounts.proxy_pool_id
+          WHEN accounts.authorization_instance_source_account_id IS NOT NULL THEN NULL
+          ELSE accounts.proxy_pool_id
+        END AS effective_proxy_pool_id,
+        CASE
+          WHEN source_accounts.proxy_pool_id IS NOT NULL THEN NULL
+          WHEN source_accounts.proxy_profile_id IS NOT NULL THEN source_accounts.proxy_profile_id
+          ELSE accounts.proxy_profile_id
+        END AS effective_proxy_profile_id,
         accounts.background_probe_enabled,
         source_accounts.background_probe_enabled AS source_background_probe_enabled
       FROM ` + table("accounts") + ` accounts
@@ -300,7 +332,31 @@ func managementAccountRowsCTE(table func(string) string) string {
     )`
 }
 
+// proxyPoolAssignableMemberCountSQL 是池当前可分配成员数子查询（代理池设计
+// §6.2/§8.5）：成员行、代理档案、池三者均 enabled 且健康不是 dead；健康 NULL
+// 按 unknown 处理（可分配），不消费旧整体 test_status。
+func proxyPoolAssignableMemberCountSQL(table func(string) string) string {
+	return `(
+        SELECT COUNT(*)
+        FROM ` + table("proxy_pool_members") + ` assignable_members
+        JOIN ` + table("proxy_profiles") + ` assignable_profiles
+          ON assignable_profiles.id = assignable_members.proxy_profile_id
+        JOIN ` + table("proxy_pools") + ` assignable_pools
+          ON assignable_pools.id = assignable_members.pool_id
+        WHERE assignable_members.pool_id = account_rows.effective_proxy_pool_id
+          AND assignable_members.enabled = TRUE
+          AND assignable_profiles.enabled = TRUE
+          AND assignable_pools.enabled = TRUE
+          AND COALESCE(assignable_profiles.pool_health_status, 'unknown') <> 'dead'
+          AND assignable_profiles.pool_health_failure_streak < 3
+      )`
+}
+
 // managementPageSQL 组装完整列表行查询（PG 用 LATERAL 选绑定）。
+//
+// 池绑定面（代理池设计 §5.2/§8.5）：直接代理 join 改用
+// effective_proxy_profile_id（source 覆盖后），池/租约/成员/租约成员档案按
+// effective pool + 租约键（source account 优先）join，可分配数走子查询。
 func (l *ProjectionItemLoader) managementPageSQL(idCount int) string {
 	table := func(name string) string {
 		return "juhe_business." + name
@@ -321,7 +377,18 @@ func (l *ProjectionItemLoader) managementPageSQL(idCount int) string {
       LIMIT 1
     ) group_bindings ON true`
 	return managementAccountRowsCTE(table) + `
-    SELECT ` + managementRowColumns + `
+    SELECT ` + managementRowColumns + `,
+      account_rows.effective_proxy_pool_id,
+      proxy_pools.name AS proxy_pool_name,
+      proxy_pools.enabled AS proxy_pool_enabled,
+      ` + proxyPoolAssignableMemberCountSQL(table) + ` AS proxy_pool_assignable_member_count,
+      lease.proxy_profile_id AS lease_member_profile_id,
+      lease_profile.name AS lease_member_profile_name,
+      lease_profile.type AS lease_member_profile_type,
+      lease_profile.enabled AS lease_member_profile_enabled,
+      lease_member.enabled AS lease_member_enabled,
+      lease_profile.pool_health_status AS lease_member_pool_health_status,
+      lease_profile.pool_health_failure_streak AS lease_member_pool_health_streak
     FROM account_rows
     ` + groupBindingsJoin + `
     LEFT JOIN ` + table("groups") + ` bound_groups
@@ -335,7 +402,17 @@ func (l *ProjectionItemLoader) managementPageSQL(idCount int) string {
         account_rows.system_account_id
       )
     LEFT JOIN ` + table("proxy_profiles") + ` proxy_profiles
-      ON proxy_profiles.id = COALESCE(account_rows.source_proxy_profile_id, account_rows.configured_proxy_profile_id)
+      ON proxy_profiles.id = account_rows.effective_proxy_profile_id
+    LEFT JOIN ` + table("proxy_pools") + ` proxy_pools
+      ON proxy_pools.id = account_rows.effective_proxy_pool_id
+    LEFT JOIN ` + table("account_proxy_leases") + ` lease
+      ON lease.account_id = account_rows.proxy_lease_account_id
+      AND lease.pool_id = account_rows.effective_proxy_pool_id
+    LEFT JOIN ` + table("proxy_pool_members") + ` lease_member
+      ON lease_member.pool_id = lease.pool_id
+      AND lease_member.proxy_profile_id = lease.proxy_profile_id
+    LEFT JOIN ` + table("proxy_profiles") + ` lease_profile
+      ON lease_profile.id = lease.proxy_profile_id
     LEFT JOIN ` + table("vendors") + ` vendors
       ON vendors.code = account_rows.provider_code
     WHERE account_rows.id IN (` + placeholdersFor(idCount) + `)
@@ -461,6 +538,17 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.proxyProfileEnabled,
 		&row.backgroundProbeEnabled,
 		&row.sourceBackgroundProbeEnabled,
+		&row.effectiveProxyPoolID,
+		&row.proxyPoolName,
+		&row.proxyPoolEnabled,
+		&row.proxyPoolAssignableMemberCount,
+		&row.leaseMemberProfileID,
+		&row.leaseMemberProfileName,
+		&row.leaseMemberProfileType,
+		&row.leaseMemberProfileEnabled,
+		&row.leaseMemberEnabled,
+		&row.leaseMemberPoolHealthStatus,
+		&row.leaseMemberPoolHealthStreak,
 	)
 	return row, err
 }
@@ -548,7 +636,15 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 		payload["superPriorityEnabled"] = booleanValue(row.superPriorityEnabled)
 		payload["fallbackEnabled"] = booleanValue(row.fallbackEnabled)
 	}
-	if proxyProfileID := resolvedProxyProfileID(row, authorized); proxyProfileID != "" {
+	// 代理目标判别（代理池设计 §5.2/§8.5）：池绑定写 proxyPool*/proxyMember*
+	// 字段族；直接代理保持现有 proxyProfile* 行为并补 proxyTargetType="profile"；
+	// 无池无直接代理时不写 proxyTargetType。池绑定时下方 direct 展示列经
+	// effective NULL join 天然缺省，proxyUnavailable 因有效 profile 为空恒
+	// false，不可用标记由池分支负责。
+	if poolID := effectiveProxyPoolID(row); poolID != "" {
+		applyProxyPoolPayload(payload, row, poolID)
+	} else if proxyProfileID := resolvedProxyProfileID(row, authorized); proxyProfileID != "" {
+		payload["proxyTargetType"] = "profile"
 		payload["proxyProfileId"] = proxyProfileID
 	}
 	if row.proxyProfileName.Valid && row.proxyProfileName.String != "" {
@@ -610,10 +706,97 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 	return payload
 }
 
+// effectiveProxyPoolID 返回行上解析出的有效池绑定（代理池设计 §5.2，SQL 侧
+// effective_proxy_pool_id）；空串表示非池绑定（直接代理或无代理）。
+func effectiveProxyPoolID(row managementRow) string {
+	if row.effectiveProxyPoolID.Valid && row.effectiveProxyPoolID.String != "" {
+		return row.effectiveProxyPoolID.String
+	}
+	return ""
+}
+
+// applyProxyPoolPayload 写入池绑定账户的 §8.5 字段族：proxyTargetType/proxyPool*
+// 恒写（池绑定时）；proxyMember* 仅当前租约存在时写；proxyPoolAssignableMemberCount
+// 恒写用于区分“待分配/待切换/无可用成员”；proxyProfileUnavailable 与
+// proxyProfileErrorMessage 按池可用性状态写（无租约且存在可分配成员时为
+// “待分配”，必须保持不可用标记缺省）。
+func applyProxyPoolPayload(payload map[string]any, row managementRow, poolID string) {
+	payload["proxyTargetType"] = "pool"
+	payload["proxyPoolId"] = poolID
+	if row.proxyPoolName.Valid && row.proxyPoolName.String != "" {
+		payload["proxyPoolName"] = row.proxyPoolName.String
+	}
+	if row.proxyPoolEnabled != nil {
+		payload["proxyPoolEnabled"] = booleanValue(row.proxyPoolEnabled)
+	}
+	payload["proxyPoolAssignableMemberCount"] = nullInt64Number(row.proxyPoolAssignableMemberCount, 0)
+	if row.leaseMemberProfileID.Valid && row.leaseMemberProfileID.String != "" {
+		payload["proxyMemberProfileId"] = row.leaseMemberProfileID.String
+		if row.leaseMemberProfileName.Valid && row.leaseMemberProfileName.String != "" {
+			payload["proxyMemberProfileName"] = row.leaseMemberProfileName.String
+		}
+		if memberType := proxyProfileType(row.leaseMemberProfileType); memberType != "" {
+			payload["proxyMemberProfileType"] = memberType
+		}
+		if row.leaseMemberProfileEnabled != nil {
+			payload["proxyMemberProfileEnabled"] = booleanValue(row.leaseMemberProfileEnabled)
+		}
+	}
+	poolStatus := proxyPoolAvailability(row)
+	if poolStatus.unavailable {
+		payload["proxyProfileUnavailable"] = true
+		payload["proxyProfileErrorMessage"] = poolStatus.message
+	}
+}
+
+// proxyPoolAvailabilityStatus 是池绑定有效目标的可用性判定结果。
+type proxyPoolAvailabilityStatus struct {
+	unavailable bool
+	message     string
+}
+
+// proxyPoolAvailability 按代理池设计 §8.5 区分池级不可用状态并给出对应文案：
+// 池停用 → “已停用”；无任何可分配成员 → “无可用成员”；已有租约但成员不可分配
+// （成员行/代理档案停用或健康 dead，§6.2）→ “当前成员不可用，将在下次请求
+// 重新分配”。无租约且存在可分配成员时为待分配，不可用为 false。
+func proxyPoolAvailability(row managementRow) proxyPoolAvailabilityStatus {
+	poolEnabled := row.proxyPoolEnabled != nil && booleanValue(row.proxyPoolEnabled)
+	assignableCount := int(nullInt64Number(row.proxyPoolAssignableMemberCount, 0))
+	hasLease := row.leaseMemberProfileID.Valid && row.leaseMemberProfileID.String != ""
+	memberUnavailable := hasLease &&
+		(row.leaseMemberEnabled == nil || !booleanValue(row.leaseMemberEnabled) ||
+			row.leaseMemberProfileEnabled == nil || !booleanValue(row.leaseMemberProfileEnabled) ||
+			row.leaseMemberPoolHealthStreak.Valid && row.leaseMemberPoolHealthStreak.Int64 >= 3 ||
+			strings.TrimSpace(row.leaseMemberPoolHealthStatus.String) == "dead")
+	label := "代理池"
+	if row.proxyPoolName.Valid && strings.TrimSpace(row.proxyPoolName.String) != "" {
+		label = "代理池「" + strings.TrimSpace(row.proxyPoolName.String) + "」"
+	}
+	switch {
+	case !poolEnabled:
+		return proxyPoolAvailabilityStatus{unavailable: true, message: label + "已停用"}
+	case assignableCount == 0:
+		return proxyPoolAvailabilityStatus{unavailable: true, message: label + "无可用成员"}
+	case memberUnavailable:
+		return proxyPoolAvailabilityStatus{unavailable: true, message: label + "当前成员不可用，将在下次请求重新分配"}
+	}
+	return proxyPoolAvailabilityStatus{}
+}
+
 func resolvedProxyProfileID(row managementRow, authorized bool) string {
+	// 池绑定时直接代理配置不参与有效目标（代理池设计 §5.2）：proxyProfileId
+	// 只写直接代理有效 profile，池绑定一律不写。
+	if effectiveProxyPoolID(row) != "" {
+		return ""
+	}
 	if authorized {
 		if row.sourceProxyProfileID.Valid && row.sourceProxyProfileID.String != "" {
 			return row.sourceProxyProfileID.String
+		}
+		// source 无池无直接代理时回落到实例自身的直接代理绑定（§5.2），
+		// 实例自身的池绑定已在 effectiveProxyPoolID 处排除。
+		if row.configuredProxyProfileID.Valid && row.configuredProxyProfileID.String != "" {
+			return row.configuredProxyProfileID.String
 		}
 		return ""
 	}

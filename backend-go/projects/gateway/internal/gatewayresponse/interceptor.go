@@ -340,6 +340,12 @@ func (iso *parseErrorEventIsolator) push(chunk []byte) []byte {
 	if len(chunk) == 0 {
 		return chunk
 	}
+	// 入口 pending 非空 = 跨 push 持有字节：快路径（原样返回入参切片）只在
+	// 入口 pending 为空时成立，否则必须返回重组后的 out——此前判据
+	// （dropped 未增 && pending 排空）无法区分两种形态，跨 push 持有后恰好
+	// 排空时会静默丢弃此前持有的字节（上游 TCP 分片切断 SSE 事件行 / 响应侧
+	// 占位符悬挂还原改变分片边界时必现，2026-11-07 批C 修复）。
+	hadPending := len(iso.pending) > 0
 	iso.pending = append(iso.pending, chunk...)
 	if len(iso.pending) > parseErrorEventIsolatorMaxHoldBytes {
 		held := iso.pending
@@ -361,7 +367,7 @@ func (iso *parseErrorEventIsolator) push(chunk []byte) []byte {
 		}
 		out = append(out, rawEvent...)
 	}
-	if iso.dropped == droppedBefore && len(iso.pending) == 0 {
+	if iso.dropped == droppedBefore && !hadPending && len(iso.pending) == 0 {
 		return chunk
 	}
 	return out

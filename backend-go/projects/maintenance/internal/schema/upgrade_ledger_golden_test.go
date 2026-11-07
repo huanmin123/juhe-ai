@@ -11,18 +11,53 @@ func collapseSpaces(value string) string {
 }
 
 // 升级账本 golden（升级兼容与迁移账本设计 §7.4）：钉死账本 DDL 文本、结构
-// 摘要与破坏性语句披露值。任何变化都必须显式更新本文件并在同批递增
-// contracts.SchemaRevision。
+// 摘要与破坏性语句披露值。账本字段变化必须显式更新本文件；账本属于升级
+// 编排基础设施，不占用业务 SchemaRevision（业务 schema/步骤变化才递增）。
 func TestUpgradeLedgerGolden(t *testing.T) {
 	statements := UpgradeLedgerStatements()
-	if len(statements) != 2 {
-		t.Fatalf("账本 DDL 语句数 = %d, want 2（schema_state + schema_migrations）", len(statements))
+	if len(statements) != 4 {
+		t.Fatalf("账本 DDL 语句数 = %d, want 4（两表 CREATE + 两表 ALTER 补列）", len(statements))
 	}
 	if !strings.Contains(statements[0], "CREATE TABLE IF NOT EXISTS juhe_business.schema_state") {
 		t.Fatalf("schema_state DDL 首句不符: %s", statements[0])
 	}
 	if !strings.Contains(statements[1], "CREATE TABLE IF NOT EXISTS juhe_business.schema_migrations") {
 		t.Fatalf("schema_migrations DDL 首句不符: %s", statements[1])
+	}
+	// 多节点发布门禁（设计 §5.2/§6.4）：state 记录最低可读二进制与 expand 完成态。
+	for _, must := range []string{
+		"min_readable_binary_revision bigint NOT NULL DEFAULT 0",
+		"expand_completed boolean NOT NULL DEFAULT true",
+	} {
+		if !strings.Contains(collapseSpaces(statements[0]), must) {
+			t.Fatalf("schema_state DDL 缺少契约片段 %q", must)
+		}
+	}
+	for _, must := range []string{
+		"phase text NOT NULL DEFAULT 'expand'",
+		"online_safe boolean NOT NULL DEFAULT false",
+	} {
+		if !strings.Contains(collapseSpaces(statements[1]), must) {
+			t.Fatalf("schema_migrations DDL 缺少契约片段 %q", must)
+		}
+	}
+	for _, must := range []string{
+		"ALTER TABLE juhe_business.schema_state",
+		"ADD COLUMN IF NOT EXISTS min_readable_binary_revision",
+		"ADD COLUMN IF NOT EXISTS expand_completed",
+	} {
+		if !strings.Contains(collapseSpaces(statements[2]), must) {
+			t.Fatalf("schema_state ALTER 缺少契约片段 %q", must)
+		}
+	}
+	for _, must := range []string{
+		"ALTER TABLE juhe_business.schema_migrations",
+		"ADD COLUMN IF NOT EXISTS phase",
+		"ADD COLUMN IF NOT EXISTS online_safe",
+	} {
+		if !strings.Contains(collapseSpaces(statements[3]), must) {
+			t.Fatalf("schema_migrations ALTER 缺少契约片段 %q", must)
+		}
 	}
 	// 对齐空格不参与钉死：归一空白后比较契约片段。
 	normalized := collapseSpaces(statements[1])
@@ -41,8 +76,10 @@ func TestUpgradeLedgerGolden(t *testing.T) {
 		}
 	}
 	// 时间列跟随 juhe_business text 惯例（§7.1）：账本不得引入 timestamptz。
-	if strings.Contains(statements[1], "timestamptz") || strings.Contains(statements[0], "timestamptz") {
-		t.Fatal("账本时间列必须为 text（ISO-8601 UTC 毫秒），不得使用 timestamptz")
+	for _, statement := range statements {
+		if strings.Contains(statement, "timestamptz") {
+			t.Fatal("账本时间列必须为 text（ISO-8601 UTC 毫秒），不得使用 timestamptz")
+		}
 	}
 }
 

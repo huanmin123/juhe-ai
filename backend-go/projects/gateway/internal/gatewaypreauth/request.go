@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysecpol"
 )
 
 // GatewayRequest is the gateway-facing request view shared by the pre-auth
@@ -73,6 +75,45 @@ type GatewayRequest struct {
 	// RequestFailureHealthCheckDispatched / MarkRequestFailureHealthCheckDispatched
 	// 读写，NewGatewayRequest 构造即初始化；零值请求由 Mark 方法惰性补齐。
 	failureHealthCheckMark *requestFailureHealthCheckMark
+
+	// SecurityPolicy 是 API Key 安全策略的请求级执行事实（API Key 安全策略与
+	// 出站内容脱敏设计 §2/§8，批B2）：由链层在出站脱敏单点（body 定型后）挂
+	// 载，供 usage 终态（SecurityPolicyApplied / piiHits）与响应侧占位符还原
+	// 消费。nil = 未绑定 / 内置默认 / 空规则集（零开销路径，行为与旧版逐字节
+	// 一致）。指针字段使浅复制（model override clone）与原请求共享同一份执行
+	// 事实——脱敏在请求生命周期内一次定型（§2 映射表请求级唯一）。
+	SecurityPolicy *SecurityPolicyRequestState
+}
+
+// SecurityPolicyRequestState 是单次请求的出站脱敏执行事实。请求级数据结构：
+// Mapping 随请求上下文传播、请求终态销毁，不落盘、不进 Redis、不写日志（设
+// 计 §2 硬约束）；字段值在脱敏点一次写入，之后只读。
+type SecurityPolicyRequestState struct {
+	// PolicyID 是绑定的安全策略 id（security_policies.id，恒非内置默认行——
+	// 内置默认走零开销路径不产生本状态）。
+	PolicyID string
+	// Family 是本次判定的出站协议族（gatewaysecpol 五族词表）；空 = 无法判
+	// 定，fail-open 跳过扫描（§9.4），仅保留绑定事实供 usage 记录。
+	Family string
+	// Applied 报告本次出站脱敏是否实际发生替换/注入（SanitizeResult.Applied）。
+	Applied bool
+	// Hits 是按规则 label 的命中计数（无原文，含 mask 与 placeholder；§8）。
+	// 未执行扫描时为 nil。
+	Hits map[string]int
+	// TotalHits 是原始命中总数（防护次数口径，设计 §4.3.1：每次实际替换
+	// +1，不去重，fail-open 跳过不计），供请求终态 INCRBY 防护计数消费。
+	TotalHits int
+	// Skips 是 fail-open 跳过计数（内层 JSON 解析失败等，§5）。
+	Skips int
+	// Mapping 是占位符映射表（响应侧还原消费；纯 mask 策略或未命中为 nil）。
+	Mapping *gatewaysecpol.Mapping
+	// ProtectionCounted 钉住本请求的防护次数 Redis INCRBY 已执行（API Key 安
+	// 全策略防护次数计数，写后缓存设计 §4.3.1）：终态消费点（FinalizationDeps
+	// 构造点）随多账户重试 / 多 attempt 每 attempt 进入一次，CAS 让首次到达的
+	// 终态入口执行 INCRBY，其余 attempt 直接跳过——脱敏每请求一次，防护计数
+	// 同请求只计一次。零值 false 可用；TotalHits 为 0 时该标记不置位（无计
+	// 数即无去重需要）。
+	ProtectionCounted atomic.Bool
 }
 
 // requestFailureHealthCheckMark 是单请求的失败健康检查派发标记；互斥锁保护

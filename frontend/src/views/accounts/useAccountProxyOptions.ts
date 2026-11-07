@@ -3,25 +3,30 @@ import { getCurrentInstance, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
-import { rememberProxyLabels } from '@/shared/proxyLabelCache'
-import type { ProxyProfileOptionSummary } from '@/types/domain'
+import { rememberProxyLabels, rememberProxyPoolLabels } from '@/shared/proxyLabelCache'
+import type { ProxyOptionItem, ProxyOptionKind, ProxyPoolOptionSummary, ProxyProfileOptionSummary } from '@/types/domain'
 
 export interface AccountProxyOptionsScope {
   selectedIds?: Array<string | undefined>
+  selectedPoolIds?: Array<string | undefined>
 }
 
 interface UseAccountProxyOptionsConfig {
   errorMessage?: string
   limit?: number
+  /** 账户下拉 kinds（代理池设计 §8.2）：缺省 profile 保持既有调用方行为。 */
+  kinds?: ProxyOptionKind[]
   scope?: () => AccountProxyOptionsScope
   searchDelayMs?: number
 }
 
 export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}) {
   const proxies = ref<ProxyProfileOptionSummary[]>([])
+  const pools = ref<ProxyPoolOptionSummary[]>([])
   const keyword = ref('')
   const loading = ref(false)
   const limit = optionLimitValue(config.limit)
+  const kinds: ProxyOptionKind[] = config.kinds?.length ? config.kinds : ['profile']
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
   let loadingKey: string | undefined
@@ -41,8 +46,10 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
     const requestKey = JSON.stringify([
       activeIdentity,
       limit,
+      kinds,
       requestKeyword ?? '',
-      scope.selectedIds
+      scope.selectedIds,
+      scope.selectedPoolIds
     ])
     if (!force && loadingKey === requestKey && loadingPromise) {
       return loadingPromise
@@ -53,14 +60,20 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
     loadingPromise = (async () => {
       try {
         const selectedIds: string[] = scope.selectedIds
-        const nextProxies = await api.proxies.options({
+        const selectedPoolIds: string[] = scope.selectedPoolIds
+        const nextOptions = await api.proxies.options({
           keyword: requestKeyword,
           limit,
-          ...(selectedIds.length > 0 ? { selectedIds } : {})
+          ...(kinds.length > 1 || kinds[0] !== 'profile' ? { kinds } : {}),
+          ...(selectedIds.length > 0 ? { selectedIds } : {}),
+          ...(selectedPoolIds.length > 0 ? { selectedPoolIds } : {})
         })
         if (currentRequestId !== requestId || activeIdentity !== proxyOptionIdentityKey()) return
-        rememberProxyLabels(nextProxies)
-        proxies.value = nextProxies
+        const { profiles, poolOptions } = splitProxyOptionItems(nextOptions)
+        rememberProxyLabels(profiles)
+        rememberProxyPoolLabels(poolOptions)
+        proxies.value = profiles
+        pools.value = poolOptions
       } catch (error) {
         if (currentRequestId !== requestId || activeIdentity !== proxyOptionIdentityKey()) return
         console.error(error)
@@ -110,18 +123,21 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
     }
   }
 
-  function normalizedScope(scopeOverride?: Partial<AccountProxyOptionsScope>): { selectedIds: string[] } {
+  function normalizedScope(scopeOverride?: Partial<AccountProxyOptionsScope>): { selectedIds: string[]; selectedPoolIds: string[] } {
     const configuredScope = config.scope?.() ?? {}
     const scope = {
       ...configuredScope,
       ...scopeOverride,
-      selectedIds: scopeOverride?.selectedIds ?? configuredScope.selectedIds
+      selectedIds: scopeOverride?.selectedIds ?? configuredScope.selectedIds,
+      selectedPoolIds: scopeOverride?.selectedPoolIds ?? configuredScope.selectedPoolIds
     }
+    const uniqueSorted = (ids: Array<string | undefined> | undefined): string[] => [...new Set((ids ?? [])
+      .map((id) => id?.trim())
+      .filter((id): id is string => Boolean(id))
+      .sort())]
     return {
-      selectedIds: [...new Set((scope.selectedIds ?? [])
-        .map((id) => id?.trim())
-        .filter((id): id is string => Boolean(id))
-        .sort())]
+      selectedIds: uniqueSorted(scope.selectedIds),
+      selectedPoolIds: uniqueSorted(scope.selectedPoolIds)
     }
   }
 
@@ -131,6 +147,7 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
     if (identityChanged) activeIdentity = nextIdentity
     if (!identityChanged) return
     proxies.value = []
+    pools.value = []
     invalidateInFlightRequest()
   }
 
@@ -161,9 +178,32 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
     keyword,
     load,
     loading,
+    pools,
     proxies,
     resetSearch
   }
+}
+
+/** options 响应按 kind 判别拆分（§8.2）：kind 缺省按 profile 兼容既有后端响应。 */
+export function splitProxyOptionItems(items: ProxyOptionItem[]): {
+  profiles: ProxyProfileOptionSummary[]
+  poolOptions: ProxyPoolOptionSummary[]
+} {
+  const profiles: ProxyProfileOptionSummary[] = []
+  const poolOptions: ProxyPoolOptionSummary[] = []
+  for (const item of items ?? []) {
+    if (item.kind === 'pool') {
+      poolOptions.push(item)
+      continue
+    }
+    profiles.push({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      enabled: item.enabled
+    })
+  }
+  return { profiles, poolOptions }
 }
 
 function proxyOptionIdentityKey(): string {

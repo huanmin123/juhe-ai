@@ -92,18 +92,18 @@ func TestW13ATestMappingHelpers(t *testing.T) {
 	openaiSource := manualTestModeSource{
 		ProviderCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
-	// 同族直通、流式转非流式、responses→chat 在 OpenAI 协议支持。
+	// 同族直通与流式转非流式支持；responses→chat bridge 已随 7 pair 矩阵退役。
 	if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
 		t.Fatal("同族应支持")
 	}
 	if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "stream_generate_content", UpstreamEndpointFamily: "generate_content"}, openaiSource) {
 		t.Fatal("流式→非流式应支持")
 	}
-	if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
-		t.Fatal("responses→chat 在 OpenAI 协议应支持")
+	if isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
+		t.Fatal("responses→chat bridge 已退役，不应支持")
 	}
 	if isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
-		t.Fatal("messages→chat 在非 OpenAI 协议面不应支持")
+		t.Fatal("messages→chat 跨协议不应支持")
 	}
 	// legacy hybrid token 的跨协议转换矩阵已随 §555 终态扫描拆除（B4④）：
 	// hybrid 来源只剩同族直通与 stream→generate 归一，跨协议一律不支持。

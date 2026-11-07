@@ -33,7 +33,8 @@ import (
 
 // kitUsageRecordsPartitionedDDL 是 juhe_usage.usage_records 的生产对齐 DDL：
 // 逐列对照 pg_schema_usage.go（usage-records 组，含 route_group_id /
-// compaction_expected / M1 音频计量 / M2 视频计量列的当前全形状），分区母表
+// compaction_expected / 安全策略两列 security_policy_applied + pii_hits_json /
+// M1 音频计量 / M2 视频计量列的当前全形状），分区母表
 // PARTITION BY RANGE (created_at)，每日分区由被测 ensure 链按批内 createdAt
 // 创建（生产自适应分区路径，测试不复刻分区 DDL）。
 const kitUsageRecordsPartitionedDDL = `CREATE TABLE IF NOT EXISTS juhe_usage.usage_records (
@@ -46,6 +47,8 @@ const kitUsageRecordsPartitionedDDL = `CREATE TABLE IF NOT EXISTS juhe_usage.usa
       group_id text,
       route_group_id text,
       compaction_expected integer NOT NULL DEFAULT 0,
+      security_policy_applied integer NOT NULL DEFAULT 0,
+      pii_hits_json text,
       account_id text,
       endpoint text,
       provider_code text,

@@ -1,5 +1,6 @@
 import { formatCompactUsageAmount, formatRequestCountTag, formatUsd } from '@/shared/formatters'
 import type { ApiKeyAvailabilitySchedule, ApiKeySummary, ApiKeyUsageListSummary, RouteStrategyMode } from '@/types/domain'
+import { BUILTIN_SECURITY_POLICY_NAME } from '@/api/domains/securityPolicies'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { timeScheduleSummary, timeScheduleTagColor } from '@/views/shared/timeSchedule'
 
@@ -11,6 +12,11 @@ export function apiKeyRouteStrategyName(apiKey: ApiKeySummary): string {
 
 export function apiKeySchedulingPreferenceText(apiKey: ApiKeySummary): string {
   return apiKey.schedulingPreferenceName?.trim() || '-'
+}
+
+/** 未绑定（securityPolicyId 空/null）与内置行同义：固定显示「默认安全策略」。 */
+export function apiKeySecurityPolicyText(apiKey: ApiKeySummary): string {
+  return apiKey.securityPolicyName?.trim() || BUILTIN_SECURITY_POLICY_NAME
 }
 
 export function apiKeyRouteStrategyModeText(mode?: RouteStrategyMode): string {

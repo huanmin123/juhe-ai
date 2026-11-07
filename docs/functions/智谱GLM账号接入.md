@@ -1,7 +1,8 @@
 # 智谱 GLM 账号接入
 
-> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 默认客户端画像和显式桥接配置只作为历史背景；当前目标是客户端画像由网关内部识别，API Key 只绑定策略路由，OpenAI v1 Responses 到 Chat Completions 可由普通 GLM 账号模型别名显式声明，其他跨协议转换落到混合供应商账户。
-> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 默认客户端画像”或“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。除 OpenAI v1 普通账号 `responses -> chat_completions` 外，跨协议承接统一迁移到混合供应商账户。
+> **2026-11-07 退役标注：** 跨协议模型映射已整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）。GLM Chat 账号的 `responses -> chat_completions` 显式 bridge 已随退役全链删除：GLM OpenAI v1 账户不再承接 Codex / OpenAI Responses 请求（无候选时被跳过），映射协议强制同族。GLM 承接 Responses 的唯一路径是未来落地独立原生 `profile_glm_coding_openai_responses_v1` 档案（方案目标，待实现）；混合供应商账户已随 2026-11-05 供应商退役消失。本文中所有 Codex bridge / Chat-only bridge 段落为历史截面。
+> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 默认客户端画像和显式桥接配置只作为历史背景；当时目标是客户端画像由网关内部识别，API Key 只绑定策略路由，OpenAI v1 Responses 到 Chat Completions 可由普通 GLM 账号模型别名显式声明，其他跨协议转换落到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 默认客户端画像”或“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。
 
 > 2026-09-09 三协议复核（方案阶段）：智谱官方现已在 Coding Plan 接入工具表中明确列出 OpenAI Response 协议及独立端点 `https://open.bigmodel.cn/api/v1`。当前 Go/前端仍只实现下方三个历史档案，尚未注册原生 GLM Responses；本次先固化新增独立 Responses 档案的方案，代码、seed、模型白名单和导入枚举均待后续实施与验证。本文旧段落中“没有原生 Responses”的表述仅代表复核前的实现事实，不能继续作为官网能力结论。
 
@@ -9,7 +10,7 @@
 
 > 目录同步边界：GLM 的上游模型目录只由用户手动刷新账户草稿调用，内部标记仅保护该受控转发。账户弹框打开、字段变更、取消以及测试或确认不会自动同步；测试或确认遇到缺少支持模型或检查模型时只提示并中止。人工 / 草稿测试、激活、健康、恢复和调度直接验证 Chat 或 Messages endpoint；目录 `404` 或未开放不能阻断已配置完整模型账户的使用，客户端模型目录仍由本地返回。
 
-本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；官网新增的 OpenAI Responses 端点尚未进入运行代码。计划新增独立 `profile_glm_coding_openai_responses_v1`，并保留现有 Chat-only bridge 的显式语义。运行事实以“当前实现”与“方案阶段目标”两栏区分。
+本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；官网新增的 OpenAI Responses 端点尚未进入运行代码。计划新增独立 `profile_glm_coding_openai_responses_v1`（原 Chat-only bridge 已随 2026-11-07 跨协议映射退役删除，不再保留）。运行事实以“当前实现”与“方案阶段目标”两栏区分。
 
 官方资料显示，智谱当前面向本项目最相关的接入形态有三类：
 
@@ -23,7 +24,7 @@
 结论：
 
 - 智谱官方已公布三种 Coding Plan 接入端点；仓库当前只落地其中 Chat Completions 和 Anthropic Messages，Responses 端点进入“待实现的独立原生档案”，不能把官网事实误写成当前代码已支持。
-- Codex / OpenAI 客户端必须使用 Responses 协议时，适配目标是独立 `profile_glm_coding_openai_responses_v1` 直连 `/api/v1/responses`。现有 `responses -> chat_completions` 仅作为 Chat-only 账号的显式 bridge，不能冒充原生 Responses，也不能通过 API Key 或策略路由隐式开启。
+- Codex / OpenAI 客户端必须使用 Responses 协议时，适配目标是独立 `profile_glm_coding_openai_responses_v1` 直连 `/api/v1/responses`。原 `responses -> chat_completions` Chat-only 显式 bridge 已随 2026-11-07 跨协议映射退役删除；GLM Chat 账户不再承接 Responses 请求。
 - 通用 GLM API、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 都用 API Key 鉴权，不是 OAuth；创建账户时应像 GPT 一样先区分接入类型，但底层 `accounts.type` 仍保存为 `api_key`。
 - 通用 GLM API、GLM Coding Plan OpenAI Chat、GLM Coding Plan Anthropic v1 和目标 Responses 档案必须使用不同 `provider_protocol_profile_id`，不能只靠同一个 `glm` 供应商和不同 `base_url` 混用，否则分组、额度、模型目录、账号测试和排障都会混在一起。
 
@@ -42,11 +43,11 @@ type ProviderCode = 'glm'
 | 档案 | 供应商 | 协议 | 默认 Base URL（版本根） | 账户创建类型 | 客户端画像 | 真实 endpoint mode | 跨协议转换 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `profile_glm_general_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/paas/v4` | Chat API Key | 网关内部识别 | `chat_json`、`chat_sse` | 不启用 |
-| `profile_glm_coding_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/coding/paas/v4` | Coding API Key | 网关内部识别 | `chat_json`、`chat_sse` | 普通账户可显式配置 Responses -> Chat |
+| `profile_glm_coding_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/coding/paas/v4` | Coding API Key | 网关内部识别 | `chat_json`、`chat_sse` | （已随 2026-11-07 退役）原普通账户可显式配置 Responses -> Chat |
 | `profile_glm_coding_anthropic_v1` | `glm` | `anthropic/v1` | `https://open.bigmodel.cn/api/anthropic/v1` | Claude API Key | Anthropic API / Claude Code | `messages_json`、`messages_sse` | 不启用 |
 | `profile_glm_coding_openai_responses_v1`（方案目标，待实现） | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/v1` | Coding API Key（Responses 档案，落地时以描述文案区分） | OpenAI Responses / Codex | `responses_json`、`responses_sse` | 不启用隐式 bridge |
 
-OpenAI Chat 两套现有档案的账户真实能力仍只声明 `chat_completions`；Anthropic v1 档案只声明 Messages / Models，不默认写入 `message_token_counting`。Responses 档案只有在代码落地且通过 Mock + 最小真实请求后，才可写入 `responses_json/responses_sse`。普通 GLM 账户不会隐式启用 Codex bridge；需要把 Responses / Codex Responses 转到 GLM Chat 时，必须通过账号模型别名显式声明 `responses -> chat_completions`，账户真实 endpoint modes 仍保持 `chat_json/chat_sse`。
+OpenAI Chat 两套现有档案的账户真实能力仍只声明 `chat_completions`；Anthropic v1 档案只声明 Messages / Models，不默认写入 `message_token_counting`。Responses 档案只有在代码落地且通过 Mock + 最小真实请求后，才可写入 `responses_json/responses_sse`。2026-11-07 跨协议映射退役后，GLM Chat 账户不再承接 Responses / Codex Responses 请求（原“账号模型别名显式声明 `responses -> chat_completions`”的入口已删除）。
 
 存储实现必须允许同一供应商在同一协议版本下存在多条协议档案。当前如果 `provider_protocol_profiles` 仍用 `UNIQUE(provider_code, protocol_code, protocol_version)` 作为唯一约束，GLM 两条 `glm + openai/v1` 档案会互相冲突；落地前应改为以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 后按 `provider_code + connection_type` 做业务唯一约束。分组名称唯一约束为 `(system_account_id, name)`、每个系统账户作用域最多一个默认分组；分组实体的 `provider_code` 供应商维度已退役，账户加入分组不再按 `provider_code` 校验（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md)）。
 
@@ -81,7 +82,7 @@ OpenAI Chat 两套现有档案的账户真实能力仍只声明 `chat_completion
 - 管理 API、导入协议和公开外部账号推送当前只接收 `providerProtocolProfileId = profile_glm_general_openai_v1 | profile_glm_coding_openai_v1 | profile_glm_coding_anthropic_v1`。代码实施完成并通过验收后，才将 `profile_glm_coding_openai_responses_v1` 加入契约；旧接入类型别名不能解析。
 - 已保存 GLM 账户不建议在编辑时切换通用 / Coding OpenAI / Coding Anthropic 接入类型；如果后续允许切换，必须要求账户未绑定分组、无授权实例或完成独立清理计划，不能在已有调度和统计归属上原地改档案。
 - GLM 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token 或 ChatGPT Account ID。
-- 通用 GLM 账户和 GLM Coding OpenAI Chat 档案只具备 Chat Completions 请求能力。目标 Responses 档案直连 GLM `/api/v1/responses`；Chat-only 账号如需承接 Responses / Codex Responses，仍须在普通账号模型别名中显式声明 `responses -> chat_completions`，并继续只保存真实 Chat 上游配置。
+- 通用 GLM 账户和 GLM Coding OpenAI Chat 档案只具备 Chat Completions 请求能力。目标 Responses 档案直连 GLM `/api/v1/responses`；（已随 2026-11-07 退役）Chat-only 账号原通过显式声明 `responses -> chat_completions` 承接 Responses / Codex Responses 的入口已删除。
 - GLM Coding Anthropic 账户只具备 Anthropic v1 Messages 请求能力，不承接 Codex Responses。
 - Coding Plan Key 与平台其他 API Key 不通用；如果用户把通用 API Key 填到 Coding Plan 档案，可能无法使用 Coding 套餐额度，应通过表单提示和测试结果提示区分。
 
@@ -94,7 +95,7 @@ GLM OpenAI Chat 档案复用 OpenAI v1 Chat Completions 协议适配器；方案
 - 客户端可请求 `/chat/completions` 或 `/v1/chat/completions`。
 - 网关把请求发往所选档案的版本根 `base_url` + 不含版本前缀的操作路径（`/chat/completions`），`TrimRight(base_url,"/")` 直拼、无 `/v1` 补插；GLM 官方版本根（`/api/paas/v4`、`/api/coding/paas/v4`）直接作为 base，最终 URL 为 `https://open.bigmodel.cn/api/paas/v4/chat/completions`。行为回正披露：旧网关形态曾把 openai 档案文本面多拼 `/v1`（出站 `/api/paas/v4/v1/chat/completions`），与官方形态不符，已随上游 Base URL 版本根语义回正（与探针旧豁免、媒体链既有注释一致）。
 - `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不主动请求智谱上游模型列表。
-- `/responses` 和 `/v1/responses` 默认不进入未配置映射的 GLM 通用 API 或 GLM Coding OpenAI 账号候选；只有普通 GLM OpenAI v1 账户明确声明 `responses -> chat_completions` 且真实上游支持 `chat_sse` 时，才走本地 bridge 改写到该账号自己的上游 `/chat/completions`。
+- `/responses` 和 `/v1/responses` 默认不进入未配置映射的 GLM 通用 API 或 GLM Coding OpenAI 账号候选；（已随 2026-11-07 退役）原“普通 GLM OpenAI v1 账户声明 `responses -> chat_completions` 后走本地 bridge 改写”的分支已删除，GLM Chat 账户对 Responses 请求一律无候选。
 
 方案目标的原生 Responses 边界：
 
@@ -136,7 +137,9 @@ Responses 模型能力必须独立于 Chat 能力维护。当前目录所有 GLM
 
 普通网关请求仍保留真实调用方的客户端身份，不能全局覆盖成 ZCode 或其他客户端；探针使用的内部 `x-juhe-client-profile` 只用于本地构造，不得发送到智谱上游。其他已有精确客户端绑定档案（GPT/Codex、Anthropic OAuth、Gemini Code Assist、Grok OAuth）只在各自支持的请求形态沿用适配器身份；例如 GPT/Codex Responses 身份不套用到 `GET /models`。
 
-## Codex Responses 到 Chat 桥接
+## Codex Responses 到 Chat 桥接（已随 2026-11-07 跨协议映射退役删除）
+
+> 本节全部内容为历史截面：GLM Chat 账号的 `responses -> chat_completions` bridge 与网关 summary compact 状态层已随 2026-11-07 跨协议映射退役全链删除，GLM OpenAI v1 账户不再承接 Responses / Codex 请求。GLM 承接 Responses 的唯一路径是未来落地原生 `profile_glm_coding_openai_responses_v1` 档案。
 
 本节只描述 Chat-only 档案的兼容 bridge。原生 Responses 目标档案已发布独立 `/api/v1` 方案后，仍不能把 bridge 当成原生能力；两者要在 profile、endpoint modes、模型能力、审计和指标中分开。
 
@@ -241,7 +244,7 @@ API Key 绑定的路由策略允许跨供应商分组；一个本地 API Key 可
 GLM 账户测试必须复用真实网关链路：
 
 - OpenAI 标准测试路径使用 `/v1/chat/completions`。
-- GLM Coding 账户的普通测试路径使用 `/v1/chat/completions`；需要验证 Codex Responses bridge 时，应在普通 GLM OpenAI v1 账户配置 `responses -> chat_completions` 模型别名后从 `/v1/responses` 进入本地 bridge，下游请求带 Codex turn metadata，上游实际仍是该账号自己的 `/chat/completions`。
+- GLM Coding 账户的普通测试路径使用 `/v1/chat/completions`；**（已随 2026-11-07 退役）** 原“在普通 GLM OpenAI v1 账户配置 `responses -> chat_completions` 模型别名后从 `/v1/responses` 进入本地 bridge”的 Codex Responses bridge 路径已删除；GLM Chat 账户不再承接 Responses 入站。
 - 方案目标的 Responses 档案实施后，必须增加独立 `/v1/responses` JSON/SSE 测试，确认请求命中 `/api/v1/responses`；该测试与 Chat bridge 分开计账和审计。
 - 新建账户的检查模型由创建事务在最终支持模型集内解析（首个声明该检查形态的模型，无声明时回落首个支持模型），保存后后台检查严格使用账户自己的 `healthCheckModel`。
 - OpenAI 标准测试请求不发送 Responses 字段，例如 `input`、`instructions`、`max_output_tokens`、`store` 或 Codex 专属 metadata；Codex bridge 测试只发送最小 Responses SSE 请求。
@@ -261,7 +264,7 @@ GLM 账户测试必须复用真实网关链路：
 | 账户创建 | 前端、后端写接口、导入协议和外部推送接口都要显式接收 `providerProtocolProfileId`，编辑时默认不允许原地切换接入类型。 | 只保存 `accounts.type = api_key` 无法区分通用 API Key、Coding Plan Key 与 Coding Anthropic Key，后续无法判断额度、默认模型和测试入口。 |
 | 导入导出 | GLM 导出必须输出可 round-trip 的 `providerProtocolProfileId`，导入预览、确认导入和导出 JSON 的字段白名单保持一致。 | 如果导出只保留 `providerCode/type/base_url`，重新导入时只能猜档案，容易把 Coding Key 导成通用账号。 |
 | Base URL | 通用档案默认 `https://open.bigmodel.cn/api/paas/v4`，Coding Chat 档案默认 `https://open.bigmodel.cn/api/coding/paas/v4`，Coding Anthropic 档案默认 `https://open.bigmodel.cn/api/anthropic/v1`，目标 Responses 档案默认 `https://open.bigmodel.cn/api/v1`；均为版本根语义（含服务/版本前缀），操作路径不含版本前缀，直拼不得生成重复 `/v1`、漏掉 `/chat/completions`、`/responses` 或误拼 Anthropic `/messages`。 | OpenAI SDK 的 `base_url` 语义与上游 HTTP API 原始路径容易混淆；Chat 与 Responses 根地址不同，错误复用 helper 会导致错端点。 |
-| Endpoint mode | 现有 GLM Chat 档案默认仅 `chat_json/chat_sse`，Anthropic 档案仅 Messages；目标 Responses 档案单独允许 `responses_json/responses_sse`。Chat-only 账号的 `responses -> chat_completions` 继续是显式 bridge。 | 如果沿用 GPT API Key 默认四项能力，Responses 请求可能被误认为上游原生支持；如果把 bridge 隐藏在 profile 里，路由和审计无法判断该请求为什么跨协议。 |
+| Endpoint mode | 现有 GLM Chat 档案默认仅 `chat_json/chat_sse`，Anthropic 档案仅 Messages；目标 Responses 档案单独允许 `responses_json/responses_sse`。**（已随 2026-11-07 退役）** 原 Chat-only 账号的 `responses -> chat_completions` 显式 bridge 已删除，不再可用。 | 如果沿用 GPT API Key 默认四项能力，Responses 请求可能被误认为上游原生支持；跨协议 bridge 退役后，GLM Chat 账户不承接 Responses 入站，原生 Responses 需独立档案。 |
 | 协议转换 | Codex Responses -> Chat Completions 转换必须复用共享 adapter，供应商 driver 只配置启用条件、默认模型、Base URL 和局部差异。 | 如果把转换写死在 GLM，后续 DeepSeek 等供应商会复制协议逻辑，工具调用、reasoning、usage 和错误事件容易分叉。 |
 | 请求兼容 | 默认透传 GLM 扩展字段；`developer` role、`response_format`、`temperature`、`thinking/reasoning_effort` 等差异只在 GLM 供应商层处理或提示，不写进全局 OpenAI v1 规则。 | 全局改写会影响 GPT、DeepSeek 和其他 OpenAI-compatible 上游；完全忽略差异会让常见客户端错误难排查。 |
 | 错误处理 | 通用客户端完整 `2xx` / 普通 JSON / SSE payload 透明；所有请求的完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级候选接管，transport / timeout 进入统一错误输入。图片、文件和其他请求在语义未提交时同样切换候选。只有精确客户端画像或用户显式策略才允许解释声明范围内的 `finish_reason` / Coding Plan 错误码。 | 直接按状态码或错误正文硬编码限流 / 异常会破坏协议中立边界。 |
@@ -315,7 +318,7 @@ GLM 账户测试必须复用真实网关链路：
 - [x] 后端账户创建、编辑、导入、导出和公开推送接口按 `providerProtocolProfileId` 校验 GLM 协议档案，并保证导出导入 round-trip。
 - [x] GLM 默认 `supported_endpoint_modes` 只启用 Chat JSON/SSE。
 - [x] GLM Coding Anthropic 默认 `supported_endpoint_modes` 只启用 Messages JSON/SSE。
-- [x] 普通 GLM OpenAI v1 账号模型别名可显式承接 `responses -> chat_completions`；Anthropic / Gemini native 等其他跨协议桥接继续由混合供应商账户承接。
+- [x] （已随 2026-11-07 退役）普通 GLM OpenAI v1 账号模型别名不再可承接 `responses -> chat_completions`；Anthropic / Gemini native 等其他跨协议桥接同样不存在账户载体。
 - [x] GLM 上游 URL 构造按版本根语义：base 携带 `/api/paas/v4`、`/api/coding/paas/v4` 等版本根，操作路径不含版本前缀，无 `/v1` 补插（openai 档案文本面旧多拼 `/v1` 形态已回正）。
 - [x] GLM Anthropic v1 档案复用共享 Anthropic adapter，但保持独立供应商 / 分组 / 统计语义。
 - [x] 抽出通用 `Codex Responses -> Chat Completions` bridge；普通 GLM Coding 档案不再隐式启用，由账号模型别名显式复用。
@@ -341,7 +344,7 @@ GLM 账户测试必须复用真实网关链路：
 
 - 直接 Chat Completions：`glm-5.2` 和 `glm-5-turbo` 可返回 200 和 usage；`glm-5.2-free` 在 60 秒窗口内超时。
 - 直接 `/v1/responses`：2026-06-20 对 `vsllm.com/v1` 代理的历史请求未按 Codex Responses 协议成功返回；这只能说明当时代理路径未验证通过，不能否定智谱官方当前公布的 `/api/v1` Responses 端点。官方端点仍需按本计划重新做 Mock 与最小真实请求验证。
-- 历史本地 GLM Coding Codex bridge 曾验证 `glm-5.2` 和 `glm-5-turbo` 可返回 Responses SSE；该路径现已从 API Key / 策略路由层移除，当前真实验证应改为普通 GLM OpenAI v1 账号显式 `responses -> chat_completions` 模型别名。
+- （已随 2026-11-07 退役）历史本地 GLM Coding Codex bridge 曾验证 `glm-5.2` 和 `glm-5-turbo` 可返回 Responses SSE；该路径先后从 API Key / 策略路由层移除、又随跨协议映射退役全链删除，GLM 账号不再存在 `responses -> chat_completions` 模型别名入口。
 - Mock AI 已覆盖 Chat JSON/SSE、GLM Coding OpenAI 标准账号拒绝 Codex / Responses、错误切号和分组硬边界。
 
 2026-06-24 本轮修订复测：
@@ -355,12 +358,12 @@ GLM 账户测试必须复用真实网关链路：
 
 - 创建 Chat API Key（通用 GLM）账户，保存后落到 `profile_glm_general_openai_v1`。
 - 创建 Coding API Key（GLM Coding Plan）账户，保存后落到 `profile_glm_coding_openai_v1`。
-- 两类账户默认 `supported_endpoint_modes` 均为 `chat_json/chat_sse`；通用 GLM 和 GLM Coding 普通账号只有在显式 `responses -> chat_completions` 模型别名命中时才通过 bridge 承接流式 Responses。
+- 两类账户默认 `supported_endpoint_modes` 均为 `chat_json/chat_sse`；（已随 2026-11-07 退役）原“显式 `responses -> chat_completions` 模型别名命中时通过 bridge 承接流式 Responses”的分支已删除。
 - 两类账户绑定同一 GLM 供应商分组，账户协议档案由账户接入类型区分。
 - OpenAI 标准账户测试使用 `/v1/chat/completions`；GLM Coding 普通账户测试也使用 `/v1/chat/completions`；通用 GLM API 默认模型为 `glm-5.2`，GLM Coding Plan 默认模型为 `glm-5.2`。
 - 网关请求通用 GLM API 时命中 `https://open.bigmodel.cn/api/paas/v4/chat/completions`。
 - 网关请求 GLM Coding Plan 时命中 `https://open.bigmodel.cn/api/coding/paas/v4/chat/completions`。
-- Codex 客户端请求 GLM Coding 普通账户 `/v1/responses` 且未命中 `responses -> chat_completions` 模型别名时必须被本地拒绝或跳过；命中显式映射时，才允许本地改写到该账号自己的 GLM Coding `/chat/completions`。
+- Codex 客户端请求 GLM Coding 普通账户 `/v1/responses` 时一律无候选（跳过该账户）——原 `responses -> chat_completions` 显式映射分支已随 2026-11-07 跨协议映射退役删除，不再存在“命中映射后本地改写”的路径。
 - GLM Coding bridge 不向下游泄露 `chat.completion.chunk`，也不把 `reasoning_content` 作为普通 `output_text`。
 - 客户端 `GET /v1/models` 返回本地可见 GLM 模型，不请求智谱上游。服务端受控目录探针带内部标记时，通用 GLM / GLM Coding OpenAI API Key 才会转发到账户自身 Base URL 下的 `.../models`；必须保留 `/api/paas/v4` 或 `/api/coding/paas/v4` 路径，不能错误拼成通用 `/v1/models`。
 - GLM 响应 usage 能写入使用记录；无 usage 的流式可见输出按现有估算兜底。

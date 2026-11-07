@@ -8,14 +8,15 @@ import {
   type AccountModelMappingModelOption
 } from '../../views/accounts/accountModelMappingModelOptions'
 import {
+  accountModelMappingEndpointFamilyText,
+  accountModelMappingProtocolOptions,
   accountModelMappingProtocolRules,
   accountModelMappingProtocolValidationMessage,
-  defaultAccountModelMappingSourceEndpointFamily,
-  defaultAccountModelMappingUpstreamEndpointFamily,
+  accountModelMappingTargetForSource,
+  defaultAccountModelMappingProtocol,
   hasAccountModelMappingUpstreamEndpointFamilyCapability,
   isAccountModelMappingProtocolAllowed,
-  isAccountModelMappingSourceEndpointFamilyAllowed,
-  shouldResetAccountModelMappingUpstreamEndpointFamily,
+  isAccountModelMappingProtocolOptionAllowed,
   type AccountModelMappingUpstreamEndpointFamily
 } from '../../views/accounts/accountModelMappingProtocolMatrix'
 import { accountEndpointModeOptions } from '../../views/accounts/accountEndpointModes'
@@ -40,6 +41,7 @@ const userHelpSource = readHelpDocsSource('user')
 const adminHelpSource = readHelpDocsSource('admin')
 const publicHelpSource = `${userHelpSource}\n${adminHelpSource}`
 
+// 跨供应商客户端模型候选池：池本身是全供应商全量目录，按映射行协议过滤后供下拉。
 const options: AccountModelMappingModelOption[] = [
   { label: 'gpt-chat-only', value: 'gpt-chat-only', supportedApiProtocols: ['chat_completions'] },
   { label: 'gpt-responses-only', value: 'gpt-responses-only', supportedApiProtocols: ['responses'] },
@@ -51,18 +53,22 @@ const options: AccountModelMappingModelOption[] = [
   { label: 'unknown-legacy', value: 'unknown-legacy' }
 ]
 
-const ordinarySourceOptions = accountModelMappingSourceModelOptions({
-  providerCode: 'deepseek',
-  sourceEndpointFamily: 'responses',
-  currentProviderOptions: options,
-  openAIProtocolOptions: [],
-  anthropicProtocolOptions: [],
-  geminiProtocolOptions: []
-})
+// 客户端模型候选（跨协议退役契约）：source 可跨供应商，但必须支持所选协议；
+// 未声明协议的目录行（含空协议数组）视为不支持，不进入候选。
 assertDeepEqual(
-  values(ordinarySourceOptions),
-  values(options),
-  '普通账户客户端模型必须使用当前供应商完整目录，不能按客户端或上游协议反向过滤'
+  values(accountModelMappingSourceModelOptions({ sourceEndpointFamily: 'responses', options })),
+  ['gpt-responses-only', 'gpt-dual'],
+  '客户端模型候选必须按所选协议过滤跨供应商目录'
+)
+assertDeepEqual(
+  values(accountModelMappingSourceModelOptions({ sourceEndpointFamily: 'chat_completions', options })),
+  ['gpt-chat-only', 'gpt-dual'],
+  'Chat 协议的客户端模型候选只能包含声明支持 Chat 的模型'
+)
+assertDeepEqual(
+  values(accountModelMappingSourceModelOptions({ sourceEndpointFamily: 'video_generation', options })),
+  ['sora-video'],
+  '媒体族客户端模型候选按目录 video 协议 token 过滤（跨供应商 source）'
 )
 assertDeepEqual(
   values(accountModelMappingUpstreamModelOptions(options, 'responses')),
@@ -73,27 +79,27 @@ assertDeepEqual(
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'chat_completions')),
   ['gpt-chat-only', 'gpt-dual'],
-  'Chat Completions 来源只能展示声明支持 Chat 的模型'
+  'Chat Completions 只能展示声明支持 Chat 的模型'
 )
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'responses')),
   ['gpt-responses-only', 'gpt-dual'],
-  'Responses 来源只能展示声明支持 Responses 的模型'
+  'Responses 只能展示声明支持 Responses 的模型'
 )
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'messages')),
   ['claude-messages'],
-  'Messages 来源只能展示 Anthropic Messages 模型'
+  'Messages 只能展示 Anthropic Messages 模型'
 )
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'generate_content')),
   ['gemini-native'],
-  'Gemini GenerateContent 来源只能展示 Gemini native 模型'
+  'Gemini GenerateContent 只能展示 Gemini native 模型'
 )
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'stream_generate_content')),
   ['gemini-native'],
-  'Gemini StreamGenerateContent 来源只能展示支持流式 Gemini native 的模型'
+  'Gemini StreamGenerateContent 只能展示支持流式 Gemini native 的模型'
 )
 assertEqual(accountModelMappingEndpointFamilyProtocol('chat_completions'), 'chat_completions', 'Chat 协议映射错误')
 assertEqual(accountModelMappingEndpointFamilyProtocol('responses'), 'responses', 'Responses 协议映射错误')
@@ -104,12 +110,12 @@ assertEqual(accountModelMappingEndpointFamilyProtocol('tts'), 'audio_speech', '�
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'video_generation')),
   ['sora-video'],
-  '视频生成来源只能展示声明 video 协议 token 的媒体模型'
+  '视频生成只能展示声明 video 协议 token 的媒体模型'
 )
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'tts')),
   ['gpt-tts'],
-  '语音合成来源只能展示声明 audio_speech 协议 token 的媒体模型'
+  '语音合成只能展示声明 audio_speech 协议 token 的媒体模型'
 )
 assertIncludes(accountEditModalSource, 'for (const item of props.form.supportedModels)', '账号模型别名右侧下拉只能从账户支持模型构建')
 assertNotIncludes(accountEditModalSource, 'buildAccountModelMappingUpstreamOptions', '账号模型别名右侧下拉不应合并整个供应商模型目录')
@@ -156,11 +162,24 @@ assertIncludes(accountStrategySectionSource, 'placeholder="上游模型"', '账�
 assertIncludes(accountStrategySectionSource, '真实上游支持的接口形态', '账户表单提示必须解释真实上游能力语义')
 assertNotIncludes(accountStrategySectionSource, '接口能力限制', '账户表单不得继续展示旧接口能力限制文案')
 assertNotIncludes(accountStrategySectionSource, '可承接的接口形态', '账户表单不得把上游能力描述成客户端可承接请求')
-assertIncludes(adminHelpSource, '接口能力 / 模型别名', '帮助必须展示上游接口能力字段（模型别名配置说明）')
-assertIncludes(adminHelpSource, '只声明真实上游能处理的协议', '帮助必须解释上游接口能力边界')
-assertIncludes(adminHelpSource, '别名两端都受协议档案和支持模型限制', '帮助必须解释模型映射两端受支持模型与上游能力约束')
 assertNotIncludes(publicHelpSource, '接口能力限制', '帮助不得继续展示接口能力限制旧文案')
 assertNotIncludes(publicHelpSource, '账号可承接的请求形态', '帮助不得展示派生的可承接请求形态')
+assertIncludes(adminHelpSource, '接口能力 / 模型别名', '帮助必须展示上游接口能力字段（模型别名配置说明）')
+
+// ---- 单协议下拉（2026-11-07 跨协议模型映射退役，批次 E 前端契约） ----
+
+// 单协议选项 = 协议等价 pair：7 个选项，value 即 source 端点族，target 由选项表派生。
+assertEqual(accountModelMappingProtocolOptions.length, 7, '单协议下拉必须恰好提供 7 个协议等价选项')
+for (const option of accountModelMappingProtocolOptions) {
+  assertEqual(option.value, option.source, `协议选项 ${option.value} 的下拉值必须是 source 端点族`)
+  assertEqual(
+    accountModelMappingTargetForSource(option.source),
+    option.upstream,
+    `协议选项 ${option.value} 的 target 派生必须与选项表一致`
+  )
+}
+assertEqual(accountModelMappingTargetForSource('stream_generate_content'), 'generate_content', 'Gemini StreamGenerateContent 选项的 target 必须归一为 generate_content')
+assertEqual(accountModelMappingEndpointFamilyText('stream_generate_content'), 'Gemini StreamGenerateContent', 'Gemini 流式族文案')
 
 const openAIProfile = { protocolCode: 'openai', protocolVersion: 'v1' }
 const anthropicProfile = { protocolCode: 'anthropic', protocolVersion: 'v1' }
@@ -169,82 +188,105 @@ const geminiNativeProfile = {
   protocolCode: 'gemini',
   protocolVersion: 'v1beta'
 }
+const geminiOpenAIChatProfile = {
+  providerProtocolProfileId: 'profile_gemini_openai_chat_v1beta',
+  protocolCode: 'openai',
+  protocolVersion: 'v1'
+}
 
-assertDefaultMappingFamilies(
+// 协议选项按 profile + 账户 endpoint modes 过滤；默认协议按账户支持模式选择。
+assertDefaultMappingProtocol(
   { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] },
   'responses',
   'responses',
   'Responses-only OpenAI 新增映射'
 )
-assertDefaultMappingFamilies(
+assertDefaultMappingProtocol(
   { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] },
   'messages',
   'messages',
   'Anthropic 新增映射'
 )
-assertDefaultMappingFamilies(
+assertDefaultMappingProtocol(
   { providerProfile: geminiNativeProfile, supportedEndpointModes: ['generate_content_sse'] },
   'generate_content',
   'generate_content',
-  'Gemini native 新增映射'
+  'Gemini native 新增映射（GenerateContent 优先于 StreamGenerateContent）'
 )
 
-assertEqual(
-  isAccountModelMappingSourceEndpointFamilyAllowed('chat_completions', {
-    providerProfile: openAIProfile,
-    supportedEndpointModes: ['responses_json']
-  }),
-  true,
-  '来源 Chat Completions 是否可选只能看 profile 和转换白名单，不能被右侧 Chat 上游能力缺失禁用'
+// Chat-only 账户：协议下拉只有 Chat 选项，默认协议是 Chat（不再默认 responses → chat bridge）。
+const chatOnlyOptions = accountModelMappingProtocolOptions.filter((option) => (
+  isAccountModelMappingProtocolOptionAllowed(option, { providerProfile: openAIProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] })
+))
+assertDeepEqual(
+  chatOnlyOptions.map((option) => option.value),
+  ['chat_completions'],
+  'Chat-only 账户的协议下拉必须只有 Chat Completions'
 )
-assertEqual(
-  shouldResetAccountModelMappingUpstreamEndpointFamily({
-    sourceEndpointFamily: 'responses',
-    upstreamEndpointFamily: 'chat_completions',
-    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
-  }),
-  false,
-  '目标 Chat 能力缺失但转换结构仍合法时，watcher 不应静默重写映射目标族'
+assertDefaultMappingProtocol(
+  { providerProfile: openAIProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] },
+  'chat_completions',
+  'chat_completions',
+  'Chat-only 账户新增映射'
 )
-assertEqual(
-  shouldResetAccountModelMappingUpstreamEndpointFamily({
-    sourceEndpointFamily: 'chat_completions',
-    upstreamEndpointFamily: 'responses',
-    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
-  }),
-  true,
-  '普通 OpenAI Chat -> Responses 转换结构非法时，watcher 仍应重置目标族'
+// 媒体族选项按账户媒体端点模式放行。
+assertDeepEqual(
+  accountModelMappingProtocolOptions.filter((option) => (
+    isAccountModelMappingProtocolOptionAllowed(option, { providerProfile: openAIProfile, supportedEndpointModes: ['video_create', 'audio_speech'] })
+  )).map((option) => option.value),
+  ['video_generation', 'tts'],
+  '仅启用媒体端点模式的账户只出现媒体族协议选项'
 )
 
+// Gemini OpenAI Chat 档案：bridge 退役后只允许 Chat 同协议映射。
+assertDeepEqual(
+  accountModelMappingProtocolOptions.filter((option) => (
+    isAccountModelMappingProtocolOptionAllowed(option, { providerProfile: geminiOpenAIChatProfile, supportedEndpointModes: ['chat_json'] })
+  )).map((option) => option.value),
+  ['chat_completions'],
+  'Gemini OpenAI Chat 档案的协议下拉必须只有 Chat Completions'
+)
 assertMatch(
   accountModelMappingProtocolValidationMessage({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'chat_completions',
     enabled: true,
-    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
+    context: { providerProfile: geminiOpenAIChatProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
   }) ?? '',
-  /Chat Completions.*上游接口能力/,
-  '前端启用的 Responses -> Chat 映射必须按右侧要求 Chat 上游能力'
+  /Gemini OpenAI Chat.*Chat Completions 同协议映射/,
+  'Gemini OpenAI Chat 档案不得再提供 Responses 到 Chat bridge（文案与结构门同步退役）'
 )
-assertEqual(
+
+// 跨协议方向整体退役：矩阵外组合一律按协议一致口径拒绝（含 responses -> chat）。
+assertMatch(
   accountModelMappingProtocolValidationMessage({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'chat_completions',
-    enabled: false,
-    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
-  }),
-  undefined,
-  '前端应允许在 Chat 上游能力缺失时保留停用的 Responses -> Chat 映射'
+    enabled: true,
+    context: { providerProfile: openAIProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
+  }) ?? '',
+  /模型映射客户端协议与上游协议必须一致/,
+  '退役的 Responses -> Chat 跨协议映射必须被结构门拒绝'
 )
 assertEqual(
   isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
-    upstreamEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: 'responses',
     enabled: true,
-    context: { providerProfile: openAIProfile, supportedEndpointModes: ['chat_sse'] }
+    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
   }),
   true,
-  '前端不应使用左侧 Responses 能力限制 Responses -> Chat 映射'
+  'Responses 同族改名映射在启用 Responses 上游能力时可用'
+)
+assertEqual(
+  isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'stream_generate_content',
+    upstreamEndpointFamily: 'generate_content',
+    enabled: true,
+    context: { providerProfile: geminiNativeProfile, supportedEndpointModes: ['generate_content_sse'] }
+  }),
+  true,
+  'Gemini 流式归一映射在启用 GenerateContent SSE 上游能力时可用'
 )
 assertMatch(
   accountModelMappingProtocolValidationMessage({
@@ -255,16 +297,6 @@ assertMatch(
   }) ?? '',
   /Messages.*上游接口能力/,
   '前端 Messages 目标族不能把 token-counting 当作请求能力'
-)
-assertMatch(
-  accountModelMappingProtocolValidationMessage({
-    sourceEndpointFamily: 'stream_generate_content',
-    upstreamEndpointFamily: 'generate_content',
-    enabled: true,
-    context: { providerProfile: geminiNativeProfile, supportedEndpointModes: ['count_tokens'] }
-  }) ?? '',
-  /Gemini GenerateContent.*上游接口能力/,
-  '前端 Gemini 目标族必须要求 GenerateContent JSON 或 SSE 上游能力'
 )
 // M4b 媒体映射（普通 OpenAI 档案同族改写）。
 assertEqual(
@@ -284,18 +316,49 @@ assertEqual(
     enabled: true,
     context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] }
   }),
-  '当前供应商协议不支持媒体账号模型别名',
+  '当前供应商协议不支持媒体模型映射账号别名',
   '非 OpenAI 档案不得声明媒体映射族'
 )
+
+// 单账户策略区源码契约：一个协议下拉派生 source/target；协议重置 watcher 删除。
 assertIncludes(accountSavePayloadSource, 'enabled: item.enabled', '前端保存校验必须把映射启停状态传给统一协议矩阵')
-assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, option.value, mapping.enabled)', '前端目标协议下拉联动必须区分启用与停用映射')
-assertIncludes(accountStrategySectionSource, 'shouldResetAccountModelMappingUpstreamEndpointFamily', '前端 watcher 必须仅按转换结构决定是否重写目标族')
-assertIncludes(accountStrategySectionSource, 'defaultAccountModelMappingSourceEndpointFamily', '主编辑器新增映射和结构 fallback 必须使用共享默认来源族')
+assertIncludes(
+  accountStrategySectionSource,
+  'v-model:value="mapping.sourceEndpointFamily"',
+  '映射行必须只保留一个协议下拉（绑定 source 端点族）'
+)
+assertIncludes(
+  accountStrategySectionSource,
+  '@change="handleMappingProtocolChange(mapping)"',
+  '修改协议必须触发 source/target 同步写入'
+)
+assertIncludes(
+  accountStrategySectionSource,
+  'mapping.upstreamEndpointFamily = accountModelMappingTargetForSource(mapping.sourceEndpointFamily)',
+  '修改协议时必须按选项表派生并写入上游端点族'
+)
+assertNotIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyOptions', '上游协议下拉必须删除，不得保留第二个协议控件')
+assertNotIncludes(accountStrategySectionSource, 'shouldResetAccountModelMappingUpstreamEndpointFamily', '协议重置 watcher 必须删除（单下拉不再需要结构回写）')
+assertNotIncludes(accountStrategySectionSource, 'isAccountModelMappingSourceEndpointFamilyAllowed', '来源协议双下拉时代的结构过滤入口必须删除')
+assertIncludes(accountStrategySectionSource, ':options="protocolOptions"', '协议下拉必须使用协议等价选项表')
+assertIncludes(accountStrategySectionSource, 'isAccountModelMappingProtocolOptionAllowed(option, modelMappingProtocolContext())', '协议选项必须按协议档案与账户 endpoint modes 过滤')
+assertIncludes(accountStrategySectionSource, 'defaultAccountModelMappingProtocol(modelMappingProtocolContext())', '新增映射必须使用共享默认协议')
 assertNotIncludes(accountStrategySectionSource, "sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY", '主编辑器新增映射不得硬编码 Chat 来源族')
-assertIncludes(accountStrategySectionSource, 'sourceEndpointFamilyBaseOptions.filter', '来源协议下拉必须直接过滤当前账号不支持的协议')
-assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyBaseOptions.filter', '目标协议下拉必须直接过滤当前账号不支持的协议')
-assertNotIncludes(accountStrategySectionSource, 'disabled: !isAccountModelMappingSourceEndpointFamilyAllowed', '来源协议下拉不应保留不可选择项')
-assertNotIncludes(accountStrategySectionSource, 'disabled: upstreamEndpointFamilyDisabled', '目标协议下拉不应保留不可选择项')
+assertIncludes(
+  accountStrategySectionSource,
+  'accountModelMappingSourceModelOptions({',
+  '客户端模型候选必须经跨供应商池的协议过滤入口'
+)
+assertIncludes(
+  accountStrategySectionSource,
+  'options: props.mappingSourceModelOptions',
+  '客户端模型候选必须来自跨供应商全量目录'
+)
+assertIncludes(
+  accountStrategySectionSource,
+  'accountModelMappingUpstreamModelOptions(props.mappingUpstreamModelOptions, upstreamEndpointFamily)',
+  '上游模型候选仍必须从账户支持模型按目标协议过滤'
+)
 assertNotIncludes(accountStrategySectionSource, "mapping.sourceModel = ''", '模型目录异步刷新不得静默清空来源模型')
 assertNotIncludes(accountStrategySectionSource, "mapping.upstreamModel = ''", '模型目录异步刷新不得静默清空上游模型')
 assertNotIncludes(accountStrategySectionSource, 'sourceModelOptionsFingerprint', '协议结构 watcher 不应订阅异步模型目录指纹')
@@ -305,11 +368,48 @@ assertEqual(
   '上游接口能力必须展示在账号模型别名之前'
 )
 
+// useAccountEditForm 契约：跨供应商池（不传 providerCode/protocol）+ 主动加载 + 就绪标志。
+assertIncludes(
+  accountEditFormSource,
+  'mappingSourceModelOptionsReady',
+  '映射 source 候选池必须维护就绪标志，供保存校验阻止未就绪提交'
+)
+assertNotIncludes(accountEditFormSource, "protocol: 'openai'", '映射 source 池不得按 openai 协议切片（跨供应商池不传 protocol）')
+assertNotIncludes(accountEditFormSource, "protocol: 'anthropic'", '映射 source 池不得按 anthropic 协议切片')
+assertNotIncludes(accountEditFormSource, "protocol: 'gemini'", '映射 source 池不得按 gemini 协议切片')
+assertNotIncludes(accountEditFormSource, 'mappingAnthropicSourceModelOptions', '按协议拆分的三个 source 池实例必须删除')
+assertIncludes(
+  accountEditFormSource,
+  'void loadMappingSourceModelOptions()',
+  '打开弹窗/装载编辑详情时必须主动加载映射 source 候选池'
+)
+assertIncludes(
+  accountsViewSource,
+  'function handleMappingModelOptionsOpen(open: boolean)',
+  '映射 source 下拉展开事件不得再携带协议参数（单池跨供应商）'
+)
+// 只读展示单协议；历史行仍可显示两族。
+assertIncludes(accountEditModalSource, 'readonlyMappingProtocolText', '授权只读展示必须使用单协议投影')
+assertNotIncludes(accountEditModalSource, 'function endpointFamilyText', '账户编辑弹窗内的重复端点族文案函数必须删除（统一走矩阵文案）')
+
+const accountBatchModalSource = readFileSync(new URL('../../views/accounts/AccountBatchEditModal.vue', import.meta.url), 'utf8')
+assertIncludes(accountBatchModalSource, 'placeholder="映射协议"', '批量编辑必须使用单协议下拉')
+assertNotIncludes(accountBatchModalSource, 'placeholder="上游协议"', '批量编辑不得保留上游协议下拉')
+assertNotIncludes(accountBatchModalSource, 'disabled: !isAccountModelMappingProtocolAllowed', '批量编辑协议选项不得保留 disabled 写法（批量没有协议 watcher）')
+assertIncludes(accountBatchModalSource, 'mappingSourcePoolReady', '批量编辑必须维护跨供应商 source 池就绪标志')
+
+const accountSavePayloadTestSource = readFileSync(new URL('../../views/accounts/accountSavePayload.test.ts', import.meta.url), 'utf8')
+assertIncludes(accountSavePayloadTestSource, 'ACCOUNT_MODEL_MAPPING_SOURCE_POOL_UNREADY_MESSAGE', '保存校验必须覆盖池未就绪阻止保存用例')
+assertIncludes(accountSavePayloadTestSource, '不支持 Chat Completions 协议', '保存校验必须覆盖跨供应商 source 协议不符被拒用例')
+
+assertIncludes(adminHelpSource, '只声明真实上游能处理的协议', '帮助必须解释上游接口能力边界')
+assertIncludes(adminHelpSource, '别名两端都受协议档案和支持模型限制', '帮助必须解释模型映射两端受支持模型与上游能力约束')
+
 // T103 / BUG-0342 根因治理：账号模型别名 family pair 合法集合的四方一致性
 // golden 断言。唯一事实源 golden 是
 // backend-go/projects/gateway/internal/accounts/testdata/entry_mapping_pairs.json，
 // Go 侧断言在同目录 entry_mapping_pairs_golden_test.go（写侧矩阵全等 + 运行时
-// admissible 一致）；本段守护前端两条 protocolRules 清单与 golden 的 pair 集合
+// admissible 一致）；本段守护前端 protocolRules 清单与 golden 的 pair 集合
 // 全等。targetModes 是 pair 级可执行形态（§5.3），前端下拉只到 family 级能力门，
 // 因此 mode 侧断言的可验证子集是：golden 的每个形态都在前端端点模式词表内，
 // 且前端该目标族能力门认可的形态与 golden 交集非空（family 级与 pair 级的粒度
@@ -419,17 +519,13 @@ function assertMatch(actual: string, expected: RegExp, message: string): void {
   }
 }
 
-function assertDefaultMappingFamilies(
-  context: Parameters<typeof defaultAccountModelMappingSourceEndpointFamily>[0],
-  expectedSource: ReturnType<typeof defaultAccountModelMappingSourceEndpointFamily>,
-  expectedUpstream: ReturnType<typeof defaultAccountModelMappingUpstreamEndpointFamily>,
+function assertDefaultMappingProtocol(
+  context: Parameters<typeof defaultAccountModelMappingProtocol>[0],
+  expectedSource: ReturnType<typeof defaultAccountModelMappingProtocol>['source'],
+  expectedUpstream: ReturnType<typeof defaultAccountModelMappingProtocol>['upstream'],
   message: string
 ): void {
-  const source = defaultAccountModelMappingSourceEndpointFamily(context)
-  assertEqual(source, expectedSource, `${message}来源族错误`)
-  assertEqual(
-    defaultAccountModelMappingUpstreamEndpointFamily(source, context),
-    expectedUpstream,
-    `${message}目标族错误`
-  )
+  const option = defaultAccountModelMappingProtocol(context)
+  assertEqual(option.source, expectedSource, `${message}默认协议来源族错误`)
+  assertEqual(option.upstream, expectedUpstream, `${message}默认协议目标族错误`)
 }

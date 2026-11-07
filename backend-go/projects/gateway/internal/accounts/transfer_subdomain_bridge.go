@@ -216,6 +216,10 @@ func (s *Store) transferService() *accountstransfer.Service {
 		ScheduleJSON:                     ScheduleJSON,
 		ScheduleStatus:                   ScheduleStatus,
 		NextScheduleCheckAt:              NextScheduleCheckAt,
+		LockProxyPoolForWrite:            s.lockProxyPoolForWrite,
+		SelectProxyPoolMemberForWrite:    s.selectProxyPoolMemberForWrite,
+		AssignAccountProxyPoolLease:      s.assignAccountProxyPoolLease,
+		ClearAccountProxyPoolLease:       s.clearAccountProxyPoolLease,
 		CacheInvalidator:                 s.invalidator,
 	})
 }
@@ -447,8 +451,8 @@ func textValueOrJoin(value any) string { return accountstransfer.TextValueOrJoin
 
 func textListOrSingle(value any) []string { return accountstransfer.TextListOrSingle(value) }
 
-func importCreateInput(source *normalizedImportAccount, groupID, proxyProfileID string) accountscore.CreateInput {
-	return accountstransfer.ImportCreateInput(source, groupID, proxyProfileID)
+func importCreateInput(source *normalizedImportAccount, groupID, proxyProfileID, proxyPoolID string) accountscore.CreateInput {
+	return accountstransfer.ImportCreateInput(source, groupID, proxyProfileID, proxyPoolID)
 }
 
 func importOptionalTextField(record map[string]any, key, label string, messages *[]string) string {

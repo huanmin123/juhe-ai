@@ -52,6 +52,8 @@ var usageRecordColumns = []string{
 	"group_id",
 	"route_group_id",
 	"compaction_expected",
+	"security_policy_applied",
+	"pii_hits_json",
 	"account_id",
 	"endpoint",
 	"provider_code",
@@ -1134,7 +1136,12 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 		"status_code":                  spec.statusCode,
 		"success":                      boolInt(spec.success),
 		// 压缩标记列（使用记录延迟健康分档设计）：mock 记录均非压缩请求，恒 0。
+		// 安全策略计量两列（API Key 安全策略与出站内容脱敏设计 §8）：mock 记录
+		// 不走请求侧脱敏链路，恒 applied=0 / hits NULL（pii_hits_json 仅命中
+		// 数 > 0 时由网关写入）。
 		"compaction_expected":             0,
+		"security_policy_applied":         0,
+		"pii_hits_json":                   nil,
 		"failure_attribution":             nullString(spec.failureAttribution),
 		"error_code":                      nullString(spec.errorCode),
 		"error_message":                   nullString(spec.errorMessage),

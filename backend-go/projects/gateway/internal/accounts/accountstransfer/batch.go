@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
 // M09 batch edit slice: the POST /accounts/batch-edit-context +
@@ -352,6 +353,7 @@ type batchLockedAccount struct {
 	status                             string
 	credentials                        accountscore.Credentials
 	proxyProfileID                     sql.NullString
+	proxyPoolID                        sql.NullString
 	balanceQueryEnabled                bool
 	concurrencyLimit                   int
 	rpmLimit                           int
@@ -405,6 +407,13 @@ type batchPreparedAccount struct {
 	// connectionModesNotice 是多连接/无连接行账户的逐账户跳过报告（T100）：
 	// 凭据域副本照常写，连接行不动，结果项携带原因与动作。
 	connectionModesNotice string
+	// 代理池租约动作（代理池设计 §8.4）：prepared 段记录目标绑定，execute 段
+	// 在账户 CAS UPDATE 之后同事务执行（每账户独立租约）。
+	//   leaseAction "assign" = 绑定/改绑池（resolvedProxyPool 非空 + 成员已选）
+	//   leaseAction "clear"  = 解绑/改走直接代理（删除既有租约）
+	leaseAction        string
+	leasePoolID        string
+	leaseMemberProfile string
 }
 
 // batchConnectionModesSync 携带单连接账户待同步的请求 modes（已过凭据域词表
@@ -518,6 +527,29 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 		}
 		if err := s.executeBatchCasUpdate(ctx, tx, &account, current.systemAccountID, nowISO); err != nil {
 			return nil, err
+		}
+		// 代理池粘性租约（代理池设计 §6.1/§8.4「批量编辑绑池」）：账户 CAS
+		// UPDATE 与租约写入同一批事务；每账户独立选成员与租约（round_robin/
+		// weighted 按当前租约数逐账户分配）。assign = 绑定/改绑池（reason=
+		// pool_reassigned，generation 取共享序列；成员为空 = 健康全 dead，
+		// 允许绑定但无租约）；clear = 解绑/改走直接代理（删除旧租约）。池行
+		// 锁已在 prepareBatchUpdates 获取（锁序 池→账户→租约）。
+		switch account.leaseAction {
+		case "assign":
+			memberID, err := s.deps.SelectProxyPoolMemberForWrite(ctx, tx, account.leasePoolID)
+			if err != nil {
+				return nil, err
+			}
+			if memberID != "" {
+				if err := s.deps.AssignAccountProxyPoolLease(ctx, tx, account.accountID,
+					account.leasePoolID, memberID, proxyresolve.AssignmentPoolReassigned); err != nil {
+					return nil, err
+				}
+			}
+		case "clear":
+			if err := s.deps.ClearAccountProxyPoolLease(ctx, tx, account.accountID); err != nil {
+				return nil, err
+			}
 		}
 		if account.supportedModels != nil {
 			if err := s.deps.Writer.ReplaceAccountSupportedModels(ctx, tx, account.accountID, current.providerCode, account.supportedModels, nowISO); err != nil {
@@ -680,7 +712,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			COALESCE(accounts.vendor_code, '') AS provider_code,
 			'' AS provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.type, accounts.status, accounts.credentials_encrypted,
-			accounts.proxy_profile_id, accounts.balance_query_enabled, accounts.concurrency_limit,
+			accounts.proxy_profile_id, accounts.proxy_pool_id, accounts.balance_query_enabled, accounts.concurrency_limit,
 			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.schedulable, accounts.availability_schedule_json,
@@ -709,7 +741,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 		if err := rows.Scan(&account.id, &account.configRevision, &account.systemAccountID,
 			&account.providerCode, &account.providerProtocolProfileID, &account.protocolCode,
 			&account.protocolVersion, &account.accountType, &account.status, &credentialsEncrypted,
-			&account.proxyProfileID, &balanceEnabled, &account.concurrencyLimit,
+			&account.proxyProfileID, &account.proxyPoolID, &balanceEnabled, &account.concurrencyLimit,
 			&account.rpmLimit,
 			&account.priority, &superPriority, &fallback,
 			&account.clientCompatibility, &schedulable, &scheduleJSON,
@@ -883,10 +915,39 @@ func (s *Service) prepareBatchUpdates(ctx context.Context, q accountscore.Querye
 			resolvedProxy = id
 		}
 	}
+	// 代理池绑定（代理池设计 §8.4）：三态与 proxyProfileId 一致，互斥（设置
+	// 值同时非空整批 400 proxy_target_conflict）；池为全局资源（不按 owner
+	// 过滤，§8.7）。绑定值整批统一：先锁池行（锁序 池→账户→租约，先于下方
+	// 全部账户 CAS UPDATE），再校验池存在/enabled 与成员；逐账户成员分配在
+	// execute 段同事务执行（每账户独立租约）。
+	resolvedPool := ""
+	resolvePool := false
+	profileUpdate, hasProfileUpdate := updates["proxyProfileId"]
+	poolUpdate, hasPoolUpdate := updates["proxyPoolId"]
+	if hasProfileUpdate && hasPoolUpdate && profileUpdate.Enabled && poolUpdate.Enabled &&
+		profileUpdate.Value != nil && poolUpdate.Value != nil {
+		return nil, &accountscore.ValidationError{Message: "代理与代理池不能同时选择", Code: accountscore.ProxyTargetConflictCode}
+	}
+	if update, ok := updates["proxyPoolId"]; ok && update.Enabled {
+		resolvePool = true
+		if update.Value != nil {
+			text := strings.TrimSpace(textString(update.Value))
+			if text == "" {
+				return nil, &accountscore.ValidationError{Message: "代理池配置不能为空"}
+			}
+			if err := s.deps.LockProxyPoolForWrite(ctx, q, text); err != nil {
+				return nil, err
+			}
+			if _, err := s.deps.SelectProxyPoolMemberForWrite(ctx, q, text); err != nil {
+				return nil, err
+			}
+			resolvedPool = text
+		}
+	}
 
 	prepared := make([]batchPreparedAccount, 0, len(accounts))
 	for index := range accounts {
-		result, err := s.prepareBatchAccount(ctx, q, &accounts[index], updates, resolvedProxy, resolveProxy)
+		result, err := s.prepareBatchAccount(ctx, q, &accounts[index], updates, resolvedProxy, resolveProxy, resolvedPool, resolvePool)
 		if err != nil {
 			return nil, err
 		}
@@ -926,7 +987,7 @@ func JSONValueDeepEqual(left, right any) bool {
 // prepareBatchAccount mirrors prepareAccountUpdateAsync for the supported
 // field subset. changedFields are collected and sorted; main-column writes use
 // the same physical columns the Node repository assigns.
-func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Queryer, account *batchLockedAccount, updates map[string]BatchUpdateField, resolvedProxy string, resolveProxy bool) (batchPreparedAccount, error) {
+func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Queryer, account *batchLockedAccount, updates map[string]BatchUpdateField, resolvedProxy string, resolveProxy bool, resolvedPool string, resolvePool bool) (batchPreparedAccount, error) {
 	result := batchPreparedAccount{
 		accountID:              account.id,
 		expectedConfigRevision: account.configRevision,
@@ -1306,7 +1367,10 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		result.hasTags = true
 	}
 
-	// proxyProfileId.
+	// proxyProfileId / proxyPoolId（代理池设计 §8.4）：三态与单账户编辑一致，
+	// 互斥（设置值同时非空已在 prepareBatchUpdates 统一拒绝）；至多一个非空
+	//（§4.4 CHECK）由各臂的对侧清列承载；池绑定变化在 execute 段同事务为每
+	// 账户独立分配/删除租约（leaseAction）。
 	var nextProxy *string
 	proxyChanged := false
 	if resolveProxy {
@@ -1322,6 +1386,42 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 				setColumn("proxy_profile_id", nil)
 			} else {
 				setColumn("proxy_profile_id", *nextProxy)
+				// 改绑直接代理清空既有池绑定；execute 段删除旧租约（直接代理
+				// 绑定不得残留租约）。
+				if account.proxyPoolID.Valid && account.proxyPoolID.String != "" && !resolvePool {
+					setColumn("proxy_pool_id", nil)
+					result.leaseAction = "clear"
+				}
+			}
+			if account.balanceQueryEnabled {
+				setColumn("balance_query_next_refresh_at", accountscore.IsoMillis(s.store.Now()))
+			}
+		}
+	}
+	poolChanged := false
+	if resolvePool {
+		var nextPool *string
+		if resolvedPool != "" {
+			text := resolvedPool
+			nextPool = &text
+		}
+		currentPool := accountscore.NullPtrString(account.proxyPoolID)
+		poolChanged = !NullableTextEqual(nextPool, currentPool)
+		if poolChanged {
+			addChange("proxyPoolId")
+			if nextPool == nil {
+				setColumn("proxy_pool_id", nil)
+				if result.leaseAction == "" {
+					result.leaseAction = "clear"
+				}
+			} else {
+				setColumn("proxy_pool_id", *nextPool)
+				result.leaseAction = "assign"
+				result.leasePoolID = resolvedPool
+				// 改绑池清空既有直接代理（至多一个非空）。
+				if account.proxyProfileID.Valid && account.proxyProfileID.String != "" && !resolveProxy {
+					setColumn("proxy_profile_id", nil)
+				}
 			}
 			if account.balanceQueryEnabled {
 				setColumn("balance_query_next_refresh_at", accountscore.IsoMillis(s.store.Now()))
@@ -1330,7 +1430,7 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	}
 	// Node account-batch-edit.service.ts:391: dispatchRevisionChanged: proxyChanged —
 	// the same field comparison that drives the changedFields entry.
-	result.dispatchRevisionChanged = proxyChanged
+	result.dispatchRevisionChanged = proxyChanged || poolChanged
 
 	// Dispatch fields.
 	nextConcurrency := account.concurrencyLimit
@@ -1529,7 +1629,7 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	groupStatsFields := map[string]bool{"status": true, "schedulable": true, "concurrencyLimit": true}
 	gatewayFields := map[string]bool{
 		"status": true, "schedulable": true, "concurrencyLimit": true, "rpmLimit": true, "priority": true,
-		"superPriorityEnabled": true, "fallbackEnabled": true, "proxyProfileId": true,
+		"superPriorityEnabled": true, "fallbackEnabled": true, "proxyProfileId": true, "proxyPoolId": true,
 		"supportedModels": true, "modelMappings": true, "healthCheckModel": true,
 		"healthCheckEndpointMode": true, "availabilitySchedule": true, "accountExpiresAt": true,
 		"errorHandlingRules": true, "responseInspectionRules": true, "supportedEndpointModes": true,
@@ -1832,7 +1932,7 @@ func BatchUpdateBody(body map[string]any) (BatchUpdateInput, string) {
 }
 
 var BatchUpdateFields = map[string]bool{
-	"tags": true, "proxyProfileId": true, "concurrencyLimit": true, "rpmLimit": true, "priority": true,
+	"tags": true, "proxyProfileId": true, "proxyPoolId": true, "concurrencyLimit": true, "rpmLimit": true, "priority": true,
 	"superPriorityEnabled": true, "fallbackEnabled": true, "accountExpiresAt": true,
 	"availabilitySchedule": true, "notes": true, "errorHandlingRules": true,
 	"responseInspectionRules": true, "supportedModels": true, "healthCheckModel": true,
@@ -1858,7 +1958,7 @@ func ValidateBatchUpdateValue(field string, value any) string {
 		if !ok || len(list) > 24 {
 			return BatchFieldsPrompt
 		}
-	case "proxyProfileId":
+	case "proxyProfileId", "proxyPoolId":
 		if value == nil {
 			return ""
 		}

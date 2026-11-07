@@ -584,11 +584,11 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 	}
 }
 
-// 模型映射投影与已退役 anthropic 桥接的延迟判定。
+// 模型映射投影与跨协议退役的运行时判定。
 func TestWhModelMappingProjection(t *testing.T) {
-	// 2026-11-05 退役裁决后，唯一允许的跨协议映射是 OpenAI v1
-	// responses -> chat_completions；同协议别名与该 bridge 之外的
-	// 跨协议映射（含旧 hybrid/anthropic bridge）不再可解析。
+	// 2026-11-07 退役裁决后映射矩阵只保留协议等价 pair（同族改名 + Gemini
+	// stream 归一）；responses -> chat_completions 跨协议映射不再可解析，
+	// 运行时一律拒绝（与写侧 400 同源约束）。
 	account := gatewayruntimecache.OpenAIAccountSecret{
 		ID: "acc1", VendorCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
@@ -597,9 +597,8 @@ func TestWhModelMappingProjection(t *testing.T) {
 			Enabled: true,
 		}},
 	}
-	mapping := resolveOpenAIAccountModelMapping(account, "gpt-5.5", EndpointFamilyResponses)
-	if mapping == nil || mapping.UpstreamModel != "gpt-5.5-chat" || mapping.UpstreamEndpointFamily != EndpointFamilyChatCompletions {
-		t.Fatalf("映射 = %+v", mapping)
+	if mapping := resolveOpenAIAccountModelMapping(account, "gpt-5.5", EndpointFamilyResponses); mapping != nil {
+		t.Fatalf("跨协议映射必须被拒绝，得到 %+v", mapping)
 	}
 	if mapping := resolveOpenAIAccountModelMapping(account, "", EndpointFamilyResponses); mapping != nil {
 		t.Fatal("空模型不得映射")

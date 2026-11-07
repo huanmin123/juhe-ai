@@ -697,10 +697,13 @@ type TestDraftAccountInput struct {
 	SuperPriorityEnabled      *bool
 	FallbackEnabled           *bool
 	ProxyProfileID            *string
-	GroupID                   string
-	AccountExpiresAt          *string
-	AvailabilitySchedule      any
-	Notes                     *string
+	// ProxyPoolID 是草稿测试的代理池绑定（代理池设计 §6.1 草稿测试行 /
+	// §8.3）：与 ProxyProfileID 互斥；执行时临时选成员、不固化租约。
+	ProxyPoolID          *string
+	GroupID              string
+	AccountExpiresAt     *string
+	AvailabilitySchedule any
+	Notes                *string
 }
 
 // TestRequestBody mirrors accountTestSchema.parse output (the prompt field
@@ -779,7 +782,7 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 		case "providerCode", "providerProtocolProfileId", "name", "type", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
 			"concurrencyLimit", "priority", "superPriorityEnabled", "fallbackEnabled",
-			"proxyProfileId", "groupId", "accountExpiresAt", "availabilitySchedule", "notes":
+			"proxyProfileId", "proxyPoolId", "groupId", "accountExpiresAt", "availabilitySchedule", "notes":
 		default:
 			return nil, "账户测试参数无效"
 		}
@@ -902,6 +905,23 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 		} else {
 			return nil, "账户测试参数无效"
 		}
+	}
+	// 代理池绑定（代理池设计 §8.3 草稿测试）：草稿信封携带 proxyPoolId；
+	// 执行链临时选成员、不固化租约（prepare 段解析，见 prepareAccountDraft
+	// TestSnapshotWithOwner）。
+	if value, exists := record["proxyPoolId"]; exists {
+		if value == nil {
+			input.ProxyPoolID = nil
+		} else if text, ok := value.(string); ok {
+			trimmed := strings.TrimSpace(text)
+			input.ProxyPoolID = &trimmed
+		} else {
+			return nil, "账户测试参数无效"
+		}
+	}
+	if input.ProxyProfileID != nil && strings.TrimSpace(*input.ProxyProfileID) != "" &&
+		input.ProxyPoolID != nil && strings.TrimSpace(*input.ProxyPoolID) != "" {
+		return nil, "账户测试参数无效"
 	}
 	if value, exists := record["accountExpiresAt"]; exists {
 		if value == nil {
@@ -1303,6 +1323,29 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 	scheduleJSON := scheduleToJSONString(schedule)
 	accountExpiresAt := input.AccountExpiresAt
 	proxyProfileID := input.ProxyProfileID
+	proxyPoolID := input.ProxyPoolID
+	// 代理池草稿测试（代理池设计 §6.1 草稿测试行 / §8.3）：临时选成员、不固
+	// 化——不写 account_proxy_leases；本地解析不可用按显式 400 拒绝（fail-
+	// closed，不直连）。选定成员写进草稿信封的 ProxyProfileID，由既有测试执
+	// 行链解析出站 URL；执行侧不感知池。草稿是诊断，不承诺与保存后出口一致。
+	if proxyPoolID != nil && strings.TrimSpace(*proxyPoolID) != "" {
+		trimmedPool := strings.TrimSpace(*proxyPoolID)
+		if proxyProfileID != nil && strings.TrimSpace(*proxyProfileID) != "" {
+			return nil, proxyTargetConflictError()
+		}
+		memberID, err := s.selectProxyPoolMemberForWrite(ctx, s.db, trimmedPool)
+		if err != nil {
+			return nil, err
+		}
+		if memberID == "" {
+			return nil, &ValidationError{Message: "代理池当前没有可分配成员，无法执行测试"}
+		}
+		poolID := trimmedPool
+		proxyPoolID = &poolID
+		proxyProfileID = &memberID
+	} else {
+		proxyPoolID = nil
+	}
 	notes := input.Notes
 	credentialsMap := map[string]any{}
 	for key, value := range credentials {
@@ -1330,6 +1373,7 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		HealthCheckEndpointMode:   healthCheckEndpointMode,
 		ModelMappings:             mappings,
 		ProxyProfileID:            proxyProfileID,
+		ProxyPoolID:               proxyPoolID,
 		AccountExpiresAt:          accountExpiresAt,
 		AvailabilitySchedule:      availabilityScheduleMap,
 		AvailabilityScheduleJSON:  scheduleJSON,

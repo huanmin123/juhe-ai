@@ -3,7 +3,7 @@
 //
 // 2026-10 存储形态（T66 PG 造数重写）：目标为 --dsn 指向的 PostgreSQL 单库多
 // schema 存储（juhe_business / juhe_usage / juhe_stats / juhe_dataset /
-// juhe_codex_context + 属主 schema juhe_j3b / juhe_jobs；juhe_chat 已随 my-chat
+// 属主 schema juhe_j3b / juhe_jobs（juhe_codex_context 已随 2026-11-07 跨协议桥退役删除）；juhe_chat 已随 my-chat
 // 会话面退役移除——演练场设计 §8）。主流程：
 // EnsurePostgres 建骨架 → SeedPostgresDefaults 落最小种子 → 属主存储探测
 // （juhe_j3b 受控 bootstrap，其余只探测）→ 幂等清理 → 逐域 seed → autofill →
@@ -38,9 +38,10 @@ const (
 	// DomainObservability 拥有 juhe_dataset 维护面（公开接口日志、记录清理
 	// 目标）与审计 / 操作 / 运行日志属主表（缺失时域内跳过）。
 	DomainObservability = "observability"
-	// DomainChatCodexModelCheck 拥有 juhe_codex_context、J3b 模型检测专库与
-	// 账户健康库（后两者属主缺失时域内跳过；域名中的 chat_ 前缀为历史注册键，
-	// 原 juhe_chat 日分区面已随 my-chat 会话面退役移除——演练场设计 §8）。
+	// DomainChatCodexModelCheck 拥有 J3b 模型检测专库与账户健康库（juhe_
+	// codex_context 已随 2026-11-07 跨协议桥退役移除；属主缺失时域内跳过；
+	// 域名中的 chat_ 前缀为历史注册键，原 juhe_chat 日分区面已随 my-chat
+	// 会话面退役移除——演练场设计 §8）。
 	DomainChatCodexModelCheck = "chat_codex_model_check"
 )
 

@@ -75,6 +75,14 @@ var goAddedAfterRetentionJobNames = []string{
 	"media-jobs-retention",
 }
 
+// goAddedBeforeAccountListAvailabilityProjectionJobNames 是插在
+// account-list-availability-projection-maintenance 之前的 Go 附加条目：
+// 代理池可用性探测是独立 jobs 任务（代理池设计 §7.2），不与 J3a vendor
+// 矩阵共享状态/预算。
+var goAddedBeforeAccountListAvailabilityProjectionJobNames = []string{
+	"proxy-pool-health",
+}
+
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
 // usage-overview-windows-refresh 之后（原锚点 usage-scope-range-windows-
 // refresh 已随 D13 sqlite-only 行删除），keepalive 刷新插在 openai-oauth-
@@ -82,9 +90,12 @@ var goAddedAfterRetentionJobNames = []string{
 // detect-recovery 之后（客户端版本自动跟版紧随 grok 用量快照），与
 // ScheduledEntries 的登记位置一致。
 func expectedScheduledOrder() []string {
-	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
+	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames)+len(goAddedBeforeAccountListAvailabilityProjectionJobNames))
 	for _, name := range nodeScheduledJobNames {
 		result = append(result, name)
+		if name == "account-circuit-control-plane-maintenance" {
+			result = append(result, goAddedBeforeAccountListAvailabilityProjectionJobNames...)
+		}
 		if name == "usage-overview-windows-refresh" {
 			result = append(result, goAddedScheduledJobNames...)
 		}
@@ -107,7 +118,7 @@ func TestScheduledRegistryCoversAllNodeJobs(t *testing.T) {
 	if len(entries) != len(want) {
 		t.Fatalf("scheduled entries=%d want=%d（Node %d 项 + Go 附加 %d 项）",
 			len(entries), len(want), len(nodeScheduledJobNames),
-			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
+			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames)+len(goAddedBeforeAccountListAvailabilityProjectionJobNames))
 	}
 	for index, name := range want {
 		if entries[index].JobName != name {

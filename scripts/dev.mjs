@@ -268,7 +268,8 @@ function resolveBackendTarget() {
 function resolveGoProjectEnv() {
   const childEnv = { ...loadBackendEnv(), ...process.env }
   // 2026-10-24/25 存储形态收口后为 PostgreSQL + Redis 唯一形态：dev 只钉住
-  // 普通/日志文件根（JUHE_AI_DATA_DIR 派生 usage-record-spool / codex-context /
+  // 普通/日志文件根（JUHE_AI_DATA_DIR 派生 usage-record-spool /（codex-context
+  // 已随 2026-11-07 跨协议桥退役停止派生，历史目录人工清理）/
   // audit-blob / chat-assets 等运行时目录），存储连接串（PG/Redis URL）从仓库
   // 根 .env / 父进程环境原样转发，缺失由 Go 侧 fail-fast。
   childEnv.JUHE_AI_DATA_DIR = firstConfiguredValue(childEnv.JUHE_AI_DATA_DIR, devDataRoot)

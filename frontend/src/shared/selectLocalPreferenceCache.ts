@@ -1,5 +1,5 @@
 import { authState } from '@/composables/useAuth'
-import type { SelectOption } from '@/shared/selectLabelCache'
+import { isSelectOptionGroup, type SelectOption } from '@/shared/selectLabelCache'
 
 interface SelectPreferenceRecord {
   count: number
@@ -84,7 +84,7 @@ export function recordLocalSelectChoices(
   if (!selectedValues.length) return
 
   const store = readPreferenceStore(key)
-  const knownValues = new Set(options.map((option) => normalizeValue(option.value)).filter(Boolean))
+  const knownValues = new Set(collectSelectOptionValues(options))
   const now = Date.now()
   let changed = false
   for (const value of selectedValues) {
@@ -148,7 +148,21 @@ export function sortSelectOptionsByLocalPreference(
       if (leftRank.lastSelectedAt !== rightRank.lastSelectedAt) return rightRank.lastSelectedAt - leftRank.lastSelectedAt
       return left.index - right.index
     })
-    .map((entry) => entry.option)
+    .map((entry) => {
+      // 分组节点不参与平铺排序，只在组内按偏好重排子项（组间顺序保持数据源顺序）。
+      if (!isSelectOptionGroup(entry.option)) return entry.option
+      return {
+        ...entry.option,
+        options: sortSelectOptionsByLocalPreference(key, entry.option.options ?? [], _selectedValues, ignoredValues)
+      }
+    })
+}
+
+function collectSelectOptionValues(options: SelectOption[]): string[] {
+  return options.flatMap((option) => isSelectOptionGroup(option)
+    ? collectSelectOptionValues(option.options ?? [])
+    : [normalizeValue(option.value)])
+    .filter(Boolean)
 }
 
 function preferenceSnapshotFor(key: string): Record<string, SelectPreferenceRecord> {

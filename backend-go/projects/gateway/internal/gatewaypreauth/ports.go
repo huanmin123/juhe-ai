@@ -155,70 +155,12 @@ type SessionAffinity interface {
 }
 
 // CodexBridgePreflight mirrors the consumed codex-responses preflight surface
-// (G18): chat-bridge-state + compact-preflight + compaction contract.
+// (G18). 2026-11-07 跨协议 Responses→Chat 桥退役后，本端口只剩原生 compaction
+// contract 单点判定（用量压缩标记 + 预算豁免识别）；chat-bridge-state 与桥
+// 摘要 compact preflight 的端口方法随桥删除。
 type CodexBridgePreflight interface {
 	// CompactionExpectedForRequest mirrors codexCompactionExpectedForRequest.
 	CompactionExpectedForRequest(req *GatewayRequest) bool
-	// ApplyContextStatePreflight mirrors applyCodexResponsesContextStatePreflight;
-	// completed=true means the request finished inside the preflight.
-	ApplyContextStatePreflight(ctx context.Context, input CodexContextStateInput) (completed bool, err error)
-	// ApplyChatBridgeCompactPreflight mirrors
-	// applyCodexResponsesChatBridgeCompactPreflight.
-	ApplyChatBridgeCompactPreflight(ctx context.Context, input CodexCompactPreflightInput) (CodexCompactPreflightResult, error)
-}
-
-// CodexContextStateInput mirrors the context state preflight input.
-type CodexContextStateInput struct {
-	Req             *GatewayRequest
-	Res             GatewayResponseWriter
-	AuditCapture    AuditCaptureContext
-	UsageContext    GatewayFailureUsageContext
-	StartedAt       int64
-	SystemAccountID string
-	APIKeyID        string
-	GroupID         string
-	Signal          context.Context
-}
-
-// CodexCompactPreflightInput mirrors the compact preflight input.
-type CodexCompactPreflightInput struct {
-	Req                        *GatewayRequest
-	Res                        GatewayResponseWriter
-	AuditCapture               AuditCaptureContext
-	UsageContext               GatewayFailureUsageContext
-	StartedAt                  int64
-	SystemAccountID            string
-	APIKeyID                   string
-	GroupID                    string
-	RequestClientCompatibility string
-	DispatchAccounts           []gatewayruntimecache.OpenAIAccountSecret
-	ActiveGatewaySettings      gatewayruntimecache.GatewaySettings
-	ClientIPAccountAvoidance   ClientIPAccountAvoidanceTracker
-	ModelPriority              *gatewayrouting.GatewayAccountModelPriority
-	RequestLane                string
-	GroupSchedulingPolicy      *map[string]any
-	RequestCoordination        CodexRequestCoordination
-	OnDispatchedAccount        func(account gatewayruntimecache.OpenAIAccountSecret)
-	Signal                     context.Context
-}
-
-// CodexRequestCoordination mirrors requestCoordination。
-// （原 TimeoutPolicy 镜像字段已随调度内核通用化批次 2 删除：超时豁免由
-// GatewayRequestWallBudget.Unbounded 承载，引擎入参为 TimeoutsDisabled bool。）
-type CodexRequestCoordination struct {
-	Scope                    string
-	ServerRetryBudget        *ServerRetryBudget
-	GatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
-	RouteCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
-	RequestAttemptTracker    *gatewayrouting.GatewayRequestAttemptTracker
-}
-
-// CodexCompactPreflightResult mirrors the compact preflight outcome.
-type CodexCompactPreflightResult struct {
-	// Completed mirrors outcome === 'completed'.
-	Completed bool
-	// Accounts mirrors the post-preflight dispatch accounts.
-	Accounts []gatewayruntimecache.OpenAIAccountSecret
 }
 
 // ClientIPAccountAvoidanceTracker is the opaque handle created per request

@@ -15,13 +15,13 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// GLM 三协议适配方案 P1 裁决测试（响应侧）。
+// GLM chat-only 账户退役裁决测试（2026-11-07 跨协议 Responses→Chat 桥退役）。
 //
-// 背景：GLM chat 账户（openai 协议档案）显式配置 responses -> chat_completions
-// 模型映射后，链上响应变换器（chain_bridge_response.go）是 chat 上游回转
-// Responses 客户端的唯一出口。本测试用运行时证据裁决：chat SSE/JSON 上游
-// 响应是否真的被回转成 Responses 形态。若原样透传 choices/[DONE]，说明
-// 响应侧门控未放行该组合，桥端到端断裂。
+// 原本文件钉住 responses -> chat_completions 桥的端到端裁决（响应回转 + URL
+// 改写）；桥整体退役后改钉反向不变量：配置了已退役跨协议映射的 chat-only
+// 账户不再承接 Responses 请求——URL 不改写（打到原生 /responses），响应不
+// 回转（chat 上游字节原样透传），映射在运行时解析即被拒绝。
+
 func glmBridgeAdjudicationAccount() gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID:                        "acc_glm_bridge_adjudication",
@@ -71,11 +71,42 @@ func glmBridgeAdjudicationInput(t *testing.T, stream bool, response *gatewaydisp
 	}
 }
 
-func TestAdjudicateGLMResponsesToChatBridgeResponseConversion(t *testing.T) {
-	// 守护 responses -> chat_completions 响应侧回转契约（BUG-0178 修复回归）。
-	transformer := newChainBridgeResponseTransformer()
+func glmResponsesRequestForMappingProbe(t *testing.T) *gatewaypreauth.GatewayRequest {
+	t.Helper()
+	body := `{"model":"client-model","stream":false,"input":"hi"}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req := gatewaypreauth.NewGatewayRequest(request)
+	req.Body = &gatewaybody.Request{RawBody: []byte(body), Body: adjMustJSONMap(t, body)}
+	return req
+}
 
-	t.Run("流式", func(t *testing.T) {
+// TestAdjudicateGLMResponsesToChatBridgeRetired 钉住退役不变量：已退役的
+// responses→chat 映射不再驱动任何桥行为——URL 保持客户端原始 /responses
+// 路径（不改写到 /chat/completions），chat 上游响应原样透传（不回转成
+// Responses 形态），映射在运行时解析即被拒绝。
+func TestAdjudicateGLMResponsesToChatBridgeRetired(t *testing.T) {
+	t.Run("URL不改写", func(t *testing.T) {
+		driver := newChainProviderDriver()
+		body := `{"model":"client-model","stream":false,"input":"hi"}`
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		req := gatewaypreauth.NewGatewayRequest(request)
+		req.Body = &gatewaybody.Request{RawBody: []byte(body), Body: adjMustJSONMap(t, body)}
+		account := glmBridgeAdjudicationAccount()
+		account.BaseURL = "https://open.bigmodel.cn/api/coding/paas/v4"
+		urls, err := driver.BuildGatewayUpstreamURLsForAccount(context.Background(), account, req)
+		if err != nil {
+			t.Fatalf("BuildGatewayUpstreamURLsForAccount error: %v", err)
+		}
+		if len(urls) != 1 {
+			t.Fatalf("urls = %#v", urls)
+		}
+		if urls[0] != "https://open.bigmodel.cn/api/coding/paas/v4/responses" {
+			t.Fatalf("上游 URL = %q，期望保持 /responses 直通（桥改写已退役）", urls[0])
+		}
+	})
+
+	t.Run("响应不回转", func(t *testing.T) {
+		transformer := newChainBridgeResponseTransformer()
 		upstreamSSE := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
 		input := glmBridgeAdjudicationInput(t, true, adjUpstreamResponse("text/event-stream", io.NopCloser(strings.NewReader(upstreamSSE))))
 		out, err := transformer.TransformUpstreamResponseForAccount(input)
@@ -87,67 +118,27 @@ func TestAdjudicateGLMResponsesToChatBridgeResponseConversion(t *testing.T) {
 			t.Fatalf("读取客户端响应失败: %v", readErr)
 		}
 		text := string(clientBody)
-		if !strings.Contains(text, "response.") {
-			t.Fatalf("客户端未收到 Responses SSE（响应未被桥回转，chat SSE 原样透传），实际内容: %s", text)
+		if strings.Contains(text, "response.") || strings.Contains(text, `"object":"response"`) {
+			t.Fatalf("退役映射不得触发桥回转，实际内容: %s", text)
 		}
-		t.Logf("裁决通过：客户端收到 Responses SSE，长度 %d", len(text))
+		if !strings.Contains(text, `"choices"`) {
+			t.Fatalf("chat 上游响应应原样透传，实际内容: %s", text)
+		}
 	})
 
-	t.Run("缓冲", func(t *testing.T) {
-		upstreamJSON := `{"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"model":"glm-upstream"}`
-		input := glmBridgeAdjudicationInput(t, false, adjUpstreamResponse("application/json", io.NopCloser(strings.NewReader(upstreamJSON))))
-		out, err := transformer.TransformUpstreamResponseForAccount(input)
-		if err != nil {
-			t.Fatalf("TransformUpstreamResponseForAccount error: %v", err)
+	t.Run("映射运行时解析被拒绝", func(t *testing.T) {
+		// 运行时映射解析（与 chain_bridge_response.go 同一入口）对已退役
+		// 跨协议组合返回 nil——即账户对该请求不构成映射候选。
+		if mapping := chainBridgeResponseMappingOf(
+			glmResponsesRequestForMappingProbe(t), glmBridgeAdjudicationAccount()); mapping != nil {
+			t.Fatalf("跨协议映射必须被运行时拒绝，得到 %+v", mapping)
 		}
-		clientBody, readErr := io.ReadAll(out.Body)
-		if readErr != nil {
-			t.Fatalf("读取客户端响应失败: %v", readErr)
-		}
-		text := string(clientBody)
-		if !strings.Contains(text, `"object":"response"`) {
-			t.Fatalf("客户端未收到 Responses JSON（响应未被桥回转，chat JSON 原样透传），实际内容: %s", text)
-		}
-		t.Logf("裁决通过：客户端收到 Responses JSON，长度 %d", len(text))
 	})
 }
 
-// TestAdjudicateGLMResponsesToChatBridgeUpstreamURL 守护链上 URL 构建的映射
-// 路径改写（BUG-0178 第二层修复回归）：responses -> chat_completions 映射
-// 账户的 /v1/responses 请求必须打到上游 /chat/completions，而非原生
-// /responses（真机验收发现：URL 构建器曾用客户端原始路径，桥体转换后仍打
-// 到上游 Responses 端点被拒）。
-func TestAdjudicateGLMResponsesToChatBridgeUpstreamURL(t *testing.T) {
-	driver := newChainProviderDriver()
-	body := `{"model":"client-model","stream":false,"input":"hi"}`
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
-	req := gatewaypreauth.NewGatewayRequest(request)
-	req.Body = &gatewaybody.Request{RawBody: []byte(body), Body: adjMustJSONMap(t, body)}
-	account := glmBridgeAdjudicationAccount()
-	account.BaseURL = "https://open.bigmodel.cn/api/coding/paas/v4"
-	urls, err := driver.BuildGatewayUpstreamURLsForAccount(context.Background(), account, req)
-	if err != nil {
-		t.Fatalf("BuildGatewayUpstreamURLsForAccount error: %v", err)
-	}
-	if len(urls) != 1 {
-		t.Fatalf("urls = %#v", urls)
-	}
-	// 动机（v2 直拼契约）：glm coding 版本根 base（/api/coding/paas/v4）+
-	// 入站剥 /v1 后的 /chat/completions 直拼——旧行为对非 /v1 结尾 base 多拼
-	// 一层 /v1（/api/coding/paas/v4/v1/chat/completions），v2 删除补缀后为
-	// 正确官方端点；映射路径改写语义不变（打到 /chat/completions 而非原生
-	// /responses）。
-	want := "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
-	if urls[0] != want {
-		t.Fatalf("上游 URL = %q，期望 %q（映射路径改写未生效）", urls[0], want)
-	}
-	t.Logf("裁决通过：上游 URL = %s", urls[0])
-}
-
-// TestAdjudicateGLMResponsesToChatBridgeNativeResponsesAccount 守护能力不变量
-// （BUG-0178 守卫回归）：持有原生 Responses 端点模式的账户即使配置了
-// responses -> chat_completions 映射，/v1/responses 仍按原生直通——URL 不
-// 改写、响应不回转（codex OAuth 与 responses 模式 api_key 账户的既有语义）。
+// TestAdjudicateGLMResponsesToChatBridgeNativeResponsesAccount 守护原生直通
+// 不变量（BUG-0178 守卫的退役后形态）：持有原生 Responses 端点模式的账户对
+// /v1/responses 恒按原生直通——URL 不改写、响应不回转。
 func TestAdjudicateGLMResponsesToChatBridgeNativeResponsesAccount(t *testing.T) {
 	account := glmBridgeAdjudicationAccount()
 	account.BaseURL = "https://resp.example/v1"

@@ -27,19 +27,11 @@ func NormalizeEndpointFamily(family string) string {
 	}
 }
 
-// IsCrossProtocolBridgeRequired reports whether a model mapping requires
-// cross-protocol bridge conversion. 2026-11-05 供应商/协议面收窄后，映射矩阵
-// 只保留 8 个 family pair；其中唯一的跨族组合是 OpenAI v1 Responses ->
-// Chat Completions（chat-only 账户承接 /v1/responses），其余 chat/messages/
-// gemini 互转在写侧和运行时同时拒绝。同族改名不需要 bridge，返回 false。
-//
-// Both the canonical protocol tokens and the stored mapping-row tokens are
-// accepted.
-func IsCrossProtocolBridgeRequired(source, upstream string) bool {
-	source = NormalizeEndpointFamily(source)
-	upstream = NormalizeEndpointFamily(upstream)
-	return source == FamilyResponses && upstream == FamilyChatCompletions
-}
+// 2026-11-07 跨协议 Responses→Chat 桥退役：IsCrossProtocolBridgeRequired
+// 删除。映射矩阵收口为 7 个协议等价 pair（同族改名 + Gemini stream 归一，
+// 等价判定见 gatewayrouting/gatewaydispatch 的 rank 0 口径）后，不存在需要
+// 桥接转换的映射组合；桥接线（openaicompatbridge 转换面与两处守卫）已随批
+// 次删除，本判定无消费方。
 
 // Config carries the runtime-config surface the five Node modules read from
 // backend/src/config/runtime.ts. Defaults mirror the Node fallbacks; roots

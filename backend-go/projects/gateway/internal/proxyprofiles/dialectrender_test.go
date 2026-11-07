@@ -389,10 +389,17 @@ func TestPostgresPatchBindsBooleanAndTimestampCast(t *testing.T) {
 	if !strings.Contains(update.query, "enabled = $2") {
 		t.Fatalf("UPDATE 应绑定 enabled 参数：\n%s", update.query)
 	}
-	if !strings.Contains(update.query, "updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST($9 AS timestamptz))") {
+	// 代理池设计 §6.2：连接变更同时重置池健康投影（unknown / streak 0 /
+	// checked_at NULL，§10.2 批次新增的三列）。
+	if !strings.Contains(update.query, "pool_health_status = $9") ||
+		!strings.Contains(update.query, "pool_health_failure_streak = $10") ||
+		!strings.Contains(update.query, "pool_health_checked_at = $11") {
+		t.Fatalf("UPDATE 应重置池健康投影：\n%s", update.query)
+	}
+	if !strings.Contains(update.query, "updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST($12 AS timestamptz))") {
 		t.Fatalf("UPDATE updated_at 表达式不匹配：\n%s", update.query)
 	}
-	if !strings.Contains(update.query, "WHERE id = $10 AND updated_at = CAST($11 AS timestamptz)") {
+	if !strings.Contains(update.query, "WHERE id = $13 AND updated_at = CAST($14 AS timestamptz)") {
 		t.Fatalf("UPDATE CAS WHERE 不匹配：\n%s", update.query)
 	}
 	if strings.Contains(update.query, "strftime") || strings.Contains(update.query, "enabled = 1") {
@@ -407,6 +414,9 @@ func TestPostgresPatchBindsBooleanAndTimestampCast(t *testing.T) {
 		"<nil>",                       // outbound_region
 		"<nil>",                       // last_test_message
 		"<nil>",                       // last_tested_at
+		"unknown",                     // pool_health_status 重置（§6.2）
+		"0",                           // pool_health_failure_streak 重置
+		"<nil>",                       // pool_health_checked_at 重置
 		"2026-09-04T12:00:00.000000Z", // updated_at candidate
 		"p-1",                         // id
 		"2026-09-01T00:00:00.000000Z", // CAS revision

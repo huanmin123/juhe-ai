@@ -1,5 +1,7 @@
 # OpenAI 账号接入
 
+> **2026-11-07 退役标注：** 跨协议模型映射已整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）。OpenAI v1 账户的显式 `responses -> chat_completions` 模型别名桥接已随退役全链删除：Chat-only 上游不再承接 Responses / Codex Responses 入站，Responses 请求只能落到声明 `responses_json` / `responses_sse` 的账户。接口能力矩阵（`supported_endpoint_modes`，现行配置面为 `account_endpoint_modes`）与映射协议同族约束仍然有效。
+
 ## 范围
 
 > 目录同步边界：上游模型目录只由用户点击“同步上游模型”手动刷新触发，受控内部标记只适用于该草稿目录操作。账户弹框打开、字段变更、取消以及测试或确认均不会自动同步；后两者遇到缺少支持模型或检查模型时只提示并中止。人工 / 草稿测试、激活、健康、恢复和调度直接验证账户配置的真实生成或图片 endpoint；上游 `/models` 不开放或返回 `404` 不得阻断已配置完整模型的这些流程，客户端 `GET /models` / `GET /v1/models` 继续返回本地目录。
@@ -71,7 +73,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - Responses
 - Chat
 
-账户级接口能力限制保存于凭据的非敏感字段 `credentials.supported_endpoint_modes`，用于表达当前上游实际支持的 OpenAI v1 请求形态：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。网关候选账号筛选必须遵守该矩阵；例如只支持 `chat_json/chat_sse` 的通用 OpenAI-compatible 上游不会按原生 Responses 账号参与 `/v1/responses` 调度。测试弹窗中的“测试请求形态”可选项来自该接口能力限制；前端提交哪个 `testEndpointMode`，后端就按该 endpoint mode 构造测试请求，并校验它必须在账号 `supported_endpoint_modes` 内。测试失败即表示该账号不能按本次形态使用；不会根据最近真实请求、客户端画像或供应商偏好改写测试形态。省略接口能力限制时，通用 `openai` API Key 默认启用 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE。原生 Codex Responses 请求必须命中具备 `responses_sse` 的账号；OpenAI v1 普通账号如果显式配置 `responses -> chat_completions` 模型别名，则可用真实 `chat_sse` 能力承接流式 Responses / Codex Responses 入站。OAuth 账户只能选择 Responses JSON/SSE，不支持 Chat Completions。
+账户级接口能力限制保存于凭据的非敏感字段 `credentials.supported_endpoint_modes`（现行配置面为 `account_endpoint_modes`），用于表达当前上游实际支持的 OpenAI v1 请求形态：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。网关候选账号筛选必须遵守该矩阵；例如只支持 `chat_json/chat_sse` 的通用 OpenAI-compatible 上游不会按原生 Responses 账号参与 `/v1/responses` 调度。测试弹窗中的“测试请求形态”可选项来自该接口能力限制；前端提交哪个 `testEndpointMode`，后端就按该 endpoint mode 构造测试请求，并校验它必须在账号 `supported_endpoint_modes` 内。测试失败即表示该账号不能按本次形态使用；不会根据最近真实请求、客户端画像或供应商偏好改写测试形态。省略接口能力限制时，通用 `openai` API Key 默认启用 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE。原生 Codex Responses 请求必须命中具备 `responses_sse` 的账号（原“OpenAI v1 普通账号显式配置 `responses -> chat_completions` 模型别名后用真实 `chat_sse` 能力承接流式 Responses / Codex Responses 入站”已随 2026-11-07 跨协议映射退役删除）。OAuth 账户只能选择 Responses JSON/SSE，不支持 Chat Completions。
 
 默认检查模型：
 
@@ -144,7 +146,7 @@ OAuth 运行时修复口径：
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方版本根地址 `https://api.openai.com/v1`
-- 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；网关调度会按该配置筛选，不做未声明的 Chat 与 Responses 自动互转。测试弹窗中的“测试请求形态”从接口能力限制中选择，本次提交后只按所选 `testEndpointMode` 测试，不回写账户，也不从最近真实请求或客户端画像推导。需要让 Chat-only OpenAI v1 上游承接 Responses 入站时，必须在账号模型别名中显式配置 `responses -> chat_completions`，且账号真实能力仍只保存 `chat_json/chat_sse`。
+- 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；网关调度会按该配置筛选，不做未声明的 Chat 与 Responses 自动互转。测试弹窗中的“测试请求形态”从接口能力限制中选择，本次提交后只按所选 `testEndpointMode` 测试，不回写账户，也不从最近真实请求或客户端画像推导。（已随 2026-11-07 退役）原“需要让 Chat-only OpenAI v1 上游承接 Responses 入站时，在账号模型别名中显式配置 `responses -> chat_completions`”的入口已删除；Chat-only 上游不再承接 Responses 入站。
 - `base_url` 保存时按 OpenAI-compatible 上游版本根校验：必须是完整绝对地址，协议允许 `http` 和 `https`，主机允许域名和公网 / 私网 IP；按 2026-09-19 决策默认放行私网 / 本机上游（SSRF 拒绝面仍覆盖本机、内网、链路本地、CGNAT 与保留地址，只有部署者显式配置 `JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false` / `0` 时才恢复限制）。`JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` 语义保留：需要精确放行时按匹配 `scheme + IP + effective port` 配置，默认不预置，路径不参与白名单匹配。保存侧校验与出站 `upstreamhttp.DialGuard` 同时覆盖 `/v1` 派发、账户手动测试、jobs 健康探针和模型检测探针（含题库提交门禁测试执行器，共用同一 Dispatcher 组合与部署级 `URLSecurityConfig`）：直连在拨号期解析并校验，代理分支在发送前对目标 host 做同一 `ValidateHost` 校验（代理 transport 的 guard 只校验代理主机）；strict 模式（上述开关为 `false` / `0`）下不允许域名指向内网。模型检测探针在 key-model / 熔断准入之前完成目标校验，被拒绝的目标不消耗准入、不计入账户传输失败。禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。Base URL 语义为版本根，应填写含 `/v1` 的版本根地址，例如 `https://api.openai.com/v1`、`http://103.236.84.213:48222/v1`、`https://example.com/openai/v1`；运行时不再自动补 `/v1`（存量裸根历史值由 maintenance 迁移命令回填版本根），不推荐再填写裸根地址；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度

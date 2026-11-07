@@ -13,11 +13,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
 
 // Test statuses mirror proxyTestStatusValues.
 const (
 	testStatusUnknown = "unknown"
+	// 池健康投影重置值（代理池设计 §6.2）：连接变更后旧检测事实作废。
+	poolHealthResetStatus = "unknown"
+	poolHealthResetStreak = 0
 )
 
 const (
@@ -76,20 +81,56 @@ func (e *InUseError) Error() string {
 	return fmt.Sprintf("这个代理仍被 %s 个账户使用，请先在账户管理中解绑或改绑后再删除%s", countText, names)
 }
 
+// PoolMemberReferenceError mirrors the 代理池设计 §8.6
+// proxy_pool_member_reference_conflict failure: the profile is still
+// referenced by a proxy_pool_members row and cannot be deleted until the
+// pool editor removes the membership.
+type PoolMemberReferenceError struct{}
+
+// ErrorCode exposes the §8.6 code for the route envelope.
+func (e *PoolMemberReferenceError) ErrorCode() string { return "proxy_pool_member_reference_conflict" }
+
+func (e *PoolMemberReferenceError) Error() string {
+	return "代理被代理池引用，请先解除成员关系"
+}
+
+// RuntimeInvalidator is the K5 gateway runtime cache invalidation port
+// (代理池设计 §10.2：代理档案写入同批补上 proxy_profile_updated 失效)。
+// *inval.Bus satisfies it structurally; nil keeps the write family
+// self-contained with no-op invalidation (the pre-handover Deps state).
+type RuntimeInvalidator interface {
+	Invalidate(topic, reason string)
+}
+
+// MemberHealthResetter is the best-effort Redis member-health projection
+// reset port (代理池设计 §6.2/§7.4)：连接变更或档案删除后删除
+// juhe-ai:{<namespace>}:proxy-pool:member-health:<id>，让 gateway 回退 PG
+// pool_health_*，直到下一轮池健康探测重新写入。删除失败由实现方告警并靠
+// TTL 过期兜底；nil keeps the reset off.
+type MemberHealthResetter interface {
+	ResetMemberHealth(profileID string)
+}
+
 // Deps bundles the proxy family collaborators.
 type Deps struct {
 	DB     *sql.DB
 	Secret string
 	Now    func() time.Time
 	NewID  func(prefix string) string
+	// Inval publishes the committed-write runtime invalidation; nil tolerated.
+	Inval RuntimeInvalidator
+	// MemberHealth resets the shared Redis member-health key; nil tolerated.
+	MemberHealth MemberHealthResetter
 }
 
 // Store is the proxy persistence half.
 type Store struct {
-	db     *sql.DB
-	secret string
-	now    func() time.Time
-	newID  func(string) string
+	db           *sql.DB
+	secret       string
+	now          func() time.Time
+	newID        func(string) string
+	inval        RuntimeInvalidator
+	memberHealth MemberHealthResetter
 }
 
 // NewStore builds the proxy store.
@@ -103,7 +144,28 @@ func NewStore(deps Deps) (*Store, error) {
 	if deps.NewID == nil {
 		return nil, errors.New("proxy store requires an id generator")
 	}
-	return &Store{db: deps.DB, secret: deps.Secret, now: deps.Now, newID: deps.NewID}, nil
+	return &Store{db: deps.DB, secret: deps.Secret, now: deps.Now, newID: deps.NewID,
+		inval: deps.Inval, memberHealth: deps.MemberHealth}, nil
+}
+
+// notifyRuntimeUpdated mirrors notifyCommittedModelCacheInvalidation: call
+// sites sit strictly on commit-success paths, before the response renders
+// (§10.2 proxy_profile_updated reason).
+func (s *Store) notifyRuntimeUpdated() {
+	if s.inval == nil {
+		return
+	}
+	s.inval.Invalidate(inval.TopicGatewayRuntime, "proxy_profile_updated")
+}
+
+// resetMemberHealth deletes the shared Redis member-health key best-effort
+// (§6.2)：失败只告警（实现方负责），键最多保留到 TTL 过期，gateway 期间回退
+// PG pool_health_* 事实源。
+func (s *Store) resetMemberHealth(profileID string) {
+	if s.memberHealth == nil {
+		return
+	}
+	s.memberHealth.ResetMemberHealth(profileID)
 }
 
 func (s *Store) table(name string) string {
@@ -164,13 +226,26 @@ type ListResult struct {
 	PageSize int              `json:"pageSize"`
 }
 
-// OptionSummary mirrors ProxyProfileOptionSummary.
+// OptionSummary mirrors ProxyProfileOptionSummary plus the 代理池设计 §8.2
+// kind discriminator. Profile items keep the legacy id/name/type/enabled
+// shape (kind added additively); pool items omit type and carry the pool
+// counts — never members, host, port or credentials.
 type OptionSummary struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
-	Type    string `json:"type"`
+	Kind    string `json:"kind"`
+	Type    string `json:"type,omitempty"`
 	Enabled bool   `json:"enabled"`
+	// Pool-only fields (nil/omitted on profile items).
+	MemberCount           *int `json:"memberCount,omitempty"`
+	AssignableMemberCount *int `json:"assignableMemberCount,omitempty"`
 }
+
+// Option kinds for the shared account-form dropdown (§8.2).
+const (
+	OptionKindProfile = "profile"
+	OptionKindPool    = "pool"
+)
 
 // isProxyNameDuplicate mirrors isDuplicateProxyNameError: Node matches the
 // unique index names surfaced by better-sqlite3/pg; the Go drivers report

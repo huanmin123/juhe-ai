@@ -22,9 +22,7 @@ func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 	if want := filepath.Join(dataDir, "usage-record-spool"); config.UsageSpoolDirectory != want {
 		t.Fatalf("UsageSpoolDirectory 必须派生为 %q，得到 %q", want, config.UsageSpoolDirectory)
 	}
-	if want := filepath.Join(dataDir, "codex-context"); config.CodexContextRoot != want {
-		t.Fatalf("CodexContextRoot 必须派生为 %q，得到 %q", want, config.CodexContextRoot)
-	}
+	// 2026-11-07 codex-context 退役：CodexContextRoot 派生断言随配置删除。
 	if config.DataDir != dataDir {
 		t.Fatalf("DataDir 必须透传 %q，得到 %q", dataDir, config.DataDir)
 	}

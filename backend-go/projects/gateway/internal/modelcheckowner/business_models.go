@@ -133,11 +133,15 @@ func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, acco
 	return configuredModelResolution{}, nil
 }
 
-func j3bModelMappingConversionSupported(profile modelcheckprofile.ProtocolProfile, source, upstream modelcheckprofile.EndpointFamily) bool {
+// j3bModelMappingConversionSupported 与网关运行时口径一致（§5.2 7 pair 协议
+// 等价判定）：同族改名 + Gemini stream_generate_content→generate_content 归一。
+// 2026-11-07 跨协议模型映射退役后，Responses→Chat Completions 的健康检查映射
+// 放行一并删除，J3b 检测对退役跨族行 fail closed。
+func j3bModelMappingConversionSupported(_ modelcheckprofile.ProtocolProfile, source, upstream modelcheckprofile.EndpointFamily) bool {
 	if source == upstream {
 		return true
 	}
-	return profile.Protocol == modelcheckprofile.ProtocolOpenAIResponses && source == modelcheckprofile.EndpointResponses && upstream == modelcheckprofile.EndpointChatCompletions
+	return source == modelcheckprofile.EndpointStreamGenerate && upstream == modelcheckprofile.EndpointGenerateContent
 }
 
 // resolveConfiguredUpstreamModel is retained as a compatibility shim for

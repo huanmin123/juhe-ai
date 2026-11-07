@@ -43,6 +43,8 @@ type Candidate struct {
 	CredentialFingerprint string      `json:"credential_fingerprint"`
 	ConfigJSON            string      `json:"config_json"`
 	ProxyProfileID        string      `json:"proxy_profile_id"`
+	ProxyPoolID           string      `json:"proxy_pool_id"`
+	ProxyMemberProfileID  string      `json:"proxy_member_profile_id"`
 	Deleted               bool        `json:"deleted"`
 	Authorized            bool        `json:"authorized"`
 	BaseURL               string      `json:"base_url"`
@@ -52,7 +54,10 @@ type Candidate struct {
 	Recovery              bool        `json:"-"`
 	APIKeyCount           int         `json:"api_key_count"`
 	// CredentialFingerprint / ConfigJSON / ProxyProfileID 携带余额输入身份
-	// 摘要的原始输入（ProxyProfileID 为空串 = 未绑代理，合法）。
+	// 摘要的原始输入（ProxyProfileID 为空串 = 未绑直接代理，合法）。
+	// ProxyPoolID / ProxyMemberProfileID 是池绑定段的同一输入（代理池设计
+	// §10.3）：池绑定账户的查询出口是租约成员，两者为空串 = 无池绑定或
+	// 池绑定但无有效租约（查询应失败，见执行面），摘要仍按空段参与计算。
 	APIKey        CredentialEnvelope  `json:"api_key"`
 	Credential    CredentialEnvelope  `json:"credential,omitempty"`
 	Proxy         *CredentialEnvelope `json:"proxy,omitempty"`
@@ -73,20 +78,25 @@ type Input struct {
 	Type            string `json:"type"`
 	Status          string `json:"status"`
 	// 与 Candidate 同名段同源；persistInput 据此落快照 inputDigest（BUG-0286）。
-	CredentialFingerprint string              `json:"credential_fingerprint"`
-	ConfigJSON            string              `json:"config_json"`
-	ProxyProfileID        string              `json:"proxy_profile_id"`
-	Schedulable           bool                `json:"schedulable"`
-	BaseURL               string              `json:"base_url"`
-	Config                QueryConfig         `json:"config"`
-	APIKey                CredentialEnvelope  `json:"api_key"`
-	Credential            CredentialEnvelope  `json:"credential,omitempty"`
-	Proxy                 *CredentialEnvelope `json:"proxy,omitempty"`
-	Trigger               Trigger             `json:"trigger"`
-	IssuedAt              time.Time           `json:"issued_at"`
-	ExpiresAt             time.Time           `json:"expires_at"`
-	NextRefreshAt         *time.Time          `json:"next_refresh_at,omitempty"`
-	Recovery              bool                `json:"-"`
+	CredentialFingerprint string `json:"credential_fingerprint"`
+	ConfigJSON            string `json:"config_json"`
+	ProxyProfileID        string `json:"proxy_profile_id"`
+	// ProxyPoolID / ProxyMemberProfileID 是池绑定余额身份的池段与有效租约
+	// 成员段（代理池设计 §10.3）：读端摘要与写端快照同段同值，租约迁移成员
+	// 即摘要变化、旧快照失效。
+	ProxyPoolID          string              `json:"proxy_pool_id"`
+	ProxyMemberProfileID string              `json:"proxy_member_profile_id"`
+	Schedulable          bool                `json:"schedulable"`
+	BaseURL              string              `json:"base_url"`
+	Config               QueryConfig         `json:"config"`
+	APIKey               CredentialEnvelope  `json:"api_key"`
+	Credential           CredentialEnvelope  `json:"credential,omitempty"`
+	Proxy                *CredentialEnvelope `json:"proxy,omitempty"`
+	Trigger              Trigger             `json:"trigger"`
+	IssuedAt             time.Time           `json:"issued_at"`
+	ExpiresAt            time.Time           `json:"expires_at"`
+	NextRefreshAt        *time.Time          `json:"next_refresh_at,omitempty"`
+	Recovery             bool                `json:"-"`
 }
 
 // ToInput converts a candidate into a bounded input. It deliberately does not
@@ -168,6 +178,7 @@ func (c Candidate) ToInput(trigger Trigger, now time.Time, ttl time.Duration) (I
 		AccountID: c.AccountID, SystemAccountID: c.SystemAccountID, InputVersion: c.InputVersion, ConfigRevision: c.ConfigRevision,
 		Provider: c.Provider, Type: c.Type, Status: c.Status, Schedulable: c.Schedulable,
 		CredentialFingerprint: c.CredentialFingerprint, ConfigJSON: c.ConfigJSON, ProxyProfileID: c.ProxyProfileID,
+		ProxyPoolID: c.ProxyPoolID, ProxyMemberProfileID: c.ProxyMemberProfileID,
 		BaseURL: strings.TrimRight(c.BaseURL, "/"), Config: c.Config, APIKey: credential, Credential: credential,
 		Proxy: cloneCredential(c.Proxy), Trigger: trigger, IssuedAt: issued, ExpiresAt: expires, NextRefreshAt: cloneTime(c.NextRefreshAt), Recovery: c.Recovery,
 	}, nil

@@ -1,5 +1,5 @@
-// Package gatewaycodex is the G18 slice of the W4-W5 gateway chain: the
-// codex client profile family and the Responses↔Chat completions bridge.
+// Package gatewaycodex is the G18 slice of the W4-W5 gateway chain: the codex
+// client profile family and the native Responses compaction contract.
 //
 // It mirrors backend/src/modules/gateway:
 //
@@ -7,10 +7,6 @@
 //	  → contract.go（Codex Responses item 契约注册表）
 //	codex-responses/request-history-types.ts + request-history-sanitizer.ts
 //	  → historysanitizer.go（历史 item id 清理）
-//	codex-responses/chat-bridge-state.ts
-//	  → chatbridgestate.go（会话状态 preflight / 恢复 / 保存 / compact snapshot）
-//	codex-responses/compact-preflight.ts
-//	  → compactpreflight.go（桥摘要 compact preflight）
 //	codex-responses/web-search-executor.ts
 //	  → 无对应实现（Node 已标记 retired，正文为空导出）
 //	client-profiles/source-identity.ts
@@ -29,15 +25,17 @@
 //	  → compactioncontract.go（codexCompactionExpectedForRequest + compaction trigger 扫描）
 //	runtime/account-effects.ts persistOpenAICodexHeadersIfNeeded
 //	  → codexheaders.go（OAuth codex 用量响应头识别与副作用投递）
-//	storage/codex-context-state.repository.ts（按 import 链）
-//	  → contextstore.go（响应/compact 索引 store：sqlitepath 分片 + sqlpool postgres 双模）
 //
-// The frozen G05 ports (gatewaypreauth.ClientStrategy /
-// gatewaypreauth.CodexBridgePreflight) are implemented by the port adapters
-// in ports.go with compile-time assertions. The availability probe
-// coordinator itself is owned by gatewaycircuit (G11) and consumed through a
-// narrow seam; the upstream summary dispatch of the compact preflight is a
-// seam the dispatch slice wires (Node fetchFirstAvailableUpstream). All
-// Chinese error and log copy is byte-identical with the Node source; all
-// time comes from an injected clock.
+// 2026-11-07 退役记录：codex-responses/chat-bridge-state.ts（chatbridgestate.go）、
+// codex-responses/compact-preflight.ts（compactpreflight.go）与
+// storage/codex-context-state.repository.ts（contextstore.go + segments.go
+// 分片子面）随跨协议 Responses→Chat 桥整体删除；Responses 客户端只落到原生
+// Responses 账户，/responses/compact 由原生上游承接（compaction contract 的
+// 用量标记与预算豁免保留）。
+//
+// The frozen G05 port (gatewaypreauth.ClientStrategy) is implemented by the
+// port adapter in ports.go with a compile-time assertion. The availability
+// probe coordinator itself is owned by gatewaycircuit (G11) and consumed
+// through a narrow seam. All Chinese error and log copy is byte-identical
+// with the Node source; all time comes from an injected clock.
 package gatewaycodex

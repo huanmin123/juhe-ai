@@ -5,26 +5,6 @@ package openaicompatstorage
 
 import "testing"
 
-func TestW11BBridgeExecutorsHelpers(t *testing.T) {
-	threshold := 0.5
-	options := map[string]any{"score_threshold": threshold}
-	if value := scoreThresholdFromRankingOptions(options); value == nil || *value != 0.5 {
-		t.Fatalf("threshold = %v", value)
-	}
-	if scoreThresholdFromRankingOptions(nil) != nil {
-		t.Fatal("nil 选项 nil")
-	}
-	if scoreThresholdFromRankingOptions(map[string]any{}) != nil {
-		t.Fatal("缺阈值 nil")
-	}
-	if !isTextBridgeMediaType("text/plain") || !isTextBridgeMediaType("text/plain; charset=utf-8") {
-		t.Fatal("文本媒体类型")
-	}
-	if isTextBridgeMediaType("") || isTextBridgeMediaType("application/json") {
-		t.Fatal("非文本媒体类型")
-	}
-}
-
 func TestW11BImageGenerationParseHelpers(t *testing.T) {
 	// safeParseJSON：空串/坏 JSON 折叠空对象。
 	if object := safeParseJSON("bad").(map[string]any); len(object) != 0 {

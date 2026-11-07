@@ -33,7 +33,6 @@ func TestAutofillSkipReason(t *testing.T) {
 		{table: "stats_job_state", contains: "owner 状态族"},
 		{table: "backfill_progress", contains: "一次性回填"},
 		{table: "usage_range_window_requests", contains: "瞬时队列"},
-		{table: "codex_context_storage_cleanup_queue", contains: "瞬时清理队列"},
 		{table: "usage_stats_totals", contains: "usage_stats_"},
 		{table: "account_quality_dirty_accounts", contains: "account_quality_"},
 		{table: "usage_quota_hourly_windows", contains: "usage_quota_hourly_"},

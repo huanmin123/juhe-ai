@@ -97,6 +97,20 @@ type Deps struct {
 	ScheduleStatus func(schedule *accountscore.AvailabilitySchedule, now time.Time) (string, bool)
 	// NextScheduleCheckAt mirrors NextScheduleCheckAt (schedule.go).
 	NextScheduleCheckAt func(schedule *accountscore.AvailabilitySchedule, now time.Time) (string, bool)
+	// LockProxyPoolForWrite mirrors Store.lockProxyPoolForWrite（代理池设计
+	// §6.1/§6.7）：写账户行之前 FOR UPDATE 锁池行（锁序 池→账户→租约，与
+	// 请求时重分配同序）；池不存在/停用按 §8.6 ValidationError（400）拒绝。
+	LockProxyPoolForWrite func(ctx context.Context, q accountscore.Queryer, poolID string) error
+	// SelectProxyPoolMemberForWrite mirrors Store.selectProxyPoolMemberForWrite
+	// （同一事务经共享 proxyresolve 选成员；健康全 dead 返回空串 = 允许绑定
+	// 但无租约；ErrPoolUnavailable/ErrPoolEmpty 已折算为 §8.6 校验错误）。
+	SelectProxyPoolMemberForWrite func(ctx context.Context, q accountscore.Queryer, poolID string) (string, error)
+	// AssignAccountProxyPoolLease mirrors Store.assignAccountProxyPoolLease
+	// （generation 取 juhe_business.account_proxy_lease_generation_seq）。
+	AssignAccountProxyPoolLease func(ctx context.Context, q accountscore.Queryer, accountID, poolID, memberProfileID, reason string) error
+	// ClearAccountProxyPoolLease mirrors Store.clearAccountProxyPoolLease
+	// （解绑/改绑替换前删除旧租约；幂等）。
+	ClearAccountProxyPoolLease func(ctx context.Context, q accountscore.Queryer, accountID string) error
 	// CacheInvalidator is the nil-safe post-commit invalidation port of the
 	// batch edit (batch_effects.go); the facade passes its live Store field so
 	// SetCacheInvalidator wiring keeps working.

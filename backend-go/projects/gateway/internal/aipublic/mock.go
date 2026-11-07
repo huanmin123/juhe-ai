@@ -82,7 +82,7 @@ func bindingsFromBody(body map[string]any) []PublicBindingSummary {
 		out = append(out, PublicBindingSummary{
 			ID: "mock_route_strategy_group_" + itoa(index+1), GroupID: groupID,
 			GroupName: strPtr("公开接口分组" + itoa(index+1)),
-			Priority: priority, Weight: weight, Status: status, GroupEnabled: true,
+			Priority:  priority, Weight: weight, Status: status, GroupEnabled: true,
 		})
 	}
 	return out
@@ -310,7 +310,7 @@ func mockStrategySummary(id, name, mode, status string, bindings []PublicBinding
 		bindings = []PublicBindingSummary{{
 			ID: "mock_route_strategy_group_1", GroupID: "mock_group_public",
 			GroupName: strPtr("公开接口分组1"),
-			Priority: 1, Weight: 100, Status: "active", GroupEnabled: true,
+			Priority:  1, Weight: 100, Status: "active", GroupEnabled: true,
 		}}
 	}
 	normal := normalConfig

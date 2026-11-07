@@ -139,6 +139,7 @@ type apiKeyAddBody struct {
 	HasDescription         bool
 	RouteStrategyID        string
 	SchedulingPreferenceID *string
+	SecurityPolicyID       *string
 	Status                 string
 	HasStatus              bool
 	ExpiresAt              string
@@ -150,7 +151,7 @@ type apiKeyAddBody struct {
 }
 
 func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
+	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -186,6 +187,16 @@ func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
 		}
 		trimmed := strings.TrimSpace(text)
 		parsed.SchedulingPreferenceID = &trimmed
+	}
+	if value, exists := body["securityPolicyId"]; exists && value != nil {
+		// 安全策略绑定（公开 add 与内面创建同矩阵，§4.2）：缺省或 null →
+		// 内置固定 ID（store 层收敛）；非法类型/空字符串按绑定契约统一 400。
+		text, isString := value.(string)
+		if !isString || strings.TrimSpace(text) == "" {
+			return nil, apikeys.SecurityPolicyUnavailableMessage
+		}
+		trimmed := strings.TrimSpace(text)
+		parsed.SecurityPolicyID = &trimmed
 	}
 	status, hasStatus, issue := bodyOptionalEnumField(body, "status", []string{"active", "disabled"})
 	if issue != "" {
@@ -233,9 +244,10 @@ func (d *Deps) addApiKey(w http.ResponseWriter, r *http.Request) {
 		Name:            parsed.Name,
 		Description:     parsed.Description,
 		RouteStrategyID: &parsed.RouteStrategyID,
-		// 目标 Key owner（target.SystemAccountID）名下的偏好校验由 store 层
-		// 绑定解析收敛（同 owner 启用偏好或全局内置行）。
+		// 目标 Key owner（target.SystemAccountID）名下的偏好/策略校验由 store
+		// 层绑定解析收敛（同 owner 自定义行或全局内置行）。
 		SchedulingPreferenceID: parsed.SchedulingPreferenceID,
+		SecurityPolicyID:       parsed.SecurityPolicyID,
 	}
 	if parsed.HasStatus {
 		status := parsed.Status
@@ -284,6 +296,8 @@ type apiKeyUpdateBody struct {
 	HasStrategy             bool
 	SchedulingPreferenceID  *string
 	HasSchedulingPreference bool
+	SecurityPolicyID        *string
+	HasSecurityPolicy       bool
 	Status                  string
 	HasStatus               bool
 	ExpiresAt               *string
@@ -294,10 +308,10 @@ type apiKeyUpdateBody struct {
 	HasSchedule             bool
 }
 
-var apiKeyUpdateMutableFields = []string{"name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule"}
+var apiKeyUpdateMutableFields = []string{"name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule"}
 
 func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "apiKeyId", "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
+	unknown := strictObjectKeys(body, "targetUsername", "apiKeyId", "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -349,6 +363,20 @@ func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
 			}
 			trimmed := strings.TrimSpace(text)
 			parsed.SchedulingPreferenceID = &trimmed
+		}
+	}
+	if bodyHas(body, "securityPolicyId") {
+		// 安全策略绑定（公开 update 与内面 PATCH 同 Has 语义矩阵，§4.2）：
+		// 缺失 = 保持原值；显式 null = 内置固定 ID；非空 ID = 校验后持久化；
+		// 非法类型/空字符串统一 400。
+		parsed.HasSecurityPolicy = true
+		if value := body["securityPolicyId"]; value != nil {
+			text, isString := value.(string)
+			if !isString || strings.TrimSpace(text) == "" {
+				return nil, apikeys.SecurityPolicyUnavailableMessage
+			}
+			trimmed := strings.TrimSpace(text)
+			parsed.SecurityPolicyID = &trimmed
 		}
 	}
 	status, hasStatus, issue := bodyOptionalEnumField(body, "status", []string{"active", "disabled"})
@@ -432,6 +460,10 @@ func (d *Deps) updateApiKey(w http.ResponseWriter, r *http.Request) {
 	if parsed.HasSchedulingPreference {
 		input.SchedulingPreferenceID = parsed.SchedulingPreferenceID
 		input.HasSchedulingPreferenceID = true
+	}
+	if parsed.HasSecurityPolicy {
+		input.SecurityPolicyID = parsed.SecurityPolicyID
+		input.HasSecurityPolicyID = true
 	}
 	if parsed.HasStatus {
 		input.Status = parsed.Status

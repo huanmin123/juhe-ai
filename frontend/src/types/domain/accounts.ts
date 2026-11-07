@@ -431,6 +431,17 @@ export interface AccountSummary {
   proxyProfileEnabled?: boolean
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
+  // 代理池绑定展示字段（代理池设计 §8.5）：池绑定时 proxyProfile* 为 null，
+  // proxyMember* 是当前租约成员；proxyPoolAssignableMemberCount 驱动待分配/待切换/无可用成员三态。
+  proxyTargetType?: 'profile' | 'pool'
+  proxyPoolId?: string
+  proxyPoolName?: string
+  proxyPoolEnabled?: boolean
+  proxyMemberProfileId?: string
+  proxyMemberProfileName?: string
+  proxyMemberProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyMemberProfileEnabled?: boolean
+  proxyPoolAssignableMemberCount?: number
   schedulable: boolean
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
@@ -536,6 +547,17 @@ export interface AccountListItem {
   proxyProfileEnabled?: boolean
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
+  // 代理池绑定展示字段（代理池设计 §8.5）：池绑定时 proxyProfile* 为 null，
+  // proxyMember* 是当前租约成员；proxyPoolAssignableMemberCount 驱动待分配/待切换/无可用成员三态。
+  proxyTargetType?: 'profile' | 'pool'
+  proxyPoolId?: string
+  proxyPoolName?: string
+  proxyPoolEnabled?: boolean
+  proxyMemberProfileId?: string
+  proxyMemberProfileName?: string
+  proxyMemberProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyMemberProfileEnabled?: boolean
+  proxyPoolAssignableMemberCount?: number
   schedulable: boolean
   /**
    * 时间计划闸门（时间计划闸门与账户状态解耦设计 §3.1）：null=未配置计划（恒开），
@@ -646,6 +668,9 @@ export interface AccountAdvancedDetail {
   credentials?: AccountCredentials
   modelMappings: AccountModelMapping[]
   proxyProfileId?: string
+  /** 配置的代理池绑定（§8.3）：编辑表单回填配置绑定，proxyPoolName 用于标签注入。 */
+  proxyPoolId?: string
+  proxyPoolName?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   temporaryUnavailableContinuousProbeEnabled: boolean
@@ -735,6 +760,9 @@ export interface AccountCloneContext {
   boundGroupName?: string
   modelMappings: AccountModelMapping[]
   proxyProfileId?: string
+  /** 来源账户的代理池绑定（§8.4 克隆）：复制配置绑定，不复制租约；proxyPoolName 供前端展示池名。 */
+  proxyPoolId?: string
+  proxyPoolName?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   temporaryUnavailableContinuousProbeEnabled: boolean
@@ -828,6 +856,8 @@ export interface AccountBatchEditField<TValue> {
 export interface AccountBatchEditUpdates {
   tags?: AccountBatchEditField<string[]>
   proxyProfileId?: AccountBatchEditField<string | null>
+  /** 代理池批量绑定（§8.4）：与 proxyProfileId 互斥；同一勾选状态下两者恰有一个为 null。 */
+  proxyPoolId?: AccountBatchEditField<string | null>
   concurrencyLimit?: AccountBatchEditField<number>
   rpmLimit?: AccountBatchEditField<number>
   priority?: AccountBatchEditField<number>
@@ -1108,6 +1138,17 @@ export interface AccountImportProxyItem {
   proxyProfileId?: string
 }
 
+/** 导入预览池引用行（§8.4/§9.4）：第一版只读引用不建池；缺失/停用池按条目失败提示。 */
+export interface AccountImportPoolItem {
+  index: number
+  ref?: string
+  name?: string
+  action: 'create' | 'reuse' | 'skip' | 'failed'
+  messages: string[]
+  warnings: string[]
+  proxyPoolId?: string
+}
+
 export interface AccountExportAccount {
   ref: string
   name: string
@@ -1141,6 +1182,8 @@ export interface AccountImportResult {
   summary: AccountImportSummary
   accounts: AccountImportItem[]
   proxies: AccountImportProxyItem[]
+  /** 池引用预览行（§9.4）：服务端按需返回；缺失时不渲染该表（前端不本地推导）。 */
+  pools?: AccountImportPoolItem[]
   messages: string[]
   source: AccountImportSourceSummary
 }

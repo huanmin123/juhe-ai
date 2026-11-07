@@ -250,12 +250,12 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 	waMapping := func(source, upstream string) AccountModelMapping {
 		return AccountModelMapping{SourceModel: "m", SourceEndpointFamily: source, UpstreamModel: "m-up", UpstreamEndpointFamily: upstream}
 	}
-	// 2026-11-05 起运行时只放行同族、stream→generate 与 Responses→Chat
-	// bridge；其余跨族映射行不再执行。
-	account := &RuntimeAccount{ModelMappings: []AccountModelMapping{waMapping(FamilyResponses, FamilyChatCompletions)}}
+	// 2026-11-07 起运行时只放行协议等价映射（同族 + Gemini stream 归一）；
+	// Responses→Chat bridge 与其余跨族映射行全部不再执行。
+	account := &RuntimeAccount{ModelMappings: []AccountModelMapping{waMapping(FamilyChatCompletions, FamilyChatCompletions)}}
 
-	t.Run("responses 到 chat", func(t *testing.T) {
-		resolved := ResolveAccountModelMapping(account, " m ", FamilyResponses)
+	t.Run("同族改名", func(t *testing.T) {
+		resolved := ResolveAccountModelMapping(account, " m ", FamilyChatCompletions)
 		if resolved == nil {
 			t.Fatal("应解析出映射")
 		}
@@ -279,6 +279,14 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 			t.Fatal("无匹配行不解析")
 		}
 	})
+	t.Run("responses 到 chat 已退役", func(t *testing.T) {
+		responsesAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{
+			waMapping(FamilyResponses, FamilyChatCompletions),
+		}}
+		if resolved := ResolveAccountModelMapping(responsesAccount, "m", FamilyResponses); resolved != nil {
+			t.Fatalf("responses→chat bridge 已退役，映射行不应再执行: %+v", resolved)
+		}
+	})
 	t.Run("anthropic 来源跨族映射已退役", func(t *testing.T) {
 		messagesAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{waMapping(FamilyAnthropicMessages, FamilyChatCompletions)}}
 		if resolved := ResolveAccountModelMapping(messagesAccount, "m", FamilyAnthropicMessages); resolved != nil {
@@ -289,22 +297,13 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		disabled := false
 		sameFamilyAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{
 			{SourceModel: "m", SourceEndpointFamily: FamilyChatCompletions, UpstreamModel: "m", UpstreamEndpointFamily: FamilyChatCompletions},
-			{SourceModel: "m", SourceEndpointFamily: FamilyResponses, UpstreamModel: "m2", UpstreamEndpointFamily: FamilyChatCompletions, Enabled: &disabled},
+			{SourceModel: "m2", SourceEndpointFamily: FamilyChatCompletions, UpstreamModel: "m3", UpstreamEndpointFamily: FamilyChatCompletions, Enabled: &disabled},
 		}}
 		if resolved := ResolveAccountModelMapping(sameFamilyAccount, "m", FamilyChatCompletions); resolved != nil {
 			t.Fatalf("同构映射不解析: %+v", resolved)
 		}
-		if resolved := ResolveAccountModelMapping(sameFamilyAccount, "m", FamilyResponses); resolved != nil {
+		if resolved := ResolveAccountModelMapping(sameFamilyAccount, "m2", FamilyChatCompletions); resolved != nil {
 			t.Fatalf("禁用映射不解析: %+v", resolved)
-		}
-	})
-	t.Run("responses 到 chat", func(t *testing.T) {
-		responsesAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{
-			waMapping(FamilyResponses, FamilyChatCompletions),
-		}}
-		resolved := ResolveAccountModelMapping(responsesAccount, "m", FamilyResponses)
-		if resolved == nil || resolved.UpstreamModel != "m-up" {
-			t.Fatalf("responses 到 chat 应解析: %+v", resolved)
 		}
 	})
 	t.Run("nil 账户", func(t *testing.T) {
@@ -321,12 +320,9 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		if !isOpenAIModelMappingRuntimeConversionSupported(geminiFlatten, nil) {
 			t.Fatal("gemini stream 到非 stream 支持")
 		}
-		// 跨族矩阵收窄为 OpenAI Responses→Chat bridge；其余跨族组合拒绝。
-		bridge := &AccountModelMapping{SourceEndpointFamily: FamilyResponses, UpstreamEndpointFamily: FamilyChatCompletions}
-		if !isOpenAIModelMappingRuntimeConversionSupported(bridge, &RuntimeAccount{}) {
-			t.Fatal("responses 到 chat bridge 应支持")
-		}
+		// 跨族矩阵整体退役（含 responses→chat bridge）；全部跨族组合拒绝。
 		retired := [][2]string{
+			{FamilyResponses, FamilyChatCompletions},
 			{FamilyAnthropicMessages, FamilyChatCompletions},
 			{FamilyChatCompletions, FamilyAnthropicMessages},
 			{FamilyResponses, FamilyAnthropicMessages},
@@ -350,40 +346,11 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 }
 
 func TestWAMappingPredicates(t *testing.T) {
-	resolved := func(source, upstream string) *gatewayproto.ResolvedModelMapping {
-		return &gatewayproto.ResolvedModelMapping{SourceEndpointFamily: source, UpstreamEndpointFamily: upstream}
-	}
-	if !isOpenAIResponsesToChatCompletionsModelMapping(resolved(FamilyResponses, FamilyChatCompletions)) {
-		t.Fatal("responses 到 chat 判定错误")
-	}
-	if !isAnthropicMessagesToChatCompletionsModelMapping(resolved(FamilyAnthropicMessages, FamilyChatCompletions)) {
-		t.Fatal("anthropic 到 chat 判定错误")
-	}
-	if !isGeminiGenerateContentToChatCompletionsModelMapping(resolved(FamilyGeminiStreamGenerate, FamilyChatCompletions)) {
-		t.Fatal("gemini stream 到 chat 判定错误")
-	}
-	if isGeminiGenerateContentToChatCompletionsModelMapping(nil) {
-		t.Fatal("nil 映射应 false")
-	}
-	if !isCrossProtocolBridgeToAnthropicMessagesModelMapping(resolved(FamilyResponses, "messages")) {
-		t.Fatal("存储词表 messages 应识别")
-	}
 	if NormalizeAnthropicFamily("messages") != true || NormalizeAnthropicFamily("anthropic_messages") != true || NormalizeAnthropicFamily("chat_completions") {
 		t.Fatal("NormalizeAnthropicFamily 语义错误")
 	}
 }
 
-func TestWAGeminiGenerateContentBridgeQuery(t *testing.T) {
-	if got := geminiGenerateContentBridgeQuery(""); got != "" {
-		t.Fatalf("空 query = %q", got)
-	}
-	if got := geminiGenerateContentBridgeQuery("?alt=sse&key=secret&x=1"); got != "?x=1" {
-		t.Fatalf("删 alt/key = %q", got)
-	}
-	if got := geminiGenerateContentBridgeQuery("?%zz=1"); got != "" {
-		t.Fatalf("非法 query = %q", got)
-	}
-	if got := geminiGenerateContentBridgeQuery("?alt=sse"); got != "" {
-		t.Fatalf("全删除后 = %q", got)
-	}
-}
+// TestWAGeminiGenerateContentBridgeQuery 已随 geminiGenerateContentBridgeQuery
+// 删除（跨协议 gemini→chat 桥路径改写退役，7 pair 矩阵下无该映射组合）；Gemini
+// 原生 stream→generate 的 query/mode 处理在 chain_driver gemini 原生分支。

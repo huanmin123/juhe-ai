@@ -48,7 +48,7 @@ func TestSuperGroupAffinityFixture(t *testing.T) {
 		s.GroupAffinity = affinity
 		s.SessionIdentity = &fixedSessionIdentity{identity: SessionIdentity{SessionID: "session_super", ConversationKey: "conv_super"}}
 		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 
 	for attempt := 0; attempt < 20; attempt++ {

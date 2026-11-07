@@ -28,12 +28,16 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
 // chainSecretOptions mirrors OpenAIAccountSecretOptions (the hydration loads
 // the caller prefetched for the batch).
 type chainSecretOptions struct {
 	proxyProfiles map[string]chainProxyProfileResolution
+	// proxyTargets 是池绑定候选的只读解析结果（按账户 ID）。直接代理候选不
+	// 需要该表；池绑定时缺失/不可用按 proxyProfileUnavailable 处理。
+	proxyTargets map[string]proxyresolve.Target
 	// connectionModes 是单连接事实源（health_check_connection_id 指向的 enabled
 	// 连接优先，否则 enabled 连接按 id 升序首个，与候选窗口 connection_base_url
 	// 投影同口径）的 account_endpoint_modes 实际集合，按模型事实主体 ID 分桶
@@ -119,8 +123,39 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	}
 	apiKeyPoolEnabled := chainAccountAPIKeyPoolIsolationEnabled(
 		row.resourceVendorCode(), row.resourceConnectionDriverCode(), row.resourceProtocolCode(), row.resourceProtocolVersion(), resourceType, credentials)
-	resourceProxyProfileID := row.resourceProxyProfileID()
-	proxyProfile := chainResolveProxyURL(resourceProxyProfileID, options.proxyProfiles)
+	// 有效代理目标（代理池设计 §5.2/§10.1）：池绑定写有效成员，直接代理走
+	// 既有 profile 解析；池分支的 ProxyPoolID 恒写，即使本次解析不可用，以便
+	// dispatch 准备阶段识别并执行请求时健康门/租约修复。
+	effectiveProxyProfileID, effectiveProxyPoolID := row.effectiveProxyBinding()
+	proxyProfileID := effectiveProxyProfileID
+	var proxyPoolID, proxyMemberProfileID *string
+	var proxyProfile chainProxyProfileResolution
+	if effectiveProxyPoolID != "" {
+		poolIDValue := effectiveProxyPoolID
+		proxyPoolID = &poolIDValue
+		target, ok := options.proxyTargets[row.ID]
+		switch {
+		case !ok:
+			proxyProfile = chainProxyUnavailable("代理池当前不可用，将在下一次请求重新分配")
+		case !target.Available() || target.Kind == proxyresolve.KindDirect || strings.TrimSpace(target.URL) == "":
+			message := strings.TrimSpace(target.UnavailableMessage)
+			if message == "" {
+				message = "代理池当前不可用，将在下一次请求重新分配"
+			}
+			proxyProfile = chainProxyUnavailable(message)
+		default:
+			proxyProfileID = target.ProfileID
+			memberID := target.MemberProfileID
+			if memberID == "" {
+				memberID = target.ProfileID
+			}
+			proxyMemberProfileID = &memberID
+			proxyURL := target.URL
+			proxyProfile = chainProxyProfileResolution{proxyURL: &proxyURL}
+		}
+	} else {
+		proxyProfile = chainResolveProxyURL(proxyProfileID, options.proxyProfiles)
+	}
 
 	isAccountAuthorized := access.accountAccessType == chainAccountAccessAuthorized
 	isLocalAccountAuthorized := isAccountAuthorized && row.AccountAuthorizationID.Valid && row.AccountAuthorizationID.String != ""
@@ -224,7 +259,9 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		APIKeys:                          apiKeys,
 		RefreshToken:                     anyStringPtr(credentials["refresh_token"]),
 		ClientID:                         anyStringPtr(credentials["client_id"]),
-		ProxyProfileID:                   nilIfEmpty(resourceProxyProfileID),
+		ProxyProfileID:                   nilIfEmpty(proxyProfileID),
+		ProxyPoolID:                      proxyPoolID,
+		ProxyMemberProfileID:             proxyMemberProfileID,
 		ProxyURL:                         proxyProfile.proxyURL,
 		ProxyProfileUnavailable:          proxyProfile.unavailable,
 		ProxyProfileErrorMessage:         proxyProfile.errorMessage,

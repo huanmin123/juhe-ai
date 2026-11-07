@@ -830,6 +830,14 @@ type chainMediaJobAccount struct {
 	// ProxyProfileID 是账户行自身绑定的代理档案 id（出站代理消费键；NULL
 	// 经 COALESCE 扫成空串 = 直连）。
 	ProxyProfileID string
+	// 代理池有效目标解析输入（代理池设计 §5.2 授权实例覆盖，C10）：任务面
+	// 出站代理统一按有效目标解析——实例行（SourceAccountID 非空）取 source
+	// 池 > source 代理 > 实例自身直接代理，实例自身的池绑定不参与；普通账户
+	// 用自身池/代理。池绑定出站走当前租约成员 URL（只读解析，不修复租约）。
+	SourceAccountID string
+	ProxyPoolID     string
+	SourceProfileID string
+	SourcePoolID    string
 }
 
 // hydrateAccount 按 account_id 水合账户凭据（媒体设计 §7 账户亲和）。返回
@@ -844,18 +852,28 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	)
 	// provider_protocol_profile_id 列已退役（设计 §2.1/§9.11）：档案身份由
 	// 健康检查连接的 preset 确定性派生（与 accounts/patch.go 同源映射）。
+	// 代理有效目标解析输入（代理池设计 §5.2，C10）：source 账户行一并水合，
+	// 实例行出站代理按 source 池 > source 代理 > 实例自身直接代理解析
+	// （实例自身 proxy_pool_id 恒不参与；租约键 = source account）。
 	row := m.db.QueryRowContext(ctx, `SELECT accounts.id, accounts.system_account_id, COALESCE(accounts.vendor_code, ''),
 		COALESCE(conn.connection_preset_code, ''), COALESCE(accounts.protocol_code, ''), COALESCE(accounts.protocol_version, ''),
 		accounts.type, accounts.status, COALESCE(accounts.capability_domain, 'chat'), COALESCE(accounts.health_check_endpoint_mode, ''),
 		COALESCE(accounts.cooldown_until, ''), COALESCE(accounts.credentials_encrypted, ''), COALESCE(accounts.deleted_at, ''),
-		COALESCE(accounts.proxy_profile_id, '')
+		COALESCE(accounts.proxy_profile_id, ''),
+		COALESCE(accounts.authorization_instance_source_account_id, ''),
+		COALESCE(accounts.proxy_pool_id, ''),
+		COALESCE(src.proxy_profile_id, ''),
+		COALESCE(src.proxy_pool_id, '')
 		FROM `+m.mediaAccountsTable()+` accounts
 		LEFT JOIN `+m.mediaConnectionsTable()+` conn ON conn.id = accounts.health_check_connection_id
+		LEFT JOIN `+m.mediaAccountsTable()+` src ON src.id = accounts.authorization_instance_source_account_id
+			AND src.deleted_at IS NULL
 		WHERE accounts.id = ?`, accountID)
 	if err := row.Scan(&account.ID, &account.OwnerSystemAccountID, &account.ProviderCode,
 		&healthCheckPreset, &account.ProtocolCode, &account.ProtocolVersion,
 		&account.Type, &account.Status, &account.CapabilityDomain, &account.HealthCheckEndpointMode,
-		&account.CooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID); err != nil {
+		&account.CooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID,
+		&account.SourceAccountID, &account.ProxyPoolID, &account.SourceProfileID, &account.SourcePoolID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -895,20 +913,87 @@ type mediaJobProxyUnavailableError struct{ message string }
 
 func (e *mediaJobProxyUnavailableError) Error() string { return e.message }
 
-// resolveMediaJobAccountProxyURL 解析任务面出站代理 URL（与同步 lane 同源的
-// 账户绑定代理消费：账户行自身 proxy_profile_id → proxy_profiles 档案 →
-// proxy_url，socks5→socks5h 归一与 AES-GCM 密码解封沿 chainProxyURLFromRow
-// —— resolveProxyURLsForProfiles 的单账户等价面）。资源覆盖语义不在任务面
-// 范围：授权实例按记录绑定账户行自身的 proxy_profile_id 解析，不读取任何
-// 实例覆盖/池化代理配置。id 空 → ("", nil)（直连；空 ProxyURL 走池构建的
-// 显式禁环境代理直连 transport，未配代理账户的行为与改动前逐字一致）；
-// 档案缺失/停用/凭据不可解密 → *mediaJobProxyUnavailableError（调用方失败
-// 出站，不回落直连）。占位符裸 `?` 与 hydrateAccount 同先例（PG 侧由
-// sqldialect driver 兜底改写 $n）；表前缀 PG 方言为 juhe_business.
-// proxy_profiles。enabled 列 NullBool 扫描沿 resolveProxyURLsForProfiles 的
-// PG boolean 列经 database/sql 可扫（int64 0/1 同样接受）。
-func (m *mediaJobsRuntime) resolveMediaJobAccountProxyURL(ctx context.Context, proxyProfileID string) (string, error) {
-	profileID := strings.TrimSpace(proxyProfileID)
+// mediaJobEffectiveProxyBinding 计算任务面出站代理的有效绑定（代理池设计
+// §5.2 授权实例覆盖，C10）：实例行（SourceAccountID 非空）取 source 池 >
+// source 代理 > 实例自身直接代理，实例自身的池绑定恒不参与；普通账户用自身
+// 池/代理；两列同时非空是数据损坏，显式失败不选边。返回
+// (kind, targetID, leaseKey)：leaseKey 是池租约所有者（source account 或
+// 账户自身）。
+func mediaJobEffectiveProxyBinding(account *chainMediaJobAccount) (kind string, targetID string, leaseKey string, err error) {
+	ownProfile := strings.TrimSpace(account.ProxyProfileID)
+	ownPool := strings.TrimSpace(account.ProxyPoolID)
+	if ownProfile != "" && ownPool != "" {
+		return "", "", "", &mediaJobProxyUnavailableError{message: "代理不可用（账户同时绑定代理与代理池，数据损坏）"}
+	}
+	sourceID := strings.TrimSpace(account.SourceAccountID)
+	if sourceID != "" {
+		sourcePool := strings.TrimSpace(account.SourcePoolID)
+		sourceProfile := strings.TrimSpace(account.SourceProfileID)
+		if sourcePool != "" && sourceProfile != "" {
+			return "", "", "", &mediaJobProxyUnavailableError{message: "代理不可用（来源账户同时绑定代理与代理池，数据损坏）"}
+		}
+		if sourcePool != "" {
+			return "pool", sourcePool, sourceID, nil
+		}
+		if sourceProfile != "" {
+			return "profile", sourceProfile, sourceID, nil
+		}
+		if ownProfile != "" {
+			return "profile", ownProfile, sourceID, nil
+		}
+		return "none", "", sourceID, nil
+	}
+	if ownPool != "" {
+		return "pool", ownPool, strings.TrimSpace(account.ID), nil
+	}
+	if ownProfile != "" {
+		return "profile", ownProfile, strings.TrimSpace(account.ID), nil
+	}
+	return "none", "", strings.TrimSpace(account.ID), nil
+}
+
+// resolveMediaJobAccountProxyURL 解析任务面出站代理 URL（代理池设计 §5.2/
+// §5.3 统一有效目标解析，C10：不再只读本行 proxy_profile_id，消除实例
+// source 覆盖差异）：
+//
+//   - 无绑定 → ("", nil)（直连；空 ProxyURL 走池构建的显式禁环境代理直连
+//     transport，未配代理账户的行为与改动前逐字一致）；
+//   - 直接代理 → proxy_profiles 档案 → proxy_url（socks5→socks5h 归一与
+//     AES-GCM 密码解封沿 chainProxyURLFromRow）；缺失/停用/凭据不可解密 →
+//     *mediaJobProxyUnavailableError；
+//   - 代理池 → 当前租约成员 URL（mediaJobPoolMemberProxyURL）；租约缺失、
+//     池/成员/档案停用或健康 dead → *mediaJobProxyUnavailableError——池绑定
+//     账户绝不静默回落直连、不退回旧成员，也不在任务面重分配租约（租约修复
+//     只属于 gateway 请求解析路径，§6.6）。
+//
+// 占位符裸 `?` 与 hydrateAccount 同先例（PG 侧由 sqldialect driver 兜底改写
+// $n）；表前缀 PG 方言为 juhe_business.。enabled 列 NullBool 扫描沿
+// resolveProxyURLsForProfiles 的 PG boolean 列经 database/sql 可扫（int64
+// 0/1 同样接受）。
+func (m *mediaJobsRuntime) resolveMediaJobAccountProxyURL(ctx context.Context, account *chainMediaJobAccount) (string, error) {
+	if account == nil {
+		return "", nil
+	}
+	kind, targetID, leaseKey, bindErr := mediaJobEffectiveProxyBinding(account)
+	if bindErr != nil {
+		return "", bindErr
+	}
+	switch kind {
+	case "none":
+		return "", nil
+	case "profile":
+		return m.resolveMediaJobProfileProxyURL(ctx, targetID)
+	case "pool":
+		return m.resolveMediaJobPoolMemberProxyURL(ctx, leaseKey, targetID)
+	default:
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（未知代理绑定）"}
+	}
+}
+
+// resolveMediaJobProfileProxyURL 是直接代理绑定的出站 URL 解析（原
+// resolveMediaJobAccountProxyURL 的 profile 直读臂，行为逐字保持）。
+func (m *mediaJobsRuntime) resolveMediaJobProfileProxyURL(ctx context.Context, profileID string) (string, error) {
+	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
 		return "", nil
 	}
@@ -935,6 +1020,63 @@ func (m *mediaJobsRuntime) resolveMediaJobAccountProxyURL(ctx context.Context, p
 	if err != nil {
 		// 不透传解密错误细节（可能含密文形态信息），归一为不可用语义。
 		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理凭据不可解密: " + profileID + "）"}
+	}
+	return proxyURL, nil
+}
+
+// resolveMediaJobPoolMemberProxyURL 解析池绑定账户的当前租约成员出站 URL：
+// 租约（键 = source account 或账户自身）→ 池（enabled）→ 成员行（enabled 且
+// 在池内）→ 代理档案（enabled、健康非 dead 且 streak < 3）。健康读 PG
+// pool_health_status/pool_health_failure_streak
+// 投影（§5.3 规则 4 回退语义；任务面无 Redis 读取器，Redis dead 投影由
+// gateway 请求解析路径与 60s 探测消费）。租约缺失/成员不可用一律
+// *mediaJobProxyUnavailableError：池绑定账户不直连、不退回旧成员、不在任务
+// 面重分配（§7.5 后台/任务面失败语义）。
+func (m *mediaJobsRuntime) resolveMediaJobPoolMemberProxyURL(ctx context.Context, leaseKey, poolID string) (string, error) {
+	leaseKey = strings.TrimSpace(leaseKey)
+	poolID = strings.TrimSpace(poolID)
+	if leaseKey == "" || poolID == "" {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理池绑定无效）"}
+	}
+	var (
+		proxyType, host, username, passwordEncrypted sql.NullString
+		port                                         sql.NullInt64
+		poolEnabled, memberEnabled, profileEnabled   sql.NullBool
+		health                                       sql.NullString
+		streak                                       sql.NullInt64
+	)
+	query := `SELECT pool.enabled, member.enabled, profile.enabled,
+		COALESCE(profile.pool_health_status, 'unknown'), profile.pool_health_failure_streak,
+		profile.type, profile.host, profile.port, profile.username, profile.password_encrypted
+		FROM juhe_business.account_proxy_leases lease
+		JOIN juhe_business.proxy_pools pool ON pool.id = lease.pool_id AND pool.id = ?
+		JOIN juhe_business.proxy_pool_members member ON member.pool_id = lease.pool_id
+			AND member.proxy_profile_id = lease.proxy_profile_id
+		JOIN juhe_business.proxy_profiles profile ON profile.id = lease.proxy_profile_id
+		WHERE lease.account_id = ?
+		LIMIT 1`
+	err := m.db.QueryRowContext(ctx, query, poolID, leaseKey).
+		Scan(&poolEnabled, &memberEnabled, &profileEnabled, &health, &streak,
+			&proxyType, &host, &port, &username, &passwordEncrypted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理池当前不可用：租约缺失或成员已移除，池: " + poolID + "）"}
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询媒体任务池租约成员失败: %w", err)
+	}
+	if !poolEnabled.Valid || !poolEnabled.Bool {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理池已停用: " + poolID + "）"}
+	}
+	if !memberEnabled.Valid || !memberEnabled.Bool || !profileEnabled.Valid || !profileEnabled.Bool {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理池成员已停用，池: " + poolID + "）"}
+	}
+	if !streak.Valid || streak.Int64 >= 3 || strings.EqualFold(strings.TrimSpace(health.String), "dead") {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理池成员健康不可用，池: " + poolID + "）"}
+	}
+	proxyURL, urlErr := chainProxyURLFromRow(m.secret, proxyType.String, host.String, int(port.Int64), username.String, passwordEncrypted.String)
+	if urlErr != nil {
+		// 不透传解密错误细节（可能含密文形态信息），归一为不可用语义。
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理池成员凭据不可解密，池: " + poolID + "）"}
 	}
 	return proxyURL, nil
 }
@@ -1807,11 +1949,12 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 		}
 	}
 	headers.Set("Accept", "application/json")
-	// 出站代理与同步 lane 同源：账户配了代理档案 → 任务面出站走该代理；
-	// 未配代理（id 空）→ ProxyURL 零值直连（行为不变）；档案缺失/停用 →
-	// 失败出站（不允许回落直连），错误沿调用方 renderMediaVideoTransportError
-	// 收敛为 503 proxy_unavailable 语义。
-	proxyURL, proxyErr := c.mediaJobs.resolveMediaJobAccountProxyURL(ctx, account.ProxyProfileID)
+	// 出站代理与同步 lane 同源：统一有效目标解析（代理池设计 §5.2/§5.3，
+	// C10——实例 source 覆盖 + 池绑定走当前租约成员）；未配代理 → ProxyURL
+	// 零值直连（行为不变）；直接代理缺失/停用、池不可用/租约缺失 → 失败出站
+	// （不允许回落直连），错误沿调用方 renderMediaVideoTransportError 收敛为
+	// 503 proxy_unavailable 语义。
+	proxyURL, proxyErr := c.mediaJobs.resolveMediaJobAccountProxyURL(ctx, account)
 	if proxyErr != nil {
 		return nil, proxyErr
 	}
@@ -1826,12 +1969,13 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 
 // mediaJobArtifactRequestUpstream 直连 completed 任务的产物 URL（M3 gemini：
 // Veo 的 GCS 签名 URL，凭据内嵌于 URL，契约 §5.2——不携带任何账户认证头，
-// 带 Authorization 反而会被 GCS 拒绝）；出站代理消费任务账户绑定档案（与
-// 轮询/取消同一 resolveMediaJobAccountProxyURL 语义：未配代理直连、缺失/
-// 停用失败出站不回落）；传输复用引擎 TransportDeps（URL 安全策略与任务面
-// 直连同源）。不设 client 总超时——产物是流式下载，总超时会截断长下载。
+// 带 Authorization 反而会被 GCS 拒绝）；出站代理消费任务账户有效代理目标
+// （与轮询/取消同一 resolveMediaJobAccountProxyURL 语义：未配代理直连、
+// 直接代理缺失/停用与池不可用失败出站不回落）；传输复用引擎 TransportDeps
+// （URL 安全策略与任务面直连同源）。不设 client 总超时——产物是流式下载，
+// 总超时会截断长下载。
 func (c *gatewayChain) mediaJobArtifactRequestUpstream(ctx context.Context, account *chainMediaJobAccount, artifactURL string) (*gatewayupstream.GatewayUpstreamResponse, error) {
-	proxyURL, proxyErr := c.mediaJobs.resolveMediaJobAccountProxyURL(ctx, account.ProxyProfileID)
+	proxyURL, proxyErr := c.mediaJobs.resolveMediaJobAccountProxyURL(ctx, account)
 	if proxyErr != nil {
 		return nil, proxyErr
 	}

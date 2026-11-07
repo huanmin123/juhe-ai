@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -70,14 +71,44 @@ type BalanceSnapshotRecord struct {
 	UpdatedAt        string
 }
 
+// effectiveBalanceProxyTarget 计算余额身份摘要的有效代理目标（代理池设计
+// §5.2/§10.3）：授权实例（source 绑定存在）按 source 池 > source 代理 >
+// 实例自身直接代理解析（实例自身的池绑定恒不参与）；普通账户用自身池/代理；
+// 两列同时非空是数据损坏，返回 ok=false（该行摘要为空串 = 不显示快照，
+// 显式暴露为「待查询」而不是静默选边）。租约键 = source account 或账户自身，
+// 由调用方按同键取租约成员。
+func effectiveBalanceProxyTarget(ownProfile, ownPool, sourceProfile, sourcePool string) (profileID, poolID string, ok bool) {
+	ownProfile, ownPool = strings.TrimSpace(ownProfile), strings.TrimSpace(ownPool)
+	sourceProfile, sourcePool = strings.TrimSpace(sourceProfile), strings.TrimSpace(sourcePool)
+	if ownProfile != "" && ownPool != "" {
+		return "", "", false
+	}
+	if sourceProfile != "" || sourcePool != "" {
+		if sourceProfile != "" && sourcePool != "" {
+			return "", "", false
+		}
+		if sourcePool != "" {
+			return "", sourcePool, true
+		}
+		return sourceProfile, "", true
+	}
+	if ownPool != "" {
+		return "", ownPool, true
+	}
+	return ownProfile, "", true
+}
+
 // LoadBalanceInputDigests 批量现算账户的余额输入身份摘要（BUG-0286）：
 // BalanceInputDigest 的输入取 accounts 当前列值（provider_code /
 // credential_fingerprint / balance_query_config_json 列原文、
 // credentials_encrypted 密文（实现解密提取 base_url + 有效 Key 全池逻辑
-// 身份）、proxy_profile_id，COALESCE 空串），与 J2 周期路径的直读 reader
-// 同源同列。分块大小对齐 LoadRelayBalanceSnapshotRecords 的 900。单行凭据
+// 身份）、有效代理目标——代理池设计 §10.3：proxy_profile_id（实例覆盖后）、
+// proxy_pool_id 与 account_proxy_leases 当前租约成员（租约键 = source
+// account 或账户自身），COALESCE 空串），与 J2 周期路径的直读 reader 同源
+// 同列语义。分块大小对齐 LoadRelayBalanceSnapshotRecords 的 900。单行凭据
 // 解密失败不中断批量：该行摘要为空串（读端按缺 digest 处理 = 不显示快照，
-// 安全方向降级）。缺失 id 不出现在返回值中。
+// 安全方向降级）。绑定冲突行同样空摘要（不静默选边）。缺失 id 不出现在
+// 返回值中。
 func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []string) (map[string]string, error) {
 	out := make(map[string]string, len(accountIDs))
 	const chunkSize = 900
@@ -93,20 +124,43 @@ func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []stri
 			args = append(args, id)
 			placeholders = append(placeholders, "?")
 		}
-		query := s.store.Bind(`SELECT id, COALESCE(vendor_code, '') AS provider_code, COALESCE(credential_fingerprint, ''), COALESCE(balance_query_config_json, ''), COALESCE(credentials_encrypted, ''), COALESCE(proxy_profile_id, '')
-			FROM ` + s.store.Table("accounts") + `
-			WHERE deleted_at IS NULL AND id IN (` + strings.Join(placeholders, ", ") + `)`)
+		query := s.store.Bind(`SELECT accounts.id, COALESCE(accounts.vendor_code, '') AS provider_code, COALESCE(accounts.credential_fingerprint, ''), COALESCE(accounts.balance_query_config_json, ''), COALESCE(accounts.credentials_encrypted, ''),
+				COALESCE(accounts.proxy_profile_id, ''), COALESCE(accounts.proxy_pool_id, ''),
+				COALESCE(src.proxy_profile_id, ''), COALESCE(src.proxy_pool_id, ''),
+				COALESCE(lease.proxy_profile_id, '')
+			FROM ` + s.store.Table("accounts") + ` accounts
+			LEFT JOIN ` + s.store.Table("accounts") + ` src ON src.id = accounts.authorization_instance_source_account_id
+				AND src.deleted_at IS NULL
+			LEFT JOIN ` + s.store.Table("account_proxy_leases") + ` lease ON lease.account_id = COALESCE(NULLIF(accounts.authorization_instance_source_account_id, ''), accounts.id)
+				AND lease.pool_id = CASE
+					WHEN NULLIF(accounts.authorization_instance_source_account_id, '') IS NOT NULL
+						THEN src.proxy_pool_id
+					ELSE accounts.proxy_pool_id
+				END
+			WHERE accounts.deleted_at IS NULL AND accounts.id IN (` + strings.Join(placeholders, ", ") + `)`)
 		rows, err := s.store.DB().QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var id, provider, fingerprint, configJSON, credentialsEnvelope, proxyProfileID string
-			if err := rows.Scan(&id, &provider, &fingerprint, &configJSON, &credentialsEnvelope, &proxyProfileID); err != nil {
+			var id, provider, fingerprint, configJSON, credentialsEnvelope string
+			var ownProfile, ownPool, sourceProfile, sourcePool, leaseMember string
+			if err := rows.Scan(&id, &provider, &fingerprint, &configJSON, &credentialsEnvelope,
+				&ownProfile, &ownPool, &sourceProfile, &sourcePool, &leaseMember); err != nil {
 				_ = rows.Close()
 				return nil, err
 			}
-			out[id] = s.deps.BalanceInputDigest(provider, fingerprint, configJSON, credentialsEnvelope, proxyProfileID)
+			profileID, poolID, ok := effectiveBalanceProxyTarget(ownProfile, ownPool, sourceProfile, sourcePool)
+			if !ok {
+				// 绑定冲突（数据损坏）：不静默选边，摘要置空 = 该账户余额显示
+				// 回退待查询，与凭据解密失败同一安全方向。
+				continue
+			}
+			memberID := ""
+			if poolID != "" {
+				memberID = strings.TrimSpace(leaseMember)
+			}
+			out[id] = s.deps.BalanceInputDigest(provider, fingerprint, configJSON, credentialsEnvelope, profileID, poolID, memberID)
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
@@ -364,6 +418,10 @@ var (
 // (findAccountBalanceManualRefreshCandidateAsync): the manual refresh query
 // keeps disabled/unavailable accounts eligible (the route re-checks the
 // permissions against the summary row) but stays api_key + enabled-only.
+// ProxyPoolID / SourcePoolID 是池绑定识别列（代理池设计 §10.3）：池绑定
+// （自身或 source）账户的查询出口是租约成员，现有执行端口只会按
+// proxy_profile_id 直读——为执行「池绑定不直连」硬约束，本查询对池绑定
+// 账户显式失败（见 FindBalanceManualRefreshCandidate）。
 type BalanceRefreshCandidate struct {
 	ID                  string
 	SystemAccountID     string
@@ -380,29 +438,39 @@ type BalanceRefreshCandidate struct {
 	ConfigJSON            string
 	NextRefreshAt         sql.NullString
 	ProxyProfileID        sql.NullString
+	ProxyPoolID           sql.NullString
+	SourcePoolID          sql.NullString
 }
 
 // FindBalanceManualRefreshCandidate mirrors
 // findAccountBalanceManualRefreshCandidateAsync (the SELECT column set follows
 // the archived Node repository account-balance.repository.ts:315-334, the row
 // mapping :938-971; dispatch_revision is the manual InputVersion fence).
+// 代理池设计 §10.3 硬约束：池绑定（自身 proxy_pool_id 或 source 池绑定）账户
+// 的手动刷新显式失败（不直连、不写回旧成员结果）——现有 ManualBalanceRefresher
+// 执行端口只消费 proxy_profile_id，无法携带池租约成员出口；执行端口升级为
+// 池感知前的过渡门。J2 周期路径（jobs 侧 reader）的对应收口不在本包范围。
 func (s *Service) FindBalanceManualRefreshCandidate(ctx context.Context, accountID string) (*BalanceRefreshCandidate, error) {
 	ctx = accountscore.EnsureCtx(ctx)
 	var row BalanceRefreshCandidate
 	var schedulable int
-	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, system_account_id, COALESCE(vendor_code, '') AS provider_code, type, status, schedulable,
-			config_revision, dispatch_revision, credentials_encrypted, COALESCE(credential_fingerprint, ''),
-			balance_query_config_json, balance_query_next_refresh_at, proxy_profile_id
-		FROM `+s.store.Table("accounts")+`
-		WHERE id = ?
-			AND type = 'api_key'
-			AND balance_query_enabled = 1
-			AND deleted_at IS NULL
-			AND authorization_instance_authorization_id IS NULL
+	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.system_account_id, COALESCE(accounts.vendor_code, '') AS provider_code, accounts.type, accounts.status, accounts.schedulable,
+			accounts.config_revision, accounts.dispatch_revision, accounts.credentials_encrypted, COALESCE(accounts.credential_fingerprint, ''),
+			accounts.balance_query_config_json, accounts.balance_query_next_refresh_at, accounts.proxy_profile_id,
+			accounts.proxy_pool_id, COALESCE(src.proxy_pool_id, '')
+		FROM `+s.store.Table("accounts")+` accounts
+		LEFT JOIN `+s.store.Table("accounts")+` src ON src.id = accounts.authorization_instance_source_account_id
+			AND src.deleted_at IS NULL
+		WHERE accounts.id = ?
+			AND accounts.type = 'api_key'
+			AND accounts.balance_query_enabled = 1
+			AND accounts.deleted_at IS NULL
+			AND accounts.authorization_instance_authorization_id IS NULL
 		LIMIT 1`), strings.TrimSpace(accountID)).Scan(
 		&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.Type, &row.Status, &schedulable,
 		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEnvelope, &row.CredentialFingerprint,
-		&row.ConfigJSON, &row.NextRefreshAt, &row.ProxyProfileID)
+		&row.ConfigJSON, &row.NextRefreshAt, &row.ProxyProfileID,
+		&row.ProxyPoolID, &row.SourcePoolID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -410,6 +478,15 @@ func (s *Service) FindBalanceManualRefreshCandidate(ctx context.Context, account
 		return nil, err
 	}
 	row.Schedulable = schedulable != 0
+	poolID := strings.TrimSpace(row.ProxyPoolID.String)
+	sourcePoolID := strings.TrimSpace(row.SourcePoolID.String)
+	if poolID != "" || sourcePoolID != "" {
+		bound := poolID
+		if bound == "" {
+			bound = sourcePoolID
+		}
+		return nil, fmt.Errorf("账户绑定代理池（池: %s），余额手动刷新暂不支持池出口执行，已拒绝以避免直连", bound)
+	}
 	return &row, nil
 }
 

@@ -544,3 +544,7 @@ func mergeMetadata(base, extra map[string]any) map[string]any {
 	}
 	return merged
 }
+
+// intPtr 是可空 int 字面量的便捷构造（原定义在已退役的
+// bridgeexecutors_impl.go，2026-11-07 桥删除批迁入本文件）。
+func intPtr(value int) *int { return &value }

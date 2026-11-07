@@ -265,13 +265,6 @@ func TestAccountAPIKeyCredentialHelpers(t *testing.T) {
 	}
 }
 
-func TestConvertBridgeGuidanceError(t *testing.T) {
-	plain := errors.New("普通错误")
-	if convertBridgeGuidanceError(plain) != plain {
-		t.Fatal("非 guidance 错误透传")
-	}
-}
-
 func TestWrapCodexPreparationErrorRecordsUsage(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	usage := engine.Usage.(*fakeUsage)

@@ -20,6 +20,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -148,7 +149,7 @@ func (s *BusinessTargetSource) CheckContract(ctx context.Context) error {
 	// account_connections 承载，模型目录与映射改由 models /
 	// account_entry_mappings 承载（upstream_model 对应旧 model 列，
 	// public_model 对应请求侧模型名）。
-	contracts := map[string]string{"accounts": "id,name,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "vendors": "id,code,enabled", "models": "id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible", "account_connections": "id,account_id,connection_preset_code,base_url,enabled", "account_entry_mappings": "id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,timeout_penalty_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids", "account_supported_models": "account_id,model_id"}
+	contracts := map[string]string{"accounts": "id,name,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,proxy_pool_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "proxy_pools": "id,enabled,strategy", "proxy_pool_members": "pool_id,proxy_profile_id,enabled", "account_proxy_leases": "account_id,pool_id,proxy_profile_id,generation", "vendors": "id,code,enabled", "models": "id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible", "account_connections": "id,account_id,connection_preset_code,base_url,enabled", "account_entry_mappings": "id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted,pool_health_status,pool_health_failure_streak", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,timeout_penalty_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids", "account_supported_models": "account_id,model_id"}
 	for table, columns := range contracts {
 		if _, err := tx.ExecContext(ctx, "SELECT "+columns+" FROM "+s.table(table)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify J3b Business source table %s: %w", table, err)
@@ -201,7 +202,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if (authorizationInstance.Valid && strings.TrimSpace(authorizationInstance.String) != "") || (authorizationSource.Valid && strings.TrimSpace(authorizationSource.String) != "") {
 		return s.resolveAuthorizedTarget(ctx, request)
 	}
-	client, err := buildProxyClient(s.credentialSecret, proxyProfileID, proxyEnabled, proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword)
+	client, err := s.effectiveProxyClient(ctx, request.TargetID, proxyProfileID, proxyEnabled, proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword)
 	if err != nil {
 		return Target{}, err
 	}
@@ -358,7 +359,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 		// virtual instance proxy only when the source has no proxy reference.
 		proxyProfileID, proxyEnabled, proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword = instanceProxyProfileID, instanceProxyEnabled, instanceProxyType, instanceProxyHost, instanceProxyPort, instanceProxyUsername, instanceProxyPassword
 	}
-	client, err := buildProxyClient(s.credentialSecret, proxyProfileID, proxyEnabled, proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword)
+	client, err := s.effectiveProxyClient(ctx, request.TargetID, proxyProfileID, proxyEnabled, proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword)
 	if err != nil {
 		return Target{}, err
 	}
@@ -1319,6 +1320,90 @@ func openAIOAuthCodexAdapter(providerCode, profileID, credentialType string, pro
 		return "", errors.New("J3b Business OAuth credential is incompatible with OpenAI provider profile")
 	}
 	return "", nil
+}
+
+// businessProxyDecrypter adapts the J3b password decryptor to proxyresolve.
+type businessProxyDecrypter struct{ secret string }
+
+func (d businessProxyDecrypter) DecryptProxyPassword(_ context.Context, encrypted string) (string, error) {
+	return decryptProxyPassword(d.secret, encrypted)
+}
+
+// effectiveProxyClient resolves the account's effective proxy target (proxy
+// design §5.2/§7.5): a pool binding uses the current sticky lease via the
+// shared resolver (read-only, no lease repair); an unavailable pool/member
+// fails the check instead of dialing directly. Direct profiles resolve through
+// the binding's targetID so a concurrent rebind cannot fall back to a stale
+// caller column and connect directly.
+func (s *BusinessTargetSource) effectiveProxyClient(
+	ctx context.Context,
+	accountID string,
+	profileID sql.NullString,
+	enabled sql.NullBool,
+	proxyType, host sql.NullString,
+	port sql.NullInt64,
+	username, password sql.NullString,
+) (*http.Client, error) {
+	store, err := proxyresolve.NewPostgresStore(s.db)
+	if err != nil {
+		return nil, fmt.Errorf("J3b Business proxy resolver: %w", err)
+	}
+	bindings, err := store.LoadBindings(ctx, []string{accountID})
+	if err != nil {
+		return nil, fmt.Errorf("J3b Business proxy binding: %w", err)
+	}
+	binding, ok := bindings[accountID]
+	if !ok {
+		return buildProxyClient(s.credentialSecret, profileID, enabled, proxyType, host, port, username, password)
+	}
+	kind, targetID := binding.Effective()
+	switch kind {
+	case proxyresolve.BindingPool:
+		resolver, err := proxyresolve.New(proxyresolve.Options{
+			Store: store, Decrypter: businessProxyDecrypter{secret: s.credentialSecret},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("J3b Business proxy resolver: %w", err)
+		}
+		targets, err := resolver.ResolveBatch(ctx, []string{accountID})
+		if err != nil {
+			return nil, fmt.Errorf("J3b Business proxy pool: %w", err)
+		}
+		target := targets[accountID]
+		if !target.Available() || strings.TrimSpace(target.URL) == "" {
+			return nil, fmt.Errorf("J3b Business proxy pool unavailable: %s %s",
+				target.UnavailableCode, target.UnavailableMessage)
+		}
+		return buildProxyClientURL(target.URL)
+	case proxyresolve.BindingProfile:
+		// 绑定快照可能晚于账户行读取；直接档案也按 binding 的 targetID 重新
+		// 取行，避免“已从池改为直接代理”的窗口复用旧 NULL 列直连。
+		profiles, err := store.LoadProfiles(ctx, []string{targetID})
+		if err != nil {
+			return nil, fmt.Errorf("J3b Business proxy profile: %w", err)
+		}
+		profile, ok := profiles[targetID]
+		if !ok || !profile.Enabled {
+			return nil, errors.New("J3b Business proxy profile is unavailable")
+		}
+		proxyURL, err := proxyresolve.BuildProfileURL(ctx, profile, businessProxyDecrypter{secret: s.credentialSecret})
+		if err != nil {
+			return nil, fmt.Errorf("J3b Business proxy profile: %w", err)
+		}
+		return buildProxyClientURL(proxyURL)
+	case proxyresolve.BindingConflict:
+		return nil, errors.New("J3b Business proxy target conflict")
+	default:
+		return buildProxyClient(s.credentialSecret, profileID, enabled, proxyType, host, port, username, password)
+	}
+}
+
+func buildProxyClientURL(proxyURL string) (*http.Client, error) {
+	client, err := upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("J3b Business proxy client: %w", err)
+	}
+	return client, nil
 }
 
 func buildProxyClient(secret string, profileID sql.NullString, enabled sql.NullBool, proxyType, host sql.NullString, port sql.NullInt64, username, password sql.NullString) (*http.Client, error) {

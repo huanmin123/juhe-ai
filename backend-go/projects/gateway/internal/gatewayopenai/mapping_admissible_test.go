@@ -7,9 +7,9 @@ import (
 // IsAdmissibleModelMapping：单条账户模型映射行的运行时可执行性判定
 // （启用 + 源族可接受集 + 恒等拒绝 + 转换矩阵），与
 // ResolveAccountModelMapping 共享唯一函数源（网关模型列表账户并集设计 4.2）。
-// 2026-11-05 openai/hybrid/generic_http 退役后只保留同族改写、
-// stream_generate_content→generate_content 归一与 OpenAI v1
-// Responses→Chat Completions bridge；其余跨族映射由写侧
+// 2026-11-07 跨协议模型映射退役后只保留协议等价映射：同族改写与
+// stream_generate_content→generate_content 归一；其余跨族映射（含 OpenAI v1
+// Responses→Chat Completions bridge）由写侧
 // validateEntryMappingFamilyLinkage（§5.2 + §5.3）在保存时拒绝。
 
 func boolPtr(v bool) *bool { return &v }
@@ -55,9 +55,9 @@ func TestIsAdmissibleModelMapping(t *testing.T) {
 		{"same family rewrite admitted", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyChatCompletions, nil), plainAccount, true},
 		{"gemini stream to generate admitted", admissibleMappingRow("m5", FamilyGeminiStreamGenerate, "m1", FamilyGeminiGenerateContent, nil), plainAccount, true},
 
-		// 仅保留 OpenAI v1 Responses→Chat Completions 显式 bridge；其余跨族
-		// family 对在运行时与写侧同时拒绝。
-		{"responses to chat bridge admitted", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyChatCompletions, nil), plainAccount, true},
+		// 2026-11-07 退役：OpenAI v1 Responses→Chat Completions bridge 不再放行；
+		// 其余跨族 family 对在运行时与写侧同时拒绝。
+		{"responses to chat bridge retired", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyChatCompletions, nil), plainAccount, false},
 		{"chat to messages excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyAnthropicMessages, nil), plainAccount, false},
 		{"responses to messages excluded", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyAnthropicMessages, nil), plainAccount, false},
 		{"chat to generate_content excluded", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyGeminiGenerateContent, nil), plainAccount, false},
@@ -103,9 +103,9 @@ func TestIsAdmissibleModelMappingConsistentWithResolve(t *testing.T) {
 		{"unknown family", admissibleMappingRow("m5", "unknown_family", "m1", FamilyChatCompletions, nil), RuntimeAccount{}},
 		{"messages source (former profile exclusion removed)", admissibleMappingRow("m5", FamilyAnthropicMessages, "m1", FamilyChatCompletions, nil), RuntimeAccount{}},
 		{"identity row", admissibleMappingRow("m5", FamilyChatCompletions, "m5", FamilyChatCompletions, nil), RuntimeAccount{}},
-		{"matrix supported (responses to chat, any account)", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyChatCompletions, nil), RuntimeAccount{}},
+		{"matrix retired (responses to chat, any account)", admissibleMappingRow("m5", FamilyResponses, "m1", FamilyChatCompletions, nil), RuntimeAccount{}},
 		{"matrix unsupported (chat to responses)", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyResponses, nil), RuntimeAccount{}},
-		{"matrix supported (chat to messages)", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyAnthropicMessages, nil), RuntimeAccount{}},
+		{"matrix unsupported (chat to messages)", admissibleMappingRow("m5", FamilyChatCompletions, "m1", FamilyAnthropicMessages, nil), RuntimeAccount{}},
 	}
 
 	for _, tc := range cases {

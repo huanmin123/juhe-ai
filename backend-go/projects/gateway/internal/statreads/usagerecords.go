@@ -2,6 +2,7 @@ package statreads
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -449,7 +450,8 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 
 // usageRecordListSelectColumns mirror usageRecordListSelectColumns.
 const usageRecordListSelectColumns = `ur.id, ur.system_account_id, ur.trace_id, ur.traffic_source, ur.client_ip,
-	ur.api_key_id, ur.group_id, ur.route_group_id, ur.compaction_expected, ur.account_id, ur.provider_code, ur.endpoint, ur.model, ur.upstream_model,
+	ur.api_key_id, ur.group_id, ur.route_group_id, ur.compaction_expected, ur.security_policy_applied, ur.pii_hits_json,
+	ur.account_id, ur.provider_code, ur.endpoint, ur.model, ur.upstream_model,
 	ur.upstream_response_model, ur.billed_service_tier, ur.effective_reasoning_effort,
 	ur.model_mapping_applied, ur.stream, ur.status_code, ur.success, ur.failure_attribution,
 	ur.error_code, ur.error_message, ur.first_token_ms, ur.duration_ms, ur.input_tokens,
@@ -593,7 +595,12 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 		RouteGroupId:  row.nullText("route_group_id"),
 		// 压缩标记（用量记录压缩标记设计 §压缩请求识别）：boolLike 同时吃
 		// PG 原生 bool 与 SQLite integer 0/1；缺失列按 false。
-		CompactionExpected:       row.boolLike("compaction_expected"),
+		CompactionExpected: row.boolLike("compaction_expected"),
+		// 安全策略请求级事实（API Key 安全策略与出站内容脱敏设计 §8，批D）：
+		// applied 走 boolLike（缺列/NULL 按 false）；pii_hits_json NULL/空/
+		// 坏 JSON 静默 nil（omitempty 不透出），镜像既有容错模式。
+		SecurityPolicyApplied:    row.boolLike("security_policy_applied"),
+		PIIHits:                  piiHitsFromJSON(row["pii_hits_json"]),
 		AccountId:                row.nullText("account_id"),
 		ProviderCode:             row.nullText("provider_code"),
 		Endpoint:                 row.nullText("endpoint"),
@@ -658,6 +665,31 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 		}
 	}
 	return item
+}
+
+// piiHitsFromJSON 解析 pii_hits_json（jobs usagewriter 落列的紧凑 JSON：
+// {"PHONE":2} 形态，按规则 label 计数）。NULL/非文本/空串/坏 JSON/空 object
+// 一律静默 nil（omitempty 不透出），镜像既有读面容错模式。
+func piiHitsFromJSON(value any) map[string]int {
+	if value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	var hits map[string]int
+	if err := json.Unmarshal([]byte(trimmed), &hits); err != nil {
+		return nil
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	return hits
 }
 
 // upstreamModelMismatch mirrors hasUpstreamResponseModelMismatch.
@@ -788,49 +820,53 @@ type usageRecordListResult struct {
 }
 
 type usageRecordListItem struct {
-	ID                       string   `json:"id"`
-	SystemAccountID          *string  `json:"systemAccountId,omitempty"`
-	SystemAccountName        *string  `json:"systemAccountName,omitempty"`
-	TraceID                  string   `json:"traceId"`
-	TrafficSource            *string  `json:"trafficSource,omitempty"`
-	ClientIp                 *string  `json:"clientIp,omitempty"`
-	ApiKeyId                 *string  `json:"apiKeyId,omitempty"`
-	ApiKeyName               *string  `json:"apiKeyName,omitempty"`
-	GroupId                  *string  `json:"groupId,omitempty"`
-	GroupName                *string  `json:"groupName,omitempty"`
-	RouteGroupId             *string  `json:"routeGroupId,omitempty"`
-	RouteGroupName           *string  `json:"routeGroupName,omitempty"`
-	CompactionExpected       bool     `json:"compactionExpected"`
-	AccountId                *string  `json:"accountId,omitempty"`
-	AccountName              *string  `json:"accountName,omitempty"`
-	ProviderCode             *string  `json:"providerCode,omitempty"`
-	Endpoint                 *string  `json:"endpoint,omitempty"`
-	Model                    *string  `json:"model,omitempty"`
-	UpstreamModel            *string  `json:"upstreamModel,omitempty"`
-	UpstreamResponseModel    *string  `json:"upstreamResponseModel,omitempty"`
-	UpstreamModelMismatch    bool     `json:"upstreamModelMismatch"`
-	BilledServiceTier        *string  `json:"billedServiceTier,omitempty"`
-	EffectiveReasoningEffort *string  `json:"effectiveReasoningEffort,omitempty"`
-	ModelMappingApplied      bool     `json:"modelMappingApplied"`
-	Stream                   bool     `json:"stream"`
-	StatusCode               *int64   `json:"statusCode,omitempty"`
-	Success                  bool     `json:"success"`
-	FailureAttribution       *string  `json:"failureAttribution,omitempty"`
-	FailureReason            *string  `json:"failureReason,omitempty"`
-	ErrorCode                *string  `json:"errorCode,omitempty"`
-	ErrorMessage             *string  `json:"errorMessage,omitempty"`
-	FirstTokenMs             *int64   `json:"firstTokenMs,omitempty"`
-	DurationMs               *int64   `json:"durationMs,omitempty"`
-	InputTokens              *int64   `json:"inputTokens,omitempty"`
-	OutputTokens             *int64   `json:"outputTokens,omitempty"`
-	CacheReadTokens          *int64   `json:"cacheReadTokens,omitempty"`
-	InputAudioTokens         *int64   `json:"inputAudioTokens,omitempty"`
-	OutputAudioTokens        *int64   `json:"outputAudioTokens,omitempty"`
-	TTSInputChars            *int64   `json:"ttsInputChars,omitempty"`
-	AudioInputSeconds        *float64 `json:"audioInputSeconds,omitempty"`
-	OutputVideoSeconds       *float64 `json:"outputVideoSeconds,omitempty"`
-	CostUsd                  *float64 `json:"costUsd,omitempty"`
-	CreatedAt                string   `json:"createdAt"`
+	ID                 string  `json:"id"`
+	SystemAccountID    *string `json:"systemAccountId,omitempty"`
+	SystemAccountName  *string `json:"systemAccountName,omitempty"`
+	TraceID            string  `json:"traceId"`
+	TrafficSource      *string `json:"trafficSource,omitempty"`
+	ClientIp           *string `json:"clientIp,omitempty"`
+	ApiKeyId           *string `json:"apiKeyId,omitempty"`
+	ApiKeyName         *string `json:"apiKeyName,omitempty"`
+	GroupId            *string `json:"groupId,omitempty"`
+	GroupName          *string `json:"groupName,omitempty"`
+	RouteGroupId       *string `json:"routeGroupId,omitempty"`
+	RouteGroupName     *string `json:"routeGroupName,omitempty"`
+	CompactionExpected bool    `json:"compactionExpected"`
+	// 安全策略请求级事实（API Key 安全策略与出站内容脱敏设计 §8，批D 列表
+	// 透出）：omitempty 与前端 UsageRecordSummary 可选字段对齐。
+	SecurityPolicyApplied    bool           `json:"securityPolicyApplied,omitempty"`
+	PIIHits                  map[string]int `json:"piiHits,omitempty"`
+	AccountId                *string        `json:"accountId,omitempty"`
+	AccountName              *string        `json:"accountName,omitempty"`
+	ProviderCode             *string        `json:"providerCode,omitempty"`
+	Endpoint                 *string        `json:"endpoint,omitempty"`
+	Model                    *string        `json:"model,omitempty"`
+	UpstreamModel            *string        `json:"upstreamModel,omitempty"`
+	UpstreamResponseModel    *string        `json:"upstreamResponseModel,omitempty"`
+	UpstreamModelMismatch    bool           `json:"upstreamModelMismatch"`
+	BilledServiceTier        *string        `json:"billedServiceTier,omitempty"`
+	EffectiveReasoningEffort *string        `json:"effectiveReasoningEffort,omitempty"`
+	ModelMappingApplied      bool           `json:"modelMappingApplied"`
+	Stream                   bool           `json:"stream"`
+	StatusCode               *int64         `json:"statusCode,omitempty"`
+	Success                  bool           `json:"success"`
+	FailureAttribution       *string        `json:"failureAttribution,omitempty"`
+	FailureReason            *string        `json:"failureReason,omitempty"`
+	ErrorCode                *string        `json:"errorCode,omitempty"`
+	ErrorMessage             *string        `json:"errorMessage,omitempty"`
+	FirstTokenMs             *int64         `json:"firstTokenMs,omitempty"`
+	DurationMs               *int64         `json:"durationMs,omitempty"`
+	InputTokens              *int64         `json:"inputTokens,omitempty"`
+	OutputTokens             *int64         `json:"outputTokens,omitempty"`
+	CacheReadTokens          *int64         `json:"cacheReadTokens,omitempty"`
+	InputAudioTokens         *int64         `json:"inputAudioTokens,omitempty"`
+	OutputAudioTokens        *int64         `json:"outputAudioTokens,omitempty"`
+	TTSInputChars            *int64         `json:"ttsInputChars,omitempty"`
+	AudioInputSeconds        *float64       `json:"audioInputSeconds,omitempty"`
+	OutputVideoSeconds       *float64       `json:"outputVideoSeconds,omitempty"`
+	CostUsd                  *float64       `json:"costUsd,omitempty"`
+	CreatedAt                string         `json:"createdAt"`
 }
 
 func errToString(err error) string {

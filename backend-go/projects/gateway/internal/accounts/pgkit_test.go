@@ -124,8 +124,46 @@ const accountsPGFixtureSchema = `
       outbound_region text,
       last_test_message text,
       last_tested_at timestamptz,
+      pool_health_status text CHECK (pool_health_status IS NULL OR pool_health_status IN ('healthy','degraded','dead','unknown')),
+      pool_health_failure_streak integer NOT NULL DEFAULT 0,
+      pool_health_checked_at timestamptz,
       created_at timestamptz NOT NULL,
       updated_at timestamptz NOT NULL
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_pools (
+      id text PRIMARY KEY,
+      system_account_id text NOT NULL,
+      name text NOT NULL,
+      description text,
+      strategy text NOT NULL CHECK (strategy IN ('round_robin','weighted')),
+      enabled boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL
+    );
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_pools_name_unique
+      ON juhe_business.proxy_pools (name);
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_pool_members (
+      pool_id text NOT NULL REFERENCES juhe_business.proxy_pools(id) ON DELETE RESTRICT,
+      proxy_profile_id text NOT NULL REFERENCES juhe_business.proxy_profiles(id) ON DELETE RESTRICT,
+      priority integer NOT NULL CHECK (priority >= 0),
+      weight integer NOT NULL CHECK (weight BETWEEN 1 AND 100) DEFAULT 1,
+      enabled boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL,
+      PRIMARY KEY (pool_id, proxy_profile_id),
+      UNIQUE (pool_id, priority)
+    );
+	CREATE SEQUENCE IF NOT EXISTS juhe_business.account_proxy_lease_generation_seq;
+	CREATE TABLE IF NOT EXISTS juhe_business.account_proxy_leases (
+      account_id text PRIMARY KEY,
+      pool_id text NOT NULL REFERENCES juhe_business.proxy_pools(id) ON DELETE RESTRICT,
+      proxy_profile_id text NOT NULL REFERENCES juhe_business.proxy_profiles(id) ON DELETE RESTRICT,
+      generation bigint NOT NULL DEFAULT nextval('juhe_business.account_proxy_lease_generation_seq'),
+      assignment_reason text NOT NULL CHECK (assignment_reason IN ('initial','member_unavailable','member_removed','pool_reassigned')),
+      assigned_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL,
+      FOREIGN KEY (pool_id, proxy_profile_id)
+        REFERENCES juhe_business.proxy_pool_members(pool_id, proxy_profile_id) ON DELETE RESTRICT
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.groups (
       id text PRIMARY KEY,
@@ -160,6 +198,7 @@ const accountsPGFixtureSchema = `
       oauth_access_token_expires_at text,
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
+      proxy_pool_id text REFERENCES juhe_business.proxy_pools(id) ON DELETE RESTRICT,
       concurrency_limit integer NOT NULL DEFAULT 5000,
       rpm_limit integer NOT NULL DEFAULT 0,
       priority integer NOT NULL DEFAULT 0,
@@ -208,7 +247,8 @@ const accountsPGFixtureSchema = `
       deleted_at text,
       deleted_by text,
       created_at text NOT NULL,
-      updated_at text NOT NULL
+      updated_at text NOT NULL,
+      CONSTRAINT accounts_proxy_target_single_check CHECK (proxy_profile_id IS NULL OR proxy_pool_id IS NULL)
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique
       ON juhe_business.accounts (system_account_id, name) WHERE deleted_at IS NULL;

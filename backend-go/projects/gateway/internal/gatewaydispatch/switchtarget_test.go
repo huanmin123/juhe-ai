@@ -162,56 +162,13 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			expectKept: true,
 		},
 		{
-			// 桥接 Chat 目标：RHS 匹配的跨供应商候选保留（Chat 允许跨供应商）。
-			name:         "bridged_chat_cross_provider_alias_kept",
-			target:       frozenBridgedChatTarget(),
-			clientModel:  "gpt-5",
-			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "glm", []string{"gpt-5-chat"}, nil,
-				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-chat", "chat_completions")}),
-			expectKept: true,
-		},
-		{
-			// 桥接 Chat 目标：仅支持 responses 形态的候选剔除（承接门直连分支：
-			// 目标族 != 客户端族）。
-			name:         "bridged_chat_responses_only_direct_dropped",
-			target:       frozenBridgedChatTarget(),
-			clientModel:  "gpt-5",
-			clientFamily: "responses",
-			candidate:    accountWithMappings("cand", "gpt", []string{"gpt-5"}, nil, nil),
-			expectKept:   false,
-			expectReason: "direct native-shape gate",
-		},
-		{
-			// 桥接 Chat 目标：RHS 模型不匹配剔除。
-			name:         "bridged_chat_alias_model_mismatch_dropped",
-			target:       frozenBridgedChatTarget(),
-			clientModel:  "gpt-5",
-			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "gpt", []string{"gpt-5-mini"}, nil,
-				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-mini", "chat_completions")}),
-			expectKept:   false,
-			expectReason: "alias model gate",
-		},
-		{
-			// mode 不匹配剔除（声明了 modes 但缺 chat_sse）。
-			name:         "mode_mismatch_dropped",
-			target:       frozenBridgedChatTarget(),
-			clientModel:  "gpt-5",
-			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "glm", []string{"gpt-5-chat"}, []string{"chat_json"},
-				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-chat", "chat_completions")}),
-			expectKept:   false,
-			expectReason: "mode gate",
-		},
-		{
-			// 空 modes 候选不受限（既有 D-155 语义不改变）。
+			// 空 modes 候选不受限（既有 D-155 语义不改变）。2026-11-07 桥退役后
+			// 改用原生 Chat 目标 + Chat 客户端直持形态锁定同一语义。
 			name:         "empty_modes_unrestricted",
 			target:       frozenBridgedChatTarget(),
-			clientModel:  "gpt-5",
-			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "glm", []string{"gpt-5-chat"}, []string{},
-				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-chat", "chat_completions")}),
+			clientModel:  "gpt-5-chat",
+			clientFamily: "chat_completions",
+			candidate:    accountWithMappings("cand", "glm", []string{"gpt-5-chat"}, []string{}, nil),
 			expectKept: true,
 		},
 		{
@@ -663,36 +620,6 @@ func TestGroupFallbackCandidateKeptWithoutFrozenSwitchTarget(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 消费点接线：候选窗口（含模型感知 reload）后置过滤
 // ---------------------------------------------------------------------------
-
-// TestFilterCandidatesPostFiltersByFrozenSwitchTarget：初始窗口按冻结目标
-// 过滤——桥接 Chat 目标下 glm responses 直连候选剔除、Chat 别名候选保留。
-func TestFilterCandidatesPostFiltersByFrozenSwitchTarget(t *testing.T) {
-	pipeline, _, _, _ := newPipeline(t)
-
-	capture := &SwitchTargetCapture{}
-	freezeOf(capture, "src-1", frozenBridgedChatTarget(), "gpt-5", "responses")
-	ctx := WithSwitchTargetCapture(context.Background(), capture)
-
-	req := newTestResponsesRequest(t, `{"model":"gpt-5","stream":true}`)
-	coordinator := &capturingCoordinator{}
-	input := candidateFilterInput(t, req, nil)
-	input.RouteCoordinator = coordinator
-	input.RawCandidates = []AccountCandidate{
-		accountWithMappings("glm-direct", "glm", []string{"gpt-5"}, nil, nil),
-		accountWithMappings("chat-alias", "glm", []string{"gpt-5-chat"}, nil,
-			[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-chat", "chat_completions")}),
-	}
-	result, err := pipeline.FilterCandidates(ctx, input)
-	if err != nil {
-		t.Fatalf("FilterCandidates: %v", err)
-	}
-	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
-		t.Fatalf("outcome = %s", result.Outcome)
-	}
-	if len(result.Accounts) != 1 || result.Accounts[0].ID != "chat-alias" {
-		t.Fatalf("仅 Chat 别名候选应保留，实际 = %#v", accountIDs(result.Accounts))
-	}
-}
 
 // TestFilterCandidatesReloadResultPostFilteredByFrozenTarget：模型感知 reload
 // 产生的候选同样按冻结目标后置过滤；过滤后为空走既有 fallback 兜底。

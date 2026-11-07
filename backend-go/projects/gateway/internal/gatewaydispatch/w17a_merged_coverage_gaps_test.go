@@ -22,7 +22,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -259,22 +258,6 @@ func TestW17aKeyModelCapabilityUsesRevisionAndCredentialSource(t *testing.T) {
 	}
 }
 
-// w17aFailingCodexBridge 恒返回错误，覆盖 BuildPreparedUpstreamRequestParts
-// 的 CodexBridge 失败臂与 wrapCodexPreparationError 的非 adapter 透传臂。
-type w17aFailingCodexBridge struct{}
-
-func (w17aFailingCodexBridge) GetContextState(*gatewaypreauth.GatewayRequest) *CodexBridgeState {
-	return nil
-}
-
-func (w17aFailingCodexBridge) CompletionHandlerForRequest(*gatewaypreauth.GatewayRequest, AccountCandidate) CodexBridgeCompletionHandler {
-	return nil
-}
-
-func (w17aFailingCodexBridge) PrepareContextForAccount(*gatewaypreauth.GatewayRequest, AccountCandidate) error {
-	return errors.New("bridge failed")
-}
-
 func TestW17aAccountPreparationSmallBranches(t *testing.T) {
 	// accountProxyDispatchKey：ProxyURL 分支。
 	proxyURL := "http://proxy.example:8080"
@@ -282,20 +265,9 @@ func TestW17aAccountPreparationSmallBranches(t *testing.T) {
 		t.Fatalf("key = %q", key)
 	}
 
-	// convertBridgeGuidanceError：guidance 错误 → GatewayAgentGuidanceResponse。
-	converted := convertBridgeGuidanceError(&openaicompatbridge.BridgeGuidanceError{Message: "引导消息", Code: "guide"})
-	var guidance *gatewaypreauth.GatewayAgentGuidanceResponse
-	if !errors.As(converted, &guidance) || guidance.Message != "引导消息" {
-		t.Fatalf("guidance = %#v", converted)
-	}
-	// 非 guidance 错误原样透传。
-	plain := errors.New("普通错误")
-	if convertBridgeGuidanceError(plain) != plain {
-		t.Fatal("普通错误应原样返回")
-	}
-
 	// wrapCodexPreparationError：非 adapter 错误原样返回。
 	engine := &Engine{}
+	plain := errors.New("普通错误")
 	if wrapped := engine.wrapCodexPreparationError(context.Background(), nil, gatewaypreauth.GatewayFailureUsageContext{}, AccountCandidate{}, plain); wrapped != plain {
 		t.Fatalf("wrapped = %v", wrapped)
 	}
@@ -321,15 +293,6 @@ func TestW17aAccountPreparationSmallBranches(t *testing.T) {
 		return gatewayoauthcodex.CodexHistorySanitizeResult{Items: list, Changed: false}
 	}
 	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqUnchanged, AccountCandidate{ID: "w17a-acc"}, frontPolicy)
-
-	// BuildPreparedUpstreamRequestParts：CodexBridge 失败臂。
-	bridgeEngine, _, _ := newTestEngine(t)
-	bridgeEngine.CodexBridge = w17aFailingCodexBridge{}
-	_, err := bridgeEngine.BuildPreparedUpstreamRequestParts(
-		context.Background(), newTestRequest(t, ""), testAccounts("w17a-bridge")[0], testUsageContext(), "")
-	if err == nil || err.Error() != "bridge failed" {
-		t.Fatalf("err = %v", err)
-	}
 }
 
 func TestW17aCodexSanitizedRegistryCapacityDrop(t *testing.T) {

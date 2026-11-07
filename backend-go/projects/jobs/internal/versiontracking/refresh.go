@@ -241,6 +241,7 @@ func logRefresh(logger *slog.Logger, ok bool, outcomes []FamilyOutcome) {
 	if logger == nil {
 		return
 	}
+	failedSources := failedSourceFamilies(outcomes)
 	args := []any{"event", eventRefreshCompleted, "ok", ok, "sources", len(outcomes)}
 	for index, outcome := range outcomes {
 		prefix := "source_" + strconv.Itoa(index)
@@ -259,5 +260,24 @@ func logRefresh(logger *slog.Logger, ok bool, outcomes []FamilyOutcome) {
 			args = append(args, prefix+"_retry_after", outcome.RetryAfter)
 		}
 	}
+	// 设计 §6 失败可见性（2026-11-06 增补）：任务成功返回但存在失败源时升
+	// Warn 并携带失败源清单，保证部分源持续失败可被日志告警消费；全部源失败
+	// 与写入失败返回 error 交调度层 jobsched_run_failed 兜底，此处保持 Info。
+	if ok && len(failedSources) > 0 {
+		args = append(args, "failed_sources", strings.Join(failedSources, ","))
+		logger.Warn("客户端版本自动跟版刷新完成", args...)
+		return
+	}
 	logger.Info("客户端版本自动跟版刷新完成", args...)
+}
+
+// failedSourceFamilies 按 outcomes 顺序返回本轮失败的发布源 family。
+func failedSourceFamilies(outcomes []FamilyOutcome) []string {
+	failed := make([]string, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.Result == "failed" {
+			failed = append(failed, outcome.Family)
+		}
+	}
+	return failed
 }

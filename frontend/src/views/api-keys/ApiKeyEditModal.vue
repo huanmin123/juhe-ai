@@ -41,6 +41,18 @@
           @search="handleSchedulingPreferenceSearch"
         />
       </a-form-item>
+      <a-form-item label="安全策略" tooltip="控制该 Key 发往上游的请求是否做敏感信息脱敏（打码/占位符替换）；默认安全策略不做处理。">
+        <CachedSelect
+          v-model:value="form.securityPolicyId"
+          :options="visibleSecurityPolicyOptions"
+          :selected-options="securityPolicySelectedOptions"
+          cache-key="security-policies"
+          :loading="securityPolicyOptionsLoading"
+          placeholder="选择安全策略"
+          @dropdown-visible-change="handleSecurityPolicyDropdown"
+          @search="handleSecurityPolicySearch"
+        />
+      </a-form-item>
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item label="运行状态" tooltip="API Key 只有一个运行状态；时间计划只切换可用时段（非时间段），不改写运行状态；人工停用不会被计划自动恢复。">
@@ -68,7 +80,7 @@
 import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 
-import type { useScopedApiKeysApi, useScopedRouteStrategiesApi, useScopedSchedulingPreferencesApi } from '@/composables/useScopedDomainApi'
+import type { useScopedApiKeysApi, useScopedRouteStrategiesApi, useScopedSchedulingPreferencesApi, useScopedSecurityPoliciesApi } from '@/composables/useScopedDomainApi'
 import { getCachedUserReferenceData } from '@/composables/useUserReferenceData'
 import CachedSelect from '@/components/CachedSelect.vue'
 import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
@@ -85,12 +97,14 @@ import type {
   ApiKeyQuotaLimits,
   ApiKeySummary,
   RouteStrategyOptionSummary,
-  SchedulingPreferenceOptionSummary
+  SchedulingPreferenceOptionSummary,
+  SecurityPolicyOptionSummary
 } from '@/types/domain'
 import {
   SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
   SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_LABEL
 } from '@/api/domains/schedulingPreferences'
+import { BUILTIN_SECURITY_POLICY_ID, BUILTIN_SECURITY_POLICY_NAME } from '@/api/domains/securityPolicies'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 import {
@@ -100,6 +114,8 @@ import {
 import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
 import { loadSchedulingPreferenceOptionsResource } from '@/views/scheduling-preferences/schedulingPreferenceOptionsResource'
 import { rememberSchedulingPreferenceSelectionLabel, schedulingPreferenceLabelForId } from '@/views/scheduling-preferences/schedulingPreferenceLabelCache'
+import { loadSecurityPolicyOptionsResource } from '@/views/security-policies/securityPoliciesOptionsResource'
+import { rememberSecurityPolicySelectionLabel, securityPolicyLabelForId } from '@/views/security-policies/securityPoliciesLabelCache'
 import {
   createApiKeyTimeScheduleForm,
   type ApiKeyAvailabilityScheduleForm
@@ -116,6 +132,7 @@ import { apiKeyStatusOptions as statusOptions } from './apiKeyTableConfig'
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
 type ScopedRouteStrategiesApi = ReturnType<typeof useScopedRouteStrategiesApi>
 type ScopedSchedulingPreferencesApi = ReturnType<typeof useScopedSchedulingPreferencesApi>
+type ScopedSecurityPoliciesApi = ReturnType<typeof useScopedSecurityPoliciesApi>
 
 interface CreatedKeyPayload {
   key: string
@@ -129,6 +146,7 @@ interface ApiKeyEditModalSession {
   parentScopeKey: string
   routeStrategyOptionsScopeKey: string
   schedulingPreferenceOptionsScopeKey: string
+  securityPolicyOptionsScopeKey: string
   systemAccountId?: string
 }
 
@@ -136,6 +154,7 @@ const props = defineProps<{
   apiKeysApi: Pick<ScopedApiKeysApi, 'create' | 'update'>
   routeStrategiesApi: Pick<ScopedRouteStrategiesApi, 'options'>
   schedulingPreferencesApi: Pick<ScopedSchedulingPreferencesApi, 'options'>
+  securityPoliciesApi: Pick<ScopedSecurityPoliciesApi, 'options'>
   isManagementView: boolean
   scopeParams?: ApiKeyScopeParams
   targetSystemAccountLabel?: string
@@ -158,6 +177,8 @@ function schedulingPreferencePurposeExempt(purpose: 'general' | 'chat'): boolean
 }
 const editingOriginalSchedulingPreferenceId = ref('')
 const editingOriginalSchedulingPreferenceName = ref('')
+const editingOriginalSecurityPolicyId = ref('')
+const editingOriginalSecurityPolicyName = ref('')
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
@@ -175,6 +196,13 @@ let schedulingPreferenceOptionsRequestToken = 0
 let schedulingPreferenceOptionsLoadingKey: string | undefined
 let schedulingPreferenceOptionsLoadingPromise: Promise<void> | undefined
 let schedulingPreferenceOptionsSearchTimer: number | undefined
+const securityPolicyOptionsRaw = ref<SecurityPolicyOptionSummary[]>([])
+const securityPolicyOptionsLoading = ref(false)
+const securityPolicyOptionsScopeKey = ref('')
+let securityPolicyOptionsRequestToken = 0
+let securityPolicyOptionsLoadingKey: string | undefined
+let securityPolicyOptionsLoadingPromise: Promise<void> | undefined
+let securityPolicyOptionsSearchTimer: number | undefined
 let editingBaseline: ApiKeyEditableSnapshot | undefined
 let editingRevision: string | undefined
 let modalSessionGeneration = 0
@@ -185,6 +213,7 @@ const form = reactive({
   routeStrategyId: '',
   routeStrategy: undefined as RouteStrategySelection | undefined,
   schedulingPreferenceId: SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID as string | undefined,
+  securityPolicyId: BUILTIN_SECURITY_POLICY_ID as string,
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
@@ -222,6 +251,35 @@ const schedulingPreferencePlaceholder = computed(() => (
     : '选择调度偏好'
 ))
 
+const visibleSecurityPolicyOptions = computed<SelectOption[]>(() => (
+  activeModalSession.value
+  && modalOpen.value
+  && securityPolicyOptionsScopeKey.value === activeModalSession.value.securityPolicyOptionsScopeKey
+    ? securityPolicyOptionsRaw.value.map(securityPolicySelectOption)
+    : []
+))
+
+const securityPolicySelectedOptions = computed<SelectOption[]>(() => {
+  const selectedId = form.securityPolicyId?.trim()
+  if (!selectedId || visibleSecurityPolicyOptions.value.some((option) => option.value === selectedId)) return []
+  const label = securityPolicyFallbackLabel(selectedId)
+  return label ? [{ label, value: selectedId }] : []
+})
+
+function securityPolicySelectOption(option: SecurityPolicyOptionSummary): SelectOption {
+  // 内置行显示名「默认安全策略」由后端 options/name 下发，前端直接展示 option.name。
+  return {
+    label: option.name,
+    value: option.id
+  }
+}
+
+function securityPolicyFallbackLabel(selectedId: string): string | undefined {
+  if (selectedId === BUILTIN_SECURITY_POLICY_ID) return BUILTIN_SECURITY_POLICY_NAME
+  return securityPolicyLabelForId(selectedId)
+    || (editingOriginalSecurityPolicyId.value === selectedId ? editingOriginalSecurityPolicyName.value || undefined : undefined)
+}
+
 function schedulingPreferenceSelectOption(option: SchedulingPreferenceOptionSummary): SelectOption {
   // 内置行显示名「默认调度偏好」由后端 options/name 下发，前端直接展示 option.name。
   return {
@@ -255,6 +313,7 @@ function openCreate() {
     routeStrategyId: defaultStrategy?.id ?? '',
     routeStrategy: defaultStrategy,
     schedulingPreferenceId: SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
+    securityPolicyId: BUILTIN_SECURITY_POLICY_ID,
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -294,6 +353,7 @@ function openEdit(apiKey: ApiKeySummary) {
     routeStrategyId: apiKey.routeStrategyId,
     routeStrategy: apiKeyRouteStrategySelection(apiKey),
     schedulingPreferenceId: apiKey.schedulingPreferenceId ?? '',
+    securityPolicyId: apiKey.securityPolicyId?.trim() || BUILTIN_SECURITY_POLICY_ID,
     status: apiKey.status,
     expiresAt,
     description: apiKey.description ?? '',
@@ -303,6 +363,9 @@ function openEdit(apiKey: ApiKeySummary) {
   editingOriginalSchedulingPreferenceId.value = apiKey.schedulingPreferenceId?.trim() ?? ''
   editingOriginalSchedulingPreferenceName.value = apiKey.schedulingPreferenceName?.trim() ?? ''
   rememberSchedulingPreferenceSelectionLabel(apiKey.schedulingPreferenceId, apiKey.schedulingPreferenceName)
+  editingOriginalSecurityPolicyId.value = apiKey.securityPolicyId?.trim() ?? ''
+  editingOriginalSecurityPolicyName.value = apiKey.securityPolicyName?.trim() ?? ''
+  rememberSecurityPolicySelectionLabel(apiKey.securityPolicyId, apiKey.securityPolicyName)
   editingBaseline = currentApiKeyEditableSnapshot(buildTimeSchedulePayload(form.availabilitySchedule))
   modalOpen.value = true
 }
@@ -395,6 +458,7 @@ function currentApiKeyEditableSnapshot(
     name: form.name.trim(),
     routeStrategyId: form.routeStrategyId.trim() || undefined,
     schedulingPreferenceId: schedulingPreferenceSnapshotId(),
+    securityPolicyId: securityPolicySnapshotId(),
     status: form.status,
     expiresAt: formatServerDateTimeInput(form.expiresAt),
     description: form.description,
@@ -407,6 +471,11 @@ function currentApiKeyEditableSnapshot(
 function schedulingPreferenceSnapshotId(): string | undefined {
   if (schedulingPreferencePurposeExempt(editingPurpose.value)) return undefined
   return form.schedulingPreferenceId?.trim() || undefined
+}
+
+/** 安全策略无用途豁免：快照恒为显式 ID；空值归一为内置「默认安全策略」。 */
+function securityPolicySnapshotId(): string {
+  return form.securityPolicyId?.trim() || BUILTIN_SECURITY_POLICY_ID
 }
 
 function cachedDefaultRouteStrategy(scopeParams: ApiKeyScopeParams | undefined): RouteStrategySelection | undefined {
@@ -512,6 +581,7 @@ function beginModalSession(scopeParams: ApiKeyScopeParams | undefined): void {
     parentScopeKey: currentParentScopeKey(),
     routeStrategyOptionsScopeKey: routeStrategyOptionsCatalogScopeKey(props.isManagementView, systemAccountId),
     schedulingPreferenceOptionsScopeKey: routeStrategyOptionsCatalogScopeKey(props.isManagementView, systemAccountId),
+    securityPolicyOptionsScopeKey: routeStrategyOptionsCatalogScopeKey(props.isManagementView, systemAccountId),
     systemAccountId
   }
 }
@@ -529,11 +599,18 @@ function invalidateModalSession(options: { clearOptions?: boolean } = {}): void 
   schedulingPreferenceOptionsLoadingPromise = undefined
   schedulingPreferenceOptionsLoading.value = false
   clearSchedulingPreferenceOptionsSearchTimer()
+  securityPolicyOptionsRequestToken += 1
+  securityPolicyOptionsLoadingKey = undefined
+  securityPolicyOptionsLoadingPromise = undefined
+  securityPolicyOptionsLoading.value = false
+  clearSecurityPolicyOptionsSearchTimer()
   if (options.clearOptions) {
     routeStrategyOptionsRaw.value = []
     routeStrategyOptionsScopeKey.value = ''
     schedulingPreferenceOptionsRaw.value = []
     schedulingPreferenceOptionsScopeKey.value = ''
+    securityPolicyOptionsRaw.value = []
+    securityPolicyOptionsScopeKey.value = ''
   }
 }
 
@@ -651,6 +728,82 @@ function clearSchedulingPreferenceOptionsSearchTimer() {
   if (schedulingPreferenceOptionsSearchTimer && typeof window !== 'undefined') {
     window.clearTimeout(schedulingPreferenceOptionsSearchTimer)
     schedulingPreferenceOptionsSearchTimer = undefined
+  }
+}
+
+function securityPolicyOptionsRequestKey(modalSession: ApiKeyEditModalSession, keyword: string | undefined): string {
+  return JSON.stringify([
+    modalSession.securityPolicyOptionsScopeKey,
+    keyword ?? ''
+  ])
+}
+
+async function loadSecurityPolicyOptions(keyword = '', selectedIds: string[] = []) {
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) return
+  const operationScopeParams = modalSessionScopeParams(modalSession)
+  if (modalSession.isManagementView && !operationScopeParams?.systemAccountId) return
+  const requestKeyword = keyword.trim() || undefined
+  const requestScopeKey = modalSession.securityPolicyOptionsScopeKey
+  const requestKey = securityPolicyOptionsRequestKey(modalSession, requestKeyword)
+  if (securityPolicyOptionsLoadingKey === requestKey && securityPolicyOptionsLoadingPromise) {
+    return securityPolicyOptionsLoadingPromise
+  }
+  const requestToken = ++securityPolicyOptionsRequestToken
+  securityPolicyOptionsLoading.value = true
+  securityPolicyOptionsLoadingKey = requestKey
+  securityPolicyOptionsLoadingPromise = (async () => {
+    try {
+      await loadSecurityPolicyOptionsResource({
+        api: props.securityPoliciesApi,
+        apply: (nextOptions) => {
+          securityPolicyOptionsRaw.value = nextOptions
+          securityPolicyOptionsScopeKey.value = requestScopeKey
+        },
+        isCurrent: () => requestToken === securityPolicyOptionsRequestToken
+          && isCurrentModalSession(modalSession)
+          && requestScopeKey === modalSession.securityPolicyOptionsScopeKey,
+        keyword: requestKeyword,
+        selectedIds,
+        systemAccountId: operationScopeParams?.systemAccountId
+      })
+    } catch (error) {
+      if (requestToken !== securityPolicyOptionsRequestToken || !isCurrentModalSession(modalSession)) return
+      message.error(extractApiErrorMessage(error, '安全策略选项加载失败'))
+    } finally {
+      if (requestToken === securityPolicyOptionsRequestToken && securityPolicyOptionsLoadingKey === requestKey) {
+        securityPolicyOptionsLoadingKey = undefined
+        securityPolicyOptionsLoadingPromise = undefined
+      }
+      if (requestToken === securityPolicyOptionsRequestToken) {
+        securityPolicyOptionsLoading.value = false
+      }
+    }
+  })()
+  return securityPolicyOptionsLoadingPromise
+}
+
+function handleSecurityPolicyDropdown(open: boolean) {
+  if (open && !visibleSecurityPolicyOptions.value.length) {
+    void loadSecurityPolicyOptions('', [form.securityPolicyId ?? ''])
+  }
+}
+
+function handleSecurityPolicySearch(value: string) {
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) return
+  clearSecurityPolicyOptionsSearchTimer()
+  securityPolicyOptionsSearchTimer = window.setTimeout(() => {
+    securityPolicyOptionsSearchTimer = undefined
+    if (!isCurrentModalSession(modalSession)) return
+    void loadSecurityPolicyOptions(value, [form.securityPolicyId ?? ''])
+  }, 250)
+}
+
+function clearSecurityPolicyOptionsSearchTimer() {
+  if (securityPolicyOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(securityPolicyOptionsSearchTimer)
+    securityPolicyOptionsSearchTimer = undefined
   }
 }
 

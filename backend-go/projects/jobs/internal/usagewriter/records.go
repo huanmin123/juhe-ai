@@ -19,64 +19,73 @@ import (
 // pointers mean the Node undefined fields; Success, TraceID and TrafficSource
 // are always set by the record builders.
 type UsageRecordInput struct {
-	ID                               string   `json:"id,omitempty"`
-	SystemAccountID                  string   `json:"systemAccountId,omitempty"`
-	TraceID                          string   `json:"traceId"`
-	TrafficSource                    string   `json:"trafficSource"`
-	ClientIP                         string   `json:"clientIp,omitempty"`
-	APIKeyID                         string   `json:"apiKeyId,omitempty"`
-	GroupID                          string   `json:"groupId,omitempty"`
-	RouteGroupID                     string   `json:"routeGroupId,omitempty"`
-	CompactionExpected               bool     `json:"compactionExpected"`
-	AccountID                        string   `json:"accountId,omitempty"`
-	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
-	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`
-	AccountAccessType                string   `json:"accountAccessType,omitempty"`
-	GroupAccessType                  string   `json:"groupAccessType,omitempty"`
-	AccountAuthorizationID           string   `json:"accountAuthorizationId,omitempty"`
-	AccountAuthorizationSourceType   string   `json:"accountAuthorizationSourceType,omitempty"`
-	AccountAuthorizationSourceTeamID string   `json:"accountAuthorizationSourceTeamId,omitempty"`
-	GroupAuthorizationID             string   `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationSourceType     string   `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID   string   `json:"groupAuthorizationSourceTeamId,omitempty"`
-	Endpoint                         string   `json:"endpoint,omitempty"`
-	ProviderCode                     string   `json:"providerCode,omitempty"`
-	ProviderProtocolProfileID        string   `json:"providerProtocolProfileId,omitempty"`
-	UsageSemantic                    string   `json:"usageSemantic,omitempty"`
-	Model                            string   `json:"model,omitempty"`
-	UpstreamModel                    string   `json:"upstreamModel,omitempty"`
-	UpstreamResponseModel            string   `json:"upstreamResponseModel,omitempty"`
-	PricingModel                     string   `json:"pricingModel,omitempty"`
-	RequestedServiceTier             string   `json:"requestedServiceTier,omitempty"`
-	EffectiveServiceTier             string   `json:"effectiveServiceTier,omitempty"`
-	ReportedServiceTier              string   `json:"reportedServiceTier,omitempty"`
-	BilledServiceTier                string   `json:"billedServiceTier,omitempty"`
-	RequestedReasoningEffort         string   `json:"requestedReasoningEffort,omitempty"`
-	EffectiveReasoningEffort         string   `json:"effectiveReasoningEffort,omitempty"`
-	PricingSnapshot                  any      `json:"pricingSnapshot,omitempty"`
-	ModelMappingApplied              *bool    `json:"modelMappingApplied,omitempty"`
-	ModelMappingSource               string   `json:"modelMappingSource,omitempty"`
-	SourceEndpointFamily             string   `json:"sourceEndpointFamily,omitempty"`
-	UpstreamEndpointFamily           string   `json:"upstreamEndpointFamily,omitempty"`
-	Stream                           *bool    `json:"stream,omitempty"`
-	StatusCode                       *int     `json:"statusCode,omitempty"`
-	Success                          bool     `json:"success"`
-	FailureAttribution               string   `json:"failureAttribution,omitempty"`
-	FirstTokenMs                     *int     `json:"firstTokenMs,omitempty"`
-	DurationMs                       *int     `json:"durationMs,omitempty"`
-	InputTokens                      *int     `json:"inputTokens,omitempty"`
-	OutputTokens                     *int     `json:"outputTokens,omitempty"`
-	CacheReadTokens                  *int     `json:"cacheReadTokens,omitempty"`
-	CacheReadCostUsd                 *float64 `json:"cacheReadCostUsd,omitempty"`
-	CacheWriteTokens                 *int     `json:"cacheWriteTokens,omitempty"`
-	CacheWrite1hTokens               *int     `json:"cacheWrite1hTokens,omitempty"`
-	CacheWriteCostUsd                *float64 `json:"cacheWriteCostUsd,omitempty"`
-	ThinkingTokens                   *int     `json:"thinkingTokens,omitempty"`
-	InputImageTokens                 *int     `json:"inputImageTokens,omitempty"`
-	OutputImageTokens                *int     `json:"outputImageTokens,omitempty"`
-	InputAudioTokens                 *int     `json:"inputAudioTokens,omitempty"`
-	OutputAudioTokens                *int     `json:"outputAudioTokens,omitempty"`
-	OutputImageCount                 *int     `json:"outputImageCount,omitempty"`
+	ID                 string `json:"id,omitempty"`
+	SystemAccountID    string `json:"systemAccountId,omitempty"`
+	TraceID            string `json:"traceId"`
+	TrafficSource      string `json:"trafficSource"`
+	ClientIP           string `json:"clientIp,omitempty"`
+	APIKeyID           string `json:"apiKeyId,omitempty"`
+	GroupID            string `json:"groupId,omitempty"`
+	RouteGroupID       string `json:"routeGroupId,omitempty"`
+	CompactionExpected bool   `json:"compactionExpected"`
+	// SecurityPolicyApplied / PIIHits 是 API Key 安全策略的请求级事实（API
+	// Key 安全策略与出站内容脱敏设计 §8）：applied = 该请求挂载了非默认安全
+	// 策略（与是否命中无关）；piiHits 按规则 label 计数（无任何原文），仅命
+	// 中数 > 0 时非空（omitempty 不写）。与 gateway/internal/gatewayusage
+	// UsageRecordInput 同名同 tag、字段序同样紧邻 CompactionExpected（跨进程
+	// 契约 golden 门禁逐字段校验）；spool JSON 契约随 usagespooldrain
+	// parseSpoolRecord 的 json.Unmarshal 透传，drain 侧无需改动。
+	SecurityPolicyApplied            bool           `json:"securityPolicyApplied"`
+	PIIHits                          map[string]int `json:"piiHits,omitempty"`
+	AccountID                        string         `json:"accountId,omitempty"`
+	AccountOwnerSystemAccountID      string         `json:"accountOwnerSystemAccountId,omitempty"`
+	GroupOwnerSystemAccountID        string         `json:"groupOwnerSystemAccountId,omitempty"`
+	AccountAccessType                string         `json:"accountAccessType,omitempty"`
+	GroupAccessType                  string         `json:"groupAccessType,omitempty"`
+	AccountAuthorizationID           string         `json:"accountAuthorizationId,omitempty"`
+	AccountAuthorizationSourceType   string         `json:"accountAuthorizationSourceType,omitempty"`
+	AccountAuthorizationSourceTeamID string         `json:"accountAuthorizationSourceTeamId,omitempty"`
+	GroupAuthorizationID             string         `json:"groupAuthorizationId,omitempty"`
+	GroupAuthorizationSourceType     string         `json:"groupAuthorizationSourceType,omitempty"`
+	GroupAuthorizationSourceTeamID   string         `json:"groupAuthorizationSourceTeamId,omitempty"`
+	Endpoint                         string         `json:"endpoint,omitempty"`
+	ProviderCode                     string         `json:"providerCode,omitempty"`
+	ProviderProtocolProfileID        string         `json:"providerProtocolProfileId,omitempty"`
+	UsageSemantic                    string         `json:"usageSemantic,omitempty"`
+	Model                            string         `json:"model,omitempty"`
+	UpstreamModel                    string         `json:"upstreamModel,omitempty"`
+	UpstreamResponseModel            string         `json:"upstreamResponseModel,omitempty"`
+	PricingModel                     string         `json:"pricingModel,omitempty"`
+	RequestedServiceTier             string         `json:"requestedServiceTier,omitempty"`
+	EffectiveServiceTier             string         `json:"effectiveServiceTier,omitempty"`
+	ReportedServiceTier              string         `json:"reportedServiceTier,omitempty"`
+	BilledServiceTier                string         `json:"billedServiceTier,omitempty"`
+	RequestedReasoningEffort         string         `json:"requestedReasoningEffort,omitempty"`
+	EffectiveReasoningEffort         string         `json:"effectiveReasoningEffort,omitempty"`
+	PricingSnapshot                  any            `json:"pricingSnapshot,omitempty"`
+	ModelMappingApplied              *bool          `json:"modelMappingApplied,omitempty"`
+	ModelMappingSource               string         `json:"modelMappingSource,omitempty"`
+	SourceEndpointFamily             string         `json:"sourceEndpointFamily,omitempty"`
+	UpstreamEndpointFamily           string         `json:"upstreamEndpointFamily,omitempty"`
+	Stream                           *bool          `json:"stream,omitempty"`
+	StatusCode                       *int           `json:"statusCode,omitempty"`
+	Success                          bool           `json:"success"`
+	FailureAttribution               string         `json:"failureAttribution,omitempty"`
+	FirstTokenMs                     *int           `json:"firstTokenMs,omitempty"`
+	DurationMs                       *int           `json:"durationMs,omitempty"`
+	InputTokens                      *int           `json:"inputTokens,omitempty"`
+	OutputTokens                     *int           `json:"outputTokens,omitempty"`
+	CacheReadTokens                  *int           `json:"cacheReadTokens,omitempty"`
+	CacheReadCostUsd                 *float64       `json:"cacheReadCostUsd,omitempty"`
+	CacheWriteTokens                 *int           `json:"cacheWriteTokens,omitempty"`
+	CacheWrite1hTokens               *int           `json:"cacheWrite1hTokens,omitempty"`
+	CacheWriteCostUsd                *float64       `json:"cacheWriteCostUsd,omitempty"`
+	ThinkingTokens                   *int           `json:"thinkingTokens,omitempty"`
+	InputImageTokens                 *int           `json:"inputImageTokens,omitempty"`
+	OutputImageTokens                *int           `json:"outputImageTokens,omitempty"`
+	InputAudioTokens                 *int           `json:"inputAudioTokens,omitempty"`
+	OutputAudioTokens                *int           `json:"outputAudioTokens,omitempty"`
+	OutputImageCount                 *int           `json:"outputImageCount,omitempty"`
 	// M1 同步音频计量（音频设计 §10）：TTS 输入字符数、STT 音频秒数与
 	// usage_missing 标记（上游无 usage 回报也无 duration）。
 	// M2 视频计量（媒体设计 §10）：OutputVideoSeconds 是视频任务输出秒数。
@@ -195,6 +204,14 @@ func NormalizeUsageRecordInput(input UsageRecordInput, clock Clock, idFactory Us
 	}
 	normalized.RequestSnapshot = BoundUsageRecordSnapshot(input.RequestSnapshot)
 	normalized.ResponseSnapshot = BoundUsageRecordSnapshot(input.ResponseSnapshot)
+
+	// SecurityPolicyApplied / PIIHits 照 CompactionExpected 先例随结构拷贝透
+	// 传；PIIHits nil/空 map 归一为 nil（gateway 侧 omitempty 保证 spool JSON
+	// 永不出现空 map，此处只对进程内直调者做同形归一，不改变 wire 契约）。
+	normalized.PIIHits = nil
+	if len(input.PIIHits) > 0 {
+		normalized.PIIHits = input.PIIHits
+	}
 
 	// Account scope integrity.
 	accountID := normalizedUsageScopeValue(input.AccountID)

@@ -1,5 +1,11 @@
 # 计划目录
 
+- [PLAN-20261106T163123672Z](计划-20261106T163123672Z-多节点发布基建改造.md)：多节点发布基建改造——P0 集群上线/开发评估文档、P1 版本与门禁/账本（`MinRequiredRevision`、`min_readable_binary_revision`、expand/contract）、P2 gateway 无状态（RPM/OAuth/J3b 验证码/管理面限流/额度在途/Realtime 计数）、P3 jobs leader/共享文件/前端/LB/按版本指标、P4 多机演练；单机允许停写，集群首次门禁切换必须停写。**状态：进行中（2026-11-07：P0/P1/P2 完成，P3 jobs 全局 leader 完成，剩余共享文件/前端/LB/发布脚本）。**
+
+- [PLAN-20261106T162344524Z](计划-20261106T162344524Z-退役跨协议模型映射与ChatBridge清理.md)：退役唯一跨协议映射 `responses → chat_completions`，强制客户端协议与上游协议一致（7 个协议等价 pair、13 个请求形态）；前端两个协议下拉合并为一个，客户端模型可跨供应商但须支持所选协议，上游模型限账户 `supportedModels`；同批删除 Chat bridge / gateway summary compact、`juhe_codex_context` schema、`JUHE_AI_CODEX_CONTEXT_ROOT`、jobs 清理任务与测试；schema revision 20 删除全部非合规存量映射行并归一历史 family token（revision 19 已由 API Key 安全策略批占用）。**状态：进行中（2026-11-07 代码已实施；待发布验证项已登记 [T152](../待办与阻塞事项.md#t152)，由用户统一发布窗口处理）。**
+
+- [PLAN-20261106T150648000Z](计划-20261106T150648000Z-上游身份一致性与版本门槛诊断.md)：上游身份一致性与版本门槛诊断——退出追赶型伪装军备竞赛（用户 2026-11-06 拍板）后的三件收尾：W1 Anthropic OAuth 透传 dateline 隐写清洗（新包 shared/platform/anthropicfp，行为规格佐证 sub2api anthropicfp 公开注释、独立实现不复制 LGPL 源码）；W2 upstreamidentity 请求内身份原子快照（手动/自动层各读一次派生五族，accountprobe 头 UA 与 body cc_version、jobs Grok 用量双头改同快照）；W3 网关链 426 诊断归类 reason_class 增 version_gate（纯状态码零文案解析，仅诊断面不写账户状态）+ 跟版部分源失败 Info 升 Warn；TLS 指纹/探针身份跟随/多源跟版裁决不做。落点与并行 #C2 零重叠。**状态：实施中（2026-11-06）。**
+
 - [PLAN-20261106T024618000Z](计划-20261106T024618000Z-网关与jobs跨进程共享状态改造.md)：网关与 jobs 跨进程共享状态改造——把 OAuth 凭据轮换、API Key 运行态/时间计划闸门、账户状态/冷却、settings 双向可见性从 60s TTL、轮询或账户状态副作用，收敛为 Redis 共享投影/版本/锁 + PG 事实源；不引入直接 import/RPC、不把 token 写入 Redis；S6-S13 已检查但不建议本期改。**状态：Tier 1 已实施（2026-11-06）：B0 共享契约包 + B1 OAuth 刷新跨进程锁 + B2 凭据版本投影；Tier 2 已实施 B3a 时间计划闸门 + B3b API Key 运行态 + B4 账户状态/冷却/孤儿删除（共享序号触发 gateway 重载 PG）；S13 gateway 只读 jobs 刷新失败退避；B5 settings 版本已实施（实施记录见 §11）。**
 
 - [PLAN-20261030T062141000Z](PLAN-20261030T062141000Z-AI账户后台自动探测总开关.md)：AI 账户后台自动探测总开关——按 2026-10-30 用户口径：只禁止后台自动探测（周期健康检查、首次激活、配置变更复检、请求失败二次确认、冷却复测、运行态/电路/Key/速度优先恢复、质量预检、J3b 定时模型检测），不禁手动测试/手动刷新/手动检测；余额刷新与 xAI Grok 用量刷新不纳入；错误策略/响应拦截/迁移流量等账户自有策略零影响；新增 `background_probe_enabled` 默认开，父子开关关系收敛「持续恢复探活」，关闭时清理探针派生运行态并把账户健康状态收敛为「正常 / 异常」二态（无待检查/冷却/限流/质量隔离/恢复中过程），显示「手动」模式 tag，特供/锁死等依赖后台恢复的高级功能不开放并自动清理；媒体域不适用；真实请求切号重试不受影响；候选筛选 + 派发前守卫双门禁；已含状态写入路径、媒体域、导入凭据、投影展示、余额/OAuth 例外与发布兼容的边界审查。**状态：已完成（2026-10-30 实施完成、两轮独立复审通过；未发布，生产验证随发布批次）。**

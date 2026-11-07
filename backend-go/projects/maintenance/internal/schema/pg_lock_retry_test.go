@@ -265,16 +265,17 @@ func TestEnsurePostgresRetriesMidFlowDeadlockAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("中段死锁重试后 EnsurePostgres 应成功: %v", err)
 	}
-	// SchemaCount 6→5：juhe_chat schema 随 my-chat 会话面退役（演练场设计 §8）。
-	if result.StatementCount != len(postgresSchemaStatements) || result.SchemaCount != 5 {
+	// SchemaCount 6→5→4：juhe_chat 随会话面退役、juhe_codex_context 随
+	// 2026-11-07 跨协议桥退役（ensure-schema 清单同步撤除）。
+	if result.StatementCount != len(postgresSchemaStatements) || result.SchemaCount != 4 {
 		t.Fatalf("结果异常: %+v", result)
 	}
-	// CREATE SCHEMA 次数 6→5：juhe_chat schema 随会话面退役（演练场设计 §8）。
-	if got := rec.execCount(); got != len(postgresSchemaStatements)+5 {
-		t.Fatalf("成功执行次数=%d, want %d（重试不得重启流程或重复语句）", got, len(postgresSchemaStatements)+5)
+	// CREATE SCHEMA 次数 6→5→4：同上。
+	if got := rec.execCount(); got != len(postgresSchemaStatements)+4 {
+		t.Fatalf("成功执行次数=%d, want %d（重试不得重启流程或重复语句）", got, len(postgresSchemaStatements)+4)
 	}
-	if got := rec.execAttemptCount(); got != len(postgresSchemaStatements)+5+1 {
-		t.Fatalf("执行尝试次数=%d, want %d（恰好多一次重试尝试）", got, len(postgresSchemaStatements)+5+1)
+	if got := rec.execAttemptCount(); got != len(postgresSchemaStatements)+4+1 {
+		t.Fatalf("执行尝试次数=%d, want %d（恰好多一次重试尝试）", got, len(postgresSchemaStatements)+4+1)
 	}
 }
 

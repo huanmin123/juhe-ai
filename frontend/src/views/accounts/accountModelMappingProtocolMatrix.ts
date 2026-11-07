@@ -49,9 +49,12 @@ export function isMediaMappingEndpointFamily(
   return value === OPENAI_VIDEO_GENERATION_FAMILY || value === OPENAI_TTS_FAMILY
 }
 
+// 2026-11-07 跨协议模型映射退役（计划 PLAN-20261106T162344524Z）：唯一允许方向
+// 是协议等价——同族改名，外加 Gemini stream_generate_content → generate_content
+// 归一；responses → chat_completions bridge 已随 Chat bridge 全链删除。与后端
+// entry_mappings.go / entry_mapping_pairs.json golden 全等（回归脚本守护）。
 export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
-  { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_RESPONSES_FAMILY, upstreamProfile: 'openai', requiresNativeResponses: true },
   { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
   { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
@@ -62,6 +65,71 @@ export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[]
   { source: OPENAI_VIDEO_GENERATION_FAMILY, upstream: OPENAI_VIDEO_GENERATION_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_TTS_FAMILY, upstream: OPENAI_TTS_FAMILY, upstreamProfile: 'openai' }
 ] as const
+
+// 单协议下拉选项（前端变化契约）：每行映射只有一个协议选择，选项即协议等价
+// pair——source 唯一标识选项，target 由选项表派生后同时写入两个持久化字段。
+// 选项直接由规则表投影生成，保证下拉集合与协议矩阵/golden 不漂移。
+export type AccountModelMappingProtocolOption = {
+  /** 下拉值：即该协议等价 pair 的 source 端点族（选项唯一标识）。 */
+  value: AccountModelMappingSourceEndpointFamily
+  label: string
+  source: AccountModelMappingSourceEndpointFamily
+  upstream: AccountModelMappingUpstreamEndpointFamily
+}
+
+const accountModelMappingProtocolOptionLabels: Record<AccountModelMappingSourceEndpointFamily, string> = {
+  [OPENAI_CHAT_COMPLETIONS_FAMILY]: 'Chat Completions',
+  [OPENAI_RESPONSES_FAMILY]: 'Responses',
+  [ANTHROPIC_MESSAGES_FAMILY]: 'Messages',
+  [GEMINI_GENERATE_CONTENT_FAMILY]: 'Gemini GenerateContent',
+  [GEMINI_STREAM_GENERATE_CONTENT_FAMILY]: 'Gemini StreamGenerateContent',
+  [OPENAI_VIDEO_GENERATION_FAMILY]: '视频生成',
+  [OPENAI_TTS_FAMILY]: '语音合成'
+}
+
+export const accountModelMappingProtocolOptions: readonly AccountModelMappingProtocolOption[] = (
+  accountModelMappingProtocolRules.map((rule) => ({
+    value: rule.source,
+    label: accountModelMappingProtocolOptionLabels[rule.source],
+    source: rule.source,
+    upstream: rule.upstream
+  }))
+)
+
+// 单协议下拉的 target 派生：修改协议时同时写入 source/target 两个持久化字段。
+export function accountModelMappingTargetForSource(
+  source: AccountModelMappingSourceEndpointFamily
+): AccountModelMappingUpstreamEndpointFamily {
+  const option = accountModelMappingProtocolOptions.find((item) => item.source === source)
+  if (option) return option.upstream
+  // 表外 source（UI 不可达）按同族回落：stream 归一目标为 generate_content，
+  // 其余 source 本身就是合法上游族；保证返回值始终落在上游词表内。
+  return source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY ? GEMINI_GENERATE_CONTENT_FAMILY : source
+}
+
+// 协议选项过滤（profile + 账户 endpoint modes）：结构门（协议档案支持的协议等价
+// pair）与目标族能力门（账户至少启用一种对应上游接口形态）都满足才出现。
+export function isAccountModelMappingProtocolOptionAllowed(
+  option: AccountModelMappingProtocolOption,
+  context: AccountModelMappingProtocolContext
+): boolean {
+  return !accountModelMappingProtocolStructureValidationMessage({
+    sourceEndpointFamily: option.source,
+    upstreamEndpointFamily: option.upstream,
+    context
+  }) && hasAccountModelMappingUpstreamEndpointFamilyCapability(option.upstream, context.supportedEndpointModes)
+}
+
+// 默认协议按账户支持模式选择：优先 Chat，其次 Responses / Messages / Gemini
+// GenerateContent / Gemini StreamGenerateContent / 媒体族对应项（选项表顺序即
+// 优先级）；无任何匹配时回退 Chat（首个选项）。
+export function defaultAccountModelMappingProtocol(
+  context: AccountModelMappingProtocolContext
+): AccountModelMappingProtocolOption {
+  return accountModelMappingProtocolOptions.find((option) => (
+    isAccountModelMappingProtocolOptionAllowed(option, context)
+  )) ?? accountModelMappingProtocolOptions[0]
+}
 
 type AccountModelMappingProtocolStructureInput = {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
@@ -80,7 +148,7 @@ export function accountModelMappingProtocolValidationMessage(
   )) {
     return undefined
   }
-  const rule = accountModelMappingRulesForContext(input.context).find((item) => (
+  const rule = accountModelMappingProtocolRules.find((item) => (
     item.source === input.sourceEndpointFamily && item.upstream === input.upstreamEndpointFamily
   ))
   return rule?.requiresNativeResponses
@@ -103,18 +171,14 @@ function accountModelMappingProtocolStructureValidationMessage(
   if (!openAIProfile && !anthropicProfile && !geminiProfile) {
     return '当前供应商协议不支持模型映射'
   }
-  if (
-    geminiOpenAIChatProfile
-    && sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY
-    && sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY
-  ) {
-    return 'Gemini OpenAI Chat 账号模型别名只能使用 Chat Completions 或 Responses 到 Chat bridge'
-  }
-  if (geminiOpenAIChatProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
-    return 'Gemini OpenAI Chat 账号模型别名只能使用 Chat Completions'
+  // 2026-11-07 bridge 退役：Gemini OpenAI Chat 档案不再承接 Responses 入站，
+  // 只允许 Chat Completions 同协议映射（原「Responses 到 Chat bridge」结构门删除）。
+  if (geminiOpenAIChatProfile
+    && (sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY || upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY)) {
+    return 'Gemini OpenAI Chat 账号模型别名只能使用 Chat Completions 同协议映射'
   }
   if (geminiProfile && !geminiNativeProfile && !geminiOpenAIChatProfile) {
-    return '当前 Gemini 协议档案暂不支持账号模型别名'
+    return '当前 Gemini 协议档案暂不支持模型映射账号别名'
   }
 
   const rule = accountModelMappingProtocolRules.find((item) => (
@@ -127,19 +191,19 @@ function accountModelMappingProtocolStructureValidationMessage(
   // M4b：媒体映射族的上游面恒为 OpenAI 形态媒体端点，仅 openai 档案供应商
   // 可声明（anthropic/gemini 档案无对应执行面）。
   if (isMediaMappingEndpointFamily(sourceEndpointFamily) && !openAIProfile) {
-    return '当前供应商协议不支持媒体账号模型别名'
+    return '当前供应商协议不支持媒体模型映射账号别名'
   }
   if (openAIProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && !isMediaMappingEndpointFamily(upstreamEndpointFamily)) {
-    return 'OpenAI 协议账号模型别名只能使用 Chat Completions 或 Responses'
+    return '模型映射 OpenAI 协议账号只能使用 Chat Completions、Responses 或媒体族同协议映射'
   }
   if (anthropicProfile && upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY) {
-    return 'Anthropic 协议账号模型别名只能使用 Messages'
+    return '模型映射 Anthropic 协议账号只能使用 Messages 同协议映射'
   }
   if (geminiNativeProfile && upstreamEndpointFamily !== GEMINI_GENERATE_CONTENT_FAMILY) {
-    return 'Gemini native 账号模型别名只能使用 GenerateContent / StreamGenerateContent'
+    return '模型映射 Gemini native 账号只能使用 GenerateContent 同族映射'
   }
   if (!openAIProfile && !anthropicProfile && !geminiNativeProfile) {
-    return '当前供应商协议不支持账号模型别名'
+    return '当前供应商协议不支持模型映射账号别名'
   }
   return undefined
 }
@@ -153,69 +217,6 @@ export function isAccountModelMappingProtocolAllowed(input: {
   return !accountModelMappingProtocolValidationMessage(input)
 }
 
-export function isAccountModelMappingSourceEndpointFamilyAllowed(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  context: AccountModelMappingProtocolContext
-): boolean {
-  return accountModelMappingRulesForContext(context).some((rule) => (
-    rule.source === sourceEndpointFamily
-    && !accountModelMappingProtocolStructureValidationMessage({
-      sourceEndpointFamily,
-      upstreamEndpointFamily: rule.upstream,
-      context
-    })
-  ))
-}
-
-export function defaultAccountModelMappingSourceEndpointFamily(
-  context: AccountModelMappingProtocolContext
-): AccountModelMappingSourceEndpointFamily {
-  const preferred = [
-    OPENAI_RESPONSES_FAMILY,
-    OPENAI_CHAT_COMPLETIONS_FAMILY,
-    ANTHROPIC_MESSAGES_FAMILY,
-    GEMINI_GENERATE_CONTENT_FAMILY,
-    GEMINI_STREAM_GENERATE_CONTENT_FAMILY
-  ] as const
-  return preferred.find((sourceEndpointFamily) => (
-    isAccountModelMappingSourceEndpointFamilyAllowed(sourceEndpointFamily, context)
-  )) ?? OPENAI_CHAT_COMPLETIONS_FAMILY
-}
-
-export function shouldResetAccountModelMappingUpstreamEndpointFamily(
-  input: AccountModelMappingProtocolStructureInput
-): boolean {
-  return Boolean(accountModelMappingProtocolStructureValidationMessage(input))
-}
-
-export function defaultAccountModelMappingUpstreamEndpointFamily(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  context: AccountModelMappingProtocolContext
-): AccountModelMappingUpstreamEndpointFamily {
-  const preferred = [
-    ...preferredUpstreamFamilies(sourceEndpointFamily),
-    ...accountModelMappingRulesForContext(context)
-      .filter((rule) => rule.source === sourceEndpointFamily)
-      .map((rule) => rule.upstream)
-  ]
-  return preferred.find((upstreamEndpointFamily) => isAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily,
-    upstreamEndpointFamily,
-    context
-  })) ?? defaultFallbackUpstreamEndpointFamily(sourceEndpointFamily)
-}
-
-// 兜底上游族保持结构合法：媒体来源兜底回同族（chat 兜底对媒体来源是非法
-// 转换，会把新增映射直接摆进必报错状态）；其余维持 Chat Completions 既有
-// 行为不变。
-function defaultFallbackUpstreamEndpointFamily(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
-): AccountModelMappingUpstreamEndpointFamily {
-  if (sourceEndpointFamily === OPENAI_VIDEO_GENERATION_FAMILY) return OPENAI_VIDEO_GENERATION_FAMILY
-  if (sourceEndpointFamily === OPENAI_TTS_FAMILY) return OPENAI_TTS_FAMILY
-  return OPENAI_CHAT_COMPLETIONS_FAMILY
-}
-
 export function accountModelMappingEndpointFamilyText(
   value: AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
 ): string {
@@ -225,10 +226,6 @@ export function accountModelMappingEndpointFamilyText(
   if (value === OPENAI_VIDEO_GENERATION_FAMILY) return '视频生成'
   if (value === OPENAI_TTS_FAMILY) return '语音合成'
   return value === OPENAI_RESPONSES_FAMILY ? 'Responses' : 'Chat Completions'
-}
-
-export function isGeminiGenerateContentMappingSource(value: AccountModelMappingSourceEndpointFamily): boolean {
-  return value === GEMINI_GENERATE_CONTENT_FAMILY || value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 }
 
 export function hasNativeResponsesEndpointMode(value: AccountFormModel['supportedEndpointModes']): boolean {
@@ -271,38 +268,13 @@ function accountModelMappingProviderProfileId(providerProfile?: AccountModelMapp
   return undefined
 }
 
-function accountModelMappingRulesForContext(_context: AccountModelMappingProtocolContext): readonly ProtocolConversionRule[] {
-  return accountModelMappingProtocolRules
-}
-
+// 跨协议映射已整体退役：矩阵外组合一律按「协议一致」口径拒绝（与后端 400
+// 文案同语义）；消息携带「映射」关键词，供创建向导校验失败回跳第 3 步。
 function unsupportedProtocolConversionMessage(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): string {
-  if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-    return '账号模型别名不支持 Anthropic Messages 跨协议映射'
-  }
-  if (isGeminiGenerateContentMappingSource(sourceEndpointFamily)) {
-    return '账号模型别名不支持 Gemini GenerateContent 跨协议映射'
-  }
-  return `账号模型别名只支持同协议映射；不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 的跨协议转换`
-}
-
-function preferredUpstreamFamilies(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
-): AccountModelMappingUpstreamEndpointFamily[] {
-  if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-    return [ANTHROPIC_MESSAGES_FAMILY]
-  }
-  if (isGeminiGenerateContentMappingSource(sourceEndpointFamily)) {
-    return [GEMINI_GENERATE_CONTENT_FAMILY]
-  }
-  // M4b：媒体映射是同族模型名改写，默认上游就是来源族本身。
-  if (sourceEndpointFamily === OPENAI_VIDEO_GENERATION_FAMILY) return [OPENAI_VIDEO_GENERATION_FAMILY]
-  if (sourceEndpointFamily === OPENAI_TTS_FAMILY) return [OPENAI_TTS_FAMILY]
-  return sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    ? [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
-    : [OPENAI_CHAT_COMPLETIONS_FAMILY]
+  return `模型映射客户端协议与上游协议必须一致：不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 的跨协议映射`
 }
 
 function missingUpstreamEndpointFamilyCapabilityMessage(

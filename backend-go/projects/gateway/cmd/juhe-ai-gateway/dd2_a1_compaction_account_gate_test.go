@@ -253,13 +253,13 @@ func TestDD2A1MediaAndBridgeExclusionSurfacesUnchanged(t *testing.T) {
 	})
 	t.Run("replay_window_exclusions_independent_of_budget", func(t *testing.T) {
 		mediaContext := &gatewaypreauth.DispatchContext{RequestLane: gatewayproto.LaneImage}
-		if !preCommitReplayWindowDisabledOf(nil, mediaContext, gatewaydispatch.AccountCandidate{ID: "acc_any"}) {
+		if !preCommitReplayWindowDisabledOf(nil, mediaContext) {
 			t.Fatal("媒体创建域的受限重放窗口排除必须保持生效")
 		}
 		bridgeContext := &gatewaypreauth.DispatchContext{
 			ClientStrategy: gatewaypreauth.ClientStrategyContext{DownstreamProtocol: "messages_sse"},
 		}
-		if !preCommitReplayWindowDisabledOf(nil, bridgeContext, gatewaydispatch.AccountCandidate{ID: "acc_bridge"}) {
+		if !preCommitReplayWindowDisabledOf(nil, bridgeContext) {
 			t.Fatal("桥接流方向的受限重放窗口排除必须保持生效")
 		}
 	})

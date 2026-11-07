@@ -91,7 +91,7 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	// len(registeredSteps)，空库上目标态判据式步骤（违规计数类）空真满足归
 	// adopt，其余 pending；两列表必须恰好不重不漏覆盖全部步骤 ID。
 	total := len(dryReport.Plan.Pending) + len(dryReport.Plan.Adopt)
-	if total != 12 {
+	if total != 13 {
 		t.Fatalf("fresh dry-run 步骤总数不符: pending=%d adopt=%d 合计=%d destructive=%d",
 			len(dryReport.Plan.Pending), len(dryReport.Plan.Adopt), total, dryReport.Plan.DestructiveDDLStatements)
 	}
@@ -107,8 +107,8 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 			t.Fatalf("步骤 %s 在 pending/adopt 出现 %d 次（应恰好一次）", stepID, count)
 		}
 	}
-	if len(seen) != 12 {
-		t.Fatalf("步骤 ID 去重后 %d 个，want 12（rev7 已随 AI 问答退役删除；rev13 为 T91-3 schedulable 归一）", len(seen))
+	if len(seen) != 13 {
+		t.Fatalf("步骤 ID 去重后 %d 个，want 13（rev7 已随 AI 问答退役删除；rev13 为 T91-3 schedulable 归一；rev20 为跨协议入口映射退役）", len(seen))
 	}
 	for _, item := range dryReport.Plan.Pending {
 		t.Logf("pending rev=%d %s", item.Revision, item.StepID)

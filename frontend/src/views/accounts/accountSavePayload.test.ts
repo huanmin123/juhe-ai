@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildAccountSavePayload, buildAccountUpdatePayload, validateAccountModelMappings, validateAccountSaveForm } from './accountSavePayload'
+import {
+  ACCOUNT_MODEL_MAPPING_SOURCE_POOL_UNREADY_MESSAGE,
+  ACCOUNT_MODEL_MAPPING_UPSTREAM_POOL_UNREADY_MESSAGE,
+  buildAccountSavePayload,
+  buildAccountUpdatePayload,
+  validateAccountModelMappings,
+  validateAccountSaveForm
+} from './accountSavePayload'
 import {
   buildAccountAdvancedUpdatePatch,
   buildAccountBasicEditSnapshot,
@@ -30,8 +37,8 @@ describe('validateAccountModelMappings baseline changes', () => {
       openAIProfile,
       {
         baselineMappings: [mapping],
-        mappingCurrentProviderSourceModelOptions: [],
-        mappingUpstreamModelOptions: []
+        mappingSourceModelOptions: [{ value: 'legacy-client-model', supportedApiProtocols: ['chat_completions'] }],
+        mappingUpstreamModelOptions: [{ value: 'legacy-upstream-model', supportedApiProtocols: ['chat_completions'] }]
       }
     )
 
@@ -40,6 +47,131 @@ describe('validateAccountModelMappings baseline changes', () => {
 
   it('keeps an unchanged baseline row exempt from the current candidate window', () => {
     expect(validateAccountModelMappings([mapping], [], ['chat_json'], openAIProfile, { baselineMappings: [mapping] })).toBeUndefined()
+  })
+
+  it('baseline exemption does not bypass protocol structure validation', () => {
+    // 升级前遗留的跨协议行（responses -> chat_completions）即使与基线完全一致，
+    // 协议结构校验（协议一致强制）也必须拒绝，不做候选窗口豁免扩权。
+    const legacyBridgeRow: AccountFormModel['modelMappings'][number] = {
+      sourceModel: 'legacy-client-model',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'legacy-upstream-model',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }
+    expect(validateAccountModelMappings(
+      [legacyBridgeRow],
+      ['legacy-upstream-model'],
+      ['chat_json'],
+      openAIProfile,
+      {
+        baselineMappings: [legacyBridgeRow],
+        mappingSourceModelOptions: [{ value: 'legacy-client-model', supportedApiProtocols: ['responses'] }],
+        mappingUpstreamModelOptions: [{ value: 'legacy-upstream-model', supportedApiProtocols: ['chat_completions'] }]
+      }
+    )).toContain('模型映射客户端协议与上游协议必须一致')
+  })
+})
+
+// 2026-11-07 跨协议模型映射退役（批次 E）：source 跨供应商 + 协议过滤 +
+// 候选池就绪门的保存校验契约。
+describe('validateAccountModelMappings 跨供应商 source 与候选池就绪门', () => {
+  function chatMappingRow(sourceModel: string): AccountFormModel['modelMappings'][number] {
+    return {
+      sourceModel,
+      sourceEndpointFamily: 'chat_completions',
+      upstreamModel: 'deepseek-chat',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }
+  }
+
+  it('跨供应商 source 声明协议不符被拒（Responses-only 模型不能做 Chat 映射的客户端模型）', () => {
+    const error = validateAccountModelMappings(
+      [chatMappingRow('gpt-responses-only')],
+      ['deepseek-chat'],
+      ['chat_json'],
+      openAIProfile,
+      {
+        mappingSourceModelOptions: [
+          { value: 'gpt-responses-only', supportedApiProtocols: ['responses'] },
+          { value: 'gpt-chat', supportedApiProtocols: ['chat_completions'] }
+        ],
+        mappingUpstreamModelOptions: [{ value: 'deepseek-chat', supportedApiProtocols: ['chat_completions'] }]
+      }
+    )
+    expect(error).toContain('模型映射客户端模型 gpt-responses-only 不支持 Chat Completions 协议')
+  })
+
+  it('跨供应商同协议 source（含媒体族 token 换算）正常放行', () => {
+    const error = validateAccountModelMappings(
+      [{
+        sourceModel: 'sora-video',
+        sourceEndpointFamily: 'video_generation',
+        upstreamModel: 'doubao-video',
+        upstreamEndpointFamily: 'video_generation',
+        enabled: true
+      }],
+      ['doubao-video'],
+      ['video_create'],
+      openAIProfile,
+      {
+        // 跨供应商池：source 来自 gpt 目录（video token），upstream 来自本账户目录。
+        mappingSourceModelOptions: [{ value: 'sora-video', supportedApiProtocols: ['video'] }],
+        mappingUpstreamModelOptions: [{ value: 'doubao-video', supportedApiProtocols: ['video'] }]
+      }
+    )
+    expect(error).toBeUndefined()
+  })
+
+  it('source 池未就绪阻止保存并返回中文加载错误', () => {
+    expect(validateAccountModelMappings(
+      [chatMappingRow('gpt-chat')],
+      ['deepseek-chat'],
+      ['chat_json'],
+      openAIProfile,
+      { mappingSourceModelOptionsReady: false }
+    )).toBe(ACCOUNT_MODEL_MAPPING_SOURCE_POOL_UNREADY_MESSAGE)
+  })
+
+  it('上游候选池未就绪阻止保存并返回中文加载错误', () => {
+    expect(validateAccountModelMappings(
+      [chatMappingRow('gpt-chat')],
+      ['deepseek-chat'],
+      ['chat_json'],
+      openAIProfile,
+      {
+        mappingSourceModelOptions: [{ value: 'gpt-chat', supportedApiProtocols: ['chat_completions'] }],
+        mappingUpstreamModelOptionsReady: false
+      }
+    )).toBe(ACCOUNT_MODEL_MAPPING_UPSTREAM_POOL_UNREADY_MESSAGE)
+  })
+
+  it('就绪但为空的 source 池不再空池放行（目录确认无该模型即拒绝）', () => {
+    const error = validateAccountModelMappings(
+      [chatMappingRow('gpt-chat')],
+      ['deepseek-chat'],
+      ['chat_json'],
+      openAIProfile,
+      {
+        mappingSourceModelOptions: [],
+        mappingUpstreamModelOptions: [{ value: 'deepseek-chat', supportedApiProtocols: ['chat_completions'] }]
+      }
+    )
+    expect(error).toContain('模型映射客户端模型 gpt-chat 不在可选模型目录中')
+  })
+
+  it('基线原样行不触发候选池就绪门（池未加载不阻断未变更映射的保存）', () => {
+    expect(validateAccountModelMappings(
+      [mapping],
+      ['legacy-upstream-model'],
+      ['chat_json'],
+      openAIProfile,
+      {
+        baselineMappings: [mapping],
+        mappingSourceModelOptionsReady: false
+      }
+    )).toBeUndefined()
   })
 })
 

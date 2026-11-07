@@ -91,7 +91,41 @@ const oauthMgmtPGFixtureSchema = `
       outbound_region text,
       last_test_message text,
       last_tested_at timestamptz,
+      pool_health_status text,
+      pool_health_failure_streak integer NOT NULL DEFAULT 0,
+      pool_health_checked_at timestamptz,
       created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL
+    );
+	CREATE SEQUENCE IF NOT EXISTS juhe_business.account_proxy_lease_generation_seq;
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_pools (
+      id text PRIMARY KEY,
+      system_account_id text NOT NULL,
+      name text NOT NULL,
+      description text,
+      strategy text NOT NULL,
+      enabled boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_pool_members (
+      pool_id text NOT NULL,
+      proxy_profile_id text NOT NULL,
+      priority integer NOT NULL,
+      weight integer NOT NULL DEFAULT 1,
+      enabled boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL,
+      PRIMARY KEY (pool_id, proxy_profile_id),
+      UNIQUE (pool_id, priority)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_proxy_leases (
+      account_id text PRIMARY KEY,
+      pool_id text NOT NULL,
+      proxy_profile_id text NOT NULL,
+      generation bigint NOT NULL DEFAULT nextval('juhe_business.account_proxy_lease_generation_seq'),
+      assignment_reason text NOT NULL,
+      assigned_at timestamptz NOT NULL,
       updated_at timestamptz NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.groups (
@@ -127,7 +161,9 @@ const oauthMgmtPGFixtureSchema = `
       oauth_access_token_expires_at text,
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
+      proxy_pool_id text,
       concurrency_limit integer NOT NULL DEFAULT 5000,
+      rpm_limit integer NOT NULL DEFAULT 0,
       priority integer NOT NULL DEFAULT 0,
       super_priority_enabled integer NOT NULL DEFAULT 0,
       fallback_enabled integer NOT NULL DEFAULT 0,

@@ -15,7 +15,7 @@ import { anthropicOAuthApi, myAnthropicOAuthApi } from './domains/anthropicOAuth
 import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
 import { playgroundApi } from './domains/playground'
 import { providersApi } from './domains/providers'
-import { proxiesApi } from './domains/proxies'
+import { proxiesApi, proxyPoolsApi } from './domains/proxies'
 import { responseInspectionPoliciesApi } from './domains/responseInspectionPolicies'
 import { myRouteStrategiesApi, routeStrategiesApi } from './domains/routeStrategies'
 import { settingsApi } from './domains/settings'
@@ -59,6 +59,7 @@ export const api = {
   myOpenaiOAuth: myOpenaiOAuthApi,
   playground: playgroundApi,
   proxies: proxiesApi,
+  proxyPools: proxyPoolsApi,
   usageRecords: usageRecordsApi,
   myUsageRecords: myUsageRecordsApi,
   mediaJobs: mediaJobsApi,

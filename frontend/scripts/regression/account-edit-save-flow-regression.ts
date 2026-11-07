@@ -169,8 +169,8 @@ assert.match(
 )
 assert.match(
   editFormSource,
-  /function resetDeferredAccountOptionState\(\)[\s\S]*?resetProviderModelOptions\(\)[\s\S]*?resetAllProviderModelOptions\(\)[\s\S]*?resetAccountTagOptions\(\)/,
-  '关闭或切换账户表单必须清空所有模型候选和标签候选'
+  /function resetDeferredAccountOptionState\(\)[\s\S]*?resetProviderModelOptions\(\)[\s\S]*?resetMappingPoolModelOptions\(\)[\s\S]*?resetAccountTagOptions\(\)/,
+  '关闭或切换账户表单必须清空所有模型候选（含跨供应商映射 source 池）和标签候选'
 )
 assert.match(tagSelectSource, /@dropdown-visible-change="\$emit\('dropdown-visible-change', \$event\)"/, '标签选择器必须透传下拉展开事件')
 assert.match(apiKeySectionSource, /@dropdown-visible-change="\$emit\('model-options-open', \$event\)"/, 'API Key 支持模型下拉必须发出按需加载事件')

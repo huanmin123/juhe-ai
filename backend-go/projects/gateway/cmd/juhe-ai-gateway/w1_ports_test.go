@@ -421,10 +421,8 @@ func TestW1AdapterGuardsAndIdentity(t *testing.T) {
 	if scope.HMACSecret != "secret" || scope.RouteStrategyID != "rs_1" || scope.GroupID != "grp_1" {
 		t.Fatalf("scope = %+v", scope)
 	}
-	// codex 桥 preflight 保持非 nil。
-	if chainCodexBridgePreflight(nil) == nil {
-		t.Fatal("必须回退到适配器")
-	}
+	// 2026-11-07 桥退役：codex 桥 preflight 降级装配已删，preauth 的 Codex
+	// 端口在生产组合为 codexCompactionExpectedPort（chain_compose.go）。
 	// 审计适配器：producer 缺席静默丢弃。
 	auditUsageDispatcher{}.DispatchAuditLog(nil, gatewayusage.AuditLogInput{})
 	// auditSettingsSource：nil enabled 函数 → 关闭；零值构造采样字段保持 0。

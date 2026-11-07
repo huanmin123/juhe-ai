@@ -120,34 +120,6 @@ type ScheduledLeaseFence struct {
 	FencingToken int64
 }
 
-// CodexContextExpiredCleanup mirrors CodexContextExpiredStateCleanupResult.
-type CodexContextExpiredCleanup struct {
-	DeletedSessions  int64
-	DeletedResponses int64
-	DeletedCompacts  int64
-	StorageKeys      []string
-	HasMore          bool
-}
-
-// CodexContextCleanupFailure mirrors CodexContextStorageCleanupFailure.
-type CodexContextCleanupFailure struct {
-	StorageKey string
-	Error      string
-}
-
-// CodexContextSettlement mirrors CodexContextStorageCleanupSettlement.
-type CodexContextSettlement struct {
-	SucceededStorageKeys []string
-	Failures             []CodexContextCleanupFailure
-	Now                  string
-}
-
-// CodexContextSettlementResult mirrors CodexContextStorageCleanupSettlementResult.
-type CodexContextSettlementResult struct {
-	Acknowledged int64
-	Deferred     int64
-}
-
 // ExpiredDeletedAccountTarget mirrors DeletedAccountRecordCleanupTarget.
 type ExpiredDeletedAccountTarget struct {
 	AccountID         string
@@ -180,8 +152,6 @@ type ExpiredDeletedAccountSummary struct {
 // keeps its dedicated error messages at the call sites.
 type DbService interface {
 	CleanupExpiredSystemSessions(ctx context.Context, expiredBefore string, limit int) (int64, error)
-	CleanupExpiredCodexContextStates(ctx context.Context, expiredBefore string, limit int) (*CodexContextExpiredCleanup, error)
-	SettleCodexContextStorageCleanup(ctx context.Context, settlement CodexContextSettlement) (CodexContextSettlementResult, error)
 	CleanupExpiredDeletedAccounts(ctx context.Context) (*ExpiredDeletedAccountSummary, error)
 }
 
@@ -299,14 +269,5 @@ type AccountRecordCleanupRetryer interface {
 }
 
 
-// StorageKeyDeletionResult mirrors CodexContextStorageKeyDeletionResult.
-type StorageKeyDeletionResult struct {
-	Deleted              int64
-	SucceededStorageKeys []string
-	Failures             []CodexContextCleanupFailure
-}
-
-// CodexContextStorageKeyDeleter mirrors deleteCodexContextStorageKeys.
-type CodexContextStorageKeyDeleter interface {
-	DeleteStorageKeys(ctx context.Context, storageKeys []string) (StorageKeyDeletionResult, error)
-}
+// 2026-11-07 codex-context 退役：原 StorageKeyDeletionResult /
+// CodexContextStorageKeyDeleter（segments 文件删除端口）随桥删除。

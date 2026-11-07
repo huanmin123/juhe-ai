@@ -130,11 +130,11 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 	t.Run("dispatch-mapping", func(t *testing.T) {
 		cache := superDispatchCache(t)
 		cache.groupAccess["grp_map"] = routeTestAccess()
-		cache.accounts["grp_map"] = []UpstreamAccount{crossFamilyMappingAccount("acc_map_only", "up_m")}
+		cache.accounts["grp_map"] = []UpstreamAccount{mappingAccount("acc_map_only", "up_m")}
 
-		// 跨协议转换映射（responses→chat_completions）的源族必须与请求族一致
-		// 才能命中；请求视图覆盖为 responses family。
-		candidates := collectSuperCandidatesWithFamily(t, cache, EndpointFamilyResponses,
+		// 协议等价映射（chat→chat 同族改名）与直连同权 rank 0；跨协议映射已
+		// 随 2026-11-07 退役，见下方 dispatch-retired-cross-protocol。
+		candidates := collectSuperCandidatesWithFamily(t, cache, EndpointFamilyChatCompletions,
 			superGroupBinding("b1", "grp_super", []string{"grp_map"}, 1))
 		if len(candidates) != 1 {
 			t.Fatalf("candidates = %d, want 1", len(candidates))
@@ -143,12 +143,24 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 		if got := accountIDs(candidate.Accounts); !equalStrings(got, []string{"acc_map_only"}) {
 			t.Fatalf("accounts = %v", got)
 		}
-		if got := candidate.ModelFilter.ModelPriority.RankByAccountID["acc_map_only"]; got != 1 {
-			t.Fatalf("cross-protocol mapping route rank = %d, want 1", got)
+		if got := candidate.ModelFilter.ModelPriority.RankByAccountID["acc_map_only"]; got != 0 {
+			t.Fatalf("protocol-equivalent mapping route rank = %d, want 0", got)
 		}
-		if candidate.ModelFilter.DirectMatchedCount != 0 || candidate.ModelFilter.MappingMatchedCount != 1 {
+		if candidate.ModelFilter.DirectMatchedCount != 1 || candidate.ModelFilter.MappingMatchedCount != 0 {
 			t.Fatalf("filter counts = direct:%d mapping:%d",
 				candidate.ModelFilter.DirectMatchedCount, candidate.ModelFilter.MappingMatchedCount)
+		}
+	})
+
+	t.Run("dispatch-retired-cross-protocol", func(t *testing.T) {
+		cache := superDispatchCache(t)
+		cache.groupAccess["grp_map"] = routeTestAccess()
+		cache.accounts["grp_map"] = []UpstreamAccount{crossFamilyMappingAccount("acc_cross_only", "up_cross")}
+
+		candidates := collectSuperCandidatesWithFamily(t, cache, EndpointFamilyResponses,
+			superGroupBinding("b1", "grp_super", []string{"grp_map"}, 1))
+		if len(candidates) != 0 {
+			t.Fatalf("retired cross-protocol mapping must not produce candidates: %v", accountIDs(candidates[0].Accounts))
 		}
 	})
 

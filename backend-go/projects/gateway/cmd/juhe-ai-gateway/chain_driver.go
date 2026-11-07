@@ -337,18 +337,11 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 	}
 	// openai-compatible (openai / hybrid and any other OpenAI-style
 		// upstream): v2 直拼——base_url 即版本根 + 入站剥 /v1 后的 opPath
-		//（不再补 /v1）。Mapped
-		// requests carry the same path rewrite as the driver body transform
-		//（BUG-0178：responses -> chat_completions 需改写到 /chat/completions，
-		// 否则 Responses 形态请求会打到上游原生 /responses 端点）。持有原生
-		// Responses 端点模式的账户不参与该改写：/responses 按原生直通
-		//（codex OAuth 账户与 responses 模式 api_key 账户的既有语义）。
+		//（不再补 /v1）。2026-11-07 跨协议 Responses→Chat 桥退役：原
+		// BUG-0178 的 responses→chat 路径改写与 accountHasNativeResponsesModes
+		// 守卫随桥删除；协议等价映射（同族改名）不改变请求路径，模型改名由
+		// driver body transform 承载。
 		pathAndQuery := req.PathAndQuery()
-		if mapping := d.resolveAccountModelMapping(account, req, ""); mapping != nil && !accountHasNativeResponsesModes(account) {
-			if rewritten, ok := gatewayopenai.ModelMappedUpstreamPathAndQuery(pathAndQuery, mapping); ok {
-				pathAndQuery = rewritten
-			}
-		}
 		// 对话批（通义百炼对话承接）：qwen chat 通用 opPath 恒定拼厂商前缀
 		// /compatible-mode/v1（R6，chainQwenChatPathPrefix，registry preset
 		// qwen_dashscope 同源）后与 base_url 直拼——官方 origin 形态 base +
@@ -719,12 +712,9 @@ func chainMaybeInjectChatStreamUsageOption(
 	if !gatewaypreauth.RequestStream(req) {
 		return body
 	}
+	// 2026-11-07 桥退役：responses→chat 路径改写随桥删除；注入判定直接按
+	// 客户端出站路径（协议等价映射不改变路径）。
 	outboundPathAndQuery := req.PathAndQuery()
-	if modelMapping != nil && !accountHasNativeResponsesModes(account) {
-		if rewritten, ok := gatewayopenai.ModelMappedUpstreamPathAndQuery(outboundPathAndQuery, modelMapping); ok {
-			outboundPathAndQuery = rewritten
-		}
-	}
 	if !chainIsChatCompletionsPathAndQuery(outboundPathAndQuery) {
 		return body
 	}
@@ -2079,20 +2069,6 @@ func (d *chainProviderDriver) endpointModeMismatchReason(req *gatewaypreauth.Gat
 	return "endpoint_mode_unsupported"
 }
 
-// accountHasNativeResponsesModes reports whether the account explicitly
-// carries OpenAI Responses endpoint modes. The BUG-0178 responses ->
-// chat_completions bridge（URL 改写 + 响应回转）只面向 chat-only 账户；持有
-// 原生 Responses 能力的账户（codex OAuth、responses 模式 api_key）对
-// /responses 按原生直通，映射改写不得介入。
-func accountHasNativeResponsesModes(account gatewaydispatch.AccountCandidate) bool {
-	for _, mode := range account.SupportedEndpointModes {
-		if mode == gatewaypreauth.EndpointModeResponsesJSON || mode == gatewaypreauth.EndpointModeResponsesSSE {
-			return true
-		}
-	}
-	return false
-}
-
 // requiredSupportedEndpointMode computes the endpoint-mode token this request
 // would exercise on the account (bridge mappings remap the vocabulary onto the
 // upstream family, mirroring the Node bridge required-mode helpers). The
@@ -2106,38 +2082,20 @@ func (d *chainProviderDriver) requiredSupportedEndpointMode(req *gatewaypreauth.
 		return "", false
 	}
 	stream := gatewaypreauth.RequestStream(req)
-	// 跨协议映射把许可词汇表切到上游族（Node
-	// anthropicMessagesChatBridgeRequiredEndpointMode /
-	// geminiGenerateContentChatBridgeRequiredEndpointMode /
-	// codexResponsesChatBridgeRequiredEndpointMode /
-	// openAIToAnthropicBridgeRequiredEndpointMode）。映射分支一律先于通用
-	// 分支判定（Node glm / openai-compatible / hybrid / gpt 各 driver 同序）：
-	// 命中 responses -> chat_completions 显式映射的 chat-only 账户对
-	// codex_responses 客户端请求只要求 chat_sse，不被 responses_sse 强制
-	// 淘汰（BUG-0179）。OAuth 账户不走映射分支（Node gpt driver 的
-	// account.type !== 'oauth' 守卫），保持原生 Responses 语义。
+	// 2026-11-07 跨协议 Responses→Chat 桥退役：映射分支的许可词汇表切换面
+	// （Node 各 bridge required-mode helper）随桥删除；唯一保留的跨族形态是
+	// Gemini 同族归一 pair 5（source=stream_generate_content →
+	// upstream=generate_content），账户按目标族要求 generate_content_sse/json。
+	// OAuth 账户不走映射分支（Node gpt driver 的 account.type !== 'oauth'
+	// 守卫），保持原生 Responses 语义。
 	if account.Type != "oauth" {
 		if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil &&
-			mapping.UpstreamEndpointFamily != "" && mapping.UpstreamEndpointFamily != mapping.SourceEndpointFamily {
-			switch openaicompatcore.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) {
-			case "chat_completions":
-				if stream || openaicompatcore.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == "responses" {
-					return gatewaypreauth.EndpointModeChatSSE, true
-				}
-				return gatewaypreauth.EndpointModeChatJSON, true
-			case "anthropic_messages":
-				if stream {
-					return gatewaypreauth.EndpointModeMessagesSSE, true
-				}
-				return gatewaypreauth.EndpointModeMessagesJSON, true
-			case "gemini_generate_content", "gemini_stream_generate":
-				if stream {
-					return gatewaypreauth.EndpointModeGenerateContentSSE, true
-				}
-				return gatewaypreauth.EndpointModeGenerateContentJSON, true
-			default:
-				return "", false
+			openaicompatcore.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == openaicompatcore.FamilyGeminiStreamGenerate &&
+			openaicompatcore.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) == openaicompatcore.FamilyGeminiGenerateContent {
+			if stream {
+				return gatewaypreauth.EndpointModeGenerateContentSSE, true
 			}
+			return gatewaypreauth.EndpointModeGenerateContentJSON, true
 		}
 	}
 	// codex_responses 客户端的 /responses POST 强制 SSE（D-99），账户必须持有

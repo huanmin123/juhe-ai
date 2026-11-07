@@ -133,8 +133,22 @@ import (
 // 623→625：2026-11-06 媒体任务索引批——juhe_business +2（media_jobs
 // owner_system_account_id+created_at 与 status+created_at 两条幂等 CREATE
 // INDEX）。
+// 625→641：2026-11-06 代理池批——juhe_business +16（4 条建表/序列语句、
+// 4 条幂等 ALTER、1 个二选一 CHECK/FK DO 块、6 条索引、1 个 dirty 触发器
+// 块）。设计见 docs/functions/代理池设计.md §4.6/§11.2。
+// 641→650：2026-11-07 API Key 安全策略批A 存储（API Key 安全策略与出站内容
+// 脱敏设计 §4.1）——juhe_business +7（security_policies 建表、
+// api_keys.security_policy_id 幂等 ALTER、安全策略索引组 5 条），
+// juhe_usage +2（usage_records security_policy_applied / pii_hits_json 幂等
+// ALTER；建表 DDL 原位加列不另计语句）。
+// 650→637：2026-11-07 跨协议 Responses→Chat 桥退役批——juhe_codex_context
+// 组 13 条整组移除（schema 不再保留；存量 schema 由 revision 20 升级步骤
+// DROP，ensure-schema 不再预建）。
+// 637→638：2026-11-07 防护次数写后缓存批（API Key 安全策略与出站内容脱敏
+// 设计 §4.3.1）——juhe_business +1（security_policies.protection_count 幂等
+// ALTER；revision 21 纯 DDL 空号）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 625
+const goldenPostgresSchemaStatementCount = 638
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -161,23 +175,26 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 去索引化批 -12（3 TABLE + 9 INDEX）。312→313：2026-11-05 九家真实
 	// 厂商收口 +1（accounts vendor/driver 一致性 CHECK 幂等 ALTER）。
 	// 313→315：2026-11-06 媒体任务索引批 +2（media_jobs owner+created、
-	// status+created 幂等 CREATE INDEX）。
-	"juhe_business": 315,
+	// status+created 幂等 CREATE INDEX）。315→331：2026-11-06 代理池批 +16
+	// （详见总数注释）。331→338：2026-11-07 API Key 安全策略批A 存储 +7
+	//（security_policies 建表 + api_keys.security_policy_id 幂等 ALTER +
+	// 索引组 5 条，详见总数注释）。338→339：2026-11-07 防护次数写后缓存批
+	// +1（security_policies.protection_count 幂等 ALTER，详见总数注释）。
+	"juhe_business": 339,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
 	// 53→54：用量记录压缩标记批 +1（compaction_expected 幂等 ALTER）。
 	// 54→58：用量统计消费水位批 +4（两个聚合器各一列幂等 ALTER 与各一条
-	// 部分索引）。
-	"juhe_usage": 58,
+	// 部分索引）。58→60：2026-11-07 API Key 安全策略批A 存储 +2
+	//（usage_records security_policy_applied / pii_hits_json 幂等 ALTER）。
+	"juhe_usage": 60,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
 	// 238→232：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
 	//（-2 TABLE -6 INDEX +2 DROP TABLE）。
 	"juhe_stats": 232,
-	// 16→16：provider 维度持久列退役批（B4①）-3 CREATE INDEX（codex boundary）
-	// +3 DROP COLUMN。16→13：2026-10-30 B08 撤除 codex 三表 3 条 provider_code
-	// 幂等 DROP COLUMN（boundary 索引已随 B4① 撤除，无对应加法语句）。
-	"juhe_codex_context": 13,
+	// juhe_codex_context 组 13 条已随 2026-11-07 跨协议桥退役整组移除
+	// （schema 不再保留；存量 schema 由 revision 20 升级步骤 DROP）。
 }
 
 // goldenPostgresSchemaNameOrder is the Node first-seen schema order, which is
@@ -187,7 +204,6 @@ var goldenPostgresSchemaNameOrder = []string{
 	"juhe_dataset",
 	"juhe_usage",
 	"juhe_stats",
-	"juhe_codex_context",
 }
 
 func TestPostgresSchemaStatementsGoldenCount(t *testing.T) {
@@ -302,8 +318,12 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 请求上限批 +1（account-rpm-limit-pg-column）。93→96：时间计划闸门批 +2
 	// （accounts / api_keys 各一条 availability_schedule_gate；当批未同步本计数，
 	// 由本批一并回正）+ 用量统计消费水位批 +1（两列中第一列；另一列计入下一条）。
-	if alterColumns != 97 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 97", alterColumns)
+	// 101→104：2026-11-07 API Key 安全策略批A 存储 +3（api_keys.
+	// security_policy_id + usage_records security_policy_applied / pii_hits_json，
+	// API Key 安全策略与出站内容脱敏设计 §4.1）。104→105：同日防护次数写后
+	// 缓存批 +1（security_policies.protection_count，设计 §4.3.1）。
+	if alterColumns != 105 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 105", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。
@@ -313,14 +333,14 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
 	// ALTER DO 块。
-	if doBlocks != 6 {
-		t.Fatalf("DO block count = %d, want 5", doBlocks)
+	if doBlocks != 7 {
+		t.Fatalf("DO block count = %d, want 7", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
 	}
-	if triggerBlocks != 2 {
-		t.Fatalf("trigger block count = %d, want 2", triggerBlocks)
+	if triggerBlocks != 3 {
+		t.Fatalf("trigger block count = %d, want 3", triggerBlocks)
 	}
 	// proxy_profiles 触发器随 2026-10-17 触发器治理（PLAN-20261017T035500000Z）
 	// 有意单向移除：CREATE 定义删除、块尾保留 legacy DROP IF EXISTS 清理存量库

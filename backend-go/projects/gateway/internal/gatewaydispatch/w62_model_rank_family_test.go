@@ -1,9 +1,10 @@
 package gatewaydispatch
 
 // W62 方案B（2026-10-24 用户裁决）：同族改名映射（source 与 upstream endpoint
-// family 相同）与直连同权 rank 0；跨协议转换映射（两族不同）保留 rank 1。
-// 权威口径：docs/functions/AI账户模型映射选择规则.md §2.4。全部纯函数/内存
-// 构造，不连数据库。
+// family 相同）与直连同权 rank 0。2026-11-07 跨协议映射退役后不再有 rank 1
+// 桥臂——跨协议映射在运行时解析即被拒绝（拒绝面见 entry_mappings 写侧矩阵
+// 与 gatewayopenai 运行时判定）。权威口径：docs/functions/AI账户模型映射选择
+// 规则.md §2.4。全部纯函数/内存构造，不连数据库。
 
 import (
 	"testing"
@@ -13,9 +14,10 @@ import (
 )
 
 // TestFilterGatewayAccountsByRequestedModelFamilyArms 覆盖同一请求模型下
-// 同族改名 / 保留的 Responses→Chat bridge / 直连三个 rank 判定臂（SQL 候选
-// 窗口的同构语义由 cmd/juhe-ai-gateway 的 w62_model_rank_family_test.go 以
-// 真实 seed 验证）。
+// 同族改名 / 跨协议映射拒绝 / 直连三个 rank 判定臂（SQL 候选窗口的同构语义
+// 由 cmd/juhe-ai-gateway 的 w62_model_rank_family_test.go 以真实 seed 验证）。
+// 2026-11-07 跨协议退役后不再有 rank 1 桥臂：responses -> chat 映射在运行时
+// 解析即被拒绝，持有该映射的账户不进入候选。
 func TestFilterGatewayAccountsByRequestedModelFamilyArms(t *testing.T) {
 	sameFamilyRename := AccountCandidate{
 		ID:              "acc_same_family_rename",
@@ -28,7 +30,7 @@ func TestFilterGatewayAccountsByRequestedModelFamilyArms(t *testing.T) {
 			Enabled:                true,
 		}},
 	}
-	bridge := AccountCandidate{
+	crossProtocol := AccountCandidate{
 		ID:              "acc_responses_chat_bridge",
 		SupportedModels: []string{"up-cross"},
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
@@ -42,24 +44,25 @@ func TestFilterGatewayAccountsByRequestedModelFamilyArms(t *testing.T) {
 	direct := AccountCandidate{ID: "acc_direct", SupportedModels: []string{"client-model"}}
 
 	result := FilterGatewayAccountsByRequestedModel(
-		[]AccountCandidate{sameFamilyRename, bridge, direct},
+		[]AccountCandidate{sameFamilyRename, crossProtocol, direct},
 		"client-model", gatewayrouting.EndpointFamilyResponses)
 
-	if got := len(result.Accounts); got != 3 {
-		t.Fatalf("accounts = %d, want 3 (same-family rename + bridge + direct)", got)
+	gotIDs := make([]string, 0, len(result.Accounts))
+	for _, account := range result.Accounts {
+		gotIDs = append(gotIDs, account.ID)
+	}
+	if len(gotIDs) != 2 || gotIDs[0] != "acc_same_family_rename" || gotIDs[1] != "acc_direct" {
+		t.Fatalf("accounts = %v, want [acc_same_family_rename acc_direct]（跨协议映射账户被拒绝，同族改名与直连同秩保留）", gotIDs)
 	}
 	ranks := result.ModelPriority.RankByAccountID
 	if ranks["acc_same_family_rename"] != ModelPriorityRankDirect {
 		t.Fatalf("same-family rename rank = %d, want %d (ties with direct)", ranks["acc_same_family_rename"], ModelPriorityRankDirect)
 	}
-	if ranks["acc_responses_chat_bridge"] != ModelPriorityRankMapping {
-		t.Fatalf("bridge rank = %d, want %d", ranks["acc_responses_chat_bridge"], ModelPriorityRankMapping)
-	}
 	if ranks["acc_direct"] != ModelPriorityRankDirect {
 		t.Fatalf("direct rank = %d, want %d", ranks["acc_direct"], ModelPriorityRankDirect)
 	}
-	if result.MappingMatchedCount != 2 || result.DirectMatchedCount != 1 {
-		t.Fatalf("counts = direct:%d mapping:%d, want direct:1 mapping:2",
+	if result.MappingMatchedCount != 1 || result.DirectMatchedCount != 1 {
+		t.Fatalf("counts = direct:%d mapping:%d, want direct:1 mapping:1",
 			result.DirectMatchedCount, result.MappingMatchedCount)
 	}
 }
@@ -94,6 +97,8 @@ func TestW62ModelFilterKeepsRankOrderNotBucketOrder(t *testing.T) {
 	}
 
 	// 输入序 = 上游装配序：同秩映射账户在最前（比较器已按超级优先置顶）。
+	// 2026-11-07 跨协议退役：跨协议映射账户在解析即被拒绝，不进入输出序；
+	// 输出序继续锁定「同秩继承上游装配序」不按桶拼接。
 	result := FilterGatewayAccountsByRequestedModel(
 		[]AccountCandidate{sameFamilyRename, directA, directB, bridge},
 		"client-model", gatewayrouting.EndpointFamilyResponses)
@@ -103,13 +108,13 @@ func TestW62ModelFilterKeepsRankOrderNotBucketOrder(t *testing.T) {
 		got = append(got, account.ID)
 	}
 	t.Logf("ranks = %v", result.ModelPriority.RankByAccountID)
-	want := []string{"acc_rename_first", "acc_direct_a", "acc_direct_b", "acc_cross_last"}
+	want := []string{"acc_rename_first", "acc_direct_a", "acc_direct_b"}
 	if len(got) != len(want) {
 		t.Fatalf("accounts = %v, want %v", got, want)
 	}
 	for index := range want {
 		if got[index] != want[index] {
-			t.Fatalf("filtered order = %v, want %v (rank-0 mapping stays ahead; rank-1 cross-protocol last)", got, want)
+			t.Fatalf("filtered order = %v, want %v (rank-0 mapping keeps assembly order)", got, want)
 		}
 	}
 }

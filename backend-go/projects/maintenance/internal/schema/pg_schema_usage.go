@@ -89,6 +89,8 @@ var postgresSchemaUsage = []PGStatement{
       group_id text,
       route_group_id text,
       compaction_expected integer NOT NULL DEFAULT 0,
+      security_policy_applied integer NOT NULL DEFAULT 0,
+      pii_hits_json text,
       account_id text,
       endpoint text,
       provider_code text,
@@ -184,6 +186,20 @@ var postgresSchemaUsage = []PGStatement{
 		SchemaName: "juhe_usage",
 		Source:     "usage-records-compaction-expected",
 		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS compaction_expected integer NOT NULL DEFAULT 0`,
+	},
+	{
+		// 安全策略计量两列（API Key 安全策略与出站内容脱敏设计 §8，批A 存储）：
+		// security_policy_applied = 该请求绑定了非默认安全策略（1/0，与是否命中
+		// 无关）；pii_hits_json = 仅命中数 > 0 时由网关写入（按规则 label 计数，
+		// 无任何原文）。存量库幂等补列，模式同 compaction_expected/route_group_id。
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-security-policy",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS security_policy_applied integer NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-security-policy",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS pii_hits_json text`,
 	},
 	{
 		// M2 视频计量列（媒体设计 §10）：视频任务输出秒数，任务终态回填；

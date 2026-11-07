@@ -20,6 +20,16 @@ import {
   type SchedulingPreferencePatchPayload,
   type SchedulingPreferenceScopeParams
 } from '@/api/domains/schedulingPreferences'
+import {
+  mySecurityPoliciesApi,
+  securityPoliciesApi,
+  type SecurityPolicyCreatePayload,
+  type SecurityPolicyCreateScopeParams,
+  type SecurityPolicyListParams,
+  type SecurityPolicyOptionsParams,
+  type SecurityPolicyPatchPayload,
+  type SecurityPolicyScopeParams
+} from '@/api/domains/securityPolicies'
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
@@ -186,6 +196,29 @@ export function useScopedSchedulingPreferencesApi(isManagementView: Ref<boolean>
     delete: (id: string, params?: SchedulingPreferenceScopeParams) => isManagementView.value
       ? schedulingPreferencesApi.delete(id, params)
       : mySchedulingPreferencesApi.delete(id)
+  }
+}
+
+export function useScopedSecurityPoliciesApi(isManagementView: Ref<boolean>) {
+  return {
+    list: (params?: SecurityPolicyListParams) => isManagementView.value
+      ? securityPoliciesApi.list(params)
+      : mySecurityPoliciesApi.list(params),
+    options: (params?: SecurityPolicyOptionsParams) => isManagementView.value
+      ? securityPoliciesApi.options(params)
+      : mySecurityPoliciesApi.options(params),
+    detail: (id: string, params?: SecurityPolicyScopeParams) => isManagementView.value
+      ? securityPoliciesApi.detail(id, params)
+      : mySecurityPoliciesApi.detail(id),
+    create: (payload: SecurityPolicyCreatePayload, params: SecurityPolicyCreateScopeParams) => isManagementView.value
+      ? securityPoliciesApi.create(payload, params)
+      : mySecurityPoliciesApi.create(payload),
+    update: (id: string, payload: SecurityPolicyPatchPayload, params?: SecurityPolicyScopeParams) => isManagementView.value
+      ? securityPoliciesApi.update(id, payload, params)
+      : mySecurityPoliciesApi.update(id, payload),
+    delete: (id: string, params?: SecurityPolicyScopeParams) => isManagementView.value
+      ? securityPoliciesApi.delete(id, params)
+      : mySecurityPoliciesApi.delete(id)
   }
 }
 

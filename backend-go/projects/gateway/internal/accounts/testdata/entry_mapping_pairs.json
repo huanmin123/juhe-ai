@@ -1,19 +1,20 @@
 {
   "$header": [
     "账号模型别名映射 family pair 合法集合的唯一事实源 golden（BUG-0342 根因治理 T103）。",
-    "同一份合法 pair 清单历史上独立存在于四处并各自演化（BUG-0342 即后端写侧漏了 #18 responses->responses 而其余三方放行）：",
+    "同一份合法 pair 清单历史上独立存在于四处并各自演化（BUG-0342 即后端写侧漏了 responses->responses 而其余三方放行）：",
     "  ① 设计文档 docs/functions/供应商与上游协议面重构设计.md §5.2 表格（人工维护的权威叙述）；",
     "  ② 后端写侧 backend-go/projects/gateway/internal/accounts/entry_mappings.go entryMappingPairTargetModes（保存校验唯一实现）；",
-    "  ③ 运行时 backend-go/projects/gateway/internal/gatewayopenai/mapping.go isOpenAIModelMappingRuntimeConversionSupported / IsAdmissibleModelMapping（source==upstream 同族放行 + 跨协议矩阵）；",
+    "  ③ 运行时 backend-go/projects/gateway/internal/gatewayopenai/mapping.go isOpenAIModelMappingRuntimeConversionSupported / IsAdmissibleModelMapping（协议等价判定：同族改名 + Gemini stream 归一）；",
     "  ④ 前端 frontend/src/views/accounts/accountModelMappingProtocolMatrix.ts accountModelMappingProtocolRules（普通）+ （openai/hybrid 已退役）。",
+    "2026-11-07 跨协议模型映射退役：responses->chat_completions bridge 删除，矩阵从 8 pair 收敛为 7 pair（同族改名 + Gemini stream_generate_content->generate_content 归一）。",
     "矩阵演化时必须先改本文件，再同步修改四方实现；两侧自动断言守护：",
     "  Go：backend-go/projects/gateway/internal/accounts/entry_mapping_pairs_golden_test.go（go test -run TestEntryMapping ./internal/accounts/）；",
     "  前端：frontend/src/scripts/regression/account-model-mapping-model-options-regression.ts（npm run test:account-model-mapping-model-options）。",
     "pair 语义：\"source -> target\" 即后端 map 键 source\\x00target 的可读形态；targetModes 是该 pair 全部可执行 target mode（§5.3 唯一选择函数的写侧输入）。",
-    "粒度说明：targetModes 是 pair 级约束（如 responses->chat_completions 仅 chat_sse）；前端下拉只到 family 级能力门，前端侧可验证的子集是 pair 集合全等与交集非空，mode 级联动校验由后端 §5.3 保存校验承担。"
+    "粒度说明：targetModes 是 pair 级约束（如 stream_generate_content->generate_content 仅 generate_content_sse）；前端下拉只到 family 级能力门，前端侧可验证的子集是 pair 集合全等与交集非空，mode 级联动校验由后端 §5.3 保存校验承担。"
   ],
   "authorities": {
-    "designDoc": "docs/functions/供应商与上游协议面重构设计.md §5.2 固定 endpoint family 矩阵（8 pair 表格，designDocRow 即表格行号）",
+    "designDoc": "docs/functions/供应商与上游协议面重构设计.md §5.2 固定 endpoint family 矩阵（7 pair 表格，designDocRow 即表格行号）",
     "backendWrite": "backend-go/projects/gateway/internal/accounts/entry_mappings.go entryMappingPairTargetModes",
     "backendRuntime": "backend-go/projects/gateway/internal/gatewayopenai/mapping.go isOpenAIModelMappingRuntimeConversionSupported / IsAdmissibleModelMapping",
     "frontend": "frontend/src/views/accounts/accountModelMappingProtocolMatrix.ts accountModelMappingProtocolRules（普通）"
@@ -31,19 +32,20 @@
       ]
     },
     {
-      "pair": "responses -> chat_completions",
+      "pair": "responses -> responses",
       "designDocRow": 2,
       "targetModes": [
-        "chat_sse"
+        "responses_json",
+        "responses_sse"
       ],
       "frontendRuleSets": [
         "ordinary"
       ],
-      "note": "仅 stream=true（§5.3：account_entry_mappings 不存 stream 字段，stream=false 时运行时跳过该账户）"
+      "note": "同族改名映射（BUG-0342：写侧曾漏项导致保存恒 400），不是跨协议 bridge"
     },
     {
       "pair": "messages -> messages",
-      "designDocRow": 6,
+      "designDocRow": 3,
       "targetModes": [
         "messages_json",
         "messages_sse"
@@ -54,7 +56,7 @@
     },
     {
       "pair": "generate_content -> generate_content",
-      "designDocRow": 11,
+      "designDocRow": 4,
       "targetModes": [
         "generate_content_json"
       ],
@@ -65,7 +67,7 @@
     },
     {
       "pair": "stream_generate_content -> generate_content",
-      "designDocRow": 12,
+      "designDocRow": 5,
       "targetModes": [
         "generate_content_sse"
       ],
@@ -76,7 +78,7 @@
     },
     {
       "pair": "video_generation -> video_generation",
-      "designDocRow": 16,
+      "designDocRow": 6,
       "targetModes": [
         "video_create",
         "video_get",
@@ -90,7 +92,7 @@
     },
     {
       "pair": "tts -> tts",
-      "designDocRow": 17,
+      "designDocRow": 7,
       "targetModes": [
         "audio_speech"
       ],
@@ -98,18 +100,6 @@
         "ordinary"
       ],
       "note": "同步语音生成，只有一个形态"
-    },
-    {
-      "pair": "responses -> responses",
-      "designDocRow": 18,
-      "targetModes": [
-        "responses_json",
-        "responses_sse"
-      ],
-      "frontendRuleSets": [
-        "ordinary"
-      ],
-      "note": "同族改名映射（BUG-0342：写侧曾漏项导致保存恒 400），不是跨协议 bridge；hybrid 不合成 Responses 上游状态机，故只在普通账户清单"
     }
   ]
 }

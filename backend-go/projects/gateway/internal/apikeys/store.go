@@ -590,8 +590,14 @@ type ListItem struct {
 	SchedulingPreferenceID      *string `json:"schedulingPreferenceId"`
 	SchedulingPreferenceName    *string `json:"schedulingPreferenceName"`
 	SchedulingPreferenceBuiltIn *bool   `json:"schedulingPreferenceBuiltIn"`
-	Usage                       any     `json:"usage"`
-	Revision                    string  `json:"revision"`
+	// 安全策略绑定投影（批A，API Key 安全策略与出站内容脱敏设计 §4.2）：创
+	// 建缺省/null 即内置固定 ID（不存在历史 NULL 语义）；存量行取 NULL 恒满足
+	// REFERENCES 声明，回显 null 由前端按内置行渲染。
+	SecurityPolicyID      *string `json:"securityPolicyId"`
+	SecurityPolicyName    *string `json:"securityPolicyName"`
+	SecurityPolicyBuiltIn *bool   `json:"securityPolicyBuiltIn"`
+	Usage                 any     `json:"usage"`
+	Revision              string  `json:"revision"`
 }
 
 // ListPageResult mirrors ApiKeyListResult (total is the paged upper bound).
@@ -694,6 +700,10 @@ type apiKeyRow struct {
 	schedulingPreferenceID      sql.NullString
 	schedulingPreferenceName    sql.NullString
 	schedulingPreferenceBuiltIn sql.NullInt64
+
+	securityPolicyID      sql.NullString
+	securityPolicyName    sql.NullString
+	securityPolicyBuiltIn sql.NullInt64
 }
 
 func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error) {
@@ -707,6 +717,7 @@ func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error
 	targets = append(targets,
 		&row.routeStrategyID, &row.routeStrategyName, &row.routeStrategyMode, &row.routeStrategyStatus,
 		&row.schedulingPreferenceID, &row.schedulingPreferenceName, &row.schedulingPreferenceBuiltIn,
+		&row.securityPolicyID, &row.securityPolicyName, &row.securityPolicyBuiltIn,
 		&row.name, &row.description, &row.keyPrefix, &row.keySuffix, &row.status, &row.isDefault,
 		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.scheduleGate, &row.updatedAt)
 	err := scan(targets...)
@@ -721,7 +732,11 @@ func apiKeyJoin(s *Store) string {
 		// 调度偏好绑定投影 join：绑定行按 id 直连（删除偏好改为同事务内自动
 		// 解绑回内置默认——v2 用户裁决修订第 5 条，绑定不会悬空）。
 		` LEFT JOIN ` + s.table("scheduling_preferences") + ` scheduling_preferences
-		ON scheduling_preferences.id = api_keys.scheduling_preference_id`
+		ON scheduling_preferences.id = api_keys.scheduling_preference_id` +
+		// 安全策略绑定投影 join（批A，§4.2）：同调度偏好——删除策略在
+		// securitypolicies 侧同事务解绑回内置默认，绑定不会悬空。
+		` LEFT JOIN ` + s.table("security_policies") + ` security_policies
+		ON security_policies.id = api_keys.security_policy_id`
 }
 
 // apiKeySchedulingPreferenceColumns 是列表/详情共用的绑定投影三列（顺序与
@@ -729,6 +744,12 @@ func apiKeyJoin(s *Store) string {
 const apiKeySchedulingPreferenceColumns = `api_keys.scheduling_preference_id,
 		scheduling_preferences.name AS scheduling_preference_name,
 		scheduling_preferences.built_in AS scheduling_preference_built_in,`
+
+// apiKeySecurityPolicyColumns 是列表/详情共用的安全策略绑定投影三列（顺序与
+// scanAPIKeyRow 扫描目标一致）。
+const apiKeySecurityPolicyColumns = `api_keys.security_policy_id,
+		security_policies.name AS security_policy_name,
+		security_policies.built_in AS security_policy_built_in,`
 
 // ListPage mirrors listApiKeysPageAsync (sqlite sync shape): scope + filters,
 // is_default DESC then recency ordering, pageSize+1 probe and the paged total
@@ -772,6 +793,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	columns += `api_keys.route_strategy_id, route_strategies.name AS route_strategy_name,
 		route_strategies.mode AS route_strategy_mode, route_strategies.status AS route_strategy_status,
 		` + apiKeySchedulingPreferenceColumns + `
+		` + apiKeySecurityPolicyColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
 		api_keys.availability_schedule_json, api_keys.availability_schedule_gate, api_keys.updated_at`
@@ -939,6 +961,9 @@ func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error)
 		SchedulingPreferenceID:      nullPtrString(row.schedulingPreferenceID),
 		SchedulingPreferenceName:    nullPtrString(row.schedulingPreferenceName),
 		SchedulingPreferenceBuiltIn: nullPtrBoolFromNullInt64(row.schedulingPreferenceBuiltIn),
+		SecurityPolicyID:            nullPtrString(row.securityPolicyID),
+		SecurityPolicyName:          nullPtrString(row.securityPolicyName),
+		SecurityPolicyBuiltIn:       nullPtrBoolFromNullInt64(row.securityPolicyBuiltIn),
 		Usage:                       emptyListUsageSummary(),
 		Revision:                    row.updatedAt,
 	}
@@ -995,6 +1020,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	columns += `api_keys.route_strategy_id, route_strategies.name AS route_strategy_name,
 		route_strategies.mode AS route_strategy_mode, route_strategies.status AS route_strategy_status,
 		` + apiKeySchedulingPreferenceColumns + `
+		` + apiKeySecurityPolicyColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
 		api_keys.availability_schedule_json, api_keys.availability_schedule_gate, api_keys.updated_at`
@@ -1088,6 +1114,7 @@ type CreateInput struct {
 	QuotaLimits            any
 	AvailabilitySchedule   any
 	SchedulingPreferenceID *string
+	SecurityPolicyID       *string
 }
 
 // Create mirrors createApiKeyRecordAsync: sealed random key, default-strategy
@@ -1168,6 +1195,12 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err != nil {
 		return nil, nil, err
 	}
+	// 安全策略绑定（批A 五写入口矩阵，§4.2）：缺省/null → 内置固定 ID；非空
+	// ID → 同 owner 自定义策略或内置行，非法统一 400；无 purpose 豁免。
+	policy, err := s.resolveSecurityPolicyBinding(ctx, tx, ownerID, input.SecurityPolicyID)
+	if err != nil {
+		return nil, nil, err
+	}
 	sealed, err := EncryptJSON(s.secret, secretPayload{Key: key})
 	if err != nil {
 		return nil, nil, err
@@ -1176,12 +1209,12 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 		(id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
 		 key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json,
 		 availability_schedule_json, availability_schedule_next_check_at, availability_schedule_gate,
-		 scheduling_preference_id,
+		 scheduling_preference_id, security_policy_id,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, ownerID, strategy.id, name, description, HashSecret(key), keyPrefix, keySuffix,
 		sealed, status, expiresAt, quotaJSONValue, scheduleJSONValue, nextCheckAt, scheduleGateValue,
-		preference.id, nowISO, revision)
+		preference.id, policy.id, nowISO, revision)
 	if err != nil {
 		if duplicate := duplicateAPIKeyNameError(err, name); duplicate != nil {
 			return nil, nil, duplicate

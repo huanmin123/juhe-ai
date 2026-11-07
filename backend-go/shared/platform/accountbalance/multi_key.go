@@ -44,9 +44,10 @@ const multiKeyDeadlineMessage = "上游余额查询超时"
 // gateway 手动刷新）共用的执行核。BUG-0286：成功返回（含上游失败形态的
 // QueryResult）统一在此打点余额输入身份摘要——快照负载携带 inputDigest，
 // gateway 读端以账户当前列值现算同一摘要做显示匹配；本地错误（解封失败等）
-// 不产生快照，无需打点。摘要输入含凭据逻辑身份（base_url + 有效 Key 全池）
-// 与 proxy_profile_id：credential_fingerprint 只覆盖主 Key，不足以表达池内
-// 次成员与端点/出口变化（审核轮补齐）。
+// 不产生快照，无需打点。摘要输入含凭据逻辑身份（base_url + 有效 Key 全池）、
+// proxy_profile_id 与 proxy_pool_id + 有效租约成员档案 ID（代理池设计
+// §10.3：credential_fingerprint 只覆盖主 Key；池绑定账户的查询出口是租约
+// 成员，租约迁移必须立即失效旧快照）。
 func ExecuteAccountBalanceQuery(ctx context.Context, input Input, options QueryOptions) (QueryResult, error) {
 	result, err := executeAccountBalanceQuery(ctx, input, options)
 	if err == nil {
@@ -54,7 +55,7 @@ func ExecuteAccountBalanceQuery(ctx context.Context, input Input, options QueryO
 		// 换取单/多 Key 执行路径零侵入；解封失败时不打点（读端按缺摘要
 		// 处理 = 不显示快照，安全方向）。
 		if payload, _, perr := resolveCredentialPayload(input, options.Secret); perr == nil {
-			result.Snapshot.InputDigest = BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON, CredentialBalanceIdentity(payload), input.ProxyProfileID)
+			result.Snapshot.InputDigest = BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON, CredentialBalanceIdentity(payload), input.ProxyProfileID, input.ProxyPoolID, input.ProxyMemberProfileID)
 		}
 	}
 	return result, err

@@ -171,9 +171,9 @@ func gatewaybodyJSONObject(req *gatewaypreauth.GatewayRequest) (map[string]any, 
 // Model filter (dispatch/model-filter.ts)
 // ---------------------------------------------------------------------------
 
-// Model priority ranks mirror gatewayAccountModelPriorityRank. 方案B
-// （2026-10-24）：rank 1 仅留给跨协议转换映射（两族不同）；同族改名映射与
-// 直接命中同权记 rank 0（见 FilterGatewayAccountsByRequestedModel 映射臂）。
+// Model priority ranks mirror gatewayAccountModelPriorityRank. 2026-11-07 跨协议
+// 映射退役后，运行时可接受映射只剩协议等价（同族改名或 Gemini stream 归一），
+// 与直接命中同权记 rank 0；rank 1 不再产生。
 const (
 	ModelPriorityRankDirect      = 0
 	ModelPriorityRankMapping     = 1
@@ -231,12 +231,9 @@ func FilterGatewayAccountsByRequestedModel(
 		if mapping != nil {
 			if isMappingAllowedBySupportedModels(mapping.UpstreamModel, supportedModels) {
 				mappingMatchedCount++
-				// 恒等映射已被 IsAdmissibleModelMapping 拒绝，故此处同族必为改名映射。
-				if mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
-					rankByAccountID[account.ID] = ModelPriorityRankDirect
-				} else {
-					rankByAccountID[account.ID] = ModelPriorityRankMapping
-				}
+				// 跨协议映射已在 ResolveAccountModelMapping 拒绝；此处映射必为
+				// 协议等价（同族改名或 Gemini stream 归一），与直连同为 rank 0。
+				rankByAccountID[account.ID] = ModelPriorityRankDirect
 				filtered = append(filtered, account)
 			} else {
 				skippedCount++

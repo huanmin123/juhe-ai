@@ -359,10 +359,10 @@ func TestW1TDriverEndpointModeBridgeArms(t *testing.T) {
 			modes      []string
 			wantReason string
 		}{
-			// 2026-11-05 供应商/协议面收窄后跨协议只保留 Responses → Chat
-			// Completions 账户级映射；chat→anthropic / chat→gemini 映射不可再
-			// 创建，原矩阵用例随之删除。
-			{name: "responses→chat SSE 缺模式", path: "/v1/responses", body: `{"model":"src"}`, source: "responses", upstream: "chat_completions", modes: []string{"responses_json"}, wantReason: "endpoint_mode_unsupported"},
+			// 2026-11-07 跨协议桥退役：responses→chat 映射不再分流（映射解析被
+			// 拒绝，账户按 codex_responses / 原生族口径淘汰）；本矩阵只锁「未知
+			// 上游族不设闸」。pair 5（stream→generate）模式闸由
+			// TestEndpointModeGeminiStreamMappingBranch 钉住。
 			{name: "未知上游族不设闸", path: "/v1/chat/completions", body: `{"model":"src"}`, source: "chat_completions", upstream: "bogus_family", modes: []string{"chat_json"}, wantReason: ""},
 		}
 		for _, testCase := range cases {

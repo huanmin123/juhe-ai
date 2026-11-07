@@ -85,6 +85,7 @@ export function defaultAccountForm(
     modelMappings: [],
     tags: [],
     proxyProfileId: undefined,
+    proxyPoolId: undefined,
     availabilitySchedule: createAccountAvailabilityScheduleForm(),
     notes: '',
     balanceQueryEnabled: false,

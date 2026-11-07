@@ -71,6 +71,16 @@ func (s *Store) ListPage(ctx context.Context, page, pageSize int, keyword string
 // ListOptions mirrors listProxyOptionsAsync: enabled profiles matching the
 // keyword window plus the explicitly selected ids, merged name-ordered.
 func (s *Store) ListOptions(ctx context.Context, keyword string, limit int, selectedIds []string) ([]OptionSummary, error) {
+	merged, err := s.profileOptionRows(ctx, keyword, limit, selectedIds)
+	if err != nil {
+		return nil, err
+	}
+	return optionSummaries(merged), nil
+}
+
+// profileOptionRows merges the enabled-profile keyword window with the
+// explicitly selected ids (§8.2 profile kind arm of the shared dropdown).
+func (s *Store) profileOptionRows(ctx context.Context, keyword string, limit int, selectedIds []string) ([]optionRow, error) {
 	keyword = strings.TrimSpace(keyword)
 	if limit < 1 {
 		limit = 1
@@ -114,14 +124,18 @@ func (s *Store) ListOptions(ctx context.Context, keyword string, limit int, sele
 			return nil, err
 		}
 	}
-	return mergeProxyOptionRows(windowRows, selectedRows), nil
+	return mergeOptionRows(windowRows, selectedRows), nil
 }
 
 type optionRow struct {
 	id        string
 	name      string
+	kind      string
 	typeCode  string
 	updatedAt string
+	// Pool-kind extras (proxy_pools join counts); zero on profile rows.
+	memberCount           int
+	assignableMemberCount int
 }
 
 // rowScanner is the query-result surface the option scans consume.
@@ -144,14 +158,15 @@ func scanOptionRows(rows rowScanner) ([]optionRow, error) {
 		if err := rows.Scan(&id, &name, &typeCode, &enabled, &updatedAt); err != nil {
 			return nil, err
 		}
-		out = append(out, optionRow{id: id, name: name, typeCode: typeCode, updatedAt: updatedAt})
+		out = append(out, optionRow{id: id, name: name, kind: OptionKindProfile, typeCode: typeCode, updatedAt: updatedAt})
 	}
 	return out, rows.Err()
 }
 
-// mergeProxyOptionRows mirrors mergeProxyOptionRows: enabled-only, name ASC,
-// updated_at DESC, id ASC.
-func mergeProxyOptionRows(windowRows, selectedRows []optionRow) []OptionSummary {
+// mergeOptionRows dedupes by id keeping the later (selected) row's payload
+// and returns rows in the canonical option order: name ASC, updated_at DESC,
+// id ASC.
+func mergeOptionRows(windowRows, selectedRows []optionRow) []optionRow {
 	byID := map[string]optionRow{}
 	order := []string{}
 	for _, row := range append(append([]optionRow{}, windowRows...), selectedRows...) {
@@ -160,35 +175,67 @@ func mergeProxyOptionRows(windowRows, selectedRows []optionRow) []OptionSummary 
 		}
 		byID[row.id] = row
 	}
-	options := make([]OptionSummary, 0, len(order))
+	merged := make([]optionRow, 0, len(order))
 	for _, id := range order {
-		row := byID[id]
-		options = append(options, OptionSummary{ID: row.id, Name: row.name, Type: row.typeCode, Enabled: true})
+		merged = append(merged, byID[id])
 	}
-	// Stable sort by name, then updated_at desc, then id asc.
-	for i := 1; i < len(options); i++ {
+	sortMergedOptionRows(merged)
+	return merged
+}
+
+// sortMergedOptionRows is the stable name ASC -> updated_at DESC -> id ASC
+// insertion sort shared by the profile merge and the §8.2 cross-kind merge.
+func sortMergedOptionRows(rows []optionRow) {
+	for i := 1; i < len(rows); i++ {
 		for j := i; j > 0; j-- {
-			left, right := options[j-1], options[j]
-			if left.Name != right.Name {
-				if left.Name > right.Name {
-					options[j-1], options[j] = options[j], options[j-1]
+			left, right := rows[j-1], rows[j]
+			if left.name != right.name {
+				if left.name > right.name {
+					rows[j-1], rows[j] = rows[j], rows[j-1]
 				}
 				continue
 			}
-			leftUpdated := byID[left.ID].updatedAt
-			rightUpdated := byID[right.ID].updatedAt
-			if leftUpdated != rightUpdated {
-				if leftUpdated < rightUpdated {
-					options[j-1], options[j] = options[j], options[j-1]
+			if left.updatedAt != right.updatedAt {
+				if left.updatedAt < right.updatedAt {
+					rows[j-1], rows[j] = rows[j], rows[j-1]
 				}
 				continue
 			}
-			if left.ID > right.ID {
-				options[j-1], options[j] = options[j], options[j-1]
+			if left.id > right.id {
+				rows[j-1], rows[j] = rows[j], rows[j-1]
 			}
 		}
 	}
+}
+
+// optionSummaries projects merged rows onto the wire shape (§8.2): kind
+// discriminator on every item, pool counts only on pool items.
+func optionSummaries(rows []optionRow) []OptionSummary {
+	options := make([]OptionSummary, 0, len(rows))
+	for _, row := range rows {
+		summary := OptionSummary{
+			ID:      row.id,
+			Name:    row.name,
+			Kind:    row.kind,
+			Type:    row.typeCode,
+			Enabled: true,
+		}
+		if row.kind == OptionKindPool {
+			summary.Type = ""
+			memberCount := row.memberCount
+			assignable := row.assignableMemberCount
+			summary.MemberCount = &memberCount
+			summary.AssignableMemberCount = &assignable
+		}
+		options = append(options, summary)
+	}
 	return options
+}
+
+// mergeProxyOptionRows mirrors mergeProxyOptionRows: enabled-only, name ASC,
+// updated_at DESC, id ASC.
+func mergeProxyOptionRows(windowRows, selectedRows []optionRow) []OptionSummary {
+	return optionSummaries(mergeOptionRows(windowRows, selectedRows))
 }
 
 func clampInt(value, minValue, maxValue int) int {

@@ -47,15 +47,16 @@
               <AccountBatchEditField
                 v-model:checked="form.enabled.proxyProfileId"
                 label="代理"
-                description="选择统一代理；留空表示全部改为不使用代理。"
+                description="选择统一代理或代理池；留空表示全部改为不使用代理（直连）。"
               >
                 <template #default="{ disabled }">
                   <ProxySelect
-                    v-model:value="form.proxyProfileId"
+                    v-model:value="proxyTargetValue"
                     allow-clear
                     :disabled="disabled"
                     :loading="proxyOptionsLoading"
                     :options="proxyOptions"
+                    :pools="proxyPools"
                     placeholder="不使用代理"
                     @dropdown-visible-change="$emit('proxyOptionsDropdown', $event)"
                     @search="$emit('proxyOptionsSearch', $event)"
@@ -327,8 +328,9 @@
                       <a-select
                         v-model:value="mapping.sourceEndpointFamily"
                         :disabled="disabled"
-                        :options="sourceEndpointOptions"
-                        placeholder="客户端协议"
+                        :options="mappingProtocolOptions"
+                        placeholder="映射协议"
+                        @change="handleMappingProtocolChange(mapping)"
                       />
                       <a-select
                         v-model:value="mapping.sourceModel"
@@ -342,12 +344,6 @@
                         @search="handleMappingModelOptionsSearch"
                       />
                       <SwapRightOutlined class="mapping-arrow" />
-                      <a-select
-                        v-model:value="mapping.upstreamEndpointFamily"
-                        :disabled="disabled"
-                        :options="upstreamEndpointOptionsFor(mapping)"
-                        placeholder="上游协议"
-                      />
                       <a-select
                         v-model:value="mapping.upstreamModel"
                         show-search
@@ -447,7 +443,9 @@ import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/ico
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import ProxySelect from '@/components/ProxySelect.vue'
+import { joinProxyCompositeValue, splitProxyCompositeValue } from '@/shared/proxyLabelCache'
 import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -458,7 +456,8 @@ import type {
   AccountListItem,
   AccountModelMapping,
   AccountTagSummary,
-  ProviderDefinition
+  ProviderDefinition,
+  ProxyPoolOptionSummary
 } from '@/types/domain'
 import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
 import AccountBatchEditField from './AccountBatchEditField.vue'
@@ -488,10 +487,10 @@ import {
   isAccountRequestOverrideProviderSupported
 } from './accountGptRequestOverrides'
 import {
-  defaultAccountModelMappingSourceEndpointFamily,
-  defaultAccountModelMappingUpstreamEndpointFamily,
-  isAccountModelMappingProtocolAllowed,
-  isAccountModelMappingSourceEndpointFamilyAllowed
+  accountModelMappingProtocolOptions,
+  accountModelMappingTargetForSource,
+  defaultAccountModelMappingProtocol,
+  isAccountModelMappingProtocolOptionAllowed
 } from './accountModelMappingProtocolMatrix'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { endpointModesForProfile } from './accountProviderCapabilities'
@@ -509,6 +508,8 @@ const props = defineProps<{
   isManagementView: boolean
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  /** 代理池候选（代理池设计 §9.4）：批量下拉与单账户共用同一 kind-aware 组件与标签缓存。 */
+  proxyPools?: ProxyPoolOptionSummary[]
   proxyOptionsLoading?: boolean
   scopeParams?: { systemAccountId: string }
   tags: AccountTagSummary[]
@@ -540,6 +541,15 @@ const loadedModelContextFields = reactive(new Set<AccountBatchEditContextField>(
 const pendingModelContextFields = new Set<AccountBatchEditContextField>()
 
 const tagOptions = computed(() => props.tags.map((tag) => ({ label: tag.name, value: tag.name })))
+// kind-aware 复合值绑定（代理池设计 §9.2/§9.4 批量共用）：拆装为裸 proxyProfileId / proxyPoolId。
+const proxyTargetValue = computed<string | undefined>({
+  get: () => joinProxyCompositeValue(form.proxyProfileId, form.proxyPoolId),
+  set: (value) => {
+    const { profileId, poolId } = splitProxyCompositeValue(value)
+    form.proxyProfileId = profileId
+    form.proxyPoolId = poolId
+  }
+})
 const accountNameSummary = computed(() => {
   const names = props.accounts.slice(0, 4).map((account) => account.name)
   return props.accounts.length > 4 ? `${names.join('、')} 等 ${props.accounts.length} 个账户` : names.join('、')
@@ -568,6 +578,24 @@ const managementScopeParams = computed(() => {
     ? accountOperationScopeParams(selectedAccount, props.scopeParams)
     : undefined
 })
+// 映射客户端模型候选池（跨协议退役契约）：source 可跨供应商，池不带 providerCode，
+// 与单账户编辑共用同一 useProviderModelSelectOptions 候选源；就绪标志供保存校验
+// 在「池未就绪/加载失败」时阻止保存。
+const mappingSourcePoolScopeParams = computed(() => (
+  props.isManagementView ? managementScopeParams.value : undefined
+))
+const {
+  loadModelOptions: loadMappingSourcePoolOptions,
+  loadFailed: mappingSourcePoolLoadFailed,
+  resetModelOptions: resetMappingSourcePoolOptions,
+  selectOptions: mappingSourcePoolSelectOptions
+} = useProviderModelSelectOptions({
+  scopeParams: mappingSourcePoolScopeParams,
+  onLoadError: (error) => {
+    message.error(extractApiErrorMessage(error, '加载客户端模型目录失败'))
+  }
+})
+const mappingSourcePoolReady = ref(false)
 const sharedSupportedModels = computed(() => intersectAccountModels(accountDetails.value))
 const effectiveBatchModels = computed(() => (
   form.enabled.supportedModels ? normalizedTextList(form.supportedModels) : sharedSupportedModels.value
@@ -656,29 +684,12 @@ const confirmTitle = computed(() => (
   `确认用当前值覆盖 ${props.accounts.length} 个账户的 ${enabledLabels.value.join('、')}？`
 ))
 
-const sourceEndpointBaseOptions = [
-  { label: 'Chat Completions', value: 'chat_completions' },
-  { label: 'Responses', value: 'responses' },
-  { label: 'Messages', value: 'messages' },
-  { label: 'Gemini GenerateContent', value: 'generate_content' },
-  { label: 'Gemini StreamGenerateContent', value: 'stream_generate_content' },
-  // M4b 媒体映射族：同族模型名改写，上游面恒为 OpenAI 形态媒体端点。
-  { label: '视频生成', value: 'video_generation' },
-  { label: '语音合成', value: 'tts' }
-] as const
-const sourceEndpointOptions = computed(() => sourceEndpointBaseOptions.map((option) => ({
-  ...option,
-  disabled: !isAccountModelMappingSourceEndpointFamilyAllowed(option.value, mappingContext())
-})))
-const upstreamEndpointBaseOptions = [
-  { label: 'Chat Completions', value: 'chat_completions' },
-  { label: 'Responses', value: 'responses' },
-  { label: 'Messages', value: 'messages' },
-  { label: 'Gemini GenerateContent', value: 'generate_content' },
-  // M4b 媒体映射族：同族模型名改写，上游面恒为 OpenAI 形态媒体端点。
-  { label: '视频生成', value: 'video_generation' },
-  { label: '语音合成', value: 'tts' }
-] as const
+// 单协议下拉（7 个协议等价选项）：按同构账户的协议档案与 endpoint mode 交集过滤。
+const mappingProtocolOptions = computed(() => (
+  accountModelMappingProtocolOptions.filter((option) => (
+    isAccountModelMappingProtocolOptionAllowed(option, mappingContext())
+  )).map((option) => ({ label: option.label, value: option.value }))
+))
 
 watch(open, (next) => {
   if (next) {
@@ -704,6 +715,8 @@ async function loadContext(): Promise<void> {
   modelOptionsLoaded.value = false
   modelOptionsRequestId += 1
   modelsLoading.value = false
+  resetMappingSourcePoolOptions()
+  mappingSourcePoolReady.value = false
   loadedModelContextFields.clear()
   pendingModelContextFields.clear()
   modelContextPromise = undefined
@@ -832,7 +845,9 @@ function handleMappingModelOptionsOpen(nextOpen: boolean): void {
   const token = loadToken
   void (async () => {
     await ensureModelContext(modelContextFieldsForEnabledForm())
-    if (token === loadToken && open.value && !contextErrorMessage.value) await loadModelOptions(token)
+    if (token === loadToken && open.value && !contextErrorMessage.value) {
+      await Promise.all([loadModelOptions(token), loadMappingSourcePool()])
+    }
   })()
 }
 
@@ -851,10 +866,24 @@ function scheduleModelOptionsSearch(
     void (async () => {
       await ensureModelContext(contextFields)
       if (token === loadToken && open.value && !contextErrorMessage.value) {
-        await loadModelOptions(token, value.trim())
+        await Promise.all([loadModelOptions(token, value.trim()), loadMappingSourcePool(value.trim())])
       }
     })()
   }, 250)
+}
+
+// 映射客户端模型候选池（跨供应商）：下拉展开/搜索与保存时按需加载；
+// selectedIds 携带当前映射行已选的客户端模型，保证候选窗口包含已选值。
+async function loadMappingSourcePool(keyword = ''): Promise<void> {
+  const selectedIds = form.enabled.modelMappings
+    ? form.modelMappings
+      .flatMap((mapping) => (mapping.sourceModel.trim() ? [mapping.sourceModel.trim()] : []))
+    : []
+  await loadMappingSourcePoolOptions({
+    ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
+    selectedIds
+  })
+  mappingSourcePoolReady.value = !mappingSourcePoolLoadFailed.value
 }
 
 function clearModelOptionsSearchTimer(): void {
@@ -892,13 +921,23 @@ async function save(): Promise<void> {
   const token = loadToken
   await ensureModelContext(modelContextFieldsForEnabledForm())
   if (token !== loadToken || !open.value || contextErrorMessage.value) return
+  if (form.enabled.modelMappings) {
+    // 保存前主动补拉映射候选：source 跨供应商池 + 当前供应商目录（上游协议声明）。
+    // 目录加载失败直接阻止保存；source 池失败由就绪标志在校验中拦截并给出中文提示。
+    try {
+      await Promise.all([loadModelOptions(token), loadMappingSourcePool()])
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载模型目录失败，请稍后重试'))
+      return
+    }
+    if (token !== loadToken || !open.value) return
+  }
   const result = buildAccountBatchEditRequest(accountDetails.value, form, {
-    mappingAnthropicSourceModelOptions: currentProviderModelOptions.value,
-    mappingCurrentProviderSourceModelOptions: currentProviderModelOptions.value,
-    mappingGeminiSourceModelOptions: currentProviderModelOptions.value,
-    mappingSourceModelOptions: currentProviderModelOptions.value,
+    mappingSourceModelOptions: mappingSourcePoolSelectOptions.value,
+    mappingSourceModelOptionsReady: mappingSourcePoolReady.value,
     mappingUpstreamModelOptions: mappingUpstreamModelOptions.value,
-    providerCode: homogeneousAccount.value?.providerCode,
+    mappingUpstreamModelOptionsReady: modelOptionsLoaded.value,
     providerProfile: selectedProtocolProfile.value ?? selectedProvider.value
   })
   if (!result.payload) {
@@ -936,16 +975,12 @@ onBeforeUnmount(() => {
 })
 
 function addMapping(): void {
-  const sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(mappingContext())
-  const upstreamEndpointFamily = defaultAccountModelMappingUpstreamEndpointFamily(
-    sourceEndpointFamily,
-    mappingContext()
-  )
+  const option = defaultAccountModelMappingProtocol(mappingContext())
   form.modelMappings.push({
     sourceModel: '',
-    sourceEndpointFamily,
+    sourceEndpointFamily: option.source,
     upstreamModel: '',
-    upstreamEndpointFamily,
+    upstreamEndpointFamily: option.upstream,
     enabled: true
   })
 }
@@ -954,26 +989,15 @@ function removeMapping(index: number): void {
   form.modelMappings.splice(index, 1)
 }
 
-function upstreamEndpointOptionsFor(mapping: AccountModelMapping) {
-  return upstreamEndpointBaseOptions.map((option) => ({
-    ...option,
-    disabled: !isAccountModelMappingProtocolAllowed({
-      sourceEndpointFamily: mapping.sourceEndpointFamily,
-      upstreamEndpointFamily: option.value,
-      enabled: mapping.enabled,
-      context: mappingContext()
-    })
-  }))
+// 修改协议时同时写入 source/target 两个持久化字段（批量没有协议 watcher）。
+function handleMappingProtocolChange(mapping: AccountModelMapping): void {
+  mapping.upstreamEndpointFamily = accountModelMappingTargetForSource(mapping.sourceEndpointFamily)
 }
 
 function mappingSourceModelOptionsFor(mapping: AccountModelMapping): AccountModelSelectOption[] {
   return accountModelMappingSourceModelOptions({
-    providerCode: homogeneousAccount.value?.providerCode,
     sourceEndpointFamily: mapping.sourceEndpointFamily,
-    currentProviderOptions: currentProviderModelOptions.value,
-    openAIProtocolOptions: currentProviderModelOptions.value,
-    anthropicProtocolOptions: currentProviderModelOptions.value,
-    geminiProtocolOptions: currentProviderModelOptions.value
+    options: mappingSourcePoolSelectOptions.value
   }) as AccountModelSelectOption[]
 }
 
@@ -1111,7 +1135,7 @@ function clearAccountModelContext(account: AccountBatchEditContextItem): Account
 
 .mapping-row {
   display: grid;
-  grid-template-columns: 150px minmax(130px, 1fr) 18px 150px minmax(130px, 1fr) 36px 32px;
+  grid-template-columns: 150px minmax(130px, 1fr) 18px minmax(130px, 1fr) 36px 32px;
   gap: 8px;
   align-items: center;
   min-width: 0;

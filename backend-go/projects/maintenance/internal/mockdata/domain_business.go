@@ -491,6 +491,23 @@ type mockProxySeed struct {
 	enabled  bool
 }
 
+// mockProxyPoolSeed 是一条代理池样本；成员按 priority 唯一（DDL
+// UNIQUE(pool_id, priority)），weighted 池用 weight 表达流量占比。
+type mockProxyPoolSeed struct {
+	id       string
+	name     string
+	desc     string
+	strategy string
+	enabled  bool
+	members  []mockProxyPoolMemberSeed
+}
+
+type mockProxyPoolMemberSeed struct {
+	proxy   string
+	weight  int
+	enabled bool
+}
+
 // seed 按依赖顺序写入 business schema 的全部样本。模型目录样本先于 AI 账户：
 // account_supported_models / account_entry_mappings 的外键指向 models 行。
 func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
@@ -660,7 +677,8 @@ func (w *businessWriter) seedUsers(tx *sql.Tx, guard businessGuard) ([]mockUserS
 	return seeds, nil
 }
 
-// seedProxies 写入代理样本（http/socks5h/停用），返回 loginsuffix → id 映射。
+// seedProxies 写入代理样本（http/socks5h/停用）与代理池（成员/租约引用），
+// 返回 loginsuffix → id 映射；池成员键为 `<pool>_member`。
 // proxy_profiles.enabled 是 boolean、last_tested_at/created_at/updated_at 是
 // timestamptz（PG DDL 列型）。
 func (w *businessWriter) seedProxies(tx *sql.Tx, guard businessGuard) (map[string]string, error) {
@@ -722,6 +740,55 @@ func (w *businessWriter) seedProxies(tx *sql.Tx, guard businessGuard) (map[strin
 			ids["socks"] = seed.id
 		default:
 			ids["disabled"] = seed.id
+		}
+	}
+	pools := []mockProxyPoolSeed{
+		{
+			id: CleanupIDPrefix + "pool_main", name: CleanupNamePrefix + "主代理池",
+			desc: "Mockdata 轮询代理池，账户 acc_proxied 绑定并固化成员租约", strategy: "round_robin", enabled: true,
+			members: []mockProxyPoolMemberSeed{
+				{proxy: "http", weight: 1, enabled: true},
+				{proxy: "socks", weight: 1, enabled: true},
+			},
+		},
+		{
+			id: CleanupIDPrefix + "pool_disabled", name: CleanupNamePrefix + "停用代理池",
+			desc: "Mockdata 停用加权池，成员含停用代理，用于池状态与成员不可分配展示", strategy: "weighted", enabled: false,
+			members: []mockProxyPoolMemberSeed{
+				{proxy: "disabled", weight: 100, enabled: true},
+				{proxy: "http", weight: 1, enabled: true},
+			},
+		},
+	}
+	poolKeys := map[string]string{
+		CleanupIDPrefix + "pool_main":     "pool_main",
+		CleanupIDPrefix + "pool_disabled": "pool_disabled",
+	}
+	for _, pool := range pools {
+		if err := w.put(tx, "proxy_pools", map[string]any{
+			"id": pool.id, "system_account_id": guard.adminID, "name": pool.name,
+			"description": pool.desc, "strategy": pool.strategy, "enabled": pool.enabled,
+			"created_at": now, "updated_at": now,
+		}); err != nil {
+			return nil, err
+		}
+		key := poolKeys[pool.id]
+		ids[key] = pool.id
+		for priority, member := range pool.members {
+			profileID := ids[member.proxy]
+			if profileID == "" {
+				return nil, fmt.Errorf("代理池 %s 成员引用未知代理 %q", pool.id, member.proxy)
+			}
+			if err := w.put(tx, "proxy_pool_members", map[string]any{
+				"pool_id": pool.id, "proxy_profile_id": profileID, "priority": priority,
+				"weight": member.weight, "enabled": member.enabled,
+				"created_at": now, "updated_at": now,
+			}); err != nil {
+				return nil, err
+			}
+			if priority == 0 {
+				ids[key+"_member"] = profileID
+			}
 		}
 	}
 	return ids, nil
@@ -915,6 +982,8 @@ type mockAccountSeed struct {
 	unschedulable bool
 	schedule      string
 	proxy         string
+	proxyPool     string
+	proxyPoolKey  string
 	tags          []string
 	modelSlots    []int
 	extraModels   []string
@@ -1091,9 +1160,9 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			notes: "Mockdata 主力账号，超级优先"},
 		{id: CleanupIDPrefix + "acc_proxied", name: CleanupNamePrefix + "带代理 API Key 账户", owner: guard.adminID,
 			group: groups["main"], slug: "proxied", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
-			priority: 10, concurrency: 45, proxy: proxies["http"],
-			modelSlots: []int{1, 2}, tags: []string{"代理"},
-			notes: "Mockdata 代理账号，用于账户授权给用户"},
+			priority: 10, concurrency: 45, proxyPool: proxies["pool_main"], proxyPoolKey: "pool_main",
+			modelSlots: []int{1, 2}, tags: []string{"代理", "代理池"},
+			notes: "Mockdata 代理池账号，池成员租约随账户写入，用于账户授权与池解析展示"},
 		{id: CleanupIDPrefix + "acc_normal", name: CleanupNamePrefix + "普通 API Key 账户", owner: guard.adminID,
 			group: groups["main"], slug: "normal", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
 			priority: 30, concurrency: 35, schedule: "inactive",
@@ -1251,6 +1320,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			"status": seed.status, "credentials_encrypted": credentials,
 			"credential_fingerprint": fingerprint, "credential_mask": mask,
 			"oauth_refresh_token_present": 0, "proxy_profile_id": nullString(seed.proxy),
+			"proxy_pool_id":     nullString(seed.proxyPool),
 			"concurrency_limit": seed.concurrency, "rpm_limit": seed.rpm,
 			"priority":               seed.priority,
 			"super_priority_enabled": boolInt(seed.super), "fallback_enabled": boolInt(seed.fallback),
@@ -1291,6 +1361,21 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 		}
 		if err := w.put(tx, "accounts", columns); err != nil {
 			return nil, err
+		}
+		// 池绑定账户的固化租约（账户级粘性）：解析器只在已有租约上做健
+		// 康门与故障修复，缺租约的池账户在请求期会判池不可用，样本必须
+		// 同时写入首个成员的 initial 租约。
+		if seed.proxyPool != "" {
+			memberID := proxies[seed.proxyPoolKey+"_member"]
+			if memberID == "" {
+				return nil, fmt.Errorf("账户 %s 绑定的代理池 %s 缺少成员", seed.id, seed.proxyPool)
+			}
+			if err := w.put(tx, "account_proxy_leases", map[string]any{
+				"account_id": seed.id, "pool_id": seed.proxyPool, "proxy_profile_id": memberID,
+				"assignment_reason": "initial", "assigned_at": now, "updated_at": now,
+			}); err != nil {
+				return nil, err
+			}
 		}
 		// 连接行 + endpoint mode 行（域 lane ∩ preset 词表的非空子集）。
 		for planIndex, plan := range plans {
@@ -2384,10 +2469,11 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 		instanceName := CleanupNamePrefix + strings.TrimPrefix(source.name, CleanupNamePrefix) + "（授权实例）"
 		instanceID := CleanupIDPrefix + "accinst_" + userSlug(instance.grantee) + "_" + source.slug
 		connectionID := CleanupIDPrefix + "conn_accinst_" + userSlug(instance.grantee) + "_" + source.slug
+		sourceVendor, _ := mockConnectorIdentity(&source)
 		if err := w.put(tx, "accounts", map[string]any{
 			"id": instanceID, "config_revision": 1, "dispatch_revision": 1,
 			"circuit_projection_revision": 0, "system_account_id": instance.grantee,
-			"vendor_code": nullString(source.vendor), "connection_driver_code": connectorDriverFor(&source),
+			"vendor_code": nullString(sourceVendor), "connection_driver_code": connectorDriverFor(&source),
 			"oauth_type": nil, "protocol_code": "openai", "protocol_version": "v1",
 			"name": instanceName, "type": source.typ, "status": mockAccountStatusActive,
 			"credentials_encrypted": sealed, "credential_mask": maskSecret("sk-mockdata-instance-" + userSlug(instance.grantee)),

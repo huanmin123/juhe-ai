@@ -67,10 +67,12 @@ interface UseAccountEditSaveFlowOptions {
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   refreshAccountMutationRows: (mutation: AccountMutationResult) => Promise<void>
-  mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
-  mappingCurrentProviderSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
-  mappingGeminiSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
+  /** 映射客户端模型候选：跨供应商全量目录（useAccountEditForm 装载）。 */
   mappingSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
+  /** source 候选池就绪标志：false = 未就绪/加载失败，保存校验阻止提交。 */
+  mappingSourceModelOptionsReady: ReadonlyValue<boolean>
+  /** source 候选池补拉入口：保存时池未就绪先重试一次，重试仍失败才被校验拦截。 */
+  ensureMappingSourceModelOptions?: () => Promise<void>
   providerModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   modalOpen: Ref<boolean>
   providers: ReadonlyValue<ProviderDefinition[]>
@@ -124,6 +126,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
 
+    // 映射 source 候选池未就绪（加载中/失败）时先补拉一次，再按刷新后的就绪
+    // 状态进入保存校验；仍失败则由校验的中文加载错误拦截，不静默空池放行。
+    if (!options.mappingSourceModelOptionsReady.value) {
+      await options.ensureMappingSourceModelOptions?.()
+    }
     const validationMessage = validateAccountSaveForm({
       editingId: options.editingId.value,
       form: options.form,
@@ -131,10 +138,8 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       errorPolicyRules: options.accountErrorPolicyRules.value,
       responseInspectionRules: options.accountResponseInspectionRules.value,
       providers: options.providers.value,
-      mappingAnthropicSourceModelOptions: options.mappingAnthropicSourceModelOptions.value,
-      mappingCurrentProviderSourceModelOptions: options.mappingCurrentProviderSourceModelOptions.value,
-      mappingGeminiSourceModelOptions: options.mappingGeminiSourceModelOptions.value,
       mappingSourceModelOptions: options.mappingSourceModelOptions.value,
+      mappingSourceModelOptionsReady: options.mappingSourceModelOptionsReady.value,
       mappingUpstreamModelOptions: options.providerModelOptions.value,
       // 完整编辑保存基线（R6）：存量模型映射与存量模型清单按加载基线放行，
       // 仅新增/变更行按候选窗口校验（后端 PATCH 本就「映射未变不校验」）。

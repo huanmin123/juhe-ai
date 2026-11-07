@@ -251,14 +251,13 @@ func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Conte
 	best := make(map[string]superGroupAccountChoice)
 	for _, member := range members {
 		for _, account := range member.candidate.Accounts {
-			// 方案B（2026-10-24）：候选 Accounts 只含 rank 0（direct + 同族改名
-			// 映射，同层）与 rank 1（跨协议转换映射）；rank 2（不支持）不进候选，
-			// 钳位 `!=0 -> 1` 与新语义等价，比较器不动。
+			// 2026-11-07 跨协议映射退役后，候选 Accounts 只含 rank 0
+			// （direct + 协议等价映射）；rank 2 本就不进候选，rank 1 不再产生。
 			rank := member.candidate.ModelFilter.ModelPriority.RankByAccountID[account.ID]
 			if rank != 0 {
-				rank = 1
+				continue
 			}
-			choice := superGroupAccountChoice{rank: rank, memberIndex: member.index, groupID: member.candidate.Binding.GroupID, account: account}
+			choice := superGroupAccountChoice{rank: gatewayAccountModelPriorityRankDirect, memberIndex: member.index, groupID: member.candidate.Binding.GroupID, account: account}
 			current, exists := best[account.ID]
 			if !exists || superGroupAccountChoiceLess(choice, current) {
 				best[account.ID] = choice
@@ -279,18 +278,14 @@ func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Conte
 	segments := make([]NormalRouteGroupSegment, 0, len(members))
 	pooled := make([]UpstreamAccount, 0, len(choices))
 	rankByAccountID := make(map[string]int, len(choices))
-	// 方案B（2026-10-24）：rank 0 = direct + 同族改名映射（同层），rank 1 =
-	// 跨协议转换映射。结构体字段名 DirectMatchedCount/MappingMatchedCount 是
-	// 既有消费契约不改；本地计数按 rank 桶命名以免误导。
-	rank0Count, rank1Count := 0, 0
+	// 2026-11-07：rank 0 = direct + 协议等价映射（同层）；跨协议 rank 1 不再
+	// 产生。结构体字段名 DirectMatchedCount/MappingMatchedCount 是既有消费
+	// 契约不改，MappingMatchedCount 恒 0。
+	directMatchedCount := 0
 	for _, choice := range choices {
 		pooled = append(pooled, choice.account)
-		rankByAccountID[choice.account.ID] = choice.rank
-		if choice.rank == 0 {
-			rank0Count++
-		} else {
-			rank1Count++
-		}
+		rankByAccountID[choice.account.ID] = gatewayAccountModelPriorityRankDirect
+		directMatchedCount++
 		index, exists := segmentIndex[choice.groupID]
 		if !exists {
 			index = len(segments)
@@ -305,8 +300,8 @@ func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Conte
 		Accounts:    pooled,
 		ModelFilter: GatewayModelAccountFilterResult{
 			Accounts:             pooled,
-			DirectMatchedCount:   rank0Count,
-			MappingMatchedCount:  rank1Count,
+			DirectMatchedCount:   directMatchedCount,
+			MappingMatchedCount:  0,
 			RequestedModel:       input.TargetModel,
 			SourceEndpointFamily: sourceEndpointFamily,
 			ModelPriority: GatewayAccountModelPriority{

@@ -228,6 +228,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 	var availabilityScheduleGate sql.NullInt64
 	var purpose, schedulingPreferenceID, schedulingPreferenceJoinedID sql.NullString
 	var schedulingPreferenceChatMode, schedulingPreferenceConfigJSON sql.NullString
+	var securityPolicyID, securityPolicyJoinedID, securityPolicyRulesJSON sql.NullString
 	var imageGenerationEnabled int
 	// 调度偏好独立实体 P1（读取分阶段契约）：api_keys.scheduling_preference_id
 	// 与 api_keys.purpose 进 SELECT，LEFT JOIN scheduling_preferences 区分「无
@@ -235,6 +236,9 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 	// 内置行（跨 owner 引用与行缺失同样落空，由六态解析显式上抛）；禁止用
 	// 偏好 INNER JOIN 把整个 Key 当作不存在。enabled 列已随 v2 用户裁决修订
 	// 第 4 条退役（创建即启用，无停用回落态），SELECT 不再读取。
+	// API Key 安全策略绑定（安全策略设计 §4.1，批B2）：同一谓词形态 LEFT JOIN
+	// security_policies 带出 rules_json 原文；引用损坏（绑定 id 非空但 owner/
+	// built_in 谓词落空）与规则损坏在下方显式上抛。
 	err := m.db.QueryRowContext(ctx, m.bind(`SELECT
 			api_keys.id,
 			api_keys.system_account_id,
@@ -251,7 +255,10 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 			api_keys.scheduling_preference_id,
 			scheduling_preferences.id AS scheduling_preference_joined_id,
 			scheduling_preferences.chat_mode AS scheduling_preference_chat_mode,
-			scheduling_preferences.chat_speed_first_config_json AS scheduling_preference_config_json
+			scheduling_preferences.chat_speed_first_config_json AS scheduling_preference_config_json,
+			api_keys.security_policy_id,
+			security_policies.id AS security_policy_joined_id,
+			security_policies.rules_json AS security_policy_rules_json
 		FROM `+m.table("api_keys")+` api_keys
 		INNER JOIN `+m.table("system_accounts")+` system_accounts
 			ON system_accounts.id = api_keys.system_account_id
@@ -264,12 +271,17 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 			ON scheduling_preferences.id = api_keys.scheduling_preference_id
 			AND (scheduling_preferences.system_account_id = api_keys.system_account_id
 				OR scheduling_preferences.built_in = 1)
+		LEFT JOIN `+m.table("security_policies")+` security_policies
+			ON security_policies.id = api_keys.security_policy_id
+			AND (security_policies.system_account_id = api_keys.system_account_id
+				OR security_policies.built_in = 1)
 		WHERE `+predicate+`
 		LIMIT 1`), value).
 		Scan(&id, &systemAccountID, &routeStrategyID, &routeStrategyMode, &routeConfigJSON,
 			&status, &availabilityScheduleGate, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON,
 			&purpose, &schedulingPreferenceID, &schedulingPreferenceJoinedID,
-			&schedulingPreferenceChatMode, &schedulingPreferenceConfigJSON)
+			&schedulingPreferenceChatMode, &schedulingPreferenceConfigJSON,
+			&securityPolicyID, &securityPolicyJoinedID, &securityPolicyRulesJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -341,6 +353,27 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 	}
 	if err := applySchedulingPreferenceSnapshot(row, snapshot); err != nil {
 		return nil, err
+	}
+	// API Key 安全策略绑定快照（安全策略设计 §4.1/§10，批B2）：NULL = 未绑定
+	// = 内置默认行为（两字段保持空串，请求链零开销路径）；非空绑定的 JOIN 行
+	// 带出 rules_json 原文（内置行即 {"rules":[]} 字面）。引用损坏语义对齐调
+	// 度偏好 P2：绑定 id 非空但 JOIN 谓词落空（行缺失/跨 owner）显式上抛，禁
+	// 止静默回落内置；rules_json 为 NULL/空白按空规则集处理（列无 NOT NULL，
+	// 写入口恒落规范化 JSON，此处是读取侧宽容下界），非空则装载校验必须可编
+	// 译（顺带预热编译缓存），损坏显式上抛。编译产物不进快照。
+	if securityPolicyID.Valid && strings.TrimSpace(securityPolicyID.String) != "" {
+		if !securityPolicyJoinedID.Valid || strings.TrimSpace(securityPolicyJoinedID.String) == "" {
+			return nil, fmt.Errorf("API Key %s 绑定的安全策略 %s 不存在或不可用", id, securityPolicyID.String)
+		}
+		rulesJSON := ""
+		if securityPolicyRulesJSON.Valid {
+			rulesJSON = securityPolicyRulesJSON.String
+		}
+		if err := validateSecurityPolicyRulesJSON(rulesJSON); err != nil {
+			return nil, fmt.Errorf("API Key %s 绑定的安全策略 %s 规则集损坏: %w", id, securityPolicyID.String, err)
+		}
+		row.SecurityPolicyID = securityPolicyID.String
+		row.SecurityPolicyRulesJSON = rulesJSON
 	}
 	return row, nil
 }

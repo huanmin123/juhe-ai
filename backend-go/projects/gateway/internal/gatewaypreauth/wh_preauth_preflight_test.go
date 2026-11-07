@@ -52,7 +52,7 @@ func TestWhPreflightRuntimeResolvedHappyPath(t *testing.T) {
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 	audit := &fakeAuditCapture{}
 	req, recorder, writer := whAuthorizedChatRequest()
@@ -163,7 +163,7 @@ func TestWhPreflightNormalRouteSelected(t *testing.T) {
 			Accounts:     []gatewayruntimecache.OpenAIAccountSecret{account},
 		}}
 		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 	audit := &fakeAuditCapture{}
 	req, _, writer := whAuthorizedChatRequest()
@@ -266,7 +266,7 @@ func TestWhPreflightImageLaneUpgrade(t *testing.T) {
 				ReleaseClientIPConcurrency: func() {},
 			},
 		}
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 		s.Images = &fakeImages{result: ImagePermissionPreflightResult{RequestLane: "image"}}
 	})
 	audit := &fakeAuditCapture{}

@@ -36,7 +36,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 ## 不做什么
 
 - 不引入 Kafka、RabbitMQ、BullMQ、ClickHouse 或其他外部队列 / OLAP。
-- 不实现多节点自动故障转移、跨地域复制或自动用户迁移；多节点部署与滚动发布按 [多节点部署与不停机发布设计](多节点部署与不停机发布设计.md) 推进（设计稿，未实施）；按系统账户 home node 分片的分布式路由是 SQLite 时代历史方向，未实施。
+- 不实现多节点自动故障转移、跨地域复制或自动用户迁移；多节点部署与滚动发布按 [多节点部署与不停机发布设计](多节点部署与不停机发布设计.md) 推进（实施中：P1/P2 与 jobs 全局 leader 已落地）；按系统账户 home node 分片的分布式路由是 SQLite 时代历史方向，未实施。
 - 不把 Redis 作为账务、权限、授权、账号健康、审计或使用记录的持久事实库；跨进程短 TTL 缓存、运行态和原子计数的当前事实源必须是 Redis，不能回退到进程内 memory。持久事实统一落 PostgreSQL，不引入外部队列。
 - 不为运行路径保留旧 schema 兼容分支；历史数据处理只允许离线脚本或重建流程。
 - 不恢复 SQLite / memory 本地模式，也不为旧 env 值、旧命令行形态、sqlite 数据文件提供任何读取或转换能力。
@@ -44,8 +44,8 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 ## 配置模型
 
 - 启动必填（缺失启动即失败，fail-fast 保留）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_URL`。
-- 已退役 env：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER` 与全部 sqlite 路径 / 分片族（`*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_ROOT` / `_COUNT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` / `_COUNT`）及 store 选择族（`JUHE_AI_AUDIT_LOG_STORE` / `JUHE_AI_OPERATION_LOG_STORE` / `JUHE_AI_RUNTIME_LOG_STORE` / `JUHE_AI_J3B_STORE` / `JUHE_AI_ACCOUNT_HEALTH_STORE` / `JUHE_AI_ACCOUNT_BALANCE_STORE`）——代码不再读取，部署面残留值无效，应从 `.env` 删除（清理清单见 `docker/single-server/README.md`）。
-- 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `usage-record-spool`（gateway↔jobs 用量交接，可用 `JUHE_AI_USAGE_SPOOL_DIRECTORY` 显式覆盖）、`codex-context` segments 根（可用 `JUHE_AI_CODEX_CONTEXT_ROOT` 显式覆盖）、`logs`、`audit-blob`（chat-assets 已随 AI 问答退役删除，2026-10-31）。gateway 与 jobs 双进程消费同一目录时必须解析到同一宿主机路径。
+- 已退役 env：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER` 与全部 sqlite 路径 / 分片族（`*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_ROOT` / `_COUNT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` / `_COUNT`）、`JUHE_AI_CODEX_CONTEXT_ROOT`（已随 2026-11-07 Chat bridge 退役删除）及 store 选择族（`JUHE_AI_AUDIT_LOG_STORE` / `JUHE_AI_OPERATION_LOG_STORE` / `JUHE_AI_RUNTIME_LOG_STORE` / `JUHE_AI_J3B_STORE` / `JUHE_AI_ACCOUNT_HEALTH_STORE` / `JUHE_AI_ACCOUNT_BALANCE_STORE`）——代码不再读取，部署面残留值无效，应从 `.env` 删除（清理清单见 `docker/single-server/README.md`）。
+- 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `usage-record-spool`（gateway↔jobs 用量交接，可用 `JUHE_AI_USAGE_SPOOL_DIRECTORY` 显式覆盖）、`logs`、`audit-blob`（chat-assets 已随 AI 问答退役删除，2026-10-31；`codex-context` segments 根已随 2026-11-07 Chat bridge 退役删除，历史目录备份后人工清理）。gateway 与 jobs 双进程消费同一目录时必须解析到同一宿主机路径。
 - `JUHE_AI_CACHE_DRIVER` 类语义不复存在：Redis cache 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走运行态域（同一 Redis 连接下的 `runtimecache` / `ratelimit` / `session` 等域键空间）。
 - `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，必填非空（现行生产配 `prod`）；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
 - `JUHE_AI_REDIS_MODE` 选择 `single` 或 `cluster`；两种形态都只使用 DB0。Cluster 多节点通过 `JUHE_AI_REDIS_URL` 重复 `addr` 参数声明，客户端负责 MOVED/ASK 与故障转移。
@@ -57,7 +57,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 
 ## 部署边界
 
-现行唯一生产形态是国内单机 Docker（`docker/single-server/`，go-only）：Caddy 入口 + gateway / jobs 常驻容器 + maintenance 一次性容器 + postgres / redis 两个中间件容器；部署、初始化与 env 契约以 `docker/single-server/README.md` 和 `docs/deploy/部署指南.md` 为准。多节点（gateway 多副本 + jobs 单活 + 外部 LB）的目标形态与迁移契约见 [多节点部署与不停机发布设计](多节点部署与不停机发布设计.md)（设计稿，未实施）。
+现行唯一生产形态是国内单机 Docker（`docker/single-server/`，go-only）：Caddy 入口 + gateway / jobs 常驻容器 + maintenance 一次性容器 + postgres / redis 两个中间件容器；部署、初始化与 env 契约以 `docker/single-server/README.md` 和 `docs/deploy/部署指南.md` 为准。多节点（gateway 多副本 + jobs 单活 + 外部 LB）的目标形态与迁移契约见 [多节点部署与不停机发布设计](多节点部署与不停机发布设计.md)（实施中：P1/P2 与 jobs 全局 leader 已落地，尚未生产就绪）。
 
 | 服务 | 职责 | 说明 |
 | --- | --- | --- |
@@ -76,11 +76,11 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 
 | PostgreSQL schema | 数据域 | 主要表 |
 | --- | --- | --- |
-| `juhe_business` | 业务库 | 系统账户、会话、供应商、协议与协议档案、账号、分组、路由策略、调度偏好、API Key、授权、代理、设置、公告、系统团队、外部来源系统、账户测试任务 / 会话、自定义模型、媒体任务 |
+| `juhe_business` | 业务库 | 系统账户、会话、供应商、协议与协议档案、账号、分组、路由策略、调度偏好、安全策略、API Key、授权、代理、设置、公告、系统团队、外部来源系统、账户测试任务 / 会话、自定义模型、媒体任务 |
 | `juhe_dataset` | 数据集域 | 审计事实（`audit_logs` / `audit_log_attempts` / `audit_payload_refs` / `audit_payload_blobs` / `audit_error_groups`）、操作日志四表、`public_api_logs`、运行日志索引（`runtime_logs` / `runtime_log_file_cursors`，由 jobs 的 F1 索引器唯一写入）、模型检测三表、`api_key_record_cleanup_targets` |
 | `juhe_usage` | 使用记录域 | `usage_records`（日分区）与列表索引、账号 / API Key scope catalog |
 | `juhe_stats` | 统计结果域 | 用量桶、额度窗口、范围窗口、排行、账号质量、`stats_job_state` 等预聚合结果（逐表键与口径见 [统计指标与分层聚合设计](统计指标与分层聚合设计.md)） |
-| `juhe_codex_context` | Responses 桥接状态索引 | Responses session / response / compact 索引 |
+| （已随 2026-11-07 Chat bridge 退役删除）`juhe_codex_context` | 历史截面：Responses 桥接状态索引 | schema revision 20 `DROP SCHEMA ... CASCADE`（4 表 9 索引），网关不再保存 Responses 桥接状态 |
 | `juhe_jobs` / `juhe_j3b` | jobs 事实域 / J3b 模型检测 | 余额租约四表等 jobs 事实、`model_check_*` 专库表（需手工预置 schema 后由 maintenance `--apply-*` 建表） |
 
 schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/internal/schema/pg_schema*.go`），由 `juhe-ai-maintenance --ensure-schema` 幂等执行（Node 时代的 `postgres-schema.ts` / `postgres:init-schema` 已随迁移删除）。生产单库除上表 schema 外的预置序列（手工 `CREATE SCHEMA` 与 `--apply-*` 命令）以 `docker/single-server/README.md` 的拓扑节为准。
@@ -89,7 +89,7 @@ schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/inter
 
 ### 存储域边界（承自 SQLite 存储说明 2026-10-25 退役）
 
-- **业务库（`juhe_business`）是恢复的硬边界**，保存可恢复核心业务数据：`system_accounts` / `system_sessions`、`global_settings` / `system_settings`、`providers` / `protocols` / `protocol_endpoint_families` / `provider_protocol_profiles` / `provider_protocol_profile_families` / `proxy_profiles`、`accounts` 及其支持模型 / 模型映射 / 标签 / 测试任务 / 测试会话、`custom_provider_models`、`groups` / `group_authorization_settings` / `group_accounts` / `group_account_stats_dirty`、`route_strategies` / `route_strategy_groups`、`scheduling_preferences`、`api_keys`、`system_teams` / `system_team_members`、`resource_authorization_*` 三表、`external_integration_sources` / `external_integration_source_tokens`、`announcements` / `announcement_reads`。供应商 / 协议档案的当前清单与约束以 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) 与 [核心功能设计](核心功能设计.md) 为准。
+- **业务库（`juhe_business`）是恢复的硬边界**，保存可恢复核心业务数据：`system_accounts` / `system_sessions`、`global_settings` / `system_settings`、`providers` / `protocols` / `protocol_endpoint_families` / `provider_protocol_profiles` / `provider_protocol_profile_families` / `proxy_profiles`、`proxy_pools` / `proxy_pool_members` / `account_proxy_leases`（代理池配置与粘性租约）、`accounts` 及其支持模型 / 模型映射 / 标签 / 测试任务 / 测试会话、`custom_provider_models`、`groups` / `group_authorization_settings` / `group_accounts` / `group_account_stats_dirty`、`route_strategies` / `route_strategy_groups`、`scheduling_preferences`、`security_policies`（API Key 安全策略实体，2026-11-07 schema revision 19 随 `api_keys.security_policy_id` 绑定列交付，表形态与调度偏好同构）、`api_keys`、`system_teams` / `system_team_members`、`resource_authorization_*` 三表、`external_integration_sources` / `external_integration_source_tokens`、`announcements` / `announcement_reads`。供应商 / 协议档案的当前清单与约束以 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) 与 [核心功能设计](核心功能设计.md) 为准；代理池表/序列/健康列以 [代理池设计](代理池设计.md) 与 maintenance DDL 为准。
 - **数据集域与统计结果域是可丢弃、可重建数据**（含使用记录分区、审计 payload blob、日志索引、统计缓存），只有离线取证时才额外停机备份；默认备份只覆盖业务库与部署配置。
 - 运行时代码不做跨 schema 的隐式耦合查询；业务写入归 gateway 唯一 owner，统计结果域写入归 jobs 串行提交，审计 / 操作日志 / 运行日志索引 / 模型检测归各自 owner（见"队列与消费并发"）。
 - 使用记录列表由 repository 内部有界读取并稳定合并，不做全量精确 `COUNT(*)`；账户名筛选先在业务库解析账户 ID 集合，再以 `account_id IN (...)` 查明细（授权场景解析范围包含授权实例名称、来源账户名称与分组授权来源分组内账户名称，保证被授权用户按来源账户名可命中且不越权）。
@@ -103,6 +103,7 @@ schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/inter
 - 管理员使用记录页未限定用户时只能读取配置的 `usageStatsTimezone`（显式 IANA）当天、`created_at DESC, id DESC` 的全用户列表，由当天分区和父表复合主键 `(created_at, id)` 承接；账户名称、结果、状态码、IP、分组、模型、trace ID、请求来源、手工日期或非默认排序必须先选择系统账户。其他管理员大表页面仍按各自功能边界先限定用户和日期窗口；独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
 - PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip`、API Key 名称和 AI 性能账号选项名称等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为。
 - 清理策略：常规过期清理按统计安全游标追平后处理整日分区；已删除账号 / API Key 的关联明细小批次清理必须使用 `(created_at, id)` 命中分区，不能只按裸 `id` 删除。
+- 安全策略观测列（2026-11-07 schema revision 19 加法）：`security_policy_applied`（integer 0/1，默认 0）= 该请求实际执行了出站脱敏（绑定非默认安全策略且规则集非空，与是否命中无关）；`pii_hits_json`（text 可空）= 仅命中数 > 0 时写入，按规则 label 计数、不含任何原文。两列随分区 DDL 与幂等 ALTER 交付（`pg_schema_usage.go`），jobs `usagewriter` 落列、gateway `statreads` 读面透出，语义见 [API Key 安全策略与出站内容脱敏设计](APIKey安全策略与出站内容脱敏设计.md) §8。
 - 统计游标：`stats.stats_job_state` 继续记录按分区 / 窗口推进的游标，统计写入和游标推进在同一 PostgreSQL 事务提交。
 
 索引白名单与 collation 细节以 `backend-go/projects/maintenance/internal/schema/pg_schema_usage.go` 当前 DDL 为准。
@@ -151,6 +152,7 @@ juhe-ai:{<namespace>:<域>}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - `oauth` 域的跨进程刷新契约（2026-11-06，[网关与 jobs 跨进程共享状态改造计划](../plans/计划-20261106T024618000Z-网关与jobs跨进程共享状态改造.md) Tier 1）：账户锁 `juhe-ai:{<namespace>:oauth}:lock:oauth-refresh:<account_id>` 用 `SET NX PX 60s` + 随机 token + compare-delete 释放；凭据版本 `juhe-ai:{<namespace>:oauth}:version:account-credentials:<account_id>` 用 `SET max(config_revision)` + PEXPIRE（30 天）单调推进，并由读者批量 MGET。两者只存锁 token 与整型版本，不写 access/refresh token 或完整凭据；PG 仍是唯一凭据事实源，锁/版本后端不可用时回退既有进程内锁（jobs）、PG `config_revision` CAS（gateway/jobs）与 60s 缓存窗口。同域键同 slot，批量 MGET 在 Cluster 形态合法。B3/B4 再增加运行态序号 `juhe-ai:{<namespace>:oauth}:version:state:<account:<id>|apikey:<id>>`（INCR + PEXPIRE，30 天）：jobs 闸门/账户健康投影/J4 状态迁移/孤儿删除/冷却复测 Key 运行态/precheck 状态提交后递增，gateway runtime 缓存与凭据版本合并为一次 MGET，序号变化即重载 PG 快照（不复制状态字段，过滤语义与 PG 完全一致）。
 - `oauth` 刷新失败退避键（S13）：`juhe-ai:{<namespace>:oauth}:state:openai-oauth-refresh-failure:<base64url(sha256(account_id))>`，jobs 写、gateway 401 自动刷新只读；值为计数/退避截止/`configRevision` 的 JSON，不含 token。键形状与 revision 守卫固化在 `shared/platform/oauthfailure`，jobs 历史前缀逐字节兼容。
 - `settings` 域版本键（B5）：`juhe-ai:{<namespace>:settings}:version:settings:sys_admin`，gateway `Update`/`UpdateSection` system 提交后与 jobs 自动覆盖写后 INCR；jobs `jobssettings` 读前比较并清空 60s 键缓存。只存整型版本，不复制设置值；`global_settings` 品牌不纳入。
+- 代理池成员健康投影（C7-R，[代理池设计](代理池设计.md) §7.4）：`juhe-ai:{<namespace>}:proxy-pool:member-health:<proxy_profile_id>`，jobs `proxy-pool-health` 每完成一次可用性探测写 `healthy|degraded|dead`（TTL 5min，刷新覆盖），gateway 请求解析时批量 MGET；缺失/失败回退 PG `proxy_profiles.pool_health_status`。它是独立领域键，**不是** gateway `inval`/`runtimecache` 内部键；jobs 不发布 gateway 失效事件，gateway 也不写该键。代理档案连接变更、成员移除或池删除时 best-effort DEL（失败靠 TTL）。
 - `circuit` / `keymodel` / `hotquality` 三个域含全局索引与多键原子 Lua，必须单 slot；这是已知容量边界，热点域只能垂直扩容。
 - 跨进程同键必须逐域对齐：gateway 的 normal-route 延迟降级/恢复探针写 `proxyhealth`，jobs 的速度优先恢复读取器必须用 `proxyhealth`（不能再用 `speedfirst`）；gateway 的 policy avoidance 写 `keymodel`，jobs 列表可用性投影读取避让态必须用 `keymodel`，而恢复探针状态仍读 `proxyhealth`。一个读取器不能把两类键合并到同一 namespace，否则会静默读空、把避让账户标成可用。
 - 缓存失效优先递增 domain version，实现常量成本失效，不做全库 `SCAN + DEL`。
@@ -261,7 +263,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 | `audit_logs` / `audit_log_attempts` | 成功 payload 热窗口默认 1 小时，成功长期 payload 样本默认 3 天，问题事件默认 7 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 清理长期过期数据 | 完全成功请求先全量热保留；超过热窗口后，未命中 10% 长期采样的记录删除 attempts 和 payload 引用、主记录降为 `metadata_only`；成功三项环境变量全为 0 时不采集成功审计 |
 | `audit_payload_refs` / `audit_payload_blobs` | 成功样本正文默认 3 天，问题正文默认 7 天 | 是，`data-retention-cleanup` | 先删除过期引用，再删除无引用 blob 和本地 blob 文件（`JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`） |
 | `audit_error_groups` | 默认 7 天 | 是，`data-retention-cleanup` | 只做展示和排障聚合，不替代事件记录 |
-| `juhe_codex_context` 关系索引 + segments 文件 | 固定 7 天未使用即清理 | 是，jobs `data-retention-cleanup` | 过期索引删除与 storage key 入队在同一事务内；只删除没有任何剩余引用的 segment 文件（`JUHE_AI_CODEX_CONTEXT_ROOT`），失败项指数退避，成功或文件已不存在才确认出队 |
+| （已随 2026-11-07 Chat bridge 退役删除）`juhe_codex_context` 关系索引 + segments 文件 | 历史截面：固定 7 天未使用即清理 | jobs `data-retention-cleanup` 的该清理任务已随 bridge 退役删除（`cleanuprepo/codexcontext.go` 与 `JUHE_AI_CODEX_CONTEXT_ROOT` 同批移除） | 磁盘历史 `codex-context/` 目录不自动删除，升级文档要求备份后人工清理 |
 | `juhe_usage` 明细与 scope catalog | 默认 7 天在线保留（`usageRecordOnlineRetentionDays`），按统计安全游标追平后整日分区 `DETACH / DROP` | 是，`data-retention-cleanup` | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细 |
 | 账号质量分钟桶 / 统计缓存各桶 | 分钟桶默认 48 小时；小时桶默认 60 天；日桶默认 400 天；周桶默认 104 周；月桶默认 24 个月 | 是，`data-retention-cleanup` | 快照刷新水位只读 `MAX(updated_at)`，不以全表 `COUNT(*)` 感知删除 |
 | 授权日摘要 / 热范围窗口 | 日摘要跟随日级统计保留；热窗口默认今天 / 昨天 / 最近 7 天 / 最近 31 天 / 当前月，按需窗口按 TTL 清理 | 是，`data-retention-cleanup`；刷新任务会覆盖当前窗口 | 自定义范围先登记请求再后台生成，过期窗口可重建或丢弃 |

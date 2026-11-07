@@ -155,6 +155,33 @@ export function usageRecordServiceTierText(record: UsageRecordListItem): string 
   return undefined
 }
 
+/**
+ * 出站脱敏命中总数（安全策略设计 §8）：`pii_hits_json` 解析后的按规则 label 计数求和；
+ * 字段缺失（未绑定或零命中不写）返回 0。
+ */
+export function usageRecordPiiHitTotal(record: Pick<UsageRecordListItem, 'piiHits'>): number {
+  let total = 0
+  for (const value of Object.values(record.piiHits ?? {})) {
+    const numeric = typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+    total += numeric
+  }
+  return total
+}
+
+/** 命中徽标文案：总命中 N>0 → 「脱敏 N」；否则 undefined（不显示徽标）。 */
+export function usageRecordPiiHitSummary(record: Pick<UsageRecordListItem, 'piiHits'>): string | undefined {
+  const total = usageRecordPiiHitTotal(record)
+  return total > 0 ? `脱敏 ${formatTokens(total)}` : undefined
+}
+
+/** 徽标 tooltip 明细：按规则 label 计数列出，如 `PHONE×2、SECRET×1`。 */
+export function usageRecordPiiHitDetail(record: Pick<UsageRecordListItem, 'piiHits'>): string {
+  const entries = Object.entries(record.piiHits ?? {})
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]) && entry[1] > 0)
+  if (!entries.length) return '无脱敏命中'
+  return entries.map(([label, count]) => `${label}×${formatTokens(count)}`).join('、')
+}
+
 export function usageRecordReasoningEffortText(record: UsageRecordListItem): string | undefined {
   const effort = record.effectiveReasoningEffort
   if (!effort) return undefined

@@ -36,10 +36,12 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
       availability_schedule_gate INTEGER,
   deleted_at TEXT,
   authorization_instance_authorization_id TEXT,
+  authorization_instance_source_account_id TEXT,
   dispatch_revision INTEGER NOT NULL DEFAULT 1,
   config_revision INTEGER NOT NULL DEFAULT 1,
   credentials_encrypted TEXT NOT NULL,
   proxy_profile_id TEXT,
+  proxy_pool_id TEXT,
   balance_query_enabled INTEGER NOT NULL DEFAULT 0,
   balance_query_config_json TEXT NOT NULL DEFAULT '{}',
   name TEXT NOT NULL DEFAULT '',
@@ -51,12 +53,36 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
 );
 CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
   id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL,
   host TEXT,
   port INTEGER,
   username TEXT,
   password_encrypted TEXT,
-  enabled INTEGER NOT NULL DEFAULT 1
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  pool_health_status TEXT,
+  pool_health_failure_streak INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS juhe_business.proxy_pools (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  strategy TEXT NOT NULL DEFAULT 'round_robin',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE TABLE IF NOT EXISTS juhe_business.proxy_pool_members (
+  pool_id TEXT NOT NULL,
+  proxy_profile_id TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  weight INTEGER NOT NULL DEFAULT 1,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  PRIMARY KEY (pool_id, proxy_profile_id)
+);
+CREATE TABLE IF NOT EXISTS juhe_business.account_proxy_leases (
+  account_id TEXT PRIMARY KEY,
+  pool_id TEXT NOT NULL,
+  proxy_profile_id TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 1,
+  assignment_reason TEXT NOT NULL DEFAULT 'initial'
 );
 CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
   system_account_id TEXT NOT NULL,

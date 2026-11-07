@@ -113,12 +113,12 @@ func ensureAccountsBalanceColumns(ctx context.Context, b *businessDB) error {
 	check := `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'juhe_business' AND table_name = 'accounts' AND column_name = ANY($1)`
 	if err := b.db.QueryRowContext(ctx, check, []string{
 		"balance_query_enabled", "balance_query_config_json", "balance_query_next_refresh_at",
-		"config_revision", "credentials_encrypted", "proxy_profile_id", "dispatch_revision",
+		"config_revision", "credentials_encrypted", "proxy_profile_id", "proxy_pool_id", "dispatch_revision",
 	}).Scan(&count); err != nil {
 		return err
 	}
-	if count < 7 {
-		return fmt.Errorf("业务库 accounts 表缺少余额探测契约列（found %d/7）", count)
+	if count < 8 {
+		return fmt.Errorf("业务库 accounts 表缺少余额探测契约列（found %d/8）", count)
 	}
 	return nil
 }

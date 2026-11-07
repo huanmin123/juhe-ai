@@ -956,18 +956,10 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		"candidateAccountCount": len(rawCandidateAccounts),
 	}, "success", s.StartedAt())
 
-	codexCompleted, err := s.Codex.ApplyContextStatePreflight(ctx, CodexContextStateInput{
-		Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
-		StartedAt: input.StartedAt, SystemAccountID: systemAccountID,
-		APIKeyID: apiKeyID, GroupID: groupID,
-		Signal: input.Signal,
-	})
-	if err != nil {
-		return PreflightResult{}, err
-	}
-	if codexCompleted {
-		return PreflightResult{}, nil
-	}
+	// 2026-11-07 跨协议 Responses→Chat 桥退役：原 codex context-state preflight
+	// （ApplyContextStatePreflight 的「请求在 preflight 内完结」短路）随桥删除；
+	// 原生 Codex 请求的 previous_response_id 透传、审计 registry 写入不再存在
+	// （请求体字节本就不被改写，仅审计 metadata 收窄）。
 
 	routePlanSnapshot := options.RoutePlanSnapshot
 	if routePlanSnapshot == nil {
@@ -1166,72 +1158,15 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		settleHotQuality = settle
 	}
 
-	compactPreflight, err := s.Codex.ApplyChatBridgeCompactPreflight(ctx, CodexCompactPreflightInput{
-		Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
-		StartedAt: input.StartedAt, SystemAccountID: systemAccountID,
-		APIKeyID: apiKeyID, GroupID: groupID,
-		RequestClientCompatibility: clientStrategy.RequestClientCompatibility,
-		DispatchAccounts:           dispatchPreparation.Accounts,
-		ActiveGatewaySettings:      activeGatewaySettings,
-		ClientIPAccountAvoidance:   clientIPAccountAvoidanceTracker,
-		ModelPriority:              candidateFilter.ModelPriority,
-		RequestLane:                string(requestLane),
-		GroupSchedulingPolicy:      groupAccess.SchedulingPolicy,
-		RequestCoordination: CodexRequestCoordination{
-			Scope:                    "gateway_request",
-			ServerRetryBudget:        serverRetryBudget,
-			GatewayRequestWallBudget: gatewayRequestWallBudget,
-			RouteCoordinationBudget:  routeCoordinationBudget,
-			RequestAttemptTracker:    requestAttemptTracker,
-		},
-		OnDispatchedAccount: func(account gatewayruntimecache.OpenAIAccountSecret) {
-			if settleHotQuality == nil {
-				return
-			}
-			outcome := "not_dispatched"
-			if dispatchPreparation.HotQualityExplorationReservation != nil &&
-				dispatchPreparation.HotQualityExplorationReservation.AccountRuntimeKey == gatewayAccountRuntimeKey(account) {
-				outcome = "dispatched"
-			}
-			// 热度探索结算失败不允许静默：探索预约/热度样本因此悬空。真实
-			// scopeKey 由 gatewayhotquality 内部构造，本层不可达，线索以
-			// groupId + systemAccountId 承载（scope 同源）。
-			if err := settleHotQuality(outcome); err != nil {
-				slog.Warn("热度质量探索结算失败，探索预约保持未结算",
-					"event", "gateway_hot_quality_settlement_failed",
-					"accountId", account.ID,
-					"groupId", groupID,
-					"systemAccountId", systemAccountID,
-					"outcome", outcome,
-					"error", err.Error())
-			}
-		},
-		Signal: input.Signal,
-	})
-	if err != nil {
-		return PreflightResult{}, err
-	}
-	if compactPreflight.Completed {
-		if settleHotQuality != nil {
-			// 结算失败告警口径与 OnDispatchedAccount 侧一致（探索预约悬空）。
-			if err := settleHotQuality("not_dispatched"); err != nil {
-				slog.Warn("热度质量探索结算失败，探索预约保持未结算",
-					"event", "gateway_hot_quality_settlement_failed",
-					"groupId", groupID,
-					"systemAccountId", systemAccountID,
-					"outcome", "not_dispatched",
-					"error", err.Error())
-			}
-		}
-		if dispatchPreparation.ReleaseClientIPConcurrency != nil {
-			dispatchPreparation.ReleaseClientIPConcurrency()
-		}
-		return PreflightResult{}, nil
-	}
-	runtimeResponseInspectionPolicies, err := s.RuntimeCache.ListCachedActiveResponseInspectionPoliciesForAccountsAsync(ctx, compactPreflight.Accounts)
+	// 2026-11-07 跨协议 Responses→Chat 桥退役：原 ApplyChatBridgeCompactPreflight
+	// （桥摘要 compact 的合成派发/过滤窗口与 codex_responses 拒绝面）随桥删除。
+	// 派发账户窗口直接取准备链产物；原生 /responses/compact 请求的预算豁免、
+	// compaction_trigger 用量标记（CompactionExpectedForRequest）与真实上游
+	// compact 语义保持不变，`/responses/compact` 不再有桥内 400 拒绝面。
+	runtimeResponseInspectionPolicies, err := s.RuntimeCache.ListCachedActiveResponseInspectionPoliciesForAccountsAsync(ctx, dispatchPreparation.Accounts)
 	if err != nil {
 		if settleHotQuality != nil {
-			// 结算失败告警口径与 OnDispatchedAccount 侧一致（探索预约悬空）；
+			// 结算失败告警口径与探索预约悬空语义一致；
 			// 本分支随后按缓存读失败退出，结算悬空不得无声。
 			if err := settleHotQuality("not_dispatched"); err != nil {
 				slog.Warn("热度质量探索结算失败，探索预约保持未结算",
@@ -1252,7 +1187,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	return PreflightResult{DispatchContext: &DispatchContext{
 		ActiveGatewaySettings:                    activeGatewaySettings,
 		UsageContext:                             usageContext,
-		Accounts:                                 compactPreflight.Accounts,
+		Accounts:                                 dispatchPreparation.Accounts,
 		SessionIdentity:                          sessionIdentity,
 		SessionAffinityKey:                       sessionAffinityKey,
 		GroupAffinityKey:                         groupAffinityKey,

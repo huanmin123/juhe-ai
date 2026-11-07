@@ -79,18 +79,11 @@ func (s *w1pAuditSink) RecordFailedDispatchAttempt(input gatewaydispatch.FailedD
 }
 
 // w1pBridgePreflight 是 gatewaypreauth.CodexBridgePreflight 的透传 fake。
+// 2026-11-07 桥退役后端口只剩 compaction expected 单点判定。
 type w1pBridgePreflight struct{}
 
 func (b *w1pBridgePreflight) CompactionExpectedForRequest(*gatewaypreauth.GatewayRequest) bool {
 	return true
-}
-
-func (b *w1pBridgePreflight) ApplyContextStatePreflight(context.Context, gatewaypreauth.CodexContextStateInput) (bool, error) {
-	return true, nil
-}
-
-func (b *w1pBridgePreflight) ApplyChatBridgeCompactPreflight(context.Context, gatewaypreauth.CodexCompactPreflightInput) (gatewaypreauth.CodexCompactPreflightResult, error) {
-	return gatewaypreauth.CodexCompactPreflightResult{Completed: true}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,45 +1060,6 @@ func TestW1PProtocolGateHelpers(t *testing.T) {
 	}
 }
 
-// TestW1PChainCodexBridgePreflight：nil 桥接降级为直通适配器；非 nil 原样
-// 返回；降级适配器的三个方法保持“未完成”语义。
-func TestW1PChainCodexBridgePreflight(t *testing.T) {
-	fake := &w1pBridgePreflight{}
-	if got := chainCodexBridgePreflight(fake); got != gatewaypreauth.CodexBridgePreflight(fake) {
-		t.Fatal("非 nil 桥接应原样返回")
-	}
-
-	adapter := chainCodexBridgePreflight(nil)
-	if adapter == nil {
-		t.Fatal("nil 桥接应返回降级适配器")
-	}
-	if _, isAdapter := adapter.(codexPreflightAdapter); !isAdapter {
-		t.Fatalf("降级实现类型 = %T，want codexPreflightAdapter", adapter)
-	}
-	completed, err := adapter.ApplyContextStatePreflight(context.Background(), gatewaypreauth.CodexContextStateInput{})
-	if completed || err != nil {
-		t.Fatalf("ApplyContextStatePreflight = (%v,%v)，want (false,nil)", completed, err)
-	}
-	accounts := []gatewaydispatch.AccountCandidate{{ID: "acc-1"}, {ID: "acc-2"}}
-	compact, err := adapter.ApplyChatBridgeCompactPreflight(context.Background(), gatewaypreauth.CodexCompactPreflightInput{
-		DispatchAccounts: accounts,
-	})
-	if err != nil {
-		t.Fatalf("ApplyChatBridgeCompactPreflight 错误：%v", err)
-	}
-	if compact.Completed {
-		t.Fatal("降级 compact preflight 不应标记完成")
-	}
-	if len(compact.Accounts) != 2 || compact.Accounts[0].ID != "acc-1" || compact.Accounts[1].ID != "acc-2" {
-		t.Fatalf("派发账户被改写：%v", compact.Accounts)
-	}
-	if adapter.CompactionExpectedForRequest(w1pGatewayRequest(http.MethodPost, "/v1/responses", nil)) {
-		t.Fatal("普通 /v1/responses 请求不应预期 compaction")
-	}
-	if !adapter.CompactionExpectedForRequest(w1pGatewayRequest(http.MethodPost, "/v1/responses/compact", nil)) {
-		t.Fatal("POST /v1/responses/compact 应预期 compaction")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // slogObservability / 阶段日志级别

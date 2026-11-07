@@ -40,7 +40,7 @@ func TestWhPreflightInteractionAffinityFound(t *testing.T) {
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whFullDispatchCandidates(account)
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 		s.Affinity = affinity
 	})
 	audit := &fakeAuditCapture{}
@@ -166,7 +166,7 @@ func TestWhPrepareAPIKeyGroupFallbackDispatchFound(t *testing.T) {
 			},
 			fallbackFound: true,
 		}
-		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
+		s.Codex = &fakeCodex{}
 	})
 	row := validRuntimeRow()
 	req, _, writer := newTestRequest("POST", "/v1/chat/completions")

@@ -419,11 +419,14 @@ func TestUsageShardLocationMirror(t *testing.T) {
 }
 
 // TestUsageRecordColumnsMatchDDL 钉住 usage_records 写入列集与 pg_schema_usage
-// DDL 的 68 列一致（列名来自 DDL 抽取，缺列会让 NOT NULL 约束在写入时才爆）。
+// DDL 的 70 列一致（列名来自 DDL 抽取，缺列会让 NOT NULL 约束在写入时才爆）。
+// 68→70：2026-11-07 API Key 安全策略批A 存储 +2（security_policy_applied /
+// pii_hits_json，紧邻 compaction_expected 之后）。
 func TestUsageRecordColumnsMatchDDL(t *testing.T) {
 	want := []string{
 		"id", "system_account_id", "trace_id", "traffic_source", "client_ip",
 		"api_key_id", "group_id", "route_group_id", "compaction_expected",
+		"security_policy_applied", "pii_hits_json",
 		"account_id", "endpoint", "provider_code", "provider_protocol_profile_id",
 		"usage_semantic", "model", "upstream_model", "upstream_response_model",
 		"pricing_model", "requested_service_tier", "effective_service_tier",

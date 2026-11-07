@@ -89,6 +89,9 @@ type Store struct {
 	// （crossprocess.go）。nil 保持既有进程内行为；生产组合根必须接线。
 	refreshLock      RefreshLock
 	credentialBumper CredentialVersionBumper
+	// proxyStack 是懒构造的共享 proxyresolve 只读栈（代理池设计 §5.3；见
+	// proxy_pool.go 文件头）。构造后不变，无开关语义。
+	proxyStack proxyResolveStack
 }
 
 // Option configures optional collaborators.
@@ -549,10 +552,20 @@ type CreateAccountInput struct {
 	ModelMappings           []accounts.ModelMapping
 	Tags                    []string
 	ProxyProfileID          *string
-	GroupID                 *string
-	AccountExpiresAt        *string
-	AvailabilitySchedule    any
-	Notes                   *string
+	// ProxyPoolID 是 OAuth 建号的池绑定入参（代理池设计 §8.3 OAuth 建号行，
+	// camelCase proxyPoolId）：与 ProxyProfileID 互斥（路由层已 400，落库前
+	// 复核）。accounts 写面在同一创建事务写 proxy_pool_id 与池租约；
+	// CreateOAuthAccount 随后把租约 pin 到建号临时分配的同一成员
+	//（PinPoolMemberProfileID），成员不再可分配时明确失败，不静默换出口。
+	ProxyPoolID *string
+	// PinPoolMemberProfileID 是建号链临时分配（allocateOAuthPoolMemberURL，
+	// 不落租约）的成员档案 ID：token 交换固定使用该成员 URL；账户落库后由
+	// pinOAuthPoolLease 固化为租约（§6.1）。仅 ProxyPoolID 非空时有意义。
+	PinPoolMemberProfileID string
+	GroupID                *string
+	AccountExpiresAt       *string
+	AvailabilitySchedule   any
+	Notes                  *string
 }
 
 // CreateOAuthAccount mirrors createAccountAsync on the M08 slice: profile
@@ -563,6 +576,17 @@ type CreateAccountInput struct {
 // 默认连接集合与健康检查连接维度（显式入参优先）；派生载荷进入 Store.Create
 // 后仍受写面 §8 全量校验，必填门不放宽。
 func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput, access AccessScope) (*accounts.CreateResult, error) {
+	// 池绑定互斥复核（代理池设计 §5.2/§8.3）：两列同时非空是数据损坏，路由层
+	// 已 400，落库前再断言一次，不静默选边。池建号必须携带临时分配成员（token
+	// 交换已固定使用该成员 URL），缺失即明确失败。
+	if _, poolSet := trimmedOptionalPointer(input.ProxyPoolID); poolSet {
+		if _, profileSet := trimmedOptionalPointer(input.ProxyProfileID); profileSet {
+			return nil, &ValidationError{Message: "代理与代理池不能同时选择"}
+		}
+		if strings.TrimSpace(input.PinPoolMemberProfileID) == "" {
+			return nil, &ValidationError{Message: "代理池建号缺少临时分配成员，无法固定 token 交换出口"}
+		}
+	}
 	// 克隆预检（B5 托管建户 × M2 克隆契约，创建事务前执行）：复用 accounts 包
 	// FindCloneContext（访问范围/归属/授权实例禁克隆判定与通用路由同源），
 	// 403/409/404 语义照搬 accounts/routes.go create 的克隆分支——错误类型已
@@ -682,6 +706,7 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 		SuperPriorityEnabled:            input.SuperPriorityEnabled,
 		FallbackEnabled:                 input.FallbackEnabled,
 		ProxyProfileID:                  input.ProxyProfileID,
+		ProxyPoolID:                     input.ProxyPoolID,
 		GroupID:                         input.GroupID,
 		AccountExpiresAt:                input.AccountExpiresAt,
 		AvailabilitySchedule:            input.AvailabilitySchedule,
@@ -697,6 +722,22 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 			return nil, &ValidationError{Message: validation.Message}
 		}
 		return nil, err
+	}
+	// OAuth 建号池绑定收口（代理池设计 §6.1 OAuth 建号行）：落库后把租约 pin
+	// 到 token 交换实际使用的临时成员（重新校验成员仍可分配；accounts 写面的
+	// 策略分配可能与临时分配不同，出口一致性以临时成员为准）。失败明确报错，
+	// 不静默换出口/直连；对刚落库的账户做 best-effort 软删除回滚，避免留下
+	// 「建号已报失败但账户无代理可用」的半成品行（池绑定账户不会直连，残留行
+	// 删除失败时由日志暴露并人工处理）。
+	if _, poolSet := trimmedOptionalPointer(input.ProxyPoolID); poolSet {
+		if pinErr := s.pinOAuthPoolLease(ctx, result.ID, *input.ProxyPoolID, input.PinPoolMemberProfileID); pinErr != nil {
+			if _, deleteErr := s.Accounts.Delete(ensureContext(ctx), result.ID, access.accountsScope()); deleteErr != nil {
+				slog.Error("OAuth 池建号固化失败后账户回滚删除失败",
+					"event", "oauth_pool_create_pin_failed", "accountId", result.ID,
+					"pinError", pinErr.Error(), "deleteError", deleteErr.Error())
+			}
+			return nil, pinErr
+		}
 	}
 	return result, nil
 }

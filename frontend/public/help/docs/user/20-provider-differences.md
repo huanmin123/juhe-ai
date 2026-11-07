@@ -8,7 +8,7 @@
 | --- | --- |
 | 透传 | 你怎么写，上游收到的就是什么（绝大多数参数的状态） |
 | 改写 | 网关会替换或归一（仅模型映射改 `model`、账户级 `service_tier`/`reasoning_effort` 覆盖、少量格式归一——见透传规则篇） |
-| 受控拒绝 | 跨协议转换时目标协议没有等价语义的字段，网关直接报错点名，不伪装成功 |
+| 受控拒绝 | 上游不支持或没有等价语义的字段，网关直接报错点名，不伪装成功（跨协议转换已随 2026-11-07 退役，请求只由同协议账户承接） |
 
 **逐家速查里，没有标"受控拒绝"的一律是透传。**
 
@@ -128,16 +128,13 @@
 | Gemini generateContent | `generationConfig.thinkingConfig.thinkingLevel` |
 | GLM / DeepSeek（Chat 形态） | 顶层 `reasoning_effort`（GLM 另有 `thinking` 开关；DeepSeek 是 `thinking` 开关 + effort） |
 
-你在哪个协议面上发请求，就写哪个字段；网关做跨协议转换时的换算规则见下一节。
+你在哪个协议面上发请求，就写哪个字段。
 
-## 跨协议时的字段限制
+## 协议一致性（2026-11-07 起）
 
-只有当请求被转换到"协议不同"的账户时才需要关心这一节（同协议直连永远透传）：
+自 2026-11-07 起跨协议模型映射已退役：**客户端请求协议与实际上游协议必须一致**，请求只会由同协议账户承接（唯一例外是 Gemini 同族的"流式请求 → GenerateContent 上游"归一）。不存在"请求被转换到协议不同的账户"的场景，因此没有跨协议字段换算规则。供应商特有参数按你所在协议面的官方语义书写即可；映射只做同族模型名改写，不改请求体结构。
 
-- **Anthropic → Chat 协议**：`thinking`、`cache_control`、`top_k`、`mcp_servers`、`container`、`context_management`、`service_tier` **无 Chat 等价语义 → 400 受控拒绝**（错误信息点名字段）；白名单外的其他字段会被丢弃。可自动映射的只有少数结构字段（`system`→system message、`stop_sequences`→`stop` 等）。
-- **OpenAI → Gemini**：`reasoning_effort` 的 `minimal/low/medium/high` 会换算为 Gemini 思考档位；`logprobs` / `top_logprobs` 受控拒绝。
-- **OpenAI → Anthropic**：`verbosity`、`n>1`、`logprobs` 等无等价能力，本地受控错误或明确忽略。
-- `count_tokens` / `embedContent` / 文件与缓存类辅助端点**不参与任何跨协议转换**——只有原生同协议账户承接。
+- `count_tokens` / `embedContent` / 文件与缓存类辅助端点**不参与任何协议转换**——只有原生同协议账户承接。
 
 ## 两句话收尾
 

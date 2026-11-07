@@ -29,6 +29,7 @@ import {
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { accountModelMappingProtocolValidationMessage } from './accountModelMappingProtocolMatrix'
 import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
+import { joinProxyCompositeValue, splitProxyCompositeValue } from '@/shared/proxyLabelCache'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import {
   validateAccountModelMappings,
@@ -38,6 +39,7 @@ import {
 export type AccountBatchEditFieldKey =
   | 'tags'
   | 'proxyProfileId'
+  | 'proxyPoolId'
   | 'concurrencyLimit'
   | 'rpmLimit'
   | 'priority'
@@ -60,6 +62,8 @@ export interface AccountBatchEditForm {
   enabled: Record<AccountBatchEditFieldKey, boolean>
   tags: string[]
   proxyProfileId?: string
+  /** 代理池批量绑定（代理池设计 §8.4）：与 proxyProfileId 互斥，由复合值拆分写入。 */
+  proxyPoolId?: string
   concurrencyLimit: number
   /** 每分钟请求上限（RPM 设计 §6.4）：0 表示不限制。 */
   rpmLimit: number
@@ -86,18 +90,20 @@ export interface AccountBatchEditBuildResult {
 }
 
 export interface AccountBatchEditModelMappingOptions {
-  mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
-  mappingCurrentProviderSourceModelOptions?: ModelMappingProtocolOption[]
-  mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+  /** 映射客户端模型候选：跨供应商全量目录（批量与单账户共用同一池）。 */
   mappingSourceModelOptions?: ModelMappingProtocolOption[]
+  /** source 候选池就绪标志：false = 未就绪/加载失败，非基线行阻止保存。 */
+  mappingSourceModelOptionsReady?: boolean
   mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
-  providerCode?: string
+  /** 上游候选（批量取所选账户支持模型交集）就绪标志。 */
+  mappingUpstreamModelOptionsReady?: boolean
   providerProfile?: AccountModelMappingProviderProfile
 }
 
 export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, string> = {
   tags: '账户标签',
   proxyProfileId: '代理',
+  proxyPoolId: '代理池',
   concurrencyLimit: '并发上限',
   rpmLimit: '每分钟请求上限',
   priority: '优先级',
@@ -124,6 +130,7 @@ export function createAccountBatchEditForm(): AccountBatchEditForm {
     ) as Record<AccountBatchEditFieldKey, boolean>,
     tags: [],
     proxyProfileId: undefined,
+    proxyPoolId: undefined,
     concurrencyLimit: 1,
     // RPM 默认 0（不限制），与创建表单同口径（RPM 设计 §6.4）。
     rpmLimit: 0,
@@ -278,7 +285,11 @@ export function buildAccountBatchEditRequest(
 
   const updates: AccountBatchEditRequest['updates'] = {}
   addUpdate(updates, 'tags', form.enabled.tags, normalizedTextList(form.tags))
-  addUpdate(updates, 'proxyProfileId', form.enabled.proxyProfileId, form.proxyProfileId?.trim() || null)
+  // 代理/代理池批量绑定（代理池设计 §8.4）：同一勾选状态下两键同时进入 updates，
+  // 裸 id 与 null 恰好互斥——绑定池时清空直接代理、绑定代理时清空池、清空时两者都为 null。
+  const proxyTarget = splitBatchProxyTarget(form)
+  addUpdate(updates, 'proxyProfileId', form.enabled.proxyProfileId, proxyTarget.profileId)
+  addUpdate(updates, 'proxyPoolId', form.enabled.proxyPoolId, proxyTarget.poolId)
   addUpdate(updates, 'concurrencyLimit', form.enabled.concurrencyLimit, form.concurrencyLimit)
   addUpdate(updates, 'rpmLimit', form.enabled.rpmLimit, form.rpmLimit)
   addUpdate(updates, 'priority', form.enabled.priority, form.priority)
@@ -394,6 +405,22 @@ function addUpdate<TKey extends keyof AccountBatchEditRequest['updates']>(
 ): void {
   if (!enabled) return
   updates[key] = { enabled: true, value } as AccountBatchEditRequest['updates'][TKey]
+}
+
+/**
+ * 批量代理目标三态拆分（代理池设计 §8.4）：
+ * - 未勾选（enabled=false）：不进入 updates，不改任何账户；
+ * - 勾选 + 清空：两键均为 null（全部改回直连）；
+ * - 勾选 + 值：选中目标的裸 id + 另一键 null，绝不把复合值发给 API。
+ */
+function splitBatchProxyTarget(form: AccountBatchEditForm): { profileId: string | null; poolId: string | null } {
+  const { profileId, poolId } = splitProxyCompositeValue(
+    joinProxyCompositeValue(form.proxyProfileId, form.proxyPoolId)
+  )
+  return {
+    profileId: profileId ?? null,
+    poolId: poolId ?? null
+  }
 }
 
 function normalizedTextList(values: string[]): string[] {

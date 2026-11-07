@@ -996,7 +996,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 		case "providerCode", "providerProtocolProfileId", "name", "type", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
 			"tags", "status", "skipInitialHealthCheck", "concurrencyLimit", "rpmLimit", "priority",
-			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId",
+			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId", "proxyPoolId",
 			"groupId", "accountExpiresAt", "availabilitySchedule", "balanceQueryEnabled",
 			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled",
 			"backgroundProbeEnabled",
@@ -1174,6 +1174,17 @@ func createBody(body map[string]any) (CreateInput, string) {
 			return CreateInput{}, "账户参数无效"
 		}
 	}
+	// 代理池绑定（代理池设计 §8.3）：创建缺省/null = 无代理；与 proxyProfileId
+	// 互斥的写入面校验在 createInTx 统一承载（400 proxy_target_conflict）。
+	if value, exists := body["proxyPoolId"]; exists {
+		if value == nil {
+			input.ProxyPoolID = nil
+		} else if text, ok := value.(string); ok {
+			input.ProxyPoolID = &text
+		} else {
+			return CreateInput{}, "账户参数无效"
+		}
+	}
 	if value, exists := body["groupId"]; exists {
 		if value == nil {
 			input.GroupID = nil
@@ -1288,7 +1299,7 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			"priority", "superPriorityEnabled", "fallbackEnabled",
 			"credentials", "credentialsPatch", "supportedModels", "healthCheckModel",
 			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
-			"availabilitySchedule", "clearFailureState", "proxyProfileId", "groupId",
+			"availabilitySchedule", "clearFailureState", "proxyProfileId", "proxyPoolId", "groupId",
 			"balanceQueryEnabled", "balanceQueryConfig",
 			"temporaryUnavailableContinuousProbeEnabled", "backgroundProbeEnabled", "expeditedRecoveryEnabled",
 			// M2 域不可变校验入参（携带即校验，≠ 行现值拒绝）。
@@ -1490,6 +1501,19 @@ func patchBody(body map[string]any) (PatchInput, string) {
 		if value != nil {
 			if text, ok := value.(string); ok {
 				input.ProxyProfileID = &text
+			} else {
+				return PatchInput{}, "账户更新参数无效"
+			}
+		}
+	}
+	// 代理池绑定（代理池设计 §8.3）：PATCH 缺省 = 不修改、null = 清除（含
+	// 与 proxyProfileId:null 同时提交的解除绑定）。互斥（同时非空 400
+	// proxy_target_conflict）由补丁事务统一承载。
+	if value, exists := body["proxyPoolId"]; exists {
+		input.ProxyPoolIDPresent = true
+		if value != nil {
+			if text, ok := value.(string); ok {
+				input.ProxyPoolID = &text
 			} else {
 				return PatchInput{}, "账户更新参数无效"
 			}

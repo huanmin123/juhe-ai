@@ -91,17 +91,12 @@ func TestMockdataRunSeedsBusinessOnFreshDatabase(t *testing.T) {
 		}
 	}
 	// chat_codex_model_check 域的关键计数（属主段缺失时跳过，不进 Counts）。
+	// 2026-11-07 codex-context 退役：原 codex_context_* 三表计数断言随造数段
+	// 删除。
 	chatCounts := map[string]int{}
 	for _, domain := range report.Domains {
 		if domain.Name == DomainChatCodexModelCheck {
 			chatCounts = domain.Counts
-		}
-	}
-	for _, table := range []string{
-		"codex_context_sessions", "codex_context_responses", "codex_context_compacts",
-	} {
-		if chatCounts[table] == 0 {
-			t.Fatalf("codex 域计数缺少 %s: %v", table, chatCounts)
 		}
 	}
 	// 全新库无 juhe_j3b schema / juhe_jobs：j3b 与账户健康段按属主缺失跳过。
@@ -123,7 +118,8 @@ func TestMockdataRunSeedsBusinessOnFreshDatabase(t *testing.T) {
 		"system_accounts", "groups", "super_group_members", "accounts", "account_connections",
 		"account_endpoint_modes", "account_supported_models", "group_accounts", "route_strategies",
 		"route_strategy_groups", "api_keys", "resource_authorizations", "resource_authorization_grants",
-		"system_teams", "proxy_profiles", "announcements", "media_jobs", "account_test_tasks",
+		"system_teams", "proxy_profiles", "proxy_pools", "proxy_pool_members", "account_proxy_leases",
+		"announcements", "media_jobs", "account_test_tasks",
 		"model_check_question_bank", "models",
 	} {
 		if counts[table] == 0 {

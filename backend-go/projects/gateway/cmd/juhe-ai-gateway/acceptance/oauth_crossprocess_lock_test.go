@@ -108,7 +108,6 @@ func TestAcceptanceOAuthRefreshCrossProcessLock(t *testing.T) {
 		"JUHE_AI_REDIS_URL":                         fixture.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   fixture.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(fixture.root, "storage"),
-		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(fixture.root, "storage", "codex-context-root"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             fixture.spoolDir,
 		"JUHE_AI_INSTANCE_ID":                       "acceptance-jobs-lock",
 		"JUHE_AI_WORKER_ROLE":                       "worker",

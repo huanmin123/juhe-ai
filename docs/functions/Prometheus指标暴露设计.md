@@ -78,12 +78,13 @@
 ### 基数约束
 
 - 自定义族标签只允许上表枚举值；禁止把路由路径、模型名、账户 / 用户 / API Key ID、上游地址、错误正文等高基数或敏感值放入标签。
-- `route_group` 枚举为 `health` / `management` / `public_api` / `gateway` / `other` / `observability` 六值；`/__aisys__/metrics` 自身归 `observability` 且**不参与计量**（双重排除：分类器短路 + 端点挂健康监听不经指标中间件），因此有效 `route_group` 为五类。`method` 归一化为七个标准 HTTP 方法 + `OTHER`；`status_class` / `outcome` / `failure_scope` 取值见指标族表；`reason_class`（九值：`quota`/`rate_limit`/`authorization`/`protocol`/`timeout`/`transport`/`upstream_5xx`/`upstream_4xx`/`unknown`）与 `failure_class`（三值：`opaque_upstream_response`/`transport`/`unknown`）为固定分类词表。新增标签值前必须先在本文登记基数上界。
+- `route_group` 枚举为 `health` / `management` / `public_api` / `gateway` / `other` / `observability` 六值；`/__aisys__/metrics` 自身归 `observability` 且**不参与计量**（双重排除：分类器短路 + 端点挂健康监听不经指标中间件），因此有效 `route_group` 为五类。`method` 归一化为七个标准 HTTP 方法 + `OTHER`；`status_class` / `outcome` / `failure_scope` 取值见指标族表；`reason_class`（十值：`quota`/`rate_limit`/`authorization`/`protocol`/`timeout`/`transport`/`upstream_5xx`/`upstream_4xx`/`version_gate`/`unknown`）与 `failure_class`（三值：`opaque_upstream_response`/`transport`/`unknown`）为固定分类词表。新增标签值前必须先在本文登记基数上界。
+- `version_gate`（2026-11-06 登记）：上游返回 HTTP 426（Upgrade Required）的版本门槛失败。纯状态码判定、零文案解析（遵循《客户端版本自动跟版设计》§8.3 裁决）；仅诊断计数面，不写账户状态、不触发自动处置——反应式跟版触发仅限 jobs xai 用量路径既有白名单。
 - 单实例序列上界（标签笛卡尔积理论值，实际受语义约束更小）：
   - `juhe_ai_http_requests_total`：5 类有效 `route_group` × 8 `method` × 13 个有效 (status_class, outcome, failure_scope) 组合（12 个 (status_class, outcome) 组合中 11 个恒配 `none`，`5xx`+`completed` 发射 `gateway/upstream` 两值——`none` 在该组合被归一为 `gateway`，不可达）= **520**。
   - `juhe_ai_http_request_duration_seconds`：同标签集，每组合 8 桶 + `+Inf` + `_sum` + `_count` = 11 序列，上界 **5720**。
   - `juhe_ai_http_requests_in_flight`：5 × 8 = **40**。
-  - `juhe_ai_gateway_upstream_failures_total`：3 `failure_class` × 9 `reason_class` × 6 `status_class` = **162**。
+  - `juhe_ai_gateway_upstream_failures_total`：3 `failure_class` × 10 `reason_class` × 6 `status_class` = **180**。
   - `juhe_ai_gateway_first_output_duration_seconds`：8 `method` × 11 = **88**。
   - `juhe_ai_gateway_db_pool_*`：主业务池固定 **6** 序列（无标签）。
   - `juhe_ai_jobs_task_runs_total`：注册任务数 × 状态数（3 终态）；`juhe_ai_jobs_task_last_success_timestamp_seconds`：注册任务数（仅出现过的 job_name/job_type 组合）。

@@ -69,12 +69,7 @@ curl -s &quot;$BASE_URL/v1/chat/completions&quot; \
 <h2>网关会改写什么：五种例外</h2>
 <p>透传是默认，但有五种场景网关会动请求体。每种都有明确的触发条件：</p>
 <p><strong>1. 模型映射改写 <code>model</code> 字段。</strong> 你的 Key 绑定的分组里，某账户配了&quot;请求模型 → 上游模型&quot;的映射并命中时，出站请求体的 <code>model</code> 被替换为映射后的上游模型（其余字段不动）。你无感知，但<strong>响应里的 <code>model</code> 可能是上游真实拼写</strong>，与你请求的名字不同。</p>
-<p><strong>2. 跨协议转换时按白名单重建请求体。</strong> 当请求被路由到&quot;协议不同&quot;的账户（比如 Anthropic 客户端 → Chat 协议账户，见《协议总览：三类协议面怎么选》），网关按目标协议<strong>重建</strong>请求体——重建时只保留目标协议有语义的字段，多余字段要么报错要么丢失：</p>
-<ul>
-<li>Anthropic → Chat 桥：请求体带 <code>thinking</code>、<code>cache_control</code>、<code>top_k</code>、<code>mcp_servers</code> 等字段会<strong>直接 400 拒绝</strong>（错误信息会点名该字段）；白名单外的其他字段<strong>静默丢失</strong>。</li>
-<li>Gemini 桥：<code>reasoning</code>/<code>thinking</code>/<code>logprobs</code> 等在场即拒绝；<code>reasoning_effort</code> 的部分取值会换算为 Gemini 的思考档位。</li>
-</ul>
-<p><strong>结论：用供应商特有参数时，请确保模型由同协议账户承接</strong>（一般用户无需判断——只要不刻意跨协议混用，遇 400 看错误信息即可）。</p>
+<p><strong>2. 模型映射只做同协议改名，不做跨协议转换。</strong> 自 2026-11-07 起跨协议模型映射已退役：客户端请求协议与实际上游协议必须一致（唯一例外是 Gemini 同族的&quot;流式请求 → 非流式上游&quot;归一）。请求不会被路由到&quot;协议不同&quot;的账户；模型映射命中时只改写 <code>model</code> 字段（同族改名），请求体按原协议透传。如果你在供应商特有参数上遇到 400，通常是目标账户协议不匹配被跳过或字段不被上游支持，看错误信息即可。</p>
 <p><strong>3. 特定类型账户会删字段。</strong> 极少数账户类型（如 OpenAI OAuth 的 Codex 类账户）对字段有硬性要求，转发前会删除 <code>stream_options</code>、<code>temperature</code>、<code>top_p</code>、<code>user</code>、<code>metadata</code> 等字段——这类账户由管理员标记，普通 API Key 分组一般不涉及；你的参数&quot;莫名没生效&quot;时可以找管理员确认账户类型。</p>
 <p><strong>4. 管理员可配置账户级覆盖。</strong> <code>service_tier</code>、<code>reasoning_effort</code> 两个字段可能被管理员在账户上配置的覆盖值改写（客户端传了也以覆盖为准）。</p>
 <p><strong>5. 个别端点的格式归一。</strong> <code>/chat/completions</code> 与 <code>/responses</code> 上 <code>reasoning</code> 与 <code>reasoning_effort</code> 双形态会被归一为该端点的规范形态（语义不变）；Anthropic <code>/messages</code> 请求体里的 <code>&quot;stream&quot;: false</code> 会被删除（等价语义）。</p>

@@ -182,10 +182,7 @@ func TestAutofillFillsEmptyProbeTablesWithCoverageReady(t *testing.T) {
 			t.Fatalf("运行态表 %s 不应被补行: %d 行", key, count)
 		}
 	}
-	queueKey := qualified(SchemaCodexContext, "codex_context_storage_cleanup_queue")
-	if _, ok := first.AutofillSkipped[queueKey]; !ok {
-		t.Fatalf("瞬时队列 %s 应出现在跳过清单", queueKey)
-	}
+	// 2026-11-07 codex-context 退役：原瞬时清理队列表的跳过断言随 schema 删除。
 
 	// 5. 重复 Run 不叠加：清理阶段删掉探针的标识行后 autofill 重新补齐，行数
 	//    与首次一致，FK 跳过语义稳定。

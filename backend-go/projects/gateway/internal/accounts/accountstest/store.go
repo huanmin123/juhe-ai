@@ -145,10 +145,14 @@ type TestDraftSnapshot struct {
 	HealthCheckEndpointMode   string                      `json:"healthCheckEndpointMode"`
 	ModelMappings             []accountscore.ModelMapping `json:"modelMappings,omitempty"`
 	ProxyProfileID            *string                     `json:"proxyProfileId,omitempty"`
-	AccountExpiresAt          *string                     `json:"accountExpiresAt,omitempty"`
-	AvailabilitySchedule      map[string]any              `json:"availabilitySchedule,omitempty"`
-	AvailabilityScheduleJSON  *string                     `json:"availabilityScheduleJson,omitempty"`
-	Notes                     *string                     `json:"notes,omitempty"`
+	// ProxyPoolID 是草稿的代理池绑定来源（代理池设计 §6.1/§8.3 草稿测试）：
+	// prepare 段已临时选定成员写入 ProxyProfileID（不写租约）；本字段仅随
+	// 信封携带用于诊断，执行链（shared manualtest）解析 ProxyProfileID 出站。
+	ProxyPoolID              *string        `json:"proxyPoolId,omitempty"`
+	AccountExpiresAt         *string        `json:"accountExpiresAt,omitempty"`
+	AvailabilitySchedule     map[string]any `json:"availabilitySchedule,omitempty"`
+	AvailabilityScheduleJSON *string        `json:"availabilityScheduleJson,omitempty"`
+	Notes                    *string        `json:"notes,omitempty"`
 }
 
 // TestTaskCreateInput mirrors CreateAccountTestTaskInput. ProviderCode 列已随

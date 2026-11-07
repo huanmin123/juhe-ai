@@ -3,7 +3,6 @@ package gatewaycodex
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -87,43 +86,6 @@ func TestWIGatewayProtocolResponseProtocol(t *testing.T) {
 	}
 	if _, ok := gatewayProtocolResponseProtocol(nil); ok {
 		t.Fatal("nil req 不得识别协议")
-	}
-}
-
-func TestWISegmentStoreGuards(t *testing.T) {
-	if _, err := NewSegmentStore(SegmentStoreConfig{Root: " "}); err == nil {
-		t.Fatal("空 root 必须报错")
-	}
-	store, err := NewSegmentStore(SegmentStoreConfig{Root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	ctx := context.Background()
-	reference, err := store.WriteSegmentPayload(ctx, "session", map[string]any{"k": "v"}, time.UnixMilli(1_000))
-	if err != nil {
-		t.Fatalf("写入失败: %v", err)
-	}
-	raw, err := store.ReadSegmentPayload(reference)
-	if err != nil || !containsJSONKey(raw, "k") {
-		t.Fatalf("读回=%s err=%v", raw, err)
-	}
-	// 超过读取上限必须拒绝。
-	oversized := reference
-	oversized.CompressedSizeBytes = maxStoredPayloadBytes + 1
-	if _, err := store.ReadSegmentPayload(oversized); err == nil {
-		t.Fatal("超限引用必须报错")
-	}
-	// 未知 storage key → 打开失败。
-	missing := reference
-	missing.StorageKey = "no-such-key"
-	if _, err := store.ReadSegmentPayload(missing); err == nil {
-		t.Fatal("未知 key 必须报错")
-	}
-	// digest 校验失败 → 报错。
-	tampered := reference
-	tampered.SHA256 = stringsRepeat("0", 64)
-	if _, err := store.ReadSegmentPayload(tampered); err == nil {
-		t.Fatal("digest 不匹配必须报错")
 	}
 }
 

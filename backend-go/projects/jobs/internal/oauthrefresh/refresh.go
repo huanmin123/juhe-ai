@@ -738,11 +738,14 @@ func (j *RefreshJob) refreshWithRaceRetry(ctx context.Context, account *Rotation
 		// Once a refresh starts, the provider may rotate the refresh token
 		// before persistence completes; every downstream error goes through
 		// the race recovery check exactly like the Node catch block.
-		// Resolve the account-bound proxy per attempt from the latest row so a
-		// race-retry uses the rebinding too; a resolution failure surfaces as
-		// this account's local-configuration refresh failure and never falls
-		// back to a direct dial.
-		proxyURL, proxyErr := j.store.proxyProfileRequestURL(ctx, current.ProxyProfileID)
+		// Resolve the effective proxy target per attempt from the latest row
+		// (direct profile keeps the legacy semantics; a pool binding resolves
+		// its current lease member read-only, proxy design §5.2/§5.3) so a
+		// race-retry uses the rebinding too. A resolution failure surfaces as
+		// this account's refresh failure (local-configuration kind for direct
+		// profile defects, retriable proxy-target unavailability for pools)
+		// and never falls back to a direct dial.
+		proxyURL, proxyErr := j.store.proxyRequestURLForAccount(ctx, current)
 		if proxyErr != nil {
 			return nil, proxyErr
 		}

@@ -62,7 +62,6 @@ func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 	// 普通文件目录面固定名派生（D1 spool / codex-context segments）。
 	derived := map[string]string{
 		cfg.UsageSpoolDirectory: filepath.Join(root, "usage-record-spool"),
-		cfg.CodexContextRoot:    filepath.Join(root, "codex-context"),
 	}
 	for got, want := range derived {
 		if got != want {

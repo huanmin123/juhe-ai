@@ -105,7 +105,6 @@ var coverageAllowEmptyExactTables = map[string]string{
 	"stats_job_state":                              "owner 状态族：统计任务游标由运行时维护",
 	"account_health_current_state":                 "owner 状态族：账户健康当前态由探针 owner 维护",
 	"usage_range_window_requests":                  "设计文档明确允许为空：瞬时自定义范围请求队列",
-	"codex_context_storage_cleanup_queue":          "瞬时清理队列：由 storage 清理任务消费",
 	"account_health_outcomes":                      "属主运行态：探针结果由 jobs 健康运行时写入（空表走属主 pending 口径）",
 	"audit_payload_blob_gc":                        "运行时建表：audit payload blob 回收队列由 gateway 运行时维护",
 	"account_health_jobs_input_versions":           "输入版本：业务变更运行时预留快照 epoch（纯运行态）",
@@ -226,9 +225,6 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "public_api_logs.test_token", Domain: DomainObservability, Table: qualified(SchemaDataset, "public_api_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE is_test_token = 1", qualified(SchemaDataset, "public_api_logs")), Min: 1},
 		// codex / model-check 域（chat 会话面覆盖项已随演练场设计 §8 退役）：
 		// J3b 运行与 observation（模型检测走属主存储）、账户健康（属主存储）。
-		{Name: "codex_context_sessions", Domain: DomainChatCodexModelCheck, Table: qualified(SchemaCodexContext, "codex_context_sessions"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaCodexContext, "codex_context_sessions")), Min: 1},
-		{Name: "codex_context_responses", Domain: DomainChatCodexModelCheck, Table: qualified(SchemaCodexContext, "codex_context_responses"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaCodexContext, "codex_context_responses")), Min: 1},
-		{Name: "codex_context_compacts", Domain: DomainChatCodexModelCheck, Table: qualified(SchemaCodexContext, "codex_context_compacts"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaCodexContext, "codex_context_compacts")), Min: 1},
 		{Name: "model_check_runs", Domain: DomainChatCodexModelCheck, OwnerStore: "model_check", Table: qualified(SchemaJ3B, "model_check_runs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaJ3B, "model_check_runs")), Min: 1},
 		{Name: "model_check_runs.status_distribution", Domain: DomainChatCodexModelCheck, OwnerStore: "model_check", Table: qualified(SchemaJ3B, "model_check_runs"), Query: fmt.Sprintf("SELECT COUNT(DISTINCT status) FROM %s", qualified(SchemaJ3B, "model_check_runs")), Min: 4},
 		{Name: "model_check_runs.profile_distribution", Domain: DomainChatCodexModelCheck, OwnerStore: "model_check", Table: qualified(SchemaJ3B, "model_check_runs"), Query: fmt.Sprintf("SELECT COUNT(DISTINCT profile) FROM %s", qualified(SchemaJ3B, "model_check_runs")), Min: 2},

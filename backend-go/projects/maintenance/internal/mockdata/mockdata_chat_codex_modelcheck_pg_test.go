@@ -37,16 +37,10 @@ func TestChatCodexModelCheckDomainContent(t *testing.T) {
 	report := runMockdataForTest(t, dsn, now, "")
 	counts := chatDomainCounts(t, report)
 
-	// 计数：codex 2 会话 3 响应 2 摘要（chat 会话 / 消息 / 资产计数已随会话面
-	// 退役移除）。background_task_runs 归 stats 域，不在本域计数。
-	wantCounts := map[string]int{
-		"codex_context_sessions": 2, "codex_context_responses": 3, "codex_context_compacts": 2,
-	}
-	for table, want := range wantCounts {
-		if counts[table] != want {
-			t.Fatalf("计数 %s = %d, want %d（全部计数 %v）", table, counts[table], want, counts)
-		}
-	}
+	// 2026-11-07 codex-context 退役：codex 三表计数断言随造数段删除
+	// （chat 会话 / 消息 / 资产计数已随会话面退役移除）。本域只剩 J3b 与
+	// 账户健康段（属主缺失时跳过，不进 Counts）。background_task_runs 归
+	// stats 域，不在本域计数。
 	// 属主缺失：模型检测与账户健康段跳过，不进 Counts。
 	if counts["model_check_runs"] != 0 || counts["account_health_outcomes"] != 0 {
 		t.Fatalf("属主缺失时属主段不应产出: %v", counts)
@@ -64,22 +58,7 @@ func TestChatCodexModelCheckDomainContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = env.Close() }()
-	ctx := context.Background()
-	count := func(query string, args ...any) int {
-		t.Helper()
-		var n int
-		if err := env.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-
-	// codex 三表闭环：会话 latest 指针与响应/摘要行一致，响应 previous 链完整。
-	if n := count(`SELECT COUNT(*) FROM ` + qualified(SchemaCodexContext, "codex_context_sessions") + ` s
-		WHERE (s.latest_response_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ` + qualified(SchemaCodexContext, "codex_context_responses") + ` r WHERE r.response_id = s.latest_response_id))
-		   OR (s.latest_compact_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ` + qualified(SchemaCodexContext, "codex_context_compacts") + ` c WHERE c.compact_id = s.latest_compact_id))`); n != 0 {
-		t.Fatalf("会话 latest 指针悬挂: %d", n)
-	}
+	// 2026-11-07 codex-context 退役：codex 三表闭环断言随造数段删除。
 
 	// 后台任务运行表归 stats 域（域归属见 Mockdata造数设计），本域不再断言其状态分布。
 }
@@ -232,8 +211,6 @@ func TestChatCodexModelCheckIdempotent(t *testing.T) {
 	for table, want := range first {
 		var query string
 		switch {
-		case strings.HasPrefix(table, "codex_context"):
-			query = "SELECT COUNT(*) FROM " + qualified(SchemaCodexContext, table)
 		case table == "account_health_outcomes":
 			query = "SELECT COUNT(*) FROM " + qualified(SchemaJobs, table)
 		case strings.HasPrefix(table, "model_check") || strings.HasPrefix(table, "account_quality") ||
@@ -260,19 +237,11 @@ func TestChatCodexModelCheckCleanupSweeps(t *testing.T) {
 	}
 	defer func() { _ = env.Close() }()
 	ctx := context.Background()
-	deleted, _, err := cleanupAll(ctx, env, nil)
-	if err != nil {
+	if _, _, err := cleanupAll(ctx, env, nil); err != nil {
 		t.Fatalf("cleanupAll: %v", err)
 	}
-	for _, schemaTable := range []string{
-		qualified(SchemaCodexContext, "codex_context_sessions"),
-		qualified(SchemaCodexContext, "codex_context_responses"),
-		qualified(SchemaCodexContext, "codex_context_compacts"),
-	} {
-		if deleted[schemaTable] == 0 {
-			t.Fatalf("清理未命中 %s: %v", schemaTable, deleted)
-		}
-	}
+	// 2026-11-07 codex-context 退役：juhe_codex_context 三表的清理命中断言
+	// 随 schema 删除（cleanupAll 对 maintenance schema 的拓扑不变）。
 	// 第二次清理为 no-op（幂等收敛）。
 	second, _, err := cleanupAll(ctx, env, nil)
 	if err != nil {

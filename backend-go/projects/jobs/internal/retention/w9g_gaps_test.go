@@ -4,14 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	"golang.org/x/sys/windows"
 )
 
 // 本文件补齐 retention 域既有测试未覆盖的错误臂、守卫分支与 fail-closed
@@ -85,18 +81,6 @@ func (c *w9gCancelAfterStats) CleanupUsageStatsRetention(ctx context.Context, in
 	return counts, err
 }
 
-// w9gCancelAfterCodexStorage 在 ProcessBatch 返回前取消 ctx。
-type w9gCancelAfterCodexStorage struct {
-	inner  *fakeCodexStorage
-	cancel context.CancelFunc
-}
-
-func (c *w9gCancelAfterCodexStorage) ProcessBatch(ctx context.Context, keys []string) (int64, error) {
-	deleted, err := c.inner.ProcessBatch(ctx, keys)
-	c.cancel()
-	return deleted, err
-}
-
 // w9gFailingStats 只让指定方法失败，其余委托 fakeStatsWriter。
 type w9gFailingStats struct {
 	*fakeStatsWriter
@@ -126,13 +110,12 @@ func (f *w9gFailingStats) CleanupNonBusinessStatsData(ctx context.Context, cutof
 	return f.fakeStatsWriter.CleanupNonBusinessStatsData(ctx, cutoffAt, limit)
 }
 
-func w9gBaseJob(t *testing.T, mutate func(j *DataRetentionJob)) (*DataRetentionJob, *fakePublicApiLogs, *fakeUsageRecords, *fakeStatsWriter, *fakeDbService, *fakeCodexStorage) {
+func w9gBaseJob(t *testing.T, mutate func(j *DataRetentionJob)) (*DataRetentionJob, *fakePublicApiLogs, *fakeUsageRecords, *fakeStatsWriter, *fakeDbService) {
 	t.Helper()
 	public := &fakePublicApiLogs{script: []int64{0}}
 	usage := &fakeUsageRecords{script: []UsageRecordsBatch{{}}}
 	stats := &fakeStatsWriter{}
 	db := &fakeDbService{}
-	codex := &fakeCodexStorage{}
 	job := NewDataRetentionJob("worker", "ingest-worker")
 	job.Settings = func(context.Context) (map[string]any, error) { return validPolicySettings(), nil }
 	job.Timezone = func(context.Context) (string, error) { return "UTC", nil }
@@ -142,12 +125,11 @@ func w9gBaseJob(t *testing.T, mutate func(j *DataRetentionJob)) (*DataRetentionJ
 	job.UsageRecords = usage
 	job.Stats = stats
 	job.DB = db
-	job.CodexStorage = codex
 	job.Enqueuer = &fakeEnqueuer{}
 	if mutate != nil {
 		mutate(job)
 	}
-	return job, public, usage, stats, db, codex
+	return job, public, usage, stats, db
 }
 
 // ---------- fail-closed stub 与回退访问器（直测） ----------
@@ -181,17 +163,8 @@ func TestW9GMissingPortsFailClosed(t *testing.T) {
 	if _, err := job.db().CleanupExpiredSystemSessions(ctx, "c", 1); err == nil {
 		t.Fatal("missingDbService.CleanupExpiredSystemSessions 必须 fail-closed")
 	}
-	if _, err := job.db().CleanupExpiredCodexContextStates(ctx, "c", 1); err == nil {
-		t.Fatal("missingDbService.CleanupExpiredCodexContextStates 必须 fail-closed")
-	}
-	if _, err := job.db().SettleCodexContextStorageCleanup(ctx, CodexContextSettlement{}); err == nil {
-		t.Fatal("missingDbService.SettleCodexContextStorageCleanup 必须 fail-closed")
-	}
 	if _, err := job.db().CleanupExpiredDeletedAccounts(ctx); err == nil {
 		t.Fatal("missingDbService.CleanupExpiredDeletedAccounts 必须 fail-closed")
-	}
-	if _, err := job.codexStorage().ProcessBatch(ctx, nil); err == nil {
-		t.Fatal("missingCodexStorage.ProcessBatch 必须 fail-closed")
 	}
 }
 
@@ -231,7 +204,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("settings 失败上抛", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.Settings = func(context.Context) (map[string]any, error) { return nil, errors.New("settings down") }
 		})
 		if _, err := job.Run(ctx); err == nil || err.Error() != "settings down" {
@@ -240,7 +213,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("timezone 失败上抛", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.Timezone = func(context.Context) (string, error) { return "", errors.New("tz down") }
 		})
 		if _, err := job.Run(ctx); err == nil || err.Error() != "tz down" {
@@ -249,7 +222,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("policy 非法上抛", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.Settings = func(context.Context) (map[string]any, error) {
 				settings := validPolicySettings()
 				settings[SettingPublicApiLogRetentionDays] = 0
@@ -262,7 +235,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("enqueuer 未初始化上抛", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.Enqueuer = nil
 		})
 		if _, err := job.Run(ctx); err == nil || !strings.Contains(err.Error(), "enqueuer 未初始化") {
@@ -271,7 +244,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("publicApiLogs 清理失败上抛", func(t *testing.T) {
-		job, public, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, public, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		public.err = errors.New("pg logs down")
 		if _, err := job.Run(ctx); err == nil || err.Error() != "pg logs down" {
 			t.Fatalf("err = %v", err)
@@ -279,7 +252,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("timezone 不可解析上抛", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.Timezone = func(context.Context) (string, error) { return "Mars/Phobos", nil }
 		})
 		if _, err := job.Run(ctx); err == nil || !strings.Contains(err.Error(), "统计时区不存在") {
@@ -289,7 +262,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 
 	t.Run("usage stats 清理失败上抛", func(t *testing.T) {
 		stats := &fakeStatsWriter{}
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.Stats = &w9gFailingStats{fakeStatsWriter: stats, usageErr: errors.New("pg stats down")}
 		})
 		if _, err := job.Run(ctx); err == nil || err.Error() != "pg stats down" {
@@ -298,57 +271,19 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("sessions 清理失败上抛", func(t *testing.T) {
-		job, _, _, _, db, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, _, _, _, db := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		db.sessionsErr = errors.New("pg sessions down")
 		if _, err := job.Run(ctx); err == nil || err.Error() != "pg sessions down" {
 			t.Fatalf("err = %v", err)
 		}
 	})
 
-	t.Run("codex 状态清理失败上抛", func(t *testing.T) {
-		job, _, _, _, db, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
-		db.codexErr = errors.New("pg codex down")
-		if _, err := job.Run(ctx); err == nil || err.Error() != "pg codex down" {
-			t.Fatalf("err = %v", err)
-		}
-	})
 
-	t.Run("codex nil 清理结果返回 0", func(t *testing.T) {
-		job, _, _, _, db, codex := w9gBaseJob(t, func(j *DataRetentionJob) {})
-		db.codexScript = []*CodexContextExpiredCleanup{nil}
-		if _, err := job.Run(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if codex.calls != 0 {
-			t.Fatal("nil 清理结果不得触达存储处理器")
-		}
-	})
 
-	t.Run("codex 存储处理失败上抛", func(t *testing.T) {
-		job, _, _, _, db, codex := w9gBaseJob(t, func(j *DataRetentionJob) {})
-		db.codexScript = []*CodexContextExpiredCleanup{{DeletedSessions: 1, StorageKeys: []string{"k"}}}
-		codex.processErr = errors.New("pg storage down")
-		if _, err := job.Run(ctx); err == nil || err.Error() != "pg storage down" {
-			t.Fatalf("err = %v", err)
-		}
-	})
 
-	t.Run("codex 满批续跑后睡眠失败上抛", func(t *testing.T) {
-		sleeper := &countingSleeper{err: errors.New("pause aborted")}
-		job, public, _, stats, db, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
-			j.Sleep = sleeper.sleep
-		})
-		public.script = []int64{0}
-		stats.usageScript = []UsageStatsRetentionCounts{{}}
-		db.sessionsScript = []int64{0}
-		db.codexScript = []*CodexContextExpiredCleanup{{DeletedSessions: CleanupBatchSize, StorageKeys: []string{"k"}, HasMore: true}}
-		if _, err := job.Run(ctx); err == nil || err.Error() != "pause aborted" {
-			t.Fatalf("err = %v", err)
-		}
-	})
 
 	t.Run("publicApiLogs 满批耗尽配额", func(t *testing.T) {
-		job, public, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, public, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		public.script = []int64{CleanupBatchSize}
 		if _, err := job.Run(ctx); err != nil {
 			t.Fatal(err)
@@ -359,7 +294,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("usage stats 满批耗尽配额", func(t *testing.T) {
-		job, _, _, stats, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, _, _, stats, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		stats.usageScript = make([]UsageStatsRetentionCounts, CleanupMaxBatchesPerRun)
 		for index := range stats.usageScript {
 			stats.usageScript[index] = UsageStatsRetentionCounts{UsageStatsMinute: 1}
@@ -373,7 +308,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("非 worker 角色跳过 postgres 投递", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
 			j.ProcessRole = "server"
 		})
 		if err := job.EnqueuePostgresMaintenanceJobs(ctx); err != nil {
@@ -382,13 +317,13 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("投递前取消上抛", func(t *testing.T) {
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		cancelled, cancel := context.WithCancel(ctx)
 		cancel()
 		if _, err := job.Run(cancelled); !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v", err)
 		}
-		job2, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job2, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		cancelled2, cancel2 := context.WithCancel(ctx)
 		cancel2()
 		if err := job2.EnqueuePostgresMaintenanceJobs(cancelled2); !errors.Is(err, context.Canceled) {
@@ -397,7 +332,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("sleep 中取消在循环顶部捕获", func(t *testing.T) {
-		job, public, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, public, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		public.script = []int64{CleanupBatchSize}
 		cancelCtx, cancel := context.WithCancel(ctx)
 		job.Sleep = w9gCancelSleeper(cancel)
@@ -410,7 +345,7 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 	})
 
 	t.Run("stats 循环顶部取消捕获", func(t *testing.T) {
-		job, public, _, stats, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
+		job, public, _, stats, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
 		public.script = []int64{0}
 		stats.usageScript = []UsageStatsRetentionCounts{{UsageStatsMinute: 1}}
 		cancelCtx, cancel := context.WithCancel(ctx)
@@ -644,11 +579,6 @@ func (errNonBusinessCleaner) CleanupBefore(context.Context, string, int) (NonBus
 	return NonBusinessDataCleanupCounts{}, errors.New("dataset cleaner down")
 }
 
-type errDeleter struct{}
-
-func (errDeleter) DeleteStorageKeys(context.Context, []string) (StorageKeyDeletionResult, error) {
-	return StorageKeyDeletionResult{}, errors.New("deleter down")
-}
 
 func TestW9GJobValidation(t *testing.T) {
 	// regex 通过但日历非法（2 月 30 日）。
@@ -727,59 +657,3 @@ func TestW9GSettingNumberIntegerTypes(t *testing.T) {
 		t.Fatalf("errNotInteger = %q", errNotInteger.Error())
 	}
 }
-
-// ---------- Codex context 存储清理 ----------
-
-func TestW9GCodexStorageDeleterEdgePaths(t *testing.T) {
-	root := t.TempDir()
-
-	// 非法 storage key 记入失败清单。
-	result, err := NewFilesystemKeyDeleter(root).DeleteStorageKeys(context.Background(), []string{"../escape.json"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Failures) != 1 || result.Failures[0].StorageKey != "../escape.json" {
-		t.Fatalf("result = %+v", result)
-	}
-	if len(result.SucceededStorageKeys) != 0 {
-		t.Fatalf("succeeded = %+v", result.SucceededStorageKeys)
-	}
-
-	// 超长文件名：Lstat 错误不属于 ErrNotExist，记入失败清单。
-	longKey := strings.Repeat("x", 300) + ".json"
-	result, err = NewFilesystemKeyDeleter(root).DeleteStorageKeys(context.Background(), []string{longKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Failures) != 1 || result.Deleted != 0 {
-		t.Fatalf("long key result = %+v", result)
-	}
-
-	// 已占用文件（无共享位句柄）删除失败记入失败清单（Windows 语义）。
-	if runtime.GOOS == "windows" {
-		existing := filepath.Join(root, "locked.json")
-		if err := os.WriteFile(existing, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		handle, err := windows.CreateFile(windows.StringToUTF16Ptr(existing),
-			windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
-		if err != nil {
-			t.Skipf("打开句柄失败（环境限制）: %v", err)
-		}
-		result, err := NewFilesystemKeyDeleter(root).DeleteStorageKeys(context.Background(), []string{"locked.json"})
-		_ = windows.CloseHandle(handle)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(result.Failures) != 1 || result.Deleted != 0 {
-			t.Fatalf("locked result = %+v", result)
-		}
-		if len(result.SucceededStorageKeys) != 0 {
-			t.Fatalf("失败 key 不得进入 succeeded: %+v", result.SucceededStorageKeys)
-		}
-		if _, statErr := os.Lstat(existing); statErr != nil {
-			t.Fatalf("删除失败后文件必须保留: %v", statErr)
-		}
-	}
-}
-

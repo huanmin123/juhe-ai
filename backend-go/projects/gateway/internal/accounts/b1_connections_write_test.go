@@ -24,7 +24,7 @@ func b1CreatePayload(name string) string {
 		`"supportedModels":["gpt-4o-mini","gpt-4.1"],"status":"active",` +
 		`"connections":[{"connectionPresetCode":"gpt_openai_v1","protocolSurfaceCode":"openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
 		`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini",` +
-		`"modelMappings":[{"sourceModel":"client-model","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":true}]}`
+		`"modelMappings":[{"sourceModel":"client-model","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":true}]}`
 }
 
 // TestB1CreateWritesConnectionRows 是 #B1 完成判定用例：携 connections +
@@ -65,8 +65,9 @@ func TestB1CreateWritesConnectionRows(t *testing.T) {
 	}
 
 	// 入口映射：target_connection_id 解析到本事务写入的连接行（#B1 断点修复）。
+	// 协议面用 7 pair 矩阵内的 chat 同族改名（responses→chat_completions 已退役）。
 	if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ? AND target_connection_id = ?
-		AND source_model = 'client-model' AND source_endpoint_family = 'responses'
+		AND source_model = 'client-model' AND source_endpoint_family = 'chat_completions'
 		AND target_endpoint_family = 'chat_completions' AND enabled = 1`, id, connectionID); got != 1 {
 		t.Fatalf("入口映射未解析到新连接行：%d", got)
 	}

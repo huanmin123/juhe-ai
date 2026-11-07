@@ -222,8 +222,40 @@ var postgresSchemaBusinessTables = []PGStatement{
       outbound_region text,
       last_test_message text,
       last_tested_at timestamptz,
+      pool_health_status text CHECK (pool_health_status IS NULL OR pool_health_status IN ('healthy','degraded','dead','unknown')),
+      pool_health_failure_streak integer NOT NULL DEFAULT 0,
+      pool_health_checked_at timestamptz,
       created_at timestamptz NOT NULL,
       updated_at timestamptz NOT NULL
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "proxy-pool-table",
+		SQL: `CREATE TABLE IF NOT EXISTS proxy_pools (
+      id text PRIMARY KEY,
+      system_account_id text NOT NULL,
+      name text NOT NULL,
+      description text,
+      strategy text NOT NULL CHECK (strategy IN ('round_robin', 'weighted')),
+      enabled boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "proxy-pool-member-table",
+		SQL: `CREATE TABLE IF NOT EXISTS proxy_pool_members (
+      pool_id text NOT NULL REFERENCES proxy_pools(id) ON DELETE RESTRICT,
+      proxy_profile_id text NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
+      priority integer NOT NULL CHECK (priority >= 0),
+      weight integer NOT NULL DEFAULT 1 CHECK (weight BETWEEN 1 AND 100),
+      enabled boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL,
+      PRIMARY KEY (pool_id, proxy_profile_id),
+      UNIQUE (pool_id, priority)
     )`,
 	},
 	{
@@ -608,6 +640,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       oauth_access_token_expires_at text,
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
+      proxy_pool_id text,
       concurrency_limit integer NOT NULL DEFAULT 5000,
       rpm_limit integer NOT NULL DEFAULT 0,
       priority integer NOT NULL DEFAULT 0,
@@ -657,11 +690,32 @@ var postgresSchemaBusinessTables = []PGStatement{
       deleted_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
+      CONSTRAINT accounts_proxy_target_single_check CHECK (proxy_profile_id IS NULL OR proxy_pool_id IS NULL),
       FOREIGN KEY (vendor_code) REFERENCES vendors(code),
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
+      FOREIGN KEY (proxy_pool_id) REFERENCES proxy_pools(id) ON DELETE RESTRICT,
       FOREIGN KEY (authorization_instance_source_account_id) REFERENCES accounts(id),
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id),
       FOREIGN KEY (id, health_check_connection_id) REFERENCES account_connections(account_id, id)
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "proxy-pool-lease-generation-sequence",
+		SQL:        `CREATE SEQUENCE IF NOT EXISTS juhe_business.account_proxy_lease_generation_seq`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "account-proxy-lease-table",
+		SQL: `CREATE TABLE IF NOT EXISTS account_proxy_leases (
+      account_id text PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+      pool_id text NOT NULL REFERENCES proxy_pools(id) ON DELETE RESTRICT,
+      proxy_profile_id text NOT NULL REFERENCES proxy_profiles(id) ON DELETE RESTRICT,
+      generation bigint NOT NULL DEFAULT nextval('juhe_business.account_proxy_lease_generation_seq'),
+      assignment_reason text NOT NULL CHECK (assignment_reason IN ('initial', 'member_unavailable', 'member_removed', 'pool_reassigned')),
+      assigned_at timestamptz NOT NULL,
+      updated_at timestamptz NOT NULL,
+      FOREIGN KEY (pool_id, proxy_profile_id) REFERENCES proxy_pool_members(pool_id, proxy_profile_id) ON DELETE RESTRICT
     )`,
 	},
 	{
@@ -1553,6 +1607,31 @@ $$`,
 		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS rpm_limit integer NOT NULL DEFAULT 0`,
 	},
 	{
+		// 代理池绑定列（代理池设计 §4.4）：CREATE TABLE 只救新库，存量库必须
+		// 显式补列；列级 REFERENCES 同时补挂外键，ON DELETE RESTRICT 与契约
+		// 一致。accounts_proxy_target_single_check 由下方 DO 块幂等补挂。
+		SchemaName: "juhe_business",
+		Source:     "account-proxy-pool-pg-column",
+		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS proxy_pool_id text REFERENCES proxy_pools(id) ON DELETE RESTRICT`,
+	},
+	{
+		// 池健康投影列（代理池设计 §7.2）：PG 是持久事实源，Redis 成员健康键
+		// 是请求时快速投影。三列均为加法列，存量行取 NULL/0。
+		SchemaName: "juhe_business",
+		Source:     "proxy-profile-pool-health-status-pg-column",
+		SQL:        `ALTER TABLE proxy_profiles ADD COLUMN IF NOT EXISTS pool_health_status text CHECK (pool_health_status IS NULL OR pool_health_status IN ('healthy', 'degraded', 'dead', 'unknown'))`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "proxy-profile-pool-health-streak-pg-column",
+		SQL:        `ALTER TABLE proxy_profiles ADD COLUMN IF NOT EXISTS pool_health_failure_streak integer NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "proxy-profile-pool-health-checked-at-pg-column",
+		SQL:        `ALTER TABLE proxy_profiles ADD COLUMN IF NOT EXISTS pool_health_checked_at timestamptz`,
+	},
+	{
 		// 时间计划闸门（时间计划闸门与账户状态解耦设计 §3.1）：accounts
 		// availability_schedule_gate 列的存量库守卫，模式同上。三态
 		// NULL=无计划 / 1=时段内 / 0=时段外；存量行保持 NULL（等价「无计划」），
@@ -1797,6 +1876,7 @@ BEGIN
     new_accounts.type,
     new_accounts.status,
     new_accounts.proxy_profile_id,
+    new_accounts.proxy_pool_id,
     new_accounts.concurrency_limit,
     new_accounts.rpm_limit,
     new_accounts.priority,
@@ -1850,6 +1930,7 @@ BEGIN
     old_accounts.type,
     old_accounts.status,
     old_accounts.proxy_profile_id,
+    old_accounts.proxy_pool_id,
     old_accounts.concurrency_limit,
     old_accounts.rpm_limit,
     old_accounts.priority,
@@ -2173,6 +2254,126 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 `,
 	},
 	{
+		// 代理池投影 dirty 扇出（代理池设计 §4.5）：池/成员/租约/代理展示列
+		// 变化按绑定账户标脏；pool_health_status 只在进入/离开 dead 时标脏，
+		// 不按 test_status/latency/last_tested_at/pool_health_checked_at 高频
+		// churn。所有函数都汇聚到 account_list_availability_mark_dirty_accounts，
+		// 共用 advisory 锁与有界等待。
+		SchemaName: "juhe_business",
+		Source:     "proxy-pool-dirty-triggers",
+		SQL: `
+CREATE OR REPLACE FUNCTION account_list_availability_proxy_pool_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+DECLARE
+  v_pool_id text;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    RETURN NULL;
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    v_pool_id := OLD.id;
+  ELSE
+    v_pool_id := NEW.id;
+  END IF;
+  IF TG_OP = 'UPDATE'
+     AND ROW(NEW.name, NEW.enabled, NEW.strategy) IS NOT DISTINCT FROM ROW(OLD.name, OLD.enabled, OLD.strategy) THEN
+    RETURN NULL;
+  END IF;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id FROM accounts WHERE accounts.proxy_pool_id = v_pool_id
+  ), 'proxy_pool_changed');
+  RETURN NULL;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_proxy_pool_member_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+DECLARE
+  v_pool_ids text[] := ARRAY[]::text[];
+BEGIN
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    v_pool_ids := array_append(v_pool_ids, NEW.pool_id);
+  END IF;
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    v_pool_ids := array_append(v_pool_ids, OLD.pool_id);
+  END IF;
+  IF COALESCE(array_length(v_pool_ids, 1), 0) = 0 THEN
+    RETURN NULL;
+  END IF;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id FROM accounts WHERE accounts.proxy_pool_id = ANY(v_pool_ids)
+  ), 'proxy_pool_member_changed');
+  RETURN NULL;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_account_proxy_lease_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+DECLARE
+  v_account_id text;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_account_id := OLD.account_id;
+  ELSE
+    v_account_id := NEW.account_id;
+  END IF;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[v_account_id], 'account_proxy_lease_changed');
+  RETURN NULL;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_proxy_profile_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  IF TG_OP <> 'UPDATE' THEN
+    RETURN NULL;
+  END IF;
+  IF ROW(NEW.name, NEW.type, NEW.enabled) IS NOT DISTINCT FROM ROW(OLD.name, OLD.type, OLD.enabled)
+     AND ((OLD.pool_health_status IS NOT DISTINCT FROM 'dead') IS NOT DISTINCT FROM (NEW.pool_health_status IS NOT DISTINCT FROM 'dead')) THEN
+    RETURN NULL;
+  END IF;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id FROM accounts WHERE accounts.proxy_profile_id = NEW.id
+    UNION
+    SELECT accounts.id FROM accounts
+    INNER JOIN proxy_pool_members ON proxy_pool_members.pool_id = accounts.proxy_pool_id
+    WHERE proxy_pool_members.proxy_profile_id = NEW.id
+  ), 'proxy_profile_changed');
+  RETURN NULL;
+END;
+$function$;
+
+DROP TRIGGER IF EXISTS account_list_availability_proxy_pools ON proxy_pools;
+CREATE TRIGGER account_list_availability_proxy_pools
+AFTER INSERT OR UPDATE OR DELETE ON proxy_pools
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_pool_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_proxy_pool_members ON proxy_pool_members;
+CREATE TRIGGER account_list_availability_proxy_pool_members
+AFTER INSERT OR UPDATE OR DELETE ON proxy_pool_members
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_pool_member_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_account_proxy_leases ON account_proxy_leases;
+CREATE TRIGGER account_list_availability_account_proxy_leases
+AFTER INSERT OR UPDATE OR DELETE ON account_proxy_leases
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_account_proxy_lease_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_proxy_profiles ON proxy_profiles;
+CREATE TRIGGER account_list_availability_proxy_profiles
+AFTER UPDATE OF name, type, enabled, pool_health_status ON proxy_profiles
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_profile_dirty_trigger();
+`,
+	},
+	{
 		SchemaName: "juhe_business",
 		Source:     "model-check-question-bank-table",
 		SQL: `CREATE TABLE IF NOT EXISTS model_check_question_bank (
@@ -2444,6 +2645,39 @@ END
 $$`,
 	},
 	{
+		// 账户代理目标二选一（代理池设计 §4.4）：新库由 CREATE TABLE 内联，
+		// 存量库由本 DO 块幂等补挂 CHECK；proxy_pool_id 外键同样兜底补挂，
+		// 防止列已存在但外键缺失的半成品库通过启动门。
+		SchemaName: "juhe_business",
+		Source:     "accounts-proxy-target-single-check",
+		SQL: `DO $$
+BEGIN
+  IF to_regclass('juhe_business.accounts') IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'accounts'
+        AND c.conname = 'accounts_proxy_target_single_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_proxy_target_single_check CHECK (proxy_profile_id IS NULL OR proxy_pool_id IS NULL)';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'accounts'
+        AND c.conname = 'accounts_proxy_pool_id_fkey'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_proxy_pool_id_fkey FOREIGN KEY (proxy_pool_id) REFERENCES juhe_business.proxy_pools(id) ON DELETE RESTRICT';
+    END IF;
+  END IF;
+END
+$$`,
+	},
+	{
 		// groups.group_kind（超级分组设计 §3.1）：新库由建表 DDL 内联声明；
 		// 存量库由幂等 ALTER 补列。DEFAULT 'standard' 与 DDL 同构，常量
 		// CHECK 词表对存量行（取默认值）恒满足。
@@ -2461,6 +2695,49 @@ $$`,
 		SchemaName: "juhe_business",
 		Source:     "scheduling-preferences-api-keys-column",
 		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scheduling_preference_id text REFERENCES scheduling_preferences(id)`,
+	},
+	{
+		// security_policies 安全策略实体（API Key 安全策略与出站内容脱敏设计
+		// §4.1，批A 存储）：与 scheduling_preferences 同构的 owner 归属实体——
+		// system_account_id 内置行恒 NULL（全局只读例外）；不加 owner 外键（契约
+		// 只要求 api_keys 侧引用声明，自定义行 owner 非空由写入口事务内校验）。
+		// rules_json 统一存规范化 JSON（{"rules":[...]}，写入口校验后落库，空规
+		// 则集 = 请求原样转发）。置于本位：下方 api_keys.security_policy_id
+		// ALTER 与新库语义均要求目标表先存在。CREATE TABLE IF NOT EXISTS 幂等。
+		SchemaName: "juhe_business",
+		Source:     "security-policies-table",
+		SQL: `CREATE TABLE IF NOT EXISTS security_policies (
+      id text PRIMARY KEY,
+      system_account_id text,
+      name text NOT NULL,
+      description text,
+      rules_json text,
+      built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
+      created_at text NOT NULL,
+      updated_at text NOT NULL
+    )`,
+	},
+	{
+		// security_policies.protection_count 防护次数累计列（API Key 安全策略
+		// 与出站内容脱敏设计 §4.3.1 写后缓存）：gateway 终态 INCRBY 进 Redis、
+		// 进程内刷写任务周期 GETDEL 合并入列；展示用途的运行态累计，不参与
+		// CAS（刷写 UPDATE 显式 updated_at=updated_at）。新库与存量库统一由幂
+		// 等 ALTER 补列（PG CREATE TABLE 未内联该列，model-check-question-bank
+		// 先例），revision 21 纯 DDL 空号、不入升级账本（账本设计 §6.4）。
+		SchemaName: "juhe_business",
+		Source:     "security-policies-protection-count-column",
+		SQL:        `ALTER TABLE security_policies ADD COLUMN IF NOT EXISTS protection_count bigint NOT NULL DEFAULT 0`,
+	},
+	{
+		// api_keys.security_policy_id 绑定列（API Key 安全策略与出站内容脱敏设
+		// 计 §4.1，批A 存储）：新库与历史库统一由幂等 ALTER 补列，模式同上方
+		// scheduling_preference_id 先例（PG CREATE TABLE 未内联该列），存量行取
+		// NULL 恒满足列级 REFERENCES 声明。外键无 ON DELETE 子句（NO ACTION）
+		// 仅作 belt：删除被引用策略在服务层先同事务重置绑定回内置固定 ID 再删
+		// 行，存在性 / owner 校验以事务内校验为主。
+		SchemaName: "juhe_business",
+		Source:     "security-policies-api-keys-column",
+		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS security_policy_id text REFERENCES security_policies(id)`,
 	},
 	{
 		// api_keys.purpose CHECK 三值 legacy 词表收敛（2026-10-14 studio 退场

@@ -7,41 +7,54 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 )
 
-// BalanceInputDigest 契约（BUG-0286）：确定性、逐输入区分、与全局
-// config_revision 无关——非余额相关编辑（revision 推进）不得改变摘要。
+// BalanceInputDigest 契约（BUG-0286；代理池设计 §10.3 v2）：确定性、逐输入
+// 区分、与全局 config_revision 无关——非余额相关编辑（revision 推进）不得
+// 改变摘要；池绑定段（proxyPoolId + 有效租约成员）任一变化必须改变摘要。
 func TestBalanceInputDigestContract(t *testing.T) {
 	identity := CredentialBalanceIdentity(map[string]any{
 		"base_url": "https://api.openai.com",
 		"api_key":  "sk-test",
 	})
-	base := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "")
+	base := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "", "")
 	if base == "" || len(base) != 16 {
 		t.Fatalf("摘要应为 16 位 hex: %q", base)
 	}
-	if again := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, ""); again != base {
+	if again := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "", ""); again != base {
 		t.Fatalf("同输入摘要必须确定: %q vs %q", base, again)
 	}
-	if changed := BalanceInputDigest("openai", "fp-2", `{"adapter":"builtin","intervalMinutes":5}`, identity, ""); changed == base {
+	if changed := BalanceInputDigest("openai", "fp-2", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "", ""); changed == base {
 		t.Fatal("凭据指纹变化必须改变摘要（换主 Key 立即失效）")
 	}
-	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"custom"}`, identity, ""); changed == base {
+	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"custom"}`, identity, "", "", ""); changed == base {
 		t.Fatal("适配器配置变化必须改变摘要")
 	}
-	if changed := BalanceInputDigest("anthropic", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, ""); changed == base {
+	if changed := BalanceInputDigest("anthropic", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "", ""); changed == base {
 		t.Fatal("provider 变化必须改变摘要")
 	}
-	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "proxy-1"); changed == base {
+	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "proxy-1", "", ""); changed == base {
 		t.Fatal("换绑代理必须改变摘要")
+	}
+	// 池绑定段（代理池设计 §10.3）：绑定池、无租约、租约迁移到另一成员都
+	// 是不同输入（租约迁移 = 不同输入并重置刷新代次）。
+	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "pool-1", ""); changed == base {
+		t.Fatal("绑定代理池必须改变摘要（池段为空租约也参与规范串）")
+	}
+	poolBound := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "pool-1", "member-a")
+	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "pool-1", ""); changed == poolBound {
+		t.Fatal("池绑定无租约与有租约必须是不同输入")
+	}
+	if changed := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin","intervalMinutes":5}`, identity, "", "pool-1", "member-b"); changed == poolBound {
+		t.Fatal("租约迁移到另一成员必须改变摘要（重置刷新代次）")
 	}
 	// 非余额语义扰动不改变摘要：两侧 trim（同一列值读出，仅外围空白差异；
 	// 纯空白 proxy trims 为空串与 base 相同）。
-	if trimmed := BalanceInputDigest(" openai ", " fp-1 ", ` {"adapter":"builtin","intervalMinutes":5} `, " "+identity+" ", "   "); trimmed != base {
+	if trimmed := BalanceInputDigest(" openai ", " fp-1 ", ` {"adapter":"builtin","intervalMinutes":5} `, " "+identity+" ", "   ", "  ", "   "); trimmed != base {
 		t.Fatal("外围空白不得改变摘要（两侧同列同源读取）")
 	}
 	// 快照打点契约：执行核返回的成功负载带 inputDigest（端到端薄壳行为由
 	// 各写入方测试覆盖；此处锁定打点输入与摘要函数一致）。
 	input := Input{Provider: "openai", CredentialFingerprint: "fp-1", ConfigJSON: `{"adapter":"builtin","intervalMinutes":5}`, ProxyProfileID: ""}
-	if inputDigest := BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON, identity, input.ProxyProfileID); inputDigest != base {
+	if inputDigest := BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON, identity, input.ProxyProfileID, input.ProxyPoolID, input.ProxyMemberProfileID); inputDigest != base {
 		t.Fatal("Input 携带的摘要输入与显式参数必须产出同一摘要")
 	}
 }
@@ -120,8 +133,8 @@ func TestBalanceInputDigestDecryptParity(t *testing.T) {
 	if !reflect.DeepEqual(writerPayload, readerPayload) {
 		t.Fatalf("两套解密实现 payload 不等价: %#v vs %#v", writerPayload, readerPayload)
 	}
-	writerDigest := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin"}`, CredentialBalanceIdentity(writerPayload), "proxy-1")
-	readerDigest := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin"}`, CredentialBalanceIdentity(readerPayload), "proxy-1")
+	writerDigest := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin"}`, CredentialBalanceIdentity(writerPayload), "proxy-1", "", "")
+	readerDigest := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin"}`, CredentialBalanceIdentity(readerPayload), "proxy-1", "", "")
 	if writerDigest != readerDigest {
 		t.Fatalf("两侧摘要必须一致: %q vs %q", writerDigest, readerDigest)
 	}

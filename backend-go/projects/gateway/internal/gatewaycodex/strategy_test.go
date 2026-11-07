@@ -903,35 +903,6 @@ func TestClientStrategyPortAdapter(t *testing.T) {
 	}
 }
 
-func TestBridgePreflightPortAdapter(t *testing.T) {
-	bridge, registry, _, _, _ := newBridgeService(t)
-	compact := &CompactPreflightService{Bridge: bridge, Registry: registry, Clock: SystemClock{}, Sink: &recordedSink{}}
-	port := NewBridgePreflightPort(bridge, compact, registry)
-	var _ gatewaypreauth.CodexBridgePreflight = port
-
-	if !port.CompactionExpectedForRequest(newTestRequest(t, "POST", "/v1/responses/compact", nil, nil)) {
-		t.Error("compaction expected on compact path")
-	}
-	completed, err := port.ApplyContextStatePreflight(context.Background(), gatewaypreauth.CodexContextStateInput{
-		Req:          newTestRequest(t, "POST", "/v1/chat/completions", nil, nil),
-		AuditCapture: &recordedAudit{},
-	})
-	if err != nil || completed {
-		t.Errorf("chat request completed=%v err=%v", completed, err)
-	}
-	compactResult, err := port.ApplyChatBridgeCompactPreflight(context.Background(), gatewaypreauth.CodexCompactPreflightInput{
-		Req:              newTestRequest(t, "POST", "/v1/responses", nil, nil),
-		AuditCapture:     &recordedAudit{},
-		DispatchAccounts: []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
-	})
-	if err != nil {
-		t.Fatalf("compact port: %v", err)
-	}
-	if compactResult.Completed || len(compactResult.Accounts) != 1 {
-		t.Errorf("compact result = %+v", compactResult)
-	}
-}
-
 // silence unused-import guards for types only used in a few builds
 var (
 	_ = http.MethodPost

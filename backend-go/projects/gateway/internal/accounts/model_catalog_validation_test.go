@@ -426,11 +426,16 @@ func TestCreateWiresModelMappingCatalogAssertion(t *testing.T) {
 		[]ModelMapping{mapping("gpt-4o-mini", "messages", "gpt-4o-mini", "messages")}), scope)
 	assertValidationError(t, err, "当前供应商协议不支持 Anthropic Messages 账号模型别名")
 	// 跨协议 chat_completions → responses 需要 native Responses 上游，openai
-	// 档案白名单无该配对 → 400（归档 unsupportedProtocolConversionMessage）。
+	// 档案白名单无该配对 → 400（统一可归因文案，2026-11-07 退役后无混合供应商引导）。
 	_, err = store.Create(context.Background(), catalogWiringCreateInput("mapping-capability",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "responses")}), scope)
-	assertValidationError(t, err, "账号模型别名只支持同协议映射；跨协议 Chat Completions 到 Responses 请改用混合供应商账户")
+	assertValidationError(t, err, "账号模型别名协议矩阵外组合 Chat Completions 到 Responses：客户端协议与上游协议必须一致，不支持跨协议模型映射")
+	// 已退役的 responses → chat_completions bridge 组合同样按矩阵外拒绝。
+	_, err = store.Create(context.Background(), catalogWiringCreateInput("mapping-retired",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
+		[]ModelMapping{mapping("gpt-4o-mini", "responses", "gpt-4o-mini", "chat_completions")}), scope)
+	assertValidationError(t, err, "账号模型别名协议矩阵外组合 Responses 到 Chat Completions：客户端协议与上游协议必须一致，不支持跨协议模型映射")
 	// 同协议映射 + chat 端点能力：矩阵/目录门禁通过后，写入侧走
 	// account_entry_mappings 双解析（B4 W2）。BUG-0337 起：载荷不带
 	// targetConnectionPresetCode 时，空 preset 回退到账户唯一启用连接（本

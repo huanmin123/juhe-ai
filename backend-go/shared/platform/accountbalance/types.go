@@ -86,7 +86,7 @@ type KeyBalance struct {
 // therefore also carries omitempty: multi-Key results always have KeyCount>0,
 // while single-Key snapshots must not grow a "keyCount":0 field.
 type Snapshot struct {
-	Status                    Status  `json:"status"`
+	Status Status `json:"status"`
 	// InputDigest 是余额输入身份摘要（BalanceInputDigest）：gateway 读端
 	// 以账户当前列值现算同一摘要做显示匹配，替代全局 config_revision 相等
 	// 判定（BUG-0286）。J2 写端在 persistInput 统一打点。
