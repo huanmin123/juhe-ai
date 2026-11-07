@@ -10,7 +10,6 @@ import {
 import type { GroupOptionSummary } from '@/types/domain'
 
 export interface AccountGroupOptionsScope {
-  providerCode?: string
   systemAccountId?: string
   selectedIds?: Array<string | undefined>
 }
@@ -20,7 +19,6 @@ export interface AccountGroupOptionsLoadOptions {
 }
 
 interface UseAccountGroupOptionsConfig {
-  allowAllProviders?: boolean
   allowGlobalManagement?: boolean
   errorMessage?: string
   isManagementView: () => boolean
@@ -61,7 +59,10 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   ): Promise<void> {
     keyword.value = nextKeyword
     const scope = normalizedScope(scopeOverride)
-    if ((config.isManagementView() && !scope.systemAccountId && !config.allowGlobalManagement) || (!config.allowAllProviders && !scope.providerCode && !scope.selectedIds.length)) {
+    // W18（2026-11-08 裁决）：分组实体已无供应商维度，providerCode 门禁随死代码
+    // 收口——编辑/绑定/创建向导弹窗开启即放行；管理面仍按 systemAccountId /
+    // allowGlobalManagement 门禁。
+    if (config.isManagementView() && !scope.systemAccountId && !config.allowGlobalManagement) {
       requestId += 1
       groups.value = []
       loadingKey = undefined
@@ -202,7 +203,6 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
       selectedIds: scopeOverride?.selectedIds ?? configuredScope.selectedIds
     }
     return {
-      providerCode: scope.providerCode?.trim() ?? '',
       systemAccountId: scope.systemAccountId?.trim() ?? '',
       selectedIds: [...new Set((scope.selectedIds ?? [])
         .map((id) => id?.trim())
@@ -241,15 +241,13 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
 
 function catalogScopeKey(isManagementView: boolean, scope: Required<AccountGroupOptionsScope>): string {
   return JSON.stringify([
-    isManagementView ? `management:${scope.systemAccountId || 'all'}` : 'self',
-    scope.providerCode
+    isManagementView ? `management:${scope.systemAccountId || 'all'}` : 'self'
   ])
 }
 
 function groupOptionParams(scope: Required<AccountGroupOptionsScope>, keyword: string | undefined, limit: number, ids?: string[]) {
   return {
     systemAccountId: scope.systemAccountId || undefined,
-    providerCode: scope.providerCode || undefined,
     ids,
     keyword,
     limit,

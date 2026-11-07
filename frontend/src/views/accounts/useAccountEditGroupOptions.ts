@@ -11,9 +11,9 @@ interface UseAccountEditGroupOptionsConfig {
 export function useAccountEditGroupOptions(config: UseAccountEditGroupOptionsConfig) {
   const optionScope = ref<AccountGroupOptionsScope>({})
   const groupOptions = useAccountGroupOptions({
+    // W18（2026-11-08 裁决）：编辑/创建弹窗开启即放行，分组选项不再依赖供应商。
     isManagementView: () => config.isManagementView.value,
     scope: () => ({
-      providerCode: optionScope.value.providerCode,
       systemAccountId: config.isManagementView.value
         ? optionScope.value.systemAccountId || config.accountScopeParams.value?.systemAccountId
         : undefined,
@@ -23,7 +23,6 @@ export function useAccountEditGroupOptions(config: UseAccountEditGroupOptionsCon
 
   function setEditGroupOptionScope(scope: AccountGroupOptionsScope): void {
     optionScope.value = {
-      providerCode: scope.providerCode,
       systemAccountId: scope.systemAccountId,
       selectedIds: scope.selectedIds
     }
