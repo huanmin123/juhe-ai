@@ -51,9 +51,12 @@ const externalIntegrationSourceScopeOptions = [
   { value: 'juhe_ai_public:group_add:write', label: 'POST 分组新增' },
   { value: 'juhe_ai_public:group_update:write', label: 'POST 分组修改' },
   { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
+  { value: 'juhe_ai_public:group_super_members_update:write', label: 'POST 超级分组成员更新' },
   { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
   { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
-  { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
+  { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' },
+  { value: 'juhe_ai_public:provider_list:read', label: 'GET 供应商列表' },
+  { value: 'juhe_ai_public:provider_detail:read', label: 'GET 供应商详情' }
 ] as const
 const externalIntegrationSourceScopeSet = new Set<string>(
   externalIntegrationSourceScopeOptions.map((option) => option.value)
@@ -126,6 +129,12 @@ const apiKeyListItemFieldSet = new Set([
   'routeStrategyName',
   'routeStrategyMode',
   'routeStrategyStatus',
+  'schedulingPreferenceId',
+  'schedulingPreferenceName',
+  'schedulingPreferenceBuiltIn',
+  'securityPolicyId',
+  'securityPolicyName',
+  'securityPolicyBuiltIn',
   'expiresAt',
   'quotaLimits',
   'availabilitySchedule',
@@ -135,13 +144,15 @@ const externalIntegrationSourceApiDocContracts = externalIntegrationSourceScopeO
   externalIntegrationSourceApiDocContract(option.value)
 )
 const builtInProviderCodes = new Set([
-  'openai',
   'gpt',
-  'deepseek',
+  'xai',
   'anthropic',
   'gemini',
+  'deepseek',
   'glm',
-  'hybrid'
+  'minimax',
+  'volcengine',
+  'qwen'
 ])
 const mutationSchedulingPolicy = {
   defaultSoftConcurrency: 7,
@@ -420,7 +431,6 @@ interface ClientIPStatsDetailTarget {
 interface TemporaryGroupIdentity {
   id: string
   name: string
-  providerCode: string
   ownerSystemAccountId?: string
   cleanupNames: string[]
 }
@@ -709,8 +719,16 @@ async function runReadOnlySmoke(
   const modelsUrl = endpointUrl(config.baseUrl, '/providers/models/options', {
     systemAccountId: config.systemAccountId
   })
-  const modelsData = await getEnvelopeData(modelsUrl, config, 'providers/models/options')
-  const modelOptions = assertModelOptions(modelsData)
+  // T25 截断元数据：models/options envelope 顶层附加 total/hasMore（接口契约
+  // 与权限矩阵「providers/models/options」节），envelope 不再只有 data。
+  const modelsEnvelope = await getEnvelope(modelsUrl, config, 'providers/models/options')
+  expect(
+    Object.keys(modelsEnvelope).sort().join(',') === 'data,hasMore,total',
+    'providers/models/options envelope must contain only data, total, and hasMore'
+  )
+  expect(typeof modelsEnvelope.total === 'number', 'providers/models/options envelope total must be a number')
+  expect(typeof modelsEnvelope.hasMore === 'boolean', 'providers/models/options envelope hasMore must be a boolean')
+  const modelOptions = assertModelOptions(modelsEnvelope.data)
   const providerCodes = new Set(providers.map((provider) => provider.code))
   for (const option of modelOptions) {
     // 未归属供应商的模型选项不带 providerCode（前端 ProviderModelOption 同形可选）。
@@ -1006,7 +1024,7 @@ async function runGroupMutationSmoke(
   readOnlyResult: ReadOnlySmokeResult,
   registerCreatedGroup: (identity: TemporaryGroupIdentity) => void
 ): Promise<void> {
-  const provider = selectMutationProvider(config.providerCode, readOnlyResult.selectedGroup, readOnlyResult.providers)
+  const provider = selectMutationProvider(config.providerCode, readOnlyResult.providers)
   const expectedName = `${temporaryGroupNamePrefix}${randomUUID()}`
   const createData = await requestEnvelopeData(
     endpointUrl(config.baseUrl, '/groups', { systemAccountId: config.systemAccountId }),
@@ -1023,11 +1041,10 @@ async function runGroupMutationSmoke(
       expectedStatus: 201
     }
   )
-  const createdGroup = assertCreatedGroup(createData, expectedName, provider.code)
+  const createdGroup = assertCreatedGroup(createData, expectedName)
   const identity: TemporaryGroupIdentity = {
     id: createdGroup.id,
     name: expectedName,
-    providerCode: provider.code,
     ownerSystemAccountId: createdGroup.ownerSystemAccountId,
     cleanupNames: [expectedName]
   }
@@ -1263,21 +1280,22 @@ function selectClientIPStatsDetailTarget(
 
 function selectMutationProvider(
   configuredProviderCode: string | undefined,
-  selectedGroup: GroupRecord,
   providers: ProviderRecord[]
 ): ProviderRecord {
-  const requestedCode = configuredProviderCode ?? selectedGroup.providerCode
+  // 分组已与供应商解耦（供应商解耦设计 §8）：分组 providerCode 恒空，突变
+  // 供应商回退为供应商定义列表中的首个启用项。
+  const requestedCode = configuredProviderCode ?? providers.find((item) => item.enabled)?.code
   const provider = providers.find((item) => item.code === requestedCode)
   expect(provider, 'Mutation provider was not returned by providers/definitions')
   expect(provider.enabled, 'Mutation provider must be enabled')
   return provider
 }
 
-function assertCreatedGroup(value: unknown, expectedName: string, expectedProviderCode: string): TemporaryGroupIdentity {
+function assertCreatedGroup(value: unknown, expectedName: string): TemporaryGroupIdentity {
   expect(isRecord(value), 'temporary group create data must be an object')
   expect(isNonEmptyString(value.id), 'temporary group create data.id must be a non-empty string')
   expect(value.name === expectedName, 'Temporary group create name does not match')
-  expect(value.providerCode === expectedProviderCode, 'Temporary group create provider does not match')
+  expect(value.providerCode === '', 'Temporary group create provider must be empty (供应商解耦设计 §8)')
   expect(value.enabled === true, 'Temporary group create must be enabled')
   expect(value.isDefault === false, 'Temporary group create must be non-default')
   expect(value.groupType === 'personal', 'Temporary group create must be personal')
@@ -1292,7 +1310,6 @@ function assertCreatedGroup(value: unknown, expectedName: string, expectedProvid
   return {
     id: value.id,
     name: expectedName,
-    providerCode: expectedProviderCode,
     ownerSystemAccountId,
     cleanupNames: [expectedName]
   }
@@ -1306,7 +1323,7 @@ function assertTemporaryGroupIdentity(
 ): void {
   expect(group.id === expected.id, `${label} id does not match`)
   expect(allowedNames.includes(group.name), `${label} name does not match`)
-  expect(group.providerCode === expected.providerCode, `${label} provider does not match`)
+  expect(group.providerCode === '', `${label} provider must be empty (供应商解耦设计 §8)`)
   expect(isNonEmptyString(group.ownerSystemAccountId), `${label} owner must be present`)
   if (expected.ownerSystemAccountId) {
     expect(group.ownerSystemAccountId === expected.ownerSystemAccountId, `${label} owner does not match`)
@@ -1447,6 +1464,28 @@ async function getEnvelopeData(
     expectedStatus: 200,
     requirePragmaNoCache
   })
+}
+
+// envelope 级读取（不做「仅 data」断言）：供带 envelope 顶层元数据的端点使用。
+async function getEnvelope(
+  url: URL,
+  config: NormalizedRealGoManagementSmokeConfig,
+  label: string
+): Promise<Record<string, unknown>> {
+  const response = await sendRequest(url, config, label, { method: 'GET', expectedStatus: 200 })
+  if (response.status !== 200) {
+    await response.body?.cancel()
+    throw new Error(`${label} failed with HTTP ${response.status}`)
+  }
+  assertNoStore(response, label)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new Error(`${label} returned invalid JSON`)
+  }
+  expect(isRecord(payload), `${label} envelope must be an object`)
+  return payload
 }
 
 async function requestEnvelopeData(
@@ -1992,6 +2031,29 @@ function externalIntegrationSourceApiDocContract(scope: string): {
   path: string
   scope: string
 } {
+  // 超级分组成员更新与供应商只读作用域的 id/path 与既有 resource_action 派生
+  // 规则不同（backend policyreads/external_apidocs.go），先走显式契约表。
+  const explicitContracts: Record<string, { id: string; method: 'GET' | 'POST'; path: string }> = {
+    'juhe_ai_public:group_super_members_update:write': {
+      id: 'group-super-members-update',
+      method: 'POST',
+      path: '/__aipublic__/group/super-members/update'
+    },
+    'juhe_ai_public:provider_list:read': {
+      id: 'provider-list',
+      method: 'GET',
+      path: '/__aipublic__/provider/list'
+    },
+    'juhe_ai_public:provider_detail:read': {
+      id: 'provider-detail',
+      method: 'GET',
+      path: '/__aipublic__/provider/detail'
+    }
+  }
+  const explicit = explicitContracts[scope]
+  if (explicit) {
+    return { ...explicit, scope }
+  }
   const match = /^juhe_ai_public:(api_key|route_strategy|group|account)_(list|add|update|delete):(read|write)$/.exec(scope)
   const resource = match?.[1]?.replaceAll('_', '-')
   const action = match?.[2]
@@ -2124,6 +2186,45 @@ function assertApiKeyListItem(value: unknown, scope: 'admin' | 'self', label: st
   }
   if (Object.hasOwn(value, 'availabilitySchedule')) {
     expect(isRecord(value.availabilitySchedule), `${label}.availabilitySchedule must be an object when present`)
+  }
+  // 调度偏好最小摘要（调度偏好独立实体设计）：id 可空（沿用策略路由迁移期），
+  // id 非空时 name 非空、builtIn 为布尔。
+  if (Object.hasOwn(value, 'schedulingPreferenceId')) {
+    expect(
+      value.schedulingPreferenceId === null || isNonEmptyString(value.schedulingPreferenceId),
+      `${label}.schedulingPreferenceId must be a non-empty string or null`
+    )
+  }
+  if (Object.hasOwn(value, 'schedulingPreferenceName')) {
+    expect(
+      value.schedulingPreferenceName === null || isNonEmptyString(value.schedulingPreferenceName),
+      `${label}.schedulingPreferenceName must be a non-empty string or null`
+    )
+  }
+  if (Object.hasOwn(value, 'schedulingPreferenceBuiltIn')) {
+    expect(
+      value.schedulingPreferenceBuiltIn === null || typeof value.schedulingPreferenceBuiltIn === 'boolean',
+      `${label}.schedulingPreferenceBuiltIn must be a boolean or null`
+    )
+  }
+  // 安全策略最小摘要（APIKey 安全策略设计 §4.2）：与调度偏好同范式。
+  if (Object.hasOwn(value, 'securityPolicyId')) {
+    expect(
+      value.securityPolicyId === null || isNonEmptyString(value.securityPolicyId),
+      `${label}.securityPolicyId must be a non-empty string or null`
+    )
+  }
+  if (Object.hasOwn(value, 'securityPolicyName')) {
+    expect(
+      value.securityPolicyName === null || isNonEmptyString(value.securityPolicyName),
+      `${label}.securityPolicyName must be a non-empty string or null`
+    )
+  }
+  if (Object.hasOwn(value, 'securityPolicyBuiltIn')) {
+    expect(
+      value.securityPolicyBuiltIn === null || typeof value.securityPolicyBuiltIn === 'boolean',
+      `${label}.securityPolicyBuiltIn must be a boolean or null`
+    )
   }
   if (scope === 'admin') {
     expect(isNonEmptyString(value.systemAccountId), `${label}.systemAccountId must be a non-empty string`)
@@ -2494,7 +2595,7 @@ function assertGroup(value: unknown, label: string): GroupRecord {
   expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
   expect(isNonEmptyString(value.ownerSystemAccountId), `${label}.ownerSystemAccountId must be a non-empty string`)
   expect(isNonEmptyString(value.name), `${label}.name must be a non-empty string`)
-  expect(isNonEmptyString(value.providerCode), `${label}.providerCode must be a non-empty string`)
+  expect(value.providerCode === '', `${label}.providerCode must be empty (供应商解耦设计 §8 兼容出参)`)
   if (Object.hasOwn(value, 'description')) {
     expect(typeof value.description === 'string', `${label}.description must be a string`)
   }
@@ -2542,21 +2643,20 @@ function assertProviderDefinitions(value: unknown): ProviderRecord[] {
     expect(isRecord(item), `${itemLabel} must be an object`)
     expect(isNonEmptyString(item.code), `${itemLabel}.code must be a non-empty string`)
     const label = `providers/definitions provider ${item.code}`
-    for (const field of [
-      'id',
-      'name',
-      'defaultProtocolProfileId',
-      'protocolCode',
-      'protocolVersion'
-    ]) {
-      expect(isNonEmptyString(item[field]), `${label}.${field} must be a non-empty string`)
+    expect(isNonEmptyString(item.id), `${label}.id must be a non-empty string`)
+    expect(isNonEmptyString(item.name), `${label}.name must be a non-empty string`)
+    // B4 退役后服务端返回「空形状」协议面（BUG-0330）：defaultProtocolProfileId/
+    // protocolCode/protocolProtocolVersion 为字符串（现恒空串），protocolProfiles
+    // 可为空数组；完整档案形状（旧库或前端迁移后）仍按原断言校验。
+    for (const field of ['defaultProtocolProfileId', 'protocolCode', 'protocolVersion']) {
+      expect(typeof item[field] === 'string', `${label}.${field} must be a string`)
     }
     assertProviderTopLevelEndpointDefaults(item, item.code, label)
     expect(typeof item.enabled === 'boolean', `${label}.enabled must be boolean`)
     assertStringArray(item.defaultSupportedModels, `${label}.defaultSupportedModels`)
     assertStringArray(item.accountTypes, `${label}.accountTypes`)
     assertStringArray(item.capabilities, `${label}.capabilities`)
-    expect(Array.isArray(item.protocolProfiles) && item.protocolProfiles.length > 0, `${label}.protocolProfiles must be non-empty`)
+    expect(Array.isArray(item.protocolProfiles), `${label}.protocolProfiles must be an array`)
     for (const [profileIndex, profile] of item.protocolProfiles.entries()) {
       const profileLabel = `${label}.protocolProfiles item ${profileIndex}`
       expect(isRecord(profile), `${profileLabel} must be an object`)
@@ -2570,10 +2670,12 @@ function assertProviderDefinitions(value: unknown): ProviderRecord[] {
       assertProviderEndpointFamilies(profile.endpointFamilies, profileLabel)
       assertProviderProfileEndpointDefaults(profile, item.code, profileLabel)
     }
-    expect(
-      item.protocolProfiles.some((profile) => isRecord(profile) && profile.id === item.defaultProtocolProfileId),
-      `${label}.defaultProtocolProfileId must reference a protocol profile`
-    )
+    if (isNonEmptyString(item.defaultProtocolProfileId)) {
+      expect(
+        item.protocolProfiles.some((profile) => isRecord(profile) && profile.id === item.defaultProtocolProfileId),
+        `${label}.defaultProtocolProfileId must reference a protocol profile`
+      )
+    }
     return item as unknown as ProviderRecord
   })
   const providerCodes = new Set<string>()
@@ -2625,9 +2727,10 @@ function assertProviderTopLevelEndpointDefaults(
   if (providerCode === 'hybrid') {
     expect(value.baseUrl === '', `${label}.baseUrl must be empty for hybrid`)
   } else if (builtInProviderCodes.has(providerCode)) {
-    for (const field of ['baseUrl', 'defaultHealthCheckModel']) {
-      expect(isNonEmptyString(value[field]), `${label}.${field} must be a non-empty string`)
-    }
+    // 空形状契约（BUG-0330）：baseUrl 恒空串；defaultHealthCheckModel 仍由
+    // 目录派生（纯媒体供应商回落最新目录模型）。
+    expect(value.baseUrl === '', `${label}.baseUrl must be empty (B4 退役空形状)`)
+    expect(isNonEmptyString(value.defaultHealthCheckModel), `${label}.defaultHealthCheckModel must be a non-empty string`)
   }
 }
 
