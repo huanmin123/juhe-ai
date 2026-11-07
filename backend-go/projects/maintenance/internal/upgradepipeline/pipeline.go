@@ -163,10 +163,14 @@ type Report struct {
 	Database              databaseState   `json:"database"`
 	Plan                  planInfo        `json:"plan"`
 	Estimate              estimateInfo    `json:"estimate"`
-	Executed              []executedStep  `json:"executed,omitempty"`
-	Postflight            *postflightInfo `json:"postflight,omitempty"`
-	Rollback              string          `json:"rollback"`
-	Result                string          `json:"result"`
+	// SecretVerified 是 §9.4-8 KCV 结果（T84-1）：true=库内密文试解密通过；
+	// false=无可试解密载体（fresh/无密文行，KCV 跳过披露）或校验失败（此时
+	// result=blocked）；nil=本次运行不使用 secret（不要求 secret 的路径）。
+	SecretVerified *bool           `json:"secretVerified,omitempty"`
+	Executed       []executedStep  `json:"executed,omitempty"`
+	Postflight     *postflightInfo `json:"postflight,omitempty"`
+	Rollback       string          `json:"rollback"`
+	Result         string          `json:"result"`
 }
 
 // Result 取值与退出码映射（§9.2/§9.3）：planned/up-to-date/upgraded→0，
@@ -298,6 +302,12 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	rows, err := ReadMigrations(ctx, db)
 	if err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
+	}
+	// T84-2（§7.4）：账本 checksum 读取侧闭环——账本行与本二进制注册表同
+	// revision 的 checksum 不一致即「同 revision 步骤被改名/改目标」的篡改或
+	// 意外改动，blocked 交人工处置，禁止静默覆盖吞掉证据。
+	if err := verifyLedgerChecksums(rows, steps); err != nil {
+		return fail(ResultBlocked, ExitNeedsHuman, err.Error(), true)
 	}
 	dbRevision := state.Revision
 	stepMax := int64(0)
@@ -437,6 +447,18 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 				return fail(ResultBlocked, ExitUsage,
 					"存在待执行升级步骤：需要 --secret（或 JUHE_AI_SECRET）供 seed 与凭据类步骤使用", true)
 			}
+		}
+	}
+
+	// 8.5 secret KCV（§9.4-8，T84-1）：确认门禁之后、任何写入（加法相/
+	// EnsureLedger/seed）之前，取库内现有密文试解密。条件与本运行要求 secret
+	// 的门禁范围一致（needsApply||needsStructural；contract 的 needsStructural
+	// 恒 false 已被上方 blocked 拦截，故该条件即各分支 secret 必填条件的并集）。
+	if needsApply || needsStructural {
+		verified, kcvErr := verifySecretAgainstDatabase(ctx, db, opts.Secret)
+		report.SecretVerified = &verified
+		if kcvErr != nil {
+			return fail(ResultBlocked, ExitNeedsHuman, kcvErr.Error(), true)
 		}
 	}
 
@@ -716,6 +738,28 @@ func validateRegistry(steps []Step) error {
 			return fmt.Errorf("revision %d 重复: %s / %s", step.Revision, other, step.ID)
 		}
 		seen[step.Revision] = step.ID
+	}
+	return nil
+}
+
+// verifyLedgerChecksums 校验账本行 checksum 与本二进制注册表一致（§7.4，
+// T84-2）：checksum=sha256(step_id|revision|target|title|destructive)，
+// 不一致即「同 revision 步骤被改名/改目标」。只校验账本中存在且注册表覆盖
+// 的 revision；账本超出注册表的行由方向校验（stepMax > binary → blocked）
+// 既有口径覆盖。fresh 库（无行）为空操作。
+func verifyLedgerChecksums(rows map[int64]MigrationRow, steps []Step) error {
+	checksums := make(map[int64]string, len(steps))
+	for _, step := range steps {
+		checksums[step.Revision] = step.Checksum()
+	}
+	for revision, row := range rows {
+		want, ok := checksums[revision]
+		if !ok || row.Checksum == want {
+			continue
+		}
+		return fmt.Errorf(
+			"账本 checksum 不一致（revision=%d 账本步骤=%s checksum=%s，本二进制期望=%s）：同 revision 步骤定义已被改名/改目标，请人工核对账本与二进制版本后处置",
+			revision, row.StepID, row.Checksum, want)
 	}
 	return nil
 }

@@ -98,19 +98,31 @@ func ReadMigrations(ctx context.Context, db *sql.DB) (map[int64]MigrationRow, er
 }
 
 // MarkRunning 写入/改写 running 行（幂等重跑直接覆盖 started_at 与 checksum）。
+// 冲突分支带 step_id/title/target/destructive 一致性守卫（T84-2，§7.4）：
+// 读取侧 checksum 校验拦截「改名/改目标」篡改后，本守卫兜住读取与写入之间
+// 的窗口——不一致时拒绝覆盖（0 行更新报错），不静默吞掉篡改证据。
 func MarkRunning(ctx context.Context, db *sql.DB, step Step, phase UpgradePhase, onlineSafe bool, appVersion string, started time.Time) error {
-	_, err := db.ExecContext(ctx, `
+	result, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.schema_migrations
   (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, app_version, phase, online_safe)
 VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, false, $8, $9, $10, $11)
 ON CONFLICT (revision) DO UPDATE SET
   status = 'running', checksum = EXCLUDED.checksum, impl_version = EXCLUDED.impl_version,
   started_at = EXCLUDED.started_at, app_version = EXCLUDED.app_version,
-  phase = EXCLUDED.phase, online_safe = EXCLUDED.online_safe, detail_json = NULL`,
+  phase = EXCLUDED.phase, online_safe = EXCLUDED.online_safe, detail_json = NULL
+WHERE juhe_business.schema_migrations.step_id = EXCLUDED.step_id
+  AND juhe_business.schema_migrations.title = EXCLUDED.title
+  AND juhe_business.schema_migrations.target = EXCLUDED.target
+  AND juhe_business.schema_migrations.destructive = EXCLUDED.destructive`,
 		step.Revision, step.ID, step.Title, string(step.Target), step.Destructive,
 		step.Checksum(), step.ImplVersion, formatTime(started), appVersion, string(phase), onlineSafe)
 	if err != nil {
 		return fmt.Errorf("写步骤 running 行失败（%s）: %w", step.ID, err)
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return fmt.Errorf(
+			"账本行与本二进制步骤定义不一致（revision=%d，step_id/title/target/destructive 任一不匹配），拒绝覆盖写 running 行（%s）",
+			step.Revision, step.ID)
 	}
 	return nil
 }
@@ -151,19 +163,29 @@ WHERE status = 'applied' AND (destructive = true OR phase = 'contract')`)
 
 // MarkAdopted 记账 adopt（Satisfied 为真，未执行 Apply；impl_version 漂移时
 // 重求值后同步更新 impl_version，§7.4）。已存在行走 UPDATE（不翻转历史证据，
-// I8 裁决口径），无行则插入。
+// I8 裁决口径），无行则插入；冲突分支与 MarkRunning 同一带 step_id/title/
+// target/destructive 一致性守卫（T84-2），不一致拒绝写而非静默记账。
 func MarkAdopted(ctx context.Context, db *sql.DB, step Step, phase UpgradePhase, onlineSafe bool, appVersion string, adopted time.Time) error {
-	_, err := db.ExecContext(ctx, `
+	result, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.schema_migrations
   (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, applied_at, duration_ms, app_version, phase, online_safe)
 VALUES ($1, $2, $3, $4, $5, 'applied', $6, $7, true, $8, $8, 0, $9, $10, $11)
 ON CONFLICT (revision) DO UPDATE SET
   status = 'applied', adopted = true, impl_version = EXCLUDED.impl_version, phase = EXCLUDED.phase,
-  online_safe = EXCLUDED.online_safe`,
+  online_safe = EXCLUDED.online_safe
+WHERE juhe_business.schema_migrations.step_id = EXCLUDED.step_id
+  AND juhe_business.schema_migrations.title = EXCLUDED.title
+  AND juhe_business.schema_migrations.target = EXCLUDED.target
+  AND juhe_business.schema_migrations.destructive = EXCLUDED.destructive`,
 		step.Revision, step.ID, step.Title, string(step.Target), step.Destructive,
 		step.Checksum(), step.ImplVersion, formatTime(adopted), appVersion, string(phase), onlineSafe)
 	if err != nil {
 		return fmt.Errorf("写步骤 adopted 行失败（%s）: %w", step.ID, err)
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return fmt.Errorf(
+			"账本行与本二进制步骤定义不一致（revision=%d，step_id/title/target/destructive 任一不匹配），拒绝覆盖写 adopted 行（%s）",
+			step.Revision, step.ID)
 	}
 	return nil
 }
