@@ -84,9 +84,11 @@ func connectorComboSurface(driver, accountType, oauthType, preset, domain string
 	return "", false
 }
 
-// resolveConnectionSet 执行 §8 连接集合的全量校验并解析为写入形态：
-//   - 非空必填（缺失/空数组 400，文案列明缺 connections）；
-//   - preset 非空、账户内唯一（重复 preset 400 connection_capability_unsupported）；
+// resolveConnectionSet 执行连接集合的全量校验并解析为写入形态。产品契约
+// （2026-11-07 用户裁决）：一个账户只能有一条上游连接（一个 Base URL）；
+// 多 API Key 放在同一凭据 JSON 中，不支持多连接。
+//   - 恰好一条（缺失/空数组 400；多于一条 400 并提示多 Key 走凭据）；
+//   - preset 非空（账户内唯一约束由单连接自然满足，保留防御校验）；
 //   - preset 必须与账户 (driver, account_type, oauth_type, domain) 组合在
 //     registry 允许（IsAllowedConnectorCombo）；
 //   - protocolSurfaceCode 回显非空时必须等于 registry surface；
@@ -96,6 +98,9 @@ func connectorComboSurface(driver, accountType, oauthType, preset, domain string
 func resolveConnectionSet(domain, driver, accountType, oauthType string, connections []accountscore.ConnectionInput) ([]resolvedConnection, error) {
 	if len(connections) == 0 {
 		return nil, &ValidationError{Message: "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"}
+	}
+	if len(connections) > 1 {
+		return nil, &ValidationError{Message: "账户只支持一个上游连接（一个 Base URL）；多个 API Key 请在账户凭据中配置，不支持多连接"}
 	}
 	resolved := make([]resolvedConnection, 0, len(connections))
 	seenPresets := map[string]bool{}

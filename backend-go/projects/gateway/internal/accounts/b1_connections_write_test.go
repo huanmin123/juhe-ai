@@ -503,3 +503,44 @@ func TestB1ImportLegacyFormatFailsExplicitly(t *testing.T) {
 		t.Fatalf("旧格式导入不应落库：%d", got)
 	}
 }
+
+// TestB1ImportMultipleConnectionsFailsExplicitly：产品契约（2026-11-07 用户
+// 裁决）下一个账户只支持一条连接；导入包提交多条 connections 时在预览计划
+// 层显式失败，不进入执行链，也不落任何账户行。
+func TestB1ImportMultipleConnectionsFailsExplicitly(t *testing.T) {
+	env := newTestEnv(t)
+	seedOpenAICompatibleProvider(t, env)
+	env.login(t, "root", "root-pass", "super_admin")
+
+	multi := `{"data":{"type":"juhe-ai-account-import","version":1,"proxies":[],
+		"accounts":[{"name":"多连接账户","providerCode":"gpt",
+		"providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active",
+		"groupName":"多连接分组","supportedModels":["gpt-4o-mini"],
+		"credentials":{"api_key":"sk-multi-connection-123","base_url":"https://api.openai.com/v1"},
+		"connections":[
+			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json"],"enabled":true},
+			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v2","endpointModes":["chat_sse"],"enabled":true}],
+		"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}]}}`
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", multi)
+	if code != http.StatusOK {
+		t.Fatalf("preview: %d %v", code, payload)
+	}
+	plan := dataMap(t, payload)
+	if plan["canImport"] != false {
+		t.Fatalf("多连接导入应不可导入：%v", plan["summary"])
+	}
+	item := plan["accounts"].([]any)[0].(map[string]any)
+	if item["action"] != "failed" {
+		t.Fatalf("多连接条目应 failed：%v", item)
+	}
+	messages := ""
+	for _, message := range item["messages"].([]any) {
+		messages += message.(string) + "|"
+	}
+	if !strings.Contains(messages, "connections 必须恰好一条") || !strings.Contains(messages, "多个 API Key") {
+		t.Fatalf("多连接报错清单不完整：%s", messages)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE name = '多连接账户'`); got != 0 {
+		t.Fatalf("多连接导入不应落库：%d", got)
+	}
+}

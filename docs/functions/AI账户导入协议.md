@@ -19,7 +19,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`providerProtocolProfileId`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
-- 每个账户必须显式提交非空 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；`native` 导入不做缺省补齐，四键缺任一该账户在预览中标记失败（`sub2api` 等非原生来源由适配器按契约补齐三件套，但 `connections` 仍必须由来源包显式携带）。
+- 每个账户必须显式提交恰好一条 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；`native` 导入不做缺省补齐，四键缺任一该账户在预览中标记失败（`sub2api` 等非原生来源由适配器按契约补齐三件套，但 `connections` 仍必须由来源包显式携带且恰好一条）。
 - `providerCode` 只能是九家真实厂商：`gpt`、`xai`、`anthropic`、`gemini`、`deepseek`、`glm`、`minimax`、`volcengine`、`qwen`。`openai` 兼容、`hybrid` 与 `generic_http` 已于 2026-11-05 退役，提交这些值会返回「不支持的供应商」。`gpt` 支持 `api_key|oauth`；`xai` 支持官方 API Key 与 Responses-only Grok `oauth`；`anthropic` 支持 API Key 与官方 `oauth`；`gemini` native 支持 API Key 与 `google_oauth`，后者必须保存 `code_assist|google_one|ai_studio` 模式，OpenAI Chat 档案只支持 API Key；其余厂商按各自档案与账户类型约束。
 - `providerProtocolProfileId` 是协议档案唯一入口；导入协议不接收旧接入类型别名，也不按 `base_url`、供应商默认值或历史字段猜测档案。
 - 来源模式没有可信厂商时（Sub2API/NewAPI/One-API/CLIProxyAPI），适配器按来源账户模型名/前缀推断九家厂商：所有模型必须收敛到同一厂商，缺模型、零命中或跨厂商冲突一律跳过该来源记录并写入预览报告；不提供通用连接器兜底。
@@ -322,7 +322,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。填写 `healthCheckModel` 时建议同时显式给出本字段，便于核对成员关系。 |
-| `connections` | 是 | 连接集合，非空必填；每个元素描述一条上游连接（见下文「connections 条目字段」）。元素 `connectionPresetCode` 在同一账户内不能重复。 |
+| `connections` | 是 | 连接集合，必须恰好一条；描述该账户唯一的上游连接（见下文「connections 条目字段」）。多个 API Key 放在 `credentials` 中，不支持多条连接。 |
 | `healthCheckConnectionPresetCode` | 是 | 健康检查三件套之一；必须等于本账户 `connections` 中一条 `enabled: true` 连接的 `connectionPresetCode`，落库时同事务解析为 `health_check_connection_id`。 |
 | `healthCheckModel` | 是 | 健康检查三件套之一；账户级检查模型，必须属于账户 `supportedModels`（含供应商默认回填后的集合）。管理面手动创建时才允许省略并由创建事务在最终支持模型集内解析；`native` 导入必须显式提交。 |
 | `healthCheckEndpointMode` | 是 | 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 |
@@ -353,7 +353,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 
 ## connections 条目字段
 
-每个账户的 `connections` 必须是非空对象数组，元素键固定如下；出现未知键、缺少任一必填键或 `endpointModes` 为空都会导致该账户失败（与创建链共享 `ParseConnectionInput` 严格解析，不造兼容层）：
+每个账户的 `connections` 必须恰好一条，元素键固定如下；出现未知键、缺少任一必填键或 `endpointModes` 为空都会导致该账户失败（与创建链共享 `ParseConnectionInput` 严格解析，不造兼容层）；多于一条按「账户只支持一个上游连接」失败：
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
@@ -498,7 +498,7 @@ Grok OAuth 账户：
 - 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。
 - 账户支持模型不在供应商模型目录中：先在「供应商」页或「我的模型」页的模型目录创建这些自定义模型并配置价格，再重新导入。
 - 账号模型别名（`modelMappings`）的来源 / 目标模型不在当前供应商模型目录中：处理方式与支持模型相同，先在模型目录创建并配置价格，再重新导入。
-- 账户 `connections` 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode/baseUrl/endpointModes/enabled）。
+- 账户 `connections` 必须恰好一条：导入包必须提交恰好一个连接对象（connectionPresetCode/baseUrl/endpointModes/enabled）；多个 API Key 放在 `credentials` 中，不支持多连接。
 - `healthCheckConnectionPresetCode` 不能为空：健康检查三件套必须显式提交；即使填写，指向的也必须是本账户一条 `enabled: true` 连接（否则执行阶段报 `health_check_connection_conflict`）。
 - `healthCheckModel` 不能为空：健康检查三件套必须显式提交；填写后仍必须属于 `supportedModels`。
 - `healthCheckEndpointMode` 不能为空：健康检查三件套必须显式提交；填写后必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。

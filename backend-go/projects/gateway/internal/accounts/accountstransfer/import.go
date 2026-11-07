@@ -1254,6 +1254,9 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	if len(source.connections) == 0 {
 		source.Push("账户 connections 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode/baseUrl/endpointModes/enabled）")
 	}
+	if len(source.connections) > 1 {
+		source.Push("账户 connections 必须恰好一条：账户只支持一个上游连接（一个 Base URL）；多个 API Key 请在 credentials 中配置，不支持多连接")
+	}
 	if source.healthCheckConnectionPresetCode == "" {
 		source.Push("账户 healthCheckConnectionPresetCode 不能为空：健康检查三件套必须显式提交")
 	}

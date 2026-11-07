@@ -76,8 +76,8 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   },
   {
     name: 'connections 与健康检查三件套必填',
-    exportedPattern: /每个账户必须显式提交非空 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；native 导入不做任何缺省补齐，缺一个就整账户失败。/,
-    formalPattern: /每个账户必须显式提交非空 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；`native` 导入不做缺省补齐，四键缺任一该账户在预览中标记失败/
+    exportedPattern: /每个账户必须显式提交恰好一条 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；native 导入不做任何缺省补齐，缺一个或 connection 多于一条就整账户失败。多个 API Key 放在 `credentials` 中，不支持多连接。/,
+    formalPattern: /每个账户必须显式提交恰好一条 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；`native` 导入不做缺省补齐，四键缺任一该账户在预览中标记失败/
   },
   {
     name: 'connections 条目契约与三件套指向约束',
@@ -171,7 +171,7 @@ assertTrue(Array.isArray(anthropicAccount.credentials?.supported_endpoint_modes)
 assertFalse(Object.prototype.hasOwnProperty.call(anthropicAccount.credentials ?? {}, 'anthropic_version'), 'Anthropic 导入示例不应把 anthropic-version 当作账号凭据')
 assertFalse(Object.prototype.hasOwnProperty.call(anthropicAccount.credentials ?? {}, 'anthropic_beta'), 'Anthropic 导入示例不应把 anthropic-beta 当作账号凭据')
 assertEqual(typeof apiKeyAccount.groupName, 'string', '模板账号必须保留 groupName 示例')
-assertTrue(template.accounts?.every((account) => Array.isArray(account.connections) && account.connections.length > 0) === true, '导入模板每个账号都必须显式提交非空 connections 数组（native 导入不做缺省补齐）')
+assertTrue(template.accounts?.every((account) => Array.isArray(account.connections) && account.connections.length === 1) === true, '导入模板每个账号必须恰好一条 connections（单账户单 Base URL）')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckConnectionPresetCode === 'string' && account.healthCheckConnectionPresetCode.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckConnectionPresetCode')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckModel === 'string' && account.healthCheckModel.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckModel')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckEndpointMode === 'string' && account.healthCheckEndpointMode.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckEndpointMode')
@@ -196,7 +196,7 @@ assertMatch(aiConversionPrompt, /只输出合法 JSON/, 'AI 提示词应继续�
 assertMatch(aiConversionPrompt, /不要编造来源数据里不存在的 token/, 'AI 提示词应继续约束 token 不可编造')
 assertMatch(aiConversionPrompt, /pending_test 或 disabled/, 'AI 提示词应允许不确定账户导入为待检查或停用')
 assertMatch(aiConversionPrompt, /普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -> Chat Completions/, 'AI 提示词应说明普通 OpenAI v1 账户可导入 Responses 到 Chat 映射')
-assertMatch(aiConversionPrompt, /每个账户必须显式提交非空 connections 数组/, 'AI 提示词应要求每个账户显式提交 connections')
+assertMatch(aiConversionPrompt, /每个账户必须显式提交恰好一条 connections 数组/, 'AI 提示词应要求每个账户显式提交单条 connections')
 assertMatch(aiConversionPrompt, /healthCheckConnectionPresetCode（指向该账户一条 enabled 连接的 connectionPresetCode）、healthCheckModel（必须属于 supportedModels）和 healthCheckEndpointMode/, 'AI 提示词应说明健康检查三件套的键名与指向约束')
 
 assertMatch(accountImportProtocolMarkdown, /# juhe-ai AI 账户导入协议 v1/, '协议 Markdown 应继续保留标题')
@@ -238,8 +238,8 @@ assertMatch(accountImportProtocolMarkdown, /\| `connections` \| 是 \| object\[\
 assertMatch(accountImportProtocolMarkdown, /\| `healthCheckConnectionPresetCode` \| 是 \| string \|/, '导出协议 Markdown 应把 healthCheckConnectionPresetCode 暴露为必填导入字段')
 assertMatch(accountImportProtocolMarkdown, /\| `healthCheckModel` \| 是 \| string \|/, '导出协议 Markdown 应把 healthCheckModel 暴露为必填导入字段')
 assertMatch(accountImportProtocolMarkdown, /## connections 条目字段/, '导出协议 Markdown 应包含 connections 条目字段说明')
-assertMatch(accountImportProtocolMarkdown, /账户 `connections` 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode\/baseUrl\/endpointModes\/enabled）/, '导出协议 Markdown 应说明 connections 缺失失败提示')
-assertMatch(formalProtocolMarkdown, /账户 `connections` 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode\/baseUrl\/endpointModes\/enabled）/, '正式协议文档应说明 connections 缺失失败提示')
+assertMatch(accountImportProtocolMarkdown, /账户 `connections` 必须恰好一条：导入包必须提交恰好一个连接对象/, '导出协议 Markdown 应说明 connections 单条失败提示')
+assertMatch(formalProtocolMarkdown, /账户 `connections` 必须恰好一条：导入包必须提交恰好一个连接对象/, '正式协议文档应说明 connections 单条失败提示')
 assertMatch(formalProtocolMarkdown, /`healthCheckConnectionPresetCode` 不能为空：健康检查三件套必须显式提交/, '正式协议文档应说明健康检查三件套缺失失败提示')
 assertMatch(formalProtocolMarkdown, /health_check_connection_conflict/, '正式协议文档应说明健康检查指向失败的执行阶段错误码')
 
@@ -387,7 +387,7 @@ interface ConnectionRecord {
 
 /** 复算 ParseConnectionInput（writeinput.go:84-123）+ 执行链 registry 校验。 */
 function parseConnectionsForValidation(rawConnections: unknown, label: string): ConnectionRecord[] {
-  assertTrue(Array.isArray(rawConnections) && rawConnections.length > 0, `${label}：账户 connections 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode/baseUrl/endpointModes/enabled）`)
+  assertTrue(Array.isArray(rawConnections) && rawConnections.length === 1, `${label}：账户 connections 必须恰好一条：单账户单 Base URL，多 API Key 放在 credentials 中`)
   const seenPresets = new Set<string>()
   return rawConnections.map((entry, index) => {
     const entryLabel = `${label} connections[${index}]`
