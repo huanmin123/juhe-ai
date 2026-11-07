@@ -27,6 +27,7 @@ func TestUnknownFromEnviron(t *testing.T) {
 	register(Entry{Name: "JUHE_AI_KNOWN_ONE", Process: []string{ProcessJobs}})
 	environ := []string{
 		"JUHE_AI_KNOWN_ONE=1",
+		"JUHE_AI_DEPLOY_SERVER=user@host",
 		"JUHE_AI_STRAY_LEFTOVER=x",
 		"PATH=/bin",
 		"JUHE_AI_STRAY_OTHER=y",

@@ -57,7 +57,7 @@ func TestW14dClosedDBQueryForks(t *testing.T) {
 	}
 	// providerCode 臂已随源扩展退役收敛为纯函数（不触库）。
 	if sourceCodes, builtInCodes, _ := store.modelOptionSourceCodes(ctx, "openai", ""); len(sourceCodes) != 1 ||
-		len(builtInCodes) != 0 || sourceCodes[0] != "openai" {
+		len(builtInCodes) != 1 || sourceCodes[0] != "openai" || builtInCodes[0] != "openai" {
 		t.Fatalf("provider-scoped option sources: %v %v", sourceCodes, builtInCodes)
 	}
 	if _, err := store.listBuiltInModelOptions(ctx, []string{"gpt"}, ModelOptionQuery{Limit: 5}); err == nil {

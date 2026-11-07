@@ -72,7 +72,7 @@ func TestProvidersCreateCustomModel(t *testing.T) {
 
 	body := `{"model":"my-model","supportedApiProtocols":["chat_completions"],"contextWindowTokens":32000,
 		"inputUsdPer1M":1.5,"outputUsdPer1M":2,"supportedServiceTiers":["priority"],
-		"serviceTierPrices":{"priority":{"inputUsdPer1M":2.5}}}`
+		"serviceTierPrices":{"priority":{"inputUsdPer1M":2.5,"outputUsdPer1M":3.5}}}`
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", body)
 	if code != http.StatusCreated {
 		t.Fatalf("create custom model: %d %v", code, created)
@@ -125,7 +125,7 @@ func TestProvidersCreateCustomModel(t *testing.T) {
 	}
 
 	// Duplicate POST: same scope+model upserts onto the same row.
-	code, again := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":"my-model","inputUsdPer1M":3}`)
+	code, again := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":"my-model","inputUsdPer1M":3,"outputUsdPer1M":6}`)
 	if code != http.StatusCreated {
 		t.Fatalf("duplicate create: %d %v", code, again)
 	}
@@ -198,7 +198,7 @@ func TestProvidersCreateCustomModelValidation(t *testing.T) {
 
 	// Admin global create works and carries no systemAccountId.
 	env.login(t, "root", "root-pass", "super_admin")
-	code, global := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":"global-model","scope":"global","inputUsdPer1M":1}`)
+	code, global := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":"global-model","scope":"global","inputUsdPer1M":1,"outputUsdPer1M":2}`)
 	if code != http.StatusCreated {
 		t.Fatalf("global create: %d %v", code, global)
 	}
@@ -508,7 +508,7 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 	// Global delete clears a shadowed system default; gpt-4o is shadowed by
 	// the built-in row so a fresh model is used for the cleanup assertion.
 	code, created = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"delete-me","scope":"global","inputUsdPer1M":2}`)
+		`{"model":"delete-me","scope":"global","inputUsdPer1M":2,"outputUsdPer1M":4}`)
 	if code != http.StatusCreated {
 		t.Fatalf("delete-me create: %d %v", code, created)
 	}

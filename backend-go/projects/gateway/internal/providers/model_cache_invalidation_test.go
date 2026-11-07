@@ -132,7 +132,7 @@ func TestProvidersModelCacheInvalidationCreate(t *testing.T) {
 	// A duplicate upsert is its own commit and notifies again (Node has no
 	// dedup on the notify layer).
 	code, duplicate := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"inv-model","inputUsdPer1M":3}`)
+		`{"model":"inv-model","inputUsdPer1M":3,"outputUsdPer1M":6}`)
 	if code != http.StatusCreated {
 		t.Fatalf("duplicate create: %d %v", code, duplicate)
 	}
@@ -301,7 +301,7 @@ func TestProvidersModelCacheInvalidationNilPort(t *testing.T) {
 	env.seedWriteFixtures(t)
 	env.login(t, "user1", "user-pass", "user")
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"nil-port-model","inputUsdPer1M":1}`)
+		`{"model":"nil-port-model","inputUsdPer1M":1,"outputUsdPer1M":2}`)
 	if code != http.StatusCreated {
 		t.Fatalf("nil port create: %d %v", code, created)
 	}

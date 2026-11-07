@@ -56,7 +56,7 @@ func TestWeProvidersCreateModelBranches(t *testing.T) {
 	// 模板存在：继承模板配置并覆盖模型名（模板目录按当前调用者可见性解析）。
 	env.login(t, "user1", "user-pass", "user")
 	code, tplCreated := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"gpt-we-tpl2","configurationTemplateId":"cat-2","supportedApiProtocols":["chat_completions"]}`)
+		`{"model":"gpt-we-tpl2","configurationTemplateId":"cat-2","supportedApiProtocols":["chat_completions"],"outputUsdPer1M":0}`)
 	if code != http.StatusCreated {
 		t.Fatalf("模板创建: %d %v", code, tplCreated)
 	}
@@ -82,7 +82,7 @@ func TestWeProvidersPatchCustomModelAllFields(t *testing.T) {
 
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=all",
 		`{"model":"gpt-we-allfields","supportedApiProtocols":["chat_completions"],"mode":"text",`+
-			`"supportedReasoningEfforts":["low"],"defaultReasoningEffort":"low","inputUsdPer1M":1}`)
+			`"supportedReasoningEfforts":["low"],"defaultReasoningEffort":"low","inputUsdPer1M":1,"outputUsdPer1M":2}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, created)
 	}

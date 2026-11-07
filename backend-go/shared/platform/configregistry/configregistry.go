@@ -86,7 +86,9 @@ func Known(name string) bool {
 }
 
 // UnknownFromEnviron 从环境清单（os.Environ() 形态）筛出未登记的 JUHE_AI_*
-// 变量名（启动诊断 §12.2：单条 WARN 列出，不阻断启动）。
+// 变量名（启动诊断 §12.2：单条 WARN 列出，不阻断启动）。部署侧专用变量
+// （DeployOnly）由 compose env_file 一并注入容器环境，必须与 check-config
+// 同口径放行，否则每次启动都会对合法部署变量误报残留（T160）。
 func UnknownFromEnviron(environ []string) []string {
 	unknown := []string{}
 	for _, item := range environ {
@@ -97,7 +99,7 @@ func UnknownFromEnviron(environ []string) []string {
 		if idx := strings.IndexByte(item, '='); idx >= 0 {
 			name = item[:idx]
 		}
-		if !Known(name) {
+		if !Known(name) && !DeployOnly(name) {
 			unknown = append(unknown, name)
 		}
 	}

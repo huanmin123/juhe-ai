@@ -106,7 +106,7 @@ func TestWeProvidersCustomModelPatchOptionalFields(t *testing.T) {
 			`"mode":"text","supportedServiceTiers":["priority"],"supportedReasoningEfforts":["low"],`+
 			`"defaultReasoningEffort":"low","releaseDate":"2026-01-01",`+
 			`"contextWindowTokens":32000,"inputUsdPer1M":1,"outputUsdPer1M":2,`+
-			`"serviceTierPrices":{"priority":{"inputUsdPer1M":4}}}`)
+			`"serviceTierPrices":{"priority":{"inputUsdPer1M":4,"outputUsdPer1M":8}}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, created)
 	}
@@ -120,14 +120,14 @@ func TestWeProvidersCustomModelPatchOptionalFields(t *testing.T) {
 	// tier 价格分两次提交。
 	updatedAt := env.updatedAtOf(t, modelID)
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+modelID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","serviceTierPrices":{"priority":{"outputUsdPer1M":9}}}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","serviceTierPrices":{"priority":{"inputUsdPer1M":4,"outputUsdPer1M":9}}}`)
 	if code != http.StatusOK {
 		t.Fatalf("patch tiers: %d %v", code, patched)
 	}
 	// 契约：携带档位价格的模型不能切出文本模式，这里只清空输入价并补每图价格。
 	updatedAt = env.updatedAtOf(t, modelID)
 	code, patched = env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+modelID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","inputUsdPer1M":null,"outputUsdPerImage":0.02}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","cachedInputUsdPer1M":null,"outputUsdPerImage":0.02}`)
 	if code != http.StatusOK {
 		t.Fatalf("patch: %d %v", code, patched)
 	}
@@ -136,7 +136,7 @@ func TestWeProvidersCustomModelPatchOptionalFields(t *testing.T) {
 	if err := env.db.QueryRow(`SELECT supported_endpoint_modes_json, input_usd_per_1m FROM models WHERE id = ?`, modelID).Scan(&mode, &inputPrice); err != nil {
 		t.Fatal(err)
 	}
-	if mode != `["chat_json","chat_sse"]` || inputPrice != nil {
+	if mode != `["chat_json","chat_sse"]` || inputPrice != float64(1) {
 		t.Fatalf("patch 投影: mode=%v input=%v", mode, inputPrice)
 	}
 }
