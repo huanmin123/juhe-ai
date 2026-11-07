@@ -143,10 +143,10 @@ func TestB1CreateRejectsInvalidConnections(t *testing.T) {
 	}{
 		{"registry 组合外 preset", `"connections":[{"connectionPresetCode":"anthropic_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json"],"enabled":true}]`,
 			"connection_capability_unsupported"},
-		{"同 preset 重复行", `"connections":[
+		{"同 preset 重复行（多连接）", `"connections":[
 			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json"],"enabled":true},
 			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v2","endpointModes":["chat_sse"],"enabled":true}]`,
-			"connection_capability_unsupported"},
+			"只支持一个上游连接"},
 		{"mode 越域", `"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["messages_json"],"enabled":true}]`,
 			"connection_capability_unsupported"},
 		{"mode 重复", `"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_json"],"enabled":true}]`,
@@ -429,15 +429,16 @@ func TestB1CloneAdoptsExplicitConnections(t *testing.T) {
 		t.Fatalf("回落克隆连接行应原样重建源连接：%q", got)
 	}
 
-	// 臂 3：显式非法连接（重复 preset）→ 400 且不产生克隆体。
+	// 臂 3：显式多连接（重复 preset）→ 400 且不产生克隆体；单账户单连接
+	// 契约先于 preset 唯一性生效。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"b1-t99-invalid","type":"api_key",
 		"capabilityDomain":"chat","credentials":{"api_key":"sk-t99-invalid-secret-12","base_url":"https://api.openai.com/v1"},
 		"supportedModels":["gpt-4o-mini"],"status":"active","cloneSourceId":"`+sourceID+`",
 		"connections":[
 			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true},
 			{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json"],"enabled":true}]}`)
-	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "同一连接预设重复提交") {
-		t.Fatalf("重复 preset 显式克隆应 400：%d %v", code, payload)
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "只支持一个上游连接") {
+		t.Fatalf("多连接显式克隆应 400：%d %v", code, payload)
 	}
 	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE name = ?`, "b1-t99-invalid"); got != 0 {
 		t.Fatalf("非法克隆不应产生克隆体：%d", got)
