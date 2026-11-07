@@ -388,6 +388,9 @@ type Bridge struct {
 	pending                 map[string]observeInput
 	workers                 map[string]*scopeWorker
 	retryBackoffs           map[string]*scopeRetryState
+	// persistenceFailures 记录当前待重试的持久化 scope（scopeKey ->
+	// accountRuntimeKey）。BUG-0359 起仅作诊断/测试观察面，不再参与 readiness
+	// 判定：写积压不是运行态未知，不能把账户永久拦在 runtime_state_rebuilding。
 	persistenceFailures     map[string]string
 	ledgerRevisions         map[string]int64
 	dispatchRevisions       map[string]int64
@@ -602,7 +605,13 @@ func (b *Bridge) IsReady() bool {
 	return b.globallyReady
 }
 
-// IsAccountReady mirrors isAccountReady.
+// IsAccountReady mirrors isAccountReady with the BUG-0359 readiness boundary:
+// readiness only answers "has this account's circuit runtime been rebuilt from
+// the authoritative ledger". A persistence backlog is a write-side visibility
+// lag; it must not keep the account in runtime_state_rebuilding forever
+// (the previous behavior deadlocked: no dispatch -> no successful persist ->
+// flag never cleared -> no dispatch). Cold start (globallyReady false and the
+// account not loaded) and load failures still fail closed.
 func (b *Bridge) IsAccountReady(accountRuntimeKey string) (bool, error) {
 	normalized, err := requiredRuntimeKey(accountRuntimeKey)
 	if err != nil {
@@ -614,16 +623,7 @@ func (b *Bridge) IsAccountReady(accountRuntimeKey string) (bool, error) {
 	if !b.globallyReady && !ready {
 		return false, nil
 	}
-	return !b.hasAccountPersistenceFailureLocked(normalized), nil
-}
-
-func (b *Bridge) hasAccountPersistenceFailureLocked(accountRuntimeKey string) bool {
-	for _, failed := range b.persistenceFailures {
-		if failed == accountRuntimeKey {
-			return true
-		}
-	}
-	return false
+	return true, nil
 }
 
 // EnsureAccountReady mirrors ensureAccountReady.
@@ -952,11 +952,11 @@ func (b *Bridge) performAccountLoad(ctx context.Context, accountRuntimeKey strin
 	}
 	b.mu.Lock()
 	b.readyAccountRuntimeKeys[accountRuntimeKey] = struct{}{}
-	ready := !b.hasAccountPersistenceFailureLocked(accountRuntimeKey)
 	b.mu.Unlock()
-	if !ready {
-		return false, errors.New("account_load_persistence_failure")
-	}
+	// BUG-0359: the authoritative account load completed. Do not downgrade to
+	// unready just because a previous mutation is still retrying its ledger
+	// write; that write backlog is visible through onPersistFailure and the
+	// scoped retry worker, not through readiness.
 	return true, nil
 }
 
@@ -975,8 +975,6 @@ func accountLoadFailureReason(err error) string {
 		return "account_load_runtime_key_mismatch"
 	case "account_load_capacity_exhausted":
 		return "account_load_capacity_exhausted"
-	case "account_load_persistence_failure":
-		return "account_load_persistence_failure"
 	default:
 		return "account_load_failed"
 	}
@@ -1076,6 +1074,10 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 	// 固定文案导致生产 6442 条失败无法定性（锁/冲突/约束不可区分）。
 	var lastErr error
 	lastStatus := ""
+	// rebasedState 非 nil 表示本轮冲突已按控制面墓碑 generation 重定基线；
+	// CAS 成功后必须把 rebase 状态写回运行态，否则后续转换仍会从旧 generation
+	// 递增并再次撞栅栏（BUG-0359）。
+	var rebasedState *State
 	for attempt := int64(1); attempt <= b.maxPersistAttempts; attempt++ {
 		refreshed, err := b.refreshDesiredState(ctx, scope, desiredState)
 		if err != nil {
@@ -1162,6 +1164,25 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 				b.mu.Unlock()
 			}
 			if persisted.Incident != nil {
+				// BUG-0359：运行态条目过期后新状态从 generation 1 重计，而控制面
+				// 墓碑仍持有更高 generation。先尝试按墓碑 +1 rebase；只有观测确属
+				// 新事故（时间晚于墓碑、dispatchRevision 不旧于墓碑）才允许，避免
+				// 把迟到旧观察重新写成新世代。
+				if rebased, rebasedOK := rebaseDesiredStateOnIncident(desiredState, *persisted.Incident); rebasedOK {
+					b.mu.Lock()
+					b.ledgerRevisions[rebased.ScopeKey] = persisted.Incident.LedgerRevision
+					b.mu.Unlock()
+					desiredState = rebased
+					rebasedState = &rebased
+					if attempt == b.maxPersistAttempts {
+						break
+					}
+					if sleepErr := b.sleep(ctx, msToDuration(int64Min(delay, 250))); sleepErr != nil {
+						return sleepErr
+					}
+					delay = int64Min(delay*2, 30_000)
+					continue
+				}
 				runtimeState, err := b.refreshDesiredState(ctx, scope, desiredState)
 				if err != nil {
 					lastErr = err
@@ -1213,6 +1234,23 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 			}
 			delay = int64Min(delay*2, 30_000)
 			continue
+		}
+		// rebase 成功后把新 generation 写回运行态，让后续转换从同一水位继续。
+		// 只在 CAS applied 且控制面确实落在 rebase generation 时执行；idempotent
+		// 回放可能命中旧 transition，不得把更高 generation 写进与账本不一致的
+		// 运行态。
+		if rebasedState != nil && persisted.Status == CASApplied &&
+			persisted.Incident != nil && persisted.Incident.Generation == rebasedState.Generation {
+			restored, restoreErr := b.store.Restore(ctx, *rebasedState, int64Ptr(b.now()))
+			if restoreErr != nil {
+				return restoreErr
+			}
+			b.observeRestoredRelationships(restored)
+			if restored.Status == MutationCapacityExhausted {
+				// 与既有对账路径同口径：运行态未落新 generation 不能静默成功，
+				// 否则 pending 被消费而运行态仍停在旧代，后续转换会再次冲突。
+				return errors.New("账户 circuit runtime store 对账容量不足")
+			}
 		}
 		return nil
 	}
@@ -1719,6 +1757,40 @@ func incidentIsNewerThanRuntimeState(incident *IncidentRecord, state State) bool
 		return float64(incident.DispatchRevision) > runtimeDispatchRevision
 	}
 	return incident.Generation > state.Generation
+}
+
+// rebaseDesiredStateOnIncident implements the BUG-0359 generation rebuild
+// contract (design §7.5 "generation 重建"): when the Redis runtime entry was
+// evicted (CLOSED retention) while the control plane still carries the scope
+// (CLOSED tombstone or active incident), a fresh transition starts at
+// generation 1. The ledger generation fence is monotonic, so retrying the
+// observation at generation 1 can never converge. Continue above the persisted
+// incident instead, keeping the live dispatch revision and transition identity.
+//
+// The rebase is intentionally narrow:
+//   - same scope key;
+//   - the persisted incident generation is not lower than the observation;
+//   - the incident does not belong to a newer dispatch epoch;
+//   - the observation is newer than the incident (a stale pending must not be
+//     resurrected under a new generation).
+func rebaseDesiredStateOnIncident(desired State, incident IncidentRecord) (State, bool) {
+	if strings.TrimSpace(incident.CircuitScopeKey) != strings.TrimSpace(desired.ScopeKey) {
+		return State{}, false
+	}
+	if incident.Generation < desired.Generation {
+		return State{}, false
+	}
+	desiredRevision, ok := parseSafeInteger(desired.DispatchRevision)
+	if !ok || float64(incident.DispatchRevision) > desiredRevision {
+		return State{}, false
+	}
+	// 墓碑时间未知（零值/历史脏行）时不得推断观测更新；交给既有对账路径。
+	if incident.UpdatedAtMs <= 0 || desired.UpdatedAtMs <= incident.UpdatedAtMs {
+		return State{}, false
+	}
+	rebased := desired
+	rebased.Generation = incident.Generation + 1
+	return rebased, true
 }
 
 func runtimePhase(state string) string {

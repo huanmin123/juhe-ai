@@ -42,11 +42,12 @@ func wkControlDB(t *testing.T) *sql.DB {
  confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes INTEGER NOT NULL, last_failure_class TEXT,
  retained_until_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS ` + wkControlSchema + `.account_circuit_outbox (
- event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+ event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL, event_type TEXT NOT NULL,
  account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
  dispatch_revision BIGINT NOT NULL, generation BIGINT, ledger_revision BIGINT, status TEXT NOT NULL, available_at_ms BIGINT NOT NULL,
  claim_token TEXT, claimed_by TEXT, claim_until_ms BIGINT, attempt_count INTEGER NOT NULL, last_error_class TEXT,
- acknowledged_at_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`,
+ acknowledged_at_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL,
+ UNIQUE (projection_key, dedupe_key))`,
 			`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON ` + wkControlSchema + `.account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`,
 			`INSERT INTO ` + wkControlSchema + `.accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`,
 		} {
@@ -259,17 +260,20 @@ func TestRunOnceReleasesFailedProjections(t *testing.T) {
 	ctx := context.Background()
 	// 分支一：不支持的 outbox 事件类型 → 投影失败并释放重放。
 	wkInsertOutbox(t, db, "evt-bogus", "bogus_event_type", "", "", 1)
-	// 分支二：incident_changed 指向不存在的 scope → 快照缺失 → 投影失败。
+	// 分支二：incident_changed 指向不存在的 scope → 快照缺失按 obsolete 成功
+	// 确认（2026-11-06 生产验证补丁），不进入失败重放。
 	wkInsertOutbox(t, db, "evt-missing", runtime.GatewayAccountCircuitIncidentChanged, "scope-unknown", "inc-unknown", 1)
 	result, err := svc.RunOnce(ctx, time.UnixMilli(200), 10)
 	if err != nil {
 		t.Fatalf("释放路径不应返回错误: %v", err)
 	}
-	if result.Claimed != 2 || result.Projected != 0 || result.Failed != 2 || result.Released != 2 {
+	if result.Claimed != 2 || result.Projected != 1 || result.Acknowledged != 1 || result.Failed != 1 || result.Released != 1 {
 		t.Fatalf("失败投影统计不符: %+v", result)
 	}
 	var lastError sql.NullString
-	if err := db.QueryRow(`SELECT last_error_class FROM ` + wkControlSchema + `.account_circuit_outbox WHERE event_id='evt-bogus'`).Scan(&lastError); err != nil {
+	// 投影器消费的是 J3b fan-out 行（event_id 带 :j3b 后缀），错误类别记录在
+	// 被释放的那一行，不是主投影行。
+	if err := db.QueryRow(`SELECT last_error_class FROM ` + wkControlSchema + `.account_circuit_outbox WHERE event_id='evt-bogus:j3b'`).Scan(&lastError); err != nil {
 		t.Fatal(err)
 	}
 	if lastError.String != "projection_failed" {
@@ -371,29 +375,23 @@ func wkAccountScope(accountID string) string {
 	return fmt.Sprintf("%d:%s|%d:%s", len(kind), kind, len(accountID), accountID)
 }
 
-func TestRunOnceReleasesWhenAcknowledgeMisses(t *testing.T) {
-	// 契约：ack 未命中（投影键不匹配）必须计为 Failed 且不报错。
-	// incident_changed 投影不校验投影键，篡改后投影仍成功、ack 落空。
-	svc, controlStore, db, _ := wkProjector(t)
+func TestAcknowledgeOutboxMissIsSilent(t *testing.T) {
+	// 契约：claim 竞争导致的 ack 未命中返回 (false,nil)，不得报错；正确
+	// claim token 的 J3b 行必须 ack 成功（BUG-0359 修复前 J3b 键恒被拒）。
+	_, controlStore, _, _ := wkProjector(t)
 	ctx := context.Background()
-	incidentID := "inc-ack-miss"
-	if _, err := controlStore.CompareAndSetIncident(ctx, control.IncidentMutation{Incident: control.Incident{
-		CircuitScopeKey: wkAccountScope("a1"), AccountID: "a1", AccountRuntimeKey: "a1", ScopeKind: "account",
-		IncidentID: &incidentID, State: "OPEN", Generation: 1, DispatchRevision: 1, TransitionID: "tr-ack-miss",
-		ConfirmationFailuresRequired: 1, ChildIncidentIDs: []string{}, ConfirmationFailureEvidenceKeys: []string{},
-		CreatedAtMS: 100, UpdatedAtMS: 100,
-	}}); err != nil {
+	if _, err := controlStore.AdvanceDispatchRevision(ctx, control.DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "tr-ack", NowMS: 100}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE ` + wkControlSchema + `.account_circuit_outbox SET projection_key='tampered' WHERE event_type='incident_changed'`); err != nil {
-		t.Fatal(err)
+	claimed, err := controlStore.ClaimOutboxForProjection(ctx, control.J3bProjectionKey, "j3b-worker", 200, 20, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("j3b claim = %+v err=%v", claimed, err)
 	}
-	result, err := svc.RunOnce(ctx, time.UnixMilli(200), 10)
-	if err != nil {
-		t.Fatalf("ack 未命中必须被吞掉: %v", err)
+	if ok, err := controlStore.AcknowledgeOutbox(ctx, claimed[0].EventID, control.J3bProjectionKey, "wrong-token", 210); err != nil || ok {
+		t.Fatalf("wrong token ack = (%v, %v), want (false, nil)", ok, err)
 	}
-	if result.Projected != 1 || result.Acknowledged != 0 || result.Failed != 1 {
-		t.Fatalf("ack 未命中统计不符: %+v", result)
+	if ok, err := controlStore.AcknowledgeOutbox(ctx, claimed[0].EventID, control.J3bProjectionKey, *claimed[0].ClaimToken, 210); err != nil || !ok {
+		t.Fatalf("j3b ack = (%v, %v), want (true, nil)", ok, err)
 	}
 }
 
@@ -408,24 +406,27 @@ func TestRunOnceFailsWhenClaimErrors(t *testing.T) {
 	}
 }
 
-func TestRunOnceFailsWhenAcknowledgeErrors(t *testing.T) {
-	// AcknowledgeOutbox 在投影键不匹配时返回 (false,nil)：RunOnce 必须记为 Failed
-	// 且继续不报错——这是幂等护栏语义而不是故障。
-	svc, controlStore, db, _ := wkProjector(t)
+func TestRunOnceDoesNotReplayAcknowledgedJ3bRows(t *testing.T) {
+	// BUG-0359 回归：J3b 行 ack 成功后不得在下一轮被重新认领（修复前恒为
+	// processing，attempt_count 每 30 秒增长并阻断 CLOSED 墓碑清理）。
+	svc, controlStore, _, _ := wkProjector(t)
 	ctx := context.Background()
 	if _, err := controlStore.AdvanceDispatchRevision(ctx, control.DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "tr-ack", NowMS: 100}); err != nil {
 		t.Fatal(err)
 	}
-	// 预先破坏投影键，dispatch 事件在投影层即失败并释放重放。
-	if _, err := db.Exec(`UPDATE ` + wkControlSchema + `.account_circuit_outbox SET projection_key='tampered'`); err != nil {
-		t.Fatal(err)
-	}
-	result, err := svc.RunOnce(ctx, time.UnixMilli(200), 10)
+	first, err := svc.RunOnce(ctx, time.UnixMilli(200), 10)
 	if err != nil {
-		t.Fatalf("投影失败必须走释放路径: %v", err)
+		t.Fatalf("first RunOnce: %v", err)
 	}
-	if result.Failed != 1 || result.Released != 1 || result.Projected != 0 {
-		t.Fatalf("释放统计不符: %+v", result)
+	if first.Claimed != 1 || first.Acknowledged != 1 || first.Failed != 0 {
+		t.Fatalf("first RunOnce = %+v, want claimed/acknowledged 1", first)
+	}
+	second, err := svc.RunOnce(ctx, time.UnixMilli(31_000), 10)
+	if err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if second.Claimed != 0 || second.Acknowledged != 0 {
+		t.Fatalf("second RunOnce = %+v, want no replay", second)
 	}
 }
 

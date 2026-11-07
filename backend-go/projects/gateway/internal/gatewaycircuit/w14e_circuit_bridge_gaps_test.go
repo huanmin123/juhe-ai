@@ -328,16 +328,19 @@ func TestW14EBridgePerformAccountLoadArms(t *testing.T) {
 	parent := w14eIncidentRecord(parentScope, "parent-1", 1)
 	parent.ChildIncidentIDs = []string{"leaf-1"}
 
-	t.Run("persistence failure flag", func(t *testing.T) {
+	t.Run("persistence failure does not gate readiness", func(t *testing.T) {
 		store := newNonExpiringMemoryStore(t)
 		db := &mockControlPlaneDB{}
 		bridge := newTestBridge(t, store, db, nil)
 		bridge.mu.Lock()
 		bridge.persistenceFailures[MustScopeKey(parentScope)] = parentScope.AccountRuntimeKey
 		bridge.mu.Unlock()
+		// BUG-0359: a write backlog is reported through onPersistFailure and the
+		// scoped retry worker; it must not keep the account in
+		// runtime_state_rebuilding forever.
 		ready, err := bridge.EnsureAccountReady(context.Background(), "w14e-load")
-		if err != nil || ready {
-			t.Fatalf("persistence failure gate = (%t, %v)", ready, err)
+		if err != nil || !ready {
+			t.Fatalf("persistence failure gate = (%t, %v), want ready", ready, err)
 		}
 	})
 

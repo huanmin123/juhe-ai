@@ -696,7 +696,11 @@ func (s *Store) AcknowledgeOutbox(ctx context.Context, eventID, projectionKey, c
 	if err := requireTextBounded(eventID, 256, "event id"); err != nil {
 		return false, err
 	}
-	if projectionKey != ProjectionKey {
+	// DR-33：主运行态与 J3b 运行态各写一行、各自 ack。入口只接受两个已
+	// 注册投影键；行级围栏仍由下方 event.ProjectionKey 等值检查与 UPDATE 的
+	// projection_key=? 承担。BUG-0359：此前只放行 ProjectionKey，J3b 消费者
+	// 恒拿 (false,nil)，行永久 processing 并阻断 CLOSED 墓碑清理。
+	if projectionKey != ProjectionKey && projectionKey != J3bProjectionKey {
 		return false, nil
 	}
 	if err := requireTextBounded(claimToken, 256, "claim token"); err != nil {

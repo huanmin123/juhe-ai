@@ -307,8 +307,10 @@ func TestW9EClaimOutboxFences(t *testing.T) {
 	if _, err := s.ClaimOutbox(ctx, "owner", maxInt64, maxClaimLeaseMS, 10); err == nil {
 		t.Fatal("lease 溢出必须失败")
 	}
-	// 正常 claim + 过期重claim。
-	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('e1','circuit-control-plane','d1','incident_changed','a1','a1','t1',1,'pending',100,0,100,100)`); err != nil {
+	// 正常 claim + 过期重claim。使用主投影键与 dispatch 事件形态：ClaimOutbox
+	// 只认领主键，incident 事件还要求 scope/incident/generation/ledger 非空
+	// （生产 CHECK）。
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('e1','` + ProjectionKey + `','d1','dispatch_revision_changed','a1','a1','t1',1,'pending',100,0,100,100)`); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := s.ClaimOutbox(ctx, "owner", 200, 1000, 10)

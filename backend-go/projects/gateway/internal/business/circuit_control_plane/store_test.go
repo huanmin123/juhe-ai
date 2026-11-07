@@ -59,7 +59,7 @@ func TestBackfillProjectionRowsCopiesRetainedMainRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 模拟部署前只有主投影行的存量。
-	if _, err := db.Exec(`DELETE FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE projection_key=?`, J3bProjectionKey); err != nil {
+	if _, err := db.Exec(`DELETE FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE projection_key=$1`, J3bProjectionKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.BackfillProjectionRows(ctx, ProjectionKey, J3bProjectionKey, 200); err != nil {
@@ -88,7 +88,7 @@ func TestBackfillSkipsDispatchedMainRows(t *testing.T) {
 	if ok, err := s.AcknowledgeOutbox(ctx, mainClaimed[0].EventID, ProjectionKey, *mainClaimed[0].ClaimToken, 110); err != nil || !ok {
 		t.Fatalf("main ack=%v err=%v", ok, err)
 	}
-	if _, err := db.Exec(`DELETE FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE projection_key=?`, J3bProjectionKey); err != nil {
+	if _, err := db.Exec(`DELETE FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE projection_key=$1`, J3bProjectionKey); err != nil {
 		t.Fatal(err)
 	}
 	affected, err := s.BackfillProjectionRows(ctx, ProjectionKey, J3bProjectionKey, 200)

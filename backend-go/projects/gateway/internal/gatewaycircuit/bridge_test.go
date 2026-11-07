@@ -210,24 +210,30 @@ func TestBridgeObserveClosedRetainsAndMapsLease(t *testing.T) {
 	}
 }
 
-func TestBridgePersistenceFailureMarksAccountUnready(t *testing.T) {
+func TestBridgePersistenceFailureDoesNotMarkAccountUnready(t *testing.T) {
 	store := newNonExpiringMemoryStore(t)
 	db := &mockControlPlaneDB{casErrs: []error{errors.New("db down"), errors.New("db down"), errors.New("db down")}}
 	bridge := newTestBridge(t, store, db, func(options *BridgeOptions) {
 		options.MaxPersistAttempts = 3
 	})
-	bridge.Observe(accountScope("acc"), ClosedState(accountScope("acc"), "5", 1, "t1", 900))
-	// The worker retries asynchronously; poll for the failure marker.
+	scope := accountScope("acc")
+	bridge.Observe(scope, ClosedState(scope, "5", 1, "t1", 900))
+	// The worker retries asynchronously; poll for the failure marker. Readiness
+	// must stay true: the write backlog is reported through onPersistFailure,
+	// not through the runtime-rebuild gate (BUG-0359).
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if ready, _ := bridge.IsAccountReady("acc"); !ready && bridge.IsReady() {
+		bridge.mu.Lock()
+		_, failed := bridge.persistenceFailures[MustScopeKey(scope)]
+		bridge.mu.Unlock()
+		if failed {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	ready, _ := bridge.IsAccountReady("acc")
-	if ready {
-		t.Fatalf("account must be unready after persistence failure")
+	ready, err := bridge.EnsureAccountReady(context.Background(), "acc")
+	if err != nil || !ready {
+		t.Fatalf("EnsureAccountReady = (%t, %v), want ready after a persistence failure", ready, err)
 	}
 	if len(db.casCalls) != 3 {
 		t.Fatalf("attempts = %d, want 3", len(db.casCalls))

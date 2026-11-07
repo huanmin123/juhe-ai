@@ -411,7 +411,6 @@ func TestW11CBridgeAccountLoadFailureReasons(t *testing.T) {
 		{&rebuildError{reason: RebuildReasonRebuildTimeout}, "account_load_timeout"},
 		{errors.New("account_load_runtime_key_mismatch"), "account_load_runtime_key_mismatch"},
 		{errors.New("account_load_capacity_exhausted"), "account_load_capacity_exhausted"},
-		{errors.New("account_load_persistence_failure"), "account_load_persistence_failure"},
 		{errors.New("other"), "account_load_failed"},
 	}
 	for _, tc := range cases {

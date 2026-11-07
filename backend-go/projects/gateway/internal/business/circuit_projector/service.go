@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,11 @@ type Service struct {
 	lease, retryDelay time.Duration
 	backfillMu        sync.Mutex
 	backfilled        bool
+	// ackWarnMu/ackWarnedAt 支撑 ack 被拒绝的结构化告警按 (eventId,
+	// projectionKey) 60s 节流：正常 claim 竞争会偶发 ok=false，逐轮 Warn
+	// 会随 1s ticker 刷屏；持续 ok=false 才是契约破坏（BUG-0359）。
+	ackWarnMu   sync.Mutex
+	ackWarnedAt map[string]time.Time
 }
 
 func New(controlStore *control.Store, runtimeStore *runtime.Store, ownerID string) (*Service, error) {
@@ -93,10 +99,45 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time, limit int) (RunRes
 			result.Acknowledged++
 		} else {
 			result.Failed++
+			s.warnAckRejected(event)
 		}
 		_ = projection
 	}
 	return result, nil
+}
+
+// warnAckRejected 把 ack 被拒绝的持续形态暴露为结构化告警（BUG-0359）。
+// 正常 claim 竞争会偶发 ok=false，按 (eventId, projectionKey) 60s 节流；
+// 同一事件持续被拒说明 ack 契约被破坏（此前 J3b 键恒被拒且完全静默）。
+func (s *Service) warnAckRejected(event control.Outbox) {
+	const interval = time.Minute
+	key := event.EventID + "|" + event.ProjectionKey
+	now := time.Now()
+	s.ackWarnMu.Lock()
+	if s.ackWarnedAt == nil {
+		s.ackWarnedAt = map[string]time.Time{}
+	}
+	if last, ok := s.ackWarnedAt[key]; ok && now.Sub(last) < interval {
+		s.ackWarnMu.Unlock()
+		return
+	}
+	// 有界淘汰：eventId 数量长期增长时清掉两倍节流窗口外的旧项。
+	if len(s.ackWarnedAt) >= 1024 {
+		cutoff := now.Add(-2 * interval)
+		for warnedKey, warnedAt := range s.ackWarnedAt {
+			if warnedAt.Before(cutoff) {
+				delete(s.ackWarnedAt, warnedKey)
+			}
+		}
+	}
+	s.ackWarnedAt[key] = now
+	s.ackWarnMu.Unlock()
+	slog.Warn("账户 circuit outbox ack 被拒绝",
+		"event", "gateway_account_circuit_ack_rejected",
+		"eventId", event.EventID,
+		"projectionKey", event.ProjectionKey,
+		"accountRuntimeKey", event.AccountRuntimeKey,
+		"scopeKey", value(event.CircuitScopeKey))
 }
 
 func (s *Service) project(ctx context.Context, event control.Outbox) (runtime.GatewayAccountCircuitRevisionProjection, error) {

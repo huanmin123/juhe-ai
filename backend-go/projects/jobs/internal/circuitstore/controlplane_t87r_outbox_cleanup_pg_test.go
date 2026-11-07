@@ -206,3 +206,64 @@ func TestT87RCleanupIncidentArmsUnchangedByOutboxArm(t *testing.T) {
 		t.Fatalf("超龄 dispatched 行应物理消失: count=%d err=%v", afterAdvanced, err)
 	}
 }
+
+// TestT87RJ3bProcessingRowBlocksTombstoneUntilAck 是 BUG-0359 的 jobs 侧
+// 回归：同一 incident 事件按 DR-33 成对写主投影行与 J3b 行。主行 dispatched
+// 但 J3b 行仍 processing 时，noPendingOutbox 不区分 projection_key，CLOSED
+// 墓碑必须保留；J3b 行被 ack 为 dispatched 后下一轮 Cleanup 必须删除墓碑。
+func TestT87RJ3bProcessingRowBlocksTombstoneUntilAck(t *testing.T) {
+	repo, db := dd3b5OpenRepo(t, "acc-t87r-j3b")
+	ctx := context.Background()
+	const scopeKey = "14:protocol_model|20:acc-t87r-j3b|9:openai:v1|4:text|19:deepseek-v4.1-flash"
+	retainedExpired := t87rNow - 1
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_circuit_incidents (
+		circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
+		child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
+		projected_ledger_revision, transition_id, retained_until_ms, created_at_ms, updated_at_ms
+	) VALUES ($1, 'acc-t87r-j3b', 'acc-t87r-j3b', 'protocol_model', 'incident-t87r-j3b',
+		'[]', 'CLOSED', 20, 13, 41,
+		41, 'tr-t87r-j3b', $2, 0, 0)`, scopeKey, retainedExpired); err != nil {
+		t.Fatalf("插入 CLOSED 墓碑失败: %v", err)
+	}
+	insertOutbox := func(eventID, projectionKey, status string, claimToken, claimedBy any, claimUntil, ackedAt any) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO juhe_business.account_circuit_outbox (
+			event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
+			circuit_scope_key, incident_id, transition_id, dispatch_revision, generation, ledger_revision,
+			status, available_at_ms, claim_token, claimed_by, claim_until_ms, attempt_count, acknowledged_at_ms,
+			created_at_ms, updated_at_ms
+		) VALUES ($1, $2, 'incident:tr-t87r-j3b', 'incident_changed', 'acc-t87r-j3b', 'acc-t87r-j3b',
+			$3, 'incident-t87r-j3b', 'tr-t87r-j3b', 13, 20, 41,
+			$4, 0, $5, $6, $7, 0, $8,
+			0, 0)`,
+			eventID, projectionKey, scopeKey, status, claimToken, claimedBy, claimUntil, ackedAt); err != nil {
+			t.Fatalf("插入 outbox 行 %s 失败: %v", eventID, err)
+		}
+	}
+	freshAck := t87rNow - 3_600_000
+	insertOutbox("evt-j3b-main", "account_circuit_runtime_v1", "dispatched", nil, nil, nil, &freshAck)
+	claimUntil := t87rNow + 60_000
+	insertOutbox("evt-j3b-row", "account_circuit_runtime_j3b_v1", "processing", "token-j3b", "j3b-worker", &claimUntil, nil)
+
+	blocked, err := repo.Cleanup(ctx, t87rNow)
+	if err != nil {
+		t.Fatalf("Cleanup 失败: %v", err)
+	}
+	if blocked.DeletedIncidents != 0 {
+		t.Fatalf("J3b processing 行必须阻断墓碑清理: %+v", blocked)
+	}
+
+	// 模拟 J3b ack：processing -> dispatched，清 claim、写 acknowledged_at_ms。
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_outbox
+		SET status='dispatched', claim_token=NULL, claimed_by=NULL, claim_until_ms=NULL, acknowledged_at_ms=$1
+		WHERE event_id='evt-j3b-row'`, freshAck); err != nil {
+		t.Fatalf("模拟 J3b ack 失败: %v", err)
+	}
+	recovered, err := repo.Cleanup(ctx, t87rNow)
+	if err != nil {
+		t.Fatalf("ack 后 Cleanup 失败: %v", err)
+	}
+	if recovered.DeletedIncidents != 1 {
+		t.Fatalf("J3b ack 后必须删除 CLOSED 墓碑: %+v", recovered)
+	}
+}

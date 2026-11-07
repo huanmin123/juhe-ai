@@ -408,11 +408,17 @@ func TestWBBridgeObservePersistsThroughRetry(t *testing.T) {
 		defer db.mu.Unlock()
 		return db.compareCalls > 0
 	}, "失败后必须仍然尝试写入")
-	// 失败标记由后台 worker 写入，必须等待其完成而不是立即断言。
+	// 失败标记由后台 worker 写入，必须等待其完成而不是立即断言。BUG-0359：
+	// 写积压只作为告警与有界重试信号，不得永久阻塞已重建运行态的账户。
 	wbWaitFor(t, 2*time.Second, func() bool {
-		ready, err := bridge.IsAccountReady("acc")
-		return err == nil && !ready
-	}, "持久化失败必须阻塞账户")
+		bridge.mu.Lock()
+		defer bridge.mu.Unlock()
+		_, failed := bridge.persistenceFailures[MustScopeKey(scope)]
+		return failed
+	}, "持久化失败未记录")
+	if ready, err := bridge.IsAccountReady("acc"); err != nil || !ready {
+		t.Fatalf("持久化失败后账户必须保持就绪 = (%v, %v)", ready, err)
+	}
 	bridge.Close()
 }
 
