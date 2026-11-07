@@ -265,7 +265,7 @@ func TestW11EStoreWriteSkipArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "w11e-acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	valid := w9dPoolAccount("w11e-acc", fps)
 	ctx := context.Background()
 

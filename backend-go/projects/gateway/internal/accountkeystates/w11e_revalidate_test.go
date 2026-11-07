@@ -25,7 +25,7 @@ func TestW11ERevalidatePoolReasonArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "w11e-rv", keyCount: 2, status: "active", schedulable: 1, configRev: 5,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	var singleFps []string
 	h.seedAccount(t, struct {
 		id           string
@@ -38,7 +38,7 @@ func TestW11ERevalidatePoolReasonArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "w11e-single", keyCount: 1, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &singleFps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &singleFps})
 	var inactiveFps []string
 	h.seedAccount(t, struct {
 		id           string
@@ -51,7 +51,7 @@ func TestW11ERevalidatePoolReasonArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "w11e-inactive", keyCount: 2, status: "disabled", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &inactiveFps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &inactiveFps})
 	ctx := context.Background()
 
 	// 参数无效。

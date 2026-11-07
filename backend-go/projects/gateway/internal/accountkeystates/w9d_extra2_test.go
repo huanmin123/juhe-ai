@@ -64,7 +64,7 @@ func TestW9DStatesReaderArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-1_000)})
 	// 空归一化入参。
 	if states, err := h.store.LoadSelectionStatesByAccountIds(ctx, nil); err != nil || len(states) != 0 {
@@ -105,7 +105,7 @@ func TestW9DSummaryArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-1_000), "last_failure_at": plusMillis(-500)})
 	// 空 ids。
 	if out, err := h.store.LoadSummariesByAccountIds(ctx, nil); err != nil || len(out) != 0 {
@@ -164,7 +164,7 @@ func TestW9DDetailsArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	// 空 id 归一化。
 	if items, err := h.store.LoadAPIKeyRuntimeDetails(ctx, "  "); err != nil || len(items) != 0 {
 		t.Fatalf("empty id items=%v err=%v", items, err)
@@ -190,7 +190,7 @@ func TestW9DDetailsArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "src", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1"})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1"})
 	h.exec(t, `UPDATE accounts SET authorization_instance_source_account_id=NULL WHERE id='src'`)
 	// 来源账户视角：视图账户 acc 的明细取自 src 凭据池。
 	items, err := h.store.LoadAPIKeyRuntimeDetails(ctx, "acc")
@@ -224,7 +224,7 @@ func TestW9DRevalidateArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	// 参数臂。
 	if _, err := h.store.RevalidatePool(ctx, "  ", 1); err == nil {
 		t.Fatal("blank account must fail")

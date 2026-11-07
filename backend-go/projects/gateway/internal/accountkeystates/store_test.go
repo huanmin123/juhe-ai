@@ -241,10 +241,10 @@ func TestAccountAPIKeyEntriesAndIsolation(t *testing.T) {
 		keyCount                int
 		want                    bool
 	}{
-		{"openai pool", "openai", "openai", "v1", "api_key", 2, true},
+		{"openai retired", "openai", "openai", "v1", "api_key", 2, false},
 		{"gpt vendor", "GPT", "", "", "api_key", 2, true},
-		{"single key", "openai", "openai", "v1", "api_key", 1, false},
-		{"oauth type", "openai", "openai", "v1", "oauth", 2, false},
+		{"single key", "gpt", "openai", "v1", "api_key", 1, false},
+		{"oauth type", "gpt", "openai", "v1", "oauth", 2, false},
 		{"hybrid not supported", "hybrid", "openai", "v1", "api_key", 2, false},
 		{"anthropic provider", "anthropic", "anthropic", "v1", "api_key", 2, true},
 		{"anthropic profile v1", "xai", "anthropic", "v1", "api_key", 2, true},
@@ -285,7 +285,7 @@ func TestRevalidatePoolGates(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc-1", keyCount: 2, status: "active", schedulable: 1, configRev: 2,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 
 	if result, err := h.store.RevalidatePool(context.Background(), "missing", 1); err != nil || result.Reason != ReasonAccountNotFound {
 		t.Fatalf("not found: %+v %v", result, err)
@@ -328,7 +328,7 @@ func TestRevalidatePoolReactivatesEligibleKeys(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 3, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	// f1: rate_limited 带冷却与恢复窗口 → 重置到期。
 	h.seedState(t, "acc", fps[0], map[string]any{
 		"status": "rate_limited", "cooldown_until": plusMillis(3_600_000),
@@ -415,7 +415,7 @@ func TestSummariesAndAllUnavailable(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 3, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	// 双 Key 池账户用于摘要计数（第三把 Key 保持 active 以区分）。
 	h.seedState(t, "acc", fps[0], map[string]any{
 		"status": "rate_limited", "next_probe_at": plusMillis(120_000),
@@ -483,7 +483,7 @@ func TestSummariesAndAllUnavailable(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "single", keyCount: 1, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1"})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1"})
 	if allUnavailable, err := h.store.AllUnavailable(context.Background(), "single"); err != nil || allUnavailable {
 		t.Fatalf("single-key account: %v %v", allUnavailable, err)
 	}
@@ -530,14 +530,14 @@ func TestRecordFailureSuccessDefer(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	account := TargetInput{
 		AccountID:                 "acc",
 		SystemAccountID:           "sys-owner",
 		SelectedAPIKeyFingerprint: fps[0],
 		HasSelectedAPIKeyIndex:    true,
 		SelectedAPIKeyIndex:       0,
-		ProviderCode:              "openai",
+		ProviderCode:              "gpt",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		AccountType:               "api_key",
@@ -669,7 +669,7 @@ func TestLoadSelectionStatesByAccountIds(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "cooldown_until": plusMillis(1_000)})
 	h.seedState(t, "acc", fps[1], map[string]any{"status": "active"})
 

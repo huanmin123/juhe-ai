@@ -26,7 +26,7 @@ func w9dSeededClosed(t *testing.T) (*Store, []*Store) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-1_000), "last_attempt_at": plusMillis(-2_000)})
 	valid := w9dPoolAccount("acc", fps)
 	rev := int64(1)
@@ -54,7 +54,7 @@ func TestW9DClosedDBArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-1_000)})
 	ctx := context.Background()
 	valid := w9dPoolAccount("acc", fps)

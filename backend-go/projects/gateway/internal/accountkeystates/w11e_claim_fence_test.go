@@ -38,7 +38,7 @@ func TestW11EClaimScanSkipArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "w11e-claim", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	ctx := context.Background()
 	account := w9dPoolAccount("w11e-claim", fps)
 	if _, err := h.store.RecordFailure(ctx, FailureInput{Account: account, Status: "rate_limited"}); err != nil {
@@ -112,7 +112,7 @@ func TestW11EFencedWriteArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "w11e-fence", keyCount: 2, status: "active", schedulable: 1, configRev: 3,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	ctx := context.Background()
 	account := w9dPoolAccount("w11e-fence", fps)
 	// 建立初始失败态并领取。

@@ -25,7 +25,7 @@ func TestB14RecordFailurePreservesKeyTerminalStates(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "b14-acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	first := w9dPoolAccount("b14-acc", fps)
 	second := first
 	second.SelectedAPIKeyFingerprint = fps[1]
@@ -109,7 +109,7 @@ func TestB14RecordFailureSkipsWhenExpectedError(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "b14-short", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	result, err := h.store.RecordFailure(context.Background(), FailureInput{
 		Account: w9dPoolAccount("b14-short", fps), Status: "rate_limited",
 		Expected: ExpectedProbeState{Status: "error"},

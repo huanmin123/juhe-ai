@@ -26,7 +26,7 @@ func TestLoadAPIKeyRuntimeDetails(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1",
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1",
 		fingerprints: &fingerprints})
 	// Key #1（索引 0）进入 error 态并带计数；Key #2 无运行态行 → active 兜底。
 	h.seedState(t, "acc", fingerprints[0], map[string]any{
@@ -93,7 +93,7 @@ func TestLoadAPIKeyRuntimeDetails(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc-single", keyCount: 1, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1"})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1"})
 	if items, err := h.store.LoadAPIKeyRuntimeDetails(context.Background(), "acc-single"); err != nil || len(items) != 0 {
 		t.Fatalf("single key pool must render empty: %v %v", items, err)
 	}

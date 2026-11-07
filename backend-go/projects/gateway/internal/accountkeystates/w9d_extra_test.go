@@ -29,7 +29,7 @@ func w9dPoolAccount(id string, fps []string) TargetInput {
 		SelectedAPIKeyFingerprint: fps[0],
 		HasSelectedAPIKeyIndex:    true,
 		SelectedAPIKeyIndex:       0,
-		ProviderCode:              "openai",
+		ProviderCode:              "gpt",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		AccountType:               "api_key",
@@ -83,7 +83,7 @@ func TestW9DResolveTargetArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	valid := w9dPoolAccount("acc", fps)
 	ctx := context.Background()
 
@@ -152,7 +152,7 @@ func TestW9DClaimCandidateSkipArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	// 三个候选：fps[0]（正常）、ghost（指纹不在池）、acc2 的 key（父账户
 	// config_revision 无效 → 跳过）。
 	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-1_000)})
@@ -168,7 +168,7 @@ func TestW9DClaimCandidateSkipArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc2", keyCount: 2, status: "active", schedulable: 1, configRev: 0,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1"})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1"})
 	var fps2 []string
 	_ = fps2
 	h.seedState(t, "acc2", "fingerprint-of-acc2", map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-3_000)})
@@ -218,7 +218,7 @@ func TestW9DRecordFailureArms(t *testing.T) {
 		protocolVer  string
 		fingerprints *[]string
 	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
+		providerCode: "gpt", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
 	ctx := context.Background()
 	valid := w9dPoolAccount("acc", fps)
 
