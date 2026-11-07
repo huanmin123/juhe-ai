@@ -950,6 +950,50 @@ func (f *fullchainFixture) createAPIKey(name, strategyID string) string {
 	return fullKey
 }
 
+// createSpeedFirstPreference 创建独立调度偏好实体（P2 起路由策略不再接受
+// 调度配置字段）；返回偏好 ID。
+func (f *fullchainFixture) createSpeedFirstPreference(name string, firstByteDeadlineMs, slowTriggerCount int) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/scheduling-preferences?systemAccountId=sys_admin", map[string]any{
+		"name":     name,
+		"chatMode": "speed_first",
+		"chatSpeedFirstConfig": map[string]any{
+			"firstByteDeadlineMs": firstByteDeadlineMs,
+			"speedFirstConfig":    map[string]any{"slowTriggerCount": slowTriggerCount},
+		},
+	}, wantStatus(http.StatusCreated))
+	preferenceID := str(data(created)["id"])
+	if preferenceID == "" {
+		f.t.Fatalf("fullchain scheduling-preference create payload wrong: %#v", created)
+	}
+	return preferenceID
+}
+
+// bindSchedulingPreference 把独立调度偏好绑定到 API Key（expectedRevision CAS）。
+func (f *fullchainFixture) bindSchedulingPreference(apiKeyID, preferenceID string) {
+	f.t.Helper()
+	revision := ""
+	_, payload := f.admin.do(http.MethodGet, "/__aisys__/api/api-keys?page=1&pageSize=100", nil, wantStatus(http.StatusOK))
+	items, _ := data(payload)["items"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item != nil && str(item["id"]) == apiKeyID {
+			revision = str(item["revision"])
+			break
+		}
+	}
+	if revision == "" {
+		f.t.Fatalf("fullchain api-key %s not found for scheduling binding", apiKeyID)
+	}
+	_, patched := f.admin.do(http.MethodPatch, "/__aisys__/api/api-keys/"+apiKeyID, map[string]any{
+		"expectedRevision":       revision,
+		"schedulingPreferenceId": preferenceID,
+	}, wantStatus(http.StatusOK))
+	if data(patched) == nil {
+		f.t.Fatalf("fullchain scheduling binding failed: %#v", patched)
+	}
+}
+
 // fullchainChatResponse 是一次 /v1 调用的原始结果。
 type fullchainChatResponse struct {
 	Status      int

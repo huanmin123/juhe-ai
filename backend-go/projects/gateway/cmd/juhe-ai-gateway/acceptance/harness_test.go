@@ -484,8 +484,14 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	runMaintenanceProxyLatencyPostgresApply(t, dsn)
 	// J3b circuit runtime owner fence（与部署 jobs 预置 runtime-index-meta
 	// 同一契约）：fresh 验收环境的 state Redis 无历史就绪哈希，harness 按
-	// circuitruntime.Store.CheckReady 的键位契约预置。
-	provisionCircuitRuntimeIndex(t, redisURL, namespace)
+	// circuitruntime.Store.CheckReady 的键位契约预置。ExtraEnv 可把主 Redis
+	// 指向 miniredis（Redis driver 场景），就绪哈希必须写入生效后的连接。
+	effectiveRedisURL := env["JUHE_AI_REDIS_URL"]
+	effectiveNamespace := env["JUHE_AI_REDIS_NAMESPACE"]
+	if effectiveNamespace == "" {
+		effectiveNamespace = namespace
+	}
+	provisionCircuitRuntimeIndex(t, effectiveRedisURL, effectiveNamespace)
 	// X04 logreads：F1 runtime-log 数据集表由 jobs 进程自建（gateway 只读）；
 	// fresh 验收环境由夹具按生产 DDL 预置读面（helper 在 log_faces_test.go）。
 	provisionRuntimeLogDataset(t, dsn)

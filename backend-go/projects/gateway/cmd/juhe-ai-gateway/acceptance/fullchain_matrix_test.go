@@ -437,13 +437,11 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 			{key: slowKey, defaultScenario: fullchainSlowBodyScenario},
 			{},
 		}},
-	}, nil, map[string]any{
-		"normalRoutingConfig": map[string]any{
-			"schedulingPreference": "speed_first",
-			"firstByteDeadlineMs":  10000,
-			"speedFirstConfig":     map[string]any{"slowTriggerCount": 2},
-		},
-	})
+	}, nil, nil)
+	// P2 起调度偏好是独立实体：创建 speed_first 偏好并绑定到该 Key，
+	// 路由策略不再携带 normalRoutingConfig 调度字段。
+	preferenceID := f.createSpeedFirstPreference("R5-速度优先", 10000, 2)
+	f.bindSchedulingPreference(route.apiKeyID, preferenceID)
 
 	// 第 1 个请求：慢观测 #1（不切换，等慢账户 12s 后返回 200）。
 	first := f.chat(route.apiKey, chatBody(acceptanceModel, "R5-慢观测"))
@@ -479,11 +477,28 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 			break
 		}
 	}
-	// 契约自检：策略配置已按 speed_first + 首字截止存储。
-	_, strategyDetail := f.admin.do(http.MethodGet, "/__aisys__/api/route-strategies/"+route.strategyID, nil, wantStatus(http.StatusOK))
-	config, _ := data(strategyDetail)["normalRoutingConfig"].(map[string]any)
-	if config == nil || config["schedulingPreference"] != "speed_first" {
-		t.Fatalf("R5 strategy normalRoutingConfig not speed_first: %#v", data(strategyDetail)["normalRoutingConfig"])
+	// 契约自检：独立偏好已按 speed_first + 首字截止存储，且 Key 已绑定。
+	_, preferenceDetail := f.admin.do(http.MethodGet, "/__aisys__/api/scheduling-preferences/"+preferenceID+"?systemAccountId=sys_admin", nil, wantStatus(http.StatusOK))
+	preference := data(preferenceDetail)
+	if str(preference["chatMode"]) != "speed_first" {
+		t.Fatalf("R5 scheduling preference chatMode not speed_first: %#v", preference)
+	}
+	preferenceConfig, _ := preference["chatSpeedFirstConfig"].(map[string]any)
+	if preferenceConfig == nil || fmt.Sprint(preferenceConfig["firstByteDeadlineMs"]) != "10000" {
+		t.Fatalf("R5 scheduling preference firstByteDeadlineMs not 10000: %#v", preference["chatSpeedFirstConfig"])
+	}
+	_, keyList := f.admin.do(http.MethodGet, "/__aisys__/api/api-keys?page=1&pageSize=100", nil, wantStatus(http.StatusOK))
+	bound := false
+	keyItems, _ := data(keyList)["items"].([]any)
+	for _, raw := range keyItems {
+		item, _ := raw.(map[string]any)
+		if item != nil && str(item["id"]) == route.apiKeyID {
+			bound = str(item["schedulingPreferenceId"]) == preferenceID
+			break
+		}
+	}
+	if !bound {
+		t.Fatalf("R5 api key %s not bound to scheduling preference %s", route.apiKeyID, preferenceID)
 	}
 	if cutoverAt == 0 {
 		t.Fatalf("R5 fast account never took over within diagnostic window; slowHits=%d", len(f.mock.protocolCallsByKey(slowKey)))
