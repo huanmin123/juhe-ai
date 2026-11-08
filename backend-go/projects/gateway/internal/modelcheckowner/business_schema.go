@@ -350,6 +350,13 @@ func postgresReferentialAction(code string) string {
 
 func postgresSchemaIndexMismatch(actual postgresSchemaIndex, required contracts.BusinessIndexDefinition) string {
 	if actual.expression {
+		// T117d（2026-11-08）：表达式唯一索引（如 (system_account_id, lower(name))，
+		// 大小写不敏感唯一）是契约支持的形态——required 声明了表达式列时，比对
+		// actual 的非表达式列集（pg_stat 解析中表达式列不进 columns、普通列照常）。
+		if requiredHasExpressionColumn(required.Columns) &&
+			sameSchemaIndexColumns(actual.columns, requiredNonExpressionColumns(required.Columns)) {
+			return ""
+		}
 		return "index contains an expression"
 	}
 	if actual.unique != required.Unique {
@@ -367,6 +374,29 @@ func postgresSchemaIndexMismatch(actual postgresSchemaIndex, required contracts.
 		return fmt.Sprintf("predicate=%q want=%q", actualPredicate, required.Predicate)
 	}
 	return ""
+}
+
+// requiredHasExpressionColumn 判定契约声明的索引列里是否含表达式（当前仅
+// 支持 lower(...) 形态，T117d 大小写不敏感唯一）。
+func requiredHasExpressionColumn(columns []string) bool {
+	for _, column := range columns {
+		if strings.HasPrefix(column, "lower(") {
+			return true
+		}
+	}
+	return false
+}
+
+// requiredNonExpressionColumns 剥离契约声明里的表达式列，仅保留普通列——
+// 与 actual 解析口径对齐（表达式列不进 postgresSchemaIndex.columns）。
+func requiredNonExpressionColumns(columns []string) []string {
+	out := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if !strings.HasPrefix(column, "lower(") {
+			out = append(out, column)
+		}
+	}
+	return out
 }
 
 func sameSchemaIndexColumns(actual, expected []string) bool {

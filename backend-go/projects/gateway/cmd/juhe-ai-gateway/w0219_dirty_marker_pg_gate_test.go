@@ -69,7 +69,7 @@ func TestW0219ListAvailabilityDirtyMarkerPostgres(t *testing.T) {
 	  protocol_code, protocol_version, name, type, credentials_encrypted,
 	  health_check_model, health_check_endpoint_mode, authorization_instance_source_account_id,
 	  created_at, updated_at
-	) VALUES ($1, 'w0219-sys', NULL, 'gpt', 'openai', 'v1', $1, 'api_key', 'w0219-creds', 'w0219-model', 'chat_json', $2,
+	) VALUES ($1, 'w0219-sys', 'gpt', 'gpt', 'openai', 'v1', $1, 'api_key', 'w0219-creds', 'w0219-model', 'chat_json', $2,
 	  '2026-09-28T00:00:00.000Z', '2026-09-28T00:00:00.000Z')
 	ON CONFLICT (id) DO NOTHING`,
 			id, source); err != nil {

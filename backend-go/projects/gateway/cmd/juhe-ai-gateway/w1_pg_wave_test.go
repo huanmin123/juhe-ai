@@ -130,15 +130,15 @@ func w1pgEnvFile(t *testing.T) map[string]string {
 	return values
 }
 
-// w1g2CoverSchemas 是临时子库的五个业务 schema（重灌时按此清单 DROP CASCADE，
+// w1g2CoverSchemas 是临时子库的四个业务 schema（重灌时按此清单 DROP CASCADE，
 // 绝不触碰清单之外的任何对象）。
 //
-// juhe_chat 已随 my-chat 会话面退役（e87b15f1d 删除 pg_schema_chat.go；任务
-// 记录里的 d64e51c9b 只是 schema 单文件拆分提交），bootstrap 现在只建五个
-// schema。清单须与 maintenance schema 组一致：maintenance/internal/schema 是
-// internal 包，跨模块不可导入，故此处保持静态清单；bootstrap 的 schema 组
-// 变化时必须同步本清单。
-var w1g2CoverSchemas = []string{"juhe_business", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage"}
+// juhe_chat 已随 my-chat 会话面退役（e87b15f1d 删除 pg_schema_chat.go）；**
+// juhe_codex_context 已随跨协议模型映射退役（T152，revision 20）整组清退**。
+// bootstrap 现在只建四个 schema。清单须与 maintenance schema 组一致：
+// maintenance/internal/schema 是 internal 包，跨模块不可导入，故此处保持静态
+// 清单；bootstrap 的 schema 组变化时必须同步本清单。
+var w1g2CoverSchemas = []string{"juhe_business", "juhe_dataset", "juhe_stats", "juhe_usage"}
 
 // w1g2CoverPostgres 打开 pgtestkit 隔离 PG 测试库并应用 maintenance bootstrap
 // fresh DDL + 种子（原 dev env 手工建临时子库 + 漂移探测/重灌装配已退役），
