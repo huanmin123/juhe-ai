@@ -377,15 +377,29 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
   echo "== 停写窗口备份确认 =="
   echo "  升级备份维度（§20.5）：business 必备（chat/codex_context schema 已退役，revision 20 升级会 DROP juhe_codex_context——整库 pg_dump 已覆盖备份义务）；建议命令："
   echo "    ssh $SERVER 'docker exec juhe-ai-postgres pg_dump -U juhe_ai -Fc juhe_ai > /opt/juhe-ai/backup/juhe_ai-pre-upgrade-\$(date +%Y%m%d-%H%M).dump'"
-  printf "  已完成并验证可恢复备份？输入 YES 继续（其他输入中止，gateway/jobs 保持停止）："
-  read -r ANSWER || ANSWER=""
-  if [ "$ANSWER" != "YES" ]; then
-    echo "[FAIL] 未确认备份，升级中止；gateway/jobs 保持停止，可手动 docker compose start gateway jobs 恢复。" >&2
-    exit 1
+  if [ "${JUHE_AI_DEPLOY_BACKUP_CONFIRMED:-0}" = "1" ]; then
+    # 非交互旁路（T184）：无人值守/管道场景 stdin 已被前置 ssh 吸走，交互 read
+    # 会无限悬挂。旁路不降安全门槛——改为远端客观校验：backup/ 下最新的
+    # juhe_ai-pre-upgrade-*.dump 须在 24h 内、非零大小，且经容器内 pg_restore -l
+    # 可读（docker cp 进临时路径，postgres 镜像自带 pg_restore；宿主未必有客户端）。
+    BACKUP_VERIFY_CMD="cd $SERVER_DIR && set -o pipefail; B=\$(ls -t backup/juhe_ai-pre-upgrade-*.dump 2>/dev/null | head -1); [ -n \"\$B\" ] && [ -s \"\$B\" ] && [ \$(( \$(date +%s) - \$(stat -c %Y \"\$B\") )) -lt 86400 ] && docker cp \"\$B\" juhe-ai-postgres:/tmp/deploy-backup-verify.dump >/dev/null && docker exec juhe-ai-postgres pg_restore -U juhe_ai -l /tmp/deploy-backup-verify.dump >/dev/null && docker exec juhe-ai-postgres rm -f /tmp/deploy-backup-verify.dump"
+    if $SSH "$SERVER" "bash -c '$BACKUP_VERIFY_CMD'"; then
+      echo "  非交互旁路：远端备份客观校验通过（存在、24h 内、pg_restore -l 可读）。"
+    else
+      echo "[FAIL] 非交互旁路校验失败：backup/ 下没有 24h 内可读的 juhe_ai-pre-upgrade-*.dump。请先完成备份（命令见上），或带有效备份重跑；gateway/jobs 保持停止，可手动 docker compose start gateway jobs 恢复。" >&2
+      exit 1
+    fi
+  else
+    printf "  已完成并验证可恢复备份？输入 YES 继续（其他输入中止，gateway/jobs 保持停止）："
+    read -r ANSWER || ANSWER=""
+    if [ "$ANSWER" != "YES" ]; then
+      echo "[FAIL] 未确认备份，升级中止；gateway/jobs 保持停止，可手动 docker compose start gateway jobs 恢复。" >&2
+      exit 1
+    fi
   fi
 
   echo "== 执行 maintenance upgrade（账本编排；失败即中止且不拉起）=="
-  UPGRADE_CMD="set -a && . ./.env && set +a && $REMOTE_COMPOSE_ENV docker compose --profile tool run --rm maintenance upgrade --dsn \"\$JUHE_AI_POSTGRES_URL\" --secret \"\$JUHE_AI_SECRET\" --stop-write-confirmed --backup-confirmed"
+  UPGRADE_CMD="cd $SERVER_DIR && set -a && . ./.env && set +a && $REMOTE_COMPOSE_ENV docker compose --profile tool run --rm maintenance upgrade --dsn \"\$JUHE_AI_POSTGRES_URL\" --secret \"\$JUHE_AI_SECRET\" --stop-write-confirmed --backup-confirmed"
   if ! $SSH "$SERVER" "bash -c '$UPGRADE_CMD'"; then
     echo "[FAIL] upgrade 失败：gateway/jobs 保持停止。二选一：" >&2
     echo "       ① 重跑本命令前向续跑（账本断点，推荐）：./deploy.sh upgrade" >&2
