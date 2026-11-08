@@ -105,6 +105,9 @@ type databaseState struct {
 	SchemaRevision int64  `json:"schemaRevision"`
 	AppliedSteps   int64  `json:"appliedSteps"`
 	Digest         string `json:"schemaDigest,omitempty"`
+	// ShapeDrift 是 §9.4-6/§9.6 检测结果（T84-3）：库内实际形态指纹与账本
+	// 上次记录不一致——手工 DDL 或上次升级中断，升级按当前形态收敛。
+	SchemaShapeDrift bool `json:"schemaShapeDrift,omitempty"`
 }
 
 type pendingStep struct {
@@ -266,9 +269,10 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		Estimate: estimateInfo{StructuralUpperBoundMinutes: 60},
 		Rollback: RollbackBinaryOnly,
 	}
+	warnNotes := "" // 非致命 WARN（§9.4-6 形态漂移等）：并入全部出口的 stderr。
 	fail := func(result string, code int, message string, withReport bool) outcome {
 		report.Result = result
-		out := outcome{ExitCode: code, Stderr: message}
+		out := outcome{ExitCode: code, Stderr: warnNotes + message}
 		if withReport {
 			out.Report = report
 		}
@@ -331,6 +335,21 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	}
 	report.CompatibleBinaryRange = fmt.Sprintf("%d..%d", stateMinReadable, contracts.SchemaRevision)
 	env := Env{PrimaryDSN: opts.PrimaryDSN, Secret: opts.Secret}
+
+	// T84-3（§9.4-6/§9.6）：库内实际形态指纹比对（只读，计划期执行）。账本
+	// 上次记录为 actual 口径时与当前库形态比对——不一致 = 手工 DDL 或上次
+	// 升级中断；WARN 不阻断（升级本就按当前形态收敛，§9.6 自改用户提示）。
+	// 旧口径值（代码 DDL 清单哈希，无前缀）跳过比对，写新值后完成口径迁移。
+	if state.Digest != "" && schema.ShapeDigestIsActualShape(state.Digest) && dbRevision > 0 {
+		actual, digestErr := schema.PostgresActualShapeDigest(ctx, db)
+		if digestErr != nil {
+			return fail(ResultFailed, ExitRuntimeFailure, "库形态指纹计算失败: "+digestErr.Error(), true)
+		}
+		if actual != state.Digest {
+			report.Database.SchemaShapeDrift = true
+			warnNotes += "[WARN] 库结构形态与账本上次记录不一致（手工 DDL 或上次升级中断）；本次升级将按当前形态收敛，请确认手工改动是否需保留。\n"
+		}
+	}
 
 	// 5. 方向校验：库领先于二进制（state 或账本任一）即 blocked。
 	if dbRevision > int64(contracts.SchemaRevision) || stepMax > int64(contracts.SchemaRevision) {
@@ -472,7 +491,7 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 			return fail(ResultFailed, ExitNeedsHuman, "up-to-date 核验未通过（见报告 postflight）", true)
 		}
 		report.Result = ResultUpToDate
-		return outcome{ExitCode: ExitOK, Report: report}
+		return outcome{ExitCode: ExitOK, Stderr: warnNotes, Report: report}
 	}
 
 	// 10. 结构收敛·加法相（建表/补列/补种；§7.3）。
@@ -604,13 +623,20 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 			minReadable = dbRevision
 		}
 	}
-	if err := WriteSchemaState(ctx, db, int64(contracts.SchemaRevision), minReadable, true, schema.PostgresSchemaDigest(), opts.AppVersion, now()); err != nil {
+	// T84-3：schema_state.schema_digest 改存 B 口径（库内实际形态指纹）——
+	// 它是下次升级 §9.4-6 比对的基准；计算失败不阻断（保留 A 口径旧值，
+	// 前缀判定会跳过比对，下次升级重试口径迁移）。
+	actualDigest, digestErr := schema.PostgresActualShapeDigest(ctx, db)
+	if digestErr != nil {
+		actualDigest = schema.PostgresSchemaDigest()
+	}
+	if err := WriteSchemaState(ctx, db, int64(contracts.SchemaRevision), minReadable, true, actualDigest, opts.AppVersion, now()); err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
 	}
 	report.CompatibleBinaryRange = fmt.Sprintf("%d..%d", minReadable, contracts.SchemaRevision)
 	report.Database.SchemaRevision = int64(contracts.SchemaRevision)
 	report.Result = ResultUpgraded
-	return outcome{ExitCode: ExitOK, Report: report}
+	return outcome{ExitCode: ExitOK, Stderr: warnNotes, Report: report}
 }
 
 // filterStepsForPhase 按迁移相过滤步骤：expand 只含非破坏步骤，contract 只含
