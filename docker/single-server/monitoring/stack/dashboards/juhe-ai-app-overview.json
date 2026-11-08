@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "juhe-ai 单机部署应用总览（gateway /jobs Prometheus 指标 + postgres_exporter 存储指标）。抓取接入与告警基线见 docker/single-server/monitoring/stack/README.md。",
+  "description": "juhe-ai 单机部署应用总览（gateway /jobs Prometheus 指标 + postgres_exporter 存储指标）。抓取接入与告警基线见 docker/single-server/monitoring/README.md。",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
