@@ -622,21 +622,21 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			Title: "J3a 代理延迟检测 PostgreSQL 表与索引预置", Target: upgradepipeline.TargetJ3A,
 			ImplVersion: 1,
 			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
-				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(j3aDSN, false) })
+				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(ctx, j3aDSN, false) })
 				return code == 0, nil
 			},
 			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
 				if err := upgradepipeline.EnsureTargetSchema(ctx, j3aDSN, upgradepipeline.TargetJ3A); err != nil {
 					return nil, err
 				}
-				code, output := callResult(func() int { return j3aProxyLatencyBootstrapResult(j3aDSN, true) })
+				code, output := callResult(func() int { return j3aProxyLatencyBootstrapResult(ctx, j3aDSN, true) })
 				if code != 0 {
 					return upgradepipeline.Detail{"output": output}, exitErr("j3a 预置", output, code)
 				}
 				return upgradepipeline.Detail{"output": output}, nil
 			},
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
-				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(j3aDSN, false) })
+				code, _ := callResult(func() int { return j3aProxyLatencyBootstrapResult(ctx, j3aDSN, false) })
 				if code != 0 {
 					return fmt.Errorf("J3a 表/索引契约未就绪（退出码 %d）", code)
 				}
@@ -648,21 +648,21 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			Title: "J3b 模型检测 PostgreSQL 表预置与 trigger_kind 词表", Target: upgradepipeline.TargetJ3B,
 			ImplVersion: 1,
 			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
-				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(j3bDSN, false) })
+				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(ctx, j3bDSN, false) })
 				return code == 0, nil
 			},
 			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
 				if err := upgradepipeline.EnsureTargetSchema(ctx, j3bDSN, upgradepipeline.TargetJ3B); err != nil {
 					return nil, err
 				}
-				code, output := callResult(func() int { return j3bModelCheckBootstrapResult(j3bDSN, true) })
+				code, output := callResult(func() int { return j3bModelCheckBootstrapResult(ctx, j3bDSN, true) })
 				if code != 0 {
 					return upgradepipeline.Detail{"output": output}, exitErr("j3b 预置", output, code)
 				}
 				return upgradepipeline.Detail{"output": output}, nil
 			},
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
-				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(j3bDSN, false) })
+				code, _ := callResult(func() int { return j3bModelCheckBootstrapResult(ctx, j3bDSN, false) })
 				if code != 0 {
 					return fmt.Errorf("J3b 表/CHECK 契约未就绪（退出码 %d）", code)
 				}
@@ -689,7 +689,7 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				if err := upgradepipeline.EnsureTargetSchema(ctx, balanceDSN, upgradepipeline.TargetAccountBalance); err != nil {
 					return nil, err
 				}
-				code, output := callResult(func() int { return accountBalanceBootstrapResult(balanceDSN) })
+				code, output := callResult(func() int { return accountBalanceBootstrapResult(ctx, balanceDSN) })
 				if code != 0 {
 					return upgradepipeline.Detail{"output": output}, exitErr("账户余额预置", output, code)
 				}

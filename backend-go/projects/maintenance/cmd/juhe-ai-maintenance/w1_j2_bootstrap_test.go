@@ -17,15 +17,15 @@ const w1J2UnreachableURL = "postgres://w1j2@127.0.0.1:1/w1j2-none"
 
 func TestW1J2BootstrapUsageGates(t *testing.T) {
 	t.Run("dsn missing", func(t *testing.T) {
-		if got := accountBalanceBootstrapResult(""); got != 2 {
+		if got := accountBalanceBootstrapResult(context.Background(), ""); got != 2 {
 			t.Fatalf("空 --dsn 必须返回 2: %d", got)
 		}
 	})
 	t.Run("url shape", func(t *testing.T) {
-		if got := accountBalanceBootstrapResult("postgres://@/"); got != 2 {
+		if got := accountBalanceBootstrapResult(context.Background(), "postgres://@/"); got != 2 {
 			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
 		}
-		if got := accountBalanceBootstrapResult("sqlite://w1j2/db"); got != 2 {
+		if got := accountBalanceBootstrapResult(context.Background(), "sqlite://w1j2/db"); got != 2 {
 			t.Fatalf("非 postgres scheme 必须返回 2: %d", got)
 		}
 	})
@@ -74,7 +74,7 @@ func TestW1J2BootstrapMutualExclusion(t *testing.T) {
 // TestW1J2BootstrapUnreachable 直调结果函数覆盖不可达主机的运行时失败臂，
 // 与 TestW14KRunnerRuntimeFailures 同口径。
 func TestW1J2BootstrapUnreachable(t *testing.T) {
-	if got := accountBalanceBootstrapResult(w1J2UnreachableURL); got != 1 {
+	if got := accountBalanceBootstrapResult(context.Background(), w1J2UnreachableURL); got != 1 {
 		t.Fatalf("不可达主机必须返回 1: %d", got)
 	}
 }

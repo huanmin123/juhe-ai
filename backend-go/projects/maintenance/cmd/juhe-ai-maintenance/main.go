@@ -248,13 +248,13 @@ func runMaintenance(argv []string) int {
 	// 排在 J2 之后；退役监控表清退（--drop-retired-monitoring-tables）与
 	// studio 清理同模式，互斥同链。
 	if *j3bApply {
-		return j3bModelCheckBootstrapResult(*bootstrapDSN, *j3bApply)
+		return j3bModelCheckBootstrapResult(context.Background(), *bootstrapDSN, *j3bApply)
 	}
 	if *j3Apply {
-		return j3aProxyLatencyBootstrapResult(*bootstrapDSN, *j3Apply)
+		return j3aProxyLatencyBootstrapResult(context.Background(), *bootstrapDSN, *j3Apply)
 	}
 	if *accountBalanceApply {
-		return accountBalanceBootstrapResult(*bootstrapDSN)
+		return accountBalanceBootstrapResult(context.Background(), *bootstrapDSN)
 	}
 	if *applyStudioRetirement {
 		return studioRetirementResult(*bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
@@ -274,7 +274,8 @@ func runMaintenance(argv []string) int {
 }
 
 // j3bModelCheckBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func j3bModelCheckBootstrapResult(dsn string, apply bool) int {
+// ctx 由调用方注入（升级步骤闭包传步骤 ctx 使 --step-timeout 可覆盖，CLI dispatch 传 Background）。
+func j3bModelCheckBootstrapResult(ctx context.Context, dsn string, apply bool) int {
 	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
 		fmt.Fprintln(os.Stderr, "J3b PostgreSQL bootstrap requires --dsn")
@@ -286,7 +287,7 @@ func j3bModelCheckBootstrapResult(dsn string, apply bool) int {
 		return 2
 	}
 	defer db.Close()
-	report, runErr := j3bmodelcheck.Run(context.Background(), db, apply)
+	report, runErr := j3bmodelcheck.Run(ctx, db, apply)
 	return j3bBootstrapOutcomeExitCode(report, runErr)
 }
 
@@ -308,7 +309,8 @@ func j3bBootstrapOutcomeExitCode(report j3bmodelcheck.Report, runErr error) int 
 }
 
 // j3aProxyLatencyBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func j3aProxyLatencyBootstrapResult(dsn string, apply bool) int {
+// ctx 由调用方注入（升级步骤闭包传步骤 ctx 使 --step-timeout 可覆盖，CLI dispatch 传 Background）。
+func j3aProxyLatencyBootstrapResult(ctx context.Context, dsn string, apply bool) int {
 	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
 		fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap requires --dsn")
@@ -320,7 +322,7 @@ func j3aProxyLatencyBootstrapResult(dsn string, apply bool) int {
 		return 2
 	}
 	defer db.Close()
-	report, runErr := j3aproxylatency.Run(context.Background(), db, apply)
+	report, runErr := j3aproxylatency.Run(ctx, db, apply)
 	return j3aBootstrapOutcomeExitCode(report, runErr)
 }
 
@@ -345,7 +347,7 @@ func j3aBootstrapOutcomeExitCode(report j3aproxylatency.Report, runErr error) in
 // dispatches it and tests call it in-process. The target database comes from
 // the shared --dsn flag（accountbalance 是纯库包，连接打开与 CLI 契约留在
 // maintenance）。
-func accountBalanceBootstrapResult(dsn string) int {
+func accountBalanceBootstrapResult(ctx context.Context, dsn string) int {
 	rawURL := strings.TrimSpace(dsn)
 	if rawURL == "" {
 		fmt.Fprintln(os.Stderr, "J2 account-balance PostgreSQL bootstrap requires --dsn")
@@ -357,7 +359,7 @@ func accountBalanceBootstrapResult(dsn string) int {
 		return 2
 	}
 	defer db.Close()
-	report, runErr := accountbalance.BootstrapPostgres(context.Background(), db)
+	report, runErr := accountbalance.BootstrapPostgres(ctx, db)
 	return accountBalanceBootstrapOutcomeExitCode(report, runErr)
 }
 

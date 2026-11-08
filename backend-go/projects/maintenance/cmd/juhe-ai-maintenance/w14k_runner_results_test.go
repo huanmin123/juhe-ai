@@ -19,6 +19,7 @@ package main
 // --postgres-schema-snapshot 必失败；详见 w14k_pg_gate_test.go 注释。
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -61,18 +62,18 @@ func TestW14KRunnerUsageGates(t *testing.T) {
 	// J3a/J3b 一次性 bootstrap apply 命令（现行生产初始化契约）的用法门：
 	// 空 env、缺主机 URL 与 apply 无确认都必须 fail-closed 返回 2。
 	t.Run("j3a bootstrap", func(t *testing.T) {
-		if got := j3aProxyLatencyBootstrapResult("", false); got != 2 {
+		if got := j3aProxyLatencyBootstrapResult(context.Background(), "", false); got != 2 {
 			t.Fatalf("空 --dsn 必须返回 2: %d", got)
 		}
-		if got := j3aProxyLatencyBootstrapResult("postgres://@/", false); got != 2 {
+		if got := j3aProxyLatencyBootstrapResult(context.Background(), "postgres://@/", false); got != 2 {
 			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
 		}
 	})
 	t.Run("j3b pg bootstrap", func(t *testing.T) {
-		if got := j3bModelCheckBootstrapResult("", false); got != 2 {
+		if got := j3bModelCheckBootstrapResult(context.Background(), "", false); got != 2 {
 			t.Fatalf("空 --dsn 必须返回 2: %d", got)
 		}
-		if got := j3bModelCheckBootstrapResult("postgres://@/", false); got != 2 {
+		if got := j3bModelCheckBootstrapResult(context.Background(), "postgres://@/", false); got != 2 {
 			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
 		}
 	})

@@ -160,7 +160,7 @@ func TestW1CLIPostgresURLValidationErrorsAreLocalAndPreserved(t *testing.T) {
 
 	t.Run("j3a", func(t *testing.T) {
 		var code int
-		stdout, stderr := bdCaptureOutput(t, func() { code = j3aProxyLatencyBootstrapResult(w1InvalidPostgresSchemeURL, false) })
+		stdout, stderr := bdCaptureOutput(t, func() { code = j3aProxyLatencyBootstrapResult(context.Background(), w1InvalidPostgresSchemeURL, false) })
 		want := "open J3a PostgreSQL bootstrap connection: J3a bootstrap 必须提供 postgres/postgresql URL\n"
 		if code != 2 || stdout != "" || stderr != want {
 			t.Fatalf("J3a PostgreSQL URL error = %d/%q/%q, want exit 2 with original %q", code, stdout, stderr, want)
@@ -169,7 +169,7 @@ func TestW1CLIPostgresURLValidationErrorsAreLocalAndPreserved(t *testing.T) {
 
 	t.Run("j3b", func(t *testing.T) {
 		var code int
-		stdout, stderr := bdCaptureOutput(t, func() { code = j3bModelCheckBootstrapResult(w1InvalidPostgresSchemeURL, false) })
+		stdout, stderr := bdCaptureOutput(t, func() { code = j3bModelCheckBootstrapResult(context.Background(), w1InvalidPostgresSchemeURL, false) })
 		want := "open J3b PostgreSQL bootstrap connection: J3b bootstrap 必须提供包含主机、数据库和显式角色的 postgres URL\n"
 		if code != 2 || stdout != "" || stderr != want {
 			t.Fatalf("J3b PostgreSQL URL error = %d/%q/%q, want exit 2 with original %q", code, stdout, stderr, want)
@@ -189,7 +189,7 @@ func TestW1CLIPostgresURLValidationErrorsAreLocalAndPreserved(t *testing.T) {
 
 	t.Run("account balance", func(t *testing.T) {
 		var code int
-		stdout, stderr := bdCaptureOutput(t, func() { code = accountBalanceBootstrapResult(w1InvalidPostgresSchemeURL) })
+		stdout, stderr := bdCaptureOutput(t, func() { code = accountBalanceBootstrapResult(context.Background(), w1InvalidPostgresSchemeURL) })
 		want := "open J2 account-balance PostgreSQL bootstrap connection: J2 account-balance bootstrap 必须提供 postgres/postgresql URL\n"
 		if code != 2 || stdout != "" || stderr != want {
 			t.Fatalf("account-balance PostgreSQL URL error = %d/%q/%q, want exit 2 with original %q", code, stdout, stderr, want)
@@ -221,7 +221,7 @@ func TestW1CLIRuntimePostgresConfigErrorsStayLocal(t *testing.T) {
 
 	t.Run("j3a", func(t *testing.T) {
 		var code int
-		stdout, stderr := bdCaptureOutput(t, func() { code = j3aProxyLatencyBootstrapResult(w1InvalidPGSSLModeURL, false) })
+		stdout, stderr := bdCaptureOutput(t, func() { code = j3aProxyLatencyBootstrapResult(context.Background(), w1InvalidPGSSLModeURL, false) })
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "J3a PostgreSQL bootstrap failed:") || !strings.Contains(stderr, "sslmode is invalid") {
 			t.Fatalf("J3a local PG config error = %d/%q/%q, want exit 1 with sslmode error", code, stdout, stderr)
 		}
@@ -229,7 +229,7 @@ func TestW1CLIRuntimePostgresConfigErrorsStayLocal(t *testing.T) {
 
 	t.Run("j3b", func(t *testing.T) {
 		var code int
-		stdout, stderr := bdCaptureOutput(t, func() { code = j3bModelCheckBootstrapResult(w1InvalidPGSSLModeURL, false) })
+		stdout, stderr := bdCaptureOutput(t, func() { code = j3bModelCheckBootstrapResult(context.Background(), w1InvalidPGSSLModeURL, false) })
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "J3b PostgreSQL bootstrap failed:") || !strings.Contains(stderr, "sslmode is invalid") {
 			t.Fatalf("J3b local PG config error = %d/%q/%q, want exit 1 with sslmode error", code, stdout, stderr)
 		}

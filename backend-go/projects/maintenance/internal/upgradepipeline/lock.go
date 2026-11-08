@@ -29,29 +29,30 @@ func AcquireOrchestrationLock(ctx context.Context, db *sql.DB) (func(), error) {
 // 全程持有直到 release；等待超过 2s 视为有并发编排/结构变更在进行，快失败。
 // 锁绑定在独立连接上（pg_advisory_lock 为会话锁，连接归还即释放）。
 //
-// 失败分类：仅「锁等待超时（55P03）」按竞争失败上抛（exit 1）；连接不可达/
-// 连接串配置错误返回「无锁继续」——连接坏了后续操作必然以原始错误失败
-// （既有 stderr 契约如「postgres ensure-schema 失败：… sslmode is invalid」
-// 由 w1_cli 测试钉死），锁层不得吞换报错形态，也就不存在无锁并发的实际窗口。
+// 失败分类（T84-5 fail-closed 裁决）：仅「锁等待超时（55P03）」按竞争失败
+// 上抛（exit 1）；其余取锁错误（连接不可达、断连、服务器拒绝）一律失败退出
+// ——无锁继续等于放弃编排互斥，无锁并发的理论窗口不该由「后续操作恰好也会
+// 失败」来兜底。DSN 配置错误的原始报错契约（w1_cli 钉死的
+// 「postgres ensure-schema 失败：… sslmode is invalid」等形态）由调用方在
+// 取锁之前的连接前置检查保留；错误一律 %w 包装携带原始文本，不吞换报错。
 func acquireUpgradeLock(ctx context.Context, db *sql.DB) (func(), error) {
-	noop := func() {}
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return noop, nil
+		return nil, fmt.Errorf("取得升级编排锁专用连接失败: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET lock_timeout = '%s'", lockWaitTimeout)); err != nil {
 		conn.Close()
 		if isLockTimeout(err) {
 			return nil, fmt.Errorf("获取升级编排锁失败（等待超过 %s，可能有并发 upgrade/ensure-schema）: %w", lockWaitTimeout, err)
 		}
-		return noop, nil
+		return nil, fmt.Errorf("设置升级编排锁 lock_timeout 失败: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", advisorylock.UpgradeOrchestration); err != nil {
 		conn.Close()
 		if isLockTimeout(err) {
 			return nil, fmt.Errorf("获取升级编排锁失败（等待超过 %s，可能有并发 upgrade/ensure-schema）: %w", lockWaitTimeout, err)
 		}
-		return noop, nil
+		return nil, fmt.Errorf("获取升级编排锁失败: %w", err)
 	}
 	release := func() {
 		// 会话结束锁自动释放；显式 unlock 尽力而为，连接关闭兜底。

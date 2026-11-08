@@ -481,14 +481,28 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		}
 	}
 
-	// 9. 已最新短路：只读核验（本 phase 步骤 + 语句计数），不写任何表。
-	// contract 不短路：即使破坏性步骤已 applied，仍要执行 EnsureDestructive
-	//（破坏性 DDL 不在步骤注册表里）并推进 min_readable_binary_revision。
+	// 9. 已最新短路：只读核验（本 phase 步骤 + 语句计数）。contract 不短路：
+	// 即使破坏性步骤已 applied，仍要执行 EnsureDestructive（破坏性 DDL 不在
+	// 步骤注册表里）并推进 min_readable_binary_revision。
+	// T84-4（§7.4 裁决）：核验通过后对本 phase 的 adopted 步骤补写账本记账
+	//（impl_version 漂移期间每次短路都幂等刷新，账本与二进制最终收敛）；
+	// 短路的零写入承诺仅指业务表，账本记账行除外。短路前提（所有步骤
+	// applied+impl_version 足够）不成立才不会走到这里，EnsureLedger 只是
+	// 兜底历史库账本缺失的形态。
 	if !needsApply && phase != PhaseContract && dbRevision == int64(contracts.SchemaRevision) && stepMax <= int64(contracts.SchemaRevision) {
 		post := verifyAllSteps(ctx, env, phaseSteps, opts.StepTimeout)
 		report.Postflight = &post
 		if !post.OK {
 			return fail(ResultFailed, ExitNeedsHuman, "up-to-date 核验未通过（见报告 postflight）", true)
+		}
+		if err := EnsureLedger(ctx, db); err != nil {
+			return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
+		}
+		for _, item := range pending {
+			if err := MarkAdopted(ctx, db, item.step, phase, onlineSafe, opts.AppVersion, now()); err != nil {
+				return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
+			}
+			report.Executed = append(report.Executed, executedStep{Revision: item.step.Revision, Status: "adopted"})
 		}
 		report.Result = ResultUpToDate
 		return outcome{ExitCode: ExitOK, Stderr: warnNotes, Report: report}
@@ -536,6 +550,22 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 				return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
 			}
 			report.Executed = append(report.Executed, executedStep{Revision: step.Revision, Status: "adopted"})
+			// T84-9（§9.3）：报告以执行期为准——计划期 pending、执行期翻转
+			// satisfied 的步骤（加法相/seed 改变了求值事实）从 Plan.Pending
+			// 挪入 Plan.Adopt，保持 pending/adopt 互斥与 Executed 口径一致；
+			// 计划期已 satisfied 的（adopted 命中）计划侧已正确归类，不重复追加。
+			if !adopted[step.Revision] {
+				adopted[step.Revision] = true
+				report.Plan.Adopt = append(report.Plan.Adopt, adoptStep{
+					Revision: step.Revision, StepID: step.ID, Reason: "satisfied-at-execution"})
+				filtered := report.Plan.Pending[:0]
+				for _, item := range report.Plan.Pending {
+					if item.Revision != step.Revision {
+						filtered = append(filtered, item)
+					}
+				}
+				report.Plan.Pending = filtered
+			}
 			continue
 		}
 		// 破坏性步骤即将产生不可逆写：rollback 口径先于执行翻转为

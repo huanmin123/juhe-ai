@@ -75,6 +75,21 @@ func runStorageBootstrap(ensure, seed bool, dsn, secret string) int {
 		return 2
 	}
 	defer db.Close()
+	// 连接前置检查（T84-5 fail-closed 配套）：取编排锁之前完成首次真实连接，
+	// DSN 配置错误（sslmode is invalid 等）在此按 ensure/seed 臂的既有失败
+	// 形态上抛（w1_cli 钉死的 stderr 契约）；连接健康后锁层的非竞争失败
+	// fail-closed 退出，不再有「无锁继续」路径。此前首个真实连接发生在取锁
+	// 的 db.Conn，配置错误曾依赖「锁层无锁继续 + 后续操作报原始错误」到达
+	// 契约形态——锁层改为 fail-closed 后该路径不存在，检查前置到锁前。
+	pingErr := db.PingContext(context.Background())
+	if pingErr != nil {
+		if ensure {
+			fmt.Fprintf(os.Stderr, "postgres ensure-schema 失败：%v\n", pingErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "postgres seed 失败：%v\n", pingErr)
+		}
+		return 1
+	}
 	// 升级编排互斥锁（升级兼容与迁移账本设计 §9.5）：与 maintenance upgrade
 	// 共用 advisorylock.UpgradeOrchestration，防止结构收敛与升级编排并发；
 	// 2s 快失败（BUG-0313 同口径），拿不到即退出由操作者重试。
