@@ -11,6 +11,11 @@ package schema
 // postgresSchemaBusinessIndexes holds the juhe_business CREATE INDEX
 // statements of the index phase in execution order.
 var postgresSchemaBusinessIndexes = []PGStatement{
+	// T117d（2026-11-08 用户裁决「根治」）：accounts / api_keys / groups 三表的
+	// owner+name 唯一从精确大小写改为 lower(name)（与大小写不敏感搜索一致，
+	// 消除「同名不同大小写并存」歧义）；生产已 CONCURRENTLY 切换并清退旧精确
+	// 唯一索引（vsllm 组重名已改名为 vsllm-legacy-0809）。写面冲突翻译按索引名
+	// 子串 Contains 匹配，_lower 名包含旧名子串故全部既有翻译点自动兼容。
 	{
 		// models 身份唯一索引（供应商与上游协议面重构设计 §3 :201）：四元组
 		// (COALESCE(vendor_code,''), scope, COALESCE(system_account_id,''),
@@ -117,7 +122,7 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique ON accounts(system_account_id, name) WHERE deleted_at IS NULL`,
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique_lower ON accounts(system_account_id, lower(name)) WHERE deleted_at IS NULL`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -578,7 +583,7 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		// provider_code 列退役一并删除。
 		SchemaName: "juhe_business",
 		Source:     "groups-target-unique-indexes",
-		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name)`,
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique_lower ON groups(system_account_id, lower(name))`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -759,7 +764,7 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique ON api_keys(system_account_id, name)`,
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name))`,
 	},
 	{
 		SchemaName: "juhe_business",
