@@ -540,7 +540,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "juhe_ai_http_requests_in_flight{job=~\"$job\"}",
+          "expr": "sum by (job) (juhe_ai_http_requests_in_flight{job=~\"$job\"})",
           "legendFormat": "{{job}}",
           "range": true,
           "refId": "A"
