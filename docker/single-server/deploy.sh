@@ -211,7 +211,16 @@ else
       echo "  自动打版本 tag：$AUTO_TAG（发布即版本；不再需要人工记忆打 tag）"
     fi
   fi
-  if [ -n "$(git status --porcelain)" ]; then BUILD_VERSION="dev-${COMMIT}-dirty"; else BUILD_VERSION="dev-${COMMIT}"; fi
+  # T84-10（2026-11-08 发布实录）：刚自动打完 tag 的干净树，构建身份必须取
+  # tag（二进制自报版本与 git tag 一致，版本回滚锚点不再错位）；此前此处
+  # 恒按 dev-<sha> 注入，tag 形同虚设。
+  if [ -n "$(git status --porcelain)" ]; then
+    BUILD_VERSION="dev-${COMMIT}-dirty"
+  elif [ -n "$RELEASE_TAG" ]; then
+    BUILD_VERSION="$RELEASE_TAG"
+  else
+    BUILD_VERSION="dev-${COMMIT}"
+  fi
 fi
 # Docker image tag 必须匹配 [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}；git tag 允许的
 # `/`、`+` 等字符会让 compose build 以晦涩错误失败，也让注入的 shell 变量不
