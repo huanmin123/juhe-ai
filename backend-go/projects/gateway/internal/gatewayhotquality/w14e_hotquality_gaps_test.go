@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -819,8 +820,11 @@ func TestW14EStoreScopeArms(t *testing.T) {
 
 func TestW14EBodyAdmissionClearWithQueuedItem(t *testing.T) {
 	registry := NewSpeedFirstBodyAdmissionRegistry()
-	baseClock := int64(1_000)
-	registry.SetClock(func() time.Time { return time.UnixMilli(baseClock) })
+	// T115：clock 用原子变量——SetClock 闭包在后台 Acquire goroutine 中被调用，
+	// 与主 goroutine 的推进写入必须同步（此前裸共享 int64 触发 -race）。
+	var baseClock atomic.Int64
+	baseClock.Store(1_000)
+	registry.SetClock(func() time.Time { return time.UnixMilli(baseClock.Load()) })
 
 	ctx := context.Background()
 	first := registry.Acquire(ctx, SpeedFirstBodyAdmissionInput{SystemAccountID: "s", RouteStrategyID: "r", GroupID: "g", APIKeyID: "key-1", Capacity: 1, MaxQueueWaitMs: 60_000, MaxQueueSize: 4, PerAPIKeyQueueLimit: 4})
@@ -832,15 +836,26 @@ func TestW14EBodyAdmissionClearWithQueuedItem(t *testing.T) {
 	go func() {
 		queuedDone <- registry.Acquire(ctx, SpeedFirstBodyAdmissionInput{SystemAccountID: "s", RouteStrategyID: "r", GroupID: "g", APIKeyID: "key-2", Capacity: 1, MaxQueueWaitMs: 60_000, MaxQueueSize: 4, PerAPIKeyQueueLimit: 4})
 	}()
+	// T115：经 Snapshot（内部持锁）等待入队，替代直读 registry.states 内部 map。
 	deadline := time.Now().Add(time.Second)
-	for len(registry.states) == 0 || len(registry.states["s:r:g"].queue) == 0 {
+	for {
+		queued := false
+		for _, entry := range registry.Snapshot() {
+			if entry.Queued > 0 {
+				queued = true
+				break
+			}
+		}
+		if queued {
+			break
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("queued item never appeared")
 		}
 		time.Sleep(time.Millisecond)
 	}
 
-	baseClock = 1_500
+	baseClock.Store(1_500)
 	registry.ClearForTest()
 	select {
 	case decision := <-queuedDone:
