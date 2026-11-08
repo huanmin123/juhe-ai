@@ -80,7 +80,7 @@
   ```
 
 - `dev` 使用远端 dev 服务器的 PostgreSQL 专用库 `juhe_ai_dev`（本机开发用 `juhe_ai_dev_local`）与共享 Redis namespace `dev`（本机 `devlocal`）；应用角色 `juhe_ai_dev` 拥有两库。真实连接配置在 `dev/env/shared.env` 与 `dev/env/server.env`，初始化、验证和数据库生命周期在 `dev/runbooks/`；服务器地址、角色口令与监控凭据只在 `.local`。共享 Redis 禁止 `FLUSHDB`/`FLUSHALL`，只按 `juhe-ai:{dev:*` / `juhe-ai:{devlocal:*` 前缀清理。
-- `dev/` 保存本机开发环境变量与历史演练实例资料：`shared.env` 是本机 `pnpm dev`（development）的权威配置，连 `192.168.1.203` 的开发库；`server.env` 为 `NODE_ENV=production`、验证码开启、首登强制改密门禁开启，仅内网 HTTP 使用 `COOKIE_SECURE=false`，两者不得混用。**2026-11-08 勘误（用户确认）**：历史记录中的「192.168.40.195」演练实例为误记 IP，该服务器不存在；实测 `192.168.1.203` 上也无演练形态部署实物（无 `/opt/juhe-ai-dev`、无 `pg16` 容器、无 `juhe_ai_dev` 库、无 03:40 备份 cron、无 8193 入口）——`docker/dev-server` 生产演练形态当前未部署，T154/T155/T156 的目标对象已消失，去留待裁决。
+- `dev/` 保存本机开发环境变量：`shared.env` 是本机 `pnpm dev`（development）的权威配置，连 `192.168.1.203` 的开发库（`juhe_ai_sub2api_dev`），开发自动登录与验证码关闭由 development 配置提供。**2026-11-08 用户裁决：生产演练实例退役**——历史记录中的「192.168.40.195」演练实例为误记 IP（该服务器不存在），`docker/dev-server` 内网生产演练形态从未在此可及的任何机器落地（203 实测无部署实物），相关待办 T154/T155/T156 已按裁决删除，`docker/dev-server/` 目录随退役清理；如未来需要生产演练形态，按 `docker/single-server/` 变体重新立项。
 - `F:\juhe-ai-public-welfare\.local` 仅供目录设计参考；当前项目不读取或复用其中的数据库、Redis、连接串或命名空间。
 - `prod` 只保存当前唯一生产形态（国内单机 Docker，`103.36.63.105`）的私有资料：资产台账 `assets/国内单机-103.36.63.105.md`（含 SSH 密钥）、数据库事实 `database/国内单机-postgresql-redis.md`、唯一运维手册 `runbooks/国内单机Docker部署与运维.md`。旧 Mac + K3s + Edge 形态资料已清理，不另留备份。单机形态的变更通过 `docker/single-server/` 配置 + 上传发布；在当前任务获得明确授权时，允许在目标服务器上以受控方式执行限定的数据修复、回填和向前兼容的加法式 schema 变更（执行前先备份）。不允许把 Secret、env、logs、releases、backups 数据复制到本目录之外的任何位置。
 - **当前检出已包含 `.local/project-resources/prod/`**（2026-11-07 核实）：资产台账、数据库事实与运维手册在位，`docker/single-server/deploy.sh` 发布路径可执行；生产发布/备份仍须用户发布窗授权，执行清单见 `docs/待办与阻塞事项.md` T178。
@@ -98,7 +98,7 @@
 | 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/architecture/Go三项目架构基线.md` |
 | 需求计划、执行进度或关联文档 | `docs/plans/README.md` |
 | 本地安装、运行、联调、测试或验证 | `docs/develop/README.md` |
-| 部署相关变动（compose/env/参数/运行时目录/初始化与验证步骤） | `docs/deploy/README.md` 与 `docker/single-server/README.md`（同步约束见上文"部署变更文档同步"）；内网生产演练形态见 `docker/dev-server/README.md` |
+| 部署相关变动（compose/env/参数/运行时目录/初始化与验证步骤） | `docs/deploy/README.md` 与 `docker/single-server/README.md`（同步约束见上文"部署变更文档同步"） |
 | bug、异常、测试失败或数据不一致 | `docs/architecture/问题修复指导.md`，必要时记录到 `docs/bug/README.md` |
 | 大文件拆分、职责调整或重复逻辑收敛 | `docs/architecture/大文件重构指南.md`，复盘记录到 `docs/refactors/README.md` |
 | 压测、性能分析、容量或验证报告 | `docs/reports/README.md` |

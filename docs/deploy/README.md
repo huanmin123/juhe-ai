@@ -33,7 +33,6 @@
 ## 适用边界
 
 - 本文档面向“拿到仓库即可部署”的维护者：主文档走流程，组件细节按上表进入对应文档。
-- 内网生产演练变体不在 `docs/deploy/` 下单独成文：复用外部 PostgreSQL/Redis 的 compose、生产语义配置、备份与边界统一由 [`docker/dev-server/README.md`](../../docker/dev-server/README.md) 维护；它不是生产实例，也不替代生产部署。
 - `docker/cluster/` 是未来多机形态的隔离部署目录（dev 演练验收、生产未启用）；单机生产变更不得修改该目录，集群变更不得修改 `docker/single-server/`。
-- 不覆盖已退役形态：K3s/K8s、Harbor/Jenkins、家庭宽带反代、Edge/WireGuard 回源、macOS/Windows 本机部署、SQLite/内存存储模式、Node 后端。看到旧文档或旧命令时以本目录为准。
+- 不覆盖已退役形态：内网生产演练形态（`docker/dev-server`，2026-11-08 用户裁决退役——演练实例从未在可及机器落地且 IP 记录系误记）、K3s/K8s、Harbor/Jenkins、家庭宽带反代、Edge/WireGuard 回源、macOS/Windows 本机部署、SQLite/内存存储模式、Node 后端。看到旧文档或旧命令时以本目录为准。
 - 修改部署行为（compose / Caddyfile / Dockerfile / 环境变量契约 / 运行时目录 / 初始化与升级序列）时，必须同批更新本目录、对应组件文档与 `docker/single-server/README.md`。
