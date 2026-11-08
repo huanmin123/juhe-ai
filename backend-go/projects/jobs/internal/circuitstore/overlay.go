@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -378,6 +379,12 @@ func (o *OverlayReconciler) UpsertOverlays(ctx context.Context, overlays []opsjo
 	if len(ordered) == 0 {
 		return nil
 	}
+	// 多行 upsert 行序统一为 account_id 升序：调用方（reconcileRuntimeOverlays）
+	// 的顺序来自 Redis dirty 列表，非确定；两个并发批次对同一账户集以不同行序
+	// upsert 会交叉加行锁死锁（2026-11-08 巡检实录：生产每 15-20 分钟自愈重试
+	// 一次，pg_stat_database.deadlocks 持续增长）。统一排序后并发批次按相同
+	// 顺序加锁，不再交叉。
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].AccountID < ordered[j].AccountID })
 	valueClauses := make([]string, 0, len(ordered))
 	args := make([]any, 0, len(ordered)*4)
 	for _, entry := range ordered {
