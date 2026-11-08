@@ -102,6 +102,7 @@ import {
   NodeIndexOutlined,
   ProfileOutlined,
   SafetyCertificateOutlined,
+  SafetyOutlined,
   SettingOutlined,
   TeamOutlined,
   ThunderboltOutlined,
@@ -278,6 +279,11 @@ const menuIconMap = {
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
   '/ip-stats': GlobalOutlined,
+  // 我的安全策略 / 安全策略（API Key 安全策略与出站内容脱敏设计）：出站内容
+  // 脱敏用盾形（SafetyOutlined）与授权域 SafetyCertificateOutlined、响应检查
+  // 策略 FilterOutlined 区分，双面同款。
+  '/my-security-policies': SafetyOutlined,
+  '/security-policies': SafetyOutlined,
   '/response-inspection-policies': FilterOutlined,
   '/external-integration-sources': LinkOutlined,
   '/announcements': BellOutlined,
