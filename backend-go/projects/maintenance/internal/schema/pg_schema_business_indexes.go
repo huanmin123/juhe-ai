@@ -109,11 +109,11 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(lower(display_name), id)`,
 	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL`,
-	},
+	// T117c（2026-11-08 生产回收批）：idx_accounts_credential_fingerprint /
+	// owner_name_lookup / type_c_trgm_lookup / system_account_last_used /
+	// owner_list_order 五枚 0 扫描无查询引用索引已从本清单与生产同时删除
+	//（审计报告-2026-11-04 §6；扫描计数与 EXPLAIN 证据见待办 T117 条目），
+	// 新库不再创建。
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
@@ -125,13 +125,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SQL: `CREATE INDEX IF NOT EXISTS idx_accounts_owner_all_name_lookup
       ON accounts(system_account_id, name, id)
       WHERE deleted_at IS NULL`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_lookup
-      ON accounts(system_account_id, name, id)
-      WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -296,24 +289,12 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_accounts_owner_list_order
-      ON accounts(system_account_id, priority ASC, created_at ASC, id ASC)
-      WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_proxy_profile ON accounts(proxy_profile_id, id)`,
 	},
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_proxy_pool ON accounts(proxy_pool_id, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at)`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -1182,11 +1163,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "accounts-pg-trigram-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_name_c_trgm_lookup ON accounts USING gin ((name COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "accounts-pg-trigram-indexes",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_type_c_trgm_lookup ON accounts USING gin ((type COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL`,
 	},
 	{
 		SchemaName: "juhe_business",

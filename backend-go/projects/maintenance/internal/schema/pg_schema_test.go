@@ -152,8 +152,10 @@ import (
 // account_id、models(system_account_id,scope,vendor_code)、
 // system_sessions(system_account_id,last_seen_at DESC)；media_jobs
 // owner_created 原位补 id DESC 后缀不改计数）。
+// 642→637：T117c 冗余索引回收批 -5（同上方 per-schema 注释；proberepo
+// EnsureSchema 的重复唯一索引语句删除属 shared 模块不计入）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 642
+const goldenPostgresSchemaStatementCount = 637
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -188,7 +190,11 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 339→343：T117b 支撑索引批 +4（account_supported_models(model_id,account_id)、
 	// 可用性投影 account_id、models owner 三列、system_sessions owner 两列；
 	// media_jobs owner_created 原位升级三列不改计数）。
-	"juhe_business": 343,
+	// 343→338：T117c 冗余索引回收批 -5（accounts 五枚 0 扫描无查询引用索引：
+	// credential_fingerprint / owner_name_lookup / type_c_trgm_lookup /
+	// system_account_last_used / owner_list_order，生产已同步 DROP
+	// CONCURRENTLY；审计报告-2026-11-04 §6）。
+	"juhe_business": 338,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,

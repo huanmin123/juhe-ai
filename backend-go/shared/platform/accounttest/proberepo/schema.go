@@ -37,8 +37,10 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
       created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT ''
     )`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS account_api_key_runtime_states_account_fingerprint ON ` +
-			s.table("account_api_key_runtime_states") + ` (account_id, key_fingerprint)`,
+		// T117c（2026-11-08，审计报告 §8 DDL 双写收敛）：表结构与唯一性由
+		// maintenance schema 唯一所有（idx_account_api_key_runtime_unique，
+		// 同键同谓词），本探针族不再重复建第二枚同名不同索引；建表语句保持
+		// 启动自检兜底（IF NOT EXISTS 与 maintenance DDL 同形）。
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, s.bind(statement)); err != nil {
