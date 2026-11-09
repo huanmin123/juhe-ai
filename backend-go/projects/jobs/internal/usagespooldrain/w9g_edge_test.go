@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // TestW9GConfigDefaults 覆盖零值回落默认与显式值直通两条分支。

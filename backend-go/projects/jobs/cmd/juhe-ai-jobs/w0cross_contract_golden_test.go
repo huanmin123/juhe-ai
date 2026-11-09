@@ -5,12 +5,12 @@
 // 跨进程契约只能各自维护手工同步的拷贝，且没有任何编译期联动——漂移不会
 // 在构建期暴露，只会在运行时才表现出来：
 //
-//   - 契约 1（usage-record-spool JSON 记录形状）：gateway 写侧
+//   - 契约 1（用量记录 JSON 字段形状）：gateway 写侧
 //     projects/gateway/internal/gatewayusage/records.go 的 UsageRecordInput
-//     （json tag 即 usage-record-spool 落盘格式）与 jobs 读侧
-//     projects/jobs/internal/usagewriter/records.go 的同名字段结构。漂移
-//     先例风险：jobs 读侧缺字段时该字段被静默丢弃（字段静默丢失），极端
-//     形状下整行进 .corrupt 隔离，用量与账务出现不可逆缺口；
+//     （json tag 即直投 PG 桥的序列化格式，2026-11-09 T188 前为
+//     usage-record-spool 落盘格式）与 shared/platform/usagewriter/records.go
+//     的同名字段结构。漂移风险：桥接时字段被静默丢弃，用量与账务出现不可
+//     逆缺口；
 //   - 契约 2（account_health_probe_request_outbox 交接表 DDL）：gateway
 //     写侧 projects/gateway/cmd/juhe-ai-gateway/chain_request_failure_health.go
 //     与 jobs 消费侧本目录 worker_health_probe_outbox.go 各自维护 CREATE
@@ -55,8 +55,8 @@ import (
 )
 
 // TestCrossProcessContractGolden 是两份跨进程手工契约拷贝的 golden 对比
-// 入口：子测试分别覆盖 usage-record-spool JSON 记录形状与
-// account_health_probe_request_outbox DDL。
+// 入口：子测试分别覆盖用量记录 JSON 字段形状（gateway ↔ shared
+// usagewriter 直投桥）与 account_health_probe_request_outbox DDL。
 func TestCrossProcessContractGolden(t *testing.T) {
 	root, ok := crossContractBackendGoRoot(t)
 	if !ok {
@@ -64,7 +64,7 @@ func TestCrossProcessContractGolden(t *testing.T) {
 	}
 	gatewayRecords := filepath.Join(root, "projects", "gateway", "internal", "gatewayusage", "records.go")
 	gatewayOutbox := filepath.Join(root, "projects", "gateway", "cmd", "juhe-ai-gateway", "chain_request_failure_health.go")
-	jobsRecords := filepath.Join(root, "projects", "jobs", "internal", "usagewriter", "records.go")
+	jobsRecords := filepath.Join(root, "shared", "platform", "usagewriter", "records.go")
 	jobsOutbox := filepath.Join(root, "projects", "jobs", "cmd", "juhe-ai-jobs", "worker_health_probe_outbox.go")
 
 	// gateway 侧属于另一个 module：未检出时跳过（monorepo 完整检出时生效）。
@@ -73,10 +73,11 @@ func TestCrossProcessContractGolden(t *testing.T) {
 			t.Skipf("gateway 契约源未检出（monorepo 完整检出时本测试生效）: %s", path)
 		}
 	}
-	// jobs 侧属于本 module：缺失即本 module 自身损坏，不是检出范围问题。
+	// 共享 usagewriter 与 jobs 幂等 DDL 都在本工作区：缺失即仓库自身损坏，
+	// 不是检出范围问题。
 	for _, path := range []string{jobsRecords, jobsOutbox} {
 		if !crossContractFileExists(path) {
-			t.Fatalf("jobs module 自身契约源缺失: %s", path)
+			t.Fatalf("仓库内契约源缺失: %s", path)
 		}
 	}
 

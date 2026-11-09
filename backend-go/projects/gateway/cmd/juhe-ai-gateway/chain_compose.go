@@ -84,15 +84,10 @@ type chainRuntimeDeps struct {
 	// AuditUsageDispatch carries the same producer behind the usage-face
 	// audit port (gatewayusage.AuditDispatcher). Nil degrades identically.
 	AuditUsageDispatch gatewayusage.AuditDispatcher
-	// SpoolDirectory enables the durable usage-record spool.
-	SpoolDirectory string
-	// Usage spool capacity knobs（D-209，Node runtimeConfig.usageSpool：
-	// JUHE_AI_USAGE_SPOOL_MAX_ITEMS / MAX_MB / REPLAY_BATCH_SIZE /
-	// REPLAY_INTERVAL_MS）。<=0 时回落 Node 同值默认。
-	UsageSpoolMaxItems         int
-	UsageSpoolMaxBytes         int
-	UsageSpoolReplayBatchSize  int
-	UsageSpoolReplayIntervalMs int
+	// UsageDeliverer 是用量记录投递端口：生产为网关直投 PG（共享
+	// usagewriter，2026-11-09 T188）；测试可注入文件 spool 或捕获替身。
+	// nil 时 recorder 按丢弃计数与采样告警处理（不再回落生产文件 spool）。
+	UsageDeliverer usageRecordDeliverer
 	// UsageFinalizationMaxItems 是用量收尾队列容量（D-147，Node
 	// runtimeConfig.gateway.usageFinalizationMaxItems，
 	// JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS 默认 2048）。<=0 回落
@@ -342,20 +337,17 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 
 	// ---- usage service + persistence bridge (adapter 5) ----
-	spool := newUsageSpool(deps.SpoolDirectory, clock, logger, usageSpoolCapacity{
-		MaxItems:         deps.UsageSpoolMaxItems,
-		MaxBytes:         deps.UsageSpoolMaxBytes,
-		ReplayBatchSize:  deps.UsageSpoolReplayBatchSize,
-		ReplayIntervalMs: deps.UsageSpoolReplayIntervalMs,
-	})
-	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: logger}, spool)
+	// 用量记录直投：生产由组合根注入 PG deliverer；测试注入文件 spool 或捕获
+	// 替身。nil 时 recorder 逐条计数并采样告警，不静默吞掉投递面缺失。
+	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: logger}, deps.UsageDeliverer)
 	// D-147（BUG-0175）：收尾队列容量/并发改由组合根 env 旋钮传入——
 	// JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS 与
 	// JUHE_AI_CONCURRENCY_GLOBAL_MAX（Node runtimeConfig.gateway.
 	// usageFinalizationMaxItems / concurrency.globalMax）；此前硬传 (0,0)
 	// 使两个 env 对队列失效，只能吃到包级默认。
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
-	dispatch.OverflowEnabled = spool != nil
+	// 2026-11-09 T188：文件 spool 退出生产投递面，收尾队列溢出不再有落盘补
+	// 偿端口；溢出记录由 recorder 的丢弃计数与采样告警显式暴露。
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
 	// chainSyncPricingAllowed 是同步定价目录 gate 的组合根字面量（D6，存储
 	// 形态收口：原按 cacheDriver 判断的写法本就以常量表达，redis 下现行为
 	// true 逐字节保持；启用同步定价属独立行为裁决，不在收口战役内）：usage
@@ -830,9 +822,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 
 	shutdown := func() {
 		recorder.Close()
-		if spool != nil {
-			spool.StopReplay()
-		}
 		// D-192/D-146：链条停机时释放上游 keep-alive 传输的空闲连接。
 		upstreamClientPool.CloseIdleConnections()
 		// 停掉共享 JSON 解析池的常驻 worker，防止多次组合（测试全量/链重建）泄漏 goroutine。
@@ -873,59 +862,6 @@ func joinChinese(values []string) string {
 		out += value
 	}
 	return out
-}
-
-// usageSpoolCapacity 汇集 Node runtimeConfig.usageSpool 的四个容量旋钮
-// （D-209）；<=0 的字段回落 Node 同值默认。
-type usageSpoolCapacity struct {
-	MaxItems         int
-	MaxBytes         int
-	ReplayBatchSize  int
-	ReplayIntervalMs int
-}
-
-func newUsageSpool(directory string, clock gatewaypreauth.Clock, logger *slog.Logger, capacity usageSpoolCapacity) *gatewayusage.UsageRecordSpool {
-	if directory == "" {
-		return nil
-	}
-	// Enabled: the chain process is the usage-record producer after the flip;
-	// the file spool is its durable compensation sink regardless of the
-	// runtime mode (the Node standalone path enqueues into the jobs-module
-	// usagewriter, which this process cannot import — see chain_usage.go).
-	// Capacity defaults mirror runtimeConfig.usageSpool (JUHE_AI_USAGE_SPOOL_*).
-	if capacity.MaxItems <= 0 {
-		capacity.MaxItems = 250_000
-	}
-	if capacity.MaxBytes <= 0 {
-		capacity.MaxBytes = 4_096 * 1024 * 1024
-	}
-	if capacity.ReplayBatchSize <= 0 {
-		capacity.ReplayBatchSize = 500
-	}
-	if capacity.ReplayIntervalMs <= 0 {
-		capacity.ReplayIntervalMs = 1_000
-	}
-	return gatewayusage.NewUsageRecordSpool(gatewayusage.SpoolConfig{
-		Directory:        directory,
-		InstanceID:       "gateway-chain",
-		MaxItems:         capacity.MaxItems,
-		MaxBytes:         capacity.MaxBytes,
-		ReplayBatchSize:  capacity.ReplayBatchSize,
-		ReplayIntervalMs: capacity.ReplayIntervalMs,
-		Enabled:          true,
-	}, clock, slogLogger{inner: logger})
-}
-
-// spoolOverflow implements gatewayusage.DispatchOverflowSpool.
-type spoolOverflow struct {
-	spool *gatewayusage.UsageRecordSpool
-}
-
-func (o spoolOverflow) PersistOverflow(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
-	if o.spool == nil {
-		return nil
-	}
-	return o.spool.Persist(ctx, input)
 }
 
 func firstNonEmptyString(values ...string) string {

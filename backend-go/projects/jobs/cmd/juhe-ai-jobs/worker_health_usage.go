@@ -20,7 +20,7 @@ import (
 	"errors"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // probeUsageWriter 是探针观测到使用记录的适配器（业务库作用域解析 +

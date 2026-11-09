@@ -16,6 +16,16 @@ import (
 	"time"
 )
 
+// artifactTestRoot 返回测试替身的文件系统根目录。
+func artifactTestRoot(t *testing.T, deps *Deps) string {
+	t.Helper()
+	store, ok := deps.Artifacts.(*fsArtifactStore)
+	if !ok || store.root == "" {
+		t.Fatalf("测试暂存后端不是文件系统替身: %T", deps.Artifacts)
+	}
+	return store.root
+}
+
 // artifactUserDirFiles 列出指定用户暂存目录内的文件名（目录不存在视为空）。
 func artifactUserDirFiles(t *testing.T, root, viewer string) []string {
 	t.Helper()
@@ -85,7 +95,7 @@ func TestImagesArtifactsReplaceOnRegenerate(t *testing.T) {
 	if len(first) != 1 {
 		t.Fatalf("首批产物数 = %d，期望 1", len(first))
 	}
-	files := artifactUserDirFiles(t, deps.ArtifactsRoot, "sys_user_1")
+	files := artifactUserDirFiles(t, artifactTestRoot(t, deps), "sys_user_1")
 	if len(files) != 1 {
 		t.Fatalf("首批落盘文件数 = %d，期望 1（%v）", len(files), files)
 	}
@@ -99,7 +109,7 @@ func TestImagesArtifactsReplaceOnRegenerate(t *testing.T) {
 	if len(second) != 1 {
 		t.Fatalf("二次产物数 = %d，期望 1", len(second))
 	}
-	files = artifactUserDirFiles(t, deps.ArtifactsRoot, "sys_user_1")
+	files = artifactUserDirFiles(t, artifactTestRoot(t, deps), "sys_user_1")
 	if len(files) != 1 || files[0] != second[0].ID+".png" {
 		t.Fatalf("覆盖替换后文件不符: %v（期望仅 %s）", files, second[0].ID+".png")
 	}
@@ -149,7 +159,7 @@ func TestSpeechArtifactReplacedOnRegenerate(t *testing.T) {
 	}
 	firstID := synthesize()
 	secondID := synthesize()
-	files := artifactUserDirFiles(t, deps.ArtifactsRoot, "sys_user_1")
+	files := artifactUserDirFiles(t, artifactTestRoot(t, deps), "sys_user_1")
 	if len(files) != 1 || files[0] != secondID+".wav" {
 		t.Fatalf("语音覆盖替换后文件不符: %v（期望仅 %s.wav）", files, secondID)
 	}
@@ -190,7 +200,7 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 			t.Fatalf("创建响应 = %s（期望 jobId %s）", recorder.Body.String(), wantJobID)
 		}
 	}
-	files := artifactUserDirFiles(t, deps.ArtifactsRoot, "sys_user_1")
+	files := artifactUserDirFiles(t, artifactTestRoot(t, deps), "sys_user_1")
 	if len(files) != 1 || !strings.HasSuffix(files[0], ".json") {
 		t.Fatalf("任务引用文件数不符: %v（期望单条 .json）", files)
 	}
@@ -201,7 +211,7 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 		Status    string `json:"status"`
 		CreatedAt int64  `json:"createdAt"`
 	}
-	data, err := os.ReadFile(filepath.Join(deps.ArtifactsRoot, "sys_user_1", files[0]))
+	data, err := os.ReadFile(filepath.Join(artifactTestRoot(t, deps), "sys_user_1", files[0]))
 	if err != nil {
 		t.Fatalf("任务引用读取失败: %v", err)
 	}
@@ -386,7 +396,7 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 	}
 
 	// 视频任务引用 JSON 不经 content 端点（404；视频内容走 §3.5 jobId 代理）。
-	refFiles := artifactUserDirFiles(t, deps.ArtifactsRoot, "sys_user_1")
+	refFiles := artifactUserDirFiles(t, artifactTestRoot(t, deps), "sys_user_1")
 	refID := ""
 	for _, name := range refFiles {
 		if strings.HasSuffix(name, ".json") {
@@ -408,8 +418,8 @@ func TestCleanupExpiredRemovesStaleAndEmptyDirs(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
 	mux, _ := newTestRoutes(deps)
 	staleTime := time.Now().Add(-25 * time.Hour)
-	stalePath := filepath.Join(deps.ArtifactsRoot, "sys_user_1", "1700000000000000000-deadbeefdeadbeef.png")
-	if err := os.MkdirAll(filepath.Join(deps.ArtifactsRoot, "sys_user_1"), 0o700); err != nil {
+	stalePath := filepath.Join(artifactTestRoot(t, deps), "sys_user_1", "1700000000000000000-deadbeefdeadbeef.png")
+	if err := os.MkdirAll(filepath.Join(artifactTestRoot(t, deps), "sys_user_1"), 0o700); err != nil {
 		t.Fatalf("暂存目录构造失败: %v", err)
 	}
 	if err := os.WriteFile(stalePath, pngOnePixel, 0o600); err != nil {
@@ -418,12 +428,12 @@ func TestCleanupExpiredRemovesStaleAndEmptyDirs(t *testing.T) {
 	if err := os.Chtimes(stalePath, staleTime, staleTime); err != nil {
 		t.Fatalf("过期 mtime 注入失败: %v", err)
 	}
-	freshPath := filepath.Join(deps.ArtifactsRoot, "sys_user_1", "1700000000000000001-cafebabecafebabe.jpg")
+	freshPath := filepath.Join(artifactTestRoot(t, deps), "sys_user_1", "1700000000000000001-cafebabecafebabe.jpg")
 	if err := os.WriteFile(freshPath, pngOnePixel, 0o600); err != nil {
 		t.Fatalf("新鲜文件构造失败: %v", err)
 	}
 	// 另一用户目录仅存过期文件：清理后连目录一起删除。
-	otherDir := filepath.Join(deps.ArtifactsRoot, "sys_user_2")
+	otherDir := filepath.Join(artifactTestRoot(t, deps), "sys_user_2")
 	otherPath := filepath.Join(otherDir, "1700000000000000002-0123456789abcdef.mp3")
 	if err := os.MkdirAll(otherDir, 0o700); err != nil {
 		t.Fatalf("他户目录构造失败: %v", err)
@@ -490,11 +500,11 @@ func TestSanitizeArtifactID(t *testing.T) {
 	}
 }
 
-// TestArtifactsEndpointsDegradedWithoutRoot 暂存面未接线（ArtifactsRoot 空）：
+// TestArtifactsEndpointsDegradedWithoutRoot 暂存面未接线（Artifacts 为 nil）：
 // 产物端点显式 503 降级，生图不进入派发路径（功能不设开关，非静默空行为）。
 func TestArtifactsEndpointsDegradedWithoutRoot(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
-	deps.ArtifactsRoot = ""
+	deps.Artifacts = nil
 	addImageCandidate(deps)
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}})

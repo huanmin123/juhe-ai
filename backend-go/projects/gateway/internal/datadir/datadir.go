@@ -30,24 +30,15 @@ const (
 // codex-context 根常量随跨协议桥退役删除，磁盘历史目录按部署文档人工清理).
 // 保留的只有 PG+Redis 形态仍消费的普通文件目录面.
 const (
-	// UsageRecordSpoolDirectory 是 gateway↔jobs 用量记录 spool 交接目录
-	// （D1，PLAN-20261024T051925945Z）：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置
-	// 时组合根派生 <DATA_DIR>/usage-record-spool（显式配置优先；旧名
-	// JUHE_AI_USAGE_SPOOL_DIR 回落语义保留在组合根）。
-	UsageRecordSpoolDirectory = "usage-record-spool"
-	AuditBlobDirectory        = "audit-blob"
-	// PlaygroundArtifactsDirectory is the playground artifact staging root
-	// (演练场设计 §3.8: images/speech bytes + the single video task reference
-	// per user; a display cache with 24h lazy expiry — not an asset store, so
-	// it deliberately has no path env override and always derives from the
-	// data root).
-	PlaygroundArtifactsDirectory = "playground-artifacts"
-	// RuntimeLogsDirectory is the 2026-09-28 default-on derivation for
-	// JUHE_AI_LOG_DIR: an unset env derives <DATA_DIR>/logs (symmetric with
-	// the jobs runtimelog config derivation); the gateway file sink and the
-	// jobs F1 indexer/cleanup then share one directory in a zero-config
-	// deployment. The literal "disabled" stays a composition-root concern
-	// (explicit opt-out), not a fixed name.
+	// 2026-11-09 T188：UsageRecordSpoolDirectory 随网关直投 PG 删除
+	// （usage-record-spool 目录与 JUHE_AI_USAGE_SPOOL_* env 一并退役）。
+	AuditBlobDirectory = "audit-blob"
+	// RuntimeLogsDirectory is the default-on derivation for JUHE_AI_LOG_DIR:
+	// an unset env derives <DATA_DIR>/logs. The gateway file sink writes
+	// locally and self-prunes rotated files; the jobs F1 PG indexer was
+	// retired on 2026-11-09, so no cross-process directory sharing is needed.
+	// The literal "disabled" stays a composition-root concern (explicit
+	// opt-out), not a fixed name.
 	RuntimeLogsDirectory = "logs"
 )
 

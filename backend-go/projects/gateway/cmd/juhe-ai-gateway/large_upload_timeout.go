@@ -7,13 +7,13 @@ import (
 )
 
 // 大请求体路由的读超时豁免（2026-11-06 安全加固复审 blocker）：
-// mainServer.ReadTimeout 是全局 body 慢速占连上限，但 /v1/files 的契约单文件
-// 上限是 512MiB，64MiB 的图片/音频车道也高于默认窗口能覆盖的速率。这里在
-// 监听最外层按路由延长连接读 deadline；必须包在全部 ResponseWriter 包装器
-// 之前，http.NewResponseController 才能触达原始连接。
+// mainServer.ReadTimeout 是全局 body 慢速占连上限，但 64MiB 的图片/音频车道
+// 高于默认窗口能覆盖的速率。这里在监听最外层按路由延长连接读 deadline；必须
+// 包在全部 ResponseWriter 包装器之前，http.NewResponseController 才能触达原始
+// 连接。原 /v1/files 512MiB 车道随 2026-11-09 openai-compatible files 本地
+// 运行时退役删除（路由不再挂载）。
 const (
-	defaultLargeUploadReadTimeout = 60 * time.Minute // /v1/files：512MiB ≈ 146KiB/s
-	mediaUploadReadTimeout        = 30 * time.Minute // 64MiB 媒体车道 ≈ 36KiB/s
+	mediaUploadReadTimeout = 30 * time.Minute // 64MiB 媒体车道 ≈ 36KiB/s
 	// largeUploadConcurrencyLimit bounds how many extended-deadline uploads
 	// may hold a connection at once. The extension runs before authentication,
 	// so without this cap an unauthenticated client could pin many goroutines
@@ -82,8 +82,6 @@ func largeUploadReadTimeout(r *http.Request) (time.Duration, bool) {
 		path = strings.TrimPrefix(path, "/v1")
 	}
 	switch path {
-	case "/files":
-		return defaultLargeUploadReadTimeout, true
 	case "/images/edits", "/audio/transcriptions", "/audio/translations":
 		return mediaUploadReadTimeout, true
 	default:

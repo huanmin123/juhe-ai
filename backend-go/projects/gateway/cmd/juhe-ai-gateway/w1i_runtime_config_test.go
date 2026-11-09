@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -95,9 +94,6 @@ func TestW1iLoadRuntimeConfigDefaults(t *testing.T) {
 	}
 	if cfg.Port != 3000 {
 		t.Fatalf("port = %d", cfg.Port)
-	}
-	if cfg.UsageSpoolDirectory != filepath.Join("data", "usage-record-spool") {
-		t.Fatalf("usage spool = %q", cfg.UsageSpoolDirectory)
 	}
 }
 

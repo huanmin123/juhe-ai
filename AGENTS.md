@@ -47,7 +47,7 @@
 - 凡涉及部署行为的变动，必须在**同一次交付内**同步更新用户部署文档，未同步不得宣称任务完成；交付说明中列出已同步的文档清单。触发范围包括但不限于：
   - `docker/single-server/` 下 `compose.yml` / `Caddyfile` / `Dockerfile.runtime` 的任何变更（working_dir、卷挂载、健康检查、端口、镜像参数等）；
   - 环境变量契约变化：新增、删除、改名、默认值、必填性或取值约束（gateway/jobs/maintenance 全部进程）；
-  - 运行时目录/路径契约、进程工作目录、跨进程交接路径（如 gateway↔jobs 的 usage-record-spool 同源要求）；
+  - 运行时目录/路径契约、进程工作目录、日志与 DATA_DIR 派生路径；
   - 初始化与迁移序列（maintenance 命令、schema 预置）、部署/更新/回滚/验证步骤；
   - systemd/裸进程直跑等非 compose 形态的差异。
 - 同步去向：总览入 `docs/deploy/部署指南.md`，配置契约权威入 `docker/single-server/README.md`，直跑差异入 `docs/deploy/linux/README.md`；HTTPS、代理等专题入 `docs/deploy/` 对应子目录。

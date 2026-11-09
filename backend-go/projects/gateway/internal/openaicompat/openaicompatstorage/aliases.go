@@ -16,12 +16,11 @@ import (
 
 // Shared type vocabulary (aliases keep the Go type identity single-sourced).
 type (
-	RequestError          = openaicompatcore.RequestError
-	BridgeRequestError    = openaicompatcore.BridgeRequestError
-	Config                = openaicompatcore.Config
-	CodeInterpreterConfig = openaicompatcore.CodeInterpreterConfig
-	GatewayScope          = openaicompatcore.GatewayScope
-	ScopeResolver         = openaicompatcore.ScopeResolver
+	RequestError       = openaicompatcore.RequestError
+	BridgeRequestError = openaicompatcore.BridgeRequestError
+	Config             = openaicompatcore.Config
+	GatewayScope       = openaicompatcore.GatewayScope
+	ScopeResolver      = openaicompatcore.ScopeResolver
 )
 
 // Runtime-config constants.

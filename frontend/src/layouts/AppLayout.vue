@@ -118,6 +118,7 @@ import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { authState, logout } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
+import { deploymentCapabilityEnabled } from '@/composables/useCapabilities'
 import {
   appMenuMode,
   getDefaultPathForMenuMode,
@@ -277,7 +278,6 @@ const menuIconMap = {
   '/operation-logs': ProfileOutlined,
   '/public-api-logs': ApiOutlined,
   '/audit-logs': FileSearchOutlined,
-  '/runtime-logs': SearchOutlined,
   '/ip-stats': GlobalOutlined,
   // 我的安全策略 / 安全策略（API Key 安全策略与出站内容脱敏设计）：出站内容
   // 脱敏用盾形（SafetyOutlined）与授权域 SafetyCertificateOutlined、响应检查
@@ -327,6 +327,8 @@ function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
 const visibleMenuRoutes = computed(() =>
   menuRoutes.filter((item) => (
     canAccessRoute(item)
+    && (!item.meta?.requiresCapability
+      || deploymentCapabilityEnabled(currentUser.value?.capabilities, item.meta.requiresCapability))
     && (item.meta?.viewScope ?? 'admin') === appMenuMode.value
   ))
 )

@@ -29,10 +29,10 @@ import (
 const playgroundJSONBodyLimit = 64 * 1024 * 1024
 
 // playgroundRoutes 是演练场路由运行时（会话/任务零落库，设计 §1.2；artifacts
-// 是产物暂存区句柄，根目录来自 Deps.ArtifactsRoot）。
+// 是产物暂存后端，生产注入 PG 实现）。
 type playgroundRoutes struct {
 	deps      *Deps
-	artifacts *artifactStore
+	artifacts ArtifactStore
 }
 
 // Register 挂载演练场路由族到 kernel（pattern 键 "METHOD /prefix/path"，与
@@ -44,7 +44,7 @@ func (d *Deps) Register(k Registerer, prefix string) {
 	if d.FetchURL == nil {
 		d.FetchURL = defaultFetchURL
 	}
-	rt := &playgroundRoutes{deps: d, artifacts: newArtifactStore(d.ArtifactsRoot)}
+	rt := &playgroundRoutes{deps: d, artifacts: d.Artifacts}
 	mount := func(method, pattern string, handler http.HandlerFunc) {
 		k.Register(method+" "+prefix+pattern, rt.wrap(handler))
 	}

@@ -32,19 +32,14 @@ container_health() {
 }
 http_code() { curl -sS -m 5 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || echo 000; }
 
-check_shared() { # $1=compose file $2=service
+check_dirs() { # $1=compose file $2=service
   local compose=$1 service=$2 uid
   uid=$(docker compose -f "$compose" exec -T "$service" id -u 2>/dev/null | tr -d '\r')
-  if [ "$uid" = "1000" ]; then ok "$service 容器内运行用户 uid=1000"; else bad "$service 容器内 uid=${uid:-未知}（要求 1000，跨节点共享目录契约）"; fi
+  if [ "$uid" = "1000" ]; then ok "$service 容器内运行用户 uid=1000"; else bad "$service 容器内 uid=${uid:-未知}（要求 1000，镜像固定运行用户契约）"; fi
   if docker compose -f "$compose" exec -T "$service" sh -c 'touch data/.verify-$$ && rm data/.verify-$$ && touch logs/.verify-$$ && rm logs/.verify-$$' 2>/dev/null; then
-    ok "$service 可写共享 data/ 与 logs/"
+    ok "$service data/ 与 logs/ 可写"
   else
-    bad "$service 无法写共享 data/ 或 logs/（检查 NFS 挂载、UID/GID 与目录权限）"
-  fi
-  if docker compose -f "$compose" exec -T "$service" sh -c 'test -d data/usage-record-spool' 2>/dev/null; then
-    ok "$service usage spool 目录存在（data/usage-record-spool）"
-  else
-    warn "$service 未见 data/usage-record-spool（新节点首次启动后由进程创建；持续缺失需查日志）"
+    bad "$service 无法写 data/ 或 logs/（检查挂载、UID/GID 与目录权限）"
   fi
 }
 
@@ -68,10 +63,10 @@ check_node() {
   echo "$metrics" | grep -q "instance_id=\"$instance\"" \
     && ok "build_info instance_id=$instance 与配置一致" \
     || bad "build_info instance_id 与 JUHE_AI_INSTANCE_ID=$instance 不一致"
-  check_shared "$compose" gateway
+  check_dirs "$compose" gateway
   docker compose -f "$compose" exec -T gateway sh -c 'ls logs 2>/dev/null' 2>/dev/null | grep -q "$instance" \
-    && ok "本实例运行日志文件已在共享 logs/ 落盘" \
-    || warn "共享 logs/ 未见含实例名 $instance 的日志文件（启动初期或日志目录契约异常）"
+    && ok "本实例运行日志文件已在 logs/ 落盘" \
+    || warn "logs/ 未见含实例名 $instance 的日志文件（启动初期或日志目录契约异常）"
 }
 
 check_jobs() {
@@ -91,10 +86,10 @@ check_jobs() {
   else
     bad "jobs /health 无 leader 字段：${body:-无响应}"
   fi
-  check_shared "$compose" jobs
+  check_dirs "$compose" jobs
   docker compose -f "$compose" exec -T jobs sh -c 'ls logs 2>/dev/null' 2>/dev/null | grep -q "$instance" \
-    && ok "本实例运行日志文件已在共享 logs/ 落盘" \
-    || warn "共享 logs/ 未见含实例名 $instance 的日志文件（启动初期或日志目录契约异常）"
+    && ok "本实例运行日志文件已在 logs/ 落盘" \
+    || warn "logs/ 未见含实例名 $instance 的日志文件（启动初期或日志目录契约异常）"
 }
 
 check_edge() {

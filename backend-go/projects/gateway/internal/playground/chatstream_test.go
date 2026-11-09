@@ -19,8 +19,8 @@ import (
 )
 
 // playgroundFixtureDeps 装配「一个 gpt 账户 + chat 目录行」的最小依赖（chat
-// 行带 function_calling 声明由参数控制；ArtifactsRoot 指向每测试独立临时目录，
-// 暂存行为走真实磁盘）。
+// 行带 function_calling 声明由参数控制；Artifacts 指向每测试独立的文件系统
+// 替身（生产为 PG 实现，单测保留真实文件写读以覆盖覆盖替换/懒清理）。
 func playgroundFixtureDeps(t *testing.T, functionCalling bool) *Deps {
 	t.Helper()
 	tools := map[string][]string{}
@@ -42,7 +42,7 @@ func playgroundFixtureDeps(t *testing.T, functionCalling bool) *Deps {
 		FetchURL: func(context.Context, string) (FetchResult, error) {
 			return FetchResult{Text: "正文首行\n第二行"}, nil
 		},
-		ArtifactsRoot: t.TempDir(),
+		Artifacts: newFSArtifactStore(t.TempDir()),
 	}
 }
 

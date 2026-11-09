@@ -2847,4 +2847,25 @@ $$`,
 		Source:     "models-capability-declaration-pg-columns",
 		SQL:        `ALTER TABLE models ADD COLUMN IF NOT EXISTS output_modalities_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(output_modalities_json::jsonb) = 'array')`,
 	},
+	{
+		// 演练场产物暂存（2026-11-09 用户裁决：由本地文件改为 PG bytea，
+		// 多节点无需共享盘）。图片/语音字节与视频任务引用 JSON 同表，kind
+		// 区分；24h 懒清理按 created_at 全表删除。
+		SchemaName: "juhe_business",
+		Source:     "playground-artifacts",
+		SQL: `CREATE TABLE IF NOT EXISTS playground_artifacts (
+      system_account_id text NOT NULL,
+      id text NOT NULL,
+      kind text NOT NULL,
+      mime_type text NOT NULL DEFAULT '',
+      data bytea NOT NULL,
+      created_at bigint NOT NULL,
+      PRIMARY KEY (system_account_id, id)
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "playground-artifacts",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_playground_artifacts_created_at ON playground_artifacts (created_at)`,
+	},
 }

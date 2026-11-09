@@ -10,7 +10,6 @@ package main
 //     显式 BUSINESS_POSTGRES_URL 原样保留，残留切流语义 env 被忽略。
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -59,15 +58,8 @@ func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 	if cfg.Secret != defaultRuntimeSecret {
 		t.Fatalf("空 env Secret 必须回退开发密钥: %q", cfg.Secret)
 	}
-	// 普通文件目录面固定名派生（D1 spool / codex-context segments）。
-	derived := map[string]string{
-		cfg.UsageSpoolDirectory: filepath.Join(root, "usage-record-spool"),
-	}
-	for got, want := range derived {
-		if got != want {
-			t.Fatalf("派生路径 %q != %q", got, want)
-		}
-	}
+	// 2026-11-09 T188：usage-record-spool 目录随网关直投 PG 删除，不再有
+	// DATA_DIR 派生断言。
 	// business owner 自动认领 + 连接串回落 + 门禁放行。
 	if cfg.BusinessOwner != "gateway" || cfg.BusinessOwnerEpoch != "standalone" {
 		t.Fatalf("自动认领=%+v", cfg)

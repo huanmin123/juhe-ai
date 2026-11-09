@@ -157,8 +157,11 @@ func TestW10BWorkerStatusPayloadFields(t *testing.T) {
 	if _, ok := payload["workerDriver"]; ok {
 		t.Fatalf("workerDriver 键必须已删除: %v", payload)
 	}
-	if payload["workerUsageWriter"] != false || payload["workerUsageSpoolDrain"] != false {
+	if payload["workerUsageWriter"] != false {
 		t.Fatalf("空 assembly 必须报告无 writer: %v", payload)
+	}
+	if _, ok := payload["workerUsageSpoolDrain"]; ok {
+		t.Fatalf("workerUsageSpoolDrain 键必须随 T188 删除: %v", payload)
 	}
 	if _, ok := payload["workerRegisteredTodo"]; !ok {
 		t.Fatalf("statusPayload 缺少 registeredTodo: %v", payload)

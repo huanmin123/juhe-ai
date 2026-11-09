@@ -40,11 +40,11 @@
 - **一个 Redis 就够**：cache/state/J3b/限流/会话等域通过 `juhe-ai:{<namespace>:<域>}:...` 键前缀隔离，不再需要多逻辑库。单节点只支持 DB0；配置 DB1/DB2 会启动失败。
 - **Cluster 已支持**：`JUHE_AI_REDIS_MODE=cluster` + `JUHE_AI_REDIS_URL` 用重复 `addr` 参数列节点。Cluster 只支持 DB0；每个域一个 hash tag，域内多键 Lua/批量读同 slot，域间分布到不同 slot。部署与迁移见 §5。
 - **已知容量边界**：`circuit`（账户电路）、`keymodel`（Key 模型运行态）、`hotquality`（短窗口热质量）三个热点域内部有全局索引/多键原子脚本，只能落单个 slot，无法再拆；其他域按域分布。热点域压力靠垂直扩容，不是集群能解决的。
-- PG 子系统 URL 已收口：审计/操作日志/J3b/J2/J3a/账户健康 store 等不再有独立连接串，统一主库。需要独立库隔离的只有 `RUNTIME_LOG` 与 `ACCOUNT_HEALTH_INPUT`，两者必须显式配置且不回退。
+- PG 子系统 URL 已收口：审计/操作日志/J3b/J2/J3a/账户健康 store 等不再有独立连接串，统一主库。需要独立库隔离的只剩 `ACCOUNT_HEALTH_INPUT`，必须显式配置且不回退（运行日志 PG 索引已随 F1 下架）。
 - `application_name` 不再写进连接串：三个进程启动时由 `pgcfg.PrepareProcessEnv` 设置 `PGAPPNAME`，慢 SQL 与 `pg_stat_activity` 仍可区分来源。
 - maintenance 的 `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres` / `--postgres-schema-snapshot` 全部改用 `--dsn "$JUHE_AI_POSTGRES_URL"`，不再读取 `JUHE_AI_MAINTENANCE_*` / `JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`。
 - SQLite/内存模式已退役：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER`、全部 `*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_*`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_*`、`*_STORE` 等都不要再写；残留只会产生未知变量 WARN。
-- 本次硬切删除的配置（不得回填）：`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE`、`JUHE_AI_BUSINESS_POSTGRES_URL`、`JUHE_AI_AUDIT_LOG_POSTGRES_URL`、`JUHE_AI_OPERATION_LOG_POSTGRES_URL`、`JUHE_AI_J3B_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL`、`JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_POSTGRES_URL`、`JUHE_AI_MAINTENANCE_*_POSTGRES_URL`、`JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL`、`JUHE_AI_USAGE_SPOOL_DIR`（旧名）、`JUHE_AI_COOKIE_SAME_SITE`、`JUHE_AI_BUSINESS_OWNER`、`JUHE_AI_PROCESS_ROLE`、`JUHE_AI_J3B_OWNER`、`JUHE_AI_MODEL_CHECK_ENABLED`、`JUHE_AI_ACCOUNT_BALANCE_STORE`、`JUHE_AI_PROXY_LATENCY_STORE`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE`、`JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE`、`JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`。
+- 本次硬切删除的配置（不得回填）：`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE`、`JUHE_AI_BUSINESS_POSTGRES_URL`、`JUHE_AI_AUDIT_LOG_POSTGRES_URL`、`JUHE_AI_OPERATION_LOG_POSTGRES_URL`、`JUHE_AI_J3B_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL`、`JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_POSTGRES_URL`、`JUHE_AI_MAINTENANCE_*_POSTGRES_URL`、`JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL`、`JUHE_AI_USAGE_SPOOL_*`（整族，2026-11-09 T188 网关直投 PG 后退役）、`JUHE_AI_COOKIE_SAME_SITE`、`JUHE_AI_BUSINESS_OWNER`、`JUHE_AI_PROCESS_ROLE`、`JUHE_AI_J3B_OWNER`、`JUHE_AI_MODEL_CHECK_ENABLED`、`JUHE_AI_ACCOUNT_BALANCE_STORE`、`JUHE_AI_PROXY_LATENCY_STORE`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE`、`JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE`、`JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`。
 - 系统指标/表监控已下线：`JUHE_AI_GO_RUNTIME_METRICS_*`、`JUHE_AI_TABLE_MONITOR_*`、gateway 侧 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS` 不要再写。
 - AI 问答已退役：`JUHE_AI_CHAT_*` 不要再写。
 
@@ -182,7 +182,7 @@ mkdir -p /opt/juhe-ai/data/app
 chown -R 1000:1000 /opt/juhe-ai/data/app   # 容器以 UID/GID 1000 的 app 用户运行
 ```
 
-`data/app` 的 chown 必须在旧容器停止后执行（首次部署无旧容器，直接执行即可）；否则 app 用户无权写 usage spool 和日志。
+`data/app` 的 chown 必须在旧容器停止后执行（首次部署无旧容器，直接执行即可）；否则 app 用户无权写 logs / audit-blob。
 
 ## 8. 关联文档
 

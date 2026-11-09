@@ -43,7 +43,7 @@
 
 | 症状 | 先查 | 处理 |
 | --- | --- | --- |
-| 统计/用量恒 0 | 两容器 `data` 挂载是否同源、`usage-record-spool` 是否存在 | 恢复 `working_dir: /app/backend` 与 `./data/app/data` 挂载；`bash verify-release.sh` |
+| 统计/用量恒 0 | gateway 日志是否有 `usage_record_delivery_failed` / `usage_record_delivery_unavailable`、PG `juhe_usage.usage_records` 是否有新行 | 检查 PG 连接与 gateway 启动日志；用量自 2026-11-09 T188 起直投 PG，不再有 spool 目录 |
 | 新版启动提示「尚未升级/升级未完成」 | `maintenance upgrade --dry-run` | 走[部署指南 §9](../部署指南.md) 升级流程 |
 | 文件日志不增长 | `JUHE_AI_LOG_DIR` 与 `data/app/logs` 挂载 | 修正挂载；`disabled` 字面量会关闭写侧 |
 | 后台登录 401/跨域失败 | `.env` 的 `JUHE_AI_ALLOWED_ORIGINS`、`COOKIE_SECURE`、`TRUST_PROXY` | 改成实际访问 Origin；HTTPS 下 cookie secure；反代后信任代理 |

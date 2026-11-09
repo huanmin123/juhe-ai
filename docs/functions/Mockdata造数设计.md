@@ -42,7 +42,7 @@ Mockdata 是项目里「可复用本地造数」的唯一职责入口：
 | `internal/mockdata/domain_observability.go` | observability 域造数：审计/操作/运行日志属主表探测式写入 + `public_api_logs` 与清理目标 |
 | `internal/mockdata/domain_chat_codex_modelcheck.go` | chat/codex/model-check 域造数：chat 日分区、codex 三表、J3b 样本、账户健康属主表 |
 | `internal/mockdata/domain_chat_media_sample.go` | chat 域媒体样本：纯字节/纯值生成器（WAV/MP4 内嵌样本、媒体工具演示消息块），与存储无关 |
-| `backend-go/projects/jobs/internal/usagewriter/partitions.go` | `usage_records` 日分区语句的权威来源（mockdata 与 jobs 逐字对齐） |
+| `backend-go/shared/platform/usagewriter/partitions.go` | `usage_records` 日分区语句的权威来源（mockdata 与 gateway/jobs 共用实现逐字对齐） |
 | `backend-go/projects/gateway/internal/chat/postgres_partitions.go` | `chat_messages` 日分区语句的权威来源 |
 | `backend-go/projects/maintenance/internal/j3bmodelcheck/bootstrap.go` | `juhe_j3b` 受控 bootstrap（mockdata 只调用它，不复制 DDL） |
 

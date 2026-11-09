@@ -1055,17 +1055,8 @@ func TestW1TCatalogSourceTails(t *testing.T) {
 // 亲和记忆空账户 / chat tokenizer 回退
 // ---------------------------------------------------------------------------
 
-func TestW1TOpenAICompatMountGuards(t *testing.T) {
-	if err := mountChainOpenAICompatFamilies(nil, nil, runtimeConfig{}, nil); err == nil ||
-		!strings.Contains(err.Error(), "业务数据库句柄") {
-		t.Fatalf("err = %v, want 缺少业务数据库句柄", err)
-	}
-	composed := &composition{db: w1uOpenPlainSQLite(t, "w1t-compat.sqlite3")}
-	if err := mountChainOpenAICompatFamilies(composed, nil, runtimeConfig{}, nil); err == nil ||
-		!strings.Contains(err.Error(), "runtime cache") {
-		t.Fatalf("err = %v, want 缺少网关链 runtime cache", err)
-	}
-}
+// 原 TestW1TOpenAICompatMountGuards 随 2026-11-09 openai-compatible
+// files/vector-stores 本地运行时退役删除（装配函数与错误类型一并移除）。
 
 func TestW1TTurnRetryRedisStateStoreTails(t *testing.T) {
 	// 空命名空间构造失败（nil 客户端回退臂已随存储形态退役删除）。

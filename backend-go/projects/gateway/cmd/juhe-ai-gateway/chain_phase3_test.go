@@ -171,32 +171,22 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 	defer server.Close()
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// /v1/files without a key: the openaicompat 401 contract.
-	response, err := client.Get(server.URL + "/v1/files")
-	if err != nil {
-		t.Fatalf("GET /v1/files: %v", err)
-	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("/v1/files status=%d body=%s", response.StatusCode, string(body))
-	}
-	if !strings.Contains(string(body), "invalid_api_key") {
-		t.Fatalf("/v1/files body=%s", string(body))
-	}
-
-	// /v1/vector_stores with a valid gateway key: the route surface answers
-	// (the list route renders an empty page).
-	list, err := client.Get(server.URL + "/v1/vector_stores")
-	if err != nil {
-		t.Fatalf("GET /v1/vector_stores: %v", err)
-	}
-	listBody, _ := io.ReadAll(list.Body)
-	list.Body.Close()
-	if list.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("/v1/vector_stores unauthenticated status=%d body=%s", list.StatusCode, string(listBody))
+	// 2026-11-09 用户裁决：网关只做调度与协议转发，openai-compatible files /
+	// containers / vector_stores 本地运行时退役；无论是否带 Key，这些非协议
+	// /v1 路径都回落 404 JSON。
+	for _, path := range []string{"/v1/files", "/v1/vector_stores"} {
+		response, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "资源不存在") {
+			t.Fatalf("%s status=%d body=%s", path, response.StatusCode, string(body))
+		}
 	}
 
+	// 带有效网关 Key 同样 404：路由族未挂载，不是权限问题。
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/vector_stores", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -208,11 +198,11 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 	}
 	authedBody, _ := io.ReadAll(authed.Body)
 	authed.Body.Close()
-	if authed.StatusCode != http.StatusOK {
-		t.Fatalf("/v1/vector_stores status=%d body=%s", authed.StatusCode, string(authedBody))
+	if authed.StatusCode != http.StatusNotFound {
+		t.Fatalf("/v1/vector_stores with key status=%d body=%s", authed.StatusCode, string(authedBody))
 	}
 
-	// Non-family /v1 paths keep the Node 404 JSON contract.
+	// 其余非协议 /v1 路径保持同一 404 JSON 契约。
 	unknown, err := client.Get(server.URL + "/v1/definitely-not-a-protocol-path")
 	if err != nil {
 		t.Fatalf("GET unknown: %v", err)
@@ -223,8 +213,7 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 		t.Fatalf("unknown path status=%d body=%s", unknown.StatusCode, string(unknownBody))
 	}
 
-	// The wrong-method probe on a family path falls through to the 404 JSON
-	// (express routers do not match unmatched methods).
+	// 旧 family 的任意子路径/方法同样 404。
 	wrongMethod, err := client.Post(server.URL+"/v1/vector_stores/not-a-route", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("POST family miss: %v", err)

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // spoolFileIn 按 gateway Persist 布局写单记录文件到指定实例目录。

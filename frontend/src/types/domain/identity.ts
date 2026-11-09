@@ -1,11 +1,17 @@
 import type { SystemAccountRole, SystemAccountStatus } from './base'
 
+export interface CurrentUserCapabilities {
+  /** 审计日志（部署级开关；false 时菜单/路由不展示）。 */
+  auditLogs?: boolean
+}
+
 export interface CurrentUserSummary {
   id: string
   username: string
   displayName: string
   role: SystemAccountRole
   mustChangePassword: boolean
+  capabilities?: CurrentUserCapabilities
 }
 
 export interface CaptchaChallengeSummary {

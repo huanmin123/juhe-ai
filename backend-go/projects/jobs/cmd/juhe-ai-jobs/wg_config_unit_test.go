@@ -1,13 +1,12 @@
 package main
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
+func TestLoadWorkerConfigDataDir(t *testing.T) {
 	dataDir := t.TempDir()
 	env := map[string]string{
 		"JUHE_AI_DATA_DIR":     dataDir,
@@ -19,32 +18,11 @@ func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DATA_DIR + SECRET 必须构成可启动配置: %v", err)
 	}
-	if want := filepath.Join(dataDir, "usage-record-spool"); config.UsageSpoolDirectory != want {
-		t.Fatalf("UsageSpoolDirectory 必须派生为 %q，得到 %q", want, config.UsageSpoolDirectory)
-	}
 	// 2026-11-07 codex-context 退役：CodexContextRoot 派生断言随配置删除。
+	// 2026-11-09 T188：gateway→jobs usage spool 交接退役，UsageSpoolDirectory
+	// 与 JUHE_AI_USAGE_SPOOL_DIRECTORY 一并删除，不再派生 usage-record-spool。
 	if config.DataDir != dataDir {
 		t.Fatalf("DataDir 必须透传 %q，得到 %q", dataDir, config.DataDir)
-	}
-	// spool 显式配置始终优先。
-	explicit := filepath.Join(t.TempDir(), "explicit-spool")
-	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = explicit
-	config, err = loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("显式 spool 必须可解析: %v", err)
-	}
-	if config.UsageSpoolDirectory != explicit {
-		t.Fatalf("显式 SPOOL_DIRECTORY 必须优先: %q", config.UsageSpoolDirectory)
-	}
-	// 旧名 JUHE_AI_USAGE_SPOOL_DIR 已删除：未配置 DIRECTORY 时按 DATA_DIR 派生。
-	delete(env, "JUHE_AI_USAGE_SPOOL_DIRECTORY")
-	env["JUHE_AI_USAGE_SPOOL_DIR"] = explicit
-	config, err = loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("旧名 spool 必须可解析: %v", err)
-	}
-	if config.UsageSpoolDirectory == explicit {
-		t.Fatalf("旧名 SPOOL_DIR 必须被忽略: %q", config.UsageSpoolDirectory)
 	}
 }
 
@@ -97,26 +75,8 @@ func TestLoadWorkerConfigDefaults(t *testing.T) {
 	if config.RecordMaintenanceBatchSize != 10 || config.RecordMaintenanceShutdownFlushMaxBatches != 1 {
 		t.Fatalf("retention/维护默认值漂移: %+v", config)
 	}
-	// spool 目录按 D1 从 DATA_DIR 派生。
-	expectedSpool := "usage-record-spool"
-	if !strings.HasSuffix(config.UsageSpoolDirectory, expectedSpool) {
-		t.Fatalf("spool 目录必须从 DATA_DIR 派生: %s", config.UsageSpoolDirectory)
-	}
 	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 10 {
 		t.Fatalf("PG 池默认值漂移: %+v", config)
-	}
-}
-
-// TestLoadWorkerConfigSpoolDirectoryOverride 验证显式 env 覆盖派生目录。
-func TestLoadWorkerConfigSpoolDirectoryOverride(t *testing.T) {
-	env := workerSmokeTestEnv(t)
-	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = "/tmp/spool-explicit"
-	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("loadWorkerConfig: %v", err)
-	}
-	if config.UsageSpoolDirectory != "/tmp/spool-explicit" {
-		t.Fatalf("显式 spool env 必须优先: %s", config.UsageSpoolDirectory)
 	}
 }
 

@@ -65,7 +65,7 @@ chmod 600 /opt/juhe-ai/.env
 chown -R 1000:1000 /opt/juhe-ai/data/app
 ```
 
-- 容器以 UID/GID `1000` 的 `app` 用户运行；`data/app` 属主必须匹配，否则 usage spool 与日志写不进去。
+- 容器以 UID/GID `1000` 的 `app` 用户运行；`data/app` 属主必须匹配，否则 logs / audit-blob 写不进去。
 - `data/postgres`、`data/redis` 由容器自身管理，不需要 chown 给 app。
 - 目录结构完整说明见[部署指南 §4](../部署指南.md)。
 

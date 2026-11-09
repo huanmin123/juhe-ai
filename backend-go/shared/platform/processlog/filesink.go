@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +32,11 @@ type FileSinkOptions struct {
 	FileName string
 	// MaxFileBytes 是大小轮转阈值；<=0 时取 DefaultMaxFileBytes。
 	MaxFileBytes int64
+	// MaxFiles / Retention 是本地轮转文件保留上限（2026-11-09 运行日志不再
+	// 由 jobs F1 清理，改由写侧在轮转后自清理）；<=0 时分别取 DefaultMaxFiles
+	// 与 DefaultRetention。
+	MaxFiles  int
+	Retention time.Duration
 	// RetryInterval 是写失败/句柄失效后重开文件的节流间隔；<=0 时取
 	// DefaultFileSinkRetryInterval（多机 NFS 断连恢复后无需重启进程即可自愈）。
 	RetryInterval time.Duration
@@ -44,11 +51,17 @@ type FileSinkOptions struct {
 // 保证共享目录恢复后在约 5s 内自动续写。
 const DefaultFileSinkRetryInterval = 5 * time.Second
 
+// 本地轮转文件保留默认值（与既有 JUHE_AI_LOG_MAX_FILES / RETENTION_DAYS 一致）。
+const (
+	DefaultMaxFiles  = 500
+	DefaultRetention = 30 * 24 * time.Hour
+)
+
 // FileSink 是按大小滚动的 append-only JSONL 文件写侧。轮转判定与 Node
 // RotatingLogStream._write 相同：currentSize > 0 且追加后超出阈值才轮转，
-// 因此单条超阈记录仍完整写入而非拒写。文件清理由 jobs runtimelog 索引器的
-// 保留清理负责，写侧不做任何删除。Write 保证每条记录一次 write 落盘
-// (O_APPEND 单写原子性)，进程内不会出现交叉写撕裂行。
+// 因此单条超阈记录仍完整写入而非拒写。写侧在每次轮转后按 MaxFiles/Retention
+// 清理本实例的 rotated 文件（2026-11-09 起 jobs F1 索引与清理下架）。Write 保证
+// 每条记录一次 write 落盘 (O_APPEND 单写原子性)，进程内不会出现交叉写撕裂行。
 //
 // 失败恢复：写入错误（EIO/ESTALE/句柄失效）或轮转重开失败后关闭并置空
 // 句柄，按 retryInterval 节流重试 open；共享目录（NFS/云 NAS）恢复后无需
@@ -59,6 +72,8 @@ type FileSink struct {
 	dir           string
 	fileName      string
 	maxFileBytes  int64
+	maxFiles      int
+	retention     time.Duration
 	retryInterval time.Duration
 	now           func() time.Time
 	newToken      func() string
@@ -88,6 +103,8 @@ func NewFileSink(dir string, options FileSinkOptions) (*FileSink, error) {
 		dir:           dir,
 		fileName:      fileName,
 		maxFileBytes:  options.MaxFileBytes,
+		maxFiles:      options.MaxFiles,
+		retention:     options.Retention,
 		retryInterval: options.RetryInterval,
 		now:           options.Now,
 		newToken:      options.NewToken,
@@ -95,6 +112,12 @@ func NewFileSink(dir string, options FileSinkOptions) (*FileSink, error) {
 	}
 	if sink.maxFileBytes <= 0 {
 		sink.maxFileBytes = DefaultMaxFileBytes
+	}
+	if sink.maxFiles <= 0 {
+		sink.maxFiles = DefaultMaxFiles
+	}
+	if sink.retention <= 0 {
+		sink.retention = DefaultRetention
 	}
 	if sink.retryInterval <= 0 {
 		sink.retryInterval = DefaultFileSinkRetryInterval
@@ -108,6 +131,7 @@ func NewFileSink(dir string, options FileSinkOptions) (*FileSink, error) {
 	if err := sink.openCurrentLocked(); err != nil {
 		return nil, err
 	}
+	sink.pruneLocked()
 	return sink, nil
 }
 
@@ -243,6 +267,7 @@ func (s *FileSink) rotateLocked() error {
 		s.scheduleReopenLocked()
 		return err
 	}
+	s.pruneLocked()
 	return nil
 }
 
@@ -253,6 +278,48 @@ func (s *FileSink) rotateLocked() error {
 func rotatedLogFileName(fileName string, timestamp time.Time, token string) string {
 	base := strings.TrimSuffix(fileName, ".log")
 	return base + "." + timestamp.UTC().Format("20060102T150405Z") + "." + token + ".log"
+}
+
+// pruneLocked 清理本实例的 rotated 文件：超过 MaxFiles 的最旧文件删除，超过
+// Retention 的文件删除。只匹配 `<base>.<YYYYMMDDTHHMMSSZ>.<token>.log`，不会
+// 误删 current 文件或同目录其它实例的日志。调用方须持有 mu。
+func (s *FileSink) pruneLocked() {
+	base := strings.TrimSuffix(s.fileName, ".log")
+	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(base) + `\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$`)
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	cutoff := s.now().Add(-s.retention)
+	candidates := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !pattern.MatchString(entry.Name()) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		path := filepath.Join(s.dir, entry.Name())
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(path)
+			continue
+		}
+		candidates = append(candidates, candidate{path: path, modTime: info.ModTime()})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].modTime.Equal(candidates[j].modTime) {
+			return candidates[i].modTime.After(candidates[j].modTime)
+		}
+		return candidates[i].path > candidates[j].path
+	})
+	for index := s.maxFiles; index < len(candidates); index++ {
+		_ = os.Remove(candidates[index].path)
+	}
 }
 
 // newRandomToken 生成 8-4-4-4-12 小写 hex token（UUID 形状，满足消费面

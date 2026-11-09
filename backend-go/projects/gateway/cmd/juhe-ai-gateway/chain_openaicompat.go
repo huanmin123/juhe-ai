@@ -1,13 +1,9 @@
 package main
 
-// G20 phase-3 openai-compatible files / vector-stores mount: the two route
-// families Node mounts ahead of openAIGatewayRouter in the gateway middleware
-// chain (server.ts: openAICompatibleFilesRouter + openAICompatibleVectorStoresRouter,
-// preResolveGatewayRuntime -> files -> vector-stores). The composition builds
-// the openaicompat Store over the business database and hands the chain a
-// non-protocol dispatcher covering /v1/files, /v1/containers and
-// /v1/vector_stores; every other non-protocol /v1
-// path keeps the Node 404 JSON contract (rejectUnrecognizedGatewayProtocolRequest).
+// 2026-11-09 用户裁决：网关只做调度与协议转发，不做 RAG / 文件存储 /
+// 向量库。原 openai-compatible files / containers / vector_stores 本地运行时
+// 不再装配（chain.compat 保持 nil，非协议 /v1 路径回落 404 JSON）；业务侧
+// 自行管理文件与向量库。
 
 import (
 	"context"
@@ -17,37 +13,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatstorage"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
 )
-
-// mountChainOpenAICompatFamilies builds the openai-compatible families over
-// the business database and attaches them to the chain's non-protocol path
-// dispatcher. It fails fast when the runtime cache is missing (the scope
-// resolver needs the gateway runtime read).
-func mountChainOpenAICompatFamilies(composed *composition, chain *gatewayChain, cfg runtimeConfig, services *chainRuntimeServices) error {
-	if composed == nil || composed.db == nil {
-		return errChainCompat("openai-compatible 组合缺少业务数据库句柄")
-	}
-	if services == nil || services.Cache == nil {
-		return errChainCompat("openai-compatible 组合缺少网关链 runtime cache")
-	}
-	store, err := openaicompatstorage.NewStore(composed.db)
-	if err != nil {
-		return err
-	}
-	deps := &openaicompatstorage.Deps{
-		Store: store,
-		Config: openaicompatcore.Config{
-			FilesRoot: cfg.OpenAICompatibleFilesRoot,
-		},
-		Scope: chainCompatScopeResolver(services.Cache),
-	}
-	compat := &chainCompatMux{mux: http.NewServeMux()}
-	deps.Mount(compat)
-	chain.compat = &chainCompatDispatcher{mux: compat, cache: services.Cache, chain: chain}
-	return nil
-}
 
 // chainCompatMux adapts http.ServeMux onto the openaicompat mount interface
 // (the kernel's Register(pattern, handler) shape).
@@ -58,16 +25,6 @@ type chainCompatMux struct {
 func (m *chainCompatMux) Register(pattern string, handler http.Handler) {
 	m.mux.Handle(pattern, handler)
 }
-
-func errChainCompat(message string) error {
-	return &chainCompatError{message: message}
-}
-
-type chainCompatError struct {
-	message string
-}
-
-func (e *chainCompatError) Error() string { return e.message }
 
 // chainCompatScopeContextKey 承载 dispatcher 预解析的 scope（含 nil =
 // key 缺失/无效），使 resolver 与 dispatcher 共享同一次运行时读，请求内不

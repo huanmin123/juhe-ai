@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/ingestgate"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // dd3b1CheckThroughProbe 把装配结果按 probe 形态送入 ingestgate.Check，

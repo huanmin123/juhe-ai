@@ -14,6 +14,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const maxBalanceRunnerConcurrency = 5096
@@ -39,6 +40,9 @@ type RunnerConfig struct {
 	ProbeTimeout     time.Duration
 	MaxResponseBytes int64
 	Now              func() time.Time
+	// DialGuard 是部署级上游 URL 守卫（与 /v1 派发同源）：周期/自动探测的
+	// 余额查询与手动刷新共用同一出站防护；nil 保留隔离测试的既有直连语义。
+	DialGuard *upstreamhttp.DialGuard
 	// DueAdvancer 在周期刷新已结算 outcome（成功、失败、unsupported）后推进
 	// 业务库 due 游标；nil 表示不推进（网关手动 bridge runner 与既有隔离测试）。
 	DueAdvancer BusinessDueAdvancer
@@ -68,6 +72,7 @@ type Runner struct {
 	now                       func() time.Time
 	dueAdvancer               BusinessDueAdvancer
 	manualOwnerLeaseKeyPrefix string
+	dialGuard                 *upstreamhttp.DialGuard
 }
 
 func NewRunner(config RunnerConfig) (*Runner, error) {
@@ -119,7 +124,7 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, dueAdvancer: config.DueAdvancer, manualOwnerLeaseKeyPrefix: config.ManualOwnerLeaseKeyPrefix, logger: config.Logger}, nil
+	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, dueAdvancer: config.DueAdvancer, manualOwnerLeaseKeyPrefix: config.ManualOwnerLeaseKeyPrefix, dialGuard: config.DialGuard, logger: config.Logger}, nil
 }
 
 // RunPeriodic executes a bounded batch of already-frozen due candidates.
@@ -426,7 +431,7 @@ func (r *Runner) prepareInput(ctx context.Context, leaseKey string, owner OwnerL
 	// ExecuteBalanceQuery（行为零变化）；多 Key 输入逐 Key 查询并把合并结果
 	// （含 keyCount/queriedKeyCount/keyBalances 等多 Key 字段）作为 Snapshot
 	// 走同一条 persistInput 写入链。
-	query, queryErr := ExecuteAccountBalanceQuery(ctx, input, QueryOptions{Secret: r.credentialSecret, Client: r.httpClient, Timeout: r.probeTimeout, MaxResponseBytes: r.maxResponseBytes, Now: r.now})
+	query, queryErr := ExecuteAccountBalanceQuery(ctx, input, QueryOptions{Secret: r.credentialSecret, Client: r.httpClient, Timeout: r.probeTimeout, MaxResponseBytes: r.maxResponseBytes, Now: r.now, DialGuard: r.dialGuard})
 	if queryErr != nil {
 		// Local setup/decryption errors are not upstream balance diagnostics.
 		// Keep the original error visible and do not fabricate a snapshot.

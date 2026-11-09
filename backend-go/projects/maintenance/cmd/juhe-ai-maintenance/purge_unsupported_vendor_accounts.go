@@ -3,7 +3,7 @@
 //     vendor/driver 不一致的账户（含其授权实例）。generic_http 连接器已随
 //     openai/hybrid 一起退役，这些账户不再有运行时语义；
 //   - 删除范围由用户 2026-11-05 裁决：账户配置 + 运行态 + 测试草稿 + media 任务
-//     + 历史 usage/audit/stats 一并删除，不留存量；九家真实厂商账户与历史行
+//   - 历史 usage/audit/stats 一并删除，不留存量；九家真实厂商账户与历史行
 //     不受影响；
 //   - dry-run 只读探测并写出 manifest（冻结 ID 清单）；正式执行必须带
 //     --stop-write-confirmed 与 --backup-confirmed，且复用 dry-run 的 manifest，
@@ -340,16 +340,17 @@ func purgeValidateStaleManifest(ctx context.Context, db *sql.DB, ids []string) e
 	return nil
 }
 
-// purgePendingSpoolFiles 统计数据目录下两个 usage spool 的待消费文件数。purge
-// 删除的是 PG 行，spool 文件若仍有残留，jobs 拉起后会把已清退账户的用量重新
-// 写回 usage_records。
+// purgePendingSpoolFiles 统计数据目录下 usage 溢出 spool 的待消费文件数。
+// purge 删除的是 PG 行，溢出 spool 文件若仍有残留，jobs 拉起后会把已清退
+// 账户的用量重新写回 usage_records。2026-11-09 T188 起 gateway→jobs 的
+// usage-record-spool 交接退役（网关直投 PG），只保留 writer 溢出 spool。
 func purgePendingSpoolFiles() (int, error) {
 	dataDir := strings.TrimSpace(os.Getenv("JUHE_AI_DATA_DIR"))
 	if dataDir == "" {
 		dataDir = "./data"
 	}
 	total := 0
-	for _, sub := range []string{"usage-record-spool", "usage-record-overflow-spool"} {
+	for _, sub := range []string{"usage-record-overflow-spool"} {
 		root := filepath.Join(dataDir, sub)
 		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {

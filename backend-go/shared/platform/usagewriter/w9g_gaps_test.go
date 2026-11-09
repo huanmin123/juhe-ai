@@ -178,6 +178,72 @@ func TestW9GPostgresStoreSecurityPolicyColumns(t *testing.T) {
 	}
 }
 
+// TestW9GPostgresStorePricingSnapshotColumns 是 T188 计费对账的写库锚点：
+// 网关直投路径把冻结的 *CostBreakdown 经 JSON 桥传入 writer 后，落库的
+// cost_breakdown_snapshot_json 必须仍是完整快照（含 accountChargeUsd），而
+// 不是退化为 fallback。
+func TestW9GPostgresStorePricingSnapshotColumns(t *testing.T) {
+	db := openKitPostgresDB(t)
+	store := NewPostgresShardStore(PostgresShardStoreConfig{
+		DB:         db,
+		ShardCount: 4,
+		Now:        func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
+	})
+	ctx := context.Background()
+
+	today := time.Now().UTC().Format("2006-01-02")
+	runToken := fmt.Sprintf("%d", time.Now().UnixNano())
+	createdAt := today + "T03:04:05.000Z"
+	record := gatewayInput("w9g-price-" + runToken)
+	record.ID = "usage_" + strings.ReplaceAll(today, "-", "") + "_s01_" + runToken + "_price"
+	record.CreatedAt = createdAt
+	record.InputTokens = intPtrW9G(13_196)
+	record.OutputTokens = intPtrW9G(167)
+	record.CostUsd = floatPtrW9G(0.069317)
+	record.PricingSnapshot = &CostBreakdown{
+		Currency:                 "USD",
+		InputCostUsd:             floatPtrW9G(0.000012),
+		OutputCostUsd:            floatPtrW9G(0.00334),
+		CacheWriteCostUsd:        floatPtrW9G(0.065965),
+		AccountChargeUsd:         floatPtrW9G(0.069317),
+		Multiplier:               1,
+		ServiceTierPricingSource: TierSourceDefault,
+	}
+
+	plan, err := BuildWritePlan(ctx, []UsageRecordInput{record}, WritePlanOptions{ShardCount: 4}, fixedClock(createdAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted, err := store.WriteBatch(ctx, plan); err != nil || inserted != 1 {
+		t.Fatalf("WriteBatch inserted=%d err=%v", inserted, err)
+	}
+
+	var snapshotText string
+	var costUSD float64
+	if err := db.QueryRowContext(ctx,
+		`SELECT cost_breakdown_snapshot_json, cost_usd FROM juhe_usage.usage_records WHERE trace_id = $1`,
+		"w9g-price-"+runToken).Scan(&snapshotText, &costUSD); err != nil {
+		t.Fatal(err)
+	}
+	if costUSD != 0.069317 {
+		t.Fatalf("cost_usd = %v, want 0.069317", costUSD)
+	}
+	var snapshot struct {
+		AccountChargeUsd  *float64 `json:"accountChargeUsd"`
+		ServiceTierSource string   `json:"serviceTierPricingSource"`
+		Multiplier        float64  `json:"multiplier"`
+	}
+	if err := json.Unmarshal([]byte(snapshotText), &snapshot); err != nil {
+		t.Fatalf("snapshot json: %v (raw=%s)", err, snapshotText)
+	}
+	if snapshot.AccountChargeUsd == nil || *snapshot.AccountChargeUsd != 0.069317 {
+		t.Fatalf("snapshot accountChargeUsd = %v, want 0.069317 (raw=%s)", snapshot.AccountChargeUsd, snapshotText)
+	}
+	if snapshot.ServiceTierSource != TierSourceDefault || snapshot.Multiplier != 1 {
+		t.Fatalf("snapshot tier facts lost: %+v", snapshot)
+	}
+}
+
 // TestW9GPostgresStoreEnsurePartitionsInvalidDate 覆盖分区日期解析对
 // 非法值的静默跳过分支（ensure 层不报错，由 INSERT 承载错误）。
 func TestW9GPostgresStoreEnsurePartitionsInvalidDate(t *testing.T) {

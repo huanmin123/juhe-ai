@@ -17,9 +17,8 @@ package mockdata
 //     usage_rank_snapshots、account_health_hourly 等）一律不写，由 jobs 聚合 /
 //     窗口任务重建（cleanup 已整表重置派生面）；
 //   - PG 形态没有 sqlite 时代的 stats 库 usage_records 镜像表，不生成镜像；
-//   - 记录 ID 与逻辑 shard 定位逐字对齐 jobs/internal/usagewriter/shards.go
-//     （Go 三项目基线禁止 maintenance → jobs 依赖，算法在本文件对齐，由测试
-//     钉住）；
+//   - 记录 ID 与逻辑 shard 定位逐字对齐 shared/platform/usagewriter/shards.go
+//     （算法在 shared/platform 与本文件各存一份，由测试钉住，改动须两处同步）；
 //   - 记录列集与列型逐列对照 maintenance/internal/schema/pg_schema_usage.go：
 //     bigint/integer 列写 Go int，double precision 列写 float64，时间列是
 //     text（isoMillisLayout UTC 毫秒 ISO，分区键取其文本前缀）。

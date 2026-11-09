@@ -67,7 +67,7 @@ func (rt *playgroundRoutes) videosCreateHandler(w http.ResponseWriter, r *http.R
 	}
 	// 任务引用落盘是 §3.8 暂存契约的一部分（前端刷新后凭 GET /artifacts 恢复
 	// 轮询），暂存面未接线时显式降级。
-	if !rt.artifacts.available() {
+	if !rt.artifactsReady() {
 		writeHTTPError(w, artifactsUnavailable())
 		return
 	}

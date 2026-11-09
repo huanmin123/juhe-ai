@@ -75,9 +75,11 @@ Bridge 层只读取 registry 决策，不直接判断具体运行时实现细节
 
 真实 `native_upstream` / `local_runtime` 模式必须等对应执行器、权限、审计和 mock 回归齐全后再加入配置枚举，避免通过环境变量提前宣称能力可用。MCP 固定为 guidance，不提供服务端 runtime、mock、proxy、approval、execution record 或管理 UI。
 
+> **状态（2026-11-09，SEC6）：** 本地 Python `local_runtime` 执行器从未接入组合根，已作为 dead code 删除（`openaicompatstorage/codeinterpreter.go`、`CodeInterpreterConfig` 与 `HostedToolCodeInterpreterMode`/`JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE` 一并移除）。当前 `code_interpreter` 只有 guidance：网关返回 OpenAI 形态 guidance、不请求 Anthropic、不提供任何本机执行路径。若将来恢复该能力，必须按 §5.2 的容器/独立身份隔离重新实现并单独评审，不得把旧的子进程执行器直接接回主 Web 进程。
+
 | 环境变量 | 工具 | 默认 |
 | --- | --- | --- |
-| `JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE` | `code_interpreter` / `container` | `guidance` |
+| ~~`JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE`~~ | `code_interpreter` / `container` | **已退役（SEC6，无本机执行器）** |
 | `JUHE_AI_HOSTED_TOOL_COMPUTER_MODE` | `computer` | `guidance` |
 | `JUHE_AI_HOSTED_TOOL_SHELL_MODE` | `shell` | `guidance` |
 | `JUHE_AI_HOSTED_TOOL_SKILLS_MODE` | `skills` | `guidance` |

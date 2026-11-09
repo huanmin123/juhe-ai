@@ -68,12 +68,6 @@ func TestConfigWithDefaults(t *testing.T) {
 	if defaulted.MaxFileBytes != DefaultMaxFileBytes || defaulted.FilesRoot != "data/openai-compatible-files" {
 		t.Errorf("Config 缺省 = %+v", defaulted)
 	}
-	ci := defaulted.CodeInterpreter
-	if ci.PythonCommand != "python" || ci.TimeoutMs != 5000 || ci.MaxCodeBytes != 64*1024 ||
-		ci.MaxOutputBytes != 64*1024 || ci.MaxArtifactCount != 8 || ci.MaxArtifactBytes != 256*1024 ||
-		ci.TempRoot != "data/code-interpreter-tmp" {
-		t.Errorf("CodeInterpreter 缺省 = %+v", ci)
-	}
 	ca := defaulted.ComputerAdapter
 	if ca.TimeoutMs != 30000 || ca.MaxBodyBytes != 512*1024 {
 		t.Errorf("ComputerAdapter 缺省 = %+v", ca)
@@ -87,10 +81,9 @@ func TestConfigWithDefaults(t *testing.T) {
 
 func TestHostedToolRuntimeModesProjection(t *testing.T) {
 	modes := Config{
-		HostedToolCodeInterpreterMode: "local_runtime",
-		HostedToolComputerMode:        "mock",
+		HostedToolComputerMode: "mock",
 	}.HostedToolRuntimeModes()
-	if modes.CodeInterpreter != "local_runtime" || modes.Computer != "mock" || modes.Shell != "" {
+	if modes.Computer != "mock" || modes.Shell != "" {
 		t.Errorf("投影 = %+v", modes)
 	}
 }

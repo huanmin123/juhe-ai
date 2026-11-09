@@ -42,13 +42,13 @@ const adminRoutes = [
   '/stats', '/models', '/proxies', '/accounts', '/groups', '/authorizations',
   '/authorization-team-usage', '/authorization-user-usage', '/authorization-teams', '/api-keys',
   '/model-checks', '/usage-stats', '/ai-performance', '/ai-health', '/usage-records', '/operation-logs',
-  '/public-api-logs', '/audit-logs', '/runtime-logs', '/ip-stats',
+  '/public-api-logs', '/audit-logs', '/ip-stats',
   '/response-inspection-policies', '/route-strategies', '/external-integration-sources',
   '/announcements', '/system-accounts', '/settings'
 ] as const
 
 assertEqual(userRoutes.length, 16, '用户帮助路由清单必须维护 16 项')
-assertEqual(adminRoutes.length, 26, '管理员帮助路由清单必须维护 26 项')
+assertEqual(adminRoutes.length, 25, '管理员帮助路由清单必须维护 25 项（运行日志页已下架）')
 for (const route of [...userRoutes, ...adminRoutes]) {
   assertMatch(routerSource, new RegExp(`path:\\s*['"]${escapeRegExp(route)}['"]`), `路由源必须保留 ${route}`)
 }
@@ -167,7 +167,7 @@ assertNotMatch(`${userShell}\n${adminShell}\n${helpIndex}`, /<script(?![^>]*\bsr
 assertNotContains(viteConfigSource, "devProxy['^/__aisys__/help", 'dev 代理不得把帮助页转发给 gateway：未配置 JUHE_AI_FRONTEND_DIST_PATH 时 help 面不挂载会 404')
 assertContains(viteConfigSource, 'helpPageDirectoryIndexPlugin', 'dev 下必须保留帮助页目录索引插件，否则目录形 URL 会落入 SPA fallback 返回主应用页面')
 
-console.log(`帮助文档站回归通过：${userDocs.length + adminDocs.length} 篇 md/渲染物/manifest 三方一致，17+26 条管理页深链全部保留，协议/概念/导入语义与下载、hash 路由、门控契约完好（更新于 ${manifest.updatedAt}）`)
+console.log(`帮助文档站回归通过：${userDocs.length + adminDocs.length} 篇 md/渲染物/manifest 三方一致，17+25 条管理页深链全部保留（运行日志页已下架），协议/概念/导入语义与下载、hash 路由、门控契约完好（更新于 ${manifest.updatedAt}）`)
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

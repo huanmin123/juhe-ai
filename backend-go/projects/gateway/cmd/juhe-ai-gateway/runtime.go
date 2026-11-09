@@ -5,7 +5,6 @@ import (
 	"math"
 	"net"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -25,8 +24,8 @@ const (
 // runtimeConfig mirrors the env conventions of the Node composition root
 // (backend/src/config/runtime.ts) for the scope the Go gateway composition
 // consumes: PostgreSQL + Redis URLs + namespace, secret, cookie/cors/
-// trust-proxy HTTP security, the local file-face derivations (usage spool,
-// codex-context segments, logs, chat-assets) and the composition gates.
+// trust-proxy HTTP security, the local file-face derivations (logs, audit
+// blob) and the composition gates.
 //
 // Validation mirrors the Node fail-fast contract: missing PostgreSQL/Redis
 // URLs, a none-cookie without secure, a production process without a strong
@@ -64,14 +63,8 @@ type runtimeConfig struct {
 	// 2026-11-07 跨协议 Responses→Chat 桥退役：原 CodexContextRoot
 	//（JUHE_AI_CODEX_CONTEXT_ROOT，segments 根）随桥删除；历史 codex-context/
 	// 目录按部署文档人工备份后清理，运行时不读取。
-
-	OpenAICompatibleFilesRoot string
-
-	// PlaygroundArtifactsRoot is the playground artifact staging root (演练场
-	// 设计 §3.8: fixed derivation <DATA_DIR>/playground-artifacts, no env
-	// override — the staging area is a display cache with 24h lazy expiry,
-	// not an asset store, so it intentionally has no explicit path config).
-	PlaygroundArtifactsRoot string
+	// 2026-11-09 起 openai-compatible files / vector stores 本地运行时退役，
+	// 原 OpenAICompatibleFilesRoot 配置项删除（网关不做文件存储）。
 
 	Host string
 	Port int
@@ -111,27 +104,15 @@ type runtimeConfig struct {
 	ChainEnabled bool
 
 	// Chain collaborator config: the audit capture fact (Node
-	// runtimeConfig.auditLog.enabled；2026-09-21 起 JUHE_AI_AUDIT_LOG_ENABLED
-	// 开关移除，捕获恒开)
-	// and the durable usage-record spool directory
-	// (JUHE_AI_USAGE_SPOOL_DIRECTORY；兼容旧名 JUHE_AI_USAGE_SPOOL_DIR，
-	// DIRECTORY 优先). The F3 loopback audit input URL
-	// (derived from JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS) is deleted since
+	// runtimeConfig.auditLog.enabled；2026-11-09 起由部署级
+	// JUHE_AI_AUDIT_LOG_ENABLED 控制，默认 true). The F3 loopback audit input
+	// URL (derived from JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS) is deleted since
 	// 去跨进程战役第四刀 — chain audit dispatch goes through the in-process
 	// producer.
-	AuditLogEnabled     bool
-	UsageSpoolDirectory string
-	// Usage spool capacity knobs (Node runtimeConfig.usageSpool,
-	// runtime.ts:661-666): JUHE_AI_USAGE_SPOOL_MAX_ITEMS [1000, 5_000_000]
-	// default 250_000, JUHE_AI_USAGE_SPOOL_MAX_MB [64, 102_400] default
-	// 4_096, JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE [1, 5_000] default 500,
-	// JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS [100, 60_000] default 1_000.
-	// D-209：Go 曾完全未读取这四个容量 env（chain_compose 硬编码同值默认），
-	// 部署调参静默失效。
-	UsageSpoolMaxItems         int
-	UsageSpoolMaxBytes         int
-	UsageSpoolReplayBatchSize  int
-	UsageSpoolReplayIntervalMs int
+	//
+	// 2026-11-09 T188：用量记录改为网关直投 PG（共享 usagewriter），
+	// usage-record-spool 目录与四个 JUHE_AI_USAGE_SPOOL_* 容量 env 一并删除。
+	AuditLogEnabled bool
 	// UsageFinalizationMaxItems mirrors Node
 	// runtimeConfig.gateway.usageFinalizationMaxItems
 	// (JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS, default 2048,
@@ -326,11 +307,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// segments 根、logs 均落 <JUHE_AI_DATA_DIR=./data>/<固定名>。
 	// sqlite 专库文件族路径派生已随存储形态退役删除。
 	dataDir := datadir.Dir(getenv)
-	cfg.OpenAICompatibleFilesRoot = strings.TrimSpace(getenv("JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT"))
 
-	// 演练场产物暂存根（演练场设计 §3.8，零新 env：固定派生
-	// <DATA_DIR>/playground-artifacts，无显式覆盖入口）。
-	cfg.PlaygroundArtifactsRoot = filepath.Join(dataDir, datadir.PlaygroundArtifactsDirectory)
 	cfg.Host = strings.TrimSpace(getenv("JUHE_AI_HOST"))
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
@@ -472,52 +449,15 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.ChainEnabled = true
 
 	// Chain collaborator config (mirrors the Node runtime.ts audit + spool
-	// fields the gateway chain reads). 2026-09-21 起链路审计为常驻能力，
-	// JUHE_AI_AUDIT_LOG_ENABLED 开关移除。
-	cfg.AuditLogEnabled = true
-	cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
-	// D1（PLAN-20261024T051925945Z）：spool 目录派生改挂 JUHE_AI_DATA_DIR
-	// （缺省 <cwd>/data），不再以已退役的 JUHE_AI_STATS_DATABASE_PATH 目录为
-	// 派生根。PG 零配置派生路径不变（<DATA_DIR>/usage-record-spool——stats
-	// 库路径时代即派生到同一 DATA_DIR 下），gateway↔jobs 交接链不受影响；
-	// 显式 JUHE_AI_USAGE_SPOOL_DIRECTORY（含旧名 DIR 回落）覆盖语义保留。
-	if cfg.UsageSpoolDirectory == "" {
-		cfg.UsageSpoolDirectory = filepath.Join(dataDir, datadir.UsageRecordSpoolDirectory)
+	// fields the gateway chain reads). 审计默认开启；2026-11-09 起以部署级
+	// JUHE_AI_AUDIT_LOG_ENABLED 控制（默认 true，缺省行为与既有常驻一致）：
+	// false 停写全部审计（成功/失败/attempts/payload/热搜索），read 接口不挂载、
+	// 管理菜单隐藏，retention 仍按保留期清理存量。集群无共享存储时必须关闭。
+	auditLogEnabled, auditLogEnabledErr := strictEnvBool("JUHE_AI_AUDIT_LOG_ENABLED", getenv("JUHE_AI_AUDIT_LOG_ENABLED"), true)
+	if auditLogEnabledErr != nil {
+		return runtimeConfig{}, auditLogEnabledErr
 	}
-	// Node runtimeConfig.usageSpool（runtime.ts:661-666）四个容量旋钮：
-	// numberConfig 边界与默认值逐一对齐；非数字或越界启动报错（D-209）。
-	cfg.UsageSpoolMaxItems = 250_000
-	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_MAX_ITEMS")); raw != "" {
-		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_MAX_ITEMS", raw, 1_000, 5_000_000)
-		if parsedErr != nil {
-			return runtimeConfig{}, parsedErr
-		}
-		cfg.UsageSpoolMaxItems = parsed
-	}
-	cfg.UsageSpoolMaxBytes = 4_096 * 1024 * 1024
-	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_MAX_MB")); raw != "" {
-		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_MAX_MB", raw, 64, 102_400)
-		if parsedErr != nil {
-			return runtimeConfig{}, parsedErr
-		}
-		cfg.UsageSpoolMaxBytes = parsed * 1024 * 1024
-	}
-	cfg.UsageSpoolReplayBatchSize = 500
-	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE")); raw != "" {
-		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE", raw, 1, 5_000)
-		if parsedErr != nil {
-			return runtimeConfig{}, parsedErr
-		}
-		cfg.UsageSpoolReplayBatchSize = parsed
-	}
-	cfg.UsageSpoolReplayIntervalMs = 1_000
-	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS")); raw != "" {
-		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS", raw, 100, 60_000)
-		if parsedErr != nil {
-			return runtimeConfig{}, parsedErr
-		}
-		cfg.UsageSpoolReplayIntervalMs = parsed
-	}
+	cfg.AuditLogEnabled = auditLogEnabled
 	// D-147：usage finalization 队列容量旋钮（Node
 	// runtimeConfig.gateway.usageFinalizationMaxItems，runtime.ts:754，
 	// integerConfig 默认 2048、范围 [1, 1_000_000]）。

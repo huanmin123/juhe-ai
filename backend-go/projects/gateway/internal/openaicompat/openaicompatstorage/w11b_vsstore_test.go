@@ -1,12 +1,10 @@
 package openaicompatstorage
 
 // w11b 波次：vector store 存储方法级分支（创建、游标列表、查找、删除、
-// 计数）与 code interpreter 工件收集。
+// 计数）。code interpreter 工件收集用例随本地 Python 执行器退役删除（SEC6）。
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -125,39 +123,5 @@ func TestW11BVectorStoreStoreMethodBranches(t *testing.T) {
 	}
 	if again, err := store.DeleteVectorStore(ctx, "vs-w11b", testScopeA, testKeyA); err != nil || again != nil {
 		t.Fatalf("redelete store = %+v err = %v", again, err)
-	}
-}
-
-func TestW11BCodeInterpreterCollectArtifacts(t *testing.T) {
-	executor := &CodeInterpreterExecutor{
-		config: Config{}.WithDefaults().CodeInterpreter,
-	}
-	workDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workDir, "chart.png"), []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(workDir, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workDir, "sub", "data.csv"), []byte("a,b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	collection, err := executor.collectArtifacts(workDir, "ctr-w11b")
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if len(collection.artifacts) != 2 {
-		t.Fatalf("artifacts = %+v", collection.artifacts)
-	}
-	if collection.metadata["artifacts_scan_failed"] == true {
-		t.Fatalf("metadata = %v", collection.metadata)
-	}
-	// 目录不存在：扫描失败被吞并记录。
-	failed, err := executor.collectArtifacts(filepath.Join(workDir, "missing"), "ctr")
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if failed.metadata["artifacts_scan_failed"] != true {
-		t.Fatalf("failed metadata = %v", failed.metadata)
 	}
 }

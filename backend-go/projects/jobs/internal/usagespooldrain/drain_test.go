@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // gatewaySpoolFile 复现 gateway spool Persist 的写出格式（单文件单记录，

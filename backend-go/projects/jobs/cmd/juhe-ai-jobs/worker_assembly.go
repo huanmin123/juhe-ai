@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -23,12 +22,13 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagespooldrain"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/crossprocessstate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagepricing"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -62,12 +62,10 @@ type workerAssembly struct {
 	//（worker_oauth_failurestate.go），供装配分支测试断言。
 	oauthFailures oauthrefresh.FailureStateStore
 	writer        *usagewriter.Writer
-	// usageSpoolDrain 是 gateway usage spool 交接表 drain（BUG-0175 D-72，
-	// wireUsageWriterFamily 尾部接线；supervisor 组件在 components 注册）。
-	usageSpoolDrain *usagespooldrain.Drainer
 	// usageOverflowReplay 是 writer 溢出 spool 的回放 drain（统计链路排查
 	// B②：队列满时记录先落盘溢出 spool，再由本 drain 幂等回放入队；未消费
-	// 文件的队头水位并入 ingestgate 多源积压）。
+	// 文件的队头水位并入 ingestgate 多源积压）。2026-11-09 T188 起 gateway
+	// 用量记录直投 PG，本 drain 只服务 jobs 自身 writer 的溢出补偿。
 	usageOverflowReplay *usagespooldrain.Drainer
 	// upstreamClientVersionRefresh 是 upstream-client-version-refresh 的单轮
 	// 刷新入口（wireVersionTrackingFamily 装配期赋值）。Grok 426 版本门触发
@@ -874,8 +872,8 @@ const usageWriterMaxWriteAttempts = 120
 // 记录 ID，基数变更会让新旧 ID 路由不一致，故收编为常量不再暴露 env。
 const usageWriterShardCount = 16
 
-// usageOverflowSpoolDirName 是 writer 溢出 spool 目录名（与 gateway
-// usage-record-spool 同级、同派生规则：DATA_DIR 下）。
+// usageOverflowSpoolDirName 是 writer 溢出 spool 目录名（jobs 进程私有；
+// 2026-11-09 T188 起 gateway 用量记录直投 PG，不再有 gateway 侧同名交接目录）。
 const usageOverflowSpoolDirName = "usage-record-overflow-spool"
 
 // workerUsageOverflowSpoolDirectory 派生 writer 溢出 spool 目录：DATA_DIR
@@ -905,7 +903,7 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	})
 	// usage-writer 池与业务库同库（juhe_business schema 限定），定价目录复用
 	// 该句柄，不额外开池。
-	pricingCatalog := newUsagePricingCatalog(catalogDB)
+	pricingCatalog := usagepricing.NewCatalog(catalogDB)
 	// 统计链路排查 B②/B③：
 	//   - OverflowSpool：队列满时记录先落盘溢出 spool（历史装配缺省该选项，
 	//     溢出记录直接丢弃且无处恢复），再由本进程的回放 drain 幂等重投；
@@ -928,12 +926,9 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		}
 		return nil
 	})
-	// BUG-0175 D-72：gateway 把 /v1 用量记录写入文件 spool 交接表，jobs 侧
-	// 在此接线唯一的消费方（drain → Enqueue → 分片落库）。
-	if err := a.wireUsageSpoolDrain(); err != nil {
-		return err
-	}
-	// 溢出 spool 回放 drain：溢出文件的格式/目录布局与 gateway 交接表同构，
+	// 2026-11-09 T188：gateway 用量记录直投 PG，不再有 gateway→jobs 的
+	// usage-record-spool 交接消费面；仅保留 jobs writer 自身的溢出回放。
+	// 溢出 spool 回放 drain：溢出文件的格式/目录布局与旧交接表同构，
 	// 复用 usagespooldrain.Drainer 的解析、幂等入队（ON CONFLICT DO
 	// NOTHING）、删除与待删水位语义。目录恒非空（DATA_DIR 派生），恒接线；
 	// 未消费文件的队头水位并入 ingestgate 多源积压（B①）。
@@ -946,66 +941,6 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		"event", "usage_record_overflow_spool_replay_wired",
 		"directory", a.usageOverflowReplay.Directory)
 	return nil
-}
-
-// wireUsageSpoolDrain 接线 gateway usage spool 交接表 drain（supervisor
-// 组件由 components 提供）。目录取 JUHE_AI_USAGE_SPOOL_DIRECTORY（未配置时
-// 由 loadWorkerConfig 按 D1 从 DATA_DIR 派生 <DATA_DIR>/usage-record-spool，
-// 见 worker_config.go）；测试注入的零值 config 目录为空时按组合根约定显式
-// 告警登记，不静默。
-func (a *workerAssembly) wireUsageSpoolDrain() error {
-	if a.writer == nil {
-		return nil
-	}
-	if a.config.UsageSpoolDirectory == "" {
-		a.logger.Warn("usage spool drain 未接线：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置且 DATA_DIR 派生不可用，gateway 用量交接文件将无人消费",
-			"event", "usage_record_spool_drain_unwired")
-		return nil
-	}
-	a.usageSpoolDrain = &usagespooldrain.Drainer{
-		Directory: a.config.UsageSpoolDirectory,
-		Enqueuer:  a.writer,
-		Logger:    a.logger,
-	}
-	// BUG-0193 防复发诊断：与 gateway 写侧同款——打印解析后的绝对路径并探测
-	// 可写性；两侧绝对路径不一致即交接静默断裂（相对路径按各自 cwd 解析）。
-	logUsageSpoolDirectoryDiagnostics(a.logger, "usage spool drain", a.config.UsageSpoolDirectory)
-	a.logger.Info("usage spool drain 已接线",
-		"event", "usage_record_spool_drain_wired",
-		"directory", a.config.UsageSpoolDirectory,
-		"batchSize", usagespooldrain.DefaultBatchSize,
-		"flushIntervalMs", usagespooldrain.DefaultFlushIntervalMs)
-	return nil
-}
-
-// logUsageSpoolDirectoryDiagnostics 打印交接目录的绝对路径并探测可写性
-// （ERROR 级不阻断启动；写入失败另有逐条错误面）。
-func logUsageSpoolDirectoryDiagnostics(logger *slog.Logger, label, directory string) {
-	resolved := directory
-	if abs, err := filepath.Abs(directory); err == nil {
-		resolved = abs
-	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		logger.Error("用量交接目录不可创建（用量记录将无人投递，检查挂载与 working_dir）",
-			"event", "usage_spool_directory_unavailable",
-			"label", label, "directory", resolved, "error", err.Error())
-		return
-	}
-	probe, err := os.CreateTemp(directory, ".writability-probe-*")
-	if err == nil {
-		name := probe.Name()
-		_ = probe.Close()
-		_ = os.Remove(name)
-	}
-	if err != nil {
-		logger.Error("用量交接目录不可写（用量记录将无人投递，检查挂载与 working_dir）",
-			"event", "usage_spool_directory_unwritable",
-			"label", label, "directory", resolved, "error", err.Error())
-		return
-	}
-	logger.Info("用量交接目录就绪（须与 gateway 写侧解析到同一路径）",
-		"event", "usage_spool_directory_ready",
-		"label", label, "directory", resolved)
 }
 
 type slogWriterLogger struct{ logger *slog.Logger }
@@ -1268,18 +1203,6 @@ func (a *workerAssembly) components() []supervisor.Component {
 			},
 		})
 	}
-	if a.usageSpoolDrain != nil {
-		drainer := a.usageSpoolDrain
-		components = append(components, supervisor.Component{
-			// gateway usage spool 交接表 drain（BUG-0175 D-72）：Run 内含
-			// ctx 取消后的有界停机排空；未消费文件持久留待下次启动。
-			Name: "usage-record spool drain",
-			Run: func(runCtx context.Context) error {
-				drainer.Run(runCtx)
-				return nil
-			},
-		})
-	}
 	if a.usageOverflowReplay != nil {
 		replay := a.usageOverflowReplay
 		components = append(components, supervisor.Component{
@@ -1325,13 +1248,12 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		snapshots = a.scheduler.Snapshots()
 	}
 	statusPayload := map[string]any{
-		"workerEnabled":         true, // 机制强制常开（2026-09-19 决策），字段保留以稳定 /health 载荷契约
-		"workerWiredJobs":       a.wiredJobs,
-		"workerRegisteredTodo":  registeredNotWired,
-		"workerDisabledJobs":    a.disabledJobs,
-		"workerUsageWriter":     a.writer != nil,
-		"workerUsageSpoolDrain": a.usageSpoolDrain != nil,
-		"workerJobs":            snapshots,
+		"workerEnabled":        true, // 机制强制常开（2026-09-19 决策），字段保留以稳定 /health 载荷契约
+		"workerWiredJobs":      a.wiredJobs,
+		"workerRegisteredTodo": registeredNotWired,
+		"workerDisabledJobs":   a.disabledJobs,
+		"workerUsageWriter":    a.writer != nil,
+		"workerJobs":           snapshots,
 	}
 	// 统计链路排查 B②/B③ 观测面：writer 运行态快照（含
 	// deadLetterCount / droppedOverflowCount / droppedDispatchCount 等丢弃

@@ -2,18 +2,13 @@ package main
 
 // G20 phase-2 composition-root adapter: the gateway usage persistence bridge.
 //
-//   - gatewayusage.UsageRecorder: the durable write-delivery entry. The
-//     production writer lives in the jobs module (Node usagewriter), which the
-//     three-project baseline forbids this process from importing. The bridge
-//     therefore delivers through an in-process asynchronous buffer (Node
-//     record-queue.service.ts local-path semantics: enqueue failures are
-//     counted and logged, delivery is non-blocking) with the file spool
-//     (gatewayusage.UsageRecordSpool, usage-record-spool.ts) as the overflow /
-//     compensation sink. TAKEOVER POINT: when the Go jobs module ships its
-//     usagewriter input, deliver() below switches to that IPC/stream writer
-//     and this file shrinks to the buffer configuration; the
-//     FinalizationDispatch pipeline (gatewayusage/finalization.go) stays
-//     unchanged.
+//   - gatewayusage.UsageRecorder: the usage-record delivery entry. 2026-11-09
+//     T188：生产投递面改为 gateway 直投 PG——共享 usagewriter（
+//     backend-go/shared/platform/usagewriter）经 usageWriterDeliverer 入队，
+//     有界异步缓冲沿用 Node record-queue.service.ts 的本地路径语义（enqueue
+//     不阻塞、失败计数 + 采样告警）。文件 spool 只作为测试替身存在，
+//     不再进入生产投递链；FinalizationDispatch 管线
+//     （gatewayusage/finalization.go）保持不变。
 //   - gatewaydispatch.AttemptAuditSink: the attempt-level audit surface
 //     (audit/capture.service.ts startAttempt / completeAttempt /
 //     recordFailedDispatchAttempt) delegated onto the gatewayusage
@@ -43,11 +38,6 @@ import (
 type usageBridgeConfig struct {
 	// BufferCapacity mirrors the local record queue depth.
 	BufferCapacity int
-	// SpoolDirectory enables the file spool when non-empty.
-	SpoolDirectory string
-	// SpoolMaxFiles / SpoolMaxFileBytes mirror the spool config.
-	SpoolMaxFiles     int
-	SpoolMaxFileBytes int64
 	// Logger 接收投递告警（nil 时回落 slog.Default()）。
 	Logger *slog.Logger
 }
@@ -71,12 +61,19 @@ func fieldsArgs(fields map[string]any) []any {
 	return args
 }
 
+// usageRecordDeliverer 是用量记录的持久投递端口。生产实现是网关直投 PG
+// （usageWriterDeliverer → usagewriter.Enqueue）；测试/旧装配仍可注入文件
+// spool（*gatewayusage.UsageRecordSpool 满足同一 Persist 签名）。
+type usageRecordDeliverer interface {
+	Persist(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error
+}
+
 // spooledUsageRecorder implements gatewayusage.UsageRecorder: bounded async
-// buffer → durable deliver with the spool as the synchronous overflow path.
+// buffer → deliverer（生产为 PG 直投，测试可注入捕获替身）。
 type spooledUsageRecorder struct {
-	config usageBridgeConfig
-	spool  *gatewayusage.UsageRecordSpool
-	logger *slog.Logger
+	config    usageBridgeConfig
+	deliverer usageRecordDeliverer
+	logger    *slog.Logger
 	// clock / idFactory 驱动 enqueue 入口的记录归一化（稳定 id/createdAt）。
 	clock     gatewayusage.Clock
 	idFactory gatewayusage.UsageRecordIDFactory
@@ -89,7 +86,7 @@ type spooledUsageRecorder struct {
 	wg       sync.WaitGroup
 }
 
-func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.UsageRecordSpool) *spooledUsageRecorder {
+func newSpooledUsageRecorder(config usageBridgeConfig, deliverer usageRecordDeliverer) *spooledUsageRecorder {
 	capacity := config.BufferCapacity
 	if capacity <= 0 {
 		capacity = 4096
@@ -100,7 +97,7 @@ func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.Usage
 	}
 	recorder := &spooledUsageRecorder{
 		config:    config,
-		spool:     spool,
+		deliverer: deliverer,
 		logger:    logger,
 		clock:     gatewayusage.SystemClock{},
 		idFactory: usageShardRecordIDFactory{now: time.Now},
@@ -113,12 +110,11 @@ func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.Usage
 
 // EnqueueUsageRecord implements gatewayusage.UsageRecorder. Node never
 // surfaces enqueue failures to callers on the local path: overflow falls to
-// the spool and only persistent failure counts + logs.
+// the deliverer and only persistent failure counts + logs.
 //
 // 入口第一步先做记录归一化（Node record-queue.service.ts enqueueUsageRecord
-// 语义）：补齐稳定 id 与 RFC3339 createdAt 并收紧快照。spool 落盘 JSON 因此
-// 带稳定 id/createdAt，jobs usagespooldrain 的 parseSpoolRecord 契约（缺
-// id/createdAt 判损坏隔离）在无 Redis 的 spool 交接路径上成立。
+// 语义）：补齐稳定 id 与 RFC3339 createdAt；直投 PG 的稳定 id 是
+// usage_records 幂等键（ON CONFLICT(created_at, id) DO NOTHING）。
 func (r *spooledUsageRecorder) EnqueueUsageRecord(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
 	// 使用日志结构性抑制（AI 问答内部通道）：抑制标记在记录上随请求传播。
 	// 主闸口在 FinalizationDispatch.DispatchUsageRecord 入口（覆盖正常入队与
@@ -159,16 +155,17 @@ func (r *spooledUsageRecorder) EnqueueUsageRecord(ctx gatewayusage.Ctx, input ga
 	return r.persistOverflow(ctx, input)
 }
 
-// persistOverflow mirrors persistUsageRecordForQueueOverflow: the spool
-// compensates when the buffer cannot admit the record.
+// persistOverflow mirrors persistUsageRecordForQueueOverflow: deliverer 接管
+// recorder 缓冲区满时溢出的记录（生产 PG writer 的 Enqueue 自身按队列满
+// 语义计数/丢弃，测试的 spool 替身直接落盘）。
 func (r *spooledUsageRecorder) persistOverflow(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
-	if r.spool == nil {
+	if r.deliverer == nil {
 		r.mu.Lock()
 		r.dropped++
 		r.mu.Unlock()
 		return nil
 	}
-	return r.spool.Persist(ctx, input)
+	return r.deliverer.Persist(ctx, input)
 }
 
 // drain is the delivery worker.
@@ -180,22 +177,20 @@ func (r *spooledUsageRecorder) drain() {
 	}
 }
 
-// deliver hands one record to the durable writer. The default target is the
-// spool (crash-safe, replayed by the jobs usage spool drain); the jobs-module
-// usagewriter input takes over here per the registered takeover point above.
+// deliver hands one record to the deliverer（生产为 PG 直投 writer）。
 //
-// BUG-0175 D-72 告警面：spool 未装配或写入失败意味着该记录没有到达任何
-// 持久投递面（jobs drain 无从消费），除计数外按采样告警（前 10 条逐条、
-// 之后每 100 条一条，对齐 Node droppedLogSampleLimit 采样），不允许静默丢弃。
+// BUG-0175 D-72 告警面：投递端口未装配或投递失败意味着该记录没有到达任何
+// 持久投递面，除计数外按采样告警（前 10 条逐条、之后每 100 条一条，对齐
+// Node droppedLogSampleLimit 采样），不允许静默丢弃。
 func (r *spooledUsageRecorder) deliver(input gatewayusage.UsageRecordInput) {
-	if r.spool == nil {
+	if r.deliverer == nil {
 		r.mu.Lock()
 		r.dropped++
 		dropped := r.dropped
 		r.mu.Unlock()
 		if dropped <= 10 || dropped%100 == 0 {
-			r.logger.Warn("usage spool 未装配，用量记录无法持久投递，已丢弃",
-				"event", "usage_record_spool_unavailable",
+			r.logger.Warn("usage 投递端口未装配，用量记录无法持久投递，已丢弃",
+				"event", "usage_record_delivery_unavailable",
 				"usageRecordId", input.ID,
 				"traceId", input.TraceID,
 				"trafficSource", input.TrafficSource,
@@ -203,14 +198,14 @@ func (r *spooledUsageRecorder) deliver(input gatewayusage.UsageRecordInput) {
 		}
 		return
 	}
-	if err := r.spool.Persist(context.Background(), input); err != nil {
+	if err := r.deliverer.Persist(context.Background(), input); err != nil {
 		r.mu.Lock()
 		r.failed++
 		failed := r.failed
 		r.mu.Unlock()
 		if failed <= 10 || failed%100 == 0 {
-			r.logger.Error("usage spool 写入失败，用量记录未持久化",
-				"event", "usage_record_spool_persist_failed",
+			r.logger.Error("usage 记录投递失败，未持久化",
+				"event", "usage_record_delivery_failed",
 				"usageRecordId", input.ID,
 				"traceId", input.TraceID,
 				"trafficSource", input.TrafficSource,

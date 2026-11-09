@@ -18,7 +18,7 @@
 | `juhe-ai-jobs` | 后台任务 / 探针 / 统计 / retention |
 | `juhe-ai-maintenance` | 一次性 CLI（schema、seed、upgrade、迁移、核验） |
 
-**cwd 契约（必须）**：gateway/jobs 的 `data/`、`logs/` 等相对路径以进程 cwd 为基准，用量记录经 `usage-record-spool` 目录在 gateway↔jobs 间交接。systemd 必须设置 `WorkingDirectory=` 到同一含 `data/` 的目录，或显式配置 `JUHE_AI_DATA_DIR` 绝对路径；两侧必须解析到同一路径，否则统计恒空且容器/进程重建即丢数据。
+**cwd 契约（必须）**：gateway/jobs 的 `data/`、`logs/` 等相对路径以进程 cwd 为基准。systemd 必须设置 `WorkingDirectory=` 到含 `data/` 的目录，或显式配置 `JUHE_AI_DATA_DIR` / `JUHE_AI_LOG_DIR` 绝对路径；否则写入 systemd 临时工作目录，进程重建即丢数据。用量记录自 2026-11-09 T188 起由 gateway 直投 PG，不再依赖 gateway↔jobs 目录同源。
 
 ## 3. systemd 单元示例
 
@@ -67,7 +67,7 @@ systemctl enable --now juhe-ai-gateway juhe-ai-jobs
 - `JUHE_AI_FRONTEND_DIST_PATH` 指向前端 `dist` 绝对路径（不配则不挂管理 SPA）。
 - `JUHE_AI_LOG_DIR` 显式指向与 jobs 索引器相同的日志目录。
 - 直跑形态没有内置 Caddy：HSTS 必须由前置反代（Caddy/Nginx）提供，等价 `Strict-Transport-Security: max-age=31536000`（不要贸然加 `includeSubDomains`）；compose 的 `read_only`/`cap_drop` 容器基线不适用，需用 systemd 沙箱或主机加固替代。
-- 应用层请求体上限与 `ReadTimeout`（主监听默认 10 分钟、J3b 管理别名 5 分钟、健康监听 30 秒；`/v1/files`/`/files` 与 64MiB 图片/音频车道路由在监听层分别延长到 60/30 分钟，最多 8 个并发，超出 503）在直跑形态同样生效，不依赖 Docker。
+- 应用层请求体上限与 `ReadTimeout`（主监听默认 10 分钟、J3b 管理别名 5 分钟、健康监听 30 秒；64MiB 图片/音频车道路由在监听层延长到 30 分钟，最多 8 个并发，超出 503；原 `/v1/files` 60 分钟车道随 2026-11-09 openai-compatible files 本地运行时退役删除）在直跑形态同样生效，不依赖 Docker。
 
 ## 5. 首次初始化（直跑）
 
@@ -119,5 +119,5 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ## 8. 日志与排障
 
 - `journalctl -u juhe-ai-gateway -f` / `journalctl -u juhe-ai-jobs -f`。
-- 文件日志在 `JUHE_AI_LOG_DIR`；索引与轮转清理由 jobs 负责。
-- 统计恒 0：先查两进程 cwd / `JUHE_AI_DATA_DIR` 是否同源，再看 `usage-record-spool` 是否有文件、jobs 是否出现 `usage_record_spool_drain_unwired` 告警。
+- 文件日志在 `JUHE_AI_LOG_DIR`，由 `processlog.FileSink` 自行轮转与清理（默认最多 500 个文件 / 30 天）。
+- 统计恒 0：先查 gateway 日志是否有 `usage_record_delivery_failed` / `usage_record_delivery_unavailable`，再看 PG `juhe_usage.usage_records` 是否持续无新行。

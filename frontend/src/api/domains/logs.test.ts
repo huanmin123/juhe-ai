@@ -2,7 +2,7 @@ import type { InternalAxiosRequestConfig } from 'axios'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { http } from '../http'
-import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, runtimeLogsApi } from './logs'
+import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi } from './logs'
 
 interface CapturedRequest {
   method: string
@@ -59,35 +59,6 @@ describe('auditLogsApi 请求形状', () => {
   it('searchHot 透传查询参数', async () => {
     await auditLogsApi.searchHot({ keyword: '账号' } as never)
     expect(requests[0].params).toEqual({ keyword: '账号' })
-  })
-})
-
-describe('runtimeLogsApi 请求形状', () => {
-  it('各方法发出正确的 method 与 URL', async () => {
-    await runtimeLogsApi.list()
-    await runtimeLogsApi.facets()
-    await runtimeLogsApi.grepOptions()
-    await runtimeLogsApi.detail('log-1')
-    await runtimeLogsApi.grep({ pattern: 'ERROR' } as never)
-    await runtimeLogsApi.grepDetail({ id: 'log-1', fileName: 'a.log', lineNumber: 3 })
-    expect(requestShapes()).toEqual([
-      ['GET', '/runtime-logs'],
-      ['GET', '/runtime-logs/facets'],
-      ['GET', '/runtime-logs/grep-options'],
-      ['GET', '/runtime-logs/log-1'],
-      ['GET', '/runtime-logs/grep'],
-      ['GET', '/runtime-logs/grep-detail']
-    ])
-  })
-
-  it('list/facets/detail 用默认超时，grep 与 grepDetail 禁用超时', async () => {
-    await runtimeLogsApi.list()
-    expect(requests[0].timeout).toBe(15000)
-    await runtimeLogsApi.grep()
-    expect(requests[1].timeout).toBe(0)
-    await runtimeLogsApi.grepDetail({ id: 'log-1', fileName: 'a.log', lineNumber: 3 })
-    expect(requests[2].timeout).toBe(0)
-    expect(requests[2].params).toEqual({ id: 'log-1', fileName: 'a.log', lineNumber: 3 })
   })
 })
 

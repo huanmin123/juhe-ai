@@ -777,8 +777,8 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 	}{
 		{"信任代理非法", map[string]string{"JUHE_AI_TRUST_PROXY": "maybe"}, "JUHE_AI_TRUST_PROXY 只能配置为 true/false 或 0-16"},
 		{"临时访问白名单非法", map[string]string{"JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST": "example.com"}, "只能填写逗号分隔的单个 IPv4 或 IPv6 地址"},
-		// 2026-09-21 起 SYSTEM_API/CHAIN/AUDIT_LOG/LOG_FILE 开关全部移除（恒开），
-		// 原「链条缺系统API开关」联动校验臂与「显式关闭」断言随之消失。
+		// 2026-09-21 起 SYSTEM_API/CHAIN/LOG_FILE 开关移除（恒开）并删除对应
+		// 联动校验臂；AUDIT_LOG 于 2026-11-09 恢复为部署级开关（默认 true）。
 		{"候选上限非整数", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "abc"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数"},
 		{"候选上限越界", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "0"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内"},
 	}
@@ -801,8 +801,8 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("合法覆盖必须通过: %v", err)
 		}
-		if !cfg.AuditLogEnabled {
-			t.Fatal("AuditLogEnabled = false，want true（2026-09-21 起开关移除恒开，残留 false 被忽略）")
+		if cfg.AuditLogEnabled {
+			t.Fatal("AuditLogEnabled = true，want false（2026-11-09 起 JUHE_AI_AUDIT_LOG_ENABLED=false 必须生效）")
 		}
 		if cfg.DispatchAccountCandidateLimit != 12345 {
 			t.Fatalf("DispatchAccountCandidateLimit = %d，want 12345", cfg.DispatchAccountCandidateLimit)

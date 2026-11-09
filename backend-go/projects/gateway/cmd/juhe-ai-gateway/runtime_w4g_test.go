@@ -87,64 +87,6 @@ func TestTemporaryAccessIPAllowlistConfig(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfigUsageSpoolEnvs(t *testing.T) {
-	// 旧名 JUHE_AI_USAGE_SPOOL_DIR 已删除：只配旧名时按 DATA_DIR 派生默认目录。
-	cfg, err := loadRuntimeConfig(w4gEnv(map[string]string{
-		"JUHE_AI_DATA_DIR":        "data",
-		"JUHE_AI_USAGE_SPOOL_DIR": "/tmp/spool-legacy",
-	}))
-	if err != nil {
-		t.Fatalf("load with legacy spool dir: %v", err)
-	}
-	if cfg.UsageSpoolDirectory == "/tmp/spool-legacy" {
-		t.Fatalf("legacy DIR must be ignored: %q", cfg.UsageSpoolDirectory)
-	}
-	if cfg.UsageSpoolMaxItems != 250_000 || cfg.UsageSpoolMaxBytes != 4_096*1024*1024 ||
-		cfg.UsageSpoolReplayBatchSize != 500 || cfg.UsageSpoolReplayIntervalMs != 1_000 {
-		t.Fatalf("spool defaults = %#v", cfg)
-	}
-	// 显式 DIRECTORY 生效。
-	cfg, err = loadRuntimeConfig(w4gEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH":         "data/business.sqlite3",
-		"JUHE_AI_USAGE_SPOOL_DIR":       "/tmp/spool-legacy",
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY": "/tmp/spool-new",
-	}))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.UsageSpoolDirectory != "/tmp/spool-new" {
-		t.Fatalf("DIRECTORY must win over DIR, got %q", cfg.UsageSpoolDirectory)
-	}
-	// Capacity knobs load and validate.
-	cfg, err = loadRuntimeConfig(w4gEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH":                  "data/business.sqlite3",
-		"JUHE_AI_USAGE_SPOOL_MAX_ITEMS":          "300000",
-		"JUHE_AI_USAGE_SPOOL_MAX_MB":             "64",
-		"JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE":  "100",
-		"JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS": "250",
-	}))
-	if err != nil {
-		t.Fatalf("load capacities: %v", err)
-	}
-	if cfg.UsageSpoolMaxItems != 300_000 || cfg.UsageSpoolMaxBytes != 64*1024*1024 ||
-		cfg.UsageSpoolReplayBatchSize != 100 || cfg.UsageSpoolReplayIntervalMs != 250 {
-		t.Fatalf("spool capacities = %#v", cfg)
-	}
-	for _, bad := range []struct{ env, value string }{
-		{"JUHE_AI_USAGE_SPOOL_MAX_ITEMS", "10"}, // below 1000
-		{"JUHE_AI_USAGE_SPOOL_MAX_MB", "32"},    // below 64
-		{"JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE", "0"},
-		{"JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS", "50"},
-	} {
-		if _, err := loadRuntimeConfig(w4gEnv(map[string]string{
-			"JUHE_AI_DATABASE_PATH": "data/business.sqlite3",
-			bad.env:                 bad.value,
-		})); err == nil {
-			t.Fatalf("%s=%s accepted", bad.env, bad.value)
-		}
-	}
-}
-
 func TestLoadRuntimeConfigUsageFinalizationMaxItems(t *testing.T) {
 	base := map[string]string{"JUHE_AI_DATABASE_PATH": "data/business.sqlite3"}
 	cfg, err := loadRuntimeConfig(w4gEnv(base))

@@ -62,7 +62,7 @@ func (rt *playgroundRoutes) imagesHandler(w http.ResponseWriter, r *http.Request
 	}
 	// 产物落盘是本端点响应契约的一部分（§3.4 响应即 {id,url}），暂存面未接线
 	// 时显式降级，不派发不静默改行为。
-	if !rt.artifacts.available() {
+	if !rt.artifactsReady() {
 		writeHTTPError(w, artifactsUnavailable())
 		return
 	}

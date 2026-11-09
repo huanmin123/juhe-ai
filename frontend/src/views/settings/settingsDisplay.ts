@@ -387,21 +387,19 @@ export const settingGroups: readonly SettingGroupDef[] = [
     title: '数据保留',
     hint: '3 项 · 清理前等待统计游标完成',
     sectionKeys: ['data-retention'],
-    itemCount: 3,
+    itemCount: 2,
     fields: [
       { key: 'usageRecordRetentionDays', label: '使用记录保留', kind: 'number', unit: '天', min: 1, max: 180, tip: '最大 180 天；清理前会等待统计游标处理完成，避免破坏聚合' },
-      { key: 'runtimeLogIndexRetentionDays', label: '运行日志索引保留', kind: 'number', unit: '天', min: 1, max: 90, tip: '最大 90 天；只影响索引和文件游标清理，不删除原始日志文件' },
       { key: 'publicApiLogRetentionDays', label: '公开接口日志保留', kind: 'number', unit: '天', min: 1, max: 365, tip: '最大 365 天；用于公开接口日志表的后台清理' }
     ],
     viewRows: (access) => [
       {
         title: '',
         rows: [
-          mergedRow('retention', '使用记录 · 运行日志索引 · 公开接口日志', [
+          mergedRow('retention', '使用记录 · 公开接口日志', [
             { key: 'usageRecordRetentionDays', text: `${displayNumber(num(access, 'usageRecordRetentionDays'), '天')}` },
-            { key: 'runtimeLogIndexRetentionDays', text: `${displayNumber(num(access, 'runtimeLogIndexRetentionDays'), '天')}` },
             { key: 'publicApiLogRetentionDays', text: `${displayNumber(num(access, 'publicApiLogRetentionDays'), '天')}` }
-          ], access, '默认 30 天 · 14 天 · 30 天')
+          ], access, '默认 30 天 · 30 天')
         ]
       }
     ]
@@ -465,7 +463,7 @@ export const settingsSectionFields: Record<ManagementSettingsSectionKey, readonl
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
   'cooldown-retest': ['cooldownAccountRetestMaxBackoffHours'],
-  'data-retention': ['usageRecordRetentionDays', 'runtimeLogIndexRetentionDays', 'publicApiLogRetentionDays'],
+  'data-retention': ['usageRecordRetentionDays', 'publicApiLogRetentionDays'],
   'log-retention': ['auditLogSuccessRetentionDays', 'auditLogProblemRetentionDays', 'auditLogSuccessHotRetentionHours', 'auditLogSuccessSampleRate', 'operationLogRetentionDays', 'operationLogMaxChangesPerRecord']
 }
 

@@ -35,9 +35,11 @@ services:
       JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3305
     env_file: .env
     volumes:
-      # 与 gateway 同源：usage spool 交接与运行日志消费依赖同一目录。
-      - ${JUHE_AI_SHARED_ROOT:?JUHE_AI_SHARED_ROOT is required}/data:/app/backend/data
-      - ${JUHE_AI_SHARED_ROOT:?JUHE_AI_SHARED_ROOT is required}/logs:/app/backend/logs
+      # 默认节点本地目录（用量记录直投 PG，无跨进程文件交接；日志本地落盘，
+      # 跨节点汇总用 ELK/Loki 外部采集）。显式 JUHE_AI_SHARED_ROOT 仍可让
+      # 需要集中留存的目录指向共享挂载。
+      - ${JUHE_AI_SHARED_ROOT:-./data/app}/data:/app/backend/data
+      - ${JUHE_AI_SHARED_ROOT:-./data/app}/logs:/app/backend/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3305/health"]
       interval: 10s

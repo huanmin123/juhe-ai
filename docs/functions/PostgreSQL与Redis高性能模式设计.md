@@ -45,7 +45,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 
 - 启动必填（缺失启动即失败，fail-fast 保留）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_URL`。
 - 已退役 env：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER` 与全部 sqlite 路径 / 分片族（`*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_ROOT` / `_COUNT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` / `_COUNT`）、`JUHE_AI_CODEX_CONTEXT_ROOT`（已随 2026-11-07 Chat bridge 退役删除）及 store 选择族（`JUHE_AI_AUDIT_LOG_STORE` / `JUHE_AI_OPERATION_LOG_STORE` / `JUHE_AI_RUNTIME_LOG_STORE` / `JUHE_AI_J3B_STORE` / `JUHE_AI_ACCOUNT_HEALTH_STORE` / `JUHE_AI_ACCOUNT_BALANCE_STORE`）——代码不再读取，部署面残留值无效，应从 `.env` 删除（清理清单见 `docker/single-server/README.md`）。
-- 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `usage-record-spool`（gateway↔jobs 用量交接，可用 `JUHE_AI_USAGE_SPOOL_DIRECTORY` 显式覆盖）、`logs`、`audit-blob`（chat-assets 已随 AI 问答退役删除，2026-10-31；`codex-context` segments 根已随 2026-11-07 Chat bridge 退役删除，历史目录备份后人工清理）。gateway 与 jobs 双进程消费同一目录时必须解析到同一宿主机路径。
+- 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `logs`、`audit-blob`（用量记录自 2026-11-09 T188 起由 gateway 直投 PG，`usage-record-spool` 与 `JUHE_AI_USAGE_SPOOL_*` env 已删除；chat-assets 已随 AI 问答退役删除，2026-10-31；`codex-context` segments 根已随 2026-11-07 Chat bridge 退役删除，历史目录备份后人工清理）。gateway 与 jobs 各自读写本地目录，不再要求同源。
 - `JUHE_AI_CACHE_DRIVER` 类语义不复存在：Redis cache 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走运行态域（同一 Redis 连接下的 `runtimecache` / `ratelimit` / `session` 等域键空间）。
 - `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，必填非空（现行生产配 `prod`）；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
 - `JUHE_AI_REDIS_MODE` 选择 `single` 或 `cluster`；两种形态都只使用 DB0。Cluster 多节点通过 `JUHE_AI_REDIS_URL` 重复 `addr` 参数声明，客户端负责 MOVED/ASK 与故障转移。
@@ -194,9 +194,9 @@ AI 账户运行态探针的运行态必须跨进程可见（权威口径见 [AI 
 
 Go 三项目没有 Redis 任务队列（Node 时代的 Redis Streams consumer group 队列表已随迁移退役，见 git 历史）。异步链路按数据域收敛为进程内组件与文件交接：
 
-- usage 链路：gateway 在 `/v1` 链内把用量记录原子写入文件 spool（`JUHE_AI_USAGE_SPOOL_DIRECTORY`，未配置时按 `JUHE_AI_DATA_DIR` 派生 `usage-record-spool`），jobs 的 `usagespooldrain` 扫描 spool 文件、经归一化校验后交接给 `usagewriter` 直接异步写分区（`backend-go/projects/jobs/internal/usagespooldrain/drain.go`）。gateway 与 jobs 两侧 spool 目录必须解析到同一宿主机路径，否则用量记录永不到库且无报错（`docker/single-server/README.md`"运行时数据目录契约"）。
+- usage 链路：gateway 在 `/v1` 链内通过有界异步 recorder 把用量记录交给共享 `usagewriter`（`backend-go/shared/platform/usagewriter`），后者按 16 分片直接写 PG `juhe_usage.usage_records`，入队时冻结定价目录（`usagepricing`）。2026-11-09 T188 起删除 gateway→jobs 文件 spool 交接，gateway 进程崩溃时内存队列内未落库记录会丢失（直投语义的已知取舍，队列满按采样告警计数）。
 - 审计与操作日志：gateway 进程内 F3 / F4 owner 包直接写入，不经队列。
-- 公开接口日志由 gateway 进程内组件写入；运行日志索引由 jobs 的 F1 索引器按文件 cursor 消费。
+- 公开接口日志由 gateway 进程内组件写入；运行日志只写 gateway 本地 JSONL（F1 PG 索引已下架，集中检索走 ELK/Loki 外部抓取）。
 - 后台任务族由 `jobregistry` 统一注册，lease 围栏、单持有者、固定退避语义见 `backend-go/projects/jobs/internal/jobregistry/registry.go`；低优先级清理不得阻塞关键用量与审计链路。
 
 统计聚合仍按作用域 / 分区并行读取、窗口事务写入控制，避免同一 summary key 并发 upsert 放大冲突；事实明细 append-only，不做 last-write-wins；失败重试必须指数退避并有上限，不能无限占用执行预算。
@@ -228,7 +228,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 - 账户行锁持有后，才写入 `juhe_usage.usage_records` 及其分区元数据，最后执行 `last_used_at` 和健康成功信号的条件更新。
 - 事务失败时整体回滚；spool 文件按 at-least-once 语义保留重试。不得以降低批量规模、关闭幂等写入或删除历史记录规避竞争。
 
-该顺序仅约束使用记录批写事务，不要求把所有账户写入路径串行化；其他账户变更仍须避免在同一事务中先持有其他互斥资源、再反向等待 usage 写入。该锁顺序在 Go `usagewriter` 的 PG 写路径中原样保留（`backend-go/projects/jobs/internal/usagewriter/store.go` 的 `ORDER BY id FOR NO KEY UPDATE` 先锁账户行、再写 usage 分区）。
+该顺序仅约束使用记录批写事务，不要求把所有账户写入路径串行化；其他账户变更仍须避免在同一事务中先持有其他互斥资源、再反向等待 usage 写入。该锁顺序在 Go `usagewriter` 的 PG 写路径中原样保留（`backend-go/shared/platform/usagewriter/store.go` 的 `ORDER BY id FOR NO KEY UPDATE` 先锁账户行、再写 usage 分区）。
 
 ## PostgreSQL 调优基线
 
@@ -258,20 +258,25 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 | 数据 | 保留策略 | 统一定时清理 | 注意事项 |
 | --- | --- | --- | --- |
 | `runtime_logs` / `runtime_log_file_cursors` | 索引行默认 14 天（`runtimeLogIndexRetentionDays`，1..90），cursor 清理按最近 3 天未更新 | 是，Go F1 indexer 按各自 interval 清理 | 只删除 PG 搜索索引行，不删除后端 `.log` 文件；文件日志按 30 天 / 500 个轮转文件保留 |
-| `model_check_runs` / `model_check_items` / `model_check_observations` | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` | observation 通过 run 外键级联删除，只保留 HMAC 桶、Token 数值和固定 8 维身份特征，不保存题面、回答正文或普通流量正文 |
+| `model_check_runs` / `model_check_items` / `model_check_observations` | 默认 30 天（`modelCheckRetentionDays`，1..365）；每账户最新 1000 条 run 由清理节拍收敛 | 是，`data-retention-cleanup` | observation / item 通过 run 外键级联删除；只保留 HMAC 桶、Token 数值和固定 8 维身份特征，不保存题面、回答正文或普通流量正文；清理按 10 分钟节拍收敛，允许节拍内单账户短暂超过 1000 条 |
+| `model_check_inputs` / `model_check_outcomes` / `model_check_execution_claims` / `model_trust_observation_receipts` / `model_check_scheduler_tasks` | 输入 / 结果 / 认领 / 回执跟随 30 天窗口；scheduler 仅清理 completed（`completed_at`）与不再重试的 failed（`due_at`）；pending 永不删除 | 是，`data-retention-cleanup` | 队列与回执无 run 外键，按各自时间列独立收敛；`account_quality_health_hourly` 跟随 `usageStatsHourlyRetentionDays`（默认 60 天，可与小时桶一并调低） |
 | 操作日志四表（`operation_logs` / `operation_log_targets` / `operation_log_viewers` / `operation_log_summary_search_terms`） | 默认 365 天，业务设置允许 1..3650 天 | 是，Go F4 owner 按独立 interval 清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除；设置不可读或非法时跳过该轮并记录错误 |
 | `audit_logs` / `audit_log_attempts` | 成功 payload 热窗口默认 1 小时，成功长期 payload 样本默认 3 天，问题事件默认 7 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 清理长期过期数据 | 完全成功请求先全量热保留；超过热窗口后，未命中 10% 长期采样的记录删除 attempts 和 payload 引用、主记录降为 `metadata_only`；成功三项环境变量全为 0 时不采集成功审计 |
 | `audit_payload_refs` / `audit_payload_blobs` | 成功样本正文默认 3 天，问题正文默认 7 天 | 是，`data-retention-cleanup` | 先删除过期引用，再删除无引用 blob 和本地 blob 文件（`JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`） |
 | `audit_error_groups` | 默认 7 天 | 是，`data-retention-cleanup` | 只做展示和排障聚合，不替代事件记录 |
 | （已随 2026-11-07 Chat bridge 退役删除）`juhe_codex_context` 关系索引 + segments 文件 | 历史截面：固定 7 天未使用即清理 | jobs `data-retention-cleanup` 的该清理任务已随 bridge 退役删除（`cleanuprepo/codexcontext.go` 与 `JUHE_AI_CODEX_CONTEXT_ROOT` 同批移除） | 磁盘历史 `codex-context/` 目录不自动删除，升级文档要求备份后人工清理 |
-| `juhe_usage` 明细与 scope catalog | 默认 7 天在线保留（`usageRecordOnlineRetentionDays`），按统计安全游标追平后整日分区 `DETACH / DROP` | 是，`data-retention-cleanup` | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细 |
+| `juhe_usage` 明细与 scope catalog | 默认 30 天在线保留（`usageRecordRetentionDays`，1..180），按统计安全游标追平后整日分区 `DETACH / DROP` | 是，`data-retention-cleanup` | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；`usageRecordOnlineRetentionDays` 等拆分设置仍是未实现提案，不按系统设置读取 |
 | 账号质量分钟桶 / 统计缓存各桶 | 分钟桶默认 48 小时；小时桶默认 60 天；日桶默认 400 天；周桶默认 104 周；月桶默认 24 个月 | 是，`data-retention-cleanup` | 快照刷新水位只读 `MAX(updated_at)`，不以全表 `COUNT(*)` 感知删除 |
 | 授权日摘要 / 热范围窗口 | 日摘要跟随日级统计保留；热窗口默认今天 / 昨天 / 最近 7 天 / 最近 31 天 / 当前月，按需窗口按 TTL 清理 | 是，`data-retention-cleanup`；刷新任务会覆盖当前窗口 | 自定义范围先登记请求再后台生成，过期窗口可重建或丢弃 |
 | 排行 / 概览 / AI 性能 / 额度窗口缓存 | 默认最近 31 天窗口或最近 30 天刷新结果；排行快照默认 30 天 | 是，`data-retention-cleanup` | API 只直读预聚合结果，不在请求时回扫明细；额度小时窗口只在用量聚合实际推进后刷新，空轮不重建 |
 | `account_usage_snapshots` | 默认 30 天未更新即清理 | 是，`data-retention-cleanup` | 正常按账号主键 upsert，清理的是长期未更新的过期快照 |
 | `system_sessions` | 到期即清理 | 是，后台数据保留任务 | 查询时也会校验过期时间；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
+| `client_ip_stats_daily` / `client_ip_policy_hits` | 默认 35 天（31 天读面 + 4 天余量） | 是，`data-retention-cleanup` | 按业务时区 `stat_date` 日期键滚动删除；两表都是纯统计 / 审计派生数据 |
+| `juhe_jobs.account_balance_outcomes` | 默认 35 天 | 是，`data-retention-cleanup` | 与 `account_health_outcomes` 同窗口、同批次语义；余额快照 `account_balance_snapshots` 是按账号 upsert 的当前态，不按时间清理 |
 
 不按保留期物理清理：
+
+- `client_ip_registry` 长期保留：它是 IP 管理列表的成员全集（时间范围只切换统计列），且网关封禁执行独立读 `client_ip_policies`；按时间删除会让仍生效的策略从管理页消失但网关继续拦截。如确需控制体积，只清理「`last_seen_at` 超 180 天且不存在任何 `client_ip_policies` 行（含 disabled）」的孤儿，并保留清理计数。
 
 - `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
 - `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务和管理员手动清理删除 `usage_records` 的安全边界。

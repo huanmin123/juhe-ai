@@ -40,7 +40,7 @@ func (rt *playgroundRoutes) speechHandler(w http.ResponseWriter, r *http.Request
 	}
 	// 音频落盘是本端点响应契约的一部分（§3.6 响应即 {id,url,mimeType}），暂存
 	// 面未接线时显式降级，不派发不静默改行为。
-	if !rt.artifacts.available() {
+	if !rt.artifactsReady() {
 		writeHTTPError(w, artifactsUnavailable())
 		return
 	}

@@ -609,17 +609,9 @@ func TestW1RListFullAccountsGuards(t *testing.T) {
 // ---------------------------------------------------------------------------
 // chain_openaicompat（覆盖清单 13）
 // ---------------------------------------------------------------------------
-
-// TestW1RErrChainCompat 覆盖错误构造：消息原文与专用错误类型。
-func TestW1RErrChainCompat(t *testing.T) {
-	err := errChainCompat("openai-compatible 组合缺少业务数据库句柄")
-	if err.Error() != "openai-compatible 组合缺少业务数据库句柄" {
-		t.Errorf("err = %q, want 消息原文", err.Error())
-	}
-	if _, ok := err.(*chainCompatError); !ok {
-		t.Errorf("错误类型 = %T, want *chainCompatError", err)
-	}
-}
+// errChainCompat / mountChainOpenAICompatFamilies 随 2026-11-09 openai-compatible
+// files/vector-stores 本地运行时退役删除；compat dispatcher 与 scope resolver
+// 契约仍由 chain_openaicompat_fallback_test.go / dd2_c1 等测试覆盖。
 
 // TestW1RBearerTokenOf 表驱动覆盖 Authorization bearer 提取：大小写、
 // 空白容错与非 bearer 方案拒绝。

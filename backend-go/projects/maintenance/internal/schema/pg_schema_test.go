@@ -154,8 +154,10 @@ import (
 // owner_created 原位补 id DESC 后缀不改计数）。
 // 642→637：T117c 冗余索引回收批 -5（同上方 per-schema 注释；proberepo
 // EnsureSchema 的重复唯一索引语句删除属 shared 模块不计入）。
+// 637→639：2026-11-09 演练场产物暂存 PG bytea——juhe_business +2
+// （playground_artifacts 建表 + created_at 索引）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 637
+const goldenPostgresSchemaStatementCount = 639
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -194,7 +196,9 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// credential_fingerprint / owner_name_lookup / type_c_trgm_lookup /
 	// system_account_last_used / owner_list_order，生产已同步 DROP
 	// CONCURRENTLY；审计报告-2026-11-04 §6）。
-	"juhe_business": 338,
+	// 338→340：2026-11-09 演练场产物暂存 PG bytea +2（playground_artifacts
+	// 建表 + created_at 索引；多节点无需共享盘）。
+	"juhe_business": 340,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,

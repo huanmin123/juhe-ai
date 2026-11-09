@@ -117,7 +117,7 @@ func TestW16HRunFlagArms(t *testing.T) {
 	})
 }
 
-// TestW16HRunStartupFailArms 覆盖 logger/owner/F1 配置链错误臂。
+// TestW16HRunStartupFailArms 覆盖 logger/owner/健康配置链错误臂。
 func TestW16HRunStartupFailArms(t *testing.T) {
 	t.Run("非法日志级别返回 1", func(t *testing.T) {
 		w16hApplyEnv(t, map[string]string{"JUHE_AI_LOG_LEVEL": "w16h-not-a-level"})
@@ -134,14 +134,16 @@ func TestW16HRunStartupFailArms(t *testing.T) {
 	})
 	t.Run("空 env 缺 PG 连接串配置装载失败返回 1", func(t *testing.T) {
 		// PG 唯一形态：零配置不再可启动（sqlite 自动派生已退役），JUHE_AI_POSTGRES_URL
-		// 必填 fail-fast。DATA_DIR 指向自管理目录，避免在包目录创建 ./data。
+		// 必填 fail-fast。F1 runtime-log-indexer 已于 2026-11-09 退役，空 env 下
+		// 首个失败点是 J1 account-health 配置。DATA_DIR 指向自管理目录，避免在
+		// 包目录创建 ./data。
 		root, mkdirErr := os.MkdirTemp("", "w16h-empty-env-")
 		if mkdirErr != nil {
 			t.Fatal(mkdirErr)
 		}
 		t.Cleanup(func() { _ = os.RemoveAll(root) })
 		w16hApplyEnv(t, map[string]string{"JUHE_AI_DATA_DIR": root})
-		w16hRunArms(t, nil, 1, "JUHE_AI_RUNTIME_LOG_POSTGRES_URL")
+		w16hRunArms(t, nil, 1, "JUHE_AI_POSTGRES_URL")
 	})
 }
 

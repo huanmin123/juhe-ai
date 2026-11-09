@@ -400,7 +400,7 @@ func TestSpeechSynthesis(t *testing.T) {
 		t.Fatalf("响应不得再直接回音频字节流: %s", recorder.Body.String())
 	}
 	// 暂存文件字节与上游音频一致（真实落盘验证）。
-	data, err := os.ReadFile(filepath.Join(deps.ArtifactsRoot, "sys_user_1", response.Data.ID+".wav"))
+	data, err := os.ReadFile(filepath.Join(artifactTestRoot(t, deps), "sys_user_1", response.Data.ID+".wav"))
 	if err != nil || !bytes.Equal(data, wavBytes) {
 		t.Fatalf("暂存文件读取失败或字节不符（err %v）", err)
 	}

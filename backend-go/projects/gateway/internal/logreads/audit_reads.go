@@ -420,47 +420,44 @@ func readBool(value any) bool {
 	}
 }
 
-// ReadsDeps wires the three log read route families onto the admin surface.
+// ReadsDeps wires the two log read route families onto the admin surface.
 type ReadsDeps struct {
-	Audit   AuditLogReader
+	Audit  AuditLogReader
+	Public PublicApiLogReader
+	Auth   *authsys.Deps
+	// Runtime / Grep 只被已下架的 runtime-logs handler 方法引用（路由不再
+	// 注册）；保留字段避免一次性删除历史实现，后续清理批次随包删除。
 	Runtime RuntimeLogReader
-	Public  PublicApiLogReader
-	// Grep backs the runtime-logs grep family (grep-options/grep/
-	// grep-detail over the process file logs). Optional: when nil the grep
-	// routes stay unregistered (the pre-M14 bridge behaviour).
-	Grep *RuntimeLogGrep
-	Auth *authsys.Deps
+	Grep    *RuntimeLogGrep
+	// AuditDisabled gates the audit-logs read family: JUHE_AI_AUDIT_LOG_ENABLED=
+	// false leaves every audit GET route unregistered (404) so the management
+	// API stops serving request/response bodies. public-api-logs stays
+	// registered. 布尔取反是为了让零值保持既有行为（默认挂载），包内既有
+	// 装配与测试无需逐个改写（2026-11-09 部署级审计关闭）。
+	AuditDisabled bool
 }
 
 // Mount registers every read route under /__aisys__/api behind requireAdmin,
 // matching the Node routers (each router mounts requireAdmin for the whole
-// family). Node mounts no my-* variants for these three families, so the Go
-// surfaces are admin-only as well.
+// family). 2026-11-09 起运行日志读面（含 grep）下架：运行日志不再入库 PG，
+// 只保留 gateway 本地 JSONL 文件供外部抓取/人工查看。
 func (d *ReadsDeps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	admin := func(handler http.Handler) http.Handler {
 		return d.Auth.RequireAdmin(handler)
 	}
-	// Audit-logs family (backend/src/modules/audit-logs/audit-logs.routes.ts).
-	// ServeMux cannot order /{id}/... wildcards against the literal
-	// error-groups family (the Express registration order), so the detail,
-	// payload and error-group-events paths dispatch inside the subtree
-	// handler below.
-	k.Register("GET "+prefix+"/audit-logs", admin(http.HandlerFunc(d.handleListAuditLogs)))
-	k.Register("GET "+prefix+"/audit-logs/search-hot", admin(http.HandlerFunc(d.handleAuditSearchHot)))
-	k.Register("GET "+prefix+"/audit-logs/runtime", admin(http.HandlerFunc(d.handleAuditLogRuntime)))
-	k.Register("GET "+prefix+"/audit-logs/error-groups", admin(http.HandlerFunc(d.handleListAuditErrorGroups)))
-	k.Register("GET "+prefix+"/audit-logs/", admin(http.HandlerFunc(d.handleAuditLogSubtree)))
-	// Runtime-logs family (runtime-logs.routes.ts); the grep endpoints ride
-	// on the optional file-scanner service.
-	k.Register("GET "+prefix+"/runtime-logs", admin(http.HandlerFunc(d.handleListRuntimeLogs)))
-	k.Register("GET "+prefix+"/runtime-logs/facets", admin(http.HandlerFunc(d.handleRuntimeLogFacets)))
-	if d.Grep != nil {
-		k.Register("GET "+prefix+"/runtime-logs/grep-options", admin(http.HandlerFunc(d.handleRuntimeLogGrepOptions)))
-		k.Register("GET "+prefix+"/runtime-logs/grep", admin(http.HandlerFunc(d.handleRuntimeLogGrep)))
-		k.Register("GET "+prefix+"/runtime-logs/grep-detail", admin(http.HandlerFunc(d.handleRuntimeLogGrepDetail)))
+	if !d.AuditDisabled {
+		// Audit-logs family (backend/src/modules/audit-logs/audit-logs.routes.ts).
+		// ServeMux cannot order /{id}/... wildcards against the literal
+		// error-groups family (the Express registration order), so the detail,
+		// payload and error-group-events paths dispatch inside the subtree
+		// handler below.
+		k.Register("GET "+prefix+"/audit-logs", admin(http.HandlerFunc(d.handleListAuditLogs)))
+		k.Register("GET "+prefix+"/audit-logs/search-hot", admin(http.HandlerFunc(d.handleAuditSearchHot)))
+		k.Register("GET "+prefix+"/audit-logs/runtime", admin(http.HandlerFunc(d.handleAuditLogRuntime)))
+		k.Register("GET "+prefix+"/audit-logs/error-groups", admin(http.HandlerFunc(d.handleListAuditErrorGroups)))
+		k.Register("GET "+prefix+"/audit-logs/", admin(http.HandlerFunc(d.handleAuditLogSubtree)))
 	}
-	k.Register("GET "+prefix+"/runtime-logs/{id}", admin(http.HandlerFunc(d.handleGetRuntimeLogDetail)))
 	// Public-api-logs family (public-api-logs.routes.ts).
 	k.Register("GET "+prefix+"/public-api-logs", admin(http.HandlerFunc(d.handleListPublicApiLogs)))
 	k.Register("GET "+prefix+"/public-api-logs/{id}", admin(http.HandlerFunc(d.handleGetPublicApiLogDetail)))

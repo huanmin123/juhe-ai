@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // bug0304StubShardStore 是 usagewriter.ShardStore 的内存替身：接收证明走

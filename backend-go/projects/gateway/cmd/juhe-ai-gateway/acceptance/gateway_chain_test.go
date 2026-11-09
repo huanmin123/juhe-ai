@@ -6,11 +6,11 @@ package acceptance
 import (
 	"bufio"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -279,20 +279,25 @@ func TestAcceptanceGatewayChain(t *testing.T) {
 		t.Fatalf("sse missing [DONE]: %s", sseBody)
 	}
 
-	// usage 落 spool：异步持久化桥（chain_usage.go spooledUsageRecorder）
-	// 最终把记录写入 JUHE_AI_USAGE_SPOOL_DIRECTORY。
-	spoolHasEntries := false
-	spoolDeadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(spoolDeadline) {
-		entries, err := os.ReadDir(chain.fixture.spoolDir)
-		if err == nil && len(entries) > 0 {
-			spoolHasEntries = true
+	// usage 直投 PG（2026-11-09 T188）：gateway 的异步 recorder →
+	// usagewriter 最终写入 juhe_usage.usage_records，不再有文件 spool。
+	usageSink, err := sql.Open("pgx", chain.fixture.dsn)
+	if err != nil {
+		t.Fatalf("open usage DSN: %v", err)
+	}
+	defer usageSink.Close()
+	usageDeadline := time.Now().Add(10 * time.Second)
+	usageWritten := false
+	for time.Now().Before(usageDeadline) {
+		var count int
+		if err := usageSink.QueryRow(`SELECT COUNT(*) FROM juhe_usage.usage_records`).Scan(&count); err == nil && count > 0 {
+			usageWritten = true
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if !spoolHasEntries {
-		t.Fatalf("usage spool empty after completion; dir=%s", chain.fixture.spoolDir)
+	if !usageWritten {
+		t.Fatal("usage_records empty after completion; gateway 直投 PG 未生效")
 	}
 
 	// /v1/models：认证后模型列表（协议端点）。

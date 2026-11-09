@@ -1180,11 +1180,16 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 	if err != nil {
 		t.Fatalf("create inflight quota: %v", err)
 	}
+	var usageDeliverer usageRecordDeliverer
+	if spool := newUsageSpool(spoolDir, clock, nil, usageSpoolCapacity{}); spool != nil {
+		t.Cleanup(spool.StopReplay)
+		usageDeliverer = spool
+	}
 	return chainRuntimeDeps{
 		Cache:           fixture.cache,
 		Clock:           clock,
 		AuditLogEnabled: func() bool { return false },
-		SpoolDirectory:  spoolDir,
+		UsageDeliverer:  usageDeliverer,
 		// 组合测试的上游是 httptest loopback 服务：与 Node 回归显式设置
 		// JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=true 同一约定，测试夹具
 		// 打开 allowPrivate 开关（D-192/D-146 严格策略的生产默认不受影响）。

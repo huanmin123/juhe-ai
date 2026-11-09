@@ -28,7 +28,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
@@ -168,24 +167,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			"wait_duration_ms", event.DBStats.WaitDuration.Milliseconds(),
 		)
 	})
-	runtimeConfig, err := runtimelog.LoadConfig(os.Getenv)
-	if err != nil {
-		return failWith(stderr, fmt.Errorf("load F1 runtime-log-indexer config: %w", err))
-	}
-	if runtimeConfig.Once {
-		return failWith(stderr, errors.New("JUHE_AI_RUNTIME_LOG_ONCE=true is not supported by juhe-ai-jobs"))
-	}
-	runtimeStore, err := runtimelog.OpenStore(context.Background(), runtimeConfig)
-	if err != nil {
-		return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
-	}
-	defer runtimeStore.Close()
-	if err := runtimelog.EnsureSchema(context.Background(), runtimeStore); err != nil {
-		return failWith(stderr, fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err))
-	}
-	if err := runtimeStore.CheckSchema(context.Background()); err != nil {
-		return failWith(stderr, fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
-	}
+	// 2026-11-09 用户裁决：运行日志不再入库 PG，F1 runtime-log-indexer 组件
+	// 与它的配置/存储/schema 装配整体下架；gateway 仍写本地 JSONL 文件，
+	// 需要集中检索由 ELK/Loki 等外部抓取承担。
 	accountHealthConfig, err := accounthealth.LoadConfig(os.Getenv)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("load J1 account-health config: %w", err))
@@ -574,19 +558,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	promRegistry := prommetrics.NewRegistry()
 	taskruns.BindMetrics(promRegistry)
 	bindJobsBuildInfo(promRegistry, jobsMetricInstanceID(workerCfg))
-	runtimeIndexer := runtimelog.NewIndexer(runtimeConfig, runtimeStore)
+	// F1 runtime-log-indexer 已于 2026-11-09 退役；保留 runtimeRunning 供
+	// /health 报告 false，避免健康契约字段消失。
 	var runtimeRunning atomic.Bool
-	components := []supervisor.Component{
-		{
-			Name: "F1 runtime-log-indexer",
-			Run: func(runCtx context.Context) error {
-				runtimeRunning.Store(true)
-				defer runtimeRunning.Store(false)
-				return runtimelog.RunWithOwnerLease(runCtx, runtimeConfig, runtimeStore, runtimeIndexer.Run)
-			},
-			Close: runtimeStore.Close,
-		},
-	}
+	components := []supervisor.Component{}
 	if probeOutboxPruner != nil {
 		// 业务库句柄的关闭由 worker 组件 Close（closeStores）承担；
 		// supervisor 保证所有组件 Run 停止后才调用 Close。

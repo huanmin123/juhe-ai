@@ -51,9 +51,11 @@ services:
       JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT: 45s
     env_file: .env
     volumes:
-      # 必须与 jobs 指向同一共享根（NFS/云 NAS）；节点 UID/GID 必须一致（app=1000）。
-      - ${JUHE_AI_SHARED_ROOT:?JUHE_AI_SHARED_ROOT is required}/data:/app/backend/data
-      - ${JUHE_AI_SHARED_ROOT:?JUHE_AI_SHARED_ROOT is required}/logs:/app/backend/logs
+      # 默认节点本地目录（不强制 NFS/NAS）；跨节点共享按需配置
+      # JUHE_AI_SHARED_ROOT，决策与原因见 README「共享目录决策表」。
+      # 共享时节点 UID/GID 必须一致（app=1000）。
+      - ${JUHE_AI_SHARED_ROOT:-./data/app}/data:/app/backend/data
+      - ${JUHE_AI_SHARED_ROOT:-./data/app}/logs:/app/backend/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3306/health"]
       interval: 10s

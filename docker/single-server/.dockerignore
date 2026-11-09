@@ -1,0 +1,21 @@
+# 单机构建上下文收敛（与 docker/cluster/.dockerignore 同标准）。
+#
+# 背景：compose.yml 的三个 build.context 都是 `.`（即 docker/single-server/
+# 部署目录，服务器上是 /opt/juhe-ai）。该目录同时存放生产 .env（PostgreSQL /
+# Redis 密码、JUHE_AI_SECRET）、部署脚本、监控栈配置和 build/ 下的全部二进制；
+# 不加本文件时它们都会进入 docker build 上下文并交给构建守护进程。当前
+# Dockerfile.runtime 只 COPY 两份产物，不会写进镜像层，但上下文本身不应持有
+# 生产密钥（远程/共享 builder、daemon 上下文缓存都会放大暴露面）。
+#
+# 只保留构建真正需要的内容：build/bin/<TARGET_BINARY> 与 build/frontend-dist。
+# 匹配顺序按 Docker 的“最后命中优先”规则：先全排除，再放行 build 目录本身，
+# 再排除其全部子项，最后只放行 bin 与 frontend-dist 两棵子树。
+*
+!build
+build/*
+!build/bin
+!build/bin/**
+!build/frontend-dist
+!build/frontend-dist/**
+# 经典 builder 需要在上下文里读取 Dockerfile；BuildKit 自带该文件。
+!Dockerfile.runtime

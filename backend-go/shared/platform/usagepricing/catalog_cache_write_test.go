@@ -1,6 +1,6 @@
-package main
+package usagepricing
 
-// BUG-0347 回归（jobs 镜像引擎）：worker_usage_pricing_catalog.go 的
+// BUG-0347 回归（jobs 镜像引擎）：usagepricing/catalog.go 的
 // buildUsageCatalogTokenBreakdown 与 gateway pricing.buildTokenCostBreakdown
 // 必须保持同一扣除语义——OpenAI 兼容族把 cache_write_tokens 计入
 // input_tokens 总额，普通 input 行项要先扣缓存写入；Anthropic 的
@@ -9,7 +9,7 @@ package main
 import (
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 func usageCatalogIntPtr(value int) *int { return &value }

@@ -15,10 +15,26 @@
 | 入口 | Caddy 与 gateway 同 compose，固定容器 IP | 独立入口机 Caddy，环境变量上游池 + 主动健康检查 |
 | 镜像 | 本机构建（`deploy.sh`），`juhe-ai-single-server:<tag>-<role>` | 仓库推送 digest 引用，`<registry>/juhe-ai:<tag>-<role>` |
 | 发布 | `deploy.sh`（停写窗口 + 单机重建） | `build-images.sh` + 逐节点 `rolling-release.sh` |
-| 共享目录 | `./data/app/{data,logs}` 本机 | NFS/云 NAS 共享根，跨节点同源 |
+| 共享目录 | `./data/app/{data,logs}` 本机 | 默认也是本机 `./data/app`；跨节点共享按需配置，不强制 NFS/NAS |
 | 容器名 | `juhe-ai-go-gateway` / `juhe-ai-go-jobs` / `juhe-ai-caddy` | `juhe-ai-gateway` / `juhe-ai-jobs` / `juhe-ai-go-frontend` / `juhe-ai-edge` |
 
 两侧不共享 compose、Caddyfile、脚本或 `.env`；单机部署行为不受本目录任何文件影响。
+
+### 1.1 共享目录决策表（默认全部本地）
+
+应用不依赖 NFS/NAS：`JUHE_AI_SHARED_ROOT` 不配置时，compose 把节点本地
+`./data/app/{data,logs}` 挂进容器；只有下表列出的跨节点能力才需要把它配成
+共享挂载。**不需要共享的目录一律保持本地，避免把系统级存储问题带进启动链。**
+
+| 目录/能力 | 默认位置 | 何时需要跨节点共享 | 原因 |
+| --- | --- | --- | --- |
+| `data/usage-record-spool` | 已退役（2026-11-09 T188） | 不需要 | gateway 用量记录直投 PG（共享 `usagewriter`），不再有 gateway→jobs 文件交接与 jobs drain |
+| `logs/` | 节点本地 | 不需要 | 2026-11-09 起运行日志只写节点本地 JSONL，F1 索引/管理页/grep 已下架；集中检索由 ELK/Loki 等外部抓取承担 |
+| `data/audit-blob` + 热搜索目录 | 节点本地 | 审计开启且 gateway 多节点 | 详情读用本节点 `blobDir`、retention 全局单活只删本节点、热搜索是本地 NDJSON；不共享会出现跨节点读不到 blob 与非清理节点 blob 永久泄漏 |
+| `data/playground-artifacts` | 已退役（2026-11-09 起存业务库 `playground_artifacts`） | 不需要 | 产物改 PG bytea，跨节点可读 |
+| `data/openai-compatible-files` | 已退役（2026-11-09 files/vector stores 本地运行时下架） | 不需要 | `/v1/files` 等非协议路径回落 404 |
+| `data/account-health-input.key` | 节点本地 | 永远不需要 | jobs 本机密钥，启动时生成/读取；目录不可写会让 jobs 启动失败（本地写权限要求，与共享设备无关） |
+| 备份、Docker json 日志 | 宿主机 | 系统层自行决定 | 不属于应用数据面 |
 
 ## 2. 目录内容
 
@@ -56,8 +72,8 @@ docker/cluster/
                               │
         ┌─────────────────────┼─────────────────────┐
         │                     │                     │
-   外部 PostgreSQL       外部 Redis           共享存储（NFS/云 NAS）
-   （主备/高可用）      （单节点或 cluster）    data/ 与 logs/ 跨节点同源
+   外部 PostgreSQL       外部 Redis           可选共享存储（NFS/云 NAS）
+   （主备/高可用）      （单节点或 cluster）    仅 logs 集中留存时需要；默认节点本地
 
   jobs 节点：每台一份，PG leader lease 决定唯一 leader；其余 standby 只保留健康面。
 ```
@@ -120,7 +136,7 @@ curl -fsS http://127.0.0.1:3306/health
 ```
 
 - `JUHE_AI_INSTANCE_ID` 必须全集群唯一（日志文件名、`build_info` 指标、后台 owner 依赖）。
-- `JUHE_AI_LOG_DIR=/app/backend/logs` 与 jobs 同源；日志文件名 `juhe-ai.<INSTANCE_ID>.log`。
+- `JUHE_AI_LOG_DIR` 默认节点本地（`./data/app/logs`）；日志文件名 `juhe-ai.<INSTANCE_ID>.log`，跨节点集中检索走 ELK/Loki 外部采集。
 - 健康监听 `127.0.0.1:3306` 仅宿主回环，供 Prometheus 经 SSH 隧道抓取；公网不要暴露。
 - 安全基线沿用单机：非 root（1000）、只读根文件系统、`cap_drop: ALL`、`no-new-privileges`。
 
@@ -278,9 +294,11 @@ spool 目录、本实例日志文件、Caddy 上游池 healthy、HTTPS 健康、
 
 ## 9. 运行时一致性契约（跨节点必须成立）
 
-1. **共享根同源**：所有 gateway/jobs 的 `data/`、`logs/` 指向同一 NFS/云 NAS；
-   usage spool（`data/usage-record-spool`）与运行日志索引器依赖此契约。
-2. **UID/GID 一致**：镜像内 `app=1000`；共享目录属主 1000，节点间 UID 映射一致。
+1. **共享根可选**：默认所有 gateway/jobs 的 `data/`、`logs/` 保持节点本地；
+   只有需要集中留存日志时才把 `JUHE_AI_SHARED_ROOT` 配成同一 NFS/云 NAS。
+   用量记录直投 PG、审计关闭时无跨节点文件面，不依赖共享存储。
+2. **UID/GID 一致**：镜像内 `app=1000`；如启用共享目录，属主 1000 且节点间
+   UID 映射一致。
 3. **实例 ID 唯一**：gateway 的 `JUHE_AI_INSTANCE_ID` 与 jobs 的 `JUHE_AI_INSTANCE_ID`
    在集群内唯一；日志文件名按实例区分，避免互相覆盖。
 4. **Redis namespace 同值**：所有节点同一 `JUHE_AI_REDIS_NAMESPACE`；并发计数键

@@ -648,7 +648,7 @@ func TestW2BUsageBridgeArms(t *testing.T) {
 	if recorder.failed != 1 {
 		t.Fatalf("spool 写入失败必须计数, failed=%d", recorder.failed)
 	}
-	if !strings.Contains(buf.String(), "usage_record_spool_persist_failed") {
+	if !strings.Contains(buf.String(), "usage_record_delivery_failed") {
 		t.Fatalf("spool 写入失败必须告警: %s", buf.String())
 	}
 	recorder.Close() // 184：重复 Close 幂等返回

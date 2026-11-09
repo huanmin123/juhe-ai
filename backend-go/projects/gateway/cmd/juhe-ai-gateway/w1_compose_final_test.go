@@ -198,7 +198,6 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 		Secret:                        "w1u-final-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
-		UsageSpoolDirectory:           filepath.Join(root, "usage-spool"),
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,
@@ -238,24 +237,6 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "缺少 F3 audit 数据集连接池") {
 			t.Fatalf("错误 = %v，want 包含 %q", err, "postgres 模式缺少 F3 audit 数据集连接池")
-		}
-	})
-
-	t.Run("链条缺spool目录", func(t *testing.T) {
-		cfg := fixture.cfg
-		cfg.UsageSpoolDirectory = ""
-		composed, err := composeSystemAPI(cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, fixture.auditConfig, composeTestOwnerHealth())
-		if err == nil {
-			if composed != nil {
-				composed.Shutdown()
-			}
-			t.Fatal("链条开启且 spool 目录缺失必须 fail-fast，实际 err=nil")
-		}
-		if composed != nil {
-			t.Fatal("失败臂不得返回组合根")
-		}
-		if !strings.Contains(err.Error(), "AI 网关链缺少用量 spool 目录") {
-			t.Fatalf("错误 = %v，want 包含 %q", err, "AI 网关链缺少用量 spool 目录")
 		}
 	})
 

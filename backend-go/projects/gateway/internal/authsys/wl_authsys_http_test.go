@@ -308,6 +308,25 @@ func TestWlAuthHandlersDirectContracts(t *testing.T) {
 		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil || payload.Data.Username != "wldirect" {
 			t.Fatalf("payload=%s err=%v", recorder.Body.String(), err)
 		}
+		if !payload.Data.Capabilities.AuditLogs {
+			t.Fatalf("缺省 capabilities.auditLogs 必须为 true: %s", recorder.Body.String())
+		}
+	})
+	t.Run("getMe 审计关闭能力位", func(t *testing.T) {
+		deps.Capabilities = func() Capabilities { return Capabilities{AuditLogs: false} }
+		defer func() { deps.Capabilities = nil }()
+		request := withWlAuth(httptest.NewRequest(http.MethodGet, "/me", nil), account.ID, "wldirect", "admin", false)
+		recorder := httptest.NewRecorder()
+		deps.getMe(recorder, request)
+		var payload struct {
+			Data CurrentUserSummary `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("payload=%s err=%v", recorder.Body.String(), err)
+		}
+		if payload.Data.Capabilities.AuditLogs {
+			t.Fatalf("审计关闭时 capabilities.auditLogs 必须为 false: %s", recorder.Body.String())
+		}
 	})
 	t.Run("getProfile 账户缺失返回 404", func(t *testing.T) {
 		request := withWlAuth(httptest.NewRequest(http.MethodGet, "/profile", nil), "missing-id", "ghost", "admin", false)

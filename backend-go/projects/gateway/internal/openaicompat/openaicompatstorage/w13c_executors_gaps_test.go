@@ -1,7 +1,8 @@
 package openaicompatstorage
 
 // w13c 覆盖率补充测试（storage 域半边，自 w13c_streams_gaps_test.go 拆出）：图像生成 SSE
-// 迭代器错误形态、runPythonProcess 进程边界与文件存储/索引小分支。
+// 迭代器错误形态与文件存储/索引小分支。runPythonProcess 进程边界用例随本地
+// Python 执行器退役删除（SEC6）。
 
 import (
 	"context"
@@ -9,11 +10,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestW13CImageGenerationStreamArms(t *testing.T) {
@@ -96,83 +94,6 @@ func TestW13CImageGenerationStreamArms(t *testing.T) {
 type w13cErrReader struct{}
 
 func (w13cErrReader) Read([]byte) (int, error) { return 0, errors.New("w13c read failure") }
-
-func TestW13CRunPythonProcessArms(t *testing.T) {
-	pythonPath, err := exec.LookPath("python")
-	if err != nil {
-		pythonPath, err = exec.LookPath("python3")
-		if err != nil {
-			t.Skip("未安装 python 解释器；跳过 runPythonProcess 真实进程用例")
-		}
-	}
-	workDir := t.TempDir()
-	config := CodeInterpreterConfig{
-		PythonCommand:  pythonPath,
-		TimeoutMs:      15000,
-		MaxOutputBytes: 1 << 20,
-	}
-
-	// 启动失败：不存在的解释器。
-	spawnFail := config
-	spawnFail.PythonCommand = "w13c-nonexistent-python"
-	runner := filepath.Join(workDir, "runner.py")
-	code := filepath.Join(workDir, "code.py")
-	if err := os.WriteFile(runner, []byte("import sys; exec(open(sys.argv[1]).read())"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(code, []byte("print('ok')"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	result := runPythonProcess(context.Background(), spawnFail, runner, code, workDir)
-	if result.SpawnErr == nil {
-		t.Fatal("missing interpreter must fail to spawn")
-	}
-
-	// 非零退出码。
-	exitResult := runPythonProcess(context.Background(), config, runner, writeW13CFile(t, workDir, "exit.py", "import sys; sys.exit(3)"), workDir)
-	if exitResult.ExitCode == nil || *exitResult.ExitCode != 3 {
-		t.Fatalf("exit code = %v", exitResult.ExitCode)
-	}
-
-	// 输出超限截断。
-	truncatedConfig := config
-	truncatedConfig.MaxOutputBytes = 16
-	truncated := runPythonProcess(context.Background(), truncatedConfig, runner,
-		writeW13CFile(t, workDir, "flood.py", "print('x' * 4096)"), workDir)
-	if !truncated.OutputTruncated {
-		t.Fatalf("flooded output must truncate: %+v", truncated)
-	}
-
-	// 超时 kill。
-	timeoutConfig := config
-	timeoutConfig.TimeoutMs = 150
-	timedOut := runPythonProcess(context.Background(), timeoutConfig, runner,
-		writeW13CFile(t, workDir, "sleep.py", "import time; time.sleep(5)"), workDir)
-	if !timedOut.TimedOut {
-		t.Fatalf("long sleep must time out: %+v", timedOut)
-	}
-
-	// 外部取消 → abort。
-	abortCtx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		cancel()
-	}()
-	aborted := runPythonProcess(abortCtx, config, runner,
-		writeW13CFile(t, workDir, "sleep2.py", "import time; time.sleep(5)"), workDir)
-	if !aborted.Aborted {
-		t.Fatalf("canceled context must abort: %+v", aborted)
-	}
-}
-
-func writeW13CFile(t *testing.T, dir, name, content string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
 
 func TestW13CFileStorageAndIndexerArms(t *testing.T) {
 	root := t.TempDir()

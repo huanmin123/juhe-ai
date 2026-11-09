@@ -189,7 +189,7 @@ type composition struct {
 }
 
 // Shutdown runs the in-process worker drains registered during assembly
-// (recorder/spool, capture pipeline, redis clients) in
+// (recorder/deliverer, capture pipeline, redis clients) in
 // reverse registration order. It does not drain the F3/F4 producer queues —
 // the producers expose no drain interface and records still queued at
 // process exit are dropped (accepted bounded-loss boundary). The HTTP
@@ -337,11 +337,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// X04 read faces: the table-monitor snapshot database reaches
 	// juhe_usage/juhe_stats through the shared pool.
 
-	// X04 404 项补齐 (logreads three-family reads): PostgreSQL reaches
+	// X04 404 项补齐 (logreads two-family reads): PostgreSQL reaches
 	// juhe_dataset through the shared pools — audit through the F3 store pool
 	// (the same JUHE_AI_AUDIT_LOG_POSTGRES_URL pool main acquired),
-	// runtime-log and public-api-logs through the business pool like every
-	// other dataset repository.
+	// public-api-logs through the business pool like every other dataset
+	// repository. 运行日志读面已下架（2026-11-09）。
 	var auditDatasetDB *sql.DB
 	if auditConfig.PostgresPool != nil {
 		auditDatasetDB = auditConfig.PostgresPool.DB()
@@ -349,7 +349,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if auditDatasetDB == nil {
 		return nil, errors.New("缺少 F3 audit 数据集连接池，无法挂载审计日志读面")
 	}
-	runtimeLogDatasetDB := composed.db
 	publicApiLogDatasetDB := composed.db
 
 	ownerGate := businesssettings.OwnerGate{
@@ -397,8 +396,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	cancelAutoOverridesRefresh := startUpstreamClientVersionAutoRefresh(settingsStore)
 	composed.shutdowns = append(composed.shutdowns, func() { cancelAutoOverridesRefresh() })
 
-	// X04 404 项补齐 (logreads three-family reads): build the audit/runtime/
-	// public-api log readers over the dataset handles opened above.
+	// X04 404 项补齐 (logreads two-family reads): build the audit/public-api
+	// log readers over the dataset handles opened above. 运行日志读面与 grep 于
+	// 2026-11-09 下架（不再入库 PG，只保留本地 JSONL 文件）。
 	auditLogReader, err := logreads.NewAuditLogQueryReader(auditDatasetDB, logreads.AuditQueryDirectories{
 		HotSearchDirectory:   auditConfig.HotSearchDirectory,
 		PayloadBlobDirectory: auditConfig.PayloadBlobDirectory,
@@ -406,32 +406,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create audit log reader: %w", err)
 	}
-	// Retention days mirror Node runtimeLogIndexRetentionDaysFromSettings:
-	// the integer runtimeLogIndexRetentionDays setting (else the 14-day
-	// default), clamped to 1..90 by the reader.
-	runtimeLogReader, err := logreads.NewRuntimeLogSQLReaderWithSources(runtimeLogDatasetDB, func() int {
-		value, readErr := settingValue("runtimeLogIndexRetentionDays")
-		if readErr != nil {
-			return 14
-		}
-		// runtimeLogIndexRetentionDays 经 settings.Load 归一化为 [1,90] 内的
-		// 整数 float64，settingsString 输出整数文本，Atoi 恒成功（w2 登记）。
-		parsed, _ := strconv.Atoi(strings.TrimSpace(value))
-		return parsed
-	}, time.Now)
-	if err != nil {
-		return nil, fmt.Errorf("create runtime log reader: %w", err)
-	}
 	publicApiLogReader, err := logreads.NewPublicApiLogSQLStore(publicApiLogDatasetDB)
 	if err != nil {
 		return nil, fmt.Errorf("create public api log reader: %w", err)
 	}
-	grepService := logreads.NewRuntimeLogGrep(logreads.RuntimeLogGrepConfig{
-		FileEnabled:   cfg.LogFileEnabled,
-		Directory:     cfg.LogDir,
-		MaxFiles:      cfg.LogMaxFiles,
-		RetentionDays: cfg.LogRetentionDays,
-	})
 
 	authzStore, err := authz.NewStore(composed.db, time.Now)
 	if err != nil {
@@ -716,6 +694,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	systemAccountStore.SetDefaultResourceEnsurer(authsys.NewSQLDefaultResources(systemAccountStore, apikeySecretSealer{secret: cfg.Secret}))
 	authDeps := authsys.NewDeps(businessAuth, systemAccountStore, captchaService, loginGuard, time.Now, businessSettings)
 	composed.authDeps = authDeps
+	// 2026-11-09：部署级能力位随会话摘要下发，SPA 据此动态裁剪审计菜单与路由。
+	authDeps.Capabilities = func() authsys.Capabilities {
+		return authsys.Capabilities{AuditLogs: cfg.AuditLogEnabled}
+	}
 	authDeps.Sink = sink
 	authDeps.TemporaryAccessIPAllowlist = cfg.TemporaryAccessIPAllowlist
 	authDeps.CaptchaDisabled = cfg.CaptchaDisabled
@@ -783,11 +765,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// families (Node system-api-app.ts lines: /audit-logs, /runtime-logs,
 	// /public-api-logs; none of them has a my-* variant).
 	(&logreads.ReadsDeps{
-		Audit:   auditLogReader,
-		Runtime: runtimeLogReader,
-		Public:  publicApiLogReader,
-		Grep:    grepService,
-		Auth:    authDeps,
+		Audit:         auditLogReader,
+		Public:        publicApiLogReader,
+		Auth:          authDeps,
+		AuditDisabled: !cfg.AuditLogEnabled,
 	}).Mount(kern)
 	(&ipstats.Deps{Store: ipStatsStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	// X04 404 项补齐: stats + usage-records (statreads), ui-bootstrap,
@@ -907,18 +888,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 作，管理面读侧走 PG 列不依赖 Redis。
 	var securityPolicyProtection *securitypolicies.ProtectionCountStore
 	if cfg.ChainEnabled {
-		// D1（存储形态收口）：spool 目录已由 loadRuntimeConfig 派生到
-		// JUHE_AI_DATA_DIR（缺省 <cwd>/data）下的 usage-record-spool（显式
-		// JUHE_AI_USAGE_SPOOL_DIRECTORY 优先）；此守卫只剩直接构造 runtimeConfig
-		// 且 spool 为空的组合测试语义（env 路径不可达）。
-		spoolDirectory := cfg.UsageSpoolDirectory
-		if spoolDirectory == "" {
-			return nil, fmt.Errorf("AI 网关链缺少用量 spool 目录（gateway→jobs 用量交接表，用量记录将无处投递）：设置 JUHE_AI_USAGE_SPOOL_DIRECTORY")
+		// 2026-11-09 T188：用量记录改为网关直投 PG（共享 usagewriter +
+		// usagepricing），不再创建/依赖 usage-record-spool 文件目录，也不再有
+		// gateway→jobs 的 spool 交接。
+		usageDeliverer, closeUsageWriter := newUsageWriterDeliverer(composed.statsDB, composed.db)
+		if usageDeliverer == nil {
+			return nil, errors.New("AI 网关链缺少 usage 直投 PG 句柄（composed.statsDB 为空）")
 		}
-		// BUG-0193 防复发诊断：相对路径按进程 cwd 解析（镜像无 WORKDIR 时为
-		// /），两侧解析到各自容器私有目录即静默断链。启动期打印解析后的绝对
-		// 路径并探测可写性，ERROR 级不阻断启动（写入失败另有逐条错误面）。
-		logUsageSpoolDirectoryDiagnostics(spoolDirectory)
+		composed.shutdowns = append(composed.shutdowns, closeUsageWriter)
 		// 健康检查派发的进程内 DB outbox writer（account_health_probe_request_outbox，
 		// chain_request_failure_health.go）：请求失败链与 runtime-reset/激活面的
 		// 探针派发都落这张常驻交接表，jobs J1 Runner 每周期 drain。deadline env
@@ -1045,18 +1022,15 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 				MaxQueueSize:        cfg.ConcurrencyGlobalMax,
 				PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
 			},
-			SpoolDirectory: spoolDirectory,
+			UsageDeliverer: usageDeliverer,
 			// M2 媒体任务面（媒体设计 §8.2）：media_jobs 仓储 + 账户亲和水合走
 			// 同一业务库；secret 与 chain_runtime.go newChainAccountsSelector
 			// 的 cfg.Secret 同源（B-1 同款约定）。
 			MediaJobsDB:     composed.db,
 			MediaJobsSecret: cfg.Secret,
-			// D-209 / D-147 / D-192+D-146（BUG-0175）：spool 容量、用量收尾
-			// 队列与全局并发容量、请求期上游 URL 安全配置的组合根传参。
-			UsageSpoolMaxItems:           cfg.UsageSpoolMaxItems,
-			UsageSpoolMaxBytes:           cfg.UsageSpoolMaxBytes,
-			UsageSpoolReplayBatchSize:    cfg.UsageSpoolReplayBatchSize,
-			UsageSpoolReplayIntervalMs:   cfg.UsageSpoolReplayIntervalMs,
+			// D-147 / D-192+D-146（BUG-0175）：用量收尾队列与全局并发容量、
+			// 请求期上游 URL 安全配置的组合根传参。spool 容量旋钮随 T188 直投
+			// PG 退役。
 			UsageFinalizationMaxItems:    cfg.UsageFinalizationMaxItems,
 			ConcurrencyGlobalMax:         cfg.ConcurrencyGlobalMax,
 			UpstreamURLSecurity:          cfg.UpstreamURLSecurity,
@@ -1181,21 +1155,21 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		kern.Register("/v1", chain)
 		kern.Register("/v1/", chain)
 		mountGatewayRootForms(kern, chain)
-		if chainErr := mountChainOpenAICompatFamilies(composed, chain, cfg, chainServices); chainErr != nil {
-			return nil, fmt.Errorf("mount openai-compatible families: %w", chainErr)
-		}
+		// 2026-11-09 用户裁决：网关只做调度与协议转发，不做 RAG / 文件存储 /
+		// 向量库；原 openai-compatible files / containers / vector_stores 本地
+		// 运行时不再装配，非协议 /v1 路径回落 404 JSON。
 		// 演练场（docs/functions/演练场设计.md §3.1）：复用派发执行器、
 		// runtime cache 目录 loader 与 accounts.Store 账户查询（cmd 适配层包装
 		// 见 chain_playground_mount.go），挂载 /__aisys__/api/playground 路由族；
-		// 产物暂存根按数据根派生传入（§3.8，runtime.go 固定派生，零新 env）。
-		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, accountStore, cfg.PlaygroundArtifactsRoot); playgroundErr != nil {
+		// 产物暂存走业务库 playground_artifacts 表（§3.8，2026-11-09 起）。
+		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, accountStore); playgroundErr != nil {
 			return nil, fmt.Errorf("compose playground family: %w", playgroundErr)
 		}
 		// The fixed-window redis store backs the system-api limiter
 		// (task item 9); the chain services always own it since the
 		// 2026-10-24 storage-shape retirement.
 		limiter.Store = chainServices.RateLimitStore
-		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditUsageDispatch", auditProducer != nil)
+		slog.Info("gateway chain composed", "trafficSource", "gateway", "auditUsageDispatch", auditProducer != nil)
 	}
 
 	// M06 speed-first 运行态接线：facade 读取链条的时延降级服务（Node

@@ -509,7 +509,7 @@ func TestW1ZSpooledUsageRecorderNilSpoolDropsDeterministically(t *testing.T) {
 	if recorder.dropped != 3 || recorder.failed != 0 {
 		t.Fatalf("spool 未装配 dropped = %d failed = %d，want 3/0（每条记录恰好计一次丢弃）", recorder.dropped, recorder.failed)
 	}
-	if !strings.Contains(buf.String(), "usage_record_spool_unavailable") {
+	if !strings.Contains(buf.String(), "usage_record_delivery_unavailable") {
 		t.Fatalf("deliver 丢弃必须输出告警事件，日志 = %q", buf.String())
 	}
 }

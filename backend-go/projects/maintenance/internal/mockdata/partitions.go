@@ -15,7 +15,7 @@ import (
 // my-chat 会话面退役移除——演练场设计 §8）：
 //
 //   - juhe_usage.usage_records 按 created_at（text）RANGE 分区，语句文本与
-//     jobs/internal/usagewriter/partitions.go 逐字对齐：
+//     shared/platform/usagewriter/partitions.go 逐字对齐：
 //     CREATE TABLE IF NOT EXISTS juhe_usage."usage_records_YYYYMMDD"
 //     PARTITION OF juhe_usage.usage_records FOR VALUES FROM ('S') TO ('E')。
 //

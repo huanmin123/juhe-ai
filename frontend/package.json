@@ -110,8 +110,6 @@
     "test:audit-log-filters": "tsx --tsconfig tsconfig.json src/scripts/regression/audit-log-filters-regression.ts",
     "test:audit-log-session-identity": "tsx --tsconfig tsconfig.json src/scripts/regression/audit-log-session-identity-regression.ts",
     "test:log-progressive-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/log-progressive-loading-regression.ts",
-    "test:runtime-log-formatters": "tsx --tsconfig tsconfig.json src/scripts/regression/runtime-log-formatters-regression.ts",
-    "test:runtime-log-grep-range": "tsx --tsconfig tsconfig.json src/scripts/regression/runtime-log-grep-range-regression.ts",
     "test:authorization-search-scheduler": "tsx --tsconfig tsconfig.json src/scripts/regression/authorization-search-scheduler-regression.ts",
     "test:authorization-user-usage-route-filters": "tsx --tsconfig tsconfig.json src/scripts/regression/authorization-user-usage-route-filters-regression.ts",
     "test:w3-auth-system-account-smoke": "tsx --tsconfig tsconfig.json src/scripts/regression/w3-auth-system-account-smoke-regression.ts",

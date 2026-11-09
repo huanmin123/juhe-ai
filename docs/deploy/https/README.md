@@ -47,7 +47,7 @@ echo | openssl s_client -servername <domain> -connect <domain>:443 2>/dev/null |
 - `proxy_http_version 1.1`，不要用 h2c；
 - `/v1/` 关闭 `proxy_buffering`/`gzip`，`proxy_read_timeout` ≥ 600s；
 - 透传 `Upgrade`/`Connection` 与 `X-Forwarded-For`；
-- `client_max_body_size` 不小于网关上限（`/v1/files` 512MiB，建议 `520m`；图片/音频 64MiB、文本 16MiB）。
+- `client_max_body_size` 不小于网关上限（图片/音频 64MiB、文本 16MiB；建议 `70m`）。原 `/v1/files` 512MiB 车道随 2026-11-09 openai-compatible files 本地运行时退役删除。
 
 ### 2.2 外部 Caddy 示例
 

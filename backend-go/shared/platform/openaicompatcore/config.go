@@ -51,16 +51,15 @@ type Config struct {
 	// without a 512 MiB payload; zero means the Node default.
 	MaxFileBytes int64
 
-	// CodeInterpreter mirrors runtimeConfig.codeInterpreter.
-	CodeInterpreter CodeInterpreterConfig
-
 	// ComputerAdapter mirrors runtimeConfig.computerAdapter.
 	ComputerAdapter ComputerAdapterConfig
 
-	// HostedToolCodeInterpreterMode / HostedToolComputerMode mirror
-	// runtimeConfig.hostedToolRuntimes (guidance default).
-	HostedToolCodeInterpreterMode string
-	HostedToolComputerMode        string
+	// HostedToolComputerMode mirrors runtimeConfig.hostedToolRuntimes
+	// (guidance default). The code-interpreter mode and its local Python
+	// executor were retired with the dead-code cleanup (SEC6): the executor
+	// had no composition-root caller and keeping a spawn path was a latent
+	// RCE surface.
+	HostedToolComputerMode string
 	// HostedToolShellMode / HostedToolSkillsMode / HostedToolToolSearchMode
 	// mirror the remaining runtimeConfig.hostedToolRuntimes entries
 	// (JUHE_AI_HOSTED_TOOL_{SHELL,SKILLS,TOOL_SEARCH}_MODE, guidance default).
@@ -73,24 +72,11 @@ type Config struct {
 // mode bag (ResolveOpenAIHostedToolRuntimeDecision).
 func (c Config) HostedToolRuntimeModes() OpenAIHostedToolRuntimeModes {
 	return OpenAIHostedToolRuntimeModes{
-		CodeInterpreter: c.HostedToolCodeInterpreterMode,
-		Computer:        c.HostedToolComputerMode,
-		Shell:           c.HostedToolShellMode,
-		Skills:          c.HostedToolSkillsMode,
-		ToolSearch:      c.HostedToolToolSearchMode,
+		Computer:   c.HostedToolComputerMode,
+		Shell:      c.HostedToolShellMode,
+		Skills:     c.HostedToolSkillsMode,
+		ToolSearch: c.HostedToolToolSearchMode,
 	}
-}
-
-// CodeInterpreterConfig mirrors RuntimeConfig['codeInterpreter'].
-type CodeInterpreterConfig struct {
-	PythonCommand        string
-	TimeoutMs            int64
-	MaxCodeBytes         int64
-	MaxOutputBytes       int64
-	MaxArtifactCount     int
-	MaxArtifactBytes     int64
-	TempRoot             string
-	CleanupTempDirectory bool
 }
 
 // ComputerAdapterConfig mirrors RuntimeConfig['computerAdapter'].
@@ -108,10 +94,9 @@ type ComputerAdapterConfig struct {
 // onto it without leaving the neutral core; the registry itself stays in the
 // bridge domain.
 type OpenAIHostedToolRuntimeModes struct {
-	CodeInterpreter string
-	Computer        string
-	Shell           string
-	Skills          string
+	Computer   string
+	Shell      string
+	Skills     string
 	ToolSearch      string
 }
 
@@ -129,32 +114,6 @@ const (
 )
 
 // WithDefaults mirrors the former in-package withDefaults: fill the Node
-// fallbacks for every unset field.
-func (c CodeInterpreterConfig) WithDefaults() CodeInterpreterConfig {
-	if c.PythonCommand == "" {
-		c.PythonCommand = "python"
-	}
-	if c.TimeoutMs <= 0 {
-		c.TimeoutMs = 5000
-	}
-	if c.MaxCodeBytes <= 0 {
-		c.MaxCodeBytes = 64 * 1024
-	}
-	if c.MaxOutputBytes <= 0 {
-		c.MaxOutputBytes = 64 * 1024
-	}
-	if c.MaxArtifactCount <= 0 {
-		c.MaxArtifactCount = 8
-	}
-	if c.MaxArtifactBytes <= 0 {
-		c.MaxArtifactBytes = 256 * 1024
-	}
-	if c.TempRoot == "" {
-		c.TempRoot = "data/code-interpreter-tmp"
-	}
-	return c
-}
-
 // WithDefaults mirrors the former in-package withDefaults for the computer
 // adapter runtime defaults.
 func (c ComputerAdapterConfig) WithDefaults() ComputerAdapterConfig {
@@ -176,7 +135,6 @@ func (c Config) WithDefaults() Config {
 	if c.FilesRoot == "" {
 		c.FilesRoot = "data/openai-compatible-files"
 	}
-	c.CodeInterpreter = c.CodeInterpreter.WithDefaults()
 	c.ComputerAdapter = c.ComputerAdapter.WithDefaults()
 	return c
 }

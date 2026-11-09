@@ -45,7 +45,6 @@ describe('api 客户端 barrel', () => {
       'publicApiLogs',
       'responseInspectionPolicies',
       'routeStrategies',
-      'runtimeLogs',
       'settings',
       'stats',
       'systemAccounts',

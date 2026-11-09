@@ -16,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -71,6 +72,18 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// J3b 模型检测诊断域保留清理句柄（juhe_j3b schema，同池）；表归属
+	// gateway modelcheckowner，SQL 在 cleanuprepo 清理侧实现。
+	modelCheckRetentionDB, err := openCleanupDB("retention-model-check")
+	if err != nil {
+		return err
+	}
+	// J2 余额刷新遥测保留清理句柄（juhe_jobs schema，同池）；SQL 在 shared
+	// accountbalance 包内实现（表归属不动，与 W40 同型）。
+	accountBalanceOutcomesDB, err := openCleanupDB("retention-account-balance-outcomes")
+	if err != nil {
+		return err
+	}
 
 	// usage-shards 清理消费面已随 sqlite 分片形态删除（D14 验证：PG 写侧落
 	// juhe_usage 分区，分片文件只在 sqlite 形态存在，ShardStore 在 PG 装配
@@ -90,6 +103,9 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.retentionStatsStore = statsRetention
 	family.taskRunsRetention = &cleanuprepo.TaskRunsRetentionStore{DB: taskRunsRetentionDB}
 	family.accountHealthOutcomesDB = accountHealthOutcomesDB
+	family.clientIPRetention = &cleanuprepo.ClientIPRetentionStore{DB: stats}
+	family.modelCheckRetention = &cleanuprepo.ModelCheckRetentionStore{DB: modelCheckRetentionDB}
+	family.accountBalanceOutcomesDB = accountBalanceOutcomesDB
 	recordCleanup := &cleanuprepo.RecordCleanupStore{
 		Dataset:      dataset,
 		Stats:        stats,
@@ -192,7 +208,20 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		if err := family.cleanupAccountHealthOutcomes(taskCtx); err != nil {
 			return jobsched.TaskResult{}, err
 		}
+		// 2026-11-09：IP 维度统计两表、J3b 模型检测诊断域、J2 余额刷新
+		// 遥测此前无定时清理；与既有阶段共用同一节拍与失败语义。放在既有
+		// usage/public/stats 清理之后，避免新增批处理挤占关键保留链的
+		// 5 分钟预算。
 		if _, err := dataRetentionJob.Run(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		if err := family.cleanupClientIPStats(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		if err := family.cleanupModelCheck(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		if err := family.cleanupAccountBalanceOutcomes(taskCtx); err != nil {
 			return jobsched.TaskResult{}, err
 		}
 		return jobsched.TaskResult{}, nil
@@ -284,6 +313,12 @@ type retentionFamily struct {
 	// accountHealthOutcomesDB 是 account_health_outcomes 保留清理的 juhe_jobs
 	// 句柄（W40；清理 SQL 在 accounthealth 包，随同一节拍执行）。
 	accountHealthOutcomesDB *cleanuprepo.DB
+	// clientIPRetention 是 IP 日统计与策略命中两表的保留清理（juhe_stats）。
+	clientIPRetention *cleanuprepo.ClientIPRetentionStore
+	// modelCheckRetention 是 J3b 模型检测诊断域的保留清理（juhe_j3b）。
+	modelCheckRetention *cleanuprepo.ModelCheckRetentionStore
+	// accountBalanceOutcomesDB 是 J2 余额刷新遥测的保留清理句柄（juhe_jobs）。
+	accountBalanceOutcomesDB *cleanuprepo.DB
 
 	recordCleanup *cleanuprepo.RecordCleanupStore
 	dbService     *familyDbService
@@ -427,6 +462,258 @@ func (f *retentionFamily) cleanupAccountHealthOutcomes(ctx context.Context) erro
 	return nil
 }
 
+// 2026-11-09 新增保留清理的共享节拍参数：与既有 data-retention-cleanup
+// 同节拍（10 分钟）、受任务 5 分钟超时约束。单轮单表最多
+// retentionTimeSeriesBatchSize × retentionTimeSeriesMaxPasses 行；积压由
+// 下一轮继续收敛。
+const (
+	clientIPStatsRetentionDays          = 35
+	accountBalanceOutcomesRetentionDays = 35
+	retentionTimeSeriesBatchSize        = 5000
+	retentionTimeSeriesMaxPasses        = 20
+	modelCheckPerAccountRunCap          = 1000
+	modelCheckRetentionSettingKey       = "modelCheckRetentionDays"
+	modelCheckRetentionSettingMin       = 1
+	modelCheckRetentionSettingMax       = 365
+)
+
+// modelCheckRetentionTables 是 J3b 保留清理覆盖的全部表；任一表缺席
+// （老库未跑 J3b bootstrap、或 J3b 能力未装配）时整阶段跳过，避免
+// data-retention-cleanup 因 undefined_table 每 10 分钟失败并拖累其它清理。
+var modelCheckRetentionTables = []string{
+	"model_check_runs",
+	"model_check_items",
+	"model_check_observations",
+	"model_trust_observation_receipts",
+	"model_check_execution_claims",
+	"model_check_outcomes",
+	"model_check_inputs",
+	"account_quality_health_hourly",
+	"model_check_scheduler_tasks",
+}
+
+// missingRetentionTable 返回第一个不存在的表（schema.table）；全部存在时
+// 返回空串。使用 to_regclass 不触碰表锁，单轮一次廉价探测。
+func missingRetentionTable(ctx context.Context, db *sql.DB, schema string, tables []string) (string, error) {
+	for _, table := range tables {
+		qualified := schema + "." + table
+		var exists bool
+		if err := db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, qualified).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return qualified, nil
+		}
+	}
+	return "", nil
+}
+
+// cleanupClientIPStats 执行一轮 IP 日统计与策略命中的保留清理：两表都是
+// 纯统计/审计派生数据，按业务时区 35 天日期窗（31 天读面 + 4 天余量）
+// 最旧优先批删。client_ip_registry 不清理（IP 管理成员全集 + 策略可见性），
+// 见 cleanuprepo.ClientIPRetentionStore 注释。
+func (f *retentionFamily) cleanupClientIPStats(ctx context.Context) error {
+	store := f.clientIPRetention
+	if store == nil {
+		return nil
+	}
+	location, err := f.timezone(ctx)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-clientIPStatsRetentionDays * 24 * time.Hour).In(location).Format("2006-01-02")
+	var daily, hits int64
+	for pass := 0; pass < retentionTimeSeriesMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		deletedDaily, err := store.CleanupDailyStatsBefore(ctx, cutoff, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 client_ip_stats_daily 失败: %w", err)
+		}
+		deletedHits, err := store.CleanupPolicyHitsBefore(ctx, cutoff, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 client_ip_policy_hits 失败: %w", err)
+		}
+		daily += deletedDaily
+		hits += deletedHits
+		if deletedDaily < retentionTimeSeriesBatchSize && deletedHits < retentionTimeSeriesBatchSize {
+			break
+		}
+	}
+	if daily > 0 || hits > 0 {
+		f.assembly.logger.Info("IP 统计保留清理完成",
+			"event", "client_ip_stats_retention_cleanup",
+			"deletedDailyStats", daily,
+			"deletedPolicyHits", hits,
+			"retentionDays", clientIPStatsRetentionDays,
+			"cutoff", cutoff)
+	}
+	return nil
+}
+
+// cleanupModelCheck 执行一轮 J3b 模型检测诊断域保留清理：runs（items /
+// observations 级联）、observation receipts、execution claims、outcomes、
+// inputs、质量健康小时表、scheduler 终态任务，以及每账户 1000 条 run 上限。
+// 时间窗读 modelCheckRetentionDays（默认 30 天，1..365，fail-closed）；质量
+// 健康小时表跟随 usageStatsHourlyRetentionDays（与 account_health_hourly
+// 同一保留口径）。
+func (f *retentionFamily) cleanupModelCheck(ctx context.Context) error {
+	store := f.modelCheckRetention
+	if store == nil {
+		return nil
+	}
+	missingTable, err := missingRetentionTable(ctx, store.DB.DB, "juhe_j3b", modelCheckRetentionTables)
+	if err != nil {
+		return fmt.Errorf("检查 J3b 保留清理表失败: %w", err)
+	}
+	if missingTable != "" {
+		f.assembly.logger.Debug("J3b 保留清理跳过：表不存在", "table", missingTable)
+		return nil
+	}
+	settings, err := f.retentionSettings.settings(ctx)
+	if err != nil {
+		return err
+	}
+	policy, err := retention.LoadPolicy(settings)
+	if err != nil {
+		return err
+	}
+	retentionDays, err := f.retentionSettings.retentionNumber(ctx, modelCheckRetentionSettingKey, modelCheckRetentionSettingMin, modelCheckRetentionSettingMax)
+	if err != nil {
+		return err
+	}
+	location, err := f.timezone(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	// created_at / observation_created_at 是 RFC3339 文本列，按字面序比较；
+	// RFC3339Nano 在整秒时以 Z 结尾、带小数时以 . 结尾，同秒边界存在字面
+	// 序差异，多留 1 小时边界余量（30 天窗口下无业务影响）。
+	cutoffText := now.AddDate(0, 0, -retentionDays).Add(-time.Hour).Format(time.RFC3339Nano)
+	cutoffTime := now.AddDate(0, 0, -retentionDays)
+	// account_quality_health_hourly.stat_hour 是业务时区 YYYY-MM-DDTHH
+	// （gateway NewHealthStatHourFunc 唯一写入格式），cutoff 必须同格式
+	// 同业务时区，不能用 UTC RFC3339 字面比较。
+	qualityCutoffHour := now.Add(-time.Duration(policy.StatsHourlyDays) * 24 * time.Hour).In(location).Format("2006-01-02T15")
+	var runs, receipts, claims, outcomes, inputs, qualityHealth, schedulerTasks, cappedRuns int64
+	for pass := 0; pass < retentionTimeSeriesMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		deletedRuns, err := store.CleanupRunsBefore(ctx, cutoffText, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 model_check_runs 失败: %w", err)
+		}
+		deletedReceipts, err := store.CleanupObservationReceiptsBefore(ctx, cutoffText, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 model_trust_observation_receipts 失败: %w", err)
+		}
+		deletedClaims, err := store.CleanupExecutionClaimsBefore(ctx, cutoffTime, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 model_check_execution_claims 失败: %w", err)
+		}
+		deletedOutcomes, err := store.CleanupOutcomesBefore(ctx, cutoffTime, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 model_check_outcomes 失败: %w", err)
+		}
+		deletedInputs, err := store.CleanupInputsBefore(ctx, cutoffTime, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 model_check_inputs 失败: %w", err)
+		}
+		deletedQuality, err := store.CleanupQualityHealthBefore(ctx, qualityCutoffHour, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 account_quality_health_hourly 失败: %w", err)
+		}
+		deletedTasks, err := store.CleanupSchedulerTasksBefore(ctx, cutoffTime, cutoffTime, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 model_check_scheduler_tasks 失败: %w", err)
+		}
+		runs += deletedRuns
+		receipts += deletedReceipts
+		claims += deletedClaims
+		outcomes += deletedOutcomes
+		inputs += deletedInputs
+		qualityHealth += deletedQuality
+		schedulerTasks += deletedTasks
+		if deletedRuns < retentionTimeSeriesBatchSize &&
+			deletedReceipts < retentionTimeSeriesBatchSize &&
+			deletedClaims < retentionTimeSeriesBatchSize &&
+			deletedOutcomes < retentionTimeSeriesBatchSize &&
+			deletedInputs < retentionTimeSeriesBatchSize &&
+			deletedQuality < retentionTimeSeriesBatchSize &&
+			deletedTasks < retentionTimeSeriesBatchSize {
+			break
+		}
+	}
+	// 账户上限是容量兜底：全局窗口排序较重，每轮只跑一次（最多
+	// 4×batch 行），积压由下一轮继续收敛，避免在批处理循环里重复排序。
+	if ctx.Err() != nil {
+		return nil
+	}
+	cappedRuns, err = store.CleanupRunsBeyondAccountCap(ctx, modelCheckPerAccountRunCap, retentionTimeSeriesBatchSize*4)
+	if err != nil {
+		return fmt.Errorf("清理 model_check_runs 账户上限失败: %w", err)
+	}
+	if runs > 0 || receipts > 0 || claims > 0 || outcomes > 0 || inputs > 0 || qualityHealth > 0 || schedulerTasks > 0 || cappedRuns > 0 {
+		f.assembly.logger.Info("J3b 模型检测保留清理完成",
+			"event", "model_check_retention_cleanup",
+			"deletedRuns", runs,
+			"deletedObservationReceipts", receipts,
+			"deletedExecutionClaims", claims,
+			"deletedOutcomes", outcomes,
+			"deletedInputs", inputs,
+			"deletedQualityHealth", qualityHealth,
+			"deletedSchedulerTasks", schedulerTasks,
+			"deletedCappedRuns", cappedRuns,
+			"retentionDays", retentionDays,
+			"perAccountRunCap", modelCheckPerAccountRunCap,
+			"cutoff", cutoffText)
+	}
+	return nil
+}
+
+// cleanupAccountBalanceOutcomes 执行一轮 J2 余额刷新遥测保留清理：按
+// observed_at 滚动 35 天窗口最旧优先批删，与 account_health_outcomes 同
+// 窗口、同批次语义；清理 SQL 在 shared accountbalance 包（表归属不动）。
+func (f *retentionFamily) cleanupAccountBalanceOutcomes(ctx context.Context) error {
+	if f.accountBalanceOutcomesDB == nil {
+		return nil
+	}
+	missingTable, err := missingRetentionTable(ctx, f.accountBalanceOutcomesDB.DB, "juhe_jobs", []string{"account_balance_outcomes"})
+	if err != nil {
+		return fmt.Errorf("检查 account_balance_outcomes 保留清理表失败: %w", err)
+	}
+	if missingTable != "" {
+		f.assembly.logger.Debug("余额 outcome 保留清理跳过：表不存在", "table", missingTable)
+		return nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -accountBalanceOutcomesRetentionDays)
+	var deleted int64
+	for pass := 0; pass < retentionTimeSeriesMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		batch, err := accountbalance.CleanupOutcomesBefore(ctx, f.accountBalanceOutcomesDB.DB, cutoff, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 account_balance_outcomes 失败: %w", err)
+		}
+		deleted += batch
+		if batch < retentionTimeSeriesBatchSize {
+			break
+		}
+	}
+	if deleted > 0 {
+		f.assembly.logger.Info("J2 余额 outcome 保留清理完成",
+			"event", "account_balance_outcomes_retention_cleanup",
+			"deleted", deleted,
+			"retentionDays", accountBalanceOutcomesRetentionDays,
+			"cutoff", cutoff.Format(time.RFC3339))
+	}
+	return nil
+}
+
 // retentionSettingsRuntime 是数据保留组合根的 system_settings 读模型
 // （D-45，BUG-0175；Node usageStatsTimezoneAsync + getSettingsAsync 的 Go
 // 承接）：
@@ -487,6 +774,12 @@ func (r *retentionSettingsRuntime) settings(ctx context.Context) (map[string]any
 		settings[key] = value
 	}
 	return settings, nil
+}
+
+// retentionNumber 读取单个整数型保留设置（domain 上限内的 fail-closed
+// 校验，语义与 jobssettings.Number 一致）。
+func (r *retentionSettingsRuntime) retentionNumber(ctx context.Context, key string, min, max int) (int, error) {
+	return r.source.Number(ctx, key, min, max)
 }
 
 // timezoneName implements retention.TimezoneSource（usageStatsTimezoneAsync）。

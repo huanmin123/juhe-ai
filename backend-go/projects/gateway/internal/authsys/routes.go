@@ -157,6 +157,7 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 		kernel.WriteOK(w, CurrentUserSummary{
 			ID: verified.SystemAccountID, Username: verified.Username, DisplayName: verified.DisplayName,
 			Role: verified.Role, MustChangePassword: verified.MustChangePassword,
+			Capabilities: d.capabilitiesOrEnabled(),
 		}, "")
 	}
 }
@@ -181,7 +182,7 @@ func (d *Deps) getMe(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	kernel.WriteOK(w, currentUserSummary(auth), "")
+	kernel.WriteOK(w, d.currentUserSummary(auth), "")
 }
 
 func (d *Deps) getProfile(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +254,7 @@ func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if before.DisplayName == displayName {
-		kernel.WriteOK(w, currentUserSummary(auth), "")
+		kernel.WriteOK(w, d.currentUserSummary(auth), "")
 		return
 	}
 	_, err = d.Accounts.Patch(r.Context(), auth.SystemAccountID, PatchInput{
@@ -287,6 +288,7 @@ func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {
 		DisplayName:        updated.DisplayName,
 		Role:               updated.Role,
 		MustChangePassword: updated.MustChangePassword,
+		Capabilities:       d.capabilitiesOrEnabled(),
 	}, "")
 }
 
@@ -392,6 +394,7 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 	kernel.WriteOK(w, CurrentUserSummary{
 		ID: auth.SystemAccountID, Username: auth.Username, DisplayName: auth.DisplayName,
 		Role: auth.Role, MustChangePassword: false,
+		Capabilities: d.capabilitiesOrEnabled(),
 	}, "")
 }
 

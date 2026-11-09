@@ -18,7 +18,6 @@ import type {
   ResponseInspectionPolicyMatch,
   ResponseInspectionPolicyProtocolCode,
   ResponseInspectionPolicyScopeType,
-  RuntimeLogLevel,
   UsageRecordTrafficSource
 } from '@/types/domain'
 import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
@@ -357,24 +356,6 @@ export interface PublicApiLogListParams {
   result?: PublicApiLogResultFilter
   statusCode?: number
   clientIp?: string
-  startAt?: string
-  endAt?: string
-}
-
-export interface RuntimeLogGrepParams {
-  keywords?: string
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
-export interface RuntimeLogListParams {
-  page?: number
-  pageSize?: number
-  traceId?: string
-  level?: RuntimeLogLevel | 'all'
-  event?: string
-  keyword?: string
   startAt?: string
   endAt?: string
 }

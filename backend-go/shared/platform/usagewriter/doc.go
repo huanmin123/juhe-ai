@@ -1,5 +1,6 @@
 // Package usagewriter is the J-F (F6) slice of the Node→Go migration: the
-// usage-record (使用记录) writer for the jobs project, mirroring:
+// usage-record (使用记录) writer shared by the gateway process (direct PG,
+// 2026-11-09 T188) and the jobs process, mirroring:
 //
 //	backend/src/storage/usage-record-shards.ts        → shards.go (id 生成、
 //	                                                    分片路由、bucket 键)
@@ -17,11 +18,12 @@
 //
 // # 与 G17 (gateway/internal/gatewayusage) 的契约关系
 //
-// gateway/internal/gatewayusage（另一 Go module，互不可 import）冻结了
-// UsageRecordInput 字段契约与 UsageRecorder port。本包的 UsageRecordInput
-// 逐字段复刻 G17 records.go 的同名结构（字段名、Go 类型、json tag 一致），
-// 保证 G20 装配时的适配层只是机械的值拷贝。分片 id 格式按 G17 的声明归属
-// 本 slice（"The shard-id format stays with the writer slice (J-F/G20)"）。
+// gateway/internal/gatewayusage 冻结了 UsageRecordInput 字段契约与
+// UsageRecorder port；gateway 进程通过 JSON 桥（chain_usage_writer.go）把
+// 该记录转换为本包 UsageRecordInput。本包结构逐字段复刻 G17 records.go 的
+// 同名结构（字段名、Go 类型、json tag 一致），桥接层不做语义改写。分片 id
+// 格式按 G17 的声明归属本 slice（"The shard-id format stays with the writer
+// slice (J-F/G20)"）。
 //
 // # 队列消灭（批准的架构差异）
 //
@@ -42,8 +44,8 @@
 // 与 Node 完全一致；>0 时同一批重试耗尽后转入死信终态并计数，防止进程内
 // 队列永久堆积——Redis Stream 路径消灭后不再有"pending 消息"兜底）。
 //
-// durable 例外（BUG-0304）：EnqueueDurable 为 durable spool 交接消费方
-// （usagespooldrain）提供非终态的队列满路径——溢出落盘失败返回可重试错误
+// durable 例外（BUG-0304）：EnqueueDurable 为溢出 spool 回放消费方
+// （jobs internal/usagespooldrain）提供非终态的队列满路径——溢出落盘失败返回可重试错误
 // 而不计终态丢弃，记录由 durable 源文件重试（nil ⇔ 已接受，非 nil ⇔ 未接
 // 收）；oversize 仍按终态丢弃返回 nil（重试不可能成功，保留会卡死回放队
 // 头）。Enqueue 的 best-effort 终态语义保持不变。
@@ -55,6 +57,6 @@
 // （对照 gateway/internal/pricing 包注释中的冻结声明；定价算法本身留在
 // C03 的 pricing 包，本包通过 CatalogPricing port 调用）。
 //
-// 所有时间源为注入 Clock；测试只跑内存 mock 与 t.TempDir() 内的 SQLite，
-// 不访问真实 DB、Redis、HTTP 或外部文件系统。
+// 所有时间源为注入 Clock；单元测试只跑内存 mock 与临时目录，真实 PG 集成
+// 测试经 pgtestkit 授权门（JUHE_AI_TEST_EXTERNAL=1）访问隔离测试库。
 package usagewriter

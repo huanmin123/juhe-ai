@@ -1,5 +1,7 @@
 # OpenAI 兼容 Files 与 File Search 本地运行时设计
 
+> **已退役（2026-11-09 用户裁决）。** 网关只做调度与协议转发，不做 RAG / 文件存储 / 向量库；`/v1/files`、`/v1/containers`、`/v1/vector_stores` 本地运行时不再装配（非协议 `/v1` 路径回落 404），业务侧自行管理文件与检索。本文仅作历史设计存档，不再作为现行契约。
+
 ## 1. 背景
 
 OpenAI 到 Anthropic Messages 桥接已经覆盖 Chat / Responses 四类入口、function tools、structured output、thinking、inline 图片和部分 inline 文件输入。剩余的关键缺口是 OpenAI `file_id` 和 `file_search`：

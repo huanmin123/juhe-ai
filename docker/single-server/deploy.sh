@@ -8,10 +8,11 @@
 #      JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=45s：发布 recreate 窗口新 gateway 在启动期
 #      等待前任 F3/F4 租约 TTL（默认 30s）过期后接管，等待计入 healthcheck
 #      start_period=75s，healthy 滞后至多约 1 分钟属预期，不再有重启循环）；
-#   4. 发布后验证（verify-release.sh，PLAN-20261002T114140718Z）：usage spool
-#      同源与 jobs drain 接线为强制断言。（原可选"/v1 请求 → 审计 + 用量落库"
-#      闭环门禁已于 2026-10-03 按用户裁定移除：依赖账户/模型实时可用性无法
-#      保证稳定；见 README 发布后验证节。）
+#   4. 发布后验证（verify-release.sh，PLAN-20261002T114140718Z）：gateway
+#      内存双限（GOMEMLIMIT + mem_limit）为强制断言；usage spool 同源与
+#      jobs drain 断言随 2026-11-09 T188（网关直投 PG）删除。原可选"/v1
+#      请求 → 审计 + 用量落库"闭环门禁已于 2026-10-03 按用户裁定移除：依赖
+#      账户/模型实时可用性无法保证稳定；见 README 发布后验证节。
 #   5. 前端漏发门禁（2026-10-08 起，对应 10-07/10-08 多次前端漏发：deploy.sh 只
 #      传 Go 二进制，前端 dist 经 Dockerfile.runtime COPY 烤入镜像，本地 dist 不
 #      重建时后端发版会把旧前端再次烤进新镜像）：发布前探测线上前端 buildId，

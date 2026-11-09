@@ -37,7 +37,15 @@ type readsTestEnv struct {
 // by newLogreadsPGDatabase. The optional mutate hook runs after the readers
 // are constructed and before Mount (used to pin the runtime reader clock).
 
-func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool) *readsTestEnv {
+// readsTestOption mutates the mounted ReadsDeps (e.g. audit switch off).
+type readsTestOption func(*ReadsDeps)
+
+// withAuditDisabled simulates JUHE_AI_AUDIT_LOG_ENABLED=false.
+func withAuditDisabled() readsTestOption {
+	return func(deps *ReadsDeps) { deps.AuditDisabled = true }
+}
+
+func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool, options ...readsTestOption) *readsTestEnv {
 	t.Helper()
 	db := newLogreadsPGDatabase(t)
 	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
@@ -77,7 +85,11 @@ func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime Run
 	grep := NewRuntimeLogGrep(RuntimeLogGrepConfig{FileEnabled: true, Directory: logDir, MaxFiles: 500, RetentionDays: 30})
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
-	(&ReadsDeps{Audit: audit, Runtime: runtimeReader, Public: public, Grep: grep, Auth: deps}).Mount(k)
+	readsDeps := &ReadsDeps{Audit: audit, Runtime: runtimeReader, Public: public, Grep: grep, Auth: deps}
+	for _, option := range options {
+		option(readsDeps)
+	}
+	readsDeps.Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
 	env := &readsTestEnv{server: server, db: db, pg: true, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir, logDir: logDir, grep: grep}
@@ -512,6 +524,33 @@ func TestAuditLogReadsRequireAdmin(t *testing.T) {
 		code, payload := env.do(t, http.MethodGet, path, "")
 		if code != http.StatusUnauthorized {
 			t.Fatalf("anonymous %s should be 401, got %d %v", path, code, payload)
+		}
+	}
+}
+
+// TestAuditLogReadsUnregisteredWhenDisabled 锁定 JUHE_AI_AUDIT_LOG_ENABLED=false
+// 的读面契约：审计 GET 全部 404，runtime-logs / public-api-logs 不受影响。
+func TestAuditLogReadsUnregisteredWhenDisabled(t *testing.T) {
+	env := newReadsTestEnv(t, nil, true, withAuditDisabled())
+	for _, path := range []string{
+		"/__aisys__/api/audit-logs",
+		"/__aisys__/api/audit-logs/search-hot?keywords=trace",
+		"/__aisys__/api/audit-logs/runtime",
+		"/__aisys__/api/audit-logs/error-groups",
+		"/__aisys__/api/audit-logs/log-1",
+	} {
+		code, payload := env.do(t, http.MethodGet, path, "")
+		if code != http.StatusNotFound {
+			t.Fatalf("disabled %s should be 404, got %d %v", path, code, payload)
+		}
+	}
+	for _, path := range []string{
+		"/__aisys__/api/runtime-logs",
+		"/__aisys__/api/public-api-logs",
+	} {
+		code, payload := env.do(t, http.MethodGet, path, "")
+		if code == http.StatusNotFound {
+			t.Fatalf("%s must stay mounted when audit is disabled, got %d %v", path, code, payload)
 		}
 	}
 }

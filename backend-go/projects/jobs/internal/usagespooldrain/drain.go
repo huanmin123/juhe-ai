@@ -1,45 +1,44 @@
-// Package usagespooldrain 把 gateway 的 usage-record 文件 spool 交接表接到
-// jobs usagewriter.Writer（BUG-0175 D-72：用量记录投递链在组合根断开）。
+// Package usagespooldrain 把用量记录文件 spool 回放接入 jobs
+// usagewriter.Writer。2026-11-09 T188 起 gateway 用量记录直投 PG，不再有
+// gateway→jobs 的 usage-record-spool 交接表；本包现役唯一消费面是
+// usagewriter 自身的溢出补偿 spool（队列满时落盘，再由 jobs 回放）。
 //
-// gateway（cmd/juhe-ai-gateway chain_usage.go deliver）把 /v1 用量记录原子写
-// 入 <JUHE_AI_USAGE_SPOOL_DIRECTORY>/<instanceID>/<ts>-<pid>-<uuid>.json
-// （internal/gatewayusage spool.go Persist，单文件单记录，json.Marshal +
-// '\n'，先归一化再落盘）。生产环境里 StartReplay 从未被调用、jobs 不读该
-// 目录，usage_records 由此断供；本包是交接表的消费侧：
-//   - 扫描 spool 根目录下全部实例子目录的 .json 文件（.tmp/.corrupt 不取），
-//     按路径排序（文件名以 UnixMilli 开头，近似写入序）；
-//   - 逐文件解析单条 JSON 用量记录，复用 usagewriter records.go 的归一化/
-//     校验路径（NormalizeUsageRecordInput）；解析失败、缺稳定 id/createdAt、
-//     归一化校验失败的文件对齐 gateway spool.go 自身语义隔离为
-//     <原路径>.corrupt（保留现场，不阻塞后续文件）；
-//   - 读取失败（非 ErrNotExist，如 BUG-0227 root→app 切换窗口残留的
-//     root:root 0600 文件致 EACCES）的文件不隔离、不删除：记节流 Error
-//     （event=usage_record_spool_file_read_failed，同文件 60s 窗口内不
-//     重复）后跳过，继续本轮后续文件，运维修复属主/权限后下轮自然消费
-//     （区别于损坏文件的 .corrupt 隔离语义）；
-//   - 校验通过经 usagewriter.Writer.EnqueueDurable 入队（BUG-0304：durable
-//     交接必须走该端口；Enqueue 的 best-effort 语义会在溢出落盘失败时终态
-//     丢弃却仍返回 nil，用它删源文件会丢记录）。EnqueueDurable 返回 nil 即
-//     视为接受并删除文件。接受语义 = 记录已进入 writer 内存队列，或（队列
-//     满时）已同步溢出落盘到 overflow spool 文件（落盘成功才返回 nil，可
-//     回放不丢），或 oversize 终态丢弃（重试不可能成功，保留会卡死回放队
-//     头）。删除后、writer 批量落库（默认 500ms flush）前进程崩溃的内存
-//     窗口是已知取舍（Node 本地队列同款边界）；EnqueueDurable 失败（writer
-//     已停、队列满且溢出落盘失败等未接收形态）保留文件、终止本轮并按固定
-//     退避重试（at-least-once，head-of-line 与 Node 本地队列 flush 语义一
-//     致）；
-//   - 每轮结束时刷新待删水位（OldestPendingCreatedAt）：按文件名序取第
-//     一个可读待消费 spool 文件内记录的 created_at 反馈给 ingestgate 游
-//     标安全门，使统计游标在 drain 仍持有未确认文件时不得越过其中最旧记
-//     录（否则记录滞留超过安全水位后入表，statsagg 严格单调游标已越过其
-//     created_at，永久不聚合）。不可读队头（非 ErrNotExist 读取失败，
-//     BUG-0227）直接跳过，统计游标安全门不得被属主异常文件永久卡死；仅
-//     剩不可读文件时保留上次水位（不前进也不清空，取舍见
-//     refreshPendingWatermark 注释）。排序假设：文件名以 UnixMilli 开头，
-//     gateway 侧每记录落盘即写、互斥串行（FIFO），文件名序即最旧记录；
-//     跨实例时钟偏斜与 gateway 进程内 buffer 的残余窗口同源（进程边界
-//     外，Node 同款边界）。
-//   - 停机时有界排空后返回，未消费文件持久留待下次启动。
+// 历史交接格式与溢出 spool 文件格式同构：单文件单记录，json.Marshal +
+// '\n'（internal/gatewayusage spool.go Persist 的落盘形态，writer 溢出
+// spool 复用同一布局）。本包扫描 spool 根目录下全部实例子目录的 .json
+// 文件（.tmp/.corrupt 不取），按路径排序（文件名以 UnixMilli 开头，近似
+// 写入序）；//   - 逐文件解析单条 JSON 用量记录，复用 usagewriter records.go 的归一化/
+//
+//	  校验路径（NormalizeUsageRecordInput）；解析失败、缺稳定 id/createdAt、
+//	  归一化校验失败的文件对齐原 gateway 交接 spool 的隔离语义为
+//	  <原路径>.corrupt（保留现场，不阻塞后续文件）；
+//	- 读取失败（非 ErrNotExist，如 BUG-0227 root→app 切换窗口残留的
+//	  root:root 0600 文件致 EACCES）的文件不隔离、不删除：记节流 Error
+//	  （event=usage_record_spool_file_read_failed，同文件 60s 窗口内不
+//	  重复）后跳过，继续本轮后续文件，运维修复属主/权限后下轮自然消费
+//	  （区别于损坏文件的 .corrupt 隔离语义）；
+//	- 校验通过经 usagewriter.Writer.EnqueueDurable 入队（BUG-0304：durable
+//	  交接必须走该端口；Enqueue 的 best-effort 语义会在溢出落盘失败时终态
+//	  丢弃却仍返回 nil，用它删源文件会丢记录）。EnqueueDurable 返回 nil 即
+//	  视为接受并删除文件。接受语义 = 记录已进入 writer 内存队列，或（队列
+//	  满时）已同步溢出落盘到 overflow spool 文件（落盘成功才返回 nil，可
+//	  回放不丢），或 oversize 终态丢弃（重试不可能成功，保留会卡死回放队
+//	  头）。删除后、writer 批量落库（默认 500ms flush）前进程崩溃的内存
+//	  窗口是已知取舍（Node 本地队列同款边界）；EnqueueDurable 失败（writer
+//	  已停、队列满且溢出落盘失败等未接收形态）保留文件、终止本轮并按固定
+//	  退避重试（at-least-once，head-of-line 与 Node 本地队列 flush 语义一
+//	  致）；
+//	- 每轮结束时刷新待删水位（OldestPendingCreatedAt）：按文件名序取第
+//	  一个可读待消费 spool 文件内记录的 created_at 反馈给 ingestgate 游
+//	  标安全门，使统计游标在 drain 仍持有未确认文件时不得越过其中最旧记
+//	  录（否则记录滞留超过安全水位后入表，statsagg 严格单调游标已越过其
+//	  created_at，永久不聚合）。不可读队头（非 ErrNotExist 读取失败，
+//	  BUG-0227）直接跳过，统计游标安全门不得被属主异常文件永久卡死；仅
+//	  剩不可读文件时保留上次水位（不前进也不清空，取舍见
+//	  refreshPendingWatermark 注释）。排序假设：文件名以 UnixMilli 开头，
+//	  写出侧每记录落盘即写、互斥串行（FIFO），文件名序即最旧记录；同进程
+//	  内时钟偏斜与 writer 队列窗口同源（进程边界外，Node 同款边界）。
+//	- 停机时有界排空后返回，未消费文件持久留待下次启动。
 //
 // 节拍对齐 record_maintenance_jobs drain 族：100ms 轮询、失败固定 1s 退避、
 // 停机有界排空（internal/recordmaintenance/drain.go 同形）；失败轮打 Warn
@@ -60,7 +59,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // drain 节拍与结算常量（record_maintenance drain 族同值；BatchSize 取
@@ -68,7 +67,7 @@ import (
 const (
 	// DefaultFlushIntervalMs 对齐 recordMaintenanceFlushIntervalMs（100ms）。
 	DefaultFlushIntervalMs = 100
-	// DefaultBatchSize 对齐 gateway usage spool ReplayBatchSize（500 文件/轮）。
+	// DefaultBatchSize 沿用历史交接表的 ReplayBatchSize（500 文件/轮）。
 	DefaultBatchSize = 500
 	// DefaultRetryDelay 对齐 fixedRetryPolicy 固定重试延迟（1s）。
 	DefaultRetryDelay = time.Second
@@ -105,10 +104,10 @@ type Enqueuer interface {
 	EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error
 }
 
-// Drainer 轮询 gateway usage spool 目录并入队用量记录。
+// Drainer 轮询 usage 溢出 spool 目录并入队用量记录。
 type Drainer struct {
-	// Directory 是 spool 根目录（与 gateway JUHE_AI_USAGE_SPOOL_DIRECTORY
-	// 同值或同派生规则：未配置 env 时取 <stats 库目录>/usage-record-spool）。
+	// Directory 是 writer 溢出 spool 根目录（jobs 侧由 DATA_DIR 派生，
+	// 见 workerUsageOverflowSpoolDirectory）。
 	Directory string
 	// Enqueuer 是用量记录入队口（生产装配为 *usagewriter.Writer）。
 	Enqueuer Enqueuer

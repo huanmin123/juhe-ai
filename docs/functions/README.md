@@ -160,7 +160,7 @@
 - [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)
 - [协议桥接框架设计](协议桥接框架设计.md)
 - [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)
-- [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)
+- [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)（已退役 2026-11-09，仅历史存档）
 - [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)
 - [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)
 - [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回下一层：自动跟版层优先于内置），含内置锚点表与维护规则。

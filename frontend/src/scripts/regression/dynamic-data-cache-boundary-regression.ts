@@ -20,8 +20,7 @@ const directDetailReads = [
   ['../../views/public-api-logs/PublicApiLogsView.vue', /api\.publicApiLogs\.detail\(record\.id\)/],
   ['../../views/model-checks/ModelChecksView.vue', /modelChecksApi\.detail\(id, modelCheckScopeParams\.value\)/],
   ['../../views/operation-logs/OperationLogsView.vue', /operationLogsApi\.detail\(record\.id\)/],
-  ['../../views/runtime-logs/useRuntimeLogDetailState.ts', /api\.runtimeLogs\.detail\(record\.id\)/],
-  ['../../views/audit-logs/useAuditLogDetailPayload.ts', /api\.auditLogs\.detail\(record\.id\)/]
+  ['../../views/audit-logs/useAuditLogDetailPayload.ts', /api\.auditLogs\.detail\(id\)/]
 ] as const
 
 for (const [relativeUrl, expectedRequest] of directDetailReads) {

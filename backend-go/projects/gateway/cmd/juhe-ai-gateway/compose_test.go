@@ -54,7 +54,6 @@ func composeTestConfig(t *testing.T) runtimeConfig {
 // provision the database themselves).
 func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
 	t.Helper()
-	root := t.TempDir()
 	redisServer := miniredis.RunT(t)
 	return runtimeConfig{
 		PostgresURL:         dsn,
@@ -68,7 +67,6 @@ func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
 		// mirrors it.
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
-		UsageSpoolDirectory:           filepath.Join(root, "usage-record-spool"),
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,
@@ -497,10 +495,6 @@ func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 	}
 	if cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] || cfg.RedisURL != env["JUHE_AI_REDIS_URL"] {
 		t.Fatalf("storage endpoints wrong: %#v", cfg)
-	}
-	// Spool derivation lands under <DATA_DIR>/usage-record-spool (D1).
-	if cfg.UsageSpoolDirectory != filepath.Join("data", "usage-record-spool") {
-		t.Fatalf("derived spool directory = %q", cfg.UsageSpoolDirectory)
 	}
 	// 2026-11-07 桥退役：JUHE_AI_CODEX_CONTEXT_ROOT 与派生目录已从运行时配置
 	// 删除（历史 codex-context/ 目录按部署文档人工清理，不再断言派生）。

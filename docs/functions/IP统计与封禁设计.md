@@ -646,6 +646,13 @@ GET /__aipublic__/access/info
 - 统计 job 正常运行，冷 IP 通过 `INSERT OR IGNORE` 和主键唯一约束兜底。
 - 如后续确实需要预热，只允许独立低优先级分页任务并在批次之间让出事件循环。
 
+## 数据保留与清理
+
+- `client_ip_stats_daily` 与 `client_ip_policy_hits` 由 jobs `data-retention-cleanup` 按业务时区 `stat_date` 滚动保留 35 天（31 天页面读面 + 4 天余量），最旧优先分批删除。两表都是纯统计 / 审计派生数据，超窗行没有读取路径。
+- `client_ip_registry` **不按时间清理**：它是 IP 管理列表的成员全集（时间范围只切换统计列，不决定 IP 是否出现），且网关封禁执行独立读取 `client_ip_policies`。按时间删除 registry 行会让仍生效的策略从管理页消失但网关继续拦截，运维无法定位和解封。
+- 如未来确需控制 registry 体积，只允许清理「`last_seen_at` 超过 180 天且不存在任何 `client_ip_policies` 行（含 disabled）」的孤儿，并保留可审计的清理计数；不得用单一时长无条件清空注册表。
+- 本能力不使用已退役的 `non_business_data_cleanup` 任务族；清理挂现有 `data-retention-cleanup` 节拍（2026-10-14 表监控退役后该任务族已无生产者）。
+
 ## 安全与隐私
 
 - IP 属于敏感运维数据，后台页面只允许管理员访问。

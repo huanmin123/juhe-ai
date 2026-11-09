@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/ingestgate"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // gateFunc 将门控闭包适配为包侧 IngestDrainGate port（accountquality 与
@@ -97,16 +97,11 @@ func assembleIngestDrainStatus(readSpoolOldest func() string, readRuntime func()
 	}
 }
 
-// spoolPendingOldestCreatedAt 汇总两个 drain 的待删水位，返回最旧一条；
-// 两者皆无积压返回空串。时间值为 usagewriter 归一化后的 RFC3339 毫秒
-// UTC，解析失败按不可知处理（返回另一值或空串，由门控按默认水位放行）。
+// spoolPendingOldestCreatedAt 汇总溢出回放的待删水位；无积压返回空串。
+// 时间值为 usagewriter 归一化后的 RFC3339 毫秒 UTC，解析失败按不可知处理
+// （返回空串，由门控按默认水位放行）。
 func (a *workerAssembly) spoolPendingOldestCreatedAt() string {
 	var candidates []string
-	if a.usageSpoolDrain != nil {
-		if value := a.usageSpoolDrain.OldestPendingCreatedAt(); value != "" {
-			candidates = append(candidates, value)
-		}
-	}
 	if a.usageOverflowReplay != nil {
 		if value := a.usageOverflowReplay.OldestPendingCreatedAt(); value != "" {
 			candidates = append(candidates, value)

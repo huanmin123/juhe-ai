@@ -12,7 +12,7 @@
 //   - 本回归把自引用 *OrderedObject 输入 EstimateJSONLikeBytes，实现有限
 //     终止且给出确定估算值（外层 {} 2 + 键 "self" 4+3 + 循环容器 16 + 逗号 1
 //     = 26 字节），无栈溢出；
-//   - jobs/internal/usagewriter/size.go 的同族实现已同步同一修复。
+//   - shared/platform/usagewriter/size.go 的同族实现已同步同一修复。
 //
 // 红形态说明：若该修复回退，本测试将以测试二进制栈溢出崩溃的方式变红
 // （Go 栈溢出不可 recover），因此不写「断言会失败」的红测试。

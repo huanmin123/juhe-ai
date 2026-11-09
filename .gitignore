@@ -68,3 +68,11 @@ backend-go/docker/single-server/build/bin/
 # 本地运行时残留（含 account-health-input.key 等敏感文件，禁止入库）
 /data/
 /backend-go/projects/maintenance/data/
+# Go 网关/任务进程以项目目录为工作目录运行时写出的数据根：原始审计 blob、
+# 热检索索引、usage spool 与 account-health 签名密钥都可能含明文凭据，
+# 任何目录一律不入库（2026-11-09 安全审计：这些路径此前未忽略，已有运行
+# 产物被提交，见 docs/待办与阻塞事项.md 的 SEC 条目）。
+/backend-go/projects/gateway/data/
+/backend-go/projects/jobs/data/
+/backend-go/projects/jobs/cmd/juhe-ai-jobs/data/
+/backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/data/*.key

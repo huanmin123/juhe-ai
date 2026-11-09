@@ -9,7 +9,7 @@ import { groupsApi, myGroupsApi } from './domains/groups'
 import { geminiOAuthApi, myGeminiOAuthApi } from './domains/geminiOAuth'
 import { grokOAuthApi, myGrokOAuthApi } from './domains/grokOAuth'
 import { ipStatsApi } from './domains/ipStats'
-import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, runtimeLogsApi } from './domains/logs'
+import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi } from './domains/logs'
 import { modelChecksApi, myModelChecksApi } from './domains/modelChecks'
 import { anthropicOAuthApi, myAnthropicOAuthApi } from './domains/anthropicOAuth'
 import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
@@ -66,7 +66,6 @@ export const api = {
   uiBootstrap: uiBootstrapApi,
   myUiBootstrap: myUiBootstrapApi,
   auditLogs: auditLogsApi,
-  runtimeLogs: runtimeLogsApi,
   operationLogs: operationLogsApi,
   publicApiLogs: publicApiLogsApi,
   myOperationLogs: myOperationLogsApi,

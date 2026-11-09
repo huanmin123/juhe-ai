@@ -168,6 +168,16 @@ type Deps struct {
 	// 429 contract. Nil disables the user rate limit; the composition root
 	// wires the shared limiter.
 	AuthenticatedRateLimit func(w http.ResponseWriter, r *http.Request, systemAccountID string) bool
+	// Capabilities 是部署级能力位来源（与用户权限正交，同一部署内所有登录
+	// 用户读到同一组值）。nil 按「审计开启」处理，避免包内测试与旧装配默认翻转。
+	Capabilities func() Capabilities
+}
+
+// Capabilities is the deployment-level capability set exposed in the session
+// summary so the SPA can trim menus and routes without a second bootstrap
+// request (2026-11-09: audit logs become switchable per deployment).
+type Capabilities struct {
+	AuditLogs bool `json:"auditLogs"`
 }
 
 // rateLimitOrWrite applies the optional user rate limit once the actor is
@@ -341,16 +351,27 @@ func sameSiteMode(value string) http.SameSite {
 
 // CurrentUserSummary mirrors currentUserSummary.
 type CurrentUserSummary struct {
-	ID                 string `json:"id"`
-	Username           string `json:"username"`
-	DisplayName        string `json:"displayName"`
-	Role               string `json:"role"`
-	MustChangePassword bool   `json:"mustChangePassword"`
+	ID                 string       `json:"id"`
+	Username           string       `json:"username"`
+	DisplayName        string       `json:"displayName"`
+	Role               string       `json:"role"`
+	MustChangePassword bool         `json:"mustChangePassword"`
+	Capabilities       Capabilities `json:"capabilities"`
 }
 
-func currentUserSummary(auth *AuthContext) CurrentUserSummary {
+// capabilitiesOrEnabled returns the deployment capabilities; a nil source
+// (package tests / legacy assemblies) keeps audit logs enabled.
+func (d *Deps) capabilitiesOrEnabled() Capabilities {
+	if d == nil || d.Capabilities == nil {
+		return Capabilities{AuditLogs: true}
+	}
+	return d.Capabilities()
+}
+
+func (d *Deps) currentUserSummary(auth *AuthContext) CurrentUserSummary {
 	return CurrentUserSummary{
 		ID: auth.SystemAccountID, Username: auth.Username, DisplayName: auth.DisplayName,
 		Role: auth.Role, MustChangePassword: auth.MustChangePassword,
+		Capabilities: d.capabilitiesOrEnabled(),
 	}
 }

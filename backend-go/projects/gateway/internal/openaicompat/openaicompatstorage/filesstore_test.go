@@ -259,3 +259,5 @@ func TestCreateFileSurfacesDBErrors(t *testing.T) {
 }
 
 func strPtr(value string) *string { return &value }
+
+func intPtr(value int) *int { return &value }

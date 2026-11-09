@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import { setMustChangePasswordHandler, setUnauthorizedHandler } from '@/api/client'
 import { clearAuthState, loadCurrentUser } from '@/composables/useAuth'
+import { deploymentCapabilityEnabled, type RouteCapability } from '@/composables/useCapabilities'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import type { SystemAccountRole } from '@/types/domain'
 import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
@@ -21,6 +22,8 @@ declare module 'vue-router' {
     public?: boolean
     viewScope?: 'admin' | 'self'
     roles?: SystemAccountRole[]
+    // 部署级能力位（2026-11-09）：false 时菜单隐藏且路由守卫重定向。
+    requiresCapability?: RouteCapability
     // AI 账户能力域拆分（M2）：四域路由共用 AccountsView，按域装载/裁剪列表。
     capabilityDomain?: AccountCapabilityDomain
   }
@@ -519,19 +522,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/runtime-logs',
-    component: () => import('@/views/runtime-logs/RuntimeLogsView.vue'),
-    meta: {
-      title: '日志搜索',
-      description: '索引查询检索最近 3 天运行日志，关键字只模糊匹配消息列；grep 模式由后端 rg 按任意关键字扫描文件日志。',
-      menuGroup: 'log-management',
-      menuGroupTitle: '日志管理',
-      viewScope: 'admin',
-      roles: managementRoles,
+      requiresCapability: 'auditLogs',
       heavy: true
     }
   },
@@ -845,6 +836,9 @@ router.beforeEach(async (to) => {
   }
   if (!user) {
     return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.requiresCapability && !deploymentCapabilityEnabled(user.capabilities, to.meta.requiresCapability)) {
+    return getPreferredEntryPath(user)
   }
   if (to.path === '/') {
     if (user.mustChangePassword) return requiredPasswordProfileLocation('/')

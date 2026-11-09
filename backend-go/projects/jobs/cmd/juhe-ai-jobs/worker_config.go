@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -53,11 +52,8 @@ type workerConfig struct {
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
 
-	// UsageSpoolDirectory 是 gateway usage-record 文件 spool 交接表的根目录
-	// （BUG-0175 D-72 消费侧）：env JUHE_AI_USAGE_SPOOL_DIRECTORY，未配置时
-	// 按 D1 从 JUHE_AI_DATA_DIR 派生 <DATA_DIR>/usage-record-spool（两侧必须
-	// 同源，drain 才能读到 gateway 写出的交接文件）。
-	UsageSpoolDirectory string
+	// UsageSpoolDirectory 已随 2026-11-09 T188 删除：gateway 用量记录改为
+	// 直投 PG，不再有 gateway→jobs 的 usage-record-spool 文件交接。
 
 	RecordMaintenanceQueueMaxItems int
 	RecordMaintenanceQueueMaxMb    int
@@ -178,14 +174,8 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	// JUHE_AI_POSTGRES_MAX_IDLE_CONNS）五源零引用，2026-09-30 C4 收编为常量
 	// 50/10。idle 上限受平台 pgpool 校验约束（idle <= min(open, 10)），常量值
 	// 必须落在合法区间内，否则组装 worker pool 时直接失败。
-	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
-	// 同名 env、同派生规则；未配置时按 D1 从 DATA_DIR 派生
-	// <DATA_DIR>/usage-record-spool，因此本字段恒非空；wireUsageSpoolDrain
-	// 常驻按该目录接线 drain。
-	config.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
-	if config.UsageSpoolDirectory == "" {
-		config.UsageSpoolDirectory = filepath.Join(config.DataDir, "usage-record-spool")
-	}
+	// usage spool 交接目录与 JUHE_AI_USAGE_SPOOL_DIRECTORY env 随 2026-11-09
+	// T188 删除（gateway 直投 PG，不再有文件交接消费面）。
 	// 2026-11-07 codex-context 退役：原 JUHE_AI_CODEX_CONTEXT_ROOT /
 	// CodexContextRoot 装配随桥删除（历史 codex-context/ 目录按部署文档
 	// 人工备份后清理，运行时不读取）。

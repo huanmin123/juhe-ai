@@ -367,11 +367,6 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "chat-assets"), 0o750); err != nil {
 		t.Fatalf("创建 chat-assets 目录失败: %v", err)
 	}
-	spoolDirectory := filepath.Join(root, "usage-spool")
-	if err := os.MkdirAll(spoolDirectory, 0o750); err != nil {
-		t.Fatalf("创建 usage spool 目录失败: %v", err)
-	}
-
 	cfg := runtimeConfig{
 		// PG+Redis 唯一存储形态（2026-10-24 存储形态收口）。
 		PostgresURL:                   tempAppURL,
@@ -381,7 +376,6 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 		Secret:                        "w1g2-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
-		UsageSpoolDirectory:           spoolDirectory,
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,

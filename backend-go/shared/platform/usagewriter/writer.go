@@ -348,10 +348,10 @@ func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 	return nil
 }
 
-// EnqueueDurable 是 durable spool 交接（gateway usage spool 消费与 overflow
-// spool 回放）专用的入队端口（BUG-0304）：与 Enqueue 共享前置流程与准入尾
-// 部，区别只在队列满的溢出分支——未接收时返回可重试错误，而不是按终态丢
-// 弃后返回 nil。
+// EnqueueDurable 是溢出 spool 回放专用的入队端口（BUG-0304）：与 Enqueue
+// 共享前置流程与准入尾部，区别只在队列满的溢出分支——未接收时返回可重试
+// 错误，而不是按终态丢弃后返回 nil。2026-11-09 T188 起 gateway 用量记录
+// 直投 PG，durable spool 交接消费方只剩 jobs 的溢出回放。
 //
 // 契约：返回 nil ⇔ 记录已被接受（进入内存队列、幂等重复、溢出落盘成功，
 // 或 oversize 终态丢弃）；返回非 nil ⇔ 记录未被接收，调用方必须保留

@@ -215,7 +215,7 @@ func (s *StatsRetentionStore) AfterDelete(ctx context.Context) {
 }
 
 // deleteRowsBefore 按 rowid（SQLite）/ ctid（PG）删除时间列早于 cutoff 的行。
-func deleteRowsBefore(ctx context.Context, db *DB, schema, tableName, timeColumnName, cutoff string, limit int) (int64, error) {
+func deleteRowsBefore(ctx context.Context, db *DB, schema, tableName, timeColumnName string, cutoff any, limit int) (int64, error) {
 	table := db.Table(schema, tableName)
 	quotedTable := quoteIdentifierTable(db, table)
 	quotedColumn := quoteIdentifierColumn(db, timeColumnName)

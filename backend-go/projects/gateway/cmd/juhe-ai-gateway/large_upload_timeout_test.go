@@ -17,9 +17,9 @@ func TestLargeUploadReadTimeoutSelection(t *testing.T) {
 		timeout time.Duration
 		ok      bool
 	}{
-		{name: "files upload", method: http.MethodPost, path: "/v1/files", timeout: defaultLargeUploadReadTimeout, ok: true},
-		{name: "files upload trailing slash", method: http.MethodPost, path: "/v1/files/", timeout: defaultLargeUploadReadTimeout, ok: true},
-		{name: "files upload bare form", method: http.MethodPost, path: "/files", timeout: defaultLargeUploadReadTimeout, ok: true},
+		{name: "files upload retired", method: http.MethodPost, path: "/v1/files"},
+		{name: "files upload trailing slash retired", method: http.MethodPost, path: "/v1/files/"},
+		{name: "files upload bare form retired", method: http.MethodPost, path: "/files"},
 		{name: "image edit", method: http.MethodPost, path: "/v1/images/edits", timeout: mediaUploadReadTimeout, ok: true},
 		{name: "image edit bare form", method: http.MethodPost, path: "/images/edits", timeout: mediaUploadReadTimeout, ok: true},
 		{name: "audio transcription", method: http.MethodPost, path: "/v1/audio/transcriptions", timeout: mediaUploadReadTimeout, ok: true},
@@ -70,9 +70,9 @@ func TestWithLargeUploadReadTimeoutExtendsOnlyUploadRoutes(t *testing.T) {
 		wantCalls int
 		wantAfter time.Duration
 	}{
-		{name: "files upload", method: http.MethodPost, path: "/v1/files", wantCalls: 1, wantAfter: defaultLargeUploadReadTimeout},
+		{name: "image edit", method: http.MethodPost, path: "/v1/images/edits", wantCalls: 1, wantAfter: mediaUploadReadTimeout},
 		{name: "chat stays default", method: http.MethodPost, path: "/v1/chat/completions"},
-		{name: "files list stays default", method: http.MethodGet, path: "/v1/files"},
+		{name: "files retired stays default", method: http.MethodGet, path: "/v1/files"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			writer := &deadlineRecordingWriter{ResponseRecorder: httptest.NewRecorder()}
@@ -119,7 +119,7 @@ func TestLargeUploadConcurrencyLimit(t *testing.T) {
 		largeCalled = true
 	}))
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/files", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("full limiter status = %d, want 503", recorder.Code)
 	}
@@ -173,7 +173,7 @@ func TestLargeUploadReadDeadlineAllowsSlowBody(t *testing.T) {
 		_, _ = writer.Write([]byte(body))
 		_ = writer.Close()
 	}()
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/files", reader)
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/images/edits", reader)
 	if err != nil {
 		t.Fatalf("build slow upload request: %v", err)
 	}

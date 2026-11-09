@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // account-balance-auto-detect-recovery 组合根适配器，逐语义对齐 Node
@@ -174,10 +176,15 @@ func balanceDueCompare(op string, dueText string) (string, any) {
 // balanceDetectRuntime 承载探测意图仓储、互斥租约与 builtin 探测器共享的
 // 句柄与状态（对齐 Node 仓储的模块级游标/凭据解密语境）。
 type balanceDetectRuntime struct {
-	business   *businessDB
-	statsDB    *sql.DB
-	secret     string
-	client     *http.Client
+	business *businessDB
+	statsDB  *sql.DB
+	secret   string
+	client   *http.Client
+	// dialGuard 是部署级上游 URL 守卫（与 /v1 派发、健康探针共用
+	// URLSecurityConfig 语义）：builtin 余额探测必须与网关出站口径一致，
+	// strict 模式下不得经域名解析访问内网。注入 client（测试自有传输）时
+	// 守卫不参与。
+	dialGuard  *upstreamhttp.DialGuard
 	nowFunc    func() time.Time
 	leasestore *taskruns.Store
 	// logger 由装配注入（wired assembly 的 a.logger）；nil 时池不可用原因
@@ -825,9 +832,10 @@ func (r *balanceDetectRuntime) QueryBuiltin(ctx context.Context, candidate opsjo
 			})
 		}
 		return accountbalance.ExecuteAccountBalanceQuery(ctx, input, accountbalance.QueryOptions{
-			Secret:  r.secret,
-			Timeout: 15 * time.Second,
-			Now:     r.nowFunc,
+			Secret:    r.secret,
+			Timeout:   15 * time.Second,
+			Now:       r.nowFunc,
+			DialGuard: r.dialGuard,
 		})
 	}()
 	if execErr != nil {
@@ -1067,10 +1075,20 @@ func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 		_ = business.close()
 		return nil
 	}
+	// 出站防护（D-192/D-146）：与 /v1 派发、健康探针共用同一部署级
+	// URLSecurityConfig 语义（默认放行私网，显式 false/0 恢复限制）。非法
+	// 配置不静默放行：按既有装配失败口径禁用该任务并保留原始错误。
+	balanceSecurity, securityErr := upstreamhttp.URLSecurityConfigFromEnv(os.Getenv)
+	if securityErr != nil {
+		a.registerDisabledJob(name, "上游 URL 安全配置无效："+securityErr.Error())
+		_ = business.close()
+		return nil
+	}
 	runtimeState := &balanceDetectRuntime{
 		business:   business,
 		statsDB:    statsDB,
 		secret:     a.config.Secret,
+		dialGuard:  upstreamhttp.NewDialGuard(balanceSecurity, nil, nil),
 		nowFunc:    func() time.Time { return time.Now().UTC() },
 		leasestore: a.taskRunsStore,
 		logger:     a.logger,

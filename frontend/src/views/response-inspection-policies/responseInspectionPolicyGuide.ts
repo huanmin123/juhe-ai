@@ -1,11 +1,5 @@
 export const responseInspectionPolicyGuideSources = [
   {
-    key: 'runtime-logs',
-    name: '运行日志',
-    where: '系统运维 / 运行日志，按 traceId、response_inspection 或策略名称搜索',
-    note: '看这条规则有没有命中、当时执行了什么处置、有没有触发重试。'
-  },
-  {
     key: 'audit-logs',
     name: '审计日志',
     where: '系统运维 / 审计日志，查看失败请求、响应检查和上游错误摘要',

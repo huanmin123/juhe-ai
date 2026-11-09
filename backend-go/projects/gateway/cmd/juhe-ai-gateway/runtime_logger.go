@@ -1,18 +1,19 @@
 package main
 
 // BUG-0195：gateway 文件日志写侧装配。runtimeConfig.LogDir 非空时 slog 输出
-// 经 TeeWriter 同时进 stdout 与按大小滚动的 JSONL 文件（jobs runtimelog 索引
-// 器消费面：生产 current=juhe-ai.<instanceID>.log，轮转名
-// <base>.<UTC时间戳>.<token>.log；零值 runtimeConfig 仍保留 legacy
-// juhe-ai.log 测试/兼容口径）；目录为空（2026-09-28 起 LogDir 由组合根派生，
-// 仅 JUHE_AI_LOG_DIR=disabled 显式关闭才会为空）或文件 sink 打开失败时降级
-// stdout-only，进程不因文件路故障拒绝启动。文件清理属 jobs 保留清理职责，
-// 写侧不做删除。
+// 经 TeeWriter 同时进 stdout 与按大小滚动的 JSONL 文件（生产 current=
+// juhe-ai.<instanceID>.log，轮转名 <base>.<UTC时间戳>.<token>.log；零值
+// runtimeConfig 仍保留 legacy juhe-ai.log 测试/兼容口径）；目录为空（2026-09-28
+// 起 LogDir 由组合根派生，仅 JUHE_AI_LOG_DIR=disabled 显式关闭才会为空）或文件
+// sink 打开失败时降级 stdout-only，进程不因文件路故障拒绝启动。2026-11-09 起
+// 运行日志不再入库 PG，写侧在轮转后按 JUHE_AI_LOG_MAX_FILES / RETENTION_DAYS
+// 自清理 rotated 文件（原 jobs F1 清理职责）。
 
 import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 )
@@ -77,6 +78,8 @@ func newRuntimeLogger(cfg runtimeConfig, stdout io.Writer, level slog.Level) (*s
 	sink, err := processlog.NewFileSink(cfg.LogDir, processlog.FileSinkOptions{
 		FileName:     fileName,
 		MaxFileBytes: int64(cfg.LogMaxFileMB) << 20,
+		MaxFiles:     cfg.LogMaxFiles,
+		Retention:    time.Duration(cfg.LogRetentionDays) * 24 * time.Hour,
 	})
 	if err != nil {
 		bootstrap.Error("运行日志文件 sink 打开失败，降级 stdout-only（运行日志不落盘）",

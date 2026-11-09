@@ -1,7 +1,7 @@
-package main
+package usagepricing
 
-// worker_usage_pricing_catalog.go：usagewriter 定价冻结的目录适配器（P1 修复，
-// usagewriter.WithCatalog 首个生产注入）。
+// catalog.go：usagewriter 定价冻结的目录适配器（原 jobs worker_usage_pricing_
+// catalog.go，2026-11-09 T188 迁入 shared 供 gateway 直投与 jobs 共用）。
 //
 // 数据源判定（审计遗留缺口 worker_assembly「jobs 暂无 C03 catalog 适配器」）：
 //   - usage-catalog 库（juhe_usage / UsageCatalogSQLitePath）只承载使用记录
@@ -20,8 +20,8 @@ package main
 // trim 相等；目录读取失败时 usagewriter 侧保留确定性 fallback 快照（契约
 // 降级路径，不得删）。
 //
-// 缓存：Node 用 24h TTL + 写路径进程内失效；jobs 只读镜像收不到失效事件，
-// 改用短 TTL（60s）替代失效通道，定价新鲜度上限 1 分钟。
+// 缓存：Node 用 24h TTL + 写路径进程内失效；gateway/jobs 只读镜像收不到
+// 失效事件，改用短 TTL（60s）替代失效通道，定价新鲜度上限 1 分钟。
 
 import (
 	"context"
@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
 // usagePricingCatalogCacheTTL 是目录只读缓存的有效期（见文件头注释）。
@@ -64,7 +64,7 @@ type usagePricingCatalogEntry struct {
 	err       error
 }
 
-func newUsagePricingCatalog(db *sql.DB) *usagePricingCatalog {
+func NewCatalog(db *sql.DB) *usagePricingCatalog {
 	return &usagePricingCatalog{db: db, now: time.Now, cache: map[string]usagePricingCatalogEntry{}}
 }
 

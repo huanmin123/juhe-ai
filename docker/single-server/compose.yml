@@ -126,7 +126,7 @@ services:
     stop_grace_period: 30s
     # datadir/日志等相对路径约定以进程 cwd 为基准（缺省 ./data 相对 cwd）；
     # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
-    # 下方挂载的宿主机持久目录（usage spool 交接、文件日志等）。
+    # 下方挂载的宿主机持久目录（文件日志、审计 blob 等本地数据）。
     working_dir: /app/backend
     # 固定容器 IP：Caddy 直连 IP，不经 Docker DNS（偶发 lookup 失败会导致 502）；
     # 172.18.x 为 compose 内网段（下方 ipam），非公网实例事实，无需变量化
@@ -190,8 +190,10 @@ services:
         - "${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
     volumes:
-      # PG 模式下该目录仍承载 usage spool 等文件数据（codex-context 目录已随
-      # 2026-11-07 桥退役停止读写，历史目录按部署文档人工备份后清理）
+      # 本地运行数据目录：开启审计时的 audit-blob、进程日志等落在这里；
+      # 用量记录自 2026-11-09 T188 起直投 PG，不再有文件 spool 交接。
+      # （codex-context 目录已随 2026-11-07 桥退役停止读写，历史目录按部署
+      # 文档人工备份后清理）
       - ./data/app/data:/app/backend/data
       - ./data/app/logs:/app/backend/logs
     healthcheck:
@@ -227,8 +229,8 @@ services:
       - /tmp:size=64m
     # 与 gateway 同批停写；给任务 finish/租约释放留出排空时间。
     stop_grace_period: 30s
-    # 与 gateway 同理：spool drain 目录按相对路径派生，必须锚定 /app/backend
-    # 才能与网关共享宿主机挂载的 data 目录（两侧同源才能完成用量交接）。
+    # 与 gateway 同理：相对路径以进程 cwd 为基准，锚定 /app/backend 才能让
+    # data/logs 落在挂载的持久目录（用量记录直投 PG，无文件交接依赖）。
     working_dir: /app/backend
     ports:
       # 健康监听宿主回环发布：仅 127.0.0.1 可达（部署层必须拒绝公网入口、只允许

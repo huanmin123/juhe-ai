@@ -158,10 +158,10 @@ type Deps struct {
 	ProviderCatalog ProviderCatalogPort
 	// FetchURL 是 fetch_url 工具执行端口（nil 时装配默认实现 fetchurl.go）。
 	FetchURL FetchURLFunc
-	// ArtifactsRoot 是产物暂存根 <数据根>/playground-artifacts（设计 §3.8，零
-	// 新 env：组合根按 internal/datadir 数据根派生传入，无显式覆盖入口）。空 =
-	// 暂存面未接线，产物端点显式降级 503（功能不设开关，非静默空行为）。
-	ArtifactsRoot string
+	// Artifacts 是产物暂存后端（设计 §3.8）：生产由组合根注入 PG 实现
+	// （NewPGArtifactStore(composed.db)），nil = 暂存面未接线，产物端点显式降级
+	// 503（功能不设开关，非静默空行为）。2026-11-09 起不再写本地文件。
+	Artifacts ArtifactStore
 }
 
 // Registerer 是演练场挂载所需的 kernel 子集（kernel.Kernel 同形）。
