@@ -1,1 +1,0 @@
-{"type":"gateway_metadata","label":"normal_model_route","metadata":{"candidateBindingCount":1,"fromGroupId":"grp_default_gpt_sys_admin","requestedModel":"deepseek-v4.1-flash","routeSource":"catalog_provider","sourceBindingCount":1,"toGroupId":"grp_default_gpt_sys_admin"}}

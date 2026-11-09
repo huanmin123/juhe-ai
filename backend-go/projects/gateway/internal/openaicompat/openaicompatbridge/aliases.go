@@ -19,7 +19,6 @@ type (
 	RequestError                 = openaicompatcore.RequestError
 	BridgeRequestError           = openaicompatcore.BridgeRequestError
 	Config                       = openaicompatcore.Config
-	CodeInterpreterConfig        = openaicompatcore.CodeInterpreterConfig
 	ComputerAdapterConfig        = openaicompatcore.ComputerAdapterConfig
 	OpenAIHostedToolRuntimeModes = openaicompatcore.OpenAIHostedToolRuntimeModes
 	GatewayScope                 = openaicompatcore.GatewayScope

@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -235,6 +236,10 @@ type xaiGrokUsageRuntime struct {
 	// clientFactory 可注入测试客户端工厂；nil 时按账户代理经
 	// upstreamhttp.SharedClient 取进程级共享客户端（支持 socks5h）。
 	clientFactory func(proxyURL string) (*http.Client, error)
+	// dialGuard 是部署级上游 URL 守卫（与 /v1 派发、J2、健康探针共用
+	// URLSecurityConfig 语义）：billing/settings 端点的 host 来自账户
+	// 凭据 base_url，必须按同一策略校验；注入 clientFactory（测试）时不参与。
+	dialGuard *upstreamhttp.DialGuard
 	// versionRefreshTrigger 是版本跟版刷新入口（装配期由
 	// wireXAIGrokUsageFamily 注入运行期延迟解引用
 	// assembly.upstreamClientVersionRefresh 的闭包；字段为 nil 或入口未接线
@@ -249,7 +254,7 @@ func (r *xaiGrokUsageRuntime) clientFor(proxyURL string) (*http.Client, error) {
 	if r.clientFactory != nil {
 		return r.clientFactory(proxyURL)
 	}
-	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{})
+	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{DialGuard: r.dialGuard})
 }
 
 // xaiGrokProxyPasswordDecrypter 用同一 v1 AES-GCM 封套解开
@@ -472,6 +477,30 @@ func (r *xaiGrokUsageRuntime) xaiGrokProxyRequestURL(ctx context.Context, proxyP
 func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http.Client, accessToken, endpointURL string) ([]byte, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, xaiGrokUsageHTTPTimeout)
 	defer cancel()
+	// 凭据 base_url 派生的用量端点必须先过部署级 URL 守卫：直连在拨号期
+	// 校验实际 socket 对端，代理分支的拨号期守卫只看代理主机，因此这里
+	// 对最终目标做同一 ValidateHost（与余额/目录读取同口径）。
+	if r.dialGuard != nil {
+		parsed, parseErr := url.Parse(endpointURL)
+		if parseErr != nil || parsed.Hostname() == "" {
+			return nil, errors.New("用量端点地址无效")
+		}
+		port := parsed.Port()
+		if port == "" {
+			if parsed.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		if guardErr := r.dialGuard.ValidateHost(fetchCtx, parsed.Hostname(), port); guardErr != nil {
+			var blocked *upstreamhttp.UnsafeResolvedUpstreamURLError
+			if errors.As(guardErr, &blocked) {
+				return nil, errors.New("用量端点地址不被允许")
+			}
+			return nil, errors.New("用量端点地址解析失败")
+		}
+	}
 	request, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, endpointURL, nil)
 	if err != nil {
 		return nil, err
@@ -773,12 +802,22 @@ func (a *workerAssembly) wireXAIGrokUsageFamily(ctx context.Context) error {
 		_ = business.close()
 		return nil
 	}
+	// 出站防护（D-192/D-146）：与 /v1 派发、J2、健康探针共用部署级
+	// URLSecurityConfig 语义。非法配置 fail-closed（禁用该任务并保留原始
+	// 错误），不静默放行。
+	usageSecurity, securityErr := upstreamhttp.URLSecurityConfigFromEnv(os.Getenv)
+	if securityErr != nil {
+		a.registerDisabledJob(name, "上游 URL 安全配置无效："+securityErr.Error())
+		_ = business.close()
+		return nil
+	}
 	runtime := &xaiGrokUsageRuntime{
-		business: business,
-		statsDB:  statsDB,
-		secret:   a.config.Secret,
-		nowFunc:  func() time.Time { return time.Now().UTC() },
-		logger:   a.logger,
+		business:  business,
+		statsDB:   statsDB,
+		secret:    a.config.Secret,
+		dialGuard: upstreamhttp.NewDialGuard(usageSecurity, nil, nil),
+		nowFunc:   func() time.Time { return time.Now().UTC() },
+		logger:    a.logger,
 	}
 	// Grok 426 版本门触发器（设计 §8.3 第二期）：注入运行期延迟解引用
 	// upstreamClientVersionRefresh 的闭包——本家族先于 wireVersionTrackingFamily

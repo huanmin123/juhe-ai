@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const (
@@ -49,6 +50,11 @@ type RuntimeConfig struct {
 	PostgresPool              PoolHandle
 	InputPostgresPool         PoolHandle
 	Now                       func() time.Time
+	// DialGuard 是部署级上游 URL 守卫（与 /v1 派发、健康探针共用
+	// URLSecurityConfig 语义）：J2 周期刷新、首探、恢复与手动刷新都经
+	// Service 的 runner 出站，必须携带同一守卫。由 LoadRuntimeConfig 从
+	// 部署环境构造；非法配置 fail-closed，不静默放行。
+	DialGuard *upstreamhttp.DialGuard
 }
 
 func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
@@ -64,6 +70,13 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{Enabled: false, Now: time.Now}, nil
 	}
 	cfg := RuntimeConfig{Enabled: true, Now: time.Now}
+	// 出站防护（D-192/D-146）：J2 与网关共用同一部署级 URL 安全配置面。
+	// 非法取值 fail-closed，与 gateway/jobs 其他消费者同口径。
+	securityConfig, securityErr := upstreamhttp.URLSecurityConfigFromEnv(getenv)
+	if securityErr != nil {
+		return RuntimeConfig{}, fmt.Errorf("J2 account-balance 上游 URL 安全配置无效: %w", securityErr)
+	}
+	cfg.DialGuard = upstreamhttp.NewDialGuard(securityConfig, nil, nil)
 	if owner := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER")); owner != "" && !strings.EqualFold(owner, "go") {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER 必须为 go（或留空）")
 	}

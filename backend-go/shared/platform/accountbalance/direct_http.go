@@ -32,6 +32,13 @@ type QueryOptions struct {
 	Timeout          time.Duration
 	MaxResponseBytes int64
 	Now              func() time.Time
+	// DialGuard installs the deployment-level upstream URL guard
+	// (D-192/D-146) on every outbound balance request: the target host is
+	// validated before the request is sent (this covers HTTP(S) proxy
+	// branches, whose dial-time guard only sees the proxy host) and the
+	// shared client dials through the same guard for direct transports. nil
+	// keeps the historical unguarded transport for isolated tests.
+	DialGuard *upstreamhttp.DialGuard
 }
 
 type QueryResult struct {
@@ -95,7 +102,7 @@ func ExecuteBalanceQuery(ctx context.Context, input Input, options QueryOptions)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	requester := &balanceRequester{ctx: ctx, input: input, key: keyPayload.APIKey, doer: doer, maxBytes: maxBytes}
+	requester := &balanceRequester{ctx: ctx, input: input, key: keyPayload.APIKey, doer: doer, maxBytes: maxBytes, guard: options.DialGuard}
 	if input.Config.Adapter == "custom" {
 		result := requester.queryCustom(input.Config.Custom)
 		return result, nil
@@ -109,6 +116,7 @@ type balanceRequester struct {
 	key      string
 	doer     HTTPDoer
 	maxBytes int64
+	guard    *upstreamhttp.DialGuard
 }
 
 func (r *balanceRequester) queryBuiltin(preferred Adapter) (QueryResult, error) {
@@ -287,6 +295,14 @@ func (r *balanceRequester) getJSON(path string, auth ...requestAuth) (any, *quer
 	if err != nil {
 		return nil, &queryDiagnostic{code: "endpoint_invalid", message: err.Error()}
 	}
+	// Deployment-level SSRF guard (D-192/D-146): the balance reader is the
+	// second outbound consumer of an account base_url besides the /v1 chain.
+	// Validating the final target here covers both the direct transport (the
+	// dial hook re-checks the connected socket) and HTTP(S) proxy branches,
+	// whose dial-time guard only sees the proxy host.
+	if err := r.validateTarget(endpoint); err != nil {
+		return nil, err
+	}
 	request, err := http.NewRequestWithContext(r.ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, &queryDiagnostic{code: "request_invalid", message: "余额请求构造失败"}
@@ -329,6 +345,36 @@ func (r *balanceRequester) getJSON(path string, auth ...requestAuth) (any, *quer
 	return value, nil
 }
 
+// validateTarget applies the deployment-level upstream URL guard to the final
+// balance endpoint. A rejected target is a policy decision, not a transient
+// upstream failure: it returns a non-temporary "upstream_blocked" diagnostic
+// without echoing the resolved address. Resolver failures stay transient.
+func (r *balanceRequester) validateTarget(endpoint string) *queryDiagnostic {
+	if r.guard == nil {
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Hostname() == "" {
+		return &queryDiagnostic{code: "endpoint_invalid", message: "余额查询目标地址无效"}
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	if err := r.guard.ValidateHost(r.ctx, parsed.Hostname(), port); err != nil {
+		var blocked *upstreamhttp.UnsafeResolvedUpstreamURLError
+		if errors.As(err, &blocked) {
+			return &queryDiagnostic{code: "upstream_blocked", message: "余额查询目标地址不被允许"}
+		}
+		return &queryDiagnostic{code: "transport_error", message: "余额查询目标地址解析失败", temporary: true}
+	}
+	return nil
+}
+
 func balanceEndpoint(base, path string) (string, error) {
 	if strings.TrimSpace(path) == "" || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		return "", errors.New("余额查询路径必须是同源绝对路径")
@@ -355,7 +401,7 @@ func balanceHTTPClient(options QueryOptions, proxy *CredentialEnvelope, timeout 
 		if options.Client != nil {
 			return options.Client, nil
 		}
-		return upstreamhttp.SharedClient("", upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+		return upstreamhttp.SharedClient("", upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: options.DialGuard})
 	}
 	var payload struct {
 		URL string `json:"url"`
@@ -375,5 +421,5 @@ func balanceHTTPClient(options QueryOptions, proxy *CredentialEnvelope, timeout 
 		// production input.
 		return options.Client, nil
 	}
-	return upstreamhttp.SharedClient(payload.URL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+	return upstreamhttp.SharedClient(payload.URL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: options.DialGuard})
 }

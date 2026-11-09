@@ -32,6 +32,19 @@ type ResolvedPublicTarget struct {
 	SystemAccountID string
 }
 
+// publicTargetSuperAdminMessage 是外部集成面禁止操作超管的统一文案。
+const publicTargetSuperAdminMessage = "外部集成不能操作超级管理员账户"
+
+// rejectPublicSuperAdminTarget 阻断外部集成面把内置超管当作 target。
+// 公开接口 token 是机器对机器凭据，设计上只服务普通用户命名空间的资源；
+// 允许 target=sys_admin 等于把超管账户池暴露给外部系统（安全审计 SEC2）。
+func rejectPublicSuperAdminTarget(account authsys.AccountSummary) error {
+	if account.Role == "super_admin" || account.ID == "sys_admin" {
+		return errors.New(publicTargetSuperAdminMessage)
+	}
+	return nil
+}
+
 // requirePublicTarget mirrors requirePublicTargetAsync: empty username throws
 // 目标用户不能为空; a missing account throws 目标用户不存在：<username>.
 func (d *Deps) requirePublicTarget(ctx context.Context, usernameInput string) (*ResolvedPublicTarget, error) {
@@ -45,6 +58,9 @@ func (d *Deps) requirePublicTarget(ctx context.Context, usernameInput string) (*
 	}
 	if account.ID == "" {
 		return nil, errors.New("目标用户不存在：" + username)
+	}
+	if err := rejectPublicSuperAdminTarget(account); err != nil {
+		return nil, err
 	}
 	return &ResolvedPublicTarget{
 		Public: PublicTarget{
@@ -70,6 +86,9 @@ func (d *Deps) ensureTargetSystemAccount(ctx context.Context, username string, d
 		return nil, err
 	}
 	if account.ID != "" {
+		if err := rejectPublicSuperAdminTarget(account); err != nil {
+			return nil, err
+		}
 		return &ResolvedPublicTarget{
 			Public: PublicTarget{
 				Username: account.Username, DisplayName: account.DisplayName,
@@ -136,6 +155,12 @@ func (d *Deps) resolveOwnedTarget(ctx context.Context, username string, hasUsern
 	}
 	if account.ID == "" || account.ID != owner.SystemAccountID {
 		return nil, nil
+	}
+	// update/delete 面按 owner 直达（可省略 targetUsername）：同一道超管
+	// 守卫必须覆盖这里，否则外部 token 仍能改/删超管名下的账户、Key、分组、
+	// 路由策略与超级分组成员（安全审计 SEC2 update/delete 面）。
+	if err := rejectPublicSuperAdminTarget(account); err != nil {
+		return nil, err
 	}
 	return &ResolvedPublicTarget{
 		Public: PublicTarget{

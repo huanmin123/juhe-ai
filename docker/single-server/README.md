@@ -123,6 +123,12 @@ gateway/jobs 的全部"路径类"env 未配置时按 datadir 约定派生为 `<D
 - **镜像 digest**：生产源镜像已固定到 digest（2026-11-06）——`postgres:18-alpine@sha256:77f585…`、`redis:7.4-alpine@sha256:858f00…`、`caddy:2-alpine@sha256:6aeddd…`，构建基础镜像 `docker.m.daocloud.io/library/alpine:3.20@sha256:d9e853…`（多架构 index digest；完整值见 `compose.yml` 与 `Dockerfile.runtime`）。升级任一镜像时必须同时更新 tag 与 digest，并在发布窗口验证 `docker compose pull`、容器 healthy 与回滚标签；不要只改 tag 保留旧 digest。解析方法：`docker buildx imagetools inspect <image>` 读 `Digest`（多架构 index），或 `docker image inspect <image> --format '{{json .RepoDigests}}'` 读生产已拉取 digest。
 
 ## 构建与部署（本机 Windows → 服务器）
+> **构建上下文边界（2026-11-09）。** 三个 `build.context` 都是 `.`（本目录 / 服务器 `/opt/juhe-ai`），
+> 该目录同时存放生产 `.env`、部署脚本与 `build/` 全部产物；同目录 `.dockerignore` 只放行
+> `build/bin/**`、`build/frontend-dist/**` 与 `Dockerfile.runtime`，其余（含 `.env`、`monitoring/`、
+> 历史 `frontend-dist.*` 备份）不再进入 docker build 上下文。新增需要进入镜像的文件时必须先改
+> `.dockerignore` 的放行规则，不得反过来放宽成整目录。
+
 
 > **红线：严禁在服务器上构建/打包**（Go 编译、前端 pnpm build 等一切编译型打包只能在本地 Windows 机执行）。
 > 4C8G 服务器跑构建会直接把机器拖死（OOM/卡死，整机不可用）。服务器上只允许做两件轻量事：
@@ -346,6 +352,7 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 - 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/host/README.md` 执行。
 
 - `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。compose 对 gateway/jobs/maintenance 三服务固定同值；maintenance 消费 secret 的一次性命令（`--migrate-account-capability-domain`、`--verify-account-capability-domain`、`--seed`）在 production 缺 `--secret`/`JUHE_AI_SECRET` 时 stderr 报错并 exit 2，**不再回落开发默认密钥**（`juhe-ai-dev-secret-change-me` 是仓库内公开值，生产回退会让凭据信封失去保护）。
+- `JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS`（2026-11-09 生产基线）：**生产固定 `false`**。为 `true` 时账户 `base_url` 可指向本机/内网/链路本地/CGNAT/保留地址，网关会把请求发进服务器内网（SSRF）；本栈无本地 sidecar，故生产关闭。该开关同时约束 /v1 派发、账户手动测试、jobs 健康探针、模型检测、余额查询（手动/周期/自动探测）、模型目录刷新与 xAI Grok 用量查询——修改后必须同时重建 **gateway 与 jobs**。确需私网上游时只加 `JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` 精确 origin，不要整类放开。
 - `JUHE_AI_SECRET`：≥32 位强随机；账号凭据/内建 API Key 加密封套，**有加密数据后不可更换**，务必留档。所有共享 Redis 会话亲和绑定的 Gateway 实例必须使用相同 secret：会话绑定携带上游 Key 的 HMAC 指纹（账户内 Key 会话黏性，见 `docs/functions/账户内APIKey会话亲和设计.md`），组级会话绑定键同样由该 secret 派生（独立 HMAC purpose `group-affinity:v1`，见 `docs/functions/策略路由分组会话亲和设计.md`），不同 secret 实例混跑不是受支持的稳定形态；secret 协调轮换时先统一切换全部实例再恢复流量，旧指纹自然失配并在下一次协议成功后重绑。
 - `JUHE_AI_IMAGE_TAG`（compose 变量，2026-10-30 起；2026-11-07 起由 `deploy.sh` 实际注入）：三服务镜像 tag 前缀（`juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-gateway|jobs|maintenance`）；不配置回落 `latest`。`deploy.sh` 以本次 `BUILD_VERSION`（发布 tag 或 `dev-<sha>[-dirty]`）注入之后每一次远端 compose 调用（dry-run/build/stop/run/up），构建、校验、运行使用同一镜像 tag，镜像与 git 版本一一对应；不写入服务器 `.env`。发布全部验证通过后脚本把 `latest-<role>` 别名指到同一镜像，因此 `.env`/运维手册里未显式带 tag 的手工 `docker compose` 仍使用最近一次成功发布；`latest` 是可变别名，版本 tag 才是回滚锚点。脚本不自动清理旧版本 tag 镜像：按磁盘预算保留最近回滚锚点，清理前确认该 tag 不再用于回滚（`docker image prune` 不会删除仍带 tag 的镜像）。手工回滚时显式带入目标版本：`JUHE_AI_IMAGE_TAG=<tag> docker compose ...`。历史镜像名 `juhe-ai-single-server:<role>` 已退役，首次升级到该版后旧 tag 镜像可清理。
 - `JUHE_AI_POSTGRES_URL`：唯一主库连接串，gateway/jobs/maintenance 及全部子系统共用，必填（缺失启动 fail-fast）。审计、操作日志、J3b、J2、J3a、J1 store 等不再有独立 URL；密码只需在 `POSTGRES_PASSWORD` 维护一份（进程启动映射为 `PGPASSWORD`），URL 写 `postgres://juhe_ai@postgres:5432/juhe_ai`。

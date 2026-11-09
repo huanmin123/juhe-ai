@@ -201,6 +201,12 @@ func main() {
 	if runtimeCfg.MustChangePasswordGateDisabled {
 		logger.Warn("首登强制改密门禁已关闭:JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED 仅限非生产环境使用", "event", "auth_must_change_password_gate_disabled")
 	}
+	// 验证码关闭是登录面唯一被文档要求"所有环境开启时必须输出明确 warn
+	// 日志"的旁路（安全与日志策略.md）；此前只有解析与装配、没有告警，
+	// 生产误开时无任何可见信号。与上方门禁旁路同级别输出一次启动告警。
+	if runtimeCfg.CaptchaDisabled {
+		logger.Warn("登录验证码已关闭:JUHE_AI_AUTH_CAPTCHA_DISABLED 仅限非生产环境使用，登录面退化为密码+失败限频", "event", "auth_captcha_disabled")
+	}
 	if err := gateGatewayChain(runtimeCfg.ChainEnabled); err != nil {
 		fail(err)
 	}
@@ -1117,7 +1123,7 @@ func main() {
 			healthServeErr:        serveErr,
 		}); err != nil {
 			// 运行期失败（HTTP Shutdown 超时 / Serve 异常退出）走 failRuntime：
-			// 先有界排空 composed（recorder/spool）、随后尽力
+			// 先有界排空 composed（recorder/deliverer）、随后尽力
 			// 释放 F4 operation lease，再 exit(1)（DD-RC-A2）。
 			failRuntime(err)
 		}
@@ -1438,7 +1444,7 @@ func fail(err error) {
 }
 
 // runtimeDrain 是运行期失败退出前的进程内排空钩子；组合根在 composed 构建
-// 成功后注入 composed.Shutdown（recorder/spool、空闲
+// 成功后注入 composed.Shutdown（recorder/deliverer、空闲
 // 连接释放）。启动早期失败保持 nil：此时无在途请求，fail 直接退出不做
 // 排空（DD-G2 允许的启动期快速 no-op）。
 var runtimeDrain func()
@@ -1466,7 +1472,7 @@ const runtimeDrainBudget = 10 * time.Second
 // failRuntime 是运行期（HTTP Serve 已启动后）的失败出口：与启动期 fail
 // 一样记录原始错误并保留退出码 1，但先执行一次有界进程内排空 + F4 租约
 // 释放——否则 os.Exit 会跳过 main 的全部 defer（含 composed.Shutdown 的
-// recorder/spool 排空与 F4 operationLease 释放），长流
+// recorder/deliverer 排空与 F4 operationLease 释放），长流
 // 式请求使 HTTP Shutdown 超时即落到本路径。仅 main 尾部的停机排空组件
 // 调用本函数。
 func failRuntime(err error) {

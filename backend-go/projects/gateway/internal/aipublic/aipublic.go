@@ -72,8 +72,8 @@ const publicJSONBodyLimitBytes = 256 * 1024
 // 单次失败不误伤（失败 10 次内照常 401），连续无效 token 达阈值打开惩罚窗
 // （429 + Retry-After），惩罚时长按既有 penalty-window 指数倍增至
 // rateLimitMaxPenaltyMs。复用 consumeRateLimit 的既有惩罚窗机制（Redis 驱动
-// 与 memory 模型同款），scopeKey 前缀与合法 token 的
-// "SourceRefID:TokenID:TokenPrefix" 键空间隔离。
+// 与 memory 模型同款），惩罚窗 scopeKey 使用独立前缀，与合法 token 的
+// 来源级限流键（"SourceRefID"）空间隔离。
 const (
 	invalidTokenPenaltyWindowSeconds = 60
 	invalidTokenPenaltyMaxRequests   = 10
@@ -232,7 +232,9 @@ func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
 			return
 		}
 		source.set(context)
-		decision := d.consumeRateLimit(r.Context(), context.SourceRefID+":"+context.TokenID+":"+context.TokenPrefix, context.RateLimits)
+		// 限流按来源计数（安全审计 SEC5）：同一来源的多个 token 共享
+		// rate_limits_json 配置的预算，不能通过增发 token 线性放大。
+		decision := d.consumeRateLimit(r.Context(), context.SourceRefID, context.RateLimits)
 		if !decision.Allowed {
 			w.Header().Set("Retry-After", itoa(decision.RetryAfterSeconds))
 			writeCodeErrorDetails(w, http.StatusTooManyRequests, "external_source_rate_limited", "来源系统调用过于频繁，请稍后重试", map[string]any{

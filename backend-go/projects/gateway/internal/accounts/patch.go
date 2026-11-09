@@ -142,8 +142,37 @@ type PatchInput struct {
 	CapabilityDomainPresent bool
 }
 
-// credentialModesExplicitlyDeclared 判定本次补丁是否显式携带
-// supported_endpoint_modes 数组（严格声明校验的触发前提）：显式数组 = 声明集
+// authorizedInstanceSourceFieldMessage 返回授权实例行被拒绝的来源侧字段文案
+// （空串 = 本次补丁只含使用侧字段）。来源账户的资源事实（凭据、连接、代理、
+// 模型/映射、健康检查、余额、到期时间、时间计划、探活策略）由来源账户持有，
+// 实例只能本地启停、改名/备注/标签、清失败态和绑定自己的分组。
+func authorizedInstanceSourceFieldMessage(input PatchInput) string {
+	switch {
+	case input.CredentialsPresent:
+		return "授权实例的凭据只读跟随来源账户"
+	case input.ConnectionsPresent:
+		return "授权实例的连接配置只读跟随来源账户"
+	case input.SupportedModelsPresent:
+		return "授权实例的支持模型只读跟随来源账户"
+	case input.ModelMappingsPresent:
+		return "授权实例的模型映射只读跟随来源账户"
+	case input.HealthCheckModel != nil || input.HealthCheckEndpointMode != nil || input.HealthCheckConnectionPresetCode != nil:
+		return "授权实例的健康检查配置只读跟随来源账户"
+	case input.ProxyProfileIDPresent || input.ProxyPoolIDPresent:
+		return "授权实例的代理配置只读跟随来源账户"
+	case input.AccountExpiresAtPresent:
+		return "授权实例的账户到期时间只读跟随来源账户"
+	case input.AvailabilitySchedulePresent:
+		return "授权实例的可用时段只读跟随来源账户"
+	case input.BalanceQueryEnabled != nil || input.BalanceQueryConfigPresent:
+		return "授权实例的余额查询配置只读跟随来源账户"
+	case input.TemporaryUnavailableContinuousProbeEnabled != nil:
+		return "授权实例的持续恢复探活策略只读跟随来源账户"
+	}
+	return ""
+}
+
+// credentialModesExplicitlyDeclared 判定本次补丁是否显式携带// supported_endpoint_modes 数组（严格声明校验的触发前提）：显式数组 = 声明集
 // 的直接提交，归一化结果必须 ⊆ 域允许集；credentialsPatch 删键（present-null）
 // 已在补丁准备处就地替换为按域默认集数组（DefaultEndpointModesForDomain），
 // 到这里同样以显式数组出现——按域默认集并不保证 ⊆ 域允许集，越界组合由同一
@@ -395,6 +424,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 假，属于不可达防御代码，w13a 移除。
 	if row.configRevision != input.ExpectedConfigRevision {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
+	}
+	// 授权实例的来源侧配置只读跟随来源账户（核心功能设计「授权实例」节）：
+	// 通用 PATCH 只接受使用侧字段（名称/备注/状态/标签/清失败态/本地分组绑定），
+	// 凭据、连接、代理、模型/映射、健康检查、余额、到期时间、时间计划与探活
+	// 策略一旦提交即 400。此前仅调度字段与后台探测开关有守卫，凭据/连接会因
+	// 实例占位符不可解密落到 500（安全审计 SEC3），代理/模型/到期时间则被静默
+	// 写入实例行。
+	if row.authorizationID.Valid {
+		if message := authorizedInstanceSourceFieldMessage(input); message != "" {
+			return nil, &ValidationError{Message: message, Code: "authorized_instance_source_field_rejected"}
+		}
 	}
 	// 归档 patchAccountFailureStateInTransaction（account-management-patch
 	// .repository.ts:1116-1119）：clearFailureState=true 是独立的重新检查/

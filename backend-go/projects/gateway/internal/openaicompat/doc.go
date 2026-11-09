@@ -13,10 +13,9 @@
 //	openaicompatstorage  storage / REST endpoint domain: files + vector-stores
 //	                                            stores and route families, file
 //	                                            storage + text indexing, the
-//	                                            code-interpreter / image-generation
-//	                                            endpoint executors, and the
-//	                                            Deps-backed implementations of the
-//	                                            bridge FileResolver /
+//	                                            image-generation endpoint executor,
+//	                                            and the Deps-backed implementations
+//	                                            of the bridge FileResolver /
 //	                                            FileSearchExecutor ports
 //
 // Dependency direction is one-way: core <- bridge <- storage, core <- storage;
@@ -28,7 +27,8 @@
 //	openai-compatible-vector-stores      -> openaicompatstorage vector-store store/routes + text indexer
 //	openai-compatible-images             -> openaicompatstorage image generation bridge executor
 //	openai-compatible-computer           -> openaicompatbridge computer browser HTTP adapter executor
-//	openai-compatible-code-interpreter   -> openaicompatstorage local python code interpreter executor
+//	openai-compatible-code-interpreter   -> 已退役（SEC6：本地 Python 执行器 dead code 删除，见
+//	                                         docs/functions/OpenAI托管工具运行时设计.md §1）
 //
 // Route family (all mounted by openaicompatstorage.Deps.Mount):
 // GET/POST /v1/files, GET/DELETE /v1/files/{fileId},

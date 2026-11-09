@@ -91,7 +91,7 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: config.OwnerID, OwnerLeaseTTL: config.OwnerLease, AccountLeaseTTL: config.AccountLease, InputTTL: config.InputTTL, MaxConcurrent: config.MaxConcurrency, IOConcurrency: config.IOConcurrency, DBConcurrency: config.DBConcurrency, DBQueueSize: config.DBQueueSize, CredentialSecret: config.CredentialSecret, ProbeTimeout: config.ProbeTimeout, MaxResponseBytes: config.MaxResponseBytes, Now: config.Now, DueAdvancer: dueStore, Logger: logger})
+	runner, err := NewRunner(runnerConfigFromRuntime(config, store, dueStore, logger))
 	if err != nil {
 		_ = inputPool.Close()
 		_ = store.Close()
@@ -102,6 +102,32 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 }
 
 func (s *Service) Ready() bool { return s != nil && s.ready.Load() }
+
+// runnerConfigFromRuntime is the single mapping from the J2 runtime
+// configuration onto the runner contract. Keeping it as one pure function
+// means the deployment-level dial guard (and every other出站/租约 field)
+// cannot be silently dropped on one construction path; the SEC-001 regression
+// test asserts the guard survives this mapping.
+func runnerConfigFromRuntime(config RuntimeConfig, store *Store, due BusinessDueAdvancer, logger *slog.Logger) RunnerConfig {
+	return RunnerConfig{
+		Store:            store,
+		OwnerID:          config.OwnerID,
+		OwnerLeaseTTL:    config.OwnerLease,
+		AccountLeaseTTL:  config.AccountLease,
+		InputTTL:         config.InputTTL,
+		MaxConcurrent:    config.MaxConcurrency,
+		IOConcurrency:    config.IOConcurrency,
+		DBConcurrency:    config.DBConcurrency,
+		DBQueueSize:      config.DBQueueSize,
+		CredentialSecret: config.CredentialSecret,
+		ProbeTimeout:     config.ProbeTimeout,
+		MaxResponseBytes: config.MaxResponseBytes,
+		Now:              config.Now,
+		DueAdvancer:      due,
+		Logger:           logger,
+		DialGuard:        config.DialGuard,
+	}
+}
 
 // directPool adapts a directly-opened *sql.DB to the PoolHandle seam (same
 // shape as the gateway/jobs pgpool handles).

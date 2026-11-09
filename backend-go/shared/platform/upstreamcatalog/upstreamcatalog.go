@@ -75,6 +75,12 @@ type FetchOptions struct {
 	Timeout time.Duration
 	// MaxBodyBytes bounds the response body; <= 0 keeps DefaultMaxBodyBytes.
 	MaxBodyBytes int64
+	// DialGuard installs the deployment-level upstream URL guard
+	// (D-192/D-146): the final catalog endpoint is validated before the
+	// request is sent (covering HTTP(S) proxy branches, whose dial-time guard
+	// only sees the proxy host) and direct transports dial through the same
+	// guard. nil keeps the historical unguarded transport for isolated tests.
+	DialGuard *upstreamhttp.DialGuard
 }
 
 // modelsPathForProtocol mirrors accountTestModelsPathForProtocol
@@ -92,6 +98,33 @@ const modelsPathForProtocol = "/models"
 func upstreamModelsURL(baseURL, protocolCode string) (string, error) {
 	_ = protocolCode
 	return upstreamenvelope.JoinUpstreamURL(baseURL, modelsPathForProtocol)
+}
+
+// validateCatalogTarget applies the deployment-level upstream URL guard to the
+// final credential-discovery endpoint. A policy rejection is reported as a
+// non-retryable "目标地址不被允许" without echoing the resolved address;
+// resolver failures keep the generic request-failure wording.
+func validateCatalogTarget(ctx context.Context, guard *upstreamhttp.DialGuard, endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Hostname() == "" {
+		return errors.New("获取上游模型目录失败：上游目标地址无效")
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	if err := guard.ValidateHost(ctx, parsed.Hostname(), port); err != nil {
+		var blocked *upstreamhttp.UnsafeResolvedUpstreamURLError
+		if errors.As(err, &blocked) {
+			return errors.New("获取上游模型目录失败：上游目标地址不被允许")
+		}
+		return errors.New("获取上游模型目录失败：上游目标地址解析失败")
+	}
+	return nil
 }
 
 // requestHeadersForProtocol mirrors the upstream auth conventions the gateway
@@ -159,12 +192,20 @@ func FetchUpstreamModelIDs(ctx context.Context, options FetchOptions) ([]string,
 	}
 	doer := options.Doer
 	if doer == nil {
-		doer, err = upstreamhttp.SharedClient(options.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+		doer, err = upstreamhttp.SharedClient(options.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout, DialGuard: options.DialGuard})
 		if err != nil {
 			if errors.Is(err, upstreamhttp.ErrProxySchemeUnsupported) {
 				return nil, errors.New("获取上游模型目录失败：代理协议不受支持")
 			}
 			return nil, errors.New("获取上游模型目录失败：代理 URL 无效")
+		}
+	}
+	// Validate the final target before sending: the proxy branch's dial-time
+	// guard only sees the proxy host, and the catalog reader must apply the
+	// same deployment policy as the /v1 chain regardless of egress path.
+	if options.DialGuard != nil {
+		if err := validateCatalogTarget(ctx, options.DialGuard, endpoint); err != nil {
+			return nil, err
 		}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

@@ -42,6 +42,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamcatalog"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // manualBalanceInputTTL 对齐归档 Node 桥的 20s 输入窗口
@@ -63,6 +64,7 @@ type gatewayManualBalanceRefresher struct {
 	secret string
 	store  *accountbalance.Store
 	runner *accountbalance.Runner
+	guard  *sharedupstreamhttp.DialGuard
 	now    func() time.Time
 }
 
@@ -71,6 +73,7 @@ type gatewayModelCatalogRefresher struct {
 	db      *sql.DB
 	secret  string
 	catalog *providers.Store
+	guard   *sharedupstreamhttp.DialGuard
 	now     func() time.Time
 }
 
@@ -80,11 +83,18 @@ type gatewayModelCatalogRefresher struct {
 // 登记告警，不阻塞组合根（对齐 wireInProcessAccountTestDispatch 的降级先例）；
 // store 打开或 runner 创建失败则原样上抛使组合根启动失败。
 func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeConfig, accountStore *accounts.Store, providerStore *providers.Store) error {
+	// 出站防护单源（D-192/D-146）：余额查询与模型目录刷新与 /v1 派发共用
+	// 部署级 URLSecurityConfig。此前两个执行器直接使用 SharedClient 且未
+	// 携带 guard——strict 模式下（显式关闭私网放行）仍可经“公网域名解析到
+	// 内网”完成 SSRF，与《核心功能设计》声明的“出站请求都必须经过 SSRF
+	// 防护”不一致。
+	urlGuard := sharedupstreamhttp.NewDialGuard(cfg.UpstreamURLSecurity, nil, nil)
 	// 模型目录刷新：纯进程内 HTTP + 本地目录投影读。
 	accountStore.SetModelCatalogRefresher(&gatewayModelCatalogRefresher{
 		db:      composed.db,
 		secret:  cfg.Secret,
 		catalog: providerStore,
+		guard:   urlGuard,
 		now:     time.Now,
 	})
 
@@ -116,6 +126,7 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 		ManualOwnerLeaseKeyPrefix: accountbalance.ManualOwnerLeaseKeyPrefix,
 		CredentialSecret:          cfg.Secret,
 		ProbeTimeout:              15 * time.Second,
+		DialGuard:                 urlGuard,
 		Now:                       time.Now,
 	})
 	if err != nil {
@@ -127,6 +138,7 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 		secret: cfg.Secret,
 		store:  store,
 		runner: runner,
+		guard:  urlGuard,
 		now:    time.Now,
 	})
 	return nil
@@ -373,8 +385,9 @@ func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input acc
 	// 多 Key 感知执行入口：单 Key 输入内部原样委托 ExecuteBalanceQuery
 	// （行为零变化），多 Key 输入逐 Key 查询并合并为一份快照。
 	result, err := accountbalance.ExecuteAccountBalanceQuery(ctx, probeInput, accountbalance.QueryOptions{
-		Secret: r.secret,
-		Now:    r.now,
+		Secret:    r.secret,
+		Now:       r.now,
+		DialGuard: r.guard,
 	})
 	if err != nil {
 		return nil, err
@@ -420,6 +433,7 @@ func (r *gatewayModelCatalogRefresher) RefreshDraftModelCatalog(ctx context.Cont
 			OAuthType:                 textFromCredentials(input.Credentials["oauth_type"]),
 			OAuthQuotaProjectID:       textFromCredentials(input.Credentials["quota_project_id"]),
 			ProxyURL:                  proxyURL,
+			DialGuard:                 r.guard,
 		})
 		if err != nil {
 			return nil, err
