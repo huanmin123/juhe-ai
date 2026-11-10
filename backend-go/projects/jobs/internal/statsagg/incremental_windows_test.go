@@ -313,4 +313,3 @@ func TestIncrementalWindowsOrphanCleanupKeepsGlobal(t *testing.T) {
 	env.assertFloats("rebuilt account rows preserved",
 		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_overview_summary_windows WHERE system_account_id='sa-a'`), 496)
 }
-

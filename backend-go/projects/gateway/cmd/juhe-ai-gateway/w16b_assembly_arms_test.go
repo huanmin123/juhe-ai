@@ -139,65 +139,6 @@ func TestW16BBridgeMappingOfPointerArms(t *testing.T) {
 // chain_ports.go：AreHighConcurrencyAccountsBusyForLaneAsync 臂
 // ---------------------------------------------------------------------------
 
-// w16bBusyConcurrency 桩：可编程的读结果 / 错误。
-type w16bBusyConcurrency struct {
-	currentErr  error
-	laneErr     error
-	current     map[string]int
-	laneCurrent map[string]int
-}
-
-func (s *w16bBusyConcurrency) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
-	if s.currentErr != nil {
-		return nil, s.currentErr
-	}
-	return s.current, nil
-}
-
-func (s *w16bBusyConcurrency) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
-	if s.laneErr != nil {
-		return nil, s.laneErr
-	}
-	return s.laneCurrent, nil
-}
-
-func (s *w16bBusyConcurrency) LoadCurrentRPMAsync(context.Context, []string) (map[string]gatewaydispatch.AccountRPMState, error) {
-	return map[string]gatewaydispatch.AccountRPMState{}, nil
-}
-
-func (s *w16bBusyConcurrency) TryAcquireAsync(context.Context, string, int, gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
-	return gatewaydispatch.ConcurrencySlot{}, errors.New("w16b: TryAcquireAsync not expected")
-}
-
-func TestW16BHighConcurrencyBusyLaneArms(t *testing.T) {
-	affinity := &localSessionAffinity{concurrency: &w16bBusyConcurrency{}}
-	zeroLimit := gatewaydispatch.AccountCandidate{ID: "w16b-zero-limit", ConcurrencyLimit: 0}
-
-	// 1300-1302：ConcurrencyLimit<1 钳制为 1 的臂（钳制后不忙，随正常面返回）。
-	busy, err := affinity.AreHighConcurrencyAccountsBusyForLaneAsync(context.Background(),
-		[]gatewaydispatch.AccountCandidate{zeroLimit},
-		gatewaydispatch.HighConcurrencyBusyOptions{AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{GroupType: "high_concurrency"}})
-	if err != nil || busy {
-		t.Fatalf("零限额钳制臂: busy=%v err=%v", busy, err)
-	}
-
-	// 1306-1308：总并发读报错直接上抛。
-	errAffinity := &localSessionAffinity{concurrency: &w16bBusyConcurrency{currentErr: errors.New("w16b: load refused")}}
-	if busy, err := errAffinity.AreHighConcurrencyAccountsBusyForLaneAsync(context.Background(),
-		[]gatewaydispatch.AccountCandidate{{ID: "w16b-acc", ConcurrencyLimit: 2}},
-		gatewaydispatch.HighConcurrencyBusyOptions{AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{GroupType: "high_concurrency"}}); err == nil || busy {
-		t.Fatalf("LoadCurrentAsync 失败必须上抛: busy=%v err=%v", busy, err)
-	}
-
-	// 1311-1313：image lane 读报错直接上抛。
-	imageErrAffinity := &localSessionAffinity{concurrency: &w16bBusyConcurrency{laneErr: errors.New("w16b: lane refused")}}
-	if busy, err := imageErrAffinity.AreHighConcurrencyAccountsBusyForLaneAsync(context.Background(),
-		[]gatewaydispatch.AccountCandidate{{ID: "w16b-acc", ConcurrencyLimit: 2}},
-		gatewaydispatch.HighConcurrencyBusyOptions{AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{GroupType: "high_concurrency"}, RequestLane: "image"}); err == nil || busy {
-		t.Fatalf("image lane 读失败必须上抛: busy=%v err=%v", busy, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // compose.go：businesssettings ownerGate fail-fast 臂
 // ---------------------------------------------------------------------------

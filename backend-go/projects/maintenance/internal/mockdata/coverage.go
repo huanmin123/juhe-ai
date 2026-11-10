@@ -56,6 +56,14 @@ type CoverageReport struct {
 //
 // 白名单必须给出理由，否则就是在给覆盖要求开后门。
 var coverageAllowEmptyExactTables = map[string]string{
+	// 运行日志索引（F1）已于 2026-11-09 下架：历史表不再造数/写入，存在但为空
+	// 是正确状态，待生产 DROP（docs/待办与阻塞事项.md T187）。
+	"runtime_logs":                   "历史 F1 索引表已停写，待生产 DROP",
+	"runtime_log_facet_summary":      "历史 F1 索引表已停写，待生产 DROP",
+	"runtime_log_level_facets":       "历史 F1 索引表已停写，待生产 DROP",
+	"runtime_log_event_facets":       "历史 F1 索引表已停写，待生产 DROP",
+	"runtime_log_file_cursors":       "历史 F1 索引表已停写，待生产 DROP",
+	"runtime_log_index_owner_leases": "历史 F1 索引表已停写，待生产 DROP",
 	// stats 派生聚合族（cleanupAggregateResetTables 同源）：由常驻 jobs 从使用
 	// 明细重建，造数重置后、重建完成前为空是正确状态。
 	"usage_stats_totals":                           "派生聚合族：由常驻 jobs 从使用明细重建，造数重置后重建完成前为空是正确状态",
@@ -106,6 +114,7 @@ var coverageAllowEmptyExactTables = map[string]string{
 	"account_health_current_state":                 "owner 状态族：账户健康当前态由探针 owner 维护",
 	"usage_range_window_requests":                  "设计文档明确允许为空：瞬时自定义范围请求队列",
 	"account_health_outcomes":                      "属主运行态：探针结果由 jobs 健康运行时写入（空表走属主 pending 口径）",
+	"playground_artifacts":                         "域业务表：演练场产物由 playground 运行时写入，造数不伪造",
 	"audit_payload_blob_gc":                        "运行时建表：audit payload blob 回收队列由 gateway 运行时维护",
 	"account_health_jobs_input_versions":           "输入版本：业务变更运行时预留快照 epoch（纯运行态）",
 	"account_health_jobs_input_outbox":             "intent outbox：输入快照由运行时发布器消费（纯运行态）",
@@ -122,7 +131,6 @@ var coverageAllowEmptyExactTables = map[string]string{
 	"ai_performance_summary_dirty_system_accounts": "stats AI 性能汇总脏账户队列：被性能汇总聚合消费后即空",
 	"api_key_record_cleanup_targets":               "dataset 清理目标队列：被 api-key-record-cleanup-retry 消费后即空",
 	"account_record_cleanup_targets":               "dataset 清理目标队列：被 account-record-cleanup-retry 消费后即空",
-	"runtime_log_file_cursors":                     "owner 游标族：文件读取进度由 jobs runtimelog 运行时维护；PG 造数无日志目录契约、不写物理日志文件，不伪造游标",
 	"usage_record_cleanup_deductions":              "stats 清理扣减账本：造数清理会整表重置它，仅当发生真实记录清理时才有行",
 	"record_maintenance_jobs":                      "business 运行时队列：记录维护任务由 jobs 消费后为空",
 	"account_health_probe_request_outbox":          "business 运行时 outbox：探针请求由 jobs 消费后为空",
@@ -200,17 +208,14 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "usage_records.upstream_response_model.match", Domain: DomainUsage, Table: qualified(SchemaUsage, "usage_records"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE upstream_model IS NOT NULL AND upstream_response_model IS NOT NULL AND upstream_model = upstream_response_model", qualified(SchemaUsage, "usage_records")), Min: 1},
 		{Name: "usage_records.upstream_response_model.mismatch", Domain: DomainUsage, Table: qualified(SchemaUsage, "usage_records"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE upstream_model IS NOT NULL AND upstream_response_model IS NOT NULL AND upstream_model <> upstream_response_model", qualified(SchemaUsage, "usage_records")), Min: 1},
 		{Name: "usage_records.traffic_source.gateway", Domain: DomainUsage, Table: qualified(SchemaUsage, "usage_records"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE traffic_source = 'gateway'", qualified(SchemaUsage, "usage_records")), Min: 1},
-		// 用量域 shard 登记：日分区存在、明细全部登记进 catalog、登记行的
-		// file_path 是 PG 逻辑定位（与 jobs usagewriter 一致）。
+		// 用量域：日分区存在且明细可读（退役的 shard 目录四表不再由造数写入）。
 		{Name: "usage_records.daily_partitions", Domain: DomainUsage, Table: qualified(SchemaUsage, "usage_records"), Query: "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'juhe_usage' AND c.relkind = 'r' AND c.relispartition AND c.relname LIKE 'usage_records\\_%'", Min: 1},
-		{Name: "usage_records.shard_entries_complete", Domain: DomainUsage, Table: qualified(SchemaUsage, "usage_records"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s r WHERE NOT EXISTS (SELECT 1 FROM %s e WHERE e.usage_id = r.id)", qualified(SchemaUsage, "usage_records"), qualified(SchemaUsage, "usage_record_shard_entries")), Min: 0},
-		{Name: "usage_record_shards.postgres_logical_path", Domain: DomainUsage, Table: qualified(SchemaUsage, "usage_record_shards"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE file_path LIKE 'postgres:juhe_usage.usage_records:%%'", qualified(SchemaUsage, "usage_record_shards")), Min: 1},
 		// 统计域：后台任务运行样本、账户用量快照 kind 词表、IP 登记样本。
 		{Name: "background_task_runs", Domain: DomainStats, Table: qualified(SchemaStats, "background_task_runs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaStats, "background_task_runs")), Min: 1},
 		{Name: "background_task_runs.status_distribution", Domain: DomainStats, Table: qualified(SchemaStats, "background_task_runs"), Query: fmt.Sprintf("SELECT COUNT(DISTINCT status) FROM %s", qualified(SchemaStats, "background_task_runs")), Min: 3},
 		{Name: "account_usage_snapshots.kind_distribution", Domain: DomainStats, Table: qualified(SchemaStats, "account_usage_snapshots"), Query: fmt.Sprintf("SELECT COUNT(DISTINCT kind) FROM %s", qualified(SchemaStats, "account_usage_snapshots")), Min: 3},
 		{Name: "client_ip_registry.mock_sample", Domain: DomainStats, Table: qualified(SchemaStats, "client_ip_registry"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaStats, "client_ip_registry")), Min: 1},
-		// 可观测域：审计 / 操作 / 运行日志（属主存储）、公开接口日志。
+		// 可观测域：审计 / 操作（属主存储）、公开接口日志。
 		{Name: "audit_logs", Domain: DomainObservability, OwnerStore: "audit_log", Table: qualified(SchemaDataset, "audit_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "audit_logs")), Min: 1},
 		{Name: "audit_logs.media_endpoints", Domain: DomainObservability, OwnerStore: "audit_log", Table: qualified(SchemaDataset, "audit_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE path IN ('/v1/audio/speech', '/v1/videos')", qualified(SchemaDataset, "audit_logs")), Min: 1},
 		{Name: "audit_error_groups", Domain: DomainObservability, OwnerStore: "audit_log", Table: qualified(SchemaDataset, "audit_error_groups"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "audit_error_groups")), Min: 1},
@@ -218,9 +223,6 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "audit_payload_refs", Domain: DomainObservability, OwnerStore: "audit_log", Table: qualified(SchemaDataset, "audit_payload_refs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "audit_payload_refs")), Min: 1},
 		{Name: "operation_logs", Domain: DomainObservability, OwnerStore: "operation_log", Table: qualified(SchemaDataset, "operation_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "operation_logs")), Min: 1},
 		{Name: "operation_log_targets", Domain: DomainObservability, OwnerStore: "operation_log", Table: qualified(SchemaDataset, "operation_log_targets"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "operation_log_targets")), Min: 1},
-		{Name: "runtime_logs", Domain: DomainObservability, OwnerStore: "runtime_log", Table: qualified(SchemaDataset, "runtime_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "runtime_logs")), Min: 1},
-		{Name: "runtime_log_facet_summary", Domain: DomainObservability, OwnerStore: "runtime_log", Table: qualified(SchemaDataset, "runtime_log_facet_summary"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE bucket_key = '%s' AND total_count > 0", qualified(SchemaDataset, "runtime_log_facet_summary"), observabilityRuntimeFacetBucketKey), Min: 1},
-		{Name: "runtime_log_level_facets", Domain: DomainObservability, OwnerStore: "runtime_log", Table: qualified(SchemaDataset, "runtime_log_level_facets"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE bucket_key = '%s' AND count > 0", qualified(SchemaDataset, "runtime_log_level_facets"), observabilityRuntimeFacetBucketKey), Min: 3},
 		{Name: "public_api_logs", Domain: DomainObservability, Table: qualified(SchemaDataset, "public_api_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s", qualified(SchemaDataset, "public_api_logs")), Min: 1},
 		{Name: "public_api_logs.test_token", Domain: DomainObservability, Table: qualified(SchemaDataset, "public_api_logs"), Query: fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE is_test_token = 1", qualified(SchemaDataset, "public_api_logs")), Min: 1},
 		// codex / model-check 域（chat 会话面覆盖项已随演练场设计 §8 退役）：

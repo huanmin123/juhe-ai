@@ -58,7 +58,7 @@ func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 	if cfg.Secret != defaultRuntimeSecret {
 		t.Fatalf("空 env Secret 必须回退开发密钥: %q", cfg.Secret)
 	}
-	// 2026-11-09 T188：usage-record-spool 目录随网关直投 PG 删除，不再有
+	// 2026-11-09 T188/T189：用量文件交接目录随网关直投 PG 删除，不再有
 	// DATA_DIR 派生断言。
 	// business owner 自动认领 + 连接串回落 + 门禁放行。
 	if cfg.BusinessOwner != "gateway" || cfg.BusinessOwnerEpoch != "standalone" {

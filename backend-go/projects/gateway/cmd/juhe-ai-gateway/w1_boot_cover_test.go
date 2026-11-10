@@ -195,7 +195,7 @@ func w1bScenarioEnv(t *testing.T, coverageDir string, pairs ...string) []string 
 // 自动删库。
 func w1bScenarioPostgres(t *testing.T) *pgtestkit.TestDatabase {
 	t.Helper()
-	return pgtestkit.NewTestDatabase(t,
+	db := pgtestkit.NewTestDatabase(t,
 		func(ctx context.Context, db *sql.DB) error {
 			_, err := bootstrap.EnsurePostgres(ctx, db)
 			return err
@@ -204,6 +204,12 @@ func w1bScenarioPostgres(t *testing.T) *pgtestkit.TestDatabase {
 			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: "w1b-scenario-secret"})
 			return err
 		})
+	// bootstrap 不写升级账本；子进程 schemagate 会以 revision=0 拦截。revision
+	// 取 contracts.SchemaRevision，二进制升级后场景夹具无需改动。
+	ledgerCtx, ledgerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer ledgerCancel()
+	w1g2SeedUpgradeLedger(t, ledgerCtx, db.DB)
+	return db
 }
 
 // w1bEnvHasKey 判断场景 pairs 是否显式给出某个 env（"K=V" 形态，按键全名

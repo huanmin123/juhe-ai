@@ -376,15 +376,6 @@ func normalizeLegacyOperationLogInput(input Input) error {
 	return nil
 }
 
-type legacyRecordQueryer interface {
-	legacyQueryer
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-type legacyQueryer interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
-
 func postgresPrimaryKey(ctx context.Context, db operationLogCounter, qualifiedTable string) (string, error) {
 	var primaryKey sql.NullString
 	err := db.QueryRowContext(ctx, `SELECT string_agg(a.attname,',' ORDER BY key.ordinality) FROM pg_constraint c CROSS JOIN unnest(c.conkey) WITH ORDINALITY AS key(attnum,ordinality) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid=$1::regclass AND c.contype='p'`, qualifiedTable).Scan(&primaryKey)

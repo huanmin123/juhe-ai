@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+// writePlanRowCount counts the usage rows carried by a plan (the retired
+// catalog entry list no longer exists).
+func writePlanRowCount(plan WritePlan) int {
+	total := 0
+	for _, shard := range plan.RowsByShard {
+		total += len(shard.Rows)
+	}
+	return total
+}
+
 // mockStore records every WriteBatch plan and can fail the first N calls.
 type mockStore struct {
 	mu          sync.Mutex
@@ -28,8 +38,8 @@ func (m *mockStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 		return 0, m.overflowErr
 	}
 	m.batches = append(m.batches, plan)
-	m.inserted = append(m.inserted, len(plan.ShardEntries))
-	return len(plan.ShardEntries), nil
+	m.inserted = append(m.inserted, writePlanRowCount(plan))
+	return writePlanRowCount(plan), nil
 }
 
 func (m *mockStore) batchCount() int {
@@ -43,7 +53,7 @@ func (m *mockStore) totalRows() int {
 	defer m.mu.Unlock()
 	total := 0
 	for _, batch := range m.batches {
-		total += len(batch.ShardEntries)
+		total += writePlanRowCount(batch)
 	}
 	return total
 }
@@ -54,7 +64,7 @@ func (m *mockStore) recordedShardKeys() []string {
 	var keys []string
 	for _, batch := range m.batches {
 		for _, shard := range batch.RowsByShard {
-			keys = append(keys, shard.Location.ShardKey)
+			keys = append(keys, shard.ShardKey)
 		}
 	}
 	return keys
@@ -65,8 +75,12 @@ func (m *mockStore) recordedTraceIDs() []string {
 	defer m.mu.Unlock()
 	var ids []string
 	for _, batch := range m.batches {
-		for _, entry := range batch.ShardEntries {
-			ids = append(ids, entry.TraceID)
+		for _, shard := range batch.RowsByShard {
+			for _, row := range shard.Rows {
+				if len(row.Params) > 2 {
+					ids = append(ids, row.Params[2].(string))
+				}
+			}
 		}
 	}
 	return ids
@@ -144,7 +158,7 @@ func newTestWriter(t *testing.T, config Config, store ShardStore, options ...Opt
 
 func TestWriterNormalBatchWrite(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 4, FlushIntervalMs: 5_000, }
+	config := Config{BatchSize: 4, FlushIntervalMs: 5_000}
 	writer, _ := newTestWriter(t, config, store)
 	for i := 0; i < 4; i++ {
 		if err := writer.Enqueue(context.Background(), gatewayInput(string(rune('a'+i)))); err != nil {
@@ -174,14 +188,14 @@ func TestWriterNormalBatchWrite(t *testing.T) {
 	if len(batch.RowsByShard[0].Rows) != 4 {
 		t.Fatalf("batch rows = %d", len(batch.RowsByShard[0].Rows))
 	}
-	if batch.ShardEntries[0].CreatedAt != "2026-01-02T03:04:05.000Z" {
-		t.Fatalf("entry createdAt = %q", batch.ShardEntries[0].CreatedAt)
+	if batch.RowsByShard[0].Rows[0].CreatedAt != "2026-01-02T03:04:05.000Z" {
+		t.Fatalf("entry createdAt = %q", batch.RowsByShard[0].Rows[0].CreatedAt)
 	}
 }
 
 func TestWriterShardDistribution(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 100, FlushIntervalMs: 5_000, ShardCount: 8, }
+	config := Config{BatchSize: 100, FlushIntervalMs: 5_000, ShardCount: 8}
 	writer, _ := newTestWriter(t, config, store)
 	// Explicit pre-generated ids spread over shard buckets deterministically.
 	inputs := []UsageRecordInput{}
@@ -224,7 +238,7 @@ func TestWriterShardDistribution(t *testing.T) {
 func TestWriterRetryThenTerminalDeadLetter(t *testing.T) {
 	store := &mockStore{failures: 2, overflowErr: errors.New("db busy")}
 	config := Config{
-		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 4, }
+		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 4}
 	writer, retry := newTestWriter(t, config, store)
 	// Batch 1 (records a,b) survives two failures then succeeds.
 	if err := writer.Enqueue(context.Background(), gatewayInput("a")); err != nil {
@@ -270,7 +284,7 @@ func TestWriterZeroAttemptsRetriesForeverUntilStop(t *testing.T) {
 	// MaxWriteAttempts=0 (Node default): a failing batch is never dropped;
 	// Close() drains what it can and the failed batch stays terminal-queued.
 	store := &mockStore{failures: 1 << 20, overflowErr: errors.New("db down")}
-	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, }
+	config := Config{BatchSize: 1, FlushIntervalMs: 5_000}
 	writer, retry := newTestWriter(t, config, store)
 	if err := writer.Enqueue(context.Background(), gatewayInput("stuck")); err != nil {
 		t.Fatal(err)
@@ -479,7 +493,7 @@ func TestWriterGracefulShutdownDrain(t *testing.T) {
 
 func TestWriterShutdownDrainStopsOnFailure(t *testing.T) {
 	store := &mockStore{failures: 1 << 20, overflowErr: errors.New("db down")}
-	config := Config{BatchSize: 1, FlushIntervalMs: 60_000, ShutdownFlushMaxBatches: 3, }
+	config := Config{BatchSize: 1, FlushIntervalMs: 60_000, ShutdownFlushMaxBatches: 3}
 	writer, _ := newTestWriter(t, config, store)
 	for i := 0; i < 3; i++ {
 		if err := writer.Enqueue(context.Background(), gatewayInput(string(rune('a'+i)))); err != nil {
@@ -501,7 +515,7 @@ func TestWriterShutdownDrainStopsOnFailure(t *testing.T) {
 
 func TestWriterConcurrentEnqueueRace(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 16, FlushIntervalMs: 5, }
+	config := Config{BatchSize: 16, FlushIntervalMs: 5}
 	writer, _ := newTestWriter(t, config, store)
 	var wg sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
@@ -525,7 +539,7 @@ func TestWriterConcurrentEnqueueRace(t *testing.T) {
 
 func TestWriterInvalidNormalizeInput(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 4, FlushIntervalMs: 60_000, }
+	config := Config{BatchSize: 4, FlushIntervalMs: 60_000}
 	writer, _ := newTestWriter(t, config, store)
 	input := gatewayInput("bad")
 	input.CreatedAt = "not-a-time"
@@ -541,7 +555,7 @@ func TestWriterSlowFlushMetrics(t *testing.T) {
 	// The store stub sleeps past the slow threshold to exercise the
 	// slow-flush counters.
 	store := &slowStore{delay: 520 * time.Millisecond}
-	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, }
+	config := Config{BatchSize: 1, FlushIntervalMs: 5_000}
 	writer, _ := newTestWriter(t, config, store)
 	if err := writer.Enqueue(context.Background(), gatewayInput("s")); err != nil {
 		t.Fatal(err)
@@ -560,5 +574,5 @@ type slowStore struct{ delay time.Duration }
 
 func (s *slowStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 	time.Sleep(s.delay)
-	return len(plan.ShardEntries), nil
+	return writePlanRowCount(plan), nil
 }

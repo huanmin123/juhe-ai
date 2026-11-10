@@ -1139,7 +1139,7 @@ func errorPolicyAccount(credentials map[string]any) gatewaydispatch.AccountCandi
 	if credentials == nil {
 		credentials = map[string]any{}
 	}
-	return gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一", Type: "api_key", VendorCode: "openai", Credentials: credentials}
+	return gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一", Type: "api_key", VendorCode: "gpt", Credentials: credentials}
 }
 
 // errorPolicyDecide 便捷入口：status + 失败体 → 决策。失败体事实与生产面
@@ -1651,13 +1651,14 @@ func TestChainErrorPolicyEffectsKeyScopedQuotaRecord(t *testing.T) {
 		}); err != nil {
 		t.Fatalf("record key scoped failure: %v", err)
 	}
-	var status, errorCode, cooldownUntil string
+	var status, cooldownUntil string
+	var errorCode sql.NullString
 	if err := fixture.db.QueryRow(fixtureBind(`SELECT status, last_error_code, COALESCE(cooldown_until, '') FROM account_api_key_runtime_states WHERE account_id = 'acc_1' AND key_fingerprint = ?`),
 		fingerprint).Scan(&status, &errorCode, &cooldownUntil); err != nil {
 		t.Fatalf("read key state: %v", err)
 	}
-	if status != "rate_limited" || errorCode != "api_key_quota_insufficient" {
-		t.Fatalf("key state = %s/%s", status, errorCode)
+	if status != "rate_limited" || !errorCode.Valid || errorCode.String != "api_key_quota_insufficient" {
+		t.Fatalf("key state = %s/%s", status, errorCode.String)
 	}
 	if cooldownUntil != "2026-09-01T11:00:00.000Z" {
 		t.Fatalf("key cooldown_until = %q", cooldownUntil)

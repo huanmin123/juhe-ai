@@ -1,17 +1,10 @@
 package gatewayusage
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
 )
-
-// wjNoopReplay 是空回放消费者。
-type wjNoopReplay struct{}
-
-func (wjNoopReplay) Replay(Ctx, UsageRecordInput) error { return nil }
 
 // wjMockStageLogger 记录阶段日志调用。
 type wjMockStageLogger struct {
@@ -328,52 +321,6 @@ func TestWJEstimateRetainedPayloadBytesOffload(t *testing.T) {
 	empty := &AuditLogPayloadInput{PartType: AuditPartClientRequest}
 	if got := estimateRetainedPayloadBytes(empty, 256, true); got != 512 {
 		t.Fatalf("无 body 估算 = %d", got)
-	}
-}
-
-// TestWJSpoolFailureAccountingAndReplayLoop 固定补偿队列的失败记账与回放
-// 循环生命周期。
-func TestWJSpoolFailureAccountingAndReplayLoop(t *testing.T) {
-	spool, _ := newTestSpool(t, true)
-	// 持久化失败计数必须进入运行时视图。
-	if err := spool.recordPersistFailure(errors.New("marshal down")); err == nil {
-		t.Fatal("recordPersistFailure 必须回传错误")
-	}
-	runtime := spool.Runtime()
-	if runtime.PersistFailureCount != 1 || runtime.LastError != "marshal down" {
-		t.Fatalf("失败记账不符: %+v", runtime)
-	}
-
-	// 回放循环：空队列空转；二次启动必须幂等；Stop 后退出。
-	spool.StartReplay(&wjNoopReplay{})
-	spool.StartReplay(&wjNoopReplay{}) // 幂等
-	spool.StopReplay()
-	spool.StopReplay() // 幂等
-}
-
-// TestWJSpoolCapacityCacheRefresh 固定容量缓存过期后的重扫路径：写满后再
-// 写必须触发容量刷新并正确拒绝。
-func TestWJSpoolCapacityCacheRefresh(t *testing.T) {
-	directory := t.TempDir()
-	spool := NewUsageRecordSpool(SpoolConfig{
-		Directory:        directory,
-		InstanceID:       "inst-cap",
-		MaxItems:         1,
-		MaxBytes:         1 << 20,
-		ReplayBatchSize:  8,
-		ReplayIntervalMs: 5,
-		Enabled:          true,
-	}, fixedClock{ms: 1700000000000}, nil)
-	record := UsageRecordInput{ID: "usage_cap_1", TraceID: "cap-1", TrafficSource: TrafficSourceGateway, Success: true, CreatedAt: "2023-11-14T22:13:20.123Z"}
-	if err := spool.Persist(context.Background(), record); err != nil {
-		t.Fatalf("首次持久化: %v", err)
-	}
-	// 第二条超过 MaxItems：先走 30s 缓存（未过期），强制刷新后仍超限。
-	if err := spool.Persist(context.Background(), UsageRecordInput{ID: "usage_cap_2", TraceID: "cap-2", TrafficSource: TrafficSourceGateway, Success: true, CreatedAt: "2023-11-14T22:13:20.123Z"}); err == nil {
-		t.Fatal("超容量必须拒绝")
-	}
-	if got := spool.Runtime().PersistFailureCount; got != 1 {
-		t.Fatalf("容量失败必须记账: %d", got)
 	}
 }
 

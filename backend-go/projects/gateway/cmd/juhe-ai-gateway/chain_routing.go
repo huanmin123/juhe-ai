@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
 // chainRoutingCache adapts *gatewayruntimecache.Service to the
@@ -97,6 +99,16 @@ func projectGroupAccessForRouting(meta gatewayruntimecache.GroupUsageAccessMetad
 // re-hydration read fails: the lossy routing metadata is carried forward so
 // the request keeps its identity fields instead of losing the group scope.
 func projectGroupAccessForRuntime(meta gatewayrouting.GroupUsageAccessMetadata) gatewayruntimecache.GroupUsageAccessMetadata {
+	return projectGroupAccessForRuntimeWithGlobalMax(meta, gatewayscheduling.DefaultGlobalConcurrencyMax)
+}
+
+// projectGroupAccessForRuntimeWithGlobalMax 使用调用方进程实际的
+// JUHE_AI_CONCURRENCY_GLOBAL_MAX 映射 legacy 16 键策略，避免 fallback 与主读
+// 路径（selector/read models）对同一旧行给出不同阈值；<=0 时回落默认值。
+func projectGroupAccessForRuntimeWithGlobalMax(meta gatewayrouting.GroupUsageAccessMetadata, globalConcurrencyMax int) gatewayruntimecache.GroupUsageAccessMetadata {
+	if globalConcurrencyMax <= 0 {
+		globalConcurrencyMax = gatewayscheduling.DefaultGlobalConcurrencyMax
+	}
 	out := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      meta.GroupOwnerSystemAccountID,
 		GroupAccessType:                meta.GroupAccessType,
@@ -105,14 +117,19 @@ func projectGroupAccessForRuntime(meta gatewayrouting.GroupUsageAccessMetadata) 
 		GroupAuthorizationSourceTeamID: stringPtr(meta.GroupAuthorizationSourceTeamID),
 	}
 	if meta.GroupType != "" {
-		out.GroupType = &meta.GroupType
+		if normalized, _, err := gatewayscheduling.NormalizeGroupType(meta.GroupType); err == nil {
+			out.GroupType = &normalized
+		}
 	}
 	if meta.SchedulingPolicy != "" {
-		policy := gatewayruntimecache.GroupSchedulingPolicy{}
-		if err := json.Unmarshal([]byte(meta.SchedulingPolicy), &policy); err == nil {
+		legacy := meta.GroupType == gatewayscheduling.LegacyGroupTypeHighConcurrency
+		policy, err := gatewayscheduling.ParseStored(meta.SchedulingPolicy, true, legacy, globalConcurrencyMax)
+		if err != nil {
+			// fallback 不改变请求路径，但损坏策略不得静默：主读路径会显式
+			// 报错，这里保留可观测告警并按默认（关闭）继续。
+			slog.Warn("gateway group access fallback policy parse failed", "error", err)
+		} else if !policy.IsDefault() {
 			out.SchedulingPolicy = &policy
-		} else {
-			out.SchedulingPolicy = &gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": meta.SchedulingPolicy}
 		}
 	}
 	return out
@@ -206,6 +223,9 @@ type chainRouteResolver struct {
 	// 门同一底层服务（chainDispatchQuota）；nil（部分组合测试零值）时片段
 	// 配额剔除不生效，生产组合根 fail-fast 要求必装配。
 	quota gatewaydispatch.AuthorizationQuotaChecker
+	// globalConcurrencyMax 与 selector/read models 同源，用于 fallback 投影
+	// 映射 legacy 16 键策略；0 表示未注入（按默认值）。
+	globalConcurrencyMax int
 }
 
 // ResolveNormalGatewayModelRoute mirrors resolveNormalGatewayModelRoute with
@@ -601,14 +621,14 @@ func orderSuperGroupAccountsByPool(accounts []gatewayruntimecache.OpenAIAccountS
 // routing projection is the documented fallback when the cache read fails.
 func (r *chainRouteResolver) rehydrateGroupAccess(ctx context.Context, groupID, systemAccountID string, fallback gatewayrouting.GroupUsageAccessMetadata) *gatewayruntimecache.GroupUsageAccessMetadata {
 	if groupID == "" {
-		projected := projectGroupAccessForRuntime(fallback)
+		projected := projectGroupAccessForRuntimeWithGlobalMax(fallback, r.globalConcurrencyMax)
 		return &projected
 	}
 	meta, err := r.cache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, groupID, systemAccountID)
 	if err == nil && meta != nil {
 		return meta
 	}
-	projected := projectGroupAccessForRuntime(fallback)
+	projected := projectGroupAccessForRuntimeWithGlobalMax(fallback, r.globalConcurrencyMax)
 	return &projected
 }
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,8 +73,8 @@ func TestW9GListSpoolFilesRootError(t *testing.T) {
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("DrainOnce err = %v, want 非 ErrNotExist 枚举错误", err)
 	}
-	if len(enqueuer.inputs) != 0 {
-		t.Fatalf("enqueued = %d", len(enqueuer.inputs))
+	if enqueuer.count() != 0 {
+		t.Fatalf("enqueued = %d", enqueuer.count())
 	}
 }
 
@@ -169,8 +170,8 @@ func TestW9GDrainOnceReadFileError(t *testing.T) {
 	if got := logs.countEventValue("usage_record_spool_file_read_failed", "file", locked); got != 1 {
 		t.Fatalf("read_failed 错误日志 = %d, want 1", got)
 	}
-	if len(enqueuer.inputs) != 1 || enqueuer.inputs[0].ID != "id-good" {
-		t.Fatalf("enqueued = %+v", enqueuer.inputs)
+	if enqueuer.count() != 1 || enqueuer.at(0).ID != "id-good" {
+		t.Fatalf("enqueued = %+v", enqueuer.snapshot())
 	}
 }
 
@@ -222,8 +223,8 @@ func TestW9GDrainOnceConcurrentDeleteSkipped(t *testing.T) {
 	if processed != 1 {
 		t.Fatalf("processed = %d, want 1（并发删除文件跳过）", processed)
 	}
-	if len(enqueuer.inputs) != 1 || enqueuer.inputs[0].ID != "id-first" {
-		t.Fatalf("enqueued = %+v", enqueuer.inputs)
+	if enqueuer.count() != 1 || enqueuer.at(0).ID != "id-first" {
+		t.Fatalf("enqueued = %+v", enqueuer.snapshot())
 	}
 }
 
@@ -241,6 +242,14 @@ func (e *hookEnqueuer) EnqueueDurable(_ usagewriter.Ctx, input usagewriter.Usage
 	return nil
 }
 
+func (e *hookEnqueuer) count() int { return len(e.inputs) }
+
+func (e *hookEnqueuer) at(index int) usagewriter.UsageRecordInput { return e.inputs[index] }
+
+func (e *hookEnqueuer) snapshot() []usagewriter.UsageRecordInput {
+	return append([]usagewriter.UsageRecordInput(nil), e.inputs...)
+}
+
 // TestW9GDrainShutdownConsumesAllBatches：连续多批都有文件时消费完全部
 // 批次配额后收尾返回总数。
 func TestW9GDrainShutdownConsumesAllBatches(t *testing.T) {
@@ -256,8 +265,8 @@ func TestW9GDrainShutdownConsumesAllBatches(t *testing.T) {
 	if processed != 2 {
 		t.Fatalf("processed = %d, want 2（两批各消费一个文件）", processed)
 	}
-	if len(enqueuer.inputs) != 2 {
-		t.Fatalf("enqueued = %d, want 2", len(enqueuer.inputs))
+	if enqueuer.count() != 2 {
+		t.Fatalf("enqueued = %d, want 2", enqueuer.count())
 	}
 }
 
@@ -302,21 +311,21 @@ func TestW9GDrainOnceRenameError(t *testing.T) {
 
 // failingEnqueuer 恒定失败并计数，驱动 Run 的固定退避分支。
 type failingEnqueuer struct {
-	calls int
+	calls atomic.Int64
 }
 
 func (e *failingEnqueuer) EnqueueDurable(_ usagewriter.Ctx, _ usagewriter.UsageRecordInput) error {
-	e.calls++
+	e.calls.Add(1)
 	return errors.New("usage writer 已停止，拒绝写入使用记录")
 }
 
 func waitForCalls(t *testing.T, enqueuer *failingEnqueuer, want int) {
 	t.Helper()
 	deadline := time.After(3 * time.Second)
-	for enqueuer.calls < want {
+	for int(enqueuer.calls.Load()) < want {
 		select {
 		case <-deadline:
-			t.Fatalf("等待 %d 次入队尝试超时，当前 %d", want, enqueuer.calls)
+			t.Fatalf("等待 %d 次入队尝试超时，当前 %d", want, enqueuer.calls.Load())
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
@@ -373,8 +382,8 @@ func TestW9GRunRetryTimerFires(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("取消后 Run 未返回")
 	}
-	if enqueuer.calls < 3 {
-		t.Fatalf("calls = %d, want >= 3（退避到期后重试）", enqueuer.calls)
+	if enqueuer.calls.Load() < 3 {
+		t.Fatalf("calls = %d, want >= 3（退避到期后重试）", enqueuer.calls.Load())
 	}
 }
 
@@ -405,8 +414,8 @@ func TestW9GDrainShutdownEmptyBatchTerminates(t *testing.T) {
 	if processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
-	if len(enqueuer.inputs) != 1 || enqueuer.inputs[0].ID != "id-one" {
-		t.Fatalf("enqueued = %+v", enqueuer.inputs)
+	if enqueuer.count() != 1 || enqueuer.at(0).ID != "id-one" {
+		t.Fatalf("enqueued = %+v", enqueuer.snapshot())
 	}
 	if _, statErr := os.Stat(filepath.Join(directory, "gateway-chain", "0001-one.json")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("已消费文件未删除: %v", statErr)

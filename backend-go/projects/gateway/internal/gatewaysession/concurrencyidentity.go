@@ -97,10 +97,9 @@ func GatewayAccountModelPriorityRank(accountID string, priority *GatewayAccountM
 
 // Group types mirror domain GroupType.
 const (
-	GroupTypePersonal        = "personal"
-	GroupTypeHighConcurrency = "high_concurrency"
-	RequestLaneImage         = "image"
-	ConcurrencyLaneText      = "text"
+	GroupTypePersonal   = "personal"
+	RequestLaneImage    = "image"
+	ConcurrencyLaneText = "text"
 )
 
 // AccountInFlightStats mirrors AccountInFlightStats.
@@ -199,4 +198,36 @@ func accountQualityRank(account gatewayruntimecache.OpenAIAccountSecret) float64
 		return *account.QualityScore
 	}
 	return math.Inf(1)
+}
+
+// sessionAffinityQualityBandWidthMs 是质量带档宽（QualityScore 为毫秒量纲：
+// 首字 EWMA + 状态/年龄罚分；unknown=1,000,000）。2 秒能把首字正常差异与
+// failed +60s / stale +5s / unknown +10s 分开；先用 2000ms 起点，W3 后按生产
+// 分布校准。
+const sessionAffinityQualityBandWidthMs = 2000.0
+
+// accountQualityBand 把质量分量化到带：missing/invalid 归最差带。
+func accountQualityBand(account gatewayruntimecache.OpenAIAccountSecret) float64 {
+	rank := accountQualityRank(account)
+	if math.IsInf(rank, 1) || math.IsNaN(rank) {
+		return math.Inf(1)
+	}
+	return math.Floor(rank / sessionAffinityQualityBandWidthMs)
+}
+
+// compareAccountQualityBand 比较质量带；同一带内视为相等（层内后继选择优先
+// 更小带，带内交给负载/占用/稳定序）。
+func compareAccountQualityBand(left gatewayruntimecache.OpenAIAccountSecret, right gatewayruntimecache.OpenAIAccountSecret) int {
+	leftBand := accountQualityBand(left)
+	rightBand := accountQualityBand(right)
+	if leftBand == rightBand {
+		return 0
+	}
+	if math.IsInf(leftBand, 1) && math.IsInf(rightBand, 1) {
+		return 0
+	}
+	if leftBand < rightBand {
+		return -1
+	}
+	return 1
 }

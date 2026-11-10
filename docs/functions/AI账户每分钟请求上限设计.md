@@ -2,7 +2,7 @@
 
 > 状态：已实施 2026-11-03，待随全量发布上线（发布与生产验证见 `docs/待办与阻塞事项.md` T104）。
 > 定位：在现有账户硬并发上限之外，为 AI 账户增加账户级「每分钟向上游派发请求次数」上限（RPM），两层限制正交叠加；本文是字段契约、计数口径、调度语义、展示和升级的唯一权威。
-> 关联：[高并发分组调度设计](高并发分组调度设计.md)、[核心功能设计](核心功能设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[AI账户批量编辑设计](AI账户批量编辑设计.md)、[AI账户导入协议](AI账户导入协议.md)、[升级兼容与迁移账本设计](升级兼容与迁移账本设计.md)。
+> 关联：[普通分组可选调度策略设计](普通分组可选调度策略设计.md)、[核心功能设计](核心功能设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[AI账户批量编辑设计](AI账户批量编辑设计.md)、[AI账户导入协议](AI账户导入协议.md)、[升级兼容与迁移账本设计](升级兼容与迁移账本设计.md)。
 
 ## 1. 背景与目标
 
@@ -31,8 +31,8 @@
 | Redis 并发实现有 acquire/consume/release Lua，生产组合根已装配（共享 runtime-state client + `concurrency` 域 namespace）；memory tracker 仅用于测试/非生产组合 | `backend-go/projects/gateway/internal/gatewayclientip/accountconcurrency_store_redis.go`、`cmd/juhe-ai-gateway/chain_runtime.go:422-434` |
 | 派发首取与 Key 轮换重取都走 `TryAcquireAsync`；失败记入 `capacityLimitFailures` 并跳过账户 | `backend-go/projects/gateway/internal/gatewaydispatch/dispatchsingle.go:137-260` |
 | 候选运行时上限来源：授权实例取来源账户 `source_accounts.concurrency_limit` | `backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_accounts.go:239/:270`、`:1466-1471` |
-| 高并发分组容量等待：`WaitForCapacity` 只认并发计数，ready 判定按账户 total/lane | `backend-go/projects/gateway/internal/gatewaydispatch/upstreamdispatch.go:1119-1208`、`internal/gatewayclientip/queue.go:424-458/:656-682/:859-874` |
-| 个人分组并发耗尽终态是 503；超级分组目标容量耗尽才是 429 | `cmd/juhe-ai-gateway/chain_v1_loop.go:1408-1479`、`:1306-1400` |
+| 整池容量等待（普通/超级分组统一）：无分组短队列，按账户 total/lane 与 RPM 判定容量，整池失败后按全局等待预算重试 | `backend-go/projects/gateway/internal/gatewaydispatch/upstreamdispatch.go` |
+| 普通分组并发耗尽终态是 503；超级分组目标容量耗尽才是 429 | `cmd/juhe-ai-gateway/chain_v1_loop.go:1408-1479`、`:1306-1400` |
 | 列表 `currentConcurrency` 由进程内 tracker 读时叠加 | `backend-go/projects/gateway/internal/accounts/list.go:330-368` |
 | 账户列表并发列 `current/limit` 内联编辑 | `frontend/src/views/accounts/accountTableColumns.ts:17`、`AccountConcurrencyEditor.vue` |
 
@@ -119,24 +119,18 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 
 - `AccountCapacityLimitFailure` 增加 `Kind`（`concurrency` / `rpm`）与 `RetryAfterMs`。
 - 失败 attempt 的 `UpstreamURL` 分别为 `concurrency:limit` / `rpm:limit`；错误文案：「账户每分钟请求数已达到上限 X/Y（约 N 秒后重置）」。
-- 纯 RPM 拒绝**不进入并发短等重试**（`acquireAccountConcurrencyWithShortRetry` 立即返回，不消耗请求级短等预算）：RPM 计数在窗口内不会因并发释放而下降，逐账户短等只会把延迟累加到请求上；重置等待统一由整池等待（§5.2/§5.3）承担。并发拒绝与「并发 + RPM 双满」仍保留既有短等，因为并发槽可能随时释放。
+- 纯 RPM 拒绝默认**不进入并发短等重试**（`acquireAccountConcurrencyWithShortRetry` 直接返回，不消耗请求级短等预算）：RPM 计数在窗口内不会因并发释放而下降，逐账户短等只会把延迟累加到请求上；重置等待统一由整池等待（§5.2）承担。并发拒绝与「并发 + RPM 双满」仍保留既有短等，因为并发槽可能随时释放。唯一例外是账户亲和 owner 路径：RPM reset 落在共享 1-2s 等待预算内时会按 200ms 固定轮询等待，reset 超出预算则立即切换。
+- 账户亲和 owner 与名额等待共享 `SessionAffinityOwnerWaitBudgetMs`（默认 2000ms），固定 200ms 轮询（5-10 次）；同层后继最终协议成功后会以 expected-owner CAS 重绑，旧 owner 的 RPM 窗口恢复也不主动回切（[账户亲和同层单向粘性与会话名额设计](账户亲和同层单向粘性与会话名额设计.md) §5.3/§5.5）。
 - 当前候选跳过，继续下一个候选；不写账户数据库状态、冷却或错误策略。
 
-### 5.2 高并发分组
+### 5.2 分组整池等待（普通/超级统一）
 
-`WaitForCapacity` 的容量模型加入 RPM：
+分组短队列已随高并发分组退役删除（[普通分组可选调度策略设计](普通分组可选调度策略设计.md) §3.3/§3.4）。容量失败统一走整池等待：
 
-- `highConcurrencyAccountCapacity` 增加 `rpmLimit`；
-- ready 判定追加 `rpmLimit <= 0 || rpmUsed < rpmLimit`；
-- 输入增加 `AccountRPMLimits map[string]int`，RPM 已用次数/重置时刻由 tracker 实时读（memory）或 HASH 读（Redis）；
-- 若本轮全部容量失败均为 RPM 且预算充足，`MaxWaitMs = min(剩余预算, 最近重置时刻 - now)`，把队列等待封顶到最近重置点；到点后由外层 `wholePoolRound` 重新选号，不依赖 release 事件（RPM 重置没有槽释放事件）。
-
-### 5.3 个人分组
-
-个人分组没有分组队列。若本轮容量失败集合**全部**为 RPM：
-
-- 单次等待 `min(最近重置时刻 - now, 剩余请求预算)`，然后重跑整池轮次；
-- 预算不足以覆盖到重置点 → 走既有 handoff，返回 429（§5.4）；
+- 容量判定同时看并发槽与 RPM（`TryAcquire` 原子判定），RPM 已用次数/重置时刻由 tracker 实时读（memory）或 HASH 读（Redis）；
+- 若本轮容量失败集合**全部**为 RPM，单次等待 `min(最近重置时刻 - now, 剩余请求预算)`，然后重跑整池轮次；不依赖 release 事件（RPM 重置没有槽释放事件）；
+- 并发失败或混合失败按既有整池退避重试；预算不足以覆盖到重置点 → 走既有 handoff，返回 429（§5.4）；
+- 不再有 `maxQueueWaitMs`、`MaxWaitMs` 分组队列参数或 `WaitForCapacity` 入口，最大等待统一由 `noAvailableAccountWaitTimeoutSeconds`（默认 270 秒）约束。
 - 若失败集合混合了并发与 RPM，保持现有 500ms 级退避重试，因为并发槽可能随时释放，不能盲目长等。
 
 ### 5.4 终态
@@ -144,7 +138,7 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 - 个人分组：本轮耗尽且最后一个容量失败为 RPM → `429`，`Retry-After: ceil(RetryAfterMs/1000)`（最小 1、最大 60）；payload `message="上游账户每分钟请求数已达上限，请稍后重试"`、`type/code="rate_limit_exceeded"`；审计 `errorCode="account_rpm_limit"`、`outcome=gateway_failed`、`failureScope="capacity"`。
 - 超级分组：RPM 归入 `capacity_exhausted` 聚合分类，沿用现有 429 渲染，不改契约。
 - realtime 面（`chain_realtime.go`）：保持既有 `503 upstream_unavailable` 契约，RPM 拒绝仅计入候选跳过，不单独分类、不带 `Retry-After`（本设计 §5 只覆盖 /v1 链路终态；realtime 频次语义如需对齐另立需求）。
-- 非 RPM 的并发耗尽：保持现状（个人 503、超级分组 429）。
+- 非 RPM 的并发耗尽：保持现状（普通分组 503、超级分组 429）。
 
 ### 5.5 审计与观测
 
@@ -221,13 +215,13 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 1. **存储与账户读写面**：schema、contracts、mockdata、legacy import、accounts 创建/PATCH/批量/导入导出/克隆、aipublic、authz provisioning、列表/详情投影与测试。
 2. **调度热路径**：memory + Redis 并发 store、dispatchsingle、enginehelpers、capacity/queue、upstreamdispatch 等待与终态、审计/usage/metrics 与测试。
 3. **前端**：类型、列表双行、编辑器、创建/编辑/媒体表单、批量、导入协议/模板、移动端、回归脚本与单测。
-4. **文档**：核心功能设计字段表、高并发分组调度设计配置表与等待语义、接口契约与权限矩阵、批量编辑设计、导入协议、前端 README/样式规范、部署文档、升级账本设计 §6.4 实施注记。
+4. **文档**：核心功能设计字段表、普通分组可选调度策略设计（整池等待语义）、接口契约与权限矩阵、批量编辑设计、导入协议、前端 README/样式规范、部署文档、升级账本设计 §6.4 实施注记。
 
 ## 9. 验收
 
 1. 字段：新建/编辑/批量/导入/导出/公开 API/克隆/授权实例全部可读可写，`0` 表示不限制，授权实例只读且继承来源值。
 2. 原子性：并发满 + RPM 有余时不消耗 RPM；RPM 满 + 并发有余时不占并发；两者都通过时同时 +1，`Release` 只退并发。
-3. 调度：单账户 RPM 满时切换下一账户；全池 RPM 满时高并发分组等待到最近重置点、个人分组有界等待后返回 429 + `Retry-After`；非 RPM 并发耗尽终态保持现状。
+3. 调度：单账户 RPM 满时切换下一账户；全池 RPM 满时在 270 秒预算内等待到最近重置点，预算不足返回 429 + `Retry-After`；不再有分组短队列；非 RPM 并发耗尽终态保持现状。
 4. 展示：列表双行（未配置不显示第二行）、编辑/批量/导入表单、移动端和授权实例只读均正确。
 5. 升级：fresh 库与存量库 `upgrade` 后 `schema_state.schema_revision=14`、列存在；旧库缺列时 gateway/jobs 启动门禁 fail-closed；旧二进制回滚可用。
 6. 回归：schema golden、accounts/aipublic/authz/accountstransfer、gatewaydispatch/gatewayclientip、frontend typecheck + 相关回归脚本全绿。

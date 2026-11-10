@@ -144,7 +144,7 @@ func TestW1GroupBindingRowProjections(t *testing.T) {
 func TestW1ClientIPConcurrencyAcquire(t *testing.T) {
 	slots, err := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{})
 	adapter := newChainClientIPConcurrency(slots)
-	policy := map[string]any{}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	decision, err := adapter.Acquire(context.Background(), gatewaydispatch.ClientIPConcurrencyInput{
 		SystemAccountID: "sys_1", GroupID: "grp_1", APIKeyID: "key_1", ClientIP: "203.0.113.5",
 		Policy: &policy, Signal: context.Background(),

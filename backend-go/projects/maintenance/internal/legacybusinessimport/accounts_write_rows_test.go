@@ -127,7 +127,7 @@ func TestWriteAccountRowsWritesAccountsAndConnections(t *testing.T) {
 			ProfileID:        "profile_openai_openai_v1",
 			Vendor:           sql.NullString{},
 			Driver:           "generic_http",
-			Preset:           "generic_openai_v1",
+			Preset:           "gpt_openai_v1",
 			AccountType:      "api_key",
 			ProtocolCode:     "openai",
 			ProtocolVersion:  "v1",

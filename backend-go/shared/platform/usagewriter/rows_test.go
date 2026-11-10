@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func writeRowParam(row ShardWriteRow, column string) any {
+	for index, name := range UsageRecordColumns {
+		if name == column {
+			return row.Params[index]
+		}
+	}
+	return nil
+}
+
 func planOptions() WritePlanOptions {
 	return WritePlanOptions{
 		ShardCount: 16,
@@ -130,8 +139,8 @@ func TestBuildWritePlanFailureAttributionDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plan.ShardEntries[0].FailureAttribution == nil || *plan.ShardEntries[0].FailureAttribution != tt.want {
-				t.Fatalf("attribution = %+v, want %q", plan.ShardEntries[0].FailureAttribution, tt.want)
+			if got := writeRowParam(plan.RowsByShard[0].Rows[0], "failure_attribution"); got == nil || got != tt.want {
+				t.Fatalf("attribution = %+v, want %q", got, tt.want)
 			}
 		})
 	}
@@ -206,8 +215,8 @@ func TestBuildWritePlanPostgresRequiresSystemAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(plan.RowsByShard[0].Location.FilePath, "postgres:juhe_usage.usage_records:") {
-		t.Fatalf("postgres location = %q", plan.RowsByShard[0].Location.FilePath)
+	if !strings.HasPrefix(plan.RowsByShard[0].ShardKey, "20260102:s") {
+		t.Fatalf("postgres shard key = %q", plan.RowsByShard[0].ShardKey)
 	}
 }
 
@@ -230,10 +239,10 @@ func TestBuildWritePlanShardGroupsAndFallbackSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(plan.RowsByShard) != 1 {
-		t.Fatalf("same-bucket ids should share one shard, got %d (%v)", len(plan.RowsByShard), plan.Locations)
+		t.Fatalf("same-bucket ids should share one shard, got %d", len(plan.RowsByShard))
 	}
-	if len(plan.ShardEntries) != 5 {
-		t.Fatalf("entries = %d", len(plan.ShardEntries))
+	if got := writePlanRowCount(plan); got != 5 {
+		t.Fatalf("rows = %d", got)
 	}
 	// Random-id records spread across the shard grid (Node parity).
 	for i := 0; i < 12; i++ {

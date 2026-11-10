@@ -55,12 +55,11 @@ const gatewayTrafficSource = "gateway"
 
 // gatewayChain is the assembled /v1 chain.
 type gatewayChain struct {
-	preauth             *gatewaypreauth.Service
-	engine              *gatewaydispatch.Engine
-	observability       gatewaypreauth.Observability
-	clock               gatewaypreauth.Clock
-	bodyPipeline        *gatewaybody.Middleware
-	speedFirstAdmission *chainSpeedFirstBodyAdmissionGate
+	preauth       *gatewaypreauth.Service
+	engine        *gatewaydispatch.Engine
+	observability gatewaypreauth.Observability
+	clock         gatewaypreauth.Clock
+	bodyPipeline  *gatewaybody.Middleware
 	// callerTier 是调用方分级影子观测的记录器（调用方分级调度设计 §8 M1）：
 	// 分母在认证成功点计入（本文件），模型过滤失败信号经 preauth CallerTier
 	// 口透传，非法 JSON 信号经 bodyPipeline 组合适配透传。影子运行，零资源
@@ -267,26 +266,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 
 	// ---- body pipeline (rejectGatewayRawBodyByContentLength ->
-	//      admitSpeedFirstRequestBody -> parseGatewayRawBody -> capture) ----
+	//      parseGatewayRawBody -> capture) ----
 	if c.bodyPipeline != nil {
 		if c.bodyPipeline.RejectByContentLength(w, r) {
 			return
-		}
-		// speed-first + high-concurrency groups admit request bodies through a
-		// bounded queue (Node server.ts admitSpeedFirstRequestBody); 429
-		// backpressure replaces the body stages entirely.
-		if c.speedFirstAdmission != nil {
-			admission, admErr := c.speedFirstAdmission.AdmitBody(r.Context(), req, res, requestLane)
-			if admErr != nil {
-				c.handleOrchestratorError(admErr, req, res, startedAt, endpoint)
-				return
-			}
-			if admission.Handled {
-				return
-			}
-			if admission.Release != nil {
-				defer admission.Release()
-			}
 		}
 		rawBody, parserErr := c.bodyPipeline.ReadRawBody(w, r)
 		if parserErr != nil {

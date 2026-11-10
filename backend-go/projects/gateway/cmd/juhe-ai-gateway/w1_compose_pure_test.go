@@ -726,21 +726,22 @@ func TestW1CChainResourceAuthorizationQuotaLimited(t *testing.T) {
 
 func TestW1CChainNormalizeGroupType(t *testing.T) {
 	cases := []struct {
-		name      string
-		value     sql.NullString
-		want      string
-		wantError string
+		name       string
+		value      sql.NullString
+		want       string
+		wantLegacy bool
+		wantError  string
 	}{
-		{"NULL回personal", sql.NullString{}, "personal", ""},
-		{"空串回personal", sql.NullString{String: "", Valid: true}, "personal", ""},
-		{"空白回personal", sql.NullString{String: "  ", Valid: true}, "personal", ""},
-		{"personal透传", sql.NullString{String: "personal", Valid: true}, "personal", ""},
-		{"high_concurrency透传", sql.NullString{String: "high_concurrency", Valid: true}, "high_concurrency", ""},
-		{"非法值报错", sql.NullString{String: "shared", Valid: true}, "", "分组类型无效"},
+		{"NULL报错", sql.NullString{}, "", false, "分组类型无效"},
+		{"空串报错", sql.NullString{String: "", Valid: true}, "", false, "分组类型无效"},
+		{"空白报错", sql.NullString{String: "  ", Valid: true}, "", false, "分组类型无效"},
+		{"personal透传", sql.NullString{String: "personal", Valid: true}, "personal", false, ""},
+		{"high_concurrency归一", sql.NullString{String: "high_concurrency", Valid: true}, "personal", true, ""},
+		{"非法值报错", sql.NullString{String: "shared", Valid: true}, "", false, "分组类型无效"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := chainNormalizeGroupType(tc.value)
+			got, legacy, err := chainNormalizeGroupType(tc.value)
 			if tc.wantError != "" {
 				if err == nil || err.Error() != tc.wantError {
 					t.Fatalf("期望错误 %q 实际 %v", tc.wantError, err)
@@ -750,34 +751,36 @@ func TestW1CChainNormalizeGroupType(t *testing.T) {
 			if err != nil {
 				t.Fatalf("不应报错，实际 %v", err)
 			}
-			if got == nil || *got != tc.want {
-				t.Fatalf("期望 %q 实际 %#v", tc.want, got)
+			if got == nil || *got != tc.want || legacy != tc.wantLegacy {
+				t.Fatalf("期望 %q legacy=%v 实际 %#v legacy=%v", tc.want, tc.wantLegacy, got, legacy)
 			}
 		})
 	}
 }
 
 func TestW1CChainParseGroupSchedulingPolicy(t *testing.T) {
-	high := "high_concurrency"
-	personal := "personal"
+	// 普通分组只接受两键；legacy high_concurrency 行按 globalMax 映射并忽略
+	// 其余旧键（普通分组可选调度策略设计 §2.2/§5.2）。
 	cases := []struct {
-		name     string
-		value    sql.NullString
-		group    *string
-		wantErr  bool
-		wantKeys int
+		name      string
+		value     sql.NullString
+		legacy    bool
+		globalMax int
+		wantErr   bool
+		want      *gatewayruntimecache.GroupSchedulingPolicy
 	}{
-		{"非高并发返回nil", sql.NullString{String: "{}", Valid: true}, &personal, false, 0},
-		{"组类型nil返回nil", sql.NullString{String: "{}", Valid: true}, nil, false, 0},
-		{"高并发NULL报错", sql.NullString{}, &high, true, 0},
-		{"高并发空串报错", sql.NullString{String: "", Valid: true}, &high, true, 0},
-		{"高并发空白报错", sql.NullString{String: "  ", Valid: true}, &high, true, 0},
-		{"合法JSON", sql.NullString{String: `{"maxConcurrent":5}`, Valid: true}, &high, false, 1},
-		{"非法JSON", sql.NullString{String: "{bad", Valid: true}, &high, true, 0},
+		{"personal NULL 返回 nil", sql.NullString{}, false, 5000, false, nil},
+		{"personal 空对象报错", sql.NullString{String: "{}", Valid: true}, false, 5000, true, nil},
+		{"personal 两键", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`, Valid: true}, false, 5000, false, &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}},
+		{"personal 未知键报错", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2,"maxConcurrent":5}`, Valid: true}, false, 5000, true, nil},
+		{"legacy NULL 报错", sql.NullString{}, true, 5000, true, nil},
+		{"legacy 旧键映射", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2,"maxQueueWaitMs":60000}`, Valid: true}, true, 5000, false, &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}},
+		{"legacy 默认阈值收敛", sql.NullString{String: `{"defaultSoftConcurrency":5000}`, Valid: true}, true, 5000, false, nil},
+		{"非法JSON", sql.NullString{String: "{bad", Valid: true}, false, 5000, true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy, err := chainParseGroupSchedulingPolicy(tc.value, tc.group)
+			policy, err := chainParseGroupSchedulingPolicy(tc.value, tc.legacy, tc.globalMax)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("应返回错误")
@@ -790,17 +793,14 @@ func TestW1CChainParseGroupSchedulingPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatalf("不应报错，实际 %v", err)
 			}
-			if tc.wantKeys == 0 {
+			if tc.want == nil {
 				if policy != nil {
-					t.Fatalf("非高并发应返回 nil 策略，实际 %#v", policy)
+					t.Fatalf("期望 nil 策略，实际 %#v", policy)
 				}
 				return
 			}
-			if policy == nil || len(*policy) != tc.wantKeys {
-				t.Fatalf("策略键数期望 %d 实际 %#v", tc.wantKeys, policy)
-			}
-			if value, ok := (*policy)["maxConcurrent"].(float64); !ok || value != 5 {
-				t.Fatalf("maxConcurrent 期望 5，实际 %#v", (*policy)["maxConcurrent"])
+			if policy == nil || *policy != *tc.want {
+				t.Fatalf("策略期望 %#v 实际 %#v", *tc.want, policy)
 			}
 		})
 	}

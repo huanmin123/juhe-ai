@@ -139,4 +139,3 @@ func TestWFResultProjectorCheckContractNilGuards(t *testing.T) {
 		t.Fatal("缺业务库必须报未初始化")
 	}
 }
-

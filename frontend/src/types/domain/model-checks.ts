@@ -325,6 +325,7 @@ export interface ModelCheckQuestionBankTestResult {
   verdict: ModelCheckQuestionBankTestVerdict
   questionAlignment: ModelCheckQuestionAlignment
   keyPointResults: ModelCheckQuestionBankTestKeyPointResult[]
+  /** 模型作答全文（字段名沿用历史；后端仅 12000 rune 落库兜底，不再 400 摘录截断） */
   answerExcerpt?: string
   graderNote?: string
   verdictReason?: string

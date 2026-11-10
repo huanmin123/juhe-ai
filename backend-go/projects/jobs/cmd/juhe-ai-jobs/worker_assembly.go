@@ -868,8 +868,8 @@ const usageWriterMaxWriteAttempts = 120
 // usageWriterShardCount 是 usage 记录 ID/逻辑分片路由基数（原
 // JUHE_AI_USAGE_SHARD_COUNT 的常量收编，对齐 Node runtimeConfig.usageShardCount
 // 默认 16）。PG 唯一形态下仍被写计划消费：BuildWritePlan 经
-// UsageRecordLogicalShardLocationForPostgres 把分片路由写进逻辑 location 与
-// 记录 ID，基数变更会让新旧 ID 路由不一致，故收编为常量不再暴露 env。
+// UsageRecordShardKeyForPostgres 把分片路由写进批分组键与记录 ID，基数变更
+// 会让新旧 ID 路由不一致，故收编为常量不再暴露 env。
 const usageWriterShardCount = 16
 
 // usageOverflowSpoolDirName 是 writer 溢出 spool 目录名（jobs 进程私有；

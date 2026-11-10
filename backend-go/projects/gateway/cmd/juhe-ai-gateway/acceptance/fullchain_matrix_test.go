@@ -8,8 +8,9 @@
 //   - mock 场景控制器的上游命中记录（key/model/scenario/时序）——一手观测；
 //   - audit-logs 请求级审计（attempt 行 + gateway_metadata 事件）；
 //   - 账户快照 API（status/cooldownUntil 状态机）；
-//   - usage-records（gateway spool → jobs drain 交接链，见 fullchain_e2e_test.go
-//     的回归 canary 头注；链路回归时逐场景 skip）。
+//   - usage-records（gateway 直投 juhe_usage.usage_records → statreads 读模型；
+//     2026-11-09 T188 起不再经 jobs spool drain，见 fullchain_e2e_test.go 的
+//     回归 canary 头注；链路异常时逐场景带 triage skip）。
 package acceptance
 
 import (
@@ -870,8 +871,13 @@ func fullchainF5(t *testing.T, f *fullchainFixture) {
 	if got := len(f.mock.protocolCallsByKey(route.upstreamKeys[1])); got != 0 {
 		t.Fatalf("F5 backup account hits=%d want 0（已提交流不允许切号拼接）", got)
 	}
-	if got := len(f.mock.protocolCallsByKey(streamKey)); got != 1 {
-		t.Fatalf("F5 stream account attempts=%d want 1", got)
+	// 断流真实传播后（夹具 io.Copy 错误 → ErrAbortHandler，2026-11-10 修复），
+	// 同账户是否重试取决于断流落在提交边界前后：提交前网关识别 transport
+	// 失败后同账户重试（实测 attempts=2，重试成功后客户端仍拿到完整流），
+	// 提交后不重试（attempts=1）。核心保证不变：不跨账户拼接 + 失败归因
+	// account_upstream 正确落库（usage_attribution 子测试）。
+	if got := len(f.mock.protocolCallsByKey(streamKey)); got < 1 || got > 2 {
+		t.Fatalf("F5 stream account attempts=%d want 1..2（同账户有界重试，禁止跨账户拼接）", got)
 	}
 
 	t.Run("usage_attribution", func(t *testing.T) {
@@ -1001,14 +1007,15 @@ func (f *fullchainFixture) chatE(apiKey, body string) (fullchainChatResponse, er
 	return fullchainChatResponse{Status: response.StatusCode, ContentType: response.Header.Get("Content-Type"), Body: string(raw)}, nil
 }
 
-// G1 高并发分组排队：账户并发 1 + mock 持流，5 并发 → 全部最终成功且出现
-// 排队审计（非 503）。
+// G1 普通分组软阈值 + 整池硬忙：账户并发 1 + mock 持流，5 并发 → 全部最终
+// 成功（270 秒预算内整池重试），且不出现退役的分组短队列审计标签
+// （普通分组可选调度策略设计 §3.3/§3.4）。
 func fullchainG1(t *testing.T, f *fullchainFixture) {
 	holdKey := fullchainUpstreamKey(t, "G1-hold")
 	route := f.newRoute("G1", "normal", []fullchainGroupSpec{
 		{
-			groupType:        "high_concurrency",
-			schedulingPolicy: map[string]any{"defaultSoftConcurrency": 1},
+			groupType:        "personal",
+			schedulingPolicy: map[string]any{"defaultSoftConcurrency": 1, "clientIpConcurrencyLimit": 0},
 			accounts: []fullchainAccountSpec{
 				{key: holdKey, script: []platformmock.Scenario{fullchainHoldScenario}, extra: map[string]any{"concurrencyLimit": 1}},
 			},
@@ -1026,43 +1033,25 @@ func fullchainG1(t *testing.T, f *fullchainFixture) {
 			responses[index], errs[index] = f.chatE(route.apiKey, chatBody(acceptanceModel, fmt.Sprintf("G1-%d", index)))
 		}(i)
 	}
-	// 持流 1.5s：确保后续请求进入排队路径（高并发组 WaitForCapacity）。
+	// 持流 1.5s：其余请求在整池硬忙路径内等待，不进入分组短队列。
 	time.Sleep(1500 * time.Millisecond)
 	f.mock.releaseHold(holdKey)
 	wg.Wait()
 
-	successes, connectionDropped := 0, 0
 	for index := range responses {
-		switch {
-		case errs[index] == nil && responses[index].Status == http.StatusOK:
-			successes++
-		case errs[index] != nil:
-			// E2E-FINDING #5（真实缺陷，崩溃级）：engine.HighConcurrencyQueue
-			// 从未装配（internal/gatewaydispatch/engine.go:90 声明、
-			// upstreamdispatch.go:863 / preparation.go:642 直接消费，全仓库
-			// 无赋值点）。高并发组并发满进入排队路径时 nil 接口调用 panic，
-			// net/http 按连接恢复 → 客户端连接被中断。队列已装配
-			//（chain_runtime.go NewHighConcurrencyGroupQueue → compose 适配器
-			// → engine.HighConcurrencyQueue），连接中断不再是合法结局。
-			connectionDropped++
-		default:
-			t.Fatalf("G1 request %d unexpected status=%d body=%s", index, responses[index].Status, responses[index].Body)
+		if errs[index] != nil || responses[index].Status != http.StatusOK {
+			body := responses[index].Body
+			if errs[index] != nil {
+				body = errs[index].Error()
+			}
+			t.Fatalf("G1 request %d status=%d body=%s（整池等待预算内必须成功，不再有分组短队列）", index, responses[index].Status, body)
 		}
 	}
-	if successes < 1 {
-		t.Fatalf("G1 no request succeeded; even the concurrency-slot holder failed")
+	for _, label := range f.auditLabelUnion(route.apiKeyID) {
+		if label == "high_concurrency_group_queue" {
+			t.Fatalf("G1 出现已退役的分组短队列审计标签 %q", label)
+		}
 	}
-	// E2E-FINDING #13（已修复 2026-09-17）：根因是并发事实源分裂——compose.go
-	// 未把 chainServices.ConcurrencyTracker 传给 chainRuntimeDeps，chain_compose.go
-	// nil 兜底新建第二个实例给 engine → queue 读数恒 0、立即 Ready、请求永不
-	// 入队。已接线同一事实源，连接中断不再是合法结局。
-	if connectionDropped > 0 {
-		t.Fatalf("G1 queue path dropped %d/%d connections（E2E-FINDING #13 并发事实源接线已修复，连接中断不再是合法结局）", connectionDropped, parallel)
-	}
-	// 队列生效路径：全部成功后必须有排队审计。排队的首选落点是预派发分组
-	// 短队列（high_concurrency_group_queue）；引擎侧硬并发等待
-	// （high_concurrency_dispatch_queue）只在预派发放行后仍被抢占时出现。
-	f.waitAuditLabels(t, route.apiKeyID, []string{"high_concurrency_group_queue"}, "high-concurrency queue event")
 }
 
 // G2 普通组并发满：切组内下一账户。
@@ -1130,7 +1119,7 @@ func TestFullchainStage2Matrix(t *testing.T) {
 	t.Run("F6_api_key_pool_failover", func(t *testing.T) { fullchainF6(t, f) })
 	t.Run("F7_candidates_exhausted_503", func(t *testing.T) { fullchainF7(t, f) })
 	t.Run("F8_upstream_content_encoding_none", func(t *testing.T) { fullchainF8(t, f) })
-	t.Run("G1_high_concurrency_queue", func(t *testing.T) { fullchainG1(t, f) })
+	t.Run("G1_personal_policy_pool_wait", func(t *testing.T) { fullchainG1(t, f) })
 	t.Run("G2_normal_group_concurrency_next_account", func(t *testing.T) { fullchainG2(t, f) })
 }
 

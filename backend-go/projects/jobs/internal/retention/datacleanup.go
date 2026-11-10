@@ -178,14 +178,6 @@ func (missingStatsWriter) CleanupNonBusinessStatsData(context.Context, string, i
 	return NonBusinessDataCleanupCounts{}, errors.New("retention stats writer 未初始化")
 }
 
-func (missingStatsWriter) CleanupDeletedApiKeyRecordStats(context.Context, DeletedApiKeyRecordStatsCleanupInput) error {
-	return errors.New("retention stats writer 未初始化")
-}
-
-func (missingStatsWriter) CleanupDeletedAccountRecordStats(context.Context, DeletedAccountRecordStatsCleanupInput) error {
-	return errors.New("retention stats writer 未初始化")
-}
-
 func (missingStatsWriter) UpsertAccountUsageSnapshots(context.Context, []AccountUsageSnapshotUpsertInput) error {
 	return errors.New("retention stats writer 未初始化")
 }
@@ -196,17 +188,8 @@ func (missingDbService) CleanupExpiredSystemSessions(context.Context, string, in
 	return 0, errors.New("retention db service 未初始化")
 }
 
-
-
 func (missingDbService) CleanupExpiredDeletedAccounts(context.Context) (*ExpiredDeletedAccountSummary, error) {
 	return nil, errors.New("retention db service 未初始化")
-}
-
-type processedUsageRecordsCleanup struct {
-	cutoffCreatedAt string
-	deletedRows     int64
-	batches         int
-	blockedReason   string
 }
 
 func (j *DataRetentionJob) cleanupInBatches(ctx context.Context, batchSize, maxBatches int, cleanupBatch func(ctx context.Context) (int64, error)) (int64, error) {

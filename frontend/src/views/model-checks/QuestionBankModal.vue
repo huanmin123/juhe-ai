@@ -54,38 +54,6 @@
             </a-form-item>
           </div>
 
-          <section v-if="lastTestResult" ref="questionTestSectionRef" class="question-test-section">
-            <div class="question-test-result">
-              <div class="question-test-status">
-                <a-tag :color="questionTestVerdictColor(lastTestResult.verdict)">{{ questionTestVerdictText(lastTestResult.verdict) }}</a-tag>
-                <span class="question-test-status-meta">
-                  {{ lastTestResult.accountName }} · {{ lastTestResult.model }} · 总耗时 <span class="question-test-mono">{{ formatModelCheckDuration(lastTestResult.latencyMs) }}</span>
-                </span>
-              </div>
-              <div
-                v-for="(note, index) in testResultNotes"
-                :key="index"
-                class="question-test-note"
-                :class="`question-test-note-${note.tone}`"
-              >{{ note.text }}</div>
-              <ul v-if="testPointRows.length" class="question-test-points">
-                <li v-for="(row, index) in testPointRows" :key="index" class="question-test-point">
-                  <span v-if="row.met !== undefined" class="question-test-point-state" :class="row.met ? 'is-met' : 'is-unmet'">
-                    <i class="question-test-point-dot" aria-hidden="true"></i>{{ row.met ? '已覆盖' : '未覆盖' }}
-                  </span>
-                  <span class="question-test-point-text">{{ row.point }}</span>
-                  <span v-if="row.note" class="question-test-point-note">{{ row.note }}</span>
-                </li>
-              </ul>
-              <div v-if="lastTestResult.answerExcerpt" class="question-test-answer">
-                <p class="question-test-answer-text" :class="{ 'is-collapsed': !testAnswerExpanded }">{{ lastTestResult.answerExcerpt }}</p>
-                <a-button type="link" size="small" class="question-test-answer-toggle" @click="testAnswerExpanded = !testAnswerExpanded">
-                  {{ testAnswerExpanded ? '收起' : '展开查看' }}
-                </a-button>
-              </div>
-            </div>
-          </section>
-
           <footer class="question-form-actions">
             <a-button v-if="editingItem" :disabled="submitting" @click="resetForm">取消编辑</a-button>
             <a-button :loading="testing" @click="handleRunFormTest">测试题目</a-button>
@@ -118,6 +86,45 @@
               />
             </div>
           </footer>
+
+          <!-- 测试结果区固定在按钮行下方：结构化判定在上，模型回答全文走与
+               手动检测一致的 AI 测试终端（等宽、完整滚动，不再折叠截断）。
+               测试进行中只展示终端等待态，上一轮结构化判定隐藏避免新旧混淆。 -->
+          <section v-if="questionTestTerminalVisible" ref="questionTestSectionRef" class="question-test-section">
+            <div v-if="lastTestResult && !testing" class="question-test-result">
+              <div class="question-test-status">
+                <a-tag :color="questionTestVerdictColor(lastTestResult.verdict)">{{ questionTestVerdictText(lastTestResult.verdict) }}</a-tag>
+                <span class="question-test-status-meta">
+                  {{ lastTestResult.accountName }} · {{ lastTestResult.model }} · 总耗时 <span class="question-test-mono">{{ formatModelCheckDuration(lastTestResult.latencyMs) }}</span>
+                </span>
+              </div>
+              <div
+                v-for="(note, index) in testResultNotes"
+                :key="index"
+                class="question-test-note"
+                :class="`question-test-note-${note.tone}`"
+              >{{ note.text }}</div>
+              <ul v-if="testPointRows.length" class="question-test-points">
+                <li v-for="(row, index) in testPointRows" :key="index" class="question-test-point">
+                  <span v-if="row.met !== undefined" class="question-test-point-state" :class="row.met ? 'is-met' : 'is-unmet'">
+                    <i class="question-test-point-dot" aria-hidden="true"></i>{{ row.met ? '已覆盖' : '未覆盖' }}
+                  </span>
+                  <span class="question-test-point-text">{{ row.point }}</span>
+                  <span v-if="row.note" class="question-test-point-note">{{ row.note }}</span>
+                </li>
+              </ul>
+            </div>
+            <ModelCheckTerminal
+              :visible="true"
+              :submitting="testing"
+              :stoppable="false"
+              :lines="questionTestTerminalLines"
+              :status-text="questionTestTerminalStatusText"
+              :status-color="questionTestTerminalStatusColor"
+              subtitle="输出发起命令、裁判判定与模型回答全文"
+              waiting-text="正在执行作答与裁判两跳，请稍候…"
+            />
+          </section>
         </section>
       </a-form>
 
@@ -271,7 +278,9 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { ModelCheckAccountOption, ModelCheckQuestionBankItem, ModelCheckQuestionBankTestResult, ModelCheckQuestionStatus } from '@/types/domain'
 import { canSelectModelCheckAccount, modelCheckModelsForAccount, type ModelCheckAccountProfile } from './modelCheckProviderCapabilities'
+import ModelCheckTerminal, { type ModelCheckTerminalLine } from './ModelCheckTerminal.vue'
 import {
+  formatClockTime,
   formatModelCheckDuration,
   questionBankDateTimeText,
   questionCreatorText,
@@ -335,9 +344,62 @@ const testing = ref(false)
 const lastTestResult = ref<ModelCheckQuestionBankTestResult>()
 // 测试通过时的内容指纹；与当前指纹不一致说明内容已改，门禁重新上锁
 const lastTestDraftKey = ref('')
-const testAnswerExpanded = ref(false)
 // 结果区锚点：列表行测试后滚动到这里展示结果
 const questionTestSectionRef = ref<HTMLElement>()
+
+// ---- 题库测试终端（复用手动检测的 ModelCheckTerminal 展示形态） ----
+// 测试中只放发起命令行 + 等待光标；完成后追加耗时、判定与模型回答全文
+// （后端不再 400 截断，终端 pre-wrap 原文换行完整滚动展示）。
+const questionTestTerminalLines = ref<ModelCheckTerminalLine[]>([])
+let questionTestTerminalSeq = 0
+
+const questionTestTerminalVisible = computed(() => testing.value || Boolean(lastTestResult.value))
+const questionTestTerminalStatusText = computed(() => {
+  if (testing.value) return '检测中'
+  const result = lastTestResult.value
+  return result ? questionTestVerdictText(result.verdict) : ''
+})
+const questionTestTerminalStatusColor = computed(() => {
+  if (testing.value) return 'processing'
+  const result = lastTestResult.value
+  return result ? questionTestVerdictColor(result.verdict) : 'default'
+})
+
+function pushQuestionTestTerminalLine(level: ModelCheckTerminalLine['level'], text: string, time: string): void {
+  questionTestTerminalLines.value.push({ id: ++questionTestTerminalSeq, time, level, text })
+}
+
+// 发起测试：重置终端为命令行 + 等待态；命令行时间贯穿本次测试的后续行。
+function beginQuestionTestTerminal(accountName: string, model: string): void {
+  questionTestTerminalSeq = 0
+  questionTestTerminalLines.value = []
+  pushQuestionTestTerminalLine('info', `question-bank test --account ${accountName} --model ${model}`, formatClockTime(new Date()))
+}
+
+// 完成/恢复草稿：在命令行之后补齐耗时、判定结论与回答全文。
+function renderQuestionTestTerminal(result: ModelCheckQuestionBankTestResult): void {
+  if (!questionTestTerminalLines.value.length) {
+    beginQuestionTestTerminal(result.accountName, result.model)
+  }
+  const time = formatClockTime(new Date(result.testedAt))
+  pushQuestionTestTerminalLine('muted', `作答与裁判两跳完成 · 总耗时 ${formatModelCheckDuration(result.latencyMs)}`, time)
+  if (result.verdict === 'request_failed') {
+    const detail = [result.httpStatus ? `HTTP ${result.httpStatus}` : '', result.error?.trim() ?? ''].filter(Boolean).join(' · ')
+    pushQuestionTestTerminalLine('warning', `上游请求失败${detail ? `：${detail}` : ''}`, time)
+  } else {
+    const reason = result.verdictReason?.trim() ?? result.graderNote?.trim() ?? ''
+    pushQuestionTestTerminalLine(
+      result.verdict === 'pass' ? 'success' : 'error',
+      `裁判判定：${questionTestVerdictText(result.verdict)}${reason ? ` · ${reason}` : ''}`,
+      time
+    )
+  }
+  const answer = result.answerExcerpt?.trim()
+  if (answer) {
+    pushQuestionTestTerminalLine('muted', '模型回答全文：', time)
+    pushQuestionTestTerminalLine('info', answer, time)
+  }
+}
 
 // ---- 弹窗内测试目标选择（footer 右侧） ----
 const testAccountId = ref('')
@@ -434,7 +496,12 @@ async function runQuestionTest(content: { questionText: string; referenceAnswer:
   if (!target) return
   // 指纹在请求前捕获：测试期间改动内容，结果也不会解锁门禁
   const draftKey = questionDraftKey(content.questionText, content.referenceAnswer, content.keyPoints)
+  const accountName = selectedTestAccountProfile.value?.name
+    || testAccountSelectOptions.value.find((option) => option.value === testAccountId.value)?.label
+    || target.accountId
   testing.value = true
+  beginQuestionTestTerminal(accountName, target.model)
+  void nextTick(() => questionTestSectionRef.value?.scrollIntoView({ block: 'nearest' }))
   try {
     const result = await scopedApi.questionBankTest({
       questionText: content.questionText,
@@ -445,7 +512,7 @@ async function runQuestionTest(content: { questionText: string; referenceAnswer:
     }, props.modelCheckScopeParams)
     lastTestResult.value = result
     lastTestDraftKey.value = draftKey
-    testAnswerExpanded.value = false
+    renderQuestionTestTerminal(result)
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '题目可用性测试失败'))
@@ -473,7 +540,8 @@ async function testListItem(item: ModelCheckQuestionBankItem) {
 function resetTestState() {
   lastTestResult.value = undefined
   lastTestDraftKey.value = ''
-  testAnswerExpanded.value = false
+  questionTestTerminalSeq = 0
+  questionTestTerminalLines.value = []
 }
 
 function rememberTestAccountProfile(account: ModelCheckAccountOption) {
@@ -634,6 +702,7 @@ function restoreDraft(draft: QuestionBankDraft) {
   lastTestDraftKey.value = draft.lastTestDraftKey
   testAccountId.value = draft.testAccountId
   testModel.value = draft.testModel
+  if (lastTestResult.value) renderQuestionTestTerminal(lastTestResult.value)
   if (testAccountId.value) void ensureTestAccountModels(testAccountId.value)
   // 恢复的测试结果沿用测试时的内容指纹：内容未改则门禁仍开，改了自动上锁
 }
@@ -1016,7 +1085,7 @@ async function confirmReject() {
 }
 
 .question-test-section {
-  margin-top: 4px;
+  margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid var(--juhe-border);
 }
@@ -1114,32 +1183,6 @@ async function confirmReject() {
 
 .question-test-point-note {
   color: var(--juhe-muted);
-}
-
-.question-test-answer {
-  display: grid;
-  gap: 2px;
-}
-
-.question-test-answer-text {
-  margin: 0;
-  color: var(--juhe-fg-soft);
-  font-size: 13px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.question-test-answer-text.is-collapsed {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-}
-
-.question-test-answer-toggle {
-  justify-self: start;
-  padding: 0;
 }
 
 .question-list-section {

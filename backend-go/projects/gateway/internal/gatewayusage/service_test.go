@@ -126,7 +126,7 @@ func newHarness(config ServiceConfig) *testHarness {
 		protocol:  &stubProtocolErrors{payload: protocolErrorPayload("insufficient_quota", "upstream boom")},
 		clock:     fixedClock{ms: 1700000000000},
 	}
-	dispatch := NewFinalizationDispatch(recorder, nil, 8, 2)
+	dispatch := NewFinalizationDispatch(recorder, 8, 2)
 	dispatch.clock = harness.clock
 	service := NewService(dispatch, config)
 	service.WithClock(harness.clock)
@@ -370,127 +370,55 @@ func TestRecordGatewayFailureOmitsUnresolvedGroupScope(t *testing.T) {
 	}
 }
 
-func TestDispatchOverflowSpoolsInsteadOfBlocking(t *testing.T) {
-	// The gated recorder keeps the first task active so queue occupancy is
-	// deterministic (Node capacity counts queued entries only).
-	gate := &gatedRecorder{entered: make(chan struct{}, 8), release: make(chan struct{})}
-	spool := NewUsageRecordSpool(SpoolConfig{
-		Directory:  t.TempDir(),
-		InstanceID: "inst-1",
-		MaxItems:   100,
-		MaxBytes:   1024 * 1024,
-		Enabled:    true,
-	}, fixedClock{ms: 1700000000000}, nil)
-	overflow := &memoryOverflow{spool: spool}
-	dispatch := NewFinalizationDispatch(gate, overflow, 1, 1)
-	dispatch.OverflowEnabled = true
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-a"), 100); err != nil {
-		t.Fatalf("err = %v", err)
+func TestFinalizationQueueDropOnFull(t *testing.T) {
+	queue := NewGatewayUsageFinalizationQueue(1, 1)
+	queue.EnableDropOnFull()
+	release := make(chan struct{})
+	if err := queue.Dispatch(context.Background(), func(context.Context) error {
+		<-release
+		return nil
+	}, 10); err != nil {
+		t.Fatalf("first dispatch: %v", err)
 	}
-	<-gate.entered // task-a is active.
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-b"), 100); err != nil {
-		t.Fatalf("err = %v", err)
+	if err := queue.Dispatch(context.Background(), func(context.Context) error { return nil }, 10); err != nil {
+		t.Fatalf("second dispatch: %v", err)
 	}
-	// The queue is full (maxItems=1) → trace-c spools without blocking.
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-c"), 100); err != nil {
-		t.Fatalf("err = %v", err)
+	if err := queue.Dispatch(context.Background(), func(context.Context) error { return nil }, 10); err != nil {
+		t.Fatalf("full dispatch must drop without error: %v", err)
 	}
-	runtime := dispatch.Runtime()
-	if runtime.OverflowSpoolCount != 1 {
-		t.Fatalf("overflow count = %d runtime %+v", runtime.OverflowSpoolCount, runtime)
+	if runtime := queue.Runtime(); runtime.DroppedCount != 1 {
+		t.Fatalf("droppedCount = %d, want 1 (runtime=%+v)", runtime.DroppedCount, runtime)
 	}
-	close(gate.release)
-	if !dispatch.WaitForIdle(2000) {
-		t.Fatal("not idle")
-	}
-	// WaitForIdle only accounts queued/active/waiters; the overflow factory
-	// goroutine (queue-tracked only) can still be inside spool.Persist. Wait
-	// for the persist counter to settle — observable only after the final
-	// rename, which is Persist's last filesystem operation — so returning
-	// here can never race t.TempDir's RemoveAll with a straggler writer
-	// (full-suite concurrency, -race).
-	waitForSpoolSettled(t, spool, 1)
-	spooled := overflow.snapshot()
-	if len(spooled) != 1 || spooled[0].TraceID != "trace-c" {
-		t.Fatalf("spooled = %+v", spooled)
-	}
-	if !gate.seenTrace("trace-a") || !gate.seenTrace("trace-b") {
-		t.Fatalf("queued tasks must still deliver: %v", gate.seenSnapshot())
-	}
-	if gate.seenTrace("trace-c") {
-		t.Fatal("spooled record must not double-deliver")
+	close(release)
+	if !queue.WaitForIdle(2000) {
+		t.Fatal("queue did not become idle")
 	}
 }
 
-// TestDispatchUsageRecordSuppressedSkipsBothArms 钉住使用日志抑制在两条投递臂
-// 上都生效（AI 问答免 Key 直调内部通道 §3.1）：正常入队臂与队列满时的溢出
-// 落 spool 臂都不得看到抑制记录。溢出臂是关键——它绕过 recorder 直接落盘，
-// 只把闸口设在 EnqueueUsageRecord 会让抑制记录在队列积压时逃逸，而抑制标记
-// 不序列化，jobs 侧读回后无法识别，会按普通记录写 usage_records。
-//
-// 队列容量判定只统计 queued 槽位（hasCapacityLocked 读 len(q.queued)，在途
-// active 任务不占位，与 Node 同口径），因此构造溢出必须让「1 个在途 + 1 个
-// 排队」把 maxItems=1 的容量占满：在途任务占住单并发槽位使排队项无法开跑，
-// 排队项本身占满唯一 queued 槽位；此后投递才会真正落到 overflowFactory。
-func TestDispatchUsageRecordSuppressedSkipsBothArms(t *testing.T) {
+// TestDispatchUsageRecordSuppressedNeverReachesRecorder 钉住使用日志抑制
+// （AI 问答免 Key 直调内部通道 §3.1）：抑制标记在 DispatchUsageRecord 入口
+// 直接丢弃，recorder 永远看不到该记录；对照记录正常投递。
+func TestDispatchUsageRecordSuppressedNeverReachesRecorder(t *testing.T) {
 	gate := &gatedRecorder{entered: make(chan struct{}, 8), release: make(chan struct{})}
-	spool := NewUsageRecordSpool(SpoolConfig{
-		Directory:  t.TempDir(),
-		InstanceID: "inst-suppress",
-		MaxItems:   100,
-		MaxBytes:   1024 * 1024,
-		Enabled:    true,
-	}, fixedClock{ms: 1700000000000}, nil)
-	overflow := &memoryOverflow{spool: spool}
-	// maxItems=1 / maxConcurrency=1：在途 trace-occupy 占住并发槽，排队
-	// trace-queued 占满满唯一的 queued 槽位 ⇒ 后续投递必然走溢出臂。
-	dispatch := NewFinalizationDispatch(gate, overflow, 1, 1)
-	dispatch.OverflowEnabled = true
+	dispatch := NewFinalizationDispatch(gate, 1, 1)
 
 	suppressed := completedRecord("trace-suppressed")
 	suppressed.SuppressUsage = true
 	if err := dispatch.DispatchUsageRecord(context.Background(), suppressed, 100); err != nil {
-		t.Fatalf("suppressed normal-arm err = %v", err)
+		t.Fatalf("suppressed err = %v", err)
 	}
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-occupy"), 100); err != nil {
-		t.Fatalf("occupy err = %v", err)
-	}
-	<-gate.entered
-	// 在途项已占并发槽：本项进 queued（占满唯一槽位），不会开跑。
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-queued"), 100); err != nil {
-		t.Fatalf("queued err = %v", err)
-	}
-	if got := dispatch.Runtime().QueuedCount; got != 1 {
-		t.Fatalf("排队占位构造失败（溢出臂将不可达）: QueuedCount = %d, want 1", got)
-	}
-	// 容量已满：抑制记录必须仍被丢弃（入口闸口提前返回，不进溢出工厂）。
-	suppressedOverflow := completedRecord("trace-suppressed-overflow")
-	suppressedOverflow.SuppressUsage = true
-	if err := dispatch.DispatchUsageRecord(context.Background(), suppressedOverflow, 100); err != nil {
-		t.Fatalf("suppressed overflow-arm err = %v", err)
-	}
-	// 对照：非抑制记录在同容量状态下确实落到溢出臂，证明本场景真的在测溢出。
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-overflow-control"), 100); err != nil {
-		t.Fatalf("overflow control err = %v", err)
-	}
-	if runtime := dispatch.Runtime(); runtime.OverflowSpoolCount != 1 {
-		t.Fatalf("对照组必须落到溢出臂（否则本测试未覆盖目标场景）; runtime=%+v", runtime)
+	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-control"), 100); err != nil {
+		t.Fatalf("control err = %v", err)
 	}
 	close(gate.release)
 	if !dispatch.WaitForIdle(2000) {
 		t.Fatal("not idle")
 	}
-	// 溢出 spool 里必须只有对照组那一条，抑制记录一条都不能有。
-	waitForSpoolSettled(t, spool, 1)
-	spooled := overflow.snapshot()
-	if len(spooled) != 1 || spooled[0].TraceID != "trace-overflow-control" {
-		t.Fatalf("溢出 spool 必须只含对照组记录: %+v", spooled)
+	if !gate.seenTrace("trace-control") {
+		t.Fatalf("对照组记录必须正常投递: %v", gate.seenSnapshot())
 	}
-	if !gate.seenTrace("trace-occupy") || !gate.seenTrace("trace-queued") {
-		t.Fatalf("非抑制记录必须正常投递: %v", gate.seenSnapshot())
-	}
-	if gate.seenTrace("trace-suppressed") || gate.seenTrace("trace-suppressed-overflow") {
-		t.Fatalf("抑制记录到达 recorder: %v", gate.seenSnapshot())
+	if gate.seenTrace("trace-suppressed") {
+		t.Fatalf("抑制记录不得到达 recorder: %v", gate.seenSnapshot())
 	}
 }
 
@@ -537,7 +465,7 @@ func completedRecord(trace string) UsageRecordInput {
 func TestRecorderPortFailureDoesNotBlockDispatch(t *testing.T) {
 	recorder := NewMemoryUsageRecorder(nil, nil)
 	recorder.SetFailures(1)
-	dispatch := NewFinalizationDispatch(recorder, nil, 4, 1)
+	dispatch := NewFinalizationDispatch(recorder, 4, 1)
 	service := NewService(dispatch, ServiceConfig{})
 	service.WithClock(fixedClock{ms: 1700000000000})
 	attempt := usageContext()
@@ -575,14 +503,14 @@ func TestFinalizationQueueCapacityWaitAndRuntime(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		return nil
-	}, 100, nil); err != nil {
+	}, 100); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	<-started
 	// Two more admissions fill the queue (maxItems=2; active tasks do not
 	// count against admission, mirroring Node hasCapacity).
 	for index := 0; index < 2; index++ {
-		if err := queue.Dispatch(context.Background(), func(Ctx) error { return nil }, 100, nil); err != nil {
+		if err := queue.Dispatch(context.Background(), func(Ctx) error { return nil }, 100); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	}
@@ -590,10 +518,10 @@ func TestFinalizationQueueCapacityWaitAndRuntime(t *testing.T) {
 	if runtime.QueuedCount != 2 || runtime.ActiveCount != 1 {
 		t.Fatalf("runtime = %+v", runtime)
 	}
-	// The next admission exceeds maxItems with no overflow → blocks.
+	// The next admission exceeds maxItems without drop-on-full → blocks.
 	admitted := make(chan error, 1)
 	go func() {
-		admitted <- queue.Dispatch(context.Background(), func(Ctx) error { return nil }, 100, nil)
+		admitted <- queue.Dispatch(context.Background(), func(Ctx) error { return nil }, 100)
 	}()
 	select {
 	case err := <-admitted:
@@ -615,7 +543,7 @@ func TestFinalizationQueueCapacityWaitAndRuntime(t *testing.T) {
 
 func TestFinalizationQueueOversizeTaskRejected(t *testing.T) {
 	queue := NewGatewayUsageFinalizationQueue(2, 1)
-	err := queue.Dispatch(context.Background(), func(Ctx) error { return nil }, gatewayUsageFinalizationTaskMaxBytes+1, nil)
+	err := queue.Dispatch(context.Background(), func(Ctx) error { return nil }, gatewayUsageFinalizationTaskMaxBytes+1)
 	if err == nil || err.Error() != "网关使用记录异步收尾任务超过单条容量上限" {
 		t.Fatalf("err = %v", err)
 	}
@@ -626,7 +554,7 @@ func TestFinalizationQueueErrorSwallowedAndLogged(t *testing.T) {
 	queue := NewGatewayUsageFinalizationQueue(2, 1).WithLogger(logger)
 	if err := queue.Dispatch(context.Background(), func(Ctx) error {
 		return errors.New("writer down")
-	}, 10, nil); err != nil {
+	}, 10); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if !queue.WaitForIdle(2000) {
@@ -635,27 +563,6 @@ func TestFinalizationQueueErrorSwallowedAndLogged(t *testing.T) {
 	if len(logger.warns) == 0 {
 		t.Fatal("task failure must be logged, not propagated")
 	}
-}
-
-type memoryOverflow struct {
-	mu      sync.Mutex
-	spool   *UsageRecordSpool
-	spooled []UsageRecordInput
-}
-
-func (m *memoryOverflow) PersistOverflow(ctx Ctx, input UsageRecordInput) error {
-	m.mu.Lock()
-	m.spooled = append(m.spooled, input)
-	m.mu.Unlock()
-	return m.spool.Persist(ctx, input)
-}
-
-func (m *memoryOverflow) snapshot() []UsageRecordInput {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]UsageRecordInput, len(m.spooled))
-	copy(out, m.spooled)
-	return out
 }
 
 // TestFinalizationDefaultsMirrorNodeConcurrencyGlobalMax 验证收尾队列默认档位：

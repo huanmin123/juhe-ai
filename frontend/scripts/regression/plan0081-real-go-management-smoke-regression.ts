@@ -118,7 +118,7 @@ interface MockGroup {
   description?: string
   enabled: boolean
   isDefault: boolean
-  groupType: 'personal' | 'high_concurrency'
+  groupType: 'personal'
   accessType: 'owner' | 'authorized'
   accountIds: string[]
   schedulingPolicy?: Record<string, unknown>
@@ -837,7 +837,7 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
   const scopeCases = [
     [
       'external_integration_source_scopes_missing_item',
-      /external integration source scopes data must contain exactly 16 items/
+      /external integration source scopes data must contain exactly 19 items/
     ],
     [
       'external_integration_source_scopes_invalid_field',
@@ -872,7 +872,7 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
     ],
     [
       'external_integration_source_api_docs_missing_item',
-      /external integration source api docs data\.items must contain exactly 16 items/
+      /external integration source api docs data\.items must contain exactly 19 items/
     ],
     [
       'external_integration_source_api_docs_get_contract_invalid',
@@ -1118,7 +1118,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=7 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=11 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1334,7 +1334,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=7 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=11 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1361,7 +1361,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=7 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=11 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1401,6 +1401,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     groupDetailPath(temporaryGroupId),
     groupPatchPath(temporaryGroupId),
     groupDetailPath(temporaryGroupId),
+    groupPatchPath(temporaryGroupId),
     groupDeletePath(temporaryGroupId),
     groupDetailPath(temporaryGroupId),
     groupDetailPath(temporaryGroupId)
@@ -1420,19 +1421,22 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     String(recordBody(createRequest).name),
     /^PLAN-0081 real Go management smoke [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   )
-  const patchRequest = requestRecords.find((record) => record.method === 'PATCH')
-  assert.deepEqual(patchRequest?.body, {
+  const patchRequests = requestRecords.filter((record) => record.method === 'PATCH')
+  assert.equal(patchRequests.length, 2, 'mutation smoke must send exactly the policy PATCH and the retired-type negative PATCH')
+  assert.deepEqual(patchRequests[0]?.body, {
     name: `${String(recordBody(createRequest).name)} updated`,
     description: 'PLAN-0081 W5 group CRUD real Go smoke',
-    groupType: 'high_concurrency',
     schedulingPolicy: {
       defaultSoftConcurrency: 7,
-      maxQueueWaitMs: 45_000,
-      clientIpConcurrencyLimit: 3,
-      clientIpConcurrencyOverflowMode: 'queue',
-      imageLaneMaxConcurrency: 2
-    }
+      clientIpConcurrencyLimit: 3
+    },
+    expectedUpdatedAt: '2026-07-15T08:00:00.000Z'
   })
+  const retiredTypeBody = patchRequests[1]?.body
+  assert(retiredTypeBody !== undefined && typeof retiredTypeBody === 'object')
+  assert.equal((retiredTypeBody as Record<string, unknown>).groupType, 'high_concurrency')
+  assert.equal(typeof (retiredTypeBody as Record<string, unknown>).expectedUpdatedAt, 'string')
+  assert.notEqual((retiredTypeBody as Record<string, unknown>).expectedUpdatedAt, '')
   assertNoCookieLeak(output)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
   assertRequestHeaders()
@@ -1910,7 +1914,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const input = recordBody({ body })
     const name = String(input.name ?? '')
     const providerCode = String(input.providerCode ?? '')
-    const created = groupFixture(temporaryGroupId, name, false, 'owner', providerCode)
+    const created = groupFixture(temporaryGroupId, name, false, 'owner')
     groups.set(created.id, created)
     res.statusCode = 201
     sendEnvelope(res, groupResponse(created))
@@ -1922,10 +1926,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       ['hybrid', 'Hybrid'],
       ['openai', 'OpenAI'],
       ['gpt', 'GPT'],
+      ['xai', 'xAI'],
       ['deepseek', 'DeepSeek'],
       ['anthropic', 'Anthropic'],
       ['gemini', 'Gemini'],
-      ['glm', 'GLM']
+      ['glm', 'GLM'],
+      ['minimax', 'MiniMax'],
+      ['volcengine', 'Volcengine'],
+      ['qwen', 'Qwen']
     ].map(([code, name]) => ({ id: `provider_${code}`, code, name, enabled: true }))
     sendEnvelope(res, providers)
     return
@@ -1936,10 +1944,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       ['hybrid', 'Hybrid'],
       ['openai', 'OpenAI'],
       ['gpt', 'GPT'],
+      ['xai', 'xAI'],
       ['deepseek', 'DeepSeek'],
       ['anthropic', 'Anthropic'],
       ['gemini', 'Gemini'],
-      ['glm', 'GLM']
+      ['glm', 'GLM'],
+      ['minimax', 'MiniMax'],
+      ['volcengine', 'Volcengine'],
+      ['qwen', 'Qwen']
     ].map(([code, name]) => providerFixture(code, name))
     if (scenario === 'provider_profile_endpoint_families_missing') {
       const hybridProfiles = fixtureRecord(providers[0]).protocolProfiles
@@ -1953,24 +1965,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/models/options') {
-    // 现行契约（前端 ProviderModelOption 同形）：id/name 必备，providerCode 可选。
-    sendEnvelope(res, [
-      {
-        id: 'gpt-5.6-sol',
-        name: 'gpt-5.6-sol',
-        providerCode: 'gpt',
-        supportedApiProtocols: ['responses'],
-        supportedServiceTiers: ['priority'],
-        supportedReasoningEfforts: ['low', 'high'],
-        defaultReasoningEffort: 'high'
-      },
-      {
-        id: 'gpt-4.1',
-        name: 'gpt-4.1',
-        supportedApiProtocols: ['chat_completions'],
-        defaultReasoningEffort: null
-      }
-    ])
+    // 现行契约（前端 ProviderModelOption 同形）：id/name 必备，providerCode 可选；
+    // T25 截断元数据：envelope 顶层附加 total/hasMore。
+    res.end(JSON.stringify({
+      data: [
+        {
+          id: 'gpt-5.6-sol',
+          name: 'gpt-5.6-sol',
+          providerCode: 'gpt',
+          supportedApiProtocols: ['responses'],
+          supportedServiceTiers: ['priority'],
+          supportedReasoningEfforts: ['low', 'high'],
+          defaultReasoningEffort: 'high'
+        },
+        {
+          id: 'gpt-4.1',
+          name: 'gpt-4.1',
+          supportedApiProtocols: ['chat_completions'],
+          defaultReasoningEffort: null
+        }
+      ],
+      total: 2,
+      hasMore: false
+    }))
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/api-keys') {
@@ -2142,17 +2159,37 @@ async function handleGroupDetailRequest(
       return
     }
     const input = recordBody({ body })
+    // 契约验收 §7.9：废弃分组类型写入面返回 400「分组类型无效」，类型只剩 personal。
+    if (input.groupType !== undefined && input.groupType !== 'personal') {
+      res.statusCode = 400
+      res.end(JSON.stringify({ message: '分组类型无效' }))
+      return
+    }
     if (typeof input.name === 'string') {
       group.name = input.name
     }
     if (typeof input.description === 'string') {
       group.description = input.description
     }
-    if (input.groupType === 'high_concurrency') {
-      group.groupType = 'high_concurrency'
-    }
-    if (input.schedulingPolicy && typeof input.schedulingPolicy === 'object' && !Array.isArray(input.schedulingPolicy)) {
-      group.schedulingPolicy = input.schedulingPolicy as Record<string, unknown>
+    if (Object.hasOwn(input, 'schedulingPolicy')) {
+      // 普通分组可选调度策略（设计 §2.2）：null 清空；对象必须两键齐全整对象替换；
+      // 两项都为默认值时存 NULL（mock 用删除键模拟 NULL）。
+      const policy = input.schedulingPolicy
+      if (policy === null) {
+        delete group.schedulingPolicy
+      } else if (policy && typeof policy === 'object' && !Array.isArray(policy)
+        && 'defaultSoftConcurrency' in policy && 'clientIpConcurrencyLimit' in policy) {
+        if ((policy as Record<string, unknown>).defaultSoftConcurrency === -1
+          && (policy as Record<string, unknown>).clientIpConcurrencyLimit === 0) {
+          delete group.schedulingPolicy
+        } else {
+          group.schedulingPolicy = policy as Record<string, unknown>
+        }
+      } else {
+        res.statusCode = 400
+        res.end(JSON.stringify({ message: '分组调度策略必须两键齐全' }))
+        return
+      }
     }
     if (scenario !== 'normal') {
       patchFailureDelivered = true
@@ -2163,7 +2200,7 @@ async function handleGroupDetailRequest(
     // 现行 PATCH 契约（真实 gateway 同形）：变更确认 {id, changedFields, updatedAt}。
     sendEnvelope(res, {
       id: group.id,
-      changedFields: ['description', 'groupType', 'name', 'schedulingPolicy'],
+      changedFields: ['description', 'name', 'schedulingPolicy'],
       updatedAt: new Date().toISOString()
     })
     return
@@ -2206,14 +2243,14 @@ function groupFixture(
   id: string,
   name: string,
   isDefault: boolean,
-  accessType: 'owner' | 'authorized',
-  providerCode = 'gpt'
+  accessType: 'owner' | 'authorized'
 ): MockGroup {
   return {
     id,
     ownerSystemAccountId: accessType === 'owner' ? systemAccountId : 'sys_plan0081_owner',
     name,
-    providerCode,
+    // 分组已与供应商解耦（供应商解耦设计 §8）：providerCode 恒空串兼容出参。
+    providerCode: '',
     enabled: true,
     isDefault,
     groupType: 'personal',
@@ -2224,7 +2261,8 @@ function groupFixture(
 
 function groupListItem(group: MockGroup): Record<string, unknown> {
   const { accountIds: _accountIds, ...item } = groupResponse(group)
-  return { ...item }
+  // 列表投影（真实 gateway 同形）：策略键恒存在，NULL 时显式 null，非空时为规范化两键对象。
+  return item
 }
 
 function groupResponse(group: MockGroup): Record<string, unknown> {
@@ -2240,23 +2278,16 @@ function groupResponse(group: MockGroup): Record<string, unknown> {
     permissions: {
       canManageAccounts: group.accessType === 'owner'
     },
-    schedulingPolicy: group.groupType === 'high_concurrency'
-      ? {
-          mode: 'balanced_fast',
-          defaultSoftConcurrency: 5,
-          maxQueueWaitMs: 60_000,
-          clientIpConcurrencyLimit: 0,
-          clientIpConcurrencyOverflowMode: 'reject',
-          imageLaneMaxConcurrency: 0,
-          ...group.schedulingPolicy
-        }
-      : undefined
+    schedulingPolicy: group.schedulingPolicy ?? null,
+    // 乐观锁版本（真实 gateway Detail/列表同形）：PATCH 请求以该值回传 expectedUpdatedAt。
+    updatedAt: '2026-07-15T08:00:00.000Z'
   }
 }
 
 function providerFixture(code: string, name: string): Record<string, unknown> {
   const profileId = `profile_${code}_openai_v1`
-  const baseUrl = code === 'hybrid' ? '' : 'https://api.example.test/v1'
+  // B4 退役空形状（BUG-0330）：顶层 baseUrl 恒空串，档案级仍保留连接面。
+  const profileBaseUrl = code === 'hybrid' ? '' : 'https://api.example.test/v1'
   const profileDefaultHealthCheckModel = code === 'hybrid'
     ? ''
     : code === 'gpt'
@@ -2273,7 +2304,7 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
     defaultProtocolProfileId: profileId,
     protocolCode: 'openai',
     protocolVersion: 'v1',
-    baseUrl,
+    baseUrl: '',
     defaultHealthCheckModel,
     defaultSupportedModels: code === 'gpt' ? ['gpt-5.6-sol'] : ['provider-model'],
     accountTypes: ['api_key'],
@@ -2285,7 +2316,7 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
       enabled: true,
       protocolCode: 'openai',
       protocolVersion: 'v1',
-      baseUrl,
+      baseUrl: profileBaseUrl,
       defaultHealthCheckModel: profileDefaultHealthCheckModel,
       accountTypes: ['api_key'],
       capabilities: ['chat_completions', 'responses'],
@@ -2445,7 +2476,7 @@ function expectedSummary(
     adminApiKeyCount: 2,
     groupCount: 3,
     selectedGroupId,
-    providerCount: 7,
+    providerCount: 11,
     modelOptionCount: 2,
     publicApiLogCount: 0,
     publicApiLogDetailChecked: false,
@@ -2577,9 +2608,12 @@ function externalIntegrationSourceScopesFixture(): Array<Record<string, unknown>
     { value: 'juhe_ai_public:group_add:write', label: 'POST 分组新增' },
     { value: 'juhe_ai_public:group_update:write', label: 'POST 分组修改' },
     { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
+    { value: 'juhe_ai_public:group_super_members_update:write', label: 'POST 超级分组成员更新' },
     { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
     { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
-    { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
+    { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' },
+    { value: 'juhe_ai_public:provider_list:read', label: 'GET 供应商列表' },
+    { value: 'juhe_ai_public:provider_detail:read', label: 'GET 供应商详情' }
   ]
 }
 
@@ -2590,11 +2624,31 @@ function externalIntegrationSourceApiDocsFixture(): {
 } {
   const items = externalIntegrationSourceScopesFixture().map((option): Record<string, unknown> => {
     const scope = String(option.value)
+    // 超级分组成员更新与供应商只读作用域与既有 resource_action 派生规则不同，
+    // 走显式契约表（与 smoke 的 externalIntegrationSourceApiDocContract 同形）。
+    const explicitContracts: Record<string, { id: string; method: 'GET' | 'POST'; path: string }> = {
+      'juhe_ai_public:group_super_members_update:write': {
+        id: 'group-super-members-update',
+        method: 'POST',
+        path: '/__aipublic__/group/super-members/update'
+      },
+      'juhe_ai_public:provider_list:read': {
+        id: 'provider-list',
+        method: 'GET',
+        path: '/__aipublic__/provider/list'
+      },
+      'juhe_ai_public:provider_detail:read': {
+        id: 'provider-detail',
+        method: 'GET',
+        path: '/__aipublic__/provider/detail'
+      }
+    }
+    const explicit = explicitContracts[scope]
     const match = /^juhe_ai_public:(api_key|route_strategy|group|account)_(list|add|update|delete):(read|write)$/.exec(scope)
-    assert(match)
-    const resource = String(match[1]).replace('_', '-')
-    const action = String(match[2])
-    const method = action === 'list' ? 'GET' : 'POST'
+    assert(explicit ?? match)
+    const resource = String(match?.[1] ?? '').replace('_', '-')
+    const action = String(match?.[2] ?? '')
+    const method = explicit?.method ?? (action === 'list' ? 'GET' : 'POST')
     const publicAction = action === 'delete' ? 'del' : action
     const documentedField = {
       name: 'targetUsername',
@@ -2605,12 +2659,12 @@ function externalIntegrationSourceApiDocsFixture(): {
     }
 
     return {
-      id: `${resource}-${action}`,
+      id: explicit?.id ?? `${resource}-${action}`,
       name: String(option.label).replace(/^(GET|POST)\s+/, ''),
       summary: `${String(option.label)} regression fixture`,
       status: 'available',
       method,
-      path: `/__aipublic__/${resource}/${publicAction}`,
+      path: explicit?.path ?? `/__aipublic__/${resource}/${publicAction}`,
       scope,
       headers: [{
         name: 'Authorization',

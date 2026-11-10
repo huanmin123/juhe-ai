@@ -9,9 +9,9 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // wgOpenPGDialectDB 打开一个隔离 PG 测试库并套 sqldialect 改写（`?`→`$n`，

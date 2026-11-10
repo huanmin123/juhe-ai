@@ -36,7 +36,7 @@ const (
 	// 聚合由既有聚合器重建，不手工伪造）。
 	DomainStats = "stats"
 	// DomainObservability 拥有 juhe_dataset 维护面（公开接口日志、记录清理
-	// 目标）与审计 / 操作 / 运行日志属主表（缺失时域内跳过）。
+	// 目标）与审计 / 操作日志属主表（缺失时域内跳过）。
 	DomainObservability = "observability"
 	// DomainChatCodexModelCheck 拥有 J3b 模型检测专库与账户健康库（juhe_
 	// codex_context 已随 2026-11-07 跨协议桥退役移除；属主缺失时域内跳过；

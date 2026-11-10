@@ -102,9 +102,6 @@ func TestCleanupProcessedBeforePostgres(t *testing.T) {
 	rec.script("SELECT id, created_at", []string{"id", "created_at"}, [][]driver.Value{
 		{"rec-1", "2026-01-05T01:00:00.000Z"}, {"rec-2", "2026-01-05T02:00:00.000Z"},
 	})
-	rec.script("SELECT usage_id, shard_key", []string{
-		"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
-	}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}, {"rec-2", "sk-1", "sys-1", "key-1", ""}})
 
 	batch, err := store.CleanupProcessedBefore(context.Background(), "2026-09-10T00:00:00.000Z", 10)
 	if err != nil {
@@ -119,9 +116,6 @@ func TestCleanupProcessedBeforePostgres(t *testing.T) {
 	}
 	allText := strings.Join(joined, "\n")
 	for _, needle := range []string{
-		"DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY",
-		"DELETE FROM juhe_usage.usage_record_account_shards",
-		"DELETE FROM juhe_usage.usage_record_api_key_shards",
 		"DELETE FROM juhe_usage.usage_records WHERE (created_at, id) IN",
 	} {
 		if !strings.Contains(allText, needle) {
@@ -141,42 +135,5 @@ func TestCleanupProcessedBeforePostgres(t *testing.T) {
 	batch, err = emptyStore.CleanupProcessedBefore(context.Background(), "2026-09-10T00:00:00.000Z", 10)
 	if err != nil || !strings.Contains(batch.BlockedReason, "游标尚未建立") {
 		t.Fatalf("阻塞批次 = %+v, %v", batch, err)
-	}
-}
-
-// TestPostgresUsageRecordCatalogHelpers：目录条目删除触发 scope catalog
-// 收缩语句（录制驱动，逐语句核对家族）。
-func TestPostgresUsageRecordCatalogHelpers(t *testing.T) {
-	rec := newPGRecorder()
-	store := &UsageRecordsStore{Catalog: openRecorderPG(rec), Stats: openRecorderPG(rec)}
-	rec.script("SELECT usage_id, shard_key", []string{
-		"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
-	}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}})
-	tx, err := store.Catalog.BeginTx(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("BeginTx: %v", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := deletePostgresUsageRecordCatalogRowsByUsageIds(context.Background(), store, tx, []string{"rec-1"}); err != nil {
-		t.Fatalf("deletePostgresUsageRecordCatalogRowsByUsageIds: %v", err)
-	}
-	joined := make([]string, 0, 4)
-	for _, statement := range rec.all() {
-		joined = append(joined, statement.query)
-	}
-	allText := strings.Join(joined, "\n")
-	for _, needle := range []string{
-		"DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY",
-		"DELETE FROM juhe_usage.usage_record_account_shards scope",
-		"DELETE FROM juhe_usage.usage_record_api_key_shards scope",
-		"NOT EXISTS",
-	} {
-		if !strings.Contains(allText, needle) {
-			t.Fatalf("缺少 scope 收缩语句：%s", needle)
-		}
-	}
-	// 空 ids 直接返回。
-	if err := deletePostgresUsageRecordCatalogRowsByUsageIds(context.Background(), store, tx, nil); err != nil {
-		t.Fatalf("空 ids 应直通：%v", err)
 	}
 }

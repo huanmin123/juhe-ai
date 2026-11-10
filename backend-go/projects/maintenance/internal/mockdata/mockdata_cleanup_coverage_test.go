@@ -38,7 +38,6 @@ func TestCleanupOrderPlacesChildrenBeforeParents(t *testing.T) {
 		{qualified(SchemaBusiness, "account_supported_models"), qualified(SchemaBusiness, "models")},
 		{qualified(SchemaBusiness, "account_endpoint_modes"), qualified(SchemaBusiness, "account_connections")},
 		{qualified(SchemaBusiness, "api_keys"), qualified(SchemaBusiness, "route_strategies")},
-		{qualified(SchemaUsage, "usage_record_shard_entries"), qualified(SchemaUsage, "usage_record_shards")},
 	}
 	for _, pair := range requireBefore {
 		child, parent := pair[0], pair[1]
@@ -212,7 +211,7 @@ func TestVerifyCoverageSemantics(t *testing.T) {
 	if !assertionEvaluated("public_api_logs") || !assertionEvaluated("public_api_logs.test_token") {
 		t.Fatalf("observability maintenance 面断言应已评估: %v", report.NotCovered)
 	}
-	for _, name := range []string{"audit_logs", "runtime_log_facet_summary", "operation_log_targets"} {
+	for _, name := range []string{"audit_logs", "audit_payload_refs", "operation_log_targets"} {
 		found := false
 		for _, item := range report.NotCovered {
 			if strings.Contains(item, "属主存储") && strings.HasPrefix(item, name) {

@@ -134,9 +134,8 @@ func TestW16HRunStartupFailArms(t *testing.T) {
 	})
 	t.Run("空 env 缺 PG 连接串配置装载失败返回 1", func(t *testing.T) {
 		// PG 唯一形态：零配置不再可启动（sqlite 自动派生已退役），JUHE_AI_POSTGRES_URL
-		// 必填 fail-fast。F1 runtime-log-indexer 已于 2026-11-09 退役，空 env 下
-		// 首个失败点是 J1 account-health 配置。DATA_DIR 指向自管理目录，避免在
-		// 包目录创建 ./data。
+		// 必填 fail-fast；空 env 下首个失败点是 J1 account-health 配置。
+		// DATA_DIR 指向自管理目录，避免在包目录创建 ./data。
 		root, mkdirErr := os.MkdirTemp("", "w16h-empty-env-")
 		if mkdirErr != nil {
 			t.Fatal(mkdirErr)

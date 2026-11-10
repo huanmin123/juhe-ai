@@ -25,40 +25,16 @@ type ShardWriteRow struct {
 	CreatedAt string
 }
 
-// ShardEntry mirrors UsageRecordShardEntryInput: the catalog entry row.
-type ShardEntry struct {
-	ID                 string   `json:"id"`
-	ShardKey           string   `json:"shardKey"`
-	SystemAccountID    string   `json:"systemAccountId"`
-	TraceID            string   `json:"traceId"`
-	APIKeyID           *string  `json:"apiKeyId"`
-	AccountID          *string  `json:"accountId"`
-	GroupID            *string  `json:"groupId"`
-	Model              *string  `json:"model"`
-	TrafficSource      string   `json:"trafficSource"`
-	Success            bool     `json:"success"`
-	FailureAttribution *string  `json:"failureAttribution"`
-	StatusCode         *int     `json:"statusCode"`
-	ClientIP           *string  `json:"clientIp"`
-	FirstTokenMs       *int     `json:"firstTokenMs"`
-	DurationMs         *int     `json:"durationMs"`
-	CostUsd            *float64 `json:"costUsd"`
-	CreatedAt          string   `json:"createdAt"`
-}
-
-// WritePlan mirrors UsageRecordBatchWritePlan: rows grouped per shard plus
-// the catalog entries.
+// WritePlan mirrors UsageRecordBatchWritePlan: rows grouped per logical shard.
 type WritePlan struct {
 	// RowsByShard preserves the Node Map insertion order (first record's
 	// shard first).
-	RowsByShard  []ShardRows
-	ShardEntries []ShardEntry
-	Locations    []UsageRecordShardLocation
+	RowsByShard []ShardRows
 }
 
 // ShardRows is one map entry of rowsByShard.
 type ShardRows struct {
-	Location UsageRecordShardLocation
+	ShardKey string
 	Rows     []ShardWriteRow
 }
 
@@ -152,8 +128,8 @@ type WritePlanOptions struct {
 }
 
 // BuildWritePlan mirrors buildUsageRecordBatchWritePlan: validate and shape
-// every input into shard-routed rows plus catalog entries. The clock supplies
-// nowIso() for records without createdAt.
+// every input into shard-routed rows. The PostgreSQL store persists only the
+// usage rows. The clock supplies nowIso() for records without createdAt.
 func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions, clock Clock) (WritePlan, error) {
 	plan := WritePlan{}
 	shardIndex := map[string]int{}
@@ -276,38 +252,17 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 			}
 		}
 
-		location, err := UsageRecordLogicalShardLocationForPostgres(id, createdAt, options.ShardCount)
+		shardKey, err := UsageRecordShardKeyForPostgres(id, createdAt, options.ShardCount)
 		if err != nil {
 			return WritePlan{}, err
 		}
-		index, exists := shardIndex[location.ShardKey]
+		index, exists := shardIndex[shardKey]
 		if !exists {
 			index = len(plan.RowsByShard)
-			shardIndex[location.ShardKey] = index
-			plan.RowsByShard = append(plan.RowsByShard, ShardRows{Location: location})
-			plan.Locations = append(plan.Locations, location)
+			shardIndex[shardKey] = index
+			plan.RowsByShard = append(plan.RowsByShard, ShardRows{ShardKey: shardKey})
 		}
 		plan.RowsByShard[index].Rows = append(plan.RowsByShard[index].Rows, row)
-
-		plan.ShardEntries = append(plan.ShardEntries, ShardEntry{
-			ID:                 id,
-			ShardKey:           location.ShardKey,
-			SystemAccountID:    systemAccountID,
-			TraceID:            input.TraceID,
-			APIKeyID:           nilableStringPtr(input.APIKeyID),
-			AccountID:          nilableStringPtr(input.AccountID),
-			GroupID:            nilableStringPtr(input.GroupID),
-			Model:              nilableStringPtr(input.Model),
-			TrafficSource:      trafficSource,
-			Success:            input.Success,
-			FailureAttribution: nilableStringPtr(failureAttribution),
-			StatusCode:         input.StatusCode,
-			ClientIP:           nilableStringPtr(input.ClientIP),
-			FirstTokenMs:       input.FirstTokenMs,
-			DurationMs:         input.DurationMs,
-			CostUsd:            input.CostUsd,
-			CreatedAt:          createdAt,
-		})
 	}
 	return plan, nil
 }
@@ -374,13 +329,6 @@ func UsageFailureAttributionForInput(input UsageRecordInput) (string, error) {
 		return FailureAttributionAccountUpstream, nil
 	}
 	return FailureAttributionGatewayPolicy, nil
-}
-
-func nilableStringPtr(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
 }
 
 func nilableString(value string) any {

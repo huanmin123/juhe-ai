@@ -133,28 +133,6 @@ func (f *w13g3FakeLocks) RecordFailureAsync(ctx context.Context, accountID, reas
 	return nil
 }
 
-type w13g3Queue struct {
-	fakeQueue
-	result    QueueWaitResult
-	err       error
-	sleepMs   int64
-	waitCalls int
-}
-
-func (q *w13g3Queue) WaitForCapacity(ctx context.Context, input HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	q.waitCalls++
-	if q.sleepMs > 0 {
-		select {
-		case <-ctx.Done():
-		case <-time.After(time.Duration(q.sleepMs) * time.Millisecond):
-		}
-	}
-	if q.err != nil {
-		return QueueWaitResult{}, q.err
-	}
-	return q.result, nil
-}
-
 // w13g3Phase 是一次过滤的剧本：err 优先，其次 all，其次 ids，否则放行。
 type w13g3Phase struct {
 	ids           []string
@@ -263,7 +241,6 @@ type w13g3Harness struct {
 	driver      *fakeDriver
 	dispatcher  *fakeFailureDispatcher
 	locks       *w13g3FakeLocks
-	queue       *w13g3Queue
 	suppression *w13g3Suppression
 	degradation *w13g3Degradation
 	usage       *w13g3Usage
@@ -278,13 +255,11 @@ func newW13g3Harness(t *testing.T) *w13g3Harness {
 		driver:      driver,
 		dispatcher:  dispatcher,
 		locks:       &w13g3FakeLocks{},
-		queue:       &w13g3Queue{},
 		suppression: &w13g3Suppression{},
 		degradation: &w13g3Degradation{},
 		usage:       &w13g3Usage{},
 	}
 	engine.Locks = h.locks
-	engine.HighConcurrencyQueue = h.queue
 	engine.Suppression = h.suppression
 	engine.Degradation = h.degradation
 	engine.Usage = h.usage
@@ -873,8 +848,10 @@ func (c *w13g3Concurrency) TryAcquireAsync(ctx context.Context, accountID string
 	return c.fakeConcurrencyStore.TryAcquireAsync(ctx, accountID, concurrencyLimit, options)
 }
 
-func TestW13g3CapacityQueueWaitPaths(t *testing.T) {
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"mode": "queue"}
+func TestW13g3CapacityRetryWaitPaths(t *testing.T) {
+	// 高并发队列退役后，整池容量失败由外环退避等待重跑整池恢复；队列专属
+	// 子测试（queue error surfaces、ready order error）随之删除。
+	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	newCapacityEngine := func(t *testing.T, failFirst int) (*w13g3Harness, *w13g3Concurrency) {
 		t.Helper()
 		h := newW13g3Harness(t)
@@ -884,23 +861,10 @@ func TestW13g3CapacityQueueWaitPaths(t *testing.T) {
 		return h, concurrency
 	}
 
-	t.Run("queue error surfaces", func(t *testing.T) {
-		h, _ := newCapacityEngine(t, 99)
-		h.queue.err = errW13g3
-		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
-		args := w13g3Args(t, req, testAccounts("a-1"))
-		args.GroupSchedulingPolicy = &policy
-		_, err := h.engine.FetchFirstAvailableUpstream(context.Background(), args)
-		if !errors.Is(err, errW13g3) {
-			t.Fatalf("expected queue error, got %v", err)
-		}
-	})
-
-	t.Run("ready reorders and dispatches", func(t *testing.T) {
+	t.Run("retry reorders and dispatches", func(t *testing.T) {
 		server := sequentialServer(t, 0, 500)
 		defer server.Close()
 		h, concurrency := newCapacityEngine(t, 1)
-		h.queue.result = QueueWaitResult{Ready: true, WaitedMs: 5, QueueSize: 1}
 		h.driver.urlByAccount = map[string][]string{"a-1": {server.URL + "/v1/chat/completions"}}
 		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 		args := w13g3Args(t, req, testAccounts("a-1"))
@@ -914,39 +878,8 @@ func TestW13g3CapacityQueueWaitPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("ready order error surfaces", func(t *testing.T) {
-		h, _ := newCapacityEngine(t, 99)
-		h.queue.result = QueueWaitResult{Ready: true}
-		h.degradation.errOnLaneCall = 2 // 第二次（ready 重排）失败
-		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
-		args := w13g3Args(t, req, testAccounts("a-1"))
-		args.GroupSchedulingPolicy = &policy
-		_, err := h.engine.FetchFirstAvailableUpstream(context.Background(), args)
-		if !errors.Is(err, errW13g3) {
-			t.Fatalf("expected order error, got %v", err)
-		}
-	})
-
-	t.Run("aborted after queue wait", func(t *testing.T) {
-		h, _ := newCapacityEngine(t, 99)
-		h.queue.result = QueueWaitResult{Ready: true}
-		h.queue.sleepMs = 300
-		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
-		args := w13g3Args(t, req, testAccounts("a-1"))
-		args.GroupSchedulingPolicy = &policy
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-		args.Signal = ctx
-		_, err := h.engine.FetchFirstAvailableUpstream(context.Background(), args)
-		var aborted *UpstreamRequestAbortedError
-		if !errorsAs(err, &aborted) {
-			t.Fatalf("expected abort after queue wait, got %v", err)
-		}
-	})
-
 	t.Run("retry delay deadline with policy", func(t *testing.T) {
 		h, _ := newCapacityEngine(t, 99)
-		h.queue.result = QueueWaitResult{Ready: false}
 		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 		args := w13g3Args(t, req, testAccounts("a-1"))
 		args.GroupSchedulingPolicy = &policy
@@ -961,7 +894,6 @@ func TestW13g3CapacityQueueWaitPaths(t *testing.T) {
 
 	t.Run("retry delay canceled with policy", func(t *testing.T) {
 		h, _ := newCapacityEngine(t, 99)
-		h.queue.result = QueueWaitResult{Ready: false}
 		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 		args := w13g3Args(t, req, testAccounts("a-1"))
 		args.GroupSchedulingPolicy = &policy
@@ -979,7 +911,6 @@ func TestW13g3CapacityQueueWaitPaths(t *testing.T) {
 
 	t.Run("handoff records capacity failure", func(t *testing.T) {
 		h, _ := newCapacityEngine(t, 99)
-		h.queue.result = QueueWaitResult{Ready: false, Reason: "timeout"}
 		req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 		args := w13g3Args(t, req, testAccounts("a-1"))
 		args.GroupSchedulingPolicy = &policy

@@ -36,8 +36,6 @@ const (
 	probeCandidateScanLimit = 10_000
 )
 
-var probeCandidateStatuses = []string{"unverified", "temporary_unavailable", "rate_limited"}
-
 // MarkPrecheckTemporaryUnavailable 实现 accountquality.PrecheckMutation。
 func (s *Store) MarkPrecheckTemporaryUnavailable(ctx context.Context, input accountquality.PrecheckMutationInput) (accountquality.PrecheckMutationResult, error) {
 	startedAtMS := int64(0)

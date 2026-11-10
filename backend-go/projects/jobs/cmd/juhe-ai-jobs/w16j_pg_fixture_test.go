@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -58,9 +59,9 @@ func w14jSharedEnvValue(t *testing.T, key string) string {
 // 序排列（组合根装配链与各 cmd 测试夹具的外键全部落在集合内）。
 var wgCmdBusinessTables = []string{
 	"system_accounts", "system_teams", "vendors", "global_settings", "system_settings",
-	"route_strategies", "scheduling_preferences", "proxy_profiles", "proxy_pools", "account_tags",
+	"route_strategies", "scheduling_preferences", "proxy_profiles", "proxy_pools", "proxy_pool_members", "account_tags",
 	"resource_authorizations", "resource_authorization_grants", "account_connections",
-	"account_endpoint_modes", "accounts", "groups", "group_accounts",
+	"account_endpoint_modes", "accounts", "account_proxy_leases", "groups", "group_accounts",
 	"group_account_stats_dirty",
 	"account_list_availability_projection_dependency_health",
 	"account_list_availability_dirty",
@@ -196,6 +197,11 @@ func wgCmdKitDB(t *testing.T) (*sql.DB, string) {
 			id text NOT NULL, created_at text NOT NULL, PRIMARY KEY (created_at, id))`); err != nil {
 			return err
 		}
+		// account_proxy_leases 依赖独立 sequence（权威 DDL 中该 sequence 是
+		// 单独 schema 条目，不在表提取面内）。
+		if _, err := db.ExecContext(ctx, `CREATE SEQUENCE IF NOT EXISTS juhe_business.account_proxy_lease_generation_seq`); err != nil {
+			return fmt.Errorf("预置 account_proxy_lease_generation_seq: %w", err)
+		}
 		for _, table := range wgCmdBusinessTables {
 			if _, err := db.ExecContext(ctx, `SET search_path = juhe_business; `+business[table]); err != nil {
 				return fmt.Errorf("预置 juhe_business.%s: %w", table, err)
@@ -251,6 +257,23 @@ func wgCmdKitDB(t *testing.T) (*sql.DB, string) {
 		}
 		return nil
 	})
+	// J2 余额交接表是组合根 account-balance-stats-projection 的启动前置；
+	// 生产 EnsureSchema 是幂等权威 DDL，测试夹具直接复用，避免在测试侧
+	// 复制表结构（w14j j2-service 另有显式 bootstrap 断言）。
+	bootstrap, err := accountbalance.OpenStore(accountbalance.StoreConfig{
+		Mode:        accountbalance.StorePostgres,
+		PostgresURL: testDB.DSN,
+	})
+	if err != nil {
+		t.Fatalf("打开 J2 balance store 做夹具 bootstrap: %v", err)
+	}
+	if err := bootstrap.EnsureSchema(context.Background()); err != nil {
+		_ = bootstrap.Close()
+		t.Fatalf("J2 balance 夹具 bootstrap: %v", err)
+	}
+	if err := bootstrap.Close(); err != nil {
+		t.Fatalf("关闭 J2 balance 夹具 store: %v", err)
+	}
 	return testDB.DB, testDB.DSN
 }
 

@@ -156,8 +156,12 @@ import (
 // EnsureSchema 的重复唯一索引语句删除属 shared 模块不计入）。
 // 637→639：2026-11-09 演练场产物暂存 PG bytea——juhe_business +2
 // （playground_artifacts 建表 + created_at 索引）。
+// 639→641：2026-11-09 非业务数据保留清理索引批——juhe_stats +2
+// （background_task_runs.created_at、background_job_leases.lease_until）。
+// 641→627：2026-11-10 退役 usage shard 目录四表——juhe_usage -14
+// （4 CREATE TABLE + 10 CREATE INDEX，revision 23）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 639
+const goldenPostgresSchemaStatementCount = 627
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -206,11 +210,14 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 54→58：用量统计消费水位批 +4（两个聚合器各一列幂等 ALTER 与各一条
 	// 部分索引）。58→60：2026-11-07 API Key 安全策略批A 存储 +2
 	//（usage_records security_policy_applied / pii_hits_json 幂等 ALTER）。
-	"juhe_usage": 60,
+	// 60→46：2026-11-10 退役 usage shard 目录四表 -14（4 TABLE + 10 INDEX，
+	// revision 23）。
+	"juhe_usage": 46,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
 	// 238→232：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
-	//（-2 TABLE -6 INDEX +2 DROP TABLE）。
-	"juhe_stats": 232,
+	//（-2 TABLE -6 INDEX +2 DROP TABLE）。232→234：2026-11-09 保留清理
+	// 索引批 +2（background_task_runs.created_at / background_job_leases.lease_until）。
+	"juhe_stats": 234,
 	// juhe_codex_context 组 13 条已随 2026-11-07 跨协议桥退役整组移除
 	// （schema 不再保留；存量 schema 由 revision 20 升级步骤 DROP）。
 }
@@ -661,8 +668,9 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	// chatImageGenerationTotalTimeoutSeconds 随生图工具退场。
 	// 67→69：+2 来自调度慢失败直切与墙钟收尾修复设计 §5（快速失败耗时门槛
 	// 与尝试启动最小剩余窗口两键，与 sqlite 侧钉值同源）。
-	if len(pgSeedSystemSettings) != 69 {
-		t.Fatalf("system settings = %d, want 69", len(pgSeedSystemSettings))
+	// 69→68：-1 来自 2026-11-09 T187 运行日志索引保留期键随 F1 下架退场。
+	if len(pgSeedSystemSettings) != 68 {
+		t.Fatalf("system settings = %d, want 68", len(pgSeedSystemSettings))
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

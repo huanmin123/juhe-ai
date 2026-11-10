@@ -97,13 +97,13 @@ func TestW14EAssignNormalizedWindowArms(t *testing.T) {
 }
 
 func TestW14EShimsAndCapacityArms(t *testing.T) {
-	// shims：nil policy 与带 policy 两个分支。
+	// shims：媒体车道上限恒等于账户硬上限（nil policy 与带 policy 两分支一致）。
 	if got := gatewayhotqualityEffectiveImageLaneConcurrencyLimit(5, nil); got != 5 {
 		t.Fatalf("nil policy limit = %d", got)
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"imageLaneMaxConcurrency": 2}
-	if got := gatewayhotqualityEffectiveImageLaneConcurrencyLimit(9, &policy); got != 2 {
-		t.Fatalf("policy limit = %d", got)
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2, ClientIPConcurrencyLimit: 1}
+	if got := gatewayhotqualityEffectiveImageLaneConcurrencyLimit(9, &policy); got != 9 {
+		t.Fatalf("policy limit = %d, want 硬上限 9", got)
 	}
 
 	// capacity：空 runtime key 跳过 + 取更小上限的合并分支。

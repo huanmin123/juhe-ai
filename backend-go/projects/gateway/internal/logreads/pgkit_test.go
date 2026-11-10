@@ -11,10 +11,9 @@ package logreads
 //     routes_test 的 F4 环境走本文件夹具。schema 以生产 SQL 为准：F3 audit
 //     数据集五表经 auditlog.OpenStore(ModePostgres) 的生产 EnsureSchema 建
 //     （juhe_dataset schema、超级分组补列 route_group_id/member_group_id 与
-//     blob GC schema，与生产启动时序一致，不复刻 DDL）；F1 runtime 四表与
-//     F5 public_api_logs 属 jobs runtimelog / maintenance pg_schema_dataset
-//     跨模块生产 SQL，由本夹具逐字节摘录生产 DDL（timestamptz / bigint /
-//     integer / text 列型精确对齐）。测试体手写 SQL 经 fixtureDatasetSQL 对
+//     blob GC schema，与生产启动时序一致，不复刻 DDL）；F5 public_api_logs
+//     属 maintenance pg_schema_dataset 跨模块生产 SQL，由本夹具逐字节摘录
+//     生产 DDL（text 时间列型精确对齐）。测试体手写 SQL 经 fixtureDatasetSQL 对
 //     齐生产 PG 方言（juhe_dataset 限定 + $n）；boolean 列种子用 true/false；
 //     timestamptz 列回读 time.Time 经 readISOText 输出 canonical UTC 毫秒文
 //     本，与 SQLite 文本回读逐字节一致。
@@ -38,14 +37,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// logreadsPGFixtureSchema 是 auth 面 + F1 runtime + F5 public 数据集的夹具
-// schema。juhe_business 两表照抄 maintenance 生产业务 DDL 的列集与类型（同
-// groups 夹具先例）；juhe_dataset 下 F1 四表与 F5 表逐字节摘录生产 SQL：
-// F1 摘自 projects/jobs/internal/runtimelog/schema.go 的 postgresSchema（只
-// 保留读取器消费的表，读取索引无行为语义故省略），F5 摘自
+// logreadsPGFixtureSchema 是 auth 面 + F5 public 数据集的夹具 schema。
+// juhe_business 两表照抄 maintenance 生产业务 DDL 的列集与类型（同 groups
+// 夹具先例）；juhe_dataset 下 F5 表逐字节摘录
 // projects/maintenance/internal/schema/pg_schema_dataset.go（text 时间列型
 // 是 Node F5 管道的生产契约）。F3 audit 五表不在此列——它们走下方生产
-// EnsureSchema 路径。
+// EnsureSchema 路径。运行日志索引表已随 F1 下架，夹具不再创建。
 const logreadsPGFixtureSchema = `
 CREATE SCHEMA IF NOT EXISTS juhe_business;
 CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (
@@ -81,42 +78,6 @@ CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
   PRIMARY KEY (system_account_id, key)
 );
 CREATE SCHEMA IF NOT EXISTS juhe_dataset;
-CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_logs (
-  id text PRIMARY KEY,
-  log_file text,
-  log_offset bigint,
-  line_number integer,
-  time timestamptz NOT NULL,
-  level text NOT NULL,
-  trace_id text,
-  event text,
-  message text,
-  error_message text,
-  raw_json text NOT NULL,
-  created_at timestamptz NOT NULL
-);
-CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_facet_summary (
-  bucket_key text PRIMARY KEY,
-  total_count integer NOT NULL DEFAULT 0,
-  earliest_time timestamptz,
-  latest_time timestamptz,
-  updated_at timestamptz NOT NULL
-);
-CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_level_facets (
-  bucket_key text NOT NULL,
-  level text NOT NULL,
-  count integer NOT NULL DEFAULT 0,
-  updated_at timestamptz NOT NULL,
-  PRIMARY KEY (bucket_key, level)
-);
-CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_event_facets (
-  bucket_key text NOT NULL,
-  event text NOT NULL,
-  count integer NOT NULL DEFAULT 0,
-  latest_time timestamptz,
-  updated_at timestamptz NOT NULL,
-  PRIMARY KEY (bucket_key, event)
-);
 CREATE TABLE IF NOT EXISTS juhe_dataset.public_api_logs (
   id text PRIMARY KEY,
   trace_id text,
@@ -150,7 +111,7 @@ CREATE TABLE IF NOT EXISTS juhe_dataset.public_api_logs (
 
 // fixtureDatasetTablePattern 是夹具手写 seed/校验 SQL 的裸表名改写（与生产
 // 读取器 s.mode.table 的 "juhe_dataset". 限定同形式）。同前缀族按长名优先排列。
-var fixtureDatasetTablePattern = regexp.MustCompile(`\b(FROM|INTO|UPDATE|JOIN)\s+(audit_error_groups|audit_log_attempts|audit_payload_blobs|audit_payload_refs|audit_logs|runtime_log_event_facets|runtime_log_facet_summary|runtime_log_level_facets|runtime_logs|public_api_logs)\b`)
+var fixtureDatasetTablePattern = regexp.MustCompile(`\b(FROM|INTO|UPDATE|JOIN)\s+(audit_error_groups|audit_log_attempts|audit_payload_blobs|audit_payload_refs|audit_logs|public_api_logs)\b`)
 
 // fixtureDatasetBind 把夹具手写 SQL 的 ? 占位符按序改写为 $n（与生产读取器
 // mode.bind 同一惯例；夹具 SQL 的字符串字面量不含 ?，计数不受字面量干扰）。

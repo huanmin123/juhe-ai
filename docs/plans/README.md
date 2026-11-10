@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20261109T053329932Z](计划-20261109T053329932Z-账户亲和同层单向粘性与缓存稳定.md)：账户亲和同层单向粘性与缓存稳定——同层内从 first-binder-wins 改为单向 latch（A 容不下切 B 成功即重绑，A 恢复空闲不主动回切）；P0 收敛同层谓词四层模型（L0 硬门 → L1 四元调度层 → L2 质量带 → L3 运行态/显式覆盖）、共享 1-2s 有界等待（200ms×5-10 次，RPM reset 超预算立即切）、并发 expected-owner CAS 最后成功者赢、D-94 普通分组容量忙 any→every；缓存共享不可知，不建模缓存域，跨账户切换按可能丢缓存处理并计数；30 分钟滑动 lease、P1 每账户会话名额（`clamp(min(C×4,R/2),32,10000)`、规划/等待/回退/LRU、`slot_fallback` 跨层重绑）已落地；P2 粘性队列+跨层驻留。设计契约见 `docs/functions/账户亲和同层单向粘性与会话名额设计.md`。**状态：P0 + P1 已完成，待发布（T199）。**
+
 - [PLAN-20261106T163123672Z](计划-20261106T163123672Z-多节点发布基建改造.md)：多节点发布基建改造——P0 集群上线/开发评估文档、P1 版本与门禁/账本（`MinRequiredRevision`、`min_readable_binary_revision`、expand/contract）、P2 gateway 无状态（RPM/OAuth/J3b 验证码/管理面限流/额度在途/Realtime 计数）、P3 jobs leader/共享文件/前端/LB/按版本指标、P4 多机演练；单机允许停写，集群首次门禁切换必须停写。**状态：进行中（2026-11-07：P0/P1/P2 完成，P3 jobs 全局 leader 完成，剩余共享文件/前端/LB/发布脚本）。**
 
 - [PLAN-20261106T162344524Z](计划-20261106T162344524Z-退役跨协议模型映射与ChatBridge清理.md)：退役唯一跨协议映射 `responses → chat_completions`，强制客户端协议与上游协议一致（7 个协议等价 pair、13 个请求形态）；前端两个协议下拉合并为一个，客户端模型可跨供应商但须支持所选协议，上游模型限账户 `supportedModels`；同批删除 Chat bridge / gateway summary compact、`juhe_codex_context` schema、`JUHE_AI_CODEX_CONTEXT_ROOT`、jobs 清理任务与测试；schema revision 20 删除全部非合规存量映射行并归一历史 family token（revision 19 已由 API Key 安全策略批占用）。**状态：进行中（2026-11-07 代码已实施；待发布验证项已登记 [T152](../待办与阻塞事项.md#t152)，由用户统一发布窗口处理）。**

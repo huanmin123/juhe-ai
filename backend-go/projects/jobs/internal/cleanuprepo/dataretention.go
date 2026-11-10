@@ -80,11 +80,6 @@ var nonBusinessDatasetCleanupTables = []statsTableRule{
 	{"account_record_cleanup_targets", "updated_at", "iso"},
 }
 
-var nonBusinessUsageCatalogCleanupTables = []statsTableRule{
-	{"usage_record_account_shards", "last_seen_at", "iso"},
-	{"usage_record_api_key_shards", "last_seen_at", "iso"},
-}
-
 // usageStatsRetentionSpec 照 cleanupUsageStatsBucketsBefore 的表/列/结果字段
 // 映射（field 为 retention.UsageStatsRetentionCounts 的赋值序）。
 type usageStatsRetentionSpec struct {
@@ -428,11 +423,10 @@ func addNonBusinessRows(counts *retention.NonBusinessDataCleanupCounts, key stri
 }
 
 // NonBusinessDatasetStore 是非业务数据硬清理的 dataset 半区
-// （scope='dataset'：usage records + dataset/usage-catalog 表 + 空分片文件），
-// 对应 retention.NonBusinessDataCleaner。
+// （scope='dataset'：usage records + dataset 表），对应
+// retention.NonBusinessDataCleaner。
 type NonBusinessDatasetStore struct {
 	Dataset      *DB
-	UsageCatalog *DB
 	Stats        *DB
 	UsageRecords *UsageRecordsStore
 	Timezone     func(ctx context.Context) (*time.Location, error)
@@ -467,15 +461,6 @@ func (s *NonBusinessDatasetStore) CleanupBefore(ctx context.Context, cutoffAt st
 		}
 		addNonBusinessRows(&counts, "dataset."+rule.TableName, deleted, int64(batch))
 	}
-	if !usageRecords.HasMore && usageRecords.BlockedReason == "" {
-		for _, rule := range nonBusinessUsageCatalogCleanupTables {
-			deleted, err := deleteRowsBefore(ctx, s.UsageCatalog, "", rule.TableName, rule.TimeColumnName, cutoffs[rule.CutoffKey], batch)
-			if err != nil {
-				return counts, err
-			}
-			addNonBusinessRows(&counts, "usage-catalog."+rule.TableName, deleted, int64(batch))
-		}
-	}
 
 	return counts, nil
 }
@@ -504,10 +489,9 @@ func (s *UsageRecordsStore) missingCursorBlockedReason() string {
 	return "使用记录清理的统计聚合安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试"
 }
 
-type ShardCleanupRow struct {
+type UsageCleanupRow struct {
 	ID        string
 	CreatedAt string
-	Location  ShardLocation
 }
 
 func placeholderList(count int) string {
@@ -770,7 +754,7 @@ func atoi(value string) int {
 	return out
 }
 
-func (s *UsageRecordsStore) selectPostgresCleanupRows(ctx context.Context, cutoffCreatedAt string, cursor cleanupCursor, limit int) ([]ShardCleanupRow, error) {
+func (s *UsageRecordsStore) selectPostgresCleanupRows(ctx context.Context, cutoffCreatedAt string, cursor cleanupCursor, limit int) ([]UsageCleanupRow, error) {
 	rows, err := s.Catalog.QueryContext(ctx, s.Catalog.Bind(`
       SELECT id, created_at
       FROM juhe_usage.usage_records
@@ -785,7 +769,7 @@ func (s *UsageRecordsStore) selectPostgresCleanupRows(ctx context.Context, cutof
 		return nil, err
 	}
 	defer rows.Close()
-	var output []ShardCleanupRow
+	var output []UsageCleanupRow
 	for rows.Next() {
 		var id, createdAt sql.NullString
 		if err := rows.Scan(&id, &createdAt); err != nil {
@@ -794,103 +778,13 @@ func (s *UsageRecordsStore) selectPostgresCleanupRows(ctx context.Context, cutof
 		if strings.TrimSpace(id.String) == "" || strings.TrimSpace(createdAt.String) == "" {
 			continue
 		}
-		output = append(output, ShardCleanupRow{ID: strings.TrimSpace(id.String), CreatedAt: strings.TrimSpace(createdAt.String)})
+		output = append(output, UsageCleanupRow{ID: strings.TrimSpace(id.String), CreatedAt: strings.TrimSpace(createdAt.String)})
 	}
 	return output, rows.Err()
 }
 
-// deletePostgresUsageRecordCatalogRowsByUsageIds 照 usage-record-catalog-cleanup.ts。
-func deletePostgresUsageRecordCatalogRowsByUsageIds(ctx context.Context, s *UsageRecordsStore, tx *sql.Tx, usageIDs []string) error {
-	ids := uniqueNonEmpty(usageIDs)
-	if len(ids) == 0 {
-		return nil
-	}
-	scopes, err := listPostgresScopeEntries(ctx, s, tx, ids)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY($1::text[])`, ids); err != nil {
-		return err
-	}
-	return cleanupPostgresScopeShardCatalog(ctx, scopes, tx)
-}
-
-func listPostgresScopeEntries(ctx context.Context, s *UsageRecordsStore, tx *sql.Tx, ids []string) ([]scopeEntry, error) {
-	rows, err := tx.QueryContext(ctx, `
-      SELECT usage_id, shard_key, system_account_id, api_key_id, account_id
-      FROM juhe_usage.usage_record_shard_entries
-      WHERE usage_id = ANY($1::text[])
-	`, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var scopes []scopeEntry
-	for rows.Next() {
-		var entry scopeEntry
-		var usageID, shardKey, systemAccountID, apiKeyID, accountID sql.NullString
-		if err := rows.Scan(&usageID, &shardKey, &systemAccountID, &apiKeyID, &accountID); err != nil {
-			return nil, err
-		}
-		entry.UsageID, entry.ShardKey, entry.SystemAccountID = usageID.String, shardKey.String, systemAccountID.String
-		entry.APIKeyID, entry.AccountID = apiKeyID.String, accountID.String
-		if entry.UsageID != "" && entry.ShardKey != "" && entry.SystemAccountID != "" {
-			scopes = append(scopes, entry)
-		}
-	}
-	return scopes, rows.Err()
-}
-
-func cleanupPostgresScopeShardCatalog(ctx context.Context, scopes []scopeEntry, tx *sql.Tx) error {
-	accountScopes := map[string]bool{}
-	apiKeyScopes := map[string]bool{}
-	for _, scope := range scopes {
-		if accountID := strings.TrimSpace(scope.AccountID); accountID != "" {
-			accountScopes[accountID+"\x00"+scope.ShardKey] = true
-		}
-		if apiKeyID := strings.TrimSpace(scope.APIKeyID); apiKeyID != "" {
-			apiKeyScopes[apiKeyID+"\x00"+scope.SystemAccountID+"\x00"+scope.ShardKey] = true
-		}
-	}
-	for key := range accountScopes {
-		parts := strings.SplitN(key, "\x00", 2)
-		// scope 键由非空 account_id 与 shard_key 拼接，分段校验恒通过，
-		// 守卫已按 w13e 收尾授权删除。
-		if _, err := tx.ExecContext(ctx, `
-      DELETE FROM juhe_usage.usage_record_account_shards scope
-      WHERE scope.account_id = $1 AND scope.shard_key = $2
-        AND NOT EXISTS (
-          SELECT 1 FROM juhe_usage.usage_record_shard_entries entry
-          WHERE entry.account_id = scope.account_id AND entry.shard_key = scope.shard_key
-          LIMIT 1
-        )
-		`, parts[0], parts[1]); err != nil {
-			return err
-		}
-	}
-	for key := range apiKeyScopes {
-		parts := strings.SplitN(key, "\x00", 3)
-		// scope 键由非空 api_key_id/system_account_id/shard_key 拼接，
-		// 分段校验恒通过，守卫已按 w13e 收尾授权删除。
-		if _, err := tx.ExecContext(ctx, `
-      DELETE FROM juhe_usage.usage_record_api_key_shards scope
-      WHERE scope.api_key_id = $1 AND scope.system_account_id = $2 AND scope.shard_key = $3
-        AND NOT EXISTS (
-          SELECT 1 FROM juhe_usage.usage_record_shard_entries entry
-          WHERE entry.api_key_id = scope.api_key_id
-            AND entry.system_account_id = scope.system_account_id
-            AND entry.shard_key = scope.shard_key
-          LIMIT 1
-        )
-		`, parts[0], parts[1], parts[2]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // deletePostgresRows 照 deletePostgresUsageRecordRows。
-func (s *UsageRecordsStore) deletePostgresRows(ctx context.Context, rows []ShardCleanupRow) (int64, error) {
+func (s *UsageRecordsStore) deletePostgresRows(ctx context.Context, rows []UsageCleanupRow) (int64, error) {
 	type key struct{ createdAt, id string }
 	var keys []key
 	seen := map[string]bool{}
@@ -906,18 +800,11 @@ func (s *UsageRecordsStore) deletePostgresRows(ctx context.Context, rows []Shard
 	if len(keys) == 0 {
 		return 0, nil
 	}
-	usageIDs := make([]string, 0, len(keys))
-	for _, item := range keys {
-		usageIDs = append(usageIDs, item.id)
-	}
 	tx, err := s.Catalog.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := deletePostgresUsageRecordCatalogRowsByUsageIds(ctx, s, tx, usageIDs); err != nil {
-		return 0, err
-	}
 	placeholders := strings.TrimSuffix(strings.Repeat("(?, ?),", len(keys)), ",")
 	args := make([]any, 0, len(keys)*2)
 	for _, item := range keys {

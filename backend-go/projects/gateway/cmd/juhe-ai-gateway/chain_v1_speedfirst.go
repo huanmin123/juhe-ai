@@ -506,11 +506,11 @@ func (l *v1DispatchLoop) speedFirstRouteEligibleDispatchAccounts(
 	return output, nil
 }
 
-// chainSchedulingPolicyValueOf 解引用调度策略指针（nil = 空 map 语义，
-// gatewayhotquality 内部按缺省处理）。
+// chainSchedulingPolicyValueOf 解引用调度策略指针；nil 返回默认两键值
+// （-1/0 = 两项均关闭），避免把 0 当作合法阈值外泄。
 func chainSchedulingPolicyValueOf(policy *gatewayruntimecache.GroupSchedulingPolicy) gatewayruntimecache.GroupSchedulingPolicy {
 	if policy == nil {
-		return nil
+		return gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: 0}
 	}
 	return *policy
 }

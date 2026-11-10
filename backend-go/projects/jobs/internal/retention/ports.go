@@ -108,8 +108,6 @@ type AccountUsageSnapshotUpsertInput struct {
 type StatsWriter interface {
 	CleanupUsageStatsRetention(ctx context.Context, input UsageStatsRetentionInput) (UsageStatsRetentionCounts, error)
 	CleanupNonBusinessStatsData(ctx context.Context, cutoffAt string, limit int) (NonBusinessDataCleanupCounts, error)
-	CleanupDeletedApiKeyRecordStats(ctx context.Context, input DeletedApiKeyRecordStatsCleanupInput) error
-	CleanupDeletedAccountRecordStats(ctx context.Context, input DeletedAccountRecordStatsCleanupInput) error
 	UpsertAccountUsageSnapshots(ctx context.Context, inputs []AccountUsageSnapshotUpsertInput) error
 }
 
@@ -181,11 +179,10 @@ type RelatedCleanupResult struct {
 	SafetyCursorID        string
 }
 
-// RelatedRecordCleaner executes the per-target record cleanup jobs. statsWriter
-// mirrors the Node optional stats cleanup callback: postgres mode passes nil.
+// RelatedRecordCleaner executes the per-target record cleanup jobs.
 type RelatedRecordCleaner interface {
-	CleanupApiKeyRelated(ctx context.Context, job RecordMaintenanceJob, statsWriter StatsWriter) (RelatedCleanupResult, error)
-	CleanupAccountRelated(ctx context.Context, job RecordMaintenanceJob, statsWriter StatsWriter) (RelatedCleanupResult, error)
+	CleanupApiKeyRelated(ctx context.Context, job RecordMaintenanceJob) (RelatedCleanupResult, error)
+	CleanupAccountRelated(ctx context.Context, job RecordMaintenanceJob) (RelatedCleanupResult, error)
 }
 
 // UsageRecordsJobResult mirrors the cleanupUsageRecordsBefore return object
@@ -226,26 +223,10 @@ type RecordMaintenanceExecutor struct {
 	StatsWriter     StatsWriter
 }
 
-// DeletedApiKeyRecordStatsCleanupInput mirrors DeletedApiKeyRecordStatsCleanupInput.
-type DeletedApiKeyRecordStatsCleanupInput struct {
-	Target       APIKeyCleanupTarget
-	Rows         []map[string]any
-	UpdatedAt    string
-	ShardDeleted bool
-}
-
 // APIKeyCleanupTarget mirrors DeletedApiKeyRecordCleanupTarget.
 type APIKeyCleanupTarget struct {
 	APIKeyID        string
 	SystemAccountID string
-}
-
-// DeletedAccountRecordStatsCleanupInput mirrors the account variant.
-type DeletedAccountRecordStatsCleanupInput struct {
-	Target       ExpiredDeletedAccountTarget
-	Rows         []map[string]any
-	UpdatedAt    string
-	ShardDeleted bool
 }
 
 // PendingCleanupSummary mirrors PendingDeletedApiKeyRecordCleanupSummary /
@@ -260,14 +241,13 @@ type PendingCleanupSummary struct {
 
 // APIKeyRecordCleanupRetryer mirrors cleanupPendingDeletedApiKeyRecordTargetsAsync.
 type APIKeyRecordCleanupRetryer interface {
-	CleanupPendingTargets(ctx context.Context, limit int, statsWriter StatsWriter) (PendingCleanupSummary, error)
+	CleanupPendingTargets(ctx context.Context, limit int) (PendingCleanupSummary, error)
 }
 
 // AccountRecordCleanupRetryer mirrors cleanupPendingDeletedAccountRecordTargetsAsync.
 type AccountRecordCleanupRetryer interface {
-	CleanupPendingTargets(ctx context.Context, limit int, statsWriter StatsWriter) (PendingCleanupSummary, error)
+	CleanupPendingTargets(ctx context.Context, limit int) (PendingCleanupSummary, error)
 }
-
 
 // 2026-11-07 codex-context 退役：原 StorageKeyDeletionResult /
 // CodexContextStorageKeyDeleter（segments 文件删除端口）随桥删除。

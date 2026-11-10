@@ -63,8 +63,6 @@ import (
 	"os/exec"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // w1mExpireOwnerLeaseRow 直改 lease 行的 lease_until（模拟 TTL 已过期的安全
@@ -106,8 +104,6 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 	t.Run("A-F3过期租约接管成功", func(t *testing.T) {
 		root := w1mAuditRoot(t, "lease-wait-a")
 		business := w1mBusinessPostgres(t)
-		audit := pgtestkit.NewTestDatabase(t)
-		f4 := pgtestkit.NewTestDatabase(t)
 
 		// 进程 1：system api 组合根（M4 同款构造），
 		// F3 与 F4 的启动获取租约都由本进程持有。
@@ -115,8 +111,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir1 := w1bCoverageDir(t, "M1-lease-wait-a-owner1")
 		env1 := w1bScenarioEnv(t, coverageDir1, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-wait-a-audit", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root, "w1m-wait-a-audit", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env1 = append(env1, w1mSystemAPIEnvPairs(t, root, business.DSN, w1bFreePort(t))...)
 		env1 = append(env1, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr1)
 		cmd1, done1, cancel1, _, _ := w1mStartOwnerProcess(t, coverageDir1, env1)
@@ -127,8 +123,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 
 		// F3 lease 行置为明确过去（被测接管窗口）；F4 行同改（同 env 共用
 		// F4 库的前置条件，见文件头说明）。
-		w1mExpireOwnerLeaseRow(t, audit.DB, "juhe_dataset.audit_log_owner_leases", "f3-audit-log-persistence")
-		w1mExpireOwnerLeaseRow(t, f4.DB, "juhe_dataset.operation_log_owner_leases", "f4-operation-log-persistence")
+		w1mExpireOwnerLeaseRow(t, business.DB, "juhe_dataset.audit_log_owner_leases", "f3-audit-log-persistence:w1m-wait-a-audit")
+		w1mExpireOwnerLeaseRow(t, business.DB, "juhe_dataset.operation_log_owner_leases", "f4-operation-log-persistence:w1m-f4")
 
 		// 进程 2：同 env（仅监听端口换新，进程 1 已退出）+ wait=10s →
 		// F3/F4 过期租约启动获取接管成功，健康端点就绪。
@@ -136,8 +132,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-a-owner2")
 		env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-wait-a-audit", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root, "w1m-wait-a-audit", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env2 = append(env2, w1mSystemAPIEnvPairs(t, root, business.DSN, w1bFreePort(t))...)
 		env2 = append(env2,
 			"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,
@@ -156,16 +152,14 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 	t.Run("B-第二实例独立lease启动并等待retention", func(t *testing.T) {
 		root := w1mAuditRoot(t, "lease-wait-b")
 		business := w1mBusinessPostgres(t)
-		audit := pgtestkit.NewTestDatabase(t)
-		f4 := pgtestkit.NewTestDatabase(t)
 
 		// 进程 1：M1 同款构造（F3 启动获取 + F4 专有租约）。
 		healthAddr1 := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
 		coverageDir1 := w1bCoverageDir(t, "M1-lease-wait-b-owner1")
 		env1 := w1bScenarioEnv(t, coverageDir1, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-wait-b-audit", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root, "w1m-wait-b-audit", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env1 = append(env1,
 			"JUHE_AI_POSTGRES_URL="+business.DSN,
 			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
@@ -181,7 +175,7 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-b-rival")
 		env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-wait-b-rival", audit.DSN, business.DSN)...,
+			w1mAuditEnvPairs(t, root, "w1m-wait-b-rival", business.DSN)...,
 		), "JUHE_AI_POSTGRES_URL="+business.DSN, "JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
 		env2 = append(env2,
 			"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,
@@ -193,12 +187,10 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 			<-done2
 			t.Fatalf("第二实例未在 20s 内就绪 stdout: %s stderr: %s", stdout2.String(), stderr2.String())
 		}
-		if !w1mWaitOutputContains(t, stdout2, "retention owner lease held by another gateway instance", 15*time.Second) {
-			cancel2()
-			_ = cmd2.Process.Kill()
-			<-done2
-			t.Fatalf("第二实例的 retention 等待提示未出现 stdout: %s stderr: %s", stdout2.String(), stderr2.String())
-		}
+		// 本质保证：前持有者已被强杀、retention 全局 lease 可能仍在 TTL 内
+		// （proc1 死后不再续租），rival 实例必须正常就绪且不因 contention
+		// 退出。「held by another / 直接 acquired」两种日志形态取决于首次
+		// 尝试落在 TTL 内还是外，属时序而非契约，不作断言。
 		w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-lease-wait-b-rival")
 	})
 
@@ -206,17 +198,14 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		root1 := w1mAuditRoot(t, "lease-wait-c1")
 		root2 := w1mAuditRoot(t, "lease-wait-c2")
 		business := w1mBusinessPostgres(t)
-		audit1 := pgtestkit.NewTestDatabase(t)
-		audit2 := pgtestkit.NewTestDatabase(t)
-		f4 := pgtestkit.NewTestDatabase(t)
 
 		// 进程 1：M1 同款"同时持有 F3+F4"构造（F4 走组件专有租约分支）。
 		healthAddr1 := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
 		coverageDir1 := w1bCoverageDir(t, "M1-lease-wait-c-owner1")
 		env1 := w1bScenarioEnv(t, coverageDir1, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root1, "w1m-wait-c-audit-1", audit1.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root1, "w1m-wait-c-audit-1", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env1 = append(env1,
 			"JUHE_AI_POSTGRES_URL="+business.DSN,
 			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
@@ -227,7 +216,7 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 
 		// F4 lease 行置为明确过去（被测接管窗口）；F3 行不动（进程 2 换
 		// 独立审计库，无 F3 接管前置）。
-		w1mExpireOwnerLeaseRow(t, f4.DB, "juhe_dataset.operation_log_owner_leases", "f4-operation-log-persistence")
+		w1mExpireOwnerLeaseRow(t, business.DB, "juhe_dataset.operation_log_owner_leases", "f4-operation-log-persistence:w1m-f4")
 
 		// 进程 2：独立 F3 审计库 + 共享 F4 库 + system api 组合根 → F4 启动
 		// 获取点带 wait=10s 接管过期租约。
@@ -235,8 +224,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-c-owner2")
 		env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root2, "w1m-wait-c-audit-2", audit2.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root2, "w1m-wait-c-audit-2", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env2 = append(env2, w1mSystemAPIEnvPairs(t, root2, business.DSN, w1bFreePort(t))...)
 		env2 = append(env2,
 			"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,
@@ -249,16 +238,14 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 	t.Run("D-F3同owner未过期租约直接接管", func(t *testing.T) {
 		root := w1mAuditRoot(t, "lease-wait-d")
 		business := w1mBusinessPostgres(t)
-		audit := pgtestkit.NewTestDatabase(t)
-		f4 := pgtestkit.NewTestDatabase(t)
 
 		// 进程 1：M1 同款构造（F3 启动获取由本进程持有）。
 		healthAddr1 := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
 		coverageDir1 := w1bCoverageDir(t, "M1-lease-wait-d-owner1")
 		env1 := w1bScenarioEnv(t, coverageDir1, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-wait-d-audit", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root, "w1m-wait-d-audit", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env1 = append(env1,
 			"JUHE_AI_POSTGRES_URL="+business.DSN,
 			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
@@ -274,8 +261,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-d-owner2")
 		env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-wait-d-audit", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root, "w1m-wait-d-audit", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env2 = append(env2,
 			"JUHE_AI_POSTGRES_URL="+business.DSN,
 			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
@@ -302,9 +289,6 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		root1 := w1mAuditRoot(t, "lease-wait-e1")
 		root2 := w1mAuditRoot(t, "lease-wait-e2")
 		business := w1mBusinessPostgres(t)
-		audit1 := pgtestkit.NewTestDatabase(t)
-		audit2 := pgtestkit.NewTestDatabase(t)
-		f4 := pgtestkit.NewTestDatabase(t)
 
 		// 进程 1：M1 同款"同时持有 F3+F4"构造（F4 走组件专有租约分支，
 		// owner_id 固定 w1m-f4，与进程 2 的 F4 实例 ID 相同）。
@@ -312,8 +296,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir1 := w1bCoverageDir(t, "M1-lease-wait-e-owner1")
 		env1 := w1bScenarioEnv(t, coverageDir1, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root1, "w1m-wait-e-audit-1", audit1.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root1, "w1m-wait-e-audit-1", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env1 = append(env1, w1mSystemAPIEnvPairs(t, root1, business.DSN, w1bFreePort(t))...)
 		env1 = append(env1, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr1)
 		cmd1, done1, cancel1, stdout1, stderr1 := w1mStartOwnerProcess(t, coverageDir1, env1)
@@ -332,8 +316,8 @@ func TestW1MOwnerLeaseAcquireWaitArms(t *testing.T) {
 		coverageDir2 := w1bCoverageDir(t, "M1-lease-wait-e-owner2")
 		env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root2, "w1m-wait-e-audit-2", audit2.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root2, "w1m-wait-e-audit-2", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env2 = append(env2, w1mSystemAPIEnvPairs(t, root2, business.DSN, w1bFreePort(t))...)
 		env2 = append(env2,
 			"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,

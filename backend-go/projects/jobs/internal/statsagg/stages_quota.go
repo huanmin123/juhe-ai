@@ -103,38 +103,6 @@ func (w *WindowRefresher) scopeLimit() int {
 	return quotaHourlyWindowDefaultScopeLimit
 }
 
-func (w *WindowRefresher) listQuotaHourlyWindowScopeBindings(ctx context.Context) ([]scopeBinding, error) {
-	query := w.Dialect.bind(`
-		SELECT system_account_id, scope_type, scope_id, window_hours
-		FROM ` + w.Dialect.BusinessTable("request_quota_hourly_window_scope_bindings") + `
-		ORDER BY window_hours ASC, system_account_id ASC, scope_type ASC, scope_id ASC
-	`)
-	rows, err := w.businessDB().QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	bindings := []scopeBinding{}
-	for rows.Next() {
-		var systemAccountID, scopeType, scopeID sql.NullString
-		var windowHours int64
-		if err := rows.Scan(&systemAccountID, &scopeType, &scopeID, &windowHours); err != nil {
-			return nil, err
-		}
-		hours := int(windowHours)
-		if !validQuotaHourlyWindowHours(hours) {
-			continue
-		}
-		bindings = append(bindings, scopeBinding{
-			systemAccountID: systemAccountID.String,
-			scopeType:       scopeType.String,
-			scopeID:         scopeID.String,
-			windowHours:     hours,
-		})
-	}
-	return bindings, rows.Err()
-}
-
 // ---- PG 增量消费（refreshUsageQuotaHourlyWindowsCacheAsync :1802-1950）----
 //
 // 语句按 Dialect.bind 双模生成：除 PG 专属的 FOR UPDATE SKIP LOCKED 外，

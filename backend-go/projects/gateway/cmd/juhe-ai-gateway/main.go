@@ -152,6 +152,11 @@ func main() {
 	// safego/inval 的兜底路径统一走 slog.Default()，这里把进程 JSON logger
 	// 设为默认。
 	slog.SetDefault(logger)
+	// D-93：Codex/Responses 历史脱敏生产接线。此前 hook 恒 nil，Grok 等上游
+	// 产生的 history item id 会随会话切换原样发给真实 GPT 上游并被拒绝（用户
+	// 实证：Grok 转 GPT 给下游用后，上下文切到真实 GPT 账户时上游不认 Grok
+	// 的 item id）。接线后 Front/Post/Adapter 三阶段按归档 Node 语义清理。
+	wireCodexHistorySanitizer()
 	// 构建身份首行（升级兼容与迁移账本设计 §6.3）：每次启动一次性输出，供运维从日志直接辨识运行版本。
 	logger.Info("juhe-ai-gateway starting",
 		"version", version.Version,

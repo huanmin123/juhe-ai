@@ -507,8 +507,11 @@ func TestW1OComposeChainRuntimeServicesGuardsAndBadRedisURLs(t *testing.T) {
 			}
 			t.Fatal("坏状态 redis URL 必须报错")
 		}
-		if !strings.Contains(err.Error(), "parse state redis url") {
-			t.Fatalf("错误 = %v，want 包含 parse state redis url", err)
+		// 统一 RedisURL 契约后 cache/state 同源同客户端工厂，独立 state URL
+		// 解析步骤（parse state redis url）已退役；坏 URL 的第一落点是链条
+		// 首个 redis 构造（共享缓存工厂），与上方坏缓存臂同点、断言更精确。
+		if !strings.Contains(err.Error(), "create gateway redis shared cache factory") {
+			t.Fatalf("错误 = %v，want 包含 create gateway redis shared cache factory", err)
 		}
 	})
 }
@@ -554,7 +557,6 @@ func TestW1OComposeChainRuntimeServicesMemorySuccess(t *testing.T) {
 		"ConfiguredPolicyAvoidance": services.ConfiguredPolicyAvoidance != nil,
 		"AccountCircuits":           services.AccountCircuits != nil,
 		"ClientIPSlots":             services.ClientIPSlots != nil,
-		"HighConcurrencyQueue":      services.HighConcurrencyQueue != nil,
 		"SuppressionStore":          services.SuppressionStore != nil,
 		"SuppressionWaiter":         services.SuppressionWaiter != nil,
 		"ProxyHealth":               services.ProxyHealth != nil,

@@ -61,7 +61,7 @@ func TestW1bTerminalExitEmissionSourceGuard(t *testing.T) {
 		return ok && fn.Name == "emitTerminalDispatchDecision"
 	}
 
-	const minKnownExits = 15 // 2026-10-02 基线：fallback 6 + completed 9
+	const minKnownExits = 11 // 2026-10-02 基线 fallback 6 + completed 9；2026-11-09 高并发排队/繁忙分支退役后降为 11
 	exits, guarded := 0, 0
 	ast.Inspect(file, func(n ast.Node) bool {
 		block, ok := n.(*ast.BlockStmt)

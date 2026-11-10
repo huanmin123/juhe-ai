@@ -47,9 +47,6 @@ func seedKitPGAPIKeyFlow(t *testing.T, rec *pgRecorder, withResidualUsage bool) 
 		{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 	})
 	rec.script("FROM juhe_usage.usage_records", usageRecordColumns(), [][]driver.Value{usageRecordDriverRow(row)})
-	rec.script("SELECT usage_id, shard_key", []string{
-		"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
-	}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}})
 	if withResidualUsage {
 		rec.script("SELECT 1 AS found", []string{"found"}, [][]driver.Value{{int64(1)}})
 	}
@@ -65,8 +62,6 @@ func TestPGAPIKeyFlowErrorStages(t *testing.T) {
 		{"deduction select", "FOR UPDATE"},
 		{"stats subtract", "GREATEST(0, request_count"},
 		{"mark subtracted", "UPDATE juhe_stats.usage_record_cleanup_deductions"},
-		{"catalog entries", "usage_record_shard_entries"},
-		{"api key scope shrink", "usage_record_api_key_shards"},
 		{"partition delete", "DELETE FROM juhe_usage.usage_records"},
 		{"mark deleted", "SET shard_deleted_at = COALESCE"},
 		{"usage exists", "SELECT 1 AS found"},
@@ -130,8 +125,6 @@ func TestPGAccountFlowErrorStages(t *testing.T) {
 		{"deduction select", "FOR UPDATE"},
 		{"stats subtract", "GREATEST(0, request_count"},
 		{"mark subtracted", "UPDATE juhe_stats.usage_record_cleanup_deductions"},
-		{"catalog entries", "usage_record_shard_entries"},
-		{"account scope shrink", "usage_record_account_shards"},
 		{"partition delete", "DELETE FROM juhe_usage.usage_records"},
 		{"mark deleted", "SET shard_deleted_at = COALESCE"},
 		{"usage exists", "SELECT 1 AS found"},
@@ -302,10 +295,6 @@ func TestDataRetentionPGErrorStages(t *testing.T) {
 			{"partition count", "SELECT COUNT(*) AS total"},
 			{"partition detach", "DETACH PARTITION"},
 			{"batch select", "SELECT id, created_at"},
-			{"scope entries", "SELECT usage_id, shard_key"},
-			{"entries delete", "DELETE FROM juhe_usage.usage_record_shard_entries"},
-			{"account shrink", "DELETE FROM juhe_usage.usage_record_account_shards"},
-			{"api key shrink", "DELETE FROM juhe_usage.usage_record_api_key_shards"},
 			{"rows delete", "DELETE FROM juhe_usage.usage_records WHERE (created_at, id) IN"},
 		}
 		runPGStages(t, stages, func(t *testing.T, stage pgStage) error {

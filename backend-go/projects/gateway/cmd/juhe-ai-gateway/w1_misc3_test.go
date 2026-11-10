@@ -419,9 +419,9 @@ func TestW1TrafficMigrationBridge(t *testing.T) {
 	}
 	defer mini.Close()
 	affinity, err := gatewaysession.NewAffinityService(gatewaysession.AffinityConfig{
-		Secret:        "w1-traffic-migration-secret-0123456789abcdef",
+		Secret:   "w1-traffic-migration-secret-0123456789abcdef",
 		RedisURL: "redis://" + mini.Addr(),
-		Clock:         func() time.Time { return time.UnixMilli(1728000000000) },
+		Clock:    func() time.Time { return time.UnixMilli(1728000000000) },
 	})
 	if err != nil {
 		t.Fatalf("affinity service = %v", err)
@@ -456,8 +456,7 @@ func TestW1BodyRejectionUsageFailure(t *testing.T) {
 	// 否则异步 flush 与 RemoveAll 在 Windows 上竞态（"directory is not empty"）。
 	defer recorder.Close()
 	t.Cleanup(spool.StopReplay)
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, 0, 0)
-	dispatch.OverflowEnabled = spool != nil
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 0, 0)
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithClock(gatewaypreauth.SystemClock{})
 	rec := &chainBodyRejectionRecorder{usage: service}
@@ -499,13 +498,8 @@ func (c *captureUsageRecorder) EnqueueUsageRecord(_ gatewayusage.Ctx, input gate
 // 凭据 query（Gemini `?key=`）时必须经 SanitizeURLForLog 掩码后落库
 // （RecordGatewayFailure 直通透传快照，不经过 BuildUsageRequestSnapshot）。
 func TestW1BodyRejectionUsageSnapshotURLMasked(t *testing.T) {
-	spool := newUsageSpool(t.TempDir(), gatewaypreauth.SystemClock{}, newTestSlogLogger(), usageSpoolCapacity{})
-	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: newTestSlogLogger()}, spool)
-	defer recorder.Close()
-	t.Cleanup(spool.StopReplay)
 	capture := &captureUsageRecorder{}
-	dispatch := gatewayusage.NewFinalizationDispatch(capture, spoolOverflow{spool: spool}, 0, 0)
-	dispatch.OverflowEnabled = true
+	dispatch := gatewayusage.NewFinalizationDispatch(capture, 0, 0)
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithClock(gatewaypreauth.SystemClock{})
 	rec := &chainBodyRejectionRecorder{usage: service}

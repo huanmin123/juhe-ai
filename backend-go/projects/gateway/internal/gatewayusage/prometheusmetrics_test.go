@@ -41,18 +41,17 @@ func TestBuildInfoMetric(t *testing.T) {
 
 func TestClassifyHTTPMetricRouteGolden(t *testing.T) {
 	golden := map[string]HTTPMetricRouteGroup{
-		"/__aisys__/metrics":          HTTPMetricRouteObservability,
-		"/health":                     HTTPMetricRouteHealth,
-		"/__aisys__/health":           HTTPMetricRouteHealth,
-		"/__aisys__/api/health":       HTTPMetricRouteHealth,
-		"/__aipublic__":               HTTPMetricRoutePublicAPI,
-		"/__aipublic__/v1/whatever":   HTTPMetricRoutePublicAPI,
-		"/__aisys__":                  HTTPMetricRouteManagement,
-		"/__aisys__/api/runtime-logs": HTTPMetricRouteManagement,
-		"/":                           HTTPMetricRouteGateway,
-		"/v1":                         HTTPMetricRouteGateway,
-		"/v1/chat/completions":        HTTPMetricRouteGateway,
-		"/vX/unknown":                 HTTPMetricRouteOther,
+		"/__aisys__/metrics":        HTTPMetricRouteObservability,
+		"/health":                   HTTPMetricRouteHealth,
+		"/__aisys__/health":         HTTPMetricRouteHealth,
+		"/__aisys__/api/health":     HTTPMetricRouteHealth,
+		"/__aipublic__":             HTTPMetricRoutePublicAPI,
+		"/__aipublic__/v1/whatever": HTTPMetricRoutePublicAPI,
+		"/__aisys__":                HTTPMetricRouteManagement,
+		"/":                         HTTPMetricRouteGateway,
+		"/v1":                       HTTPMetricRouteGateway,
+		"/v1/chat/completions":      HTTPMetricRouteGateway,
+		"/vX/unknown":               HTTPMetricRouteOther,
 	}
 	for path, want := range golden {
 		if got := ClassifyHTTPMetricRoute(path); got != want {

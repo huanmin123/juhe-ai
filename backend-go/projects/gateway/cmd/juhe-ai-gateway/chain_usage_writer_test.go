@@ -128,9 +128,12 @@ func TestConvertUsageRecordInputDropsSuppressUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	// SuppressUsage 带 json:"-"，只用于进程内闸口；converted 结构体本身没有该
-	// 字段，这里断言其余字段照常过桥（闸口由 recorder/dispatch 在更早处丢弃）。
+	// SuppressUsage 带 json:"-"，只用于进程内闸口（recorder/dispatch 在更早处
+	// 丢弃）；类型别名后字段仍在内存记录上，但不会进入 writer 的落库列。
 	if converted.ID != input.ID || converted.TraceID != input.TraceID {
 		t.Fatalf("identity lost: %+v", converted)
+	}
+	if !converted.SuppressUsage {
+		t.Fatal("SuppressUsage must survive the same-type bridge")
 	}
 }

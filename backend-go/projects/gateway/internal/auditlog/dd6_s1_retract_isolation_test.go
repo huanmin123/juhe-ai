@@ -118,15 +118,12 @@ func TestDD6S1RetractOccupationCannotStarveDataConsumption(t *testing.T) {
 	deadline = time.Now().Add(5 * time.Second)
 	for {
 		got := store.retractions()
-		if count := dd6CountRetractions(got, envID); count >= 1 {
-			if count != retractCommandCount {
-				t.Fatalf("全部 %d 条撤回命令都必须最终送达，实际 envID 撤回次数=%d: %v",
-					retractCommandCount, count, got)
-			}
+		if count := dd6CountRetractions(got, envID); count == retractCommandCount {
 			return
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("信封 settle 后撤回必须送达，实际 retractions=%v", store.retractions())
+			t.Fatalf("全部 %d 条撤回命令都必须最终送达，实际 envID 撤回次数=%d: %v",
+				retractCommandCount, dd6CountRetractions(store.retractions(), envID), store.retractions())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

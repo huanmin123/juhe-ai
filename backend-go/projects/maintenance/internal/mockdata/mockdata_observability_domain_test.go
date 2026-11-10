@@ -34,7 +34,7 @@ type observabilityOwnerFile struct {
 	// MustReport 标记的常量缺失视为本 module 自身损坏（jobs 是 maintenance 的
 	// module 依赖，必然检出）；gateway 属 missable（单独检出时 skip）。
 	MustReport bool
-	// Segments 标记该常量覆盖哪些属主段（audit / operation / runtime）。
+	// Segments 标记该常量覆盖哪些属主段（audit / operation）。
 	Segments []string
 	// Sanity 是常量里必须出现的一条 CREATE TABLE 证据（夹具自检）。
 	Sanity string
@@ -47,9 +47,6 @@ var observabilityOwnerFiles = []observabilityOwnerFile{
 		Segments: []string{"audit"}, Sanity: "CREATE TABLE IF NOT EXISTS juhe_dataset.audit_payload_blob_gc"},
 	{RelPath: "projects/gateway/internal/operationlog/schema.go", ConstName: "postgresSchema",
 		Segments: []string{"operation"}, Sanity: "CREATE TABLE IF NOT EXISTS juhe_dataset.operation_logs"},
-	{RelPath: "projects/jobs/internal/runtimelog/schema.go", ConstName: "postgresSchema",
-		MustReport: true, Segments: []string{"runtime"},
-		Sanity: "CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_logs"},
 }
 
 // observabilityBackendGoRoot 用 runtime.Caller(0) 定位 backend-go workspace 根
@@ -220,7 +217,7 @@ func observabilityQueryInt(t *testing.T, db *sql.DB, query string, args ...any) 
 // 产出，列型与关联语义在真实属主 schema 上成立。
 func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 	dsn := pgtestkit.NewTestDatabase(t,
-		observabilityPrepare(t, "audit", "operation", "runtime")).DSN
+		observabilityPrepare(t, "audit", "operation")).DSN
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	summaryPath := coverageSummaryPath(t)
 	report := observabilityRunForTest(t, dsn, now, summaryPath)
@@ -234,7 +231,6 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 	expectPositive := []string{
 		"auditLogs", "auditLogAttempts", "auditPayloadBlobs", "auditPayloadRefs", "auditErrorGroups",
 		"operationLogs", "operationLogTargets", "operationLogViewers", "operationLogSummarySearchTerms",
-		"runtimeLogs", "runtimeLogEventFacets",
 		"publicApiLogs",
 	}
 	for _, key := range expectPositive {
@@ -243,21 +239,19 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 		}
 	}
 	for key, want := range map[string]int{
-		"runtimeLogFacetSummary": 1,
-		"runtimeLogLevelFacets":  3, // info / warn / error
-		"accountCleanupTargets":  3,
-		"apiKeyCleanupTargets":   3,
+		"accountCleanupTargets": 3,
+		"apiKeyCleanupTargets":  3,
 	} {
 		if counts[key] != want {
 			t.Fatalf("observability 计数 %s = %d, want %d: %v", key, counts[key], want, counts)
 		}
 	}
-	// 属主就位的三个存储不进 pending；juhe_j3b / juhe_jobs 仍缺失。
+	// 属主就位的两个存储不进 pending；juhe_j3b / juhe_jobs 仍缺失。
 	pendingStores := map[string]bool{}
 	for _, pending := range report.OwnerStoresPending {
 		pendingStores[pending.Store] = true
 	}
-	for _, store := range []string{"audit_log", "operation_log", "runtime_log"} {
+	for _, store := range []string{"audit_log", "operation_log"} {
 		if pendingStores[store] {
 			t.Fatalf("属主 %s 已建表仍进 pending: %+v", store, report.OwnerStoresPending)
 		}
@@ -330,23 +324,6 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 		t.Fatal("摘要检索词应能按「造数」命中")
 	}
 
-	// 运行日志面：分面与索引行一致（分面是表的聚合视图）。
-	total := observabilityQueryInt(t, db, "SELECT COUNT(*) FROM "+obsTable("runtime_logs"))
-	facetTotal := observabilityQueryInt(t, db, "SELECT total_count FROM "+obsTable("runtime_log_facet_summary")+
-		" WHERE bucket_key = '"+observabilityRuntimeFacetBucketKey+"'")
-	if total == 0 || facetTotal != total {
-		t.Fatalf("分面汇总 total_count=%d 与索引行数 %d 不一致", facetTotal, total)
-	}
-	levelSum := observabilityQueryInt(t, db, "SELECT COALESCE(SUM(count), 0) FROM "+obsTable("runtime_log_level_facets")+
-		" WHERE bucket_key = '"+observabilityRuntimeFacetBucketKey+"'")
-	if levelSum != total {
-		t.Fatalf("level 分面合计 %d 与索引行数 %d 不一致", levelSum, total)
-	}
-	if n := observabilityQueryInt(t, db, "SELECT COUNT(*) FROM "+obsTable("runtime_log_event_facets")+
-		" WHERE latest_time IS NULL"); n != 0 {
-		t.Fatalf("event 分面缺 latest_time: %d 行", n)
-	}
-
 	// 公开接口日志面：内置测试 Token、capture 状态与状态码分布。
 	if n := observabilityQueryInt(t, db, "SELECT COUNT(*) FROM "+obsTable("public_api_logs")+
 		" WHERE is_test_token = 1"); n == 0 {
@@ -381,8 +358,8 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 	}
 	for _, name := range []string{
 		"audit_logs", "audit_logs.media_endpoints", "audit_error_groups", "audit_payload_blobs",
-		"audit_payload_refs", "operation_logs", "operation_log_targets", "runtime_logs",
-		"runtime_log_facet_summary", "runtime_log_level_facets", "public_api_logs", "public_api_logs.test_token",
+		"audit_payload_refs", "operation_logs", "operation_log_targets",
+		"public_api_logs", "public_api_logs.test_token",
 	} {
 		if notCoveredNames[name] {
 			t.Fatalf("断言 %s 应已评估而非 NotCovered: %v", name, coverage.NotCovered)
@@ -395,7 +372,7 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 	}
 	for _, item := range coverage.Errors {
 		if strings.HasPrefix(item, "audit_") || strings.HasPrefix(item, "operation_") ||
-			strings.HasPrefix(item, "runtime_") || strings.HasPrefix(item, "public_api_logs") {
+			strings.HasPrefix(item, "public_api_logs") {
 			t.Fatalf("observability 断言失败: %v", coverage.Errors)
 		}
 	}
@@ -405,7 +382,7 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 // 清理删掉上一批（含属主哨兵表的显式规则命中），重插后全部计数逐键一致。
 func TestObservabilityRunIsIdempotent(t *testing.T) {
 	dsn := pgtestkit.NewTestDatabase(t,
-		observabilityPrepare(t, "audit", "operation", "runtime")).DSN
+		observabilityPrepare(t, "audit", "operation")).DSN
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	first := observabilityRunForTest(t, dsn, now, "")
 	second := observabilityRunForTest(t, dsn, now, "")
@@ -421,7 +398,7 @@ func TestObservabilityRunIsIdempotent(t *testing.T) {
 		}
 	}
 	// 第二次运行的清理必须删掉第一批属主表行（显式规则命中）。
-	for _, table := range []string{"audit_logs", "operation_logs", "runtime_logs"} {
+	for _, table := range []string{"audit_logs", "operation_logs"} {
 		if second.Cleanup[obsTable(table)] == 0 {
 			t.Fatalf("第二次清理未命中属主表 %s: %v", table, second.Cleanup)
 		}
@@ -433,7 +410,7 @@ func TestObservabilityRunIsIdempotent(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	for _, table := range []string{
 		"audit_logs", "audit_log_attempts", "audit_payload_refs", "operation_logs",
-		"runtime_logs", "public_api_logs",
+		"public_api_logs",
 	} {
 		if n := observabilityQueryInt(t, db, "SELECT COUNT(*) FROM "+obsTable(table)); n == 0 {
 			t.Fatalf("第二次运行后 %s 不应有残留空表", table)
@@ -446,7 +423,7 @@ func TestObservabilityRunIsIdempotent(t *testing.T) {
 // gateway 的 audit retention 负责）；分面行保留（聚合视图由下次 seed 重算）。
 func TestObservabilityCleanupSweepsOwnerTables(t *testing.T) {
 	dsn := pgtestkit.NewTestDatabase(t,
-		observabilityPrepare(t, "audit", "operation", "runtime")).DSN
+		observabilityPrepare(t, "audit", "operation")).DSN
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	observabilityRunForTest(t, dsn, now, "")
 
@@ -460,7 +437,7 @@ func TestObservabilityCleanupSweepsOwnerTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cleanupAll: %v", err)
 	}
-	for _, table := range []string{"audit_logs", "operation_logs", "runtime_logs"} {
+	for _, table := range []string{"audit_logs", "operation_logs"} {
 		if deleted[obsTable(table)] == 0 {
 			t.Fatalf("清理未命中属主表 %s: %v", table, deleted)
 		}
@@ -477,7 +454,7 @@ func TestObservabilityCleanupSweepsOwnerTables(t *testing.T) {
 	for _, table := range []string{
 		"audit_logs", "audit_log_attempts", "audit_payload_refs", "audit_error_groups",
 		"operation_logs", "operation_log_targets", "operation_log_viewers",
-		"operation_log_summary_search_terms", "runtime_logs", "public_api_logs",
+		"operation_log_summary_search_terms", "public_api_logs",
 		"account_record_cleanup_targets", "api_key_record_cleanup_targets",
 	} {
 		if n := count("SELECT COUNT(*) FROM " + obsTable(table)); n != 0 {
@@ -486,9 +463,6 @@ func TestObservabilityCleanupSweepsOwnerTables(t *testing.T) {
 	}
 	if n := count("SELECT COUNT(*) FROM " + obsTable("audit_payload_blobs")); n == 0 {
 		t.Fatal("内容寻址 blob 行应保留（幂等复用，不清扫）")
-	}
-	if n := count("SELECT COUNT(*) FROM " + obsTable("runtime_log_facet_summary")); n == 0 {
-		t.Fatal("分面聚合行应保留（由下次 seed 重算，不属清理面）")
 	}
 	// 第二次清理：全部 no-op。
 	second, _, err := cleanupAll(ctx, e, nil)
@@ -500,14 +474,11 @@ func TestObservabilityCleanupSweepsOwnerTables(t *testing.T) {
 			t.Fatalf("第二次清理仍删除 %s %d 行", table, rows)
 		}
 	}
-	// 再造数一次：分面重算后与索引行重新一致，全部计数可复现。
+	// 再造数一次：全部计数可复现。
 	report := observabilityRunForTest(t, dsn, now, "")
 	counts := observabilityCountsOf(report, DomainObservability)
-	if counts["runtimeLogs"] == 0 || counts["runtimeLogFacetSummary"] != 1 {
-		t.Fatalf("重建后运行日志计数异常: %v", counts)
-	}
-	if total := count("SELECT COUNT(*) FROM " + obsTable("runtime_logs")); total != counts["runtimeLogs"] {
-		t.Fatalf("runtime_logs 行数 %d 与计数 %d 不一致", total, counts["runtimeLogs"])
+	if counts["auditLogs"] == 0 || counts["publicApiLogs"] == 0 {
+		t.Fatalf("重建后计数异常: %v", counts)
 	}
 }
 
@@ -527,7 +498,7 @@ func TestObservabilitySkipsMissingOwnerStores(t *testing.T) {
 	for _, pending := range report.OwnerStoresPending {
 		pendingStores[pending.Store] = true
 	}
-	for _, store := range []string{"audit_log", "operation_log", "runtime_log"} {
+	for _, store := range []string{"audit_log", "operation_log"} {
 		if !pendingStores[store] {
 			t.Fatalf("属主 %s 未建表应进 pending: %+v", store, report.OwnerStoresPending)
 		}
@@ -536,7 +507,7 @@ func TestObservabilitySkipsMissingOwnerStores(t *testing.T) {
 	if counts == nil {
 		t.Fatalf("observability 域应至少产出 maintenance 面: %+v", report.Domains)
 	}
-	for _, key := range []string{"auditLogs", "operationLogs", "runtimeLogs"} {
+	for _, key := range []string{"auditLogs", "operationLogs"} {
 		if _, present := counts[key]; present {
 			t.Fatalf("属主缺失时不应产出 %s: %v", key, counts)
 		}
@@ -552,10 +523,8 @@ func TestObservabilitySkipsMissingOwnerStores(t *testing.T) {
 		t.Fatalf("VerifyCoverage: %v", err)
 	}
 	wantPendingReason := map[string]string{
-		"audit_logs":                "属主存储 audit_log 缺失",
-		"operation_logs":            "属主存储 operation_log 缺失",
-		"runtime_logs":              "属主存储 runtime_log 缺失",
-		"runtime_log_facet_summary": "属主存储 runtime_log 缺失",
+		"audit_logs":     "属主存储 audit_log 缺失",
+		"operation_logs": "属主存储 operation_log 缺失",
 	}
 	for name, reason := range wantPendingReason {
 		found := false
@@ -582,7 +551,7 @@ func TestObservabilitySkipsMissingOwnerStores(t *testing.T) {
 }
 
 // TestObservabilityPartialOwnerStoreSkip 钉住「只建了部分属主 schema」的中间态：
-// audit 段产出、operation / runtime 段跳过，pending 只列真正缺失的属主。
+// audit 段产出、operation 段跳过，pending 只列真正缺失的属主。
 func TestObservabilityPartialOwnerStoreSkip(t *testing.T) {
 	dsn := pgtestkit.NewTestDatabase(t, observabilityPrepare(t, "audit")).DSN
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
@@ -595,7 +564,7 @@ func TestObservabilityPartialOwnerStoreSkip(t *testing.T) {
 	if pendingStores["audit_log"] {
 		t.Fatalf("audit_log 已建表不应 pending: %+v", report.OwnerStoresPending)
 	}
-	for _, store := range []string{"operation_log", "runtime_log"} {
+	for _, store := range []string{"operation_log"} {
 		if !pendingStores[store] {
 			t.Fatalf("属主 %s 应 pending: %+v", store, report.OwnerStoresPending)
 		}
@@ -606,7 +575,7 @@ func TestObservabilityPartialOwnerStoreSkip(t *testing.T) {
 			t.Fatalf("audit 段应产出 %s: %v", key, counts)
 		}
 	}
-	for _, key := range []string{"operationLogs", "runtimeLogs"} {
+	for _, key := range []string{"operationLogs"} {
 		if _, present := counts[key]; present {
 			t.Fatalf("缺失属主段不应产出 %s: %v", key, counts)
 		}
@@ -617,7 +586,7 @@ func TestObservabilityPartialOwnerStoreSkip(t *testing.T) {
 // 清理拓扑后的删除顺序：外键子表先于哨兵父表。
 func TestObservabilityCleanupOrderPlacesChildrenBeforeSentinels(t *testing.T) {
 	db := pgtestkit.NewTestDatabase(t,
-		observabilityPrepare(t, "audit", "operation", "runtime")).DB
+		observabilityPrepare(t, "audit", "operation")).DB
 	order, err := cleanupOrder(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
@@ -647,7 +616,7 @@ func TestObservabilityCleanupOrderPlacesChildrenBeforeSentinels(t *testing.T) {
 		}
 	}
 	// 属主哨兵表必须在拓扑序里（缺失场景由 cleanupTable 记 skipped，不在这里）。
-	for _, table := range []string{"audit_logs", "operation_logs", "runtime_logs"} {
+	for _, table := range []string{"audit_logs", "operation_logs"} {
 		if _, ok := position[obsTable(table)]; !ok {
 			t.Fatalf("清理顺序缺少属主哨兵表 %s", table)
 		}

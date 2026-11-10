@@ -328,6 +328,7 @@ CREATE INDEX IF NOT EXISTS idx_model_token_intercept_baseline_active ON juhe_j3b
 CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON juhe_j3b.model_account_trust_results(updated_at,account_id,requested_model);
 CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON juhe_j3b.model_trust_latest_dirty_accounts(updated_at,system_account_id,account_id,requested_model);
 CREATE INDEX IF NOT EXISTS idx_model_trust_observation_receipts_processed ON juhe_j3b.model_trust_observation_receipts(processed_at,observation_id);
+CREATE INDEX IF NOT EXISTS idx_model_trust_observation_receipts_observed ON juhe_j3b.model_trust_observation_receipts(observation_created_at);
 CREATE INDEX IF NOT EXISTS idx_model_check_outcomes_cursor ON juhe_j3b.model_check_outcomes(stored_at,outcome_id);
 CREATE INDEX IF NOT EXISTS idx_model_check_inputs_target ON juhe_j3b.model_check_inputs(target_id,issued_at);
 CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON juhe_j3b.model_check_runs(created_at DESC,id DESC);
@@ -335,6 +336,7 @@ CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry ON juh
 CREATE INDEX IF NOT EXISTS idx_model_check_items_run_order ON juhe_j3b.model_check_items(run_id,created_at,id);
 CREATE INDEX IF NOT EXISTS idx_model_check_items_run_key ON juhe_j3b.model_check_items(run_id,item_key,id);
 CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON juhe_j3b.model_check_observations(created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_run ON juhe_j3b.model_check_observations(run_id);
 CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON juhe_j3b.model_check_observations(created_at,id) WHERE aggregation_completed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_account_quality_health_hourly_scope ON juhe_j3b.account_quality_health_hourly(system_account_id,stat_hour,account_id);
 `

@@ -16,12 +16,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// 定向补齐引擎循环剩余分支：容量排队策略分支、可恢复等待恢复路径、
+// 定向补齐引擎循环剩余分支：整池容量失败外环退避恢复、可恢复等待恢复路径、
 // precheck 半开等待、Key-model 准备错误、请求级 Key 安全上限、
 // 响应失败处理的显式策略/换 Key/失败桥接分支与管道写失败。
 
 // ---------------------------------------------------------------------------
-// 容量排队：策略分支 + 就绪队列恢复
+// 整池容量失败：外环退避等待恢复（高并发队列已退役）
 // ---------------------------------------------------------------------------
 
 // freeAfterNStore 前 N 次 TryAcquire 失败，之后成功（模拟并发槽释放）。
@@ -49,14 +49,13 @@ func (f *freeAfterNStore) TryAcquireAsync(context.Context, string, int, AccountC
 	return ConcurrencySlot{Acquired: true, Current: 1, Limit: 4, Lane: "text"}, nil
 }
 
-func TestDispatchCapacityPolicyQueueReadyRecovers(t *testing.T) {
+func TestDispatchCapacityFailureOuterWaitRecovers(t *testing.T) {
 	okServer := sequentialServer(t, 0, 500)
 	defer okServer.Close()
 	engine, driver, _ := newTestEngine(t)
-	store := &freeAfterNStore{limit: 1} // 第一次获取失败，队列等待后成功
+	store := &freeAfterNStore{limit: 1} // 第一次获取失败，外环退避等待后成功
 	engine.Concurrency = store
 	engine.Config.AccountConcurrencyRetryBudgetMs = 0 // 短重试不消耗服务器预算
-	engine.HighConcurrencyQueue = &configurableQueue{ready: true}
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	driver.urlByAccount = map[string][]string{
 		"a-1": {okServer.URL + "/v1/chat/completions"},
@@ -67,41 +66,9 @@ func TestDispatchCapacityPolicyQueueReadyRecovers(t *testing.T) {
 	args.RequestCoordination.ServerRetryBudget = gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{})
 	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
 	if err != nil {
-		t.Fatalf("队列就绪后必须恢复调度: %v", err)
+		t.Fatalf("外环退避等待后必须恢复调度: %v", err)
 	}
 	_ = result
-	if result.Account.ID != "a-1" {
-		t.Fatalf("account = %s", result.Account.ID)
-	}
-}
-
-// nonTimeoutQueue 恒未就绪且原因非 timeout（触发重试延迟分支）。
-type nonTimeoutQueue struct{}
-
-func (nonTimeoutQueue) WaitForCapacity(context.Context, HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	return QueueWaitResult{Ready: false, Reason: "drained"}, nil
-}
-
-func TestDispatchCapacityPolicyQueueDrainedRetries(t *testing.T) {
-	okServer := sequentialServer(t, 0, 500)
-	defer okServer.Close()
-	engine, driver, _ := newTestEngine(t)
-	store := &freeAfterNStore{limit: 1}
-	engine.Concurrency = store
-	engine.Config.AccountConcurrencyRetryBudgetMs = 0
-	engine.HighConcurrencyQueue = nonTimeoutQueue{}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
-	driver.urlByAccount = map[string][]string{
-		"a-1": {okServer.URL + "/v1/chat/completions"},
-	}
-	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
-	args := fastDispatchArgs(t, req, testAccounts("a-1"))
-	args.GroupSchedulingPolicy = &policy
-	args.RequestCoordination.ServerRetryBudget = gatewaypreauth.NewServerRetryBudget(120, gatewaypreauth.SystemClock{})
-	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
-	if err != nil {
-		t.Fatalf("排队后必须恢复调度: %v", err)
-	}
 	if result.Account.ID != "a-1" {
 		t.Fatalf("account = %s", result.Account.ID)
 	}

@@ -49,18 +49,16 @@ func w16iKitDBWithContractSurface(t *testing.T) (*sql.DB, string) {
 // TestW16HIPGFullChainOwnerShutdown 进程内驱动 run() 完成 J1/J2/J3a PG 装配
 // 成功链、management API 装配与优雅停机（覆盖 w14q 同一生产路径的进程内
 // 形态）。
-// w16iBaseEnv 构造 PG 唯一形态的 owner env 基底：F1 store 与 J1 store/input
-// 全部走 wgCmdKitDB 隔离测试库（原 w16hBaseEnv 的 sqlite 基底随 sqlite 形态
-// 退役删除；连接串不落日志）。
+// w16iBaseEnv 构造 PG 唯一形态的 owner env 基底：J1 store/input 全部走
+// wgCmdKitDB 隔离测试库（原 w16hBaseEnv 的 sqlite 基底随 sqlite 形态退役
+// 删除；连接串不落日志）。
 func w16iBaseEnv(t *testing.T, pgURL string) map[string]string {
 	t.Helper()
 	redisServer := miniredis.RunT(t)
 	return map[string]string{
 		"JUHE_AI_POSTGRES_URL":                      pgURL,
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          pgURL,
 		"JUHE_AI_REDIS_URL":                         "redis://" + redisServer.Addr() + "/0",
 		"JUHE_AI_REDIS_NAMESPACE":                   "juhe-ai:w16i",
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "w16i-run",
 		"JUHE_AI_LOG_DIR":                           t.TempDir(),
 		"JUHE_AI_SECRET":                            "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "w16i-j1",

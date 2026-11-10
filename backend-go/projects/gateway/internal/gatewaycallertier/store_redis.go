@@ -15,11 +15,15 @@ import (
 // 提交前 key 未变才生效；冲突重试上限内失败则返回 Redis 错误（保守缺省兜底）。
 // 状态为单 key JSON blob，滑动 TTL（StateTTL）。
 type RedisStore struct {
-	client    redis.UniversalClient
-	keyPrefix string
+	client     redis.UniversalClient
+	keyPrefix  string
 	maxRetries int
-	now       func() time.Time
+	now        func() time.Time
 }
+
+// asynchronousMutation 标记 Recorder 可把 Mutate 移出请求协程异步执行
+// （2026-11-09：每请求不再承担 WATCH 往返；影子观测允许丢弃/延迟）。
+func (*RedisStore) asynchronousMutation() {}
 
 // NewRedisStore 构造 Redis 存储。keyPrefix 形如 "juhe-ai:caller-tiers:"，
 // 最终 key = prefix + apiKeyID。

@@ -393,7 +393,7 @@ func TestW13g3FailedProxyKeysClearedAfterRecoverableWait(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 高并发排队收尾
+// 准备收尾（高并发排队/繁忙分支已退役）
 // ---------------------------------------------------------------------------
 
 type w13g3ConcurrencyHC2 struct {
@@ -415,102 +415,15 @@ func (c *w13g3ConcurrencyHC2) LoadCurrentRPMAsync(context.Context, []string) (ma
 	return map[string]AccountRPMState{}, nil
 }
 
-type w13g3AffinityBusy struct {
-	fakeAffinity
-	busyFromNth int
-	busyErrFrom int
-	busyCalls   int
-}
-
-func (a *w13g3AffinityBusy) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error) {
-	a.busyCalls++
-	if a.busyErrFrom > 0 && a.busyCalls >= a.busyErrFrom {
-		return false, errW13g3
-	}
-	if a.busyFromNth > 0 && a.busyCalls >= a.busyFromNth {
-		return true, nil
-	}
-	return false, nil
-}
-
-func w13g3HCPrepInput(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate, coordinator *w13g3Coordinator) gatewaypreauth.DispatchPreparationInput {
-	t.Helper()
-	input := w13g3DispatchPrepInput(t, req, accounts, coordinator)
-	hc := "high_concurrency"
-	input.GroupAccess.GroupType = &hc
-	input.GatewayRequestWallBudget = w13g3WallBudget(t, 60_000)
-	return input
-}
-
-func TestW13g3PrepareHighConcurrencyTail(t *testing.T) {
+func TestW13g3PrepareSnapshotRefreshErrorSurfaces(t *testing.T) {
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 
 	t.Run("snapshot refresh error surfaces", func(t *testing.T) {
 		pipeline, engine, _, _ := newPipeline(t)
 		engine.Concurrency = &w13g3ConcurrencyHC2{loadErr: errW13g3}
-		input := w13g3HCPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
+		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
 			t.Fatalf("expected refresh error, got %v", err)
-		}
-	})
-
-	t.Run("busy refresh error surfaces", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Concurrency = &w13g3ConcurrencyHC2{loadErr: errW13g3, loadErrAfter: 1}
-		engine.Affinity = &w13g3AffinityBusy{busyFromNth: 1}
-		input := w13g3HCPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected busy refresh error, got %v", err)
-		}
-	})
-
-	t.Run("second busy check error surfaces", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Concurrency = &w13g3ConcurrencyHC2{}
-		engine.Affinity = &w13g3AffinityBusy{busyErrFrom: 2}
-		input := w13g3HCPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected second busy error, got %v", err)
-		}
-	})
-
-	t.Run("third busy check error surfaces", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Concurrency = &w13g3ConcurrencyHC2{}
-		engine.Affinity = &w13g3AffinityBusy{busyErrFrom: 3}
-		engine.ClientIPConcurrency = &w13g3ClientIPConcurrency{decision: ClientIPConcurrencyDecision{Enabled: true, Acquired: true, Release: func() {}}}
-		input := w13g3HCPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected third busy error, got %v", err)
-		}
-	})
-
-	t.Run("busy fallback error after queue", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Concurrency = &w13g3ConcurrencyHC2{}
-		engine.Affinity = &w13g3AffinityBusy{busyFromNth: 4}
-		engine.ClientIPConcurrency = &w13g3ClientIPConcurrency{decision: ClientIPConcurrencyDecision{Enabled: true, Acquired: true, Release: func() {}}}
-		engine.HighConcurrencyQueue = &w13g3Queue{result: QueueWaitResult{Ready: true}}
-		input := w13g3HCPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{fallbackErr: errW13g3})
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected busy fallback error, got %v", err)
-		}
-	})
-
-	t.Run("busy fallback attempted after queue", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Concurrency = &w13g3ConcurrencyHC2{}
-		engine.Affinity = &w13g3AffinityBusy{busyFromNth: 4}
-		engine.ClientIPConcurrency = &w13g3ClientIPConcurrency{decision: ClientIPConcurrencyDecision{Enabled: true, Acquired: true, Release: func() {}}}
-		engine.HighConcurrencyQueue = &w13g3Queue{result: QueueWaitResult{Ready: true}}
-		input := w13g3HCPrepInput(t, req, testAccounts("a-1", "a-2"),
-			&w13g3Coordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}})
-		result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
-		if err != nil {
-			t.Fatalf("prepare: %v", err)
-		}
-		if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "high_concurrency_group_busy" {
-			t.Fatalf("result = %#v", result)
 		}
 	})
 }

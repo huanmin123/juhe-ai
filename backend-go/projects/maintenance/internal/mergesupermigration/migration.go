@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/groupspolicymigration"
 )
 
 // 迁移判定词表。
@@ -383,6 +385,13 @@ func applyStrategy(ctx context.Context, tx *sql.Tx, plan *StrategyPlan, nowISO s
 	return nil
 }
 
+// firstMemberDispatchFacts 读取首成员的 group_type 与两键归一后的策略（生成
+// 超级分组自身行的初值）。2026-11-09 高并发分组退役（普通分组可选调度策略设计
+// §5.2）：不再复制 16 键旧策略——策略经迁移内核 MapLegacyPolicy 归一为两键
+// （globalMax 取旧进程默认值；成员行本体不动，由 upgrade 链 revision 22 统一
+// 迁移，届时超级分组自身行再按首成员重算收敛）；畸形策略中断迁移并保留原始
+// 错误。group_type 原样传递：成员行未迁移时提前改写自身行会破坏成员指纹一致
+// 性，revision 22 负责统一收敛。
 func firstMemberDispatchFacts(ctx context.Context, q querier, plan *StrategyPlan) (string, string, error) {
 	if len(plan.Members) == 0 {
 		return "", "", fmt.Errorf("策略 %s 没有成员", plan.StrategyID)
@@ -395,7 +404,21 @@ func firstMemberDispatchFacts(ctx context.Context, q querier, plan *StrategyPlan
 	}
 	policy := ""
 	if schedulingJSON.Valid {
-		policy = schedulingJSON.String
+		var decoded any
+		if err := json.Unmarshal([]byte(schedulingJSON.String), &decoded); err != nil {
+			return "", "", fmt.Errorf("成员 %s 调度策略 JSON 损坏: %w", plan.Members[0].MemberGroupID, err)
+		}
+		object, ok := decoded.(map[string]any)
+		if !ok {
+			return "", "", fmt.Errorf("成员 %s 调度策略不是 JSON 对象", plan.Members[0].MemberGroupID)
+		}
+		normalized, ok := groupspolicymigration.MapLegacyPolicy(object, groupspolicymigration.DefaultGlobalConcurrencyMax)
+		if !ok {
+			return "", "", fmt.Errorf("成员 %s 调度策略值非法（defaultSoftConcurrency/clientIpConcurrencyLimit 非整数或越界）", plan.Members[0].MemberGroupID)
+		}
+		if !normalized.IsDefault() {
+			policy = normalized.TargetJSON()
+		}
 	}
 	return groupType, policy, nil
 }

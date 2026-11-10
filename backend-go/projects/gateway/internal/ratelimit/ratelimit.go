@@ -433,10 +433,6 @@ func (s *RedisStore) Check(ctx context.Context, nowMs int64, buckets []BucketInp
 	return false, retry, name, int(numeric(values[3])), nil
 }
 
-func redisFixedWindowKey(storeName, key string) string {
-	return redisFixedWindowKeyNS("", storeName, key)
-}
-
 func redisFixedWindowKeyNS(namespace, storeName, key string) string {
 	return rediscfg.NamespacedKey("juhe-ai:rate-limit:fixed:"+redisKeyHash(storeName)+":"+redisKeyHash(key), namespace)
 }

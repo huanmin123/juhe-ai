@@ -253,6 +253,42 @@ func TestDecideHotQualityCandidateSpeedCompareEwma(t *testing.T) {
 	}
 }
 
+// TestDecideHotQualityCandidateSoftBusyWithinTier 钉住普通分组软阈值与热质量
+// 排序的集成顺序：softBusy 是层内第一顺位键，质量更好的软忙账户不得越过同层
+// 非软忙 peer；但 softBusy 只在本层降权，不能跨层排到低优先级层之后。
+func TestDecideHotQualityCandidateSoftBusyWithinTier(t *testing.T) {
+	quality := func(ewma float64) func(*HotQualityCandidate) {
+		return func(candidate *HotQualityCandidate) {
+			candidate.HotQuality = &HotQualitySelectionSnapshot{
+				SampleState:      HotQualitySampleKnown,
+				ReliabilityLevel: HotQualityReliabilityHealthy,
+				FirstByteEwma5m:  floatPtr(ewma),
+			}
+		}
+	}
+	softBusyFast := hqCandidate("soft-fast", normalTier(), quality(120))
+	softBusyFast.Candidate.SoftBusy = true
+	candidates := []HotQualityCandidatePayload{
+		softBusyFast,
+		hqCandidate("idle-slow", normalTier(), quality(500)),
+		hqCandidate("fallback", fallbackTier(), quality(100)),
+	}
+	decision, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
+		RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: candidates,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	labels := []string{}
+	for _, payload := range decision.OrderedCandidates {
+		labels = append(labels, payload.Payload.label)
+	}
+	// 同层：非软忙即使更慢也排在软忙前；跨层：普通层软忙仍先于 fallback 层。
+	if strings.Join(labels, ",") != "idle-slow,soft-fast,fallback" {
+		t.Fatalf("labels = %v", labels)
+	}
+}
+
 func TestDecideExplorationStatuses(t *testing.T) {
 	candidateFor := func(label string, mutate func(*HotQualityCandidate)) HotQualityCandidatePayload {
 		return hqCandidate(label, normalTier(), mutate)
@@ -367,6 +403,27 @@ func TestDecideExplorationStatuses(t *testing.T) {
 		}
 		if len(explanation.FairCursorPeerAccountIDs) != 1 || explanation.FairCursorPeerAccountIDs[0] != "cold-target" {
 			t.Fatalf("fair peers = %v", explanation.FairCursorPeerAccountIDs)
+		}
+	})
+
+	t.Run("soft busy target is not eligible", func(t *testing.T) {
+		softBusyTarget := candidateFor("cold-target", func(candidate *HotQualityCandidate) {
+			candidate.StableBindingOrder = 1
+			candidate.SoftBusy = true
+		})
+		decision, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
+			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf,
+			Candidates:  []HotQualityCandidatePayload{primary, softBusyTarget},
+			Exploration: state(nil),
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if decision.Explanation.Exploration.Status != ExplorationStatusNoEligibleTarget {
+			t.Fatalf("status = %s, want no_eligible_target", decision.Explanation.Exploration.Status)
+		}
+		if decision.SelectedCandidate == nil || decision.SelectedCandidate.Payload.label != "primary" {
+			t.Fatalf("selected = %+v, want primary", decision.SelectedCandidate)
 		}
 	})
 

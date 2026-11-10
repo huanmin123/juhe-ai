@@ -149,7 +149,7 @@ package main
 //     （1451-1453）与六个 load 错误返回（1457..1477）全部不可达；坏值只能从
 //     store.Load 错误出口（1436-1437，已有覆盖）出现。
 //   - 【已于 w3 清理】compose.go 493-495：runtime-log 保留期闭包的 parseErr 臂
-//     ——闭包读取的 runtimeLogIndexRetentionDays 在 settings.Load 阶段已被
+//     ——闭包读取的运行日志索引保留期键在 settings.Load 阶段已被
 //     normalize 成合法数字（同上 normalizeSystemSetting 证据），readErr 臂
 //     （489-491）已有覆盖，Atoi 对归一化值恒成功。
 //   - 【已于 w3 清理】compose.go 1578-1579/1580-1581/1582-1586：

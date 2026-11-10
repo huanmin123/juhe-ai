@@ -125,22 +125,16 @@ func TestW1BodyRejectionRecorderGuards(t *testing.T) {
 	}
 }
 
-func TestW1UsageSpoolAssembly(t *testing.T) {
+func TestW1UsageDelivererAssembly(t *testing.T) {
 	// 空目录：不装配。
 	if got := newUsageSpool("", gatewaypreauth.SystemClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), usageSpoolCapacity{}); got != nil {
 		t.Fatal("空目录必须 nil")
 	}
-	// 容量旋钮 <=0 回落默认后装配成功。
-	spool := newUsageSpool(t.TempDir(), gatewaypreauth.SystemClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), usageSpoolCapacity{})
-	if spool == nil {
-		t.Fatal("临时目录必须装配 spool")
+	deliverer := newUsageSpool(t.TempDir(), gatewaypreauth.SystemClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), usageSpoolCapacity{})
+	if deliverer == nil {
+		t.Fatal("临时目录必须装配投递器")
 	}
-	// 溢出写：nil spool 安全；非 nil 委托 PersistOverflow。
-	if err := (spoolOverflow{}).PersistOverflow(context.Background(), gatewayusage.UsageRecordInput{}); err != nil {
-		t.Fatalf("nil overflow = %v", err)
-	}
-	overflow := spoolOverflow{spool: spool}
-	if err := overflow.PersistOverflow(context.Background(), gatewayusage.UsageRecordInput{TraceID: "t1"}); err != nil {
+	if err := deliverer.Persist(context.Background(), gatewayusage.UsageRecordInput{TraceID: "t1"}); err != nil {
 		t.Fatalf("persist = %v", err)
 	}
 }

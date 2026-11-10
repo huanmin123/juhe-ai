@@ -92,7 +92,7 @@ func TestChainSessionAffinityDispatchPortApiKeyMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAffinityService: %v", err)
 	}
-	port := &chainSessionAffinityDispatchPort{service: service, busy: newLocalSessionAffinity()}
+	port := &chainSessionAffinityDispatchPort{service: service}
 	ctx := context.Background()
 	scope := gatewaydispatch.AffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"}
 

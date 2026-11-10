@@ -129,6 +129,19 @@ type prometheusMetrics struct {
 	// AI 账户每分钟请求上限设计 §5.5：账户 RPM 拒绝计数（无标签维度，命中
 	// 一次拒绝加 1；空向量不渲染）。
 	accountRPMLimited prommetrics.CounterVec
+	// 账户亲和同层单向粘性与会话名额设计 §8：重绑/跨账户切换/租约/owner
+	// 等待指标。reason 限定为 capacity/runtime/success/soft_threshold/slot_fallback 等有界值。
+	sessionAffinityRebind         prommetrics.CounterVec
+	sessionAffinityRebindFailed   prommetrics.CounterVec
+	sessionAffinityBackSwitch     prommetrics.CounterVec
+	sessionAffinityCrossSwitch    prommetrics.CounterVec
+	sessionAffinityLeaseHit       prommetrics.CounterVec
+	sessionAffinityLeaseExpired   prommetrics.CounterVec
+	sessionAffinityAffinityWaitMs prommetrics.HistogramVec
+	sessionAffinitySlotWaitMs     prommetrics.HistogramVec
+	sessionAffinitySlotFallback   prommetrics.CounterVec
+	sessionAffinitySlotEvictions  prommetrics.CounterVec
+	sessionAffinitySlotFailures   prommetrics.CounterVec
 
 	auditDropOnce     sync.Once
 	auditDropSlot     atomic.Pointer[func() int64]
@@ -155,10 +168,21 @@ func newPrometheusMetrics() *prometheusMetrics {
 		upstreamFailures: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_upstream_failures_total", "Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.", prometheusServiceLabels, []string{"failure_class", "reason_class", "status_class"}),
 		firstOutput:      prommetrics.NewHistogramVec(registry, "juhe_ai_gateway_first_output_duration_seconds", "Time to first upstream output for gateway requests, excluding full stream duration.", prometheusServiceLabels, []string{"method"}, prometheusFirstOutputBuckets),
 
-		requestFastExhausted:         prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_fast_exhausted_total", "Request-level fast exhaustion events: one request bucket reached >=3 distinct accounts and >=5 complete non-2xx candidate rejections.", prometheusServiceLabels, nil),
-		negativeCacheHits:            prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_hits_total", "Request negative-cache hits that served the existing dispatch-exhausted exit without further candidate scanning.", prometheusServiceLabels, nil),
-		negativeCacheCapacityRejects: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_capacity_rejected_total", "Request negative-cache writes rejected because the bounded in-process store was at capacity.", prometheusServiceLabels, nil),
-		accountRPMLimited:            prommetrics.NewCounterVec(registry, "juhe_ai_gateway_account_rpm_limited_total", "Account per-minute request (RPM) limit rejections at dispatch acquire time.", prometheusServiceLabels, nil),
+		requestFastExhausted:          prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_fast_exhausted_total", "Request-level fast exhaustion events: one request bucket reached >=3 distinct accounts and >=5 complete non-2xx candidate rejections.", prometheusServiceLabels, nil),
+		negativeCacheHits:             prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_hits_total", "Request negative-cache hits that served the existing dispatch-exhausted exit without further candidate scanning.", prometheusServiceLabels, nil),
+		negativeCacheCapacityRejects:  prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_capacity_rejected_total", "Request negative-cache writes rejected because the bounded in-process store was at capacity.", prometheusServiceLabels, nil),
+		accountRPMLimited:             prommetrics.NewCounterVec(registry, "juhe_ai_gateway_account_rpm_limited_total", "Account per-minute request (RPM) limit rejections at dispatch acquire time.", prometheusServiceLabels, nil),
+		sessionAffinityRebind:         prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_rebind_total", "Successful account-affinity owner rebinds grouped by bounded reason.", prometheusServiceLabels, []string{"reason"}),
+		sessionAffinityRebindFailed:   prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_rebind_failed_total", "Account-affinity rebind CAS misses or write failures grouped by bounded reason.", prometheusServiceLabels, []string{"reason"}),
+		sessionAffinityBackSwitch:     prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_back_switch_prevented_total", "Ordering passes where an active session binding kept its owner ahead of same-layer peers that were originally ahead.", prometheusServiceLabels, nil),
+		sessionAffinityCrossSwitch:    prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_cross_account_switch_total", "Successful responses landing on a different account than the session owner.", prometheusServiceLabels, nil),
+		sessionAffinityLeaseHit:       prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_lease_hit_total", "Session-affinity claims that found an active owner lease.", prometheusServiceLabels, nil),
+		sessionAffinityLeaseExpired:   prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_lease_expired_total", "Session-affinity claims that rewrote an expired owner lease.", prometheusServiceLabels, nil),
+		sessionAffinityAffinityWaitMs: prommetrics.NewHistogramVec(registry, "juhe_ai_gateway_session_affinity_affinity_wait_ms", "Time spent waiting for the session-affinity owner to free a concurrency slot, in milliseconds.", prometheusServiceLabels, nil, []float64{25, 50, 100, 200, 300, 500, 1000, 2000}),
+		sessionAffinitySlotWaitMs:     prommetrics.NewHistogramVec(registry, "juhe_ai_gateway_session_affinity_slot_wait_ms", "Time spent waiting for the session-affinity owner account to free a session slot, in milliseconds.", prometheusServiceLabels, nil, []float64{100, 200, 400, 600, 1000, 1500, 2000}),
+		sessionAffinitySlotFallback:   prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_slot_fallback_total", "Session-slot assignments that moved away from the owner/claimed account because its slot table was full.", prometheusServiceLabels, nil),
+		sessionAffinitySlotEvictions:  prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_slot_evictions_total", "Session-slot LRU evictions performed when the candidate pool had no free slot.", prometheusServiceLabels, nil),
+		sessionAffinitySlotFailures:   prommetrics.NewCounterVec(registry, "juhe_ai_gateway_session_affinity_slot_failed_total", "Session-slot probe/read/touch/release/write failures (advisory; request continues).", prometheusServiceLabels, nil),
 	}
 	// build_info 是发布观测面：version/commit/schema_revision/instance_id 作为
 	// 标签，值恒 1；多副本按 instance_id 区分，滚动发布时可按 version 聚合。
@@ -267,6 +291,66 @@ func (m *prometheusMetrics) recordAccountRPMLimited() {
 	m.accountRPMLimited.WithLabelValues().Inc()
 }
 
+func sessionAffinityMetricReason(reason string) string {
+	switch reason {
+	case "capacity", "runtime", "success", "soft_threshold", "slot_fallback":
+		return reason
+	default:
+		return "other"
+	}
+}
+
+func (m *prometheusMetrics) recordSessionAffinityRebind(reason string, applied bool) {
+	reason = sessionAffinityMetricReason(reason)
+	if applied {
+		m.sessionAffinityRebind.WithLabelValues(reason).Inc()
+		return
+	}
+	m.sessionAffinityRebindFailed.WithLabelValues(reason).Inc()
+}
+
+func (m *prometheusMetrics) recordSessionAffinityCrossAccountSwitch() {
+	m.sessionAffinityCrossSwitch.WithLabelValues().Inc()
+}
+
+func (m *prometheusMetrics) recordSessionAffinityBackSwitchPrevented() {
+	m.sessionAffinityBackSwitch.WithLabelValues().Inc()
+}
+
+func (m *prometheusMetrics) recordSessionAffinityLease(hit bool) {
+	if hit {
+		m.sessionAffinityLeaseHit.WithLabelValues().Inc()
+		return
+	}
+	m.sessionAffinityLeaseExpired.WithLabelValues().Inc()
+}
+
+func (m *prometheusMetrics) recordSessionAffinityAffinityWait(durationMs int64) {
+	if durationMs <= 0 {
+		return
+	}
+	m.sessionAffinityAffinityWaitMs.WithLabelValues().Observe(float64(durationMs))
+}
+
+func (m *prometheusMetrics) recordSessionAffinitySlotWait(durationMs int64) {
+	if durationMs <= 0 {
+		return
+	}
+	m.sessionAffinitySlotWaitMs.WithLabelValues().Observe(float64(durationMs))
+}
+
+func (m *prometheusMetrics) recordSessionAffinitySlotFallback() {
+	m.sessionAffinitySlotFallback.WithLabelValues().Inc()
+}
+
+func (m *prometheusMetrics) recordSessionAffinitySlotEviction() {
+	m.sessionAffinitySlotEvictions.WithLabelValues().Inc()
+}
+
+func (m *prometheusMetrics) recordSessionAffinitySlotFailure() {
+	m.sessionAffinitySlotFailures.WithLabelValues().Inc()
+}
+
 // recordFirstOutput mirrors recordGatewayFirstOutputMetric.
 func (m *prometheusMetrics) recordFirstOutput(durationMs int64, method string) {
 	if durationMs < 0 {
@@ -324,6 +408,57 @@ func RecordGatewayRequestNegativeCacheCapacityRejectedMetric() {
 // 请求上限设计 §5.5，dispatch 占位拒绝路径调用）。
 func RecordGatewayAccountRPMLimitedMetric() {
 	prometheusDefault.recordAccountRPMLimited()
+}
+
+// RecordGatewaySessionAffinityRebindMetric 计一次账户亲和同层 latch 重绑结算：
+// applied=false 表示 CAS 未命中/写失败（并发改绑、绑定已删或 Redis 失败）。
+func RecordGatewaySessionAffinityRebindMetric(reason string, applied bool) {
+	prometheusDefault.recordSessionAffinityRebind(reason, applied)
+}
+
+// RecordGatewaySessionAffinityCrossAccountSwitchMetric 计一次最终成功账户与
+// 会话 owner 不同的跨账户切换（无论是否同层重绑）。
+func RecordGatewaySessionAffinityCrossAccountSwitchMetric() {
+	prometheusDefault.recordSessionAffinityCrossAccountSwitch()
+}
+
+// RecordGatewaySessionAffinityBackSwitchPreventedMetric 计一次“亲和排序把
+// owner 保留在同层 peer 之前”的排序轮次；每次 Order 最多加 1，不按比较次数
+// 累计。
+func RecordGatewaySessionAffinityBackSwitchPreventedMetric() {
+	prometheusDefault.recordSessionAffinityBackSwitchPrevented()
+}
+
+// RecordGatewaySessionAffinityLeaseMetric 计一次 lease 判定：hit=true 表示
+// claim 命中有效 owner lease；false 表示 lease 已过期并被新分配重写。
+func RecordGatewaySessionAffinityLeaseMetric(hit bool) {
+	prometheusDefault.recordSessionAffinityLease(hit)
+}
+
+// RecordGatewaySessionAffinityAffinityWaitMetric 记录 owner 专用并发等待
+// 时长（毫秒）；非 owner 路径不调用。
+func RecordGatewaySessionAffinityAffinityWaitMetric(durationMs int64) {
+	prometheusDefault.recordSessionAffinityAffinityWait(durationMs)
+}
+
+// RecordGatewaySessionAffinitySlotWaitMetric 记录原账户名额等待时长。
+func RecordGatewaySessionAffinitySlotWaitMetric(durationMs int64) {
+	prometheusDefault.recordSessionAffinitySlotWait(durationMs)
+}
+
+// RecordGatewaySessionAffinitySlotFallbackMetric 计一次名额回退到其他账户。
+func RecordGatewaySessionAffinitySlotFallbackMetric() {
+	prometheusDefault.recordSessionAffinitySlotFallback()
+}
+
+// RecordGatewaySessionAffinitySlotEvictionMetric 计一次名额 LRU 驱逐。
+func RecordGatewaySessionAffinitySlotEvictionMetric() {
+	prometheusDefault.recordSessionAffinitySlotEviction()
+}
+
+// RecordGatewaySessionAffinitySlotFailureMetric 计一次名额探测/写入失败。
+func RecordGatewaySessionAffinitySlotFailureMetric() {
+	prometheusDefault.recordSessionAffinitySlotFailure()
 }
 
 // RecordGatewayFirstOutputMetric mirrors recordGatewayFirstOutputMetric.

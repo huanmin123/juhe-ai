@@ -809,7 +809,6 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "oauthAccessTokenRefreshBatchSize", ValueJSON: "20"},
 	{Key: "oauthAccessTokenRefreshRetryBackoffSeconds", ValueJSON: "300"},
 	{Key: "modelCheckRetentionDays", ValueJSON: "30"},
-	{Key: "runtimeLogIndexRetentionDays", ValueJSON: "14"},
 	{Key: "publicApiLogRetentionDays", ValueJSON: "30"},
 	{Key: "usageRecordRetentionDays", ValueJSON: "30"},
 	{Key: "usageStatsTimezone", ValueJSON: "\"Asia/Shanghai\""},

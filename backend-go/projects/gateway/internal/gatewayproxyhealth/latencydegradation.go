@@ -224,18 +224,22 @@ type LatencyDegradationOptions struct {
 const (
 	// v1（历史策略路径，完整保留）与 v2（调度偏好路径）两个键族版本段。
 	// v1 派生键常量继续存在并被测试引用，是"历史键零字节漂移"的锚点。
-	latencyStateVersion                = "v1"
-	latencyStateVersionV2              = "v2"
-	latencyStateGenerationKey          = latencyStateVersion + ":generation"
-	latencyStateAllIndexKey            = latencyStateVersion + ":all-index"
-	latencyStateProbeIndexKey          = latencyStateVersion + ":probe-index"
-	latencyStateAllIndexLockKey        = latencyStateVersion + ":all-index-lock"
-	latencyStateProbeIndexLockKey      = latencyStateVersion + ":probe-index-lock"
-	latencyStateIndexMaxKeys           = 10_000
-	latencyStateIndexTTLMs             = int64(24 * 60 * 60 * 1000)
-	latencyStateGenerationTTLMs        = int64(48 * 60 * 60 * 1000)
-	latencyStateLockAcquireMaxAttempts = 50
-	latencyStateLockAcquireMaxDelayMs  = 100
+	latencyStateVersion           = "v1"
+	latencyStateVersionV2         = "v2"
+	latencyStateGenerationKey     = latencyStateVersion + ":generation"
+	latencyStateAllIndexKey       = latencyStateVersion + ":all-index"
+	latencyStateProbeIndexKey     = latencyStateVersion + ":probe-index"
+	latencyStateAllIndexLockKey   = latencyStateVersion + ":all-index-lock"
+	latencyStateProbeIndexLockKey = latencyStateVersion + ":probe-index-lock"
+	latencyStateIndexMaxKeys      = 10_000
+	latencyStateIndexTTLMs        = int64(24 * 60 * 60 * 1000)
+	latencyStateGenerationTTLMs   = int64(48 * 60 * 60 * 1000)
+	// 2026-11-09：速度优先慢/成功样本在请求完成路径同步记录，原 50 次 ×
+	// 最长 100ms 退避最坏可拖住请求约 4s。影子调度状态允许丢样本：5 次 ×
+	// 最长 50ms（约 110ms 退避 + RTT）拿不到锁即放弃本次样本，由后续请求
+	// 重新采样；锁 TTL 同步收敛到 5.5s，陈旧锁恢复更快。
+	latencyStateLockAcquireMaxAttempts = 5
+	latencyStateLockAcquireMaxDelayMs  = 50
 	latencyStateMutationLockTTLMs      = int64(2*latencyStateLockAcquireMaxAttempts*latencyStateLockAcquireMaxDelayMs) + 5000
 	latencyStateIndexLockTTLMs         = latencyStateMutationLockTTLMs
 	latencyStateGenerationCASMax       = 8
@@ -2286,6 +2290,9 @@ func (s *LatencyDegradationService) acquireLatencyStateLock(ctx context.Context,
 		}
 		if locked {
 			return true, nil
+		}
+		if attempt == latencyStateLockAcquireMaxAttempts-1 {
+			break
 		}
 		s.lockRetryDelay(attempt)
 	}

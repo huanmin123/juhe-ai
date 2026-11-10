@@ -169,7 +169,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			clientModel:  "gpt-5-chat",
 			clientFamily: "chat_completions",
 			candidate:    accountWithMappings("cand", "glm", []string{"gpt-5-chat"}, []string{}, nil),
-			expectKept: true,
+			expectKept:   true,
 		},
 		{
 			// 无别名候选在原生目标 + 模型直持时保留（EqualFold）。

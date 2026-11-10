@@ -69,16 +69,17 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 			reportResult(out.Report), reportPostflightOK(out.Report))
 	}
 
-	// 4) 账本：13 行全 applied（rev7 chat-account-only-binding 已随退役删除，
-	// 注册表 13 步）；schema_state revision = SchemaRevision。
+	// 4) 账本：15 行全 applied（rev7 chat-account-only-binding 已随退役删除，
+	// 注册表 15 步，含 rev22 高并发分组退役与 rev23 usage shard 目录退役）；
+	// schema_state revision = SchemaRevision。
 	db := td.DB
 	var applied int
 	if err := db.QueryRowContext(context.Background(),
 		`SELECT count(*) FROM juhe_business.schema_migrations WHERE status = 'applied'`).Scan(&applied); err != nil {
 		t.Fatalf("读账本失败: %v", err)
 	}
-	if applied != 13 {
-		t.Fatalf("applied 行数 = %d, want 13", applied)
+	if applied != 15 {
+		t.Fatalf("applied 行数 = %d, want 15", applied)
 	}
 	var stateRevision int64
 	if err := db.QueryRowContext(context.Background(),

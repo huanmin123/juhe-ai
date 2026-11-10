@@ -93,7 +93,7 @@ func TestRunUpToDateShortCircuitAdoptsLedger(t *testing.T) {
 }
 
 // T84-9：报告以执行期为准——计划期 pending、执行期翻转 satisfied 的步骤
-//（加法相/seed 改变了求值事实）从 Plan.Pending 挪入 Plan.Adopt（reason=
+// （加法相/seed 改变了求值事实）从 Plan.Pending 挪入 Plan.Adopt（reason=
 // satisfied-at-execution），保持 pending/adopt 互斥与 Executed 口径一致；
 // 计划期已 adopt 的步骤执行期不重复追加。
 func TestRunReportFollowsExecutionFlip(t *testing.T) {

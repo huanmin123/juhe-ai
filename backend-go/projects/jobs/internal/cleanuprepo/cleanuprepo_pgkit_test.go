@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
@@ -82,32 +80,6 @@ func (c kitFailingPGConnector) Driver() driver.Driver { return recorderDriver{re
 // openKitFailingRecorderPG 打开命中 failOn 子串即报错的 PG 录制句柄。
 func openKitFailingRecorderPG(rec *pgRecorder, failOn ...string) *DB {
 	return &DB{DB: sql.OpenDB(kitFailingPGConnector{rec: rec, failOn: failOn}), Postgres: true}
-}
-
-// ---- retention.StatsWriter / DerivedWindowRefresher fake ----
-
-type kitAPIKeyStatsCall struct {
-	Target       retention.APIKeyCleanupTarget
-	Rows         []map[string]any
-	UpdatedAt    string
-	ShardDeleted bool
-}
-
-type kitAccountStatsCall struct {
-	Target       retention.ExpiredDeletedAccountTarget
-	Rows         []map[string]any
-	UpdatedAt    string
-	ShardDeleted bool
-}
-
-// kitStatsWriter 记录 CleanupDeletedApiKeyRecordStats / CleanupDeletedAccountRecordStats
-// 调用，并可脚本化返回错误（Node stats cleanup callback 的 fake）。
-type kitStatsWriter struct {
-	mu           sync.Mutex
-	apiKeyCalls  []kitAPIKeyStatsCall
-	accountCalls []kitAccountStatsCall
-	apiKeyErr    error
-	accountErr   error
 }
 
 func oneLineSQL(query string) string {

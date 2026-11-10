@@ -3,11 +3,11 @@
     <div class="model-check-terminal-head">
       <div>
         <div class="terminal-title">AI 测试终端</div>
-        <div class="terminal-subtitle">按真实检测进度输出探针请求、响应、评分和 Trace ID</div>
+        <div class="terminal-subtitle">{{ subtitle }}</div>
       </div>
       <a-space>
         <a-tag :color="statusColor">{{ statusText }}</a-tag>
-        <a-button v-if="submitting" size="small" danger @click="$emit('stop')">停止检测</a-button>
+        <a-button v-if="submitting && props.stoppable" size="small" danger @click="$emit('stop')">停止检测</a-button>
       </a-space>
     </div>
     <div ref="terminalBodyRef" class="model-check-terminal-body">
@@ -48,8 +48,14 @@ const props = withDefaults(defineProps<{
   statusText: string
   statusColor: string
   waitingText?: string
+  /** false 时隐藏「停止检测」按钮：无停止端点的同步测试（如题库门禁测试）复用终端时不渲染无效按钮 */
+  stoppable?: boolean
+  /** 头部副标题：不同复用场景描述各自输出的内容 */
+  subtitle?: string
 }>(), {
-  waitingText: '等待下一个检测事件'
+  waitingText: '等待下一个检测事件',
+  stoppable: true,
+  subtitle: '按真实检测进度输出探针请求、响应、评分和 Trace ID'
 })
 
 defineEmits<{
@@ -140,6 +146,11 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: start;
   word-break: break-word;
+}
+
+/* 回答全文等 多行文本以单条 line 承载，按原文换行渲染 */
+.model-check-terminal .terminal-text {
+  white-space: pre-wrap;
 }
 
 .terminal-time {

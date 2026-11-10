@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
+
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -158,7 +160,7 @@ func (s *Store) globalConcurrencyMax() int {
 	if s.globalMax >= 1 {
 		return s.globalMax
 	}
-	return defaultGlobalConcurrencyMax
+	return gatewayscheduling.DefaultGlobalConcurrencyMax
 }
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
@@ -325,6 +327,7 @@ type ListItem struct {
 	IsDefault                  bool                               `json:"isDefault"`
 	GroupType                  string                             `json:"groupType"`
 	GroupKind                  string                             `json:"groupKind"`
+	SchedulingPolicy           any                                `json:"schedulingPolicy"`
 	AccessType                 string                             `json:"accessType"`
 	GroupAuthorizationID       *string                            `json:"groupAuthorizationId,omitempty"`
 	AuthorizationStatus        *string                            `json:"authorizationStatus,omitempty"`
@@ -515,18 +518,18 @@ func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
 const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json`
 
 // authorizedListArm mirrors the authorized arm of queryGroupRowsForAccess:
-// grantee-scoped runtime rows with the management-list status guard and the
-// per-grantee settings overrides, excluding rows the owner arm returned. The
-// column order matches groupRowColumns + the access columns (description
+// grantee-scoped runtime rows with the management-list status guard. Group
+// type and scheduling policy always come from the source group; the retired
+// per-grantee group_type/scheduling_policy_json overrides are ignored.
+// The column order matches groupRowColumns + the access columns (description
 // fifth) so the UNION ALL aligns positionally.
 func (s *Store) authorizedListArm() string {
 	return `SELECT g.id, g.system_account_id, g.name, g.description,
 			CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 			g.is_default,
-			COALESCE(s.group_type, g.group_type) AS group_type,
+			g.group_type,
 			g.group_kind,
-			CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
-				THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
+			g.scheduling_policy_json,
 			g.created_at,
 			COALESCE(s.updated_at, g.updated_at) AS updated_at,
 			'authorized' AS access_type,
@@ -930,12 +933,14 @@ func hasActiveManualSource(rows []authorizedSourceRow) bool {
 // summary, and renders the authorized permissions whenever the row owner
 // differs from the viewer.
 // newListItem mirrors groupListItemFromRow: the list projection validates the
-// stored group type but (like Node) omits schedulingPolicy and does not parse
-// the policy JSON; the authorized view forces isDefault=false, carries the
-// runtime authorization columns plus the source summary, and renders the
-// authorized permissions whenever the row owner differs from the viewer.
+// stored group type and now carries the two-key optional scheduling policy
+// (NULL renders as null), so list summaries do not need a per-row detail call.
 func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[string]string, includeSystemAccountFields bool, viewer string) (ListItem, error) {
 	groupType, err := normalizeStoredGroupType(row.row.groupType)
+	if err != nil {
+		return ListItem{}, err
+	}
+	policy, err := parseStoredSchedulingPolicy(row.row.schedulingJSON.String, row.row.schedulingJSON.Valid, isLegacyGroupType(row.row.groupType), s.globalConcurrencyMax())
 	if err != nil {
 		return ListItem{}, err
 	}
@@ -959,6 +964,7 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 		IsDefault:              !authorized && row.row.isDefault,
 		GroupType:              groupType,
 		GroupKind:              row.row.groupKind,
+		SchedulingPolicy:       policy,
 		AccessType:             row.accessType,
 		GroupAuthorizationID:   nullPtrString(row.authorizationID),
 		AuthorizationStatus:    nullPtrString(row.authorizationStatus),
@@ -1207,10 +1213,9 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 				SELECT g.id, g.system_account_id, g.name, g.description,
 					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 					g.is_default,
-					COALESCE(s.group_type, g.group_type) AS group_type,
+					g.group_type,
 					g.group_kind,
-					CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
-						THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
+					g.scheduling_policy_json,
 					g.created_at,
 					COALESCE(s.updated_at, g.updated_at) AS updated_at,
 					'authorized' AS access_type,
@@ -1242,7 +1247,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	if err != nil {
 		return nil, err
 	}
-	policy, err := parseStoredSchedulingPolicy(row.row.schedulingJSON.String, row.row.schedulingJSON.Valid, groupType, s.globalConcurrencyMax())
+	policy, err := parseStoredSchedulingPolicy(row.row.schedulingJSON.String, row.row.schedulingJSON.Valid, isLegacyGroupType(row.row.groupType), s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
 	}
@@ -1335,12 +1340,15 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 type MutationInput struct {
 	Name *string
 	// ProviderCode 接受但忽略（见类型注释）；包内任何写路径不得消费。
-	ProviderCode     *string
-	Description      *string
-	Enabled          *bool
-	GroupType        *string
-	GroupKind        *string
-	SchedulingPolicy any // decoded JSON object when present
+	ProviderCode *string
+	Description  *string
+	Enabled      *bool
+	GroupType    *string
+	GroupKind    *string
+	// SchedulingPolicy 是解码后的对象；nil 需要配合 SchedulingPolicySet
+	// 区分“缺省不变”与“显式 null 清空”。
+	SchedulingPolicy    any
+	SchedulingPolicySet bool
 }
 
 // Empty reports whether no patchable field is present。
@@ -1348,7 +1356,7 @@ type MutationInput struct {
 // 普通 PATCH 不解析该键（routes 白名单拒绝），不参与 Empty。
 func (m MutationInput) Empty() bool {
 	return m.Name == nil && m.Description == nil &&
-		m.Enabled == nil && m.GroupType == nil && m.SchedulingPolicy == nil
+		m.Enabled == nil && m.GroupType == nil && !m.SchedulingPolicySet
 }
 
 // Create mirrors createGroupWithReceiptAsync: normalized fields, owner-scoped
@@ -1373,7 +1381,11 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
-	policyJSON, err := schedulingPolicyJSON(groupType, input.SchedulingPolicy, s.globalConcurrencyMax())
+	policyJSON, err := schedulingPolicyJSON(input.SchedulingPolicy)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := parseStoredSchedulingPolicy(string(policyJSON), len(policyJSON) > 0, false, s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
 	}
@@ -1420,6 +1432,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 		IsDefault:              false,
 		GroupType:              groupType,
 		GroupKind:              groupKind,
+		SchedulingPolicy:       policy,
 		AccessType:             "owner",
 		UpdatedAt:              now,
 		AccountStats:           AccountStats{},
@@ -1440,6 +1453,19 @@ func policyJSONString(raw json.RawMessage) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: string(raw), Valid: true}
+}
+
+// policyValueJSON renders a decoded policy value for storage; nil clears the
+// column.
+func policyValueJSON(policy any) (sql.NullString, error) {
+	if policy == nil {
+		return sql.NullString{}, nil
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		return sql.NullString{}, err
+	}
+	return sql.NullString{String: string(encoded), Valid: true}, nil
 }
 
 func (s *Store) lookupName(ctx context.Context, id string) *string {
@@ -1481,6 +1507,7 @@ type PatchResult struct {
 	AccessType           string   `json:"accessType"`
 	ChangedFields        []string `json:"changedFields"`
 	UpdatedAt            string   `json:"updatedAt"`
+	SchedulingPolicy     any      `json:"schedulingPolicy"`
 	OwnerSystemAccountID string   `json:"-"`
 	Changes              []Change `json:"-"`
 }
@@ -1576,7 +1603,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	}
 
 	hasGroupTypeInput := input.GroupType != nil
-	hasSchedulingPolicyInput := input.SchedulingPolicy != nil
+	hasSchedulingPolicyInput := input.SchedulingPolicySet
 	persistedGroupType := current.groupType
 	persistedSchedulingJSON := current.schedulingJSON
 	if hasGroupTypeInput || hasSchedulingPolicyInput {
@@ -1586,23 +1613,27 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			// branch (分组类型无效).
 			return nil, &ValidationError{Message: typeErr.Error()}
 		}
+		legacyBefore := isLegacyGroupType(current.groupType)
 		afterGroupType := beforeGroupType
 		if hasGroupTypeInput {
-			normalized, typeErr := normalizeGroupType(input.GroupType)
-			if typeErr != nil {
-				return nil, typeErr
+			normalized, normalizeErr := normalizeGroupType(input.GroupType)
+			if normalizeErr != nil {
+				return nil, normalizeErr
 			}
 			afterGroupType = normalized
 			persistedGroupType = afterGroupType
-			if beforeGroupType != afterGroupType {
+			if current.groupType != afterGroupType {
 				assignments = append(assignments, "group_type = ?")
 				updateArgs = append(updateArgs, afterGroupType)
 			}
 			addChange("groupType", beforeGroupType, afterGroupType)
-		}
-		var policyInput any
-		if hasSchedulingPolicyInput {
-			policyInput = input.SchedulingPolicy
+		} else if legacyBefore && hasSchedulingPolicyInput {
+			// 旧 high_concurrency 行只改策略时也顺带归一类型，避免写面继续
+			// 保留退役类型。
+			afterGroupType = GroupTypePersonal
+			persistedGroupType = GroupTypePersonal
+			assignments = append(assignments, "group_type = ?")
+			updateArgs = append(updateArgs, GroupTypePersonal)
 		}
 		// Node compares the parsed policy objects (isDeepStrictEqual), so a
 		// stored JSON differing only in key order or whitespace is a no-op.
@@ -1616,62 +1647,51 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			}
 			return string(encoded)
 		}
-		parseCurrentPolicy := func() (any, error) {
-			parsed, parseErr := parseStoredSchedulingPolicy(current.schedulingJSON.String, current.schedulingJSON.Valid, beforeGroupType, s.globalConcurrencyMax())
-			if parseErr != nil {
-				return nil, &ValidationError{Message: parseErr.Error()}
-			}
-			return parsed, nil
+		beforePolicy, parseErr := parseStoredSchedulingPolicy(current.schedulingJSON.String, current.schedulingJSON.Valid, legacyBefore, s.globalConcurrencyMax())
+		if parseErr != nil {
+			return nil, &ValidationError{Message: parseErr.Error()}
 		}
-		if beforeGroupType != afterGroupType {
-			// Node: group-type transitions reset the stored policy to the
-			// defaults (plus writable input) unconditionally.
-			afterJSON, policyErr := schedulingPolicyJSON(afterGroupType, policyInput, s.globalConcurrencyMax())
+		afterJSON := current.schedulingJSON
+		switch {
+		case hasSchedulingPolicyInput:
+			encoded, policyErr := schedulingPolicyJSON(input.SchedulingPolicy)
 			if policyErr != nil {
 				return nil, policyErr
 			}
+			afterJSON = policyJSONString(encoded)
+		case legacyBefore:
+			// 旧 high_concurrency 行在首次编辑时顺带归一为 personal +
+			// 两键策略，避免新二进制把旧 16 键继续写回。
+			encoded, policyErr := policyValueJSON(beforePolicy)
+			if policyErr != nil {
+				return nil, policyErr
+			}
+			afterJSON = encoded
+		}
+		afterPolicy, parseErr := parseStoredSchedulingPolicy(afterJSON.String, afterJSON.Valid, false, s.globalConcurrencyMax())
+		if parseErr != nil {
+			return nil, &ValidationError{Message: parseErr.Error()}
+		}
+		// 策略写入按语义等值判定：仅键序/空白差异不回写、不 bump updatedAt。
+		// legacy 行即使映射后语义相同，也把旧 16 键文档归一为两键规范文本。
+		policyChanged := canonicalPolicy(beforePolicy) != canonicalPolicy(afterPolicy)
+		normalizationNeeded := legacyBefore && current.schedulingJSON != afterJSON
+		if policyChanged || normalizationNeeded {
 			assignments = append(assignments, "scheduling_policy_json = ?")
-			updateArgs = append(updateArgs, policyJSONString(afterJSON))
-			persistedSchedulingJSON = policyJSONString(afterJSON)
-			if hasSchedulingPolicyInput {
-				beforePolicy, beforeErr := parseCurrentPolicy()
-				if beforeErr != nil {
-					return nil, beforeErr
-				}
-				afterPolicy, afterErr := parseStoredSchedulingPolicy(string(afterJSON), true, afterGroupType, s.globalConcurrencyMax())
-				if afterErr != nil {
-					return nil, &ValidationError{Message: afterErr.Error()}
-				}
-				addChange("schedulingPolicy", canonicalPolicy(beforePolicy), canonicalPolicy(afterPolicy))
-			}
-		} else if hasSchedulingPolicyInput {
-			beforePolicy, beforeErr := parseCurrentPolicy()
-			if beforeErr != nil {
-				return nil, beforeErr
-			}
-			afterJSON, policyErr := schedulingPolicyJSON(afterGroupType, policyInput, s.globalConcurrencyMax())
-			if policyErr != nil {
-				return nil, policyErr
-			}
-			afterPolicy, afterErr := parseStoredSchedulingPolicy(string(afterJSON), true, afterGroupType, s.globalConcurrencyMax())
-			if afterErr != nil {
-				return nil, &ValidationError{Message: afterErr.Error()}
-			}
-			if canonicalPolicy(beforePolicy) != canonicalPolicy(afterPolicy) {
-				assignments = append(assignments, "scheduling_policy_json = ?")
-				updateArgs = append(updateArgs, policyJSONString(afterJSON))
-				persistedSchedulingJSON = policyJSONString(afterJSON)
-			}
-			addChange("schedulingPolicy", canonicalPolicy(beforePolicy), canonicalPolicy(afterPolicy))
+			updateArgs = append(updateArgs, afterJSON)
+			persistedSchedulingJSON = afterJSON
 		}
+		addChange("schedulingPolicy", canonicalPolicy(beforePolicy), canonicalPolicy(afterPolicy))
 	}
 
+	resultPolicy, _ := parseStoredSchedulingPolicy(persistedSchedulingJSON.String, persistedSchedulingJSON.Valid, isLegacyGroupType(persistedGroupType), s.globalConcurrencyMax())
 	result := &PatchResult{
 		ID:                   current.id,
 		Name:                 nextName,
 		AccessType:           "owner",
 		ChangedFields:        []string{},
 		UpdatedAt:            current.updatedAt,
+		SchedulingPolicy:     resultPolicy,
 		OwnerSystemAccountID: current.systemAccountID,
 		Changes:              changes,
 	}
@@ -1701,11 +1721,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		}
 	}
 	if (columnChanged(assignments, "group_type") || columnChanged(assignments, "scheduling_policy_json")) && current.groupKind == GroupKindStandard {
-		normalizedType, typeErr := normalizeStoredGroupType(persistedGroupType)
-		if typeErr != nil {
-			return nil, &ValidationError{Message: typeErr.Error()}
-		}
-		fingerprint, fpErr := groupDispatchFingerprint(normalizedType, persistedSchedulingJSON)
+		fingerprint, fpErr := groupDispatchFingerprint(persistedGroupType, persistedSchedulingJSON, s.globalConcurrencyMax())
 		if fpErr != nil {
 			return nil, fpErr
 		}

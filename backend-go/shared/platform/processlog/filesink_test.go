@@ -15,8 +15,7 @@ import (
 	"time"
 )
 
-// 消费面轮转名正则的写侧镜像（jobs runtimelog filename.go 同款）；写侧
-// 产出的轮转文件名必须整串命中，否则索引器会跳过该文件。
+// 轮转文件名的写侧正则镜像；外部采集按该命名识别历史文件。
 var filesinkRotationNamePattern = regexp.MustCompile(`^(.*)\.(\d{8}T\d{6}Z)\.([0-9a-f-]+)\.log$`)
 
 func TestFileSinkRotatesBySizeAndKeepsJSONLLinesIntact(t *testing.T) {

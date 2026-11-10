@@ -256,12 +256,12 @@ var autofillSkipExactTables = map[string]string{
 	"model_token_intercept_baseline_versions":      "派生聚合族：Token 拦截基线",
 	"ai_performance_summary_dirty_system_accounts": "派生队列：AI 性能摘要脏账户",
 	// —— owner 状态 / 租约 / 游标 / 瞬时队列族。
-	"background_job_leases":               "owner 租约族：占位行会让本机后端误判任务持有者",
-	"stats_job_state":                     "owner 状态族：统计任务游标，由运行时写者维护",
-	"account_health_current_state":        "owner 状态族：账户健康当前态，由探针 owner 维护",
-	"usage_range_window_requests":         "瞬时队列：自定义范围请求由运行时写入，设计文档明确允许为空",
-	"backfill_progress":                   "一次性回填完成标记：由显式运维动作 --apply-success-cost-backfill 写入，造数不伪造",
-	"model_check_question_tests":          "运行时诊断记录：题库提交门禁测试由 gateway 运行时写入",
+	"background_job_leases":        "owner 租约族：占位行会让本机后端误判任务持有者",
+	"stats_job_state":              "owner 状态族：统计任务游标，由运行时写者维护",
+	"account_health_current_state": "owner 状态族：账户健康当前态，由探针 owner 维护",
+	"usage_range_window_requests":  "瞬时队列：自定义范围请求由运行时写入，设计文档明确允许为空",
+	"backfill_progress":            "一次性回填完成标记：由显式运维动作 --apply-success-cost-backfill 写入，造数不伪造",
+	"model_check_question_tests":   "运行时诊断记录：题库提交门禁测试由 gateway 运行时写入",
 	// —— 域显式写入的业务表（business 库）。
 	"system_accounts":                            "域业务表：seedBusiness 写入配套用户与 admin",
 	"system_sessions":                            "域业务表：seedBusiness 写入会话样本",
@@ -316,11 +316,7 @@ var autofillSkipExactTables = map[string]string{
 	"account_list_availability_projection_dependency_health": "域业务表：seedBusiness 写入依赖健康行（CHECK 锁定 dependency_name='runtime_state'，占位值必违约）",
 	// —— 域显式写入的业务表（usage / stats / observability / codex-model-check；
 	// chat_* 行随 my-chat 会话面退役移除——演练场设计 §8）。
-	"usage_records":               "域业务表：seedUsage 写入使用记录（经日分区）",
-	"usage_record_shards":         "域业务表：seedUsage 写入分片登记",
-	"usage_record_shard_entries":  "域业务表：seedUsage 写入分片条目",
-	"usage_record_account_shards": "域业务表：seedUsage 写入账户分片索引",
-	"usage_record_api_key_shards": "域业务表：seedUsage 写入 Key 分片索引",
+	"usage_records": "域业务表：seedUsage 写入使用记录（经日分区）",
 	// usage_record_cleanup_deductions 是 jobs 清理任务的扣减台账（行语义是「该
 	// 记录已从分片删除并已扣减统计」），域按裁决不伪造。
 	"usage_record_cleanup_deductions":    "运行时台账：记录清理扣减由 jobs 清理任务结算，伪造行会让重试任务结算不存在的记录",
@@ -341,11 +337,6 @@ var autofillSkipExactTables = map[string]string{
 	"operation_log_targets":              "属主表族：seedObservability 写入操作目标",
 	"operation_log_viewers":              "属主表族：seedObservability 写入查看者",
 	"operation_log_summary_search_terms": "属主表族：seedObservability 写入摘要搜索词条",
-	"runtime_logs":                       "属主表族：seedObservability 写入运行日志",
-	"runtime_log_facet_summary":          "属主表族：seedObservability 写入运行日志分面",
-	"runtime_log_level_facets":           "属主表族：seedObservability 写入日志级别分面",
-	"runtime_log_event_facets":           "属主表族：seedObservability 写入日志事件分面",
-	"runtime_log_file_cursors":           "owner 游标族：文件读取进度由 jobs runtimelog 运行时维护；PG 造数无日志目录契约、不写物理日志文件，不伪造游标",
 	"record_maintenance_jobs":            "运行时队列：记录维护任务由 jobs 消费后为空，造数不伪造",
 	"account_record_cleanup_targets":     "域业务表：seedObservability 写入账户清理目标",
 	"api_key_record_cleanup_targets":     "域业务表：seedObservability 写入 Key 清理目标",
@@ -354,6 +345,7 @@ var autofillSkipExactTables = map[string]string{
 	"model_check_observations":           "域业务表：J3b bootstrap 后写入受控 observation",
 	"model_check_scheduler_tasks":        "域业务表：J3b bootstrap 后写入调度任务",
 	"account_quality_health_hourly":      "域业务表：seedChatCodexModelCheck 写入质量健康小时",
+	"playground_artifacts":               "域业务表：演练场产物由 playground 运行时写入，造数不伪造",
 	// —— J1（账户健康）owner 运行态表，由 jobs 健康owner / 业务变更运行时维护；
 	// 域按裁决不伪造，登记在这里把「为什么是空的」写清楚而不是误标为域表。
 	"account_health_outcomes":                  "owner 运行态：J1 探针结果由 jobs 健康owner 写入，域不伪造",

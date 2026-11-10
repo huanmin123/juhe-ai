@@ -1,18 +1,15 @@
 package gatewaydispatch
 
 // AI 账户每分钟请求上限设计 §5 的调度语义行为测试：Kind 归属与文案、RPM 失败
-// 跳过下一候选、全池 RPM 耗尽携带 RetryAfterMs、高并发分组队列等待封顶到最近
-// 重置点、RPM 上限聚合与最早重置计算。
+// 跳过下一候选、全池 RPM 耗尽携带 RetryAfterMs、RPM 上限聚合与最早重置计算。
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 func TestAccountCapacityFailureKindAndLimitMessage(t *testing.T) {
@@ -117,64 +114,6 @@ func TestDispatchRPMFailureSkipsToNextAccount(t *testing.T) {
 	}
 }
 
-// captureWaitQueue 记录一次 WaitForCapacity 输入后以错误中止引擎（避免无界轮
-// 次循环），供等待封顶断言使用。
-type captureWaitQueue struct {
-	input    HighConcurrencyWaitInput
-	captured bool
-}
-
-var errCaptureWaitDone = errors.New("capture wait done")
-
-func (q *captureWaitQueue) WaitForCapacity(_ context.Context, input HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	if !q.captured {
-		q.input = input
-		q.captured = true
-	}
-	return QueueWaitResult{Ready: false, Reason: "timeout"}, errCaptureWaitDone
-}
-
-// TestDispatchRPMOnlyFailuresCapQueueWaitToReset：高并发分组本轮容量失败全部
-// 为 RPM 时，队列等待封顶到最近重置剩余（设计 §5.2），并把 RPM 上限随容量模
-// 型透传。
-func TestDispatchRPMOnlyFailuresCapQueueWaitToReset(t *testing.T) {
-	okServer := sequentialServer(t, 0, 500)
-	defer okServer.Close()
-	engine, driver, _ := newTestEngine(t)
-	resetAtMs := gatewayupstream.NowMs() + 1_200
-	store := &rpmFullStore{rpmFullAccountID: "a-1", rpmResetAtMs: resetAtMs}
-	engine.Concurrency = store
-	engine.Config.AccountConcurrencyRetryBudgetMs = 0
-	queue := &captureWaitQueue{}
-	engine.HighConcurrencyQueue = queue
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
-	driver.urlByAccount = map[string][]string{
-		"a-1": {okServer.URL + "/v1/chat/completions"},
-	}
-	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
-	candidates := testAccounts("a-1")
-	candidates[0].RPMLimit = 2
-	args := fastDispatchArgs(t, req, candidates)
-	args.GroupSchedulingPolicy = &policy
-	args.RequestCoordination.ServerRetryBudget = gatewaypreauth.NewServerRetryBudget(8_000, gatewaypreauth.SystemClock{})
-	_, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
-	if !errors.Is(err, errCaptureWaitDone) {
-		t.Fatalf("捕获用错误应上抛, got %v", err)
-	}
-	if !queue.captured {
-		t.Fatal("WaitForCapacity 必须被调用")
-	}
-	if queue.input.AccountRPMLimits["a-1"] != 2 {
-		t.Fatalf("AccountRPMLimits = %v, want a-1=2", queue.input.AccountRPMLimits)
-	}
-	if queue.input.MaxWaitMs <= 0 || queue.input.MaxWaitMs > 1_200 {
-		t.Fatalf("MaxWaitMs = %d, want 封顶到重置剩余 ~1200ms", queue.input.MaxWaitMs)
-	}
-	if remaining := resetAtMs - gatewayupstream.NowMs(); remaining > 0 && queue.input.MaxWaitMs > remaining+50 {
-		t.Fatalf("MaxWaitMs = %d 超过重置剩余 %d", queue.input.MaxWaitMs, remaining)
-	}
-}
-
 func TestGatewayAccountRPMLimitsByAccountID(t *testing.T) {
 	source := "src-1"
 	accounts := []AccountCandidate{
@@ -264,7 +203,7 @@ func TestAcquireShortRetrySkipsWaitOnPureRPM(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 5, 2, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 5, 2, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -296,7 +235,7 @@ func TestAcquireShortRetryBreaksOnPureRPMAfterWait(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 5, 2, 200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 5, 2, 200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -325,7 +264,7 @@ func TestAcquireShortRetryStillWaitsOnDoubleFull(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 5, 2, 60, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 5, 2, 60, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -350,30 +289,4 @@ type rpmStateStore struct {
 
 func (s *rpmStateStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
 	return s.states, nil
-}
-
-// TestEarliestAccountRPMResetWaitMs：只统计已达上限且配置了 RPM 的账户，取
-// 最早重置剩余；未满额与未配置账户不参与（预派发等待封顶，设计 §5.2）。
-func TestEarliestAccountRPMResetWaitMs(t *testing.T) {
-	engine, _, _ := newTestEngine(t)
-	now := gatewayupstream.NowMs()
-	engine.Concurrency = &rpmStateStore{states: map[string]AccountRPMState{
-		"a-1": {Used: 5, ResetAtMs: now + 4_000},
-		"a-2": {Used: 5, ResetAtMs: now + 2_000},
-		"a-3": {Used: 1, ResetAtMs: now + 1_000},
-		"a-4": {Used: 9, ResetAtMs: now + 500},
-	}}
-	accounts := []AccountCandidate{
-		{ID: "a-1", RPMLimit: 5},
-		{ID: "a-2", RPMLimit: 5},
-		{ID: "a-3", RPMLimit: 5},
-		{ID: "a-4", RPMLimit: 0},
-	}
-	wait, err := engine.EarliestAccountRPMResetWaitMs(context.Background(), accounts)
-	if err != nil {
-		t.Fatalf("EarliestAccountRPMResetWaitMs: %v", err)
-	}
-	if wait < 1_500 || wait > 2_500 {
-		t.Fatalf("wait = %dms, want 约 2000ms（只取已满且已配置账户的最近重置）", wait)
-	}
 }

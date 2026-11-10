@@ -724,11 +724,11 @@ func TestW11FSectionFaults(t *testing.T) {
 		t.Fatal("section rows.Err must fail")
 	}
 	// system 分区缺键（兼容默认只覆盖五个键，删一个非默认键）。
-	env.exec(t, `DELETE FROM system_settings WHERE key = 'runtimeLogIndexRetentionDays'`)
+	env.exec(t, `DELETE FROM system_settings WHERE key = 'publicApiLogRetentionDays'`)
 	if _, err := store.LoadSection(ctx, "data-retention"); err == nil || !strings.Contains(err.Error(), "缺少字段") {
 		t.Fatalf("section missing key = %v", err)
 	}
-	env.exec(t, `INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'runtimeLogIndexRetentionDays', '14', '2024-01-01T00:00:00Z')`)
+	env.exec(t, `INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'publicApiLogRetentionDays', '30', '2024-01-01T00:00:00Z')`)
 
 	// UpdateSection: 未知分区 / 空输入 / 未授权键 / 原型污染键 / 校验错误 / 全局与系统域写入 / 故障。
 	if _, err := store.UpdateSection(ctx, "nope", map[string]any{"appName": "n"}); err == nil {

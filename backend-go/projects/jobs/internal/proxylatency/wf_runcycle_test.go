@@ -39,4 +39,3 @@ func wfCycleCommitOutcome(t *testing.T, store *Store, owner OwnerLease, proxy Pr
 	}
 	return outcome, committed
 }
-

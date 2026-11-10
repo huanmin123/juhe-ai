@@ -76,7 +76,15 @@ export interface ProviderDefinition {
   defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
+  /** 供应商高峰时段目录定义（providers 包 peak_windows.go 单一数据源）：nil = 无高峰口径，时间计划快捷预设据此动态生成。 */
+  peakWindows?: ProviderPeakWindows
   protocolProfiles: ProviderProtocolProfileDefinition[]
+}
+
+/** 供应商高峰时段（HH:mm，daysOfWeek 1=周一..7=周日，跨午夜以 start>end 表达）。 */
+export interface ProviderPeakWindows {
+  timezone: string
+  windows: Array<{ daysOfWeek: number[]; start: string; end: string }>
 }
 
 export interface ProviderListItem {
@@ -92,6 +100,7 @@ export interface ProviderListItem {
   defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
+  peakWindows?: ProviderPeakWindows
 }
 
 export interface ProviderOption {

@@ -100,14 +100,13 @@ func w13g8FullOwnerEnv(t *testing.T) map[string]string {
 		}
 	}
 	env := wgOwnerModeMainEnv(t, t.TempDir())
-	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = pgURL
 	env["JUHE_AI_POSTGRES_URL"] = pgURL
 	// J1 postgres 直连输入（PG 唯一形态必填，原 files/sqlite 形状退役）。
 	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] = pgURL
 	return env
 }
 
-// w13g8NoPostgresURLEnv 构造 worker 配置 fail closed 臂：F1 独立 URL 可加载，
+// w13g8NoPostgresURLEnv 构造 worker 配置 fail closed 臂：
 // JUHE_AI_POSTGRES_URL 缺失 → loadWorkerConfig fail-fast（PG 唯一形态下的
 // worker 配置守卫）。
 func w13g8NoPostgresURLEnv(t *testing.T) map[string]string {
@@ -122,14 +121,6 @@ func w13g8NoPostgresURLEnv(t *testing.T) map[string]string {
 func w13g8WorkerAssemblyFailEnv(t *testing.T) map[string]string {
 	env := w13g8FullOwnerEnv(t)
 	env["JUHE_AI_POSTGRES_URL"] = w16dClosedPortURL()
-	return env
-}
-
-// w13g8GarbageRuntimeEnv 构造 F1 OpenStore 失败臂的 env：F1 运行日志 PG
-// 连接串指向不可达端口（OpenStore/Ping 失败）。
-func w13g8GarbageRuntimeEnv(t *testing.T) map[string]string {
-	env := w13g8FullOwnerEnv(t)
-	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = w16dClosedPortURL()
 	return env
 }
 
@@ -164,20 +155,18 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		// 配置加载失败臂（fail → exit 1）。
 		{"无效日志级别", nil, workerSmokeTestEnv, map[string]string{"JUHE_AI_LOG_LEVEL": "w13g8-bogus"}, false, 1},
 		{"owner 模式非法", nil, workerSmokeTestEnv, map[string]string{"JUHE_AI_BLUE_GREEN_OWNER_MODE": "w13g8"}, false, 1},
-		{"runtime log 配置缺失", nil, workerSmokeTestEnv, nil, false, 1},
+		{"空配置装载失败", nil, workerSmokeTestEnv, nil, false, 1},
 		// 中深度臂：以 w13g8FullOwnerEnv 为基座（F1/J1 指向共享覆盖库、
 		// fixture 自愈通过），fail 前置点之后才命中目标分支。
-		{"runtime log ONCE 不支持", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}, false, 1},
 		{"J1 owner 非 go", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "w13g8-not-go"}, false, 1},
 		{"model-recovery 非法 namespace", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_REDIS_URL": "redis://127.0.0.1:6379/9",
+			"JUHE_AI_REDIS_URL":       "redis://127.0.0.1:6379/9",
 			"JUHE_AI_REDIS_NAMESPACE": "w13g8 bad namespace!",
 		}, false, 1},
 		{"model-recovery Redis URL 非法", nil, w13g8FullOwnerEnv, map[string]string{
 			"JUHE_AI_REDIS_NAMESPACE": "w13g8",
 		}, false, 1},
 		{"J3a 管理接口守卫", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED": "true"}, false, 1},
-		{"F1 OpenStore 失败", nil, w13g8GarbageRuntimeEnv, nil, false, 1},
 		{"J3b 由网关持有", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_MODEL_CHECK_ENABLED": "true"}, false, 1},
 		{"worker 配置 fail closed", nil, w13g8NoPostgresURLEnv, nil, false, 1},
 		{"worker 装配失败", nil, w13g8WorkerAssemblyFailEnv, nil, false, 1},

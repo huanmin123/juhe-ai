@@ -45,21 +45,21 @@ func TestW16KClientIPConcurrencyCopyArms(t *testing.T) {
 	rejected := clientIpConcurrencyAuditMetadata(ClientIPConcurrencyDecision{
 		Enabled:   true,
 		Acquired:  false,
-		Reason:    "queue_full",
+		Reason:    "limit_reached",
 		Current:   4,
 		Limit:     4,
-		WaitedMs:  20,
-		QueueSize: 5,
+		WaitedMs:  0,
+		QueueSize: 0,
 	})
-	if rejected["acquired"] != false || rejected["reason"] != "queue_full" || rejected["queueSize"] != 5 {
+	if rejected["acquired"] != false || rejected["reason"] != "limit_reached" || rejected["queueSize"] != 0 {
 		t.Fatalf("rejected metadata = %+v", rejected)
 	}
 
-	if msg := clientIpConcurrencyFailureMessage(ClientIPConcurrencyDecision{Enabled: true, Reason: "timeout"}); msg != "当前 IP 并发排队等待超时，请稍后重试" {
-		t.Fatalf("timeout message = %q", msg)
-	}
-	if msg := clientIpConcurrencyFailureMessage(ClientIPConcurrencyDecision{Enabled: true, Reason: "queue_full"}); msg != "当前 IP 并发已达到分组限制，请稍后重试" {
-		t.Fatalf("default message = %q", msg)
+	// 溢出队列模式退役后，全部拒绝原因统一为分组限制文案。
+	for _, reason := range []string{"limit_reached", "timeout", "aborted"} {
+		if msg := clientIpConcurrencyFailureMessage(ClientIPConcurrencyDecision{Enabled: true, Reason: reason}); msg != "当前 IP 并发已达到分组限制，请稍后重试" {
+			t.Fatalf("reason %q message = %q", reason, msg)
+		}
 	}
 }
 

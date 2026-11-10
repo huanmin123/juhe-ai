@@ -18,7 +18,7 @@ type AccountConcurrencyReleaseEvent struct {
 }
 
 // AccountConcurrencySource mirrors the shared/account-concurrency.ts surface
-// the high-concurrency group queue consumes. The total-lane read matches the
+// the dispatch capacity/busy check consumes. The total-lane read matches the
 // G10 seam gatewayruntimecache.ConcurrencySource.
 type AccountConcurrencySource interface {
 	// LoadAccountCurrentConcurrencyByID mirrors
@@ -31,7 +31,7 @@ type AccountConcurrencySource interface {
 	// process-local synchronous read (memory driver only).
 	CurrentAccountConcurrency(accountID string, lane string) int
 	// LoadAccountRPMByID 批量读取账户 RPM 窗口计数（AI 账户每分钟请求上限
-	// 设计 §5.2：高并发分组队列的 ready 判定消费）。
+	// 设计 §5.2：派发容量/忙判定消费）。
 	LoadAccountRPMByID(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error)
 	// CurrentAccountRPM 返回单账户 RPM 窗口快照（本地驱动的同步读取，与
 	// CurrentAccountConcurrency 同层；Redis 驱动读 HASH）。
@@ -276,7 +276,7 @@ func (m *MemoryAccountConcurrency) CurrentAccountConcurrency(accountID string, l
 	return maxInt(0, m.byLane[accountID+":"+lane])
 }
 
-// LoadAccountRPMByID 按账户资源 ID 批量读取 RPM 窗口计数（高并发分组队列的
+// LoadAccountRPMByID 按账户资源 ID 批量读取 RPM 窗口计数（派发容量判定的
 // 异步 ready 判定与列表运行态 overlay 消费）。无条目按 0 返回且不写入；窗口
 // 已滚动的账户按 0 返回并删除两个条目（读取面惰性清理，设计 §4.2）。
 func (m *MemoryAccountConcurrency) LoadAccountRPMByID(_ context.Context, accountIDs []string) (map[string]AccountRPMState, error) {
@@ -296,7 +296,7 @@ func (m *MemoryAccountConcurrency) LoadAccountRPMByID(_ context.Context, account
 	return result, nil
 }
 
-// CurrentAccountRPM 返回单账户 RPM 窗口快照（本地驱动的同步读取，高并发队列
+// CurrentAccountRPM 返回单账户 RPM 窗口快照（本地驱动的同步读取，容量判定
 // 的 immediate/wake 判定消费）。无条目按 0 返回且不写入；窗口已滚动时按 0
 // 返回并删除两个条目（惰性清理）。
 func (m *MemoryAccountConcurrency) CurrentAccountRPM(accountID string) AccountRPMState {

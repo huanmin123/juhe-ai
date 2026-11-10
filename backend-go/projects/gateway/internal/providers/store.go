@@ -137,40 +137,44 @@ type EndpointFamily struct {
 // stay empty, protocolProfiles stays [], while capabilities and
 // defaultHealthCheckModel are derived from the vendor's built-in models rows.
 type ProviderDefinition struct {
-	ID                            string            `json:"id"`
-	Code                          string            `json:"code"`
-	Name                          string            `json:"name"`
-	ParentCode                    *string           `json:"parentCode,omitempty"`
-	Description                   *string           `json:"description,omitempty"`
-	Enabled                       bool              `json:"enabled"`
-	DefaultProtocolProfileID      string            `json:"defaultProtocolProfileId"`
-	ProtocolCode                  string            `json:"protocolCode"`
-	ProtocolVersion               string            `json:"protocolVersion"`
-	BaseURL                       string            `json:"baseUrl"`
-	DefaultHealthCheckModel       string            `json:"defaultHealthCheckModel"`
-	SystemDefaultHealthCheckModel *string           `json:"systemDefaultHealthCheckModel,omitempty"`
-	DefaultSupportedModels        []string          `json:"defaultSupportedModels"`
-	AccountTypes                  []string          `json:"accountTypes"`
-	Capabilities                  []string          `json:"capabilities"`
-	ProtocolProfiles              []ProtocolProfile `json:"protocolProfiles"`
+	ID                            string   `json:"id"`
+	Code                          string   `json:"code"`
+	Name                          string   `json:"name"`
+	ParentCode                    *string  `json:"parentCode,omitempty"`
+	Description                   *string  `json:"description,omitempty"`
+	Enabled                       bool     `json:"enabled"`
+	DefaultProtocolProfileID      string   `json:"defaultProtocolProfileId"`
+	ProtocolCode                  string   `json:"protocolCode"`
+	ProtocolVersion               string   `json:"protocolVersion"`
+	BaseURL                       string   `json:"baseUrl"`
+	DefaultHealthCheckModel       string   `json:"defaultHealthCheckModel"`
+	SystemDefaultHealthCheckModel *string  `json:"systemDefaultHealthCheckModel,omitempty"`
+	DefaultSupportedModels        []string `json:"defaultSupportedModels"`
+	AccountTypes                  []string `json:"accountTypes"`
+	Capabilities                  []string `json:"capabilities"`
+	// PeakWindows 是目录级供应商高峰时段定义（peak_windows.go 单一数据源）：
+	// 时间计划前端快捷预设据此动态生成，nil = 该供应商无高峰口径。
+	PeakWindows      *ProviderPeakWindows `json:"peakWindows,omitempty"`
+	ProtocolProfiles []ProtocolProfile    `json:"protocolProfiles"`
 }
 
 // ProviderListItem mirrors the catalogue list row of GET /providers/list (the
 // archived mapProviderListRow shape; capabilities/defaultHealthCheckModel are
 // derived from the vendor's built-in models rows).
 type ProviderListItem struct {
-	ID                      string   `json:"id"`
-	Code                    string   `json:"code"`
-	Name                    string   `json:"name"`
-	ParentCode              *string  `json:"parentCode,omitempty"`
-	Description             *string  `json:"description,omitempty"`
-	Enabled                 bool     `json:"enabled"`
-	ProtocolCode            string   `json:"protocolCode"`
-	BaseURL                 string   `json:"baseUrl"`
-	DefaultHealthCheckModel string   `json:"defaultHealthCheckModel"`
-	DefaultSupportedModels  []string `json:"defaultSupportedModels"`
-	AccountTypes            []string `json:"accountTypes"`
-	Capabilities            []string `json:"capabilities"`
+	ID                      string               `json:"id"`
+	Code                    string               `json:"code"`
+	Name                    string               `json:"name"`
+	ParentCode              *string              `json:"parentCode,omitempty"`
+	Description             *string              `json:"description,omitempty"`
+	Enabled                 bool                 `json:"enabled"`
+	ProtocolCode            string               `json:"protocolCode"`
+	BaseURL                 string               `json:"baseUrl"`
+	DefaultHealthCheckModel string               `json:"defaultHealthCheckModel"`
+	DefaultSupportedModels  []string             `json:"defaultSupportedModels"`
+	AccountTypes            []string             `json:"accountTypes"`
+	Capabilities            []string             `json:"capabilities"`
+	PeakWindows             *ProviderPeakWindows `json:"peakWindows,omitempty"`
 }
 
 // ProviderOption mirrors GET /providers/options rows (vendors projection).
@@ -232,6 +236,7 @@ func scanVendorListItem(scan func(...any) error) (ProviderListItem, error) {
 	item.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
 	item.AccountTypes = []string{}
 	item.Capabilities = []string{}
+	item.PeakWindows = peakWindowsForProvider(item.Code)
 	return item, nil
 }
 
@@ -322,6 +327,7 @@ func scanVendorDefinition(scan func(...any) error) (ProviderDefinition, error) {
 	definition.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
 	definition.AccountTypes = []string{}
 	definition.Capabilities = []string{}
+	definition.PeakWindows = peakWindowsForProvider(definition.Code)
 	definition.ProtocolProfiles = []ProtocolProfile{}
 	return definition, nil
 }

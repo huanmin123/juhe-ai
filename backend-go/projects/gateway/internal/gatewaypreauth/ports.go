@@ -320,6 +320,20 @@ type DispatchPreparationResult struct {
 	SchedulingExclusions                     *SchedulingExclusions
 	DispatchSegments                         []DispatchSegment
 	PrecheckHalfOpenEligible                 bool
+	// SessionAffinityOwnerAccountID 是准备期 claim 的账户亲和 owner
+	// （同层 latch 的 expectedOwner）；空串 = 无会话键/claim 失败。
+	SessionAffinityOwnerAccountID string
+	// SessionAffinityOwnerBusy 表示准备期 claim 的 owner 已硬并发繁忙；派发可能
+	// 直接成功在其他同层账户上，最终结算需按“owner 容量不可用”处理。
+	SessionAffinityOwnerBusy bool
+	// SessionAffinityOwnerSoftBusy 表示准备期 owner 达到普通分组软阈值；
+	// 同层后继成功时按 soft_threshold 重绑。
+	SessionAffinityOwnerSoftBusy bool
+	// SessionAffinitySlotFallback / SessionAffinityWaitPlanned /
+	// SessionAffinityWaitRemainingMs 是名额规划与共享等待预算。
+	SessionAffinitySlotFallback    bool
+	SessionAffinityWaitPlanned     bool
+	SessionAffinityWaitRemainingMs int64
 	// fallback variant
 	Reason string
 }

@@ -289,7 +289,7 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseTag)) { $releas
 if ($releaseTag) {
   if ($buildDirty) {
     if ($env:ALLOW_DIRTY_BUILD -ne '1') {
-      throw "Working tree is dirty and HEAD matches tag $releaseTag: refusing to inject a release version (commit/clean first, or ALLOW_DIRTY_BUILD=1 to append -dirty)."
+      throw "Working tree is dirty and HEAD matches tag ${releaseTag}: refusing to inject a release version (commit/clean first, or ALLOW_DIRTY_BUILD=1 to append -dirty)."
     }
     $buildVersion = "$releaseTag-dirty"
   } else {

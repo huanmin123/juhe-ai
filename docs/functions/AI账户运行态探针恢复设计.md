@@ -63,7 +63,7 @@
 不进入账号失败采样：
 
 - 本地 JSON 非法、模型过滤失败、额度不足、授权不可用。
-- 分组队列满、账号并发满、单 IP 并发满。
+- 分组整池容量满、账号并发满、单 IP 并发满。
 - 客户端主动断开、慢客户端背压。
 - 完整非 `2xx`、`2xx + error`、任意状态码/错误正文和完整但协议未成功的响应。
 - 普通路由配置首字截止主动取消；它是请求级中性调度事实，不是 lane hard timeout。
@@ -85,7 +85,7 @@
 - 采样键必须带当前调用方和路由上下文，建议为 `systemAccountId + routeStrategyId + groupId + accountRuntimeKey`。不同路由策略的速度偏好不能互相污染。
 - 慢样本按 `systemAccountId + routeStrategyId + groupId + accountRuntimeKey` 作用域聚合；在 `slowWindowSeconds` 内达到 `slowTriggerCount` 时，请求链路直接进入 `latency_degraded`，不等待后台确认。观察期内的达标快样本会清理当前慢样本窗口；超过窗口的下一次慢样本从 1 次重新开始。进入 `latency_degraded` 后，单次快样本不会立即清理状态，需由真实请求恢复计数、后台恢复探针或 TTL / 手动恢复处理。
 - `latency_degraded` 有效期内，速度优先可以把未降级且硬可承接的同分组账号排到前面，即使被后置账号拥有超级优先、更高账号优先级、主池身份或会话亲和。
-- `latency_degraded` 只覆盖账户偏好，不覆盖硬约束；候选仍必须满足账户状态、授权、时间计划、模型能力、协议能力、额度、账号硬并发、分组队列和本地不可调度过滤。
+- `latency_degraded` 只覆盖账户偏好，不覆盖硬约束；候选仍必须满足账户状态、授权、时间计划、模型能力、协议能力、额度、账号硬并发、分组整池容量和本地不可调度过滤。
 - `latency_degraded` 账号仍可兜底调度；所有硬可承接候选都处于 `latency_degraded` 时应旁路该排序，保留原账户顺序，避免保护机制筛空号池。
 - 后台探针连续首字达标清理 `latency_degraded` 后，后续选号立即回到账户配置排序，避免恢复账号饿死或替补账号被长期耗尽额度。
 - 首字慢不是账号故障。只有普通请求的本地 transport failure 首次投递 `recovery_wait`；opaque HTTP/协议失败不投递。后台探针形成 transport failure 后才进入 `failure_observed`、`runtime_degraded` 或持久冷却链路。`local_suppressed` 只由用户显式策略建立。

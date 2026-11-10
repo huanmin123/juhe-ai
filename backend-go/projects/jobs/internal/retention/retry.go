@@ -20,19 +20,16 @@ const (
 
 // RecordCleanupRetryJob mirrors runApiKeyRecordCleanupRetry and
 // runAccountRecordCleanupRetry: each retry round processes at most one
-// pending target; postgres mode forwards no stats-writer callback.
+// pending target.
 type RecordCleanupRetryJob struct {
-	Mode    Mode
-	Clock   Clock
 	Logger  *slog.Logger
 	APIKey  APIKeyRecordCleanupRetryer
 	Account AccountRecordCleanupRetryer
-	Stats   StatsWriter
 }
 
 // RunAPIKey mirrors runApiKeyRecordCleanupRetry.
 func (j *RecordCleanupRetryJob) RunAPIKey(ctx context.Context) error {
-	summary, err := j.apiKey().CleanupPendingTargets(ctx, RecordCleanupRetryTargetLimit, j.statsWriter())
+	summary, err := j.apiKey().CleanupPendingTargets(ctx, RecordCleanupRetryTargetLimit)
 	if err != nil {
 		j.logger().Error("已删除 API Key 关联数据清理重试失败",
 			"event", "background_api_key_record_cleanup_retry_failed", "error", err)
@@ -47,7 +44,7 @@ func (j *RecordCleanupRetryJob) RunAPIKey(ctx context.Context) error {
 
 // RunAccount mirrors runAccountRecordCleanupRetry.
 func (j *RecordCleanupRetryJob) RunAccount(ctx context.Context) error {
-	summary, err := j.account().CleanupPendingTargets(ctx, RecordCleanupRetryTargetLimit, j.statsWriter())
+	summary, err := j.account().CleanupPendingTargets(ctx, RecordCleanupRetryTargetLimit)
 	if err != nil {
 		j.logger().Error("已删除 AI 账户关联数据清理重试失败",
 			"event", "background_account_record_cleanup_retry_failed", "error", err)
@@ -74,12 +71,6 @@ func (j *RecordCleanupRetryJob) account() AccountRecordCleanupRetryer {
 	return j.Account
 }
 
-// statsWriter mirrors the Node conditional callback: postgres mode passes
-// nil so the retryer skips stats deduction dispatch.
-func (j *RecordCleanupRetryJob) statsWriter() StatsWriter {
-	return nil
-}
-
 func (j *RecordCleanupRetryJob) logger() *slog.Logger {
 	if j.Logger != nil {
 		return j.Logger
@@ -89,13 +80,13 @@ func (j *RecordCleanupRetryJob) logger() *slog.Logger {
 
 type missingAPIKeyRetryer struct{}
 
-func (missingAPIKeyRetryer) CleanupPendingTargets(context.Context, int, StatsWriter) (PendingCleanupSummary, error) {
+func (missingAPIKeyRetryer) CleanupPendingTargets(context.Context, int) (PendingCleanupSummary, error) {
 	return PendingCleanupSummary{}, errRetryerMissing("API Key")
 }
 
 type missingAccountRetryer struct{}
 
-func (missingAccountRetryer) CleanupPendingTargets(context.Context, int, StatsWriter) (PendingCleanupSummary, error) {
+func (missingAccountRetryer) CleanupPendingTargets(context.Context, int) (PendingCleanupSummary, error) {
 	return PendingCleanupSummary{}, errRetryerMissing("AI 账户")
 }
 

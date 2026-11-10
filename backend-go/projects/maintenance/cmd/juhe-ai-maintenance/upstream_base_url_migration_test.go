@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upstreambaseurlmigration"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upstreambaseurlmigration"
 )
 
 // 上游 Base URL 版本根迁移命令的 CLI 分支测试（进程内直调 runMaintenance，
@@ -193,7 +193,7 @@ func TestUpstreamBaseURLVerifyMatchesDryRunClassification(t *testing.T) {
 		`INSERT INTO "juhe_business"."accounts"
 		 (id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 		  name, type, credentials_encrypted, created_at, updated_at)
-		 VALUES ('acc-fixture', 'sys-fixture', 'deepseek', 'api_key', 'openai', 'v1',
+		 VALUES ('acc-fixture', 'sys-fixture', 'deepseek', 'deepseek', 'openai', 'v1',
 		  'fixture', 'api_key', $1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		`INSERT INTO "juhe_business"."account_connections"
 		 (id, account_id, connection_preset_code, base_url, created_at, updated_at)

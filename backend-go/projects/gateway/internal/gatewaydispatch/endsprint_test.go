@@ -82,10 +82,10 @@ func TestPrepareDispatchAccountsClientIPAcquireError(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{}}
-	engine.Affinity = &configurableAffinity{busy: false}
+	engine.Affinity = &fakeAffinity{}
 	engine.ClientIPConcurrency = errorClientIPConcurrency{}
 	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.GroupAccess = highConcurrencyGroupAccess(&policy)
+	input.GroupAccess = ordinaryGroupAccess(&policy)
 	if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); err == nil || !strings.Contains(err.Error(), "IP 并发爆炸") {
 		t.Fatalf("获取错误必须透传, got %v", err)
 	}

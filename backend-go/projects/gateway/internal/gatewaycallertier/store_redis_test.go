@@ -22,6 +22,9 @@ func tierDriveSustainedDegradation(t *testing.T, recorder *Recorder, base time.T
 		recorder.RecordRequest(ctx, key)
 		recorder.RecordSignal(ctx, key, SignalInvalidJSON)
 	}
+	if err := recorder.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestRedisMemoryEquivalenceAndLoss 双形态等价：同一驱动序列下层级结论一致；
@@ -44,6 +47,11 @@ func TestRedisMemoryEquivalenceAndLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = viaRedis.Close(closeCtx)
+	})
 	ctx := context.Background()
 
 	// 前置：各记 20 个无信号请求（满足日样本分母且比率仍达标）。
@@ -51,6 +59,9 @@ func TestRedisMemoryEquivalenceAndLoss(t *testing.T) {
 		recorder.now = func() time.Time { return base }
 		for i := 0; i < minWindowRequests; i++ {
 			recorder.RecordRequest(ctx, "key-eq")
+		}
+		if err := recorder.Flush(ctx); err != nil {
+			t.Fatal(err)
 		}
 	}
 	// 各驱动 15 连续劣化分钟。
@@ -73,6 +84,9 @@ func TestRedisMemoryEquivalenceAndLoss(t *testing.T) {
 	// TTL 语义：滑动过期后回 T2。
 	server.FlushDB()
 	viaRedis.RecordRequest(ctx, "key-ttl")
+	if err := viaRedis.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if !server.Exists("juhe-ai:{caller-tiers}:key-ttl") {
 		t.Fatal("写入必须建立状态 key")
 	}

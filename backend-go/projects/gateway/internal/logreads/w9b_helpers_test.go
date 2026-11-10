@@ -120,12 +120,6 @@ func TestW9BParseInstantMillisVariants(t *testing.T) {
 	if _, err := parseHotInstantMillis("nope"); err == nil || !strings.Contains(err.Error(), "RFC3339") {
 		t.Fatalf("非法时间=%v", err)
 	}
-	if _, err := parseGrepInstantMillis("2026-09-01T00:00:00Z"); err != nil {
-		t.Fatalf("grep 合法=%v", err)
-	}
-	if _, err := parseGrepInstantMillis("nope"); err == nil || !strings.Contains(err.Error(), "运行日志") {
-		t.Fatalf("grep 非法=%v", err)
-	}
 }
 
 func TestW9BReadBoundedHotLineArms(t *testing.T) {
@@ -169,74 +163,6 @@ func TestW9BReadBoundedHotLineArms(t *testing.T) {
 	}
 }
 
-func TestW9BCompareAndInsertGrepItems(t *testing.T) {
-	older := orderedGrepItem{item: RuntimeLogGrepItem{LineNumber: 5}, fileOrder: 0, sortTimeMs: 100}
-	newer := orderedGrepItem{item: RuntimeLogGrepItem{LineNumber: 1}, fileOrder: 1, sortTimeMs: 200}
-	if !compareGrepItems(newer, older) {
-		t.Fatal("新时间必须在前")
-	}
-	if compareGrepItems(older, newer) {
-		t.Fatal("比较必须非对称一致")
-	}
-	sameTime := orderedGrepItem{item: RuntimeLogGrepItem{LineNumber: 3}, fileOrder: 0, sortTimeMs: 100}
-	if !compareGrepItems(older, sameTime) {
-		t.Fatal("同时间按文件序")
-	}
-	sameFile := orderedGrepItem{item: RuntimeLogGrepItem{LineNumber: 9}, fileOrder: 0, sortTimeMs: 100}
-	if compareGrepItems(older, sameFile) {
-		t.Fatal("同文件行号大者在前")
-	}
-	// 插入排序限制条数。
-	items := []orderedGrepItem{}
-	for index := 0; index < 5; index++ {
-		items = insertLatestGrepItem(items, orderedGrepItem{item: RuntimeLogGrepItem{LineNumber: int64(index)}, sortTimeMs: int64(index)}, 3)
-	}
-	if len(items) != 3 || items[0].item.LineNumber != 4 {
-		t.Fatalf("插入排序=%d 首=%d", len(items), items[0].item.LineNumber)
-	}
-}
-
-func TestW9BGrepNormalizeLevelMatrix(t *testing.T) {
-	cases := []struct {
-		value any
-		want  string
-	}{
-		{"ERROR", "error"},
-		{"  ", "info"},
-		{nil, "info"},
-		{float64(60), "fatal"},
-		{float64(50), "error"},
-		{float64(40), "warn"},
-		{float64(30), "info"},
-		{float64(20), "debug"},
-		{float64(10), "trace"},
-		{struct{}{}, "info"},
-	}
-	for _, tc := range cases {
-		if got := grepNormalizeLevel(tc.value); got != tc.want {
-			t.Fatalf("grepNormalizeLevel(%#v)=%q want %q", tc.value, got, tc.want)
-		}
-	}
-}
-
-func TestW9BGrepTimeAndTrimHelpers(t *testing.T) {
-	if got := grepTimeValue(" 2026-09-01T00:00:00Z "); got != "2026-09-01T00:00:00Z" {
-		t.Fatalf("string time=%q", got)
-	}
-	if got := grepTimeValue(float64(0)); got == "" {
-		t.Fatalf("毫秒时间=%q", got)
-	}
-	if got := grepTimeValue(nil); got != "" {
-		t.Fatalf("空值=%q", got)
-	}
-	if got := trimGrepText(strings.Repeat("字", 30), 10); len([]rune(got)) != 13 || !strings.HasSuffix(got, "...") {
-		t.Fatalf("trim=%q", got)
-	}
-	if got := trimGrepText("short", 10); got != "short" {
-		t.Fatalf("未截断=%q", got)
-	}
-}
-
 func TestW9BEmptyAuditBlobWindowArms(t *testing.T) {
 	full := emptyAuditBlobWindow(true, 5, 100, 42, "full")
 	if full.offset != 0 || full.limit != 100 || full.totalBytes != 42 || full.status != "full" {
@@ -258,13 +184,6 @@ func TestW9BReaderConstructors(t *testing.T) {
 	}
 	if reader == nil {
 		t.Fatal("reader 不能为 nil")
-	}
-	if _, err := NewRuntimeLogSQLReaderWithSources(nil, nil, nil); err == nil {
-		t.Fatal("nil db 必须拒绝")
-	}
-	withSources, err := NewRuntimeLogSQLReaderWithSources(&sql.DB{}, func() int { return 30 }, func() time.Time { return time.Unix(0, 0) })
-	if err != nil || withSources == nil {
-		t.Fatalf("WithSources=%v err=%v", withSources, err)
 	}
 }
 

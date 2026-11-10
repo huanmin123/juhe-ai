@@ -14,7 +14,7 @@
 
 当前常驻入口是 `projects/jobs/cmd/juhe-ai-jobs` 与 `projects/gateway/cmd/juhe-ai-gateway`：
 
-- `jobs` 运行 F1 运行日志索引与保留、F2 表存储监控采样与保留，以及 jobregistry 注册的探针/统计/retention 任务族。
+- `jobs` 运行 jobregistry 注册的探针/统计/retention 任务族与 J3a 代理延迟检测；原 F1 运行日志索引（2026-11-09）与 F2 表存储监控采样（2026-10-14）均已退役。
 - `gateway` 承载管理面 `/__aisys__/api` 全部业务域、公开面 `/__aipublic__` 和 `/v1` 网关链；F3 原始审计日志、F4 操作日志的本机签名输入、读取与保留也在 gateway 内。Node 后端已于 2026-09-05 全量清零，对外 API 与 AI 桥接由 gateway 唯一承担。权威挂载矩阵见 `cmd/juhe-ai-gateway/compose.go`（同源引用先例见 `docs/functions/README.md` 头部）。
 
 每个项目独立加载配置、Store、schema 和 owner lease。普通单条或单轮错误必须记录并由组件的下一轮处理；租约丢失和不可恢复基础设施错误只影响所属项目，由该项目的服务管理器重启，绝不通过进程内依赖影响另一项目。
@@ -35,7 +35,7 @@ go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-po
 
 （原 J3b 专属 SQLite 库的 `--apply-j3b-model-check-sqlite` 命令与 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH` env 已于 2026-10-24 随 SQLite 退役批物理删除，不再提供该引导路径。）
 
-> **授权链路统一口径（2026-10-27 测试链路治理）**：本文各「显式 opt-in 真实 PG smoke」段（J3a bootstrap smoke、jobs runtime schema contract smoke、F1 runtime log adapter smoke 等）均属授权外部链路：执行时必须显式带 `JUHE_AI_TEST_EXTERNAL=1`（唯一授权开关，属单次授权执行，不进日常回归）；未授权时这些 smoke 一律 SKIP，**SKIP 不作验证通过证据**。各 smoke 自身的 URL / REQUIRED 等门控变量继续有效，与该开关不互替。口径权威见 `docs/develop/后端测试分层规则.md` §3.6。
+> **授权链路统一口径（2026-10-27 测试链路治理）**：本文各「显式 opt-in 真实 PG smoke」段（J3a bootstrap smoke、jobs runtime schema contract smoke 等；原 F1 runtime log adapter smoke 已随 F1 下架删除）均属授权外部链路：执行时必须显式带 `JUHE_AI_TEST_EXTERNAL=1`（唯一授权开关，属单次授权执行，不进日常回归）；未授权时这些 smoke 一律 SKIP，**SKIP 不作验证通过证据**。各 smoke 自身的 URL / REQUIRED 等门控变量继续有效，与该开关不互替。口径权威见 `docs/develop/后端测试分层规则.md` §3.6。
 
 维护项目的真实 bootstrap 回归也是显式 opt-in，仅接受直连 `5432` 的一次性 `juhe_ai_sub2api_dev_j3a_` scratch，且要求管理员预先创建 `juhe_jobs` schema：
 
@@ -69,48 +69,9 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 
 命令输出 JSON 计数和迁移结果。它不是生产切流授权：完成后仍须按 F4 操作日志完整迁移契约 核验可读性、首尾样本、发布候选与回滚提交。
 
-## F1：运行日志索引与保留
+## F1：运行日志索引（2026-11-09 退役）
 
-`jobs` 内的 F1 直接扫描已落盘的 JSONL 运行日志，按文件 goroutine 并发处理，并直接提交索引、cursor、facet 和保留清理；不使用 Redis Stream、Asynq、任务队列或常驻通用 worker pool。JSONL 运行日志由 gateway 自身 FileSink 产生（`cmd/juhe-ai-gateway/runtime.go` 与 `runtime_logger.go`，BUG-0195 写侧，目录由写侧 NewFileSink 代建）；Node 已于 2026-09-05 清零，不再存在 Node 写侧。
-
-运行前必须满足：
-
-- 稳定且唯一的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`；它用于 Go 多实例 fencing，不是 Node/Go 选择开关。
-- 必须提供专用 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`（无主 URL 回退），并从 `juhe_business.system_settings` 读取 `runtimeLogIndexRetentionDays`。原 `JUHE_AI_RUNTIME_LOG_STORE` env 与 SQLite 路径族（`JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 等）已于 2026-10-24 随 SQLite 退役删除，不再读取。
-- 提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
-
-示例：
-
-```powershell
-$env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'go-jobs-runtime-log-a'
-$env:JUHE_AI_RUNTIME_LOG_POSTGRES_URL = 'postgres://<user>:<password>@<host>:5432/juhe_ai?sslmode=require'
-$env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
-go run ./projects/jobs/cmd/juhe-ai-jobs
-```
-
-主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。
-
-已存在的 Node F1 索引数据不能在常驻启动时自动复制；F1 的旧 SQLite 离线迁移命令（`--migrate-runtime-log-legacy-sqlite`）已于 2026-10-24 随 SQLite 退役批删除，存量旧库不再提供迁移路径，也不允许把 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL` 指向其他域的库。
-
-验证：
-
-```powershell
-rtk go test ./...
-```
-
-### PostgreSQL adapter 真实 smoke
-
-在 `backend-go` 工作目录执行。`JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL` 必须指向专用、可销毁的 PostgreSQL 数据库，并且运行前 `juhe_dataset` 的全部 F1 表必须为空；测试会初始化 schema、真实写入并通过 adapter 清理自己的数据，不会对非空数据库执行。
-
-```powershell
-$env:JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL = 'postgres://<user>:<password>@<host>:5432/<database>?sslmode=disable'
-$env:JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED = 'true'
-rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1
-```
-
-2026-08-09 已在用户授权的专用、可销毁开发 PostgreSQL 数据库中强制执行并通过该 smoke；测试结束后已终止残留会话并删除临时数据库，连接串未写入仓库或文档。未设置 URL 时，该 smoke 会显式 `skipped`，绝不等同 PostgreSQL 验证通过；设为强制模式后，缺 URL 或 URL 无法连接都会失败。
-
-完整边界、归档和 PostgreSQL smoke 记录见 F1 运行日志索引与保留。
+运行日志 PG 索引（F1）已下架：`jobs/internal/runtimelog`、`--rebuild-runtime-log-facets`、`JUHE_AI_RUNTIME_LOG_*` env、`runtimeLogIndexRetentionDays` 设置键与 `logreads` 运行日志读面均已删除。gateway 仍经 `processlog.FileSink` 写节点本地 JSONL 日志并自清理；需要集中检索时由部署方用 ELK/Loki 等外部抓取。历史 `juhe_dataset.runtime_*` 表保留只读，生产 DROP 见 `docs/待办与阻塞事项.md` T187。
 
 ## F2：表存储监控（2026-10-14 退役）
 

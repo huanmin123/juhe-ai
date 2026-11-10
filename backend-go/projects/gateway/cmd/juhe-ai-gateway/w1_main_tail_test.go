@@ -95,8 +95,7 @@ const (
 
 type w1wOwnerFixture struct {
 	root       string
-	pg         *pgtestkit.TestDatabase // 业务库（fresh DDL + seed）
-	j3b        *pgtestkit.TestDatabase // J3b 专属库（prepareJ3b=false 时无 schema）
+	pg         *pgtestkit.TestDatabase // 业务库（fresh DDL + seed；统一配置契约下 juhe_j3b 同库同 schema）
 	audit      *pgtestkit.TestDatabase // F3 审计库
 	oper       *pgtestkit.TestDatabase // F4 操作日志库
 	cache      *miniredis.Miniredis
@@ -106,16 +105,17 @@ type w1wOwnerFixture struct {
 	j3bAddr    string
 }
 
-// w1wNewOwnerFixture 组装 owner 二进制场景 fixture。prepareJ3b=false 时 J3b
-// 专属库是空 PG 库（合法空库，用于 OpenHost CheckSchema 失败臂）；
+// w1wNewOwnerFixture 组装 owner 二进制场景 fixture。prepareJ3b=true 时在统一
+// 业务库上补建 juhe_j3b schema——modelcheckowner.LoadConfig 只读统一
+// JUHE_AI_POSTGRES_URL 并在该库校验 juhe_j3b 面（独立 J3B_POSTGRES_URL 键已
+// 退役，原专属 f.j3b 库不再被进程读取，同 w1mBusinessPostgres 先例）；
 // seedMeta=false 时不写 runtime-index-meta（CheckReady 失败臂）。
 func w1wNewOwnerFixture(t *testing.T, prepareJ3b, seedMeta bool) *w1wOwnerFixture {
 	t.Helper()
 	f := &w1wOwnerFixture{root: t.TempDir()}
 	f.pg = w1v2PrepareBusinessPostgres(t)
-	f.j3b = pgtestkit.NewTestDatabase(t)
 	if prepareJ3b {
-		w1g2EnsureJ3bSchema(t, f.j3b.DB)
+		w1g2EnsureJ3bSchema(t, f.pg.DB)
 	}
 	f.audit = pgtestkit.NewTestDatabase(t)
 	f.oper = pgtestkit.NewTestDatabase(t)
@@ -162,13 +162,12 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
 		"JUHE_AI_BUSINESS_OWNER_EPOCH=" + w1wOwnerEpoch,
 		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=" + w1bWriteCutoverEvidence(t, filepath.Join(f.root, "business-evidence"), w1wOwnerEpoch),
-		// J3b owner（postgres 专属库 + business 目标库）
+		// J3b owner（postgres 存储；统一配置契约下 J3b 与主链共用
+		// JUHE_AI_POSTGRES_URL / JUHE_AI_REDIS_URL，独立 URL 键已退役不再注入）
 		"JUHE_AI_J3B_ENABLED=true",
 		"JUHE_AI_J3B_OWNER=gateway",
 		"JUHE_AI_J3B_INSTANCE_ID=w1w-owner-boot",
 		"JUHE_AI_J3B_STORE=postgres",
-		"JUHE_AI_J3B_POSTGRES_URL=" + f.j3b.DSN,
-		"JUHE_AI_J3B_BUSINESS_POSTGRES_URL=" + f.pg.DSN,
 		"JUHE_AI_J3B_CREDENTIAL_SECRET=w1w-credential-secret-value",
 		"JUHE_AI_J3B_IDENTITY_SECRET=w1w-identity-secret-value",
 		"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
@@ -190,8 +189,7 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		// F4 操作日志（postgres 模式）
 		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=" + f.oper.DSN,
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-owner-boot",
-		// chain 协作面（spool / 日志 grep 目录）
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(f.root, "usage-spool"),
+		// chain 协作面（本地日志目录；用量记录直投 PG，无 spool env）
 		"JUHE_AI_LOG_DIR=" + filepath.Join(f.root, "logs"),
 	}
 	overridden := map[string]bool{}
@@ -333,17 +331,20 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 	//   - w1w-acc + 未知模型 schedule → resolve 失败（316-317）；
 	//   - w1w-acc-iso（quality_isolated）+ 到期 enforcement → 313-315
 	//     （EnforcementID 非空走 quality_recovery trigger）。
+	// 账户行 vendor/driver 用合法组合 'gpt','gpt'（通用连接器 generic_http
+	// 已退役，accounts_vendor_driver_consistency_check 要求 vendor_code 非空
+	// 且 connection_driver_code = vendor_code）。
 	nowText := time.Now().UTC().Format(time.RFC3339Nano)
 	pastText := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
 	seedStatements := []string{
 		`INSERT INTO juhe_business.accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc','sys_admin',NULL,'generic_http','openai','v1','w1w-account','api_key','active','w1w-encrypted','gpt-4o','chat_json',42,7,'` + nowText + `','` + nowText + `')`,
+			VALUES ('w1w-acc','sys_admin','gpt','gpt','openai','v1','w1w-account','api_key','active','w1w-encrypted','gpt-4o','chat_json',42,7,'` + nowText + `','` + nowText + `')`,
 		`INSERT INTO juhe_business.accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc-iso','sys_admin',NULL,'generic_http','openai','v1','w1w-account-isolated','api_key','quality_isolated','w1w-encrypted','gpt-4o','chat_json',11,3,'` + nowText + `','` + nowText + `')`,
+			VALUES ('w1w-acc-iso','sys_admin','gpt','gpt','openai','v1','w1w-account-isolated','api_key','quality_isolated','w1w-encrypted','gpt-4o','chat_json',11,3,'` + nowText + `','` + nowText + `')`,
 		`INSERT INTO juhe_business.model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
 			VALUES ('w1w-sched-ok','sys_admin','w1w-acc','gpt-4o',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
 		`INSERT INTO juhe_business.accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc-bad','sys_admin',NULL,'generic_http','openai','v1','w1w-account-bad','api_key','active','w1w-encrypted','gpt-4o','chat_json',13,2,'` + nowText + `','` + nowText + `')`,
+			VALUES ('w1w-acc-bad','sys_admin','gpt','gpt','openai','v1','w1w-account-bad','api_key','active','w1w-encrypted','gpt-4o','chat_json',13,2,'` + nowText + `','` + nowText + `')`,
 		`INSERT INTO juhe_business.model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
 			VALUES ('w1w-sched-bad-model','sys_admin','w1w-acc-bad','w1w-nonexistent-model',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
 		`INSERT INTO juhe_business.account_quality_enforcements (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,policy_revision,profile,account_config_revision,before_status,after_status,started_at,recovery_due_at,recovery_model,created_at,updated_at)
@@ -499,9 +500,10 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 
 // w1g2GrantSchemas 是受限连接角色需要授予权限的业务 schema（子进程全启动
 // 在契约校验前会触碰这些域）。juhe_chat 已随 my-chat 会话面退役（e87b15f1d），
-// 清单须与 bootstrap 实际创建的 schema 组一致，否则 GRANT 命中不存在的
-// schema（SQLSTATE 3F000）。juhe_j3b 是测试侧补建的专属 schema。
-var w1g2GrantSchemas = []string{"juhe_business", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage", "juhe_j3b"}
+// juhe_codex_context 已随跨协议映射退役 DROP（schema revision 20）；清单须
+// 与 bootstrap 实际创建的 schema 组一致，否则 GRANT 命中不存在的 schema
+// （SQLSTATE 3F000）。juhe_j3b 是测试侧补建的模型检测 schema。
+var w1g2GrantSchemas = []string{"juhe_business", "juhe_dataset", "juhe_stats", "juhe_usage", "juhe_j3b"}
 
 // w1g2WithLimitedAppRole 在隔离库上创建每测试唯一的受限 LOGIN 角色（原共享
 // 覆盖库形态依赖 admin 建表 / app 角色连接的双角色划分；pgtestkit 单角色
@@ -692,63 +694,21 @@ func TestW1WManagementAliasDemotesWhenPortTaken(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 场景 B2：F3/F4 EnsureSchema 失败臂（378-380、425-427）——PG store 的
-// OpenStore 惰性不连接，EnsureSchema 首次连库时对不可达 URL 确定性失败。
+// 场景 B2（已删除）：F3/F4 EnsureSchema 不可达 URL 失败臂随统一配置契约
+// 退役——auditlog/operationlog LoadConfig 只读统一 JUHE_AI_POSTGRES_URL
+// （internal/auditlog/config.go），独立 F3/F4 URL 键已退役且 EnsureSchema
+// 对可达库自举（CREATE SCHEMA/TABLE IF NOT EXISTS），「独立不可达 F3/F4
+// URL」形态结构性不存在；统一 URL 不可达由更早的业务门臂承载，schema 初
+// 始化错误标记由 w1v2OwnerFailMarkers 的 graceful 路径扫描继续覆盖。下列
+// 记录性跳过说明中提到的「上一场景」即本删除臂。
 // ---------------------------------------------------------------------------
-
-func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
-	w1bBuildCoverBinary(t)
-	root := t.TempDir()
-	for _, name := range []string{"audit-blobs", "audit-hot", "logs"} {
-		if err := os.MkdirAll(filepath.Join(root, name), 0o750); err != nil {
-			t.Fatalf("创建目录 %s 失败: %v", name, err)
-		}
-	}
-	business := w1mBusinessPostgres(t)
-	args := []string{"-health-listen-address", fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))}
-	auditBase := []string{
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL=postgres://127.0.0.1:1/w1w_unused",
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=" + filepath.Join(root, "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=" + filepath.Join(root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f3-schema",
-	}
-
-	// F3 PG EnsureSchema 连接失败臂（378-380）。
-	coverageDir := w1bCoverageDir(t, "W1W-f3-schema-fail")
-	env := w1bScenarioEnv(t, coverageDir, append(append(append([]string{}, w1wRuntimeRedisPairs(t, "juhe-ai:w1w-f3f4-schema")...), auditBase...),
-		"JUHE_AI_POSTGRES_URL="+business.DSN,
-		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
-	_, stderr, code := w1bRunScenario(t, "W1W-f3-schema-fail", env, args...)
-	w1bRequireExitCode(t, "f3-schema-fail", code, 1)
-	w1bRequireContains(t, "f3-schema-fail", stderr, "initialize F3 audit-log schema")
-
-	// F4 PG EnsureSchema 连接失败臂（425-427）：F3 用可用库让启动推进到
-	// F4 EnsureSchema，再以不可达 URL 命中失败。
-	coverageDir = w1bCoverageDir(t, "W1W-f4-schema-fail")
-	auditOK := pgtestkit.NewTestDatabase(t)
-	env = w1bScenarioEnv(t, coverageDir,
-		append(w1wRuntimeRedisPairs(t, "juhe-ai:w1w-f3f4-schema-f4"),
-			"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+auditOK.DSN,
-			"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
-			"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
-			"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
-			"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-schema",
-			"JUHE_AI_OPERATION_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
-			"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-schema",
-			"JUHE_AI_POSTGRES_URL="+business.DSN,
-			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
-	_, stderr, code = w1bRunScenario(t, "W1W-f4-schema-fail", env, args...)
-	w1bRequireExitCode(t, "f4-schema-fail", code, 1)
-	w1bRequireContains(t, "f4-schema-fail", stderr, "initialize F4 operation-log schema")
-}
 
 // 场景 B2 补充（369-371 / 408-410 / 388-390 / 442-444 / 514-516）记录性跳过：
 //   - 369-371 / 408-410（共享 PG 池打开失败）：pgpool.Acquire 的错误臂是空
 //     URL/role、池上限非法与 open() 同步失败；前两者被 auditlog/operationlog
 //     LoadConfig 内的 sqlpool.ValidatePoolLimits 先行拦截，sql.Open("pgx")
-//     惰性解析使不可达 DSN 拖到 EnsureSchema 才失败（上一场景正是利用该
-//     语义覆盖 378-380 / 425-427）。
+//     惰性解析使不可达 DSN 拖到 EnsureSchema 才失败（该覆盖面已随 B2 删除
+//     臂一并退役，统一 URL 不可达在更早的业务门失败）。
 //   - 388-390 / 442-444（租约获取错误臂）：租约表由 EnsureSchema 刚建好，
 //     错误需要启动中途的 DB 故障注入，无确定性缝（held 臂 445-447 已由
 //     TestW1WOwnerF4LeaseHeldPostgres 覆盖）。

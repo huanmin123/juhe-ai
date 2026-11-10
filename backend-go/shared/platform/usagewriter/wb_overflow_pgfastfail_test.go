@@ -170,7 +170,7 @@ func TestWriterPostgresPlanFastFail(t *testing.T) {
 func TestWriterSQLiteDefaultAcceptsEmptySystemAccountID(t *testing.T) {
 	store := &mockStore{}
 	config := Config{
-		BatchSize: 1, FlushIntervalMs: 5_000, }
+		BatchSize: 1, FlushIntervalMs: 5_000}
 	writer, _ := newTestWriter(t, config, store)
 	input := gatewayInput("sqlite-missing-account")
 	input.SystemAccountID = ""

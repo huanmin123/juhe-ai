@@ -91,7 +91,7 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	// len(registeredSteps)，空库上目标态判据式步骤（违规计数类）空真满足归
 	// adopt，其余 pending；两列表必须恰好不重不漏覆盖全部步骤 ID。
 	total := len(dryReport.Plan.Pending) + len(dryReport.Plan.Adopt)
-	if total != 13 {
+	if total != 15 {
 		t.Fatalf("fresh dry-run 步骤总数不符: pending=%d adopt=%d 合计=%d destructive=%d",
 			len(dryReport.Plan.Pending), len(dryReport.Plan.Adopt), total, dryReport.Plan.DestructiveDDLStatements)
 	}
@@ -107,8 +107,8 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 			t.Fatalf("步骤 %s 在 pending/adopt 出现 %d 次（应恰好一次）", stepID, count)
 		}
 	}
-	if len(seen) != 13 {
-		t.Fatalf("步骤 ID 去重后 %d 个，want 13（rev7 已随 AI 问答退役删除；rev13 为 T91-3 schedulable 归一；rev20 为跨协议入口映射退役）", len(seen))
+	if len(seen) != 15 {
+		t.Fatalf("步骤 ID 去重后 %d 个，want 15（rev7 已随 AI 问答退役删除；rev13 为 T91-3 schedulable 归一；rev20 为跨协议入口映射退役；rev22 为高并发分组退役；rev23 为 usage shard 目录退役）", len(seen))
 	}
 	for _, item := range dryReport.Plan.Pending {
 		t.Logf("pending rev=%d %s", item.Revision, item.StepID)
@@ -200,7 +200,6 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	// 5) gateway 启动：门禁放行 + /health 200。
 	gatewayEnv := append(env,
 		"JUHE_AI_POSTGRES_URL="+td.DSN,
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL="+td.DSN,
 	)
 	gatewayHealth := startGatewayExpectReady(t, bins.gateway, gatewayEnv, &testingGateExpectation{shouldPass: true})
 
@@ -209,7 +208,6 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	runCapture(t, bins.maintenance, nil, "--ensure-schema", "--dsn", td2.DSN)
 	blockedEnv := append(env,
 		"JUHE_AI_POSTGRES_URL="+td2.DSN,
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL="+td2.DSN,
 		"JUHE_AI_REDIS_NAMESPACE="+rehearsalNamespace(),
 	)
 	expectGateBlocking(t, bins.gateway, blockedEnv)
@@ -228,7 +226,6 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	// 8) jobs 启动：门禁放行 + /health 200。
 	jobsEnv := append(env,
 		"JUHE_AI_POSTGRES_URL="+td.DSN,
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL="+td.DSN,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL="+td.DSN,
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL="+td.DSN,
 	)
@@ -239,15 +236,12 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 
 func rehearsalBaseEnv(t *testing.T) []string {
 	t.Helper()
-	values := sharedEnvValues(t, "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL")
+	// 2026-11 配置硬切后只剩统一 JUHE_AI_REDIS_URL；CACHE/STATE/J3B_CIRCUIT
+	// 分库变量已退役，演练按现行 env 契约传入统一连接串。
+	values := sharedEnvValues(t, "JUHE_AI_REDIS_URL")
 	dataDir := t.TempDir()
 	return []string{
-		"JUHE_AI_REDIS_URL=" + values["JUHE_AI_REDIS_CACHE_URL"],
-		"JUHE_AI_REDIS_CACHE_URL=" + values["JUHE_AI_REDIS_CACHE_URL"],
-		"JUHE_AI_REDIS_STATE_URL=" + values["JUHE_AI_REDIS_STATE_URL"],
-		// 演练抓到的真实要求（§11.3 fresh 序列补充）：J3b 电路 Redis 必须
-		// 显式配置；独立 namespace 下显式同值 = 已知并接受与主链共享。
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=" + values["JUHE_AI_REDIS_STATE_URL"],
+		"JUHE_AI_REDIS_URL=" + values["JUHE_AI_REDIS_URL"],
 		// 部署 env 契约：JUHE_AI_SECRET 常驻（gateway 加密封套、jobs J2
 		// account-balance 凭据密钥的回退源——缺它 J2 启动必填校验失败）。
 		"JUHE_AI_SECRET=" + rehearsalSecret,

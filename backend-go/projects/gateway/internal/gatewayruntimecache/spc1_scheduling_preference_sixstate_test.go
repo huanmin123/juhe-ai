@@ -63,7 +63,7 @@ func spc1ReadRow(t *testing.T, models *SQLReadModels, rawKey string) *GatewayAPI
 
 // spc1SpeedFirstConfigJSON 是合法范围内的速度配置（触发缺省回填路径的仅有
 // slowTriggerCount 显式值）。
-const spc1SpeedFirstConfigJSON = `{"slowTriggerCount":4}`
+const spc1SpeedFirstConfigJSON = `{"firstByteDeadlineMs":30000,"speedFirstConfig":{"slowTriggerCount":4}}`
 
 func TestSPC2HistoricalNullFailsAndChatKeysKeepStrategyConfig(t *testing.T) {
 	db := newSQLTestDB(t)
@@ -148,13 +148,14 @@ func TestSPC1BoundEnabledPreferenceSynthesizesConfig(t *testing.T) {
 	}
 	// fingerprint 与规范化参数集一致（sha256 前 12 位）：同一配置经
 	// routestrategies normalize 的期望值独立重算。
-	var speedConfig any
-	if err := json.Unmarshal([]byte(spc1SpeedFirstConfigJSON), &speedConfig); err != nil {
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(spc1SpeedFirstConfigJSON), &stored); err != nil {
 		t.Fatal(err)
 	}
 	normalized, err := routestrategies.NormalizeNormalRoutingConfig(map[string]any{
 		"schedulingPreference": "speed_first",
-		"speedFirstConfig":     speedConfig,
+		"firstByteDeadlineMs":  stored["firstByteDeadlineMs"],
+		"speedFirstConfig":     stored["speedFirstConfig"],
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -264,8 +265,8 @@ func TestSPC1BrokenBindingOrConfigFailsExplicitly(t *testing.T) {
 		{
 			name:          "out-of-range-param",
 			preferenceID:  "sp-range",
-			seedPrefs:     []string{"sp-range|sys_owner|speed_first|{\"slowTriggerCount\":99}|0"},
-			seedSpeedJSON: `{"slowTriggerCount":99}`,
+			seedPrefs:     []string{"sp-range|sys_owner|speed_first|{\"speedFirstConfig\":{\"slowTriggerCount\":99}}|0"},
+			seedSpeedJSON: `{"speedFirstConfig":{"slowTriggerCount":99}}`,
 			wantFragment:  "速度优先触发次数",
 		},
 	}

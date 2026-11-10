@@ -176,6 +176,18 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	kernel.WriteOK(w, detail, "")
 }
 
+// rejectedGroupType reports whether the body carries a retired group type on
+// the write face. high_concurrency was retired with the two-key policy
+// (普通分组可选调度策略设计 §2.1); the route renders 400「分组类型无效」.
+func rejectedGroupType(body map[string]any) bool {
+	value, exists := body["groupType"]
+	if !exists {
+		return false
+	}
+	text, isString := value.(string)
+	return isString && text != GroupTypePersonal
+}
+
 // createBody validates the route payload (Node groupSchema.strict()): every
 // optional field rejects null (zod optional accepts only undefined) and the
 // schedulingPolicy object runs the strict per-key int/range/enum checks.
@@ -211,7 +223,7 @@ func createBody(body map[string]any) (MutationInput, bool) {
 	}
 	if value, exists := body["groupType"]; exists {
 		text, isString := value.(string)
-		if !isString || (text != GroupTypePersonal && text != GroupTypeHighConcurrency) {
+		if !isString || text != GroupTypePersonal {
 			return MutationInput{}, false
 		}
 		input.GroupType = &text
@@ -224,11 +236,14 @@ func createBody(body map[string]any) (MutationInput, bool) {
 		input.GroupKind = &text
 	}
 	if value, exists := body["schedulingPolicy"]; exists {
-		policy, isObject := value.(map[string]any)
-		if !isObject || !validateSchedulingPolicyInput(policy) {
-			return MutationInput{}, false
+		input.SchedulingPolicySet = true
+		if value != nil {
+			policy, isObject := value.(map[string]any)
+			if !isObject || !validateSchedulingPolicyInput(policy) {
+				return MutationInput{}, false
+			}
+			input.SchedulingPolicy = policy
 		}
-		input.SchedulingPolicy = policy
 	}
 	return input, true
 }
@@ -268,6 +283,10 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 		}
 		var body map[string]any
 		if !kernel.DecodeJSON(w, r, &body) {
+			return
+		}
+		if rejectedGroupType(body) {
+			kernel.WriteBadRequest(w, "分组类型无效")
 			return
 		}
 		input, ok := createBody(body)
@@ -361,6 +380,10 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 		kernel.WriteBadRequest(w, "请提供要修改的分组内容")
 		return
 	}
+	if rejectedGroupType(body) {
+		kernel.WriteBadRequest(w, "分组类型无效")
+		return
+	}
 	input := patchBody(body)
 	if input.Empty() {
 		kernel.WriteBadRequest(w, "分组参数无效")
@@ -404,6 +427,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 	}
 	kernel.WriteOK(w, map[string]any{
 		"id": result.ID, "changedFields": result.ChangedFields, "updatedAt": result.UpdatedAt,
+		"schedulingPolicy": result.SchedulingPolicy,
 	}, "")
 }
 
@@ -435,17 +459,20 @@ func patchBody(body map[string]any) MutationInput {
 	}
 	if value, exists := body["groupType"]; exists {
 		text, isString := value.(string)
-		if !isString || (text != GroupTypePersonal && text != GroupTypeHighConcurrency) {
+		if !isString || text != GroupTypePersonal {
 			return MutationInput{}
 		}
 		input.GroupType = &text
 	}
 	if value, exists := body["schedulingPolicy"]; exists {
-		policy, isObject := value.(map[string]any)
-		if !isObject || !validateSchedulingPolicyInput(policy) {
-			return MutationInput{}
+		input.SchedulingPolicySet = true
+		if value != nil {
+			policy, isObject := value.(map[string]any)
+			if !isObject || !validateSchedulingPolicyInput(policy) {
+				return MutationInput{}
+			}
+			input.SchedulingPolicy = policy
 		}
-		input.SchedulingPolicy = policy
 	}
 	return input
 }

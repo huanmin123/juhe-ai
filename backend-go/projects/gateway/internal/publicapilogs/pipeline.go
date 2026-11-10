@@ -22,6 +22,12 @@ const (
 	DefaultRetryDelay       = time.Second
 	DefaultShutdownMaxBatch = 100
 	defaultDropWarnInterval = 100
+	// publicAPILogWriteTimeout 是单批写入硬上限：公开接口日志可丢，PG 黑洞
+	// 不得让 flusher 或停机永久阻塞。
+	publicAPILogWriteTimeout = 10 * time.Second
+	// publicAPILogMaxConsecutiveFailures 后丢弃队头批次（非业务日志，避免 PG
+	// 长期不可用时队头无限重试占住队列/停机）。
+	publicAPILogMaxConsecutiveFailures = 5
 
 	// estimateMaxNodes mirrors estimatePublicApiLogBytes' maxNodes cap.
 	estimateMaxNodes = 20000
@@ -229,6 +235,7 @@ func (p *Pipeline) run() {
 		}
 	}
 
+	consecutiveFailures := 0
 	for {
 		topUp()
 		if len(batch) == 0 {
@@ -244,8 +251,23 @@ func (p *Pipeline) run() {
 			topUp()
 		}
 		if p.writeBatch(ctx, batch, batchBytes) {
+			consecutiveFailures = 0
 			batch = batch[:0]
 			batchBytes = 0
+			continue
+		}
+		consecutiveFailures++
+		if consecutiveFailures >= publicAPILogMaxConsecutiveFailures {
+			p.logWarn("公开接口日志批次连续写入失败，已丢弃该批次",
+				"event", "public_api_log_batch_dropped",
+				"batchSize", len(batch),
+				"batchBytes", batchBytes,
+				"consecutiveFailures", consecutiveFailures)
+			p.queueLen.Add(-int64(len(batch)))
+			p.queueBytes.Add(-batchBytes)
+			batch = batch[:0]
+			batchBytes = 0
+			consecutiveFailures = 0
 			continue
 		}
 		// The failed batch stays at the head; wait out the retry delay. A
@@ -299,7 +321,9 @@ func (p *Pipeline) writeBatch(ctx context.Context, batch []queuedLog, batchBytes
 	for i, item := range batch {
 		inputs[i] = item.input
 	}
-	err := p.writer.InsertBatch(ctx, inputs)
+	writeCtx, cancel := context.WithTimeout(ctx, publicAPILogWriteTimeout)
+	defer cancel()
+	err := p.writer.InsertBatch(writeCtx, inputs)
 	if err == nil {
 		p.queueLen.Add(-int64(len(batch)))
 		p.queueBytes.Add(-batchBytes)

@@ -95,7 +95,8 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 	}{
 		{"standard-rate", "gpt-est", "default", 10_000, 10_000, 0.125, true},
 		{"priority-tier", "gpt-est", "priority", 10_000, 10_000, 0.2, true},
-		{"unknown-tier", "gpt-est", "flex", 10_000, 10_000, 0, false},
+		// T93-3（C3-H4）：未知档位回退标准档单价，不再整单落 NULL。
+		{"unknown-tier", "gpt-est", "flex", 10_000, 10_000, 0.125, true},
 		{"long-context", "gpt-est", "default", 200_000, 200_000, 2*2.5*0.2 + 1.5*10*0.2, true},
 		{"below-threshold", "gpt-est", "default", 100_000, 100_000, 1.25, true},
 		{"unknown-model", "gpt-missing", "default", 1_000, 1_000, 0, false},

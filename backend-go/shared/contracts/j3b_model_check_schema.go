@@ -25,6 +25,7 @@ var J3BModelCheckIndexes = map[string]string{
 	"idx_model_check_items_run_order":                  "on juhe_j3b.model_check_items using btree (run_id, created_at, id)",
 	"idx_model_check_items_run_key":                    "on juhe_j3b.model_check_items using btree (run_id, item_key, id)",
 	"idx_model_check_observations_cursor":              "on juhe_j3b.model_check_observations using btree (created_at, id)",
+	"idx_model_check_observations_run":                 "on juhe_j3b.model_check_observations using btree (run_id)",
 	"idx_model_check_observations_pending_aggregation": "on juhe_j3b.model_check_observations using btree (created_at, id)",
 	"idx_account_quality_health_hourly_scope":          "on juhe_j3b.account_quality_health_hourly using btree (system_account_id, stat_hour, account_id)",
 	"idx_model_check_scheduler_tasks_due":              "on juhe_j3b.model_check_scheduler_tasks using btree (kind, due_at, claim_until, id)",
@@ -32,6 +33,7 @@ var J3BModelCheckIndexes = map[string]string{
 	"idx_model_account_trust_results_updated":          "on juhe_j3b.model_account_trust_results using btree (updated_at, account_id, requested_model)",
 	"idx_model_trust_latest_dirty_updated":             "on juhe_j3b.model_trust_latest_dirty_accounts using btree (updated_at, system_account_id, account_id, requested_model)",
 	"idx_model_trust_observation_receipts_processed":   "on juhe_j3b.model_trust_observation_receipts using btree (processed_at, observation_id)",
+	"idx_model_trust_observation_receipts_observed":    "on juhe_j3b.model_trust_observation_receipts using btree (observation_created_at)",
 }
 
 var J3BModelCheckColumns = map[string]map[string]PostgresColumnSpec{

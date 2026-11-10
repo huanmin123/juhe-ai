@@ -3,12 +3,11 @@ package main
 // G20 phase-2 composition-root adapter: the gateway usage persistence bridge.
 //
 //   - gatewayusage.UsageRecorder: the usage-record delivery entry. 2026-11-09
-//     T188：生产投递面改为 gateway 直投 PG——共享 usagewriter（
+//     T188/T189：生产投递面为 gateway 直投 PG——共享 usagewriter（
 //     backend-go/shared/platform/usagewriter）经 usageWriterDeliverer 入队，
 //     有界异步缓冲沿用 Node record-queue.service.ts 的本地路径语义（enqueue
-//     不阻塞、失败计数 + 采样告警）。文件 spool 只作为测试替身存在，
-//     不再进入生产投递链；FinalizationDispatch 管线
-//     （gatewayusage/finalization.go）保持不变。
+//     不阻塞、失败计数 + 采样告警）。文件 spool、溢出补偿与回放均已删除；
+//     FinalizationDispatch 管线只保留有界队列 + UsageRecorder。
 //   - gatewaydispatch.AttemptAuditSink: the attempt-level audit surface
 //     (audit/capture.service.ts startAttempt / completeAttempt /
 //     recordFailedDispatchAttempt) delegated onto the gatewayusage
@@ -62,8 +61,7 @@ func fieldsArgs(fields map[string]any) []any {
 }
 
 // usageRecordDeliverer 是用量记录的持久投递端口。生产实现是网关直投 PG
-// （usageWriterDeliverer → usagewriter.Enqueue）；测试/旧装配仍可注入文件
-// spool（*gatewayusage.UsageRecordSpool 满足同一 Persist 签名）。
+// （usageWriterDeliverer → usagewriter.Enqueue）；测试可注入捕获替身。
 type usageRecordDeliverer interface {
 	Persist(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error
 }
@@ -117,9 +115,8 @@ func newSpooledUsageRecorder(config usageBridgeConfig, deliverer usageRecordDeli
 // usage_records 幂等键（ON CONFLICT(created_at, id) DO NOTHING）。
 func (r *spooledUsageRecorder) EnqueueUsageRecord(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
 	// 使用日志结构性抑制（AI 问答内部通道）：抑制标记在记录上随请求传播。
-	// 主闸口在 FinalizationDispatch.DispatchUsageRecord 入口（覆盖正常入队与
-	// 队列满时溢出落 spool 两条投递臂）；这里再守一道，兜住绕过 finalization
-	// 直投 recorder 的路径，保证 spool 与 DB 都不会看到抑制记录。
+	// 主闸口在 FinalizationDispatch.DispatchUsageRecord 入口；这里再守一道，
+	// 兜住绕过 finalization 直投 recorder 的路径，保证投递面不会看到抑制记录。
 	if input.SuppressUsage {
 		return nil
 	}
@@ -165,7 +162,14 @@ func (r *spooledUsageRecorder) persistOverflow(ctx gatewayusage.Ctx, input gatew
 		r.mu.Unlock()
 		return nil
 	}
-	return r.deliverer.Persist(ctx, input)
+	// 用量记录是计费事实：客户端断连/请求 ctx 超时不能取消落库（旧文件 spool
+	// 写盘本就不看 ctx）。保留 ctx 值但解除取消与 deadline；目录查询自身有
+	// 超时（usagepricing.lookup），不会无限阻塞。
+	persistCtx := context.Background()
+	if ctx != nil {
+		persistCtx = context.WithoutCancel(ctx)
+	}
+	return r.deliverer.Persist(persistCtx, input)
 }
 
 // drain is the delivery worker.
@@ -215,7 +219,13 @@ func (r *spooledUsageRecorder) deliver(input gatewayusage.UsageRecordInput) {
 	}
 }
 
-// Close stops accepting records and drains the buffer.
+// usageRecorderCloseTimeout 是停机排空缓冲的硬上限（gateway 停机总预算
+// 30s：HTTP 排空最坏 20s + usage 排空 <=9s）：投递侧可能因目录查询
+// 超时（每键 5s）而变慢，不能让 chain shutdown 无限等待；超时后未排空的记录
+// 随进程退出丢弃（直投语义已知取舍），但停机流程必须可预期完成。
+const usageRecorderCloseTimeout = 4 * time.Second
+
+// Close stops accepting records and drains the buffer (有界等待).
 func (r *spooledUsageRecorder) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -225,7 +235,17 @@ func (r *spooledUsageRecorder) Close() {
 	r.closed = true
 	close(r.buffered)
 	r.mu.Unlock()
-	r.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(usageRecorderCloseTimeout):
+		r.logger.Error("usage recorder 停机排空超时，未投递记录随进程退出丢弃",
+			"event", "usage_record_shutdown_drain_timeout")
+	}
 }
 
 // chainAttemptAuditSink implements gatewaydispatch.AttemptAuditSink by

@@ -194,18 +194,6 @@ func runtimeInt64(getenv func(string) string, name string, fallback, minimum, ma
 	return parsed, nil
 }
 
-func runtimePositiveInt(getenv func(string) string, name string, fallback int) (int, error) {
-	value := strings.TrimSpace(getenv(name))
-	if value == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		return 0, fmt.Errorf("%s 必须是正整数", name)
-	}
-	return parsed, nil
-}
-
 // firstNonEmptyString 返回第一个 trim 后非空的值（2026-09-21 零配置回落链）。
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {

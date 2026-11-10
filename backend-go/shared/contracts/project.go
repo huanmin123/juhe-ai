@@ -49,8 +49,23 @@ const ArchitectureVersion = "go-projects-v1"
 // security_policies 新增 protection_count bigint NOT NULL DEFAULT 0 加法列
 // （gateway Redis 增量经进程内刷写任务合并入库），纯 DDL 空号，按《升级兼容
 // 与迁移账本设计》§6.4 不写入 schema_migrations，由 DDL golden 与本常量共同
-// 表达。当前值 21。
-const SchemaRevision int64 = 21
+// 表达。2026-11-09 revision 22 高并发分组退役（普通分组可选调度策略设计 §5，
+// T195 阶段③）：注册表新增 revision 22 数据/破坏步骤
+// （retire-high-concurrency-groups），把 juhe_business.groups 全部行迁为
+// personal、16 键旧策略按 --global-max 映射为两键
+// （defaultSoftConcurrency / clientIpConcurrencyLimit，两项都默认 → NULL），
+// group_authorization_settings 的 group_type/策略列清为 personal/NULL（覆盖
+// 退役），超级分组自身行按首成员重算；畸形 JSON/未知键/未知 group_type 行
+// needs_review 阻断。步骤写入 schema_migrations，只在 contract/all 相执行；
+// 列形态不变（group_type/scheduling_policy_json 列保留，无 DDL 空号）。
+// 2026-11-10 revision 23 退役 usage shard 目录四表（用户裁决“没有需求就
+// 去掉”）：注册表新增 revision 23 破坏性步骤
+// （retire-usage-shard-catalog），在停写窗口内 DROP
+// juhe_usage.usage_record_shard_entries / usage_record_account_shards /
+// usage_record_api_key_shards / usage_record_shards；生产写入链路只写
+// juhe_usage.usage_records，列表与清理均直接读该日分区表，四表无生产读取方。
+// 步骤写入 schema_migrations，只在 contract/all 相执行。当前值 23。
+const SchemaRevision int64 = 23
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

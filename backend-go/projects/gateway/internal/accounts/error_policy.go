@@ -11,23 +11,6 @@ import (
 // normalization (the runtime matcher systemInsufficientQuotaRuleMatches and
 // effectiveAccountErrorHandlingRules belong to the circuit dispatch slices).
 
-type errorHandlingRule struct {
-	enabled         bool
-	name            string
-	priority        float64
-	action          string
-	statusCodes     []any
-	errorCodes      []any
-	errorTypes      []any
-	keywords        []any
-	resetStrategy   string
-	durationHours   float64
-	dailyResetHour  float64
-	weeklyResetDay  float64
-	weeklyResetHour float64
-	description     string
-}
-
 // normalizeAccountErrorHandlingRules mirrors normalizeAccountErrorHandlingRules:
 // undefined normalizes to an empty list, arrays of strict rule objects.
 func normalizeAccountErrorHandlingRules(value any) ([]any, error) {

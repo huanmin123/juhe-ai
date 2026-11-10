@@ -1,5 +1,5 @@
 // X05 场景 5：网关链。seed 默认 key → /v1/chat/completions 对 mock upstream
-// （httptest 进程内上游）→ 200 非流式 + SSE 流式透传 + usage 落 spool；
+// （httptest 进程内上游）→ 200 非流式 + SSE 流式透传 + usage 直投 PG；
 // 401 invalid_api_key / 404 非 协议路径 / 429 用户限流契约；/v1/models 端点。
 package acceptance
 

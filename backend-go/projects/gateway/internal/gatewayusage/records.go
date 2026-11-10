@@ -4,104 +4,15 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
-// UsageRecordInput mirrors UsageRecordInput
-// (backend/src/storage/usage-records.repository.ts) field for field. Empty
-// strings and nil pointers mean the Node undefined fields; Success, TraceID
-// and TrafficSource are always set by the record builders.
-type UsageRecordInput struct {
-	ID              string `json:"id,omitempty"`
-	SystemAccountID string `json:"systemAccountId,omitempty"`
-	TraceID         string `json:"traceId"`
-	TrafficSource   string `json:"trafficSource"`
-	ClientIP        string `json:"clientIp,omitempty"`
-	APIKeyID        string `json:"apiKeyId,omitempty"`
-	GroupID         string `json:"groupId,omitempty"`
-	RouteGroupID    string `json:"routeGroupId,omitempty"`
-	// CompactionExpected 是请求侧压缩期望（用量记录压缩标记设计 §压缩请求
-	// 识别：/responses/compact 路径或 /responses 请求体含内联压缩触发器）：
-	// 非探针请求经 spool JSON 透传落列 compaction_expected。与 jobs
-	// usagewriter 镜像结构同名同 tag、字段序同样紧邻 RouteGroupID。
-	CompactionExpected bool `json:"compactionExpected"`
-	// SecurityPolicyApplied / PIIHits 是 API Key 安全策略的请求级事实（API
-	// Key 安全策略与出站内容脱敏设计 §8）：applied = 该请求挂载了非默认安全
-	// 策略（与是否命中无关）；piiHits 按规则 label 计数（无任何原文），仅命
-	// 中数 > 0 时非空（omitempty 不写）。与 jobs usagewriter 镜像结构同名同
-	// tag（jobs 侧镜像属下一批）；spool JSON 前向兼容——旧 jobs 反序列化忽
-	// 略未知字段，新 jobs 读旧网关缺字段为零值。字段序紧邻 CompactionExpected
-	// 事实块。
-	SecurityPolicyApplied bool           `json:"securityPolicyApplied"`
-	PIIHits               map[string]int `json:"piiHits,omitempty"`
-	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
-	// 只在进程内随记录传播到持久化唯一闸口（FinalizationDispatch.
-	// DispatchUsageRecord 入口第一步即丢弃，覆盖正常入队与溢出 spool 两臂），
-	// 永不序列化——`json:"-"` 保证 spool 落盘 JSON 契约一个字节都不变。
-	SuppressUsage                    bool     `json:"-"`
-	AccountID                        string   `json:"accountId,omitempty"`
-	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
-	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`
-	AccountAccessType                string   `json:"accountAccessType,omitempty"`
-	GroupAccessType                  string   `json:"groupAccessType,omitempty"`
-	AccountAuthorizationID           string   `json:"accountAuthorizationId,omitempty"`
-	AccountAuthorizationSourceType   string   `json:"accountAuthorizationSourceType,omitempty"`
-	AccountAuthorizationSourceTeamID string   `json:"accountAuthorizationSourceTeamId,omitempty"`
-	GroupAuthorizationID             string   `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationSourceType     string   `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID   string   `json:"groupAuthorizationSourceTeamId,omitempty"`
-	Endpoint                         string   `json:"endpoint,omitempty"`
-	ProviderCode                     string   `json:"providerCode,omitempty"`
-	ProviderProtocolProfileID        string   `json:"providerProtocolProfileId,omitempty"`
-	UsageSemantic                    string   `json:"usageSemantic,omitempty"`
-	Model                            string   `json:"model,omitempty"`
-	UpstreamModel                    string   `json:"upstreamModel,omitempty"`
-	UpstreamResponseModel            string   `json:"upstreamResponseModel,omitempty"`
-	PricingModel                     string   `json:"pricingModel,omitempty"`
-	RequestedServiceTier             string   `json:"requestedServiceTier,omitempty"`
-	EffectiveServiceTier             string   `json:"effectiveServiceTier,omitempty"`
-	ReportedServiceTier              string   `json:"reportedServiceTier,omitempty"`
-	BilledServiceTier                string   `json:"billedServiceTier,omitempty"`
-	RequestedReasoningEffort         string   `json:"requestedReasoningEffort,omitempty"`
-	EffectiveReasoningEffort         string   `json:"effectiveReasoningEffort,omitempty"`
-	PricingSnapshot                  any      `json:"pricingSnapshot,omitempty"`
-	ModelMappingApplied              *bool    `json:"modelMappingApplied,omitempty"`
-	ModelMappingSource               string   `json:"modelMappingSource,omitempty"`
-	SourceEndpointFamily             string   `json:"sourceEndpointFamily,omitempty"`
-	UpstreamEndpointFamily           string   `json:"upstreamEndpointFamily,omitempty"`
-	Stream                           *bool    `json:"stream,omitempty"`
-	StatusCode                       *int     `json:"statusCode,omitempty"`
-	Success                          bool     `json:"success"`
-	FailureAttribution               string   `json:"failureAttribution,omitempty"`
-	FirstTokenMs                     *int     `json:"firstTokenMs,omitempty"`
-	DurationMs                       *int     `json:"durationMs,omitempty"`
-	InputTokens                      *int     `json:"inputTokens,omitempty"`
-	OutputTokens                     *int     `json:"outputTokens,omitempty"`
-	CacheReadTokens                  *int     `json:"cacheReadTokens,omitempty"`
-	CacheReadCostUsd                 *float64 `json:"cacheReadCostUsd,omitempty"`
-	CacheWriteTokens                 *int     `json:"cacheWriteTokens,omitempty"`
-	CacheWrite1hTokens               *int     `json:"cacheWrite1hTokens,omitempty"`
-	CacheWriteCostUsd                *float64 `json:"cacheWriteCostUsd,omitempty"`
-	ThinkingTokens                   *int     `json:"thinkingTokens,omitempty"`
-	InputImageTokens                 *int     `json:"inputImageTokens,omitempty"`
-	OutputImageTokens                *int     `json:"outputImageTokens,omitempty"`
-	InputAudioTokens                 *int     `json:"inputAudioTokens,omitempty"`
-	OutputAudioTokens                *int     `json:"outputAudioTokens,omitempty"`
-	OutputImageCount                 *int     `json:"outputImageCount,omitempty"`
-	// M1 同步音频计量（音频设计 §10）：TTS 输入字符数、STT 音频秒数与
-	// usage_missing 标记（上游无 usage 回报也无 duration）。
-	// M2 视频计量（媒体设计 §10）：OutputVideoSeconds 是视频任务输出秒数
-	//（任务参数 seconds 口径，网关自算；失败任务不虚计）。
-	TtsInputChars      *int64   `json:"ttsInputChars,omitempty"`
-	AudioInputSeconds  *float64 `json:"audioInputSeconds,omitempty"`
-	OutputVideoSeconds *float64 `json:"outputVideoSeconds,omitempty"`
-	UsageMissing       bool     `json:"usageMissing,omitempty"`
-	CostUsd            *float64 `json:"costUsd,omitempty"`
-	ErrorCode          string   `json:"errorCode,omitempty"`
-	ErrorMessage       string   `json:"errorMessage,omitempty"`
-	RequestSnapshot    any      `json:"requestSnapshot,omitempty"`
-	ResponseSnapshot   any      `json:"responseSnapshot,omitempty"`
-	CreatedAt          string   `json:"createdAt,omitempty"`
-}
+// UsageRecordInput 是 shared/platform/usagewriter.UsageRecordInput 的类型别名
+// （2026-11-09 T188）：网关用量记录直投 PG 时与 writer 使用同一内存类型，
+// 热路径不再做 JSON 序列化/反序列化；字段契约由编译期保证。SuppressUsage
+// 仍是 gateway 进程内字段（json:"-"），随别名保留。
+type UsageRecordInput = usagewriter.UsageRecordInput
 
 // UsageFailureAttribution mirrors the Node union.
 type UsageFailureAttribution = string

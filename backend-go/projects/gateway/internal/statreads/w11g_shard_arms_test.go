@@ -1,7 +1,7 @@
 package statreads
 
 // w11g 覆盖补充（第三批）：usage-records keyword 的 owner 授权/分组检索
-// 路径、真实 shard 文件读链与水合错误臂、timekeys 边界。
+// 路径与 timekeys 边界。
 
 import (
 	"net/http"

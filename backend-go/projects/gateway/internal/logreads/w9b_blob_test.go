@@ -7,9 +7,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,13 +224,5 @@ func TestW9BNormalizeHotSearchKeywordsAndLimit(t *testing.T) {
 	big := 500
 	if got := normalizeHotSearchLimit(&big); got != 100 {
 		t.Fatalf("上限=%d", got)
-	}
-}
-
-func TestW9BGrepIDAndPrefixHelpers(t *testing.T) {
-	id := runtimeLogGrepItemID("file.log", 3, "line")
-	digest := sha256.Sum256([]byte("file.log\x003\x00line"))
-	if id != hex.EncodeToString(digest[:]) {
-		t.Fatalf("itemID=%q", id)
 	}
 }

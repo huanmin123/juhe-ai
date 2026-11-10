@@ -1,11 +1,8 @@
 package gatewayusage
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,38 +36,6 @@ func TestWJCaptureDiagnosticIdempotency(t *testing.T) {
 	logs := dispatcher.all()
 	if len(logs) != 1 {
 		t.Fatalf("收尾后必须恰好投递一次: %d", len(logs))
-	}
-}
-
-// TestWJSpoolCapacityRefreshPath 固定容量缓存的强制刷新成功路径：缓存显示
-// 超限但重扫后容量释放，继续写入成功。
-func TestWJSpoolCapacityRefreshPath(t *testing.T) {
-	directory := t.TempDir()
-	// 使用真实时钟：30 秒容量缓存在测试窗口内不会过期，第一次 Persist 后
-	// 缓存记录 items=1；外部删除文件后缓存仍显示已满，触发强制重扫。
-	spool := NewUsageRecordSpool(SpoolConfig{
-		Directory:        directory,
-		InstanceID:       "inst-refresh2",
-		MaxItems:         1,
-		MaxBytes:         1 << 20,
-		ReplayBatchSize:  8,
-		ReplayIntervalMs: 5,
-		Enabled:          true,
-	}, nil, nil)
-	first := UsageRecordInput{ID: "usage_refresh2_1", TraceID: "refresh2-1", TrafficSource: TrafficSourceGateway, Success: true, CreatedAt: "2023-11-14T22:13:20.123Z"}
-	if err := spool.Persist(context.Background(), first); err != nil {
-		t.Fatalf("首次持久化: %v", err)
-	}
-	matches, err := filepath.Glob(filepath.Join(directory, "inst-refresh2", "*.json"))
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("预期 1 个 spool 文件: %v %v", matches, err)
-	}
-	if err := os.Remove(matches[0]); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	// 缓存内 items=1 已满 → 强制重扫发现 0 文件 → 容量释放 → 写入成功。
-	if err := spool.Persist(context.Background(), UsageRecordInput{ID: "usage_refresh2_2", TraceID: "refresh2-2", TrafficSource: TrafficSourceGateway, Success: true, CreatedAt: "2023-11-14T22:13:20.123Z"}); err != nil {
-		t.Fatalf("容量刷新后持久化: %v", err)
 	}
 }
 
@@ -126,9 +91,5 @@ func TestWJFinalizationClockAndRecovery(t *testing.T) {
 	// maxInt64 的直调契约（直方图桶渲染已交由 client_golang，排序直调面消失）。
 	if maxInt64(1, 2) != 2 || maxInt64(5, 2) != 5 {
 		t.Fatal("maxInt64 不符")
-	}
-	// maxInt 的 b>a 分支。
-	if maxInt(1, 2) != 2 || maxInt(3, 1) != 3 {
-		t.Fatal("maxInt 不符")
 	}
 }

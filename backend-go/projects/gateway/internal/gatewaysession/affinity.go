@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -16,6 +17,7 @@ import (
 // loop).
 const (
 	sessionAffinityTtlMs            = int64(60 * 60 * 1000)
+	sessionAffinityLeaseTtlMs       = int64(30 * 60 * 1000)
 	trafficMigrationPreferenceTtlMs = sessionAffinityTtlMs
 
 	redisSessionAffinityIndexTtlPaddingMs = int64(60_000)
@@ -60,6 +62,24 @@ type SessionBinding struct {
 	Scope                     *OpenAIGatewaySessionAffinityScope
 	TrafficMigrationPreferred bool
 	UpstreamApiKeyFingerprint string
+	// LeaseUntilMs / LastActiveAtMs 是账户亲和同层 latch 的 30 分钟滑动租约
+	// （2026-11-09 用户裁决）。零值 = 旧记录，按 legacy active 处理；只有正值
+	// 且已过期才视为失活，避免上线瞬间把既有会话亲和全部清掉。
+	LeaseUntilMs   int64
+	LastActiveAtMs int64
+}
+
+// LeaseActive reports whether the binding's sticky lease is still valid.
+// A zero lease is a legacy record and stays active until the first successful
+// request writes a lease. A positive lease that has passed is inactive.
+func (b *SessionBinding) LeaseActive(nowMs int64) bool {
+	if b == nil {
+		return false
+	}
+	if b.LeaseUntilMs <= 0 {
+		return true
+	}
+	return b.LeaseUntilMs > nowMs
 }
 
 // validUpstreamApiKeyFingerprint 报告值是否为合法指纹：恰好 64 个 [0-9a-f]
@@ -126,7 +146,7 @@ type AffinityConfig struct {
 	// Secret mirrors runtimeConfig.secret (the deriveGatewaySessionAffinityKey
 	// fallback). Must be non-empty, like the Node runtime default.
 	Secret         string
-	RedisURL  string
+	RedisURL       string
 	RedisNamespace string
 	// ConcurrencyGlobalMax mirrors runtimeConfig.concurrency.globalMax
 	// (default 5000) used by the scheduling policy defaults.
@@ -138,7 +158,7 @@ type AffinityConfig struct {
 	Redis RedisClient
 	// Logger defaults to a no-op.
 	Logger AffinityLogger
-	// Concurrency is required by the high-concurrency ordering / busy checks.
+	// Concurrency 是测试注入的并发事实源；普通分组排序使用请求冻结快照。
 	Concurrency ConcurrencySource
 }
 
@@ -314,6 +334,126 @@ func (s *AffinityService) RememberOpenAIAccountForSessionAsync(ctx context.Conte
 	_, _ = s.ClaimOpenAIAccountForSessionAsync(ctx, sessionAffinityKey, accountID, scope)
 }
 
+// RebindOpenAIAccountForSessionAsync 是最终协议成功后的账户亲和结算：
+//   - expectedOwner == newOwner：只刷新 lease/lastActiveAt，不改 owner；
+//   - expectedOwner != newOwner：CAS 只允许当前 owner 仍是 expectedOwner 时改绑，
+//     且由调用方保证同层 + expectedOwner 在本请求被容量拒绝/运行态排除；
+//   - Redis/内存写失败只告警/返回 false，不影响请求结果。
+func (s *AffinityService) RebindOpenAIAccountForSessionAsync(ctx context.Context, sessionAffinityKey string, expectedOwner string, newOwner string, scope *OpenAIGatewaySessionAffinityScope) bool {
+	if sessionAffinityKey == "" || newOwner == "" {
+		return false
+	}
+	nowMs := s.clock().UnixMilli()
+	if !s.shouldUseRedisSessionAffinity() {
+		if !s.canUseProcessLocalSessionAffinity() {
+			return false
+		}
+		return s.rebindOpenAIAccountForSessionLocal(sessionAffinityKey, expectedOwner, newOwner, scope, nowMs)
+	}
+	ok, err := s.rebindRedis(ctx, sessionAffinityKey, expectedOwner, newOwner, scope, nowMs)
+	if err != nil {
+		s.warn("redis_openai_session_affinity_rebind_failed", err, map[string]any{
+			"expectedOwner": expectedOwner,
+			"newOwner":      newOwner,
+		}, "Redis 会话亲和重绑失败，已保留现值")
+		return false
+	}
+	return ok
+}
+
+// rebindRedis mirrors the claim CAS shape: read current record, up to two
+// compare-and-set attempts. It never creates a binding when an expected owner
+// was supplied but the record is missing (deleted/forgot): the caller's claim
+// is the creation point.
+func (s *AffinityService) rebindRedis(ctx context.Context, key string, expectedOwner string, newOwner string, scope *OpenAIGatewaySessionAffinityScope, nowMs int64) (bool, error) {
+	previous, err := s.getRedisSessionAffinityRecord(ctx, key, false)
+	if err != nil {
+		return false, err
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if previous == nil {
+			if expectedOwner != "" {
+				return false, nil
+			}
+			binding := SessionBinding{AccountID: newOwner, Scope: scope}
+			applySessionAffinityLease(&binding, nowMs)
+			written, err := s.setRedisSessionAffinityBinding(ctx, key, binding, nil)
+			if err != nil {
+				return false, err
+			}
+			if written {
+				return true, nil
+			}
+			previous, err = s.getRedisSessionAffinityRecord(ctx, key, false)
+			if err != nil {
+				return false, err
+			}
+			continue
+		}
+		if previous.binding.AccountID != expectedOwner {
+			return false, nil
+		}
+		binding := sessionBindingAfterSuccess(previous.binding, newOwner, scope, nowMs)
+		written, err := s.setRedisSessionAffinityBinding(ctx, key, binding, previous)
+		if err != nil {
+			return false, err
+		}
+		if written {
+			return true, nil
+		}
+		previous, err = s.getRedisSessionAffinityRecord(ctx, key, false)
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func (s *AffinityService) rebindOpenAIAccountForSessionLocal(key string, expectedOwner string, newOwner string, scope *OpenAIGatewaySessionAffinityScope, nowMs int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous := s.sessionAffinityCacheGetLocked(key)
+	if previous == nil {
+		if expectedOwner != "" {
+			return false
+		}
+		binding := SessionBinding{AccountID: newOwner, Scope: scope}
+		applySessionAffinityLease(&binding, nowMs)
+		s.setSessionAffinityBindingLocked(key, binding)
+		return true
+	}
+	if previous.AccountID != expectedOwner {
+		return false
+	}
+	binding := sessionBindingAfterSuccess(*previous, newOwner, scope, nowMs)
+	s.setSessionAffinityBindingLocked(key, binding)
+	return true
+}
+
+func applySessionAffinityLease(binding *SessionBinding, nowMs int64) {
+	binding.LeaseUntilMs = nowMs + sessionAffinityLeaseTtlMs
+	binding.LastActiveAtMs = nowMs
+}
+
+// sessionBindingAfterSuccess preserves the session scope; an owner change
+// clears the old owner's Key fingerprint and traffic-migration flag, while a
+// same-owner success keeps them.
+func sessionBindingAfterSuccess(previous SessionBinding, newOwner string, scope *OpenAIGatewaySessionAffinityScope, nowMs int64) SessionBinding {
+	binding := SessionBinding{AccountID: newOwner}
+	if previous.AccountID == newOwner {
+		binding.Scope = previous.Scope
+		binding.TrafficMigrationPreferred = previous.TrafficMigrationPreferred
+		binding.UpstreamApiKeyFingerprint = previous.UpstreamApiKeyFingerprint
+	} else {
+		binding.Scope = previous.Scope
+		if binding.Scope == nil {
+			binding.Scope = scope
+		}
+	}
+	applySessionAffinityLease(&binding, nowMs)
+	return binding
+}
+
 // StickyOpenAIApiKeyFingerprintAsync 返回会话绑定中属于 accountID 的上游 Key
 // 指纹（账户内 Key 会话黏性读）。绑定缺失、过期、属于其他账户或读取失败均
 // 返回空串——降级为无黏性；读取失败按既有亲和读取失败路径告警。读取不刷新
@@ -418,61 +558,96 @@ func (s *AffinityService) rememberOpenAIApiKeyFingerprintRedis(ctx context.Conte
 // first binder wins; re-claiming the bound account refreshes the binding TTL.
 // Redis failures warn and yield ("", false), exactly like the Node catch.
 func (s *AffinityService) ClaimOpenAIAccountForSessionAsync(ctx context.Context, sessionAffinityKey string, accountID string, scope *OpenAIGatewaySessionAffinityScope) (string, bool) {
+	owner, _, ok := s.ClaimOpenAIAccountForSessionWithStateAsync(ctx, sessionAffinityKey, accountID, scope)
+	return owner, ok
+}
+
+// ClaimOpenAIAccountForSessionWithStateAsync 在 claim 结果上额外返回“claim 前
+// 是否已有活跃 lease 的绑定”：名额规划据此区分新会话占位 owner（不等待，
+// 直接分配空闲名额）与既有会话 owner（名额满时允许 1-2s 等待）。
+func (s *AffinityService) ClaimOpenAIAccountForSessionWithStateAsync(ctx context.Context, sessionAffinityKey string, accountID string, scope *OpenAIGatewaySessionAffinityScope) (string, bool, bool) {
 	if sessionAffinityKey == "" {
-		return "", false
+		return "", false, false
 	}
 	if !s.shouldUseRedisSessionAffinity() {
 		if !s.canUseProcessLocalSessionAffinity() {
-			return "", false
+			return "", false, false
 		}
-		return s.claimOpenAIAccountForSessionLocal(sessionAffinityKey, accountID, scope), true
+		return s.claimOpenAIAccountForSessionLocal(sessionAffinityKey, accountID, scope), true, true
 	}
-	owner, err := s.claimRedis(ctx, sessionAffinityKey, accountID, scope)
+	owner, established, err := s.claimRedis(ctx, sessionAffinityKey, accountID, scope)
 	if err != nil {
 		s.warn("redis_openai_session_affinity_remember_failed", err, map[string]any{
 			"accountId": accountID,
 		}, "Redis 会话亲和绑定写入失败，已跳过本次亲和记录")
-		return "", false
+		return "", established, false
 	}
-	return owner, owner != ""
+	return owner, established, owner != ""
 }
 
 // claimRedis mirrors the Node try{} block: read previous, up to two
-// compare-and-set attempts.
-func (s *AffinityService) claimRedis(ctx context.Context, sessionAffinityKey string, accountID string, scope *OpenAIGatewaySessionAffinityScope) (string, error) {
+// compare-and-set attempts. First binder wins while the existing lease is
+// active; an expired lease allows the proposed account to rewrite the owner.
+// established 表示 claim 前存在活跃 lease 的绑定（新会话/零 lease 占位为
+// false），供名额规划区分是否值得等待 owner 名额。
+func (s *AffinityService) claimRedis(ctx context.Context, sessionAffinityKey string, accountID string, scope *OpenAIGatewaySessionAffinityScope) (string, bool, error) {
 	previous, err := s.getRedisSessionAffinityRecord(ctx, sessionAffinityKey, false)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
+	nowMs := s.clock().UnixMilli()
+	// 只有正值 lease 才算“既有会话”；零 lease 是 claim 占位或 legacy 记录，
+	// 不能据此让新会话在 owner 名额满时等待（LeaseActive 对 0 返回 true 是
+	// first-binder-wins/legacy 兼容语义，不适用于名额资格判断）。
+	established := previous != nil && previous.binding.LeaseUntilMs > 0 && previous.binding.LeaseActive(nowMs)
 	for attempt := 0; attempt < 2; attempt++ {
 		if previous != nil {
 			if previous.binding.AccountID == accountID {
+				gatewayusage.RecordGatewaySessionAffinityLeaseMetric(true)
 				client, err := s.redisSessionAffinityClient(ctx)
 				if err != nil {
-					return "", err
+					return "", established, err
 				}
 				if _, err := s.refreshRedisSessionAffinityBinding(ctx, client, sessionAffinityKey, previous); err != nil {
-					return "", err
+					return "", established, err
 				}
+				return previous.binding.AccountID, established, nil
 			}
-			return previous.binding.AccountID, nil
+			if previous.binding.LeaseActive(nowMs) {
+				gatewayusage.RecordGatewaySessionAffinityLeaseMetric(true)
+				return previous.binding.AccountID, established, nil
+			}
+			gatewayusage.RecordGatewaySessionAffinityLeaseMetric(false)
+			// 租约已过期：允许新 proposed 账户 CAS 重写 owner（新分配）。lease
+			// 仍只由最终成功刷新；claim 写零 lease，避免把“未成功”当成活跃租约。
+			binding := SessionBinding{AccountID: accountID, Scope: scope}
+			written, err := s.setRedisSessionAffinityBinding(ctx, sessionAffinityKey, binding, previous)
+			if err != nil {
+				return "", established, err
+			}
+			if written {
+				return accountID, established, nil
+			}
+			previous, err = s.getRedisSessionAffinityRecord(ctx, sessionAffinityKey, false)
+			if err != nil {
+				return "", established, err
+			}
+			continue
 		}
-		written, err := s.setRedisSessionAffinityBinding(ctx, sessionAffinityKey, SessionBinding{
-			AccountID: accountID,
-			Scope:     scope,
-		}, previous)
+		binding := SessionBinding{AccountID: accountID, Scope: scope}
+		written, err := s.setRedisSessionAffinityBinding(ctx, sessionAffinityKey, binding, previous)
 		if err != nil {
-			return "", err
+			return "", established, err
 		}
 		if written {
-			return accountID, nil
+			return accountID, established, nil
 		}
 		previous, err = s.getRedisSessionAffinityRecord(ctx, sessionAffinityKey, false)
 		if err != nil {
-			return "", err
+			return "", established, err
 		}
 	}
-	return "", nil
+	return "", established, nil
 }
 
 // RememberOpenAIAccountForSessionLocal mirrors rememberOpenAIAccountForSessionLocal.
@@ -481,14 +656,37 @@ func (s *AffinityService) RememberOpenAIAccountForSessionLocal(sessionAffinityKe
 }
 
 // claimOpenAIAccountForSessionLocal mirrors claimOpenAIAccountForSessionLocal.
+// First binder wins while the existing lease is active; an expired lease
+// allows the proposed account to rewrite the owner.
 func (s *AffinityService) claimOpenAIAccountForSessionLocal(sessionAffinityKey string, accountID string, scope *OpenAIGatewaySessionAffinityScope) string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	nowMs := s.clock().UnixMilli()
+	owner := ""
+	leaseHit := false
+	leaseExpired := false
 	if previous := s.sessionAffinityCacheGetLocked(sessionAffinityKey); previous != nil {
-		return previous.AccountID
+		if previous.AccountID == accountID || previous.LeaseActive(nowMs) {
+			owner = previous.AccountID
+			leaseHit = true
+		} else {
+			leaseExpired = true
+		}
 	}
-	s.setSessionAffinityBindingLocked(sessionAffinityKey, SessionBinding{AccountID: accountID, Scope: scope})
-	return accountID
+	if owner == "" {
+		// lease 只由最终成功刷新；claim 写零 lease（legacy active），与 Redis
+		// 路径及既有 1h 绑定 TTL 语义一致。
+		binding := SessionBinding{AccountID: accountID, Scope: scope}
+		s.setSessionAffinityBindingLocked(sessionAffinityKey, binding)
+		owner = accountID
+	}
+	s.mu.Unlock()
+	switch {
+	case leaseHit:
+		gatewayusage.RecordGatewaySessionAffinityLeaseMetric(true)
+	case leaseExpired:
+		gatewayusage.RecordGatewaySessionAffinityLeaseMetric(false)
+	}
+	return owner
 }
 
 // RememberOpenAIAccountTrafficMigrationPreference mirrors
@@ -600,6 +798,9 @@ func (s *AffinityService) forgetRedis(ctx context.Context, sessionAffinityKey st
 		return err
 	}
 	if record == nil {
+		// 绑定已不存在时仍清理调用方账户的残留名额；名额可能在绑定删除后
+		// 遗留到 lease 过期，提前清理避免占用其他会话的名额。
+		s.releaseSessionSlot(ctx, sessionAffinityKey, accountID)
 		return nil
 	}
 	if accountID != "" && record.binding.AccountID != accountID {
@@ -609,8 +810,11 @@ func (s *AffinityService) forgetRedis(ctx context.Context, sessionAffinityKey st
 	if err != nil {
 		return err
 	}
-	_, err = s.deleteRedisSessionAffinityBinding(ctx, client, sessionAffinityKey, record)
-	return err
+	if _, err := s.deleteRedisSessionAffinityBinding(ctx, client, sessionAffinityKey, record); err != nil {
+		return err
+	}
+	s.releaseSessionSlot(ctx, sessionAffinityKey, record.binding.AccountID)
+	return nil
 }
 
 // MigrateOpenAIAccountSessionAffinity mirrors migrateOpenAIAccountSessionAffinity.
@@ -694,6 +898,9 @@ func (s *AffinityService) migrateRedisOpenAIAccountSessionAffinity(ctx context.C
 		}
 		if migrated {
 			migratedSessionCount++
+			// 迁移只移动绑定；源账户名额立即释放，目标账户名额在下次最终成功
+			// 时按目标容量重新写入，避免把源账户名额带过去造成误计。
+			s.releaseSessionSlot(ctx, key, source)
 		}
 	}
 	return MigrationResult{MigratedSessionCount: migratedSessionCount}, nil

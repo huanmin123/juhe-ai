@@ -41,6 +41,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
@@ -66,6 +67,8 @@ type chainAccountsSelector struct {
 	// concurrency.globalMax); candidateScanLimit = finalLimit * 2.
 	candidateFinalLimit int
 	candidateScanLimit  int
+	// globalConcurrencyMax maps retired high_concurrency policies on read.
+	globalConcurrencyMax int
 	// proxyTargets 是池绑定候选的只读解析器（代理池设计 §10.1）：
 	// 非 nil 时 hydration 批内批量解析池租约成员；nil 保持旧行为（测试/未装配）。
 	proxyTargets chainProxyTargetResolver
@@ -110,13 +113,22 @@ func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, secret strin
 		now = time.Now
 	}
 	return &chainAccountsSelector{
-		db:                  db,
-		statsDB:             statsDB,
-		secret:              secret,
-		now:                 now,
-		candidateFinalLimit: dispatchAccountCandidateLimit,
-		candidateScanLimit:  dispatchCandidateScanLimitFor(dispatchAccountCandidateLimit),
+		db:                   db,
+		statsDB:              statsDB,
+		secret:               secret,
+		now:                  now,
+		candidateFinalLimit:  dispatchAccountCandidateLimit,
+		candidateScanLimit:   dispatchCandidateScanLimitFor(dispatchAccountCandidateLimit),
+		globalConcurrencyMax: gatewayscheduling.DefaultGlobalConcurrencyMax,
 	}, nil
+}
+
+// SetGlobalConcurrencyMax passes the runtime JUHE_AI_CONCURRENCY_GLOBAL_MAX
+// value used to map retired high_concurrency policies.
+func (s *chainAccountsSelector) SetGlobalConcurrencyMax(value int) {
+	if value > 0 {
+		s.globalConcurrencyMax = value
+	}
 }
 
 func (s *chainAccountsSelector) table(name string) string {
@@ -1136,11 +1148,11 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 	if enabled != 1 {
 		return nil, nil
 	}
-	normalizedType, err := chainNormalizeGroupType(groupType)
+	normalizedType, legacyType, err := chainNormalizeGroupType(groupType)
 	if err != nil {
 		return nil, err
 	}
-	policy, err := chainParseGroupSchedulingPolicy(schedulingPolicyJSON, normalizedType)
+	policy, err := chainParseGroupSchedulingPolicy(schedulingPolicyJSON, legacyType, s.globalConcurrencyMax)
 	if err != nil {
 		return nil, err
 	}
@@ -1160,36 +1172,19 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 		return nil, nil
 	}
 	var localEnabled sql.NullInt64
-	var localType, localPolicyJSON sql.NullString
-	err = s.db.QueryRowContext(ctx, s.bind(`SELECT enabled, group_type, scheduling_policy_json FROM `+s.table("group_authorization_settings")+` WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? LIMIT 1`),
-		authorization.id, systemAccountID, groupID).Scan(&localEnabled, &localType, &localPolicyJSON)
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT enabled FROM `+s.table("group_authorization_settings")+` WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? LIMIT 1`),
+		authorization.id, systemAccountID, groupID).Scan(&localEnabled)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
 	if localEnabled.Valid && localEnabled.Int64 == 0 {
 		return nil, nil
 	}
-	localTypeValue := normalizedType
-	if localType.Valid && strings.TrimSpace(localType.String) != "" {
-		normalized, typeErr := chainNormalizeGroupType(localType)
-		if typeErr != nil {
-			return nil, typeErr
-		}
-		localTypeValue = normalized
-	}
-	policyJSON := localPolicyJSON
-	if !policyJSON.Valid || strings.TrimSpace(policyJSON.String) == "" {
-		policyJSON = schedulingPolicyJSON
-	}
-	localPolicy, err := chainParseGroupSchedulingPolicy(policyJSON, localTypeValue)
-	if err != nil {
-		return nil, err
-	}
 	return &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      ownerID,
 		GroupAccessType:                gatewayruntimecache.GroupAccessTypeAuthorized,
-		GroupType:                      localTypeValue,
-		SchedulingPolicy:               localPolicy,
+		GroupType:                      normalizedType,
+		SchedulingPolicy:               policy,
 		GroupAuthorizationID:           nullStringPtr(sql.NullString{String: authorization.id, Valid: true}),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
 		GroupAuthorizationQuotaLimited: chainResourceAuthorizationQuotaLimited(authorization.limitsJSON),

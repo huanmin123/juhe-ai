@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
@@ -36,6 +37,53 @@ type gatewayusagePricingCostInput = gatewayusage.PricingCostInput
 // chainCatalogLookupTimeout bounds one synchronous catalog lookup (the usage
 // service calls this adapter inside the finalization pipeline).
 const chainCatalogLookupTimeout = 10 * time.Second
+
+// chainPricingCatalogMemoTTL / MaxEntries 是请求级定价目录的进程内短缓存：
+// 同一次 usage 收尾会连续调用 ResolvePricingModel / EstimateCost /
+// EstimateCacheReadCost / EstimateCacheWriteCost 四次，命中同一
+// (provider, systemAccount, model)。缓存 1s 只消除重复读，目录更新最多延迟
+// 1s（usage 属运营统计，2026-11-09 裁决可接受）。
+const (
+	chainPricingCatalogMemoTTL        = time.Second
+	chainPricingCatalogMemoMaxEntries = 512
+)
+
+type chainPricingCatalogMemoEntry struct {
+	item      *gatewayruntimecache.ProviderModelCatalogItem
+	expiresAt time.Time
+}
+
+type chainPricingCatalogMemo struct {
+	mu      sync.Mutex
+	entries map[string]chainPricingCatalogMemoEntry
+	now     func() time.Time
+}
+
+func newChainPricingCatalogMemo() *chainPricingCatalogMemo {
+	return &chainPricingCatalogMemo{entries: map[string]chainPricingCatalogMemoEntry{}, now: time.Now}
+}
+
+func (m *chainPricingCatalogMemo) get(key string) (*gatewayruntimecache.ProviderModelCatalogItem, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.entries[key]
+	if !ok || !m.now().Before(entry.expiresAt) {
+		if ok {
+			delete(m.entries, key)
+		}
+		return nil, false
+	}
+	return entry.item, true
+}
+
+func (m *chainPricingCatalogMemo) put(key string, item *gatewayruntimecache.ProviderModelCatalogItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.entries[key]; !exists && len(m.entries) >= chainPricingCatalogMemoMaxEntries {
+		clear(m.entries)
+	}
+	m.entries[key] = chainPricingCatalogMemoEntry{item: item, expiresAt: m.now().Add(chainPricingCatalogMemoTTL)}
+}
 
 // chainCostEstimator implements gatewayquota.CostEstimator over the runtime
 // cache model catalog (Node estimateCatalogCostUsdAsync →
@@ -98,10 +146,11 @@ func (e *chainCostEstimator) resolveCatalogPricing(ctx context.Context, provider
 // gates the synchronous surface on cacheDriver !== 'redis').
 type chainUsagePricingCatalog struct {
 	cache *gatewayruntimecache.Service
+	memo  *chainPricingCatalogMemo
 }
 
 func newChainUsagePricingCatalog(cache *gatewayruntimecache.Service) *chainUsagePricingCatalog {
-	return &chainUsagePricingCatalog{cache: cache}
+	return &chainUsagePricingCatalog{cache: cache, memo: newChainPricingCatalogMemo()}
 }
 
 // ResolvePricingModel mirrors resolveCatalogPricingModel: the matched catalog
@@ -200,6 +249,13 @@ func (c *chainUsagePricingCatalog) breakdownFor(input gatewayusagePricingCostInp
 }
 
 func (c *chainUsagePricingCatalog) findItem(providerCode, systemAccountID, model string) *gatewayruntimecache.ProviderModelCatalogItem {
+	key := strings.ToLower(strings.TrimSpace(providerCode)) + "\x00" +
+		strings.TrimSpace(systemAccountID) + "\x00" + strings.TrimSpace(model)
+	if c.memo != nil {
+		if item, ok := c.memo.get(key); ok {
+			return item
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), chainCatalogLookupTimeout)
 	defer cancel()
 	catalog, err := c.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{
@@ -209,7 +265,11 @@ func (c *chainUsagePricingCatalog) findItem(providerCode, systemAccountID, model
 	if err != nil {
 		return nil
 	}
-	return findChainCatalogItem(catalog, model)
+	item := findChainCatalogItem(catalog, model)
+	if c.memo != nil {
+		c.memo.put(key, item)
+	}
+	return item
 }
 
 // ---- catalog row → pricing.Pricing conversion ----

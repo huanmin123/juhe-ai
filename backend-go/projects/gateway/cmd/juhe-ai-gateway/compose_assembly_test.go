@@ -94,24 +94,37 @@ func TestComposeSystemAPIWiresAPIKeyHandovers(t *testing.T) {
 		return object
 	}
 
-	// M05 WithGlobalConcurrencyMax: a high-concurrency group stores the
-	// default policy projection with the configured global max.
+	// M05 WithGlobalConcurrencyMax: the configured global max lands in the
+	// legacy high_concurrency read mapping; the write face rejects the retired
+	// type (普通分组可选调度策略设计 §2.1/§5.2).
 	code, payload := do(http.MethodPost, "/__aisys__/api/groups",
 		`{"name":"hc-handover","providerCode":"gpt","groupType":"high_concurrency"}`)
-	if code != http.StatusCreated {
-		t.Fatalf("create group: %d %v", code, payload)
+	if code != http.StatusBadRequest {
+		t.Fatalf("retired type create must 400: %d %v", code, payload)
 	}
-	groupID := data(payload)["id"].(string)
-	var policyJSON string
-	if err := composed.DB.QueryRow(`SELECT scheduling_policy_json FROM juhe_business.groups WHERE id = $1`, groupID).Scan(&policyJSON); err != nil {
-		t.Fatalf("read group policy: %v", err)
+	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.groups
+		(id, system_account_id, name, enabled, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('legacy-handover', $1, 'legacy-handover', 1, 'high_concurrency',
+		'{"defaultSoftConcurrency":1234,"clientIpConcurrencyLimit":5}', NOW(), NOW())`, admin.ID); err != nil {
+		t.Fatalf("seed legacy group: %v", err)
 	}
-	var policy map[string]any
-	if err := json.Unmarshal([]byte(policyJSON), &policy); err != nil {
-		t.Fatalf("decode group policy %q: %v", policyJSON, err)
+	code, payload = do(http.MethodGet, "/__aisys__/api/groups/legacy-handover", "")
+	if code != http.StatusOK {
+		t.Fatalf("legacy group detail: %d %v", code, payload)
 	}
-	if policy["maxQueueSize"] != float64(4321) || policy["perApiKeyQueueLimit"] != float64(4321) {
-		t.Fatalf("global max handover drift: %v", policy)
+	legacyPolicy, _ := data(payload)["schedulingPolicy"].(map[string]any)
+	if legacyPolicy["defaultSoftConcurrency"] != float64(1234) || legacyPolicy["clientIpConcurrencyLimit"] != float64(5) {
+		t.Fatalf("legacy policy mapping drift: %v", legacyPolicy)
+	}
+	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.groups
+		(id, system_account_id, name, enabled, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('legacy-handover-max', $1, 'legacy-handover-max', 1, 'high_concurrency',
+		'{"defaultSoftConcurrency":4321,"clientIpConcurrencyLimit":0}', NOW(), NOW())`, admin.ID); err != nil {
+		t.Fatalf("seed legacy max boundary group: %v", err)
+	}
+	code, payload = do(http.MethodGet, "/__aisys__/api/groups/legacy-handover-max", "")
+	if code != http.StatusOK || data(payload)["schedulingPolicy"] != nil {
+		t.Fatalf("global max boundary mapping = %d %v", code, payload)
 	}
 
 	// The api-key under test.

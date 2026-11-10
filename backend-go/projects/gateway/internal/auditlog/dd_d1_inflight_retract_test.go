@@ -176,7 +176,7 @@ func TestDD1EnvelopeRegistrationReleasedOnDropAndSettle(t *testing.T) {
 
 	// (c) 终态采集从不参与在途集合。
 	settleProducer.Capture(producerTestInput("dd1-finalized"))
-	settled.waitForCalls(t, 6)
+	settled.waitForCalls(t, 5) // 首条 renew+persist+hot；第二条 TTL/3 内跳过续租
 	if settleProducer.envelopeInFlight("dd1-finalized") {
 		t.Fatal("终态采集不得登记在途集合")
 	}

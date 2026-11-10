@@ -54,6 +54,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"weak"
 
@@ -337,6 +338,21 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequestWithMemo(ctx context.
 	} else if disabled {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: probeSkippedDisabledDecision}
 	}
+	return w.insertProbeRequestRow(ctx, normalizedID, reason, traceID, sourceFence)
+}
+
+// insertProbeRequestRow 是 outbox 单行 INSERT 的落点（开关守卫之后）。
+// 异步请求失败派发 worker 直接调用它，避免每条失败请求在请求协程里等
+// INSERT；sourceFence 路径仍走同步 Enqueue，保证 codex turn 交接能确认
+// 行已落库后才返回 queued。
+func (w *chainProbeRequestOutboxWriter) insertProbeRequestRow(ctx context.Context, accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
+	normalizedID := strings.TrimSpace(accountID)
+	if normalizedID == "" {
+		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
+	}
+	if w == nil || w.db == nil || w.deadlineMS <= 0 {
+		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
+	}
 	fenceJSON := ""
 	if sourceFence != nil {
 		encoded, err := json.Marshal(sourceFence)
@@ -354,7 +370,7 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequestWithMemo(ctx context.
 			"event", "account_health_check_dispatch_unavailable", "accountId", normalizedID, "error", err)
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
-	_, err = w.db.ExecContext(ctx, w.bind(`INSERT INTO `+w.table()+`
+	_, err := w.db.ExecContext(ctx, w.bind(`INSERT INTO `+w.table()+`
 		(request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`),
 		requestID, normalizedID, strings.TrimSpace(reason), strings.TrimSpace(traceID), fenceJSON,
@@ -376,9 +392,28 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequestWithMemo(ctx context.
 // memo registry holds only weak references to requests (entries die with the
 // request object — the BUG-0339 strong-keyed shape stays forbidden);
 // otherwise this dispatcher is stateless besides the outbox writer.
+const (
+	probeDispatchQueueCapacity = 1024
+	probeDispatchInsertTimeout = 5 * time.Second
+)
+
+type chainProbeDispatchJob struct {
+	accountID string
+	reason    string
+	traceID   string
+	barrier   chan struct{}
+}
+
 type chainRequestFailureHealthDispatcher struct {
 	outbox *chainProbeRequestOutboxWriter
 	memos  chainProbeSwitchMemoRegistry
+	// queue 仅在有可用 outbox 时创建；请求失败路径把 INSERT 交给单 worker，
+	// 请求协程只做一次开关 SELECT + 非阻塞入队。sourceFence 路径（codex
+	// turn 交接）仍走同步 Enqueue，必须确认行落库后才返回 queued。
+	queue  chan chainProbeDispatchJob
+	stop   chan struct{}
+	done   chan struct{}
+	closed atomic.Bool
 }
 
 // newChainRequestFailureHealthDispatcher assembles the dispatcher over the
@@ -386,8 +421,85 @@ type chainRequestFailureHealthDispatcher struct {
 // the removed HTTP bridge there is no reachability gate, so a nil writer is
 // the only inert shape (hand-assembled tests).
 func newChainRequestFailureHealthDispatcher(outbox *chainProbeRequestOutboxWriter) *chainRequestFailureHealthDispatcher {
-	return &chainRequestFailureHealthDispatcher{
-		outbox: outbox,
+	dispatcher := &chainRequestFailureHealthDispatcher{outbox: outbox}
+	if outbox != nil && outbox.db != nil {
+		dispatcher.queue = make(chan chainProbeDispatchJob, probeDispatchQueueCapacity)
+		dispatcher.stop = make(chan struct{})
+		dispatcher.done = make(chan struct{})
+		go dispatcher.run()
+	}
+	return dispatcher
+}
+
+func (d *chainRequestFailureHealthDispatcher) run() {
+	defer close(d.done)
+	for {
+		select {
+		case <-d.stop:
+			d.drain()
+			return
+		case job := <-d.queue:
+			d.deliver(job)
+		}
+	}
+}
+
+func (d *chainRequestFailureHealthDispatcher) drain() {
+	for {
+		select {
+		case job := <-d.queue:
+			d.deliver(job)
+		default:
+			return
+		}
+	}
+}
+
+func (d *chainRequestFailureHealthDispatcher) deliver(job chainProbeDispatchJob) {
+	if job.barrier != nil {
+		close(job.barrier)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeDispatchInsertTimeout)
+	defer cancel()
+	_ = d.outbox.insertProbeRequestRow(ctx, job.accountID, job.reason, job.traceID, nil)
+}
+
+// Flush 等待已入队的请求失败探针全部落库（测试与停机排空用）。
+func (d *chainRequestFailureHealthDispatcher) Flush(ctx context.Context) error {
+	if d == nil || d.queue == nil {
+		return nil
+	}
+	if d.closed.Load() {
+		return nil
+	}
+	barrier := make(chan struct{})
+	select {
+	case d.queue <- chainProbeDispatchJob{barrier: barrier}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-barrier:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close 停止异步 INSERT worker（尽力排空后退出）。
+func (d *chainRequestFailureHealthDispatcher) Close(ctx context.Context) error {
+	if d == nil || d.queue == nil {
+		return nil
+	}
+	if d.closed.CompareAndSwap(false, true) {
+		close(d.stop)
+	}
+	select {
+	case <-d.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -406,8 +518,34 @@ func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealt
 	if req.RequestFailureHealthCheckDispatched() {
 		return false
 	}
-	outcome := d.dispatchWithMemo(d.memos.memoFor(req), accountID, chainRequestFailureReason, "", nil)
-	if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
+	normalizedID := strings.TrimSpace(accountID)
+	if normalizedID == "" {
+		return false
+	}
+	if d.queue == nil {
+		outcome := d.dispatchWithMemo(d.memos.memoFor(req), normalizedID, chainRequestFailureReason, "", nil)
+		if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
+			return false
+		}
+		req.MarkRequestFailureHealthCheckDispatched()
+		return true
+	}
+	// 开关 SELECT 保持在请求协程（关闭账户不消耗请求标记的语义不变，且单次
+	// PK 查询远轻于 INSERT）；INSERT 交给单 worker 有界队列，队列满则不标记、
+	// 由后续失败候选重试。
+	disabled, err := d.outbox.backgroundProbeDisabled(context.Background(), d.memos.memoFor(req), normalizedID)
+	if err != nil {
+		slog.Warn("健康检查派发读取后台探测开关失败，保持既有派发行为",
+			"event", "account_health_check_dispatch_flag_read_failed", "accountId", normalizedID, "error", err)
+	} else if disabled {
+		return false
+	}
+	if d.closed.Load() {
+		return false
+	}
+	select {
+	case d.queue <- chainProbeDispatchJob{accountID: normalizedID, reason: chainRequestFailureReason}:
+	default:
 		return false
 	}
 	req.MarkRequestFailureHealthCheckDispatched()

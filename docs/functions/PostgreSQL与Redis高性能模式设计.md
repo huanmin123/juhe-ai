@@ -63,7 +63,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 | --- | --- | --- |
 | `postgres` | 主事实库 | `postgres:18-alpine`，单库 `juhe_ai` 多 schema，应用直连、无 PgBouncer；compose 预置 `shared_buffers=2GB`、`effective_cache_size=4GB`。 |
 | `redis` | 缓存 + 运行态 + J3b 电路 | 单 `redis:7.4-alpine` 容器，`appendonly yes`、`maxmemory-policy=noeviction`；cache / state / J3b circuit 以 DB 编号分离，state 与 J3b 电路键空间强制分离（见配置模型）。 |
-| `gateway` | 管理面、公开面与 `/v1` 网关链 | 进程内装配 F3 审计、F4 usage spool 等 owner 包。 |
+| `gateway` | 管理面、公开面与 `/v1` 网关链 | 进程内装配 F3 审计、F4 操作日志 owner 包与 usage 直投 PG 写侧。 |
 | `jobs` | 后台任务族 | jobregistry 注册的统计聚合、保留清理、探针、OAuth 刷新等任务族。 |
 | `maintenance` | schema / seed 一次性 CLI | `juhe-ai-maintenance --ensure-schema / --seed`（`--dsn` 单形态）幂等执行。 |
 | `caddy` | HTTPS 入口 | ACME 自动续期，反代管理 SPA 与 `/v1`。 |
@@ -77,8 +77,8 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 | PostgreSQL schema | 数据域 | 主要表 |
 | --- | --- | --- |
 | `juhe_business` | 业务库 | 系统账户、会话、供应商、协议与协议档案、账号、分组、路由策略、调度偏好、安全策略、API Key、授权、代理、设置、公告、系统团队、外部来源系统、账户测试任务 / 会话、自定义模型、媒体任务 |
-| `juhe_dataset` | 数据集域 | 审计事实（`audit_logs` / `audit_log_attempts` / `audit_payload_refs` / `audit_payload_blobs` / `audit_error_groups`）、操作日志四表、`public_api_logs`、运行日志索引（`runtime_logs` / `runtime_log_file_cursors`，由 jobs 的 F1 索引器唯一写入）、模型检测三表、`api_key_record_cleanup_targets` |
-| `juhe_usage` | 使用记录域 | `usage_records`（日分区）与列表索引、账号 / API Key scope catalog |
+| `juhe_dataset` | 数据集域 | 审计事实（`audit_logs` / `audit_log_attempts` / `audit_payload_refs` / `audit_payload_blobs` / `audit_error_groups`）、操作日志四表、`public_api_logs`、运行日志索引历史表（`runtime_logs` / `runtime_log_file_cursors`，2026-11-09 起 F1 索引已下架，仅保留历史行，待生产 DROP）、模型检测三表、`api_key_record_cleanup_targets` |
+| `juhe_usage` | 使用记录域 | `usage_records`（日分区）及其列表索引；原四张 `usage_record_shard_*` 逻辑目录表已随 revision 23 删除 |
 | `juhe_stats` | 统计结果域 | 用量桶、额度窗口、范围窗口、排行、账号质量、`stats_job_state` 等预聚合结果（逐表键与口径见 [统计指标与分层聚合设计](统计指标与分层聚合设计.md)） |
 | （已随 2026-11-07 Chat bridge 退役删除）`juhe_codex_context` | 历史截面：Responses 桥接状态索引 | schema revision 20 `DROP SCHEMA ... CASCADE`（4 表 9 索引），网关不再保存 Responses 桥接状态 |
 | `juhe_jobs` / `juhe_j3b` | jobs 事实域 / J3b 模型检测 | 余额租约四表等 jobs 事实、`model_check_*` 专库表（需手工预置 schema 后由 maintenance `--apply-*` 建表） |
@@ -91,7 +91,7 @@ schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/inter
 
 - **业务库（`juhe_business`）是恢复的硬边界**，保存可恢复核心业务数据：`system_accounts` / `system_sessions`、`global_settings` / `system_settings`、`providers` / `protocols` / `protocol_endpoint_families` / `provider_protocol_profiles` / `provider_protocol_profile_families` / `proxy_profiles`、`proxy_pools` / `proxy_pool_members` / `account_proxy_leases`（代理池配置与粘性租约）、`accounts` 及其支持模型 / 模型映射 / 标签 / 测试任务 / 测试会话、`custom_provider_models`、`groups` / `group_authorization_settings` / `group_accounts` / `group_account_stats_dirty`、`route_strategies` / `route_strategy_groups`、`scheduling_preferences`、`security_policies`（API Key 安全策略实体，2026-11-07 schema revision 19 随 `api_keys.security_policy_id` 绑定列交付，表形态与调度偏好同构）、`api_keys`、`system_teams` / `system_team_members`、`resource_authorization_*` 三表、`external_integration_sources` / `external_integration_source_tokens`、`announcements` / `announcement_reads`。供应商 / 协议档案的当前清单与约束以 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) 与 [核心功能设计](核心功能设计.md) 为准；代理池表/序列/健康列以 [代理池设计](代理池设计.md) 与 maintenance DDL 为准。
 - **数据集域与统计结果域是可丢弃、可重建数据**（含使用记录分区、审计 payload blob、日志索引、统计缓存），只有离线取证时才额外停机备份；默认备份只覆盖业务库与部署配置。
-- 运行时代码不做跨 schema 的隐式耦合查询；业务写入归 gateway 唯一 owner，统计结果域写入归 jobs 串行提交，审计 / 操作日志 / 运行日志索引 / 模型检测归各自 owner（见"队列与消费并发"）。
+- 运行时代码不做跨 schema 的隐式耦合查询；业务写入归 gateway 唯一 owner，统计结果域写入归 jobs 串行提交，审计 / 操作日志 / 模型检测归各自 owner（运行日志索引已随 F1 下架）（见"队列与消费并发"）。
 - 使用记录列表由 repository 内部有界读取并稳定合并，不做全量精确 `COUNT(*)`；账户名筛选先在业务库解析账户 ID 集合，再以 `account_id IN (...)` 查明细（授权场景解析范围包含授权实例名称、来源账户名称与分组授权来源分组内账户名称，保证被授权用户按来源账户名可命中且不越权）。
 
 ### usage_records 当前形态
@@ -105,6 +105,7 @@ schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/inter
 - 清理策略：常规过期清理按统计安全游标追平后处理整日分区；已删除账号 / API Key 的关联明细小批次清理必须使用 `(created_at, id)` 命中分区，不能只按裸 `id` 删除。
 - 安全策略观测列（2026-11-07 schema revision 19 加法）：`security_policy_applied`（integer 0/1，默认 0）= 该请求实际执行了出站脱敏（绑定非默认安全策略且规则集非空，与是否命中无关）；`pii_hits_json`（text 可空）= 仅命中数 > 0 时写入，按规则 label 计数、不含任何原文。两列随分区 DDL 与幂等 ALTER 交付（`pg_schema_usage.go`），jobs `usagewriter` 落列、gateway `statreads` 读面透出，语义见 [API Key 安全策略与出站内容脱敏设计](APIKey安全策略与出站内容脱敏设计.md) §8。
 - 统计游标：`stats.stats_job_state` 继续记录按分区 / 窗口推进的游标，统计写入和游标推进在同一 PostgreSQL 事务提交。
+- 统计聚合批：行数由系统设置 `statsAggregationBatchSize` 控制（默认 2000，100..10000），单批事务硬上限 60 秒；超时回滚整批、消费水位不推进，下一轮幂等重试同一批。授权日摘要先在批内按输出行键（账户 + 日期 + 摘要键）预聚合，批末每键只写一条 UPSERT，再按排序键落库（2026-11-09）；不能改回逐记录展开，否则单批语句数会从百级回到万级。浮点成本列在批内先求和，末位可能与逐条 DB 累加不同（非精确对账数据，可忽略）。
 
 索引白名单与 collation 细节以 `backend-go/projects/maintenance/internal/schema/pg_schema_usage.go` 当前 DDL 为准。
 
@@ -192,18 +193,22 @@ AI 账户运行态探针的运行态必须跨进程可见（权威口径见 [AI 
 
 ## 队列与消费并发
 
-Go 三项目没有 Redis 任务队列（Node 时代的 Redis Streams consumer group 队列表已随迁移退役，见 git 历史）。异步链路按数据域收敛为进程内组件与文件交接：
+Go 三项目没有 Redis 任务队列（Node 时代的 Redis Streams consumer group 队列表已随迁移退役，见 git 历史）。异步链路按数据域收敛为进程内组件与 PG 直投：
 
-- usage 链路：gateway 在 `/v1` 链内通过有界异步 recorder 把用量记录交给共享 `usagewriter`（`backend-go/shared/platform/usagewriter`），后者按 16 分片直接写 PG `juhe_usage.usage_records`，入队时冻结定价目录（`usagepricing`）。2026-11-09 T188 起删除 gateway→jobs 文件 spool 交接，gateway 进程崩溃时内存队列内未落库记录会丢失（直投语义的已知取舍，队列满按采样告警计数）。
+- usage 链路：gateway 在 `/v1` 链内通过有界异步 recorder（4096 条）把用量记录交给共享 `usagewriter`（`backend-go/shared/platform/usagewriter`，队列 10k 条/64MB、1000 条/批、500ms 冲刷），后者按 16 分片直接写 PG `juhe_usage.usage_records`，入队时冻结定价目录（`usagepricing`）。**2026-11-09 用户裁决：usage_records 仅作运营统计（网关不是计费系统，数据最终会被清理），不要求严格数据一致性；异常期允许丢弃，gateway 用量路径不引入死信落盘、WAL 或文件 spool 兜底，优先保证请求速度与进程稳定。** 2026-11-09 T188 起删除 gateway→jobs 文件 spool 交接：
+  - 常规路径零 JSON 转换（`gatewayusage.UsageRecordInput` 是 writer 输入的类型别名）；
+  - 收尾队列满时生产启用 drop-on-full（`DroppedCount` + `gateway_usage_finalization_dropped` 采样日志），不反压请求；gateway 侧 writer 队列满按 `usage_record_queue_*` 采样告警丢弃并计数；进程崩溃/优雅停机超时会丢失内存队列内未落库记录（直投语义的已知取舍）；
+  - 账户 `last_used_at` 副作用在 usage 事务提交后逐账户短 UPDATE，失败忽略，不把业务账户行锁横跨整批写入；
+  - 防止挂死：目录回源 5s、单批落库 30s、队头连续失败总时长 10min、recorder 停机排空 4s、writer 停机排空 5s 均为硬上限；超时按失败批次重试/死信或随进程退出丢弃，不允许无限等待；
 - 审计与操作日志：gateway 进程内 F3 / F4 owner 包直接写入，不经队列。
-- 公开接口日志由 gateway 进程内组件写入；运行日志只写 gateway 本地 JSONL（F1 PG 索引已下架，集中检索走 ELK/Loki 外部抓取）。
+- 公开接口日志由 gateway 进程内组件写入：单批写入 10s 超时、连续 5 次失败丢弃队头批次、停机 Close 10s 有界；运行日志只写 gateway 本地 JSONL（F1 PG 索引已下架，集中检索走 ELK/Loki 外部抓取），文件路经 `processlog.AsyncWriter` 单 worker 有界队列异步落盘（队列满丢弃，停机排空上限 2s），慢盘/NFS 卡死不会阻塞请求协程；hot-search 镜像不做 fsync。
 - 后台任务族由 `jobregistry` 统一注册，lease 围栏、单持有者、固定退避语义见 `backend-go/projects/jobs/internal/jobregistry/registry.go`；低优先级清理不得阻塞关键用量与审计链路。
 
 统计聚合仍按作用域 / 分区并行读取、窗口事务写入控制，避免同一 summary key 并发 upsert 放大冲突；事实明细 append-only，不做 last-write-wins；失败重试必须指数退避并有上限，不能无限占用执行预算。
 
 ## Go 三进程分工
 
-- `gateway`（`backend-go/projects/gateway`）：管理面、公开面与 `/v1` 网关链主入口；进程内装配 F3 原始审计、F4 操作日志 owner 包和 usage 文件 spool 写入，owner lease 围栏下的审计 / 操作日志保留清理也在本进程执行。
+- `gateway`（`backend-go/projects/gateway`）：管理面、公开面与 `/v1` 网关链主入口；进程内装配 F3 原始审计、F4 操作日志 owner 包和 usage 直投 PG 写侧，owner lease 围栏下的审计 / 操作日志保留清理也在本进程执行。
 - `jobs`（`backend-go/projects/jobs`）：后台任务族执行进程，任务条目以 `internal/jobregistry/registry.go` 注册表为准（统计聚合、数据保留清理、探针任务族、OpenAI OAuth token 刷新等），每个任务显式登记 Go 绑定状态、不允许静默跳过。J3a 已由 Go `juhe-ai-jobs` 独占执行、结果投影和 `proxy_profiles` 写回。
 - `maintenance`（`backend-go/projects/maintenance`）：schema / seed 一次性 CLI，`--ensure-schema / --seed`（`--dsn` 单形态）幂等执行。
 
@@ -215,20 +220,16 @@ Go 三项目没有 Redis 任务队列（Node 时代的 Redis Streams consumer gr
 - 跨事实域强一致需求应优先收敛到同一个 PostgreSQL 事务。
 - 对 usage 明细、审计、日志、统计缓存这类异步事实链路，仍保持"事实先落库，统计后聚合"的最终一致模型。
 - 统计结果和统计游标必须同事务提交。
-- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态，不承载未落库消息（Go 无 Redis 任务队列）。原始审计和操作日志由 gateway 进程内 F3 / F4 owner 包直接写入；usage 明细经文件 spool 由 jobs 的 `usagewriter` 落库；普通运行日志只追加到 JSONL 文件，由 jobs 的 F1 索引器按持久 cursor 批量索引。事实最终以 PostgreSQL 落库为准。
+- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态，不承载未落库消息（Go 无 Redis 任务队列）。原始审计和操作日志由 gateway 进程内 F3 / F4 owner 包直接写入；usage 明细由 gateway 经共享 `usagewriter` 直投 PG；普通运行日志只追加到本地 JSONL 文件，集中检索走 ELK/Loki，不再建 PG 索引。事实最终以 PostgreSQL 落库为准。
 
 ### 使用记录批量落库锁顺序
 
-jobs 的 `usagewriter` 以批量事务把用量记录写入 PostgreSQL。`usage_records` 的唯一键保证重复投递幂等，但不能替代锁顺序：若事务先写 usage 分区的唯一索引、再按输入顺序更新多个 `juhe_business.accounts` 行，两个批次就可能分别持有 usage 索引和账户行锁，形成 `40P01` 循环等待。
+2026-11-09 起（usage_records 定性为运营统计、非计费账本），`usagewriter` 的批量事务**只写 `juhe_usage.usage_records` 及其分区元数据**，不再在事务内预锁或更新 `juhe_business.accounts`：
 
-PostgreSQL 使用记录批事务必须遵守以下边界：
-
-- 在事务外完成批次归属、价格和账户副作用的汇总，不持有数据库锁。
-- 事务开始后，先对所有将写入副作用的未删除账户执行 `ORDER BY id FOR NO KEY UPDATE`，由数据库按唯一稳定顺序获取行锁。
-- 账户行锁持有后，才写入 `juhe_usage.usage_records` 及其分区元数据，最后执行 `last_used_at` 和健康成功信号的条件更新。
-- 事务失败时整体回滚；spool 文件按 at-least-once 语义保留重试。不得以降低批量规模、关闭幂等写入或删除历史记录规避竞争。
-
-该顺序仅约束使用记录批写事务，不要求把所有账户写入路径串行化；其他账户变更仍须避免在同一事务中先持有其他互斥资源、再反向等待 usage 写入。该锁顺序在 Go `usagewriter` 的 PG 写路径中原样保留（`backend-go/shared/platform/usagewriter/store.go` 的 `ORDER BY id FOR NO KEY UPDATE` 先锁账户行、再写 usage 分区）。
+- 批事务保持短小，不持有业务账户行锁；`usage_records` 唯一键 `(created_at, id)` + `ON CONFLICT DO NOTHING` 保证重复投递幂等。
+- `accounts.last_used_at` 副作用在 usage 事务**提交后**逐账户短 UPDATE（带 `last_used_at IS NULL OR <` 条件），失败忽略、不重试整批；延迟/偶尔丢失属可接受运营误差。
+- 因此不再存在“usage 索引 + 账户行锁”跨事务 `40P01` 循环的既有前提；若未来重新把账户副作用放回事务，必须恢复 `ORDER BY id FOR NO KEY UPDATE` 的稳定锁序。
+- 事务失败时批次回滚，writer 按固定退避重试/死信；gateway 无文件 spool，jobs 溢出 spool 仅服务 jobs 自身 writer。
 
 ## PostgreSQL 调优基线
 
@@ -257,7 +258,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 
 | 数据 | 保留策略 | 统一定时清理 | 注意事项 |
 | --- | --- | --- | --- |
-| `runtime_logs` / `runtime_log_file_cursors` | 索引行默认 14 天（`runtimeLogIndexRetentionDays`，1..90），cursor 清理按最近 3 天未更新 | 是，Go F1 indexer 按各自 interval 清理 | 只删除 PG 搜索索引行，不删除后端 `.log` 文件；文件日志按 30 天 / 500 个轮转文件保留 |
+| `runtime_logs` / `runtime_log_file_cursors` | 历史索引行（F1 已于 2026-11-09 下架，不再新增；存量行保留只读，facet 重建 CLI 已删除） | 不再由 F1 定时清理 | 只影响历史 PG 索引行，不删除后端 `.log` 文件；文件日志按 30 天 / 500 个轮转文件由写侧自清理 |
 | `model_check_runs` / `model_check_items` / `model_check_observations` | 默认 30 天（`modelCheckRetentionDays`，1..365）；每账户最新 1000 条 run 由清理节拍收敛 | 是，`data-retention-cleanup` | observation / item 通过 run 外键级联删除；只保留 HMAC 桶、Token 数值和固定 8 维身份特征，不保存题面、回答正文或普通流量正文；清理按 10 分钟节拍收敛，允许节拍内单账户短暂超过 1000 条 |
 | `model_check_inputs` / `model_check_outcomes` / `model_check_execution_claims` / `model_trust_observation_receipts` / `model_check_scheduler_tasks` | 输入 / 结果 / 认领 / 回执跟随 30 天窗口；scheduler 仅清理 completed（`completed_at`）与不再重试的 failed（`due_at`）；pending 永不删除 | 是，`data-retention-cleanup` | 队列与回执无 run 外键，按各自时间列独立收敛；`account_quality_health_hourly` 跟随 `usageStatsHourlyRetentionDays`（默认 60 天，可与小时桶一并调低） |
 | 操作日志四表（`operation_logs` / `operation_log_targets` / `operation_log_viewers` / `operation_log_summary_search_terms`） | 默认 365 天，业务设置允许 1..3650 天 | 是，Go F4 owner 按独立 interval 清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除；设置不可读或非法时跳过该轮并记录错误 |
@@ -265,7 +266,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 | `audit_payload_refs` / `audit_payload_blobs` | 成功样本正文默认 3 天，问题正文默认 7 天 | 是，`data-retention-cleanup` | 先删除过期引用，再删除无引用 blob 和本地 blob 文件（`JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`） |
 | `audit_error_groups` | 默认 7 天 | 是，`data-retention-cleanup` | 只做展示和排障聚合，不替代事件记录 |
 | （已随 2026-11-07 Chat bridge 退役删除）`juhe_codex_context` 关系索引 + segments 文件 | 历史截面：固定 7 天未使用即清理 | jobs `data-retention-cleanup` 的该清理任务已随 bridge 退役删除（`cleanuprepo/codexcontext.go` 与 `JUHE_AI_CODEX_CONTEXT_ROOT` 同批移除） | 磁盘历史 `codex-context/` 目录不自动删除，升级文档要求备份后人工清理 |
-| `juhe_usage` 明细与 scope catalog | 默认 30 天在线保留（`usageRecordRetentionDays`，1..180），按统计安全游标追平后整日分区 `DETACH / DROP` | 是，`data-retention-cleanup` | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；`usageRecordOnlineRetentionDays` 等拆分设置仍是未实现提案，不按系统设置读取 |
+| `juhe_usage` 明细 | 默认 30 天在线保留（`usageRecordRetentionDays`，1..180），按统计安全游标追平后整日分区 `DETACH / DROP` | 是，`data-retention-cleanup` | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；`usageRecordOnlineRetentionDays` 等拆分设置仍是未实现提案，不按系统设置读取 |
 | 账号质量分钟桶 / 统计缓存各桶 | 分钟桶默认 48 小时；小时桶默认 60 天；日桶默认 400 天；周桶默认 104 周；月桶默认 24 个月 | 是，`data-retention-cleanup` | 快照刷新水位只读 `MAX(updated_at)`，不以全表 `COUNT(*)` 感知删除 |
 | 授权日摘要 / 热范围窗口 | 日摘要跟随日级统计保留；热窗口默认今天 / 昨天 / 最近 7 天 / 最近 31 天 / 当前月，按需窗口按 TTL 清理 | 是，`data-retention-cleanup`；刷新任务会覆盖当前窗口 | 自定义范围先登记请求再后台生成，过期窗口可重建或丢弃 |
 | 排行 / 概览 / AI 性能 / 额度窗口缓存 | 默认最近 31 天窗口或最近 30 天刷新结果；排行快照默认 30 天 | 是，`data-retention-cleanup` | API 只直读预聚合结果，不在请求时回扫明细；额度小时窗口只在用量聚合实际推进后刷新，空轮不重建 |
@@ -286,7 +287,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 
 统一清理规则：
 
-- 除 F1 / F4 专属事实外，表数据长期保留期统一由 `data-retention-cleanup` 默认每 10 分钟执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行（单轮固定 5 秒预算，预算耗尽后停止本轮留给下一轮）。F1 运行日志和 F4 操作日志分别由对应 Go owner 保留清理，其他清理器不得删除它们的专用事实。
+- 除 F4 专属事实外，表数据长期保留期统一由 `data-retention-cleanup` 默认每 10 分钟执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行（单轮固定 5 秒预算，预算耗尽后停止本轮留给下一轮）。F1 运行日志索引已下架（历史表待生产 DROP，不再新增），F4 操作日志由 gateway owner 保留清理；其他清理器不得删除 F4 专用事实。
 - 清理任务按内部常量小批次删除，固定每类表每轮最多处理 1000 条、最多 20 批，即每类数据每轮最多 2 万行；这些吞吐参数不属于系统设置，不允许用户在线调整。PostgreSQL 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。
 - 手动清理 `usage_records` 按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合消费水位保护——批次只挑「两个统计聚合器都已消费」的行（`usage_stats_aggregated_at` / `client_ip_stats_aggregated_at` 均非空），未消费的行留到下一批；没有可安全清理记录或统计游标尚未建立时拒绝并说明原因。
 - 统计聚合和审计日志落库只负责写入或聚合，不在各自流程里顺手删除历史表数据。
@@ -299,7 +300,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 - 历史覆盖门禁（DR-35）：清空统计面前比较 `MIN(juhe_usage.usage_records.created_at)` 与 `MIN(juhe_stats.usage_stats_daily.stat_date)`。若统计最早日期早于 usage_records 最旧日期（raw 只保留 30 天，统计可能更长），重建会永久丢失该段历史，命令默认拒绝（退出码 5，零副作用），报告 `rawOldest`/`statsOldest`；确认可丢弃后加 `--allow-history-loss` 才继续。该门禁不能替代备份，执行前仍应完成可恢复备份。
 - 存储形态：`--dsn <PostgreSQL URL>` 单形态（事实源 `juhe_usage.usage_records`，重建目标 `juhe_stats`，业务 schema `juhe_business` 只读）。
 - 重建语义：单事务清空 statsagg 实际写入的统计结果面（`usage_stats_*` 六桶、`usage_model_*` / `usage_error_*` / `usage_latency_*` 各五桶、`account_quality_minute_stats`、`account_health_hourly`、授权摘要 / 窗口表、`usage_rank_snapshots`、`ai_performance_summary_windows`、`usage_overview_*_windows`、`usage_model_rank_windows` / `usage_error_rank_windows`、`usage_scope_range_windows`、`usage_quota_hourly_windows` 等，执行时逐表打印；清单由防漂移守卫测试对 schema 全量分类断言）并重置 `stats_job_state` 的 `usage_stats_aggregation` 与 `usage_quota_hourly_windows_expiry` 游标行，然后从 `usage_records` 逐批重放聚合（复用 jobs `internal/statsagg` 既有口径，经 `backend-go/projects/jobs/statsrebuild` 受控导出面）；重放排干后运行全部窗口 / 排行刷新阶段，使统计缓存面一次回到与在线收敛一致的状态。业务库只读；`usage_records` 源表除统计消费水位列外只读——同一事务内会把 `usage_stats_aggregated_at` 全部归零（不归零则重放读不到任何待消费行，重建结果会是空统计面），这是本命令对源表唯一的写。
-- 吞吐与续跑：`--batch-size` 默认 2000（钳 1..50000）、`--max-batches` 默认 1000（钳 1..10000）；单轮达到批数上限时退出码 3（未完成），调大上限后再次执行本命令即可完成重建（每轮重新清空并从零重放，历史覆盖门禁仍生效）。退出码契约：0 完成（含空源）、1 运行失败、2 用法错误（含门禁拒绝）、3 未完成、4 离线校验未通过、5 历史覆盖校验未通过（需 `--allow-history-loss`）。
+- 吞吐与续跑：`--batch-size` 默认 1000（原 2000）、上限 10000（原 50000）、下限 1；`--max-batches` 默认 1000（钳 1..10000）；单轮达到批数上限时退出码 3（未完成），调大上限后再次执行本命令即可完成重建（每轮重新清空并从零重放，历史覆盖门禁仍生效）。批上限与在线聚合 job 同量级：单批事务内授权摘要已按输出行键预聚合（2026-11-09），继续放大批次只会拉长事务持锁与 WAL 窗口。退出码契约：0 完成（含空源）、1 运行失败、2 用法错误（含门禁拒绝）、3 未完成、4 离线校验未通过、5 历史覆盖校验未通过（需 `--allow-history-loss`）。
 - dirty 队列处置：`usage_overview_dirty_scopes` / `ai_performance_summary_dirty_system_accounts` 的在线消费方是两个窗口刷新 job 的同日增量轮；离线重建在同一执行内已按当前口径全量重建窗口，完成路径末尾清空标记；`usage_quota_hourly_window_dirty_scopes` 保留重放再生的标记（恢复在线后首轮额度窗口刷新消费补建）；`account_quality_dirty_accounts` 保留（gateway 账号质量刷新据此重算分数）。
 - 空源语义：`usage_records` 为空或历史记录已丢弃时明确提示"放弃历史统计重建，后续从新请求重新累计"，统计缓存面重置为空并正常完成（退出码 0）。
 
@@ -316,7 +317,7 @@ schema 初始化与默认 seed 由 `juhe-ai-maintenance --ensure-schema / --seed
 - 原始审计由 Go F3 在同一请求事务中按策略计算正文保留、压缩、去重和错误聚合，写入 `juhe_dataset` 的 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups`；网关请求链路不同步写审计表，SSE 等流式响应按终态一次签名提交。大 payload blob 由 `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` 指向的专用目录保存，PG 仅保存 blob 元数据和引用；audit payload 不参与统计 worker，不作为用量事实源。
 - 成功样本 body 不超过 `512KB` 时保存完整正文，超过后保存 `summary_only` 摘要；问题链路 body 不超过 `2MB` 时保存完整正文，超过后保存原始 hash、大小、content type、头尾 `256KB` 和文本预览。`headers_sha256` / `body_sha256` 均针对压缩前的原始字节计算；相同 `sha256 + raw_size_bytes + content_type` 的 blob 只存一份，多条事件通过 refs 引用；未完整保留正文时 `capture_status` 必须如实标记。单个请求活跃捕获上限 `64MB`。
 - 操作日志由 gateway 一次签名提交给 Go F4；F4 是 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 和 `operation_log_summary_search_terms` 的唯一 writer / reader / retention owner。只记录成功提交的状态变更，查询请求不写操作日志；提交或单条落库失败只影响追溯数据，不反向回滚已提交业务变更。字段表与脱敏 allowlist 口径见 [操作日志设计](操作日志设计.md)，审计字段表见 [原始审计日志设计](原始审计日志设计.md)。
-- 运行日志以完整 JSON Lines 写入角色日志文件并滚动清理；最近 3 天的索引查询只使用 `juhe_dataset.runtime_logs`，F1 索引器经 `runtime_log_file_cursors` 记录文件读取游标增量追新；keyword 只对 `message` 列做普通模糊匹配，未显式传时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志不使用内存或 Redis 逐行队列，不允许按级别采样、丢弃完整行或截断 `raw_json`。
+- 运行日志以完整 JSON Lines 写入 gateway 本地角色日志文件并滚动清理；2026-11-09 起 F1 PG 索引、管理页与 grep 模式全部下架，`juhe_dataset.runtime_logs` / `runtime_log_file_cursors` 不再新增，集中检索由 ELK/Loki 等外部抓取承担。文件路经 `processlog.AsyncWriter` 有界异步队列，队列满丢弃日志，不允许为日志写入阻塞业务请求。
 
 敏感字段口径（必须加密存储）：
 

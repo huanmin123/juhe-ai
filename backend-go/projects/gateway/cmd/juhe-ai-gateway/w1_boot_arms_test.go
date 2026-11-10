@@ -59,8 +59,9 @@ import (
 const w1mEvidenceEpoch = "epoch-w1m"
 
 // w1mUnreachablePostgresURL 是确定性的不可达 PG URL（端口 1 拒绝连接），
-// 顶替原「垃圾 SQLite 文件」打开失败臂的 PG 对应失败模式。
-const w1mUnreachablePostgresURL = "postgres://127.0.0.1:1/w1m_unused"
+// 顶替原「垃圾 SQLite 文件」打开失败臂的 PG 对应失败模式。connect_timeout=2
+// 让 ensure-schema 的打开失败落在场景 30s 有界等待内（默认重试会超过 30s）。
+const w1mUnreachablePostgresURL = "postgres://127.0.0.1:1/w1m_unused?connect_timeout=2"
 
 // w1mAuditRoot 为一个 owner 场景准备独立根目录：F3 审计隔离所需的 blob/hot
 // 目录与 chat-assets 根。返回根目录路径；调用方把各路径填进 env。
@@ -107,13 +108,13 @@ func w1mMainChainRedisPairs(t *testing.T) []string {
 }
 
 // w1mAuditEnvPairs 返回 F3 审计常驻启动所需的完整 env（owner 模式下审计
-// 总是先于其他组件启动，是所有 owner 场景的公共前置）。auditURL 是 F3 的
-// PG 连接串；businessURL 是 F3 只读业务设置镜像的业务库（部署契约允许镜像
-// 指向业务库本体）。
-func w1mAuditEnvPairs(t *testing.T, root, instanceID, auditURL, businessURL string) []string {
+// 总是先于其他组件启动，是所有 owner 场景的公共前置）。F3 的 PG 连接串随
+// 统一配置契约读 JUHE_AI_POSTGRES_URL（独立 AUDIT_LOG_POSTGRES_URL 键已
+// 退役，注入只会触发未登记告警）；businessURL 是 F3 只读业务设置镜像的业
+// 务库（部署契约允许镜像指向业务库本体）。
+func w1mAuditEnvPairs(t *testing.T, root, instanceID, businessURL string) []string {
 	t.Helper()
 	return []string{
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL=" + auditURL,
 		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL=" + businessURL,
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=" + filepath.Join(root, "audit-blobs"),
 		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=" + filepath.Join(root, "audit-hot"),
@@ -121,12 +122,12 @@ func w1mAuditEnvPairs(t *testing.T, root, instanceID, auditURL, businessURL stri
 	}
 }
 
-// w1mF4EnvPairs 返回 F4 常驻 owner 所需的 env；f4URL / instanceID 由调用方
-// 显式给值，供「复用同一 F4 PG 库」的租约冲突场景精确控制。
-func w1mF4EnvPairs(t *testing.T, f4URL, instanceID string) []string {
+// w1mF4EnvPairs 返回 F4 常驻 owner 所需的 env；instanceID 供「第二实例写入
+// lease 独立」的共存场景区分身份。F4 的 PG 连接串随统一配置契约读
+// JUHE_AI_POSTGRES_URL（独立 OPERATION_LOG_POSTGRES_URL 键已退役）。
+func w1mF4EnvPairs(t *testing.T, instanceID string) []string {
 	t.Helper()
 	return []string{
-		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=" + f4URL,
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=" + instanceID,
 	}
 }
@@ -270,23 +271,26 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	w1bBuildCoverBinary(t)
 	client := &http.Client{Timeout: 2 * time.Second}
 
-	// 共享 PG 库：业务库（settings/compose preflight 消费）与 F4 租约库。
+	// 共享 PG 库：业务库（settings/compose preflight 消费；统一配置契约下
+	// F3/F4 的租约与数据面都在统一库）。
 	business := w1mBusinessPostgres(t)
-	f4 := pgtestkit.NewTestDatabase(t)
 
-	// 进程 1：F4 启用 + 独立 F3 审计库 → F4 写入与 retention 各自持有 lease。
+	// 进程 1：F3/F4 实例身份各持写入 lease，retention 全局 lease 由本进程
+	// 持有（统一配置契约下独立 F3/F4 PG 库键已退役，不再分库）。
 	root1 := w1mAuditRoot(t, "m1-owner1")
-	audit1 := pgtestkit.NewTestDatabase(t)
 	healthAddr := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
 	coverageDir1 := w1bCoverageDir(t, "M1-owner-f4-private-lease")
 	env1 := w1bScenarioEnv(t, coverageDir1, append(append(
 		w1mRuntimeBaseEnvPairs(t),
-		w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1", audit1.DSN, business.DSN)...,
-	), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+		w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1", business.DSN)...,
+	), w1mF4EnvPairs(t, "w1m-f4")...)...)
 	env1 = append(env1,
 		"JUHE_AI_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr,
+		// system api 组合根恒开（M1 契约）：多实例并存时主监听必须逐进程错开，
+		// 否则第二实例抢默认 3000 失败直接退出。
+		"JUHE_AI_PORT="+strconv.Itoa(w1bFreePort(t)),
 	)
 	// F4 写入 lease + 全局 retention lease 同时装配，进程只暴露 gateway health 监听。
 	cmd1, done1, cancel1, bootStdout1, bootStderr1 := w1mStartOwnerProcess(t, coverageDir1, env1)
@@ -326,17 +330,17 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	// 新契约：写入 lease 每实例独立，进程 2 必须正常启动并写入；只有 retention
 	// 的全局 lease 被进程 1 持有，进程 2 应等待并在日志中提示接管，而不是退出。
 	root2 := w1mAuditRoot(t, "m1-owner2")
-	audit2 := pgtestkit.NewTestDatabase(t)
 	coverageDir2 := w1bCoverageDir(t, "M1-f4-retention-wait")
 	healthAddr2 := "127.0.0.1:" + strconv.Itoa(w1bFreePort(t))
 	env2 := w1bScenarioEnv(t, coverageDir2, append(append(
 		w1mRuntimeBaseEnvPairs(t),
-		w1mAuditEnvPairs(t, root2, "w1m-m1-audit-2", audit2.DSN, business.DSN)...,
-	), w1mF4EnvPairs(t, f4.DSN, "w1m-f4-rival")...)...)
+		w1mAuditEnvPairs(t, root2, "w1m-m1-audit-2", business.DSN)...,
+	), w1mF4EnvPairs(t, "w1m-f4-rival")...)...)
 	env2 = append(env2,
 		"JUHE_AI_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr2,
+		"JUHE_AI_PORT="+strconv.Itoa(w1bFreePort(t)),
 	)
 	cmd2, done2, cancel2, stdout2, stderr2 := w1mStartOwnerProcess(t, coverageDir2, env2)
 	if !w1mTryWaitHealthReady(t, client, healthAddr2, 20*time.Second) {
@@ -353,16 +357,17 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	}
 	w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-f4-retention-wait")
 
-	// 进程 3：复用进程 1 的 F3 审计 PG 库 + 换一个 audit 实例 ID。
+	// 进程 3：换一个 audit 实例 ID。
 	// F3 写入 lease 每实例独立，进程 3 正常启动；仅 retention 全局 lease 等待
 	// 进程 1 释放。health 监听显式用空闲端口。
 	coverageDir3 := w1bCoverageDir(t, "M1-f3-retention-wait")
 	healthAddr3 := "127.0.0.1:" + strconv.Itoa(w1bFreePort(t))
 	env3 := w1bScenarioEnv(t, coverageDir3, append(append(
 		w1mRuntimeBaseEnvPairs(t),
-		w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1-rival", audit1.DSN, business.DSN)...,
+		w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1-rival", business.DSN)...,
 	), "JUHE_AI_POSTGRES_URL="+business.DSN, "JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
-	env3 = append(env3, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr3)
+	env3 = append(env3, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr3,
+		"JUHE_AI_PORT="+strconv.Itoa(w1bFreePort(t)))
 	cmd3, done3, cancel3, stdout3, stderr3 := w1mStartOwnerProcess(t, coverageDir3, env3)
 	if !w1mTryWaitHealthReady(t, client, healthAddr3, 20*time.Second) {
 		cancel3()
@@ -383,59 +388,27 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// M2. 配置快速失败臂（F3/F4 OpenStore 不可达 URL、owner 侧健康监听地址非法；
-// 原 STORE=bogus 配置臂、sqlite 垃圾文件臂与 F4 迁移命令臂随存储形态/命令
-// 退役删除）
+// M2. 配置快速失败臂（owner 侧健康监听地址非法；原 F3/F4 OpenStore 不可达
+// URL 臂随统一配置契约退役删除——auditlog/operationlog LoadConfig 只读统一
+// JUHE_AI_POSTGRES_URL（internal/auditlog/config.go），独立 F3/F4 URL 键已
+// 退役且 EnsureSchema 对可达库自举（CREATE SCHEMA/TABLE IF NOT EXISTS），
+// 「独立不可达 F3/F4 URL」形态结构性不存在；统一 URL 不可达由更早的业务
+// 门臂承载，graceful 路径的 schema 初始化错误标记由 w1v2OwnerFailMarkers
+// 扫描继续覆盖。原 STORE=bogus 配置臂、sqlite 垃圾文件臂与 F4 迁移命令臂
+// 随存储形态/命令退役删除）
 // ---------------------------------------------------------------------------
 
 func TestW1MBootConfigFastFailArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 
-	t.Run("F3审计store打开不可达URL失败", func(t *testing.T) {
-		// PG 形态下 OpenStore/池 Acquire 均惰性连接，不可达 F3 URL 的确定性
-		// 失败面是 EnsureSchema 首次连库（与 W1W-f3-schema-fail 同语义）。
-		// 业务库显式给值：J3b 装配先于 F3 打开且回落业务库校验 juhe_j3b 面。
-		business := w1mBusinessPostgres(t)
-		root := w1mAuditRoot(t, "m2-f3-open")
-		coverageDir := w1bCoverageDir(t, "M2-f3-open-unreachable")
-		env := w1bScenarioEnv(t, coverageDir, append(append(
-			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-m2-b", w1mUnreachablePostgresURL, w1mUnreachablePostgresURL)...,
-		), "JUHE_AI_POSTGRES_URL="+business.DSN, "JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
-		_, stderr, code := w1bRunScenario(t, "M2-f3-open-unreachable", env)
-		w1bRequireExitCode(t, "M2-f3-open-unreachable", code, 1)
-		w1bRequireContains(t, "M2-f3-open-unreachable", stderr, "initialize F3 audit-log schema")
-	})
-
-	t.Run("F4操作日志store打开不可达URL失败", func(t *testing.T) {
-		root := w1mAuditRoot(t, "m2-f4-open")
-		audit := pgtestkit.NewTestDatabase(t)
-		business := w1mBusinessPostgres(t)
-		coverageDir := w1bCoverageDir(t, "M2-f4-open-unreachable")
-		env := w1bScenarioEnv(t, coverageDir, append(append(
-			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-m2-d", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, w1mUnreachablePostgresURL, "w1m-f4")...)...)
-		env = append(env,
-			"JUHE_AI_POSTGRES_URL="+business.DSN,
-			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
-		)
-		_, stderr, code := w1bRunScenario(t, "M2-f4-open-unreachable", env)
-		w1bRequireExitCode(t, "M2-f4-open-unreachable", code, 1)
-		// OpenStore 惰性连接后，不可达 F4 URL 的确定性失败面是 EnsureSchema。
-		w1bRequireContains(t, "M2-f4-open-unreachable", stderr, "initialize F4 operation-log schema")
-	})
-
 	t.Run("owner侧健康监听地址非法", func(t *testing.T) {
 		root := w1mAuditRoot(t, "m2-listen")
-		audit := pgtestkit.NewTestDatabase(t)
-		f4 := pgtestkit.NewTestDatabase(t)
 		business := w1mBusinessPostgres(t)
 		coverageDir := w1bCoverageDir(t, "M2-owner-bad-listen")
 		env := w1bScenarioEnv(t, coverageDir, append(append(
 			w1mRuntimeBaseEnvPairs(t),
-			w1mAuditEnvPairs(t, root, "w1m-m2-e", audit.DSN, business.DSN)...,
-		), w1mF4EnvPairs(t, f4.DSN, "w1m-f4")...)...)
+			w1mAuditEnvPairs(t, root, "w1m-m2-e", business.DSN)...,
+		), w1mF4EnvPairs(t, "w1m-f4")...)...)
 		env = append(env,
 			"JUHE_AI_POSTGRES_URL="+business.DSN,
 			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
@@ -454,61 +427,31 @@ func TestW1MBootConfigFastFailArms(t *testing.T) {
 func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 
-	t.Run("J3b配置非法", func(t *testing.T) {
+	t.Run("J3b电路运行时索引未种子", func(t *testing.T) {
+		// JUHE_AI_J3B_ENABLED/J3B_OWNER 已随常驻化退役（模型检测恒开）；
+		// 统一契约下 J3b 的确定性失败面是「主 Redis 未种子电路运行时索引」
+		// 的 owner fence 门（w1mMainChainRedisPairs 不种子索引）。业务库用
+		// fresh DDL 种子库，让前序业务门通过、失败点精确到 fence。
+		business := w1mBusinessPostgres(t)
 		coverageDir := w1bCoverageDir(t, "M3-j3b-config-bogus")
-		// 主链三连接串必填（PG+Redis 唯一形态）；补齐后失败落点精确到
-		// J3b LoadConfig 的 owner 校验臂。
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-config-bogus", w1bOwnerBaseEnv(t, coverageDir,
 			append(w1mMainChainRedisPairs(t),
-				"JUHE_AI_J3B_ENABLED=true",
-				"JUHE_AI_J3B_OWNER=notgateway")...))
+				"JUHE_AI_POSTGRES_URL="+business.DSN,
+				"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...))
 		w1bRequireExitCode(t, "M3-j3b-config-bogus", code, 1)
-		w1bRequireContains(t, "M3-j3b-config-bogus", stderr, "load J3b gateway owner config")
-	})
-
-	t.Run("J3bpostgres模式映射与业务库连接失败", func(t *testing.T) {
-		// STORE=postgres 命中 main.go 的 Postgres 模式映射臂；业务 PG URL
-		// 指向不可达地址（127.0.0.1:1），schema 校验连接即失败，不连真 PG。
-		coverageDir := w1bCoverageDir(t, "M3-j3b-pg-business-unreachable")
-		env := w1bScenarioEnv(t, coverageDir,
-			append(w1mMainChainRedisPairs(t),
-				"JUHE_AI_J3B_ENABLED=true",
-				"JUHE_AI_J3B_OWNER=gateway",
-				"JUHE_AI_J3B_INSTANCE_ID=w1m-j3b",
-				"JUHE_AI_J3B_STORE=postgres",
-				"JUHE_AI_J3B_POSTGRES_URL="+w1mUnreachablePostgresURL,
-				"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+w1mUnreachablePostgresURL,
-				"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
-				"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-				"JUHE_AI_REDIS_URL=redis://127.0.0.1:1/0",
-				"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
-		_, stderr, code := w1bRunScenario(t, "M3-j3b-pg-business-unreachable", env)
-		w1bRequireExitCode(t, "M3-j3b-pg-business-unreachable", code, 1)
-		w1bRequireContains(t, "M3-j3b-pg-business-unreachable", stderr, "open J3b Business owner connection")
+		w1bRequireContains(t, "M3-j3b-config-bogus", stderr, "account circuit runtime index is not ready")
 	})
 
 	t.Run("J3b电路运行时Redis不可达", func(t *testing.T) {
 		// 业务库用 fresh DDL 种子库，让 J3b 业务库契约校验推进到电路运行时
-		// Redis Ping 失败臂。J3b 专属库 schema 由 w1g2EnsureJ3bSchema 补建。
+		// Redis Ping 失败臂（统一配置契约下 J3b 读统一业务库，独立 J3B_* 库
+		// 键已退役）。
 		business := w1mBusinessPostgres(t)
-		j3bDB := pgtestkit.NewTestDatabase(t)
-		w1g2EnsureJ3bSchema(t, j3bDB.DB)
 		coverageDir := w1bCoverageDir(t, "M3-j3b-redis-unreachable")
 		env := w1bScenarioEnv(t, coverageDir,
 			append(w1mMainChainRedisPairs(t),
 				"JUHE_AI_POSTGRES_URL="+business.DSN,
 				"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
-				"JUHE_AI_J3B_ENABLED=true",
-				"JUHE_AI_J3B_OWNER=gateway",
-				"JUHE_AI_J3B_INSTANCE_ID=w1m-j3b",
-				"JUHE_AI_J3B_STORE=postgres",
-				"JUHE_AI_J3B_POSTGRES_URL="+j3bDB.DSN,
-				"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+business.DSN,
-				"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
-				"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-				"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
-				"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
-				"JUHE_AI_J3B_SCHEMA_READY=true",
 				"JUHE_AI_REDIS_URL=redis://127.0.0.1:1/0",
 				"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-redis-unreachable", env)

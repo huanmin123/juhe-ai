@@ -131,7 +131,8 @@ func TestChainInteractionAffinityLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder := &interactionUpstreamRecorder{}
 	upstream := newInteractionsUpstream(t, recorder)
-	keySecret := seedInteractionGeminiAccount(t, fixture, "acc_gem_int", upstream.URL)
+	// v2 直拼契约：gemini base_url 是版本根（/v1beta），入站 /v1beta 已剥除。
+	keySecret := seedInteractionGeminiAccount(t, fixture, "acc_gem_int", upstream.URL+"/v1beta")
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -199,7 +200,8 @@ func TestChainInteractionAffinityWriteFailure503(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder := &interactionUpstreamRecorder{}
 	upstream := newInteractionsUpstream(t, recorder)
-	keySecret := seedInteractionGeminiAccount(t, fixture, "acc_gem_int", upstream.URL)
+	// v2 直拼契约：gemini base_url 是版本根（/v1beta），入站 /v1beta 已剥除。
+	keySecret := seedInteractionGeminiAccount(t, fixture, "acc_gem_int", upstream.URL+"/v1beta")
 
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
 	deps.Affinity = gatewaygemini.NewInteractionAffinity(interactionAffinityFailingStore{})

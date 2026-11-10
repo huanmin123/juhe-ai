@@ -92,6 +92,14 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ```sh
 systemctl stop juhe-ai-gateway juhe-ai-jobs
 # 备份并验证可恢复（pg_dump -Fc + pg_restore -l）
+# revision 22 可选只读盘点：核对 needsReview/queueOverflow/imageLane 后再 upgrade；
+# --global-max 必须与旧 gateway 实际运行的 JUHE_AI_CONCURRENCY_GLOBAL_MAX（1-50000）一致。
+# revision 23 会在同一 upgrade 停写窗口 DROP usage shard 目录四表（不可逆）；
+# 执行前用 psql 记录四表 count(*) 并确认备份可恢复。
+/opt/juhe-ai/bin/juhe-ai-maintenance migrate-group-policy --dry-run \
+  --manifest-out /opt/juhe-ai/data/group-policy-$(date +%Y%m%d-%H%M).json \
+  --global-max "${JUHE_AI_CONCURRENCY_GLOBAL_MAX:-5000}" \
+  --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
 /opt/juhe-ai/bin/juhe-ai-maintenance upgrade \
   --dsn "$JUHE_AI_POSTGRES_URL" --secret "$JUHE_AI_SECRET" \
   --stop-write-confirmed --backup-confirmed </dev/null
@@ -119,5 +127,5 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ## 8. 日志与排障
 
 - `journalctl -u juhe-ai-gateway -f` / `journalctl -u juhe-ai-jobs -f`。
-- 文件日志在 `JUHE_AI_LOG_DIR`，由 `processlog.FileSink` 自行轮转与清理（默认最多 500 个文件 / 30 天）。
+- 文件日志在 `JUHE_AI_LOG_DIR`，由 `processlog.FileSink` 自行轮转与清理（默认最多 500 个文件 / 30 天）；文件路经 `processlog.AsyncWriter` 有界异步队列写入，队列满丢弃日志，慢盘不阻塞请求。
 - 统计恒 0：先查 gateway 日志是否有 `usage_record_delivery_failed` / `usage_record_delivery_unavailable`，再看 PG `juhe_usage.usage_records` 是否持续无新行。

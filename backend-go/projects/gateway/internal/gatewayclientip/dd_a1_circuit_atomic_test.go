@@ -35,7 +35,7 @@ func readRedisCircuitEntry(t *testing.T, server *miniredis.Miniredis, redisKey s
 }
 
 // TestDDA1RecordPreAuthFailureConcurrentNoLostUpdates：并发 30 次同 IP 记录
-//（阈值 40 之下，不截断样本）→ 最终样本数必须为 30。
+// （阈值 40 之下，不截断样本）→ 最终样本数必须为 30。
 func TestDDA1RecordPreAuthFailureConcurrentNoLostUpdates(t *testing.T) {
 	server := miniredis.RunT(t)
 	circuit, err := NewErrorCircuit(ErrorCircuitOptions{

@@ -23,6 +23,13 @@ const quizDiagnosisInstructions = `You are diagnosing one model answer against a
 // quizDiagnosisGraderNoteLimit 截断裁判 reason（留证字段不无限增长）。
 const quizDiagnosisGraderNoteLimit = 200
 
+// quizDiagnosisAnswerLimit 是提交门禁诊断回答文本的落库防御上限。该回答
+// 通过 diagnosis_json（PG text 列）落库并经 /question-bank/test 响应透出
+// 供提交者查看完整作答，与家族 evidence 的 400 rune 摘录（answerExcerpt，
+// 受存储 sanitize cap 约束）不同：回答本体受 quizMaxOutputTokens 输出预算
+// 约束，12000 rune 仅拦截异常超大输出，不再对正常回答二次截断展示。
+const quizDiagnosisAnswerLimit = 12000
+
 // QuizKeyPointResult 是诊断裁判输出的单条要点覆盖结论。
 type QuizKeyPointResult struct {
 	Point string `json:"point"`
@@ -123,7 +130,7 @@ func parseQuizDiagnosis(question QuizQuestion, answer string, grade Result, late
 	verdict, reason, _ := parseQuizVerdict(grade.Output)
 	diagnosis := QuizDiagnosis{
 		Verdict:       verdict,
-		AnswerExcerpt: answerExcerpt(answer),
+		AnswerExcerpt: truncateRunes(answer, quizDiagnosisAnswerLimit),
 		GraderNote:    truncateRunes(reason, quizDiagnosisGraderNoteLimit),
 		HTTPStatus:    grade.HTTPStatus,
 		LatencyMs:     latencyMs,

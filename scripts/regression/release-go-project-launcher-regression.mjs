@@ -462,7 +462,7 @@ function assertLauncherDropsRetiredMonitoringEnv() {
     // （gateway/gateway、jobs/jobs），launcher 不注入、不转发该 env。
   }, [
     // 2026-10-24/25 存储收口回归注入：模式开关与 store 选择族残留必须被拒转；
-    // RUNTIME_LOG_POSTGRES_URL 仍在役并原样透传。
+    // 2026-11-09 F1 下架后 JUHE_AI_RUNTIME_LOG_* 全族同样拒转。
     'JUHE_AI_DATABASE_DRIVER=postgres',
     'JUHE_AI_RUNTIME_LOG_STORE=postgres',
     'JUHE_AI_TABLE_MONITOR_STORE=postgres',
@@ -482,13 +482,12 @@ function assertLauncherDropsRetiredMonitoringEnv() {
       'JUHE_AI_TABLE_MONITOR_POSTGRES_URL',
       'JUHE_AI_DATABASE_DRIVER',
       'JUHE_AI_RUNTIME_LOG_STORE',
+      'JUHE_AI_RUNTIME_LOG_POSTGRES_URL',
       'JUHE_AI_TABLE_MONITOR_STORE'
     ]) {
       assert.equal(jobs.childEnvironment[name], undefined,
         `the retired monitoring env ${name} must not be forwarded to the jobs child`)
     }
-    assert.equal(jobs.childEnvironment.JUHE_AI_RUNTIME_LOG_POSTGRES_URL, 'postgres://runtime-log',
-      'JUHE_AI_RUNTIME_LOG_POSTGRES_URL must be forwarded to the jobs child')
   } finally {
     jobs.cleanup()
   }

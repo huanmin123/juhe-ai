@@ -154,12 +154,11 @@ const builtInProviderCodes = new Set([
   'volcengine',
   'qwen'
 ])
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：策略严格只含两键，
+// 分组类型写入面已只接受 personal。
 const mutationSchedulingPolicy = {
   defaultSoftConcurrency: 7,
-  maxQueueWaitMs: 45_000,
-  clientIpConcurrencyLimit: 3,
-  clientIpConcurrencyOverflowMode: 'queue',
-  imageLaneMaxConcurrency: 2
+  clientIpConcurrencyLimit: 3
 } as const
 
 export type SmokeEnvironment = Readonly<Record<string, string | undefined>>
@@ -234,12 +233,12 @@ interface GroupRecord {
   description?: string
   enabled: boolean
   isDefault: boolean
-  groupType: 'personal' | 'high_concurrency'
+  groupType: 'personal'
   accessType: 'owner' | 'authorized'
   accountStats: Record<string, unknown>
   permissions?: Record<string, unknown>
   updatedAt: string
-  schedulingPolicy?: Record<string, unknown>
+  schedulingPolicy?: Record<string, unknown> | null
 }
 
 interface GroupDetailRecord extends GroupRecord {
@@ -344,28 +343,13 @@ type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
 interface PublicApiLogSummary {
   id: string
   traceId?: string
-  sourceRefId?: string
   sourceName?: string
-  tokenId?: string
-  tokenName?: string
-  tokenPrefix?: string
-  isTestToken: boolean
   method: string
   path: string
-  queryString?: string
   clientIp?: string
-  userAgent?: string
   statusCode?: number
   success: boolean
   durationMs?: number
-  requestSizeBytes: number
-  responseSizeBytes: number
-  requestCaptureStatus: PublicApiLogCaptureStatus
-  responseCaptureStatus: PublicApiLogCaptureStatus
-  errorCode?: string
-  errorMessage?: string
-  startedAt: string
-  endedAt: string
   createdAt: string
 }
 
@@ -589,7 +573,7 @@ async function runReadOnlySmoke(
       config,
       'public API log detail'
     )
-    assertPublicAPILogDetail(publicAPILogDetailData, config.publicApiLogId)
+    assertPublicAPILogDetail(publicAPILogDetailData)
     publicApiLogDetailChecked = true
   }
 
@@ -1057,12 +1041,20 @@ async function runGroupMutationSmoke(
   const listedGroup = assertGroup(listedGroupValue, 'temporary group list item')
   assertTemporaryGroupIdentity(listedGroup, identity, 'temporary group list item')
   expect(listedGroup.groupType === 'personal', 'Temporary group list item must be personal before PATCH')
+  expect(
+    listedGroup.schedulingPolicy === undefined || listedGroup.schedulingPolicy === null,
+    'Temporary group list item must not carry a scheduling policy before PATCH'
+  )
   identity.ownerSystemAccountId = listedGroup.ownerSystemAccountId
 
   const detailData = await getEnvelopeData(groupDetailUrl(config, identity.id), config, 'temporary group detail')
   const detail = assertGroupDetail(detailData)
   assertTemporaryGroupIdentity(detail, identity, 'temporary group detail')
   expect(detail.groupType === 'personal', 'Temporary group detail must be personal before PATCH')
+  expect(
+    detail.schedulingPolicy === undefined || detail.schedulingPolicy === null,
+    'Temporary group detail must not carry a scheduling policy before PATCH'
+  )
 
   const patchedName = `${expectedName} updated`
   identity.cleanupNames = [expectedName, patchedName]
@@ -1076,7 +1068,6 @@ async function runGroupMutationSmoke(
         expectedUpdatedAt: detail.updatedAt,
         name: patchedName,
         description: temporaryGroupDescription,
-        groupType: 'high_concurrency',
         schedulingPolicy: mutationSchedulingPolicy
       },
       expectedStatus: 200
@@ -1098,6 +1089,18 @@ async function runGroupMutationSmoke(
   )
   const patchedDetail = assertGroupDetail(patchedDetailData)
   assertPatchedTemporaryGroup(patchedDetail, identity, patchedName, 'temporary group detail after PATCH')
+
+  // 契约验收 §7.9：废弃分组类型的写入面必须返回 400「分组类型无效」。
+  await expectResponseStatus(
+    groupDetailUrl(config, identity.id),
+    config,
+    'temporary group PATCH with retired group type',
+    {
+      method: 'PATCH',
+      body: { expectedUpdatedAt: patchedDetail.updatedAt, groupType: 'high_concurrency' },
+      expectedStatuses: [400]
+    }
+  )
 
   await expectResponseStatus(
     groupDetailUrl(config, identity.id),
@@ -1340,9 +1343,10 @@ function assertPatchedTemporaryGroup(
 ): void {
   assertTemporaryGroupIdentity(group, expected, label, [patchedName])
   expect(group.description === temporaryGroupDescription, `${label} description does not match`)
-  expect(group.groupType === 'high_concurrency', `${label} must be high_concurrency`)
+  expect(group.groupType === 'personal', `${label} must remain personal`)
   const policy = group.schedulingPolicy
   expect(isRecord(policy), `${label}.schedulingPolicy must be an object`)
+  assertTwoKeySchedulingPolicy(policy, `${label}.schedulingPolicy`)
   for (const [field, value] of Object.entries(mutationSchedulingPolicy)) {
     expect(policy[field] === value, `${label}.schedulingPolicy.${field} does not match`)
   }
@@ -1515,8 +1519,9 @@ async function expectResponseStatus(
   config: NormalizedRealGoManagementSmokeConfig,
   label: string,
   options: {
-    method: 'GET' | 'DELETE'
+    method: 'GET' | 'PATCH' | 'DELETE'
     expectedStatuses: number[]
+    body?: Record<string, unknown>
   }
 ): Promise<number> {
   const response = await sendRequest(url, config, label, options)
@@ -2078,10 +2083,27 @@ function assertExternalIntegrationSourceApiDocField(value: unknown, label: strin
   expect(isNonEmptyString(value.description), `${label}.description must be a non-empty string`)
 }
 
-function assertPublicAPILogDetail(value: unknown, expectedId: string): void {
-  const detail = assertPublicAPILogSummary(value, 'public API log detail')
-  expect(detail.id === expectedId, 'public API log detail id must match the configured id')
+function assertPublicAPILogDetail(value: unknown): void {
   expect(isRecord(value), 'public API log detail data must be an object')
+  for (const field of [
+    'sourceRefId',
+    'tokenId',
+    'tokenName',
+    'tokenPrefix',
+    'queryString',
+    'userAgent',
+    'errorCode',
+    'errorMessage'
+  ]) {
+    assertOptionalString(value, field, 'public API log detail')
+  }
+  expect(typeof value.isTestToken === 'boolean', 'public API log detail.isTestToken must be boolean')
+  expect(isNonNegativeInteger(value.requestSizeBytes), 'public API log detail.requestSizeBytes must be a non-negative integer')
+  expect(isNonNegativeInteger(value.responseSizeBytes), 'public API log detail.responseSizeBytes must be a non-negative integer')
+  expect(isPublicAPILogCaptureStatus(value.requestCaptureStatus), 'public API log detail.requestCaptureStatus must be a valid capture status')
+  expect(isPublicAPILogCaptureStatus(value.responseCaptureStatus), 'public API log detail.responseCaptureStatus must be a valid capture status')
+  expect(isNonEmptyString(value.startedAt), 'public API log detail.startedAt must be a non-empty string')
+  expect(isNonEmptyString(value.endedAt), 'public API log detail.endedAt must be a non-empty string')
   expect(isRecord(value.requestData), 'public API log detail.requestData must be a non-array object')
   expect(isRecord(value.responseData), 'public API log detail.responseData must be a non-array object')
 }
@@ -2089,22 +2111,9 @@ function assertPublicAPILogDetail(value: unknown, expectedId: string): void {
 function assertPublicAPILogSummary(value: unknown, label: string): PublicApiLogSummary {
   expect(isRecord(value), `${label} must be an object`)
   expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
-  for (const field of [
-    'traceId',
-    'sourceRefId',
-    'sourceName',
-    'tokenId',
-    'tokenName',
-    'tokenPrefix',
-    'queryString',
-    'clientIp',
-    'userAgent',
-    'errorCode',
-    'errorMessage'
-  ]) {
+  for (const field of ['traceId', 'sourceName', 'clientIp']) {
     assertOptionalString(value, field, label)
   }
-  expect(typeof value.isTestToken === 'boolean', `${label}.isTestToken must be boolean`)
   expect(isNonEmptyString(value.method), `${label}.method must be a non-empty string`)
   expect(isNonEmptyString(value.path), `${label}.path must be a non-empty string`)
   if (Object.hasOwn(value, 'statusCode')) {
@@ -2114,12 +2123,6 @@ function assertPublicAPILogSummary(value: unknown, label: string): PublicApiLogS
   if (Object.hasOwn(value, 'durationMs')) {
     expect(isNonNegativeInteger(value.durationMs), `${label}.durationMs must be a non-negative integer when present`)
   }
-  expect(isNonNegativeInteger(value.requestSizeBytes), `${label}.requestSizeBytes must be a non-negative integer`)
-  expect(isNonNegativeInteger(value.responseSizeBytes), `${label}.responseSizeBytes must be a non-negative integer`)
-  expect(isPublicAPILogCaptureStatus(value.requestCaptureStatus), `${label}.requestCaptureStatus must be a valid capture status`)
-  expect(isPublicAPILogCaptureStatus(value.responseCaptureStatus), `${label}.responseCaptureStatus must be a valid capture status`)
-  expect(isNonEmptyString(value.startedAt), `${label}.startedAt must be a non-empty string`)
-  expect(isNonEmptyString(value.endedAt), `${label}.endedAt must be a non-empty string`)
   expect(isNonEmptyString(value.createdAt), `${label}.createdAt must be a non-empty string`)
   return value as unknown as PublicApiLogSummary
 }
@@ -2583,9 +2586,9 @@ function assertGroupDetail(value: unknown): GroupDetailRecord {
   expect(isRecord(value) && Array.isArray(value.accountIds), 'group detail accountIds must be an array')
   assertStringArray(value.accountIds, 'group detail accountIds')
   expect(isRecord(value.permissions), 'group detail permissions must be an object')
-  // 详情（GroupSummary 同形）携带完整 schedulingPolicy；列表项已瘦身省略。
-  if (group.groupType === 'high_concurrency') {
-    expect(isRecord(value.schedulingPolicy), 'group detail schedulingPolicy must be an object for high_concurrency')
+  // 详情（GroupSummary 同形）携带规范化两键 schedulingPolicy 或 null；列表项已瘦身省略。
+  if (group.schedulingPolicy !== undefined && group.schedulingPolicy !== null) {
+    assertTwoKeySchedulingPolicy(group.schedulingPolicy, 'group detail schedulingPolicy')
   }
   return group as GroupDetailRecord
 }
@@ -2601,10 +2604,7 @@ function assertGroup(value: unknown, label: string): GroupRecord {
   }
   expect(typeof value.enabled === 'boolean', `${label}.enabled must be boolean`)
   expect(typeof value.isDefault === 'boolean', `${label}.isDefault must be boolean`)
-  expect(
-    value.groupType === 'personal' || value.groupType === 'high_concurrency',
-    `${label}.groupType must be personal or high_concurrency`
-  )
+  expect(value.groupType === 'personal', `${label}.groupType must be personal`)
   expect(value.accessType === 'owner' || value.accessType === 'authorized', `${label}.accessType is invalid`)
   expect(isRecord(value.accountStats), `${label}.accountStats must be an object`)
   // 列表项契约（前端 GroupListItem）已瘦身省略 permissions；详情（GroupSummary）仍提供。
@@ -2612,6 +2612,18 @@ function assertGroup(value: unknown, label: string): GroupRecord {
     expect(isRecord(value.permissions), `${label}.permissions must be an object`)
   }
   return value as unknown as GroupRecord
+}
+
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：响应只允许规范化两键。
+function assertTwoKeySchedulingPolicy(value: Record<string, unknown>, label: string): void {
+  const keys = Object.keys(value).sort()
+  expect(
+    JSON.stringify(keys) === JSON.stringify(['clientIpConcurrencyLimit', 'defaultSoftConcurrency']),
+    `${label} must contain exactly defaultSoftConcurrency/clientIpConcurrencyLimit`
+  )
+  for (const field of ['defaultSoftConcurrency', 'clientIpConcurrencyLimit'] as const) {
+    expect(Number.isInteger(value[field]), `${label}.${field} must be an integer`)
+  }
 }
 
 function assertProviderOptions(value: unknown): void {

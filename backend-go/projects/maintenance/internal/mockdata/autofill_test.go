@@ -49,7 +49,6 @@ func TestAutofillSkipReason(t *testing.T) {
 		{table: "model_check_question_tests", contains: "运行时诊断记录"},
 		{table: "audit_payload_blobs", contains: "seedObservability"},
 		{table: "operation_log_viewers", contains: "seedObservability"},
-		{table: "runtime_log_file_cursors", contains: "owner 游标族"},
 		{table: "account_health_probe_request_outbox", contains: "运行时 outbox"},
 		{table: "usage_records", contains: "seedUsage"},
 		{table: "model_check_runs", contains: "J3b"},

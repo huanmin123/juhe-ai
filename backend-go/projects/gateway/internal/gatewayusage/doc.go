@@ -18,7 +18,6 @@
 //	                                    machinery itself stays on the Node
 //	                                    writer side and is re-owned by the
 //	                                    J-F/G20 writer assembly)
-//	  usage-record-spool.ts           → spool.go
 //	backend/src/modules/gateway/audit/
 //	  capture.service.ts              → audit_capture.go
 //	  metadata.ts                     → audit_capture.go

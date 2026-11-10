@@ -139,3 +139,19 @@ func TestRunQuizDiagnosisRequiresExactlyOneQuestion(t *testing.T) {
 		}
 	}
 }
+
+// TestRunQuizDiagnosisKeepsFullAnswerForSubmissionGate 固化提交门禁回答的
+// 展示上限口径：超过家族 evidence 摘录上限（answerExcerptLimit=400）的回答
+// 在诊断结果中全文保留（AnswerExcerpt 走 quizDiagnosisAnswerLimit 兜底），
+// 前端终端展示不再出现 400 rune 截断断尾。
+func TestRunQuizDiagnosisKeepsFullAnswerForSubmissionGate(t *testing.T) {
+	answer := strings.Repeat("答", answerExcerptLimit+1)
+	transport := &quizTransport{gradeOutput: `{"verdict":"pass","reason":"对"}`, answerOutput: answer}
+	diagnosis, err := RunQuizDiagnosis(context.Background(), quizDiagnosisTestSuite(transport), time.Second)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if diagnosis.AnswerExcerpt != answer {
+		t.Fatalf("提交门禁回答必须全文保留: want %d runes, got %d runes", answerExcerptLimit+1, len([]rune(diagnosis.AnswerExcerpt)))
+	}
+}

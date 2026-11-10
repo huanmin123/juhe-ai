@@ -61,11 +61,11 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 	if summary["ownerSystemAccountId"] != adminID || summary["ownerSystemAccountName"] != "root_name" {
 		t.Fatalf("owner hydration mismatch: %v", summary)
 	}
-	if summary["groupType"] != "high_concurrency" || summary["accessType"] != "owner" {
+	if summary["groupType"] != "personal" || summary["accessType"] != "owner" {
 		t.Fatalf("type/access mismatch: %v", summary)
 	}
 	policy := summary["schedulingPolicy"].(map[string]any)
-	if policy["clientIpConcurrencyLimit"].(float64) != 9 {
+	if policy["clientIpConcurrencyLimit"].(float64) != 9 || policy["defaultSoftConcurrency"].(float64) != -1 || len(policy) != 2 {
 		t.Fatalf("scheduling policy mismatch: %v", policy)
 	}
 	permissions := summary["permissions"].(map[string]any)
@@ -118,7 +118,7 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("edit-basic: %d %v", code, payload)
 	}
 	edit := payload["data"].(map[string]any)
-	if edit["name"] != "Beta 选项组" || edit["providerCode"] != "" || edit["enabled"] != false || edit["groupType"] != "high_concurrency" {
+	if edit["name"] != "Beta 选项组" || edit["providerCode"] != "" || edit["enabled"] != false || edit["groupType"] != "personal" {
 		t.Fatalf("edit projection mismatch: %v", edit)
 	}
 	if edit["description"] != "第二个" {

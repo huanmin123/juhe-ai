@@ -113,8 +113,8 @@ func TestW0227DrainOnceSkipsUnreadableHeadAndRecovers(t *testing.T) {
 	if got := logs.countEventValue("usage_record_spool_file_read_failed", "file", locked); got != 1 {
 		t.Fatalf("read_failed 错误日志 = %d, want 1", got)
 	}
-	if len(enqueuer.inputs) != 1 || enqueuer.inputs[0].ID != "id-good" {
-		t.Fatalf("enqueued = %+v", enqueuer.inputs)
+	if enqueuer.count() != 1 || enqueuer.at(0).ID != "id-good" {
+		t.Fatalf("enqueued = %+v", enqueuer.snapshot())
 	}
 
 	// 第二轮（60s 节流窗口内）：同文件同错误不重复记录。
@@ -141,8 +141,8 @@ func TestW0227DrainOnceSkipsUnreadableHeadAndRecovers(t *testing.T) {
 	if _, statErr := os.Stat(locked); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("修复后文件未消费: %v", statErr)
 	}
-	if len(enqueuer.inputs) != 2 {
-		t.Fatalf("enqueued = %d, want 2", len(enqueuer.inputs))
+	if enqueuer.count() != 2 {
+		t.Fatalf("enqueued = %d, want 2", enqueuer.count())
 	}
 }
 

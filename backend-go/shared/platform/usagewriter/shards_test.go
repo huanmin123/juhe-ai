@@ -54,26 +54,23 @@ func TestStableShardIDDistribution(t *testing.T) {
 	}
 }
 
-func TestUsageRecordLogicalShardLocationForPostgres(t *testing.T) {
-	location, err := UsageRecordLogicalShardLocationForPostgres("usage_20260102_s007_x", "2026-01-02T00:00:00.000Z", 16)
+func TestUsageRecordShardKeyForPostgres(t *testing.T) {
+	shardKey, err := UsageRecordShardKeyForPostgres("usage_20260102_s007_x", "2026-01-02T00:00:00.000Z", 16)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Parsed ids reuse the id shard; the logical key pads to three digits.
-	if location.ShardKey != "20260102:s007" {
-		t.Fatalf("shardKey = %q", location.ShardKey)
-	}
-	if location.FilePath != "postgres:juhe_usage.usage_records:20260102:s007" {
-		t.Fatalf("filePath = %q", location.FilePath)
+	if shardKey != "20260102:s007" {
+		t.Fatalf("shardKey = %q", shardKey)
 	}
 
 	// Unparsed ids hash with the 31-multiplier polynomial.
-	location, err = UsageRecordLogicalShardLocationForPostgres("opaque", "2026-02-03T00:00:00.000Z", 16)
+	shardKey, err = UsageRecordShardKeyForPostgres("opaque", "2026-02-03T00:00:00.000Z", 16)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if location.ShardKey != "20260203:s"+FormatLogicalShardID(LogicalShardID("opaque", 16)) {
-		t.Fatalf("logical shardKey = %q", location.ShardKey)
+	if shardKey != "20260203:s"+FormatLogicalShardID(LogicalShardID("opaque", 16)) {
+		t.Fatalf("logical shardKey = %q", shardKey)
 	}
 }
 

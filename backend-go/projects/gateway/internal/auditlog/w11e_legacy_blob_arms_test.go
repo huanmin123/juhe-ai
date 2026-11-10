@@ -6,12 +6,27 @@ package auditlog
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// w11ePayloadDegraded 断言该审计记录的 payload 已降级为 hash_only 且无
+// body blob 引用（缺失/截断 blob 的降级契约）。
+func w11ePayloadDegraded(t *testing.T, implementation *sqlStore, auditLogID string) bool {
+	t.Helper()
+	var bodyBlobID, bodySHA sql.NullString
+	var captureStatus string
+	if err := implementation.db.QueryRow(`SELECT body_blob_id, body_sha256, capture_status
+		FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, auditLogID).
+		Scan(&bodyBlobID, &bodySHA, &captureStatus); err != nil {
+		t.Fatalf("读取降级 payload ref 失败: %v", err)
+	}
+	return (!bodyBlobID.Valid || bodyBlobID.String == "") && bodySHA.Valid && bodySHA.String != "" && captureStatus == string(PayloadCaptureHashOnly)
+}
 
 func TestW11ECompressAndBlobRecordArms(t *testing.T) {
 	// 小于阈值不压缩。
@@ -89,7 +104,8 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	blobPath := filepath.Join(implementation.blobDir, filepath.FromSlash(storageKey))
-	// 物理文件尺寸与元数据不一致 → 二次持久化拒绝。
+	// 物理文件尺寸与元数据不一致 → 本次 payload 降级为 hash_only，不阻塞
+	// 审计主记录（2026-11-09 去 fsync 后的降级契约）。
 	if err := os.WriteFile(blobPath, []byte("truncated"), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -98,18 +114,28 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 	second.Success = false
 	second.ErrorMessage = "w11e failure"
 	second.Payloads = first.Payloads
-	// 换 Path 拉开错误指纹：本测试只验证 blob 物理一致性臂，不得被错误组
-	// 窗口内去重（出生即降级、跳过文件校验）提前短路。
 	second.Path = "/v1/w11e-blob-second"
-	if _, err := store.Persist(ctx, lease, second); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("物理不一致必须拒绝: %v", err)
+	if _, err := store.Persist(ctx, lease, second); err != nil {
+		t.Fatalf("物理不一致应降级 payload 而非拒绝 Persist: %v", err)
 	}
-	// 元数据存在但物理文件缺失 → 拒绝伪造。
+	if !w11ePayloadDegraded(t, implementation, second.ID) {
+		t.Fatal("截断 blob 的 payload 必须降级为 hash_only")
+	}
+	// 元数据存在但物理文件缺失 → 同样降级，不阻塞后续 Persist。
 	if err := os.Remove(blobPath); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Persist(ctx, lease, second); err == nil || !strings.Contains(err.Error(), "缺少物理文件") {
-		t.Fatalf("缺失物理文件必须拒绝: %v", err)
+	third := fixture("w11e-blob-third", LifecycleFinalized)
+	third.AuditOutcome = AuditOutcomeGatewayFailed
+	third.Success = false
+	third.ErrorMessage = "w11e failure"
+	third.Payloads = first.Payloads
+	third.Path = "/v1/w11e-blob-third"
+	if _, err := store.Persist(ctx, lease, third); err != nil {
+		t.Fatalf("缺失物理文件应降级 payload 而非拒绝 Persist: %v", err)
+	}
+	if !w11ePayloadDegraded(t, implementation, third.ID) {
+		t.Fatal("缺失 blob 的 payload 必须降级为 hash_only")
 	}
 	// blob 根目录被文件占用 → 写临时文件失败。
 	if _, err := implementation.db.Exec(`DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id LIKE 'w11e-blob-%'`); err != nil {
@@ -126,7 +152,13 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	implementation.blobDir = blocker
-	if _, err := store.Persist(ctx, lease, second); err == nil {
+	blockerInput := fixture("w11e-blob-blocker", LifecycleFinalized)
+	blockerInput.AuditOutcome = AuditOutcomeGatewayFailed
+	blockerInput.Success = false
+	blockerInput.ErrorMessage = "w11e failure"
+	blockerInput.Payloads = first.Payloads
+	blockerInput.Path = "/v1/w11e-blob-blocker"
+	if _, err := store.Persist(ctx, lease, blockerInput); err == nil {
 		t.Fatal("被占用 blob 根目录必须失败")
 	}
 }

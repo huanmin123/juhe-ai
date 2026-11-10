@@ -638,18 +638,17 @@ func TestW2BUsageBridgeArms(t *testing.T) {
 		t.Fatalf("slogLogger.Error 未落日志: %s", buf.String())
 	}
 
-	// 169：spool 未启用（Enabled=false）→ Persist 恒错 → 失败计数 + 逐条告警。
-	disabledSpool := gatewayusage.NewUsageRecordSpool(gatewayusage.SpoolConfig{}, nil, nil)
-	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4, Logger: logger.inner}, disabledSpool)
+	// 169：投递器恒错 → 失败计数 + 逐条告警。
+	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4, Logger: logger.inner}, failingUsageDeliverer{})
 	if err := recorder.EnqueueUsageRecord(context.Background(), gatewayusage.UsageRecordInput{ID: "w2b-u1"}); err != nil {
 		t.Fatalf("本地路径入队失败不得上抛: %v", err)
 	}
 	recorder.Close() // 等待 drain 处理完缓冲后退出
 	if recorder.failed != 1 {
-		t.Fatalf("spool 写入失败必须计数, failed=%d", recorder.failed)
+		t.Fatalf("投递失败必须计数, failed=%d", recorder.failed)
 	}
 	if !strings.Contains(buf.String(), "usage_record_delivery_failed") {
-		t.Fatalf("spool 写入失败必须告警: %s", buf.String())
+		t.Fatalf("投递失败必须告警: %s", buf.String())
 	}
 	recorder.Close() // 184：重复 Close 幂等返回
 

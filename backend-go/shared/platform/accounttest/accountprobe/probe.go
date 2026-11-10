@@ -1186,17 +1186,6 @@ func endpointModeForUpstreamFamily(family string, streaming bool) (EndpointMode,
 	}
 }
 
-func protocolCodeForMode(mode EndpointMode) DiagnosticProtocol {
-	switch {
-	case mode.anthropic():
-		return ProtocolAnthropic
-	case mode.gemini():
-		return ProtocolGemini
-	default:
-		return ProtocolOpenAI
-	}
-}
-
 // resolveTestModel 等价 resolveAccountTestModelAsync（无显式模型分支）。
 func resolveTestModel(view *View, explicitModel string) (string, error) {
 	if explicitModel != "" {

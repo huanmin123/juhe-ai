@@ -70,6 +70,9 @@ type v1DispatchLoop struct {
 	actionVisitedGroups map[string]bool
 	enteredGroups       map[string]bool
 	fallbackSwitches    int
+	// sessionAffinityOwnerWaitBudgetMs 是请求级 owner 等待额度：跨 attempt/
+	// 回退组复用同一指针，首次按准备期剩余初始化，之后只减不增。
+	sessionAffinityOwnerWaitBudgetMs *int64
 	// exhaustedAccounts is the request-level exhausted set (Node
 	// exhaustedAccountIds, routes.ts:568): every non-recoverable failed
 	// account of an UpstreamAttemptError enters it, and switchToFallbackGroup
@@ -555,20 +558,39 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		// 本轮上游派发起点：引擎调用单点在循环体内，每轮刷新（含回退分组
 		// 切换后的下一轮），供耗尽埋点的阶段起点口径使用。
 		l.roundStartedAtMs = time.Now().UnixMilli()
+		// owner 等待额度跨 attempt 复用：首次按当前准备期剩余初始化，后续
+		// attempt 若名额等待已消耗更多则收紧，但已于本次请求消耗的额度不回增。
+		if l.sessionAffinityOwnerWaitBudgetMs == nil {
+			budget := gatewaydispatch.SessionAffinityOwnerWaitBudget(
+				l.c.engine.Config.SessionAffinityOwnerWaitBudgetMs,
+				current.SessionAffinityWaitPlanned,
+				current.SessionAffinityWaitRemainingMs,
+			)
+			l.sessionAffinityOwnerWaitBudgetMs = &budget
+		} else if current.SessionAffinityWaitPlanned && current.SessionAffinityWaitRemainingMs < *l.sessionAffinityOwnerWaitBudgetMs {
+			*l.sessionAffinityOwnerWaitBudgetMs = current.SessionAffinityWaitRemainingMs
+		}
 		// codex 压缩 SSE 的派发等待期保活（Node routes.ts:1229-1239）：fetch
 		// 前挂 10s compaction 保活心跳，fetch 返回（等待期结束）即停。
 		l.startCompactSseWaitHeartbeat(ctx, current)
 		dispatched, dispatchErr := l.c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
-			Req:                             l.req,
-			Accounts:                        dispatchAccounts,
-			Settings:                        current.ActiveGatewaySettings,
-			UsageContext:                    current.UsageContext,
-			AuditCapture:                    l.c.engineAuditCapture(l.auditCapture),
-			SessionAffinityKey:              current.SessionAffinityKey,
-			GroupAffinityKey:                current.GroupAffinityKey,
-			RouteStrategyID:                 current.RouteStrategyID,
-			Signal:                          ctx,
-			ClientIPAccountAvoidanceTracker: current.ClientIPAccountAvoidance,
+			Req:                              l.req,
+			Accounts:                         dispatchAccounts,
+			Settings:                         current.ActiveGatewaySettings,
+			UsageContext:                     current.UsageContext,
+			AuditCapture:                     l.c.engineAuditCapture(l.auditCapture),
+			SessionAffinityKey:               current.SessionAffinityKey,
+			SessionAffinityOwnerAccountID:    current.SessionAffinityOwnerAccountID,
+			SessionAffinityOwnerBusy:         current.SessionAffinityOwnerBusy,
+			SessionAffinityOwnerSoftBusy:     current.SessionAffinityOwnerSoftBusy,
+			SessionAffinitySlotFallback:      current.SessionAffinitySlotFallback,
+			SessionAffinityWaitPlanned:       current.SessionAffinityWaitPlanned,
+			SessionAffinityWaitRemainingMs:   current.SessionAffinityWaitRemainingMs,
+			SessionAffinityOwnerWaitBudgetMs: l.sessionAffinityOwnerWaitBudgetMs,
+			GroupAffinityKey:                 current.GroupAffinityKey,
+			RouteStrategyID:                  current.RouteStrategyID,
+			Signal:                           ctx,
+			ClientIPAccountAvoidanceTracker:  current.ClientIPAccountAvoidance,
 			// B1 记账回调（调度慢失败直切与墙钟收尾修复设计 §3）：从请求级来源
 			// 避让 tracker 构造；tracker 缺席或探针/诊断流量返回 nil（不记账）。
 			RememberUpstreamAttemptFailure: l.clientIPAccountAvoidanceRememberFunc(current),
@@ -1371,7 +1393,7 @@ func superTargetClassificationFromReason(reason string) string {
 		return superTargetUpstreamExhausted
 	case "no_candidate_accounts", "all_accounts_cooldown":
 		return superTargetNoCandidate
-	case "authorization_quota_exceeded", "high_concurrency_group_busy", "group_capacity_busy":
+	case "authorization_quota_exceeded", "group_capacity_busy":
 		return superTargetCapacityExhausted
 	}
 	return ""
@@ -2149,6 +2171,16 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 	// 消费。nil = 无组亲和键（范围外）/ 端口未装配。
 	if dispatched.ConfirmGroupAffinity != nil {
 		dispatched.ConfirmGroupAffinity()
+	}
+	// 账户亲和同层 latch（设计 §5.5）：最终协议成功刷新 30 分钟 lease；owner
+	// 变化且本请求容量拒绝 + 同层时 CAS 重绑到成功账户。组 → 账户 → Key 顺序；
+	// 失败只告警，不改写已完成响应。
+	if dispatched.ConfirmSessionAffinityRebind != nil {
+		dispatched.ConfirmSessionAffinityRebind()
+	}
+	// 会话名额（P1）：账户重绑后写入成功账户名额并释放旧名额；失败只告警。
+	if dispatched.ConfirmSessionAffinitySlot != nil {
+		dispatched.ConfirmSessionAffinitySlot()
 	}
 	// 账户内 Key 会话亲和（设计 §6）：最终协议成功把本尝试选中的上游 Key 指纹
 	// 写回现存同 owner 会话绑定；nil = 无会话键 / 无选中指纹 / 端口未装配。

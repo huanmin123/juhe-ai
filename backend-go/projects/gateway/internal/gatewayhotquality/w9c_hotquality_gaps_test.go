@@ -6,7 +6,6 @@ import (
 	"math"
 	"strings"
 	"testing"
-	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
@@ -47,8 +46,8 @@ func TestW9CGetGatewayHotQualityRuntimeRedisDriver(t *testing.T) {
 	ctx := context.Background()
 	url := "redis://" + server.Addr()
 	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RedisURL:      url,
-		RedisNamespace:     "w9c-redis",
+		RedisURL:       url,
+		RedisNamespace: "w9c-redis",
 	})
 	if err != nil {
 		t.Fatalf("redis runtime must build against miniredis: %v", err)
@@ -58,8 +57,8 @@ func TestW9CGetGatewayHotQualityRuntimeRedisDriver(t *testing.T) {
 	}
 	// Same identity returns the cached pair.
 	cached, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RedisURL:      url,
-		RedisNamespace:     "w9c-redis",
+		RedisURL:       url,
+		RedisNamespace: "w9c-redis",
 	})
 	if err != nil || cached != runtime {
 		t.Fatalf("cached runtime must be reused: %v", err)
@@ -353,28 +352,4 @@ func TestW9CExplorationRedisSettleAndBadReplies(t *testing.T) {
 	if err != nil || state == nil || state.PoolKey != "pool" || state.Credit != 1 {
 		t.Fatalf("get = %+v, %v", state, err)
 	}
-}
-
-func TestW9CBodyAdmissionSetClockAndClear(t *testing.T) {
-	registry := NewSpeedFirstBodyAdmissionRegistry()
-	fakeStart := time.UnixMilli(5_000_000)
-	registry.SetClock(func() time.Time { return fakeStart })
-	registry.SetClock(nil) // nil must keep the injected clock.
-
-	ctx := context.Background()
-	decision := registry.Acquire(ctx, SpeedFirstBodyAdmissionInput{
-		SystemAccountID: "sys-w9c", RouteStrategyID: "w9c-route", GroupID: "grp", APIKeyID: "key", Capacity: 1,
-	})
-	if !decision.Acquired {
-		t.Fatalf("first acquire must pass: %+v", decision)
-	}
-	if len(registry.Snapshot()) != 1 {
-		t.Fatalf("snapshot = %+v", registry.Snapshot())
-	}
-	registry.ClearForTest()
-	if len(registry.Snapshot()) != 0 {
-		t.Fatal("ClearForTest must drop all states")
-	}
-	// ClearForTest on an empty registry stays a no-op.
-	registry.ClearForTest()
 }

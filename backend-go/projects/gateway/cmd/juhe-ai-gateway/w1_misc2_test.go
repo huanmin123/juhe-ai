@@ -45,8 +45,8 @@ func TestW1RoutingProjections(t *testing.T) {
 	badPolicy := projected
 	badPolicy.SchedulingPolicy = "speed_first"
 	badBack := projectGroupAccessForRuntime(badPolicy)
-	if badBack.SchedulingPolicy == nil {
-		t.Fatal("非法策略 JSON 必须回落偏好结构")
+	if badBack.SchedulingPolicy != nil {
+		t.Fatalf("非法策略 JSON 必须保持 nil: %+v", *badBack.SchedulingPolicy)
 	}
 	// 账户投影：路由层只带身份与支持模型。
 	account := projectAccountForRouting(gatewayruntimecache.OpenAIAccountSecret{

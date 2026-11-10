@@ -1,7 +1,7 @@
 package main
 
 // w1: compose.go / chain_compose.go 的组合根小适配器直测（K5 失效总线桥、
-// 设置源、日志桥、spool 溢出、body 拒绝记录器的门控路径）。
+// 设置源、日志桥、body 拒绝记录器的门控路径）。
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
 
@@ -82,16 +81,12 @@ func TestW1BusInvalidatorAdapters(t *testing.T) {
 	}
 }
 
-func TestW1GatewaybodyLoggerAndSpoolOverflow(t *testing.T) {
+func TestW1GatewaybodyLogger(t *testing.T) {
 	logger := gatewaybodyLogger{inner: slog.Default()}
 	logger.Debug("d", map[string]any{"k": "v"})
 	logger.Info("i", nil)
 	logger.Warn("w", map[string]any{})
 	logger.Error("e", map[string]any{"k": 1})
-	// spoolOverflow：nil spool 吞掉；有 spool 透传。
-	if err := (spoolOverflow{}).PersistOverflow(gatewayusage.Ctx(context.Background()), gatewayusage.UsageRecordInput{}); err != nil {
-		t.Fatalf("nil spool 必须成功: %v", err)
-	}
 }
 
 func TestW1ChainBodyRejectionRecorderGated(t *testing.T) {

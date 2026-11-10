@@ -109,19 +109,6 @@ func queryRows(ctx context.Context, q interface {
 	return output, rows.Err()
 }
 
-func queryOne(ctx context.Context, q interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, query string, args ...any) (*row, error) {
-	rows, err := queryRows(ctx, q, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	return &rows[0], nil
-}
-
 func execChangedQ(ctx context.Context, q interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, query string, args ...any) (int64, error) {

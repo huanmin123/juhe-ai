@@ -29,7 +29,7 @@
 - API Key 并列绑定路由策略与调度偏好：路由策略只负责路由拓扑（路由模式与分组绑定）；调度偏好自 v1 起为独立实体与独立菜单，内置「对话·成本优先」行不可删改；分组协调 AI 账户；AI 账户和供应商管理真实上游语义。路由拓扑配置是会话盲的；组级会话黏性（[策略路由分组会话亲和设计](docs/functions/策略路由分组会话亲和设计.md)）是网关在策略拓扑之内的软调度偏好，与账户亲和同级，不改配置面。
 - 普通路由只绑定一个分组；权重、故障回退和轮询规则由策略路由维护。路由目标可以是普通分组或超级分组（[超级分组设计](docs/functions/超级分组设计.md)）：超级分组属于分组域，把多个普通分组组合成一个分组目标，不新增路由模式。
 - 客户端画像由网关内部自动识别，不作为 API Key、路由策略、分组或普通 AI 账户的用户配置项。
-- 跨协议只保留 OpenAI v1 Responses → Chat Completions 的账户级模型别名 bridge；混合供应商、openai 兼容与 generic_http 已退役，不写成 API Key 或路由策略里的显式协议桥接规则。
+- 跨协议映射已退役：账户入口映射强制同族（`source_endpoint_family = target_endpoint_family`），只保留 7 个协议等价 pair（含 Gemini `stream_generate_content → generate_content` 同族归一例外）；混合供应商、`openai` 兼容与 `generic_http` 已退役，不写成 API Key 或路由策略里的显式协议桥接规则。
 
 ## 本地管理页面测试
 

@@ -223,7 +223,24 @@ func (f *fakeHotQuality) ReorderOnly(ctx context.Context, input HotQualityOrderI
 type fakeAffinity struct {
 	remembered []string
 	forgotten  []string
-	busy       bool
+	rebinds    []affinityRebindCall
+}
+
+type affinityRebindCall struct {
+	sessionAffinityKey string
+	expectedOwner      string
+	newOwner           string
+	scope              AffinityScope
+}
+
+func (f *fakeAffinity) RebindAsync(ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, scope AffinityScope) bool {
+	f.rebinds = append(f.rebinds, affinityRebindCall{
+		sessionAffinityKey: sessionAffinityKey,
+		expectedOwner:      expectedOwner,
+		newOwner:           newOwner,
+		scope:              scope,
+	})
+	return true
 }
 
 func (f *fakeAffinity) OrderAsync(ctx context.Context, accounts []AccountCandidate, sessionAffinityKey string, options AffinityOrderingOptions) ([]AccountCandidate, error) {
@@ -248,16 +265,6 @@ func (f *fakeAffinity) StickyApiKeyFingerprintAsync(ctx context.Context, session
 }
 
 func (f *fakeAffinity) RememberApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID, upstreamApiKeyFingerprint string) {
-}
-
-func (f *fakeAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error) {
-	return f.busy, nil
-}
-
-type fakeQueue struct{}
-
-func (f *fakeQueue) WaitForCapacity(ctx context.Context, input HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	return QueueWaitResult{Ready: true}, nil
 }
 
 type fakeClientIPConcurrency struct{}
@@ -439,7 +446,6 @@ func newTestEngine(t *testing.T) (*Engine, *fakeDriver, *fakeFailureDispatcher) 
 	engine.ClientSourceAvoidance = &fakeClientSourceAvoidance{}
 	engine.HotQuality = &fakeHotQuality{}
 	engine.Affinity = &fakeAffinity{}
-	engine.HighConcurrencyQueue = &fakeQueue{}
 	engine.ClientIPConcurrency = &fakeClientIPConcurrency{}
 	engine.Quota = &fakeQuota{}
 	engine.Concurrency = &fakeConcurrencyStore{}

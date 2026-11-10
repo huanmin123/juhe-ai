@@ -10,8 +10,6 @@ import (
 	"testing"
 )
 
-// seedMediaUsageShard 建一个含媒体计量列的 usage shard 并注册 catalog。
-
 func TestAccountUsageSummaryMediaMeteringFields(t *testing.T) {
 	fixture := newFixture(t)
 	if _, err := fixture.db.Exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,

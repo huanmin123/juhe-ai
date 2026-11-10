@@ -11,12 +11,10 @@ type scriptedApiKeyRetryer struct {
 	summary PendingCleanupSummary
 	err     error
 	limits  []int
-	writers []StatsWriter
 }
 
-func (s *scriptedApiKeyRetryer) CleanupPendingTargets(_ context.Context, limit int, statsWriter StatsWriter) (PendingCleanupSummary, error) {
+func (s *scriptedApiKeyRetryer) CleanupPendingTargets(_ context.Context, limit int) (PendingCleanupSummary, error) {
 	s.limits = append(s.limits, limit)
-	s.writers = append(s.writers, statsWriter)
 	return s.summary, s.err
 }
 
@@ -24,12 +22,10 @@ type scriptedAccountRetryer struct {
 	summary PendingCleanupSummary
 	err     error
 	limits  []int
-	writers []StatsWriter
 }
 
-func (s *scriptedAccountRetryer) CleanupPendingTargets(_ context.Context, limit int, statsWriter StatsWriter) (PendingCleanupSummary, error) {
+func (s *scriptedAccountRetryer) CleanupPendingTargets(_ context.Context, limit int) (PendingCleanupSummary, error) {
 	s.limits = append(s.limits, limit)
-	s.writers = append(s.writers, statsWriter)
 	return s.summary, s.err
 }
 

@@ -17,8 +17,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

@@ -416,8 +416,9 @@ tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"
 mv "$TMP_START_SCRIPT" "$PACKAGE_ROOT/start.sh"
 chmod +x "$PACKAGE_ROOT/start.sh"
 
-# Node backend 已归档（X02）：发布物为 go-only 形态（校验器缺省即 go-only）。
-node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"
+# Node backend 已归档（X02）：发布物为 go-only 形态；显式传 --deploy-mode=go
+# 与 validate-release-source-preflight 门禁一致，防止校验器缺省值漂移。
+node "$VALIDATOR_PATH" --quiet --deploy-mode=go "$PACKAGE_ROOT"
 
 if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   echo "==> Creating tar.gz archive"

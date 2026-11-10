@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   last_error_code TEXT,
   last_error_message TEXT,
   credentials_encrypted TEXT NOT NULL DEFAULT '{}',
+  proxy_profile_id TEXT,
+  proxy_pool_id TEXT,
   authorization_instance_authorization_id TEXT,
   authorization_instance_source_account_id TEXT,
   authorization_instance_owner_system_account_id TEXT,
@@ -130,6 +132,47 @@ CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (
   limits_json TEXT,
   effective_source_type TEXT,
   effective_source_team_id TEXT
+);
+CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
+  id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  type TEXT NOT NULL DEFAULT '',
+  host TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 0,
+  username TEXT,
+  password_encrypted TEXT,
+  pool_health_status TEXT NOT NULL DEFAULT 'healthy',
+  pool_health_failure_streak INTEGER NOT NULL DEFAULT 0,
+  pool_health_checked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS juhe_business.proxy_pools (
+  id TEXT PRIMARY KEY,
+  system_account_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  strategy TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS juhe_business.proxy_pool_members (
+  pool_id TEXT NOT NULL,
+  proxy_profile_id TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  weight INTEGER NOT NULL DEFAULT 1,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (pool_id, proxy_profile_id)
+);
+CREATE TABLE IF NOT EXISTS juhe_business.account_proxy_leases (
+  account_id TEXT PRIMARY KEY,
+  pool_id TEXT NOT NULL,
+  proxy_profile_id TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 1,
+  assignment_reason TEXT NOT NULL DEFAULT 'initial',
+  assigned_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 `
 

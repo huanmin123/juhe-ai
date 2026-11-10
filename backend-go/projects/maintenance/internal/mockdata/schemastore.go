@@ -10,10 +10,10 @@ import (
 // 造数域 → schema 的唯一映射。全部 SQL 全限定 schema；属主表（gateway/jobs
 // 运行时建表）只探测不复制 DDL。
 const (
-	SchemaBusiness     = "juhe_business"
-	SchemaUsage        = "juhe_usage"
-	SchemaStats        = "juhe_stats"
-	SchemaDataset      = "juhe_dataset"
+	SchemaBusiness = "juhe_business"
+	SchemaUsage    = "juhe_usage"
+	SchemaStats    = "juhe_stats"
+	SchemaDataset  = "juhe_dataset"
 	// SchemaJ3B 是 J3b 模型检测专库：由 j3bmodelcheck 的受控 bootstrap 建表，
 	// schema 本体缺失时记 OwnerStoresPending 而不是失败。
 	SchemaJ3B = "juhe_j3b"
@@ -78,7 +78,6 @@ type ownerStore struct {
 var ownerStores = []ownerStore{
 	{Key: "audit_log", Domain: DomainObservability, Schema: SchemaDataset, Tables: []string{"audit_logs"}},
 	{Key: "operation_log", Domain: DomainObservability, Schema: SchemaDataset, Tables: []string{"operation_logs"}},
-	{Key: "runtime_log", Domain: DomainObservability, Schema: SchemaDataset, Tables: []string{"runtime_logs"}},
 	{Key: "model_check", Domain: DomainChatCodexModelCheck, Schema: SchemaJ3B, Tables: []string{"model_check_runs", "model_check_observations"}},
 	{Key: "account_health", Domain: DomainChatCodexModelCheck, Schema: SchemaJobs, Tables: []string{"account_health_outcomes"}},
 }
@@ -184,7 +183,7 @@ type fkEdge struct {
 // 顺序稳定（同层级按 schema + 名字排序）。
 //
 // 属主哨兵表（schemastore 的 ownerStores）若落在 maintenance schema 内
-// （juhe_dataset 的 audit_logs / operation_logs / runtime_logs），造数会写入
+// （juhe_dataset 的 audit_logs / operation_logs），造数会写入
 // 它们，清理节点集也显式包含：表不存在时由 cleanupTable 记入 skipped（首次
 // 运行的属主缺失场景）。juhe_j3b / juhe_jobs 等非 maintenance schema 的属主
 // 不是造数写入面，不参与清理。

@@ -107,14 +107,6 @@ func (f *fakeStatsWriter) CleanupNonBusinessStatsData(_ context.Context, cutoffA
 	return NonBusinessDataCleanupCounts{CutoffAt: cutoffAt, TableRows: map[string]int64{}, FileDeletes: map[string]int64{}}, nil
 }
 
-func (f *fakeStatsWriter) CleanupDeletedApiKeyRecordStats(context.Context, DeletedApiKeyRecordStatsCleanupInput) error {
-	return nil
-}
-
-func (f *fakeStatsWriter) CleanupDeletedAccountRecordStats(context.Context, DeletedAccountRecordStatsCleanupInput) error {
-	return nil
-}
-
 func (f *fakeStatsWriter) UpsertAccountUsageSnapshots(context.Context, []AccountUsageSnapshotUpsertInput) error {
 	return nil
 }
@@ -126,13 +118,12 @@ type fakeDbService struct {
 	sessionCalls    int
 	sessionsErr     error
 
-	chatErr    error
+	chatErr error
 
 	expiredSummary *ExpiredDeletedAccountSummary
 	expiredErr     error
 	expiredCalls   int
 }
-
 
 func (f *fakeDbService) CleanupExpiredSystemSessions(_ context.Context, expiredBefore string, _ int) (int64, error) {
 	f.mutex.Lock()
@@ -149,8 +140,6 @@ func (f *fakeDbService) CleanupExpiredSystemSessions(_ context.Context, expiredB
 	return deleted, nil
 }
 
-
-
 func (f *fakeDbService) CleanupExpiredDeletedAccounts(context.Context) (*ExpiredDeletedAccountSummary, error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -160,7 +149,6 @@ func (f *fakeDbService) CleanupExpiredDeletedAccounts(context.Context) (*Expired
 	}
 	return f.expiredSummary, nil
 }
-
 
 type fakeEnqueuer struct {
 	mutex    sync.Mutex

@@ -186,17 +186,17 @@ func TestW1ComposeReadsDepsMountArms(t *testing.T) {
 	// runtime 索引保留天数契约：先写入一个脏设置，随后读取族挂载的
 	// 闭包会在第一次运行时对 14 天默认值做解析（settings 失败回退）。
 	seedSystemSettings(t, composed.DB)
-	// X04 读取族（audit/runtime/public）已挂载：/runtime-logs 应答 401
+	// X04 读取族（audit/public）已挂载：/public-api-logs 应答 401
 	//（未认证）而不是 404——路由存在但被测面未登录。
 	server := httptest.NewServer(composed.Kernel)
 	defer server.Close()
-	response, err := http.Get(server.URL + "/__aisys__/api/runtime-logs")
+	response, err := http.Get(server.URL + "/__aisys__/api/public-api-logs")
 	if err != nil {
-		t.Fatalf("runtime-logs 请求 = %v", err)
+		t.Fatalf("public-api-logs 请求 = %v", err)
 	}
 	_ = response.Body.Close()
 	if response.StatusCode == http.StatusNotFound {
-		t.Fatal("runtime-logs 必须已挂载（401 而非 404）")
+		t.Fatal("public-api-logs 必须已挂载（401 而非 404）")
 	}
 }
 

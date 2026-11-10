@@ -98,44 +98,45 @@ type taskUnit struct {
 }
 
 // FinalizationDispatch is the write-delivery pipeline: bounded admission
-// queue + overflow spool + the UsageRecorder port. It mirrors
-// dispatchUsageRecord (records.ts) composed with
-// dispatchGatewayUsageFinalization (failure-finalization.service.ts).
+// queue + the UsageRecorder port. It mirrors dispatchUsageRecord (records.ts)
+// composed with dispatchGatewayUsageFinalization
+// (failure-finalization.service.ts).
 type FinalizationDispatch struct {
 	queue    *GatewayUsageFinalizationQueue
 	recorder UsageRecorder
-	// overflow ports persistUsageRecordForQueueOverflow; only consulted in
-	// performance mode (OverflowEnabled).
-	overflow        DispatchOverflowSpool
-	OverflowEnabled bool
-	clock           Clock
-	logger          Logger
+	clock    Clock
+	logger   Logger
 }
 
 // NewFinalizationDispatch wires the pipeline over the recorder port. maxItems /
 // maxConcurrency <= 0 fall back to the Node defaults
 // (usageFinalizationMaxItems 2048, concurrency.globalMax 5000 via
 // JUHE_AI_CONCURRENCY_GLOBAL_MAX).
-func NewFinalizationDispatch(recorder UsageRecorder, overflow DispatchOverflowSpool, maxItems int, maxConcurrency int) *FinalizationDispatch {
+func NewFinalizationDispatch(recorder UsageRecorder, maxItems int, maxConcurrency int) *FinalizationDispatch {
 	queue := NewGatewayUsageFinalizationQueue(maxItems, maxConcurrency)
 	return &FinalizationDispatch{
 		queue:    queue,
 		recorder: recorder,
-		overflow: overflow,
 		clock:    SystemClock{},
 	}
 }
 
+// EnableDropOnFull 是生产 gateway 的组合策略：usage 收尾队列满时直接丢弃
+// 并计数，不反压请求协程（运营统计可丢，2026-11-09 用户裁决）。
+func (d *FinalizationDispatch) EnableDropOnFull() { d.queue.EnableDropOnFull() }
+
+// WithLogger 注入收尾队列的丢弃/失败日志端口。
+func (d *FinalizationDispatch) WithLogger(logger Logger) *FinalizationDispatch {
+	d.queue.WithLogger(logger)
+	return d
+}
+
 // DispatchUsageRecord mirrors dispatchUsageRecord: admit
-// enqueueUsageRecord(input) with the byte budget, spooling on overflow when
-// the performance-mode overflow factory is configured.
+// enqueueUsageRecord(input) with the byte budget.
 //
 // 使用日志抑制（AI 问答免 Key 直调内部通道 §3.1）：抑制记录在这里丢弃，而不是
-// 只交给 recorder 的 EnqueueUsageRecord——本函数有两条投递臂（正常入队 task
-// 与队列满时的 overflowFactory），后者直接落 spool、不经过 recorder，只在
-// recorder 处设闸会让抑制记录在队列积压时逃逸（且 SuppressUsage 标记不序列化，
-// jobs 侧读回后无法识别，会按普通记录写 usage_records）。闸口设在本入口，
-// 两条臂都覆盖，是全部 usage 写入面的唯一持久化闸口。
+// 只交给 recorder 的 EnqueueUsageRecord——recorder 入口另有第二道闸，但本入口
+// 是全部 usage 写入面（含绕过 finalization 的直投路径）的唯一持久化闸口。
 func (d *FinalizationDispatch) DispatchUsageRecord(ctx Ctx, input UsageRecordInput, bytes int) error {
 	if input.SuppressUsage {
 		return nil
@@ -143,13 +144,7 @@ func (d *FinalizationDispatch) DispatchUsageRecord(ctx Ctx, input UsageRecordInp
 	task := func(ctx Ctx) error {
 		return d.recorder.EnqueueUsageRecord(ctx, input)
 	}
-	var overflowFactory func(Ctx) error
-	if d.OverflowEnabled && d.overflow != nil {
-		overflowFactory = func(ctx Ctx) error {
-			return d.overflow.PersistOverflow(ctx, input)
-		}
-	}
-	return d.queue.Dispatch(ctx, task, bytes, overflowFactory)
+	return d.queue.Dispatch(ctx, task, bytes)
 }
 
 // WaitForIdle mirrors waitForGatewayFailureUsageFinalizationsIdle.
@@ -163,18 +158,18 @@ func (d *FinalizationDispatch) Runtime() GatewayUsageFinalizationRuntime {
 }
 
 // GatewayUsageFinalizationRuntime mirrors GatewayUsageFinalizationRuntime.
-// 无 DroppedCount：队列不存在丢弃路径（满队走 overflow spool、超限走错误返回，
-// 分别由 OverflowSpoolCount 与 Dispatch 错误承载）。
 type GatewayUsageFinalizationRuntime struct {
 	PendingCount       int
 	QueuedCount        int
 	QueuedBytes        int
 	ActiveCount        int
 	AdmissionWaitCount int
-	OverflowSpoolCount int
-	MaxItems           int
-	MaxBytes           int
-	MaxConcurrency     int
+	// DroppedCount 是满队且启用 drop-on-full 时丢弃的任务数（非业务统计数据，
+	// 2026-11-09 用户裁决允许丢弃，优先保证请求不被反压）。
+	DroppedCount   int
+	MaxItems       int
+	MaxBytes       int
+	MaxConcurrency int
 }
 
 // GatewayUsageFinalizationQueue mirrors the module state of
@@ -194,7 +189,8 @@ type GatewayUsageFinalizationQueue struct {
 	queuedBytes        int
 	active             int
 	admissionWaitCount int
-	overflowSpoolCount int
+	droppedCount       int
+	dropOnFull         bool
 	waiters            int
 	wg                 sync.WaitGroup
 }
@@ -240,13 +236,20 @@ func (q *GatewayUsageFinalizationQueue) WithClock(clock Clock) *GatewayUsageFina
 	return q
 }
 
+// EnableDropOnFull 把满队行为从无限等待改为计数丢弃。生产 gateway 的
+// usage 记录属运营统计（2026-11-09 用户裁决），不允许反压请求路径。
+func (q *GatewayUsageFinalizationQueue) EnableDropOnFull() {
+	q.mu.Lock()
+	q.dropOnFull = true
+	q.mu.Unlock()
+}
+
 // Dispatch mirrors dispatchGatewayUsageFinalization. bytes above the single
-// task budget errors; a full queue with an overflow factory spools instead
-// of waiting; otherwise admission blocks until capacity frees up. The task
-// runs asynchronously; its error is swallowed and logged (Node
-// trackGatewayUsageFinalization contract) so delivery never blocks the
-// gateway request path.
-func (q *GatewayUsageFinalizationQueue) Dispatch(ctx Ctx, task func(Ctx) error, bytes int, overflowFactory func(Ctx) error) error {
+// task budget errors; a full queue drops (drop-on-full) or blocks until
+// capacity frees up. The task runs asynchronously; its error is swallowed and
+// logged (Node trackGatewayUsageFinalization contract) so delivery never
+// blocks the gateway request path.
+func (q *GatewayUsageFinalizationQueue) Dispatch(ctx Ctx, task func(Ctx) error, bytes int) error {
 	if bytes < 0 {
 		bytes = 0
 	}
@@ -254,10 +257,21 @@ func (q *GatewayUsageFinalizationQueue) Dispatch(ctx Ctx, task func(Ctx) error, 
 		return errors.New("网关使用记录异步收尾任务超过单条容量上限")
 	}
 	q.mu.Lock()
-	if !q.hasCapacityLocked(bytes) && overflowFactory != nil {
-		q.overflowSpoolCount++
+	if !q.hasCapacityLocked(bytes) && q.dropOnFull {
+		q.droppedCount++
+		dropped := q.droppedCount
 		q.mu.Unlock()
-		q.track(overflowFactory)
+		if dropped <= 10 || dropped%100 == 0 {
+			if q.logger != nil {
+				q.logger.Warn("网关用量收尾队列已满，记录已丢弃（运营统计可丢）", map[string]any{
+					"event":              "gateway_usage_finalization_dropped",
+					"droppedCount":       dropped,
+					"queuedCount":        len(q.queued),
+					"queuedBytes":        q.queuedBytes,
+					"admissionWaitCount": q.admissionWaitCount,
+				})
+			}
+		}
 		return nil
 	}
 	for !q.hasCapacityLocked(bytes) {
@@ -365,7 +379,7 @@ func (q *GatewayUsageFinalizationQueue) Runtime() GatewayUsageFinalizationRuntim
 		QueuedBytes:        q.queuedBytes,
 		ActiveCount:        q.active,
 		AdmissionWaitCount: q.admissionWaitCount,
-		OverflowSpoolCount: q.overflowSpoolCount,
+		DroppedCount:       q.droppedCount,
 		MaxItems:           q.maxItems,
 		MaxBytes:           q.maxBytes,
 		MaxConcurrency:     q.maxConcurrency,

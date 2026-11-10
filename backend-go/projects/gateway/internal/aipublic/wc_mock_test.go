@@ -97,13 +97,13 @@ func TestWCMockGroupFamily(t *testing.T) {
 	// add：完整字段投影（description/enabled=false/groupType）；分组目标已去
 	// 供应商维度，mock 与真实路径同样不携带 providerCode。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/add",
-		`{"targetUsername":"u1","name":"组名","description":"描述","enabled":false,"groupType":"high_concurrency"}`, token)
+		`{"targetUsername":"u1","name":"组名","description":"描述","enabled":false,"groupType":"personal"}`, token)
 	data = mustMockEnvelope(t, status, payload, http.StatusOK)
 	if data["action"] != "mock" {
 		t.Fatalf("mock add action: %v", data)
 	}
 	group := data["group"].(map[string]any)
-	if group["name"] != "组名" || group["description"] != "描述" || group["enabled"] != false || group["groupType"] != "high_concurrency" || group["isDefault"] != false {
+	if group["name"] != "组名" || group["description"] != "描述" || group["enabled"] != false || group["groupType"] != "personal" || group["isDefault"] != false {
 		t.Fatalf("mock add group: %v", group)
 	}
 

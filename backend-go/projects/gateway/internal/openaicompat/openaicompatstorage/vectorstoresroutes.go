@@ -274,7 +274,7 @@ func (d *Deps) listVectorStores(w http.ResponseWriter, r *http.Request) error {
 		}
 		data = append(data, object)
 	}
-	writeListEnvelope(w, data)
+	writeListEnvelope(w, data, result.HasMore)
 	return nil
 }
 
@@ -499,7 +499,7 @@ func (d *Deps) listVectorStoreFiles(w http.ResponseWriter, r *http.Request) erro
 		}
 		data = append(data, object)
 	}
-	writeListEnvelope(w, data)
+	writeListEnvelope(w, data, result.HasMore)
 	return nil
 }
 
@@ -595,7 +595,9 @@ func (d *Deps) listVectorStoreFileContent(w http.ResponseWriter, r *http.Request
 			ChunkIndex: chunk.ChunkIndex,
 		})
 	}
-	writeListEnvelope(w, data)
+	// 文件内容分片列表不提供 store 级 HasMore（ListVectorStoreFileChunks 只
+	// 返回分片本身），保持既有 false 契约。
+	writeListEnvelope(w, data, false)
 	return nil
 }
 

@@ -58,28 +58,28 @@ func TestGroupListPageSizeNormalization(t *testing.T) {
 	}
 }
 
-func TestGroupDefaultPolicyUsesInjectedGlobalMax(t *testing.T) {
+func TestGroupLegacyPolicyUsesInjectedGlobalMax(t *testing.T) {
 	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Legacy high_concurrency row: threshold 500 below the injected global max
+	// 1234 is kept; the default globalMax value would map to -1.
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('grp-legacy-map', ?, '旧策略', 1, 0, 'high_concurrency', '{"defaultSoftConcurrency":500,"clientIpConcurrencyLimit":7}', ?, ?)`, adminID, now, now)
 	store, err := NewStore(env.db, nil, nil, nil, WithGlobalConcurrencyMax(1234))
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, err := store.Create(context.Background(), MutationInput{
-		Name: ptrString("hc-global"), ProviderCode: ptrString("openai"),
-		GroupType: ptrString(GroupTypeHighConcurrency),
-	}, AccessScope{ViewerID: "owner-1"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	detail, err := store.FindDetail(context.Background(), item.ID, AccessScope{ViewerID: "owner-1"})
+	detail, err := store.FindDetail(context.Background(), "grp-legacy-map", AccessScope{ViewerID: adminID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	policy := detail.SchedulingPolicy.(map[string]any)
-	for _, key := range []string{"defaultSoftConcurrency", "maxQueueSize", "perApiKeyQueueLimit"} {
-		if policy[key] != 1234 {
-			t.Fatalf("policy %s = %v, want the injected global max 1234", key, policy[key])
-		}
+	if policy["defaultSoftConcurrency"] != 500 || policy["clientIpConcurrencyLimit"] != 7 {
+		t.Fatalf("legacy policy mapping = %v", policy)
+	}
+	if detail.GroupType != GroupTypePersonal {
+		t.Fatalf("legacy group type normalized = %q", detail.GroupType)
 	}
 	// Stores built without the option keep the 5000 default.
 	legacy, err := NewStore(env.db, nil, nil, nil)
@@ -95,9 +95,9 @@ func TestGroupCorruptedStoredPolicyAndTypeAreReadErrors(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// high_concurrency with a broken policy document (missing keys).
+	// high_concurrency with a broken JSON document.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-broken-policy', ?, '坏策略', 1, 0, 'high_concurrency', '{"mode":"balanced_fast"}', ?, ?)`, adminID, now, now)
+		VALUES ('grp-broken-policy', ?, '坏策略', 1, 0, 'high_concurrency', '{"mode":', ?, ?)`, adminID, now, now)
 	// high_concurrency with a NULL policy column.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
 		VALUES ('grp-null-policy', ?, '空策略', 1, 0, 'high_concurrency', NULL, ?, ?)`, adminID, now, now)
@@ -137,21 +137,15 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t, "root", "root-pass", "super_admin")
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"deep-eq","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"defaultSoftConcurrency":100}}`)
+		`{"name":"deep-eq","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":100,"clientIpConcurrencyLimit":0}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, created)
 	}
 	groupID := dataMap(t, created)["id"].(string)
 
-	// Rewrite the stored document with a different key order, extra
-	// whitespace and a textual exponent — the same semantic policy (Node
-	// isDeepStrictEqual → no-op; the legacy Go compare saw different bytes).
-	reordered := `{"imageLaneMaxConcurrency":0,  "clientIpConcurrencyOverflowMode":"reject",
-		"clientIpConcurrencyLimit":0, "perApiKeyQueueLimit":5000, "maxQueueSize":5000,
-		"maxQueueWaitMs":60000, "recentTimeoutPenaltyThreshold":2, "recentTimeoutWindowSeconds":120,
-		"firstOutputSlowThresholdMs":15000, "slowRequestThresholdMs":30000,
-		"breakAffinityOnQueueWaitMs":0, "breakAffinityOnSoftLimit":true, "fallbackOnQueueEnabled":true,
-		"fastFirstEnabled":true, "mode":"balanced_fast", "defaultSoftConcurrency":100}`
+	// Rewrite the stored document with a different key order and whitespace —
+	// the same semantic policy (Node isDeepStrictEqual → no-op).
+	reordered := `{"clientIpConcurrencyLimit":0,  "defaultSoftConcurrency":100}`
 	env.exec(t, `UPDATE groups SET scheduling_policy_json = ? WHERE id = ?`, reordered, groupID)
 
 	detailCode, detail := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+groupID, "")
@@ -161,7 +155,7 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	updatedAt := dataMap(t, detail)["updatedAt"].(string)
 
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+groupID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":100,"maxQueueWaitMs":60000}}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":100,"clientIpConcurrencyLimit":0}}`)
 	if code != http.StatusOK {
 		t.Fatalf("noop patch: %d %v", code, patched)
 	}
@@ -180,9 +174,9 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	if stored != reordered {
 		t.Fatalf("noop patch must not rewrite the stored document")
 	}
-	// A real change still lands.
+	// A real change still lands; objects must carry both keys.
 	code, changed := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+groupID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":200}}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":200,"clientIpConcurrencyLimit":0}}`)
 	if code != http.StatusOK {
 		t.Fatalf("real patch: %d %v", code, changed)
 	}

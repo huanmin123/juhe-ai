@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 )
 
 // 本文件补齐 retention 域既有测试未覆盖的错误臂、守卫分支与 fail-closed
@@ -84,9 +83,9 @@ func (c *w9gCancelAfterStats) CleanupUsageStatsRetention(ctx context.Context, in
 // w9gFailingStats 只让指定方法失败，其余委托 fakeStatsWriter。
 type w9gFailingStats struct {
 	*fakeStatsWriter
-	usageErr   error
-	upsertErr  error
-	nonBizErr  error
+	usageErr  error
+	upsertErr error
+	nonBizErr error
 }
 
 func (f *w9gFailingStats) CleanupUsageStatsRetention(ctx context.Context, input UsageStatsRetentionInput) (UsageStatsRetentionCounts, error) {
@@ -134,7 +133,6 @@ func w9gBaseJob(t *testing.T, mutate func(j *DataRetentionJob)) (*DataRetentionJ
 
 // ---------- fail-closed stub 与回退访问器（直测） ----------
 
-
 func TestW9GMissingPortsFailClosed(t *testing.T) {
 	ctx := context.Background()
 	job := &DataRetentionJob{}
@@ -144,12 +142,6 @@ func TestW9GMissingPortsFailClosed(t *testing.T) {
 	}
 	if _, err := job.stats().CleanupNonBusinessStatsData(ctx, "c", 1); err == nil {
 		t.Fatal("missingStatsWriter.CleanupNonBusinessStatsData 必须 fail-closed")
-	}
-	if err := job.stats().CleanupDeletedApiKeyRecordStats(ctx, DeletedApiKeyRecordStatsCleanupInput{}); err == nil {
-		t.Fatal("missingStatsWriter.CleanupDeletedApiKeyRecordStats 必须 fail-closed")
-	}
-	if err := job.stats().CleanupDeletedAccountRecordStats(ctx, DeletedAccountRecordStatsCleanupInput{}); err == nil {
-		t.Fatal("missingStatsWriter.CleanupDeletedAccountRecordStats 必须 fail-closed")
 	}
 	if err := job.stats().UpsertAccountUsageSnapshots(ctx, nil); err == nil {
 		t.Fatal("missingStatsWriter.UpsertAccountUsageSnapshots 必须 fail-closed")
@@ -171,10 +163,10 @@ func TestW9GMissingPortsFailClosed(t *testing.T) {
 func TestW9GMissingRunnerAndRetryerStubs(t *testing.T) {
 	ctx := context.Background()
 	runner := &RecordMaintenanceRunner{}
-	if _, err := runner.relatedRecords().CleanupApiKeyRelated(ctx, RecordMaintenanceJob{}, nil); err == nil {
+	if _, err := runner.relatedRecords().CleanupApiKeyRelated(ctx, RecordMaintenanceJob{}); err == nil {
 		t.Fatal("missingRelatedRecords.CleanupApiKeyRelated 必须 fail-closed")
 	}
-	if _, err := runner.relatedRecords().CleanupAccountRelated(ctx, RecordMaintenanceJob{}, nil); err == nil {
+	if _, err := runner.relatedRecords().CleanupAccountRelated(ctx, RecordMaintenanceJob{}); err == nil {
 		t.Fatal("missingRelatedRecords.CleanupAccountRelated 必须 fail-closed")
 	}
 	if _, err := runner.nonBusinessData().CleanupBefore(ctx, "c", 1); err == nil {
@@ -182,10 +174,10 @@ func TestW9GMissingRunnerAndRetryerStubs(t *testing.T) {
 	}
 
 	retry := &RecordCleanupRetryJob{}
-	if _, err := retry.apiKey().CleanupPendingTargets(ctx, 1, nil); err == nil {
+	if _, err := retry.apiKey().CleanupPendingTargets(ctx, 1); err == nil {
 		t.Fatal("missingAPIKeyRetryer 必须 fail-closed")
 	}
-	if _, err := retry.account().CleanupPendingTargets(ctx, 1, nil); err == nil {
+	if _, err := retry.account().CleanupPendingTargets(ctx, 1); err == nil {
 		t.Fatal("missingAccountRetryer 必须 fail-closed")
 	}
 
@@ -277,10 +269,6 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
-
-
-
-
 
 	t.Run("publicApiLogs 满批耗尽配额", func(t *testing.T) {
 		job, public, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {})
@@ -459,7 +447,6 @@ func TestW9GCutoffHelpers(t *testing.T) {
 
 // ---------- chat / expired account 守卫 ----------
 
-
 func TestW9GExpiredAccountGuards(t *testing.T) {
 	ctx := context.Background()
 	logger, buffer := newTestLogger()
@@ -578,7 +565,6 @@ type errNonBusinessCleaner struct{}
 func (errNonBusinessCleaner) CleanupBefore(context.Context, string, int) (NonBusinessDataCleanupCounts, error) {
 	return NonBusinessDataCleanupCounts{}, errors.New("dataset cleaner down")
 }
-
 
 func TestW9GJobValidation(t *testing.T) {
 	// regex 通过但日历非法（2 月 30 日）。

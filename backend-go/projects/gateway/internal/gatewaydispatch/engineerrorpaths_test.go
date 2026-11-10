@@ -643,18 +643,12 @@ func TestDispatchUnavailableProxyThenSharedProxySkip(t *testing.T) {
 	}
 }
 
-// unavailableQueue 恒返回未就绪的排队结果。
-type unavailableQueue struct{}
-
-func (unavailableQueue) WaitForCapacity(context.Context, HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	return QueueWaitResult{Ready: false, Reason: "timeout"}, nil
-}
-
-func TestDispatchCapacityLimitWithPolicyQueueWaits(t *testing.T) {
+// 带策略的普通分组整池容量失败不进入高并发队列（分支已退役）：外环退避等待
+// 至预算耗尽后，容量失败必须成为最后尝试并按容量上限记录。
+func TestDispatchCapacityLimitWithPolicyFailsAfterBudget(t *testing.T) {
 	engine, driver, _ := newTestEngine(t)
 	store := &fakeConcurrencyStore{exhausted: true, limit: 4}
 	engine.Concurrency = store
-	engine.HighConcurrencyQueue = unavailableQueue{}
 	okServer := sequentialServer(t, 0, 500)
 	defer okServer.Close()
 	driver.urlByAccount = map[string][]string{
@@ -662,7 +656,7 @@ func TestDispatchCapacityLimitWithPolicyQueueWaits(t *testing.T) {
 	}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	args := fastDispatchArgs(t, req, testAccounts("a-1"))
-	// 服务器重试预算收窄到 120ms：容量失败后短暂排队 → 预算耗尽 → 记录容量失败。
+	// 服务器重试预算收窄到 120ms：容量失败 → 外环退避等待至预算耗尽 → 记录容量失败。
 	args.RequestCoordination.ServerRetryBudget = gatewaypreauth.NewServerRetryBudget(120, gatewaypreauth.SystemClock{})
 	_, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
 	var attemptErr *UpstreamAttemptError

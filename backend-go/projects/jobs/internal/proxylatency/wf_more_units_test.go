@@ -23,4 +23,3 @@ func TestWFDecryptBase64SubCases(t *testing.T) {
 		t.Fatal("非法 tag base64 必须拒绝")
 	}
 }
-

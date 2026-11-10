@@ -157,8 +157,8 @@ func TestWriterWithIDFactoryOption(t *testing.T) {
 		t.Fatalf("记录应抵达 mock store，实际: %v", traceIDs)
 	}
 	plan := store.snapshotPlan()
-	if plan == nil || len(plan.ShardEntries) != 1 || plan.ShardEntries[0].ID != "usage_wo_fixed" {
-		t.Fatalf("注入工厂的 ID 应出现在目录条目中，实际: %#v", plan)
+	if plan == nil || writePlanRowCount(*plan) != 1 || plan.RowsByShard[0].Rows[0].ID != "usage_wo_fixed" {
+		t.Fatalf("注入工厂的 ID 应出现在写入行中，实际: %#v", plan)
 	}
 }
 

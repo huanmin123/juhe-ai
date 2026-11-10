@@ -3,7 +3,6 @@ package gatewayruntimecache
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 )
 
@@ -42,6 +42,9 @@ type SQLReadModels struct {
 	accounts    AccountsSelector
 	catalog     CatalogSource
 	concurrency ConcurrencySource
+	// globalConcurrencyMax maps retired high_concurrency policies; production
+	// wiring sets it from JUHE_AI_CONCURRENCY_GLOBAL_MAX.
+	globalConcurrencyMax int
 }
 
 // NewSQLReadModels builds the SQL read models. now defaults to time.Now; the
@@ -59,13 +62,22 @@ func NewSQLReadModels(db *sql.DB, now func() time.Time, accounts AccountsSelecto
 		return nil, err
 	}
 	return &SQLReadModels{
-		db:          db,
-		settings:    store,
-		now:         now,
-		accounts:    accounts,
-		catalog:     catalog,
-		concurrency: concurrency,
+		db:                   db,
+		settings:             store,
+		now:                  now,
+		accounts:             accounts,
+		catalog:              catalog,
+		concurrency:          concurrency,
+		globalConcurrencyMax: gatewayscheduling.DefaultGlobalConcurrencyMax,
 	}, nil
+}
+
+// SetGlobalConcurrencyMax lets the composition root pass the runtime
+// JUHE_AI_CONCURRENCY_GLOBAL_MAX value used to map retired policies.
+func (m *SQLReadModels) SetGlobalConcurrencyMax(value int) {
+	if value > 0 {
+		m.globalConcurrencyMax = value
+	}
 }
 
 // SetAccountsSelector wires the account selector seam.
@@ -360,11 +372,11 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 	if ownerID == "" || enabled != 1 {
 		return nil, nil
 	}
-	groupTypeValue, err := normalizeGroupTypeValue(groupType)
+	groupTypeValue, legacyGroupType, err := normalizeGroupTypeValue(groupType)
 	if err != nil {
 		return nil, err
 	}
-	schedulingPolicy, err := parseGroupSchedulingPolicyJSON(schedulingJSON, groupTypeValue)
+	schedulingPolicy, err := parseGroupSchedulingPolicyJSON(schedulingJSON, legacyGroupType, m.globalConcurrencyMax)
 	if err != nil {
 		return nil, err
 	}
@@ -384,38 +396,22 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 		return nil, nil
 	}
 	var localEnabled sql.NullInt64
-	var localGroupType, localSchedulingJSON sql.NullString
-	err = m.db.QueryRowContext(ctx, m.bind(`SELECT enabled, group_type, scheduling_policy_json
+	err = m.db.QueryRowContext(ctx, m.bind(`SELECT enabled
 		FROM `+m.table("group_authorization_settings")+`
 		WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? LIMIT 1`),
 		authorization.id, systemAccountID, groupID).
-		Scan(&localEnabled, &localGroupType, &localSchedulingJSON)
+		Scan(&localEnabled)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	if err == nil && localEnabled.Valid && localEnabled.Int64 == 0 {
 		return nil, nil
 	}
-	effectiveGroupType := groupTypeValue
-	if err == nil && localGroupType.Valid {
-		effectiveGroupType, err = normalizeGroupTypeValue(localGroupType)
-		if err != nil {
-			return nil, err
-		}
-	}
-	effectiveScheduling := schedulingJSON
-	if err == nil && localSchedulingJSON.Valid {
-		effectiveScheduling = localSchedulingJSON
-	}
-	localPolicy, err := parseGroupSchedulingPolicyJSON(effectiveScheduling, effectiveGroupType)
-	if err != nil {
-		return nil, err
-	}
 	return &GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      ownerID,
 		GroupAccessType:                GroupAccessTypeAuthorized,
-		GroupType:                      strPtrIfSet(effectiveGroupType),
-		SchedulingPolicy:               localPolicy,
+		GroupType:                      strPtrIfSet(groupTypeValue),
+		SchedulingPolicy:               schedulingPolicy,
 		GroupAuthorizationID:           strPtrIfSet(authorization.id),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
 		GroupAuthorizationQuotaLimited: boolPtr(authorization.quotaLimited),
@@ -484,32 +480,24 @@ func quotaLimitsHasEnabled(limits apikeys.QuotaLimits) bool {
 		(limits.Total != nil && limits.Total.Enabled)
 }
 
-// normalizeGroupTypeValue mirrors normalizeGroupType.
-func normalizeGroupTypeValue(value sql.NullString) (string, error) {
-	if !value.Valid || value.String == "" {
-		return "personal", nil
-	}
-	if value.String == "personal" || value.String == "high_concurrency" {
-		return value.String, nil
-	}
-	return "", errors.New("分组类型无效")
+// normalizeGroupTypeValue maps the retired type to personal on read and
+// reports whether the raw value was legacy (for policy mapping). NULL/empty is
+// invalid data (column NOT NULL DEFAULT 'personal'), never a silent fallback.
+func normalizeGroupTypeValue(value sql.NullString) (string, bool, error) {
+	return gatewayscheduling.NormalizeGroupType(value.String)
 }
 
-// parseGroupSchedulingPolicyJSON mirrors parseGroupSchedulingPolicyJson for
-// the cache read path: only high_concurrency groups carry one, absence is the
-// Node "高并发分组调度策略缺失" error, stored JSON decodes opaquely.
-func parseGroupSchedulingPolicyJSON(raw sql.NullString, groupType string) (*GroupSchedulingPolicy, error) {
-	if groupType != "high_concurrency" {
-		return nil, nil
-	}
-	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
-		return nil, errors.New("高并发分组调度策略缺失")
-	}
-	var decoded GroupSchedulingPolicy
-	if err := json.Unmarshal([]byte(raw.String), &decoded); err != nil {
+// parseGroupSchedulingPolicyJSON parses the optional two-key policy; retired
+// high_concurrency rows map their old 16-key payload with globalMax.
+func parseGroupSchedulingPolicyJSON(raw sql.NullString, legacy bool, globalMax int) (*GroupSchedulingPolicy, error) {
+	policy, err := gatewayscheduling.ParseStored(raw.String, raw.Valid, legacy, globalMax)
+	if err != nil {
 		return nil, err
 	}
-	return &decoded, nil
+	if policy.IsDefault() {
+		return nil, nil
+	}
+	return &policy, nil
 }
 
 func strPtrIfSet(value string) *string {

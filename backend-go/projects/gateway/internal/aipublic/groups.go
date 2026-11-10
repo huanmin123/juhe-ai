@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
@@ -153,6 +154,11 @@ func (d *Deps) listGroupRows(ctx context.Context, ownerID string, page, pageSize
 		if err := rows.Scan(&item.ID, &item.Name, &description, &enabled, &item.GroupType, &isDefault); err != nil {
 			return nil, err
 		}
+		normalizedType, _, err := gatewayscheduling.NormalizeGroupType(item.GroupType)
+		if err != nil {
+			return nil, err
+		}
+		item.GroupType = normalizedType
 		item.Enabled = enabled == 1
 		item.IsDefault = isDefault == 1
 		if description.Valid {
@@ -268,7 +274,7 @@ func parseGroupAddBody(body map[string]any) (*groupAddBody, string) {
 		return nil, issue
 	}
 	parsed.Enabled, parsed.HasEnabled = &enabled, hasEnabled
-	groupType, hasGroupType, issue := bodyOptionalEnumField(body, "groupType", []string{"personal", "high_concurrency"})
+	groupType, hasGroupType, issue := bodyOptionalEnumField(body, "groupType", []string{"personal"})
 	if issue != "" {
 		return nil, issue
 	}
@@ -418,7 +424,7 @@ func parseGroupUpdateBody(body map[string]any) (*groupUpdateBody, string) {
 	}
 	parsed.Enabled, parsed.HasEnabled = &enabled, hasEnabled
 	if bodyHas(body, "groupType") {
-		groupType, _, issue := bodyOptionalEnumField(body, "groupType", []string{"personal", "high_concurrency"})
+		groupType, _, issue := bodyOptionalEnumField(body, "groupType", []string{"personal"})
 		if issue != "" {
 			return nil, issue
 		}

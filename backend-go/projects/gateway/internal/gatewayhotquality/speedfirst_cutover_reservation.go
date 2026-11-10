@@ -209,24 +209,11 @@ func gatewayAccountConcurrencyAccountID(target GatewayAccountConcurrencyLimitIde
 	return target.ID
 }
 
-var defaultHighConcurrencyImageLaneMaxConcurrency = 0
-
-// EffectiveImageLaneConcurrencyLimit mirrors
-// effectiveImageLaneConcurrencyLimit (domain/group-scheduling.ts): the image
-// lane never exceeds the account hard limit and never exceeds the configured
-// imageLaneMaxConcurrency when positive.
+// EffectiveImageLaneConcurrencyLimit returns the account hard limit. The
+// retired high_concurrency imageLaneMaxConcurrency override is gone; ordinary
+// groups have no group-level image lane cap.
 func EffectiveImageLaneConcurrencyLimit(accountConcurrencyLimit int, policy gatewayruntimecache.GroupSchedulingPolicy) int {
-	hardLimit := boundedPositiveInteger(accountConcurrencyLimit, 1, 1_000_000)
-	configured := defaultHighConcurrencyImageLaneMaxConcurrency
-	if policy != nil {
-		if value, ok := policy["imageLaneMaxConcurrency"]; ok && value != nil {
-			configured = numericPolicyValue(value, configured)
-		}
-	}
-	if configured > 0 {
-		return mini(hardLimit, maxi(1, configured))
-	}
-	return hardLimit
+	return boundedPositiveInteger(accountConcurrencyLimit, 1, 1_000_000)
 }
 
 func boundedPositiveInteger(value int, fallback int, maximum int) int {
@@ -234,30 +221,4 @@ func boundedPositiveInteger(value int, fallback int, maximum int) int {
 		return fallback
 	}
 	return value
-}
-
-func numericPolicyValue(value interface{}, fallback int) int {
-	switch typed := value.(type) {
-	case float64:
-		return int(typed)
-	case int:
-		return typed
-	case int64:
-		return int(typed)
-	}
-	return fallback
-}
-
-func mini(left int, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}
-
-func maxi(left int, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }

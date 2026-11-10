@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ensureLedgerDDL 桥接 schema 包的账本 DDL（幂等）。

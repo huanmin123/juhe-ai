@@ -39,8 +39,11 @@ type hotSearchLine struct {
 	Text          string `json:"text"`
 }
 
-// AppendHotSearch appends bounded NDJSON search records while holding the same
-// owner fence used by audit persistence. A stale owner cannot publish lines.
+// AppendHotSearch appends bounded NDJSON search records. hot-search 是从
+// canonical audit store 重建的排障索引，不是权威事实：2026-11-09 起不再为
+// 每次追加开 PG 事务（原实现 begin/两次 lease SELECT/commit），只用一次
+// 无事务 lease fence 查询挡住过期 owner；进程内 hotMu 保证同进程追加顺序，
+// 跨进程共享目录本就不是支持的审计形态。
 func (s *sqlStore) AppendHotSearch(ctx context.Context, lease OwnerLease, inputs []AuditLogInput) (int, error) {
 	normalizedInputs := make([]AuditLogInput, 0, len(inputs))
 	for _, input := range inputs {
@@ -54,20 +57,7 @@ func (s *sqlStore) AppendHotSearch(ctx context.Context, lease OwnerLease, inputs
 	if len(inputs) == 0 {
 		return 0, nil
 	}
-	if err := s.EnsureSchema(ctx); err != nil {
-		return 0, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("开始 F3 hot-search 追加事务失败: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if err := s.verifyLeaseTx(ctx, tx, lease); err != nil {
+	if err := s.verifyLease(ctx, lease); err != nil {
 		return 0, err
 	}
 	lines, err := buildHotSearchLines(s.hotDir, inputs)
@@ -86,13 +76,6 @@ func (s *sqlStore) AppendHotSearch(ctx context.Context, lease OwnerLease, inputs
 		}
 		appended += len(contents)
 	}
-	if err := s.verifyLeaseBeforeCommit(ctx, tx, lease); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("提交 F3 hot-search 追加事务失败: %w", err)
-	}
-	committed = true
 	return appended, nil
 }
 
@@ -147,10 +130,9 @@ func appendHotSearchFile(path string, lines []hotSearchLine) error {
 			return fmt.Errorf("写入 F3 hot-search 文件失败: %w", err)
 		}
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("同步 F3 hot-search 文件失败: %w", err)
-	}
+	// hot-search 是可从 canonical audit store 重建的排障索引（producer 注释
+	// 自述）：不做 fsync，掉电/崩溃丢尾部可接受，避免每条审计多一次磁盘
+	// 同步（2026-11-09 非业务数据可丢裁决）。
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("关闭 F3 hot-search 文件失败: %w", err)
 	}

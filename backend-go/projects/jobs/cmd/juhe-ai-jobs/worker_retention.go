@@ -26,8 +26,6 @@ import (
 // 退役移除，演练场设计 §8。）仓储实现在 internal/cleanuprepo
 // （Node backend/src/storage 清理侧的移植），组合根只做句柄打开与 port 适配。
 
-const retentionFamilyBatchSize = retention.CleanupBatchSize
-
 func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family := &retentionFamily{assembly: a}
 
@@ -107,12 +105,11 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.modelCheckRetention = &cleanuprepo.ModelCheckRetentionStore{DB: modelCheckRetentionDB}
 	family.accountBalanceOutcomesDB = accountBalanceOutcomesDB
 	recordCleanup := &cleanuprepo.RecordCleanupStore{
-		Dataset:      dataset,
-		Stats:        stats,
-		UsageCatalog: usageCatalog,
-		Business:     business,
-		Now:          family.now,
-		Timezone:     retentionSettings.location,
+		Dataset:  dataset,
+		Stats:    stats,
+		Business: business,
+		Now:      family.now,
+		Timezone: retentionSettings.location,
 	}
 	family.recordCleanup = recordCleanup
 
@@ -138,7 +135,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	systemSessions := &cleanuprepo.SystemSessionsStore{DB: business}
 	nonBusinessDataset := &cleanuprepo.NonBusinessDatasetStore{
 		Dataset:      dataset,
-		UsageCatalog: usageCatalog,
 		Stats:        stats,
 		UsageRecords: usageRecords,
 		Timezone:     retentionSettings.location,
@@ -256,11 +252,9 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	})
 
 	retryJob := &retention.RecordCleanupRetryJob{
-		Clock:   func() time.Time { return family.now() },
 		Logger:  a.logger,
 		APIKey:  &familyAPIKeyRetryer{family: family},
 		Account: &familyAccountRetryer{family: family},
-		Stats:   runner.Executor.StatsWriter,
 	}
 	a.scheduleWiredJob("api-key-record-cleanup-retry", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		if err := retryJob.RunAPIKey(taskCtx); err != nil {
@@ -879,14 +873,14 @@ type familyRelatedCleaner struct {
 	family *retentionFamily
 }
 
-func (c *familyRelatedCleaner) CleanupApiKeyRelated(ctx context.Context, job retention.RecordMaintenanceJob, statsWriter retention.StatsWriter) (retention.RelatedCleanupResult, error) {
+func (c *familyRelatedCleaner) CleanupApiKeyRelated(ctx context.Context, job retention.RecordMaintenanceJob) (retention.RelatedCleanupResult, error) {
 	if c.family.recordCleanup == nil {
 		return retention.RelatedCleanupResult{}, fmt.Errorf("retention record cleanup store 未初始化")
 	}
 	return c.family.recordCleanup.CleanupAPIKeyRelatedPostgres(ctx, job.APIKeyID, job.SystemAccountID)
 }
 
-func (c *familyRelatedCleaner) CleanupAccountRelated(ctx context.Context, job retention.RecordMaintenanceJob, statsWriter retention.StatsWriter) (retention.RelatedCleanupResult, error) {
+func (c *familyRelatedCleaner) CleanupAccountRelated(ctx context.Context, job retention.RecordMaintenanceJob) (retention.RelatedCleanupResult, error) {
 	if c.family.recordCleanup == nil {
 		return retention.RelatedCleanupResult{}, fmt.Errorf("retention record cleanup store 未初始化")
 	}
@@ -903,7 +897,7 @@ type familyAPIKeyRetryer struct {
 	family *retentionFamily
 }
 
-func (r *familyAPIKeyRetryer) CleanupPendingTargets(ctx context.Context, limit int, statsWriter retention.StatsWriter) (retention.PendingCleanupSummary, error) {
+func (r *familyAPIKeyRetryer) CleanupPendingTargets(ctx context.Context, limit int) (retention.PendingCleanupSummary, error) {
 	return r.family.recordCleanup.CleanupPendingAPIKeyTargetsPostgres(ctx, limit)
 }
 
@@ -911,17 +905,15 @@ type familyAccountRetryer struct {
 	family *retentionFamily
 }
 
-func (r *familyAccountRetryer) CleanupPendingTargets(ctx context.Context, limit int, statsWriter retention.StatsWriter) (retention.PendingCleanupSummary, error) {
+func (r *familyAccountRetryer) CleanupPendingTargets(ctx context.Context, limit int) (retention.PendingCleanupSummary, error) {
 	return r.family.recordCleanup.CleanupPendingAccountTargetsPostgres(ctx, limit)
 }
 
-// familyStatsWriter 是 retention.StatsWriter 的清理侧实现（非业务数据 stats 半区
-// 与记录清理扣减结算；usage stats/metrics retention 走 StatsRetentionStore）。
+// familyStatsWriter 是 retention.StatsWriter 的清理侧实现（非业务数据 stats 半区；
+// usage stats/metrics retention 走 StatsRetentionStore）。
 type familyStatsWriter struct {
 	family *retentionFamily
 }
-
-func (w *familyStatsWriter) store() *cleanuprepo.StatsRetentionStore { return nil }
 
 func (w *familyStatsWriter) CleanupUsageStatsRetention(ctx context.Context, input retention.UsageStatsRetentionInput) (retention.UsageStatsRetentionCounts, error) {
 	return w.family.retentionStats().CleanupUsageStatsRetention(ctx, input)
@@ -933,22 +925,6 @@ func (w *familyStatsWriter) CleanupNonBusinessStatsData(ctx context.Context, cut
 		return retention.NonBusinessDataCleanupCounts{}, err
 	}
 	return w.family.retentionStats().CleanupNonBusinessStatsData(ctx, cutoffAt, limit, location)
-}
-
-func (w *familyStatsWriter) CleanupDeletedApiKeyRecordStats(ctx context.Context, input retention.DeletedApiKeyRecordStatsCleanupInput) error {
-	location, err := w.family.timezone(ctx)
-	if err != nil {
-		return err
-	}
-	return w.family.recordCleanup.CleanupAPIKeyRecordStatsData(ctx, input.Target, input.Rows, input.UpdatedAt, input.ShardDeleted, location)
-}
-
-func (w *familyStatsWriter) CleanupDeletedAccountRecordStats(ctx context.Context, input retention.DeletedAccountRecordStatsCleanupInput) error {
-	location, err := w.family.timezone(ctx)
-	if err != nil {
-		return err
-	}
-	return w.family.recordCleanup.CleanupAccountRecordStatsData(ctx, input.Target, input.Rows, input.UpdatedAt, input.ShardDeleted, location)
 }
 
 // UpsertAccountUsageSnapshots 接真实现：cleanuprepo.RecordCleanupStore.
@@ -1127,5 +1103,3 @@ func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenan
 		}
 	}
 }
-
-// familyTimezoneClock 已随 sqlite 派生窗口刷新臂删除（DerivedWindows 同批移除）。

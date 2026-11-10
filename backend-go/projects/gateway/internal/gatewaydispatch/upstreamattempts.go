@@ -56,6 +56,34 @@ func (e *Engine) PerformUpstreamRequestAttempt(ctx context.Context, input Attemp
 		return nil, err
 	}
 
+	// D-163：Grok CLI 代理 403 access-denied 时按 Node 语义改走官方 API
+	// （api.x.ai）重试一次；非候选/重试失败保留原始 403 与可重放响应体。
+	inspectionSignal := input.Signal
+	if inspectionSignal == nil {
+		inspectionSignal = ctx
+	}
+	fallback, fallbackErr := applyGrokAccessDeniedFallback(grokAccessDeniedFallbackInput{
+		UpstreamURL: input.UpstreamURL,
+		Headers:     headers,
+		Body:        upstreamBody,
+		Response:    response,
+		Signal:      inspectionSignal,
+		RequestFallback: func(fallbackURL string, fallbackHeaders http.Header) (*GatewayUpstreamResponse, error) {
+			return e.requestUpstreamForAttempt(ctx, input, fallbackHeaders, upstreamBody, fallbackURL)
+		},
+	})
+	if fallbackErr != nil {
+		return nil, fallbackErr
+	}
+	response = fallback.Response
+	if fallback.UsedFallback {
+		path := ""
+		if parsed, parseErr := url.Parse(input.UpstreamURL); parseErr == nil {
+			path = parsed.Path
+		}
+		logGrokFallbackSuccess(input.Account.ID, input.Req.MethodUpper(), path)
+	}
+
 	// Node upstream-attempts.ts:180-198: the model observation decorates the
 	// raw upstream response BEFORE any bridge transform — the attribution must
 	// read the upstream-native payload (modelVersion / upstream model), not the

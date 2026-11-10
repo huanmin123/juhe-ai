@@ -9,6 +9,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // handleUpstreamAttemptResponse + handleUpstreamAttemptError: the response-ok
@@ -47,6 +49,125 @@ func newConfirmGroupAffinityFunc(port GroupAffinityPort, ctx context.Context, gr
 	return func() {
 		port.RememberGroupAsync(writeCtx, groupAffinityKey, routeStrategyID, groupID)
 	}
+}
+
+// newConfirmSessionAffinityRebindFunc 构造账户亲和同层 latch 的最终成功结算
+// 闭包：同 owner 刷新 30 分钟 lease；owner 变化时先记跨账户切换，容量拒绝 +
+// 同层且端口实现 RebindAsync 时 CAS 重绑到成功账户（跨层/非容量变化只记指标，
+// 不改绑）。端口未实现可选 RebindAsync 面（测试 fake/降级）时仅保留跨账户计数
+// 句柄；无会话键/owner/成功账户时返回 nil，链面 nil 检查自然跳过。
+func newConfirmSessionAffinityRebindFunc(port SessionAffinityPort, ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, expectedOwnerUnavailable, expectedOwnerSoftBusy, slotFallback, sameLayer bool, scope AffinityScope, auditCapture AuditCapture) func() {
+	if port == nil || sessionAffinityKey == "" || expectedOwner == "" || newOwner == "" {
+		return nil
+	}
+	rebind, canRebind := port.(SessionAffinityRebindPort)
+	writeCtx := context.WithoutCancel(ctx)
+	if expectedOwner != newOwner {
+		eligible := (expectedOwnerUnavailable || expectedOwnerSoftBusy || slotFallback) && (sameLayer || slotFallback) && canRebind
+		reason := "capacity"
+		switch {
+		case slotFallback:
+			reason = "slot_fallback"
+		case !expectedOwnerUnavailable && expectedOwnerSoftBusy:
+			reason = "soft_threshold"
+		}
+		return func() {
+			gatewayusage.RecordGatewaySessionAffinityCrossAccountSwitchMetric()
+			if !eligible {
+				return
+			}
+			applied := rebind.RebindAsync(writeCtx, sessionAffinityKey, expectedOwner, newOwner, scope)
+			gatewayusage.RecordGatewaySessionAffinityRebindMetric(reason, applied)
+			if auditCapture.Nil() {
+				return
+			}
+			auditCapture.AddGatewayMetadata("session_affinity_rebind", map[string]any{
+				"fromAccountId": expectedOwner,
+				"toAccountId":   newOwner,
+				"reason":        reason,
+				"sameLayer":     sameLayer,
+				"slotFallback":  slotFallback,
+				"applied":       applied,
+			})
+		}
+	}
+	if !canRebind {
+		return nil
+	}
+	return func() {
+		applied := rebind.RebindAsync(writeCtx, sessionAffinityKey, expectedOwner, newOwner, scope)
+		gatewayusage.RecordGatewaySessionAffinityRebindMetric("success", applied)
+		if auditCapture.Nil() {
+			return
+		}
+		auditCapture.AddGatewayMetadata("session_affinity_rebind", map[string]any{
+			"fromAccountId": expectedOwner,
+			"toAccountId":   newOwner,
+			"reason":        "success",
+			"sameLayer":     sameLayer,
+			"slotFallback":  false,
+			"applied":       applied,
+		})
+	}
+}
+
+// newConfirmSessionAffinitySlotFunc 构造最终成功后的名额结算闭包：把成功
+// 账户写入/刷新名额表，owner 变化时释放旧名额；名额满时 LRU 驱逐最久空闲
+// 会话。端口未实现（memory 降级/测试）返回 nil。
+func newConfirmSessionAffinitySlotFunc(port SessionAffinityPort, ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, concurrencyLimit, rpmLimit int, slotFallback bool, auditCapture AuditCapture) func() {
+	slotPort, ok := port.(SessionAffinitySlotPort)
+	if !ok || sessionAffinityKey == "" || newOwner == "" {
+		return nil
+	}
+	writeCtx := context.WithoutCancel(ctx)
+	cap := gatewaysession.SessionSlotCap(concurrencyLimit, rpmLimit)
+	return func() {
+		applied := slotPort.ConfirmSessionSlot(writeCtx, sessionAffinityKey, expectedOwner, newOwner, cap)
+		// 只在实际成功账户不同于原 owner 且名额结算应用成功时计名额回退，
+		// 与 rebind reason=slot_fallback 的 applied 口径对齐。
+		if applied && slotFallback && expectedOwner != "" && expectedOwner != newOwner {
+			gatewayusage.RecordGatewaySessionAffinitySlotFallbackMetric()
+		}
+		if auditCapture.Nil() {
+			return
+		}
+		auditCapture.AddGatewayMetadata("session_affinity_slot_confirm", map[string]any{
+			"fromAccountId": expectedOwner,
+			"toAccountId":   newOwner,
+			"cap":           cap,
+			"slotFallback":  slotFallback,
+			"applied":       applied,
+		})
+	}
+}
+
+// sessionAffinityOwnerWasCapacityRejected 报告 owner 是否在本请求被本地容量
+// 拒绝（当前整池轮次的失败集合；owner 在成功轮次仍被排到前面时即可命中）。
+func sessionAffinityOwnerWasCapacityRejected(failures []AccountCapacityLimitFailure, ownerID string) bool {
+	if ownerID == "" {
+		return false
+	}
+	for _, failure := range failures {
+		if failure.account.ID == ownerID {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionAffinitySameLayer 用四元调度层比较 owner 与最终成功账户；owner 不在
+// 本请求候选窗口（硬过滤/已删除）时返回 false，P0 不重绑。
+func sessionAffinitySameLayer(accounts []AccountCandidate, ownerID string, success AccountCandidate, priority *gatewayrouting.GatewayAccountModelPriority) bool {
+	if ownerID == "" || ownerID == success.ID {
+		return true
+	}
+	for _, account := range accounts {
+		if account.ID != ownerID {
+			continue
+		}
+		return dispatchPriorityTierOf(account, priority) == dispatchPriorityTierOf(success, priority)
+	}
+	return false
 }
 
 // rememberUpstreamAttemptFailure 结算现场构造来源避让 AccountFailure（调度慢
@@ -119,6 +240,19 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		}
 		accountLockLeaseRelease := in.createAccountLockLeaseRelease(false)
 		confirmFailures := append([]PendingAccountApiKeyFailure{}, *c.loop.pendingApiKeyFailuresRef...)
+		affinityOwnerID := in.args.SessionAffinityOwnerAccountID
+		var affinityFailures []AccountCapacityLimitFailure
+		if in.capacityLimitFailures != nil {
+			affinityFailures = *in.capacityLimitFailures
+		}
+		affinityOwnerCapacityRejected := in.args.SessionAffinityOwnerBusy ||
+			sessionAffinityOwnerWasCapacityRejected(affinityFailures, affinityOwnerID)
+		affinitySameLayer := sessionAffinitySameLayer(in.args.Accounts, affinityOwnerID, c.account, in.args.ModelPriority)
+		affinityScope := AffinityScope{
+			SystemAccountID: usageContext.SystemAccountID,
+			APIKeyID:        usageContext.APIKeyID,
+			GroupID:         usageContext.GroupID,
+		}
 		*c.loop.resultRef = &UpstreamDispatchResult{
 			Account:              c.account,
 			Response:             response,
@@ -160,6 +294,14 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			// 的组绑定写回，链面仅在最终协议成功结算消费一次（组 → 账户 → Key
 			// 顺序由链面结算块保证）；写回失败只告警，不改写已完成响应。
 			ConfirmGroupAffinity: newConfirmGroupAffinityFunc(e.GroupAffinity, ctx, in.args.GroupAffinityKey, in.args.RouteStrategyID, usageContext.GroupID),
+			// 账户亲和同层 latch（同层单向粘性设计 §5.5）：同 owner 刷新 lease；
+			// owner 变化且本请求容量拒绝 + 同层时 CAS 重绑到成功账户。链面仅在
+			// 最终协议成功结算消费一次（组 → 账户 → Key 顺序中的“账户”层）。
+			ConfirmSessionAffinityRebind:         newConfirmSessionAffinityRebindFunc(e.Affinity, ctx, in.args.SessionAffinityKey, affinityOwnerID, c.account.ID, affinityOwnerCapacityRejected, in.args.SessionAffinityOwnerSoftBusy, in.args.SessionAffinitySlotFallback, affinitySameLayer, affinityScope, in.args.AuditCapture),
+			ConfirmSessionAffinitySlot:           newConfirmSessionAffinitySlotFunc(e.Affinity, ctx, in.args.SessionAffinityKey, affinityOwnerID, c.account.ID, accountHardConcurrencyLimit(c.account), c.account.RPMLimit, in.args.SessionAffinitySlotFallback, in.args.AuditCapture),
+			SessionAffinityOwnerAccountID:        affinityOwnerID,
+			SessionAffinityOwnerCapacityRejected: affinityOwnerCapacityRejected,
+			SessionAffinitySameLayer:             affinitySameLayer,
 			// 成功侧结算：ENGAGED 锁复位（Node 完全成功后调用
 			// completeAccountLockSuccessAsync，routes.ts:2481-2483）。
 			ConfirmAccountLockSuccess: func() error {

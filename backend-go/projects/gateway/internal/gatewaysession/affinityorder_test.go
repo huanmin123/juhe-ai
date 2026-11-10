@@ -43,8 +43,9 @@ func TestOrderPersonalPromotesBoundAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("order error: %v", err)
 	}
-	// b promotes over both equal-tier peers and rotates within the tier.
-	want := []string{"b", "c", "a"}
+	// b moves to the front of its equal-tier run; peer order is preserved
+	// (same-layer latch does not rotate peers).
+	want := []string{"b", "a", "c"}
 	if !equalIDs(idsOf(ordered), want) {
 		t.Fatalf("ordered = %v, want %v", idsOf(ordered), want)
 	}
@@ -74,7 +75,7 @@ func TestOrderPersonalStopsPromotionAtBetterPeer(t *testing.T) {
 	}
 }
 
-func TestOrderPersonalNoopWhenSuperPriorityPresent(t *testing.T) {
+func TestOrderPersonalBoundNormalStaysBelowSuperPriority(t *testing.T) {
 	service, _, _ := newTestAffinityService(t, nil)
 	scope := &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"}
 	key := "aff_v1_order-super"
@@ -89,8 +90,11 @@ func TestOrderPersonalNoopWhenSuperPriorityPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("order error: %v", err)
 	}
+	// super priority is a higher dispatch layer; the bound normal account
+	// cannot promote over it (and the removal of the old anySuperPriority
+	// short-circuit no longer disables affinity for the whole group).
 	if !equalIDs(idsOf(ordered), []string{"a", "b"}) {
-		t.Fatalf("ordered = %v, want untouched", idsOf(ordered))
+		t.Fatalf("ordered = %v, want normal bound below super", idsOf(ordered))
 	}
 }
 
@@ -128,49 +132,45 @@ func TestOrderTrafficMigrationPreferencePutsTargetFirst(t *testing.T) {
 	}
 }
 
-func TestOrderHighConcurrencyPrefersBoundAndLessLoaded(t *testing.T) {
-	concurrency := newMockConcurrency()
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.Concurrency = concurrency
-	})
+func TestOrderSoftConcurrencyPrefersBoundAndLessLoaded(t *testing.T) {
+	service, _, _ := newTestAffinityService(t, nil)
 	scope := &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"}
-	key := "aff_v1_hc"
-	concurrency.SetInFlight("busy", AccountInFlightStats{CurrentConcurrency: 4})
-	concurrency.SetInFlight("free", AccountInFlightStats{CurrentConcurrency: 1})
-	concurrency.SetInFlight("bound", AccountInFlightStats{CurrentConcurrency: 1})
+	key := "aff_soft_1"
 	accounts := []gatewayruntimecache.OpenAIAccountSecret{
-		testAccount("busy", 10, nil),
-		testAccount("free", 10, nil),
-		testAccount("bound", 10, nil),
+		testAccount("busy", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(4) }),
+		testAccount("free", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
+		testAccount("bound", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
 	}
 	if _, ok := service.ClaimOpenAIAccountForSessionAsync(context.Background(), key, "bound", scope); !ok {
 		t.Fatal("claim failed")
 	}
-	ordered, err := service.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, key, DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency})
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 0}
+	ordered, err := service.OrderOpenAIAccountsBySessionAffinity(accounts, key, DispatchOrderingOptions{
+		GroupType:        GroupTypePersonal,
+		SchedulingPolicy: policy,
+	})
 	if err != nil {
 		t.Fatalf("order error: %v", err)
 	}
-	// bound wins via affinityAllowed; the remaining two tie on load ratio
-	// (1/5) and current concurrency, so the stable input order decides.
+	// bound wins via affinityAllowed; free/busy tie on softBusy=false and load
+	// ratio decides (1/5 vs 4/5).
 	want := []string{"bound", "free", "busy"}
 	if !equalIDs(idsOf(ordered), want) {
 		t.Fatalf("ordered = %v, want %v", idsOf(ordered), want)
 	}
 }
 
-func TestOrderHighConcurrencyHardBusyLastWhenFastFirstDisabled(t *testing.T) {
-	concurrency := newMockConcurrency()
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.Concurrency = concurrency
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-	})
-	concurrency.SetCurrent("free", 1)
-	concurrency.SetCurrent("busy", 5)
+func TestOrderSoftConcurrencyHardBusyLast(t *testing.T) {
+	service, _, _ := newTestAffinityService(t, nil)
 	accounts := []gatewayruntimecache.OpenAIAccountSecret{
-		testAccount("busy", 10, nil),
-		testAccount("free", 10, nil),
+		testAccount("busy", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(10) }),
+		testAccount("free", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
 	}
-	ordered, err := service.orderOpenAIHighConcurrencyHardBusyLastAsync(context.Background(), accounts)
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
+	ordered, err := service.OrderOpenAIAccountsBySessionAffinity(accounts, "", DispatchOrderingOptions{
+		GroupType:        GroupTypePersonal,
+		SchedulingPolicy: policy,
+	})
 	if err != nil {
 		t.Fatalf("order error: %v", err)
 	}
@@ -179,81 +179,63 @@ func TestOrderHighConcurrencyHardBusyLastWhenFastFirstDisabled(t *testing.T) {
 	}
 }
 
-func TestOrderHighConcurrencyTrafficMigrationTargetFirstWithPolicy(t *testing.T) {
-	concurrency := newMockConcurrency()
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.Concurrency = concurrency
-	})
-	for _, id := range []string{"a", "b", "target"} {
-		concurrency.SetInFlight(id, AccountInFlightStats{CurrentConcurrency: 1})
-	}
+func TestOrderSoftConcurrencyOwnerYieldsAtThreshold(t *testing.T) {
+	service, _, _ := newTestAffinityService(t, nil)
+	scope := &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"}
+	key := "aff_soft_owner"
 	accounts := []gatewayruntimecache.OpenAIAccountSecret{
-		testAccount("a", 10, nil),
-		testAccount("b", 10, nil),
-		testAccount("target", 10, nil),
+		testAccount("owner", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(5) }),
+		testAccount("peer", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
 	}
-	ordered, err := service.orderOpenAIHighConcurrencyAccounts(accounts, "", nil, "target", nil)
+	if _, ok := service.ClaimOpenAIAccountForSessionAsync(context.Background(), key, "owner", scope); !ok {
+		t.Fatal("claim failed")
+	}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
+	ordered, err := service.OrderOpenAIAccountsBySessionAffinity(accounts, key, DispatchOrderingOptions{
+		GroupType:        GroupTypePersonal,
+		SchedulingPolicy: policy,
+	})
+	if err != nil {
+		t.Fatalf("order error: %v", err)
+	}
+	// The owner is soft-busy (5/5), so the healthy peer must lead; the owner
+	// keeps affinity only when it drops below the threshold.
+	if !equalIDs(idsOf(ordered), []string{"peer", "owner"}) {
+		t.Fatalf("ordered = %v, want [peer owner]", idsOf(ordered))
+	}
+}
+
+func TestOrderSoftConcurrencyTrafficMigrationTargetFirst(t *testing.T) {
+	service, _, _ := newTestAffinityService(t, nil)
+	accounts := []gatewayruntimecache.OpenAIAccountSecret{
+		testAccount("a", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
+		testAccount("b", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
+		testAccount("target", 10, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(1) }),
+	}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
+	ordered, err := service.OrderOpenAIAccountsBySessionAffinity(accounts, "", DispatchOrderingOptions{
+		GroupType:        GroupTypePersonal,
+		SchedulingPolicy: policy,
+	})
+	if err != nil {
+		t.Fatalf("order error: %v", err)
+	}
+	if !equalIDs(idsOf(ordered), []string{"a", "b", "target"}) {
+		t.Fatalf("ordered = %v, want stable input order", idsOf(ordered))
+	}
+	// The explicit traffic-migration preference still overrides load order.
+	scope := &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"}
+	service.RememberOpenAIAccountTrafficMigrationPreference("source", "target", scope)
+	ordered, err = service.OrderOpenAIAccountsBySessionAffinity(accounts, "", DispatchOrderingOptions{
+		GroupType:             GroupTypePersonal,
+		SchedulingPolicy:      policy,
+		TrafficMigrationScope: scope,
+	})
 	if err != nil {
 		t.Fatalf("order error: %v", err)
 	}
 	if !equalIDs(idsOf(ordered), []string{"target", "a", "b"}) {
 		t.Fatalf("ordered = %v, want target first", idsOf(ordered))
-	}
-}
-
-func TestOrderHighConcurrencyInvalidPolicyErrors(t *testing.T) {
-	service, _, _ := newTestAffinityService(t, nil)
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{testAccount("a", 1, nil), testAccount("b", 1, nil)}
-	_, err := service.orderOpenAIHighConcurrencyAccounts(accounts, "", map[string]any{"unknownField": 1.0}, "", nil)
-	if err == nil {
-		t.Fatal("expected unknown policy key error")
-	}
-}
-
-func TestAreHighConcurrencyAccountsHardBusy(t *testing.T) {
-	service, _, _ := newTestAffinityService(t, nil)
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{
-		testAccount("a", 1, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(5) }),
-		testAccount("b", 1, func(a *gatewayruntimecache.OpenAIAccountSecret) { a.CurrentConcurrency = ptrInt(9) }),
-	}
-	if !service.AreOpenAIHighConcurrencyAccountsHardBusy(accounts, DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency}) {
-		t.Fatal("expected hard busy")
-	}
-	if service.AreOpenAIHighConcurrencyAccountsHardBusy(accounts[:1], DispatchOrderingOptions{GroupType: GroupTypePersonal}) {
-		t.Fatal("personal groups never report hard busy")
-	}
-}
-
-func TestAreHighConcurrencyAccountsBusyForLane(t *testing.T) {
-	concurrency := newMockConcurrency()
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.Concurrency = concurrency
-	})
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{testAccount("img", 1, nil)}
-	// Total lane free, image lane at limit with imageLaneMaxConcurrency=1.
-	concurrency.SetLane(RequestLaneImage, "img", 1)
-	busy, err := service.AreOpenAIHighConcurrencyAccountsBusyForLane(accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{
-			GroupType:        GroupTypeHighConcurrency,
-			SchedulingPolicy: map[string]any{"imageLaneMaxConcurrency": 1},
-		},
-		RequestLane: RequestLaneImage,
-	})
-	if err != nil {
-		t.Fatalf("busy error: %v", err)
-	}
-	if !busy {
-		t.Fatal("expected image lane busy")
-	}
-	// Without the image lane the same accounts are free.
-	busy, err = service.AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(context.Background(), accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency},
-	})
-	if err != nil {
-		t.Fatalf("busy async error: %v", err)
-	}
-	if busy {
-		t.Fatal("expected text lane free")
 	}
 }
 

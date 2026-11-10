@@ -95,10 +95,6 @@ func (p *w1fAffinityPort) StickyApiKeyFingerprintAsync(context.Context, string, 
 func (p *w1fAffinityPort) RememberApiKeyFingerprintAsync(context.Context, string, string, string) {
 }
 
-func (p *w1fAffinityPort) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []gatewaydispatch.AccountCandidate, gatewaydispatch.HighConcurrencyBusyOptions) (bool, error) {
-	return false, nil
-}
-
 // w1fAccountView 是 gatewayresponse.AccountView 的非 OpenAI 实现（窄口回落
 // 分支覆盖）。
 type w1fAccountView struct {
@@ -447,7 +443,7 @@ func TestW1FAccountAPIKeyWriterSQLite(t *testing.T) {
 	poolAccount := gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        "acc_w1f_writer",
 		SystemAccountID:           "sys_owner",
-		VendorCode:                "openai",
+		VendorCode:                "gpt",
 		ProtocolCode:              "openai",
 		Type:                      "api_key",
 		APIKeys:                   []string{"sk-pool-1", "sk-pool-2"},
@@ -738,150 +734,32 @@ func TestW1FImagePreflightFinalForbiddenArms(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// chain_preflight.go：speed-first 准入门辅助
+// chain_preflight.go：content-length 解析
 // ---------------------------------------------------------------------------
 
-func TestW1FSpeedFirstAdmissionGuards(t *testing.T) {
-	personal := "personal"
-	weightedMode := "weighted"
-	failoverMode := "failover"
-	roundRobinMode := "round_robin"
-	costFirst := "cost_first"
-
-	t.Run("applicability 守卫", func(t *testing.T) {
-		cases := []struct {
-			name    string
-			runtime *gatewayruntimecache.GatewayRuntime
-			lane    gatewayproto.RequestLane
-			want    bool
-		}{
-			{"nil runtime", nil, gatewayproto.LaneText, false},
-			{"weighted 模式适用", speedFirstRuntime(&weightedMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
-			{"failover 模式适用", speedFirstRuntime(&failoverMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
-			{"round_robin 模式适用", speedFirstRuntime(&roundRobinMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
-			{"非 speed_first 偏好", speedFirstRuntime(nil, &costFirst, nil, nil, 1), gatewayproto.LaneText, false},
-			{"非 high_concurrency 分组", speedFirstRuntime(nil, nil, &personal, nil, 1), gatewayproto.LaneText, false},
-			{"无账户", speedFirstRuntime(nil, nil, nil, nil, 0), gatewayproto.LaneText, false},
-			{"图像 lane", speedFirstRuntime(nil, nil, nil, nil, 1), gatewayproto.LaneImage, false},
-			{"全部满足", speedFirstRuntime(nil, nil, nil, nil, 1), gatewayproto.LaneText, true},
-		}
-		for _, testCase := range cases {
-			t.Run(testCase.name, func(t *testing.T) {
-				if got := chainSpeedFirstBodyAdmissionApplies(testCase.runtime, testCase.lane); got != testCase.want {
-					t.Fatalf("applicability = %v, want %v", got, testCase.want)
-				}
-			})
-		}
-		t.Run("缺 NormalRoutingConfig 不适用", func(t *testing.T) {
-			runtime := speedFirstRuntime(nil, nil, nil, nil, 1)
-			runtime.APIKey.NormalRoutingConfig = nil
-			if chainSpeedFirstBodyAdmissionApplies(runtime, gatewayproto.LaneText) {
-				t.Fatalf("缺 NormalRoutingConfig 必须不适用")
+func TestW1FChainContentLengthBytes(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		set    bool
+		want   int
+	}{
+		{"正常值", "123", true, 123},
+		{"缺省为 0", "", false, 0},
+		{"非法为 0", "abc", true, 0},
+		{"负数为 0", "-5", true, 0},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			httpReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if testCase.set {
+				httpReq.Header.Set("Content-Length", testCase.header)
+			}
+			if got := chainContentLengthBytes(gatewaypreauth.NewGatewayRequest(httpReq)); got != testCase.want {
+				t.Fatalf("contentLength = %d, want %d", got, testCase.want)
 			}
 		})
-		t.Run("缺 GroupAccess 不适用", func(t *testing.T) {
-			runtime := speedFirstRuntime(nil, nil, nil, nil, 1)
-			runtime.GroupAccess = nil
-			if chainSpeedFirstBodyAdmissionApplies(runtime, gatewayproto.LaneText) {
-				t.Fatalf("缺 GroupAccess 必须不适用")
-			}
-		})
-	})
-
-	t.Run("调度策略指针解引用", func(t *testing.T) {
-		if derefGroupSchedulingPolicy(nil) != nil {
-			t.Fatalf("nil 策略必须返回 nil map")
-		}
-		policy := gatewayruntimecache.GroupSchedulingPolicy{"maxQueueWaitMs": float64(500)}
-		if derefGroupSchedulingPolicy(&policy)["maxQueueWaitMs"] != float64(500) {
-			t.Fatalf("非 nil 策略必须原样返回")
-		}
-	})
-
-	t.Run("队列策略投影", func(t *testing.T) {
-		waitMs, queueSize, perKey, err := chainSpeedFirstQueuePolicy(nil, gatewayclientip.HighConcurrencyPolicyDefaults{})
-		if err != nil {
-			t.Fatalf("nil 策略: %v", err)
-		}
-		if waitMs != 60_000 || queueSize != 1 || perKey != 1 {
-			t.Fatalf("默认策略 = %d/%d/%d, want 60000/1/1", waitMs, queueSize, perKey)
-		}
-		policy := gatewayruntimecache.GroupSchedulingPolicy{
-			"maxQueueWaitMs":      float64(500),
-			"maxQueueSize":        float64(3),
-			"perApiKeyQueueLimit": float64(2),
-		}
-		waitMs, queueSize, perKey, err = chainSpeedFirstQueuePolicy(&policy, gatewayclientip.HighConcurrencyPolicyDefaults{})
-		if err != nil || waitMs != 500 || queueSize != 3 || perKey != 2 {
-			t.Fatalf("显式策略 = %d/%d/%d err %v", waitMs, queueSize, perKey, err)
-		}
-		partial := gatewayruntimecache.GroupSchedulingPolicy{
-			"maxQueueWaitMs": float64(1000),
-			"maxQueueSize":   float64(4),
-		}
-		waitMs, queueSize, perKey, err = chainSpeedFirstQueuePolicy(&partial, gatewayclientip.HighConcurrencyPolicyDefaults{})
-		if err != nil || waitMs != 1000 || queueSize != 4 || perKey != 4 {
-			t.Fatalf("缺省 perApiKeyQueueLimit = %d/%d/%d err %v, want 1000/4/4", waitMs, queueSize, perKey, err)
-		}
-		malformed := gatewayruntimecache.GroupSchedulingPolicy{"maxQueueWaitMs": float64(0)}
-		if _, _, _, err := chainSpeedFirstQueuePolicy(&malformed, gatewayclientip.HighConcurrencyPolicyDefaults{}); err == nil {
-			t.Fatalf("越界 maxQueueWaitMs 必须报错")
-		}
-	})
-
-	t.Run("body 准入容量", func(t *testing.T) {
-		source := "acc-src"
-		cases := []struct {
-			name     string
-			accounts []gatewayruntimecache.OpenAIAccountSecret
-			want     int
-		}{
-			{"空列表", nil, 0},
-			{"单账户", []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc-1", ConcurrencyLimit: 5}}, 5},
-			{"下限钳制到 1", []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc-1", ConcurrencyLimit: 0}}, 1},
-			{"共享源取最小", []gatewayruntimecache.OpenAIAccountSecret{
-				{ID: "acc-1", CredentialSourceAccountID: &source, ConcurrencyLimit: 5},
-				{ID: "acc-2", CredentialSourceAccountID: &source, ConcurrencyLimit: 3},
-			}, 3},
-			{"不同账户求和", []gatewayruntimecache.OpenAIAccountSecret{
-				{ID: "acc-1", ConcurrencyLimit: 2},
-				{ID: "acc-2", ConcurrencyLimit: 4},
-			}, 6},
-			{"空 ID 跳过", []gatewayruntimecache.OpenAIAccountSecret{{ID: "  ", ConcurrencyLimit: 9}}, 0},
-		}
-		for _, testCase := range cases {
-			t.Run(testCase.name, func(t *testing.T) {
-				if got := chainBodyAdmissionCapacity(testCase.accounts); got != testCase.want {
-					t.Fatalf("capacity = %d, want %d", got, testCase.want)
-				}
-			})
-		}
-	})
-
-	t.Run("content-length 解析", func(t *testing.T) {
-		cases := []struct {
-			name   string
-			header string
-			set    bool
-			want   int
-		}{
-			{"正常值", "123", true, 123},
-			{"缺省为 0", "", false, 0},
-			{"非法为 0", "abc", true, 0},
-			{"负数为 0", "-5", true, 0},
-		}
-		for _, testCase := range cases {
-			t.Run(testCase.name, func(t *testing.T) {
-				httpReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-				if testCase.set {
-					httpReq.Header.Set("Content-Length", testCase.header)
-				}
-				if got := chainContentLengthBytes(gatewaypreauth.NewGatewayRequest(httpReq)); got != testCase.want {
-					t.Fatalf("contentLength = %d, want %d", got, testCase.want)
-				}
-			})
-		}
-	})
+	}
 }
 
 // ---------------------------------------------------------------------------

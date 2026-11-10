@@ -150,8 +150,5 @@ func (o *chainDispatchDecisionObserver) observe(event gatewaydispatch.DispatchDe
 		}
 		fields["candidateOrder"] = top
 	}
-	if summary.HotQualityReorderDegraded {
-		fields["hotQualityReorderDegraded"] = true
-	}
 	o.logger.Info("gateway_dispatch_decision", fieldsArgs(fields)...)
 }

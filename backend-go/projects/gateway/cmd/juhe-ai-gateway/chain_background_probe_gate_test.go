@@ -42,7 +42,7 @@ func newBackgroundProbeGateFixture(t *testing.T, deadlineMS int64) *healthOutbox
 	if err := writer.ensureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure outbox schema: %v", err)
 	}
-	return &healthOutboxFixture{db: db, writer: writer}
+	return newHealthOutboxFixtureWithDeps(t, db, writer)
 }
 
 func (f *healthOutboxFixture) seedAccount(t *testing.T, id string, source any, enabled int) {

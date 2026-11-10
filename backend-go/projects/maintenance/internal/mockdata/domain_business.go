@@ -463,8 +463,9 @@ type mockUserSeed struct {
 }
 
 // mockGroupSeed 是一条分组样本（设计 §8：分组无供应商维度）。
-// groupKind 为空按 standard；超级分组不接受账户直绑，账户绑定由
-// seedSuperGroupMembers 落到其成员普通分组上。
+// groupType/groupKind 为空按 personal/standard；超级分组不接受账户直绑，账户
+// 绑定由 seedSuperGroupMembers 落到其成员普通分组上。policyOverride 非空时
+// 生成两键可选调度策略（普通分组可选调度策略设计 §2.2；两项都默认存 NULL）。
 type mockGroupSeed struct {
 	id             string
 	name           string
@@ -803,29 +804,14 @@ func boolInt(value bool) int {
 	return 0
 }
 
-// mockHighConcurrencyPolicy 生成高并发分组的完整调度策略。
-//
-// 为什么是完整 16 键而不是只写 5 个可写键：gateway 的
-// parseStoredSchedulingPolicy 对 high_concurrency 分组做严格读校验（缺键即
-// 500），写入端必须落整份文档；创建路径也把可写覆盖合并进默认值后整体持久化。
-func mockHighConcurrencyPolicy(overrides map[string]any) map[string]any {
+// mockTwoKeySchedulingPolicy 生成普通分组可选调度策略（普通分组可选调度策略
+// 设计 §2.2）：严格两键，defaultSoftConcurrency 默认 -1（关闭）、
+// clientIpConcurrencyLimit 默认 0（关闭）。2026-11-09 高并发分组退役后不再
+// 生成 16 键旧策略；两项都默认时由调用方存 NULL（与 gateway 写面一致）。
+func mockTwoKeySchedulingPolicy(overrides map[string]any) map[string]any {
 	policy := map[string]any{
-		"mode":                            "balanced_fast",
-		"defaultSoftConcurrency":          5000,
-		"fastFirstEnabled":                true,
-		"fallbackOnQueueEnabled":          true,
-		"breakAffinityOnSoftLimit":        true,
-		"breakAffinityOnQueueWaitMs":      0,
-		"slowRequestThresholdMs":          30000,
-		"firstOutputSlowThresholdMs":      15000,
-		"recentTimeoutWindowSeconds":      120,
-		"recentTimeoutPenaltyThreshold":   2,
-		"maxQueueWaitMs":                  60000,
-		"maxQueueSize":                    5000,
-		"perApiKeyQueueLimit":             5000,
-		"clientIpConcurrencyLimit":        0,
-		"clientIpConcurrencyOverflowMode": "reject",
-		"imageLaneMaxConcurrency":         0,
+		"defaultSoftConcurrency":   -1,
+		"clientIpConcurrencyLimit": 0,
 	}
 	for key, value := range overrides {
 		policy[key] = value
@@ -833,38 +819,36 @@ func mockHighConcurrencyPolicy(overrides map[string]any) map[string]any {
 	return policy
 }
 
-// mockGroupInfo 是分组写入后的读回投影（授权分组设置需要复用分组类型与策略）。
+// mockGroupInfo 是分组写入后的读回投影（授权分组设置需要复用分组类型）。
 type mockGroupInfo struct {
 	id        string
 	groupType string
-	policy    any
 }
 
 // seedGroups 写入分组样本：管理员级普通分组、每用户 1 个默认分组、管理员自有
 // 分组与 3 个"授权给别人"的分组（设计 §8：分组不再携带供应商维度），以及 1 个
-// 由两个普通分组成员构成的超级分组。
+// 由两个普通分组成员构成的超级分组。2026-11-09 高并发分组退役：分组类型只有
+// personal，「高并发」样本改为带两键可选调度策略的普通分组（阈值 + 单 IP 并发）。
 func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []mockUserSeed) (map[string]string, map[string]mockGroupInfo, error) {
-	highPolicy := map[string]any{
-		"defaultSoftConcurrency": 12, "maxQueueWaitMs": 45000,
-		"clientIpConcurrencyLimit": 8, "clientIpConcurrencyOverflowMode": "queue",
-		"imageLaneMaxConcurrency": 6,
+	thresholdPolicy := map[string]any{
+		"defaultSoftConcurrency":   12,
+		"clientIpConcurrencyLimit": 8,
 	}
-	managerHighPolicy := map[string]any{
-		"defaultSoftConcurrency": 10, "maxQueueWaitMs": 40000,
-		"clientIpConcurrencyLimit": 6, "clientIpConcurrencyOverflowMode": "queue",
-		"imageLaneMaxConcurrency": 4,
+	managerThresholdPolicy := map[string]any{
+		"defaultSoftConcurrency":   10,
+		"clientIpConcurrencyLimit": 6,
 	}
 	opsGrantedPolicy := map[string]any{
-		"defaultSoftConcurrency": 6, "maxQueueWaitMs": 30000,
-		"clientIpConcurrencyLimit": 4, "clientIpConcurrencyOverflowMode": "reject",
-		"imageLaneMaxConcurrency": 2,
+		"defaultSoftConcurrency":   6,
+		"clientIpConcurrencyLimit": 4,
 	}
 	seeds := []mockGroupSeed{
 		{id: CleanupIDPrefix + "group_main", name: CleanupNamePrefix + "主力分组", owner: guard.adminID,
 			desc: "主力业务分组，包含高优先级与常规账户", enabled: true},
 		{id: CleanupIDPrefix + "group_high", name: CleanupNamePrefix + "高并发 AI 分组", owner: guard.adminID,
-			desc:      "高并发调度分组，用于分组管理页展示软并发、短队列和单 IP 并发限制",
-			groupType: "high_concurrency", enabled: true, policyOverride: highPolicy},
+			desc:           "普通分组，启用可选调度策略（单账户排队阈值 + 单 IP 并发限制），用于分组管理页策略摘要展示",
+			enabled:        true,
+			policyOverride: thresholdPolicy},
 		{id: CleanupIDPrefix + "group_backup", name: CleanupNamePrefix + "备用分组", owner: guard.adminID,
 			desc: "备用调度分组，包含降级账户和冷却样例", enabled: true},
 		{id: CleanupIDPrefix + "group_oauth", name: CleanupNamePrefix + "OAuth 分组", owner: guard.adminID,
@@ -877,16 +861,16 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 			owner: CleanupIDPrefix + "user_admin",
 			desc:  "普通管理员自有分组，用于管理员模式按管理员角色筛选和创建目标验收", enabled: true},
 		{id: CleanupIDPrefix + "group_manager_high", name: CleanupNamePrefix + "管理员高并发分组",
-			owner:     CleanupIDPrefix + "user_admin",
-			desc:      "普通管理员自有高并发分组，用于管理员角色下的 AI 分组管理验收",
-			groupType: "high_concurrency", enabled: true, policyOverride: managerHighPolicy},
+			owner:   CleanupIDPrefix + "user_admin",
+			desc:    "普通管理员自有分组，启用两键可选调度策略，用于管理员角色下的 AI 分组管理验收",
+			enabled: true, policyOverride: managerThresholdPolicy},
 		{id: CleanupIDPrefix + "group_dev_granted", name: CleanupNamePrefix + "研发授权分组",
 			owner: CleanupIDPrefix + "user_dev",
 			desc:  "研发用户自有分组，主动授权给超级管理员，用于 AI 分组管理查看授权分组", enabled: true},
 		{id: CleanupIDPrefix + "group_ops_granted", name: CleanupNamePrefix + "运维授权高并发分组",
-			owner:     CleanupIDPrefix + "user_ops",
-			desc:      "运维用户自有高并发分组，授权给超级管理员后暂停，用于授权状态展示",
-			groupType: "high_concurrency", enabled: true, policyOverride: opsGrantedPolicy},
+			owner:   CleanupIDPrefix + "user_ops",
+			desc:    "运维用户自有普通分组（带单 IP 并发限制），授权给超级管理员后暂停，用于授权状态展示",
+			enabled: true, policyOverride: opsGrantedPolicy},
 		{id: CleanupIDPrefix + "group_tester_granted", name: CleanupNamePrefix + "测试授权过期分组",
 			owner: CleanupIDPrefix + "user_tester",
 			desc:  "测试用户自有分组，授权给超级管理员后过期，用于 AI 分组管理过期状态展示", enabled: true},
@@ -918,12 +902,16 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 			groupKind = "standard"
 		}
 		var policy any
-		if groupType == "high_concurrency" {
-			encoded, err := w.putJSON(mockHighConcurrencyPolicy(seed.policyOverride))
-			if err != nil {
-				return nil, nil, err
+		if seed.policyOverride != nil {
+			normalized := mockTwoKeySchedulingPolicy(seed.policyOverride)
+			// 两项都默认时存 NULL（与 gateway 写面语义一致，契约 §2.2 规则 6）。
+			if normalized["defaultSoftConcurrency"] != -1 || normalized["clientIpConcurrencyLimit"] != 0 {
+				encoded, err := w.putJSON(normalized)
+				if err != nil {
+					return nil, nil, err
+				}
+				policy = encoded
 			}
-			policy = encoded
 		}
 		if err := w.put(tx, "groups", map[string]any{
 			"id": seed.id, "system_account_id": seed.owner, "name": seed.name,
@@ -948,7 +936,7 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 		}
 		key := strings.TrimPrefix(seed.id, CleanupIDPrefix+"group_")
 		ids[key] = seed.id
-		info[key] = mockGroupInfo{id: seed.id, groupType: groupType, policy: policy}
+		info[key] = mockGroupInfo{id: seed.id, groupType: groupType}
 	}
 	return ids, info, nil
 }
@@ -3633,7 +3621,8 @@ func mockQuestionTitleNorm(title string) string {
 }
 
 // seedGroupAuthorizationSettings 为活跃的分组授权写入被授权方的分组设置样本
-// （授权分组在网关侧按自己的调度策略生效）。
+// （普通分组可选调度策略设计 §2.1/§4：授权覆盖退役——group_type 恒与来源分组
+// 一致的 personal，策略列恒 NULL，被授权方运行来源分组的两个策略）。
 func (w *businessWriter) seedGroupAuthorizationSettings(tx *sql.Tx, guard businessGuard, groups map[string]mockGroupInfo) error {
 	seeds := []struct {
 		key     string
@@ -3653,15 +3642,12 @@ func (w *businessWriter) seedGroupAuthorizationSettings(tx *sql.Tx, guard busine
 		if !ok {
 			continue
 		}
-		policy := any(nil)
-		if group.groupType == "high_concurrency" {
-			policy = group.policy
-		}
 		if err := w.put(tx, "group_authorization_settings", map[string]any{
 			"authorization_id":  CleanupIDPrefix + "auth_" + seed.key + "_" + userSlug(seed.grantee),
 			"system_account_id": seed.grantee, "group_id": group.id,
 			"enabled": seed.enabled, "group_type": group.groupType,
-			"scheduling_policy_json": policy, "created_at": now, "updated_at": now,
+			// 授权覆盖退役：策略列不再携带 per-grantee 策略。
+			"scheduling_policy_json": nil, "created_at": now, "updated_at": now,
 		}); err != nil {
 			return err
 		}

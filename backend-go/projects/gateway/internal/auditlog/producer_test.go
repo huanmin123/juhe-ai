@@ -302,28 +302,35 @@ func TestProducerCaptureConcurrentWrites(t *testing.T) {
 		}(index)
 	}
 	wg.Wait()
-	fake.waitForCalls(t, writers*3)
+	fake.waitForCalls(t, writers*2+1)
 
-	if renews, persists, hots := fake.counts(); renews != writers || persists != writers || hots != writers {
-		t.Fatalf("concurrent counts renew=%d persist=%d hot=%d, want %d each", renews, persists, hots, writers)
+	if renews, persists, hots := fake.counts(); renews != 1 || persists != writers || hots != writers {
+		t.Fatalf("concurrent counts renew=%d persist=%d hot=%d, want 1/%d/%d", renews, persists, hots, writers, writers)
 	}
 	if stored := fake.persistedInputs(); len(stored) != writers {
 		t.Fatalf("persisted %d inputs, want %d", len(stored), writers)
 	}
 }
 
-// gatedStore blocks the per-record lease renewal so tests can hold every
-// worker inside the write path and fill the queue deterministically.
+// gatedStore blocks the data Persist and retract store calls so tests can hold
+// every worker inside the write path and fill the queues deterministically.
 type gatedStore struct {
 	*fakeStore
-	gate    chan struct{}
-	entered atomic.Int32
+	gate           chan struct{}
+	entered        atomic.Int32
+	retractEntered atomic.Int32
 }
 
-func (g *gatedStore) RenewOwnerLease(_ context.Context, _ OwnerLease, _ time.Duration) (bool, error) {
+func (g *gatedStore) Persist(ctx context.Context, lease OwnerLease, input AuditLogInput) (PersistResult, error) {
 	g.entered.Add(1)
 	<-g.gate
-	return true, nil
+	return g.fakeStore.Persist(ctx, lease, input)
+}
+
+func (g *gatedStore) RetractInProgress(ctx context.Context, lease OwnerLease, id string) (bool, error) {
+	g.retractEntered.Add(1)
+	<-g.gate
+	return g.fakeStore.RetractInProgress(ctx, lease, id)
 }
 
 // TestProducerCaptureDropsWhenQueueSaturated pins the bounded-queue contract:
@@ -371,11 +378,11 @@ func TestProducerCaptureDropsWhenQueueSaturated(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	renews, persists, hots := inner.counts()
-	if renews != 0 || persists != want || hots != want {
-		t.Fatalf("store calls after drain: renew=%d persist=%d hot=%d, want 0/%d/%d", renews, persists, hots, want, want)
+	if renews != 1 || persists != want || hots != want {
+		t.Fatalf("store calls after drain: renew=%d persist=%d hot=%d, want 1/%d/%d", renews, persists, hots, want, want)
 	}
 	if entered := store.entered.Load(); entered != int32(want) {
-		t.Fatalf("gate renewals = %d, want %d", entered, want)
+		t.Fatalf("gated persist entries = %d, want %d", entered, want)
 	}
 }
 

@@ -1,6 +1,5 @@
 package gatewayhotquality
 
-
 import (
 	"context"
 	"math/rand"
@@ -797,86 +796,6 @@ func TestDecideHotQualityCandidateCacheRateExplanation(t *testing.T) {
 	}
 }
 
-func TestDecideHotQualityCandidateOrderOnlyPureEntry(t *testing.T) {
-	wouldExplore := func() *SameTierExplorationDecisionState {
-		return &SameTierExplorationDecisionState{
-			Enabled:                      true,
-			EligibleFirstPrimaryDispatch: true,
-			Credit:                       1,
-			Cursor:                       0,
-			NowMs:                        10_000,
-			KnownSampleStaleAfterMs:      60_000,
-		}
-	}
-	build := func() []HotQualityCandidatePayload {
-		return []HotQualityCandidatePayload{
-			hqCandidate("primary", normalTier(), func(candidate *HotQualityCandidate) {
-				candidate.StableBindingOrder = 0
-				candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleWarming, ReliabilityLevel: HotQualityReliabilityHealthy}
-			}),
-			hqCandidate("cold-target", normalTier(), func(candidate *HotQualityCandidate) {
-				candidate.StableBindingOrder = 1
-			}),
-		}
-	}
-	cacheRates := map[string]CacheRateWindow{"primary": crWindow(60, 1_000_000)}
-
-	// Sanity: the full entry with the live state selects the exploration
-	// target.
-	full, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
-		RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf,
-		Candidates: build(), CacheRates: cacheRates, Exploration: wouldExplore(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if full.Explanation.Exploration.Status != ExplorationStatusSelected || full.SelectedCandidate.Payload.label != "cold-target" {
-		t.Fatalf("full entry = %+v", full.Explanation.Exploration)
-	}
-
-	// The pure entry ignores the exploration state entirely: no target, no
-	// panic, not_configured, baseline primary stays selected.
-	pure, err := DecideHotQualityCandidateOrderOnly(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
-		RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf,
-		Candidates: build(), CacheRates: cacheRates, Exploration: wouldExplore(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pure.Explanation.Exploration.Status != ExplorationStatusNotConfigured {
-		t.Fatalf("pure status = %s", pure.Explanation.Exploration.Status)
-	}
-	if pure.DispatchIntent != DispatchIntentPrimaryService || pure.Explanation.SelectionReason != SelectionReasonRankedPrimary {
-		t.Fatalf("pure intent/reason = %s/%s", pure.DispatchIntent, pure.Explanation.SelectionReason)
-	}
-	if pure.SelectedCandidate == nil || pure.SelectedCandidate.Payload.label != "primary" {
-		t.Fatalf("pure selected = %+v", pure.SelectedCandidate)
-	}
-	if len(pure.Explanation.DuplicateRuntimeAccountIDs) != 0 || pure.Explanation.CandidateOrderDetails == nil {
-		t.Fatalf("pure explanation = %+v", pure.Explanation)
-	}
-
-	// Pure entry ordering equals the full entry without exploration, including
-	// the cache-rate-aware within-tier keys.
-	exploreFree, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
-		RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf,
-		Candidates: build(), CacheRates: cacheRates,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Join(crLabels(pure), ",") != strings.Join(crLabels(exploreFree), ",") {
-		t.Fatalf("pure order %v != full order %v", crLabels(pure), crLabels(exploreFree))
-	}
-
-	// The nil-exploration behavior of the full entry is locked: no panic,
-	// not_configured, baseline primary selected.
-	nilState := exploreFree
-	if nilState.Explanation.Exploration.Status != ExplorationStatusNotConfigured {
-		t.Fatalf("nil-state status = %s", nilState.Explanation.Exploration.Status)
-	}
-}
-
 func TestApplyCacheRateWindow(t *testing.T) {
 	apply := func(window CacheRateWindow) *HotQualitySelectionSnapshot {
 		snapshot := &HotQualitySelectionSnapshot{}
@@ -1236,4 +1155,3 @@ func TestDecideHotQualityCandidateCacheQuantumModeTierWidth(t *testing.T) {
 		t.Fatalf("quantums = %+v", details)
 	}
 }
-

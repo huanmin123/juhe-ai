@@ -77,13 +77,6 @@ type AuditLogRetractor interface {
 	DispatchAuditLogRetraction(ctx Ctx, auditLogID string)
 }
 
-// DispatchOverflowSpool ports persistUsageRecordForQueueOverflow: the
-// performance-mode overflow compensation invoked when the finalization queue
-// is full (usage-record-spool.ts persistUsageRecordToSpool).
-type DispatchOverflowSpool interface {
-	PersistOverflow(ctx Ctx, input UsageRecordInput) error
-}
-
 // Ctx is the dispatch context alias keeping port signatures compact.
 type Ctx = context.Context
 

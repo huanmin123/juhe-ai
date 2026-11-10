@@ -1,7 +1,7 @@
 package statreads
 
 // w11g 覆盖补充（第二批）：selfOnly handler 分支、分页/候选钳制、
-// usage-records 日期窗口与 PG 方言分支、shard 目录细节、错误臂。
+// usage-records 日期窗口、PG 方言分支与错误臂。
 
 import (
 	"context"

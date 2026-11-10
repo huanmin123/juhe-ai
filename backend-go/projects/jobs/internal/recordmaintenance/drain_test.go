@@ -64,4 +64,3 @@ func pendingCount(t *testing.T, store *Store) int {
 	}
 	return len(jobs)
 }
-

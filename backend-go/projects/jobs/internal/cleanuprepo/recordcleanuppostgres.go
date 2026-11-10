@@ -471,9 +471,6 @@ func (s *RecordCleanupStore) deletePostgresAPIKeyUsageDataBatch(ctx context.Cont
 	if err := s.subtractPostgresAPIKeyUsageRowsOnce(ctx, tx, rows, apiKeyID, systemAccountID, updatedAt); err != nil {
 		return 0, err
 	}
-	if err := deletePostgresUsageRecordCatalogRowsByUsageIds(ctx, &UsageRecordsStore{Catalog: s.UsageCatalog, Stats: s.Stats}, tx, usageIDs); err != nil {
-		return 0, err
-	}
 	deletedRows, err := s.deletePostgresUsageRecordsByPartitionKeys(ctx, tx, rows)
 	if err != nil {
 		return 0, err
@@ -516,9 +513,6 @@ func (s *RecordCleanupStore) deletePostgresAccountUsageDataBatch(ctx context.Con
 		return 0, nil
 	}
 	if err := s.subtractPostgresAccountUsageRowsOnce(ctx, tx, rows, target, updatedAt); err != nil {
-		return 0, err
-	}
-	if err := deletePostgresUsageRecordCatalogRowsByUsageIds(ctx, &UsageRecordsStore{Catalog: s.UsageCatalog, Stats: s.Stats}, tx, usageIDs); err != nil {
 		return 0, err
 	}
 	deletedRows, err := s.deletePostgresUsageRecordsByPartitionKeys(ctx, tx, rows)

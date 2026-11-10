@@ -3,13 +3,10 @@ package cleanuprepo
 import (
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
-// 纯函数助手的小分支补测：numberOf / parseNumber / textOf /
-// authorizationReportRowsOf（account 与 group 两族 + 归属排除）。这些分支
-// 为 switch/条件全类型覆盖，走真实断言即可稳定复现。
+// 纯函数助手的小分支补测：numberOf / parseNumber / textOf。这些分支为
+// switch/条件全类型覆盖，走真实断言即可稳定复现。
 
 func TestW10ENumberOfTypeBranches(t *testing.T) {
 	cases := map[string]struct {
@@ -67,70 +64,6 @@ func TestW10ETextOfBranches(t *testing.T) {
 	}
 	if got := optionalText("  "); got != "" {
 		t.Fatalf("optionalText(空白) = %q", got)
-	}
-}
-
-func TestW10EAuthorizationReportRowsOf(t *testing.T) {
-	owner := "owner-1"
-	groupOwner := "owner-2"
-	authSrcTeam := "team-1"
-	groupSrcTeam := "team-2"
-
-	// account 行命中：授权/账户/归属齐备且 owner != grantee。
-	accountRow := statsagg.UsageStatsRecordRow{
-		SystemAccountID:                  "grantee-1",
-		AccountID:                        &owner,
-		AccountOwnerSystemAccountID:      &owner,
-		AccountAuthorizationID:           &owner,
-		AccountAuthorizationSourceType:   &owner,
-		AccountAuthorizationSourceTeamID: &authSrcTeam,
-	}
-	rows := authorizationReportRowsOf(accountRow)
-	if len(rows) != 1 {
-		t.Fatalf("account 命中应返回 1 行，实际 %d", len(rows))
-	}
-	if rows[0].authorizationID != "account:"+owner || rows[0].resourceType != "account" ||
-		rows[0].owner != owner || rows[0].grantee != "grantee-1" ||
-		rows[0].sourceTeamID == nil || *rows[0].sourceTeamID != authSrcTeam {
-		t.Fatalf("account 行 = %+v", rows[0])
-	}
-
-	// group 行命中：group 授权族。
-	groupRow := statsagg.UsageStatsRecordRow{
-		SystemAccountID:                "grantee-1",
-		GroupID:                        &groupOwner,
-		GroupOwnerSystemAccountID:      &groupOwner,
-		GroupAuthorizationID:           &groupOwner,
-		GroupAuthorizationSourceType:   &groupOwner,
-		GroupAuthorizationSourceTeamID: &groupSrcTeam,
-		AccountOwnerSystemAccountID:    &owner,
-		AccountID:                      &owner,
-	}
-	rows = authorizationReportRowsOf(groupRow)
-	if len(rows) != 1 {
-		t.Fatalf("group 命中应返回 1 行，实际 %d", len(rows))
-	}
-	if rows[0].authorizationID != "group:"+groupOwner || rows[0].resourceType != "group" ||
-		rows[0].owner != groupOwner || rows[0].grantee != "grantee-1" ||
-		rows[0].sourceTeamID == nil || *rows[0].sourceTeamID != groupSrcTeam {
-		t.Fatalf("group 行 = %+v", rows[0])
-	}
-
-	// 归属 == grantee 时不追加（排除自身授权）。
-	sameOwner := "grantee-1"
-	selfRow := statsagg.UsageStatsRecordRow{
-		SystemAccountID:             "grantee-1",
-		AccountID:                   &sameOwner,
-		AccountOwnerSystemAccountID: &sameOwner,
-		AccountAuthorizationID:      &sameOwner,
-	}
-	if rows := authorizationReportRowsOf(selfRow); len(rows) != 0 {
-		t.Fatalf("owner==grantee 不应追加，实际 %d 行", len(rows))
-	}
-
-	// 空行不产生任何授权报表行。
-	if rows := authorizationReportRowsOf(statsagg.UsageStatsRecordRow{}); len(rows) != 0 {
-		t.Fatalf("空行不应追加，实际 %d 行", len(rows))
 	}
 }
 

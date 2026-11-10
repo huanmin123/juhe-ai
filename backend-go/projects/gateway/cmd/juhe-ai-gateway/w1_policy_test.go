@@ -298,38 +298,34 @@ func TestW1AccountsSecretHelpers(t *testing.T) {
 		t.Fatal("越界必须回 1")
 	}
 	// chainNormalizeGroupType。
-	personal, err := chainNormalizeGroupType(sql.NullString{})
-	if err != nil || personal == nil || *personal != "personal" {
-		t.Fatalf("空类型 = %v, %v", personal, err)
+	if _, _, err := chainNormalizeGroupType(sql.NullString{}); err == nil {
+		t.Fatal("NULL 类型必须报错（不得静默归 personal）")
 	}
-	blank, err := chainNormalizeGroupType(sql.NullString{String: "  ", Valid: true})
-	if err != nil || *blank != "personal" {
-		t.Fatalf("空白类型 = %v, %v", blank, err)
+	if _, _, err := chainNormalizeGroupType(sql.NullString{String: "  ", Valid: true}); err == nil {
+		t.Fatal("空白类型必须报错（不得静默归 personal）")
 	}
-	high, err := chainNormalizeGroupType(sql.NullString{String: "high_concurrency", Valid: true})
-	if err != nil || *high != "high_concurrency" {
-		t.Fatalf("高并发 = %v, %v", high, err)
+	high, legacy, err := chainNormalizeGroupType(sql.NullString{String: "high_concurrency", Valid: true})
+	if err != nil || *high != "personal" || !legacy {
+		t.Fatalf("legacy 高并发 = %v legacy=%v, %v", high, legacy, err)
 	}
-	if _, err := chainNormalizeGroupType(sql.NullString{String: "bogus", Valid: true}); err == nil {
+	if _, _, err := chainNormalizeGroupType(sql.NullString{String: "bogus", Valid: true}); err == nil {
 		t.Fatal("非法类型必须报错")
 	}
 	// chainParseGroupSchedulingPolicy。
-	if got, err := chainParseGroupSchedulingPolicy(sql.NullString{}, nil); err != nil || got != nil {
-		t.Fatalf("nil 组类型 = %v, %v", got, err)
+	if got, err := chainParseGroupSchedulingPolicy(sql.NullString{}, false, 5000); err != nil || got != nil {
+		t.Fatalf("personal NULL = %v, %v", got, err)
 	}
-	personalType := "personal"
-	if got, err := chainParseGroupSchedulingPolicy(sql.NullString{String: "{}", Valid: true}, &personalType); err != nil || got != nil {
-		t.Fatalf("personal = %v, %v", got, err)
+	if _, err := chainParseGroupSchedulingPolicy(sql.NullString{String: "{}", Valid: true}, false, 5000); err == nil {
+		t.Fatal("personal 空对象必须报错")
 	}
-	highType := "high_concurrency"
-	if _, err := chainParseGroupSchedulingPolicy(sql.NullString{}, &highType); err == nil {
-		t.Fatal("高并发缺策略必须报错")
+	if _, err := chainParseGroupSchedulingPolicy(sql.NullString{}, true, 5000); err == nil {
+		t.Fatal("legacy 缺策略必须报错")
 	}
-	policy, err := chainParseGroupSchedulingPolicy(sql.NullString{String: `{"maxQueueSize":10}`, Valid: true}, &highType)
-	if err != nil || policy == nil || (*policy)["maxQueueSize"] != float64(10) {
+	policy, err := chainParseGroupSchedulingPolicy(sql.NullString{String: `{"defaultSoftConcurrency":10,"clientIpConcurrencyLimit":2}`, Valid: true}, true, 5000)
+	if err != nil || policy == nil || policy.DefaultSoftConcurrency != 10 || policy.ClientIPConcurrencyLimit != 2 {
 		t.Fatalf("策略 = %+v, %v", policy, err)
 	}
-	if _, err := chainParseGroupSchedulingPolicy(sql.NullString{String: "bad", Valid: true}, &highType); err == nil {
+	if _, err := chainParseGroupSchedulingPolicy(sql.NullString{String: "bad", Valid: true}, true, 5000); err == nil {
 		t.Fatal("非法 JSON 必须报错")
 	}
 	// chainResolveProxyURL。

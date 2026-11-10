@@ -2,50 +2,31 @@ package cleanuprepo
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // api-key-record-cleanup.ts / account-record-cleanup.ts 的关联数据清理链移植：
 // dataset targets 表、双聚合 global 游标放行门（usage_shard 逐分片游标已废，
-// 与 dataretention 半区共用 sqliteAggregationFloorCursorAt）、分批删除、统计
-// 扣减结算（CleanupDeletedApiKeyRecordStats / CleanupDeletedAccountRecordStats）
-// 与派生窗口刷新挂钩。
+// 与 dataretention 半区共用 sqliteAggregationFloorCursorAt）、分批删除与统计
+// 扣减结算（CleanupAPIKeyRelatedPostgres / CleanupAccountRelatedPostgres）。
 
-const (
-	recordCleanupBatchLimit = 100
-	recordCleanupShardLimit = 16
-)
-
-// DerivedWindowRefresher 照 refreshUsageQuotaHourlyWindowsCache +
-// refreshUsageRankSnapshots（SQLite 派生窗口重算；由组合根接入 statsagg）。
-type DerivedWindowRefresher interface {
-	RefreshQuotaHourlyWindows(ctx context.Context) error
-	RefreshRankSnapshots(ctx context.Context) error
-}
+const recordCleanupBatchLimit = 100
 
 // RecordCleanupStore 承载已删除 API Key / AI 账户关联数据清理。
 type RecordCleanupStore struct {
-	Dataset      *DB
-	Stats        *DB
-	UsageCatalog *DB
+	Dataset *DB
+	Stats   *DB
 	// Business PG 模式下 juhe_business 句柄，供 PG 扣减链授权查找
 	// （createPostgresUsageStatsAuthorizationLookup 的
-	// resource_authorizations 查询）；SQLite 分片路径不使用。
+	// resource_authorizations 查询）。
 	Business *DB
-	// DerivedWindows SQLite 派生窗口刷新；nil 时由组合根登记为跳过（Go 的
-	// 调度式窗口刷新 jobs 已覆盖同一收敛语义）。
-	DerivedWindows DerivedWindowRefresher
-	// OnDerivedWindowsSkipped 在 DerivedWindows 为 nil 时上报（不静默）。
-	OnDerivedWindowsSkipped func(reason string)
-	Now                     func() time.Time
+	Now      func() time.Time
 	// Timezone 提供业务统计时区（时间桶键计算）。
 	Timezone func(ctx context.Context) (*time.Location, error)
 	// CacheReadCostEstimator 注入 Node estimateProviderCacheReadCostUsd
@@ -80,156 +61,6 @@ func cleanupPendingReason(hasMoreCoveredRows, hasUncoveredRows bool) string {
 
 // ---- targets 表 ----
 
-func (s *RecordCleanupStore) upsertAPIKeyTarget(ctx context.Context, apiKeyID, systemAccountID, updatedAt string) error {
-	_, err := execChangedQ(ctx, s.Dataset, s.Dataset.Bind(fmt.Sprintf(`
-    INSERT INTO api_key_record_cleanup_targets (api_key_id, system_account_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(api_key_id) DO UPDATE SET
-      system_account_id = excluded.system_account_id,
-      updated_at = excluded.updated_at
-	`)), apiKeyID, systemAccountID, updatedAt, updatedAt)
-	return err
-}
-
-func (s *RecordCleanupStore) markAPIKeyTarget(ctx context.Context, apiKeyID, systemAccountID, blockedReason, errorMessage, updatedAt string) error {
-	query := s.Dataset.Bind(fmt.Sprintf(`
-    UPDATE api_key_record_cleanup_targets
-    SET attempt_count = attempt_count + 1,
-        last_attempt_at = ?,
-        last_blocked_reason = %s,
-        last_error_message = %s,
-        updated_at = ?
-    WHERE api_key_id = ? AND system_account_id = ?
-	`, placeholderNull(blockedReason), placeholderNull(errorMessage)))
-	args := []any{updatedAt}
-	if blockedReason != "" {
-		args = append(args, blockedReason)
-	}
-	if errorMessage != "" {
-		args = append(args, errorMessage)
-	}
-	args = append(args, updatedAt, apiKeyID, systemAccountID)
-	_, err := execChangedQ(ctx, s.Dataset, query, args...)
-	return err
-}
-
-func placeholderNull(value string) string {
-	if value == "" {
-		return "NULL"
-	}
-	return "?"
-}
-
-func (s *RecordCleanupStore) clearAPIKeyTarget(ctx context.Context, apiKeyID, systemAccountID string) error {
-	_, err := execChangedQ(ctx, s.Dataset,
-		`DELETE FROM api_key_record_cleanup_targets WHERE api_key_id = ? AND system_account_id = ?`, apiKeyID, systemAccountID)
-	return err
-}
-
-func (s *RecordCleanupStore) listAPIKeyTargets(ctx context.Context, limit int) ([]retention.APIKeyCleanupTarget, error) {
-	rows, err := queryRows(ctx, s.Dataset, s.Dataset.Bind(fmt.Sprintf(`
-    SELECT api_key_id, system_account_id
-    FROM api_key_record_cleanup_targets
-    ORDER BY COALESCE(last_attempt_at, created_at) ASC, created_at ASC, api_key_id ASC
-    LIMIT ?
-	`)), batchLimit(limit))
-	if err != nil {
-		return nil, err
-	}
-	var targets []retention.APIKeyCleanupTarget
-	for _, row := range rows {
-		target := retention.APIKeyCleanupTarget{
-			APIKeyID:        textOf(row["api_key_id"]),
-			SystemAccountID: textOf(row["system_account_id"]),
-		}
-		if target.APIKeyID != "" && target.SystemAccountID != "" {
-			targets = append(targets, target)
-		}
-	}
-	return targets, nil
-}
-
-func (s *RecordCleanupStore) upsertAccountTarget(ctx context.Context, target retention.ExpiredDeletedAccountTarget, updatedAt string) error {
-	_, err := execChangedQ(ctx, s.Dataset, s.Dataset.Bind(fmt.Sprintf(`
-    INSERT INTO account_record_cleanup_targets (
-      account_id, system_account_id, related_account_ids_json, authorization_ids_json, team_scope_ids_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account_id) DO UPDATE SET
-      system_account_id = excluded.system_account_id,
-      related_account_ids_json = CASE
-        WHEN excluded.related_account_ids_json <> '[]' THEN excluded.related_account_ids_json
-        ELSE account_record_cleanup_targets.related_account_ids_json
-      END,
-      authorization_ids_json = CASE
-        WHEN excluded.authorization_ids_json <> '[]' THEN excluded.authorization_ids_json
-        ELSE account_record_cleanup_targets.authorization_ids_json
-      END,
-      team_scope_ids_json = CASE
-        WHEN excluded.team_scope_ids_json <> '[]' THEN excluded.team_scope_ids_json
-        ELSE account_record_cleanup_targets.team_scope_ids_json
-      END,
-      updated_at = excluded.updated_at
-	`)),
-		target.AccountID, target.SystemAccountID,
-		stringArrayJSON(target.RelatedAccountIDs), stringArrayJSON(target.AuthorizationIDs), stringArrayJSON(target.TeamScopeIDs),
-		updatedAt, updatedAt)
-	return err
-}
-
-func (s *RecordCleanupStore) markAccountTarget(ctx context.Context, target retention.ExpiredDeletedAccountTarget, blockedReason, errorMessage, updatedAt string) error {
-	query := s.Dataset.Bind(fmt.Sprintf(`
-    UPDATE account_record_cleanup_targets
-    SET attempt_count = attempt_count + 1,
-        last_attempt_at = ?,
-        last_blocked_reason = %s,
-        last_error_message = %s,
-        updated_at = ?
-    WHERE account_id = ? AND system_account_id = ?
-	`, placeholderNull(blockedReason), placeholderNull(errorMessage)))
-	args := []any{updatedAt}
-	if blockedReason != "" {
-		args = append(args, blockedReason)
-	}
-	if errorMessage != "" {
-		args = append(args, errorMessage)
-	}
-	args = append(args, updatedAt, target.AccountID, target.SystemAccountID)
-	_, err := execChangedQ(ctx, s.Dataset, query, args...)
-	return err
-}
-
-func (s *RecordCleanupStore) clearAccountTarget(ctx context.Context, target retention.ExpiredDeletedAccountTarget) error {
-	_, err := execChangedQ(ctx, s.Dataset,
-		`DELETE FROM account_record_cleanup_targets WHERE account_id = ? AND system_account_id = ?`, target.AccountID, target.SystemAccountID)
-	return err
-}
-
-func (s *RecordCleanupStore) listAccountTargets(ctx context.Context, limit int) ([]retention.ExpiredDeletedAccountTarget, error) {
-	rows, err := queryRows(ctx, s.Dataset, s.Dataset.Bind(fmt.Sprintf(`
-    SELECT account_id, system_account_id, related_account_ids_json, authorization_ids_json, team_scope_ids_json
-    FROM account_record_cleanup_targets
-    ORDER BY COALESCE(last_attempt_at, created_at) ASC, created_at ASC, account_id ASC
-    LIMIT ?
-	`)), batchLimit(limit))
-	if err != nil {
-		return nil, err
-	}
-	var targets []retention.ExpiredDeletedAccountTarget
-	for _, row := range rows {
-		target := retention.ExpiredDeletedAccountTarget{
-			AccountID:         textOf(row["account_id"]),
-			SystemAccountID:   textOf(row["system_account_id"]),
-			RelatedAccountIDs: parseStringArrayJSON(textOf(row["related_account_ids_json"])),
-			AuthorizationIDs:  parseStringArrayJSON(textOf(row["authorization_ids_json"])),
-			TeamScopeIDs:      parseStringArrayJSON(textOf(row["team_scope_ids_json"])),
-		}
-		if target.AccountID != "" && target.SystemAccountID != "" {
-			targets = append(targets, target)
-		}
-	}
-	return targets, nil
-}
-
 func stringArrayJSON(values []string) string {
 	normalized, _ := json.Marshal(uniqueNonEmpty(values))
 	return string(normalized)
@@ -247,19 +78,6 @@ func parseStringArrayJSON(value string) []string {
 }
 
 // ---- 统计安全游标 ----
-
-func (s *RecordCleanupStore) scanUsageRows(ctx context.Context, db *sql.DB, query string, args ...any) ([]statsagg.UsageStatsRecordRow, error) {
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanUsageStatsRecordRows(rows)
-}
-
-func (s *RecordCleanupStore) toRelated(result retention.RelatedCleanupResult) retention.RelatedCleanupResult {
-	return result
-}
 
 var accountScopeStatsTables = []string{
 	"usage_stats_totals", "usage_stats_minute", "usage_stats_hourly", "usage_stats_daily",

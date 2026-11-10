@@ -18,8 +18,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 )
 
-// gatewayRuntimeLogFileName 生成 F1 可解析的 server 实例文件名
-// `juhe-ai.<instanceID>.log`（jobs filename.go 的 server instance 模式），
+// gatewayRuntimeLogFileName 生成 server 实例本地日志文件名（外部采集按该名识别）
+// `juhe-ai.<instanceID>.log`（沿用历史 F1 的 server instance 命名模式），
 // 多 gateway 共享日志目录时各写各的文件；实例段清洗为
 // [A-Za-z0-9][A-Za-z0-9._-]{0,63}，非法字符折叠为 `_`，空值回落 gateway。
 func gatewayRuntimeLogFileName(instanceID string) string {
@@ -64,10 +64,14 @@ func sanitizeRuntimeLogInstanceID(instanceID string) string {
 // 不可恢复装配错误，当前恒为 nil。
 // 启动诊断事件始终经由 stdout-only bootstrap logger 发出（在切换多路
 // logger 之前），文件路异常时诊断事件仍可从 stdout 观察。
-func newRuntimeLogger(cfg runtimeConfig, stdout io.Writer, level slog.Level) (*slog.Logger, *processlog.FileSink, error) {
+//
+// 文件路自 2026-11-09 起经 AsyncWriter 有界异步落盘：日志目录换成 NFS/NAS
+// 或底层盘卡死时，请求协程不会被文件 Write 拖住；队列满丢弃日志（非业务
+// 数据，允许取舍），stdout 路保持同步即时输出。
+func newRuntimeLogger(cfg runtimeConfig, stdout io.Writer, level slog.Level) (*slog.Logger, *processlog.AsyncWriter, error) {
 	bootstrap := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: level}))
 	if cfg.LogDir == "" {
-		bootstrap.Info("JUHE_AI_LOG_DIR 显式关闭（disabled），文件日志与 grep 面禁用",
+		bootstrap.Info("JUHE_AI_LOG_DIR 显式关闭（disabled），文件日志禁用",
 			"event", "runtime_log_file_sink_disabled")
 		return bootstrap, nil, nil
 	}
@@ -87,9 +91,10 @@ func newRuntimeLogger(cfg runtimeConfig, stdout io.Writer, level slog.Level) (*s
 			"directory", cfg.LogDir, "error", err.Error())
 		return bootstrap, nil, nil
 	}
-	logger := slog.New(slog.NewJSONHandler(processlog.NewTeeWriter(stdout, sink), &slog.HandlerOptions{Level: level}))
+	asyncSink := processlog.NewAsyncWriter(sink, 0)
+	logger := slog.New(slog.NewJSONHandler(processlog.NewTeeWriter(stdout, asyncSink), &slog.HandlerOptions{Level: level}))
 	bootstrap.Info("运行日志文件 sink 就绪",
 		"event", "runtime_log_file_sink_ready",
 		"directory", cfg.LogDir, "currentFile", sink.CurrentPath(), "maxFileMB", cfg.LogMaxFileMB)
-	return logger, sink, nil
+	return logger, asyncSink, nil
 }

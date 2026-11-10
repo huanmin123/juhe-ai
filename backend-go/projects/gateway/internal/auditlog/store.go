@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -294,6 +293,17 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 	if err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
+	for index := range plans {
+		plans[index].root = s.blobDir
+	}
+	// 2026-11-09：canonical blob 不再逐文件/父目录 fsync；崩溃后若已有 blob
+	// 文件缺失或截断，把新记录中命中的 payload 降级为 hash_only（保留
+	// body_sha256 / raw size），而不是永久拒绝同 hash 的后续 Persist。
+	// 旧记录仍指向缺失 blob（payload 本就已丢），但审计主记录继续可写。
+	plans, prepared, err = degradeMissingExistingBlobPayloads(plans, prepared)
+	if err != nil {
+		return PersistResult{}, errors.Join(err, tx.Rollback())
+	}
 	wroteParent, err := s.upsertLog(ctx, tx, input, prepared)
 	if err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
@@ -303,12 +313,6 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 			return PersistResult{}, errors.Join(fmt.Errorf("重复或迟到的审计输入被忽略"), rollbackErr)
 		}
 		return PersistResult{Ignored: true}, nil
-	}
-	for index := range plans {
-		plans[index].root = s.blobDir
-	}
-	if err := verifyExistingBlobFiles(plans); err != nil {
-		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
 	if err := s.writeBlobTemps(lease, plans); err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
@@ -478,6 +482,23 @@ func (s *sqlStore) reactivateScheduledBlobGC(ctx context.Context, tx *sql.Tx, pl
 		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("audit_payload_blob_gc")+` WHERE blob_id=?`), id); err != nil {
 			return fmt.Errorf("取消 F3 pending blob GC 失败: %w", err)
 		}
+	}
+	return nil
+}
+
+// verifyLease 是 hot-search 无事务追加前的单次 fence 查询（不持事务、不锁
+// 租约行）；过期 owner 在写文件前即被拒绝。
+func (s *sqlStore) verifyLease(ctx context.Context, lease OwnerLease) error {
+	if lease.OwnerID == "" || lease.FenceToken <= 0 {
+		return ErrOwnerLeaseLost
+	}
+	var found int
+	err := s.db.QueryRowContext(ctx, s.bind(postgresInitialFenceSQL), s.leaseKey, lease.OwnerID, lease.FenceToken).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrOwnerLeaseLost
+	}
+	if err != nil {
+		return fmt.Errorf("校验 F3 owner lease fence 失败: %w", err)
 	}
 	return nil
 }
@@ -658,10 +679,10 @@ func (s *sqlStore) writeBlobTemps(lease OwnerLease, plans []blobPlan) error {
 			_ = file.Close()
 			return fmt.Errorf("写入 audit blob 临时文件失败: %w", err)
 		}
-		if err := file.Sync(); err != nil {
-			_ = file.Close()
-			return fmt.Errorf("fsync audit blob 临时文件失败: %w", err)
-		}
+		// 2026-11-09 复审裁决：payload 是可降级的排障正文，不再逐 blob
+		// fsync（原实现还在 PG 事务内，每条审计多一次磁盘同步并拉长持锁）。
+		// 掉电/崩溃留下的缺失或截断文件由 degradeMissingExistingBlobPayloads
+		// 在后续同 hash Persist 时降级为 hash_only，不阻塞审计主记录。
 		if err := file.Close(); err != nil {
 			return fmt.Errorf("关闭 audit blob 临时文件失败: %w", err)
 		}
@@ -719,29 +740,62 @@ func (s *sqlStore) prepareExistingBlobRecords(ctx context.Context, tx *sql.Tx, p
 	return prepared, plans, nil
 }
 
-func verifyExistingBlobFiles(plans []blobPlan) error {
-	seen := map[string]struct{}{}
+// degradeMissingExistingBlobPayloads 处理「DB 已有 blob 元数据但物理文件
+// 缺失/不可读/尺寸不符」：丢弃本次 Persist 中命中该 blob 的 payload 指针，
+// 降级为 hash_only（保留 sha256/raw size），并移除这些 plan，避免
+// resolveBlobIDs/insertFinalChildren 继续引用不存在的文件。旧记录仍指向
+// 原 blob（payload 已丢），但不会阻塞后续审计写入。
+func degradeMissingExistingBlobPayloads(plans []blobPlan, prepared []preparedPayload) ([]blobPlan, []preparedPayload, error) {
+	missing := map[string]struct{}{}
 	for _, plan := range plans {
 		if !plan.existing {
 			continue
 		}
-		key := plan.record.id + "\x00" + plan.record.storageKey
-		if _, ok := seen[key]; ok {
+		path := filepath.Join(plan.root, filepath.FromSlash(plan.record.storageKey))
+		info, err := os.Stat(path)
+		if err == nil && info.Mode().IsRegular() && info.Size() == plan.record.compressedSize {
 			continue
 		}
-		seen[key] = struct{}{}
-		info, err := os.Stat(filepath.Join(plan.root, filepath.FromSlash(plan.record.storageKey)))
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("已有 canonical audit blob 缺少物理文件，拒绝伪造或重编码: id=%s", plan.record.id)
-			}
-			return fmt.Errorf("检查已有 canonical audit blob 文件失败: %w", err)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			// 不可读（权限/IO）与缺失同样按 payload 丢失处理；审计主记录
+			// 不能因为一个历史 payload 文件不可读而永久停写。
+			missing[plan.record.id] = struct{}{}
+			continue
 		}
-		if !info.Mode().IsRegular() || info.Size() != plan.record.compressedSize {
-			return fmt.Errorf("已有 canonical audit blob 文件与元数据不一致: id=%s", plan.record.id)
-		}
+		missing[plan.record.id] = struct{}{}
 	}
-	return nil
+	if len(missing) == 0 {
+		return plans, prepared, nil
+	}
+	kept := make([]blobPlan, 0, len(plans))
+	for _, plan := range plans {
+		if _, drop := missing[plan.record.id]; drop {
+			continue
+		}
+		kept = append(kept, plan)
+	}
+	for index := range prepared {
+		droppedBody := false
+		if prepared[index].headers != nil {
+			if _, drop := missing[prepared[index].headers.id]; drop {
+				prepared[index].headers = nil
+			}
+		}
+		if prepared[index].body != nil {
+			if _, drop := missing[prepared[index].body.id]; drop {
+				prepared[index].body = nil
+				droppedBody = true
+			}
+		}
+		if droppedBody {
+			switch prepared[index].input.CaptureStatus {
+			case "", PayloadCaptureComplete, PayloadCaptureSummaryOnly:
+				prepared[index].input.CaptureStatus = PayloadCaptureHashOnly
+			}
+		}
+		recomputePreparedCompressedSize(&prepared[index])
+	}
+	return kept, prepared, nil
 }
 
 func publishBlobPlans(plans []blobPlan) error {
@@ -760,9 +814,8 @@ func publishBlobPlans(plans []blobPlan) error {
 		if err := os.Rename(plan.tempPath, finalPath); err == nil {
 			plan.tempPath = ""
 			plan.published = true
-			if err := syncBlobParent(filepath.Dir(finalPath)); err != nil {
-				return fmt.Errorf("同步 audit blob 父目录失败: %w", err)
-			}
+			// 不再在 PG 事务内做父目录 fsync；崩溃丢失目录项时按缺失 blob
+			// 降级（同上），不让一个 payload 文件阻塞整个审计写入。
 			continue
 		} else if info, statErr := os.Stat(finalPath); statErr != nil {
 			return fmt.Errorf("原子发布 audit blob 失败: %w", err)
@@ -777,21 +830,6 @@ func publishBlobPlans(plans []blobPlan) error {
 		plan.tempPath = ""
 	}
 	return nil
-}
-
-func syncBlobParent(directory string) error {
-	// Windows does not provide portable directory fsync through os.File. The
-	// file itself was Sync'd before Rename; do not pretend a parent-directory
-	// flush is available there. On Unix, request the extra metadata flush.
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	file, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
 }
 
 // compensatePublishedBlobs 是 Persist 失败臂的写侧补偿（W47）：发布成功之后、

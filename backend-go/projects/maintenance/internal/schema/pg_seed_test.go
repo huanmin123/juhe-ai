@@ -67,7 +67,7 @@ func TestBuildPostgresModelSeedUpsertRendering(t *testing.T) {
 // --- models bulk upsert arity 防线（PG 与 SQLite 双侧）---
 
 // splitSeedUpsertTopLevelCommas 按顶层逗号切分 VALUES 元组体：单引号字符串
-// 字面量内的逗号与 '' 转义不参与切分；$n / ? 占位符按普通 token 返回。
+// 字面量内的逗号与 ” 转义不参与切分；$n / ? 占位符按普通 token 返回。
 func splitSeedUpsertTopLevelCommas(body string) []string {
 	var elements []string
 	var current strings.Builder

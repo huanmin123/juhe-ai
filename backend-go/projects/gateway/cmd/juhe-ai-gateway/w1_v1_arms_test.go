@@ -776,12 +776,12 @@ func TestW1VPureProjections(t *testing.T) {
 		t.Fatalf("chainAccountIDsOf(nil) = %v", got)
 	}
 
-	// chainSchedulingPolicyValueOf：nil 解引用为 nil，非 nil 返回同一值。
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"imageLaneMaxConcurrency": float64(4)}
-	if got := chainSchedulingPolicyValueOf(nil); got != nil {
-		t.Fatalf("nil policy = %v", got)
+	// chainSchedulingPolicyValueOf：nil 返回默认两键值（-1/0），非 nil 原样返回。
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
+	if got := chainSchedulingPolicyValueOf(nil); !got.IsDefault() {
+		t.Fatalf("nil policy = %v, want default", got)
 	}
-	if got := chainSchedulingPolicyValueOf(&policy); got == nil || got["imageLaneMaxConcurrency"] != float64(4) {
+	if got := chainSchedulingPolicyValueOf(&policy); got != policy {
 		t.Fatalf("policy 解引用错误: %v", got)
 	}
 

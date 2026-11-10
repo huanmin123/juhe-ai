@@ -569,12 +569,6 @@ type HotQualityReservation = gatewaypreauth.HotQualityExplorationReservation
 // HotQualityPort mirrors orderGatewayAccountsByHotQualityAsync.
 type HotQualityPort interface {
 	OrderAsync(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error)
-	// ReorderOnly is the pure within-tier ordering pass of the cache-rate
-	// design (section 7): no exploration accrual/reservation, no audit
-	// writes — used by the high-concurrency group to re-apply the ordering
-	// after its final session-affinity ordering, returning the sorted
-	// candidates plus the decision explanation of that final ordering.
-	ReorderOnly(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error)
 }
 
 // HotQualityOrderInput mirrors the ordering input.
@@ -589,6 +583,7 @@ type HotQualityOrderInput struct {
 	Model                        string
 	RequestID                    string
 	LatencyDegradedAccountIDs    map[string]struct{}
+	SoftBusyAccountIDs           map[string]bool
 	EligibleFirstPrimaryDispatch bool
 }
 
@@ -627,9 +622,52 @@ type SessionAffinityPort interface {
 	// 写回现存同 owner 绑定：不创建绑定、不改 owner；记录缺失/过期/owner 不匹配
 	// 或指纹非法时跳过；写回刷新绑定 TTL。
 	RememberApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID, upstreamApiKeyFingerprint string)
-	// AreHighConcurrencyAccountsBusyForLaneAsync mirrors
-	// areOpenAIHighConcurrencyAccountsBusyForLaneAsync.
-	AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error)
+}
+
+// SessionAffinityRebindPort 是账户亲和同层 latch 的最终成功重绑可选面。
+// 独立于 SessionAffinityPort 以避免给只读/测试 fake 增加强制方法；引擎在
+// 最终成功结算时 type-assert，未实现 = 不重绑（测试/降级显式 no-op）。
+type SessionAffinityRebindPort interface {
+	// RebindAsync 在最终协议成功后确认 owner：
+	//   - expectedOwner == newOwner：刷新 lease；
+	//   - expectedOwner != newOwner：CAS 只允许当前 owner 仍是 expectedOwner 时
+	//     改绑（调用方已判定同层 + expectedOwner 容量/运行态不可用）。
+	// 返回 false 表示 no-op/冲突/写失败；不得影响请求结果。
+	RebindAsync(ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, scope AffinityScope) bool
+}
+
+// SessionAffinityClaimStatePort 是 claim 的可选状态面：返回 claim 前是否已有
+// 活跃 lease 的绑定，供名额规划区分“新会话占位 owner”与“既有会话 owner”。
+// 未实现时调用方按既有会话处理（保守等待）。
+type SessionAffinityClaimStatePort interface {
+	ClaimWithStateAsync(ctx context.Context, sessionAffinityKey, proposedAccountID string, scope AffinityScope) (owner string, established bool, ok bool)
+}
+
+// SessionSlotCandidate 是名额规划需要的账户容量快照。
+type SessionSlotCandidate struct {
+	AccountID        string
+	ConcurrencyLimit int
+	RPMLimit         int
+}
+
+// SessionAffinitySlotPlan 是准备期名额规划结果；PreferredAccountID 由调用方
+// 提到候选首位，Fallback 表示首选已不是原 owner（成功后可 CAS 迁移）。
+type SessionAffinitySlotPlan struct {
+	PreferredAccountID string
+	SlotActive         bool
+	Fallback           bool
+	WaitedMs           int64
+}
+
+// SessionAffinitySlotPort 是会话名额的可选面（Redis 生产路径实现；
+// localSessionAffinity 降级适配器不实现，调用方跳过名额规划）。
+type SessionAffinitySlotPort interface {
+	// PlanSessionSlot 选择名额账户；ownerEstablished=false（新会话占位 owner）
+	// 时不等待，直接分配空闲名额；既有 owner 名额满时最多等待 waitBudgetMs。
+	PlanSessionSlot(ctx context.Context, sessionAffinityKey, ownerAccountID string, ownerEstablished bool, candidates []SessionSlotCandidate, waitBudgetMs int64) (SessionAffinitySlotPlan, error)
+	// ConfirmSessionSlot 在最终协议成功后写入/刷新新 owner 名额并释放旧名额；
+	// 名额满时按 LRU 驱逐最久空闲会话。失败只告警，不影响请求结果。
+	ConfirmSessionSlot(ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, cap int) bool
 }
 
 // GroupAffinityPort 是组级会话黏性的写回面（策略路由分组会话亲和设计 §5）：
@@ -650,42 +688,9 @@ type AffinityOrderingOptions struct {
 	TrafficMigrationScope *AffinityScope
 }
 
-// HighConcurrencyBusyOptions mirrors the options with requestLane.
-type HighConcurrencyBusyOptions struct {
-	AffinityOrderingOptions
-	RequestLane string
-}
-
 // ---------------------------------------------------------------------------
-// High-concurrency queue + client-ip concurrency
+// Client-ip concurrency
 // ---------------------------------------------------------------------------
-
-// QueueWaitResult mirrors waitForHighConcurrencyGroupCapacity's result.
-type QueueWaitResult struct {
-	Ready     bool
-	Reason    string // 'timeout' | ''
-	WaitedMs  int64
-	QueueSize int
-}
-
-// HighConcurrencyWaiter mirrors runtime/high-concurrency-queue.service.ts.
-type HighConcurrencyWaiter interface {
-	WaitForCapacity(ctx context.Context, input HighConcurrencyWaitInput) (QueueWaitResult, error)
-}
-
-// HighConcurrencyWaitInput mirrors the wait input. AccountRPMLimits 是账户
-// 资源 ID → RPM 上限（0 视为不限制），容量模型的 RPM 余量输入（设计 §5.2）。
-type HighConcurrencyWaitInput struct {
-	SystemAccountID          string
-	GroupID                  string
-	APIKeyID                 string
-	AccountIDs               []string
-	AccountConcurrencyLimits map[string]int
-	AccountRPMLimits         map[string]int
-	Lane                     string
-	Policy                   *gatewayruntimecache.GroupSchedulingPolicy
-	MaxWaitMs                int64
-}
 
 // ClientIPConcurrencyDecision mirrors ClientIpConcurrencyDecision.
 type ClientIPConcurrencyDecision struct {
@@ -703,7 +708,7 @@ type ClientIPConcurrencyDecision struct {
 }
 
 // ClientIPConcurrencyAcquirer mirrors
-// runtime/client-ip-concurrency.service.ts acquireHighConcurrencyClientIpSlot.
+// runtime/client-ip-concurrency.service.ts acquireClientIpSlot.
 type ClientIPConcurrencyAcquirer interface {
 	Acquire(ctx context.Context, input ClientIPConcurrencyInput) (ClientIPConcurrencyDecision, error)
 }
@@ -782,7 +787,7 @@ type AccountConcurrencyStore interface {
 	// LoadCurrentByLaneAsync mirrors loadAccountCurrentConcurrencyByIdsAsync(ids, lane).
 	LoadCurrentByLaneAsync(ctx context.Context, accountIDs []string, lane string) (map[string]int, error)
 	// LoadCurrentRPMAsync 批量读取账户 RPM 窗口计数（AI 账户每分钟请求上限
-	// 设计 §5.2：高并发分组容量模型的 RPM 余量输入）。
+	// 设计 §5.2：派发容量模型的 RPM 余量输入）。
 	LoadCurrentRPMAsync(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error)
 	// TryAcquireAsync mirrors tryAcquireAccountConcurrencyAsync.
 	TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error)

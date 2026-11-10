@@ -6,155 +6,83 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
-// Group scheduling policy handling mirrors backend/src/domain/group-scheduling.ts:
-// only the writable subset of the stored policy is accepted from API input,
-// personal groups never carry a policy (NULL column), and high_concurrency
-// groups always persist a full policy JSON rooted at the built-in defaults
-// (Node DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY with
-// runtimeConfig.concurrency.globalMax — JUHE_AI_CONCURRENCY_GLOBAL_MAX,
-// default 5000 — read live for defaultSoftConcurrency/maxQueueSize/
-// perApiKeyQueueLimit). Stored policies are re-validated strictly on read
-// (Node parseGroupSchedulingPolicyJson throws instead of rendering broken
-// rows as usable defaults).
+// Group scheduling policy handling. 2026-11-09 用户裁决后只有普通分组：
+// scheduling_policy_json 可空，非空时严格只含 defaultSoftConcurrency 与
+// clientIpConcurrencyLimit 两个键；默认值 -1/0 表示不启用，两项都默认时存
+// NULL。high_concurrency 作为退役类型只在读路径识别，写面拒绝；旧 16 键策略
+// 在迁移前按 globalMax 映射为两个键（见 docs/functions/普通分组可选调度策略设计.md）。
 
-// GroupType mirrors GroupType (domain/types.ts).
 const (
-	GroupTypePersonal        = "personal"
-	GroupTypeHighConcurrency = "high_concurrency"
+	GroupTypePersonal = "personal"
 )
 
-// defaultGlobalConcurrencyMax mirrors the runtimeConfig.concurrency.globalMax
-// default (JUHE_AI_CONCURRENCY_GLOBAL_MAX). A store built without
-// WithGlobalConcurrencyMax keeps this constant; the compose wiring passes the
-// parsed runtime value so deployments overriding the env stay aligned.
-const defaultGlobalConcurrencyMax = 5_000
+const (
+	policyKeyDefaultSoftConcurrency   = "defaultSoftConcurrency"
+	policyKeyClientIPConcurrencyLimit = "clientIpConcurrencyLimit"
+)
 
-// writableSchedulingPolicyKeys mirrors writableGroupSchedulingPolicyKeys.
-var writableSchedulingPolicyKeys = map[string]bool{
-	"defaultSoftConcurrency":          true,
-	"maxQueueWaitMs":                  true,
-	"clientIpConcurrencyLimit":        true,
-	"clientIpConcurrencyOverflowMode": true,
-	"imageLaneMaxConcurrency":         true,
-}
-
-// storedSchedulingPolicyKeys mirrors storedGroupSchedulingPolicyKeys in
-// definition order (Node assertRequiredKeys reports missing keys in this
-// order).
-var storedSchedulingPolicyKeys = []string{
-	"mode",
-	"defaultSoftConcurrency",
-	"fastFirstEnabled",
-	"fallbackOnQueueEnabled",
-	"breakAffinityOnSoftLimit",
-	"breakAffinityOnQueueWaitMs",
-	"slowRequestThresholdMs",
-	"firstOutputSlowThresholdMs",
-	"recentTimeoutWindowSeconds",
-	"recentTimeoutPenaltyThreshold",
-	"maxQueueWaitMs",
-	"maxQueueSize",
-	"perApiKeyQueueLimit",
-	"clientIpConcurrencyLimit",
-	"clientIpConcurrencyOverflowMode",
-	"imageLaneMaxConcurrency",
-}
-
-// schedulingPolicyBound mirrors numericPolicy's per-key min/max. The fallback
-// always comes from defaultHighConcurrencyPolicy (globalMax aware).
-type schedulingPolicyBound struct {
-	min int
-	max int
-}
-
-// numericPolicyBounds mirrors numericPolicy: max is 3_600_000 for
-// maxQueueWaitMs and 1_000_000 for every other key; min is 0 for the
-// wait/ip/image keys and 1 otherwise.
-func numericPolicyBounds(key string) schedulingPolicyBound {
-	max := 1_000_000
-	if key == "maxQueueWaitMs" {
-		max = 3_600_000
-	}
-	min := 1
-	if key == "breakAffinityOnQueueWaitMs" || key == "clientIpConcurrencyLimit" || key == "imageLaneMaxConcurrency" {
-		min = 0
-	}
-	return schedulingPolicyBound{min: min, max: max}
-}
-
-// defaultHighConcurrencyPolicy mirrors DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
-// with globalMax substituted for runtimeConfig.concurrency.globalMax.
-func defaultHighConcurrencyPolicy(globalMax int) map[string]any {
+// defaultSchedulingPolicy returns the closed policy values.
+func defaultSchedulingPolicy() map[string]any {
 	return map[string]any{
-		"mode":                            "balanced_fast",
-		"defaultSoftConcurrency":          globalMax,
-		"fastFirstEnabled":                true,
-		"fallbackOnQueueEnabled":          true,
-		"breakAffinityOnSoftLimit":        true,
-		"breakAffinityOnQueueWaitMs":      0,
-		"slowRequestThresholdMs":          30_000,
-		"firstOutputSlowThresholdMs":      15_000,
-		"recentTimeoutWindowSeconds":      120,
-		"recentTimeoutPenaltyThreshold":   2,
-		"maxQueueWaitMs":                  60_000,
-		"maxQueueSize":                    globalMax,
-		"perApiKeyQueueLimit":             globalMax,
-		"clientIpConcurrencyLimit":        0,
-		"clientIpConcurrencyOverflowMode": "reject",
-		"imageLaneMaxConcurrency":         0,
+		policyKeyDefaultSoftConcurrency:   -1,
+		policyKeyClientIPConcurrencyLimit: 0,
 	}
 }
 
-// normalizeGroupType mirrors normalizeGroupType (domain/group-scheduling.ts):
-// absent input falls back to personal.
+// normalizeGroupType mirrors the write-face contract: absent input falls back
+// to personal; high_concurrency is retired and rejected like any other unknown
+// value.
 func normalizeGroupType(value *string) (string, error) {
 	if value == nil {
 		return GroupTypePersonal, nil
 	}
-	if *value == GroupTypePersonal || *value == GroupTypeHighConcurrency {
+	if *value == GroupTypePersonal {
 		return *value, nil
 	}
 	return "", &ValidationError{Message: "分组类型无效"}
 }
 
-// normalizeStoredGroupType mirrors normalizeGroupType on read paths: unknown
-// stored values are contract errors (the caller renders 500), never a silent
-// personal fallback that would mask corrupted rows.
+// isLegacyGroupType reports whether a stored value is the retired
+// high_concurrency type. Read paths normalize it to personal and map its
+// policy; write paths never accept it.
+func isLegacyGroupType(value string) bool {
+	return value == gatewayscheduling.LegacyGroupTypeHighConcurrency
+}
+
+// normalizeStoredGroupType normalizes stored values for response/runtime use:
+// personal and legacy high_concurrency both render as personal; unknown values
+// remain contract errors (500), never a silent personal fallback.
 func normalizeStoredGroupType(value string) (string, error) {
-	if value == GroupTypePersonal || value == GroupTypeHighConcurrency {
+	if value == GroupTypePersonal {
 		return value, nil
+	}
+	if isLegacyGroupType(value) {
+		return GroupTypePersonal, nil
 	}
 	return "", errors.New("分组类型无效")
 }
 
-// schedulingPolicyJSON mirrors groupSchedulingPolicyJson: personal groups
-// store NULL; high_concurrency groups merge writable overrides into the
-// built-in defaults and persist the full policy JSON. Input must be a JSON
-// object (or absent) with only writable keys. globalMax stands in for
-// runtimeConfig.concurrency.globalMax.
-func schedulingPolicyJSON(groupType string, input any, globalMax int) (json.RawMessage, error) {
-	if groupType != GroupTypeHighConcurrency {
+// schedulingPolicyJSON validates API input and renders the stored two-key
+// policy. nil/absent means clear; an object must contain both keys; both
+// default values store NULL.
+func schedulingPolicyJSON(input any) (json.RawMessage, error) {
+	if input == nil {
 		return nil, nil
 	}
-	object, err := policyInputObject(input)
+	object, ok := input.(map[string]any)
+	if !ok {
+		return nil, &ValidationError{Message: "分组调度策略无效"}
+	}
+	policy, err := validatePolicyObject(object)
 	if err != nil {
 		return nil, err
 	}
-	unknown := make([]string, 0, len(object))
-	for key := range object {
-		if !writableSchedulingPolicyKeys[key] {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		return nil, &ValidationError{Message: "分组调度策略包含未知字段：" + joinCN(unknown)}
-	}
-	policy, err := resolveHighConcurrencyPolicy(object, globalMax, false)
-	if err != nil {
-		return nil, err
+	if isDefaultSchedulingPolicy(policy) {
+		return nil, nil
 	}
 	encoded, err := json.Marshal(policy)
 	if err != nil {
@@ -163,17 +91,15 @@ func schedulingPolicyJSON(groupType string, input any, globalMax int) (json.RawM
 	return encoded, nil
 }
 
-// parseStoredSchedulingPolicy mirrors parseGroupSchedulingPolicyJson +
-// resolveStoredGroupSchedulingPolicy for response payloads: personal groups
-// render null; high_concurrency groups require a non-empty strict policy JSON
-// (missing/invalid/untyped/out-of-range rows are read errors, matching the
-// Node throw that surfaces as the 500 服务器内部错误 envelope).
-func parseStoredSchedulingPolicy(raw string, valid bool, groupType string, globalMax int) (any, error) {
-	if groupType != GroupTypeHighConcurrency {
-		return nil, nil
-	}
+// parseStoredSchedulingPolicy reads the policy column for response/runtime
+// payloads. Legacy high_concurrency rows are mapped with globalMax; non-legacy
+// rows must already be the strict two-key shape. NULL/empty renders null.
+func parseStoredSchedulingPolicy(raw string, valid bool, legacy bool, globalMax int) (any, error) {
 	if !valid || strings.TrimSpace(raw) == "" {
-		return nil, errors.New("高并发分组调度策略缺失")
+		if legacy {
+			return nil, errors.New("分组调度策略缺失")
+		}
+		return nil, nil
 	}
 	var decoded any
 	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
@@ -183,199 +109,137 @@ func parseStoredSchedulingPolicy(raw string, valid bool, groupType string, globa
 	if !ok {
 		return nil, errors.New("分组调度策略无效")
 	}
-	return resolveHighConcurrencyPolicy(object, globalMax, true)
-}
-
-// resolveHighConcurrencyPolicy mirrors resolveGroupSchedulingPolicy: per-key
-// type/range checks rooted at the globalMax-aware defaults. stored=true adds
-// the resolveStoredGroupSchedulingPolicy strict-keys/required-keys gates
-// (read path); the writable input path keeps missing keys on their defaults.
-func resolveHighConcurrencyPolicy(object map[string]any, globalMax int, stored bool) (map[string]any, error) {
-	defaults := defaultHighConcurrencyPolicy(globalMax)
-	if stored {
-		known := map[string]bool{}
-		for _, key := range storedSchedulingPolicyKeys {
-			known[key] = true
+	if legacy {
+		policy, err := mapLegacySchedulingPolicy(object, globalMax)
+		if err != nil {
+			return nil, err
 		}
-		unknown := make([]string, 0, len(object))
-		for key := range object {
-			if !known[key] {
-				unknown = append(unknown, key)
-			}
+		if isDefaultSchedulingPolicy(policy) {
+			return nil, nil
 		}
-		if len(unknown) > 0 {
-			sort.Strings(unknown)
-			return nil, errors.New("分组调度策略包含未知字段：" + joinCN(unknown))
-		}
-		missing := make([]string, 0, len(storedSchedulingPolicyKeys))
-		for _, key := range storedSchedulingPolicyKeys {
-			if value, present := object[key]; !present || value == nil {
-				missing = append(missing, key)
-			}
-		}
-		if len(missing) > 0 {
-			return nil, errors.New("分组调度策略缺少字段：" + joinCN(missing))
-		}
+		return policy, nil
 	}
-
-	policy := map[string]any{}
-	mode, err := policyMode(object, defaults)
+	policy, err := validatePolicyObject(object)
 	if err != nil {
 		return nil, err
 	}
-	policy["mode"] = mode
-	for _, key := range []string{
-		"defaultSoftConcurrency",
-		"breakAffinityOnQueueWaitMs",
-		"slowRequestThresholdMs",
-		"firstOutputSlowThresholdMs",
-		"recentTimeoutWindowSeconds",
-		"recentTimeoutPenaltyThreshold",
-		"maxQueueWaitMs",
-		"maxQueueSize",
-		"clientIpConcurrencyLimit",
-		"imageLaneMaxConcurrency",
-	} {
-		bound := numericPolicyBounds(key)
-		value, numberErr := boundedPolicyInteger(object, key, bound.min, bound.max, defaults[key])
-		if numberErr != nil {
-			return nil, numberErr
-		}
-		policy[key] = value
+	if isDefaultSchedulingPolicy(policy) {
+		return nil, nil
 	}
-	for _, key := range []string{"fastFirstEnabled", "fallbackOnQueueEnabled", "breakAffinityOnSoftLimit"} {
-		value, boolErr := policyBoolean(object, key, defaults[key])
-		if boolErr != nil {
-			return nil, boolErr
-		}
-		policy[key] = value
-	}
-	overflow, err := policyOverflowMode(object, defaults)
-	if err != nil {
-		return nil, err
-	}
-	policy["clientIpConcurrencyOverflowMode"] = overflow
-	// resolvePerApiKeyQueueLimit: absent falls back to the parsed maxQueueSize
-	// and the accepted range is 1..maxQueueSize.
-	perKeyLimit := policy["maxQueueSize"].(int)
-	if value, present := object["perApiKeyQueueLimit"]; present && value != nil {
-		number, ok := value.(float64)
-		if !ok || number != float64(int64(number)) {
-			return nil, fmt.Errorf("分组调度策略 perApiKeyQueueLimit 必须是整数")
-		}
-		perKeyLimit = int(number)
-		if perKeyLimit < 1 || perKeyLimit > policy["maxQueueSize"].(int) {
-			return nil, fmt.Errorf("分组调度策略 perApiKeyQueueLimit 必须在 1-%d 之间", policy["maxQueueSize"].(int))
-		}
-	}
-	policy["perApiKeyQueueLimit"] = perKeyLimit
 	return policy, nil
 }
 
-func boundedPolicyInteger(object map[string]any, key string, min, max int, fallback any) (int, error) {
-	value, present := object[key]
-	if !present || value == nil {
-		return fallback.(int), nil
+// mapLegacySchedulingPolicy maps the old 16-key high_concurrency policy to the
+// two-key contract. It intentionally ignores retired keys, but rejects
+// malformed values instead of guessing.
+func mapLegacySchedulingPolicy(object map[string]any, globalMax int) (map[string]any, error) {
+	threshold := -1
+	if raw, present := object[policyKeyDefaultSoftConcurrency]; present && raw != nil {
+		value, ok := policyInteger(raw)
+		if !ok {
+			return nil, fmt.Errorf("分组调度策略 %s 必须是整数", policyKeyDefaultSoftConcurrency)
+		}
+		// 旧默认 globalMax 等价于硬上限，不迁移成阈值。
+		if value >= 1 && value < globalMax {
+			threshold = value
+		}
 	}
-	number, ok := value.(float64)
-	if !ok || number != float64(int64(number)) {
-		return 0, fmt.Errorf("分组调度策略 %s 必须是整数", key)
+	ipLimit := 0
+	if raw, present := object[policyKeyClientIPConcurrencyLimit]; present && raw != nil {
+		value, ok := policyInteger(raw)
+		if !ok {
+			return nil, fmt.Errorf("分组调度策略 %s 必须是整数", policyKeyClientIPConcurrencyLimit)
+		}
+		if value < 0 || value > 1_000_000 {
+			return nil, fmt.Errorf("分组调度策略 %s 必须在 0-1000000 之间", policyKeyClientIPConcurrencyLimit)
+		}
+		ipLimit = value
 	}
-	parsed := int(number)
-	if parsed < min || parsed > max {
-		return 0, fmt.Errorf("分组调度策略 %s 必须在 %d-%d 之间", key, min, max)
-	}
-	return parsed, nil
+	return map[string]any{
+		policyKeyDefaultSoftConcurrency:   threshold,
+		policyKeyClientIPConcurrencyLimit: ipLimit,
+	}, nil
 }
 
-func policyBoolean(object map[string]any, key string, fallback any) (bool, error) {
-	value, present := object[key]
-	if !present || value == nil {
-		return fallback.(bool), nil
+// validatePolicyObject enforces the strict two-key contract shared by API
+// input and stored rows after migration.
+func validatePolicyObject(object map[string]any) (map[string]any, error) {
+	unknown := make([]string, 0, len(object))
+	for key := range object {
+		if key != policyKeyDefaultSoftConcurrency && key != policyKeyClientIPConcurrencyLimit {
+			unknown = append(unknown, key)
+		}
 	}
-	parsed, ok := value.(bool)
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, &ValidationError{Message: "分组调度策略包含未知字段：" + joinCN(unknown)}
+	}
+	missing := make([]string, 0, 2)
+	for _, key := range []string{policyKeyDefaultSoftConcurrency, policyKeyClientIPConcurrencyLimit} {
+		if value, present := object[key]; !present || value == nil {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, &ValidationError{Message: "分组调度策略缺少字段：" + joinCN(missing)}
+	}
+	threshold, ok := policyInteger(object[policyKeyDefaultSoftConcurrency])
 	if !ok {
-		return false, fmt.Errorf("分组调度策略 %s 必须是布尔值", key)
+		return nil, &ValidationError{Message: "分组调度策略 defaultSoftConcurrency 必须是整数"}
 	}
-	return parsed, nil
+	if threshold != -1 && (threshold < 1 || threshold > 1_000_000) {
+		return nil, &ValidationError{Message: "分组调度策略 defaultSoftConcurrency 必须是 -1 或 1-1000000"}
+	}
+	ipLimit, ok := policyInteger(object[policyKeyClientIPConcurrencyLimit])
+	if !ok {
+		return nil, &ValidationError{Message: "分组调度策略 clientIpConcurrencyLimit 必须是整数"}
+	}
+	if ipLimit < 0 || ipLimit > 1_000_000 {
+		return nil, &ValidationError{Message: "分组调度策略 clientIpConcurrencyLimit 必须在 0-1000000 之间"}
+	}
+	return map[string]any{
+		policyKeyDefaultSoftConcurrency:   threshold,
+		policyKeyClientIPConcurrencyLimit: ipLimit,
+	}, nil
 }
 
-func policyMode(object map[string]any, defaults map[string]any) (string, error) {
-	value, present := object["mode"]
-	if !present || value == nil {
-		return defaults["mode"].(string), nil
-	}
-	parsed, ok := value.(string)
-	if !ok || parsed != "balanced_fast" {
-		return "", errors.New("分组调度策略 mode 无效")
-	}
-	return parsed, nil
+func isDefaultSchedulingPolicy(policy map[string]any) bool {
+	threshold, _ := policyInteger(policy[policyKeyDefaultSoftConcurrency])
+	ipLimit, _ := policyInteger(policy[policyKeyClientIPConcurrencyLimit])
+	return threshold == -1 && ipLimit == 0
 }
 
-func policyOverflowMode(object map[string]any, defaults map[string]any) (string, error) {
-	value, present := object["clientIpConcurrencyOverflowMode"]
-	if !present || value == nil {
-		return defaults["clientIpConcurrencyOverflowMode"].(string), nil
-	}
-	parsed, ok := value.(string)
-	if !ok || (parsed != "reject" && parsed != "queue") {
-		return "", errors.New("分组调度策略 clientIpConcurrencyOverflowMode 无效")
-	}
-	return parsed, nil
-}
-
-// validateSchedulingPolicyInput mirrors the route-level groupSchema
-// schedulingPolicy object (zod strict + per-key int/min/max/enum, optional
-// keys): null/float/out-of-range/unknown values are route 400s.
+// validateSchedulingPolicyInput is the route-level check for API objects: two
+// keys, both present, integer/range valid. null/float/unknown values are 400s.
 func validateSchedulingPolicyInput(policy map[string]any) bool {
-	for key := range policy {
-		if !writableSchedulingPolicyKeys[key] {
-			return false
-		}
-	}
-	for _, key := range []string{"defaultSoftConcurrency", "maxQueueWaitMs", "clientIpConcurrencyLimit", "imageLaneMaxConcurrency"} {
-		raw, present := policy[key]
-		if !present {
-			continue
-		}
-		if raw == nil {
-			return false
-		}
-		number, ok := raw.(float64)
-		if !ok || number != float64(int64(number)) {
-			return false
-		}
-		bound := schedulingPolicyBound{min: 1, max: 1_000_000}
-		if key == "maxQueueWaitMs" {
-			bound.max = 3_600_000
-		}
-		if key == "clientIpConcurrencyLimit" || key == "imageLaneMaxConcurrency" {
-			bound.min = 0
-		}
-		if int(number) < bound.min || int(number) > bound.max {
-			return false
-		}
-	}
-	if raw, present := policy["clientIpConcurrencyOverflowMode"]; present {
-		if raw == nil {
-			return false
-		}
-		mode, ok := raw.(string)
-		if !ok || (mode != "reject" && mode != "queue") {
-			return false
-		}
+	if _, err := validatePolicyObject(policy); err != nil {
+		return false
 	}
 	return true
 }
 
-func policyInputObject(input any) (map[string]any, error) {
-	switch typed := input.(type) {
-	case nil:
-		return map[string]any{}, nil
-	case map[string]any:
-		return typed, nil
+func policyInteger(raw any) (int, bool) {
+	switch value := raw.(type) {
+	case float64:
+		number := int64(value)
+		if float64(number) != value {
+			return 0, false
+		}
+		return int(number), true
+	case float32:
+		number := int64(value)
+		if float32(number) != value {
+			return 0, false
+		}
+		return int(number), true
+	case int:
+		return value, true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
 	default:
-		return nil, &ValidationError{Message: "分组调度策略无效"}
+		return 0, false
 	}
 }
 

@@ -99,7 +99,6 @@ func TestPostgresStudioRetirementLiveSmoke(t *testing.T) {
 	}
 }
 
-
 // TestPostgresStudioRetirementRefusesWhenOpenAICompatibleResourcesRemain 是
 // opt-in 真库测试（同上 URL 门禁）：关联 OpenAI-compatible 资源的 studio Key
 // 在写入前被拒绝（返回错误、零 DELETE/DROP）。

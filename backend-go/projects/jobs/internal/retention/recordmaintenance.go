@@ -228,7 +228,7 @@ func (r *RecordMaintenanceRunner) RunOnce(ctx context.Context, input RecordMaint
 	}
 	switch job.Type {
 	case JobTypeAPIKeyRelatedCleanup:
-		result, err := r.relatedRecords().CleanupApiKeyRelated(ctx, job, r.statsWriter())
+		result, err := r.relatedRecords().CleanupApiKeyRelated(ctx, job)
 		if err != nil {
 			return nil, err
 		}
@@ -243,7 +243,7 @@ func (r *RecordMaintenanceRunner) RunOnce(ctx context.Context, input RecordMaint
 		logger.Info(message, append([]any{"event", event, "jobId", job.ID}, relatedCleanupResultValues(job, result)...)...)
 		return relatedCleanupResultMap(job, result), nil
 	case JobTypeAccountRelatedCleanup:
-		result, err := r.relatedRecords().CleanupAccountRelated(ctx, job, r.statsWriter())
+		result, err := r.relatedRecords().CleanupAccountRelated(ctx, job)
 		if err != nil {
 			return nil, err
 		}
@@ -375,11 +375,11 @@ func (r *RecordMaintenanceRunner) logger() *slog.Logger {
 
 type missingRelatedRecords struct{}
 
-func (missingRelatedRecords) CleanupApiKeyRelated(context.Context, RecordMaintenanceJob, StatsWriter) (RelatedCleanupResult, error) {
+func (missingRelatedRecords) CleanupApiKeyRelated(context.Context, RecordMaintenanceJob) (RelatedCleanupResult, error) {
 	return RelatedCleanupResult{}, errors.New("retention related record cleaner 未初始化")
 }
 
-func (missingRelatedRecords) CleanupAccountRelated(context.Context, RecordMaintenanceJob, StatsWriter) (RelatedCleanupResult, error) {
+func (missingRelatedRecords) CleanupAccountRelated(context.Context, RecordMaintenanceJob) (RelatedCleanupResult, error) {
 	return RelatedCleanupResult{}, errors.New("retention related record cleaner 未初始化")
 }
 

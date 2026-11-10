@@ -32,8 +32,8 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-own', ?, 'Alice 自有组', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
 	// The authorized group: owned by root, granted to alice, with a
-	// per-grantee settings row disabling it (settings.enabled=0) and
-	// overriding group_type back to personal.
+	// per-grantee settings row disabling it (settings.enabled=0). The retired
+	// group_type/scheduling_policy_json overrides are ignored.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
 		VALUES ('grp-auth', ?, 'Auth 授权组', 1, 1, 'high_concurrency', ?, ?, ?)`, ownerID, storedPolicyJSON(t, map[string]any{"imageLaneMaxConcurrency": 7}), now, now)
 	// An enabled grant with a past expiry: still listed (the status guard is
@@ -145,12 +145,14 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("authorized edit-basic after override: %d %v", code, payload)
 	}
 	edit = payload["data"].(map[string]any)
-	if edit["enabled"] != true || edit["groupType"] != "high_concurrency" || edit["updatedAt"] != later {
+	if edit["enabled"] != true || edit["groupType"] != "personal" || edit["updatedAt"] != later {
 		t.Fatalf("authorized edit override restore mismatch: %v", edit)
 	}
-	policy := edit["schedulingPolicy"].(map[string]any)
-	if policy["maxQueueWaitMs"].(float64) != 90_000 {
-		t.Fatalf("authorized edit policy override mismatch: %v", policy)
+	// group_authorization_settings.group_type/scheduling_policy_json are
+	// retired: the grantee sees the source group's normalized type and policy
+	// (legacy imageLane policy maps to the default two-key policy -> null).
+	if edit["schedulingPolicy"] != nil {
+		t.Fatalf("authorized edit must ignore the retired policy override: %v", edit["schedulingPolicy"])
 	}
 	// A grantee-untouched field falls back to the group column: name.
 	if edit["name"] != "Auth 授权组" || edit["providerCode"] != "" {

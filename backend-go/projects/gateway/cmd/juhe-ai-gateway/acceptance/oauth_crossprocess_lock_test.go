@@ -103,17 +103,14 @@ func TestAcceptanceOAuthRefreshCrossProcessLock(t *testing.T) {
 	env := map[string]string{
 		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS":        fmt.Sprintf("127.0.0.1:%d", freePort(t)),
 		"JUHE_AI_POSTGRES_URL":                      fixture.dsn,
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          fixture.dsn,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": fixture.dsn,
 		"JUHE_AI_REDIS_URL":                         fixture.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   fixture.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(fixture.root, "storage"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             fixture.spoolDir,
 		"JUHE_AI_INSTANCE_ID":                       "acceptance-jobs-lock",
 		"JUHE_AI_WORKER_ROLE":                       "worker",
 		"JUHE_AI_WORKER_REPLICA_INDEX":              "0",
 		"JUHE_AI_SECRET":                            fixture.secret,
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "acceptance-jobs-lock",
 		"JUHE_AI_LOG_DIR":                           fixture.storage["logs"],
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":             "5000",
 	}

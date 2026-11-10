@@ -506,6 +506,7 @@
                       <AccountAvailabilityScheduleSection
                         :form="form"
                         :readonly="authorizedEditing"
+                        :peak-presets="providerPeakPresets"
                       />
                     </div>
                 </AccountAdvancedCard>
@@ -695,6 +696,7 @@
                     <AccountAvailabilityScheduleSection
                       :form="form"
                       :readonly="authorizedEditing"
+                      :peak-presets="providerPeakPresets"
                     />
                   </div>
                 </AccountAdvancedCard>
@@ -759,6 +761,7 @@ import { api } from '@/api/client'
 import { defaultAccountNameFromBaseUrl } from './accountNameSuggestion'
 import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProxyPoolOptionSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
+import { peakWindowsToTimeSchedulePreset } from '@/views/shared/timeSchedule'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountAdvancedCard from './AccountAdvancedCard.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -903,6 +906,15 @@ const isMediaDomain = computed(() =>
   props.capabilityDomain === 'video'
   || props.capabilityDomain === 'audio'
   || props.capabilityDomain === 'image')
+
+// 供应商高峰快捷预设（时间计划闸门设计 §6）：来源为供应商目录 peakWindows
+// （后端 providers 包 peak_windows.go 单一数据源），随所选供应商联动；未选
+// 供应商或该供应商无高峰口径时返回 undefined（快捷行只展示通用反向按钮）。
+const providerPeakPresets = computed(() => {
+  const peak = props.selectedProvider?.peakWindows
+  if (!peak) return undefined
+  return [peakWindowsToTimeSchedulePreset(props.selectedProvider.name, peak)]
+})
 
 // 媒体域供应商清单保障：列表页传入的 providers 是轻量 options（protocolProfiles
 // 懒加载），服务端完整定义在协议档案表退役后 protocolProfiles 恒为空；三段式的

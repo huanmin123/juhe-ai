@@ -578,7 +578,7 @@ func TestW1NOpenAIAccountSecretFromRowCredentialVariants(t *testing.T) {
 			Fingerprint: "w1n_unsupported",
 		}},
 	}
-	poolRow := w1nSecretRow("w1n_row_pool", "api_key", "openai",
+	poolRow := w1nSecretRow("w1n_row_pool", "api_key", "gpt",
 		mustEncryptCredentials(t, map[string]any{
 			"api_keys":        []any{"sk-w1n-pool-a", "sk-w1n-pool-b", "sk-w1n-pool-a"},
 			"api_key_weights": []any{2.0, 5.0},

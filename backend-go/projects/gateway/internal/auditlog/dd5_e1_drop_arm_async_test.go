@@ -27,9 +27,9 @@ func dd6ParkRetractWorkers(t *testing.T, store *gatedStore, producer *Producer, 
 		producer.retractQueue <- fmt.Sprintf("%s-park-%d", prefix, index)
 		want := baseEntered + int32(index) + 1
 		deadline := time.Now().Add(5 * time.Second)
-		for store.entered.Load() != want {
+		for store.retractEntered.Load() != want {
 			if !time.Now().Before(deadline) {
-				t.Fatalf("仅 %d 个 worker 停进续租门，want %d", store.entered.Load(), want)
+				t.Fatalf("仅 %d 个撤回 worker 停进存储门，want %d", store.retractEntered.Load(), want)
 			}
 			time.Sleep(2 * time.Millisecond)
 		}
@@ -96,7 +96,7 @@ func TestDD5E1QueueFullDropArmReturnsWithoutRetractBudgetBlocking(t *testing.T) 
 
 	// DD6-S1：撤回 worker 全部停进续租门后把撤回队列确定性填满——丢弃臂的
 	// tryEnqueueRetract 必然失败（撤回队列槽满臂）。
-	dd6ParkRetractWorkers(t, store, producer, "dd5e1-retract", producerWorkers)
+	dd6ParkRetractWorkers(t, store, producer, "dd5e1-retract", 0)
 	dd6FillRetractQueue(t, producer, "dd5e1-retract-fill")
 
 	// 数据队列槽塞满：CaptureDeferred 的丢弃臂由数据队列饱和触发。
@@ -165,7 +165,7 @@ func TestDD5E1QueueFullDropArmIntentEventuallyRedelivered(t *testing.T) {
 		t.Fatalf("仅 %d 个 worker 停进续租门，want %d", store.entered.Load(), producerWorkers)
 	}
 	// DD6-S1：撤回 worker 停驻后把撤回队列确定性填满（意图挂起前提）。
-	dd6ParkRetractWorkers(t, store, producer, "dd5e1r-retract", producerWorkers)
+	dd6ParkRetractWorkers(t, store, producer, "dd5e1r-retract", 0)
 	dd6FillRetractQueue(t, producer, "dd5e1r-retract-fill")
 	for i := 0; i < producerQueueCapacity; i++ {
 		select {

@@ -70,6 +70,20 @@ type UpstreamDispatchResult struct {
 	// Key 顺序消费（本句柄最先），把最终成功派发账户所属分组写回/创建组绑定；
 	// 2xx 响应头阶段不执行。nil = 无组亲和键 / 端口未装配。
 	ConfirmGroupAffinity func()
+	// ConfirmSessionAffinityRebind 是账户亲和同层 latch 的最终成功结算句柄：
+	// 同 owner 时刷新 30 分钟 lease；owner 变化且本请求容量拒绝 + 同层时 CAS
+	// 重绑到最终成功账户。链面在组亲和之后、Key 指纹之前消费一次；2xx 头
+	// 阶段不执行。nil = 无会话键/无 owner/端口未装配。
+	ConfirmSessionAffinityRebind func()
+	// ConfirmSessionAffinitySlot 是最终成功后的会话名额结算句柄：写入/刷新
+	// 成功账户名额，owner 变化时释放旧名额；名额满时 LRU 驱逐。链面在账户
+	// 重绑之后消费一次；nil = 无会话键/端口未装配。
+	ConfirmSessionAffinitySlot func()
+	// SessionAffinityOwnerAccountID / SessionAffinityOwnerCapacityRejected /
+	// SessionAffinitySameLayer 是上述结算的观测字段（审计/测试用）。
+	SessionAffinityOwnerAccountID        string
+	SessionAffinityOwnerCapacityRejected bool
+	SessionAffinitySameLayer             bool
 	// ConfirmAccountLockSuccess 镜像 completeAccountLockSuccessAsync：上游响应
 	// 协议成功后，把 ENGAGED 账户锁 CAS 复位为 LOCKED_IDLE（Node
 	// account-lock.repository.ts:completeAccountLockSuccessAsync,
@@ -471,6 +485,28 @@ type FetchFirstAvailableUpstreamArgs struct {
 	UsageContext       gatewaypreauth.GatewayFailureUsageContext
 	AuditCapture       AuditCapture
 	SessionAffinityKey string
+	// SessionAffinityOwnerAccountID 是准备期 claim 的账户亲和 owner（同层
+	// latch 的 expectedOwner）；空串 = 无会话键/claim 失败。最终成功结算用它
+	// 判断是否把绑定重绑到实际成功账户。
+	SessionAffinityOwnerAccountID string
+	// SessionAffinityOwnerBusy 表示准备期 claim 的 owner 已硬并发繁忙：容量排序
+	// 已把它降位，请求可能不经过 owner 直接成功在其他同层账户上。最终结算按
+	// “owner 容量不可用”处理，保证这种跳过路径也会重绑。
+	SessionAffinityOwnerBusy bool
+	// SessionAffinityOwnerSoftBusy 表示准备期 owner 达到普通分组软阈值；
+	// 同层后继成功时按 soft_threshold 重绑。
+	SessionAffinityOwnerSoftBusy bool
+	// SessionAffinitySlotFallback 表示准备期名额规划已回退到其他账户；成功
+	// 结算按 slot_fallback 重绑（允许跨层）。
+	SessionAffinitySlotFallback bool
+	// SessionAffinityWaitPlanned / SessionAffinityWaitRemainingMs 是准备期名额
+	// 等待后的剩余共享预算；planned=true 时 owner 并发等待只能用剩余额度。
+	SessionAffinityWaitPlanned     bool
+	SessionAffinityWaitRemainingMs int64
+	// SessionAffinityOwnerWaitBudgetMs 可选：请求级 owner 等待剩余额度指针。
+	// 链面跨 attempt 传入同一指针，使总 owner 等待按请求累计递减；nil 时按
+	// 本次 args 的准备期剩余从头初始化（测试/单次 dispatch 兼容）。
+	SessionAffinityOwnerWaitBudgetMs *int64
 	// GroupAffinityKey / RouteStrategyID 承载组级会话黏性写回上下文（策略路由
 	// 分组会话亲和设计 §5.1）：键空串 = 范围外（无会话键 / 模式不在范围 /
 	// 绑定数不足），写回静默跳过。写回组取本尝试派发上下文的组。
@@ -559,7 +595,14 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	var agentGuidanceResponse *gatewaypreauth.GatewayAgentGuidanceResponse
 	auditAttemptIndex := 0
 	concurrencyRetryWaitBudgetMs := e.Config.AccountConcurrencyRetryBudgetMs
-	highConcurrencyDispatchQueueWaitCount := 0
+	// 账户亲和 owner 使用独立于通用 1.2s 的共享 1-2s 预算：请求开始时按
+	// 配置与名额规划剩余额度初始化，key 重取/整池重试共用同一递减值，避免
+	// 每次重取重新获得完整 owner 等待。
+	ownerAffinityWaitBudgetMs := args.SessionAffinityOwnerWaitBudgetMs
+	if ownerAffinityWaitBudgetMs == nil {
+		budget := sessionAffinityOwnerWaitBudgetMs(e.Config.SessionAffinityOwnerWaitBudgetMs, args.SessionAffinityWaitPlanned, args.SessionAffinityWaitRemainingMs)
+		ownerAffinityWaitBudgetMs = &budget
+	}
 	failedProxyDispatchKeys := map[string]string{}
 	failedAccountIDs := map[string]struct{}{}
 	keyModelFailureBudget := gatewayaccounteffects.NewGatewayKeyModelFailureBudget()
@@ -1084,6 +1127,7 @@ wholePoolRound:
 						agentGuidanceResponse:                &agentGuidanceResponse,
 						auditAttemptIndex:                    &auditAttemptIndex,
 						concurrencyRetryWaitBudgetMs:         &concurrencyRetryWaitBudgetMs,
+						sessionAffinityOwnerWaitBudgetMs:     ownerAffinityWaitBudgetMs,
 						keyModelFailureBudget:                keyModelFailureBudget,
 						accountCircuitAttempt:                accountCircuitAttempt,
 						reserveSameAccountRetry:              reserveSameAccountRetry,
@@ -1134,84 +1178,7 @@ wholePoolRound:
 		// 从单一活动段恢复为整池 pool；Node postCycleSuppressionFilter ...
 		// waitForRecoverableUnavailableState）。
 		pool := activeSegmentsPool(activeSegments)
-		if len(capacityLimitFailures) > 0 && args.GroupSchedulingPolicy != nil {
-			queueWaitStartedAtMs := gatewayupstream.NowMs()
-			// AI 账户每分钟请求上限设计 §5.2：本轮容量失败全部为 RPM 时，队列
-			// 等待封顶到最近 RPM 重置剩余（重置没有槽释放事件，到点由外层
-			// wholePoolRound 重新选号）；混合失败保持既有预算等待。
-			maxQueueWaitMs := serverRetryBudget.RemainingMs(&queueWaitStartedAtMs)
-			if allCapacityLimitFailuresAreRPM(capacityLimitFailures) {
-				if earliestResetMs := earliestRPMResetWaitMs(capacityLimitFailures); earliestResetMs > 0 && earliestResetMs < maxQueueWaitMs {
-					maxQueueWaitMs = earliestResetMs
-				}
-			}
-			serverRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
-			queueWait, err := func() (QueueWaitResult, error) {
-				defer serverRetryBudget.PauseNoAvailableWait(&queueWaitStartedAtMs)
-				return e.HighConcurrencyQueue.WaitForCapacity(ctx, HighConcurrencyWaitInput{
-					SystemAccountID:          usageContext.SystemAccountID,
-					GroupID:                  usageContext.GroupID,
-					APIKeyID:                 usageContext.APIKeyID,
-					AccountIDs:               gatewaySessionConcurrencyIDs(pool),
-					AccountConcurrencyLimits: GatewayAccountConcurrencyLimitsByAccountID(pool),
-					AccountRPMLimits:         GatewayAccountRPMLimitsByAccountID(pool),
-					Lane:                     requestLane,
-					Policy:                   args.GroupSchedulingPolicy,
-					MaxWaitMs:                maxQueueWaitMs,
-				})
-			}()
-			if err != nil {
-				return UpstreamDispatchResult{}, err
-			}
-			highConcurrencyDispatchQueueWaitCount++
-			auditCapture.AddGatewayMetadata("high_concurrency_dispatch_queue", map[string]any{
-				"ready":     queueWait.Ready,
-				"reason":    queueWait.Reason,
-				"waitedMs":  queueWait.WaitedMs,
-				"queueSize": queueWait.QueueSize,
-				"lane":      requestLane,
-				"waitCount": highConcurrencyDispatchQueueWaitCount,
-				"source":    "account_concurrency_acquire",
-			})
-			if err := throwIfRequestAborted(signal); err != nil {
-				return UpstreamDispatchResult{}, err
-			}
-			if queueWait.Ready {
-				// BUG-0247 项 2：外环容量等待后刷新请求级并发等待预算
-				//（Node upstream-dispatch.ts:1892/:1909/:1926 三处同构重置；
-				// 预算递减恢复后本重置为活写）。
-				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
-				reordered, err := e.Degradation.OrderWithLaneAsync(ctx, pool, requestLane, args.GroupSchedulingPolicy, args.ModelPriority)
-				if err != nil {
-					return UpstreamDispatchResult{}, err
-				}
-				rebuildSegmentsAfterPoolReorder(reordered.Accounts)
-				continue wholePoolRound
-			}
-			if !serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
-				if queueWait.Reason != "timeout" {
-					retryDelayMs := minInt64(upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 0, 1000), serverRetryBudget.RemainingMs(nil))
-					serverRetryBudget.BeginNoAvailableWait(nil)
-					if err := waitForDelayMs(signal, retryDelayMs); err != nil {
-						serverRetryBudget.PauseNoAvailableWait(nil)
-						if err == context.Canceled {
-							return UpstreamDispatchResult{}, &UpstreamRequestAbortedError{Message: "请求已取消"}
-						}
-						return UpstreamDispatchResult{}, err
-					}
-					serverRetryBudget.PauseNoAvailableWait(nil)
-				}
-				// BUG-0247 项 2：外环容量等待重试刷新预算（Node :1909）。
-				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
-				continue wholePoolRound
-			}
-			if failure := lastCapacityLimitFailure(capacityLimitFailures); failure != nil {
-				auditAttemptIndex++
-				if err := e.recordAccountCapacityLimitFailure(ctx, usageContext, *failure, auditCapture, auditAttemptIndex); err != nil {
-					return UpstreamDispatchResult{}, err
-				}
-			}
-		} else if len(capacityLimitFailures) > 0 {
+		if len(capacityLimitFailures) > 0 {
 			if !serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
 				// AI 账户每分钟请求上限设计 §5.3：个人分组本轮容量失败全部为 RPM
 				// 时，单次等待 min(最近重置剩余, 剩余请求预算) 后重跑整池（预算
@@ -1547,7 +1514,7 @@ func allCapacityLimitFailuresAreRPM(failures []AccountCapacityLimitFailure) bool
 }
 
 // earliestRPMResetWaitMs 返回本轮 RPM 失败中最小的重置等待（毫秒；无 RPM 失败
-// 返回 0），供高并发分组与个人分组的“等待封顶到最近重置点”消费。
+// 返回 0），供分组整池等待的“封顶到最近重置点”消费。
 func earliestRPMResetWaitMs(failures []AccountCapacityLimitFailure) int64 {
 	earliest := int64(0)
 	for _, failure := range failures {

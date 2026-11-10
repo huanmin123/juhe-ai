@@ -85,8 +85,8 @@ func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, grou
 		"healthCheckConnectionPresetCode": "qwen_dashscope",
 		"healthCheckEndpointMode":         "audio_job_create",
 		"healthCheckModel":                "paraformer-v2",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
@@ -253,8 +253,8 @@ func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, gr
 		"healthCheckConnectionPresetCode": "glm_general_openai_v1",
 		"healthCheckEndpointMode":         "audio_speech",
 		"healthCheckModel":                "cogtts",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
@@ -389,8 +389,8 @@ func (f *fullchainFixture) fullchainCreateVolcengineSpeechAccount(name, arkKey, 
 		"healthCheckConnectionPresetCode": "volcengine_openspeech",
 		"healthCheckEndpointMode":         "audio_speech",
 		"healthCheckModel":                "doubao-tts",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
@@ -522,8 +522,8 @@ func (f *fullchainFixture) fullchainCreateVolcengineASRAccount(name, arkKey, spe
 		"healthCheckConnectionPresetCode": "volcengine_openspeech",
 		"healthCheckEndpointMode":         "audio_job_create",
 		"healthCheckModel":                "volc.seedasr.auc",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {

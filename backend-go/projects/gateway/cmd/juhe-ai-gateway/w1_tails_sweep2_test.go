@@ -109,7 +109,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		if credErr != nil {
 			t.Fatalf("加密凭据: %v", credErr)
 		}
-		if _, err := db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('acc-w1t-extra', 'sys_admin', 'extra', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, ?, NULL)`), credentials); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, rpm_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('acc-w1t-extra', 'sys_admin', 'extra', 'api_key', 'active', 1, 0, 0, 0, 0, 0, 1, 1, ?, NULL)`), credentials); err != nil {
 			t.Fatalf("seed 额外账户: %v", err)
 		}
 		if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acc-w1t-extra', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '2026-01-01T00:00:00.000Z')`); err != nil {

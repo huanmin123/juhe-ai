@@ -33,6 +33,13 @@ const (
 	DefaultShutdownFlushMaxBatches = 100
 	// slowUsageRecordFlushMs mirrors the slow-flush threshold.
 	slowUsageRecordFlushMs = 500
+	// usageRecordWriteTimeout 是单批落库的硬上限：PG 黑洞/锁等待不得让
+	// flush goroutine 无限挂起（超时按失败批次重试，计数与死信语义不变）。
+	usageRecordWriteTimeout = 30 * time.Second
+	// usageRecordMaxFailureDuration 是队头连续失败的总时长上限：避免
+	// MaxWriteAttempts=120 叠加 30s 写超时后单批阻塞 writer 约 1 小时
+	//（2026-11-09 非业务数据可丢、稳定性优先裁决）。
+	usageRecordMaxFailureDuration = 10 * time.Minute
 	// queueSaturationWarnRatio 与最小间隔 mirror maybeLogUsageRecordQueueSaturation.
 	queueSaturationWarnRatio = 0.8
 	queueSaturationWarnGapMs = 60_000
@@ -148,6 +155,7 @@ type Writer struct {
 	activeDeadLetterCount        int
 	deadLetters                  []UsageRecordInput
 	flushFailureCount            int
+	firstFlushFailureAt          time.Time
 	handledRecords               int
 	writtenRecords               int
 	lastFlushMs                  int64
@@ -564,10 +572,16 @@ func (w *Writer) flushCycle() {
 // equals its retry count.
 func (w *Writer) handleFlushFailure(batch []queuedRecord, err error) bool {
 	w.mu.Lock()
+	now := w.clock.Now()
 	w.flushFailureCount++
 	failureCount := w.flushFailureCount
+	if failureCount == 1 {
+		w.firstFlushFailureAt = now
+	}
 	attemptLimit := w.config.MaxWriteAttempts
-	exhausted := attemptLimit > 0 && failureCount >= attemptLimit
+	durationExhausted := !w.firstFlushFailureAt.IsZero() &&
+		now.Sub(w.firstFlushFailureAt) >= usageRecordMaxFailureDuration
+	exhausted := (attemptLimit > 0 && failureCount >= attemptLimit) || durationExhausted
 	w.mu.Unlock()
 
 	if w.logger != nil {
@@ -601,7 +615,8 @@ func (w *Writer) writeBatch(batch []queuedRecord) (int, error) {
 	for _, item := range batch {
 		inputs = append(inputs, item.input)
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), usageRecordWriteTimeout)
+	defer cancel()
 	plan, err := BuildWritePlan(ctx, inputs, WritePlanOptions{
 		Catalog:    w.catalog,
 		ShardCount: w.config.ShardCount,
@@ -662,6 +677,7 @@ func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int)
 	}
 	w.writtenRecords += inserted
 	w.flushFailureCount = 0
+	w.firstFlushFailureAt = time.Time{}
 	// 一次成功写入证明写路径已恢复；解除死信门控（累计计数保留用于观测）。
 	w.activeDeadLetterCount = 0
 	w.mu.Unlock()
@@ -689,6 +705,7 @@ func (w *Writer) deadLetterBatch(batch []queuedRecord) {
 		w.pendingBytes = 0
 	}
 	w.flushFailureCount = 0
+	w.firstFlushFailureAt = time.Time{}
 	w.mu.Unlock()
 }
 

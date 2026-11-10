@@ -1063,37 +1063,6 @@ func TestW13DNormalizeEdges(t *testing.T) {
 	}
 }
 
-func TestW13DSchedulingPolicyValidation(t *testing.T) {
-	defaults := HighConcurrencyPolicyDefaults{MaxQueueSize: 4, PerAPIKeyQueueLimit: 4}
-	if _, err := resolveGroupSchedulingPolicy(map[string]any{"maxQueueWaitMs": "abc"}, defaults); err == nil {
-		t.Fatal("非数字 maxQueueWaitMs 必须报错")
-	}
-	if _, err := resolveGroupSchedulingPolicy(map[string]any{"maxQueueWaitMs": 1.5}, defaults); err == nil {
-		t.Fatal("非整数 maxQueueWaitMs 必须报错")
-	}
-	if _, err := resolveGroupSchedulingPolicy(map[string]any{"maxQueueWaitMs": 0}, defaults); err == nil {
-		t.Fatal("越界 maxQueueWaitMs 必须报错")
-	}
-	if _, err := resolveGroupSchedulingPolicy(map[string]any{"clientIpConcurrencyOverflowMode": "other"}, defaults); err == nil {
-		t.Fatal("非法 overflow mode 必须报错")
-	}
-	if _, err := resolveGroupSchedulingPolicy(map[string]any{"maxQueueSize": "abc"}, defaults); err == nil {
-		t.Fatal("非数字 maxQueueSize 必须报错")
-	}
-	if _, err := resolveGroupSchedulingPolicy(map[string]any{"perApiKeyQueueLimit": 0}, defaults); err == nil {
-		t.Fatal("越界 perApiKeyQueueLimit 必须报错")
-	}
-	if got := normalizePositiveInteger("abc", 7); got != 7 {
-		t.Fatalf("normalizePositiveInteger fallback=%d", got)
-	}
-	if got := normalizeNonNegativeInteger(-3, 0); got != 0 {
-		t.Fatalf("normalizeNonNegativeInteger=%d", got)
-	}
-	if got := normalizePositiveInteger("5", 1); got != 5 {
-		t.Fatalf("数字字符串=%d", got)
-	}
-}
-
 func TestW13DRFC3339Edges(t *testing.T) {
 	// 正则通过但日历无效：2 月 30 日。
 	if _, ok := rfc3339Millis("2023-02-30T00:00:00Z"); ok {

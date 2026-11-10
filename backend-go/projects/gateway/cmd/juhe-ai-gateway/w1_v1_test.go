@@ -42,12 +42,12 @@ func TestW1ChainSpeedFirstProjectionHelpers(t *testing.T) {
 	if projected == nil || projected.FirstByteDeadlineMs != 900 || projected.SchedulingPreference != "speed_first" {
 		t.Fatalf("projected = %+v", projected)
 	}
-	// chainSchedulingPolicyValueOf。
-	if chainSchedulingPolicyValueOf(nil) != nil {
-		t.Fatal("nil policy 必须 nil")
+	// chainSchedulingPolicyValueOf：nil → 默认两键值；非 nil 原样返回。
+	if got := chainSchedulingPolicyValueOf(nil); !got.IsDefault() {
+		t.Fatalf("nil policy = %v, want default", got)
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "speed_first"}
-	if chainSchedulingPolicyValueOf(&policy)["schedulingPreference"] != "speed_first" {
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
+	if got := chainSchedulingPolicyValueOf(&policy); got != policy {
 		t.Fatal("policy 值丢失")
 	}
 	// chainRuntimeKeyOfCandidate。

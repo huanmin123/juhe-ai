@@ -7,7 +7,7 @@
 ## 1. 目标
 
 - 一条命令在指定 PostgreSQL 库上生成完整业务闭环数据，覆盖管理端与公开面的全部页面数据来源。
-- 存储拓扑是**单库多 schema**（与生产一致）：business→`juhe_business`、usage+catalog→`juhe_usage`（`usage_records` 日分区 + 逻辑 shard 四表）、stats→`juhe_stats`（含 `background_task_runs`）、dataset→`juhe_dataset`（公开接口日志与记录清理目标）、chat→`juhe_chat`（`chat_messages` 日分区，已随 AI 问答退役）、codex→`juhe_codex_context`（已随 2026-11-07 Chat bridge 退役删除，造数不再触达）、model-check→`juhe_j3b`（属主）、task-runs→`juhe_stats.background_task_runs`、account-health→`juhe_jobs`（属主）、audit/operation/runtime→`juhe_dataset` 属主表（gateway/jobs 运行时建）。
+- 存储拓扑是**单库多 schema**（与生产一致）：business→`juhe_business`、usage→`juhe_usage`（`usage_records` 日分区；原 shard 目录四表已随 revision 23 删除）、stats→`juhe_stats`（含 `background_task_runs`）、dataset→`juhe_dataset`（公开接口日志与记录清理目标）、chat→`juhe_chat`（`chat_messages` 日分区，已随 AI 问答退役）、codex→`juhe_codex_context`（已随 2026-11-07 Chat bridge 退役删除，造数不再触达）、model-check→`juhe_j3b`（属主）、task-runs→`juhe_stats.background_task_runs`、account-health→`juhe_jobs`（属主）、audit/operation/runtime→`juhe_dataset` 属主表（gateway/jobs 运行时建）。
 - 覆盖 AI 账户的 OAuth / API Key / `openai_standard` 客户端 / 多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、冷却、错误、不可调度和时间计划等状态样本；覆盖 API Key 的优先级故障转移、轮询、加权轮询、绑定禁用、额度窗口、过期、停用和时间计划样本（business 域已全部交付）。
 - 默认生成近 31 天明细与监控样本（明细面随 usage 域接线交付）；派生表（`usage_stats_*`、`*_windows`、排行、健康小时、账号质量等）不伪造，全部由 jobs 聚合 / 窗口任务重建；造数清理会整表重置派生面与游标。
 - 可重复执行：每次先按固定清理标识删除上一批数据，再重新插入；执行结束时可选写出摘要，`--verify-mockdata-coverage` 做严格只读覆盖校验。
@@ -37,9 +37,9 @@ Mockdata 是项目里「可复用本地造数」的唯一职责入口：
 | `internal/mockdata/summary.go` | 摘要 JSON 写出与域接线快照读取（`--mockdata-summary-file` 显式路径，无隐式回退） |
 | `internal/mockdata/coverage.go` | 严格只读覆盖校验：maintenance schema + 属主存储逐表枚举、空表白名单、按域归属的关键状态断言 |
 | `internal/mockdata/domain_business.go` | business 域造数 |
-| `internal/mockdata/domain_usage.go` | usage 域造数：`usage_records` 日分区写入 + 逻辑 shard 四表登记 + 上游响应模型定向样本 |
+| `internal/mockdata/domain_usage.go` | usage 域造数：`usage_records` 日分区写入 + 上游响应模型定向样本（shard 目录四表已退役） |
 | `internal/mockdata/domain_stats.go` | stats 域造数：`background_task_runs`、`account_usage_snapshots`、IP 样本与脏标记（派生聚合不伪造） |
-| `internal/mockdata/domain_observability.go` | observability 域造数：审计/操作/运行日志属主表探测式写入 + `public_api_logs` 与清理目标 |
+| `internal/mockdata/domain_observability.go` | observability 域造数：审计/操作属主表探测式写入 + `public_api_logs` 与清理目标 |
 | `internal/mockdata/domain_chat_codex_modelcheck.go` | chat/codex/model-check 域造数：chat 日分区、codex 三表、J3b 样本、账户健康属主表 |
 | `internal/mockdata/domain_chat_media_sample.go` | chat 域媒体样本：纯字节/纯值生成器（WAV/MP4 内嵌样本、媒体工具演示消息块），与存储无关 |
 | `backend-go/shared/platform/usagewriter/partitions.go` | `usage_records` 日分区语句的权威来源（mockdata 与 gateway/jobs 共用实现逐字对齐） |
@@ -50,7 +50,7 @@ Mockdata 是项目里「可复用本地造数」的唯一职责入口：
 
 ### 3.1 使用前提
 
-目标库必须是显式 `--dsn` 指向的 PostgreSQL 库（开发库或测试库）；一次误执行的造数命令不得落到未知库。造数前停止本地常驻 `gateway` 与 `jobs`（`pnpm dev` 会话）：常驻聚合器与造数的清理/重插并发会重复累计同一批用量游标；造数完成后重启服务。属主表（审计/操作/运行日志、`juhe_j3b`、`juhe_jobs`）由 gateway/jobs 首次启动或受控 bootstrap 流程创建——全新库直接跑 `--mockdata` 是允许的，属主缺失按第 6 节语义处理。
+目标库必须是显式 `--dsn` 指向的 PostgreSQL 库（开发库或测试库）；一次误执行的造数命令不得落到未知库。造数前停止本地常驻 `gateway` 与 `jobs`（`pnpm dev` 会话）：常驻聚合器与造数的清理/重插并发会重复累计同一批用量游标；造数完成后重启服务。属主表（审计/操作、`juhe_j3b`、`juhe_jobs`）由 gateway/jobs 首次启动或受控 bootstrap 流程创建——全新库直接跑 `--mockdata` 是允许的，属主缺失按第 6 节语义处理。
 
 ### 3.2 调用形态
 
@@ -101,10 +101,10 @@ CoverageReport JSON（`--verify-mockdata-coverage` stdout）：`driver` / `dsn` 
 
 | 域 | schema / 表 | 造数内容 | 状态 |
 | --- | --- | --- | --- |
-| `business` | `juhe_business` | 配套用户 7 个（1 个普通管理员 + 6 个角色用户）、13 个分组（含个人分组、高并发分组与 1 个超级分组）、25+ AI 账户样本（含状态与类型覆盖、连接面三表、支持模型与入口映射）、路由策略与 API Key 18 条（含本地网关明文 Key）、38 条授权样本（含团队来源与授权实例账户）、团队、代理与代理池样本（池/成员/租约）、公告、模型目录样本、响应检查策略、外部来源系统与 Token、账户测试任务三态、熔断/锁/Key 运行态、媒体任务（video 六状态 + 音频三样本）、题库三态 | 已交付 |
-| `usage` | `juhe_usage`：`usage_records` 日分区 + 逻辑 shard 四表（`usage_record_shards` / `usage_record_shard_entries` / `usage_record_account_shards` / `usage_record_api_key_shards`） | 按天插入使用记录并在 shard 四表登记；插入前 ensure 日分区；含三条上游响应模型定向样本与音频/视频计量样本 | 已交付 |
+| `business` | `juhe_business` | 配套用户 7 个（1 个普通管理员 + 6 个角色用户）、13 个普通分组（含 1 个超级分组；分组类型统一 `personal`，样本含两键可选策略）、25+ AI 账户样本（含状态与类型覆盖、连接面三表、支持模型与入口映射）、路由策略与 API Key 18 条（含本地网关明文 Key）、38 条授权样本（含团队来源与授权实例账户）、团队、代理与代理池样本（池/成员/租约）、公告、模型目录样本、响应检查策略、外部来源系统与 Token、账户测试任务三态、熔断/锁/Key 运行态、媒体任务（video 六状态 + 音频三样本）、题库三态 | 已交付 |
+| `usage` | `juhe_usage`：`usage_records` 日分区 | 按天插入使用记录并 ensure 日分区；含三条上游响应模型定向样本与音频/视频计量样本；退役的 shard 目录四表不再写入 | 已交付 |
 | `stats` | `juhe_stats`（`background_task_runs`、`account_usage_snapshots`、dirty 标记） | 原始写入面（`background_task_runs` 由本域独占）；派生聚合表不伪造 | 已交付 |
-| `observability` | `juhe_dataset` 维护面（`public_api_logs`、记录清理目标）+ 属主表（`audit_logs` / `operation_logs` / `runtime_logs` 族） | 公开接口日志、清理目标；属主表缺失时域内跳过 | 已交付 |
+| `observability` | `juhe_dataset` 维护面（`public_api_logs`、记录清理目标）+ 属主表（`audit_logs` / `operation_logs`） | 公开接口日志、清理目标；属主表缺失时域内跳过；`runtime_logs` 族已随 F1 下架，不再造数 | 已交付 |
 | `chat_codex_model_check` | `juhe_chat` 日分区面（已随 AI 问答退役）、`juhe_codex_context`（已随 2026-11-07 Chat bridge 退役删除，该域造数目标移除）、`juhe_j3b`（属主）、`juhe_jobs` 账户健康（属主） | 历史截面：会话/消息（插入前 ensure 日分区）、codex context；现行仍交付模型检测 runs/items/observations、账户健康 | 已交付（codex/context 部分随退役移除） |
 
 补充约束：
@@ -135,14 +135,14 @@ CoverageReport JSON（`--verify-mockdata-coverage` stdout）：`driver` / `dsn` 
 `--mockdata` 可重复执行。PG 形态的清理分三段：
 
 1. **外键拓扑序枚举**：从 `information_schema` 读 maintenance schema 内的外键依赖图，Kahn 拓扑排序保证子表先于父表删除（自引用边不参与排序，由显式规则处理；互引环 `accounts`↔`account_connections` 由 FK 冲突重试轮兜底）。
-2. **显式规则 + 通用标识扫描**：对拓扑序内每张表先执行显式规则（accounts 授权实例列的两段式删除、`usage_record_shards` 按「分片内已无条目」回收），再执行通用扫描——任一标识列（`id`/`name`/`trace_id`/`*_id`/`*_key`/`*_name` 等文本列）命中任一清理前缀即删。扫描只可能命中造数自己写出的值，seed 行（vendors、models 目录、默认分组与默认 Key）不受影响。
+2. **显式规则 + 通用标识扫描**：对拓扑序内每张表先执行显式规则（accounts 授权实例列的两段式删除），再执行通用扫描——任一标识列（`id`/`name`/`trace_id`/`*_id`/`*_key`/`*_name` 等文本列）命中任一清理前缀即删。扫描只可能命中造数自己写出的值，seed 行（vendors、models 目录、默认分组与默认 Key）不受影响。
 3. **派生面重置**：整表清空 `juhe_stats` 聚合/窗口/队列族与 `stats_job_state` 游标（游标与桶必须一并清零），重建交给 jobs。
 
 对空库、缺表，清理是安全 no-op（缺表记入 `cleanupSkipped`）。
 
 ## 6. 验证点
 
-`--mockdata` 退出码 0 即造数成功；`--verify-mockdata-coverage` exit 0 表示覆盖 Ready、exit 3 表示未 Ready（剩余空表与 NotCovered 清单见 stdout JSON）。常见非故障状态是按处置方式分类：属主存储缺失（`OwnerStoresPending` 非空）——审计/操作/运行日志、账户健康由 gateway/jobs 首次启动建库，`juhe_j3b` 由受控 bootstrap 流程预置 schema，之后重跑即可转为硬门槛；白名单空表（瞬时队列/运行态游标）按表名与理由逐项登记。执行完成后建议检查：
+`--mockdata` 退出码 0 即造数成功；`--verify-mockdata-coverage` exit 0 表示覆盖 Ready、exit 3 表示未 Ready（剩余空表与 NotCovered 清单见 stdout JSON）。常见非故障状态是按处置方式分类：属主存储缺失（`OwnerStoresPending` 非空）——审计/操作、账户健康由 gateway/jobs 首次启动建库，`juhe_j3b` 由受控 bootstrap 流程预置 schema，之后重跑即可转为硬门槛；白名单空表（瞬时队列/运行态游标）按表名与理由逐项登记。执行完成后建议检查：
 
 - business 相关页面应有可见数据：AI 账户、分组、API Key、路由策略、授权、团队、代理、公告、供应商与模型目录、响应检查、外部来源、题库、媒体任务。
 - 使用记录、审计、操作日志等页面在对应域接线后，可按 `mockdata` 或 `造数` 关键字检索。

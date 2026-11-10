@@ -36,6 +36,9 @@ type quizTransport struct {
 	gradeOutput            string
 	gradeStatus            int
 	failAnswerWhenContains string
+	// answerOutput 覆盖作答跳的输出文本（空串回退 quizTestAnswerText），
+	// 供诊断回答上限用例构造超长回答。
+	answerOutput           string
 	answerRequests         int
 	gradeRequests          int
 }
@@ -59,6 +62,9 @@ func (t *quizTransport) RoundTrip(request *http.Request) (*http.Response, error)
 	case strings.Contains(text, quizTestQuestionText):
 		t.answerRequests++
 		output = quizTestAnswerText
+		if t.answerOutput != "" {
+			output = t.answerOutput
+		}
 		if t.failAnswerWhenContains != "" && strings.Contains(text, t.failAnswerWhenContains) {
 			status = http.StatusServiceUnavailable
 			output = ""

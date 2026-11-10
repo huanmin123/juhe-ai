@@ -158,14 +158,14 @@ type postflightInfo struct {
 // Report 是 stdout 单行 JSON（§9.3）。字段存在性由 omitempty 与场景装配共同
 // 保证；连接不可达/旗标解析失败路径不产出报告（命令层 stderr + exit）。
 type Report struct {
-	Driver                string          `json:"driver"`
-	Phase                 string          `json:"phase,omitempty"`
-	OnlineSafe            bool            `json:"onlineSafe"`
-	CompatibleBinaryRange string          `json:"compatibleBinaryRange,omitempty"`
-	Binary                binaryIdentity  `json:"binary"`
-	Database              databaseState   `json:"database"`
-	Plan                  planInfo        `json:"plan"`
-	Estimate              estimateInfo    `json:"estimate"`
+	Driver                string         `json:"driver"`
+	Phase                 string         `json:"phase,omitempty"`
+	OnlineSafe            bool           `json:"onlineSafe"`
+	CompatibleBinaryRange string         `json:"compatibleBinaryRange,omitempty"`
+	Binary                binaryIdentity `json:"binary"`
+	Database              databaseState  `json:"database"`
+	Plan                  planInfo       `json:"plan"`
+	Estimate              estimateInfo   `json:"estimate"`
 	// SecretVerified 是 §9.4-8 KCV 结果（T84-1）：true=库内密文试解密通过；
 	// false=无可试解密载体（fresh/无密文行，KCV 跳过披露）或校验失败（此时
 	// result=blocked）；nil=本次运行不使用 secret（不要求 secret 的路径）。
@@ -223,7 +223,7 @@ type Options struct {
 	OldWritersDrained  bool
 	StepTimeout        time.Duration // 钳制 1m..4h（命令层钳制后传入）
 	AppVersion         string
-	AppCommit          string        // 构建 commit（报告 binary.commit；命令层取 version.Commit）
+	AppCommit          string           // 构建 commit（报告 binary.commit；命令层取 version.Commit）
 	Now                func() time.Time // 测试注入；nil 用 time.Now
 }
 

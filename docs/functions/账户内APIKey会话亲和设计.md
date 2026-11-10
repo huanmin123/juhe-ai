@@ -4,7 +4,7 @@
 
 ## 1. 背景与问题
 
-`api_key` 类型 AI 账户支持配置多个上游 API Key，按 `credentials.api_key_strategy`（`failover` 主备 / `round_robin` 轮询 / `weighted_round_robin` 权重轮询）选择。账户维度的会话亲和已存在：会话黏住 AI 账户（`internal/gatewaysession`，Redis 绑定记录 + 进程内回退）。
+`api_key` 类型 AI 账户支持配置多个上游 API Key，按 `credentials.api_key_strategy`（`failover` 主备 / `round_robin` 轮询 / `weighted_round_robin` 权重轮询）选择。账户维度的会话亲和已存在：会话黏住 AI 账户（`internal/gatewaysession`，Redis 绑定记录 + 进程内回退）。账户维度自 2026-11-09 起另有同层单向 latch 与 30 分钟 lease（[账户亲和同层单向粘性与会话名额设计](账户亲和同层单向粘性与会话名额设计.md)）：本设计只消费该绑定记录，不改写其 owner 选择、重绑与 lease 规则；owner 变更时旧指纹清除、同 owner 成功保留指纹的既有约束不变。
 
 但账户内 Key 选择目前每个请求独立按策略执行（`backend-go/projects/gateway/internal/gatewaydispatch/apikeyrotation.go` `selectAccountRuntimeApiKeyEntry`）：轮询与权重走**全账户共享的全局游标**（Redis 键 `juhe-ai:route-state:account-api-key:<strategy>:<base64url(accountId)>`，INCR + 30 天 TTL，`cmd/juhe-ai-gateway/chain_apikey_rotation_redis.go`）。同一会话的后续请求会随全局游标漂到不同 Key——会话只在账户维度黏住，不在 Key 维度黏住。
 
@@ -22,7 +22,7 @@
 
 ### 非目标
 
-1. 不改变账户维度会话亲和与调度语义（排序提升、claim、流量迁移、高并发车道、失败 Forget）。
+1. 不改写账户维度会话亲和的 owner 选择、同层 latch/重绑与 lease 语义（排序提升、claim、流量迁移、高并发车道、失败 Forget 仍由账户亲和设计定义）；本设计只在绑定内追加 Key 指纹并消费同一记录。
 2. 不改变 Key 状态机（禁用/冷却/探测恢复）、请求内救回链路（`ContinueAfterFingerprint`）与 Key 级失败记账。
 3. 不做 Key 级独立授权、独立分组、独立并发池（继承现行不做范围）。
 4. 不改变前端表单与 `api_key_strategy` 配置面：策略配置项保留，语义从「每次请求的选择规则」变为「黏不住时的选择规则」。

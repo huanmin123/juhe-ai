@@ -71,7 +71,6 @@ func (errorFilterSuppression) ResolveLocalSuppressionFilter(ctx context.Context,
 
 type errorAffinityPort struct {
 	orderError bool
-	busyError  bool
 }
 
 func (e *errorAffinityPort) OrderAsync(context.Context, []AccountCandidate, string, AffinityOrderingOptions) ([]AccountCandidate, error) {
@@ -94,13 +93,6 @@ func (e *errorAffinityPort) StickyApiKeyFingerprintAsync(context.Context, string
 }
 
 func (e *errorAffinityPort) RememberApiKeyFingerprintAsync(context.Context, string, string, string) {}
-
-func (e *errorAffinityPort) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []AccountCandidate, HighConcurrencyBusyOptions) (bool, error) {
-	if e.busyError {
-		return false, errPortBoom
-	}
-	return false, nil
-}
 
 type errorDegradationPort struct{}
 

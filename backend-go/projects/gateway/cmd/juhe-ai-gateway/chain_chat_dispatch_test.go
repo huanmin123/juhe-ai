@@ -11,6 +11,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +20,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
 // chatDispatchUpstream 是可命中计数的 mock 上游。
@@ -462,11 +463,11 @@ func TestChatDispatchPinnedDisabledAccountFullChain(t *testing.T) {
 }
 
 // TestChatDispatchGroupContextAlignsPinnedPolicy：窗口级分组上下文对齐——
-// 高并发（动态调度）承载分组的 scheduling policy 与 usage 窗口组取承载分组。
+// 普通分组的两键 scheduling policy 与 usage 窗口组取承载分组。
 func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
-	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('group_hc', ?, 1, 'high_concurrency', '{"weighted":{}}')`), fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('group_hc', ?, 1, 'personal', '{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}')`), fixture.systemAccount); err != nil {
 		t.Fatalf("seed hc group: %v", err)
 	}
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
@@ -487,11 +488,11 @@ func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 	if err := chain.applyChatDispatchGroupContext(context.Background(), fixture.systemAccount, "group_hc", dispatchContext); err != nil {
 		t.Fatalf("applyChatDispatchGroupContext: %v", err)
 	}
-	if dispatchContext.GroupSchedulingPolicy == nil || *dispatchContext.GroupSchedulingPolicy == nil {
+	if dispatchContext.GroupSchedulingPolicy == nil {
 		t.Fatalf("调度策略未对齐到承载分组: %+v", dispatchContext.GroupSchedulingPolicy)
 	}
-	if got := (*dispatchContext.GroupSchedulingPolicy)["weighted"]; got == nil {
-		t.Fatalf("调度策略内容不符: %+v", *dispatchContext.GroupSchedulingPolicy)
+	if got, want := *dispatchContext.GroupSchedulingPolicy, (gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}); got != want {
+		t.Fatalf("调度策略内容不符: %+v want %+v", got, want)
 	}
 	if dispatchContext.UsageContext.GroupID != "group_hc" {
 		t.Fatalf("usage 窗口组 = %q, want group_hc", dispatchContext.UsageContext.GroupID)

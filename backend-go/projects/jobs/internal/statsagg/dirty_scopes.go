@@ -129,15 +129,14 @@ func (a *Aggregator) markDerivedWindowDirtyScopes(ctx context.Context, tx *sql.T
 	return nil
 }
 
-// authorizationRowQuerier 统一 *sql.Tx / *sql.DB 的单行查询面。
+// authorizationRowQuerier 统一 *sql.Tx / *sql.DB 的查询面。
 type authorizationRowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// authorizationQueryHandle 返回授权链查找的执行句柄：PG 沿用聚合事务
-// （与聚合读同快照，juhe_business. 前缀同池可查）；SQLite 用组合根注入的
-// 业务库句柄（stats 库没有 resource_authorizations / accounts）。SQLite 未
-// 注入时回退聚合事务，保留既有缺表报错信号，不静默吞。
+// authorizationQueryHandle 返回授权链查找的执行句柄。当前 PostgreSQL 是
+// 唯一方言：聚合事务与 juhe_business 同池，直接用事务句柄（与聚合读同
+// 快照）；保留接口是为后续替换业务库句柄时不动查询逻辑。
 func (a *Aggregator) authorizationQueryHandle(tx *sql.Tx) authorizationRowQuerier {
 	return tx
 }
@@ -164,16 +163,17 @@ func (a *Aggregator) createUsageStatsAuthorizationLookup(ctx context.Context, tx
 		  ON instance_accounts.authorization_instance_authorization_id = authorizations.id
 		 AND instance_accounts.system_account_id = authorizations.grantee_system_account_id
 		WHERE authorizations.resource_type = 'account'
-		  AND authorizations.id = ?
+		  AND authorizations.id = ANY(?)
+		ORDER BY authorizations.id, instance_accounts.id
 	`)
-	queryHandle := a.authorizationQueryHandle(tx)
-	for _, id := range ids {
+	rows, err := a.authorizationQueryHandle(tx).QueryContext(ctx, query, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
 		var authID, resourceID, instanceAccountID sql.NullString
-		err := queryHandle.QueryRowContext(ctx, query, id).Scan(&authID, &resourceID, &instanceAccountID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
+		if err := rows.Scan(&authID, &resourceID, &instanceAccountID); err != nil {
 			return nil, err
 		}
 		if authID.Valid && resourceID.Valid && resourceID.String != "" {
@@ -183,8 +183,15 @@ func (a *Aggregator) createUsageStatsAuthorizationLookup(ctx context.Context, tx
 			lookup.setAccountAuthorizationResourceID(authID.String, resourceID.String)
 		}
 		if authID.Valid && instanceAccountID.Valid && instanceAccountID.String != "" {
-			lookup.AccountAuthorizationInstanceAccountIDs[authID.String] = instanceAccountID.String
+			// 同一授权理论上只有一个实例账户，但历史数据可能重复；按
+			// instance_accounts.id 升序取第一个，避免依赖数据库未定义行序。
+			if _, exists := lookup.AccountAuthorizationInstanceAccountIDs[authID.String]; !exists {
+				lookup.AccountAuthorizationInstanceAccountIDs[authID.String] = instanceAccountID.String
+			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return lookup, nil
 }

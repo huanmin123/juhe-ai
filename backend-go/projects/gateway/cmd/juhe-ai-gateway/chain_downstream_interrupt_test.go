@@ -176,10 +176,12 @@ func TestGatewayChainCommittedStreamFailureInterruptsWithoutAccountSwitch(t *tes
 		}
 	}))
 	defer upstream.Close()
+	// v2 直拼契约：base_url 是版本根（gpt/openai 族 /v1），入站 /v1 前缀已剥除。
+	upstreamBaseURL := upstream.URL + "/v1"
 
 	// 候选 2：acc_2 同上游 OK 凭据，local_priority=10 排在 acc_1 之后。
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_2', ?, 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`),
-		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstream.URL})); err != nil {
+		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstreamBaseURL})); err != nil {
 		t.Fatalf("seed acc_2: %v", err)
 	}
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at) VALUES (?, ?, 'acc_2', 1, 10, '2026-09-04T00:00:00.000Z')`),
@@ -190,14 +192,14 @@ func TestGatewayChainCommittedStreamFailureInterruptsWithoutAccountSwitch(t *tes
 		t.Fatalf("seed acc_2 models: %v", err)
 	}
 	// B4 第一批单连接事实源：acc_2 需要 enabled 连接行（含 chat_sse 模式）才能水合。
-	chainSeedAccountConnection(t, fixture.db, "acc_2", upstream.URL, "chat_json", "chat_sse")
+	chainSeedAccountConnection(t, fixture.db, "acc_2", upstreamBaseURL, "chat_json", "chat_sse")
 	// 候选 1：上游指向同步改凭据与连接行。
 	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstreamBaseURL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update acc_1 credentials: %v", err)
 	}
-	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse")
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstreamBaseURL, "chat_json", "chat_sse")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	// Windows 的文件删除异步生效：spool 目录文件较多时，t.TempDir 的
@@ -314,9 +316,11 @@ func runCommittedStreamInterruptScenario(t *testing.T, candidate1 http.HandlerFu
 		}
 	}))
 	defer upstream.Close()
+	// v2 直拼契约：base_url 是版本根（gpt/openai 族 /v1），入站 /v1 前缀已剥除。
+	upstreamBaseURL := upstream.URL + "/v1"
 
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_2', ?, 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`),
-		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstream.URL})); err != nil {
+		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstreamBaseURL})); err != nil {
 		t.Fatalf("seed acc_2: %v", err)
 	}
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at) VALUES (?, ?, 'acc_2', 1, 10, '2026-09-04T00:00:00.000Z')`),
@@ -326,13 +330,13 @@ func runCommittedStreamInterruptScenario(t *testing.T, candidate1 http.HandlerFu
 	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_2', 'gpt-test', 'mdl_gpt-test', '2026-09-04T00:00:00.000Z')`); err != nil {
 		t.Fatalf("seed acc_2 models: %v", err)
 	}
-	chainSeedAccountConnection(t, fixture.db, "acc_2", upstream.URL, "chat_json", "chat_sse")
+	chainSeedAccountConnection(t, fixture.db, "acc_2", upstreamBaseURL, "chat_json", "chat_sse")
 	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstreamBaseURL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update acc_1 credentials: %v", err)
 	}
-	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse")
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstreamBaseURL, "chat_json", "chat_sse")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	t.Cleanup(func() {

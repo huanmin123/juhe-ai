@@ -1,6 +1,7 @@
 package groups
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
@@ -252,6 +253,32 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		}
 	})
 
+	t.Run("topology-super-clear-normalizes-self", func(t *testing.T) {
+		f := newSuperFixtureEnv(t)
+		super := f.createSuper(t, "清空归一")
+		member := f.createStandard(t, "清空成员")
+		revision, _ := f.members(t, super)
+		if code, payload := f.patchMembers(t, super, revision, membersJSON(member)); code != http.StatusOK {
+			t.Fatalf("seed member: %d %v", code, payload)
+		}
+		// 模拟历史遗留自身行：成员清空时必须立即收敛，而非留待迁移。
+		f.env.exec(t, `UPDATE groups SET group_type = 'high_concurrency',
+			scheduling_policy_json = '{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":0}' WHERE id = ?`, super)
+		revision, _ = f.members(t, super)
+		if code, payload := f.patchMembers(t, super, revision, "[]"); code != http.StatusOK {
+			t.Fatalf("clear members: %d %v", code, payload)
+		}
+		var groupType string
+		var policy sql.NullString
+		if err := f.env.queryRow(`SELECT group_type, scheduling_policy_json FROM groups WHERE id = ?`, super).
+			Scan(&groupType, &policy); err != nil {
+			t.Fatalf("read super row: %v", err)
+		}
+		if groupType != "personal" || policy.Valid {
+			t.Fatalf("cleared super row = %s/%v, want personal/NULL", groupType, policy)
+		}
+	})
+
 	t.Run("member-self", func(t *testing.T) {
 		f := newSuperFixtureEnv(t)
 		super := f.createSuper(t, "自引用")
@@ -310,9 +337,9 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		super := f.createSuper(t, "指纹不一致")
 		personal := f.createStandard(t, "个人组")
 		code, payload := f.env.do(t, http.MethodPost, f.prefix+"/groups",
-			`{"name":"高并发组","groupType":"high_concurrency"}`)
+			`{"name":"阈值组","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":3,"clientIpConcurrencyLimit":0}}`)
 		if code != http.StatusCreated {
-			t.Fatalf("create high concurrency: %d %v", code, payload)
+			t.Fatalf("create policy group: %d %v", code, payload)
 		}
 		high := payload["data"].(map[string]any)["id"].(string)
 		revision, _ := f.members(t, super)
@@ -336,7 +363,7 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		}
 		memberRevision := f.groupRevision(t, g1)
 		status, payload := f.env.do(t, http.MethodPatch, f.prefix+"/groups/"+g1,
-			`{"expectedUpdatedAt":`+fmt.Sprintf("%q", memberRevision)+`,"groupType":"high_concurrency"}`)
+			`{"expectedUpdatedAt":`+fmt.Sprintf("%q", memberRevision)+`,"schedulingPolicy":{"defaultSoftConcurrency":3,"clientIpConcurrencyLimit":0}}`)
 		assertCode(t, status, payload, http.StatusConflict, CodeSuperGroupMemberDispatchConflict)
 	})
 

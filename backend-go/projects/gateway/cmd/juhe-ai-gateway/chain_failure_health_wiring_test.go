@@ -38,8 +38,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type healthOutboxFixture struct {
-	db     *sql.DB
-	writer *chainProbeRequestOutboxWriter
+	db              *sql.DB
+	writer          *chainProbeRequestOutboxWriter
+	probeDispatcher *chainRequestFailureHealthDispatcher
 }
 
 // newHealthOutboxFixture 在 pgtestkit 隔离 PG 库上构造 writer（与生产 PG 形态
@@ -48,15 +49,47 @@ type healthOutboxFixture struct {
 func newHealthOutboxFixture(t *testing.T, deadlineMS int64) *healthOutboxFixture {
 	t.Helper()
 	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
-		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`)
+		if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+			return err
+		}
+		// 开关守卫 SELECT 的最小账户形状（无行 → 按默认开启继续派发）。
+		_, err := db.Exec(`CREATE TABLE IF NOT EXISTS juhe_business.accounts (
+			id text PRIMARY KEY,
+			authorization_instance_authorization_id text,
+			authorization_instance_source_account_id text,
+			background_probe_enabled integer NOT NULL DEFAULT 1,
+			deleted_at text)`)
 		return err
 	})
 	writer := newChainProbeRequestOutboxWriter(db, deadlineMS)
-	return &healthOutboxFixture{db: db, writer: writer}
+	return newHealthOutboxFixtureWithDeps(t, db, writer)
+}
+
+// newHealthOutboxFixtureWithDeps 给已有 db/writer 的夹具补异步派发器生命周期
+// （background-probe gate 夹具复用）。
+func newHealthOutboxFixtureWithDeps(t *testing.T, db *sql.DB, writer *chainProbeRequestOutboxWriter) *healthOutboxFixture {
+	t.Helper()
+	fixture := &healthOutboxFixture{db: db, writer: writer}
+	fixture.probeDispatcher = newChainRequestFailureHealthDispatcher(writer)
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = fixture.probeDispatcher.Close(closeCtx)
+	})
+	return fixture
 }
 
 func (f *healthOutboxFixture) dispatcher() *chainRequestFailureHealthDispatcher {
-	return newChainRequestFailureHealthDispatcher(f.writer)
+	return f.probeDispatcher
+}
+
+func (f *healthOutboxFixture) flush(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.probeDispatcher.Flush(ctx); err != nil {
+		t.Fatalf("等待异步探针 outbox 落库: %v", err)
+	}
 }
 
 func (f *healthOutboxFixture) dispatch(t *testing.T, req *gatewaypreauth.GatewayRequest, trafficSource, accountID string) bool {
@@ -67,6 +100,7 @@ func (f *healthOutboxFixture) dispatch(t *testing.T, req *gatewaypreauth.Gateway
 // rows 返回全部 outbox 行（自然序），行键为列名。
 func (f *healthOutboxFixture) rows(t *testing.T) []map[string]any {
 	t.Helper()
+	f.flush(t)
 	result, err := f.db.Query(`SELECT request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at
 		FROM juhe_business.account_health_probe_request_outbox ORDER BY created_at, request_id`)
 	if err != nil {
@@ -806,5 +840,46 @@ func TestComposeGatewayChainWiresFailureDispatchCollaborators(t *testing.T) {
 	// memory 驱动：无 Redis 客户端时 Store 保持 nil。
 	if degradedDispatcher.turnRetry == nil || degradedDispatcher.turnRetry.Store != nil {
 		t.Fatal("turn retry must keep the memory driver without redis")
+	}
+}
+
+// TestChainRequestFailureHealthDispatcherDoesNotBlockOnOutboxInsert：失败请求
+// 的 outbox INSERT 由后台 worker 执行；表被锁时 Dispatch 仍应立即返回并置位
+// 请求标记，锁释放后行最终落库（T196）。
+func TestChainRequestFailureHealthDispatcherDoesNotBlockOnOutboxInsert(t *testing.T) {
+	fixture := newHealthOutboxFixture(t, 65_000)
+	ctx := context.Background()
+	if err := fixture.writer.ensureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lockTx, err := fixture.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.ExecContext(ctx, `LOCK TABLE juhe_business.account_health_probe_request_outbox IN ACCESS EXCLUSIVE MODE`); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+
+	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	startedAt := time.Now()
+	if !fixture.dispatcher().DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_async") {
+		_ = lockTx.Rollback()
+		t.Fatal("INSERT 被锁时 Dispatch 仍应受理并入队")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		_ = lockTx.Rollback()
+		t.Fatalf("Dispatch 被 outbox INSERT 阻塞: %s", elapsed)
+	}
+	if !req.RequestFailureHealthCheckDispatched() {
+		_ = lockTx.Rollback()
+		t.Fatal("入队成功后必须置位请求标记")
+	}
+	if err := lockTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.flush(t)
+	if rows := fixture.count(t); rows != 1 {
+		t.Fatalf("锁释放后 outbox 行数 = %d，want 1", rows)
 	}
 }

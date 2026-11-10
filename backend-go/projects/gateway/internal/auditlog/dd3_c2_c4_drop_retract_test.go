@@ -251,7 +251,7 @@ func TestDD3C4RetractEnqueueExhaustedRegistersIntent(t *testing.T) {
 
 	// DD6-S1：撤回 worker 停驻后把撤回队列确定性填满——Retract 的三次入队
 	// 尝试必然全部失败（耗尽臂前置）。
-	dd6ParkRetractWorkers(t, store, producer, "dd3c4-retract", producerWorkers)
+	dd6ParkRetractWorkers(t, store, producer, "dd3c4-retract", 0)
 	dd6FillRetractQueue(t, producer, "dd3c4-retract-fill")
 	for i := 0; i < producerQueueCapacity; i++ {
 		select {

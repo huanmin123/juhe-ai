@@ -25,8 +25,12 @@ type bug0304StubShardStore struct {
 func (s *bug0304StubShardStore) WriteBatch(_ usagewriter.Ctx, plan usagewriter.WritePlan) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rows += len(plan.ShardEntries)
-	return len(plan.ShardEntries), nil
+	count := 0
+	for _, shard := range plan.RowsByShard {
+		count += len(shard.Rows)
+	}
+	s.rows += count
+	return count, nil
 }
 
 func (s *bug0304StubShardStore) totalRows() int {
@@ -46,7 +50,7 @@ func (s *bug0304StubShardStore) totalRows() int {
 //	  DrainOnce → 返回 nil、源文件被删除，记录经 writer 落库证实已接收。
 func TestBug0304DrainKeepsSourceOnOverflowPersistFailureThenReplays(t *testing.T) {
 	root := t.TempDir()
-	spoolDirectory := filepath.Join(root, "usage-record-spool")
+	spoolDirectory := filepath.Join(root, "usage-record-overflow-spool")
 	blocker := filepath.Join(root, "overflow-blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)

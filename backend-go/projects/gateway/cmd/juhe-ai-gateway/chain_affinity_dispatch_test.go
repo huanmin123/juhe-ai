@@ -5,7 +5,7 @@ package main
 //    的映射（此前 localSessionAffinity 的 OrderAsync 签名丢弃 options）。
 //  2. chainSessionAffinityDispatchPort：Redis cacheDriver 下绑定读写经
 //    AffinityService 落 miniredis（dispatch 写 → preauth 读侧可见），
-//    忙判定保持 F13 同源委托。
+//    绑定读写面与 preauth 共用同一数据面。
 //  3. composeGatewayChain 装配分叉：Redis cacheDriver → 适配器端口；
 //    memory / nil Identity → localSessionAffinity（本地降级行为不变）。
 
@@ -48,7 +48,7 @@ func w17RedisAffinityService(t *testing.T, mr *miniredis.Miniredis, namespace st
 		CacheDriver:        gatewaysession.CacheDriverRedis,
 		RuntimeStateDriver: gatewaysession.RuntimeStateDriverMemory,
 		Secret:             w17AffinitySecret,
-		RedisURL:      "redis://" + mr.Addr(),
+		RedisURL:           "redis://" + mr.Addr(),
 		RedisNamespace:     namespace,
 	})
 	if err != nil {
@@ -59,10 +59,10 @@ func w17RedisAffinityService(t *testing.T, mr *miniredis.Miniredis, namespace st
 
 // TestChainDispatchOrderingOptionsOf: 完整选项映射（含 nil 分支与解引用）。
 func TestChainDispatchOrderingOptionsOf(t *testing.T) {
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"maxQueueSize": float64(7)}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 7, ClientIPConcurrencyLimit: 3}
 	rankByAccountID := map[string]int{"acc-a": 0, "acc-b": 1}
 	converted := chainDispatchOrderingOptionsOf(gatewaydispatch.AffinityOrderingOptions{
-		GroupType:        "high_concurrency",
+		GroupType:        "personal",
 		SchedulingPolicy: &policy,
 		ModelPriority: &gatewaydispatch.ModelPriority{
 			RequestedModel:       "gpt-test",
@@ -71,10 +71,10 @@ func TestChainDispatchOrderingOptionsOf(t *testing.T) {
 		},
 		TrafficMigrationScope: &gatewaydispatch.AffinityScope{SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "grp-1"},
 	})
-	if converted.GroupType != "high_concurrency" {
+	if converted.GroupType != "personal" {
 		t.Fatalf("GroupType = %q", converted.GroupType)
 	}
-	if converted.SchedulingPolicy == nil || converted.SchedulingPolicy["maxQueueSize"] != float64(7) {
+	if converted.SchedulingPolicy == nil || *converted.SchedulingPolicy != policy {
 		t.Fatalf("SchedulingPolicy = %#v", converted.SchedulingPolicy)
 	}
 	if converted.ModelPriority == nil || converted.ModelPriority.RequestedModel != "gpt-test" ||
@@ -94,12 +94,11 @@ func TestChainDispatchOrderingOptionsOf(t *testing.T) {
 
 // TestChainSessionAffinityDispatchPortRedisRoundTrip: 适配器四方法经
 // AffinityService 落 miniredis；排序读侧（preauth 同一服务实例）可见；
-// OrderAsync 消费 ModelPriority 排序选项；忙判定保持 localSessionAffinity
-// 的 nil-tracker 恒不忙语义。
+// OrderAsync 消费 ModelPriority 排序选项。
 func TestChainSessionAffinityDispatchPortRedisRoundTrip(t *testing.T) {
 	mr := miniredis.RunT(t)
 	service := w17RedisAffinityService(t, mr, "w17-port")
-	port := &chainSessionAffinityDispatchPort{service: service, busy: newLocalSessionAffinity()}
+	port := &chainSessionAffinityDispatchPort{service: service}
 	ctx := context.Background()
 	scope := gatewaydispatch.AffinityScope{SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "grp-1"}
 
@@ -148,15 +147,6 @@ func TestChainSessionAffinityDispatchPortRedisRoundTrip(t *testing.T) {
 	}
 	if w17BindingKeyExists(t, mr, "aff_w17_remember") {
 		t.Fatal("ForgetAsync 必须清理 Redis 绑定")
-	}
-
-	// 忙判定委托：nil 并发事实源恒不忙（与 localSessionAffinity 组合测试
-	// 语义一致），不落 AffinityService。
-	busy, err := port.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, []gatewaydispatch.AccountCandidate{w17Account("acc-a")}, gatewaydispatch.HighConcurrencyBusyOptions{
-		AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{GroupType: "high_concurrency"},
-	})
-	if err != nil || busy {
-		t.Fatalf("忙判定委托 = (%v, %v); want (false, nil)", busy, err)
 	}
 }
 
@@ -212,6 +202,81 @@ func TestComposeGatewayChainAffinityPortRedisShared(t *testing.T) {
 	}
 	if len(ordered) != 2 || ordered[0].ID != "acc-b" {
 		t.Fatalf("preauth 读侧未看到 dispatch 写入的亲和: ordered[0] = %s", ordered[0].ID)
+	}
+}
+
+// w17SlotMemberExists reports whether the session is recorded in the given
+// account's session-slot ZSET.
+func w17SlotMemberExists(t *testing.T, mr *miniredis.Miniredis, accountID, affinityKey string) bool {
+	t.Helper()
+	suffix := "session-affinity:slot:" + accountID
+	for _, key := range mr.Keys() {
+		if !strings.HasSuffix(key, suffix) {
+			continue
+		}
+		members, err := mr.ZMembers(key)
+		if err != nil {
+			t.Fatalf("ZMembers(%s): %v", key, err)
+		}
+		for _, member := range members {
+			if member == affinityKey {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestChainSessionAffinityDispatchPortSlotPlanAndConfirm: 名额端口经适配器
+// 落 Redis，确认后写入新 owner 名额并释放旧 owner 名额。
+func TestChainSessionAffinityDispatchPortSlotPlanAndConfirm(t *testing.T) {
+	mr := miniredis.RunT(t)
+	service := w17RedisAffinityService(t, mr, "w17-slot")
+	port := &chainSessionAffinityDispatchPort{service: service}
+	ctx := context.Background()
+	scope := gatewaydispatch.AffinityScope{SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "grp-1"}
+	if _, ok := port.ClaimAsync(ctx, "aff_slot_port", "acc-a", scope); !ok {
+		t.Fatal("ClaimAsync failed")
+	}
+	if !port.RebindAsync(ctx, "aff_slot_port", "acc-a", "acc-a", scope) {
+		t.Fatal("RebindAsync(acc-a) failed")
+	}
+	candidates := []gatewaydispatch.SessionSlotCandidate{
+		{AccountID: "acc-a", ConcurrencyLimit: 10},
+		{AccountID: "acc-b", ConcurrencyLimit: 10},
+	}
+	plan, err := port.PlanSessionSlot(ctx, "aff_slot_port", "", false, candidates, 0)
+	if err != nil {
+		t.Fatalf("PlanSessionSlot: %v", err)
+	}
+	if plan.PreferredAccountID != "acc-a" || plan.Fallback {
+		t.Fatalf("new-session plan = %+v, want acc-a", plan)
+	}
+	cap := gatewaysession.SessionSlotCap(10, 0)
+	if !port.ConfirmSessionSlot(ctx, "aff_slot_port", "", "acc-a", cap) {
+		t.Fatal("ConfirmSessionSlot(acc-a) = false")
+	}
+	if !w17SlotMemberExists(t, mr, "acc-a", "aff_slot_port") {
+		t.Fatal("acc-a 名额未写入 Redis")
+	}
+	plan, err = port.PlanSessionSlot(ctx, "aff_slot_port", "acc-a", true, candidates, 0)
+	if err != nil {
+		t.Fatalf("PlanSessionSlot(owner): %v", err)
+	}
+	if plan.PreferredAccountID != "acc-a" || !plan.SlotActive {
+		t.Fatalf("owner plan = %+v, want active acc-a", plan)
+	}
+	if !port.RebindAsync(ctx, "aff_slot_port", "acc-a", "acc-b", scope) {
+		t.Fatal("RebindAsync(acc-b) failed")
+	}
+	if !port.ConfirmSessionSlot(ctx, "aff_slot_port", "acc-a", "acc-b", cap) {
+		t.Fatal("ConfirmSessionSlot(acc-b) = false")
+	}
+	if w17SlotMemberExists(t, mr, "acc-a", "aff_slot_port") {
+		t.Fatal("旧 owner 名额必须释放")
+	}
+	if !w17SlotMemberExists(t, mr, "acc-b", "aff_slot_port") {
+		t.Fatal("新 owner 名额必须写入")
 	}
 }
 
@@ -272,3 +337,69 @@ type w17NopWaitLogger struct{}
 func (w17NopWaitLogger) Info(map[string]any, string) {}
 
 func (w17NopWaitLogger) Warn(map[string]any, string) {}
+
+// TestChainSessionAffinityDispatchPortRebind: 账户亲和同层 latch 的链端口
+// 重绑走同一 AffinityService；同 owner 刷新 lease、异 owner CAS 改绑、
+// expected owner 不匹配时 no-op。
+func TestChainSessionAffinityDispatchPortRebind(t *testing.T) {
+	mr := miniredis.RunT(t)
+	service := w17RedisAffinityService(t, mr, "w17-rebind")
+	port := &chainSessionAffinityDispatchPort{service: service}
+	ctx := context.Background()
+	scope := gatewaydispatch.AffinityScope{SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "grp-1"}
+
+	port.RememberAsync(ctx, "aff_w17_rebind", "acc-a", scope)
+	if !port.RebindAsync(ctx, "aff_w17_rebind", "acc-a", "acc-a", scope) {
+		t.Fatal("same-owner lease refresh must succeed")
+	}
+	if !port.RebindAsync(ctx, "aff_w17_rebind", "acc-a", "acc-b", scope) {
+		t.Fatal("same-layer rebind a->b must succeed")
+	}
+	if owner, ok := port.ClaimAsync(ctx, "aff_w17_rebind", "acc-c", scope); !ok || owner != "acc-b" {
+		t.Fatalf("claim after rebind = %q %v, want acc-b", owner, ok)
+	}
+	if port.RebindAsync(ctx, "aff_w17_rebind", "acc-a", "acc-c", scope) {
+		t.Fatal("rebind with a stale expected owner must be a no-op")
+	}
+}
+
+// TestChainSessionAffinityDispatchPortSoftThresholdOrder: 生产 Redis 适配器
+// 透传普通分组软阈值策略；owner 达到 softBusy 时同层 peer 先于 owner，
+// 保证准备期 soft_threshold 让位路径可达（memory 降级适配器不实现该排序）。
+func TestChainSessionAffinityDispatchPortSoftThresholdOrder(t *testing.T) {
+	mr := miniredis.RunT(t)
+	service := w17RedisAffinityService(t, mr, "w17-soft-order")
+	port := &chainSessionAffinityDispatchPort{service: service}
+	ctx := context.Background()
+	scope := gatewaydispatch.AffinityScope{SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "grp-1"}
+	key := "aff_w17_soft_order"
+
+	if owner, ok := port.ClaimAsync(ctx, key, "acc-a", scope); !ok || owner != "acc-a" {
+		t.Fatalf("claim = %q %v", owner, ok)
+	}
+	ownerConcurrency, peerConcurrency := 1, 0
+	owner := w17Account("acc-a")
+	owner.CurrentConcurrency = &ownerConcurrency
+	peer := w17Account("acc-b")
+	peer.CurrentConcurrency = &peerConcurrency
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 1, ClientIPConcurrencyLimit: 0}
+
+	ordered, err := port.OrderAsync(ctx, []gatewaydispatch.AccountCandidate{owner, peer}, key, gatewaydispatch.AffinityOrderingOptions{
+		GroupType:        "personal",
+		SchedulingPolicy: policy,
+	})
+	if err != nil {
+		t.Fatalf("OrderAsync: %v", err)
+	}
+	if len(ordered) != 2 || ordered[0].ID != "acc-b" {
+		t.Fatalf("soft-busy owner must yield to same-layer peer, got %v", idsOfCandidates(ordered))
+	}
+}
+
+func idsOfCandidates(accounts []gatewaydispatch.AccountCandidate) []string {
+	out := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, account.ID)
+	}
+	return out
+}

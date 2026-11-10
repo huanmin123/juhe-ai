@@ -265,7 +265,7 @@ func TestW11DGroupAccessSharedRefreshArms(t *testing.T) {
 	if shared := (groupUsageAccessCacheEntry{}).toShared(); shared.Value != nil {
 		t.Fatal("负缓存 toShared 必须是 null value")
 	}
-	policy := GroupSchedulingPolicy{"a": 1.0}
+	policy := GroupSchedulingPolicy{DefaultSoftConcurrency: 1}
 	posEntry := groupUsageAccessCacheEntry{value: &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "s", SchedulingPolicy: &policy}}
 	if sharedPos := posEntry.toShared(); sharedPos.Value == nil || sharedPos.Value.SchedulingPolicy == nil {
 		t.Fatal("正向 toShared 必须携带值")
@@ -833,7 +833,7 @@ func TestW11DSQLAuthorizationFailureArms(t *testing.T) {
 	}
 }
 
-func TestW11DSQLLocalTypeInvalidArms(t *testing.T) {
+func TestW11DSQLLocalAuthorizationOverrideRetired(t *testing.T) {
 	ctx := context.Background()
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
@@ -852,8 +852,11 @@ func TestW11DSQLLocalTypeInvalidArms(t *testing.T) {
 			t.Fatalf("seed: %v\n%s", err, statement)
 		}
 	}
-	if _, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_other"); err == nil {
-		t.Fatal("本地非法 group_type 必须报错")
+	// 授权设置的 group_type/策略覆盖已退役：本地旧值（含非法类型）不再读取，
+	// 类型与策略恒来自来源分组（g1 为 legacy high_concurrency，策略映射后默认）。
+	meta, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_other")
+	if err != nil || meta == nil || meta.GroupType == nil || *meta.GroupType != "personal" || meta.SchedulingPolicy != nil {
+		t.Fatalf("授权本地旧覆盖必须被忽略 = (%+v, %v)", meta, err)
 	}
 }
 

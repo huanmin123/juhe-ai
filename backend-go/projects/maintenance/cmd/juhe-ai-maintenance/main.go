@@ -64,6 +64,9 @@ func runMaintenance(argv []string) int {
 	if len(argv) > 0 && argv[0] == "purge-unsupported-vendor-accounts" {
 		return runPurgeUnsupportedVendorAccountsCommand(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == "migrate-group-policy" {
+		return runMigrateGroupPolicyCommand(argv[1:])
+	}
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	printVersion := fs.Bool("version", false, "print the maintenance build version, commit and schema revision")
 	check := fs.Bool("check-boundary", false, "verify the scaffold boundary")
@@ -88,7 +91,7 @@ func runMaintenance(argv []string) int {
 	mockdataSummaryFile := fs.String("mockdata-summary-file", "", "optional mockdata summary JSON path: --mockdata writes it, --verify-mockdata-coverage reads the domain-wiring snapshot from it (no implicit fallback)")
 	rebuildUsageStats := fs.Bool("rebuild-usage-stats", false, "offline rebuild of the usage statistics cache from usage_records (requires --confirm-offline or JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1; gateway/jobs must be stopped; business database and usage_records stay read-only; BUG-0182)")
 	confirmOffline := fs.Bool("confirm-offline", false, "confirm an offline window for --rebuild-usage-stats (gateway/jobs stopped); alternatively set JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1")
-	rebuildBatchSize := fs.Int("batch-size", 2000, "rebuild-usage-stats aggregation batch size (clamped to 1..50000; default 2000)")
+	rebuildBatchSize := fs.Int("batch-size", 1000, "rebuild-usage-stats aggregation batch size (clamped to 1..10000; default 1000)")
 	rebuildMaxBatches := fs.Int("max-batches", 1000, "rebuild-usage-stats aggregation batch cap per run (clamped to 1..10000; default 1000; rerun to continue when the cap is hit)")
 	rebuildAllowHistoryLoss := fs.Bool("allow-history-loss", false, "rebuild-usage-stats: allow clearing statistics older than the current usage_records retention window (default refuses; DR-35)")
 	applySuccessCostBackfill := fs.Bool("apply-success-cost-backfill", false, "one-shot idempotent backfill of usage_stats success_cost_usd from total_cost_usd for the six stats tables (maintenance window with jobs stopped; run --ensure-schema first to create the backfill_progress marker table; requires --dsn; resumable from the persisted cursor)")

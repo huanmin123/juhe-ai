@@ -488,6 +488,8 @@ type sessionBindingJSON struct {
 	Scope                     *openAIGatewaySessionAffinityScopeJSON `json:"scope,omitempty"`
 	TrafficMigrationPreferred *bool                                  `json:"trafficMigrationPreferred,omitempty"`
 	UpstreamApiKeyFingerprint *string                                `json:"upstreamApiKeyFingerprint,omitempty"`
+	LeaseUntilMs              *int64                                 `json:"leaseUntilMs,omitempty"`
+	LastActiveAtMs            *int64                                 `json:"lastActiveAtMs,omitempty"`
 }
 
 // openAIGatewaySessionAffinityScopeJSON keeps the explicit field order.
@@ -518,6 +520,14 @@ func marshalSessionBinding(binding SessionBinding) string {
 		fingerprint := binding.UpstreamApiKeyFingerprint
 		payload.UpstreamApiKeyFingerprint = &fingerprint
 	}
+	if binding.LeaseUntilMs > 0 {
+		leaseUntilMs := binding.LeaseUntilMs
+		payload.LeaseUntilMs = &leaseUntilMs
+	}
+	if binding.LastActiveAtMs > 0 {
+		lastActiveAtMs := binding.LastActiveAtMs
+		payload.LastActiveAtMs = &lastActiveAtMs
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		// A struct payload cannot fail marshaling.
@@ -535,6 +545,8 @@ func parseRedisSessionBinding(rawValue string) *SessionBinding {
 		Scope                     json.RawMessage `json:"scope"`
 		TrafficMigrationPreferred json.RawMessage `json:"trafficMigrationPreferred"`
 		UpstreamApiKeyFingerprint json.RawMessage `json:"upstreamApiKeyFingerprint"`
+		LeaseUntilMs              json.RawMessage `json:"leaseUntilMs"`
+		LastActiveAtMs            json.RawMessage `json:"lastActiveAtMs"`
 	}
 	if err := json.Unmarshal([]byte(rawValue), &parsed); err != nil {
 		return nil
@@ -568,7 +580,29 @@ func parseRedisSessionBinding(rawValue string) *SessionBinding {
 			}
 		}
 	}
+	if value, ok := positiveInt64FromRaw(parsed.LeaseUntilMs); ok {
+		binding.LeaseUntilMs = value
+	}
+	if value, ok := positiveInt64FromRaw(parsed.LastActiveAtMs); ok {
+		binding.LastActiveAtMs = value
+	}
 	return binding
+}
+
+// positiveInt64FromRaw accepts a positive JSON integer; malformed/non-positive
+// values are ignored so a bad field cannot brick the binding.
+func positiveInt64FromRaw(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, false
+	}
+	if value <= 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 // parseRedisSessionBindingScope mirrors parseRedisSessionBindingScope: the

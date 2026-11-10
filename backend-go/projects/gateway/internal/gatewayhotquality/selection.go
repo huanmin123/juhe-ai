@@ -79,13 +79,16 @@ type HotQualitySelectionSnapshot struct {
 
 // HotQualityCandidate mirrors HotQualityCandidate.
 type HotQualityCandidate struct {
-	AccountID                  string
-	AccountRuntimeKey          string
-	RouteScopeKey              string
-	ConfigurationTier          GatewayAccountConfigurationTier
-	StableBindingOrder         int
-	HotQuality                 *HotQualitySelectionSnapshot
-	LatencyDegraded            bool
+	AccountID          string
+	AccountRuntimeKey  string
+	RouteScopeKey      string
+	ConfigurationTier  GatewayAccountConfigurationTier
+	StableBindingOrder int
+	HotQuality         *HotQualitySelectionSnapshot
+	LatencyDegraded    bool
+	// SoftBusy 来自普通分组 defaultSoftConcurrency：只在本层内降权，
+	// 不参与候选过滤/硬拒绝（契约 §3.1）。
+	SoftBusy                   bool
 	LastExplorationAttemptAtMs *int64
 }
 
@@ -518,6 +521,11 @@ func decideExploration[T any](
 		if candidate.base.AccountRuntimeKey == primary.base.AccountRuntimeKey {
 			continue
 		}
+		// 软阈值是层内第一顺位键（普通分组可选调度策略设计 §3.1）；探索
+		// 置顶也不得把 softBusy 目标提回同层健康 peer 之前。
+		if candidate.base.SoftBusy {
+			continue
+		}
 		if mode == HotQualityModeSpeedFirst && candidate.base.LatencyDegraded {
 			continue
 		}
@@ -657,8 +665,16 @@ func sameExplorationPriority[T any](left, right *explorationRankedCandidate[T]) 
 // materialized by materializeTierOrderKeys before sorting — the comparator
 // never reads the opposite candidate's snapshot and never applies relative
 // threshold judgments, which keeps it a strict weak ordering independent of
-// candidate input order.
+// candidate input order. SoftBusy（普通分组 defaultSoftConcurrency）是层内
+// 第一顺位键：软忙候选排在同层非软忙之后，但仍在同层内按质量/稳定序收敛，
+// 不跨层、不过滤、不拒绝（普通分组可选调度策略设计 §3.1）。
 func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
+	if left.base.SoftBusy != right.base.SoftBusy {
+		if left.base.SoftBusy {
+			return 1
+		}
+		return -1
+	}
 	reliability := reliabilityRank(left.reliabilityLevel) - reliabilityRank(right.reliabilityLevel)
 	if reliability != 0 {
 		return reliability
@@ -697,19 +713,6 @@ func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
 		return cmp
 	}
 	return left.originalIndex - right.originalIndex
-}
-
-// DecideHotQualityCandidateOrderOnly is the pure-ordering export for
-// post-affinity reordering (e.g. the high-concurrency group's final reorder
-// after OrderAsync, cache-rate design doc section 7): the tier segmentation
-// and within-tier ordering are identical to DecideHotQualityCandidate, but
-// same-tier exploration is never triggered — the exploration state is forced
-// to nil, which decideExploration short-circuits into
-// ExplorationStatusNotConfigured with no selected target, no store access and
-// no reservation or audit side effects.
-func DecideHotQualityCandidateOrderOnly[T any](input DecideHotQualityCandidateInput[T]) (*HotQualityCandidateDecision[T], error) {
-	input.Exploration = nil
-	return DecideHotQualityCandidate(input)
 }
 
 // normalizeCandidates mirrors normalizeCandidates (duplicate runtime keys are

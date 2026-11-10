@@ -198,7 +198,7 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidateForArgs(ctx context
 		orderedQuotaAllowedAccounts := degradationOrder.Accounts
 		// m4（BUG-0174）：对齐归档 api-key-group-fallback-candidate.ts:123-125，
 		// busy 检查无条件执行（当前装配恒注入 Concurrency；Node 无 nil 守卫）。
-		if input.Reason == "high_concurrency_group_busy" || input.Reason == "group_capacity_busy" {
+		if input.Reason == "group_capacity_busy" {
 			busy, err := AreGatewayAccountsCapacityBusyForLaneAsync(ctx, p.engine.Concurrency, orderedQuotaAllowedAccounts, gatewayprotoLane(input.RequestLane), groupAccess.SchedulingPolicy)
 			if err != nil {
 				return GroupFallbackCandidateOutput{}, false, err

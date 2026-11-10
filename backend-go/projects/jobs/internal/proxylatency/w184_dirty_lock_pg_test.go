@@ -26,4 +26,3 @@ func w184StatementIndex(statements []wfStatement, match string) int {
 	}
 	return -1
 }
-

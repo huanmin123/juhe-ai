@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -430,29 +431,29 @@ func (p *postCycleMultiSuppress) ResolveLocalSuppressionFilter(_ context.Context
 	return &result, false, nil
 }
 
-// queueGatedConcurrencyStore 在队列等待发生前拒绝获取（容量满），队列等待
-// 触发后放行——驱动既有"外环容量等待 → 重排 → 重试"恢复路径。
-type queueGatedConcurrencyStore struct {
-	queueHit atomic.Bool
+// timedGateConcurrencyStore 在截止时刻前拒绝所有获取（容量满），截止后放行——
+// 高并发队列退役后，驱动"整池容量失败 → 外环退避等待 → 重跑整池"恢复路径。
+type timedGateConcurrencyStore struct {
+	openAtMs int64
 	calls    atomic.Int64
 	acquired atomic.Int64
 }
 
-func (s *queueGatedConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
+func (s *timedGateConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
 	return map[string]int{}, nil
 }
 
-func (s *queueGatedConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+func (s *timedGateConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
 	return map[string]AccountRPMState{}, nil
 }
 
-func (s *queueGatedConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
+func (s *timedGateConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }
 
-func (s *queueGatedConcurrencyStore) TryAcquireAsync(_ context.Context, _ string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error) {
+func (s *timedGateConcurrencyStore) TryAcquireAsync(_ context.Context, _ string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error) {
 	s.calls.Add(1)
-	if !s.queueHit.Load() {
+	if time.Now().UnixMilli() < s.openAtMs {
 		return ConcurrencySlot{Acquired: false, Current: concurrencyLimit, Limit: concurrencyLimit, Lane: options.Lane}, nil
 	}
 	s.acquired.Add(1)
@@ -466,19 +467,9 @@ func (s *queueGatedConcurrencyStore) TryAcquireAsync(_ context.Context, _ string
 	}, nil
 }
 
-// queueHitFlipper 在容量队列等待时翻转存储闸门（等待即恢复信号）。
-type queueHitFlipper struct {
-	store *queueGatedConcurrencyStore
-}
-
-func (q *queueHitFlipper) WaitForCapacity(_ context.Context, _ HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	q.store.queueHit.Store(true)
-	return QueueWaitResult{Ready: true, Reason: "drained"}, nil
-}
-
-// 矩阵 f（真实失败后释放 + 可恢复等待）：段内普通候选真实耗尽既有重试 → 释放
-// 排除账号 → 释放账号命中可恢复容量失败，按既有外环容量等待恢复后继续重试，
-// 无需二次释放。
+// 矩阵 f（真实失败后释放 + 可恢复等待）：整池容量失败不进入高并发队列（分支
+// 已退役），外环退避等待后重跑整池——段内普通候选真实耗尽既有重试 → 释放
+// 排除账号 → 释放后重试无需二次释放。
 func TestMatrixFReleaseThenRecoverableWait(t *testing.T) {
 	upstream := newScriptedUpstream(func(accountID string, call int) int {
 		if accountID == "a-1" {
@@ -490,9 +481,8 @@ func TestMatrixFReleaseThenRecoverableWait(t *testing.T) {
 	defer server.Close()
 	engine, driver := newMatrixEngine(t)
 	engine.Config.AccountConcurrencyRetryBudgetMs = 1
-	store := &queueGatedConcurrencyStore{}
+	store := &timedGateConcurrencyStore{openAtMs: time.Now().UnixMilli() + 120}
 	engine.Concurrency = store
-	engine.HighConcurrencyQueue = &queueHitFlipper{store: store}
 	driver.urlByAccount = matrixURLs(server, "a-1", "b-1")
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	audit := &matrixAudit{sink: &fakeAuditSink{}}
@@ -554,7 +544,7 @@ func TestMatrixGSameAccountRetryPinningExempt(t *testing.T) {
 }
 
 // 矩阵 h（重复释放禁止 + 释放状态跨等待/reload 持续）：同段两个排除账号一次
-// 释放（单事件、各一次），经外环容量等待与 reload 重排后继续，不产生第二次
+// 释放（单事件、各一次），经外环退避等待与 reload 重排后继续，不产生第二次
 // 释放；已释放状态跨等待持续。
 func TestMatrixHReleaseOnceAcrossReload(t *testing.T) {
 	upstream := newScriptedUpstream(func(accountID string, call int) int {
@@ -567,9 +557,8 @@ func TestMatrixHReleaseOnceAcrossReload(t *testing.T) {
 	defer server.Close()
 	engine, driver := newMatrixEngine(t)
 	engine.Config.AccountConcurrencyRetryBudgetMs = 1
-	store := &queueGatedConcurrencyStore{}
+	store := &timedGateConcurrencyStore{openAtMs: time.Now().UnixMilli() + 120}
 	engine.Concurrency = store
-	engine.HighConcurrencyQueue = &queueHitFlipper{store: store}
 	driver.urlByAccount = matrixURLs(server, "c-1", "b-1", "b-2")
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	audit := &matrixAudit{sink: &fakeAuditSink{}}
@@ -833,34 +822,29 @@ func TestMatrixMAdjacentSameTierSegments(t *testing.T) {
 	})
 }
 
-// accountGatedConcurrencyStore 只对指定账户在容量队列等待发生前拒绝获取（段 1
-// 候选容量受限），其余账户照常放行（段 2 候选空闲）——驱动"段 1 容量失败、
-// 段 2 空闲"的整池等待域场景。
-type accountGatedConcurrencyStore struct {
+// timedAccountGateConcurrencyStore 在截止时刻前对指定账户拒绝获取（容量满），
+// 其余账户照常放行——驱动"段 1 容量失败、段 2 空闲"的整池回归场景。
+type timedAccountGateConcurrencyStore struct {
 	blockedID string
-	queueHit  atomic.Bool
-	calls     atomic.Int64
-	acquired  atomic.Int64
+	openAtMs  int64
 }
 
-func (s *accountGatedConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
+func (s *timedAccountGateConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
 	return map[string]int{}, nil
 }
 
-func (s *accountGatedConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+func (s *timedAccountGateConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
 	return map[string]AccountRPMState{}, nil
 }
 
-func (s *accountGatedConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
+func (s *timedAccountGateConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }
 
-func (s *accountGatedConcurrencyStore) TryAcquireAsync(_ context.Context, accountID string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error) {
-	s.calls.Add(1)
-	if accountID == s.blockedID && !s.queueHit.Load() {
+func (s *timedAccountGateConcurrencyStore) TryAcquireAsync(_ context.Context, accountID string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error) {
+	if accountID == s.blockedID && time.Now().UnixMilli() < s.openAtMs {
 		return ConcurrencySlot{Acquired: false, Current: concurrencyLimit, Limit: concurrencyLimit, Lane: options.Lane}, nil
 	}
-	s.acquired.Add(1)
 	return ConcurrencySlot{
 		Acquired:        true,
 		Current:         1,
@@ -871,37 +855,14 @@ func (s *accountGatedConcurrencyStore) TryAcquireAsync(_ context.Context, accoun
 	}, nil
 }
 
-// poolRecordingQueue 记录每次容量队列等待的整池入参（等待域断言载体），并在
-// 等待时翻转并发闸门（等待即恢复信号）。
-type poolRecordingQueue struct {
-	store  *accountGatedConcurrencyStore
-	mu     sync.Mutex
-	inputs []HighConcurrencyWaitInput
-}
-
-func (q *poolRecordingQueue) WaitForCapacity(_ context.Context, input HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	q.mu.Lock()
-	q.inputs = append(q.inputs, input)
-	q.mu.Unlock()
-	q.store.queueHit.Store(true)
-	return QueueWaitResult{Ready: true, Reason: "drained"}, nil
-}
-
-func (q *poolRecordingQueue) recordedInputs() []HighConcurrencyWaitInput {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return append([]HighConcurrencyWaitInput(nil), q.inputs...)
-}
-
-// 回炉回归（批次 1 复审裁决：整池等待域，锁定无排除场景行为等价）：无排除
-// 集、两个段——段 1（高优）候选容量受限、段 2（低优）候选空闲。旧行为（整池）
-// 在单周期内段 1 容量失败后段 2 立即被真实尝试，整池周期走完后容量等待才触发
-// 且等待对象包含两段候选；等待域若被收窄到当前活动段，段 2 首试会被段 1 的
-// 容量等待推迟（可达数十秒），且等待对象只含段 1 候选。
-func TestWholePoolCapacityWaitAcrossSegments(t *testing.T) {
+// 回炉回归（新契约）：带非空策略的普通分组整池容量失败不进入高并发队列（等
+// 待分支已删除，引擎不再持有任何队列端口），由外环退避等待后重跑整池恢复；
+// 空闲的段 2 候选在段 1 容量失败的同一周期内即被真实尝试，不被段 1 容量失败
+// 推迟。
+func TestWholePoolCapacityFailureWithPolicyRecoversWithoutQueue(t *testing.T) {
 	upstream := newScriptedUpstream(func(accountID string, call int) int {
 		if accountID == "p-1" {
-			return 0 // 段 1 候选容量恢复后成功
+			return 0 // 段 1 候选容量闸放行后成功
 		}
 		return 500 // 段 2 候选空闲但上游瞬态失败，保证本轮整池周期走完才等待
 	})
@@ -909,10 +870,8 @@ func TestWholePoolCapacityWaitAcrossSegments(t *testing.T) {
 	defer server.Close()
 	engine, driver := newMatrixEngine(t)
 	engine.Config.AccountConcurrencyRetryBudgetMs = 1
-	store := &accountGatedConcurrencyStore{blockedID: "p-1"}
-	queue := &poolRecordingQueue{store: store}
+	store := &timedAccountGateConcurrencyStore{blockedID: "p-1", openAtMs: time.Now().UnixMilli() + 120}
 	engine.Concurrency = store
-	engine.HighConcurrencyQueue = queue
 	driver.urlByAccount = matrixURLs(server, "p-1", "p-2")
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	audit := &matrixAudit{sink: &fakeAuditSink{}}
@@ -931,22 +890,13 @@ func TestWholePoolCapacityWaitAcrossSegments(t *testing.T) {
 		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
 	}
 	if result.Account.ID != "p-1" {
-		t.Fatalf("容量恢复后段 1 候选应服务, got %s", result.Account.ID)
+		t.Fatalf("外环退避等待重跑整池后段 1 候选应服务, got %s", result.Account.ID)
 	}
-	// 断言一：段 2 候选在段 1 容量失败的同一周期内即被真实尝试（首现先于段 1
-	// 的任何上游尝试），不被段 1 容量等待推迟。
+	// 段 2 候选在段 1 容量失败的同一周期内即被真实尝试（首现先于段 1 的任何
+	// 上游尝试），不被段 1 容量失败推迟。
 	order := firstAppearanceOrder(upstream.attemptOrder())
 	if len(order) != 2 || order[0] != "p-2" || order[1] != "p-1" {
-		t.Fatalf("首现顺序 = %v, 期望 [p-2 p-1]（段 2 不被段 1 容量等待推迟）", order)
-	}
-	// 断言二：整池容量等待恰好一次，且等待对象包含两段候选（整池域，而非段 1
-	// 单独的收窄域）。
-	inputs := queue.recordedInputs()
-	if len(inputs) != 1 {
-		t.Fatalf("容量队列等待次数 = %d, 期望 1", len(inputs))
-	}
-	if got := strings.Join(inputs[0].AccountIDs, ","); got != "p-1,p-2" {
-		t.Fatalf("容量等待 AccountIDs = %q, 期望整池 %q", got, "p-1,p-2")
+		t.Fatalf("首现顺序 = %v, 期望 [p-2 p-1]（段 2 不被段 1 容量失败推迟）", order)
 	}
 	// 两段候选各发生真实上游尝试（段 1 恰一次成功，段 2 至少一次瞬态失败）。
 	if upstream.hits("p-1") != 1 {

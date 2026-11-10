@@ -19,8 +19,7 @@ import (
 // TestW13G8LoadWorkerConfigRemainingArms 覆盖 loadWorkerConfig 尚未覆盖的
 // 范围校验与解析失败臂。
 func TestW13G8LoadWorkerConfigRemainingArms(t *testing.T) {
-	base := map[string]string{
-	}
+	base := map[string]string{}
 	for _, test := range []struct {
 		name     string
 		patch    map[string]string

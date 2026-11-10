@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -503,7 +502,7 @@ func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
 	}
 }
 
-func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
+func TestCanonicalBlobMissingFileDegradesPayloadWithoutBlockingPersist(t *testing.T) {
 	store, impl, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
@@ -517,23 +516,38 @@ func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
 	if err := impl.db.QueryRow(`SELECT storage_key FROM juhe_dataset.audit_payload_blobs`).Scan(&storageKey); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(cfg.PayloadBlobDirectory, filepath.FromSlash(storageKey))); err != nil {
+	blobPath := filepath.Join(cfg.PayloadBlobDirectory, filepath.FromSlash(storageKey))
+	if err := os.Remove(blobPath); err != nil {
 		t.Fatal(err)
 	}
 	second := fixture("audit-canonical-missing", LifecycleFinalized)
 	second.Payloads = first.Payloads
-	// 换 Path 拉开错误指纹：本测试只验证 canonical 文件缺失检测，不得被
-	// 错误组窗口内去重（出生即降级、不落盘）提前短路。
 	second.Path = "/v1/canonical-missing"
-	if _, err := store.Persist(context.Background(), lease, second); err == nil || !strings.Contains(err.Error(), "缺少物理文件") {
-		t.Fatalf("missing canonical gzip file must fail instead of Go recompression: %v", err)
+	if _, err := store.Persist(context.Background(), lease, second); err != nil {
+		t.Fatalf("缺失 canonical blob 不得阻塞后续 Persist，应降级 payload: %v", err)
 	}
 	var rows int
 	if err := impl.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE id=$1`, second.ID).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 0 {
-		t.Fatalf("failed canonical recovery must roll back parent row, got %d", rows)
+	if rows != 1 {
+		t.Fatalf("降级路径必须写入审计主记录，got %d", rows)
+	}
+	var bodyBlobID, bodySHA sql.NullString
+	var captureStatus string
+	if err := impl.db.QueryRow(`SELECT body_blob_id, body_sha256, capture_status
+		FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, second.ID).
+		Scan(&bodyBlobID, &bodySHA, &captureStatus); err != nil {
+		t.Fatal(err)
+	}
+	if bodyBlobID.Valid && bodyBlobID.String != "" {
+		t.Fatalf("缺失 blob 的 payload 必须降级为无 body blob 引用，got %q", bodyBlobID.String)
+	}
+	if !bodySHA.Valid || bodySHA.String == "" || captureStatus != string(PayloadCaptureHashOnly) {
+		t.Fatalf("降级 payload 应保留 hash 并标记 hash_only: sha=%v status=%q", bodySHA, captureStatus)
+	}
+	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("降级路径不得伪造/重编码缺失 blob，stat err=%v", err)
 	}
 }
 
@@ -718,20 +732,6 @@ func TestPostgresLeaseSQLUsesRealtimeCommitFenceWithoutLongRowLock(t *testing.T)
 	}
 	if !strings.Contains(strings.ToUpper(postgresCommitFenceSQL), "UPDATE") || !strings.Contains(strings.ToUpper(postgresCommitFenceSQL), "RETURNING") {
 		t.Fatalf("commit fence must atomically lock/check the lease immediately before Commit: %s", postgresCommitFenceSQL)
-	}
-}
-
-func TestBlobParentSyncPlatformContract(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Windows has no portable directory fsync in os.File. The implementation
-		// must deliberately avoid claiming one or touching an arbitrary path.
-		if err := syncBlobParent(filepath.Join(t.TempDir(), "does-not-exist")); err != nil {
-			t.Fatalf("Windows parent sync must be an explicit no-op: %v", err)
-		}
-		return
-	}
-	if err := syncBlobParent(t.TempDir()); err != nil {
-		t.Fatalf("Unix parent directory fsync failed: %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-// `maintenance upgrade` 的 13 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 15 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
@@ -12,7 +12,11 @@
 // （retire-cross-protocol-entry-mappings，PLAN-20261106T162344524Z 批次C）是
 // 跨协议入口映射退役：一个 Destructive 步骤按序执行归一→删除→删 schema 三个
 // 阶段（账本 revision 主键 + 注册表唯一校验决定一个 revision 只能注册一个
-// 步骤，阶段 ID 与逐阶段计数进 detail_json / stderr / dry-run 输出）。
+// 步骤，阶段 ID 与逐阶段计数进 detail_json / stderr / dry-run 输出）。revision
+// 22（retire-high-concurrency-groups，普通分组可选调度策略设计 §5）是
+// high_concurrency 分组退役：一个 Destructive 步骤把 groups /
+// group_authorization_settings 迁为 personal + 两键策略并按首成员重算超级分组
+// 自身行，needs_review 行阻断（与 migrate-group-policy CLI 共用迁移内核）。
 package main
 
 import (
@@ -22,11 +26,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/groupspolicymigration"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upgradepipeline"
 )
 
@@ -542,7 +549,200 @@ func verifyEntryMigrationRetirement(ctx context.Context, dsn string) error {
 	return errors.New("revision 20 完成态谓词未满足")
 }
 
-// upgradeSteps 返回 13 步骤注册表（revision 升序；引擎再做一次排序校验）。
+// ---------- revision 22：high_concurrency 分组迁移为 personal + 两键策略 ----------
+//
+// 普通分组可选调度策略设计 §5（2026-11-09 裁决）：退役 high_concurrency 分组
+// 类型，把 defaultSoftConcurrency / clientIpConcurrencyLimit 两个可选策略并入
+// 普通分组。一个 Destructive 步骤在停写窗口内：
+//  1. groups 全部行迁为 personal，16 键旧策略按执行时 globalMax 映射为两键
+//     （globalMax 取 JUHE_AI_CONCURRENCY_GLOBAL_MAX 实际值，缺失/非法回落默认
+//     5000；阈值 ∈ [1, min(1000000, globalMax)) 保留，缺失/<=0/>=globalMax →
+//     -1；IP 限制保留；两项都默认 → NULL）；
+//  2. group_authorization_settings 的 group_type/策略列清为 personal/NULL
+//    （覆盖退役，契约 §2.1）；
+//  3. 超级分组自身行按首成员重算（保持成员策略指纹一致，契约 §4）。
+//
+// 畸形 JSON/未知键/未知 group_type 行进入 needs_review 并阻断 apply（CLI 退出
+// 码 3；upgrade 步骤 Apply 返回错误停账本于 running），不静默修复（契约 §8-14）。
+// 不更新 updated_at（§8-13，由发布流程重启进程刷新运行时缓存）。与一次性命令
+// migrate-group-policy 共用同一迁移内核（Satisfied/Verify 与内核完成态谓词
+// 同源；dry-run 由 CLI 的 --dry-run/--check=preflight 承载，升级前先跑 CLI
+// 盘点并复核 manifest）。
+
+// groupPolicySatisfied 是 revision 22 的完成态谓词（Satisfied 与 Verify 同源）：
+// 两表无 personal 之外的 group_type、策略列只含两键或 NULL。fresh 库语义
+// （§9.4-6）：groups 表尚未建立即「无可迁移数据」，谓词返回满足。
+func groupPolicySatisfied(ctx context.Context, dsn string) (bool, error) {
+	exists, err := tableExists(ctx, dsn, "juhe_business", "groups")
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return true, nil
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	return groupspolicymigration.Satisfied(ctx, db)
+}
+
+// groupPolicyGlobalMaxFromEnv 读取旧二进制运行时的实际 globalMax
+// （JUHE_AI_CONCURRENCY_GLOBAL_MAX，契约 §5.2：阈值保留区间按执行时的实际值
+// 判定）。upgrade 步骤没有人工 flag 面，以执行环境 env 为准；缺失回落
+// DefaultGlobalConcurrencyMax；非法值同样回落但 stderr WARN（不静默吞掉配置
+// 错误）。CLI 的 --global-max 保持人工显式覆盖入口。
+func groupPolicyGlobalMaxFromEnv(logf func(format string, args ...any)) int {
+	raw := strings.TrimSpace(os.Getenv("JUHE_AI_CONCURRENCY_GLOBAL_MAX"))
+	if raw == "" {
+		return groupspolicymigration.DefaultGlobalConcurrencyMax
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > groupspolicymigration.MaxGlobalConcurrencyMax {
+		logf("JUHE_AI_CONCURRENCY_GLOBAL_MAX=%q 非法（需要 1-%d 的整数），回落默认 %d——请核对停写窗口执行环境的实际配置",
+			raw, groupspolicymigration.MaxGlobalConcurrencyMax, groupspolicymigration.DefaultGlobalConcurrencyMax)
+		return groupspolicymigration.DefaultGlobalConcurrencyMax
+	}
+	return value
+}
+
+// applyGroupPolicyMigration 是 revision 22 的 Apply：调用与
+// migrate-group-policy CLI 同一迁移内核；needs_review 行返回错误阻断（引擎把
+// detail_json 与错误写账本，账本停于 running，人工复核后重跑）。
+func applyGroupPolicyMigration(ctx context.Context, dsn string) (upgradepipeline.Detail, error) {
+	db, err := openPG(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	globalMax := groupPolicyGlobalMaxFromEnv(func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "revision 22 "+format+"\n", args...)
+	})
+	plan, applyErr := groupspolicymigration.Apply(ctx, db, groupspolicymigration.Options{GlobalMax: globalMax})
+	detail := upgradepipeline.Detail{
+		"globalMax":       plan.GlobalMax,
+		"mappedCount":     plan.Mapped,
+		"unchangedCount":  plan.Unchanged,
+		"blockedCount":    plan.Blocked,
+		"appliedCount":    plan.Applied,
+		"needsReviewRows": plan.NeedsReview,
+	}
+	if applyErr != nil {
+		return detail, applyErr
+	}
+	fmt.Fprintf(os.Stderr, "revision 22 分组策略迁移（globalMax=%d）：update %d 行（unchanged %d；needs_review %d）\n",
+		plan.GlobalMax, plan.Applied, plan.Unchanged, plan.Blocked)
+	return detail, nil
+}
+
+// verifyGroupPolicyMigration 是 Apply 后的完成态核验（与 Satisfied 同一谓词，
+// 逐项给出可归因计数）。
+func verifyGroupPolicyMigration(ctx context.Context, dsn string) error {
+	satisfied, err := groupPolicySatisfied(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	if satisfied {
+		return nil
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	report, err := groupspolicymigration.VerifyPostflight(ctx, db)
+	if err != nil {
+		return err
+	}
+	if report.NonPersonalGroups > 0 {
+		return fmt.Errorf("revision 22 迁移未完成：仍有 %d 行 groups.group_type 非 personal", report.NonPersonalGroups)
+	}
+	if report.NonPersonalAuthSettings > 0 {
+		return fmt.Errorf("revision 22 迁移未完成：仍有 %d 行授权设置 group_type 非 personal", report.NonPersonalAuthSettings)
+	}
+	if report.InvalidPolicyGroups > 0 || report.InvalidPolicyAuthSettings > 0 {
+		return fmt.Errorf("revision 22 策略列仍非两键/NULL 完成态形状（groups %d / 授权设置 %d）：%v",
+			report.InvalidPolicyGroups, report.InvalidPolicyAuthSettings, report.Examples)
+	}
+	return errors.New("revision 22 完成态谓词未满足")
+}
+
+// ---------- revision 23：退役 usage shard 目录四表 ----------
+//
+// 2026-11-10 用户裁决：shard 目录四表没有现行需求，生产写入链路只写
+// juhe_usage.usage_records，列表与清理均直接读该日分区表，四表无生产读取方。
+// 一个 Destructive 步骤在停写窗口内按 FK 依赖顺序 DROP：
+//  1. usage_record_shard_entries
+//  2. usage_record_account_shards
+//  3. usage_record_api_key_shards
+//  4. usage_record_shards
+//
+// 四表是历史兼容/造数遗留，DROP 不可回滚；执行前必须完成可恢复备份（发布
+// runbook 的停写+备份门禁）。缺失表是良性 no-op，重复执行只报告已缺席。
+
+var usageShardCatalogTables = []string{
+	"usage_record_shard_entries",
+	"usage_record_account_shards",
+	"usage_record_api_key_shards",
+	"usage_record_shards",
+}
+
+func usageShardCatalogSatisfied(ctx context.Context, dsn string) (bool, error) {
+	for _, table := range usageShardCatalogTables {
+		exists, err := tableExists(ctx, dsn, "juhe_usage", table)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func applyUsageShardCatalogRetirement(ctx context.Context, dsn string) (upgradepipeline.Detail, error) {
+	satisfied, err := usageShardCatalogSatisfied(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if satisfied {
+		return upgradepipeline.Detail{"dropped": 0, "alreadyRetired": true}, nil
+	}
+	toDrop := make([]string, 0, len(usageShardCatalogTables))
+	for _, table := range usageShardCatalogTables {
+		exists, err := tableExists(ctx, dsn, "juhe_usage", table)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			toDrop = append(toDrop, table)
+		}
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	dropped := 0
+	for _, table := range toDrop {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS juhe_usage.`+table); err != nil {
+			return upgradepipeline.Detail{"dropped": dropped, "failedTable": table}, err
+		}
+		dropped++
+	}
+	if err := tx.Commit(); err != nil {
+		return upgradepipeline.Detail{"dropped": dropped}, err
+	}
+	return upgradepipeline.Detail{"dropped": dropped, "alreadyRetired": false}, nil
+}
+
+// upgradeSteps 返回 15 步骤注册表（revision 升序；引擎再做一次排序校验）。
 // secret 为空时，凭据类 Check 不允许调用（第 8 步门禁保证到 Apply 阶段必有；
 // dry-run 阶段 Check 若需要 secret 会以错误呈现——预检语义可接受）。
 func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
@@ -1041,6 +1241,54 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			},
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
 				return verifyEntryMigrationRetirement(ctx, primaryDSN)
+			},
+		},
+		{
+			// 普通分组可选调度策略设计 §5（2026-11-09 裁决）。Destructive=true：
+			// expand 相被引擎过滤，contract/all 相执行分组策略迁移。Satisfied/
+			// Verify 同源（groupPolicySatisfied / 内核完成态谓词）；Apply 与
+			// migrate-group-policy CLI 共用迁移内核，needs_review 行阻断并停账
+			// 本于 running（升级前先跑 CLI --dry-run 复核 manifest）。
+			Revision: 22, ID: "retire-high-concurrency-groups",
+			Title:       "high_concurrency 分组迁移为 personal + 两键调度策略（groups 与 group_authorization_settings）",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return groupPolicySatisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyGroupPolicyMigration(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				return verifyGroupPolicyMigration(ctx, primaryDSN)
+			},
+		},
+		{
+			// 2026-11-10 用户裁决：shard 目录四表没有现行需求，生产写入只写
+			// usage_records。Destructive=true：停写窗口内按 FK 依赖顺序 DROP；
+			// Satisfied/Verify 同源（四表全部缺席）。DROP 不可回滚，执行前必须
+			// 完成可恢复备份。
+			Revision: 23, ID: "retire-usage-shard-catalog",
+			Title:       "退役 usage shard 目录四表（juhe_usage.usage_record_shard_*）",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return usageShardCatalogSatisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyUsageShardCatalogRetirement(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := usageShardCatalogSatisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("usage shard 目录四表未清退干净")
+				}
+				return nil
 			},
 		},
 	}

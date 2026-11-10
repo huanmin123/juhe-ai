@@ -1206,23 +1206,13 @@ export interface AccountExportResult {
   }
 }
 
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：非空对象必须同时
+// 包含两个键；NULL 等价于两项都取默认值。旧 16 键高并发策略已退役。
 export interface GroupSchedulingPolicy {
-  mode?: 'balanced_fast'
+  /** 最大单账户排队阈值：-1 关闭（默认）；1..1000000 生效；0 不是合法值。 */
   defaultSoftConcurrency?: number
-  fastFirstEnabled?: boolean
-  fallbackOnQueueEnabled?: boolean
-  breakAffinityOnSoftLimit?: boolean
-  breakAffinityOnQueueWaitMs?: number
-  slowRequestThresholdMs?: number
-  firstOutputSlowThresholdMs?: number
-  recentTimeoutWindowSeconds?: number
-  recentTimeoutPenaltyThreshold?: number
-  maxQueueWaitMs?: number
-  maxQueueSize?: number
-  perApiKeyQueueLimit?: number
+  /** 单 IP 并发上限：0 不限制（默认）；1..1000000 生效，超限立即返回 429。 */
   clientIpConcurrencyLimit?: number
-  clientIpConcurrencyOverflowMode?: 'reject' | 'queue'
-  imageLaneMaxConcurrency?: number
 }
 
 export type GroupKind = 'standard' | 'super'
@@ -1239,7 +1229,8 @@ export interface GroupSummary {
   groupType: GroupType
   /** 分组形态：普通分组直接拥有账号；超级分组只拥有成员关系（超级分组设计 §3.1）。 */
   groupKind?: GroupKind
-  schedulingPolicy?: GroupSchedulingPolicy
+  /** 可选调度策略：NULL/缺省 = 两项都取默认值（普通分组可选调度策略设计 §2.2）。 */
+  schedulingPolicy?: GroupSchedulingPolicy | null
   accountIds?: string[]
   accountStats: GroupAccountStats
   accessType?: ResourceAccessType
@@ -1266,6 +1257,8 @@ export interface GroupListItem extends Omit<
   'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'
 > {
   updatedAt: string
+  /** 列表项可选调度策略（普通分组可选调度策略设计 §2.3）：供类型列摘要直接使用，不再逐行拉 edit-basic。 */
+  schedulingPolicy?: GroupSchedulingPolicy | null
   accountStats: Pick<
     GroupAccountStats,
     'total' | 'available' | 'active' | 'disabled' | 'error' | 'rateLimited' | 'concurrencyLimit'
@@ -1281,13 +1274,15 @@ export interface GroupListItem extends Omit<
 // 编辑详情同 GroupSummary：后端仍回恒空串 providerCode 兼容键，前端类型已退役不再声明。
 export type GroupEditDetail = Pick<
   GroupSummary,
-  'name' | 'description' | 'enabled' | 'groupType' | 'schedulingPolicy'
+  'name' | 'description' | 'enabled' | 'groupType' | 'groupKind' | 'schedulingPolicy'
 > & { updatedAt: string }
 
 export interface GroupMutationResult {
   id: string
   changedFields: string[]
   updatedAt: string
+  /** PATCH changedFields 含 schedulingPolicy 时的最终策略回显（普通分组可选调度策略设计 §2.3）。 */
+  schedulingPolicy?: GroupSchedulingPolicy | null
 }
 
 export interface SuperGroupMember {

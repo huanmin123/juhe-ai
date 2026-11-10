@@ -743,7 +743,7 @@ func TestW1TChainComposeClientCatalogErrorArm(t *testing.T) {
 // w1tNewUsageService 以进程内 recorder + 空溢出组装最小用量服务。
 func w1tNewUsageService() *gatewayusage.Service {
 	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 64, Logger: slog.Default()}, nil)
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{}, 0, 0)
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 0, 0)
 	return gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true})
 }
 

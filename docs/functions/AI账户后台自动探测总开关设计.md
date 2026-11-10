@@ -32,6 +32,8 @@
 | --- | --- | --- |
 | J1 周期健康检查 / 首次激活 / 配置变更复检 / 冷却复测 | `accounthealth/direct_input_reader.go` | `scheduler.go` `checkInputFreshness` 扩展为同时校验开关 |
 | 请求失败二次确认 | — | gateway `chain_request_failure_health.go` 不投递；`worker_health_probe_outbox` 消费跳过并 ack |
+
+请求失败派发的热路径（2026-11-09）：gateway 请求协程只做一次账户开关 SELECT（关闭账户不消耗请求标记的语义不变），outbox INSERT 交给单 worker 有界队列（容量 1024，满则本次不标记、后续失败候选重试；停机排空上限 2s）。`sourceFence` 形态（codex turn 源代际交接）仍走同步 INSERT，必须确认 queued 后才返回，不使用异步队列。
 | 运行态（`recovery_wait` / `precheck_pending` / `runtime_degraded`） | — | gateway 状态机建立前检查开关 |
 | account circuit 恢复 | `account-circuit-recovery` | 关闭时关闭该账户 incident |
 | Key 冷却复测 / key-model memory 恢复 | `account-api-key-cooldown-retest` / `key-model-memory-recovery` | 候选过滤 + 派发前守卫；关闭时清理派生 Key 状态 |

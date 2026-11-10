@@ -71,11 +71,10 @@ func TestW13HPersistPanicRetractsEnvelope(t *testing.T) {
 		fake.mu.Lock()
 		retracts := append([]string(nil), fake.retractIDs...)
 		fake.mu.Unlock()
-		if len(retracts) >= 1 {
-			if retracts[0] != "w13h-panic" {
-				t.Fatalf("panic 臂撤回 id = %v", retracts)
+		for _, id := range retracts {
+			if id == "w13h-panic" {
+				return
 			}
-			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

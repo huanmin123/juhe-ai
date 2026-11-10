@@ -175,7 +175,7 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g_badtype', 'sys_owner', 1, 'weird')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g_high_nopolicy', 'sys_owner', 1, 'high_concurrency')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high_badpolicy', 'sys_owner', 1, 'high_concurrency', 'not-json')`,
-		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high', 'sys_owner', 1, 'high_concurrency', '{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_authorized', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_disabled_local', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_overridden', 'sys_owner', 1, 'personal', NULL)`,
@@ -240,13 +240,13 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 	if err != nil || locallyDisabled != nil {
 		t.Fatalf("本地禁用 = %v err=%v", locallyDisabled, err)
 	}
-	// 本地覆盖：group_type 与调度策略覆盖 + 限额启用。
+	// 本地覆盖退役：类型/策略来自来源分组（personal + NULL），限额仍生效。
 	overridden, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_auth_overridden", "sys_other")
 	if err != nil || overridden == nil {
 		t.Fatalf("本地覆盖 = %+v err=%v", overridden, err)
 	}
-	if overridden.GroupType == nil || *overridden.GroupType != "high_concurrency" || overridden.SchedulingPolicy == nil {
-		t.Fatalf("覆盖类型/策略 = %+v", overridden)
+	if overridden.GroupType == nil || *overridden.GroupType != "personal" || overridden.SchedulingPolicy != nil {
+		t.Fatalf("覆盖类型/策略必须来自来源分组 = %+v", overridden)
 	}
 	if overridden.GroupAuthorizationQuotaLimited == nil || !*overridden.GroupAuthorizationQuotaLimited {
 		t.Fatal("启用限额必须标记 quotaLimited")
@@ -260,17 +260,17 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 		t.Fatalf("坏限额 = %+v err=%v", badLimits, err)
 	}
 	// 纯助手：normalizeGroupTypeValue / parseGroupSchedulingPolicyJSON / strPtrIfSet。
-	if value, err := normalizeGroupTypeValue(sql.NullString{}); err != nil || value != "personal" {
-		t.Fatalf("空类型 = %q %v", value, err)
+	if _, _, err := normalizeGroupTypeValue(sql.NullString{}); err == nil {
+		t.Fatal("空类型必须报错（不得静默归 personal）")
 	}
-	if value, err := normalizeGroupTypeValue(sql.NullString{String: "high_concurrency", Valid: true}); err != nil || value != "high_concurrency" {
-		t.Fatalf("高并发类型 = %q %v", value, err)
+	if value, legacy, err := normalizeGroupTypeValue(sql.NullString{String: "high_concurrency", Valid: true}); err != nil || value != "personal" || !legacy {
+		t.Fatalf("旧高并发类型 = %q/%v %v", value, legacy, err)
 	}
-	if _, err := normalizeGroupTypeValue(sql.NullString{String: "odd", Valid: true}); err == nil {
+	if _, _, err := normalizeGroupTypeValue(sql.NullString{String: "odd", Valid: true}); err == nil {
 		t.Fatal("未知类型必须报错")
 	}
-	if policy, err := parseGroupSchedulingPolicyJSON(sql.NullString{}, "personal"); err != nil || policy != nil {
-		t.Fatalf("非高并发策略 = %v %v", policy, err)
+	if policy, err := parseGroupSchedulingPolicyJSON(sql.NullString{}, false, 5000); err != nil || policy != nil {
+		t.Fatalf("空策略 = %v %v", policy, err)
 	}
 	if strPtrIfSet("") != nil || strPtrIfSet("x") == nil {
 		t.Fatal("strPtrIfSet 臂错误")

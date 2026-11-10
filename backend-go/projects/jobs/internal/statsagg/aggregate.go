@@ -66,10 +66,20 @@ func (a *Aggregator) now() time.Time {
 	return time.Now()
 }
 
+// statsAggregationBatchTimeBudget 是单批聚合事务的硬上限（2026-11-09）。事务内
+// 包含选行、授权查找、内存聚合与全部 UPSERT；超时回滚整批（消费水位不
+// 推进），下一轮重试同一批，幂等不会重复计数。正常 2000 行批次在授权摘要
+// 预聚合后语句量降到百级，远低于该预算；预算只用于兜住异常锁等待/数据库
+// 黑洞，避免事务无限持有行锁与 WAL。
+const statsAggregationBatchTimeBudget = 60 * time.Second
+
 // AggregateOptions mirrors aggregate_usage_stats stats-writer 操作参数。
 type AggregateOptions struct {
 	BatchSize         int
 	SafeCreatedBefore string // 空则在构造时按 now-15s 计算
+	// TimeBudget 覆盖单批事务硬上限（零值用 statsAggregationBatchTimeBudget；
+	// 仅供测试缩短，生产不配置）。
+	TimeBudget time.Duration
 }
 
 // AggregateUsageStatsBatch mirrors aggregateUsageStatsBatchAsync（PG 单游标
@@ -90,6 +100,13 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 	if err != nil {
 		return 0, err
 	}
+	budget := options.TimeBudget
+	if budget <= 0 {
+		budget = statsAggregationBatchTimeBudget
+	}
+	batchCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	ctx = batchCtx
 
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -462,6 +479,8 @@ func (a *Aggregator) aggregateRows(ctx context.Context, tx *sql.Tx, records []Us
 	errorEntries := map[statsErrorKey]*aggregatedUsageErrorEntry{}
 	accountQualityEntries := map[string]*aggregatedAccountQualityEntry{}
 	accountHealthEntries := map[string]*aggregatedAccountHealthEntry{}
+	authorizationTeamEntries := map[authorizationSummaryEntryKey]*UsageStatsAccumulator{}
+	authorizationUserEntries := map[authorizationSummaryEntryKey]*UsageStatsAccumulator{}
 
 	for _, record := range records {
 		row := record
@@ -515,7 +534,8 @@ func (a *Aggregator) aggregateRows(ctx context.Context, tx *sql.Tx, records []Us
 		}
 		addPostgresAggregatedAccountHealthEntry(accountHealthEntries, row, timeKeys.StatHour)
 		if isSet(row.AccountAuthorizationID) || isSet(row.GroupAuthorizationID) {
-			if err := a.upsertAuthorizationUsageReportRows(ctx, tx, row, timeKeys.StatDate, updatedAt, lookup); err != nil {
+			// 2026-11-09：不再逐记录 UPSERT，先按输出行键折叠，批末统一落库。
+			if err := addAuthorizationUsageReportEntries(authorizationTeamEntries, authorizationUserEntries, row, timeKeys.StatDate, lookup); err != nil {
 				return err
 			}
 		}
@@ -544,6 +564,9 @@ func (a *Aggregator) aggregateRows(ctx context.Context, tx *sql.Tx, records []Us
 		}
 	}
 
+	if err := a.flushAuthorizationUsageSummaryEntries(ctx, tx, authorizationTeamEntries, authorizationUserEntries, updatedAt); err != nil {
+		return err
+	}
 	if err := a.upsertUsageStatsTotals(ctx, tx, totalEntries, updatedAt); err != nil {
 		return err
 	}

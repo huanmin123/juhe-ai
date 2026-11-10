@@ -1,7 +1,7 @@
 package auditlog
 
 // w10b SQLite error-arm coverage: writeBlobTemps / publishBlobPlans /
-// verifyExistingBlobFiles failure arms, stale-temp cleanup matrices, closed
+// degradeMissingExistingBlobPayloads arms, stale-temp cleanup matrices, closed
 // store error arms, hot-search error arms and pure helper matrices that the
 // existing suite leaves uncovered.
 
@@ -117,14 +117,24 @@ func TestW10BPublishBlobPlansErrorArms(t *testing.T) {
 	}
 }
 
-func TestW10BVerifyExistingBlobFilesArms(t *testing.T) {
+func TestW10BDegradeMissingExistingBlobPayloadArms(t *testing.T) {
 	root := t.TempDir()
-	// existing blob 缺少物理文件。
-	plans := []blobPlan{{root: root, record: blobRecord{id: "blob:m", storageKey: "sha256/m.blob", compressedSize: 1}, existing: true}}
-	if err := verifyExistingBlobFiles(plans); err == nil || !strings.Contains(err.Error(), "缺少物理文件") {
-		t.Fatalf("缺失 existing 文件必须报错: %v", err)
+	// existing blob 缺少物理文件：plan 移除，payload 降级 hash_only。
+	missing := &blobRecord{id: "blob:m", storageKey: "sha256/m.blob", compressedSize: 1}
+	plans := []blobPlan{{root: root, record: *missing, existing: true}}
+	prepared := []preparedPayload{{
+		body:  missing,
+		input: AuditLogPayloadInput{CaptureStatus: PayloadCaptureComplete},
+	}}
+	kept, degraded, err := degradeMissingExistingBlobPayloads(plans, prepared)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 文件存在但大小不一致。
+	if len(kept) != 0 || degraded[0].body != nil || degraded[0].input.CaptureStatus != PayloadCaptureHashOnly {
+		t.Fatalf("缺失 existing 文件必须移除 plan 并降级 payload: kept=%d body=%v status=%q",
+			len(kept), degraded[0].body, degraded[0].input.CaptureStatus)
+	}
+	// 文件存在但大小不一致：同样降级。
 	path := filepath.Join(root, "sha256")
 	if err := os.MkdirAll(path, 0o750); err != nil {
 		t.Fatal(err)
@@ -132,17 +142,28 @@ func TestW10BVerifyExistingBlobFilesArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "s.blob"), []byte("xyz"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plans = []blobPlan{{root: root, record: blobRecord{id: "blob:s", storageKey: "sha256/s.blob", compressedSize: 1}, existing: true}}
-	if err := verifyExistingBlobFiles(plans); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("大小不一致必须报错: %v", err)
+	truncated := &blobRecord{id: "blob:s", storageKey: "sha256/s.blob", compressedSize: 1}
+	plans = []blobPlan{{root: root, record: *truncated, existing: true}}
+	prepared = []preparedPayload{{body: truncated, input: AuditLogPayloadInput{CaptureStatus: PayloadCaptureComplete}}}
+	kept, degraded, err = degradeMissingExistingBlobPayloads(plans, prepared)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 同一 key 去重后只校验一次。
-	plans = []blobPlan{
-		{root: root, record: blobRecord{id: "blob:ok", storageKey: "sha256/s.blob", compressedSize: 3}, existing: true},
-		{root: root, record: blobRecord{id: "blob:ok", storageKey: "sha256/s.blob", compressedSize: 3}, existing: true},
+	if len(kept) != 0 || degraded[0].body != nil || degraded[0].input.CaptureStatus != PayloadCaptureHashOnly {
+		t.Fatalf("大小不一致必须降级 payload: kept=%d body=%v status=%q",
+			len(kept), degraded[0].body, degraded[0].input.CaptureStatus)
 	}
-	if err := verifyExistingBlobFiles(plans); err != nil {
-		t.Fatalf("匹配文件必须通过: %v", err)
+	// 文件尺寸一致：保留 plan 与 payload 指针。
+	matching := &blobRecord{id: "blob:ok", storageKey: "sha256/s.blob", compressedSize: 3}
+	plans = []blobPlan{{root: root, record: *matching, existing: true}}
+	prepared = []preparedPayload{{body: matching, input: AuditLogPayloadInput{CaptureStatus: PayloadCaptureComplete}}}
+	kept, degraded, err = degradeMissingExistingBlobPayloads(plans, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || degraded[0].body == nil || degraded[0].input.CaptureStatus != PayloadCaptureComplete {
+		t.Fatalf("匹配文件必须保留 plan 与完整 payload: kept=%d body=%v status=%q",
+			len(kept), degraded[0].body, degraded[0].input.CaptureStatus)
 	}
 }
 
@@ -432,9 +453,6 @@ func TestW10BNormalizeRetentionAndHelperArms(t *testing.T) {
 	}
 	if blobTempOwnerKey(OwnerLease{OwnerID: "o", FenceToken: 3}) == "" || !strings.HasPrefix(blobTempPattern(OwnerLease{OwnerID: "o", FenceToken: 3}), ".f3-audit-blob-") {
 		t.Fatal("blobTemp helper")
-	}
-	if syncBlobParent(t.TempDir()) != nil {
-		t.Fatal("Windows 分支必须 no-op")
 	}
 }
 

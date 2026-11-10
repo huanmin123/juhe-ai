@@ -384,84 +384,6 @@ func TestW13CLazyRedisClientErrorArms(t *testing.T) {
 	}
 }
 
-func TestW13CSchedulingPolicyRemainingArms(t *testing.T) {
-	defaults := SchedulingDefaults{GlobalMax: 5000}
-	cases := []map[string]any{
-		{"bogus": 1},
-		{"maxQueueSize": "x"},
-		{"mode": "turbo"},
-		{"defaultSoftConcurrency": "x"},
-		{"fastFirstEnabled": "yes"},
-		{"fallbackOnQueueEnabled": 1},
-		{"breakAffinityOnSoftLimit": "no"},
-		{"breakAffinityOnQueueWaitMs": -1},
-		{"firstOutputSlowThresholdMs": 0},
-		{"recentTimeoutWindowSeconds": "x"},
-		{"recentTimeoutPenaltyThreshold": 0},
-		{"maxQueueWaitMs": "x"},
-		{"perApiKeyQueueLimit": "x"},
-		{"clientIpConcurrencyLimit": -1},
-		{"clientIpConcurrencyOverflowMode": 1},
-		{"imageLaneMaxConcurrency": -5},
-	}
-	for index, policy := range cases {
-		if _, err := ResolveGroupSchedulingPolicy(GroupTypeHighConcurrency, policy, defaults); err == nil {
-			t.Fatalf("case %d (%v) must fail", index, policy)
-		}
-	}
-	// 超大整数臂。
-	if _, err := ResolveGroupSchedulingPolicy(GroupTypeHighConcurrency, map[string]any{"maxQueueSize": float64(1) * 1e18}, defaults); err == nil {
-		t.Fatal("overflow maxQueueSize must fail")
-	}
-}
-
-type w13cStubConcurrency struct {
-	loadTotalErr error
-	loadImageErr error
-	loadStatsErr error
-	current      map[string]int
-	image        map[string]int
-}
-
-func (c *w13cStubConcurrency) GetAccountCurrentConcurrency(accountID string, lane string) int {
-	if lane == RequestLaneImage {
-		return c.image[accountID]
-	}
-	return c.current[accountID]
-}
-
-func (c *w13cStubConcurrency) LoadAccountCurrentConcurrencyByIDsAsync(ctx context.Context, accountIDs []string, lane string) (map[string]int, error) {
-	if lane == RequestLaneImage {
-		if c.loadImageErr != nil {
-			return nil, c.loadImageErr
-		}
-		return c.image, nil
-	}
-	if c.loadTotalErr != nil {
-		return nil, c.loadTotalErr
-	}
-	return c.current, nil
-}
-
-func (c *w13cStubConcurrency) LoadAccountInFlightStatsByIDs(accountIDs []string, thresholds InFlightThresholds) map[string]AccountInFlightStats {
-	stats := map[string]AccountInFlightStats{}
-	for id, value := range c.current {
-		stats[id] = AccountInFlightStats{CurrentConcurrency: value}
-	}
-	return stats
-}
-
-func (c *w13cStubConcurrency) LoadAccountInFlightStatsByIDsAsync(ctx context.Context, accountIDs []string, thresholds InFlightThresholds) (map[string]AccountInFlightStats, error) {
-	if c.loadStatsErr != nil {
-		return nil, c.loadStatsErr
-	}
-	stats := map[string]AccountInFlightStats{}
-	for id, value := range c.current {
-		stats[id] = AccountInFlightStats{CurrentConcurrency: value}
-	}
-	return stats, nil
-}
-
 func w13cAccount(id string, priority int, concurrency int) gatewayruntimecache.OpenAIAccountSecret {
 	concurrencyValue := concurrency
 	return gatewayruntimecache.OpenAIAccountSecret{
@@ -472,261 +394,79 @@ func w13cAccount(id string, priority int, concurrency int) gatewayruntimecache.O
 	}
 }
 
-func TestW13CBusyLaneArms(t *testing.T) {
-	stub := &w13cStubConcurrency{current: map[string]int{}}
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.Concurrency = stub
-	})
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 1), w13cAccount("a2", 2, 1)}
-
-	// 非 redis 运行时驱动回落同步 busy-lane。
-	busy, err := service.AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(context.Background(), accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency},
-		RequestLane:             "text",
-	})
-	if err != nil || busy {
-		t.Fatalf("text lane = %v, %v", busy, err)
-	}
-
-	// image lane + 非法调度策略 → 校验错误臂。
-	badPolicy, err := service.AreOpenAIHighConcurrencyAccountsBusyForLane(accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{
-			GroupType:        GroupTypeHighConcurrency,
-			SchedulingPolicy: map[string]any{"mode": "turbo"},
-		},
-		RequestLane: RequestLaneImage,
-	})
-	if err == nil || badPolicy {
-		t.Fatalf("bad policy busy = %v, %v", badPolicy, err)
-	}
-
-	// redis 运行时驱动 + Concurrency 加载错误。
-	errStub := &w13cStubConcurrency{loadTotalErr: errors.New("w13c load failure")}
-	errService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = errStub
-	})
-	if _, err := errService.AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(context.Background(), accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency},
-	}); err == nil {
-		t.Fatal("load failure must surface")
-	}
-
-	// redis 运行时驱动 + image lane 加载错误。
-	imageErrStub := &w13cStubConcurrency{current: map[string]int{}, loadImageErr: errors.New("w13c image load failure")}
-	imageErrService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = imageErrStub
-	})
-	if _, err := imageErrService.AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(context.Background(), accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency},
-		RequestLane:             RequestLaneImage,
-	}); err == nil {
-		t.Fatal("image load failure must surface")
-	}
-
-	// redis 运行时驱动 + Concurrency 为 nil → 非 busy。
-	nilConcurrencyService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = nil
-	})
-	busy, err = nilConcurrencyService.AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(context.Background(), accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{GroupType: GroupTypeHighConcurrency},
-	})
-	if err != nil || busy {
-		t.Fatalf("nil concurrency = %v, %v", busy, err)
-	}
-}
-
-func TestW13CHighConcurrencyOrderArms(t *testing.T) {
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 1), w13cAccount("a2", 2, 1)}
-
-	// 非 redis 运行时驱动回落同步排序。
-	stub := &w13cStubConcurrency{current: map[string]int{}}
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverMemory
-		cfg.Concurrency = stub
-	})
-	if _, err := service.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "w13c-key", DispatchOrderingOptions{
-		GroupType: GroupTypeHighConcurrency,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// redis 运行时驱动 + Concurrency nil：async 统计空表 + fallback 本地绑定读取。
-	nilConcurrencyService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverMemory
-		cfg.Concurrency = nil
-	})
-	// fastFirst 关闭 + 无迁移目标 → personal by binding。
-	ordered, err := nilConcurrencyService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "w13c-key", DispatchOrderingOptions{
-		GroupType:        GroupTypeHighConcurrency,
-		SchedulingPolicy: map[string]any{"fastFirstEnabled": false},
-	})
-	if err != nil || len(ordered) != 2 {
-		t.Fatalf("fast-first off = %v, %v", ordered, err)
-	}
-	// fastFirst 关闭 + 有迁移目标 → hard-busy-last async。
-	ordered, err = nilConcurrencyService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "w13c-key", DispatchOrderingOptions{
-		GroupType:             GroupTypeHighConcurrency,
-		SchedulingPolicy:      map[string]any{"fastFirstEnabled": false},
-		TrafficMigrationScope: &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1"},
-		ModelPriority:         nil,
-	})
-	if err != nil || len(ordered) != 2 {
-		t.Fatalf("hard-busy-last async = %v, %v", ordered, err)
-	}
-
-	// 非法调度策略在 async 路径的传播。
-	if _, err := nilConcurrencyService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType:        GroupTypeHighConcurrency,
-		SchedulingPolicy: map[string]any{"mode": "turbo"},
-	}); err == nil {
-		t.Fatal("bad policy must surface from async ordering")
-	}
-
-	// 硬满载分组：hardBusyLast async 两个桶。
-	fullStub := &w13cStubConcurrency{current: map[string]int{"a1": 9, "a2": 0}}
-	fullService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = fullStub
-	})
-	ordered, err = fullService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType:             GroupTypeHighConcurrency,
-		TrafficMigrationScope: &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1"},
-	})
-	if err != nil || ordered[0].ID != "a2" {
-		t.Fatalf("hard busy last = %v, %v", ordered, err)
-	}
-	// 全部空闲：直接原序返回。
-	freeStub := &w13cStubConcurrency{current: map[string]int{"a1": 0, "a2": 0}}
-	freeService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = freeStub
-	})
-	ordered, err = freeService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType:             GroupTypeHighConcurrency,
-		TrafficMigrationScope: &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1"},
-	})
-	if err != nil || len(ordered) != 2 {
-		t.Fatalf("all free = %v, %v", ordered, err)
-	}
-
-	// LoadAccountCurrentConcurrencyByIDsAsync 错误传播（fastFirst 关闭 +
-	// 迁移目标存在 → hard-busy-last async）。
-	hardBusyLoadErr := &w13cStubConcurrency{loadTotalErr: errors.New("w13c load failure")}
-	preferenceStub := &w13cStubRedis{getHook: func(key string) (*string, error) {
-		if strings.Contains(key, "traffic-migration-preference") {
-			value := `{"sourceAccountId":"gone-1","targetAccountId":"a2"}`
-			return &value, nil
-		}
-		return nil, errors.New("w13c binding read failure")
-	}, sendHook: func(args ...any) (any, error) {
-		return "OK", nil
-	}}
-	loadErrService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = preferenceStub
-		cfg.Concurrency = hardBusyLoadErr
-	})
-	if _, err := loadErrService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType:             GroupTypeHighConcurrency,
-		SchedulingPolicy:      map[string]any{"fastFirstEnabled": false},
-		TrafficMigrationScope: &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"},
-	}); err == nil {
-		t.Fatal("load failure must surface from hard-busy-last async")
-	}
-
-	// LoadAccountInFlightStatsByIDsAsync 错误传播（fastFirst 开启路径）。
-	statsErrService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = &w13cStubConcurrency{loadStatsErr: errors.New("w13c stats failure")}
-	})
-	if _, err := statsErrService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType: GroupTypeHighConcurrency,
-	}); err == nil {
-		t.Fatal("stats load failure must surface")
-	}
-}
-
-func TestW13CCompareHighConcurrencyCandidateArms(t *testing.T) {
-	policy := DefaultHighConcurrencyGroupSchedulingPolicy(SchedulingDefaults{GlobalMax: 5000})
-	policy.FallbackOnQueueEnabled = true
-	policy.BreakAffinityOnSoftLimit = true
-	base := highConcurrencyCandidate{account: w13cAccount("a1", 1, 0), index: 0, softLimit: 5}
-	peer := highConcurrencyCandidate{account: w13cAccount("a2", 2, 1), index: 1, softLimit: 5}
+func TestW13CCompareSoftConcurrencyCandidateArms(t *testing.T) {
+	base := softConcurrencyCandidate{account: w13cAccount("a1", 1, 0), index: 0, softLimit: 5}
+	peer := softConcurrencyCandidate{account: w13cAccount("a2", 2, 1), index: 1, softLimit: 5, currentConcurrency: 1}
 	bound := base
 	bound.affinityAllowed = true
 	preferred := base
 	preferred.trafficMigrationPreferred = true
 	softBusy := base
 	softBusy.softBusy = true
-	super := highConcurrencyCandidate{account: w13cAccount("a3", 1, 0), index: 2, softLimit: 5}
+	super := softConcurrencyCandidate{account: w13cAccount("a3", 1, 0), index: 2, softLimit: 5}
 	super.account.SuperPriorityEnabled = true
-	fallback := highConcurrencyCandidate{account: w13cAccount("a4", 1, 0), index: 3, softLimit: 5}
+	fallback := softConcurrencyCandidate{account: w13cAccount("a4", 1, 0), index: 3, softLimit: 5}
 	fallback.account.FallbackEnabled = true
-	qualityLow := highConcurrencyCandidate{account: w13cAccount("a5", 1, 0), index: 4, softLimit: 5}
-	qualityHigh := highConcurrencyCandidate{account: w13cAccount("a6", 1, 0), index: 5, softLimit: 5}
+	qualityLow := softConcurrencyCandidate{account: w13cAccount("a5", 1, 0), index: 4, softLimit: 5}
+	qualityHigh := softConcurrencyCandidate{account: w13cAccount("a6", 1, 0), index: 5, softLimit: 5}
 	qualityHigh.account.QualityScore = float64Ptr(99)
-	loaded := highConcurrencyCandidate{account: w13cAccount("a7", 1, 4), index: 6, softLimit: 5}
-	idle := highConcurrencyCandidate{account: w13cAccount("a8", 1, 0), index: 7, softLimit: 5}
+	loaded := softConcurrencyCandidate{account: w13cAccount("a7", 1, 4), index: 6, softLimit: 5, currentConcurrency: 4}
+	idle := softConcurrencyCandidate{account: w13cAccount("a8", 1, 0), index: 7, softLimit: 5}
+	hardBusy := softConcurrencyCandidate{account: w13cAccount("a9", 1, 9), index: 8, softLimit: 5, currentConcurrency: 9, hardBusy: true}
 
-	if compareHighConcurrencyCandidates(base, peer, &policy, false, nil) >= 0 {
+	if compareSoftConcurrencyCandidates(base, peer, nil) >= 0 {
 		t.Fatal("lower index must win ties")
 	}
-	if compareHighConcurrencyCandidates(softBusy, base, &policy, false, nil) <= 0 {
+	if compareSoftConcurrencyCandidates(softBusy, base, nil) <= 0 {
 		t.Fatal("soft-busy must rank worse")
 	}
-	if compareHighConcurrencyCandidates(super, base, &policy, false, nil) >= 0 {
+	if compareSoftConcurrencyCandidates(super, base, nil) >= 0 {
 		t.Fatal("super priority must rank better")
 	}
-	if compareHighConcurrencyCandidates(base, super, &policy, false, nil) <= 0 {
+	if compareSoftConcurrencyCandidates(base, super, nil) <= 0 {
 		t.Fatal("plain must rank worse than super")
 	}
-	if compareHighConcurrencyCandidates(base, peer, &policy, true, nil) >= 0 {
-		t.Fatal("priority must decide with equal load")
-	}
-	if compareHighConcurrencyCandidates(loaded, idle, &policy, false, nil) >= 0 {
+	if compareSoftConcurrencyCandidates(loaded, idle, nil) <= 0 {
 		t.Fatal("higher load ratio must rank worse")
 	}
-	if compareHighConcurrencyCandidates(qualityHigh, qualityLow, &policy, false, nil) >= 0 {
+	if compareSoftConcurrencyCandidates(qualityHigh, qualityLow, nil) >= 0 {
 		t.Fatal("higher quality must rank better")
 	}
-	if compareHighConcurrencyCandidates(bound, base, &policy, false, nil) >= 0 {
+	if compareSoftConcurrencyCandidates(bound, base, nil) >= 0 {
 		t.Fatal("affinity allowed must rank better")
 	}
-	noFallback := policy
-	noFallback.FallbackOnQueueEnabled = false
-	if compareHighConcurrencyCandidates(fallback, base, &noFallback, true, nil) <= 0 {
-		t.Fatal("fallback rank must decide when queue fallback disabled")
+	// 同层 latch：健康 owner 即使负载更高，也优先于更空闲的同层 peer；
+	// 亲和键必须排在 load ratio 之前。
+	boundLoaded := softConcurrencyCandidate{account: w13cAccount("a1", 1, 4), index: 0, softLimit: 5, currentConcurrency: 4, affinityAllowed: true}
+	idlePeer := softConcurrencyCandidate{account: w13cAccount("a2", 1, 0), index: 1, softLimit: 5}
+	if compareSoftConcurrencyCandidates(boundLoaded, idlePeer, nil) >= 0 {
+		t.Fatal("affinity owner must beat a less-loaded same-layer peer")
 	}
-	withFallback := policy
-	withFallback.FallbackOnQueueEnabled = true
-	allBusy := highConcurrencyCandidate{account: w13cAccount("a9", 1, 9), index: 8, softLimit: 5, softBusy: true, hardBusy: true}
-	allBusyPeer := highConcurrencyCandidate{account: w13cAccount("a10", 1, 9), index: 9, softLimit: 5, softBusy: true, hardBusy: true}
-	if compareHighConcurrencyCandidates(allBusy, allBusyPeer, &withFallback, false, nil) >= 0 {
-		t.Fatal("fallback rank must decide when nothing soft available")
+	// 质量带：同带视为相等，跨带才分胜负。
+	qualityBandA := softConcurrencyCandidate{account: w13cAccount("qa", 1, 0), index: 0, softLimit: 5}
+	qualityBandA.account.QualityScore = float64Ptr(1000)
+	qualityBandB := softConcurrencyCandidate{account: w13cAccount("qb", 1, 0), index: 1, softLimit: 5}
+	qualityBandB.account.QualityScore = float64Ptr(2500)
+	if compareSoftConcurrencyCandidates(qualityBandA, qualityBandB, nil) >= 0 {
+		t.Fatal("better quality band must rank better")
 	}
-	if compareHighConcurrencyCandidates(preferred, base, &policy, false, nil) >= 0 {
+	if compareAccountQualityBand(qualityBandA.account, qualityBandA.account) != 0 {
+		t.Fatal("same quality band must compare equal")
+	}
+	if compareAccountQualityBand(qualityBandA.account, qualityBandB.account) >= 0 {
+		t.Fatal("quality band 0 must rank before band 1")
+	}
+	if compareSoftConcurrencyCandidates(fallback, base, nil) <= 0 {
+		t.Fatal("fallback rank must decide")
+	}
+	if compareSoftConcurrencyCandidates(preferred, base, nil) >= 0 {
 		t.Fatal("traffic preferred must rank better")
 	}
-	if compareHighConcurrencyCandidates(base, preferred, &policy, false, nil) <= 0 {
+	if compareSoftConcurrencyCandidates(base, preferred, nil) <= 0 {
 		t.Fatal("non-preferred must rank worse")
+	}
+	if compareSoftConcurrencyCandidates(hardBusy, base, nil) <= 0 {
+		t.Fatal("hard busy must rank last")
 	}
 }
 
@@ -1063,11 +803,11 @@ func TestW13CPersonalOrderingArms(t *testing.T) {
 	if got, err := service.OrderOpenAIAccountsBySessionAffinity(accounts, "", DispatchOrderingOptions{}); err != nil || len(got) != 2 {
 		t.Fatalf("empty key order = %v err=%v", got, err)
 	}
-	// super priority 短路。
+	// super priority 是更高层：绑定账号不得越过 super 层（不再是整组短路）。
 	superList := []gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 0), w13cAccount("a2", 2, 0)}
 	superList[0].SuperPriorityEnabled = true
 	if got := service.orderOpenAIPersonalAccountsBySessionBinding(superList, &SessionBinding{AccountID: "a2"}, nil); got[0].ID != "a1" {
-		t.Fatalf("super priority must short-circuit: %v", got)
+		t.Fatalf("super priority must stay the higher layer: %v", got)
 	}
 	// 单账号短路。
 	if got := service.orderOpenAIPersonalAccountsBySessionBinding([]gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 0)}, nil, nil); len(got) != 1 {
@@ -1077,7 +817,8 @@ func TestW13CPersonalOrderingArms(t *testing.T) {
 	if got := service.orderOpenAIPersonalAccountsBySessionBinding(accounts, &SessionBinding{AccountID: "zz"}, nil); got[0].ID != "a1" {
 		t.Fatalf("missing bound = %v", got)
 	}
-	// 同层轮转终止：绑定 a2（中间位），质量分更优晋升到 a1，a3 质量更差不参与轮转。
+	// 同层提升：绑定 a2 提到本层首位，其余 peer 保持原序；质量分不再阻断
+	// 同层提升（质量只影响后继选择，见账户亲和 latch 设计）。
 	qualityA1 := 5.0
 	qualityA2 := 1.0
 	qualityA3 := 9.0
@@ -1092,156 +833,4 @@ func TestW13CPersonalOrderingArms(t *testing.T) {
 	if ordered[0].ID != "a2" || ordered[1].ID != "a1" {
 		t.Fatalf("promotion ordering = %v", ordered)
 	}
-	// 高并发排序单账号短路。
-	if got, err := service.orderOpenAIHighConcurrencyAccounts([]gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 0)}, "k", nil, "", nil); err != nil || len(got) != 1 {
-		t.Fatalf("single hc = %v err=%v", got, err)
-	}
-	// fastFirst 关闭 + 无迁移目标 → personal 亲和排序。
-	if got, err := service.orderOpenAIHighConcurrencyAccounts(accounts, "", map[string]any{"fastFirstEnabled": false}, "", nil); err != nil || len(got) != 2 {
-		t.Fatalf("fast-first off = %v err=%v", got, err)
-	}
-	// fastFirst 关闭 + 迁移目标 → hard-busy-last（a1 满载沉底）。
-	hardBusyMock := newMockConcurrency()
-	hardBusyMock.SetInFlight("a1", AccountInFlightStats{CurrentConcurrency: 9})
-	hardBusyService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.Concurrency = hardBusyMock
-	})
-	if got, err := hardBusyService.orderOpenAIHighConcurrencyAccounts(accounts, "", map[string]any{"fastFirstEnabled": false}, "a2", nil); err != nil || got[0].ID != "a2" {
-		t.Fatalf("hard busy last sync = %v err=%v", got, err)
-	}
-}
-
-func TestW13CHighConcurrencyAsyncRemainingArms(t *testing.T) {
-	scope := &OpenAIGatewaySessionAffinityScope{SystemAccountID: "sys-1", GroupID: "grp-1"}
-	// image lane + 非法策略（stats 加载正常）。
-	stub := &w13cStubConcurrency{current: map[string]int{"a1": 0, "a2": 0}}
-	service, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{sendHook: func(args ...any) (any, error) { return "OK", nil }}
-		cfg.Concurrency = stub
-	})
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 0), w13cAccount("a2", 2, 0)}
-	if _, err := service.AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(context.Background(), accounts, BusyLaneOptions{
-		DispatchOrderingOptions: DispatchOrderingOptions{
-			GroupType:        GroupTypeHighConcurrency,
-			SchedulingPolicy: map[string]any{"mode": "turbo"},
-		},
-		RequestLane: RequestLaneImage,
-	}); err == nil {
-		t.Fatal("bad policy must surface from async image lane")
-	}
-
-	// fastFirst 关闭 + 迁移目标存在 → hard-busy-last async，统计生效。
-	fullStub := &w13cStubConcurrency{current: map[string]int{"a1": 9, "a2": 0}}
-	fullService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{
-			getHook: func(key string) (*string, error) {
-				if strings.Contains(key, "traffic-migration-preference") {
-					value := `{"sourceAccountId":"gone-1","targetAccountId":"a2"}`
-					return &value, nil
-				}
-				return nil, errors.New("w13c binding read failure")
-			},
-			sendHook: func(args ...any) (any, error) { return "OK", nil },
-		}
-		cfg.Concurrency = fullStub
-	})
-	ordered, err := fullService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType:             GroupTypeHighConcurrency,
-		SchedulingPolicy:      map[string]any{"fastFirstEnabled": false},
-		TrafficMigrationScope: scope,
-	})
-	if err != nil || ordered[0].ID != "a2" {
-		t.Fatalf("async hard busy last = %v err=%v", ordered, err)
-	}
-
-	// 全部空闲：单桶直接原序。
-	freeService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{
-			getHook: func(key string) (*string, error) {
-				if strings.Contains(key, "traffic-migration-preference") {
-					value := `{"sourceAccountId":"gone-1","targetAccountId":"a2"}`
-					return &value, nil
-				}
-				return nil, errors.New("w13c binding read failure")
-			},
-			sendHook: func(args ...any) (any, error) { return "OK", nil },
-		}
-		cfg.Concurrency = &w13cStubConcurrency{current: map[string]int{"a1": 0, "a2": 0}}
-	})
-	ordered, err = freeService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType:             GroupTypeHighConcurrency,
-		SchedulingPolicy:      map[string]any{"fastFirstEnabled": false},
-		TrafficMigrationScope: scope,
-	})
-	if err != nil || len(ordered) != 2 {
-		t.Fatalf("async all free = %v err=%v", ordered, err)
-	}
-
-	// Concurrency 为 nil + fastFirst 开启：stats 空表分支。
-	nilConcurrencyService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverRedis
-		cfg.Redis = &w13cStubRedis{}
-		cfg.Concurrency = nil
-	})
-	if _, err := nilConcurrencyService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "", DispatchOrderingOptions{
-		GroupType: GroupTypeHighConcurrency,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// 本地缓存绑定 + breakAffinityOnSoftLimit 关闭：softBusy=false 分支。
-	boundService, _, _ := newTestAffinityService(t, func(cfg *AffinityConfig) {
-		cfg.RuntimeStateDriver = RuntimeStateDriverRedis
-		cfg.CacheDriver = CacheDriverMemory
-		cfg.Concurrency = &w13cStubConcurrency{current: map[string]int{"a1": 0, "a2": 0}}
-	})
-	boundService.RememberOpenAIAccountForSessionLocal("w13c-bound", "a1", nil)
-	if _, err := boundService.OrderOpenAIAccountsBySessionAffinityAsync(context.Background(), accounts, "w13c-bound", DispatchOrderingOptions{
-		GroupType:        GroupTypeHighConcurrency,
-		SchedulingPolicy: map[string]any{"breakAffinityOnSoftLimit": false},
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestW13CCompareCandidateRemainingArms(t *testing.T) {
-	policy := DefaultHighConcurrencyGroupSchedulingPolicy(SchedulingDefaults{GlobalMax: 5000})
-	// 模型优先级分歧。
-	priority := &GatewayAccountModelPriority{RankByAccountID: map[string]int{"a1": 1, "a2": 2}}
-	left := highConcurrencyCandidate{account: w13cAccount("a1", 1, 0), index: 0, softLimit: 5}
-	right := highConcurrencyCandidate{account: w13cAccount("a2", 2, 0), index: 1, softLimit: 5}
-	if compareHighConcurrencyCandidates(right, left, &policy, false, priority) <= 0 {
-		t.Fatal("better model rank must win")
-	}
-	// 软忙右位。
-	busyRight := highConcurrencyCandidate{account: w13cAccount("a2", 1, 5), index: 1, softLimit: 5, softBusy: true}
-	if compareHighConcurrencyCandidates(left, busyRight, &policy, false, nil) >= 0 {
-		t.Fatal("idle must outrank soft-busy")
-	}
-	// 亲和右位。
-	bound := highConcurrencyCandidate{account: w13cAccount("a2", 1, 0), index: 1, softLimit: 5, affinityAllowed: true}
-	if compareHighConcurrencyCandidates(left, bound, &policy, false, nil) <= 0 {
-		t.Fatal("non-bound must rank worse than bound")
-	}
-	// 相同负载率但并发数不同。
-	ratioA := highConcurrencyCandidate{account: w13cAccount("a1", 1, 1), index: 0, softLimit: 5}
-	ratioB := highConcurrencyCandidate{account: w13cAccount("a2", 1, 2), index: 1, softLimit: 10}
-	if compareHighConcurrencyCandidates(ratioB, ratioA, &policy, false, nil) <= 0 {
-		t.Fatal("higher concurrency with equal ratio must rank worse")
-	}
-	// 迁移偏好排序：目标在更优账号之后不动。
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{w13cAccount("a1", 1, 0), w13cAccount("a2", 2, 0)}
-	rankedPriority := &GatewayAccountModelPriority{RankByAccountID: map[string]int{"a1": 1, "a2": 2}}
-	if got := orderOpenAIAccountsByTrafficMigrationPreference(accounts, "a2", rankedPriority); got[0].ID != "a1" {
-		t.Fatalf("unmovable target = %v", got)
-	}
-	// deleteSetValue 空集合守卫。
-	deleteSetValue(map[string]map[string]struct{}{}, "a", "k")
 }

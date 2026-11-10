@@ -62,18 +62,15 @@
 
     <GroupEditModal
       v-model:open="modalOpen"
-      v-model:client-ip-limit-enabled="clientIpLimitEnabled"
-      :client-ip-concurrency-limit="formClientIpConcurrencyLimit"
       :editing-authorized-group="editingAuthorizedGroup"
       :group-kind-locked="Boolean(editingId)"
       :form="form"
-      :max-queue-wait-seconds="formMaxQueueWaitSeconds"
       :saving="groupSaving"
       :show-target-alert="!editingId && isManagementView"
       :target-system-account-label="targetSystemAccountLabel"
       :title="groupModalTitle"
       @client-ip-concurrency-limit-change="setFormClientIpConcurrencyLimit"
-      @max-queue-wait-seconds-change="setFormMaxQueueWaitSeconds"
+      @default-soft-concurrency-change="setFormDefaultSoftConcurrency"
       @save="saveGroup"
     />
 
@@ -91,7 +88,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
@@ -107,7 +104,7 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import type { GroupListItem } from '@/types/domain'
+import type { GroupListItem, GroupMutationResult, GroupSchedulingPolicy } from '@/types/domain'
 import { reconcileCreatedGroup } from './groupListMutation'
 import GroupEditModal from './GroupEditModal.vue'
 import SuperGroupMembersModal from './SuperGroupMembersModal.vue'
@@ -135,7 +132,6 @@ const memberGroup = ref<GroupListItem>()
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
-let groupEditRequestId = 0
 const groupPageEpoch = ref(0)
 const groupPageActive = ref(true)
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
@@ -143,16 +139,13 @@ const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const {
-  clientIpLimitEnabled,
   form,
-  formClientIpConcurrencyLimit,
-  formMaxQueueWaitSeconds,
   applyGroupToForm,
   groupCreatePayload,
   groupEditPatch,
   resetGroupFormForCreate,
   setFormClientIpConcurrencyLimit,
-  setFormMaxQueueWaitSeconds
+  setFormDefaultSoftConcurrency
 } = useGroupFormModel(computed(() => []))
 type GroupEditTarget = Pick<GroupListItem, 'id' | 'systemAccountId' | 'updatedAt'> & {
   accessType: 'owner' | 'authorized'
@@ -245,7 +238,6 @@ const groupScopeParams = computed(() => {
 onDeactivated(() => {
   groupPageActive.value = false
   groupPageEpoch.value += 1
-  groupEditRequestId += 1
 })
 
 onActivated(() => {
@@ -255,7 +247,6 @@ onActivated(() => {
 
 watch(authState.revision, () => {
   groupPageEpoch.value += 1
-  groupEditRequestId += 1
   invalidateSystemAccountOptions()
   invalidatePendingLoads()
   groups.value = []
@@ -264,9 +255,6 @@ watch(authState.revision, () => {
   systemAccounts.value = []
   resetSystemAccountOptionsSearch()
   resetPagination()
-})
-onBeforeUnmount(() => {
-  groupEditRequestId += 1
 })
 const editingAuthorizedGroup = computed(() => editingAccessType.value === 'authorized')
 const groupModalTitle = computed(() => {
@@ -288,7 +276,7 @@ const targetSystemAccountLabel = computed(() => {
 
 function handleGroupAction(key: string, group: GroupListItem) {
   if (key === 'edit') {
-    void openEdit(group)
+    openEdit(group)
     return
   }
   if (key === 'members') {
@@ -333,7 +321,6 @@ function refreshMobileGroups() {
 }
 
 function handleSystemAccountFilterChange() {
-  groupEditRequestId += 1
   if (isAllGroupsSystemAccountFilter(systemAccountFilter.value)) {
     systemAccountFilterSelection.value = undefined
   }
@@ -343,7 +330,6 @@ function handleSystemAccountFilterChange() {
 }
 
 function resetFilters() {
-  groupEditRequestId += 1
   systemAccountFilter.value = defaultGroupsPageState().systemAccountFilter
   systemAccountFilterSelection.value = undefined
   resetSystemAccountOptionsSearch()
@@ -357,7 +343,6 @@ function openCreate() {
     message.warning('请先选择目标系统账户，再创建分组')
     return
   }
-  groupEditRequestId += 1
   editingId.value = undefined
   editingTarget = undefined
   editingAccessType.value = undefined
@@ -365,42 +350,19 @@ function openCreate() {
   modalOpen.value = true
 }
 
-async function openEdit(group: GroupListItem) {
+// 分组类型收敛后只有普通分组：列表行已携带 schedulingPolicy（普通分组可选调度
+// 策略设计 §2.3），编辑直接使用列表行，不再逐行读取 edit-basic 编辑投影。
+function openEdit(group: GroupListItem) {
   if (!canEditGroup(group)) {
     message.warning(group.isDefault ? '默认分组不允许编辑' : '当前分组不能编辑')
     return
   }
-  const requestId = ++groupEditRequestId
   const target = groupEditTarget(group)
-  if (group.groupType !== 'high_concurrency') {
-    applyGroupToForm({ ...group, accessType: target.accessType })
-    editingTarget = target
-    editingAccessType.value = target.accessType
-    editingId.value = group.id
-    modalOpen.value = true
-    return
-  }
-  const managementView = isManagementView.value
-  const authRevision = authState.revision.value
-  const pageSystemAccountId = groupScopeParams.value?.systemAccountId
-  try {
-    const detail = await groupsApi.editBasicDetail(group.id, groupOperationScopeParams(group))
-    if (requestId !== groupEditRequestId
-      || managementView !== isManagementView.value
-      || authRevision !== authState.revision.value
-      || pageSystemAccountId !== groupScopeParams.value?.systemAccountId) return
-    applyGroupToForm({ ...detail, accessType: target.accessType })
-    editingTarget = { ...target, updatedAt: detail.updatedAt }
-    editingAccessType.value = target.accessType
-    editingId.value = group.id
-    modalOpen.value = true
-  } catch (error) {
-    if (requestId !== groupEditRequestId
-      || managementView !== isManagementView.value
-      || authRevision !== authState.revision.value
-      || pageSystemAccountId !== groupScopeParams.value?.systemAccountId) return
-    message.error(extractApiErrorMessage(error, '加载分组编辑信息失败'))
-  }
+  applyGroupToForm({ ...group, accessType: target.accessType })
+  editingTarget = target
+  editingAccessType.value = target.accessType
+  editingId.value = group.id
+  modalOpen.value = true
 }
 
 const saveGroup = submitAction('groups.save', async () => {
@@ -432,7 +394,7 @@ const saveGroup = submitAction('groups.save', async () => {
         ...(changedFields.has('name') && typeof patch.name === 'string' ? { name: patch.name } : {}),
         ...(changedFields.has('description') && typeof patch.description === 'string' ? { description: patch.description || undefined } : {}),
         ...(changedFields.has('enabled') && typeof patch.enabled === 'boolean' ? { enabled: patch.enabled } : {}),
-        ...(changedFields.has('groupType') && (patch.groupType === 'personal' || patch.groupType === 'high_concurrency') ? { groupType: patch.groupType } : {})
+        ...(changedFields.has('schedulingPolicy') ? { schedulingPolicy: savedSchedulingPolicy(updated, patch) } : {})
       }))
       message.success(target.accessType === 'authorized' ? '授权分组使用配置已更新' : '分组已更新')
     } else {
@@ -471,6 +433,16 @@ const saveGroup = submitAction('groups.save', async () => {
     message.error(extractApiErrorMessage(error, '保存分组失败'))
   }
 })
+
+// 保存后同步策略摘要（普通分组可选调度策略设计 §2.3）：优先使用响应回显的最终
+// 策略；响应未携带该键时（现行 PATCH 仅回变更确认，不含最终策略），用本次提交值
+// 本地推导——null 表示已清空为未启用，避免逐行补拉详情。
+function savedSchedulingPolicy(updated: GroupMutationResult, patch: Record<string, unknown>): GroupSchedulingPolicy | undefined {
+  if ('schedulingPolicy' in updated) {
+    return updated.schedulingPolicy ?? undefined
+  }
+  return patch.schedulingPolicy === null ? undefined : patch.schedulingPolicy as GroupSchedulingPolicy
+}
 
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)

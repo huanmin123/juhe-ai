@@ -7,76 +7,18 @@ import (
 	"time"
 )
 
-// ShardStore ports the durable side of the batch write (usage-records
-// repository + shard storage): one atomic call per flush batch. The writer
-// queue tests run against in-memory mocks of this port; the concrete
-// SQLite/Postgres stores below mirror the Node SQL.
+// ShardStore ports the durable side of the batch write: one atomic call per
+// flush batch. The writer queue tests run against in-memory mocks of this
+// port. The PostgreSQL store writes only juhe_usage.usage_records rows plus
+// account side effects; the retired usage_record_shard_* catalog tables are
+// not maintained by the gateway/jobs write path.
 type ShardStore interface {
-	// WriteBatch persists one flush batch: shard rows, catalog entries and
-	// the account side effects, mirroring createUsageRecordsBatch/
+	// WriteBatch persists one flush batch: usage rows and the account side
+	// effects, mirroring createUsageRecordsBatch /
 	// createUsageRecordsBatchAsync. Returns the number of newly inserted
 	// usage rows (ON CONFLICT DO NOTHING misses excluded).
 	WriteBatch(ctx Ctx, plan WritePlan) (int, error)
 }
-
-var audioMeteringShardColumns = [][2]string{
-	{"tts_input_chars", "tts_input_chars INTEGER NOT NULL DEFAULT 0"},
-	{"audio_input_seconds", "audio_input_seconds REAL NOT NULL DEFAULT 0"},
-	{"usage_missing", "usage_missing INTEGER NOT NULL DEFAULT 0"},
-	{"output_video_seconds", "output_video_seconds REAL NOT NULL DEFAULT 0"},
-}
-
-var statsMirrorAggregateColumns = []string{
-	"id",
-	"system_account_id",
-	"trace_id",
-	"traffic_source",
-	"client_ip",
-	"api_key_id",
-	"group_id",
-	"account_id",
-	"endpoint",
-	"provider_code",
-	"provider_protocol_profile_id",
-	"model",
-	"status_code",
-	"success",
-	"failure_attribution",
-	"first_token_ms",
-	"duration_ms",
-	"input_tokens",
-	"output_tokens",
-	"cache_read_tokens",
-	"cache_read_cost_usd",
-	"cache_write_tokens",
-	"cache_write_1h_tokens",
-	"cache_write_cost_usd",
-	"thinking_tokens",
-	"input_image_tokens",
-	"output_image_tokens",
-	"cost_usd",
-	"error_code",
-	"error_message",
-	"account_owner_system_account_id",
-	"group_owner_system_account_id",
-	"account_access_type",
-	"group_access_type",
-	"account_authorization_id",
-	"account_authorization_source_type",
-	"account_authorization_source_team_id",
-	"group_authorization_id",
-	"group_authorization_source_type",
-	"group_authorization_source_team_id",
-	"created_at",
-}
-
-// statsMirrorParamIndexes / errStatsMirrorColumns 把镜像列映射回行参数
-// （UsageRecordColumns 顺序）的下标；init 期解析，列名漂移在首次镜像写时
-// 报错而不是写错列。
-var (
-	statsMirrorParamIndexes []int
-	errStatsMirrorColumns   error
-)
 
 func sortedAccountIDs(values map[string]string) []string {
 	ids := make([]string, 0, len(values))
@@ -170,32 +112,6 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 		}
 	}()
 
-	accountIDs := map[string]bool{}
-	for id := range lastUsedAt {
-		accountIDs[id] = true
-	}
-	for id := range healthSuccessAt {
-		accountIDs[id] = true
-	}
-	if len(accountIDs) > 0 {
-		ids := sortedAccountIDList(accountIDs)
-		lockSQL := fmt.Sprintf(`
-      SELECT id
-      FROM juhe_business.accounts
-      WHERE id IN (%s)
-        AND deleted_at IS NULL
-      ORDER BY id
-      FOR NO KEY UPDATE
-    `, postgresPlaceholders(len(ids), 1))
-		args := make([]any, 0, len(ids))
-		for _, id := range ids {
-			args = append(args, id)
-		}
-		if _, err := tx.ExecContext(ctx, lockSQL, args...); err != nil {
-			return 0, err
-		}
-	}
-
 	inserted := 0
 	columnList := strings.Join(UsageRecordColumns, ", ")
 	for _, shardRows := range plan.RowsByShard {
@@ -230,24 +146,26 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 		}
 	}
 
-	for _, accountID := range sortedAccountIDs(lastUsedAt) {
-		lastUsed := lastUsedAt[accountID]
-		if _, err := tx.ExecContext(ctx, `
-      UPDATE juhe_business.accounts
-      SET last_used_at = $1, updated_at = $2
-      WHERE id = $3
-        AND deleted_at IS NULL
-        AND (last_used_at IS NULL OR last_used_at < $4)
-    `, lastUsed, lastUsed, accountID, lastUsed); err != nil {
-			return 0, err
-		}
-	}
-
 	if err := tx.Commit(); err != nil {
 		tx = nil
 		return 0, err
 	}
 	tx = nil
+
+	// accounts.last_used_at 是运营性副作用（非账务事实）：放在 usage 事务
+	// 提交之后逐账户短 UPDATE，避免把业务账户行锁横跨整批 INSERT/提交
+	//（2026-11-09 非业务数据性能优先裁决）。失败不影响已提交的 usage 行，
+	// 也不重试整批（最多晚一次刷新，可接受）。
+	for _, accountID := range sortedAccountIDs(lastUsedAt) {
+		lastUsed := lastUsedAt[accountID]
+		_, _ = s.config.DB.ExecContext(ctx, `
+      UPDATE juhe_business.accounts
+      SET last_used_at = $1, updated_at = $2
+      WHERE id = $3
+        AND deleted_at IS NULL
+        AND (last_used_at IS NULL OR last_used_at < $4)
+    `, lastUsed, lastUsed, accountID, lastUsed)
+	}
 	return inserted, nil
 }
 
@@ -270,17 +188,4 @@ func (s *PostgresShardStore) usageRecordPartitionExists(ctx Ctx, partitionName s
 		return false, err
 	}
 	return exists, nil
-}
-
-func sortedAccountIDList(ids map[string]bool) []string {
-	out := make([]string, 0, len(ids))
-	for id := range ids {
-		out = append(out, id)
-	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
 }

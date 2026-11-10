@@ -635,4 +635,3 @@ func TestWatermarkSkipSemantics(t *testing.T) {
 		t.Fatalf("hot window stages = %+v", hotResult.Stages)
 	}
 }
-

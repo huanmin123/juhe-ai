@@ -1242,7 +1242,11 @@ export function mergeAccountProviderDefinitions(
       id: provider.id,
       code: provider.code,
       name: provider.name,
-      enabled: provider.enabled
+      enabled: provider.enabled,
+      // peakWindows 来自服务端列表行（peak_windows.go 单一数据源）：懒加载
+      // 定义缺失走 fallback 合并时会被无口径的回退表覆盖，这里始终以基座行
+      // 为准，保证时间计划快捷预设与目录联动。
+      peakWindows: provider.peakWindows ?? definition.peakWindows
     })
   }
   // 懒加载得到的完整定义可能覆盖基座之外的供应商码（媒体族不在 options 轻量

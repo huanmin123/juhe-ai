@@ -16,21 +16,21 @@ import (
 )
 
 func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
-	groupType := "high_concurrency"
+	groupType := "personal"
 	authzID := "authz_1"
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
 		GroupAccessType:                "shared",
 		GroupType:                      &groupType,
-		SchedulingPolicy:               &gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "speed_first"},
+		SchedulingPolicy:               &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2},
 		GroupAuthorizationID:           &authzID,
 		GroupAuthorizationQuotaLimited: boolPtr(true),
 	}
 	projected := projectGroupAccessForRouting(meta)
-	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.GroupType != "high_concurrency" {
+	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.GroupType != "personal" {
 		t.Fatalf("projection = %+v", projected)
 	}
-	if !strings.Contains(projected.SchedulingPolicy, "speed_first") {
+	if !strings.Contains(projected.SchedulingPolicy, "defaultSoftConcurrency") {
 		t.Fatalf("scheduling policy = %q", projected.SchedulingPolicy)
 	}
 	if projected.GroupAuthorizationID != "authz_1" {
@@ -38,25 +38,22 @@ func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
 	}
 	// 反向投影：identity 字段、空值 nil 指针、policy JSON 往返。
 	back := projectGroupAccessForRuntime(projected)
-	if back.GroupType == nil || *back.GroupType != "high_concurrency" {
+	if back.GroupType == nil || *back.GroupType != "personal" {
 		t.Fatalf("runtime group type = %v", back.GroupType)
 	}
 	if back.SchedulingPolicy == nil {
 		t.Fatal("runtime scheduling policy 缺失")
 	}
 	rendered := renderSchedulingPolicy(back.SchedulingPolicy)
-	if !strings.Contains(rendered, "speed_first") {
+	if !strings.Contains(rendered, "defaultSoftConcurrency") {
 		t.Fatalf("policy 往返 = %q", rendered)
 	}
-	// 非法 policy JSON 回落为 schedulingPreference 单键。
+	// 非法 policy JSON：保持 nil（不再伪造 schedulingPreference 单键）。
 	broken := projected
 	broken.SchedulingPolicy = "{not-json"
 	back = projectGroupAccessForRuntime(broken)
-	if back.SchedulingPolicy == nil {
-		t.Fatal("非法 policy 必须回落单键")
-	}
-	if (*back.SchedulingPolicy)["schedulingPreference"] != "{not-json" {
-		t.Fatalf("回落 policy = %+v", *back.SchedulingPolicy)
+	if back.SchedulingPolicy != nil {
+		t.Fatalf("非法 policy 必须保持 nil: %+v", *back.SchedulingPolicy)
 	}
 	// 空 scheduling policy：nil。
 	empty := projectGroupAccessForRuntime(gatewayrouting.GroupUsageAccessMetadata{GroupType: ""})
@@ -183,7 +180,7 @@ func TestW1ProjectAPIKeyRowHelperArms(t *testing.T) {
 	if renderSchedulingPolicy(nil) != "" {
 		t.Fatal("nil policy 渲染必须为空")
 	}
-	if !strings.Contains(renderSchedulingPolicy(&gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "latency"}), "latency") {
+	if !strings.Contains(renderSchedulingPolicy(&gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}), "defaultSoftConcurrency") {
 		t.Fatal("policy 渲染丢失")
 	}
 	result := (chainCapabilityFilter{}).FilterAccountsByRequestCapability(context.Background(),

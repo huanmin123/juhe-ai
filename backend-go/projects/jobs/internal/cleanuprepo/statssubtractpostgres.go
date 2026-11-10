@@ -15,11 +15,10 @@ import (
 // PostgreSQL 移植（Node 权威：final-archive/backend/src/storage/
 // usage-stats.repository.ts + usage-stats-authorization-daily-writer.ts PG 分支）。
 //
-// 与 SQLite 路径（statssubtract.go subtractUsageStatsRecord 家族）的差异：
-//   - PG 先把本批行聚合为 totals / time bucket / latency / model / error /
+// 实现要点：
+//   - 先把本批行聚合为 totals / time bucket / latency / model / error /
 //     quality 维度条目，再对每个聚合条目执行 GREATEST(0, col - ?) 扣减与
 //     空行 DELETE；
-//   - 方言函数 SQLite 用 MAX/标量，PG 用 GREATEST/LEAST；
 //   - stats 库表统一 juhe_stats. schema 限定，占位符经 DB.Bind 改写 $n；
 //   - 扣减后标记 usage_overview_dirty_scopes /
 //     ai_performance_summary_dirty_system_accounts /

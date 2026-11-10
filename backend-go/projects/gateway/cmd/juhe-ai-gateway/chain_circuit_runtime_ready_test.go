@@ -26,7 +26,7 @@ func w17eOpenBusinessPostgres(t *testing.T) *sql.DB {
 	// credentials_encrypted/created_at/updated_at 生产 NOT NULL，
 	// dispatch_revision=1 与下方 ledger 行的围栏一致）。
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, credential_mask, created_at, updated_at, deleted_at)
-		VALUES ('acc', 'sys_admin', 'gpt', 'openai', 'openai', 'v1', 'acc', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '', '', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z', NULL)
+		VALUES ('acc', 'sys_admin', 'gpt', 'gpt', 'openai', 'v1', 'acc', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '', '', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z', NULL)
 		ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatalf("seed account row: %v", err)
 	}

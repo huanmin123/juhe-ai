@@ -5,8 +5,8 @@ package usagepricing
 //
 // 数据源判定（审计遗留缺口 worker_assembly「jobs 暂无 C03 catalog 适配器」）：
 //   - usage-catalog 库（juhe_usage / UsageCatalogSQLitePath）只承载使用记录
-//     分片目录（usage_record_shards/usage_records），没有任何定价列，不是
-//     定价数据源；
+//     （usage_records；shard 目录四表已于 revision 23 删除），没有任何定价
+//     列，不是定价数据源；
 //   - 正确数据源是业务库 models 单表（供应商与上游协议面重构设计 §3：
 //     provider_model_catalog 与 custom_provider_models 已合并为唯一物理表），
 //     内置行 scope='builtin'、运营自定义行 global/personal，均按 vendor_code
@@ -43,10 +43,14 @@ const usagePricingCatalogCacheTTL = 60 * time.Second
 // 限制逐记录重查压力；窗口过后自动重试）。
 const usagePricingCatalogErrorTTL = 10 * time.Second
 
+// usagePricingCatalogLoadTimeout 是单次目录回源的硬上限（上下文无 deadline
+// 时兜底）：PG 黑洞/慢查询不得阻塞用量入队与停机排空。
+const usagePricingCatalogLoadTimeout = 5 * time.Second
+
 // usagePricingCatalogCacheMaxEntries 是目录缓存条目上限：键空间
 // （provider+systemAccountID）理论上有界，但脏数据或异常放大不可信，长驻
-// 进程不得无界增长。超限整体清空——jobs 消费为单线程串行，最坏代价只是
-// 一轮全量回源，不引入 LRU 复杂度。
+// 进程不得无界增长。超限整体清空——gateway/jobs 写入侧为单线程串行（或
+// 极少量溢出并发），最坏代价只是一轮全量回源，不引入 LRU 复杂度。
 const usagePricingCatalogCacheMaxEntries = 1024
 
 // usagePricingCatalog 实现 usagewriter.CatalogPricing（组合根侧适配器）。
@@ -153,7 +157,11 @@ func (c *usagePricingCatalog) lookup(ctx context.Context, providerCode string, s
 	}
 	c.mu.Unlock()
 
-	rows, err := c.load(ctx, providerCode, systemAccountID)
+	// 目录查询必须有界：调用方（gateway recorder/overflow）可能传
+	// context.Background()，PG 黑洞时不能让冻结路径无限挂起。
+	loadCtx, cancel := context.WithTimeout(ctx, usagePricingCatalogLoadTimeout)
+	rows, err := c.load(loadCtx, providerCode, systemAccountID)
+	cancel()
 	entry := usagePricingCatalogEntry{rows: rows, err: err}
 	if err != nil {
 		entry.expiresAt = now.Add(usagePricingCatalogErrorTTL)

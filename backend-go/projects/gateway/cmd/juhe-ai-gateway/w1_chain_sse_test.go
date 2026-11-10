@@ -37,9 +37,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
@@ -393,136 +391,6 @@ func TestW1VChainOrchestratorEarlyExits(t *testing.T) {
 		status, body := w1vServeV1(t, chain, fixture.apiKeySecret, `{"model":"gpt-test","messages":[{"role":"user","content":"w1v 超预算请求体"}]}`, nil)
 		if status == http.StatusOK {
 			t.Fatalf("被拒绝的 body 不应放行: status=%d body=%s", status, body)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// speed-first body admission 三臂（146 / 150 / 153）
-// ---------------------------------------------------------------------------
-
-// w1vSeedSpeedFirstStack 种 speed_first 策略 + high_concurrency 分组 + 账户，
-// 返回 key 明文。concurrencyLimit 决定 admission 容量（0 = 容量 0 → 429）。
-func w1vSeedSpeedFirstStack(t *testing.T, fixture *chainFixture, suffix, schedulingPolicyJSON string, concurrencyLimit int, upstream *httptest.Server) string {
-	t.Helper()
-	now := "2026-09-14T00:00:00.000Z"
-	seed := func(query string, args ...any) {
-		t.Helper()
-		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
-			t.Fatalf("seed: %v: %v", query, err)
-		}
-	}
-	groupID := "w1v_hc_" + suffix
-	strategyID := "rs_w1v_speed_" + suffix
-	accountID := "acc_w1v_speed_" + suffix
-	secret := "sk-w1v-speed-" + suffix
-	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES (?, ?, 1, 'high_concurrency', ?)`,
-		groupID, fixture.systemAccount, schedulingPolicyJSON)
-	credentials := map[string]any{"api_key": "sk-upstream-account-key"}
-	if upstream != nil {
-		credentials["base_url"] = upstream.URL
-	}
-	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model) VALUES (?, ?, 'prof_1', 'openai', 'v1', 'W1V 速度优先账户', 'api_key', 'active', 1, ?, ?, NULL, 'gpt-test')`,
-		accountID, fixture.systemAccount, concurrencyLimit, w1vEncrypt(t, credentials))
-	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
-		groupID, fixture.systemAccount, accountID, now)
-	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`, accountID, now)
-	// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合（upstream 为
-	// nil 的臂无上游指向，连接行带占位 URL）。
-	if upstream != nil {
-		chainSeedAccountConnection(t, fixture.db, accountID, upstream.URL)
-	} else {
-		chainSeedAccountConnection(t, fixture.db, accountID, "https://w1v-speed-placeholder.example.invalid")
-	}
-	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES (?, ?, 'W1V 速度优先', 'normal', '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}', 'active')`,
-		strategyID, fixture.systemAccount)
-	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
-		VALUES (?, ?, ?, ?, 1, 1, 'active', ?)`, "rsg_"+strategyID, strategyID, fixture.systemAccount, groupID, now)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
-		VALUES (?, ?, ?, 'W1V 速度优先 Key', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`, "key_w1v_speed_"+suffix, fixture.systemAccount, strategyID, gatewayruntimecache.HashSecret(secret), now)
-	return secret
-}
-
-func TestW1VChainSpeedFirstAdmissionArms(t *testing.T) {
-	upstreamHits := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamHits++
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-w1v-admit","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"admitted"},"finish_reason":"stop"}]}`))
-	}))
-	defer upstream.Close()
-
-	t.Run("invalid_policy_error_arm", func(t *testing.T) {
-		// maxQueueSize 越界 → 队列策略校验失败 → admErr → 编排器 500。
-		fixture := newChainFixture(t)
-		chain, shutdown := w1vComposeChain(t, fixture)
-		defer shutdown()
-		secret := w1vSeedSpeedFirstStack(t, fixture, "bad", `{"maxQueueSize":-1}`, 1, upstream)
-		status, body := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
-		if status != http.StatusInternalServerError {
-			t.Fatalf("status=%d body=%s", status, body)
-		}
-		if !strings.Contains(body, "服务器内部错误") {
-			t.Fatalf("body=%q", body)
-		}
-	})
-
-	t.Run("queue_rejected_429_handled_arm", func(t *testing.T) {
-		// 容量 1 + maxQueueWaitMs=1ms：第一个请求经 admission 挂在上游
-		//（active=1），第二个请求入队 1ms 即超时 → 429 Handled。
-		fixture := newChainFixture(t)
-		chain, shutdown := w1vComposeChain(t, fixture)
-		defer shutdown()
-		var enteredOnce sync.Once
-		entered := make(chan struct{})
-		releaseUpstream := make(chan struct{})
-		// release 幂等且挂 defer（先于 hang.Close 的 LIFO 顺序执行）：
-		// 断言失败走 FailNow 时也必须放行挂着的上游请求，否则
-		// hang.Close 等待请求结束、请求等待 release，包级测试被拖到超时。
-		var releaseOnce sync.Once
-		release := func() { releaseOnce.Do(func() { close(releaseUpstream) }) }
-		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			enteredOnce.Do(func() { close(entered) })
-			<-releaseUpstream
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"chatcmpl-w1v-hang","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hang"},"finish_reason":"stop"}]}`))
-		}))
-		defer hang.Close()
-		defer release()
-		secret := w1vSeedSpeedFirstStack(t, fixture, "queue", `{"maxQueueWaitMs":1}`, 1, hang)
-		firstDone := make(chan int, 1)
-		go func() {
-			status, _ := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
-			firstDone <- status
-		}()
-		select {
-		case <-entered:
-		case <-time.After(10 * time.Second):
-			t.Fatal("第一个请求未到达上游")
-		}
-		status, body := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
-		if status != http.StatusTooManyRequests {
-			t.Fatalf("status=%d body=%s", status, body)
-		}
-		if !strings.Contains(body, "当前分组繁忙") {
-			t.Fatalf("body=%q", body)
-		}
-		release()
-		if first := <-firstDone; first != http.StatusOK {
-			t.Fatalf("第一个请求 status=%d want 200", first)
-		}
-	})
-
-	t.Run("admitted_release_arm", func(t *testing.T) {
-		// 容量充足 → admission 放行（Release 挂到 handler 退出，153 臂）。
-		// 后续 preflight/dispatch 的结果不影响该臂覆盖。
-		fixture := newChainFixture(t)
-		chain, shutdown := w1vComposeChain(t, fixture)
-		defer shutdown()
-		secret := w1vSeedSpeedFirstStack(t, fixture, "open", `{}`, 2, upstream)
-		status, body := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
-		if status != http.StatusOK && status != http.StatusServiceUnavailable {
-			t.Fatalf("status=%d body=%s", status, body)
 		}
 	})
 }

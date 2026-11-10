@@ -94,15 +94,6 @@ func (d *degradedHotQuality) OrderAsync(_ context.Context, input gatewaydispatch
 	return gatewaydispatch.HotQualityOrder{Accounts: input.Accounts}, nil
 }
 
-// ReorderOnly 与 OrderAsync 同语义降级：候选保持原序、无解释（重排序调用
-// 方把 nil 解释计为降级标记，不阻塞派发）。
-func (d *degradedHotQuality) ReorderOnly(_ context.Context, input gatewaydispatch.HotQualityOrderInput) (gatewaydispatch.HotQualityOrder, error) {
-	d.once.Do(func() {
-		slogOnceWarn("gatewaydispatch.HotQualityPort", "热度质量排序保持不变")
-	})
-	return gatewaydispatch.HotQualityOrder{Accounts: input.Accounts}, nil
-}
-
 // degradedClientSourceAvoidance implements
 // gatewaydispatch.ClientSourceAvoidancePort (client-profiles
 // client-source-avoidance.service.ts is a later slice; absent state means no
@@ -286,7 +277,7 @@ func (s *chainConcurrencyStore) LoadCurrentByLaneAsync(ctx context.Context, acco
 }
 
 // LoadCurrentRPMAsync 把 tracker 的 RPM 窗口计数投影为 dispatch 读取面
-// （AI 账户每分钟请求上限设计 §5.2：高并发分组容量模型的 RPM 余量输入）。
+// （AI 账户每分钟请求上限设计 §5.2：派发容量模型的 RPM 余量输入）。
 func (s *chainConcurrencyStore) LoadCurrentRPMAsync(ctx context.Context, accountIDs []string) (map[string]gatewaydispatch.AccountRPMState, error) {
 	states, err := s.tracker.LoadAccountRPMByID(ctx, accountIDs)
 	if err != nil {

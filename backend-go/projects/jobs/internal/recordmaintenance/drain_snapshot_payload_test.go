@@ -29,18 +29,9 @@ func (w *recordingStatsWriter) CleanupNonBusinessStatsData(context.Context, stri
 	return retention.NonBusinessDataCleanupCounts{}, nil
 }
 
-func (w *recordingStatsWriter) CleanupDeletedApiKeyRecordStats(context.Context, retention.DeletedApiKeyRecordStatsCleanupInput) error {
-	return nil
-}
-
-func (w *recordingStatsWriter) CleanupDeletedAccountRecordStats(context.Context, retention.DeletedAccountRecordStatsCleanupInput) error {
-	return nil
-}
-
 func (w *recordingStatsWriter) UpsertAccountUsageSnapshots(_ context.Context, inputs []retention.AccountUsageSnapshotUpsertInput) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.batches = append(w.batches, append([]retention.AccountUsageSnapshotUpsertInput(nil), inputs...))
 	return nil
 }
-

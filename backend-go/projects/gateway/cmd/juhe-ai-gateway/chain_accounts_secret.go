@@ -28,6 +28,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
@@ -670,31 +671,29 @@ func chainResourceAuthorizationQuotaLimited(limitsJSON *string) *bool {
 	return boolPtr(limited)
 }
 
-// chainNormalizeGroupType mirrors normalizeGroupType.
-func chainNormalizeGroupType(value sql.NullString) (*string, error) {
-	if !value.Valid || strings.TrimSpace(value.String) == "" {
-		personal := "personal"
-		return &personal, nil
+// chainNormalizeGroupType normalizes the retired high_concurrency type to
+// personal and reports whether the raw value was legacy.
+func chainNormalizeGroupType(value sql.NullString) (*string, bool, error) {
+	raw := ""
+	if value.Valid {
+		raw = value.String
 	}
-	if value.String == "personal" || value.String == "high_concurrency" {
-		return &value.String, nil
+	normalized, legacy, err := gatewayscheduling.NormalizeGroupType(raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("分组类型无效")
 	}
-	return nil, fmt.Errorf("分组类型无效")
+	return &normalized, legacy, nil
 }
 
-// chainParseGroupSchedulingPolicy mirrors parseGroupSchedulingPolicyJson: the
-// policy only exists for high_concurrency groups; a missing payload throws
-// like the Node implementation.
-func chainParseGroupSchedulingPolicy(value sql.NullString, groupType *string) (*gatewayruntimecache.GroupSchedulingPolicy, error) {
-	if groupType == nil || *groupType != "high_concurrency" {
-		return nil, nil
-	}
-	if !value.Valid || strings.TrimSpace(value.String) == "" {
-		return nil, fmt.Errorf("高并发分组调度策略缺失")
-	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
-	if err := json.Unmarshal([]byte(value.String), &policy); err != nil {
+// chainParseGroupSchedulingPolicy parses the optional two-key policy; legacy
+// high_concurrency rows map their old 16-key payload with globalMax.
+func chainParseGroupSchedulingPolicy(value sql.NullString, legacy bool, globalMax int) (*gatewayruntimecache.GroupSchedulingPolicy, error) {
+	policy, err := gatewayscheduling.ParseStored(value.String, value.Valid, legacy, globalMax)
+	if err != nil {
 		return nil, err
+	}
+	if policy.IsDefault() {
+		return nil, nil
 	}
 	return &policy, nil
 }

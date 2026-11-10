@@ -19,7 +19,11 @@
 // PostgreSQL) read-only queries for the reads that had no Go home yet.
 package gatewayruntimecache
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
+)
 
 // Route strategy modes mirror domain/route-strategy.ts RouteStrategyMode.
 // merge 已退役（超级分组设计 §5），运行时只承认四种模式。
@@ -436,11 +440,9 @@ func cloneCredentials(input map[string]any) map[string]any {
 	return out
 }
 
-// GroupSchedulingPolicy mirrors the scheduling_policy_json payload shape. The
-// runtime cache treats it as opaque — Node only ever clones it with
-// {...policy} — so the Go cache carries it as the decoded JSON object; typed
-// decoding belongs to the groups / high-concurrency slices.
-type GroupSchedulingPolicy = map[string]any
+// GroupSchedulingPolicy is the closed ordinary-group policy shared with the
+// management plane and dispatch (defaultSoftConcurrency/clientIpConcurrencyLimit).
+type GroupSchedulingPolicy = gatewayscheduling.Policy
 
 // GroupUsageAccessMetadata mirrors GroupUsageAccessMetadata
 // (storage/openai-account-selector.types.ts).
@@ -460,10 +462,7 @@ type GroupUsageAccessMetadata struct {
 func CloneGroupUsageAccessMetadata(value GroupUsageAccessMetadata) GroupUsageAccessMetadata {
 	out := value
 	if value.SchedulingPolicy != nil {
-		policy := make(GroupSchedulingPolicy, len(*value.SchedulingPolicy))
-		for key, item := range *value.SchedulingPolicy {
-			policy[key] = item
-		}
+		policy := *value.SchedulingPolicy
 		out.SchedulingPolicy = &policy
 	}
 	return out

@@ -51,7 +51,10 @@ func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
 		return &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(_ context.Context, request RunRequest) (Target, error) {
 			return Target{
 				Endpoint: server.URL + "/v1", TargetName: "OpenAI Compatible", TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: "group-1",
-				ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key",
+				// 892cd3de6 退役 openai 目录身份后，夹具须使用在册 gpt 目录身份：
+				// 否则 gpt-5.6-sol 也不在目录内，目录内对照段同样被判目录外，
+				// 持久化字节形态携带 detectionScope，目录外/目录内对照退化。
+				ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", CredentialType: "api_key",
 				Protocol: modelcheckprofile.ProtocolOpenAIChat, UpstreamProtocol: modelcheckprofile.ProtocolOpenAIChat,
 				EndpointMode: modelcheckprofile.EndpointModeChatJSON, UpstreamEndpointMode: modelcheckprofile.EndpointModeChatJSON,
 				SupportedEndpointModes: []string{modelcheckprofile.EndpointModeChatJSON},

@@ -70,6 +70,118 @@ export const weekdayOptions = [
   { label: '周日', value: 7 }
 ]
 
+// ---- 快捷预设（动态数据源，见时间计划闸门设计 §6） ----
+
+export interface TimeSchedulePreset {
+  key: string
+  label: string
+  description: string
+  timezone: string
+  /**
+   * 预设携带的时段定义：`invertOnApply: false`（默认）时直接作为调度窗口；
+   * `invertOnApply: true` 时 windows 是该供应商的**高峰定义**，应用时取反
+   * 生成"避开高峰的其余全部时间"（周末/非高峰天自然得到全天时段）。
+   */
+  invertOnApply?: boolean
+  windows: TimeScheduleWindow[]
+}
+
+interface ProviderPeakWindowsShape {
+  timezone: string
+  windows: TimeScheduleWindow[]
+}
+
+function formatPresetWindowRange(windows: readonly TimeScheduleWindow[]): string {
+  return windows.map((window) => (window.start > window.end ? `${window.start}-次日${window.end}` : `${window.start}-${window.end}`)).join('、')
+}
+
+// peakWindowsToTimeSchedulePreset 把供应商目录的 peakWindows 定义（后端
+// providers 包 peak_windows.go 单一数据源，经 /providers/definitions 透出）
+// 转换为时间计划快捷预设：windows 即高峰定义，应用时反向生成非高峰调度时段。
+export function peakWindowsToTimeSchedulePreset(providerName: string, peak: ProviderPeakWindowsShape): TimeSchedulePreset {
+  return {
+    key: `provider_peak_${providerName}`,
+    label: `${providerName} 避开高峰（${formatPresetWindowRange(peak.windows)}）`,
+    description: `按 ${providerName} 高峰（${formatPresetWindowRange(peak.windows)}）反向生成全部非高峰时段`,
+    timezone: peak.timezone,
+    invertOnApply: true,
+    windows: peak.windows.map((window) => ({ daysOfWeek: [...window.daysOfWeek], start: window.start, end: window.end }))
+  }
+}
+
+// 反向时段短于该分钟数的零头（如高峰 22:00-23:55 反向后 23:55-24:00 的 5
+// 分钟尾巴）不生成，避免出现无调度意义的碎段。
+const invertMinSegmentMinutes = 15
+
+function parseScheduleMinutes(value: string): number {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value)
+  if (!match) throw new Error(`时间格式无效：${value}`)
+  return Number(match[1]) * 60 + Number(match[2])
+}
+
+function formatScheduleMinutes(minutes: number): string {
+  const normalized = Math.min(Math.max(minutes, 0), 1439)
+  return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`
+}
+
+// invertTimeScheduleWindows 把"高峰时段"取反为"避开高峰的其余全部时间"：
+// 输入现有时段（语义为允许调度的窗口，本函数将其视作高峰），输出按分钟
+// 覆盖矩阵计算的补集。跨午夜窗口（start>end）在次日展开；每段终点直接用
+// 下一高峰起点表达（高峰 22:00-23:55 全周 → 反向 00:00-22:00 全周），全天
+// 尾段以 23:59 表达（与既有表单惯例一致）；短于 15 分钟的零头段丢弃；高峰
+// 覆盖全天时返回空数组（调用方应提示且不覆盖）。
+export function invertTimeScheduleWindows(windows: readonly TimeScheduleWindow[]): TimeScheduleWindow[] {
+  const marked = Array.from({ length: 7 }, () => new Uint8Array(1440))
+  for (const window of windows) {
+    const start = parseScheduleMinutes(window.start)
+    const end = parseScheduleMinutes(window.end)
+    if (start === end) continue
+    for (const day of window.daysOfWeek) {
+      if (start < end) {
+        for (let minute = start; minute < end; minute += 1) marked[day - 1][minute] = 1
+      } else {
+        for (let minute = start; minute < 1440; minute += 1) marked[day - 1][minute] = 1
+        const nextDay = (day % 7) + 1
+        for (let minute = 0; minute < end; minute += 1) marked[nextDay - 1][minute] = 1
+      }
+    }
+  }
+  // 每天提取反向连续段（段终点 = 下一高峰起点），再按相同 (start,end) 合并天。
+  const segmentsByDay = new Map<number, Array<{ start: number; end: number }>>()
+  for (let day = 1; day <= 7; day += 1) {
+    const segments: Array<{ start: number; end: number }> = []
+    let segmentStart = -1
+    for (let minute = 0; minute <= 1440; minute += 1) {
+      const inverted = minute < 1440 ? marked[day - 1][minute] === 0 : false
+      if (inverted && segmentStart < 0) segmentStart = minute
+      if (!inverted && segmentStart >= 0) {
+        if (minute - segmentStart >= invertMinSegmentMinutes) segments.push({ start: segmentStart, end: minute })
+        segmentStart = -1
+      }
+    }
+    if (segments.length) segmentsByDay.set(day, segments)
+  }
+  // 按 (start,end) 归组：段终点相同的天合并进同一时段行，days 升序。
+  const grouped = new Map<string, { days: number[]; start: number; end: number }>()
+  for (const [day, segments] of segmentsByDay) {
+    for (const segment of segments) {
+      const key = `${segment.start}-${segment.end}`
+      const entry = grouped.get(key)
+      if (entry) entry.days.push(day)
+      else grouped.set(key, { days: [day], start: segment.start, end: segment.end })
+    }
+  }
+  return [...grouped.values()]
+    .sort((left, right) => left.start - right.start)
+    .map((entry) => ({
+      daysOfWeek: [...entry.days].sort((left, right) => left - right),
+      start: formatScheduleMinutes(entry.start),
+      // 段尾到午夜时按表单惯例写 23:59（00:00-23:59 表达全天）；其余段终点
+      // 就是下一高峰起点，原样表达。
+      end: entry.end >= 1440 ? '23:59' : formatScheduleMinutes(entry.end)
+    }))
+}
+
 export function createTimeScheduleForm<TSchedule extends TimeSchedule = TimeSchedule>(
   schedule?: TSchedule,
   options: TimeScheduleOptions = {}

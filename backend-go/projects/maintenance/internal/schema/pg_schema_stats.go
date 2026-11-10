@@ -1299,6 +1299,16 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 	{
 		SchemaName: "juhe_stats",
 		Source:     "stats",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_background_task_runs_created_at ON background_task_runs(created_at)`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "stats",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_background_job_leases_lease_until ON background_job_leases(lease_until)`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "stats",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_target
       ON usage_record_cleanup_deductions(api_key_id, system_account_id, shard_deleted_at)`,
 	},

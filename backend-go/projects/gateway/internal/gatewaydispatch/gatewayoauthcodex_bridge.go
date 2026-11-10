@@ -3,6 +3,7 @@ package gatewaydispatch
 import (
 	"net/http"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
@@ -61,6 +62,26 @@ func sanitizeCodexHistoryHookIfSet(items []any, options SanitizeCodexHistoryOpti
 		return CodexHistorySanitizeResult{}, false
 	}
 	return gatewayoauthcodex.SanitizeCodexHistory(items, options), true
+}
+
+// WireCodexHistorySanitizer 安装生产 Codex/Responses 历史清理实现（D-93）。
+// 此前 hook 恒 nil，Grok 等上游产生的 history item id 会随会话切换原样发给
+// 真实 GPT 上游并被拒绝（用户实证：Grok 转 GPT 给下游用后，上下文切到真实
+// GPT 账户时上游不认识 Grok 的 item id）。接线后 Front/Post/Adapter 三阶段
+// 按归档 Node request-history-sanitizer 语义清理未持久化/跨作用域 item id。
+// 组合根在启动时调用一次；测试可重复调用（幂等覆盖）。
+func WireCodexHistorySanitizer() {
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options gatewayoauthcodex.SanitizeCodexHistoryOptions) gatewayoauthcodex.CodexHistorySanitizeResult {
+		result := gatewaycodex.SanitizeCodexResponseHistoryItems(items, gatewaycodex.CodexHistorySanitizerContext{
+			Store:                  options.Store,
+			TargetScopeKey:         options.TargetScopeKey,
+			TargetPersistenceScope: options.TargetPersistenceScope,
+		})
+		return gatewayoauthcodex.CodexHistorySanitizeResult{
+			Items:   result.Items,
+			Changed: result.Changed,
+		}
+	}
 }
 
 // --- OAuth codex 规范化 / 适配（原 oauthnormalizer.go / oauthadapter.go /

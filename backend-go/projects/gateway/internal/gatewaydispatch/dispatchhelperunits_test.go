@@ -12,6 +12,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -492,7 +493,7 @@ func TestAcquireAccountConcurrencyWithShortRetryExhaustion(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 4, 0, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 4, 0, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -544,7 +545,7 @@ func TestAcquireAccountConcurrencyWithShortRetryAbort(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, _, _, err := engine.acquireAccountConcurrencyWithShortRetry(
-		canceled, canceled, "a-1", 4, 0, 10_000, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		canceled, canceled, "a-1", 4, 0, 10_000, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	var aborted *UpstreamRequestAbortedError
 	if !errorsAs(err, &aborted) {
@@ -575,7 +576,7 @@ func TestAcquireAccountConcurrencyStoreError(t *testing.T) {
 	engine.Concurrency = errorConcurrencyStore{}
 	coordination := newTestCoordination(t)
 	_, _, _, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 4, 0, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 4, 0, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	if err == nil || err.Error() != "store boom" {
 		t.Fatalf("存储错误应透传, got %v", err)
@@ -588,7 +589,7 @@ func TestAcquireAccountConcurrencyImmediateSuccess(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 4, 0, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 4, 0, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget, 0,
 	)
 	if err != nil || !slot.Acquired || waitedMs != 0 {
 		t.Fatalf("首取成功: slot=%+v waited=%d err=%v", slot, waitedMs, err)
@@ -1127,6 +1128,24 @@ func TestOrderAccountsByLaneCapacityBusyState(t *testing.T) {
 	if ordered[0].ID != "a-2" {
 		t.Fatalf("顺序 = %#v", accountIDs(ordered))
 	}
+	// 实时并发必须写回候选快照，供后续软阈值亲和排序/准备期 softBusy 判定。
+	if ordered[0].CurrentConcurrency == nil || *ordered[0].CurrentConcurrency != 0 ||
+		ordered[1].CurrentConcurrency == nil || *ordered[1].CurrentConcurrency != 4 {
+		t.Fatalf("并发快照未写回: %+v", ordered)
+	}
+	// 软阈值：未达硬限但达到 softLimit 的账户在同层降位。媒体 lane 不跑热
+	// 质量排序，容量排序本身必须保证 softBusy 生效。
+	softPolicy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2}
+	softStore := &mapBackedConcurrencyStore{current: map[string]int{"a-1": 2, "a-2": 0}}
+	for _, lane := range []gatewayproto.RequestLane{gatewayproto.LaneText, gatewayproto.LaneImage} {
+		ordered, err = OrderGatewayAccountsByLaneCapacityAvailabilityAsync(context.Background(), softStore, accounts, lane, softPolicy, nil)
+		if err != nil {
+			t.Fatalf("soft %s order: %v", lane, err)
+		}
+		if ordered[0].ID != "a-2" {
+			t.Fatalf("soft %s 顺序 = %#v, want a-2 first", lane, accountIDs(ordered))
+		}
+	}
 	// image 通道：lane 独立并发饱和的账户被判忙。
 	imageStore := &laneBackedConcurrencyStore{current: map[string]int{"a-1": 1}, image: map[string]int{"a-1": 4}}
 	ordered, err = OrderGatewayAccountsByLaneCapacityAvailabilityAsync(context.Background(), imageStore, accounts, "image", nil, nil)
@@ -1136,9 +1155,25 @@ func TestOrderAccountsByLaneCapacityBusyState(t *testing.T) {
 	if ordered[0].ID != "a-2" {
 		t.Fatalf("image 顺序 = %#v", accountIDs(ordered))
 	}
-	busy, err := AreGatewayAccountsCapacityBusyForLaneAsync(context.Background(), imageStore, accounts, "image", nil)
+	// D-94：组忙谓词是 every——任一账户仍有容量时整组不忙，组回退不得提前。
+	busy, err := AreGatewayAccountsCapacityBusyForLaneAsync(context.Background(), store, accounts, "text", nil)
+	if err != nil || busy {
+		t.Fatalf("partial busy text = %v err=%v", busy, err)
+	}
+	busy, err = AreGatewayAccountsCapacityBusyForLaneAsync(context.Background(), imageStore, accounts, "image", nil)
+	if err != nil || busy {
+		t.Fatalf("partial busy image = %v err=%v", busy, err)
+	}
+	// 全部账户满载（含 image lane 独立饱和）才判组忙。
+	allBusyStore := &mapBackedConcurrencyStore{current: map[string]int{"a-1": 4, "a-2": 4}}
+	busy, err = AreGatewayAccountsCapacityBusyForLaneAsync(context.Background(), allBusyStore, accounts, "text", nil)
 	if err != nil || !busy {
-		t.Fatalf("image busy = %v err=%v", busy, err)
+		t.Fatalf("all busy text = %v err=%v", busy, err)
+	}
+	allBusyImageStore := &laneBackedConcurrencyStore{current: map[string]int{}, image: map[string]int{"a-1": 4, "a-2": 4}}
+	busy, err = AreGatewayAccountsCapacityBusyForLaneAsync(context.Background(), allBusyImageStore, accounts, "image", nil)
+	if err != nil || !busy {
+		t.Fatalf("all busy image = %v err=%v", busy, err)
 	}
 	// 单账户不重排。
 	single := testAccounts("a-1")
@@ -1173,12 +1208,12 @@ func (m *laneBackedConcurrencyStore) TryAcquireAsync(context.Context, string, in
 }
 
 func TestDerefPolicyAndModelPriorityRankMap(t *testing.T) {
-	if derefPolicy(nil) != nil {
-		t.Fatal("nil policy 解引用应为 nil")
+	if derefPolicy(nil) != (gatewayruntimecache.GroupSchedulingPolicy{}) {
+		t.Fatal("nil policy 解引用应为零值两键策略")
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
-	if derefPolicy(&policy) == nil {
-		t.Fatal("非 nil policy 应解引用")
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3, ClientIPConcurrencyLimit: 1}
+	if derefPolicy(&policy) != policy {
+		t.Fatal("非 nil policy 应解引用为同值")
 	}
 	if modelPriorityRankMap(nil) != nil {
 		t.Fatal("nil priority 返回 nil")

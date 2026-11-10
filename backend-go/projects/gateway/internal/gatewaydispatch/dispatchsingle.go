@@ -11,6 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // dispatchSingleAccount owns the per-candidate dispatch loop of
@@ -49,14 +50,17 @@ type dispatchSingleAccountInput struct {
 	lastAttempt                          **UpstreamAttempt
 	// semanticCommitFailure 在"上游响应已开始、正文传输失败"（proven body
 	// transport failure）时置位：此时请求语义已提交，不允许换目标重放。
-	semanticCommitFailure         *bool
-	agentGuidanceResponse         **gatewaypreauth.GatewayAgentGuidanceResponse
-	auditAttemptIndex             *int
-	concurrencyRetryWaitBudgetMs  *int64
-	keyModelFailureBudget         *gatewayaccounteffects.GatewayKeyModelFailureBudget
-	accountCircuitAttempt         *gatewaycircuit.Attempt
-	reserveSameAccountRetry       func(identity gatewayrouting.GatewayDispatchAttemptIdentity, reason, accountID string) (string, error)
-	createAccountLockLeaseRelease func(scheduleNextRetry bool) func(bool) bool
+	semanticCommitFailure        *bool
+	agentGuidanceResponse        **gatewaypreauth.GatewayAgentGuidanceResponse
+	auditAttemptIndex            *int
+	concurrencyRetryWaitBudgetMs *int64
+	// sessionAffinityOwnerWaitBudgetMs 是账户亲和 owner 的请求级剩余等待
+	// 额度（独立于通用并发预算）；key 轮换重取与整池重试共用同一递减值。
+	sessionAffinityOwnerWaitBudgetMs *int64
+	keyModelFailureBudget            *gatewayaccounteffects.GatewayKeyModelFailureBudget
+	accountCircuitAttempt            *gatewaycircuit.Attempt
+	reserveSameAccountRetry          func(identity gatewayrouting.GatewayDispatchAttemptIdentity, reason, accountID string) (string, error)
+	createAccountLockLeaseRelease    func(scheduleNextRetry bool) func(bool) bool
 }
 
 // dispatchResultKind carries the loop control outcomes. M-2（BUG-0174）: the
@@ -164,10 +168,23 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		// 预留槽无短等，请求级预算不变（Node :768-771 reservedSlot 的
 		// remainingWaitBudgetMs 原样携带 concurrencyRetryWaitBudgetMs）。
 	} else {
+		requestWaitBudgetMs := *in.concurrencyRetryWaitBudgetMs
+		ownerWaitBudgetMs := int64(0)
+		ownerFixedPollMs := int64(0)
+		if in.args.SessionAffinityOwnerAccountID != "" && originalAccount.ID == in.args.SessionAffinityOwnerAccountID {
+			ownerWaitBudgetMs = sessionAffinityOwnerWaitBudgetMs(e.Config.SessionAffinityOwnerWaitBudgetMs, in.args.SessionAffinityWaitPlanned, in.args.SessionAffinityWaitRemainingMs)
+			if in.sessionAffinityOwnerWaitBudgetMs != nil {
+				ownerWaitBudgetMs = *in.sessionAffinityOwnerWaitBudgetMs
+			}
+			requestWaitBudgetMs = ownerWaitBudgetMs
+			if ownerWaitBudgetMs > 0 {
+				ownerFixedPollMs = e.Config.SessionAffinityWaitPollIntervalMs
+			}
+		}
 		acquired, waitedMs, remainingWaitBudgetMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
 			ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit, originalAccount.RPMLimit,
-			*in.concurrencyRetryWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
-			in.coordination.ServerRetryBudget,
+			requestWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
+			in.coordination.ServerRetryBudget, ownerFixedPollMs,
 		)
 		if acquireErr != nil {
 			_ = releaseHalfOpenLease(ctx, halfOpenLease)
@@ -179,7 +196,26 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		//（Node upstream-dispatch.ts:793 concurrencyRetryWaitBudgetMs =
 		// concurrencyAcquire.remainingWaitBudgetMs；预算在外环容量等待后由
 		// upstreamdispatch.go 三处重置点刷新）。
-		*in.concurrencyRetryWaitBudgetMs = remainingWaitBudgetMs
+		if ownerWaitBudgetMs > 0 {
+			// owner 用独立小预算，但消耗的是请求级总预算：返回“总预算 - 实际
+			// 等待”，让后续账户仍可使用剩余额度。等待时长单独记指标 + 审计。
+			outcome := "capacity_rejected"
+			if concurrencySlot.Acquired {
+				outcome = "acquired"
+			}
+			in.args.AuditCapture.AddGatewayMetadata("session_affinity_affinity_wait", map[string]any{
+				"accountId": originalAccount.ID,
+				"waitedMs":  waitedMs,
+				"outcome":   outcome,
+			})
+			gatewayusage.RecordGatewaySessionAffinityAffinityWaitMetric(waitedMs)
+			if in.sessionAffinityOwnerWaitBudgetMs != nil {
+				consumeSessionAffinityOwnerWaitBudget(in.sessionAffinityOwnerWaitBudgetMs, waitedMs)
+			}
+			*in.concurrencyRetryWaitBudgetMs = remainingAfterAffinityOwnerWait(*in.concurrencyRetryWaitBudgetMs, waitedMs, in.coordination.ServerRetryBudget)
+		} else {
+			*in.concurrencyRetryWaitBudgetMs = remainingWaitBudgetMs
+		}
 	}
 	if !concurrencySlot.Acquired {
 		_ = releaseHalfOpenLease(ctx, halfOpenLease)
@@ -251,10 +287,23 @@ rotationLoop:
 		retryAccountApiKey = false
 		skipAccount = false
 		if reacquireConcurrencyForNextKey {
+			requestWaitBudgetMs := *in.concurrencyRetryWaitBudgetMs
+			ownerWaitBudgetMs := int64(0)
+			ownerFixedPollMs := int64(0)
+			if in.args.SessionAffinityOwnerAccountID != "" && originalAccount.ID == in.args.SessionAffinityOwnerAccountID {
+				ownerWaitBudgetMs = sessionAffinityOwnerWaitBudgetMs(e.Config.SessionAffinityOwnerWaitBudgetMs, in.args.SessionAffinityWaitPlanned, in.args.SessionAffinityWaitRemainingMs)
+				if in.sessionAffinityOwnerWaitBudgetMs != nil {
+					ownerWaitBudgetMs = *in.sessionAffinityOwnerWaitBudgetMs
+				}
+				requestWaitBudgetMs = ownerWaitBudgetMs
+				if ownerWaitBudgetMs > 0 {
+					ownerFixedPollMs = e.Config.SessionAffinityWaitPollIntervalMs
+				}
+			}
 			acquired, waitedMs, remainingWaitBudgetMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
 				ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit, originalAccount.RPMLimit,
-				*in.concurrencyRetryWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
-				in.coordination.ServerRetryBudget,
+				requestWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
+				in.coordination.ServerRetryBudget, ownerFixedPollMs,
 			)
 			if acquireErr != nil {
 				releaseTransientState()
@@ -262,7 +311,24 @@ rotationLoop:
 			}
 			// BUG-0247 项 2：Key 轮换重取同样按实际短等递减请求级预算
 			//（Node upstream-dispatch.ts:866）。
-			*in.concurrencyRetryWaitBudgetMs = remainingWaitBudgetMs
+			if ownerWaitBudgetMs > 0 {
+				outcome := "capacity_rejected"
+				if acquired.Acquired {
+					outcome = "acquired"
+				}
+				in.args.AuditCapture.AddGatewayMetadata("session_affinity_affinity_wait", map[string]any{
+					"accountId": originalAccount.ID,
+					"waitedMs":  waitedMs,
+					"outcome":   outcome,
+				})
+				gatewayusage.RecordGatewaySessionAffinityAffinityWaitMetric(waitedMs)
+				if in.sessionAffinityOwnerWaitBudgetMs != nil {
+					consumeSessionAffinityOwnerWaitBudget(in.sessionAffinityOwnerWaitBudgetMs, waitedMs)
+				}
+				*in.concurrencyRetryWaitBudgetMs = remainingAfterAffinityOwnerWait(*in.concurrencyRetryWaitBudgetMs, waitedMs, in.coordination.ServerRetryBudget)
+			} else {
+				*in.concurrencyRetryWaitBudgetMs = remainingWaitBudgetMs
+			}
 			concurrencySlot = acquired
 			reacquireConcurrencyForNextKey = false
 			// P0-1（PLAN-20260918T142845703Z）: 生产并发实现未 Acquired 时

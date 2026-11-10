@@ -43,9 +43,6 @@ func newWdFixture(t *testing.T) *wdFixture {
 	return &wdFixture{deps: base.deps, db: base.db}
 }
 
-// newWdSQLiteFixture 是组B测试（usage 分片文件读面）的 SQLite 夹具入口：
-// newSQLiteFixture + 无前缀补充表，随 SQLite 生产臂删除批次同批退役。
-
 func (f *wdFixture) exec(t *testing.T, statements ...string) {
 	t.Helper()
 	for _, statement := range statements {
@@ -563,10 +560,6 @@ func TestWdAiHealthListHandlerParameterContract(t *testing.T) {
 // ---------------------------------------------------------------------------
 // usage-records：关键字、日期窗口与过滤矩阵
 // ---------------------------------------------------------------------------
-
-// newWdShardFixture 是组B（usage 分片文件读面，SQLite-only 臂）的夹具入口：
-// newWdSQLiteFixture + 真实 shard 文件与 :memory: 目录，随 SQLite 生产臂删除
-// 批次同批退役。
 
 func TestWdUsageRecordsAdminCannotFilterAcrossAllWithoutScope(t *testing.T) {
 	// 被测对象是 admin 过滤门（方言无关）；放行臂的行读走 PG 臂空

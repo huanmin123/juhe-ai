@@ -10,13 +10,9 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 // ---------------------------------------------------------------------------
@@ -305,16 +301,16 @@ func TestW14EGetGatewayHotQualityRuntimeRedisClientError(t *testing.T) {
 	t.Cleanup(ResetGatewayHotQualityRuntimeForTest)
 	ResetGatewayHotQualityRuntimeForTest()
 	if _, err := GetGatewayHotQualityRuntime(context.Background(), RuntimeDriverConfig{
-		RedisURL:      "://w14e-not-a-url",
-		RedisNamespace:     "w14e-ns",
+		RedisURL:       "://w14e-not-a-url",
+		RedisNamespace: "w14e-ns",
 	}); err == nil {
 		t.Fatal("invalid redis url must fail the runtime build")
 	}
 	// 空命名空间：热质量 Redis store 构造必须拒绝。
 	server := miniredis.RunT(t)
 	if _, err := GetGatewayHotQualityRuntime(context.Background(), RuntimeDriverConfig{
-		RedisURL:      "redis://" + server.Addr(),
-		RedisNamespace:     " ",
+		RedisURL:       "redis://" + server.Addr(),
+		RedisNamespace: " ",
 	}); err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("empty namespace err = %v", err)
 	}
@@ -815,100 +811,8 @@ func TestW14EStoreScopeArms(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// speedfirst_body_admission.go：ClearForTest 唤醒、陈旧 item、nil item。
-// ---------------------------------------------------------------------------
-
-func TestW14EBodyAdmissionClearWithQueuedItem(t *testing.T) {
-	registry := NewSpeedFirstBodyAdmissionRegistry()
-	// T115：clock 用原子变量——SetClock 闭包在后台 Acquire goroutine 中被调用，
-	// 与主 goroutine 的推进写入必须同步（此前裸共享 int64 触发 -race）。
-	var baseClock atomic.Int64
-	baseClock.Store(1_000)
-	registry.SetClock(func() time.Time { return time.UnixMilli(baseClock.Load()) })
-
-	ctx := context.Background()
-	first := registry.Acquire(ctx, SpeedFirstBodyAdmissionInput{SystemAccountID: "s", RouteStrategyID: "r", GroupID: "g", APIKeyID: "key-1", Capacity: 1, MaxQueueWaitMs: 60_000, MaxQueueSize: 4, PerAPIKeyQueueLimit: 4})
-	if !first.Acquired || first.Release == nil {
-		t.Fatalf("first acquire = %+v", first)
-	}
-
-	queuedDone := make(chan SpeedFirstBodyAdmissionDecision, 1)
-	go func() {
-		queuedDone <- registry.Acquire(ctx, SpeedFirstBodyAdmissionInput{SystemAccountID: "s", RouteStrategyID: "r", GroupID: "g", APIKeyID: "key-2", Capacity: 1, MaxQueueWaitMs: 60_000, MaxQueueSize: 4, PerAPIKeyQueueLimit: 4})
-	}()
-	// T115：经 Snapshot（内部持锁）等待入队，替代直读 registry.states 内部 map。
-	deadline := time.Now().Add(time.Second)
-	for {
-		queued := false
-		for _, entry := range registry.Snapshot() {
-			if entry.Queued > 0 {
-				queued = true
-				break
-			}
-		}
-		if queued {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("queued item never appeared")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	baseClock.Store(1_500)
-	registry.ClearForTest()
-	select {
-	case decision := <-queuedDone:
-		if decision.Acquired || decision.Reason != BodyAdmissionRejectAborted {
-			t.Fatalf("clear decision = %+v", decision)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("clear must resolve queued items")
-	}
-	first.Release()
-	if entries := registry.Snapshot(); len(entries) != 0 {
-		t.Fatalf("clear must drop states: %+v", entries)
-	}
-}
-
-func TestW14EBodyAdmissionStaleAndNilQueueItems(t *testing.T) {
-	registry := NewSpeedFirstBodyAdmissionRegistry()
-	state := createState("w14e:key", 2)
-	stale := &bodyAdmissionQueueItem{apiKeyID: "k", done: make(chan SpeedFirstBodyAdmissionDecision, 1), finished: make(chan struct{})}
-	// 陈旧 item 不在队列中：complete 必须是 no-op，contains 必须为 false。
-	registry.completeQueuedItem(state, stale, SpeedFirstBodyAdmissionDecision{Acquired: false, Reason: BodyAdmissionRejectAborted})
-	if bodyAdmissionQueueContains(state.queue, stale) {
-		t.Fatal("stale item must not be queued")
-	}
-	select {
-	case <-stale.done:
-		t.Fatal("stale item must not be resolved")
-	default:
-	}
-
-	// 唤醒循环遇到 nil item 必须安全返回。
-	nilState := createState("w14e:nil", 2)
-	nilState.queue = []*bodyAdmissionQueueItem{nil}
-	registry.states[nilState.key] = nilState
-	registry.mu.Lock()
-	registry.wakeQueuedItemsLocked(nilState)
-	registry.mu.Unlock()
-}
-
-// ---------------------------------------------------------------------------
 // speedfirst_cutover_reservation.go：policy 数值回退。
 // ---------------------------------------------------------------------------
-
-func TestW14ECutoverNumericPolicyFallback(t *testing.T) {
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"imageLaneMaxConcurrency": "not-a-number"}
-	if got := EffectiveImageLaneConcurrencyLimit(5, policy); got != 5 {
-		t.Fatalf("non numeric policy must keep hard limit: %d", got)
-	}
-	int64Policy := gatewayruntimecache.GroupSchedulingPolicy{"imageLaneMaxConcurrency": int64(3)}
-	if got := EffectiveImageLaneConcurrencyLimit(9, int64Policy); got != 3 {
-		t.Fatalf("int64 policy = %d", got)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // memory_store.go：构造、输入校验与终态 owner 过期清理。

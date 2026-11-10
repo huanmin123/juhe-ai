@@ -298,6 +298,47 @@ func TestFilesRoutesContainerFiles(t *testing.T) {
 	}
 }
 
+func TestFilesRoutesListHasMore(t *testing.T) {
+	env := newRouteEnv(t, nil)
+	createTestFile(t, env.Deps.Store, env.FilesRoot, "file-page-1", "assistants", []byte("one"), "text/plain", nil)
+	createTestFile(t, env.Deps.Store, env.FilesRoot, "file-page-2", "assistants", []byte("two"), "text/plain", nil)
+
+	// D-220：limit 截断且仍有更多项时 has_more 必须为 true。
+	status, raw := env.do(t, "GET", "/v1/files?limit=1", testScopeA, "", nil)
+	if status != 200 {
+		t.Fatalf("status = %d body %s", status, raw)
+	}
+	list := decodeJSON(t, raw)
+	if list["has_more"] != true || len(list["data"].([]any)) != 1 {
+		t.Fatalf("limit=1 list = %v", list)
+	}
+	// 返回全部项时 has_more=false。
+	status, raw = env.do(t, "GET", "/v1/files?limit=2", testScopeA, "", nil)
+	if status != 200 {
+		t.Fatalf("status = %d", status)
+	}
+	list = decodeJSON(t, raw)
+	if list["has_more"] != false || len(list["data"].([]any)) != 2 {
+		t.Fatalf("limit=2 list = %v", list)
+	}
+}
+
+func TestContainerFilesRoutesListHasMore(t *testing.T) {
+	env := newRouteEnv(t, nil)
+	container := "container-page"
+	createTestFile(t, env.Deps.Store, env.FilesRoot, "file-container-page-1", "code_interpreter_output", []byte("one"), "text/plain", &container)
+	createTestFile(t, env.Deps.Store, env.FilesRoot, "file-container-page-2", "code_interpreter_output", []byte("two"), "text/plain", &container)
+
+	status, raw := env.do(t, "GET", "/v1/containers/"+container+"/files?limit=1", testScopeA, "", nil)
+	if status != 200 {
+		t.Fatalf("status = %d body %s", status, raw)
+	}
+	list := decodeJSON(t, raw)
+	if list["has_more"] != true || len(list["data"].([]any)) != 1 {
+		t.Fatalf("container limit=1 list = %v", list)
+	}
+}
+
 func TestFilesRoutesUploadPersistsUnderStorageRoot(t *testing.T) {
 	env := newRouteEnv(t, nil)
 	contentType, body := multipartBody(t, map[string]string{"purpose": "batch"}, []struct {

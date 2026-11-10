@@ -205,7 +205,7 @@ func TestW14dParseGroupBodySchemas(t *testing.T) {
 	_, issue = parseGroupAddBody(map[string]any{
 		"targetUsername": "alice", "name": "n", "groupType": "mystery",
 	})
-	if issue != zodEnumMessage([]string{"personal", "high_concurrency"}, "mystery") {
+	if issue != zodEnumMessage([]string{"personal"}, "mystery") {
 		t.Fatalf("group add enum: %q", issue)
 	}
 
@@ -215,7 +215,7 @@ func TestW14dParseGroupBodySchemas(t *testing.T) {
 	}
 	update, issue := parseGroupUpdateBody(map[string]any{
 		"groupId": " g ", "name": "n", "providerCode": "p", "description": nil,
-		"enabled": false, "groupType": "high_concurrency", "targetUsername": "alice",
+		"enabled": false, "groupType": "personal", "targetUsername": "alice",
 	})
 	if issue != "" {
 		t.Fatalf("group update: %q", issue)

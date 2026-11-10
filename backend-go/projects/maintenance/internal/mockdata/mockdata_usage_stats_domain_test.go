@@ -7,7 +7,6 @@ package mockdata
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -47,10 +46,10 @@ func domainCounts(t *testing.T, report Report, domain string) map[string]int {
 	return nil
 }
 
-// TestMockdataUsageDomainSeedsRecordsAndShards 是 usage 域的核心验收：记录行数
-// = Days×DailyRequests + 覆盖样本、批内日期都有日分区、三条上游响应模型定向
-// 样本可关联 business 账户与 Key、shard 四表登记与明细一致。
-func TestMockdataUsageDomainSeedsRecordsAndShards(t *testing.T) {
+// TestMockdataUsageDomainSeedsRecords 是 usage 域的核心验收：记录行数 =
+// Days×DailyRequests + 覆盖样本、批内日期都有日分区、三条上游响应模型定向
+// 样本可关联 business 账户与 Key。
+func TestMockdataUsageDomainSeedsRecords(t *testing.T) {
 	dsn := newMockdataTestDB(t)
 	summaryPath := coverageSummaryPath(t)
 	report := runUsageStatsForTest(t, dsn, usageStatsTestNow, summaryPath)
@@ -60,14 +59,6 @@ func TestMockdataUsageDomainSeedsRecordsAndShards(t *testing.T) {
 	const wantCoverage = 6 // 三连上游响应模型 + 模型映射 + models/images 端点。
 	if counts["usage_records"] != wantDaily+wantCoverage {
 		t.Fatalf("usage_records 计数 = %d, want %d: %v", counts["usage_records"], wantDaily+wantCoverage, counts)
-	}
-	if counts["usage_record_shard_entries"] != counts["usage_records"] {
-		t.Fatalf("shard entries 与明细不一致: %v", counts)
-	}
-	for _, key := range []string{"usage_record_shards", "usage_record_account_shards", "usage_record_api_key_shards"} {
-		if counts[key] == 0 {
-			t.Fatalf("usage 计数缺少 %s: %v", key, counts)
-		}
 	}
 
 	ctx := context.Background()
@@ -123,33 +114,6 @@ func TestMockdataUsageDomainSeedsRecordsAndShards(t *testing.T) {
 	if n := count("SELECT COUNT(*) FROM " + ut("usage_records") + " WHERE trace_id = '" +
 		usageTraceUpstreamUnmappedMismatch + "' AND model_mapping_applied = 0"); n != 1 {
 		t.Fatalf("未映射样本的 model_mapping_applied 应为 0: %d", n)
-	}
-
-	// shard 登记一致：每条明细都有 entry、登记行 file_path 是 PG 逻辑定位、
-	// shard_key 三位分片号、shard_id 落在分片数内。
-	if n := count("SELECT COUNT(*) FROM " + ut("usage_records") + " r WHERE NOT EXISTS (SELECT 1 FROM " +
-		ut("usage_record_shard_entries") + " e WHERE e.usage_id = r.id)"); n != 0 {
-		t.Fatalf("%d 条明细没有 shard entry", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + ut("usage_record_shards") +
-		" WHERE file_path NOT LIKE 'postgres:juhe_usage.usage_records:%'"); n != 0 {
-		t.Fatalf("%d 条 shard 登记的 file_path 不是 PG 逻辑定位", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + ut("usage_record_shards") +
-		" WHERE shard_key !~ '^\\d{8}:s\\d{3}$'"); n != 0 {
-		t.Fatalf("%d 条 shard_key 不是「8 位日期 + 三位分片号」形态", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + ut("usage_record_shards") +
-		" WHERE shard_id < 0 OR shard_id >= 16"); n != 0 {
-		t.Fatalf("%d 条 shard_id 超出分片数", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + ut("usage_record_account_shards") +
-		" WHERE first_created_at > last_seen_at"); n != 0 {
-		t.Fatalf("%d 条账户分片跨度非法", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + ut("usage_record_api_key_shards") +
-		" WHERE first_created_at > last_seen_at"); n != 0 {
-		t.Fatalf("%d 条 Key 分片跨度非法", n)
 	}
 	// PG 形态没有 sqlite 时代的 stats 镜像 usage_records 表（juhe_stats schema
 	// 里不存在该表）。
@@ -265,7 +229,7 @@ func TestMockdataUsageStatsDomainsAreIdempotent(t *testing.T) {
 	}
 	// 第二次清理命中两域的表（清理标识收敛）。
 	for _, schemaTable := range []string{
-		ut("usage_records"), ut("usage_record_shard_entries"), ut("usage_record_shards"),
+		ut("usage_records"),
 		st("background_task_runs"), st("account_usage_snapshots"), st("client_ip_registry"),
 		st("usage_overview_dirty_scopes"),
 	} {
@@ -276,7 +240,7 @@ func TestMockdataUsageStatsDomainsAreIdempotent(t *testing.T) {
 }
 
 // TestMockdataUsageStatsCleanupCoversDomainTables 清理规则覆盖两域表：清理后
-// 明细 / shard 四表 / stats 写入面全部归零，第二次清理 no-op。
+// usage 明细 / stats 写入面全部归零，第二次清理 no-op。
 func TestMockdataUsageStatsCleanupCoversDomainTables(t *testing.T) {
 	dsn := newMockdataTestDB(t)
 	runUsageStatsForTest(t, dsn, usageStatsTestNow, "")
@@ -300,8 +264,7 @@ func TestMockdataUsageStatsCleanupCoversDomainTables(t *testing.T) {
 		t.Fatalf("cleanupAll: %v", err)
 	}
 	for _, schemaTable := range []string{
-		ut("usage_records"), ut("usage_record_shard_entries"), ut("usage_record_shards"),
-		ut("usage_record_account_shards"), ut("usage_record_api_key_shards"),
+		ut("usage_records"),
 		st("background_task_runs"), st("account_usage_snapshots"),
 		st("client_ip_registry"), st("client_ip_policies"), st("client_ip_policy_hits"),
 		st("usage_overview_dirty_scopes"), st("ai_performance_summary_dirty_system_accounts"),
@@ -311,11 +274,9 @@ func TestMockdataUsageStatsCleanupCoversDomainTables(t *testing.T) {
 			t.Fatalf("清理未命中 %s: %v", schemaTable, deleted)
 		}
 	}
-	// 清理后两域写入面全部归零（含不带标识的 shard 登记行——按「分片内已无
-	// 条目」回收；client_ip_registry 按派生面重置）。
+	// 清理后两域写入面全部归零（client_ip_registry 按派生面重置）。
 	for _, schemaTable := range []string{
-		ut("usage_records"), ut("usage_record_shards"), ut("usage_record_shard_entries"),
-		ut("usage_record_account_shards"), ut("usage_record_api_key_shards"),
+		ut("usage_records"),
 		st("client_ip_registry"), st("usage_overview_dirty_scopes"),
 		st("ai_performance_summary_dirty_system_accounts"),
 	} {
@@ -390,31 +351,8 @@ func TestUsageShardLocationMirror(t *testing.T) {
 		}
 	}
 	id := usageRecordID(time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC), "mockdata-usage-00042", 42)
-	location := usageLogicalShardLocationForRecord(id, "2026-10-25T03:04:05.000Z")
-	if location.RecordID != id || location.BucketDateKey != "20261025" || location.BucketDate != "2026-10-25" {
-		t.Fatalf("定位解析不符: %+v", location)
-	}
-	if want := "20261025:s" + fmt.Sprintf("%03d", location.ShardID); location.ShardKey != want {
-		t.Fatalf("shard_key = %q, want %q（三位分片号）", location.ShardKey, want)
-	}
-	if location.FilePath != "postgres:juhe_usage.usage_records:"+location.ShardKey {
-		t.Fatalf("file_path = %q", location.FilePath)
-	}
-	if location.ShardID < 0 || location.ShardID >= usageLogicalShardCount {
-		t.Fatalf("shard_id 越界: %d", location.ShardID)
-	}
-	// 非 usage_* 前缀的 ID：回落 createdAt 桶 + 31 乘子逻辑哈希（与 jobs
-	// LogicalShardID 同式）。
-	fallback := usageLogicalShardLocationForRecord("legacy-id", "2026-10-24T10:00:00.000Z")
-	if fallback.BucketDateKey != "20261024" {
-		t.Fatalf("回落桶日期 = %q", fallback.BucketDateKey)
-	}
-	hash := uint32(0)
-	for index := 0; index < len("legacy-id"); index++ {
-		hash = hash*31 + uint32("legacy-id"[index])
-	}
-	if want := int(hash) % usageLogicalShardCount; fallback.ShardID != want {
-		t.Fatalf("回落分片号 = %d, want %d", fallback.ShardID, want)
+	if !strings.HasPrefix(id, "usage_20261025_s") {
+		t.Fatalf("usage id 形状不符: %q", id)
 	}
 }
 

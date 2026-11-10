@@ -34,7 +34,7 @@ import (
 // 直连 capturingUsageRecorder，测试在 WaitForIdle 后断言入队记录。
 func newUsageCapturingService() (*gatewayusage.Service, *gatewayusage.FinalizationDispatch, *capturingUsageRecorder) {
 	recorder := &capturingUsageRecorder{}
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, 64, 1)
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 64, 1)
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{})
 	return service, dispatch, recorder
 }

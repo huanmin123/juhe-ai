@@ -474,20 +474,7 @@ func (e *w11fEnv) w11fSeedGroup(t *testing.T, id, owner, name string, enabled, i
 // ---------------------------------------------------------------------------
 
 func TestW11FSchedulingPure(t *testing.T) {
-	// numericPolicyBounds: maxQueueWaitMs 上限 / 零下限键 / 默认。
-	if bound := numericPolicyBounds("maxQueueWaitMs"); bound.min != 1 || bound.max != 3_600_000 {
-		t.Fatalf("maxQueueWaitMs bound = %+v", bound)
-	}
-	for _, key := range []string{"breakAffinityOnQueueWaitMs", "clientIpConcurrencyLimit", "imageLaneMaxConcurrency"} {
-		if bound := numericPolicyBounds(key); bound.min != 0 {
-			t.Fatalf("%s bound = %+v", key, bound)
-		}
-	}
-	if bound := numericPolicyBounds("maxQueueSize"); bound.min != 1 || bound.max != 1_000_000 {
-		t.Fatalf("default bound = %+v", bound)
-	}
-
-	// normalizeGroupType。
+	// normalizeGroupType: write face only accepts personal.
 	if got, err := normalizeGroupType(nil); err != nil || got != GroupTypePersonal {
 		t.Fatalf("normalizeGroupType nil = %s/%v", got, err)
 	}
@@ -495,29 +482,49 @@ func TestW11FSchedulingPure(t *testing.T) {
 	if got, err := normalizeGroupType(&personal); err != nil || got != GroupTypePersonal {
 		t.Fatalf("normalizeGroupType personal = %s/%v", got, err)
 	}
+	legacy := "high_concurrency"
+	if _, err := normalizeGroupType(&legacy); err == nil {
+		t.Fatal("normalizeGroupType legacy must fail on the write face")
+	}
 	bogus := "bogus"
 	if _, err := normalizeGroupType(&bogus); err == nil {
 		t.Fatal("normalizeGroupType bogus must fail")
 	}
-	// normalizeStoredGroupType。
+
+	// normalizeStoredGroupType: legacy reads as personal; unknown stays an error.
+	if got, err := normalizeStoredGroupType("high_concurrency"); err != nil || got != GroupTypePersonal {
+		t.Fatalf("normalizeStoredGroupType legacy = %s/%v", got, err)
+	}
+	if !isLegacyGroupType("high_concurrency") || isLegacyGroupType("personal") {
+		t.Fatal("isLegacyGroupType drift")
+	}
 	if _, err := normalizeStoredGroupType("bogus"); err == nil {
 		t.Fatal("normalizeStoredGroupType bogus must fail")
 	}
-	if got, err := normalizeStoredGroupType("high_concurrency"); err != nil || got != GroupTypeHighConcurrency {
-		t.Fatalf("normalizeStoredGroupType hc = %s/%v", got, err)
-	}
 
-	// schedulingPolicyJSON: personal → nil; 非对象输入; 未知字段; 高并发默认。
-	if raw, err := schedulingPolicyJSON(GroupTypePersonal, map[string]any{}, 5000); raw != nil || err != nil {
-		t.Fatalf("personal policy = %v/%v", raw, err)
+	// schedulingPolicyJSON: nil clears; strict two-key objects; defaults store NULL.
+	if raw, err := schedulingPolicyJSON(nil); raw != nil || err != nil {
+		t.Fatalf("nil policy = %v/%v", raw, err)
 	}
-	if _, err := schedulingPolicyJSON(GroupTypeHighConcurrency, "nope", 5000); err == nil {
+	if _, err := schedulingPolicyJSON("nope"); err == nil {
 		t.Fatal("non-object policy must fail")
 	}
-	if _, err := schedulingPolicyJSON(GroupTypeHighConcurrency, map[string]any{"mode": "balanced_fast"}, 5000); err == nil {
-		t.Fatal("unknown writable key must fail")
+	if _, err := schedulingPolicyJSON(map[string]any{"mode": "x", "defaultSoftConcurrency": -1, "clientIpConcurrencyLimit": 0}); err == nil {
+		t.Fatal("unknown key must fail")
 	}
-	raw, err := schedulingPolicyJSON(GroupTypeHighConcurrency, nil, 7000)
+	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": -1}); err == nil {
+		t.Fatal("missing key must fail")
+	}
+	if raw, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": -1, "clientIpConcurrencyLimit": 0}); raw != nil || err != nil {
+		t.Fatalf("defaults must store NULL: %v/%v", raw, err)
+	}
+	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 0, "clientIpConcurrencyLimit": 0}); err == nil {
+		t.Fatal("zero threshold must fail")
+	}
+	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 1, "clientIpConcurrencyLimit": -1}); err == nil {
+		t.Fatal("negative ip limit must fail")
+	}
+	raw, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 5, "clientIpConcurrencyLimit": 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,176 +532,75 @@ func TestW11FSchedulingPure(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["defaultSoftConcurrency"] != float64(7000) || decoded["maxQueueSize"] != float64(7000) {
-		t.Fatalf("policy globalMax = %v", decoded)
+	if decoded["defaultSoftConcurrency"] != float64(5) || decoded["clientIpConcurrencyLimit"] != float64(3) {
+		t.Fatalf("policy = %v", decoded)
 	}
 
-	// parseStoredSchedulingPolicy: personal nil / 缺失 / 空白 / 坏 JSON / 非对象 / 完整。
-	if value, err := parseStoredSchedulingPolicy("x", true, GroupTypePersonal, 5000); value != nil || err != nil {
-		t.Fatalf("personal stored = %v/%v", value, err)
+	// parseStoredSchedulingPolicy: personal NULL / valid two keys / strict errors.
+	if value, err := parseStoredSchedulingPolicy("x", false, false, 5000); value != nil || err != nil {
+		t.Fatalf("personal NULL = %v/%v", value, err)
 	}
-	if _, err := parseStoredSchedulingPolicy("", false, GroupTypeHighConcurrency, 5000); err == nil {
-		t.Fatal("missing policy must fail")
+	if value, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":-1,"clientIpConcurrencyLimit":0}`, true, false, 5000); value != nil || err != nil {
+		t.Fatalf("default policy must render null: %v/%v", value, err)
 	}
-	if _, err := parseStoredSchedulingPolicy("  ", true, GroupTypeHighConcurrency, 5000); err == nil {
-		t.Fatal("blank policy must fail")
+	if _, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1}`, true, false, 5000); err == nil {
+		t.Fatal("missing key must fail")
 	}
-	if _, err := parseStoredSchedulingPolicy("{bad", true, GroupTypeHighConcurrency, 5000); err == nil {
+	if _, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1,"clientIpConcurrencyLimit":0,"mode":"x"}`, true, false, 5000); err == nil {
+		t.Fatal("unknown key must fail")
+	}
+	if _, err := parseStoredSchedulingPolicy("{bad", true, false, 5000); err == nil {
 		t.Fatal("malformed policy must fail")
 	}
-	if _, err := parseStoredSchedulingPolicy("[]", true, GroupTypeHighConcurrency, 5000); err == nil {
-		t.Fatal("non-object policy must fail")
-	}
-	full, marshalErr := json.Marshal(defaultHighConcurrencyPolicy(5000))
-	if marshalErr != nil {
-		t.Fatal(marshalErr)
-	}
-	parsedAny, err := parseStoredSchedulingPolicy(string(full), true, GroupTypeHighConcurrency, 5000)
+	parsedAny, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":3}`, true, false, 5000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, _ := parsedAny.(map[string]any)
-	if parsed["mode"] != "balanced_fast" || parsed["maxQueueSize"] != 5000 {
+	parsed := parsedAny.(map[string]any)
+	if parsed["defaultSoftConcurrency"] != 5 || parsed["clientIpConcurrencyLimit"] != 3 {
 		t.Fatalf("parsed policy = %v", parsed)
 	}
 
-	// resolveHighConcurrencyPolicy stored 严格闸门。
-	if _, err := resolveHighConcurrencyPolicy(map[string]any{"extra": 1}, 5000, true); err == nil || !strings.Contains(err.Error(), "未知字段") {
-		t.Fatalf("stored unknown key = %v", err)
+	// Legacy high_concurrency mapping (globalMax aware).
+	if _, err := parseStoredSchedulingPolicy("", false, true, 5000); err == nil {
+		t.Fatal("legacy NULL policy must fail")
 	}
-	partial := map[string]any{"mode": "balanced_fast"}
-	if _, err := resolveHighConcurrencyPolicy(partial, 5000, true); err == nil || !strings.Contains(err.Error(), "缺少字段") {
-		t.Fatalf("stored missing key = %v", err)
+	legacyAny, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":500,"clientIpConcurrencyLimit":7,"mode":"balanced_fast"}`, true, true, 1234)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 非法输入值。
-	badObject := map[string]any{"defaultSoftConcurrency": "x"}
-	if _, err := resolveHighConcurrencyPolicy(badObject, 5000, false); err == nil {
-		t.Fatal("non-number concurrency must fail")
+	legacyPolicy := legacyAny.(map[string]any)
+	if legacyPolicy["defaultSoftConcurrency"] != 500 || legacyPolicy["clientIpConcurrencyLimit"] != 7 {
+		t.Fatalf("legacy mapping = %v", legacyPolicy)
 	}
-	fractional := map[string]any{"maxQueueSize": 1.5}
-	if _, err := resolveHighConcurrencyPolicy(fractional, 5000, false); err == nil {
-		t.Fatal("fractional queue size must fail")
-	}
-	outOfRange := map[string]any{"maxQueueSize": 1_000_001}
-	if _, err := resolveHighConcurrencyPolicy(outOfRange, 5000, false); err == nil {
-		t.Fatal("oversized queue size must fail")
-	}
-	badBool := map[string]any{"fastFirstEnabled": "yes"}
-	if _, err := resolveHighConcurrencyPolicy(badBool, 5000, false); err == nil {
-		t.Fatal("non-bool flag must fail")
-	}
-	badMode := map[string]any{"mode": "turbo"}
-	if _, err := resolveHighConcurrencyPolicy(badMode, 5000, false); err == nil {
-		t.Fatal("bogus mode must fail")
-	}
-	nonStringMode := map[string]any{"mode": 7}
-	if _, err := resolveHighConcurrencyPolicy(nonStringMode, 5000, false); err == nil {
-		t.Fatal("non-string mode must fail")
-	}
-	badOverflow := map[string]any{"clientIpConcurrencyOverflowMode": "bogus"}
-	if _, err := resolveHighConcurrencyPolicy(badOverflow, 5000, false); err == nil {
-		t.Fatal("bogus overflow must fail")
-	}
-	nonStringOverflow := map[string]any{"clientIpConcurrencyOverflowMode": 3}
-	if _, err := resolveHighConcurrencyPolicy(nonStringOverflow, 5000, false); err == nil {
-		t.Fatal("non-string overflow must fail")
-	}
-	// perApiKeyQueueLimit: 非整数 / 越界 / 合法。
-	badPerKey := map[string]any{"maxQueueSize": 100, "perApiKeyQueueLimit": "x"}
-	if _, err := resolveHighConcurrencyPolicy(badPerKey, 5000, false); err == nil {
-		t.Fatal("non-number perApiKeyQueueLimit must fail")
-	}
-	fractionalPerKey := map[string]any{"maxQueueSize": 100, "perApiKeyQueueLimit": 1.5}
-	if _, err := resolveHighConcurrencyPolicy(fractionalPerKey, 5000, false); err == nil {
-		t.Fatal("fractional perApiKeyQueueLimit must fail")
-	}
-	overPerKey := map[string]any{"maxQueueSize": 100, "perApiKeyQueueLimit": 101}
-	if _, err := resolveHighConcurrencyPolicy(overPerKey, 5000, false); err == nil {
-		t.Fatal("oversized perApiKeyQueueLimit must fail")
-	}
-	underPerKey := map[string]any{"maxQueueSize": 100, "perApiKeyQueueLimit": 0}
-	if _, err := resolveHighConcurrencyPolicy(underPerKey, 5000, false); err == nil {
-		t.Fatal("zero perApiKeyQueueLimit must fail")
-	}
-	validPerKey := map[string]any{"maxQueueSize": float64(100), "perApiKeyQueueLimit": float64(80)}
-	policy, err := resolveHighConcurrencyPolicy(validPerKey, 5000, false)
-	if err != nil || policy["perApiKeyQueueLimit"] != 80 {
-		t.Fatalf("valid perApiKeyQueueLimit = %v/%v", policy, err)
-	}
-	// nil 值字段回落默认。
-	nilFields := map[string]any{"maxQueueSize": nil, "fastFirstEnabled": nil}
-	policy, err = resolveHighConcurrencyPolicy(nilFields, 5000, false)
-	if err != nil || policy["maxQueueSize"] != 5000 || policy["fastFirstEnabled"] != true {
-		t.Fatalf("nil fields = %v/%v", policy, err)
-	}
-	// 覆盖 queue 溢出模式。
-	queueOverflow := map[string]any{"clientIpConcurrencyOverflowMode": "queue"}
-	if policy, err = resolveHighConcurrencyPolicy(queueOverflow, 5000, false); err != nil || policy["clientIpConcurrencyOverflowMode"] != "queue" {
-		t.Fatalf("queue overflow = %v/%v", policy, err)
+	if value, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1234,"clientIpConcurrencyLimit":0}`, true, true, 1234); value != nil || err != nil {
+		t.Fatalf("legacy globalMax default must map to disabled: %v/%v", value, err)
 	}
 
-	// boundedPolicyInteger / policyBoolean / policyMode / policyOverflowMode 缺省回落。
-	if got, err := boundedPolicyInteger(map[string]any{}, "maxQueueSize", 1, 100, 42); err != nil || got != 42 {
-		t.Fatalf("bounded fallback = %v/%v", got, err)
+	// validateSchedulingPolicyInput: route shape.
+	valid := map[string]any{"defaultSoftConcurrency": float64(-1), "clientIpConcurrencyLimit": float64(0)}
+	if !validateSchedulingPolicyInput(valid) {
+		t.Fatal("valid policy rejected")
 	}
-	if got, err := policyBoolean(map[string]any{}, "fastFirstEnabled", true); err != nil || !got {
-		t.Fatalf("boolean fallback = %v/%v", got, err)
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(-1)}) {
+		t.Fatal("missing key must be invalid")
 	}
-	if got, err := policyMode(map[string]any{}, map[string]any{"mode": "balanced_fast"}); err != nil || got != "balanced_fast" {
-		t.Fatalf("mode fallback = %v/%v", got, err)
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(0), "clientIpConcurrencyLimit": float64(0)}) {
+		t.Fatal("zero threshold must be invalid")
 	}
-	if got, err := policyOverflowMode(map[string]any{}, map[string]any{"clientIpConcurrencyOverflowMode": "reject"}); err != nil || got != "reject" {
-		t.Fatalf("overflow fallback = %v/%v", got, err)
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1_000_001), "clientIpConcurrencyLimit": float64(0)}) {
+		t.Fatal("oversized threshold must be invalid")
 	}
-
-	// validateSchedulingPolicyInput。
-	if validateSchedulingPolicyInput(map[string]any{"mode": "x"}) {
-		t.Fatal("unknown key must be invalid")
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1), "clientIpConcurrencyLimit": float64(1_000_001)}) {
+		t.Fatal("oversized ip limit must be invalid")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": nil}) {
-		t.Fatal("null value must be invalid")
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1.5), "clientIpConcurrencyLimit": float64(0)}) {
+		t.Fatal("fractional threshold must be invalid")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": "x"}) {
-		t.Fatal("non-number must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": 0}) {
-		t.Fatal("below min must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": 1_000_001}) {
-		t.Fatal("above max must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"maxQueueWaitMs": 3_600_001}) {
-		t.Fatal("above maxQueueWaitMs max must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": 1.5}) {
-		t.Fatal("fractional must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"clientIpConcurrencyLimit": float64(0), "imageLaneMaxConcurrency": float64(0)}) != true {
-		t.Fatal("zero ip/image limits must be valid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"clientIpConcurrencyOverflowMode": nil}) {
-		t.Fatal("null overflow must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"clientIpConcurrencyOverflowMode": "queue"}) != true {
-		t.Fatal("queue overflow must be valid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"clientIpConcurrencyOverflowMode": "bogus"}) {
-		t.Fatal("bogus overflow must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{}) != true {
-		t.Fatal("empty policy must be valid")
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1), "clientIpConcurrencyLimit": float64(0), "maxQueueWaitMs": float64(1)}) {
+		t.Fatal("retired key must be invalid")
 	}
 
-	// policyInputObject / joinCN。
-	if object, err := policyInputObject(nil); err != nil || len(object) != 0 {
-		t.Fatalf("policyInputObject nil = %v/%v", object, err)
-	}
-	if object, err := policyInputObject(map[string]any{"a": 1}); err != nil || object["a"] != 1 {
-		t.Fatalf("policyInputObject map = %v/%v", object, err)
-	}
-	if _, err := policyInputObject([]any{}); err == nil {
-		t.Fatal("policyInputObject slice must fail")
-	}
 	if joinCN([]string{"a", "b"}) != "a、b" || joinCN(nil) != "" {
 		t.Fatal("joinCN drift")
 	}

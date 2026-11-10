@@ -113,9 +113,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -247,7 +245,6 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"oauthAccessTokenRefreshBatchSize":           "10",
 		"oauthAccessTokenRefreshRetryBackoffSeconds": "60",
 		"modelCheckRetentionDays":                    "30",
-		"runtimeLogIndexRetentionDays":               "7",
 		"publicApiLogRetentionDays":                  "30",
 		"usageRecordRetentionDays":                   "30",
 		"usageStatsTimezone":                         `"UTC"`,
@@ -575,41 +572,6 @@ func TestW2APreflightNarrowGuards(t *testing.T) {
 	preflight := &chainImagePreflight{}
 	if preflight.rejectOversizedAutoDowngrade(gatewaypreauth.ImagePermissionPreflightInput{}) {
 		t.Fatalf("nil request must not be rejected")
-	}
-
-	// 247-249：nil 接收器的 body 准入门直通。
-	var gate *chainSpeedFirstBodyAdmissionGate
-	outcome, err := gate.AdmitBody(context.Background(), nil, nil, gatewayproto.LaneText)
-	if err != nil || outcome.Handled || outcome.Release != nil {
-		t.Fatalf("nil gate must pass through, got %+v,%v", outcome, err)
-	}
-}
-
-func TestW2ASpeedFirstAdmissionCtxCancelledAborts(t *testing.T) {
-	// 280-286：适用面成立但 ctx 已取消 → Acquire 返回 aborted → 记录
-	// aborted 阶段并 Handled。
-	gatewayhotquality.ClearSpeedFirstBodyAdmissionsForTest()
-	defer gatewayhotquality.ClearSpeedFirstBodyAdmissionsForTest()
-	obs := &chainCapturedObservability{}
-	gate := newChainSpeedFirstGateForTest(obs)
-	req, res, _ := speedFirstRequest(t, speedFirstRuntime(nil, nil, nil, nil, 2))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	outcome, err := gate.AdmitBody(ctx, req, res, gatewayproto.LaneText)
-	if err != nil {
-		t.Fatalf("admit: %v", err)
-	}
-	if !outcome.Handled || outcome.Release != nil {
-		t.Fatalf("cancelled ctx must be handled, got %+v", outcome)
-	}
-	found := false
-	for _, stage := range obs.snapshotStages() {
-		if stage.stage == "body.speed_first_admission" && stage.outcome == "aborted" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("missing aborted stage: %+v", obs.snapshotStages())
 	}
 }
 
@@ -1180,7 +1142,7 @@ func w2aComposeSettingValue(key string) (string, error) {
 func TestW2AComposeQuotaSharedNamespaceError(t *testing.T) {
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RedisURL:                 "redis://127.0.0.1:1",
+		RedisURL:                      "redis://127.0.0.1:1",
 		RedisNamespace:                "",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
@@ -1188,9 +1150,13 @@ func TestW2AComposeQuotaSharedNamespaceError(t *testing.T) {
 	services, err := composeChainRuntimeServices(&composition{db: db, statsDB: statsDB}, cfg, w2aComposeSettingValue)
 	if err == nil {
 		services.Close()
-		t.Fatalf("empty redis namespace must fail quota shared cache construction")
+		t.Fatalf("unreachable redis URL must fail chain runtime composition")
 	}
-	if !strings.Contains(err.Error(), "namespace") {
+	// 原「空 namespace 必失败 quota 共享缓存构造」断言随 namespace 域派生
+	// 契约退役：rediscfg.DomainNamespace 对空基名回落域名（如 quota），
+	// 派生 namespace 恒合法，quota 面不再有 namespace 失败臂；不可达 redis
+	// 的第一落点收敛为 hot quality 运行时构造期拨号（GetRedisClient）。
+	if !strings.Contains(err.Error(), "create gateway hot quality runtime") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1219,7 +1185,7 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 	}
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RedisURL:                 stateURL,
+		RedisURL:                      stateURL,
 		RedisNamespace:                "juhe-ai:{dev}:w2a-oversized:" + strings.Repeat("w2a", 30),
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
@@ -1241,7 +1207,7 @@ func TestW2AComposeRuntimeInvalidationClosures(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisURL := "redis://" + server.Addr()
 	cfg := runtimeConfig{
-		RedisURL:                 redisURL,
+		RedisURL:                      redisURL,
 		RedisNamespace:                "juhe-ai:{dev}:w2a-compose",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,

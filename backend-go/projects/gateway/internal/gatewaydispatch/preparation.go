@@ -32,6 +32,27 @@ type PreparationResult struct {
 	// ready variant
 	Accounts                   []AccountCandidate
 	ReleaseClientIPConcurrency func()
+	// SessionAffinityOwnerAccountID 是准备期 claim 得到的账户亲和 owner
+	// （同层 latch 的 expectedOwner）。空串 = 无会话键/claim 失败；最终协议
+	// 成功结算据此判断是否重绑。
+	SessionAffinityOwnerAccountID string
+	// SessionAffinityOwnerBusy 表示 claim 得到的 owner 在准备期已处于硬并发
+	// 繁忙（容量排序把它降位，请求可能直接成功在其他同层账户上而不经过 owner
+	// 的容量失败）。最终成功结算必须把它与派发期容量拒绝合并，否则准备期跳过
+	// owner 的成功请求不会重绑，下一次 owner 空闲时仍会回切。
+	SessionAffinityOwnerBusy bool
+	// SessionAffinityOwnerSoftBusy 表示 owner 达到普通分组 defaultSoftConcurrency
+	// 阈值。它不产生容量失败，但同层后继成功时必须按 soft_threshold 重绑，
+	// 否则每次请求都会重新落回 owner，阈值无法真正分流。
+	SessionAffinityOwnerSoftBusy bool
+	// SessionAffinitySlotFallback 表示准备期名额规划已把会话首选从原 owner
+	// 回退到其他空闲名额账户；最终成功按 slot_fallback 重绑（允许跨层）。
+	SessionAffinitySlotFallback bool
+	// SessionAffinityWaitPlanned / SessionAffinityWaitRemainingMs 是名额等待
+	// 与 owner 并发等待共享的 1-2s 预算：准备期消耗等待后，dispatch 只使用
+	// 剩余额度，避免两段等待叠加。
+	SessionAffinityWaitPlanned     bool
+	SessionAffinityWaitRemainingMs int64
 	// SchedulingExclusions 是通用调度排除集（设计 5.1）：来源避让（turn /
 	// client-source）与未来来源级排除统一在准备层算出最终排除集合；nil = 无
 	// 排除。画像语义（阈值、TTL、状态键）留在准备层之前的来源服务。
@@ -49,14 +70,9 @@ type PreparationResult struct {
 	// docs/functions/网关全链路轨迹日志设计.md 能力二）。
 	QuotaDeniedAccountIDs  []string
 	CapacityBusyAccountIDs []string
-	// 期二（缓存率设计 5.6/7）：最终生效那次排序的决策解释——非高并发 =
-	// applyHotQualityOrder 的 OrderAsync；高并发 = 等待后 ReorderOnly。
-	// 未执行质量排序（媒体车道/降级端口/排序失败）时为 nil；重排序失败时
-	// 保留上一次质量排序的解释并以 HotQualityReorderDegraded 标记。
+	// 期二（缓存率设计 5.6）：最终生效那次 OrderAsync 排序的决策解释；
+	// 未执行质量排序（媒体车道/降级端口/排序失败）时为 nil。
 	HotQualityOrderExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
-	// HotQualityReorderDegraded：高并发最终重排序失败（端口报错或未产出解
-	// 释），派发按等待后亲和序继续（不阻塞），决策日志据此标记降级。
-	HotQualityReorderDegraded bool
 	// fallback variant
 	Reason  string
 	Context any
@@ -157,11 +173,9 @@ type DispatchDecisionSummary struct {
 	SpeedThresholdMs int64    `json:"speedThresholdMs,omitempty"`
 	CacheRateStale   bool     `json:"cacheRateStale,omitempty"`
 	CacheRateEnabled bool     `json:"cacheRateEnabled,omitempty"`
-	// CandidateOrder 是候选级排序明细（按最终排序序）；HotQualityReorder
-	// Degraded 标记高并发最终重排序失败（派发按等待后亲和序继续）。
-	CandidateOrder            []DispatchDecisionCandidateOrderDetail `json:"candidateOrder,omitempty"`
-	CandidateOrderTruncated   bool                                   `json:"candidateOrderTruncated,omitempty"`
-	HotQualityReorderDegraded bool                                   `json:"hotQualityReorderDegraded,omitempty"`
+	// CandidateOrder 是候选级排序明细（按最终排序序）。
+	CandidateOrder          []DispatchDecisionCandidateOrderDetail `json:"candidateOrder,omitempty"`
+	CandidateOrderTruncated bool                                   `json:"candidateOrderTruncated,omitempty"`
 }
 
 // DispatchDecisionSummaryInput 是汇总组装输入：全部为既有决策数据的只读
@@ -188,8 +202,6 @@ type DispatchDecisionSummaryInput struct {
 	// HotQualityExplanation 是最终生效那次热质量排序的决策解释（缓存率设
 	// 计 5.6；nil = 本窗口未执行质量排序，缓存率排序块整体缺省）。
 	HotQualityExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
-	// HotQualityReorderDegraded 标记高并发最终重排序失败（降级继续派发）。
-	HotQualityReorderDegraded bool
 }
 
 // BuildDispatchDecisionSummary 把候选窗口既有决策数据汇成可序列化摘要。
@@ -248,7 +260,6 @@ func BuildDispatchDecisionSummary(input DispatchDecisionSummaryInput) DispatchDe
 		}
 		summary.CandidateOrder, summary.CandidateOrderTruncated = cappedSlice(details)
 	}
-	summary.HotQualityReorderDegraded = input.HotQualityReorderDegraded
 	return summary
 }
 
@@ -688,12 +699,18 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 			proposedAccountID = readyAccounts[0].ID
 		}
 		claimedAccountID := ""
+		ownerEstablished := true
 		if proposedAccountID != "" {
-			claimedAccountID, _ = e.Affinity.ClaimAsync(ctx, input.SessionAffinityKey, proposedAccountID, AffinityScope{
+			claimScope := AffinityScope{
 				SystemAccountID: input.SystemAccountID,
 				APIKeyID:        input.APIKeyID,
 				GroupID:         input.GroupID,
-			})
+			}
+			if claimState, ok := e.Affinity.(SessionAffinityClaimStatePort); ok {
+				claimedAccountID, ownerEstablished, _ = claimState.ClaimWithStateAsync(ctx, input.SessionAffinityKey, proposedAccountID, claimScope)
+			} else {
+				claimedAccountID, _ = e.Affinity.ClaimAsync(ctx, input.SessionAffinityKey, proposedAccountID, claimScope)
+			}
 		}
 		containsClaimed := false
 		for _, account := range readyAccounts {
@@ -702,7 +719,39 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 				break
 			}
 		}
-		if claimedAccountID != "" && claimedAccountID != proposedAccountID && containsClaimed {
+		// 硬满 owner 不重排：容量排序已把它降位，claim 重排若再把它提回首位会
+		// 让每个请求先撞满账户；同层 latch 由最终成功重绑收敛。
+		claimedBusy := false
+		if claimedAccountID != "" {
+			for _, accountID := range readyPreparation.CapacityBusyAccountIDs {
+				if accountID == claimedAccountID {
+					claimedBusy = true
+					break
+				}
+			}
+			if !claimedBusy {
+				for _, account := range readyAccounts {
+					if account.ID != claimedAccountID || account.CurrentConcurrency == nil {
+						continue
+					}
+					if *account.CurrentConcurrency >= accountHardConcurrencyLimit(account) {
+						claimedBusy = true
+					}
+					break
+				}
+			}
+		}
+		claimedSoftBusy := false
+		if !claimedBusy && claimedAccountID != "" && input.GroupAccess.SchedulingPolicy != nil {
+			for _, account := range readyAccounts {
+				if account.ID != claimedAccountID || account.CurrentConcurrency == nil {
+					continue
+				}
+				claimedSoftBusy = input.GroupAccess.SchedulingPolicy.SoftBusy(*account.CurrentConcurrency, accountHardConcurrencyLimit(account))
+				break
+			}
+		}
+		if claimedAccountID != "" && claimedAccountID != proposedAccountID && containsClaimed && !claimedBusy {
 			readyAccounts, err = e.Affinity.OrderAsync(ctx, readyAccounts, input.SessionAffinityKey, dispatchOrderingOptions)
 			if err != nil {
 				readyPreparation.ReleaseClientIPConcurrency()
@@ -713,6 +762,9 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 			}
 			_ = accountsBeforeSessionAffinityClaim
 		}
+		readyPreparation.SessionAffinityOwnerAccountID = claimedAccountID
+		readyPreparation.SessionAffinityOwnerBusy = claimedBusy
+		readyPreparation.SessionAffinityOwnerSoftBusy = claimedSoftBusy
 		if input.SessionAffinityKey != "" && proposedAccountID != "" {
 			winnerAvailable := false
 			if claimedAccountID != "" {
@@ -729,6 +781,33 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 				"claimedAccountId":  claimedAccountID,
 				"winnerAvailable":   winnerAvailable,
 				"applied":           applied,
+				"claimedBusy":       claimedBusy,
+				"claimedSoftBusy":   claimedSoftBusy,
+			})
+		}
+		// 会话名额（P1）：owner 名额满时先等待，再回退到同层/其他层空闲名额。
+		// preferred 提到候选首位：活跃会话优先原账户，新会话按名额分布。
+		slotPlan, preferredIndex, waitRemainingMs, slotPlanned := p.planSessionAffinitySlot(ctx, input, claimedAccountID, ownerEstablished, readyAccounts)
+		// 名额首选前移的独立守卫：claim 重排走 OrderAsync（其比较器已对
+		// softBusy 降位），而 moveAccountToFront 是无条件提首，所以这里必须
+		// 同时挡硬忙和软阈值让位 owner。硬忙会先撞满 owner；软忙会让软阈值
+		// 让位失效、soft_threshold 重绑无从触发。名额回退到其他账户
+		// （preferred != owner）仍可前移。
+		if preferredIndex > 0 && !((claimedBusy || claimedSoftBusy) && slotPlan.PreferredAccountID == claimedAccountID) {
+			readyAccounts = moveAccountToFront(readyAccounts, preferredIndex)
+		}
+		if slotPlanned {
+			readyPreparation.SessionAffinityWaitPlanned = true
+			readyPreparation.SessionAffinityWaitRemainingMs = waitRemainingMs
+			if slotPlan.Fallback {
+				readyPreparation.SessionAffinitySlotFallback = true
+			}
+			input.AuditCapture.AddGatewayMetadata("session_affinity_slot", map[string]any{
+				"ownerAccountId":     claimedAccountID,
+				"preferredAccountId": slotPlan.PreferredAccountID,
+				"slotActive":         slotPlan.SlotActive,
+				"fallback":           slotPlan.Fallback,
+				"waitedMs":           slotPlan.WaitedMs,
 			})
 		}
 	}
@@ -775,11 +854,9 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 			proxyHealthOrder.AvoidedAccountIDs...),
 			clientIpAccountAvoidance.AvoidedAccountIDs...),
 			clientSourceAvoidance.AvoidedAccountIDs...),
-		// 期二（缓存率设计 5.6）：最终生效那次排序的解释（非高并发 =
-		// applyHotQualityOrder；高并发 = 等待后 ReorderOnly）与重排序降级
-		// 标记——全部来自准备结果，不用零值占位。
-		HotQualityExplanation:     readyPreparation.HotQualityOrderExplanation,
-		HotQualityReorderDegraded: readyPreparation.HotQualityReorderDegraded,
+		// 期二（缓存率设计 5.6）：最终生效那次 OrderAsync 排序的解释，
+		// 来自准备结果，不用零值占位。
+		HotQualityExplanation: readyPreparation.HotQualityOrderExplanation,
 	})
 	input.AuditCapture.AddGatewayMetadata("gateway_dispatch_candidates", decisionSummary.AuditMetadata())
 	notifyDispatchDecisionObserver(DispatchDecisionEvent{
@@ -852,13 +929,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	accounts := []AccountCandidate{}
 	var hotQualityExplorationReservation *HotQualityReservation
 	var settleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
-	// 期二（缓存率设计 5.6/7）：最终生效排序的解释与高并发重排序降级标记，
-	// 随 ready 出口/终态决策摘要带出。
+	// 期二（缓存率设计 5.6）：最终生效排序的解释，随 ready 出口/终态决策
+	// 摘要带出。
 	var hotQualityExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
-	var hotQualityReorderDegraded bool
-	// hotQualityReorderPending：高并发等待块执行了最终 Affinity.OrderAsync
-	//（可能覆盖 905 那次热质量顺序）后置位——return 前据此重应用层内排序。
-	var hotQualityReorderPending bool
 	var err error
 
 	// 超级分组目标跳过窗口级配额批查——此处用窗口组 GroupAccess 对成员展开
@@ -882,15 +955,6 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 				continue
 			}
 			accounts = append(accounts, account)
-		}
-	}
-
-	// capacity.account_snapshot: high-concurrency groups refresh the
-	// concurrency snapshot.
-	if input.dispatchOrderingOptions.GroupType == gatewayruntimecacheGroupTypeHighConcurrency {
-		accounts, err = RefreshGatewayAccountCurrentConcurrencyAsync(ctx, e.Concurrency, accounts)
-		if err != nil {
-			return PreparationResult{}, err
 		}
 	}
 
@@ -937,25 +1001,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 	}
 
-	busyOptions := HighConcurrencyBusyOptions{AffinityOrderingOptions: input.dispatchOrderingOptions, RequestLane: req.RequestLane}
-
-	highConcurrencyBusy, err := e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
-	if err != nil {
-		return PreparationResult{}, err
-	}
-	if highConcurrencyBusy {
-		refreshed, err := RefreshGatewayAccountCurrentConcurrencyAsync(ctx, e.Concurrency, accounts)
-		if err != nil {
-			return PreparationResult{}, err
-		}
-		accounts, err = e.Affinity.OrderAsync(ctx, refreshed, req.SessionAffinityKey, input.dispatchOrderingOptions)
-		if err != nil {
-			return PreparationResult{}, err
-		}
-	}
-
 	// latencyDegradedTailPartition 与原闭包内 speed_first 降级臂同语义：
-	// 降级账户整体后置（层间分段先于层内比较），闭包与高并发重排序共用。
+	// 降级账户整体后置（层间分段先于层内比较），闭包与热质量排序共用。
 	latencyDegradedTailPartition := func(candidates []AccountCandidate) []AccountCandidate {
 		if input.hotQualityMode != HotQualityModeSpeedFirst || len(input.latencyDegradedAccountIDs) == 0 {
 			return candidates
@@ -971,7 +1018,6 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 		return append(append([]AccountCandidate{}, healthy...), degraded...)
 	}
-
 	applyHotQualityOrder := func() error {
 		// 非对话调度域豁免文本调度优化机制（对话与非对话媒体调度分离设计
 		// §3.2 + 音频视频模型接入与统一媒体网关设计 §3 车道行为规则 +
@@ -982,6 +1028,13 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		if isNonConversationDispatchLane(req.RequestLane) {
 			return nil
 		}
+		// 硬忙候选不进入热质量比较：否则层内质量重排会把硬忙账户提回健康
+		// peer 之前；排序完成后整体追加到尾部，保持「hardBusy 永远最后」。
+		var hardBusyAccounts []AccountCandidate
+		accounts, hardBusyAccounts = splitHardBusyForHotQuality(accounts)
+		// 软阈值是层内第一顺位键：热质量排序必须感知 softBusy，否则层内
+		// 质量重排会把软忙账户重新提到非软忙 peer 之前（契约 §3.1）。
+		softBusyAccountIDs := softBusyAccountIDsFor(accounts, req.GroupAccess.SchedulingPolicy)
 		hotQualityOrder, err := e.HotQuality.OrderAsync(ctx, HotQualityOrderInput{
 			Accounts:                     accounts,
 			ModelPriority:                req.ModelPriority,
@@ -993,6 +1046,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			Model:                        requestModelOrEmpty(req.Req),
 			RequestID:                    req.UsageContext.TraceID,
 			LatencyDegradedAccountIDs:    input.latencyDegradedAccountIDs,
+			SoftBusyAccountIDs:           softBusyAccountIDs,
 			EligibleFirstPrimaryDispatch: input.eligibleFirstPrimaryDispatch,
 		})
 		if err != nil {
@@ -1000,10 +1054,15 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 		accounts = hotQualityOrder.Accounts
 		accounts = latencyDegradedTailPartition(accounts)
+		if len(hardBusyAccounts) > 0 {
+			combined := make([]AccountCandidate, 0, len(accounts)+len(hardBusyAccounts))
+			combined = append(combined, accounts...)
+			combined = append(combined, hardBusyAccounts...)
+			accounts = combined
+		}
 		hotQualityExplorationReservation = hotQualityOrder.ExplorationReservation
 		settleHotQualityExplorationAfterDispatch = hotQualityOrder.SettleExplorationAfterDispatch
-		// 期二（设计 5.6）：带出该次排序的决策解释，作为非高并发路径的最终
-		// 生效排序事实（高并发路径会被等待后的重排序覆盖）。
+		// 期二（设计 5.6）：带出该次排序的决策解释，作为最终生效排序事实。
 		hotQualityExplanation = hotQualityOrder.Explanation
 		if hotQualityOrder.DispatchIntent == "same_tier_exploration" || len(hotQualityOrder.QualityReorderedTierKeys) > 0 {
 			req.AuditCapture.AddGatewayMetadata("hot_quality_candidate_selection", map[string]any{
@@ -1017,58 +1076,33 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		return nil
 	}
 
-	if input.dispatchOrderingOptions.GroupType == gatewayruntimecacheGroupTypeHighConcurrency {
-		if err := applyHotQualityOrder(); err != nil {
-			return PreparationResult{}, err
-		}
-	}
-
-	highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
+	capacityBusy, err := AreGatewayAccountsCapacityBusyForLaneAsync(ctx, e.Concurrency, accounts, gatewayprotoLane(req.RequestLane), req.GroupAccess.SchedulingPolicy)
 	if err != nil {
 		return PreparationResult{}, err
 	}
-	if highConcurrencyBusy {
-		fallbackAttempted, fallbackContext, err := p.requestRouteFallback(ctx, req, accounts, "high_concurrency_group_busy")
+	if capacityBusy {
+		fallbackAttempted, fallbackContext, err := p.requestRouteFallback(ctx, req, accounts, "group_capacity_busy")
 		if err != nil {
 			return PreparationResult{}, err
 		}
 		if fallbackAttempted {
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "group_capacity_busy", DispatchDecisionSummaryInput{
 				HotQualityExplanation: hotQualityExplanation,
 			})
-			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "high_concurrency_group_busy", Context: fallbackContext}, nil
+			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "group_capacity_busy", Context: fallbackContext}, nil
 		}
 	}
-
-	if input.dispatchOrderingOptions.GroupType != gatewayruntimecacheGroupTypeHighConcurrency {
-		capacityBusy, err := AreGatewayAccountsCapacityBusyForLaneAsync(ctx, e.Concurrency, accounts, gatewayprotoLane(req.RequestLane), req.GroupAccess.SchedulingPolicy)
-		if err != nil {
-			return PreparationResult{}, err
-		}
-		if capacityBusy {
-			fallbackAttempted, fallbackContext, err := p.requestRouteFallback(ctx, req, accounts, "group_capacity_busy")
-			if err != nil {
-				return PreparationResult{}, err
-			}
-			if fallbackAttempted {
-				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "group_capacity_busy", DispatchDecisionSummaryInput{
-					HotQualityExplanation: hotQualityExplanation,
-				})
-				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "group_capacity_busy", Context: fallbackContext}, nil
-			}
-		}
-		// W1b：lane 容量排序同时带出排序前快照中的 busy 候选 ID（busy 候选
-		// 仍留在窗口内，仅排序降位）。
-		accounts, capacityBusyAccountIDs, err = OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync(ctx, e.Concurrency, accounts, gatewayprotoLane(req.RequestLane), req.GroupAccess.SchedulingPolicy, req.ModelPriority)
-		if err != nil {
-			return PreparationResult{}, err
-		}
-		if err := applyHotQualityOrder(); err != nil {
-			return PreparationResult{}, err
-		}
-		// Keep busy candidates in the dispatch context (Node parity comment:
-		// the upstream dispatcher owns bounded capacity waiting).
+	// W1b：lane 容量排序同时带出排序前快照中的 busy 候选 ID（busy 候选
+	// 仍留在窗口内，仅排序降位）。
+	accounts, capacityBusyAccountIDs, err = OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync(ctx, e.Concurrency, accounts, gatewayprotoLane(req.RequestLane), req.GroupAccess.SchedulingPolicy, req.ModelPriority)
+	if err != nil {
+		return PreparationResult{}, err
 	}
+	if err := applyHotQualityOrder(); err != nil {
+		return PreparationResult{}, err
+	}
+	// Keep busy candidates in the dispatch context (the upstream dispatcher
+	// owns bounded capacity waiting).
 
 	var releaseClientIPConcurrency func() = noopRelease
 	var releaseOnce sync.Once
@@ -1078,12 +1112,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		})
 	}
 
-	fail := func(err error) (PreparationResult, error) {
-		releaseClientIPConcurrencyOnce()
-		return PreparationResult{}, err
-	}
-
-	if input.dispatchOrderingOptions.GroupType == gatewayruntimecacheGroupTypeHighConcurrency {
+	// 单 IP 并发闸口：普通分组按 clientIpConcurrencyLimit 生效，0 时服务
+	// 直接返回 disabled/acquired，零额外开销。未装配（组合测试/降级）时跳过。
+	if e.ClientIPConcurrency != nil {
 		clientIpConcurrency, err := e.ClientIPConcurrency.Acquire(ctx, ClientIPConcurrencyInput{
 			SystemAccountID: req.SystemAccountID,
 			GroupID:         req.GroupID,
@@ -1099,7 +1130,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			releaseClientIPConcurrency = clientIpConcurrency.Release
 		}
 		if clientIpConcurrency.Enabled {
-			req.AuditCapture.AddGatewayMetadata("high_concurrency_client_ip", clientIpConcurrencyAuditMetadata(clientIpConcurrency))
+			req.AuditCapture.AddGatewayMetadata("client_ip_concurrency", clientIpConcurrencyAuditMetadata(clientIpConcurrency))
 		}
 		if !clientIpConcurrency.Acquired {
 			if signalAborted(req.Signal) || resWritableEnded(ctx) {
@@ -1132,155 +1163,6 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 	}
 
-	// 重排队上界以「无进展等待」计：队列判定有容量但没有真正排到队
-	//（WaitedMs=0，通常是队列为空时的立即可用窗口被竞争请求抢走）连续
-	// 达到上限才失败；一旦经历过真实排队（WaitedMs>0），按剩余
-	// maxQueueWaitMs 预算继续等待，不能在唤醒竞争下落成提前 429。
-	//
-	// 循环顶部的 busy 复查同时覆盖「首次检查通过、最终派发前被并发请求
-	// 抢先占槽」窗口：此时尚未发生任何排队，必须进入短队列等待而不是直接
-	// 返回 429（429 只属于等待超时/队列满/取消）。
-	const maxHighConcurrencyQueueNoProgressWaits = 3
-	queueNoProgressWaits := 0
-	for {
-		highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
-		if err != nil {
-			return fail(err)
-		}
-		if !highConcurrencyBusy {
-			// 派发前最终复查：首次检查与最终派发之间仍可能被并发请求抢先
-			// 占槽，此时尚未排过队，必须进入短队列而不是直接 429。
-			highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
-			if err != nil {
-				return fail(err)
-			}
-		}
-		if !highConcurrencyBusy || queueNoProgressWaits >= maxHighConcurrencyQueueNoProgressWaits {
-			break
-		}
-		queueWaitStartedAtMs := gatewayupstream.NowMs()
-		req.ServerRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
-		queueWait, waitErr := func() (QueueWaitResult, error) {
-			defer req.ServerRetryBudget.PauseNoAvailableWait(&queueWaitStartedAtMs)
-			serverRetryRemainingMs := req.ServerRetryBudget.RemainingMs(&queueWaitStartedAtMs)
-			availableDecisionMs, err := req.GatewayRequestWallBudget.AvailableDecisionMs(gatewayrouting.GatewayRequestWallBudgetDecision{NowMs: &queueWaitStartedAtMs})
-			if err != nil {
-				return QueueWaitResult{}, err
-			}
-			maxWaitMs := serverRetryRemainingMs
-			if req.RequestLane != "image" && availableDecisionMs < maxWaitMs {
-				maxWaitMs = availableDecisionMs
-			}
-			// RPM 重置没有并发槽释放事件：预派发等待封顶到最近重置点，避免
-			// 空等整个请求预算后才交给引擎侧（设计 §5.2）。读失败降级为不封顶。
-			if resetWaitMs, resetErr := e.EarliestAccountRPMResetWaitMs(ctx, accounts); resetErr == nil && resetWaitMs > 0 && resetWaitMs < maxWaitMs {
-				maxWaitMs = resetWaitMs
-			}
-			return e.HighConcurrencyQueue.WaitForCapacity(ctx, HighConcurrencyWaitInput{
-				SystemAccountID:          req.SystemAccountID,
-				GroupID:                  req.GroupID,
-				APIKeyID:                 req.APIKeyID,
-				AccountIDs:               gatewaySessionConcurrencyIDs(accounts),
-				AccountConcurrencyLimits: GatewayAccountConcurrencyLimitsByAccountID(accounts),
-				AccountRPMLimits:         GatewayAccountRPMLimitsByAccountID(accounts),
-				Lane:                     req.RequestLane,
-				Policy:                   req.GroupAccess.SchedulingPolicy,
-				MaxWaitMs:                maxWaitMs,
-			})
-		}()
-		if waitErr != nil {
-			return fail(waitErr)
-		}
-		if !queueWait.Ready {
-			break
-		}
-		if queueWait.WaitedMs <= 0 {
-			queueNoProgressWaits++
-		} else {
-			queueNoProgressWaits = 0
-		}
-		req.AuditCapture.AddGatewayMetadata("high_concurrency_group_queue", map[string]any{
-			"ready":     queueWait.Ready,
-			"reason":    queueWait.Reason,
-			"waitedMs":  queueWait.WaitedMs,
-			"queueSize": queueWait.QueueSize,
-			"lane":      req.RequestLane,
-		})
-		if signalAborted(req.Signal) || resWritableEnded(ctx) {
-			releaseClientIPConcurrencyOnce()
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
-				HotQualityExplanation: hotQualityExplanation,
-			})
-			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
-		}
-		refreshed, err := RefreshGatewayAccountCurrentConcurrencyAsync(ctx, e.Concurrency, accounts)
-		if err != nil {
-			return fail(err)
-		}
-		accounts, err = e.Affinity.OrderAsync(ctx, refreshed, req.SessionAffinityKey, input.dispatchOrderingOptions)
-		if err != nil {
-			return fail(err)
-		}
-		// 该次亲和排序可能覆盖 905 那次热质量顺序（缓存率设计第 7 节）：
-		// busy 复查通过后、return 前重应用层内排序。
-		hotQualityReorderPending = true
-	}
-	if highConcurrencyBusy {
-		fallbackAttempted, fallbackContext, err := p.requestRouteFallback(ctx, req, accounts, "high_concurrency_group_busy")
-		if err != nil {
-			return fail(err)
-		}
-		if fallbackAttempted {
-			releaseClientIPConcurrencyOnce()
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{
-				HotQualityExplanation: hotQualityExplanation,
-			})
-			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "high_concurrency_group_busy", Context: fallbackContext}, nil
-		}
-		releaseClientIPConcurrencyOnce()
-		if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
-			StatusCode:         429,
-			Message:            "当前分组繁忙，请稍后重试或增加可用账户。",
-			ErrorType:          "rate_limit_exceeded",
-			ErrorCode:          "rate_limit_exceeded",
-			ErrorPhase:         "dispatch",
-			FailureAttribution: "gateway_capacity",
-		}); err != nil {
-			return PreparationResult{}, err
-		}
-		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
-			HotQualityExplanation: hotQualityExplanation,
-		})
-		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
-	}
-
-	// 期二（缓存率设计 5.6/7 高并发分组行）：等待块里的最终 Affinity.
-	// OrderAsync 可能覆盖早先的热质量顺序——最终派发前重应用层内排序。
-	// 失败不阻塞派发：保持等待后亲和序继续，决策摘要标记降级；非对话调度域
-	// （媒体创建 + realtime）与 905 闭包同语义豁免（质量排序从未生效，无重排
-	// 可言）。
-	if hotQualityReorderPending && !isNonConversationDispatchLane(req.RequestLane) {
-		reorder, reorderErr := e.HotQuality.ReorderOnly(ctx, HotQualityOrderInput{
-			Accounts:                     accounts,
-			ModelPriority:                req.ModelPriority,
-			Mode:                         input.hotQualityMode,
-			SystemAccountID:              req.SystemAccountID,
-			RouteStrategyID:              req.RouteStrategyID,
-			GroupID:                      req.GroupID,
-			RequestLane:                  req.RequestLane,
-			Model:                        requestModelOrEmpty(req.Req),
-			RequestID:                    req.UsageContext.TraceID,
-			LatencyDegradedAccountIDs:    input.latencyDegradedAccountIDs,
-			EligibleFirstPrimaryDispatch: input.eligibleFirstPrimaryDispatch,
-		})
-		if reorderErr != nil || reorder.Explanation == nil {
-			hotQualityReorderDegraded = true
-		} else {
-			accounts = latencyDegradedTailPartition(reorder.Accounts)
-			hotQualityExplanation = reorder.Explanation
-		}
-	}
-
 	return PreparationResult{
 		Outcome:                                  PreparationOutcomeReady,
 		Accounts:                                 accounts,
@@ -1290,7 +1172,6 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		QuotaDeniedAccountIDs:                    quotaDeniedAccountIDs,
 		CapacityBusyAccountIDs:                   capacityBusyAccountIDs,
 		HotQualityOrderExplanation:               hotQualityExplanation,
-		HotQualityReorderDegraded:                hotQualityReorderDegraded,
 	}, nil
 }
 
@@ -1321,9 +1202,6 @@ func clientIpConcurrencyAuditMetadata(decision ClientIPConcurrencyDecision) map[
 }
 
 func clientIpConcurrencyFailureMessage(decision ClientIPConcurrencyDecision) string {
-	if decision.Enabled && !decision.Acquired && decision.Reason == "timeout" {
-		return "当前 IP 并发排队等待超时，请稍后重试"
-	}
 	return "当前 IP 并发已达到分组限制，请稍后重试"
 }
 
@@ -1351,9 +1229,6 @@ func requestModelOrEmpty(req *gatewaypreauth.GatewayRequest) string {
 func isNonConversationDispatchLane(lane string) bool {
 	return gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(lane)) != gatewayproto.DispatchDomainConversation
 }
-
-// gatewayruntimecacheGroupTypeHighConcurrency mirrors groupType value.
-const gatewayruntimecacheGroupTypeHighConcurrency = "high_concurrency"
 
 // gatewayquotaAuthorizationQuotaExceededMessage mirrors
 // AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE.

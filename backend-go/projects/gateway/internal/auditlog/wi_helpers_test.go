@@ -43,11 +43,7 @@ func TestWICompressAuditBlobMatrix(t *testing.T) {
 	}
 }
 
-func TestWISyncBlobParentAndCleanupTemps(t *testing.T) {
-	// Windows 恒 no-op；Unix 分支打开目录 fsync。
-	if err := syncBlobParent(t.TempDir()); err != nil {
-		t.Fatalf("syncBlobParent=%v", err)
-	}
+func TestWICleanupBlobTemps(t *testing.T) {
 	// cleanupBlobTemps：带 tempPath 的清理 + 无 tempPath 跳过 + 不存在文件忽略。
 	temp := filepath.Join(t.TempDir(), "blob.tmp")
 	if err := os.WriteFile(temp, []byte("x"), 0o644); err != nil {

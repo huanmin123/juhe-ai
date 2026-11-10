@@ -72,7 +72,6 @@ var DefaultSystemSettings = map[string]any{
 	"auditLogProblemRetentionDays":               float64(7),
 	"auditLogSuccessHotRetentionHours":           float64(1),
 	"auditLogSuccessSampleRate":                  1.0,
-	"runtimeLogIndexRetentionDays":               float64(14),
 	"publicApiLogRetentionDays":                  float64(30),
 	"usageRecordRetentionDays":                   float64(30),
 	"usageStatsTimezone":                         "Asia/Shanghai",

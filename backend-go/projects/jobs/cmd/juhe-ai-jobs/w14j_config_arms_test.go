@@ -9,9 +9,9 @@ import (
 func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_INSTANCE_ID":                 "w14j-cfg",
-			"JUHE_AI_WORKER_ROLE":                 "stats-worker",
-			"JUHE_AI_SECRET":                      "0123456789abcdef0123456789abcdef",
+			"JUHE_AI_INSTANCE_ID": "w14j-cfg",
+			"JUHE_AI_WORKER_ROLE": "stats-worker",
+			"JUHE_AI_SECRET":      "0123456789abcdef0123456789abcdef",
 		}
 	}
 	scenarios := []struct {
@@ -40,4 +40,3 @@ func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 		})
 	}
 }
-

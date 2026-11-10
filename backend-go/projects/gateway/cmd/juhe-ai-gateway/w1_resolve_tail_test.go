@@ -103,7 +103,7 @@ func w1kNormalResolver(fixture *chainFixture) *chainRouteResolver {
 // 落记录，测试用 WaitForIdle 有界等待）。
 func w1kUsageService() (*gatewayusage.Service, *gatewayusage.MemoryUsageRecorder, *gatewayusage.FinalizationDispatch) {
 	recorder := gatewayusage.NewMemoryUsageRecorder(nil, nil)
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, 64, 1)
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 64, 1)
 	return gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{}), recorder, dispatch
 }
 

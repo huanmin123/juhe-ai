@@ -34,7 +34,7 @@ func w1rGatewayBodyRequest(raw string, parsed map[string]any, state *gatewaybody
 // GroupType/授权字段 deref，SchedulingPolicy 保持原样 JSON 文本，三态布尔
 // 指针原样透传。
 func TestW1RProjectGroupAccessForRouting(t *testing.T) {
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "quality"}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
 		GroupAccessType:                "owner",
@@ -56,7 +56,7 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 	if projected.GroupType != "personal" {
 		t.Errorf("GroupType = %q, want personal（指针已 deref）", projected.GroupType)
 	}
-	if projected.SchedulingPolicy != `{"schedulingPreference":"quality"}` {
+	if projected.SchedulingPolicy != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}` {
 		t.Errorf("SchedulingPolicy = %q, want 原样 JSON 文本", projected.SchedulingPolicy)
 	}
 	if projected.GroupAuthorizationID != "authz_1" || projected.GroupAuthorizationExpiresAt != "2999-01-01T00:00:00.000Z" {
@@ -81,8 +81,8 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 }
 
 // TestW1RProjectGroupAccessForRuntime 覆盖反向投影：字符串抬回指针、
-// SchedulingPolicy 按 JSON 解析，非法 JSON 回退到
-// {"schedulingPreference": <原文>}，空值保持 nil。
+// legacy 类型归一为 personal、SchedulingPolicy 按两键解析，非法 JSON 保持
+// nil（不再伪造 schedulingPreference），空值保持 nil。
 func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 	base := gatewayrouting.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
@@ -96,8 +96,8 @@ func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 	if out.GroupOwnerSystemAccountID != "sys_owner" || out.GroupAccessType != "authorized" {
 		t.Errorf("身份字段 = %+v, want 原样保留", out)
 	}
-	if out.GroupType == nil || *out.GroupType != "high_concurrency" {
-		t.Errorf("GroupType = %v, want 指针 high_concurrency", out.GroupType)
+	if out.GroupType == nil || *out.GroupType != "personal" {
+		t.Errorf("GroupType = %v, want 指针 personal（legacy 归一）", out.GroupType)
 	}
 	if out.GroupAuthorizationID == nil || *out.GroupAuthorizationID != "authz_2" {
 		t.Errorf("GroupAuthorizationID = %v, want 指针 authz_2", out.GroupAuthorizationID)
@@ -111,27 +111,46 @@ func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 
 	// SchedulingPolicy 合法 JSON：解析为策略对象。
 	valid := base
-	valid.SchedulingPolicy = `{"schedulingPreference":"quality","clientIpConcurrencyLimit":2}`
+	valid.SchedulingPolicy = `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`
 	out = projectGroupAccessForRuntime(valid)
 	if out.SchedulingPolicy == nil {
 		t.Fatal("合法 SchedulingPolicy 必须解析为策略指针")
 	}
-	if (*out.SchedulingPolicy)["schedulingPreference"] != "quality" || (*out.SchedulingPolicy)["clientIpConcurrencyLimit"] != float64(2) {
-		t.Errorf("SchedulingPolicy 解析结果 = %+v, want quality/2", *out.SchedulingPolicy)
+	if out.SchedulingPolicy.DefaultSoftConcurrency != 5 || out.SchedulingPolicy.ClientIPConcurrencyLimit != 2 {
+		t.Errorf("SchedulingPolicy 解析结果 = %+v, want 5/2", *out.SchedulingPolicy)
 	}
 
-	// SchedulingPolicy 非法 JSON：回退 {"schedulingPreference": 原文}。
+	// SchedulingPolicy 非法 JSON：保持 nil（读面错误由权威路径报出）。
 	invalid := base
 	invalid.SchedulingPolicy = `quality`
 	out = projectGroupAccessForRuntime(invalid)
-	if out.SchedulingPolicy == nil || (*out.SchedulingPolicy)["schedulingPreference"] != "quality" {
-		t.Errorf("非法 SchedulingPolicy 回退 = %v, want {schedulingPreference: quality}", out.SchedulingPolicy)
+	if out.SchedulingPolicy != nil {
+		t.Errorf("非法 SchedulingPolicy = %v, want nil", out.SchedulingPolicy)
 	}
 
 	// 空字段保持 nil 指针。
 	blank := projectGroupAccessForRuntime(gatewayrouting.GroupUsageAccessMetadata{GroupType: "", SchedulingPolicy: ""})
 	if blank.GroupType != nil || blank.SchedulingPolicy != nil {
 		t.Errorf("空 GroupType/SchedulingPolicy = %v/%v, want nil/nil", blank.GroupType, blank.SchedulingPolicy)
+	}
+}
+
+// TestW1RProjectGroupAccessForRuntimeUsesInjectedGlobalMax 钉住 fallback 投影
+// 与 selector/read models 使用同一个进程 globalMax 映射旧 16 键策略：同一
+// legacy 行在不同 globalMax 下必须得到不同阈值，而不是固定 5000。
+func TestW1RProjectGroupAccessForRuntimeUsesInjectedGlobalMax(t *testing.T) {
+	meta := gatewayrouting.GroupUsageAccessMetadata{
+		GroupType:        "high_concurrency",
+		SchedulingPolicy: `{"defaultSoftConcurrency":6000,"clientIpConcurrencyLimit":0}`,
+	}
+	// 默认 globalMax=5000：6000 视为旧默认（等价硬上限），不迁移。
+	if got := projectGroupAccessForRuntime(meta); got.SchedulingPolicy != nil {
+		t.Fatalf("default globalMax policy = %+v, want nil", got.SchedulingPolicy)
+	}
+	// 实际 globalMax=7000：6000 < 7000，保留为软阈值。
+	got := projectGroupAccessForRuntimeWithGlobalMax(meta, 7000)
+	if got.SchedulingPolicy == nil || got.SchedulingPolicy.DefaultSoftConcurrency != 6000 {
+		t.Fatalf("injected globalMax policy = %+v, want 6000", got.SchedulingPolicy)
 	}
 }
 
@@ -347,14 +366,9 @@ func TestW1RDerefStringPtrRenderSchedulingPolicy(t *testing.T) {
 	if got := renderSchedulingPolicy(nil); got != "" {
 		t.Errorf("renderSchedulingPolicy(nil) = %q, want 空字符串", got)
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "quality"}
-	if got := renderSchedulingPolicy(&policy); got != `{"schedulingPreference":"quality"}` {
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
+	if got := renderSchedulingPolicy(&policy); got != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}` {
 		t.Errorf("renderSchedulingPolicy = %q, want 原样 JSON", got)
-	}
-	// 序列化失败路径：不可 JSON 化的值渲染为空字符串。
-	unserializable := gatewayruntimecache.GroupSchedulingPolicy{"bad": func() {}}
-	if got := renderSchedulingPolicy(&unserializable); got != "" {
-		t.Errorf("不可序列化策略 = %q, want 空字符串", got)
 	}
 }
 
@@ -508,7 +522,7 @@ func TestW1RRehydrateGroupAccess(t *testing.T) {
 	fallback := gatewayrouting.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_fb",
 		GroupAccessType:           "owner",
-		SchedulingPolicy:          `{"schedulingPreference":"quality"}`,
+		SchedulingPolicy:          `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`,
 		GroupAuthorizationID:      "authz_fb",
 	}
 
@@ -520,8 +534,8 @@ func TestW1RRehydrateGroupAccess(t *testing.T) {
 	if projected.GroupAuthorizationID == nil || *projected.GroupAuthorizationID != "authz_fb" {
 		t.Errorf("空 groupID 授权 = %v, want 指针 authz_fb", projected.GroupAuthorizationID)
 	}
-	if projected.SchedulingPolicy == nil || (*projected.SchedulingPolicy)["schedulingPreference"] != "quality" {
-		t.Errorf("空 groupID 策略 = %v, want quality", projected.SchedulingPolicy)
+	if projected.SchedulingPolicy == nil || projected.SchedulingPolicy.DefaultSoftConcurrency != 5 || projected.SchedulingPolicy.ClientIPConcurrencyLimit != 2 {
+		t.Errorf("空 groupID 策略 = %v, want 5/2", projected.SchedulingPolicy)
 	}
 
 	// 命中缓存：返回缓存原始元数据（指针形态，含 personal 类型）。

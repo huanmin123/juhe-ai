@@ -177,7 +177,7 @@ func TestChainUsageProtocolErrorParserFallbacks(t *testing.T) {
 // 兜底与语义字段（对齐 chain_compose.go usageService 装配链）。
 func TestChainUsageWiringSmokeRecordGatewayFailure(t *testing.T) {
 	recorder := gatewayusage.NewMemoryUsageRecorder(nil, nil)
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, 8, 2)
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 8, 2)
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithUsageSemantics(chainUsageSemanticResolver{}).
 		WithDefaultProviderCode(chainUsageDefaultProviderCode{}).

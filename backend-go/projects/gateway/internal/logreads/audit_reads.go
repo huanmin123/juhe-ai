@@ -1,18 +1,17 @@
-// Package logreads mounts the read-only admin routes for the three log
-// datasets migrated from Node: audit-logs (F3 dataset tables), runtime-logs
-// (F1 dataset tables) and public-api-logs (F5 dataset table). The package is
-// deliberately read-only: it never creates or mutates schema objects and never
-// owns a writer. Query semantics, parameter names and pagination envelopes
-// mirror the Node contracts in backend/src/modules/{audit-logs,runtime-logs,
-// public-api-logs} and their storage repositories.
+// Package logreads mounts the read-only admin routes for the log datasets
+// migrated from Node: audit-logs (F3 dataset tables) and public-api-logs (F5
+// dataset table). The package is deliberately read-only: it never creates or
+// mutates schema objects and never owns a writer. Query semantics, parameter
+// names and pagination envelopes mirror the Node contracts in
+// backend/src/modules/{audit-logs,public-api-logs} and their storage
+// repositories. runtime-logs 读面已于 2026-11-09 随 F1 下架。
 //
 // File layout (prefixes keep parallel read slices coexistable in this
 // package): audit_reads.go carries the shared read plumbing plus the audit
 // family, audit_detail.go the payload/by-id hydration, audit_hot_search.go
-// the NDJSON hot-search scan, runtime_reads.go the runtime family,
-// runtime_grep.go the file-log grep family and public_reads.go the public
-// API log family. Each family has a local Reader interface so route tests
-// can mock the store boundary.
+// the NDJSON hot-search scan, and public_reads.go the public API log family.
+// Each family has a local Reader interface so route tests can mock the store
+// boundary.
 package logreads
 
 import (
@@ -211,7 +210,7 @@ func readPageRows[T any](rows []T, pageSize int) ([]T, bool) {
 }
 
 // readTextPrefixUpperBound mirrors the shared query-utils textPrefixUpperBound
-// (runtime-logs / public-api-logs): increment the last code point.
+// (public-api-logs): increment the last code point.
 func readTextPrefixUpperBound(value string) string {
 	runes := []rune(value)
 	for index := len(runes) - 1; index >= 0; index-- {
@@ -425,10 +424,6 @@ type ReadsDeps struct {
 	Audit  AuditLogReader
 	Public PublicApiLogReader
 	Auth   *authsys.Deps
-	// Runtime / Grep 只被已下架的 runtime-logs handler 方法引用（路由不再
-	// 注册）；保留字段避免一次性删除历史实现，后续清理批次随包删除。
-	Runtime RuntimeLogReader
-	Grep    *RuntimeLogGrep
 	// AuditDisabled gates the audit-logs read family: JUHE_AI_AUDIT_LOG_ENABLED=
 	// false leaves every audit GET route unregistered (404) so the management
 	// API stops serving request/response bodies. public-api-logs stays

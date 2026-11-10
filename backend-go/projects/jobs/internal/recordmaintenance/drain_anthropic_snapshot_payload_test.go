@@ -8,7 +8,6 @@ package recordmaintenance
 import (
 	"database/sql"
 	"testing"
-
 )
 
 func seedAnthropicSnapshotRow(t *testing.T, db *sql.DB, id, accountID, snapshotJSON, updatedAt string) {

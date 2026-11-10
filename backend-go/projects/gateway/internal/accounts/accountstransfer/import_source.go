@@ -17,8 +17,6 @@ import (
 // planning. CLIProxyAPI string input decodes through YAML (JSON is a YAML
 // subset) via ParseCpaInput in import_source_yaml.go.
 
-type importSourceMode = string
-
 const (
 	ImportSourceNative  = "native"
 	ImportSourceSub2Api = "sub2api"

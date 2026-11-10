@@ -3,6 +3,7 @@ package statsagg
 import (
 	"context"
 	"database/sql"
+	"sort"
 )
 
 // 授权用量日报 writer（usage 聚合 job 的伴随写入），移植
@@ -33,26 +34,101 @@ type authorizationSummaryKey struct {
 	resourceFilterID             string
 }
 
-// upsertAuthorizationUsageReportRows mirrors upsertAuthorizationUsageReportRowsAsync。
-func (a *Aggregator) upsertAuthorizationUsageReportRows(ctx context.Context, tx *sql.Tx, row UsageStatsRecordRow, statDate, updatedAt string, context *AuthorizationLookup) error {
+// authorizationSummaryEntryKey 是批内预聚合的输出行键（表由 team/user 两个
+// map 区分）；statDate 来自记录时间，跨日批次不会错误合并。
+type authorizationSummaryEntryKey struct {
+	systemAccountID string
+	statDate        string
+	summary         authorizationSummaryKey
+}
+
+// addAuthorizationUsageReportEntries 把单条记录的授权摘要展开结果累加进批内
+// 预聚合表（2026-11-09）。原实现逐记录直接 UPSERT：单批 2000 行按每记录最多 24+
+// 条语句会把事务拉到万级语句，并放大 authorization_*_usage_summary_daily 的
+// 行锁与 WAL。预聚合按输出行键折叠后，同批同键只在批末落一条 UPSERT，累计
+// 语义（含 max/last_used_at）由 MergeAccumulator 保持。
+func addAuthorizationUsageReportEntries(
+	teamEntries map[authorizationSummaryEntryKey]*UsageStatsAccumulator,
+	userEntries map[authorizationSummaryEntryKey]*UsageStatsAccumulator,
+	row UsageStatsRecordRow,
+	statDate string,
+	lookup *AuthorizationLookup,
+) error {
 	stats := UsageStatsAccumulatorFromRecord(row)
-	for _, reportRow := range authorizationReportRows(row, context) {
+	for _, reportRow := range authorizationReportRows(row, lookup) {
 		filters := authorizationReportResourceFilters(reportRow)
 		for _, scopedReportRow := range authorizationReportScopeRows(reportRow) {
 			teamKeys, userKeys := authorizationSummaryKeys(scopedReportRow, filters)
 			for _, key := range teamKeys {
-				if err := a.upsertAuthorizationTeamUsageSummaryRow(ctx, tx, scopedReportRow.ownerSystemAccountID, statDate, key, stats, updatedAt); err != nil {
-					return err
+				entryKey := authorizationSummaryEntryKey{scopedReportRow.ownerSystemAccountID, statDate, key}
+				if target, ok := teamEntries[entryKey]; ok {
+					if err := MergeAccumulator(target, stats); err != nil {
+						return err
+					}
+					continue
 				}
+				entry := stats
+				teamEntries[entryKey] = &entry
 			}
 			for _, key := range userKeys {
-				if err := a.upsertAuthorizationUserUsageSummaryRow(ctx, tx, scopedReportRow.ownerSystemAccountID, statDate, key, stats, updatedAt); err != nil {
-					return err
+				entryKey := authorizationSummaryEntryKey{scopedReportRow.ownerSystemAccountID, statDate, key}
+				if target, ok := userEntries[entryKey]; ok {
+					if err := MergeAccumulator(target, stats); err != nil {
+						return err
+					}
+					continue
 				}
+				entry := stats
+				userEntries[entryKey] = &entry
 			}
 		}
 	}
 	return nil
+}
+
+// flushAuthorizationUsageSummaryEntries 按排序后的键逐行 UPSERT。排序让同批
+// 落库顺序确定（便于复现与排查；离线 rebuild 有 jobs 停止门禁，不与在线
+// 聚合并发）。同键已在内存折叠，语句量取决于批内不同键数而非记录数。
+func (a *Aggregator) flushAuthorizationUsageSummaryEntries(ctx context.Context, tx *sql.Tx, teamEntries, userEntries map[authorizationSummaryEntryKey]*UsageStatsAccumulator, updatedAt string) error {
+	for _, entryKey := range sortedAuthorizationSummaryEntryKeys(teamEntries) {
+		if err := a.upsertAuthorizationTeamUsageSummaryRow(ctx, tx, entryKey.systemAccountID, entryKey.statDate, entryKey.summary, *teamEntries[entryKey], updatedAt); err != nil {
+			return err
+		}
+	}
+	for _, entryKey := range sortedAuthorizationSummaryEntryKeys(userEntries) {
+		if err := a.upsertAuthorizationUserUsageSummaryRow(ctx, tx, entryKey.systemAccountID, entryKey.statDate, entryKey.summary, *userEntries[entryKey], updatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sortedAuthorizationSummaryEntryKeys(entries map[authorizationSummaryEntryKey]*UsageStatsAccumulator) []authorizationSummaryEntryKey {
+	keys := make([]authorizationSummaryEntryKey, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := keys[i], keys[j]
+		if left.systemAccountID != right.systemAccountID {
+			return left.systemAccountID < right.systemAccountID
+		}
+		if left.statDate != right.statDate {
+			return left.statDate < right.statDate
+		}
+		leftKey, rightKey := left.summary, right.summary
+		if leftKey.teamFilterID != rightKey.teamFilterID {
+			return leftKey.teamFilterID < rightKey.teamFilterID
+		}
+		if leftKey.granteeFilterSystemAccountID != rightKey.granteeFilterSystemAccountID {
+			return leftKey.granteeFilterSystemAccountID < rightKey.granteeFilterSystemAccountID
+		}
+		if leftKey.resourceFilterType != rightKey.resourceFilterType {
+			return leftKey.resourceFilterType < rightKey.resourceFilterType
+		}
+		return leftKey.resourceFilterID < rightKey.resourceFilterID
+	})
+	return keys
 }
 
 // authorizationReportRows mirrors authorizationReportRows。

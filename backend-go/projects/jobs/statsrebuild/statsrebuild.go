@@ -40,9 +40,11 @@
 // 空源语义：usage_records 无可重放记录时（首批即空），历史统计明确放弃，
 // 后续从新请求重新累计，正常完成（不作为错误）。
 //
-// 吞吐：BatchSize 默认 2000（钳 1..50000）、MaxBatches 默认 1000
+// 吞吐：BatchSize 默认 1000（钳 1..10000）、MaxBatches 默认 1000
 // （钳 1..10000）；单轮达到批数上限时返回 Drained=false，由调用方提示
-// 再次执行完成重建。
+// 再次执行完成重建。批上限与在线聚合 job 同量级（50000 → 10000，T194）：
+// 单批事务内的授权摘要已按输出行键预聚合，继续放大批次只会拉长事务持锁与
+// WAL 窗口，收益有限。
 package statsrebuild
 
 import (
@@ -64,11 +66,13 @@ func bind(_ bool, query string) string {
 	return sqldialect.BindSQL(query)
 }
 
-// 吞吐参数默认值与钳制边界，对齐 BUG-0182 记载的 Node 脚本缺省值。
+// 吞吐参数默认值与钳制边界。历史 Node 脚本缺省为 2000/50000（BUG-0182）；
+// 2026-11-09 起默认下调到 1000、上限对齐在线聚合 job 的 10000，缩短单批
+// 事务持锁与 WAL 窗口。
 const (
-	DefaultBatchSize  = 2000
+	DefaultBatchSize  = 1000
 	MinBatchSize      = 1
-	MaxBatchSize      = 50000
+	MaxBatchSize      = 10000
 	DefaultMaxBatches = 1000
 	MinMaxBatches     = 1
 	MaxMaxBatches     = 10000

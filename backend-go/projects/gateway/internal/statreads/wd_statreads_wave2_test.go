@@ -1,9 +1,8 @@
 package statreads
 
 // statreads 第二轮补充（wd_ 前缀，独占新增文件）：读错误→500 的降级契约、
-// PG outcome 入口不可达的失败面、分页 hasMore、损坏 shard 的容错与系统账户
-// 名回退。读错误契约用 pgtestkit 空 PG 库；分片/shard 容错（组B，SQLite-only
-// 组B 分片读面测试已随 sqlite 生产臂退役（2026-10-24 存储形态收口）。
+// PG outcome 入口不可达的失败面、分页 hasMore 与系统账户名回退。读错误契约
+// 用 pgtestkit 空 PG 库。
 
 import (
 	"context"

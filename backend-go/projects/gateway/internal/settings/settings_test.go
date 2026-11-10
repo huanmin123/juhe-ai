@@ -125,7 +125,6 @@ var seedSystemSettings = map[string]any{
 	"oauthAccessTokenRefreshBatchSize":           20,
 	"oauthAccessTokenRefreshRetryBackoffSeconds": 300,
 	"modelCheckRetentionDays":                    30,
-	"runtimeLogIndexRetentionDays":               14,
 	"publicApiLogRetentionDays":                  30,
 	"usageRecordRetentionDays":                   30,
 	"usageStatsTimezone":                         "UTC",

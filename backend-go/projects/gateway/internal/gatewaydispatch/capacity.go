@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
@@ -97,11 +96,17 @@ func OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync(
 	// orderAccountsByLaneCapacityBusyState 内部已做 preserveDispatchPriority
 	// Tiers，此处直接返回其结果，保证与原函数排序逐位一致。
 	ordered := orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy, modelPriority)
+	// 把本次加载的实时并发写回候选快照：后续亲和软阈值排序/准备期 softBusy
+	// 判定直接读 CurrentConcurrency，不能依赖数据库快照里的陈旧值或 nil。
+	for index := range ordered {
+		ordered[index].CurrentConcurrency = newInt(mapValueOr(currentConcurrency, gatewaySessionConcurrencyID(ordered[index]), 0))
+	}
 	return ordered, busyAccountIDs, nil
 }
 
 // AreGatewayAccountsCapacityBusyForLaneAsync mirrors
-// areGatewayAccountsCapacityBusyForLaneAsync.
+// areGatewayAccountsCapacityBusyForLaneAsync（every 语义：整组候选全部容量忙
+// 才返回 true；任一账户仍有容量即 false，供组回退判定继续使用本组空闲账户）。
 func AreGatewayAccountsCapacityBusyForLaneAsync(
 	ctx context.Context,
 	store AccountConcurrencyStore,
@@ -124,12 +129,15 @@ func AreGatewayAccountsCapacityBusyForLaneAsync(
 			return false, err
 		}
 	}
+	// 单账户忙不得让整组提前回退（D-94）：归档
+	// areAccountsCapacityBusyForLane 使用 accounts.every，只有全部候选都达到
+	// 硬并发/lane 上限时才认定组忙。
 	for _, account := range accounts {
-		if isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy) {
-			return true, nil
+		if !isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy) {
+			return false, nil
 		}
 	}
-	return false, nil
+	return true, nil
 }
 
 func orderAccountsByLaneCapacityBusyState(
@@ -141,22 +149,39 @@ func orderAccountsByLaneCapacityBusyState(
 	modelPriority *gatewayrouting.GatewayAccountModelPriority,
 ) []AccountCandidate {
 	type entry struct {
-		account AccountCandidate
-		index   int
-		busy    bool
+		account  AccountCandidate
+		index    int
+		busy     bool
+		softBusy bool
 	}
 	entries := make([]entry, len(accounts))
 	for index, account := range accounts {
+		concurrencyID := gatewaySessionConcurrencyID(account)
+		softBusy := false
+		if schedulingPolicy != nil {
+			softBusy = schedulingPolicy.SoftBusy(
+				mapValueOr(currentConcurrency, concurrencyID, 0),
+				accountHardConcurrencyLimit(account),
+			)
+		}
 		entries[index] = entry{
-			account: account,
-			index:   index,
-			busy:    isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy),
+			account:  account,
+			index:    index,
+			busy:     isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy),
+			softBusy: softBusy,
 		}
 	}
 	// sort.SliceStable keeps the insertion-order tiebreak
-	// (|| left.index - right.index).
+	// (|| left.index - right.index)。硬忙在此层先降位（同层内），软忙作为
+	// 同层第二键；媒体 lane 不跑热质量排序，这里保证 softBusy 仍生效。
 	sort.SliceStable(entries, func(left, right int) bool {
-		return boolToInt(entries[left].busy) < boolToInt(entries[right].busy)
+		if entries[left].busy != entries[right].busy {
+			return !entries[left].busy
+		}
+		if entries[left].softBusy != entries[right].softBusy {
+			return !entries[left].softBusy
+		}
+		return false
 	})
 	ordered := make([]AccountCandidate, len(entries))
 	for index, item := range entries {
@@ -222,9 +247,55 @@ func modelPriorityRankMap(priority *gatewayrouting.GatewayAccountModelPriority) 
 
 func derefPolicy(policy *gatewayruntimecache.GroupSchedulingPolicy) gatewayruntimecache.GroupSchedulingPolicy {
 	if policy == nil {
-		return nil
+		return gatewayruntimecache.GroupSchedulingPolicy{}
 	}
 	return *policy
+}
+
+// splitHardBusyForHotQuality 把已达硬并发的候选从热质量排序输入中剥离：
+// 热质量比较器只处理同层质量/稳定序，若把硬忙账户一并传入，层内质量重排会
+// 把它们提回健康 peer 之前，违反「hardBusy 永远最后」（契约 §3.1）。无健康
+// 候选时保持原列表（全部硬忙仍由既有容量等待处理），不足两个候选时不拆分。
+func splitHardBusyForHotQuality(accounts []AccountCandidate) (dispatchable []AccountCandidate, hardBusy []AccountCandidate) {
+	if len(accounts) < 2 {
+		return accounts, nil
+	}
+	dispatchable = make([]AccountCandidate, 0, len(accounts))
+	hardBusy = make([]AccountCandidate, 0)
+	for _, account := range accounts {
+		current := 0
+		if account.CurrentConcurrency != nil {
+			current = *account.CurrentConcurrency
+		}
+		if current >= accountHardConcurrencyLimit(account) {
+			hardBusy = append(hardBusy, account)
+			continue
+		}
+		dispatchable = append(dispatchable, account)
+	}
+	if len(dispatchable) == 0 {
+		return accounts, nil
+	}
+	return dispatchable, hardBusy
+}
+
+// softBusyAccountIDsFor 计算本次候选的 softBusy 集合，供热质量排序作为层内
+// 第一顺位键；策略关闭/null 时返回空集合（不参与排序判定）。
+func softBusyAccountIDsFor(accounts []AccountCandidate, policy *gatewayruntimecache.GroupSchedulingPolicy) map[string]bool {
+	out := map[string]bool{}
+	if policy == nil {
+		return out
+	}
+	for _, account := range accounts {
+		current := 0
+		if account.CurrentConcurrency != nil {
+			current = *account.CurrentConcurrency
+		}
+		if policy.SoftBusy(current, accountHardConcurrencyLimit(account)) {
+			out[account.ID] = true
+		}
+	}
+	return out
 }
 
 // gatewaySessionConcurrencyID mirrors gatewayAccountConcurrencyAccountId via
@@ -266,34 +337,6 @@ func GatewayAccountConcurrencyLimitsByAccountID(accounts []AccountCandidate) map
 		result[accountID] = limit
 	}
 	return result
-}
-
-// EarliestAccountRPMResetWaitMs 返回候选池中已达到 RPM 上限账户的最早重置
-// 等待（毫秒；无满额账户返回 0）。预派发高并发队列等待用它把等待封顶到最近
-// 重置点：RPM 重置没有并发槽释放事件，不封顶会空等整个请求预算
-// （AI账户每分钟请求上限设计 §5.2）。读失败由调用方降级为不封顶，不影响派发。
-func (e *Engine) EarliestAccountRPMResetWaitMs(ctx context.Context, accounts []AccountCandidate) (int64, error) {
-	ids := gatewaySessionConcurrencyIDs(accounts)
-	states, err := e.Concurrency.LoadCurrentRPMAsync(ctx, ids)
-	if err != nil {
-		return 0, err
-	}
-	now := gatewayupstream.NowMs()
-	earliest := int64(0)
-	for _, account := range accounts {
-		if account.RPMLimit <= 0 {
-			continue
-		}
-		state := states[gatewaySessionConcurrencyID(account)]
-		if state.Used < account.RPMLimit || state.ResetAtMs <= now {
-			continue
-		}
-		wait := state.ResetAtMs - now
-		if earliest == 0 || wait < earliest {
-			earliest = wait
-		}
-	}
-	return earliest, nil
 }
 
 // GatewayAccountRPMLimitsByAccountID 按账户资源 ID 聚合候选 RPM 上限（AI 账户

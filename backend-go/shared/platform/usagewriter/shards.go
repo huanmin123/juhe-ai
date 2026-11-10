@@ -11,15 +11,6 @@ import (
 // usage-record-shards.ts. The shard-id format is owned by the writer slice
 // (per the G17 port declaration in gateway/internal/gatewayusage/ports.go).
 
-// UsageRecordShardLocation mirrors UsageRecordShardLocation.
-type UsageRecordShardLocation struct {
-	ShardKey      string
-	BucketDate    string
-	BucketDateKey string
-	ShardID       int
-	FilePath      string
-}
-
 // DefaultUsageShardCount mirrors the JUHE_AI_USAGE_SHARD_COUNT default (16).
 const DefaultUsageShardCount = 16
 
@@ -61,12 +52,11 @@ func SanitizeShardEntropy(entropy string) string {
 	return builder.String()
 }
 
-// UsageRecordLogicalShardLocationForPostgres mirrors
-// usageRecordLogicalShardLocationForPostgres: a logical location (no file)
-// for the partitioned juhe_usage.usage_records table. Note the Node source
-// intentionally pads the logical shard id to three digits here (versus two
-// digits in the SQLite path).
-func UsageRecordLogicalShardLocationForPostgres(id string, createdAt string, shardCount int) (UsageRecordShardLocation, error) {
+// UsageRecordShardKeyForPostgres mirrors usageRecordLogicalShardLocationForPostgres
+// and returns its shard key for the partitioned juhe_usage.usage_records
+// table. Note the Node source intentionally pads the logical shard id to
+// three digits here (versus two digits in the SQLite path).
+func UsageRecordShardKeyForPostgres(id string, createdAt string, shardCount int) (string, error) {
 	bucketDateKey := ""
 	shardID := 0
 	if match := usageRecordShardIDPattern.FindStringSubmatch(strings.TrimSpace(id)); match != nil {
@@ -80,20 +70,12 @@ func UsageRecordLogicalShardLocationForPostgres(id string, createdAt string, sha
 	} else {
 		resolved, err := BucketDateKey(createdAt)
 		if err != nil {
-			return UsageRecordShardLocation{}, err
+			return "", err
 		}
 		bucketDateKey = resolved
 		shardID = LogicalShardID(id, shardCount)
 	}
-	bucketDate := bucketDateKey[0:4] + "-" + bucketDateKey[4:6] + "-" + bucketDateKey[6:8]
-	shardKey := bucketDateKey + ":s" + FormatLogicalShardID(shardID)
-	return UsageRecordShardLocation{
-		ShardKey:      shardKey,
-		BucketDate:    bucketDate,
-		BucketDateKey: bucketDateKey,
-		ShardID:       shardID,
-		FilePath:      "postgres:juhe_usage.usage_records:" + shardKey,
-	}, nil
+	return bucketDateKey + ":s" + FormatLogicalShardID(shardID), nil
 }
 
 // StableShardID mirrors stableShardId: FNV-1a 32-bit hash modulo shardCount.

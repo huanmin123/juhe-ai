@@ -25,4 +25,3 @@ func TestWFParseTargetURLRejects(t *testing.T) {
 		t.Fatal("合法路径不得拒绝")
 	}
 }
-

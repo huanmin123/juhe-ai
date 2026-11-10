@@ -182,30 +182,3 @@ func stringSliceToAny(values []string) []any {
 	}
 	return out
 }
-
-// cleanupScopeShardCatalog 照 cleanupUsageRecordScopeShardCatalog（SQLite 版）。
-
-type ShardLocation struct {
-	ShardKey      string
-	BucketDate    string
-	BucketDateKey string
-	ShardID       int64
-	FilePath      string
-}
-
-// ShardLocationWindow 照 Node UsageRecordShardLocationWindow。
-
-type ShardLocationWindow struct {
-	Locations []ShardLocation
-	HasMore   bool
-}
-
-// ShardStore 承载 SQLite usage 分片访问（仅 sqlite 模式使用）。
-
-type scopeEntry struct {
-	UsageID         string
-	ShardKey        string
-	SystemAccountID string
-	APIKeyID        string
-	AccountID       string
-}

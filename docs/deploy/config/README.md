@@ -19,7 +19,6 @@
 | `JUHE_AI_REDIS_MODE` | `single`（缺省）或 `cluster` |
 | `JUHE_AI_REDIS_NAMESPACE` | 键空间根，生产固定 `prod`，必填非空 |
 | `JUHE_AI_SECRET` | ≥32 位强随机；凭据/内建 Key 加密封套，有数据后不可更换 |
-| `JUHE_AI_RUNTIME_LOG_POSTGRES_URL` | 运行日志索引连接串；**必须显式，不回退主库**（保留独立库隔离能力） |
 | `JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL` | jobs 的 J1 账户健康 PG 输入；**必须显式，不回退主库** |
 | `JUHE_AI_ALLOWED_ORIGINS` | 后台访问 Origin，逗号分隔，如 `https://<domain>`；生产环境为空或 `*` 都会启动失败 |
 | `JUHE_AI_TRUST_PROXY` | `true`；缺失时默认 false，所有请求的来源 IP 都会变成反代容器地址，来源限流/封禁/调度避让全部失真 |
@@ -65,7 +64,6 @@ JUHE_AI_PROXY_IP_B=<代理IP或服务器IP>
 # ---- 应用 ----
 JUHE_AI_SECRET=<至少32位随机串>
 JUHE_AI_POSTGRES_URL=postgres://juhe_ai@postgres:5432/juhe_ai
-JUHE_AI_RUNTIME_LOG_POSTGRES_URL=postgres://juhe_ai@postgres:5432/juhe_ai
 JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL=postgres://juhe_ai@postgres:5432/juhe_ai
 JUHE_AI_REDIS_URL=redis://redis:6379
 JUHE_AI_REDIS_MODE=single

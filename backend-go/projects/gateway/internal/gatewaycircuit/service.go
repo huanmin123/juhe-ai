@@ -173,11 +173,6 @@ type confirmationSettlement struct {
 // settlementDone 关闭即表示在途结算完成；结果（或错误）从
 // confirmationSettled / settlementErr 读取，保证任意数量的并发结算方都能拿到
 // 同一份结果（Node：所有调用方 await 同一个 promise）。
-type settlementSignal struct {
-	settlement confirmationSettlement
-	err        error
-}
-
 // Attempt mirrors GatewayAccountCircuitAttempt.
 type Attempt struct {
 	service                      *CircuitService

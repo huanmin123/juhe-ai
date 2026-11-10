@@ -236,7 +236,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			t.Fatalf("分区裁剪 Commit 失败应透传")
 		}
 	}
-	// 行删除路径：批超限、scan 失败、空 id 跳过、目录行删除失败、Commit 失败。
+	// 行删除路径：批超限、scan 失败、空 id 跳过、Commit 失败。
 	// CleanupProcessedBefore 的批查询只 SELECT id, created_at 两列；种子必须
 	// 与之一致（seedKitPGAPIKeyFlow 的 41 列行会被该查询消费导致 Scan 错）。
 	pgIDs := func(rec *pgRecorder, ids ...string) {
@@ -287,17 +287,6 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			t.Fatalf("空 id 行应跳过: %+v %v", batch, err)
 		}
 	}
-	// 目录条目删除失败。
-	{
-		rec := newPGRecorder()
-		seedJobState(rec)
-		pgIDs(rec, "rec-1")
-		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_usage.usage_record_shard_entries"}})
-		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
-		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 2); err == nil {
-			t.Fatalf("目录条目删除失败应透传")
-		}
-	}
 	// usage_records 行删除失败与 Commit 失败。
 	for _, tc := range []struct {
 		name string
@@ -306,18 +295,11 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 		{"行删除失败", w13ePGOptions{failOn: []string{"DELETE FROM juhe_usage.usage_records WHERE (created_at"}}},
 		{"RowsAffected 失败", w13ePGOptions{rowsAffectedFailOn: "DELETE FROM juhe_usage.usage_records WHERE (created_at"}},
 		{"Commit 失败", w13ePGOptions{failCommit: true}},
-		{"scope 收缩失败", w13ePGOptions{failOn: []string{"DELETE FROM juhe_usage.usage_record_account_shards scope"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newPGRecorder()
 			seedJobState(rec)
 			pgIDs(rec, "rec-1")
-			// scope 收缩臂需要 shard 目录行（account 维度）才会执行 DELETE。
-			if tc.name == "scope 收缩失败" {
-				rec.script("SELECT usage_id, shard_key", []string{
-					"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
-				}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}})
-			}
 			failing := w13eOpenDecoratedPG(t, rec, tc.opts)
 			plain := openRecorderPG(rec)
 			store := &UsageRecordsStore{Catalog: failing, Stats: plain}

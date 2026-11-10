@@ -27,8 +27,8 @@
 | 流式响应 | 协议 inspector 按 SSE event 解析，响应检查 interceptor 也可能消费相同事件 | 协议语义必需；重点检查同一 event 是否被两套 parser 重复解析 |
 | 原始审计 | 超限摘要为了展示顶层类型和 key，会解析或扫描 Body | 纯日志目的，删除结构解析，只保留 hash、大小、首尾字节和文本预览 |
 | 使用记录 | 快照只做大小、深度和字段数约束 | 不做 Body JSON 解析，保持 |
-| 运行日志索引 | worker/查询侧解析 JSONL 日志行 | 不在网关请求热路径，保持 |
-| Go 对照 | Express raw parser 边界由 `gatewaybody/middleware.go` raw 读取承接；运行日志索引由 jobs F1 cursor 承接 | 解析次数契约按边界逐条承接，验证见 `gatewaybody` 各 `*_test.go` |
+| 运行日志索引（已下架） | 历史：worker/查询侧解析 JSONL 日志行 | 已删除；现行只写本地 JSONL，不做索引解析 |
+| Go 对照 | Express raw parser 边界由 `gatewaybody/middleware.go` raw 读取承接；运行日志索引已随 F1 删除 | 解析次数契约按边界逐条承接，验证见 `gatewaybody` 各 `*_test.go` |
 
 ## 3. 一次性交付范围与落地结果
 
@@ -83,7 +83,7 @@ Go 对应物：`scanned_json` 元数据状态对应 `gatewaybody.JSONParseStatus
 - 用户显式开启的响应检查和混合质量检查。
 - 跨协议 transformer 对源协议文档的解析，以及生成目标协议后由目标协议状态机执行的解析。二者是不同 wire document，不属于同一 Body 的重复解析。
 - OAuth/token、余额、图片执行器等独立 HTTP 客户端对各自响应的单次协议解析。
-- Redis、DB、IPC、JSONL、加密状态和 usage spool 的序列化边界解析。
+- Redis、DB、IPC、JSONL、加密状态和 usage 直投 PG 的序列化边界解析。
 - `json-metadata-scanner` 对单个 JSON string token 的反转义；它不构建或解析完整 Body。
 - 审计裁剪器对自身已经生成的 summary 对象进行缩容；它不解析原始模型 Body。
 

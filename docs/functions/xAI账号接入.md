@@ -44,6 +44,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 - 浏览器授权使用 xAI OAuth authorization code + PKCE S256，会话保存 `state`、`nonce`、verifier、client、scope 和回调地址，30 分钟内一次性消费。
 - 前端可以粘贴完整 callback URL、裸 query、`code#state` 或 Refresh Token 创建账户，也可直接录入当前可用的 Access Token；已有 OAuth 账户支持手动刷新和两种重新授权入口。
 - 管理端使用 `/grok-oauth/*`，个人端使用 `/my-grok-oauth/*`；创建、刷新和重新授权都复用账户绑定代理。
+- OAuth 上游返回 403 且响应体（完整读取上限 64 KiB，检查超时 5 秒）包含 `access denied` 时，网关会剥离 CLI 专用头（`x-xai-token-auth` / `x-grok-client-version` / `x-grok-client-surface` / `x-userid` / `x-email` / `User-Agent`）改用官方 `https://api.x.ai` 重试一次；重试非 2xx 或请求失败时保留原始 403 响应与可重放正文。非 `xai-grok-cli` 头、非 `Bearer` 鉴权、非 `cli-chat-proxy.grok.com` 主机或正文不含 `access denied` 的 403 不触发回退。
 - OAuth 上游只在目标主机精确为 `cli-chat-proxy.grok.com` 时补充 `X-XAI-Token-Auth: xai-grok-cli`、`x-grok-client-version: 1.0.45` 和 `xai-grok-workspace/1.0.45` User-Agent；`api.x.ai` 与自定义主机不得携带这些 CLI 身份头。它不继承 GPT/Codex OAuth 的 compact、attestation、Chat 兼容或账户请求覆盖规则。账户请求覆盖两字段 `service_tier_override` / `reasoning_effort_override` 属 openai 协议族（思考级别 `none|minimal|low|medium|high|xhigh|max`，服务等级 `default|priority|flex`），保存只做 token 形状与族集校验，不再要求模型目录声明；运行时思考级别向下兼容降级到最终模型不高于配置值的最高档，服务等级仅在最终模型声明支持时写入。CLI 版本号跟随 xAI grok-build 官方最新维护（与自动跟版同源；2026-10-10 锚点 1.0.45）：2026-10 起上游强制 CLI 版本门槛（首见 ≥ 1.0.13），低于门槛的 CLI 画像返回 426 Upgrade Required（错误体 "Grok CLI version ... outdated"），版本常量 `upstreamidentity.GrokCLIClientVersion`，升级时同步该常量与本文。版本可经系统设置 `upstreamClientVersionOverrides` 的 grokCLI 键热覆盖，见[上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)。
 
 ### Grok Web SSO 转 OAuth

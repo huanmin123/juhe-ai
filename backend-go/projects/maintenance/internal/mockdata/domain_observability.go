@@ -1,26 +1,24 @@
 package mockdata
 
 // 可观测域（T66 PG 造数第二波）：juhe_dataset 维护面（public_api_logs、后台
-// 记录清理目标）+ 属主表审计 / 操作 / 运行日志族（gateway internal/auditlog、
-// gateway internal/operationlog、jobs internal/runtimelog 运行时建表）。
+// 记录清理目标）+ 属主表审计 / 操作日志族（gateway internal/auditlog、
+// gateway internal/operationlog 运行时建表）。运行日志索引表已随 F1 下架，
+// 不再造数。
 //
 // 样本形状、数量、状态矩阵与关联语义沿用 sqlite 版 domain_observability.go
 // （删除于 4645eb259，git 历史可溯）；存储形态按现行 PG DDL 逐列重写：
 //   - 属主表的时间列是 timestamptz、布尔列是 boolean（与 maintenance schema
 //     的 text 时间 + integer 布尔不同），写入值逐列对照
 //     gateway/internal/auditlog/schema.go、gateway/internal/operationlog/
-//     schema.go、jobs/internal/runtimelog/schema.go 与
-//     maintenance/internal/schema/pg_schema_dataset.go；
+//     schema.go 与 maintenance/internal/schema/pg_schema_dataset.go；
 //   - 属主表缺失时按子段跳过（framework probeOwnerStores 已把它们登记为
 //     ownerStores，Run 报告 OwnerStoresPending），不复制 DDL、不阻塞 Ready；
 //   - PG 形态没有数据根：审计 payload blob 只落库（内容寻址 id/storage_key，
-//     媒体样本以 data URI 内嵌进 payload JSON），运行日志只写索引行与分面，
-//     不写日志文件与文件游标（runtime_log_file_cursors 按属主游标族白名单
-//     允许为空）。
+//     媒体样本以 data URI 内嵌进 payload JSON）。
 //
 // 覆盖点：docs/functions/Mockdata造数设计.md「数据边界」observability 行与
-// 「验证点」（审计 / 操作 / 运行日志与公开接口日志页面可按 mockdata / 造数
-// 关键字检索；上游响应模型三条对比 trace 由本域提供审计侧 payload）。
+// 「验证点」（审计 / 操作与公开接口日志页面可按 mockdata / 造数关键字检索；
+// 上游响应模型三条对比 trace 由本域提供审计侧 payload）。
 
 import (
 	"bytes"
@@ -51,17 +49,6 @@ const (
 	observabilityBlobCompressionThresholdBytes = 4 * 1024
 	observabilityBlobCompressionMaxBytes       = 1024 * 1024
 
-	// observabilityRuntimeFacetBucketKey 与 jobs runtimelog / gateway logreads
-	// 的 runtimeLogFacetBucketKey 一致（「当前索引」聚合桶）。
-	observabilityRuntimeFacetBucketKey = "current"
-
-	// 运行日志文件名：满足 jobs runtimelog 的实例日志文件模式
-	// （juhe-ai.<instance>.log / juhe-ai.<role>.<instance>.log），并带 mockdata
-	// 实例名避免与真实实例日志混淆。PG 形态只写索引行的 log_file 文本，不写
-	// 物理文件。
-	observabilityServerLogFile = "juhe-ai.mockdata-server.log"
-	observabilityWorkerLogFile = "juhe-ai.stats-worker.mockdata-dev.log"
-
 	// 内置外部来源系统与测试 Token（maintenance/internal/schema seed 与
 	// gateway/internal/aipublic 同名常量）：is_test_token 的判定就是「来源 id
 	// 命中该常量」。
@@ -74,7 +61,7 @@ const (
 	observabilitySearchTermLimit    = 400
 )
 
-// seedObservability 是可观测域入口：五个子段各自独立判存、独立跳过。任一子段
+// seedObservability 是可观测域入口：四个子段各自独立判存、独立跳过。任一子段
 // 写入失败即整体失败（半批数据比没有更难排查）；属主表缺失只跳过对应子段。
 func seedObservability(ctx context.Context, e *env) (DomainResult, error) {
 	now := e.options.clock().UTC()
@@ -86,7 +73,6 @@ func seedObservability(ctx context.Context, e *env) (DomainResult, error) {
 	}{
 		{"审计日志", func() error { return observabilitySeedAuditLogs(ctx, e, refs, now, counts) }},
 		{"操作日志", func() error { return observabilitySeedOperationLogs(ctx, e, refs, now, counts) }},
-		{"运行日志", func() error { return observabilitySeedRuntimeLogs(ctx, e, now, counts) }},
 		{"公开接口日志", func() error { return observabilitySeedPublicAPILogs(ctx, e, refs, now, counts) }},
 		{"后台清理目标", func() error { return observabilitySeedRecordCleanupTargets(ctx, e, refs, now, counts) }},
 	}
@@ -1796,421 +1782,6 @@ func observabilityIsSearchRune(char rune) bool {
 	default:
 		return false
 	}
-}
-
-// ---------------------------------------------------------------------------
-// 运行日志（runtime_log 属主存储：runtime_logs / runtime_log_facet_summary /
-// runtime_log_level_facets / runtime_log_event_facets）
-// ---------------------------------------------------------------------------
-
-// observabilityRuntimeLine 是一条运行日志索引行（PG 形态没有日志目录契约，只
-// 写索引行与 raw_json 文本，不写物理文件与文件游标）。
-type observabilityRuntimeLine struct {
-	FileName     string
-	At           time.Time
-	Level        string
-	TraceID      string
-	Event        string
-	Message      string
-	Fields       map[string]any
-	ErrorMessage string
-}
-
-// observabilityRuntimeServerEvents 是 server 角色的请求 summary 事件序列：事件
-// 名与字段取自 gateway/internal/kernel 的 http_request_completed / closed。
-var observabilityRuntimeServerEvents = []struct {
-	Level    string
-	Event    string
-	Message  string
-	Method   string
-	Path     string
-	Status   int
-	Failure  string
-	Duration int
-}{
-	{Level: "info", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/chat/completions", Status: 200, Duration: 812},
-	{Level: "info", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/responses", Status: 200, Duration: 1543},
-	{Level: "warn", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/chat/completions", Status: 429, Failure: "gateway", Duration: 96},
-	{Level: "error", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "GET", Path: "/v1/models", Status: 500, Failure: "gateway", Duration: 204},
-	{Level: "warn", Event: "gateway_upstream_response_failed", Message: "上游返回非成功状态", Method: "POST", Path: "/v1/chat/completions", Status: 502, Failure: "upstream", Duration: 1877},
-	{Level: "error", Event: "http_request_closed", Message: "HTTP 请求已断开", Method: "POST", Path: "/v1/images/generations", Status: 499, Failure: "downstream", Duration: 4201},
-	// 媒体请求日志样本（媒体契约 §3.4）：同步音频与视频任务创建。
-	{Level: "info", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/audio/speech", Status: 200, Duration: 2210},
-	{Level: "info", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/videos", Status: 200, Duration: 310},
-}
-
-// observabilityRuntimeWorkerEvents 是 stats-worker 角色的定时任务事件序列：事件
-// 名与字段取自 jobs/internal/retention 与 jobs/internal/usagespooldrain。
-var observabilityRuntimeWorkerEvents = []struct {
-	Level   string
-	Event   string
-	Message string
-	Fields  map[string]any
-	Error   string
-}{
-	{
-		Level: "info", Event: "data_retention_cleanup_completed", Message: "数据保留清理完成",
-		Fields: map[string]any{"batchSize": 500, "maxBatches": 20, "workerRole": "stats-worker", "usageStats": 1200, "usageRecords": 8400},
-	},
-	{
-		Level: "info", Event: "record_maintenance_usage_records_cleanup_completed", Message: "使用记录后台清理完成",
-		Fields: map[string]any{"jobId": CleanupIDPrefix + "record_maintenance_job_usage", "deletedRows": 320, "batches": 2, "hasMore": false},
-	},
-	{
-		Level: "warn", Event: "public_api_log_queue_overflow", Message: "公开接口日志队列已满，丢弃日志记录",
-		Fields: map[string]any{"itemBytes": 1408, "droppedPublicApiLogCount": 100, "path": "/__aipublic__/api-key/list"},
-	},
-	{
-		Level: "info", Event: "background_api_key_record_cleanup_retry_completed", Message: "API Key 关联数据清理重试完成",
-		Fields: map[string]any{"jobId": CleanupIDPrefix + "record_maintenance_job_api_key", "attemptCount": 1, "deletedRows": 14},
-	},
-	{
-		Level: "error", Event: "public_api_log_batch_write_failed", Message: "公开接口日志批量写入失败，已保留批次等待重试",
-		Fields: map[string]any{"batchSize": 64, "batchBytes": 98304, "pendingCount": 64, "path": "/__aipublic__/account/list", "statusCode": 200},
-		Error:  CleanupNamePrefix + "模拟批次写入失败",
-	},
-	{
-		Level: "error", Event: "usage_record_spool_flush_failed", Message: "usage spool 投递失败，已保留文件等待重试",
-		Fields: map[string]any{"usageRecordId": CleanupIDPrefix + "usage_spool_record", "attemptCount": 3},
-		Error:  CleanupNamePrefix + "模拟 spool 投递失败",
-	},
-}
-
-// observabilityBuildRuntimeLines 生成近 Days 天的运行日志行（server / worker 两
-// 个逻辑文件各一份），按文件名与时间排序保证写入顺序稳定。
-func observabilityBuildRuntimeLines(e *env, now time.Time) []observabilityRuntimeLine {
-	days := e.options.Days
-	lines := make([]observabilityRuntimeLine, 0, days*8)
-	index := 0
-	for _, dayIndex := range observabilityDayIndexes(days) {
-		dayStart := observabilityDayStart(now).AddDate(0, 0, -(days - 1 - dayIndex))
-		for rowIndex := 0; rowIndex < 4; rowIndex++ {
-			sample := observabilityRuntimeServerEvents[(dayIndex*4+rowIndex)%len(observabilityRuntimeServerEvents)]
-			at := observabilitySpread(now, dayStart, rowIndex, 5)
-			lines = append(lines, observabilityRuntimeLine{
-				FileName: observabilityServerLogFile,
-				At:       at, Level: sample.Level,
-				TraceID: CleanupTracePrefix + "runtime-" + at.Format("20060102") + "-" + fmt.Sprintf("%03d", index+1),
-				Event:   sample.Event, Message: sample.Message,
-				Fields: map[string]any{
-					"requestId":         CleanupIDPrefix + "request_" + fmt.Sprintf("%03d", index+1),
-					"method":            sample.Method,
-					"path":              sample.Path,
-					"originalUrl":       sample.Path,
-					"clientIp":          fmt.Sprintf("172.20.%d.%d", index%16, 20+(index%180)),
-					"durationMs":        sample.Duration,
-					"responseCommitted": true,
-					"statusCode":        sample.Status,
-					"failureScope":      sample.Failure,
-				},
-			})
-			index++
-		}
-		for rowIndex := 0; rowIndex < 4; rowIndex++ {
-			sample := observabilityRuntimeWorkerEvents[(dayIndex*4+rowIndex)%len(observabilityRuntimeWorkerEvents)]
-			at := observabilitySpread(now, dayStart, rowIndex+1, 6)
-			fields := map[string]any{}
-			for key, value := range sample.Fields {
-				fields[key] = value
-			}
-			lines = append(lines, observabilityRuntimeLine{
-				FileName: observabilityWorkerLogFile,
-				At:       at, Level: sample.Level, Event: sample.Event, Message: sample.Message,
-				Fields: fields, ErrorMessage: sample.Error,
-			})
-		}
-	}
-	sort.SliceStable(lines, func(left, right int) bool {
-		if lines[left].FileName != lines[right].FileName {
-			return lines[left].FileName < lines[right].FileName
-		}
-		return lines[left].At.Before(lines[right].At)
-	})
-	return lines
-}
-
-// observabilityRuntimeLineJSON 把一行渲染成 slog JSON 形态（单行、稳定键序）。
-// 固定键在前才能与真实日志在字符层面同形；字段值仍走 json.Marshal 保证转义正确。
-func observabilityRuntimeLineJSON(line observabilityRuntimeLine) (string, error) {
-	var builder strings.Builder
-	builder.WriteString(`{"time":`)
-	if err := observabilityWriteJSONValue(&builder, line.At.Format(isoMillisLayout)); err != nil {
-		return "", err
-	}
-	builder.WriteString(`,"level":`)
-	if err := observabilityWriteJSONValue(&builder, strings.ToUpper(line.Level)); err != nil {
-		return "", err
-	}
-	builder.WriteString(`,"msg":`)
-	if err := observabilityWriteJSONValue(&builder, line.Message); err != nil {
-		return "", err
-	}
-	if line.Event != "" {
-		builder.WriteString(`,"event":`)
-		if err := observabilityWriteJSONValue(&builder, line.Event); err != nil {
-			return "", err
-		}
-	}
-	if line.TraceID != "" {
-		builder.WriteString(`,"traceId":`)
-		if err := observabilityWriteJSONValue(&builder, line.TraceID); err != nil {
-			return "", err
-		}
-	}
-	keys := make([]string, 0, len(line.Fields))
-	for key := range line.Fields {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		builder.WriteString(",")
-		if err := observabilityWriteJSONValue(&builder, key); err != nil {
-			return "", err
-		}
-		builder.WriteString(":")
-		if err := observabilityWriteJSONValue(&builder, line.Fields[key]); err != nil {
-			return "", err
-		}
-	}
-	if line.ErrorMessage != "" {
-		builder.WriteString(`,"err":{"message":`)
-		if err := observabilityWriteJSONValue(&builder, line.ErrorMessage); err != nil {
-			return "", err
-		}
-		builder.WriteString("}")
-	}
-	builder.WriteString("}")
-	return builder.String(), nil
-}
-
-// observabilityWriteJSONValue 把值编码成 JSON 片段写入 builder（编码失败即错）。
-func observabilityWriteJSONValue(builder *strings.Builder, value any) error {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("编码运行日志字段 %v: %w", value, err)
-	}
-	builder.Write(encoded)
-	return nil
-}
-
-// observabilityRuntimeLogID 生成索引行 id：带清理标识 + 内容摘要。不复刻 jobs
-// runtimelog 的 rtlog_<identity:offset> 算法：文件身份（inode / file index）只有
-// 索引进程能拿到；带清理标识的 id 保证清理扫描收敛，重复执行不叠加。
-func observabilityRuntimeLogID(line observabilityRuntimeLine, raw string) string {
-	sum := sha256.Sum256([]byte(line.FileName + "\x00" + raw))
-	return CleanupIDPrefix + "rtlog_" + hex.EncodeToString(sum[:])[:32]
-}
-
-// observabilitySeedRuntimeLogs 写运行日志索引行并重建分面（facet 汇总表）。
-//
-// 时间列逐列对照 DDL：runtime_logs.time / created_at 与分面表的
-// earliest_time / latest_time / updated_at 都是 timestamptz，全部写 time.Time。
-// runtime_log_file_cursors 是文件读取游标（属主游标族）：PG 形态不写物理日志
-// 文件，造数不伪造读取进度，该表保持为空（覆盖白名单按属主游标族放行）。
-func observabilitySeedRuntimeLogs(ctx context.Context, e *env, now time.Time, counts map[string]int) error {
-	ready, err := observabilityTablesReady(ctx, e, "运行日志", "runtime_logs",
-		"runtime_log_facet_summary", "runtime_log_level_facets", "runtime_log_event_facets")
-	if err != nil {
-		return err
-	}
-	if !ready {
-		return nil
-	}
-	lines := observabilityBuildRuntimeLines(e, now)
-	rendered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		raw, err := observabilityRuntimeLineJSON(line)
-		if err != nil {
-			return err
-		}
-		rendered = append(rendered, raw)
-	}
-	return e.tx(ctx, func(tx *sql.Tx) error {
-		for i, line := range lines {
-			if err := e.insertMapTx(ctx, tx, obsTable("runtime_logs"), map[string]any{
-				"id":            observabilityRuntimeLogID(line, rendered[i]),
-				"log_file":      line.FileName,
-				"time":          line.At,
-				"level":         strings.ToLower(line.Level),
-				"raw_json":      rendered[i],
-				"trace_id":      nullString(line.TraceID),
-				"event":         nullString(line.Event),
-				"message":       nullString(line.Message),
-				"error_message": nullString(line.ErrorMessage),
-				"created_at":    line.At,
-			}); err != nil {
-				return err
-			}
-		}
-		summaryRows, levelRows, eventRows, err := observabilityRebuildRuntimeFacets(ctx, e, tx, now)
-		if err != nil {
-			return err
-		}
-		observabilityAdd(counts, "runtimeLogs", len(lines))
-		observabilityAdd(counts, "runtimeLogFacetSummary", summaryRows)
-		observabilityAdd(counts, "runtimeLogLevelFacets", levelRows)
-		observabilityAdd(counts, "runtimeLogEventFacets", eventRows)
-		return nil
-	})
-}
-
-// observabilityRebuildRuntimeFacets 从 runtime_logs 重算分面表并返回写入行数。
-//
-// 为什么重算而不是增量累加：分面是「索引行数的聚合视图」（total_count 与
-// level / event 计数始终保持与表一致）；增量累加会在重复执行时重复计数，重算
-// 既幂等，也不会破坏索引进程已记录的其它行。earliest / latest 同样从表里取，
-// 避免造数把分面时间窗写歪。
-func observabilityRebuildRuntimeFacets(ctx context.Context, e *env, tx *sql.Tx, now time.Time) (summaryRows, levelRows, eventRows int, err error) {
-	var total int
-	var earliest, latest sql.NullTime
-	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*), MIN(time), MAX(time) FROM "+obsTable("runtime_logs")).Scan(&total, &earliest, &latest); err != nil {
-		return 0, 0, 0, fmt.Errorf("统计 %s: %w", obsTable("runtime_logs"), err)
-	}
-	if total == 0 {
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM "+obsTable("runtime_log_facet_summary")+" WHERE bucket_key = $1",
-			observabilityRuntimeFacetBucketKey); err != nil {
-			return 0, 0, 0, fmt.Errorf("清理空分面汇总: %w", err)
-		}
-	} else {
-		earliestValue, latestValue := observabilityNullTime(earliest), observabilityNullTime(latest)
-		if err := e.insertMapTx(ctx, tx, obsTable("runtime_log_facet_summary"), map[string]any{
-			"bucket_key":    observabilityRuntimeFacetBucketKey,
-			"total_count":   total,
-			"earliest_time": earliestValue,
-			"latest_time":   latestValue,
-			"updated_at":    now,
-		}); err != nil {
-			return 0, 0, 0, err
-		}
-		summaryRows = 1
-	}
-	if levelRows, err = observabilityRebuildRuntimeLevelFacets(ctx, e, tx, now); err != nil {
-		return summaryRows, 0, 0, err
-	}
-	if eventRows, err = observabilityRebuildRuntimeEventFacets(ctx, e, tx, now); err != nil {
-		return summaryRows, levelRows, 0, err
-	}
-	return summaryRows, levelRows, eventRows, nil
-}
-
-// observabilityRebuildRuntimeLevelFacets 重算 level 分面（并按当前级别集合清理）。
-//
-// 先收集后写入：insertMapTx 需要在同一事务连接上查询主键，不能在未读完的
-// rows 迭代里再发查询（pgx 连接忙）。
-func observabilityRebuildRuntimeLevelFacets(ctx context.Context, e *env, tx *sql.Tx, now time.Time) (int, error) {
-	rows, err := tx.QueryContext(ctx,
-		"SELECT level, COUNT(*) FROM "+obsTable("runtime_logs")+" GROUP BY level")
-	if err != nil {
-		return 0, fmt.Errorf("统计 %s level: %w", obsTable("runtime_logs"), err)
-	}
-	type levelCount struct {
-		level string
-		count int
-	}
-	levels := make([]levelCount, 0, 6)
-	for rows.Next() {
-		var item levelCount
-		if err := rows.Scan(&item.level, &item.count); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("统计 %s level: %w", obsTable("runtime_logs"), err)
-		}
-		levels = append(levels, item)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, fmt.Errorf("统计 %s level: %w", obsTable("runtime_logs"), err)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("统计 %s level: %w", obsTable("runtime_logs"), err)
-	}
-	names := make([]string, 0, len(levels))
-	for _, item := range levels {
-		names = append(names, item.level)
-	}
-	for _, item := range levels {
-		if err := e.insertMapTx(ctx, tx, obsTable("runtime_log_level_facets"), map[string]any{
-			"bucket_key": observabilityRuntimeFacetBucketKey,
-			"level":      item.level,
-			"count":      item.count,
-			"updated_at": now,
-		}); err != nil {
-			return 0, err
-		}
-	}
-	return len(levels), observabilityPruneFacetRows(ctx, tx, "runtime_log_level_facets", "level", names)
-}
-
-// observabilityRebuildRuntimeEventFacets 重算 event 分面（含 latest_time）。
-func observabilityRebuildRuntimeEventFacets(ctx context.Context, e *env, tx *sql.Tx, now time.Time) (int, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT event, COUNT(*), MAX(time) FROM `+obsTable("runtime_logs")+`
-		WHERE event IS NOT NULL AND event <> '' GROUP BY event`)
-	if err != nil {
-		return 0, fmt.Errorf("统计 %s event: %w", obsTable("runtime_logs"), err)
-	}
-	type eventCount struct {
-		event  string
-		count  int
-		latest sql.NullTime
-	}
-	events := make([]eventCount, 0, 16)
-	for rows.Next() {
-		var item eventCount
-		if err := rows.Scan(&item.event, &item.count, &item.latest); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("统计 %s event: %w", obsTable("runtime_logs"), err)
-		}
-		events = append(events, item)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, fmt.Errorf("统计 %s event: %w", obsTable("runtime_logs"), err)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("统计 %s event: %w", obsTable("runtime_logs"), err)
-	}
-	names := make([]string, 0, len(events))
-	for _, item := range events {
-		names = append(names, item.event)
-	}
-	for _, item := range events {
-		if err := e.insertMapTx(ctx, tx, obsTable("runtime_log_event_facets"), map[string]any{
-			"bucket_key":  observabilityRuntimeFacetBucketKey,
-			"event":       item.event,
-			"count":       item.count,
-			"latest_time": observabilityNullTime(item.latest),
-			"updated_at":  now,
-		}); err != nil {
-			return 0, err
-		}
-	}
-	return len(events), observabilityPruneFacetRows(ctx, tx, "runtime_log_event_facets", "event", names)
-}
-
-// observabilityPruneFacetRows 删除当前集合之外的分面行（分面是表的聚合视图）。
-func observabilityPruneFacetRows(ctx context.Context, tx *sql.Tx, table, column string, values []string) error {
-	if len(values) == 0 {
-		_, err := tx.ExecContext(ctx,
-			"DELETE FROM "+obsTable(table)+" WHERE bucket_key = $1", observabilityRuntimeFacetBucketKey)
-		if err != nil {
-			return fmt.Errorf("清理分面 %s: %w", obsTable(table), err)
-		}
-		return nil
-	}
-	placeholders := make([]string, len(values))
-	args := make([]any, 0, len(values)+1)
-	args = append(args, observabilityRuntimeFacetBucketKey)
-	for index, value := range values {
-		placeholders[index] = fmt.Sprintf("$%d", index+2)
-		args = append(args, value)
-	}
-	query := "DELETE FROM " + obsTable(table) + " WHERE bucket_key = $1 AND " +
-		quotePGIdentifier(column) + " NOT IN (" + strings.Join(placeholders, ", ") + ")"
-	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-		return fmt.Errorf("清理分面 %s: %w", obsTable(table), err)
-	}
-	return nil
 }
 
 // observabilityNullTime 把可空时间投影成 SQL NULL（PG 分面时间列是 timestamptz）。

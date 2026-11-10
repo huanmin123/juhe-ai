@@ -188,7 +188,7 @@ type Producer struct {
 	cfg   Config
 	log   producerLogger
 
-	queue      chan queuedAudit
+	queue chan queuedAudit
 	// retractQueue 是撤回命令的专用有界队列（DD6-S1, 2026-11-01）。修复前撤回
 	// 命令免预算（bytes=0）并入采集队列、由同一 worker 池分发：存储慢窗内每条
 	// 被丢 finalize 派生的撤回最长占 worker retractWaitBudget（15s），4 个数据
@@ -199,6 +199,10 @@ type Producer struct {
 	start        sync.Once
 	dropped      atomic.Int64
 	queueBytes   atomic.Int64
+	// lastLeaseRenewAt 是 per-record 续租节流点（UnixMilli）：OwnerLease/3
+	// 窗口内只允许一个 worker 真正续租，其余记录直接进入 Persist。审计开启
+	// 时每条记录少一次独立 PG UPDATE；lease keeper 仍按 TTL/3 兜底续租。
+	lastLeaseRenewAt atomic.Int64
 	// persistDuration is the optional push hook for the per-record
 	// persistence latency histogram (result "ok" | "error"); nil keeps the
 	// producer silent.
@@ -841,23 +845,13 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	lease := p.lease.Lease()
-	// Extending the lease per record keeps it alive under write activity
-	// (the LeaseKeeper ticker covers the idle case). A non-positive TTL
-	// would set lease_until to the current instant and self-destruct the
-	// fence, so the renewal is skipped instead — the configured
-	// composition always passes the real owner-lease TTL.
-	if p.cfg.OwnerLease > 0 {
-		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer renewCancel()
-		renewed, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease)
-		if err != nil || !renewed {
-			outcome = "error"
-			p.warn("F3 owner lease renewal failed; dropping audit capture", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
-			// W13 生产复核（2026-10-24）：丢弃采集时该 id 的 in_progress 信封
-			// 行可能已落库，不派发撤回就永久残留空壳；与 Cancel() 同口径。
-			needsRetract = true
-			return
-		}
+	if err := p.renewLeaseIfDue(lease); err != nil {
+		outcome = "error"
+		p.warn("F3 owner lease renewal failed; dropping audit capture", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
+		// W13 生产复核（2026-10-24）：丢弃采集时该 id 的 in_progress 信封
+		// 行可能已落库，不派发撤回就永久残留空壳；与 Cancel() 同口径。
+		needsRetract = true
+		return
 	}
 	persistResult, err := p.store.Persist(ctx, lease, input)
 	if err != nil {
@@ -877,6 +871,39 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	if _, err := p.store.AppendHotSearch(ctx, lease, []AuditLogInput{input}); err != nil {
 		p.warn("F3 audit hot-search append failed", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
 	}
+}
+
+// renewLeaseIfDue 按 OwnerLease/3 节流 per-record 续租；零 TTL 跳过（与
+// 旧行为一致，避免把 lease_until 写成当前时刻自毁 fence）。续租失败时清空
+// 节流点，下一条记录立即重试，不把失败窗口拖到 TTL/3 之后。
+func (p *Producer) renewLeaseIfDue(lease OwnerLease) error {
+	if p.cfg.OwnerLease <= 0 {
+		return nil
+	}
+	interval := p.cfg.OwnerLease / 3
+	if interval <= 0 {
+		interval = p.cfg.OwnerLease
+	}
+	now := time.Now()
+	last := p.lastLeaseRenewAt.Load()
+	if last > 0 && now.UnixMilli()-last < interval.Milliseconds() {
+		return nil
+	}
+	if !p.lastLeaseRenewAt.CompareAndSwap(last, now.UnixMilli()) {
+		return nil
+	}
+	renewCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	renewed, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease)
+	if err != nil {
+		p.lastLeaseRenewAt.Store(0)
+		return err
+	}
+	if !renewed {
+		p.lastLeaseRenewAt.Store(0)
+		return ErrOwnerLeaseLost
+	}
+	return nil
 }
 
 // observePersistDuration reports the per-record persistence latency through

@@ -500,8 +500,8 @@ func (f *fullchainFixture) fullchainCreateGeminiVideoAccount(name, upstreamKey, 
 		"healthCheckConnectionPresetCode": "gemini_native_v1beta",
 		"healthCheckEndpointMode":         "video_create",
 		"healthCheckModel":                "veo-3.1-fast-generate-preview",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
@@ -662,8 +662,8 @@ func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey,
 		"healthCheckConnectionPresetCode": "minimax_media",
 		"healthCheckEndpointMode":         "video_create",
 		"healthCheckModel":                "MiniMax-Hailuo-2.3",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {

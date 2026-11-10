@@ -128,7 +128,7 @@ func TestBug0304EnqueueDurableQueueFullWithoutSpoolReturnsError(t *testing.T) {
 // Enqueue 同款错误形态。
 func TestBug0304EnqueueDurableAfterStopReturnsError(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 4, FlushIntervalMs: 60_000, }
+	config := Config{BatchSize: 4, FlushIntervalMs: 60_000}
 	writer, _ := newTestWriter(t, config, store)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -179,7 +179,7 @@ func TestBug0304EnqueueDurableOversizeTerminalDrop(t *testing.T) {
 func TestBug0304EnqueueDurableAdmitsWhenQueueHasRoom(t *testing.T) {
 	store := &mockStore{}
 	// BatchSize=1：单条即批满立即冲刷，不等 flush ticker，断言确定。
-	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, }
+	config := Config{BatchSize: 1, FlushIntervalMs: 5_000}
 	writer, _ := newTestWriter(t, config, store)
 
 	if err := writer.EnqueueDurable(context.Background(), gatewayInput("durable-1")); err != nil {

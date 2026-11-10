@@ -44,11 +44,16 @@ func TestChainBackgroundProbeDisableClosesCircuitIncidents(t *testing.T) {
 		ON CONFLICT (id) DO NOTHING`, ownerID); err != nil {
 		t.Fatalf("seed owner: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, created_at, updated_at)
+		VALUES ('ven-bgprobe', 'gpt', 'GPT', '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')
+		ON CONFLICT (code) DO NOTHING`); err != nil {
+		t.Fatalf("seed vendor: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id,
-		connection_driver_code, protocol_code, protocol_version, name, type, status,
+		vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, background_probe_enabled,
 		health_check_model, health_check_endpoint_mode, created_at, updated_at)
-		VALUES ($1, $2, 'gpt', 'openai', 'v1', 'bgprobe-close', 'api_key', 'active',
+		VALUES ($1, $2, 'gpt', 'gpt', 'openai', 'v1', 'bgprobe-close', 'api_key', 'active',
 		'cipher', 1, 'm', 'chat_json', '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`,
 		accountID, ownerID); err != nil {
 		t.Fatalf("seed account: %v", err)
@@ -127,8 +132,10 @@ func TestChainBackgroundProbeDisableClosesCircuitIncidents(t *testing.T) {
 		WHERE account_id = $1 AND event_type = 'dispatch_revision_changed' AND status = 'pending'`, accountID).Scan(&outboxEvents); err != nil {
 		t.Fatal(err)
 	}
-	if outboxEvents != 1 {
-		t.Fatalf("pending close events = %d，期望 1", outboxEvents)
+	// 同一 fence 同时写主 circuit 投影与 J3b 投影两行（幂等键相同、
+	// projection_key 不同），是现行设计而非重复事件。
+	if outboxEvents != 2 {
+		t.Fatalf("pending close events = %d，期望 2（主 circuit + J3b 投影）", outboxEvents)
 	}
 
 	// jobs 控制面投影等价单步：认领 → 关闭账户全部 scope → ack 水位回写。

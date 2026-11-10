@@ -25,7 +25,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -1574,10 +1573,6 @@ type localSessionAffinity struct {
 	mu   sync.Mutex
 	ttls map[string]time.Time
 	keys map[string]localAffinityEntry
-	// concurrency 是高并发忙判定读的账户并发事实源（F13：与 engine 并发槽、
-	// high-concurrency 队列共用同一 tracker）；nil（仅组合测试零值）保持
-	// 既往「恒不忙」显式降级。
-	concurrency gatewaydispatch.AccountConcurrencyStore
 }
 
 type localAffinityEntry struct {
@@ -1670,6 +1665,34 @@ func (a *localSessionAffinity) RememberAsync(_ context.Context, sessionAffinityK
 	a.ttls[sessionAffinityKey] = time.Now().Add(localSessionAffinityTTL)
 }
 
+// RebindAsync 实现 gatewaydispatch.SessionAffinityRebindPort 的测试/降级面：
+// 生产 Redis 驱动走 chainSessionAffinityDispatchPort（30 分钟 lease + CAS）；
+// 本进程内实现只做 expected-owner 守卫与 owner 替换，不维护 lease 过期，
+// 保持测试/组合降级可运行。owner 变化时清除旧 Key 指纹。
+func (a *localSessionAffinity) RebindAsync(_ context.Context, sessionAffinityKey, expectedOwner, newOwner string, scope gatewaydispatch.AffinityScope) bool {
+	if sessionAffinityKey == "" || newOwner == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.expired(sessionAffinityKey) {
+		if entry, ok := a.keys[sessionAffinityKey]; ok && entry.accountID != "" {
+			if entry.accountID != expectedOwner {
+				return false
+			}
+			a.keys[sessionAffinityKey] = localAffinityEntry{accountID: newOwner, scopeKey: scope.GroupID}
+			a.ttls[sessionAffinityKey] = time.Now().Add(localSessionAffinityTTL)
+			return true
+		}
+	}
+	if expectedOwner != "" {
+		return false
+	}
+	a.keys[sessionAffinityKey] = localAffinityEntry{accountID: newOwner, scopeKey: scope.GroupID}
+	a.ttls[sessionAffinityKey] = time.Now().Add(localSessionAffinityTTL)
+	return true
+}
+
 // StickyApiKeyFingerprintAsync 返回会话黏住的上游 Key 指纹：记录缺失、过期或
 // owner 不匹配返回空串（降级为无黏性）；读不刷新 TTL（与 Redis 路径一致）。
 func (a *localSessionAffinity) StickyApiKeyFingerprintAsync(_ context.Context, sessionAffinityKey, accountID string) string {
@@ -1724,58 +1747,6 @@ func (a *localSessionAffinity) ForgetAsync(_ context.Context, sessionAffinityKey
 	return nil
 }
 
-// AreHighConcurrencyAccountsBusyForLaneAsync mirrors
-// areOpenAIHighConcurrencyAccountsBusyForLaneAsync
-// (backend/src/modules/gateway/runtime/session-affinity.service.ts:273-330):
-// only high-concurrency groups with a non-empty candidate set can be busy;
-// busy means every candidate has exhausted its concurrency — total current
-// concurrency >= hard limit, or, for image-lane requests, image-lane current
-// >= EffectiveImageLaneConcurrencyLimit(gatewayhotquality, policy 收紧).
-// 采用活计数版（Redis 驱动语义）：总并发与 lane 并发都读注入的并发事实源，
-// 与 engine 并发槽 / high-concurrency 队列共用同一 tracker（F13 确立）。
-// nil store（仅组合测试零值）保持既往「恒不忙」显式降级。
-func (a *localSessionAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []gatewaydispatch.AccountCandidate, options gatewaydispatch.HighConcurrencyBusyOptions) (bool, error) {
-	if a.concurrency == nil || options.GroupType != "high_concurrency" || len(accounts) == 0 {
-		return false, nil
-	}
-	ids := make([]string, 0, len(accounts))
-	limits := make(map[string]int, len(accounts))
-	for _, account := range accounts {
-		ids = append(ids, account.ID)
-		limit := account.ConcurrencyLimit
-		if limit < 1 {
-			limit = 1
-		}
-		limits[account.ID] = limit
-	}
-	current, err := a.concurrency.LoadCurrentAsync(ctx, ids)
-	if err != nil {
-		return false, err
-	}
-	laneCurrent := map[string]int{}
-	if options.RequestLane == "image" {
-		if laneCurrent, err = a.concurrency.LoadCurrentByLaneAsync(ctx, ids, "image"); err != nil {
-			return false, err
-		}
-	}
-	var policy gatewayruntimecache.GroupSchedulingPolicy
-	if options.SchedulingPolicy != nil {
-		policy = *options.SchedulingPolicy
-	}
-	for _, account := range accounts {
-		limit := limits[account.ID]
-		totalBusy := current[account.ID] >= limit
-		if !totalBusy && options.RequestLane == "image" {
-			laneLimit := gatewayhotquality.EffectiveImageLaneConcurrencyLimit(limit, policy)
-			totalBusy = laneCurrent[account.ID] >= laneLimit
-		}
-		if !totalBusy {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 // ---------------------------------------------------------------------------
 // disabled collaborators (explicit, logged, Node-absent-runtime semantics)
 // ---------------------------------------------------------------------------
@@ -1820,22 +1791,6 @@ func (d *disabledDegradation) OrderWithLaneAsync(_ context.Context, accounts []g
 
 func (d *disabledDegradation) OrderSync(accounts []gatewaydispatch.AccountCandidate, _ *gatewayrouting.GatewayAccountModelPriority) gatewaydispatch.DegradationOrder {
 	return gatewaydispatch.DegradationOrder{Accounts: accounts}
-}
-
-// degradedHighConcurrencyQueue keeps the ordinary capacity semantics when the
-// composition root has no group queue (组合测试专用降级；生产组合根必须装配
-// gatewayclientip 队列——E2E-FINDING #5：队列缺席时引擎的等待调用曾直接
-// nil panic）。Ready=true 表示允许按既有候选顺序继续重试容量，与文档
-// 「快速失败优先于无限排队」的缺席语义一致：没有队列就不排队。
-type degradedHighConcurrencyQueue struct {
-	once sync.Once
-}
-
-func (d *degradedHighConcurrencyQueue) WaitForCapacity(_ context.Context, _ gatewaydispatch.HighConcurrencyWaitInput) (gatewaydispatch.QueueWaitResult, error) {
-	d.once.Do(func() {
-		slog.Warn("网关链端口显式降级", "port", "gatewaydispatch.HighConcurrencyWaiter", "effect", "分组队列缺席，按普通容量语义立即放行")
-	})
-	return gatewaydispatch.QueueWaitResult{Ready: true}, nil
 }
 
 // disabledAccountLocks answers with unlocked accounts (Node: lock owner

@@ -674,9 +674,12 @@ func TestW1G2F4OperationLogLegacyPostgresMigration(t *testing.T) {
 
 	w1bBuildCoverBinary(t)
 	coverageDir := w1bCoverageDir(t, "W1G2-f4-pg-migrate")
+	// 统一配置契约：operationlog.LoadConfig 只读 JUHE_AI_POSTGRES_URL（独立
+	// OPERATION_LOG_POSTGRES_URL / OPERATION_LOG_STORE 键已退役，注入无效）；
+	// 迁移子进程必须显式指向本夹具库，否则回落 w1bScenarioEnv 的隔离基线库
+	// （无 juhe_dataset.operation_logs）导致迁移误报表缺失。
 	env := w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_OPERATION_LOG_STORE=postgres",
-		"JUHE_AI_OPERATION_LOG_POSTGRES_URL="+tempAppURL,
+		"JUHE_AI_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1g2-f4-pg-migrate")
 	stdout, stderr, code := w1bRunScenario(t, "W1G2-f4-pg-migrate", env,
 		"-migrate-operation-log-legacy-postgres",

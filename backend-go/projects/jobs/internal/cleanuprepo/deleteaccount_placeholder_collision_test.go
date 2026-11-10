@@ -1,6 +1,5 @@
 package cleanuprepo
 
-
 import (
 	"fmt"
 	"strings"

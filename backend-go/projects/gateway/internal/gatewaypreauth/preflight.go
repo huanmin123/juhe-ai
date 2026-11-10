@@ -86,6 +86,20 @@ type DispatchContext struct {
 	Accounts              []gatewayruntimecache.OpenAIAccountSecret
 	SessionIdentity       SessionIdentity
 	SessionAffinityKey    string
+	// SessionAffinityOwnerAccountID 是准备期 claim 的账户亲和 owner（同层
+	// latch 的 expectedOwner）；空串 = 无会话键/claim 失败。
+	SessionAffinityOwnerAccountID string
+	// SessionAffinityOwnerBusy 表示准备期 owner 已硬并发繁忙；派发可能直接成功
+	// 在其他同层账户上，最终结算需按“owner 容量不可用”处理。
+	SessionAffinityOwnerBusy bool
+	// SessionAffinityOwnerSoftBusy 表示准备期 owner 达到普通分组软阈值；
+	// 同层后继成功时按 soft_threshold 重绑。
+	SessionAffinityOwnerSoftBusy bool
+	// SessionAffinitySlotFallback / SessionAffinityWaitPlanned /
+	// SessionAffinityWaitRemainingMs 是名额规划与共享等待预算。
+	SessionAffinitySlotFallback    bool
+	SessionAffinityWaitPlanned     bool
+	SessionAffinityWaitRemainingMs int64
 	// GroupAffinityKey / RouteStrategyID 承载组级会话黏性的写回与删除上下文
 	// （策略路由分组会话亲和设计 §5.1）：键空串 = 范围外（无会话键 / 模式不
 	// 在范围 / 绑定数不足 / 功能未装配）。策略 ID 与键计算时的 apiKeyRecord
@@ -1190,6 +1204,12 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Accounts:                                 dispatchPreparation.Accounts,
 		SessionIdentity:                          sessionIdentity,
 		SessionAffinityKey:                       sessionAffinityKey,
+		SessionAffinityOwnerAccountID:            dispatchPreparation.SessionAffinityOwnerAccountID,
+		SessionAffinityOwnerBusy:                 dispatchPreparation.SessionAffinityOwnerBusy,
+		SessionAffinityOwnerSoftBusy:             dispatchPreparation.SessionAffinityOwnerSoftBusy,
+		SessionAffinitySlotFallback:              dispatchPreparation.SessionAffinitySlotFallback,
+		SessionAffinityWaitPlanned:               dispatchPreparation.SessionAffinityWaitPlanned,
+		SessionAffinityWaitRemainingMs:           dispatchPreparation.SessionAffinityWaitRemainingMs,
 		GroupAffinityKey:                         groupAffinityKey,
 		RouteStrategyID:                          recordRouteStrategyID(apiKeyRecord),
 		ClientStrategy:                           clientStrategy,

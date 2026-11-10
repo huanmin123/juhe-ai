@@ -86,10 +86,6 @@ func queryIntegerValue(value any) *int {
 	return openaicompatcore.QueryIntegerValue(value)
 }
 
-func intFromFloat(number float64) *int {
-	return openaicompatcore.IntFromFloat(number)
-}
-
 func queryNumberValue(value any) *float64 {
 	return openaicompatcore.QueryNumberValue(value)
 }

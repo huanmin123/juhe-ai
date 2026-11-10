@@ -469,7 +469,7 @@ func TestUsageModelResolverRequiresSourceEndpointFamily(t *testing.T) {
 // RecordFailedUpstreamAttemptInput，服务层映射记账才能命中。
 func TestUsageAttemptRecorderAdapterFailedAttemptCarriesSourceEndpointFamily(t *testing.T) {
 	recorder := &capturingUsageRecorder{}
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, 64, 1)
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 64, 1)
 	catalog := &accountingPricingCatalog{}
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithModelResolver(usageModelResolverAdapter{}).

@@ -111,7 +111,6 @@ var SystemSettingKeys = []string{
 	"oauthAccessTokenRefreshBatchSize",
 	"oauthAccessTokenRefreshRetryBackoffSeconds",
 	"modelCheckRetentionDays",
-	"runtimeLogIndexRetentionDays",
 	"publicApiLogRetentionDays",
 	"usageRecordRetentionDays",
 	"usageStatsTimezone",
@@ -124,14 +123,6 @@ var SystemSettingKeys = []string{
 	"upstreamClientVersionOverrides",
 	"upstreamClientVersionAutoOverrides",
 }
-
-var systemSettingKeySet = func() map[string]bool {
-	set := make(map[string]bool, len(SystemSettingKeys))
-	for _, key := range SystemSettingKeys {
-		set[key] = true
-	}
-	return set
-}()
 
 // settingSpec mirrors one SYSTEM_SETTING_VALIDATORS entry: an integer with a
 // closed range, the timezone validator, or the upstreamClientVersionOverrides
@@ -211,7 +202,6 @@ var systemSettingSpecs = map[string]settingSpec{
 	"oauthAccessTokenRefreshBatchSize":           {integer: true, min: 1, max: 200},
 	"oauthAccessTokenRefreshRetryBackoffSeconds": {integer: true, min: 0, max: 86400},
 	"modelCheckRetentionDays":                    {integer: true, min: 1, max: 365},
-	"runtimeLogIndexRetentionDays":               {integer: true, min: 1, max: 90},
 	"publicApiLogRetentionDays":                  {integer: true, min: 1, max: 365},
 	"usageRecordRetentionDays":                   {integer: true, min: 1, max: 180},
 	"usageStatsTimezone":                         {integer: false},
@@ -356,7 +346,6 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 	}},
 	"data-retention": {Domain: settingsSectionDomainSystem, Keys: []string{
 		"usageRecordRetentionDays",
-		"runtimeLogIndexRetentionDays",
 		"publicApiLogRetentionDays",
 	}},
 	// log-retention（2026-10-02 日志与审计设置）：审计 retention 四键收编为

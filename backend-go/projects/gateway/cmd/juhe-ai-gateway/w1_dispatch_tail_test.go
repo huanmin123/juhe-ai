@@ -31,7 +31,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
@@ -636,13 +635,13 @@ func w1xSeedAuthzRow(t *testing.T, db *sql.DB, resourceType, id, resourceID, gra
 func TestW1XResolveGroupAccessArms(t *testing.T) {
 	ctx := context.Background()
 
-	// 高并发分组缺策略 JSON：解析失败。
+	// legacy high_concurrency 行缺策略 JSON：读路径报错（与迁移 needs_review 同口径）。
 	fixture, _ := w1xSelectorAuthzFixture(t)
 	if _, err := fixture.db.Exec(`UPDATE groups SET group_type = 'high_concurrency', scheduling_policy_json = NULL WHERE id = 'w1x-grp'`); err != nil {
 		t.Fatalf("update group: %v", err)
 	}
 	if _, err := fixture.resolveGroupAccess(ctx, "w1x-grp", "sys_owner"); err == nil {
-		t.Fatal("高并发分组缺策略必须报错")
+		t.Fatal("legacy 分组缺策略必须报错")
 	}
 
 	// 授权组：resource_authorizations 表缺失 -> 授权读取报错。
@@ -671,17 +670,18 @@ func TestW1XResolveGroupAccessArms(t *testing.T) {
 		t.Fatalf("授权组 personal 回退 = (%+v, %v)", meta, err)
 	}
 
-	// 授权组：本地 high_concurrency 策略非法 JSON -> 报错。
+	// 授权组：本地设置里的旧类型/策略列已退役，非法 JSON 不再读取。
 	fixture, _ = w1xSelectorAuthzFixture(t)
 	w1xSeedAuthzRow(t, fixture.db, "group", "w1x-authz", "w1x-grp", "sys_other")
 	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 1, 'high_concurrency', 'not-json')`); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
-	if _, err := fixture.resolveGroupAccess(ctx, "w1x-grp", "sys_other"); err == nil {
-		t.Fatal("本地策略非法 JSON 必须报错")
+	meta, err = fixture.resolveGroupAccess(ctx, "w1x-grp", "sys_other")
+	if err != nil || meta == nil || meta.GroupType == nil || *meta.GroupType != "personal" || meta.SchedulingPolicy != nil {
+		t.Fatalf("授权本地旧覆盖必须被忽略 = (%+v, %v)", meta, err)
 	}
 
-	// 授权组：本地 high_concurrency 策略合法 -> 授权元数据带配额与来源。
+	// 授权组：本地旧策略列合法也不参与运行 -> 授权元数据仍带配额与来源，策略来自来源分组。
 	fixture, _ = w1xSelectorAuthzFixture(t)
 	w1xSeedAuthzRow(t, fixture.db, "group", "w1x-authz", "w1x-grp", "sys_other")
 	if _, err := fixture.db.Exec(`UPDATE resource_authorizations SET limits_json = '{"hourly":{"enabled":true}}' WHERE id = 'w1x-authz'`); err != nil {
@@ -691,7 +691,7 @@ func TestW1XResolveGroupAccessArms(t *testing.T) {
 		t.Fatalf("seed settings: %v", err)
 	}
 	meta, err = fixture.resolveGroupAccess(ctx, "w1x-grp", "sys_other")
-	if err != nil || meta == nil {
+	if err != nil || meta == nil || meta.SchedulingPolicy != nil {
 		t.Fatalf("授权组 high_concurrency = (%+v, %v)", meta, err)
 	}
 	if meta.GroupAuthorizationQuotaLimited == nil || !*meta.GroupAuthorizationQuotaLimited {
@@ -1464,19 +1464,6 @@ func TestW1XCacheBindingRowOfAndConcurrencyError(t *testing.T) {
 		t.Fatalf("缓存行投影错误: %+v", row)
 	}
 
-	// 并发槽：非法调度策略必须报错。
-	slots, err := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{})
-	if err != nil {
-		t.Fatalf("create client ip concurrency: %v", err)
-	}
-	t.Cleanup(slots.Close)
-	adapter := newChainClientIPConcurrency(slots)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"maxQueueSize": 0}
-	if _, err := adapter.Acquire(context.Background(), gatewaydispatch.ClientIPConcurrencyInput{
-		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key", ClientIP: "1.2.3.4", Policy: &policy,
-	}); err == nil {
-		t.Fatal("非法 maxQueueSize 必须报错")
-	}
 }
 
 func TestW1XAccountCircuitServiceForkArms(t *testing.T) {
@@ -1719,7 +1706,7 @@ func TestW1XHotQualityLifecycleMarkFirstByte(t *testing.T) {
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisURL:  "redis://" + server.Addr(),
+		RedisURL:       "redis://" + server.Addr(),
 		RedisNamespace: "w1x-hot-quality",
 	})
 	if err != nil {
@@ -1840,13 +1827,17 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 		t.Fatalf("候选上限越界必须报选择器错误: %v", err)
 	}
 
-	// runtime state 驱动 + 空 namespace：state 前缀构造失败于错误电路。
+	// 缺 Secret：accountkeystates 凭据解密/指纹库构造 fail-fast。（原「空
+	// namespace 报错误电路」断言随 namespace 域派生契约退役：rediscfg.
+	// DomainNamespace 对空/空白基名回落域名，派生 namespace 恒合法，错误电路
+	// 不再因 namespace 失败；装配序上 accountkeystates 的 JUHE_AI_SECRET
+	// 必填校验成为该配置的第一落点。）
 	if _, err := composeChainRuntimeServices(composed, runtimeConfig{
 		DispatchAccountCandidateLimit: 20,
-		RedisURL:                 redisURL,
+		RedisURL:                      redisURL,
 		RedisNamespace:                "   ",
-	}, settingValue); err == nil || !strings.Contains(err.Error(), "error circuit") {
-		t.Fatalf("redis 驱动空 namespace 必须报错误电路失败: %v", err)
+	}, settingValue); err == nil || !strings.Contains(err.Error(), "create account api-key effects key states store") {
+		t.Fatalf("缺 Secret 必须在 account api-key effects key states store fail-fast: %v", err)
 	}
 
 	// stats 库缺失：client-ip 策略源构造失败。
@@ -2015,8 +2006,10 @@ func TestW1XResolveGroupAccessLocalTypeErrorArm(t *testing.T) {
 	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 1, 'bogus', NULL)`); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
-	if _, err := fixture.resolveGroupAccess(context.Background(), "w1x-grp", "sys_other"); err == nil {
-		t.Fatal("本地分组类型非法必须报错")
+	// 授权本地 group_type/策略列已退役：非法旧值不再读取，运行面回退来源分组。
+	meta, err := fixture.resolveGroupAccess(context.Background(), "w1x-grp", "sys_other")
+	if err != nil || meta == nil || meta.GroupType == nil || *meta.GroupType != "personal" || meta.SchedulingPolicy != nil {
+		t.Fatalf("本地旧类型必须被忽略 = (%+v, %v)", meta, err)
 	}
 }
 

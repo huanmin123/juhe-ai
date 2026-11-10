@@ -925,9 +925,6 @@ func (s *Store) ListProjectionGaps(ctx context.Context, afterAccountID string, a
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
-type rowQueryer interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
 
 func (s *Store) incidentByScope(ctx context.Context, q queryer, scope string) (Incident, bool, error) {
 	row := q.QueryRowContext(ctx, s.bind("SELECT "+incidentColumns+" FROM "+s.table("account_circuit_incidents")+" WHERE circuit_scope_key=?"), scope)

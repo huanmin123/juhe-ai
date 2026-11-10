@@ -48,4 +48,3 @@ func (m *mockBatchRunner) batchRunIDs() [][]string {
 	}
 	return out
 }
-

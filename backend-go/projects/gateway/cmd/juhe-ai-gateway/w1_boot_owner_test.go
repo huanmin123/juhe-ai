@@ -35,7 +35,7 @@ const w1v2RuntimeSecret = "w1v2-owner-full-boot-secret"
 // bootstrap 的 fresh DDL + 种子（原 w1v2PrepareBusinessSQLite 的 PG 形态）。
 func w1v2PrepareBusinessPostgres(t *testing.T) *pgtestkit.TestDatabase {
 	t.Helper()
-	return pgtestkit.NewTestDatabase(t,
+	db := pgtestkit.NewTestDatabase(t,
 		func(ctx context.Context, db *sql.DB) error {
 			_, err := bootstrap.EnsurePostgres(ctx, db)
 			return err
@@ -44,6 +44,12 @@ func w1v2PrepareBusinessPostgres(t *testing.T) *pgtestkit.TestDatabase {
 			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC) }, Secret: w1v2RuntimeSecret})
 			return err
 		})
+	// bootstrap 不写升级账本；owner 子进程的 schemagate 会以 revision=0 拦截。
+	// revision 取 contracts.SchemaRevision，二进制升级后夹具无需改动。
+	ledgerCtx, ledgerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer ledgerCancel()
+	w1g2SeedUpgradeLedger(t, ledgerCtx, db.DB)
+	return db
 }
 
 // w1v2OwnerFailMarkers 是 main.go owner 分支 fail() 输出的特征文案采样；

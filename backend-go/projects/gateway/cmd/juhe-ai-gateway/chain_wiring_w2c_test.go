@@ -24,7 +24,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 
 	"github.com/alicebob/miniredis/v2"
 )
@@ -116,7 +115,7 @@ func TestChainClientIPConcurrencySlotLifecycle(t *testing.T) {
 	}
 	defer slots.Close()
 	port := newChainClientIPConcurrency(slots)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{"clientIpConcurrencyLimit": 1, "clientIpConcurrencyOverflowMode": "reject"}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: 1}
 	input := gatewaydispatch.ClientIPConcurrencyInput{
 		SystemAccountID: "sys",
 		GroupID:         "grp",
@@ -176,7 +175,7 @@ func TestComposeWiresClientIPConcurrency(t *testing.T) {
 	}
 	defer shutdown()
 	if chain.engine.ClientIPConcurrency == nil {
-		t.Fatal("engine.ClientIPConcurrency must be wired for high_concurrency groups")
+		t.Fatal("engine.ClientIPConcurrency must be wired for ordinary groups")
 	}
 }
 
@@ -475,7 +474,7 @@ func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisURL:  "redis://" + server.Addr(),
+		RedisURL:       "redis://" + server.Addr(),
 		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
@@ -548,7 +547,7 @@ func TestChainHotQualityPortPreservesCandidateIdentityThroughOrder(t *testing.T)
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisURL:  "redis://" + server.Addr(),
+		RedisURL:       "redis://" + server.Addr(),
 		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
@@ -594,7 +593,7 @@ func TestChainHotQualityLifecycleScopeMatchesOrderingScope(t *testing.T) {
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisURL:  "redis://" + server.Addr(),
+		RedisURL:       "redis://" + server.Addr(),
 		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
@@ -825,195 +824,3 @@ func newW2CTestRequest(t *testing.T, body string) *gatewaypreauth.GatewayRequest
 }
 
 func strBoolPtr(value bool) *bool { return &value }
-
-// ---------------------------------------------------------------------------
-// E2E-FINDING #5: high-concurrency group queue wiring
-// ---------------------------------------------------------------------------
-
-// TestChainHighConcurrencyQueueAdapterWaitCapacity 覆盖分组级短队列适配器：
-// 分组内账户并发未满时立即 Ready；MaxWaitMs 与 policy map 透传；结果折叠为
-// dispatch QueueWaitResult 形状。
-func TestChainHighConcurrencyQueueAdapterWaitCapacity(t *testing.T) {
-	tracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
-	queue, err := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
-		Concurrency: tracker,
-	})
-	if err != nil {
-		t.Fatalf("create queue: %v", err)
-	}
-	defer queue.Close()
-	port := newChainHighConcurrencyQueue(queue)
-	maxWaitMs := int64(50)
-	result, err := port.WaitForCapacity(context.Background(), gatewaydispatch.HighConcurrencyWaitInput{
-		SystemAccountID: "sys",
-		GroupID:         "grp",
-		APIKeyID:        "key",
-		AccountIDs:      []string{"acc-1"},
-		AccountConcurrencyLimits: map[string]int{
-			"acc-1": 1,
-		},
-		Lane:      "text",
-		MaxWaitMs: maxWaitMs,
-	})
-	if err != nil {
-		t.Fatalf("wait capacity: %v", err)
-	}
-	if !result.Ready {
-		t.Fatalf("空队列应立即 Ready，result = %+v", result)
-	}
-}
-
-// TestChainComposeWiresHighConcurrencyQueue 断言组合根把队列接上引擎：
-// 此前 engine.HighConcurrencyQueue 无生产赋值，high_concurrency 分组并发满
-// 时直接 nil panic（E2E-FINDING #5 崩溃级缺陷）。
-func TestChainComposeWiresHighConcurrencyQueue(t *testing.T) {
-	deps := chainSmokeDeps(t, newChainFixture(t), gatewaypreauth.SystemClock{}, "")
-	tracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
-	queue, err := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
-		Concurrency: tracker,
-	})
-	if err != nil {
-		t.Fatalf("create queue: %v", err)
-	}
-	defer queue.Close()
-	deps.ClientIPSlots = newChainClientIPConcurrency(slotsForQueue(t))
-	deps.HighConcurrencyQueue = newChainHighConcurrencyQueue(queue)
-	chain, shutdown, err := composeGatewayChain(deps)
-	if err != nil {
-		t.Fatalf("compose gateway chain: %v", err)
-	}
-	defer shutdown()
-	if chain.engine.HighConcurrencyQueue == nil {
-		t.Fatal("engine.HighConcurrencyQueue 必须接线（nil 在并发满时 panic）")
-	}
-}
-
-// TestChainComposeDegradesHighConcurrencyQueueWhenAbsent 断言 nil 队列回落
-// 普通容量语义（Ready=true 立即放行），绝不 nil panic。
-func TestChainComposeDegradesHighConcurrencyQueueWhenAbsent(t *testing.T) {
-	deps := chainSmokeDeps(t, newChainFixture(t), gatewaypreauth.SystemClock{}, "")
-	deps.ClientIPSlots = newChainClientIPConcurrency(slotsForQueue(t))
-	chain, shutdown, err := composeGatewayChain(deps)
-	if err != nil {
-		t.Fatalf("compose gateway chain: %v", err)
-	}
-	defer shutdown()
-	result, err := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), gatewaydispatch.HighConcurrencyWaitInput{})
-	if err != nil {
-		t.Fatalf("degraded wait: %v", err)
-	}
-	if !result.Ready {
-		t.Fatalf("缺席降级应立即 Ready，result = %+v", result)
-	}
-}
-
-// slotsForQueue builds the minimal slot family the queue-wiring fixtures need
-// (the D-109 slot acquisition segment runs ahead of the group queue).
-func slotsForQueue(t *testing.T) *gatewayclientip.ClientIPConcurrency {
-	t.Helper()
-	slots, err := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{})
-	if err != nil {
-		t.Fatalf("create slots: %v", err)
-	}
-	t.Cleanup(slots.Close)
-	return slots
-}
-
-// ---------------------------------------------------------------------------
-// E2E-FINDING #13: composition-root concurrency-tracker single source
-// ---------------------------------------------------------------------------
-
-// TestChainComposeRootSharesConcurrencyTrackerWithQueue 断言生产组合根的并发
-// 事实源单一性（E2E-FINDING #13 回归）：composeChainRuntimeServices 的同一
-// concurrencyTracker 必须经 chainRuntimeDeps.ConcurrencyTracker 传给
-// engine.Concurrency，并与 HighConcurrencyQueue 共用。事实源分裂时 queue 读数
-// 恒 0，WaitForCapacity 永远立即 Ready=true（请求永不入队），且 release 事件
-// 发在另一个实例上、排队者永不被唤醒（G1 曾 4/5 连接悬挂至客户端超时）。
-// 断言形态是行为级的：engine 侧 acquire 占满后 queue 必须观察到占用（不再
-// 立即 Ready），engine 侧 release 后排队等待者必须被唤醒。
-func TestChainComposeRootSharesConcurrencyTrackerWithQueue(t *testing.T) {
-	fixture := newChainFixture(t)
-	cfg := composeTestConfig(t)
-	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: inval.New(time.Now)}
-	services, err := composeChainRuntimeServices(composed, cfg, func(string) (string, error) { return "UTC", nil })
-	if err != nil {
-		t.Fatalf("composeChainRuntimeServices: %v", err)
-	}
-	t.Cleanup(services.Close)
-	if services.ConcurrencyTracker == nil {
-		t.Fatal("chainRuntimeServices.ConcurrencyTracker 不得为 nil（生产组合根的并发事实源出口）")
-	}
-
-	// 与生产组合根同源的装配：chainSmokeDeps 之上按 compose.go 的传法补上
-	// 三个端口（Cache 也对齐 services 实例）。
-	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, t.TempDir())
-	deps.Cache = services.Cache
-	deps.ClientIPSlots = newChainClientIPConcurrency(services.ClientIPSlots)
-	deps.HighConcurrencyQueue = newChainHighConcurrencyQueue(services.HighConcurrencyQueue)
-	deps.ConcurrencyTracker = services.ConcurrencyTracker
-	chain, shutdown, err := composeGatewayChain(deps)
-	if err != nil {
-		t.Fatalf("composeGatewayChain: %v", err)
-	}
-	defer shutdown()
-
-	const accountID = "w2c-f13-acc"
-	waitInput := gatewaydispatch.HighConcurrencyWaitInput{
-		SystemAccountID:          "sys",
-		GroupID:                  "grp",
-		APIKeyID:                 "key",
-		AccountIDs:               []string{accountID},
-		AccountConcurrencyLimits: map[string]int{accountID: 1},
-		Lane:                     "text",
-		MaxWaitMs:                80,
-	}
-
-	// 空载：立即 Ready。
-	idle, err := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), waitInput)
-	if err != nil {
-		t.Fatalf("空载等待出错: %v", err)
-	}
-	if !idle.Ready {
-		t.Fatalf("空载等待应立即 Ready，result = %+v", idle)
-	}
-
-	// engine 侧占用 1/1：queue 必须观察到占用（共享事实源），短超时拒绝。
-	slot, err := chain.engine.Concurrency.TryAcquireAsync(context.Background(), accountID, 1, gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: "text"})
-	if err != nil {
-		t.Fatalf("engine TryAcquireAsync: %v", err)
-	}
-	if !slot.Acquired {
-		t.Fatalf("首次 acquire 应成功，slot = %+v", slot)
-	}
-	occupied, err := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), waitInput)
-	if err != nil {
-		t.Fatalf("占用满等待出错: %v", err)
-	}
-	if occupied.Ready {
-		t.Fatalf("engine 侧占用满后 queue 仍立即 Ready——并发事实源分裂（E2E-FINDING #13 回归），result = %+v", occupied)
-	}
-
-	// engine 侧 release：已在排队的等待者必须被 release 事件唤醒（订阅在
-	// 同一事实源上）。唤醒路径携带 WaitedMs>0；立即 Ready 路径恒为 0。
-	waited := make(chan gatewaydispatch.QueueWaitResult, 1)
-	go func() {
-		longWait := waitInput
-		longWait.MaxWaitMs = 5000
-		result, waitErr := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), longWait)
-		if waitErr != nil {
-			t.Errorf("排队等待出错: %v", waitErr)
-			return
-		}
-		waited <- result
-	}()
-	time.Sleep(150 * time.Millisecond) // 保证等待者已入队
-	slot.Release()
-	select {
-	case result := <-waited:
-		if !result.Ready || result.WaitedMs <= 0 {
-			t.Fatalf("engine release 后排队者应被唤醒（Ready=true 且 WaitedMs>0），result = %+v", result)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("engine release 后排队者未被唤醒——release 事件与 queue 订阅不在同一事实源（E2E-FINDING #13 回归）")
-	}
-}

@@ -108,7 +108,7 @@ func catalogGroupFields(prefix string) []catalogField {
 		catalogFieldEx(prefix+".providerCode", "string", false, "供应商编码。", vendorCodeGPT),
 		catalogFieldEx(prefix+".description", "string", false, "分组说明；未填写时缺省。", "公益站账号分组"),
 		catalogFieldEx(prefix+".enabled", "boolean", false, "分组是否启用。", true),
-		catalogFieldEx(prefix+".groupType", "string", false, "分组类型：personal 或 high_concurrency。", "personal"),
+		catalogFieldEx(prefix+".groupType", "string", false, "分组类型：personal。", "personal"),
 		catalogFieldEx(prefix+".isDefault", "boolean", false, "是否默认分组。", false),
 	}
 }
@@ -597,7 +597,7 @@ func externalPublicAPICatalog() externalAPICatalog {
 					catalogFieldEx("providerCode", "string", true, "供应商编码。", vendorCodeGPT),
 					catalogFieldEx("description", "string", false, "分组说明。"),
 					catalogFieldEx("enabled", "boolean", false, "是否启用，默认 true。", true),
-					catalogFieldEx("groupType", "string", false, "分组类型：personal 或 high_concurrency，默认 personal。", "personal")},
+					catalogFieldEx("groupType", "string", false, "分组类型：personal，默认 personal。", "personal")},
 				Example: map[string]any{"targetUsername": "huanmin", "name": "福利", "providerCode": vendorCodeGPT},
 			},
 			ResponseExample: responseEnvelope(map[string]any{"action": "created", "target": target, "group": group}),
@@ -617,7 +617,7 @@ func externalPublicAPICatalog() externalAPICatalog {
 					catalogFieldEx("providerCode", "string", false, "新的供应商编码。"),
 					catalogFieldEx("description", "string|null", false, "新的分组说明；传 null 表示清空。"),
 					catalogFieldEx("enabled", "boolean", false, "是否启用。"),
-					catalogFieldEx("groupType", "string", false, "分组类型：personal 或 high_concurrency。"),
+					catalogFieldEx("groupType", "string", false, "分组类型：personal。"),
 				},
 				Example: map[string]any{"groupId": "grp_xxx", "name": "福利-主池"},
 			},

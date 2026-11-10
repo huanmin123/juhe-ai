@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // Account ordering under session affinity, migrated from
@@ -14,7 +15,7 @@ import (
 // DispatchOrderingOptions mirrors OpenAIAccountDispatchOrderingOptions.
 type DispatchOrderingOptions struct {
 	GroupType             string
-	SchedulingPolicy      map[string]any
+	SchedulingPolicy      *gatewayruntimecache.GroupSchedulingPolicy
 	ModelPriority         *GatewayAccountModelPriority
 	TrafficMigrationScope *OpenAIGatewaySessionAffinityScope
 }
@@ -34,7 +35,10 @@ func accountsIDs(accounts []gatewayruntimecache.OpenAIAccountSecret) []string {
 }
 
 // OrderOpenAIAccountsBySessionAffinity mirrors orderOpenAIAccountsBySessionAffinity
-// (the synchronous, process-local driver path).
+// (the synchronous, process-local driver path). The retired high_concurrency
+// type is gone; a non-default defaultSoftConcurrency enables the unified
+// hardBusy/softBusy ordering, otherwise the existing personal binding path is
+// preserved byte-for-byte.
 func (s *AffinityService) OrderOpenAIAccountsBySessionAffinity(accounts []gatewayruntimecache.OpenAIAccountSecret, sessionAffinityKey string, options DispatchOrderingOptions) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 	modelOrderedAccounts := orderOpenAIAccountsByModelPriority(accounts, options.ModelPriority)
 	trafficMigrationPreference := s.trafficMigrationPreferenceForAccounts(accountsIDs(modelOrderedAccounts), options.TrafficMigrationScope)
@@ -47,39 +51,37 @@ func (s *AffinityService) OrderOpenAIAccountsBySessionAffinity(accounts []gatewa
 		trafficMigrationTargetAccountID = trafficMigrationPreference.TargetAccountID
 	}
 	preferenceOrderedAccounts := orderOpenAIAccountsByTrafficMigrationPreference(modelOrderedAccounts, trafficMigrationTargetAccountID, options.ModelPriority)
-	if options.GroupType == GroupTypeHighConcurrency {
-		return s.orderOpenAIHighConcurrencyAccounts(preferenceOrderedAccounts, sessionAffinityKey, options.SchedulingPolicy, trafficMigrationTargetAccountID, options.ModelPriority)
+	policy, err := ResolveGroupSchedulingPolicy(options.SchedulingPolicy)
+	if err != nil {
+		return nil, err
 	}
-	if trafficMigrationTargetAccountID != "" {
-		return preferenceOrderedAccounts, nil
+	if policy.DefaultSoftConcurrency <= 0 {
+		if trafficMigrationTargetAccountID != "" {
+			return preferenceOrderedAccounts, nil
+		}
+		return s.orderOpenAIPersonalAccountsBySessionAffinity(preferenceOrderedAccounts, sessionAffinityKey, options.ModelPriority), nil
 	}
-	return s.orderOpenAIPersonalAccountsBySessionAffinity(preferenceOrderedAccounts, sessionAffinityKey, options.ModelPriority), nil
+	var binding *SessionBinding
+	if sessionAffinityKey != "" {
+		s.mu.Lock()
+		binding = s.sessionAffinityCacheGetLocked(sessionAffinityKey)
+		s.mu.Unlock()
+	}
+	return s.orderAccountsBySoftConcurrency(preferenceOrderedAccounts, binding, policy, trafficMigrationTargetAccountID, options.ModelPriority), nil
 }
 
 // OrderOpenAIAccountsBySessionAffinityAsync mirrors
-// orderOpenAIAccountsBySessionAffinityAsync (Redis bindings and in-flight
-// stats when the drivers ask for them).
+// orderOpenAIAccountsBySessionAffinityAsync (Redis bindings when configured).
+// SoftBusy uses the request-frozen candidate snapshot; no in-flight stats or
+// extra Redis read is required.
 func (s *AffinityService) OrderOpenAIAccountsBySessionAffinityAsync(ctx context.Context, accounts []gatewayruntimecache.OpenAIAccountSecret, sessionAffinityKey string, options DispatchOrderingOptions) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if s.cfg.CacheDriver != CacheDriverRedis && options.GroupType != GroupTypeHighConcurrency {
+	if s.cfg.CacheDriver != CacheDriverRedis {
 		return s.OrderOpenAIAccountsBySessionAffinity(accounts, sessionAffinityKey, options)
 	}
 	modelOrderedAccounts := orderOpenAIAccountsByModelPriority(accounts, options.ModelPriority)
 	ids := accountsIDs(modelOrderedAccounts)
-	var (
-		trafficMigrationPreference *TrafficMigrationPreference
-		sessionBinding             *SessionBinding
-	)
-	if s.cfg.CacheDriver == CacheDriverRedis {
-		trafficMigrationPreference = s.trafficMigrationPreferenceForAccountsAsync(ctx, ids, options.TrafficMigrationScope)
-		sessionBinding = s.getRedisSessionAffinityBindingForOrdering(ctx, sessionAffinityKey)
-	} else {
-		trafficMigrationPreference = s.trafficMigrationPreferenceForAccounts(ids, options.TrafficMigrationScope)
-		if sessionAffinityKey != "" {
-			s.mu.Lock()
-			sessionBinding = s.sessionAffinityCacheGetLocked(sessionAffinityKey)
-			s.mu.Unlock()
-		}
-	}
+	trafficMigrationPreference := s.trafficMigrationPreferenceForAccountsAsync(ctx, ids, options.TrafficMigrationScope)
+	sessionBinding := s.getRedisSessionAffinityBindingForOrdering(ctx, sessionAffinityKey)
 	sessionTrafficMigrationTargetAccountID := ""
 	if trafficMigrationPreference == nil {
 		sessionTrafficMigrationTargetAccountID = sessionTrafficMigrationTargetForAccountsFromBinding(ids, sessionBinding)
@@ -89,118 +91,22 @@ func (s *AffinityService) OrderOpenAIAccountsBySessionAffinityAsync(ctx context.
 		trafficMigrationTargetAccountID = trafficMigrationPreference.TargetAccountID
 	}
 	preferenceOrderedAccounts := orderOpenAIAccountsByTrafficMigrationPreference(modelOrderedAccounts, trafficMigrationTargetAccountID, options.ModelPriority)
-	if options.GroupType == GroupTypeHighConcurrency {
-		return s.orderOpenAIHighConcurrencyAccountsAsync(ctx, preferenceOrderedAccounts, sessionAffinityKey, options.SchedulingPolicy, trafficMigrationTargetAccountID, options.ModelPriority, sessionBinding)
-	}
-	if trafficMigrationTargetAccountID != "" {
-		return preferenceOrderedAccounts, nil
-	}
-	return s.orderOpenAIPersonalAccountsBySessionBinding(preferenceOrderedAccounts, sessionBinding, options.ModelPriority), nil
-}
-
-// AreOpenAIHighConcurrencyAccountsHardBusy mirrors
-// areOpenAIHighConcurrencyAccountsHardBusy.
-func (s *AffinityService) AreOpenAIHighConcurrencyAccountsHardBusy(accounts []gatewayruntimecache.OpenAIAccountSecret, options DispatchOrderingOptions) bool {
-	if options.GroupType != GroupTypeHighConcurrency || len(accounts) == 0 {
-		return false
-	}
-	for _, account := range accounts {
-		if accountCurrentConcurrency(account, nil) < accountHardConcurrencyLimit(account) {
-			return false
-		}
-	}
-	return true
-}
-
-// AreOpenAIHighConcurrencyAccountsBusyForLane mirrors
-// areOpenAIHighConcurrencyAccountsBusyForLane.
-func (s *AffinityService) AreOpenAIHighConcurrencyAccountsBusyForLane(accounts []gatewayruntimecache.OpenAIAccountSecret, options BusyLaneOptions) (bool, error) {
-	if options.GroupType != GroupTypeHighConcurrency || len(accounts) == 0 {
-		return false, nil
-	}
-	if s.cfg.Concurrency == nil {
-		return false, nil
-	}
-	for _, account := range accounts {
-		hardLimit := accountHardConcurrencyLimit(account)
-		currentConcurrency := accountCurrentConcurrency(account, nil)
-		if currentConcurrency >= hardLimit {
-			return true, nil
-		}
-		if options.RequestLane != RequestLaneImage {
-			continue
-		}
-		imageLaneLimit, err := EffectiveImageLaneConcurrencyLimit(int64(hardLimit), options.SchedulingPolicy, s.schedulingDefaults)
-		if err != nil {
-			return false, err
-		}
-		if s.cfg.Concurrency.GetAccountCurrentConcurrency(GatewayAccountConcurrencyAccountID(GatewayAccountConcurrencyIdentityOf(account)), RequestLaneImage) >= int(imageLaneLimit) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// AreOpenAIHighConcurrencyAccountsBusyForLaneAsync mirrors
-// areOpenAIHighConcurrencyAccountsBusyForLaneAsync.
-func (s *AffinityService) AreOpenAIHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []gatewayruntimecache.OpenAIAccountSecret, options BusyLaneOptions) (bool, error) {
-	if s.cfg.RuntimeStateDriver != RuntimeStateDriverRedis {
-		return s.AreOpenAIHighConcurrencyAccountsBusyForLane(accounts, options)
-	}
-	if options.GroupType != GroupTypeHighConcurrency || len(accounts) == 0 {
-		return false, nil
-	}
-	if s.cfg.Concurrency == nil {
-		return false, nil
-	}
-	accountIDs := GatewayAccountConcurrencyAccountIDs(GatewayAccountConcurrencyIdentities(accounts))
-	totalConcurrency, err := s.cfg.Concurrency.LoadAccountCurrentConcurrencyByIDsAsync(ctx, accountIDs, "")
+	policy, err := ResolveGroupSchedulingPolicy(options.SchedulingPolicy)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	var imageLaneConcurrency map[string]int
-	if options.RequestLane == RequestLaneImage {
-		imageLaneConcurrency, err = s.cfg.Concurrency.LoadAccountCurrentConcurrencyByIDsAsync(ctx, accountIDs, RequestLaneImage)
-		if err != nil {
-			return false, err
+	if policy.DefaultSoftConcurrency <= 0 {
+		if trafficMigrationTargetAccountID != "" {
+			return preferenceOrderedAccounts, nil
 		}
+		return s.orderOpenAIPersonalAccountsBySessionBinding(preferenceOrderedAccounts, sessionBinding, options.ModelPriority), nil
 	}
-	for _, account := range accounts {
-		hardLimit := accountHardConcurrencyLimit(account)
-		concurrencyAccountID := GatewayAccountConcurrencyAccountID(GatewayAccountConcurrencyIdentityOf(account))
-		runtimeValue := ptrIntFromMap(totalConcurrency, concurrencyAccountID)
-		currentConcurrency := accountCurrentConcurrency(account, runtimeValue)
-		if currentConcurrency >= hardLimit {
-			return true, nil
-		}
-		if options.RequestLane != RequestLaneImage {
-			continue
-		}
-		imageLaneLimit, err := EffectiveImageLaneConcurrencyLimit(int64(hardLimit), options.SchedulingPolicy, s.schedulingDefaults)
-		if err != nil {
-			return false, err
-		}
-		if imageLaneConcurrency[concurrencyAccountID] >= int(imageLaneLimit) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func ptrIntFromMap(values map[string]int, key string) *int {
-	if value, ok := values[key]; ok {
-		copy := value
-		return &copy
-	}
-	return nil
+	return s.orderAccountsBySoftConcurrency(preferenceOrderedAccounts, sessionBinding, policy, trafficMigrationTargetAccountID, options.ModelPriority), nil
 }
 
 // orderOpenAIPersonalAccountsBySessionAffinity mirrors
 // orderOpenAIPersonalAccountsBySessionAffinity.
 func (s *AffinityService) orderOpenAIPersonalAccountsBySessionAffinity(accounts []gatewayruntimecache.OpenAIAccountSecret, sessionAffinityKey string, modelPriority *GatewayAccountModelPriority) []gatewayruntimecache.OpenAIAccountSecret {
-	if anySuperPriority(accounts) {
-		return accounts
-	}
 	if sessionAffinityKey == "" || len(accounts) < 2 {
 		return accounts
 	}
@@ -211,16 +117,14 @@ func (s *AffinityService) orderOpenAIPersonalAccountsBySessionAffinity(accounts 
 }
 
 // orderOpenAIPersonalAccountsBySessionBinding mirrors
-// orderOpenAIPersonalAccountsBySessionBinding: the bound account is promoted
-// over equal-or-worse peers and rotates within its own tier.
+// orderOpenAIPersonalAccountsBySessionBinding: the bound account is moved to
+// the front of its dispatch tier; peer relative order is preserved. An expired
+// lease is treated as no binding.
 func (s *AffinityService) orderOpenAIPersonalAccountsBySessionBinding(accounts []gatewayruntimecache.OpenAIAccountSecret, binding *SessionBinding, modelPriority *GatewayAccountModelPriority) []gatewayruntimecache.OpenAIAccountSecret {
-	if anySuperPriority(accounts) {
-		return accounts
-	}
 	if len(accounts) < 2 {
 		return accounts
 	}
-	if binding == nil {
+	if binding == nil || !binding.LeaseActive(s.clock().UnixMilli()) {
 		return accounts
 	}
 	boundIndex := -1
@@ -244,28 +148,15 @@ func (s *AffinityService) orderOpenAIPersonalAccountsBySessionBinding(accounts [
 	if targetIndex == boundIndex {
 		return accounts
 	}
-	rotationEndIndex := boundIndex + 1
-	for ; rotationEndIndex < len(accounts); rotationEndIndex++ {
-		if !canSessionAffinityRotateWithinSameTier(boundAccount, accounts[rotationEndIndex], modelPriority) {
-			break
-		}
-	}
 	ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(accounts))
 	ordered = append(ordered, accounts[:targetIndex]...)
 	ordered = append(ordered, boundAccount)
-	ordered = append(ordered, accounts[boundIndex+1:rotationEndIndex]...)
 	ordered = append(ordered, accounts[targetIndex:boundIndex]...)
-	ordered = append(ordered, accounts[rotationEndIndex:]...)
+	ordered = append(ordered, accounts[boundIndex+1:]...)
+	// 同层 owner 被从后面提到同层首位：没有亲和时排在前面的 peer 会继续承接，
+	// 这次实际重排即为一次“回切被阻止”。每轮排序最多 +1。
+	gatewayusage.RecordGatewaySessionAffinityBackSwitchPreventedMetric()
 	return ordered
-}
-
-func anySuperPriority(accounts []gatewayruntimecache.OpenAIAccountSecret) bool {
-	for _, account := range accounts {
-		if account.SuperPriorityEnabled {
-			return true
-		}
-	}
-	return false
 }
 
 // canSessionAffinityRotateWithinSameTier mirrors
@@ -275,179 +166,108 @@ func canSessionAffinityRotateWithinSameTier(boundAccount gatewayruntimecache.Ope
 		canSessionAffinityPromoteOver(currentAccount, boundAccount, modelPriority)
 }
 
-// orderOpenAIHighConcurrencyAccounts mirrors orderOpenAIHighConcurrencyAccounts.
-func (s *AffinityService) orderOpenAIHighConcurrencyAccounts(accounts []gatewayruntimecache.OpenAIAccountSecret, sessionAffinityKey string, policyInput map[string]any, trafficMigrationTargetAccountID string, modelPriority *GatewayAccountModelPriority) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if len(accounts) < 2 {
-		return accounts, nil
-	}
-	policy, err := resolvePolicyOrDefault(policyInput, s.schedulingDefaults)
-	if err != nil {
-		return nil, err
-	}
-	if !policy.FastFirstEnabled {
-		if trafficMigrationTargetAccountID != "" {
-			return s.orderOpenAIHighConcurrencyHardBusyLast(accounts)
-		}
-		return s.orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority), nil
-	}
-	var binding *SessionBinding
-	if sessionAffinityKey != "" {
-		s.mu.Lock()
-		binding = s.sessionAffinityCacheGetLocked(sessionAffinityKey)
-		s.mu.Unlock()
-	}
-	accountIDs := GatewayAccountConcurrencyAccountIDs(GatewayAccountConcurrencyIdentities(accounts))
-	inFlightStats := map[string]AccountInFlightStats{}
-	if s.cfg.Concurrency != nil {
-		inFlightStats = s.cfg.Concurrency.LoadAccountInFlightStatsByIDs(accountIDs, InFlightThresholds{
-			SlowRequestThresholdMs:     policy.SlowRequestThresholdMs,
-			FirstOutputSlowThresholdMs: policy.FirstOutputSlowThresholdMs,
-		})
-	}
-	candidates := s.buildHighConcurrencyCandidates(accounts, binding, inFlightStats, policy, trafficMigrationTargetAccountID)
-	primarySoftAvailable := hasPrimarySoftAvailable(candidates)
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return compareHighConcurrencyCandidates(candidates[i], candidates[j], policy, primarySoftAvailable, modelPriority) < 0
-	})
-	ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(candidates))
-	for _, candidate := range candidates {
-		ordered = append(ordered, candidate.account)
-	}
-	return ordered, nil
-}
-
-// orderOpenAIHighConcurrencyAccountsAsync mirrors
-// orderOpenAIHighConcurrencyAccountsAsync.
-func (s *AffinityService) orderOpenAIHighConcurrencyAccountsAsync(ctx context.Context, accounts []gatewayruntimecache.OpenAIAccountSecret, sessionAffinityKey string, policyInput map[string]any, trafficMigrationTargetAccountID string, modelPriority *GatewayAccountModelPriority, sessionBinding *SessionBinding) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if s.cfg.RuntimeStateDriver != RuntimeStateDriverRedis {
-		return s.orderOpenAIHighConcurrencyAccounts(accounts, sessionAffinityKey, policyInput, trafficMigrationTargetAccountID, modelPriority)
-	}
-	if len(accounts) < 2 {
-		return accounts, nil
-	}
-	policy, err := resolvePolicyOrDefault(policyInput, s.schedulingDefaults)
-	if err != nil {
-		return nil, err
-	}
-	fallbackBinding := sessionBinding
-	if fallbackBinding == nil && s.cfg.CacheDriver != CacheDriverRedis && sessionAffinityKey != "" {
-		s.mu.Lock()
-		fallbackBinding = s.sessionAffinityCacheGetLocked(sessionAffinityKey)
-		s.mu.Unlock()
-	}
-	if !policy.FastFirstEnabled {
-		if trafficMigrationTargetAccountID != "" {
-			return s.orderOpenAIHighConcurrencyHardBusyLastAsync(ctx, accounts)
-		}
-		return s.orderOpenAIPersonalAccountsBySessionBinding(accounts, fallbackBinding, modelPriority), nil
-	}
-	var inFlightStats map[string]AccountInFlightStats
-	if s.cfg.Concurrency != nil {
-		inFlightStats, err = s.cfg.Concurrency.LoadAccountInFlightStatsByIDsAsync(ctx, GatewayAccountConcurrencyAccountIDs(GatewayAccountConcurrencyIdentities(accounts)), InFlightThresholds{
-			SlowRequestThresholdMs:     policy.SlowRequestThresholdMs,
-			FirstOutputSlowThresholdMs: policy.FirstOutputSlowThresholdMs,
-		})
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		inFlightStats = map[string]AccountInFlightStats{}
-	}
-	candidates := s.buildHighConcurrencyCandidates(accounts, fallbackBinding, inFlightStats, policy, trafficMigrationTargetAccountID)
-	primarySoftAvailable := hasPrimarySoftAvailable(candidates)
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return compareHighConcurrencyCandidates(candidates[i], candidates[j], policy, primarySoftAvailable, modelPriority) < 0
-	})
-	ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(candidates))
-	for _, candidate := range candidates {
-		ordered = append(ordered, candidate.account)
-	}
-	return ordered, nil
-}
-
-// resolvePolicyOrDefault mirrors `resolveGroupSchedulingPolicy('high_concurrency', input) ?? DEFAULT`.
-func resolvePolicyOrDefault(policyInput map[string]any, defaults SchedulingDefaults) (*SchedulingPolicyValues, error) {
-	policy, err := ResolveGroupSchedulingPolicy(GroupTypeHighConcurrency, policyInput, defaults)
-	if err != nil {
-		return nil, err
-	}
-	if policy != nil {
-		return policy, nil
-	}
-	resolved := DefaultHighConcurrencyGroupSchedulingPolicy(defaults)
-	return &resolved, nil
-}
-
-// highConcurrencyCandidate mirrors HighConcurrencyCandidate.
-type highConcurrencyCandidate struct {
+// softConcurrencyCandidate is the unified hardBusy/softBusy ordering row. It
+// deliberately carries no queue/slow-request keys: the retired high-concurrency
+// mechanisms are not part of the ordinary-group contract.
+type softConcurrencyCandidate struct {
 	account                   gatewayruntimecache.OpenAIAccountSecret
 	index                     int
 	currentConcurrency        int
 	hardLimit                 int
 	softLimit                 int
-	slowInFlightCount         int
-	firstOutputSlowCount      int
-	oldestInFlightMs          int64
 	affinityAllowed           bool
 	trafficMigrationPreferred bool
 	hardBusy                  bool
 	softBusy                  bool
 }
 
-func (s *AffinityService) buildHighConcurrencyCandidates(accounts []gatewayruntimecache.OpenAIAccountSecret, binding *SessionBinding, inFlightStats map[string]AccountInFlightStats, policy *SchedulingPolicyValues, trafficMigrationTargetAccountID string) []highConcurrencyCandidate {
-	candidates := make([]highConcurrencyCandidate, 0, len(accounts))
+// orderAccountsBySoftConcurrency applies the ordinary-group soft threshold.
+// Tier keys (model priority/traffic/fallback/super/priority) stay ahead of
+// softBusy, so load-shedding never crosses a dispatch tier; within a tier the
+// owner yields when softBusy and healthy peers come first.
+func (s *AffinityService) orderAccountsBySoftConcurrency(accounts []gatewayruntimecache.OpenAIAccountSecret, binding *SessionBinding, policy *SchedulingPolicyValues, trafficMigrationTargetAccountID string, modelPriority *GatewayAccountModelPriority) []gatewayruntimecache.OpenAIAccountSecret {
+	if len(accounts) < 2 {
+		return accounts
+	}
+	nowMs := s.clock().UnixMilli()
+	leaseActive := binding != nil && binding.LeaseActive(nowMs)
+	originalOwnerIndex := -1
+	if leaseActive {
+		for index, account := range accounts {
+			if account.ID == binding.AccountID {
+				originalOwnerIndex = index
+				break
+			}
+		}
+	}
+	candidates := make([]softConcurrencyCandidate, 0, len(accounts))
 	for index, account := range accounts {
-		concurrencyAccountID := GatewayAccountConcurrencyAccountID(GatewayAccountConcurrencyIdentityOf(account))
-		runtimeStats, hasStats := inFlightStats[concurrencyAccountID]
-		// Node: runtimeStats?.currentConcurrency — an absent entry falls back
-		// to the account snapshot, a present zero stays zero.
-		var runtimeConcurrency *int
-		if hasStats {
-			runtimeConcurrency = &runtimeStats.CurrentConcurrency
-		}
-		currentConcurrency := accountCurrentConcurrency(account, runtimeConcurrency)
+		currentConcurrency := accountCurrentConcurrency(account, nil)
 		hardLimit := accountHardConcurrencyLimit(account)
-		softLimit := int(effectiveSoftConcurrencyLimitResolved(int64(hardLimit), policy))
-		boundToSession := binding != nil && binding.AccountID == account.ID
-		affinityAllowed := boundToSession &&
-			currentConcurrency < hardLimit &&
-			(!policy.BreakAffinityOnSoftLimit || currentConcurrency < softLimit)
-		softBusy := true
-		switch {
-		case !policy.BreakAffinityOnSoftLimit && boundToSession:
-			softBusy = false
-		default:
-			softBusy = currentConcurrency >= softLimit
-		}
-		candidates = append(candidates, highConcurrencyCandidate{
+		softLimit := policy.SoftLimit(hardLimit)
+		hardBusy := currentConcurrency >= hardLimit
+		softBusy := policy.SoftBusy(currentConcurrency, hardLimit)
+		boundToSession := leaseActive && binding.AccountID == account.ID
+		candidates = append(candidates, softConcurrencyCandidate{
 			account:                   account,
 			index:                     index,
 			currentConcurrency:        currentConcurrency,
 			hardLimit:                 hardLimit,
 			softLimit:                 softLimit,
-			slowInFlightCount:         runtimeStats.SlowInFlightCount,
-			firstOutputSlowCount:      runtimeStats.FirstOutputSlowCount,
-			oldestInFlightMs:          runtimeStats.OldestInFlightMs,
-			affinityAllowed:           affinityAllowed,
+			affinityAllowed:           boundToSession && !hardBusy && !softBusy,
 			trafficMigrationPreferred: account.ID == trafficMigrationTargetAccountID,
-			hardBusy:                  currentConcurrency >= hardLimit,
+			hardBusy:                  hardBusy,
 			softBusy:                  softBusy,
 		})
 	}
-	return candidates
-}
-
-func hasPrimarySoftAvailable(candidates []highConcurrencyCandidate) bool {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return compareSoftConcurrencyCandidates(candidates[i], candidates[j], modelPriority) < 0
+	})
+	ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(candidates))
 	for _, candidate := range candidates {
-		if !candidate.account.FallbackEnabled && !candidate.hardBusy && !candidate.softBusy {
-			return true
+		ordered = append(ordered, candidate.account)
+	}
+	if leaseActive && originalOwnerIndex > 0 {
+		finalOwnerIndex := -1
+		for index, account := range ordered {
+			if account.ID == binding.AccountID {
+				finalOwnerIndex = index
+				break
+			}
+		}
+		if finalOwnerIndex >= 0 && finalOwnerIndex < originalOwnerIndex &&
+			sessionAffinityOwnerFirstInLayer(ordered, binding.AccountID, modelPriority) {
+			gatewayusage.RecordGatewaySessionAffinityBackSwitchPreventedMetric()
 		}
 	}
-	return false
+	return ordered
 }
 
-// compareHighConcurrencyCandidates mirrors compareHighConcurrencyCandidates.
-func compareHighConcurrencyCandidates(left highConcurrencyCandidate, right highConcurrencyCandidate, policy *SchedulingPolicyValues, primarySoftAvailable bool, modelPriority *GatewayAccountModelPriority) int {
+// sessionAffinityOwnerFirstInLayer 报告 owner 是否已是其四元调度层内的首个
+// 候选；用于区分“亲和把 owner 留在本层首位”和跨层候选本就排在前面的情况。
+func sessionAffinityOwnerFirstInLayer(accounts []gatewayruntimecache.OpenAIAccountSecret, ownerID string, modelPriority *GatewayAccountModelPriority) bool {
+	ownerIndex := -1
+	for index, account := range accounts {
+		if account.ID == ownerID {
+			ownerIndex = index
+			break
+		}
+	}
+	if ownerIndex < 0 {
+		return false
+	}
+	owner := accounts[ownerIndex]
+	for index := 0; index < ownerIndex; index++ {
+		peer := accounts[index]
+		if canSessionAffinityPromoteOver(owner, peer, modelPriority) &&
+			canSessionAffinityPromoteOver(peer, owner, modelPriority) {
+			return false
+		}
+	}
+	return true
+}
+
+func compareSoftConcurrencyCandidates(left softConcurrencyCandidate, right softConcurrencyCandidate, modelPriority *GatewayAccountModelPriority) int {
 	if left.hardBusy != right.hardBusy {
 		if left.hardBusy {
 			return 1
@@ -463,23 +283,8 @@ func compareHighConcurrencyCandidates(left highConcurrencyCandidate, right highC
 		}
 		return 1
 	}
-	if !policy.FallbackOnQueueEnabled || primarySoftAvailable {
-		fallbackDelta := accountFallbackRank(left.account) - accountFallbackRank(right.account)
-		if fallbackDelta != 0 {
-			return sign(fallbackDelta)
-		}
-	}
-	if left.softBusy != right.softBusy {
-		if left.softBusy {
-			return 1
-		}
-		return -1
-	}
-	if policy.FallbackOnQueueEnabled && !primarySoftAvailable {
-		fallbackDelta := accountFallbackRank(left.account) - accountFallbackRank(right.account)
-		if fallbackDelta != 0 {
-			return sign(fallbackDelta)
-		}
+	if fallbackDelta := accountFallbackRank(left.account) - accountFallbackRank(right.account); fallbackDelta != 0 {
+		return sign(fallbackDelta)
 	}
 	if left.account.SuperPriorityEnabled != right.account.SuperPriorityEnabled {
 		if left.account.SuperPriorityEnabled {
@@ -490,7 +295,23 @@ func compareHighConcurrencyCandidates(left highConcurrencyCandidate, right highC
 	if left.account.Priority != right.account.Priority {
 		return sign(left.account.Priority - right.account.Priority)
 	}
-	loadRatioDelta := (float64(left.currentConcurrency) / float64(left.softLimit)) - (float64(right.currentConcurrency) / float64(right.softLimit))
+	// 同层 latch：健康 owner 优先于更空闲/质量更高的 peer；softBusy 已在前，
+	// owner 达到软阈值时让位。affinityAllowed 必须在 load/quality 之前。
+	if left.affinityAllowed != right.affinityAllowed {
+		if left.affinityAllowed {
+			return -1
+		}
+		return 1
+	}
+	if left.softBusy != right.softBusy {
+		if left.softBusy {
+			return 1
+		}
+		return -1
+	}
+	leftRatio := softConcurrencyLoadRatio(left)
+	rightRatio := softConcurrencyLoadRatio(right)
+	loadRatioDelta := leftRatio - rightRatio
 	if math.Abs(loadRatioDelta) > 0.000001 {
 		if loadRatioDelta < 0 {
 			return -1
@@ -500,25 +321,21 @@ func compareHighConcurrencyCandidates(left highConcurrencyCandidate, right highC
 	if left.currentConcurrency != right.currentConcurrency {
 		return sign(left.currentConcurrency - right.currentConcurrency)
 	}
-	if left.firstOutputSlowCount != right.firstOutputSlowCount {
-		return sign(left.firstOutputSlowCount - right.firstOutputSlowCount)
-	}
-	if left.slowInFlightCount != right.slowInFlightCount {
-		return sign(left.slowInFlightCount - right.slowInFlightCount)
-	}
-	if left.oldestInFlightMs != right.oldestInFlightMs {
-		return signInt64(left.oldestInFlightMs - right.oldestInFlightMs)
-	}
-	if delta := compareAccountQualityRank(left.account, right.account); delta != 0 {
+	if delta := compareAccountQualityBand(left.account, right.account); delta != 0 {
 		return delta
 	}
-	if left.affinityAllowed != right.affinityAllowed {
-		if left.affinityAllowed {
-			return -1
-		}
-		return 1
-	}
 	return sign(left.index - right.index)
+}
+
+func softConcurrencyLoadRatio(candidate softConcurrencyCandidate) float64 {
+	denominator := candidate.softLimit
+	if denominator <= 0 {
+		denominator = candidate.hardLimit
+	}
+	if denominator <= 0 {
+		denominator = 1
+	}
+	return float64(candidate.currentConcurrency) / float64(denominator)
 }
 
 func sign(value int) int {
@@ -531,92 +348,12 @@ func sign(value int) int {
 	return 0
 }
 
-func signInt64(value int64) int {
-	if value < 0 {
-		return -1
-	}
-	if value > 0 {
-		return 1
-	}
-	return 0
-}
-
-// orderOpenAIHighConcurrencyHardBusyLast mirrors
-// orderOpenAIHighConcurrencyHardBusyLast.
-func (s *AffinityService) orderOpenAIHighConcurrencyHardBusyLast(accounts []gatewayruntimecache.OpenAIAccountSecret) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if len(accounts) < 2 {
-		return accounts, nil
-	}
-	policy := DefaultHighConcurrencyGroupSchedulingPolicy(s.schedulingDefaults)
-	inFlightStats := map[string]AccountInFlightStats{}
-	if s.cfg.Concurrency != nil {
-		inFlightStats = s.cfg.Concurrency.LoadAccountInFlightStatsByIDs(GatewayAccountConcurrencyAccountIDs(GatewayAccountConcurrencyIdentities(accounts)), InFlightThresholds{
-			SlowRequestThresholdMs:     policy.SlowRequestThresholdMs,
-			FirstOutputSlowThresholdMs: policy.FirstOutputSlowThresholdMs,
-		})
-	}
-	var available []gatewayruntimecache.OpenAIAccountSecret
-	var hardBusy []gatewayruntimecache.OpenAIAccountSecret
-	for _, account := range accounts {
-		concurrencyAccountID := GatewayAccountConcurrencyAccountID(GatewayAccountConcurrencyIdentityOf(account))
-		runtimeStats, hasStats := inFlightStats[concurrencyAccountID]
-		var runtimeConcurrency *int
-		if hasStats {
-			runtimeConcurrency = &runtimeStats.CurrentConcurrency
-		}
-		if accountCurrentConcurrency(account, runtimeConcurrency) >= accountHardConcurrencyLimit(account) {
-			hardBusy = append(hardBusy, account)
-		} else {
-			available = append(available, account)
-		}
-	}
-	if len(available) > 0 && len(hardBusy) > 0 {
-		ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(accounts))
-		ordered = append(ordered, available...)
-		ordered = append(ordered, hardBusy...)
-		return ordered, nil
-	}
-	return accounts, nil
-}
-
-// orderOpenAIHighConcurrencyHardBusyLastAsync mirrors
-// orderOpenAIHighConcurrencyHardBusyLastAsync.
-func (s *AffinityService) orderOpenAIHighConcurrencyHardBusyLastAsync(ctx context.Context, accounts []gatewayruntimecache.OpenAIAccountSecret) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if s.cfg.RuntimeStateDriver != RuntimeStateDriverRedis {
-		return s.orderOpenAIHighConcurrencyHardBusyLast(accounts)
-	}
-	if len(accounts) < 2 {
-		return accounts, nil
-	}
-	currentConcurrencyByAccount := map[string]int{}
-	if s.cfg.Concurrency != nil {
-		values, err := s.cfg.Concurrency.LoadAccountCurrentConcurrencyByIDsAsync(ctx, GatewayAccountConcurrencyAccountIDs(GatewayAccountConcurrencyIdentities(accounts)), "")
-		if err != nil {
-			return nil, err
-		}
-		currentConcurrencyByAccount = values
-	}
-	var available []gatewayruntimecache.OpenAIAccountSecret
-	var hardBusy []gatewayruntimecache.OpenAIAccountSecret
-	for _, account := range accounts {
-		concurrencyAccountID := GatewayAccountConcurrencyAccountID(GatewayAccountConcurrencyIdentityOf(account))
-		runtimeValue := ptrIntFromMap(currentConcurrencyByAccount, concurrencyAccountID)
-		if accountCurrentConcurrency(account, runtimeValue) >= accountHardConcurrencyLimit(account) {
-			hardBusy = append(hardBusy, account)
-		} else {
-			available = append(available, account)
-		}
-	}
-	if len(available) > 0 && len(hardBusy) > 0 {
-		ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(accounts))
-		ordered = append(ordered, available...)
-		ordered = append(ordered, hardBusy...)
-		return ordered, nil
-	}
-	return accounts, nil
-}
-
 // canSessionAffinityPromoteOver mirrors canSessionAffinityPromoteOver.
+// canSessionAffinityPromoteOver mirrors canSessionAffinityPromoteOver with the
+// same-layer latch contract: model priority / super / fallback / priority are
+// the dispatch layer; within the same layer the bound account wins regardless
+// of quality rank or load. Quality is only a successor-selection preference
+// (see the account-affinity latch design), not a promotion blocker.
 func canSessionAffinityPromoteOver(boundAccount gatewayruntimecache.OpenAIAccountSecret, currentAccount gatewayruntimecache.OpenAIAccountSecret, modelPriority *GatewayAccountModelPriority) bool {
 	modelPriorityDelta := CompareGatewayAccountModelPriority(boundAccount.ID, currentAccount.ID, modelPriority)
 	if modelPriorityDelta > 0 {
@@ -634,7 +371,7 @@ func canSessionAffinityPromoteOver(boundAccount gatewayruntimecache.OpenAIAccoun
 	if boundAccount.Priority != currentAccount.Priority {
 		return false
 	}
-	return accountQualityRank(boundAccount) <= accountQualityRank(currentAccount)
+	return true
 }
 
 // orderOpenAIAccountsByTrafficMigrationPreference mirrors

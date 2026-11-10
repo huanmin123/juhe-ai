@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-
 )
 
 func readKitScopeCostTuple(t *testing.T, stats *DB, table, timeColumn string, timeValue any) [4]float64 {
@@ -30,4 +29,3 @@ func readKitScopeCostTuple(t *testing.T, stats *DB, table, timeColumn string, ti
 	}
 	return [4]float64{request, errors, total, success}
 }
-

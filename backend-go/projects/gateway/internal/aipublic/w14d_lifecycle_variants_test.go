@@ -196,7 +196,7 @@ func TestW14dGroupUpdateAndDeletePaths(t *testing.T) {
 
 	// The update patch applies the optional arms.
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/update",
-		`{"targetUsername":"w14dgrpr","groupId":"`+groupID+`","name":"组B","description":null,"enabled":false,"groupType":"high_concurrency"}`, token)
+		`{"targetUsername":"w14dgrpr","groupId":"`+groupID+`","name":"组B","description":null,"enabled":false,"groupType":"personal"}`, token)
 	if status != http.StatusOK {
 		t.Fatalf("group update: %d %v", status, payload)
 	}

@@ -130,4 +130,3 @@ func TestW5RunnerPruneUsesConfiguredRetention(t *testing.T) {
 		t.Fatalf("配置保留窗口必须生效 calls=%d", calls)
 	}
 }
-

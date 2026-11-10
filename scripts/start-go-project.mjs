@@ -78,10 +78,6 @@ const commonNames = [
 const projectNames = project === 'jobs'
   ? [
       'JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS',
-      'JUHE_AI_RUNTIME_LOG_POSTGRES_URL',
-      'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_RUNTIME_LOG_OWNER_LEASE', 'JUHE_AI_RUNTIME_LOG_ONCE',
-      'JUHE_AI_RUNTIME_LOG_POLL_INTERVAL', 'JUHE_AI_RUNTIME_LOG_RETENTION_INTERVAL',
-      'JUHE_AI_RUNTIME_LOG_RETENTION_DAYS', 'JUHE_AI_RUNTIME_LOG_BATCH_SIZE',
       // 2026-10-14 监控改造：JUHE_AI_TABLE_MONITOR_* 与 JUHE_AI_GO_RUNTIME_METRICS_*
       // 两家族已随 F2 表监控组件与 gometrics 采样链删除，不再转发；残留值按
       // 前缀拒转清单剥离。
@@ -246,7 +242,7 @@ const removedSqliteModeEnvNames = [
   'JUHE_AI_J3B_STORE', 'JUHE_AI_ACCOUNT_HEALTH_STORE', 'JUHE_AI_ACCOUNT_BALANCE_STORE',
   'JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE'
 ]
-const removedSqliteModeEnvPrefixes = ['JUHE_AI_USAGE_SHARD_', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_']
+const removedSqliteModeEnvPrefixes = ['JUHE_AI_USAGE_SHARD_', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_', 'JUHE_AI_RUNTIME_LOG_']
 for (const name of removedSqliteModeEnvNames) delete env[name]
 for (const prefix of removedSqliteModeEnvPrefixes) {
   for (const name of Object.keys(env)) {

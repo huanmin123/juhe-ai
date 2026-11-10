@@ -31,9 +31,7 @@ var cleanupMarkers = []string{CleanupNamePrefix, CleanupIDPrefix, CleanupTracePr
 // cleanupRule 是一条显式清理语句，处理「通用标识扫描覆盖不到」的场景：
 //
 //   - 自引用外键要求两段式删除（accounts 的授权实例列先删实例行，一次
-//     DELETE 内的行序不可控，PG 的立即外键检查会撞实例列）；
-//   - 登记行不带标识、按业务语义回收（usage_record_shards 按「分片内已无
-//     条目」删除）。
+//     DELETE 内的行序不可控，PG 的立即外键检查会撞实例列）。
 type cleanupRule struct {
 	// Query 是完整 DELETE 语句（$n 占位符），Args 给出实参。
 	Query string
@@ -81,23 +79,6 @@ func cleanupRules() map[string][]cleanupRule {
 				Query: "DELETE FROM " + quoteQualified(qualified(SchemaDataset, "operation_logs")) +
 					" WHERE id LIKE $1 OR trace_id LIKE $2",
 				Args: []any{id, trace},
-			},
-		},
-		qualified(SchemaDataset, "runtime_logs"): {
-			{
-				Query: "DELETE FROM " + quoteQualified(qualified(SchemaDataset, "runtime_logs")) +
-					" WHERE id LIKE $1 OR trace_id LIKE $2",
-				Args: []any{id, trace},
-			},
-		},
-		// usage catalog 登记行不带任何造数标识（shard_key 是日期+分片号），
-		// 按「分片内已无任何条目」回收；entries / account / api_key 关联表对
-		// shards 是 ON DELETE CASCADE，随登记行级联清理。
-		qualified(SchemaUsage, "usage_record_shards"): {
-			{
-				Query: "DELETE FROM " + quoteQualified(qualified(SchemaUsage, "usage_record_shards")) +
-					" WHERE shard_key NOT IN (SELECT DISTINCT shard_key FROM " +
-					quoteQualified(qualified(SchemaUsage, "usage_record_shard_entries")) + ")",
 			},
 		},
 		// stats 域脏标记（stats 域写入面）：按「持有 mock 账户归属的系统账户 +

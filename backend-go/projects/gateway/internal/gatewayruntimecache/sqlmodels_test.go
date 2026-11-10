@@ -30,10 +30,10 @@ const gatewayRuntimeCacheFixtureSchema = `
 	-- groups 目标形态（供应商与上游协议面重构设计 §8，迁移窗口 shim 已按
 	-- A 路线一次性收敛撤除）：无 provider_code 列；owner 内名称唯一见
 	-- idx_groups_owner_name_unique（与权威 DDL 同名同列）。
-	CREATE TABLE juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT);
+	CREATE TABLE juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT);
 	CREATE TABLE juhe_business.super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 	CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT);
-	CREATE TABLE juhe_business.group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT);
+	CREATE TABLE juhe_business.group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT);
 	CREATE TABLE juhe_business.response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)
 `
 
@@ -115,7 +115,6 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"oauthAccessTokenRefreshBatchSize":           "20",
 		"oauthAccessTokenRefreshRetryBackoffSeconds": "300",
 		"modelCheckRetentionDays":                    "30",
-		"runtimeLogIndexRetentionDays":               "14",
 		"publicApiLogRetentionDays":                  "30",
 		"usageRecordRetentionDays":                   "30",
 		"usageStatsTimezone":                         `"UTC"`,

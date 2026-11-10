@@ -31,7 +31,7 @@ type RuntimeDriverConfig struct {
 	// PostgreSQL + Redis 是唯一存储形态（PLAN-20261024T051925945Z）：热质量
 	// 运行态恒 redis（原 RuntimeMode/RuntimeStateDriver 双模字段随 standalone
 	// + memory 形态退役删除）。
-	RedisURL  string
+	RedisURL       string
 	RedisNamespace string
 }
 
@@ -216,6 +216,7 @@ type GatewayHotQualityCandidateOrderInput[T any] struct {
 	Model                          *string
 	RequestID                      string
 	LatencyDegradedAccountIDs      map[string]bool
+	SoftBusyAccountIDs             map[string]bool
 	StableBindingOrderByRuntimeKey map[string]int
 	EligibleFirstPrimaryDispatch   bool
 	NowMs                          *int64
@@ -336,6 +337,7 @@ func OrderGatewayAccountsByHotQuality[T any](
 				StableBindingOrder: stableOrders[runtimeKey],
 				HotQuality:         selectionViewOrNil(snapshots[index]),
 				LatencyDegraded:    input.LatencyDegradedAccountIDs[view.ID],
+				SoftBusy:           input.SoftBusyAccountIDs[view.ID],
 			}
 			// Cache-rate window injection (section 8.1): the selection view is
 			// a fresh per-request value, so writing the 24h window keyed by

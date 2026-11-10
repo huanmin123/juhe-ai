@@ -26,10 +26,16 @@ func t91SeedSchedulableAccount(t *testing.T, db *sql.DB, id, status string, sche
 		ON CONFLICT (id) DO NOTHING`, now); err != nil {
 		t.Fatalf("seed system account: %v", err)
 	}
+	// revision 17 起 vendor_code/connection_driver_code NOT NULL 且必须相等。
+	if _, err := db.ExecContext(context.Background(), `INSERT INTO juhe_business.vendors
+		(id, code, name, created_at, updated_at) VALUES ('ven-t91', 'gpt', 'GPT', $1, $1)
+		ON CONFLICT (code) DO NOTHING`, now); err != nil {
+		t.Fatalf("seed vendor: %v", err)
+	}
 	if _, err := db.ExecContext(context.Background(), `INSERT INTO juhe_business.accounts
-		(id, system_account_id, connection_driver_code, protocol_code, protocol_version, name, type,
+		(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type,
 		 status, schedulable, credentials_encrypted, created_at, updated_at)
-		VALUES ($1, 'sys-t91', 'gpt', 'openai', 'v1', $1, 'api_key', $2, $3, 'sealed', $4, $4)`,
+		VALUES ($1, 'sys-t91', 'gpt', 'gpt', 'openai', 'v1', $1, 'api_key', $2, $3, 'sealed', $4, $4)`,
 		id, status, schedulable, now); err != nil {
 		t.Fatalf("seed %s: %v", id, err)
 	}

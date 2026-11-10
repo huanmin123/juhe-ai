@@ -170,12 +170,12 @@ func chainCacheBindingRowOf(row gatewayrouting.GroupBindingRow) gatewayruntimeca
 }
 
 // ---------------------------------------------------------------------------
-// D-109: client-IP concurrency slots (high_concurrency groups)
+// D-109: client-IP concurrency slots (ordinary groups)
 // ---------------------------------------------------------------------------
 
 // chainClientIPConcurrency adapts the G13 gatewayclientip slot family onto
 // the dispatch ClientIPConcurrencyAcquirer port (Node
-// acquireHighConcurrencyClientIpSlot, runtime/client-ip-concurrency.service.ts).
+// acquireClientIpSlot, runtime/client-ip-concurrency.service.ts).
 type chainClientIPConcurrency struct {
 	slots *gatewayclientip.ClientIPConcurrency
 }
@@ -184,20 +184,15 @@ func newChainClientIPConcurrency(slots *gatewayclientip.ClientIPConcurrency) *ch
 	return &chainClientIPConcurrency{slots: slots}
 }
 
-// Acquire mirrors the Node acquire: the scheduling policy map rides through
-// (GroupSchedulingPolicy is the raw map alias) and the returned release keeps
-// the store's idempotent once guard.
+// Acquire mirrors the Node acquire: the two-key scheduling policy rides
+// through and the returned release keeps the store's idempotent once guard.
 func (c *chainClientIPConcurrency) Acquire(ctx context.Context, input gatewaydispatch.ClientIPConcurrencyInput) (gatewaydispatch.ClientIPConcurrencyDecision, error) {
-	var policy map[string]any
-	if input.Policy != nil {
-		policy = *input.Policy
-	}
-	decision, err := c.slots.AcquireHighConcurrencyClientIPSlot(ctx, gatewayclientip.ClientIPConcurrencyAcquireInput{
+	decision, err := c.slots.AcquireClientIPSlot(ctx, gatewayclientip.ClientIPConcurrencyAcquireInput{
 		SystemAccountID: input.SystemAccountID,
 		GroupID:         input.GroupID,
 		APIKeyID:        input.APIKeyID,
 		ClientIP:        input.ClientIP,
-		Policy:          policy,
+		Policy:          input.Policy,
 		Signal:          input.Signal,
 	})
 	if err != nil {
@@ -220,57 +215,6 @@ func (c *chainClientIPConcurrency) Acquire(ctx context.Context, input gatewaydis
 		out.Release = func() { release.Release() }
 	}
 	return out, nil
-}
-
-// ---------------------------------------------------------------------------
-// D-109: high-concurrency group queue (high_concurrency groups)
-// ---------------------------------------------------------------------------
-
-// chainHighConcurrencyQueue adapts the gatewayclientip group queue onto the
-// dispatch HighConcurrencyWaiter port (Node
-// runtime/high-concurrency-queue.service.ts waitForHighConcurrencyGroupCapacity).
-// The scheduling policy map rides through (gatewayruntimecache.GroupSchedulingPolicy
-// is the raw map alias); the request signal is the dispatch context itself.
-type chainHighConcurrencyQueue struct {
-	queue *gatewayclientip.HighConcurrencyGroupQueue
-}
-
-func newChainHighConcurrencyQueue(queue *gatewayclientip.HighConcurrencyGroupQueue) *chainHighConcurrencyQueue {
-	return &chainHighConcurrencyQueue{queue: queue}
-}
-
-// WaitForCapacity mirrors the Node wait: policy map, lane and the bounded
-// MaxWaitMs ride through; the result collapses to the dispatch QueueWaitResult
-// shape (Ready / Reason / WaitedMs / QueueSize).
-func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input gatewaydispatch.HighConcurrencyWaitInput) (gatewaydispatch.QueueWaitResult, error) {
-	waitInput := gatewayclientip.HighConcurrencyQueueWaitInput{
-		SystemAccountID:          input.SystemAccountID,
-		GroupID:                  input.GroupID,
-		APIKeyID:                 input.APIKeyID,
-		AccountIDs:               input.AccountIDs,
-		AccountConcurrencyLimits: input.AccountConcurrencyLimits,
-		// RPM 上限随容量模型透传（AI 账户每分钟请求上限设计 §5.2）。
-		AccountRPMLimits: input.AccountRPMLimits,
-		Lane:             input.Lane,
-		Signal:           ctx,
-	}
-	if input.Policy != nil {
-		waitInput.Policy = *input.Policy
-	}
-	if input.MaxWaitMs > 0 {
-		maxWaitMs := input.MaxWaitMs
-		waitInput.MaxWaitMs = &maxWaitMs
-	}
-	result, err := c.queue.WaitForHighConcurrencyGroupCapacity(ctx, waitInput)
-	if err != nil {
-		return gatewaydispatch.QueueWaitResult{}, err
-	}
-	return gatewaydispatch.QueueWaitResult{
-		Ready:     result.Ready,
-		Reason:    result.Reason,
-		WaitedMs:  result.WaitedMs,
-		QueueSize: result.QueueSize,
-	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +724,7 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 		Model:                        chainModelPtr(input.Model),
 		RequestID:                    input.RequestID,
 		LatencyDegradedAccountIDs:    chainLatencyDegradedOf(input.LatencyDegradedAccountIDs),
+		SoftBusyAccountIDs:           input.SoftBusyAccountIDs,
 		EligibleFirstPrimaryDispatch: input.EligibleFirstPrimaryDispatch,
 		CacheRates:                   ratesForInput,
 		CacheRateStale:               cacheRateStale,
@@ -814,28 +759,6 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 	// 空候选结果无解释（nil），决策摘要按缺省处理。
 	order.Explanation = result.Explanation
 	return order, nil
-}
-
-// ReorderOnly 是高并发分组最终亲和排序后的纯层内排序（设计第 7 节）：
-// 无探索/无预留/无审计写入，缓存率快照每次调用取最新（stale/未加载不喂）。
-func (p chainHotQualityPort) ReorderOnly(ctx context.Context, input gatewaydispatch.HotQualityOrderInput) (gatewaydispatch.HotQualityOrder, error) {
-	rates, cacheRateStale := p.cacheRatesSnapshot()
-	if cacheRateStale {
-		rates = nil
-	}
-	return chainHotQualityReorderAccounts(ctx, p.runtime, chainHotQualityReorderInput{
-		Accounts:                  input.Accounts,
-		ModelPriority:             input.ModelPriority,
-		Mode:                      input.Mode,
-		SystemAccountID:           input.SystemAccountID,
-		RouteStrategyID:           input.RouteStrategyID,
-		GroupID:                   input.GroupID,
-		RequestLane:               input.RequestLane,
-		Model:                     input.Model,
-		LatencyDegradedAccountIDs: input.LatencyDegradedAccountIDs,
-		CacheRates:                rates,
-		CacheRateStale:            cacheRateStale,
-	})
 }
 
 // chainHotQualityAccountViewOf mirrors the Node UpstreamAccount projection
@@ -1031,7 +954,6 @@ func slogInfoFields(event string, fields map[string]any, message string) {
 var (
 	_ gatewayruntimecache.GroupBindingOrderer      = chainGroupBindingOrderer{}
 	_ gatewaydispatch.ClientIPConcurrencyAcquirer  = (*chainClientIPConcurrency)(nil)
-	_ gatewaydispatch.HighConcurrencyWaiter        = (*chainHighConcurrencyQueue)(nil)
 	_ gatewaydispatch.KeyModelAdmission            = chainKeyModelAdmission{}
 	_ gatewaydispatch.SuppressionPort              = chainSuppressionPort{}
 	_ gatewaydispatch.RecoverableSuppressionWaiter = &chainDispatchRecoverableWait{}

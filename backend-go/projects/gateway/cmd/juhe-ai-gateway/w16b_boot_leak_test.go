@@ -64,6 +64,12 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 			return err
 		})
 	businessDSN := businessDB.DSN
+	// bootstrap 只建业务 schema，不写升级账本；main() 的 schemagate 会因
+	// schema_state 缺失（revision=0）拦截。复用 w1 的账本夹具，revision 取
+	// contracts.SchemaRevision，二进制升级后无需改本用例。
+	ledgerCtx, ledgerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer ledgerCancel()
+	w1g2SeedUpgradeLedger(t, ledgerCtx, businessDB.DB)
 	// J3b owner 装配段启动即校验 juhe_j3b schema（组合根按契约拒绝自行建
 	// schema）：与 w1 夹具 w1BootOwnerPostgres 同款，由夹具补建（等价
 	// maintenance --ensure-schema 的 juhe_j3b 面）。

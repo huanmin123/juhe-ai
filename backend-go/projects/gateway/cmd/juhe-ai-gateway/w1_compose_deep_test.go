@@ -171,8 +171,12 @@ func TestW1QComposeSystemAPIChainRuntimeArms(t *testing.T) {
 			}
 			t.Fatal("坏缓存 redis URL 必须 fail-fast")
 		}
-		if !strings.Contains(err.Error(), "compose gateway chain runtime services") {
-			t.Fatalf("错误 = %v，want 包含 compose gateway chain runtime services", err)
+		// 统一 RedisURL 契约（cache/state 同源）后，坏 URL 在全组合路径的
+		// 第一落点前移到共享登录守卫（compose.go NewRedisLoginGuard，先于
+		// 链条组装 composeChainRuntimeServices），链条级包装对坏 URL 结构性
+		// 不可达；链条内 redis 工厂失败面由 TestW1O 直驱臂精确覆盖。
+		if !strings.Contains(err.Error(), "create shared login guard") {
+			t.Fatalf("错误 = %v，want 包含 create shared login guard", err)
 		}
 	})
 
@@ -806,9 +810,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		}
 		if cfg.DispatchAccountCandidateLimit != 12345 {
 			t.Fatalf("DispatchAccountCandidateLimit = %d，want 12345", cfg.DispatchAccountCandidateLimit)
-		}
-		if !cfg.LogFileEnabled {
-			t.Fatal("LogFileEnabled = false，want true（2026-09-21 起开关移除恒开，残留 false 被忽略）")
 		}
 	})
 }

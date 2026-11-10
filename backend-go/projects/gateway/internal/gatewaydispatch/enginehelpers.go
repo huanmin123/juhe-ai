@@ -96,6 +96,7 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 	lane gatewayproto.RequestLane,
 	policy *gatewayruntimecache.GroupSchedulingPolicy,
 	serverRetryBudget *gatewaypreauth.ServerRetryBudget,
+	fixedPollIntervalMs int64,
 ) (ConcurrencySlot, int64, int64, error) {
 	remainingWaitBudgetMs := maxInt64(0, waitBudgetMs)
 	acquireOptions := e.accountConcurrencyLaneAcquireOptions(concurrencyLimit, rpmLimit, lane, policy)
@@ -106,7 +107,13 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 	waitedMs := int64(0)
 	retryCount := int64(0)
 	if !slot.Acquired && accountCapacityFailureKind(slot) == AccountCapacityFailureKindRPM {
-		return slot, waitedMs, remainingWaitBudgetMs, nil
+		if fixedPollIntervalMs <= 0 {
+			return slot, waitedMs, remainingWaitBudgetMs, nil
+		}
+		resetWaitMs := slot.RPMResetAtMs - gatewayupstream.NowMs()
+		if slot.RPMResetAtMs <= 0 || resetWaitMs <= 0 || resetWaitMs > remainingWaitBudgetMs {
+			return slot, waitedMs, remainingWaitBudgetMs, nil
+		}
 	}
 	if !slot.Acquired && remainingWaitBudgetMs > 0 {
 		serverRetryBudget.BeginNoAvailableWait(nil)
@@ -115,6 +122,10 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 		}
 		for !slot.Acquired && remainingWaitBudgetMs > 0 {
 			delayMs := e.nextConcurrencyRetryDelayMs(retryCount+1, remainingWaitBudgetMs)
+			if fixedPollIntervalMs > 0 {
+				// owner 路径固定 200ms 轮询，配合共享 1-2s 预算形成 5-10 次探测。
+				delayMs = fixedPollIntervalMs
+			}
 			currentDelayMs := minInt64(delayMs, remainingWaitBudgetMs)
 			if waitErr := waitForDelayMs(signal, currentDelayMs); waitErr != nil {
 				serverRetryBudget.PauseNoAvailableWait(nil)
@@ -129,7 +140,13 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 				return slot, waitedMs, 0, err
 			}
 			if !slot.Acquired && accountCapacityFailureKind(slot) == AccountCapacityFailureKindRPM {
-				break
+				if fixedPollIntervalMs <= 0 {
+					break
+				}
+				resetWaitMs := slot.RPMResetAtMs - gatewayupstream.NowMs()
+				if slot.RPMResetAtMs <= 0 || resetWaitMs <= 0 || resetWaitMs > remainingWaitBudgetMs {
+					break
+				}
 			}
 		}
 		serverRetryBudget.PauseNoAvailableWait(nil)
@@ -137,8 +154,59 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 	return slot, waitedMs, remainingWaitBudgetMs, nil
 }
 
-func (e *Engine) nextConcurrencyRetryDelayMs(attempt int64, remainingWaitBudgetMs int64) int64 {
-	// exponentialRetryPolicy('gateway_account_concurrency_short_wait',
+// SessionAffinityOwnerWaitBudget 是链面初始化请求级 owner 等待额度的公开
+// 入口：链 loop 跨 attempt 复用同一指针，避免每个 attempt 重新获得完整 2s。
+func SessionAffinityOwnerWaitBudget(configBudgetMs int64, waitPlanned bool, waitRemainingMs int64) int64 {
+	return sessionAffinityOwnerWaitBudgetMs(configBudgetMs, waitPlanned, waitRemainingMs)
+}
+
+// sessionAffinityOwnerWaitBudgetMs 计算 owner 本次可用的等待额度：
+//   - 配置 <=0 表示禁用 owner 等待；
+//   - 名额规划已消耗等待时，用准备期剩余额度收紧；
+//   - 其余情况使用配置额度（默认 2000ms）。
+func sessionAffinityOwnerWaitBudgetMs(configBudgetMs int64, waitPlanned bool, waitRemainingMs int64) int64 {
+	if configBudgetMs <= 0 {
+		return 0
+	}
+	budget := configBudgetMs
+	if waitPlanned && waitRemainingMs < budget {
+		budget = waitRemainingMs
+	}
+	if budget < 0 {
+		return 0
+	}
+	return budget
+}
+
+// consumeSessionAffinityOwnerWaitBudget 从请求级 owner 等待额度扣除本次实际
+// 等待，保证 key 轮换重取/多次获取不会重新获得完整预算。
+func consumeSessionAffinityOwnerWaitBudget(budget *int64, waitedMs int64) {
+	if budget == nil {
+		return
+	}
+	*budget = maxInt64(0, *budget-waitedMs)
+}
+
+// remainingAfterAffinityOwnerWait 把 owner 的独立小预算消耗记回请求级总预算：
+// requestBudgetMs 是请求开始时的总预算，waitedMs 是 owner 实际短等时长。结果
+// 再受 ServerRetryBudget 的零可派发等待余额封顶。
+func remainingAfterAffinityOwnerWait(requestBudgetMs int64, waitedMs int64, serverRetryBudget *gatewaypreauth.ServerRetryBudget) int64 {
+	remaining := requestBudgetMs - waitedMs
+	if remaining < 0 {
+		remaining = 0
+	}
+	if serverRetryBudget != nil {
+		if serverRemaining := serverRetryBudget.RemainingMs(nil); serverRemaining < remaining {
+			remaining = serverRemaining
+		}
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining
+}
+
+func (e *Engine) nextConcurrencyRetryDelayMs(attempt int64, remainingWaitBudgetMs int64) int64 { // exponentialRetryPolicy('gateway_account_concurrency_short_wait',
 	// initialDelayMs, maxDelayMs): delay = min(max, initial * 2^(attempt-1)).
 	delay := e.Config.AccountConcurrencyRetryInitialDelayMs
 	for i := int64(1); i < attempt; i++ {

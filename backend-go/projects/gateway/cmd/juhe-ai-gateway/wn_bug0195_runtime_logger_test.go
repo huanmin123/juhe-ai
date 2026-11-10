@@ -3,12 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 )
@@ -53,9 +55,8 @@ func TestWNBug0195NewRuntimeLoggerDisabledWithoutLogDir(t *testing.T) {
 }
 
 // TestRuntimeConfigLogDirDefaultOnDerivation 覆盖 2026-09-28 默认开启整改的
-// LogDir 装配契约：JUHE_AI_LOG_DIR 未配置时派生 <JUHE_AI_DATA_DIR>/logs
-// （与 jobs runtimelog 派生对称）；"disabled" 字面量（大小写不敏感）显式关闭
-// （LogDir 归空）；显式路径原样优先。
+// LogDir 装配契约：JUHE_AI_LOG_DIR 未配置时派生 <JUHE_AI_DATA_DIR>/logs；
+// "disabled" 字面量（大小写不敏感）显式关闭（LogDir 归空）；显式路径原样优先。
 func TestRuntimeConfigLogDirDefaultOnDerivation(t *testing.T) {
 	// 未配置 → 派生 <DATA_DIR>/logs（DATA_DIR 未配置时为 ./data）。
 	env := developmentSecurityEnv(t)
@@ -137,6 +138,11 @@ func TestWNBug0195NewRuntimeLoggerReadyWritesFileAndDefault(t *testing.T) {
 	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	slog.Info("wn_bug0195 落盘探针", "event", "wn_bug0195_probe", "traceId", "trace-1")
+	flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := sink.Flush(flushCtx); err != nil {
+		t.Fatalf("等待异步文件路落盘: %v", err)
+	}
 	fileRaw, err = os.ReadFile(filepath.Join(dir, processlog.CurrentLogFileName))
 	if err != nil {
 		t.Fatal(err)

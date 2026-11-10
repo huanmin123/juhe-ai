@@ -63,11 +63,9 @@ func (c *w13g3Coordinator) CompleteFailure(ctx context.Context, failure gatewayr
 
 type w13g3Affinity struct {
 	fakeAffinity
-	claimID     string
-	orderErrOn  int
-	orderCalls  int
-	busyFromNth int // >=1 时第 N 次起返回繁忙
-	busyCalls   int
+	claimID    string
+	orderErrOn int
+	orderCalls int
 }
 
 func (a *w13g3Affinity) ClaimAsync(ctx context.Context, sessionAffinityKey, proposedAccountID string, scope AffinityScope) (string, bool) {
@@ -80,14 +78,6 @@ func (a *w13g3Affinity) OrderAsync(ctx context.Context, accounts []AccountCandid
 		return nil, errW13g3
 	}
 	return accounts, nil
-}
-
-func (a *w13g3Affinity) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error) {
-	a.busyCalls++
-	if a.busyFromNth > 0 && a.busyCalls >= a.busyFromNth {
-		return true, nil
-	}
-	return a.fakeAffinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, options)
 }
 
 type w13g3HotQuality struct {
@@ -538,39 +528,28 @@ func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
 		}
 	})
 
-	t.Run("high concurrency refresh and hot quality paths", func(t *testing.T) {
+	t.Run("snapshot refresh and hot quality paths", func(t *testing.T) {
 		pipeline, engine, _, _ := newPipeline(t)
-		hc := "high_concurrency"
 		concurrency := &w13g3ConcurrencyHC{loadErr: errW13g3}
 		engine.Concurrency = concurrency
 		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		input.GroupAccess.GroupType = &hc
 		// 快照刷新错误。
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
 			t.Fatalf("expected refresh error, got %v", err)
 		}
-		// 高并发繁忙排序错误（busy 分支内刷新成功 → Order 失败）。
+		// hot quality 排序错误。
 		concurrency.loadErr = nil
-		affinity := &w13g3Affinity{busyFromNth: 1, orderErrOn: 2}
-		engine.Affinity = affinity
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected busy order error, got %v", err)
-		}
-		// 高并发 hot quality 排序错误。
-		affinity.orderErrOn = 0
 		engine.HotQuality = &w13g3HotQuality{err: errW13g3}
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
 			t.Fatalf("expected hot quality error, got %v", err)
 		}
 	})
 
-	t.Run("high concurrency readiness with hot quality audit", func(t *testing.T) {
+	t.Run("readiness with hot quality audit", func(t *testing.T) {
 		pipeline, engine, _, _ := newPipeline(t)
-		hc := "high_concurrency"
 		engine.Concurrency = &w13g3ConcurrencyHC{}
 		engine.HotQuality = &w13g3HotQuality{intent: "same_tier_exploration", tierKeys: []string{"tier-1"}}
 		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		input.GroupAccess.GroupType = &hc
 		result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
 		if err != nil {
 			t.Fatalf("prepare: %v", err)
@@ -604,14 +583,12 @@ func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
 		}
 	})
 
-	t.Run("high concurrency client ip concurrency decisions", func(t *testing.T) {
+	t.Run("client ip concurrency decisions", func(t *testing.T) {
 		pipeline, engine, _, _ := newPipeline(t)
-		hc := "high_concurrency"
 		engine.Concurrency = &w13g3ConcurrencyHC{}
 		clientIP := &w13g3ClientIPConcurrency{err: errW13g3}
 		engine.ClientIPConcurrency = clientIP
 		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		input.GroupAccess.GroupType = &hc
 		// Acquire 错误。
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
 			t.Fatalf("expected client ip acquire error, got %v", err)
@@ -637,40 +614,8 @@ func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
 		}
 	})
 
-	t.Run("high concurrency queue wait error surfaces", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		hc := "high_concurrency"
-		engine.Concurrency = &w13g3ConcurrencyHC{}
-		affinity := &w13g3Affinity{busyFromNth: 3} // 第三次繁忙检查（获取后）触发排队
-		engine.Affinity = affinity
-		engine.HighConcurrencyQueue = &w13g3Queue{err: errW13g3}
-		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1", "a-2"), &w13g3Coordinator{})
-		input.GroupAccess.GroupType = &hc
-		input.GatewayRequestWallBudget = w13g3WallBudget(t, 60_000)
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected queue wait error, got %v", err)
-		}
-	})
-
-	t.Run("high concurrency busy completes 429", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		hc := "high_concurrency"
-		engine.Concurrency = &w13g3ConcurrencyHC{}
-		// 排队后仍繁忙 → 回退未尝试 → CompleteFailure。
-		affinity := &w13g3Affinity{busyFromNth: 3}
-		engine.Affinity = affinity
-		engine.HighConcurrencyQueue = &w13g3Queue{result: QueueWaitResult{Ready: true}}
-		coordinator := &w13g3Coordinator{completeErr: errW13g3}
-		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1", "a-2"), coordinator)
-		input.GroupAccess.GroupType = &hc
-		input.GatewayRequestWallBudget = w13g3WallBudget(t, 60_000)
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected busy complete failure error, got %v", err)
-		}
-		if coordinator.failure == nil || coordinator.failure.ErrorCode != "rate_limit_exceeded" {
-			t.Fatalf("failure = %#v", coordinator.failure)
-		}
-	})
+	// 高并发排队/繁忙分支（queue wait error surfaces、busy completes 429）已随
+	// 等待分支退役删除。
 }
 
 // w13g3ConcurrencyAlwaysBusy 让每账户按上限满载（busy 判定恒真）。
@@ -760,6 +705,23 @@ func TestW13g3GroupFallbackRoutePlanAndErrors(t *testing.T) {
 		}
 		if found {
 			t.Fatal("a busy fallback group must be skipped")
+		}
+	})
+
+	t.Run("partially busy group is not skipped", func(t *testing.T) {
+		// D-94：every 语义——候选组只有部分账户满载时仍有容量，不得跳过。
+		pipeline, engine, _, _ := newPipeline(t)
+		engine.Cache = &fakeCacheFallback{accounts: map[string][]AccountCandidate{"group-2": testAccounts("b-1", "b-2")}}
+		engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"b-1": 4}}
+		candidate, found, err := pipeline.ResolveNextGroupFallbackCandidateForArgs(context.Background(), GroupFallbackArgs{
+			Req: req, Reason: "group_capacity_busy", APIKeyRecord: apiKeyRecord,
+			SystemAccountID: "system-1", GroupID: "group-1", RequestLane: "text",
+		})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if !found || candidate.GroupID != "group-2" {
+			t.Fatalf("partially busy group must not be skipped: found=%v candidate=%#v", found, candidate)
 		}
 	})
 }

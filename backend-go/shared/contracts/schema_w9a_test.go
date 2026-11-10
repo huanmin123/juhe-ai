@@ -97,8 +97,17 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 		}
 	}
 	systemAccounts := BusinessSchema["system_accounts"]
-	if len(systemAccounts.UniqueConstraints) != 1 || systemAccounts.UniqueConstraints[0][0] != "username" {
-		t.Fatalf("system_accounts username unique constraint drifted: %+v", systemAccounts.UniqueConstraints)
+	// v23 起 username/display_name 唯一性由 lower(...) 唯一索引表达，不再是表级
+	// UniqueConstraints 条目；冻结索引定义，避免大小写语义漂移。
+	usernameUnique := false
+	for _, definition := range systemAccounts.IndexDefinitions {
+		if definition.Name == "idx_system_accounts_username_unique_lower" && definition.Unique &&
+			len(definition.Columns) == 1 && definition.Columns[0] == "lower(username)" {
+			usernameUnique = true
+		}
+	}
+	if !usernameUnique {
+		t.Fatalf("system_accounts username unique index drifted: %+v", systemAccounts.IndexDefinitions)
 	}
 	incidents := BusinessSchema["account_circuit_incidents"]
 	if len(incidents.IndexDefinitions) != 1 || !incidents.IndexDefinitions[0].Unique {
@@ -188,14 +197,14 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 	hasOwnerDefaultUnique := false
 	for _, def := range groups.IndexDefinitions {
 		switch def.Name {
-		case "idx_groups_owner_name_unique":
-			hasOwnerNameUnique = def.Unique && strings.Join(def.Columns, ",") == "system_account_id,name" && def.Predicate == ""
+		case "idx_groups_owner_name_unique_lower":
+			hasOwnerNameUnique = def.Unique && strings.Join(def.Columns, ",") == "system_account_id,lower(name)" && def.Predicate == ""
 		case "idx_groups_owner_default_unique":
 			hasOwnerDefaultUnique = def.Unique && strings.Join(def.Columns, ",") == "system_account_id" && def.Predicate != ""
 		}
 	}
 	if !hasOwnerNameUnique {
-		t.Fatalf("groups idx_groups_owner_name_unique (system_account_id, name) unique index drifted: %+v", groups.IndexDefinitions)
+		t.Fatalf("groups idx_groups_owner_name_unique_lower (system_account_id, lower(name)) unique index drifted: %+v", groups.IndexDefinitions)
 	}
 	if !hasOwnerDefaultUnique {
 		t.Fatalf("groups default partial unique index drifted: %+v", groups.IndexDefinitions)

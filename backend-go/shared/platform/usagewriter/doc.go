@@ -18,12 +18,11 @@
 //
 // # 与 G17 (gateway/internal/gatewayusage) 的契约关系
 //
-// gateway/internal/gatewayusage 冻结了 UsageRecordInput 字段契约与
-// UsageRecorder port；gateway 进程通过 JSON 桥（chain_usage_writer.go）把
-// 该记录转换为本包 UsageRecordInput。本包结构逐字段复刻 G17 records.go 的
-// 同名结构（字段名、Go 类型、json tag 一致），桥接层不做语义改写。分片 id
-// 格式按 G17 的声明归属本 slice（"The shard-id format stays with the writer
-// slice (J-F/G20)"）。
+// gateway/internal/gatewayusage 冻结了 UsageRecorder port；2026-11-09 T188
+// 起其 UsageRecordInput 是本包 UsageRecordInput 的类型别名（编译期同型），
+// gateway 直投 PG 的常规路径零转换、零序列化（仅已冻结的 pricingSnapshot
+// 会按需收紧为 *CostBreakdown）。分片 id 格式按 G17 的声明归属本 slice
+// （"The shard-id format stays with the writer slice (J-F/G20)"）。
 //
 // # 队列消灭（批准的架构差异）
 //

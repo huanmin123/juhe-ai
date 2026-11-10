@@ -201,25 +201,6 @@ func TestWlSmallNumericHelpers(t *testing.T) {
 			t.Fatalf("双 nil got=%v", got)
 		}
 	})
-	t.Run("numericPolicyValue 与 maxi", func(t *testing.T) {
-		if got := numericPolicyValue(nil, 7); got != 7 {
-			t.Fatalf("nil 回落=%d", got)
-		}
-		if got := numericPolicyValue(3.0, 7); got != 3 {
-			t.Fatalf("got=%d", got)
-		}
-		if got := numericPolicyValue("bad", 7); got != 7 {
-			t.Fatalf("非数字回落=%d", got)
-		}
-		value2 := 2.5
-		if got := numericPolicyValue(value2, 7); got != 2 {
-			// float64 直接截断为整数。
-			t.Fatalf("小数截断=%d", got)
-		}
-		if maxi(1, 2) != 2 || maxi(5, 2) != 5 {
-			t.Fatal("maxi 语义错误")
-		}
-	})
 	t.Run("positiveIntegerInt64 与 bodyAdmission 限额", func(t *testing.T) {
 		if got, err := positiveIntegerInt64(5, "n"); err != nil || got != 5 {
 			t.Fatalf("got=%d err=%v", got, err)
@@ -229,12 +210,6 @@ func TestWlSmallNumericHelpers(t *testing.T) {
 		}
 		if _, err := positiveIntegerInt64(-1, "n"); err == nil {
 			t.Fatal("负数必须报错")
-		}
-		if bodyAdmissionMax(1, 2) != 2 || bodyAdmissionMax(5, 2) != 5 {
-			t.Fatal("bodyAdmissionMax 语义错误")
-		}
-		if bodyAdmissionMax64(1, 2) != 2 || bodyAdmissionMax64(9, 2) != 9 {
-			t.Fatal("bodyAdmissionMax64 语义错误")
 		}
 	})
 	t.Run("exploration 与 runtime 的 now/整数辅助", func(t *testing.T) {

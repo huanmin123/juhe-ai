@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,18 +53,40 @@ func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// recordingEnqueuer 记录入队调用，可注入失败。
+// recordingEnqueuer 记录入队调用，可注入失败。Drainer.Run 在后台 goroutine
+// 调用入队、测试主 goroutine 断言，读写必须加锁（-race 门禁）。
 type recordingEnqueuer struct {
+	mu     sync.Mutex
 	inputs []usagewriter.UsageRecordInput
 	failOn map[string]error
 }
 
 func (e *recordingEnqueuer) EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err, ok := e.failOn[input.ID]; ok {
 		return err
 	}
 	e.inputs = append(e.inputs, input)
 	return nil
+}
+
+func (e *recordingEnqueuer) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.inputs)
+}
+
+func (e *recordingEnqueuer) at(index int) usagewriter.UsageRecordInput {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.inputs[index]
+}
+
+func (e *recordingEnqueuer) snapshot() []usagewriter.UsageRecordInput {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]usagewriter.UsageRecordInput(nil), e.inputs...)
 }
 
 func newTestDrainer(directory string, enqueuer Enqueuer) *Drainer {
@@ -86,8 +109,8 @@ func TestDrainOnceEmptyAndMissingDirectory(t *testing.T) {
 	if err != nil || processed != 0 {
 		t.Fatalf("empty directory: processed=%d err=%v", processed, err)
 	}
-	if len(enqueuer.inputs) != 0 {
-		t.Fatalf("enqueued = %d", len(enqueuer.inputs))
+	if enqueuer.count() != 0 {
+		t.Fatalf("enqueued = %d", enqueuer.count())
 	}
 }
 
@@ -134,8 +157,8 @@ func TestDrainOnceQuarantinesCorruptFiles(t *testing.T) {
 			t.Fatalf("%s 原文件仍在: %v", testCase.token, err)
 		}
 	}
-	if len(enqueuer.inputs) != 1 || enqueuer.inputs[0].ID != "id-good" {
-		t.Fatalf("enqueued = %+v", enqueuer.inputs)
+	if enqueuer.count() != 1 || enqueuer.at(0).ID != "id-good" {
+		t.Fatalf("enqueued = %+v", enqueuer.snapshot())
 	}
 }
 
@@ -177,7 +200,7 @@ func TestDrainOnceKeepsFileWhenEnqueueFails(t *testing.T) {
 	if _, err := os.Stat(after); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("后续文件未删除: %v", err)
 	}
-	if got := len(enqueuer.inputs); got != 2 {
+	if got := enqueuer.count(); got != 2 {
 		t.Fatalf("enqueued = %d, want 2", got)
 	}
 }
@@ -197,7 +220,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 		close(done)
 	}()
 	deadline := time.After(3 * time.Second)
-	for len(enqueuer.inputs) == 0 {
+	for enqueuer.count() == 0 {
 		select {
 		case <-done:
 			t.Fatal("Run 在取消前提前退出")

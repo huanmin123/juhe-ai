@@ -813,4 +813,5 @@ CREATE TABLE IF NOT EXISTS juhe_jobs.account_balance_outcomes (
  outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, trigger TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, committed BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_account_balance_outcomes_account ON juhe_jobs.account_balance_outcomes(account_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_account_balance_outcomes_observed ON juhe_jobs.account_balance_outcomes(observed_at);
 `

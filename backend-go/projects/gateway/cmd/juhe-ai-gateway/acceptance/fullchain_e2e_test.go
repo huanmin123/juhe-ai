@@ -624,7 +624,13 @@ func (m *fullchainMockUpstream) proxy(w http.ResponseWriter, r *http.Request, sc
 	}
 	m.mu.Unlock()
 	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, response.Body)
+	// 断流场景（如 mid_stream_close 的 panic(ErrAbortHandler)）必须向网关真实
+	// 传播传输中断：吞掉 io.Copy 错误会把 mock 断流「正常化」成合法 chunked
+	// 终止，网关按 generic 收敛契约判 success，失败归因/重试形态全部失真
+	//（F5 usage_attribution 自 2026-09-17 起因此结构性不可满足）。
+	if _, err := io.Copy(w, response.Body); err != nil {
+		panic(http.ErrAbortHandler)
+	}
 	if overrides > 0 {
 		m.mu.Lock()
 		m.injectedHeaderCalls++
@@ -675,7 +681,7 @@ type fullchainFixture struct {
 }
 
 // startFullchainFixture 组装：mock 上游（含场景控制器）+ chain 网关 + 真实
-// jobs worker（消费 usage spool 落 PG usage shard，让 usage-records 断言面
+// jobs worker（后台任务/探针族；usage-records 断言面由 gateway 直投 PG 提供
 // 可达）+ 管理面登录客户端。复用 acceptance harness（真实二进制 + pgtestkit
 // 隔离 PG 库 + 私网上游白名单 env）。
 func startFullchainFixture(t *testing.T) *fullchainFixture {
@@ -736,8 +742,8 @@ func (f *fullchainFixture) raiseSystemAPIRateLimits() {
 }
 
 // startFullchainJobsWorker 以 PG 唯一存储形态启动 juhe-ai-jobs，额外接上
-// gateway 的 usage spool 目录（BUG-0175 D-72 消费侧契约）与同一隔离 PG 库 /
-// Redis namespace，让用量记录经「gateway spool → jobs drain → PG usage
+// gateway 的同一隔离 PG 库 /
+// Redis namespace；用量记录由 gateway 直投 PG（2026-11-09 T188），jobs 负责
 // shard → usage-catalog 注册」的真实交接链进入 usage-records 读模型。
 func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess {
 	t.Helper()
@@ -746,20 +752,16 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 	env := map[string]string{
 		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", freePort(t)),
 		"JUHE_AI_POSTGRES_URL":               gw.dsn,
-		// F1 runtime-log-indexer（jobs 进程内）显式必填（无回落主连接串）。
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": gw.dsn,
 		// J1 账户健康 PG 直读输入连接串（docker/single-server/README 同款显式
 		// 必填，无回落）。
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": gw.dsn,
-		"JUHE_AI_REDIS_URL":                   gw.redisURL,
+		"JUHE_AI_REDIS_URL":                         gw.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   gw.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             gw.spoolDir,
 		"JUHE_AI_INSTANCE_ID":                       "fullchain-jobs",
 		"JUHE_AI_WORKER_ROLE":                       "worker",
 		"JUHE_AI_WORKER_REPLICA_INDEX":              "0",
 		"JUHE_AI_SECRET":                            gw.secret,
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "fullchain-jobs",
 		"JUHE_AI_LOG_DIR":                           gw.storage["logs"],
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":             "5000",
 	}
@@ -954,7 +956,7 @@ func (f *fullchainFixture) createGroupWithProvider(name, providerCode string) st
 	return groupID
 }
 
-// createGroupWithType 创建指定类型分组（personal / high_concurrency）。
+// createGroupWithType 创建分组；写面只接受 personal（退役类型由调用方断言 400）。
 func (f *fullchainFixture) createGroupWithType(name, groupType string, schedulingPolicy map[string]any) string {
 	f.t.Helper()
 	payload := map[string]any{"name": name, "providerCode": "gpt", "groupType": groupType}
@@ -1164,8 +1166,9 @@ func (f *fullchainFixture) listUsageRecords(apiKeyID string) []fullchainUsageRec
 	return out
 }
 
-// waitUsageRecords 轮询直到谓词满足（usage 落库是异步桥：gateway spool →
-// jobs drain → usage shard → usage-catalog 注册 → statreads 读模型）。
+// waitUsageRecords 轮询直到谓词满足（usage 落库是异步链：gateway recorder →
+// usagewriter 直投 juhe_usage.usage_records → statreads 读模型；2026-11-09
+// T188 起不再经 jobs spool drain）。
 func (f *fullchainFixture) waitUsageRecords(t *testing.T, apiKeyID string, predicate func([]fullchainUsageRecord) bool, what string) []fullchainUsageRecord {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -1182,62 +1185,18 @@ func (f *fullchainFixture) waitUsageRecords(t *testing.T, apiKeyID string, predi
 	return nil
 }
 
-// firstCorruptSpoolHead 返回 spool 目录下第一个 .corrupt 文件的前 240 字节
-// （usage 记录不含凭据；截断仅为控制输出体积）。
-func firstCorruptSpoolHead(spoolDir string) string {
-	entries, err := os.ReadDir(spoolDir)
-	if err != nil {
-		return ""
-	}
-	var found string
-	_ = filepath.WalkDir(spoolDir, func(path string, entry os.DirEntry, walkErr error) error {
-		if found != "" || walkErr != nil {
-			return filepath.SkipAll
-		}
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".corrupt") {
-			if data, readErr := os.ReadFile(path); readErr == nil {
-				head := string(data)
-				if len(head) > 240 {
-					head = head[:240]
-				}
-				found = head
-				return filepath.SkipAll
-			}
-		}
-		return nil
-	})
-	_ = entries
-	return found
-}
-
-// usageChainTriage 在 usage 断言超时时输出交接链各环节的可观测状态
-// （spool 文件数 / jobs shard 文件数 / catalog 注册行数），避免盲猜。
+// usageChainTriage 在 usage 断言超时时输出直投链路的可观测状态
+// （usage_records 行数），避免盲猜。退役的 shard 目录四表不再查询。
 func (f *fullchainFixture) usageChainTriage() string {
 	f.t.Helper()
-	pieces := []string{}
-	countFiles := func(root string) string {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			return fmt.Sprintf("%s: unreadable(%v)", root, err)
-		}
-		return fmt.Sprintf("%s: %d files", root, len(entries))
-	}
-	pieces = append(pieces, countFiles(f.gw.spoolDir))
-	pieces = append(pieces, countFiles(filepath.Join(f.gw.root, "storage", "usage-jobs-shards")))
-	// E2E-FINDING 取证：jobs 侧把无法解析的 spool 文件隔离为 .corrupt；
-	// 抽样其内容头部以定位缺失字段（不含凭据）。
-	if corrupt := firstCorruptSpoolHead(f.gw.spoolDir); corrupt != "" {
-		pieces = append(pieces, "corrupt-sample: "+corrupt)
-	}
 	catalog, err := sql.Open("pgx", f.gw.dsn)
 	if err != nil {
-		return strings.Join(pieces, "; ") + fmt.Sprintf("; catalog open: %v", err)
+		return fmt.Sprintf("usage db open: %v", err)
 	}
 	defer catalog.Close()
-	var shards, entries int
-	_ = catalog.QueryRow(`SELECT COUNT(*) FROM juhe_usage.usage_record_shards`).Scan(&shards)
-	_ = catalog.QueryRow(`SELECT COUNT(*) FROM juhe_usage.usage_record_shard_entries`).Scan(&entries)
-	return strings.Join(pieces, "; ") + fmt.Sprintf("; catalog shards=%d entries=%d", shards, entries)
+	var usageRows int
+	_ = catalog.QueryRow(`SELECT COUNT(*) FROM juhe_usage.usage_records`).Scan(&usageRows)
+	return fmt.Sprintf("usage_records=%d", usageRows)
 }
 
 // fullchainAuditLog 是 audit-logs 详情的断言投影。
@@ -1392,18 +1351,20 @@ func (f *fullchainFixture) patchAccount(accountID string, fields map[string]any)
 //   - gateway 侧生产者从不生成稳定 id：internal/gatewayusage/service.go
 //     RecordCompletedUpstreamAttempt / RecordFailedUpstreamAttempt 构造的
 //     UsageRecordInput 无 ID；cmd/juhe-ai-gateway/chain_usage.go 的
-//     spooledUsageRecorder 直接 spool.Persist 原始记录；带 idFactory 的
+//     历史 E2E-FINDING 记录（T188 前 spool 路径；现行直投 PG 不再经 spool）：
 //     NormalizeUsageRecordInput 只被测试用 MemoryUsageRecorder 调用。
-//   - spool 落盘 JSON 首键即 systemAccountId（id 为 omitempty 被省略），
-//     jobs drain 对 id/createdAt 空值判「usage spool 文件缺少稳定
+//   - 旧 spool 落盘 JSON 首键即 systemAccountId（id 为 omitempty 被省略），
+//     jobs drain 对 id/createdAt 空值判「spool 文件缺少稳定
 //     id/createdAt」并隔离 .corrupt，usage-records 读模型永远为空。
 //
-// 修复：spooledUsageRecorder.EnqueueUsageRecord 入口执行
+// 历史修复：spooledUsageRecorder.EnqueueUsageRecord 入口执行
 // NormalizeUsageRecordInput（Node record-queue enqueueUsageRecord 首步语义），
 // 组合根提供 shard 格式稳定 id 工厂（usageShardRecordIDFactory）。修复后
 // 下列探测在链路健康时立即返回 false，全部 usage-records 断言照常执行；
 // 若交接链再次断裂（例如有人移除入口归一化），usage 断言回到 SKIP 并在
-// triage 输出 corrupt-sample 证据，而不是给出误导性的超时失败。
+// skip 原因里附 usage_records/catalog 的 triage 计数，而不是给出误导性的
+// 超时失败。2026-11-09 T188 起判据只看 usage_records 是否有行：直投 PG
+// 不再维护旧 shard 目录四表，catalog shards=0 是预期状态。
 // ---------------------------------------------------------------------------
 
 // usageChainStateOnce 缓存 usage 交接链可用性探测结果（每夹具一次）。
@@ -1419,14 +1380,25 @@ func (f *fullchainFixture) usageChainBroken(t *testing.T) bool {
 		f.usageChainProbed = true
 		deadline := time.Now().Add(12 * time.Second)
 		for time.Now().Before(deadline) {
-			if len(f.listUsageRecords(f.anyAPIKeyID(t))) > 0 {
-				return false
+			// 自证口径：fixture 库是 pgtestkit 每测试隔离库，本轮创建的任意
+			// 一把 API Key 名下出现 usage 行即写链存活。不能只探第一把
+			// key（列表序与流量 key 无关），也不能以 usage_records 总行数
+			// 为准（后台探针行会污染判定）。
+			for _, keyID := range f.fixtureAPIKeyIDs(t) {
+				if len(f.listUsageRecords(keyID)) > 0 {
+					return false
+				}
 			}
 			time.Sleep(400 * time.Millisecond)
 		}
-		if strings.Contains(f.usageChainTriage(), "corrupt-sample") || strings.Contains(f.usageChainTriage(), "catalog shards=0") {
+		// 2026-11-09 T188 起 gateway 直投 juhe_usage.usage_records，旧 shard
+		// 目录四表不再由写入链路维护（仅 mockdata/清理读取）；canary 只以
+		// usage_records 是否有行为准，catalog shards 仅保留在 triage 里作
+		// 诊断信息。此前把 catalog shards=0 当断链会在直投后永久误判。
+		triage := f.usageChainTriage()
+		if strings.Contains(triage, "usage_records=0") {
 			f.usageChainBrokenFlag = true
-			f.usageChainReason = "usage 交接链回归 canary：spool 记录被 jobs drain 判损坏或 usage-catalog 无 shard（E2E-FINDING #1 曾因此断裂，2026-09-17 已修复；复现说明见 fullchain_e2e_test.go 头注）"
+			f.usageChainReason = "usage 直投链路回归 canary：usage_records 无新行（历史 E2E-FINDING #1 见文件头注）；triage: " + triage
 		}
 	}
 	return f.usageChainBrokenFlag
@@ -1440,19 +1412,23 @@ func (f *fullchainFixture) requireUsageChain(t *testing.T) {
 	}
 }
 
-// anyAPIKeyID 返回当前测试里任意一个已创建 API Key 的 id（usage 探测用）。
-func (f *fullchainFixture) anyAPIKeyID(t *testing.T) string {
+// fixtureAPIKeyIDs 返回本轮创建的全部 API Key id（usage 写链 canary 探测
+// 用；fixture 库隔离，列表里所有 key 都属于本轮）。
+func (f *fullchainFixture) fixtureAPIKeyIDs(t *testing.T) []string {
 	f.t.Helper()
 	_, payload := f.admin.do(http.MethodGet, "/__aisys__/api/api-keys?page=1&pageSize=100", nil, wantStatus(http.StatusOK))
 	items, _ := data(payload)["items"].([]any)
+	ids := []string{}
 	for _, raw := range items {
 		item, _ := raw.(map[string]any)
 		if item != nil && str(item["id"]) != "" {
-			return str(item["id"])
+			ids = append(ids, str(item["id"]))
 		}
 	}
-	t.Fatalf("no api keys for usage probe")
-	return ""
+	if len(ids) == 0 {
+		t.Fatalf("no api keys for usage probe")
+	}
+	return ids
 }
 
 // ---------------------------------------------------------------------------

@@ -61,9 +61,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	printVersion := flags.Bool("version", false, "print the jobs build version, commit and schema revision")
 	check := flags.Bool("check-boundary", false, "verify the scaffold boundary")
 	runJobsOnce := flags.String("run-jobs-once", "", "run wired worker jobs once (comma-separated task names), print a JSON result array and exit")
-	// W33 一次性运维入口：从 runtime_logs 全量重建 F1 facet 三表并退出，
-	// 修复 W23 修复前增量写入对同日记录的历史少计。禁止接入定时任务。
-	rebuildRuntimeLogFacets := flags.Bool("rebuild-runtime-log-facets", false, "rebuild F1 runtime-log facet tables from runtime_logs once (one-shot maintenance), print a JSON result and exit")
 	healthAddress := flags.String("health-listen-address", envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305"), "loopback health listen address")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -81,10 +78,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintf(stderr, "unsupported jobs arguments: %v\n", flags.Args())
-		return 2
-	}
-	if *rebuildRuntimeLogFacets && *runJobsOnce != "" {
-		fmt.Fprintln(stderr, "--rebuild-runtime-log-facets 与 --run-jobs-once 不得同时使用")
 		return 2
 	}
 
@@ -111,12 +104,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	// once 契约。SetDefault 延后到守护路径安装（run-jobs-once 分支之后）。
 	processlog.CatchPanic(logger)
 	processlog.KeepAliveOnBrokenOutputPipe()
-	// --rebuild-runtime-log-facets 分发点：一次性运维操作，先于 owner/passive
-	// 形态判定（passive env 下也不允许被静默转成被动健康面）。stdout 契约是
-	// 仅输出单个结果 JSON，与 --run-jobs-once 同型。
-	if *rebuildRuntimeLogFacets {
-		return runRebuildRuntimeLogFacets(os.Getenv, stdout, stderr)
-	}
 	ownerMode, err := ownermode.Load(os.Getenv)
 	if err != nil {
 		return failWith(stderr, err)
@@ -167,9 +154,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			"wait_duration_ms", event.DBStats.WaitDuration.Milliseconds(),
 		)
 	})
-	// 2026-11-09 用户裁决：运行日志不再入库 PG，F1 runtime-log-indexer 组件
-	// 与它的配置/存储/schema 装配整体下架；gateway 仍写本地 JSONL 文件，
-	// 需要集中检索由 ELK/Loki 等外部抓取承担。
+	// 2026-11-09 用户裁决：运行日志不再入库 PG。F1 索引器的配置/存储/schema
+	// 与一次性 facet 重建 CLI 已全部删除；gateway 仍写本地 JSONL 文件，需要
+	// 集中检索由 ELK/Loki 等外部抓取承担。
 	accountHealthConfig, err := accounthealth.LoadConfig(os.Getenv)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("load J1 account-health config: %w", err))
@@ -558,8 +545,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	promRegistry := prommetrics.NewRegistry()
 	taskruns.BindMetrics(promRegistry)
 	bindJobsBuildInfo(promRegistry, jobsMetricInstanceID(workerCfg))
-	// F1 runtime-log-indexer 已于 2026-11-09 退役；保留 runtimeRunning 供
-	// /health 报告 false，避免健康契约字段消失。
+	// runtimeRunning 是“owner 运行态”健康位（字段名 runtimeLogOwnerHeld 为
+	// 既有健康契约保留）：owner supervisor 运行期间置 true，停机置 false。
+	// 此前退役批删除了唯一 Store(true) 写入点，导致 owner 模式 /health 的
+	// ready 恒为 false。
 	var runtimeRunning atomic.Bool
 	components := []supervisor.Component{}
 	if probeOutboxPruner != nil {
@@ -727,6 +716,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "accountHealthEnabled", true, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
 	components = append(components, worker.components()...)
 	components = wrapLeaderComponents(leaderGate, components)
+	// owner 运行态从 supervisor 启动持续到退出；/health 的 ready 依赖该位。
+	runtimeRunning.Store(true)
+	defer runtimeRunning.Store(false)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)

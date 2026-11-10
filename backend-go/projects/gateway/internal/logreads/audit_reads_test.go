@@ -29,8 +29,6 @@ type readsTestEnv struct {
 	accounts *authsys.AccountStore
 	hotDir   string
 	blobDir  string
-	logDir   string
-	grep     *RuntimeLogGrep
 }
 
 // newReadsTestEnv builds the env over the production dataset schemas carried
@@ -45,7 +43,7 @@ func withAuditDisabled() readsTestOption {
 	return func(deps *ReadsDeps) { deps.AuditDisabled = true }
 }
 
-func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool, options ...readsTestOption) *readsTestEnv {
+func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, public PublicApiLogReader), login bool, options ...readsTestOption) *readsTestEnv {
 	t.Helper()
 	db := newLogreadsPGDatabase(t)
 	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
@@ -63,15 +61,10 @@ func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime Run
 	directories := t.TempDir()
 	hotDir := filepath.Join(directories, "audit-hot")
 	blobDir := filepath.Join(directories, "audit-blobs")
-	logDir := filepath.Join(directories, "logs")
 	audit, err := NewAuditLogQueryReader(db, AuditQueryDirectories{
 		HotSearchDirectory:   hotDir,
 		PayloadBlobDirectory: blobDir,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtimeReader, err := NewRuntimeLogSQLReader(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,19 +73,18 @@ func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime Run
 		t.Fatal(err)
 	}
 	if mutate != nil {
-		mutate(audit, runtimeReader, public)
+		mutate(audit, public)
 	}
-	grep := NewRuntimeLogGrep(RuntimeLogGrepConfig{FileEnabled: true, Directory: logDir, MaxFiles: 500, RetentionDays: 30})
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
-	readsDeps := &ReadsDeps{Audit: audit, Runtime: runtimeReader, Public: public, Grep: grep, Auth: deps}
+	readsDeps := &ReadsDeps{Audit: audit, Public: public, Auth: deps}
 	for _, option := range options {
 		option(readsDeps)
 	}
 	readsDeps.Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	env := &readsTestEnv{server: server, db: db, pg: true, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir, logDir: logDir, grep: grep}
+	env := &readsTestEnv{server: server, db: db, pg: true, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir}
 	if login {
 		if _, err := accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 			Username: "admin", DisplayName: "admin_name", Password: "admin-password-123", Role: "admin",
@@ -106,6 +98,8 @@ func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime Run
 	}
 	return env
 }
+
+var mustChangeFalse = false
 
 func boolPtr(value bool) *bool { return &value }
 
@@ -515,9 +509,6 @@ func TestAuditLogReadsRequireAdmin(t *testing.T) {
 		"/__aisys__/api/audit-logs/runtime",
 		"/__aisys__/api/audit-logs/error-groups",
 		"/__aisys__/api/audit-logs/log-1",
-		"/__aisys__/api/runtime-logs",
-		"/__aisys__/api/runtime-logs/facets",
-		"/__aisys__/api/runtime-logs/some-id",
 		"/__aisys__/api/public-api-logs",
 		"/__aisys__/api/public-api-logs/some-id",
 	} {
@@ -529,7 +520,7 @@ func TestAuditLogReadsRequireAdmin(t *testing.T) {
 }
 
 // TestAuditLogReadsUnregisteredWhenDisabled 锁定 JUHE_AI_AUDIT_LOG_ENABLED=false
-// 的读面契约：审计 GET 全部 404，runtime-logs / public-api-logs 不受影响。
+// 的读面契约：审计 GET 全部 404，public-api-logs 不受影响。
 func TestAuditLogReadsUnregisteredWhenDisabled(t *testing.T) {
 	env := newReadsTestEnv(t, nil, true, withAuditDisabled())
 	for _, path := range []string{
@@ -545,7 +536,6 @@ func TestAuditLogReadsUnregisteredWhenDisabled(t *testing.T) {
 		}
 	}
 	for _, path := range []string{
-		"/__aisys__/api/runtime-logs",
 		"/__aisys__/api/public-api-logs",
 	} {
 		code, payload := env.do(t, http.MethodGet, path, "")

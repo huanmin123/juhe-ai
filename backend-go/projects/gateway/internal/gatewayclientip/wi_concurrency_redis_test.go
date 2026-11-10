@@ -11,175 +11,16 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
-// queuePolicy 构造排队型 client-IP 并发策略。
-func wiQueueOverflowPolicy(limit int) map[string]any {
-	return map[string]any{
-		"maxQueueSize":                    float64(4),
-		"clientIpConcurrencyLimit":        float64(limit),
-		"clientIpConcurrencyOverflowMode": OverflowModeQueue,
-		"maxQueueWaitMs":                  float64(5_000),
-		"perApiKeyQueueLimit":             float64(4),
-	}
+// wiIPGatePolicy 构造两键普通分组策略（clientIpConcurrencyLimit 生效）。
+func wiIPGatePolicy(limit int) *gatewayscheduling.Policy {
+	return &gatewayscheduling.Policy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: limit}
 }
 
-func TestWIClientIPConcurrencyMemoryReleaseWakesQueue(t *testing.T) {
-	clock := newManualClock(time.UnixMilli(2_000_000))
-	concurrency, err := NewClientIPConcurrency(ClientIPConcurrencyOptions{Clock: clock})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	t.Cleanup(concurrency.Close)
-	input := ClientIPConcurrencyAcquireInput{
-		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-		ClientIP: "10.0.0.1", Policy: wiQueueOverflowPolicy(1),
-	}
-	ctx := context.Background()
-
-	// 空 IP / limit<=0 → 禁用快速路径。
-	disabled, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, ClientIPConcurrencyAcquireInput{Policy: wiQueueOverflowPolicy(0)})
-	if err != nil || disabled.Enabled || !disabled.Acquired {
-		t.Fatalf("禁用路径=%+v err=%v", disabled, err)
-	}
-	first, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input)
-	if err != nil || !first.Acquired || first.Current != 1 {
-		t.Fatalf("首次获取=%+v err=%v", first, err)
-	}
-
-	// 第二个进入队列；release 后按 FIFO 唤醒。
-	wake := make(chan ClientIPConcurrencyDecision, 1)
-	go func() {
-		decision, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input)
-		if err != nil {
-			t.Error(err)
-			wake <- ClientIPConcurrencyDecision{}
-			return
-		}
-		wake <- decision
-	}()
-	waitForWIClientIPQueue(t, concurrency, 1)
-	first.Release()
-	select {
-	case decision := <-wake:
-		if !decision.Acquired || !decision.Queued || decision.Current != 1 {
-			t.Fatalf("唤醒决策=%+v", decision)
-		}
-		decision.Release()
-	case <-time.After(5 * time.Second):
-		t.Fatal("release 后未唤醒排队者")
-	}
-}
-
-// waitForWIClientIPQueue 等待内存队列出现指定长度的排队者。
-func waitForWIClientIPQueue(t *testing.T, c *ClientIPConcurrency, want int) {
-	t.Helper()
-	for i := 0; i < 200; i++ {
-		for _, row := range c.Snapshot() {
-			if row.QueueSize == want {
-				return
-			}
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("队列在 1s 内未达到长度 %d", want)
-}
-
-func TestWIClientIPConcurrencyMemorySignalAbort(t *testing.T) {
-	clock := newManualClock(time.UnixMilli(2_000_000))
-	concurrency, err := NewClientIPConcurrency(ClientIPConcurrencyOptions{Clock: clock})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	t.Cleanup(concurrency.Close)
-	input := ClientIPConcurrencyAcquireInput{
-		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-		ClientIP: "10.0.0.1", Policy: wiQueueOverflowPolicy(1),
-	}
-	ctx := context.Background()
-	first, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input)
-	if err != nil || !first.Acquired {
-		t.Fatalf("首次获取=%+v err=%v", first, err)
-	}
-
-	// 已取消的 Signal 直接触发 aborted 拒绝（快速路径）。
-	cancelled, cancel := context.WithCancel(ctx)
-	cancel()
-	aborted, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, ClientIPConcurrencyAcquireInput{
-		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-		ClientIP: "10.0.0.1", Policy: wiQueueOverflowPolicy(1), Signal: cancelled,
-	})
-	if err != nil || aborted.Acquired || aborted.Reason != RejectAborted {
-		t.Fatalf("已取消 signal=%+v err=%v", aborted, err)
-	}
-
-	// 排队后取消 signal → aborted 出队。
-	waiter := make(chan ClientIPConcurrencyDecision, 1)
-	queuedCtx, cancelQueued := context.WithCancel(ctx)
-	go func() {
-		decision, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, ClientIPConcurrencyAcquireInput{
-			SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-			ClientIP: "10.0.0.1", Policy: wiQueueOverflowPolicy(1), Signal: queuedCtx,
-		})
-		if err != nil {
-			t.Error(err)
-			waiter <- ClientIPConcurrencyDecision{}
-			return
-		}
-		waiter <- decision
-	}()
-	waitForWIClientIPQueue(t, concurrency, 1)
-	// 排队者仍持有引用：释放首个槽位会先按 aborted drain 掉已取消的排队头。
-	cancelQueued()
-	first.Release()
-	select {
-	case decision := <-waiter:
-		if decision.Acquired {
-			t.Fatalf("已取消的排队者必须 aborted: %+v", decision)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("取消后的排队者未收到决策")
-	}
-}
-
-func TestWIClientIPConcurrencyMemoryClear(t *testing.T) {
-	clock := newManualClock(time.UnixMilli(2_000_000))
-	concurrency, err := NewClientIPConcurrency(ClientIPConcurrencyOptions{Clock: clock})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	t.Cleanup(concurrency.Close)
-	ctx := context.Background()
-	input := ClientIPConcurrencyAcquireInput{
-		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-		ClientIP: "10.0.0.1", Policy: wiQueueOverflowPolicy(1),
-	}
-	first, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input)
-	if err != nil || !first.Acquired {
-		t.Fatalf("首次获取=%+v err=%v", first, err)
-	}
-	waiter := make(chan ClientIPConcurrencyDecision, 1)
-	go func() {
-		decision, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input)
-		if err != nil {
-			t.Error(err)
-			waiter <- ClientIPConcurrencyDecision{}
-			return
-		}
-		waiter <- decision
-	}()
-	waitForWIClientIPQueue(t, concurrency, 1)
-	// 契约：Clear 以 aborted（limit 字面量 1）出队全部等待者。
-	concurrency.Clear()
-	select {
-	case decision := <-waiter:
-		if decision.Acquired || decision.Reason != RejectAborted || decision.Limit != 1 {
-			t.Fatalf("Clear 决策=%+v", decision)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Clear 后等待者未收到决策")
-	}
-}
+// 排队溢出模式的内存/Redis 测试已随队列退役删除；IP 闸口只保留 reject 即时
+// 拒绝语义（获取/满额拒绝/释放恢复/取消/scope 隔离见 concurrency_test.go）。
 
 func TestWIClientIPConcurrencyRedisSlotContract(t *testing.T) {
 	server := miniredis.RunT(t)
@@ -195,16 +36,16 @@ func TestWIClientIPConcurrencyRedisSlotContract(t *testing.T) {
 	ctx := context.Background()
 	input := ClientIPConcurrencyAcquireInput{
 		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-		ClientIP: "10.0.0.1", Policy: wiQueueOverflowPolicy(1),
+		ClientIP: "10.0.0.1", Policy: wiIPGatePolicy(1),
 	}
 	key := clientIPConcurrencyKey("sys", "grp", "key", "10.0.0.1")
 
 	// 首次获取成功并写入 redis 槽。
-	first, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input)
+	first, err := concurrency.AcquireClientIPSlot(ctx, input)
 	if err != nil || !first.Acquired || first.Current != 1 {
 		t.Fatalf("redis 首次获取=%+v err=%v", first, err)
 	}
-	slotKey := redisClientIPConcurrencyKey(key)
+	slotKey := redisClientIPConcurrencyKeyNS("", key)
 	if wiZCard(t, server, slotKey) != 1 {
 		t.Fatalf("槽 ZSET=%d want 1", wiZCard(t, server, slotKey))
 	}
@@ -228,66 +69,25 @@ func TestWIClientIPConcurrencyRedisSlotContract(t *testing.T) {
 	}
 	first.Release()
 
-	// 拒绝路径：打满 + reject 模式 → limit_reached。
+	// 拒绝路径：打满 → limit_reached 即时拒绝（溢出队列模式已退役）。
 	rejectInput := ClientIPConcurrencyAcquireInput{
 		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
 		ClientIP: "10.0.0.2",
-		Policy: map[string]any{
-			"clientIpConcurrencyLimit": float64(1), "clientIpConcurrencyOverflowMode": OverflowModeReject,
-		},
+		Policy:   wiIPGatePolicy(1),
 	}
-	held, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, rejectInput)
+	held, err := concurrency.AcquireClientIPSlot(ctx, rejectInput)
 	if err != nil || !held.Acquired {
 		t.Fatalf("拒绝测试持有失败: %+v err=%v", held, err)
 	}
-	rejected, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, rejectInput)
+	rejected, err := concurrency.AcquireClientIPSlot(ctx, rejectInput)
 	if err != nil || rejected.Acquired || rejected.Reason != RejectLimitReached {
 		t.Fatalf("reject 决策=%+v err=%v", rejected, err)
 	}
 	held.Release()
 
-	// 排队路径：queue 模式打满 → 排队 → 释放后唤醒。
-	queueInput := input
-	queueInput.ClientIP = "10.0.0.3"
-	queueKey := clientIPConcurrencyKey("sys", "grp", "key", "10.0.0.3")
-	holder, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, queueInput)
-	if err != nil || !holder.Acquired {
-		t.Fatalf("排队持有失败: %+v err=%v", holder, err)
-	}
-	wake := make(chan ClientIPConcurrencyDecision, 1)
-	go func() {
-		decision, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, queueInput)
-		if err != nil {
-			t.Error(err)
-			wake <- ClientIPConcurrencyDecision{}
-			return
-		}
-		wake <- decision
-	}()
-	// Redis 排队依赖 ZSET 队列键出现。
-	for i := 0; i < 200; i++ {
-		if wiZCard(t, server, redisClientIPQueueKey(queueKey)) == 1 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if wiZCard(t, server, redisClientIPQueueKey(queueKey)) != 1 {
-		t.Fatal("排队项未写入 redis 队列")
-	}
-	holder.Release()
-	select {
-	case decision := <-wake:
-		if !decision.Acquired || !decision.Queued {
-			t.Fatalf("redis 唤醒决策=%+v", decision)
-		}
-		decision.Release()
-	case <-time.After(5 * time.Second):
-		t.Fatal("redis 排队者未被唤醒")
-	}
-
 	// redis 不可用：错误透传，不静默降级。
 	server.Close()
-	if _, err := concurrency.AcquireHighConcurrencyClientIPSlot(ctx, input); err == nil {
+	if _, err := concurrency.AcquireClientIPSlot(ctx, input); err == nil {
 		t.Fatal("redis 不可用时必须报错")
 	}
 }

@@ -19,6 +19,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // composeTestPostgres provisions the isolated PostgreSQL test database for
@@ -76,6 +78,9 @@ func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
 		ChainEnabled:                  true,
 		CaptchaDisabled:               true,
 		AuditLogEnabled:               true,
+		// 组合测试的 mock 上游是 httptest loopback：与既有的 init 环境开关
+		// 同一约定，运行时配置显式放行私网；生产默认仍由环境变量决定。
+		UpstreamURLSecurity: sharedupstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: true},
 	}
 }
 
@@ -164,25 +169,6 @@ func openComposeAuditSources(t *testing.T, dsn string) (auditlog.Config, *auditl
 	return config, producer, func() {
 		keeper.Close()
 		_ = store.Close()
-	}
-}
-
-// createRuntimeLogDataset provisions the F1-jobs-owned runtime-log dataset
-// tables in the juhe_dataset schema (the gateway itself never creates another
-// owner's schema; this mirrors a deployed F1 indexer).
-func createRuntimeLogDataset(t *testing.T, db *sql.DB) {
-	t.Helper()
-	statements := []string{
-		`CREATE SCHEMA IF NOT EXISTS juhe_dataset`,
-		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_logs (id TEXT PRIMARY KEY, time TIMESTAMPTZ NOT NULL, level TEXT NOT NULL, trace_id TEXT, event TEXT, message TEXT, error_message TEXT, raw_json TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_facet_summary (bucket_key TEXT PRIMARY KEY, earliest_time TIMESTAMPTZ, latest_time TIMESTAMPTZ, total_count INTEGER NOT NULL DEFAULT 0)`,
-		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_level_facets (bucket_key TEXT NOT NULL, level TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (bucket_key, level))`,
-		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_event_facets (bucket_key TEXT NOT NULL, event TEXT NOT NULL, count INTEGER NOT NULL, latest_time TIMESTAMPTZ, PRIMARY KEY (bucket_key, event))`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("create runtime-log dataset table: %v", err)
-		}
 	}
 }
 
@@ -326,10 +312,12 @@ func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 	}
 
 	// The challenge lives in the namespaced shared store, not in process
-	// memory: the Go key equals redisNamespacedKey(`juhe-ai:state:auth_captcha:`).
+	// memory: 域作用域键形态 juhe-ai:{<namespace>:<域>}:state:auth_captcha:
+	// （PostgreSQL与Redis高性能模式设计 §域清单，authstate 域）。
+	challengePrefix := "juhe-ai:{" + rediscfg.DomainNamespace("dev", rediscfg.DomainAuthState) + "}:state:auth_captcha:challenge:"
 	found := false
 	for _, key := range redisServer.Keys() {
-		if strings.HasPrefix(key, "juhe-ai:{dev}:state:auth_captcha:challenge:") {
+		if strings.HasPrefix(key, challengePrefix) {
 			found = true
 		}
 	}
@@ -396,7 +384,6 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 		"oauthAccessTokenRefreshBatchSize":           20,
 		"oauthAccessTokenRefreshRetryBackoffSeconds": 300,
 		"modelCheckRetentionDays":                    30,
-		"runtimeLogIndexRetentionDays":               14,
 		"publicApiLogRetentionDays":                  30,
 		"usageRecordRetentionDays":                   30,
 		"usageStatsTimezone":                         "UTC",
@@ -578,13 +565,12 @@ func TestBusinessOwnerGateKeepsConnectionPreconditions(t *testing.T) {
 	}
 }
 
-// TestComposeSystemAPIMountsLogReadFamilies probes the X04 three log read
-// faces end to end: the audit-logs / runtime-logs (incl. grep) / public-api-
-// logs route families answer the Node 200 contracts for an admin and deny
-// anonymous callers, instead of falling through to the kernel 404.
+// TestComposeSystemAPIMountsLogReadFamilies probes the mounted log read
+// faces end to end: the audit-logs / public-api-logs route families answer
+// the Node 200 contracts for an admin instead of falling through to the
+// kernel 404. runtime-logs 已随 F1 下架。
 func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 	tdb := composeTestPostgres(t)
-	createRuntimeLogDataset(t, tdb.DB)
 	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	store := openComposeOperationStore(t, tdb.DSN)
 	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
@@ -650,10 +636,6 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 		"/__aisys__/api/audit-logs/runtime",
 		"/__aisys__/api/audit-logs/search-hot",
 		"/__aisys__/api/audit-logs/error-groups",
-		"/__aisys__/api/runtime-logs",
-		"/__aisys__/api/runtime-logs/facets",
-		"/__aisys__/api/runtime-logs/grep-options",
-		"/__aisys__/api/runtime-logs/grep",
 		"/__aisys__/api/public-api-logs",
 	} {
 		response := get(path)
@@ -663,18 +645,21 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 		decodeData(response)
 	}
 
-	// The audit search-hot empty-keyword hint and the runtime grep
-	// file-logging-disabled degradation both stay 200 (composeTestConfig
-	// hand-builds the config with an empty LogDir — the equivalent of the
-	// explicit JUHE_AI_LOG_DIR=disabled opt-out since the 2026-09-28
-	// default-on derivation — so grep reports the disabled contract).
+	// The audit search-hot empty-keyword hint stays 200.
 	hotData := decodeData(get("/__aisys__/api/audit-logs/search-hot"))
 	if hotData["available"] != true {
 		t.Fatalf("search-hot available=%v", hotData["available"])
 	}
-	grepData := decodeData(get("/__aisys__/api/runtime-logs/grep?keywords=probe"))
-	if grepData["available"] != false || grepData["message"] != "文件日志已显式关闭（JUHE_AI_LOG_DIR=disabled），无法使用 grep 模式。" {
-		t.Fatalf("grep payload=%v", grepData)
+
+	// F1 retired: runtime-logs/grep routes must stay unregistered (404), not
+	// silently answer an empty 200 or resurrect the read surface.
+	for _, path := range []string{
+		"/__aisys__/api/runtime-logs",
+		"/__aisys__/api/runtime-logs/grep",
+	} {
+		if response := get(path); response.StatusCode != http.StatusNotFound {
+			t.Fatalf("retired route %s status=%d want 404", path, response.StatusCode)
+		}
 	}
 
 	// Anonymous callers hit requireAdmin, not the 404 fallthrough.

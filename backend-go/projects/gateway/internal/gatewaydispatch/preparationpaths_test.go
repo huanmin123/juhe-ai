@@ -13,6 +13,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
 // dispatch/preparation.ts 候选准备分支 + reserveSameAccountRetry 账户锁脚本
@@ -67,15 +68,6 @@ func (f *flagClientSourceAvoidancePort) OrderAsync(_ context.Context, accounts [
 	return AvoidanceOrder{Accounts: accounts, Applied: f.applied, ThresholdReached: f.threshold, AvoidedAccountIDs: f.avoided}, nil
 }
 
-type configurableAffinity struct {
-	fakeAffinity
-	busy bool
-}
-
-func (f *configurableAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []AccountCandidate, HighConcurrencyBusyOptions) (bool, error) {
-	return f.busy, nil
-}
-
 type configurableClientIPConcurrency struct {
 	enabled  bool
 	acquired bool
@@ -89,16 +81,6 @@ func (f *configurableClientIPConcurrency) Acquire(context.Context, ClientIPConcu
 		decision.Release = func() { f.released.Add(1) }
 	}
 	return decision, nil
-}
-
-type configurableQueue struct {
-	ready bool
-	calls atomic.Int64
-}
-
-func (f *configurableQueue) WaitForCapacity(context.Context, HighConcurrencyWaitInput) (QueueWaitResult, error) {
-	f.calls.Add(1)
-	return QueueWaitResult{Ready: f.ready, Reason: "drained"}, nil
 }
 
 // dispatchPreparationInput 构造准备输入。
@@ -132,9 +114,10 @@ func dispatchPreparationInput(t *testing.T, accounts []AccountCandidate) gateway
 	}
 }
 
-func highConcurrencyGroupAccess(policy *gatewayruntimecache.GroupSchedulingPolicy) gatewayruntimecache.GroupUsageAccessMetadata {
-	hc := gatewayruntimecacheGroupTypeHighConcurrency
-	return gatewayruntimecache.GroupUsageAccessMetadata{GroupType: &hc, SchedulingPolicy: policy}
+// ordinaryGroupAccess 构造 personal 普通分组的访问元数据（两键策略可选注入）。
+func ordinaryGroupAccess(policy *gatewayruntimecache.GroupSchedulingPolicy) gatewayruntimecache.GroupUsageAccessMetadata {
+	personal := gatewayscheduling.GroupTypePersonal
+	return gatewayruntimecache.GroupUsageAccessMetadata{GroupType: &personal, SchedulingPolicy: policy}
 }
 
 func TestPrepareDispatchAccountsWithAppliedOrderings(t *testing.T) {
@@ -263,7 +246,7 @@ func (completedSuppressionFake) ResolveLocalSuppressionFilter(ctx context.Contex
 	return nil, true, nil
 }
 
-func TestPrepareDispatchAccountsHighConcurrencyReady(t *testing.T) {
+func TestPrepareDispatchAccountsOrdinaryGroupReady(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"ok"}`))
@@ -271,15 +254,14 @@ func TestPrepareDispatchAccountsHighConcurrencyReady(t *testing.T) {
 	defer okServer.Close()
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 0}}
-	engine.Affinity = &configurableAffinity{busy: false}
+	engine.Affinity = &fakeAffinity{}
 	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: true}
-	engine.HighConcurrencyQueue = &configurableQueue{ready: true}
 	driver := engine.Driver.(*fakeDriver)
 	driver.urlByAccount = map[string][]string{
 		"a-1": {okServer.URL + "/v1/chat/completions"},
 	}
 	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.GroupAccess = highConcurrencyGroupAccess(&policy)
+	input.GroupAccess = ordinaryGroupAccess(&policy)
 	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
 	if err != nil {
 		t.Fatalf("PrepareDispatchAccounts: %v", err)
@@ -294,53 +276,14 @@ func TestPrepareDispatchAccountsHighConcurrencyReady(t *testing.T) {
 	result.ReleaseClientIPConcurrency() // 幂等
 }
 
-func TestPrepareDispatchAccountsHighConcurrencyBusyFallsBack(t *testing.T) {
+func TestPrepareDispatchAccountsClientIPConcurrencyRejected429(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{}}
-	engine.Affinity = &configurableAffinity{busy: true}
-	coordinator := &capturingCoordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}}
+	engine.Affinity = &fakeAffinity{}
+	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: false, reason: "limit_reached"}
 	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.GroupAccess = highConcurrencyGroupAccess(&policy)
-	input.RouteCoordinator = coordinator
-	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
-	if err != nil {
-		t.Fatalf("PrepareDispatchAccounts: %v", err)
-	}
-	if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "high_concurrency_group_busy" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestPrepareDispatchAccountsHighConcurrencyBusyCompletes429(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
-	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{}}
-	engine.Affinity = &configurableAffinity{busy: true}
-	coordinator := &capturingCoordinator{}
-	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.GroupAccess = highConcurrencyGroupAccess(&policy)
-	input.RouteCoordinator = coordinator
-	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
-	if err != nil {
-		t.Fatalf("PrepareDispatchAccounts: %v", err)
-	}
-	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
-		t.Fatalf("outcome = %s", result.Outcome)
-	}
-	if coordinator.failure == nil || coordinator.failure.Message != "当前分组繁忙，请稍后重试或增加可用账户。" {
-		t.Fatalf("failure = %#v", coordinator.failure)
-	}
-}
-
-func TestPrepareDispatchAccountsClientIPConcurrencyDenied(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
-	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{}}
-	engine.Affinity = &configurableAffinity{busy: false}
-	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: false, reason: "timeout"}
-	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.GroupAccess = highConcurrencyGroupAccess(&policy)
+	input.GroupAccess = ordinaryGroupAccess(&policy)
 	coordinator := &capturingCoordinator{}
 	input.RouteCoordinator = coordinator
 	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
@@ -350,8 +293,27 @@ func TestPrepareDispatchAccountsClientIPConcurrencyDenied(t *testing.T) {
 	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
 		t.Fatalf("outcome = %s", result.Outcome)
 	}
-	if coordinator.failure == nil || coordinator.failure.Message != "当前 IP 并发排队等待超时，请稍后重试" {
+	if coordinator.failure == nil || coordinator.failure.Message != "当前 IP 并发已达到分组限制，请稍后重试" {
 		t.Fatalf("failure = %#v", coordinator.failure)
+	}
+}
+
+// 全软忙仍派发回归：普通分组 defaultSoftConcurrency 只参与排序（软阈值让位），
+// 不产生排队或 429——账户并发未达硬限（4）时照常取得容量并 ready。
+func TestPrepareDispatchAccountsAllSoftBusyStillDispatches(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3, ClientIPConcurrencyLimit: 0}
+	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 3, "a-2": 3}}
+	engine.Affinity = &fakeAffinity{}
+	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: true}
+	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
+	input.GroupAccess = ordinaryGroupAccess(&policy)
+	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+	if err != nil {
+		t.Fatalf("PrepareDispatchAccounts: %v", err)
+	}
+	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts || len(result.Accounts) != 2 {
+		t.Fatalf("全软忙不得整组拒绝: outcome=%s accounts=%v", result.Outcome, accountIDs(result.Accounts))
 	}
 }
 
@@ -368,6 +330,29 @@ func TestPrepareDispatchAccountsCapacityBusyFallsBack(t *testing.T) {
 	}
 	if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "group_capacity_busy" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestPrepareDispatchAccountsPartiallyBusyStaysInGroup(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	// D-94：普通分组只有部分账户满载时不得整组回退（归档容量谓词为 every）；
+	// 容量排序把仍有容量的 a-2 放前，继续在本组派发。
+	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 4}}
+	coordinator := &capturingCoordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}}
+	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
+	input.RouteCoordinator = coordinator
+	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+	if err != nil {
+		t.Fatalf("PrepareDispatchAccounts: %v", err)
+	}
+	if coordinator.fallbackCalled {
+		t.Fatalf("部分账户满载不得整组回退: reason=%s", coordinator.fallbackReason)
+	}
+	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
+		t.Fatalf("outcome = %s", result.Outcome)
+	}
+	if len(result.Accounts) != 2 || result.Accounts[0].ID != "a-2" {
+		t.Fatalf("accounts = %v", accountIDs(result.Accounts))
 	}
 }
 

@@ -30,8 +30,7 @@ const (
 // codex-context 根常量随跨协议桥退役删除，磁盘历史目录按部署文档人工清理).
 // 保留的只有 PG+Redis 形态仍消费的普通文件目录面.
 const (
-	// 2026-11-09 T188：UsageRecordSpoolDirectory 随网关直投 PG 删除
-	// （usage-record-spool 目录与 JUHE_AI_USAGE_SPOOL_* env 一并退役）。
+	// 2026-11-09 T188/T189：用量文件交接目录及其容量 env 已随网关直投 PG 删除。
 	AuditBlobDirectory = "audit-blob"
 	// RuntimeLogsDirectory is the default-on derivation for JUHE_AI_LOG_DIR:
 	// an unset env derives <DATA_DIR>/logs. The gateway file sink writes

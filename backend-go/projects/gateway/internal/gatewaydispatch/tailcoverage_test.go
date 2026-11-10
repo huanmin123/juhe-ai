@@ -122,10 +122,11 @@ func TestPrepareDispatchAccountsClientIPAbortedSignal(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{}}
-	engine.Affinity = &configurableAffinity{busy: false}
-	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: true}
+	engine.Affinity = &fakeAffinity{}
+	clientIP := &configurableClientIPConcurrency{enabled: true, acquired: true}
+	engine.ClientIPConcurrency = clientIP
 	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.GroupAccess = highConcurrencyGroupAccess(&policy)
+	input.GroupAccess = ordinaryGroupAccess(&policy)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	input.Signal = canceled
@@ -135,6 +136,9 @@ func TestPrepareDispatchAccountsClientIPAbortedSignal(t *testing.T) {
 	}
 	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
 		t.Fatalf("取消信号应直接完成, got %s", result.Outcome)
+	}
+	if clientIP.released.Load() != 1 {
+		t.Fatalf("取消后必须释放已获取的 IP 槽, released=%d", clientIP.released.Load())
 	}
 }
 

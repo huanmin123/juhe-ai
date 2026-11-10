@@ -24,6 +24,14 @@ type EngineConfig struct {
 	AccountConcurrencyRetryInitialDelayMs int64
 	// AccountConcurrencyRetryMaxDelayMs mirrors the max delay.
 	AccountConcurrencyRetryMaxDelayMs int64
+	// SessionAffinityOwnerWaitBudgetMs 是账户亲和 owner 的共享有界等待预算
+	// （名额等待 + 并发等待共用，默认 2000ms；准备期消耗后剩余额度传入派发，
+	// 并受 ServerRetryBudget 收口），避免每个请求都为已满的 owner 快速切号。
+	// <=0 = 禁用 owner 等待（不回落通用并发预算）。
+	SessionAffinityOwnerWaitBudgetMs int64
+	// SessionAffinityWaitPollIntervalMs 是 owner 等待的固定轮询间隔（默认
+	// 200ms，配合 1-2s 预算形成 5-10 次探测）；0 = 回落指数退避。
+	SessionAffinityWaitPollIntervalMs int64
 	// AccountApiKeyRequestAttemptSafetyLimit mirrors
 	// gateway.accountApiKeyRequestAttemptSafetyLimit.
 	AccountApiKeyRequestAttemptSafetyLimit int
@@ -73,6 +81,8 @@ func DefaultEngineConfig() EngineConfig {
 		AccountConcurrencyRetryBudgetMs:        1_200,
 		AccountConcurrencyRetryInitialDelayMs:  120,
 		AccountConcurrencyRetryMaxDelayMs:      480,
+		SessionAffinityOwnerWaitBudgetMs:       2_000,
+		SessionAffinityWaitPollIntervalMs:      200,
 		AccountApiKeyRequestAttemptSafetyLimit: 5_000,
 		KeyModelForegroundQueueWaitMs:          1_200,
 		KeyModelForegroundQueuePollMs:          25,
@@ -109,10 +119,9 @@ type Engine struct {
 	Affinity              SessionAffinityPort
 	// GroupAffinity 是组级会话黏性写回端口（策略路由分组会话亲和设计 §5）；
 	// nil = 未装配，最终协议成功不写回组绑定。
-	GroupAffinity        GroupAffinityPort
-	HighConcurrencyQueue HighConcurrencyWaiter
-	ClientIPConcurrency  ClientIPConcurrencyAcquirer
-	Quota                AuthorizationQuotaChecker
+	GroupAffinity       GroupAffinityPort
+	ClientIPConcurrency ClientIPConcurrencyAcquirer
+	Quota               AuthorizationQuotaChecker
 	// InflightQuota 是请求级在途额度预占端口（T93-1/T93-4）：nil = 未装配，
 	// 只保留 preflight 的已结算额度拒绝，不做在途预留。
 	InflightQuota   InflightQuotaPort

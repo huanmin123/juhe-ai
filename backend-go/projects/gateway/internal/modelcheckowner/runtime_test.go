@@ -747,10 +747,13 @@ func TestRuntimeFullRunFormsUniversalEvidenceBothWays(t *testing.T) {
 		Projector:   &QualityProjector{Store: store, Enforcement: enforcement},
 		Now:         func() time.Time { return now },
 		Resolve: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
+			// 892cd3de6 退役 openai 目录身份后，夹具须使用在册 gpt 目录身份：
+			// 否则 token_integrity 因 model_catalog_scope_not_applicable 跳过，
+			// 证据以 Partial+Invalid 不成形（Missing 为空）。
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", CredentialType: "api_key", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
 		},
 		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", CredentialType: "api_key", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
 		},
 	}
 	assertFormedQualityFailure := func(t *testing.T, request RunRequest) {

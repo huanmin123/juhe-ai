@@ -89,8 +89,8 @@ func TestFullchainT5VolcengineSpeechMissingCredentials(t *testing.T) {
 		"healthCheckConnectionPresetCode": "volcengine_openspeech",
 		"healthCheckEndpointMode":         "audio_speech",
 		"healthCheckModel":                "doubao-tts",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	if str(data(created)["id"]) == "" {
 		t.Fatalf("T5 volcengine 缺凭据账户创建载荷异常: %#v", created)
@@ -213,8 +213,8 @@ func (f *fullchainFixture) fullchainT5CreateImageOnlyAccount(name, upstreamKey, 
 		"healthCheckConnectionPresetCode": "gpt_openai_v1",
 		"healthCheckEndpointMode":         "images_json",
 		"healthCheckModel":                "gpt-image-2",
-		"status":          "active",
-		"groupId":         groupID,
+		"status":                          "active",
+		"groupId":                         groupID,
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {

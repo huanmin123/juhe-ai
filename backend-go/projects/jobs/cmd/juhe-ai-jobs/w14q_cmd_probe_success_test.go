@@ -51,8 +51,8 @@ func w14qSeedProbeHTTPAccount(t *testing.T, handle *proberepoStoreHandle, upstre
 		t.Fatal(err)
 	}
 	statements := []string{
-		// seedProbeCoreTables 的账户形状缺 LoadProbeView 读取的代理列。
-		`ALTER TABLE juhe_business.accounts ADD COLUMN proxy_profile_id TEXT`,
+		// seedProbeCoreTables 的账户形状已含代理列；IF NOT EXISTS 兼容旧夹具。
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS proxy_profile_id TEXT`,
 		`INSERT INTO juhe_business.groups (id, system_account_id) VALUES ('g-w14q', 'sys-w14q')`,
 		`INSERT INTO juhe_business.group_accounts (group_id, system_account_id, account_id) VALUES ('g-w14q', 'sys-w14q', 'acc-w14q')`,
 		// 供应商解耦形态：身份 vendor_code + 健康检查连接行（探针 profile 由

@@ -7,6 +7,7 @@ package mockdata
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -41,10 +42,22 @@ func newMockdataTestDB(t *testing.T) string {
 	return pgtestkit.NewTestDatabase(t).DSN
 }
 
+// newMockdataTestDBWithOwnerSchemas 额外预置 juhe_j3b / juhe_jobs 属主 schema：
+// 生产由受控数据库流程创建（runbook），fresh 测试库需显式模拟，否则
+// chat_codex_model_check 域按「属主缺失」整体跳过、无法验证接线。
+func newMockdataTestDBWithOwnerSchemas(t *testing.T) string {
+	t.Helper()
+	return pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_j3b AUTHORIZATION current_user;
+			CREATE SCHEMA IF NOT EXISTS juhe_jobs AUTHORIZATION current_user`)
+		return err
+	}).DSN
+}
+
 // TestMockdataRunSeedsBusinessOnFreshDatabase 是第一波的核心验收：全新库一次
 // Run 后 business 域计数齐全、报告结构完整、未接线域显式登记。
 func TestMockdataRunSeedsBusinessOnFreshDatabase(t *testing.T) {
-	dsn := newMockdataTestDB(t)
+	dsn := newMockdataTestDBWithOwnerSchemas(t)
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	report := runMockdataForTest(t, dsn, now, "")
 
@@ -85,7 +98,7 @@ func TestMockdataRunSeedsBusinessOnFreshDatabase(t *testing.T) {
 			t.Fatalf("observability maintenance 面计数缺少 %s: %v", key, obsCounts)
 		}
 	}
-	for _, key := range []string{"auditLogs", "operationLogs", "runtimeLogs"} {
+	for _, key := range []string{"auditLogs", "operationLogs"} {
 		if _, present := obsCounts[key]; present {
 			t.Fatalf("属主缺失时 observability 不应产出 %s: %v", key, obsCounts)
 		}
@@ -132,10 +145,11 @@ func TestMockdataRunSeedsBusinessOnFreshDatabase(t *testing.T) {
 	if report.Counts["accounts"] != counts["accounts"] {
 		t.Fatalf("合并计数与域计数不一致: %v vs %v", report.Counts, counts)
 	}
-	// 属主存储第一波全部缺失（juhe_j3b / juhe_jobs 未建，gateway/jobs owner
-	// 表未建）——pending 不构成失败，但要如实列出。
-	if len(report.OwnerStoresPending) != len(ownerStores) {
-		t.Fatalf("OwnerStoresPending = %+v, 期望 %d 项", report.OwnerStoresPending, len(ownerStores))
+	// 本测试显式预置 juhe_j3b / juhe_jobs schema 以验证域接线：J3b 属主存储
+	// 已就绪，不再计入 pending；其余 owner 表（含 jobs account_health）仍缺失，
+	// pending 不构成失败但要如实列出。
+	if len(report.OwnerStoresPending) != len(ownerStores)-1 {
+		t.Fatalf("OwnerStoresPending = %+v, 期望 %d 项（J3b 已预置）", report.OwnerStoresPending, len(ownerStores)-1)
 	}
 	if report.SummaryPath != "" {
 		t.Fatalf("未指定摘要路径时 SummaryPath 应为空: %q", report.SummaryPath)

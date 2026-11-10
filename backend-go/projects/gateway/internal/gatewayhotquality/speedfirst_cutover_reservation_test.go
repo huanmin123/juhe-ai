@@ -92,16 +92,15 @@ func TestReserveSpeedFirstCutoverTargetImageLaneLimit(t *testing.T) {
 		return AccountConcurrencySlot{Key: accountID, Lane: AccountConcurrencyLaneImage, Release: func() {}}, true, nil
 	})
 	reservation, err := ReserveSpeedFirstCutoverTarget(ctx, SpeedFirstCutoverReservationInput{
-		Targets:               []GatewayAccountConcurrencyLimitIdentity{{ID: "t", ConcurrencyLimit: 10}},
-		Lane:                  AccountConcurrencyLaneImage,
-		GroupSchedulingPolicy: gatewayruntimecache.GroupSchedulingPolicy(map[string]any{"imageLaneMaxConcurrency": 3}),
+		Targets: []GatewayAccountConcurrencyLimitIdentity{{ID: "t", ConcurrencyLimit: 10}},
+		Lane:    AccountConcurrencyLaneImage,
 	})
 	if err != nil || reservation == nil {
 		t.Fatalf("reservation = %+v, err = %v", reservation, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if request.Lane != AccountConcurrencyLaneImage || request.ImageLaneLimit != 3 {
+	if request.Lane != AccountConcurrencyLaneImage || request.ImageLaneLimit != 10 {
 		t.Fatalf("request = %+v", request)
 	}
 }
@@ -161,19 +160,18 @@ func TestSpeedFirstCutoverBudgetSnapshotAlwaysEmpty(t *testing.T) {
 }
 
 func TestEffectiveImageLaneConcurrencyLimit(t *testing.T) {
+	// 图片 lane 不再有分组级上限（普通分组可选调度策略设计 §3.4）：始终返回
+	// 账户硬并发上限，策略参数只保留签名兼容。
 	testCases := []struct {
 		name   string
 		limit  int
 		policy gatewayruntimecache.GroupSchedulingPolicy
 		want   int
 	}{
-		{"no policy uses hard limit", 10, nil, 10},
-		{"zero configured uses hard limit", 10, map[string]any{"imageLaneMaxConcurrency": 0}, 10},
-		{"configured caps the hard limit", 10, map[string]any{"imageLaneMaxConcurrency": 3}, 3},
-		{"configured above hard limit is clamped", 5, map[string]any{"imageLaneMaxConcurrency": 20}, 5},
-		{"fractional configured truncates", 10, map[string]any{"imageLaneMaxConcurrency": 2.9}, 2},
-		{"invalid hard limit falls back", 0, nil, 1},
-		{"oversized hard limit falls back", 2_000_000, nil, 1},
+		{"hard limit", 10, gatewayruntimecache.GroupSchedulingPolicy{}, 10},
+		{"policy does not cap", 10, gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3, ClientIPConcurrencyLimit: 5}, 10},
+		{"invalid hard limit falls back", 0, gatewayruntimecache.GroupSchedulingPolicy{}, 1},
+		{"oversized hard limit falls back", 2_000_000, gatewayruntimecache.GroupSchedulingPolicy{}, 1},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {

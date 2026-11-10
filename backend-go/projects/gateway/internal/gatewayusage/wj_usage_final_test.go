@@ -1,13 +1,9 @@
 package gatewayusage
 
 import (
-	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestWJSanitizeURLForLog 固定日志 URL 脱敏契约：凭据类 query 值掩码
@@ -88,61 +84,6 @@ func serializeWJ(value any) string {
 		return ""
 	}
 	return string(encoded)
-}
-
-// TestWJSpoolCapacityCacheRefreshAfterExternalDelete 固定容量缓存的强制
-// 刷新路径：外部删除 spool 文件后重写必须重扫并成功。
-func TestWJSpoolCapacityCacheRefreshAfterExternalDelete(t *testing.T) {
-	directory := t.TempDir()
-	spool := NewUsageRecordSpool(SpoolConfig{
-		Directory:        directory,
-		InstanceID:       "inst-refresh",
-		MaxItems:         1,
-		MaxBytes:         1 << 20,
-		ReplayBatchSize:  8,
-		ReplayIntervalMs: 5,
-		Enabled:          true,
-	}, fixedClock{ms: 1700000000000}, nil)
-	first := UsageRecordInput{ID: "usage_refresh_1", TraceID: "refresh-1", TrafficSource: TrafficSourceGateway, Success: true, CreatedAt: "2023-11-14T22:13:20.123Z"}
-	if err := spool.Persist(context.Background(), first); err != nil {
-		t.Fatalf("首次持久化: %v", err)
-	}
-	// 外部删除文件（模拟已被回放清理）。
-	matches, err := filepath.Glob(filepath.Join(directory, "inst-refresh", "*.json"))
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("预期 1 个 spool 文件: %v %v", matches, err)
-	}
-	if err := os.Remove(matches[0]); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	// 固定时钟使容量缓存恒过期 → 持久化前强制重扫，删除后容量归零 → 写入成功。
-	if err := spool.Persist(context.Background(), UsageRecordInput{ID: "usage_refresh_2", TraceID: "refresh-2", TrafficSource: TrafficSourceGateway, Success: true, CreatedAt: "2023-11-14T22:13:20.123Z"}); err != nil {
-		t.Fatalf("刷新后持久化: %v", err)
-	}
-}
-
-// TestWJSpoolReplayLoopErrorBackoff 固定回放循环的错误退避与退出。
-func TestWJSpoolReplayLoopErrorBackoff(t *testing.T) {
-	spool, directory := newTestSpool(t, true)
-	// 植入一个损坏文件：回放必然失败 → 循环进入退避分支。
-	corruptDir := filepath.Join(directory, "inst-1")
-	if err := os.MkdirAll(corruptDir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(corruptDir, "bad.json"), []byte("{corrupt"), 0o600); err != nil {
-		t.Fatalf("seed corrupt: %v", err)
-	}
-	spool.StartReplay(&wjNoopReplay{})
-	spool.StartReplay(&wjNoopReplay{}) // 二次启动必须幂等
-	deadline := 0
-	for spool.Runtime().ReplayFailureCount == 0 && deadline < 200 {
-		time.Sleep(5 * time.Millisecond)
-		deadline++
-	}
-	if spool.Runtime().ReplayFailureCount == 0 {
-		t.Fatal("损坏文件必须触发回放失败记账")
-	}
-	spool.StopReplay()
 }
 
 // TestWJServiceProbeAwareLogging 固定探针流量的降级日志：probe 来源记

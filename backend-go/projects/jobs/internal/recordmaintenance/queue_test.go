@@ -3,7 +3,6 @@ package recordmaintenance
 import (
 	"database/sql"
 	"testing"
-
 )
 
 func seedRow(t *testing.T, db *sql.DB, id, jobType, cutoffAt string, batchSize, maxBatches int, createdAt string) {
@@ -40,4 +39,3 @@ func seedGatewaySnapshotRow(t *testing.T, db *sql.DB, id, accountID, snapshotJSO
 		t.Fatalf("seed gateway snapshot row: %v", err)
 	}
 }
-

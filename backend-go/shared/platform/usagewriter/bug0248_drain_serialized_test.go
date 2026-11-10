@@ -36,7 +36,7 @@ func (g *bug0248GatedStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 	g.mu.Lock()
 	g.active--
 	g.batches = append(g.batches, plan)
-	count := len(plan.ShardEntries)
+	count := writePlanRowCount(plan)
 	g.mu.Unlock()
 	return count, nil
 }
@@ -46,7 +46,7 @@ func (g *bug0248GatedStore) totalRows() int {
 	defer g.mu.Unlock()
 	total := 0
 	for _, batch := range g.batches {
-		total += len(batch.ShardEntries)
+		total += writePlanRowCount(batch)
 	}
 	return total
 }

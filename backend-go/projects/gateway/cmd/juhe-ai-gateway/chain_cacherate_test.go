@@ -1,7 +1,7 @@
 package main
 
 // 期二（缓存率感知调度与用量缓存率展示设计 5.6/7/8.1）：cmd 接线回归——
-// chainHotQualityPort 的缓存率注入/stale 门控/纯排序 ReorderOnly、缓存率
+// chainHotQualityPort 的缓存率注入/stale 门控、缓存率
 // 快照加载器组合根装配（时区源 + 统计库真读）与决策日志观察者的缓存率排
 // 序块投影。runtime 用 standalone+memory 单例（与 w2c 既有测试同模式），
 // SQL 面走 pgtestkit 隔离 PG 业务库（bootstrap fresh DDL）。
@@ -28,7 +28,7 @@ func newW2CHotQualityRuntime(t *testing.T) *gatewayhotquality.GatewayHotQualityR
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisURL:  "redis://" + miniredis.RunT(t).Addr(),
+		RedisURL:       "redis://" + miniredis.RunT(t).Addr(),
 		RedisNamespace: "w2c-hot-quality",
 	})
 	if err != nil {
@@ -61,56 +61,6 @@ func w2cOrderInput(accounts []gatewaydispatch.AccountCandidate) gatewaydispatch.
 		RequestLane:     "text",
 		Model:           "gpt-4o",
 		RequestID:       "req-cacherate",
-	}
-}
-
-// ReorderOnly：纯排序 + 解释（阈值/候选明细），缓存率窗口经快照取数口注
-// 入后真实参与层内排序——有有效样本的 a1 反超输入序靠前，档位/命中率进
-// 解释；无样本候选保持 -1 哨兵。
-func TestChainHotQualityPortReorderOnlyAppliesCacheRateOrdering(t *testing.T) {
-	runtime := newW2CHotQualityRuntime(t)
-	rates := map[string]gatewayhotquality.CacheRateWindow{
-		"a2": {CacheReadTokens: 50_000, InputTokens: 100_000}, // rate 0.5 → cost_first 20pp 档位 2
-	}
-	port := chainHotQualityPort{runtime: runtime, cacheRates: func() (map[string]gatewayhotquality.CacheRateWindow, bool) {
-		return rates, false
-	}}
-	// 输入序 a1 在前；a2 命中缓存样本后应反超（同层同为 cold/合格）。
-	order, err := port.ReorderOnly(context.Background(), w2cOrderInput(w2cCacheRateAccounts()))
-	if err != nil {
-		t.Fatalf("ReorderOnly: %v", err)
-	}
-	if len(order.Accounts) != 2 || order.Accounts[0].ID != "a2" || order.Accounts[1].ID != "a1" {
-		t.Fatalf("order = %#v, want a2（缓存样本）在前", accountIDsOf(order.Accounts))
-	}
-	if order.Explanation == nil {
-		t.Fatal("ReorderOnly 必须返回排序决策解释")
-	}
-	explanation := order.Explanation
-	// 两个候选均无已知 EWMA：恒合格但生效窗口 W 无定义，speedThresholdMs
-	// 按契约省略（零值）。
-	if explanation.SpeedThresholdMs != 0 {
-		t.Fatalf("speedThresholdMs = %d, want 0（无已知 EWMA 层省略）", explanation.SpeedThresholdMs)
-	}
-	if !explanation.CacheRateEnabled {
-		t.Fatal("存在有效样本时缓存档位键必须参与")
-	}
-	if explanation.CacheRateStale {
-		t.Fatal("非 stale 快照不得透传 stale 标记")
-	}
-	if len(explanation.CandidateOrderDetails) != 2 {
-		t.Fatalf("candidateOrderDetails = %#v", explanation.CandidateOrderDetails)
-	}
-	first, second := explanation.CandidateOrderDetails[0], explanation.CandidateOrderDetails[1]
-	if first.AccountID != "a2" || first.CacheHitRate == nil || *first.CacheHitRate != 0.5 || first.CacheQuantum != 2 {
-		t.Fatalf("candidate[0] = %#v, want a2 rate 0.5 quantum 2", first)
-	}
-	if second.AccountID != "a1" || second.CacheHitRate != nil || second.CacheQuantum != -1 {
-		t.Fatalf("candidate[1] = %#v, want a1 无数据（nil rate / -1 哨兵）", second)
-	}
-	// 纯排序语义：无探索预留、无结算钩子。
-	if order.ExplorationReservation != nil || order.SettleExplorationAfterDispatch != nil {
-		t.Fatal("ReorderOnly 不得产生探索副作用")
 	}
 }
 
@@ -219,7 +169,6 @@ func TestChainDispatchDecisionObserverCacheRateFields(t *testing.T) {
 				{AccountID: "a2", CacheHitRate: &rate, CacheQuantum: 5, SpeedQualified: true},
 				{AccountID: "a1", CacheQuantum: -1, SpeedQualified: false},
 			},
-			HotQualityReorderDegraded: true,
 		},
 	})
 	var record map[string]any
@@ -231,9 +180,6 @@ func TestChainDispatchDecisionObserverCacheRateFields(t *testing.T) {
 	}
 	if record["speedBaseEwmaMs"].(float64) != 0.5 || record["cacheRateStale"] != true || record["cacheRateEnabled"] != true {
 		t.Fatalf("decision-level block = %#v", record)
-	}
-	if record["hotQualityReorderDegraded"] != true {
-		t.Fatalf("degraded flag = %#v", record)
 	}
 	candidates, ok := record["candidateOrder"].([]any)
 	if !ok || len(candidates) != 2 {
@@ -258,7 +204,7 @@ func TestChainDispatchDecisionObserverCacheRateFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buffer.String())), &record); err != nil {
 		t.Fatalf("decode empty: %v", err)
 	}
-	for _, absent := range []string{"speedBaseEwmaMs", "speedThresholdMs", "cacheRateStale", "cacheRateEnabled", "candidateOrder", "hotQualityReorderDegraded"} {
+	for _, absent := range []string{"speedBaseEwmaMs", "speedThresholdMs", "cacheRateStale", "cacheRateEnabled", "candidateOrder"} {
 		if _, present := record[absent]; present {
 			t.Fatalf("未排序时 %s 必须缺省: %#v", absent, record)
 		}

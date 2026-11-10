@@ -473,7 +473,7 @@ func TestSinkFailureUsageCarriesRequestFactsAndCompletion(t *testing.T) {
 // FinalizationDispatch 投递），网关策略失败行的 model 不再恒空。
 func TestUsageDispatchAdapterRecordGatewayFailureCarriesRequestFacts(t *testing.T) {
 	recorder := &capturingUsageRecorder{}
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, 64, 1)
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 64, 1)
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithUsageSemantics(chainUsageSemanticResolver{}).
 		WithDefaultProviderCode(chainUsageDefaultProviderCode{})

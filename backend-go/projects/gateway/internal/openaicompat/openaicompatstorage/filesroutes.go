@@ -128,8 +128,8 @@ func writeJSONBody(w http.ResponseWriter, status int, payload any) {
 	_, _ = w.Write(encoded)
 }
 
-func writeListEnvelope(w http.ResponseWriter, data []any) {
-	envelope := listEnvelope{Object: "list", Data: data}
+func writeListEnvelope(w http.ResponseWriter, data []any, hasMore bool) {
+	envelope := listEnvelope{Object: "list", Data: data, HasMore: hasMore}
 	if len(data) > 0 {
 		if first, ok := data[0].(interface{ idValue() string }); ok {
 			envelope.FirstID = first.idValue()
@@ -184,7 +184,7 @@ func (d *Deps) listFiles(w http.ResponseWriter, r *http.Request) error {
 		}
 		data = append(data, object)
 	}
-	writeListEnvelope(w, data)
+	writeListEnvelope(w, data, result.HasMore)
 	return nil
 }
 
@@ -232,7 +232,7 @@ func (d *Deps) listContainerFiles(w http.ResponseWriter, r *http.Request) error 
 		}
 		data = append(data, object)
 	}
-	writeListEnvelope(w, data)
+	writeListEnvelope(w, data, result.HasMore)
 	return nil
 }
 

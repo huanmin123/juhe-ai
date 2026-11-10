@@ -50,7 +50,6 @@ const (
 	xaiProviderCode                      = accountscore.XaiProviderCode
 )
 
-var openAIEndpointModeValues = accountscore.OpenAIEndpointModeValues
 var openAIChatEndpointModes = accountscore.OpenAIChatEndpointModes
 var openAIResponsesEndpointModes = accountscore.OpenAIResponsesEndpointModes
 var anthropicEndpointModeValues = accountscore.AnthropicEndpointModeValues

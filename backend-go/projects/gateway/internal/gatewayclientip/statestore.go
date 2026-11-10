@@ -147,8 +147,6 @@ func sanitizeRedisNamespacePart(value string) (string, error) {
 	return normalized, nil
 }
 
-var namespaceSanitizePattern = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
-
 // sanitizeRedisKeyPart mirrors the runtime-state-store / queue key sanitizer.
 func sanitizeRedisKeyPart(value string) string {
 	normalized := keySanitizePattern.ReplaceAllString(strings.TrimSpace(value), "_")

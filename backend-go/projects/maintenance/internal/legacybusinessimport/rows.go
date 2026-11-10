@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/groupspolicymigration"
 )
 
 // importSystemAccounts copies every owner row verbatim: the surviving columns
@@ -199,6 +201,13 @@ func importTeams(ctx context.Context, source *sql.DB, tx *sql.Tx, report *Report
 // normalising the default flag: the target enforces one default group per
 // owner (partial unique index), while the legacy schema allowed several. The
 // kept default is the lowest group id per owner, which is stable across reruns.
+//
+// 2026-11-09 高并发分组退役（普通分组可选调度策略设计 §5.2）：group_type 一律
+// 归一 personal，策略列经迁移内核 NormalizeRow 映射为两键/NULL（16 键旧策略
+// 只保留 defaultSoftConcurrency / clientIpConcurrencyLimit；globalMax 取
+// 旧进程默认值，upgrade 链 revision 22 会对导入库再做同口径完成态核验）。
+// needs_review 形状（畸形 JSON/未知键/未知 group_type）中断导入并保留原始
+// 错误，不静默修复。
 func importGroups(ctx context.Context, source *sql.DB, tx *sql.Tx, owners map[string]struct{}, report *Report) (map[string]struct{}, error) {
 	rows, err := source.QueryContext(ctx, `
 		SELECT id, system_account_id, name, COALESCE(description,''), enabled, is_default, group_type,
@@ -241,6 +250,16 @@ func importGroups(ctx context.Context, source *sql.DB, tx *sql.Tx, owners map[st
 				keptDefault[row.owner] = true
 			}
 		}
+		target, reviewReason := groupspolicymigration.NormalizeRow(row.groupType, row.schedulingPolicy,
+			groupspolicymigration.DefaultGlobalConcurrencyMax)
+		if reviewReason != "" {
+			return nil, fmt.Errorf("分组 %s 调度策略需要人工复核（%s），先在旧库修正后重跑: %s",
+				row.id, reviewReason, nullStringText(row.schedulingPolicy))
+		}
+		var policyArg any
+		if !target.TargetNull {
+			policyArg = target.TargetPolicy.TargetJSON()
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO juhe_business.groups
 				(id, system_account_id, name, description, enabled, is_default, group_type, group_kind,
@@ -250,8 +269,8 @@ func importGroups(ctx context.Context, source *sql.DB, tx *sql.Tx, owners map[st
 				name=EXCLUDED.name, description=EXCLUDED.description, enabled=EXCLUDED.enabled,
 				is_default=EXCLUDED.is_default, group_type=EXCLUDED.group_type,
 				scheduling_policy_json=EXCLUDED.scheduling_policy_json, updated_at=EXCLUDED.updated_at`,
-			row.id, row.owner, row.name, row.description, row.enabled, isDefault, row.groupType,
-			row.schedulingPolicy, row.createdAt, row.updatedAt); err != nil {
+			row.id, row.owner, row.name, row.description, row.enabled, isDefault, target.TargetType,
+			policyArg, row.createdAt, row.updatedAt); err != nil {
 			return nil, fmt.Errorf("写入分组 %s: %w", row.id, err)
 		}
 		ids[row.id] = struct{}{}
@@ -262,6 +281,14 @@ func importGroups(ctx context.Context, source *sql.DB, tx *sql.Tx, owners map[st
 			fmt.Sprintf("默认分组归一化：%d 个多余 is_default 行已降级（新 schema 每 owner 仅允许一个默认分组）", droppedDefaults))
 	}
 	return ids, nil
+}
+
+// nullStringText 返回策略列原文（错误消息用；NULL 为空串）。
+func nullStringText(raw sql.NullString) string {
+	if !raw.Valid {
+		return ""
+	}
+	return raw.String
 }
 
 // importRouteStrategies copies strategies and their group bindings. The retired

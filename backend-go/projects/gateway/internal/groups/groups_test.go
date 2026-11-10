@@ -41,8 +41,9 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	if _, present := created["memberCount"]; present {
 		t.Fatalf("create payload must not carry memberCount: %v", created)
 	}
-	if _, present := created["schedulingPolicy"]; present {
-		t.Fatalf("personal group list item must omit schedulingPolicy: %v", created["schedulingPolicy"])
+	// 列表投影恒带 schedulingPolicy（NULL → null，契约 §2.2 规则 8）。
+	if value, present := created["schedulingPolicy"]; !present || value != nil {
+		t.Fatalf("personal group list item must carry schedulingPolicy:null: %v", created)
 	}
 
 	// Idempotent create → 409 (dedup guard).
@@ -73,17 +74,61 @@ func TestGroupAdminLifecycle(t *testing.T) {
 		t.Fatalf("ignored provider create: %d %v", code, ignoredProvider)
 	}
 
-	// High-concurrency group carries a defaulted policy.
-	code, hc := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"hc","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"defaultSoftConcurrency":100}}`)
+	// Ordinary group carries the optional two-key policy.
+	code, policyGroup := env.do(t, http.MethodPost, "/__aisys__/api/groups",
+		`{"name":"policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":100,"clientIpConcurrencyLimit":3}}`)
 	if code != http.StatusCreated {
-		t.Fatalf("hc create: %d %v", code, hc)
+		t.Fatalf("policy create: %d %v", code, policyGroup)
 	}
-	hcID := dataMap(t, hc)["id"].(string)
-	code, hcDetail := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+hcID, "")
-	policy := dataMap(t, hcDetail)["schedulingPolicy"].(map[string]any)
-	if policy["defaultSoftConcurrency"] != float64(100) || policy["mode"] != "balanced_fast" || policy["maxQueueWaitMs"] != float64(60_000) {
-		t.Fatalf("hc policy: %v", policy)
+	policyID := dataMap(t, policyGroup)["id"].(string)
+	code, policyDetail := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+policyID, "")
+	policy := dataMap(t, policyDetail)["schedulingPolicy"].(map[string]any)
+	if policy["defaultSoftConcurrency"] != float64(100) || policy["clientIpConcurrencyLimit"] != float64(3) || len(policy) != 2 {
+		t.Fatalf("policy: %v", policy)
+	}
+	// 运行时相关字段（schedulingPolicy）变更必须触发 gateway runtime 失效；
+	// name/description 不承载运行时语义，不要求 group_updated。
+	policyUpdatedAt := dataMap(t, policyDetail)["updatedAt"].(string)
+	code, policyPatched := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+policyID,
+		`{"expectedUpdatedAt":"`+policyUpdatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":101,"clientIpConcurrencyLimit":4}}`)
+	if code != http.StatusOK {
+		t.Fatalf("policy patch: %d %v", code, policyPatched)
+	}
+
+	// PATCH 缺省 schedulingPolicy 不变；显式 null 清空（契约 §2.2 规则 5/6）。
+	patchedUpdatedAt := dataMap(t, policyPatched)["updatedAt"].(string)
+	code, omittedPatch := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+policyID,
+		`{"expectedUpdatedAt":"`+patchedUpdatedAt+`","description":"no policy change"}`)
+	if code != http.StatusOK {
+		t.Fatalf("policy omitted patch: %d %v", code, omittedPatch)
+	}
+	code, afterOmitted := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+policyID, "")
+	omittedPolicy := dataMap(t, afterOmitted)["schedulingPolicy"].(map[string]any)
+	if omittedPolicy["defaultSoftConcurrency"] != float64(101) || omittedPolicy["clientIpConcurrencyLimit"] != float64(4) {
+		t.Fatalf("omitted schedulingPolicy must stay unchanged: %v", omittedPolicy)
+	}
+	omittedUpdatedAt := dataMap(t, afterOmitted)["updatedAt"].(string)
+	code, clearedPatch := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+policyID,
+		`{"expectedUpdatedAt":"`+omittedUpdatedAt+`","schedulingPolicy":null}`)
+	if code != http.StatusOK {
+		t.Fatalf("policy clear patch: %d %v", code, clearedPatch)
+	}
+	code, afterClear := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+policyID, "")
+	if code != http.StatusOK || dataMap(t, afterClear)["schedulingPolicy"] != nil {
+		t.Fatalf("explicit null must clear schedulingPolicy: %d %v", code, afterClear)
+	}
+
+	// high_concurrency is retired on the write face; the contract message is
+	// 分组类型无效 (普通分组可选调度策略设计 §7.9).
+	code, retired := env.do(t, http.MethodPost, "/__aisys__/api/groups",
+		`{"name":"hc","providerCode":"openai","groupType":"high_concurrency"}`)
+	if code != http.StatusBadRequest || retired["message"] != "分组类型无效" {
+		t.Fatalf("retired type create must 400 分组类型无效: %d %v", code, retired)
+	}
+	code, retiredPatch := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+bravoID,
+		`{"expectedUpdatedAt":"`+bravoUpdatedAt+`","groupType":"high_concurrency"}`)
+	if code != http.StatusBadRequest || retiredPatch["message"] != "分组类型无效" {
+		t.Fatalf("retired type patch must 400 分组类型无效: %d %v", code, retiredPatch)
 	}
 
 	// Pagination + keyword prefix (alpha, bravo, gamma, hc).
@@ -135,7 +180,7 @@ func TestGroupAdminLifecycle(t *testing.T) {
 		t.Fatalf("stale patch: %d %v", code, stale)
 	}
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+alphaID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","name":"alpha-renamed","description":"更新说明","groupType":"high_concurrency"}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","name":"alpha-renamed","description":"更新说明","groupType":"personal"}`)
 	if code != 200 {
 		t.Fatalf("fresh patch: %d %v", code, patched)
 	}
@@ -144,7 +189,7 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	for _, field := range patchData["changedFields"].([]any) {
 		changed[field.(string)] = true
 	}
-	if !changed["name"] || !changed["description"] || !changed["groupType"] || len(changed) != 3 {
+	if !changed["name"] || !changed["description"] || len(changed) != 2 {
 		t.Fatalf("changedFields: %v", patchData["changedFields"])
 	}
 	nextUpdatedAt := patchData["updatedAt"].(string)
@@ -384,7 +429,7 @@ func TestGroupPermissionMatrixAnonymousAndValidation(t *testing.T) {
 		t.Fatalf("bad expectedUpdatedAt: %d %v", code, badVersion)
 	}
 	code, badPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"policy-broken","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"defaultSoftConcurrency":0}}`)
+		`{"name":"policy-broken","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":0,"clientIpConcurrencyLimit":0}}`)
 	if code != http.StatusBadRequest || badPolicy["message"] != "分组参数无效" {
 		t.Fatalf("bad policy: %d %v", code, badPolicy)
 	}
@@ -397,11 +442,11 @@ func TestGroupPermissionMatrixAnonymousAndValidation(t *testing.T) {
 		t.Fatalf("null description: %d %v", code, nullDescription)
 	}
 	code, nullSubKey := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"null-policy","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"defaultSoftConcurrency":null}}`)
+		`{"name":"null-policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":null,"clientIpConcurrencyLimit":0}}`)
 	if code != http.StatusBadRequest || nullSubKey["message"] != "分组参数无效" {
 		t.Fatalf("null policy sub-key: %d %v", code, nullSubKey)
 	}
-	unknownSubKey := `{"name":"unknown-policy","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"bogusKey":1}}`
+	unknownSubKey := `{"name":"unknown-policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":-1,"clientIpConcurrencyLimit":0,"bogusKey":1}}`
 	code, unknownPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups", unknownSubKey)
 	if code != http.StatusBadRequest || unknownPolicy["message"] != "分组参数无效" {
 		t.Fatalf("unknown policy sub-key: %d %v", code, unknownPolicy)

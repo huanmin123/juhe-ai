@@ -22,8 +22,8 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 )
 
 // w16kInsertProbeAccount 在探针核心表上插入一个凭据可解密的账户行，

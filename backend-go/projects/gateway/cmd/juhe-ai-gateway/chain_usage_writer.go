@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/usagepricing"
@@ -20,6 +21,10 @@ const (
 	// gatewayUsageWriterShardCount / MaxWriteAttempts 与 jobs 原装配同值。
 	gatewayUsageWriterShardCount  = 16
 	gatewayUsageWriterMaxAttempts = 120
+	// gatewayUsageWriterCloseTimeout 是进程停机时等待 writer 排空的上限；与
+	// recorder 排空（4s）合计 <=9s，整体 shutdown 保持在 compose
+	// stop_grace_period=30s 内。
+	gatewayUsageWriterCloseTimeout = 5 * time.Second
 )
 
 // usageWriterDeliverer 把 gatewayusage 记录转换为 usagewriter 输入并直投 PG。
@@ -27,28 +32,21 @@ type usageWriterDeliverer struct {
 	writer *usagewriter.Writer
 }
 
-// convertUsageRecordInput 把 gatewayusage 记录转换为 usagewriter 输入。两端
-// 字段契约逐字段一致（shared/platform/usagewriter/doc.go 的 G20 契约），用
-// JSON 桥避免手写 50+ 字段拷贝漂移。
+// convertUsageRecordInput 把 gatewayusage 记录交给 usagewriter。2026-11-09
+// T188 起两处是同一类型别名（gatewayusage.UsageRecordInput =
+// usagewriter.UsageRecordInput），常规路径零拷贝；只有已冻结的
+// pricingSnapshot 需要从 any 收紧为 typed CostBreakdown（writer 落库路径只
+// 识别 *CostBreakdown）。形状不匹配时保留原值，不丢记录。
 func convertUsageRecordInput(input gatewayusage.UsageRecordInput) (usagewriter.UsageRecordInput, error) {
-	payload, err := json.Marshal(input)
-	if err != nil {
-		return usagewriter.UsageRecordInput{}, err
-	}
-	var converted usagewriter.UsageRecordInput
-	if err := json.Unmarshal(payload, &converted); err != nil {
-		return usagewriter.UsageRecordInput{}, err
-	}
-	// JSON 桥会把 any 类型的 pricingSnapshot 解成 map；writer 的冻结/落库路径
-	// 只识别 *CostBreakdown，原样保留 map 会让已冻结快照退化为 fallback。
-	// 这里按同名字段重新解码为 typed CostBreakdown；形状不匹配时保留原值
-	// （与旧 spool 路径行为一致，不丢记录）。
+	converted := input
 	if converted.PricingSnapshot != nil {
-		raw, err := json.Marshal(converted.PricingSnapshot)
-		if err == nil {
-			var breakdown usagewriter.CostBreakdown
-			if err := json.Unmarshal(raw, &breakdown); err == nil {
-				converted.PricingSnapshot = &breakdown
+		if _, ok := converted.PricingSnapshot.(*usagewriter.CostBreakdown); !ok {
+			raw, err := json.Marshal(converted.PricingSnapshot)
+			if err == nil {
+				var breakdown usagewriter.CostBreakdown
+				if err := json.Unmarshal(raw, &breakdown); err == nil {
+					converted.PricingSnapshot = &breakdown
+				}
 			}
 		}
 	}
@@ -84,7 +82,12 @@ func newUsageWriterDeliverer(db, businessDB *sql.DB) (usageRecordDeliverer, func
 		usagewriter.WithCatalog(usagepricing.NewCatalog(businessDB)))
 	writer.Start()
 	return usageWriterDeliverer{writer: writer}, func() {
-		writer.Close(context.Background())
+		// 停机排空必须有界：DB 黑洞时 writer 内部的 flush goroutine 可能仍
+		// 卡在一次查询上，Close 只等到超时即返回，进程随后退出（compose
+		// stop_grace_period 30s 内完成）。不使用 Background 无限等待。
+		closeCtx, cancel := context.WithTimeout(context.Background(), gatewayUsageWriterCloseTimeout)
+		defer cancel()
+		writer.Close(closeCtx)
 	}
 }
 

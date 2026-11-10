@@ -1,13 +1,13 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
-	"os/exec"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -198,8 +198,6 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 	env := workerSmokeTestEnv(t)
 	// 文件运行时目录统一收拢到本次测试的隔离目录（原 sqlite 库文件族
 	// 与业务库 DDL 预置随 sqlite 形态退役删除；PG 形状由覆盖库 seed 承担）。
-	// F1 runtime-log-indexer（store URL 由调用方注入覆盖库）。
-	env["JUHE_AI_RUNTIME_LOG_INSTANCE_ID"] = "wg-main-e2e"
 	logsDirectory := filepath.Join(root, "logs")
 	if err := os.MkdirAll(logsDirectory, 0o755); err != nil {
 		t.Fatal(err)

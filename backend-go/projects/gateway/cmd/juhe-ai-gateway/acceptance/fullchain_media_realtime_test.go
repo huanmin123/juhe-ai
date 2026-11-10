@@ -5,7 +5,7 @@ package acceptance
 //
 //   - Bearer 会话：受理边界臂 1（首账户升级拒绝换第二账户）+ 事件往返逐
 //     字节（透传不重写）+ 上游 Bearer 账户凭据 + usage 终态落库（audio
-//     token $32/$64 价，经 spool → jobs → usage-records 真实交接链）；
+//     token $32/$64 价，经 gateway 直投 PG usage-records 真实链路）；
 //   - 受理边界臂 2（close_after_established）：受理后上游断开不换账户（恰
 //     好一次升级请求），客户端收到 close；空会话终态 0 计费 + usage_missing；
 //   - 无 redis 运行态驱动（standalone 门禁）时 client_secrets 显式 503 降
@@ -213,7 +213,7 @@ func TestFullchainMediaRealtimeSession(t *testing.T) {
 	// ---- usage 终态：audio token 计量与金额经真实交接链落 usage-records ----
 	//（160 input audio * $32/1M + 80 output audio * $64/1M = $0.01024；空会话
 	// 终态 0 计费——usage_missing 标记不在 usage-records 读模型字段面，链级
-	// spool 断言覆盖标记位，这里以"第二行无计量无金额"锚定空会话行。）
+	// usage_records 断言覆盖标记位，这里以"第二行无计量无金额"锚定空会话行。）
 	deadline := time.Now().Add(30 * time.Second)
 	var meteredRow, emptyRow map[string]any
 	for time.Now().Before(deadline) && (meteredRow == nil || emptyRow == nil) {

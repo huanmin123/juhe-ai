@@ -1,7 +1,6 @@
 package mockdata
 
-// usage 域（T66 PG 造数第二波）：juhe_usage.usage_records 日分区明细 + 逻辑
-// shard 四表登记。
+// usage 域（T66 PG 造数第二波）：juhe_usage.usage_records 日分区明细。
 //
 // 范围（docs/functions/Mockdata造数设计.md §4）：按 --mockdata-days ×
 // --mockdata-daily-requests 生成日常使用记录，外加「上游响应模型一致 / 映射后
@@ -17,7 +16,7 @@ package mockdata
 //     usage_rank_snapshots、account_health_hourly 等）一律不写，由 jobs 聚合 /
 //     窗口任务重建（cleanup 已整表重置派生面）；
 //   - PG 形态没有 sqlite 时代的 stats 库 usage_records 镜像表，不生成镜像；
-//   - 记录 ID 与逻辑 shard 定位逐字对齐 shared/platform/usagewriter/shards.go
+//   - 记录 ID 的逻辑 shard 段逐字对齐 shared/platform/usagewriter/shards.go
 //     （算法在 shared/platform 与本文件各存一份，由测试钉住，改动须两处同步）；
 //   - 记录列集与列型逐列对照 maintenance/internal/schema/pg_schema_usage.go：
 //     bigint/integer 列写 Go int，double precision 列写 float64，时间列是
@@ -28,7 +27,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -114,18 +112,9 @@ var usageRecordColumns = []string{
 	"created_at",
 }
 
-// usageRecordShardSchemaVersion 与 jobs usagewriter 的常量同值（分片登记的
-// schema_version 列）。
-const usageRecordShardSchemaVersion = 8
-
 // usageLogicalShardCount 与 jobs usagewriter DefaultUsageShardCount（
-// JUHE_AI_USAGE_SHARD_COUNT 默认值 16）同值：逻辑 shard 路由的分片数。
+// JUHE_AI_USAGE_SHARD_COUNT 默认值 16）同值：usage id 的逻辑 shard 段分片数。
 const usageLogicalShardCount = 16
-
-// usageRecordIDPattern 与 jobs usageRecordShardIDPattern 同形：从记录 ID 解析
-// 桶日期与分片号（ID 内分片号是两位数字，逻辑 shard key 用三位数字，见
-// usageLogicalShardLocationForRecord）。
-var usageRecordIDPattern = regexp.MustCompile(`^usage_(\d{8})_s(\d+)_`)
 
 // 上游响应模型三连样本的 trace（设计文档 §4 逐字要求；PG DDL 无派生布尔列，
 // 一致 / 不一致只由 upstream_model 与 upstream_response_model 的原始值表达）。
@@ -853,10 +842,9 @@ func usageTrafficSourceForOrdinal(index int) string {
 	}
 }
 
-// usageRecordEntry 是一条待落库记录：列取值 + 逻辑 shard 定位。
+// usageRecordEntry 是一条待落库记录：usage_records 列取值。
 type usageRecordEntry struct {
-	columns  map[string]any
-	location usageLogicalShardLocation
+	columns map[string]any
 }
 
 // buildDailyRecords 生成近 Options.Days 天的日常记录：每天 DailyRequests 条，
@@ -1083,11 +1071,10 @@ func usageScenarioForAccount(scenarios []usageScenario, accountID string) (usage
 	return usageScenario{}, false
 }
 
-// newRecord 把规格展开成全部列取值与逻辑 shard 定位。
+// newRecord 把规格展开成 usage_records 的全部列取值。
 func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 	createdAtText := spec.createdAt.UTC().Format(isoMillisLayout)
-	shard := usageLogicalShardLocationForRecord(
-		usageRecordID(spec.createdAt, spec.traceID, spec.ordinal), createdAtText)
+	recordID := usageRecordID(spec.createdAt, spec.traceID, spec.ordinal)
 
 	// 调用者：显式给出时（团队授权分组场景）是被授权成员；缺省是账户归属人
 	//（自调语义）。
@@ -1108,7 +1095,7 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 		upstreamModel = spec.model
 	}
 	columns := map[string]any{
-		"id":                           shard.RecordID,
+		"id":                           recordID,
 		"system_account_id":            caller,
 		"trace_id":                     spec.traceID,
 		"traffic_source":               spec.scenario.trafficSource,
@@ -1183,7 +1170,7 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 		columns["account_id"] = spec.scenario.account.id
 	}
 	w.fillMetrics(spec, columns)
-	return usageRecordEntry{columns: columns, location: shard}
+	return usageRecordEntry{columns: columns}
 }
 
 // fillMetrics 填 token / 延迟 / 成本列：失败与不计 token 的端点留 NULL，
@@ -1324,18 +1311,6 @@ func mockPseudoRandom(ordinal, salt int) float64 {
 	return float64(hash%10000) / 10000
 }
 
-// usageLogicalShardLocation 是 PG 逻辑分片的定位结果（jobs
-// usagewriter.UsageRecordShardLocation 的同形投影：shard_key、bucket_date、
-// 分片号与逻辑 file_path），额外携带记录 ID 供写入方复用。
-type usageLogicalShardLocation struct {
-	RecordID      string
-	ShardKey      string
-	BucketDate    string
-	BucketDateKey string
-	ShardID       int
-	FilePath      string
-}
-
 // usageRecordID 复刻 jobs GenerateUsageRecordID 的 ID 形状：
 // usage_<bucketDateKey>_s<两位分片号>_<毫秒>_<熵（alnum，截断 24）>。
 func usageRecordID(createdAt time.Time, traceID string, ordinal int) string {
@@ -1375,170 +1350,26 @@ func usageStableShardID(value string, shardCount int) int {
 	return int(hash) % shardCount
 }
 
-// usageLogicalShardID 复刻 jobs LogicalShardID（31 乘子多项式哈希模分片数）：
-// ID 不含可解析分片号时的 PG 逻辑分片路由。
-func usageLogicalShardID(value string, shardCount int) int {
-	if shardCount < 1 {
-		shardCount = 1
-	}
-	hash := uint32(0)
-	for index := 0; index < len(value); index++ {
-		hash = hash*31 + uint32(value[index])
-	}
-	return int(hash) % shardCount
-}
-
-// usageLogicalShardLocationForRecord 复刻 jobs
-// UsageRecordLogicalShardLocationForPostgres：从记录 ID 解析桶日期与分片号
-// （解析失败回落 createdAt 桶 + 逻辑哈希），shard_key 用三位分片号，file_path
-// 是逻辑定位 `postgres:juhe_usage.usage_records:<shardKey>`。
-func usageLogicalShardLocationForRecord(recordID, createdAt string) usageLogicalShardLocation {
-	bucketDateKey := ""
-	shardID := 0
-	if match := usageRecordIDPattern.FindStringSubmatch(strings.TrimSpace(recordID)); match != nil {
-		bucketDateKey = match[1]
-		if parsed, err := strconv.Atoi(match[2]); err == nil && parsed >= 0 {
-			shardID = parsed
-		} else {
-			shardID = usageLogicalShardID(recordID, usageLogicalShardCount)
-		}
-	} else {
-		bucketDateKey = usageBucketDateKeyFromISO(createdAt)
-		shardID = usageLogicalShardID(recordID, usageLogicalShardCount)
-	}
-	bucketDate := bucketDateKey[0:4] + "-" + bucketDateKey[4:6] + "-" + bucketDateKey[6:8]
-	shardKey := bucketDateKey + ":s" + fmt.Sprintf("%03d", shardID)
-	return usageLogicalShardLocation{
-		RecordID:      recordID,
-		ShardKey:      shardKey,
-		BucketDate:    bucketDate,
-		BucketDateKey: bucketDateKey,
-		ShardID:       shardID,
-		FilePath:      "postgres:juhe_usage.usage_records:" + shardKey,
-	}
-}
-
-// usageBucketDateKeyFromISO 从 created_at 文本取 YYYYMMDD（UTC）。文本来自本域
-// 的 isoMillisLayout 输出，前缀必是合法日期；防御性回退纪元值（调用方保证只
-// 处理自己生成的文本）。
-func usageBucketDateKeyFromISO(value string) string {
-	if dateKey, ok := partitionDateKeyFromISO(value); ok {
-		return dateKey
-	}
-	return "19700101"
-}
-
-// usageScopeSpan 是作用域目录行的最小 / 最大时间跨度。
-type usageScopeSpan struct {
-	first string
-	last  string
-}
-
-// extend 合并一条记录的时间跨度。
-func (s usageScopeSpan) extend(createdAt string) usageScopeSpan {
-	if s.first == "" || createdAt < s.first {
-		s.first = createdAt
-	}
-	if createdAt > s.last {
-		s.last = createdAt
-	}
-	return s
-}
-
-// usage 写入列序（逐列对照 pg_schema_usage.go 的四张登记表 DDL）。
-var (
-	usageShardColumns = []string{
-		"shard_key", "bucket_date", "shard_id", "file_path", "schema_version",
-		"status", "first_seen_at", "last_write_at", "last_error_message",
-		"created_at", "updated_at",
-	}
-	usageShardEntryColumns = []string{
-		"usage_id", "shard_key", "system_account_id", "trace_id", "api_key_id",
-		"account_id", "group_id", "model", "traffic_source", "success",
-		"status_code", "client_ip", "first_token_ms", "duration_ms", "cost_usd",
-		"created_at", "indexed_at",
-	}
-	usageAccountShardColumns = []string{
-		"account_id", "shard_key", "first_created_at", "last_seen_at",
-	}
-	usageAPIKeyShardColumns = []string{
-		"api_key_id", "system_account_id", "shard_key", "first_created_at", "last_seen_at",
-	}
-)
-
 // write 落库：插入前 ensure 批内全部日分区，然后单事务写 usage_records 批量
 // INSERT（ON CONFLICT(created_at, id) DO NOTHING，与 jobs PostgresShardStore
-// 的冲突目标一致）与 shard 四表登记。
+// 的冲突目标一致）。退役的 usage_record_shard_* 目录四表不再写入。
 func (w *usageWriter) write(records []usageRecordEntry) error {
 	if len(records) == 0 {
 		return nil
 	}
-	// 1. 分组：shard_key 首次出现顺序即登记顺序（确定性）。
 	createdAts := make([]string, 0, len(records))
-	shardKeys := make([]string, 0, len(records))
-	shardRows := map[string][][]any{}
-	entryRows := make([][]any, 0, len(records))
-	accountSpans := map[string]usageScopeSpan{}
-	var accountOrder []string
-	apiKeySpans := map[string]usageScopeSpan{}
-	var apiKeyOrder []string
-	now := w.now.UTC().Format(isoMillisLayout)
 	for _, record := range records {
-		columns := record.columns
-		createdAt := recordString(columns, "created_at")
-		createdAts = append(createdAts, createdAt)
-		shard := record.location
-		if _, exists := shardRows[shard.ShardKey]; !exists {
-			shardKeys = append(shardKeys, shard.ShardKey)
-		}
-		shardRows[shard.ShardKey] = append(shardRows[shard.ShardKey], []any{
-			shard.ShardKey, shard.BucketDate, shard.ShardID, shard.FilePath,
-			usageRecordShardSchemaVersion, "active", now, now, nil, now, now,
-		})
-		entryRows = append(entryRows, []any{
-			recordString(columns, "id"),
-			shard.ShardKey,
-			recordString(columns, "system_account_id"),
-			recordString(columns, "trace_id"),
-			recordValue(columns, "api_key_id"),
-			recordValue(columns, "account_id"),
-			recordValue(columns, "group_id"),
-			recordValue(columns, "model"),
-			recordString(columns, "traffic_source"),
-			recordValue(columns, "success"),
-			recordValue(columns, "status_code"),
-			recordValue(columns, "client_ip"),
-			recordValue(columns, "first_token_ms"),
-			recordValue(columns, "duration_ms"),
-			recordValue(columns, "cost_usd"),
-			createdAt,
-			now,
-		})
-		if accountID := recordString(columns, "account_id"); accountID != "" {
-			scopeKey := accountID + "\x00" + shard.ShardKey
-			if _, exists := accountSpans[scopeKey]; !exists {
-				accountOrder = append(accountOrder, scopeKey)
-			}
-			accountSpans[scopeKey] = accountSpans[scopeKey].extend(createdAt)
-		}
-		apiKeyID := recordString(columns, "api_key_id")
-		systemAccountID := recordString(columns, "system_account_id")
-		if apiKeyID != "" && systemAccountID != "" {
-			scopeKey := apiKeyID + "\x00" + systemAccountID + "\x00" + shard.ShardKey
-			if _, exists := apiKeySpans[scopeKey]; !exists {
-				apiKeyOrder = append(apiKeyOrder, scopeKey)
-			}
-			apiKeySpans[scopeKey] = apiKeySpans[scopeKey].extend(createdAt)
-		}
+		createdAts = append(createdAts, recordString(record.columns, "created_at"))
 	}
 
-	// 2. 分区 ensure：批内 created_at 的日分区（autocommit DDL，父表锁窗口
-	//    不跨事务，与 jobs 写入路径一致）。
+	// 分区 ensure：批内 created_at 的日分区（autocommit DDL，父表锁窗口不跨
+	// 事务，与 jobs 写入路径一致）。
 	if err := ensureUsageRecordPartitions(w.ctx, w.env.DB(), w.partitions, createdAts); err != nil {
 		return fmt.Errorf("mockdata usage 域 ensure 日分区失败: %w", err)
 	}
 
-	// 3. 单事务写明细 + 登记（FK 子表随父表登记行同事务落库）。
+	// 单事务写 usage_records 明细（ON CONFLICT(created_at, id) DO NOTHING，
+	// 与 jobs PostgresShardStore 的冲突目标一致）。
 	err := w.env.tx(w.ctx, func(tx *sql.Tx) error {
 		rows := make([][]any, 0, len(records))
 		for _, record := range records {
@@ -1548,64 +1379,14 @@ func (w *usageWriter) write(records []usageRecordEntry) error {
 			}
 			rows = append(rows, values)
 		}
-		if err := usageBatchInsertTx(w.ctx, tx, ut("usage_records"), usageRecordColumns, rows,
-			" ON CONFLICT (created_at, id) DO NOTHING"); err != nil {
-			return err
-		}
-		// shard 登记行：upsert 保持 first_seen_at/created_at，其余随本批刷新。
-		if err := usageBatchInsertTx(w.ctx, tx, ut("usage_record_shards"), usageShardColumns,
-			flattenShardRows(shardKeys, shardRows),
-			" ON CONFLICT (shard_key) DO UPDATE SET bucket_date = excluded.bucket_date, shard_id = excluded.shard_id, "+
-				"file_path = excluded.file_path, schema_version = excluded.schema_version, status = 'active', "+
-				"last_write_at = excluded.last_write_at, updated_at = excluded.updated_at"); err != nil {
-			return err
-		}
-		if err := usageBatchInsertTx(w.ctx, tx, ut("usage_record_shard_entries"), usageShardEntryColumns, entryRows,
-			" ON CONFLICT (usage_id) DO UPDATE SET shard_key = excluded.shard_key, system_account_id = excluded.system_account_id, "+
-				"trace_id = excluded.trace_id, api_key_id = excluded.api_key_id, account_id = excluded.account_id, "+
-				"group_id = excluded.group_id, model = excluded.model, traffic_source = excluded.traffic_source, "+
-				"success = excluded.success, status_code = excluded.status_code, client_ip = excluded.client_ip, "+
-				"first_token_ms = excluded.first_token_ms, duration_ms = excluded.duration_ms, cost_usd = excluded.cost_usd, "+
-				"created_at = excluded.created_at, indexed_at = excluded.indexed_at"); err != nil {
-			return err
-		}
-		accountScopeTable := quoteQualified(ut("usage_record_account_shards"))
-		accountRows := make([][]any, 0, len(accountOrder))
-		for _, scopeKey := range accountOrder {
-			span := accountSpans[scopeKey]
-			parts := strings.SplitN(scopeKey, "\x00", 2)
-			accountRows = append(accountRows, []any{parts[0], parts[1], span.first, span.last})
-		}
-		if err := usageBatchInsertTx(w.ctx, tx, ut("usage_record_account_shards"), usageAccountShardColumns, accountRows,
-			" ON CONFLICT (account_id, shard_key) DO UPDATE SET "+
-				"first_created_at = LEAST("+accountScopeTable+".first_created_at, excluded.first_created_at), "+
-				"last_seen_at = GREATEST("+accountScopeTable+".last_seen_at, excluded.last_seen_at)"); err != nil {
-			return err
-		}
-		apiKeyScopeTable := quoteQualified(ut("usage_record_api_key_shards"))
-		apiKeyRows := make([][]any, 0, len(apiKeyOrder))
-		for _, scopeKey := range apiKeyOrder {
-			span := apiKeySpans[scopeKey]
-			parts := strings.SplitN(scopeKey, "\x00", 3)
-			apiKeyRows = append(apiKeyRows, []any{parts[0], parts[1], parts[2], span.first, span.last})
-		}
-		if err := usageBatchInsertTx(w.ctx, tx, ut("usage_record_api_key_shards"), usageAPIKeyShardColumns, apiKeyRows,
-			" ON CONFLICT (api_key_id, system_account_id, shard_key) DO UPDATE SET "+
-				"first_created_at = LEAST("+apiKeyScopeTable+".first_created_at, excluded.first_created_at), "+
-				"last_seen_at = GREATEST("+apiKeyScopeTable+".last_seen_at, excluded.last_seen_at)"); err != nil {
-			return err
-		}
-		return nil
+		return usageBatchInsertTx(w.ctx, tx, ut("usage_records"), usageRecordColumns, rows,
+			" ON CONFLICT (created_at, id) DO NOTHING")
 	})
 	if err != nil {
 		return err
 	}
 
 	w.counts["usage_records"] = len(records)
-	w.counts["usage_record_shards"] = len(shardKeys)
-	w.counts["usage_record_shard_entries"] = len(entryRows)
-	w.counts["usage_record_account_shards"] = len(accountOrder)
-	w.counts["usage_record_api_key_shards"] = len(apiKeyOrder)
 	return nil
 }
 
@@ -1617,16 +1398,6 @@ func (w *usageWriter) recordRow(columns map[string]any) ([]any, error) {
 		row[index] = columns[column]
 	}
 	return row, nil
-}
-
-// flattenShardRows 按登记顺序展开每个 shard 的单行登记（每 shard 一行，不是
-// 每记录一行）。
-func flattenShardRows(shardKeys []string, shardRows map[string][][]any) [][]any {
-	rows := make([][]any, 0, len(shardKeys))
-	for _, key := range shardKeys {
-		rows = append(rows, shardRows[key][0])
-	}
-	return rows
 }
 
 // usageBatchInsertTx 批量多行 INSERT：列名来自本包常量、表名全限定，行分块

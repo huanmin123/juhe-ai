@@ -79,6 +79,11 @@ func TestVectorStoresRoutesCreateListGetDelete(t *testing.T) {
 	if len(raw["data"].([]any)) != 3 {
 		t.Fatalf("list data = %v", raw["data"])
 	}
+	// D-220：limit 截断且仍有更多项时 has_more 必须为 true。
+	status, raw = env.doJSON(t, "GET", "/v1/vector_stores?limit=2", testScopeA, "")
+	if status != 200 || raw["has_more"] != true || len(raw["data"].([]any)) != 2 {
+		t.Fatalf("limit=2 list = %v", raw)
+	}
 
 	// Get + 404 + 越权.
 	status, raw = env.doJSON(t, "GET", "/v1/vector_stores/"+vsID, testScopeA, "")
@@ -220,6 +225,12 @@ func TestVectorStoresRoutesFiles(t *testing.T) {
 	}
 	if lastError["message"] != "文件 file-bin 的媒体类型不受本地向量存储文本索引支持" {
 		t.Fatalf("last error message = %v", lastError["message"])
+	}
+
+	// D-220：两个文件、limit=1 时 has_more 必须为 true。
+	status, raw = env.doJSON(t, "GET", "/v1/vector_stores/"+vsID+"/files?limit=1", testScopeA, "")
+	if status != 200 || raw["has_more"] != true || len(raw["data"].([]any)) != 1 {
+		t.Fatalf("files limit=1 = %v", raw)
 	}
 
 	// Delete file envelope.

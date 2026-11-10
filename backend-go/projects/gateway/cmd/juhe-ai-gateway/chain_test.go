@@ -940,7 +940,7 @@ func TestChainFinalizationUsageFailedAttemptOmitsAbsentStatusCode(t *testing.T) 
 	}
 }
 
-func gatewayusageNewSpool(t *testing.T, dir string, clock gatewaypreauth.Clock) *gatewayusage.UsageRecordSpool {
+func gatewayusageNewSpool(t *testing.T, dir string, clock gatewaypreauth.Clock) *fileUsageDeliverer {
 	t.Helper()
 	spool := newUsageSpool(dir, clock, nil, usageSpoolCapacity{})
 	if spool == nil {
@@ -1055,7 +1055,8 @@ func TestGatewayChainServeSmokePreauthDispatchResponse(t *testing.T) {
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key"}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
-	if _, err := fixture.db.Exec(fixtureBind(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`), upstream.URL); err != nil {
+	// v2 直拼契约：base_url 是版本根（gpt/openai 族 /v1），入站 /v1 已剥除。
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`), upstream.URL+"/v1"); err != nil {
 		t.Fatalf("update connection base url: %v", err)
 	}
 

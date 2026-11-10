@@ -105,6 +105,12 @@ func (p *CandidatePipeline) PrepareDispatchAccounts(ctx context.Context, input g
 		result.SchedulingExclusions = projectSchedulingExclusionsToPreauth(output.SchedulingExclusions)
 		result.DispatchSegments = projectDispatchSegmentsToPreauth(output.DispatchSegments)
 		result.PrecheckHalfOpenEligible = output.PrecheckHalfOpenEligible
+		result.SessionAffinityOwnerAccountID = output.SessionAffinityOwnerAccountID
+		result.SessionAffinityOwnerBusy = output.SessionAffinityOwnerBusy
+		result.SessionAffinityOwnerSoftBusy = output.SessionAffinityOwnerSoftBusy
+		result.SessionAffinitySlotFallback = output.SessionAffinitySlotFallback
+		result.SessionAffinityWaitPlanned = output.SessionAffinityWaitPlanned
+		result.SessionAffinityWaitRemainingMs = output.SessionAffinityWaitRemainingMs
 	case gatewaypreauth.CandidateOutcomeFallback:
 		result.Reason = output.Reason
 	}

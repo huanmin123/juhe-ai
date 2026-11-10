@@ -120,18 +120,12 @@ type chainRuntimeServices struct {
 	// 组合测试的 nil 仅出现在未装配组合（链条回落 disabled*/degraded*）。----
 	// AccountCircuits is the D-131 account-circuit service.
 	AccountCircuits *gatewaycircuit.CircuitService
-	// ClientIPSlots is the D-109 high-concurrency client-IP slot family.
+	// ClientIPSlots is the D-109 client-IP slot family (ordinary-group
+	// clientIpConcurrencyLimit; limit 0 is disabled).
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
-	// HighConcurrencyQueue is the D-109 high-concurrency group short queue
-	// (Node runtime/high-concurrency-queue.service.ts singleton fork; the
-	// memory driver keeps process-local queues, the redis driver shares the
-	// juhe-ai:state:high-concurrency-queue keyspace).
-	HighConcurrencyQueue *gatewayclientip.HighConcurrencyGroupQueue
 	// ConcurrencyTracker 是唯一的账户并发事实源（E2E-FINDING #13）：组合根
 	// 必须把同一实例传给 engine.Concurrency（chainRuntimeDeps.
-	// ConcurrencyTracker）与本 HighConcurrencyQueue；事实源分裂会让 queue
-	// 读数恒 0、WaitForCapacity 永远立即 Ready、请求永不入队且排队者
-	// 永不被唤醒。生产为 Redis 驱动，组合测试可为 memory 驱动。
+	// ConcurrencyTracker）；事实源分裂会让容量读数漂移。
 	ConcurrencyTracker accountConcurrencyTracker
 	// RealtimeConnections 是每 API Key WS 并发连接计数（生产 Redis 全局）。
 	RealtimeConnections *chainRealtimeConnectionLimiter
@@ -355,6 +349,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		services.Close()
 		return nil, fmt.Errorf("create gateway runtime sql read models: %w", err)
 	}
+	models.SetGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax)
 	// One settings repository per process: the read models must see a
 	// management settings PATCH immediately (Node clears the shared
 	// systemSettingsCache on write) instead of a stale 60s snapshot.
@@ -364,6 +359,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		services.Close()
 		return nil, fmt.Errorf("create gateway accounts selector: %w", selectorErr)
 	}
+	selector.SetGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax)
 	services.Accounts = selector
 	// 代理池（代理池设计 §10.1）：候选 hydration 用只读解析器（不写租约）；
 	// dispatch 准备阶段用带 PG 租约写入器的解析器，在本次请求内执行健康门与
@@ -416,9 +412,9 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway model catalog source: %w", catalogErr)
 	}
 	models.SetCatalogSource(catalogSource)
-	// 多副本账户并发/RPM 事实源：生产恒用 Redis（与 HighConcurrencyQueue、
-	// 管理列表、dispatch 共用同一 tracker）；Redis 失败在 acquire 路径显式
-	// 上抛，不静默按空闲处理。组合测试仍可注入 memory 驱动。
+	// 多副本账户并发/RPM 事实源：生产恒用 Redis（管理列表、dispatch 容量
+	// 忙判定共用同一 tracker）；Redis 失败在 acquire 路径显式上抛，不静默
+	// 按空闲处理。组合测试仍可注入 memory 驱动。
 	concurrencyTracker, concurrencyErr := gatewayclientip.NewRedisAccountConcurrency(gatewayclientip.RedisAccountConcurrencyOptions{
 		Client:    stateClient,
 		Namespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainConcurrency),
@@ -431,8 +427,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create Redis account concurrency tracker: %w", concurrencyErr)
 	}
 	// E2E-FINDING #13：tracker 同步暴露到 services，供生产组合根传入
-	// chainRuntimeDeps.ConcurrencyTracker（engine.Concurrency），与
-	// HighConcurrencyQueue 共用同一事实源。
+	// chainRuntimeDeps.ConcurrencyTracker（engine.Concurrency 与容量忙判定
+	// 共用同一事实源）。
 	services.ConcurrencyTracker = concurrencyTracker
 	models.SetConcurrencySource(concurrencyTracker)
 	services.RealtimeConnections = newChainRealtimeConnectionLimiter(stateClient,
@@ -642,16 +638,12 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.Affinity = gatewaygemini.NewInteractionAffinity(quotaRuntimeStateBridge{store: affinityState, storeName: "gateway-gemini-interaction-affinity"}).WithLogger(slog.Default())
 
 	// ---- W2-C production wiring (BUG-0175) ----
-	// D-109：high_concurrency 分组的 client-IP 并发槽（Node
+	// D-109：普通分组的 client-IP 并发槽（Node
 	// client-ip-concurrency.service.ts；redis 驱动共享 180s TTL 槽）。
 	clientIPSlots, slotsErr := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{
 		RuntimeStateDriver: "redis",
 		StateRedisURL:      cfg.RedisURL,
 		RedisNamespace:     rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainClientIP),
-		PolicyDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
-			MaxQueueSize:        cfg.ConcurrencyGlobalMax,
-			PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
-		},
 	})
 	if slotsErr != nil {
 		services.Close()
@@ -659,29 +651,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.ClientIPSlots = clientIPSlots
 	services.closeFuncs = append(services.closeFuncs, clientIPSlots.Close)
-
-	// D-109 补齐（E2E-FINDING #5）：high_concurrency 分组的分组级短队列
-	//（Node runtime/high-concurrency-queue.service.ts 单例 fork）。此前
-	// engine.HighConcurrencyQueue 从未装配，并发满时直接 nil panic
-	//（4×EOF + panic 栈）。实现复用 gatewayclientip 队列：redis 驱动共享
-	// juhe-ai:state:high-concurrency-queue 键空间；账户并发事实源与
-	// cache/dispatch 同用一个 concurrencyTracker（G10 seam）。
-	highConcurrencyQueue, queueErr := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
-		RuntimeStateDriver: "redis",
-		StateRedisURL:      cfg.RedisURL,
-		RedisNamespace:     rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainClientIP),
-		PolicyDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
-			MaxQueueSize:        cfg.ConcurrencyGlobalMax,
-			PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
-		},
-		Concurrency: concurrencyTracker,
-	})
-	if queueErr != nil {
-		services.Close()
-		return nil, fmt.Errorf("create high-concurrency group queue: %w", queueErr)
-	}
-	services.HighConcurrencyQueue = highConcurrencyQueue
-	services.closeFuncs = append(services.closeFuncs, highConcurrencyQueue.Close)
 
 	// D-131：账户电路服务（Node GatewayAccountCircuitService 单例 fork；
 	// SUSPECT/confirmation/父升级/恢复状态机的存储在 redis 运行态共享——

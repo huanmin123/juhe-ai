@@ -27,12 +27,17 @@ const groupCreateSource = sourceBetween(groupsViewSource, 'function openCreate()
 assert.doesNotMatch(groupCreateSource, /loadGroupOptions|groupsApi\.(?:detail|options)/, '打开新建分组弹窗不得预取供应商候选')
 
 const groupEditSource = sourceBetween(groupsViewSource, 'function openEdit', 'const saveGroup')
-assert.match(groupEditSource, /if \(group\.groupType !== 'high_concurrency'\)[\s\S]*applyGroupToForm\(\{\s*\.\.\.group,\s*accessType: target\.accessType\s*\}\)[\s\S]*modalOpen\.value = true[\s\S]*return/, '普通分组编辑必须直接使用列表行并保留访问类型，不得读取详情')
-assert.match(groupEditSource, /groupsApi\.editBasicDetail\(group\.id/, '仅高并发分组读取专用编辑投影，不得读取完整分组摘要')
-assert.doesNotMatch(groupEditSource, /groupsApi\.detail\(group\.id/, '编辑分组不得读取包含用量、账户 ID 和授权详情的完整摘要')
-assert.match(groupEditSource, /applyGroupToForm\(\{\s*\.\.\.detail,\s*accessType: target\.accessType\s*\}\)/, '编辑分组必须使用必要详情并保留访问类型填充表单')
+assert.match(
+  groupEditSource,
+  /const target = groupEditTarget\(group\)[\s\S]*applyGroupToForm\(\{\s*\.\.\.group,\s*accessType: target\.accessType\s*\}\)[\s\S]*editingId\.value = group\.id[\s\S]*modalOpen\.value = true/,
+  '普通分组编辑必须直接使用列表行并保留访问类型；列表行已携带 schedulingPolicy，不再逐行拉编辑投影'
+)
+assert.doesNotMatch(
+  groupEditSource,
+  /groupsApi\.editBasicDetail\(|groupsApi\.detail\(/,
+  '编辑分组不得读取编辑投影或包含用量、账户 ID 和授权详情的完整摘要'
+)
 assert.doesNotMatch(groupEditSource, /loadGroupOptions/, '打开编辑分组弹窗不得预取供应商候选')
-assert.match(groupEditSource, /requestId !== groupEditRequestId/, '分组编辑详情迟到响应不得打开旧弹窗')
 assert.match(groupsViewSource, /useResponsivePagedList<GroupListItem/, '分组列表必须使用 Node 轻量列表 DTO，而不是伪装成完整详情')
 assert.doesNotMatch(groupsViewSource, /updateGroupItems[\s\S]{0,250}\.\.\.updated/, '编辑响应不得把详情字段临时灌回轻量列表，避免授权限额刷新前后闪变')
 

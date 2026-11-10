@@ -202,12 +202,12 @@ func TestWCGroupUpdateDeleteBranches(t *testing.T) {
 
 	// description 显式 null + enabled=false + groupType 更新。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/update",
-		`{"groupId":"`+groupID+`","description":null,"enabled":false,"groupType":"high_concurrency"}`, wcLifeToken)
+		`{"groupId":"`+groupID+`","description":null,"enabled":false,"groupType":"personal"}`, wcLifeToken)
 	if status != http.StatusOK {
 		t.Fatalf("update: %d %v", status, payload)
 	}
 	group := payload["data"].(map[string]any)["group"].(map[string]any)
-	if group["description"] != nil || group["enabled"] != false || group["groupType"] != "high_concurrency" {
+	if group["description"] != nil || group["enabled"] != false || group["groupType"] != "personal" {
 		t.Fatalf("update 投影: %v", group)
 	}
 	// DB 侧确认 description 为 NULL。

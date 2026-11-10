@@ -25,7 +25,6 @@ import (
 	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
@@ -95,10 +94,9 @@ const (
 //	/__aisys__/api/{provider}-oauth + /my-*        -> oauthmgmt.Deps.Mount
 //	/__aisys__/api/response-inspection-policies    -> policyreads.InspectionDeps
 //	/__aisys__/api/operation-logs + /my-operation-logs -> logreads.Deps (F4)
-//	/__aisys__/api/{audit-logs,runtime-logs,public-api-logs} -> logreads.ReadsDeps
-//	  (X04: F3/F1/F5 dataset readers over the audit, runtime-log and dataset
-//	  databases; the runtime-logs grep family scans JUHE_AI_LOG_DIR files.
-//	  Node mounts no my-* variants for these three families)
+//	/__aisys__/api/{audit-logs,public-api-logs} -> logreads.ReadsDeps
+//	  (X04: F3/F5 dataset readers over the audit and dataset databases.
+//	  Node mounts no my-* variants for these families)
 //	/__aisys__/api/ip-stats                        -> ipstats.Deps.Mount
 //	/__aisys__/api/external-integration-sources    -> policyreads.ExternalDeps
 //	/__aisys__/api/health                          -> kernel health (rate-limit bypass)
@@ -113,10 +111,8 @@ const (
 //
 // Slice provenance notes (X01 go-only terminal state: every prefix below is
 // mounted in Go; the archived Node origin serves nothing):
-//   - /__aisys__/api/audit-logs, /runtime-logs, /public-api-logs: mounted
-//     through logreads.ReadsDeps (X04 404 项补齐); the F1 runtime-log dataset
-//     stays jobs-owned (the gateway only opens a read-only handle, the F1
-//     indexer keeps the schema).
+//   - /__aisys__/api/audit-logs, /public-api-logs: mounted through
+//     logreads.ReadsDeps (X04 404 项补齐). runtime-logs 已随 F1 下架。
 //   - /__aisys__/api/playground: mounted with the chain (演练场设计 §3.1,
 //     composePlaygroundFamily): the dispatch executor + the runtime cache
 //     catalog loaders + the accounts.Store lookups, adapted onto the
@@ -761,9 +757,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	(&policyreads.InspectionDeps{Store: inspectionStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.ExternalDeps{Store: externalStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&logreads.Deps{Reader: operationStore, Auth: authDeps}).Mount(kern)
-	// X04 404 项补齐: the audit-logs / runtime-logs / public-api-logs read
-	// families (Node system-api-app.ts lines: /audit-logs, /runtime-logs,
-	// /public-api-logs; none of them has a my-* variant).
+	// X04 404 项补齐: the audit-logs / public-api-logs read families (Node
+	// system-api-app.ts lines: /audit-logs, /public-api-logs; neither has a
+	// my-* variant). runtime-logs 已随 F1 下架。
 	(&logreads.ReadsDeps{
 		Audit:         auditLogReader,
 		Public:        publicApiLogReader,
@@ -889,7 +885,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	var securityPolicyProtection *securitypolicies.ProtectionCountStore
 	if cfg.ChainEnabled {
 		// 2026-11-09 T188：用量记录改为网关直投 PG（共享 usagewriter +
-		// usagepricing），不再创建/依赖 usage-record-spool 文件目录，也不再有
+		// usagepricing），不再创建/依赖用量文件交接目录，也不再有
 		// gateway→jobs 的 spool 交接。
 		usageDeliverer, closeUsageWriter := newUsageWriterDeliverer(composed.statsDB, composed.db)
 		if usageDeliverer == nil {
@@ -1018,11 +1014,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// input URL/POST 面，且从未携带强制 HMAC 签名头 → 现网审计派发
 			// 全部 401 被吞）。nil 适配器保留空目标降级分支。
 			AuditUsageDispatch: auditUsageDispatcher{producer: auditProducer},
-			QueueDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
-				MaxQueueSize:        cfg.ConcurrencyGlobalMax,
-				PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
-			},
-			UsageDeliverer: usageDeliverer,
+			UsageDeliverer:     usageDeliverer,
 			// M2 媒体任务面（媒体设计 §8.2）：media_jobs 仓储 + 账户亲和水合走
 			// 同一业务库；secret 与 chain_runtime.go newChainAccountsSelector
 			// 的 cfg.Secret 同源（B-1 同款约定）。
@@ -1106,11 +1098,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 记账。各服务在 chainRuntimeServices 中按驱动轴分叉；nil 仅
 			// 出现在组合测试（链条回落 disabled*/degraded* 显式降级）。
 			ClientIPSlots: newChainClientIPConcurrency(chainServices.ClientIPSlots),
-			// E2E-FINDING #5：分组级短队列随 W2-C 一起进生产组合根（nil 仅
-			// 出现在组合测试，链条回落 degradedHighConcurrencyQueue）。
-			HighConcurrencyQueue: newChainHighConcurrencyQueue(chainServices.HighConcurrencyQueue),
-			// E2E-FINDING #13：engine.Concurrency 与 HighConcurrencyQueue
-			// 共用同一并发事实源（chainServices.ConcurrencyTracker）。
+			// E2E-FINDING #13：engine.Concurrency 与容量排序共用同一并发事实源
+			//（chainServices.ConcurrencyTracker）。
 			ConcurrencyTracker:  chainServices.ConcurrencyTracker,
 			RealtimeConnections: chainServices.RealtimeConnections,
 			AccountCircuits:     chainServices.AccountCircuits,
@@ -1231,7 +1220,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	captureDatasetDB := composed.db
 	if logStore, err := publicapilogs.NewStore(captureDatasetDB, time.Now, nil); err == nil {
 		pipeline := publicapilogs.NewPipeline(logStore, publicapilogs.Config{})
-		composed.shutdowns = append(composed.shutdowns, func() { pipeline.Close(context.Background()) })
+		composed.shutdowns = append(composed.shutdowns, func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			pipeline.Close(closeCtx)
+		})
 		aipublicDeps.Capture = aipublic.PublicApiLogCaptureSink(pipeline.Enqueue)
 	} else {
 		slog.Warn("公开面日志捕获不可用（日志 store 初始化失败，capture 静默降级）",

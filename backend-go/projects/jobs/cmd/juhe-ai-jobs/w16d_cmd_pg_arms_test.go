@@ -83,7 +83,7 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 	family := &retentionFamily{
 		assembly: newWorkerAssembly(workerConfig{}, slog.Default()),
 		recordCleanup: &cleanuprepo.RecordCleanupStore{
-			Business: pgHandle, Stats: pgHandle, Dataset: pgHandle, UsageCatalog: pgHandle,
+			Business: pgHandle, Stats: pgHandle, Dataset: pgHandle,
 		},
 	}
 	// PG 分支选择（564-566 / 574-582 / 597-599 / 608-610）；共享库缺契约表时
@@ -91,18 +91,18 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 	cleaner := &familyRelatedCleaner{family: family}
 	if _, err := cleaner.CleanupApiKeyRelated(context.Background(), retention.RecordMaintenanceJob{
 		Type: retention.JobTypeAPIKeyRelatedCleanup, ID: "w16d-job", APIKeyID: "w16d-key", SystemAccountID: "sys_admin",
-	}, nil); err != nil {
+	}); err != nil {
 		t.Logf("PG CleanupApiKeyRelated（登记不判失败）: %v", err)
 	}
 	if _, err := cleaner.CleanupAccountRelated(context.Background(), retention.RecordMaintenanceJob{
 		Type: retention.JobTypeAccountRelatedCleanup, ID: "w16d-job", AccountID: "w16d-acc", SystemAccountID: "sys_admin",
-	}, nil); err != nil {
+	}); err != nil {
 		t.Logf("PG CleanupAccountRelated（登记不判失败）: %v", err)
 	}
-	if _, err := (&familyAPIKeyRetryer{family: family}).CleanupPendingTargets(context.Background(), 1, nil); err != nil {
+	if _, err := (&familyAPIKeyRetryer{family: family}).CleanupPendingTargets(context.Background(), 1); err != nil {
 		t.Logf("PG CleanupPendingAPIKeyTargets（登记不判失败）: %v", err)
 	}
-	if _, err := (&familyAccountRetryer{family: family}).CleanupPendingTargets(context.Background(), 1, nil); err != nil {
+	if _, err := (&familyAccountRetryer{family: family}).CleanupPendingTargets(context.Background(), 1); err != nil {
 		t.Logf("PG CleanupPendingAccountTargets（登记不判失败）: %v", err)
 	}
 }
@@ -142,10 +142,9 @@ func TestW16DPGFlushLoopFailureArms(t *testing.T) {
 				RelatedRecords: &familyRelatedCleaner{family: &retentionFamily{
 					assembly: assembly,
 					recordCleanup: &cleanuprepo.RecordCleanupStore{
-						Dataset:      &cleanuprepo.DB{DB: pgDB},
-						Stats:        &cleanuprepo.DB{DB: pgDB},
-						UsageCatalog: &cleanuprepo.DB{DB: pgDB},
-						Business:     &cleanuprepo.DB{DB: pgDB},
+						Dataset:  &cleanuprepo.DB{DB: pgDB},
+						Stats:    &cleanuprepo.DB{DB: pgDB},
+						Business: &cleanuprepo.DB{DB: pgDB},
 					},
 				}},
 			},

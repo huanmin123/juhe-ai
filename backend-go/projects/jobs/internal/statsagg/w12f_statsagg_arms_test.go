@@ -68,4 +68,3 @@ func TestW12fStatsNaNGuard(t *testing.T) {
 		t.Fatal("有限值必须保留")
 	}
 }
-

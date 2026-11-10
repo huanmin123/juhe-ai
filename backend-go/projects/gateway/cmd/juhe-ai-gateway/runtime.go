@@ -45,10 +45,9 @@ const (
 // JUHE_AI_DATABASE_DRIVER / JUHE_AI_CACHE_DRIVER / JUHE_AI_RUNTIME_STATE_DRIVER
 // 四开关与全部 sqlite 库路径 env 随之删除，三个连接串 env
 // （JUHE_AI_POSTGRES_URL / JUHE_AI_REDIS_URL）
-// 无条件必填（缺失启动即失败）。普通文件目录派生保留：usage-record-spool、
-// codex-context segments、logs 等仍按 internal/datadir 固定名表
-// 派生到 JUHE_AI_DATA_DIR（缺省 ./data）下；非生产未配置 JUHE_AI_SECRET 时
-// 回退内置开发密钥。
+// 无条件必填（缺失启动即失败）。普通文件目录派生保留：codex-context
+// segments、logs 等仍按 internal/datadir 固定名表派生到 JUHE_AI_DATA_DIR
+// （缺省 ./data）下；非生产未配置 JUHE_AI_SECRET 时回退内置开发密钥。
 type runtimeConfig struct {
 	PostgresURL string
 
@@ -111,7 +110,7 @@ type runtimeConfig struct {
 	// producer.
 	//
 	// 2026-11-09 T188：用量记录改为网关直投 PG（共享 usagewriter），
-	// usage-record-spool 目录与四个 JUHE_AI_USAGE_SPOOL_* 容量 env 一并删除。
+	// 用量文件交接目录与四个 JUHE_AI_USAGE_SPOOL_* 容量 env 一并删除。
 	AuditLogEnabled bool
 	// UsageFinalizationMaxItems mirrors Node
 	// runtimeConfig.gateway.usageFinalizationMaxItems
@@ -145,9 +144,8 @@ type runtimeConfig struct {
 	// counterpart; Node merged readPostgresOutcomesForAccounts from the same DB).
 	AccountHealthOutcomePostgresURL string
 	// ConcurrencyGlobalMax mirrors Node runtimeConfig.concurrency.globalMax
-	// (JUHE_AI_CONCURRENCY_GLOBAL_MAX, default 5000): the DEFAULT
-	// high-concurrency scheduling policy queue bounds and the dispatch
-	// candidate window limit derive from it.
+	// (JUHE_AI_CONCURRENCY_GLOBAL_MAX, default 5000): legacy high_concurrency
+	// policy mapping and the dispatch candidate window limit derive from it.
 	ConcurrencyGlobalMax int
 	// DispatchAccountCandidateLimit mirrors Node
 	// runtimeConfig.gateway.dispatchAccountCandidateLimit
@@ -178,18 +176,16 @@ type runtimeConfig struct {
 	// production availability retry cadence.
 	UpstreamRetryBackoffDelaysMs []int64
 
-	// Runtime-logs grep surface (X04 404 项补齐): Node runtimeConfig.log
-	// fields the grep family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_MAX_FILES /
-	// JUHE_AI_LOG_RETENTION_DAYS；JUHE_AI_LOG_FILE_ENABLED 开关已于 2026-09-21
-	// 移除，文件日志恒开). The gateway only scans these files; an empty
-	// directory simply yields no matches.
+	// LogDir / LogInstanceID / LogMaxFileMB / LogMaxFiles / LogRetentionDays
+	// 是本地 FileSink 的配置（JUHE_AI_LOG_DIR / JUHE_AI_LOG_INSTANCE_ID /
+	// JUHE_AI_LOG_MAX_FILE_MB / JUHE_AI_LOG_MAX_FILES /
+	// JUHE_AI_LOG_RETENTION_DAYS）；文件日志恒开，空 LogDir 表示显式关闭。
 	LogDir string
 	// LogInstanceID 是运行日志文件名中的实例段：显式
 	// JUHE_AI_LOG_INSTANCE_ID 优先，未配置时取 datadir.DefaultInstanceID()
 	// （hostname）。多 gateway 共享日志目录时写各自的
 	// juhe-ai.<instanceID>.log，避免同一文件并发写。
 	LogInstanceID    string
-	LogFileEnabled   bool
 	LogMaxFiles      int
 	LogRetentionDays int
 	// LogMaxFileMB 是 gateway 自身文件日志写侧的大小轮转阈值（MB）。恢复
@@ -303,9 +299,8 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.RedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 
 	// 路径类 env 派生（普通文件目录面，PG+Redis 形态仍消费；internal/datadir
-	// 固定名表）：usage-record-spool（D1，gateway↔jobs 用量交接）、codex-context
-	// segments 根、logs 均落 <JUHE_AI_DATA_DIR=./data>/<固定名>。
-	// sqlite 专库文件族路径派生已随存储形态退役删除。
+	// 固定名表）：codex-context segments 根、logs 均落
+	// <JUHE_AI_DATA_DIR=./data>/<固定名>。用量文件交接已随网关直投 PG 删除；sqlite 专库文件族路径派生已随存储形态退役删除。
 	dataDir := datadir.Dir(getenv)
 
 	cfg.Host = strings.TrimSpace(getenv("JUHE_AI_HOST"))
@@ -535,18 +530,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 	cfg.FrontendDistPath = strings.TrimSpace(getenv("JUHE_AI_FRONTEND_DIST_PATH"))
 
-	// Runtime-logs grep surface: Node numberConfig (runtime.ts:891-892,
+	// 本地日志保留配置：Node numberConfig (runtime.ts:891-892,
 	// 'JUHE_AI_LOG_MAX_FILES', 500, 1, 500 / 'JUHE_AI_LOG_RETENTION_DAYS',
-	// 30, 1, 30) fails fast on a non-number or out-of-range value instead of
-	// clamping it silently; the value truncates before the range check
-	// (Math.trunc, runtime.ts:1391), so "10.5" passes as 10. Defaults stay
-	// 500/30.
-	// 2026-09-28 默认开启整改（对齐 jobs runtimelog 的派生哲学）：
-	// JUHE_AI_LOG_DIR 未配置时派生 <DATA_DIR>/logs（固定名见 internal/datadir，
-	// 与 jobs 侧派生对称，零配置部署下 gateway 写侧/grep 面与 jobs 索引器/
-	// 保留清理共享同一目录）；显式配置路径优先；"disabled" 字面量（大小写
-	// 不敏感）= 显式关闭文件日志写侧与 grep 面，LogDir 保持空。目录由写侧
-	// NewFileSink 代建（BUG-0195），无目录派生副作用。
+	// 30, 1, 30) 对非数字或越界值启动失败；小数先截断（Math.trunc,
+	// runtime.ts:1391），所以 "10.5" 按 10 处理。默认 500/30。
+	// 2026-09-28 默认开启整改：JUHE_AI_LOG_DIR 未配置时派生
+	// <DATA_DIR>/logs（固定名见 internal/datadir）；显式配置路径优先；
+	// "disabled" 字面量（大小写不敏感）= 显式关闭文件日志写侧，LogDir 保持空。
+	// 目录由写侧 NewFileSink 代建（BUG-0195），无目录派生副作用。
 	cfg.LogDir = datadir.Path(getenv, dataDir, "JUHE_AI_LOG_DIR", datadir.RuntimeLogsDirectory)
 	if strings.EqualFold(cfg.LogDir, "disabled") {
 		cfg.LogDir = ""
@@ -558,7 +549,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.LogInstanceID = datadir.DefaultInstanceID()
 	}
 	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
-	cfg.LogFileEnabled = true
 	cfg.LogMaxFiles = 500
 	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_MAX_FILES")); raw != "" {
 		parsed, parsedErr := parseTruncatedInt("JUHE_AI_LOG_MAX_FILES", raw, 1, 500)

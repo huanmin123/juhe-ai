@@ -125,21 +125,16 @@ func TestParseRfc3339Instant(t *testing.T) {
 	}
 }
 
-// scriptedRelatedCleaner records the statsWriter handed to each call so the
-// postgres-nil-callback contract is observable.
 type scriptedRelatedCleaner struct {
-	result  RelatedCleanupResult
-	err     error
-	writers []StatsWriter
+	result RelatedCleanupResult
+	err    error
 }
 
-func (s *scriptedRelatedCleaner) CleanupApiKeyRelated(_ context.Context, _ RecordMaintenanceJob, statsWriter StatsWriter) (RelatedCleanupResult, error) {
-	s.writers = append(s.writers, statsWriter)
+func (s *scriptedRelatedCleaner) CleanupApiKeyRelated(_ context.Context, _ RecordMaintenanceJob) (RelatedCleanupResult, error) {
 	return s.result, s.err
 }
 
-func (s *scriptedRelatedCleaner) CleanupAccountRelated(_ context.Context, _ RecordMaintenanceJob, statsWriter StatsWriter) (RelatedCleanupResult, error) {
-	s.writers = append(s.writers, statsWriter)
+func (s *scriptedRelatedCleaner) CleanupAccountRelated(_ context.Context, _ RecordMaintenanceJob) (RelatedCleanupResult, error) {
 	return s.result, s.err
 }
 

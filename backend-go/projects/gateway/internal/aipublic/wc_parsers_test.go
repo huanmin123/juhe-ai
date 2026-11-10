@@ -67,11 +67,11 @@ func TestWCParseGroupListQuery(t *testing.T) {
 func TestWCParseGroupMutationBodies(t *testing.T) {
 	add, issue := parseGroupAddBody(map[string]any{
 		"targetUsername": " ab ", "targetDisplayName": " 展示 ", "name": " 组 ",
-		"groupKind": " standard ", "enabled": false, "groupType": "high_concurrency",
+		"groupKind": " standard ", "enabled": false, "groupType": "personal",
 	})
 	if issue != "" || add.TargetUsername != "ab" || add.TargetDisplayName == nil || *add.TargetDisplayName != "展示" ||
 		add.Name != "组" || add.GroupKind != "standard" || add.Description != nil || !add.HasEnabled ||
-		add.Enabled == nil || *add.Enabled || add.GroupType != "high_concurrency" {
+		add.Enabled == nil || *add.Enabled || add.GroupType != "personal" {
 		t.Fatalf("add 全字段: %+v %q", add, issue)
 	}
 	if _, issue := parseGroupAddBody(map[string]any{"targetUsername": "ab", "name": "n", "enabled": "x"}); issue != zodInvalidType("boolean", "x") {
@@ -92,7 +92,7 @@ func TestWCParseGroupMutationBodies(t *testing.T) {
 	if _, issue := parseGroupUpdateBody(map[string]any{"groupId": "g", "enabled": 1.5}); issue != zodInvalidType("boolean", 1.5) {
 		t.Fatalf("enabled 非布尔: %q", issue)
 	}
-	if _, issue := parseGroupUpdateBody(map[string]any{"groupId": "g", "groupType": "bogus"}); issue != zodEnumMessage([]string{"personal", "high_concurrency"}, "bogus") {
+	if _, issue := parseGroupUpdateBody(map[string]any{"groupId": "g", "groupType": "bogus"}); issue != zodEnumMessage([]string{"personal"}, "bogus") {
 		t.Fatalf("groupType 非法: %q", issue)
 	}
 	if _, issue := parseGroupUpdateBody(map[string]any{"groupId": "g", "name": ""}); issue != zodStringMin(1) {

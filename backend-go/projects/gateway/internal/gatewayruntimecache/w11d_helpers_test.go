@@ -644,14 +644,14 @@ func TestW11DTypesCloneArms(t *testing.T) {
 	}
 
 	// CloneGroupUsageAccessMetadata：调度策略深拷贝。
-	policy := GroupSchedulingPolicy{"k": 1.0}
+	policy := GroupSchedulingPolicy{DefaultSoftConcurrency: 1, ClientIPConcurrencyLimit: 2}
 	access := GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", SchedulingPolicy: &policy}
 	accessClone := CloneGroupUsageAccessMetadata(access)
-	if accessClone.SchedulingPolicy == nil || *accessClone.SchedulingPolicy == nil {
+	if accessClone.SchedulingPolicy == nil {
 		t.Fatal("调度策略克隆失败")
 	}
-	policy["k2"] = 2.0
-	if _, leaked := (*accessClone.SchedulingPolicy)["k2"]; leaked {
+	policy.DefaultSoftConcurrency = 9
+	if (*accessClone.SchedulingPolicy).DefaultSoftConcurrency != 1 {
 		t.Fatal("调度策略克隆必须深拷贝")
 	}
 	bareAccess := CloneGroupUsageAccessMetadata(GroupUsageAccessMetadata{})

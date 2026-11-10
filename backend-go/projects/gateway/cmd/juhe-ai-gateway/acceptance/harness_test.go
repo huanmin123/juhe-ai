@@ -362,9 +362,7 @@ type gatewayFixture struct {
 	dsn            string
 	redisURL       string
 	redisNamespace string
-	spoolDir       string
-	// storage 暴露共享目录面（logs / codex-context 根 / usage-shards；jobs
-	// 场景复用同一隔离目录布局）。数据库面统一走 dsn。
+	// storage 暴露共享目录面（logs；jobs 场景复用同一隔离目录布局）。
 	storage map[string]string
 	process *managedProcess
 	admin   *http.Client
@@ -409,17 +407,13 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	}
 	fixture.dsn = dsn
 
-	usageShardRoot := filepath.Join(root, "storage", "usage-shards")
-	mustMkdirAll(t, usageShardRoot,
+	mustMkdirAll(t,
 		filepath.Join(root, "storage", "audit-blobs"),
 		filepath.Join(root, "openai-files"),
 		filepath.Join(root, "logs"),
 	)
 
-	spoolDir := filepath.Join(root, "storage", "usage-record-spool")
-	fixture.spoolDir = spoolDir
-
-	// PG 唯一形态下 gateway↔jobs 经 spool 目录与 PG 交接；Redis 键空间以
+	// PG 唯一形态下 gateway 直投 usage_records（2026-11-09 T188 起无文件交接）；Redis 键空间以
 	// 每测试唯一 namespace 隔离，避免并发验收互踩。
 	redisURL := acceptanceRedisURL(t)
 	namespace := "acc-" + randomHex(t, 6)
@@ -452,12 +446,9 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "1",
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":     "acceptance-gateway",
 		"JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT":  filepath.Join(root, "openai-files"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":         spoolDir,
 	}
 	fixture.storage = map[string]string{
-		"dsn":          dsn,
-		"usage-shards": usageShardRoot,
-		"logs":         filepath.Join(root, "logs"),
+		"logs": filepath.Join(root, "logs"),
 	}
 	if opts.ChainEnabled {
 		env["JUHE_AI_GATEWAY_CHAIN_ENABLED"] = "true"
@@ -492,7 +483,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	provisionCircuitRuntimeIndex(t, effectiveRedisURL, effectiveNamespace)
 	// X04 logreads：F1 runtime-log 数据集表由 jobs 进程自建（gateway 只读）；
 	// fresh 验收环境由夹具按生产 DDL 预置读面（helper 在 log_faces_test.go）。
-	provisionRuntimeLogDataset(t, dsn)
 
 	fixture.process = startProcess(t, "gateway", gatewayBinary, envMapToSlice(env))
 	waitForSystemAPIReady(t, fixture)

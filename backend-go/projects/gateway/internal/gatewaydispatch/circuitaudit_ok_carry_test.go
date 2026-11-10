@@ -27,7 +27,7 @@ import (
 // TestCircuitAuditOkBranchCarriesAttemptHandlesToResult：200 响应选中后，
 // result.AccountCircuitAttempt 必须与注入的 confirmation 尝试同指针，
 // result.KeyModelAttempt 逐值透传（nil→nil）；且 OK 臂不得再前置结算
-//（SUSPECT 状态保持、租约仍由句柄持有——结算权已移交链面）。
+// （SUSPECT 状态保持、租约仍由句柄持有——结算权已移交链面）。
 func TestCircuitAuditOkBranchCarriesAttemptHandlesToResult(t *testing.T) {
 	h := newAttemptErrorHarness(t)
 	clock := int64(9_000_000)

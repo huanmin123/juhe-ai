@@ -100,10 +100,6 @@ type chainRuntimeDeps struct {
 	// UpstreamURLSecurity 是请求期上游 URL 安全配置（D-192/D-146，Node
 	// runtimeConfig.upstreamUrlSecurity）。
 	UpstreamURLSecurity UpstreamURLSecurityConfig
-	// QueueDefaults carries the concurrency.globalMax derived DEFAULT
-	// high-concurrency scheduling bounds (Node runtimeConfig.concurrency.
-	// globalMax, default 5000) for the speed-first body admission gate.
-	QueueDefaults gatewayclientip.HighConcurrencyPolicyDefaults
 
 	// M2 媒体任务面运行时输入（媒体设计 §8.2）：MediaJobsDB 是业务库句柄
 	//（media_jobs 仓储 + 账户亲和水合读面，juhe_business schema 限定）；
@@ -242,12 +238,8 @@ type chainRuntimeDeps struct {
 	// 组合测试，链条回落 chain_ports.go 的 disabled*/degraded* 直通。 ----
 	// AccountCircuits 是 D-131 账户电路服务（SUSPECT/confirmation/恢复）。
 	AccountCircuits *gatewaycircuit.CircuitService
-	// ClientIPSlots 是 D-109 high_concurrency 分组的 client-IP 并发槽。
+	// ClientIPSlots 是 D-109 普通分组的 client-IP 并发槽。
 	ClientIPSlots gatewaydispatch.ClientIPConcurrencyAcquirer
-	// HighConcurrencyQueue 是 D-109 的分组级短队列（E2E-FINDING #5：此前
-	// engine.HighConcurrencyQueue 从未装配，并发满时 nil panic）。nil 仅出现
-	// 在组合测试，链条回落 degradedHighConcurrencyQueue 的普通容量语义。
-	HighConcurrencyQueue gatewaydispatch.HighConcurrencyWaiter
 	// KeyModelStore 是 D-133 的 key-model 前台准入状态存储（driver 选择器）。
 	KeyModelStore gatewayaccounteffects.KeyModelRuntimeStore
 	// ProxyHealth 是 D-136 的上游桶健康端口。
@@ -337,17 +329,20 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 
 	// ---- usage service + persistence bridge (adapter 5) ----
-	// 用量记录直投：生产由组合根注入 PG deliverer；测试注入文件 spool 或捕获
-	// 替身。nil 时 recorder 逐条计数并采样告警，不静默吞掉投递面缺失。
+	// 用量记录直投：生产由组合根注入 PG deliverer；测试注入捕获替身。
+	// nil 时 recorder 逐条计数并采样告警，不静默吞掉投递面缺失。
 	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: logger}, deps.UsageDeliverer)
 	// D-147（BUG-0175）：收尾队列容量/并发改由组合根 env 旋钮传入——
 	// JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS 与
 	// JUHE_AI_CONCURRENCY_GLOBAL_MAX（Node runtimeConfig.gateway.
 	// usageFinalizationMaxItems / concurrency.globalMax）；此前硬传 (0,0)
 	// 使两个 env 对队列失效，只能吃到包级默认。
-	// 2026-11-09 T188：文件 spool 退出生产投递面，收尾队列溢出不再有落盘补
-	// 偿端口；溢出记录由 recorder 的丢弃计数与采样告警显式暴露。
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, nil, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
+	// 2026-11-09 T188/T189：文件 spool 与溢出补偿臂已删除；usage 属运营
+	// 统计，收尾队列满时直接丢弃并计数（不反压请求），recorder 缓冲满后同样
+	// 按丢弃计数与采样告警暴露。
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
+	dispatch.EnableDropOnFull()
+	dispatch.WithLogger(slogLogger{inner: logger})
 	// chainSyncPricingAllowed 是同步定价目录 gate 的组合根字面量（D6，存储
 	// 形态收口：原按 cacheDriver 判断的写法本就以常量表达，redis 下现行为
 	// true 逐字节保持；启用同步定价属独立行为裁决，不在收口战役内）：usage
@@ -457,7 +452,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	)
 	// 超级分组解析期逐片段配额批查与 dispatch 窗口门共用同一 G07 服务
 	// （chainDispatchQuota → gatewaydispatch.AuthorizationQuotaChecker）。
-	routeResolver := &chainRouteResolver{cache: deps.Cache, normal: normalRoute, quota: newChainDispatchQuota(deps.AuthzQuota)}
+	routeResolver := &chainRouteResolver{
+		cache:                deps.Cache,
+		normal:               normalRoute,
+		quota:                newChainDispatchQuota(deps.AuthzQuota),
+		globalConcurrencyMax: deps.ConcurrencyGlobalMax,
+	}
 
 	// ---- dispatch engine + provider driver (adapter 2) ----
 	// The failure dispatcher shares the engine's session-affinity port: the
@@ -473,7 +473,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// localSessionAffinity，「网关链端口显式降级」warn 只在该真实降级路径
 	// 触发（localSessionAffinity.ClaimAsync 的 once warn）。
 	var dispatchSessionAffinity gatewaydispatch.SessionAffinityPort = sessionAffinity
-	if redisBacked := newChainSessionAffinityDispatchPort(sessionAffinity, deps.Identity); redisBacked != nil {
+	if redisBacked := newChainSessionAffinityDispatchPort(deps.Identity); redisBacked != nil {
 		dispatchSessionAffinity = redisBacked
 	}
 	// G18 client-source avoidance collaborators: the source-identity resolver
@@ -631,21 +631,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		engine.KeyModel = chainKeyModelAdmission{healthDispatch: deps.KeyModelHealthDispatch}
 		engine.KeyModelStore = deps.KeyModelStore
 	}
-	// D-109（BUG-0175）接线：high_concurrency 分组的 client-IP 并发槽
-	//（nil 时 preparation 的槽获取段不会运行——组合根缺槽即panic 风险，
-	// 故 chainRuntimeServices 保证非 nil）。
+	// D-109（BUG-0175）接线：普通分组的 client-IP 并发槽（nil 时
+	// preparation 的槽获取段不会运行——组合根缺槽即 panic 风险，故
+	// chainRuntimeServices 保证非 nil）。
 	if deps.ClientIPSlots != nil {
 		engine.ClientIPConcurrency = deps.ClientIPSlots
-	}
-	// E2E-FINDING #5 接线：high_concurrency 分组的分组级短队列。生产组合根
-	// 由 chainRuntimeServices 提供 gatewayclientip 队列（memory/redis 双驱动，
-	// 见 docs/functions/高并发分组调度设计.md「分组级队列」）；nil 仅出现在
-	// 组合测试，回落 degradedHighConcurrencyQueue——等待者缺席时立即放行
-	//（普通容量语义），绝不 nil panic。
-	if deps.HighConcurrencyQueue != nil {
-		engine.HighConcurrencyQueue = deps.HighConcurrencyQueue
-	} else {
-		engine.HighConcurrencyQueue = &degradedHighConcurrencyQueue{}
 	}
 	// D-134（BUG-0175）接线：半开租约释放 → 恢复等待者唤醒。
 	if deps.WakeRecoverableWaiter != nil {
@@ -673,16 +663,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	engine.InflightQuota = newChainRequestInflightQuota(deps.InflightQuota, deps.APIKeyQuota, deps.AuthzQuota)
 	if deps.ConcurrencyTracker == nil {
 		// nil 兜底仅供组合测试：生产组合根必须传 chainServices.
-		// ConcurrencyTracker，与 HighConcurrencyQueue 共用同一事实源
-		//（E2E-FINDING #13：分裂会让 queue 读数恒 0、永不入队）。
+		// ConcurrencyTracker（engine 并发槽与容量忙判定共用同一事实源）。
 		deps.ConcurrencyTracker = gatewayclientip.NewMemoryAccountConcurrency(nil)
 	}
 	engine.Concurrency = newChainConcurrencyStore(deps.ConcurrencyTracker)
-	// F13 同源接线：session affinity 的高并发忙判定（Node
-	// session-affinity.service.ts:273-330 areHighConcurrencyAccountsBusyForLaneAsync）
-	// 与 engine 并发槽 / high-concurrency 队列读同一并发事实源；nil store
-	// 仅存在于零值 localSessionAffinity 的组合测试（恒不忙降级）。
-	sessionAffinity.concurrency = newChainConcurrencyStore(deps.ConcurrencyTracker)
 	engine.Cache = newChainRuntimeCachePort(deps.Cache)
 	// W4-B（BUG-0175）D-111 接线：瞬态加载守卫 + API Key 效果链端口
 	//（nil 守卫保持空集降级；nil 端口保持 confirmed-rotation 静默跳过——
@@ -769,14 +753,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// 调用方分级影子观测记录器（调用方分级调度设计 §8 M1）：分母在本链
 		// 认证成功点计入，信号经 preauth CallerTier 口与 bodyPipeline 适配
 		// 透传；影子运行零资源效果。
-		callerTier: callerTier,
-		speedFirstAdmission: &chainSpeedFirstBodyAdmissionGate{
-			preauth:       preauthService,
-			QueueDefaults: deps.QueueDefaults,
-			// D-119（BUG-0175）：429 背压拒绝面写 dropped audit + usage
-			// failure（Node recordGatewayBodyRejection）；此前 nil 保持静默。
-			Recorder: rejectionRecorder,
-		},
+		callerTier:        callerTier,
 		finalizationUsage: recorder,
 		// 完成尝试记录的同步定价面：catalog 与上方 usageService 共享同一实例，
 		// gate 与 ServiceConfig.SyncPricingAllowed 同源（chainSyncPricingAllowed）。
@@ -822,6 +799,15 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 
 	shutdown := func() {
 		recorder.Close()
+		// caller tier 影子事件在 Redis 形态下由后台 worker 消费；停机时尽力
+		// 排空（有界，不阻塞进程退出）。
+		callerTierCtx, callerTierCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = callerTier.Close(callerTierCtx)
+		callerTierCancel()
+		// 请求失败探针的 outbox INSERT 由单 worker 异步执行；停机时尽力排空。
+		probeDispatchCtx, probeDispatchCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = chainHealthDispatch.Close(probeDispatchCtx)
+		probeDispatchCancel()
 		// D-192/D-146：链条停机时释放上游 keep-alive 传输的空闲连接。
 		upstreamClientPool.CloseIdleConnections()
 		// 停掉共享 JSON 解析池的常驻 worker，防止多次组合（测试全量/链重建）泄漏 goroutine。

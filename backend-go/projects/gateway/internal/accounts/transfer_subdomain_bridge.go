@@ -391,10 +391,6 @@ func batchStatusForcesSchedulableOff(status string) bool {
 	return accountstransfer.BatchStatusForcesSchedulableOff(status)
 }
 
-func batchFamilyDispatchTransitionID(transitionID, accountID string) string {
-	return accountstransfer.BatchFamilyDispatchTransitionID(transitionID, accountID)
-}
-
 func batchCircuitEventID() (string, error) { return accountstransfer.BatchCircuitEventID() }
 
 func accountScheduleError(err error) error { return accountstransfer.AccountScheduleError(err) }

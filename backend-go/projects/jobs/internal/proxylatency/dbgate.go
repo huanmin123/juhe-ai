@@ -2,7 +2,6 @@ package proxylatency
 
 import (
 	"context"
-	"errors"
 	"time"
 )
 
@@ -62,5 +61,3 @@ func (g *DBConcurrencyGate) Capacity() int {
 	}
 	return cap(g.slots)
 }
-
-var errDBGateUnavailable = errors.New("J3a DB concurrency gate unavailable")

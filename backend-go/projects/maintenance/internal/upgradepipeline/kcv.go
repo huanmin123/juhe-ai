@@ -7,7 +7,10 @@ package upgradepipeline
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 )
@@ -41,6 +44,11 @@ func verifySecretAgainstDatabase(ctx context.Context, db *sql.DB, secret string)
 		if err == sql.ErrNoRows {
 			continue
 		}
+		if isUndefinedTableError(err) {
+			// fresh 库尚未建表（结构收敛在本次 upgrade 的加法相执行）：
+			// 该载体不存在等价于无密文可校验，继续下一个载体。
+			continue
+		}
 		if err != nil {
 			return false, fmt.Errorf("KCV 读取密文载体（%s）失败: %w", probe.name, err)
 		}
@@ -52,4 +60,12 @@ func verifySecretAgainstDatabase(ctx context.Context, db *sql.DB, secret string)
 		return true, nil
 	}
 	return false, nil
+}
+
+// isUndefinedTableError reports PostgreSQL 42P01. Fresh databases have no
+// business tables before the additive ensure-schema phase, so KCV must treat
+// missing carriers as "no ciphertext to verify" instead of blocking upgrade.
+func isUndefinedTableError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }

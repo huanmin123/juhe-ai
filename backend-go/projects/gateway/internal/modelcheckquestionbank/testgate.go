@@ -186,8 +186,6 @@ func lastTestJSONValue(record TestRecord) (any, error) {
 	return string(encoded), nil
 }
 
-const testRecordSelectColumns = "id,created_by,account_id,account_name,model,draft_hash,verdict,alignment,COALESCE(diagnosis_json,''),COALESCE(http_status,0),latency_ms,created_at"
-
 func scanTestRecord(row interface{ Scan(...any) error }) (TestRecord, error) {
 	var record TestRecord
 	err := row.Scan(&record.ID, &record.CreatedBy, &record.AccountID, &record.AccountName, &record.Model,

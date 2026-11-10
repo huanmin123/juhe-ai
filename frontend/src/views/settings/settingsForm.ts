@@ -43,7 +43,6 @@ export interface SystemForm {
   accountHealthCheckIntervalHours: number
   accountHealthCheckJitterMinutes: number
   accountHealthCheckFailureThreshold: number
-  runtimeLogIndexRetentionDays: number
   publicApiLogRetentionDays: number
   usageRecordRetentionDays: number
   cooldownAccountRetestMaxBackoffHours: number
@@ -94,7 +93,6 @@ export const defaultSystemSettings: SystemForm = {
   accountHealthCheckIntervalHours: 1,
   accountHealthCheckJitterMinutes: 10,
   accountHealthCheckFailureThreshold: 3,
-  runtimeLogIndexRetentionDays: 14,
   publicApiLogRetentionDays: 30,
   usageRecordRetentionDays: 30,
   cooldownAccountRetestMaxBackoffHours: 12,
@@ -153,7 +151,6 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     accountHealthCheckIntervalHours: integerValue(settings.accountHealthCheckIntervalHours, '正常账号健康检测间隔', 1, 168),
     accountHealthCheckJitterMinutes: integerValue(settings.accountHealthCheckJitterMinutes, '健康检测错峰窗口', 0, 1440),
     accountHealthCheckFailureThreshold: integerValue(settings.accountHealthCheckFailureThreshold, '健康检测连续失败阈值', 1, 10),
-    runtimeLogIndexRetentionDays: integerValue(settings.runtimeLogIndexRetentionDays, '运行日志索引保留天数', 1, 90),
     publicApiLogRetentionDays: integerValue(settings.publicApiLogRetentionDays, '公开接口日志保留天数', 1, 365),
     usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 180),
     cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),

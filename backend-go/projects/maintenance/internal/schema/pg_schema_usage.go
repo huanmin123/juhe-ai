@@ -12,72 +12,6 @@ package schema
 var postgresSchemaUsage = []PGStatement{
 	{
 		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL: `CREATE TABLE IF NOT EXISTS usage_record_shards (
-          shard_key text PRIMARY KEY,
-          bucket_date text NOT NULL,
-          shard_id integer NOT NULL,
-          file_path text NOT NULL,
-          schema_version integer NOT NULL DEFAULT 1,
-          status text NOT NULL DEFAULT 'active',
-          first_seen_at text NOT NULL,
-          last_write_at text,
-          last_error_message text,
-          created_at text NOT NULL,
-          updated_at text NOT NULL
-        )`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL: `CREATE TABLE IF NOT EXISTS usage_record_shard_entries (
-          usage_id text PRIMARY KEY,
-          shard_key text NOT NULL,
-          system_account_id text NOT NULL,
-          trace_id text NOT NULL,
-          api_key_id text,
-          account_id text,
-          group_id text,
-          model text,
-          traffic_source text NOT NULL,
-          success integer NOT NULL DEFAULT 0,
-          status_code integer,
-          client_ip text,
-          first_token_ms integer,
-          duration_ms integer,
-          cost_usd double precision,
-          created_at text NOT NULL,
-          indexed_at text NOT NULL,
-          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
-        )`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL: `CREATE TABLE IF NOT EXISTS usage_record_account_shards (
-          account_id text NOT NULL,
-          shard_key text NOT NULL,
-          first_created_at text NOT NULL,
-          last_seen_at text NOT NULL,
-          PRIMARY KEY (account_id, shard_key),
-          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
-        )`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL: `CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (
-          api_key_id text NOT NULL,
-          system_account_id text NOT NULL,
-          shard_key text NOT NULL,
-          first_created_at text NOT NULL,
-          last_seen_at text NOT NULL,
-          PRIMARY KEY (api_key_id, system_account_id, shard_key),
-          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
-        )`,
-	},
-	{
-		SchemaName: "juhe_usage",
 		Source:     "usage-records",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_records (
       id text NOT NULL,
@@ -343,56 +277,6 @@ var postgresSchemaUsage = []PGStatement{
 		SchemaName: "juhe_usage",
 		Source:     "usage-records",
 		SQL:        `DROP INDEX IF EXISTS idx_usage_records_provider_protocol_profile_created_at`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shards_bucket ON usage_record_shards(bucket_date, shard_id)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_account_shards_account_created ON usage_record_account_shards(account_id, first_created_at, shard_key)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_api_key_shards_key_created ON usage_record_api_key_shards(api_key_id, system_account_id, first_created_at, shard_key)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_shard ON usage_record_shard_entries(shard_key, created_at)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_created_sort ON usage_record_shard_entries(created_at, usage_id)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_created_sort ON usage_record_shard_entries(system_account_id, created_at, usage_id)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_trace_created_sort ON usage_record_shard_entries(system_account_id, trace_id, created_at, usage_id)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_api_key_created_sort ON usage_record_shard_entries(system_account_id, api_key_id, created_at, usage_id)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_group_created_sort ON usage_record_shard_entries(system_account_id, group_id, created_at, usage_id)`,
-	},
-	{
-		SchemaName: "juhe_usage",
-		Source:     "usage-catalog",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_account_created_sort ON usage_record_shard_entries(system_account_id, account_id, created_at, usage_id)`,
 	},
 	{
 		SchemaName: "juhe_usage",

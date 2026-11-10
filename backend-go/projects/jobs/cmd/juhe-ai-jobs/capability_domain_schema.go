@@ -17,9 +17,10 @@
 // 只读句柄臂已随 sqlite 形态退役删除）。
 //
 // 判据说明：information_schema.columns 取类型/可空/默认值；CHECK 读
-//     pg_constraint 的 pg_get_constraintdef——PG 会把 IN 归一化为
-//     = ANY(ARRAY[...])，因此按「约束含 capability_domain 且四值字面量齐备」
-//     判定值集形状，不匹配 IN 语法字面。
+//
+//	pg_constraint 的 pg_get_constraintdef——PG 会把 IN 归一化为
+//	= ANY(ARRAY[...])，因此按「约束含 capability_domain 且四值字面量齐备」
+//	判定值集形状，不匹配 IN 语法字面。
 package main
 
 import (

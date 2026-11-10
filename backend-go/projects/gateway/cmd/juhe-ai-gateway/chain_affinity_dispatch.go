@@ -8,12 +8,7 @@ package main
 //
 // chainSessionAffinityDispatchPort 把 gatewaydispatch.SessionAffinityPort 的
 // 绑定读写面（Order/Claim/Remember/Forget + 账户内 Key 黏性读/最终成功 Key
-// 写回）接到与 preauth 同一 AffinityService 实例上；高并发忙判定
-// （AreHighConcurrencyAccountsBusyForLaneAsync）继续走 localSessionAffinity：
-// 该维度是 F13 确立的「与 engine 并发槽 /
-// high-concurrency 队列共用同一活计数 tracker」同源接线，而
-// AffinityService.cfg.Concurrency 生产未装配（nil，Redis runtime-state 下恒
-// 不忙），为不回退既有忙判定语义，此维度保持本进程事实源。
+// 写回）接到与 preauth 同一 AffinityService 实例上。
 //
 // 装配条件与 preauth 侧一致：deps.Identity.Affinity.UsesRedisSessionAffinity()
 // （Redis cacheDriver）才启用本端口；memory cacheDriver（含组合测试
@@ -31,8 +26,6 @@ import (
 // over the shared G14 AffinityService.
 type chainSessionAffinityDispatchPort struct {
 	service *gatewaysession.AffinityService
-	// busy 承接高并发忙判定的活计数事实源（F13 同源），见文件头注释。
-	busy *localSessionAffinity
 }
 
 // OrderAsync mirrors orderOpenAIAccountsBySessionAffinityAsync：排序经
@@ -55,10 +48,48 @@ func (p *chainSessionAffinityDispatchPort) ClaimAsync(ctx context.Context, sessi
 	return p.service.ClaimOpenAIAccountForSessionAsync(ctx, sessionAffinityKey, proposedAccountID, chainAffinityScopePtr(scope))
 }
 
+// ClaimWithStateAsync 实现 gatewaydispatch.SessionAffinityClaimStatePort：
+// 额外返回 claim 前是否已有绑定，供名额规划区分新会话占位 owner 与既有会话。
+func (p *chainSessionAffinityDispatchPort) ClaimWithStateAsync(ctx context.Context, sessionAffinityKey, proposedAccountID string, scope gatewaydispatch.AffinityScope) (string, bool, bool) {
+	return p.service.ClaimOpenAIAccountForSessionWithStateAsync(ctx, sessionAffinityKey, proposedAccountID, chainAffinityScopePtr(scope))
+}
+
 // RememberAsync mirrors rememberOpenAIAccountForSessionAsync（同步 claim 语义，
 // 引擎在尝试成功后调用）。
 func (p *chainSessionAffinityDispatchPort) RememberAsync(ctx context.Context, sessionAffinityKey, accountID string, scope gatewaydispatch.AffinityScope) {
 	p.service.RememberOpenAIAccountForSessionAsync(ctx, sessionAffinityKey, accountID, chainAffinityScopePtr(scope))
+}
+
+// RebindAsync 实现 gatewaydispatch.SessionAffinityRebindPort（账户亲和同层
+// latch）：同 owner 刷新 30 分钟 lease；owner 变化时 CAS 只允许当前 owner 仍是
+// expectedOwner 才改绑。失败只返回 false（服务内已告警），不改变请求结果。
+func (p *chainSessionAffinityDispatchPort) RebindAsync(ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, scope gatewaydispatch.AffinityScope) bool {
+	return p.service.RebindOpenAIAccountForSessionAsync(ctx, sessionAffinityKey, expectedOwner, newOwner, chainAffinityScopePtr(scope))
+}
+
+// PlanSessionSlot 实现 gatewaydispatch.SessionAffinitySlotPort：准备期按账户
+// 名额选择首选账户，owner 名额满时在预算内等待后回退到空闲名额账户。
+func (p *chainSessionAffinityDispatchPort) PlanSessionSlot(ctx context.Context, sessionAffinityKey, ownerAccountID string, ownerEstablished bool, candidates []gatewaydispatch.SessionSlotCandidate, waitBudgetMs int64) (gatewaydispatch.SessionAffinitySlotPlan, error) {
+	converted := make([]gatewaysession.SessionSlotCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		converted = append(converted, gatewaysession.SessionSlotCandidate{
+			AccountID:        candidate.AccountID,
+			ConcurrencyLimit: candidate.ConcurrencyLimit,
+			RPMLimit:         candidate.RPMLimit,
+		})
+	}
+	plan, err := p.service.PlanSessionSlot(ctx, sessionAffinityKey, ownerAccountID, ownerEstablished, converted, waitBudgetMs)
+	return gatewaydispatch.SessionAffinitySlotPlan{
+		PreferredAccountID: plan.PreferredAccountID,
+		SlotActive:         plan.SlotActive,
+		Fallback:           plan.Fallback,
+		WaitedMs:           plan.WaitedMs,
+	}, err
+}
+
+// ConfirmSessionSlot 实现最终成功后的名额结算。
+func (p *chainSessionAffinityDispatchPort) ConfirmSessionSlot(ctx context.Context, sessionAffinityKey, expectedOwner, newOwner string, cap int) bool {
+	return p.service.ConfirmSessionSlot(ctx, sessionAffinityKey, expectedOwner, newOwner, cap)
 }
 
 // ForgetAsync mirrors forgetOpenAIAccountForSessionAsync（Redis 清理失败
@@ -80,13 +111,6 @@ func (p *chainSessionAffinityDispatchPort) RememberApiKeyFingerprintAsync(ctx co
 	p.service.RememberOpenAIApiKeyFingerprintAsync(ctx, sessionAffinityKey, accountID, upstreamApiKeyFingerprint)
 }
 
-// AreHighConcurrencyAccountsBusyForLaneAsync 委托 localSessionAffinity 的
-// 活计数实现（F13 同源：与 engine 并发槽 / high-concurrency 队列共用同一
-// tracker；AffinityService 的忙判定读 cfg.Concurrency，生产未装配）。
-func (p *chainSessionAffinityDispatchPort) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []gatewaydispatch.AccountCandidate, options gatewaydispatch.HighConcurrencyBusyOptions) (bool, error) {
-	return p.busy.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, options)
-}
-
 // chainDispatchOrderingOptionsOf maps gatewaydispatch.AffinityOrderingOptions
 // onto the G14 DispatchOrderingOptions. AccountCandidate 与
 // gatewayruntimecache.OpenAIAccountSecret 是同一命名类型的别名，账户切片直接
@@ -94,12 +118,8 @@ func (p *chainSessionAffinityDispatchPort) AreHighConcurrencyAccountsBusyForLane
 // RankByAccountID），逐字段拷贝。
 func chainDispatchOrderingOptionsOf(options gatewaydispatch.AffinityOrderingOptions) gatewaysession.DispatchOrderingOptions {
 	converted := gatewaysession.DispatchOrderingOptions{
-		GroupType: options.GroupType,
-	}
-	if options.SchedulingPolicy != nil {
-		// GroupSchedulingPolicy 是 map[string]any 的命名别名，服务侧按
-		// policyInput map 消费（scheduling.go），解引用共享底层 map 即可。
-		converted.SchedulingPolicy = *options.SchedulingPolicy
+		GroupType:        options.GroupType,
+		SchedulingPolicy: options.SchedulingPolicy,
 	}
 	if options.ModelPriority != nil {
 		converted.ModelPriority = &gatewaysession.GatewayAccountModelPriority{
@@ -128,9 +148,9 @@ func chainAffinityScopePtr(scope gatewaydispatch.AffinityScope) *gatewaysession.
 // port at assembly time: the shared AffinityService when its cache driver is
 // Redis（与 preauth 读侧同一数据面），否则 nil——调用方保持
 // localSessionAffinity 显式降级（warn 保留在该路径）。
-func newChainSessionAffinityDispatchPort(local *localSessionAffinity, services *sessionIdentityServices) gatewaydispatch.SessionAffinityPort {
+func newChainSessionAffinityDispatchPort(services *sessionIdentityServices) gatewaydispatch.SessionAffinityPort {
 	if services == nil || services.Affinity == nil || !services.Affinity.UsesRedisSessionAffinity() {
 		return nil
 	}
-	return &chainSessionAffinityDispatchPort{service: services.Affinity, busy: local}
+	return &chainSessionAffinityDispatchPort{service: services.Affinity}
 }

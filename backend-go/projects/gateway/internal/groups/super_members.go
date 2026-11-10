@@ -91,17 +91,19 @@ type SuperMembersSummary struct {
 
 // groupDispatchFingerprint 计算成员调度指纹（设计 §3.3）：
 // SHA256("group-dispatch-fingerprint:v1\n" + canonical_json({group_type,
-// scheduling_policy_json}))。现有模型没有独立 queue/concurrency 策略列，
-// 队列与并发键位于 scheduling_policy_json 内，整体取值即覆盖。
-func groupDispatchFingerprint(groupType string, schedulingJSON sql.NullString) (string, error) {
-	var policy any
-	if schedulingJSON.Valid && strings.TrimSpace(schedulingJSON.String) != "" {
-		if err := json.Unmarshal([]byte(schedulingJSON.String), &policy); err != nil {
-			return "", err
-		}
+// scheduling_policy_json}))。group_type 先归一（旧 high_concurrency 视同
+// personal），策略先按两键契约解析/映射，保证迁移前后等价指纹一致。
+func groupDispatchFingerprint(groupType string, schedulingJSON sql.NullString, globalMax int) (string, error) {
+	normalizedType, err := normalizeStoredGroupType(groupType)
+	if err != nil {
+		return "", err
+	}
+	policy, err := parseStoredSchedulingPolicy(schedulingJSON.String, schedulingJSON.Valid, isLegacyGroupType(groupType), globalMax)
+	if err != nil {
+		return "", err
 	}
 	canonical, err := json.Marshal(map[string]any{
-		"group_type":             groupType,
+		"group_type":             normalizedType,
 		"scheduling_policy_json": policy,
 	})
 	if err != nil {
@@ -305,7 +307,7 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 		if memberFacts.groupKind != GroupKindStandard {
 			return nil, codeError(400, CodeSuperGroupMemberNested, "超级分组不能嵌套超级分组")
 		}
-		fingerprint, fpErr := groupDispatchFingerprint(memberFacts.groupType, memberFacts.schedulingJSON)
+		fingerprint, fpErr := groupDispatchFingerprint(memberFacts.groupType, memberFacts.schedulingJSON, s.globalConcurrencyMax())
 		if fpErr != nil {
 			return nil, fpErr
 		}
@@ -338,7 +340,8 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 	}
 	// 成员集合变更后，把成员组的调度事实回写到超级分组自身（group_type 与
 	// scheduling_policy_json）：超级分组目标在运行期按自身 GroupAccess 执行
-	// 容量/队列门，只有与成员一致才符合设计 §4.3「按实际成员分组执行」。
+	// 容量门，只有与成员一致才符合设计 §4.3「按实际成员分组执行」。旧
+	// high_concurrency 成员在此归一为 personal + 两键策略。
 	if len(normalized) > 0 {
 		firstMemberID := normalized[0].MemberGroupID
 		var memberType string
@@ -347,9 +350,29 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 			FROM `+s.table("groups")+` WHERE id = ?`), firstMemberID).Scan(&memberType, &memberScheduling); err != nil {
 			return nil, err
 		}
+		normalizedType, err := normalizeStoredGroupType(memberType)
+		if err != nil {
+			return nil, err
+		}
+		policy, err := parseStoredSchedulingPolicy(memberScheduling.String, memberScheduling.Valid, isLegacyGroupType(memberType), s.globalConcurrencyMax())
+		if err != nil {
+			return nil, err
+		}
+		policyJSON, err := policyValueJSON(policy)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("groups")+`
 			SET group_type = ?, scheduling_policy_json = ? WHERE id = ?`),
-			memberType, nullableSchedulingJSON(memberScheduling), groupID); err != nil {
+			normalizedType, policyJSON, groupID); err != nil {
+			return nil, err
+		}
+	} else {
+		// 成员清空后超级分组不可调度，自身行不得保留旧 group_type/策略：
+		// 立即收敛为 personal + NULL，与迁移侧空超级分组口径一致。
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("groups")+`
+			SET group_type = ?, scheduling_policy_json = NULL WHERE id = ?`),
+			GroupTypePersonal, groupID); err != nil {
 			return nil, err
 		}
 	}
@@ -473,7 +496,7 @@ func (s *Store) assertSuperGroupFingerprintCompatible(ctx context.Context, q que
 				memberRows.Close()
 				return err
 			}
-			fingerprint, fpErr := groupDispatchFingerprint(groupType, schedulingJSON)
+			fingerprint, fpErr := groupDispatchFingerprint(groupType, schedulingJSON, s.globalConcurrencyMax())
 			if fpErr != nil {
 				memberRows.Close()
 				return fpErr

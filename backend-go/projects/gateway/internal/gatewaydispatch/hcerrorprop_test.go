@@ -28,22 +28,14 @@ func (errorLaneConcurrencyStore) TryAcquireAsync(context.Context, string, int, A
 	return ConcurrencySlot{Acquired: true}, nil
 }
 
-// errorBusyAffinity 的高并发繁忙检查报错。
-type errorBusyAffinity struct {
-	fakeAffinity
-}
-
-func (errorBusyAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []AccountCandidate, HighConcurrencyBusyOptions) (bool, error) {
-	return false, errPortBoom
-}
-
+// 高并发繁忙检查（errorBusyAffinity）已随等待分支退役删除；快照刷新与热度
+// 排序的错误传播用例保留。
 func TestPrepareDispatchAccountsHighConcurrencyErrorsPropagate(t *testing.T) {
 	cases := []struct {
 		name  string
 		setup func(engine *Engine)
 	}{
 		{"snapshot_refresh", func(engine *Engine) { engine.Concurrency = errorLaneConcurrencyStore{} }},
-		{"busy_check", func(engine *Engine) { engine.Affinity = &errorBusyAffinity{} }},
 		{"hot_quality", func(engine *Engine) { engine.HotQuality = errorHotQualityPort{} }},
 	}
 	for _, testCase := range cases {
@@ -52,7 +44,7 @@ func TestPrepareDispatchAccountsHighConcurrencyErrorsPropagate(t *testing.T) {
 			testCase.setup(engine)
 			policy := gatewayruntimecache.GroupSchedulingPolicy{}
 			input := dispatchPreparationInput(t, testAccounts("a-1"))
-			input.GroupAccess = highConcurrencyGroupAccess(&policy)
+			input.GroupAccess = ordinaryGroupAccess(&policy)
 			_, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
 			if !errors.Is(err, errPortBoom) {
 				t.Fatalf("expected 端口爆炸, got %v", err)

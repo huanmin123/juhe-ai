@@ -25,4 +25,3 @@ type wbFailingEnqueuer struct{}
 func (wbFailingEnqueuer) EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
 	return context.Canceled
 }
-

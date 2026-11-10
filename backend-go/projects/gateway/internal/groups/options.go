@@ -134,15 +134,15 @@ const optionOuterSelectColumns = `id, system_account_id, name,
 		access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json`
 
 // authorizedOptionRowSelectColumns mirrors authorizedGroupRowSelectColumns:
-// per-grantee settings overrides for enabled/group_type/scheduling_policy_json
-// plus the settings-aware updated_at.
+// per-grantee enabled override plus the settings-aware updated_at. Group type
+// and scheduling policy always come from the source group (the retired
+// per-grantee group_type/scheduling_policy_json overrides are ignored).
 const authorizedOptionRowSelectColumns = `g.id, g.system_account_id, g.name,
 		CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 		g.is_default,
-		COALESCE(s.group_type, g.group_type) AS group_type,
+		g.group_type,
 		g.group_kind,
-		CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
-			THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
+		g.scheduling_policy_json,
 		g.created_at,
 		COALESCE(s.updated_at, g.updated_at) AS updated_at`
 
@@ -452,7 +452,7 @@ func (s *Store) newOptionSummary(row optionRow, names map[string]string, include
 	if err != nil {
 		return OptionSummary{}, err
 	}
-	policy, err := parseStoredSchedulingPolicy(row.schedulingJSON.String, row.schedulingJSON.Valid, groupType, s.globalConcurrencyMax())
+	policy, err := parseStoredSchedulingPolicy(row.schedulingJSON.String, row.schedulingJSON.Valid, isLegacyGroupType(row.groupType), s.globalConcurrencyMax())
 	if err != nil {
 		return OptionSummary{}, err
 	}
@@ -528,9 +528,8 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 			UNION ALL
 			SELECT g.name, g.description,
 				CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
-				COALESCE(s.group_type, g.group_type) AS group_type,
-				CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
-					THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
+				g.group_type,
+				g.scheduling_policy_json,
 				COALESCE(s.updated_at, g.updated_at) AS updated_at,
 				g.group_kind
 			FROM ` + s.table("resource_authorizations") + ` ra
@@ -557,7 +556,7 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	if err != nil {
 		return nil, err
 	}
-	policy, err := parseStoredSchedulingPolicy(schedulingJSON.String, schedulingJSON.Valid, normalizedType, s.globalConcurrencyMax())
+	policy, err := parseStoredSchedulingPolicy(schedulingJSON.String, schedulingJSON.Valid, isLegacyGroupType(groupType), s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
 	}

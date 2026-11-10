@@ -72,13 +72,12 @@ func TestW16GAssemblyComponentsLifecycle(t *testing.T) {
 	// writer/drain/scheduler 组件面不受影响。
 	_, pgURL := wgCmdKitDB(t)
 	env := map[string]string{
-		"JUHE_AI_POSTGRES_URL":             pgURL,
-		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": pgURL,
-		"JUHE_AI_REDIS_URL":                "redis://127.0.0.1:1",
-		"JUHE_AI_REDIS_NAMESPACE":          w16gNamespace,
-		"JUHE_AI_DATA_DIR":                 filepath.Join(t.TempDir(), "data"),
-		"JUHE_AI_SECRET":                   "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_LOG_DIR":                  filepath.Join(t.TempDir(), "logs"),
+		"JUHE_AI_POSTGRES_URL":    pgURL,
+		"JUHE_AI_REDIS_URL":       "redis://127.0.0.1:1",
+		"JUHE_AI_REDIS_NAMESPACE": w16gNamespace,
+		"JUHE_AI_DATA_DIR":        filepath.Join(t.TempDir(), "data"),
+		"JUHE_AI_SECRET":          "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_LOG_DIR":         filepath.Join(t.TempDir(), "logs"),
 	}
 	assembly, err := buildWorkerAssembly(loadWorkerConfigOrFatal(t, env), nil)
 	if err != nil {
@@ -91,14 +90,14 @@ func TestW16GAssemblyComponentsLifecycle(t *testing.T) {
 	for _, component := range components {
 		names[component.Name] = true
 	}
-	if !names["usage-record writer"] || !names["usage-record spool drain"] {
-		t.Fatalf("writer/drain 组件必须就位: %v", names)
+	if !names["usage-record writer"] || !names["usage-record overflow replay"] {
+		t.Fatalf("writer/overflow replay 组件必须就位: %v", names)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, component := range components {
 		switch component.Name {
-		case "usage-record writer", "usage-record spool drain", "worker scheduler":
+		case "usage-record writer", "usage-record overflow replay", "worker scheduler":
 			if err := component.Run(ctx); err != nil {
 				t.Fatalf("组件 %s 取消 ctx 直跑必须正常返回: %v", component.Name, err)
 			}

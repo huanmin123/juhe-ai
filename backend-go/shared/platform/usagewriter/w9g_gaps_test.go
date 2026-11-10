@@ -57,8 +57,8 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.RowsByShard) == 0 || len(plan.ShardEntries) != 2 {
-		t.Fatalf("plan rows=%d entries=%d", len(plan.RowsByShard), len(plan.ShardEntries))
+	if len(plan.RowsByShard) == 0 || writePlanRowCount(plan) != 2 {
+		t.Fatalf("plan rows=%d entries=%d", len(plan.RowsByShard), writePlanRowCount(plan))
 	}
 
 	inserted, err := store.WriteBatch(ctx, plan)
@@ -282,17 +282,17 @@ var w9gTempRoot string
 
 func TestW9GShardRoutingEdges(t *testing.T) {
 	// 溢出的 shard id 数字：回退 LogicalShardID。
-	location, err := UsageRecordLogicalShardLocationForPostgres(
-		"usage_20260102_s99999999999999999999_1_x", "2026-01-02T00:00:00.000Z", 4)
+	overflowID := "usage_20260102_s99999999999999999999_1_x"
+	shardKey, err := UsageRecordShardKeyForPostgres(overflowID, "2026-01-02T00:00:00.000Z", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if location.ShardID < 0 || location.ShardID >= 4 {
-		t.Fatalf("logical shardID = %d", location.ShardID)
+	if want := "20260102:s" + FormatLogicalShardID(LogicalShardID(overflowID, 4)); shardKey != want {
+		t.Fatalf("logical shardKey = %q, want %q", shardKey, want)
 	}
 
 	// id 不匹配且 createdAt 非法：上抛。
-	if _, err := UsageRecordLogicalShardLocationForPostgres("zzz", "nope", 4); err == nil {
+	if _, err := UsageRecordShardKeyForPostgres("zzz", "nope", 4); err == nil {
 		t.Fatal("非法 createdAt 必须上抛")
 	}
 }

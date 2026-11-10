@@ -351,12 +351,22 @@ func requestFastExhaustSeedAccount(t *testing.T, fixture *chainFixture, accountI
 	chainSeedAccountConnection(t, fixture.db, accountID, upstreamURL)
 }
 
+// requestFastExhaustEnablePrimaryKeyPool 把基础夹具账户 acc_1 切到 gpt 供应商：
+// openai 兼容供应商已退役，Key 池隔离不再支持，三 Key 池无法轮换。
+func requestFastExhaustEnablePrimaryKeyPool(t *testing.T, fixture *chainFixture) {
+	t.Helper()
+	if _, err := fixture.db.Exec(`UPDATE accounts SET vendor_code = 'gpt', connection_driver_code = 'gpt' WHERE id = 'acc_1'`); err != nil {
+		t.Fatalf("enable primary account key pool: %v", err)
+	}
+}
+
 // TestGatewayChainRequestFastExhaustStopsScanningBucket：acc_1（3 Key 轮换）
 // + acc_2 + acc_3 的 5 次完整非 2xx 触发提前耗尽——第 5 次失败后同桶剩余候选
 // （acc_4）不被扫描（0 次上游命中），客户端拿到既有统一耗尽出口的 503 固定
 // 文案，响应不泄漏上游地址。
 func TestGatewayChainRequestFastExhaustStopsScanningBucket(t *testing.T) {
 	fixture := newChainFixture(t)
+	requestFastExhaustEnablePrimaryKeyPool(t, fixture)
 	var hits int32
 	upstream := httptestAlwaysRejectedUpstream(t, &hits)
 	requestFastExhaustSeedAccount(t, fixture, "acc_2", upstream.URL, 1, 10)
@@ -402,6 +412,7 @@ func TestGatewayChainRequestFastExhaustStopsScanningBucket(t *testing.T) {
 // 客户端契约不变。
 func TestGatewayChainRequestFastExhaustNegativeCacheRetryHitsOnce(t *testing.T) {
 	fixture := newChainFixture(t)
+	requestFastExhaustEnablePrimaryKeyPool(t, fixture)
 	var hits int32
 	upstream := httptestAlwaysRejectedUpstream(t, &hits)
 	requestFastExhaustSeedAccount(t, fixture, "acc_2", upstream.URL, 1, 10)
@@ -462,6 +473,7 @@ func TestGatewayChainRequestFastExhaustNegativeCacheRetryHitsOnce(t *testing.T) 
 
 func TestGatewayChainRequestFastExhaustTwoAccountsNotTriggered(t *testing.T) {
 	fixture := newChainFixture(t)
+	requestFastExhaustEnablePrimaryKeyPool(t, fixture)
 	var hits int32
 	upstream := httptestAlwaysRejectedUpstream(t, &hits)
 	requestFastExhaustSeedAccount(t, fixture, "acc_2", upstream.URL, 3, 10)

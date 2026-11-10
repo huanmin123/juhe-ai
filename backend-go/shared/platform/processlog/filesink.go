@@ -15,9 +15,8 @@ import (
 	"time"
 )
 
-// current 运行日志文件名是 jobs runtimelog 索引器的消费面契约
-// (filename.go legacyRuntimeLogRoles: juhe-ai.log → server 角色)；改名会让
-// 整个运行日志 grep 面失去 server 侧数据源。
+// CurrentLogFileName 是本地运行日志的稳定文件名；外部采集（ELK/Loki）
+// 与本机排障按该名识别，改名会改变既有日志文件契约。
 const CurrentLogFileName = "juhe-ai.log"
 
 // DefaultMaxFileBytes 对齐 Node 写侧契约的默认轮转阈值
@@ -166,7 +165,6 @@ func (s *FileSink) Write(p []byte) (int, error) {
 	}
 	return written, nil
 }
-
 
 // Close 幂等关闭 current 文件句柄。
 func (s *FileSink) Close() error {
