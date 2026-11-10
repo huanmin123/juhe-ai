@@ -92,7 +92,7 @@ describe('peakWindowsToTimeSchedulePreset', () => {
     expect(preset.key).toBe('provider_peak_DeepSeek')
     expect(preset.timezone).toBe('Asia/Shanghai')
     expect(preset.invertOnApply).toBe(true)
-    expect(preset.label).toContain('DeepSeek 避开高峰')
+    expect(preset.label).toBe('DeepSeek 低峰时段')
     expect(preset.windows).toEqual(deepSeekPeakWindows.windows)
     expect(preset.windows).not.toBe(deepSeekPeakWindows.windows)
   })

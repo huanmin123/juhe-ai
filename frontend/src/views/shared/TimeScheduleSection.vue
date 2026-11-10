@@ -10,30 +10,19 @@
       <a-switch v-model:checked="form.availabilitySchedule.enabled" :disabled="readonly" />
     </div>
     <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
-      <div v-if="!readonly" class="schedule-quick-row">
+      <div v-if="!readonly && presets.length" class="schedule-quick-row">
         <span class="schedule-quick-label">快捷预设</span>
-        <template v-if="presets.length">
-          <a-popconfirm
-            v-for="preset in presets"
-            :key="preset.key"
-            :title="preset.invertOnApply
-              ? `将按该供应商高峰定义（${preset.windows.map((w) => `${w.start}-${w.end}`).join('、')}）反向生成非高峰时段，覆盖当前 ${form.availabilitySchedule.windows.length} 个时段，确定？`
-              : `将覆盖当前 ${form.availabilitySchedule.windows.length} 个时段为：${preset.description}，确定？`"
-            ok-text="覆盖"
-            cancel-text="取消"
-            @confirm="applySchedulePreset(preset)"
-          >
-            <a-tag class="schedule-quick-tag" :title="preset.description">{{ preset.label }}</a-tag>
-          </a-popconfirm>
-        </template>
-        <span v-else-if="peakPresetsDefined" class="schedule-quick-empty">当前供应商未配置高峰时段</span>
         <a-popconfirm
-          title="把当前时段视为高峰并取反生成其余全部时间，将覆盖现有时段，确定？"
-          ok-text="生成反向"
+          v-for="preset in presets"
+          :key="preset.key"
+          :title="preset.invertOnApply
+            ? `将按该供应商高峰定义（${preset.windows.map((w) => `${w.start}-${w.end}`).join('、')}）反向生成非高峰时段，覆盖当前 ${form.availabilitySchedule.windows.length} 个时段，确定？`
+            : `将覆盖当前 ${form.availabilitySchedule.windows.length} 个时段为：${preset.description}，确定？`"
+          ok-text="覆盖"
           cancel-text="取消"
-          @confirm="invertScheduleWindows"
+          @confirm="applySchedulePreset(preset)"
         >
-          <a-button size="small" type="link" class="schedule-quick-invert">反向当前时段</a-button>
+          <a-tag class="schedule-quick-tag" :title="preset.description">{{ preset.label }}</a-tag>
         </a-popconfirm>
       </div>
       <div class="schedule-window-list">
@@ -88,9 +77,8 @@ const props = withDefaults(defineProps<{
   bordered?: boolean
   /**
    * 供应商高峰快捷预设（动态数据源：调用方从 /providers/definitions 的
-   * peakWindows 转换传入，见 peakWindowsToTimeSchedulePreset）。空数组 =
-   * 当前供应商无高峰口径，只展示「反向当前时段」通用按钮；undefined =
-   * 供应商未知（未选择），连占位也不显示。
+   * peakWindows 转换传入，见 peakWindowsToTimeSchedulePreset）。空数组或
+   * undefined（供应商未知）= 不渲染快捷行，账户时段完全手工配置。
    */
   peakPresets?: TimeSchedulePreset[]
 }>(), {
@@ -101,8 +89,6 @@ const props = withDefaults(defineProps<{
 })
 
 const presets = computed(() => props.peakPresets ?? [])
-// undefined = 供应商未知（未选择），与「无高峰口径」的占位提示区分。
-const peakPresetsDefined = computed(() => props.peakPresets !== undefined)
 const scheduleTooltipTitle = computed(() => props.helpMessage || '开启后只在配置的星期和时间段内参与调度；未命中时间段时会暂时跳过。')
 
 function addScheduleWindow(): void {
@@ -137,24 +123,10 @@ function applySchedulePreset(preset: TimeSchedulePreset): void {
   message.success(`已应用预设：${preset.label}`)
 }
 
-// 反向生成：把当前时段视为高峰，覆盖为其补集（跨午夜拆段、零头丢弃）。
-function invertScheduleWindows(): void {
-  if (props.readonly) return
-  const inverted = invertTimeScheduleWindows(props.form.availabilitySchedule.windows
-    .filter((window) => window.start && window.end)
-    .map((window) => ({ daysOfWeek: window.daysOfWeek, start: window.start as string, end: window.end as string })))
-  if (!inverted.length) {
-    message.warning('当前时段已覆盖全天，没有可生成的反向时段')
-    return
-  }
-  props.form.availabilitySchedule.windows = inverted.map((window) => createTimeScheduleWindowFormRow({
-    daysOfWeek: window.daysOfWeek,
-    start: window.start,
-    end: window.end,
-    keyPrefix: props.rowKeyPrefix
-  }))
-  message.success(`已生成 ${inverted.length} 个反向时段`)
+function scheduleWindowKey(window: { daysOfWeek: number[]; start?: string; end?: string }): string {
+  return `${[...window.daysOfWeek].sort((left, right) => left - right).join(',')}|${window.start}|${window.end}`
 }
+
 </script>
 
 <style scoped>
@@ -222,14 +194,7 @@ function invertScheduleWindows(): void {
   margin: 0;
 }
 
-.schedule-quick-empty {
-  color: var(--juhe-faint);
-  font-size: 12px;
-}
 
-.schedule-quick-invert {
-  padding: 0;
-}
 
 .schedule-window-row {
   display: grid;

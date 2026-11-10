@@ -97,12 +97,13 @@ function formatPresetWindowRange(windows: readonly TimeScheduleWindow[]): string
 
 // peakWindowsToTimeSchedulePreset 把供应商目录的 peakWindows 定义（后端
 // providers 包 peak_windows.go 单一数据源，经 /providers/definitions 透出）
-// 转换为时间计划快捷预设：windows 即高峰定义，应用时反向生成非高峰调度时段。
+// 转换为时间计划快捷预设：windows 即高峰定义，应用时反向生成非高峰调度时段
+//（用户口径：账户只会配置低峰时段，标签按低峰语义命名）。
 export function peakWindowsToTimeSchedulePreset(providerName: string, peak: ProviderPeakWindowsShape): TimeSchedulePreset {
   return {
     key: `provider_peak_${providerName}`,
-    label: `${providerName} 避开高峰（${formatPresetWindowRange(peak.windows)}）`,
-    description: `按 ${providerName} 高峰（${formatPresetWindowRange(peak.windows)}）反向生成全部非高峰时段`,
+    label: `${providerName} 低峰时段`,
+    description: `按高峰（${formatPresetWindowRange(peak.windows)}）反向生成全部非高峰时段`,
     timezone: peak.timezone,
     invertOnApply: true,
     windows: peak.windows.map((window) => ({ daysOfWeek: [...window.daysOfWeek], start: window.start, end: window.end }))

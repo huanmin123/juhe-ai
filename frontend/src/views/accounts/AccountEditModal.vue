@@ -911,9 +911,11 @@ const isMediaDomain = computed(() =>
 // （后端 providers 包 peak_windows.go 单一数据源），随所选供应商联动；未选
 // 供应商或该供应商无高峰口径时返回 undefined（快捷行只展示通用反向按钮）。
 const providerPeakPresets = computed(() => {
-  const peak = props.selectedProvider?.peakWindows
-  if (!peak) return undefined
-  return [peakWindowsToTimeSchedulePreset(props.selectedProvider.name, peak)]
+  const selected = props.selectedProvider
+  const peak = selected?.peakWindows
+    ?? mediaProviderDefinitions.value?.find((provider) => provider.code === selected?.code)?.peakWindows
+  if (!peak || !selected) return undefined
+  return [peakWindowsToTimeSchedulePreset(selected.name, peak)]
 })
 
 // 媒体域供应商清单保障：列表页传入的 providers 是轻量 options（protocolProfiles
@@ -926,7 +928,8 @@ const mediaProviderDefinitions = ref<ProviderDefinition[] | undefined>(undefined
 watch(
   [open, () => props.capabilityDomain],
   () => {
-    if (!open.value || !isMediaDomain.value || mediaProviderDefinitions.value) return
+    // 对话域同样需要完整定义：providerPeakPresets 的 peakWindows 只有全量 definitions 携带（轻量 options 无此字段）。
+    if (!open.value || mediaProviderDefinitions.value) return
     api.providers.definitions().then((definitions) => {
       if (Array.isArray(definitions) && definitions.length) mediaProviderDefinitions.value = definitions
     }).catch(() => { /* 拉取失败保持调用方传入清单 */ })
