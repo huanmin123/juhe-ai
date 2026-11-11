@@ -242,9 +242,9 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
-	// 多副本：每个 gateway 实例持有自己的写入 lease，避免第二个实例在
-	// 启动期被单 owner 租约拒绝；retention 单活由 PG advisory lock 保证
-	// （见 F4 operation-log-owner 组件）。
+	// 多副本：每个 gateway 实例持有自己的写入 lease（producer 专用，丢失后
+	// 由 F4 operation-log-writer-lease-reviver 组件复活）；retention 使用
+	// 独立的全局 owner lease 键单活（见 F4 operation-log-owner 组件）。
 	operationConfig.LeaseKey = operationlog.LeaseKeyForInstance(operationConfig.InstanceID)
 	// 2026-10-24 存储形态收口：零配置 sqlite seed preflight 块（业务库文件
 	// ensure+seed 自举）随 sqlite 存储形态删除——业务 schema/seed 预置由外部
@@ -713,12 +713,14 @@ func main() {
 		fail(fmt.Errorf("open F3 audit-log retention store: %w", err))
 	}
 	defer auditRetentionStore.Close()
-	// The F3 persistence lease is acquired once per process and shared by
-	// the in-process audit producer (chain dispatch, compose.go) and the
-	// resident owner (retention): both writers must fence under the same
-	// owner_id/fence_token, otherwise a second holder would permanently fence
-	// the first one out. 去跨进程战役第四刀：loopback F3 input server 删除，
-	// producer 是唯一的链审计写入口。
+	// The F3 write lease below is the per-instance producer lease (chain
+	// dispatch, compose.go); the resident owner (retention) holds a separate
+	// lease under the default global key, so the two keepers are independent
+	// and neither fences the other out. The writer keeper is watched by the
+	// F3 audit-writer-lease-reviver component: after lease loss it retries
+	// Revive(ctx) until the fence rotates, and the producer resumes because
+	// it reads Lease() per record. 去跨进程战役第四刀：loopback F3 input
+	// server 删除，producer 是唯一的链审计写入口。
 	// ownerLeaseAcquireWait 在 F3/F4 两个启动获取点之前解析一次、共用同一
 	// 等待值；解析失败在此 fail 一次。默认 0 时两个获取点与既有 fail-fast
 	// 契约完全一致。
@@ -741,8 +743,9 @@ func main() {
 	// DD3-F3：启动期失败出口 fail 经 os.Exit 跳过本 defer 链；租约获取成功
 	// 即注册进启动期释放钩子，fail 在 exit 前尽力释放（幂等 Close）。
 	startupLeaseRelease = auditLease.Close
-	// The F3 producer is the process-wide chain audit sink; it shares the
-	// audit lease above and only extends it per record.
+	// The F3 producer is the process-wide chain audit sink; it writes under
+	// the per-instance lease above and only extends it per record (the
+	// audit-writer-lease-reviver component restores this keeper after loss).
 	auditProducer := auditlog.NewProducer(auditStore, auditLease, auditConfig, producerLogger{})
 	// Queue-saturation drops become a Prometheus gauge seam (before Serve, so
 	// the write happens before any scrape goroutine reads it).
@@ -786,12 +789,14 @@ func main() {
 	var auditRunning atomic.Bool
 	var operationRunning atomic.Bool
 	var j3bRunning atomic.Bool
-	// The F4 persistence lease is acquired once per process and shared by
-	// the in-process producer (management-plane writes, compose.go) and the
-	// resident owner (retention): both writers must fence under the same
-	// owner_id/fence_token, otherwise the second holder would permanently
-	// fence the first one out. 去跨进程战役第四刀：loopback F4 input server
-	// 删除，producer 是本进程唯一写入方。
+	// The F4 write lease below is the per-instance producer lease
+	// (management-plane writes, compose.go); the resident owner (retention)
+	// holds a separate lease under the default global key, so the two
+	// keepers are independent and neither fences the other out. The writer
+	// keeper is watched by the F4 operation-log-writer-lease-reviver
+	// component, which retries Revive(ctx) until the fence rotates.
+	// 去跨进程战役第四刀：loopback F4 input server 删除，producer 是本进程
+	// 唯一写入方。
 	var operationLease *operationlog.LeaseKeeper
 	if runtimeCfg.SystemAPIEnabled && operationConfig.Enabled {
 		keeper, ok, keeperErr := startLeaseKeeperWithWait(logger, "F4 operation log", ownerLeaseAcquireWait, func() (*operationlog.LeaseKeeper, bool, error) {
@@ -858,6 +863,17 @@ func main() {
 			// （仅 Warn），继任进程只能等 TTL 过期接管。
 			Close: f3OwnerClose(auditLease.Close, auditStore),
 		},
+		{
+			// T203 写租约复活组件：auditLease 是 producer 使用的每实例写
+			// keeper，租约丢失后 producer 门禁停摆；本组件按固定周期重试
+			// Revive 直到复活，fence 递增后 producer 逐条直读 Lease() 自动
+			// 恢复写放行。keeper 生命周期归上方 f3OwnerClose 与 main defer
+			// 链，本组件无自有释放动作。
+			Name: "F3 audit-writer-lease-reviver",
+			Run: func(runCtx context.Context) error {
+				return runWriterLeaseReviver(runCtx, auditLease, 0, logger)
+			},
+		},
 	}
 	if j3bHostComponent.Run != nil {
 		components = append(components, j3bHostComponent)
@@ -908,6 +924,19 @@ func main() {
 				return operationStore.Close()
 			},
 		})
+		if operationLease != nil {
+			// T203 写租约复活组件：与 operationLease 的创建条件严格同界
+			// （上方租约获取分支 = SystemAPIEnabled && operationConfig.Enabled）；
+			// operationLease 为 nil（system API 未启用）时整体跳过。keeper
+			// 生命周期归上方 F4 组件 Close 与 main defer 链，本组件无自有
+			// 释放动作。
+			components = append(components, supervisor.Component{
+				Name: "F4 operation-log-writer-lease-reviver",
+				Run: func(runCtx context.Context) error {
+					return runWriterLeaseReviver(runCtx, operationLease, 0, logger)
+				},
+			})
+		}
 	}
 
 	// Owner readiness is wired once here and shared by the loopback /health

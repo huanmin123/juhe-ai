@@ -302,6 +302,23 @@ func (k *LeaseKeeper) reacquire(ctx context.Context) error {
 	return nil
 }
 
+// Revive revives a terminal keeper on behalf of the writer-lease revival
+// runner (T203): a lost F3 writer keeper used to be a dead end outside the
+// supervisor cycle — RunOwner's restart path only covers the retention owner,
+// so the producer gate kept dropping every audit record until a process
+// restart. Revive wraps reacquire so the revival component reuses the exact
+// fence-rotating generation rebuild (fresh AcquireOwnerLease once the row is
+// free, one-shot state rebuilt, new renewal loop and Lost channel). It is a
+// no-op on a healthy keeper (reacquire returns immediately without touching
+// the store) and refused on a closed keeper: Close has already released or
+// abandoned the row, and a lease rebuilt after Close could never be released.
+func (k *LeaseKeeper) Revive(ctx context.Context) error {
+	if k.closed.Load() {
+		return fmt.Errorf("F3 audit lease keeper 已关闭，复活会重建无法释放的租约，拒绝执行")
+	}
+	return k.reacquire(ctx)
+}
+
 // RunOwner is the resident F3 owner body: it hosts the retention cadence and
 // surfaces the shared keeper's lease state to the supervisor boundary. It
 // returns nil on context cancellation (graceful stop, the retired
