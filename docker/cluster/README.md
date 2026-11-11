@@ -135,7 +135,7 @@ docker compose -f compose.gateway.yml ps
 curl -fsS http://127.0.0.1:3306/health
 ```
 
-- `JUHE_AI_INSTANCE_ID` 必须全集群唯一（日志文件名、`build_info`/usage 指标实例标签）。gateway F3/F4 写租约 owner 不读本变量，各读 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` / `JUHE_AI_OPERATION_LOG_INSTANCE_ID`（缺省 hostname），同样必须全节点唯一。
+- `JUHE_AI_INSTANCE_ID` 必须全集群唯一（日志文件名、指标实例标签、jobs leader owner 身份基础）。gateway F3/F4 写租约 owner 不读本变量，各读 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` / `JUHE_AI_OPERATION_LOG_INSTANCE_ID`（缺省 hostname），同样必须全节点唯一。
 - `JUHE_AI_LOG_DIR` 默认节点本地（`./data/app/logs`）；日志文件名 `juhe-ai.<INSTANCE_ID>.log`，跨节点集中检索走 ELK/Loki 外部采集。
 - 健康监听 `127.0.0.1:3306` 仅宿主回环，供 Prometheus 经 SSH 隧道抓取；公网不要暴露。
 - 安全基线沿用单机：非 root（1000）、只读根文件系统、`cap_drop: ALL`、`no-new-privileges`。
