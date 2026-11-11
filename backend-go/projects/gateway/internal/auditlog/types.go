@@ -15,10 +15,9 @@ import (
 
 type LifecycleStatus string
 
-const (
-	LifecycleInProgress LifecycleStatus = "in_progress"
-	LifecycleFinalized  LifecycleStatus = "finalized"
-)
+// F3 终态唯一写入：lifecycle_status 列保留且恒为 finalized（请求进行中零落
+// 库，不再有 in_progress 占位信封）。
+const LifecycleFinalized LifecycleStatus = "finalized"
 
 type AuditOutcome string
 
@@ -207,8 +206,8 @@ type AuditLogAttemptInput struct {
 }
 
 // AuditLogInput is the F3 JSON input DTO. IDs must be stable across retries.
-// A finalized input replaces only its own in_progress placeholder; a late
-// in_progress input is ignored after finalization.
+// F3 终态唯一写入（first-wins）：同 ID 重复终态输入被忽略，已落库的首行不被
+// 改写；请求进行中不再有任何占位行。
 type AuditLogInput struct {
 	ID                     string                 `json:"id"`
 	LifecycleStatus        LifecycleStatus        `json:"lifecycleStatus"`
@@ -320,10 +319,6 @@ type Store interface {
 	// acquired current fence. Published blobs are never candidates.
 	CleanupOrphanedBlobTemps(context.Context, OwnerLease, time.Time) error
 	Persist(context.Context, OwnerLease, AuditLogInput) (PersistResult, error)
-	// RetractInProgress deletes one lifecycle_status='in_progress' envelope
-	// (W13 phantom-shell retraction at capture-cancel time). Lifecycle-
-	// guarded: unknown or already-finalized ids are no-ops.
-	RetractInProgress(context.Context, OwnerLease, string) (bool, error)
 	CleanupRetention(context.Context, OwnerLease, RetentionConfig) (RetentionResult, error)
 	AppendHotSearch(context.Context, OwnerLease, []AuditLogInput) (int, error)
 	CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error)
@@ -331,11 +326,10 @@ type Store interface {
 	Close() error
 }
 
+// normalizeLifecycle 恒返 finalized（F3 终态唯一写入）：wire 输入不携带
+// lifecycle（或携带历史 in_progress 值）时一律按终态写入。
 func normalizeLifecycle(value LifecycleStatus) LifecycleStatus {
-	if value == "" {
-		return LifecycleFinalized
-	}
-	return value
+	return LifecycleFinalized
 }
 
 func isKnown[T ~string](value T, values ...T) bool {
@@ -352,7 +346,7 @@ func validateInput(input AuditLogInput) error {
 		return fmt.Errorf("审计输入必须包含稳定 id、traceId、method 和 path")
 	}
 	lifecycle := normalizeLifecycle(input.LifecycleStatus)
-	if !isKnown(lifecycle, LifecycleInProgress, LifecycleFinalized) {
+	if !isKnown(lifecycle, LifecycleFinalized) {
 		return fmt.Errorf("lifecycleStatus 无效: %q", input.LifecycleStatus)
 	}
 	if !isKnown(input.AuditOutcome, AuditOutcomeSuccess, AuditOutcomeSuccessAfterRetry, AuditOutcomeGatewaySucceeded, AuditOutcomeGatewayFailed, AuditOutcomeUpstreamFailed, AuditOutcomeStreamFailed, AuditOutcomeDownstreamClosed) {

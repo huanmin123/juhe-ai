@@ -481,27 +481,22 @@ func TestW10BPersistArms(t *testing.T) {
 		t.Fatalf("目录 canonical blob 必须报不一致: %v", err)
 	}
 
-	// in_progress → finalized 生命周期：第二次写入更新父行。
-	progress := fixture("w10b-persist-lifecycle", LifecycleInProgress)
-	if _, err := store.Persist(ctx, lease, progress); err != nil {
-		t.Fatalf("in_progress 写入: %v", err)
+	// F3 终态唯一写入（first-wins）：同 ID 重复终态输入被忽略，首行不被改写。
+	first := fixture("w10b-persist-lifecycle", LifecycleFinalized)
+	if result, err := store.Persist(ctx, lease, first); err != nil || result.Ignored {
+		t.Fatalf("首写终态: %+v %v", result, err)
 	}
-	final := progress
-	final.LifecycleStatus = LifecycleFinalized
-	if result, err := store.Persist(ctx, lease, final); err != nil || result.Ignored {
-		t.Fatalf("finalized 替换: %+v %v", result, err)
-	}
-	// 反向（finalized 已存在，再写 in_progress）被忽略。
-	late, err := store.Persist(ctx, lease, progress)
-	if err != nil || !late.Ignored {
-		t.Fatalf("finalized 之后的 in_progress 必须被忽略: %+v %v", late, err)
+	duplicate := first
+	duplicate.SampleReason = "duplicate"
+	if result, err := store.Persist(ctx, lease, duplicate); err != nil || !result.Ignored {
+		t.Fatalf("同 ID 重复终态必须被忽略: %+v %v", result, err)
 	}
 
 	// 失效租约 Persist 在写面前被拒绝（matched!=1 臂）。
 	if err := store.ReleaseOwnerLease(ctx, lease); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Persist(ctx, lease, final); !errors.Is(err, ErrOwnerLeaseLost) {
+	if _, err := store.Persist(ctx, lease, first); !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("已释放租约 Persist 必须拒绝: %v", err)
 	}
 }

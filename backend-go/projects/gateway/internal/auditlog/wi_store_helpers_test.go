@@ -96,17 +96,19 @@ func TestWIValidateInputAndLifecycleGuards(t *testing.T) {
 	if err := validateInput(missing); err == nil {
 		t.Fatal("空 traceId 必须报错")
 	}
-	// 非法 lifecycle。
-	badLifecycle := valid
-	badLifecycle.LifecycleStatus = "weird"
-	if err := validateInput(badLifecycle); err == nil {
-		t.Fatal("非法 lifecycle 必须报错")
+	// lifecycle 不再校验枚举（F3 终态唯一写入）：任意输入值都经
+	// normalizeLifecycle 归一为 finalized 落库。
+	anyLifecycle := valid
+	anyLifecycle.LifecycleStatus = "weird"
+	if err := validateInput(anyLifecycle); err != nil {
+		t.Fatalf("任意 lifecycle 输入都应归一终态放行: %v", err)
 	}
-	// 空 lifecycle 归一化为 finalized。
+	// lifecycle 恒归一化为 finalized（F3 终态唯一写入：枚举收窄后任意输入
+	// 值都落终态）。
 	if got := normalizeLifecycle(""); got != LifecycleFinalized {
 		t.Fatalf("normalizeLifecycle=%q", got)
 	}
-	if got := normalizeLifecycle(LifecycleInProgress); got != LifecycleInProgress {
+	if got := normalizeLifecycle("weird"); got != LifecycleFinalized {
 		t.Fatalf("normalizeLifecycle=%q", got)
 	}
 	// isKnown 泛型矩阵。

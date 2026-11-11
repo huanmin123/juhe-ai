@@ -116,7 +116,6 @@ type AuditCaptureContext struct {
 	activeAttempts               map[string]*AuditAttemptState
 	gatewayContext               AuditGatewayContext
 	finalized                    bool
-	inProgressAuditEnqueued      bool
 	hadFailedAttempt             bool
 	downstreamClosed             bool
 	serverDiagnosticTimeout      bool
@@ -670,8 +669,8 @@ type RecordFailedDispatchAttemptInput struct {
 	GroupIDOverride string
 }
 
-// StartAttempt mirrors startAttempt: account context binding, in-progress
-// audit enqueue, upstream_request payload capture.
+// StartAttempt mirrors startAttempt: account context binding and
+// upstream_request payload capture.
 func (c *AuditCaptureContext) StartAttempt(input StartAttemptInput) string {
 	if !c.IsEnabled() {
 		return ""
@@ -689,7 +688,6 @@ func (c *AuditCaptureContext) StartAttempt(input StartAttemptInput) string {
 		UpstreamEndpointFamily: accounting.upstreamEndpointFamily,
 	})
 	c.BindContext(AuditGatewayContext{AccountID: input.Account.ID})
-	c.enqueueInProgressAudit()
 	nowMs := c.clockMs()
 	tempID := "attempt_" + itoa(input.AttemptIndex) + "_" + itoa64(nowMs) + "_" + randomHex6()
 	attempt := AuditLogAttemptInput{
@@ -950,10 +948,9 @@ func servedMemberGroupID(attempts []AuditLogAttemptInput) string {
 	return ""
 }
 
-// Cancel mirrors cancel. An un-finalized capture that already wrote an
-// in_progress envelope (a stream attempt had started) retracts the phantom
-// envelope here — without this the request-finally cancel leaves a permanent
-// lifecycle_status='in_progress' shell in the audit list (W13).
+// Cancel mirrors cancel. An un-finalized capture is closed idempotently:
+// requests that end without a finalize simply leave no audit row (F3 终态唯一
+// 写入——请求进行中零落库，无需占位信封撤回).
 func (c *AuditCaptureContext) Cancel() {
 	c.mu.Lock()
 	if c.finalized {
@@ -966,22 +963,12 @@ func (c *AuditCaptureContext) Cancel() {
 	c.activeCaptureRegistered = false
 	cancel := c.cancelHTTPListener
 	c.cancelHTTPListener = nil
-	envelopeEnqueued := c.inProgressAuditEnqueued
-	dispatcher := c.input.Dispatcher
-	auditLogID := c.auditLogID
 	c.mu.Unlock()
 	if registered {
 		atomic.AddInt64(&activeAuditCaptureCount, -1)
 	}
 	if cancel != nil {
 		cancel()
-	}
-	// 信封撤回只发生在「已写 in_progress 信封且未 finalize」的路径；store 侧
-	// 删除带 lifecycle 守卫，对未知/已终态 id 是无害 no-op。
-	if envelopeEnqueued {
-		if retractor, ok := dispatcher.(AuditLogRetractor); ok {
-			retractor.DispatchAuditLogRetraction(context.Background(), auditLogID)
-		}
 	}
 }
 
@@ -1239,66 +1226,6 @@ func captureStatusFor(overflowed bool, metadataOnly bool) string {
 		return "metadata_only"
 	}
 	return "complete"
-}
-
-// enqueueInProgressAudit mirrors enqueueInProgressAudit: stream requests get
-// an in_progress envelope before the first upstream attempt completes.
-func (c *AuditCaptureContext) enqueueInProgressAudit() {
-	c.mu.Lock()
-	if c.inProgressAuditEnqueued || !c.input.Stream {
-		c.mu.Unlock()
-		return
-	}
-	c.inProgressAuditEnqueued = true
-	sanitizedOriginalURL := SanitizeURLForLog(c.input.OriginalURL)
-	path := strings.Split(sanitizedOriginalURL, "?")[0]
-	if path == "" {
-		path = c.input.Path
-	}
-	queryString := ""
-	if strings.Contains(sanitizedOriginalURL, "?") {
-		parts := strings.SplitN(sanitizedOriginalURL, "?", 2)
-		queryString = strings.Join(parts[1:], "?")
-	}
-	gatewayContext := c.gatewayContext
-	sampleBucket := c.sampleBucket
-	auditLogID := c.auditLogID
-	startedAtIso := c.startedAtIso
-	clientIP := c.clientIP
-	trafficSource := c.trafficSource
-	c.mu.Unlock()
-	auditLog := AuditLogInput{
-		ID:                auditLogID,
-		LifecycleStatus:   AuditLifecycleInProgress,
-		TraceID:           c.traceID,
-		SessionID:         gatewayContext.SessionID,
-		SessionClientType: gatewayContext.SessionClientType,
-		ConversationKey:   gatewayContext.ConversationKey,
-		SystemAccountID:   gatewayContext.SystemAccountID,
-		APIKeyID:          gatewayContext.APIKeyID,
-		GroupID:           gatewayContext.GroupID,
-		RouteGroupID:      firstNonEmpty(gatewayContext.RouteGroupID, gatewayContext.GroupID),
-		AccountID:         gatewayContext.AccountID,
-		ProviderCode:      gatewayContext.ProviderCode,
-		TrafficSource:     firstNonEmpty(gatewayContext.TrafficSource, trafficSource),
-		Method:            strings.ToUpper(c.input.Method),
-		Path:              path,
-		QueryString:       queryString,
-		Model:             c.input.Model,
-		Stream:            boolPointer(c.input.Stream),
-		ClientIP:          clientIP,
-		UserAgent:         c.input.UserAgent,
-		AuditOutcome:      AuditOutcomeGatewaySucceeded,
-		Success:           true,
-		SampleBucket:      sampleBucket,
-		SampleReason:      "in_progress",
-		CaptureStatus:     "metadata_only",
-		StartedAt:         startedAtIso,
-		EndedAt:           startedAtIso,
-		Attempts:          []AuditLogAttemptInput{},
-		Payloads:          []AuditLogPayloadInput{},
-	}
-	DispatchAuditLogToGo(c.input.Dispatcher, contextWithBackground(), auditLog)
 }
 
 // DispatchAuditLogToGo mirrors the dispatchAuditLogToGo entry semantics:

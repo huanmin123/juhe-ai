@@ -253,13 +253,17 @@ func TestW10BPgBlobGCReactivationArms(t *testing.T) {
 	nowText := time.Now().UTC().Format(time.RFC3339Nano)
 
 	// 臂 A：GC 行存在 + blob 行已删（同内容 blob）→ 删除失配 GC 元数据后继续发布。
-	// 先用 in_progress 写入建立 blob（无引用），再删行删文件并补建 GC 行。
+	// 先用终态行建立 blob，随后删除其 payload 引用与 blob 行并补建 GC 行
+	// （F3 终态唯一写入：不再有 in_progress 信封可造无引用 blob）。
 	identity, _, err := newBlobRecord([]byte(w10bErrorBody), w10bErrorCT, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inProgressA := w10bErrorFixture("w10b-gc-progress-a", LifecycleInProgress, nowText, w10bErrorBody)
-	w10bPersistExpectOK(t, store, lease, inProgressA)
+	seedA := w10bErrorFixture("w10b-gc-progress-a", LifecycleFinalized, nowText, w10bErrorBody)
+	w10bPersistExpectOK(t, store, lease, seedA)
+	if _, err := implementation.db.ExecContext(ctx, `DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, seedA.ID); err != nil {
+		t.Fatalf("删除 payload 引用失败: %v", err)
+	}
 	if _, err := implementation.db.ExecContext(ctx, `DELETE FROM juhe_dataset.audit_payload_blobs WHERE id=$1`, identity.id); err != nil {
 		t.Fatalf("删除 blob 行失败: %v", err)
 	}
@@ -278,8 +282,11 @@ func TestW10BPgBlobGCReactivationArms(t *testing.T) {
 	}
 
 	// 臂 B：GC 行存在 + blob 行存在 + 物理文件缺失 + 无引用 → 删除元数据并重新发布。
-	inProgress := w10bErrorFixture("w10b-gc-progress-b", LifecycleInProgress, nowText, w10bArmBBody)
-	w10bPersistExpectOK(t, store, lease, inProgress)
+	seedB := w10bErrorFixture("w10b-gc-progress-b", LifecycleFinalized, nowText, w10bArmBBody)
+	w10bPersistExpectOK(t, store, lease, seedB)
+	if _, err := implementation.db.ExecContext(ctx, `DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, seedB.ID); err != nil {
+		t.Fatalf("删除 payload 引用失败: %v", err)
+	}
 	blobID, storageKey := w10bBlobIdentity(t, store, w10bArmBBody, w10bErrorCT)
 	w10bSeedPendingGC(t, store, blobID, storageKey)
 	if err := os.Remove(filepath.Join(blobDir, filepath.FromSlash(storageKey))); err != nil {

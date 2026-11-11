@@ -16,7 +16,6 @@ func TestWIValidateInputFieldMatrix(t *testing.T) {
 		"缺 sampleReason":   func(i *AuditLogInput) { i.SampleReason = "" },
 		"非法 auditOutcome":  func(i *AuditLogInput) { i.AuditOutcome = "weird" },
 		"非法 trafficSource": func(i *AuditLogInput) { i.TrafficSource = "weird" },
-		"非法 lifecycle":     func(i *AuditLogInput) { i.LifecycleStatus = "weird" },
 		"非法 captureStatus": func(i *AuditLogInput) { i.CaptureStatus = "weird" },
 		"非法 path 缺失":       func(i *AuditLogInput) { i.Path = "  " },
 	}
@@ -26,6 +25,13 @@ func TestWIValidateInputFieldMatrix(t *testing.T) {
 		if err := validateInput(input); err == nil {
 			t.Fatalf("%s 必须报错", name)
 		}
+	}
+	// lifecycle 不在非法矩阵内（F3 终态唯一写入）：任意输入值都经
+	// normalizeLifecycle 归一为 finalized 落库，不再按枚举拒绝。
+	weirdLifecycle := valid
+	weirdLifecycle.LifecycleStatus = "weird"
+	if err := validateInput(weirdLifecycle); err != nil {
+		t.Fatalf("任意 lifecycle 输入都应归一终态放行: %v", err)
 	}
 	// payload 维度的非法矩阵。
 	badPart := valid

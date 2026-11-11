@@ -769,8 +769,10 @@ func (s *auditLogSQLReader) persistedTrafficClause(alias string) string {
 }
 
 // buildFilters mirrors auditLogFilters; callers append LIMIT/OFFSET params.
+// F3 终态唯一写入：读面恒过滤 lifecycle_status='finalized'（请求进行中零落
+// 库，历史残留的 in_progress 行不再对管理面可见）。
 func (s *auditLogSQLReader) buildFilters(options AuditLogListOptions) (string, []any) {
-	clauses := []string{s.persistedTrafficClause("al")}
+	clauses := []string{s.persistedTrafficClause("al"), "al.lifecycle_status = 'finalized'"}
 	params := []any{
 		auditLogNonPersistedTrafficSources[0],
 		auditLogNonPersistedTrafficSources[1],
@@ -936,7 +938,7 @@ func (s *auditLogSQLReader) GetAuditLogDetail(ctx context.Context, id string) (*
 	if logID == "" {
 		return nil, nil
 	}
-	query := `SELECT al.* FROM ` + logReadsTable("audit_logs") + ` al WHERE al.id = ? AND ` + s.persistedTrafficClause("al")
+	query := `SELECT al.* FROM ` + logReadsTable("audit_logs") + ` al WHERE al.id = ? AND al.lifecycle_status = 'finalized' AND ` + s.persistedTrafficClause("al")
 	row, err := readQueryOneMap(ctx, s.db, query, append([]any{logID},
 		auditLogNonPersistedTrafficSources[0], auditLogNonPersistedTrafficSources[1], auditLogNonPersistedTrafficSources[2])...)
 	if err != nil || row == nil {
@@ -1095,10 +1097,6 @@ func (s *auditLogSQLReader) latestErrorGroupSampleEventID(ctx context.Context, f
 }
 
 func auditLogListItemFromRow(row map[string]any) AuditLogListItem {
-	lifecycle := readOptionalText(row["lifecycle_status"])
-	if lifecycle == "" {
-		lifecycle = "finalized"
-	}
 	return AuditLogListItem{
 		ID:                  readRawString(row["id"]),
 		TraceID:             readRawString(row["trace_id"]),
@@ -1119,7 +1117,7 @@ func auditLogListItemFromRow(row map[string]any) AuditLogListItem {
 		AuditOutcome:        readRawString(row["audit_outcome"]),
 		Success:             readBool(row["success"]),
 		FinalStatusCode:     readOptionalNumber(row["final_status_code"]),
-		LifecycleStatus:     lifecycle,
+		LifecycleStatus:     readRawString(row["lifecycle_status"]),
 		DurationMS:          readOptionalNumber(row["duration_ms"]),
 		HTTPDurationMS:      readOptionalNumber(row["http_duration_ms"]),
 		CreatedAt:           readRawString(row["created_at"]),

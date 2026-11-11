@@ -59,22 +59,12 @@ type UsageRecorder interface {
 }
 
 // AuditDispatcher ports dispatchAuditLogToGo (audit-log-go-input.service.ts):
-// one-shot best-effort delivery of one finalized (or in_progress) audit log.
+// one-shot best-effort delivery of one finalized audit log.
 // Node returns void and only logs dispatch failures, so the port returns
 // nothing; the adapter owns budget preparation, HMAC signing and the HTTP
 // POST (or the operationlog-producer-style direct store write).
 type AuditDispatcher interface {
 	DispatchAuditLog(ctx Ctx, input AuditLogInput)
-}
-
-// AuditLogRetractor is the optional retraction surface of the audit
-// dispatcher (W13): a capture that wrote an in_progress envelope and then
-// ended without a finalized audit (request aborted / capture canceled)
-// retracts the phantom envelope instead of leaving a permanent
-// lifecycle_status='in_progress' shell. Implementations must ignore unknown
-// or already-finalized ids (the store delete is guarded by the lifecycle).
-type AuditLogRetractor interface {
-	DispatchAuditLogRetraction(ctx Ctx, auditLogID string)
 }
 
 // Ctx is the dispatch context alias keeping port signatures compact.

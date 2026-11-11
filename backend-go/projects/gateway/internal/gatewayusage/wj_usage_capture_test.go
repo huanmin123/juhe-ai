@@ -268,32 +268,50 @@ func TestWJCaptureDisabledAndMetadataOnly(t *testing.T) {
 	}
 }
 
-// TestWJCaptureInProgressStreamEnvelope 固定流式请求的 in_progress 信封：
-// 首次入队一次，重复调用不再入队，非流式不入队。
-func TestWJCaptureInProgressStreamEnvelope(t *testing.T) {
+// TestWJCaptureStreamZeroDispatchUntilFinalize 固定 F3 终态唯一写入语义：
+// 流式/非流式请求的 StartAttempt 与进行中阶段零 dispatch（不再有 in_progress
+// 占位信封），只有 finalize 投递唯一终态行。
+func TestWJCaptureStreamZeroDispatchUntilFinalize(t *testing.T) {
 	dispatcher := &recordingAuditDispatcher{}
 	capture := captureInput(dispatcher, func(input *AuditCaptureInput) {
 		input.Stream = true
 		input.Settings = FixedAuditLogSettingsSource{Settings: wjCaptureSettings(24, 1)}
 	})
 	defer capture.Cancel()
-	capture.enqueueInProgressAudit()
-	capture.enqueueInProgressAudit()
-	logs := dispatcher.all()
-	if len(logs) != 1 {
-		t.Fatalf("流式信封必须只入队一次: %d", len(logs))
+	tempID := capture.StartAttempt(StartAttemptInput{
+		Account:      testAccount(),
+		AttemptIndex: 1,
+		UpstreamURL:  "https://upstream.example.com/v1/chat",
+		Method:       "POST",
+	})
+	if tempID == "" {
+		t.Fatal("temp id expected")
 	}
-	if logs[0].LifecycleStatus != AuditLifecycleInProgress {
-		t.Fatalf("生命周期状态不符: %q", logs[0].LifecycleStatus)
+	if got := len(dispatcher.all()); got != 0 {
+		t.Fatalf("流式进行中阶段必须零 dispatch: %d", got)
 	}
 	nonStreamDispatcher := &recordingAuditDispatcher{}
 	nonStream := captureInput(nonStreamDispatcher, func(input *AuditCaptureInput) {
 		input.Settings = FixedAuditLogSettingsSource{Settings: wjCaptureSettings(24, 1)}
 	})
 	defer nonStream.Cancel()
-	nonStream.enqueueInProgressAudit()
+	nonStream.StartAttempt(StartAttemptInput{
+		Account:      testAccount(),
+		AttemptIndex: 1,
+		UpstreamURL:  "https://upstream.example.com/v1/chat",
+		Method:       "POST",
+	})
 	if got := len(nonStreamDispatcher.all()); got != 0 {
-		t.Fatalf("非流式不得入队信封: %d", got)
+		t.Fatalf("非流式进行中阶段必须零 dispatch: %d", got)
+	}
+	statusOK := 200
+	capture.Finalize(FinalizeAuditInput{Outcome: AuditOutcomeSuccess, Success: true, StatusCode: &statusOK})
+	logs := dispatcher.all()
+	if len(logs) != 1 {
+		t.Fatalf("finalize 必须投递唯一终态行: %d", len(logs))
+	}
+	if logs[0].LifecycleStatus != AuditLifecycleFinalized {
+		t.Fatalf("生命周期状态不符: %q", logs[0].LifecycleStatus)
 	}
 }
 

@@ -17,7 +17,7 @@
           <a-descriptions-item v-if="detail.conversationKey" label="内部会话 Key" :span="2">
             <span class="identity-key">{{ detail.conversationKey }}</span>
           </a-descriptions-item>
-          <a-descriptions-item label="结果">{{ detail.lifecycleStatus === 'in_progress' ? '进行中' : outcomeText(detail.auditOutcome) }}</a-descriptions-item>
+          <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
           <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
           <a-descriptions-item label="接口">{{ detail.method }} {{ detail.path }}</a-descriptions-item>
           <a-descriptions-item label="模型">
@@ -27,7 +27,7 @@
             </span>
             <span v-else>-</span>
           </a-descriptions-item>
-          <a-descriptions-item label="结果状态">{{ detail.lifecycleStatus === 'in_progress' ? '进行中' : statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
+          <a-descriptions-item label="结果状态">{{ statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="HTTP 状态">{{ transportStatusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="AI账户">{{ displayAuditAccountName(detail.accountName, detail.accountId) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>

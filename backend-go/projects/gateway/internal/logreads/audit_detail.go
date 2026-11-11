@@ -83,7 +83,7 @@ func (s *auditLogSQLReader) ListAuditLogsByID(ctx context.Context, ids []string)
 		chunk := unique[start:end]
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
 		query := `SELECT ` + auditLogListSelectColumns + ` FROM ` + logReadsTable("audit_logs") + ` al ` +
-			`WHERE al.id IN (` + placeholders + `) AND ` + s.persistedTrafficClause("al")
+			`WHERE al.id IN (` + placeholders + `) AND al.lifecycle_status = 'finalized' AND ` + s.persistedTrafficClause("al")
 		params := append([]any{}, toAnySlice(chunk)...)
 		params = append(params, auditLogNonPersistedTrafficSources[0], auditLogNonPersistedTrafficSources[1], auditLogNonPersistedTrafficSources[2])
 		rows, err := readQueryMaps(ctx, s.db, query, params...)

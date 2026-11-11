@@ -2,7 +2,7 @@ export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeede
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test'
 export type AuditPayloadBlobStorageStatus = 'not_saved' | 'metadata_missing' | 'file_missing' | 'available'
-export type AuditLogLifecycleStatus = 'in_progress' | 'finalized'
+export type AuditLogLifecycleStatus = 'finalized'
 export type AuditPayloadDropReason = 'transport_budget' | 'capacity_limit'
 
 export interface AuditLogSummary {

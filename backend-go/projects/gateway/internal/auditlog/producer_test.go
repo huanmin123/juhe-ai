@@ -21,21 +21,18 @@ type fakeStore struct {
 	renewCalls   int
 	persistCalls int
 	hotCalls     int
-	retractCalls int
 
-	renewOK  bool
+	renewOK bool
 	renewErr error
-	// renewFailFirst 让前 N 次续约失败（w13g：复现首次续约超时、撤回路径
-	// 续约恢复的生产形态）；默认 0 不改变既有行为。
+	// renewFailFirst 让前 N 次续约失败（复现首次续约超时的生产形态）；
+	// 默认 0 不改变既有行为。
 	renewFailFirst int
 	persistErr     error
 	persistIgn     bool
 	hotErr         error
-	retractErr     error
 
-	persisted  []AuditLogInput
-	hotInputs  [][]AuditLogInput
-	retractIDs []string
+	persisted []AuditLogInput
+	hotInputs [][]AuditLogInput
 
 	signal  chan struct{}
 	signalN int
@@ -68,7 +65,7 @@ func (f *fakeStore) waitForCalls(t *testing.T, want int) {
 func (f *fakeStore) countCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.renewCalls + f.persistCalls + f.hotCalls + f.retractCalls
+	return f.renewCalls + f.persistCalls + f.hotCalls
 }
 
 func (f *fakeStore) EnsureSchema(context.Context) error { return nil }
@@ -120,24 +117,6 @@ func (f *fakeStore) AppendHotSearch(_ context.Context, _ OwnerLease, inputs []Au
 		return 0, f.hotErr
 	}
 	return len(inputs), nil
-}
-
-func (f *fakeStore) RetractInProgress(_ context.Context, _ OwnerLease, auditLogID string) (bool, error) {
-	f.mu.Lock()
-	f.retractCalls++
-	f.retractIDs = append(f.retractIDs, auditLogID)
-	err := f.retractErr
-	f.mu.Unlock()
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (f *fakeStore) retractions() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.retractIDs...)
 }
 
 func (f *fakeStore) CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error) {
@@ -216,8 +195,8 @@ func TestProducerCapturePersistsAndAppendsHotSearch(t *testing.T) {
 }
 
 // TestProducerCaptureSkipsHotSearchWhenIgnored pins the retired input-server
-// branch: a persisted-but-ignored (late in_progress after finalized) input
-// must not append to the hot-search mirror.
+// branch: a persisted-but-ignored (duplicate terminal input, first-wins)
+// input must not append to the hot-search mirror.
 func TestProducerCaptureSkipsHotSearchWhenIgnored(t *testing.T) {
 	fake := &fakeStore{renewOK: true, persistIgn: true}
 	producer := NewProducer(fake, fixedLeaseSource{}, Config{OwnerLease: 30 * time.Second}, nil)
@@ -312,25 +291,18 @@ func TestProducerCaptureConcurrentWrites(t *testing.T) {
 	}
 }
 
-// gatedStore blocks the data Persist and retract store calls so tests can hold
-// every worker inside the write path and fill the queues deterministically.
+// gatedStore blocks the data Persist store calls so tests can hold every
+// worker inside the write path and fill the queue deterministically.
 type gatedStore struct {
 	*fakeStore
-	gate           chan struct{}
-	entered        atomic.Int32
-	retractEntered atomic.Int32
+	gate    chan struct{}
+	entered atomic.Int32
 }
 
 func (g *gatedStore) Persist(ctx context.Context, lease OwnerLease, input AuditLogInput) (PersistResult, error) {
 	g.entered.Add(1)
 	<-g.gate
 	return g.fakeStore.Persist(ctx, lease, input)
-}
-
-func (g *gatedStore) RetractInProgress(ctx context.Context, lease OwnerLease, id string) (bool, error) {
-	g.retractEntered.Add(1)
-	<-g.gate
-	return g.fakeStore.RetractInProgress(ctx, lease, id)
 }
 
 // TestProducerCaptureDropsWhenQueueSaturated pins the bounded-queue contract:

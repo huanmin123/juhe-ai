@@ -53,11 +53,8 @@ const (
 // AuditLogLifecycleStatus mirrors AuditLogLifecycleStatus.
 type AuditLogLifecycleStatus = string
 
-// Audit lifecycle statuses.
-const (
-	AuditLifecycleInProgress AuditLogLifecycleStatus = "in_progress"
-	AuditLifecycleFinalized  AuditLogLifecycleStatus = "finalized"
-)
+// Audit lifecycle status（F3 终态唯一写入：只有终态一种行）。
+const AuditLifecycleFinalized AuditLogLifecycleStatus = "finalized"
 
 // AuditPayloadDropReason mirrors AuditPayloadDropReason.
 type AuditPayloadDropReason = string

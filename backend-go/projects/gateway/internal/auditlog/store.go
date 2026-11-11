@@ -1068,18 +1068,20 @@ func (s *sqlStore) upsertLog(ctx context.Context, tx *sql.Tx, input AuditLogInpu
 		capture = "complete"
 	}
 	createdAt := input.CreatedAt
+	// F3 终态唯一写入（first-wins）：同 ID 重复终态输入不改写已落库的首行，
+	// ON CONFLICT DO NOTHING → 无返回行 → 调用方据此置 PersistResult.Ignored。
 	query := `INSERT INTO ` + s.table("audit_logs") + ` (id,trace_id,traffic_source,system_account_id,api_key_id,conversation_key,session_id,session_client_type,group_id,route_group_id,account_id,provider_code,method,path,query_string,model,upstream_model,pricing_model,model_mapping_applied,model_mapping_source,source_endpoint_family,upstream_endpoint_family,stream,client_ip,user_agent,audit_outcome,success,final_status_code,error_phase,error_code,error_message,sample_bucket,sample_reason,attempt_count,payload_count,raw_payload_bytes,compressed_payload_bytes,compression_saved_bytes,capture_status,lifecycle_status,started_at,ended_at,duration_ms,http_completed_at,http_duration_ms,first_token_ms,created_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET trace_id=excluded.trace_id,traffic_source=excluded.traffic_source,system_account_id=excluded.system_account_id,api_key_id=excluded.api_key_id,conversation_key=excluded.conversation_key,session_id=excluded.session_id,session_client_type=excluded.session_client_type,group_id=excluded.group_id,route_group_id=excluded.route_group_id,account_id=excluded.account_id,provider_code=excluded.provider_code,method=excluded.method,path=excluded.path,query_string=excluded.query_string,model=excluded.model,upstream_model=excluded.upstream_model,pricing_model=excluded.pricing_model,model_mapping_applied=excluded.model_mapping_applied,model_mapping_source=excluded.model_mapping_source,source_endpoint_family=excluded.source_endpoint_family,upstream_endpoint_family=excluded.upstream_endpoint_family,stream=excluded.stream,client_ip=excluded.client_ip,user_agent=excluded.user_agent,audit_outcome=excluded.audit_outcome,success=excluded.success,final_status_code=excluded.final_status_code,error_phase=excluded.error_phase,error_code=excluded.error_code,error_message=excluded.error_message,sample_bucket=excluded.sample_bucket,sample_reason=excluded.sample_reason,attempt_count=excluded.attempt_count,payload_count=excluded.payload_count,raw_payload_bytes=excluded.raw_payload_bytes,compressed_payload_bytes=excluded.compressed_payload_bytes,compression_saved_bytes=excluded.compression_saved_bytes,error_group_id=excluded.error_group_id,capture_status=excluded.capture_status,lifecycle_status=excluded.lifecycle_status,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,http_completed_at=excluded.http_completed_at,http_duration_ms=excluded.http_duration_ms,first_token_ms=excluded.first_token_ms,created_at=excluded.created_at WHERE ` + s.table("audit_logs") + `.lifecycle_status='in_progress' AND excluded.lifecycle_status='finalized'`
-	result, err := tx.ExecContext(ctx, s.bind(query), input.ID, input.TraceID, string(input.TrafficSource), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.ConversationKey), nullText(input.SessionID), nullText(input.SessionClientType), nullText(input.GroupID), nullText(input.RouteGroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Method, input.Path, nullText(input.QueryString), nullText(input.Model), nullText(input.UpstreamModel), nullText(input.PricingModel), boolValue(input.ModelMappingApplied), nullText(input.ModelMappingSource), nullText(input.SourceEndpointFamily), nullText(input.UpstreamEndpointFamily), boolValue(input.Stream), nullText(input.ClientIP), nullText(input.UserAgent), string(input.AuditOutcome), input.Success, input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), nullText(input.ErrorMessage), input.SampleBucket, input.SampleReason, len(input.Attempts), len(input.Payloads), raw, compressed, maxInt64(0, raw-compressed), capture, string(lifecycle), dbTimeText(input.StartedAt), dbTimeText(input.EndedAt), input.DurationMS, nullableTime(input.HTTPCompletedAt), input.HTTPDurationMS, input.FirstTokenMS, nullableTime(createdAt))
+ON CONFLICT(id) DO NOTHING RETURNING id`
+	var insertedID string
+	err := tx.QueryRowContext(ctx, s.bind(query), input.ID, input.TraceID, string(input.TrafficSource), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.ConversationKey), nullText(input.SessionID), nullText(input.SessionClientType), nullText(input.GroupID), nullText(input.RouteGroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Method, input.Path, nullText(input.QueryString), nullText(input.Model), nullText(input.UpstreamModel), nullText(input.PricingModel), boolValue(input.ModelMappingApplied), nullText(input.ModelMappingSource), nullText(input.SourceEndpointFamily), nullText(input.UpstreamEndpointFamily), boolValue(input.Stream), nullText(input.ClientIP), nullText(input.UserAgent), string(input.AuditOutcome), input.Success, input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), nullText(input.ErrorMessage), input.SampleBucket, input.SampleReason, len(input.Attempts), len(input.Payloads), raw, compressed, maxInt64(0, raw-compressed), capture, string(lifecycle), dbTimeText(input.StartedAt), dbTimeText(input.EndedAt), input.DurationMS, nullableTime(input.HTTPCompletedAt), input.HTTPDurationMS, input.FirstTokenMS, nullableTime(createdAt)).Scan(&insertedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("写入 audit_logs 失败: %w", err)
 	}
-	wrote, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("读取 audit_logs 写入结果失败: %w", err)
-	}
-	return wrote == 1, nil
+	return true, nil
 }
 
 func (s *sqlStore) insertFinalChildren(ctx context.Context, tx *sql.Tx, input AuditLogInput, payloads []preparedPayload) error {
@@ -1326,7 +1328,7 @@ const auditErrorGroupWindow = 10 * time.Minute
 // between planPayloads and lockBlobLifecyclePlans so stripped blobs never take
 // locks or files.
 func (s *sqlStore) stripErrorGroupWindowDuplicates(ctx context.Context, tx *sql.Tx, input AuditLogInput, prepared []preparedPayload, plans []blobPlan) ([]preparedPayload, []blobPlan, error) {
-	if input.AuditOutcome == AuditOutcomeSuccess || normalizeLifecycle(input.LifecycleStatus) != LifecycleFinalized {
+	if input.AuditOutcome == AuditOutcomeSuccess {
 		return prepared, plans, nil
 	}
 	group, err := derivedErrorGroup(input, prepared)

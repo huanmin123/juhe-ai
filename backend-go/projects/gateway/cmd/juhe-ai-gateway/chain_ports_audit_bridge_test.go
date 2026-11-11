@@ -173,11 +173,11 @@ func auditBridgeFixtures(t *testing.T) map[string]gatewayusage.AuditLogInput {
 	emptySlices.Attempts = []gatewayusage.AuditLogAttemptInput{}
 	emptySlices.Payloads = []gatewayusage.AuditLogPayloadInput{}
 
-	// in_progress 生命周期（信封路径）。
-	inProgress := full
-	inProgress.ID = "audit-in-progress"
-	inProgress.LifecycleStatus = gatewayusage.AuditLifecycleInProgress
-	inProgress.Payloads = []gatewayusage.AuditLogPayloadInput{{ID: "pay-i", PartType: gatewayusage.AuditPartClientRequest}}
+	// 显式 finalized 生命周期（F3 终态唯一写入：wire 输入恒终态）。
+	explicitFinalized := full
+	explicitFinalized.ID = "audit-explicit-finalized"
+	explicitFinalized.LifecycleStatus = gatewayusage.AuditLifecycleFinalized
+	explicitFinalized.Payloads = []gatewayusage.AuditLogPayloadInput{{ID: "pay-f", PartType: gatewayusage.AuditPartClientRequest}}
 
 	// 时长指针为 nil（omitempty 键缺失）。
 	noDurations := full
@@ -197,13 +197,13 @@ func auditBridgeFixtures(t *testing.T) map[string]gatewayusage.AuditLogInput {
 	}}
 
 	return map[string]gatewayusage.AuditLogInput{
-		"full":         full,
-		"minimal":      minimal,
-		"nil-slices":   nilSlices,
-		"empty-slices": emptySlices,
-		"in-progress":  inProgress,
-		"no-durations": noDurations,
-		"binary-body":  binaryBody,
+		"full":              full,
+		"minimal":           minimal,
+		"nil-slices":        nilSlices,
+		"empty-slices":      emptySlices,
+		"explicit-finalized": explicitFinalized,
+		"no-durations":      noDurations,
+		"binary-body":       binaryBody,
 	}
 }
 
@@ -368,7 +368,7 @@ func TestDecodeAuditWireInputFieldSweep(t *testing.T) {
 	// 每个 mutator 破坏一个字段；失败即说明该字段未被正确搬迁。
 	mutators := map[string]func(*gatewayusage.AuditLogInput){
 		"id":                     func(i *gatewayusage.AuditLogInput) { i.ID = "audit-sweep" },
-		"lifecycle":              func(i *gatewayusage.AuditLogInput) { i.LifecycleStatus = gatewayusage.AuditLifecycleInProgress },
+		"lifecycle":              func(i *gatewayusage.AuditLogInput) { i.LifecycleStatus = gatewayusage.AuditLifecycleFinalized },
 		"conversationKey":        func(i *gatewayusage.AuditLogInput) { i.ConversationKey = "conv-sweep" },
 		"sessionId":              func(i *gatewayusage.AuditLogInput) { i.SessionID = "sess-sweep" },
 		"sessionClientType":      func(i *gatewayusage.AuditLogInput) { i.SessionClientType = "client-sweep" },
@@ -539,7 +539,7 @@ func TestDecodeAuditWireInputRandomized(t *testing.T) {
 		payloadCount := int(next() % 4)
 		input := gatewayusage.AuditLogInput{
 			ID:                     maybeID("audit"),
-			LifecycleStatus:        pick("finalized", "in_progress", ""),
+			LifecycleStatus:        pick("finalized", ""),
 			TraceID:                "trace-" + pick("x", "y"),
 			ConversationKey:        maybeID("conv"),
 			SessionID:              maybeID("sess"),

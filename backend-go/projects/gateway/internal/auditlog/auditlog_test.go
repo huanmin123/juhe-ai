@@ -131,12 +131,8 @@ func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	progress := fixture("audit-stream", LifecycleInProgress)
-	progress.Payloads = nil
-	progress.Attempts = nil
-	if _, err := store.Persist(ctx, lease, progress); err != nil {
-		t.Fatal(err)
-	}
+	// F3 终态唯一写入：终态单行 + 同 ID 重复终态 first-wins 忽略，无占位信封
+	// 参与（不再有 in_progress → finalized 的改写路径）。
 	final := fixture("audit-stream", LifecycleFinalized)
 	final.AuditOutcome = AuditOutcomeSuccessAfterRetry
 	final.Attempts = []AuditLogAttemptInput{{TempID: "attempt-1", AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://upstream.example/v1", StartedAt: final.StartedAt, EndedAt: final.EndedAt}}
@@ -144,14 +140,11 @@ func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, final); err != nil {
 		t.Fatal(err)
 	}
-	late := fixture("audit-stream", LifecycleInProgress)
-	result, err := store.Persist(ctx, lease, late)
+	retry := fixture("audit-stream", LifecycleFinalized)
+	retry.AuditOutcome = AuditOutcomeUpstreamFailed
+	result, err := store.Persist(ctx, lease, retry)
 	if err != nil || !result.Ignored {
-		t.Fatalf("late in_progress must be ignored: result=%+v err=%v", result, err)
-	}
-	retry, err := store.Persist(ctx, lease, final)
-	if err != nil || !retry.Ignored {
-		t.Fatalf("same finalized ID must be idempotent: result=%+v err=%v", retry, err)
+		t.Fatalf("duplicate terminal input must be ignored (first-wins): result=%+v err=%v", result, err)
 	}
 	var lifecycle, outcome string
 	var attempts, payloads int
@@ -159,7 +152,7 @@ func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	if lifecycle != string(LifecycleFinalized) || outcome != string(AuditOutcomeSuccessAfterRetry) || attempts != 1 || payloads != 1 {
-		t.Fatalf("finalized state was not preserved: lifecycle=%s outcome=%s attempts=%d payloads=%d", lifecycle, outcome, attempts, payloads)
+		t.Fatalf("first terminal row must stay untouched: lifecycle=%s outcome=%s attempts=%d payloads=%d", lifecycle, outcome, attempts, payloads)
 	}
 }
 
@@ -222,26 +215,29 @@ func TestPersistRejectsInvalidAbsoluteTimesAndStoresCanonicalUTC(t *testing.T) {
 	}
 }
 
-func TestFinalizedReplacesAllNodeLifecycleFields(t *testing.T) {
+func TestDuplicateTerminalDoesNotReplaceFirstRowFields(t *testing.T) {
 	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
-	progress := fixture("audit-full-replace", LifecycleInProgress)
-	progress.SystemAccountID, progress.QueryString, progress.ClientIP, progress.SampleReason = "before-account", "before=true", "127.0.0.1", "in_progress"
-	if _, err := store.Persist(context.Background(), lease, progress); err != nil {
+	// F3 终态唯一写入（first-wins）：同 ID 重复终态输入被忽略，首行的
+	// lifecycle 伴生字段不被第二次输入替换。
+	first := fixture("audit-full-replace", LifecycleFinalized)
+	first.SystemAccountID, first.QueryString, first.ClientIP, first.SampleReason = "before-account", "before=true", "127.0.0.1", "first-write"
+	if _, err := store.Persist(context.Background(), lease, first); err != nil {
 		t.Fatal(err)
 	}
-	final := fixture("audit-full-replace", LifecycleFinalized)
-	final.SystemAccountID, final.QueryString, final.ClientIP, final.SampleReason = "after-account", "after=true", "10.0.0.2", "finalized"
-	if _, err := store.Persist(context.Background(), lease, final); err != nil {
-		t.Fatal(err)
+	second := fixture("audit-full-replace", LifecycleFinalized)
+	second.SystemAccountID, second.QueryString, second.ClientIP, second.SampleReason = "after-account", "after=true", "10.0.0.2", "finalized"
+	result, err := store.Persist(context.Background(), lease, second)
+	if err != nil || !result.Ignored {
+		t.Fatalf("duplicate terminal input must be ignored: result=%+v err=%v", result, err)
 	}
 	var accountID, query, ip, reason, lifecycle string
-	if err := implementation.db.QueryRow(`SELECT system_account_id,query_string,client_ip,sample_reason,lifecycle_status FROM juhe_dataset.audit_logs WHERE id=$1`, final.ID).Scan(&accountID, &query, &ip, &reason, &lifecycle); err != nil {
+	if err := implementation.db.QueryRow(`SELECT system_account_id,query_string,client_ip,sample_reason,lifecycle_status FROM juhe_dataset.audit_logs WHERE id=$1`, first.ID).Scan(&accountID, &query, &ip, &reason, &lifecycle); err != nil {
 		t.Fatal(err)
 	}
-	if accountID != final.SystemAccountID || query != final.QueryString || ip != final.ClientIP || reason != final.SampleReason || lifecycle != string(LifecycleFinalized) {
-		t.Fatalf("finalized update must replace Node lifecycle fields: account=%q query=%q ip=%q reason=%q lifecycle=%q", accountID, query, ip, reason, lifecycle)
+	if accountID != first.SystemAccountID || query != first.QueryString || ip != first.ClientIP || reason != first.SampleReason || lifecycle != string(LifecycleFinalized) {
+		t.Fatalf("first terminal row must stay untouched: account=%q query=%q ip=%q reason=%q lifecycle=%q", accountID, query, ip, reason, lifecycle)
 	}
 }
 

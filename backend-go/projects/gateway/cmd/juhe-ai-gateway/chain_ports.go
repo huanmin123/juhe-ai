@@ -2341,15 +2341,10 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 	// 不再对全量输入（含 body base64）做整段 json.Marshal。往返本身是保留
 	// wire contract 等价的类型桥（含 durationMs int → *int64 强转）；纯 JSON
 	// 数据结构体的 Marshal→Unmarshal 恒成功（w2 登记），worker 侧失败不再
-	// 静默吞，记诊断日志后丢弃本条采集。in_progress 信封（DD-D1）经
-	// EnvelopeID 参与在途集合，撤回命令在信封 settle 前延迟生效。
-	envelopeID := ""
-	if input.LifecycleStatus == gatewayusage.AuditLifecycleInProgress {
-		envelopeID = input.ID
-	}
+	// 静默吞，记诊断日志后丢弃本条采集。F3 终态唯一写入：只有 finalize 终态
+	// 采集经此入口，请求进行中零落库。
 	d.producer.CaptureDeferred(auditlog.DeferredCapture{
 		Estimate:   auditlog.EstimateDeferredAuditBytes(deferredAuditEstimateOf(input)),
-		EnvelopeID: envelopeID,
 		TraceID:    input.TraceID,
 		AuditLogID: input.ID,
 		Decode: func() (auditlog.AuditLogInput, error) {
@@ -2611,17 +2606,6 @@ func deferredAuditEstimateOf(input gatewayusage.AuditLogInput) auditlog.Deferred
 		estimate.BodyBytes += len(input.Payloads[index].Body)
 	}
 	return estimate
-}
-
-// DispatchAuditLogRetraction implements gatewayusage.AuditLogRetractor (W13):
-// a capture canceled after its in_progress envelope was written retracts the
-// phantom shell instead of leaving a permanent lifecycle_status='in_progress'
-// row in the audit list.
-func (d auditUsageDispatcher) DispatchAuditLogRetraction(_ gatewayusage.Ctx, auditLogID string) {
-	if d.producer == nil {
-		return
-	}
-	d.producer.Retract(auditLogID)
 }
 
 // auditSettingsSourceAdapter implements gatewayusage.AuditLogSettingsSource.

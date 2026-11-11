@@ -321,14 +321,11 @@ func TestAuditCaptureAttemptsAndFailures(t *testing.T) {
 	if tempID == "" {
 		t.Fatal("temp id expected")
 	}
-	// The in-progress envelope must be enqueued for stream requests.
+	// F3 终态唯一写入：StartAttempt/进行中阶段零 dispatch（不再有 in_progress
+	// 占位信封），finalize 才投递唯一终态行。
 	dispatched := dispatcher.all()
-	if len(dispatched) != 1 || dispatched[0].LifecycleStatus != AuditLifecycleInProgress {
-		t.Fatalf("in-progress envelope = %+v", dispatched)
-	}
-	envelope := dispatched[0]
-	if envelope.AuditOutcome != AuditOutcomeGatewaySucceeded || !envelope.Success || envelope.SampleReason != "in_progress" {
-		t.Fatalf("envelope fields = %+v", envelope)
+	if len(dispatched) != 0 {
+		t.Fatalf("in-progress stage must dispatch nothing, got %+v", dispatched)
 	}
 	capture.CompleteAttempt(tempID, CompleteAttemptInput{
 		StatusCode: intPointer(500), Success: false,
@@ -339,6 +336,9 @@ func TestAuditCaptureAttemptsAndFailures(t *testing.T) {
 	capture.MarkDownstreamClosed() // idempotent
 	capture.MarkServerDiagnosticTimeout()
 	capture.MarkServerDiagnosticCancellation()
+	if got := len(dispatcher.all()); got != 0 {
+		t.Fatalf("pre-finalize stages must dispatch nothing, got %d entries", got)
+	}
 	capture.FinalizeLazy(func() FinalizeAuditInput {
 		return FinalizeAuditInput{
 			Outcome: AuditOutcomeUpstreamFailed, Success: false, StatusCode: intPointer(500),
@@ -348,18 +348,10 @@ func TestAuditCaptureAttemptsAndFailures(t *testing.T) {
 		}
 	})
 	final := dispatcher.all()
-	var auditLog AuditLogInput
-	inProgressCount := 0
-	for _, entry := range final {
-		if entry.LifecycleStatus == AuditLifecycleInProgress {
-			inProgressCount++
-			continue
-		}
-		auditLog = entry
+	if len(final) != 1 {
+		t.Fatalf("finalize must dispatch exactly one terminal row, got %+v", final)
 	}
-	if inProgressCount != 1 {
-		t.Fatalf("in-progress count = %d", inProgressCount)
-	}
+	auditLog := final[0]
 	if auditLog.AuditOutcome != AuditOutcomeUpstreamFailed || auditLog.Success {
 		t.Fatalf("outcome = %q/%v", auditLog.AuditOutcome, auditLog.Success)
 	}
