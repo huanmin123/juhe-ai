@@ -47,8 +47,8 @@ CREATE TABLE IF NOT EXISTS juhe_business.vendors (
   description text,
   enabled integer NOT NULL DEFAULT 1,
   default_supported_models_json text NOT NULL DEFAULT '[]',
-  created_at text NOT NULL,
-  updated_at text NOT NULL
+  created_at timestamptz(3) NOT NULL,
+  updated_at timestamptz(3) NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_business.models (
   id text PRIMARY KEY,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.models (
   scope text NOT NULL,
   system_account_id text,
   status text NOT NULL DEFAULT 'active',
-  created_at text NOT NULL
+  created_at timestamptz(3) NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
   id text PRIMARY KEY,
@@ -114,17 +114,17 @@ CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (
   status text NOT NULL DEFAULT 'active',
   effective_source_type text,
   effective_source_team_id text,
-  activated_at text,
-  last_source_changed_at text,
+  activated_at timestamptz(3),
+  last_source_changed_at timestamptz(3),
   remark text,
-  expires_at text,
+  expires_at timestamptz(3),
   limits_json text,
   created_by text NOT NULL,
-  created_at text NOT NULL,
+  created_at timestamptz(3) NOT NULL,
   revoked_by text,
-  revoked_at text,
+  revoked_at timestamptz(3),
   revoked_reason text,
-  updated_at text NOT NULL
+  updated_at timestamptz(3) NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_business.account_connections (
   id text PRIMARY KEY,
@@ -133,8 +133,8 @@ CREATE TABLE IF NOT EXISTS juhe_business.account_connections (
   protocol_surface_code text,
   base_url text NOT NULL,
   enabled integer NOT NULL DEFAULT 1,
-  created_at text NOT NULL,
-  updated_at text NOT NULL,
+  created_at timestamptz(3) NOT NULL,
+  updated_at timestamptz(3) NOT NULL,
   UNIQUE (account_id, connection_preset_code),
   UNIQUE (account_id, id)
 );
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   credentials_encrypted text NOT NULL,
   credential_fingerprint text,
   credential_mask text NOT NULL DEFAULT '',
-  oauth_access_token_expires_at text,
+  oauth_access_token_expires_at timestamptz(3),
   oauth_refresh_token_present integer NOT NULL DEFAULT 0,
   proxy_profile_id text,
   proxy_pool_id text,
@@ -171,19 +171,19 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   fallback_enabled integer NOT NULL DEFAULT 0,
   schedulable integer NOT NULL DEFAULT 1,
   availability_schedule_json text,
-  availability_schedule_next_check_at text,
+  availability_schedule_next_check_at timestamptz(3),
   availability_schedule_gate integer,
   notes text,
-  account_expires_at text,
-  last_used_at text,
-  cooldown_until text,
+  account_expires_at timestamptz(3),
+  last_used_at timestamptz(3),
+  cooldown_until timestamptz(3),
   last_error_code text,
   last_error_message text,
   last_error_trace_id text,
   cooldown_retest_failure_count integer NOT NULL DEFAULT 0,
-  cooldown_retest_observation_started_at text,
+  cooldown_retest_observation_started_at timestamptz(6),
   cooldown_retest_generation text,
-  cooldown_retest_last_at text,
+  cooldown_retest_last_at timestamptz(3),
   cooldown_retest_last_status_code integer,
   background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
   temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
@@ -192,27 +192,27 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   health_check_connection_id text,
   health_check_model text,
   health_check_endpoint_mode text CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
-  last_health_check_at text,
-  next_health_check_at text,
-  last_health_success_at text,
+  last_health_check_at timestamptz(3),
+  next_health_check_at timestamptz(3),
+  last_health_success_at timestamptz(3),
   health_check_failure_count integer NOT NULL DEFAULT 0,
-  health_check_failure_started_at text,
+  health_check_failure_started_at timestamptz(3),
   last_health_check_status_code integer,
   last_health_check_error_code text,
   last_health_check_error_message text,
   last_health_check_trace_id text,
   stream_failure_count integer NOT NULL DEFAULT 0,
-  stream_failure_window_started_at text,
+  stream_failure_window_started_at timestamptz(3),
   balance_query_enabled integer NOT NULL DEFAULT 0,
   balance_query_config_json text NOT NULL DEFAULT '{}',
-  balance_query_next_refresh_at text,
+  balance_query_next_refresh_at timestamptz(3),
   authorization_instance_source_account_id text,
   authorization_instance_authorization_id text,
   authorization_instance_owner_system_account_id text,
-  deleted_at text,
+  deleted_at timestamptz(3),
   deleted_by text,
-  created_at text NOT NULL,
-  updated_at text NOT NULL
+  created_at timestamptz(3) NOT NULL,
+  updated_at timestamptz(3) NOT NULL
 );
 CREATE SEQUENCE IF NOT EXISTS juhe_business.account_proxy_lease_generation_seq;
 CREATE TABLE IF NOT EXISTS juhe_business.account_proxy_leases (
@@ -235,21 +235,21 @@ CREATE TABLE IF NOT EXISTS juhe_business.account_api_key_runtime_states (
   failure_count integer NOT NULL DEFAULT 0,
   consecutive_failures integer NOT NULL DEFAULT 0,
   success_count bigint NOT NULL DEFAULT 0,
-  cooldown_until text,
-  next_probe_at text,
+  cooldown_until timestamptz(3),
+  next_probe_at timestamptz(6),
   probe_backoff_seconds integer NOT NULL DEFAULT 0,
-  recovery_started_at text,
-  last_attempt_at text,
-  last_success_at text,
-  last_failure_at text,
+  recovery_started_at timestamptz(6),
+  last_attempt_at timestamptz(3),
+  last_success_at timestamptz(3),
+  last_failure_at timestamptz(3),
   last_error_code text,
   last_error_message text,
   last_trace_id text,
-  last_probe_at text,
+  last_probe_at timestamptz(6),
   probe_claim_token text,
-  probe_claimed_until text,
-  created_at text NOT NULL,
-  updated_at text NOT NULL
+  probe_claimed_until timestamptz(6),
+  created_at timestamptz(3) NOT NULL,
+  updated_at timestamptz(3) NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_api_key_runtime_unique
   ON juhe_business.account_api_key_runtime_states(account_id, key_fingerprint);
@@ -258,7 +258,7 @@ CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_status
 CREATE TABLE IF NOT EXISTS juhe_business.account_supported_models (
   account_id text NOT NULL,
   model_id text NOT NULL,
-  created_at text NOT NULL,
+  created_at timestamptz(3) NOT NULL,
   PRIMARY KEY (account_id, model_id)
 );
 CREATE TABLE IF NOT EXISTS juhe_business.groups (
@@ -271,8 +271,8 @@ CREATE TABLE IF NOT EXISTS juhe_business.groups (
   group_type text NOT NULL DEFAULT 'personal',
   group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')),
   scheduling_policy_json text,
-  created_at text NOT NULL,
-  updated_at text NOT NULL
+  created_at timestamptz(3) NOT NULL,
+  updated_at timestamptz(3) NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (
   system_account_id text NOT NULL,
@@ -283,14 +283,14 @@ CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (
   local_super_priority_enabled integer NOT NULL DEFAULT 0,
   local_fallback_enabled integer NOT NULL DEFAULT 0,
   enabled integer NOT NULL DEFAULT 1,
-  created_at text NOT NULL,
-  updated_at text NOT NULL,
+  created_at timestamptz(3) NOT NULL,
+  updated_at timestamptz(3) NOT NULL,
   PRIMARY KEY (group_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
   group_id text PRIMARY KEY,
   reason text,
-  updated_at text NOT NULL
+  updated_at timestamptz NOT NULL
 )`
 
 // openTestDBPostgres 在 pgtestkit 隔离 PG 测试库上构建生产 PG 方言 store。

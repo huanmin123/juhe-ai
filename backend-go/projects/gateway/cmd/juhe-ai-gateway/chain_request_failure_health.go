@@ -60,6 +60,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // chainProbeRequestOutboxTableName 是 gateway 写入、jobs J1 Runner 消费的
@@ -75,22 +76,17 @@ const chainProbeRequestOutboxSchema = `CREATE TABLE IF NOT EXISTS account_health
   reason TEXT NOT NULL,
   trace_id TEXT NOT NULL DEFAULT '',
   source_fence TEXT NOT NULL DEFAULT '',
-  deadline_at TEXT NOT NULL,
+  deadline_at TIMESTAMPTZ(3) NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'consumed')),
-  consumed_at TEXT,
-  available_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  consumed_at TIMESTAMPTZ(3),
+  available_at TIMESTAMPTZ(6) NOT NULL,
+  created_at TIMESTAMPTZ(3) NOT NULL,
+  updated_at TIMESTAMPTZ(3) NOT NULL,
   CHECK ((status = 'consumed' AND consumed_at IS NOT NULL) OR (status = 'pending' AND consumed_at IS NULL))
 )`
 
 const chainProbeRequestOutboxIndex = `CREATE INDEX IF NOT EXISTS idx_account_health_probe_request_outbox_pending
   ON account_health_probe_request_outbox(status, available_at, created_at, request_id)`
-
-// chainProbeRequestOutboxTimeFormat 是 outbox 行时间列的固定书写格式（UTC、
-// 固定 9 位小数）：字典序与时间序一致，jobs 消费侧按 status/available_at 做
-// 文本比较与稳定排序；time.RFC3339Nano 可直接解析。
-const chainProbeRequestOutboxTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 // probeSkippedDisabledDecision 是后台自动探测开关关闭（设计 §3：请求失败
 // 二次确认属后台探测，关闭账户不投递）时的拒绝 decision code；与 jobs 消费
@@ -374,8 +370,8 @@ func (w *chainProbeRequestOutboxWriter) insertProbeRequestRow(ctx context.Contex
 		(request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`),
 		requestID, normalizedID, strings.TrimSpace(reason), strings.TrimSpace(traceID), fenceJSON,
-		deadline.Format(chainProbeRequestOutboxTimeFormat), now.Format(chainProbeRequestOutboxTimeFormat),
-		now.Format(chainProbeRequestOutboxTimeFormat), now.Format(chainProbeRequestOutboxTimeFormat))
+		dbtime.DBValueMillis(deadline), dbtime.DBValue(now),
+		dbtime.DBValueMillis(now), dbtime.DBValueMillis(now))
 	if err != nil {
 		slog.Warn("健康检查派发写入 outbox 失败",
 			"event", "account_health_check_dispatch_unavailable", "accountId", normalizedID, "error", err)

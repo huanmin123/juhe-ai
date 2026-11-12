@@ -51,6 +51,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
@@ -847,7 +848,8 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	var (
 		account              chainMediaJobAccount
 		credentialsEncrypted string
-		deletedAt            string
+		cooldownUntil        dbtime.Nullable
+		deletedAt            dbtime.Nullable
 		healthCheckPreset    string
 	)
 	// provider_protocol_profile_id 列已退役（设计 §2.1/§9.11）：档案身份由
@@ -858,7 +860,7 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	row := m.db.QueryRowContext(ctx, `SELECT accounts.id, accounts.system_account_id, COALESCE(accounts.vendor_code, ''),
 		COALESCE(conn.connection_preset_code, ''), COALESCE(accounts.protocol_code, ''), COALESCE(accounts.protocol_version, ''),
 		accounts.type, accounts.status, COALESCE(accounts.capability_domain, 'chat'), COALESCE(accounts.health_check_endpoint_mode, ''),
-		COALESCE(accounts.cooldown_until, ''), COALESCE(accounts.credentials_encrypted, ''), COALESCE(accounts.deleted_at, ''),
+		accounts.cooldown_until, COALESCE(accounts.credentials_encrypted, ''), accounts.deleted_at,
 		COALESCE(accounts.proxy_profile_id, ''),
 		COALESCE(accounts.authorization_instance_source_account_id, ''),
 		COALESCE(accounts.proxy_pool_id, ''),
@@ -872,7 +874,7 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	if err := row.Scan(&account.ID, &account.OwnerSystemAccountID, &account.ProviderCode,
 		&healthCheckPreset, &account.ProtocolCode, &account.ProtocolVersion,
 		&account.Type, &account.Status, &account.CapabilityDomain, &account.HealthCheckEndpointMode,
-		&account.CooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID,
+		&cooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID,
 		&account.SourceAccountID, &account.ProxyPoolID, &account.SourceProfileID, &account.SourcePoolID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -882,7 +884,8 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	if profileID, ok := exactkeyprobe.ConnectionPresetProfileID(healthCheckPreset); ok {
 		account.ProviderProtocolProfileID = profileID
 	}
-	account.Deleted = strings.TrimSpace(deletedAt) != ""
+	account.CooldownUntil = cooldownUntil.APIString()
+	account.Deleted = deletedAt.Valid
 	credentials := map[string]any{}
 	if credentialsEncrypted != "" {
 		if err := accounts.DecryptJSON(m.secret, credentialsEncrypted, &credentials); err != nil {

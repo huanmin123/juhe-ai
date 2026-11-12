@@ -423,13 +423,14 @@ func TestW7CSchemaAndStoreGuards(t *testing.T) {
 	if pg.table("accounts") != "juhe_business.accounts" {
 		t.Fatalf("pg table: %q", pg.table("accounts"))
 	}
-	// timeParam/instantParam 契约（W27 修复）：text 时间列只绑 RFC3339 文本，
-	// 不绑原生 time.Time（pgx 对 text 列回退 Go time.String() 形态致比较失真）。
+	// timeParam 仍按 text 形态输出（SQL 侧显式 ::timestamptz 转型或赋值）；
+	// Revision 26 起时间列已是 timestamptz，instantParam 必须绑定 time.Time，
+	// 让 COALESCE/CASE 的参数类型由客户端确定为 timestamptz。
 	if text, ok := pg.timeParam(testNow).(string); !ok || text != nowMillisText() {
 		t.Fatalf("pg timeParam must bind RFC3339 milli text: %#v", text)
 	}
-	if text, ok := pg.instantParam(nowMillisText()).(string); !ok || text != nowMillisText() {
-		t.Fatalf("pg instantParam must pass RFC3339 text through: %#v", text)
+	if instant, ok := pg.instantParam(nowMillisText()).(time.Time); !ok || !instant.Equal(testNow) {
+		t.Fatalf("pg instantParam must bind time.Time: %#v", instant)
 	}
 	if text, ok := pg.instantParam("garbage").(string); !ok || text != "garbage" {
 		t.Fatalf("pg instantParam fallback: %#v", text)

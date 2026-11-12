@@ -449,11 +449,11 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'chat' })).toBe('chat_sse')
   })
 
-  it('新建表单默认 status：chat=pending_test（现行），媒体域=active', () => {
+  it('新建表单默认 status：所有场景统一 pending_test（D6）', () => {
     expect(defaultStatusForCapabilityDomain('chat')).toBe('pending_test')
-    expect(defaultStatusForCapabilityDomain('video')).toBe('active')
-    expect(defaultStatusForCapabilityDomain('audio')).toBe('active')
-    expect(defaultStatusForCapabilityDomain('image')).toBe('active')
+    expect(defaultStatusForCapabilityDomain('video')).toBe('pending_test')
+    expect(defaultStatusForCapabilityDomain('audio')).toBe('pending_test')
+    expect(defaultStatusForCapabilityDomain('image')).toBe('pending_test')
   })
 
   it('媒体域判定与目录协议 token 词表', () => {
@@ -565,6 +565,44 @@ describe('媒体域三家供应商回退定义（T47）', () => {
       const provider = merged.find((item) => item.code === code)
       expect(provider, `合并后缺少 ${code}`).toBeTruthy()
       expect(provider!.protocolProfiles.length).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('能力目录优先（B1.3）', () => {
+  it('catalog 加载后媒体账户类型与允许 modes 以目录为准', async () => {
+    const { setAccountCapabilityCatalog } = await import('./accountCapabilityCatalog')
+    const { capabilityDomainAccountTypes, allowedEndpointModesFor } = await import('./accountCapabilityDomains')
+    const profile: AccountProviderProfileLike = {
+      id: 'profile_catalog_qwen',
+      providerProtocolProfileId: 'profile_catalog_qwen',
+      providerCode: 'qwen',
+      protocolCode: 'openai',
+      protocolVersion: 'v1'
+    }
+    setAccountCapabilityCatalog({
+      scenarios: [{
+        scenarioType: 'image',
+        label: '图像',
+        dispatchClass: 'stateless',
+        providers: [{
+          providerCode: 'qwen',
+          profiles: [{
+            profileId: 'profile_catalog_qwen',
+            connectionPreset: 'qwen_dashscope',
+            accountTypes: ['api_key'],
+            allowedEndpointModes: ['images_json'],
+            testPolicy: 'connectivity',
+            statusPolicy: 'pending_test_then_probe'
+          }]
+        }]
+      }]
+    })
+    try {
+      expect(capabilityDomainAccountTypes({ capabilityDomain: 'image', providerCode: 'qwen', profile })).toEqual(['api_key'])
+      expect(allowedEndpointModesFor({ capabilityDomain: 'image', providerCode: 'qwen', profile, accountType: 'api_key' })).toEqual(['images_json'])
+    } finally {
+      setAccountCapabilityCatalog(null)
     }
   })
 })

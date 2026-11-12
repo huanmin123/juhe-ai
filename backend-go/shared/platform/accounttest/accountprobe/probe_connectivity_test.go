@@ -86,6 +86,10 @@ func TestConnectivityProbeClassificationTable(t *testing.T) {
 		{"audio 200 通过", ModeAudioSpeech, "tts-model", http.StatusOK, `ok`, true, "密钥连通性验证通过（上游 HTTP 200）"},
 		{"audio 401 失败", ModeAudioSpeech, "tts-model", http.StatusUnauthorized, `unauthorized`, false, "上游拒绝访问（HTTP 401）"},
 		{"audio 502 失败", ModeAudioSpeech, "tts-model", http.StatusBadGateway, `bad gateway`, false, "上游服务不可用（HTTP 502）"},
+		// audio_job_get：查询固定占位任务，400/404 属预期（通过）。
+		{"audio job 404 通过", ModeAudioJobGet, "asr-model", http.StatusNotFound, `{"code":"NotFound"}`, true, "密钥连通性验证通过（上游 HTTP 404）"},
+		{"audio job 400 通过", ModeAudioJobGet, "asr-model", http.StatusBadRequest, `{"message":"bad task id"}`, true, "密钥连通性验证通过（上游 HTTP 400）"},
+		{"audio job 401 失败", ModeAudioJobGet, "asr-model", http.StatusUnauthorized, `unauthorized`, false, "上游拒绝访问（HTTP 401）"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,6 +130,7 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		server := newConnectivityServer(t, http.StatusNotFound, `{}`, capture)
 		defer server.Close()
 		view := connectivityView(server.URL+"/api/v3", ModeVideoCreate, "video-model")
+		view.ProviderCode = "volcengine"
 		if _, err := newTestService(t, &fakeSource{view: view}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -166,7 +171,7 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		}
 	})
 
-	t.Run("audio_speech 带 model 的 POST tts/create", func(t *testing.T) {
+	t.Run("audio_speech 带 model 的 POST audio/speech", func(t *testing.T) {
 		capture := &connectivityCapture{}
 		server := newConnectivityServer(t, http.StatusBadRequest, `{}`, capture)
 		defer server.Close()
@@ -174,13 +179,61 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		if _, err := newTestService(t, &fakeSource{view: view}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true}); err != nil {
 			t.Fatal(err)
 		}
-		if capture.method != http.MethodPost || capture.path != "/tts/create" {
+		if capture.method != http.MethodPost || capture.path != "/audio/speech" {
 			t.Fatalf("request = %s %s", capture.method, capture.path)
 		}
-		// volcengine openspeech 缺 model 时无法解析 resource_id（45000030），会误判
-		// 密钥无效；必须携带 model 才能进入参数校验层（400 text_prompt required）。
+		// OpenAI/GLM/xAI 同步 TTS 缺 input 返回 400；必须携带 model 才能进入
+		// 参数校验层，证明已过认证。
 		if capture.body != `{"model":"tts-model"}` {
 			t.Fatalf("audio 连通性探测应携带 model：%q", capture.body)
+		}
+	})
+
+	t.Run("qwen 图像走 DashScope 原生 multimodal-generation", func(t *testing.T) {
+		capture := &connectivityCapture{}
+		server := newConnectivityServer(t, http.StatusBadRequest, `{}`, capture)
+		defer server.Close()
+		view := connectivityView(server.URL, ModeImagesJSON, "qwen-image")
+		view.ProviderCode = "qwen"
+		if _, err := newTestService(t, &fakeSource{view: view}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true}); err != nil {
+			t.Fatal(err)
+		}
+		if capture.method != http.MethodPost || capture.path != "/api/v1/services/aigc/multimodal-generation/generation" {
+			t.Fatalf("request = %s %s", capture.method, capture.path)
+		}
+		if !strings.Contains(capture.body, `"messages"`) || !strings.Contains(capture.body, `"model":"qwen-image"`) {
+			t.Fatalf("qwen image body = %q", capture.body)
+		}
+	})
+
+	t.Run("qwen 视频查 DashScope 任务路径", func(t *testing.T) {
+		capture := &connectivityCapture{}
+		server := newConnectivityServer(t, http.StatusNotFound, `{}`, capture)
+		defer server.Close()
+		view := connectivityView(server.URL, ModeVideoCreate, "qwen-video")
+		view.ProviderCode = "qwen"
+		if _, err := newTestService(t, &fakeSource{view: view}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true}); err != nil {
+			t.Fatal(err)
+		}
+		if capture.method != http.MethodGet || capture.path != "/api/v1/tasks/"+ConnectivityProbeTaskID {
+			t.Fatalf("request = %s %s", capture.method, capture.path)
+		}
+	})
+
+	t.Run("qwen 长音频查 DashScope 任务路径且不创建", func(t *testing.T) {
+		capture := &connectivityCapture{}
+		server := newConnectivityServer(t, http.StatusNotFound, `{}`, capture)
+		defer server.Close()
+		view := connectivityView(server.URL, ModeAudioJobGet, "qwen-asr")
+		view.ProviderCode = "qwen"
+		if _, err := newTestService(t, &fakeSource{view: view}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true}); err != nil {
+			t.Fatal(err)
+		}
+		if capture.method != http.MethodGet || capture.path != "/api/v1/tasks/"+ConnectivityProbeTaskID {
+			t.Fatalf("request = %s %s", capture.method, capture.path)
+		}
+		if capture.body != "" {
+			t.Fatalf("audio_job_get 不得携带请求体：%q", capture.body)
 		}
 	})
 }
@@ -189,8 +242,7 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 // /api/v3/tts/create + X-Api-Key speech_token），账户 base_url（ark /api/v3）
 // 不参与拼接；body 必须带 model（缺 model 会被 45000030 挡在 resource_id
 // 解析层，无法证明密钥有效）。
-func TestConnectivityProbeVolcengineSpeech(t *testing.T) {
-	capture := &connectivityCapture{}
+func TestConnectivityProbeVolcengineSpeech(t *testing.T) {	capture := &connectivityCapture{}
 	server := newConnectivityServer(t, http.StatusBadRequest, `{"code":45001116,"message":"text_prompt is required"}`, capture)
 	defer server.Close()
 	original := volcengineSpeechBaseURL

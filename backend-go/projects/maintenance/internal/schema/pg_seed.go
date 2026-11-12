@@ -88,7 +88,11 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 			return PGSeedResult{}, err
 		}
 	}
-	for _, cte := range []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE, pgSeedQuotaScopeBindingsFromAuthorizationsCTE, pgSeedQuotaScopeBindingsFromTeamGrantsCTE} {
+	ctes, err := quotaScopeBindingCTEs(ctx, client)
+	if err != nil {
+		return PGSeedResult{}, err
+	}
+	for _, cte := range ctes {
 		if err := exec(cte); err != nil {
 			return PGSeedResult{}, err
 		}
@@ -202,7 +206,7 @@ const pgSeedGPTVendorCodexAutoReviewRemovalSelect = `
 // model list back to the GPT vendor row.
 const pgSeedGPTVendorCodexAutoReviewRemovalUpdate = `
         UPDATE "juhe_business"."vendors"
-        SET default_supported_models_json = $1, updated_at = $2
+        SET default_supported_models_json = $1, updated_at = $2::timestamptz
         WHERE code = $3
       `
 
@@ -214,7 +218,7 @@ const pgSeedGPTVendorCodexAutoReviewRemovalUpdate = `
 const pgSeedBuiltinQuestionUpsert = `
         INSERT INTO "juhe_business"."model_check_question_bank"
           (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,'approved',NULL,'system','system',1,NULL,NULL,$7,$7)
+        VALUES ($1,$2,$3,$4,$5,$6,'approved',NULL,'system','system',1,NULL,NULL,$7::timestamptz,$7::timestamptz)
         ON CONFLICT (id) DO UPDATE SET
           title = EXCLUDED.title,
           title_norm = EXCLUDED.title_norm,
@@ -383,7 +387,7 @@ const pgSeedModelsUpsertSuffix = `
 // 切 model_id），按 upstream_model 名匹配保持旧守卫语义。
 const pgSeedStaleBuiltInModelsDisable = `
     UPDATE "juhe_business"."models" AS stale_model
-    SET status = 'disabled', catalog_visible = false, updated_at = $1
+    SET status = 'disabled', catalog_visible = false, updated_at = $1::timestamptz
     WHERE stale_model.scope = 'builtin'
       AND stale_model.source NOT IN ('manual-override', 'manual-visibility-override')
       AND NOT EXISTS (
@@ -413,7 +417,7 @@ const pgSeedStaleBuiltInModelsDisable = `
 const pgSeedAdminRouteStrategyInsert = `
         INSERT INTO "juhe_business"."route_strategies" (
           id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
-        ) VALUES ($1, 'sys_admin', $2, $3, 'normal', 'active', 1, NULL, $4, $5)
+        ) VALUES ($1, 'sys_admin', $2, $3, 'normal', 'active', 1, NULL, $4::timestamptz, $5::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
@@ -429,7 +433,7 @@ const pgSeedAdminRouteStrategySelect = `
 const pgSeedAdminRouteStrategyGroupBindingInsert = `
         INSERT INTO "juhe_business"."route_strategy_groups" (
           id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
-        ) VALUES ($1, $2, 'sys_admin', $3, 1, 1, 'active', $4, $5)
+        ) VALUES ($1, $2, 'sys_admin', $3, 1, 1, 'active', $4::timestamptz, $5::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
@@ -452,7 +456,7 @@ const pgSeedAdminDefaultAPIKeyInsert = `
           id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
           key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
           availability_schedule_next_check_at, scheduling_preference_id, created_at, updated_at
-        ) VALUES ($1, 'sys_admin', $2, $3, $4, $5, $6, $7, $8, 'active', 1, NULL, NULL, NULL, NULL, 'schpref-builtin-chat-cost-first', $9, $10)
+        ) VALUES ($1, 'sys_admin', $2, $3, $4, $5, $6, $7, $8, 'active', 1, NULL, NULL, NULL, NULL, 'schpref-builtin-chat-cost-first', $9::timestamptz, $10::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
@@ -479,7 +483,7 @@ const pgSeedExternalIntegrationTokenSelect = `
 const pgSeedExternalIntegrationTokenInsert = `
         INSERT INTO "juhe_business"."external_integration_source_tokens" (
           id, source_ref_id, name, token_hash, token_secret_encrypted, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, NULL, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, NULL, $9::timestamptz, $10::timestamptz)
       `
 
 // pgSeedExternalIntegrationTokenUpdate repairs the built-in token metadata.
@@ -489,7 +493,7 @@ const pgSeedExternalIntegrationTokenUpdate = `
           name = $2,
           scopes_json = $3,
           expires_at = NULL,
-          updated_at = $4
+          updated_at = $4::timestamptz
       WHERE id = $5
     `
 
@@ -612,7 +616,7 @@ func buildPostgresModelSeedUpsert(rows []modelSeedTargetRow, now string) (string
 		for index := 5; index < 22; index++ {
 			row += ", $" + strconv.Itoa(first+index)
 		}
-		row += ", NULL, NULL, NULL, NULL, NULL, $" + strconv.Itoa(first+22) + ", $" + strconv.Itoa(first+23)
+		row += ", NULL, NULL, NULL, NULL, NULL, $" + strconv.Itoa(first+22) + "::timestamptz, $" + strconv.Itoa(first+23) + "::timestamptz"
 		for index := 24; index < 40; index++ {
 			row += ", $" + strconv.Itoa(first+index)
 		}

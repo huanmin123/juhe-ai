@@ -11,6 +11,8 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ListItem mirrors the list/detail/create row projection: 列表 / 详情字段
@@ -76,12 +78,14 @@ func scanPolicyRow(scan func(...any) error) (policyRow, error) {
 	var builtIn int
 	// owner 走 NullString：内置行 system_account_id 恒 NULL（全局只读例外）。
 	var owner sql.NullString
+	var updatedAt dbtime.Nullable
 	if err := scan(&row.id, &owner, &row.name, &row.description, &row.rulesJSON,
-		&builtIn, &row.protectionCount, &row.updatedAt); err != nil {
+		&builtIn, &row.protectionCount, &updatedAt); err != nil {
 		return policyRow{}, err
 	}
 	row.systemAccountID = owner.String
 	row.builtIn = builtIn == 1
+	row.updatedAt = updatedAt.APIString()
 	return row, nil
 }
 

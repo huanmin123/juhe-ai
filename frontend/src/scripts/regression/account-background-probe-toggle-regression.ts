@@ -245,11 +245,11 @@ assert.match(modalSource, /statusSegmentedOptions/, '编辑态标题状态选项
 assert.match(modalSource, /label: '正常', value: 'active'/, '手动模式状态选项必须提供正常')
 assert.match(modalSource, /disabled: true/, '异常状态必须以只读禁用项回显')
 
-// image 域表单渲染总开关（二轮复审裁决）：开关卡仅 image 域出现，经
-// handleBackgroundProbeToggle 走 modal 同款关闭确认；audio/video 仍不渲染。
-assert.match(modalSource, /v-if="isMediaDomain && capabilityDomain === 'image'"/, '媒体域必须仅在 image 域渲染后台自动探测开关')
-assert.match(modalSource, /name="后台自动探测"/, 'image 域开关必须由独立折叠卡承载')
-assert.match(modalSource, /@update:checked="handleBackgroundProbeToggle"/, 'image 域开关必须走 modal 同款关闭确认')
+// 所有媒体场景渲染总开关（D0/D6 并轨）：经 handleBackgroundProbeToggle 走
+// modal 同款关闭确认；video/audio 与 image 适用同一后台探测状态机。
+assert.match(modalSource, /v-if="isMediaDomain"/, '媒体域必须统一渲染后台自动探测开关')
+assert.match(modalSource, /name="后台自动探测"/, '媒体域开关必须由独立折叠卡承载')
+assert.match(modalSource, /@update:checked="handleBackgroundProbeToggle"/, '媒体域开关必须走 modal 同款关闭确认')
 assert.match(
   modalSource,
   /v-model:checked="form\.backgroundProbeEnabled"/,
@@ -257,7 +257,7 @@ assert.match(
 )
 // 余额查询卡片不纳入本开关（总开关设计 §12）。
 assert.doesNotMatch(balanceSectionSource, /backgroundProbe/, '余额查询组件不得引用后台自动探测开关')
-assert.match(payloadSource, /capabilityDomainWithoutBackgroundProbe\(input\.form\.capabilityDomain\)/, '保存载荷必须仅对 audio/video 媒体域排除总开关键（image 适用）')
+assert.match(payloadSource, /backgroundProbeEnabled: input\.form\.backgroundProbeEnabled/, '保存载荷必须对所有场景统一携带总开关键')
 
 // ---- 列表状态标签组件断言 ----
 

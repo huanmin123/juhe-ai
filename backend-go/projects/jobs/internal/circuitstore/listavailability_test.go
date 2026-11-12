@@ -28,7 +28,7 @@ CREATE TABLE juhe_business.account_list_availability_projection_dependency_healt
 	state text NOT NULL,
 	generation integer NOT NULL,
 	reason text,
-	updated_at text NOT NULL
+	updated_at timestamptz(3) NOT NULL
 );
 CREATE TABLE juhe_business.account_list_availability_dirty (
 	account_id text PRIMARY KEY,
@@ -63,8 +63,8 @@ CREATE TABLE juhe_business.account_list_availability_projections (
 	created_at_sort_key text NOT NULL,
 	payload_json text NOT NULL,
 	source_generation integer NOT NULL,
-	next_transition_at text,
-	projected_at text NOT NULL,
+	next_transition_at timestamptz(3),
+	projected_at timestamptz(6) NOT NULL,
 	PRIMARY KEY (viewer_system_account_id, account_id)
 );
 CREATE TABLE juhe_business.account_list_availability_projection_index (
@@ -95,16 +95,16 @@ CREATE TABLE juhe_business.account_list_availability_projection_tags (
 CREATE TABLE juhe_business.account_list_availability_runtime_overlays (
 	account_id text PRIMARY KEY,
 	current_concurrency integer NOT NULL,
-	observed_at text NOT NULL,
-	next_reconcile_at text
+	observed_at timestamptz(3) NOT NULL,
+	next_reconcile_at timestamptz(6)
 );
 CREATE TABLE juhe_business.account_list_availability_projection_viewer_health (
 	viewer_system_account_id text PRIMARY KEY,
 	projection_count integer NOT NULL,
-	oldest_projected_at text,
-	next_transition_at text,
+	oldest_projected_at timestamptz(6),
+	next_transition_at timestamptz(3),
 	is_current integer NOT NULL DEFAULT 0,
-	updated_at text NOT NULL
+	updated_at timestamptz(3) NOT NULL
 )`)
 	return err
 }

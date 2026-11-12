@@ -102,12 +102,30 @@ func (s *Store) timeParam(t time.Time) any {
 	return t.UTC().Format(rfc3339Milli)
 }
 
-// instantParam 绑定 RFC3339 文本时间：text 时间列保持文本绑定，不得解析为
-// time.Time 再绑定——pgx 对 text 列回退 Go time.String() 形态，与存量 RFC3339
-// 行的字典序比较永不命中（W27① 同源）；比较语义由 SQL 侧 `::timestamptz`
-// 转型承担，非法文本不在此处静默改写。
+// instantParam 把规范 RFC3339 文本绑定为 time.Time。Revision 26 起运行态
+// 与 accounts 时间列均为 timestamptz，参数类型必须由客户端确定为 timestamptz，
+// 否则 COALESCE/CASE 的赋值上下文会退化为 text（SQLSTATE 42804）；解析失败
+// 保留原文交给 SQL/调用方报错。
 func (s *Store) instantParam(value string) any {
-	return value
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return value
+	}
+	return parsed
+}
+
+// instantParamAny 处理 nil/string 混合的 recovery 参数。
+func (s *Store) instantParamAny(value any) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return s.instantParam(typed)
+	case time.Time:
+		return typed
+	default:
+		return value
+	}
 }
 
 type invalidError string

@@ -88,7 +88,7 @@ func TestHealthObservationPayloadBranches(t *testing.T) {
 	}
 
 	successRow := presentationRowFor("acc-ok")
-	successRow.lastHealthCheckAt = nullString("2026-10-03T00:00:00.000Z")
+	successRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:00:00.000Z")
 	successRow.lastHealthCheckStatusCode = nullInt64(200)
 	success := healthObservationPayload(successRow)
 	if success == nil || success.Result != "success" || success.HTTPStatus != 200 ||
@@ -97,7 +97,7 @@ func TestHealthObservationPayloadBranches(t *testing.T) {
 	}
 
 	errorCodeRow := presentationRowFor("acc-err")
-	errorCodeRow.lastHealthCheckAt = nullString("2026-10-03T00:01:00.000Z")
+	errorCodeRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:01:00.000Z")
 	errorCodeRow.lastHealthCheckErrorCode = nullString("upstream_5xx")
 	errorCodeRow.lastHealthCheckTraceID = nullString("trace-err")
 	failedByCode := healthObservationPayload(errorCodeRow)
@@ -107,7 +107,7 @@ func TestHealthObservationPayloadBranches(t *testing.T) {
 	}
 
 	statusCodeRow := presentationRowFor("acc-502")
-	statusCodeRow.lastHealthCheckAt = nullString("2026-10-03T00:02:00.000Z")
+	statusCodeRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:02:00.000Z")
 	statusCodeRow.lastHealthCheckStatusCode = nullInt64(502)
 	failedByStatus := healthObservationPayload(statusCodeRow)
 	if failedByStatus == nil || failedByStatus.Result != "failed" || failedByStatus.HTTPStatus != 502 {
@@ -116,7 +116,7 @@ func TestHealthObservationPayloadBranches(t *testing.T) {
 
 	// NULL status_code 不输出 httpStatus（仅 number 且 >0 才带）。
 	nullStatusRow := presentationRowFor("acc-null-code")
-	nullStatusRow.lastHealthCheckAt = nullString("2026-10-03T00:03:00.000Z")
+	nullStatusRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:03:00.000Z")
 	nullCodeObservation := healthObservationPayload(nullStatusRow)
 	if nullCodeObservation == nil || nullCodeObservation.Result != "success" {
 		t.Fatalf("NULL status_code 应 success 且无 httpStatus：%v", nullCodeObservation)
@@ -126,7 +126,7 @@ func TestHealthObservationPayloadBranches(t *testing.T) {
 	// 原样，否则 text[:95]+"…"——按字节而非 rune）。
 	longMessage := strings.Repeat("a", 120)
 	truncatedRow := presentationRowFor("acc-long")
-	truncatedRow.lastHealthCheckAt = nullString("2026-10-03T00:04:00.000Z")
+	truncatedRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:04:00.000Z")
 	truncatedRow.lastHealthCheckErrorMessage = nullString(longMessage)
 	truncated := healthObservationPayload(truncatedRow)
 	if truncated == nil || truncated.Reason != strings.Repeat("a", 95)+"…" {
@@ -135,7 +135,7 @@ func TestHealthObservationPayloadBranches(t *testing.T) {
 	// CJK 输入（每字 3 字节）在字节语义下 96 字节=32 字整+第 33 字前 2 字节，
 	// 断言与 jobs text[:95] 切片逐字节一致。
 	cjkRow := presentationRowFor("acc-long-cjk")
-	cjkRow.lastHealthCheckAt = nullString("2026-10-03T00:05:00.000Z")
+	cjkRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:05:00.000Z")
 	cjkRow.lastHealthCheckErrorMessage = nullString(strings.Repeat("长", 120))
 	cjkTruncated := healthObservationPayload(cjkRow)
 	if cjkTruncated == nil || cjkTruncated.Reason != textSlice95(strings.Repeat("长", 120))+"…" {
@@ -200,8 +200,8 @@ func TestSchedulePayloadStateBranches(t *testing.T) {
 func TestAvailabilityProbeFactsGating(t *testing.T) {
 	now := time.Now()
 	row := presentationRowFor("acc-gate")
-	row.lastHealthCheckAt = nullString("2026-10-03T00:00:00.000Z")
-	row.nextHealthCheckAt = nullString(now.Add(time.Hour).UTC().Format(time.RFC3339Nano))
+	row.lastHealthCheckAt = nullTimeValue("2026-10-03T00:00:00.000Z")
+	row.nextHealthCheckAt = nullTimeValue(now.Add(time.Hour).UTC().Format(time.RFC3339Nano))
 
 	pending := availabilityProbeFacts("instance_pending_test", row, now)
 	if pending == nil || pending.Kind != "activation_check" || pending.LastObservation == nil ||
@@ -210,14 +210,14 @@ func TestAvailabilityProbeFactsGating(t *testing.T) {
 	}
 
 	observationOnlyRow := presentationRowFor("acc-obs-only")
-	observationOnlyRow.lastHealthCheckAt = nullString("2026-10-03T00:00:00.000Z")
+	observationOnlyRow.lastHealthCheckAt = nullTimeValue("2026-10-03T00:00:00.000Z")
 	observationOnly := availabilityProbeFacts("instance_pending_test", observationOnlyRow, now)
 	if observationOnly == nil || observationOnly.LastObservation == nil || observationOnly.Schedule.State != "none" {
 		t.Fatalf("仅有 observation 无 next 应产 schedule=none 探针：%v", observationOnly)
 	}
 
 	scheduleOnlyRow := presentationRowFor("acc-sched-only")
-	scheduleOnlyRow.nextHealthCheckAt = nullString(now.Add(time.Hour).UTC().Format(time.RFC3339Nano))
+	scheduleOnlyRow.nextHealthCheckAt = nullTimeValue(now.Add(time.Hour).UTC().Format(time.RFC3339Nano))
 	scheduleOnly := availabilityProbeFacts("instance_pending_test", scheduleOnlyRow, now)
 	if scheduleOnly == nil || scheduleOnly.LastObservation != nil || scheduleOnly.Schedule.State != "scheduled" {
 		t.Fatalf("仅有 next 应产无 lastObservation 探针：%v", scheduleOnly)
@@ -239,8 +239,8 @@ func TestAvailabilityProbeFactsGating(t *testing.T) {
 // ← account_expires_at、instance_cooldown ← cooldown_until；其余状态无边界。
 func TestAvailabilityStatusBoundaryAt(t *testing.T) {
 	row := presentationRowFor("acc-boundary")
-	row.accountExpiresAt = nullString("2026-10-03T08:00:00.000Z")
-	row.cooldownUntil = nullString("2026-10-03T09:00:00.000Z")
+	row.accountExpiresAt = nullTimeValue("2026-10-03T08:00:00.000Z")
+	row.cooldownUntil = nullTimeValue("2026-10-03T09:00:00.000Z")
 	if boundary := availabilityStatusBoundaryAt("instance_expired", row); boundary != "2026-10-03T08:00:00.000Z" {
 		t.Fatalf("instance_expired 边界应取 account_expires_at：%q", boundary)
 	}
@@ -313,7 +313,7 @@ func TestBuildAvailabilityPresentationReasonActionBoundary(t *testing.T) {
 
 	// instance_cooldown：boundary 命中且无 probe（互斥）。
 	cooldownRow := presentationRowFor("acc-cool")
-	cooldownRow.cooldownUntil = nullString("2026-10-03T09:00:00.000Z")
+	cooldownRow.cooldownUntil = nullTimeValue("2026-10-03T09:00:00.000Z")
 	cooldown := buildAvailabilityPresentation(ListItem{EffectiveAvailability: EffectiveAvailability{
 		Available: false, Status: "instance_cooldown", Label: "账户冷却", Color: "gold",
 	}}, cooldownRow, now)
@@ -340,9 +340,10 @@ func TestListPageHydratesAvailabilityPresentation(t *testing.T) {
 	env.seedAccount(t, "acc-ap-5", adminID, "ap-5", "active")
 
 	now := time.Now().UTC()
-	attemptedAt := now.Add(-30 * time.Minute).Format(time.RFC3339Nano)
-	nextFuture := now.Add(time.Hour).Format(time.RFC3339Nano)
-	nextPast := now.Add(-time.Minute).Format(time.RFC3339Nano)
+	// timestamptz(3) 列的读回契约是 UTC 毫秒：指纹与响应断言必须用同一精度。
+	attemptedAt := now.Add(-30 * time.Minute).UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
+	nextFuture := now.Add(time.Hour).UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
+	nextPast := now.Add(-time.Minute).UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
 	// acc-ap-1：完整健康行（失败 observation + 未来计划）。
 	env.exec(t, `UPDATE accounts SET last_health_check_at = ?, next_health_check_at = ?,
 		last_health_check_status_code = 502, last_health_check_error_code = 'upstream_5xx',

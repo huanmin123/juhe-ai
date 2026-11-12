@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // CreateInput mirrors the create zod contract (normalized).
@@ -112,18 +114,20 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	// request is idempotent (created=false), while a changed request is
 	// rejected. Omitted remark preserves an existing remark; omitted expiry or
 	// limits mean an unset value, matching Node normalization.
-	var existingID, existingStatus, existingRemark, existingExpires, existingLimits sql.NullString
+	var existingID, existingStatus, existingRemark, existingLimits sql.NullString
+	var existingExpiresAt dbtime.Nullable
 	granteeColumn := "grantee_system_account_id"
 	if input.GranteeType == "team" {
 		granteeColumn = "grantee_team_id"
 	}
-	dupQuery := `SELECT id, status, COALESCE(remark,''), COALESCE(expires_at,''), COALESCE(limits_json,'')
+	dupQuery := `SELECT id, status, COALESCE(remark,''), expires_at, COALESCE(limits_json,'')
 		FROM ` + s.table("resource_authorization_grants") + `
 		WHERE resource_type = ? AND resource_id = ? AND ` + granteeColumn + ` = ?
 		ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 WHEN 'returned' THEN 4 ELSE 5 END,
 			created_at ASC, id ASC LIMIT 1`
 	err = tx.QueryRowContext(ctx, s.bind(dupQuery), input.ResourceType, input.ResourceID, input.GranteeID).
-		Scan(&existingID, &existingStatus, &existingRemark, &existingExpires, &existingLimits)
+		Scan(&existingID, &existingStatus, &existingRemark, &existingExpiresAt, &existingLimits)
+	existingExpires := existingExpiresAt.APIString()
 	var reviveID, reviveStatus string
 	if err == nil {
 		if existingStatus.String != StatusActive {
@@ -141,7 +145,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 				nextExpires = strings.TrimSpace(*input.ExpiresAt)
 			}
 			sameRemark := nextRemark == existingRemark.String
-			sameExpires := nextExpires == existingExpires.String
+			sameExpires := dbtime.SameInstant(nextExpires, existingExpires)
 			sameLimits := nullableJSONEqual(input.LimitsJSON, existingLimits.String)
 			if sameRemark && sameExpires && sameLimits {
 				// Commit before the post-commit read so single-connection

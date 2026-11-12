@@ -40,6 +40,10 @@ func RequestLaneForPath(method, path string) (gatewayproto.RequestLane, bool) {
 	switch stripQuery(path) {
 	case "/v1/audio/speech", "/audio/speech":
 		return gatewayproto.LaneAudio, true
+	case "/v1/embeddings", "/embeddings", "/v1/rerank", "/rerank",
+		"/v1/moderations", "/moderations":
+		// B7 工具端点：向量/重排/安全走无状态 lane，不产生会话亲和。
+		return gatewayproto.LaneUtility, true
 	case "/v1/audio/transcriptions", "/audio/transcriptions",
 		"/v1/audio/translations", "/audio/translations":
 		return gatewayproto.LaneAudio, true

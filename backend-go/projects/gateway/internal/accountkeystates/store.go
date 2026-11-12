@@ -132,11 +132,31 @@ func (s *Store) bind(query string) string {
 	return out.String()
 }
 
-// instantParam 返回 text 时间列（生产 DDL 全部为 text，存 Node ISO 文本）的
-// 绑定值：保持 RFC3339Nano 文本，不能绑定 time.Time——pgx 会给 text 参数编码
-// 出 Go time.String 形态，字典序比较与回读校验都会失真（W27① 同源）。
+// instantParam 把规范 instant 文本绑定为 time.Time，让 PostgreSQL 按
+// timestamptz 列类型推断参数（Revision 26 起运行态时间列均为 timestamptz）。
+// 仍接受 RFC3339Nano 文本输入；解析失败保留原文，由 SQL/调用方报错，不静默
+// 丢弃。空串不转 NULL，保持既有「空值即无效」的失败语义。
 func (s *Store) instantParam(value string) any {
-	return value
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return value
+	}
+	return parsed
+}
+
+// instantParamAny 处理 *string/string/nil 混合的 recovery 参数（quotaRecovery
+// StartedAt 返回 nil 或 instant 文本）。
+func (s *Store) instantParamAny(value any) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return s.instantParam(typed)
+	case time.Time:
+		return typed
+	default:
+		return value
+	}
 }
 
 // argOrNull 把空字符串绑定为 SQL NULL（Node 传 null 的字段）。

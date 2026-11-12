@@ -26,7 +26,7 @@
         <a-tag :color="accountStatusColor(account)">{{ accountStatusText(account) }}</a-tag>
       </div>
 
-      <a-form layout="vertical" class="test-form">
+      <a-form v-if="!connectivityTest" layout="vertical" class="test-form">
         <div class="test-config-row">
           <a-form-item class="test-config-field" label="选择测试模型">
             <a-select
@@ -59,6 +59,9 @@
           </a-form-item>
         </div>
       </a-form>
+      <div v-else class="test-connectivity-hint">
+        {{ connectivityHint }}
+      </div>
 
       <div class="test-terminal">
         <div v-if="!outputLines.length" class="test-output-line muted">准备开始测试</div>
@@ -156,6 +159,21 @@ const emit = defineEmits<{
   (event: 'update:testEndpointMode', value: AccountTestEndpointMode): void
 }>()
 
+const connectivityTest = computed(() => Boolean(
+  props.account?.capabilityDomain && props.account.capabilityDomain !== 'chat'
+))
+const connectivityHint = computed(() => {
+  switch (props.account?.capabilityDomain) {
+    case 'video':
+      return '只验证 API Key 与 Base URL 连通性：查询一个不存在的视频任务，不创建真实任务。'
+    case 'audio':
+      return '只验证 API Key 与 Base URL 连通性：发送空音频请求，不生成真实音频。'
+    case 'image':
+      return '只验证 API Key 与 Base URL 连通性：发送空 prompt，不生成真实图片。'
+    default:
+      return '只验证 API Key 与 Base URL 连通性，不选择模型或协议。'
+  }
+})
 const testEndpointModeOptions = computed(() => props.testEndpointModes.map((value) => ({
   label: accountEndpointModeLabel(value, props.account),
   value
@@ -172,12 +190,15 @@ const selectedEndpointModeText = computed(() => {
     ?? '无可测试请求形态'
 })
 const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
-const runDisabled = computed(() => (
-  (!props.modelsOptional && (props.modelsLoading || Boolean(props.modelsError)))
-  || !props.modelsReady
-  || !props.model.trim()
-  || !selectedEndpointModeSelectValue.value
-))
+const runDisabled = computed(() => {
+  if (connectivityTest.value) return !props.account
+  return (
+    (!props.modelsOptional && (props.modelsLoading || Boolean(props.modelsError)))
+    || !props.modelsReady
+    || !props.model.trim()
+    || !selectedEndpointModeSelectValue.value
+  )
+})
 const currentProviderName = computed(() => props.account
   ? props.providerName?.(props.account.providerCode) ?? '未知供应商'
   : ''
@@ -288,6 +309,15 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
 
 .test-form :deep(.ant-form-item) {
   margin-bottom: 0;
+}
+
+.test-connectivity-hint {
+  padding: 12px 14px;
+  border: 1px solid var(--juhe-border, #e5e7eb);
+  border-radius: 8px;
+  color: var(--juhe-muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .test-config-row {

@@ -58,8 +58,8 @@ const schedulingPreferencesPGFixtureSchema = `
       chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
       chat_speed_first_config_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique
       ON juhe_business.scheduling_preferences (system_account_id, name) WHERE built_in = 0;
@@ -76,8 +76,8 @@ const schedulingPreferencesPGFixtureSchema = `
       name text NOT NULL,
       status text NOT NULL DEFAULT 'active',
       scheduling_preference_id text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )
 `
 

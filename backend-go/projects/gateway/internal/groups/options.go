@@ -25,6 +25,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ResourcePermissions mirrors ResourcePermissions (storage/resource-permissions.ts).
@@ -178,12 +179,21 @@ func (s *Store) authorizedOptionArm() string {
 
 func scanOptionRow(scan func(...any) error) (optionRow, error) {
 	var row optionRow
+	var createdAt, updatedAt, authorizationExpiresAt dbtime.Nullable
 	err := scan(&row.id, &row.systemAccountID, &row.name,
 		&row.enabled, &row.isDefault, &row.groupType, &row.groupKind, &row.schedulingJSON,
-		&row.createdAt, &row.updatedAt,
+		&createdAt, &updatedAt,
 		&row.accessType, &row.authorizationID, &row.authorizationStatus,
-		&row.authorizationExpiresAt, &row.authorizationLimitsJSON)
-	return row, err
+		&authorizationExpiresAt, &row.authorizationLimitsJSON)
+	if err != nil {
+		return optionRow{}, err
+	}
+	row.createdAt = createdAt.APIString()
+	row.updatedAt = updatedAt.APIString()
+	if authorizationExpiresAt.Valid {
+		row.authorizationExpiresAt = sql.NullString{String: authorizationExpiresAt.APIString(), Valid: true}
+	}
+	return row, nil
 }
 
 // rowFilter mirrors buildGroupFilter over the union output (unqualified
@@ -567,7 +577,7 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 		Enabled:          enabled == 1,
 		GroupType:        normalizedType,
 		SchedulingPolicy: policy,
-		UpdatedAt:        updatedAt,
+		UpdatedAt:        apiTimeString(updatedAt),
 	}, nil
 }
 

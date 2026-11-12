@@ -140,30 +140,28 @@ func parseBalanceInstant(value string) (time.Time, error) {
 }
 
 // balanceDueText 把 balance_query_next_refresh_at / updated_at 的写入值规范
-// 为毫秒截断的 UTC RFC3339Nano 文本。两列都是 text 列，
-// 必须写预格式化文本——把 time.Time 参数直接绑给 text 列会让比较落入驱动
-// 的文本语义、围栏永不相等（2026-09-26 生产事故根因：CommitDetectionDue
-// 恒 0 行，探测意图永不收口）。毫秒截断保证写回值下轮读回后仍能与
-// ::timestamptz fence 精确相等（亚微秒在 PG 舍入与驱动截断间可能差 1μs），
-// 范式对齐 shared platform/accountbalance 的 AdvancePeriodicDue
-// （balanceDueText 未导出，此处本地实现）。
+// 为毫秒截断的 UTC RFC3339Nano 文本。两列自 Revision 26 起为 timestamptz(3)，
+// 毫秒截断仍是写入契约：读回值与围栏参数在同一位精度上比较，避免纳秒输入
+// 被 PG 舍入后与 Go 侧缓存值相差 1μs（2026-09-28 BUG-0206 同族）。范式对齐
+// shared platform/accountbalance 的 AdvancePeriodicDue（balanceDueText 未
+// 导出，此处本地实现）。
 func balanceDueText(value time.Time) string {
 	return value.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
 }
 
-// balanceDueColumn 返回 due 围栏/比较使用的列表达式。该列是 text：
-// 与库内读回文本做等值/大小比较必须先 cast 到 timestamptz（直接
-// text = $n 是文本比较、恒不命中）。
+// balanceDueColumn 返回 due 围栏/比较使用的列表达式。列自 Revision 26 起为
+// timestamptz，`::timestamptz` 转型保留为无类型参数与 mixed-call 的显式
+// 类型锚点（文本参数在赋值/比较上下文仍由该 cast 确定类型）。
 func balanceDueColumn() string {
 	return "balance_query_next_refresh_at::timestamptz"
 }
 
 // balanceDueCompare 返回 due 与「库内读回的 RFC3339Nano 文本」比较的 SQL
 // 片段与绑定值（op 为 "=" / ">" 等原样运算符）。绑定原始文本参数并 cast 到
-// timestamptz 后比较：等值两侧同过 PG 的同一处 cast 舍入，纳秒精度存量值
-// （如 .690411968 → .690412）与毫秒截断新值都能精确命中。绑定 time.Time
-// （pgx 截断到微秒 .690411）时与列 cast 的四舍五入相差 1μs，等值围栏恒不
-// 命中——探测意图永不收口（2026-09-28 BUG-0206 根因）。
+// timestamptz：等值两侧同过 PG 同一处 cast 舍入，纳秒精度存量值
+// （如 .690411968 → .690412）与毫秒截断新值都能精确命中；绑定 time.Time
+// 会因 pgx 微秒截断与列舍入相差 1μs（2026-09-28 BUG-0206 根因），故保留
+// 文本绑定。
 // dueText 为空（无游标占位）时绑定零值时间文本：占位臂在 SQL 里被守卫短路，
 // 但占位值仍必须是合法 timestamptz 输入，防求值报错。
 func balanceDueCompare(op string, dueText string) (string, any) {

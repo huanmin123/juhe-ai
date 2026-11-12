@@ -162,8 +162,8 @@ func TestAccountBatchUpdateDispatchGatedByProxyChange(t *testing.T) {
 			t.Fatalf("non-proxy batch must not advance %s: %v", id, revision)
 		}
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
-		t.Fatal("non-proxy batch must not write outbox rows beyond the two create-chain rows")
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 4 {
+		t.Fatal("non-proxy batch must not write outbox rows beyond the four create-chain rows (J3a+J3b)")
 	}
 	// PG 臂契约（invalidation.go finishCreateSideEffects 的 if !s.pg 门控）：
 	// 创建链 stats 脏标记只走 SQLite 臂，PG 由 compose 的 stats slice 承接，
@@ -203,9 +203,9 @@ func TestAccountBatchUpdateDispatchGatedByProxyChange(t *testing.T) {
 		}
 	}
 	// The no-op re-run must not write additional outbox rows on top of the
-	// two create-chain rows plus the two first-round batch rows
-	// (BUG-0174 M-8).
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 4 {
+	// four create-chain rows plus the four first-round batch rows
+	// (BUG-0174 M-8, J3a+J3b dual projection keys).
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 8 {
 		t.Fatal("re-run must not write additional outbox rows")
 	}
 }
@@ -244,15 +244,15 @@ func TestAccountBatchUpdateAdvancesDispatchFamily(t *testing.T) {
 		t.Fatalf("family member acc-authz-inst dispatch_revision: %v", revision)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ? AND transition_id = ?`,
-		ids[0], batchID+":"+ids[0]) != 1 {
-		t.Fatalf("root outbox row missing: %v", ids[0])
+		ids[0], batchID+":"+ids[0]) != 2 {
+		t.Fatalf("root outbox rows missing: %v", ids[0])
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ? AND transition_id = ?`,
-		ids[1], batchID+":"+ids[1]) != 1 {
-		t.Fatalf("sibling outbox row missing: %v", ids[1])
+		ids[1], batchID+":"+ids[1]) != 2 {
+		t.Fatalf("sibling outbox rows missing: %v", ids[1])
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = 'acc-authz-inst'
-		AND transition_id = ? AND dispatch_revision = 2`, familyTransitionID(batchID+":"+ids[0], "acc-authz-inst")) != 1 {
+		AND transition_id = ? AND dispatch_revision = 2`, familyTransitionID(batchID+":"+ids[0], "acc-authz-inst")) != 2 {
 		t.Fatal("instance family outbox row missing")
 	}
 }
@@ -285,8 +285,8 @@ func TestAccountBatchUpdateInvalidatorFailureKeepsOK(t *testing.T) {
 			t.Fatalf("proxy write for %s: %v", id, proxy)
 		}
 	}
-	// Two create-chain rows plus two batch rows.
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 4 {
+	// Four create-chain rows plus four batch rows (J3a+J3b per advance).
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 8 {
 		t.Fatal("outbox rows must survive invalidator failure")
 	}
 }
@@ -317,8 +317,8 @@ func TestAccountBatchUpdateDispatchRollsBackWithBatch(t *testing.T) {
 			t.Fatalf("rollback must restore proxy for %s: %v", id, proxy)
 		}
 	}
-	// Only the two create-chain outbox rows survive the rollback.
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
+	// Only the four create-chain outbox rows (J3a+J3b per advance) survive.
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 4 {
 		t.Fatal("rollback must remove the batch outbox rows")
 	}
 	// PG 臂契约同上：无 create-chain 脏标记基线，中止批量不得落任何脏标记。

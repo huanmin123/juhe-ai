@@ -364,7 +364,7 @@ const presetCapabilities: Record<string, PresetCapability> = {
   minimax_media: { operationTemplates: ['POST /video_generation', 'GET /query/video_generation', 'POST /t2a_v2'], vocabulary: mediaVocabulary },
   volcengine_ark: { operationTemplates: ['POST /contents/generations/tasks', 'GET /contents/generations/tasks/{id}'], vocabulary: ['chat_json', 'chat_sse', 'images_json', 'video_create', 'video_get', 'video_content', 'video_cancel'] },
   volcengine_openspeech: { operationTemplates: ['POST /tts/create', 'POST /auc/bigmodel/submit', 'POST /auc/bigmodel/query'], vocabulary: ['audio_speech', 'audio_transcription_json', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'] },
-  qwen_dashscope: { operationTemplates: ['POST /compatible-mode/v1/chat/completions', 'POST /api/v1/services/audio/asr/transcription', 'POST /api/v1/services/aigc/video-generation/video-synthesis', 'GET /api/v1/tasks/{task_id}'], vocabulary: ['chat_json', 'chat_sse', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'] }
+  qwen_dashscope: { operationTemplates: ['POST /compatible-mode/v1/chat/completions', 'POST /api/v1/services/aigc/multimodal-generation/generation', 'POST /api/v1/services/audio/asr/transcription', 'POST /api/v1/services/aigc/video-generation/video-synthesis', 'GET /api/v1/tasks/{task_id}'], vocabulary: ['chat_json', 'chat_sse', 'images_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'] }
 }
 
 const accountHealthCheckEndpointModes: readonly string[] = [

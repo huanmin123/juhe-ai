@@ -347,11 +347,11 @@ func TestHydrateRowDerivations(t *testing.T) {
 // TestStatusBoundaryAtOfBranches 覆盖边界时间提取的各分支。
 func TestStatusBoundaryAtOfBranches(t *testing.T) {
 	row := managementRow{
-		authorizationExpiresAt: sql.NullString{String: "2030-01-01T00:00:00.000Z", Valid: true},
-		sourceAccountExpiresAt: sql.NullString{String: "2031-01-01T00:00:00.000Z", Valid: true},
-		accountExpiresAt:       sql.NullString{String: "2032-01-01T00:00:00.000Z", Valid: true},
-		sourceCooldownUntil:    sql.NullString{String: "2033-01-01T00:00:00.000Z", Valid: true},
-		cooldownUntil:          sql.NullString{String: "2034-01-01T00:00:00.000Z", Valid: true},
+		authorizationExpiresAt: testTimeValue("2030-01-01T00:00:00.000Z"),
+		sourceAccountExpiresAt: testTimeValue("2031-01-01T00:00:00.000Z"),
+		accountExpiresAt:       testTimeValue("2032-01-01T00:00:00.000Z"),
+		sourceCooldownUntil:    testTimeValue("2033-01-01T00:00:00.000Z"),
+		cooldownUntil:          testTimeValue("2034-01-01T00:00:00.000Z"),
 	}
 	cases := []struct {
 		status       string
@@ -488,7 +488,7 @@ func TestComposeEntrySynthesis(t *testing.T) {
 
 	// 冷却中的账户：cooldownUntil 未来 → effectiveStatus=disabled + 边界时间。
 	cooledRow := row
-	cooledRow.cooldownUntil = sql.NullString{String: effFuture, Valid: true}
+	cooledRow.cooldownUntil = testTimeValue(effFuture)
 	entry, err = loader.composeEntry(composeInput{
 		row:     cooledRow,
 		payload: buildBasePayload(cooledRow, nil, nil),

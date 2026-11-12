@@ -329,9 +329,10 @@ func TestWMEnsurePostgresSeedsRunsPortableSubset(t *testing.T) {
 			t.Fatalf("可移植 seed 缺少语句 %s", fragment)
 		}
 	}
-	// 目标形态的可移植 seed 不再包含任何 profile 修复查询（provider_protocol_
-	// profiles 随旧供应商维度退役）。
-	if got := rec.queryCount(); got != 0 {
-		t.Fatalf("ErrNoRows 路径不应产生修复查询: %d", got)
+	// 唯一一次 QueryRow 是 scope_bindings 目标列类型探测（ErrNoRows 时按
+	// fresh schema 的 timestamptz 变体执行）；目标形态不再包含 profile 修复查询
+	// （provider_protocol_profiles 随旧供应商维度退役）。
+	if got := rec.queryCount(); got != 1 {
+		t.Fatalf("ErrNoRows 路径查询数 = %d, want 1（仅类型探测）", got)
 	}
 }

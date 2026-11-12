@@ -67,7 +67,7 @@ const qwenProfile = mediaProfile({
 
 // 第二次选择同供应商时定义已入缓存：resetForm 直接解析出完整默认
 // （accountFormDefaults 硬编码 status:'pending_test'），声明集非空且全部落在
-// 域允许集内——B1 修复前此处提前 return，跳过 status=active 预选。
+// 域允许集内——B1 修复前此处提前 return，跳过 status=pending_test 预选。
 function cachedResetFormState(overrides: Partial<MediaCreateDefaultsForm> = {}): MediaCreateDefaultsForm {
   return {
     supportedEndpointModes: [],
@@ -79,7 +79,7 @@ function cachedResetFormState(overrides: Partial<MediaCreateDefaultsForm> = {}):
 }
 
 describe('applyMediaCreateDefaults（媒体能力集恒全量 + status 预选）', () => {
-  it('volcengine×video：声明集窄集合被归一为域允许集全量，预选 active，检查形态收敛为 video_create', () => {
+  it('volcengine×video：声明集窄集合被归一为域允许集全量，预选 pending_test，检查形态收敛为 video_create', () => {
     const form = cachedResetFormState({
       supportedEndpointModes: ['video_get'],
       healthCheckEndpointMode: 'chat_json'
@@ -90,13 +90,13 @@ describe('applyMediaCreateDefaults（媒体能力集恒全量 + status 预选）
       profile: volcengineProfile,
       type: 'api_key'
     })
-    expect(form.status).toBe('active')
+    expect(form.status).toBe('pending_test')
     expect(form.statusSelectionExplicit).toBe(false)
     expect(form.healthCheckEndpointMode).toBe('video_create')
     expect(form.supportedEndpointModes).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
   })
 
-  it('minimax×audio：audio_speech 已是该供应商音频域全量（矩阵行仅 TTS），预选 active', () => {
+  it('minimax×audio：audio_speech 已是该供应商音频域全量（矩阵行仅 TTS），预选 pending_test', () => {
     const form = cachedResetFormState({
       supportedEndpointModes: ['audio_speech'],
       healthCheckEndpointMode: 'chat_json'
@@ -107,13 +107,30 @@ describe('applyMediaCreateDefaults（媒体能力集恒全量 + status 预选）
       profile: minimaxProfile,
       type: 'api_key'
     })
-    expect(form.status).toBe('active')
+    expect(form.status).toBe('pending_test')
     expect(form.statusSelectionExplicit).toBe(false)
     expect(form.healthCheckEndpointMode).toBe('audio_speech')
     expect(form.supportedEndpointModes).toEqual(['audio_speech'])
   })
 
-  it('qwen×video：声明集窄集合被归一为域允许集全量，预选 active，检查形态收敛为 video_create', () => {
+  it('qwen×audio：无 audio_speech 时检查形态落安全的 audio_job_get', () => {
+    const form = cachedResetFormState({
+      supportedEndpointModes: ['audio_job_create', 'audio_job_get'],
+      healthCheckEndpointMode: 'chat_json'
+    })
+    applyMediaCreateDefaults(form, {
+      capabilityDomain: 'audio',
+      providerCode: 'qwen',
+      profile: qwenProfile,
+      type: 'api_key'
+    })
+    expect(form.status).toBe('pending_test')
+    expect(form.healthCheckEndpointMode).toBe('audio_job_get')
+    expect(form.supportedEndpointModes).toContain('audio_job_get')
+    expect(form.supportedEndpointModes).not.toContain('audio_speech')
+  })
+
+  it('qwen×video：声明集窄集合被归一为域允许集全量，预选 pending_test，检查形态收敛为 video_create', () => {
     const form = cachedResetFormState({
       supportedEndpointModes: ['video_get', 'video_content'],
       healthCheckEndpointMode: 'chat_json'
@@ -124,13 +141,13 @@ describe('applyMediaCreateDefaults（媒体能力集恒全量 + status 预选）
       profile: qwenProfile,
       type: 'api_key'
     })
-    expect(form.status).toBe('active')
+    expect(form.status).toBe('pending_test')
     expect(form.statusSelectionExplicit).toBe(false)
     expect(form.healthCheckEndpointMode).toBe('video_create')
     expect(form.supportedEndpointModes).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
   })
 
-  it('首次选择（声明集为空）：落域默认集 + active 预选（既有 else 分支行为不变）', () => {
+  it('首次选择（声明集为空）：落域默认集 + pending_test 预选（既有 else 分支行为不变）', () => {
     const form = cachedResetFormState()
     applyMediaCreateDefaults(form, {
       capabilityDomain: 'video',
@@ -140,11 +157,11 @@ describe('applyMediaCreateDefaults（媒体能力集恒全量 + status 预选）
     })
     expect(form.supportedEndpointModes).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
     expect(form.healthCheckEndpointMode).toBe('video_create')
-    expect(form.status).toBe('active')
+    expect(form.status).toBe('pending_test')
     expect(form.statusSelectionExplicit).toBe(false)
   })
 
-  it('声明集含域外值：整体重置为域默认集 + active 预选（既有 else 分支行为不变）', () => {
+  it('声明集含域外值：整体重置为域默认集 + pending_test 预选（既有 else 分支行为不变）', () => {
     const form = cachedResetFormState({
       supportedEndpointModes: ['chat_json'],
       healthCheckEndpointMode: 'chat_json'
@@ -157,7 +174,7 @@ describe('applyMediaCreateDefaults（媒体能力集恒全量 + status 预选）
     })
     expect(form.supportedEndpointModes).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
     expect(form.healthCheckEndpointMode).toBe('video_create')
-    expect(form.status).toBe('active')
+    expect(form.status).toBe('pending_test')
   })
 
   it('对话域（chat）不适用媒体默认值：状态与声明集保持原样（对话域行为零变化）', () => {

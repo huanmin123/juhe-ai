@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
@@ -188,10 +189,15 @@ func lastTestJSONValue(record TestRecord) (any, error) {
 
 func scanTestRecord(row interface{ Scan(...any) error }) (TestRecord, error) {
 	var record TestRecord
+	var createdAt dbtime.Nullable
 	err := row.Scan(&record.ID, &record.CreatedBy, &record.AccountID, &record.AccountName, &record.Model,
 		&record.DraftHash, &record.Verdict, &record.Alignment, &record.DiagnosisJSON, &record.HTTPStatus,
-		&record.LatencyMs, &record.CreatedAt)
-	return record, err
+		&record.LatencyMs, &createdAt)
+	if err != nil {
+		return TestRecord{}, err
+	}
+	record.CreatedAt = createdAt.APIString()
+	return record, nil
 }
 
 // nullTextValue / nullIntValue 把空串与零值映射为 SQL NULL

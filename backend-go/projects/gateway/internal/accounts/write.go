@@ -456,15 +456,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 
 	// 后台自动探测总开关（AI账户后台自动探测总开关设计 §2/§8）：缺省开启；
-	// 媒体域（audio/video）不适用该开关，显式关闭按 400 拒绝（全创建入口统一
-	// 在本写面拒绝，含管理面/OAuth 托管/公开 API/导入；image 域存在后台探测，
-	// 适用该开关）。手动模式下特供恢复不可用（自动恢复功能没有闭环），显式
-	// 开启同样拒绝。
+	// 全部场景（含 video/audio/image）统一适用该开关——J1 已有对应媒体连通性
+	// 探测。手动模式下特供恢复不可用（自动恢复功能没有闭环），显式开启同样拒绝。
 	backgroundProbeEnabled := 1
 	if input.BackgroundProbeEnabled != nil && !*input.BackgroundProbeEnabled {
-		if accountscore.SkipsConversationHealthStateMachine(domain) {
-			return nil, &ValidationError{Message: "媒体域账户不适用后台自动探测开关"}
-		}
 		backgroundProbeEnabled = 0
 		if input.ExpeditedRecoveryEnabled != nil && *input.ExpeditedRecoveryEnabled {
 			return nil, &ValidationError{Message: "手动模式账户不适用特供快速恢复"}
@@ -662,14 +657,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if err != nil {
 		return nil, err
 	}
-	// 初始状态按域分流（媒体账户生命周期定案表）：audio/video 域账户不参与
-	// 对话健康检查状态机（无后台探针执行），创建默认落 active——显式 disabled
-	// 仍 disabled，其余入参（含缺省 pending_test 哨兵值）一律 active；
-	// health_check_endpoint_mode 仅为记录值（DefaultHealthCheckEndpointModeFor
-	// Domain）。chat/image 域行为不变：仅 active+SkipInitialHealthCheck 才
-	// active，否则非 disabled 一律 pending_test 等待后台健康检查。
-	// 手动模式（background_probe_enabled=0，总开关设计 §8）先于域分流：显式
-	// active/error/disabled 保持，缺省哨兵收敛 active——不产生 pending_test、
+	// 初始状态按统一健康状态机派生：手动模式显式状态保持；后台探测开启时
+	// 仅 active+SkipInitialHealthCheck 才 active，否则非 disabled 一律
+	// pending_test 等待 J1 首次激活检查（video/audio/image 与 chat 同规则）。
+	// 手动模式（background_probe_enabled=0，总开关设计 §8）先于统一状态机：
+	// 显式 active/error/disabled 保持，缺省哨兵收敛 active——不产生 pending_test、
 	// 不投递首次激活检查，真实流量即验收；schedulable 跟随派生状态。原始状态
 	// 词优先（哨兵归一化会把显式 error 折叠成 pending_test）。
 	manualCreationStatus := accountscore.CreationStatus{}
@@ -683,10 +675,6 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	initialStatus := input.Status.Status
 	if backgroundProbeEnabled == 0 {
 		initialStatus = manualCreationStatus.Status
-	} else if accountscore.SkipsConversationHealthStateMachine(domain) {
-		if input.Status.Status != "disabled" && !(input.PreservePendingTest && input.Status.Status == "pending_test") {
-			initialStatus = "active"
-		}
 	} else if input.Status.Status == "active" && input.Status.SkipInitialHealthCheck {
 		initialStatus = "active"
 	} else if input.Status.Status != "disabled" {
@@ -704,17 +692,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 闸门是计划在当前时刻的唯一派生事实：无计划（或计划未启用）为 NULL，闸门
 	// 恒开；有计划时按时段求值落 1/0。计划与 status 正交，任何状态都写闸门。
 	scheduleGate := ScheduleGateValue(schedule, now)
-	// 媒体域 schedulable 跟随派生状态：入参 status 缺省时 CreationStatus 的
-	// Schedulable 哨兵为 false（对应 chat 的 pending_test 暂停调度），媒体域
-	// 派生为 active 后必须可调度，否则产生「active 却禁调度」的滞留行；显式
-	// disabled 仍由哨兵落 false。套餐过期臂不变。手动模式 schedulable 跟随
-	// 派生状态：active 可调度，error/disabled 停调度。
+	// 手动模式 schedulable 跟随派生状态：active 可调度，error/disabled 停调度。
 	schedulable := input.Status.Schedulable
 	if backgroundProbeEnabled == 0 {
 		schedulable = manualCreationStatus.Schedulable
-	} else if accountscore.SkipsConversationHealthStateMachine(domain) && input.Status.Status != "disabled" &&
-		!(input.PreservePendingTest && input.Status.Status == "pending_test") {
-		schedulable = true
 	}
 	if expiredByPackage {
 		schedulable = false
@@ -1068,18 +1049,18 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// J1 snapshot outbox (repositories.ts:2418-2432): health-capable
 	// accounts reserve input version 1 and land the pending snapshot intent
 	// (reason 'account_created') in the same transaction, which is what puts
-	// the new account into the probe candidate join. Media domains have no
-	// conversation probe path. API Key accounts reserve for every vendor:
-	// J1 direct reader covers all nine vendors (deepseek 等) — the legacy
-	// gpt/openai gate left non-GPT API Key accounts without an input-version
-	// row, so their creation probe was silently dropped by the jobs outbox
-	// drain (CurrentProbeInput !ok) and the balance detection intent never
-	// appeared (T56 第二层根因，2026-10-24)。OAuth 仅 gpt（generic openai oauth
-	// 已退场）。
+	// the new account into the probe candidate join. All scenarios (chat and
+	// media) use the same J1 probe path. API Key accounts reserve for every
+	// vendor: J1 direct reader covers all nine vendors (deepseek 等) — the
+	// legacy gpt/openai gate left non-GPT API Key accounts without an
+	// input-version row, so their creation probe was silently dropped by the
+	// jobs outbox drain (CurrentProbeInput !ok) and the balance detection
+	// intent never appeared (T56 第二层根因，2026-10-24)。OAuth 仅 gpt（generic
+	// openai oauth 已退场），Gemini google_oauth 媒体账户同样走 J1。
 	// 手动模式（background_probe_enabled=0，总开关设计 §8）跳过首次激活检查
 	// 意图：不写 J1 input outbox，账户直接以 active 可调度参与真实流量。
-	if backgroundProbeEnabled != 0 && !accountscore.SkipsConversationHealthStateMachine(domain) &&
-		(accountType == "api_key" || (providerCode == contracts.VendorGPT && accountType == "oauth")) {
+	if backgroundProbeEnabled != 0 &&
+		(accountType == "api_key" || (providerCode == contracts.VendorGPT && accountType == "oauth") || accountType == "google_oauth") {
 		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
 			return nil, err
 		}
@@ -1089,8 +1070,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// probes once; a freshly saved active single-Key API Key account without
 	// balance query probes once so the balance detector can classify it.
 	// 手动模式无后台探测：不投递任何创建期检查（含单 Key 余额探测臂）。
-	initialHealthCheck := backgroundProbeEnabled != 0 &&
-		!accountscore.SkipsConversationHealthStateMachine(domain) && (nextStatus == "pending_test" ||
+	initialHealthCheck := backgroundProbeEnabled != 0 && (nextStatus == "pending_test" ||
 		(nextStatus == "active" && accountType == "api_key" &&
 			EffectiveAccountApiKeyCount(credentials) == 1 &&
 			balanceQueryEnabledInt != 1 &&

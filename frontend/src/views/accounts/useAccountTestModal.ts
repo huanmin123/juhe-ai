@@ -1,4 +1,4 @@
-import { onBeforeUnmount, reactive, ref, type ComputedRef } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, type ComputedRef } from 'vue'
 
 import { message } from '@/lib/antd'
 import type { AccountDraftTestPayload, AccountTestPayload } from '@/api/client'
@@ -12,6 +12,7 @@ import {
   type AccountTestForm,
   accountTestSuccessMessage,
   buildAccountTestPayload,
+  connectivityEndpointModeForDomain,
   failedAccountTestResult,
   stoppedAccountTestMessage
 } from './accountTestFlow'
@@ -81,6 +82,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const draftTestMode = ref<AccountTestDraftMode>()
   const draftApiKeyTestSnapshot = options.draftApiKeyTestSnapshot ?? ref<DraftApiKeyTestSnapshot>()
   const testForm = reactive<AccountTestForm>({ model: '', testEndpointMode: 'account_default' })
+  const connectivityTest = computed(() => {
+    const domain = testingAccount.value?.capabilityDomain ?? draftTestingAccountPayload.value?.capabilityDomain
+    return Boolean(domain && domain !== 'chat')
+  })
   const {
     initializeDraftTestOptions,
     initializeSavedAccountTestOptions,
@@ -183,15 +188,16 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function runAccountTest(): Promise<void> {
     const account = testingAccount.value
     const draftTestActive = Boolean(draftTestingAccountPayload.value)
-    if (
-      !account
-      || testRunning.value
-      || !testModelsReady.value
-      || (!draftTestActive && (testModelsLoading.value || Boolean(testModelsError.value)))
-      || !testForm.model.trim()
-      || testForm.testEndpointMode === 'account_default'
-    ) {
-      return
+    if (!account || testRunning.value) return
+    if (!connectivityTest.value) {
+      if (
+        !testModelsReady.value
+        || (!draftTestActive && (testModelsLoading.value || Boolean(testModelsError.value)))
+        || !testForm.model.trim()
+        || testForm.testEndpointMode === 'account_default'
+      ) {
+        return
+      }
     }
 
     const viewToken = testViewToken
@@ -203,6 +209,9 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       testEndpointMode: testForm.testEndpointMode
     }, account, draftPayload)
     const endpointMode = payload.testEndpointMode
+      ?? (connectivityTest.value
+        ? connectivityEndpointModeForDomain(account.capabilityDomain ?? draftPayload?.capabilityDomain)
+        : undefined)
     if (!endpointMode) return
     const run = beginAccountTestRun({
       account,

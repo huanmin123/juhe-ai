@@ -53,7 +53,7 @@ func TestF8RecordKeySuccessMarksStatsDirty(t *testing.T) {
 		t.Fatalf("脏行数 = %d (%v)", len(rows), rows)
 	}
 	entry, ok := rows["group-1"]
-	if !ok || entry[0] != "account_api_key_runtime" || entry[1] != nowMillisText() {
+	if !ok || entry[0] != "account_api_key_runtime" || !sameInstantText(entry[1], nowMillisText()) {
 		t.Fatalf("group-1 脏行 = %v", entry)
 	}
 
@@ -91,7 +91,7 @@ func TestF8RecordKeyFailureMarksStatsDirty(t *testing.T) {
 		t.Fatalf("update failure = %+v err=%v", result, err)
 	}
 	rows := h.dirtyRows(t)
-	if entry, ok := rows["group-1"]; !ok || entry[0] != "account_api_key_runtime" || entry[1] != nowMillisText() {
+	if entry, ok := rows["group-1"]; !ok || entry[0] != "account_api_key_runtime" || !sameInstantText(entry[1], nowMillisText()) {
 		t.Fatalf("group-1 脏行 = %v present=%v", entry, ok)
 	}
 

@@ -53,11 +53,13 @@ afterEach(() => {
 
 describe('accountsApi 请求形状', () => {
   it('列表、选项与标签方法发出正确的 method 与 URL', async () => {
+    await accountsApi.capabilityCatalog()
     await accountsApi.list()
     await accountsApi.options()
     await accountsApi.tags()
     await accountsApi.deleteTag('tag-1')
     expect(requestShapes()).toEqual([
+      ['GET', '/accounts/capability-catalog'],
       ['GET', '/accounts'],
       ['GET', '/accounts/options'],
       ['GET', '/accounts/tags'],
@@ -213,6 +215,7 @@ describe('accountsApi 请求形状', () => {
 
 describe('myAccountsApi 请求形状', () => {
   it('各方法命中 /my-accounts 前缀路径', async () => {
+    await myAccountsApi.capabilityCatalog()
     await myAccountsApi.list()
     await myAccountsApi.tags()
     await myAccountsApi.deleteTag('tag-1')
@@ -223,6 +226,7 @@ describe('myAccountsApi 请求形状', () => {
     await myAccountsApi.test('a-1')
     await myAccountsApi.testTask('task-1')
     expect(requestShapes()).toEqual([
+      ['GET', '/my-accounts/capability-catalog'],
       ['GET', '/my-accounts'],
       ['GET', '/my-accounts/tags'],
       ['DELETE', '/my-accounts/tags/tag-1'],

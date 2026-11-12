@@ -94,11 +94,12 @@ var (
 		"images_json",
 	}
 	// QwenEndpointModeValues 是 qwen 档案可声明的全部端点模式（M3 §10.1 +
-	// M3f 长音频 §10.2 + 对话批 chat）：chat 对 + video_* 四值 + audio_job_*
-	// 四值（CosyVoice TTS 未回填不收录 audio_speech）。全部 opt-in；默认集
-	// video_get（零费用档）。
+	// M3f 长音频 §10.2 + 对话批 chat + 2026-11-11 图像批）：chat 对 + video_*
+	// 四值 + audio_job_* 四值（CosyVoice TTS 未回填不收录 audio_speech）+
+	// images_json（Qwen-Image 同步生图，原生 multimodal-generation 端点）。
+	// 全部 opt-in；默认集 video_get（零费用档）。
 	QwenEndpointModeValues = []string{
-		"chat_json", "chat_sse",
+		"chat_json", "chat_sse", "images_json",
 		"video_create", "video_get", "video_content", "video_cancel",
 		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 	}
@@ -128,7 +129,7 @@ var (
 	// M5b realtime（Realtime 设计 §6）：realtime_session（GET /v1/realtime
 	// WS 升级请求）同语义追加——进词表、opt-in、不进默认集；WS 桥接
 	// handler 未交付前候选过滤消费面未接线，词表先行保持四层一致。
-	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
+	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "embed_content", "rerank_json", "moderation_json", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
 	OpenAIChatEndpointModes      = []string{"chat_json", "chat_sse"}
 	OpenAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
 	// OpenAIDefaultEndpointModes is the write-side default set for new openai

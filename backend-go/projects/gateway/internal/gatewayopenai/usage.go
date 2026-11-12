@@ -229,6 +229,11 @@ func outputImageCountValue(usage map[string]any) *int {
 	if value == nil {
 		value = numberValue(usage["image_count"])
 	}
+	// 火山 Ark Seedream 的 usage 字段名（contract §9.3）；与 OpenAI 字段
+	// 并列解析，缺失时再由 data[] 长度兜底。
+	if value == nil {
+		value = numberValue(usage["generated_images"])
+	}
 	if value == nil || *value <= 0 {
 		return nil
 	}

@@ -232,6 +232,12 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL,
 			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, model TEXT NOT NULL, model_id TEXT, created_at TEXT NOT NULL)`,
+		`CREATE TABLE account_lock_states (
+			account_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, lock_state TEXT NOT NULL DEFAULT 'UNLOCKED',
+			lock_death_timeout_seconds INTEGER, lock_retry_interval_seconds INTEGER,
+			incident_id TEXT, incident_started_at TEXT, deadline_at TEXT, original_status TEXT,
+			provenance TEXT, next_retry_at_ms BIGINT, lease_id TEXT, lease_until_ms BIGINT,
+			generation INTEGER NOT NULL DEFAULT 0, updated_at TEXT)`,
 		`CREATE TABLE account_api_key_runtime_states (
 			account_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL, key_index INTEGER,
 			status TEXT NOT NULL, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT,

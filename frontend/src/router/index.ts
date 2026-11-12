@@ -5,7 +5,6 @@ import { clearAuthState, loadCurrentUser } from '@/composables/useAuth'
 import { deploymentCapabilityEnabled, type RouteCapability } from '@/composables/useCapabilities'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import type { SystemAccountRole } from '@/types/domain'
-import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import { PROFILE_PATH, requiredPasswordProfileLocation } from '@/views/profile/profileNavigation'
 import { installRouteLoadRecovery, recoverRouteAssetLoadError } from './routeLoadRecovery'
 
@@ -24,8 +23,6 @@ declare module 'vue-router' {
     roles?: SystemAccountRole[]
     // 部署级能力位（2026-11-09）：false 时菜单隐藏且路由守卫重定向。
     requiresCapability?: RouteCapability
-    // AI 账户能力域拆分（M2）：四域路由共用 AccountsView，按域装载/裁剪列表。
-    capabilityDomain?: AccountCapabilityDomain
   }
 }
 
@@ -46,51 +43,11 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/my-accounts/chat',
+    path: '/my-accounts',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
-      title: '对话账户',
-      description: '创建和维护自己的对话 AI 账户。',
-      capabilityDomain: 'chat',
-      menuGroup: 'my-accounts',
-      menuGroupTitle: 'AI 账户',
-      viewScope: 'self',
-      heavy: true
-    }
-  },
-  {
-    path: '/my-accounts/video',
-    component: () => import('@/views/accounts/AccountsView.vue'),
-    meta: {
-      title: '视频账户',
-      description: '创建和维护自己的视频生成 AI 账户。',
-      capabilityDomain: 'video',
-      menuGroup: 'my-accounts',
-      menuGroupTitle: 'AI 账户',
-      viewScope: 'self',
-      heavy: true
-    }
-  },
-  {
-    path: '/my-accounts/audio',
-    component: () => import('@/views/accounts/AccountsView.vue'),
-    meta: {
-      title: '音频账户',
-      description: '创建和维护自己的音频生成 AI 账户。',
-      capabilityDomain: 'audio',
-      menuGroup: 'my-accounts',
-      menuGroupTitle: 'AI 账户',
-      viewScope: 'self',
-      heavy: true
-    }
-  },
-  {
-    path: '/my-accounts/image',
-    component: () => import('@/views/accounts/AccountsView.vue'),
-    meta: {
-      title: '图像账户',
-      description: '创建和维护自己的图像生成 AI 账户。',
-      capabilityDomain: 'image',
+      title: 'AI 账户',
+      description: '创建和维护自己的 AI 账户；按场景类型筛选，一个账户只属于一个场景。',
       menuGroup: 'my-accounts',
       menuGroupTitle: 'AI 账户',
       viewScope: 'self',
@@ -103,8 +60,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '任务中心',
       description: '查看自己名下的异步媒体任务类型、状态、成本与返回内容定位。',
-      menuGroup: 'my-accounts',
-      menuGroupTitle: 'AI 账户',
       viewScope: 'self',
       heavy: true
     }
@@ -260,8 +215,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的使用记录',
       description: '查看自己的网关请求、命中账户、Token 用量、成本和错误状态。',
-      menuGroup: 'my-accounts',
-      menuGroupTitle: 'AI 账户',
       viewScope: 'self',
       heavy: true
     }
@@ -302,54 +255,11 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/accounts/chat',
+    path: '/accounts',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
-      title: '对话账户',
-      description: '按系统账户管理对话 AI 账户，统一查看状态、并发、代理和错误策略。',
-      capabilityDomain: 'chat',
-      menuGroup: 'ai-assets',
-      menuGroupTitle: 'AI 账户',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/accounts/video',
-    component: () => import('@/views/accounts/AccountsView.vue'),
-    meta: {
-      title: '视频账户',
-      description: '按系统账户管理视频生成 AI 账户，统一查看状态、并发和代理。',
-      capabilityDomain: 'video',
-      menuGroup: 'ai-assets',
-      menuGroupTitle: 'AI 账户',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/accounts/audio',
-    component: () => import('@/views/accounts/AccountsView.vue'),
-    meta: {
-      title: '音频账户',
-      description: '按系统账户管理音频生成 AI 账户，统一查看状态、并发和代理。',
-      capabilityDomain: 'audio',
-      menuGroup: 'ai-assets',
-      menuGroupTitle: 'AI 账户',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/accounts/image',
-    component: () => import('@/views/accounts/AccountsView.vue'),
-    meta: {
-      title: '图像账户',
-      description: '按系统账户管理图像生成 AI 账户，统一查看状态、并发和代理。',
-      capabilityDomain: 'image',
+      title: 'AI 账户',
+      description: '按系统账户管理 AI 账户；按场景类型筛选，一个账户只属于一个场景。',
       menuGroup: 'ai-assets',
       menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
@@ -414,8 +324,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '模型检测',
       description: '对 AI 账户发起目标模型可信度检测，并查看历史检测结果。',
-      menuGroup: 'ai-assets',
-      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -466,8 +374,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '使用记录管理',
       description: '按系统账户查看网关请求、命中账户、Token 用量、成本和错误状态。',
-      menuGroup: 'ai-assets',
-      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -772,10 +678,8 @@ export const router = createRouter({
         viewScope: 'self'
       }
     },
-    // M2 域拆分旧入口：/accounts 与 /my-accounts 重定向到对话域；
-    // getDefaultPathForMenuMode 返回的旧路径由此自然落到 chat，无需改动。
-    { path: '/accounts', redirect: '/accounts/chat' },
-    { path: '/my-accounts', redirect: '/my-accounts/chat' },
+    // D13：旧四域路径不做兼容，统一由 /accounts 与 /my-accounts 承担；
+    // 旧入口不再注册 redirect，避免与新单菜单路径互相遮蔽。
     ...menuRoutes,
     {
       path: '/:pathMatch(.*)*',

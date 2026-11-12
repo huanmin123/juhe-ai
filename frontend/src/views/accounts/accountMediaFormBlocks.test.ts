@@ -378,9 +378,9 @@ describe('AccountEditModal.vue 媒体域渲染契约（源码级）', () => {
     expect(modalSource).toContain('applyMediaCreateDefaults(props.form')
   })
 
-  it('高级折叠卡按域裁剪：对话专属卡不渲染，image 才有后台探测卡', () => {
+  it('高级折叠卡按域裁剪：对话专属卡不渲染，媒体域统一渲染后台探测卡', () => {
     expect(templateSource).toContain('v-if="!isMediaDomain"')
-    expect(templateSource).toContain('v-if="isMediaDomain && capabilityDomain === \'image\'"')
+    expect(templateSource).toContain('v-if="isMediaDomain"')
     expect(templateSource).toContain('name="后台自动探测"')
     // 媒体域错误卡只保留错误处理策略，不渲染响应检查。
     expect(templateSource).toContain(':name="isMediaDomain ? \'错误处理策略\' : \'错误与响应规则\'"')

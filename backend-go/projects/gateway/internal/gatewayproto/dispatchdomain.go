@@ -29,7 +29,7 @@ const (
 // 处理——历史调用方在 lane 解析前的兜底形态保持对话语义。
 func DispatchDomainOfLane(lane RequestLane) DispatchDomain {
 	switch lane {
-	case LaneImage, LaneAudio, LaneVideo:
+	case LaneImage, LaneAudio, LaneVideo, LaneUtility:
 		return DispatchDomainStatelessMedia
 	case LaneRealtime:
 		return DispatchDomainRealtime

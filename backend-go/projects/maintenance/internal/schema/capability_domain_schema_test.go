@@ -16,11 +16,12 @@ import (
 
 // TestPostgresCapabilityDomainSchemaContract pins the PG text contract along
 // the expedited-recovery precedent: the CREATE TABLE declaration line and the
-// legacy ALTER guard statement.
+// legacy ALTER guard statement. D13 起列不再带 CHECK，场景值由应用层
+// scenario 注册表校验；旧 CHECK 由显式 drop-check 语句删除。
 func TestPostgresCapabilityDomainSchemaContract(t *testing.T) {
 	accountsDDL := findPostgresStatementContaining(t, "CREATE TABLE IF NOT EXISTS accounts (")
 	domainLine := pgColumnDeclarationLine(t, accountsDDL, "capability_domain")
-	want := "      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),"
+	want := "      capability_domain text NOT NULL DEFAULT 'chat',"
 	if domainLine != want {
 		t.Fatalf("accounts.capability_domain declaration drifted:\n got %q\nwant %q", domainLine, want)
 	}
@@ -31,18 +32,27 @@ func TestPostgresCapabilityDomainSchemaContract(t *testing.T) {
 	}
 
 	alterFound := false
+	dropCheckFound := false
 	for _, statement := range postgresSchemaStatements {
-		if statement.Source != "account-capability-domain-pg-column" {
-			continue
-		}
-		alterFound = true
-		wantAlter := `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
-		if statement.SQL != wantAlter {
-			t.Fatalf("capability domain legacy ALTER drifted:\n got %q\nwant %q", statement.SQL, wantAlter)
+		switch statement.Source {
+		case "account-capability-domain-pg-column":
+			alterFound = true
+			wantAlter := `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat'`
+			if statement.SQL != wantAlter {
+				t.Fatalf("capability domain legacy ALTER drifted:\n got %q\nwant %q", statement.SQL, wantAlter)
+			}
+		case "account-capability-domain-drop-check":
+			dropCheckFound = true
+			if !strings.Contains(statement.SQL, "DROP CONSTRAINT") || !strings.Contains(statement.SQL, "capability_domain") {
+				t.Fatalf("capability domain drop-check statement must drop the capability_domain CHECK: %q", statement.SQL)
+			}
 		}
 	}
 	if !alterFound {
 		t.Fatal("account-capability-domain-pg-column ALTER guard statement missing")
+	}
+	if !dropCheckFound {
+		t.Fatal("account-capability-domain-drop-check statement missing")
 	}
 }
 

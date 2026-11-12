@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/quotahourly"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // Availability schedule gate sync ×2（《时间计划闸门与账户状态解耦设计》§4.1）：
@@ -274,7 +275,7 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 	query += `
 		ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC
 		LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, s.bind(query), dueAt, batchLimit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), scheduleInstant(table, dueAt), batchLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +384,7 @@ func (s *Store) clearScheduleGate(ctx context.Context, tx *sql.Tx, table, id, up
 		WHERE id = ?
 			AND availability_schedule_gate IS NOT NULL
 			AND availability_schedule_json = ?`
-	executed, err := tx.ExecContext(ctx, s.bind(query), updatedAt, id, scheduleJSON)
+	executed, err := tx.ExecContext(ctx, s.bind(query), scheduleInstant(table, updatedAt), id, scheduleJSON)
 	if err != nil {
 		return false, err
 	}
@@ -401,7 +402,7 @@ func (s *Store) insertScheduleStatusEvent(ctx context.Context, tx *sql.Tx, event
 	query := `INSERT INTO ` + eventsTable + ` (event_key, ` + entityColumn + `, status, executed_at)
 		VALUES (?, ?, ?, ?)`
 	query += ` ON CONFLICT(event_key) DO NOTHING`
-	result, err := tx.ExecContext(ctx, s.bind(query), update.eventKey, update.id, gateWord(*update.gate), executedAt)
+	result, err := tx.ExecContext(ctx, s.bind(query), update.eventKey, update.id, gateWord(*update.gate), scheduleInstant(eventsTable, executedAt))
 	if err != nil {
 		return false, err
 	}
@@ -427,10 +428,10 @@ func (s *Store) insertScheduleStatusEvent(ctx context.Context, tx *sql.Tx, event
 // 不得推进它，否则窗口边界会在用户编辑期间制造 409。
 func (s *Store) applyScheduleGate(ctx context.Context, tx *sql.Tx, table string, accountMode bool, update scheduleSyncUpdate, updatedAt string) (bool, error) {
 	setClause := `SET availability_schedule_gate = ?, availability_schedule_next_check_at = ?`
-	args := []any{*update.gate, update.nextCheckAt}
+	args := []any{*update.gate, scheduleInstant(table, update.nextCheckAt)}
 	if accountMode {
 		setClause += `, updated_at = ?`
-		args = append(args, updatedAt)
+		args = append(args, scheduleInstant(table, updatedAt))
 	}
 	args = append(args, update.id, *update.gate, update.scheduleJSON)
 	query := `UPDATE ` + table + `
@@ -470,10 +471,20 @@ func (s *Store) updateScheduleNextCheckAt(ctx context.Context, tx *sql.Tx, table
 		SET availability_schedule_next_check_at = ?
 		WHERE id = ?
 			AND availability_schedule_json IS NOT NULL
-			AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
+			AND (availability_schedule_next_check_at IS NULL OR availability_schedule_next_check_at <> ?)
 			AND availability_schedule_json = ?`
-	_, err := tx.ExecContext(ctx, s.bind(query), nextCheckAt, id, nextCheckAt, scheduleJSON)
+	_, err := tx.ExecContext(ctx, s.bind(query), scheduleInstant(table, nextCheckAt), id, scheduleInstant(table, nextCheckAt), scheduleJSON)
 	return err
+}
+
+// scheduleInstant 决定时间参数的绑定类型：Revision 25 起 api_keys 与其事件表
+// 的时间列已是 timestamptz，必须绑定 time.Time；accounts 及其事件表仍是 text
+// （Phase 2-3 迁移），继续按 ISO 文本绑定。
+func scheduleInstant(table, value string) any {
+	if !strings.HasSuffix(table, "api_keys") && !strings.HasSuffix(table, "api_key_schedule_status_events") {
+		return value
+	}
+	return dbtime.DBArg(value)
 }
 
 // accountStateBumpFunc / apiKeyStateBumpFunc 把可选端口转成 bump 函数（nil 安全）。

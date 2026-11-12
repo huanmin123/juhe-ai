@@ -1,4 +1,5 @@
 import type {
+  AccountCapabilityCatalog,
   AccountBatchEditContextField,
   AccountBatchEditContextItem,
   AccountBatchEditRequest,
@@ -166,6 +167,7 @@ export interface AccountRuntimeResetResult {
 }
 
 export const accountsApi = {
+  capabilityCatalog: () => unwrap<AccountCapabilityCatalog>(http.get('/accounts/capability-catalog')),
   list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListRequestParams(params), signal: options?.signal })),
   providerCounts: (params?: AccountProviderCountsParams) => unwrap<Record<string, number>>(http.get('/accounts/provider-counts', { params: accountProviderCountsParams(params) })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
@@ -218,6 +220,7 @@ export const accountsApi = {
 }
 
 export const myAccountsApi = {
+  capabilityCatalog: () => unwrap<AccountCapabilityCatalog>(http.get('/my-accounts/capability-catalog')),
   list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListRequestParams(params, false), signal: options?.signal })),
   providerCounts: (params?: AccountProviderCountsParams) => unwrap<Record<string, number>>(http.get('/my-accounts/provider-counts', { params: accountProviderCountsParams(params) })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),

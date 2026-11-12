@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // SpeedFirstConfigDocument is the normalized chatSpeedFirstConfig projection
@@ -82,12 +83,14 @@ func scanPreferenceRow(scan func(...any) error) (preferenceRow, error) {
 	var builtIn int
 	// owner 走 NullString：内置行 system_account_id 恒 NULL（全局只读例外）。
 	var owner sql.NullString
+	var updatedAt dbtime.Nullable
 	if err := scan(&row.id, &owner, &row.name, &row.chatMode, &row.configJSON,
-		&builtIn, &row.updatedAt); err != nil {
+		&builtIn, &updatedAt); err != nil {
 		return preferenceRow{}, err
 	}
 	row.systemAccountID = owner.String
 	row.builtIn = builtIn == 1
+	row.updatedAt = updatedAt.APIString()
 	return row, nil
 }
 

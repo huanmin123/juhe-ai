@@ -16,6 +16,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // RevisionConflictError mirrors ApiKeyRevisionConflictError: the route renders
@@ -348,7 +350,9 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		args = append(args, scoped)
 	}
 	var rowID, ownerID, name, routeStrategyID, status, keyHash string
-	var description, purpose, expiresAt, quotaJSON, scheduleJSON, updatedAt, schedulingPreferenceID, securityPolicyID sql.NullString
+	var description, purpose, quotaJSON, scheduleJSON, schedulingPreferenceID, securityPolicyID sql.NullString
+	var expiresAt, updatedAt dbtime.Nullable
+	var expiresAtText sql.NullString
 	var isDefault int
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.description, api_keys.route_strategy_id, api_keys.status, api_keys.is_default, api_keys.purpose,
@@ -364,13 +368,20 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	if err != nil {
 		return nil, err
 	}
-	if updatedAt.String != input.ExpectedRevision {
-		return nil, &RevisionConflictError{CurrentRevision: updatedAt.String}
+	if expiresAt.Valid {
+		expiresAtText = sql.NullString{String: expiresAt.APIString(), Valid: true}
+	}
+	updatedAtText := ""
+	if updatedAt.Valid {
+		updatedAtText = dbtime.API6(updatedAt.Time)
+	}
+	if !dbtime.SameInstant(updatedAtText, input.ExpectedRevision) {
+		return nil, &RevisionConflictError{CurrentRevision: updatedAtText}
 	}
 
 	now := s.now()
 	changed := []string{}
-	rowPatch := map[string]any{"revision": updatedAt.String}
+	rowPatch := map[string]any{"revision": updatedAtText}
 	before := map[string]any{}
 	after := map[string]any{}
 	setClauses := []string{}
@@ -507,8 +518,8 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		if err != nil {
 			return nil, err
 		}
-		if nextExpiresAt != expiresAt {
-			addChange("expiresAt", nullStringValue(expiresAt), nullStringValue(nextExpiresAt))
+		if nextExpiresAt != expiresAtText {
+			addChange("expiresAt", nullStringValue(expiresAtText), nullStringValue(nextExpiresAt))
 			setClauses = append(setClauses, "expires_at = ?")
 			setArgs = append(setArgs, nullStringParam(nextExpiresAt))
 			rowPatch["expiresAt"] = nullStringValue(nextExpiresAt)
@@ -588,7 +599,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 
 	if len(changed) == 0 {
 		return &PatchOutcome{
-			Result:               PatchResult{ID: rowID, Revision: updatedAt.String, ChangedFields: changed, RowPatch: rowPatch},
+			Result:               PatchResult{ID: rowID, Revision: updatedAtText, ChangedFields: changed, RowPatch: rowPatch},
 			OwnerSystemAccountID: ownerID,
 			ResourceName:         name,
 			Before:               before,
@@ -596,14 +607,14 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		}, nil
 	}
 
-	revision, err := nextRevision(updatedAt.String, now)
+	revision, err := nextRevision(updatedAtText, now)
 	if err != nil {
 		return nil, err
 	}
 	setClauses = append(setClauses, "updated_at = ?")
 	setArgs = append(setArgs, revision)
 	updateArgs := append([]any{}, setArgs...)
-	updateArgs = append(updateArgs, rowID, ownerID, updatedAt.String)
+	updateArgs = append(updateArgs, rowID, ownerID, updatedAtText)
 	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("api_keys")+` SET `+strings.Join(setClauses, ", ")+`
 		WHERE id = ? AND system_account_id = ? AND updated_at = ?`), updateArgs...)
 	if err != nil {
@@ -613,7 +624,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		return nil, err
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
-		return nil, &RevisionConflictError{CurrentRevision: updatedAt.String}
+		return nil, &RevisionConflictError{CurrentRevision: updatedAtText}
 	}
 
 	bindingUpserted := false

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 var (
@@ -105,11 +107,12 @@ func (s *Store) get(ctx context.Context, table, accountID, key string) (Setting,
 		return Setting{}, false, errors.New("setting key is required")
 	}
 	var row Setting
+	var updatedAt dbtime.Nullable
 	var err error
 	if accountID == "" {
-		err = s.db.QueryRowContext(ctx, s.bind("SELECT key,value_json,updated_at FROM "+table+" WHERE key=?"), key).Scan(&row.Key, &row.ValueJSON, &row.UpdatedAt)
+		err = s.db.QueryRowContext(ctx, s.bind("SELECT key,value_json,updated_at FROM "+table+" WHERE key=?"), key).Scan(&row.Key, &row.ValueJSON, &updatedAt)
 	} else {
-		err = s.db.QueryRowContext(ctx, s.bind("SELECT key,value_json,updated_at FROM "+table+" WHERE system_account_id=? AND key=?"), accountID, key).Scan(&row.Key, &row.ValueJSON, &row.UpdatedAt)
+		err = s.db.QueryRowContext(ctx, s.bind("SELECT key,value_json,updated_at FROM "+table+" WHERE system_account_id=? AND key=?"), accountID, key).Scan(&row.Key, &row.ValueJSON, &updatedAt)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return Setting{}, false, nil
@@ -117,6 +120,7 @@ func (s *Store) get(ctx context.Context, table, accountID, key string) (Setting,
 	if err != nil {
 		return Setting{}, false, err
 	}
+	row.UpdatedAt = updatedAt.APIString()
 	return row, true, nil
 }
 
@@ -139,7 +143,7 @@ func (s *Store) put(ctx context.Context, table, accountID, key, valueJSON, expec
 	if !json.Valid([]byte(valueJSON)) {
 		return Setting{}, errors.New("setting value_json must be valid JSON")
 	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
+	now := dbtime.DBValueMillis(s.now())
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Setting{}, err
@@ -190,7 +194,7 @@ func (s *Store) put(ctx context.Context, table, accountID, key, valueJSON, expec
 	if err = tx.Commit(); err != nil {
 		return Setting{}, err
 	}
-	return Setting{Key: key, ValueJSON: valueJSON, UpdatedAt: now}, nil
+	return Setting{Key: key, ValueJSON: valueJSON, UpdatedAt: dbtime.API(now)}, nil
 }
 
 // ListProviderModels 读 models 单表 builtin 行（scope='builtin'，vendor 窗口
@@ -373,7 +377,7 @@ func (s *Store) ReplaceProviderCatalog(ctx context.Context, input CatalogReplace
 		}
 		seen[model.Model] = true
 	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
+	now := dbtime.DBValueMillis(s.now())
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

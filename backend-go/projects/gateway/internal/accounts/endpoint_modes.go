@@ -25,29 +25,29 @@ import (
 // 仍留本包。
 
 const (
-	gptOpenAIV1ProfileIDConstant         = accountscore.GptOpenAIV1ProfileID
-	xaiOpenAIV1ProfileID                 = accountscore.XaiOpenAIV1ProfileID
-	deepSeekOpenAIV1ProfileID            = accountscore.DeepSeekOpenAIV1ProfileID
-	deepSeekAnthropicV1ProfileID         = accountscore.DeepSeekAnthropicV1ProfileID
-	glmGeneralOpenAIV1ProfileID          = accountscore.GlmGeneralOpenAIV1ProfileID
-	glmCodingOpenAIV1ProfileID           = accountscore.GlmCodingOpenAIV1ProfileID
-	glmCodingAnthropicV1ProfileID        = accountscore.GlmCodingAnthropicV1ProfileID
-	geminiOpenAIChatV1BetaProfileID      = accountscore.GeminiOpenAIChatV1BetaProfileID
-	minimaxOpenAIV1ProfileID             = accountscore.MinimaxOpenAIV1ProfileID
-	volcengineOpenAIV1ProfileID          = accountscore.VolcengineOpenAIV1ProfileID
-	qwenOpenAIV1ProfileID                = accountscore.QwenOpenAIV1ProfileID
-	anthropicProviderCode                = accountscore.AnthropicProviderCode
-	geminiProviderCode                   = accountscore.GeminiProviderCode
-	anthropicProtocolCodeConstant        = accountscore.AnthropicProtocolCode
-	anthropicProtocolVersionConstant     = accountscore.AnthropicProtocolVersion
-	geminiProtocolCodeConstant           = accountscore.GeminiProtocolCode
-	geminiProtocolVersionConstant        = accountscore.GeminiProtocolVersion
-	deepSeekProviderCode                 = accountscore.DeepSeekProviderCode
-	glmProviderCode                      = accountscore.GlmProviderCode
-	minimaxProviderCode                  = accountscore.MinimaxProviderCode
-	volcengineProviderCode               = accountscore.VolcengineProviderCode
-	qwenProviderCode                     = accountscore.QwenProviderCode
-	xaiProviderCode                      = accountscore.XaiProviderCode
+	gptOpenAIV1ProfileIDConstant     = accountscore.GptOpenAIV1ProfileID
+	xaiOpenAIV1ProfileID             = accountscore.XaiOpenAIV1ProfileID
+	deepSeekOpenAIV1ProfileID        = accountscore.DeepSeekOpenAIV1ProfileID
+	deepSeekAnthropicV1ProfileID     = accountscore.DeepSeekAnthropicV1ProfileID
+	glmGeneralOpenAIV1ProfileID      = accountscore.GlmGeneralOpenAIV1ProfileID
+	glmCodingOpenAIV1ProfileID       = accountscore.GlmCodingOpenAIV1ProfileID
+	glmCodingAnthropicV1ProfileID    = accountscore.GlmCodingAnthropicV1ProfileID
+	geminiOpenAIChatV1BetaProfileID  = accountscore.GeminiOpenAIChatV1BetaProfileID
+	minimaxOpenAIV1ProfileID         = accountscore.MinimaxOpenAIV1ProfileID
+	volcengineOpenAIV1ProfileID      = accountscore.VolcengineOpenAIV1ProfileID
+	qwenOpenAIV1ProfileID            = accountscore.QwenOpenAIV1ProfileID
+	anthropicProviderCode            = accountscore.AnthropicProviderCode
+	geminiProviderCode               = accountscore.GeminiProviderCode
+	anthropicProtocolCodeConstant    = accountscore.AnthropicProtocolCode
+	anthropicProtocolVersionConstant = accountscore.AnthropicProtocolVersion
+	geminiProtocolCodeConstant       = accountscore.GeminiProtocolCode
+	geminiProtocolVersionConstant    = accountscore.GeminiProtocolVersion
+	deepSeekProviderCode             = accountscore.DeepSeekProviderCode
+	glmProviderCode                  = accountscore.GlmProviderCode
+	minimaxProviderCode              = accountscore.MinimaxProviderCode
+	volcengineProviderCode           = accountscore.VolcengineProviderCode
+	qwenProviderCode                 = accountscore.QwenProviderCode
+	xaiProviderCode                  = accountscore.XaiProviderCode
 )
 
 var openAIChatEndpointModes = accountscore.OpenAIChatEndpointModes
@@ -579,13 +579,15 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 }
 
 // normalizeQwenEndpointModesForWrite 是 qwen 档案的写侧归一化（M3 第五批，
-// 契约 §10.1 + 对话批 chat；沿 volcengine driver 结构）：值域校验用 openai
-// 族词表（chat 对/video_* / audio_job_* 是跨协议共享 token），再收敛到 qwen
-// 集（chat 对 + video_* 视频四值 + M3f audio_job_* 长转写四值，契约 §10.2）
-// ——responses_json/audio_speech 等模式对 qwen 账户报错（档案 Capabilities
-// 声明 chat+视频+长转写，无原生 Responses 面且 CosyVoice TTS 未回填）。
+// 契约 §10.1 + 对话批 chat + 2026-11-11 图像批；沿 volcengine driver 结构）：
+// 值域校验用 openai 族词表（chat 对/images_json/video_* / audio_job_* 是
+// 跨协议共享 token），再收敛到 qwen 集（chat 对 + images_json + video_* 视频
+// 四值 + M3f audio_job_* 长转写四值，契约 §10.2）——responses_json/
+// audio_speech 等模式对 qwen 账户报错（档案 Capabilities 声明 chat+视频+
+// 同步图像+长转写，无原生 Responses 面且 CosyVoice TTS 未回填）。
 // chat 对 opt-in 可勾选（qwen 对话 /compatible-mode/v1/chat/completions）；
-// 默认集 video_get（只读任务查询，零费用档）不变。
+// images_json 只经图像域 lane 成为图像域允许/默认集；默认集 video_get
+// （只读任务查询，零费用档）不变。
 func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	pinned := context
 	pinned.providerCode = qwenProviderCode
@@ -600,7 +602,7 @@ func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointMod
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*) 或长音频转写端点 (audio_job_*)：%s",
+		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持对话补全端点 (chat)、图像生成端点 (images_json)、视频生成端点 (video_*) 或长音频转写端点 (audio_job_*)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil

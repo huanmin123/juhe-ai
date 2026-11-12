@@ -9,6 +9,8 @@ import (
 	"errors"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // 超级分组（super group）目标契约见 docs/functions/超级分组设计.md。
@@ -170,6 +172,7 @@ func (s *Store) loadGroupFacts(ctx context.Context, q queryer, groupID string) (
 		return memberGroupFacts{}, err
 	}
 	facts.enabled = enabled == 1
+	facts.updatedAt = apiTimeString(facts.updatedAt)
 	return facts, nil
 }
 
@@ -283,7 +286,7 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 	if facts.groupKind != GroupKindSuper {
 		return nil, codeError(400, CodeGroupKindConflict, "该分组不是超级分组")
 	}
-	if strings.TrimSpace(expectedRevision) == "" || strings.TrimSpace(expectedRevision) != facts.updatedAt {
+	if expected := strings.TrimSpace(expectedRevision); expected == "" || !dbtime.SameInstant(expected, facts.updatedAt) {
 		return nil, codeError(409, CodeSuperGroupRevisionConflict, "超级分组成员已被其他操作更新，请刷新后重试")
 	}
 

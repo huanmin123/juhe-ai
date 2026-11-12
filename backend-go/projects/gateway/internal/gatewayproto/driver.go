@@ -13,6 +13,9 @@ const (
 	EndpointModeChatSSE       EndpointMode = "chat_sse"
 	EndpointModeResponsesJSON EndpointMode = "responses_json"
 	EndpointModeResponsesSSE  EndpointMode = "responses_sse"
+	EndpointModeEmbedContent  EndpointMode = "embed_content"
+	EndpointModeRerankJSON    EndpointMode = "rerank_json"
+	EndpointModeModerationJSON EndpointMode = "moderation_json"
 )
 
 // RequestLane mirrors OpenAIGatewayRequestLane. Lane 词表随媒体域分期扩展
@@ -26,6 +29,7 @@ const (
 	LaneImage    RequestLane = "image"
 	LaneAudio    RequestLane = "audio"
 	LaneVideo    RequestLane = "video"
+	LaneUtility  RequestLane = "utility"
 	LaneRealtime RequestLane = "realtime"
 )
 

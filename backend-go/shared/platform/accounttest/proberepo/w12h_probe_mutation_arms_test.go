@@ -18,17 +18,14 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 )
 
-// precheck：updated_at 非法时间命中 invalid_runtime_state（健康时间臂由 w7c 覆盖）。
-func TestW12HPrecheckInvalidUpdatedAtArm(t *testing.T) {
+// precheck：Revision 26 起 accounts 时间列为 timestamptz，非法时间文本在写入
+// 阶段即被 PostgreSQL 拒绝；原「脏 updated_at → invalid_runtime_state」臂在
+// schema 层已不可构造，改为钉住新不变量（生产分支保留为历史行防御）。
+func TestW12HPrecheckInvalidUpdatedAtRejectedBySchema(t *testing.T) {
 	h := openTestDBPostgres(t)
 	h.seedPoolAccount(t, "acc-1")
-	h.exec(t, `UPDATE juhe_business.accounts SET updated_at='garbage', last_used_at='2020-01-01T00:00:00.000Z' WHERE id='acc-1'`)
-	result, err := h.store.MarkPrecheckTemporaryUnavailable(context.Background(), accountquality.PrecheckMutationInput{
-		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
-		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
-	})
-	if err != nil || result.Updated || result.SkippedReason != "invalid_runtime_state" {
-		t.Fatalf("非法 updated_at 必须跳过: %+v %v", result, err)
+	if _, err := h.db.Exec(`UPDATE juhe_business.accounts SET updated_at='garbage', last_used_at='2020-01-01T00:00:00.000Z' WHERE id='acc-1'`); err == nil {
+		t.Fatal("timestamptz 列必须拒绝非法时间文本")
 	}
 }
 

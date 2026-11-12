@@ -144,18 +144,41 @@ func EnsurePostgres(ctx context.Context, db *sql.DB) (PGResult, error) {
 // 不执行其余 schema 语句（迁移窗口内不改函数/索引/触发器定义）。调用面是
 // maintenance 一次性命令，不在请求路径反复执行（BUG-0307）。
 func EnsurePostgresBusinessCapabilityDomainColumn(ctx context.Context, db *sql.DB) error {
-	const alter = `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+	const alter = `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat'`
 	if _, err := db.ExecContext(ctx, alter); err != nil {
 		return fmt.Errorf("add accounts.capability_domain: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, dropCapabilityDomainCheckSQL); err != nil {
+		return fmt.Errorf("drop accounts.capability_domain check: %w", err)
 	}
 	return VerifyPostgresBusinessCapabilityDomainShape(ctx, db)
 }
 
+// dropCapabilityDomainCheckSQL 删除 capability_domain 上的旧四值 CHECK。
+// D13 起场景值由应用层 scenario 注册表校验；保留旧 CHECK 会让新场景写入失败。
+const dropCapabilityDomainCheckSQL = `DO $$
+DECLARE
+  constraint_row record;
+BEGIN
+  FOR constraint_row IN
+    SELECT conname
+    FROM pg_catalog.pg_constraint
+    WHERE conrelid = 'juhe_business.accounts'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%capability_domain%'
+  LOOP
+    IF constraint_row.conname IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.accounts DROP CONSTRAINT %I', constraint_row.conname);
+    END IF;
+  END LOOP;
+END $$`
+
 // VerifyPostgresBusinessCapabilityDomainShape 校验既存
-// "juhe_business"."accounts".capability_domain 列的四值形状。列不存在返回
-// nil（调用方决定缺列是否可接受：EnsurePostgres 的 ALTER 已先行补列，只有
-// 显式 ALTER 失败才会走到这里缺列）。任何一项形状不符都原样报错停止，不做
-// 静默修补。
+// "juhe_business"."accounts".capability_domain 列的形状：TEXT / NOT NULL /
+// DEFAULT 'chat'，且不得存在 capability_domain CHECK（D13 起场景由应用层
+// scenario 注册表校验）。列不存在返回 nil（调用方决定缺列是否可接受：
+// EnsurePostgres 的 ALTER 已先行补列，只有显式 ALTER 失败才会走到这里缺列）。
+// 任何一项形状不符都原样报错停止，不做静默修补。
 func VerifyPostgresBusinessCapabilityDomainShape(ctx context.Context, db *sql.DB) error {
 	const query = `SELECT data_type, is_nullable, column_default
 		FROM information_schema.columns
@@ -181,50 +204,36 @@ func VerifyPostgresBusinessCapabilityDomainShape(ctx context.Context, db *sql.DB
 	if !columnDefault.Valid || !strings.HasPrefix(columnDefault.String, "'chat'::text") {
 		return fmt.Errorf("accounts.capability_domain 形状不符：默认值为 %s，期望 'chat'::text", pgShapeDefaultText(columnDefault))
 	}
-	const checkQuery = `SELECT cc.check_clause
-		FROM information_schema.table_constraints tc
-		JOIN information_schema.check_constraints cc
-		  ON tc.constraint_schema = cc.constraint_schema AND tc.constraint_name = cc.constraint_name
-		WHERE tc.table_schema = 'juhe_business' AND tc.table_name = 'accounts'
-		  AND tc.constraint_type = 'CHECK' AND cc.check_clause LIKE '%capability_domain%'`
+	// 直接读 pg_constraint（contype='c'）：information_schema.check_constraints
+	// 会把列级 NOT NULL 也渲染成 "capability_domain IS NOT NULL" 的 CHECK
+	// （PG16 实测），按该视图判定会把合法 NOT NULL 误报为旧四值 CHECK。
+	const checkQuery = `SELECT pg_get_constraintdef(oid)
+		FROM pg_catalog.pg_constraint
+		WHERE conrelid = 'juhe_business.accounts'::regclass
+		  AND contype = 'c'
+		  AND pg_get_constraintdef(oid) LIKE '%capability_domain%'`
 	rows, err := db.QueryContext(ctx, checkQuery)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	clauses := []string{}
+	foundCheck := ""
 	for rows.Next() {
 		var clause string
 		if err := rows.Scan(&clause); err != nil {
 			return err
 		}
-		clauses = append(clauses, clause)
+		if foundCheck == "" && strings.Contains(strings.ToLower(clause), "capability_domain") {
+			foundCheck = clause
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// 归一化后的 CHECK 文本可能把 IN 重写为 = ANY (ARRAY[...])，不锚定具体
-	// 文法；判据是四值词表与列名同时出现在同一 CHECK 子句中，且四值齐全。
-	for _, clause := range clauses {
-		if pgCapabilityDomainCheckComplete(clause) {
-			return nil
-		}
+	if foundCheck != "" {
+		return fmt.Errorf("accounts.capability_domain 形状不符：仍存在 CHECK 约束（%s）；请先运行 maintenance cutover 删除旧 CHECK", foundCheck)
 	}
-	if len(clauses) == 0 {
-		return fmt.Errorf("accounts.capability_domain 形状不符：未找到该列的 CHECK 约束")
-	}
-	return fmt.Errorf("accounts.capability_domain 形状不符：CHECK 约束缺少四值枚举（chat/video/audio/image），实际：%s", strings.Join(clauses, " | "))
-}
-
-// pgCapabilityDomainCheckComplete 判定一段归一化 CHECK 文本是否覆盖
-// capability_domain 的四值枚举。
-func pgCapabilityDomainCheckComplete(clause string) bool {
-	for _, value := range []string{"chat", "video", "audio", "image"} {
-		if !strings.Contains(clause, "'"+value+"'") {
-			return false
-		}
-	}
-	return strings.Contains(clause, "capability_domain")
+	return nil
 }
 
 // pgShapeDefaultText renders an information_schema column_default for error messages.
@@ -279,25 +288,51 @@ type PGSeedResult struct {
 const pgSeedSystemAccountsInsert = `
       INSERT INTO "juhe_business"."system_accounts" (
         id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::timestamptz)
       ON CONFLICT DO NOTHING
     `
 
 // pgSeedGlobalSettingsInsert seeds one global_settings row.
 const pgSeedGlobalSettingsInsert = `
         INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at)
-        VALUES ($1, $2, $3)
+        VALUES ($1, $2, $3::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
 // pgSeedWindowConfigInsert seeds one request_quota_hourly_window_configs row.
 const pgSeedWindowConfigInsert = `
         INSERT INTO "juhe_business"."request_quota_hourly_window_configs" (window_hours, created_at, updated_at)
-        VALUES ($1, $2, $3)
+        VALUES ($1, $2::timestamptz, $3::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
 // pgSeedQuotaScopeBindingsFromAPIKeysCTE backfills hourly quota scope bindings from active API keys (parameter-free, idempotent).
+const pgSeedQuotaScopeBindingsFromAPIKeysTimestamptzCTE = `
+    WITH inserted AS (
+      INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
+        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+      )
+      SELECT system_account_id, 'api_key', id, 'api_key', id,
+        (quota_limits_json::jsonb #>> '{hourly,hours}')::integer, created_at::timestamptz, updated_at::timestamptz
+      FROM "juhe_business"."api_keys"
+      WHERE status = 'active'
+        AND quota_limits_json IS NOT NULL
+        AND quota_limits_json::jsonb #>> '{hourly,enabled}' = 'true'
+        AND quota_limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
+        AND (quota_limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
+      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
+    )
+    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+    )
+    SELECT system_account_id, scope_type, scope_id, 1,
+      created_at::timestamptz,
+      updated_at::timestamptz FROM inserted
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `
 const pgSeedQuotaScopeBindingsFromAPIKeysCTE = `
     WITH inserted AS (
       INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
@@ -317,14 +352,16 @@ const pgSeedQuotaScopeBindingsFromAPIKeysCTE = `
     INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
       system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
     )
-    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
+    SELECT system_account_id, scope_type, scope_id, 1,
+      created_at,
+      updated_at FROM inserted
     ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
       generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
       updated_at = EXCLUDED.updated_at
   `
 
 // pgSeedQuotaScopeBindingsFromAuthorizationsCTE backfills quota scope bindings from resource authorizations (parameter-free, idempotent).
-const pgSeedQuotaScopeBindingsFromAuthorizationsCTE = `
+const pgSeedQuotaScopeBindingsFromAuthorizationsTimestamptzCTE = `
     WITH inserted AS (
       INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
         system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
@@ -332,7 +369,7 @@ const pgSeedQuotaScopeBindingsFromAuthorizationsCTE = `
       SELECT CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END,
         CASE WHEN ra.resource_type = 'account' THEN 'account_authorization' ELSE 'group_authorization' END,
         ra.id, 'resource_authorization_grant', grants.id,
-        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer, ra.created_at, ra.updated_at
+        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer, ra.created_at::timestamptz, ra.updated_at::timestamptz
       FROM "juhe_business"."resource_authorizations" ra
       INNER JOIN "juhe_business"."resource_authorization_grants" grants
         ON grants.resource_type = ra.resource_type
@@ -354,13 +391,124 @@ const pgSeedQuotaScopeBindingsFromAuthorizationsCTE = `
     INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
       system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
     )
-    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
+    SELECT system_account_id, scope_type, scope_id, 1,
+      created_at::timestamptz,
+      updated_at::timestamptz FROM inserted
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `
+const pgSeedQuotaScopeBindingsFromAuthorizationsCTE = `
+    WITH inserted AS (
+      INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
+        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+      )
+      SELECT CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END,
+        CASE WHEN ra.resource_type = 'account' THEN 'account_authorization' ELSE 'group_authorization' END,
+        ra.id, 'resource_authorization_grant', grants.id,
+        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer, ra.created_at::timestamptz, ra.updated_at::timestamptz
+      FROM "juhe_business"."resource_authorizations" ra
+      INNER JOIN "juhe_business"."resource_authorization_grants" grants
+        ON grants.resource_type = ra.resource_type
+        AND grants.resource_id = ra.resource_id
+        AND grants.status = 'active'
+        AND (
+          (ra.effective_source_type = 'manual' AND grants.grantee_type = 'system_account' AND grants.grantee_system_account_id = ra.grantee_system_account_id)
+          OR
+          (ra.effective_source_type = 'team' AND grants.grantee_type = 'team' AND grants.grantee_team_id = ra.effective_source_team_id)
+        )
+      WHERE ra.status = 'active'
+        AND ra.limits_json IS NOT NULL
+        AND ra.limits_json::jsonb #>> '{hourly,enabled}' = 'true'
+        AND ra.limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
+        AND (ra.limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
+      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
+    )
+    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+    )
+    SELECT system_account_id, scope_type, scope_id, 1,
+      created_at,
+      updated_at FROM inserted
     ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
       generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
       updated_at = EXCLUDED.updated_at
   `
 
+// quotaScopeBindingCTEs 按目标列类型选择 backfill 语句：旧库 scope_bindings
+// 仍为 text 时用原文本语句；fresh/已迁库为 timestamptz 时用带 cast 的变体，
+// 避免 seed 在 revision 24 之前/之后任一侧因 text↔timestamptz 赋值失败。
+func quotaScopeBindingCTEs(ctx context.Context, q seedRowQuerier) ([]string, error) {
+	var dataType string
+	err := q.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+		WHERE table_schema = 'juhe_business'
+		  AND table_name = 'request_quota_hourly_window_scope_bindings'
+		  AND column_name = 'created_at'`).Scan(&dataType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []string{pgSeedQuotaScopeBindingsFromAPIKeysTimestamptzCTE, pgSeedQuotaScopeBindingsFromAuthorizationsTimestamptzCTE, pgSeedQuotaScopeBindingsFromTeamGrantsTimestamptzCTE}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if dataType == "timestamp with time zone" {
+		return []string{pgSeedQuotaScopeBindingsFromAPIKeysTimestamptzCTE, pgSeedQuotaScopeBindingsFromAuthorizationsTimestamptzCTE, pgSeedQuotaScopeBindingsFromTeamGrantsTimestamptzCTE}, nil
+	}
+	return []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE, pgSeedQuotaScopeBindingsFromAuthorizationsCTE, pgSeedQuotaScopeBindingsFromTeamGrantsCTE}, nil
+}
+
 // pgSeedQuotaScopeBindingsFromTeamGrantsCTE backfills team quota scope bindings from authorization grants (parameter-free, idempotent).
+const pgSeedQuotaScopeBindingsFromTeamGrantsTimestamptzCTE = `
+    WITH candidates AS (
+      SELECT DISTINCT
+        CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END AS system_account_id,
+        CASE WHEN ra.resource_type = 'account' THEN 'account_authorization_team' ELSE 'group_authorization_team' END AS scope_type,
+        CASE WHEN ra.resource_type = 'account' THEN instance_accounts.id || ':' || ra.effective_source_team_id ELSE ra.resource_id || ':' || ra.effective_source_team_id END AS scope_id,
+        grants.id AS source_id,
+        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer AS window_hours,
+        ra.created_at,
+        ra.updated_at
+      FROM "juhe_business"."resource_authorizations" ra
+      INNER JOIN "juhe_business"."resource_authorization_grants" grants
+        ON grants.resource_type = ra.resource_type
+        AND grants.resource_id = ra.resource_id
+        AND grants.grantee_type = 'team'
+        AND grants.grantee_team_id = ra.effective_source_team_id
+        AND grants.status = 'active'
+      LEFT JOIN "juhe_business"."accounts" instance_accounts
+        ON ra.resource_type = 'account'
+        AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+        AND instance_accounts.deleted_at IS NULL
+      WHERE ra.status = 'active'
+        AND ra.effective_source_type = 'team'
+        AND (ra.resource_type = 'group' OR instance_accounts.id IS NOT NULL)
+        AND ra.limits_json IS NOT NULL
+        AND ra.limits_json::jsonb #>> '{hourly,enabled}' = 'true'
+        AND ra.limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
+        AND (ra.limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
+    ), inserted AS (
+      INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
+        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+      )
+      SELECT system_account_id, scope_type, scope_id, 'resource_authorization_grant', source_id,
+        window_hours, created_at::timestamptz, updated_at::timestamptz
+      FROM candidates
+      WHERE true
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
+      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
+    )
+    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+    )
+    SELECT system_account_id, scope_type, scope_id, 1,
+      created_at::timestamptz,
+      updated_at::timestamptz FROM inserted
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `
 const pgSeedQuotaScopeBindingsFromTeamGrantsCTE = `
     WITH candidates AS (
       SELECT DISTINCT
@@ -405,7 +553,9 @@ const pgSeedQuotaScopeBindingsFromTeamGrantsCTE = `
     INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
       system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
     )
-    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
+    SELECT system_account_id, scope_type, scope_id, 1,
+      created_at,
+      updated_at FROM inserted
     ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
       generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
       updated_at = EXCLUDED.updated_at
@@ -416,14 +566,14 @@ const pgSeedQuotaScopeBindingsFromTeamGrantsCTE = `
 const pgSeedProviderInsert = `
         INSERT INTO "juhe_business"."vendors" (
           id, code, name, description, enabled, default_supported_models_json, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
 // pgSeedProviderDefaultModelsRepair refreshes empty vendor default model lists.
 const pgSeedProviderDefaultModelsRepair = `
         UPDATE "juhe_business"."vendors"
-        SET default_supported_models_json = $1, updated_at = $2
+        SET default_supported_models_json = $1, updated_at = $2::timestamptz
         WHERE code = $3
           AND (default_supported_models_json IS NULL OR btrim(default_supported_models_json) = '' OR default_supported_models_json = '[]')
       `
@@ -432,7 +582,7 @@ const pgSeedProviderDefaultModelsRepair = `
 const pgSeedProtocolInsert = `
         INSERT INTO "juhe_business"."protocols" (
           id, code, version, name, description, enabled, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
@@ -440,7 +590,7 @@ const pgSeedProtocolInsert = `
 const pgSeedEndpointFamilyInsert = `
         INSERT INTO "juhe_business"."protocol_endpoint_families" (
           id, protocol_code, protocol_version, family_code, name, description, enabled, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
@@ -484,7 +634,7 @@ const pgSeedGroupInsert = `
           END || '）'
           ELSE $4
         END,
-          $6, 1, 1, $7, $8
+          $6, 1, 1, $7::timestamptz, $8::timestamptz
         FROM "juhe_business"."system_accounts" AS system_accounts
         LEFT JOIN LATERAL (
           SELECT candidate_suffix.suffix
@@ -524,7 +674,7 @@ const pgSeedGroupInsert = `
 const pgSeedExternalIntegrationSourceInsert = `
       INSERT INTO "juhe_business"."external_integration_sources" (
         id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
-      ) VALUES ($1, $2, 'active', $3, $4, NULL, $5, $6, $7)
+      ) VALUES ($1, $2, 'active', $3, $4, NULL, $5, $6::timestamptz, $7::timestamptz)
       ON CONFLICT DO NOTHING
     `
 
@@ -536,14 +686,14 @@ const pgSeedExternalIntegrationSourceUpdate = `
           rate_limits_json = $3,
           expires_at = NULL,
           notes = $4,
-          updated_at = $5
+          updated_at = $5::timestamptz
       WHERE id = $6
     `
 
 // pgSeedSystemSettingInsert seeds one system_settings row for sys_admin.
 const pgSeedSystemSettingInsert = `
         INSERT INTO "juhe_business"."system_settings" (system_account_id, key, value_json, updated_at)
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, $2, $3, $4::timestamptz)
         ON CONFLICT DO NOTHING
       `
 
@@ -865,7 +1015,11 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 			return PGSeedResult{}, err
 		}
 	}
-	for _, cte := range []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE, pgSeedQuotaScopeBindingsFromAuthorizationsCTE, pgSeedQuotaScopeBindingsFromTeamGrantsCTE} {
+	ctes, err := quotaScopeBindingCTEs(ctx, db)
+	if err != nil {
+		return PGSeedResult{}, err
+	}
+	for _, cte := range ctes {
 		if err := exec(cte); err != nil {
 			return PGSeedResult{}, err
 		}

@@ -2,12 +2,12 @@
 // capability domain 与 endpoint mode 的编译期唯一事实源。
 //
 // 数据与计数契约来自 docs/functions/供应商与上游协议面重构设计.md：
-//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 42 个
-//     允许连接组合与 133 个单 mode 组合；
+//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 43 个
+//     允许连接组合与 134 个单 mode 组合；
 //   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 15 条、Anthropic 2 条、Gemini native 8 条）；
 //   - §2.2 的域 lane（chat 13、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
 //
-// 42 与 133 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
+// 43 与 134 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
 // 禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断规则」）。
 //
 // 2026-11 裁决：registry 只注册九家真实厂商（gpt/xai/deepseek/anthropic/gemini/
@@ -84,12 +84,15 @@ const (
 	AuthStrategyDriverDefined = "driver_defined"
 )
 
-// 账户能力域（capability_domain，设计 §2，恰好 4 个值）。
+// 账户能力域（capability_domain，设计 §2，当前 7 个已注册值；列已去 CHECK）。
 const (
-	DomainChat  = "chat"
-	DomainVideo = "video"
-	DomainAudio = "audio"
-	DomainImage = "image"
+	DomainChat       = "chat"
+	DomainVideo      = "video"
+	DomainAudio      = "audio"
+	DomainImage      = "image"
+	DomainEmbedding  = "embedding"
+	DomainRerank     = "rerank"
+	DomainModeration = "moderation"
 )
 
 // 连接预设标识（connection_preset_code，设计 §1.1 注册表，恰好 14 个值）。
@@ -144,6 +147,10 @@ const (
 
 	// image lane（1 个）。
 	ModeImagesJSON = "images_json"
+
+	// 工具场景 lane（3 个；D10 独立场景，不与 chat 混用）。
+	ModeRerankJSON     = "rerank_json"
+	ModeModerationJSON = "moderation_json"
 )
 
 // ---------------------------------------------------------------------------
@@ -156,14 +163,14 @@ var capabilityDomainLanes = map[string][]string{
 		ModeChatJSON, ModeChatSSE, ModeResponsesJSON, ModeResponsesSSE,
 		ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting,
 		ModeGenerateContentJSON, ModeGenerateContentSSE,
-		ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens, ModeEmbedContent,
+		ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens,
 	},
-	DomainVideo: {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
-	DomainAudio: {
-		ModeAudioSpeech, ModeAudioTranscriptionJSON, ModeAudioJobCreate,
-		ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel, ModeRealtimeSession,
-	},
-	DomainImage: {ModeImagesJSON},
+	DomainVideo:      {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
+	DomainAudio:      {ModeAudioSpeech, ModeAudioTranscriptionJSON, ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel, ModeRealtimeSession},
+	DomainImage:      {ModeImagesJSON},
+	DomainEmbedding:  {ModeEmbedContent},
+	DomainRerank:     {ModeRerankJSON},
+	DomainModeration: {ModeModerationJSON},
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +190,8 @@ var (
 		"POST /chat/completions",
 		"POST /responses",
 		"POST /images/generations",
+		"POST /embeddings",
+		"POST /moderations",
 		"POST /audio/speech",
 		"POST /audio/transcriptions",
 		"POST /audio/translations",
@@ -246,6 +255,9 @@ var (
 	// 服务路径随操作路径登记，保持全路径）。
 	qwenDashScopeOperationTemplates = []string{
 		"POST /compatible-mode/v1/chat/completions",
+		"POST /compatible-mode/v1/embeddings",
+		"POST /api/v1/services/rerank/text-rerank/text-rerank",
+		"POST /api/v1/services/aigc/multimodal-generation/generation",
 		"POST /api/v1/services/audio/asr/transcription",
 		"POST /api/v1/services/aigc/video-generation/video-synthesis",
 		"GET /api/v1/tasks/{task_id}",
@@ -260,6 +272,7 @@ var (
 	// openAIVocabulary：*_openai_v1 共用（16 个 mode）。
 	openAIVocabulary = []string{
 		ModeChatJSON, ModeChatSSE, ModeResponsesJSON, ModeResponsesSSE, ModeImagesJSON,
+		ModeEmbedContent, ModeModerationJSON,
 		ModeAudioSpeech, ModeAudioTranscriptionJSON,
 		ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel,
 		ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel,
@@ -293,7 +306,7 @@ var (
 		ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel,
 	}
 	qwenDashScopeVocabulary = []string{
-		ModeChatJSON, ModeChatSSE,
+		ModeChatJSON, ModeChatSSE, ModeImagesJSON, ModeEmbedContent, ModeRerankJSON,
 		ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel,
 		ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel,
 	}
@@ -477,7 +490,7 @@ type connectorComboRow struct {
 
 var connectorComboRows = []connectorComboRow{
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGPTOpenAIV1,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage}},
+		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage, DomainEmbedding, DomainModeration}},
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeOAuth}, Preset: PresetGPTOpenAIV1,
 		Domains: []string{DomainChat}},
 	{Driver: DriverXAI, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetXAIOpenAIV1,
@@ -493,7 +506,7 @@ var connectorComboRows = []connectorComboRow{
 	{Driver: DriverGemini, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGeminiOpenAIChatV1Beta,
 		Domains: []string{DomainChat}},
 	{Driver: DriverGemini, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGeminiNativeV1Beta,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio}},
+		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainEmbedding}},
 	{Driver: DriverGemini, AccountTypes: []string{AccountTypeGoogleOAuth},
 		OAuthTypes: []string{OAuthTypeCodeAssist, OAuthTypeGoogleOne, OAuthTypeAIStudio},
 		Preset:     PresetGeminiNativeV1Beta,
@@ -511,11 +524,11 @@ var connectorComboRows = []connectorComboRow{
 	{Driver: DriverVolcengine, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetVolcengineOpenSpeech,
 		Domains: []string{DomainAudio}},
 	{Driver: DriverQwen, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetQwenDashScope,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio}},
+		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage, DomainEmbedding, DomainRerank}},
 }
 
 // ---------------------------------------------------------------------------
-// 派生数据（42 连接组合与 133 单 mode 组合的唯一来源）
+// 派生数据（43 连接组合与 134 单 mode 组合的唯一来源）
 // ---------------------------------------------------------------------------
 
 // ConnectorCombo 是一个允许的连接组合（设计 §1.1 五元组 + driver/preset 投影字段）。
@@ -539,7 +552,7 @@ type ConnectorCombo struct {
 }
 
 // EndpointModeCombo 是 ConnectorCombo 的单 mode 展开：一个连接组合允许的每个
-// endpoint mode 各一条（设计 §1.1 :54 的 133 条清单）。
+// endpoint mode 各一条（设计 §1.1 :54 的 134 条清单）。
 type EndpointModeCombo struct {
 	// Driver/Vendor/AccountType/OAuthType/Preset/Surface/Domain 语义与 ConnectorCombo 相同。
 	Driver      string
@@ -563,9 +576,9 @@ var (
 )
 
 var (
-	// connectorCombos 是 42 条允许连接组合的排序稳定清单。
+	// connectorCombos 是 43 条允许连接组合的排序稳定清单。
 	connectorCombos = buildConnectorCombos()
-	// endpointModeCombos 是 133 条单 mode 组合的排序稳定清单。
+	// endpointModeCombos 是 134 条单 mode 组合的排序稳定清单。
 	endpointModeCombos = buildEndpointModeCombos()
 	// connectorComboIndex 是五元组判定索引。
 	connectorComboIndex = buildConnectorComboIndex(connectorCombos)
@@ -782,14 +795,14 @@ func AllowedModes(domain, preset, accountType, oauthType string) []string {
 // 公开 API（设计 §1.1：三个项目绑定同一 tuple，不得复制允许集合）
 // ---------------------------------------------------------------------------
 
-// AllowedConnectorCombos 返回全部 42 个允许连接组合，
+// AllowedConnectorCombos 返回全部 43 个允许连接组合，
 // 按 driver、account type、oauth type、preset、domain 的字典序稳定排序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedConnectorCombos() []ConnectorCombo {
 	return connectorCombos
 }
 
-// AllowedEndpointModeCombos 返回全部 133 个单 mode 组合，
+// AllowedEndpointModeCombos 返回全部 134 个单 mode 组合，
 // 按 connectorCombos 同一排序规则追加 mode 字典序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedEndpointModeCombos() []EndpointModeCombo {
@@ -810,7 +823,7 @@ func ConnectorComboVerdict(driver, accountType, oauthType, preset, domain string
 	return IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain)
 }
 
-// ComboDriverCounts 返回 42 条连接组合按 driver 的计数。
+// ComboDriverCounts 返回 43 条连接组合按 driver 的计数。
 func ComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(connectorCombos))
 	for _, combo := range connectorCombos {
@@ -819,7 +832,7 @@ func ComboDriverCounts() map[string]int {
 	return counts
 }
 
-// ModeComboDriverCounts 返回 133 条单 mode 组合按 driver 的计数。
+// ModeComboDriverCounts 返回 134 条单 mode 组合按 driver 的计数。
 func ModeComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(endpointModeCombos))
 	for _, combo := range endpointModeCombos {
@@ -829,7 +842,7 @@ func ModeComboDriverCounts() map[string]int {
 }
 
 // RegistryFingerprint 返回 registry 的 SHA-256 指纹（64 位小写 hex）。
-// 计算方式（设计 §1.1 :56）：对 133 条单 mode 元素组成的 UTF-8 compact JSON 数组的
+// 计算方式（设计 §1.1 :56）：对 134 条单 mode 元素组成的 UTF-8 compact JSON 数组的
 // 原始 bytes 计算 SHA-256；数组元素按 ASCII 字典序排序；每个元素字段顺序固定为
 // driver、vendor、accountType、oauthType、preset、surface、domain、mode、
 // allowedBaseSuffixes、operationTemplates、defaultBaseUrl；oauthType/surface

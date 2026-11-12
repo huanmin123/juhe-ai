@@ -60,14 +60,14 @@ const announcementsPGFixtureSchema = `
       status text NOT NULL DEFAULT 'draft',
       created_by text NOT NULL,
       updated_by text,
-      published_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      published_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.announcement_reads (
       announcement_id text NOT NULL,
       system_account_id text NOT NULL,
-      read_at text NOT NULL,
+      read_at timestamptz(3) NOT NULL,
       PRIMARY KEY (announcement_id, system_account_id),
       FOREIGN KEY (announcement_id) REFERENCES juhe_business.announcements(id) ON DELETE CASCADE
     )

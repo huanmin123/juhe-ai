@@ -16,6 +16,8 @@ const (
 	EndpointFamilyStreamGenerateContent ResponseEndpointFamily = "stream_generate_content"
 	EndpointFamilyCountTokens           ResponseEndpointFamily = "count_tokens"
 	EndpointFamilyEmbedContent          ResponseEndpointFamily = "embed_content"
+	EndpointFamilyRerank                ResponseEndpointFamily = "rerank"
+	EndpointFamilyModeration            ResponseEndpointFamily = "moderation"
 	EndpointFamilyInteractions          ResponseEndpointFamily = "interactions"
 )
 

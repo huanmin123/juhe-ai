@@ -165,13 +165,17 @@ func TestW12bPgReconcileStale(t *testing.T) {
 	stale := time.Now().Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	insertRun := func(runID, status, submittedAt, heartbeatAt string) {
 		t.Helper()
+		var heartbeat any
+		if heartbeatAt != "" {
+			heartbeat = heartbeatAt
+		}
 		_, err := store.db.ExecContext(ctx, `
 		INSERT INTO juhe_stats.background_task_runs (
 		  run_id, job_name, job_type, worker_role, status, lease_key, params_json, result_json,
 		  submitted_at, created_at, updated_at, started_at, heartbeat_at
 		) VALUES ($1, $2, 'probe', $3, $4, $5, '{}', '{}', $6, $6, $6, $7, $8)`,
 			runID, "w12b-reconcile-job", TemporaryMaintenanceWorkerRole, status,
-			"w12b-lease:"+runID, submittedAt, submittedAt, heartbeatAt)
+			"w12b-lease:"+runID, submittedAt, submittedAt, heartbeat)
 		if err != nil {
 			t.Fatalf("插入 w12b 对账场景行失败: %v", err)
 		}

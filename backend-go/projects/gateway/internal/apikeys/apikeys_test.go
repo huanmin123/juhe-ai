@@ -21,6 +21,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 const testSecret = "m07-apikeys-test-secret"
@@ -510,7 +511,11 @@ func TestAPIKeyCreateValidationAndGuards(t *testing.T) {
 		t.Fatalf("expiry create: %d %v", code, okExpiry)
 	}
 	expiringID := dataMap(t, okExpiry)["id"].(string)
-	if got := env.queryCell(t, `SELECT expires_at FROM api_keys WHERE id = ?`, expiringID); got != "2030-05-31T16:00:00.000Z" {
+	var storedExpiry dbtime.Nullable
+	if err := env.db.QueryRow(`SELECT expires_at FROM api_keys WHERE id = $1`, expiringID).Scan(&storedExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedExpiry.APIString(); got != "2030-05-31T16:00:00.000Z" {
 		t.Fatalf("expiry canonicalization: %v", got)
 	}
 

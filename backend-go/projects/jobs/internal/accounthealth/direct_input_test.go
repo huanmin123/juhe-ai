@@ -366,15 +366,12 @@ func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *t
 	}
 }
 
-func TestDirectInputCandidatesExcludeHealthyImagesFromPeriodicScan(t *testing.T) {
-	guard := "OR (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) <> 'images_json')"
-	guardIndex := strings.Index(directInputCandidatesSQL, guard)
-	dueIndex := strings.Index(directInputCandidatesSQL, "a.next_health_check_at <= $1")
-	if guardIndex < 0 || dueIndex < 0 || guardIndex > dueIndex {
-		t.Fatalf("periodic candidate SQL must exclude active image accounts before due scheduling: guard=%d due=%d", guardIndex, dueIndex)
+func TestDirectInputCandidatesIncludeActiveImagesAfterConnectivityProbe(t *testing.T) {
+	if strings.Contains(directInputCandidatesSQL, "<> 'images_json'") {
+		t.Fatal("active image accounts must not be excluded from J1 periodic scans after the executor moved to GET /models connectivity probes")
 	}
-	if !strings.Contains(directInputCandidatesSQL, "$3::boolean") {
-		t.Fatal("explicit account loads must be able to bypass the periodic image exclusion")
+	if !strings.Contains(directInputCandidatesSQL, "a.next_health_check_at <= $1") {
+		t.Fatal("periodic candidates must still use next_health_check_at as the due key")
 	}
 }
 

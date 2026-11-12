@@ -113,8 +113,10 @@ func (s *Store) leasesTable() string {
 	return "juhe_stats.background_job_leases"
 }
 
-// pgNowText 与 Node postgresUtcNowTextSql 一致：数据库毫秒 UTC 时钟。
-const pgNowText = `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
+// pgNowText 是数据库原生 timestamptz 时钟。Revision 27 起 background_task_runs/
+// background_job_leases 时间列为 timestamptz；原 to_char 文本表达式在 INSERT/
+// UPDATE 目标列上不再有隐式 text→timestamptz 转换（42804）。
+const pgNowText = `clock_timestamp()`
 
 // bind 把 SQL 中的顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号
 // （pgx 驱动不做等价改写，w12b 门控实测 PG 模式报 42601 语法错误）。
@@ -138,14 +140,14 @@ CREATE TABLE IF NOT EXISTS juhe_stats.background_task_runs (
   params_json text NOT NULL DEFAULT '{}',
   result_json text NOT NULL DEFAULT '{}',
   error_message text,
-  submitted_at text NOT NULL,
-  started_at text,
-  heartbeat_at text,
-  finished_at text,
+  submitted_at timestamptz(6) NOT NULL,
+  started_at timestamptz(6),
+  heartbeat_at timestamptz(6),
+  finished_at timestamptz(6),
   duration_ms integer,
   exit_code integer,
-  created_at text NOT NULL,
-  updated_at text NOT NULL
+  created_at timestamptz(6) NOT NULL,
+  updated_at timestamptz(6) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS juhe_stats.background_job_leases (
@@ -155,10 +157,10 @@ CREATE TABLE IF NOT EXISTS juhe_stats.background_job_leases (
   owner_id text NOT NULL,
   run_id text,
   fencing_token bigint NOT NULL DEFAULT 0,
-  lease_until text NOT NULL,
-  heartbeat_at text NOT NULL,
-  started_at text NOT NULL,
-  updated_at text NOT NULL
+  lease_until timestamptz(6) NOT NULL,
+  heartbeat_at timestamptz(6) NOT NULL,
+  started_at timestamptz(6) NOT NULL,
+  updated_at timestamptz(6) NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_background_task_runs_status_updated
@@ -598,7 +600,7 @@ func (s *Store) acquireScheduledLeaseRow(ctx context.Context, tx *sql.Tx, leaseK
 	INSERT INTO ` + s.leasesTable() + ` AS current (
 	  lease_key, job_name, shard_key, owner_id, run_id, lease_until,
 	  heartbeat_at, started_at, updated_at, fencing_token
-	) VALUES ($1, $2, $3, $4, $5, to_char((clock_timestamp() + ($6 * INTERVAL '1 millisecond')) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), ` + pgNowText + `, ` + pgNowText + `, ` + pgNowText + `, 1)
+	) VALUES ($1, $2, $3, $4, $5, clock_timestamp() + ($6 * INTERVAL '1 millisecond'), ` + pgNowText + `, ` + pgNowText + `, ` + pgNowText + `, 1)
 	ON CONFLICT(lease_key) DO UPDATE SET
 	  job_name = excluded.job_name,
 	  shard_key = excluded.shard_key,
@@ -641,7 +643,7 @@ func (s *Store) RenewScheduledLease(ctx context.Context, lease LeaseIdentity, tt
 
 	query = `
 UPDATE ` + s.leasesTable() + `
-SET lease_until = to_char((clock_timestamp() + ($1 * INTERVAL '1 millisecond')) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+SET lease_until = clock_timestamp() + ($1 * INTERVAL '1 millisecond'),
   heartbeat_at = ` + pgNowText + `,
   updated_at = ` + pgNowText + `
 WHERE lease_key = $2

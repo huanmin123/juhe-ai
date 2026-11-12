@@ -70,10 +70,10 @@ const accountKeyStatesPGFixtureSchema = `
       protocol_code TEXT,
       protocol_version TEXT,
       config_revision INTEGER NOT NULL DEFAULT 1,
-      account_expires_at TEXT,
+      account_expires_at TIMESTAMPTZ(3),
       credentials_encrypted TEXT NOT NULL DEFAULT '{}',
       authorization_instance_source_account_id TEXT,
-      deleted_at TEXT
+      deleted_at TIMESTAMPTZ(3)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_api_key_runtime_states (
       id TEXT PRIMARY KEY,
@@ -85,21 +85,21 @@ const accountKeyStatesPGFixtureSchema = `
       failure_count INTEGER NOT NULL DEFAULT 0,
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
       success_count BIGINT NOT NULL DEFAULT 0,
-      cooldown_until TEXT,
-      next_probe_at TEXT,
+      cooldown_until TIMESTAMPTZ(3),
+      next_probe_at TIMESTAMPTZ(6),
       probe_backoff_seconds INTEGER NOT NULL DEFAULT 0,
-      recovery_started_at TEXT,
-      last_attempt_at TEXT,
-      last_success_at TEXT,
-      last_failure_at TEXT,
+      recovery_started_at TIMESTAMPTZ(6),
+      last_attempt_at TIMESTAMPTZ(3),
+      last_success_at TIMESTAMPTZ(3),
+      last_failure_at TIMESTAMPTZ(3),
       last_error_code TEXT,
       last_error_message TEXT,
       last_trace_id TEXT,
-      last_probe_at TEXT,
+      last_probe_at TIMESTAMPTZ(6),
       probe_claim_token TEXT,
-      probe_claimed_until TEXT,
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
+      probe_claimed_until TIMESTAMPTZ(6),
+      created_at TIMESTAMPTZ(3) NOT NULL,
+      updated_at TIMESTAMPTZ(3) NOT NULL,
       UNIQUE(account_id, key_fingerprint)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (
@@ -112,7 +112,7 @@ const accountKeyStatesPGFixtureSchema = `
 	CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
       group_id TEXT PRIMARY KEY,
       reason TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TIMESTAMPTZ(3) NOT NULL
     )
 `
 

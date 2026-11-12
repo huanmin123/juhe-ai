@@ -1,9 +1,8 @@
 package accounts
 
-// 媒体账户生命周期定案表（R1 状态机恢复闭环）的域守卫覆盖：audio/video 域
-// 账户不参与对话健康检查状态机——创建默认 active（显式 disabled 仍 disabled）、
-// 编辑连接变化不降级 pending_test、人工恢复（ClearFailureState）error 直达
-// active；chat/image 域行为不变（对照臂）。
+// 媒体账户（video/audio/image）与对话账户统一使用 J1 健康状态机：创建后
+// pending_test 等待首次激活探测、连接变化降级 pending_test、error 人工恢复
+// 进入 pending_test 复检；手动模式仍然保持显式状态。
 
 import (
 	"fmt"
@@ -47,11 +46,10 @@ func createMediaAccount(t *testing.T, env *testEnv, name, domain, status string)
 	return dataMap(t, payload)["id"].(string)
 }
 
-// TestMediaDomainCreateDefaultsActive：audio/video 域创建默认落 active + 可调
-// 度（显式 disabled 仍 disabled；缺省 pending_test 哨兵与显式 active 同收敛
-// active，且不落「等待后台健康检查」提示）；chat/image 域行为不变（缺省
-// pending_test + 暂停调度 + 等待检查提示）。
-func TestMediaDomainCreateDefaultsActive(t *testing.T) {
+// TestMediaDomainCreateDefaultsPendingTest：所有场景缺省创建落 pending_test
+// 等待 J1 首次激活检查（显式 active 携带 skipInitialHealthCheck 才 active；
+// 显式 disabled 仍 disabled），并写入健康检查快照 outbox。
+func TestMediaDomainCreateDefaultsPendingTest(t *testing.T) {
 	cases := []struct {
 		domain          string
 		statusField     string
@@ -59,14 +57,14 @@ func TestMediaDomainCreateDefaultsActive(t *testing.T) {
 		wantSchedulable int
 		wantNotice      bool
 	}{
-		{domain: "audio", statusField: "", wantStatus: "active", wantSchedulable: 1},
-		{domain: "video", statusField: "", wantStatus: "active", wantSchedulable: 1},
+		{domain: "audio", statusField: "", wantStatus: "pending_test", wantSchedulable: 0, wantNotice: true},
+		{domain: "video", statusField: "", wantStatus: "pending_test", wantSchedulable: 0, wantNotice: true},
+		{domain: "image", statusField: "", wantStatus: "pending_test", wantSchedulable: 0, wantNotice: true},
 		{domain: "audio", statusField: "active", wantStatus: "active", wantSchedulable: 1},
 		{domain: "video", statusField: "active", wantStatus: "active", wantSchedulable: 1},
+		{domain: "image", statusField: "active", wantStatus: "active", wantSchedulable: 1},
 		{domain: "audio", statusField: "disabled", wantStatus: "disabled", wantSchedulable: 0},
-		// 对照臂：chat/image 域行为不变。
 		{domain: "chat", statusField: "", wantStatus: "pending_test", wantSchedulable: 0, wantNotice: true},
-		{domain: "image", statusField: "", wantStatus: "pending_test", wantSchedulable: 0, wantNotice: true},
 	}
 	for index, testCase := range cases {
 		t.Run(fmt.Sprintf("%s/%s", testCase.domain, testCase.statusField), func(t *testing.T) {
@@ -87,22 +85,18 @@ func TestMediaDomainCreateDefaultsActive(t *testing.T) {
 				t.Fatalf("%s 域 active 创建不应带等待检查提示", testCase.domain)
 			}
 			healthRows := env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_outbox WHERE account_id = ?`, id)
-			if testCase.domain == "audio" || testCase.domain == "video" {
-				if healthRows != 0 {
-					t.Fatalf("%s 域创建不应写入健康检查快照 outbox: got %d", testCase.domain, healthRows)
-				}
-			} else if healthRows == 0 {
-				t.Fatalf("%s 域对照账户应保留健康检查快照", testCase.domain)
+			if healthRows == 0 {
+				t.Fatalf("%s 域创建应写入健康检查快照 outbox", testCase.domain)
 			}
 		})
 	}
 }
 
-// TestMediaDomainEditConnectionChangeStaysActive：audio/video 域账户编辑连接
-// 面（base_url 变化）不带显式 status 时保持 active，不落 pending_test；
-// chat 域对照行在同样编辑下降级 pending_test（既有语义）。
-func TestMediaDomainEditConnectionChangeStaysActive(t *testing.T) {
-	for _, domain := range []string{"audio", "video", "chat"} {
+// TestMediaDomainEditConnectionChangeFallsToPendingTest：所有场景在后台探测
+// 开启时，连接面（base_url）变化且不带显式 status 都降级 pending_test 等 J1
+// 复检，不再有媒体域例外。
+func TestMediaDomainEditConnectionChangeFallsToPendingTest(t *testing.T) {
+	for _, domain := range []string{"audio", "video", "image", "chat"} {
 		t.Run(domain, func(t *testing.T) {
 			env := newTestEnv(t)
 			adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -114,28 +108,21 @@ func TestMediaDomainEditConnectionChangeStaysActive(t *testing.T) {
 			if code != http.StatusOK {
 				t.Fatalf("patch %s: %d %v", domain, code, payload)
 			}
-			// chat 域降级 pending_test 并强制禁调度（既有语义）；媒体域保持
-			// active + 可调度。
-			wantStatus, wantSchedulable := "pending_test", 0
-			if domain != "chat" {
-				wantStatus, wantSchedulable = "active", 1
+			if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND status = 'pending_test'
+				AND schedulable = 0 AND cooldown_until IS NULL`, id) != 1 {
+				t.Fatalf("%s 域连接变化编辑后应落 pending_test", domain)
 			}
-			if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND status = ?
-				AND schedulable = ? AND cooldown_until IS NULL`, id, wantStatus, wantSchedulable) != 1 {
-				t.Fatalf("%s 域连接变化编辑后应保持 %s（schedulable=%d）", domain, wantStatus, wantSchedulable)
-			}
-			if domain != "chat" && env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_outbox WHERE account_id = ?`, id) != 0 {
-				t.Fatalf("%s 域连接编辑不应排队健康快照", domain)
+			if env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_outbox WHERE account_id = ?`, id) == 0 {
+				t.Fatalf("%s 域连接编辑应排队健康快照", domain)
 			}
 		})
 	}
 }
 
-// TestMediaDomainClearFailureStateErrorRestoresActive：audio/video 域 error 行
-// 人工恢复直达 active + 可调度（无探针复检，落 pending_test 会永久滞留）；
-// chat 域对照行维持 error → pending_test 既有语义。
-func TestMediaDomainClearFailureStateErrorRestoresActive(t *testing.T) {
-	for _, domain := range []string{"audio", "video", "chat"} {
+// TestMediaDomainClearFailureStateErrorFallsToPendingTest：所有场景 error 行
+// 人工恢复都落 pending_test 等 J1 复检（手动模式例外另由总开关测试覆盖）。
+func TestMediaDomainClearFailureStateErrorFallsToPendingTest(t *testing.T) {
+	for _, domain := range []string{"audio", "video", "image", "chat"} {
 		t.Run(domain, func(t *testing.T) {
 			env := newTestEnv(t)
 			adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -148,24 +135,18 @@ func TestMediaDomainClearFailureStateErrorRestoresActive(t *testing.T) {
 			if code != http.StatusOK {
 				t.Fatalf("clearFailureState %s: %d %v", domain, code, payload)
 			}
-			wantStatus := "pending_test"
-			wantSchedulable := 0
-			if domain != "chat" {
-				wantStatus = "active"
-				wantSchedulable = 1
-			}
-			if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND status = ?
-				AND schedulable = ? AND cooldown_until IS NULL
-				AND last_error_code IS NULL AND last_error_message IS NULL`, id, wantStatus, wantSchedulable) != 1 {
-				t.Fatalf("%s 域 error 人工恢复应落 %s（schedulable=%d）", domain, wantStatus, wantSchedulable)
+			if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND status = 'pending_test'
+				AND schedulable = 0 AND cooldown_until IS NULL
+				AND last_error_code IS NULL AND last_error_message IS NULL`, id) != 1 {
+				t.Fatalf("%s 域 error 人工恢复应落 pending_test", domain)
 			}
 		})
 	}
 }
 
-// TestMediaDomainClearFailureStateCoolingStillActive：audio 域冷却态行
-// （temporary_unavailable/rate_limited）的人工恢复目标本就是 active，域守卫
-// 不改变冷却臂语义（对齐既有 BUG-0288 行为的媒体域平移）。
+// TestMediaDomainClearFailureStateCoolingStillActive：冷却态行
+// （temporary_unavailable/rate_limited）的人工恢复目标本就是 active，场景
+// 不改变冷却臂语义。
 func TestMediaDomainClearFailureStateCoolingStillActive(t *testing.T) {
 	for _, status := range []string{"temporary_unavailable", "rate_limited"} {
 		t.Run(status, func(t *testing.T) {

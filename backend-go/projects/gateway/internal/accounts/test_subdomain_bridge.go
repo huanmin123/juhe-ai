@@ -252,6 +252,11 @@ func (s *Store) ResolveAccountManualTestSelection(ctx context.Context, account *
 	return s.testService().ResolveAccountManualTestSelection(ctx, account, modelInput, testEndpointMode)
 }
 
+// ResolveAccountConnectivitySelection 转发非对话账户连通性测试选择器。
+func (s *Store) ResolveAccountConnectivitySelection(account *ManualTestContext) (model, resolvedMode string, err error) {
+	return s.testService().ResolveAccountConnectivitySelection(account)
+}
+
 // ---- 自由函数转发（查询归一、端点能力解析、行投影与目录辅助） ----
 
 func NormalizeManualTestOptionsQuery(query map[string][]string) (ManualTestOptionsQuery, string) {

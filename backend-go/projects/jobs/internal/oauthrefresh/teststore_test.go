@@ -119,28 +119,28 @@ CREATE TABLE juhe_business.api_keys (
 	status text NOT NULL DEFAULT 'active',
 	is_default integer NOT NULL DEFAULT 0,
 	      purpose text NOT NULL DEFAULT 'general',
-	expires_at text,
+	expires_at timestamptz(3),
 	quota_limits_json text,
 	availability_schedule_json text,
-	availability_schedule_next_check_at text,
+	availability_schedule_next_check_at timestamptz(3),
 	availability_schedule_gate integer,
-	last_used_at text,
-	created_at text NOT NULL,
-	updated_at text NOT NULL
+	last_used_at timestamptz(3),
+	created_at timestamptz(3) NOT NULL,
+	updated_at timestamptz(3) NOT NULL
 );
 
 CREATE TABLE juhe_business.api_key_schedule_status_events (
 	event_key text PRIMARY KEY,
 	api_key_id text NOT NULL,
 	status text NOT NULL,
-	executed_at text NOT NULL
+	executed_at timestamptz(3) NOT NULL
 );
 
 CREATE TABLE juhe_business.account_schedule_status_events (
 	event_key text PRIMARY KEY,
 	account_id text NOT NULL,
 	status text NOT NULL,
-	executed_at text NOT NULL
+	executed_at timestamptz(3) NOT NULL
 );
 
 CREATE TABLE juhe_business.account_quality_enforcements (

@@ -371,3 +371,21 @@ func TestActivationPlanForProjectionGateSemantics(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectionFailureIsDeterministic 锁定 D12 的 J1 探活硬门分类：
+// 401/403/404/422 等确定性失败释放锁死 hold；5xx/429/网络失败继续 hold。
+func TestProjectionFailureIsDeterministic(t *testing.T) {
+	cases := []struct {
+		status int
+		want   bool
+	}{
+		{400, true}, {401, true}, {402, true}, {403, true}, {404, true},
+		{405, true}, {406, true}, {410, true}, {413, true}, {415, true}, {422, true},
+		{408, false}, {409, false}, {425, false}, {429, false}, {500, false}, {503, false}, {0, false},
+	}
+	for _, tc := range cases {
+		if got := projectionFailureIsDeterministic(Outcome{StatusCode: tc.status}); got != tc.want {
+			t.Fatalf("status %d deterministic=%v want %v", tc.status, got, tc.want)
+		}
+	}
+}

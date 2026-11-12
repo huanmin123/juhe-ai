@@ -5,11 +5,13 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
-// Written instants must be fixed-width UTC milliseconds: updated_at is the
-// lexicographic ORDER BY ... DESC key and time.RFC3339Nano drops trailing
-// zeros, which misordered '...Z' rows against '...000Z' rows.
+// Written instants are stored as timestamptz(3) and must still render as
+// fixed-width UTC milliseconds at the API boundary; sub-millisecond clock
+// fractions are truncated by the column scale.
 func TestAnnouncementTimestampsFixedWidthMillis(t *testing.T) {
 	db := newAnnouncementsPGDatabase(t)
 	// 夹具 schema 已由 pgkit_test.go 注入（juhe_business.announcements /
@@ -31,23 +33,23 @@ func TestAnnouncementTimestampsFixedWidthMillis(t *testing.T) {
 	if fixedWidthInstantPattern.MatchString(receipt.Revision) == false || receipt.Revision != "2026-01-10T08:30:00.123Z" {
 		t.Fatalf("create revision not fixed-width ms: %q", receipt.Revision)
 	}
-	var createdAt, updatedAt string
+	var createdAt, updatedAt dbtime.Nullable
 	if err := db.QueryRow(fixtureBind(`SELECT created_at, updated_at FROM announcements WHERE id = ?`), receipt.ID).Scan(&createdAt, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	if createdAt != receipt.Revision || updatedAt != receipt.Revision {
-		t.Fatalf("stored columns not fixed-width: %q/%q", createdAt, updatedAt)
+	if dbtime.API(createdAt.Time) != receipt.Revision || dbtime.API(updatedAt.Time) != receipt.Revision {
+		t.Fatalf("stored columns not fixed-width: %q/%q", dbtime.API(createdAt.Time), dbtime.API(updatedAt.Time))
 	}
 
 	if _, err := store.MarkRead(ctx, "reader", []string{receipt.ID}); err != nil {
 		t.Fatal(err)
 	}
-	var readAt string
+	var readAt dbtime.Nullable
 	if err := db.QueryRow(`SELECT read_at FROM announcement_reads WHERE system_account_id = 'reader'`).Scan(&readAt); err != nil {
 		t.Fatal(err)
 	}
-	if !fixedWidthInstantPattern.MatchString(readAt) {
-		t.Fatalf("read_at not fixed-width ms: %q", readAt)
+	if !fixedWidthInstantPattern.MatchString(dbtime.API(readAt.Time)) {
+		t.Fatalf("read_at not fixed-width ms: %q", dbtime.API(readAt.Time))
 	}
 
 	// Legacy variable-width revision still patches: the bumped revision is

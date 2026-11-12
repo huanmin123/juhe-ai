@@ -589,13 +589,18 @@ func sameCooldownFence(left, right *exactkeyprobe.CooldownFence) bool {
 	return *left.SourceConfigRevision == *right.SourceConfigRevision
 }
 
-// sameFenceInstant follows the J1/Node timestamp contract: cooldown fences
-// are emitted at millisecond precision. PostgreSQL may scan a TIMESTAMPTZ
-// written by Go with microseconds, while an outcome from Node/JSON carries
-// only milliseconds. The sub-millisecond representation must not invalidate
-// an otherwise identical logical fence.
+// sameFenceInstant 以 ±2ms 容差比较 cooldown 观测锚点（W35）：锚点在生产中
+// 可能以 RFC3339Nano 文本写入，PostgreSQL 落 TIMESTAMPTZ(6) 时按微秒四舍五入
+// （.103999859 → .104000），而投影 fence 携带同一物理锚点的微秒文本
+// （.103999）。两者相差 ≤1ms，毫秒 floor 相等会把同一逻辑 fence 判 stale。
+// 容差与 cooldownObservationFenceGuard 的 SQL 窗口保持一致；generation 仍是
+// 强身份键，真实换锚由 generation 变化拒绝。
 func sameFenceInstant(left, right time.Time) bool {
-	return left.UTC().UnixMilli() == right.UTC().UnixMilli()
+	diff := left.Sub(right)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= 2*time.Millisecond
 }
 
 func nullableInt64(value *int64) any {

@@ -70,6 +70,11 @@ func mountGatewayRootForms(kern *kernel.Kernel, chain http.Handler) {
 	kern.Register("/chat/completions", v1Adapter)
 	kern.Register("/models", v1Adapter)
 	kern.Register("/embeddings", v1Adapter)
+	// B7 工具端点：向量/重排/安全与 embeddings 同级放行（无状态 lane）。
+	kern.Register("/rerank", v1Adapter)
+	kern.Register("/rerank/{rest...}", v1Adapter)
+	kern.Register("/moderations", v1Adapter)
+	kern.Register("/moderations/{rest...}", v1Adapter)
 	// 向量批（2026-10-17）：ark 多模态向量子路径族（/v1/embeddings/multimodal
 	// ——doubao-embedding-vision 系独立 API 面，OpenAI 兼容 /embeddings 面不
 	// 承接该模型）与 /images 同风格整棵子树放行。

@@ -20,6 +20,15 @@ func endpointFamilyFromPath(value string) (string, bool) {
 	if strings.Contains(path, "/responses") {
 		return FamilyResponses, true
 	}
+	if strings.Contains(path, "/embeddings") {
+		return FamilyEmbeddings, true
+	}
+	if strings.Contains(path, "/rerank") {
+		return FamilyRerank, true
+	}
+	if strings.Contains(path, "/moderations") {
+		return FamilyModeration, true
+	}
 	return "", false
 }
 
@@ -30,6 +39,15 @@ func responseEndpointFamilyFromPath(path string) gatewayproto.ResponseEndpointFa
 	}
 	if strings.Contains(path, "/responses") {
 		return gatewayproto.EndpointFamilyResponses
+	}
+	if strings.Contains(path, "/embeddings") {
+		return gatewayproto.EndpointFamilyEmbedContent
+	}
+	if strings.Contains(path, "/rerank") {
+		return gatewayproto.EndpointFamilyRerank
+	}
+	if strings.Contains(path, "/moderations") {
+		return gatewayproto.EndpointFamilyModeration
 	}
 	return gatewayproto.EndpointFamilyUnknown
 }
@@ -73,6 +91,10 @@ func IsProtocolRequestPath(originalPathAndQuery string) bool {
 	case normalized == "/images", strings.HasPrefix(normalized, "/images/"):
 		return true
 	case normalized == "/embeddings", strings.HasPrefix(normalized, "/embeddings/"):
+		return true
+	case normalized == "/rerank", strings.HasPrefix(normalized, "/rerank/"):
+		return true
+	case normalized == "/moderations", strings.HasPrefix(normalized, "/moderations/"):
 		return true
 	case normalized == "/audio", strings.HasPrefix(normalized, "/audio/"):
 		return true
@@ -135,6 +157,14 @@ func endpointModeForShape(path string, stream bool) (gatewayproto.EndpointMode, 
 			return gatewayproto.EndpointModeChatSSE, true
 		}
 		return gatewayproto.EndpointModeChatJSON, true
+	}
+	switch family {
+	case FamilyEmbeddings:
+		return gatewayproto.EndpointModeEmbedContent, true
+	case FamilyRerank:
+		return gatewayproto.EndpointModeRerankJSON, true
+	case FamilyModeration:
+		return gatewayproto.EndpointModeModerationJSON, true
 	}
 	if stream {
 		return gatewayproto.EndpointModeResponsesSSE, true

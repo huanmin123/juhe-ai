@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // Change mirrors the schedulingpreferences patch change record with raw values
@@ -151,7 +152,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		return nil, &BuiltinWriteError{Message: "系统内置安全策略不可修改或删除"}
 	}
 	expectedUpdatedAt = strings.TrimSpace(expectedUpdatedAt)
-	if current.updatedAt != expectedUpdatedAt {
+	if !dbtime.SameInstant(current.updatedAt, expectedUpdatedAt) {
 		return nil, &routestrategies.VersionConflictError{Message: "安全策略已被其他操作更新，请刷新后重试", CurrentUpdatedAt: current.updatedAt}
 	}
 

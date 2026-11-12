@@ -92,6 +92,12 @@ func TestFullchainImageProvidersSync(t *testing.T) {
 		wantPath   string
 	}{
 		{
+			name: "gpt", provider: "gpt", profileID: "profile_gpt_openai_v1",
+			preset: "gpt_openai_v1", model: "gpt-image-2",
+			baseSuffix: "/v1", scenario: platformmock.ScenarioMediaImagesOK,
+			wantURL: "mock-0001.png", wantPath: "/v1/images/generations",
+		},
+		{
 			name: "xai", provider: "xai", profileID: "profile_xai_openai_v1",
 			preset: "xai_openai_v1", model: "grok-imagine-image-2.0",
 			baseSuffix: "/v1", scenario: platformmock.ScenarioMediaXaiImageOK,
@@ -133,8 +139,14 @@ func TestFullchainImageProvidersSync(t *testing.T) {
 			if !strings.Contains(responseBody, `"data"`) {
 				t.Fatalf("%s image response not OpenAI Images shape: %s", tc.name, responseBody)
 			}
+			if contentType := responseHeader.Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+				t.Fatalf("%s image response content-type=%q, want JSON", tc.name, contentType)
+			}
 			if got := responseHeader.Get("X-Juhe-Image-Provider"); got != tc.provider {
 				t.Fatalf("%s image provider echo=%q, want %q", tc.name, got, tc.provider)
+			}
+			if got := responseHeader.Get("X-Juhe-Image-Params-Ignored"); !strings.Contains(got, "stream") {
+				t.Fatalf("%s image params ignored echo=%q, want stream", tc.name, got)
 			}
 			calls := f.mock.callsByKey(key)
 			if len(calls) == 0 {
@@ -158,6 +170,13 @@ func TestFullchainImageProvidersSync(t *testing.T) {
 				t.Fatalf("%s image provider_options leaked upstream: %s", tc.name, call.Body)
 			}
 			switch tc.name {
+			case "gpt":
+				if _, ok := upstreamBody["stream"]; ok {
+					t.Fatalf("gpt image stream must be ignored: %s", call.Body)
+				}
+				if _, ok := upstreamBody["partial_images"]; ok {
+					t.Fatalf("gpt image partial_images must be ignored: %s", call.Body)
+				}
 			case "xai":
 				if _, ok := upstreamBody["stream"]; ok {
 					t.Fatalf("xai image stream must be ignored: %s", call.Body)

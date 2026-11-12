@@ -197,6 +197,9 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if isMediaConnectivityMode(input.EndpointMode) {
+		return probeMediaConnectivity(requestCtx, client, baseURL, input, token, options)
+	}
 	challenge := newProbeChallenge()
 	request, err := buildProbeRequest(requestCtx, baseURL, input, token, challenge)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // 本文件移植 Node loadAccountApiKeyRuntimeSummariesByAccountIds(Async)：
@@ -255,8 +257,8 @@ func (s *Store) loadSummaryDetailRows(ctx context.Context, accountIds []string) 
 				accountID, keyFingerprint, status            sql.NullString
 				keyIndex, failureCount, consecutiveFailures  sql.NullInt64
 				successCount                                 sql.NullInt64
-				cooldownUntil, nextProbeAt                   sql.NullString
-				lastAttemptAt, lastSuccessAt, lastFailureAt  sql.NullString
+				cooldownUntil, nextProbeAt                   dbtime.Nullable
+				lastAttemptAt, lastSuccessAt, lastFailureAt  dbtime.Nullable
 				lastErrorCode, lastErrorMessage, lastTraceID sql.NullString
 			)
 			if err := rows.Scan(&accountID, &keyFingerprint, &keyIndex, &status, &failureCount, &consecutiveFailures,
@@ -273,11 +275,11 @@ func (s *Store) loadSummaryDetailRows(ctx context.Context, accountIds []string) 
 				failureCount:        int(failureCount.Int64),
 				consecutiveFailures: int(consecutiveFailures.Int64),
 				successCount:        int(successCount.Int64),
-				cooldownUntil:       cooldownUntil.String,
-				nextProbeAt:         nextProbeAt.String,
-				lastAttemptAt:       lastAttemptAt.String,
-				lastSuccessAt:       lastSuccessAt.String,
-				lastFailureAt:       lastFailureAt.String,
+				cooldownUntil:       cooldownUntil.APIString(),
+				nextProbeAt:         nextProbeAt.APIString(),
+				lastAttemptAt:       lastAttemptAt.APIString(),
+				lastSuccessAt:       lastSuccessAt.APIString(),
+				lastFailureAt:       lastFailureAt.APIString(),
 				lastErrorCode:       lastErrorCode.String,
 				lastErrorMessage:    lastErrorMessage.String,
 				lastTraceID:         lastTraceID.String,

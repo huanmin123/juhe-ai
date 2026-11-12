@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // BUG-0161 review-and-fix pairings. Every test below locks one adjudicated
@@ -202,8 +204,12 @@ func TestAPIKeyExpiresAtWhitespaceRejected(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("empty expiresAt must pass: %d %v", code, created)
 	}
-	if stored := env.queryCell(t, `SELECT COALESCE(expires_at,'') FROM api_keys WHERE id = ?`, dataMap(t, created)["id"].(string)); stored != "" {
-		t.Fatalf("empty expiresAt must not set a value: %v", stored)
+	var storedExpiry dbtime.Nullable
+	if err := env.db.QueryRow(`SELECT expires_at FROM api_keys WHERE id = $1`, dataMap(t, created)["id"].(string)).Scan(&storedExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if storedExpiry.Valid {
+		t.Fatalf("empty expiresAt must not set a value: %v", storedExpiry.APIString())
 	}
 	// PATCH carries the same contract.
 	id := dataMap(t, created)["id"].(string)
@@ -214,13 +220,15 @@ func TestAPIKeyExpiresAtWhitespaceRejected(t *testing.T) {
 	}
 }
 
-// --- Claim 6: whitespace-only stored schedule JSON is a read failure. ---
+// --- Claim 6: whitespace-only stored schedule JSON degrades to "no schedule"
+// on reads and stays repairable through PATCH
+// （《时间计划闸门与账户状态解耦设计》§4.2：不得因旧值不可解析而拒绝修复）。 ---
 
-func TestAPIKeyStoredWhitespaceScheduleFailsReads(t *testing.T) {
+func TestAPIKeyStoredWhitespaceScheduleDegradesAndRepairs(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	sealed, err := EncryptJSON(testSecret, secretPayload{Key: "sk-dirty"})
 	if err != nil {
 		t.Fatal(err)
@@ -230,17 +238,35 @@ func TestAPIKeyStoredWhitespaceScheduleFailsReads(t *testing.T) {
 		VALUES ('key-dirty', ?, 'rs-default', 'dirty', 'hash-dirty', 'sk-dirty', 'ty-xxxx', ?, 'active', 0, 'general', '   ', ?, ?)`,
 		adminID, sealed, now, now)
 
-	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/api-keys", ""); code != http.StatusInternalServerError {
-		t.Fatalf("list with whitespace schedule must 500: %d %v", code, payload)
+	// 单条坏计划降级为“无计划”，不打挂列表与详情。
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/api-keys", "")
+	if code != http.StatusOK {
+		t.Fatalf("list with whitespace schedule must degrade: %d %v", code, payload)
 	}
-	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-dirty", ""); code != http.StatusInternalServerError {
-		t.Fatal("detail with whitespace schedule must 500")
+	items := dataMap(t, payload)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("list items = %v", items)
 	}
+	if schedule, ok := items[0].(map[string]any)["availabilitySchedule"]; ok && schedule != nil {
+		t.Fatalf("corrupt schedule must read as no schedule: %v", schedule)
+	}
+	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-dirty", ""); code != http.StatusOK {
+		t.Fatalf("detail with whitespace schedule must degrade: %d", code)
+	}
+
+	// PATCH 清空坏计划必须成功，随后列表读到干净的空计划。
 	revision := env.queryCell(t, `SELECT updated_at FROM api_keys WHERE id = 'key-dirty'`)
-	code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-dirty",
+	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-dirty",
 		`{"expectedRevision":"`+revision+`","availabilitySchedule":null}`)
-	if code != http.StatusInternalServerError {
-		t.Fatalf("patch touching a corrupt stored schedule must 500: %d", code)
+	if code != http.StatusOK {
+		t.Fatalf("patch clearing a corrupt stored schedule must succeed: %d %v", code, patched)
+	}
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-dirty", "")
+	if code != http.StatusOK {
+		t.Fatalf("detail after repair: %d %v", code, payload)
+	}
+	if schedule, ok := dataMap(t, payload)["availabilitySchedule"]; ok && schedule != nil {
+		t.Fatalf("repaired schedule must be empty: %v", schedule)
 	}
 }
 

@@ -240,8 +240,11 @@ func TestW16fDirectProfileAndBaseURLArms(t *testing.T) {
 	if isSupportedDirectProfile("profile_hybrid_openai_chat_v1", "hybrid", "api_key", "chat_json") {
 		t.Fatal("hybrid 档案已退役，必须不支持")
 	}
-	if _, ok := ConnectionPresetProfileID("minimax_media"); ok {
-		t.Fatal("media preset 没有 J1 探针 profile，必须派生失败")
+	if profile, ok := ConnectionPresetProfileID("minimax_media"); !ok || profile != "profile_minimax_openai_v1" {
+		t.Fatalf("minimax_media 必须映射 J1 媒体 profile，got %q %v", profile, ok)
+	}
+	if profile, ok := ConnectionPresetProfileID("volcengine_openspeech"); !ok || profile != "profile_volcengine_openspeech_v1" {
+		t.Fatalf("volcengine_openspeech 必须映射独立 J1 媒体 profile，got %q %v", profile, ok)
 	}
 	if profile, ok := ConnectionPresetProfileID("anthropic_v1"); !ok || profile != "profile_anthropic_anthropic_v1" {
 		t.Fatalf("anthropic_v1 必须字面映射 profile_anthropic_anthropic_v1，got %q %v", profile, ok)

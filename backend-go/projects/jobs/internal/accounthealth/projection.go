@@ -19,6 +19,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // J1 outcome → 业务账户投影器（BUG-0174 M-1）。行为基线是 Node 归档的
@@ -421,21 +422,22 @@ func (s *Store) listProjectedOutcomes(ctx context.Context, after *OutcomeCursor,
 // loadCursor 读取业务库游标（归档 currentAccountHealthProjectionCursor）并按
 // outcome_id 重新锚定存储时间戳（归档 resolveCursor：容忍游标精度漂移）。
 func (p *OutcomeProjector) loadCursor(ctx context.Context) (*OutcomeCursor, error) {
-	var observedAtText, outcomeID sql.NullString
-	err := p.business.db.QueryRowContext(ctx, p.business.bind(`SELECT observed_at, outcome_id FROM `+p.business.table("account_health_projection_cursors")+` WHERE consumer_key = ?`), p.consumerKey).Scan(&observedAtText, &outcomeID)
+	var observedAt dbtime.Nullable
+	var outcomeID sql.NullString
+	err := p.business.db.QueryRowContext(ctx, p.business.bind(`SELECT observed_at, outcome_id FROM `+p.business.table("account_health_projection_cursors")+` WHERE consumer_key = ?`), p.consumerKey).Scan(&observedAt, &outcomeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("读取 J1 投影游标失败: %w", err)
 	}
-	if !observedAtText.Valid && !outcomeID.Valid {
+	if !observedAt.Valid && !outcomeID.Valid {
 		return nil, nil
 	}
-	if !observedAtText.Valid || !outcomeID.Valid {
+	if !observedAt.Valid || !outcomeID.Valid {
 		return nil, errors.New("J1 projection cursor 存储损坏")
 	}
-	cursor, err := normalizeProjectionCursor(observedAtText.String, outcomeID.String)
+	cursor, err := normalizeProjectionCursor(projectionCursorText(observedAt.Time), outcomeID.String)
 	if err != nil {
 		return nil, err
 	}
@@ -478,19 +480,20 @@ func (p *OutcomeProjector) advanceCursor(ctx context.Context, next *OutcomeCurso
 	}
 	defer tx.Rollback()
 	table := p.business.table("account_health_projection_cursors")
-	var observedAtText, outcomeID sql.NullString
-	err = tx.QueryRowContext(ctx, p.business.bind(`SELECT observed_at, outcome_id FROM `+table+` WHERE consumer_key = ?`), p.consumerKey).Scan(&observedAtText, &outcomeID)
+	var observedAt dbtime.Nullable
+	var outcomeID sql.NullString
+	err = tx.QueryRowContext(ctx, p.business.bind(`SELECT observed_at, outcome_id FROM `+table+` WHERE consumer_key = ?`), p.consumerKey).Scan(&observedAt, &outcomeID)
 	var existing *OutcomeCursor
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// 首次写入。
 	case err != nil:
 		return false, fmt.Errorf("读取 J1 投影游标失败: %w", err)
-	case observedAtText.Valid && outcomeID.Valid:
-		if existing, err = normalizeProjectionCursor(observedAtText.String, outcomeID.String); err != nil {
+	case observedAt.Valid && outcomeID.Valid:
+		if existing, err = normalizeProjectionCursor(projectionCursorText(observedAt.Time), outcomeID.String); err != nil {
 			return false, err
 		}
-	case !observedAtText.Valid && !outcomeID.Valid:
+	case !observedAt.Valid && !outcomeID.Valid:
 		existing = nil
 	default:
 		return false, errors.New("J1 projection cursor 存储损坏")
@@ -531,6 +534,13 @@ func (p *OutcomeProjector) advanceCursor(ctx context.Context, next *OutcomeCurso
 		return false, err
 	}
 	return updated, nil
+}
+
+// projectionCursorText 归一游标时间为 UTC 微秒文本：游标列自 Revision 26
+// 起为 timestamptz(6)，读回值不再携带原始 Z/纳秒形态；统一表示可避免
+// 「同 outcome 文本不等」触发每轮无意义重写。
+func projectionCursorText(value time.Time) string {
+	return dbtime.API6(value.UTC())
 }
 
 func normalizeProjectionCursor(observedAtText, outcomeID string) (*OutcomeCursor, error) {
@@ -850,10 +860,55 @@ type activationProjectionPlan struct {
 	restoresDispatch bool
 }
 
+// projectionFailureIsDeterministic 对齐 D12 的确定性硬门：凭据无效、请求/
+// 模型确定性拒绝、额度耗尽等状态码不进入锁死 hold，仍按原状态机落冷却/错误。
+func projectionFailureIsDeterministic(outcome Outcome) bool {
+	switch outcome.StatusCode {
+	case 400, 401, 402, 403, 404, 405, 406, 410, 413, 415, 422:
+		return true
+	}
+	return false
+}
+
+// accountLockHoldsTransientFailure 报告账户是否处于锁死策略的 hold 窗口：
+// enabled=1 且 lock_state 为 LOCKED_IDLE/ENGAGED，deadline 未过或尚未设置。
+// J1 探活失败不得提前终结 hold（D12），投影层据本函数保留 active 状态。
+func (p *OutcomeProjector) accountLockHoldsTransientFailure(ctx context.Context, tx *sql.Tx, accountID string, observedAt time.Time) (bool, error) {
+	var enabled int
+	var lockState string
+	var deadline sql.NullString
+	err := tx.QueryRowContext(ctx, p.business.bind(`SELECT enabled, lock_state, deadline_at FROM `+p.business.table("account_lock_states")+` WHERE account_id = ? LIMIT 1`), accountID).Scan(&enabled, &lockState, &deadline)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取账户锁死状态失败: %w", err)
+	}
+	if enabled != 1 || (lockState != "LOCKED_IDLE" && lockState != "ENGAGED") {
+		return false, nil
+	}
+	if !deadline.Valid || strings.TrimSpace(deadline.String) == "" {
+		return true, nil
+	}
+	deadlineAt, parseErr := time.Parse(time.RFC3339, deadline.String)
+	if parseErr != nil {
+		return false, fmt.Errorf("解析账户锁死死期失败: %w", parseErr)
+	}
+	return deadlineAt.After(observedAt), nil
+}
+
 // applyProjectionUpdate 构造并执行 fenced CAS UPDATE（归档 buildProjectionUpdate
 // 的分支真值表）。返回 RowsAffected==1。
 func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx, outcome Outcome, account *projectionAccountFence, plan activationProjectionPlan) (bool, error) {
 	projection := outcome.Projection
+	lockHold := false
+	if account.status != "pending_test" && !projectionFailureIsDeterministic(outcome) {
+		var err error
+		lockHold, err = p.accountLockHoldsTransientFailure(ctx, tx, account.id, outcome.ObservedAt)
+		if err != nil {
+			return false, err
+		}
+	}
 	requiresOutputFence := projection.TransitionKind == "temporary_unavailable" || projection.TransitionKind == "cooldown_defer" || projection.TransitionKind == "cooldown_failure" || projection.TransitionKind == "cooldown_error"
 	if requiresOutputFence && projection.CooldownFence == nil {
 		// validateProjection 已拒绝该形态；到达此处属于实现缺陷。
@@ -972,12 +1027,23 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 	case "health_failure":
 		healthFailure()
 	case "activation_error":
+		if lockHold {
+			// 锁死 hold：只记录探活事实，不把账户打成 error。
+			healthFailure()
+			break
+		}
 		set("status", "error")
 		set("schedulable", 0)
 		clearCooldown()
 		setLastError()
 		healthFailure()
 	case "temporary_unavailable":
+		if lockHold {
+			// 锁死 hold：不落 temporary_unavailable/cooldown，账户保持 active
+			// 可调度，继续承接真实流量消耗额度。
+			healthFailure()
+			break
+		}
 		set("status", "temporary_unavailable")
 		set("schedulable", 1)
 		setCooldown(projection.CooldownFence)

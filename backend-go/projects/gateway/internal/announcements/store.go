@@ -11,6 +11,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ConflictError maps to AnnouncementRevisionConflictError (409 + currentRevision).
@@ -144,9 +146,8 @@ func (s *Store) ListPublic(ctx context.Context, systemAccountID string, limit in
 		if err := rows.Scan(&item.ID, &item.Title, &item.Level, &item.PublishedAt, &readAt); err != nil {
 			return nil, err
 		}
-		if readAt.Valid {
-			item.ReadAt = &readAt.String
-		}
+		item.PublishedAt = apiTimeString(item.PublishedAt)
+		item.ReadAt = apiTimePtr(readAt)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -166,7 +167,7 @@ func (s *Store) FindPublic(ctx context.Context, id string) (*PublicDetail, error
 	if err != nil {
 		return nil, err
 	}
-	detail.PublishedAt = publishedAt
+	detail.PublishedAt = apiTimeString(publishedAt)
 	return &detail, nil
 }
 
@@ -339,14 +340,16 @@ func (s *Store) ListPage(ctx context.Context, page, pageSize *int) (AdminListRes
 	for rows.Next() {
 		var item AdminListItem
 		var truncated int
-		var updatedByName, publishedAt sql.NullString
+		var updatedByName sql.NullString
+		var publishedAt, updatedAt dbtime.Nullable
 		if err := rows.Scan(&item.ID, &item.Title, &item.ContentPreview, &truncated,
-			&item.Level, &item.Status, &updatedByName, &publishedAt, &item.Revision); err != nil {
+			&item.Level, &item.Status, &updatedByName, &publishedAt, &updatedAt); err != nil {
 			return AdminListResult{}, err
 		}
 		item.ContentTruncated = truncated == 1
 		item.UpdatedByName = nullStringPtr(updatedByName)
-		item.PublishedAt = nullStringPtr(publishedAt)
+		item.PublishedAt = publishedAt.API()
+		item.Revision = updatedAt.APIString()
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -389,15 +392,17 @@ type EditDetail struct {
 func (s *Store) FindEditDetail(ctx context.Context, id string) (*EditDetail, error) {
 	ctx = ensureCtx(ctx)
 	var detail EditDetail
+	var updatedAt dbtime.Nullable
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, title, content, level, status, updated_at
 		FROM `+s.table("announcements")+` WHERE id = ?`), id).
-		Scan(&detail.ID, &detail.Title, &detail.Content, &detail.Level, &detail.Status, &detail.Revision)
+		Scan(&detail.ID, &detail.Title, &detail.Content, &detail.Level, &detail.Status, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	detail.Revision = updatedAt.APIString()
 	return &detail, nil
 }
 
@@ -544,10 +549,11 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	columns := "id, title, level, status, published_at, updated_at"
 	var current MutationState
 	var contentNull, publishedAtNull sql.NullString
-	dest := []any{&current.ID, &current.Title, &current.Level, &current.Status, &publishedAtNull, &current.Revision}
+	var updatedAt dbtime.Nullable
+	dest := []any{&current.ID, &current.Title, &current.Level, &current.Status, &publishedAtNull, &updatedAt}
 	if input.Content != nil {
 		columns = "id, title, content, level, status, published_at, updated_at"
-		dest = []any{&current.ID, &current.Title, &contentNull, &current.Level, &current.Status, &publishedAtNull, &current.Revision}
+		dest = []any{&current.ID, &current.Title, &contentNull, &current.Level, &current.Status, &publishedAtNull, &updatedAt}
 	}
 	rows := tx.QueryRowContext(ctx, s.bind(`SELECT `+columns+` FROM `+s.table("announcements")+` WHERE id = ?`), id)
 	if err := rows.Scan(dest...); err != nil {
@@ -556,7 +562,8 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		}
 		return nil, err
 	}
-	current.PublishedAt = nullStringPtr(publishedAtNull)
+	current.PublishedAt = apiTimePtr(publishedAtNull)
+	current.Revision = updatedAt.APIString()
 	if input.Content != nil {
 		// content is NOT NULL; mirror Node's `row.content ?? undefined`.
 		content := contentNull.String
@@ -565,7 +572,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	before := current
 
 	expected := strings.TrimSpace(expectedRevision)
-	if expected == "" || current.Revision != expected {
+	if expected == "" || !dbtime.SameInstant(current.Revision, expected) {
 		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: current.Revision}
 	}
 
@@ -683,18 +690,20 @@ func (s *Store) Delete(ctx context.Context, id, expectedRevision string) (*Delet
 	defer tx.Rollback()
 	var before MutationState
 	var publishedAtNull sql.NullString
+	var updatedAt dbtime.Nullable
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, title, level, status, published_at, updated_at
 		FROM `+s.table("announcements")+` WHERE id = ?`), id).
-		Scan(&before.ID, &before.Title, &before.Level, &before.Status, &publishedAtNull, &before.Revision)
+		Scan(&before.ID, &before.Title, &before.Level, &before.Status, &publishedAtNull, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	before.PublishedAt = nullStringPtr(publishedAtNull)
+	before.PublishedAt = apiTimePtr(publishedAtNull)
+	before.Revision = updatedAt.APIString()
 	expected := strings.TrimSpace(expectedRevision)
-	if expected == "" || before.Revision != expected {
+	if expected == "" || !dbtime.SameInstant(before.Revision, expected) {
 		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: before.Revision}
 	}
 	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("announcements")+` WHERE id = ? AND updated_at = ?`), id, before.Revision)

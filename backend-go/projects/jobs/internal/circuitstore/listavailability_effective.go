@@ -399,10 +399,10 @@ func probeFactsPayload(availability *effectiveAvailability, row managementRow, n
 		return sourceProbePayload(availability.status, row, now)
 	case availability.status == "instance_pending_test":
 		lastObservation := healthObservationPayload(row)
-		if lastObservation == nil && row.nextHealthCheckAt.String == "" {
+		if lastObservation == nil && row.nextHealthCheckAt.APIString() == "" {
 			return nil
 		}
-		return probeSummary("activation_check", lastObservation, schedulePayloadState(row.nextHealthCheckAt.String, now))
+		return probeSummary("activation_check", lastObservation, schedulePayloadState(row.nextHealthCheckAt.APIString(), now))
 	}
 	return nil
 }
@@ -411,7 +411,7 @@ func probeFactsPayload(availability *effectiveAvailability, row managementRow, n
 func sourceProbePayload(status string, row managementRow, now time.Time) map[string]any {
 	cooldownDriven := status == "source_rate_limited" || status == "source_temporary_unavailable" ||
 		(status == "source_error" && strings.HasPrefix(row.sourceLastErrorCode.String, "cooldown_retest_"))
-	attemptedAt := row.sourceLastHealthCheckAt.String
+	attemptedAt := row.sourceLastHealthCheckAt.APIString()
 	errorCode := row.sourceLastHealthCheckErrorCode.String
 	reason := diagnosticText(row.sourceLastHealthCheckErrorMessage.String)
 	traceID := row.sourceLastHealthCheckTraceID.String
@@ -420,7 +420,7 @@ func sourceProbePayload(status string, row managementRow, now time.Time) map[str
 		httpStatus = row.sourceLastHealthCheckStatusCode.Int64
 	}
 	if cooldownDriven {
-		attemptedAt = row.sourceCooldownRetestLastAt.String
+		attemptedAt = row.sourceCooldownRetestLastAt.APIString()
 		errorCode = row.sourceLastErrorCode.String
 		reason = diagnosticText(row.sourceLastErrorMessage.String)
 		traceID = row.sourceLastErrorTraceID.String
@@ -454,9 +454,9 @@ func sourceProbePayload(status string, row managementRow, now time.Time) map[str
 			lastObservation["traceId"] = traceID
 		}
 	}
-	next := row.sourceNextHealthCheckAt.String
+	next := row.sourceNextHealthCheckAt.APIString()
 	if cooldownDriven {
-		next = row.sourceCooldownUntil.String
+		next = row.sourceCooldownUntil.APIString()
 	}
 	schedule := schedulePayloadState(next, now)
 	if lastObservation == nil && schedule["state"] == "none" {
@@ -466,7 +466,7 @@ func sourceProbePayload(status string, row managementRow, now time.Time) map[str
 }
 
 func healthObservationPayload(row managementRow) map[string]any {
-	if row.lastHealthCheckAt.String == "" {
+	if row.lastHealthCheckAt.APIString() == "" {
 		return nil
 	}
 	failed := row.lastHealthCheckErrorCode.String != "" || row.lastHealthCheckErrorMessage.String != "" ||
@@ -476,9 +476,9 @@ func healthObservationPayload(row managementRow) map[string]any {
 		result = "failed"
 	}
 	observation := map[string]any{
-		"observationId": probeObservationID("health_check", row.id, row.lastHealthCheckAt.String,
+		"observationId": probeObservationID("health_check", row.id, row.lastHealthCheckAt.APIString(),
 			row.lastHealthCheckTraceID.String, row.lastHealthCheckErrorCode.String, row.lastHealthCheckErrorMessage.String),
-		"attemptedAt": row.lastHealthCheckAt.String,
+		"attemptedAt": row.lastHealthCheckAt.APIString(),
 		"result":      result,
 	}
 	if row.lastHealthCheckStatusCode.Valid && row.lastHealthCheckStatusCode.Int64 > 0 {

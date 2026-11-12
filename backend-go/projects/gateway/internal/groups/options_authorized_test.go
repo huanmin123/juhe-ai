@@ -23,8 +23,8 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	// alice last: the shared cookie jar must hold the grantee session for the
 	// assertions below.
 	granteeID := env.login(t, "alice", "alice-pass", "user")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	later := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
+	later := isoMillis(time.Now().UTC().Add(time.Hour))
 	old := "2020-01-01T00:00:00.000Z"
 	far := "2999-01-01T00:00:00.000Z"
 

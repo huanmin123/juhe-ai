@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // w13g2CanceledCtx 返回已取消的 context：database/sql 的下一次查询/执行
@@ -568,9 +570,9 @@ func TestW13g2ReconcileArms(t *testing.T) {
 		t.Fatalf("应重放 2 条 grant: %d", reconciled)
 	}
 	// sweep 只把 revoked_at 补进 sync 投影（runtime 行），不改 grant 行。
-	var revokedAt string
-	if err := f.db.QueryRow(`SELECT COALESCE(revoked_at,'') FROM resource_authorizations WHERE resource_id = 'grp_s13' AND grantee_system_account_id = 'grantee'`).Scan(&revokedAt); err != nil || revokedAt == "" {
-		t.Fatalf("sweep 应把 revoked_at 写进 runtime 投影: %q %v", revokedAt, err)
+	var revokedAt dbtime.Nullable
+	if err := f.db.QueryRow(`SELECT revoked_at FROM resource_authorizations WHERE resource_id = 'grp_s13' AND grantee_system_account_id = 'grantee'`).Scan(&revokedAt); err != nil || !revokedAt.Valid {
+		t.Fatalf("sweep 应把 revoked_at 写进 runtime 投影: %q %v", revokedAt.APIString(), err)
 	}
 }
 

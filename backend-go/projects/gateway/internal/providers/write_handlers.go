@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // patchModel serves PATCH /{code}/models/{modelId}: ids outside the
@@ -62,7 +63,7 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "自定义模型参数无效")
 		return
 	}
-	if existing.UpdatedAt != parsed.expectedUpdatedAt {
+	if !dbtime.SameInstant(existing.UpdatedAt, parsed.expectedUpdatedAt) {
 		kernel.WriteError(w, http.StatusConflict, "模型已被其他操作更新，请刷新后重试")
 		return
 	}
@@ -130,7 +131,7 @@ func (d *Deps) patchBuiltInModel(w http.ResponseWriter, r *http.Request, auth *a
 		kernel.WriteBadRequest(w, "内置模型配置参数无效")
 		return
 	}
-	if builtIn.UpdatedAt != parsed.expectedUpdatedAt {
+	if !dbtime.SameInstant(builtIn.UpdatedAt, parsed.expectedUpdatedAt) {
 		kernel.WriteError(w, http.StatusConflict, "模型已被其他操作更新，请刷新后重试")
 		return
 	}

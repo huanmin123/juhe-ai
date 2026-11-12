@@ -86,8 +86,8 @@ func TestCreateHealthInputSnapshotAndRevisionAdvance(t *testing.T) {
 	// dispatch_revision_changed circuit outbox row.
 	if got := env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox
 		WHERE account_id = ? AND event_type = 'dispatch_revision_changed'
-			AND dispatch_revision = 2 AND dedupe_key LIKE 'dispatch:%'`, result.ID); got != 1 {
-		t.Fatalf("circuit outbox dispatch rows = %d, want 1", got)
+			AND dispatch_revision = 2 AND dedupe_key LIKE 'dispatch:%'`, result.ID); got != 2 {
+		t.Fatalf("circuit outbox dispatch rows = %d, want 2 (J3a+J3b)", got)
 	}
 	// The probe-candidate version row (direct_input_reader hard JOINs this
 	// table — missing it hides the account from probing).

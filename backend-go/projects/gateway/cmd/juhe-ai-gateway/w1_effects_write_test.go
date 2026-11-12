@@ -72,3 +72,37 @@ func TestW1ApplyAccountErrorPolicyDecision(t *testing.T) {
 		t.Fatalf("post-disable cooldown = %v, %v", changed, err)
 	}
 }
+
+// TestW1ApplyAccountErrorPolicyDecisionLockHold：D12——锁定账户的显式策略
+// 可恢复失败（500/429）不落冷却状态，账户保持 active；确定性硬门（401）仍落
+// 冷却。
+func TestW1ApplyAccountErrorPolicyDecisionLockHold(t *testing.T) {
+	fixture := newChainFixture(t)
+	bridge := w1EffectsBridge(t, fixture)
+	ctx := context.Background()
+	account := gatewaydispatch.AccountCandidate{ID: fixture.accountID}
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO account_lock_states
+		(account_id, enabled, lock_state, lock_death_timeout_seconds, lock_retry_interval_seconds, generation, updated_at)
+		VALUES (?, 1, 'LOCKED_IDLE', 300, 5, 1, '2026-01-01T00:00:00.000Z')`), fixture.accountID); err != nil {
+		t.Fatalf("seed lock state: %v", err)
+	}
+	decision := accountErrorPolicyDecision{Action: decisionActionCooldown, CooldownStatus: cooldownStatusTemporaryUnavailable, RuleName: "临时规则", RuleSource: "account"}
+	changed, status, err := bridge.ApplyAccountErrorPolicyDecision(ctx, account, decision,
+		chainErrorPolicyFailureInput{HasStatusCode: true, StatusCode: 503})
+	if err != nil || changed || status != "active" {
+		t.Fatalf("transient lock hold = changed=%v status=%q err=%v, want false/active", changed, status, err)
+	}
+	var rowStatus string
+	if err := fixture.db.QueryRow(`SELECT status FROM accounts WHERE id = ?`, fixture.accountID).Scan(&rowStatus); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if rowStatus != "active" {
+		t.Fatalf("locked transient failure status = %q, want active", rowStatus)
+	}
+	// 确定性硬门 401 仍落冷却。
+	changed, status, err = bridge.ApplyAccountErrorPolicyDecision(ctx, account, decision,
+		chainErrorPolicyFailureInput{HasStatusCode: true, StatusCode: 401})
+	if err != nil || !changed || status != cooldownStatusTemporaryUnavailable {
+		t.Fatalf("deterministic release = changed=%v status=%q err=%v", changed, status, err)
+	}
+}

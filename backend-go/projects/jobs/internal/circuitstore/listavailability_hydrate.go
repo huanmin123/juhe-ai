@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // hydratePage 对齐 loadItems 水合链：base 行 → status seeds 派生 → 运行态读 →
@@ -195,7 +197,7 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		// authorizationRuntimeBlockingStatus(status, expiresAt) ?? row.status。
 		if row.authorizationStatus.Valid && row.authorizationStatus.String != "" && row.authorizationStatus.String != "active" {
 			status = "disabled"
-		} else if authorizationExpired(row.authorizationExpiresAt.String, now) {
+		} else if authorizationExpired(row.authorizationExpiresAt.APIString(), now) {
 			status = "disabled"
 		}
 	}
@@ -241,22 +243,22 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		boundGroupID:                bindingGroupID(binding),
 		groupBindStatus:             bindingStatus(binding),
 		authorizationStatus:         row.authorizationStatus.String,
-		authorizationExpiresAt:      row.authorizationExpiresAt.String,
+		authorizationExpiresAt:      row.authorizationExpiresAt.APIString(),
 		authorizationQuotaExceeded:  authorized && input.quotaExceeded,
 		sourceAccountID:             row.authorizationInstanceSourceID.String,
 		sourceStatus:                row.sourceStatus.String,
 		sourceSchedulable:           sourceSchedulablePtr(row),
-		sourceExpiresAt:             row.sourceAccountExpiresAt.String,
-		sourceCooldownUntil:         row.sourceCooldownUntil.String,
+		sourceExpiresAt:             row.sourceAccountExpiresAt.APIString(),
+		sourceCooldownUntil:         row.sourceCooldownUntil.APIString(),
 		sourceLastErrorCode:         row.sourceLastErrorCode.String,
 		sourceLastErrorMessage:      diagnosticText(row.sourceLastErrorMessage.String),
-		accountExpiresAt:            row.accountExpiresAt.String,
+		accountExpiresAt:            row.accountExpiresAt.APIString(),
 		status:                      status,
 		schedulable:                 booleanValue(row.schedulable),
-		cooldownUntil:               row.cooldownUntil.String,
+		cooldownUntil:               row.cooldownUntil.APIString(),
 		lastErrorCode:               row.lastErrorCode.String,
 		lastErrorMessage:            diagnosticText(row.lastErrorMessage.String),
-		lastHealthCheckAt:           row.lastHealthCheckAt.String,
+		lastHealthCheckAt:           row.lastHealthCheckAt.APIString(),
 		lastHealthCheckErrorCode:    row.lastHealthCheckErrorCode.String,
 		lastHealthCheckErrorMessage: diagnosticText(row.lastHealthCheckErrorMessage.String),
 		apiKeyAllUnavailable:        apiKeyAllUnavailable,
@@ -278,15 +280,15 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		if input.authTotal.LastUsedAt != "" {
 			lastUsedAt = &input.authTotal.LastUsedAt
 		}
-	} else if row.lastUsedAt.Valid && row.lastUsedAt.String != "" {
-		value := row.lastUsedAt.String
+	} else if row.lastUsedAt.Valid && row.lastUsedAt.APIString() != "" {
+		value := row.lastUsedAt.APIString()
 		lastUsedAt = &value
 	}
 
 	// ---- balance snapshot（配置匹配才发布；forList 去掉 keyBalances）----
 	var balancePayload map[string]any
 	if !authorized && booleanValue(row.balanceQueryEnabled) && input.balance != nil &&
-		balanceSnapshotMatchesConfiguration(row.balanceQueryNextRefreshAt.String, nullInt64Number(row.configRevision, 1), input.balance) {
+		balanceSnapshotMatchesConfiguration(row.balanceQueryNextRefreshAt.APIString(), nullInt64Number(row.configRevision, 1), input.balance) {
 		balancePayload = balanceForListPayload(input.balance.snapshot)
 	}
 
@@ -303,8 +305,8 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 	if authorized && row.authorizationStatus.Valid && row.authorizationStatus.String != "" {
 		payload["authorizationStatus"] = row.authorizationStatus.String
 	}
-	if row.authorizationExpiresAt.Valid && row.authorizationExpiresAt.String != "" {
-		payload["authorizationExpiresAt"] = row.authorizationExpiresAt.String
+	if row.authorizationExpiresAt.Valid && row.authorizationExpiresAt.APIString() != "" {
+		payload["authorizationExpiresAt"] = row.authorizationExpiresAt.APIString()
 	}
 	if authorized {
 		// Node filterSeedsDirect：authorized 行恒写入（false 也保留），
@@ -326,8 +328,8 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 	if !authorized && booleanValue(row.balanceQueryEnabled) {
 		payload["balanceQueryEnabled"] = true
 	}
-	if !authorized && row.balanceQueryNextRefreshAt.Valid && row.balanceQueryNextRefreshAt.String != "" {
-		payload["balanceQueryNextRefreshAt"] = row.balanceQueryNextRefreshAt.String
+	if !authorized && row.balanceQueryNextRefreshAt.Valid && row.balanceQueryNextRefreshAt.APIString() != "" {
+		payload["balanceQueryNextRefreshAt"] = row.balanceQueryNextRefreshAt.APIString()
 	}
 	if balancePayload != nil {
 		payload["balanceSnapshot"] = balancePayload
@@ -371,8 +373,8 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		boundGroupID = row.boundGroupID.String
 	}
 	var sortLastUsedAt *string
-	if row.lastUsedAt.Valid && row.lastUsedAt.String != "" {
-		value := row.lastUsedAt.String
+	if row.lastUsedAt.Valid && row.lastUsedAt.APIString() != "" {
+		value := row.lastUsedAt.APIString()
 		sortLastUsedAt = &value
 	}
 	textPtrOf := func(value sql.NullString) *string {
@@ -397,11 +399,11 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		sourceAccountID:                row.authorizationInstanceSourceID.String,
 		authorizationID:                row.authorizationID.String,
 		sortLastUsedAt:                 sortLastUsedAt,
-		accountExpiresAt:               textPtrOf(row.accountExpiresAt),
-		authorizationExpiresAt:         textPtrOf(row.authorizationExpiresAt),
-		sourceExpiresAt:                textPtrOf(row.sourceAccountExpiresAt),
-		sourceCooldownUntil:            textPtrOf(row.sourceCooldownUntil),
-		cooldownUntil:                  textPtrOf(row.cooldownUntil),
+		accountExpiresAt:               timePtrOf(row.accountExpiresAt),
+		authorizationExpiresAt:         timePtrOf(row.authorizationExpiresAt),
+		sourceExpiresAt:                timePtrOf(row.sourceAccountExpiresAt),
+		sourceCooldownUntil:            timePtrOf(row.sourceCooldownUntil),
+		cooldownUntil:                  timePtrOf(row.cooldownUntil),
 		apiKeyNextProbeAt:              apiKeyNextProbeAt,
 		runtimeNextAttemptAt:           runtimeNextAttemptAt,
 		runtimeRecoveryAt:              runtimeRecoveryAt,
@@ -452,6 +454,15 @@ func authorizationExpired(expiresAt string, now time.Time) bool {
 	return timestamp <= now.UnixMilli()
 }
 
+// timePtrOf 把可空 timestamptz 渲染为 API 契约 UTC 毫秒文本指针。
+func timePtrOf(value dbtime.Nullable) *string {
+	if !value.Valid {
+		return nil
+	}
+	text := value.APIString()
+	return &text
+}
+
 // statusBoundaryAtOf 对齐 accountAvailabilityPresentation 的 statusBoundary
 // 分支（含 runtime_local_suppressed 的 policy_ttl_expiry recoveryAt）。
 func statusBoundaryAtOf(availability *effectiveAvailability, row managementRow, quotaResetAt string, runtimeRecoveryAt *string) *string {
@@ -460,28 +471,28 @@ func statusBoundaryAtOf(availability *effectiveAvailability, row managementRow, 
 	}
 	switch availability.status {
 	case "authorization_expired":
-		if row.authorizationExpiresAt.Valid && row.authorizationExpiresAt.String != "" {
-			return &row.authorizationExpiresAt.String
+		if row.authorizationExpiresAt.Valid && row.authorizationExpiresAt.APIString() != "" {
+			return timePtrOf(row.authorizationExpiresAt)
 		}
 	case "source_expired":
-		if row.sourceAccountExpiresAt.Valid && row.sourceAccountExpiresAt.String != "" {
-			return &row.sourceAccountExpiresAt.String
+		if row.sourceAccountExpiresAt.Valid && row.sourceAccountExpiresAt.APIString() != "" {
+			return timePtrOf(row.sourceAccountExpiresAt)
 		}
 	case "instance_expired":
-		if row.accountExpiresAt.Valid && row.accountExpiresAt.String != "" {
-			return &row.accountExpiresAt.String
+		if row.accountExpiresAt.Valid && row.accountExpiresAt.APIString() != "" {
+			return timePtrOf(row.accountExpiresAt)
 		}
 	case "authorization_quota_exceeded":
 		if quotaResetAt != "" {
 			return &quotaResetAt
 		}
 	case "source_cooldown":
-		if row.sourceCooldownUntil.Valid && row.sourceCooldownUntil.String != "" {
-			return &row.sourceCooldownUntil.String
+		if row.sourceCooldownUntil.Valid && row.sourceCooldownUntil.APIString() != "" {
+			return timePtrOf(row.sourceCooldownUntil)
 		}
 	case "instance_cooldown":
-		if row.cooldownUntil.Valid && row.cooldownUntil.String != "" {
-			return &row.cooldownUntil.String
+		if row.cooldownUntil.Valid && row.cooldownUntil.APIString() != "" {
+			return timePtrOf(row.cooldownUntil)
 		}
 	case "runtime_local_suppressed":
 		if runtimeRecoveryAt != nil && *runtimeRecoveryAt != "" {

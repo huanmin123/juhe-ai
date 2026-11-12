@@ -46,7 +46,7 @@ func TestW11ACreateArms(t *testing.T) {
 		}
 		// The same store with the groups relation missing fails inside the
 		// default-resource bootstrap.
-		if _, err := db.Exec(`DROP TABLE groups`); err != nil {
+		if _, err := db.Exec(`DROP TABLE groups CASCADE`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Create(nil, CreateInput{Username: "w11a-user2", DisplayName: "w11a_user2", Password: "w11a-pass"}); err == nil {
@@ -56,7 +56,7 @@ func TestW11ACreateArms(t *testing.T) {
 
 	t.Run("broken_and_closed_db", func(t *testing.T) {
 		store, db := w11aNewStore(t)
-		if _, err := db.Exec(`DROP TABLE system_accounts`); err != nil {
+		if _, err := db.Exec(`DROP TABLE system_accounts CASCADE`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Create(nil, CreateInput{Username: "w11a-user", DisplayName: "w11a_user", Password: "w11a-pass"}); err == nil {
@@ -73,8 +73,10 @@ func TestW11ACreateArms(t *testing.T) {
 
 	t.Run("insert_trigger_failure", func(t *testing.T) {
 		store, db := w11aNewStore(t)
-		if _, err := db.Exec(`CREATE TRIGGER w11a_block_insert BEFORE INSERT ON system_accounts
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`); err != nil {
+		if _, err := db.Exec(`CREATE FUNCTION w11a_block_insert_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END $$;
+			CREATE TRIGGER w11a_block_insert BEFORE INSERT ON system_accounts
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_insert_fn()`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Create(nil, CreateInput{Username: "w11a-user", DisplayName: "w11a_user", Password: "w11a-pass"}); err == nil {
@@ -188,8 +190,10 @@ func TestW11APatchMutationArms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`CREATE TRIGGER w11a_block_update BEFORE UPDATE ON system_accounts
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`); err != nil {
+		if _, err := db.Exec(`CREATE FUNCTION w11a_block_update_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END $$;
+			CREATE TRIGGER w11a_block_update BEFORE UPDATE ON system_accounts
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_update_fn()`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Patch(nil, item.ID, PatchInput{ExpectedUpdatedAt: found.UpdatedAt, Status: strPtrW11A("disabled")}); err == nil {
@@ -220,7 +224,7 @@ func TestW11APatchMutationArms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`DROP TABLE system_accounts`); err != nil {
+		if _, err := db.Exec(`DROP TABLE system_accounts CASCADE`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Patch(nil, item.ID, PatchInput{ExpectedUpdatedAt: found.UpdatedAt, Status: strPtrW11A("disabled")}); err == nil {
@@ -303,7 +307,7 @@ func TestW11AListArms(t *testing.T) {
 	}
 
 	// Broken schema fails both reads.
-	if _, err := db.Exec(`DROP TABLE system_accounts`); err != nil {
+	if _, err := db.Exec(`DROP TABLE system_accounts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := store.ListPage(nil, "", 1, 20); err == nil {
@@ -354,7 +358,7 @@ func TestW11AUpdatePasswordArms(t *testing.T) {
 	if _, err := store.UpdatePassword(nil, item.ID, "w11a-new-password"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP TABLE system_accounts`); err != nil {
+	if _, err := db.Exec(`DROP TABLE system_accounts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.UpdatePassword(nil, item.ID, "w11a-again"); err == nil {
@@ -385,7 +389,7 @@ func w11aRunEnsurer(t *testing.T, e *SQLDefaultResources, db *sql.DB) error {
 func TestW11AEnsureDefaultResourcesFailureArms(t *testing.T) {
 	t.Run("groups_query_failure", func(t *testing.T) {
 		e, db := w11aEnsurerFixture(t)
-		if _, err := db.Exec(`DROP TABLE groups`); err != nil {
+		if _, err := db.Exec(`DROP TABLE groups CASCADE`); err != nil {
 			t.Fatal(err)
 		}
 		if err := w11aRunEnsurer(t, e, db); err == nil {
@@ -395,8 +399,10 @@ func TestW11AEnsureDefaultResourcesFailureArms(t *testing.T) {
 
 	t.Run("groups_insert_failure", func(t *testing.T) {
 		e, db := w11aEnsurerFixture(t)
-		if _, err := db.Exec(`CREATE TRIGGER w11a_block_group BEFORE INSERT ON groups
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`); err != nil {
+		if _, err := db.Exec(`CREATE FUNCTION w11a_block_group_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END $$;
+			CREATE TRIGGER w11a_block_group BEFORE INSERT ON groups
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_group_fn()`); err != nil {
 			t.Fatal(err)
 		}
 		if err := w11aRunEnsurer(t, e, db); err == nil {
@@ -416,8 +422,10 @@ func TestW11AEnsureDefaultResourcesFailureArms(t *testing.T) {
 
 	t.Run("strategies_insert_failure", func(t *testing.T) {
 		e, db := w11aEnsurerFixture(t)
-		if _, err := db.Exec(`CREATE TRIGGER w11a_block_strategy BEFORE INSERT ON route_strategies
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`); err != nil {
+		if _, err := db.Exec(`CREATE FUNCTION w11a_block_strategy_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END $$;
+			CREATE TRIGGER w11a_block_strategy BEFORE INSERT ON route_strategies
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_strategy_fn()`); err != nil {
 			t.Fatal(err)
 		}
 		if err := w11aRunEnsurer(t, e, db); err == nil {

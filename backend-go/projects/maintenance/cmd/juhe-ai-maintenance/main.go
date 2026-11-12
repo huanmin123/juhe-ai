@@ -64,6 +64,9 @@ func runMaintenance(argv []string) int {
 	if len(argv) > 0 && argv[0] == "purge-unsupported-vendor-accounts" {
 		return runPurgeUnsupportedVendorAccountsCommand(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == purgeNonChatCommandName {
+		return runPurgeNonChatAccountsCommand(argv[1:])
+	}
 	if len(argv) > 0 && argv[0] == "migrate-group-policy" {
 		return runMigrateGroupPolicyCommand(argv[1:])
 	}

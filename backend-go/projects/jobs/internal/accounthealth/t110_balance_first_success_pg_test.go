@@ -67,9 +67,9 @@ func TestW9HPgFirstHealthSuccessSeedsBalanceDetection(t *testing.T) {
 		}
 		return disposition.String, reason.String
 	}
-	balanceIntent := func(t *testing.T) sql.NullString {
+	balanceIntent := func(t *testing.T) sql.NullTime {
 		t.Helper()
-		var value sql.NullString
+		var value sql.NullTime
 		if err := db.QueryRow(`SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = $1`, accountID).Scan(&value); err != nil {
 			t.Fatalf("read balance intent: %v", err)
 		}
@@ -100,7 +100,7 @@ func TestW9HPgFirstHealthSuccessSeedsBalanceDetection(t *testing.T) {
 		t.Fatalf("activation receipt: disposition=%q reason=%q", disposition, reason)
 	}
 	if intent := balanceIntent(t); intent.Valid {
-		t.Fatalf("stale activation must not seed balance intent, got %q", intent.String)
+		t.Fatalf("stale activation must not seed balance intent, got %s", intent.Time)
 	}
 
 	// 2) 首次周期 health_success 必须写一次探测意图（T110 修复点）。
@@ -126,13 +126,13 @@ func TestW9HPgFirstHealthSuccessSeedsBalanceDetection(t *testing.T) {
 	if disposition, reason := receipt(t, "t110-outcome-health-1"); disposition != "applied" || reason != "" {
 		t.Fatalf("health receipt: disposition=%q reason=%q", disposition, reason)
 	}
-	wantIntent := healthObserved.UTC().Format(time.RFC3339Nano)
-	if intent := balanceIntent(t); !intent.Valid || intent.String != wantIntent {
-		t.Fatalf("balance intent=%+v want %q", intent, wantIntent)
+	if intent := balanceIntent(t); !intent.Valid || !intent.Time.Equal(healthObserved) {
+		t.Fatalf("balance intent=%+v want %s", intent, healthObserved)
 	}
 
 	// 3) 账户已有成功记录后的二次成功不得重写探测意图。
-	w9hMustExec(t, db, `UPDATE juhe_business.accounts SET balance_query_next_refresh_at = 'sentinel' WHERE id = $1`, accountID)
+	sentinel := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	w9hMustExec(t, db, `UPDATE juhe_business.accounts SET balance_query_next_refresh_at = $1 WHERE id = $2`, sentinel, accountID)
 	secondObserved := healthObserved.Add(time.Second)
 	if inserted, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "t110-outcome-health-2", RequestID: "t110-request-health-2", AccountID: accountID,
@@ -155,7 +155,7 @@ func TestW9HPgFirstHealthSuccessSeedsBalanceDetection(t *testing.T) {
 	if disposition, reason := receipt(t, "t110-outcome-health-2"); disposition != "applied" || reason != "" {
 		t.Fatalf("second health receipt: disposition=%q reason=%q", disposition, reason)
 	}
-	if intent := balanceIntent(t); !intent.Valid || intent.String != "sentinel" {
+	if intent := balanceIntent(t); !intent.Valid || !intent.Time.Equal(sentinel) {
 		t.Fatalf("second success must not rewrite balance intent, got %+v", intent)
 	}
 }
@@ -245,19 +245,19 @@ func TestW9HPgAuthorizationInstanceFirstSuccessDoesNotSeedBalance(t *testing.T) 
 	if disposition.String != "applied" || reason.String != "" {
 		t.Fatalf("instance receipt: disposition=%q reason=%q", disposition.String, reason.String)
 	}
-	var balanceIntent sql.NullString
+	var balanceIntent sql.NullTime
 	if err := db.QueryRow(`SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = $1`, instanceID).Scan(&balanceIntent); err != nil {
 		t.Fatalf("read instance balance intent: %v", err)
 	}
 	if balanceIntent.Valid {
-		t.Fatalf("authorization instance must not seed balance intent, got %q", balanceIntent.String)
+		t.Fatalf("authorization instance must not seed balance intent, got %s", balanceIntent.Time)
 	}
 	// 投影仍须正常落地健康事实（跳过余额意图不改变 health_success 其它写入）。
-	var lastSuccess sql.NullString
+	var lastSuccess sql.NullTime
 	if err := db.QueryRow(`SELECT last_health_success_at FROM juhe_business.accounts WHERE id = $1`, instanceID).Scan(&lastSuccess); err != nil {
 		t.Fatalf("read instance last success: %v", err)
 	}
-	if !lastSuccess.Valid || lastSuccess.String != observedText {
-		t.Fatalf("instance last_health_success_at=%+v want %q", lastSuccess, observedText)
+	if !lastSuccess.Valid || !lastSuccess.Time.Equal(observed) {
+		t.Fatalf("instance last_health_success_at=%+v want %s", lastSuccess, observed)
 	}
 }

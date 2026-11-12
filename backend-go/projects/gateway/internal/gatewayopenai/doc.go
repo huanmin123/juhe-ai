@@ -41,4 +41,7 @@ const (
 	// 媒体模型名），执行走 OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech）。
 	FamilyVideoGeneration = "video_generation"
 	FamilyTts             = "tts"
+	FamilyEmbeddings      = "embeddings"
+	FamilyRerank          = "rerank"
+	FamilyModeration      = "moderation"
 )

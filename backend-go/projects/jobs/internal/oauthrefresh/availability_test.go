@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 const availabilityScheduleJSON = `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"09:00","end":"18:00"}]}`
@@ -84,10 +86,12 @@ func requireGate(t *testing.T, label string, got sql.NullInt64, want string) {
 
 func readApiKey(t *testing.T, db *sql.DB, id string) (status, nextCheckAt string, updatedAt string) {
 	t.Helper()
-	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,''), updated_at FROM juhe_business.api_keys WHERE id = $1`, id).Scan(&status, &nextCheckAt, &updatedAt); err != nil {
+	var nextCheck, updated dbtime.Nullable
+	if err := db.QueryRow(`SELECT status, availability_schedule_next_check_at, updated_at FROM juhe_business.api_keys WHERE id = $1`, id).
+		Scan(&status, &nextCheck, &updated); err != nil {
 		t.Fatal(err)
 	}
-	return
+	return status, nextCheck.APIString(), dbtime.API(updated.Time)
 }
 
 func readApiKeyGate(t *testing.T, db *sql.DB, id string) sql.NullInt64 {

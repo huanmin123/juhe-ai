@@ -430,13 +430,13 @@ func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
 		t.Fatalf("activation must write schedule gate=1, got %+v", scheduleGate)
 	}
 	// 首次激活成功同时写入余额自动探测意图（T110：判据是首次成功健康检查）。
-	var balanceIntent sql.NullString
+	var balanceIntent sql.NullTime
 	if err := db.QueryRow(`SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = 'w9h-proj-acc'`).Scan(&balanceIntent); err != nil {
 		t.Fatal(err)
 	}
-	wantBalanceIntent := base.ObservedAt.Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
-	if !balanceIntent.Valid || balanceIntent.String != wantBalanceIntent {
-		t.Fatalf("activation must seed balance intent=%q, got %+v", wantBalanceIntent, balanceIntent)
+	wantBalanceIntent := base.ObservedAt.Add(2 * time.Second).UTC()
+	if !balanceIntent.Valid || !balanceIntent.Time.Equal(wantBalanceIntent) {
+		t.Fatalf("activation must seed balance intent=%s, got %+v", wantBalanceIntent, balanceIntent)
 	}
 	var outboxRows int
 	if err := db.QueryRow(`SELECT count(*) FROM juhe_business.account_circuit_outbox WHERE account_id = 'w9h-proj-acc'`).Scan(&outboxRows); err != nil {

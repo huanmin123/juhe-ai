@@ -256,8 +256,12 @@ var AccountHealthCheckEndpointModes = map[string]bool{
 	"interactions_json": true, "interactions_sse": true,
 	// M1 同步音频探针形态（与 accounts.health_check_endpoint_mode CHECK
 	// 同步，maintenance pg_schema_business_tables.go）；audio_job_create 是
-	// 长音频任务账户（qwen paraformer 等）唯一可落地的持久化诊断形态。
-	"audio_speech": true, "audio_transcription_json": true, "audio_job_create": true,
+	// 长音频任务账户（qwen paraformer 等）的持久化诊断形态，但 J1 不执行
+	// POST 创建；audio_job_get 是安全占位任务查询形态。
+	"audio_speech": true, "audio_transcription_json": true, "audio_job_create": true, "audio_job_get": true,
+	// B7 工具场景健康检查形态（D10 独立场景）：空输入/非法输入由上游 400/422
+	// 拒绝，证明 Key 可达且不产生真实结果。
+	"embed_content": true, "rerank_json": true, "moderation_json": true,
 	// realtime 账户只声明 realtime_session；该值仅作持久化诊断形态，J1
 	// 候选白名单不含它，不派发自动真实会话探针。
 	"realtime_session": true,

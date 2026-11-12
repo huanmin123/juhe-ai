@@ -60,6 +60,8 @@ var mediaEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/api/v3/auc/bigmodel/submit"}:       true,
 	{http.MethodPost, "/api/v3/auc/bigmodel/query"}:        true,
 	{http.MethodPost, "/v1/images/generations"}:            true,
+	{http.MethodPost, "/api/v3/images/generations"}:        true,
+	{http.MethodPost, qwenImageGenerationPath}:             true,
 }
 
 // acceptsMediaEndpoint matches the exact audio paths, the videos family
@@ -204,8 +206,15 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 		m.serveVolcengineTTSStream(w, idx, scenario)
 		return
 	}
-	// images 创建面（能力域拆分 T5 验收；url 形态 OpenAI images 响应）。
-	if r.URL.Path == imagesGenerationsPath {
+	// qwen 同步图像（2026-11-11 图像同步批，契约 §10.3）：DashScope 原生
+	// multimodal-generation 端点，响应由网关转换为 OpenAI Images。
+	if r.URL.Path == qwenImageGenerationPath {
+		m.serveQwenImage(w, scenario)
+		return
+	}
+	// images 创建面（能力域拆分 T5 验收；url/b64/xai/volcengine 形态按场景）。
+	// 火山 Ark 图像面 base 版本根为 /api/v3，网关直拼后命中同族 handler。
+	if r.URL.Path == imagesGenerationsPath || r.URL.Path == "/api/v3/images/generations" {
 		m.serveImages(w, idx, scenario)
 		return
 	}

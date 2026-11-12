@@ -14,6 +14,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // 账户列表可用性投影读模型仓储：移植 Node
@@ -376,12 +377,10 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
 	if limit < 1 || limit > maximumDirtyClaimLimit {
 		return 0, fmt.Errorf("limit 必须是 1..%d 的正整数", maximumDirtyClaimLimit)
 	}
-	// next_transition_at 在两种方言里都是 text 列（RFC3339Nano 文本），到期
-	// 比较靠双方言一致的字典序，参数必须绑定同格式文本。此前经 instantParam
-	// 解析成原生 time.Time 绑定，pgx 对 text 列参数以 Go 默认文本形态（含
-	// 空格与 " +0000 UTC" 后缀）参与比较，与行内 RFC3339Nano 恒不匹配——
-	// 到期候选恒空、PG 模式到期转移静默失效（W24①，2026-10-25 生产采样实证）。
-	now := time.UnixMilli(nowMS).UTC().Format(time.RFC3339Nano)
+	// Revision 26 起 next_transition_at 为 timestamptz(3)：绑定 time.Time，
+	// 由 PostgreSQL 按列类型比较。历史 text 形态的 W24①（字典序/驱动文本化）
+	// 不再适用，时间语义由类型系统保证。
+	now := time.UnixMilli(nowMS).UTC()
 	return r.enqueueSubTransactions(ctx, limit, nowMS, "projection_due_transition", func(tx txLike, batchRows int) ([]string, error) {
 		rows, err := tx.QueryContext(ctx, `
     SELECT projections.account_id
@@ -392,7 +391,7 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
       AND projections.next_transition_at <= ?
       AND dirty_accounts.account_id IS NULL
     ORDER BY projections.next_transition_at ASC, projections.account_id ASC
-    LIMIT ?`, now, batchRows)
+    LIMIT ?`, dbtime.DBValue(now), batchRows)
 		if err != nil {
 			return nil, err
 		}

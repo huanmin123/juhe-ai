@@ -13,7 +13,7 @@ import (
 func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-opt-1', ?, 'Alpha 选项组', NULL, 1, 1, 'personal', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)

@@ -99,8 +99,8 @@ const groupsPGFixtureSchema = `
       group_type text NOT NULL DEFAULT 'personal',
       group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')),
       scheduling_policy_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique
       ON juhe_business.groups (system_account_id, name);
@@ -132,8 +132,8 @@ const groupsPGFixtureSchema = `
       enabled integer NOT NULL DEFAULT 1,
       group_type text NOT NULL DEFAULT 'personal',
       scheduling_policy_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (
       id text PRIMARY KEY,
@@ -145,17 +145,17 @@ const groupsPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       effective_source_type text,
       effective_source_team_id text,
-      activated_at text,
-      last_source_changed_at text,
+      activated_at timestamptz(3),
+      last_source_changed_at timestamptz(3),
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
+      revoked_at timestamptz(3),
       revoked_reason text,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
       id text PRIMARY KEY,
@@ -163,14 +163,14 @@ const groupsPGFixtureSchema = `
       source_type text NOT NULL,
       source_team_id text,
       status text NOT NULL DEFAULT 'active',
-      activated_at text,
-      ended_at text,
+      activated_at timestamptz(3),
+      ended_at timestamptz(3),
       ended_reason text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
-      updated_at text NOT NULL
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
       id text PRIMARY KEY,
@@ -183,13 +183,13 @@ const groupsPGFixtureSchema = `
       scope text NOT NULL DEFAULT 'use',
       status text NOT NULL DEFAULT 'active',
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
-      updated_at text NOT NULL,
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL,
       CHECK (
         (grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
         OR
@@ -202,13 +202,13 @@ const groupsPGFixtureSchema = `
       description text,
       status text NOT NULL DEFAULT 'active',
       created_by text NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
       group_id text PRIMARY KEY,
       reason text,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.route_strategies (
       id text PRIMARY KEY,
@@ -224,8 +224,8 @@ const groupsPGFixtureSchema = `
       priority integer NOT NULL DEFAULT 1,
       weight integer NOT NULL DEFAULT 1,
       status text NOT NULL DEFAULT 'active',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
       system_account_id text NOT NULL,
@@ -497,7 +497,7 @@ func (e *testEnv) queryRow(query string, args ...any) *sql.Row {
 
 func (e *testEnv) bindAccount(t *testing.T, ownerID, groupID, accountID, bindingStatus string) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	e.exec(t, `INSERT INTO accounts (id, system_account_id, deleted_at, created_at) VALUES (?, ?, NULL, ?)`, accountID, ownerID, now)
 	e.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
 		ownerID, groupID, accountID, now, now)
@@ -506,7 +506,7 @@ func (e *testEnv) bindAccount(t *testing.T, ownerID, groupID, accountID, binding
 
 func (e *testEnv) bindRouteStrategy(t *testing.T, strategyID, ownerID, groupID, status string) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	e.exec(t, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		strategyID+"-"+groupID, strategyID, ownerID, groupID, status, now, now)
 }

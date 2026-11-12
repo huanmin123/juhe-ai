@@ -12,6 +12,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 const defaultResultProjectionConsumer = "juhe-ai-proxy-latency-go-projector-v1"
@@ -577,7 +578,8 @@ func (p *ResultProjector) manualOutboundUpdate(outcome Outcome, outboundIP, outb
 func (p *ResultProjector) currentCursor(ctx context.Context) (*OutcomeCursor, error) {
 	query := `SELECT stored_at,outcome_id FROM proxy_latency_projection_cursors WHERE consumer_key=?`
 	query = `SELECT stored_at,outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`
-	var storedAt, outcomeID sql.NullString
+	var storedAt dbtime.Nullable
+	var outcomeID sql.NullString
 	err := p.business.QueryRowContext(ctx, query, p.cfg.ConsumerKey).Scan(&storedAt, &outcomeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -591,7 +593,7 @@ func (p *ResultProjector) currentCursor(ctx context.Context) (*OutcomeCursor, er
 	if !storedAt.Valid || !outcomeID.Valid || strings.TrimSpace(outcomeID.String) == "" {
 		return nil, errors.New("J3a Go result cursor 存储损坏")
 	}
-	parsed, err := parseProxyLatencyUTC(storedAt.String, "stored_at")
+	parsed := storedAt.Time
 	if err != nil {
 		return nil, err
 	}
@@ -604,13 +606,14 @@ func (p *ResultProjector) advanceCursorTx(ctx context.Context, tx *sql.Tx, next 
 	}
 	query := `SELECT stored_at,outcome_id FROM proxy_latency_projection_cursors WHERE consumer_key=?`
 	query = `SELECT stored_at,outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1 FOR UPDATE`
-	var storedAt, outcomeID sql.NullString
+	var storedAt dbtime.Nullable
+	var outcomeID sql.NullString
 	err := tx.QueryRowContext(ctx, query, p.cfg.ConsumerKey).Scan(&storedAt, &outcomeID)
 	if !errors.Is(err, sql.ErrNoRows) && err != nil {
 		return fmt.Errorf("锁定 J3a Go result cursor 失败: %w", err)
 	}
-	nextStoredAt := next.StoredAt.UTC().Format(time.RFC3339Nano)
-	now := p.cfg.Now().UTC().Format(time.RFC3339Nano)
+	nextStoredAt := next.StoredAt.UTC()
+	now := p.cfg.Now().UTC()
 	if errors.Is(err, sql.ErrNoRows) {
 		insert := `INSERT INTO proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) VALUES(?,?,?,?)`
 		insert = `INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) VALUES($1,$2,$3,$4)`
@@ -622,7 +625,7 @@ func (p *ResultProjector) advanceCursorTx(ctx context.Context, tx *sql.Tx, next 
 	if !storedAt.Valid || !outcomeID.Valid {
 		return errors.New("J3a Go result cursor 存储损坏")
 	}
-	currentAt, err := parseProxyLatencyUTC(storedAt.String, "stored_at")
+	currentAt := storedAt.Time
 	if err != nil {
 		return err
 	}

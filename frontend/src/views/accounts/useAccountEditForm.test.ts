@@ -224,7 +224,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
       expect(ctx.form.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/v3')
       expect(ctx.form.supportedEndpointModes).toEqual(VIDEO_GROUP)
       expect(ctx.form.healthCheckEndpointMode).toBe('video_create')
-      expect(ctx.form.status).toBe('active')
+      expect(ctx.form.status).toBe('pending_test')
       // 凭据段可见性条件（AccountApiKeySection v-if form.type === 'api_key'）。
       expect(ctx.isApiKeyForm.value).toBe(true)
     } finally {
@@ -278,7 +278,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
       expect(ctx.form.baseUrl).toBe('https://api.minimaxi.chat/v1')
       expect(ctx.form.supportedEndpointModes).toEqual(VIDEO_GROUP)
       expect(ctx.form.healthCheckEndpointMode).toBe('video_create')
-      expect(ctx.form.status).toBe('active')
+      expect(ctx.form.status).toBe('pending_test')
       expect(ctx.isApiKeyForm.value).toBe(true)
     } finally {
       unmount()

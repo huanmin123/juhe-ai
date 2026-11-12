@@ -471,6 +471,7 @@ func signalAbortedChannel(signal interface{ Done() <-chan struct{} }) bool {
 // 失败分类、审计触发点与 usage 组装逐字段对齐；上游非流式管道由
 // PipeNonStreamUpstreamResponse 承担。
 func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamResponseHandlingResult, error) {
+	applyImageEchoHeaders(&input)
 	// Body 所有权收口：覆盖管道进入前的 signal 已 abort 早退，以及管道与
 	// 后置 finalize 序列的全部返回路径；Close 幂等。
 	if input.UpstreamResponse != nil && input.UpstreamResponse.Body != nil {
@@ -500,6 +501,7 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	// M1 同步音频：媒体 speech 转换计划（gemini 账户 + /audio/speech + 2xx
 	// 时激活），透传管道与检查管道共用。
 	mediaSpeechTransform := mediaSpeechTransformPlan(input)
+	mediaImageTransform := mediaImageTransformPlan(input)
 	if input.UpstreamResponse.Body == nil {
 		if input.UpstreamResponse.Status == 204 || input.UpstreamResponse.Status == 205 {
 			if !input.successfulEmptyUpstreamAllowed() {
@@ -535,7 +537,7 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		// M1 同步音频：gemini 账户的 speech 请求上游回 JSON（inlineData base64
 		// PCM），必须完整缓冲转二进制音频（音频设计 §5/契约 §5.1），走媒体
 		// 转换缓冲窗口。
-		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled || mediaSpeechTransform.active ||
+		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled || mediaSpeechTransform.active || mediaImageTransform.active ||
 			(isOpenAIJSONResponseContentType(input.UpstreamResponse.Header.Get("Content-Type")) &&
 				shouldBufferNonStreamJSONResponse(input))
 		pipeSpec := NonStreamPipeInput{
@@ -575,7 +577,12 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			OnFirstByteDeadlineSuperseded: input.OnFirstByteDeadlineSuperseded,
 		}
 		if inspectJSON {
-			if mediaSpeechTransform.active {
+			if mediaImageTransform.active {
+				// 图像原生响应转换窗口：qwen 只回 URL，4MB 足够；超限即拒绝，
+				// 不把未转换的原生 JSON 透传给期待 OpenAI Images 的客户端。
+				pipeSpec.InspectBytes = mediaImageTransformMaxBytes
+				pipeSpec.RequireFullyBuffered = true
+			} else if mediaSpeechTransform.active {
 				// 媒体转换窗口：base64 PCM JSON 的体积上限（语音产物远超 1MB
 				// 协议检查窗口）；requireFullyBuffered——超限即拒绝（不把未
 				// 转换的 JSON 透传给期待音频的客户端）。
@@ -591,6 +598,38 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	}
 	if pipeErr != nil {
 		return input.handleNonStreamPipeError(pipeErr)
+	}
+
+	// 同步图像原生响应转换（qwen）：完整缓冲后把 DashScope multimodal-generation
+	// 响应转为 OpenAI Images。转换成功继续走普通发送路径，usage/审计消费转换后
+	// 的 body（output_image_count 已归一）；失败按 502 协议失败收尾，不透传
+	// 未转换 JSON。
+	if mediaImageTransform.active {
+		if pipeResult.InspectionLimitExceeded {
+			clearImageEchoHeaders(input.Downstream.Res.Header())
+			failure := &ProtocolFailure{
+				Message:   "上游图像响应超过网关图像转换上限，已拒绝返回未转换响应",
+				ErrorCode: "upstream_protocol_error",
+			}
+			return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, nil, pipeResult.CapturedBodyText, driver)
+		}
+		if pipeResult.FullyBuffered {
+			transformed, transformErr := mediaImageTransform.adapter.TransformResponse(mediaImageTransform.request, pipeResult.CapturedBody)
+			if transformErr != nil {
+				clearImageEchoHeaders(input.Downstream.Res.Header())
+				failure := &ProtocolFailure{
+					Message:   transformErr.Error(),
+					ErrorCode: "upstream_protocol_error",
+				}
+				return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, pipeResult.CapturedBody, pipeResult.CapturedBodyText, driver)
+			}
+			pipeResult.CapturedBody = transformed
+			pipeResult.CapturedBodyText = string(transformed)
+			if input.UpstreamResponse.Header == nil {
+				input.UpstreamResponse.Header = http.Header{}
+			}
+			input.UpstreamResponse.Header.Set("Content-Type", "application/json")
+		}
 	}
 
 	responseBody := pipeResult.CapturedBody
@@ -1174,7 +1213,7 @@ func nonStreamJsonProtocolValidationAllowed(input HandleUpstreamResponseInput, e
 
 func isKnownNonStreamJSONRequestPath(requestPath string) bool {
 	normalized := normalizeV1PrefixPath(requestPath)
-	if normalized == "/models" || normalized == "/embeddings" || normalized == "/moderations" {
+	if normalized == "/models" || normalized == "/embeddings" || normalized == "/moderations" || normalized == "/rerank" {
 		return true
 	}
 	if imagePathPattern.MatchString(normalized) {

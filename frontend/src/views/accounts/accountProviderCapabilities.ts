@@ -385,7 +385,7 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     // 能力（opt-in，不进默认集）。
     if (isQwenProviderCode(profile?.providerCode ?? profile?.code)) {
       const families = new Set(endpointFamilyCodes(profile))
-      const modes: AccountSupportedEndpointMode[] = []
+      const modes: AccountSupportedEndpointMode[] = ['images_json']
       if (families.has(OPENAI_CHAT_COMPLETIONS_FAMILY)) {
         modes.push(...chatEndpointModes)
       }

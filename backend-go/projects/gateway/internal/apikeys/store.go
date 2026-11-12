@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ConflictError maps to the Node route family 409 paths: the duplicate API
@@ -708,6 +709,7 @@ type apiKeyRow struct {
 
 func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error) {
 	var row apiKeyRow
+	var expiresAt, updatedAt dbtime.Nullable
 	targets := []any{
 		&row.id, &row.systemAccountID,
 	}
@@ -719,9 +721,19 @@ func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error
 		&row.schedulingPreferenceID, &row.schedulingPreferenceName, &row.schedulingPreferenceBuiltIn,
 		&row.securityPolicyID, &row.securityPolicyName, &row.securityPolicyBuiltIn,
 		&row.name, &row.description, &row.keyPrefix, &row.keySuffix, &row.status, &row.isDefault,
-		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.scheduleGate, &row.updatedAt)
-	err := scan(targets...)
-	return row, err
+		&row.purpose, &expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.scheduleGate, &updatedAt)
+	if err := scan(targets...); err != nil {
+		return apiKeyRow{}, err
+	}
+	if expiresAt.Valid {
+		row.expiresAt = sql.NullString{String: expiresAt.APIString(), Valid: true}
+	}
+	// API Key revision 的既有契约是微秒渲染（.123000Z）；timestamptz(3) 存储值
+	// 仍按毫秒截断，输出必须保持六位小数，避免创建响应与列表/补丁入参不一致。
+	if updatedAt.Valid {
+		row.updatedAt = dbtime.API6(updatedAt.Time)
+	}
+	return row, nil
 }
 
 // apiKeyJoin renders the route-strategy inner join with dialect tables.
@@ -1355,18 +1367,20 @@ func (s *Store) RefreshSecret(ctx context.Context, id string, access AccessScope
 		where = " AND api_keys.system_account_id = ?"
 		args = append(args, scoped)
 	}
-	var rowID, ownerID, name, keyHashColumn, previousKeyPrefix, previousKeySuffix, updatedAt string
+	var rowID, ownerID, name, keyHashColumn, previousKeyPrefix, previousKeySuffix string
+	var currentUpdatedAt dbtime.Nullable
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.key_hash, api_keys.key_prefix, api_keys.key_suffix, api_keys.updated_at
 		FROM `+s.table("api_keys")+` api_keys
 		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause()), args...).
-		Scan(&rowID, &ownerID, &name, &keyHashColumn, &previousKeyPrefix, &previousKeySuffix, &updatedAt)
+		Scan(&rowID, &ownerID, &name, &keyHashColumn, &previousKeyPrefix, &previousKeySuffix, &currentUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	updatedAt := dbtime.API6(currentUpdatedAt.Time)
 	revision, err := nextRevision(updatedAt, s.now())
 	if err != nil {
 		return nil, err

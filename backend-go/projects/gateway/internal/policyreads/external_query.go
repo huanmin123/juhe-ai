@@ -103,8 +103,8 @@ func (s *ExternalStore) ListPage(ctx context.Context, page *int, pageSize *int, 
 		}
 		item := ExternalSourceListItem{
 			ID: row.id, Name: row.name, Status: row.status, Scopes: scopes, RateLimits: rateLimits,
-			ExpiresAt: nullPtrString(row.expiresAt), Notes: nullPtrString(row.notes),
-			LastUsedAt: nullPtrString(row.lastUsedAt), UpdatedAt: row.updatedAt,
+			ExpiresAt: apiTimePtr(row.expiresAt), Notes: nullPtrString(row.notes),
+			LastUsedAt: apiTimePtr(row.lastUsedAt), UpdatedAt: apiTimeString(row.updatedAt),
 			PrimaryToken: primaryTokens[row.id],
 			IsBuiltIn:    row.id == builtInExternalTestSourceID,
 		}

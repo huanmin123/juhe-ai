@@ -371,7 +371,8 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 		WHERE account_id = ? AND event_type = 'dispatch_revision_changed' AND status = 'pending'`), restored.id).Scan(&outboxCount); err != nil {
 		t.Fatal(err)
 	}
-	if outboxCount != 1 {
+	// 双投影键（circuit control plane + J3b）各落一条 pending 行。
+	if outboxCount != 2 {
 		t.Fatalf("circuit outbox rows = %d", outboxCount)
 	}
 

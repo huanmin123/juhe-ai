@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"regexp"
 	"strings"
 	"time"
@@ -321,10 +322,11 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	ctx = ensureCtx(ctx)
 	var detail Detail
 	var description string
+	var createdAt, updatedAt dbtime.Nullable
 	query := `SELECT id, name, COALESCE(description,''), status, created_at, updated_at
 		FROM ` + s.table("system_teams") + ` WHERE id = ?`
 	if err := s.db.QueryRowContext(ctx, s.bind(query), id).
-		Scan(&detail.ID, &detail.Name, &description, &detail.Status, &detail.CreatedAt, &detail.UpdatedAt); err != nil {
+		Scan(&detail.ID, &detail.Name, &description, &detail.Status, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -333,6 +335,8 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	if description != "" {
 		detail.Description = &description
 	}
+	detail.CreatedAt = createdAt.APIString()
+	detail.UpdatedAt = updatedAt.APIString()
 	detail.EditVersion = detail.UpdatedAt
 	scopedID := access.ScopedID()
 	if scopedID != "" {
@@ -369,7 +373,8 @@ func (s *Store) memberCount(ctx context.Context, teamID string) (int, error) {
 func (s *Store) ListMembers(ctx context.Context, id string, access AccessScope, page, pageSize int) (*MembersPage, error) {
 	ctx = ensureCtx(ctx)
 	page, pageSize = normalizeListWindow(page, pageSize)
-	var teamID, teamUpdatedAt string
+	var teamID string
+	var teamUpdatedAt dbtime.Nullable
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, updated_at FROM `+s.table("system_teams")+` WHERE id = ?`), id).
 		Scan(&teamID, &teamUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -405,9 +410,11 @@ func (s *Store) ListMembers(ctx context.Context, id string, access AccessScope, 
 	defer rows.Close()
 	for rows.Next() {
 		var member MemberDetail
-		if err := rows.Scan(&member.ID, &member.SystemAccountID, &member.SystemAccountName, &member.JoinedAt); err != nil {
+		var joinedAt dbtime.Nullable
+		if err := rows.Scan(&member.ID, &member.SystemAccountID, &member.SystemAccountName, &joinedAt); err != nil {
 			return nil, err
 		}
+		member.JoinedAt = joinedAt.APIString()
 		items = append(items, member)
 	}
 	if err := rows.Err(); err != nil {
@@ -422,7 +429,7 @@ func (s *Store) ListMembers(ctx context.Context, id string, access AccessScope, 
 		ID:          teamID,
 		Items:       items,
 		MemberCount: memberCount,
-		UpdatedAt:   teamUpdatedAt,
+		UpdatedAt:   teamUpdatedAt.APIString(),
 		Total:       memberCount,
 		HasMore:     hasMore,
 		Page:        page,
@@ -489,12 +496,12 @@ func (s *Store) ListHistory(ctx context.Context, id string, access AccessScope, 
 	for rows.Next() {
 		var entry HistoryEntry
 		var removedAt sql.NullString
-		if err := rows.Scan(&entry.ID, &entry.SystemAccountID, &entry.SystemAccountName, &entry.JoinedAt, &entry.Status, &removedAt); err != nil {
+		var joinedAt dbtime.Nullable
+		if err := rows.Scan(&entry.ID, &entry.SystemAccountID, &entry.SystemAccountName, &joinedAt, &entry.Status, &removedAt); err != nil {
 			return nil, err
 		}
-		if removedAt.Valid {
-			entry.RemovedAt = &removedAt.String
-		}
+		entry.JoinedAt = joinedAt.APIString()
+		entry.RemovedAt = apiTimePtr(removedAt)
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {

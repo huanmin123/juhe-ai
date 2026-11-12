@@ -239,7 +239,7 @@ describe('backgroundProbeEnabled 手动模式（AI账户后台自动探测总开
     expect(buildAccountUpdatePayload(payload).backgroundProbeEnabled).toBe(false)
   })
 
-  it('媒体域创建/编辑 payload 均不携带总开关键', () => {
+  it('媒体域创建/编辑 payload 统一携带总开关键', () => {
     const form = manualModeForm()
     form.capabilityDomain = 'audio'
     const payload = buildAccountSavePayload({
@@ -248,8 +248,8 @@ describe('backgroundProbeEnabled 手动模式（AI账户后台自动探测总开
       errorPolicyRules: [],
       responseInspectionRules: []
     })
-    expect(payload).not.toHaveProperty('backgroundProbeEnabled')
-    expect(buildAccountUpdatePayload(payload)).not.toHaveProperty('backgroundProbeEnabled')
+    expect(payload.backgroundProbeEnabled).toBe(false)
+    expect(buildAccountUpdatePayload(payload).backgroundProbeEnabled).toBe(false)
   })
 
   it('手动模式显式选择待检查在提交前被拦截', () => {

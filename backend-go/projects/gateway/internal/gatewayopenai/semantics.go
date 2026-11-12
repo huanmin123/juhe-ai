@@ -28,6 +28,8 @@ func ExtractJSONSemanticFrames(value any, endpointFamily gatewayproto.ResponseEn
 		frames = append(frames, extractChatJSONFrames(root)...)
 	case gatewayproto.EndpointFamilyResponses:
 		frames = append(frames, extractResponsesJSONFrames(root)...)
+	case gatewayproto.EndpointFamilyEmbedContent, gatewayproto.EndpointFamilyRerank, gatewayproto.EndpointFamilyModeration:
+		frames = append(frames, extractUtilityJSONFrames(root, endpointFamily)...)
 	default:
 		frames = append(frames, extractChatJSONFrames(root)...)
 		frames = append(frames, extractResponsesJSONFrames(root)...)

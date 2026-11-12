@@ -28,9 +28,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       ai_account_limit integer CHECK (ai_account_limit BETWEEN 0 AND 1000000),
       expedited_account_limit integer CHECK (expedited_account_limit BETWEEN 0 AND 100),
       request_limits_json text,
-      last_login_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      last_login_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -40,9 +40,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       id text PRIMARY KEY,
       system_account_id text NOT NULL,
       token_hash text NOT NULL UNIQUE,
-      expires_at text NOT NULL,
-      created_at text NOT NULL,
-      last_seen_at text NOT NULL,
+      expires_at timestamptz(3) NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      last_seen_at timestamptz(3) NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -52,7 +52,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS global_settings (
       key text PRIMARY KEY,
       value_json text NOT NULL,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -60,8 +60,8 @@ var postgresSchemaBusinessTables = []PGStatement{
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS request_quota_hourly_window_configs (
       window_hours integer PRIMARY KEY,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK (window_hours BETWEEN 1 AND 720)
     )`,
 	},
@@ -79,8 +79,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       description text,
       enabled integer NOT NULL DEFAULT 1,
       default_supported_models_json text NOT NULL DEFAULT '[]',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -133,8 +133,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       notes text,
       created_by text,
       updated_by text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       input_usd_per_1m double precision,
       output_usd_per_1m double precision,
       cached_input_usd_per_1m double precision,
@@ -180,8 +180,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       name text NOT NULL,
       description text,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (code, version)
     )`,
 	},
@@ -196,8 +196,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       name text NOT NULL,
       description text,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (protocol_code, protocol_version, family_code),
       FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
     )`,
@@ -267,7 +267,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       input_version integer NOT NULL CHECK (input_version >= 1),
       disposition text NOT NULL CHECK (disposition IN ('applied', 'stale', 'ignored', 'rejected')),
       reason text,
-      applied_at text NOT NULL
+      applied_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -275,9 +275,9 @@ var postgresSchemaBusinessTables = []PGStatement{
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS proxy_latency_projection_cursors (
       consumer_key text PRIMARY KEY,
-      stored_at text,
+      stored_at timestamptz(6),
       outcome_id text,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK ((stored_at IS NULL AND outcome_id IS NULL) OR (stored_at IS NOT NULL AND outcome_id IS NOT NULL))
     )`,
 	},
@@ -295,8 +295,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       match_json text NOT NULL CHECK (jsonb_typeof(match_json::jsonb) = 'object'),
       action text NOT NULL,
       notes text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK (scope_type IN ('protocol', 'provider')),
       CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl')),
       CHECK (
@@ -314,11 +314,11 @@ var postgresSchemaBusinessTables = []PGStatement{
       status text NOT NULL DEFAULT 'active',
       scopes_json text NOT NULL DEFAULT '[]',
       rate_limits_json text NOT NULL DEFAULT '[]',
-      expires_at text,
+      expires_at timestamptz(3),
       notes text,
-      last_used_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      last_used_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -334,11 +334,11 @@ var postgresSchemaBusinessTables = []PGStatement{
       token_suffix text NOT NULL,
       status text NOT NULL DEFAULT 'active',
       scopes_json text NOT NULL DEFAULT '[]',
-      expires_at text,
-      last_used_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
-      revoked_at text,
+      expires_at timestamptz(3),
+      last_used_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
+      revoked_at timestamptz(3),
       FOREIGN KEY (source_ref_id) REFERENCES external_integration_sources(id) ON DELETE CASCADE
     )`,
 	},
@@ -354,8 +354,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       penalty_action text NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
       recovery_interval_minutes integer NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
       timeout_penalty_enabled boolean NOT NULL DEFAULT false,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -365,7 +365,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
       account_id text PRIMARY KEY,
       current_version integer NOT NULL CHECK (current_version >= 1),
-      reserved_at text NOT NULL
+      reserved_at timestamptz(6) NOT NULL
     )`,
 	},
 	{
@@ -381,12 +381,12 @@ var postgresSchemaBusinessTables = []PGStatement{
       dispatch_revision bigint NOT NULL CHECK (dispatch_revision >= 1),
       status text NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')),
       claim_token text,
-      claimed_until text,
+      claimed_until timestamptz(6),
       attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-      available_at text NOT NULL,
+      available_at timestamptz(6) NOT NULL,
       last_error text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (account_id, input_version),
       CHECK ((status = 'leased' AND claim_token IS NOT NULL AND claimed_until IS NOT NULL) OR (status <> 'leased' AND claim_token IS NULL AND claimed_until IS NULL))
     )`,
@@ -396,9 +396,9 @@ var postgresSchemaBusinessTables = []PGStatement{
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_health_projection_cursors (
       consumer_key text PRIMARY KEY,
-      observed_at text,
+      observed_at timestamptz(6),
       outcome_id text,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
     )`,
 	},
@@ -407,9 +407,9 @@ var postgresSchemaBusinessTables = []PGStatement{
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_balance_projection_cursors (
       consumer_key text PRIMARY KEY,
-      observed_at text,
+      observed_at timestamptz(6),
       outcome_id text,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
     )`,
 	},
@@ -420,8 +420,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       id text PRIMARY KEY,
       system_account_id text NOT NULL,
       name text NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -431,10 +431,10 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS account_list_availability_projection_viewer_health (
       viewer_system_account_id text PRIMARY KEY,
       projection_count integer NOT NULL CHECK (projection_count >= 0),
-      oldest_projected_at text,
-      next_transition_at text,
+      oldest_projected_at timestamptz(6),
+      next_transition_at timestamptz(3),
       is_current integer NOT NULL CHECK (is_current IN (0, 1)),
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -446,7 +446,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       state text NOT NULL CHECK (state IN ('healthy', 'unavailable', 'recovering')),
       generation bigint NOT NULL CHECK (generation >= 1),
       reason text,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -518,8 +518,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       description text,
       status text NOT NULL DEFAULT 'active',
       created_by text NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -531,11 +531,11 @@ var postgresSchemaBusinessTables = []PGStatement{
       system_account_id text NOT NULL,
       member_role text NOT NULL DEFAULT 'member',
       status text NOT NULL DEFAULT 'active',
-      joined_at text NOT NULL,
-      removed_at text,
+      joined_at timestamptz(3) NOT NULL,
+      removed_at timestamptz(3),
       created_by text NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (team_id) REFERENCES system_teams(id) ON DELETE CASCADE,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
@@ -553,17 +553,17 @@ var postgresSchemaBusinessTables = []PGStatement{
       status text NOT NULL DEFAULT 'active',
       effective_source_type text,
       effective_source_team_id text,
-      activated_at text,
-      last_source_changed_at text,
+      activated_at timestamptz(3),
+      last_source_changed_at timestamptz(3),
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
+      revoked_at timestamptz(3),
       revoked_reason text,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -585,8 +585,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       protocol_surface_code text,
       base_url text NOT NULL,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (account_id, connection_preset_code),
       UNIQUE (account_id, id)
     )`,
@@ -599,7 +599,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       endpoint_mode text NOT NULL,
       PRIMARY KEY (connection_id, endpoint_mode),
       FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE,
-      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session'))
+      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session', 'rerank_json', 'moderation_json'))
     )`,
 	},
 	{
@@ -637,7 +637,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       credentials_encrypted text NOT NULL,
       credential_fingerprint text,
       credential_mask text NOT NULL DEFAULT '',
-      oauth_access_token_expires_at text,
+      oauth_access_token_expires_at timestamptz(3),
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
       proxy_pool_id text,
@@ -648,48 +648,48 @@ var postgresSchemaBusinessTables = []PGStatement{
       fallback_enabled integer NOT NULL DEFAULT 0,
       schedulable integer NOT NULL DEFAULT 1,
       availability_schedule_json text,
-      availability_schedule_next_check_at text,
+      availability_schedule_next_check_at timestamptz(3),
       availability_schedule_gate integer,
       notes text,
-      account_expires_at text,
-      last_used_at text,
-      cooldown_until text,
+      account_expires_at timestamptz(3),
+      last_used_at timestamptz(3),
+      cooldown_until timestamptz(3),
       last_error_code text,
       last_error_message text,
       last_error_trace_id text,
       cooldown_retest_failure_count integer NOT NULL DEFAULT 0,
-      cooldown_retest_observation_started_at text,
+      cooldown_retest_observation_started_at timestamptz(6),
       cooldown_retest_generation text,
-      cooldown_retest_last_at text,
+      cooldown_retest_last_at timestamptz(3),
       cooldown_retest_last_status_code integer,
       background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
-      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
+      capability_domain text NOT NULL DEFAULT 'chat',
       health_check_connection_id text,
       health_check_model text,
-      health_check_endpoint_mode text CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
-      last_health_check_at text,
-      next_health_check_at text,
-      last_health_success_at text,
+      health_check_endpoint_mode text CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session', 'rerank_json', 'moderation_json')),
+      last_health_check_at timestamptz(3),
+      next_health_check_at timestamptz(3),
+      last_health_success_at timestamptz(3),
       health_check_failure_count integer NOT NULL DEFAULT 0,
-      health_check_failure_started_at text,
+      health_check_failure_started_at timestamptz(3),
       last_health_check_status_code integer,
       last_health_check_error_code text,
       last_health_check_error_message text,
       last_health_check_trace_id text,
       stream_failure_count integer NOT NULL DEFAULT 0,
-      stream_failure_window_started_at text,
+      stream_failure_window_started_at timestamptz(3),
       balance_query_enabled integer NOT NULL DEFAULT 0,
       balance_query_config_json text NOT NULL DEFAULT '{}',
-      balance_query_next_refresh_at text,
+      balance_query_next_refresh_at timestamptz(3),
       authorization_instance_source_account_id text,
       authorization_instance_authorization_id text,
       authorization_instance_owner_system_account_id text,
-      deleted_at text,
+      deleted_at timestamptz(3),
       deleted_by text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CONSTRAINT accounts_proxy_target_single_check CHECK (proxy_profile_id IS NULL OR proxy_pool_id IS NULL),
       FOREIGN KEY (vendor_code) REFERENCES vendors(code),
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
@@ -729,14 +729,14 @@ var postgresSchemaBusinessTables = []PGStatement{
       lock_retry_interval_seconds integer NOT NULL DEFAULT 5 CHECK (lock_retry_interval_seconds BETWEEN 5 AND 30),
       incident_id text,
       generation bigint NOT NULL DEFAULT 0 CHECK (generation >= 0),
-      incident_started_at text,
-      deadline_at text,
+      incident_started_at timestamptz(6),
+      deadline_at timestamptz(3),
       original_status text,
       provenance text,
       next_retry_at_ms bigint,
       lease_id text,
       lease_until_ms bigint,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       CHECK ((lock_state = 'UNLOCKED' AND enabled = 0) OR (lock_state <> 'UNLOCKED' AND enabled = 1))
     )`,
@@ -757,14 +757,14 @@ var postgresSchemaBusinessTables = []PGStatement{
       timeout_penalty_enabled boolean NOT NULL DEFAULT false,
       enabled integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       revision integer NOT NULL DEFAULT 1 CHECK (revision >= 1),
-      next_run_at text NOT NULL,
+      next_run_at timestamptz(3) NOT NULL,
       last_run_id text,
-      last_run_at text,
+      last_run_at timestamptz(3),
       last_run_status text CHECK (last_run_status IS NULL OR last_run_status IN ('completed', 'failed', 'canceled')),
       lease_owner text,
-      lease_until text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      lease_until timestamptz(6),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       UNIQUE (system_account_id, account_id)
@@ -793,14 +793,14 @@ var postgresSchemaBusinessTables = []PGStatement{
       after_status text NOT NULL,
       fallback_was_enabled integer NOT NULL DEFAULT 0 CHECK (fallback_was_enabled IN (0, 1)),
       super_priority_was_enabled integer NOT NULL DEFAULT 0 CHECK (super_priority_was_enabled IN (0, 1)),
-      started_at text NOT NULL,
-      recovery_due_at text,
+      started_at timestamptz(3) NOT NULL,
+      recovery_due_at timestamptz(6),
       recovery_lease_owner text,
-      recovery_lease_until text,
+      recovery_lease_until timestamptz(6),
       last_recovery_run_id text,
-      cleared_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      cleared_at timestamptz(6),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK (
         (config_source = 'manual' AND config_source_id IS NULL)
         OR
@@ -927,21 +927,21 @@ var postgresSchemaBusinessTables = []PGStatement{
       failure_count integer NOT NULL DEFAULT 0,
       consecutive_failures integer NOT NULL DEFAULT 0,
       success_count bigint NOT NULL DEFAULT 0,
-      cooldown_until text,
-      next_probe_at text,
+      cooldown_until timestamptz(3),
+      next_probe_at timestamptz(6),
       probe_backoff_seconds integer NOT NULL DEFAULT 0,
-      recovery_started_at text,
-      last_attempt_at text,
-      last_success_at text,
-      last_failure_at text,
+      recovery_started_at timestamptz(6),
+      last_attempt_at timestamptz(3),
+      last_success_at timestamptz(3),
+      last_failure_at timestamptz(3),
       last_error_code text,
       last_error_message text,
       last_trace_id text,
-      last_probe_at text,
+      last_probe_at timestamptz(6),
       probe_claim_token text,
-      probe_claimed_until text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      probe_claimed_until timestamptz(6),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     )`,
@@ -958,7 +958,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       dispatch_revision bigint,
       cooldown_generation text,
       source_config_revision integer,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       PRIMARY KEY (account_id, purpose),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     )`,
@@ -972,7 +972,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       input_version integer NOT NULL CHECK (input_version >= 1),
       disposition text NOT NULL CHECK (disposition IN ('applied', 'stale', 'ignored', 'rejected')),
       reason text,
-      applied_at text NOT NULL,
+      applied_at timestamptz(3) NOT NULL,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -989,7 +989,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id text NOT NULL,
       model_id text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       PRIMARY KEY (account_id, model_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
@@ -1011,8 +1011,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       target_model_id text NOT NULL,
       target_endpoint_family text NOT NULL,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (account_id, source_model, source_endpoint_family),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id, target_connection_id) REFERENCES account_connections(account_id, id),
@@ -1026,7 +1026,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       account_id text NOT NULL,
       tag_id text NOT NULL,
       system_account_id text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       PRIMARY KEY (account_id, tag_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE,
@@ -1059,8 +1059,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       created_at_sort_key text NOT NULL,
       payload_json text NOT NULL,
       source_generation integer NOT NULL CHECK (source_generation >= 1),
-      next_transition_at text,
-      projected_at text NOT NULL,
+      next_transition_at timestamptz(3),
+      projected_at timestamptz(6) NOT NULL,
       PRIMARY KEY (viewer_system_account_id, account_id),
       FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
@@ -1114,8 +1114,8 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS account_list_availability_runtime_overlays (
       account_id text PRIMARY KEY,
       current_concurrency integer NOT NULL CHECK (current_concurrency >= 0),
-      observed_at text NOT NULL,
-      next_reconcile_at text,
+      observed_at timestamptz(3) NOT NULL,
+      next_reconcile_at timestamptz(6),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -1152,14 +1152,14 @@ var postgresSchemaBusinessTables = []PGStatement{
       source_type text NOT NULL,
       source_team_id text,
       status text NOT NULL DEFAULT 'active',
-      activated_at text,
-      ended_at text,
+      activated_at timestamptz(3),
+      ended_at timestamptz(3),
       ended_reason text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
-      updated_at text NOT NULL,
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
       FOREIGN KEY (source_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
     )`,
@@ -1178,13 +1178,13 @@ var postgresSchemaBusinessTables = []PGStatement{
       scope text NOT NULL DEFAULT 'use',
       status text NOT NULL DEFAULT 'active',
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
-      updated_at text NOT NULL,
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL,
       CHECK (
         (grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
         OR
@@ -1214,8 +1214,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       group_type text NOT NULL DEFAULT 'personal',
       group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')),
       scheduling_policy_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -1228,8 +1228,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       enabled integer NOT NULL DEFAULT 1,
       group_type text NOT NULL DEFAULT 'personal',
       scheduling_policy_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
@@ -1247,8 +1247,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       local_super_priority_enabled integer NOT NULL DEFAULT 0,
       local_fallback_enabled integer NOT NULL DEFAULT 0,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       PRIMARY KEY (group_id, account_id),
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
@@ -1268,8 +1268,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       member_group_id text NOT NULL,
       priority integer NOT NULL CHECK (priority >= 0),
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CONSTRAINT super_group_members_unique_member UNIQUE (super_group_id, member_group_id),
       CONSTRAINT super_group_members_unique_priority UNIQUE (super_group_id, priority),
       FOREIGN KEY (super_group_id) REFERENCES groups(id) ON DELETE RESTRICT,
@@ -1282,7 +1282,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
       group_id text PRIMARY KEY,
       reason text,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -1297,8 +1297,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       status text NOT NULL DEFAULT 'active',
       is_default integer NOT NULL DEFAULT 0,
       config_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
 	},
@@ -1313,8 +1313,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       priority integer NOT NULL DEFAULT 1,
       weight integer NOT NULL DEFAULT 1,
       status text NOT NULL DEFAULT 'active',
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id) ON DELETE CASCADE,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
@@ -1340,8 +1340,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
       chat_speed_first_config_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -1365,14 +1365,14 @@ var postgresSchemaBusinessTables = []PGStatement{
       -- 迁移逻辑保持一致；存量 studio 行/列/表由显式维护命令
       -- juhe-ai-maintenance --apply-studio-retirement 清理，不在 ensure 内。
       purpose text NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
-      expires_at text,
+      expires_at timestamptz(3),
       quota_limits_json text,
       availability_schedule_json text,
-      availability_schedule_next_check_at text,
+      availability_schedule_next_check_at timestamptz(3),
       availability_schedule_gate integer,
-      last_used_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      last_used_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id)
     )`,
 	},
@@ -1386,8 +1386,8 @@ var postgresSchemaBusinessTables = []PGStatement{
       source_type text NOT NULL,
       source_id text NOT NULL,
       window_hours integer NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK (window_hours BETWEEN 1 AND 720),
       CHECK (scope_type IN ('api_key', 'account_authorization', 'group_authorization', 'account_authorization_team', 'group_authorization_team')),
       CHECK (source_type IN ('api_key', 'resource_authorization_grant')),
@@ -1402,7 +1402,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       event_key text PRIMARY KEY,
       api_key_id text NOT NULL,
       status text NOT NULL,
-      executed_at text NOT NULL
+      executed_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -1420,10 +1420,10 @@ var postgresSchemaBusinessTables = []PGStatement{
       storage_key text NOT NULL UNIQUE,
       sha256 text NOT NULL,
       status text NOT NULL DEFAULT 'processed',
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
-      expires_at text,
-      deleted_at text,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
+      expires_at timestamptz(3),
+      deleted_at timestamptz(3),
       FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
     )`,
 	},
@@ -1439,12 +1439,12 @@ var postgresSchemaBusinessTables = []PGStatement{
       metadata_json text NOT NULL DEFAULT '{}',
       bytes bigint NOT NULL DEFAULT 0,
       status text NOT NULL DEFAULT 'active',
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       expires_after_anchor text,
       expires_after_days integer,
-      expires_at text,
-      deleted_at text,
+      expires_at timestamptz(3),
+      deleted_at timestamptz(3),
       FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
     )`,
 	},
@@ -1461,9 +1461,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       status text NOT NULL DEFAULT 'in_progress',
       usage_bytes bigint NOT NULL DEFAULT 0,
       last_error_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
-      deleted_at text,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
+      deleted_at timestamptz(3),
       PRIMARY KEY (vector_store_id, file_id),
       FOREIGN KEY (vector_store_id) REFERENCES openai_compatible_vector_stores(id) ON DELETE CASCADE,
       FOREIGN KEY (file_id) REFERENCES openai_compatible_files(id) ON DELETE CASCADE,
@@ -1484,7 +1484,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       content_preview text NOT NULL,
       token_estimate integer NOT NULL DEFAULT 0,
       keyword_index_text text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       FOREIGN KEY (vector_store_id, file_id) REFERENCES openai_compatible_vector_store_files(vector_store_id, file_id) ON DELETE CASCADE
     )`,
 	},
@@ -1495,7 +1495,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       event_key text PRIMARY KEY,
       account_id text NOT NULL,
       status text NOT NULL,
-      executed_at text NOT NULL
+      executed_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -1505,7 +1505,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       system_account_id text NOT NULL,
       key text NOT NULL,
       value_json text NOT NULL,
-      updated_at text NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       PRIMARY KEY (system_account_id, key),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     )`,
@@ -1521,9 +1521,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       status text NOT NULL DEFAULT 'draft',
       created_by text NOT NULL,
       updated_by text,
-      published_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      published_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (created_by) REFERENCES system_accounts(id),
       FOREIGN KEY (updated_by) REFERENCES system_accounts(id)
     )`,
@@ -1534,7 +1534,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS announcement_reads (
       announcement_id text NOT NULL,
       system_account_id text NOT NULL,
-      read_at text NOT NULL,
+      read_at timestamptz(3) NOT NULL,
       PRIMARY KEY (announcement_id, system_account_id),
       FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
@@ -1578,13 +1578,33 @@ $$`,
 		// AI 账户能力域拆分（PLAN-20261011T141004000Z §数据变化）：accounts
 		// capability_domain 列的存量库加式迁移。与 expedited_recovery_enabled
 		// 同为「CREATE TABLE 只救新库」的显式 ALTER；ADD COLUMN 携带 NOT NULL
-		// DEFAULT 'chat'，存量行恒落 chat 满足列级 CHECK。列已存在时的四值
-		// 形状校验（类型/NOT NULL/DEFAULT/CHECK）由 EnsurePostgres 末尾的
-		// verifyPostgresBusinessCapabilityDomainShape 承载，不以 IF NOT EXISTS
-		// 命中替代形状检查。
+		// DEFAULT 'chat'。D13 起不再带 CHECK，场景值由应用层 scenario 注册表
+		// 校验；存量库的旧 CHECK 由下一条 drop-check 语句删除。
 		SchemaName: "juhe_business",
 		Source:     "account-capability-domain-pg-column",
-		SQL:        `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`,
+		SQL:        `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat'`,
+	},
+	{
+		// D13 cutover：删除 capability_domain 旧四值 CHECK。幂等；只删包含该列
+		// 的 CHECK，不碰 accounts 其它约束。新二进制启动门禁要求该 CHECK 不存在。
+		SchemaName: "juhe_business",
+		Source:     "account-capability-domain-drop-check",
+		SQL: `DO $$
+DECLARE
+  constraint_row record;
+BEGIN
+  FOR constraint_row IN
+    SELECT conname
+    FROM pg_catalog.pg_constraint
+    WHERE conrelid = 'juhe_business.accounts'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%capability_domain%'
+  LOOP
+    IF constraint_row.conname IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.accounts DROP CONSTRAINT %I', constraint_row.conname);
+    END IF;
+  END LOOP;
+END $$`,
 	},
 	{
 		// 账户级后台自动探测总开关（AI账户后台自动探测总开关设计 §2）：
@@ -1812,7 +1832,7 @@ BEGIN
       AND team_grants.grantee_type = 'team'
       AND team_grants.grantee_team_id = authorizations.effective_source_team_id
       AND team_grants.status = 'active'
-      AND (team_grants.expires_at IS NULL OR team_grants.expires_at > to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+      AND (team_grants.expires_at IS NULL OR team_grants.expires_at > clock_timestamp())
     WHERE ((
           p_scope_type = 'account_authorization'
           AND authorizations.id = p_scope_id
@@ -2164,7 +2184,7 @@ BEGIN
   INSERT INTO account_list_availability_projection_viewer_health (
     viewer_system_account_id, projection_count, oldest_projected_at,
     next_transition_at, is_current, updated_at
-  ) VALUES (NEW.id, 0, NULL, NULL, 1, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+  ) VALUES (NEW.id, 0, NULL, NULL, 1, clock_timestamp())
   ON CONFLICT(viewer_system_account_id) DO NOTHING;
   RETURN NEW;
 END;
@@ -2179,7 +2199,7 @@ BEGIN
   INSERT INTO account_list_availability_projection_viewer_health (
     viewer_system_account_id, projection_count, oldest_projected_at,
     next_transition_at, is_current, updated_at
-  ) VALUES (OLD.viewer_system_account_id, 0, NULL, NULL, 0, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+  ) VALUES (OLD.viewer_system_account_id, 0, NULL, NULL, 0, clock_timestamp())
   ON CONFLICT(viewer_system_account_id) DO UPDATE SET
     is_current = 0,
     updated_at = excluded.updated_at;
@@ -2389,9 +2409,9 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_profile_dirty_trig
       created_scope text NOT NULL,
       is_builtin integer NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
       reviewed_by text,
-      reviewed_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      reviewed_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -2421,7 +2441,7 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_profile_dirty_trig
       diagnosis_json text,
       http_status integer,
       latency_ms integer NOT NULL DEFAULT 0,
-      created_at text NOT NULL
+      created_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -2470,8 +2490,8 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_profile_dirty_trig
       cost_usd double precision NOT NULL DEFAULT 0,
       params_applied_json text NOT NULL DEFAULT '[]',
       params_ignored_json text NOT NULL DEFAULT '[]',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -2595,7 +2615,7 @@ BEGIN
       AND relation.relname = 'accounts'
       AND c.contype = 'c'
       AND pg_get_constraintdef(c.oid) LIKE '%health_check_endpoint_mode%'
-      AND pg_get_constraintdef(c.oid) NOT LIKE '%message_token_counting%'
+      AND (pg_get_constraintdef(c.oid) NOT LIKE '%message_token_counting%' OR pg_get_constraintdef(c.oid) NOT LIKE '%rerank_json%')
       AND EXISTS (
         SELECT 1 FROM pg_attribute AS a
         WHERE a.attrelid = c.conrelid
@@ -2613,7 +2633,7 @@ BEGIN
         AND relation.relname = 'accounts'
         AND c.conname = 'accounts_health_check_endpoint_mode_check'
     ) THEN
-      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session''))';
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session'', ''rerank_json'', ''moderation_json''))';
     END IF;
   END IF;
 END
@@ -2713,8 +2733,8 @@ $$`,
       description text,
       rules_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{

@@ -471,17 +471,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 人工恢复目标状态（BUG-0288）：clearFailureState 是显式人工确认——冷却态
 	// 直接恢复调度（与授权实例 patchAuthorizedDispatchTx 的 clearFailure→
 	// active+schedulable 同语义），error 进入待检查复检；目标仍受时间计划与
-	// 套餐到期约束，由既有状态机统一裁定。两类账户 error 人工恢复直达 active
-	// （落 pending_test 会因永远等不到探针而滞留）：媒体域（audio/video）不参
-	// 与对话健康检查状态机（无后台探针复检）；手动模式（总开关设计 §7，二轮
-	// 复审 Major-1 补漏）异常恢复直接写 active，不经过 pending_test、不投递
+	// 套餐到期约束，由既有状态机统一裁定。后台探测开启的账户 error 恢复落
+	// pending_test 等 J1 复检（含视频/音频/图像）；手动模式（总开关设计 §7，
+	// 二轮复审 Major-1 补漏）异常恢复直接写 active，不经过 pending_test、不投递
 	// 后台检查。
 	clearFailureRestoreTarget := ""
 	if input.ClearFailureState {
 		switch row.status {
 		case "error":
-			if accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) ||
-				row.backgroundProbeEnabled == 0 {
+			if row.backgroundProbeEnabled == 0 {
 				clearFailureRestoreTarget = "active"
 			} else {
 				clearFailureRestoreTarget = "pending_test"
@@ -503,9 +501,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	setArgs := []any{}
 
 	// 后台自动探测总开关翻转（AI账户后台自动探测总开关设计 §2/§4）：授权实例
-	// 行只读跟随来源账户，提交即 400（先于媒体域判定——实例只读是无条件契约）；
-	// 媒体域（audio/video）不适用该开关，PATCH 幂等忽略（设计 §2 统一裁决：
-	// 创建/编辑拒绝，PATCH 幂等忽略；image 域存在后台探测，适用该开关）。
+	// 行只读跟随来源账户，提交即 400（先于场景判定——实例只读是无条件契约）；
+	// 全部场景（含 video/audio/image）统一适用该开关。
 	// 翻转副作用（状态归一化、特供/锁死
 	// 清理、J1 outbox 删除、实例传播）在下方各写段按 backgroundProbeDisabling /
 	// backgroundProbeEnabling 分臂执行。
@@ -516,19 +513,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if row.authorizationID.Valid && row.authorizationID.String != "" {
 			return nil, &ValidationError{Message: "授权实例跟随来源账户", Code: "authorized_instance_background_probe_follows_source"}
 		}
-		if !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
-			next := 0
-			if *input.BackgroundProbeEnabled {
-				next = 1
-			}
-			if next != row.backgroundProbeEnabled {
-				backgroundProbeNext = next
-				backgroundProbeDisabling = next == 0
-				backgroundProbeEnabling = next == 1
-				addChange("backgroundProbeEnabled", row.backgroundProbeEnabled == 1, *input.BackgroundProbeEnabled)
-				sets = append(sets, "background_probe_enabled = ?")
-				setArgs = append(setArgs, next)
-			}
+		next := 0
+		if *input.BackgroundProbeEnabled {
+			next = 1
+		}
+		if next != row.backgroundProbeEnabled {
+			backgroundProbeNext = next
+			backgroundProbeDisabling = next == 0
+			backgroundProbeEnabling = next == 1
+			addChange("backgroundProbeEnabled", row.backgroundProbeEnabled == 1, *input.BackgroundProbeEnabled)
+			sets = append(sets, "background_probe_enabled = ?")
+			setArgs = append(setArgs, next)
 		}
 	}
 
@@ -1457,16 +1452,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// availability_schedule_gate（scheduleChanged 分支在下方写列），status 只由
 	// 用户选择、到期与健康状态机裁定。
 	nextStatus := scheduledStatus
-	// 连接变化降级臂按域守卫（媒体账户生命周期定案表）：audio/video 域不参
-	// 与对话健康检查状态机，凭据/代理编辑保持 scheduledStatus（active 保持
-	// active），不落 pending_test——否则同样因无探针复检而永久滞留。chat/
-	// image 域行为不变。手动模式（本次翻转后 background_probe_enabled=0）
-	// 同样跳过：连接变更不再落 pending_test，凭据/代理编辑保持原状态，由
-	// 真实流量验收（总开关设计 §4，对齐媒体域 SkipsConversationHealthState
-	// Machine 先例）。
+	// 连接变化降级臂：后台探测开启时，凭据/代理编辑一律落 pending_test 等 J1
+	// 复检（video/audio/image 与 chat 同规则）。手动模式（本次翻转后
+	// background_probe_enabled=0）跳过：连接变更不再落 pending_test，凭据/代理
+	// 编辑保持原状态，由真实流量验收（总开关设计 §4）。
 	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput &&
-		backgroundProbeNext != 0 &&
-		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+		backgroundProbeNext != 0 {
 		nextStatus = "pending_test"
 	}
 	// 手动模式状态归一化（总开关设计 §4，同事务二态收敛）：按行内现值状态
@@ -1875,7 +1866,6 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 配置变更复检（总开关设计 §4），last_health_* 保留为「关闭前」历史展示，
 	// 不清投影。
 	healthCheckRequired := backgroundProbeNext != 0 &&
-		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) &&
 		(connectionChanged || supportedModelsChanged || modelMappingsChanged ||
 			healthCheckModelChanged || healthCheckEndpointModeChanged || endpointModesChanged)
 	if healthCheckRequired {
@@ -1888,7 +1878,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if clearFailurePendingTest {
 		sets = append(sets, "next_health_check_at = NULL")
 	}
-	if connectionChanged && backgroundProbeNext != 0 && !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+	if connectionChanged && backgroundProbeNext != 0 {
 		sets = append(sets,
 			"last_health_check_at = NULL",
 			"last_health_success_at = NULL",

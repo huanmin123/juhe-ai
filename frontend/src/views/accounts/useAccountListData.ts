@@ -37,8 +37,8 @@ interface AccountsPageState {
 
 interface UseAccountListDataOptions {
   isManagementView: ComputedRef<boolean>
-  // 当前能力域（来自 route.meta.capabilityDomain）：列表请求按域过滤，页状态缓存按域隔离。
-  capabilityDomain: ComputedRef<AccountCapabilityDomain>
+  // 当前场景筛选：undefined = 全部场景；非空 = 按场景过滤。
+  capabilityDomain: ComputedRef<AccountCapabilityDomain | undefined>
   scopedSystemAccountId: (filterValue?: string) => string | undefined
   onLoaded?: (selectableAccountIds: Set<string>) => void
 }
@@ -65,10 +65,10 @@ const defaultAccountsPageState = (): AccountsPageState => ({
 })
 
 export function useAccountListData(options: UseAccountListDataOptions) {
-  // 页状态缓存 key 显式包含能力域：四域路由共用本视图，跨域的筛选/分页/排序互不串写。
-  // 八条域路由按 path 强制重建组件实例，key 在每次挂载时随当前域固定。
+  // 单菜单后页状态缓存只按管理面/个人面隔离；场景筛选不再重建页面，
+  // 切换筛选时保留关键词/分组等条件，避免用户重复输入。
   const capabilityDomain = options.capabilityDomain
-  const pageStateCache = usePageStateCache<AccountsPageState>(`accounts:${capabilityDomain.value}`, defaultAccountsPageState, { version: 8 })
+  const pageStateCache = usePageStateCache<AccountsPageState>(`accounts:${options.isManagementView.value ? 'management' : 'self'}:all`, defaultAccountsPageState, { version: 9 })
   const initialPageState = pageStateCache.read()
   rememberGroupSelection(initialPageState.filters.group)
   rememberPrincipalSelection(initialPageState.filters.systemAccount)
@@ -205,6 +205,12 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     resetAccountPagination()
     void loadData()
   }
+
+  // 单菜单内切换场景筛选：保留关键词/分组等条件，回到第一页重新取数。
+  watch(capabilityDomain, () => {
+    resetAccountPagination()
+    void loadData({ forceData: true })
+  })
 
   function handleAccountTableChangeAndLoad(paginationInfo: unknown): void {
     handleAccountTableChange(paginationInfo)

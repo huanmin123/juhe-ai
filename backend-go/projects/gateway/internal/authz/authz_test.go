@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 type fixture struct {
@@ -697,12 +698,13 @@ func TestPatchExpiresAtCanonicalizesAndProjectsRuntime(t *testing.T) {
 	if outcome.Result.ExpiresAt == nil || *outcome.Result.ExpiresAt != canonical {
 		t.Fatalf("grant canonical expiry = %v", outcome.Result.ExpiresAt)
 	}
-	var grantExpires, runtimeExpires string
+	var grantExpiresAt, runtimeExpiresAt dbtime.Nullable
 	if err := f.db.QueryRow(fixtureBind(`SELECT g.expires_at, r.expires_at FROM resource_authorization_grants g
 		INNER JOIN resource_authorizations r ON r.resource_id = g.resource_id
-		WHERE g.id = ? AND r.grantee_system_account_id = 'grantee'`), created.Item.ID).Scan(&grantExpires, &runtimeExpires); err != nil {
+		WHERE g.id = ? AND r.grantee_system_account_id = 'grantee'`), created.Item.ID).Scan(&grantExpiresAt, &runtimeExpiresAt); err != nil {
 		t.Fatal(err)
 	}
+	grantExpires, runtimeExpires := grantExpiresAt.APIString(), runtimeExpiresAt.APIString()
 	if grantExpires != canonical || runtimeExpires != canonical {
 		t.Fatalf("canonical expiry projection: grant=%s runtime=%s", grantExpires, runtimeExpires)
 	}
@@ -1281,11 +1283,11 @@ func assertRuntime(t *testing.T, f *fixture, grantee, resourceID, status, effect
 
 func runtimeVersion(t *testing.T, f *fixture, grantID string) string {
 	t.Helper()
-	var updatedAt string
+	var updatedAt dbtime.Nullable
 	if err := f.db.QueryRow(fixtureBind(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`), grantID).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	return updatedAt
+	return updatedAt.APIString()
 }
 
 func decodeListItems(t *testing.T, rec *httptest.ResponseRecorder) []map[string]any {

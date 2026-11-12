@@ -8,6 +8,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -241,6 +242,7 @@ func (input *HandleUpstreamResponseInput) successfulEmptyUpstreamAllowed() bool 
 
 // HandleStreamUpstreamResponse 对齐 handleStreamUpstreamResponse。
 func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamResponseHandlingResult, error) {
+	applyImageEchoHeaders(&input)
 	if input.UpstreamResponse.Body == nil {
 		if input.UpstreamResponse.Status == 204 || input.UpstreamResponse.Status == 205 {
 			if !input.successfulEmptyUpstreamAllowed() {
@@ -766,11 +768,50 @@ func signalAborted(signal interface{ Done() <-chan struct{} }) bool {
 	}
 }
 
+// applyImageEchoHeaders 为同步图像响应写入厂商/参数回显头（2026-11-11 图像
+// 生成统一协议）。回显走响应头而不是 body：gpt 的 b64_json 响应必须保持
+// 纯透传，不能为写字段而整体缓冲/改写。响应宽容口径下 provider_options 与
+// params 的键名摘要只用于排查，不影响成功判定。
+func applyImageEchoHeaders(input *HandleUpstreamResponseInput) {
+	if input == nil || input.Req == nil || input.Account == nil ||
+		input.UpstreamResponse == nil || !input.UpstreamResponse.OK() {
+		return
+	}
+	if input.Downstream.Res == nil || input.Downstream.Res.HeadersSent() {
+		return
+	}
+	if !gatewaymedia.IsImageGenerationPath(input.Req.PathAndQuery()) {
+		return
+	}
+	echo := gatewaymedia.ImageEchoForRequest(input.Account.GetProviderCode(), input.Req.ParsedJSONObjectBody())
+	for name, value := range gatewaymedia.ImageEchoHeaders(echo) {
+		if input.Downstream.Res.Header().Get(name) == "" {
+			input.Downstream.Res.Header().Set(name, value)
+		}
+	}
+}
+
+// clearImageEchoHeaders 在图像转换失败收 502 前清掉成功语义的回显头，避免
+// 错误响应带着“provider/params 已生效”的误导信息。
+func clearImageEchoHeaders(header http.Header) {
+	if header == nil {
+		return
+	}
+	for _, name := range []string{
+		gatewaymedia.ImageProviderHeader,
+		gatewaymedia.ImageParamsAppliedHeader,
+		gatewaymedia.ImageParamsIgnoredHeader,
+		gatewaymedia.ImageProviderOptionsAppliedHeader,
+	} {
+		header.Del(name)
+	}
+}
+
+// prepareUpstreamResponseForDownstream 对齐 downstream-headers.ts 的
+// prepareUpstreamResponseForDownstream：headers 已发送时跳过；转发上游响应头
+// （copyResponseHeaders，D-116）；流式补齐 content-type 与 no-cache 头。Go 的
+// WriteHeader 立即提交响应头，全部头写入必须先于 WriteHeader。
 func prepareUpstreamResponseForDownstream(downstream StreamDownstream, upstreamResponse *GatewayUpstreamResponse, shouldHandleAsStream bool) {
-	// 对齐 downstream-headers.ts 的 prepareUpstreamResponseForDownstream：headers
-	// 已发送时跳过；转发上游响应头（copyResponseHeaders，D-116）；流式补齐
-	// content-type 与 no-cache 头。Go 的 WriteHeader 立即提交响应头，全部头
-	// 写入必须先于 WriteHeader。
 	if downstream.Res.HeadersSent() {
 		return
 	}

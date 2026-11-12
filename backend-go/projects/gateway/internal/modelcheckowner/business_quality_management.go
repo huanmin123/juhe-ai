@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 type QualityPolicyView struct {
@@ -547,11 +548,15 @@ func scanQualitySchedule(row interface{ Scan(...any) error }, now time.Time) (Qu
 	// timeout_penalty_enabled 在 SQLite 为 INTEGER 0/1、PG 为 boolean，
 	// database/sql 两种驱动取值都可扫描进 bool（manual_enforcement 同语义）。
 	var timeoutPenaltyEnabled bool
-	var accountName, providerCode, lastID, lastAt, lastStatus, leaseUntil, enforcementAction, enforcementRecoveryDueAt, customQuestionIds, accountStatus sql.NullString
-	err := row.Scan(&v.ID, &v.SystemAccountID, &v.AccountID, &accountName, &providerCode, &v.Model, &v.IntervalMinutes, &v.Profile, &v.PenaltyThreshold, &v.PenaltyAction, &v.RecoveryIntervalMinutes, &timeoutPenaltyEnabled, &enabled, &v.Revision, &customQuestionIds, &v.NextRunAt, &lastID, &lastAt, &lastStatus, &leaseUntil, &enforcementAction, &enforcementRecoveryDueAt, &accountStatus, &v.CreatedAt, &v.UpdatedAt)
+	var accountName, providerCode, lastID, lastStatus, leaseUntil, enforcementAction, enforcementRecoveryDueAt, customQuestionIds, accountStatus sql.NullString
+	var lastAt, nextRunAt, createdAt, updatedAt dbtime.Nullable
+	err := row.Scan(&v.ID, &v.SystemAccountID, &v.AccountID, &accountName, &providerCode, &v.Model, &v.IntervalMinutes, &v.Profile, &v.PenaltyThreshold, &v.PenaltyAction, &v.RecoveryIntervalMinutes, &timeoutPenaltyEnabled, &enabled, &v.Revision, &customQuestionIds, &nextRunAt, &lastID, &lastAt, &lastStatus, &leaseUntil, &enforcementAction, &enforcementRecoveryDueAt, &accountStatus, &createdAt, &updatedAt)
 	if err != nil {
 		return v, err
 	}
+	v.NextRunAt = nextRunAt.APIString()
+	v.CreatedAt = createdAt.APIString()
+	v.UpdatedAt = updatedAt.APIString()
 	v.Enabled = enabled == 1
 	v.TimeoutPenaltyEnabled = timeoutPenaltyEnabled
 	v.CustomQuestionIds = qualityCustomQuestionIds(customQuestionIds)
@@ -569,7 +574,8 @@ func scanQualitySchedule(row interface{ Scan(...any) error }, now time.Time) (Qu
 		v.LastRunID = &lastID.String
 	}
 	if lastAt.Valid {
-		v.LastRunAt = &lastAt.String
+		value := lastAt.APIString()
+		v.LastRunAt = &value
 	}
 	if lastStatus.Valid {
 		v.LastRunStatus = &lastStatus.String

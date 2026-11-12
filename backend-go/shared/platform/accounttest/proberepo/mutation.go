@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
@@ -158,9 +159,9 @@ func (s *Store) loadPrecheckState(ctx context.Context, accountID string) (*prech
 	var (
 		status              sql.NullString
 		dispatchRevision    sql.NullInt64
-		lastHealthSuccessAt sql.NullString
-		updatedAt           sql.NullString
-		lastUsedAt          sql.NullString
+		lastHealthSuccessAt dbtime.Nullable
+		updatedAt           dbtime.Nullable
+		lastUsedAt          dbtime.Nullable
 	)
 	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID).
 		Scan(&status, &dispatchRevision, &lastHealthSuccessAt, &updatedAt, &lastUsedAt); err != nil {
@@ -172,9 +173,9 @@ func (s *Store) loadPrecheckState(ctx context.Context, accountID string) (*prech
 	return &precheckState{
 		status:              status.String,
 		dispatchRevision:    dispatchRevision.Int64,
-		lastHealthSuccessAt: lastHealthSuccessAt.String,
-		updatedAt:           updatedAt.String,
-		lastUsedAt:          lastUsedAt.String,
+		lastHealthSuccessAt: lastHealthSuccessAt.APIString(),
+		updatedAt:           updatedAt.APIString(),
+		lastUsedAt:          lastUsedAt.APIString(),
 	}, nil
 }
 
@@ -226,13 +227,16 @@ func (s *Store) ListDueForProbe(ctx context.Context, limit int) ([]accountqualit
 	var scanned []accountquality.CooldownProbeCandidate
 	for rows.Next() {
 		var (
-			accountID, keyFingerprint, status, nextProbeAt, stateUpdatedAt sql.NullString
-			keyIndex                                                       sql.NullInt64
-			recoveryStartedAt, lastErrorCode                               sql.NullString
-			accountName, providerCode, protocolCode, protocolVersion       sql.NullString
-			accountType, credentialsEncrypted                              sql.NullString
-			configRevision                                                 sql.NullInt64
-			probeClaimToken, probeClaimedUntil                             sql.NullString
+			accountID, keyFingerprint, status                        sql.NullString
+			keyIndex                                                 sql.NullInt64
+			nextProbeAt, stateUpdatedAt                              dbtime.Nullable
+			recoveryStartedAt                                        dbtime.Nullable
+			lastErrorCode                                            sql.NullString
+			accountName, providerCode, protocolCode, protocolVersion sql.NullString
+			accountType, credentialsEncrypted                        sql.NullString
+			configRevision                                           sql.NullInt64
+			probeClaimToken                                          sql.NullString
+			probeClaimedUntil                                        dbtime.Nullable
 		)
 		if err := rows.Scan(&accountID, &keyFingerprint, &keyIndex, &status, &nextProbeAt,
 			&stateUpdatedAt, &recoveryStartedAt, &lastErrorCode,
@@ -273,12 +277,12 @@ func (s *Store) ListDueForProbe(ctx context.Context, limit int) ([]accountqualit
 			KeyIndex:              keyIndexValue,
 			APIKey:                matched.Key,
 			Status:                status.String,
-			NextProbeAt:           nextProbeAt.String,
-			StateUpdatedAt:        stateUpdatedAt.String,
+			NextProbeAt:           nextProbeAt.APIString(),
+			StateUpdatedAt:        stateUpdatedAt.APIString(),
 			AccountConfigRevision: configRevision.Int64,
 			ProbeClaimToken:       probeClaimToken.String,
-			ProbeClaimedUntil:     probeClaimedUntil.String,
-			RecoveryStartedAt:     recoveryStartedAt.String,
+			ProbeClaimedUntil:     probeClaimedUntil.APIString(),
+			RecoveryStartedAt:     recoveryStartedAt.APIString(),
 			LastErrorCode:         lastErrorCode.String,
 		})
 	}
@@ -500,10 +504,10 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 	switch {
 	case input.BreakQuotaRecoveryWindow:
 		recoverySQL = "?"
-		recoveryParams = []any{recoveryStartedAt}
+		recoveryParams = []any{s.instantParamAny(recoveryStartedAt)}
 	case input.QuotaRecoveryMode != "":
 		recoverySQL = "?"
-		recoveryParams = []any{recoveryStartedAt}
+		recoveryParams = []any{s.instantParamAny(recoveryStartedAt)}
 	}
 
 	if existing != nil {

@@ -79,7 +79,7 @@ func TestDD2D4WriteFaceAcceptsMaterializeShapeAndDelete(t *testing.T) {
 
 	// delete 覆盖无 rule_index，不受上界约束（含 rules 为空的 clearRules 形态）。
 	input = map[string]any{
-		"error_handling_rules":          []any{},
+		"error_handling_rules": []any{},
 		"error_handling_rule_overrides": []any{
 			map[string]any{"system_rule_id": systemInsufficientQuotaErrorPolicyRuleID, "action": "delete"},
 		},

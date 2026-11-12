@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ---------------------------------------------------------------------------
@@ -224,7 +226,8 @@ func (m *SQLReadModels) loadGatewayAPIKeyByID(ctx context.Context, apiKeyID stri
 // no usable row yields nil (the raw-key read's invalid-key semantics).
 func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate string, value any) (*GatewayAPIKeyRow, error) {
 	var id, systemAccountID, routeStrategyID, routeStrategyMode, status string
-	var routeConfigJSON, expiresAt, quotaLimitsJSON, requestLimitsJSON sql.NullString
+	var routeConfigJSON, quotaLimitsJSON, requestLimitsJSON sql.NullString
+	var expiresAt dbtime.Nullable
 	var availabilityScheduleGate sql.NullInt64
 	var purpose, schedulingPreferenceID, schedulingPreferenceJoinedID sql.NullString
 	var schedulingPreferenceChatMode, schedulingPreferenceConfigJSON sql.NullString
@@ -288,10 +291,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 	if err != nil {
 		return nil, err
 	}
-	expiresAtText := ""
-	if expiresAt.Valid {
-		expiresAtText = expiresAt.String
-	}
+	expiresAtText := expiresAt.APIString()
 	expired, err := isoTimeExpired(expiresAtText, m.now().UnixMilli())
 	if err != nil {
 		return nil, err
@@ -320,7 +320,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 		RouteStrategyMode:                   NormalizeRouteStrategyMode(routeStrategyMode),
 		RouteStrategyConfigJSON:             nullToStrPtr(routeConfigJSON),
 		Status:                              status,
-		ExpiresAt:                           nullToStrPtr(expiresAt),
+		ExpiresAt:                           expiresAt.API(),
 		QuotaLimitsJSON:                     nullToStrPtr(quotaLimitsJSON),
 		SystemAccountImageGenerationEnabled: imageGenerationEnabled,
 		SystemAccountRequestLimitsJSON:      nullToStrPtr(requestLimitsJSON),

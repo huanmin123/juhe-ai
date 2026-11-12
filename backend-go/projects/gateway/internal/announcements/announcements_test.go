@@ -18,6 +18,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // recordingSink captures the operation-log entries Mount emits so tests can
@@ -616,21 +617,20 @@ func TestCreateTimeColumns(t *testing.T) {
 
 	assertColumns := func(id, revision string, wantPublished bool) {
 		t.Helper()
-		var publishedAt sql.NullString
-		var createdAt, updatedAt string
+		var publishedAt, createdAt, updatedAt dbtime.Nullable
 		if err := env.db.QueryRow(fixtureBind(`SELECT published_at, created_at, updated_at FROM announcements WHERE id = ?`), id).
 			Scan(&publishedAt, &createdAt, &updatedAt); err != nil {
 			t.Fatal(err)
 		}
 		if wantPublished {
-			if !publishedAt.Valid || publishedAt.String != revision {
-				t.Fatalf("published create published_at = %#v, want revision %s", publishedAt, revision)
+			if got := publishedAt.API(); got == nil || *got != revision {
+				t.Fatalf("published create published_at = %#v, want revision %s", got, revision)
 			}
 		} else if publishedAt.Valid {
-			t.Fatalf("draft published_at must be NULL, got %#v", publishedAt)
+			t.Fatalf("draft published_at must be NULL, got %#v", publishedAt.API())
 		}
-		if createdAt != revision || updatedAt != revision {
-			t.Fatalf("time columns = created_at %q updated_at %q, want revision %s", createdAt, updatedAt, revision)
+		if dbtime.API(createdAt.Time) != revision || dbtime.API(updatedAt.Time) != revision {
+			t.Fatalf("time columns = created_at %q updated_at %q, want revision %s", dbtime.API(createdAt.Time), dbtime.API(updatedAt.Time), revision)
 		}
 	}
 	assertColumns(draftID, draftRevision, false)
@@ -660,12 +660,12 @@ func TestPatchNoOpSemantics(t *testing.T) {
 		t.Fatalf("trimmed same-content patch must be a no-op: %d %v", code, payload)
 	}
 
-	var updatedAt string
+	var updatedAt dbtime.Nullable
 	if err := env.db.QueryRow(fixtureBind(`SELECT updated_at FROM announcements WHERE id = ?`), id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	if updatedAt != revision {
-		t.Fatalf("no-op patch wrote updated_at %q, want %q", updatedAt, revision)
+	if dbtime.API(updatedAt.Time) != revision {
+		t.Fatalf("no-op patch wrote updated_at %q, want %q", dbtime.API(updatedAt.Time), revision)
 	}
 
 	code, changed := env.do(t, http.MethodPatch, "/__aisys__/api/announcements/"+id,

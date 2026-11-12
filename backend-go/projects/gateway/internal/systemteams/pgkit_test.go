@@ -60,8 +60,8 @@ const systemTeamsPGFixtureSchema = `
       description text,
       status text NOT NULL DEFAULT 'active',
       created_by text NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.system_team_members (
       id text PRIMARY KEY,
@@ -69,11 +69,11 @@ const systemTeamsPGFixtureSchema = `
       system_account_id text NOT NULL,
       member_role text NOT NULL DEFAULT 'member',
       status text NOT NULL DEFAULT 'active',
-      joined_at text NOT NULL,
-      removed_at text,
+      joined_at timestamptz(3) NOT NULL,
+      removed_at timestamptz(3),
       created_by text NOT NULL DEFAULT '',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.groups (
       id text PRIMARY KEY,

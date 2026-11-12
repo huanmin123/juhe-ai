@@ -59,7 +59,7 @@ func seedDownstreamInstance(t *testing.T, f *fixture, id, sourceAccountID, grant
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
 		config_revision, dispatch_revision, authorization_instance_source_account_id,
 		authorization_instance_authorization_id, deleted_at)
-		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`), 		id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`), id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -151,7 +151,7 @@ func accountRuntimeIDFor(t *testing.T, f *fixture, resourceID, granteeID string)
 	t.Helper()
 	var id string
 	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorizations
-		WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ?`), 		resourceID, granteeID).Scan(&id); err != nil {
+		WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ?`), resourceID, granteeID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -279,13 +279,13 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	// Excluded by each fanout filter: soft-deleted, provider outside the
 	// whitelist, type outside the whitelist, and an instance of another source.
-	seedDownstreamInstance(t, f, "inst-deleted", "res-1", "grantee", runtimeID, "openai", "oauth", "2026-01-01T00:00:00.000Z")
+	seedDownstreamInstance(t, f, "inst-deleted", "res-1", "grantee", runtimeID, "gpt", "oauth", "2026-01-01T00:00:00.000Z")
 	seedDownstreamInstance(t, f, "inst-provider", "res-1", "grantee", runtimeID, "minimax", "oauth", "")
-	seedDownstreamInstance(t, f, "inst-type", "res-1", "grantee", runtimeID, "openai", "completion", "")
-	seedDownstreamInstance(t, f, "inst-other", "res-9", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-type", "res-1", "grantee", runtimeID, "gpt", "completion", "")
+	seedDownstreamInstance(t, f, "inst-other", "res-9", "grantee", runtimeID, "gpt", "oauth", "")
 
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
 	if err != nil || version == nil {
@@ -386,7 +386,7 @@ func TestReturnResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
 	if err != nil || version == nil {
 		t.Fatalf("load grant: %v %v", version, err)
@@ -455,7 +455,7 @@ func TestPatchResyncsBindingsAfterRuntimeSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
 	if err != nil || version == nil {
 		t.Fatalf("load grant: %v %v", version, err)
@@ -503,7 +503,7 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
 		 grantee_system_account_id, scope, status, limits_json, created_by, created_at, updated_at, expires_at)
-		VALUES ('g-due', 'account', 'res-1', 'owner', 'system_account', 'grantee', 'use', 'active', ?, 'owner', ?, ?, ?)`), 		*hourlyLimits(6), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		VALUES ('g-due', 'account', 'res-1', 'owner', 'system_account', 'grantee', 'use', 'active', ?, 'owner', ?, ?, ?)`), *hourlyLimits(6), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), past); err != nil {
 		t.Fatal(err)
 	}
@@ -512,11 +512,11 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		 scope, status, effective_source_type, activated_at, last_source_changed_at,
 		 created_by, created_at, updated_at)
-		VALUES ('ra-due', 'account', 'res-1', 'owner', 'grantee', 'use', 'active', 'manual', ?, ?, 'owner', ?, ?)`), 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		VALUES ('ra-due', 'account', 'res-1', 'owner', 'grantee', 'use', 'active', 'manual', ?, ?, 'owner', ?, ?)`), f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z")); err != nil {
 		t.Fatal(err)
 	}
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", "ra-due", "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", "ra-due", "gpt", "oauth", "")
 	expired, err := f.store.ExpireSweep(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -557,7 +557,7 @@ func TestQuotaBindingUpsertReplacesStaleSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	// Revoke → the runtime loses its source → a fresh create revives the grant
 	// and rebuilds the binding against the same runtime row.
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, first.Item.ID)

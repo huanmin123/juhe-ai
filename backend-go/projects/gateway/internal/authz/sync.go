@@ -229,7 +229,7 @@ func (s *Store) syncTeamGrantRuntime(ctx context.Context, tx *sql.Tx, grant *gra
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+`
 			SET expires_at = ?,
 				revoked_by = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ? END,
-				revoked_at = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ? END,
+				revoked_at = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ?::timestamptz END,
 				revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' WHEN ? = 'paused' THEN 'authorization_paused' ELSE NULL END,
 				limits_json = ?,
 				updated_at = ?

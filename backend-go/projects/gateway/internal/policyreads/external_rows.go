@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,8 +49,8 @@ func (s *ExternalStore) mapSourceRecord(ctx context.Context, row externalSourceR
 	}
 	return &ExternalSourceRecord{
 		ID: row.id, Name: row.name, Status: row.status, Scopes: scopes, RateLimits: rateLimits,
-		ExpiresAt: nullPtrString(row.expiresAt), Notes: nullPtrString(row.notes),
-		LastUsedAt: nullPtrString(row.lastUsedAt), CreatedAt: row.createdAt, UpdatedAt: row.updatedAt,
+		ExpiresAt: apiTimePtr(row.expiresAt), Notes: nullPtrString(row.notes),
+		LastUsedAt: apiTimePtr(row.lastUsedAt), CreatedAt: apiTimeString(row.createdAt), UpdatedAt: apiTimeString(row.updatedAt),
 		IsBuiltIn: row.id == builtInExternalTestSourceID,
 	}, nil
 }
@@ -88,9 +90,9 @@ func (s *ExternalStore) mapTokenSummary(row externalTokenRow) ExternalTokenSumma
 	}
 	return ExternalTokenSummary{
 		ID: row.id, Name: row.name, TokenPrefix: row.tokenPrefix, TokenSuffix: row.tokenSuffix,
-		Status: row.status, Scopes: scopes, ExpiresAt: nullPtrString(row.expiresAt),
-		LastUsedAt: nullPtrString(row.lastUsedAt), CreatedAt: row.createdAt, UpdatedAt: row.updatedAt,
-		RevokedAt: nullPtrString(row.revokedAt), IsBuiltIn: row.id == builtInExternalTestTokenID,
+		Status: row.status, Scopes: scopes, ExpiresAt: apiTimePtr(row.expiresAt),
+		LastUsedAt: apiTimePtr(row.lastUsedAt), CreatedAt: apiTimeString(row.createdAt), UpdatedAt: apiTimeString(row.updatedAt),
+		RevokedAt: apiTimePtr(row.revokedAt), IsBuiltIn: row.id == builtInExternalTestTokenID,
 	}
 }
 
@@ -118,3 +120,21 @@ func scanExternalTokenRow(scan func(...any) error) (externalTokenRow, error) {
 
 const externalTokenColumns = `id, source_ref_id, name, token_prefix, token_suffix, status,
 	scopes_json, expires_at, last_used_at, created_at, updated_at, revoked_at`
+
+// apiTimeString 把存储侧的 RFC3339 文本（text 旧列或 timestamptz 渲染）归一为
+// API 契约的 UTC 毫秒 Z 文本；无法解析时保留原值，交给上层失败。
+func apiTimeString(value string) string {
+	parsed, ok := dbtime.ParseDB(strings.TrimSpace(value))
+	if !ok {
+		return value
+	}
+	return dbtime.API(parsed)
+}
+
+func apiTimePtr(value sql.NullString) *string {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	normalized := apiTimeString(value.String)
+	return &normalized
+}

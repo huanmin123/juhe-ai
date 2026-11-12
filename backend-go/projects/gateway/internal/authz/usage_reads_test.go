@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 const usageFixtureDDL = `
@@ -624,13 +626,14 @@ func TestRevokeOwnerScopeNegative(t *testing.T) {
 	if mutation.Status != "not_found" {
 		t.Fatalf("out-of-scope revoke = %+v", mutation)
 	}
-	var status, version string
+	var status string
+	var version dbtime.Nullable
 	if err := f.db.QueryRow(fixtureBind(`SELECT status, updated_at FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).
 		Scan(&status, &version); err != nil {
 		t.Fatal(err)
 	}
-	if status != StatusActive || version != created.Item.UpdatedAt {
-		t.Fatalf("grant after denied revoke = %s@%s", status, version)
+	if status != StatusActive || version.APIString() != created.Item.UpdatedAt {
+		t.Fatalf("grant after denied revoke = %s@%s", status, version.APIString())
 	}
 
 	// In-scope revoke succeeds and flips the status.

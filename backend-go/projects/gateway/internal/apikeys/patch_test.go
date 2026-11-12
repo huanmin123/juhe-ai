@@ -7,20 +7,22 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // patchRow reads the persisted mutation columns back for contract checks.
 func patchRow(t *testing.T, env *testEnv, keyID string) (name, description, status, routeStrategyID, expiresAt, quotaJSON, scheduleJSON, updatedAt string) {
 	t.Helper()
-	var rowName, rowDescription, rowExpiresAt, rowQuotaJSON, rowScheduleJSON, rowUpdatedAt []byte
+	var rowName, rowDescription, rowQuotaJSON, rowScheduleJSON []byte
+	var rowExpiresAt, rowUpdatedAt dbtime.Nullable
 	err := env.db.QueryRow(`SELECT name, COALESCE(description, ''), status, route_strategy_id,
-			COALESCE(expires_at, ''), COALESCE(quota_limits_json, ''), COALESCE(availability_schedule_json, ''), updated_at
+			expires_at, COALESCE(quota_limits_json, ''), COALESCE(availability_schedule_json, ''), updated_at
 		FROM api_keys WHERE id = $1`, keyID).
 		Scan(&rowName, &rowDescription, &status, &routeStrategyID, &rowExpiresAt, &rowQuotaJSON, &rowScheduleJSON, &rowUpdatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(rowName), string(rowDescription), status, routeStrategyID, string(rowExpiresAt), string(rowQuotaJSON), string(rowScheduleJSON), string(rowUpdatedAt)
+	return string(rowName), string(rowDescription), status, routeStrategyID, rowExpiresAt.APIString(), string(rowQuotaJSON), string(rowScheduleJSON), dbtime.API6(rowUpdatedAt.Time)
 }
 
 func changedFieldsOf(t *testing.T, payload map[string]any) []string {

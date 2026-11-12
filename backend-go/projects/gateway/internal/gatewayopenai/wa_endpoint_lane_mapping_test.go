@@ -154,6 +154,12 @@ func TestWAResolveRequestLane(t *testing.T) {
 		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "nano-banana-pro"); got != gatewayproto.LaneImage {
 			t.Fatalf("nano-banana = %q", got)
 		}
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "doubao-seedream-5-0-flash-260915"); got != gatewayproto.LaneImage {
+			t.Fatalf("doubao-seedream = %q", got)
+		}
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "qwen-image-3.0"); got != gatewayproto.LaneImage {
+			t.Fatalf("qwen-image = %q", got)
+		}
 		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "gemini-2.5-flash-image"); got != gatewayproto.LaneImage {
 			t.Fatalf("gemini image = %q", got)
 		}

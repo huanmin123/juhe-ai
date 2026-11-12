@@ -375,6 +375,8 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	rememberUpstreamAttemptFailure(in.args, c.account, c.upstreamURL, "upstream_response", failedResponseResult.LastAttempt, "")
 	explicitPolicyFailure := failedResponseResult.Action != FailedResponseActionReturnResponse &&
 		failedResponseResult.FailureKind == FailureKindExplicitPolicy
+	// D12：只有确定性硬门释放锁死 hold；空值按可恢复失败处理。
+	lockDeterministicRelease := failedResponseResult.FailureDisposition == FailureDispositionDeterministicRelease
 	if failedResponseResult.Action != FailedResponseActionReturnResponse {
 		outcomeClass := HotQualityOutcomeUpstreamResponseFailure
 		failureScope := "none"
@@ -510,9 +512,10 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	//
 	// M1（复审）：锁死记账是运行态观测，best-effort 失败只落审计，不得否决
 	// 既有 Key 轮换 / 同账号重试 / 锁死判断。
-	// M2（复审）：显式策略失败已由失败派发器把账户置为不可调度，不再写锁死
-	// 运行态，也不参与末尾锁死门（按原机制换号/结束）。
-	if in.accountLockTrafficEnabled && e.Locks != nil && !explicitPolicyFailure {
+	// D12：显式策略的可恢复失败同样写锁死运行态并参与末尾锁死门（rate_limited /
+	// temporary_unavailable 继续 hold）；只有确定性硬门（disable、凭据无效、
+	// 模型/请求确定性拒绝、额度耗尽）释放。
+	if in.accountLockTrafficEnabled && e.Locks != nil && !lockDeterministicRelease {
 		if err := e.Locks.RecordFailureAsync(ctx, c.account.ID, "upstream_http_response", *in.activeAccountLockObservation); err != nil {
 			auditCapture.AddGatewayMetadata("account_lock_failure_record_error", map[string]any{
 				"accountId": c.account.ID,
@@ -573,9 +576,9 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			}
 		}
 	}
-	// M2（复审）：显式策略失败已把账户置为不可调度，末尾不再走锁死门，直接
-	// 按原有跳过出口换号/结束。
-	if in.accountLockTrafficEnabled && e.Locks != nil && !explicitPolicyFailure {
+	// D12：可恢复失败（含显式策略的 rate_limited / temporary_unavailable）走
+	// 锁死门继续 hold；确定性硬门已由失败派发器写终态并在此释放换号。
+	if in.accountLockTrafficEnabled && e.Locks != nil && !lockDeterministicRelease {
 		lockState, stateErr := e.Locks.FindStateAsync(ctx, c.account.ID)
 		if stateErr != nil {
 			// 锁死门 fail-closed 收窄（M4 复审）：只有本请求已观察到该账户的锁行

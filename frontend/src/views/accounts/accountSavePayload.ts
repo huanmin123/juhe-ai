@@ -1,5 +1,5 @@
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
-import { capabilityDomainIsMedia, capabilityDomainWithoutBackgroundProbe } from './accountCapabilityDomains'
+import { capabilityDomainIsMedia } from './accountCapabilityDomains'
 import type {
   AccountEditBasicDetail,
   AccountListItem,
@@ -203,8 +203,7 @@ export function validateAccountSaveForm(input: {
   // 不在表单状态模型内（装载时归并 pending_test），异常账户未显式改状态时 PATCH
   // 不携带 status，必须放行；新建表单切手动模式由表单预选可调度兜底。
   if (
-    !capabilityDomainWithoutBackgroundProbe(form.capabilityDomain)
-    && form.backgroundProbeEnabled === false
+    form.backgroundProbeEnabled === false
     && form.statusSelectionExplicit
     && form.status === 'pending_test'
   ) {
@@ -392,11 +391,8 @@ export function buildAccountSavePayload(input: {
     ...(input.form.healthCheckModel.trim() ? { healthCheckModel: input.form.healthCheckModel.trim() } : {}),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
-    // 后台自动探测总开关（总开关设计 §2）：创建携带；audio/video 媒体域不适用
-    // 不携带该键（image 域适用，二轮复审裁决——图像账户存在后台探测）。
-    ...(capabilityDomainWithoutBackgroundProbe(input.form.capabilityDomain)
-      ? {}
-      : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
+    // 后台自动探测总开关（总开关设计 §2）：所有场景统一携带。
+    backgroundProbeEnabled: input.form.backgroundProbeEnabled,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     // 互斥输出（§8.3/§9.2）：裸 id 二选一；编辑链未勾选的目标显式传 null 清除，
@@ -481,12 +477,8 @@ export function buildOAuthCreateCommonPayload(input: {
     ...(input.form.healthCheckModel.trim() ? { healthCheckModel: input.form.healthCheckModel.trim() } : {}),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
-    // 后台自动探测总开关（总开关设计 §2）：OAuth 创建同样携带；audio/video 媒体
-    // 域（gemini 媒体 google_oauth 走此通道）不适用，不携带该键（image 域适用，
-    // 二轮复审裁决）。
-    ...(capabilityDomainWithoutBackgroundProbe(input.form.capabilityDomain)
-      ? {}
-      : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
+    // 后台自动探测总开关（总开关设计 §2）：所有场景统一携带。
+    backgroundProbeEnabled: input.form.backgroundProbeEnabled,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,

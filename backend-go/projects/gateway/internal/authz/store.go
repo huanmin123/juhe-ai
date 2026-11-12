@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // Limits mirror system-team-limits.ts and authorization-sweep-limits.ts.
@@ -191,11 +193,23 @@ const grantColumns = `g.id, g.resource_type, g.resource_id, g.resource_owner_sys
 
 func (s *Store) scanGrant(scanner interface{ Scan(...any) error }) (grantRow, error) {
 	var row grantRow
+	var expiresAt, revokedAt, createdAt, updatedAt dbtime.Nullable
 	err := scanner.Scan(&row.ID, &row.ResourceType, &row.ResourceID, &row.OwnerID,
 		&row.GranteeType, &row.GranteeUserID, &row.GranteeTeamID, &row.Status,
-		&row.Remark, &row.ExpiresAt, &row.LimitsJSON, &row.CreatedBy, &row.RevokedBy, &row.RevokedAt,
-		&row.CreatedAt, &row.UpdatedAt)
-	return row, err
+		&row.Remark, &expiresAt, &row.LimitsJSON, &row.CreatedBy, &row.RevokedBy, &revokedAt,
+		&createdAt, &updatedAt)
+	if err != nil {
+		return grantRow{}, err
+	}
+	if expiresAt.Valid {
+		row.ExpiresAt = sql.NullString{String: expiresAt.APIString(), Valid: true}
+	}
+	if revokedAt.Valid {
+		row.RevokedAt = sql.NullString{String: revokedAt.APIString(), Valid: true}
+	}
+	row.CreatedAt = createdAt.APIString()
+	row.UpdatedAt = updatedAt.APIString()
+	return row, nil
 }
 
 // buildFilters converts the contract filters into WHERE clauses. The scope

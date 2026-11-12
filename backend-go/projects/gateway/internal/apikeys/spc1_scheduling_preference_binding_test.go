@@ -247,7 +247,7 @@ func TestSPC1PatchChatKeyRejectsPreferenceAndDefaultKeyAllowsIt(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("chat detail: %d %v", code, payload)
 	}
-	if revision := dataMap(t, payload)["revision"].(string); revision != "2020-01-01T00:00:00.000Z" {
+	if revision := dataMap(t, payload)["revision"].(string); revision != "2020-01-01T00:00:00.000000Z" {
 		t.Fatalf("rejected chat patches must not bump revision, got %q", revision)
 	}
 

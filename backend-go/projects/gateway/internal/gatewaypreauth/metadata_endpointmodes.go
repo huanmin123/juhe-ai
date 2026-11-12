@@ -40,6 +40,8 @@ const (
 	EndpointModeGenerateContentSSE     = "generate_content_sse"
 	EndpointModeCountTokens            = "count_tokens"
 	EndpointModeEmbedContent           = "embed_content"
+	EndpointModeRerankJSON             = "rerank_json"
+	EndpointModeModerationJSON         = "moderation_json"
 	EndpointModeInteractionsJSON       = "interactions_json"
 	EndpointModeInteractionsSSE        = "interactions_sse"
 	EndpointModeAudioSpeech            = "audio_speech"
@@ -81,6 +83,12 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return EndpointModeImagesJSON
 	case method == "POST" && normalizedV1StrippedPath(path) == "/audio/speech":
 		return EndpointModeAudioSpeech
+	case method == "POST" && normalizedV1StrippedPath(path) == "/embeddings":
+		return EndpointModeEmbedContent
+	case method == "POST" && normalizedV1StrippedPath(path) == "/rerank":
+		return EndpointModeRerankJSON
+	case method == "POST" && normalizedV1StrippedPath(path) == "/moderations":
+		return EndpointModeModerationJSON
 	case method == "POST" && (normalizedV1StrippedPath(path) == "/audio/transcriptions" || normalizedV1StrippedPath(path) == "/audio/translations"):
 		return EndpointModeAudioTranscriptionJSON
 	case method == "POST" && normalizedV1StrippedPath(path) == "/videos":

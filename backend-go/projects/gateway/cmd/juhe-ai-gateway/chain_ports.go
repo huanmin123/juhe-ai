@@ -740,10 +740,11 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		}
 	}
 	result := gatewaydispatch.FailedUpstreamResponseResult{
-		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
-		FailureKind:      failureKind,
-		LastAttempt:      lastAttempt,
-		KeyScopedFailure: sameAccountKeyRotation,
+		Action:             gatewaydispatch.FailedResponseActionSkipAccount,
+		FailureKind:        failureKind,
+		FailureDisposition: accountErrorPolicyFailureDisposition(decision, statusCode, hasStatus),
+		LastAttempt:        lastAttempt,
+		KeyScopedFailure:   sameAccountKeyRotation,
 		// 本分支在上方已为该尝试写入 upstream.fetch_headers 阶段；若结果
 		// 携带的响应未来经 ReturnResponse 交回链面，链面不得重复发射。
 		UpstreamStageRecorded: true,

@@ -92,8 +92,8 @@ const apiKeysPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       is_default integer NOT NULL DEFAULT 0,
       config_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.route_strategy_groups (
       id text PRIMARY KEY,
@@ -103,8 +103,8 @@ const apiKeysPGFixtureSchema = `
       priority integer NOT NULL DEFAULT 1,
       weight integer NOT NULL DEFAULT 1,
       status text NOT NULL DEFAULT 'active',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.api_keys (
       id text PRIMARY KEY,
@@ -119,16 +119,16 @@ const apiKeysPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       is_default integer NOT NULL DEFAULT 0,
       purpose text NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
-      expires_at text,
+      expires_at timestamptz(3),
       quota_limits_json text,
       availability_schedule_json text,
-      availability_schedule_next_check_at text,
+      availability_schedule_next_check_at timestamptz(3),
       availability_schedule_gate integer,
       scheduling_preference_id text,
       security_policy_id text,
-      last_used_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      last_used_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique
       ON juhe_business.api_keys (system_account_id, name);
@@ -139,8 +139,8 @@ const apiKeysPGFixtureSchema = `
       chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
       chat_speed_first_config_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	-- 安全策略实体（批A，§4.1；api_keys.security_policy_id 引用目标）。
 	CREATE TABLE IF NOT EXISTS juhe_business.security_policies (
@@ -150,8 +150,8 @@ const apiKeysPGFixtureSchema = `
       description text,
       rules_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
       system_account_id text NOT NULL,
@@ -231,8 +231,8 @@ var sqliteFixtureSchema = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, created_at timestamptz(3) NOT NULL, updated_at timestamptz(3) NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at timestamptz(3) NOT NULL, updated_at timestamptz(3) NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS api_keys (
 		id TEXT PRIMARY KEY,
 		system_account_id TEXT NOT NULL,
@@ -246,15 +246,15 @@ var sqliteFixtureSchema = []string{
 		status TEXT NOT NULL DEFAULT 'active',
 		is_default INTEGER NOT NULL DEFAULT 0,
 		purpose TEXT NOT NULL DEFAULT 'general',
-		expires_at TEXT,
+		expires_at timestamptz(3),
 		quota_limits_json TEXT,
 		availability_schedule_json TEXT,
-		availability_schedule_next_check_at TEXT,
+		availability_schedule_next_check_at timestamptz(3),
 		availability_schedule_gate integer,
 		scheduling_preference_id TEXT,
-		last_used_at TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
+		last_used_at timestamptz(3),
+		created_at timestamptz(3) NOT NULL,
+		updated_at timestamptz(3) NOT NULL
 	)`,
 	// 调度偏好独立实体 P1（api_keys.scheduling_preference_id 引用目标）。
 	`CREATE TABLE IF NOT EXISTS scheduling_preferences (
@@ -264,8 +264,8 @@ var sqliteFixtureSchema = []string{
 		chat_mode TEXT NOT NULL,
 		chat_speed_first_config_json TEXT,
 		built_in INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
+		created_at timestamptz(3) NOT NULL,
+		updated_at timestamptz(3) NOT NULL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique ON api_keys(system_account_id, name)`,
 	`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (

@@ -660,7 +660,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	report.Record = &capdomain.Record{Stage: next, RuleVersion: capdomain.RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)}
 	report.ColumnEnsured = true
 
-	// 加列并校验形状（缺列则加；列存在则四值形状校验）。
+	// 加列并校验形状（缺列则加；列存在则校验 TEXT/NOT NULL/DEFAULT 并删除旧 CHECK）。
 	if err := schema.EnsurePostgresBusinessCapabilityDomainColumn(ctx, db); err != nil {
 		return report, err
 	}

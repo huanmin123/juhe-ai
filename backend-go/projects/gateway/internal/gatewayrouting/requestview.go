@@ -94,6 +94,15 @@ func openAIRequestEndpointFamily(endpoint string) string {
 	if strings.Contains(path, "/responses") {
 		return EndpointFamilyResponses
 	}
+	if strings.Contains(path, "/embeddings") {
+		return EndpointFamilyEmbedContent
+	}
+	if strings.Contains(path, "/rerank") {
+		return EndpointFamilyRerank
+	}
+	if strings.Contains(path, "/moderations") {
+		return EndpointFamilyModeration
+	}
 	return ""
 }
 

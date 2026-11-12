@@ -1,4 +1,4 @@
-// `maintenance upgrade` 的 15 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 17 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
@@ -742,7 +742,7 @@ func applyUsageShardCatalogRetirement(ctx context.Context, dsn string) (upgradep
 	return upgradepipeline.Detail{"dropped": dropped, "alreadyRetired": false}, nil
 }
 
-// upgradeSteps 返回 15 步骤注册表（revision 升序；引擎再做一次排序校验）。
+// upgradeSteps 返回 17 步骤注册表（revision 升序；引擎再做一次排序校验）。
 // secret 为空时，凭据类 Check 不允许调用（第 8 步门禁保证到 Apply 阶段必有；
 // dry-run 阶段 Check 若需要 secret 会以错误呈现——预检语义可接受）。
 func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
@@ -1287,6 +1287,142 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				}
 				if !satisfied {
 					return errors.New("usage shard 目录四表未清退干净")
+				}
+				return nil
+			},
+		},
+		{
+			// 时间类型迁移 Phase 2-1（计划 计划-20261111T075030000Z §Phase 2）：
+			// 23 张小表 58 个 instant text 列迁 timestamptz。Destructive=true：
+			// expand 相被引擎过滤，contract/all 相在停写窗口执行；ApplyBatch
+			// 先预检空串/非法 RFC3339/日历越界，再单事务逐列 ALTER + Verify。
+			Revision: 24, ID: "instant-timestamptz-small-tables",
+			Title:       "小表 instant 时间列迁移为 timestamptz(3)/(6)",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision24Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision24(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision24Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("小表 instant 时间列未全部迁移到目标 timestamptz 精度")
+				}
+				return nil
+			},
+		}, {
+			// 时间类型迁移 Phase 2-2（计划 计划-20261111T075030000Z §Phase 2）：
+			// 16 张 CRUD 表 44 个 instant text 列迁 timestamptz(3)。Destructive：
+			// expand 相被过滤，contract/all 相停写执行；与 Phase 2-1 共用
+			// ApplyBatch 的预检/单事务/lock_timeout/逐列 Verify。
+			Revision: 25, ID: "instant-timestamptz-crud",
+			Title:       "CRUD 域 instant 时间列迁移为 timestamptz(3)",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision25Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision25(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision25Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("CRUD 域 instant 时间列未全部迁移到目标 timestamptz 精度")
+				}
+				return nil
+			},
+		}, {
+			// 时间类型迁移 Phase 2-3（计划 计划-20261111T075030000Z §Phase 2）：
+			// accounts 聚合与投影域 24 张表 73 个 instant text 列迁 timestamptz
+			// （投影/租约列按 inventory 保留微秒）。Destructive：expand 相被过滤，
+			// contract/all 相停写执行；与 Phase 2-1/2-2 共用 ApplyBatch 的预检/
+			// 单事务/lock_timeout/逐列 Verify。
+			Revision: 26, ID: "instant-timestamptz-accounts",
+			Title:       "accounts 聚合与投影域 instant 时间列迁移",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision26Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision26(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision26Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("accounts 域 instant 时间列未全部迁移到目标 timestamptz 精度")
+				}
+				return nil
+			},
+		},
+		{
+			// 时间类型迁移 Phase 2-4（计划 计划-20261111T075030000Z §Phase 2）：
+			// dataset/jobs/taskruns 域 17 张表 40 个 instant text 列迁 timestamptz
+			// （任务运行/租约列保留微秒）。Destructive：contract/all 相停写执行；
+			// applyRevision27 在同一事务内处理 dataset 清理目标的 COALESCE 表达式
+			// 索引依赖。
+			Revision: 27, ID: "instant-timestamptz-dataset-jobs",
+			Title:       "dataset/jobs/taskruns instant 时间列迁移",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision27Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision27(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision27Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("dataset/jobs 域 instant 时间列未全部迁移到目标 timestamptz 精度")
+				}
+				return nil
+			},
+		},
+		{
+			// 时间类型迁移 Phase 3（计划 计划-20261111T075030000Z §Phase 3）：
+			// juhe_stats 统计域 53 张表 144 个时间列同表重写：instant 列迁
+			// timestamptz，stat_date/stat_week/stat_month 迁 date，
+			// stat_hour/stat_minute 迁 timestamp(0)。Destructive：停写窗口执行；
+			// 日历键是业务时区墙钟标签，不按 UTC 重新解释。
+			Revision: 28, ID: "stats-calendar-timestamptz",
+			Title:       "统计域 instant + 日历键同表重写",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision28Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision28(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision28Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("统计域 instant/日历键未全部迁移到目标类型")
 				}
 				return nil
 			},

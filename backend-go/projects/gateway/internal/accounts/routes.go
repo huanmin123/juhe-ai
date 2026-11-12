@@ -48,6 +48,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	// Reads (Node list/options routes read the scope query without parsing).
 	k.Register("GET "+prefix+"/accounts", admin(d.listHandler(false)))
 	k.Register("GET "+prefix+"/accounts/options", admin(d.optionsHandler(false)))
+	k.Register("GET "+prefix+"/accounts/capability-catalog", admin(http.HandlerFunc(d.capabilityCatalogHandler)))
 	k.Register("GET "+prefix+"/accounts/provider-counts", admin(d.providerCountsHandler(false)))
 	k.Register("GET "+prefix+"/accounts/tags", admin(d.scoped(d.tags)))
 	k.Register("DELETE "+prefix+"/accounts/tags/{tagId}", admin(d.scoped(d.deleteTag)))
@@ -89,6 +90,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	// Self surface (forceSelfAccessScope).
 	k.Register("GET "+prefix+"/my-accounts", self(d.listHandler(true)))
 	k.Register("GET "+prefix+"/my-accounts/options", self(d.optionsHandler(true)))
+	k.Register("GET "+prefix+"/my-accounts/capability-catalog", self(http.HandlerFunc(d.capabilityCatalogHandler)))
 	k.Register("GET "+prefix+"/my-accounts/provider-counts", self(d.providerCountsHandler(true)))
 	k.Register("GET "+prefix+"/my-accounts/tags", self(d.scoped(d.tags)))
 	k.Register("DELETE "+prefix+"/my-accounts/tags/{tagId}", self(d.scoped(d.deleteTag)))
@@ -214,6 +216,13 @@ func (d *Deps) optionsHandler(selfOnly bool) http.HandlerFunc {
 		}
 		d.options(w, r, access)
 	}
+}
+
+// capabilityCatalogHandler 返回账户创建/筛选的唯一只读目录。管理面与个人面
+// 共用同一份派生结果；不返回任何凭据，也不查询数据库。
+func (d *Deps) capabilityCatalogHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	kernel.WriteOK(w, BuildCapabilityCatalog(), "")
 }
 
 func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) {

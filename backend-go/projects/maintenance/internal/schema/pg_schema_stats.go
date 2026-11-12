@@ -16,8 +16,8 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (
       ip_hash text PRIMARY KEY,
       generation bigint NOT NULL DEFAULT 1,
-      first_dirty_at text NOT NULL,
-      updated_at text NOT NULL
+      first_dirty_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -26,8 +26,8 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips (
       ip_hash text PRIMARY KEY,
       generation bigint NOT NULL DEFAULT 1,
-      first_dirty_at text NOT NULL,
-      updated_at text NOT NULL
+      first_dirty_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	{
@@ -37,17 +37,17 @@ var postgresSchemaStats = []PGStatement{
           account_id text NOT NULL,
           system_account_id text NOT NULL,
           provider_code text NOT NULL,
-          stat_minute text NOT NULL,
+          stat_minute timestamp(0) without time zone NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
-          last_sample_at text,
-          last_success_at text,
-          last_error_at text,
+          last_sample_at timestamptz(3),
+          last_success_at timestamptz(3),
+          last_error_at timestamptz(3),
           last_error_message text,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (account_id, stat_minute)
         )`,
 	},
@@ -58,14 +58,14 @@ var postgresSchemaStats = []PGStatement{
           account_id text NOT NULL,
           system_account_id text NOT NULL,
           provider_code text NOT NULL,
-          stat_hour text NOT NULL,
+          stat_hour timestamp(0) without time zone NOT NULL,
           status text NOT NULL CHECK (status IN ('success', 'failure')),
-          last_observed_at text NOT NULL,
+          last_observed_at timestamptz(3) NOT NULL,
           last_record_id text NOT NULL,
           status_code integer,
           error_code text,
           error_message text,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (account_id, stat_hour)
         )`,
 	},
@@ -83,7 +83,7 @@ var postgresSchemaStats = []PGStatement{
           rate_limited integer NOT NULL DEFAULT 0,
           current_concurrency integer NOT NULL DEFAULT 0,
           concurrency_limit integer NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, group_id)
         )`,
 	},
@@ -103,13 +103,13 @@ var postgresSchemaStats = []PGStatement{
           recent_avg_first_token_ms integer,
           ewma_first_token_ms integer,
           success_rate double precision,
-          window_started_at text NOT NULL,
-          window_ended_at text NOT NULL,
-          last_sample_at text,
-          last_success_at text,
-          last_error_at text,
+          window_started_at timestamptz(3) NOT NULL,
+          window_ended_at timestamptz(3) NOT NULL,
+          last_sample_at timestamptz(3),
+          last_success_at timestamptz(3),
+          last_error_at timestamptz(3),
           last_error_message text,
-          updated_at text NOT NULL
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -117,8 +117,8 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts (
           account_id text PRIMARY KEY,
-          first_dirty_at text NOT NULL,
-          updated_at text NOT NULL
+          first_dirty_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -167,9 +167,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id)
         )`,
 	},
@@ -180,7 +180,7 @@ var postgresSchemaStats = []PGStatement{
           system_account_id text NOT NULL,
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
-          stat_minute text NOT NULL,
+          stat_minute timestamp(0) without time zone NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -201,9 +201,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, stat_minute)
         )`,
 	},
@@ -214,7 +214,7 @@ var postgresSchemaStats = []PGStatement{
           system_account_id text NOT NULL,
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -235,9 +235,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date)
         )`,
 	},
@@ -248,7 +248,7 @@ var postgresSchemaStats = []PGStatement{
           system_account_id text NOT NULL,
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
-          stat_hour text NOT NULL,
+          stat_hour timestamp(0) without time zone NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -269,9 +269,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
         )`,
 	},
@@ -282,7 +282,7 @@ var postgresSchemaStats = []PGStatement{
           system_account_id text NOT NULL,
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
-          stat_week text NOT NULL,
+          stat_week date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -303,9 +303,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, stat_week)
         )`,
 	},
@@ -316,7 +316,7 @@ var postgresSchemaStats = []PGStatement{
           system_account_id text NOT NULL,
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
-          stat_month text NOT NULL,
+          stat_month date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -337,9 +337,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, stat_month)
         )`,
 	},
@@ -348,7 +348,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_daily (
           system_account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           team_filter_id text NOT NULL DEFAULT '',
           resource_filter_type text NOT NULL DEFAULT 'all',
           resource_filter_id text NOT NULL DEFAULT '',
@@ -373,9 +373,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id)
         )`,
 	},
@@ -384,7 +384,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_daily (
           system_account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           team_filter_id text NOT NULL DEFAULT '',
           grantee_filter_system_account_id text NOT NULL DEFAULT '',
           resource_filter_type text NOT NULL DEFAULT 'all',
@@ -410,9 +410,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
         )`,
 	},
@@ -421,7 +421,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_model_minute (
           system_account_id text NOT NULL,
-          stat_minute text NOT NULL,
+          stat_minute timestamp(0) without time zone NOT NULL,
           provider_code text NOT NULL DEFAULT 'unknown',
           model text NOT NULL DEFAULT 'unknown',
           request_count bigint NOT NULL DEFAULT 0,
@@ -438,7 +438,7 @@ var postgresSchemaStats = []PGStatement{
           input_image_tokens bigint NOT NULL DEFAULT 0,
           output_image_tokens bigint NOT NULL DEFAULT 0,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_minute, provider_code, model)
         )`,
 	},
@@ -447,7 +447,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_model_daily (
           system_account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           provider_code text NOT NULL DEFAULT 'unknown',
           model text NOT NULL DEFAULT 'unknown',
           request_count bigint NOT NULL DEFAULT 0,
@@ -464,7 +464,7 @@ var postgresSchemaStats = []PGStatement{
           input_image_tokens bigint NOT NULL DEFAULT 0,
           output_image_tokens bigint NOT NULL DEFAULT 0,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_date, provider_code, model)
         )`,
 	},
@@ -473,7 +473,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_model_hourly (
           system_account_id text NOT NULL,
-          stat_hour text NOT NULL,
+          stat_hour timestamp(0) without time zone NOT NULL,
           provider_code text NOT NULL DEFAULT 'unknown',
           model text NOT NULL DEFAULT 'unknown',
           request_count bigint NOT NULL DEFAULT 0,
@@ -490,7 +490,7 @@ var postgresSchemaStats = []PGStatement{
           input_image_tokens bigint NOT NULL DEFAULT 0,
           output_image_tokens bigint NOT NULL DEFAULT 0,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_hour, provider_code, model)
         )`,
 	},
@@ -499,7 +499,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_model_weekly (
           system_account_id text NOT NULL,
-          stat_week text NOT NULL,
+          stat_week date NOT NULL,
           provider_code text NOT NULL DEFAULT 'unknown',
           model text NOT NULL DEFAULT 'unknown',
           request_count bigint NOT NULL DEFAULT 0,
@@ -516,7 +516,7 @@ var postgresSchemaStats = []PGStatement{
           input_image_tokens bigint NOT NULL DEFAULT 0,
           output_image_tokens bigint NOT NULL DEFAULT 0,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_week, provider_code, model)
         )`,
 	},
@@ -525,7 +525,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_model_monthly (
           system_account_id text NOT NULL,
-          stat_month text NOT NULL,
+          stat_month date NOT NULL,
           provider_code text NOT NULL DEFAULT 'unknown',
           model text NOT NULL DEFAULT 'unknown',
           request_count bigint NOT NULL DEFAULT 0,
@@ -542,7 +542,7 @@ var postgresSchemaStats = []PGStatement{
           input_image_tokens bigint NOT NULL DEFAULT 0,
           output_image_tokens bigint NOT NULL DEFAULT 0,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_month, provider_code, model)
         )`,
 	},
@@ -551,7 +551,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_error_minute (
           system_account_id text NOT NULL,
-          stat_minute text NOT NULL,
+          stat_minute timestamp(0) without time zone NOT NULL,
           error_group text NOT NULL DEFAULT 'unknown',
           provider_code text NOT NULL DEFAULT 'unknown',
           error_code text NOT NULL DEFAULT 'unknown',
@@ -559,7 +559,7 @@ var postgresSchemaStats = []PGStatement{
           error_message text,
           request_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_minute, error_group, provider_code, error_code, status_code)
         )`,
 	},
@@ -568,7 +568,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_error_daily (
           system_account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           error_group text NOT NULL DEFAULT 'unknown',
           provider_code text NOT NULL DEFAULT 'unknown',
           error_code text NOT NULL DEFAULT 'unknown',
@@ -576,7 +576,7 @@ var postgresSchemaStats = []PGStatement{
           error_message text,
           request_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_date, error_group, provider_code, error_code, status_code)
         )`,
 	},
@@ -585,7 +585,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_error_hourly (
           system_account_id text NOT NULL,
-          stat_hour text NOT NULL,
+          stat_hour timestamp(0) without time zone NOT NULL,
           error_group text NOT NULL DEFAULT 'unknown',
           provider_code text NOT NULL DEFAULT 'unknown',
           error_code text NOT NULL DEFAULT 'unknown',
@@ -593,7 +593,7 @@ var postgresSchemaStats = []PGStatement{
           error_message text,
           request_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_hour, error_group, provider_code, error_code, status_code)
         )`,
 	},
@@ -602,7 +602,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_error_weekly (
           system_account_id text NOT NULL,
-          stat_week text NOT NULL,
+          stat_week date NOT NULL,
           error_group text NOT NULL DEFAULT 'unknown',
           provider_code text NOT NULL DEFAULT 'unknown',
           error_code text NOT NULL DEFAULT 'unknown',
@@ -610,7 +610,7 @@ var postgresSchemaStats = []PGStatement{
           error_message text,
           request_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_week, error_group, provider_code, error_code, status_code)
         )`,
 	},
@@ -619,7 +619,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS usage_error_monthly (
           system_account_id text NOT NULL,
-          stat_month text NOT NULL,
+          stat_month date NOT NULL,
           error_group text NOT NULL DEFAULT 'unknown',
           provider_code text NOT NULL DEFAULT 'unknown',
           error_code text NOT NULL DEFAULT 'unknown',
@@ -627,7 +627,7 @@ var postgresSchemaStats = []PGStatement{
           error_message text,
           request_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, stat_month, error_group, provider_code, error_code, status_code)
         )`,
 	},
@@ -639,10 +639,10 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           metric_type text NOT NULL,
-          stat_minute text NOT NULL,
+          stat_minute timestamp(0) without time zone NOT NULL,
           bucket_upper_bound_ms integer NOT NULL,
           sample_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_minute, bucket_upper_bound_ms)
         )`,
 	},
@@ -654,10 +654,10 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           metric_type text NOT NULL,
-          stat_hour text NOT NULL,
+          stat_hour timestamp(0) without time zone NOT NULL,
           bucket_upper_bound_ms integer NOT NULL,
           sample_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_hour, bucket_upper_bound_ms)
         )`,
 	},
@@ -669,10 +669,10 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           metric_type text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           bucket_upper_bound_ms integer NOT NULL,
           sample_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_date, bucket_upper_bound_ms)
         )`,
 	},
@@ -684,10 +684,10 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           metric_type text NOT NULL,
-          stat_week text NOT NULL,
+          stat_week date NOT NULL,
           bucket_upper_bound_ms integer NOT NULL,
           sample_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_week, bucket_upper_bound_ms)
         )`,
 	},
@@ -699,10 +699,10 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           metric_type text NOT NULL,
-          stat_month text NOT NULL,
+          stat_month date NOT NULL,
           bucket_upper_bound_ms integer NOT NULL,
           sample_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_month, bucket_upper_bound_ms)
         )`,
 	},
@@ -714,11 +714,11 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           window_key text NOT NULL,
           metric text NOT NULL,
-          snapshot_at text NOT NULL,
+          snapshot_at timestamptz(3) NOT NULL,
           rank integer NOT NULL,
           scope_id text NOT NULL,
           metric_value double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id)
         )`,
 	},
@@ -748,8 +748,8 @@ var postgresSchemaStats = []PGStatement{
           duration_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, window_key)
         )`,
 	},
@@ -777,7 +777,7 @@ var postgresSchemaStats = []PGStatement{
           total_cost_usd double precision NOT NULL DEFAULT 0,
           duration_ms_sum bigint NOT NULL DEFAULT 0,
           duration_ms_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, window_key, bucket_key)
         )`,
 	},
@@ -804,7 +804,7 @@ var postgresSchemaStats = []PGStatement{
           input_image_tokens bigint NOT NULL DEFAULT 0,
           output_image_tokens bigint NOT NULL DEFAULT 0,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, window_key, rank, provider_code, model)
         )`,
 	},
@@ -822,7 +822,7 @@ var postgresSchemaStats = []PGStatement{
           status_code integer NOT NULL DEFAULT 0,
           error_message text,
           error_count bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, window_key, rank, provider_code, error_code, status_code)
         )`,
 	},
@@ -841,7 +841,7 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, window_key)
         )`,
 	},
@@ -854,7 +854,7 @@ var postgresSchemaStats = []PGStatement{
           scope_id text NOT NULL DEFAULT '',
           window_hours integer NOT NULL,
           total_cost_usd double precision NOT NULL DEFAULT 0,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, window_hours)
         )`,
 	},
@@ -866,8 +866,8 @@ var postgresSchemaStats = []PGStatement{
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           generation bigint NOT NULL DEFAULT 1,
-          first_dirty_at text NOT NULL,
-          updated_at text NOT NULL,
+          first_dirty_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id)
         )`,
 	},
@@ -877,10 +877,10 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS usage_overview_dirty_scopes (
           system_account_id text PRIMARY KEY,
           scope_id text NOT NULL,
-          min_changed_date text NOT NULL,
+          min_changed_date date NOT NULL,
           generation bigint NOT NULL DEFAULT 1,
-          first_dirty_at text NOT NULL,
-          updated_at text NOT NULL
+          first_dirty_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -888,11 +888,11 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS ai_performance_summary_dirty_system_accounts (
           system_account_id text PRIMARY KEY,
-          min_stat_date text NOT NULL,
-          max_stat_date text NOT NULL,
+          min_stat_date date NOT NULL,
+          max_stat_date date NOT NULL,
           generation bigint NOT NULL DEFAULT 1,
-          first_dirty_at text NOT NULL,
-          updated_at text NOT NULL
+          first_dirty_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -926,9 +926,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           first_token_ms_max bigint NOT NULL DEFAULT 0,
           active_days integer NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
         )`,
 	},
@@ -946,12 +946,12 @@ var postgresSchemaStats = []PGStatement{
           window_key text GENERATED ALWAYS AS (start_date || ':' || end_date) STORED,
           status text NOT NULL DEFAULT 'pending',
           requested_count integer NOT NULL DEFAULT 1,
-          last_requested_at text NOT NULL,
-          last_processed_at text,
+          last_requested_at timestamptz(3) NOT NULL,
+          last_processed_at timestamptz(3),
           error_message text,
-          expires_at text NOT NULL,
-          created_at text NOT NULL,
-          updated_at text NOT NULL,
+          expires_at timestamptz(3) NOT NULL,
+          created_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           UNIQUE (domain, system_account_id, scope_type, scope_id, start_date, end_date),
           CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
         )`,
@@ -965,10 +965,10 @@ var postgresSchemaStats = []PGStatement{
           aggregate_ip_key text NOT NULL,
           client_ip text NOT NULL,
           ip_version integer NOT NULL,
-          first_seen_at text NOT NULL,
-          last_seen_at text NOT NULL,
-          created_at text NOT NULL,
-          updated_at text NOT NULL
+          first_seen_at timestamptz(3) NOT NULL,
+          last_seen_at timestamptz(3) NOT NULL,
+          created_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -976,7 +976,7 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_stats_daily (
           ip_hash text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -996,9 +996,9 @@ var postgresSchemaStats = []PGStatement{
           duration_ms_max bigint NOT NULL DEFAULT 0,
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (ip_hash, stat_date)
         )`,
 	},
@@ -1031,9 +1031,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           average_first_token_ms double precision,
           active_days integer NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (ip_hash, start_date, end_date)
         )`,
 	},
@@ -1043,8 +1043,8 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (
           ip_hash text PRIMARY KEY,
           generation bigint NOT NULL DEFAULT 1,
-          first_dirty_at text NOT NULL,
-          updated_at text NOT NULL
+          first_dirty_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -1053,7 +1053,7 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_account_stats_daily (
           ip_hash text NOT NULL,
           account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -1073,9 +1073,9 @@ var postgresSchemaStats = []PGStatement{
           duration_ms_max bigint NOT NULL DEFAULT 0,
           first_token_ms_sum bigint NOT NULL DEFAULT 0,
           first_token_ms_count bigint NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (ip_hash, account_id, stat_date)
         )`,
 	},
@@ -1109,9 +1109,9 @@ var postgresSchemaStats = []PGStatement{
           first_token_ms_count bigint NOT NULL DEFAULT 0,
           average_first_token_ms double precision,
           active_days integer NOT NULL DEFAULT 0,
-          last_used_at text,
-          last_error_at text,
-          updated_at text NOT NULL,
+          last_used_at timestamptz(3),
+          last_error_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (ip_hash, account_id, start_date, end_date)
         )`,
 	},
@@ -1121,8 +1121,8 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips (
           ip_hash text PRIMARY KEY,
           generation bigint NOT NULL DEFAULT 1,
-          first_dirty_at text NOT NULL,
-          updated_at text NOT NULL
+          first_dirty_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -1134,11 +1134,11 @@ var postgresSchemaStats = []PGStatement{
           policy_type text NOT NULL,
           status text NOT NULL,
           reason text,
-          expires_at text,
+          expires_at timestamptz(3),
           created_by_system_account_id text NOT NULL,
-          created_at text NOT NULL,
-          updated_at text NOT NULL,
-          disabled_at text,
+          created_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
+          disabled_at timestamptz(3),
           disabled_by_system_account_id text,
           disabled_reason text
         )`,
@@ -1148,11 +1148,11 @@ var postgresSchemaStats = []PGStatement{
 		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS client_ip_policy_hits (
           ip_hash text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           policy_id text NOT NULL,
           hit_count bigint NOT NULL DEFAULT 0,
-          last_hit_at text,
-          updated_at text NOT NULL,
+          last_hit_at timestamptz(3),
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (ip_hash, stat_date, policy_id)
         )`,
 	},
@@ -1165,10 +1165,10 @@ var postgresSchemaStats = []PGStatement{
           job_name text NOT NULL,
           cursor_created_at text,
           cursor_id text,
-          last_success_at text,
+          last_success_at timestamptz(3),
           last_error_message text,
           lag_seconds integer,
-          updated_at text NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (scope_type, scope_id, job_name)
         )`,
 	},
@@ -1186,14 +1186,14 @@ var postgresSchemaStats = []PGStatement{
           params_json text NOT NULL DEFAULT '{}',
           result_json text NOT NULL DEFAULT '{}',
           error_message text,
-          submitted_at text NOT NULL,
-          started_at text,
-          heartbeat_at text,
-          finished_at text,
+          submitted_at timestamptz(6) NOT NULL,
+          started_at timestamptz(6),
+          heartbeat_at timestamptz(6),
+          finished_at timestamptz(6),
           duration_ms integer,
           exit_code integer,
-          created_at text NOT NULL,
-          updated_at text NOT NULL
+          created_at timestamptz(6) NOT NULL,
+          updated_at timestamptz(6) NOT NULL
         )`,
 	},
 	{
@@ -1206,10 +1206,10 @@ var postgresSchemaStats = []PGStatement{
           owner_id text NOT NULL,
           run_id text,
           fencing_token bigint NOT NULL DEFAULT 0,
-          lease_until text NOT NULL,
-          heartbeat_at text NOT NULL,
-          started_at text NOT NULL,
-          updated_at text NOT NULL
+          lease_until timestamptz(6) NOT NULL,
+          heartbeat_at timestamptz(6) NOT NULL,
+          started_at timestamptz(6) NOT NULL,
+          updated_at timestamptz(6) NOT NULL
         )`,
 	},
 	{
@@ -1222,10 +1222,10 @@ var postgresSchemaStats = []PGStatement{
           system_account_id text NOT NULL,
           source_shard_key text NOT NULL,
           record_json text NOT NULL,
-          stats_subtracted_at text,
-          shard_deleted_at text,
-          created_at text NOT NULL,
-          updated_at text NOT NULL,
+          stats_subtracted_at timestamptz(3),
+          shard_deleted_at timestamptz(3),
+          created_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           PRIMARY KEY (usage_id, source_shard_key)
         )`,
 	},
@@ -1897,7 +1897,7 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
       table_name text PRIMARY KEY,
       status text NOT NULL,
       cursor_json text NOT NULL DEFAULT '{}',
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     )`,
 	},
 	// 媒体计量维度列（M4a，媒体设计 §10 / 统计指标与分层聚合设计）：usage_records

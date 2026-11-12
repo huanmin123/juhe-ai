@@ -64,8 +64,20 @@ const ArchitectureVersion = "go-projects-v1"
 // juhe_usage.usage_record_shard_entries / usage_record_account_shards /
 // usage_record_api_key_shards / usage_record_shards；生产写入链路只写
 // juhe_usage.usage_records，列表与清理均直接读该日分区表，四表无生产读取方。
-// 步骤写入 schema_migrations，只在 contract/all 相执行。当前值 23。
-const SchemaRevision int64 = 23
+// 步骤写入 schema_migrations，只在 contract/all 相执行。
+// 2026-11-11 revision 24 是时间类型统一改造 Phase 2-1：注册表新增破坏性
+// 步骤 instant-timestamptz-small-tables，停写窗口内把 23 张小表 58 个
+// instant text 列迁 timestamptz（毫秒/微秒按 inventory）。
+// 2026-11-11 revision 25 是 Phase 2-2 CRUD 域：16 张表 44 个 instant text 列
+// 迁 timestamptz(3)，含 api_keys/groups/route_strategies/resource_authorization*
+// 与 system_team*。
+// 2026-11-12 revision 26 是 Phase 2-3 accounts 聚合与投影域：24 张表 73 个
+// instant text 列迁 timestamptz（投影/租约列按 inventory 保留微秒）。
+// 2026-11-12 revision 27 是 Phase 2-4 dataset/jobs/taskruns 域：17 张表 40 个
+// instant text 列迁 timestamptz。2026-11-12 revision 28 是 Phase 3 统计域：
+// 53 张表 144 个时间列同表重写（instant → timestamptz、日历键 → date/
+// timestamp(0)）。当前值 28。
+const SchemaRevision int64 = 28
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

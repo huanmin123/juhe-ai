@@ -45,7 +45,7 @@ const (
 const pgSeedBuiltinSchedulingPreferenceUpsert = `
         INSERT INTO "juhe_business"."scheduling_preferences"
           (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
-        VALUES ($1, NULL, $2, 'cost_first', NULL, 1, $3, $4)
+        VALUES ($1, NULL, $2, 'cost_first', NULL, 1, $3::timestamptz, $4::timestamptz)
         ON CONFLICT (id) DO UPDATE SET
           system_account_id = EXCLUDED.system_account_id,
           name = EXCLUDED.name,

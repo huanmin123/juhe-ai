@@ -542,7 +542,7 @@ func TestM11ForceActivateContract(t *testing.T) {
 		t.Fatal("force-activate row contract violated")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = 'acc-pending'
-		AND event_type = 'dispatch_revision_changed'`) != 1 {
+		AND event_type = 'dispatch_revision_changed'`) != 2 {
 		t.Fatal("force-activate dispatch revision advance missing")
 	}
 	seen := false

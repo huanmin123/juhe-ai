@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,41 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
+
+// 锁死窗口内的失败处置（D12，2026-11-12）：
+//   - transient_hold：rate_limited / temporary_unavailable / 5xx / 网络失败等
+//     可恢复失败继续 hold，锁定账户不落冷却状态、保持候选准入；
+//   - deterministic_release：disabled（disable 动作）、凭据无效（401/403）、
+//     模型/请求确定性拒绝（400/404/422 等）、余额/额度耗尽（系统配额规则）
+//     释放切换。
+const (
+	failureDispositionTransientHold        = "transient_hold"
+	failureDispositionDeterministicRelease = "deterministic_release"
+)
+
+// accountErrorPolicyFailureDisposition 把错误策略决策与上游状态归入锁死处置
+// 轴。decision=nil（无显式规则命中）按可恢复失败处理；状态码缺失（传输失败）
+// 同样按可恢复处理。
+func accountErrorPolicyFailureDisposition(decision *accountErrorPolicyDecision, statusCode int, hasStatus bool) string {
+	if decision != nil {
+		if decision.Action == decisionActionDisable {
+			return failureDispositionDeterministicRelease
+		}
+		if decision.RuleSource == "system" && decision.RuleID == systemInsufficientQuotaRuleID {
+			return failureDispositionDeterministicRelease
+		}
+	}
+	if !hasStatus {
+		return failureDispositionTransientHold
+	}
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotAcceptable, http.StatusGone,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
+		return failureDispositionDeterministicRelease
+	}
+	return failureDispositionTransientHold
+}
 
 // ---------------------------------------------------------------------------
 // 窄口
@@ -223,6 +259,19 @@ func (b *chainErrorPolicyEffectsBridge) ApplyAccountErrorPolicyDecision(ctx cont
 	if decision.Action == decisionActionRetryNext {
 		return false, account.Status, nil
 	}
+	// D12：锁定账户的可恢复失败不落冷却/错误状态，保持 active + schedulable
+	// 候选准入，把请求留在该账户上继续消耗额度。确定性硬门仍走下方状态写。
+	if decision.Action != decisionActionDisable && !decision.KeyScoped &&
+		(account.Status == "active" || account.Status == "temporary_unavailable" || account.Status == "rate_limited") &&
+		accountErrorPolicyFailureDisposition(&decision, input.StatusCode, input.HasStatusCode) == failureDispositionTransientHold {
+		locked, lockErr := b.accountLockEnabled(ctx, account.ID)
+		if lockErr != nil {
+			return false, "", lockErr
+		}
+		if locked {
+			return false, account.Status, nil
+		}
+	}
 	// Node 观察围栏的 observedAt 是决策时刻（applyAccountErrorHandlingWithCacheInvalidation
 	// 入队时捕获的 new Date()，account-effects.ts:36）；Go 同步桥在同一时点捕获。
 	observedAt := b.now()
@@ -386,6 +435,20 @@ func runtimeFailureUpdatedAtParams(guard *runtimeFailureObservationGuard, fallba
 // hardUnavailable 状态判定（Node isHardUnavailableAccountStatus）。
 func isHardUnavailableAccountStatus(status string) bool {
 	return status == "disabled" || status == "pending_test" || status == "error" || status == "quality_isolated"
+}
+
+// accountLockEnabled 报告账户是否配置了锁死策略（LOCKED_IDLE/ENGAGED 均为
+// enabled=1）。缺失行按未启用处理。
+func (b *chainErrorPolicyEffectsBridge) accountLockEnabled(ctx context.Context, accountID string) (bool, error) {
+	var enabled int
+	err := b.db.QueryRowContext(ctx, b.bind(`SELECT enabled FROM `+b.table("account_lock_states")+` WHERE account_id = ? LIMIT 1`), accountID).Scan(&enabled)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return enabled == 1, nil
 }
 
 // accountRuntimeRow 镜像 findAccountSummaryAsync 的写侧守卫投影。

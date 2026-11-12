@@ -64,12 +64,12 @@ func stringSliceContains(values []string, target string) bool {
 	return false
 }
 
-// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 去掉 generic_http 后的 42 条
+// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 去掉 generic_http 后的 43 条
 // 与按 driver 计数。
 func TestConnectorRegistryComboCounts(t *testing.T) {
 	combos := AllowedConnectorCombos()
-	if len(combos) != 42 {
-		t.Fatalf("AllowedConnectorCombos() = %d 条, want 42", len(combos))
+	if len(combos) != 43 {
+		t.Fatalf("AllowedConnectorCombos() = %d 条, want 43", len(combos))
 	}
 	counts := ComboDriverCounts()
 	expected := map[string]int{
@@ -81,7 +81,7 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 		DriverGLM:        7,
 		DriverMiniMax:    2,
 		DriverVolcengine: 4,
-		DriverQwen:       3,
+		DriverQwen:       4,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -93,12 +93,12 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 133 条与按 driver 计数，
+// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 134 条与按 driver 计数，
 // 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
-	if len(modeCombos) != 133 {
-		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 133", len(modeCombos))
+	if len(modeCombos) != 134 {
+		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 134", len(modeCombos))
 	}
 	counts := ModeComboDriverCounts()
 	expected := map[string]int{
@@ -110,7 +110,7 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 		DriverGLM:        18,
 		DriverMiniMax:    5,
 		DriverVolcengine: 13,
-		DriverQwen:       10,
+		DriverQwen:       11,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ModeComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -120,13 +120,13 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 			t.Errorf("driver %q 单 mode 组合数 = %d, want %d", driver, counts[driver], want)
 		}
 	}
-	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 133。
+	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 134。
 	sum := 0
 	for _, combo := range AllowedConnectorCombos() {
 		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
 	}
-	if sum != 133 {
-		t.Fatalf("42 个组合的 AllowedModes 求和 = %d, want 133", sum)
+	if sum != 134 {
+		t.Fatalf("43 个组合的 AllowedModes 求和 = %d, want 134", sum)
 	}
 }
 
@@ -147,14 +147,14 @@ func TestConnectorRegistrySortedStable(t *testing.T) {
 }
 
 // TestConnectorRegistryCartesianProduct 遍历 9 driver × 3 account type × 4 oauth 值 ×
-// 14 preset × 4 domain = 6048 组合，断言恰 42 允许、6006 拒绝，且允许集合与
+// 14 preset × 4 domain = 6048 组合，断言恰 43 允许、6005 拒绝，且允许集合与
 // AllowedConnectorCombos() 精确一致。
 func TestConnectorRegistryCartesianProduct(t *testing.T) {
 	total := len(testDriverCodes) * len(testAccountTypes) * len(testOAuthTypes) * len(testPresets) * len(testDomains)
 	if total != 6048 {
 		t.Fatalf("笛卡尔积空间 = %d, want 6048", total)
 	}
-	allowedKeys := make(map[string]struct{}, 42)
+	allowedKeys := make(map[string]struct{}, 43)
 	for _, combo := range AllowedConnectorCombos() {
 		allowedKeys[connectorComboKey(combo.Driver, combo.AccountType, combo.OAuthType, combo.Preset, combo.Domain)] = struct{}{}
 	}
@@ -185,11 +185,11 @@ func TestConnectorRegistryCartesianProduct(t *testing.T) {
 			}
 		}
 	}
-	if allowed != 42 {
-		t.Fatalf("允许组合数 = %d, want 42", allowed)
+	if allowed != 43 {
+		t.Fatalf("允许组合数 = %d, want 43", allowed)
 	}
-	if rejected != 6006 {
-		t.Fatalf("拒绝组合数 = %d, want 6006", rejected)
+	if rejected != 6005 {
+		t.Fatalf("拒绝组合数 = %d, want 6005", rejected)
 	}
 }
 
@@ -446,8 +446,8 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 	if err := json.Unmarshal([]byte(registryCanonicalJSON), &elements); err != nil {
 		t.Fatalf("canonical JSON 反序列化失败: %v", err)
 	}
-	if len(elements) != 133 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 133", len(elements))
+	if len(elements) != 134 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 134", len(elements))
 	}
 	checked := make(map[string]int, 14)
 	for _, element := range elements {
@@ -489,7 +489,7 @@ func TestPresetDefaultBaseURLAccessor(t *testing.T) {
 }
 
 // TestRegistryFingerprint 断言 fingerprint 稳定、64 位小写 hex，
-// 且 canonical JSON 为 133 元素紧凑数组、nullable 字段输出 JSON null。
+// 且 canonical JSON 为 134 元素紧凑数组、nullable 字段输出 JSON null。
 func TestRegistryFingerprint(t *testing.T) {
 	first := RegistryFingerprint()
 	second := RegistryFingerprint()
@@ -512,8 +512,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	if strings.Contains(registryCanonicalJSON, ", ") || strings.Contains(registryCanonicalJSON, ": ") {
 		t.Fatalf("canonical JSON 的结构分隔符后含空格，违反紧凑分隔要求")
 	}
-	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 133 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 133", got)
+	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 134 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 134", got)
 	}
 	// 九家真实厂商均有 vendor，删除 generic_http 后 canonical JSON 不得再出现 vendor null。
 	if strings.Contains(registryCanonicalJSON, `"vendor":null`) {
@@ -528,8 +528,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	// defaultBaseUrl 是标量尾字段：每元素恰一次且其后不得再有任何字段（设计
 	// :56/:81；不能按 } 切分——模板值含 {id}/{model} 占位符，故用正则断言尾位；
 	// generic 三 preset 输出 null，逐值精确断言见 TestPresetDefaultBaseURLs）。
-	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 133 {
-		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 133", got)
+	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 134 {
+		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 134", got)
 	}
 	if trailingFieldPattern.MatchString(registryCanonicalJSON) {
 		t.Fatalf("canonical JSON 存在 defaultBaseUrl 之后仍有字段或元素未以 defaultBaseUrl 收尾")
@@ -743,8 +743,9 @@ func TestRegistryInternalConsistency(t *testing.T) {
 	// 媒体 preset 模板精确清单（docs/functions/媒体上游协议契约与Mock上游规格.md
 	// 章节逐条注明，版本前缀随 R2 归属 base_url 版本根）：minimax §8.1 视频 +
 	// §8.2 TTS；ark §9.1 视频创建与轮询；openspeech §9.2 TTS + 长转写
-	// submit/query（无取消端点）；qwen §11 录音识别 + §10.1 万相视频 + 两域
-	// 共用 DashScope 轮询 + OpenAI 兼容模式 chat（全路径，R6）。
+	// submit/query（无取消端点）；qwen §11 录音识别 + §10.1 万相视频 +
+	// §10.3 Qwen-Image 同步生图 + 两域共用 DashScope 轮询 + OpenAI 兼容模式
+	// chat（全路径，R6）。
 	mediaTemplateSets := map[string][]string{
 		PresetMiniMaxMedia: {
 			"POST /video_generation",
@@ -762,6 +763,7 @@ func TestRegistryInternalConsistency(t *testing.T) {
 		},
 		PresetQwenDashScope: {
 			"POST /compatible-mode/v1/chat/completions",
+			"POST /api/v1/services/aigc/multimodal-generation/generation",
 			"POST /api/v1/services/audio/asr/transcription",
 			"POST /api/v1/services/aigc/video-generation/video-synthesis",
 			"GET /api/v1/tasks/{task_id}",

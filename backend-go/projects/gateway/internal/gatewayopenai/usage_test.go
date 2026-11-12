@@ -296,6 +296,10 @@ func TestParseUsageFromJSONBufferImageOutputCountFromData(t *testing.T) {
 		t.Fatalf("embeddings data[] 不得误判为图片张数, got %v", *embeddings.OutputImageCount)
 	}
 
+	// 火山 Ark Seedream usage.generated_images（契约 §9.3）与 OpenAI 字段并列解析。
+	volc := ParseUsageFromJSONBuffer([]byte(`{"created":1,"model":"doubao-seedream-5-0-flash-260915","data":[{"url":"https://img.example/a.png"}],"usage":{"generated_images":1,"output_tokens":4096,"total_tokens":4096}}`))
+	assertToken(t, volc.OutputImageCount, 1, "generated_images count")
+
 	// 上游显式张数优先，不覆盖。
 	explicit := ParseUsageFromJSONBuffer([]byte(`{"data":[{"url":"https://img.example/a.png"}],"usage":{"output_tokens":16,"output_image_count":3}}`))
 	assertToken(t, explicit.OutputImageCount, 3, "explicit count wins")

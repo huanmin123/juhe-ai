@@ -58,8 +58,8 @@ const securityPoliciesPGFixtureSchema = `
       rules_json text,
       protection_count bigint NOT NULL DEFAULT 0,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_security_policies_owner_name_unique
       ON juhe_business.security_policies (system_account_id, name) WHERE built_in = 0;

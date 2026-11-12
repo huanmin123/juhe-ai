@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
@@ -228,6 +229,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		pricingNotes, capabilityNotes sql.NullString
 		notes                         sql.NullString
 		updatedBy                     sql.NullString
+		createdAt, updatedAt          dbtime.Nullable
 	)
 	if err := scan(&record.ID, &record.ProviderCode, &record.Model, &record.Scope, &systemAccountID, &record.Status,
 		&catalogVisible, &endpointModes, &tiers, &efforts, &toolsByProtocol, &inputModalities, &outputModalities, &defaultEffort,
@@ -235,9 +237,11 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage, &tierPrices,
 		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &currency,
 		&pricingNotes, &capabilityNotes, &notes,
-		&record.CreatedBy, &updatedBy, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		&record.CreatedBy, &updatedBy, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
+	record.CreatedAt = createdAt.APIString()
+	record.UpdatedAt = updatedAt.APIString()
 	record.SystemAccountID = nullPtrString(systemAccountID)
 	record.CatalogVisible = catalogVisible.Bool && catalogVisible.Valid
 	// 旧 mode（四值 UI 分类）/ supportedApiProtocols 无物理列：由
@@ -536,7 +540,7 @@ func (s *Store) patchCustomProviderModel(ctx context.Context, current *customPro
 			return nil, fmt.Errorf("%s", customModelBuiltInNameConflictMessage)
 		}
 	}
-	if current.UpdatedAt != expectedUpdatedAt {
+	if !dbtime.SameInstant(current.UpdatedAt, expectedUpdatedAt) {
 		return &customModelPatchOutcome{Kind: "conflict", Record: customModelMutationRecordOf(current)}, nil
 	}
 	assignments, params, merged, err := s.customProviderModelPatchAssignments(current, next, fields)

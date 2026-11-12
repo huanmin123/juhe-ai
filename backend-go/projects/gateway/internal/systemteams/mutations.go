@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"strings"
 	"time"
 )
@@ -188,7 +189,7 @@ func (s *Store) Patch(ctx context.Context, id string, input PatchInput, access A
 		name        string
 		description sql.NullString
 		status      string
-		updatedAt   string
+		updatedAt   dbtime.Nullable
 	}
 	// Scoped row lookup (findSystemTeamPatchRowForAccessAsync :965-986):
 	// INNER-JOIN visibility rendered as EXISTS; postgres takes the row lock.
@@ -206,7 +207,7 @@ func (s *Store) Patch(ctx context.Context, id string, input PatchInput, access A
 		}
 		return nil, err
 	}
-	if row.updatedAt != expectedUpdatedAt {
+	if !dbtime.SameInstant(row.updatedAt.APIString(), expectedUpdatedAt) {
 		return &PatchOutcome{Status: "conflict"}, nil
 	}
 
@@ -381,14 +382,15 @@ func (s *Store) AddMembers(ctx context.Context, teamID string, systemAccountIDs 
 		args = append(args, scopedID)
 	}
 	query += " FOR UPDATE"
-	var teamName, teamStatus, teamUpdatedAt string
+	var teamName, teamStatus string
+	var teamUpdatedAt dbtime.Nullable
 	if err := tx.QueryRowContext(ctx, s.bind(query), args...).Scan(&teamName, &teamStatus, &teamUpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return &AddMembersOutcome{Status: "not_found"}, nil
 		}
 		return nil, err
 	}
-	if teamUpdatedAt != expectedUpdatedAt {
+	if !dbtime.SameInstant(teamUpdatedAt.APIString(), expectedUpdatedAt) {
 		return &AddMembersOutcome{Status: "conflict"}, nil
 	}
 	if teamStatus != "active" {
@@ -432,7 +434,7 @@ func (s *Store) AddMembers(ctx context.Context, teamID string, systemAccountIDs 
 		// Everything requested is already active → noop success with the
 		// unchanged team version (:635-641).
 		return &AddMembersOutcome{Status: "noop", Result: &AddMembersResult{
-			ID: teamID, MemberCount: len(existingActive), UpdatedAt: teamUpdatedAt, AddedMembers: []MemberDetail{},
+			ID: teamID, MemberCount: len(existingActive), UpdatedAt: teamUpdatedAt.APIString(), AddedMembers: []MemberDetail{},
 		}}, nil
 	}
 
@@ -559,14 +561,15 @@ func (s *Store) RemoveMember(ctx context.Context, teamID, memberID, expectedUpda
 		args = append(args, scopedID)
 	}
 	query += " FOR UPDATE"
-	var teamName, teamStatus, teamUpdatedAt string
+	var teamName, teamStatus string
+	var teamUpdatedAt dbtime.Nullable
 	if err := tx.QueryRowContext(ctx, s.bind(query), args...).Scan(&teamName, &teamStatus, &teamUpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return &RemoveMemberOutcome{Status: "not_found"}, nil, nil
 		}
 		return nil, nil, err
 	}
-	if teamUpdatedAt != expectedUpdatedAt {
+	if !dbtime.SameInstant(teamUpdatedAt.APIString(), expectedUpdatedAt) {
 		return &RemoveMemberOutcome{Status: "conflict"}, nil, nil
 	}
 	// Member lookup joins accounts for the operation-log display name

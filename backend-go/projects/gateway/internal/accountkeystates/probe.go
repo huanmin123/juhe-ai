@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
@@ -267,13 +268,16 @@ func (s *Store) ClaimDueForProbe(ctx context.Context, limit int) ([]ProbeCandida
 	var candidates []ProbeCandidate
 	for rows.Next() {
 		var (
-			accountID, keyFingerprint, status, nextProbeAt, stateUpdatedAt sql.NullString
-			keyIndex                                                       sql.NullInt64
-			recoveryStartedAt, lastErrorCode                               sql.NullString
-			accountName, providerCode, protocolCode, protocolVersion       sql.NullString
-			accountType, credentialsEncrypted                              sql.NullString
-			configRevision                                                 sql.NullInt64
-			probeClaimToken, probeClaimedUntil                             sql.NullString
+			accountID, keyFingerprint, status                        sql.NullString
+			keyIndex                                                 sql.NullInt64
+			nextProbeAt, stateUpdatedAt                              dbtime.Nullable
+			recoveryStartedAt                                        dbtime.Nullable
+			lastErrorCode                                            sql.NullString
+			accountName, providerCode, protocolCode, protocolVersion sql.NullString
+			accountType, credentialsEncrypted                        sql.NullString
+			configRevision                                           sql.NullInt64
+			probeClaimToken                                          sql.NullString
+			probeClaimedUntil                                        dbtime.Nullable
 		)
 		if err := rows.Scan(&accountID, &keyFingerprint, &keyIndex, &status, &nextProbeAt,
 			&stateUpdatedAt, &recoveryStartedAt, &lastErrorCode,
@@ -316,12 +320,12 @@ func (s *Store) ClaimDueForProbe(ctx context.Context, limit int) ([]ProbeCandida
 			KeyIndex:              keyIndexValue,
 			APIKey:                matched.Key,
 			Status:                status.String,
-			NextProbeAt:           nextProbeAt.String,
-			StateUpdatedAt:        stateUpdatedAt.String,
+			NextProbeAt:           nextProbeAt.APIString(),
+			StateUpdatedAt:        stateUpdatedAt.APIString(),
 			AccountConfigRevision: configRevision.Int64,
 			ProbeClaimToken:       probeClaimToken.String,
-			ProbeClaimedUntil:     probeClaimedUntil.String,
-			RecoveryStartedAt:     recoveryStartedAt.String,
+			ProbeClaimedUntil:     probeClaimedUntil.APIString(),
+			RecoveryStartedAt:     recoveryStartedAt.APIString(),
 			LastErrorCode:         lastErrorCode.String,
 		})
 	}
@@ -499,10 +503,10 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 
 	// recovery SQL 分支（Node recoveryStartedAtSql）。
 	recoverySQL := "COALESCE(" + s.writeColumn("recovery_started_at") + ", ?)"
-	recoveryParams := []any{now}
+	recoveryParam := any(now)
 	if input.BreakQuotaRecoveryWindow || input.QuotaRecoveryMode != "" {
 		recoverySQL = "?"
-		recoveryParams = []any{recoveryStartedAt}
+		recoveryParam = recoveryStartedAt
 	}
 	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"))
 
@@ -532,7 +536,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 			target.SystemAccountID, target.KeyIndex, status,
 			s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff,
 		}
-		params = append(params, recoveryParams...)
+		params = append(params, s.instantParamAny(recoveryParam))
 		params = append(params,
 			s.instantParam(observedAt), s.instantParam(observedAt), argOrNull(errorCode), errorMessage, normalizeTraceID(input.TraceID), now,
 			target.AccountID, target.KeyFingerprint, s.instantParam(observedAt))
@@ -593,7 +597,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
   `, s.statesTable(), boolSQL(input.BreakQuotaRecoveryWindow || input.QuotaRecoveryMode != "")))
 	result, err := s.db.ExecContext(ctx, query,
 		newStateID(), target.SystemAccountID, target.AccountID, target.KeyFingerprint, target.KeyIndex,
-		status, s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff, recoveryStartedAt,
+		status, s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff, s.instantParamAny(recoveryStartedAt),
 		s.instantParam(observedAt), s.instantParam(observedAt), argOrNull(errorCode), errorMessage, normalizeTraceID(input.TraceID), now, now,
 		input.QuotaRecoveryMode, QuotaRecoveryExplicitErrorCode, QuotaRecoveryGenericErrorCode)
 	if err != nil {
@@ -743,7 +747,7 @@ func (s *Store) DeferProbe(ctx context.Context, account TargetInput, input Defer
         last_attempt_at = ?,
         probe_claim_token = NULL,
         probe_claimed_until = NULL,
-        recovery_started_at = CASE WHEN %s THEN NULL ELSE %s END,
+        recovery_started_at = CASE WHEN %s THEN NULL::timestamptz ELSE %s END,
         updated_at = ?
     WHERE %s = ? AND %s = ?
       AND (%s IS NULL OR %s <= ?)
@@ -809,7 +813,7 @@ func (s *Store) loadRuntimeRow(ctx context.Context, accountID, keyFingerprint st
   `, s.statesTable()))
 	var (
 		status            sql.NullString
-		recoveryStartedAt sql.NullString
+		recoveryStartedAt dbtime.Nullable
 		lastErrorCode     sql.NullString
 		probeBackoff      sql.NullInt64
 	)
@@ -822,7 +826,7 @@ func (s *Store) loadRuntimeRow(ctx context.Context, accountID, keyFingerprint st
 	}
 	return &runtimeRow{
 		status:            status.String,
-		recoveryStartedAt: recoveryStartedAt.String,
+		recoveryStartedAt: recoveryStartedAt.APIString(),
 		lastErrorCode:     lastErrorCode.String,
 		backoff:           int(probeBackoff.Int64),
 	}, nil

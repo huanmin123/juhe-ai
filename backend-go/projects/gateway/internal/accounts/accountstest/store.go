@@ -134,6 +134,7 @@ type TestDraftSnapshot struct {
 	ProtocolVersion           *string                     `json:"protocolVersion,omitempty"`
 	Name                      string                      `json:"name"`
 	Type                      string                      `json:"type"`
+	CapabilityDomain          string                      `json:"capabilityDomain,omitempty"`
 	Credentials               map[string]any              `json:"credentials"`
 	ConcurrencyLimit          int                         `json:"concurrencyLimit"`
 	Priority                  int                         `json:"priority"`

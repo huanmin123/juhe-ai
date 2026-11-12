@@ -4,7 +4,6 @@ package circuitstore
 // 锁视图的账户缺失分支）。
 
 import (
-	"database/sql"
 	"testing"
 )
 
@@ -14,7 +13,7 @@ func TestComposeEntryOwnerLastUsedAt(t *testing.T) {
 	row := newSourcesRow("acc-used")
 	row.status = "active"
 	row.schedulable = 1
-	row.lastUsedAt = sql.NullString{String: "2026-07-01T00:00:00.000Z", Valid: true}
+	row.lastUsedAt = testTimeValue("2026-07-01T00:00:00.000Z")
 	entry, err := loader.composeEntry(composeInput{row: row, payload: map[string]any{}, now: now})
 	if err != nil {
 		t.Fatal(err)

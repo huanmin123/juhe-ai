@@ -29,15 +29,33 @@ export interface MediaCreateDefaultsContext {
  *
  * - `supported_endpoint_modes` 恒等于该供应商该域允许集全量：新建、编辑装载、
  *   克隆、切换供应商/类型都归一为全量，不存在用户收窄或保留窄集合的分支。
- * - 新建态落域默认检查形态与状态（媒体域无后台激活检查途径，默认 active 即
- *   「跳过首检直接可调度」，用户仍可改为待检查/停用）。
+ * - 新建态落域默认检查形态与统一 pending_test 状态（由 J1 首次激活探测转
+ *   active，D6）；用户仍可改为停用。
  * - 编辑态保留已装载状态，仅当检查形态不在允许集内时回落域默认。
  */
+/**
+ * 从允许集中选择安全代表检查形态：视频优先 video_create、图像 images_json；
+ * 音频优先 audio_speech，其次 audio_transcription_json，最后 audio_job_get
+ * （绝不用 audio_job_create，避免后台/测试 POST 创建真实任务）。
+ */
+function representativeHealthCheckMode(
+  capabilityDomain: AccountCapabilityDomain,
+  allowed: string[]
+): AccountFormModel['healthCheckEndpointMode'] {
+  const candidates = capabilityDomain === 'video'
+    ? ['video_create']
+    : capabilityDomain === 'image'
+      ? ['images_json']
+      : ['audio_speech', 'audio_transcription_json', 'audio_job_get']
+  return (candidates.find((mode) => allowed.includes(mode))
+    ?? allowed[0]
+    ?? 'chat_sse') as AccountFormModel['healthCheckEndpointMode']
+}
+
 export function applyMediaCreateDefaults(
   form: MediaCreateDefaultsForm,
   context: MediaCreateDefaultsContext
-): void {
-  if (!capabilityDomainIsMedia(context.capabilityDomain)) return
+): void {  if (!capabilityDomainIsMedia(context.capabilityDomain)) return
   const allowed = allowedEndpointModesFor({
     capabilityDomain: context.capabilityDomain,
     providerCode: context.providerCode,
@@ -53,10 +71,13 @@ export function applyMediaCreateDefaults(
       type: context.type
     })
   if (modes.length) form.supportedEndpointModes = modes
+  const preferredHealthMode = defaultHealthCheckEndpointModeForCapabilityDomain({
+    capabilityDomain: context.capabilityDomain
+  })
   if (!(allowed as string[]).includes(form.healthCheckEndpointMode)) {
-    form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
-      capabilityDomain: context.capabilityDomain
-    })
+    form.healthCheckEndpointMode = (allowed as string[]).includes(preferredHealthMode)
+      ? preferredHealthMode
+      : representativeHealthCheckMode(context.capabilityDomain, allowed)
   }
   if (context.editing) return
   form.status = defaultStatusForCapabilityDomain(context.capabilityDomain)

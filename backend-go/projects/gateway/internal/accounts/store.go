@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // REFACTOR-0005 阶段 0：错误三件套、RevisionConflictMessage、AccessScope、
@@ -356,4 +357,14 @@ func maxInt(a, b int) int {
 // nullPtrString renders NULL/empty SQL text as an omitted JSON field.
 func nullPtrString(value sql.NullString) *string {
 	return accountscore.NullPtrString(value)
+}
+
+// nullPtrTime renders a nullable timestamptz as the API contract RFC3339 UTC
+// millisecond string (omitted when NULL).
+func nullPtrTime(value dbtime.Nullable) *string {
+	if !value.Valid {
+		return nil
+	}
+	text := value.APIString()
+	return &text
 }

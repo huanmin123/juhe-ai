@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // ModelPriceSet mirrors ProviderModelPriceSet.
@@ -298,6 +300,7 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		imageIn, imageOut, audioIn       sql.NullFloat64
 		audioOut, outputPerImage         sql.NullFloat64
 		promptCaching, catalogVisible    sql.NullBool
+		createdAt, updatedAt             dbtime.Nullable
 	)
 	var defaultEffort sql.NullString
 	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Status, &catalogOrder,
@@ -307,9 +310,11 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices, &longThreshold, &longInclusive, &longInputMultiplier, &longOutMult,
 		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage,
-		&promptCaching, &catalogVisible, &item.Source, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		&promptCaching, &catalogVisible, &item.Source, &createdAt, &updatedAt); err != nil {
 		return ModelCatalogItem{}, err
 	}
+	item.CreatedAt = createdAt.APIString()
+	item.UpdatedAt = updatedAt.APIString()
 	item.Scope = catalogScopeBuiltIn
 	// 旧 mode / supportedApiProtocols 无物理列：从 supported_endpoint_modes_json
 	// 逆映射派生（对前端保留键名；空 mode 集不注入 mode 键）。
@@ -478,6 +483,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		pricingNotes, capabilityNotes sql.NullString
 		notes                         sql.NullString
 		promptCaching                 sql.NullBool
+		createdAt, updatedAt          dbtime.Nullable
 	)
 	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Scope, &systemAccountID, &item.Status,
 		&endpointModes, &releaseDate, &shutdownDate, &tiers, &efforts, &toolsByProtocol, &inputModalities, &outputModalities, &defaultEffort,
@@ -485,9 +491,11 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices,
 		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage,
-		&promptCaching, &pricingNotes, &capabilityNotes, &notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		&promptCaching, &pricingNotes, &capabilityNotes, &notes, &createdAt, &updatedAt); err != nil {
 		return ModelCatalogItem{}, err
 	}
+	item.CreatedAt = createdAt.APIString()
+	item.UpdatedAt = updatedAt.APIString()
 	item.SystemAccountID = nullPtrString(systemAccountID)
 	// 旧 mode / supportedApiProtocols 无物理列：从 supported_endpoint_modes_json
 	// 逆映射派生（对前端保留键名）。

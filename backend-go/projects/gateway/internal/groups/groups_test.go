@@ -223,7 +223,7 @@ func TestGroupAdminLifecycle(t *testing.T) {
 
 	// Default-group patch guard.
 	defaultID := "grp-default"
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`, defaultID, adminID, now, now)
 	code, defaultBlocked := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+defaultID,
@@ -255,7 +255,7 @@ func TestGroupDeleteCascadeAndGuards(t *testing.T) {
 	if code != http.StatusNotFound {
 		t.Fatalf("missing group delete must 404: %d %v", code, defaultBlocked)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-default', ?, '默认分组', 1, 1, 'personal', ?, ?)`, adminID, now, now)
 	code, defaultGuard := env.do(t, http.MethodDelete, "/__aisys__/api/groups/grp-default", "")

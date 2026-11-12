@@ -160,8 +160,11 @@ import (
 // （background_task_runs.created_at、background_job_leases.lease_until）。
 // 641→627：2026-11-10 退役 usage shard 目录四表——juhe_usage -14
 // （4 CREATE TABLE + 10 CREATE INDEX，revision 23）。
+// 627→628：D13 非对话账户 cutover——juhe_business +1
+// （account-capability-domain-drop-check 幂等 DO 块；建表/加列原位去 CHECK
+// 不计新增语句）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 627
+const goldenPostgresSchemaStatementCount = 628
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -202,7 +205,7 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// CONCURRENTLY；审计报告-2026-11-04 §6）。
 	// 338→340：2026-11-09 演练场产物暂存 PG bytea +2（playground_artifacts
 	// 建表 + created_at 索引；多节点无需共享盘）。
-	"juhe_business": 340,
+	"juhe_business": 341,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -357,9 +360,10 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	}
 	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
-	// ALTER DO 块。
-	if doBlocks != 7 {
-		t.Fatalf("DO block count = %d, want 7", doBlocks)
+	// ALTER DO 块。7→8：D13 非对话账户 cutover 新增 capability_domain
+	// drop-check DO 块。
+	if doBlocks != 8 {
+		t.Fatalf("DO block count = %d, want 8", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // M09 clone-context slice: GET /accounts/{id}/clone-context ported from
@@ -193,7 +194,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		proxyPoolID              sql.NullString
 		proxyPoolName            sql.NullString
 		availabilitySchedule     sql.NullString
-		accountExpiresAt         sql.NullString
+		accountExpiresAt         dbtime.Nullable
 		backgroundProbeEnabled   int64
 		continuousProbeEnabled   int64
 		balanceQueryEnabled      int64
@@ -411,7 +412,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		ProxyProfileID:            nullPtrString(row.proxyProfileID),
 		ProxyPoolID:               nullPtrString(row.proxyPoolID),
 		ProxyPoolName:             nullPtrString(row.proxyPoolName),
-		AccountExpiresAt:          nullPtrString(row.accountExpiresAt),
+		AccountExpiresAt:          nullPtrTime(row.accountExpiresAt),
 		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
 		TemporaryUnavailableContinuousProbeEnabled: row.continuousProbeEnabled == 1,
 		BalanceQueryEnabled:                        row.balanceQueryEnabled == 1,

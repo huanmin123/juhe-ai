@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
@@ -193,7 +194,7 @@ func (s *Store) Create(ctx context.Context, actor Actor, input CreateQuestionInp
 	if err != nil {
 		return Question{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := dbtime.DBValueMillis(time.Now())
 	id := newQuestionID()
 	keyPointsValue, err := keyPointsJSONValue(keyPoints)
 	if err != nil {
@@ -332,7 +333,7 @@ func (s *Store) Update(ctx context.Context, id string, actor Actor, admin bool, 
 	if err != nil {
 		return Question{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := dbtime.DBValueMillis(time.Now())
 	if current.Status == StatusRejected {
 		_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table(questionBankTable)+` SET title=?,title_norm=?,question_text=?,reference_answer=?,key_points_json=?,status=`+questionStatusPendingLiteral+`,reject_reason=NULL,reviewed_by=NULL,reviewed_at=NULL,updated_at=?,last_test_id=?,last_test_json=? WHERE id=?`),
 			title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, now, testRecord.ID, lastTestValue, current.ID)
@@ -412,7 +413,7 @@ func (s *Store) Review(ctx context.Context, id string, reviewer Actor, admin boo
 	if existing, err := s.GetByID(ctx, strings.TrimSpace(id)); err == nil && existing.IsBuiltin {
 		return Question{}, newStatusError(statusForbidden, "系统内置题目不可审核，如需调整请随系统版本更新 seed 数据")
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := dbtime.DBValueMillis(time.Now())
 	questionID := strings.TrimSpace(id)
 	var res sql.Result
 	var err error
@@ -724,11 +725,14 @@ func keyPointsJSONValue(keyPoints []string) (any, error) {
 // reviewed_at/last_test_id/last_test_json 为 NULL 时归零值。
 func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 	var question Question
-	var keyPointsJSON, rejectReason, reviewedBy, reviewedAt, lastTestID, lastTestJSON sql.NullString
-	err := row.Scan(&question.ID, &question.Title, &question.TitleNorm, &question.QuestionText, &question.ReferenceAnswer, &keyPointsJSON, &question.Status, &rejectReason, &question.CreatedBy, &question.CreatedScope, &question.IsBuiltin, &reviewedBy, &reviewedAt, &question.CreatedAt, &question.UpdatedAt, &lastTestID, &lastTestJSON)
+	var keyPointsJSON, rejectReason, reviewedBy, lastTestID, lastTestJSON sql.NullString
+	var reviewedAt, createdAt, updatedAt dbtime.Nullable
+	err := row.Scan(&question.ID, &question.Title, &question.TitleNorm, &question.QuestionText, &question.ReferenceAnswer, &keyPointsJSON, &question.Status, &rejectReason, &question.CreatedBy, &question.CreatedScope, &question.IsBuiltin, &reviewedBy, &reviewedAt, &createdAt, &updatedAt, &lastTestID, &lastTestJSON)
 	if err != nil {
 		return Question{}, err
 	}
+	question.CreatedAt = createdAt.APIString()
+	question.UpdatedAt = updatedAt.APIString()
 	question.KeyPoints = []string{}
 	if keyPointsJSON.Valid && strings.TrimSpace(keyPointsJSON.String) != "" {
 		var points []string
@@ -746,7 +750,7 @@ func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 		question.ReviewedBy = reviewedBy.String
 	}
 	if reviewedAt.Valid {
-		question.ReviewedAt = reviewedAt.String
+		question.ReviewedAt = reviewedAt.APIString()
 	}
 	if lastTestID.Valid {
 		question.LastTestID = lastTestID.String

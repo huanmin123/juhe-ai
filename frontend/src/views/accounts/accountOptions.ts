@@ -423,7 +423,7 @@ const QWEN_PROVIDER: ProviderDefinition = {
   defaultHealthCheckModel: 'qwen3.8-max',
   defaultSupportedModels: ['qwen3.8-max', 'wan3.0-video', 'qwen3-tts-flash', 'qwen-image-3.0'],
   accountTypes: ['api_key'],
-  capabilities: ['chat', 'video', 'audio'],
+  capabilities: ['chat', 'video', 'audio', 'image'],
   protocolProfiles: [
     {
       id: QWEN_OPENAI_V1_PROFILE_ID,
@@ -435,7 +435,7 @@ const QWEN_PROVIDER: ProviderDefinition = {
       baseUrl: 'https://dashscope.aliyuncs.com',
       defaultHealthCheckModel: 'qwen3.8-max',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'video', 'audio'],
+      capabilities: ['chat', 'video', 'audio', 'image'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
         { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },

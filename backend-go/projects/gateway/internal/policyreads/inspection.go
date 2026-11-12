@@ -415,7 +415,7 @@ func (s *InspectionStore) ListPage(ctx context.Context) (*InspectionListResult, 
 		}
 		overview := inspectionOverviewFromSummary(
 			row.id, row.name, row.enabled, true, row.priority, scopeType, row.protocolCode,
-			nullPtrString(row.providerCode), action, ptrString(row.updatedAt))
+			nullPtrString(row.providerCode), action, ptrString(apiTimeString(row.updatedAt)))
 		overview.ProviderName = nullPtrString(row.providerName)
 		policies = append(policies, overview)
 	}

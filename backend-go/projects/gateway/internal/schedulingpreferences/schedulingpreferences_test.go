@@ -18,6 +18,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 const builtinID = "schpref-builtin-chat-cost-first"
@@ -242,11 +243,11 @@ func (e *testEnv) scalarText(t *testing.T, query string, args ...any) sql.NullSt
 
 func (e *testEnv) updatedAtOf(t *testing.T, id string) string {
 	t.Helper()
-	var updatedAt string
+	var updatedAt dbtime.Nullable
 	if err := e.db.QueryRow(fixtureBind(`SELECT updated_at FROM scheduling_preferences WHERE id = ?`), id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	return updatedAt
+	return updatedAt.APIString()
 }
 
 // bindAPIKey 直接插入一条绑定给定偏好的 API Key（含停用形态）。

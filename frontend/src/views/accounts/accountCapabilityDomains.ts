@@ -2,6 +2,7 @@ import type { AccountSupportedEndpointMode, AccountType, ProviderDefinition } fr
 import type { AccountFormModel } from './accountFormTypes'
 import { GEMINI_NATIVE_V1BETA_PROFILE_ID, isGeminiProviderCode, isGlmProviderCode, isGptVendorCode, isMinimaxProviderCode, isQwenProviderCode, isVolcengineProviderCode, isXaiProviderCode } from '@/shared/providerProtocol'
 import { defaultEndpointModesForAccount, endpointModesForProfile, type AccountProviderProfileLike } from './accountProviderCapabilities'
+import { catalogProfiles } from './accountCapabilityCatalog'
 
 // AI 账户能力域拆分（docs/plans/计划-20261011T141004000Z-AI账户能力域拆分.md
 // §域枚举与语义 / §D6 三集合模型 / §M1 清单「前端：域常量 + 推导镜像 + 三集合常量」）。
@@ -228,6 +229,16 @@ export function capabilityDomainAccountTypes(input: {
   profile?: AccountProviderProfileLike
 }): AccountType[] {
   if (input.capabilityDomain === 'chat') return []
+  const profileId = input.profile?.providerProtocolProfileId ?? input.profile?.id
+  const catalog = catalogProfiles({
+    capabilityDomain: input.capabilityDomain,
+    providerCode: input.profile?.providerCode ?? input.profile?.code ?? input.providerCode,
+    profileId
+  })
+  if (catalog.length) {
+    const types = new Set(catalog.flatMap((profile) => profile.accountTypes))
+    return (['api_key', 'oauth', 'google_oauth'] as AccountType[]).filter((type) => types.has(type))
+  }
   const row = mediaMatrixRowForProfile(input)
   if (!row) return []
   const domainModes = input.capabilityDomain === 'video'
@@ -237,7 +248,6 @@ export function capabilityDomainAccountTypes(input: {
       : row.image
   if (!domainModes.length) return []
   const types: AccountType[] = ['api_key']
-  const profileId = input.profile?.providerProtocolProfileId ?? input.profile?.id
   if (isGeminiProviderCode(input.profile?.providerCode ?? input.profile?.code ?? input.providerCode)
     && (profileId === GEMINI_NATIVE_V1BETA_PROFILE_ID || (!profileId && isGeminiProtocolKind(input.profile)))) {
     types.push('google_oauth')
@@ -265,6 +275,18 @@ export function allowedEndpointModesFor(input: {
 }): AccountSupportedEndpointMode[] {
   const { capabilityDomain } = input
   const profile = input.profile
+  const profileId = profile?.providerProtocolProfileId ?? profile?.id
+  const catalog = catalogProfiles({
+    capabilityDomain,
+    providerCode: profile?.providerCode ?? profile?.code ?? input.providerCode,
+    profileId
+  })
+  if (catalog.length) {
+    const allowed = catalog
+      .filter((item) => !input.accountType || item.accountTypes.includes(input.accountType))
+      .flatMap((item) => item.allowedEndpointModes)
+    return [...new Set(allowed)] as AccountSupportedEndpointMode[]
+  }
   if (capabilityDomain === 'chat') {
     return intersectWithProviderVocabulary(
       [...DOMAIN_ENDPOINT_MODES_CHAT],
@@ -343,25 +365,14 @@ export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
   return 'chat_sse'
 }
 
-/** 媒体账户生命周期定案（v7）：新建表单默认 status 预选——chat=pending_test（现行），image/audio/video=active。 */
-export function defaultStatusForCapabilityDomain(capabilityDomain: AccountCapabilityDomain): AccountFormModel['status'] {
-  return capabilityDomain === 'chat' ? 'pending_test' : 'active'
+/** 所有场景新建表单默认 status 统一为 pending_test，由 J1 首次激活探测转 active（D6）。 */
+export function defaultStatusForCapabilityDomain(_capabilityDomain: AccountCapabilityDomain): AccountFormModel['status'] {
+  return 'pending_test'
 }
 
 /** 域是否媒体域（video/audio/image）：媒体域走精简三段式表单与 D7 清单表语义。 */
 export function capabilityDomainIsMedia(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
   return capabilityDomain === 'video' || capabilityDomain === 'audio' || capabilityDomain === 'image'
-}
-
-/**
- * 域是否不适用「后台自动探测」总开关（总开关设计 §2，2026-10-30 二轮复审裁决）：
- * 仅 video/audio——不参与对话健康检查状态机、无后台探测闭环；image 域存在激活
- * 检查、冷却恢复、电路/质量预检等真实后台探测（仅豁免 active 周期巡检），开关
- * 适用并显示「手动」标签。注意与 capabilityDomainIsMedia（媒体三段式表单布局
- * 语义，含 image）区分，二者不可互替。
- */
-export function capabilityDomainWithoutBackgroundProbe(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
-  return capabilityDomain === 'video' || capabilityDomain === 'audio'
 }
 
 /**

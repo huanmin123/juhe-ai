@@ -10,6 +10,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // List sort fields mirror AccountListSortField (account-list-options.ts).
@@ -553,25 +554,25 @@ type listRow struct {
 	schedulable               int
 	availabilityScheduleJSON  sql.NullString
 	availabilityScheduleGate  sql.NullInt64
-	availabilityScheduleNext  sql.NullString
-	accountExpiresAt          sql.NullString
-	cooldownUntil             sql.NullString
+	availabilityScheduleNext  dbtime.Nullable
+	accountExpiresAt          dbtime.Nullable
+	cooldownUntil             dbtime.Nullable
 	lastErrorCode             sql.NullString
 	lastErrorMessage          sql.NullString
 	lastErrorTraceID          sql.NullString
-	lastUsedAt                sql.NullString
+	lastUsedAt                dbtime.Nullable
 	// BUG-0278 批次二扩列（同表加法扩选，不动既有列）：availabilityPresentation
 	// 合成的行内健康输入（jobs listavailability_rows.go 持久列镜像的 gateway
 	// 窄投影）。cooldown_retest_last_* 当前只被未移植的 jobs sourceProbePayload
 	// 分支消费，随行载入保持列镜像完整（list_availability_presentation.go 文件
 	// 头差异说明）。
-	lastHealthCheckAt            sql.NullString
-	nextHealthCheckAt            sql.NullString
+	lastHealthCheckAt            dbtime.Nullable
+	nextHealthCheckAt            dbtime.Nullable
 	lastHealthCheckStatusCode    sql.NullInt64
 	lastHealthCheckErrorCode     sql.NullString
 	lastHealthCheckErrorMessage  sql.NullString
 	lastHealthCheckTraceID       sql.NullString
-	cooldownRetestLastAt         sql.NullString
+	cooldownRetestLastAt         dbtime.Nullable
 	cooldownRetestLastStatusCode sql.NullInt64
 	healthCheckModel             string
 	healthCheckEndpointMode      string
@@ -631,7 +632,7 @@ type listRow struct {
 	// 余额列表投影列（account-status-snapshot 列表叠加）：enabled 恒有值
 	// （0/1），next_refresh_at 可空。
 	balanceQueryEnabled       int
-	balanceQueryNextRefreshAt sql.NullString
+	balanceQueryNextRefreshAt dbtime.Nullable
 	// 特供快速恢复行值（设计 §8.2）：授权实例行同样取自身行值。
 	expeditedRecoveryEnabled int
 	// 后台自动探测总开关行值（总开关设计 §9「手动」标记）：授权实例行经
@@ -1204,18 +1205,18 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		AvailabilitySchedule:      parseScheduleOrNull(row.availabilityScheduleJSON),
 		// 时间计划闸门（设计 §5.4）：NULL = 无计划 / 1 = 时段内 / 0 = 时段外。
 		AvailabilityScheduleGate:        nullPtrScheduleGate(row.availabilityScheduleGate),
-		AccountExpiresAt:                nullPtrString(row.accountExpiresAt),
-		CooldownUntil:                   nullPtrString(row.cooldownUntil),
+		AccountExpiresAt:                nullPtrTime(row.accountExpiresAt),
+		CooldownUntil:                   nullPtrTime(row.cooldownUntil),
 		LastErrorCode:                   nullPtrString(row.lastErrorCode),
 		LastErrorMessage:                nullPtrString(row.lastErrorMessage),
 		LastErrorTraceID:                nullPtrString(row.lastErrorTraceID),
-		LastUsedAt:                      nullPtrString(row.lastUsedAt),
+		LastUsedAt:                      nullPtrTime(row.lastUsedAt),
 		AccessType:                      "owner",
 		Permissions:                     ownerPermissions(),
 		TodayUsage:                      emptyTodayUsageSummary(),
 		Usage:                           emptyUsageSummary(),
 		BackgroundProbeEnabled:          row.backgroundProbeEnabled == 1,
-		availabilityScheduleNextCheckAt: row.availabilityScheduleNext.String,
+		availabilityScheduleNextCheckAt: row.availabilityScheduleNext.APIString(),
 	}
 	if authorized {
 		item.AccessType = "authorized"
@@ -1453,7 +1454,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 			enabled := true
 			item.BalanceQueryEnabled = &enabled
 		}
-		item.BalanceQueryNextRefreshAt = nullPtrString(row.balanceQueryNextRefreshAt)
+		item.BalanceQueryNextRefreshAt = nullPtrTime(row.balanceQueryNextRefreshAt)
 	}
 	item.EffectiveAvailability = ownerEffectiveAvailability(item, now)
 	return item, nil
@@ -1811,7 +1812,7 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		var summary OptionSummary
 		var systemAccountID, effectiveStatus string
 		var systemAccountName sql.NullString
-		var accountExpiresAt sql.NullString
+		var accountExpiresAt dbtime.Nullable
 		if err := rows.Scan(&summary.ID, &systemAccountID, &systemAccountName,
 			&summary.ProviderCode, &summary.ProviderProtocolProfileID, &summary.ProtocolCode,
 			&summary.ProtocolVersion, &summary.Name, &summary.Type,
@@ -1822,7 +1823,7 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		summary.OwnerSystemAccountName = nullPtrString(systemAccountName)
 		summary.Status = effectiveStatus
 		summary.AccessType = "owner"
-		summary.AccountExpiresAt = nullPtrString(accountExpiresAt)
+		summary.AccountExpiresAt = nullPtrTime(accountExpiresAt)
 		summary.Permissions = ownerPermissions()
 		if access.CanAccessAll() {
 			summary.SystemAccountID = &systemAccountID

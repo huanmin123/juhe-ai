@@ -6,10 +6,7 @@ import (
 	"strings"
 	"time"
 
-	// tzdata 内嵌 IANA 时区库，保证 time.LoadLocation 在任意宿主（含
-	// Windows 开发机与 distroless 容器）上与 Node Intl.DateTimeFormat 解析
-	// 同样的时区名。与 gateway/internal/gatewayquota/statwindow.go 相同处理。
-	_ "time/tzdata"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/statcalendar"
 )
 
 // dateKey mirrors usage-stats-helpers dateKey：时区内 YYYY-MM-DD。
@@ -21,20 +18,17 @@ func dateKey(t time.Time, location *time.Location) string {
 
 // hourKey mirrors usage-stats-helpers hourKey：YYYY-MM-DDTHH。
 func hourKey(t time.Time, location *time.Location) string {
-	year, month, day := t.In(location).Date()
-	return fmt.Sprintf("%04d-%02d-%02dT%02d", year, int(month), day, t.In(location).Hour())
+	return string(statcalendar.HourOf(t, location))
 }
 
 // minuteKey mirrors usage-stats-helpers minuteKey：YYYY-MM-DDTHH:MM。
 func minuteKey(t time.Time, location *time.Location) string {
-	year, month, day := t.In(location).Date()
-	return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d", year, int(month), day, t.In(location).Hour(), t.In(location).Minute())
+	return string(statcalendar.MinuteOf(t, location))
 }
 
 // monthKey mirrors usage-stats-helpers monthKey：YYYY-MM。
 func monthKey(t time.Time, location *time.Location) string {
-	year, month, _ := t.In(location).Date()
-	return fmt.Sprintf("%04d-%02d", year, int(month))
+	return string(statcalendar.MonthOf(t, location))
 }
 
 // weekKey mirrors usage-stats-helpers weekKey：时区日历日的周一起始周键。

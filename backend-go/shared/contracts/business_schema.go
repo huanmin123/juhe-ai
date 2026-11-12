@@ -95,7 +95,21 @@ type BusinessForeignKeySpec struct {
 // pool_health_status / pool_health_failure_streak / pool_health_checked_at
 // 三列及到期索引。Gateway 请求解析依赖这些对象，旧库缺任一对象时
 // schemaReady 门 fail-closed。
-const BusinessSchemaVersion = "business-postgres-gateway-v23"
+// v24 (business-postgres-gateway-v24) 是时间类型统一改造 Phase 2-1：
+// 23 张小表的 58 个 instant 列由 text 迁 timestamptz（业务/API 列毫秒、
+// model_quality_schedules.lease_until 微秒）。本契约 map 只冻结列集，
+// 不编码类型；版本递增用于让旧二进制在迁移后 fail-closed。
+// v25 (business-postgres-gateway-v25) 是时间类型统一改造 Phase 2-2：
+// 16 张 CRUD 表的 44 个 instant 列由 text 迁 timestamptz(3)。契约 map 只
+// 冻结列集；版本递增让旧二进制在迁移后 fail-closed。
+// v26 (business-postgres-gateway-v26) 是时间类型统一改造 Phase 2-3：
+// 24 张 accounts 聚合与投影表的 73 个 instant 列由 text 迁 timestamptz
+// （业务/API 列毫秒、投影/租约列微秒）。
+// v27 (business-postgres-gateway-v27) 是 Phase 2-4：dataset/jobs/taskruns
+// 17 张表的 40 个 instant 列由 text 迁 timestamptz。v28 (business-postgres-
+// gateway-v28) 是 Phase 3 统计域：53 张表 144 个时间列同表重写。契约 map
+// 只冻结列集；版本递增让旧二进制在迁移后 fail-closed。
+const BusinessSchemaVersion = "business-postgres-gateway-v28"
 
 var BusinessSchema = map[string]BusinessTableSpec{
 	"system_accounts":              {Columns: []string{"id", "username", "display_name", "status", "role", "must_change_password", "password_hash", "expedited_account_limit", "last_login_at", "updated_at"}, Indexes: []string{"idx_system_accounts_username_unique_lower", "idx_system_accounts_display_name_unique_lower"}, IndexDefinitions: []BusinessIndexDefinition{{Name: "idx_system_accounts_username_unique_lower", Columns: []string{"lower(username)"}, Unique: true}, {Name: "idx_system_accounts_display_name_unique_lower", Columns: []string{"lower(display_name)"}, Unique: true}}},

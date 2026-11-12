@@ -74,7 +74,7 @@ func TestW9ABusinessSchemaContract(t *testing.T) {
 // TestW9ABusinessSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
-	if BusinessSchemaVersion != "business-postgres-gateway-v23" {
+	if BusinessSchemaVersion != "business-postgres-gateway-v28" {
 		t.Fatalf("schema version drifted: %q", BusinessSchemaVersion)
 	}
 	for _, table := range []string{
@@ -98,7 +98,8 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 	}
 	systemAccounts := BusinessSchema["system_accounts"]
 	// v23 起 username/display_name 唯一性由 lower(...) 唯一索引表达，不再是表级
-	// UniqueConstraints 条目；冻结索引定义，避免大小写语义漂移。
+	// UniqueConstraints 条目；冻结索引定义，避免大小写语义漂移。v24 只递增
+	// 时间列类型，不改变本契约 map 的列集/索引定义。
 	usernameUnique := false
 	for _, definition := range systemAccounts.IndexDefinitions {
 		if definition.Name == "idx_system_accounts_username_unique_lower" && definition.Unique &&

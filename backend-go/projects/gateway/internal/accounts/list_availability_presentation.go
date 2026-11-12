@@ -203,16 +203,16 @@ func availabilityStatusBoundaryAt(status string, row listRow) string {
 	switch status {
 	case "instance_expired":
 		if row.accountExpiresAt.Valid {
-			return row.accountExpiresAt.String
+			return row.accountExpiresAt.APIString()
 		}
 	case "instance_cooldown":
 		if row.cooldownUntil.Valid {
-			return row.cooldownUntil.String
+			return row.cooldownUntil.APIString()
 		}
 	case "schedule_out_of_window":
 		// 时间计划闸门（设计 §5.4）：RetryAt 取下一个计划边界检查时刻。
 		if row.availabilityScheduleNext.Valid {
-			return row.availabilityScheduleNext.String
+			return row.availabilityScheduleNext.APIString()
 		}
 	}
 	return ""
@@ -233,10 +233,10 @@ func availabilityProbeFacts(status string, row listRow, now time.Time) *AccountP
 		return nil
 	case status == "instance_pending_test":
 		lastObservation := healthObservationPayload(row)
-		if lastObservation == nil && row.nextHealthCheckAt.String == "" {
+		if lastObservation == nil && row.nextHealthCheckAt.APIString() == "" {
 			return nil
 		}
-		return probeSummary("activation_check", lastObservation, schedulePayloadState(row.nextHealthCheckAt.String, now))
+		return probeSummary("activation_check", lastObservation, schedulePayloadState(row.nextHealthCheckAt.APIString(), now))
 	}
 	return nil
 }
@@ -244,7 +244,7 @@ func availabilityProbeFacts(status string, row listRow, now time.Time) *AccountP
 // healthObservationPayload 对齐 jobs healthObservationPayload：observationId
 // 指纹 kind 固定 "health_check"、identity=账户 id（与 jobs 同源语义）。
 func healthObservationPayload(row listRow) *AccountProbeObservationPublic {
-	if row.lastHealthCheckAt.String == "" {
+	if row.lastHealthCheckAt.APIString() == "" {
 		return nil
 	}
 	failed := row.lastHealthCheckErrorCode.String != "" || row.lastHealthCheckErrorMessage.String != "" ||
@@ -254,9 +254,9 @@ func healthObservationPayload(row listRow) *AccountProbeObservationPublic {
 		result = "failed"
 	}
 	observation := &AccountProbeObservationPublic{
-		ObservationID: probeObservationID("health_check", row.id, row.lastHealthCheckAt.String,
+		ObservationID: probeObservationID("health_check", row.id, row.lastHealthCheckAt.APIString(),
 			row.lastHealthCheckTraceID.String, row.lastHealthCheckErrorCode.String, row.lastHealthCheckErrorMessage.String),
-		AttemptedAt: row.lastHealthCheckAt.String,
+		AttemptedAt: row.lastHealthCheckAt.APIString(),
 		Result:      result,
 	}
 	if row.lastHealthCheckStatusCode.Valid && row.lastHealthCheckStatusCode.Int64 > 0 {

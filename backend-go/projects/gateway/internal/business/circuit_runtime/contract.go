@@ -388,6 +388,7 @@ func ValidGatewayAccountCircuitRequestLane(lane string) bool {
 		string(gatewayproto.LaneImage),
 		string(gatewayproto.LaneAudio),
 		string(gatewayproto.LaneVideo),
+		string(gatewayproto.LaneUtility),
 		string(gatewayproto.LaneRealtime):
 		return true
 	}

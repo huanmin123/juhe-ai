@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 func TestW17BSmallPureArms(t *testing.T) {
@@ -19,7 +21,7 @@ func TestW17BSmallPureArms(t *testing.T) {
 
 	// nowPlusOneMilli：previous 非法时直接返回 now。
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	if got := nowPlusOneMilli(base, "not-rfc3339"); got != base.UTC().Format(time.RFC3339Nano) {
+	if got := nowPlusOneMilli(base, "not-rfc3339"); got != dbtime.API(base) {
 		t.Fatalf("非法 previous 必须回退 now: %s", got)
 	}
 

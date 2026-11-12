@@ -5,6 +5,7 @@ import {
   accountTestEndpointModesForAccount,
   defaultAccountTestEndpointModeForSelection
 } from './accountEndpointModes'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 
 export type AccountTestEndpointMode = 'account_default' | AccountSupportedEndpointMode
 
@@ -17,7 +18,12 @@ export function buildAccountTestPayload(
   form: AccountTestForm,
   account?: AccountListItem,
   draftAccount?: AccountDraftTestAccountPayload
-): { model?: string; testEndpointMode?: AccountSupportedEndpointMode } {
+): { model?: string; testEndpointMode?: AccountSupportedEndpointMode; kind?: 'connectivity' } {
+  const domain = account?.capabilityDomain ?? draftAccount?.capabilityDomain
+  if (domain && domain !== 'chat') {
+    // 非对话账户只测 Key + Base URL：不选模型/协议，服务端按场景选代表探测模式。
+    return { kind: 'connectivity' }
+  }
   const payload: { model?: string; testEndpointMode?: AccountSupportedEndpointMode } = {}
   const model = form.model.trim()
   if (model) {
@@ -30,6 +36,22 @@ export function buildAccountTestPayload(
     }
   }
   return payload
+}
+
+/** 非对话连通性测试的展示用代表 mode；真实 mode 由服务端按账户决定。 */
+export function connectivityEndpointModeForDomain(
+  domain?: AccountCapabilityDomain
+): AccountSupportedEndpointMode {
+  switch (domain) {
+    case 'video':
+      return 'video_create'
+    case 'image':
+      return 'images_json'
+    case 'audio':
+      return 'audio_speech'
+    default:
+      return 'chat_sse'
+  }
 }
 
 export function accountTestSuccessMessage(account: AccountListItem, result: AccountTestResult): string {

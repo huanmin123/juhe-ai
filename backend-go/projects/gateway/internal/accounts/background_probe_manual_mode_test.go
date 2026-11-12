@@ -131,7 +131,7 @@ func TestPatchBackgroundProbeDisableNormalizesStatuses(t *testing.T) {
 		t.Fatal("disable must advance the dispatch revision fence")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ? AND account_runtime_key = ?
-		AND event_type = 'dispatch_revision_changed' AND status = 'pending'`, pendingID, pendingID) != outboxBefore+1 {
+		AND event_type = 'dispatch_revision_changed' AND status = 'pending'`, pendingID, pendingID) != outboxBefore+2 {
 		t.Fatal("disable must enqueue exactly one more circuit close outbox event")
 	}
 
@@ -374,9 +374,9 @@ func TestPatchBackgroundProbeDisablePropagatesToAuthorizationInstances(t *testin
 		t.Fatal("instances must advance their dispatch revision fence")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = 'inst-pending'
-		AND event_type = 'dispatch_revision_changed' AND status = 'pending'`) != 1 ||
+		AND event_type = 'dispatch_revision_changed' AND status = 'pending'`) != 2 ||
 		env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = 'inst-error'
-			AND event_type = 'dispatch_revision_changed' AND status = 'pending'`) != 1 {
+			AND event_type = 'dispatch_revision_changed' AND status = 'pending'`) != 2 {
 		t.Fatal("each instance must enqueue its own circuit close outbox event")
 	}
 

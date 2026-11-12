@@ -397,6 +397,8 @@ export interface AccountSummary {
   name: string
   notes?: string
   type: AccountType
+  /** 账户场景类型；草稿测试/新单菜单需要，服务端账户详情同名字段。 */
+  capabilityDomain?: AccountCapabilityDomain
   status: AccountStatus
   credentials: AccountCredentials
   concurrencyLimit: number
@@ -644,6 +646,7 @@ export interface AccountEditBasicDetail {
   name: string
   notes?: string
   type: AccountType
+  capabilityDomain?: AccountCapabilityDomain
   credentials: AccountCredentials
   status: AccountStatus
   concurrencyLimit: number
@@ -1340,4 +1343,31 @@ export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pic
 
 export interface AccountGroupOptionSummary extends GroupOptionSummary {
   accountIds: string[]
+}
+
+/** 账户能力目录（GET /accounts/capability-catalog 与 /my-accounts 同形）。 */
+export interface AccountCapabilityCatalog {
+  scenarios: AccountCapabilityCatalogScenario[]
+}
+
+export interface AccountCapabilityCatalogScenario {
+  scenarioType: string
+  label: string
+  dispatchClass: string
+  providers: AccountCapabilityCatalogProvider[]
+}
+
+export interface AccountCapabilityCatalogProvider {
+  providerCode: string
+  profiles: AccountCapabilityCatalogProfile[]
+}
+
+export interface AccountCapabilityCatalogProfile {
+  profileId: string
+  connectionPreset: string
+  accountTypes: string[]
+  allowedEndpointModes: string[]
+  probeModes?: string[]
+  testPolicy: string
+  statusPolicy: string
 }

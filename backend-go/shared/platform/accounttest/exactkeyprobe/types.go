@@ -35,22 +35,25 @@ type APIKeyInput struct {
 // contains encrypted credential material only; the decrypted values never
 // leave the direct-probe call.
 type Input struct {
-	AccountID            string              `json:"account_id"`
-	InputVersion         int64               `json:"input_version"`
-	ConfigRevision       int64               `json:"config_revision"`
-	DispatchRevision     int64               `json:"dispatch_revision"`
-	Provider             string              `json:"provider"`
-	ProtocolProfileID    string              `json:"provider_protocol_profile_id,omitempty"`
-	ProtocolCode         string              `json:"protocol_code,omitempty"`
-	ProtocolVersion      string              `json:"protocol_version,omitempty"`
-	Type                 string              `json:"type"`
-	ClientCompatibility  string              `json:"client_compatibility,omitempty"`
-	EndpointMode         string              `json:"endpoint_mode"`
-	HealthModel          string              `json:"health_model"`
-	BaseURL              string              `json:"base_url"`
-	KeySetFingerprint    string              `json:"key_set_fingerprint,omitempty"`
-	APIKeys              []APIKeyInput       `json:"api_keys,omitempty"`
-	OAuthAccess          *CredentialEnvelope `json:"oauth_access,omitempty"`
+	AccountID           string              `json:"account_id"`
+	InputVersion        int64               `json:"input_version"`
+	ConfigRevision      int64               `json:"config_revision"`
+	DispatchRevision    int64               `json:"dispatch_revision"`
+	Provider            string              `json:"provider"`
+	ProtocolProfileID   string              `json:"provider_protocol_profile_id,omitempty"`
+	ProtocolCode        string              `json:"protocol_code,omitempty"`
+	ProtocolVersion     string              `json:"protocol_version,omitempty"`
+	Type                string              `json:"type"`
+	ClientCompatibility string              `json:"client_compatibility,omitempty"`
+	EndpointMode        string              `json:"endpoint_mode"`
+	HealthModel         string              `json:"health_model"`
+	BaseURL             string              `json:"base_url"`
+	KeySetFingerprint   string              `json:"key_set_fingerprint,omitempty"`
+	APIKeys             []APIKeyInput       `json:"api_keys,omitempty"`
+	OAuthAccess         *CredentialEnvelope `json:"oauth_access,omitempty"`
+	// SpeechToken 是火山 openspeech 语音域的 speech_token（仅 J1 媒体连通性
+	// 使用，不进入 Input JSON、不落库、不写日志）。
+	SpeechToken          string              `json:"-"`
 	OAuthExpiresAt       *time.Time          `json:"oauth_expires_at,omitempty"`
 	OAuthAccountID       string              `json:"oauth_account_id,omitempty"`
 	OAuthQuotaProjectID  string              `json:"oauth_quota_project_id,omitempty"`

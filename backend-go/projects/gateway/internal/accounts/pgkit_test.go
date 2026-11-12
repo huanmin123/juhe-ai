@@ -32,10 +32,32 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
+
+// sameInstantText 按物理瞬时比较两个 RFC3339 文本：Revision 24/26 起时间列
+// 为 timestamptz，pgx 默认按进程本地时区渲染回读文本，不再是 UTC 毫秒原文。
+func nullTimeValue(value string) dbtime.Nullable {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		panic(err)
+	}
+	return dbtime.Nullable{Time: parsed.UTC(), Valid: true}
+}
+
+func sameInstantText(left, right string) bool {
+	parse := func(value string) (time.Time, bool) {
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+		return parsed, err == nil
+	}
+	leftTime, leftOK := parse(left)
+	rightTime, rightOK := parse(right)
+	return leftOK && rightOK && leftTime.Equal(rightTime)
+}
 
 // accountsPGFixtureSchema 是 accounts/authsys/businessauth/authz 面测试的 PG
 // schema。列集与原共享夹具 schemaStatements 同一子集（maintenance 生产业务
@@ -59,17 +81,17 @@ const accountsPGFixtureSchema = `
       ai_account_limit integer CHECK (ai_account_limit BETWEEN 0 AND 1000000),
       expedited_account_limit integer CHECK (expedited_account_limit BETWEEN 0 AND 100),
       request_limits_json text,
-      last_login_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      last_login_at timestamptz(3),
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.system_sessions (
       id text PRIMARY KEY,
       system_account_id text NOT NULL,
       token_hash text NOT NULL UNIQUE,
-      expires_at text NOT NULL,
-      created_at text NOT NULL,
-      last_seen_at text NOT NULL
+      expires_at timestamptz(3) NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      last_seen_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.providers (
       id text PRIMARY KEY,
@@ -104,8 +126,8 @@ const accountsPGFixtureSchema = `
       description text,
       enabled integer NOT NULL DEFAULT 1,
       default_supported_models_json text NOT NULL DEFAULT '[]',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
       id text PRIMARY KEY,
@@ -175,8 +197,8 @@ const accountsPGFixtureSchema = `
       group_type text NOT NULL DEFAULT 'personal',
       group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')),
       scheduling_policy_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.accounts (
       id text PRIMARY KEY,
@@ -195,7 +217,7 @@ const accountsPGFixtureSchema = `
       credentials_encrypted text NOT NULL,
       credential_fingerprint text,
       credential_mask text NOT NULL DEFAULT '',
-      oauth_access_token_expires_at text,
+      oauth_access_token_expires_at timestamptz(3),
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
       proxy_pool_id text REFERENCES juhe_business.proxy_pools(id) ON DELETE RESTRICT,
@@ -206,48 +228,48 @@ const accountsPGFixtureSchema = `
       fallback_enabled integer NOT NULL DEFAULT 0,
       schedulable integer NOT NULL DEFAULT 1,
       availability_schedule_json text,
-      availability_schedule_next_check_at text,
+      availability_schedule_next_check_at timestamptz(3),
       availability_schedule_gate integer,
       notes text,
-      account_expires_at text,
-      last_used_at text,
-      cooldown_until text,
+      account_expires_at timestamptz(3),
+      last_used_at timestamptz(3),
+      cooldown_until timestamptz(3),
       last_error_code text,
       last_error_message text,
       last_error_trace_id text,
       health_check_model text NOT NULL DEFAULT '',
       health_check_endpoint_mode text NOT NULL DEFAULT 'chat_json',
       health_check_failure_count integer NOT NULL DEFAULT 0,
-      health_check_failure_started_at text,
+      health_check_failure_started_at timestamptz(3),
       cooldown_retest_failure_count integer NOT NULL DEFAULT 0,
-      cooldown_retest_observation_started_at text,
+      cooldown_retest_observation_started_at timestamptz(6),
       cooldown_retest_generation text,
-      cooldown_retest_last_at text,
+      cooldown_retest_last_at timestamptz(3),
       cooldown_retest_last_status_code integer,
       background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
       capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
-      last_health_check_at text,
-      last_health_success_at text,
+      last_health_check_at timestamptz(3),
+      last_health_success_at timestamptz(3),
       health_check_connection_id text,
       last_health_check_status_code integer,
       last_health_check_error_code text,
       last_health_check_error_message text,
       last_health_check_trace_id text,
       stream_failure_count integer NOT NULL DEFAULT 0,
-      stream_failure_window_started_at text,
-      next_health_check_at text,
+      stream_failure_window_started_at timestamptz(3),
+      next_health_check_at timestamptz(3),
       balance_query_enabled integer NOT NULL DEFAULT 0,
-      balance_query_next_refresh_at text,
+      balance_query_next_refresh_at timestamptz(3),
       balance_query_config_json text NOT NULL DEFAULT '{}',
       authorization_instance_source_account_id text,
       authorization_instance_authorization_id text,
       authorization_instance_owner_system_account_id text,
-      deleted_at text,
+      deleted_at timestamptz(3),
       deleted_by text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CONSTRAINT accounts_proxy_target_single_check CHECK (proxy_profile_id IS NULL OR proxy_pool_id IS NULL)
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique
@@ -261,8 +283,8 @@ const accountsPGFixtureSchema = `
       local_super_priority_enabled integer NOT NULL DEFAULT 0,
       local_fallback_enabled integer NOT NULL DEFAULT 0,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       PRIMARY KEY (group_id, account_id)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.models (
@@ -290,13 +312,13 @@ const accountsPGFixtureSchema = `
       audio_input_usd_per_1m double precision,
       audio_output_usd_per_1m double precision,
       output_usd_per_image double precision,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_supported_models (
       account_id text NOT NULL,
       model_id text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       PRIMARY KEY (account_id, model_id)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_connections (
@@ -306,8 +328,8 @@ const accountsPGFixtureSchema = `
       protocol_surface_code text,
       base_url text NOT NULL,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (account_id, connection_preset_code),
       UNIQUE (account_id, id)
     );
@@ -325,16 +347,16 @@ const accountsPGFixtureSchema = `
       target_model_id text NOT NULL,
       target_endpoint_family text NOT NULL,
       enabled integer NOT NULL DEFAULT 1,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (account_id, source_model, source_endpoint_family)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_tags (
       id text PRIMARY KEY,
       system_account_id text NOT NULL,
       name text NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique
       ON juhe_business.account_tags (system_account_id, name);
@@ -342,7 +364,7 @@ const accountsPGFixtureSchema = `
       account_id text NOT NULL,
       tag_id text NOT NULL,
       system_account_id text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       PRIMARY KEY (account_id, tag_id)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_api_key_runtime_states (
@@ -352,7 +374,7 @@ const accountsPGFixtureSchema = `
       key_fingerprint text NOT NULL,
       key_index integer NOT NULL DEFAULT 0,
       status text NOT NULL DEFAULT 'active',
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_lock_states (
       account_id text PRIMARY KEY,
@@ -362,14 +384,14 @@ const accountsPGFixtureSchema = `
       lock_retry_interval_seconds integer NOT NULL DEFAULT 5 CHECK (lock_retry_interval_seconds BETWEEN 5 AND 30),
       incident_id text,
       generation bigint NOT NULL DEFAULT 0 CHECK (generation >= 0),
-      incident_started_at text,
-      deadline_at text,
+      incident_started_at timestamptz(6),
+      deadline_at timestamptz(3),
       original_status text,
       provenance text,
       next_retry_at_ms bigint,
       lease_id text,
       lease_until_ms bigint,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (
       id text PRIMARY KEY,
@@ -381,17 +403,17 @@ const accountsPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       effective_source_type text,
       effective_source_team_id text,
-      activated_at text,
-      last_source_changed_at text,
+      activated_at timestamptz(3),
+      last_source_changed_at timestamptz(3),
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
+      revoked_at timestamptz(3),
       revoked_reason text,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
       id text PRIMARY KEY,
@@ -399,14 +421,14 @@ const accountsPGFixtureSchema = `
       source_type text NOT NULL,
       source_team_id text,
       status text NOT NULL DEFAULT 'active',
-      activated_at text,
-      ended_at text,
+      activated_at timestamptz(3),
+      ended_at timestamptz(3),
       ended_reason text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
-      updated_at text NOT NULL
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
       id text PRIMARY KEY,
@@ -419,13 +441,13 @@ const accountsPGFixtureSchema = `
       scope text NOT NULL DEFAULT 'use',
       status text NOT NULL DEFAULT 'active',
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text NOT NULL,
-      created_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
       revoked_by text,
-      revoked_at text,
-      updated_at text NOT NULL
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
       system_account_id text NOT NULL,
@@ -434,15 +456,15 @@ const accountsPGFixtureSchema = `
       source_type text NOT NULL,
       source_id text NOT NULL,
       window_hours integer NOT NULL,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       CHECK (window_hours BETWEEN 1 AND 720),
       PRIMARY KEY (system_account_id, scope_type, scope_id)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_health_jobs_input_versions (
       account_id text PRIMARY KEY,
       current_version integer NOT NULL CHECK (current_version >= 1),
-      reserved_at text NOT NULL
+      reserved_at timestamptz(6) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_health_jobs_input_outbox (
       event_id text PRIMARY KEY,
@@ -454,12 +476,12 @@ const accountsPGFixtureSchema = `
       dispatch_revision bigint NOT NULL CHECK (dispatch_revision >= 1),
       status text NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')),
       claim_token text,
-      claimed_until text,
+      claimed_until timestamptz(6),
       attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-      available_at text NOT NULL,
+      available_at timestamptz(6) NOT NULL,
       last_error text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL,
       UNIQUE (account_id, input_version)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_quality_enforcements (
@@ -468,16 +490,16 @@ const accountsPGFixtureSchema = `
       enforcement_id text NOT NULL,
       generation bigint NOT NULL DEFAULT 0,
       state text NOT NULL CHECK (state IN ('active', 'cleared')),
-      updated_at text NOT NULL,
-      recovery_due_at text,
+      updated_at timestamptz(3) NOT NULL,
+      recovery_due_at timestamptz(6),
       recovery_lease_owner text,
-      recovery_lease_until text,
-      cleared_at text
+      recovery_lease_until timestamptz(6),
+      cleared_at timestamptz(6)
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
       group_id text PRIMARY KEY,
       reason text,
-      updated_at text NOT NULL
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_stats.account_usage_snapshots (
       system_account_id text NOT NULL,

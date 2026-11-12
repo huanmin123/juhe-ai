@@ -74,6 +74,15 @@
         </div>
         <div class="account-form-layout">
           <div class="form-scroll">
+            <div v-if="!editing && !cloning && wizardStep === 1" class="account-scenario-choice">
+              <span class="entry-label">场景类型</span>
+              <a-segmented
+                v-model:value="createCapabilityDomain"
+                :options="scenarioOptions"
+                @change="handleCreateCapabilityDomainChange"
+              />
+              <span class="account-scenario-hint">场景创建后不可修改；不同场景共用账户、分组、调度与探针内核。</span>
+            </div>
             <AccountFormSelector
               v-show="!editing && wizardStep === 1"
               :account-counts="accountCounts"
@@ -129,7 +138,7 @@
                 v-else-if="isTokenCredentialForm && !authorizedEditing"
                 :auth-loading="authLoading"
                 :auth-result="authResult"
-                :capability-domain="capabilityDomain"
+                :capability-domain="effectiveCapabilityDomain"
                 :editing="editing"
                 :form="form"
                 :is-anthropic-o-auth="isAnthropicOAuthForm"
@@ -161,7 +170,7 @@
               <AccountMediaModelField
                 v-if="isMediaDomain && isApiKeyForm && !authorizedEditing"
                 :authorized-editing="authorizedEditing"
-                :capability-domain="capabilityDomain"
+                :capability-domain="effectiveCapabilityDomain"
                 :form="form"
                 :model-options="mediaDomainModelOptions"
                 :model-syncing="modelSyncing"
@@ -428,7 +437,7 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
-                  v-if="isMediaDomain && capabilityDomain === 'image'"
+                  v-if="isMediaDomain"
                   :open="advancedActiveKeys.includes('probe')"
                   name="后台自动探测"
                   :summary="probeCardSummary"
@@ -668,7 +677,7 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
-                  v-if="isMediaDomain && capabilityDomain === 'image'"
+                  v-if="isMediaDomain"
                   :open="advancedActiveKeys.includes('probe')"
                   name="后台自动探测"
                   :summary="probeCardSummary"
@@ -831,6 +840,8 @@ import { accountModelMappingEndpointFamilyText } from './accountModelMappingProt
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 import {
+  ACCOUNT_CAPABILITY_DOMAINS,
+  ACCOUNT_CAPABILITY_DOMAIN_LABELS,
   allowedEndpointModesFor,
   capabilityDomainAccountTypes,
   mediaDomainModelProtocolTokens
@@ -951,12 +962,42 @@ const props = withDefaults(defineProps<{
   testLoading: false
 })
 
+// 新建态场景类型：默认跟随当前列表筛选，可在创建第一步切换；编辑/克隆态
+// 沿用路由注入（账户创建后不可改场景）。
+const createCapabilityDomain = ref<AccountCapabilityDomain>(props.capabilityDomain)
+const effectiveCapabilityDomain = computed<AccountCapabilityDomain>(() => (
+  props.editing || props.cloning ? props.capabilityDomain : createCapabilityDomain.value
+))
+const scenarioOptions = computed(() => ACCOUNT_CAPABILITY_DOMAINS.map((domain) => ({
+  label: ACCOUNT_CAPABILITY_DOMAIN_LABELS[domain],
+  value: domain
+})))
+
+watch(open, (next) => {
+  if (!next || props.editing || props.cloning) return
+  createCapabilityDomain.value = props.capabilityDomain
+})
+watch(() => props.capabilityDomain, (next) => {
+  if (props.editing || props.cloning) return
+  createCapabilityDomain.value = next
+})
+
+function handleCreateCapabilityDomainChange(value: string | number): void {
+  const next = String(value) as AccountCapabilityDomain
+  if (next === createCapabilityDomain.value) return
+  createCapabilityDomain.value = next
+  // 场景切换后供应商/类型矩阵可能不兼容：清空当前选择并回到场景对应的
+  // 供应商卡片墙重新选择，避免把 chat 供应商残留在媒体场景保存载荷里。
+  providerPickerExpanded.value = true
+  emit('select-provider', '')
+}
+
 // 媒体域（video/audio/image）标志：对话/媒体共用同一双形态表单壳，媒体域只
 // 裁剪字段（供应商/类型按域矩阵过滤、插入域内模型与语音双值、隐藏对话专属卡）。
 const isMediaDomain = computed(() =>
-  props.capabilityDomain === 'video'
-  || props.capabilityDomain === 'audio'
-  || props.capabilityDomain === 'image')
+  effectiveCapabilityDomain.value === 'video'
+  || effectiveCapabilityDomain.value === 'audio'
+  || effectiveCapabilityDomain.value === 'image')
 
 // 供应商高峰快捷预设（时间计划闸门设计 §6）：来源为供应商目录 peakWindows
 // （后端 providers 包 peak_windows.go 单一数据源），随所选供应商联动；未选
@@ -977,7 +1018,7 @@ const providerPeakPresets = computed(() => {
 // 对话域不走此路径（行为零变化）。
 const mediaProviderDefinitions = ref<ProviderDefinition[] | undefined>(undefined)
 watch(
-  [open, () => props.capabilityDomain],
+  [open, () => effectiveCapabilityDomain.value],
   () => {
     // 对话域同样需要完整定义：providerPeakPresets 的 peakWindows 只有全量 definitions 携带（轻量 options 无此字段）。
     if (!open.value || mediaProviderDefinitions.value) return
@@ -997,7 +1038,7 @@ const mediaProviders = computed(() => mergeAccountProviderDefinitions(
 const mediaDomainProviders = computed(() => mediaProviders.value.filter((provider) => (
   provider.protocolProfiles.some((profile) => (
     capabilityDomainAccountTypes({
-      capabilityDomain: props.capabilityDomain,
+      capabilityDomain: effectiveCapabilityDomain.value,
       providerCode: provider.code,
       profile
     }).length > 0
@@ -1007,7 +1048,7 @@ const mediaDomainProviders = computed(() => mediaProviders.value.filter((provide
 const mediaDomainAccountTypeChoices = computed(() => {
   const profileId = props.selectedProtocolProfile?.id ?? ''
   const allowedTypes = capabilityDomainAccountTypes({
-    capabilityDomain: props.capabilityDomain,
+    capabilityDomain: effectiveCapabilityDomain.value,
     providerCode: props.form.providerCode,
     profile: props.selectedProtocolProfile
   })
@@ -1020,23 +1061,22 @@ const mediaDomainAccountTypeChoices = computed(() => {
 // 媒体域支持模型候选的协议 token 二次过滤（服务端已按域目录 mode 过滤，
 // 这里与 model_catalog 种子同源再保险）。
 const mediaDomainModelOptions = computed(() => {
-  const tokens = new Set(mediaDomainModelProtocolTokens(props.capabilityDomain))
+  const tokens = new Set(mediaDomainModelProtocolTokens(effectiveCapabilityDomain.value))
   if (!tokens.size) return props.modelOptions
   return props.modelOptions.filter((option) =>
     option.supportedApiProtocols?.some((protocol) => tokens.has(protocol)))
 })
 
 const isVolcengineAudio = computed(() =>
-  props.capabilityDomain === 'audio' && isVolcengineProviderCode(props.form.providerCode))
+  effectiveCapabilityDomain.value === 'audio' && isVolcengineProviderCode(props.form.providerCode))
 
-// 能力域上下文同步（D3）：域由路由注入、不是可编辑字段。表单在新建/编辑/克隆
-// 装载路径会被整块 Object.assign 重置，这里在弹窗打开与结构字段变化后重放注入，
-// 保证保存时刻 payload 携带的域与当前路由域一致（保存按钮在装载完成前禁用，
-// 不存在中途取值窗口）。
+// 能力域上下文同步（D3）：编辑/克隆态域由路由注入，新建态由第一步场景
+// 选择器决定；表单在装载路径会被整块 Object.assign 重置，这里在弹窗打开与
+// 结构字段变化后重放注入，保证保存时刻 payload 携带的域与当前选择一致。
 watch(
   [
     open,
-    () => props.capabilityDomain,
+    () => effectiveCapabilityDomain.value,
     () => props.loading,
     () => props.advancedLoading,
     () => props.form.providerCode,
@@ -1045,7 +1085,7 @@ watch(
   ],
   () => {
     if (!open.value) return
-    props.form.capabilityDomain = props.capabilityDomain
+    props.form.capabilityDomain = effectiveCapabilityDomain.value
   },
   { immediate: true }
 )
@@ -1065,14 +1105,14 @@ watch(
   () => {
     if (!open.value || !isMediaDomain.value || !props.form.type) return
     const allowed = allowedEndpointModesFor({
-      capabilityDomain: props.capabilityDomain,
+      capabilityDomain: effectiveCapabilityDomain.value,
       providerCode: props.form.providerCode,
       profile: props.selectedProtocolProfile,
       accountType: props.form.type
     })
     if (!allowed.length) return
     applyMediaCreateDefaults(props.form, {
-      capabilityDomain: props.capabilityDomain,
+      capabilityDomain: effectiveCapabilityDomain.value,
       providerCode: props.form.providerCode,
       profile: props.selectedProtocolProfile,
       type: props.form.type,
@@ -1124,8 +1164,8 @@ const expeditedRecoveryNote = computed(() => {
 
 // ---- 后台自动探测总开关（总开关设计 §4/§7 手动模式）----
 
-// 手动模式：总开关关闭（image 媒体域在「后台自动探测」卡渲染开关；
-// audio/video 媒体域不渲染开关，对话域在稳定性卡渲染）。
+// 手动模式：总开关关闭（所有场景统一渲染；媒体域在「后台自动探测」卡，
+// 对话域在稳定性卡）。
 const manualProbeMode = computed(() => props.form.backgroundProbeEnabled === false)
 
 const continuousProbeTooltipText = computed(() => manualProbeMode.value
@@ -1300,7 +1340,7 @@ const policyCardCount = computed(() => errorPolicyRules.value.length + responseI
 // 媒体域只渲染错误处理策略，不渲染响应检查策略。
 const mediaPolicyCardSummary = computed(() => `错误 ${errorPolicyRules.value.length} 条`)
 
-// image 媒体域专属「后台自动探测」卡摘要（audio/video 不渲染该卡）。
+// 媒体域统一「后台自动探测」卡摘要（D0 后 video/audio/image 同卡）。
 const probeCardSummary = computed(() =>
   `后台自动探测${props.form.backgroundProbeEnabled ? '开启' : '关闭'}`)
 const probeCardCount = computed(() => (props.form.backgroundProbeEnabled ? 0 : 1))
@@ -1799,6 +1839,24 @@ const emit = defineEmits<{
 .advanced-section-stack :deep(.policy-title-row h4) {
   font-size: 14px;
   font-weight: 600;
+}
+
+.account-scenario-choice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: var(--ant-color-fill-quaternary, #fafafa);
+  border: 1px solid var(--ant-color-border-secondary, #f0f0f0);
+  border-radius: 8px;
+}
+
+.account-scenario-hint {
+  flex: 1 1 100%;
+  color: var(--ant-color-text-tertiary, #8c8c8c);
+  font-size: 12px;
 }
 
 .account-modal-footer {

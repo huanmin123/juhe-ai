@@ -13,7 +13,8 @@ import (
 )
 
 // capabilityDomainCorrectColumn 是与 maintenance DDL 同构的正确列声明。
-const capabilityDomainCorrectColumn = `capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+// D13 起无 CHECK，场景值由应用层 scenario 注册表校验。
+const capabilityDomainCorrectColumn = `capability_domain TEXT NOT NULL DEFAULT 'chat'`
 
 // TestCapabilityDomainSchemaPostgresArms 在 w12c 覆盖库上以独立 scratch schema
 // 验证 PG 方言判定；覆盖库不可用时跳过。
@@ -42,7 +43,7 @@ func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
 		{"wrong-type", `capability_domain bigint NOT NULL DEFAULT 0`, "期望 text"},
 		{"nullable", `capability_domain text`, "期望 NOT NULL"},
 		{"wrong-default", `capability_domain text NOT NULL DEFAULT 'video'`, "期望前缀 'chat'"},
-		{"missing-check", `capability_domain text NOT NULL DEFAULT 'chat'`, "CHECK"},
+		{"unexpected-check", `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`, "CHECK"},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {

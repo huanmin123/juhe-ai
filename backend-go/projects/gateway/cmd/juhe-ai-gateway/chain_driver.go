@@ -329,19 +329,35 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			if err != nil {
 				return nil, geminiSpeechAdapterBoundaryError(err)
 			}
-		openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
-		if urlErr != nil {
-			return nil, urlErr
+			openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{openaiURL}, nil
 		}
-		return []string{openaiURL}, nil
-	}
-	// openai-compatible (openai / hybrid and any other OpenAI-style
+		// openai-compatible (openai / hybrid and any other OpenAI-style
 		// upstream): v2 直拼——base_url 即版本根 + 入站剥 /v1 后的 opPath
 		//（不再补 /v1）。2026-11-07 跨协议 Responses→Chat 桥退役：原
 		// BUG-0178 的 responses→chat 路径改写与 accountHasNativeResponsesModes
 		// 守卫随桥删除；协议等价映射（同族改名）不改变请求路径，模型改名由
 		// driver body transform 承载。
 		pathAndQuery := req.PathAndQuery()
+		// 同步图像（2026-11-11 图像生成统一协议）：gpt/xai/volcengine 沿用
+		// OpenAI Images 直拼；qwen 由 image adapter 给出 DashScope 原生全路径，
+		// 并把账户误配的 /compatible-mode/v1、/api/v1、/v1 版本根剥离到 origin。
+		// adapter 返回原路径时继续走下方通用 openai 分支（零行为变化）。
+		if gatewaymedia.IsImageGenerationPath(pathAndQuery) {
+			if adapter := gatewaymedia.ImageAdapterForProvider(account.VendorCode); adapter != nil {
+				if upstreamPath := adapter.UpstreamPath(pathAndQuery); upstreamPath != pathAndQuery {
+					baseURL := gatewaymedia.ImageBaseURLForProvider(account.VendorCode, account.BaseURL)
+					upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(baseURL, upstreamPath)
+					if urlErr != nil {
+						return nil, urlErr
+					}
+					return []string{upstreamURL}, nil
+				}
+			}
+		}
 		// 对话批（通义百炼对话承接）：qwen chat 通用 opPath 恒定拼厂商前缀
 		// /compatible-mode/v1（R6，chainQwenChatPathPrefix，registry preset
 		// qwen_dashscope 同源）后与 base_url 直拼——官方 origin 形态 base +
@@ -643,6 +659,26 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	// 注入发生在全部既有 body 组装/改写（兼容体、模型映射、gpt 覆盖、reasoning
 	// 归一）之后、发出之前，不回写请求级 body 缓存（候选轮换语义不变）。
 	body = chainMaybeInjectChatStreamUsageOption(req, account, modelMapping, body)
+	// 同步图像（2026-11-11 图像生成统一协议）：在模型映射/gpt 覆盖之后按
+	// vendor 归一图像 body——gpt 仅消费 provider_options（无扩展参数时返回
+	// nil，保持字节级透传）；xai/volcengine 合并扩展参数并忽略未文档化字段；
+	// qwen 改写为 DashScope 原生 multimodal-generation 报文。provider_options
+	// 不转发上游。
+	if gatewaymedia.IsImageGenerationPath(req.PathAndQuery()) {
+		imageBody, imageErr := gatewaymedia.BuildImageUpstreamRequest(account.VendorCode, body)
+		if imageErr != nil {
+			return gatewaydispatch.PreparedRequestParts{}, gatewaypreauth.NewGatewayRequestValidationError(
+				imageErr.Error(),
+				gatewaypreauth.WithValidationErrorCode("invalid_image_request"),
+				gatewaypreauth.WithValidationErrorStatusCode(http.StatusBadRequest),
+			)
+		}
+		if imageBody != nil {
+			body = imageBody
+			headers = headers.Clone()
+			headers.Set("Content-Type", "application/json")
+		}
+	}
 	// xAI（Grok）OAuth 透传出站的 Grok CLI 身份三头（xAI 账号接入文档口径，
 	// 见 applyXaiGrokOAuthIdentityHeaders）：仅按账户与目标主机条件注入，
 	// body 不再改写。
@@ -1839,7 +1875,7 @@ func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.Gatewa
 }
 
 // glmSpeechUpstreamPathOf 把 glm 账户的同步音频请求路径产出为 v2 opPath
-//（契约 §7.2：{base}/audio/speech|transcriptions|translations——CogVideo
+// （契约 §7.2：{base}/audio/speech|transcriptions|translations——CogVideo
 // §7.1 同根先例；opPath 不含版本段，/api/paas/v4 通用根由账户 base_url
 // 版本根承载）。ok=false 表示非同步音频端点（chat/videos 等
 // 维持既有归一）。

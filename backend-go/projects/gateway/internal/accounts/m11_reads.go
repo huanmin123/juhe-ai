@@ -15,6 +15,8 @@ import (
 	"errors"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // advancedEditableCredentialKeys mirrors advancedEditableCredentialKeys
@@ -252,7 +254,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		proxyPoolID                sql.NullString
 		sourceProxyPoolID          sql.NullString
 		availabilityScheduleJSON   sql.NullString
-		accountExpiresAt           sql.NullString
+		accountExpiresAt           dbtime.Nullable
 		backgroundProbeEnabled     int
 		probeEnabled               int
 		balanceQueryEnabled        int
@@ -264,7 +266,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		sourceSchedulable          sql.NullInt64
 		sourceProxyProfileID       sql.NullString
 		sourceAvailabilityJSON     sql.NullString
-		sourceAccountExpiresAt     sql.NullString
+		sourceAccountExpiresAt     dbtime.Nullable
 		sourceProbeEnabled         sql.NullInt64
 		sourceBackgroundProbe      sql.NullInt64
 		expeditedRecoveryEnabled   int
@@ -427,7 +429,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		EffectiveErrorHandlingRules:  effectiveRules,
 		ModelMappings:                mappings,
 		ProxyProfileID:               nullPtrString(row.proxyProfileID),
-		AccountExpiresAt:             nullPtrString(row.accountExpiresAt),
+		AccountExpiresAt:             nullPtrTime(row.accountExpiresAt),
 		BackgroundProbeEnabled:       row.backgroundProbeEnabled == 1,
 		TemporaryUnavailableContinuousProbeEnabled: row.probeEnabled == 1,
 		BalanceQueryEnabled:                        row.balanceQueryEnabled == 1,
@@ -511,7 +513,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 	if isAuthorized {
 		detail.AccessType = "authorized"
 		detail.ProxyProfileID = nullPtrString(row.sourceProxyProfileID)
-		detail.AccountExpiresAt = nullPtrString(row.sourceAccountExpiresAt)
+		detail.AccountExpiresAt = nullPtrTime(row.sourceAccountExpiresAt)
 		detail.BackgroundProbeEnabled = row.sourceBackgroundProbe.Valid && row.sourceBackgroundProbe.Int64 == 1
 		detail.TemporaryUnavailableContinuousProbeEnabled = row.sourceProbeEnabled.Valid && row.sourceProbeEnabled.Int64 == 1
 		detail.BalanceQueryEnabled = false

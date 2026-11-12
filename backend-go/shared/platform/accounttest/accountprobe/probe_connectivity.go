@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -34,9 +35,10 @@ import (
 const ConnectivityProbeTaskID = "probe-connectivity-check"
 
 // isConnectivityProbeMode 判定媒体域连通性探测模式。audio_transcription_json
-// 不在裁决范围（STT 探测保持内置 WAV 样本真实请求）。
+// 不在裁决范围（STT 探测保持内置 WAV 样本真实请求）；audio_job_create 永不
+// POST，长音频账户统一用 audio_job_get 查询不存在任务。
 func isConnectivityProbeMode(mode EndpointMode) bool {
-	return mode == ModeVideoCreate || mode == ModeImagesJSON || mode == ModeAudioSpeech
+	return mode == ModeVideoCreate || mode == ModeImagesJSON || mode == ModeAudioSpeech || mode == ModeAudioJobGet
 }
 
 // connectivityExpectedRejectionCodes 返回各模式的「预期拒绝 = 密钥有效」状态
@@ -46,7 +48,7 @@ func isConnectivityProbeMode(mode EndpointMode) bool {
 //
 // 2xx 对三种模式均视为通过（极少数上游对探测请求直接放行也接受）。
 func connectivityExpectedRejectionCodes(mode EndpointMode) map[int]bool {
-	if mode == ModeVideoCreate {
+	if mode == ModeVideoCreate || mode == ModeAudioJobGet {
 		return map[int]bool{http.StatusBadRequest: true, http.StatusNotFound: true}
 	}
 	return map[int]bool{http.StatusBadRequest: true, http.StatusUnprocessableEntity: true}
@@ -106,7 +108,38 @@ func (s *Service) executeConnectivityAttempt(ctx context.Context, view *View, mo
 	return classifyConnectivityResponse(view, mode, response, readErr, durationMS, limited), nil
 }
 
-// buildConnectivityRequest 按 2026-11-01 裁决构造三模式连通性请求：
+// videoConnectivityPath 返回各 vendor 的“查询不存在任务”GET 路径。所有分支
+// 都只查询固定占位任务，不触碰创建端点；path 由 base_url 版本根拼接。
+func videoConnectivityPath(provider, model string) (path, rawQuery string) {
+	id := ConnectivityProbeTaskID
+	switch provider {
+	case "volcengine":
+		return "/contents/generations/tasks/" + id, ""
+	case "qwen":
+		return "/api/v1/tasks/" + id, ""
+	case "minimax":
+		return "/query/video_generation", "task_id=" + url.QueryEscape(id)
+	case "glm":
+		return "/async-result/" + id, ""
+	case "gemini":
+		return "/models/" + url.PathEscape(strings.TrimSpace(model)) + "/operations/" + id, ""
+	default:
+		// OpenAI 官方视频任务面（gpt/xai OpenAI 兼容）。
+		return "/videos/" + id, ""
+	}
+}
+
+// audioJobConnectivityPath 返回长音频任务查询路径：qwen DashScope 与视频
+// 任务共用 /api/v1/tasks/{id}；其余 OpenAI 兼容任务面用 /audio/jobs/{id}。
+func audioJobConnectivityPath(provider string) string {
+	id := ConnectivityProbeTaskID
+	if provider == "qwen" {
+		return "/api/v1/tasks/" + id
+	}
+	return "/audio/jobs/" + id
+}
+
+// buildConnectivityRequest 按 2026-11-01 裁决构造媒体域连通性请求：
 //   - video_create：GET {base}/contents/generations/tasks/{ConnectivityProbeTaskID}
 //     （volcengine_ark 预设模板的任务查询形态，绝不 POST 创建端点）；
 //   - images_json：POST {base}/images/generations，body 仅 {"model":<model>}
@@ -123,22 +156,45 @@ const volcengineSpeechCreatePath = "/api/v3/tts/create"
 
 func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode, model, apiKey string) (*http.Request, error) {
 	baseURL := strings.TrimSpace(view.BaseURL)
+	provider := strings.ToLower(strings.TrimSpace(view.ProviderCode))
 	// volcengine 的 audio_speech 走独立语音域，不读账户 base_url（ark 版本根）。
-	volcengineSpeech := mode == ModeAudioSpeech && strings.EqualFold(strings.TrimSpace(view.ProviderCode), "volcengine")
+	volcengineSpeech := mode == ModeAudioSpeech && provider == "volcengine"
 	if baseURL == "" && !volcengineSpeech {
 		return nil, errors.New("账户缺少上游 base_url")
 	}
 	var (
-		method string
-		opPath string
-		body   []byte
+		method   string
+		opPath   string
+		body     []byte
+		rawQuery string
 	)
 	switch mode {
 	case ModeVideoCreate:
 		method = http.MethodGet
-		opPath = "/contents/generations/tasks/" + ConnectivityProbeTaskID
+		opPath, rawQuery = videoConnectivityPath(provider, model)
+	case ModeAudioJobGet:
+		method = http.MethodGet
+		opPath = audioJobConnectivityPath(provider)
 	case ModeImagesJSON:
 		method = http.MethodPost
+		if provider == "qwen" {
+			opPath = "/api/v1/services/aigc/multimodal-generation/generation"
+			encoded, err := json.Marshal(map[string]any{
+				"model": model,
+				"input": map[string]any{
+					"messages": []any{map[string]any{
+						"role":    "user",
+						"content": []any{map[string]any{"text": ""}},
+					}},
+				},
+				"parameters": map[string]any{},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("编码 qwen 图像连通性探测请求体失败: %w", err)
+			}
+			body = encoded
+			break
+		}
 		opPath = "/images/generations"
 		encoded, err := json.Marshal(map[string]string{"model": model})
 		if err != nil {
@@ -147,17 +203,40 @@ func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode
 		body = encoded
 	case ModeAudioSpeech:
 		method = http.MethodPost
-		opPath = "/tts/create"
-		// 火山 openspeech 必须先有 model 才能把请求解析到 resource_id：空体会被
-		// 45000030「fail to convert model to resource_id」挡在授权层，无法证明
-		// 密钥有效；带 model 后缺 prompt 由参数校验拒绝（400/45001116），即穿
-		// 过授权层的预期拒绝。OpenAI /audio/speech 带 model 仍因缺 input 返回
-		// 400，判定口径不变。
-		encoded, err := json.Marshal(map[string]string{"model": model})
-		if err != nil {
-			return nil, fmt.Errorf("编码连通性探测请求体失败: %w", err)
+		switch {
+		case volcengineSpeech:
+			opPath = "/api/v3/tts/create"
+			encoded, err := json.Marshal(map[string]string{"model": model})
+			if err != nil {
+				return nil, fmt.Errorf("编码连通性探测请求体失败: %w", err)
+			}
+			body = encoded
+		case provider == "gemini":
+			opPath = "/models/" + strings.TrimSpace(model) + ":generateContent"
+			encoded, err := json.Marshal(map[string]any{
+				"contents":         []any{map[string]any{"parts": []any{map[string]any{"text": ""}}}},
+				"generationConfig": map[string]any{"responseModalities": []string{"AUDIO"}},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("编码 gemini 音频连通性探测请求体失败: %w", err)
+			}
+			body = encoded
+		case provider == "minimax":
+			opPath = "/t2a_v2"
+			encoded, err := json.Marshal(map[string]string{"model": model, "text": ""})
+			if err != nil {
+				return nil, fmt.Errorf("编码 minimax 音频连通性探测请求体失败: %w", err)
+			}
+			body = encoded
+		default:
+			// OpenAI/GLM/xAI 的同步 TTS 形态。
+			opPath = "/audio/speech"
+			encoded, err := json.Marshal(map[string]string{"model": model})
+			if err != nil {
+				return nil, fmt.Errorf("编码连通性探测请求体失败: %w", err)
+			}
+			body = encoded
 		}
-		body = encoded
 	default:
 		return nil, fmt.Errorf("未知的连通性探测模式：%s", mode)
 	}
@@ -167,6 +246,9 @@ func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode
 		target, err = upstreamenvelope.JoinUpstreamURL(volcengineSpeechBaseURL, volcengineSpeechCreatePath)
 	} else {
 		target, err = upstreamenvelope.JoinUpstreamURL(baseURL, opPath)
+		if err == nil && rawQuery != "" {
+			target += "?" + rawQuery
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -219,6 +301,19 @@ func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode
 	return request, nil
 }
 
+// connectivityVolcengineAuthPassed 处理火山方舟 403/45000030（缺 resource_id，
+// 已过鉴权）与 400/45001116（参数校验前已过鉴权）的误判：响应体命中这些
+// 业务码时视为 Key 可达，而不是凭据无效。
+func connectivityVolcengineAuthPassed(view *View, statusCode int, body string) bool {
+	if view == nil || !strings.EqualFold(strings.TrimSpace(view.ProviderCode), "volcengine") {
+		return false
+	}
+	if statusCode != http.StatusForbidden {
+		return false
+	}
+	return strings.Contains(body, "45000030") || strings.Contains(body, "resource_id")
+}
+
 // classifyConnectivityResponse 按裁决分类表判定连通性结果：
 //   - 通过（2xx 或各模式预期拒绝码）：「密钥连通性验证通过（上游 HTTP <code>）」；
 //   - 401/403：密钥无效，失败；
@@ -230,7 +325,8 @@ func classifyConnectivityResponse(view *View, mode EndpointMode, response *upstr
 	protocol := DiagnosticProtocol(protocolCodeForView(view))
 	statusCode := response.status
 	upstreamErrorCode := parseUpstreamErrorCodeFromBody(response.bodyText)
-	success := (statusCode >= 200 && statusCode < 300) || connectivityExpectedRejectionCodes(mode)[statusCode]
+	success := (statusCode >= 200 && statusCode < 300) || connectivityExpectedRejectionCodes(mode)[statusCode] ||
+		connectivityVolcengineAuthPassed(view, statusCode, response.bodyText)
 	message := ""
 	errorCode := ""
 	switch {

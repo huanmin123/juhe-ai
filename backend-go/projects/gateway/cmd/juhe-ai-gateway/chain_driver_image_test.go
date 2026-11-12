@@ -14,7 +14,7 @@ func TestChainProviderDriverImageRequestParts(t *testing.T) {
 	driver := newChainProviderDriver()
 	ctx := context.Background()
 
-	t.Run("gpt 无 provider_options 保持字节透传", func(t *testing.T) {
+	t.Run("gpt 忽略 stream/partial_images 返回 JSON", func(t *testing.T) {
 		raw := `{"model":"gpt-image-2","prompt":"a cat","stream":true,"partial_images":1}`
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/images/generations", raw, nil)
 		account := gatewaydispatch.AccountCandidate{
@@ -25,8 +25,17 @@ func TestChainProviderDriverImageRequestParts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("build parts: %v", err)
 		}
-		if string(parts.Body) != raw {
-			t.Fatalf("gpt image body changed: %s", parts.Body)
+		var body map[string]any
+		if err := json.Unmarshal(parts.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		for _, key := range []string{"stream", "partial_images"} {
+			if _, ok := body[key]; ok {
+				t.Fatalf("%s must be ignored: %s", key, parts.Body)
+			}
+		}
+		if body["model"] != "gpt-image-2" || body["prompt"] != "a cat" {
+			t.Fatalf("base params changed: %s", parts.Body)
 		}
 		if parts.Headers.Get("Authorization") != "Bearer sk-gpt" {
 			t.Fatalf("authorization = %q", parts.Headers.Get("Authorization"))

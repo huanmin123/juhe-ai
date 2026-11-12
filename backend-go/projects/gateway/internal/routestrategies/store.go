@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // GroupBindingPreview mirrors RouteStrategyGroupBindingPreview（组无 provider
@@ -114,8 +116,9 @@ const strategyRowColumns = `route_strategies.id, route_strategies.system_account
 func scanStrategyRow(scan func(...any) error, withAPIKeyCount bool) (strategyRow, error) {
 	row := strategyRow{}
 	var isDefault int
+	var createdAt, updatedAt dbtime.Nullable
 	targets := []any{&row.id, &row.systemAccountID, &row.name, &row.description, &row.mode, &row.status,
-		&isDefault, &row.configJSON, &row.createdAt, &row.updatedAt}
+		&isDefault, &row.configJSON, &createdAt, &updatedAt}
 	if withAPIKeyCount {
 		targets = append(targets, &row.apiKeyCount)
 	}
@@ -123,6 +126,8 @@ func scanStrategyRow(scan func(...any) error, withAPIKeyCount bool) (strategyRow
 		return strategyRow{}, err
 	}
 	row.isDefault = isDefault == 1
+	row.createdAt = createdAt.APIString()
+	row.updatedAt = updatedAt.APIString()
 	return row, nil
 }
 
@@ -740,7 +745,8 @@ func (s *Store) FindEditBasic(ctx context.Context, id string, access AccessScope
 		where = " AND " + clause
 		args = append(args, clauseArgs...)
 	}
-	var rowID, systemAccountID, name, mode, status, updatedAt string
+	var rowID, systemAccountID, name, mode, status string
+	var updatedAt dbtime.Nullable
 	var description sql.NullString
 	var configJSON sql.NullString
 	var isDefault int
@@ -781,7 +787,7 @@ func (s *Store) FindEditBasic(ctx context.Context, id string, access AccessScope
 		IsDefault:           isDefault == 1,
 		NormalRoutingConfig: normalConfigForMode(normalizedMode, normal),
 		GroupBindings:       bindings[rowID],
-		UpdatedAt:           updatedAt,
+		UpdatedAt:           updatedAt.APIString(),
 	}
 	if detail.GroupBindings == nil {
 		detail.GroupBindings = []GroupBinding{}

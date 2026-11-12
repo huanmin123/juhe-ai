@@ -54,15 +54,9 @@ func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
 	}
 	h.exec(t, `UPDATE juhe_business.accounts SET status='active' WHERE id='acc-1'`)
 
-	// Garbage runtime timestamps surface invalid_runtime_state.
-	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at='garbage' WHERE id='acc-1'`)
-	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
-		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
-		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
-	})
-	if err != nil || result.SkippedReason != "invalid_runtime_state" {
-		t.Fatalf("garbage health timestamp: %+v %v", result, err)
-	}
+	// Revision 26 起时间列为 timestamptz：非法时间文本在写入阶段即被拒绝，
+	// 「脏健康时间 → invalid_runtime_state」臂不可构造（生产分支保留为历史
+	// 行防御；schema 拒绝不变量由 w12h 用例钉住）。
 	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at=NULL, updated_at=$1 WHERE id='acc-1'`, plusMillis(60_000))
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),

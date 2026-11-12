@@ -43,7 +43,7 @@ func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 		{"chat_sse", "gpt", "/v1/chat/completions", false},
 		{"responses_json", "gpt", "/v1/responses", true},
 		{"responses_sse", "gpt", "/v1/responses", false},
-		{"images_json", "gpt", "/v1/images/generations", false},
+		{"images_json", "gpt", "/v1/models", true},
 		{"messages_json", "anthropic", "/v1/messages", false},
 		{"generate_content_json", "gemini", "/v1beta/models/w12d-model:generateContent", false},
 		{"generate_content_sse", "gemini", "/v1beta/models/w12d-model:streamGenerateContent", false},

@@ -297,7 +297,7 @@ func (s *InspectionStore) normalizedFromPatchRow(ctx context.Context, row inspec
 	return &inspectionNormalized{
 		Name: row.name, Enabled: row.enabled, Priority: row.priority, ScopeType: scopeType,
 		ProtocolCode: row.protocolCode, ProviderCode: providerCode, Match: match,
-		Action: action, Notes: notes, UpdatedAt: row.updatedAt,
+		Action: action, Notes: notes, UpdatedAt: apiTimeString(row.updatedAt),
 	}, nil
 }
 

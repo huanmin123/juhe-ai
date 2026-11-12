@@ -506,7 +506,7 @@ var (
 	// M5b realtime（Realtime 设计 §6）：realtime_session 同语义进词表
 	//（词表缺失会让显式勾选 realtime 能力的账户在 secret 投影时被滤除，
 	// WS 桥接候选过滤随 handler 生效）。
-	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
+	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "embed_content", "rerank_json", "moderation_json", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
 	chainOpenAIChatEndpointModes  = []string{"chat_json", "chat_sse"}
 	chainOpenAIResponsesModes     = []string{"responses_json", "responses_sse"}
 	// chainOpenAIDefaultEndpointModes mirrors

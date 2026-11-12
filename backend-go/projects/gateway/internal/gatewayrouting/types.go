@@ -31,6 +31,8 @@ const (
 	EndpointFamilyStreamGenerate   = "stream_generate_content"
 	EndpointFamilyCountTokens      = "count_tokens"
 	EndpointFamilyEmbedContent     = "embed_content"
+	EndpointFamilyRerank           = "rerank"
+	EndpointFamilyModeration       = "moderation"
 	EndpointFamilyInteractions     = "interactions"
 	EndpointFamilyGeminiModelsPath = "models"
 )

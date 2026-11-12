@@ -1,14 +1,26 @@
 package circuitstore
 
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
+)
+
+// testTimeValue 把 RFC3339 文本转成 timestamptz 扫描目标。
+func testTimeValue(value string) dbtime.Nullable {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		panic(err)
+	}
+	return dbtime.Nullable{Time: parsed.UTC(), Valid: true}
+}
+
 // accountEffectiveAvailability 状态机与 presentation payload 的全分支矩阵测试：
 // 输入集合 availabilityInput 的每个阻塞分支都必须映射到唯一
 // effectiveAvailability（status/label/color/blockerScope/reason/retryAt），
 // 分类与 presentation 映射保持与归档 Node 同名函数逐分支一致。
-
-import (
-	"testing"
-	"time"
-)
 
 func effNow() time.Time { return time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC) }
 
@@ -316,7 +328,7 @@ func TestPresentationPayloadBoundaryAndProbeActions(t *testing.T) {
 	// cooldown 阻塞携带 statusBoundary（at + kind）；边界取 row.cooldownUntil。
 	cooldownRow := emptyManagementRow("a")
 	cooldownRow.cooldownUntil.Valid = true
-	cooldownRow.cooldownUntil.String = effFuture
+	cooldownRow.cooldownUntil = testTimeValue(effFuture)
 	cooldown := blockedAvailability("instance_cooldown", "冷却", "gold", "account", "冷却中", effFuture)
 	payload := presentationPayload(&cooldown, cooldownRow, nil, now)
 	boundary, ok := payload["statusBoundary"].(map[string]any)
@@ -381,7 +393,7 @@ func TestProbeFactsPayloadGating(t *testing.T) {
 	}
 	// 有 nextHealthCheckAt → schedule-only probe。
 	row.nextHealthCheckAt.Valid = true
-	row.nextHealthCheckAt.String = effFuture
+	row.nextHealthCheckAt = testTimeValue(effFuture)
 	got := probeFactsPayload(&pending, row, now)
 	if got == nil || got["kind"] != "activation_check" {
 		t.Fatalf("待检查应输出 activation_check probe: %v", got)
@@ -397,7 +409,7 @@ func TestProbeFactsPayloadGating(t *testing.T) {
 	// source_* → sourceProbePayload。
 	sourceBlocked := blockedAvailability("source_error", "", "", "", "", "")
 	row.sourceNextHealthCheckAt.Valid = true
-	row.sourceNextHealthCheckAt.String = effFuture
+	row.sourceNextHealthCheckAt = testTimeValue(effFuture)
 	got = probeFactsPayload(&sourceBlocked, row, now)
 	if got == nil || got["kind"] != "source_account_probe" {
 		t.Fatalf("source 阻塞应输出 source_account_probe: %v", got)
@@ -417,7 +429,7 @@ func TestSourceProbePayloadObservations(t *testing.T) {
 	// 健康检查成功观察（httpStatus < 400）。
 	row := emptyManagementRow("a")
 	row.sourceLastHealthCheckAt.Valid = true
-	row.sourceLastHealthCheckAt.String = effPast
+	row.sourceLastHealthCheckAt = testTimeValue(effPast)
 	row.sourceLastHealthCheckStatusCode.Valid = true
 	row.sourceLastHealthCheckStatusCode.Int64 = 200
 	got := sourceProbePayload("source_error", row, now)
@@ -452,13 +464,13 @@ func TestSourceProbePayloadObservations(t *testing.T) {
 	// rate_limited 走 cooldown-retest 数据源（attemptedAt 用 retest 时间）。
 	retestRow := emptyManagementRow("b")
 	retestRow.sourceCooldownRetestLastAt.Valid = true
-	retestRow.sourceCooldownRetestLastAt.String = effPast
+	retestRow.sourceCooldownRetestLastAt = testTimeValue(effPast)
 	retestRow.sourceLastErrorCode.Valid = true
 	retestRow.sourceLastErrorCode.String = "cooldown_retest_http_429"
 	retestRow.sourceCooldownRetestLastStatusCode.Valid = true
 	retestRow.sourceCooldownRetestLastStatusCode.Int64 = 429
 	retestRow.sourceCooldownUntil.Valid = true
-	retestRow.sourceCooldownUntil.String = effFuture
+	retestRow.sourceCooldownUntil = testTimeValue(effFuture)
 	got = sourceProbePayload("source_rate_limited", retestRow, now)
 	observation = got["lastObservation"].(map[string]any)
 	if observation["attemptedAt"] != effPast || observation["errorCode"] != "cooldown_retest_http_429" || observation["httpStatus"] != int64(429) {
@@ -477,7 +489,7 @@ func TestHealthObservationPayload(t *testing.T) {
 	}
 	row := emptyManagementRow("a")
 	row.lastHealthCheckAt.Valid = true
-	row.lastHealthCheckAt.String = effPast
+	row.lastHealthCheckAt = testTimeValue(effPast)
 	got := healthObservationPayload(row)
 	if got["result"] != "success" {
 		t.Fatalf("无失败痕迹应为 success: %v", got)

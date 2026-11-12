@@ -2,10 +2,10 @@
 // PLAN-20261011T141004000Z §数据变化）。
 //
 // 边界：加列与域赋值归 maintenance（migrate/verify 命令），gateway/jobs 启动
-// 只做一次性只读校验，不 ALTER、不重推账户域。列缺失或四值形状
-// （TEXT / NOT NULL / DEFAULT 'chat' / CHECK 四枚举）不符时 fail-fast 停止，
-// 错误信息携带期望形状；不静默修补（部署顺序契约：先迁移后启动新版本）。
-// M2 起在形状校验之后追加阶段记录门禁（要求
+// 只做一次性只读校验，不 ALTER、不重推账户域。列缺失或形状（TEXT / NOT NULL /
+// DEFAULT 'chat' / 无 capability_domain CHECK）不符时 fail-fast 停止，错误信息
+// 携带期望形状；不静默修补（部署顺序契约：先迁移后启动新版本）。M2 起在形状
+// 校验之后追加阶段记录门禁（要求
 // account_capability_domain_migration 已封存 m2_finalized，判定语义与运维
 // 文案在共享包 capabilitydomain.RequireM2Finalized，两侧启动门禁共用）。本
 // 文件与 juhe-ai-jobs 同名文件互为镜像（形状校验两模块无共享包），权威 DDL
@@ -34,17 +34,17 @@ const (
 	capabilityDomainDefaultLiteral = "'chat'"
 
 	// capabilityDomainExpectedShape 是错误信息中的期望形状（与
-	// maintenance/internal/schema accounts DDL 的列声明一致）。
-	capabilityDomainExpectedShape = "capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))"
+	// maintenance/internal/schema accounts DDL 的列声明一致）。D13 起列不再
+	// 带 CHECK：场景值由应用层 scenario 注册表校验，cutover 会删除旧 CHECK。
+	capabilityDomainExpectedShape = "capability_domain TEXT NOT NULL DEFAULT 'chat'（无 CHECK；场景由应用层 scenario 注册表校验）"
 
 	// capabilityDomainBusinessPGSchema 是 PG 模式业务 schema（与
 	// modelcheckowner/jobs 侧 juhe_business 前缀约定同源）。
 	capabilityDomainBusinessPGSchema = "juhe_business"
 )
 
-// capabilityDomainExpectedValues 是 CHECK 允许值集（PG pg_get_constraintdef
-// 按值集判定）。数组字面量不可为 const，按 var 承载。
-var capabilityDomainExpectedValues = [4]string{"'chat'", "'video'", "'audio'", "'image'"}
+// capabilityDomainExpectedShape 的旧四值 CHECK 判据已随 D13 删除：新二进制
+// 只接受无 CHECK 的文本列，旧 CHECK 由 maintenance cutover 明确移除。
 
 // checkAccountsCapabilityDomainSchema 对业务库 accounts.capability_domain 做
 // 一次性只读形状校验（PostgreSQL 业务库唯一形态）。返回 nil 表示列存在且
@@ -115,25 +115,16 @@ func checkAccountsCapabilityDomainSchemaPostgres(ctx context.Context, db *sql.DB
 		return fmt.Errorf("accounts.capability_domain 启动校验失败：遍历 CHECK 约束失败: %w", err)
 	}
 	checkRows.Close()
-	// PG 把 IN (...) 归一化为 = ANY(ARRAY[...])，按「同一约束含列名与四值
-	// 字面量」判定值集形状；不做 IN 语法字面匹配。
+	// D13：cutover 后列上不得再有 capability_domain CHECK。旧 CHECK 会让
+	// 新场景值写入失败，也会把场景枚举重新钉死；发现即 fail-fast，要求先跑
+	// maintenance cutover（删非对话账户 + 去 CHECK）。
 	for _, definition := range definitions {
 		normalized := capabilityDomainNormalized(definition)
-		if !strings.Contains(normalized, capabilityDomainColumn) {
-			continue
-		}
-		allValues := true
-		for _, value := range capabilityDomainExpectedValues {
-			if !strings.Contains(normalized, value) {
-				allValues = false
-				break
-			}
-		}
-		if allValues {
-			return nil
+		if strings.Contains(normalized, capabilityDomainColumn) {
+			return fmt.Errorf("accounts.capability_domain 启动校验失败：%s.accounts 仍存在 capability_domain CHECK 约束（%s），期望 %s；请先运行 maintenance cutover 删除旧 CHECK", schema, definition, capabilityDomainExpectedShape)
 		}
 	}
-	return fmt.Errorf("accounts.capability_domain 启动校验失败：%s.accounts 的 CHECK 约束未覆盖四值域集 %v，期望形状 %s", schema, capabilityDomainExpectedValues, capabilityDomainExpectedShape)
+	return nil
 }
 
 // capabilityDomainNormalized 小写化并移除全部空白（空格/换行/制表），供判据

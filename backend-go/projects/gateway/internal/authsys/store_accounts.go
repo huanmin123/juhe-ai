@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
@@ -217,17 +218,21 @@ var whitespacePattern = regexp.MustCompile(`\s`)
 func hasWhitespace(value string) bool { return whitespacePattern.MatchString(value) }
 
 const (
-	accountColumns = `id,username,COALESCE(display_name,''),COALESCE(description,''),role,status,must_change_password,image_generation_enabled,ai_account_limit,expedited_account_limit,COALESCE(request_limits_json,''),COALESCE(last_login_at,''),created_at,updated_at`
+	accountColumns = `id,username,COALESCE(display_name,''),COALESCE(description,''),role,status,must_change_password,image_generation_enabled,ai_account_limit,expedited_account_limit,COALESCE(request_limits_json,''),last_login_at,created_at,updated_at`
 )
 
 func (s *AccountStore) scanSummary(scanner interface{ Scan(...any) error }) (AccountSummary, error) {
 	var a AccountSummary
-	var description, requestLimitsJSON, lastLoginAt string
+	var description, requestLimitsJSON string
+	var lastLoginAt dbtime.Nullable
+	var createdAt, updatedAt dbtime.Nullable
 	var mustChange, imageEnabled int
 	var aiLimit, expeditedLimit sql.NullInt64
-	if err := scanner.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt); err != nil {
+	if err := scanner.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &createdAt, &updatedAt); err != nil {
 		return AccountSummary{}, err
 	}
+	a.CreatedAt = createdAt.APIString()
+	a.UpdatedAt = updatedAt.APIString()
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
 	a.ImageGenerationEnabled = imageEnabled == 1
 	if description != "" {
@@ -247,8 +252,9 @@ func (s *AccountStore) scanSummary(scanner interface{ Scan(...any) error }) (Acc
 		limit := int(expeditedLimit.Int64)
 		a.ExpeditedAccountLimit = &limit
 	}
-	if lastLoginAt != "" {
-		a.LastLoginAt = &lastLoginAt
+	if lastLoginAt.Valid {
+		value := lastLoginAt.APIString()
+		a.LastLoginAt = &value
 	}
 	return a, nil
 }
@@ -303,12 +309,15 @@ func (s *AccountStore) findRow(ctx context.Context, where string, args ...any) (
 	query := `SELECT ` + accountColumns + `,password_hash FROM ` + s.table("system_accounts") + ` WHERE ` + where + ` LIMIT 1`
 	row := s.db.QueryRowContext(ctx, s.bind(query), args...)
 	var a AccountSummary
-	var description, requestLimitsJSON, lastLoginAt, passwordHash string
+	var description, requestLimitsJSON, passwordHash string
+	var lastLoginAt, createdAt, updatedAt dbtime.Nullable
 	var mustChange, imageEnabled int
 	var aiLimit, expeditedLimit sql.NullInt64
-	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt, &passwordHash); err != nil {
+	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &createdAt, &updatedAt, &passwordHash); err != nil {
 		return AccountSummary{}, "", err
 	}
+	a.CreatedAt = createdAt.APIString()
+	a.UpdatedAt = updatedAt.APIString()
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
 	a.ImageGenerationEnabled = imageEnabled == 1
 	if description != "" {
@@ -327,8 +336,9 @@ func (s *AccountStore) findRow(ctx context.Context, where string, args ...any) (
 		limit := int(expeditedLimit.Int64)
 		a.ExpeditedAccountLimit = &limit
 	}
-	if lastLoginAt != "" {
-		a.LastLoginAt = &lastLoginAt
+	if lastLoginAt.Valid {
+		value := lastLoginAt.APIString()
+		a.LastLoginAt = &value
 	}
 	return a, passwordHash, nil
 }
@@ -352,7 +362,7 @@ func (s *AccountStore) UpdatePassword(ctx context.Context, id, newPassword strin
 		return AccountSummary{}, err
 	}
 	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("system_accounts")+` SET password_hash = ?, must_change_password = 0, updated_at = ? WHERE id = ?`),
-		passwordHash, s.now().UTC().Format(time.RFC3339Nano), id)
+		passwordHash, dbtime.API(s.now()), id)
 	if err != nil {
 		return AccountSummary{}, err
 	}
@@ -1117,12 +1127,15 @@ func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where s
 	query := `SELECT ` + accountColumns + `,password_hash FROM ` + s.table("system_accounts") + ` WHERE ` + where + ` LIMIT 1 FOR UPDATE`
 	row := tx.QueryRowContext(ctx, s.bind(query), args...)
 	var a AccountSummary
-	var description, requestLimitsJSON, lastLoginAt, passwordHash string
+	var description, requestLimitsJSON, passwordHash string
+	var lastLoginAt, createdAt, updatedAt dbtime.Nullable
 	var mustChange, imageEnabled int
 	var aiLimit, expeditedLimit sql.NullInt64
-	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt, &passwordHash); err != nil {
+	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &createdAt, &updatedAt, &passwordHash); err != nil {
 		return AccountSummary{}, "", err
 	}
+	a.CreatedAt = createdAt.APIString()
+	a.UpdatedAt = updatedAt.APIString()
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
 	a.ImageGenerationEnabled = imageEnabled == 1
 	if description != "" {
@@ -1148,13 +1161,13 @@ func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where s
 func nowPlusOneMilli(now time.Time, previousRFC3339 string) string {
 	previous, err := time.Parse(time.RFC3339Nano, previousRFC3339)
 	if err != nil {
-		return now.UTC().Format(time.RFC3339Nano)
+		return dbtime.API(now)
 	}
 	floor := previous.Add(time.Millisecond)
 	if now.Before(floor) {
-		return floor.UTC().Format(time.RFC3339Nano)
+		return dbtime.API(floor)
 	}
-	return now.UTC().Format(time.RFC3339Nano)
+	return dbtime.API(now)
 }
 
 // nodePasswordHashSegments matches the pbkdf2$sha512$<iterations>$salt$digest

@@ -57,6 +57,7 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
   const credentials = accountDraftTestCredentials(payload.credentials, input.accountDetail)
   return {
     providerCode: payload.providerCode,
+    capabilityDomain: payload.capabilityDomain ?? input.form.capabilityDomain,
     // providerProtocolProfileId 已停发（B4 两表退役批）：后端草稿链按
     // vendor 语义推导协议上下文，入参为接受但忽略；协议档案维度在前端
     // 仅经 buildAccountDraftTestSummary 的本地投影保留。
@@ -92,6 +93,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     name: input.draftPayload.name || input.accountDetail?.name || '未命名账户',
     notes: input.draftPayload.notes,
     type: input.draftPayload.type,
+    capabilityDomain: input.draftPayload.capabilityDomain ?? input.accountDetail?.capabilityDomain,
     credentials: input.draftPayload.credentials,
     status: 'active',
     concurrencyLimit: input.draftPayload.concurrencyLimit,

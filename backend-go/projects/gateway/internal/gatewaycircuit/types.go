@@ -563,10 +563,11 @@ func requiredRequestLane(value string) (string, error) {
 		string(gatewayproto.LaneImage),
 		string(gatewayproto.LaneAudio),
 		string(gatewayproto.LaneVideo),
+		string(gatewayproto.LaneUtility),
 		string(gatewayproto.LaneRealtime):
 		return value, nil
 	}
-	return "", errors.New("账户电路作用域 requestLane 必须是 text/image/audio/video/realtime")
+	return "", errors.New("账户电路作用域 requestLane 必须是 text/image/audio/video/utility/realtime")
 }
 
 func encodedScopeKey(parts ...string) string { return circuitstate.EncodedScopeKey(parts...) }

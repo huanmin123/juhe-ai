@@ -98,7 +98,7 @@ func TestBug0258PatchNotesOnlyKeepsBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	priority, super, fallback, updatedAt := bug0258Binding(t, env, "acc-b258-2", "grp-b258")
-	if priority != "3" || super != "0" || fallback != "1" || updatedAt != "2026-01-01T00:00:00.000Z" {
+	if priority != "3" || super != "0" || fallback != "1" || !sameInstantText(updatedAt, "2026-01-01T00:00:00.000Z") {
 		t.Fatalf("仅改 notes 后绑定行被改动：priority=%s super=%s fallback=%s updated_at=%s", priority, super, fallback, updatedAt)
 	}
 	if result.DispatchBindingChanged {

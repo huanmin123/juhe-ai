@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // SelectionState 等价 Node AccountApiKeyRuntimeSelectionState 的 DB 投影
@@ -25,8 +27,8 @@ func scanSelectionState(scan func(dest ...any) error) (SelectionState, error) {
 	var (
 		fingerprint, status        sql.NullString
 		keyIndex                   sql.NullInt64
-		cooldownUntil, nextProbeAt sql.NullString
-		recoveryStartedAt          sql.NullString
+		cooldownUntil, nextProbeAt dbtime.Nullable
+		recoveryStartedAt          dbtime.Nullable
 	)
 	if err := scan(&fingerprint, &keyIndex, &status, &cooldownUntil, &nextProbeAt, &recoveryStartedAt); err != nil {
 		return SelectionState{}, err
@@ -34,9 +36,9 @@ func scanSelectionState(scan func(dest ...any) error) (SelectionState, error) {
 	state := SelectionState{
 		KeyFingerprint:    fingerprint.String,
 		Status:            status.String,
-		CooldownUntil:     cooldownUntil.String,
-		NextProbeAt:       nextProbeAt.String,
-		RecoveryStartedAt: recoveryStartedAt.String,
+		CooldownUntil:     cooldownUntil.APIString(),
+		NextProbeAt:       nextProbeAt.APIString(),
+		RecoveryStartedAt: recoveryStartedAt.APIString(),
 	}
 	if keyIndex.Valid {
 		state.KeyIndex = int(keyIndex.Int64)

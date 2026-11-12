@@ -391,9 +391,10 @@ func TestAccountLockHoldFirstFailureTransitionsAndBlocks(t *testing.T) {
 	}
 }
 
-// TestAccountLockHoldExplicitPolicyStillFailsOver：显式策略失败（账户已被置为
-// 不可调度）不得写锁死运行态、不得被末尾锁死门否决，按原机制切到 a-2。
-func TestAccountLockHoldExplicitPolicyStillFailsOver(t *testing.T) {
+// TestAccountLockHoldExplicitPolicyTransientStillHolds：D12——显式策略的可恢复
+// 失败（此处 500，无确定性处置标记）在锁死窗口内继续 hold：不得切到 a-2，
+// 并写锁死运行态推进窗口。
+func TestAccountLockHoldExplicitPolicyTransientStillHolds(t *testing.T) {
 	locks := newLockHoldLocks(map[string]AccountLockStateView{
 		"a-1": {BlocksCrossAccount: true},
 	})
@@ -404,29 +405,65 @@ func TestAccountLockHoldExplicitPolicyStillFailsOver(t *testing.T) {
 		t.Fatalf("FailureDispatcher = %T", engine.FailureDispatcher)
 	}
 	dispatcher.failedResult = FailedUpstreamResponseResult{
-		Action:      FailedResponseActionSkipAccount,
-		FailureKind: FailureKindExplicitPolicy,
+		Action:             FailedResponseActionSkipAccount,
+		FailureKind:        FailureKindExplicitPolicy,
+		FailureDisposition: FailureDispositionTransientHold,
+	}
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+
+	_, err := engine.FetchFirstAvailableUpstream(context.Background(), fastDispatchArgs(t, req, lockHoldAccounts()))
+	var lockHold *AccountLockHoldError
+	if !errorsAs(err, &lockHold) {
+		t.Fatalf("expected AccountLockHoldError, got %v", err)
+	}
+	if a1Hits.Load() == 0 {
+		t.Fatal("锁死账号必须被真实尝试")
+	}
+	if hits := a2Hits.Load(); hits != 0 {
+		t.Fatalf("a-2 命中 = %d，D12 可恢复显式策略失败不得切换", hits)
+	}
+	if calls := locks.failureCalls("a-1", "upstream_http_response"); calls == 0 {
+		t.Fatal("D12 可恢复失败必须写入锁死窗口")
+	}
+	if calls := locks.totalSettleCalls(); calls == 0 {
+		t.Fatal("D12 可恢复失败必须推进死期结算")
+	}
+}
+
+// TestAccountLockHoldExplicitPolicyDeterministicReleases：确定性硬门（如凭据
+// 无效/额度耗尽）在锁死窗口内仍释放换号，且不写锁死运行态。
+func TestAccountLockHoldExplicitPolicyDeterministicReleases(t *testing.T) {
+	locks := newLockHoldLocks(map[string]AccountLockStateView{
+		"a-1": {BlocksCrossAccount: true},
+	})
+	engine, _, a1Hits, a2Hits := newLockHoldEngine(t, http.StatusUnauthorized)
+	engine.Locks = locks
+	dispatcher, ok := engine.FailureDispatcher.(*fakeFailureDispatcher)
+	if !ok {
+		t.Fatalf("FailureDispatcher = %T", engine.FailureDispatcher)
+	}
+	dispatcher.failedResult = FailedUpstreamResponseResult{
+		Action:             FailedResponseActionSkipAccount,
+		FailureKind:        FailureKindExplicitPolicy,
+		FailureDisposition: FailureDispositionDeterministicRelease,
 	}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 
 	result, err := engine.FetchFirstAvailableUpstream(context.Background(), fastDispatchArgs(t, req, lockHoldAccounts()))
 	if err != nil {
-		t.Fatalf("显式策略失败必须允许换号: %v", err)
+		t.Fatalf("确定性硬门必须允许换号: %v", err)
 	}
 	if result.Account.ID != "a-2" {
 		t.Fatalf("account = %q，期望 a-2", result.Account.ID)
 	}
-	if a1Hits.Load() == 0 {
-		t.Fatal("锁死账号必须被真实尝试")
-	}
-	if hits := a2Hits.Load(); hits != 1 {
-		t.Fatalf("a-2 命中 = %d，期望 1", hits)
+	if a1Hits.Load() == 0 || a2Hits.Load() != 1 {
+		t.Fatalf("命中次数 a1=%d a2=%d，期望 a1>0、a2=1", a1Hits.Load(), a2Hits.Load())
 	}
 	if calls := locks.totalFailureCalls(); calls != 0 {
-		t.Fatalf("显式策略失败不得写锁死运行态: calls = %d", calls)
+		t.Fatalf("确定性硬门不得写锁死运行态: calls = %d", calls)
 	}
 	if calls := locks.totalSettleCalls(); calls != 0 {
-		t.Fatalf("显式策略失败不得触发死期结算: calls = %d", calls)
+		t.Fatalf("确定性硬门不得触发死期结算: calls = %d", calls)
 	}
 }
 

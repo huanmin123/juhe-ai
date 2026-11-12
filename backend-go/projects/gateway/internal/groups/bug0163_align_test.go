@@ -61,7 +61,7 @@ func TestGroupListPageSizeNormalization(t *testing.T) {
 func TestGroupLegacyPolicyUsesInjectedGlobalMax(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	// Legacy high_concurrency row: threshold 500 below the injected global max
 	// 1234 is kept; the default globalMax value would map to -1.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
@@ -94,7 +94,7 @@ func TestGroupLegacyPolicyUsesInjectedGlobalMax(t *testing.T) {
 func TestGroupCorruptedStoredPolicyAndTypeAreReadErrors(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	// high_concurrency with a broken JSON document.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
 		VALUES ('grp-broken-policy', ?, '坏策略', 1, 0, 'high_concurrency', '{"mode":', ?, ?)`, adminID, now, now)
@@ -190,8 +190,8 @@ func TestGroupAvailabilityGuardCountsAuthorizedGroups(t *testing.T) {
 	env := newTestEnv(t)
 	ownerID := env.login(t, "root", "root-pass", "super_admin")
 	userAID := env.login(t, "alice", "alice-pass", "user")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	later := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
+	later := isoMillis(time.Now().UTC().Add(24 * time.Hour))
 	far := "2999-01-01T00:00:00.000Z"
 
 	// alice owns the strategy rs-auth and her only own enabled group;
@@ -242,7 +242,7 @@ func TestGroupMemberPredicateHonorsAuthorizationRows(t *testing.T) {
 	ownerID := env.login(t, "root", "root-pass", "super_admin")
 	granteeID := env.login(t, "alice", "alice-pass", "user")
 	env.do(t, http.MethodPost, "/__aisys__/api/auth/login", `{"username":"root","password":"root-pass"}`)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	far := "2999-01-01T00:00:00.000Z"
 
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
@@ -288,7 +288,7 @@ func TestGroupAuthorizedListAndDetailAndOptionEndpoints(t *testing.T) {
 	env := newTestEnv(t)
 	ownerID := env.login(t, "root", "root-pass", "super_admin")
 	granteeID := env.login(t, "alice", "alice-pass", "user")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := isoMillis(time.Now())
 	far := "2999-01-01T00:00:00.000Z"
 
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)

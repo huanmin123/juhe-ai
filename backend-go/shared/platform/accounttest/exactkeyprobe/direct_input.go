@@ -198,6 +198,9 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 	if err != nil {
 		return Input{}, err
 	}
+	if speechToken, ok := directString(credentials, "speech_token"); ok {
+		result.SpeechToken = speechToken
+	}
 	result.BaseURL, err = directBaseURL(effective)
 	if err != nil {
 		return Input{}, err
@@ -321,6 +324,10 @@ var directProfileProtocolMetadata = map[string][2]string{
 	"profile_glm_coding_anthropic_v1":   {"anthropic", "v1"},
 	"profile_gemini_openai_chat_v1beta": {"openai", "v1"},
 	"profile_gemini_native_v1beta":      {"gemini", "v1beta"},
+	"profile_minimax_openai_v1":         {"openai", "v1"},
+	"profile_volcengine_openai_v1":      {"openai", "v1"},
+	"profile_volcengine_openspeech_v1":  {"openai", "v1"},
+	"profile_qwen_openai_v1":            {"openai", "v1"},
 }
 
 // ConnectionPresetProfileID 把 account_connections.connection_preset_code 确定性地
@@ -347,6 +354,10 @@ var connectionPresetProfiles = []struct {
 	{"glm_coding_anthropic_v1", "profile_glm_coding_anthropic_v1"},
 	{"gemini_openai_chat_v1beta", "profile_gemini_openai_chat_v1beta"},
 	{"gemini_native_v1beta", "profile_gemini_native_v1beta"},
+	{"minimax_media", "profile_minimax_openai_v1"},
+	{"volcengine_ark", "profile_volcengine_openai_v1"},
+	{"volcengine_openspeech", "profile_volcengine_openspeech_v1"},
+	{"qwen_dashscope", "profile_qwen_openai_v1"},
 }
 
 func ConnectionPresetProfileID(preset string) (string, bool) {
@@ -433,16 +444,24 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 		if provider != "gpt" {
 			return false
 		}
-		return openAIProfileMode(accountType, mode, true)
+		return openAIProfileMode(accountType, mode, true) || mode == "video_create" || mode == "audio_speech" || mode == "audio_job_get"
 	case "profile_xai_openai_v1":
 		if provider != "xai" {
 			return false
 		}
-		return openAIProfileMode(accountType, mode, true)
+		return openAIProfileMode(accountType, mode, true) || mode == "video_create"
 	case "profile_deepseek_openai_v1":
 		return provider == "deepseek" && accountType == "api_key" && openAIChatOrResponseMode(mode, true)
 	case "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1":
-		return provider == "glm" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
+		return provider == "glm" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse" || mode == "video_create" || mode == "audio_speech")
+	case "profile_minimax_openai_v1":
+		return provider == "minimax" && accountType == "api_key" && (mode == "video_create" || mode == "audio_speech")
+	case "profile_volcengine_openai_v1":
+		return provider == "volcengine" && accountType == "api_key" && (mode == "video_create" || mode == "audio_speech" || mode == "images_json")
+	case "profile_volcengine_openspeech_v1":
+		return provider == "volcengine" && accountType == "api_key" && mode == "audio_speech"
+	case "profile_qwen_openai_v1":
+		return provider == "qwen" && accountType == "api_key" && (mode == "video_create" || mode == "images_json" || mode == "audio_job_get")
 	case "profile_gemini_openai_chat_v1beta":
 		return provider == "gemini" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
 	case "profile_anthropic_anthropic_v1":
@@ -476,7 +495,11 @@ func openAIChatOrResponseMode(mode string, allowImages bool) bool {
 }
 
 func geminiProfileMode(mode string) bool {
-	return mode == "generate_content_json" || mode == "generate_content_sse" || mode == "interactions_json" || mode == "interactions_sse"
+	switch mode {
+	case "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse", "video_create", "audio_speech":
+		return true
+	}
+	return false
 }
 
 func directProbeProtocolForMode(profile, provider, mode string) string {
@@ -485,7 +508,8 @@ func directProbeProtocolForMode(profile, provider, mode string) string {
 		return "anthropic"
 	case "profile_gemini_native_v1beta":
 		return "gemini"
-	case "profile_gpt_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta":
+	case "profile_gpt_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta",
+		"profile_minimax_openai_v1", "profile_volcengine_openai_v1", "profile_volcengine_openspeech_v1", "profile_qwen_openai_v1":
 		return "openai"
 	case "":
 		if isDirectOpenAIProvider(provider) {
@@ -509,6 +533,12 @@ func probeProfileProvider(profile, protocol string) string {
 		return "anthropic"
 	case "profile_gemini_native_v1beta", "profile_gemini_openai_chat_v1beta":
 		return "gemini"
+	case "profile_minimax_openai_v1":
+		return "minimax"
+	case "profile_volcengine_openai_v1", "profile_volcengine_openspeech_v1":
+		return "volcengine"
+	case "profile_qwen_openai_v1":
+		return "qwen"
 	default:
 		return protocol
 	}

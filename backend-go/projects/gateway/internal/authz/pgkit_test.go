@@ -49,8 +49,8 @@ const authzPGFixtureSchema = `
       description text,
       status text DEFAULT 'active',
       created_by text DEFAULT '',
-      created_at text DEFAULT '',
-      updated_at text DEFAULT ''
+      created_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z',
+      updated_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z'
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.system_team_members (
       id text PRIMARY KEY,
@@ -58,11 +58,11 @@ const authzPGFixtureSchema = `
       system_account_id text DEFAULT '',
       member_role text DEFAULT 'member',
       status text DEFAULT 'active',
-      joined_at text DEFAULT '',
-      removed_at text,
+      joined_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z',
+      removed_at timestamptz(3),
       created_by text DEFAULT '',
-      created_at text DEFAULT '',
-      updated_at text DEFAULT ''
+      created_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z',
+      updated_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z'
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.groups (
       id text PRIMARY KEY,
@@ -88,17 +88,17 @@ const authzPGFixtureSchema = `
       status text DEFAULT 'active',
       effective_source_type text,
       effective_source_team_id text,
-      activated_at text,
-      last_source_changed_at text,
+      activated_at timestamptz(3),
+      last_source_changed_at timestamptz(3),
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text DEFAULT '',
-      created_at text DEFAULT '',
+      created_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z',
       revoked_by text,
-      revoked_at text,
+      revoked_at timestamptz(3),
       revoked_reason text,
-      updated_at text DEFAULT ''
+      updated_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z'
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
       id text PRIMARY KEY,
@@ -106,14 +106,14 @@ const authzPGFixtureSchema = `
       source_type text DEFAULT '',
       source_team_id text,
       status text DEFAULT 'active',
-      activated_at text,
-      ended_at text,
+      activated_at timestamptz(3),
+      ended_at timestamptz(3),
       ended_reason text,
       created_by text DEFAULT '',
-      created_at text DEFAULT '',
+      created_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z',
       revoked_by text,
-      revoked_at text,
-      updated_at text DEFAULT ''
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z'
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
       id text PRIMARY KEY,
@@ -126,13 +126,13 @@ const authzPGFixtureSchema = `
       scope text DEFAULT 'use',
       status text DEFAULT 'active',
       remark text,
-      expires_at text,
+      expires_at timestamptz(3),
       limits_json text,
       created_by text DEFAULT '',
-      created_at text DEFAULT '',
+      created_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z',
       revoked_by text,
-      revoked_at text,
-      updated_at text DEFAULT ''
+      revoked_at timestamptz(3),
+      updated_at timestamptz(3) NOT NULL DEFAULT '1970-01-01T00:00:00Z'
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.accounts (
       id text PRIMARY KEY,

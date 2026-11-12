@@ -73,8 +73,8 @@ const routeStrategiesPGFixtureSchema = `
       group_type text NOT NULL DEFAULT 'personal',
       group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')),
       scheduling_policy_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique
       ON juhe_business.groups (system_account_id, name);
@@ -132,8 +132,8 @@ const routeStrategiesPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       is_default integer NOT NULL DEFAULT 0,
       config_json text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique
       ON juhe_business.route_strategies (system_account_id, name);
@@ -145,8 +145,8 @@ const routeStrategiesPGFixtureSchema = `
       priority integer NOT NULL DEFAULT 1,
       weight integer NOT NULL DEFAULT 1,
       status text NOT NULL DEFAULT 'active',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.api_keys (
       id text PRIMARY KEY,
@@ -154,8 +154,8 @@ const routeStrategiesPGFixtureSchema = `
       route_strategy_id text NOT NULL,
       name text NOT NULL,
       status text NOT NULL DEFAULT 'active',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
+      created_at timestamptz(3) NOT NULL,
+      updated_at timestamptz(3) NOT NULL
     )
 `
 

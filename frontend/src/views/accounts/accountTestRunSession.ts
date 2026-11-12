@@ -56,6 +56,7 @@ interface StoredAccountSummary {
   protocolVersion?: string
   name: string
   type: AccountListItem['type']
+  capabilityDomain?: AccountListItem['capabilityDomain']
   status: AccountListItem['status']
   concurrencyLimit: number
   /** RPM 会话快照加法兼容：旧快照缺省读 0（不限制）。 */
@@ -220,6 +221,7 @@ function storeAccountSummary(account: AccountListItem): StoredAccountSummary {
     protocolVersion: account.protocolVersion,
     name: account.name,
     type: account.type,
+    capabilityDomain: account.capabilityDomain,
     status: account.status,
     concurrencyLimit: account.concurrencyLimit,
     rpmLimit: account.rpmLimit,
@@ -254,6 +256,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountListItem | u
     protocolVersion: optionalString(value.protocolVersion),
     name: value.name,
     type: value.type,
+    capabilityDomain: value.capabilityDomain as AccountListItem['capabilityDomain'],
     status: value.status,
     concurrencyLimit: finiteNumber(value.concurrencyLimit, 1),
     // 旧会话快照无 rpmLimit 时按 0（不限制）恢复。

@@ -297,6 +297,13 @@ const (
 	FailureKindExplicitPolicy = "explicit_policy"
 )
 
+// FailureDisposition 是锁死窗口内的失败处置分类（D12）：可恢复失败继续
+// hold；确定性硬门释放切换。
+const (
+	FailureDispositionTransientHold        = "transient_hold"
+	FailureDispositionDeterministicRelease = "deterministic_release"
+)
+
 // PendingAccountApiKeyFailure mirrors PendingAccountApiKeyFailure.
 type PendingAccountApiKeyFailure struct {
 	Account          AccountCandidate
@@ -313,11 +320,14 @@ type PendingAccountApiKeyFailure struct {
 type FailedUpstreamResponseResult struct {
 	// Action is 'return_response' | 'skip_account' |
 	// 'retry_with_compatibility_recovery'.
-	Action                  string
-	Response                *GatewayUpstreamResponse
-	Recovery                CompatibilityRecovery
-	LastAttempt             *UpstreamAttempt
-	FailureKind             string
+	Action      string
+	Response    *GatewayUpstreamResponse
+	Recovery    CompatibilityRecovery
+	LastAttempt *UpstreamAttempt
+	FailureKind string
+	// FailureDisposition 是锁死处置轴：transient_hold（继续 hold，不切换）/
+	// deterministic_release（确定性硬门释放）。空值按 transient_hold 兼容。
+	FailureDisposition      string
 	TryNextApiKeyForRequest bool
 	KeyScopedFailure        bool
 	PendingApiKeyFailure    *PendingAccountApiKeyFailure

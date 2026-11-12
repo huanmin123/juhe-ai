@@ -21,6 +21,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // cascadeTeamMemberLimit mirrors activeTeamMemberRowsAsync's ceiling:
@@ -303,9 +305,13 @@ func (s *Store) activeTeamGrantRowsTx(ctx context.Context, tx *sql.Tx, teamID st
 	grants := []grantRow{}
 	for rows.Next() {
 		var grant grantRow
+		var expiresAt dbtime.Nullable
 		if err := rows.Scan(&grant.ID, &grant.ResourceType, &grant.ResourceID, &grant.OwnerID,
-			&grant.Remark, &grant.ExpiresAt, &grant.LimitsJSON); err != nil {
+			&grant.Remark, &expiresAt, &grant.LimitsJSON); err != nil {
 			return nil, err
+		}
+		if expiresAt.Valid {
+			grant.ExpiresAt = sql.NullString{String: expiresAt.APIString(), Valid: true}
 		}
 		grants = append(grants, grant)
 	}

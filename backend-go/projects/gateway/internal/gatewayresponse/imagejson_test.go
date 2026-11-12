@@ -100,3 +100,31 @@ func TestNonStreamGPTImageResponseTolerance(t *testing.T) {
 		t.Fatalf("provider echo = %q", got)
 	}
 }
+
+func TestNonStreamGPTImageStreamIgnoredEcho(t *testing.T) {
+	// 图像统一契约不提供 stream：gpt 请求带 stream/partial_images 也只返回 JSON，
+	// 响应头回显被忽略的参数。
+	requestBody := []byte(`{"model":"gpt-image-2","prompt":"a cat","stream":true,"partial_images":1}`)
+	upstreamBody := []byte(`{"data":[{"b64_json":"aGVsbG8="}]}`)
+	input, recorder := newImageInputFixture(t, requestBody, upstreamBody, "gpt")
+	var requestObject map[string]any
+	if err := json.Unmarshal(requestBody, &requestObject); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	input.Req.Body.Body = requestObject
+	if _, err := HandleNonStreamUpstreamResponse(input); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != string(upstreamBody) {
+		t.Fatalf("gpt image response must stay JSON passthrough: %s", recorder.Body.String())
+	}
+	if got := recorder.Header().Get("X-Juhe-Image-Params-Ignored"); got != "partial_images,stream" {
+		t.Fatalf("params ignored echo = %q, want partial_images,stream", got)
+	}
+	if got := recorder.Header().Get("X-Juhe-Image-Provider"); got != "gpt" {
+		t.Fatalf("provider echo = %q", got)
+	}
+}

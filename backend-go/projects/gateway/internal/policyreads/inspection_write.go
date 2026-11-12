@@ -113,7 +113,7 @@ func (s *InspectionStore) Patch(ctx context.Context, id string, patch *Inspectio
 	if err != nil {
 		return nil, err
 	}
-	if row.updatedAt != patch.ExpectedAt {
+	if apiTimeString(row.updatedAt) != patch.ExpectedAt {
 		return &InspectionPatchOutcome{Status: "conflict"}, nil
 	}
 	current, err := s.normalizedFromPatchRow(ctx, row)

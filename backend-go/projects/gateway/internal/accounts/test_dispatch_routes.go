@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
@@ -298,7 +299,15 @@ func (d *Deps) testAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var model, testEndpointMode string
-	if draft != nil {
+	if parsed.Kind == "connectivity" {
+		if draft != nil {
+			model, testEndpointMode, err = d.Store.ResolveAccountConnectivitySelection(manualTestCapabilitiesContextFromDraft(draft))
+		} else {
+			model, testEndpointMode, err = d.Store.ResolveAccountConnectivitySelection(view.manualContext())
+		}
+	} else if parsed.Kind == "ws_handshake" {
+		err = &ValidationError{Message: "Realtime WS 握手测试尚未接入（B8）"}
+	} else if draft != nil {
 		// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
 		// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
 		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
@@ -387,10 +396,17 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 	}
 	// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
 	// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
-	model, testEndpointMode, err := d.Store.ResolveAccountManualTestSelection(ctx,
-		manualTestCapabilitiesContextFromDraft(draft),
-		firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
-		firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
+	var model, testEndpointMode string
+	if parsed.Kind == "connectivity" {
+		model, testEndpointMode, err = d.Store.ResolveAccountConnectivitySelection(manualTestCapabilitiesContextFromDraft(draft))
+	} else if parsed.Kind == "ws_handshake" {
+		err = &ValidationError{Message: "Realtime WS 握手测试尚未接入（B8）"}
+	} else {
+		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
+			manualTestCapabilitiesContextFromDraft(draft),
+			firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
+			firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
+	}
 	if err != nil {
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
 		return
@@ -687,6 +703,7 @@ type TestDraftAccountInput struct {
 	ProviderProtocolProfileID string
 	Name                      string
 	Type                      string
+	CapabilityDomain          string
 	Credentials               Credentials
 	SupportedModels           []string
 	HealthCheckModel          string
@@ -711,6 +728,7 @@ type TestDraftAccountInput struct {
 type TestRequestBody struct {
 	Model            string
 	TestEndpointMode string
+	Kind             string
 	TestSessionID    string
 	Account          *TestDraftAccountInput
 }
@@ -730,8 +748,18 @@ func parseTestRequestBody(body map[string]any) (TestRequestBody, string) {
 	parsed := TestRequestBody{}
 	for key := range body {
 		switch key {
-		case "model", "testEndpointMode", "prompt", "testSessionId", "account":
+		case "model", "testEndpointMode", "kind", "prompt", "testSessionId", "account":
 		default:
+			return parsed, "账户测试参数无效"
+		}
+	}
+	if value, exists := body["kind"]; exists && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return parsed, "账户测试参数无效"
+		}
+		parsed.Kind = strings.TrimSpace(text)
+		if parsed.Kind != "" && parsed.Kind != "connectivity" && parsed.Kind != "ws_handshake" {
 			return parsed, "账户测试参数无效"
 		}
 	}
@@ -779,7 +807,7 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 	input := &TestDraftAccountInput{}
 	for key := range record {
 		switch key {
-		case "providerCode", "providerProtocolProfileId", "name", "type", "credentials",
+		case "providerCode", "providerProtocolProfileId", "name", "type", "capabilityDomain", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
 			"concurrencyLimit", "priority", "superPriorityEnabled", "fallbackEnabled",
 			"proxyProfileId", "proxyPoolId", "groupId", "accountExpiresAt", "availabilitySchedule", "notes":
@@ -802,6 +830,10 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 	input.ProviderProtocolProfileID, _ = text("providerProtocolProfileId")
 	input.Name, _ = text("name")
 	input.Type, _ = text("type")
+	input.CapabilityDomain, _ = text("capabilityDomain")
+	if input.CapabilityDomain != "" && !accountscore.AccountCapabilityDomainSet[input.CapabilityDomain] {
+		return nil, "账户测试参数无效"
+	}
 	input.HealthCheckModel, _ = text("healthCheckModel")
 	if value, exists := record["healthCheckEndpointMode"]; exists && value != nil {
 		mode, ok := value.(string)
@@ -1039,6 +1071,7 @@ func (v *AccountForTestView) manualContext() *ManualTestContext {
 		Type:                      v.item.Type,
 		ClientCompatibility:       v.item.ClientCompatibility,
 		HealthCheckModel:          v.item.HealthCheckModel,
+		CapabilityDomain:          v.item.CapabilityDomain,
 		HealthCheckEndpointMode:   v.item.HealthCheckEndpointMode,
 		SupportedEndpointModes:    v.modeSource.SupportedEndpointModes,
 		ModelMappings:             v.modeSource.ModelMappings,
@@ -1118,6 +1151,7 @@ func manualTestCapabilitiesContextFromDraft(draft *TestDraftSnapshot) *ManualTes
 		Type:                      draft.Type,
 		ClientCompatibility:       draft.ClientCompatibility,
 		HealthCheckModel:          draft.HealthCheckModel,
+		CapabilityDomain:          draft.CapabilityDomain,
 		HealthCheckEndpointMode:   draft.HealthCheckEndpointMode,
 		SupportedEndpointModes:    supportedEndpointModesFromCredentials(Credentials(draft.Credentials)),
 		ModelMappings:             draft.ModelMappings,
@@ -1135,6 +1169,9 @@ func (s *Store) savedAccountDraftTestSnapshot(ctx context.Context, view *Account
 	}
 	if input.ProviderCode != account.ProviderCode || input.Type != account.Type {
 		return nil, &ValidationError{Message: "账户测试草稿与当前账户不一致"}
+	}
+	if strings.TrimSpace(input.CapabilityDomain) == "" {
+		input.CapabilityDomain = account.CapabilityDomain
 	}
 	draft, err := s.prepareAccountDraftTestSnapshotWithOwner(ctx, input, access, account.ID, account.OwnerSystemAccountID)
 	if err != nil {
@@ -1362,6 +1399,7 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		ProtocolVersion:           &protocolVersion,
 		Name:                      input.Name,
 		Type:                      input.Type,
+		CapabilityDomain:          input.CapabilityDomain,
 		Credentials:               credentialsMap,
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,

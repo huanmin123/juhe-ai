@@ -13,6 +13,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // SQLReadModels is the default ReadModels implementation over the business
@@ -434,7 +435,8 @@ type authorizationRow struct {
 func (m *SQLReadModels) activeGroupAuthorization(ctx context.Context, groupID, granteeID string) (*authorizationRow, error) {
 	nowISO := m.now().UTC().Format("2006-01-02T15:04:05.000") + "Z"
 	var id string
-	var expiresAt, sourceType, sourceTeamID, limitsJSON sql.NullString
+	var expiresAt dbtime.Nullable
+	var sourceType, sourceTeamID, limitsJSON sql.NullString
 	err := m.db.QueryRowContext(ctx, m.bind(`SELECT id, effective_source_type, effective_source_team_id, expires_at, limits_json
 		FROM `+m.table("resource_authorizations")+`
 		WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ?
@@ -449,7 +451,7 @@ func (m *SQLReadModels) activeGroupAuthorization(ctx context.Context, groupID, g
 	}
 	return &authorizationRow{
 		id:           id,
-		expiresAt:    nullToStrPtr(expiresAt),
+		expiresAt:    expiresAt.API(),
 		quotaLimited: limitsHaveEnabledQuota(limitsJSON),
 		sourceType:   nullToStrPtr(sourceType),
 		sourceTeamID: nullToStrPtr(sourceTeamID),

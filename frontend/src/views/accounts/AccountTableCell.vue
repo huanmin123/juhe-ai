@@ -11,6 +11,9 @@
       </a-tooltip>
     </span>
   </div>
+  <a-tag v-else-if="columnKey === 'scenario'" color="purple">
+    {{ accountCapabilityDomainLabel(account.capabilityDomain ?? 'chat') }}
+  </a-tag>
   <a-tag v-else-if="columnKey === 'type'" :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
   <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">
     <ProviderIcon class="provider-tag-icon" :name="account.providerName || providerName(account.providerCode)" :provider-code="account.providerCode" :size="14" />
@@ -110,6 +113,7 @@ import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountTagsCell from './AccountTagsCell.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
+import { accountCapabilityDomainLabel } from './accountCapabilityDomains'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   accountDisplayName,

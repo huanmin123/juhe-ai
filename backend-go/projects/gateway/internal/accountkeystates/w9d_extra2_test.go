@@ -32,10 +32,16 @@ func TestW9DStoreDialectArms(t *testing.T) {
 	if got := store.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("pg bind=%q", got)
 	}
-	// 生产时间列全部为 text（Node ISO 文本），instantParam 必须原样返回文本：
-	// 绑定 time.Time 会让 pgx 编码出 Go time.String 形态，比较与回读失真。
-	if got, ok := store.instantParam(nowMillisText()).(string); !ok || got != nowMillisText() {
-		t.Fatalf("instantParam must keep text, got %T %v", store.instantParam(nowMillisText()), got)
+	// Revision 26 起生产时间列为 timestamptz：instantParam 把 RFC3339 文本
+	// 归一为 time.Time，让 PostgreSQL 按列类型推断参数并避免 COALESCE/CASE
+	// 混合类型推导；回读统一经 dbtime 归一为 UTC 毫秒文本。
+	instantText := nowMillisText()
+	parsed, ok := store.instantParam(instantText).(time.Time)
+	if !ok || parsed.UTC().Format("2006-01-02T15:04:05.000Z07:00") != instantText {
+		t.Fatalf("instantParam must bind time.Time, got %T %v", store.instantParam(instantText), store.instantParam(instantText))
+	}
+	if got, ok := store.instantParam("junk").(string); !ok || got != "junk" {
+		t.Fatalf("instantParam must keep unparseable text for caller error, got %T", store.instantParam("junk"))
 	}
 	if chunkValues([]string{"a"}, 900) == nil {
 		t.Fatal("single id chunk must not be nil")

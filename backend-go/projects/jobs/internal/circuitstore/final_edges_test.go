@@ -34,7 +34,7 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 	row.priority = 1
 	row.authorizationID = sql.NullString{String: "auth-1", Valid: true}
 	row.authorizationStatus = sql.NullString{String: "active", Valid: true}
-	row.authorizationExpiresAt = sql.NullString{String: effFuture, Valid: true}
+	row.authorizationExpiresAt = testTimeValue(effFuture)
 	row.authorizationLimitsJSON = sql.NullString{String: "", Valid: false}
 	row.authorizationEffectiveSourceTeamID = sql.NullString{String: "team-1", Valid: true}
 	row.authorizationInstanceSourceID = sql.NullString{String: "src-1", Valid: true}
@@ -49,7 +49,7 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 	row.boundGroupLocalPriority = 9
 	row.boundGroupLocalSuperPriorityEnabled = 0
 	row.boundGroupLocalFallbackEnabled = 1
-	row.lastUsedAt = sql.NullString{String: "2026-08-01T00:00:00.000Z", Valid: true}
+	row.lastUsedAt = testTimeValue("2026-08-01T00:00:00.000Z")
 	entry, err := loader.composeEntry(composeInput{
 		row:           row,
 		payload:       buildBasePayload(row, nil, nil),
@@ -150,7 +150,7 @@ func TestComposeEntryRuntimeAndBalance(t *testing.T) {
 	row.status = "active"
 	row.schedulable = 1
 	row.balanceQueryEnabled = 1
-	row.balanceQueryNextRefreshAt = sql.NullString{String: "2026-09-04T10:00:00.000Z", Valid: true}
+	row.balanceQueryNextRefreshAt = testTimeValue("2026-09-04T10:00:00.000Z")
 	row.configRevision = sql.NullInt64{Int64: 3, Valid: true}
 	row.availabilityScheduleJSON = sql.NullString{String: validScheduleJSON(), Valid: true}
 	entry, err := loader.composeEntry(composeInput{
@@ -206,7 +206,7 @@ func TestComposeEntryRuntimeAndBalance(t *testing.T) {
 	}
 	// 余额配置不匹配 → 不发布 balanceSnapshot。
 	mismatch := row
-	mismatch.balanceQueryNextRefreshAt = sql.NullString{String: "2027-01-01T00:00:00.000Z", Valid: true}
+	mismatch.balanceQueryNextRefreshAt = testTimeValue("2027-01-01T00:00:00.000Z")
 	entry, err = loader.composeEntry(composeInput{
 		row:     mismatch,
 		payload: buildBasePayload(mismatch, nil, nil),

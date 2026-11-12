@@ -38,6 +38,9 @@ type ManualTestContext struct {
 	Type                      string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	// CapabilityDomain 是账户场景类型（accounts.capability_domain）；连通性
+	// 测试按它选择代表探测模式，不再要求用户选模型/协议。
+	CapabilityDomain string
 	// capabilities-context fields
 	HealthCheckEndpointMode string
 	SupportedEndpointModes  []string
@@ -367,6 +370,7 @@ type ManualTestModeSource struct {
 	ProtocolVersion           string
 	AccountType               string
 	ClientCompatibility       string
+	CapabilityDomain          string
 	HealthCheckEndpointMode   string
 	SupportedEndpointModes    []string
 	ModelMappings             []accountscore.ModelMapping
@@ -990,6 +994,7 @@ func (a *ManualTestContext) ModeSource() ManualTestModeSource {
 		ProtocolVersion:           a.ProtocolVersion,
 		AccountType:               a.Type,
 		ClientCompatibility:       a.ClientCompatibility,
+		CapabilityDomain:          a.CapabilityDomain,
 		HealthCheckEndpointMode:   a.HealthCheckEndpointMode,
 		SupportedEndpointModes:    a.SupportedEndpointModes,
 		ModelMappings:             a.ModelMappings,
@@ -1152,6 +1157,79 @@ func (s *Service) AccountManualTestModelCapabilities(ctx context.Context, accoun
 	return &ManualTestModelCapabilities{ID: item.Model, TestEndpointModes: modes}, nil
 }
 
+// ResolveAccountConnectivitySelection 是非对话账户的连通性测试选择器：
+// 只按账户场景 + 健康检查模型/连接选择代表探测模式，不要求用户选择模型或
+// endpoint mode。与 ResolveAccountManualTestSelection 并列，对话账户不走本方法。
+func (s *Service) ResolveAccountConnectivitySelection(account *ManualTestContext) (model, resolvedMode string, err error) {
+	if account == nil {
+		return "", "", &accountscore.ValidationError{Message: "账户不存在"}
+	}
+	domain := strings.TrimSpace(account.CapabilityDomain)
+	if domain == "" {
+		domain = connectivityDomainFromModes(account.SupportedEndpointModes)
+	}
+	if domain == accountscore.CapabilityDomainChat || domain == "" {
+		return "", "", &accountscore.ValidationError{Message: "对话账户请使用模型测试"}
+	}
+	model = strings.TrimSpace(account.HealthCheckModel)
+	if model == "" {
+		return "", "", &accountscore.ValidationError{Message: "账户缺少检查模型，请先编辑账户"}
+	}
+	allowed := connectivityModesForDomain(domain)
+	if len(account.SupportedEndpointModes) > 0 {
+		supported := make([]string, 0, len(allowed))
+		for _, mode := range allowed {
+			if accountscore.ContainsString(account.SupportedEndpointModes, mode) {
+				supported = append(supported, mode)
+			}
+		}
+		allowed = supported
+	}
+	if len(allowed) == 0 {
+		return "", "", &accountscore.ValidationError{Message: "该场景暂不支持连通性测试"}
+	}
+	resolvedMode = strings.TrimSpace(account.HealthCheckEndpointMode)
+	if !accountscore.ContainsString(allowed, resolvedMode) {
+		resolvedMode = allowed[0]
+	}
+	return model, resolvedMode, nil
+}
+
+// connectivityModesForDomain 返回每个场景当前已实现的“无副作用”人工测试
+// 代表模式。video_create 在 accountprobe 中恒为 GET 不存在任务；audio_speech
+// 为空体/空文本请求；audio_transcription_json 为内置极小 WAV 真实转写；
+// audio_job_get 为 GET 不存在任务（qwen 长音频等无 audio_speech 的账户）；
+// images_json 为空 prompt。audio_job_create 绝不做 POST 探测。
+func connectivityModesForDomain(domain string) []string {
+	switch domain {
+	case accountscore.CapabilityDomainVideo:
+		return []string{"video_create"}
+	case accountscore.CapabilityDomainImage:
+		return []string{"images_json"}
+	case accountscore.CapabilityDomainAudio:
+		return []string{"audio_speech", "audio_transcription_json", "audio_job_get"}
+	}
+	return nil
+}
+
+func connectivityDomainFromModes(modes []string) string {
+	switch {
+	case accountscore.ContainsString(modes, "video_create") || accountscore.ContainsString(modes, "video_get"):
+		return accountscore.CapabilityDomainVideo
+	case accountscore.ContainsString(modes, "audio_speech") ||
+		accountscore.ContainsString(modes, "audio_transcription_json") ||
+		accountscore.ContainsString(modes, "audio_job_create") ||
+		accountscore.ContainsString(modes, "audio_job_get") ||
+		accountscore.ContainsString(modes, "audio_job_content") ||
+		accountscore.ContainsString(modes, "audio_job_cancel") ||
+		accountscore.ContainsString(modes, "realtime_session"):
+		return accountscore.CapabilityDomainAudio
+	case accountscore.ContainsString(modes, "images_json"):
+		return accountscore.CapabilityDomainImage
+	}
+	return accountscore.CapabilityDomainChat
+}
+
 // ResolveAccountManualTestSelection mirrors resolveAccountManualTestSelectionAsync.
 func (s *Service) ResolveAccountManualTestSelection(ctx context.Context, account *ManualTestContext, modelInput, testEndpointMode string) (model, resolvedMode string, err error) {
 	model = strings.TrimSpace(modelInput)
@@ -1185,6 +1263,22 @@ func (s *Service) manualTestEndpointModesForTargetModel(ctx context.Context, sou
 	// interactions）测试形态；images_json 测试面的图像模型分支不受影响。
 	// AccountManualTestEndpointModes 只产出对话族模式，整段跳过等价于逐族排除。
 	itemMode := strings.ToLower(strings.TrimSpace(item.Mode))
+	if itemMode == "audio" {
+		if source.CapabilityDomain != accountscore.CapabilityDomainAudio {
+			return nil, nil
+		}
+		out := []string{}
+		if accountscore.ContainsString(source.SupportedEndpointModes, "audio_speech") {
+			out = append(out, "audio_speech")
+		}
+		if accountscore.ContainsString(source.SupportedEndpointModes, "audio_transcription_json") {
+			out = append(out, "audio_transcription_json")
+		}
+		if accountscore.ContainsString(source.SupportedEndpointModes, "audio_job_get") {
+			out = append(out, "audio_job_get")
+		}
+		return out, nil
+	}
 	itemModeBlocksChatFace := itemMode == "image_generation" || itemMode == "video"
 	if !itemModeBlocksChatFace {
 		for _, mode := range AccountManualTestEndpointModes(source) {
@@ -1274,7 +1368,8 @@ func testModelSupportsVideoProtocol(item TestCatalogItem, source ManualTestModeS
 // （原根包私有函数，根包测试经由转发访问）.
 func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource) bool {
 	// v8-C：目录行模式词表六值（chat/responses/embedding/audio/video/
-	// image_generation）。audio 行仍整体排除（既有契约）；image_generation 行
+	// image_generation）。audio 行仅 audio 场景可测（B3：audio_speech /
+	// audio_transcription_json 连通性候选）；image_generation 行
 	// 只能经 images_json 测试面的图像分支（images 协议 + api_key 门）或启用
 	// 的模型映射进入候选；video 行自 2026-11-01 媒体域连通性裁决起经 video
 	// 协议 + api_key 门（video_create 连通性探测）进入候选——对话协议族
@@ -1282,7 +1377,9 @@ func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource)
 	// 空协议默认放行不接纳 image_generation/video 行。
 	itemMode := strings.ToLower(strings.TrimSpace(item.Mode))
 	if itemMode == "audio" {
-		return false
+		return source.CapabilityDomain == accountscore.CapabilityDomainAudio &&
+			(accountscore.ContainsString(source.SupportedEndpointModes, "audio_speech") ||
+				accountscore.ContainsString(source.SupportedEndpointModes, "audio_transcription_json"))
 	}
 	itemModeBlocksChatFace := itemMode == "image_generation" || itemMode == "video"
 	if HasEnabledTestModelMapping(source.ModelMappings, item.Model) {

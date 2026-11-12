@@ -25,6 +25,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -415,6 +416,8 @@ func scanGroupRow(scan func(...any) error) (groupRow, error) {
 	}
 	row.enabled = enabled == 1
 	row.isDefault = isDefault == 1
+	row.createdAt = apiTimeString(row.createdAt)
+	row.updatedAt = apiTimeString(row.updatedAt)
 	return row, nil
 }
 
@@ -512,6 +515,11 @@ func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
 	}
 	out.row.enabled = enabled == 1
 	out.row.isDefault = isDefault == 1
+	out.row.createdAt = apiTimeString(out.row.createdAt)
+	out.row.updatedAt = apiTimeString(out.row.updatedAt)
+	if out.authorizationExpiresAt.Valid {
+		out.authorizationExpiresAt = sql.NullString{String: apiTimeString(out.authorizationExpiresAt.String), Valid: true}
+	}
 	return out, nil
 }
 
@@ -624,6 +632,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 			}
 			out.row.enabled = enabled == 1
 			out.row.isDefault = isDefault == 1
+			out.row.createdAt = apiTimeString(out.row.createdAt)
+			out.row.updatedAt = apiTimeString(out.row.updatedAt)
+			if out.authorizationExpiresAt.Valid {
+				out.authorizationExpiresAt = sql.NullString{String: apiTimeString(out.authorizationExpiresAt.String), Valid: true}
+			}
 			return out, nil
 		}
 	}
@@ -867,11 +880,11 @@ func sanitizedAuthorizationSources(rows []authorizedSourceRow) []AuthorizationSo
 			SourceType:      row.sourceType,
 			SourceTeamName:  nullPtrString(row.sourceTeamName),
 			Status:          row.status,
-			ActivatedAt:     nullPtrString(row.activatedAt),
+			ActivatedAt:     apiTimePtr(row.activatedAt),
 			EndedReason:     nullPtrString(row.endedReason),
 			CreatedBy:       "",
-			CreatedAt:       row.createdAt,
-			UpdatedAt:       row.updatedAt,
+			CreatedAt:       apiTimeString(row.createdAt),
+			UpdatedAt:       apiTimeString(row.updatedAt),
 		})
 	}
 	return out
@@ -1557,7 +1570,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			return nil, codeError(400, CodeGroupKindConflict, "分组类型创建后不可修改")
 		}
 	}
-	if expected := strings.TrimSpace(expectedUpdatedAt); expected != "" && expected != current.updatedAt {
+	if expected := strings.TrimSpace(expectedUpdatedAt); expected != "" && !dbtime.SameInstant(expected, current.updatedAt) {
 		return nil, &ConflictError{Message: "分组已被其他操作更新，请刷新后重试"}
 	}
 

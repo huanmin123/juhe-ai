@@ -23,6 +23,18 @@ func plusMillis(ms int64) string {
 	return testNow.Add(time.Duration(ms) * time.Millisecond).UTC().Format(rfc3339Milli)
 }
 
+// sameInstantText 按物理瞬时比较两个 RFC3339 文本（Revision 26 起时间列回读
+// 由 PostgreSQL 按会话时区渲染，文本形态不再是 UTC 毫秒原文）。
+func sameInstantText(left, right string) bool {
+	parse := func(value string) (time.Time, bool) {
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+		return parsed, err == nil
+	}
+	leftTime, leftOK := parse(left)
+	rightTime, rightOK := parse(right)
+	return leftOK && rightOK && leftTime.Equal(rightTime)
+}
+
 type testDB struct {
 	store *Store
 	db    *sql.DB
@@ -31,7 +43,8 @@ type testDB struct {
 // openTestDB（SQLite 夹具）与其专属 seedSchema DDL 已于 2026-10-25 随 sqlite
 // 方言退役整体删除；全部存储行为测试统一走 openTestDBPostgres（pgtestkit 真库
 // + 生产 PG 方言）。seed/校验 helper 按生产方言生成 SQL（juhe_business 表限定
-// + bind $n），时间列断言一律按 RFC3339 文本契约（store.go timeParam 口径）。
+// + bind $n），时间列断言按物理瞬时比较（Revision 26 起为 timestamptz，
+// 回读文本的时区/精度形态不构成契约）。
 
 func (h *testDB) exec(t *testing.T, query string, args ...any) {
 	t.Helper()
@@ -270,10 +283,10 @@ func TestCooldownMutationsFlow(t *testing.T) {
 	if failureStatus != "rate_limited" {
 		t.Fatalf("failure status=%q", failureStatus)
 	}
-	if !cooldownUntil.Valid || cooldownUntil.String != plusMillis(3600_000) {
+	if !cooldownUntil.Valid || !sameInstantText(cooldownUntil.String, plusMillis(3600_000)) {
 		t.Fatalf("cooldown_until=%v", cooldownUntil)
 	}
-	if !recoveryStarted.Valid || recoveryStarted.String != nowMillisText() {
+	if !recoveryStarted.Valid || !sameInstantText(recoveryStarted.String, nowMillisText()) {
 		t.Fatalf("recovery_started_at=%v", recoveryStarted)
 	}
 	if !nextProbeAt.Valid || nextProbeAt.String == "" {
@@ -388,7 +401,7 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339Nano, updatedAt); err != nil {
 		t.Fatalf("updated_at 必须是 RFC3339 文本: %q %v", updatedAt, err)
 	}
-	if updatedAt != nowMillisText() {
+	if !sameInstantText(updatedAt, nowMillisText()) {
 		t.Fatalf("updated_at=%q（必须为注入时钟的 RFC3339 毫秒形态）", updatedAt)
 	}
 

@@ -204,43 +204,30 @@ func TestProbeOpenAIResponsesSSERejectsJSONImposter(t *testing.T) {
 	}
 }
 
-func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testing.T) {
+func TestProbeOpenAIImagesUsesReadOnlyModelsEndpoint(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/images/generations" || request.Method != http.MethodPost {
-			t.Fatalf("unexpected image probe path: %s %s", request.Method, request.URL.Path)
-		}
-		var body map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body["model"] != "gpt-test" || body["n"] != float64(1) || body["size"] != "1024x1024" || body["quality"] != "low" || body["output_format"] != "webp" || body["output_compression"] != float64(100) {
-			t.Fatalf("unexpected image probe body: %#v", body)
-		}
-		// 图片 prompt 自 2026-09 起带随机后缀：固定前缀 + 3~6 位数字。
-		prompt, _ := body["prompt"].(string)
-		if !strings.HasPrefix(prompt, "Solid black. ") || !challengeDigitsPattern.MatchString(strings.TrimPrefix(prompt, "Solid black. ")) {
-			t.Fatalf("image prompt = %q, want \"Solid black. \" + 3~6 digits", prompt)
+		if request.URL.Path != "/v1/models" || request.Method != http.MethodGet {
+			t.Fatalf("unexpected image connectivity probe path: %s %s", request.Method, request.URL.Path)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"data":[{"b64_json":"c2FtcGxl"}]}`))
+		_, _ = writer.Write([]byte(`{"data":[]}`))
 	}))
 	defer server.Close()
 
 	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
 	result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected image probe result: %#v", result)
+		t.Fatalf("unexpected image connectivity result: %#v", result)
 	}
 
-	missingResultServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"data":[{"revised_prompt":"Solid black."}]}`))
+	unauthorizedServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusUnauthorized)
 	}))
-	defer missingResultServer.Close()
-	result = ProbeOpenAI(context.Background(), testInput(missingResultServer.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeHTTPFailure || result.ErrorCode != "upstream_protocol_invalid" {
-		t.Fatalf("missing image result must be an HTTP failure, got %#v", result)
+	defer unauthorizedServer.Close()
+	result = ProbeOpenAI(context.Background(), testInput(unauthorizedServer.URL+"/v1", "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeHTTPFailure {
+		t.Fatalf("unauthorized image connectivity must fail, got %#v", result)
 	}
 }
 

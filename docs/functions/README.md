@@ -9,7 +9,7 @@
 - [模型广场页与供应商目录退役设计](模型广场页与供应商目录退役设计.md)：跨供应商「模型广场」单页（用户与管理员共用，管理员在广场内直接维护模型，供应商目录弹窗整体退役）；写接口零变更，后端仅新增聚合读接口 `GET /providers/models/plaza`（per-vendor 合并、跨供应商同名不合并、一次性加载客户端分页）。已实施（2026-10-28：plaza 接口 + 广场页双路由 + 表单抽取 + 弹窗退役 + 7 个回归脚本改写，Go/前端全门禁绿；用户验收后三项修正：2 位小数、抽屉价格表格化含 DeepSeek 空闲时段参考价、停用美元换算/来源披露分组；剩隔离浏览器人工验收，待办 #T68）。
 - [模型目录卡片化与详情抽屉设计](模型目录卡片化与详情抽屉设计.md)：供应商模型目录弹窗从 3000px+ 动态列宽表格改为卡片网格 + 详情抽屉（卡片按用途分类挑三价槽位、抽屉全量渲染 `catalogDisplay` 分组）；后端契约零变更，分组生成语义仍由《供应商独立计费与模型目录展示设计》§5 权威，本文只接管呈现形态。已实施（2026-10-28：lint/typecheck/单测/双回归脚本/build 全绿，操作门控逐行保持现状，含深挖复审两轮 40 项缺口修复；剩隔离浏览器人工验收，待办 #T66）。
 - [网关模型列表账户并集设计](网关模型列表账户并集设计.md)：`GET /v1/models`（含根形态 `/models`、`/v1beta/models` 等全部端点形态）成员资格从供应商模型目录切换为「Key 激活绑定分组上静态门+授权门的资格主体，其模型事实主体（`COALESCE(来源账户, 账户)`）supportedModels ∪ 有效映射源」的配置能力并集，读时聚合 + 双层缓存（零 schema/jobs/部署变更，不引入冗余表与第二失效链，目录降级为元数据字典，进程内随运行时失效清空，Redis 按启动 token/generation 隔离并尽力清理，失败禁止静默空列表）；含原始 API Key 维度冗余表提案的否决论证。已实施（2026-10-10，随 v4 契约同交付并通过独立复审；实施记录见文档头部）。
-- [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md)：目标架构，固定 `vendor_code` / `connection_driver_code` / `protocol_surface_code`、统一账户入口映射；2026-11-05 起 openai/hybrid/generic_http 退役，注册表收敛为 42 个连接组合、133 个单 mode 组合；2026-11-07 起跨协议映射退役，账户入口映射收敛为 7 个协议等价 pair、13 个请求形态（OpenAI v1 Responses→Chat Completions bridge 与 gateway summary compact 全链删除，schema revision 20）；schema revision 17 与清退命令已实施。
+- [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md)：目标架构，固定 `vendor_code` / `connection_driver_code` / `protocol_surface_code`、统一账户入口映射；2026-11-05 起 openai/hybrid/generic_http 退役，注册表收敛为 43 个连接组合、134 个单 mode 组合；2026-11-07 起跨协议映射退役，账户入口映射收敛为 7 个协议等价 pair、13 个请求形态（OpenAI v1 Responses→Chat Completions bridge 与 gateway summary compact 全链删除，schema revision 20）；schema revision 17 与清退命令已实施。
 - [调度内核通用化设计](调度内核通用化设计.md)：调度内核通用参数与有序分派段契约——段内让位、软避让一次解除、动态翻回、不绕过硬门，保持准备层健康分段与既有候选顺序；超时参数化、三处错误消费和前置/适配器/后置历史策略；全部批次已实施并通过独立复审（2026-10-09，审计门清零）：批次 1 修复跨层降级事故（含整池等待域回炉）、批次 2 超时参数化三轨合一、批次 3 错误契约接口化 + 历史清理门参数化、批次 4 保活判定收敛；历史清理接线缺口（hook 恒 nil、CodexBridge 未装配）已建档于契约 5.4 节，接线立项另行裁决。
 - [上游模型漂移防护与加密上下文失效治理设计](上游模型漂移防护与加密上下文失效治理设计.md)：原生 Responses/compact 响应声明异常观测、完整接纳矩阵、固定状态机参数、attempt 去重与账户版本屏障；管理员当前运行态诊断，不恢复使用记录详情；A/B 文档契约已通过有界独立复审、代码未实施，C 上下文硬过滤继续冻结，未提供密文兼容保证。
 - [客户端版本自动跟版设计](客户端版本自动跟版设计.md)：客户端版本事实单点契约（两键三层合并：手动 `upstreamClientVersionOverrides` > 自动 `upstreamClientVersionAutoOverrides` > 内置）、jobs 每日五源（含 grokCLI）跟版任务契约（codex/claudeCode/geminiCLI/zcode/grokCLI，grokCLI 为第二期追加，随 xai worker 426 触发器落地，见设计 §8.3；写者侧单调与回退拒绝）、消费点收敛清单与 guard、UA 混合身份核实结论（官方 originator 与 UA 后缀同源，原 `Codex Desktop`+`(codex_exec;…)` 组合非官方 surface）与第二期裁决——已按开源源码锚定切换 codex exec surface（`codex_exec/{version} (…) unknown`，无后缀）、抖动审计结论（唯一缺口 key-model-memory-recovery）。
@@ -69,6 +69,7 @@
 - [AI 账户错误语义与状态变更边界](AI账户错误语义与状态变更边界.md)
 - [Anthropic透传dateline隐写清洗设计](Anthropic透传dateline隐写清洗设计.md)（已实施 2026-11-06）：Claude Code 对非官方 base URL 在 system-reminder 日期句嵌入变体撇号/斜杠分隔隐写水印；Anthropic 家族 OAuth 转发在 attempt 层按句子规格归一化回 ASCII，无命中逐字节恒等；实现为 `shared/platform/anthropicfp`（行为规格佐证 sub2api anthropicfp 公开注释，独立实现不复制 LGPL 源码）。关联 [计划-20261106T150648000Z](../plans/计划-20261106T150648000Z-上游身份一致性与版本门槛诊断.md)。
 - [AI 账户锁死调度机制设计与实现前复审](AI账户锁死调度机制设计与实现前复审.md)（方案、实现与复审记录）
+- [AI 账户场景类型与能力目录设计](AI账户场景类型与能力目录设计.md)（2026-11-12 B1 底座：单菜单 + 场景注册表 + 能力目录 + D13 cutover 清退；实施中）
 - [上游额度不足继承错误策略设计](上游额度不足继承错误策略设计.md)
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)
 - [AI 账户主探测与 Key-模型短屏蔽修复设计](AI账户主探测与Key模型短屏蔽修复设计.md)
@@ -126,9 +127,9 @@
 - [模型检测设计](模型检测设计.md)
 - [模型价格与用量统计口径](模型价格与用量统计口径.md)
 - [统一模型能力与计费抽象设计](统一模型能力与计费抽象设计.md)
-- [音频视频模型接入与统一媒体网关设计](音频视频模型接入与统一媒体网关设计.md)：媒体域行为契约——`audio`/`video` 分类、TTS/STT 同步链、`/v1/videos` 与 `/v1/audio/jobs` 异步任务面、媒体 IR + 每厂商 adapter、`provider_options` 扩展通道、受理切换边界、零资源存储；分期实施见 PLAN-20261003T164247971Z。
+- [音频视频模型接入与统一媒体网关设计](音频视频模型接入与统一媒体网关设计.md)：媒体域行为契约——`audio`/`video`/`image` 分类、TTS/STT 同步链、`/v1/images/generations` 同步生图、`/v1/videos` 与 `/v1/audio/jobs` 异步任务面、媒体 IR + 每厂商 adapter、`provider_options` 扩展通道、响应宽容与流式口径、受理切换边界、零资源存储；分期实施见 PLAN-20261003T164247971Z，图像同步批见 PLAN-20261111T110928976Z。
 - [对话与非对话媒体调度分离设计](对话与非对话媒体调度分离设计.md)：调度域契约（2026-10-19 已实施）——对话保留会话亲和与复杂恢复，图像/音频/视频创建使用无会话、无缓存语义的轻量候选调度（preflight 清空三类亲和输入、一次静态候选快照、失败不派发健康检查、不等待恢复）；媒体任务面继续按 `media_jobs.account_id` 固定原账户。
-- [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md)：各音视频厂商报文级协议（认证/端点/请求响应/任务状态机/usage/错误）与 Mock 上游扩展规格（`mockupstream` 端点白名单、异步任务场景、二进制载荷、acceptance 与 mockdata 衔接）；按置信度分级，C 级条目接入前必须以官方文档回填。
+- [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md)：各音视频/图像厂商报文级协议（认证/端点/请求响应/任务状态机/usage/错误）与 Mock 上游扩展规格（`mockupstream` 端点白名单、异步任务场景、二进制载荷、acceptance 与 mockdata 衔接）；按置信度分级，C 级条目接入前必须以官方文档回填；图像同步协议见 §2.9/§4.5/§6.3/§9.3/§10.3。
 - [问答音视频工具设计](问答音视频工具设计.md)（历史截面归档 2026-10-12，随 PLAN-20261012T121500000Z（已清理，git 历史可溯） 退场；历史内容：M7 问答 generate_video/generate_audio 两工具、任务卡→播放器渲染与 Mock 可播放载荷。§2.1 的 /v1 域与 chat 域两域边界裁决仍为媒体任务面的有效参考）
 - [流式语音跨协议转换设计](流式语音跨协议转换设计.md)：M6 立项——/v1/realtime 对外面扩展转换型上游（Gemini Live、CosyVoice WS），RealtimeUpstreamConn 抽象 + 事件映射矩阵（未列事件忽略+观测），透传实现零回归护航。
 - [实时语音Realtime网关设计](实时语音Realtime网关设计.md)：M5 期契约——OpenAI Realtime 形态 WebSocket 双向流代理（事件透传）、ephemeral token 面、会话 usage 抽取计费、`realtime` lane、受理边界 WS 语义（101 升级=受理）；Gemini Live 转换独立 M6。
@@ -168,8 +169,8 @@
 - [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回下一层：自动跟版层优先于内置），含内置锚点表与维护规则。
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
 - [MiniMax 账号接入](MiniMax账号接入.md)：M3 媒体专用供应商（Hailuo 视频 + speech TTS，API Key 单档案 `profile_minimax_openai_v1`，不承接聊天流量）。
-- [火山方舟 账号接入](火山方舟账号接入.md)：M3 媒体供应商、对话批补对话（豆包 Seedance 视频 + 豆包 TTS + ark OpenAI 兼容对话端点，API Key 单档案 `profile_volcengine_openai_v1`，chat 端点模式 opt-in）。
-- [通义百炼 账号接入](通义百炼账号接入.md)：M3 媒体供应商、对话批补对话（万相 wan 系视频，DashScope 异步任务 + `X-DashScope-Async` 创建头 + OpenAI 兼容模式对话端点，API Key 单档案 `profile_qwen_openai_v1`，chat 端点模式 opt-in，不承接 TTS）。
+- [火山方舟 账号接入](火山方舟账号接入.md)：M3 媒体供应商、对话批补对话、2026-11-11 图像同步批补 Seedream（豆包 Seedance 视频 + 豆包 TTS + seedream 同步生图 + ark OpenAI 兼容对话端点，API Key 单档案 `profile_volcengine_openai_v1`，chat/image 端点模式 opt-in）。
+- [通义百炼 账号接入](通义百炼账号接入.md)：M3 媒体供应商、对话批补对话、2026-11-11 图像同步批补 Qwen-Image（万相 wan 系视频，DashScope 异步任务 + `X-DashScope-Async` 创建头 + Qwen-Image 同步生图 + OpenAI 兼容模式对话端点，API Key 单档案 `profile_qwen_openai_v1`，chat/image 端点模式 opt-in，不承接 TTS）。
 - [DeepSeek 账号接入](DeepSeek账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)
 - [Gemini 协议兼容设计](Gemini协议兼容设计.md)

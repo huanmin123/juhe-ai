@@ -223,6 +223,7 @@ export interface AccountTestOptionsParams extends ListParams {
 export interface AccountTestPayload {
   model?: string
   testEndpointMode?: AccountSupportedEndpointMode
+  kind?: 'connectivity' | 'ws_handshake'
   prompt?: string
   testSessionId?: string
   account?: AccountDraftTestAccountPayload
@@ -230,6 +231,8 @@ export interface AccountTestPayload {
 
 export interface AccountDraftTestAccountPayload {
   providerCode: string
+  // 草稿测试的场景类型（非对话账户连通性测试按它选择代表探测模式）。
+  capabilityDomain?: import('@/views/accounts/accountCapabilityDomains').AccountCapabilityDomain
   // providerProtocolProfileId 已随 B4 两表退役批停发：后端草稿链
   // （prepareAccountDraftTestSnapshot）改由 vendor 语义推导协议上下文，
   // 该键仅为滚动期旧部署的接受但忽略入参保留可选形状。

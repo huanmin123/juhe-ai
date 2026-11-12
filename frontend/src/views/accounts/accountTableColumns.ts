@@ -7,6 +7,7 @@ export type AccountTableSortOrderResolver = (field: AccountListSortField) => Tab
 export function buildAccountTableColumns(isManagementView: boolean, sortOrder: AccountTableSortOrderResolver): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 230, fixed: 'left' },
+    { title: '场景', dataIndex: 'capabilityDomain', key: 'scenario', width: 100 },
     { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
   ]
@@ -105,7 +106,8 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
 
 export function accountTableScrollX(isManagementView: boolean): number {
   // 「限频」列宽 100→150（RPM 设计 §6.2 单行双数对 + 一体化双输入），总宽同步 +50。
-  return (isManagementView ? 2700 : 2520) + accountSelectionColumnWidth
+  // 单菜单新增「场景」列 +100。
+  return (isManagementView ? 2800 : 2620) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

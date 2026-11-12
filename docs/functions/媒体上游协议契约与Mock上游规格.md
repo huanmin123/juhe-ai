@@ -151,6 +151,30 @@
 - **ignored 不构成计量基源**：`seconds` 属 ignored 参数（如 Veo，`SupportsSeconds=false`）时用户值未生效、该模型用厂商默认时长——网关不猜测默认值（§2.4 规则 1/3），不按 ignored 请求值自算，维持 `usage_missing` 兜底。
 - **无价兜底**：自算秒数落行后目录无 USD 秒价（如 seedance）→ 计量照落、成本 0 不虚计；真正无任何依据（无回报且无生效请求参数）才 `usage_missing`。
 
+### 2.9 图像生成参数表（`POST /v1/images/generations`，2026-11-11 同步批）
+
+| 参数 | 层 | 类型 / 值域 | 厂商不支持时 |
+| --- | --- | --- | --- |
+| `model` / `prompt` | L1 | string；prompt 必填 | 上游错误透传 |
+| `n` | L2 | int ≥1，默认 1 | 语义无法表达 → 400 |
+| `size` | L2 | `1024x1024` / `1536x1024` / `1024x1536` / `auto`，或厂商档位/WxH | 取厂商默认并回显；qwen 的 `auto` 忽略并进 `params_ignored.size` |
+| `quality` | L2 | `low/medium/high/xhigh/max/auto`（gpt 词表） | 忽略 + `params_ignored` |
+| `background` | L2 | `transparent/opaque/auto` | 忽略 + `params_ignored` |
+| `output_format` | L2 | `png/jpeg/webp` | 忽略 + `params_ignored` |
+| `output_compression` | L2 | int 0-100 | 忽略 + `params_ignored` |
+| `response_format` | L2（legacy） | `url/b64_json` | 忽略 + `params_ignored`（qwen 只回 URL） |
+| `stream` / `partial_images` | L2 | 图像统一契约不支持 stream（2026-11-12 用户裁决） | 四家全部接受但忽略 + `params_ignored`，上游请求不携带，统一返回普通 JSON |
+| `safety_identifier` | L2 | string（OpenAI 新字段） | 忽略 + `params_ignored` |
+| `provider_options` | L3 | `{"<vendor>": {...}}`，命中子对象 deep-merge | —— |
+
+规则：
+
+1. 图像同步响应统一 OpenAI Images `{created, data:[{url|b64_json}], usage?}`；**响应宽容**：`data[]` 至少一项有 `url`/`b64_json` 即可用，不校验 `model`/厂商/`mime_type`，缺 `created`/`model`/`usage` 不拦截。
+2. 回显走响应头 `X-Juhe-Image-Provider` / `X-Juhe-Image-Params-Applied` / `X-Juhe-Image-Params-Ignored` / `X-Juhe-Image-Provider-Options-Applied`（逗号分隔、字典序、只键名），不写 body——保持 gpt `b64_json` 大响应纯透传。
+3. usage 统一字段 `output_image_count`：xAI `data[]` 长度，火山 `usage.generated_images`，Qwen 以转换后实际 `data[]` 图片数为准（2.0 `usage.image_count` / 3.0 `usage.output_image_count` 仅作形状兼容提示），gpt 现有图像 token/张数策略。
+4. 计费跟随模型行：`OutputUsdPerImage` 按张；`ImageOutputUsdPer1M` 按图像 token。不因响应 `model` 与配置模型不一致改价。
+5. `usage_records.upstream_model` = 本次实际发送的 wire model；`upstream_response_model` = 上游响应 `model`（缺失为空）；`pricing_model` = 配置模型行。
+
 ## 3. Mock 上游规格（测试基建扩展契约）
 
 ### 3.1 现状事实（2026-10-04 取证）
@@ -171,6 +195,7 @@
    - `media_gemini_tts_ok`（inlineData base64 PCM）、`media_gemini_tts_400_format`（`response_format` 非 `pcm` → 400）——M1 已交付
    - `media_video_ok_poll3`（#1/#2 `in_progress` → #3 `completed`）、`media_video_ok_poll1`（#1 即 `completed`，快路径）、`media_video_fail_after_accept`（受理后轮询 `failed`）、`media_video_429_create`（创建 429，可换账户重试）、`media_video_create_400_bad_size`（`size` 值域外 → 400，参数类不换账户）、`media_video_create_500`（创建 5xx）、`media_video_poll_500`（受理后轮询 5xx，不得换账户）、`media_video_content_expired`（content 404/410 → 网关透出"产物已过期"）、`media_video_cancel_ok`（保持 `queued`，验证 DELETE 流程）——M2 已交付（2026-10-04；其中 `media_video_ok_poll1` 与 `media_video_create_400_bad_size` 为 W1 批次交付、本清单同日补登记）
    - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；**§5.2 的 `media_gemini_video_create_ok` / `_poll_running` / `_poll_done_uri` / `_poll_error` 已随 M3 交付（2026-10-04）**；**§7.1 的 `media_glm_video_*` 已随 M3 交付；§8 的 `media_minimax_create_ok` / `_poll_running` / `_poll_success` / `_poll_fail` 与 §8.2 的 `media_minimax_tts_ok` 已随 M3 第三批交付（2026-10-04）**；**§9.1 的 `media_volcengine_create_ok` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error` 已随 M3 第四批交付（2026-10-04）；§9.2 长转写臂的 `media_volcengine_asr_create_ok` / `_poll_running` / `_poll_succeeded_text` / `_poll_failed` 已随语音识别承接批交付（2026-10-17，`mockupstream/asr_volcengine.go`，头驱动协议——响应回 `X-Api-Status-Code`/`X-Api-Message` 并回显 `X-Api-Request-Id`，submit 成功 body 空）**；**§9.2 流式 TTS 臂的 `media_volcengine_tts_stream_ok` / `_stream_failed` 已随火山流式语音桥接 V1a 交付（2026-10-18，`/api/v3/tts/unidirectional` NDJSON 分块）**；**§10 的 `media_qwen_create_pending` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error` 已随 M3 第五批交付（2026-10-04）**；**§6.1 的 `media_xai_video_create_request_id` / `_poll_pending` / `_poll_done_url_duration` / `_poll_failed_error` / `_poll_expired` 已随 M3 回填批交付（2026-10-04）**）
+   - 同步图像场景（2026-11-11 同步批）：`media_images_ok`（已有）、`media_images_b64_ok`、`media_images_no_image`、`media_images_relay_model_mismatch`（gpt/中转）、`media_xai_image_ok` / `media_xai_image_no_image`、`media_volcengine_image_ok` / `media_volcengine_image_no_image`、`media_qwen_image_ok` / `_v3_ok` / `_no_image`；图像 mock 端点白名单覆盖 `/v1/images/generations`、火山 Ark 的 `/api/v3/images/generations` 与 qwen 原生 `/api/v1/services/aigc/multimodal-generation/generation`。
 5. **slow/abort 基建复用**：首字节延迟、分块延迟、中途断连直接复用现有 `slow_first_byte`/`mid_stream_close` 机制，用于受理边界与流中断用例。
 
 ### 3.3 acceptance E2E 扩展规格
@@ -221,6 +246,15 @@ Mock：`media_video_*` 全套 + 创建响应必须含 `id`/`status:"queued"`（�
 - 计费：audio token 口径（官方 $32/$64 每 1M audio token 量级，接入时以官方定价页为准落价；查不到不编造）；usage 从事件流累计，连接关闭终态落库；空会话 0 计费+usage_missing。
 - 受理凭据：**上游 WS 101 升级成功**（拨号/握手失败或升级拒绝=受理前可换账户）。
 - Mock：`media_realtime_echo` / `media_realtime_reject_upgrade` / `media_realtime_close_after_established` / `media_realtime_idle`（行为规格见《实时语音Realtime网关设计》§7；**基建已交付**（M5b1，2026-10-04）：`mockupstream/realtime.go` 四场景 + gorilla/websocket v1.5.3 依赖落地，echo 支持脚本参数 `usage_events`（逗号分隔帧序号，到达后发 response.done 含 usage）与 `close_after`（N 帧后 close 1000），`realtime_test.go` 真客户端断言；**网关侧消费已随 M5b2 WS 桥接交付**（2026-10-04：`cmd/juhe-ai-gateway/chain_realtime.go`——观测器按本节 usage 字段累计会话汇总、受理边界按本节凭据语义实施；场景经 `?scenario=` 查询参数由网关透传驱动）。
+
+### 4.5 同步图像：`POST /v1/images/generations`（置信度 A：官方文档 + 2026-11-11 真实探针）
+
+- 请求：`{"model":"gpt-image-2","prompt":"...","n":1,"size":"1024x1024","quality":"...","background":"...","output_format":"...","safety_identifier":"..."}`；`provider_options` 由网关消费，不转发上游。2026-11-12 用户裁决图像统一只返回 JSON，`stream`/`partial_images` 不属于支持字段；客户端若携带，仅作为兼容输入，网关删除并回显 `params_ignored`，不转发上游。
+- 响应：`{created, data:[{b64_json|url, revised_prompt?}], usage?}`；gpt-image 实测 `data[0].b64_json` 约 1.58MB，usage 为 prompt/completion/input/output tokens + `output_tokens_details.image_tokens`。
+- 图像统一契约**不产生 SSE**：`stream: true` / `partial_images` 对 gpt/xai/volcengine/qwen 全部接受但忽略，回显 `params_ignored`，统一返回普通 JSON；gpt 不再直通 SSE。后续确有需要再立扩展项。
+- OpenAI 兼容中转可能返回 `url` 或 `b64_json`，usage 可能缺省/带额外字段；按 §2.9 响应宽容归一，不按模型名/厂商拦截。
+- 计费：gpt-image 按模型行图像 token 价（`image_output_usd_per_1m`）或按张价，行内策略决定。
+- Mock：`media_images_ok`（`{"created":1700000000,"data":[{"url":"..."}]}`）；新增 `media_images_b64_ok`、`media_images_no_image`（2xx 无 data）、`media_images_relay_model_mismatch`（响应 model 为其他厂商，仍应成功）。
 
 ## 5. gemini（置信度 A/B：TTS 官方文档确认；Veo REST 多源确认）
 
@@ -285,6 +319,15 @@ Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `med
 ### 6.2 语音（Grok Voice API）
 
 TTS/STT/STS 能力已确认（2026-10 检索），报文仍待官方页抓取（`docs.x.ai` 语音能力页）——待回填，不编造。
+
+### 6.3 图像（Grok Imagine Image；2026-11-11 同步批，置信度 A：官方指南 + 真实探针）
+
+- 端点：`POST https://api.x.ai/v1/images/generations`，Bearer（账户 base_url 版本根 `https://api.x.ai/v1` 直拼 `/images/generations`）。xAI 图像面本身是 OpenAI Images 兼容形态，网关不重写路径。
+- 请求：`model`（`grok-imagine-image-2.0` 主推）、`prompt`、`n`（每请求最多 10）、`response_format`（`url|b64_json`）、`size`/aspect ratio（字段名以官方 OpenAPI 为准；未确认字段原样透传，由上游裁决）。
+- 2026-11-11 真实探针：`grok-imagine-image-2.0` + `n:1` + `response_format:"url"` → 200；响应 `data[0].url` + `mime_type`，`usage.cost_in_usd_ticks`；**没有 `created`/`model`**。按响应宽容口径，缺字段不影响成功。
+- 网关参数处理：`provider_options.xai` deep-merge 进顶层 body；`stream`/`partial_images`/`quality`/`background`/`output_compression`/`safety_identifier` 等 xAI 未文档化参数忽略并回显 `params_ignored`；`model`/`prompt`/`n`/`size`/`response_format` 透传。响应不改写。
+- 计费：`data[]` 长度 → `output_image_count`，按模型行 `output_usd_per_image` 计费；`usage.cost_in_usd_ticks` 仅保留原始提示，不替代目录价。
+- Mock：`media_xai_image_ok`（`data[].url` + `mime_type` + cost ticks，无 created/model）、`media_xai_image_no_image`（2xx 无 data）。
 
 ## 7. glm / 智谱（视频 B 级：报文多源确认；语音 C 级：模型确认字段待回填）
 
@@ -368,6 +411,15 @@ host：`ark.cn-beijing.volces.com`；认证 `Authorization: Bearer <ARK_API_KEY>
 
 **M6 实施注（2026-10-04，TTS 面；2026-10-17 迁移批更新）**：`gatewaymedia/volcengine_tts.go` adapter 挂 `speechAdapters` 的 `volcengine` 条目；链上 `volcengineSpeechRequest` 分派（沿 minimax 同模式）。落地事实：出站 URL 恒 `https://openspeech.bytedance.com` 语音服务域 + `/api/v3/tts/create` 路径（与账户 ark base_url 无关的固定上游特例——语音域鉴权（`X-Api-Key`）与资源模型独立于 ark OpenAI 兼容根，账户 `base_url` 只承载 ark `/api/v3` 版本根，不经该出站拼接；`JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL` 仅为验收 E2E 的测试 seam，生产不设置）；凭据单值 `speech_token` = 新版语音控制台 API Key（api_key 账户凭据可选键，写侧仅 volcengine 放行，缺失即该账户无 audio_speech 能力——派发时显式失败，不静默回退；`speech_appid` 退役为可选遗留键，不再参与出站报文与鉴权）；统一面 `model` 真实透传（现役 seed-audio-1.0 目录行承载；历史占位名 doubao-tts 由 adapter 归一映射，见上）；`speed` 区间 [0.2,3.0] 词表外/越界本地 400（§2.4 规则 2）；响应转换 audio 缺失/解码失败错误上抛。档案 Capabilities 含 `tts` family；`audio_speech` 端点模式 opt-in（默认集维持 video_get）。计费：上游无字符回报 → 网关按请求字符自算计量照落、成本按字符价照计（§2.8）。账号接入见《火山方舟账号接入.md》TTS 节。
 
+### 9.3 同步图像（Seedream；2026-11-11 同步批，置信度 A：官方文档 + 真实探针）
+
+- 端点：`POST https://ark.cn-beijing.volces.com/api/v3/images/generations`，Bearer（账户 base_url 版本根 `/api/v3` 直拼 `/images/generations`）；Ark 图像面为 OpenAI Images 兼容形态，网关不重写路径。
+- 请求：`model`、`prompt`、`image`（URL/Base64 图生图）、`size`（`1K/2K/4K` 档位或 `WxH`）、`response_format`（`url|b64_json`，默认 url）、`watermark`（bool，厂商默认 **true**）、`output_format`（png/jpeg）、`background`、`sequential_image_generation` + `sequential_image_generation_options.max_images`、`stream`（仅 Seedream 5.0 lite/4.5/4.0 支持，5.0 pro/flash 不支持）。
+- 2026-11-11 真实探针：`doubao-seedream-5-0-flash-260915` + `n:1` + `size:"1024x1024"` + `response_format:"url"` + `watermark:false` → 200；响应 `created`/`model`/`data[].url`（TOS 签名 URL，`X-Tos-Expires=86400`）/`size`/`output_format:"jpeg"`/`background:"opaque"`；usage `input_images:0, generated_images:1, output_tokens:4096, total_tokens:4096`。
+- 网关参数处理：`provider_options.volcengine` deep-merge（`image`、`sequential_image_generation*`、`layer_decomposition`、`optimize_prompt_options`、`tools`）；**网关首版默认显式传 `watermark:false`**，`provider_options.volcengine.watermark=true` 可覆盖；`quality`/`output_compression`/`safety_identifier`/`stream`/`partial_images` 忽略并回显 `params_ignored`；`size`/`response_format`/`output_format`/`background`/`n` 透传。`seed`/`guidance_scale` 官方页未文档化，首批不承诺。响应不改写。
+- usage：`usage.generated_images` → `output_image_count`（缺失时 `data[]` 长度兜底）；按模型行 `output_usd_per_image` 计费；`output_tokens` 为图像内部 token 核算，按张行由计费引擎置零豁免。
+- Mock：`media_volcengine_image_ok`（created/model/data[].url/size/output_format/background + generated_images）、`media_volcengine_image_no_image`（2xx 无 data）。
+
 ## 10. qwen / 通义百炼（置信度 B：DashScope 通用任务模式确认；§10.1 端点与参数面已于 2026-10-04 经百炼官方 legacy 万相 API 参考核实并实施）
 
 host：`dashscope.aliyuncs.com`；兼容模式认证 `Authorization: Bearer <DASHSCOPE_API_KEY>`；**异步任务约定：创建请求带 `X-DashScope-Async: enable` 头**（缺失上游报 "current user api does not support synchronous calls"）。
@@ -394,6 +446,16 @@ M3 第五批实施面（保守面，检索核实）：
 
 CosyVoice（**契约事实修正 2026-10-04**）：官方分类为"实时语音合成"，接入协议为 **AOQ（QUIC）/WebSocket 双向事件流**（客户端事件/服务端事件），**非 REST/SSE 同步 TTS**——从同步 TTS 回填池移出，归 M6 流式语音转换池（与 Gemini Live 同类，届时经 Realtime 转换层接入）。
 Mock（视频四场景 **M3 第五批已交付**，`mockupstream/video_qwen.go`——创建端点按契约 §10.1 校验 `X-DashScope-Async` 头，缺失即 400 同步调用拒绝；`_tts_ok` 随 TTS 接入交付）。
+
+### 10.3 同步图像（Qwen-Image；2026-11-11 同步批，置信度 A：官方文档 + 真实探针）
+
+- 端点：`POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`，Bearer；**同步接口，无 task_id 轮询，无 OpenAI 兼容模式**。账户 base_url 为 origin（`https://dashscope.aliyuncs.com`）；若用户配置了 `/compatible-mode/v1` 或 `/v1` 版本根，adapter 出站前剥离该后缀再拼原生全路径。
+- 请求：`{"model":"qwen-image-3.0","input":{"messages":[{"role":"user","content":[{"text":"..."}]}]},"parameters":{"size":"1024*1024","n":1,"negative_prompt":"...","prompt_extend":true,"watermark":false,"seed":42}}`。公共参数映射：`prompt`→`input.messages[0].content[0].text`；`size` WxH→`W*H`；`n`→`parameters.n`（1-6）；`provider_options.qwen` 的 `negative_prompt`/`prompt_extend`/`watermark`/`seed` 等 deep-merge 进 `parameters`。`quality`/`background`/`output_format`/`output_compression`/`stream`/`partial_images`/`safety_identifier`/`response_format` 忽略并回显 `params_ignored`（响应只回 URL）。网关首版默认 `watermark:false`。
+- 响应：`{"output":{"choices":[{"message":{"content":[{"image":"https://..."}]}}]},"usage":{...},"request_id":"..."}`；2.0 usage `image_count/width/height`，3.0 usage `output_image_count/output_width/output_height/input_image_count/input_image_type/output_image_type`；3.0 `content[0].type="image"`、`output.rewrite_status="not_use"`。
+- 网关响应转换：收集 `output.choices[].message.content[].image` → `{created, data:[{url}], usage:{output_image_count}}`；`output_image_count` 取实际收集到的图片数（2.0/3.0 的原生 usage 字段只作形状兼容提示，与图片数不一致时按实际图片数计费）；不合成 `model`（响应无 model 时 `upstream_response_model` 留空）；无可用图片 → 502 `upstream_protocol_error`；非 2xx 原状态/错误体透传。
+- 2026-11-11 真实探针：`qwen-image-2.0`、`qwen-image-3.0` 同端点均 200；3.0 usage 形状与 2.0 不同，adapter 兼容两种。
+- 计费：`output_image_count` → 按模型行 `output_usd_per_image`（qwen-image-3.0 目录价已落）。
+- Mock：`media_qwen_image_ok`（2.0 usage `image_count`）、`media_qwen_image_v3_ok`（3.0 usage `output_image_count`）、`media_qwen_image_no_image`（2xx 无 image）。
 
 ## 11. 与设计的衔接及前置裁决项清单
 

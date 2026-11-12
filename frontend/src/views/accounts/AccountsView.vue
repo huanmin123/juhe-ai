@@ -1,5 +1,18 @@
 <template>
   <a-card class="page-card accounts-page-card responsive-page-card">
+    <div class="accounts-scenario-filter" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
+      <span>场景类型</span>
+      <a-select
+        :value="scenarioFilter ?? 'all'"
+        style="width: 180px"
+        @change="handleScenarioFilterChange"
+      >
+        <a-select-option value="all">全部场景</a-select-option>
+        <a-select-option v-for="domain in ACCOUNT_CAPABILITY_DOMAINS" :key="domain" :value="domain">
+          {{ ACCOUNT_CAPABILITY_DOMAIN_LABELS[domain] }}
+        </a-select-option>
+      </a-select>
+    </div>
     <AccountFilterToolbar
       v-model:filter-drawer-open="filterDrawerOpen"
       :active-filter-count="activeAdvancedFilterCount"
@@ -304,7 +317,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
@@ -336,10 +349,10 @@ import {
   accountTableScrollX,
   accountTableScrollY,
   buildAccountTableColumns,
-  accountColumnSortOrder as resolveAccountColumnSortOrder,
-  tableColumnKey,
+  accountColumnSortOrder as resolveAccountColumnSortOrder
 } from './accountTableColumns'
-import { ACCOUNT_CAPABILITY_DOMAINS, DOMAIN_MODEL_MODES, capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { ACCOUNT_CAPABILITY_DOMAINS, ACCOUNT_CAPABILITY_DOMAIN_LABELS, DOMAIN_MODEL_MODES, capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { setAccountCapabilityCatalog } from './accountCapabilityCatalog'
 import { prefetchMediaDomainModelAvailability } from './mediaDomainModelAvailability'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
 import { loadAccountProviderModelOptionsResource } from './useAccountProviderModelOptions'
@@ -401,21 +414,32 @@ const modelCatalogSyncing = ref(false)
 const batchDisableConfirmOpen = ref(false)
 const batchDisableConfirmLoading = ref(false)
 const route = useRoute()
+const router = useRouter()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
-// 当前能力域（M2 域拆分）：来自 route.meta.capabilityDomain，四域路由共用本视图；
-// 兜底 'chat' 只防异常挂载，正常路由八条路径全部携带 meta。
-const capabilityDomain = computed<AccountCapabilityDomain>(() => {
-  const value = route.meta.capabilityDomain
+// 单菜单场景筛选：query.scenario 是唯一来源；无值 = 全部场景。
+// 账户创建/编辑仍需要一个具体场景，全部场景视图下默认按 chat 打开创建弹窗。
+const scenarioFilter = computed<AccountCapabilityDomain | undefined>(() => {
+  const value = route.query.scenario
   return typeof value === 'string' && (ACCOUNT_CAPABILITY_DOMAINS as readonly string[]).includes(value)
-    ? value
-    : 'chat'
+    ? value as AccountCapabilityDomain
+    : undefined
 })
-const isChatDomain = computed(() => capabilityDomain.value === 'chat')
+const capabilityDomain = computed<AccountCapabilityDomain>(() => scenarioFilter.value ?? 'chat')
+const isChatDomain = computed(() => scenarioFilter.value === 'chat')
 
-// 媒体域（video/audio/image）裁剪对话专属列：优先级（域内高级调度按 M3 另行立项）
-// 与时间计划（对话专属语义，见计划 D7）；状态/供应商/分组/标签/并发等通用列保留。
-const MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS: ReadonlySet<string> = new Set(['priority', 'availabilitySchedule'])
+function handleScenarioFilterChange(value: unknown) {
+  const next = typeof value === 'string' ? value : 'all'
+  const query = { ...route.query }
+  if (next === 'all' || !(ACCOUNT_CAPABILITY_DOMAINS as readonly string[]).includes(next)) {
+    delete query.scenario
+  } else {
+    query.scenario = next
+  }
+  void router.replace({ query })
+}
+
+// 媒体域（video/audio/image）与对话域共用同一列集；不再隐藏优先级/时间计划。
 const {
   loading,
   accounts,
@@ -456,7 +480,7 @@ const {
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
-  capabilityDomain,
+  capabilityDomain: scenarioFilter,
   scopedSystemAccountId,
   onLoaded: handleAccountListLoaded
 })
@@ -475,9 +499,9 @@ watch(
 // 收敛的前置数据，失败时新建弹窗回退既有默认值（GPT 优先），行为退回 v8-D
 // 之前，模型选择器自身的加载失败有各自的报错路径。
 watch(
-  capabilityDomain,
+  scenarioFilter,
   (domain) => {
-    if (!capabilityDomainIsMedia(domain)) return
+    if (!domain || !capabilityDomainIsMedia(domain)) return
     void prefetchMediaDomainModelAvailability({
       capabilityDomain: domain,
       isManagementView: isManagementView.value,
@@ -885,14 +909,12 @@ async function queryBalanceFromEdit(): Promise<void> {
   }
 }
 
-const rawColumns = computed(() => {
-  const columns = buildAccountTableColumns(
-    isManagementView.value,
-    (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
-  )
-  if (isChatDomain.value) return columns
-  return columns.filter((column) => !MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS.has(tableColumnKey(column)))
-})
+// 单菜单后所有场景共用同一列集：优先级/时间计划等内核字段对非对话场景同样生效，
+// 不再按域隐藏。列设置只按管理面/个人面隔离。
+const rawColumns = computed(() => buildAccountTableColumns(
+  isManagementView.value,
+  (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
+))
 const columnStorageKey = computed(() => (isManagementView.value ? 'accounts:management' : 'accounts:self'))
 const {
   managedColumns,
@@ -903,14 +925,7 @@ const {
   requiredKeys: ['name'],
   minVisible: 1
 })
-const tableScrollX = computed(() => {
-  const base = accountTableScrollX(isManagementView.value)
-  if (isChatDomain.value) return base
-  const hiddenWidth = buildAccountTableColumns(isManagementView.value, () => null)
-    .filter((column) => MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS.has(tableColumnKey(column)))
-    .reduce((sum, column) => sum + (typeof column.width === 'number' ? column.width : 0), 0)
-  return base - hiddenWidth
-})
+const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
 
 function handleAccountTableChange(...args: unknown[]): void {
@@ -1237,7 +1252,7 @@ async function loadProviderAccountCounts() {
   try {
     const scope = isManagementView.value ? accountScopeParams.value : undefined
     const params = {
-      domain: capabilityDomain.value,
+      domain: scenarioFilter.value,
       ...(scope?.systemAccountId ? { systemAccountId: scope.systemAccountId } : {})
     }
     providerAccountCounts.value = isManagementView.value
@@ -1607,6 +1622,10 @@ async function handleBatchEditSaved(result: AccountBatchEditResult): Promise<voi
 }
 
 onMounted(() => {
+  const catalogApi = isManagementView.value ? api.accounts.capabilityCatalog() : api.myAccounts.capabilityCatalog()
+  void catalogApi
+    .then((catalog) => setAccountCapabilityCatalog(catalog))
+    .catch(() => { /* 目录不可用时保留本地常量矩阵 fallback；创建/筛选仍可用 */ })
   void loadData()
 })
 </script>

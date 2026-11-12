@@ -67,9 +67,11 @@ const sharedEnvRelative = ".local/project-resources/dev/env/shared.env"
 const testDBPrefix = "juhe_ai_sub2api_dev_t"
 
 // adminPingTimeout / opTimeout 是管理连接与建删库单操作的超时上限。
+// opTimeout 覆盖 fresh DDL 全量执行：直连远端开发 PG 时数百条 DDL 逐条往返，
+// 30s 会在 schema 中途超时（2026-11-12 T210 实测），放宽到 180s；本机 PG 远低于该值。
 const (
 	adminPingTimeout = 10 * time.Second
-	opTimeout        = 30 * time.Second
+	opTimeout        = 180 * time.Second
 )
 
 var testDBCounter atomic.Uint64

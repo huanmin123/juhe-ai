@@ -48,6 +48,9 @@ func IsImageGenerationModel(model string) bool {
 		strings.HasPrefix(normalized, "dall-e") ||
 		strings.HasPrefix(normalized, "imagen-") ||
 		strings.HasPrefix(normalized, "nano-banana") ||
+		strings.HasPrefix(normalized, "doubao-seedream") ||
+		strings.HasPrefix(normalized, "seedream") ||
+		strings.HasPrefix(normalized, "qwen-image") ||
 		// grok-imagine 前缀排除 grok-imagine-video 段：xAI 官方命名中
 		// grok-imagine-video-*（契约 §6.1）是视频模型（/v1/videos 面），
 		// 只有 grok-imagine-image 与裸 grok-imagine 是图像模型——不排除

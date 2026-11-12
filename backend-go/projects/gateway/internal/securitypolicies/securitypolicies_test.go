@@ -26,6 +26,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 const builtinID = BuiltinSecurityPolicyID
@@ -254,11 +255,11 @@ func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 
 func (e *testEnv) updatedAtOf(t *testing.T, id string) string {
 	t.Helper()
-	var updatedAt string
+	var updatedAt dbtime.Nullable
 	if err := e.db.QueryRow(fixtureBind(`SELECT updated_at FROM security_policies WHERE id = ?`), id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	return updatedAt
+	return updatedAt.APIString()
 }
 
 // bindAPIKey 直接插入一条绑定给定策略的 API Key。

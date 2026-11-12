@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // BindingInput is one normalized group binding entry from the request.
@@ -567,7 +569,7 @@ func (s *Store) currentUpdatedAtForAccess(ctx context.Context, q queryer, id, ma
 		query += ` AND system_account_id = ?`
 		args = append(args, managedOwner)
 	}
-	var updatedAt string
+	var updatedAt dbtime.Nullable
 	err := q.QueryRowContext(ctx, s.bind(query+` LIMIT 1`), args...).Scan(&updatedAt)
 	if isNoRows(err) {
 		return "", nil
@@ -575,7 +577,7 @@ func (s *Store) currentUpdatedAtForAccess(ctx context.Context, q queryer, id, ma
 	if err != nil {
 		return "", err
 	}
-	return updatedAt, nil
+	return updatedAt.APIString(), nil
 }
 
 // nextStrategyUpdatedAt mirrors nextRouteStrategyUpdatedAt: monotonic

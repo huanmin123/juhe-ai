@@ -32,13 +32,36 @@ func TestIsImageGenerationPath(t *testing.T) {
 }
 
 func TestOpenAIImageAdapterPassthroughWithoutProviderOptions(t *testing.T) {
-	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat","stream":true,"partial_images":1}`)
+	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat"}`)
 	got, err := BuildImageUpstreamRequest("gpt", raw)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if got != nil {
 		t.Fatalf("gpt without provider_options should preserve bytes, got %s", got)
+	}
+}
+
+func TestOpenAIImageAdapterIgnoresStreamParams(t *testing.T) {
+	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat","stream":true,"partial_images":1}`)
+	got, err := BuildImageUpstreamRequest("gpt", raw)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body := decodeImageTestBody(t, got)
+	for _, key := range []string{"stream", "partial_images"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s must be removed: %s", key, got)
+		}
+	}
+	if body["model"] != "gpt-image-2" || body["prompt"] != "a cat" {
+		t.Fatalf("base params changed: %s", got)
+	}
+	echo := ImageEchoForRequest("gpt", decodeImageTestBody(t, raw))
+	for _, key := range []string{"stream", "partial_images"} {
+		if !imageTestContainsString(echo.ParamsIgnored, key) {
+			t.Fatalf("params ignored = %v, want %s", echo.ParamsIgnored, key)
+		}
 	}
 }
 

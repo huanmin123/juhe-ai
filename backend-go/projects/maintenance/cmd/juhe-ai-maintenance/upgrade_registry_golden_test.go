@@ -39,6 +39,11 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		{20, "retire-cross-protocol-entry-mappings", 1},
 		{22, "retire-high-concurrency-groups", 1},
 		{23, "retire-usage-shard-catalog", 1},
+		{24, "instant-timestamptz-small-tables", 1},
+		{25, "instant-timestamptz-crud", 1},
+		{26, "instant-timestamptz-accounts", 1},
+		{27, "instant-timestamptz-dataset-jobs", 1},
+		{28, "stats-calendar-timestamptz", 1},
 	}
 	if len(steps) != len(want) {
 		t.Fatalf("注册表步骤数 = %d, want %d", len(steps), len(want))
@@ -66,7 +71,7 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 	for _, step := range steps {
 		destructive[step.ID] = step.Destructive
 	}
-	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables", "retire-cross-protocol-entry-mappings", "retire-high-concurrency-groups", "retire-usage-shard-catalog"} {
+	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables", "retire-cross-protocol-entry-mappings", "retire-high-concurrency-groups", "retire-usage-shard-catalog", "instant-timestamptz-small-tables", "instant-timestamptz-crud"} {
 		if !destructive[id] {
 			t.Fatalf("步骤 %s 应标记 destructive", id)
 		}

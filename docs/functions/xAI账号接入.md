@@ -62,6 +62,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 | API Key：`/v1/responses`、`/responses` | `<base_url>/responses` | OpenAI Responses 直连 |
 | OAuth：`/v1/responses`、`/responses` | `<base_url>/responses` | Grok CLI Responses 直连 |
 | API Key：`/v1/videos` 族（创建/轮询/产物） | `<base_url>/videos/generations` 创建 + `<base_url>/videos/{request_id}` 轮询/产物 | Grok Imagine Video 异步视频（opt-in `video_*` 端点模式；契约 §6.1；统一参数经媒体 adapter 改写，受理凭据 = `request_id`） |
+| API Key：`/v1/images/generations` | `<base_url>/images/generations` | Grok Imagine Image 同步生图（`image` 域账户，`images_json` 端点模式；xAI 图像面与 OpenAI Images 兼容，网关仅做 `provider_options.xai` 合并与未支持参数忽略；契约 §6.3） |
 
 请求体默认 raw passthrough；只在账户模型映射、Codex 客户端兼容或 GPT 受控参数覆盖明确命中时做最小 JSON 改写。Chat / Responses 的 usage 复用 OpenAI 语义，`providerCode`、`providerProtocolProfileId` 和真实上游模型仍记录为 xAI 事实。
 
@@ -78,7 +79,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 本地内置目录按 `2026-07-18` xAI 官方模型页和价格页快照基线维护（2026-10 补全/复核/核对批逐项以官方页面原文回正与扩充；**2026-10-17 口径核对批：chat 8 行与 image 三行复核一致，video-1.5 确认 720p 主档，voice-agent 按官方现价回正，全行补 `sourcePricingNote` 取证注记；同日缺口补录批 +2：`grok-imagine-video-1.5-lite` 与 `grok-tts` 占位行**，见 `data_xai.go` 行注释与《模型价格数据源与取证指南》台账），当前包含：
 
 - 文本模型：`grok-4.7`、`grok-4.6`、`grok-4.5`、`grok-4.3`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`。官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。`grok-4.7`（2026-09-21 发布公告日）与 `grok-4.6`（2026-08-12）为补全批收录；`grok-4.3` 于复核批确认现售后收录（官方模型页无首发日明文，按首发报道锚定 2026-05-01，行注释登记）。`grok-4.20` 系与 `grok-build-0.1` 官方 may-15-retirement 明文 2026-05-15 退役，目录行保留 shutdown 日期。
-- 图片模型计价项：`grok-imagine-image-2.0` 每张 0.04 USD（2026-08-07 发布）、`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD（官方 60 天通知期 2026-09-02 起，到期后 slug 由 `grok-imagine-image-2.0` quality=low 承接）。图片专用模型按 images 协议可过目录协议校验，但网关当前无 xAI Images 出站 driver，实际使用图片模型前需补专用 Images driver / 回归。
+- 图片模型计价项：`grok-imagine-image-2.0` 每张 0.04 USD（2026-08-07 发布）、`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD（官方 60 天通知期 2026-09-02 起，到期后 slug 由 `grok-imagine-image-2.0` quality=low 承接）。**2026-11-11 起 xAI Images 已承接**：`/v1/images/generations` 走 OpenAI Images 兼容形态，网关只合并 `provider_options.xai`、忽略未文档化参数；响应 `data[].url` + `mime_type`、usage `cost_in_usd_ticks`，无 `created`/`model`，按响应宽容口径接受；按张价计费。
 - 视频模型：`grok-imagine-video-1.5`（2026-10-04 M3 回填批收录，mode=video、目录协议 `video`，1–15 秒 / 七档宽高比 / 480p–1080p / 音轨默认开启，契约 §6.1）。账户声明该模型即可经 opt-in `video_*` 端点模式承接 `/v1/videos` 链；官方 USD 秒价已核实并落静态层——三档明文 480p $0.08 / 720p $0.14 / 1080p $0.25 per sec，目录单槽位沿「非最低档主档」先例落 720p **$0.14/s**（2026-10-05 核对批回正）；done 的 `video.duration` 秒计量照抽并按目录秒价计费（0 计费兜底已解除，链级/全链路断言钉 6s = $0.84）。`grok-imagine-video-1.5-lite`（2026-10-17 缺口补录批，Text/Image→Video）同规则落 720p 主档 **$0.03/s**（480p $0.02 / 1080p $0.14 留注记；输入 $0.01/img 留档）；旧版 `grok-imagine-video`（2026-10-17 缺口补录第二批，Text/Image/Video→Video）同规则落 720p 主档 **$0.07/s**（480p $0.05 留注记；输入 $0.002/img、视频输入 $0.01/sec 留档；官方页无发布日期，公开发布时间线 2025-10 Imagine 上线满足收录下限）。
 - 语音模型：`grok-voice-transcribe-2.0`（录音转写，官方 REST 批量面 $0.10/hr 明文直除落每秒价；上一轮误按 Streaming $0.20/hr 换算已回正）与 `grok-voice-agent`（实时语音对话；**2026-10-17 口径批回正：官方现役 STS grok-voice-3.0 $0.08/分钟（$4.80/小时）+ $0.004/文本输入，折秒 0.08÷60 落每秒价，另加文本输入费无槽位留注记；此前落 $0.05/分钟（$3/小时）为 grok-voice-2.0 时代旧价**；grok-voice-2.0 官方已标 deprecated，官方 `-latest` 别名当前指向本行，别名不落目录行、由行注释登记）。**`grok-tts`（2026-10-17 缺口补录批）为占位行**：官方 Text to Speech `POST /v1/tts` 请求体无 model 字段（`text`/`voice_id`/`language`），端点级定价 $15.00/1M chars 折 `TtsInputCostPerChar` $1.5e-05/字符——行名仅作统一面路由与计价载体（doubao-tts 占位先例），非官方模型 ID；网关当前无 xAI TTS 出站 adapter，承接前请求不路由。计价与秒计量事实见 `data_xai.go`。
 - 思考档位：`grok-4.7`/`grok-4.6`/`grok-4.5` 目录行带 `reasoning_effort` 枚举 `low/medium/high/xhigh`（默认 `high`）；`grok-4.3` 为 `none/low/medium/high`（默认 `low`）；`grok-4.20-multi-agent-0309` 的 effort 官方语义是协作 agent 数量（low/medium = 4，high/xhigh = 16），不是推理深度；`grok-4.20-0309` 基础行无官方枚举，目录保持空数组。模型名中的 reasoning / non-reasoning 事实不等于可任意猜测请求参数。
@@ -101,6 +102,7 @@ xAI 官方价格页列出的 Web Search、X Search 和 Code Execution 均按 5 U
 ## usage 与验证
 
 - Chat Completions 使用 `prompt_tokens`、`completion_tokens`、`prompt_tokens_details.cached_tokens`；Responses 使用 `input_tokens`、`output_tokens` 及缓存细分，统一写入 OpenAI usage semantic。
+- 图像：`/v1/images/generations` 响应 `data[]` 长度 → `output_image_count`，按模型行 `output_usd_per_image` 计费；`usage.cost_in_usd_ticks` 只保留原始提示，不替代目录价；响应无 `model` 时 `upstream_response_model` 留空。真实探针 2026-11-11：`grok-imagine-image-2.0` 200。
 - `pnpm --filter juhe-ai-backend test:xai-provider` 覆盖 seed、API Key / OAuth 凭据、Chat / Responses URL、Grok OAuth Responses-only、Bearer / CLI header 和跨协议拒绝。
 - `pnpm --filter juhe-ai-backend test:grok-oauth-protocol-contract` 覆盖 OAuth 端点、PKCE、凭据构建、刷新保留与管理 / 个人路由挂载。
 - `pnpm --filter juhe-ai-backend test:grok-sso-device-flow` 覆盖 SSO 归一化、device flow、轮询、批量 3 并发和逐项结果契约。

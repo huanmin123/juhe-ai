@@ -14,6 +14,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // EffectiveAvailabilityLimitations 说明 effectiveAvailability 派生的已知边界
@@ -121,15 +122,16 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		vendorCode, oauthType                sql.NullString
 		protocolCode, protocolVersion        sql.NullString
 		healthModel, healthMode              sql.NullString
-		expiresAt, cooldownUntil             sql.NullString
+		expiresAt, cooldownUntil             dbtime.Nullable
 		lastErrorCode, lastErrorMessage      sql.NullString
 		credentials                          sql.NullString
 		authzID, sourceID, authzOwner        sql.NullString
 		sourceStatus                         sql.NullString
 		sourceSchedulable                    any
-		sourceExpiresAt, sourceCooldownUntil sql.NullString
+		sourceExpiresAt, sourceCooldownUntil dbtime.Nullable
 		sourceErrorCode, sourceErrorMessage  sql.NullString
-		authorizationStatus, authzExpiresAt  sql.NullString
+		authorizationStatus                  sql.NullString
+		authzExpiresAt                       dbtime.Nullable
 		authzResourceOwner                   sql.NullString
 		boundGroupID                         sql.NullString
 		backgroundProbeEnabled               any
@@ -169,17 +171,17 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		boundGroupID:           boundGroupID.String,
 		status:                 status.String,
 		schedulable:            truthy(schedulable),
-		expiresAt:              expiresAt.String,
-		cooldownUntil:          cooldownUntil.String,
+		expiresAt:              expiresAt.APIString(),
+		cooldownUntil:          cooldownUntil.APIString(),
 		lastErrorCode:          lastErrorCode.String,
 		lastErrorMessage:       lastErrorMessage.String,
 		authorizationStatus:    authorizationStatus.String,
-		authorizationExpiresAt: authzExpiresAt.String,
+		authorizationExpiresAt: authzExpiresAt.APIString(),
 		sourceID:               sourceID.String,
 		sourceStatus:           sourceStatus.String,
 		sourceSchedulable:      sourceSchedulable == nil || truthy(sourceSchedulable),
-		sourceExpiresAt:        sourceExpiresAt.String,
-		sourceCooldownUntil:    sourceCooldownUntil.String,
+		sourceExpiresAt:        sourceExpiresAt.APIString(),
+		sourceCooldownUntil:    sourceCooldownUntil.APIString(),
 		sourceErrorCode:        sourceErrorCode.String,
 		sourceErrorMessage:     sourceErrorMessage.String,
 		credentials:            credentialsMap,
@@ -214,7 +216,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		OwnerSystemAccountID:   systemID.String,
 		SystemAccountID:        systemID.String,
 		ProtocolCode:           protocolCode.String,
-		AccountExpiresAt:       expiresAt.String,
+		AccountExpiresAt:       expiresAt.APIString(),
 		EffectiveAvailable:     available,
 		HasEffectiveAvail:      true,
 		BackgroundProbeEnabled: backgroundProbeEnabledPtr,

@@ -43,6 +43,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/circuitstore"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
@@ -56,12 +57,12 @@ const healthProbeOutboxSchema = `CREATE TABLE IF NOT EXISTS account_health_probe
   reason TEXT NOT NULL,
   trace_id TEXT NOT NULL DEFAULT '',
   source_fence TEXT NOT NULL DEFAULT '',
-  deadline_at TEXT NOT NULL,
+  deadline_at TIMESTAMPTZ(3) NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'consumed')),
-  consumed_at TEXT,
-  available_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  consumed_at TIMESTAMPTZ(3),
+  available_at TIMESTAMPTZ(6) NOT NULL,
+  created_at TIMESTAMPTZ(3) NOT NULL,
+  updated_at TIMESTAMPTZ(3) NOT NULL,
   CHECK ((status = 'consumed' AND consumed_at IS NOT NULL) OR (status = 'pending' AND consumed_at IS NULL))
 )`
 
@@ -110,7 +111,7 @@ func (s healthProbeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, l
 		FROM `+s.business.table("account_health_probe_request_outbox")+`
 		WHERE status = 'pending' AND available_at <= ?
 		ORDER BY created_at, request_id
-		LIMIT ?`), now.UTC().Format(time.RFC3339Nano), limit)
+		LIMIT ?`), dbtime.DBValue(now), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +125,7 @@ func (s healthProbeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, l
 			accountID   string
 			reason      string
 			sourceFence sql.NullString
-			deadlineAt  string
+			deadlineAt  dbtime.Nullable
 		)
 		if err := rows.Scan(&requestID, &accountID, &reason, &sourceFence, &deadlineAt); err != nil {
 			return nil, err
@@ -137,14 +138,8 @@ func (s healthProbeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, l
 			continue
 		}
 		row.SourceFence = fence
-		if deadlineAt != "" {
-			parsed, parseErr := time.Parse(time.RFC3339Nano, deadlineAt)
-			if parseErr != nil {
-				corruptRequestIDs = append(corruptRequestIDs, requestID)
-				s.warnCorruptRow(requestID, accountID, "deadline_at", parseErr)
-				continue
-			}
-			row.Deadline = parsed
+		if deadlineAt.Valid {
+			row.Deadline = deadlineAt.Time
 		}
 		out = append(out, row)
 	}
@@ -192,25 +187,18 @@ func (s healthProbeOutboxStore) CompleteProbeRequest(ctx context.Context, reques
 
 // CountPendingProbeRequests 实现 accounthealth.ProbeRequestBacklogCounter
 // （D 任务③堆积告警的廉价只读面）：单条聚合查询返回 pending 行总数与最旧行
-// created_at（无 pending 行时 oldest 为零值）。created_at 解析失败（写侧异常
-// 文本）不掩盖计数，oldest 退化为零值（告警省略年龄字段）。
+// created_at（无 pending 行时 oldest 为零值）。
 func (s healthProbeOutboxStore) CountPendingProbeRequests(ctx context.Context) (int64, time.Time, error) {
 	var (
 		count  int64
-		oldest sql.NullString
+		oldest dbtime.Nullable
 	)
 	err := s.business.db.QueryRowContext(ctx, s.business.bind(`SELECT COUNT(*), MIN(created_at) FROM `+s.business.table("account_health_probe_request_outbox")+`
 		WHERE status = 'pending'`)).Scan(&count, &oldest)
 	if err != nil {
 		return 0, time.Time{}, err
 	}
-	var oldestAt time.Time
-	if oldest.Valid && oldest.String != "" {
-		if parsed, parseErr := time.Parse(time.RFC3339Nano, oldest.String); parseErr == nil {
-			oldestAt = parsed
-		}
-	}
-	return count, oldestAt, nil
+	return count, oldest.OrZero(), nil
 }
 
 // healthProbeBoundary 是 accounthealth.ProbeRequestBoundary 的业务库实现：
@@ -411,10 +399,9 @@ type healthProbeOutboxPruner struct {
 }
 
 // pruneOnce 删除 created_at 早于保留期的行（无论 status），返回删除行数。
-// 时间比较沿用消费侧同款文本序（gateway writer 固定 9 位小数 UTC 书写，
-// 字典序与时间序一致；business.bind 覆盖 PG $n 方言，TEXT 列两侧一致）。
+// created_at 已是 timestamptz，切点按毫秒契约绑定。
 func (p healthProbeOutboxPruner) pruneOnce(ctx context.Context, now time.Time) (int64, error) {
-	cutoff := now.UTC().Add(-p.retention).Format(time.RFC3339Nano)
+	cutoff := dbtime.DBValueMillis(now.UTC().Add(-p.retention))
 	result, err := p.business.db.ExecContext(ctx, p.business.bind(`DELETE FROM `+p.business.table("account_health_probe_request_outbox")+`
 		WHERE created_at < ?`), cutoff)
 	if err != nil {

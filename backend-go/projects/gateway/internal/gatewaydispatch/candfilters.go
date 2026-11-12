@@ -448,6 +448,15 @@ func openAIEndpointFamilyFromPath(value string) string {
 	if strings.Contains(path, "/responses") {
 		return gatewayrouting.EndpointFamilyResponses
 	}
+	if strings.Contains(path, "/embeddings") {
+		return gatewayrouting.EndpointFamilyEmbedContent
+	}
+	if strings.Contains(path, "/rerank") {
+		return gatewayrouting.EndpointFamilyRerank
+	}
+	if strings.Contains(path, "/moderations") {
+		return gatewayrouting.EndpointFamilyModeration
+	}
 	return ""
 }
 

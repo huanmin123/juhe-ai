@@ -38,9 +38,9 @@ var postgresSchemaDataset = []PGStatement{
           response_data_json text NOT NULL DEFAULT '{}',
           error_code text,
           error_message text,
-          started_at text NOT NULL,
-          ended_at text NOT NULL,
-          created_at text NOT NULL
+          started_at timestamptz(3) NOT NULL,
+          ended_at timestamptz(3) NOT NULL,
+          created_at timestamptz(3) NOT NULL
         )`,
 	},
 	{
@@ -49,10 +49,10 @@ var postgresSchemaDataset = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS api_key_record_cleanup_targets (
           api_key_id text PRIMARY KEY,
           system_account_id text NOT NULL,
-          created_at text NOT NULL,
-          updated_at text NOT NULL,
+          created_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           attempt_count integer NOT NULL DEFAULT 0,
-          last_attempt_at text,
+          last_attempt_at timestamptz(3),
           last_blocked_reason text,
           last_error_message text
         )`,
@@ -66,10 +66,10 @@ var postgresSchemaDataset = []PGStatement{
           related_account_ids_json text NOT NULL DEFAULT '[]',
           authorization_ids_json text NOT NULL DEFAULT '[]',
           team_scope_ids_json text NOT NULL DEFAULT '[]',
-          created_at text NOT NULL,
-          updated_at text NOT NULL,
+          created_at timestamptz(3) NOT NULL,
+          updated_at timestamptz(3) NOT NULL,
           attempt_count integer NOT NULL DEFAULT 0,
-          last_attempt_at text,
+          last_attempt_at timestamptz(3),
           last_blocked_reason text,
           last_error_message text
         )`,

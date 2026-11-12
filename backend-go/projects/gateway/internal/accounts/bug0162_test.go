@@ -59,7 +59,7 @@ func TestBug0162LockEngagedDeadlineRecomputed(t *testing.T) {
 		t.Fatalf("state: %v", updated)
 	}
 	// deadline = incident start + new timeout (2026-09-01T00:00 + 600s).
-	if deadline := env.queryCell(t, `SELECT deadline_at FROM account_lock_states WHERE account_id = ?`, id); deadline != "2026-09-01T00:10:00.000Z" {
+	if deadline := env.queryCell(t, `SELECT deadline_at FROM account_lock_states WHERE account_id = ?`, id); !sameInstantText(deadline, "2026-09-01T00:10:00.000Z") {
 		t.Fatalf("deadline not recomputed: %q", deadline)
 	}
 	// A death-config change releases the retry lease.
@@ -95,7 +95,7 @@ func TestBug0162LockRetainsLeaseWhenConfigUnchanged(t *testing.T) {
 		t.Fatalf("retry lease lost on unchanged config: %q", retry)
 	}
 	// deadline stays pinned to the original value when the timeout is unchanged.
-	if deadline := env.queryCell(t, `SELECT deadline_at FROM account_lock_states WHERE account_id = ?`, id); deadline != "2026-09-01T00:05:00.000Z" {
+	if deadline := env.queryCell(t, `SELECT deadline_at FROM account_lock_states WHERE account_id = ?`, id); !sameInstantText(deadline, "2026-09-01T00:05:00.000Z") {
 		t.Fatalf("deadline drifted: %q", deadline)
 	}
 }

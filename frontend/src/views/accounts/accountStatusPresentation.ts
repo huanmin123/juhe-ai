@@ -1,6 +1,6 @@
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountListItem, AccountStatus } from '@/types/domain'
-import { capabilityDomainWithoutBackgroundProbe, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import { accountDiagnosticMessageWithoutRepeatedFields } from './accountDiagnosticMessages'
 
 /**
@@ -17,17 +17,16 @@ export function isAccountScheduleOutOfWindow(
 
 /**
  * 探测模式探针（总开关设计 §2）：行缺省（旧数据/未返回）按开启处理。
- * 开关不适用域仅 audio/video（二轮复审裁决：image 域存在后台探测，适用并显示
- * 「手动」标签）。
+ * D13 后所有场景统一适用后台自动探测开关。
  */
 export function accountBackgroundProbeDisabled(account: {
   backgroundProbeEnabled?: boolean
   capabilityDomain?: AccountCapabilityDomain
 }): boolean {
-  return account.backgroundProbeEnabled === false && !capabilityDomainWithoutBackgroundProbe(account.capabilityDomain)
+  return account.backgroundProbeEnabled === false
 }
 
-/** 手动模式「手动」标签（总开关设计 §9）：灰色 default，audio/video 媒体域不适用（image 适用）。 */
+/** 手动模式「手动」标签（总开关设计 §9）：所有场景统一适用。 */
 export function accountManualModeTag(account: Pick<AccountListItem, 'backgroundProbeEnabled' | 'capabilityDomain'>):
   { color: string; label: string } | undefined {
   if (!accountBackgroundProbeDisabled(account)) return undefined

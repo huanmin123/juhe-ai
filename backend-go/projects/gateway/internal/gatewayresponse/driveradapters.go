@@ -106,6 +106,12 @@ func openAIResponseEndpointFamily(pathAndQuery string) gatewayproto.ResponseEndp
 		return gatewayproto.EndpointFamilyChatCompletions
 	case contains(path, "/responses"):
 		return gatewayproto.EndpointFamilyResponses
+	case contains(path, "/embeddings"):
+		return gatewayproto.EndpointFamilyEmbedContent
+	case contains(path, "/rerank"):
+		return gatewayproto.EndpointFamilyRerank
+	case contains(path, "/moderations"):
+		return gatewayproto.EndpointFamilyModeration
 	default:
 		return gatewayproto.EndpointFamilyUnknown
 	}

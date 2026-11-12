@@ -28,10 +28,10 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 var w11fBoom = errors.New("w11f boom")
@@ -406,7 +406,7 @@ func w11fQueryString(t *testing.T, env *w11fEnv, query string, args ...any) stri
 
 func w11fSeedAnnouncement(t *testing.T, env *w11fEnv, id, status string) string {
 	t.Helper()
-	revision := "2024-01-01T00:00:00Z"
+	revision := "2024-01-01T00:00:00.000Z"
 	var publishedAt any
 	if status == "published" {
 		publishedAt = revision

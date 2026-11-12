@@ -1,7 +1,9 @@
 // imageadapter.go 是同步图像请求的厂商适配层（2026-11-11 图像生成统一协议
-// 同步批）。对外统一 OpenAI Images 形态；gpt 原生直通，xai/volcengine 走各自
-// OpenAI 兼容图像端点，qwen 走 DashScope 原生 multimodal-generation 并由
-// qwenImageAdapter 转换响应。图像不落 media_jobs（异步任务面本批不做）。
+// 同步批）。对外统一 OpenAI Images JSON 形态；四家均不支持 stream（2026-11-12
+// 用户裁决，stream/partial_images 忽略并回显）；gpt 原生 JSON 直通，
+// xai/volcengine 走各自 OpenAI 兼容图像端点，qwen 走 DashScope 原生
+// multimodal-generation 并由 qwenImageAdapter 转换响应。图像不落 media_jobs
+// （异步任务面本批不做）。
 //
 // 响应宽容（用户 2026-11-11 裁决）：不校验响应 model/厂商/mime_type，只要
 // data[] 有 url/b64_json 即成功；响应 model 只进 usage.upstream_response_model。
@@ -184,8 +186,9 @@ func canonicalImageProvider(providerCode string) string {
 	return key
 }
 
-// openAIImageAdapter 是 gpt 原生直通：只有 provider_options 需要消费，
-// 其余字节原样透传（含 stream/partial_images 与 b64_json 大响应）。
+// openAIImageAdapter 是 gpt 同步 JSON 直通：图像统一契约不提供 stream，
+// `stream`/`partial_images` 一律忽略并回显 params_ignored；无这些参数且无
+// provider_options 时保持原始字节透传（含 b64_json 大响应）。
 type openAIImageAdapter struct{}
 
 func (openAIImageAdapter) Provider() string { return "openai" }
@@ -197,11 +200,16 @@ func (openAIImageAdapter) Build(input ImageRequest) (ImageBuildResult, error) {
 		return ImageBuildResult{}, err
 	}
 	applied := applyImageProviderOptions(body, "gpt", opts)
+	// 2026-11-12 用户裁决：图像统一只返回 JSON，不支持 stream；gpt 也不再
+	// 直通 SSE，与 xai/volcengine/qwen 同样忽略并回显。
+	ignored := dropImageParams(body, "stream", "partial_images")
+	applied = excludeStrings(applied, ignored)
 	result := ImageBuildResult{
 		Provider:               "openai",
+		ParamsIgnored:          ignored,
 		ProviderOptionsApplied: applied,
 	}
-	if !present {
+	if !present && len(ignored) == 0 {
 		return result, nil
 	}
 	encoded, err := json.Marshal(body)

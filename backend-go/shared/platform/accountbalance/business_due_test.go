@@ -232,10 +232,10 @@ CREATE TABLE juhe_business.accounts (
   schedulable integer NOT NULL,
   type text NOT NULL,
   balance_query_enabled integer NOT NULL,
-  balance_query_next_refresh_at text,
-  deleted_at timestamptz,
+  balance_query_next_refresh_at timestamptz(3),
+  deleted_at timestamptz(3),
   authorization_instance_authorization_id text,
-  updated_at text NOT NULL
+  updated_at timestamptz(3) NOT NULL
 )`)
 		return err
 	})
@@ -257,7 +257,7 @@ CREATE TABLE juhe_business.accounts (
 		}
 		if _, err := store.db.ExecContext(ctx, `INSERT INTO juhe_business.accounts
 (id, config_revision, status, schedulable, type, balance_query_enabled, balance_query_next_refresh_at, deleted_at, authorization_instance_authorization_id, updated_at)
-VALUES ($1, 7, $2, 1, 'api_key', $3, $4, NULL, NULL, '')`, id, status, enabled, dueValue); err != nil {
+VALUES ($1, 7, $2, 1, 'api_key', $3, $4, NULL, NULL, $5)`, id, status, enabled, dueValue, balanceDueText(time.Now().UTC())); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -271,15 +271,12 @@ VALUES ($1, 7, $2, 1, 'api_key', $3, $4, NULL, NULL, '')`, id, status, enabled, 
 	if err != nil || !advanced {
 		t.Fatalf("fence-matched advance: %v %t", err, advanced)
 	}
-	var stored string
+	var stored time.Time
 	if err := store.db.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id='bdue-pg-hit'`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored != balanceDueText(next) {
-		t.Fatalf("stored due %s must equal canonical text %s", stored, balanceDueText(next))
-	}
-	if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
-		t.Fatalf("stored due must stay RFC3339 parseable for the direct reader: %v", err)
+	if !stored.Equal(next.UTC().Truncate(time.Millisecond)) {
+		t.Fatalf("stored due %s must equal millisecond-truncated next %s", stored, next)
 	}
 
 	// A different frozen due must not clobber the advanced schedule.

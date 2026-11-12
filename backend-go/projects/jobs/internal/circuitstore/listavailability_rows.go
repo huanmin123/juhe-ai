@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // managementRow 是列表行原始列（base item + status seed + 授权实例来源）。
@@ -37,27 +38,27 @@ type managementRow struct {
 	status                              string
 	schedulable                         any
 	balanceQueryEnabled                 any
-	balanceQueryNextRefreshAt           sql.NullString
+	balanceQueryNextRefreshAt           dbtime.Nullable
 	availabilityScheduleJSON            sql.NullString
-	accountExpiresAt                    sql.NullString
-	cooldownUntil                       sql.NullString
+	accountExpiresAt                    dbtime.Nullable
+	cooldownUntil                       dbtime.Nullable
 	lastErrorCode                       sql.NullString
 	lastErrorMessage                    sql.NullString
-	lastHealthCheckAt                   sql.NullString
-	nextHealthCheckAt                   sql.NullString
+	lastHealthCheckAt                   dbtime.Nullable
+	nextHealthCheckAt                   dbtime.Nullable
 	lastHealthCheckStatusCode           sql.NullInt64
 	lastHealthCheckErrorCode            sql.NullString
 	lastHealthCheckErrorMessage         sql.NullString
 	lastHealthCheckTraceID              sql.NullString
 	healthCheckModel                    string
 	healthCheckEndpointMode             string
-	lastUsedAt                          sql.NullString
+	lastUsedAt                          dbtime.Nullable
 	authorizationInstanceOwnerID        sql.NullString
 	authorizationInstanceSourceID       sql.NullString
 	configuredProxyProfileID            sql.NullString
 	authorizationID                     sql.NullString
 	authorizationStatus                 sql.NullString
-	authorizationExpiresAt              sql.NullString
+	authorizationExpiresAt              dbtime.Nullable
 	authorizationLimitsJSON             sql.NullString
 	authorizationEffectiveSourceType    sql.NullString
 	authorizationEffectiveSourceTeamID  sql.NullString
@@ -70,15 +71,15 @@ type managementRow struct {
 	sourceStatus                        sql.NullString
 	sourceSchedulable                   any
 	sourceAvailabilityScheduleJSON      sql.NullString
-	sourceAccountExpiresAt              sql.NullString
-	sourceCooldownUntil                 sql.NullString
+	sourceAccountExpiresAt              dbtime.Nullable
+	sourceCooldownUntil                 dbtime.Nullable
 	sourceLastErrorCode                 sql.NullString
 	sourceLastErrorMessage              sql.NullString
 	sourceLastErrorTraceID              sql.NullString
-	sourceCooldownRetestLastAt          sql.NullString
+	sourceCooldownRetestLastAt          dbtime.Nullable
 	sourceCooldownRetestLastStatusCode  sql.NullInt64
-	sourceLastHealthCheckAt             sql.NullString
-	sourceNextHealthCheckAt             sql.NullString
+	sourceLastHealthCheckAt             dbtime.Nullable
+	sourceNextHealthCheckAt             dbtime.Nullable
 	sourceLastHealthCheckStatusCode     sql.NullInt64
 	sourceLastHealthCheckErrorCode      sql.NullString
 	sourceLastHealthCheckErrorMessage   sql.NullString

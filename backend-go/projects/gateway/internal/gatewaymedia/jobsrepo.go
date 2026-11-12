@@ -20,6 +20,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // MediaJobRetentionTTL 是任务行保留时长（媒体设计 §8.2 清理任务：TTL 过期置
@@ -578,8 +580,9 @@ func mediaJobTimeLayout(t time.Time) string {
 }
 
 func parseMediaJobTime(value string) time.Time {
-	if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value)); err == nil {
-		return parsed
+	parsed, ok := dbtime.ParseDB(strings.TrimSpace(value))
+	if !ok {
+		return time.Time{}
 	}
-	return time.Time{}
+	return dbtime.DBValueMillis(parsed)
 }
