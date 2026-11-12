@@ -312,6 +312,12 @@ func (s *chainConcurrencyStore) TryAcquireAsync(ctx context.Context, accountID s
 		outcome, err = tracker.AcquireAccountConcurrency(ctx, accountID, options.Lane,
 			redisAccountConcurrencySlotTTL.Milliseconds(), concurrencyLimit, laneLimit, options.RPMLimit)
 		if err != nil {
+			// EVAL 单次往返的 at-most-once 窗口：脚本可能已在 Redis 生效而
+			// 客户端只拿到超时/断连错误，此槽没有 Release 闭包可归还，只能
+			// 依赖 key TTL 回收。记录 WARN 以便对账定位（此路径不是 release
+			// 失败，正常不触发 "release failed" 日志）。
+			slog.Warn("account concurrency Redis acquire failed; slot may be leaked until TTL",
+				"accountId", accountID, "lane", options.Lane, "error", err)
 			return gatewaydispatch.ConcurrencySlot{}, err
 		}
 	default:

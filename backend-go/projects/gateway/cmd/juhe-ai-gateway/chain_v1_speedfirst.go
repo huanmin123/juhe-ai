@@ -31,6 +31,17 @@ func (l *v1DispatchLoop) releasePendingSpeedFirstReservation() {
 	}
 }
 
+// releaseUnconsumedCutoverReservation 释放本轮未被引擎 take 的切号预留。
+// TakeForAccount 成功（Consumed=true）时槽所有权随本轮派发结果交给响应链
+// （正常 selected 路径由 dispatched.ReleaseConcurrency 释放；引擎候选失败
+// 出口自行释放），此时不能提前释放；未消费（含目标账户不在本轮候选窗口）
+// 时由本函数归还占位，避免并发计数泄漏。
+func releaseUnconsumedCutoverReservation(reservation *gatewayhotquality.SpeedFirstCutoverReservation) {
+	if reservation != nil && !reservation.Consumed() {
+		reservation.Release()
+	}
+}
+
 // resetSpeedFirstState mirrors the Node group-switch resets (routes.ts:
 // 656-659 / 787-790): retry count, candidate narrowing and the pending
 // cutover reservation (released).

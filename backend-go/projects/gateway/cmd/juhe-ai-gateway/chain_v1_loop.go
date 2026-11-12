@@ -612,6 +612,14 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			PreAcquiredConcurrency: speedFirstReservationHandleOf(dispatchReservation),
 		})
 		l.stopCompactSseWaitHeartbeat()
+		// 切号预留所有权收口：预留已在目标账户上占了一个并发槽，只有引擎在
+		// 本轮通过 PreAcquiredConcurrency.TakeForAccount 选中该账户时才把槽
+		// 转交给响应链释放（dispatched.ReleaseConcurrency）。若本轮候选窗口
+		// 没有该账户（调度排除、代理/抑制过滤、冻结目标等），预留从未被
+		// 消费；循环开头已把 l.speedFirstCutoverReservation 置 nil，请求级
+		// defer releasePendingSpeedFirstReservation 无法兜底，必须在此确定性
+		// 释放，否则目标账户的并发计数永久 +1（泄漏到 6h key TTL）。
+		releaseUnconsumedCutoverReservation(dispatchReservation)
 		if dispatchErr == nil {
 			// 锁行观察随成功派发带出：后续速度优先结算等出口用它做 M4 收窄。
 			l.accountLockObservation = dispatched.AccountLockObservation
