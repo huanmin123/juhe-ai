@@ -85,6 +85,7 @@ import {
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import {
   allowedEndpointModesFor
 } from './accountCapabilityDomains'
@@ -100,6 +101,8 @@ const props = defineProps<{
   form: AccountFormModel
   isOAuthForm: boolean
   isManagementView: boolean
+  /** 当前场景：工具域展示同族工具协议与对应 endpoint mode 选项。 */
+  capabilityDomain: AccountCapabilityDomain
   /** 映射客户端模型候选：跨供应商全量目录（按行协议过滤），由 useAccountEditForm 装载。 */
   mappingSourceModelOptions: ModelMappingSourceModelOption[]
   /** 映射源模型下拉（协议切片实例）的服务端截断标志（T25 hasMore）。 */
@@ -124,12 +127,10 @@ const modelMappingTooltip = computed(() => (
   '客户端协议与上游协议强制一致（含 Gemini 流式归一）；客户端模型可跨供应商选择，但必须支持所选协议；上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
-  // M2 能力域收口 + v8-A 对话域纯粹化：chat 域允许集 = 13 值对话锚集合 ∩
-  // 供应商写侧词表——媒体任务组与被移出三项（images_json /
-  // audio_transcription_json / realtime_session）不再出现在对话表单勾选区
-  // （媒体域走独立精简表单）。
+  // 按当前场景取允许集：chat 域为对话锚集合，工具域为同族工具 mode 集合；
+  // 再与供应商写侧词表求交。
   const allowedModes = new Set(allowedEndpointModesFor({
-    capabilityDomain: 'chat',
+    capabilityDomain: props.capabilityDomain,
     providerCode: props.form.providerCode,
     profile: activeProfile.value,
     accountType: props.form.type

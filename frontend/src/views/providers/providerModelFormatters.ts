@@ -57,7 +57,9 @@ export const apiProtocolLabels: Record<string, string> = {
   images: 'Images API',
   audio_speech: 'Audio Speech (TTS)',
   audio_transcription: 'Audio Transcription (STT)',
-  video: 'Videos API'
+  video: 'Videos API',
+  rerank: 'Rerank',
+  moderation: 'Moderations API'
 }
 
 export const modelStatusOptions: Array<{ label: string; value: ProviderModelStatus }> = [
@@ -70,7 +72,10 @@ export const modelModeOptions: Array<{ label: string; value: ProviderModelMode }
   { label: '对话 / 编码', value: 'text' },
   { label: '图像', value: 'image' },
   { label: '音频', value: 'audio' },
-  { label: '视频', value: 'video' }
+  { label: '视频', value: 'video' },
+  { label: '向量', value: 'embedding' },
+  { label: '重排', value: 'rerank' },
+  { label: '安全', value: 'moderation' }
 ]
 
 export const apiProtocolOptions: Array<{ label: string; value: ProviderModelApiProtocol }> = Object.entries(apiProtocolLabels)
@@ -535,6 +540,25 @@ export function modelPriceTable(item: ProviderModelPricing): ModelPriceTable {
   return { columns, rows, hasOffpeak: Boolean(offpeakSection) }
 }
 
+/** 抽屉「计费价格」单位（2026-11-12）：存在媒体 text 行（$X/s、$X/次 等）时
+ * 标题只标 USD，避免把媒体价误读成 /1M tokens；纯 token 行维持原单位。 */
+export function modelPriceTableUnit(item: ProviderModelPricing): string {
+  const table = modelPriceTable(item)
+  if (!table.rows.length) return ''
+  const formats = new Set<string>()
+  for (const row of table.rows) {
+    for (const cell of Object.values(row.cells)) {
+      if (cell?.format) formats.add(cell.format)
+    }
+  }
+  if (formats.size > 1) return 'USD'
+  const format = formats.values().next().value
+  if (format === 'text') return 'USD'
+  if (format === 'usd_per_image') return 'USD / 张'
+  if (format === 'usd_per_1m_token_hour') return 'USD / 1M tokens·小时'
+  return 'USD / 1M tokens'
+}
+
 /** 抽屉「基础信息」分组（§6.3，对齐 portal info-grid）：非价格分组（reasoning /
  * capacity / long_context 及未来任何未归类分组）按后端顺序返回，供 label/value
  * 两列网格渲染；banned 分组（§6.4）前端兜底过滤（旧后端响应仍可能携带）。 */
@@ -677,11 +701,13 @@ type ModelPriceSlotField =
   | 'outputUsdPer1M'
   | 'cachedInputUsdPer1M'
   | 'outputUsdPerImage'
+  | 'inputUsdPerImage'
   | 'imageInputUsdPer1M'
   | 'imageOutputUsdPer1M'
   | 'audioInputUsdPer1M'
   | 'audioOutputUsdPer1M'
   | 'ttsInputUsdPer1MChars'
+  | 'ttsOutputUsdPerCall'
   | 'audioInputUsdPerSecond'
   | 'videoOutputUsdPerSecond'
   | 'videoOutputUsdPerCall'
@@ -702,6 +728,7 @@ const modelPriceSlotCandidates: Record<ModelCategoryKey, Array<{ label: string; 
   ],
   image: [
     { label: '每张输出', field: 'outputUsdPerImage', unit: '/张' },
+    { label: '输入图', field: 'inputUsdPerImage', unit: '/张' },
     { label: '图片输入', field: 'imageInputUsdPer1M', unit: '/1M tokens' },
     { label: '图片输出', field: 'imageOutputUsdPer1M', unit: '/1M tokens' }
   ],
@@ -709,6 +736,7 @@ const modelPriceSlotCandidates: Record<ModelCategoryKey, Array<{ label: string; 
     { label: '音频输入', field: 'audioInputUsdPer1M', unit: '/1M tokens' },
     { label: '音频输出', field: 'audioOutputUsdPer1M', unit: '/1M tokens' },
     { label: '语音合成', field: 'ttsInputUsdPer1MChars', unit: '/1M 字符' },
+    { label: '语音合成（每次）', field: 'ttsOutputUsdPerCall', unit: '/次' },
     { label: '语音识别', field: 'audioInputUsdPerSecond', unit: '/秒' },
     { label: '输入', field: 'inputUsdPer1M', unit: '/1M tokens' }
   ],
@@ -739,6 +767,78 @@ function collectModelPriceSlots(
   return slots
 }
 
+// 媒体档位价保留最多 4 位小数（秒价常见 $0.0957/s；trimNumber 的 2 位
+// 会把 0.0957 显示成 0.1，卡片信息失真）。小于 0.01 时沿用 2 位有效数字。
+function trimMediaPrice(value: number): string {
+  if (Math.abs(value) >= 0.01) return Number(value.toFixed(4)).toString()
+  if (value !== 0) return Number(value.toPrecision(2)).toString()
+  return '0'
+}
+
+// 图像像素档价槽（2026-11-12 档位批）：按 maxPixels 升序取前三个，标签带
+// 像素上限（如「每张 ≤2.61M」），末档无上限时用前一档阈值写「>X」。
+function imageTierPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
+  const tiers = item.outputUsdPerImageTiers
+  if (!tiers?.length) return []
+  const ordered = [...tiers].sort((left, right) => (left.maxPixels || Number.MAX_SAFE_INTEGER) - (right.maxPixels || Number.MAX_SAFE_INTEGER))
+  const slots = ordered.slice(0, 3).map((tier, index) => {
+    const label = tier.maxPixels > 0
+      ? `每张 ≤${formatPixelLimit(tier.maxPixels)}`
+      : index > 0 ? `每张 >${formatPixelLimit(ordered[index - 1].maxPixels)}` : '每张'
+    return { label, value: trimMediaPrice(tier.usdPerImage), unit: '/张' }
+  })
+  if (slots.length < 3 && typeof item.inputUsdPerImage === 'number') {
+    slots.push({
+      label: item.inputImageFreeCount ? '输入图（首张免费）' : '输入图',
+      value: trimMediaPrice(item.inputUsdPerImage),
+      unit: '/张'
+    })
+  }
+  return slots
+}
+
+function formatPixelLimit(pixels: number): string {
+  return `${Number((pixels / 1_000_000).toFixed(2))}M`
+}
+
+// 视频档位价槽（2026-11-12 档位批）：有分辨率档表时按 480p→4k 顺序取前
+// 三个；否则有按次时长档表时按秒数升序取前三个。两者都无返回空数组，
+// 由分类候选序列回退展示主档价。
+function videoTierPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
+  const resolutionPrices = item.videoOutputUsdPerSecondByResolution
+  if (resolutionPrices && Object.keys(resolutionPrices).length) {
+    const resolutionOrder = ['480p', '720p', '768p', '1080p', '2k', '4k']
+    return Object.keys(resolutionPrices)
+      .sort((left, right) => resolutionOrder.indexOf(left) - resolutionOrder.indexOf(right))
+      .slice(0, 3)
+      .map((resolution) => ({ label: `视频 ${resolution}`, value: trimMediaPrice(resolutionPrices[resolution]), unit: '/秒' }))
+  }
+  const combinedPrices = item.videoOutputUsdPerCallByResolutionSeconds
+  if (combinedPrices && Object.keys(combinedPrices).length) {
+    const resolutionOrder = ['480p', '720p', '768p', '1080p', '2k', '4k']
+    return Object.keys(combinedPrices)
+      .sort((left, right) => {
+        const [leftResolution, leftSeconds] = left.split('-')
+        const [rightResolution, rightSeconds] = right.split('-')
+        const rankDiff = resolutionOrder.indexOf(leftResolution) - resolutionOrder.indexOf(rightResolution)
+        return rankDiff !== 0 ? rankDiff : Number(leftSeconds) - Number(rightSeconds)
+      })
+      .slice(0, 3)
+      .map((key) => {
+        const [resolution, seconds] = key.split('-')
+        return { label: `视频 ${resolution} ${seconds}s`, value: trimMediaPrice(combinedPrices[key]), unit: '/次' }
+      })
+  }
+  const callPrices = item.videoOutputUsdPerCallBySeconds
+  if (callPrices && Object.keys(callPrices).length) {
+    return Object.keys(callPrices)
+      .sort((left, right) => Number(left) - Number(right))
+      .slice(0, 3)
+      .map((seconds) => ({ label: `视频 ${seconds}s`, value: trimMediaPrice(callPrices[seconds]), unit: '/次' }))
+  }
+  return []
+}
+
 export function modelPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
   // 单 Token 价合并只跟随后端投影（token_pricing 分组恰为单「token」条目），
   // 不做字段级全局判定；其余行保持候选序列原口径。
@@ -749,6 +849,15 @@ export function modelPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
     && typeof item.inputUsdPer1M === 'number'
   ) {
     return [{ label: 'Token', value: trimNumber(item.inputUsdPer1M), unit: '/1M tokens' }]
+  }
+  // 媒体档位价优先（图像像素档 / 视频分辨率→时长档），卡片直接展示真实计费档。
+  if (getModelCategory(item) === 'image') {
+    const tierSlots = imageTierPriceSlots(item)
+    if (tierSlots.length) return tierSlots
+  }
+  if (getModelCategory(item) === 'video') {
+    const tierSlots = videoTierPriceSlots(item)
+    if (tierSlots.length) return tierSlots
   }
   // 分类候选 0 槽时按全字段顺序回退取存在者（mode 缺失行会被误分类为 text），
   // 价格区不因分类误配隐藏真实媒体价；全部直价字段为空才返回空数组。

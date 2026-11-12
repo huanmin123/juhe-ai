@@ -83,7 +83,7 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 	cacheRedis := miniredis.RunT(t)
 	env := map[string]string{
 		"NODE_ENV":                                "development",
-		"JUHE_AI_REDIS_URL":                 "redis://" + cacheRedis.Addr() + "/0",
+		"JUHE_AI_REDIS_URL":                       "redis://" + cacheRedis.Addr() + "/0",
 		"JUHE_AI_REDIS_NAMESPACE":                 "w16b-boot",
 		"JUHE_AI_SECRET":                          "w16b-boot-secret-0123456789abcdef",
 		"JUHE_AI_POSTGRES_URL":                    businessDSN,

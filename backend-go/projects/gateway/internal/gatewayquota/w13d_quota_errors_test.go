@@ -791,7 +791,7 @@ func TestW13DCostsBatchTableCoverage(t *testing.T) {
 	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09-04", 3})
 	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "success_cost_usd"},
-		[]any{"sys", "api_key", "ak1", "2026-W36", 5})
+		[]any{"sys", "api_key", "ak1", "2026-08-31", 5})
 	seedCost(t, db, "usage_stats_monthly", []string{"system_account_id", "scope_type", "scope_id", "stat_month", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09", 7})
 	seedCost(t, db, "usage_quota_hourly_windows", []string{"system_account_id", "scope_type", "scope_id", "window_hours", "total_cost_usd"},

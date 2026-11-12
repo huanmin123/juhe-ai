@@ -74,8 +74,17 @@ type MediaJobRequestSnapshot struct {
 	Model   string   `json:"model,omitempty"`
 	Prompt  string   `json:"prompt,omitempty"`
 	Seconds *float64 `json:"seconds,omitempty"`
-	Size    string   `json:"size,omitempty"`
-	N       int      `json:"n,omitempty"`
+	// BillingSeconds 是创建时冻结的按秒计价计量基源（契约 §2.8.2）：请求
+	// seconds 生效时为请求值，否则为厂商默认输出时长（Capabilities.
+	// DefaultSeconds）。与 Seconds 分开保存——Seconds 是请求回显（可能被
+	// ignored），BillingSeconds 是计费事实。上游终态回报的时长优先于本值。
+	BillingSeconds *float64 `json:"billingSeconds,omitempty"`
+	// BillingResolution 是创建时冻结的计费分辨率档（"480p"/"720p"/"1080p"/
+	// "2k"/"4k"，契约 §2.8.3）：厂商按分辨率分档计价时由 adapter 的
+	// BillingResolution 给出；空串表示创建时无法确定，结算回落主档价。
+	BillingResolution string `json:"billingResolution,omitempty"`
+	Size              string `json:"size,omitempty"`
+	N                 int    `json:"n,omitempty"`
 	// Language 是长转写任务的语言提示（M3f，kind=audio_transcription 行；
 	// 纯参数元数据）。input_url 不入快照（资源定位指针，沿 video 行不存
 	// InputReference 的零存储裁决）。
@@ -84,6 +93,11 @@ type MediaJobRequestSnapshot struct {
 	//（不含值，契约 §2.4 规则 4 回显）：创建时随快照冻结，任务面/列表的
 	// job 对象回显同一份数据（终态后原始请求不可得）。
 	ProviderOptionsApplied []string `json:"providerOptionsApplied,omitempty"`
+	// Metadata 是 New API 兼容面（2026-11-12）请求 metadata 的原样冻结 +
+	// 本地无统一语义键（fps/response_format/user）：创建/查询响应回显来源。
+	// 纯参数元数据（零资源存储：只存键值，不含资源字节），任务终态后仍可
+	// 回显请求原值。
+	Metadata map[string]any `json:"metadata,omitempty"`
 	// Account scope 五元组（account_access_type=account_authorized 时
 	// accountAuthorizationID 必填，否则归一化清空整组——NormalizeUsageRecordInput 规则）。
 	AccountAccessType                string `json:"accountAccessType,omitempty"`
@@ -275,15 +289,15 @@ func (r *MediaJobsRepo) GetManagementByID(ctx context.Context, id string) (*Medi
 	return rows[0], nil
 }
 
-// ListByAPIKey 按归属 API Key 倒序分页（外部 GET /v1/videos 列表消费，Key 级
-// 隔离；kind 过滤由 ListByAPIKeyAndKind 承载——/v1/videos 与 /v1/audio/jobs
-// 列表互不混行，M3f 起按 kind 泛化）。
+// ListByAPIKey 按归属 API Key 倒序分页（管理面/内部消费，Key 级隔离；kind
+// 过滤由 ListByAPIKeyAndKind 承载——公开任务面自 2026-11-12 New API 兼容批起
+// 不再暴露列表端点，列表仅管理面按 kind 过滤消费）。
 func (r *MediaJobsRepo) ListByAPIKey(ctx context.Context, apiKeyID string, limit, offset int) ([]*MediaJobRecord, error) {
 	return r.listByAPIKeyWhere(ctx, apiKeyID, "", limit, offset)
 }
 
-// ListByAPIKeyAndKind 按归属 API Key + 任务种类倒序分页（外部 GET /v1/videos
-// 与 GET /v1/audio/jobs 列表消费：kind 空串 = 不过滤）。
+// ListByAPIKeyAndKind 按归属 API Key + 任务种类倒序分页（管理面列表消费：
+// kind 空串 = 不过滤；公开任务面列表端点已随 New API 批裁剪）。
 func (r *MediaJobsRepo) ListByAPIKeyAndKind(ctx context.Context, apiKeyID string, kind MediaJobKind, limit, offset int) ([]*MediaJobRecord, error) {
 	return r.listByAPIKeyWhere(ctx, apiKeyID, string(kind), limit, offset)
 }

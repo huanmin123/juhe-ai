@@ -819,8 +819,61 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 	}), nil
 }
 
+// errClientGoneDrainBudget 是客户端断开 drain 预算到点的内部控制信号：
+// 不走通用失败分支，由 finalizeClientGoneDrain 按已观测内容收口。
+var errClientGoneDrainBudget = errors.New("客户端断连 drain 预算耗尽")
+
+// clientGoneDrainExceeded 报告客户端断开后的 drain 预算是否已耗尽。
+func (p *streamPipe) clientGoneDrainExceeded() bool {
+	if p.clientGoneDrainBudget <= 0 {
+		return false
+	}
+	return p.nowMs()-p.clientGoneAtMs >= p.clientGoneDrainBudget
+}
+
+// finalizeClientGoneDrain 在客户端断开后收口（读到终态或预算耗尽）：按已观测
+// 内容估算 usage 作为失败行结算（上游可能已计费，记 0 会放大失真），并标记
+// ClientGone 让 finalize 层写 downstream_closed 失败行。
+func (p *streamPipe) finalizeClientGoneDrain(budgetExceeded bool) (StreamPipeResult, error) {
+	inspection := p.publishInspection(p.inspector.Finish())
+	p.omitBodyCaptureIfImageStream(inspection, true)
+	event := "gateway_stream_client_gone_drain_completed"
+	message := "客户端断开后已读上游终态，按实际/估算 usage 结算"
+	if budgetExceeded {
+		event = "gateway_stream_client_gone_drain_budget_exceeded"
+		message = "客户端断开后上游用量收集超出预算，按已观测内容估算结算"
+	}
+	p.logger.Warn(event, map[string]any{
+		"elapsedMs":             p.nowMs() - p.startedAt,
+		"clientGoneElapsedMs":   p.nowMs() - p.clientGoneAtMs,
+		"chunkCount":            p.chunkIndex,
+		"totalUpstreamBytes":    p.totalUpstreamBytes,
+		"outputReceived":        inspection.OutputReceived,
+		"terminalReceived":      inspection.TerminalReceived,
+		"sseEventCount":         inspection.EventCount,
+		"estimatedOutputTokens": inspection.EstimatedOutputTokens,
+	}, message)
+	return p.finishStreamResult(finishArgs{
+		completed:             false,
+		message:               DownstreamConnectionClosedMessage,
+		errorCode:             ClientCanceledErrorCode,
+		usage:                 inspection.Usage,
+		outputReceived:        inspection.OutputReceived,
+		estimatedOutputTokens: inspection.EstimatedOutputTokens,
+		imageOutputReceived:   inspection.ImageOutputReceived,
+	}), nil
+}
+
 // handlePipeError 对齐 catch 块。
 func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
+	if errors.Is(loopErr, errClientGoneDrainBudget) {
+		return p.finalizeClientGoneDrain(true)
+	}
+	if p.clientGone {
+		// drain 期间上游读错误/终局失败：仍按客户端断开口径收口，usage 取
+		// 已观测内容；不能让失败分支把归因改回 account_upstream。
+		return p.finalizeClientGoneDrain(false)
+	}
 	if beforeCommitErr := (*StreamBeforeDownstreamCommitError)(nil); errors.As(loopErr, &beforeCommitErr) {
 		return StreamPipeResult{}, beforeCommitErr.OriginalError
 	}

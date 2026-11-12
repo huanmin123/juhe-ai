@@ -9,6 +9,8 @@ package providers
 import (
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 )
 
 func sectionKeysOf(item *ModelCatalogItem) map[string]bool {
@@ -103,7 +105,7 @@ func TestCatalogDisplayRequiredSectionsByMode(t *testing.T) {
 }
 
 // TestCatalogDisplaySourceDisclosureNotGenerated 钉住披露 section 停生成契约
-//（供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
+// （供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
 // 来源文本不进客户可见目录；CNY 行、USD 行、未声明币种行都不再渲染
 // currency_conversion / source_disclosure，原始来源留档仍在 catalogdata
 // JSON 的 sourcePricingNote 字段。
@@ -153,9 +155,9 @@ func TestCatalogDisplayDeepSeekOffPeakOnlyForDeepSeek(t *testing.T) {
 	price := 1.14285714
 	cacheRead := 0.28571429
 	deepseek := &ModelCatalogItem{
-		ProviderCode:       "deepseek",
-		Model:              "deepseek-chat",
-		InputUsdPer1M:      &price,
+		ProviderCode:        "deepseek",
+		Model:               "deepseek-chat",
+		InputUsdPer1M:       &price,
 		CachedInputUsdPer1M: &cacheRead,
 	}
 	sections := map[string]catalogDisplaySection{}
@@ -190,8 +192,8 @@ func TestCatalogDisplayDeepSeekOffPeakOnlyForDeepSeek(t *testing.T) {
 	}
 
 	glm := &ModelCatalogItem{
-		ProviderCode: "glm",
-		Model:        "glm-5",
+		ProviderCode:  "glm",
+		Model:         "glm-5",
 		InputUsdPer1M: &price,
 	}
 	for _, section := range buildProviderCatalogDisplay(glm) {
@@ -237,4 +239,174 @@ func fmtString(v any) string {
 		return s
 	}
 	return ""
+}
+
+// TestCatalogDisplayMediaTierEntries 钉住按厂商档位价的展示（2026-11-12
+// 档位批）：分辨率秒价按 480p→1080p 升序、按次时长价按秒数升序、TTS 按次价
+// 各落 media_pricing 条目；有档表时主档不再重复展示。
+func TestCatalogDisplayMediaTierEntries(t *testing.T) {
+	videoMode := "video"
+	labelsAndValues := func(item *ModelCatalogItem) map[string]string {
+		out := map[string]string{}
+		for _, section := range buildProviderCatalogDisplay(item) {
+			if section.Key != "media_pricing" {
+				continue
+			}
+			for _, entry := range section.Items {
+				out[entry.Label] = entry.Value.(string)
+			}
+		}
+		return out
+	}
+
+	// 分辨率秒价：升序展示，主档 0.14 不重复出现。
+	video := &ModelCatalogItem{
+		ProviderCode:            "xai",
+		Model:                   "grok-imagine-video-1.5",
+		Mode:                    &videoMode,
+		VideoOutputUsdPerSecond: ptrFloat64(0.14),
+		VideoOutputUsdPerSecondByResolution: map[string]float64{
+			"1080p": 0.25, "480p": 0.08, "720p": 0.14,
+		},
+	}
+	got := labelsAndValues(video)
+	if got["视频 480P（每秒）"] != "$0.08/s" ||
+		got["视频 720P（每秒）"] != "$0.14/s" ||
+		got["视频 1080P（每秒）"] != "$0.25/s" {
+		t.Fatalf("分辨率档展示 = %v", got)
+	}
+	if _, duplicated := got["视频（每秒）"]; duplicated {
+		t.Fatalf("有档表时不得重复展示主档: %v", got)
+	}
+	// H3 官方 768P/2K 档：排序落在 720P 与 1080P 之间（2026-11-13）。
+	if keys := sortedResolutionKeys(map[string]float64{"2k": 1, "480p": 1, "768p": 1, "1080p": 1, "720p": 1}); strings.Join(keys, ",") != "480p,720p,768p,1080p,2k" {
+		t.Fatalf("分辨率档排序 = %v", keys)
+	}
+
+	// 按次时长档：6s 在 10s 前，主档 0.2857 不重复出现。
+	perCall := &ModelCatalogItem{
+		ProviderCode:          "minimax",
+		Model:                 "MiniMax-Hailuo-2.3",
+		Mode:                  &videoMode,
+		VideoOutputUsdPerCall: ptrFloat64(0.2857),
+		VideoOutputUsdPerCallBySeconds: map[string]float64{
+			"10": 0.5714, "6": 0.2857,
+		},
+	}
+	got = labelsAndValues(perCall)
+	if got["视频 6s（每次）"] != "$0.2857/video" || got["视频 10s（每次）"] != "$0.5714/video" {
+		t.Fatalf("时长档展示 = %v", got)
+	}
+	if _, duplicated := got["视频（每次）"]; duplicated {
+		t.Fatalf("有档表时不得重复展示主档: %v", got)
+	}
+
+	// TTS token 口径无 usage 的按次固定价。
+	audioMode := "audio_speech"
+	tts := &ModelCatalogItem{
+		ProviderCode:        "gpt",
+		Model:               "gpt-4o-mini-tts",
+		Mode:                &audioMode,
+		TtsOutputUsdPerCall: ptrFloat64(0.3),
+	}
+	if got := labelsAndValues(tts); got["语音合成（每次）"] != "$0.3/次" {
+		t.Fatalf("TTS 按次价展示 = %v", got)
+	}
+}
+
+// TestCatalogDisplayImagePixelTiers 钉住按输出像素分档的按张价展示
+// （2026-11-12 档位批）：Seedream 5.0 Pro 两档分别显示 ≤2.61M / >2.61M，
+// 有档表时不再重复主档「每张」。
+func TestCatalogDisplayImagePixelTiers(t *testing.T) {
+	imageMode := "image_generation"
+	item := &ModelCatalogItem{
+		ProviderCode:      "volcengine",
+		Model:             "doubao-seedream-5-0-pro-260628",
+		Mode:              &imageMode,
+		OutputUsdPerImage: ptrFloat64(0.04286),
+		OutputUsdPerImageTiers: []pricing.ImagePriceTier{
+			{MaxPixels: 2610000, UsdPerImage: 0.04285714285714286},
+			{MaxPixels: 0, UsdPerImage: 0.08571428571428572},
+		},
+		InputUsdPerImage:    ptrFloat64(0.002857142857142857),
+		InputImageFreeCount: 1,
+	}
+	var labels []string
+	values := map[string]float64{}
+	for _, section := range buildProviderCatalogDisplay(item) {
+		if section.Key != "image_generation" {
+			continue
+		}
+		for _, entry := range section.Items {
+			labels = append(labels, entry.Label)
+			if value, ok := entry.Value.(float64); ok {
+				values[entry.Label] = value
+			}
+		}
+	}
+	if len(labels) != 3 || labels[0] != "每张（≤2.61M 像素）" || labels[1] != "每张（>2.61M 像素）" || labels[2] != "输入图（首张免费）" {
+		t.Fatalf("image tier labels = %v", labels)
+	}
+	if values[labels[0]] != 0.04285714285714286 || values[labels[1]] != 0.08571428571428572 ||
+		values[labels[2]] != 0.002857142857142857 {
+		t.Fatalf("image tier values = %v", values)
+	}
+}
+
+// TestCatalogDisplayVideoCallResolutionTiers 钉住 Hailuo“分辨率×时长”按次
+// 组合档展示（2026-11-13）：768P 6s/10s、1080P 6s 逐档展示，排序先分辨率
+// 后秒数，且不再重复纯秒数档。
+func TestCatalogDisplayVideoCallResolutionTiers(t *testing.T) {
+	videoMode := "video"
+	item := &ModelCatalogItem{
+		ProviderCode: "minimax",
+		Model:        "MiniMax-Hailuo-2.3",
+		Mode:         &videoMode,
+		VideoOutputUsdPerCallByResolutionSeconds: map[string]float64{
+			"1080p-6": 0.5, "768p-10": 0.5714285714285714, "768p-6": 0.2857142857142857,
+		},
+	}
+	var labels []string
+	values := map[string]float64{}
+	for _, section := range buildProviderCatalogDisplay(item) {
+		for _, entry := range section.Items {
+			if value, ok := entry.Value.(string); ok && strings.Contains(entry.Label, "每次") {
+				labels = append(labels, entry.Label)
+				_ = value
+			}
+			if number, ok := entry.Value.(float64); ok {
+				values[entry.Label] = number
+			}
+		}
+	}
+	want := []string{"视频 768P 6s（每次）", "视频 768P 10s（每次）", "视频 1080P 6s（每次）"}
+	if strings.Join(labels, "|") != strings.Join(want, "|") {
+		t.Fatalf("组合档展示 = %v want %v", labels, want)
+	}
+	if _, dup := values["视频 6s（每次）"]; dup {
+		t.Fatalf("有组合档时不得重复纯秒数档: %v", values)
+	}
+}
+
+// TestBuiltInStaticDerivedTierFields 钉住 staticPricingFor 必须把档位表从
+// 静态定价层透传到目录展示（2026-11-13 修复：此前只拷贝主档价，真实目录
+// 行的像素档/分辨率档/输入图价全部丢失，仅合成测试能通过）。
+func TestBuiltInStaticDerivedTierFields(t *testing.T) {
+	seedream := ResolveBuiltInStaticDerivedCapabilities("volcengine", "doubao-seedream-5-0-pro-260628", nil, "")
+	if len(seedream.OutputUsdPerImageTiers) != 2 || seedream.InputUsdPerImage == nil || seedream.InputImageFreeCount != 1 {
+		t.Fatalf("Seedream 静态档位未透传: tiers=%+v input=%v free=%d",
+			seedream.OutputUsdPerImageTiers, seedream.InputUsdPerImage, seedream.InputImageFreeCount)
+	}
+	hailuo := ResolveBuiltInStaticDerivedCapabilities("minimax", "MiniMax-Hailuo-2.3", nil, "")
+	if got := hailuo.VideoOutputUsdPerCallByResolutionSeconds["1080p-6"]; got != 0.5 {
+		t.Fatalf("Hailuo 1080P 组合档未透传: %#v", hailuo.VideoOutputUsdPerCallByResolutionSeconds)
+	}
+	h3 := ResolveBuiltInStaticDerivedCapabilities("minimax", "MiniMax-H3", nil, "")
+	if len(h3.VideoOutputUsdPerSecondByResolution) != 2 {
+		t.Fatalf("H3 分辨率秒价档未透传: %#v", h3.VideoOutputUsdPerSecondByResolution)
+	}
+	qwenPro := ResolveBuiltInStaticDerivedCapabilities("qwen", "qwen-image-3.0-pro", nil, "")
+	if len(qwenPro.OutputUsdPerImageTiers) != 2 {
+		t.Fatalf("qwen-image-3.0-pro 像素档未透传: %#v", qwenPro.OutputUsdPerImageTiers)
+	}
 }

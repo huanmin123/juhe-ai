@@ -140,7 +140,7 @@ func (d *Deps) usageOverviewHourlyTrend(r *http.Request, scope AccessScope, rng 
 	hourly := make([]usageHourlyPoint, 0, len(rows))
 	for _, row := range rows {
 		hourly = append(hourly, usageHourlyPoint{
-			StatHour:          row.text("stat_hour"),
+			StatHour:          row.hour("stat_hour"),
 			RequestCount:      row.number("request_count"),
 			AverageDurationMs: averageFromSum(row.value("duration_ms_sum"), row.value("duration_ms_count")),
 			ErrorCount:        row.number("error_count"),
@@ -293,7 +293,7 @@ func errorRate(requestCount, errorCount float64) float64 {
 func mapUsageDailyTrendRows(rows []Row, rng Range) []usageDailyPoint {
 	byDate := map[string]Row{}
 	for _, row := range rows {
-		byDate[row.text("stat_date")] = row
+		byDate[row.day("stat_date")] = row
 	}
 	keys := dateKeysInRange(rng)
 	trend := make([]usageDailyPoint, 0, len(keys))

@@ -2841,7 +2841,8 @@
       "supportedAPIProtocols": [
         "audio_speech"
       ],
-      "supportsPromptCaching": false
+      "supportsPromptCaching": false,
+      "ttsOutputCostPerCall": 0.3
     },
     {
       "audioInputCostPerSecond": 0.0001,
@@ -3348,6 +3349,69 @@
       ],
       "supportsPromptCaching": false,
       "videoOutputCostPerSecond": 0.3
+    },
+    {
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2e-08,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "embedding",
+      "model": "text-embedding-3-small",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-01-25",
+      "shutdownDate": "",
+      "sourcePricingCurrency": "USD",
+      "sourcePricingNote": "官方 OpenAI 定价页 developers.openai.com/api/docs/pricing（2026-11-12 核对）：$0.02/百万 input tokens",
+      "supportedAPIProtocols": [
+        "embed_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1.3e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "embedding",
+      "model": "text-embedding-3-large",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-01-25",
+      "shutdownDate": "",
+      "sourcePricingCurrency": "USD",
+      "sourcePricingNote": "官方 OpenAI 定价页 developers.openai.com/api/docs/pricing（2026-11-12 核对）：$0.13/百万 input tokens",
+      "supportedAPIProtocols": [
+        "embed_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "moderation",
+      "model": "omni-moderation-latest",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-09-26",
+      "shutdownDate": "",
+      "sourcePricingCurrency": "USD",
+      "sourcePricingNote": "官方 OpenAI 定价页 developers.openai.com/api/docs/pricing（2026-11-12 核对）：Moderation 免费（$0）",
+      "supportedAPIProtocols": [
+        "moderation"
+      ],
+      "supportsPromptCaching": false
     }
   ],
   "provider": "gpt"

@@ -110,6 +110,27 @@ func TestNonStreamTtsMeteringInputChars(t *testing.T) {
 	}
 }
 
+func TestNonStreamTtsTokenMeteredFallsBackToPerCall(t *testing.T) {
+	// token 口径 TTS（gpt-4o-mini-tts）二进制响应无 usage：不解析音频、
+	// 不估算 token，按次计量 TtsCalls=1 兜底（2026-11-12 用户裁决）；
+	// usage_missing 仍置位记录“上游无 usage”事实。
+	requestBody := []byte(`{"model":"gpt-4o-mini-tts","input":"hello","voice":"alloy","response_format":"mp3"}`)
+	input, _ := newAudioInputFixture(t, "POST", "/v1/audio/speech", requestBody,
+		NewSliceUpstreamBody([]byte("ID3fakeaudio")), 200,
+		map[string]string{"Content-Type": "audio/mpeg"}, "openai")
+	input.Deps = &FinalizationDeps{NowMs: func() int64 { return 1200 }}
+	result, err := HandleNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Usage.TtsCalls == nil || *result.Usage.TtsCalls != 1 {
+		t.Fatalf("TtsCalls = %v want 1（按次固定价兜底）", result.Usage.TtsCalls)
+	}
+	if !result.Usage.UsageMissing {
+		t.Fatalf("usage_missing must stay marked for missing upstream usage: %+v", result.Usage)
+	}
+}
+
 func TestNonStreamGeminiSpeechTransform(t *testing.T) {
 	// gemini 账户 + speech 请求：上游 JSON inlineData → 下游 PCM 字节 +
 	// audio/L16;rate=24000（契约 §5.1）。

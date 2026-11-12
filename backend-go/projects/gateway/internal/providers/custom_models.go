@@ -958,6 +958,9 @@ var customProviderModelProtocolSet = map[string]bool{
 	"audio_transcription": true,
 	"video":               true,
 	"realtime":            true,
+	// B7 工具端点协议（目录 supportedApiProtocols 的协议 token）。
+	"rerank":     true,
+	"moderation": true,
 }
 
 var customModelCapabilityTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -1030,8 +1033,9 @@ func normalizeCustomModelCapabilities(providerCode string, input customModelCapa
 	if input.Mode != nil && strings.TrimSpace(*input.Mode) != "" {
 		mode = strings.TrimSpace(*input.Mode)
 	}
-	if mode != "text" && mode != "image" && mode != "audio" && mode != "video" {
-		return nil, fmt.Errorf("当前只支持文本、图像、音频和视频自定义模型")
+	if mode != "text" && mode != "image" && mode != "audio" && mode != "video" &&
+		mode != "embedding" && mode != "rerank" && mode != "moderation" {
+		return nil, fmt.Errorf("当前只支持文本、图像、音频、视频、向量、重排和安全自定义模型")
 	}
 	supportedServiceTiers, err := normalizeCapabilityTokenArray(input.SupportedServiceTiers, "服务等级")
 	if err != nil {

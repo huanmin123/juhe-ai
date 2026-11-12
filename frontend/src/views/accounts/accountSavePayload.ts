@@ -287,13 +287,12 @@ export function validateAccountSaveForm(input: {
   const healthCheckModel = form.healthCheckModel.trim()
   if (!healthCheckModel && !oauthDefaultsAllowed) return '请选择检查模型'
   if (healthCheckModel && !supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
-  // 音频/视频域账户无后台探针，health_check_endpoint_mode 仅为记录值（域常量，
+  // 媒体/工具域账户无后台探针，health_check_endpoint_mode 仅为记录值（域常量，
   // 见 defaultHealthCheckEndpointModeForCapabilityDomain），不参与「已启用能力
   // 交集」校验——qwen 长音频声明集没有任何检查形态词表值，按交集校验会被阻断
   // 保存（R5）；chat/image 域行为不变。
   if (
-    form.capabilityDomain !== 'audio'
-    && form.capabilityDomain !== 'video'
+    !capabilityDomainIsMedia(form.capabilityDomain)
     && form.healthCheckEndpointMode !== 'images_json'
     && !accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)
   ) {

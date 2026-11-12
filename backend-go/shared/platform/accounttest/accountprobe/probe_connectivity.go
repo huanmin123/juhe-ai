@@ -38,13 +38,16 @@ const ConnectivityProbeTaskID = "probe-connectivity-check"
 // 不在裁决范围（STT 探测保持内置 WAV 样本真实请求）；audio_job_create 永不
 // POST，长音频账户统一用 audio_job_get 查询不存在任务。
 func isConnectivityProbeMode(mode EndpointMode) bool {
-	return mode == ModeVideoCreate || mode == ModeImagesJSON || mode == ModeAudioSpeech || mode == ModeAudioJobGet
+	return mode == ModeVideoCreate || mode == ModeImagesJSON || mode == ModeAudioSpeech || mode == ModeAudioJobGet ||
+		mode == ModeEmbedContent || mode == ModeRerankJSON || mode == ModeModerationJSON
 }
 
 // connectivityExpectedRejectionCodes 返回各模式的「预期拒绝 = 密钥有效」状态
 // 码集：上游完成认证后因请求不完整或目标不存在而拒绝，即证明密钥有效——
 //   - video_create：查询固定占位任务，404/400 = 任务不存在属预期；
-//   - images_json / audio_speech：空 prompt / 空体被参数校验拒绝，400/422 属预期。
+//   - images_json / audio_speech：空 prompt / 空体被参数校验拒绝，400/422 属预期；
+//   - embed_content / rerank_json / moderation_json：空输入被上游参数校验拒绝，
+//     400/422 属预期，且不产生真实工具结果。
 //
 // 2xx 对三种模式均视为通过（极少数上游对探测请求直接放行也接受）。
 func connectivityExpectedRejectionCodes(mode EndpointMode) map[int]bool {
@@ -154,9 +157,25 @@ var volcengineSpeechBaseURL = "https://openspeech.bytedance.com"
 
 const volcengineSpeechCreatePath = "/api/v3/tts/create"
 
+// stripQwenConnectivityVersionRoot 剥离 qwen 历史 base_url 的版本根（与数据面
+// gatewaymedia.ImageBaseURLForProvider 同口径）；origin 形态原样返回。
+func stripQwenConnectivityVersionRoot(baseURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	for _, suffix := range []string{"/compatible-mode/v1", "/api/v1", "/v1"} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return strings.TrimSuffix(trimmed, suffix)
+		}
+	}
+	return trimmed
+}
+
 func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode, model, apiKey string) (*http.Request, error) {
 	baseURL := strings.TrimSpace(view.BaseURL)
 	provider := strings.ToLower(strings.TrimSpace(view.ProviderCode))
+	// qwen 连通性路径是 origin + 原生全路径；历史 base 可能带版本根，先剥。
+	if provider == "qwen" {
+		baseURL = stripQwenConnectivityVersionRoot(baseURL)
+	}
 	// volcengine 的 audio_speech 走独立语音域，不读账户 base_url（ark 版本根）。
 	volcengineSpeech := mode == ModeAudioSpeech && provider == "volcengine"
 	if baseURL == "" && !volcengineSpeech {
@@ -237,8 +256,37 @@ func buildConnectivityRequest(ctx context.Context, view *View, mode EndpointMode
 			}
 			body = encoded
 		}
+	case ModeEmbedContent:
+		method = http.MethodPost
+		opPath = "/embeddings"
+		if provider == "qwen" {
+			opPath = "/compatible-mode/v1/embeddings"
+		}
+		encoded, err := json.Marshal(map[string]any{"model": model, "input": []string{}})
+		if err != nil {
+			return nil, fmt.Errorf("编码向量连通性探测请求体失败: %w", err)
+		}
+		body = encoded
+	case ModeRerankJSON:
+		method = http.MethodPost
+		opPath = "/api/v1/services/rerank/text-rerank/text-rerank"
+		encoded, err := json.Marshal(map[string]any{
+			"model": model,
+			"input": map[string]any{"query": "", "documents": []string{}},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("编码重排连通性探测请求体失败: %w", err)
+		}
+		body = encoded
+	case ModeModerationJSON:
+		method = http.MethodPost
+		opPath = "/moderations"
+		encoded, err := json.Marshal(map[string]any{"model": model, "input": []string{}})
+		if err != nil {
+			return nil, fmt.Errorf("编码安全连通性探测请求体失败: %w", err)
+		}
+		body = encoded
 	default:
-		return nil, fmt.Errorf("未知的连通性探测模式：%s", mode)
 	}
 	var target string
 	var err error

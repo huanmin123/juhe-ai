@@ -166,8 +166,9 @@ assert(capabilityOptions.reasoningEfforts.some((option) => option.value === 'max
 const deepSeekCapabilityOptions = buildCustomModelCapabilityOptions('deepseek', [], [])
 assert.deepEqual(deepSeekCapabilityOptions.serviceTiers, [], '不能把 GPT Priority/Flex 候选注入 DeepSeek')
 assert.deepEqual(deepSeekCapabilityOptions.reasoningEfforts, [], '不能把 GPT reasoning effort 候选注入 DeepSeek')
-assert.deepEqual(availableCustomModelModeOptions('gpt', []).map((option) => option.value), ['text', 'image'], 'GPT 新目录只允许创建当前支持的文本与图像模型')
+assert.deepEqual(availableCustomModelModeOptions('gpt', []).map((option) => option.value), ['text', 'image', 'embedding', 'moderation'], 'GPT 新目录允许文本、图像、向量与安全模型')
 assert.deepEqual(availableCustomModelModeOptions('deepseek', []).map((option) => option.value), ['text'], 'DeepSeek 不能显示未支持的图像或音频用途')
+assert.deepEqual(availableCustomModelModeOptions('qwen', []).map((option) => option.value), ['text', 'embedding', 'rerank'], 'qwen 新目录允许文本、向量与重排模型')
 assert.deepEqual(
   availableCustomModelModeOptions('gemini', [providerModel({ providerCode: 'gemini', model: 'gemini-image', mode: 'image' })]).map((option) => option.value),
   ['text', 'image'],

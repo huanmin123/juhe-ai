@@ -32,7 +32,7 @@ var w9hBusinessTables = []string{
 	"account_endpoint_modes", "accounts", "account_api_key_runtime_states", "groups", "group_accounts",
 	"group_account_stats_dirty",
 	"account_health_jobs_input_versions", "account_health_projection_cursors",
-	"account_health_projection_receipts", "account_circuit_outbox",
+	"account_health_projection_receipts", "account_circuit_outbox", "account_lock_states",
 }
 
 // w9hStatsTables 是 J1 direct input 契约要求的 juhe_stats 只读面表。

@@ -309,7 +309,8 @@ func TestEndpointModeOrNull(value sql.NullString) *string {
 	switch value.String {
 	case "chat_json", "chat_sse", "responses_json", "responses_sse",
 		"messages_json", "messages_sse", "message_token_counting",
-		"generate_content_json", "generate_content_sse", "count_tokens", "embed_content":
+		"generate_content_json", "generate_content_sse", "count_tokens", "embed_content",
+		"rerank_json", "moderation_json":
 		mode := value.String
 		return &mode
 	}

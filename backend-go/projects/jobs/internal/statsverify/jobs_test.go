@@ -47,4 +47,3 @@ func (d denyIngest) EnsureUsageRecordsIngested(context.Context) error {
 	*d.calls++
 	return errors.New("ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录")
 }
-

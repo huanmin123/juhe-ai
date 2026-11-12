@@ -126,7 +126,7 @@ func (p *ResultProjector) contractStatements() []string {
 		"UPDATE juhe_business.proxy_profiles SET test_status=test_status WHERE FALSE",
 		"INSERT INTO juhe_business.proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) SELECT '', '', 1, 'rejected', NULL, CURRENT_TIMESTAMP WHERE FALSE",
 		"INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) SELECT '', NULL, NULL, CURRENT_TIMESTAMP WHERE FALSE",
-		"INSERT INTO juhe_business.account_list_availability_dirty(account_id,viewer_system_account_id,generation,applied_generation,reason,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) SELECT '', '', 1, 0, 'j3a_contract_check', 0, NULL, NULL, NULL, 0, 0, 0 WHERE FALSE",
+		"INSERT INTO juhe_business.account_list_availability_dirty(account_id,viewer_system_account_id,generation,applied_generation,reason,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) SELECT '', '', 1, 0, 'j3a_contract_check', to_timestamp(0/1000.0), NULL, NULL, NULL, 0, to_timestamp(0/1000.0), to_timestamp(0/1000.0) WHERE FALSE",
 		"UPDATE juhe_business.account_list_availability_dirty SET generation=generation WHERE FALSE",
 	}
 }

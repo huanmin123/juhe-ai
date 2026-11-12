@@ -27,7 +27,7 @@ type w1sResetFixture struct {
 
 // w1sEnsureBusinessSchema / w1sEnsureStatsSchema 建授权/实例/Key 运行态与
 // usage stats 的最小夹具面。pgtestkit 隔离 PG 库 + search_path 连接池
-//（newChainFixturePGDatabase 同款惯例）：夹具 CREATE 显式限定 juhe_business /
+// （newChainFixturePGDatabase 同款惯例）：夹具 CREATE 显式限定 juhe_business /
 // juhe_stats（CREATE 只落 search_path 首位 schema，统计表必须显式限定），
 // 生产桥的限定名读取与测试的裸表名种子/删除经 search_path 同 schema 解析。
 // resource_authorization_grants.id 沿生产 text 主键，缺省表达式承载

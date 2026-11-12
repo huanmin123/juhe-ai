@@ -31,4 +31,3 @@ func TestW12bSvAccumulatorPanicArms(t *testing.T) {
 func sqlOpenHelper(driverName, path string) (*sql.DB, error) {
 	return sql.Open(driverName, "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)")
 }
-

@@ -134,6 +134,56 @@ func TestRequestSupportedEndpointMode(t *testing.T) {
 			expect: EndpointModeVideoCancel,
 		},
 		{
+			name:   "new api video create",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/video/generations", nil)},
+			expect: EndpointModeVideoCreate,
+		},
+		{
+			name:   "new api video get item",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/video/generations/video_1", nil)},
+			expect: EndpointModeVideoGet,
+		},
+		{
+			name:   "new api video content",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/video/generations/video_1/content", nil)},
+			expect: EndpointModeVideoContent,
+		},
+		{
+			name:   "new api video cancel",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("DELETE", "/v1/video/generations/video_1", nil)},
+			expect: EndpointModeVideoCancel,
+		},
+		{
+			name:   "new api audio task create",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/tasks/audio", nil)},
+			expect: EndpointModeAudioJobCreate,
+		},
+		{
+			name:   "new api audio task create no v1",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/tasks/audio", nil)},
+			expect: EndpointModeAudioJobCreate,
+		},
+		{
+			name:   "new api audio task get item",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/tasks/audio/audiojob_1", nil)},
+			expect: EndpointModeAudioJobGet,
+		},
+		{
+			name:   "new api audio task content",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/tasks/audio/audiojob_1/content", nil)},
+			expect: EndpointModeAudioJobContent,
+		},
+		{
+			name:   "new api audio task delete shape",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("DELETE", "/v1/tasks/audio/audiojob_1", nil)},
+			expect: EndpointModeAudioJobCancel,
+		},
+		{
+			name:   "legacy audio jobs create",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/audio/jobs", nil)},
+			expect: EndpointModeAudioJobCreate,
+		},
+		{
 			name:   "realtime session (M5b, GET /v1/realtime)",
 			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/realtime?model=gpt-realtime", nil)},
 			expect: EndpointModeRealtimeSession,
@@ -147,6 +197,26 @@ func TestRequestSupportedEndpointMode(t *testing.T) {
 			name:   "realtime client secrets POST is not the session shape",
 			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/realtime/client_secrets", nil)},
 			expect: "",
+		},
+		{
+			name:   "B7 embeddings",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/embeddings", nil)},
+			expect: EndpointModeEmbedContent,
+		},
+		{
+			name:   "B7 embeddings subpath",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/embeddings/multimodal", nil)},
+			expect: EndpointModeEmbedContent,
+		},
+		{
+			name:   "B7 rerank",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/rerank", nil)},
+			expect: EndpointModeRerankJSON,
+		},
+		{
+			name:   "B7 moderations",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/moderations", nil)},
+			expect: EndpointModeModerationJSON,
 		},
 		{
 			name:   "ungated shape (GET models)",

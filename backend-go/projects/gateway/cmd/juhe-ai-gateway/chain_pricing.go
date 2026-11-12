@@ -297,21 +297,28 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 		Model:        item.Model,
 		Mode:         chainDerefString(item.Mode),
 		PriceSet: pricing.PriceSet{
-			InputUsdPer1M:               item.InputUsdPer1M,
-			OutputUsdPer1M:              item.OutputUsdPer1M,
-			CachedInputUsdPer1M:         item.CachedInputUsdPer1M,
-			CacheWriteUsdPer1M:          item.CacheWriteUsdPer1M,
-			CacheWrite1hUsdPer1M:        item.CacheWrite1hUsdPer1M,
-			CacheStorageUsdPer1MPerHour: item.CacheStorageUsdPer1MPerHour,
-			ImageInputUsdPer1M:          item.ImageInputUsdPer1M,
-			ImageOutputUsdPer1M:         item.ImageOutputUsdPer1M,
-			AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
-			AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
-			OutputUsdPerImage:           item.OutputUsdPerImage,
-			TtsInputUsdPer1MChars:       mediaSet.TtsInputUsdPer1MChars,
-			AudioInputUsdPerSecond:      mediaSet.AudioInputUsdPerSecond,
-			VideoOutputUsdPerSecond:     mediaSet.VideoOutputUsdPerSecond,
-			VideoOutputUsdPerCall:       mediaSet.VideoOutputUsdPerCall,
+			InputUsdPer1M:                            item.InputUsdPer1M,
+			OutputUsdPer1M:                           item.OutputUsdPer1M,
+			CachedInputUsdPer1M:                      item.CachedInputUsdPer1M,
+			CacheWriteUsdPer1M:                       item.CacheWriteUsdPer1M,
+			CacheWrite1hUsdPer1M:                     item.CacheWrite1hUsdPer1M,
+			CacheStorageUsdPer1MPerHour:              item.CacheStorageUsdPer1MPerHour,
+			ImageInputUsdPer1M:                       item.ImageInputUsdPer1M,
+			ImageOutputUsdPer1M:                      item.ImageOutputUsdPer1M,
+			AudioInputUsdPer1M:                       item.AudioInputUsdPer1M,
+			AudioOutputUsdPer1M:                      item.AudioOutputUsdPer1M,
+			OutputUsdPerImage:                        item.OutputUsdPerImage,
+			OutputUsdPerImageTiers:                   mediaSet.OutputUsdPerImageTiers,
+			InputUsdPerImage:                         mediaSet.InputUsdPerImage,
+			InputImageFreeCount:                      mediaSet.InputImageFreeCount,
+			TtsInputUsdPer1MChars:                    mediaSet.TtsInputUsdPer1MChars,
+			TtsOutputUsdPerCall:                      mediaSet.TtsOutputUsdPerCall,
+			AudioInputUsdPerSecond:                   mediaSet.AudioInputUsdPerSecond,
+			VideoOutputUsdPerSecond:                  mediaSet.VideoOutputUsdPerSecond,
+			VideoOutputUsdPerCall:                    mediaSet.VideoOutputUsdPerCall,
+			VideoOutputUsdPerSecondByResolution:      mediaSet.VideoOutputUsdPerSecondByResolution,
+			VideoOutputUsdPerCallBySeconds:           mediaSet.VideoOutputUsdPerCallBySeconds,
+			VideoOutputUsdPerCallByResolutionSeconds: mediaSet.VideoOutputUsdPerCallByResolutionSeconds,
 		},
 		CachedImageInputUsdPer1M: item.CachedImageInputUsdPer1M,
 		ServiceTierPrices:        chainServiceTierPrices(item.ServiceTierPrices),
@@ -359,7 +366,10 @@ func chainPricingCostInput(catalogPricing *pricing.Pricing, input gatewayusagePr
 		InputAudioTokens:   chainIntToFloat(input.InputAudioTokens),
 		OutputAudioTokens:  chainIntToFloat(input.OutputAudioTokens),
 		OutputImageCount:   chainIntToFloat(input.OutputImageCount),
+		OutputImagePixels:  input.OutputImagePixels,
+		InputImageCount:    chainInt64ToFloat(input.InputImageCount),
 		TtsInputChars:      chainInt64ToFloat(input.TtsInputChars),
+		TtsCalls:           chainInt64ToFloat(input.TtsCalls),
 		AudioInputSeconds:  input.AudioInputSeconds,
 	}
 }
@@ -371,7 +381,8 @@ func chainHasAnyCostDimension(input gatewayusagePricingCostInput) bool {
 		input.CacheWrite1hTokens != nil || input.InputImageTokens != nil ||
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
 		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
-		input.TtsInputChars != nil || input.AudioInputSeconds != nil
+		input.OutputImagePixels != nil || input.InputImageCount != nil ||
+		input.TtsInputChars != nil || input.TtsCalls != nil || input.AudioInputSeconds != nil
 }
 
 func chainIntToFloat(value *int) *float64 {

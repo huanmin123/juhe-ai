@@ -29,8 +29,9 @@ assert.deepEqual(accountHealthCheckEndpointModeOptions([
   'embed_content'
 ]), [
   { label: 'Messages API（Streaming）', value: 'messages_sse' },
-  { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' }
-], '所有供应商的流式生成 mode 都应展示，工具型 endpoint mode 必须排除')
+  { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' },
+  { label: 'Embeddings', value: 'embed_content' }
+], '已启用 mode 都应展示，包括 B7 工具场景的向量形态')
 const draftEndpointModes = accountTestEndpointModesForAccount({
   providerCode: 'gpt',
   providerProtocolProfileId: 'profile_gpt_openai_v1',

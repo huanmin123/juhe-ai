@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS juhe_usage.usage_records (
   input_image_tokens integer,
   output_image_tokens integer,
   cost_usd double precision,
-  created_at text NOT NULL,
-  usage_stats_aggregated_at text,
+  created_at timestamptz(3) NOT NULL,
+  usage_stats_aggregated_at timestamptz,
   client_ip_stats_aggregated_at text,
   PRIMARY KEY (created_at, id)
 );
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_registry (
 );
 CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_stats_daily (
   ip_hash text NOT NULL,
-  stat_date text NOT NULL,
+  stat_date date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_stats_daily (
 CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_account_stats_daily (
   ip_hash text NOT NULL,
   account_id text NOT NULL,
-  stat_date text NOT NULL,
+  stat_date date NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -175,7 +175,7 @@ CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_daily (
   system_account_id text NOT NULL,
   scope_type text NOT NULL,
   scope_id text NOT NULL DEFAULT '',
-  stat_date text NOT NULL,
+  stat_date date NOT NULL,
   updated_at text NOT NULL,
   PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date)
 );
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_hourly (
   system_account_id text NOT NULL,
   scope_type text NOT NULL,
   scope_id text NOT NULL DEFAULT '',
-  stat_hour text NOT NULL,
+  stat_hour timestamp(0) without time zone NOT NULL,
   updated_at text NOT NULL,
   PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
 );

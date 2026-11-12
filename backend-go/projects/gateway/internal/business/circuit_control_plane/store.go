@@ -637,8 +637,8 @@ func (s *Store) claimOutbox(ctx context.Context, projectionKey, owner string, no
 	if leaseMS > 0 && now > maxInt64-leaseMS {
 		return nil, errors.New("claim lease exceeds timestamp bounds")
 	}
-	q := "SELECT " + outboxColumns + " FROM " + s.table("account_circuit_outbox") + " WHERE projection_key=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?)) ORDER BY available_at_ms,created_at_ms,event_id LIMIT ?" + s.forUpdateSkipLocked()
-	rows, err := tx.QueryContext(ctx, s.bind(q), projectionKey, now, now, limit)
+	q := "SELECT " + outboxSelectColumns + " FROM " + s.table("account_circuit_outbox") + " WHERE projection_key=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?)) ORDER BY available_at_ms,created_at_ms,event_id LIMIT ?" + s.forUpdateSkipLocked()
+	rows, err := tx.QueryContext(ctx, s.bind(q), projectionKey, msTime(now), msTime(now), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -665,7 +665,7 @@ func (s *Store) claimOutbox(ctx context.Context, projectionKey, owner string, no
 			return nil, e
 		}
 		until := now + leaseMS
-		res, e := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='processing',claim_token=?,claimed_by=?,claim_until_ms=?,attempt_count=attempt_count+1,updated_at_ms=? WHERE event_id=? AND projection_key=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?))"), token, owner, until, now, candidate.EventID, projectionKey, now, now)
+		res, e := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='processing',claim_token=?,claimed_by=?,claim_until_ms=?,attempt_count=attempt_count+1,updated_at_ms=? WHERE event_id=? AND projection_key=? AND ((status='pending' AND available_at_ms<=?) OR (status='processing' AND claim_until_ms<=?))"), token, owner, msTime(until), msTime(now), candidate.EventID, projectionKey, msTime(now), msTime(now))
 		if e != nil {
 			return nil, e
 		}
@@ -728,7 +728,7 @@ func (s *Store) AcknowledgeOutbox(ctx context.Context, eventID, projectionKey, c
 	if event.Status != "processing" || value(event.ClaimToken) != claimToken {
 		return false, nil
 	}
-	res, err := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='dispatched',claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,acknowledged_at_ms=?,last_error_class=NULL,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=? AND projection_key=?"), now, now, eventID, claimToken, projectionKey)
+	res, err := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='dispatched',claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,acknowledged_at_ms=?,last_error_class=NULL,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=? AND projection_key=?"), msTime(now), msTime(now), eventID, claimToken, projectionKey)
 	if err != nil {
 		return false, err
 	}
@@ -777,7 +777,7 @@ func (s *Store) ReleaseOutboxForReplay(ctx context.Context, eventID, claimToken,
 		return false, errors.New("retry delay exceeds timestamp bounds")
 	}
 	now := nowMS
-	res, err := s.db.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='pending',available_at_ms=?,claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,last_error_class=?,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=?"), now+delayMS, errorClass, now, eventID, claimToken)
+	res, err := s.db.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='pending',available_at_ms=?,claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,last_error_class=?,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=?"), msTime(now+delayMS), errorClass, msTime(now), eventID, claimToken)
 	if err != nil {
 		return false, err
 	}
@@ -807,8 +807,8 @@ func (s *Store) ListForRebuild(ctx context.Context, nowMS, afterUpdatedMS int64,
 	now := nowMS
 	// 归档 listAccountCircuitIncidentsForRebuildInClient：dispatch_revision 必须仍
 	// 等于未删除账户的当前值（deleted_at IS NULL 围栏），已删账户的迟到 incident 不回放。
-	q := "SELECT " + incidentColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE (i.state<>'CLOSED' OR i.retained_until_ms>?) AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
-	page, err := s.listIncidents(ctx, q, now, afterUpdatedMS, afterUpdatedMS, afterScope, limit)
+	q := "SELECT " + incidentSelectColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE (i.state<>'CLOSED' OR i.retained_until_ms>?) AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
+	page, err := s.listIncidents(ctx, q, msTime(now), msTime(afterUpdatedMS), msTime(afterUpdatedMS), afterScope, limit)
 	if err != nil {
 		return RebuildPage{}, err
 	}
@@ -845,11 +845,11 @@ func (s *Store) ListByRuntimeKeys(ctx context.Context, keys []string, includeRet
 	}
 	if includeRetainedClosed {
 		condition = "(i.state<>'CLOSED' OR i.retained_until_ms>?)"
-		args = append(args, now)
+		args = append(args, msTime(now))
 	}
 	// 归档 listAccountCircuitIncidentsByRuntimeKeysInClient：同 deleted_at IS NULL
 	// 账户围栏，已删账户不返回摘要。
-	q := "SELECT " + incidentColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE i.account_runtime_key IN (" + ph + ") AND " + condition + " AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) ORDER BY i.account_runtime_key,i.updated_at_ms,i.circuit_scope_key"
+	q := "SELECT " + incidentSelectColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE i.account_runtime_key IN (" + ph + ") AND " + condition + " AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) ORDER BY i.account_runtime_key,i.updated_at_ms,i.circuit_scope_key"
 	rows, err := s.db.QueryContext(ctx, s.bind(q), args...)
 	if err != nil {
 		return nil, err
@@ -904,8 +904,8 @@ func (s *Store) ListProjectionGaps(ctx context.Context, afterAccountID string, a
 	if err = rows.Close(); err != nil {
 		return gaps, err
 	}
-	q := "SELECT " + incidentColumns + " FROM " + incidents + " i WHERE i.projected_ledger_revision<i.ledger_revision AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + accounts + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
-	page, err := s.listIncidents(ctx, q, afterUpdatedMS, afterUpdatedMS, afterScope, limit)
+	q := "SELECT " + incidentSelectColumns + " FROM " + incidents + " i WHERE i.projected_ledger_revision<i.ledger_revision AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + accounts + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
+	page, err := s.listIncidents(ctx, q, msTime(afterUpdatedMS), msTime(afterUpdatedMS), afterScope, limit)
 	if err != nil {
 		return gaps, err
 	}
@@ -927,7 +927,7 @@ type queryer interface {
 }
 
 func (s *Store) incidentByScope(ctx context.Context, q queryer, scope string) (Incident, bool, error) {
-	row := q.QueryRowContext(ctx, s.bind("SELECT "+incidentColumns+" FROM "+s.table("account_circuit_incidents")+" WHERE circuit_scope_key=?"), scope)
+	row := q.QueryRowContext(ctx, s.bind("SELECT "+incidentSelectColumns+" FROM "+s.table("account_circuit_incidents")+" WHERE circuit_scope_key=?"), scope)
 	v, err := scanIncident(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Incident{}, false, nil
@@ -935,7 +935,7 @@ func (s *Store) incidentByScope(ctx context.Context, q queryer, scope string) (I
 	return v, err == nil, err
 }
 func (s *Store) incidentByScopeForUpdate(ctx context.Context, q queryer, scope string) (Incident, bool, error) {
-	row := q.QueryRowContext(ctx, s.bind("SELECT "+incidentColumns+" FROM "+s.table("account_circuit_incidents")+" WHERE circuit_scope_key=?"+s.forUpdate()), scope)
+	row := q.QueryRowContext(ctx, s.bind("SELECT "+incidentSelectColumns+" FROM "+s.table("account_circuit_incidents")+" WHERE circuit_scope_key=?"+s.forUpdate()), scope)
 	v, err := scanIncident(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Incident{}, false, nil
@@ -961,7 +961,7 @@ func (s *Store) outboxByDedupe(ctx context.Context, q queryer, dedupe string, ex
 	if excludeDispatched {
 		statusFilter = " AND status<>'dispatched'"
 	}
-	row := q.QueryRowContext(ctx, s.bind("SELECT "+outboxColumns+" FROM "+s.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=?"+statusFilter), ProjectionKey, dedupe)
+	row := q.QueryRowContext(ctx, s.bind("SELECT "+outboxSelectColumns+" FROM "+s.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=?"+statusFilter), ProjectionKey, dedupe)
 	v, err := scanOutbox(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Outbox{}, false, nil
@@ -969,7 +969,7 @@ func (s *Store) outboxByDedupe(ctx context.Context, q queryer, dedupe string, ex
 	return v, err == nil, err
 }
 func (s *Store) outboxByID(ctx context.Context, q queryer, id string) (Outbox, bool, error) {
-	row := q.QueryRowContext(ctx, s.bind("SELECT "+outboxColumns+" FROM "+s.table("account_circuit_outbox")+" WHERE event_id=?"), id)
+	row := q.QueryRowContext(ctx, s.bind("SELECT "+outboxSelectColumns+" FROM "+s.table("account_circuit_outbox")+" WHERE event_id=?"), id)
 	v, err := scanOutbox(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Outbox{}, false, nil
@@ -1010,13 +1010,13 @@ func (s *Store) insertOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
 // J3b 行清理可能不同批，同 dedupe 的重放不应因残留 J3b 行把事务打回。
 func (s *Store) insertOutboxJ3bRow(ctx context.Context, tx *sql.Tx, v Outbox, eventID string) error {
 	q := "INSERT INTO " + s.table("account_circuit_outbox") + " (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"
-	_, err := tx.ExecContext(ctx, s.bind(q), eventID, J3bProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	_, err := tx.ExecContext(ctx, s.bind(q), eventID, J3bProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", msTime(v.AvailableAtMS), 0, msTime(v.CreatedAtMS), msTime(v.UpdatedAtMS))
 	return err
 }
 
 func (s *Store) insertOutboxRow(ctx context.Context, tx *sql.Tx, v Outbox, projectionKey, eventID string) error {
 	q := "INSERT INTO " + s.table("account_circuit_outbox") + " (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-	_, err := tx.ExecContext(ctx, s.bind(q), eventID, projectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	_, err := tx.ExecContext(ctx, s.bind(q), eventID, projectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", msTime(v.AvailableAtMS), 0, msTime(v.CreatedAtMS), msTime(v.UpdatedAtMS))
 	return err
 }
 
@@ -1064,7 +1064,7 @@ func (s *Store) insertIncidentChangedOutboxRow(ctx context.Context, tx *sql.Tx, 
 		" AND " + outbox + ".account_id=excluded.account_id" +
 		" AND " + outbox + ".account_runtime_key=excluded.account_runtime_key" +
 		" AND " + outbox + ".circuit_scope_key IS NOT DISTINCT FROM excluded.circuit_scope_key"
-	res, err := tx.ExecContext(ctx, s.bind(q), eventID, projectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	res, err := tx.ExecContext(ctx, s.bind(q), eventID, projectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", msTime(v.AvailableAtMS), 0, msTime(v.CreatedAtMS), msTime(v.UpdatedAtMS))
 	if err != nil {
 		return err
 	}
@@ -1095,7 +1095,7 @@ func (s *Store) upsertIncident(ctx context.Context, tx *sql.Tx, v Incident) erro
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", strings.Count(incidentColumns, ",")+1), ",")
 	q := "INSERT INTO " + s.table("account_circuit_incidents") + " (" + incidentColumns + ") VALUES (" + placeholders + ") ON CONFLICT(circuit_scope_key) DO UPDATE SET account_id=excluded.account_id,account_runtime_key=excluded.account_runtime_key,scope_kind=excluded.scope_kind,key_fingerprint=excluded.key_fingerprint,protocol_code=excluded.protocol_code,request_lane=excluded.request_lane,model_family=excluded.model_family,client_model=excluded.client_model,capability_hash=excluded.capability_hash,credential_source_account_id=excluded.credential_source_account_id,client_endpoint_family=excluded.client_endpoint_family,final_upstream_model=excluded.final_upstream_model,upstream_endpoint_mode=excluded.upstream_endpoint_mode,incident_id=excluded.incident_id,parent_incident_id=excluded.parent_incident_id,child_incident_ids_json=excluded.child_incident_ids_json,caused_by_terminal_outcome_id=excluded.caused_by_terminal_outcome_id,state=excluded.state,failure_scope=excluded.failure_scope,generation=excluded.generation,dispatch_revision=excluded.dispatch_revision,ledger_revision=excluded.ledger_revision,projected_ledger_revision=excluded.projected_ledger_revision,transition_id=excluded.transition_id,cooldown_observation_generation=excluded.cooldown_observation_generation,open_until_ms=excluded.open_until_ms,next_transition_at_ms=excluded.next_transition_at_ms,lease_id=excluded.lease_id,lease_purpose=excluded.lease_purpose,lease_owner_run_id=excluded.lease_owner_run_id,lease_until_ms=excluded.lease_until_ms,attempt_started_at_ms=excluded.attempt_started_at_ms,attempt_hard_deadline_ms=excluded.attempt_hard_deadline_ms,upstream_attempt_observed=excluded.upstream_attempt_observed,backoff_level=excluded.backoff_level,consecutive_failures=excluded.consecutive_failures,confirmation_failures_required=excluded.confirmation_failures_required,confirmation_failure_evidence_keys_json=excluded.confirmation_failure_evidence_keys_json,recovering_successes=excluded.recovering_successes,last_failure_class=excluded.last_failure_class,retained_until_ms=excluded.retained_until_ms,updated_at_ms=excluded.updated_at_ms WHERE account_circuit_incidents.account_id=excluded.account_id"
-	res, err := tx.ExecContext(ctx, s.bind(q), v.CircuitScopeKey, v.AccountID, v.AccountRuntimeKey, v.ScopeKind, v.KeyFingerprint, v.ProtocolCode, v.RequestLane, v.ModelFamily, v.ClientModel, v.CapabilityHash, v.CredentialSourceAccountID, v.ClientEndpointFamily, v.FinalUpstreamModel, v.UpstreamEndpointMode, v.IncidentID, v.ParentIncidentID, string(children), v.CausedByTerminalOutcomeID, v.State, nullableText(v.FailureScope), v.Generation, v.DispatchRevision, v.LedgerRevision, v.ProjectedLedgerRevision, v.TransitionID, v.CooldownObservationGeneration, v.OpenUntilMS, v.NextTransitionAtMS, v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS, v.AttemptStartedAtMS, v.AttemptHardDeadlineMS, boolInt(v.UpstreamAttemptObserved), v.BackoffLevel, v.ConsecutiveFailures, v.ConfirmationFailuresRequired, string(evidence), v.RecoveringSuccesses, v.LastFailureClass, v.RetainedUntilMS, v.CreatedAtMS, v.UpdatedAtMS)
+	res, err := tx.ExecContext(ctx, s.bind(q), v.CircuitScopeKey, v.AccountID, v.AccountRuntimeKey, v.ScopeKind, v.KeyFingerprint, v.ProtocolCode, v.RequestLane, v.ModelFamily, v.ClientModel, v.CapabilityHash, v.CredentialSourceAccountID, v.ClientEndpointFamily, v.FinalUpstreamModel, v.UpstreamEndpointMode, v.IncidentID, v.ParentIncidentID, string(children), v.CausedByTerminalOutcomeID, v.State, nullableText(v.FailureScope), v.Generation, v.DispatchRevision, v.LedgerRevision, v.ProjectedLedgerRevision, v.TransitionID, v.CooldownObservationGeneration, msTimePtr(v.OpenUntilMS), msTimePtr(v.NextTransitionAtMS), v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, msTimePtr(v.LeaseUntilMS), msTimePtr(v.AttemptStartedAtMS), msTimePtr(v.AttemptHardDeadlineMS), boolInt(v.UpstreamAttemptObserved), v.BackoffLevel, v.ConsecutiveFailures, v.ConfirmationFailuresRequired, string(evidence), v.RecoveringSuccesses, v.LastFailureClass, msTimePtr(v.RetainedUntilMS), msTime(v.CreatedAtMS), msTime(v.UpdatedAtMS))
 	if err != nil {
 		return err
 	}
@@ -1111,6 +1111,33 @@ const incidentColumns = "circuit_scope_key,account_id,account_runtime_key,scope_
 const outboxColumns = "event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,last_error_class,acknowledged_at_ms,created_at_ms,updated_at_ms"
 
 type scanner interface{ Scan(...any) error }
+
+// incidentSelectColumns 把 timestamptz(6) 运行态列投影回既有 int64 毫秒协议。
+var incidentSelectColumns = replaceInstantSelect(incidentColumns)
+
+// outboxSelectColumns 同 incidentSelectColumns。
+var outboxSelectColumns = replaceInstantSelect(outboxColumns)
+
+func replaceInstantSelect(columns string) string {
+	for _, name := range []string{
+		"open_until_ms", "next_transition_at_ms", "lease_until_ms", "attempt_started_at_ms",
+		"attempt_hard_deadline_ms", "retained_until_ms", "created_at_ms", "updated_at_ms",
+		"available_at_ms", "claim_until_ms", "acknowledged_at_ms",
+	} {
+		columns = strings.ReplaceAll(columns, name, fmt.Sprintf(
+			"(EXTRACT(EPOCH FROM %s)*1000)::bigint AS %s", name, name))
+	}
+	return columns
+}
+
+func msTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
+
+func msTimePtr(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return msTime(*value)
+}
 
 func scanIncident(s scanner) (Incident, error) {
 	var v Incident

@@ -51,7 +51,7 @@ func TestChainMediaVolcengineASRRealUpstreamE2E(t *testing.T) {
 	if job["status"] != "queued" {
 		t.Fatalf("真实 submit 受理状态 = %v, want queued: %#v", job["status"], job)
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := mediaVideoMetadataOf(t, job)["provider_job_id"].(string)
 	if len(providerJobID) != 32 {
 		t.Fatalf("真实 provider_job_id = %q, want 16 字节 hex", providerJobID)
 	}
@@ -62,7 +62,7 @@ func TestChainMediaVolcengineASRRealUpstreamE2E(t *testing.T) {
 	var final map[string]any
 	var finalPayload []byte
 	for {
-		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID, apiKey, "", nil)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("真实轮询 status=%d body=%s", response.StatusCode, payload)
 		}
@@ -82,7 +82,7 @@ func TestChainMediaVolcengineASRRealUpstreamE2E(t *testing.T) {
 	}
 
 	// content：同构 query 代理的转写 JSON，result.text 必须非空（真实转写）。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("真实 content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -112,6 +112,6 @@ func TestChainMediaVolcengineASRRealUpstreamE2E(t *testing.T) {
 		t.Fatalf("cost_usd = %v, want 按目录秒价 $3.1746031746031745e-05/秒 计费", costUsd)
 	}
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"endpoint":"/v1/audio/jobs"`) && strings.Contains(text, `"audioInputSeconds":`)
+		return strings.Contains(text, `"endpoint":"/v1/tasks/audio"`) && strings.Contains(text, `"audioInputSeconds":`)
 	}, "真实转写 usage 计量记录")
 }

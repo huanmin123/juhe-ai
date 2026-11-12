@@ -1,4 +1,4 @@
-export type MediaJobKind = 'video' | 'audio_transcription' | 'audio_speech'
+export type MediaJobKind = 'video' | 'audio_transcription'
 
 export type MediaJobStatus = 'queued' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'expired'
 
@@ -74,8 +74,7 @@ export interface MediaJobDetail {
 
 export const mediaJobKindLabels: Record<MediaJobKind, string> = {
   video: '视频',
-  audio_transcription: '长音频转写',
-  audio_speech: '长音频合成'
+  audio_transcription: '长音频转写'
 }
 
 export const mediaJobStatusLabels: Record<MediaJobStatus, string> = {

@@ -16,6 +16,9 @@ const (
 	FamilyAnthropic       = "anthropic"
 	FamilyGemini          = "gemini"
 	FamilyMedia           = "media"
+	// FamilyTool 是 B7 工具端点族（embeddings/rerank/moderations）：只扫文本
+	// 输入叶子，不注入系统提示（工具请求没有 system 位置，响应也不回显输入）。
+	FamilyTool = "tool"
 )
 
 var knownFamilies = map[string]bool{
@@ -24,6 +27,7 @@ var knownFamilies = map[string]bool{
 	FamilyAnthropic:       true,
 	FamilyGemini:          true,
 	FamilyMedia:           true,
+	FamilyTool:            true,
 }
 
 // SanitizeResult 是单次出站脱敏的产物（设计 §2）。
@@ -80,6 +84,8 @@ func SanitizeBody(p *CompiledPolicy, body []byte, endpointFamily string) Sanitiz
 		walkGemini(ctx, object)
 	case FamilyMedia:
 		walkMedia(ctx, object)
+	case FamilyTool:
+		walkTool(ctx, object)
 	}
 
 	injected := false
@@ -446,6 +452,54 @@ func walkMedia(ctx *sanitizeContext, root *orderedObject) {
 		}
 		if text, ok := instance.get("prompt").(string); ok {
 			instance.set("prompt", ctx.sanitizeText(text))
+		}
+	}
+}
+
+// walkTool 扫描 B7 工具端点的文本输入：
+//   - embeddings / moderations 的 input：字符串或字符串数组（token id 数字
+//     数组不扫，避免把 token ID 当敏感数字改写）；
+//   - rerank 的 query 与 documents：documents 支持字符串数组或 {text} 对象；
+//   - moderations 多模态 input[] 的 {type:"text",text} 条目；
+//   - 媒体/对话类字段若混入（prompt/text），一并按文本扫描。
+func walkTool(ctx *sanitizeContext, root *orderedObject) {
+	switch input := root.get("input").(type) {
+	case string:
+		root.set("input", ctx.sanitizeText(input))
+	case []any:
+		for index, item := range input {
+			switch typed := item.(type) {
+			case string:
+				input[index] = ctx.sanitizeText(typed)
+			case *orderedObject:
+				if text, ok := typed.get("text").(string); ok {
+					typed.set("text", ctx.sanitizeText(text))
+				}
+			}
+		}
+	case *orderedObject:
+		if text, ok := input.get("text").(string); ok {
+			input.set("text", ctx.sanitizeText(text))
+		}
+	}
+	if query, ok := root.get("query").(string); ok {
+		root.set("query", ctx.sanitizeText(query))
+	}
+	if documents, ok := root.get("documents").([]any); ok {
+		for index, item := range documents {
+			switch typed := item.(type) {
+			case string:
+				documents[index] = ctx.sanitizeText(typed)
+			case *orderedObject:
+				if text, ok := typed.get("text").(string); ok {
+					typed.set("text", ctx.sanitizeText(text))
+				}
+			}
+		}
+	}
+	for _, key := range []string{"prompt", "text", "text_prompt"} {
+		if text, ok := root.get(key).(string); ok {
+			root.set(key, ctx.sanitizeText(text))
 		}
 	}
 }

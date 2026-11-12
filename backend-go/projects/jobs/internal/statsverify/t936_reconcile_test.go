@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_hourly (
   system_account_id text NOT NULL,
   scope_type text NOT NULL,
   scope_id text NOT NULL DEFAULT '',
-  stat_hour text NOT NULL,
+  stat_hour timestamp(0) without time zone NOT NULL,
   request_count bigint NOT NULL DEFAULT 0,
   success_count bigint NOT NULL DEFAULT 0,
   error_count bigint NOT NULL DEFAULT 0,
@@ -173,7 +173,7 @@ func t936InsertHourly(t *testing.T, db *sql.DB, systemAccountID, scopeID, statHo
 		(system_account_id, scope_type, scope_id, stat_hour, request_count, success_count, error_count,
 		 input_tokens, total_cost_usd, success_cost_usd, updated_at)
 		VALUES ($1, 'system_account', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		systemAccountID, scopeID, statHour, request, success, errorCount, inputTokens, totalCost, successCost, NowIso(time.Now())); err != nil {
+		systemAccountID, scopeID, statsagg.CalendarDBValue("stat_hour", statHour), request, success, errorCount, inputTokens, totalCost, successCost, NowIso(time.Now())); err != nil {
 		t.Fatalf("写入 usage_stats_hourly 失败: %v", err)
 	}
 }
@@ -224,7 +224,7 @@ func TestT936ReconcileDetectsMissingStatsSide(t *testing.T) {
 	store, db := t936ReconcileStore(t)
 	t936SeedBalancedWindow(t, db)
 	if _, err := db.Exec(`DELETE FROM juhe_stats.usage_stats_hourly
-		WHERE system_account_id = $1 AND scope_type = 'system_account' AND stat_hour = '2026-09-07T09'`, statsagg.GlobalStatsSystemAccountID); err != nil {
+		WHERE system_account_id = $1 AND scope_type = 'system_account' AND stat_hour = '2026-09-07 09:00:00'`, statsagg.GlobalStatsSystemAccountID); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.ReconcileUsageStatsHourly(context.Background(), UsageStatsReconciliationOptions{

@@ -59,7 +59,7 @@ const quotaStatsPGFixtureSchema = `
 	  system_account_id text NOT NULL,
 	  scope_type text NOT NULL,
 	  scope_id text NOT NULL DEFAULT '',
-	  stat_date text NOT NULL,
+	  stat_date date NOT NULL,
 	  total_cost_usd double precision NOT NULL DEFAULT 0,
 	  success_cost_usd double precision NOT NULL DEFAULT 0
 	);
@@ -67,7 +67,7 @@ const quotaStatsPGFixtureSchema = `
 	  system_account_id text NOT NULL,
 	  scope_type text NOT NULL,
 	  scope_id text NOT NULL DEFAULT '',
-	  stat_week text NOT NULL,
+	  stat_week date NOT NULL,
 	  total_cost_usd double precision NOT NULL DEFAULT 0,
 	  success_cost_usd double precision NOT NULL DEFAULT 0
 	);
@@ -75,7 +75,7 @@ const quotaStatsPGFixtureSchema = `
 	  system_account_id text NOT NULL,
 	  scope_type text NOT NULL,
 	  scope_id text NOT NULL DEFAULT '',
-	  stat_month text NOT NULL,
+	  stat_month date NOT NULL,
 	  total_cost_usd double precision NOT NULL DEFAULT 0,
 	  success_cost_usd double precision NOT NULL DEFAULT 0
 	);
@@ -107,6 +107,13 @@ func seedCost(t *testing.T, db *sql.DB, table string, columns []string, values [
 	placeholders := make([]string, len(columns))
 	for i := range placeholders {
 		placeholders[i] = "$" + strconv.Itoa(i+1)
+	}
+	for index, column := range columns {
+		if column == "stat_month" {
+			if month, ok := values[index].(string); ok && len(month) == 7 {
+				values[index] = month + "-01"
+			}
+		}
 	}
 	query := "INSERT INTO juhe_stats." + table + " (" + strings.Join(columns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ")"
 	if _, err := db.Exec(query, values...); err != nil {

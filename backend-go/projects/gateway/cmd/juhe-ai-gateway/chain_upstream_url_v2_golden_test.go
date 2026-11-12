@@ -21,7 +21,7 @@ import (
 // 版本前缀），任何链路不再对 base/opPath 补插、剥离或去重版本段（R1/R2/R3）。
 // lane 覆盖：volcengine chat（头号验收用例）、glm chat（旧行为多拼 /v1 的
 // 行为修复）、qwen chat（/compatible-mode/v1 厂商前缀，R6）、qwen 视频
-//（/api/v1 双根特例全路径不变）、deepseek anthropic、gemini 版本根。
+// （/api/v1 双根特例全路径不变）、deepseek anthropic、gemini 版本根。
 func TestChainUpstreamURLV2Golden(t *testing.T) {
 	driver := newChainProviderDriver()
 	chatRequest := func(t *testing.T, target string) *gatewaypreauth.GatewayRequest {

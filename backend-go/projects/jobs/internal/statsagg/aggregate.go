@@ -113,6 +113,9 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := ensureStatsTimezoneFingerprint(ctx, tx, a.Dialect, timezone.String(), updatedAt); err != nil {
+		return 0, err
+	}
 
 	// 游标只用于诊断与下游（对账窗口、清理地板）参考，不参与选行：选行完全由
 	// 消费水位列决定，重复执行不依赖游标是否落后。这里仍读一次，用于水位列
@@ -903,6 +906,34 @@ func statsJobState(ctx context.Context, tx *sql.Tx, dialect Dialect) (statsJobSt
 		state.LagSeconds = &lagSeconds.Float64
 	}
 	return state, nil
+}
+
+// ensureStatsTimezoneFingerprint 把首次聚合使用的统计时区写入
+// stats_job_state；后续进程使用不同时区时 fail-closed，避免同一批数据被
+// 写到不同日历桶后无法对账。时区切换必须走受控重建，不能静默漂移。
+func ensureStatsTimezoneFingerprint(ctx context.Context, tx *sql.Tx, dialect Dialect, timezone, updatedAt string) error {
+	if timezone == "" {
+		return errors.New("统计时区不能为空")
+	}
+	table := dialect.StatsTable("stats_job_state")
+	if _, err := tx.ExecContext(ctx, dialect.bind(`
+		INSERT INTO `+table+` (scope_type, scope_id, job_name, cursor_id, updated_at)
+		VALUES ('global', '', 'usage_stats_timezone_fingerprint', ?, ?)
+		ON CONFLICT(scope_type, scope_id, job_name) DO NOTHING
+	`), timezone, updatedAt); err != nil {
+		return fmt.Errorf("写入统计时区指纹失败: %w", err)
+	}
+	var stored sql.NullString
+	if err := tx.QueryRowContext(ctx, dialect.bind(`
+		SELECT cursor_id FROM `+table+`
+		WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_timezone_fingerprint'
+	`)).Scan(&stored); err != nil {
+		return fmt.Errorf("读取统计时区指纹失败: %w", err)
+	}
+	if stored.Valid && stored.String != timezone {
+		return fmt.Errorf("统计时区指纹不一致：已记录 %s，当前 %s；切换时区必须走受控重建", stored.String, timezone)
+	}
+	return nil
 }
 
 type statsJobStateInput struct {

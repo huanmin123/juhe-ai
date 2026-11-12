@@ -1,5 +1,5 @@
 // qwen_asr.go 是 M3f 长音频异步转写的出站 adapter 端口与通义百炼
-// （paraformer 系）首个实现（媒体设计 §4.2/§5：对外 /v1/audio/jobs 统一 job
+// （paraformer 系）首个实现（媒体设计 §4.2/§5：对外 /v1/tasks/audio 统一 job
 // 语义 → 媒体 IR → 每厂商一个 adapter，注册表组织；本文件挂
 // audioJobAdapters 的 "qwen" 条目）。报文依据契约 §10.2（B 级，2026-10-04
 // 回填）：创建 POST /api/v1/services/audio/asr/transcription，Bearer
@@ -7,7 +7,7 @@
 // 与万相视频不同），请求 {"model":"paraformer-v2","input":{"file_urls":
 // ["<公网音频 URL>"]},"parameters":{"language_hints":[...],
 // "diarization_enabled":true,...}}——只接受公网 URL 数组不支持文件上传
-// （与零存储对齐：对外 /v1/audio/jobs 首版输入只支持 input_url）；响应
+// （与零存储对齐：对外 /v1/tasks/audio 首版输入只支持 input_url）；响应
 // {"output":{"task_id","task_status":"PENDING"},"request_id"}——受理凭据 =
 // output.task_id；轮询 GET /api/v1/tasks/{task_id}（与万相同一 DashScope
 // 任务接口），SUCCEEDED → output.results[].transcription_url（**转写结果
@@ -26,7 +26,7 @@ import (
 	"strings"
 )
 
-// AudioJobProviderAdapter 是长音频异步转写（对外 /v1/audio/jobs，kind=
+// AudioJobProviderAdapter 是长音频异步转写（对外 /v1/tasks/audio，kind=
 // audio_transcription）的出站 adapter 端口。方法集与 VideoProviderAdapter
 // 的任务面半部结构同构（Provider/Build*/ParsePollResponse/ContentFromArtifact/
 // SupportsCancel），链上层经二者共同满足的任务面接口按 kind 泛化消费（媒体
@@ -70,7 +70,7 @@ type AudioJobProviderAdapter interface {
 	SupportsCancel() bool
 }
 
-// AudioJobCapabilities 是长转写 adapter 的能力声明（对外 /v1/audio/jobs
+// AudioJobCapabilities 是长转写 adapter 的能力声明（对外 /v1/tasks/audio
 // L1/L2 参数面的裁决输入，契约 §2.4 忽略/拒绝/回显规则）。
 type AudioJobCapabilities struct {
 	// SupportsLanguage：language 参数是否有上游对应字段（paraformer 的

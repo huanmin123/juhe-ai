@@ -41,7 +41,7 @@ func TestW10CPGQuotaIncrementalSkipLocked(t *testing.T) {
 		 input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
 		 thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, success_cost_usd, updated_at)
 		VALUES ('w10cpg-1', 'api_key', 'key-1', $1, 1, 1, 0, 10, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0.5, $2)`,
-		"2026-09-06T11", "2026-09-06T12:00:00.000Z")
+		CalendarDBValue("stat_hour", "2026-09-06T11"), "2026-09-06T12:00:00.000Z")
 	w10cPgExec(t, db, `INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes
 		(system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
 		VALUES ('w10cpg-1', 'api_key', 'key-1', 1, $1, $2)`,

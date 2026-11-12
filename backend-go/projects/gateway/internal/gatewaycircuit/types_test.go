@@ -67,7 +67,7 @@ func TestScopeKeyEncoding(t *testing.T) {
 			// realtime 已随 M5b 进词表，非法样本用 m5 占位（Realtime 设计 §6）。
 			name:    "invalid lane",
 			scope:   Scope{Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "m5", ModelBucket: "m"},
-			wantErr: "账户电路作用域 requestLane 必须是 text/image/audio/video/realtime",
+			wantErr: "账户电路作用域 requestLane 必须是 text/image/audio/video/utility/realtime",
 		},
 	}
 	for _, tt := range tests {

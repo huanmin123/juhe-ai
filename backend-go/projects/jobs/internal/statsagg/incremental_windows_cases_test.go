@@ -50,7 +50,7 @@ func seedIncrementalComparisonData(t *testing.T, env *testEnv) {
 	// trend 源（hourly）。
 	env.exec(`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour,
 		request_count, error_count, input_tokens, output_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, updated_at)
-		VALUES ('sa-a', 'system_account', 'sa-a', '2026-04-18T10', 2, 1, 20, 10, 0.2, 200, 1, $1)`, updatedAt)
+		VALUES ('sa-a', 'system_account', 'sa-a', '2026-04-18 10:00:00', 2, 1, 20, 10, 0.2, 200, 1, $1)`, updatedAt)
 	// model / error rank 源。
 	env.exec(`INSERT INTO juhe_stats.usage_model_daily (system_account_id, stat_date, provider_code, model, request_count, total_cost_usd, updated_at)
 		VALUES ('sa-a', '2026-04-18', 'openai', 'm-1', 3, 0.3, $1),

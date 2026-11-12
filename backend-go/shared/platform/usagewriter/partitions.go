@@ -217,7 +217,7 @@ func ensurePostgresUsageRecordPartitionsChecked(
 		statement := fmt.Sprintf(`
       CREATE TABLE IF NOT EXISTS juhe_usage.%s
       PARTITION OF juhe_usage.usage_records
-      FOR VALUES FROM ('%s') TO ('%s')
+      FOR VALUES FROM ('%sT00:00:00Z') TO ('%sT00:00:00Z')
     `, quotePgIdentifier(partitionName), startDate, endDate)
 		if exists != nil {
 			present, queryErr := exists(ctx, partitionName)

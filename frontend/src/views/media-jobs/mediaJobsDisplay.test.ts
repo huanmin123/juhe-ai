@@ -12,7 +12,6 @@ describe('mediaJobsDisplay 枚举标签映射', () => {
   it('kind 与 status 六态均有中文标签', () => {
     expect(formatMediaJobKind('video')).toBe('视频')
     expect(formatMediaJobKind('audio_transcription')).toBe('长音频转写')
-    expect(formatMediaJobKind('audio_speech')).toBe('长音频合成')
     for (const status of ['queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired'] as const) {
       expect(formatMediaJobStatus(status)).not.toBe(status)
       expect(mediaJobStatusColor(status)).toBeTruthy()

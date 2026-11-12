@@ -59,9 +59,12 @@ describe('buildAccountTestPayload 场景分流', () => {
     expect(payload).toEqual({ kind: 'connectivity' })
   })
 
-  it('连通性展示 mode 按场景映射', () => {
+  it('连通性展示 mode 按场景映射（含 B7 工具场景）', () => {
     expect(connectivityEndpointModeForDomain('video')).toBe('video_create')
     expect(connectivityEndpointModeForDomain('image')).toBe('images_json')
     expect(connectivityEndpointModeForDomain('audio')).toBe('audio_speech')
+    expect(connectivityEndpointModeForDomain('embedding')).toBe('embed_content')
+    expect(connectivityEndpointModeForDomain('rerank')).toBe('rerank_json')
+    expect(connectivityEndpointModeForDomain('moderation')).toBe('moderation_json')
   })
 })

@@ -166,7 +166,7 @@ func (a *Aggregator) upsertUsageStatsTimeBucket(ctx context.Context, tx *sql.Tx,
 			ON CONFLICT(system_account_id, scope_type, scope_id, ` + conflictColumn + `) DO UPDATE SET
 			  ` + joinExprs(upsertDeltaExpr(target)) + `
 		`)
-		args := []any{entry.SystemAccountID, entry.ScopeType, entry.ScopeID, entry.TimeValue}
+		args := []any{entry.SystemAccountID, entry.ScopeType, entry.ScopeID, CalendarDBValue(bucket.ColumnName, entry.TimeValue)}
 		args = append(args, usageStatsParamsTail(entry.Accumulator, updatedAt)...)
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
@@ -207,7 +207,7 @@ func (a *Aggregator) upsertUsageLatencyEntries(ctx context.Context, tx *sql.Tx, 
 			`)
 			if _, err := tx.ExecContext(ctx, query,
 				entry.SystemAccountID, entry.ScopeType, entry.ScopeID,
-				string(entry.MetricType), entry.TimeValue, entry.BucketUpperBoundMs, entry.SampleCount, updatedAt); err != nil {
+				string(entry.MetricType), CalendarDBValue(bucket.ColumnName, entry.TimeValue), entry.BucketUpperBoundMs, entry.SampleCount, updatedAt); err != nil {
 				return err
 			}
 		}
@@ -271,7 +271,7 @@ func (a *Aggregator) upsertUsageModelEntries(ctx context.Context, tx *sql.Tx, en
 				  updated_at = excluded.updated_at
 			`)
 			if _, err := tx.ExecContext(ctx, query,
-				entry.SystemAccountID, entry.TimeValue, entry.ProviderCode, entry.Model,
+				entry.SystemAccountID, CalendarDBValue(bucket.ColumnName, entry.TimeValue), entry.ProviderCode, entry.Model,
 				stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
 				stats.InputTokens, stats.OutputTokens, stats.CacheReadTokens, stats.CacheReadCostUsd,
 				stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd,
@@ -329,7 +329,7 @@ func (a *Aggregator) upsertUsageErrorEntries(ctx context.Context, tx *sql.Tx, en
 				  updated_at = excluded.updated_at
 			`)
 			if _, err := tx.ExecContext(ctx, query,
-				entry.SystemAccountID, entry.TimeValue, entry.ErrorGroup, entry.ProviderCode, entry.ErrorCode, entry.StatusCode,
+				entry.SystemAccountID, CalendarDBValue(bucket.ColumnName, entry.TimeValue), entry.ErrorGroup, entry.ProviderCode, entry.ErrorCode, entry.StatusCode,
 				errorMessage, entry.RequestCount, entry.ErrorCount, updatedAt); err != nil {
 				return err
 			}
@@ -456,7 +456,7 @@ func (a *Aggregator) upsertAccountHealthEntries(ctx context.Context, tx *sql.Tx,
 			   OR (excluded.last_observed_at = ` + target + `.last_observed_at AND excluded.last_record_id > ` + target + `.last_record_id)
 		`)
 		if _, err := tx.ExecContext(ctx, query,
-			entry.AccountID, entry.SystemAccountID, entry.ProviderCode, entry.StatHour, entry.Status,
+			entry.AccountID, entry.SystemAccountID, entry.ProviderCode, CalendarDBValue("stat_hour", entry.StatHour), entry.Status,
 			entry.LastObservedAt, entry.LastRecordID, statusCode, errorCode, errorMessage, updatedAt); err != nil {
 			return err
 		}

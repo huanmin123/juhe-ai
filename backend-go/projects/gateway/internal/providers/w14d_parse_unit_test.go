@@ -364,6 +364,20 @@ func TestW14dValidateBuiltInModelCompletenessForks(t *testing.T) {
 	if got := validateBuiltInModelCompleteness(item); got != "" {
 		t.Fatalf("image model context rule must be skipped: %q", got)
 	}
+	// B7 工具模型同样跳过文本上下文规则（工具端点无上下文窗口概念）。
+	for _, modeValue := range []string{"rerank", "moderation"} {
+		toolItem := &ModelCatalogItem{
+			ReleaseDate:           &release,
+			SupportedAPIProtocols: []string{modeValue},
+			InputUsdPer1M:         ptrFloat64(1),
+			ContextWindowTokens:   &zero,
+			MaxInputTokens:        &zero,
+		}
+		toolItem.Mode = &modeValue
+		if got := validateBuiltInModelCompleteness(toolItem); got != "" {
+			t.Fatalf("%s built-in context rule must be skipped: %q", modeValue, got)
+		}
+	}
 }
 
 func TestW14dCustomModelInputFromConfigurationTemplate(t *testing.T) {

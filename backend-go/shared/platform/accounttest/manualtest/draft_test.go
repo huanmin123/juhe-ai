@@ -29,7 +29,7 @@ func TestNormalizeDraftSnapshotAcceptsEnumValues(t *testing.T) {
 		record["clientCompatibility"] = compatibility
 		for _, mode := range []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse",
 			"messages_json", "messages_sse", "generate_content_json", "generate_content_sse",
-			"interactions_json", "interactions_sse"} {
+			"interactions_json", "interactions_sse", "embed_content", "rerank_json", "moderation_json"} {
 			record["healthCheckEndpointMode"] = mode
 			if draft := normalizeDraftSnapshot(record); draft == nil {
 				t.Fatalf("compatibility=%s mode=%s must normalize", compatibility, mode)

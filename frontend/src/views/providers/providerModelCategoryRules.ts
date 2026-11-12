@@ -58,6 +58,8 @@ export function getModelCategoryFromPricing(item: Pick<ProviderModelPricing, 'mo
 function categoryFromModeAlias(mode: string): ModelCategoryKey | undefined {
   if (mode === 'image_generation') return 'image'
   if (mode === 'chat' || mode === 'responses' || mode === 'completion') return 'text'
+  // B7 工具模型并入文本分类（文本处理端点，不新增表格分组）。
+  if (mode === 'embedding' || mode === 'rerank' || mode === 'moderation') return 'text'
   // 后端目录读链（catalog.go）把 audio_speech / audio_transcription 归一为
   // audio 分类（音频设计 §3），前端别名表同步。
   if (mode === 'audio_speech' || mode === 'audio_transcription') return 'audio'

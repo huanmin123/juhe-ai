@@ -276,7 +276,8 @@ func (s *StatsRetentionStore) CleanupUsageStatsRetention(ctx context.Context, in
 		target := countsBySpec[spec.TableName]
 		// usageStatsRetentionSpecs 与 statsCountField 的表清单静态对齐，
 		// target 不可能为 nil；该防御守卫已按 w13e 收尾授权删除。
-		deleted, err := deleteRowsBefore(ctx, s.DB, s.schemaForStats(), spec.TableName, spec.Column, values[spec.CutoffKey], batchLimit(input.Limit))
+		cutoff := statsagg.CalendarDBValue(spec.Column, values[spec.CutoffKey])
+		deleted, err := deleteRowsBefore(ctx, s.DB, s.schemaForStats(), spec.TableName, spec.Column, cutoff, batchLimit(input.Limit))
 		if err != nil {
 			return counts, err
 		}
@@ -404,7 +405,8 @@ func (s *StatsRetentionStore) CleanupNonBusinessStatsData(ctx context.Context, c
 	}
 	batch := positiveLimit(limit)
 	for _, rule := range nonBusinessStatsCleanupTables {
-		deleted, err := deleteRowsBefore(ctx, s.DB, s.schemaForStats(), rule.TableName, rule.TimeColumnName, cutoffs[rule.CutoffKey], batch)
+		cutoff := statsagg.CalendarDBValue(rule.TimeColumnName, cutoffs[rule.CutoffKey])
+		deleted, err := deleteRowsBefore(ctx, s.DB, s.schemaForStats(), rule.TableName, rule.TimeColumnName, cutoff, batch)
 		if err != nil {
 			return counts, err
 		}

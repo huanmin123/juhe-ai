@@ -69,6 +69,8 @@ func TestCatalogSnapshotModeFilled(t *testing.T) {
 var catalogModeVocabulary = map[string]bool{
 	"chat": true, "audio": true, "video": true,
 	"image_generation": true, "embedding": true, "responses": true,
+	// B7 工具场景（目录 mode 八值）：向量/重排/安全。
+	"rerank": true, "moderation": true,
 }
 
 func TestCatalogSnapshotModeInVocabulary(t *testing.T) {

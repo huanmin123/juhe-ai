@@ -9,16 +9,19 @@ import { catalogProfiles } from './accountCapabilityCatalog'
 // 本文件是 M1 纯常量层：只承载域枚举、对话 modes 锚集合、域推导镜像与三集合类型，
 // 不接线任何 UI/表单消费方（保存契约与勾选 UI 由 M2 接线）。
 
-/** 能力域枚举：`accounts.capability_domain` 列 CHECK 的四值（chat/video/audio/image）。 */
-export type AccountCapabilityDomain = 'chat' | 'video' | 'audio' | 'image'
+/** 场景类型枚举：`accounts.capability_domain` 落库值（chat/video/audio/image + B7 工具三场景）。 */
+export type AccountCapabilityDomain = 'chat' | 'video' | 'audio' | 'image' | 'embedding' | 'rerank' | 'moderation'
 
-export const ACCOUNT_CAPABILITY_DOMAINS: readonly AccountCapabilityDomain[] = ['chat', 'video', 'audio', 'image']
+export const ACCOUNT_CAPABILITY_DOMAINS: readonly AccountCapabilityDomain[] = ['chat', 'video', 'audio', 'image', 'embedding', 'rerank', 'moderation']
 
 export const ACCOUNT_CAPABILITY_DOMAIN_LABELS: Record<AccountCapabilityDomain, string> = {
   chat: '对话',
   video: '视频',
   audio: '音频',
-  image: '图像'
+  image: '图像',
+  embedding: '向量',
+  rerank: '重排',
+  moderation: '安全'
 }
 
 export function accountCapabilityDomainLabel(domain: AccountCapabilityDomain): string {
@@ -31,7 +34,8 @@ export const ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION = 1
 // 「对话 modes 集合」（锚定义，前后端镜像）：命中任一值即视为具备对话能力，
 // 规则②③④的前置条件「不含对话 modes」被否决，账户归入对话域。
 // v8-A 对话域纯粹化：audio_transcription_json 与 realtime_session 移出对话域
-// （归音频域），锚集合 15 值收敛为 13 值；images_json 本就不在锚集且 v8-A 后
+// （归音频域），锚集合 15 值收敛为 13 值；B7 再把 embed_content 移入向量场景，
+// 锚集合收敛为 12 值；images_json 本就不在锚集且 v8-A 后
 // 对话域不再追加共享（存量共享、新增隔离）。
 export const DOMAIN_ENDPOINT_MODES_CHAT: readonly AccountSupportedEndpointMode[] = [
   'chat_json',
@@ -45,7 +49,6 @@ export const DOMAIN_ENDPOINT_MODES_CHAT: readonly AccountSupportedEndpointMode[]
   'interactions_json',
   'interactions_sse',
   'count_tokens',
-  'embed_content',
   'message_token_counting'
 ]
 
@@ -68,23 +71,31 @@ export const DOMAIN_ENDPOINT_MODES_AUDIO: readonly AccountSupportedEndpointMode[
   'realtime_session'
 ]
 export const DOMAIN_ENDPOINT_MODES_IMAGE: readonly AccountSupportedEndpointMode[] = ['images_json']
+// B7 工具场景 lane：向量/重排/安全各一个同步形态。
+export const DOMAIN_ENDPOINT_MODES_EMBEDDING: readonly AccountSupportedEndpointMode[] = ['embed_content']
+export const DOMAIN_ENDPOINT_MODES_RERANK: readonly AccountSupportedEndpointMode[] = ['rerank_json']
+export const DOMAIN_ENDPOINT_MODES_MODERATION: readonly AccountSupportedEndpointMode[] = ['moderation_json']
 
 /**
  * 域→目录 mode 白名单（v8-C 模型选择器按域过滤根治）：四域允许选出的
- * `provider_model_catalog.mode` 六值词表值（与 model_catalog_data_gen.go
+ * `provider_model_catalog.mode` 八值词表值（与 model_catalog_data_gen.go
  * 种子及服务端 `ProviderCatalogModeValues` 同源）：chat={chat,responses}；
  * video={video}；audio={audio}（含 TTS/转写/realtime，目录统一 mode=audio）；
- * image={image_generation}。embedding 行不属于任何账户域，任何域都不放行。
+ * image={image_generation}；embedding={embedding}；rerank={rerank}；
+ * moderation={moderation}。
  * 自定义表 `custom_provider_models.mode` 是另一套四值 UI 分类词表
  * （text/image/audio/video，写入枚举固定），服务端按表翻译后过滤
  * （chat/responses→text、image_generation→image、audio/video 同形，
- * BUG-0324）：调用方始终传本表六值，不做本地换算。
+ * BUG-0324）：调用方始终传本表八值，不做本地换算。
  */
 export const DOMAIN_MODEL_MODES: Record<AccountCapabilityDomain, readonly string[]> = {
   chat: ['chat', 'responses'],
   video: ['video'],
   audio: ['audio'],
-  image: ['image_generation']
+  image: ['image_generation'],
+  embedding: ['embedding'],
+  rerank: ['rerank'],
+  moderation: ['moderation']
 }
 
 /**
@@ -97,11 +108,14 @@ export const DOMAIN_MODEL_MODES: Record<AccountCapabilityDomain, readonly string
  *    `realtime_session` 或任一 `audio_job_create/get/content/cancel` → `audio`
  *    （v8-A：短转写与实时会话自对话域移入）；
  * ④ 不含对话 modes 且含 `images_json` → `image`；
- * ⑤ 其余 → `chat`（未命中媒体触发集合的 modes 全量保留，域边界以服务端校验为准）。
+ * ⑤ 不含对话 modes 且含 `embed_content` → `embedding`；
+ * ⑥ 不含对话 modes 且含 `rerank_json` → `rerank`；
+ * ⑦ 不含对话 modes 且含 `moderation_json` → `moderation`；
+ * ⑧ 其余 → `chat`（未命中媒体/工具触发集合的 modes 全量保留，域边界以服务端校验为准）。
  *
  * 入参接受原始字符串数组以对齐迁移读取口径；未知模式不命中任何媒体触发集合、
  * 也不做通配符推断（对齐迁移契约「不能用通配符把未知 video_* 自动视为合法能力」），
- * 按规则⑤归入 `chat`。
+ * 按规则⑧归入 `chat`。
  */
 export function deriveCapabilityDomain(modes: ReadonlyArray<AccountSupportedEndpointMode | string>): AccountCapabilityDomain {
   const declared = new Set(modes)
@@ -109,6 +123,9 @@ export function deriveCapabilityDomain(modes: ReadonlyArray<AccountSupportedEndp
   if (!hasChatMode && DOMAIN_ENDPOINT_MODES_VIDEO.some((mode) => declared.has(mode))) return 'video'
   if (!hasChatMode && DOMAIN_ENDPOINT_MODES_AUDIO.some((mode) => declared.has(mode))) return 'audio'
   if (!hasChatMode && DOMAIN_ENDPOINT_MODES_IMAGE.some((mode) => declared.has(mode))) return 'image'
+  if (!hasChatMode && DOMAIN_ENDPOINT_MODES_EMBEDDING.some((mode) => declared.has(mode))) return 'embedding'
+  if (!hasChatMode && DOMAIN_ENDPOINT_MODES_RERANK.some((mode) => declared.has(mode))) return 'rerank'
+  if (!hasChatMode && DOMAIN_ENDPOINT_MODES_MODERATION.some((mode) => declared.has(mode))) return 'moderation'
   return 'chat'
 }
 
@@ -183,9 +200,45 @@ const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUD
 // volcengine：seedance（视频）+ 豆包音频生成 TTS（audio_speech，新版语音
 // 控制台 API Key 单值凭据 speech_token）+ seedream 图像（images_json，
 // 2026-10-17 图像批开闸，词表新值与后端写侧同批）+ 长转写 audio_job_* 四值
-// （2026-10-17 语音识别承接批，豆包录音文件识别 2.0 /v1/audio/jobs 面，
+// （2026-10-17 语音识别承接批，豆包录音文件识别 2.0 /v1/tasks/audio 面，
 // opt-in 不进默认集）；无 chat 域新值。
 const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_JOB_GROUP], image: IMAGES_JSON }
+
+// B7 工具场景供应商矩阵（与后端 capabilityDomainMatrix 同源）：
+// gpt 开放向量/安全（官方 /v1/embeddings、/v1/moderations），qwen 开放向量/
+// 重排（compatible-mode embeddings、DashScope text-rerank）。其余厂商无工具
+// 端点，工具域对它们为空集。
+type UtilityDomainMatrixRow = {
+  embedding: readonly AccountSupportedEndpointMode[]
+  rerank: readonly AccountSupportedEndpointMode[]
+  moderation: readonly AccountSupportedEndpointMode[]
+}
+
+const OPENAI_UTILITY_ROW: UtilityDomainMatrixRow = {
+  embedding: DOMAIN_ENDPOINT_MODES_EMBEDDING,
+  rerank: [],
+  moderation: DOMAIN_ENDPOINT_MODES_MODERATION
+}
+const QWEN_UTILITY_ROW: UtilityDomainMatrixRow = {
+  embedding: DOMAIN_ENDPOINT_MODES_EMBEDDING,
+  rerank: DOMAIN_ENDPOINT_MODES_RERANK,
+  moderation: []
+}
+
+function utilityMatrixRowForProfile(input: {
+  providerCode?: string
+  profile?: AccountProviderProfileLike
+}): UtilityDomainMatrixRow | undefined {
+  const profile = input.profile
+  const providerCode = profile?.providerCode ?? profile?.code ?? input.providerCode
+  if (isGptVendorCode(providerCode)) return OPENAI_UTILITY_ROW
+  if (isQwenProviderCode(providerCode)) return QWEN_UTILITY_ROW
+  return undefined
+}
+
+export function isUtilityCapabilityDomain(domain: AccountCapabilityDomain): domain is 'embedding' | 'rerank' | 'moderation' {
+  return domain === 'embedding' || domain === 'rerank' || domain === 'moderation'
+}
 
 function mediaMatrixRowForProfile(input: {
   providerCode?: string
@@ -240,12 +293,14 @@ export function capabilityDomainAccountTypes(input: {
     return (['api_key', 'oauth', 'google_oauth'] as AccountType[]).filter((type) => types.has(type))
   }
   const row = mediaMatrixRowForProfile(input)
-  if (!row) return []
-  const domainModes = input.capabilityDomain === 'video'
-    ? row.video
-    : input.capabilityDomain === 'audio'
-      ? row.audio
-      : row.image
+  if (!row && !isUtilityCapabilityDomain(input.capabilityDomain)) return []
+  const domainModes = isUtilityCapabilityDomain(input.capabilityDomain)
+    ? (utilityMatrixRowForProfile(input)?.[input.capabilityDomain] ?? [])
+    : input.capabilityDomain === 'video'
+      ? row!.video
+      : input.capabilityDomain === 'audio'
+        ? row!.audio
+        : row!.image
   if (!domainModes.length) return []
   const types: AccountType[] = ['api_key']
   if (isGeminiProviderCode(input.profile?.providerCode ?? input.profile?.code ?? input.providerCode)
@@ -295,6 +350,11 @@ export function allowedEndpointModesFor(input: {
   }
   const allowedTypes = capabilityDomainAccountTypes({ capabilityDomain, providerCode: input.providerCode, profile })
   if (!input.accountType || !allowedTypes.includes(input.accountType)) return []
+  if (isUtilityCapabilityDomain(capabilityDomain)) {
+    const utilityRow = utilityMatrixRowForProfile({ providerCode: input.providerCode, profile })
+    if (!utilityRow) return []
+    return intersectWithProviderVocabulary([...utilityRow[capabilityDomain]], profile)
+  }
   const row = mediaMatrixRowForProfile({ providerCode: input.providerCode, profile })
   if (!row) return []
   const domainModes = capabilityDomain === 'video'
@@ -360,6 +420,9 @@ export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
   if (input.capabilityDomain === 'image') return 'images_json'
   if (input.capabilityDomain === 'video') return 'video_create'
   if (input.capabilityDomain === 'audio') return 'audio_speech'
+  if (input.capabilityDomain === 'embedding') return 'embed_content'
+  if (input.capabilityDomain === 'rerank') return 'rerank_json'
+  if (input.capabilityDomain === 'moderation') return 'moderation_json'
   // 对话域流式优先（AI账户检查模型与人工测试设计 2026-10-19 定案，与后端
   // accountscore.DefaultHealthCheckEndpointModeForDomain 同值）。
   return 'chat_sse'
@@ -370,9 +433,14 @@ export function defaultStatusForCapabilityDomain(_capabilityDomain: AccountCapab
   return 'pending_test'
 }
 
-/** 域是否媒体域（video/audio/image）：媒体域走精简三段式表单与 D7 清单表语义。 */
+/** 域是否媒体/工具域（video/audio/image/embedding/rerank/moderation）：走精简三段式表单与 D7 清单表语义。 */
 export function capabilityDomainIsMedia(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
-  return capabilityDomain === 'video' || capabilityDomain === 'audio' || capabilityDomain === 'image'
+  return capabilityDomain === 'video'
+    || capabilityDomain === 'audio'
+    || capabilityDomain === 'image'
+    || capabilityDomain === 'embedding'
+    || capabilityDomain === 'rerank'
+    || capabilityDomain === 'moderation'
 }
 
 /**
@@ -385,6 +453,9 @@ export function mediaDomainModelProtocolTokens(capabilityDomain: AccountCapabili
   if (capabilityDomain === 'video') return ['video']
   if (capabilityDomain === 'audio') return ['audio_speech', 'audio_transcription', 'realtime']
   if (capabilityDomain === 'image') return ['images']
+  if (capabilityDomain === 'embedding') return ['embed_content']
+  if (capabilityDomain === 'rerank') return ['rerank']
+  if (capabilityDomain === 'moderation') return ['moderation']
   return []
 }
 

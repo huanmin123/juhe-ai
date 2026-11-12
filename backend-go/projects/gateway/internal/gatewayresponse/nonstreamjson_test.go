@@ -97,6 +97,38 @@ func TestValidateBufferedJsonProtocolResponse(t *testing.T) {
 			wantFailure: true,
 		},
 		{
+			name: "embed_content OpenAI embeddings data 有效", body: `{"object":"list","data":[{"embedding":[0.1],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+			endpointFamily: "embed_content", requestPath: "/v1/embeddings",
+		},
+		{
+			name: "embed_content OpenAI embeddings data 非数组", body: `{"data":{}}`, endpointFamily: "embed_content",
+			requestPath: "/v1/embeddings", wantFailure: true, wantMessageHas: "数组",
+		},
+		{
+			name: "embed_content 多模态 data.embedding 有效", body: `{"data":{"embedding":{}}}`,
+			endpointFamily: "embed_content", requestPath: "/v1/embeddings/multimodal",
+		},
+		{
+			name: "embed_content 多模态缺 data.embedding", body: `{"data":{}}`,
+			endpointFamily: "embed_content", requestPath: "/v1/embeddings/multimodal", wantFailure: true,
+		},
+		{
+			name: "rerank results 有效", body: `{"results":[{"index":0,"relevance_score":0.9}]}`,
+			endpointFamily: "rerank", requestPath: "/v1/rerank",
+		},
+		{
+			name: "rerank 缺 results", body: `{}`, endpointFamily: "rerank", requestPath: "/v1/rerank",
+			wantFailure: true, wantMessageHas: "results",
+		},
+		{
+			name: "moderation results 有效", body: `{"results":[{"flagged":false}]}`,
+			endpointFamily: "moderation", requestPath: "/v1/moderations",
+		},
+		{
+			name: "moderation 缺 results", body: `{}`, endpointFamily: "moderation", requestPath: "/v1/moderations",
+			wantFailure: true, wantMessageHas: "results",
+		},
+		{
 			name: "interactions 缺 id/name", body: `{}`, endpointFamily: "interactions",
 			wantFailure: true,
 		},

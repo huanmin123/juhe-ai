@@ -84,7 +84,7 @@ func (f *t10PartialSuppression) ResolveLocalSuppressionFilter(_ context.Context,
 }
 
 // TestT10NonConversationLanesSkipHotQualityOrder：图像创建纳入
-// StatelessMediaDispatch 域后，候选准备不触达热质量排序（audio/video 既有
+// StatelessDispatch 域后，候选准备不触达热质量排序（audio/video 既有
 // 豁免的 image 同语义扩展；设计 §7.4 移除图像创建对文本热质量的依赖）。
 func TestT10NonConversationLanesSkipHotQualityOrder(t *testing.T) {
 	for _, lane := range []string{"image", "audio", "video"} {

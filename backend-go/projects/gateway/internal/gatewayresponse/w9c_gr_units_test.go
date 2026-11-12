@@ -147,7 +147,9 @@ func TestW9CResponseDriverAdapters(t *testing.T) {
 	}
 	if openai.EndpointFamilyForPath("/v1/chat/completions") != gatewayproto.EndpointFamilyChatCompletions ||
 		openai.EndpointFamilyForPath("/v1/responses") != gatewayproto.EndpointFamilyResponses ||
-		openai.EndpointFamilyForPath("/v1/embeddings") != gatewayproto.EndpointFamilyUnknown {
+		openai.EndpointFamilyForPath("/v1/embeddings") != gatewayproto.EndpointFamilyEmbedContent ||
+		openai.EndpointFamilyForPath("/v1/rerank") != gatewayproto.EndpointFamilyRerank ||
+		openai.EndpointFamilyForPath("/v1/moderations") != gatewayproto.EndpointFamilyModeration {
 		t.Fatal("openai endpoint family mapping")
 	}
 	if usage := openai.ExtractUsageFromJSONValue(map[string]any{"usage": map[string]any{"prompt_tokens": 3.0, "completion_tokens": 4.0}}); usage.InputTokens == nil || *usage.InputTokens != 3 {

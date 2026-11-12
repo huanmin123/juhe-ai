@@ -575,7 +575,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// health_check_connection_id) 内联引用本表 (account_id, id)），反向
 		// account_id → accounts 外键由文件尾的守卫 DO 块补挂（PG 外键目标必须
 		// 已存在，双方互引只能单边内联）。enabled 语义、行数上限与 mode 词表
-		// 校验属应用层 registry；endpoint_mode CHECK 固定 §2.2 的 25 值。
+		// 校验属应用层 registry；endpoint_mode CHECK 固定 §2.2 的 27 值。
 		SchemaName: "juhe_business",
 		Source:     "account-connections-tables",
 		SQL: `CREATE TABLE IF NOT EXISTS account_connections (
@@ -613,7 +613,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// §10 硬规则：不得 NOT NULL，创建事务先插 accounts（三字段暂 NULL）、
 		// 再写 connection/mode/model 关系，最后同一条 UPDATE 补齐——NOT NULL +
 		// 复合外键会让 fresh 库任何插入顺序都无法创建账户）；
-		// health_check_endpoint_mode CHECK 固定 §2.2 的 25 值（不得沿用旧
+		// health_check_endpoint_mode CHECK 固定 §2.2 的 27 值（不得沿用旧
 		// 22 值）。type 列名与 protocol_code / protocol_version 列的最终收敛
 		// （account_type 重命名、protocol 列退役）按设计 §9 后续切片处理；
 		// 存量库的删列/改由迁移命令处理，ensure 不写 DROP。
@@ -733,9 +733,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       deadline_at timestamptz(3),
       original_status text,
       provenance text,
-      next_retry_at_ms bigint,
+      next_retry_at_ms timestamptz(6),
       lease_id text,
-      lease_until_ms bigint,
+      lease_until_ms timestamptz(6),
       updated_at timestamptz(3) NOT NULL,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       CHECK ((lock_state = 'UNLOCKED' AND enabled = 0) OR (lock_state <> 'UNLOCKED' AND enabled = 1))
@@ -840,14 +840,14 @@ var postgresSchemaBusinessTables = []PGStatement{
       projected_ledger_revision bigint NOT NULL DEFAULT 0 CHECK (projected_ledger_revision >= 0 AND projected_ledger_revision <= ledger_revision),
       transition_id text NOT NULL,
       cooldown_observation_generation integer NOT NULL DEFAULT 0 CHECK (cooldown_observation_generation >= 0),
-      open_until_ms bigint,
-      next_transition_at_ms bigint,
+      open_until_ms timestamptz(6),
+      next_transition_at_ms timestamptz(6),
       lease_id text,
       lease_purpose text CHECK (lease_purpose IN ('confirmation', 'half_open', 'recovery', 'cooldown_retest', 'background_probe')),
       lease_owner_run_id text,
-      lease_until_ms bigint,
-      attempt_started_at_ms bigint,
-      attempt_hard_deadline_ms bigint,
+      lease_until_ms timestamptz(6),
+      attempt_started_at_ms timestamptz(6),
+      attempt_hard_deadline_ms timestamptz(6),
       upstream_attempt_observed integer NOT NULL DEFAULT 0 CHECK (upstream_attempt_observed IN (0, 1)),
       backoff_level integer NOT NULL DEFAULT 0 CHECK (backoff_level >= 0),
       consecutive_failures integer NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
@@ -855,9 +855,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       confirmation_failure_evidence_keys_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(confirmation_failure_evidence_keys_json::jsonb) = 'array'),
       recovering_successes integer NOT NULL DEFAULT 0 CHECK (recovering_successes >= 0),
       last_failure_class text CHECK (last_failure_class IN ('connect_failed', 'timeout_before_complete', 'read_interrupted', 'incomplete_response', 'explicit_policy')),
-      retained_until_ms bigint,
-      created_at_ms bigint NOT NULL,
-      updated_at_ms bigint NOT NULL,
+      retained_until_ms timestamptz(6),
+      created_at_ms timestamptz(6) NOT NULL,
+      updated_at_ms timestamptz(6) NOT NULL,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       CHECK (length(circuit_scope_key) BETWEEN 1 AND 2048),
       CHECK (length(account_runtime_key) BETWEEN 1 AND 1024),
@@ -889,15 +889,15 @@ var postgresSchemaBusinessTables = []PGStatement{
       generation bigint,
       ledger_revision bigint,
       status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
-      available_at_ms bigint NOT NULL,
+      available_at_ms timestamptz(6) NOT NULL,
       claim_token text,
       claimed_by text,
-      claim_until_ms bigint,
+      claim_until_ms timestamptz(6),
       attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
       last_error_class text,
-      acknowledged_at_ms bigint,
-      created_at_ms bigint NOT NULL,
-      updated_at_ms bigint NOT NULL,
+      acknowledged_at_ms timestamptz(6),
+      created_at_ms timestamptz(6) NOT NULL,
+      updated_at_ms timestamptz(6) NOT NULL,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       UNIQUE (projection_key, dedupe_key),
       CHECK (length(event_id) BETWEEN 1 AND 256),
@@ -1128,13 +1128,13 @@ var postgresSchemaBusinessTables = []PGStatement{
       generation bigint NOT NULL CHECK (generation >= 1),
       applied_generation integer NOT NULL DEFAULT 0 CHECK (applied_generation >= 0 AND applied_generation <= generation),
       reason text NOT NULL,
-      available_at_ms bigint NOT NULL,
+      available_at_ms timestamptz(6) NOT NULL,
       claim_token text,
       claimed_by text,
-      claim_until_ms bigint,
+      claim_until_ms timestamptz(6),
       attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-      created_at_ms bigint NOT NULL,
-      updated_at_ms bigint NOT NULL,
+      created_at_ms timestamptz(6) NOT NULL,
+      updated_at_ms timestamptz(6) NOT NULL,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       CHECK (
@@ -1545,8 +1545,12 @@ var postgresSchemaBusinessTables = []PGStatement{
 		Source:     "account-lock-retry-timestamp-pg-column",
 		SQL: `DO $$
 BEGIN
-  IF to_regclass('juhe_business.account_lock_states') IS NOT NULL THEN
-    ALTER TABLE account_lock_states ALTER COLUMN next_retry_at_ms TYPE bigint;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='juhe_business' AND table_name='account_lock_states'
+      AND column_name='next_retry_at_ms' AND data_type IN ('text','character varying')
+  ) THEN
+    ALTER TABLE account_lock_states ALTER COLUMN next_retry_at_ms TYPE bigint USING next_retry_at_ms::bigint;
   END IF;
 END
 $$`,
@@ -2581,6 +2585,60 @@ END
 $$`,
 	},
 	{
+		// account_endpoint_modes.endpoint_mode CHECK 与 accounts 健康检查列
+		// 同步演进：B7 工具端点增补 rerank_json / moderation_json → 27 值。
+		// 建表 DDL 只在新库生效；存量表必须由本 DO 块重建旧 25 值 CHECK，
+		// 否则工具账户写入 account_endpoint_modes 会直接违反约束。按表 +
+		// conkey 列 + 约束定义缺 rerank_json 定位旧匿名/具名约束，删除后
+		// 按固定名补 27 值；已有含新值的约束（任意名字）时跳过，重复执行
+		// 无副作用。
+		SchemaName: "juhe_business",
+		Source:     "account-endpoint-modes-pg-check",
+		SQL: `DO $$
+DECLARE
+  legacy_constraint text;
+BEGIN
+  IF to_regclass('juhe_business.account_endpoint_modes') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_constraint
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'account_endpoint_modes'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%endpoint_mode%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%rerank_json%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'endpoint_mode'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.account_endpoint_modes DROP CONSTRAINT %I', legacy_constraint);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'account_endpoint_modes'
+        AND c.contype = 'c'
+        AND pg_get_constraintdef(c.oid) LIKE '%rerank_json%'
+        AND EXISTS (
+          SELECT 1 FROM pg_attribute AS a
+          WHERE a.attrelid = c.conrelid
+            AND a.attname = 'endpoint_mode'
+            AND a.attnum = ANY(c.conkey)
+        )
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.account_endpoint_modes ADD CONSTRAINT account_endpoint_modes_endpoint_mode_check CHECK (endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session'', ''rerank_json'', ''moderation_json''))';
+    END IF;
+  END IF;
+END
+$$`,
+	},
+	{
 		// accounts.health_check_endpoint_mode CHECK 增补 M1 同步音频探针形态
 		// （音频设计 §11.1）：audio_speech、audio_transcription_json；M2 视频
 		// 增补 video_create / video_get / video_content / video_cancel（媒体
@@ -2591,13 +2649,16 @@ $$`,
 		// /v1/realtime WS 升级请求，Realtime 设计 §6，同随词表一致性入库，
 		// 自动探针形态未定不设默认）；供应商与上游协议面重构批（设计 :114）
 		// 增补 message_token_counting / count_tokens / embed_content → 固定
-		// §2.2 的 25 值，禁止沿用旧 22 值。幂等迁移沿 model-quality-schedule-
+		// §2.2 的 25 值，禁止沿用旧 22 值；B7 工具端点再增补 rerank_json /
+		// moderation_json → 27 值（判别谓词按 rerank_json 定位旧约束）。幂等
+		// 迁移沿 model-quality-schedule-
 		// interval-pg-check 先例：按表 + conkey 列 + 约束定义文本定位——
-		// 存量表上缺 25 值词表的旧 CHECK（含 M2 之前无 video_*、M2～M3e 有
+		// 存量表上缺 27 值词表的旧 CHECK（含 M2 之前无 video_*、M2～M3e 有
 		// video_* 无 audio_job_*、M3f 后有 audio_job_* 无 realtime_session、
-		// realtime 后无 count_tokens 三新值的四种状态；建表内联约束被 PG
-		// 自动命名为 accounts_health_check_endpoint_mode_check）先删除，再按
-		// 名字补上含新值的具名约束。建表 DDL 已含 25 值的新库：内联约束的
+		// realtime 后无 count_tokens 三新值、B7 前无 rerank_json/moderation_json
+		// 的五种状态；建表内联约束被 PG 自动命名为
+		// accounts_health_check_endpoint_mode_check）先删除，再按
+		// 名字补上含新值的具名约束。建表 DDL 已含 27 值的新库：内联约束的
 		// PG 自动名与具名约束同名，第二步 IF NOT EXISTS 直接命中跳过，不会
 		// 产生重复约束；重复执行无副作用。
 		SchemaName: "juhe_business",

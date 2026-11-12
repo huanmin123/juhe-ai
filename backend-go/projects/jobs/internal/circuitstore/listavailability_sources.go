@@ -436,7 +436,7 @@ func (l *ProjectionItemLoader) loadQuotaCosts(ctx context.Context, checks []quot
 	}
 	statDate := usageStatDate(now, timezone)
 	statWeek := usageWeekKey(now, timezone)
-	statMonth := usageMonthKey(now, timezone)
+	statMonth := usageMonthKey(now, timezone) + "-01"
 	for _, check := range checks {
 		input := quotaCostInput{
 			systemAccountID: check.systemAccountID,

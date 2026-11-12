@@ -639,9 +639,12 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 				InputAudioTokens:   input.Usage.InputAudioTokens,
 				OutputAudioTokens:  input.Usage.OutputAudioTokens,
 				OutputImageCount:   input.Usage.OutputImageCount,
+				OutputImagePixels:  input.Usage.OutputImagePixels,
+				InputImageCount:    input.Usage.InputImageCount,
 				// M1 同步音频计量维度（音频设计 §10）：tts_input_chars /
 				// audio_input_seconds 行项经同步定价目录估算。
 				TtsInputChars:     input.Usage.TtsInputChars,
+				TtsCalls:          input.Usage.TtsCalls,
 				AudioInputSeconds: input.Usage.AudioInputSeconds,
 			}
 			record.CostUsd = u.pricing.EstimateCost(costInput)

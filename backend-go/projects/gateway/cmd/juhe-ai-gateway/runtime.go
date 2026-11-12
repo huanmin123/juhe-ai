@@ -68,6 +68,13 @@ type runtimeConfig struct {
 	Host string
 	Port int
 
+	// PublicBaseURL 是 New API 任务面回退 content URL 的公共地址前缀
+	//（JUHE_AI_GATEWAY_PUBLIC_BASE_URL，如 https://api.example.com；语义与
+	// New API system_setting.ServerAddress 同构）。未配置时查询响应回退相对
+	// 路径（客户端自行拼 Host）；配置值按裸 http(s) Origin 归一（不带路径/
+	// 查询/片段，默认端口剥除，复用 normalizeAllowedOrigin）。
+	PublicBaseURL string
+
 	CookieSecure   bool
 	CookieSameSite string
 	TrustProxy     string
@@ -314,6 +321,17 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 			return runtimeConfig{}, fmt.Errorf("JUHE_AI_PORT 必须是 1-65535 的整数: %q", raw)
 		}
 		cfg.Port = port
+	}
+
+	// 公共地址前缀（New API 任务面回退 content URL）：未配置保持空串（回退
+	// 相对路径）；配置值复用 CORS Origin 同款裸 origin 归一（无路径/查询/
+	// 片段/用户名密码，默认端口剥除）。
+	if publicBaseURL := strings.TrimSpace(getenv("JUHE_AI_GATEWAY_PUBLIC_BASE_URL")); publicBaseURL != "" {
+		normalized, err := normalizeAllowedOrigin("JUHE_AI_GATEWAY_PUBLIC_BASE_URL", publicBaseURL)
+		if err != nil {
+			return runtimeConfig{}, err
+		}
+		cfg.PublicBaseURL = normalized
 	}
 
 	// Node httpSecurityConfig (runtime.ts:1519-1557): the CORS allowlist and

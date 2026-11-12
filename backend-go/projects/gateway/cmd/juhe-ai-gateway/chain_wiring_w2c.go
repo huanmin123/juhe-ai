@@ -786,7 +786,7 @@ func newChainHotQualityLifecycleFactory(runtime *gatewayhotquality.GatewayHotQua
 		// 非对话调度域（媒体创建 + realtime）豁免文本调度优化机制（对话与
 		// 非对话媒体调度分离设计 §4.2：媒体请求不直接写入热质量）：返回 nil
 		// 保持引擎中性 no-op lifecycle——媒体派发尝试不记账、不写样本、不
-		// 进入质量统计。T10 起图像同属 StatelessMediaDispatch 域一并豁免
+		// 进入质量统计。T10 起图像同属 StatelessDispatch 域一并豁免
 		// （此前仅 audio/video 豁免是 2026-10-04 的过渡裁决）。
 		if gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane)) != gatewayproto.DispatchDomainConversation {
 			return nil

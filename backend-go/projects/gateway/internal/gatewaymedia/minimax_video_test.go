@@ -111,6 +111,10 @@ func TestMinimaxVideoAdapterCreate(t *testing.T) {
 	if duration, ok := body["duration"].(float64); !ok || duration != 6 {
 		t.Fatalf("duration = %#v, want 数值 6", body["duration"])
 	}
+	// 未带 size → 官方默认 768P，显式发送使产出与计费档一致。
+	if body["resolution"] != "768P" {
+		t.Fatalf("resolution = %#v, want 768P", body["resolution"])
+	}
 	// input_reference → first_frame_image：data URL 剥离为裸 base64 载荷。
 	if body["first_frame_image"] != "aGVsbG8=" {
 		t.Fatalf("first_frame_image = %#v, want 剥离后的 base64 载荷", body["first_frame_image"])
@@ -261,9 +265,9 @@ func TestMinimaxSpeechAdapterBuildRequest(t *testing.T) {
 		t.Fatalf("path = %q, want /t2a_v2", path)
 	}
 	var parsed struct {
-		Model  string `json:"model"`
-		Text   string `json:"text"`
-		Stream bool   `json:"stream"`
+		Model        string `json:"model"`
+		Text         string `json:"text"`
+		Stream       bool   `json:"stream"`
 		VoiceSetting struct {
 			VoiceID string  `json:"voice_id"`
 			Speed   float64 `json:"speed"`
@@ -375,5 +379,222 @@ func TestSpeechReportedCharsFromJSON(t *testing.T) {
 	}
 	if got := SpeechReportedCharsFromJSON(root); got != 0 {
 		t.Fatalf("非正值应返回 0, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// minimax H3 v2（2026-11-13 协议/分辨率档批）
+// ---------------------------------------------------------------------------
+
+func TestMinimaxH3CreateTextToVideo(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	seconds := 5.0
+	output, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: NormalizedVideoParams{
+			Model:   "MiniMax-H3",
+			Prompt:  "一只猫在弹钢琴",
+			Seconds: &seconds,
+			Size:    "2560x1440",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if output.Method != http.MethodPost || output.Path != "/v2/video_generation" {
+		t.Fatalf("H3 create 出站形态 = %s %s, want POST /v2/video_generation", output.Method, output.Path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(output.Body, &body); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	if body["model"] != "MiniMax-H3" || body["duration"] != float64(5) ||
+		body["resolution"] != "2K" || body["ratio"] != "16:9" {
+		t.Fatalf("H3 create 字段错误: %v", body)
+	}
+	content, ok := body["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content = %#v, want 单 text item", body["content"])
+	}
+	item, _ := content[0].(map[string]any)
+	if item["type"] != "text" || item["text"] != "一只猫在弹钢琴" {
+		t.Fatalf("text item = %#v", item)
+	}
+	if _, exists := body["prompt"]; exists {
+		t.Fatalf("H3 v2 不得携带 v1 prompt 字段: %v", body)
+	}
+}
+
+func TestMinimaxH3CreateImageToVideoAndDefaults(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	reference := "data:image/png;base64,aGVsbG8="
+	output, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: NormalizedVideoParams{
+			Model:          "MiniMax-H3-Max",
+			Prompt:         "让画面动起来",
+			Size:           "640x480",
+			InputReference: &reference,
+		},
+		ProviderOptions: map[string]any{"minimax": map[string]any{"prompt_optimizer": true}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(output.Body, &body); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	if body["duration"] != float64(6) {
+		t.Fatalf("未传 seconds 必须发默认 6 秒（计费基源一致）: %v", body["duration"])
+	}
+	if body["resolution"] != "480P" {
+		t.Fatalf("640x480 短边 480 应落 480P: %v", body["resolution"])
+	}
+	if _, exists := body["ratio"]; exists {
+		t.Fatalf("图生视频 ratio 必须省略（跟随首帧）: %v", body)
+	}
+	content, _ := body["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %#v, want text + first_frame", body["content"])
+	}
+	imageItem, _ := content[1].(map[string]any)
+	imageURL, _ := imageItem["image_url"].(map[string]any)
+	if imageItem["type"] != "image_url" || imageItem["role"] != "first_frame" ||
+		imageURL["url"] != reference {
+		t.Fatalf("first_frame item = %#v", imageItem)
+	}
+	if body["prompt_optimizer"] != true {
+		t.Fatalf("provider_options 未合并: %v", body["prompt_optimizer"])
+	}
+}
+
+func TestMinimaxH3CreateRejectsBareBase64Reference(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	reference := "aGVsbG8="
+	_, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: NormalizedVideoParams{
+			Model:          "MiniMax-H3",
+			Prompt:         "p",
+			InputReference: &reference,
+		},
+	})
+	if !errors.Is(err, ErrParamUnsupported) {
+		t.Fatalf("H3 裸 base64 首帧应 400（无法表达 mime）: %v", err)
+	}
+}
+
+func TestMinimaxH3BillingResolution(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	cases := []struct {
+		model, size, want string
+	}{
+		{"MiniMax-H3", "", "768P"},
+		{"MiniMax-H3", "1280x720", "768P"},
+		{"MiniMax-H3", "2560x1440", "2K"},
+		{"MiniMax-H3-Max", "", "768P"},
+		{"MiniMax-H3-Max", "640x480", "480P"},
+		{"MiniMax-H3-Max", "1280x720", "768P"},
+		{"MiniMax-Hailuo-2.3", "", "768P"},
+		{"MiniMax-Hailuo-2.3", "1280x720", "768P"},
+		{"MiniMax-Hailuo-2.3", "1920x1080", "1080P"},
+		{"MiniMax-Hailuo-2.3-Fast", "2560x1440", "1080P"},
+	}
+	for _, testCase := range cases {
+		got := adapter.BillingResolution(NormalizedVideoParams{Model: testCase.model, Size: testCase.size})
+		if got != testCase.want {
+			t.Fatalf("BillingResolution(%s,%s) = %q, want %q", testCase.model, testCase.size, got, testCase.want)
+		}
+	}
+}
+
+func TestMinimaxH3PollRequestAndParse(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	method, path, body := adapter.BuildPollRequestForModel("MiniMax-H3", "0123456789abcdef")
+	if method != http.MethodGet || path != "/v2/query/video_generation/0123456789abcdef" || body != nil {
+		t.Fatalf("H3 poll = %s %s %s", method, path, body)
+	}
+	// Hailuo 仍走 v1 query 形态。
+	if _, v1Path, _ := adapter.BuildPollRequestForModel("MiniMax-Hailuo-2.3", "t"); v1Path != "/query/video_generation?task_id=t" {
+		t.Fatalf("Hailuo poll path = %q", v1Path)
+	}
+
+	ir, err := adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK, []byte(`{"task_id":"0123456789abcdef"}`))
+	if err != nil || ir.UpstreamJobID != "0123456789abcdef" || ir.Status != JobStatusQueued {
+		t.Fatalf("H3 create parse = %+v/%v", ir, err)
+	}
+	ir, err = adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK,
+		[]byte(`{"task":{"status":"processing"}}`))
+	if err != nil || ir.Status != JobStatusInProgress {
+		t.Fatalf("H3 processing parse = %+v/%v", ir, err)
+	}
+	ir, err = adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK,
+		[]byte(`{"task":{"status":"succeeded","content":{"url":"https://example.com/h3.mp4"}}}`))
+	if err != nil || ir.Status != JobStatusCompleted || ir.Artifact.ContentURL != "https://example.com/h3.mp4" {
+		t.Fatalf("H3 success parse = %+v/%v", ir, err)
+	}
+	ir, err = adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK,
+		[]byte(`{"task":{"status":"failed","error":{"code":1004,"message":"content policy"}}}`))
+	if err != nil || ir.Status != JobStatusFailed || ir.Error == nil ||
+		ir.Error.Code != "1004" || ir.Error.Message != "content policy" {
+		t.Fatalf("H3 fail parse = %+v/%v", ir, err)
+	}
+	ir, err = adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK,
+		[]byte(`{"task":{"status":"cancelled","error":"canceled by user"}}`))
+	if err != nil || ir.Status != JobStatusCancelled || ir.Error == nil || ir.Error.Message != "canceled by user" {
+		t.Fatalf("H3 cancelled parse = %+v/%v", ir, err)
+	}
+	ir, err = adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK,
+		[]byte(`{"task":{"status":"mystery"}}`))
+	if err != nil || ir.Status != JobStatusInProgress || ir.RawStatus != "mystery" {
+		t.Fatalf("H3 unknown parse = %+v/%v", ir, err)
+	}
+	if _, err := adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusOK,
+		[]byte(`{"task":{"status":"succeeded"}}`)); err == nil {
+		t.Fatal("H3 succeeded 缺 content.url 应报错")
+	}
+	if _, err := adapter.ParsePollResponseForModel("MiniMax-H3", http.StatusBadGateway,
+		[]byte(`{}`)); err == nil {
+		t.Fatal("H3 非 2xx 应报错")
+	}
+	// Hailuo 模型仍按 v1 解析。
+	if _, err := adapter.ParsePollResponseForModel("MiniMax-Hailuo-2.3", http.StatusOK,
+		[]byte(minimaxPollSuccessFixture)); err != nil {
+		t.Fatalf("Hailuo v1 parse: %v", err)
+	}
+}
+
+func TestMinimaxH3CreateRejectsUnknownRatio(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	_, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: NormalizedVideoParams{
+			Model:  "MiniMax-H3",
+			Prompt: "p",
+			Size:   "1000x333",
+		},
+	})
+	if !errors.Is(err, ErrParamUnsupported) {
+		t.Fatalf("词表外宽高比应 400（不近似贴合）: %v", err)
+	}
+}
+
+func TestMinimaxHailuoCreate1080P(t *testing.T) {
+	adapter := minimaxVideoAdapter{}
+	seconds := 6.0
+	output, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: NormalizedVideoParams{
+			Model:   "MiniMax-Hailuo-2.3",
+			Prompt:  "p",
+			Seconds: &seconds,
+			Size:    "1920x1080",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(output.Body, &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["resolution"] != "1080P" {
+		t.Fatalf("1080p size 应发送 resolution=1080P: %v", body)
 	}
 }

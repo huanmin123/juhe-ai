@@ -5,7 +5,9 @@ package mockupstream
 // /v1/images/generations 的确定性 Mock。2026-11-11 图像同步批扩展为多形态：
 // gpt 中转（url/b64/缺字段/别家模型）、xAI（url + mime_type + cost ticks）、
 // 火山（created/model/url/size/output_format + generated_images）；qwen 原生
-// multimodal-generation 端点由 serveQwenImage 承载（独立路径）。
+// multimodal-generation 端点由 serveQwenImage 承载（独立路径）。2026-11-12
+// T216 追加 POST /v1/images/edits 场景（gpt/xai 编辑共用该路径；火山编辑由
+// 网关改写为 /api/v3/images/generations 复用同一 200 判定）。
 //
 // 响应为 OpenAI images 兼容形态的 canned 确定性载荷；网关对 gpt 是同步 JSON
 // 直通（`stream`/`partial_images` 请求侧删除并回显，不做 SSE），对
@@ -21,32 +23,48 @@ const (
 	ScenarioMediaImagesB64OK              Scenario = "media_images_b64_ok"
 	ScenarioMediaImagesNoImage            Scenario = "media_images_no_image"
 	ScenarioMediaImagesRelayModelMismatch Scenario = "media_images_relay_model_mismatch"
-	ScenarioMediaXaiImageOK               Scenario = "media_xai_image_ok"
-	ScenarioMediaXaiImageNoImage          Scenario = "media_xai_image_no_image"
-	ScenarioMediaVolcengineImageOK        Scenario = "media_volcengine_image_ok"
-	ScenarioMediaVolcengineImageNoImage   Scenario = "media_volcengine_image_no_image"
-	ScenarioMediaQwenImageOK              Scenario = "media_qwen_image_ok"
-	ScenarioMediaQwenImageV3OK            Scenario = "media_qwen_image_v3_ok"
-	ScenarioMediaQwenImageNoImage         Scenario = "media_qwen_image_no_image"
+	// ScenarioMediaImagesEditOK 是编辑面的 OK 场景（契约 §3.2.4 编辑场景）：
+	// OpenAI/gpt 形态 created + data[].url，供 gpt/xai 编辑端点与
+	// volcengine/qwen 复用同一 200 判定。
+	ScenarioMediaImagesEditOK           Scenario = "media_images_edit_ok"
+	ScenarioMediaImagesEditNoImage      Scenario = "media_images_edit_no_image"
+	ScenarioMediaXaiImageOK             Scenario = "media_xai_image_ok"
+	ScenarioMediaXaiImageNoImage        Scenario = "media_xai_image_no_image"
+	ScenarioMediaVolcengineImageOK      Scenario = "media_volcengine_image_ok"
+	ScenarioMediaVolcengineImageNoImage Scenario = "media_volcengine_image_no_image"
+	ScenarioMediaQwenImageOK            Scenario = "media_qwen_image_ok"
+	ScenarioMediaQwenImageV3OK          Scenario = "media_qwen_image_v3_ok"
+	ScenarioMediaQwenImageNoImage       Scenario = "media_qwen_image_no_image"
 )
 
-// imagesGenerationsPath 是 images 创建端点（OpenAI POST /v1/images/generations；
-// edits/variations 变体不在本面，需要时按同构扩展）。
+// imagesGenerationsPath 是 images 创建端点（OpenAI POST /v1/images/generations）。
 const imagesGenerationsPath = "/v1/images/generations"
+
+// imagesEditsPath 是 images 编辑端点（OpenAI POST /v1/images/edits；gpt 与
+// xai 共用该路径，按账户主机区分）。
+const imagesEditsPath = "/v1/images/edits"
 
 // qwenImageGenerationPath 是 Qwen-Image 原生同步端点（契约 §10.3）。
 const qwenImageGenerationPath = "/api/v1/services/aigc/multimodal-generation/generation"
 
+// imagesEditOKBody 是编辑面的确定性 OK 载荷（契约 §3.2.4，url 形态）。
+const imagesEditOKBody = `{"created":1700000000,"data":[{"url":"https://mock-images.example/generated/edit-0001.png"}]}`
+
 // imagesGenerationsOKBody 是确定性 OK 载荷（url 形态 OpenAI images 响应）。
 const imagesGenerationsOKBody = `{"created":1700000000,"data":[{"url":"https://mock-images.example/generated/mock-0001.png"}]}`
 
-// serveImages implements POST /v1/images/generations：按场景返回 gpt/xai/
-// volcengine 形态；未知场景回落 url OK。
+// serveImages implements POST /v1/images/generations 与
+// POST /v1/images/edits：按场景返回 gpt/xai/volcengine 形态；未知场景回落
+// url OK（编辑面另有 media_images_edit_ok / _no_image 场景）。
 func (m *Server) serveImages(w http.ResponseWriter, _ int, scenario Scenario) {
 	switch scenario {
 	case ScenarioMediaImagesB64OK:
 		writeJSONStatus(w, http.StatusOK, `{"created":1700000000,"data":[{"b64_json":"bW9jay1iNjQ="}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30,"output_tokens_details":{"image_tokens":20}}}`)
 	case ScenarioMediaImagesNoImage:
+		writeJSONStatus(w, http.StatusOK, `{"created":1700000000,"data":[]}`)
+	case ScenarioMediaImagesEditOK:
+		writeJSONStatus(w, http.StatusOK, imagesEditOKBody)
+	case ScenarioMediaImagesEditNoImage:
 		writeJSONStatus(w, http.StatusOK, `{"created":1700000000,"data":[]}`)
 	case ScenarioMediaImagesRelayModelMismatch:
 		writeJSONStatus(w, http.StatusOK, `{"created":1700000000,"model":"grok-imagine-image-2.0","data":[{"url":"https://mock-images.example/generated/relay-0001.png"}]}`)

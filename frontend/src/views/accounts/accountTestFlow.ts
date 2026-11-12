@@ -49,6 +49,12 @@ export function connectivityEndpointModeForDomain(
       return 'images_json'
     case 'audio':
       return 'audio_speech'
+    case 'embedding':
+      return 'embed_content'
+    case 'rerank':
+      return 'rerank_json'
+    case 'moderation':
+      return 'moderation_json'
     default:
       return 'chat_sse'
   }

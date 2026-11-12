@@ -698,7 +698,7 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	// 策略决策（retry_next 动作或 keyScoped 决策）轮换——无规则命中时的自动
 	// 轮换路径（decision == nil）不进入媒体域。
 	mediaDispatchDomain := gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane))
-	mediaDispatchRequest := mediaDispatchDomain == gatewayproto.DispatchDomainStatelessMedia
+	mediaDispatchRequest := mediaDispatchDomain == gatewayproto.DispatchDomainStateless
 	hasAlternativeAccountAPIKeys := input.Account.SelectedAPIKeyFingerprint != nil && len(input.Account.APIKeys) > 1
 	explicitRotation := decision != nil && (decision.Action == decisionActionRetryNext || decision.KeyScoped)
 	automaticRotation := decision == nil && !input.DeferAutomaticSameAccountKeyRotation && !mediaDispatchRequest
@@ -1038,7 +1038,7 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	// 对话与非对话媒体调度分离设计 §4.1/§4.2：媒体创建域的传输失败不派发请求
 	// 失败健康检查，也不记录来源级失败避让——两者都是文本对话调度维度，探针
 	// 仍只由文本域失败、显式策略和后台探针编排触发。
-	mediaDispatchRequest := gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane)) == gatewayproto.DispatchDomainStatelessMedia
+	mediaDispatchRequest := gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane)) == gatewayproto.DispatchDomainStateless
 	if !mediaDispatchRequest {
 		// failure-dispatch.ts:571: the transport failure is independent evidence
 		// for the fixed-model availability confirmation (before the source

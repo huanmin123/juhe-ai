@@ -164,7 +164,7 @@ func perfScopeForAccess(access AccessScope) perfScopeState {
 }
 
 // perfScopeWithDomainFilter 是 perfScope + 可选 domain 查询筛选（M3）：
-// domain 缺省/"all" = 不过滤；非四枚举值返回非空 badRequest 文案（调用方
+// domain 缺省/"all" = 不过滤；非场景枚举值返回非空 badRequest 文案（调用方
 // 回 400）。
 func (d *Deps) perfScopeWithDomainFilter(w http.ResponseWriter, r *http.Request, selfOnly bool) (perfScopeState, string, bool) {
 	access := requestScope(r)
@@ -647,7 +647,7 @@ func (d *Deps) aiPerformanceHourlyRows(r *http.Request, scope perfScopeState, ac
 	}
 	args := []any{scope.SystemAccountID, scope.ScopeType}
 	args = append(args, idsToAny(accountIds)...)
-	args = append(args, sinceHour, endHour)
+	args = append(args, calendarDBValue("stat_hour", sinceHour), calendarDBValue("stat_hour", endHour))
 	return d.queryStats(r, `
 		SELECT
 			scope_id,
@@ -746,7 +746,7 @@ func mapAiPerformanceAccounts(rows []aiPerfAccountRow, scope perfScopeState) []a
 func mapAiPerformanceHourlySeries(accounts []aiPerformanceAccount, hourBuckets []string, hourlyRows []Row) []aiPerformanceHourlySeries {
 	byAccountHour := map[string]Row{}
 	for _, row := range hourlyRows {
-		byAccountHour[row.text("scope_id")+"\n"+row.text("stat_hour")] = row
+		byAccountHour[row.text("scope_id")+"\n"+row.hour("stat_hour")] = row
 	}
 	series := make([]aiPerformanceHourlySeries, 0, len(accounts))
 	for _, account := range accounts {

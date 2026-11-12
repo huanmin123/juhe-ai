@@ -3,6 +3,8 @@ package statsverify
 import (
 	"context"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // Golden derivations follow checkUsageStatsConsistency
@@ -37,7 +39,7 @@ func seedConsistencyHourly(t *testing.T, ctx context.Context, store *Store, syst
 		  cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
 		  total_cost_usd, success_cost_usd, updated_at
 		) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, '2026-03-01T00:00:00.000Z')
-	`, systemAccountID, scopeType, scopeID, statHour, requestCount, totalCost)
+	`, systemAccountID, scopeType, scopeID, statsagg.CalendarDBValue("stat_hour", statHour), requestCount, totalCost)
 }
 
 func seedConsistencyBuckets(t *testing.T, ctx context.Context, store *Store, systemAccountID, scopeType, scopeID, statDate, statHour string, requestCount int, totalCost float64) {
@@ -45,4 +47,3 @@ func seedConsistencyBuckets(t *testing.T, ctx context.Context, store *Store, sys
 	seedConsistencyDaily(t, ctx, store, systemAccountID, scopeType, scopeID, statDate, requestCount, totalCost)
 	seedConsistencyHourly(t, ctx, store, systemAccountID, scopeType, scopeID, statHour, requestCount, totalCost)
 }
-

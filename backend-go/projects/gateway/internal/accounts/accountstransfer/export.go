@@ -842,7 +842,7 @@ func (s *Service) ExportFiltersOptions(filters map[string]any, page int) account
 		TagIDs:       TextListOrSingle(filters["tagIds"]),
 	}
 	// M2 域过滤映射（filters["domain"] → ListOptions.Domain）：空/"all" = 不
-	// 过滤；四枚举值原样传入（解析层已拒绝越界值）。
+	// 过滤；场景枚举值原样传入（解析层已拒绝越界值）。
 	if domain, ok := accountscore.NormalizeAccountCapabilityDomain(allText("domain")); ok {
 		options.Domain = domain
 	}

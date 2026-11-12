@@ -344,7 +344,12 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.2157
+      "videoOutputCostPerSecond": 0.2157,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.09571428571428572,
+        "720p": 0.21571428571428572,
+        "1080p": 0.5342857142857144
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -369,7 +374,12 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.1414
+      "videoOutputCostPerSecond": 0.1414,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.06571428571428571,
+        "720p": 0.14142857142857143,
+        "1080p": 0.35428571428571426
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -394,7 +404,11 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.1143
+      "videoOutputCostPerSecond": 0.1143,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.05285714285714286,
+        "720p": 0.1142857142857143
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -419,7 +433,11 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.0714
+      "videoOutputCostPerSecond": 0.0714,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.032857142857142856,
+        "720p": 0.07142857142857142
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -432,7 +450,19 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "doubao-seedream-5-0-pro-260628",
+      "inputCostPerImage": 0.002857142857142857,
+      "inputImageFreeCount": 1,
       "outputCostPerImage": 0.04286,
+      "outputCostPerImageTiers": [
+        {
+          "maxPixels": 2610000,
+          "usdPerImage": 0.04285714285714286
+        },
+        {
+          "maxPixels": 0,
+          "usdPerImage": 0.08571428571428572
+        }
+      ],
       "outputModalities": [
         "image"
       ],
@@ -441,7 +471,7 @@
       "sourceExchangeRateDate": "2026-10-05",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 0.30 元/张（≤261 万像素档；>261 万像素 0.60 元/张及图层价另计，火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.04286/张",
+      "sourcePricingNote": "官方人民币价 0.30 元/张（≤261 万像素档；>261 万像素 0.60 元/张及图层价另计）、输入图 0.02 元/张（首张免费），火山方舟价格页 docs.volcengine.com/docs/82379/1544106，按约定汇率 7.0 换算",
       "supportedAPIProtocols": [
         "images"
       ],

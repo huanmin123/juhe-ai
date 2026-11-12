@@ -222,8 +222,8 @@ func (w *WindowRefresher) markQuotaHourlyWindowExpiryRanges(ctx context.Context,
 				WHERE hourly.system_account_id = bindings.system_account_id
 					AND hourly.scope_type = bindings.scope_type
 					AND hourly.scope_id = bindings.scope_id
-					AND hourly.stat_hour >= ranges.previous_cutoff_hour
-					AND hourly.stat_hour < ranges.current_cutoff_hour
+					AND hourly.stat_hour >= ranges.previous_cutoff_hour::timestamp
+					AND hourly.stat_hour < ranges.current_cutoff_hour::timestamp
 			)
 			ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
 				generation = ` + w.Dialect.qualifiedTarget("usage_quota_hourly_window_dirty_scopes") + `.generation + 1,
@@ -231,7 +231,9 @@ func (w *WindowRefresher) markQuotaHourlyWindowExpiryRanges(ctx context.Context,
 		`)
 		args := make([]any, 0, len(ranges)*3+2)
 		for _, rangeValue := range ranges {
-			args = append(args, rangeValue.windowHours, rangeValue.previousCutoffHr, rangeValue.currentCutoffHr)
+			args = append(args, rangeValue.windowHours,
+				CalendarDBValue("stat_hour", rangeValue.previousCutoffHr),
+				CalendarDBValue("stat_hour", rangeValue.currentCutoffHr))
 		}
 		args = append(args, updatedAt, updatedAt)
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -373,7 +375,7 @@ func (w *WindowRefresher) rebuildQuotaHourlyWindowsForScopes(ctx context.Context
 			ON hourly.system_account_id = claimed.system_account_id
 			AND hourly.scope_type = claimed.scope_type
 			AND hourly.scope_id = claimed.scope_id
-			AND hourly.stat_hour >= claimed.cutoff_hour
+			AND hourly.stat_hour >= claimed.cutoff_hour::timestamp
 		GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours
 		HAVING COALESCE(SUM(hourly.success_cost_usd), 0) > 0
 		ON CONFLICT(system_account_id, scope_type, scope_id, window_hours) DO UPDATE SET
@@ -387,7 +389,7 @@ func (w *WindowRefresher) rebuildQuotaHourlyWindowsForScopes(ctx context.Context
 			scope.scopeType,
 			scope.scopeID,
 			int(scope.windowHours),
-			hourKey(time.UnixMilli(nowMs-scope.windowHours*quotaHourlyWindowHourMs), timezone))
+			CalendarDBValue("stat_hour", hourKey(time.UnixMilli(nowMs-scope.windowHours*quotaHourlyWindowHourMs), timezone)))
 	}
 	args = append(args, updatedAt)
 	_, err := tx.ExecContext(ctx, query, args...)

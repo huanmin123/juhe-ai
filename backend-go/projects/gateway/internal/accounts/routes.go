@@ -229,7 +229,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	query := r.URL.Query()
 	// domain 过滤（AI 账户能力域拆分 M1 读通道，管理面 /accounts 与用户面
 	// /my-accounts 共用本处理器）：空缺省=不过滤，"all" 与 providerCode/type
-	// 的既有语义一致视为不过滤，其余非四枚举值按既有参数错误语义 400 拒绝
+	// 的既有语义一致视为不过滤，其余非场景枚举值按既有参数错误语义 400 拒绝
 	// （不让越界值静默退化成全量列表，M2 域菜单依赖该错误面暴露路由错位）。
 	domain := strings.TrimSpace(query.Get("domain"))
 	if _, ok := accountscore.NormalizeAccountCapabilityDomain(domain); !ok && domain != "all" {
@@ -1023,7 +1023,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 	input.ProviderProtocolProfileID = profileID
 	input.Name = name
 	input.AccountType = accountType
-	// capabilityDomain（M2）：缺省 chat；显式值必须是四枚举之一，否则 400
+	// capabilityDomain（M2）：缺省 chat；显式值必须是已注册场景之一，否则 400
 	//「能力域无效」。
 	if value, exists := body["capabilityDomain"]; exists && value != nil {
 		text, ok := value.(string)

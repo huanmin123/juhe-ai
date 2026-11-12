@@ -59,6 +59,8 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'streamGenerateContent (SSE)', value: 'generate_content_sse' },
   { label: 'countTokens', value: 'count_tokens' },
   { label: 'embedContent', value: 'embed_content' },
+  { label: 'Rerank (JSON)', value: 'rerank_json' },
+  { label: 'Moderations (JSON)', value: 'moderation_json' },
   { label: 'Interactions API (JSON)', value: 'interactions_json' },
   { label: 'Interactions API (SSE)', value: 'interactions_sse' }
 ]

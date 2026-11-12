@@ -41,7 +41,9 @@ const (
 	// 媒体模型名），执行走 OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech）。
 	FamilyVideoGeneration = "video_generation"
 	FamilyTts             = "tts"
-	FamilyEmbeddings      = "embeddings"
-	FamilyRerank          = "rerank"
-	FamilyModeration      = "moderation"
+	// B7 工具端点映射族：与 gatewayrouting/response family 的既有 token 对齐
+	//（embed_content 同时是 endpoint mode 名，count_tokens 同先例）。
+	FamilyEmbeddings = "embed_content"
+	FamilyRerank     = "rerank"
+	FamilyModeration = "moderation"
 )

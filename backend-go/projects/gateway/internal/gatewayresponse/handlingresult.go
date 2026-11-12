@@ -18,6 +18,9 @@ type UpstreamResponseHandlingResult struct {
 	ErrorCode           string
 	TransportFailure    *StreamTransportFailure
 	GatewayLocalFailure bool
+	// DownstreamGone 表示非流式响应已读完但下游写入失败（客户端断开）：
+	// Finalize 按 downstream_closed 失败行记账，usage 仍按已解析结果保留。
+	DownstreamGone bool
 
 	// 重试分支
 	RetryUpstream               bool

@@ -1,7 +1,7 @@
 package statreads
 
 // AI 账户能力域拆分 M3 配套适配（计划 §M3 配套适配）：统计读面可选 `domain`
-// 筛选的行为级测试。默认（不带参 / "all"）与现状逐项一致；`domain` 四枚举
+// 筛选的行为级测试。默认（不带参 / "all"）与现状逐项一致；`domain` 场景枚举
 // 在服务端收敛（ai-health 列表、ai-performance 账户水合、account-usage 列表
 // 与候选）；非法值 400。
 
@@ -34,9 +34,9 @@ func TestOptionalCapabilityDomainFilter(t *testing.T) {
 	if value, ok := optionalCapabilityDomainFilter("all"); !ok || value != "" {
 		t.Fatalf("all 应归一为不过滤：%v %v", value, ok)
 	}
-	for _, domain := range []string{"chat", "video", "audio", "image"} {
+	for _, domain := range []string{"chat", "video", "audio", "image", "embedding", "rerank", "moderation"} {
 		if value, ok := optionalCapabilityDomainFilter(domain); !ok || value != domain {
-			t.Fatalf("四枚举应放行：%s → %v %v", domain, value, ok)
+			t.Fatalf("场景枚举应放行：%s → %v %v", domain, value, ok)
 		}
 	}
 	if _, ok := optionalCapabilityDomainFilter("bogus"); ok {
@@ -54,8 +54,8 @@ func TestWdAiHealthDomainFilter(t *testing.T) {
 	seedDomainAccount(t, fixture, "acct-video", "VideoAccount", "video")
 	fixture.exec(t,
 		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at)
-			VALUES ('acct-chat', '2026-09-04T10', 'success', '2026-09-04T10:20:00.000Z'),
-			       ('acct-video', '2026-09-04T10', 'failure', '2026-09-04T10:20:00.000Z')`,
+			VALUES ('acct-chat', '2026-09-04 10:00:00', 'success', '2026-09-04T10:20:00.000Z'),
+			       ('acct-video', '2026-09-04 10:00:00', 'failure', '2026-09-04T10:20:00.000Z')`,
 	)
 	handler := fixture.deps.aiHealthListHandler(false)
 
@@ -95,8 +95,8 @@ func TestWdAiPerformanceDomainFilter(t *testing.T) {
 		`INSERT INTO juhe_stats.usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
 			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-04T00:00:00.000Z', 2, 'acct-video', 40)`,
 		`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count)
-			VALUES ('global', 'account', 'acct-chat', '2026-09-04T10', 5),
-			       ('global', 'account', 'acct-video', '2026-09-04T10', 2)`,
+			VALUES ('global', 'account', 'acct-chat', '2026-09-04 10:00:00', 5),
+			       ('global', 'account', 'acct-video', '2026-09-04 10:00:00', 2)`,
 	)
 	// base handler 挂在 deps 上（aiPerformanceBaseHandler）。
 	handler := fixture.deps.aiPerformanceBaseHandler(false)

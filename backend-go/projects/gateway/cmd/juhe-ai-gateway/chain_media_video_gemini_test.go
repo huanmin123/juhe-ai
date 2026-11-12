@@ -141,30 +141,30 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"veo-3.0-generate-preview","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"模糊","seconds":"8"}`,
+		`{"model":"veo-3.0-generate-preview","prompt":"一只猫在弹钢琴","width":1280,"height":720,"duration":8,"metadata":{"negative_prompt":"模糊"}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGeminiVideoCreateOK)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("创建响应 status = %v, want queued（operation 未 done 归一 queued）", job["status"])
 	}
-	if job["provider"] != "gemini" {
-		t.Fatalf("provider = %v, want gemini", job["provider"])
+	if mediaVideoMetadataOf(t, job)["provider"] != "gemini" {
+		t.Fatalf("provider = %v, want gemini", mediaVideoMetadataOf(t, job)["provider"])
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := mediaVideoMetadataOf(t, job)["provider_job_id"].(string)
 	if !strings.HasPrefix(providerJobID, "models/veo-3.0-generate-preview/operations/") {
 		t.Fatalf("provider_job_id = %q, want operation name 形态", providerJobID)
 	}
 	applied := mediaVideoJobKeys(t, job, "params_applied")
 	for _, want := range []string{"model", "prompt", "size", "negative_prompt"} {
 		if !applied[want] {
-			t.Fatalf("params_applied 缺少 %s: %v", want, job["params_applied"])
+			t.Fatalf("params_applied 缺少 %s: %v", want, mediaVideoMetadataOf(t, job)["params_applied"])
 		}
 	}
 	if ignored := mediaVideoJobKeys(t, job, "params_ignored"); !ignored["seconds"] {
-		t.Fatalf("params_ignored 缺少 seconds（veo 请求面无时长参数）: %v", job["params_ignored"])
+		t.Fatalf("params_ignored 缺少 seconds（veo 请求面无时长参数）: %v", mediaVideoMetadataOf(t, job)["params_ignored"])
 	}
 
 	// 创建出站断言：POST /v1beta/models/{model}:predictLongRunning + gemini
@@ -214,7 +214,10 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 		}
 	}
 
-	// media_jobs 行终态 completed + operation 名回填 + 无秒计量不虚计（0）。
+	// media_jobs 行终态 completed + operation 名回填 + 按厂商默认时长计费：
+	// veo 请求面无时长参数（seconds 进 params_ignored），上游也不回报秒数 →
+	// 按 Capabilities.DefaultSeconds=8 × veo-3.0 秒价 0.4 = 3.2 结算
+	// （契约 §2.8.2，2026-11-12 厂商默认时长批）。
 	var status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&status, &upstreamJobID, &costUsd); err != nil {
@@ -223,13 +226,13 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 	if status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s, want completed/%s", status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0 {
-		t.Fatalf("veo 无输出秒回报（seconds 属 ignored），cost_usd = %v, want 0（usage_missing 不虚计）", costUsd)
+	if costUsd != 3.2 {
+		t.Fatalf("veo 按默认 8 秒计费 cost_usd = %v, want 3.2（8 × 0.4）", costUsd)
 	}
 
 	// content 下载：completed 的 uri 是引擎渲染的绝对 URL（不经记录层），
 	// 网关无凭据直连——引擎侧 Authorization 记录为空可证。响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -252,7 +255,7 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 	//（契约 §2.8：上游不回报且请求参数非计量基源 → 0 计费 + usage_missing，
 	// 不猜测）。
 	waitGeminiSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"usageMissing":true`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"usageMissing":true`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "gemini completed usage_missing 终态记录")
 }
 
@@ -269,9 +272,9 @@ func TestChainMediaGeminiVideoFailedTerminal(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"veo-3.0-generate-preview","prompt":"失败终态","size":"720x1280"}`,
+		`{"model":"veo-3.0-generate-preview","prompt":"失败终态","width":720,"height":1280}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGeminiVideoPollError)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -290,7 +293,7 @@ func TestChainMediaGeminiVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGeminiSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "gemini failed 终态记录")
 }
 
@@ -308,39 +311,30 @@ func TestChainMediaGeminiVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"veo-3.0-generate-preview","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGeminiVideoPollRunning)})
-	jobID, _ := job["id"].(string)
-	providerJobID, _ := job["provider_job_id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
+	// New API 无取消面（契约 §4.2：列表/取消/删除不提供）：DELETE 恒 404，
+	// 本地行保持非终态，且不发上游 cancel 请求（记录层仍只有创建一条）。
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE status=%d body=%s, want 404", response.StatusCode, payload)
 	}
 	var status string
 	if err := fixture.db.QueryRow(`SELECT status FROM media_jobs WHERE id = ?`, jobID).Scan(&status); err != nil {
 		t.Fatalf("查询 media_jobs: %v", err)
 	}
-	if status != "cancelled" {
-		t.Fatalf("DELETE 后本地 status = %s, want cancelled", status)
+	if status == "cancelled" {
+		t.Fatalf("DELETE 不得本地收敛 cancelled（取消面已裁剪）: %s", status)
 	}
-	records := recorder.snapshot()
-	if len(records) != 2 || records[1].Method != http.MethodPost || records[1].Path != "/v1beta/"+providerJobID+":cancel" {
-		t.Fatalf("取消出站请求形态错误: %+v", records)
-	}
-
-	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
-	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
-		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
-	}
-	if len(recorder.snapshot()) != 2 {
-		t.Fatalf("终态轮询不得再打上游: %+v", recorder.snapshot())
+	if records := recorder.snapshot(); len(records) != 1 {
+		t.Fatalf("取消面 404 不得发上游请求: %+v", records)
 	}
 }
 
 // mediaVideoPollOnce 轮询一次并解码 job 对象。
 func mediaVideoPollOnce(t *testing.T, serverURL, apiKey, jobID string) map[string]any {
 	t.Helper()
-	response, payload := mediaVideoClientDo(t, serverURL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, serverURL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("poll %s status=%d body=%s", jobID, response.StatusCode, payload)
 	}
@@ -351,7 +345,14 @@ func mediaVideoPollOnce(t *testing.T, serverURL, apiKey, jobID string) map[strin
 func mediaVideoJobKeys(t *testing.T, job map[string]any, field string) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
+	// New API 视频响应把 params_applied/params_ignored/provider_options_applied
+	// 收进 metadata；兼容仍在顶层读取的旧调用点。
 	values, _ := job[field].([]any)
+	if values == nil {
+		if metadata, ok := job["metadata"].(map[string]any); ok {
+			values, _ = metadata[field].([]any)
+		}
+	}
 	for _, value := range values {
 		if text, ok := value.(string); ok {
 			out[text] = true

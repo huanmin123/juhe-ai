@@ -17,7 +17,9 @@ func TestWAOpenAIDriverEndpointMode(t *testing.T) {
 	}{
 		{gatewayproto.RequestShape{Path: "/v1/chat/completions", Stream: true}, gatewayproto.EndpointModeChatSSE, true},
 		{gatewayproto.RequestShape{Path: "/v1/responses", Stream: false}, gatewayproto.EndpointModeResponsesJSON, true},
-		{gatewayproto.RequestShape{Path: "/v1/embeddings"}, "", false},
+		{gatewayproto.RequestShape{Path: "/v1/embeddings"}, gatewayproto.EndpointModeEmbedContent, true},
+		{gatewayproto.RequestShape{Path: "/v1/rerank"}, gatewayproto.EndpointModeRerankJSON, true},
+		{gatewayproto.RequestShape{Path: "/v1/moderations"}, gatewayproto.EndpointModeModerationJSON, true},
 	}
 	for index, tc := range cases {
 		got, found := driver.EndpointModeForRequestShape(tc.shape)

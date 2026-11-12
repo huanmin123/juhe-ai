@@ -92,7 +92,18 @@ type streamPipe struct {
 	// summary 机制，不在本设计范围）。
 	parseErrorIsolator *parseErrorEventIsolator
 
-	clientClosed bool
+	// clientGone 表示下游写失败（客户端断开）后进入 drain 模式：停止写下游，
+	// 继续读取上游到协议终态或 clientGoneDrainBudgetMs 预算上限。
+	clientGone            bool
+	clientGoneAtMs        int64
+	clientGoneDrainBudget int64
+	// pendingClientGoneRead 保留客户端断开信号胜出时未消费的读 future：
+	// 下一轮继续从同一 future 读，避免丢弃已发出的 chunk（新开 pending
+	// 会让旧 goroutine 抢走后续分片）。
+	pendingClientGoneRead *pendingRead
+	// clientGoneTimerCh 是断连 drain 预算的单次计时器（在 markClientGone
+	// 时创建，读竞速复用），避免每个 chunk 各建一个 30s 定时器。
+	clientGoneTimerCh <-chan time.Time
 	// lastInspection 保留最近一次 inspector 快照（body omission 汇总用）。
 	lastInspection gatewayproto.StreamInspection
 }
@@ -163,6 +174,7 @@ func newStreamPipe(input PipeUpstreamStreamInput) *streamPipe {
 		responseCapture:        NewLimitedCapture(captureLimit),
 		upstreamCapture:        NewLimitedCapture(captureLimit),
 		diagnosticCapture:      NewLimitedCapture(StreamDiagnosticCaptureBytes),
+		clientGoneDrainBudget:  ClientGoneDrainBudgetMs,
 	}
 }
 
@@ -184,6 +196,11 @@ func (p *streamPipe) run() (StreamPipeResult, error) {
 	if loopErr != nil {
 		return p.handlePipeError(loopErr)
 	}
+	if p.clientGone {
+		// 客户端断开后读到 EOF/终态：统一按 clientGone 失败口径收口，跳过
+		// 提交前重试/成功判定（否则客户端已没了还会换号重放）。
+		return p.finalizeClientGoneDrain(false)
+	}
 	if result != nil {
 		return *result, nil
 	}
@@ -196,12 +213,21 @@ func (p *streamPipe) run() (StreamPipeResult, error) {
 func (p *streamPipe) loop() (*StreamPipeResult, error) {
 	var latestInspection gatewayproto.StreamInspection
 	for {
-		if p.clientClosed || p.downstream.DestroyedNow() {
+		if p.downstream.DestroyedNow() {
 			return nil, errors.New("客户端连接已断开")
+		}
+		if p.clientGone && p.clientGoneDrainExceeded() {
+			return nil, errClientGoneDrainBudget
 		}
 		readResult, err := p.readNextStreamChunk()
 		if err != nil {
 			return nil, err
+		}
+		if readResult.clientGoneDetected {
+			// 原始客户端请求已断开：不必等首次写失败，立即从断连时刻起算
+			// drain 预算并继续读上游。
+			p.markClientGone(nil)
+			continue
 		}
 		p.firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
 		p.pendingReadDecision = readResult.decision

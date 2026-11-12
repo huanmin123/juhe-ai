@@ -209,7 +209,6 @@ func TestWhPreflightCompactionTimeoutsDisabled(t *testing.T) {
 	}
 }
 
-
 // 已认证模型列表：identity 场景下按协议分支发送模型响应。
 func TestWhPreflightModelsProtocolBranches(t *testing.T) {
 	tests := []struct {

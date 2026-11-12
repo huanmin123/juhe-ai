@@ -192,27 +192,27 @@ func TestMultipartLimitSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("parts beyond the busboy cap stop processing", func(t *testing.T) {
-		parts := make([]string, 0, 30)
-		for i := 0; i < 24; i++ {
-			parts = append(parts, formField("padding", "x"))
+	t.Run("parts within the shared cap are processed", func(t *testing.T) {
+		parts := make([]string, 0, 70)
+		for i := 0; i < multipartMaxParts-1; i++ {
+			parts = append(parts, filePart("f", "x.png"))
 		}
 		parts = append(parts, formField("model", "gpt-image-1"))
 		raw, _ := multipartBody(t, parts)
-		if _, ok := ExtractMultipartImageModel(raw, "multipart/form-data; boundary=BOUNDARY", "/images"); ok {
-			t.Fatalf("model after 24 parts must be ignored")
+		if got, ok := ExtractMultipartImageModel(raw, "multipart/form-data; boundary=BOUNDARY", "/images"); !ok || got != "gpt-image-1" {
+			t.Fatalf("model within %d parts must be found, got %q, %v", multipartMaxParts, got, ok)
 		}
 	})
 
 	t.Run("file parts count toward the parts budget", func(t *testing.T) {
-		parts := make([]string, 0, 30)
-		for i := 0; i < 24; i++ {
+		parts := make([]string, 0, 70)
+		for i := 0; i < multipartMaxParts; i++ {
 			parts = append(parts, filePart("f", "x.png"))
 		}
 		parts = append(parts, formField("model", "gpt-image-1"))
 		raw, _ := multipartBody(t, parts)
 		if _, ok := ExtractMultipartImageModel(raw, "multipart/form-data; boundary=BOUNDARY", "/images"); ok {
-			t.Fatalf("model after 24 file parts must be ignored")
+			t.Fatalf("model after %d file parts must be ignored", multipartMaxParts)
 		}
 	})
 

@@ -61,7 +61,7 @@ func (d *Deps) accountUsageHandler(selfOnly bool) http.HandlerFunc {
 		if !hasPageSize {
 			pageSize = 10
 		}
-		// M3 域筛选（计划 §M3 配套适配）：可选 domain 四枚举；缺省/"all" =
+		// M3 域筛选（计划 §M3 配套适配）：可选 domain 场景枚举；缺省/"all" =
 		// 不过滤（默认行为零变化），非法值 400。筛选在服务端执行。
 		capabilityDomain, domainOK := optionalCapabilityDomainFilter(values.Get(capabilityDomainFilterParam))
 		if !domainOK {
@@ -817,7 +817,7 @@ func (d *Deps) loadUsageDailySeries(r *http.Request, scopes []usageScopeRequest,
 		if !ok {
 			continue
 		}
-		statDate := row.nullText("stat_date")
+		statDate := row.nullDay("stat_date")
 		if statDate == nil {
 			// Range summary rows only contribute when the caller asked for the
 			// rangeUsage; the trend rows map daily buckets only. Node keeps

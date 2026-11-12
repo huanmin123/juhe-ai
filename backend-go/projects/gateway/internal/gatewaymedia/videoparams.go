@@ -28,6 +28,12 @@ type VideoCapabilities struct {
 	SupportsN              bool
 	SupportsInputReference bool
 	SupportsSeconds        bool
+	// DefaultSeconds 是该厂商在请求未携带 seconds（或 seconds 不受支持被忽略）
+	// 时使用的默认输出时长，作为按秒计价的计费基源（契约 §2.8.2）。0 表示
+	// 厂商未声明默认值——此时无秒计量依据，维持 usage_missing 不猜测。
+	// 该值不是请求参数：不写入上游报文，也不进 params_applied；它只回答
+	// "上游没有用户指定时长时实际会产出多少秒"。
+	DefaultSeconds float64
 }
 
 // NormalizedVideoParams 是归一后的视频创建参数（契约 §2.2 全表）。指针字段
@@ -165,9 +171,9 @@ func ParseVideoParams(body map[string]any, caps VideoCapabilities) (NormalizedVi
 // ComputeParamsIgnored 按 adapter 能力产出被忽略的键名列表（契约 §2.4 规则
 // 1：L2 可选语义参数厂商不支持 → 忽略 + 回显，不静默）。顺序固定为契约
 // §2.2 表序：seconds、negative_prompt、seed、audio。seconds 属换算类参数
-// （规则 3），不支持时该模型用厂商默认时长、用户值不生效——网关不猜测厂商
-// 默认值，故进 ignored 而非伪造 applied 值（M3 档位型 adapter 在 Create 内
-// 换算时可改写 applied 回显实际档位）。
+// （规则 3），不支持时该模型用厂商默认时长、用户值不生效——网关不按 ignored
+// 请求值计费，改按 Capabilities.DefaultSeconds 声明的厂商默认时长计费
+// （BillingSeconds）；未声明默认值时才维持 usage_missing 不猜测。
 func ComputeParamsIgnored(params NormalizedVideoParams, caps VideoCapabilities) []string {
 	var ignored []string
 	if params.Seconds != nil && !caps.SupportsSeconds {
@@ -183,6 +189,60 @@ func ComputeParamsIgnored(params NormalizedVideoParams, caps VideoCapabilities) 
 		ignored = append(ignored, "audio")
 	}
 	return ignored
+}
+
+// videoSizeShortSide 解析 WxH 像素串并返回短边；非法形态返回 (0,false)。
+func videoSizeShortSide(size string) (int, bool) {
+	widthText, heightText, ok := strings.Cut(strings.TrimSpace(size), "x")
+	if !ok {
+		return 0, false
+	}
+	width, widthErr := strconv.Atoi(widthText)
+	height, heightErr := strconv.Atoi(heightText)
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return 0, false
+	}
+	if height < width {
+		return height, true
+	}
+	return width, true
+}
+
+// videoResolutionTierForSize 把公共 size 换算为官方分辨率档词表
+// （480p/720p/1080p）：短边 ≥900 → 1080p、≥600 → 720p、其余 480p。该阈值
+// 与 xAI / Volcengine adapter 的出站 resolution 换算同源；Qwen 官方词表同为
+// 480P/720P/1080P，按同一短边规则选档。无法解析（空/非法 size）返回空串，
+// 结算回落目录主档价。
+func videoResolutionTierForSize(size string) string {
+	shortSide, ok := videoSizeShortSide(size)
+	if !ok {
+		return ""
+	}
+	switch {
+	case shortSide >= 900:
+		return "1080p"
+	case shortSide >= 600:
+		return "720p"
+	default:
+		return "480p"
+	}
+}
+
+// BillingSeconds 返回创建时冻结的按秒计价计量基源（契约 §2.8.2）：
+//  1. seconds 生效（adapter 支持且用户显式传入）→ 用户值；
+//  2. 否则厂商声明了默认输出时长（Capabilities.DefaultSeconds）→ 默认值；
+//  3. 都没有 → nil（无依据，链上落 usage_missing，不猜测）。
+//
+// 上游终态回报的时长优先于本基源，本函数只回答"创建时可核实的秒数"。
+func (p NormalizedVideoParams) BillingSeconds(caps VideoCapabilities) *float64 {
+	if p.Seconds != nil && caps.SupportsSeconds {
+		return p.Seconds
+	}
+	if caps.DefaultSeconds > 0 {
+		seconds := caps.DefaultSeconds
+		return &seconds
+	}
+	return nil
 }
 
 // normalizeVideoSeconds 归一 seconds（契约 §2.2 number；契约 §4.3 openai

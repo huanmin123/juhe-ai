@@ -500,7 +500,7 @@ var (
 	// 消费面，任务面三 token 仅为能力表达与健康检查形态，不进默认集）。
 	// M3f 长音频任务族（媒体设计 §4.2，契约 §10.2）：audio_job_create /
 	// audio_job_get / audio_job_content / audio_job_cancel 四 token 同语义
-	// 进词表（audio_job_create 是 /v1/audio/jobs 创建链候选过滤消费面——
+	// 进词表（audio_job_create 是 /v1/tasks/audio 创建链候选过滤消费面——
 	// 词表缺失会让显式勾选长转写能力的 qwen 账户在 secret 投影时被滤除，
 	// 创建链无账户可命中）。
 	// M5b realtime（Realtime 设计 §6）：realtime_session 同语义进词表

@@ -140,30 +140,30 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"cogvideox-3","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"6","audio":true,"seed":42}`,
+		`{"model":"cogvideox-3","prompt":"一只猫在弹钢琴","width":1280,"height":720,"duration":6,"metadata":{"negative_prompt":"低清画质","audio":true,"seed":42}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmVideoCreateOK)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
-	if job["status"] != "in_progress" {
-		t.Fatalf("创建响应 status = %v, want in_progress（task_status=PROCESSING 归一）", job["status"])
+	if job["status"] != "queued" {
+		t.Fatalf("创建响应 status = %v, want queued（New API 创建响应恒 queued）", job["status"])
 	}
-	if job["provider"] != "glm" {
-		t.Fatalf("provider = %v, want glm", job["provider"])
+	if mediaVideoMetadataOf(t, job)["provider"] != "glm" {
+		t.Fatalf("provider = %v, want glm", mediaVideoMetadataOf(t, job)["provider"])
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := mediaVideoMetadataOf(t, job)["provider_job_id"].(string)
 	if len(providerJobID) != 12 || strings.ContainsAny(providerJobID, "/-") {
 		t.Fatalf("provider_job_id = %q, want 12 hex 任务 id 形态", providerJobID)
 	}
 	applied := mediaVideoJobKeys(t, job, "params_applied")
 	for _, want := range []string{"model", "prompt", "size", "negative_prompt", "seconds", "audio"} {
 		if !applied[want] {
-			t.Fatalf("params_applied 缺少 %s: %v", want, job["params_applied"])
+			t.Fatalf("params_applied 缺少 %s: %v", want, mediaVideoMetadataOf(t, job)["params_applied"])
 		}
 	}
 	if ignored := mediaVideoJobKeys(t, job, "params_ignored"); !ignored["seed"] {
-		t.Fatalf("params_ignored 缺少 seed（glm 请求面无 seed）: %v", job["params_ignored"])
+		t.Fatalf("params_ignored 缺少 seed（glm 请求面无 seed）: %v", mediaVideoMetadataOf(t, job)["params_ignored"])
 	}
 
 	// 创建出站断言：POST /api/paas/v4/videos/generations + Bearer 认证头 +
@@ -235,7 +235,7 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 
 	// content 下载：completed 的 url 是引擎渲染的绝对 URL（不经记录层），
 	// 网关无凭据直连——引擎侧 Authorization 记录为空可证。响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -259,7 +259,7 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 	// 照落 outputVideoSeconds=6、无 costUsd、不打 usage_missing（契约 §2.8：
 	// 计量照落成本不虚计）。
 	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"model":"cogvideox-3"`)
+		return strings.Contains(text, `"endpoint":"/v1/video/generations"`) && strings.Contains(text, `"model":"cogvideox-3"`)
 	}, "glm completed 无价兜底终态记录")
 	if !strings.Contains(record, `"outputVideoSeconds":6`) {
 		t.Fatalf("glm 无价 usage 行缺少 outputVideoSeconds=6（请求自算计量照落）: %s", record)
@@ -286,9 +286,9 @@ func TestChainMediaGlmVideoFailedTerminal(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"cogvideox-3","prompt":"失败终态","size":"720x1440"}`,
+		`{"model":"cogvideox-3","prompt":"失败终态","width":720,"height":1440}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmVideoPollFail)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -307,7 +307,7 @@ func TestChainMediaGlmVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "glm failed 终态记录")
 }
 
@@ -326,33 +326,23 @@ func TestChainMediaGlmVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"cogvideox-3","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmVideoPollProcessing)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
+	// New API 无取消面（契约 §4.2：列表/取消/删除不提供）：DELETE 恒 404，
+	// 本地行保持非终态，且不发上游 cancel 请求（记录层仍只有创建一条）。
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE status=%d body=%s, want 404", response.StatusCode, payload)
 	}
 	var status string
 	if err := fixture.db.QueryRow(`SELECT status FROM media_jobs WHERE id = ?`, jobID).Scan(&status); err != nil {
 		t.Fatalf("查询 media_jobs: %v", err)
 	}
-	if status != "cancelled" {
-		t.Fatalf("DELETE 后本地 status = %s, want cancelled", status)
+	if status == "cancelled" {
+		t.Fatalf("DELETE 不得本地收敛 cancelled（取消面已裁剪）: %s", status)
 	}
-	// 账户亲和面：取消未发任何上游请求（glm 无取消端点，本地收敛），记录层
-	// 仅有创建一条。
-	records := recorder.snapshot()
-	if len(records) != 1 {
-		t.Fatalf("glm 取消不得打上游（SupportsCancel=false 本地收敛）: %+v", records)
-	}
-
-	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
-	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
-		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
-	}
-	if len(recorder.snapshot()) != 1 {
-		t.Fatalf("终态轮询不得再打上游: %+v", recorder.snapshot())
+	if records := recorder.snapshot(); len(records) != 1 {
+		t.Fatalf("取消面 404 不得发上游请求: %+v", records)
 	}
 }
 

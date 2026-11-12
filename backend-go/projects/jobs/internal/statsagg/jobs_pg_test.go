@@ -252,7 +252,7 @@ func TestAggregateUsageStatsBatchGolden(t *testing.T) {
 		2, 1)
 	env.assertFloats("hourly global",
 		env.queryRowFloats(`SELECT request_count, input_tokens FROM juhe_stats.usage_stats_hourly
-			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_hour='2026-04-18T10'`),
+			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_hour='2026-04-18 10:00:00'`),
 		2, 105)
 	env.assertFloats("weekly alice",
 		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_weekly
@@ -260,11 +260,11 @@ func TestAggregateUsageStatsBatchGolden(t *testing.T) {
 		1)
 	env.assertFloats("monthly global",
 		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_monthly
-			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_month='2026-04'`),
+			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_month='2026-04-01'`),
 		2)
 	env.assertFloats("minute alice",
 		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_minute
-			WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice' AND stat_minute='2026-04-18T10:15'`),
+			WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice' AND stat_minute='2026-04-18 10:15:00'`),
 		1)
 
 	// usage_model_daily：caller + global 两条模型行。
@@ -477,10 +477,10 @@ func TestWindowStagesGolden(t *testing.T) {
 			system, scopeType, scopeID, statMonth, request, cost, lastUsed, "2026-04-18T09:00:00.000Z")
 	}
 	// 排行对账种子：metric（cost）并列时 last_used_at DESC 决定次序。
-	insertMonthly("alice", "api_key", "key-b", "2026-04", 3, 1.0, "2026-04-18T08:00:00.000Z")
-	insertMonthly("alice", "api_key", "key-a", "2026-04", 3, 1.0, "2026-04-18T09:00:00.000Z")
-	insertMonthly("alice", "api_key", "key-c", "2026-04", 1, 0.1, "2026-04-18T07:00:00.000Z")
-	insertMonthly("bob", "api_key", "key-d", "2026-03", 9, 9.0, "2026-03-31T00:00:00.000Z")
+	insertMonthly("alice", "api_key", "key-b", "2026-04-01", 3, 1.0, "2026-04-18T08:00:00.000Z")
+	insertMonthly("alice", "api_key", "key-a", "2026-04-01", 3, 1.0, "2026-04-18T09:00:00.000Z")
+	insertMonthly("alice", "api_key", "key-c", "2026-04-01", 1, 0.1, "2026-04-18T07:00:00.000Z")
+	insertMonthly("bob", "api_key", "key-d", "2026-03-01", 9, 9.0, "2026-03-31T00:00:00.000Z")
 	refresher := env.refresher()
 
 	// usage-rank-snapshots-refresh（api_key current_month 排行）。
@@ -512,8 +512,8 @@ func TestWindowStagesGolden(t *testing.T) {
 	// usage-overview-windows-refresh（summary/trend/model rank/error rank）。
 	env.exec(`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour,
 		request_count, error_count, input_tokens, output_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, updated_at)
-		VALUES ('alice','system_account','alice','2026-04-18T08',1,0,7,3,0.2,300,1,'2026-04-18T09:00:00.000Z'),
-		       ('alice','system_account','alice','2026-04-18T09',1,0,4,2,0.1,100,1,'2026-04-18T09:00:00.000Z')`)
+		VALUES ('alice','system_account','alice','2026-04-18 08:00:00',1,0,7,3,0.2,300,1,'2026-04-18T09:00:00.000Z'),
+		       ('alice','system_account','alice','2026-04-18 09:00:00',1,0,4,2,0.1,100,1,'2026-04-18T09:00:00.000Z')`)
 	env.exec(`INSERT INTO juhe_stats.usage_model_daily (system_account_id, stat_date, provider_code, model, request_count, total_cost_usd, updated_at)
 		VALUES ('alice','2026-04-18','openai','gpt-5',5,0.5,'2026-04-18T09:00:00.000Z'),
 		       ('alice','2026-04-17','openai','gpt-4.1',3,0.4,'2026-04-18T09:00:00.000Z')`)

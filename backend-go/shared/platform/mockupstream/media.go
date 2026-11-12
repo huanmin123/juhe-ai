@@ -60,6 +60,7 @@ var mediaEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/api/v3/auc/bigmodel/submit"}:       true,
 	{http.MethodPost, "/api/v3/auc/bigmodel/query"}:        true,
 	{http.MethodPost, "/v1/images/generations"}:            true,
+	{http.MethodPost, "/v1/images/edits"}:                  true,
 	{http.MethodPost, "/api/v3/images/generations"}:        true,
 	{http.MethodPost, qwenImageGenerationPath}:             true,
 }
@@ -82,6 +83,12 @@ func acceptsMediaEndpoint(method, path string) bool {
 		return true
 	}
 	if acceptsVideoEndpoint(method, path) {
+		return true
+	}
+	if acceptsNewAPIVideoEndpoint(method, path) {
+		return true
+	}
+	if acceptsNewAPIAudioEndpoint(method, path) {
 		return true
 	}
 	if acceptsGeminiVeoEndpoint(method, path) {
@@ -112,7 +119,7 @@ func acceptsMediaEndpoint(method, path string) bool {
 // It runs after the method-aware whitelist check, so the POST-keyed map
 // lookup is only reached by requests that already passed as POST.
 func isMediaPath(path string) bool {
-	if mediaEndpoints[endpoint{http.MethodPost, path}] || isXaiVideoPath(path) || isVideoPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) || isQwenVideoPath(path) || isQwenASRPath(path) {
+	if mediaEndpoints[endpoint{http.MethodPost, path}] || isXaiVideoPath(path) || isVideoPath(path) || isNewAPIVideoPath(path) || isNewAPIAudioPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) || isQwenVideoPath(path) || isQwenASRPath(path) {
 		return true
 	}
 	return geminiGenerateContentModel(path) != ""
@@ -151,6 +158,27 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 	}
 	if isVideoPath(r.URL.Path) {
 		m.serveVideo(w, r, idx, scenario)
+		return
+	}
+	if isNewAPIVideoPath(r.URL.Path) {
+		// New API 兼容面别名：把 /v1/video/generations* 归一为既有
+		// /v1/videos* handler 形态（创建/轮询/content 同语义）。
+		aliased := *r
+		clonedURL := *r.URL
+		clonedURL.Path = newAPIVideoInternalPathOf(r.URL.Path)
+		aliased.URL = &clonedURL
+		m.serveVideo(w, &aliased, idx, scenario)
+		return
+	}
+	if isNewAPIAudioPath(r.URL.Path) {
+		// New API 通用任务面长音频别名：把 /v1/tasks/audio* 归一为既有异步任务
+		// handler 形态（创建/轮询/content 同语义；列表/取消不属该面，白名单
+		// 已拒绝）。
+		aliased := *r
+		clonedURL := *r.URL
+		clonedURL.Path = newAPIAudioInternalPathOf(r.URL.Path)
+		aliased.URL = &clonedURL
+		m.serveVideo(w, &aliased, idx, scenario)
 		return
 	}
 	if isGeminiVeoPath(r.URL.Path) {
@@ -212,9 +240,12 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 		m.serveQwenImage(w, scenario)
 		return
 	}
-	// images 创建面（能力域拆分 T5 验收；url/b64/xai/volcengine 形态按场景）。
-	// 火山 Ark 图像面 base 版本根为 /api/v3，网关直拼后命中同族 handler。
-	if r.URL.Path == imagesGenerationsPath || r.URL.Path == "/api/v3/images/generations" {
+	// images 创建/编辑面（能力域拆分 T5 验收；url/b64/xai/volcengine 形态按
+	// 场景）。2026-11-12 T216：/v1/images/edits 与 /v1/images/generations 共用
+	// serveImages（gpt 与 xai 编辑同路径、按账户主机区分；火山编辑由网关改写
+	// 到 /api/v3/images/generations）。火山 Ark 图像面 base 版本根为 /api/v3，
+	// 网关直拼后命中同族 handler。
+	if r.URL.Path == imagesGenerationsPath || r.URL.Path == imagesEditsPath || r.URL.Path == "/api/v3/images/generations" {
 		m.serveImages(w, idx, scenario)
 		return
 	}

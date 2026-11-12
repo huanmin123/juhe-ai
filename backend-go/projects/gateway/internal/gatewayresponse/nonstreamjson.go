@@ -202,10 +202,36 @@ func ValidateBufferedJsonProtocolResponse(parsedJsonBody GatewayNonStreamJsonBod
 			return protocolStructureFailurePtr("上游 Gemini Count Tokens JSON 响应结构无效：缺少 totalTokens")
 		}
 	case "embed_content":
+		// embed_content 同时承载 Gemini 原生 embedContent 与 OpenAI 兼容
+		// /v1/embeddings（B7 工具端点）。两者成功响应不同构：Gemini 为
+		// embedding/embeddings，OpenAI 为 data 数组；多模态向量子路径的
+		// data 又是单对象（data.embedding）。按请求路径分流，避免把
+		// OpenAI 的 data 响应误判为 Gemini 缺字段而 502。
+		if strings.Contains(requestPath, "/embeddings/multimodal") {
+			dataObject, _ := plainObject(root["data"])
+			if _, hasEmbedding := plainObject(dataObject["embedding"]); !hasEmbedding {
+				return protocolStructureFailurePtr("上游多模态向量 JSON 响应结构无效：缺少 data.embedding")
+			}
+			break
+		}
+		if strings.Contains(requestPath, "/embeddings") {
+			if _, ok := root["data"].([]any); !ok {
+				return protocolStructureFailurePtr("上游 Embeddings JSON 响应结构无效：data 必须是数组")
+			}
+			break
+		}
 		_, hasEmbedding := plainObject(root["embedding"])
 		_, hasEmbeddings := root["embeddings"].([]any)
 		if !hasEmbedding && !hasEmbeddings {
 			return protocolStructureFailurePtr("上游 Gemini Embed Content JSON 响应结构无效：缺少 embedding 或 embeddings")
+		}
+	case "rerank":
+		if _, ok := root["results"].([]any); !ok {
+			return protocolStructureFailurePtr("上游 Rerank JSON 响应结构无效：results 必须是数组")
+		}
+	case "moderation":
+		if _, ok := root["results"].([]any); !ok {
+			return protocolStructureFailurePtr("上游 Moderations JSON 响应结构无效：results 必须是数组")
 		}
 	case "interactions":
 		_, idIsString := root["id"].(string)
@@ -350,9 +376,21 @@ func ProtocolValidatedNonStreamResponse(parsedJsonBody GatewayNonStreamJsonBody,
 		_, ok := root["totalTokens"].(float64)
 		return ok
 	case "embed_content":
+		if strings.Contains(requestPath, "/embeddings/multimodal") {
+			dataObject, _ := plainObject(root["data"])
+			_, hasEmbedding := plainObject(dataObject["embedding"])
+			return hasEmbedding
+		}
+		if strings.Contains(requestPath, "/embeddings") {
+			_, ok := root["data"].([]any)
+			return ok
+		}
 		_, hasEmbedding := plainObject(root["embedding"])
 		_, hasEmbeddings := root["embeddings"].([]any)
 		return hasEmbedding || hasEmbeddings
+	case "rerank", "moderation":
+		_, ok := root["results"].([]any)
+		return ok
 	case "interactions":
 		_, idIsString := root["id"].(string)
 		_, nameIsString := root["name"].(string)

@@ -71,8 +71,8 @@ const formalProtocolMarkdown = nodeFs.readFileSync(nodePath.resolve(repoRoot, 'd
 const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   {
     name: '账户级健康检查模型与请求形态',
-    exportedPattern: /\| `healthCheckEndpointMode` \| 是 \| string \| 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create` 受模型目录与域能力约束），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 \|/,
-    formalPattern: /\| `healthCheckEndpointMode` \| 是 \| 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（\[AI账户检查模型与人工测试设计\]\(AI账户检查模型与人工测试设计\.md\) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 \|/
+    exportedPattern: /\| `healthCheckEndpointMode` \| 是 \| string \| 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create`、`embed_content`、`rerank_json`、`moderation_json` 受模型目录与域能力约束），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 \|/,
+    formalPattern: /\| `healthCheckEndpointMode` \| 是 \| 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`、`embed_content`、`rerank_json`、`moderation_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（\[AI账户检查模型与人工测试设计\]\(AI账户检查模型与人工测试设计\.md\) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 \|/
   },
   {
     name: 'connections 与健康检查三件套必填',
@@ -101,8 +101,8 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   },
   {
     name: '模型映射与跨协议边界',
-    exportedPattern: /`modelMappings` 只做协议等价的账号模型别名：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts。跨协议方向（含原 Responses → Chat Completions bridge）已退役，一律被拒绝/,
-    formalPattern: /`modelMappings` 只做协议等价的账号模型别名（2026-11-07 跨协议退役后口径）：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts。跨协议方向（含原 Responses → Chat Completions bridge）一律返回中文 400/
+    exportedPattern: /`modelMappings` 只做协议等价的账号模型别名：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts，embed_content → embed_content，rerank → rerank，moderation → moderation。跨协议方向（含原 Responses → Chat Completions bridge）已退役，一律被拒绝/,
+    formalPattern: /`modelMappings` 只做协议等价的账号模型别名（2026-11-07 跨协议退役、2026-11-12 B7 工具端点批后口径）：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts，embed_content → embed_content，rerank → rerank，moderation → moderation。跨协议方向（含原 Responses → Chat Completions bridge）一律返回中文 400/
   },
   {
     name: '来源模型映射与模型目录拦截',
@@ -223,7 +223,7 @@ assertMatch(accountImportProtocolMarkdown, /"providerProtocolProfileId": "profil
 assertMatch(accountImportProtocolMarkdown, /profile_deepseek_anthropic_v1/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
 assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做协议等价的账号模型别名/, '协议 Markdown 应说明 modelMappings 只做协议等价的账号模型别名')
 assertMatch(accountImportProtocolMarkdown, /跨协议方向（含原 Responses → Chat Completions bridge）已退役，一律被拒绝/, '协议 Markdown 应说明跨协议方向已退役并被拒绝')
-assertMatch(accountImportProtocolMarkdown, /Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一）/, '协议 Markdown 应说明 7 个协议等价 pair 清单（不含 Responses 到 Chat bridge）')
+assertMatch(accountImportProtocolMarkdown, /Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts，embed_content → embed_content，rerank → rerank，moderation → moderation/, '协议 Markdown 应说明 10 个协议等价 pair 清单（不含 Responses 到 Chat bridge）')
 assertMatch(accountImportProtocolMarkdown, /右侧 `upstreamEndpointFamily: "responses"` 只允许 `sourceEndpointFamily: "responses"` 的原生 Responses 别名/, '协议 Markdown 应说明 Responses 目标只允许原生 Responses 同族别名（bridge 退役）')
 assertMatch(accountImportProtocolMarkdown, /`sourceModel` 是客户端请求模型，可跨供应商选择但必须支持所选协议；`upstreamModel` 是该账户实际转发模型，必须来自当前账户供应商模型目录/, '协议 Markdown 应说明 source 可跨供应商但须支持所选协议、上游限当前账户目录')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 与 GLM Coding Anthropic 使用 Anthropic v1 Messages 原生协议，`credentials\.supported_endpoint_modes` 填 `messages_json`、`messages_sse`，不要填 `message_token_counting`/, '协议 Markdown 应说明第三方 Anthropic 档案不支持 count_tokens')

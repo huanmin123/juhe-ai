@@ -431,7 +431,7 @@ func TestW9EUnknownTierBillingMatrix(t *testing.T) {
 	} //nolint:exhaustruct // 只声明本测试用到的字段
 
 	standardCost := BuildCostBreakdown(standardOnly, CostInput{
-		InputTokens:  fptr(1_000_000), OutputTokens: fptr(1_000_000),
+		InputTokens: fptr(1_000_000), OutputTokens: fptr(1_000_000),
 	})
 	if standardCost == nil || standardCost.AccountChargeUsd == nil || *standardCost.AccountChargeUsd != 12 {
 		t.Fatalf("standard baseline = %+v, want 12", standardCost)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
@@ -257,6 +258,11 @@ func TestListAccountSubqueriesFenceDeletedAccounts(t *testing.T) {
 	}
 	retained := int64(999_999)
 	insertIncident := func(scope, accountID, state string, dispatch, ledger, projected, updated int64, retainedUntil *int64) {
+		updatedTime := time.UnixMilli(updated).UTC()
+		var retainedUntilTime any
+		if retainedUntil != nil {
+			retainedUntilTime = time.UnixMilli(*retainedUntil).UTC()
+		}
 		t.Helper()
 		_, err := db.Exec(`INSERT INTO `+defaultBusinessSchema+`.account_circuit_incidents (
       circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
@@ -267,7 +273,7 @@ func TestListAccountSubqueriesFenceDeletedAccounts(t *testing.T) {
       recovering_successes, retained_until_ms, created_at_ms, updated_at_ms
     ) VALUES ($1, $2, $3, 'account', $4, '[]', $5, 1, $6, $7, $8, $9, 0, 0, 0, 0, 1, '[]', 0, $10, $11, $12)`,
 			scope, accountID, accountID, "inc-"+scope, state, dispatch, ledger, projected, "tr-"+scope,
-			retainedUntil, updated, updated)
+			retainedUntilTime, updatedTime, updatedTime)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -489,7 +495,7 @@ func TestCircuitInputBoundsAndZeroTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	var available int64
-	if err := db.QueryRow(`SELECT available_at_ms FROM ` + defaultBusinessSchema + `.account_circuit_outbox WHERE dedupe_key='dispatch:zero-time'`).Scan(&available); err != nil {
+	if err := db.QueryRow(`SELECT (EXTRACT(EPOCH FROM available_at_ms)*1000)::bigint FROM ` + defaultBusinessSchema + `.account_circuit_outbox WHERE dedupe_key='dispatch:zero-time'`).Scan(&available); err != nil {
 		t.Fatal(err)
 	}
 	if available != 0 {

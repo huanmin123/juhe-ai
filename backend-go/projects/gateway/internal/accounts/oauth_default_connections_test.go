@@ -62,21 +62,21 @@ func TestDefaultConnectionsForOAuthVendorTable(t *testing.T) {
 			name: "gemini google_oauth code_assist", provider: "gemini", accountType: "google_oauth",
 			credentials: Credentials{"access_token": "at", "oauth_type": "code_assist", "base_url": "https://generativelanguage.googleapis.com"},
 			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-			wantModes: []string{"count_tokens", "embed_content", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
+			wantModes: []string{"count_tokens", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
 			wantHealthMod: "generate_content_sse",
 		},
 		{
 			name: "gemini google_oauth google_one", provider: "gemini", accountType: "google_oauth",
 			credentials: Credentials{"access_token": "at", "oauth_type": "google_one", "base_url": "https://generativelanguage.googleapis.com"},
 			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-			wantModes: []string{"count_tokens", "embed_content", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
+			wantModes: []string{"count_tokens", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
 			wantHealthMod: "generate_content_sse",
 		},
 		{
 			name: "gemini google_oauth ai_studio", provider: "gemini", accountType: "google_oauth",
 			credentials: Credentials{"access_token": "at", "oauth_type": "ai_studio", "base_url": "https://generativelanguage.googleapis.com"},
 			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-			wantModes: []string{"count_tokens", "embed_content", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
+			wantModes: []string{"count_tokens", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
 			wantHealthMod: "generate_content_sse",
 		},
 		{
@@ -208,7 +208,7 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			credentials: Credentials{"access_token": "at-gemini", "oauth_type": "code_assist", "base_url": "https://generativelanguage.googleapis.com"},
 			model:       "gemini-2.5-pro", modelModes: `["generate_content_json","generate_content_sse"]`,
 			wantPreset: "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com/v1beta", wantSurface: "gemini_v1beta",
-			wantModes: []string{"count_tokens", "embed_content", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"},
+			wantModes: []string{"count_tokens", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"},
 		},
 		{
 			name: "gemini google_oauth video", provider: "gemini", accountType: "google_oauth", domain: "video",

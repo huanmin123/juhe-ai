@@ -210,7 +210,7 @@
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
       :account-counts="providerAccountCounts"
-      :capability-domain="capabilityDomain"
+      :capability-domain="modalCapabilityDomain"
       :validation-failure="lastValidationFailure"
       :api-key-runtime-details="accountApiKeyRuntimeDetails"
       :api-key-runtime-loading="accountApiKeyRuntimeLoading"
@@ -426,6 +426,8 @@ const scenarioFilter = computed<AccountCapabilityDomain | undefined>(() => {
     : undefined
 })
 const capabilityDomain = computed<AccountCapabilityDomain>(() => scenarioFilter.value ?? 'chat')
+// 编辑/克隆用账户自身场景（全部场景视图下不能回落到 chat）；创建用当前筛选场景。
+const modalCapabilityDomain = computed<AccountCapabilityDomain>(() => editingCapabilityDomain.value ?? capabilityDomain.value)
 const isChatDomain = computed(() => scenarioFilter.value === 'chat')
 
 function handleScenarioFilterChange(value: unknown) {
@@ -1042,6 +1044,7 @@ const {
   lastValidationFailure,
   editingAccountDetail,
   editingAccountAdvancedDetail,
+  editingCapabilityDomain,
   editingId,
   editingAuthorizedAccount,
   ensureDefaultGroupSelected,

@@ -1,6 +1,7 @@
 package gatewayresponse
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 
@@ -96,6 +97,10 @@ type HandleUpstreamResponseInput struct {
 		Done() <-chan struct{}
 		Err() error
 	}
+	// ClientCtx 是原始客户端请求上下文（未脱钩）：上游执行用 Signal 脱钩后，
+	// 仍需在客户端断开瞬间启动 drain 预算，而不是等到首次写下游失败。
+	// nil = 未装配（测试 / 非网关调用），仅靠写失败检测。
+	ClientCtx           context.Context
 	FirstByteTimeoutMs  *int64
 	FirstByteDeadlineMs *int64
 	// DeadlineStartedAtMs 是 FirstByteDeadlineMs 的计时基准（attempt 时刻）。
@@ -367,6 +372,7 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 			// 受限重放窗口资格排除面（设计 §3.1）：调度层判定透传，缺省启用。
 			PreCommitReplayWindowDisabled: input.PreCommitReplayWindowDisabled,
 			NowMs:                         input.nowMs(),
+			ClientSignal:                  clientSignalOf(input.ClientCtx),
 			// 响应侧占位符还原（§7）：事件级跨 SSE 拆分拼合 + per-chunk 悬挂
 			// 缓冲还原 + EOF 段冲刷（nil = 未挂载，管道透传零改动）。
 			TransformUpstreamChunk:         placeholderTransform,
@@ -483,11 +489,20 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 		})
 	}
 
-	success := pipeResult.Completed && input.UpstreamResponse.OK() && !pipeResult.PassthroughUpstreamFailure
+	// clientGone：客户端断开后管道已按有界 drain 读完上游（终态或预算）。
+	// 该请求对客户端是失败，但上游可能已经计费——usage 取 fallback 后的
+	// 实际/估算值记账，归因 downstream_closed，不能再按成功行落库。
+	clientGone := pipeResult.ClientGone
+	success := pipeResult.Completed && input.UpstreamResponse.OK() && !pipeResult.PassthroughUpstreamFailure && !clientGone
 	errorPhase := ""
 	errorCode := ""
 	errorMessage := ""
-	if !(pipeResult.Completed && !pipeResult.PassthroughUpstreamFailure) {
+	switch {
+	case clientGone:
+		errorPhase = "downstream"
+		errorCode = orDefault(pipeResult.ErrorCode, ClientCanceledErrorCode)
+		errorMessage = DownstreamConnectionClosedMessage
+	case !(pipeResult.Completed && !pipeResult.PassthroughUpstreamFailure):
 		errorPhase = "stream"
 		errorCode = orDefault(pipeResult.ErrorCode, "cyber_policy")
 		errorMessage = pipeResult.Message
@@ -501,6 +516,43 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 		ErrorCode:       errorCode,
 		ErrorMessage:    errorMessage,
 	})
+
+	if clientGone {
+		if input.Deps != nil && input.Deps.AccountEffects != nil {
+			input.Deps.AccountEffects.ForgetSessionAffinity(input.SessionAffinityKey, input.Account.GetID())
+		}
+		if input.Deps != nil && input.Deps.UsageRecords != nil {
+			input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
+				UsageContext:       input.UsageContext,
+				Account:            input.Account,
+				RequestedModel:     requestModelHint(input.Req),
+				StatusCode:         input.UpstreamResponse.Status,
+				Success:            false,
+				Stream:             true,
+				FirstTokenMs:       pipeResult.FirstTokenMs,
+				StartedAtMs:        input.StartedAtMs,
+				Usage:              usageWithObservedModel(usage, input.UpstreamResponse.UpstreamResponseModel),
+				ErrorCode:          errorCode,
+				ErrorMessage:       DownstreamConnectionClosedMessage,
+				FailureAttribution: FailureAttributionDownstreamClosed,
+				RequestSnapshot:    usageRequestSnapshotWithOmission(input.UsageContext, pipeResult.BodyOmission),
+				ResponseSnapshot:   streamFailureResponseSnapshot(&input, pipeResult),
+			})
+		}
+		// 审计终态必须显式落 downstream_closed：clientGone 分支返回
+		// AlreadyFinalized 后链面不会再走 FinalizeHandledUpstreamResponse。
+		input.AuditCapture.Finalize(gatewaypreauth.AuditFinalizeInput{
+			Outcome:          "downstream_closed",
+			Success:          false,
+			StatusCode:       input.UpstreamResponse.Status,
+			ResponseBody:     pipeResult.ResponseBodyText,
+			ResponsePartType: gatewaypreauth.AuditPartGatewayError,
+			ErrorPhase:       "downstream",
+			ErrorCode:        errorCode,
+			ErrorMessage:     DownstreamConnectionClosedMessage,
+		})
+		return UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}, nil
+	}
 
 	if !pipeResult.Completed {
 		return input.finalizeStreamFailure(pipeResult, usage, driver, codexTurnFailureRemembered)
@@ -768,9 +820,19 @@ func signalAborted(signal interface{ Done() <-chan struct{} }) bool {
 	}
 }
 
+// clientSignalOf 把原始请求 ctx 投影为管道可消费的 Done 视图（nil 安全）。
+func clientSignalOf(ctx context.Context) interface{ Done() <-chan struct{} } {
+	if ctx == nil {
+		return nil
+	}
+	return ctx
+}
+
 // applyImageEchoHeaders 为同步图像响应写入厂商/参数回显头（2026-11-11 图像
-// 生成统一协议）。回显走响应头而不是 body：gpt 的 b64_json 响应必须保持
-// 纯透传，不能为写字段而整体缓冲/改写。响应宽容口径下 provider_options 与
+// 生成统一协议；2026-11-12 T216 扩到编辑面）。回显走响应头而不是 body：gpt
+// 的 b64_json 响应必须保持纯透传，不能为写字段而整体缓冲/改写。编辑面的
+// multipart 请求在这里用同一解析器重新解析原始 body 计算回显事实（不缓存、
+// 不落盘）；生成面仍从 JSON body 计算。响应宽容口径下 provider_options 与
 // params 的键名摘要只用于排查，不影响成功判定。
 func applyImageEchoHeaders(input *HandleUpstreamResponseInput) {
 	if input == nil || input.Req == nil || input.Account == nil ||
@@ -780,10 +842,16 @@ func applyImageEchoHeaders(input *HandleUpstreamResponseInput) {
 	if input.Downstream.Res == nil || input.Downstream.Res.HeadersSent() {
 		return
 	}
-	if !gatewaymedia.IsImageGenerationPath(input.Req.PathAndQuery()) {
+	pathAndQuery := input.Req.PathAndQuery()
+	if !gatewaymedia.IsImagePath(pathAndQuery) {
 		return
 	}
-	echo := gatewaymedia.ImageEchoForRequest(input.Account.GetProviderCode(), input.Req.ParsedJSONObjectBody())
+	var rawBody []byte
+	if input.Req.Body != nil {
+		rawBody = input.Req.Body.RawBody
+	}
+	echo := gatewaymedia.ImageEchoForPath(input.Account.GetProviderCode(), pathAndQuery,
+		input.Req.Header("Content-Type"), rawBody)
 	for name, value := range gatewaymedia.ImageEchoHeaders(echo) {
 		if input.Downstream.Res.Header().Get(name) == "" {
 			input.Downstream.Res.Header().Set(name, value)

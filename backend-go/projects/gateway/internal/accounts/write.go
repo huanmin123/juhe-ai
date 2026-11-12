@@ -26,6 +26,8 @@ var (
 		// M4b 媒体映射族（媒体设计 §9 hybrid 行）：与 schema 端点族 seed
 		// 同码（openai_v1_video_generation / openai_v1_tts）。
 		"video_generation": true, "tts": true,
+		// B7 工具端点映射族：向量/重排/安全同族模型名改写。
+		"embed_content": true, "rerank": true, "moderation": true,
 	}
 	accountUpstreamEndpointFamilies = map[string]bool{
 		"chat_completions": true, "responses": true, "messages": true,
@@ -34,6 +36,8 @@ var (
 		// stream_generate_content 无上游形态不进上游枚举——与 chat 族仅作
 		// source 的既有先例一致。
 		"video_generation": true, "tts": true,
+		// B7 工具端点映射族。
+		"embed_content": true, "rerank": true, "moderation": true,
 	}
 )
 

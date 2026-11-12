@@ -136,14 +136,24 @@ func securityPolicyFamilyForRequest(req *gatewaypreauth.GatewayRequest) string {
 		return ""
 	}
 	if method == http.MethodPost {
-		// 媒体域优先：audio/video lane（/v1/audio/speech、/v1/videos、
-		// /v1/audio/jobs 等）与图像生成的 prompt/text 类 JSON 出站体都判
+		// B7 工具端点：向量/重排/安全的文本输入按 tool 族扫描（只替换文本
+		// 叶子，不注入系统提示——工具请求没有 system 位置）；子路径同族。
+		normalized := securityPolicyStripV1Prefix(path)
+		for _, family := range []string{"/embeddings", "/rerank", "/moderations"} {
+			if normalized == family || strings.HasPrefix(normalized, family+"/") {
+				return gatewaysecpol.FamilyTool
+			}
+		}
+		// 媒体域优先：audio/video lane（/v1/audio/speech、/v1/video/generations、
+		// /v1/tasks/audio 等）与图像生成的 prompt/text 类 JSON 出站体都判
 		// media（STT 的 multipart 输入不是 JSON，SanitizeBody 顶层 fail-open）。
 		if lane, known := gatewaymedia.RequestLaneForPath(method, path); known &&
 			(lane == gatewayproto.LaneAudio || lane == gatewayproto.LaneVideo) {
 			return gatewaysecpol.FamilyMedia
 		}
-		if strings.Contains(path, "/images/generations") {
+		// 图像生成/编辑（2026-11-12 T216：编辑面与生成面共用统一图像链）的
+		// prompt/text 类 JSON 出站体同判 media。
+		if strings.Contains(path, "/images/generations") || strings.Contains(path, "/images/edits") {
 			return gatewaysecpol.FamilyMedia
 		}
 	}

@@ -127,8 +127,8 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		return nil
 	}
 	savedStore, err := proberepo.NewStore(proberepo.Config{
-		DB: composed.db,
-		Secret:   cfg.Secret,
+		DB:     composed.db,
+		Secret: cfg.Secret,
 	})
 	if err != nil {
 		return err

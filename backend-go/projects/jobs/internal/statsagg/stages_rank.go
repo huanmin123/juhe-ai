@@ -93,7 +93,7 @@ func refreshCallerAccountLast7dRequestRankSnapshot(ctx context.Context, tx *sql.
 func refreshApiKeyCurrentMonthCostRankSnapshot(ctx context.Context, tx *sql.Tx, dialect Dialect, snapshotAt, updatedAt string, timezone *time.Location, now time.Time) error {
 	return runRankSnapshotStage(ctx, tx, dialect, rankSnapshotSpec{
 		scopeType: "api_key", windowKey: "current_month", metric: "total_cost_usd", metricColumn: "total_cost_usd",
-		sourceTable: "usage_stats_monthly", timeWhere: "stat_month = ?", timeParam: monthKey(now, timezone), limit: 50,
+		sourceTable: "usage_stats_monthly", timeWhere: "stat_month = ?", timeParam: CalendarDBValue("stat_month", monthKey(now, timezone)), limit: 50,
 	}, snapshotAt, updatedAt)
 }
 
@@ -105,6 +105,6 @@ func refreshAuthorizationCurrentMonthCostRankSnapshot(ctx context.Context, tx *s
 	}
 	return runRankSnapshotStage(ctx, tx, dialect, rankSnapshotSpec{
 		scopeType: scopeType, windowKey: "current_month", metric: "total_cost_usd", metricColumn: "total_cost_usd",
-		sourceTable: "usage_stats_monthly", timeWhere: "stat_month = ?", timeParam: monthKey(now, timezone), limit: 50,
+		sourceTable: "usage_stats_monthly", timeWhere: "stat_month = ?", timeParam: CalendarDBValue("stat_month", monthKey(now, timezone)), limit: 50,
 	}, snapshotAt, updatedAt)
 }

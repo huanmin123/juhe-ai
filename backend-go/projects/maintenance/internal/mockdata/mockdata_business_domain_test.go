@@ -75,12 +75,16 @@ func TestBusinessDomainContent(t *testing.T) {
 	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaBusiness, "model_check_question_bank") + " WHERE status = 'rejected'"); n < 1 {
 		t.Fatal("缺 rejected 题目")
 	}
-	// media_jobs：video 六状态、音频三 kind、owner 列与 Key 同源。
+	// media_jobs：video 六状态、长音频转写样本（audio_speech 为 DB 保留值，
+	// 自 2026-11-13 起种子不再创建）、owner 列与 Key 同源。
 	if n := count("SELECT COUNT(DISTINCT status) FROM " + qualified(SchemaBusiness, "media_jobs") + " WHERE kind = 'video'"); n < 4 {
 		t.Fatalf("video 状态分布 %d < 4", n)
 	}
-	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaBusiness, "media_jobs") + " WHERE kind IN ('audio_speech','audio_transcription')"); n < 3 {
-		t.Fatalf("音频任务样本 %d < 3", n)
+	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaBusiness, "media_jobs") + " WHERE kind = 'audio_transcription'"); n < 3 {
+		t.Fatalf("长音频任务样本 %d < 3", n)
+	}
+	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaBusiness, "media_jobs") + " WHERE kind = 'audio_speech'"); n != 0 {
+		t.Fatalf("种子仍创建保留值 audio_speech: %d", n)
 	}
 	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaBusiness, "media_jobs") + " WHERE owner_system_account_id = ''"); n != 0 {
 		t.Fatalf("media_jobs owner 列存在空串: %d", n)

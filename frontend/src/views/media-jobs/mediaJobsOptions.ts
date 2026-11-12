@@ -16,8 +16,7 @@ export const mediaJobStatusFilterOptions: Array<{ label: string; value: MediaJob
 export const mediaJobKindFilterOptions: Array<{ label: string; value: MediaJobKindFilter }> = [
   { label: '全部类型', value: 'all' },
   { label: '视频', value: 'video' },
-  { label: '长音频转写', value: 'audio_transcription' },
-  { label: '长音频合成', value: 'audio_speech' }
+  { label: '长音频转写', value: 'audio_transcription' }
 ]
 
 /** 列表只保留通用管理列；供应商/上游任务号/归属账户/时长尺寸/用量/错误等细节入详情抽屉（媒体设计 §8.2）。 */

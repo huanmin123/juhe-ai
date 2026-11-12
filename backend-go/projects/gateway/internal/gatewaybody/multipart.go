@@ -15,6 +15,10 @@ import (
 // fieldSize:max+1, files:5, parts:24; Go uses the standard mime/multipart
 // reader wrapped with the same observable limits. Parse errors degrade to
 // undefined exactly like the busboy error handler.
+//
+// 2026-11-12 T216：图像编辑（/v1/images/edits）允许最多 16 张参考图 + mask，
+// 分段总数上限对齐编辑解析器的 64（gatewaymedia/image_edit.go）；该常量只
+// 影响本文件的元数据扫描范围（model 提取），不改变文件数/字段数上限。
 
 const (
 	maxMultipartModelBytes          = 200
@@ -25,7 +29,8 @@ const (
 const (
 	multipartMaxFields = 16
 	multipartMaxFiles  = 5
-	multipartMaxParts  = 24
+	// multipartMaxParts 与图像编辑解析器一致（part ≤64）。
+	multipartMaxParts = 64
 )
 
 // ExtractMultipartImageModel mirrors extractGatewayMultipartImageModel.
@@ -169,7 +174,7 @@ func isAudioTranscriptionEndpointPath(path string) bool {
 
 // isAudioEndpointPath 匹配 audio 车道同步端点族（媒体设计 §3：/v1/audio/*
 // 路径族优先判定车道）：speech（TTS，JSON 体）与 transcriptions/translations
-//（STT，multipart 上传体）。body 限额按此把 audio 车道对齐 image 的 64MB 档。
+// （STT，multipart 上传体）。body 限额按此把 audio 车道对齐 image 的 64MB 档。
 func isAudioEndpointPath(path string) bool {
 	path = strings.ToLower(path)
 	if path == "/audio/speech" || path == "/v1/audio/speech" {

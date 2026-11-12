@@ -57,7 +57,7 @@ func TestV1R5FirstByteDeadlineCutoverVerdict(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	res := gatewaypreauth.NewTrackingWriter(recorder)
 
-	handling := loop.c.handleUpstreamResponse(req, res, loop.auditCapture, loop.current, dispatched, loop.startedAt,
+	handling := loop.c.handleUpstreamResponse(nil, req, res, loop.auditCapture, loop.current, dispatched, loop.startedAt,
 		gatewayruntimecache.GatewaySettings{}, requestBudgets{}, nil)
 
 	if !handling.FirstByteDeadlineCutover {

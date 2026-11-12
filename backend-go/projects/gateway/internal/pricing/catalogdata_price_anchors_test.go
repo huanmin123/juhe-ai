@@ -54,18 +54,32 @@ func TestDomesticProviderCatalogPriceAnchors(t *testing.T) {
 		t.Fatal("minimax MiniMax-Hailuo-2.3 row missing")
 	} else if got := floatOf(hailuo.VideoOutputCostPerCall); got != 0.2857142857142857 {
 		t.Fatalf("minimax MiniMax-Hailuo-2.3 VideoOutputCostPerCall = %v, want 0.2857142857142857", got)
+	} else if got := hailuo.VideoOutputCostPerCallBySeconds["10"]; got != 0.5714285714285714 {
+		t.Fatalf("minimax MiniMax-Hailuo-2.3 10s tier = %v, want 0.5714285714285714（4 元/条 ÷7.0）", got)
 	}
-	// 缺口补录批（2026-10-17）：Hailuo-2.3-Fast 768P-6s 1.35 元/条 ÷7.0。
+	// 缺口补录批（2026-10-17）：Hailuo-2.3-Fast 768P-6s 1.35 元/条 ÷7.0；
+	// 2026-11-12 档位批：768P-10s 2.25 元/条 ÷7.0。
 	if fast, ok := mm["MiniMax-Hailuo-2.3-Fast"]; !ok {
 		t.Fatal("minimax MiniMax-Hailuo-2.3-Fast row missing")
 	} else if got := floatOf(fast.VideoOutputCostPerCall); got != 0.19285714285714287 {
 		t.Fatalf("minimax MiniMax-Hailuo-2.3-Fast VideoOutputCostPerCall = %v, want 0.19285714285714287", got)
+	} else if got := fast.VideoOutputCostPerCallBySeconds["10"]; got != 0.32142857142857145 {
+		t.Fatalf("minimax MiniMax-Hailuo-2.3-Fast 10s tier = %v, want 0.32142857142857145（2.25 元/条 ÷7.0）", got)
 	}
 	// M2.7 缓存写 2.625 元/百万 ÷7.0（本批补齐；此前整字段缺失）。
 	if m27, ok := mm["MiniMax-M2.7"]; !ok {
 		t.Fatal("minimax MiniMax-M2.7 row missing")
 	} else if got := floatOf(m27.CacheCreationInputTokenCost); got != 3.75e-07 {
 		t.Fatalf("minimax MiniMax-M2.7 CacheCreationInputTokenCost = %v, want 3.75e-07", got)
+	}
+	// M3.1-Flash（2026-11-13）：官方 1.00/4.00 元、缓存读 0.10 元/百万 ÷7.0。
+	if m31, ok := mm["MiniMax-M3.1-Flash"]; !ok {
+		t.Fatal("minimax MiniMax-M3.1-Flash row missing")
+	} else if floatOf(m31.InputCostPerToken) != 1.4285714285714286e-07 ||
+		floatOf(m31.OutputCostPerToken) != 5.714285714285714e-07 ||
+		floatOf(m31.CacheReadInputTokenCost) != 1.4285714285714286e-08 {
+		t.Fatalf("minimax MiniMax-M3.1-Flash prices = %v/%v/%v, want 1/4/0.1 CNY ÷7.0",
+			floatOf(m31.InputCostPerToken), floatOf(m31.OutputCostPerToken), floatOf(m31.CacheReadInputTokenCost))
 	}
 	// 缺口补录第二批（2026-10-17）：M2 家族历史模型 2.1/8.4 元、缓存读 0.21、
 	// 缓存写 2.625 元/百万（highspeed 4.2/16.8）÷7.0；H3-Context-IR 任务价

@@ -261,7 +261,7 @@ func dispatchedTimeoutProfileHarness(t *testing.T, profile gatewayrouting.Gatewa
 			http.Header{"Content-Type": []string{"text/event-stream"}},
 			&delayedSSEReader{delay: firstChunkDelay, payload: slowCompactionSSEPayload()}),
 	}
-	handling := loop.c.handleUpstreamResponse(request, res, loop.auditCapture, loop.current, dispatched,
+	handling := loop.c.handleUpstreamResponse(nil, request, res, loop.auditCapture, loop.current, dispatched,
 		loop.startedAt, settings, requestBudgets{}, nil)
 	return recorder, handling
 }
@@ -361,7 +361,7 @@ func TestV1HandleUpstreamResponseAttemptAnchoredBudget(t *testing.T) {
 			http.Header{"Content-Type": []string{"text/event-stream"}},
 			&delayedSSEReader{delay: 1200 * time.Millisecond, payload: slowCompactionSSEPayload()}),
 	}
-	handling2 := loop.c.handleUpstreamResponse(request, res, loop.auditCapture, loop.current, dispatched,
+	handling2 := loop.c.handleUpstreamResponse(nil, request, res, loop.auditCapture, loop.current, dispatched,
 		staleStartedAt, settings, requestBudgets{}, nil)
 	if !handling2.RetryUpstream {
 		t.Fatalf("零值锚点回退请求级起点时预算耗尽必须掐断: %+v", handling2)

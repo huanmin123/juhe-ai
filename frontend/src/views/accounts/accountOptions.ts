@@ -33,8 +33,11 @@ import {
   MINIMAX_PROVIDER_CODE,
   OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_EMBED_CONTENT_FAMILY,
+  OPENAI_MODERATION_FAMILY,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
+  OPENAI_RERANK_FAMILY,
   OPENAI_RESPONSES_FAMILY,
   OPENAI_TTS_FAMILY,
   OPENAI_VIDEO_GENERATION_FAMILY,
@@ -67,7 +70,7 @@ export const GPT_PROVIDER: ProviderDefinition = {
   defaultHealthCheckModel: '',
   defaultSupportedModels: DEFAULT_GPT_SUPPORTED_MODELS,
   accountTypes: ['oauth', 'api_key'],
-  capabilities: ['responses', 'chat'],
+  capabilities: ['responses', 'chat', 'embedding', 'moderation'],
   protocolProfiles: [
     {
       id: GPT_OPENAI_V1_PROFILE_ID,
@@ -79,10 +82,12 @@ export const GPT_PROVIDER: ProviderDefinition = {
       baseUrl: 'https://api.openai.com/v1',
       defaultHealthCheckModel: '',
       accountTypes: ['oauth', 'api_key'],
-      capabilities: ['responses', 'chat'],
+      capabilities: ['responses', 'chat', 'embedding', 'moderation'],
       endpointFamilies: [
         { code: OPENAI_RESPONSES_FAMILY, name: 'Responses' },
-        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
+        { code: OPENAI_EMBED_CONTENT_FAMILY, name: '向量' },
+        { code: OPENAI_MODERATION_FAMILY, name: '安全' }
       ]
     }
   ]
@@ -423,7 +428,7 @@ const QWEN_PROVIDER: ProviderDefinition = {
   defaultHealthCheckModel: 'qwen3.8-max',
   defaultSupportedModels: ['qwen3.8-max', 'wan3.0-video', 'qwen3-tts-flash', 'qwen-image-3.0'],
   accountTypes: ['api_key'],
-  capabilities: ['chat', 'video', 'audio', 'image'],
+  capabilities: ['chat', 'video', 'audio', 'image', 'embedding', 'rerank'],
   protocolProfiles: [
     {
       id: QWEN_OPENAI_V1_PROFILE_ID,
@@ -435,11 +440,13 @@ const QWEN_PROVIDER: ProviderDefinition = {
       baseUrl: 'https://dashscope.aliyuncs.com',
       defaultHealthCheckModel: 'qwen3.8-max',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'video', 'audio', 'image'],
+      capabilities: ['chat', 'video', 'audio', 'image', 'embedding', 'rerank'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
         { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },
-        { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' }
+        { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' },
+        { code: OPENAI_EMBED_CONTENT_FAMILY, name: '向量' },
+        { code: OPENAI_RERANK_FAMILY, name: '重排' }
       ]
     }
   ]

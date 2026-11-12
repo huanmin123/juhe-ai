@@ -77,7 +77,7 @@ const ArchitectureVersion = "go-projects-v1"
 // instant text 列迁 timestamptz。2026-11-12 revision 28 是 Phase 3 统计域：
 // 53 张表 144 个时间列同表重写（instant → timestamptz、日历键 → date/
 // timestamp(0)）。当前值 28。
-const SchemaRevision int64 = 28
+const SchemaRevision int64 = 34
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

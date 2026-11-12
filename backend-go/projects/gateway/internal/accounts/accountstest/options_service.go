@@ -1208,6 +1208,12 @@ func connectivityModesForDomain(domain string) []string {
 		return []string{"images_json"}
 	case accountscore.CapabilityDomainAudio:
 		return []string{"audio_speech", "audio_transcription_json", "audio_job_get"}
+	case accountscore.CapabilityDomainEmbedding:
+		return []string{"embed_content"}
+	case accountscore.CapabilityDomainRerank:
+		return []string{"rerank_json"}
+	case accountscore.CapabilityDomainModeration:
+		return []string{"moderation_json"}
 	}
 	return nil
 }
@@ -1226,6 +1232,12 @@ func connectivityDomainFromModes(modes []string) string {
 		return accountscore.CapabilityDomainAudio
 	case accountscore.ContainsString(modes, "images_json"):
 		return accountscore.CapabilityDomainImage
+	case accountscore.ContainsString(modes, "embed_content"):
+		return accountscore.CapabilityDomainEmbedding
+	case accountscore.ContainsString(modes, "rerank_json"):
+		return accountscore.CapabilityDomainRerank
+	case accountscore.ContainsString(modes, "moderation_json"):
+		return accountscore.CapabilityDomainModeration
 	}
 	return accountscore.CapabilityDomainChat
 }

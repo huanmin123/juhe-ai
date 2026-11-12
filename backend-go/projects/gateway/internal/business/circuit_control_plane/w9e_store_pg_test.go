@@ -54,11 +54,11 @@ const w9eCPPIncidentsDDL = `CREATE TABLE IF NOT EXISTS ` + defaultBusinessSchema
  parent_incident_id TEXT, child_incident_ids_json TEXT NOT NULL, caused_by_terminal_outcome_id TEXT, state TEXT NOT NULL,
  failure_scope TEXT, generation BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, ledger_revision BIGINT NOT NULL,
  projected_ledger_revision BIGINT NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation BIGINT NOT NULL,
- open_until_ms BIGINT, next_transition_at_ms BIGINT, lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
- lease_until_ms BIGINT, attempt_started_at_ms BIGINT, attempt_hard_deadline_ms BIGINT, upstream_attempt_observed INTEGER NOT NULL,
+ open_until_ms TIMESTAMPTZ(6), next_transition_at_ms TIMESTAMPTZ(6), lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
+ lease_until_ms TIMESTAMPTZ(6), attempt_started_at_ms TIMESTAMPTZ(6), attempt_hard_deadline_ms TIMESTAMPTZ(6), upstream_attempt_observed INTEGER NOT NULL,
  backoff_level BIGINT NOT NULL, consecutive_failures BIGINT NOT NULL, confirmation_failures_required BIGINT NOT NULL,
  confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes BIGINT NOT NULL, last_failure_class TEXT,
- retained_until_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`
+ retained_until_ms TIMESTAMPTZ(6), created_at_ms TIMESTAMPTZ(6) NOT NULL, updated_at_ms TIMESTAMPTZ(6) NOT NULL)`
 
 // w9eCPPOutboxDDL 与生产同构（T87 修正 2026-10-31）：outbox 唯一约束是复合
 // UNIQUE (projection_key, dedupe_key)（生产权威
@@ -68,9 +68,9 @@ const w9eCPPIncidentsDDL = `CREATE TABLE IF NOT EXISTS ` + defaultBusinessSchema
 const w9eCPPOutboxDDL = `CREATE TABLE IF NOT EXISTS ` + defaultBusinessSchema + `.account_circuit_outbox (
  event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL, event_type TEXT NOT NULL,
  account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
- dispatch_revision BIGINT NOT NULL, generation BIGINT, ledger_revision BIGINT, status TEXT NOT NULL, available_at_ms BIGINT NOT NULL,
- claim_token TEXT, claimed_by TEXT, claim_until_ms BIGINT, attempt_count BIGINT NOT NULL, last_error_class TEXT,
- acknowledged_at_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL,
+ dispatch_revision BIGINT NOT NULL, generation BIGINT, ledger_revision BIGINT, status TEXT NOT NULL, available_at_ms TIMESTAMPTZ(6) NOT NULL,
+ claim_token TEXT, claimed_by TEXT, claim_until_ms TIMESTAMPTZ(6), attempt_count BIGINT NOT NULL, last_error_class TEXT,
+ acknowledged_at_ms TIMESTAMPTZ(6), created_at_ms TIMESTAMPTZ(6) NOT NULL, updated_at_ms TIMESTAMPTZ(6) NOT NULL,
  UNIQUE (projection_key, dedupe_key))`
 
 const w9eCPPCapabilityIndex = `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON ` +

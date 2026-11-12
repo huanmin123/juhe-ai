@@ -1,7 +1,7 @@
 package mockupstream
 
 // Volcengine (SeedASR AUC, 录音文件识别 2.0) async ASR task face for the
-// M3f /v1/audio/jobs chain, per docs/functions/媒体上游协议契约与Mock上游规格.md
+// M3f /v1/tasks/audio chain, per docs/functions/媒体上游协议契约与Mock上游规格.md
 // §3.2 (scenario naming media_<provider>_<behavior>) and §9.2 (seedasr
 // long-transcription wire contract, confidence A, adjudicated 2026-10-17):
 //

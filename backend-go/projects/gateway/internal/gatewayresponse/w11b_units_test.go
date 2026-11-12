@@ -131,6 +131,27 @@ func TestW11BProtocolValidatedNonStreamResponseFamilies(t *testing.T) {
 	if !ProtocolValidatedNonStreamResponse(validJSON(`{"embeddings":[{}]}`), 200, "embed_content", "/x") {
 		t.Fatal("embeddings 通过")
 	}
+	if !ProtocolValidatedNonStreamResponse(validJSON(`{"data":[{"embedding":[0.1]}]}`), 200, "embed_content", "/v1/embeddings") {
+		t.Fatal("OpenAI embeddings data 通过")
+	}
+	if ProtocolValidatedNonStreamResponse(validJSON(`{"embedding":{}}`), 200, "embed_content", "/v1/embeddings") {
+		t.Fatal("OpenAI embeddings 缺 data 不通过")
+	}
+	if !ProtocolValidatedNonStreamResponse(validJSON(`{"data":{"embedding":{}}}`), 200, "embed_content", "/v1/embeddings/multimodal") {
+		t.Fatal("多模态向量 data.embedding 通过")
+	}
+	if !ProtocolValidatedNonStreamResponse(validJSON(`{"results":[{"index":0}]}`), 200, "rerank", "/v1/rerank") {
+		t.Fatal("rerank results 通过")
+	}
+	if ProtocolValidatedNonStreamResponse(validJSON(`{}`), 200, "rerank", "/v1/rerank") {
+		t.Fatal("rerank 缺 results 不通过")
+	}
+	if !ProtocolValidatedNonStreamResponse(validJSON(`{"results":[{"flagged":false}]}`), 200, "moderation", "/v1/moderations") {
+		t.Fatal("moderation results 通过")
+	}
+	if ProtocolValidatedNonStreamResponse(validJSON(`{}`), 200, "moderation", "/v1/moderations") {
+		t.Fatal("moderation 缺 results 不通过")
+	}
 	if !ProtocolValidatedNonStreamResponse(validJSON(`{"id":"i1"}`), 200, "interactions", "/v1/interactions") {
 		t.Fatal("interactions 通过")
 	}
@@ -743,5 +764,27 @@ func TestW11BIsOpenAIContentHelpers(t *testing.T) {
 	}
 	if !ShouldHandleOpenAIUpstreamResponseAsStream("text/plain", true) {
 		t.Fatal("流式请求的未知类型按流式处理")
+	}
+}
+
+func TestW11BIsUtilityResponsePath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/embeddings", true},
+		{"/v1/embeddings?foo=bar", true},
+		{"/V1/EMBEDDINGS/MULTIMODAL", true},
+		{"/v1/rerank", true},
+		{"/v1/rerank/batch", true},
+		{"/v1/moderations", true},
+		{"/v1/moderations/batch", true},
+		{"/v1/chat/completions", false},
+		{"/v1/models", false},
+	}
+	for _, tc := range cases {
+		if got := isUtilityResponsePath(tc.path); got != tc.want {
+			t.Fatalf("isUtilityResponsePath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }

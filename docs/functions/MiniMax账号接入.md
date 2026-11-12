@@ -66,12 +66,13 @@ type ProviderCode = 'minimax'
 
 ## 模型目录
 
-模型目录唯一数据源为 `pricing/catalogdata/minimax.json`（go:embed 运行时 + maintenance DB 种子双通道，2026-10-17 缺口补录第二批后 19 行）；关键行：
+模型目录唯一数据源为 `pricing/catalogdata/minimax.json`（go:embed 运行时 + maintenance DB 种子双通道，2026-11-13 M3.1-Flash 批后 20 行）；关键行：
 
 | 模型 | mode | 协议 | 定价 |
 | --- | --- | --- | --- |
 | `MiniMax-Hailuo-2.3` | `video` | `video` | 按次主档（见下） |
 | `MiniMax-Hailuo-2.3-Fast` | `video` | `video` | 按次主档（见下；2026-10-17 缺口补录批） |
+| `MiniMax-M3.1-Flash` | `chat` | `chat_completions` | 1.00/4.00 元、缓存读 0.10 元/百万 tokens ÷7.0（2026-11-13 新增；1M 上下文、多模态、缓存计费，maxOutputTokens 524288 取自 tokenrhythm 模型列表） |
 | `MiniMax-M2.5` / `M2.5-highspeed` / `M2.1` / `M2.1-highspeed` / `M2` | `chat` | `chat_completions` | 历史模型 2.1/8.4 元、缓存读 0.21、缓存写 2.625 元/百万 tokens ÷7.0（highspeed 4.2/16.8；2026-10-17 缺口补录第二批，官方页无发布日期与上下文窗口，字段留空） |
 | `MiniMax-H3-Regeneration` | `video` | `video` | 768P→2K 再生成 0.30 元/秒 ÷7.0（2026-10-17 缺口补录第二批；输入素材重计费见下） |
 | `MiniMax-H3-Context-IR` | `chat` | `chat_completions` | 任务价 5.80/23.00 元/百万 tokens ÷7.0（2026-10-17 缺口补录第二批；任务归属接口官方未明示，mode 按 token 计价口径归 chat） |
@@ -80,13 +81,13 @@ type ProviderCode = 'minimax'
 
 ## 计价口径（不编造）
 
-2026-10-17 全供应商口径核对批后，MiniMax 目录主口径为**国内站人民币明文 ÷ 约定汇率 7.0**：账户协议档案实连 `api.minimax.chat` 国内站（账单人民币），国际站 USD 明文与国内价并不同步（实证：speech-2.8-hd 国内 3.50 元/万字符 ≈ $5e-05/字符 vs 国际 $1e-04/字符），不再直落国际价。全部 19 行单价与分档留档见 `catalogdata/minimax.json` 各行 `sourcePricingNote`（数据源与核对方式见《模型价格数据源与取证指南》台账），锚点钉值在 `catalogdata_price_anchors_test.go`。要点：
+2026-10-17 全供应商口径核对批后，MiniMax 目录主口径为**国内站人民币明文 ÷ 约定汇率 7.0**：账户协议档案实连 `api.minimax.chat` 国内站（账单人民币），国际站 USD 明文与国内价并不同步（实证：speech-2.8-hd 国内 3.50 元/万字符 ≈ $5e-05/字符 vs 国际 $1e-04/字符），不再直落国际价。全部 20 行单价与分档留档见 `catalogdata/minimax.json` 各行 `sourcePricingNote`（数据源与核对方式见《模型价格数据源与取证指南》台账），锚点钉值在 `catalogdata_price_anchors_test.go`。要点：
 
 - **TTS 四行**（speech-2.8-hd/turbo、speech-2.6-hd/turbo；`speech-02-turbo` 已随 2025 前模型清理批移除）：国内同价 hd 3.50 元/万字符、turbo 2.00 元/万字符（同步/异步同价），÷7.0 落 `TtsInputUsdPer1MChars`；计费 1 汉字=2 字符。字符计量照常落 usage（`extra_info.usage_characters` 回报优先，契约 §2.8）。
 - **asr-1.0 已随 2025 前模型清理批移除**（2.50 元/小时 ÷3600 ÷7.0 的秒价口径随行留档于 git 历史；现役 STT 秒价载体见 qwen3-asr-flash）。
-- **MiniMax-H3 / H3-Max**：768P 主档 0.50 元/秒 ÷7.0 落 `VideoOutputUsdPerSecond`（H3-Max 的 480P 低档 0.33 元/秒留注记；输入素材：H3 图片 5 张内免费/超出 0.20 元/张、H3-Max 2 张内/0.50 元，留注记）。
-- **MiniMax-Hailuo-2.3-Fast**（2026-10-17 缺口补录批）：按次/档位计费与 Hailuo-2.3 同规则，按 768P-6s 主档 1.35 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（768P-10s 2.25 元、1080P-6s 2.31 元留注记）；不落每秒价（按次 → 每秒是推导，裁决 §2.4 维持）。
-- **MiniMax-Hailuo-2.3**：按次/档位计费（分辨率 × 时长），按 768P-6s 主档 2.00 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（一次任务 = 一次调用，契约 §2.8 按次计费；768P-10s 4.00 元、1080P-6s 3.50 元留注记）；按次 → 每秒是推导，禁止折算（裁决 §2.4 维持）——不落 `VideoOutputCostPerSecond`；轮询响应不回报时长（契约 §8.1 query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
+- **MiniMax-H3 / H3-Max**（2026-11-13 分辨率档批）：按输出分辨率分档，H3 768P 0.50、2K 0.80 元/秒，H3-Max 480P 0.33、768P 0.50 元/秒；主档 768P 落 `VideoOutputUsdPerSecond`，全部档位落 `VideoOutputCostPerSecondByResolution`（÷7.0 → H3 $0.0714/$0.1143、H3-Max $0.0471/$0.0714）。H3/H3-Max 走 v2 协议（`/v2/video_generation`、`content[]`、必填 resolution/duration），创建时按 `size` 短边冻结 `billingResolution`（H3 ≥1440→2K；H3-Max ≥720→768P），结算按档。输入素材：H3 图片 5 张内免费/超出 0.20 元/张、输入视频按生成分辨率秒价；H3-Max 图片 2 张内免费/超出 0.50 元/张、输入视频 768P 0.97 / 480P 0.37 元/秒。统一入口只开放单张首帧（落在免费额度内）；多素材/输入视频面不开放，L3 `metadata` 注入 `content`/`image`/`reference_*` 已被计费字段封禁（契约 §2.4 规则 5）直接 400，不存在漏计请求。
+- **MiniMax-Hailuo-2.3-Fast**（2026-10-17 缺口补录批，2026-11-13 1080P 批）：按次/档位计费与 Hailuo-2.3 同规则，按 768P-6s 主档 1.35 元/条 ÷7.0 落 `VideoOutputUsdPerCall`；768P-10s 2.25 元、1080P-6s 2.31 元落 `VideoOutputCostPerCallByResolutionSeconds`（÷7.0 → $0.3214/$0.33）；不落每秒价（按次 → 每秒是推导，裁决 §2.4 维持）。
+- **MiniMax-Hailuo-2.3**：按次/档位计费（分辨率 × 时长），按 768P-6s 主档 2.00 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（一次任务 = 一次调用，契约 §2.8 按次计费）；768P-10s 4.00 元、1080P-6s 3.50 元落 `VideoOutputCostPerCallByResolutionSeconds`（÷7.0 → $0.5714/$0.5）；按次 → 每秒是推导，禁止折算（裁决 §2.4 维持）——不落 `VideoOutputCostPerSecond`；v1 出站显式发送 `resolution`（size 短边 ≥900→1080P，其余 768P），轮询响应不回报时长（契约 §8.1 query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
 - **image-01**：0.025 元/张 ÷7.0 落 `OutputUsdPerImage`（image-01-live 同价留注记）。
 - **M3 / M2.7 / M2.7-highspeed**：国内 2.10/8.40（M3 ≤512k 永久五折实付，恰与国际明文 $0.3/$1.2 等价）、M2.7 2.1/8.4、highspeed 4.2/16.8 元；缓存读 0.42 元、缓存写 2.625 元/百万 tokens；M3 >512k 恢复刊例（恰为 ×2 长上下文分档）、优先服务 1.5 倍留注记。
 - **M2 家族五行**（M2.5/M2.5-highspeed/M2.1/M2.1-highspeed/M2；2026-10-17 缺口补录第二批）：定价概览历史模型小节 2.1/8.4 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（highspeed 4.2/16.8，缓存价同档）÷7.0；官方页无发布日期与上下文窗口，`releaseDate`/`contextWindowTokens` 不臆造留空（公开发布时间线 M2 2025-10 起满足 2025-01 收录下限）。

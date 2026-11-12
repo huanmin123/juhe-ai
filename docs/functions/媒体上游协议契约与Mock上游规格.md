@@ -41,20 +41,30 @@
 - **L2 规范参数**：**网关统一定义名与值域**，由 adapter 映射/换算到厂商字段（§2.7 映射表为唯一事实源）；厂商不支持时按 §2.4 规则处理。L2 是"自建规范"的主体，禁止厂商原生参数名冒充 L2。
 - **L3 provider_options**：厂商个例参数，用户显式按 provider 命名空间配置（§6 设计文档），命中账户的子对象 deep-merge 覆盖同名 L2 值，未知键原样透传由厂商裁决。
 
-### 2.2 视频创建参数表（`POST /v1/videos`）
+### 2.2 视频创建参数表（`POST /v1/video/generations`，2026-11-12 New API 兼容面）
+
+对外字段按 New API；内部先归一为 `seconds` / `size` / `input_reference` 再交给各厂商 adapter（adapter 映射见 §2.7）。
 
 | 参数 | 层 | 类型 / 值域 | 厂商不支持时 |
 | --- | --- | --- | --- |
 | `model` | L1 | string（模型目录路由） | —— |
 | `prompt` | L1 | string | —— |
-| `seconds` | L2 | number；厂商固定档（如 6/10）时取档并回显 `params_applied` 实际值 | 用厂商默认时长并回显 |
-| `size` | L2 | 像素串 `"1280x720"` / `"720x1280"` / `"960x960"`；adapter 换算 `aspectRatio`+`resolution`/档位，无精确档取最近档 | 取厂商默认并回显 |
-| `n` | L2 | int ≥1，默认 1（≈SiliconFlow `batchSize`） | `n>1` → **400**（语义无法表达） |
-| `input_reference` | L2 | 首帧图：`image_url` 或 base64 data URL（≈SiliconFlow `image`、veo `image.bytesBase64Encoded`） | 无图生视频 → **400**（能力缺失不静默） |
-| `negative_prompt` | L2 | string | 忽略 + 回显 `params_ignored` |
-| `seed` | L2 | int（可复现；SiliconFlow/部分厂商支持） | 忽略 + 回显 |
-| `audio` | L2 | bool（视频原生音频开关；Sora 2/Veo 3/Grok 原生带音频） | 忽略 + 回显 |
-| `provider_options` | L3 | 见 §2.1 | —— |
+| `duration` | L2 | number（秒）；归一为内部 `seconds`；厂商固定档时取档并回显 `params_applied` 实际值 | 用厂商默认时长并回显 |
+| `width` + `height` | L2 | int；归一为内部 `size` 像素串 `"WxH"`（缺一不可，单边缺失忽略并回显） | 取厂商默认并回显 |
+| `image` | L2 | 首帧图：URL 或 base64 data URL；归一为内部 `input_reference` | 无图生视频 → **400**（能力缺失不静默） |
+| `seed` | L2 | int（可复现） | 忽略 + 回显 `params_ignored` |
+| `n` | L2 | int ≥1，默认 1 | `n>1` 且厂商不支持 → **400** |
+| `fps` | L2 | int；当前无统一语义 | 进 `metadata` 回显 + `params_ignored` |
+| `response_format` | L2 | `mp4` 等；当前无统一语义 | 进 `metadata` 回显 + `params_ignored` |
+| `user` | L2 | string；仅标识 | 进 `metadata` 回显 + `params_ignored` |
+| `metadata` | L3 | JSON object（唯一扩展通道）：已知 L2 键（`negative_prompt` / `audio` / `seed`）提升为公共参数，其余键在选择账户后并入该厂商 `provider_options` 子对象 deep-merge；原样随任务快照冻结并回显 | —— |
+
+规则：
+
+1. 对外公开词表为 New API 字段（`duration` / `width`+`height` / `image`）；旧 OpenAI 字段名 `seconds` / `size` / `input_reference` 按别名容忍（映射进同一内部归一，params 回显按实际生效键）；`provider_options` 出现即 400（旧 `/v1/videos` 面已 404）；内部归一后各 adapter 仍按 §2.7 映射。
+2. 创建响应 `{id, task_id, status:"queued", object:"video", model, created_at, metadata}`（长音频 object 为 `"task"`）；查询响应同时给扁平字段与 `{code:"success",message:"",data:{...}}` 包裹，`data` 内为 `task_id/status/url/format/metadata/error`。
+3. `status` 为 `queued/in_progress/completed/failed`；`cancelled`/`expired` 归一 `failed`。`url` 优先上游产物直链，缺失且 completed 时回退网关 content 端点：配置 `JUHE_AI_GATEWAY_PUBLIC_BASE_URL` 时为绝对地址（New API `BuildProxyURL` 的 `ServerAddress` 同构），未配置为相对路径（长音频为 `/v1/tasks/audio/{task_id}/content`）。
+4. `metadata` 回显 = 请求原值 + 诊断键 `provider` / `provider_job_id` / `params_applied` / `params_ignored` / `provider_options_applied`（只键名，不含资源字节）。
 
 ### 2.3 音频参数表
 
@@ -87,7 +97,8 @@
 2. **L2 语义无法表达的取值**（`n>1`、`input_reference` 无对应能力、`response_format` 无该输出、`speed` 超区间）：**400**，错误信息指明"该模型/厂商能力边界"，不降级不猜测。
 3. **换算类参数**（`seconds` 档位、`size` → 宽高比/分辨率）：按 §2.7 映射换算，实际生效值回显 `params_applied`。
 4. **L3**：仅命中 provider 的子对象生效（覆盖同名 L2），其余子对象忽略；响应回显已生效子对象键名摘要（不含值）。
-5. job 对象固定含 `params_applied` 与 `params_ignored` 两个字段（同步响应同样适用）。
+5. **L3 计费字段封禁（2026-11-13 T219 收口）**：`metadata`（视频/图像的唯一 L3 通道）中会改变计费数量/时长/分辨率/产物输入的键一律本地 400，不静默丢弃——视频：`duration`/`durationSeconds`/`seconds`/`resolution`/`size`/`ratio`/`sampleCount`/`n`/`content`/`image`/`images`/`video`/`video_url`/`first_frame_image`/`first_frame`/`last_frame`/`reference_image`/`reference_video`/`audio_url`（嵌套层同样扫描）；图像：`size`（`image`/`images` 是契约 §9.3 允许的参考图通道，其张数由响应侧请求计数覆盖 `metadata.image/images` 纳入输入图计费）。计费基源只按顶层 `seconds`/`size`/`n`/`input_reference`/`image` 冻结。
+6. job 对象固定含 `params_applied` 与 `params_ignored` 两个字段（同步响应同样适用）。
 
 ### 2.5 规范演进策略
 
@@ -121,8 +132,8 @@
 
 | 厂商 | TTS | STT | 视频 | 说明 |
 | --- | --- | --- | --- | --- |
-| openai | 双口径（M1 已实施，按厂商真实定价维度）：`gpt-4o-mini-tts` 按 **token 口径**计价（复用既有 `audioInputUsdPer1M`/`audioOutputUsdPer1M` 单价，seed 已填价；二进制响应无 usage 回报，网关亦无 token 自算维度 → 0 计费 + `usage_missing` 标记，不猜测）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）；上游无 usage 回报的 TTS 模型（原 `tts-1`/`tts-1-hd` 已随 2025 前模型清理批移除；现役例 minimax speech 系）**网关自算**按请求 `input` 字符数（行项 `tts_input_chars`） | 双口径：`gpt-4o-transcribe` 系按 **token 口径**（`usage.input_tokens`/`output_tokens`，同一对 audio token 单价）；按 `duration` 秒的 STT 模型（原 `whisper-1` 已随 2025 前模型清理批移除；现役例 minimax asr-1.0；行项 `audio_input_seconds`）；usage 优先 → duration → 0 + `usage_missing` 标记，不猜测 | 轮询 `seconds_length` 回报优先；无回报按生效请求参数 `seconds` 自算（§2.8.2）× 档位秒价；失败任务不虚计 | — |
-| gemini | 对话式 token 计量（`usageMetadata`，已有链路） | 同左（audio token） | 按输出秒（目录价格档）；Veo 系轮询无 usage 回报且 `seconds` 属 ignored 参数、不构成计量基源（§2.8.2）→ `usage_missing` 不虚计（§5.2） | — |
+| openai | 双口径（M1 已实施，按厂商真实定价维度）：`gpt-4o-mini-tts` 官方按 **token 口径**（`audioInputUsdPer1M`/`audioOutputUsdPer1M`，seed 已填价），但二进制响应无 usage、网关不解析音频 → **按次固定价 $0.3/次兜底**（2026-11-12 用户裁决：按次固定价，不空着；价格参考 new-api `defaultModelPrice` 同口径，非 OpenAI 官方按次价；`usage_missing` 仍置位记录上游无 usage 事实，行项 `tts_output_calls`）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）；上游无 usage 回报的 TTS 模型（原 `tts-1`/`tts-1-hd` 已随 2025 前模型清理批移除；现役例 minimax speech 系）**网关自算**按请求 `input` 字符数（行项 `tts_input_chars`） | 双口径：`gpt-4o-transcribe` 系按 **token 口径**（`usage.input_tokens`/`output_tokens`，同一对 audio token 单价）；按 `duration` 秒的 STT 模型（原 `whisper-1` 已随 2025 前模型清理批移除；现役例 minimax asr-1.0；行项 `audio_input_seconds`）；usage 优先 → duration → 0 + `usage_missing` 标记，不猜测 | 轮询 `seconds_length` 回报优先；无回报按生效请求参数 `seconds` 或厂商默认时长基源（§2.8.2）× 档位秒价；失败任务不虚计 | — |
+| gemini | 对话式 token 计量（`usageMetadata`，已有链路） | 同左（audio token） | 按输出秒（目录价格档）；Veo 系轮询无 usage 回报，`seconds` 属 ignored 参数不构成基源，改用 adapter 声明的厂商默认 8 秒基源（§2.8.2/§5.2）× 秒价 | — |
 | minimax | 按字符（M3 已实施：`extra_info.usage_characters` 回报优先 → `tts_input_chars`，缺失回落请求字符自算；官方口径 ¥2.00/万字符人民币、无官方美元价 → 目录不落字符价，计量照落成本不虚计） | 待回填（长转写未接入） | **按次计费**（§2.8.1，2026-10-05 按次计费批已实施）：目录行 `VideoOutputCostPerCall` 落国际站按条明文主档 768P-6s $0.28/条（分档注释登记）；轮询响应不回报时长 → 一次任务 = 一次调用，成本 = 次价 × 1，usage 行不落秒计量 | — |
 | volcengine | 按时长（2026-10-17 维度修正批）：官方计费维度=**生成原始时长**（计费文档明文"按模型生成的原始时长计费，倍速不影响计费时长"，精确至秒）——响应顶层 `duration` 秒回报 → `audio_input_seconds`（音频秒行项，费率 `audioInputUsdPerSecond` 按模型落值），**不再落字符口径**（字符非官方计费维度）；duration 缺失/非正值 → 0 计量 + `usage_missing` 标记，不猜测；单价已落值（2026-10-17 浏览器渲染抓取豆包语音计费页明文）：后付费 1 元/分钟（按时长计费、精确至秒、倍速不影响）÷ 60 ÷ 约定汇率 7.0 → $0.00238095/秒落 audioInputCostPerSecond；落值锚点测试 TestVolcengineCatalogPriceAnchors 钉住 | 长转写按时长（**2026-10-17 承接批已实施**：录音文件识别 2.0 终态 `audio_info.duration` **毫秒** → ÷1000 秒落 `audio_input_seconds`，usage_source=upstream；缺失/非正值 → 0 计量 + `usage_missing` 不猜测；秒价已落值 0.8 元/小时 ÷3600 ÷7.0 = $3.1746031746031745e-05/秒，见 §9.2） | **2026-10-17 实测回填批**：轮询 succeeded 顶层 `duration` 正值 → 秒计量回报优先（`OutputVideoSeconds`，usage_source=upstream）；无秒可抽（缺/0 值）且创建请求 `seconds` 生效时按请求参数自算（§2.8.2）；2026-10-17 国内价口径批：720p 主档 USD 秒价已落值（国内元/秒 ÷ 7.0，与 seedream 图像行同口径——账户为国内方舟账单人民币）：2.5 $0.2157（1.51 元/s）、2.0 $0.1414（0.99 元/s）、fast $0.1143（0.80 元/s）、mini $0.0714（0.50 元/s）；1-0-pro 无官方每秒示例价不落值（token 牌价注记留档：国内 15.00 元/百万 token 在线、7.50 离线）。官方计费=token 单价×usage.completion_tokens（分档随分辨率/是否含输入视频），引擎视频行只消费秒价，分档差价随专门计价批；字段全貌见 §9.1 | — |
 | qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | `usage` JSON 字符串字段族（`video_duration`/`output_video_duration`/`duration`）秒计量回报优先；无秒可抽且请求 `seconds` 生效时按请求参数自算（§2.8.2）；目录已落 USD 秒价（2026-10-05 补价：wan2.2-t2v-plus $0.1/s 等）按秒计费 | — |
@@ -136,22 +147,38 @@
 3. 按次上游按 §2.8.1 计费，一次任务 = 一次调用，不依赖秒计量。
 4. 两者都缺 → 0 计费 + 记录 `usage_missing` 标记，**不猜测**。
 
-#### 2.8.1 视频按次计费（VideoOutputCostPerCall，2026-10-05 用户裁决）
+#### 2.8.1 视频按次计费（VideoOutputCostPerCall，2026-10-05 用户裁决；2026-11-12 时长档批）
 
 - **裁决**：无法返回 usage 的上游按官网计费规则、按输入计。cogvideox/Hailuo 等上游不返回时长 usage，但官方按次/按条计费且创建请求携带时长参数（快照已冻结）→ 落按次单价，按任务粒度计费。
 - **槽位**：静态目录 `rawModel.VideoOutputCostPerCall` / `PriceSet.VideoOutputUsdPerCall`（USD/次字面量），与 `OutputCostPerImage`（按张=按次语义）同构的按次单槽位；目录表（provider_model_catalog）无按次列，只落 gateway 静态层（同秒价先例，计费真实读取处）。
+- **时长档表（2026-11-12）**：厂商按“条 × 时长档”定价时，用 `rawModel.VideoOutputCostPerCallBySeconds` / `PriceSet.VideoOutputUsdPerCallBySeconds`（键=秒数串 "6"/"10"，值=USD/条）表达；`VideoOutputUsdPerCall` 保留为默认/主档价。创建时按最近档收敛请求 `seconds`（等距取小档，`pricing.VideoCallTierSeconds`），出站报文与 `billingSeconds` 同步用收敛后的档位；结算按 `billingSeconds` 选档。档位表存在但秒数不命中 → 不产 `video_output_calls` 行项，不回退主档（宁可不计，不按错档收费）。
+- **分辨率×时长组合档（2026-11-13 Hailuo 1080P 批）**：厂商按“分辨率 × 时长”组合定价时，用 `rawModel.VideoOutputCostPerCallByResolutionSeconds` / `PriceSet.VideoOutputUsdPerCallByResolutionSeconds`（键 `"1080p-6"`）表达；创建时 adapter 冻结 `billingResolution`（Hailuo size 短边 ≥900→1080P，其余 768P），结算先按组合键选档，未命中回落 `BySeconds` 主档；已知分辨率有专门组合档但该时长组合不存在（如 1080P-10s）→ 不产行项。Hailuo 2.3 v1 出站显式发送 `resolution`，实际产出与计费档一致。
 - **互斥门禁**：同一目录行 `VideoOutputCostPerSecond` 与 `VideoOutputCostPerCall` 只落其一（按次 ≠ 按秒；门禁测试 `TestVideoCallSecondPriceMutualExclusion` 遍历全部快照行钉住）——同行双价会让秒/次两条结算路径对同一任务重复计费。
-- **结算语义**：任务终态 completed 且目录行有按次价 → 成本 = PerCall × 1（一次任务 = 一次调用），计费行项 `video_output_calls`（unit=call）；usage 行**不落** `outputVideoSeconds`（按次上游无秒计量概念）、不打 `usage_missing`（有计量计费依据）。failed 仍不虚计；cancelled/expired 仍不产生 usage 行。
-- **按次上游清单（当前）**：glm `cogvideox-3`（$0.2/次，z.ai USD 明文）、`cogvideox-2`（$0.0714/次，国内 0.5 元/次 ÷ 7.0 换算）、minimax `MiniMax-Hailuo-2.3`（$0.28/条，768P-6s 主档；分档注释登记）。seedance-1-0-pro 维持无价不动。
+- **结算语义**：任务终态 completed 且目录行有按次价 → 成本 = 档位价（按 `billingSeconds`）× 1（一次任务 = 一次调用），计费行项 `video_output_calls`（unit=call）；usage 行**不落** `outputVideoSeconds`（按次上游无秒计量概念）、不打 `usage_missing`（有计量计费依据）。failed 仍不虚计；cancelled/expired 仍不产生 usage 行。
+- **按次上游清单（当前）**：glm `cogvideox-3`（$0.2/次，z.ai USD 明文）、`cogvideox-2`（$0.0714/次，国内 0.5 元/次 ÷ 7.0 换算）、minimax `MiniMax-Hailuo-2.3`（768P-6s 2.00 元/条、768P-10s 4.00 元/条、1080P-6s 3.50 元/条，÷7.0 → $0.2857/$0.5714/$0.5）、`MiniMax-Hailuo-2.3-Fast`（1.35/2.25/1080P-6s 2.31 元/条 ÷7.0 → $0.1929/$0.3214/$0.33）；来源 `platform.minimax.cn/docs/pricing/overview`（2026-11-12 核对、2026-11-13 复核，人民币计价）。seedance-1-0-pro 维持无价不动。
 
-#### 2.8.2 视频请求参数自算计量（usage_source=request，2026-10-05 用户裁决）
+#### 2.8.2 视频计费秒数基源（请求值 / 厂商默认时长，2026-10-05 用户裁决；2026-11-12 默认时长批）
 
-- **规则**：任务终态 completed 且上游无 usage 回报（IR `OutputVideoSeconds` 为空）且创建请求 `seconds` **生效**（进 `params_applied`，快照创建时已冻结）→ usage 行 `outputVideoSeconds` 取请求秒数落行，成本按目录秒价 × 自算秒数。上游回报在场时回报优先，请求值不覆盖。
-- **来源标注**：usage_records/IR 无计量来源字段——「计量来源 = 创建请求参数自算（usage_source=request）」以结算链注释与链级测试断言语义钉住，**不加 schema 列**。
-- **ignored 不构成计量基源**：`seconds` 属 ignored 参数（如 Veo，`SupportsSeconds=false`）时用户值未生效、该模型用厂商默认时长——网关不猜测默认值（§2.4 规则 1/3），不按 ignored 请求值自算，维持 `usage_missing` 兜底。
-- **无价兜底**：自算秒数落行后目录无 USD 秒价（如 seedance）→ 计量照落、成本 0 不虚计；真正无任何依据（无回报且无生效请求参数）才 `usage_missing`。
+- **规则**：任务终态 completed 且上游无 usage 回报（IR `OutputVideoSeconds` 为空）时，按创建时冻结的**计费秒数基源**（`request_snapshot_json.billingSeconds`）结算：请求 `seconds` 生效则用请求值；否则用 adapter 声明的厂商默认输出时长（`VideoCapabilities.DefaultSeconds`）。上游回报在场时回报优先，基源不覆盖。
+- **来源标注**：usage_records/IR 无计量来源字段——「计量来源 = 创建时冻结基源（请求值或厂商默认）」以结算链注释与链级测试断言语义钉住，**不加 schema 列**。`billingSeconds` 是快照内的计费事实，与请求回显 `seconds` 分开保存。
+- **厂商默认输出时长（当前）**：Veo 3 系 8 秒（`SupportsSeconds=false`，请求面不接收 seconds）；minimax 6 秒（请求未携带 duration）；volcengine 5 秒（官方默认）。这些默认值是厂商请求面的既定行为，不是对上游响应的猜测；未声明默认值的厂商仍维持 `usage_missing`。
+- **ignored 不构成计量基源**：`seconds` 属 ignored 参数（如 Veo）时用户值未生效，网关**不按 ignored 请求值**计费，改按厂商默认时长基源计费；未声明默认值的 adapter 才落 `usage_missing`。
+- **无价兜底**：基源在场但目录无 USD 秒价（如 seedance 1.0 pro）→ 计量照落、成本 0 不虚计；真正无任何依据（无回报且无基源）才 `usage_missing`。
+- **不做跨维度换算、不解析产物字节**：2026-11-12 用户裁决——统一的是最终美元成本与行项，不是计量单位；各家按自己的计费维度和目录价结算（按秒、按次、按张、按 token 各用各的），网关不把按次折成秒、也不解析视频/音频字节反推时长。
 
-### 2.9 图像生成参数表（`POST /v1/images/generations`，2026-11-11 同步批）
+#### 2.8.3 视频秒价分辨率档（2026-11-12 分辨率档批）
+
+- **规则**：目录行用 `rawModel.VideoOutputCostPerSecondByResolution` / `PriceSet.VideoOutputUsdPerSecondByResolution`（键 "480p"/"720p"/"768p"/"1080p"/"2k"/"4k"，大小写不敏感）表达按输出分辨率分档的秒价；`VideoOutputUsdPerSecond` 仍是主档价。
+- **冻结**：创建时由 adapter 的可选接口 `VideoBillingResolutionProvider.BillingResolution(params)` 给出本次计费档，随 `request_snapshot_json.billingResolution` 冻结；未实现该接口或无法确定（空串）→ 结算用主档价。
+- **结算**：终态 completed 且 `billingResolution` 非空 → 按该档秒价 × 输出秒；档位表存在但档位不命中 → 不产 `video_output_seconds` 行项（不回退主档，宁可不计不按错档收）。
+- **选档同源**：xAI/Volcengine/Qwen 的 `BillingResolution` 与出站 resolution 换算同源（短边 ≥900→1080p、≥600→720p、其余 480p）；xAI 未传 size 时官方默认 480p，Volcengine/Qwen 未传 size 时返回空串（回落主档）。minimax H3 走 v2 官方词表：H3 短边 ≥1440→2K、其余 768P，H3-Max 短边 ≥720→768P、其余 480P；未传 size 返回主档 768P（2026-11-13 H3 批）。
+- **当前档位价（官方，2026-11-12 核对；minimax 2026-11-13）**：
+  - xAI `docs.x.ai/docs/pricing`（USD）：`grok-imagine-video-1.5` 480p/720p/1080p = $0.08/$0.14/$0.25 每秒；lite = $0.02/$0.03/$0.14；classic = $0.05/$0.07（无 1080p）。
+  - Volcengine `docs.volcengine.com/docs/82379/1099320`（CNY，÷7.0）：seedance-2.5 = 0.67/1.51/3.74 元/s；2.0 = 0.46/0.99/2.48；2.0-fast = 0.37/0.80（无 1080p）；2.0-mini = 0.23/0.50（无 1080p）。
+  - Qwen/Alibaba（CNY，÷7.0）：wan3.0-video = 0.3/0.6/1.2 元/s；wan2.7-t2v = 720P/1080P 0.6/1.0；wan2.2-t2v-plus = 480P/1080P 0.14/0.70。
+  - minimax `platform.minimax.cn/docs/pricing/overview`（CNY，÷7.0）：H3 768P/2K = 0.50/0.80 元/s；H3-Max 480P/768P = 0.33/0.50 元/s。
+
+### 2.9 图像参数表（`POST /v1/images/generations`，2026-11-11 同步批；`POST /v1/images/edits`，2026-11-12 T216/P0）
 
 | 参数 | 层 | 类型 / 值域 | 厂商不支持时 |
 | --- | --- | --- | --- |
@@ -165,7 +192,7 @@
 | `response_format` | L2（legacy） | `url/b64_json` | 忽略 + `params_ignored`（qwen 只回 URL） |
 | `stream` / `partial_images` | L2 | 图像统一契约不支持 stream（2026-11-12 用户裁决） | 四家全部接受但忽略 + `params_ignored`，上游请求不携带，统一返回普通 JSON |
 | `safety_identifier` | L2 | string（OpenAI 新字段） | 忽略 + `params_ignored` |
-| `provider_options` | L3 | `{"<vendor>": {...}}`，命中子对象 deep-merge | —— |
+| `metadata` | L3 | JSON object；链上投影为该厂商 `provider_options` 子对象 deep-merge（编辑面不接管 `image`/`images`；生成面 L3 命中按各 adapter 既有装配规则处理）；公开 `provider_options` 出现即 400 | —— |
 
 规则：
 
@@ -173,7 +200,45 @@
 2. 回显走响应头 `X-Juhe-Image-Provider` / `X-Juhe-Image-Params-Applied` / `X-Juhe-Image-Params-Ignored` / `X-Juhe-Image-Provider-Options-Applied`（逗号分隔、字典序、只键名），不写 body——保持 gpt `b64_json` 大响应纯透传。
 3. usage 统一字段 `output_image_count`：xAI `data[]` 长度，火山 `usage.generated_images`，Qwen 以转换后实际 `data[]` 图片数为准（2.0 `usage.image_count` / 3.0 `usage.output_image_count` 仅作形状兼容提示），gpt 现有图像 token/张数策略。
 4. 计费跟随模型行：`OutputUsdPerImage` 按张；`ImageOutputUsdPer1M` 按图像 token。不因响应 `model` 与配置模型不一致改价。
-5. `usage_records.upstream_model` = 本次实际发送的 wire model；`upstream_response_model` = 上游响应 `model`（缺失为空）；`pricing_model` = 配置模型行。
+5. **按输出像素分档（2026-11-12 档位批）**：目录行 `rawModel.OutputCostPerImageTiers` / `PriceSet.OutputUsdPerImageTiers`（`{maxPixels, usdPerImage}`，`maxPixels=0` 表示无上限）；结算用请求 `size` W×H 的像素数（usage `OutputImagePixels`）选第一个 `pixels ≤ maxPixels` 档；像素未知回落主档 `OutputUsdPerImage`；像素已知但无档命中 → 不产按张行项（不回退主档）。当前落值：Volcengine Seedream 5.0 Pro ≤2.61M 像素 0.30 元/张、>2.61M 0.60 元/张（÷7.0，来源 `docs.volcengine.com/docs/82379/1544106`，2026-11-12 核对）；Qwen `qwen-image-3.0-pro` ≤1024×1024 像素 0.25 元/张、>1024×1024 0.50 元/张（÷7.0；官方只标 1k/2k 与最大 2048×2048，未给像素边界，目录取 1024² 为 1K 上限，2026-11-13）。
+6. **输入图按张计费（2026-11-12 输入素材批）**：目录行 `rawModel.InputCostPerImage` / `PriceSet.InputUsdPerImage` 与每请求免费张数 `InputImageFreeCount`；结算从请求侧输入图张数（usage `InputImageCount`）扣免费张数后按张产 `image_input_unit` 行项。计数覆盖 JSON 生成请求顶层 `image`（字符串 1 张、数组按元素数）、JSON 编辑请求 `images[]`（按元素数）、multipart 编辑请求 `image`/`image[]` 文件 part（`mask` 不计），以及生成面 `metadata.image`/`metadata.images`（L3 参考图通道，投影为 provider_options 后 deep-merge 进上游报文；编辑面会剔除该通道、不重复计数）。当前落值：Volcengine Seedream 5.0 Pro 首张免费、后续 0.02 元/张（÷7.0）；Qwen `qwen-image-3.0` / `qwen-image-3.0-pro` 输入图 0.02 元/张（÷7.0，无每请求免费张数；账号级免费额度不进单请求计费）。
+7. `usage_records.upstream_model` = 本次实际发送的 wire model；`upstream_response_model` = 上游响应 `model`（缺失为空）；`pricing_model` = 配置模型行。
+
+#### 2.9.1 图像编辑参数表（`POST /v1/images/edits`）
+
+请求体双形态：`multipart/form-data`（OpenAI legacy：`image`/`image[]` + `mask` + `prompt` + `model`）与 `application/json`（OpenAI 现行：`images:[{image_url|file_id}]` + `mask` + `prompt` + `model`）。JSON 形态只接受 `images[]` 数组或顶层 `image` 字符串；顶层 `image` 数组 → 400。请求体总上限沿用 `/v1` 入口 64MB（超总限由 body 管道先拒绝，不保证 16×10MB 可同时满足）。
+
+| 参数 | 层 | 类型 / 值域 | 厂商不支持时 |
+| --- | --- | --- | --- |
+| `model` / `prompt` | L1 | string；均必填 | 缺失 → 400 `invalid_image_request` |
+| `image` / `images[]` | L1 | multipart 文件或 JSON `{image_url}`；URL 或 data URL；最多 16 张、单张 ≤10MB | `file_id` 非 gpt → 400（无法跨厂商解析）；超限 → 400 |
+| `mask` | L2 | multipart 文件或 JSON `{image_url}` | 仅 gpt 原生支持；xai/volcengine/qwen 忽略 + `params_ignored.mask` |
+| `n` | L2 | int ≥1，默认 1 | 原样透传，由上游裁决（与生成面一致） |
+| `size` | L2 | `1024x1024` 等或厂商档位 | xai 原样透传（官方未文档化，待实测）；qwen 转 `W*H`；volcengine 透传 |
+| `response_format` | L2（legacy） | `url/b64_json` | qwen 忽略 + `params_ignored`；gpt/xai/volcengine 透传 |
+| `quality` / `background` / `output_format` / `output_compression` / `input_fidelity` / `safety_identifier` / `user` | L2 | OpenAI 词表 | 按厂商白名单保留或忽略 + `params_ignored` |
+| `stream` / `partial_images` | L2 | 统一图像契约不支持 stream | 全部接受但删除 + `params_ignored`，上游请求不携带 |
+| `metadata` | L3 | JSON 请求体；链上投影为该厂商 `provider_options` 子对象 deep-merge；不接管 `image`/`images`；公开 `provider_options` 出现即 400 | multipart 不承载：非 gpt 忽略 + `params_ignored`，不报错；gpt 保持字节透传（未知字段由上游裁决） |
+
+未处理的顶层参数（厂商白名单外且非结构键）一律进 `params_ignored`，不静默丢弃；`stream`/`partial_images` 即使只由 `metadata` 注入也必须删除并回显。**下文各厂商章节出现的 `provider_options` 均指对外 `metadata` 在链上的内部投影，不是公开请求字段。**
+
+**multipart 编辑与账户模型映射互斥**：模型映射改写走 JSON 报文面（`buildModelMappedJSONBody`），multipart 请求体上不可用——配置了模型映射的账户收到 multipart 编辑请求返回 400「账号模型映射要求请求体是 JSON 对象」（与 STT multipart 口径同构）；JSON 编辑不受影响，需要模型映射时改用 JSON 编辑形态。
+
+厂商映射（报文依据见 §4.5 / §6.3 / §9.3 / §10.3）：
+
+| 厂商 | 上游端点 | 图片字段 | 边界 |
+| --- | --- | --- | --- |
+| gpt | `POST /v1/images/edits`（原路径） | multipart 原样；JSON 原样 | 唯一支持 `mask`；multipart 仅删除 `stream`/`partial_images` 文本字段 |
+| xai | `POST /v1/images/edits` | 单图 `image:{url}`、多图 `images:[{url}]` | `mask`/`quality`/`background`/`output_format`/`output_compression`/`input_fidelity`/`safety_identifier`/`user` 忽略；`file_id` 400 |
+| volcengine | `POST /api/v3/images/generations` | `image` 字符串或数组（URL/data URL） | 无独立 edits 端点；`mask` 忽略；`watermark` 默认 false |
+| qwen | `POST /api/v1/services/aigc/multimodal-generation/generation` | `input.messages[0].content[].image` | 图片须 http(s)/data URL；`mask`/`response_format` 等忽略 |
+
+规则：
+
+1. 响应仍统一 OpenAI Images JSON；qwen 复用生成面响应转换（`output.choices[].message.content[].image` → `data[]`，`output_image_count` = 实际图片数），其余厂商透传并按 §2.9 规则 1 宽容判定。
+2. 回显头与生成面完全一致；multipart 请求的回显事实由网关重新解析原始 body 计算（不缓存、不落盘）。
+3. 零存储：上传文件只在内存中转为 data URL，不落盘、不缓存、不写审计 body；`FullBodyCaptureEnabled` 既有 opt-in 行为不变。
+4. 计费沿用模型行（`OutputUsdPerImage` / `ImageOutputUsdPer1M`），不新增行项；qwen 专用编辑模型未收录目录，新增须先补官方价。
 
 ## 3. Mock 上游规格（测试基建扩展契约）
 
@@ -186,7 +251,7 @@
 
 ### 3.2 mockupstream 引擎扩展规格
 
-1. **端点白名单扩展**（`mockupstream.go` `acceptedEndpoints`）：`POST /v1/audio/speech`、`POST /v1/audio/transcriptions`、`POST /v1/audio/translations`、`POST /v1/videos`、`GET /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`、`DELETE /v1/videos/{id}`，以及 `/v1/audio/jobs` 族与 §4-§10 各厂商原生端点（每厂商一章的"Mock 端点"小节为准）。音频三端点 M1 已交付；`/v1/videos` 全 5 端点 M2 已交付（2026-10-04）；`/v1/audio/jobs` 族与厂商原生端点随对应期。
+1. **端点白名单扩展**（`mockupstream.go` `acceptedEndpoints`）：`POST /v1/audio/speech`、`POST /v1/audio/transcriptions`、`POST /v1/audio/translations`、`POST /v1/videos`、`GET /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`、`DELETE /v1/videos/{id}`，以及 `/v1/tasks/audio` 族与 §4-§10 各厂商原生端点（每厂商一章的"Mock 端点"小节为准）。音频三端点 M1 已交付；`/v1/videos` 全 5 端点 M2 已交付（2026-10-04）；`/v1/tasks/audio` 族与厂商原生端点随对应期。
 2. **异步任务场景能力（新增机制）**：按场景脚本驱动任务状态机——创建请求返回该厂商创建响应（含任务 id，id 由 mock 生成并登记内存任务表）；轮询请求按"第 N 次查询返回状态 X"脚本推进（如 `video_poll_twice_then_success`：前两次 `in_progress`，第三次终态）；同一 mock 实例内任务表隔离，支持并发用例。（M2 已交付，2026-10-04：视频任务状态机按场景脚本推进。）
 3. **二进制载荷通道（新增机制）**：场景可声明响应为 `audio/wav`、`audio/mpeg`、`video/mp4` 等二进制（内置小体积合成载荷：合法 WAV 头+静音帧、最小 MP4 box 结构），供 speech/content/下载端点流式返回；断言侧校验 magic bytes 与 content-type。（音频载荷 M1 已交付；`video/mp4` 载荷 M2 增补交付，2026-10-04。）
 4. **场景命名规范**（进 `mockupstream` 内置清单，格式 `media_<域>_<行为>`）。**M1 已交付 8 个同步音频场景与二进制载荷通道（2026-10-04）**：`media_tts_ok`、`media_tts_400_voice_invalid`、`media_tts_429_before_accept`、`media_stt_ok`、`media_stt_ok_verbose`、`media_stt_400_bad_file`、`media_gemini_tts_ok`、`media_gemini_tts_400_format`；**视频场景已随 M2 交付（2026-10-04，共 9 个）**，厂商原生异步任务场景属 M3+：
@@ -196,6 +261,7 @@
    - `media_video_ok_poll3`（#1/#2 `in_progress` → #3 `completed`）、`media_video_ok_poll1`（#1 即 `completed`，快路径）、`media_video_fail_after_accept`（受理后轮询 `failed`）、`media_video_429_create`（创建 429，可换账户重试）、`media_video_create_400_bad_size`（`size` 值域外 → 400，参数类不换账户）、`media_video_create_500`（创建 5xx）、`media_video_poll_500`（受理后轮询 5xx，不得换账户）、`media_video_content_expired`（content 404/410 → 网关透出"产物已过期"）、`media_video_cancel_ok`（保持 `queued`，验证 DELETE 流程）——M2 已交付（2026-10-04；其中 `media_video_ok_poll1` 与 `media_video_create_400_bad_size` 为 W1 批次交付、本清单同日补登记）
    - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；**§5.2 的 `media_gemini_video_create_ok` / `_poll_running` / `_poll_done_uri` / `_poll_error` 已随 M3 交付（2026-10-04）**；**§7.1 的 `media_glm_video_*` 已随 M3 交付；§8 的 `media_minimax_create_ok` / `_poll_running` / `_poll_success` / `_poll_fail` 与 §8.2 的 `media_minimax_tts_ok` 已随 M3 第三批交付（2026-10-04）**；**§9.1 的 `media_volcengine_create_ok` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error` 已随 M3 第四批交付（2026-10-04）；§9.2 长转写臂的 `media_volcengine_asr_create_ok` / `_poll_running` / `_poll_succeeded_text` / `_poll_failed` 已随语音识别承接批交付（2026-10-17，`mockupstream/asr_volcengine.go`，头驱动协议——响应回 `X-Api-Status-Code`/`X-Api-Message` 并回显 `X-Api-Request-Id`，submit 成功 body 空）**；**§9.2 流式 TTS 臂的 `media_volcengine_tts_stream_ok` / `_stream_failed` 已随火山流式语音桥接 V1a 交付（2026-10-18，`/api/v3/tts/unidirectional` NDJSON 分块）**；**§10 的 `media_qwen_create_pending` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error` 已随 M3 第五批交付（2026-10-04）**；**§6.1 的 `media_xai_video_create_request_id` / `_poll_pending` / `_poll_done_url_duration` / `_poll_failed_error` / `_poll_expired` 已随 M3 回填批交付（2026-10-04）**）
    - 同步图像场景（2026-11-11 同步批）：`media_images_ok`（已有）、`media_images_b64_ok`、`media_images_no_image`、`media_images_relay_model_mismatch`（gpt/中转）、`media_xai_image_ok` / `media_xai_image_no_image`、`media_volcengine_image_ok` / `media_volcengine_image_no_image`、`media_qwen_image_ok` / `_v3_ok` / `_no_image`；图像 mock 端点白名单覆盖 `/v1/images/generations`、火山 Ark 的 `/api/v3/images/generations` 与 qwen 原生 `/api/v1/services/aigc/multimodal-generation/generation`。
+   - 图像编辑场景（2026-11-12 T216）：`media_images_edit_ok`（OpenAI/gpt 形态 `created+data[].url`，供 gpt/xai 编辑端点与 volcengine/qwen 复用同一 200 判定）、`media_images_edit_no_image`（2xx 无 `data[]`）；白名单新增 `/v1/images/edits`（gpt 与 xai 共用该路径，按账户主机区分）。
 5. **slow/abort 基建复用**：首字节延迟、分块延迟、中途断连直接复用现有 `slow_first_byte`/`mid_stream_close` 机制，用于受理边界与流中断用例。
 
 ### 3.3 acceptance E2E 扩展规格
@@ -219,7 +285,7 @@
 
 请求：`{"model":"gpt-4o-mini-tts","input":"...","voice":"alloy","speed":1.0,"response_format":"mp3","instructions":"..."}`。
 响应：音频二进制（content-type 按 `response_format`，如 `audio/mpeg`）；**无 JSON usage**。
-计费（M1 双口径，按厂商真实定价维度）：`tts-1`、`tts-1-hd` 按 `input` 字符数（网关自算，行项 `tts_input_chars`）；`gpt-4o-mini-tts` 按 token 口径（既有 `audioInputUsdPer1M`/`audioOutputUsdPer1M` 单价，seed 已填价；二进制响应无 usage，0 计费 + `usage_missing` 标记，不猜测）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）。
+计费（M1 双口径，按厂商真实定价维度；2026-11-12 按次兜底批）：`tts-1`、`tts-1-hd` 按 `input` 字符数（网关自算，行项 `tts_input_chars`）；`gpt-4o-mini-tts` 官方按 token（`audioInputUsdPer1M`/`audioOutputUsdPer1M`），但二进制响应无 usage、网关不解析音频 → **按次固定价 $0.3/次**（行项 `tts_output_calls`，价格参考 new-api 同口径，非 OpenAI 官方按次价；`usage_missing` 仍置位记录上游无 usage 事实）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）。
 Mock：`media_tts_ok` 返回内置合成 WAV/MP3 载荷。
 
 ### 4.2 STT：`POST /v1/audio/transcriptions`（multipart：`file`、`model`、`language`、`prompt`、`response_format`、`timestamp_granularities[]`）
@@ -228,7 +294,9 @@ Mock：`media_tts_ok` 返回内置合成 WAV/MP3 载荷。
 `/v1/audio/translations` 同构。计费：`usage` 优先，否则按 `duration` 秒（whisper 系，官方按分钟定价、计量落秒）。
 Mock：`media_stt_ok` / `media_stt_ok_verbose`。
 
-### 4.3 视频：`POST /v1/videos`（sora）
+### 4.3 视频：上游 OpenAI Sora 面（内部 adapter；对外不再暴露）
+
+> 2026-11-12 用户裁决：对外视频面只保留 New API 形态 `/v1/video/generations`（§2.2），旧 `/v1/videos` 硬 404。本节仅描述 gpt/Sora **上游**报文与内部 adapter，供出站构造与 Mock 使用。
 
 请求：`{"model":"sora-2","prompt":"...","seconds":"4","size":"1280x720","n":1,"input_reference": <multipart 文件>}`（图生视频模型 `sora-2/image-to-video`）。
 创建响应（video 对象）：`{"id":"video_...","object":"video","status":"queued","progress":0,"model":"sora-2","prompt":"...","seconds_length":4,"size":"1280x720",...}`。
@@ -254,6 +322,7 @@ Mock：`media_video_*` 全套 + 创建响应必须含 `id`/`status:"queued"`（�
 - 图像统一契约**不产生 SSE**：`stream: true` / `partial_images` 对 gpt/xai/volcengine/qwen 全部接受但忽略，回显 `params_ignored`，统一返回普通 JSON；gpt 不再直通 SSE。后续确有需要再立扩展项。
 - OpenAI 兼容中转可能返回 `url` 或 `b64_json`，usage 可能缺省/带额外字段；按 §2.9 响应宽容归一，不按模型名/厂商拦截。
 - 计费：gpt-image 按模型行图像 token 价（`image_output_usd_per_1m`）或按张价，行内策略决定。
+- **编辑（`POST /v1/images/edits`，2026-11-12 T216）**：OpenAI 官方同期存在两代形态——legacy `multipart/form-data`（`image` 文件、`mask` 文件、`prompt`、`model`、`n`、`size`、`response_format`、`user`）与现行 JSON（`images:[{image_url|file_id}]`、`mask`、`prompt`、`model`、`n`、`size`、`quality`、`background`、`output_format`、`output_compression`、`input_fidelity`、`stream`、`partial_images`）。网关 multipart 保持字节级透传（只删除 `stream`/`partial_images` 文本字段），JSON 走生成面同一 adapter；响应同 `ImagesResponse`，token usage 照抽。`mask` 原生支持。
 - Mock：`media_images_ok`（`{"created":1700000000,"data":[{"url":"..."}]}`）；新增 `media_images_b64_ok`、`media_images_no_image`（2xx 无 data）、`media_images_relay_model_mismatch`（响应 model 为其他厂商，仍应成功）。
 
 ## 5. gemini（置信度 A/B：TTS 官方文档确认；Veo REST 多源确认）
@@ -296,7 +365,7 @@ Mock：`media_gemini_tts_ok`（inlineData base64 PCM 载荷）、`media_gemini_t
 轮询：`GET /v1beta/{name}` → `{"done":bool,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"<GCS 签名 URL>"}}]}},"error":{...}}`；uri 时效约 2 天。
 下载：直连 uri（经网关流式代理，认证按 GCS 签名内嵌，不需要额外凭据；M3 已实施——uri 冻结进 Artifact.ContentURL，`ContentFromArtifact` 形态不经 base_url 拼接）。
 取消：`POST /v1beta/{name}:cancel`（上游不支持时网关本地收敛 cancelled）。
-计费：按输出秒（目录档）；usage 不回报，且 `seconds` 属 ignored 参数不构成计量基源——网关按 §2.8 兜底（0 计费 + `usage_missing` 标记，不猜测；目录秒价 `VideoOutputUsdPerSecond` 已落，待 Veo 回报时长字段或固定档裁决后生效）。
+计费：按输出秒（目录档）；usage 不回报，且 `seconds` 属 ignored 参数不构成计量基源——网关按 §2.8.2 用 adapter 声明的**厂商默认输出时长 8 秒**作为计费基源（`VideoCapabilities.DefaultSeconds=8`），成本 = 8 × 目录秒价；不再落 0。用户显式传入的 seconds 仍进 `params_ignored`，不参与计费。**计费字段封禁（2026-11-13 T219）**：`provider_options.gemini` 子对象中的 `durationSeconds` / `sampleCount`（含 `parameters` 嵌套层）会改变实际产出时长/段数，但计费基源已按顶层参数冻结——命中即本地 400（`ErrParamUnsupported`），不静默丢弃；非计费键（如 `personGeneration`）照常 deep-merge。
 Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `media_gemini_video_poll_done_uri` / `media_gemini_video_poll_error`（M3 已交付，创建场景冻结任务脚本）。
 
 ### 5.3 Live（实时语音，M6a；置信度 B：多源确认 2026-10-04）
@@ -327,6 +396,7 @@ TTS/STT/STS 能力已确认（2026-10 检索），报文仍待官方页抓取（
 - 2026-11-11 真实探针：`grok-imagine-image-2.0` + `n:1` + `response_format:"url"` → 200；响应 `data[0].url` + `mime_type`，`usage.cost_in_usd_ticks`；**没有 `created`/`model`**。按响应宽容口径，缺字段不影响成功。
 - 网关参数处理：`provider_options.xai` deep-merge 进顶层 body；`stream`/`partial_images`/`quality`/`background`/`output_compression`/`safety_identifier` 等 xAI 未文档化参数忽略并回显 `params_ignored`；`model`/`prompt`/`n`/`size`/`response_format` 透传。响应不改写。
 - 计费：`data[]` 长度 → `output_image_count`，按模型行 `output_usd_per_image` 计费；`usage.cost_in_usd_ticks` 仅保留原始提示，不替代目录价。
+- **编辑（`POST /v1/images/edits`，2026-11-12 T216；置信度 A：xAI OpenAPI `EditImageRequest`）**：官方原生编辑端点 `POST https://api.x.ai/v1/images/edits`，Bearer。请求 `prompt`（必填）、`image`(ImageUrl) 与 `images[]` 互斥、`model`、`n`、`response_format`(`url|b64_json`)、`aspect_ratio`、`resolution`、`output`、`storage_options`；`ImageUrl = {url, file_id}`，`url` 接受公网 URL 或 base64 data URL。响应 `data:[{url|b64_json,mime_type}] + usage(MediaUsage)`，**无 `created`**。网关把 multipart 文件转 data URL 后写 `image:{url}`（单图）或 `images:[{url}]`（多图）；`mask`/`quality`/`background`/`output_format`/`output_compression`/`input_fidelity`/`safety_identifier`/`user` 忽略并回显；`size` 原样透传（官方未文档化，待实测）；`file_id` 无法跨厂商解析 → 400。
 - Mock：`media_xai_image_ok`（`data[].url` + `mime_type` + cost ticks，无 created/model）、`media_xai_image_no_image`（2xx 无 data）。
 
 ## 7. glm / 智谱（视频 B 级：报文多源确认；语音 C 级：模型确认字段待回填）
@@ -354,16 +424,20 @@ TTS/STT/STS 能力已确认（2026-10 检索），报文仍待官方页抓取（
 
 ## 8. minimax（置信度 B：官方文档多源确认；M3 第三批已实施 adapter，2026-10-04）
 
-### 8.1 视频：`POST /v1/video_generation`（host `api.minimax.chat` 或 `api.minimaxi.com`，以账户 base_url 为准）——M3 已实施 adapter（`gatewaymedia/minimax_video.go`；账号接入见《MiniMax账号接入.md》）
+### 8.1 视频：Hailuo v1 `POST /v1/video_generation` + H3 v2 `POST /v2/video_generation`（host `api.minimax.chat` / `api.minimax.cn` / `api.minimaxi.com`，以账户 base_url 为准）——M3 已实施 adapter；2026-11-13 H3 v2 批（`gatewaymedia/minimax_video.go`；账号接入见《MiniMax账号接入.md》）
 
-请求：`{"model":"MiniMax-Hailuo-2.3","prompt":"...","prompt_optimizer":true,"duration":6,"first_frame_image":"<base64>"}`（`first_frame_image` 承接公共 `input_reference`）。
-创建响应：`{"task_id":"...","base_resp":{"status_code":...,"status_msg":"..."}}`——**受理凭据 = `task_id`**；`base_resp.status_code != 0` 视为失败（受理前错误）。
-轮询：`GET /v1/query/video_generation?task_id=...` → `{"task_id","status":"Preparing|Queueing|Processing|Success|Fail","file_id":"...","file_download_url":"..."}`。
-下载：`GET /v1/files/retrieve?file_id=...`（或 `file_download_url`，以回填为准）。**M3 裁决：取 `file_download_url` 直连**（无凭据，与 Veo uri / glm video_result.url 同族先例；`ContentFromArtifact=true`）。
-计费（2026-10-05 按次计费批已实施，§2.8.1）：Hailuo 官方按条/档位计费（分辨率 × 时长）——目录行 `VideoOutputCostPerCall` 落国际站按条明文主档 768P-6s $0.28/条（platform.minimax.io pricing-paygo；768P-10s $0.56、1080P-6s $0.49、512P-6s $0.10、512P-10s $0.15 分档注释登记，裁决 §2.6 不结构化）。轮询响应不回报时长（仅 status/file_id/file_download_url）→ 任务终态 completed 成本 = 次价 × 1（一次任务 = 一次调用），usage 行不落秒计量、不打 `usage_missing`；按条 → 每秒是推导，禁止折秒（裁决 §2.4 维持，每秒槽位保持空）。
-`provider_options.minimax` 示例：`{"prompt_optimizer":true}`。
+**Hailuo-2.3 v1（现状；2026-11-13 分辨率批）**：请求 `{"model":"MiniMax-Hailuo-2.3","prompt":"...","prompt_optimizer":true,"duration":6,"resolution":"768P|1080P","first_frame_image":"<base64>"}`（`first_frame_image` 承接公共 `input_reference`；官方 v1 支持 `resolution`：768P 默认、1080P 仅 6s、720P 对 2.3 不可用）。网关按 `size` 短边 ≥900 → 1080P、其余 768P 显式发送，并冻结同值 `billingResolution`。创建响应 `{"task_id":"...","base_resp":{...}}`；轮询 `GET /v1/query/video_generation?task_id=...` → `{"task_id","status":"Preparing|Queueing|Processing|Success|Fail","file_id","file_download_url"}`；下载取 `file_download_url` 直连（`ContentFromArtifact=true`）。`provider_options.minimax` 示例 `{"prompt_optimizer":true}`。
+
+**H3 / H3-Max v2（2026-11-13 实施；官方指南：`platform.minimax.cn/docs/guides/video-generation`、`platform.minimax.io/docs/guides/video-generation`）**：同一 provider 注册键按模型分派 v2 协议。
+- 创建：`POST {host}/v2/video_generation`，请求 `{"model","content":[...],"duration","resolution","ratio"?}`。`prompt` → 首个 `{"type":"text","text":...}`；`input_reference` → `{"type":"image_url","image_url":{"url":...},"role":"first_frame"}`（http(s) URL / data URL 直传；裸 base64 无 mime → 本地 400）。`duration` 恒显式发送（用户 seconds，否则默认 6 秒，官方区间 4–15）。`resolution` 官方词表：H3 768P/2K、H3-Max 480P/768P；按 `size` 短边换算（H3 ≥1440→2K，H3-Max ≥720→768P），未传 size 用主档 768P。`ratio` 仅文生视频发送（官方要求且不能 adaptive），按 `size` 精确约分到六档词表（16:9/9:16/1:1/4:3/3:4/21:9），无 size 默认 16:9；图生视频省略 ratio、跟随首帧。
+- 版本根：H3 v2 操作路径在 host 根，而账户 base_url 承载 Hailuo 的 `/v1` 版本根。链上层对 minimax 的 `/v2/` 路径做**版本根特例**：剥离 base 末尾 `/v1` 后直拼（`/v1/v2/...` 实测 404；`/v2/...` 实测 401 鉴权信封，端点存在）。base 已是 host 根时直拼不变。
+- 创建响应 `{"task_id":"..."}`；轮询 `GET {host}/v2/query/video_generation/{task_id}`（路径参数）→ 官方嵌套形态 `{"task":{"status","content":{"url"},"error"}}`，兼容顶层扁平形态。状态词表：`succeeded/success/completed`→completed、`failed/fail/error`→failed、`cancelled/canceled`→cancelled、`queued/pending/created/preparing/waiting/submitted`→queued、`processing/running/in_progress`→in_progress；空状态（创建受理）→queued；未知非空→in_progress + RawStatus。completed 缺 `task.content.url` → 协议违约报错。取消仍无端点（`SupportsCancel=false`）。
+- 任务面分派：`VideoModelTaskAdapter` 可选接口按创建时冻结的模型选轮询路径/响应解析；Hailuo 模型保持 v1 面。创建响应解析仍走 v1 形态（受理凭据同为顶层 task_id）。
+- **范围裁决（T219 已收口）**：H3 `reference_image`/`reference_video`/音频输入多素材、H3-Max 输入视频 0.97/0.37 元每秒与超出免费张数的输入图计费不在统一入口开放——当前只表达单张首帧（H3 前 5 张、H3-Max 前 2 张免费，均落在免费额度内），且 `metadata` L3 注入 `content`/`image`/`reference_*` 已被计费字段封禁（§2.4 规则 5）直接 400，不存在漏计请求；未来开放多素材属新功能，需同时补输入视频秒价维度。H3-Regeneration / H3-Context-IR 是独立任务面，未接入。
+
+计费（2026-10-05 按次计费批已实施，§2.8.1；2026-11-12 默认时长 + 时长档批；2026-11-13 H3 分辨率档 + Hailuo 1080P 批）：按目录行维度分两条——Hailuo-2.3 官方按条/档位计费，目录行 `VideoOutputCostPerCall` 落主档 768P-6s 2.00 元/条（÷7.0=$0.2857），`VideoOutputCostPerCallBySeconds` 落 6s/10s 两档（10s 4.00 元/条 ÷7.0=$0.5714），`VideoOutputCostPerCallByResolutionSeconds` 落 768P-6s/10s 与 1080P-6s（3.50 元/条 ÷7.0=$0.5；Fast 对应 $0.1929/$0.3214/$0.33）；创建时请求秒数按最近档收敛，结算先按 `billingResolution + billingSeconds` 组合选档、未命中回落秒数主档，轮询响应不回报时长，usage 行不落秒计量、不打 `usage_missing`；H3/H3-Max 目录行是**秒价 + 分辨率档表**：H3 768P $0.0714/2K $0.1143、H3-Max 480P $0.0471/768P $0.0714（国内人民币 ÷7.0），创建时 `BillingResolution` 冻结档位，结算按档秒价 × 秒，档位不命中不回退主档；轮询不回报时长，创建请求未携带 `duration` 时按**厂商默认 6 秒**（`VideoCapabilities.DefaultSeconds=6`）冻结计费基源，成本 = 6 × 档位秒价（§2.8.2）。按条行禁止折秒，秒价行不做次数换算。
 取消：无上游取消端点（M3 裁决：`SupportsCancel=false`，不发上游请求直接本地收敛 `cancelled`，沿 glm §7.1 先例）。
-Mock：`media_minimax_create_ok` / `_poll_running` / `_poll_success(file_id)` / `_poll_fail(base_resp)`——M3 已交付（`mockupstream/video_minimax.go`）。
+Mock：`media_minimax_create_ok` / `_poll_running` / `_poll_success(file_id)` / `_poll_fail(base_resp)`——M3 已交付（`mockupstream/video_minimax.go`）；H3 v2 复用同一组场景名，按请求路径（`/v2/video_generation`、`/v2/query/video_generation/{id}`）切换创建/轮询报文形态（创建只回 `task_id`、轮询回嵌套 `task.status/content.url`，2026-11-13 交付，`TestMediaMinimaxH3V2FullChain` 钉住）。
 
 ### 8.2 TTS / 长转写（t2a_v2 已回填 B 级；M3 已实施 adapter，2026-10-04；长音频待回填）
 
@@ -384,7 +458,7 @@ Mock：`media_minimax_create_ok` / `_poll_running` / `_poll_success(file_id)` / 
 计费：按字符（`extra_info` 回报优先，§2.8）。M3 已实施口径：TTS 字符计量按 `extra_info.usage_characters` 回报优先、缺失回落请求字符自算；官方口径为 ¥2.00/万字符（人民币、无官方美元价），引擎无官方汇率折算链——不落字符价，计量照落、成本不虚计，不编造（依据见 `pricing/data_minimax.go` 注释）。
 Mock：`media_minimax_tts_ok`（data.audio hex 载荷，断言解码后 magic bytes）——M3 已交付（`mockupstream/video_minimax.go`；`usage_characters` 刻意 +1 偏离请求字符数，以证明网关回报优先）。
 
-异步长音频（长转写）：端点与字段接入前以 platform.minimax.io 回填；`/v1/audio/jobs` 长音频面首个上游以回填结果定（候选：百炼 paraformer / 火山长转写 / MiniMax）。
+异步长音频（长转写）：端点与字段接入前以 platform.minimax.io 回填；`/v1/tasks/audio` 长音频面首个上游以回填结果定（候选：百炼 paraformer / 火山长转写 / MiniMax）。
 
 ## 9. volcengine / 火山方舟（置信度 B：官方格式多源确认；M3 第四批已实施视频 adapter，2026-10-04）
 
@@ -397,7 +471,7 @@ host：`ark.cn-beijing.volces.com`；认证 `Authorization: Bearer <ARK_API_KEY>
 - 创建：`POST https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks`，请求 `{"model":"doubao-seedance-1-0-pro-250528" 系,"content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"..."}}],"resolution":"720p","ratio":"16:9","duration":5,"seed":42,...}`。创建响应：`{"id":"cgt-...","status":"queued",...}`——**受理凭据 = `id`**（任务记录保留 7 天）。
 - 轮询：`GET /api/v3/contents/generations/tasks/{id}` → `status ∈ queued|running|succeeded|failed`；成功 `content.video_url`（时效内下载 URL；M3 已实施：冻结进 Artifact.ContentURL，直连下载无凭据）；失败 `error{code,message}`（M3 已实施：错误摘要 code/message 透传，缺席以 status 原值兜底）；官方回调面另有 `expired` 等终态词，轮询面未回填——未知状态归 `in_progress` 记 RawStatus（§2.6 归一规则）。**usage/duration 字段全貌已回填（2026-10-17 真实上游实测）**：succeeded 响应顶层 `duration`（生成秒数，整数）、`usage.completion_tokens`/`usage.total_tokens`、`resolution`/`ratio`/`framespersecond`/`output_format`/`seed`/`service_tier` 等元数据（实测例：720p 5 秒 mini → `duration:5`、`usage.completion_tokens:108900`）——adapter 抽 `duration` 正值 → `Usage.OutputVideoSeconds`（usage_source=upstream）。
 - 下载：`video_url` 直连流式代理（M3 已实施：`ContentFromArtifact=true`）。
-- 计费：seedance 按秒 × 分辨率档；`usage` 回报优先。**2026-10-17 实测回填批**：轮询 succeeded 顶层 `duration` 正值 → 秒计量照抽（`OutputVideoSeconds`，usage_source=upstream，替换 M3 的请求参数自算/0 兜底）；成本计算维持既有规则（目录计费层秒价落值前成本 0 不虚计，token 口径与按秒×档的人民币/USD 换算待专门计价批），不编造价。failed 仍不虚计。
+- 计费：seedance 按秒 × 分辨率档（目录 720p 主档 USD 秒价已落值，见 §9 总表）；`usage` 回报优先。**2026-10-17 实测回填批**：轮询 succeeded 顶层 `duration` 正值 → 秒计量照抽（`OutputVideoSeconds`，usage_source=upstream）。**2026-11-12 默认时长批**：上游未回报 duration 且创建请求未带 `seconds` 时，按 adapter 声明的厂商默认 5 秒（`VideoCapabilities.DefaultSeconds=5`）冻结计费基源（§2.8.2），不再落 0。failed 仍不虚计。**2026-11-13 真实探针（seedance-2.0-mini）**：`480p`/`16:9`/`duration:5` 创建 200（`cgt-...`），轮询 8 次约 70s 后 succeeded；终态回报 `duration:5`、`resolution:480p`、`ratio:16:9`、`usage.completion_tokens:50638`。目录 480p 秒价 0.23 元/s × 5 = ¥1.15；官方 token 口径 50638×23/1e6 = ¥1.1647，差 1.3%（秒价是 token 价的示例折算，最终以秒价落账）。
 - `provider_options.volcengine` 示例：`{"resolution":"720p","ratio":"16:9","camera_fixed":true}`（以官方参数名为准）。
 - 取消：§9.1 回填面无取消端点（M3 裁决：`SupportsCancel=false`，不发上游请求直接本地收敛 `cancelled`，沿 glm/minimax 先例；官方回调文档提及任务存在 cancelled 终态、仅排队中任务可取消，取消端点回填后升级）。
 - Mock：`media_volcengine_create_ok` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error`——M3 第四批已交付（`mockupstream/video_volcengine.go`，端点 `/api/v3/contents/generations/tasks` 族与 `/content` 产物通道）。
@@ -406,7 +480,7 @@ host：`ark.cn-beijing.volces.com`；认证 `Authorization: Bearer <ARK_API_KEY>
 
 **TTS（2026-10-17 迁移批回填并实施；置信度 A：官方文档 + 真实上游实测）**：`POST https://openspeech.bytedance.com/api/v3/tts/create`——**注意 host 为 openspeech.bytedance.com（语音服务域）非 ark**。**迁移事实（2026-10-17 真实上游实测）**：M6 依据的旧端点 `POST /api/v3/tts` 已 404 下线（"Endpoint 'tts' does not exist"），旧版控制台 appid+token 双值凭据与 `Authorization: Bearer;<token>` 分号形态一并废弃；现役面为豆包音频生成（音频生成 HTTP 接口），鉴权 `X-Api-Key: <api-key>` 单头单值（新版语音控制台 API Key，凭据字段沿用 `speech_token` 单值；`speech_appid` 退役为可选遗留键，不再参与出站）。请求：`{"model":"seed-audio-1.0","text_prompt":"...","speaker":"<音色名>","audio_config":{"format":"mp3","speech_rate":1.0}}`——`model` **真实透传**（现役 `seed-audio-1.0`；统一面历史占位名 `doubao-tts` 由 adapter 归一映射为 `seed-audio-1.0` 兼容既有账户；**派发模型匹配同构等价（2026-10-17 实测回填批）**：账户 `supportedModels` 声明两名字之一即可承接任一名字的请求——占位名与现役名视为同一能力，等价在**五层**匹配面同构生效：候选窗口 SQL（preflight 选组的 `direct_models.model` 谓词按等价组展开 `IN`）、路由选组过滤（`gatewayrouting.FilterAccountsByRequestedModel`）、派发候选过滤（`gatewaydispatch.FilterGatewayAccountsByRequestedModel`）、driver 能力判定链（`gatewayRequestCapabilityMismatchReasonFor`——实测断层正是此层以 model_unsupported 拒绝占位声明账户）、切号承接（`switchtarget.go` 冻结目标候选检查）、**计价解析（2026-10-17 实弹取证补第六消费点）**（usage 记账的目录规范名解析按等价组变体回退：gateway `chain_pricing.go findChainCatalogItem` 与 jobs `shared/platform/usagepricing/catalog.go` 镜像同构——占位名 `doubao-tts` 请求的用量此前按目录 miss 落 0 成本，与「计费按归一后 seed-audio-1.0 秒价」的宣称不符，实弹复测 5.9s → $0.014047605 按现役秒价计费），与 adapter 归一共用该等价事实，不再出现"目录现役行可请求、存量占位账户 503"的断层）。**大小写边界**：Go 四层匹配组内 EqualFold，候选窗口 SQL 的 `IN` 为规范名字面量精确匹配（PG 大小写敏感）——大小写变体请求（如 `Seed-Audio-1.0`）经 Go 层但被窗口剔除（与等价前行为一致）；出站 adapter 占位归一为精确比较，等价组命中后模型名原样出站（现役名透传、占位名归一）；`speaker` 上游可选（缺省默认音色）。公共参数映射：`input`→text_prompt、`voice`→speaker、`response_format`→audio_config.format（**实测词表 mp3/wav/ogg_opus/opus**；opus 上游返回 OggS 容器、content-type 按 audio/ogg——**2026-10-17 实测注记：上游对 format=opus 偶发返回 WAV 容器字节（RIFF 头，同请求重试即恢复 OggS，上游内部编码产出不稳定），下游客户端应按字节头识别容器而非信任 content-type，网关零转码不纠正**；pcm 实测上游挂起超时不采纳，词表外按 §2.4 规则 2 本地 400 零转码）、`speed`→audio_config.speech_rate（倍率形态；3.0 实测接受，上游对越界值静默接受不拒绝——网关维持声明区间 [0.2,3.0] 预校验 400，不猜上游真实边界）。响应 200：`{"audio":"<base64>","duration":3.28,"original_duration":3.28,"url":"<签名 CDN 直链，约 2 小时时效>"}`——成功响应**无 code 字段**，`audio` base64 解码后透传（不得把 base64 字符串当音频下发）；HTTP 非 200 错误信封为平铺 `{"code":45000010,"message":"Invalid X-Api-Key"}` 形态（链上按状态码统一错误上抛，同步面无任务受理语义）。**分派语义（2026-10-17 实测回填批）**：volcengine 账户 + speech 路径 + 请求体为 JSON 对象时，`ParseSpeechRequest` 校验失败（`voice` 必填缺失、`model`/`input` 缺失等 L1 面）→ 网关 400 `invalid_gateway_request` 透传校验消息（如"语音合成请求缺少 voice"），**不再静默落 openai 通用透传链**（旧行为会把参数错误送上游 404 后以 503 upstream_retryable_error 伪装，错误语义与可重试性双重错乱）。计费按时长（**2026-10-17 维度修正批**：官方计费维度为生成原始时长、精确至秒——响应顶层 `duration` 秒落 `audio_input_seconds` 音频秒计量（费率 `audioInputUsdPerSecond` 按模型），不再落字符口径 `TtsInputChars`；duration 缺失/非正值 → 0 计量 + `usage_missing`，不猜测；目录秒价已落值（1 元/分钟 ÷ 60 ÷ 7.0 = $0.00238095/秒）——见《火山方舟账号接入.md》计价口径节）。Mock：`media_volcengine_tts_ok`（200 + audio base64 + duration 载荷）+ `media_volcengine_tts_failed`（401 平铺错误信封）。
 **流式 TTS（豆包语音合成模型 2.0 / `seed-tts-2.0`；2026-10-18 火山流式语音桥接 V1a 回填并实施；置信度 A：端点/鉴权/错误形态实弹探测 + 帧名 B 级待实弹回填）**：`POST https://openspeech.bytedance.com/api/v3/tts/unidirectional`（语音服务域同 host；**HTTP chunked NDJSON 流**，非 WS）。鉴权 `X-Api-Key` 单头——**与同步面同一 `speech_token` 实测穿过鉴权层（零新凭据）** + `X-Api-Resource-Id: seed-tts-2.0`（模型名即资源 ID）。请求 `{"user":{"uid"},"req_params":{"text","speaker","audio_params":{"format","speech_rate"}}}`——统一面映射 `input`→req_params.text、`voice`→req_params.speaker、`response_format`→audio_params.format（**2.0 词表 mp3/pcm/ogg_opus/wav：无 opus、pcm 正式支持**，词表外本地 400）、`speed`→audio_params.speech_rate（**换算 `(speed-1)×100`——2026-10-23 官方文档字段表回填（A 级：官方文档字段表明文）：speech_rate 默认 0、取值 [-50,100]、100 代表 2.0 倍速、-50 代表 0.5 倍速**；流式面官方可表达倍速 **[0.5,2.0]**，越界本地 400（§2.4 规则 2）——同步面 `audio_config.speech_rate` 倍率形态 [0.2,3.0] 是另一 API 区间，不适用于流式面；字段名实弹复核可后续补充）。响应 200 `text/plain` **NDJSON**（**2026-10-18 真实 2.0 出音 A 级回填**，16 音频帧 + 句级帧 + 终止帧实测）：音频帧 `{"code":0,"message":"","data":"<base64 分块>"}`——**`data` 是 base64 字符串非对象**，按序解码拼接透传；句级帧 `{"code":0,"data":null,"sentence":{"phonemes","text","words"}}` 丢弃；终止帧 `{"code":20000000,"message":"OK","data":null}`；错误帧 `{"reqid","code","message"}`（**55000000 "resource ID is mismatched with speaker related resource" = 音色未授权 2.0**）→ 网关 502 upstream_error 透传 message。**音色配对规则（A 级实测 + 官方配对表）**：`*_uranus_bigtts`/`saturn_*` 系 2.0 音色 ↔ `seed-tts-2.0`；`*_mars_bigtts`/`*_moon_bigtts`/`ICL_*` 系 1.0 音色 ↔ `seed-tts-1.0`——1.0/2.0 音色与资源错配即 55000000（两库不互通）。**分派与计量**：同一 volcengine adapter 按 model 分支（`IsVolcengineTTSStreamModel`）；计量走**字符口径**（官方计费维度语音合成 2.0 按字符 3 元/万字符 ÷7.0 = $4.2857e-05/字符，目录行 `ttsInputCostPerChar`——与 1.0 同步面的时长口径按 model 分流）。**经典资源对照（实测）**：`volc.service_type.10029` 对该语音账户 403 `45000030 not granted`。Mock：`media_volcengine_tts_stream_ok`（NDJSON 双分块）/ `media_volcengine_tts_stream_failed`（55000000 错误行）。设计：[火山流式语音桥接设计](火山流式语音桥接设计.md)（V1b 字符级流式回流与 WS 基座展望见该文档）。
-**异步长转写（录音文件识别 2.0；2026-10-17 回填并经 `/v1/audio/jobs` 第二上游承接实施；置信度 A：官方文档 + 零计费探测 + 真实转写实测）**：现役资源 `volc.seedasr.auc`（豆包录音文件识别模型 2.0；**1.0 系资源 `volc.bigasr.auc`/`.auc.duration`/`.auc.predict`/`.auc.techo`/`.auc_idle`/`.auc_turbo` 与 sauc 流式系对该语音账户全部 45000030 not granted——未开通不是故障，承接不覆盖**）。通用大模型录音文件识别面（语音服务域，host 恒 `openspeech.bytedance.com`，与 ark base_url 无关——同 TTS URL 构造特例）：`POST /api/v3/auc/bigmodel/submit` 提交 + `POST /api/v3/auc/bigmodel/query` 轮询，**异步两段、无取消端点**（`SupportsCancel=false` 本地收敛 cancelled，沿 qwen/glm/minimax 先例）。鉴权 `X-Api-Key: <api-key>` 单头（凭据沿用 `speech_token` 单值，与 TTS 同一把新版语音控制台 API Key；旧版三头 `X-Api-App-Key`+`X-Api-Access-Key` 实测同通但网关不采用——零新凭据字段）+ `X-Api-Resource-Id: volc.seedasr.auc` + `X-Api-Sequence: "-1"`（官方示例固定值）。**头驱动受理协议（与本网关既有 body 驱动任务面不同构，adapter 按响应头判定）**：submit body `{"user":{"uid":"<网关标识>"},"audio":{"url":"<公网音频直链>","format":"<wav|mp3|ogg>"},"request":{"model_name":"bigmodel"}}`，**成功响应 body 为空 `{}`，成功标志在响应头 `X-Api-Status-Code: 20000000`**；**任务 ID = 网关自定义的请求头 `X-Api-Request-Id`**（非上游返回；query 用同一值轮询，网关落 `upstream_job_id`）。query 空 body `{}`：响应头 `X-Api-Status-Code` `20000001`（处理中）/`20000002`（队列中）→ 统一 `in_progress`；终态 `20000000` → body `{"audio_info":{"duration":<毫秒>},"result":{"text":"<全文>","utterances":[{"text","start_time","end_time","words":[...词级时间戳]}]}}`。状态归一（§2.6 volcengine 长转写臂）：`20000000`→`completed`、`20000001`/`20000002`→`in_progress`、`450000xx`（如 `45000001` 参数无效、`45000006` 未文档化——实测为音频 URL 拉取失败）→`failed`、未知值→`in_progress` 记 RawStatus 不猜测。统一面映射：`model`（目录行 `volc.seedasr.auc`，资源 ID 即 API 真实标识）→ resource id 头恒 `volc.seedasr.auc`、body `request.model_name` 恒 `bigmodel`（官方示例值）；`input_url` → `audio.url`（**只接受公网 URL，multipart 文件输入本地 400——上游只收 URL，与零存储约束对齐**）；`audio.format` 由 URL 后缀（`.wav`/`.mp3`/`.ogg`）推断，可经 `provider_options.volcengine.audio_format` 覆盖，都缺省 `wav`（上游不识别时显式报错回传，不静默）。**计量计费**：终态 `audio_info.duration` **毫秒**→÷1000 秒落 `audio_input_seconds`；缺失/非正值 → 0 计量 + `usage_missing` 不猜测。官方计费（2026-10-17 计费页核实，`getDocDetail` API 直取 MDContent）：后付费 **0.8 元/小时**（按音频时长、精确至秒、折小时计费；资源包折算 0.67~0.77 元/小时）÷3600 ÷7.0 → **$3.1746031746031745e-05/秒** 落目录行 `audioInputCostPerSecond`（模型 `volc.seedasr.auc`，CNY 四件套）。**境外音频源坑（实测）**：上游境内机房自拉 `audio.url`，境外源（upload.wikimedia.org）约 4 分钟 `in_progress` 后终态 `45000006` 失败；境内源即时成功——接入文档必须提示境内可达音频源。content 端点：火山无产物下载 URL（qwen `transcription_url` 同构物不存在），终态转写 JSON 即产物——content 请求 = adapter 产出的同构 query 请求（再查一次上游、响应体直接代理）。Mock：`media_volcengine_asr_create_ok` / `_poll_running` / `_poll_succeeded_text` / `_poll_failed`——随本承接批交付（`mockupstream/asr_volcengine.go`，端点 `/api/v3/auc/bigmodel/submit|query`，响应按头驱动协议回 `X-Api-Status-Code`，submit 成功 body 空）。
+**异步长转写（录音文件识别 2.0；2026-10-17 回填并经 `/v1/tasks/audio` 第二上游承接实施；置信度 A：官方文档 + 零计费探测 + 真实转写实测）**：现役资源 `volc.seedasr.auc`（豆包录音文件识别模型 2.0；**1.0 系资源 `volc.bigasr.auc`/`.auc.duration`/`.auc.predict`/`.auc.techo`/`.auc_idle`/`.auc_turbo` 与 sauc 流式系对该语音账户全部 45000030 not granted——未开通不是故障，承接不覆盖**）。通用大模型录音文件识别面（语音服务域，host 恒 `openspeech.bytedance.com`，与 ark base_url 无关——同 TTS URL 构造特例）：`POST /api/v3/auc/bigmodel/submit` 提交 + `POST /api/v3/auc/bigmodel/query` 轮询，**异步两段、无取消端点**（`SupportsCancel=false` 本地收敛 cancelled，沿 qwen/glm/minimax 先例）。鉴权 `X-Api-Key: <api-key>` 单头（凭据沿用 `speech_token` 单值，与 TTS 同一把新版语音控制台 API Key；旧版三头 `X-Api-App-Key`+`X-Api-Access-Key` 实测同通但网关不采用——零新凭据字段）+ `X-Api-Resource-Id: volc.seedasr.auc` + `X-Api-Sequence: "-1"`（官方示例固定值）。**头驱动受理协议（与本网关既有 body 驱动任务面不同构，adapter 按响应头判定）**：submit body `{"user":{"uid":"<网关标识>"},"audio":{"url":"<公网音频直链>","format":"<wav|mp3|ogg>"},"request":{"model_name":"bigmodel"}}`，**成功响应 body 为空 `{}`，成功标志在响应头 `X-Api-Status-Code: 20000000`**；**任务 ID = 网关自定义的请求头 `X-Api-Request-Id`**（非上游返回；query 用同一值轮询，网关落 `upstream_job_id`）。query 空 body `{}`：响应头 `X-Api-Status-Code` `20000001`（处理中）/`20000002`（队列中）→ 统一 `in_progress`；终态 `20000000` → body `{"audio_info":{"duration":<毫秒>},"result":{"text":"<全文>","utterances":[{"text","start_time","end_time","words":[...词级时间戳]}]}}`。状态归一（§2.6 volcengine 长转写臂）：`20000000`→`completed`、`20000001`/`20000002`→`in_progress`、`450000xx`（如 `45000001` 参数无效、`45000006` 未文档化——实测为音频 URL 拉取失败）→`failed`、未知值→`in_progress` 记 RawStatus 不猜测。统一面映射：`model`（目录行 `volc.seedasr.auc`，资源 ID 即 API 真实标识）→ resource id 头恒 `volc.seedasr.auc`、body `request.model_name` 恒 `bigmodel`（官方示例值）；`input_url` → `audio.url`（**只接受公网 URL，multipart 文件输入本地 400——上游只收 URL，与零存储约束对齐**）；`audio.format` 由 URL 后缀（`.wav`/`.mp3`/`.ogg`）推断，可经 `provider_options.volcengine.audio_format` 覆盖，都缺省 `wav`（上游不识别时显式报错回传，不静默）。**计量计费**：终态 `audio_info.duration` **毫秒**→÷1000 秒落 `audio_input_seconds`；缺失/非正值 → 0 计量 + `usage_missing` 不猜测。官方计费（2026-10-17 计费页核实，`getDocDetail` API 直取 MDContent）：后付费 **0.8 元/小时**（按音频时长、精确至秒、折小时计费；资源包折算 0.67~0.77 元/小时）÷3600 ÷7.0 → **$3.1746031746031745e-05/秒** 落目录行 `audioInputCostPerSecond`（模型 `volc.seedasr.auc`，CNY 四件套）。**境外音频源坑（实测）**：上游境内机房自拉 `audio.url`，境外源（upload.wikimedia.org）约 4 分钟 `in_progress` 后终态 `45000006` 失败；境内源即时成功——接入文档必须提示境内可达音频源。content 端点：火山无产物下载 URL（qwen `transcription_url` 同构物不存在），终态转写 JSON 即产物——content 请求 = adapter 产出的同构 query 请求（再查一次上游、响应体直接代理）。Mock：`media_volcengine_asr_create_ok` / `_poll_running` / `_poll_succeeded_text` / `_poll_failed`——随本承接批交付（`mockupstream/asr_volcengine.go`，端点 `/api/v3/auc/bigmodel/submit|query`，响应按头驱动协议回 `X-Api-Status-Code`，submit 成功 body 空）。
 **Agent Plan 语音面未承接（2026-10-17 实测记录；2026-10-18 部分修正）**：Agent Plan 套餐语音走 `wss|https://openspeech.bytedance.com/api/v3/plan/tts/*` 与 `/api/v3/plan/sauc/*` 专属路径族，鉴权为三头形态（`X-Api-App-Key` + `X-Api-Access-Key` + `X-Api-Resource-Id`，豆包语音 2.0 控制台形态）+ 独立凭据体系（实测：ark API Key 作 `Authorization: Bearer` 或三头同值均 401 "grant not found"；通用面 `X-Api-Key` 亦不适用）——**该 plan 路径族仍不承接**。修正：语音合成 2.0 的**标准面**（非 plan）为 HTTP `/api/v3/tts/unidirectional` + `X-Api-Key` 单头（speech_token 可用，见上——"seed-tts-2.0 以 WS 流式为主、需三头"的旧论断仅对 plan 面成立），已随流式语音桥接 V1a 承接。
 
 **M6 实施注（2026-10-04，TTS 面；2026-10-17 迁移批更新）**：`gatewaymedia/volcengine_tts.go` adapter 挂 `speechAdapters` 的 `volcengine` 条目；链上 `volcengineSpeechRequest` 分派（沿 minimax 同模式）。落地事实：出站 URL 恒 `https://openspeech.bytedance.com` 语音服务域 + `/api/v3/tts/create` 路径（与账户 ark base_url 无关的固定上游特例——语音域鉴权（`X-Api-Key`）与资源模型独立于 ark OpenAI 兼容根，账户 `base_url` 只承载 ark `/api/v3` 版本根，不经该出站拼接；`JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL` 仅为验收 E2E 的测试 seam，生产不设置）；凭据单值 `speech_token` = 新版语音控制台 API Key（api_key 账户凭据可选键，写侧仅 volcengine 放行，缺失即该账户无 audio_speech 能力——派发时显式失败，不静默回退；`speech_appid` 退役为可选遗留键，不再参与出站报文与鉴权）；统一面 `model` 真实透传（现役 seed-audio-1.0 目录行承载；历史占位名 doubao-tts 由 adapter 归一映射，见上）；`speed` 区间 [0.2,3.0] 词表外/越界本地 400（§2.4 规则 2）；响应转换 audio 缺失/解码失败错误上抛。档案 Capabilities 含 `tts` family；`audio_speech` 端点模式 opt-in（默认集维持 video_get）。计费：上游无字符回报 → 网关按请求字符自算计量照落、成本按字符价照计（§2.8）。账号接入见《火山方舟账号接入.md》TTS 节。
@@ -417,7 +491,8 @@ host：`ark.cn-beijing.volces.com`；认证 `Authorization: Bearer <ARK_API_KEY>
 - 请求：`model`、`prompt`、`image`（URL/Base64 图生图）、`size`（`1K/2K/4K` 档位或 `WxH`）、`response_format`（`url|b64_json`，默认 url）、`watermark`（bool，厂商默认 **true**）、`output_format`（png/jpeg）、`background`、`sequential_image_generation` + `sequential_image_generation_options.max_images`、`stream`（仅 Seedream 5.0 lite/4.5/4.0 支持，5.0 pro/flash 不支持）。
 - 2026-11-11 真实探针：`doubao-seedream-5-0-flash-260915` + `n:1` + `size:"1024x1024"` + `response_format:"url"` + `watermark:false` → 200；响应 `created`/`model`/`data[].url`（TOS 签名 URL，`X-Tos-Expires=86400`）/`size`/`output_format:"jpeg"`/`background:"opaque"`；usage `input_images:0, generated_images:1, output_tokens:4096, total_tokens:4096`。
 - 网关参数处理：`provider_options.volcengine` deep-merge（`image`、`sequential_image_generation*`、`layer_decomposition`、`optimize_prompt_options`、`tools`）；**网关首版默认显式传 `watermark:false`**，`provider_options.volcengine.watermark=true` 可覆盖；`quality`/`output_compression`/`safety_identifier`/`stream`/`partial_images` 忽略并回显 `params_ignored`；`size`/`response_format`/`output_format`/`background`/`n` 透传。`seed`/`guidance_scale` 官方页未文档化，首批不承诺。响应不改写。
-- usage：`usage.generated_images` → `output_image_count`（缺失时 `data[]` 长度兜底）；按模型行 `output_usd_per_image` 计费；`output_tokens` 为图像内部 token 核算，按张行由计费引擎置零豁免。
+- usage：`usage.generated_images` → `output_image_count`（缺失时 `data[]` 长度兜底）；按模型行 `output_usd_per_image` / 像素档表计费；`output_tokens` 为图像内部 token 核算，按张行由计费引擎置零豁免。输入图按张价（Seedream 5.0 Pro 首张免费、后续 0.02 元/张）从请求侧输入图张数扣免费额度后落 `image_input_unit`；生成面顶层 `image`、编辑面 JSON `images[]` 与 multipart `image`/`image[]` part 均计数（`mask` 不计）。
+- **编辑（`/v1/images/edits`，2026-11-12 T216；置信度 A：官方「豆包的图生图也走 generations 接口」+ 插件实现交叉）**：Ark **无独立 edits 端点**，编辑请求改写为同一 `POST /api/v3/images/generations`：`image` 字段接受 HTTP URL 或 `data:image/<小写格式>;base64,...`，可为单字符串或数组（参考图上限按模型，≤15）；`mask` 不支持（忽略并回显 `params_ignored.mask`）；`n` 原样透传（上游以 `sequential_image_generation` 表达多图，网关不代改）；`watermark` 默认 false；响应同生成面 `data[].url` + `usage.generated_images`。
 - Mock：`media_volcengine_image_ok`（created/model/data[].url/size/output_format/background + generated_images）、`media_volcengine_image_no_image`（2xx 无 data）。
 
 ## 10. qwen / 通义百炼（置信度 B：DashScope 通用任务模式确认；§10.1 端点与参数面已于 2026-10-04 经百炼官方 legacy 万相 API 参考核实并实施）
@@ -438,8 +513,8 @@ M3 第五批实施面（保守面，检索核实）：
 
 ### 10.2 TTS（CosyVoice 系，待回填）/ 长转写（paraformer 系，B 级已回填 2026-10-04；M3f 已实施）
 
-**长转写（`/v1/audio/jobs` 首个上游）——M3f 已实施（2026-10-04，`gatewaymedia/qwen_asr.go`，对外端点族与任务面泛化见链上 `chain_media_video.go`/`chain_driver.go`；usage 时长字段钉 `duration` 秒（JSON 字符串/对象双形态兼容解析，沿 §10.1 先例）；创建无 X-DashScope-Async 头（天然异步，adapter ExtraHeaders 恒 nil）；取消面无 API 回填 → SupportsCancel=false 本地收敛 cancelled）**：
-- 创建：`POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription`，Bearer，**无需 X-DashScope-Async 头**（该服务天然异步）。请求：`{"model":"paraformer-v2","input":{"file_urls":["<公网音频 URL>"]},"parameters":{"language_hints":[...],"disfluency_removal_enabled":true,"diarization_enabled":true,"vocabulary_id":"..."}}`——**只接受公网 URL 数组，不支持文件上传**（与零存储对齐：对外 `/v1/audio/jobs` 首版输入只支持 `input_url`，multipart 文件输入待有文件上传型上游再开）。响应：`{"output":{"task_id":"...","task_status":"PENDING"},"request_id":"..."}`——受理凭据=`output.task_id`。
+**长转写（`/v1/tasks/audio` 首个上游）——M3f 已实施（2026-10-04，`gatewaymedia/qwen_asr.go`，对外端点族与任务面泛化见链上 `chain_media_video.go`/`chain_driver.go`；usage 时长字段钉 `duration` 秒（JSON 字符串/对象双形态兼容解析，沿 §10.1 先例）；创建无 X-DashScope-Async 头（天然异步，adapter ExtraHeaders 恒 nil）；取消面无 API 回填 → SupportsCancel=false 本地收敛 cancelled）**：
+- 创建：`POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription`，Bearer，**无需 X-DashScope-Async 头**（该服务天然异步）。请求：`{"model":"paraformer-v2","input":{"file_urls":["<公网音频 URL>"]},"parameters":{"language_hints":[...],"disfluency_removal_enabled":true,"diarization_enabled":true,"vocabulary_id":"..."}}`——**只接受公网 URL 数组，不支持文件上传**（与零存储对齐：对外 `/v1/tasks/audio` 首版输入只支持 `input_url`，multipart 文件输入待有文件上传型上游再开）。响应：`{"output":{"task_id":"...","task_status":"PENDING"},"request_id":"..."}`——受理凭据=`output.task_id`。
 - 轮询：`GET /api/v1/tasks/{task_id}`（与万相视频同一 DashScope 任务接口）：`PENDING|RUNNING|SUCCEEDED|FAILED`；SUCCEEDED → `output.results[].transcription_url`（**转写结果 JSON 文件的下载链接**，内容含 `transcripts[].text`/句级时间戳/说话人——content 端点流式代理该 URL，产物为 JSON 非 audio）；FAILED → `output.message`；`usage`（JSON 字符串，时长计量）。
 - 状态归一与万相同表（§2.6 qwen 列）；计费：paraformer 按时长人民币口径——无可查证 USD 不落价（0 计费+usage_missing 不编造），usage 时长计量照抽（`AudioInputSeconds`）。
 - Mock：`media_qwen_asr_create_pending` / `_poll_running` / `_poll_succeeded_transcription_url` / `_poll_failed`——**M3f 已交付**（`mockupstream/asr_qwen.go`，创建端点按契约 §10.2 校验 model + input.file_urls 非空数组（缺失 400，参数错误透传断言点）；轮询/产物通道与万相共用 `/api/v1/tasks/{id}` 族（任务表按 id 分表查询），content 回转写结果 JSON 文件）。
@@ -454,7 +529,8 @@ Mock（视频四场景 **M3 第五批已交付**，`mockupstream/video_qwen.go`�
 - 响应：`{"output":{"choices":[{"message":{"content":[{"image":"https://..."}]}}]},"usage":{...},"request_id":"..."}`；2.0 usage `image_count/width/height`，3.0 usage `output_image_count/output_width/output_height/input_image_count/input_image_type/output_image_type`；3.0 `content[0].type="image"`、`output.rewrite_status="not_use"`。
 - 网关响应转换：收集 `output.choices[].message.content[].image` → `{created, data:[{url}], usage:{output_image_count}}`；`output_image_count` 取实际收集到的图片数（2.0/3.0 的原生 usage 字段只作形状兼容提示，与图片数不一致时按实际图片数计费）；不合成 `model`（响应无 model 时 `upstream_response_model` 留空）；无可用图片 → 502 `upstream_protocol_error`；非 2xx 原状态/错误体透传。
 - 2026-11-11 真实探针：`qwen-image-2.0`、`qwen-image-3.0` 同端点均 200；3.0 usage 形状与 2.0 不同，adapter 兼容两种。
-- 计费：`output_image_count` → 按模型行 `output_usd_per_image`（qwen-image-3.0 目录价已落）。
+- 计费：`output_image_count` → 按模型行 `output_usd_per_image`（qwen-image-3.0 输出 0.18 元/张 ÷7.0 已落；1K/2K 同价，无输出档）；输入图按张：qwen-image-3.0 / pro 输入图 0.02 元/张 ÷7.0 已落 `InputUsdPerImage`（无每请求免费张数），与 Seedream 同走 `image_input_unit`，计数覆盖 JSON `images[]` / multipart `image` part / `metadata.image`（§2.9 规则 6）。qwen-image-3.0-pro 已收录：输出 1K 0.25 / 2K 0.50 元/张落 `OutputUsdPerImageTiers`（1K 上限按 1024×1024 像素；官方只标 1k/2k 与最大 2048×2048，未给像素边界，目录口径已在 `sourcePricingNote` 注明）。
+- **编辑（`/v1/images/edits`，2026-11-12 T216；置信度 A：插件实现 + 官方文档）**：与生成共用 `POST /api/v1/services/aigc/multimodal-generation/generation`（qwen profile 强制同步，禁用 async）。`input.messages[0].content` 由 `[{image:...}, ...] + [{text:...}]` 组成；图片必须是 `http(s)://`、`data:image/...` 或 `oss://`，**不接受无前缀裸 base64**；单图 ≤10MB（base64 上限）；`mask` 不消费（仅 wanx2.1-imageedit 使用，忽略并回显）；`quality`/`background`/`output_format`/`output_compression`/`response_format`/`input_fidelity`/`safety_identifier`/`user`/`stream`/`partial_images` 忽略并回显；`n`/`size`（`W*H`）/provider_options 同生成面。响应转换复用生成面（content[].image → data[]，实际图片数计费）。qwen 专用编辑模型（qwen-image-edit 系）未收录目录行，新增须先补官方价。
 - Mock：`media_qwen_image_ok`（2.0 usage `image_count`）、`media_qwen_image_v3_ok`（3.0 usage `output_image_count`）、`media_qwen_image_no_image`（2xx 无 image）。
 
 ## 11. 与设计的衔接及前置裁决项清单

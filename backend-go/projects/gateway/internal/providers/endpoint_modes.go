@@ -32,6 +32,8 @@ var catalogProtocolEndpointModes = map[string][]string{
 	"realtime":                {"realtime_session"},
 	"audio_speech":            {"audio_speech"},
 	"audio_transcription":     {"audio_transcription_json", "audio_job_create"},
+	"rerank":                  {"rerank_json"},
+	"moderation":              {"moderation_json"},
 	"completions":             {},
 }
 
@@ -62,11 +64,13 @@ var catalogEndpointModeLegacyProjection = map[string][][2]string{
 	"message_token_counting":   {{"embedding", "message_token_counting"}},
 	"count_tokens":             {{"embedding", "count_tokens"}},
 	"embed_content":            {{"embedding", "embed_content"}},
+	"rerank_json":              {{"rerank", "rerank"}},
+	"moderation_json":          {{"moderation", "moderation"}},
 }
 
 // catalogLegacyModeRank 是逆映射 mode 的词表优先序（video > audio >
-// image_generation > embedding > responses > chat，与旧 seed 行的 mode 值域
-// 一致）；链路面 chain_catalog 使用同一 rank 表。
+// image_generation > embedding > responses > chat，工具场景排在最后；与旧 seed
+// 行的 mode 值域一致）；链路面 chain_catalog 使用同一 rank 表。
 var catalogLegacyModeRank = map[string]int{
 	"chat":             0,
 	"responses":        1,
@@ -74,6 +78,8 @@ var catalogLegacyModeRank = map[string]int{
 	"image_generation": 3,
 	"audio":            4,
 	"video":            5,
+	"rerank":           6,
+	"moderation":       7,
 }
 
 // DeriveLegacyModeAndProtocols 从 supported_endpoint_modes_json 元素反推旧目
@@ -134,13 +140,16 @@ func (e *UnknownCatalogProtocolError) Error() string {
 }
 
 // catalogModeDefaultEndpointModes 是自定义模型写路径的 mode 缺省集：提交未
-// 携带任何可映射协议时按 UI 分类（text/image/audio/video）补默认 mode 集，
-// 对齐旧「mode 有值、协议为空」行的目录语义。
+// 携带任何可映射协议时按 UI 分类（text/image/audio/video/embedding/rerank/
+// moderation）补默认 mode 集，对齐旧「mode 有值、协议为空」行的目录语义。
 var catalogModeDefaultEndpointModes = map[string][]string{
-	"text":  {"chat_json", "chat_sse"},
-	"image": {"images_json"},
-	"audio": {"audio_speech"},
-	"video": {"video_create", "video_get", "video_content", "video_cancel"},
+	"text":       {"chat_json", "chat_sse"},
+	"image":      {"images_json"},
+	"audio":      {"audio_speech"},
+	"video":      {"video_create", "video_get", "video_content", "video_cancel"},
+	"embedding":  {"embed_content"},
+	"rerank":     {"rerank_json"},
+	"moderation": {"moderation_json"},
 }
 
 // ForwardCustomModelEndpointModes 把自定义模型写路径的 (UI mode, protocols)

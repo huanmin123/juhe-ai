@@ -21,6 +21,8 @@ import {
   OPENAI_TTS_FAMILY,
   OPENAI_VIDEO_GENERATION_FAMILY,
   OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
+  OPENAI_EMBED_CONTENT_FAMILY,
+  OPENAI_RERANK_FAMILY,
   isGptVendorCode,
   isGeminiProviderCode,
   isMinimaxProviderCode,
@@ -83,6 +85,10 @@ export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
   'audio_job_content',
   'audio_job_cancel',
   'realtime_session',
+  // B7 工具端点（openai 兼容族显式可选，不进默认集）。
+  'embed_content',
+  'rerank_json',
+  'moderation_json',
   ...chatEndpointModes,
   ...responsesEndpointModes
 ]
@@ -267,7 +273,7 @@ export function defaultEndpointModesForAccount(input: {
   // 与 M3 视频四值（veo adapter 承载）同样只能显式开启。
   if (protocolKind === 'gemini_v1beta') {
     return endpointModesForProfile(input.profile ?? input.provider)
-      .filter((mode) => mode !== 'audio_speech'
+      .filter((mode) => mode !== 'audio_speech' && mode !== 'embed_content'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel')
   }
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
@@ -283,7 +289,9 @@ export function defaultEndpointModesForAccount(input: {
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel'
         && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel'
-        && mode !== 'realtime_session')
+        && mode !== 'realtime_session'
+        // B7 工具域聚合到各自场景账户，不进入对话账户默认集。
+        && mode !== 'embed_content' && mode !== 'rerank_json' && mode !== 'moderation_json')
     const code = input.provider?.code ?? input.profile?.providerCode ?? ''
     if (isVolcengineProviderCode(code) || isQwenProviderCode(code)) {
       return modes.filter((mode) => mode !== 'chat_json' && mode !== 'chat_sse')
@@ -395,6 +403,13 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       if (families.has(OPENAI_AUDIO_TRANSCRIPTION_FAMILY)) {
         modes.push('audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel')
       }
+      // B7：DashScope compatible-mode embeddings + 原生 text-rerank。
+      if (families.has(OPENAI_EMBED_CONTENT_FAMILY)) {
+        modes.push('embed_content')
+      }
+      if (families.has(OPENAI_RERANK_FAMILY)) {
+        modes.push('rerank_json')
+      }
       return modes
     }
     const familyModes = endpointModesForFamilies(
@@ -421,7 +436,11 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       'audio_job_get',
       'audio_job_content',
       'audio_job_cancel',
-      'realtime_session'
+      'realtime_session',
+      // B7 工具端点：openai 兼容族的显式可选能力（opt-in，不进默认集）。
+      'embed_content',
+      'rerank_json',
+      'moderation_json'
     ]
     return [...new Set(selectable)]
   }

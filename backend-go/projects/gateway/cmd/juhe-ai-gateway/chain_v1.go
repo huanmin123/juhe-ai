@@ -152,6 +152,21 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// anthropic / gemini native 面放行进同一条分发链。
 	req := gatewaypreauth.NewGatewayRequest(r)
 	req.HTTP = r
+	// 旧 /v1/videos 面硬 404（2026-11-12 用户裁决：对外视频协议只保留 New
+	// API 形态，不保留兼容别名）。判定在协议门之前：/v1 子树整棵挂在本链，
+	// 旧路径会通过 openai 协议族白名单，必须在这里显式拒绝；内部形态词表
+	//（/videos 归一）仍供新路径复用。
+	if chainIsLegacyVideoPath(req.PathAndQuery()) {
+		writeLegacyGatewayPathNotFound(w)
+		return
+	}
+	// 旧 /v1/audio/jobs 面硬 404（2026-11-12 用户裁决：长音频异步只保留
+	// New API 通用任务面 /v1/tasks/audio*）。只命中 /audio/jobs 前缀，同步
+	// 音频三端点 /audio/speech|transcriptions|translations 不受影响。
+	if chainIsLegacyAudioJobPath(req.PathAndQuery()) {
+		writeLegacyGatewayPathNotFound(w)
+		return
+	}
 	if !gatewayIsProtocolRequest(req) {
 		if c.compat != nil {
 			// DD-A2：三族路由的协议门前置是可达性意图（见 gatewayChain.compat
@@ -350,12 +365,12 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// c.preauth.NowMs()（UnixMilli），此处直接取 wall clock 同域绝对毫秒。
 	defer httpCompletion.complete(time.Now().UnixMilli())
 
-	// M2 视频任务面（媒体设计 §4.2/§7；M3f 起含长音频 /v1/audio/jobs* 族）：
-	// GET/DELETE /v1/videos* 与 /v1/audio/jobs* 是受理后操作，不走派发循环
-	// ——preauth 认证完成后短路到账户亲和直连（查表定位原账户原上游）。
-	// 创建请求（POST /v1/videos 与 POST /v1/audio/jobs）继续走下方完整派发
-	// 链（受理边界生效）。任务面是网关本地应答（零上游尝试），2026-10-16
-	// 收窄后不再落审计。
+	// M2 视频任务面（媒体设计 §4.2/§7；M3f 起含长音频 /v1/tasks/audio* 族）：
+	// GET/DELETE /v1/video/generations* 与 /v1/tasks/audio* 是受理后操作，不走
+	// 派发循环——preauth 认证完成后短路到账户亲和直连（查表定位原账户原上游）。
+	// 创建请求（POST /v1/video/generations 与 POST /v1/tasks/audio）继续走下方
+	// 完整派发链（受理边界生效）。任务面是网关本地应答（零上游尝试），
+	// 2026-10-16 收窄后不再落审计。
 	// M5b realtime ephemeral token 签发面（Realtime 设计 §2/§4）：POST
 	// /v1/realtime/client_secrets 是无上游签发请求，不走派发循环——preauth
 	// 认证（含用户请求限流消费）与 body 管道完成后短路到 token 服务，同样
@@ -554,6 +569,13 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 
 	loop.current = context
 	loop.enteredGroups[context.UsageContext.GroupID] = true
+	// 2026-11-12 计费漏记修复：上游执行面与客户端生命周期脱钩——客户端断开
+	// 只停止下游写入，在途上游请求继续读取到协议终态或 drain 预算（30s），
+	// 按实际/估算 usage 结算。WithoutCancel 保留 ctx 值链（trace/identity），
+	// 原请求 deadline 仍生效。
+	upstreamCtx, cancelUpstream := detachUpstreamContext(ctx)
+	defer cancelUpstream()
+	loop.upstreamCtx = upstreamCtx
 	loop.run(ctx)
 }
 
@@ -624,6 +646,7 @@ func applyDispatchedEffectiveUsageFacts(context *gatewaypreauth.DispatchContext,
 // RetryUpstream verdict (Node routes.ts:1899); the zero result means the
 // request settled inside this method.
 func (c *gatewayChain) handleUpstreamResponse(
+	execCtx context.Context,
 	req *gatewaypreauth.GatewayRequest,
 	res *gatewaypreauth.TrackingWriter,
 	auditCapture gatewaypreauth.AuditCaptureContext,
@@ -634,7 +657,12 @@ func (c *gatewayChain) handleUpstreamResponse(
 	budgets requestBudgets,
 	commitState *gatewayresponse.DownstreamCommitState,
 ) gatewayresponse.UpstreamResponseHandlingResult {
-	ctx := req.HTTP.Context()
+	// execCtx 是脱钩后的上游执行上下文（客户端断开不取消上游读取与 usage
+	// 结算）；未装配时调用方回退请求 ctx。
+	ctx := execCtx
+	if ctx == nil {
+		ctx = req.HTTP.Context()
+	}
 	if commitState == nil {
 		commitState = &gatewayresponse.DownstreamCommitState{}
 	}
@@ -736,6 +764,7 @@ func (c *gatewayChain) handleUpstreamResponse(
 		UsageContext:               context.UsageContext,
 		StartedAtMs:                attemptStartedAt,
 		Signal:                     ctx,
+		ClientCtx:                  req.HTTP.Context(),
 		SessionAffinityKey:         context.SessionAffinityKey,
 		GroupAffinityKey:           context.GroupAffinityKey,
 		ClientStrategy:             clientStrategyViewOf(context),
@@ -1534,4 +1563,13 @@ func usageFallbackFactsOf(req *gatewaypreauth.GatewayRequest) gatewayresponse.Us
 		facts.JSONParsed = state.IsJSON && state.JSONParseStatus == gatewaybody.JSONParseStatusParsed
 	}
 	return facts
+}
+
+// writeLegacyGatewayPathNotFound 渲染旧媒体路径的硬 404（New API/OpenAI
+// error 形态，替代此前的 {"message":"资源不存在"}）。入口在协议门之前，
+// 此时没有解析出的客户端协议，统一按 OpenAI error 结构返回。
+func writeLegacyGatewayPathNotFound(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"error":{"message":"资源不存在","type":"invalid_request_error","param":"","code":"not_found"}}`))
 }

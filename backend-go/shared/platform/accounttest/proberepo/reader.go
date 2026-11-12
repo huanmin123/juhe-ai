@@ -1268,8 +1268,9 @@ func NormalizedEndpointModes(protocolCode, accountType string, connectionModes [
 			// 媒体域连通性探测（2026-11-01 用户裁决）：视频域 video_create 与
 			// 音频域 audio_speech 的人工测试走密钥连通性探测，探针视图必须
 			// 保留连接声明的这两个模式（此前白名单过滤会把它们丢空，探针侧
-			// 解析不到请求形态）。
-			accountprobe.ModeVideoCreate, accountprobe.ModeAudioSpeech:
+			// 解析不到请求形态）。B7 工具域同理保留三个连通性模式。
+			accountprobe.ModeVideoCreate, accountprobe.ModeAudioSpeech,
+			accountprobe.ModeEmbedContent, accountprobe.ModeRerankJSON, accountprobe.ModeModerationJSON:
 			modes[accountprobe.EndpointMode(text)] = true
 		}
 	}

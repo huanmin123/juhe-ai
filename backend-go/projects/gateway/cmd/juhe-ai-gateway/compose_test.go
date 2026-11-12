@@ -546,6 +546,44 @@ func TestLoadRuntimeConfigConcurrencyGlobalMaxBound(t *testing.T) {
 	}
 }
 
+// TestLoadRuntimeConfigPublicBaseURLOriginNormalization pins the New API 任务
+// 面回退 content URL 公共地址前缀契约：未配置为空（回退相对路径），配置值
+// 必须是裸 http(s) origin（复用 normalizeAllowedOrigin 归一，默认端口剥除）。
+func TestLoadRuntimeConfigPublicBaseURLOriginNormalization(t *testing.T) {
+	storage := map[string]string{
+		"JUHE_AI_POSTGRES_URL": "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_URL":    "redis://127.0.0.1:6379/0",
+	}
+	withBase := func(value string) func(string) string {
+		return func(key string) string {
+			if key == "JUHE_AI_GATEWAY_PUBLIC_BASE_URL" {
+				return value
+			}
+			return storage[key]
+		}
+	}
+	cfg, err := loadRuntimeConfig(withBase(""))
+	if err != nil {
+		t.Fatalf("unset base must pass: %v", err)
+	}
+	if cfg.PublicBaseURL != "" {
+		t.Fatalf("unset PublicBaseURL = %q, want empty", cfg.PublicBaseURL)
+	}
+	cfg, err = loadRuntimeConfig(withBase("https://api.example.com/"))
+	if err != nil {
+		t.Fatalf("root-slash origin must parse: %v", err)
+	}
+	if cfg.PublicBaseURL != "https://api.example.com" {
+		t.Fatalf("PublicBaseURL = %q, want normalized origin", cfg.PublicBaseURL)
+	}
+	if _, err := loadRuntimeConfig(withBase("https://api.example.com/base")); err == nil || !strings.Contains(err.Error(), "路径") {
+		t.Fatalf("origin with path must fail, got %v", err)
+	}
+	if _, err := loadRuntimeConfig(withBase("ftp://api.example.com")); err == nil || !strings.Contains(err.Error(), "http 或 https") {
+		t.Fatalf("non-http scheme must fail, got %v", err)
+	}
+}
+
 func TestBusinessOwnerGateKeepsConnectionPreconditions(t *testing.T) {
 	// 清理批次 C1（2026-09-30）：切流五证/cutover evidence 门禁随 Node 清零
 	// 整体退役，owner 事实恒 auto-claim——handoff 语义字段不再是门禁输入；

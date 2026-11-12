@@ -24,10 +24,18 @@ type ParsedUsage struct {
 	InputAudioTokens      *int
 	OutputAudioTokens     *int
 	OutputImageCount      *int
-	TtsInputChars         *int64
-	AudioInputSeconds     *float64
-	OutputVideoSeconds    *float64
-	UsageMissing          bool
+	// OutputImagePixels 是图像输出的像素数（请求 size W×H），用于按像素档
+	// 选按张价（2026-11-12 档位批）；nil = 请求未带可解析 size。
+	OutputImagePixels *int64
+	// InputImageCount 是请求侧输入图片张数（图生图/编辑，2026-11-12 输入素材批）。
+	InputImageCount *int64
+	TtsInputChars   *int64
+	// TtsCalls 是 token 口径 TTS 无 usage 时的按次计量（2026-11-12 用户裁决：
+	// 按次固定价兜底）；一次成功请求填 1，非该分支恒 nil。
+	TtsCalls           *int64
+	AudioInputSeconds  *float64
+	OutputVideoSeconds *float64
+	UsageMissing       bool
 }
 
 // EmptyUsage returns the zero-evidence usage value.
@@ -60,7 +68,10 @@ func MergeUsage(current, next ParsedUsage) ParsedUsage {
 		InputAudioTokens:      orInt(next.InputAudioTokens, current.InputAudioTokens),
 		OutputAudioTokens:     orInt(next.OutputAudioTokens, current.OutputAudioTokens),
 		OutputImageCount:      orInt(next.OutputImageCount, current.OutputImageCount),
+		OutputImagePixels:     orInt64(next.OutputImagePixels, current.OutputImagePixels),
+		InputImageCount:       orInt64(next.InputImageCount, current.InputImageCount),
 		TtsInputChars:         orInt64(next.TtsInputChars, current.TtsInputChars),
+		TtsCalls:              orInt64(next.TtsCalls, current.TtsCalls),
 		AudioInputSeconds:     orFloat64(next.AudioInputSeconds, current.AudioInputSeconds),
 		OutputVideoSeconds:    orFloat64(next.OutputVideoSeconds, current.OutputVideoSeconds),
 		UsageMissing:          current.UsageMissing || next.UsageMissing,
@@ -81,7 +92,10 @@ func HasAnyUsageValue(value ParsedUsage) bool {
 		value.InputAudioTokens != nil ||
 		value.OutputAudioTokens != nil ||
 		value.OutputImageCount != nil ||
+		value.OutputImagePixels != nil ||
+		value.InputImageCount != nil ||
 		value.TtsInputChars != nil ||
+		value.TtsCalls != nil ||
 		value.AudioInputSeconds != nil ||
 		value.OutputVideoSeconds != nil
 }

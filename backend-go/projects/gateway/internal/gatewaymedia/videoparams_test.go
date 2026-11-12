@@ -72,9 +72,9 @@ func TestParseVideoParamsValidFull(t *testing.T) {
 func TestParseVideoParamsMinimalAndDefaults(t *testing.T) {
 	// 数字形态 seconds 与未传 n：n 默认 1 且不进 applied。
 	params, err := ParseVideoParams(map[string]any{
-		"model":    "sora-2",
-		"prompt":   "a cat",
-		"seconds":  float64(4),
+		"model":            "sora-2",
+		"prompt":           "a cat",
+		"seconds":          float64(4),
 		"provider_options": map[string]any{"openai": map[string]any{}},
 	}, openaiVideoCapsForTest())
 	if err != nil {
@@ -235,4 +235,99 @@ func noCapsForIgnoredTest() VideoCapabilities { return VideoCapabilities{} }
 // 事实源，不复制字面量）。
 func openaiVideoCapsForTest() VideoCapabilities {
 	return videoAdapters["openai"].Capabilities()
+}
+
+// TestBillingSeconds 钉住按秒计价的计量基源裁决（契约 §2.8.2）：请求
+// seconds 生效时用请求值；否则用厂商默认输出时长；两者都无 → nil。
+func TestBillingSeconds(t *testing.T) {
+	secondsPtr := func(v float64) *float64 { return &v }
+	ignored := float64(4)
+	cases := []struct {
+		name    string
+		seconds *float64
+		caps    VideoCapabilities
+		want    *float64
+	}{
+		{
+			name:    "veo ignored seconds 用厂商默认 8",
+			seconds: &ignored,
+			caps:    videoAdapters["gemini"].Capabilities(),
+			want:    secondsPtr(8),
+		},
+		{
+			name: "veo 未传 seconds 用厂商默认 8",
+			caps: videoAdapters["gemini"].Capabilities(),
+			want: secondsPtr(8),
+		},
+		{
+			name: "minimax 未传 seconds 用厂商默认 6",
+			caps: videoAdapters["minimax"].Capabilities(),
+			want: secondsPtr(6),
+		},
+		{
+			name:    "minimax 显式 seconds 生效用请求值",
+			seconds: secondsPtr(10),
+			caps:    videoAdapters["minimax"].Capabilities(),
+			want:    secondsPtr(10),
+		},
+		{
+			name: "无默认值时未传 seconds 无计量基源",
+			caps: VideoCapabilities{SupportsSeconds: true},
+			want: nil,
+		},
+		{
+			name:    "无默认值时显式 seconds 用请求值",
+			seconds: secondsPtr(5),
+			caps:    VideoCapabilities{SupportsSeconds: true},
+			want:    secondsPtr(5),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := NormalizedVideoParams{Seconds: tc.seconds}
+			got := params.BillingSeconds(tc.caps)
+			if (got == nil) != (tc.want == nil) {
+				t.Fatalf("BillingSeconds = %v, want %v", got, tc.want)
+			}
+			if got != nil && *got != *tc.want {
+				t.Fatalf("BillingSeconds = %v, want %v", *got, *tc.want)
+			}
+		})
+	}
+}
+
+// TestBillingResolution 钉住按分辨率分档计费的创建档位（契约 §2.8.3）：
+// xAI 未传 size 时官方默认 480p；Volcengine/Qwen 未传 size 时返回空串
+// （结算回落主档）；三家的 size→档换算与出站 resolution 同源（短边
+// ≥900→1080p、≥600→720p、其余 480p）。
+func TestBillingResolution(t *testing.T) {
+	cases := []struct {
+		provider string
+		size     string
+		want     string
+	}{
+		{"xai", "", "480p"},
+		{"xai", "1920x1080", "1080p"},
+		{"xai", "1280x720", "720p"},
+		{"xai", "640x480", "480p"},
+		{"volcengine", "", ""},
+		{"volcengine", "1920x1080", "1080p"},
+		{"volcengine", "1280x720", "720p"},
+		{"qwen", "", ""},
+		{"qwen", "1280x720", "720p"},
+	}
+	for _, tc := range cases {
+		adapter := videoAdapters[tc.provider]
+		provider, ok := adapter.(VideoBillingResolutionProvider)
+		if !ok {
+			t.Fatalf("%s adapter does not implement VideoBillingResolutionProvider", tc.provider)
+		}
+		if got := provider.BillingResolution(NormalizedVideoParams{Size: tc.size}); got != tc.want {
+			t.Fatalf("%s BillingResolution(%q) = %q want %q", tc.provider, tc.size, got, tc.want)
+		}
+	}
+	// 平档厂商不实现该能力（Gemini/OpenAI/GLM/minimax 目录无分辨率档）。
+	if _, ok := videoAdapters["gemini"].(VideoBillingResolutionProvider); ok {
+		t.Fatal("gemini must not implement VideoBillingResolutionProvider")
+	}
 }

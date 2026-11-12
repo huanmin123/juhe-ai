@@ -91,7 +91,7 @@ func TestW14dUpsertCapabilityNormalizeAfterLookup(t *testing.T) {
 	weird := "realtime"
 	if _, err := env.providersDeps.Store.upsertCustomProviderModel(context.Background(), customProviderModelUpsertInput{
 		ProviderCode: "gpt", Model: "m2", SystemAccountID: "u1", Mode: &weird,
-	}); err == nil || err.Error() != "当前只支持文本、图像、音频和视频自定义模型" {
+	}); err == nil || err.Error() != "当前只支持文本、图像、音频、视频、向量、重排和安全自定义模型" {
 		t.Fatalf("invalid mode: %v", err)
 	}
 }

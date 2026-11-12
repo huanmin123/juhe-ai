@@ -36,17 +36,17 @@ var wkDDLs = []string{
  parent_incident_id TEXT, child_incident_ids_json TEXT NOT NULL, caused_by_terminal_outcome_id TEXT, state TEXT NOT NULL,
  failure_scope TEXT, generation INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, ledger_revision INTEGER NOT NULL,
  projected_ledger_revision INTEGER NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation INTEGER NOT NULL,
- open_until_ms INTEGER, next_transition_at_ms INTEGER, lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
- lease_until_ms INTEGER, attempt_started_at_ms INTEGER, attempt_hard_deadline_ms INTEGER, upstream_attempt_observed INTEGER NOT NULL,
+ open_until_ms TIMESTAMPTZ(6), next_transition_at_ms TIMESTAMPTZ(6), lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
+ lease_until_ms TIMESTAMPTZ(6), attempt_started_at_ms TIMESTAMPTZ(6), attempt_hard_deadline_ms TIMESTAMPTZ(6), upstream_attempt_observed INTEGER NOT NULL,
  backoff_level INTEGER NOT NULL, consecutive_failures INTEGER NOT NULL, confirmation_failures_required INTEGER NOT NULL,
  confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes INTEGER NOT NULL, last_failure_class TEXT,
- retained_until_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
+ retained_until_ms TIMESTAMPTZ(6), created_at_ms TIMESTAMPTZ(6) NOT NULL, updated_at_ms TIMESTAMPTZ(6) NOT NULL)`,
 	`CREATE TABLE account_circuit_outbox (
  event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
  account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
- dispatch_revision INTEGER NOT NULL, generation INTEGER, ledger_revision INTEGER, status TEXT NOT NULL, available_at_ms INTEGER NOT NULL,
- claim_token TEXT, claimed_by TEXT, claim_until_ms INTEGER, attempt_count INTEGER NOT NULL, last_error_class TEXT,
- acknowledged_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
+ dispatch_revision INTEGER NOT NULL, generation INTEGER, ledger_revision INTEGER, status TEXT NOT NULL, available_at_ms TIMESTAMPTZ(6) NOT NULL,
+ claim_token TEXT, claimed_by TEXT, claim_until_ms TIMESTAMPTZ(6), attempt_count INTEGER NOT NULL, last_error_class TEXT,
+ acknowledged_at_ms TIMESTAMPTZ(6), created_at_ms TIMESTAMPTZ(6) NOT NULL, updated_at_ms TIMESTAMPTZ(6) NOT NULL)`,
 }
 
 func wkBaseIncident(scope, accountID string, dispatchRevision int64) IncidentMutation {
@@ -321,7 +321,7 @@ func TestListForRebuildCursorPagination(t *testing.T) {
 	if _, err := s.CompareAndSetIncident(ctx, wkBaseIncident("scope-r3", "a1", 1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE ` + defaultBusinessSchema + `.account_circuit_incidents SET updated_at_ms=150 WHERE circuit_scope_key='scope-r3'`); err != nil {
+	if _, err := db.Exec(`UPDATE ` + defaultBusinessSchema + `.account_circuit_incidents SET updated_at_ms=to_timestamp(150/1000.0) WHERE circuit_scope_key='scope-r3'`); err != nil {
 		t.Fatal(err)
 	}
 	page, err := s.ListForRebuild(ctx, 10_000, 0, "", 2)
@@ -716,7 +716,7 @@ func TestReadIncidentsRejectsCorruptRows(t *testing.T) {
       upstream_attempt_observed, backoff_level, consecutive_failures,
       confirmation_failures_required, confirmation_failure_evidence_keys_json,
       recovering_successes, created_at_ms, updated_at_ms
-    ) VALUES ('scope-corrupt', 'a1', 'a1', 'account', 'inc-corrupt', '', 'OPEN', 1, 1, 1, 0, 'tr', 0, 0, 0, 0, 1, '[]', 0, 100, 100)`); err != nil {
+    ) VALUES ('scope-corrupt', 'a1', 'a1', 'account', 'inc-corrupt', '', 'OPEN', 1, 1, 1, 0, 'tr', 0, 0, 0, 0, 1, '[]', 0, to_timestamp(100/1000.0), to_timestamp(100/1000.0))`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ListForRebuild(ctx, 10_000, 0, "", 10); err == nil {

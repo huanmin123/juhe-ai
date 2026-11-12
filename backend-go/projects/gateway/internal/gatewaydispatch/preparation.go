@@ -1022,7 +1022,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		// 非对话调度域豁免文本调度优化机制（对话与非对话媒体调度分离设计
 		// §3.2 + 音频视频模型接入与统一媒体网关设计 §3 车道行为规则 +
 		// 2026-10-04 主代理裁决）：audio/video/realtime lane 沿 2026-10-04
-		// 裁决豁免；T10 落地后图像创建同属 StatelessMediaDispatch 域一并豁免
+		// 裁决豁免；T10 落地后图像创建同属 StatelessDispatch 域一并豁免
 		// ——不排序、不报错、不归并 text、不污染文本质量统计，候选保持既有
 		// 顺序走普通派发；独立媒体质量维度留作后续增强。
 		if isNonConversationDispatchLane(req.RequestLane) {
@@ -1223,7 +1223,7 @@ func requestModelOrEmpty(req *gatewaypreauth.GatewayRequest) string {
 }
 
 // isNonConversationDispatchLane 判定非对话调度域车道（对话与非对话媒体调度
-// 分离设计 §1/§5：StatelessMediaDispatch = 图像/音频/视频；realtime 沿
+// 分离设计 §1/§5：StatelessDispatch = 图像/音频/视频；realtime 沿
 // 2026-10-04 热质量豁免裁决一并豁免）。lane → 域映射唯一权威源是
 // gatewayproto.DispatchDomainOfLane，不在此重复维护词表。
 func isNonConversationDispatchLane(lane string) bool {

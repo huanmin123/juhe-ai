@@ -43,7 +43,12 @@ func isAccountModelMappingSourceEndpointFamily(value string) bool {
 		// 模型名改写，isOpenAIModelMappingRuntimeConversionSupported 的
 		// source==upstream 分支放行）。
 		FamilyVideoGeneration,
-		FamilyTts:
+		FamilyTts,
+		// B7 工具端点映射族：/v1/embeddings、/v1/rerank、/v1/moderations 的
+		// 同族模型名改写（各只有一个上游形态）。
+		FamilyEmbeddings,
+		FamilyRerank,
+		FamilyModeration:
 		return true
 	}
 	return false

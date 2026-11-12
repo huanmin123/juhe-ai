@@ -15,20 +15,45 @@ import (
 
 const mediaConnectivityProbeTaskID = "probe-connectivity-check"
 
-// isMediaConnectivityMode 判定 J1 媒体连通性模式：这些模式不走真实生成/
-// 创建端点，统一由 probeMediaConnectivity 构造只读/空体请求。
+// probeConnectivityBaseURL 归一 J1 连通性探测的 base_url。qwen_dashscope 的
+// 契约 base 是 origin，但历史/手工账户可能带 /compatible-mode/v1、/api/v1
+// 或 /v1 版本根；探针操作路径已是原生全路径，必须先剥版本根，否则会拼出
+// 双重路径（与数据面 gatewaymedia.ImageBaseURLForProvider 同口径）。其余
+// 厂商原样透传。
+func probeConnectivityBaseURL(baseURL *url.URL, provider string) string {
+	if baseURL == nil {
+		return ""
+	}
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL.String()), "/")
+	if !strings.EqualFold(strings.TrimSpace(provider), "qwen") {
+		return trimmed
+	}
+	for _, suffix := range []string{"/compatible-mode/v1", "/api/v1", "/v1"} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return strings.TrimSuffix(trimmed, suffix)
+		}
+	}
+	return trimmed
+}
+
+// isMediaConnectivityMode 判定 J1 无状态连通性模式（媒体 + B7 工具端点）：
+// 这些模式不走真实生成/创建端点，统一由 probeMediaConnectivity 构造只读/
+// 空输入请求。
 func isMediaConnectivityMode(mode string) bool {
 	switch mode {
-	case "images_json", "video_create", "audio_speech", "audio_job_get":
+	case "images_json", "video_create", "audio_speech", "audio_job_get",
+		"embed_content", "rerank_json", "moderation_json":
 		return true
 	}
 	return false
 }
 
-// probeMediaConnectivity 是 J1 媒体账户的无副作用连通性探测：
+// probeMediaConnectivity 是 J1 媒体/工具账户的无副作用连通性探测：
 //   - images_json：GET /models（证明 Key + Base URL，不生成图片）；
 //   - video_create：GET 查询不存在的固定占位任务（不创建视频）；
-//   - audio_speech：POST 空文本/空体 TTS（不生成音频）。
+//   - audio_speech：POST 空文本/空体 TTS（不生成音频）；
+//   - embed_content / rerank_json / moderation_json：POST 空输入，由上游参数
+//     校验拒绝（证明 Key 可达且不产生真实推理结果）。
 //
 // 2xx 与参数校验拒绝（400/422）视为 Key 有效；视频任务不存在（400/404）
 // 也视为 Key 有效；401/403 为凭据失败；5xx/传输错误按既有分类。
@@ -55,8 +80,17 @@ func probeMediaConnectivity(ctx context.Context, client *http.Client, baseURL *u
 		if err != nil {
 			return taskFailure("credential_unavailable", err.Error())
 		}
+	case "embed_content":
+		method = http.MethodPost
+		opPath, body = utilityEmbeddingRequest(input)
+	case "rerank_json":
+		method = http.MethodPost
+		opPath, body = utilityRerankRequest(input)
+	case "moderation_json":
+		method = http.MethodPost
+		opPath, body = utilityModerationRequest(input)
 	}
-	target, err := upstreamenvelope.JoinUpstreamURL(baseURL.String(), opPath)
+	target, err := upstreamenvelope.JoinUpstreamURL(probeConnectivityBaseURL(baseURL, input.Provider), opPath)
 	if err != nil {
 		return taskFailure("request_build_failed", err.Error())
 	}
@@ -109,6 +143,10 @@ func probeMediaConnectivity(ctx context.Context, client *http.Client, baseURL *u
 	case "audio_job_get":
 		success = success || response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusNotFound
 	case "audio_speech":
+		success = success || response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity
+	case "embed_content", "rerank_json", "moderation_json":
+		// 空输入被上游参数校验拒绝同样证明 Key + Base URL 可达；不产生
+		// 真实向量/重排/审核结果。
 		success = success || response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity
 	}
 	// 火山方舟 403/45000030 是缺 resource_id（已过鉴权），不能当凭据无效；
@@ -218,4 +256,50 @@ func mediaSpeechRequest(input Input, baseURL *url.URL) (path string, body []byte
 		}
 		return "/audio/speech", encoded, nil, nil
 	}
+}
+
+// utilityEmbeddingRequest 构造向量连通性探测：空 input 由上游参数校验拒绝
+// （OpenAI / qwen compatible-mode 均不接受空数组），不产生向量结果。
+// qwen 的 base_url 是 origin，需拼 compatible-mode 前缀；gpt 由 base_url
+// 版本根直拼 /embeddings。
+func utilityEmbeddingRequest(input Input) (string, []byte) {
+	opPath := "/embeddings"
+	if strings.EqualFold(strings.TrimSpace(input.Provider), "qwen") {
+		opPath = "/compatible-mode/v1/embeddings"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model": strings.TrimSpace(input.HealthModel),
+		"input": []string{},
+	})
+	return opPath, body
+}
+
+// utilityRerankRequest 构造重排连通性探测：qwen 走 DashScope 原生
+// text-rerank 报文（空 query/documents 由上游校验拒绝），其余 OpenAI 兼容
+// 重排保持扁平报文。
+func utilityRerankRequest(input Input) (string, []byte) {
+	model := strings.TrimSpace(input.HealthModel)
+	if strings.EqualFold(strings.TrimSpace(input.Provider), "qwen") {
+		body, _ := json.Marshal(map[string]any{
+			"model": model,
+			"input": map[string]any{"query": "", "documents": []string{}},
+		})
+		return "/api/v1/services/rerank/text-rerank/text-rerank", body
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":     model,
+		"query":     "",
+		"documents": []string{},
+	})
+	return "/rerank", body
+}
+
+// utilityModerationRequest 构造安全审核连通性探测：空 input 由上游参数校验
+// 拒绝，不产生审核结果。
+func utilityModerationRequest(input Input) (string, []byte) {
+	body, _ := json.Marshal(map[string]any{
+		"model": strings.TrimSpace(input.HealthModel),
+		"input": []string{},
+	})
+	return "/moderations", body
 }

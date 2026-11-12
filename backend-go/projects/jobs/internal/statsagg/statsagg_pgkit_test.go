@@ -131,9 +131,9 @@ func kitStatsStatements() []string {
       group_authorization_id text,
       group_authorization_source_type text,
       group_authorization_source_team_id text,
-      created_at text NOT NULL,
-      usage_stats_aggregated_at text,
-      client_ip_stats_aggregated_at text,
+      created_at timestamptz(3) NOT NULL,
+      usage_stats_aggregated_at timestamptz,
+      client_ip_stats_aggregated_at timestamptz,
       PRIMARY KEY (created_at, id)
     )`,
 		// 统计消费水位部分索引（BUG-0345）：与生产 schema 同形状，供「消费未
@@ -179,7 +179,7 @@ func kitStatsStatements() []string {
 		// ---- 授权日摘要（授权明细读端的直读数据源；range 窗口表族已停用不入 kit）----
 		`CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_summary_daily (
           system_account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           team_filter_id text NOT NULL DEFAULT '',
           resource_filter_type text NOT NULL DEFAULT 'all',
           resource_filter_id text NOT NULL DEFAULT '',
@@ -211,7 +211,7 @@ func kitStatsStatements() []string {
         )`,
 		`CREATE TABLE IF NOT EXISTS juhe_stats.authorization_user_usage_summary_daily (
           system_account_id text NOT NULL,
-          stat_date text NOT NULL,
+          stat_date date NOT NULL,
           team_filter_id text NOT NULL DEFAULT '',
           grantee_filter_system_account_id text NOT NULL DEFAULT '',
           resource_filter_type text NOT NULL DEFAULT 'all',
@@ -398,15 +398,15 @@ func kitStatsStatements() []string {
 		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_overview_dirty_scopes (
           system_account_id text PRIMARY KEY,
           scope_id text NOT NULL,
-          min_changed_date text NOT NULL,
+          min_changed_date date NOT NULL,
           generation bigint NOT NULL DEFAULT 1,
           first_dirty_at text NOT NULL,
           updated_at text NOT NULL
         )`,
 		`CREATE TABLE IF NOT EXISTS juhe_stats.ai_performance_summary_dirty_system_accounts (
           system_account_id text PRIMARY KEY,
-          min_stat_date text NOT NULL,
-          max_stat_date text NOT NULL,
+          min_stat_date date NOT NULL,
+          max_stat_date date NOT NULL,
           generation bigint NOT NULL DEFAULT 1,
           first_dirty_at text NOT NULL,
           updated_at text NOT NULL
@@ -450,7 +450,7 @@ func kitStatsStatements() []string {
           account_id text NOT NULL,
           system_account_id text NOT NULL,
           provider_code text NOT NULL,
-          stat_minute text NOT NULL,
+          stat_minute timestamp(0) without time zone NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -472,7 +472,7 @@ func kitStatsStatements() []string {
           account_id text NOT NULL,
           system_account_id text NOT NULL,
           provider_code text NOT NULL,
-          stat_hour text NOT NULL,
+          stat_hour timestamp(0) without time zone NOT NULL,
           status text NOT NULL CHECK (status IN ('success', 'failure')),
           last_observed_at text NOT NULL,
           last_record_id text NOT NULL,
@@ -531,12 +531,21 @@ func kitStatsStatements() []string {
 
 // kitStatsBucketDDL 生成 usage_stats 时间桶表的基础 DDL（pg_schema_stats.go
 // 形状；success_cost_usd 与媒体列经 ALTER 追加）。
+func kitCalendarColumnType(column string) string {
+	switch column {
+	case "stat_date", "stat_week", "stat_month", "min_stat_date", "max_stat_date", "min_changed_date", "end_date", "start_date":
+		return "date"
+	default:
+		return "timestamp(0) without time zone"
+	}
+}
+
 func kitStatsBucketDDL(tableName, timeColumn string) string {
 	return `CREATE TABLE IF NOT EXISTS juhe_stats.` + tableName + ` (
           system_account_id text NOT NULL,
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
-          ` + timeColumn + ` text NOT NULL,
+          ` + timeColumn + ` ` + kitCalendarColumnType(timeColumn) + ` NOT NULL,
           request_count bigint NOT NULL DEFAULT 0,
           success_count bigint NOT NULL DEFAULT 0,
           error_count bigint NOT NULL DEFAULT 0,
@@ -568,7 +577,7 @@ func kitStatsBucketDDL(tableName, timeColumn string) string {
 func kitStatsModelDDL(tableName, timeColumn string) string {
 	return `CREATE TABLE IF NOT EXISTS juhe_stats.` + tableName + ` (
           system_account_id text NOT NULL,
-          ` + timeColumn + ` text NOT NULL,
+          ` + timeColumn + ` ` + kitCalendarColumnType(timeColumn) + ` NOT NULL,
           provider_code text NOT NULL DEFAULT 'unknown',
           model text NOT NULL DEFAULT 'unknown',
           request_count bigint NOT NULL DEFAULT 0,
@@ -594,7 +603,7 @@ func kitStatsModelDDL(tableName, timeColumn string) string {
 func kitStatsErrorDDL(tableName, timeColumn string) string {
 	return `CREATE TABLE IF NOT EXISTS juhe_stats.` + tableName + ` (
           system_account_id text NOT NULL,
-          ` + timeColumn + ` text NOT NULL,
+          ` + timeColumn + ` ` + kitCalendarColumnType(timeColumn) + ` NOT NULL,
           error_group text NOT NULL DEFAULT 'unknown',
           provider_code text NOT NULL DEFAULT 'unknown',
           error_code text NOT NULL DEFAULT 'unknown',
@@ -614,7 +623,7 @@ func kitStatsLatencyDDL(tableName, timeColumn string) string {
           scope_type text NOT NULL,
           scope_id text NOT NULL DEFAULT '',
           metric_type text NOT NULL,
-          ` + timeColumn + ` text NOT NULL,
+          ` + timeColumn + ` ` + kitCalendarColumnType(timeColumn) + ` NOT NULL,
           bucket_upper_bound_ms integer NOT NULL,
           sample_count bigint NOT NULL DEFAULT 0,
           updated_at text NOT NULL,

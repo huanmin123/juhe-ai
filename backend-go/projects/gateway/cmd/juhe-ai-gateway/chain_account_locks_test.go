@@ -180,7 +180,7 @@ func (f *lockFixture) seedLockRow(t *testing.T, row chainAccountLockRow) {
 		row.accountID, row.enabled, row.lockState, row.deathTimeout, row.retryInterval,
 		nullStringOrNull(row.incidentID), row.generation, nullStringOrNull(row.incidentStart),
 		nullStringOrNull(row.deadlineAt), nullStringOrNull(row.originalStatus), nullStringOrNull(row.provenance),
-		nullInt64OrNull(row.nextRetryAtMs), nullStringOrNull(row.leaseID), nullInt64OrNull(row.leaseUntilMs),
+		nullTimeOrNull(row.nextRetryAtMs), nullStringOrNull(row.leaseID), nullTimeOrNull(row.leaseUntilMs),
 		updatedAt); err != nil {
 		t.Fatalf("seed lock row: %v", err)
 	}
@@ -191,6 +191,13 @@ func nullInt64OrNull(value sql.NullInt64) any {
 		return nil
 	}
 	return value.Int64
+}
+
+func nullTimeOrNull(value sql.NullTime) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Time
 }
 
 func (f *lockFixture) readLockRow(t *testing.T, accountID string) *chainAccountLockRow {
@@ -404,9 +411,9 @@ func TestChainAccountLocksCompleteSuccessResetsEngaged(t *testing.T) {
 		deadlineAt:     sql.NullString{String: isoMillisOf(time.UnixMilli(fixture.clock.NowMs() + 300_000)), Valid: true},
 		originalStatus: sql.NullString{String: "active", Valid: true},
 		provenance:     sql.NullString{String: "lock_policy", Valid: true},
-		nextRetryAtMs:  sql.NullInt64{Int64: fixture.clock.NowMs() + 1_000, Valid: true},
+		nextRetryAtMs:  sql.NullTime{Time: time.UnixMilli(fixture.clock.NowMs() + 1_000), Valid: true},
 		leaseID:        sql.NullString{String: "lease-1", Valid: true},
-		leaseUntilMs:   sql.NullInt64{Int64: fixture.clock.NowMs() + 2_000, Valid: true},
+		leaseUntilMs:   sql.NullTime{Time: time.UnixMilli(fixture.clock.NowMs() + 2_000), Valid: true},
 		updatedAt:      updatedAt})
 
 	// 观察代际匹配：ENGAGED → LOCKED_IDLE，事故簿记清空，generation 保持不变
@@ -664,10 +671,10 @@ func TestChainAccountLocksRetryLeaseFamily(t *testing.T) {
 	}
 	nowMs := fixture.clock.NowMs()
 	row := fixture.readLockRow(t, "acc_1")
-	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Int64 != nowMs+lease.WaitMs {
+	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Time.UnixMilli() != nowMs+lease.WaitMs {
 		t.Fatalf("next_retry_at_ms = %v, want %d", row.nextRetryAtMs, nowMs+lease.WaitMs)
 	}
-	if !row.leaseUntilMs.Valid || row.leaseUntilMs.Int64 != nowMs+lease.WaitMs+chainAccountLockReservationLeaseDurationMs {
+	if !row.leaseUntilMs.Valid || row.leaseUntilMs.Time.UnixMilli() != nowMs+lease.WaitMs+chainAccountLockReservationLeaseDurationMs {
 		t.Fatalf("lease_until_ms = %v, want reservation window", row.leaseUntilMs)
 	}
 	leaseID := lease.LeaseID
@@ -690,10 +697,10 @@ func TestChainAccountLocksRetryLeaseFamily(t *testing.T) {
 		t.Fatalf("due consume = (%v, %v), want (true, nil)", consumed, err)
 	}
 	row = fixture.readLockRow(t, "acc_1")
-	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Int64 != fixture.clock.NowMs() {
+	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Time.UnixMilli() != fixture.clock.NowMs() {
 		t.Fatalf("consumed next_retry = %v, want now", row.nextRetryAtMs)
 	}
-	if !row.leaseUntilMs.Valid || row.leaseUntilMs.Int64 != fixture.clock.NowMs()+chainAccountLockDispatchLeaseDurationMs {
+	if !row.leaseUntilMs.Valid || row.leaseUntilMs.Time.UnixMilli() != fixture.clock.NowMs()+chainAccountLockDispatchLeaseDurationMs {
 		t.Fatalf("consumed lease_until = %v, want dispatch window", row.leaseUntilMs)
 	}
 
@@ -713,10 +720,10 @@ func TestChainAccountLocksRetryLeaseFamily(t *testing.T) {
 	if row.leaseID.Valid || row.leaseUntilMs.Valid {
 		t.Fatalf("released lease fields must clear: %+v", row)
 	}
-	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Int64 <= releasedAt {
+	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Time.UnixMilli() <= releasedAt {
 		t.Fatalf("released next_retry = %v, want scheduled future", row.nextRetryAtMs)
 	}
-	scheduledDelay := row.nextRetryAtMs.Int64 - releasedAt
+	scheduledDelay := row.nextRetryAtMs.Time.UnixMilli() - releasedAt
 	if scheduledDelay < 2_000 || scheduledDelay > 30_000 {
 		t.Fatalf("scheduled delay = %d, want sampled bounds (globalDelay 3s below base)", scheduledDelay)
 	}
@@ -751,8 +758,8 @@ func TestChainAccountLocksRetryLeaseFamily(t *testing.T) {
 		t.Fatalf("reservation acquire = %+v, %v", reserved, err)
 	}
 	row = fixture.readLockRow(t, "acc_1")
-	reservedDue := row.nextRetryAtMs.Int64
-	if !row.leaseUntilMs.Valid || row.leaseUntilMs.Int64 != reservedDue+chainAccountLockReservationLeaseDurationMs {
+	reservedDue := row.nextRetryAtMs.Time.UnixMilli()
+	if !row.leaseUntilMs.Valid || row.leaseUntilMs.Time.UnixMilli() != reservedDue+chainAccountLockReservationLeaseDurationMs {
 		t.Fatalf("reservation lease_until mismatch: %+v", row)
 	}
 	if err := fixture.locks.AbandonRetryReservationAsync(ctx, gatewaydispatch.AccountLockRetryLease{AccountID: "acc_1", LeaseID: reserved.LeaseID}); err != nil {
@@ -762,7 +769,7 @@ func TestChainAccountLocksRetryLeaseFamily(t *testing.T) {
 	if row.leaseID.Valid || row.leaseUntilMs.Valid {
 		t.Fatalf("abandoned reservation must clear the lease: %+v", row)
 	}
-	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Int64 != reservedDue {
+	if !row.nextRetryAtMs.Valid || row.nextRetryAtMs.Time.UnixMilli() != reservedDue {
 		t.Fatalf("abandon must preserve the shared due time: %+v", row)
 	}
 
@@ -801,7 +808,7 @@ func TestChainAccountLocksObservationLeaseFence(t *testing.T) {
 		incidentID:   sql.NullString{String: "acc_b:3:t", Valid: true},
 		deadlineAt:   sql.NullString{String: isoMillisOf(time.UnixMilli(fixture.clock.NowMs() - 1)), Valid: true},
 		leaseID:      sql.NullString{String: "L1", Valid: true},
-		leaseUntilMs: sql.NullInt64{Int64: fixture.clock.NowMs() + 60_000, Valid: true}})
+		leaseUntilMs: sql.NullTime{Time: time.UnixMilli(fixture.clock.NowMs() + 60_000), Valid: true}})
 	matching := &gatewaydispatch.AccountLockObservation{Generation: 3, IncidentID: "acc_b:3:t", LeaseID: fenceLease("L1")}
 	if err := fixture.locks.SettleDeadlineAsync(ctx, "acc_b", fixture.clock.NowMs(), matching); err != nil {
 		t.Fatalf("settle with matching lease fence: %v", err)
@@ -817,7 +824,7 @@ func TestChainAccountLocksObservationLeaseFence(t *testing.T) {
 		incidentID:   sql.NullString{String: "acc_c:4:t", Valid: true},
 		deadlineAt:   sql.NullString{String: isoMillisOf(time.UnixMilli(fixture.clock.NowMs() - 1)), Valid: true},
 		leaseID:      sql.NullString{String: "L1", Valid: true},
-		leaseUntilMs: sql.NullInt64{Int64: fixture.clock.NowMs() + 60_000, Valid: true}})
+		leaseUntilMs: sql.NullTime{Time: time.UnixMilli(fixture.clock.NowMs() + 60_000), Valid: true}})
 	wrong := &gatewaydispatch.AccountLockObservation{Generation: 4, IncidentID: "acc_c:4:t", LeaseID: fenceLease("L2")}
 	if err := fixture.locks.SettleDeadlineAsync(ctx, "acc_c", fixture.clock.NowMs(), wrong); err != nil {
 		t.Fatalf("settle with wrong lease fence: %v", err)

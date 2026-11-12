@@ -4,17 +4,18 @@ package main
 // 设计 §4.2/§7/§8）：进程内 fixture（newChainFixture 先例）+ qwen 分组/
 // audio_job 账户 + mockupstream media_qwen_asr_* 场景。覆盖四条链路：
 //  1. 创建（transcription 报文改写：input_url → input.file_urls 单元素数组、
-//     language → parameters.language_hints 数组、provider_options deep-merge、
-//     Bearer 认证、**无 X-DashScope-Async 头**（天然异步服务）、/api/v1 服务
-//     根 URL 归一 + params 回显）→ 轮询 PENDING→RUNNING→SUCCEEDED
-//    （output.results[].transcription_url 冻结 + usage JSON 字符串解析出
-//     duration=62.5 时长计量）→ content 经绝对 URL 无凭据直连下载转写结果
-//     JSON + 终态 usage spool（audioInputSeconds 计量照落、目录无 USD 秒价
-//     成本 0，不虚计）+ /v1/audio/jobs 列表 kind 过滤（不与视频行混行）；
+//     language → parameters.language_hints 数组、metadata → provider_options
+//     deep-merge、Bearer 认证、**无 X-DashScope-Async 头**（天然异步服务）、
+//     /api/v1 服务根 URL 归一 + metadata 诊断回显）→ 轮询 PENDING→RUNNING→
+//     SUCCEEDED（output.results[].transcription_url 冻结 + usage JSON 字符串
+//     解析出 duration=62.5 时长计量）→ content 经绝对 URL 无凭据直连下载转写
+//     结果 JSON + 终态 usage spool（audioInputSeconds 计量照落、目录无 USD
+//     秒价成本 0，不虚计）+ `/v1/tasks/audio` 列表/取消 404（New API 通用
+//     任务面无对应面）；
 //  2. multipart 文件输入 → 本地 400（唯一输入形态 input_url，零存储不暂存，
 //     不打上游）；
-//  3. DELETE 取消（qwen §10.2 面无取消 API → 不发上游请求，本地收敛
-//     cancelled）；
+//  3. DELETE 取消 404（New API 通用任务面无取消面，本地行不变），旧
+//     `/v1/audio/jobs` 全部 404；
 //  4. language 参数映射在出站报文断言（链路 1 内联覆盖）。
 //
 // M6 追加（契约 §7.2/§9.2）：
@@ -33,7 +34,6 @@ package main
 // url 由引擎按自身 URL 渲染，网关直连该 URL（不经过记录层）。
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,22 +49,6 @@ import (
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
-
-// mediaAudioDecodeList 解码任务面列表响应的 data 数组。
-func mediaAudioDecodeList(t *testing.T, payload []byte) []map[string]any {
-	t.Helper()
-	var object struct {
-		Object string           `json:"object"`
-		Data   []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(payload, &object); err != nil {
-		t.Fatalf("decode list: %v", err)
-	}
-	if object.Object != "list" {
-		t.Fatalf("list 响应 object = %q, want list: %s", object.Object, payload)
-	}
-	return object.Data
-}
 
 // seedMediaQwenASRAccount 种 qwen 分组 + paraformer 长转写测试账户 + 独立
 // 路由策略与 API Key（不复用 fixture 的 openai 组与视频 qwen 组，避免跨
@@ -108,10 +92,10 @@ func seedMediaQwenASRAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 	return keySecret
 }
 
-// mediaAudioJobCreate 创建一个长音频任务并断言受理（2xx + 对外 job 对象）。
+// mediaAudioJobCreate 创建一个长音频任务并断言受理（2xx + New API 创建对象）。
 func mediaAudioJobCreate(t *testing.T, serverURL, apiKey, body string, headers map[string]string) map[string]any {
 	t.Helper()
-	response, payload := mediaVideoClientDo(t, serverURL, http.MethodPost, "/v1/audio/jobs", apiKey, body, headers)
+	response, payload := mediaVideoClientDo(t, serverURL, http.MethodPost, "/v1/tasks/audio", apiKey, body, headers)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("audio job create status=%d body=%s", response.StatusCode, payload)
 	}
@@ -119,11 +103,10 @@ func mediaAudioJobCreate(t *testing.T, serverURL, apiKey, body string, headers m
 }
 
 // TestChainMediaAudioJobQwenParaformerLifecycle 覆盖链路 1：创建（报文改写 +
-// 无异步头 + /api/v1 服务根 URL + applied 回显）→ 轮询 PENDING→RUNNING→
+// 无异步头 + /api/v1 服务根 URL + metadata 诊断回显）→ 轮询 PENDING→RUNNING→
 // SUCCEEDED（transcription_url 冻结 + usage 时长计量照抽）→ content 绝对
 // URL 无凭据直连转写结果 JSON → 终态 usage（audioInputSeconds=62.5 照落、
-// 目录无 USD 秒价成本 0，契约 §10.2/§2.8 不虚计）→ /v1/audio/jobs 列表
-// kind 过滤。
+// 目录无 USD 秒价成本 0，契约 §10.2/§2.8 不虚计）→ 列表/取消 404。
 func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, mock, upstreamURL := newQwenRecordedUpstream(t)
@@ -135,42 +118,49 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaAudioJobCreate(t, server.URL, apiKey,
-		`{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","provider_options":{"qwen":{"parameters":{"diarization_enabled":true}}}}`,
+		`{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","metadata":{"diarization_enabled":true}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenASRCreatePending)})
 	jobID, _ := job["id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "audiojob_") {
 		t.Fatalf("对外 job id 缺失或非 audiojob_ 前缀: %#v", job)
 	}
-	if job["object"] != "audio_job" {
-		t.Fatalf("object = %v, want audio_job", job["object"])
+	if job["task_id"] != jobID {
+		t.Fatalf("task_id = %v, want 与 id 同值 %s", job["task_id"], jobID)
+	}
+	if job["object"] != "task" {
+		t.Fatalf("object = %v, want task（New API 通用任务面）", job["object"])
+	}
+	if job["model"] != "paraformer-v2" {
+		t.Fatalf("model = %v, want paraformer-v2", job["model"])
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("创建响应 status = %v, want queued（创建响应 task_status=PENDING 归一）", job["status"])
 	}
-	if job["provider"] != "qwen" {
-		t.Fatalf("provider = %v, want qwen", job["provider"])
+	metadata := mediaVideoMetadataOf(t, job)
+	if metadata["provider"] != "qwen" {
+		t.Fatalf("provider = %v, want qwen", metadata["provider"])
 	}
-	if job["language"] != "zh" {
-		t.Fatalf("language 回显 = %v, want zh", job["language"])
+	if metadata["diarization_enabled"] != true {
+		t.Fatalf("metadata 回显缺少请求原值 diarization_enabled: %#v", metadata)
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := metadata["provider_job_id"].(string)
 	if !strings.Contains(providerJobID, "-") || len(providerJobID) != 36 {
 		t.Fatalf("provider_job_id = %q, want uuid 任务 id 形态（与万相同一任务接口）", providerJobID)
 	}
-	applied := mediaVideoJobKeys(t, job, "params_applied")
 	for _, want := range []string{"model", "input_url", "language"} {
-		if !applied[want] {
-			t.Fatalf("params_applied 缺少 %s: %v", want, job["params_applied"])
+		if !strings.Contains(fmt.Sprintf("%v", metadata["params_applied"]), want) {
+			t.Fatalf("params_applied 缺少 %s: %v", want, metadata["params_applied"])
 		}
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "parameters") {
-		t.Fatalf("provider_options_applied 缺少 parameters: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", metadata["provider_options_applied"]), "diarization_enabled") {
+		t.Fatalf("provider_options_applied 缺少 diarization_enabled: %v", metadata["provider_options_applied"])
 	}
 
 	// 创建出站断言：POST /api/v1/services/audio/asr/transcription + Bearer 认证
 	// 头 + **无 X-DashScope-Async 头**（天然异步服务，契约 §10.2 与万相 §10.1
 	// 的关键差异）+ 转换报文（input.file_urls 单元素数组、parameters.
-	// language_hints 数组、diarization_enabled 嵌套合并）。
+	// language_hints 数组、metadata 剩余键并入 qwen provider_options 后 deep-merge
+	// 为顶层 diarization_enabled）。
 	records := recorder.snapshot()
 	if len(records) != 1 || records[0].Method != http.MethodPost || records[0].Path != "/api/v1/services/audio/asr/transcription" {
 		t.Fatalf("创建出站请求形态错误: %+v", records)
@@ -204,7 +194,7 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	// 轮询三次：queued（#1 PENDING 归一）→ in_progress（#2 RUNNING 归一）→
 	// completed（#3 SUCCEEDED + transcription_url 冻结 + usage duration=62.5）。
 	for index, want := range []string{"queued", "in_progress", "completed"} {
-		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID, apiKey, "", nil)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("poll #%d status=%d body=%s", index+1, response.StatusCode, payload)
 		}
@@ -245,7 +235,7 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 
 	// content 下载：completed 的 transcription_url 是引擎渲染的绝对 URL（不经
 	// 记录层），网关无凭据直连。产物是转写结果 JSON（契约 §10.2），非音频。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -265,30 +255,36 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 		}
 	}
 
-	// 列表 kind 过滤：/v1/audio/jobs 含本任务（object=audio_job），/v1/videos
-	// 不混入长音频行（两族互不混行，M3f 泛化）。
-	listResponse, listPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs", apiKey, "", nil)
-	if listResponse.StatusCode != http.StatusOK {
-		t.Fatalf("audio list status=%d body=%s", listResponse.StatusCode, listPayload)
+	// New API 通用任务面无列表/取消/删除面：GET 集合与 DELETE 恒 404，且
+	// 不得泄漏本地任务行；旧 /v1/audio/jobs 全部硬 404（不保留兼容别名）。
+	for _, path := range []string{"/v1/tasks/audio", "/v1/audio/jobs"} {
+		response, body := mediaVideoClientDo(t, server.URL, http.MethodGet, path, apiKey, "", nil)
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("GET %s status=%d body=%s, want 404（New API 无列表面）", path, response.StatusCode, body)
+		}
+		if strings.Contains(string(body), jobID) {
+			t.Fatalf("GET %s 404 不得泄漏长音频任务行: %s", path, body)
+		}
 	}
-	listObject := mediaAudioDecodeList(t, listPayload)
-	if len(listObject) != 1 || listObject[0]["id"] != jobID || listObject[0]["object"] != "audio_job" {
-		t.Fatalf("/v1/audio/jobs 列表回显错误: %s", listPayload)
+	deleteResponse, deletePayload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/tasks/audio/"+jobID, apiKey, "", nil)
+	if deleteResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE /v1/tasks/audio status=%d body=%s, want 404", deleteResponse.StatusCode, deletePayload)
 	}
-	videoListResponse, videoListPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos", apiKey, "", nil)
-	if videoListResponse.StatusCode != http.StatusOK {
-		t.Fatalf("video list status=%d body=%s", videoListResponse.StatusCode, videoListPayload)
+	// 视频列表面自 New API 批起同为 404，且不泄漏长音频行（两族互不混行）。
+	videoListResponse, videoListPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations", apiKey, "", nil)
+	if videoListResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("video list status=%d body=%s, want 404（New API 无列表面）", videoListResponse.StatusCode, videoListPayload)
 	}
-	if objects := mediaAudioDecodeList(t, videoListPayload); len(objects) != 0 {
-		t.Fatalf("/v1/videos 列表不得混入长音频行: %s", videoListPayload)
+	if strings.Contains(string(videoListPayload), jobID) {
+		t.Fatalf("视频面 404 不得泄漏长音频任务行: %s", videoListPayload)
 	}
 
 	// 终态 usage：spool 链异步落盘，completed 携带 usage JSON 字符串解析出的
-	// 62.5 秒输入时长计量（audioInputSeconds）+ endpoint=/v1/audio/jobs；目录
+	// 62.5 秒输入时长计量（audioInputSeconds）+ endpoint=/v1/tasks/audio；目录
 	// 无价 → 无 costUsd 行项、无 usageMissing 标记（契约 §2.8/§10.2：计量
 	// 照落成本不虚计）。
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"audioInputSeconds":62.5`) && strings.Contains(text, `"endpoint":"/v1/audio/jobs"`)
+		return strings.Contains(text, `"audioInputSeconds":62.5`) && strings.Contains(text, `"endpoint":"/v1/tasks/audio"`)
 	}, "qwen asr completed 时长计量终态记录")
 }
 
@@ -304,7 +300,7 @@ func TestChainMediaAudioJobMultipartRejected(t *testing.T) {
 	server := httptest.NewServer(chain)
 	defer server.Close()
 
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/audio/jobs",
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/tasks/audio",
 		strings.NewReader("--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\n\r\nx\r\n--boundary--"))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -332,10 +328,10 @@ func TestChainMediaAudioJobMultipartRejected(t *testing.T) {
 	}
 }
 
-// TestChainMediaAudioJobCancel 覆盖链路 3：DELETE → qwen §10.2 面无上游取消
-// API → 不发上游取消请求、直接本地收敛 cancelled + 204；终态行轮询回本地
-// 对象不再打上游。
-func TestChainMediaAudioJobCancel(t *testing.T) {
+// TestChainMediaAudioJobCancelNotProvided 覆盖链路 3：New API 通用任务面无
+// 取消/删除面——DELETE /v1/tasks/audio/{id} 与旧 DELETE /v1/audio/jobs/{id}
+// 都恒 404，不改本地行、不打上游（账户亲和面只有创建一条请求）。
+func TestChainMediaAudioJobCancelNotProvided(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, _, upstreamURL := newQwenRecordedUpstream(t)
 	apiKey := seedMediaQwenASRAccount(t, fixture, "acc_qwen_asr_cancel", upstreamURL, "sk-dashscope-asr-cancel")
@@ -349,29 +345,30 @@ func TestChainMediaAudioJobCancel(t *testing.T) {
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenASRPollRunning)})
 	jobID, _ := job["id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
+	for _, path := range []string{"/v1/tasks/audio/" + jobID, "/v1/audio/jobs/" + jobID} {
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, path, apiKey, "", nil)
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("DELETE %s status=%d body=%s, want 404（New API 无取消/删除面）", path, response.StatusCode, payload)
+		}
 	}
 	var kind, status string
 	if err := fixture.db.QueryRow(`SELECT kind, status FROM media_jobs WHERE id = ?`, jobID).Scan(&kind, &status); err != nil {
 		t.Fatalf("查询 media_jobs: %v", err)
 	}
-	if kind != "audio_transcription" || status != "cancelled" {
-		t.Fatalf("DELETE 后本地行 = %s/%s, want audio_transcription/cancelled", kind, status)
+	if kind != "audio_transcription" || status == "cancelled" {
+		t.Fatalf("DELETE 404 后本地行 = %s/%s, want audio_transcription 且未被取消", kind, status)
 	}
-	// 账户亲和面：取消未发任何上游请求（§10.2 面无取消端点，本地收敛），
-	// 记录层仅有创建一条。
+	// 账户亲和面：404 面不接触上游（不发取消请求），记录层仅有创建一条。
 	if records := recorder.snapshot(); len(records) != 1 {
-		t.Fatalf("qwen asr 取消不得打上游（SupportsCancel=false 本地收敛）: %+v", records)
+		t.Fatalf("取消面 404 不得打上游: %+v", records)
 	}
-	// 终态行轮询回本地对象，不再打上游。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
-	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
-		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
+	// 轮询仍可推进（任务未被本地取消）。
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID, apiKey, "", nil)
+	if pollResponse.StatusCode != http.StatusOK {
+		t.Fatalf("poll status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}
-	if len(recorder.snapshot()) != 1 {
-		t.Fatalf("终态轮询不得再打上游: %+v", recorder.snapshot())
+	if got := mediaVideoDecodeJob(t, pollPayload)["status"]; got != "queued" && got != "in_progress" {
+		t.Fatalf("轮询状态 = %v, want queued/in_progress（任务未被取消）", got)
 	}
 }
 
@@ -942,13 +939,14 @@ func TestChainMediaVolcengineASRLifecycle(t *testing.T) {
 	if jobID == "" || !strings.HasPrefix(jobID, "audiojob_") {
 		t.Fatalf("对外 job id 缺失或非 audiojob_ 前缀: %#v", job)
 	}
-	if job["object"] != "audio_job" || job["provider"] != "volcengine" {
-		t.Fatalf("object/provider = %v/%v, want audio_job/volcengine", job["object"], job["provider"])
+	metadata := mediaVideoMetadataOf(t, job)
+	if job["object"] != "task" || metadata["provider"] != "volcengine" {
+		t.Fatalf("object/provider = %v/%v, want task/volcengine", job["object"], metadata["provider"])
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("创建响应 status = %v, want queued（submit 受理归一）", job["status"])
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := metadata["provider_job_id"].(string)
 	if len(providerJobID) != 32 {
 		t.Fatalf("provider_job_id = %q, want 16 字节 hex 任务 ID（网关生成请求 ID）", providerJobID)
 	}
@@ -985,7 +983,7 @@ func TestChainMediaVolcengineASRLifecycle(t *testing.T) {
 	// 轮询两次：#1 20000001 → in_progress；#2 20000000 + duration 1118ms →
 	// completed（计量 1.118 秒）。query 面与 submit 同构头。
 	for index, want := range []string{"in_progress", "completed"} {
-		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID, apiKey, "", nil)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("poll #%d status=%d body=%s", index+1, response.StatusCode, payload)
 		}
@@ -1026,7 +1024,7 @@ func TestChainMediaVolcengineASRLifecycle(t *testing.T) {
 
 	// content 下载：同构 query 代理——终态转写 JSON 即产物（无产物 URL），
 	// 携带任务头与凭据直发上游。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -1041,9 +1039,9 @@ func TestChainMediaVolcengineASRLifecycle(t *testing.T) {
 	}
 
 	// 终态 usage：spool 落盘 audioInputSeconds=1.118（毫秒 ÷1000）+
-	// endpoint=/v1/audio/jobs + 目录秒价成本行。
+	// endpoint=/v1/tasks/audio + 目录秒价成本行。
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"audioInputSeconds":1.118`) && strings.Contains(text, `"endpoint":"/v1/audio/jobs"`)
+		return strings.Contains(text, `"audioInputSeconds":1.118`) && strings.Contains(text, `"endpoint":"/v1/tasks/audio"`)
 	}, "volcengine asr completed 时长计量终态记录")
 }
 
@@ -1071,7 +1069,7 @@ func TestChainMediaVolcengineASRPollFailedTerminal(t *testing.T) {
 		t.Fatalf("对外 job id 缺失: %#v", job)
 	}
 	// 首次轮询即终态失败（脚本 #1 = 45000006）。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/tasks/audio/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("poll status=%d body=%s", response.StatusCode, payload)
 	}
@@ -1093,7 +1091,7 @@ func TestChainMediaVolcengineASRPollFailedTerminal(t *testing.T) {
 	// 终态 usage 行：failed 任务的 usage 行以 success=false 表达（usageMissing
 	// 标记只用于 completed 无计量形态），无 audioInputSeconds 行项、无成本。
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"endpoint":"/v1/audio/jobs"`) && strings.Contains(text, `"success":false`) && !strings.Contains(text, `"audioInputSeconds"`)
+		return strings.Contains(text, `"endpoint":"/v1/tasks/audio"`) && strings.Contains(text, `"success":false`) && !strings.Contains(text, `"audioInputSeconds"`)
 	}, "volcengine asr failed 终态 usage 行")
 }
 
@@ -1144,7 +1142,7 @@ func TestChainMediaVolcengineASRMissingCredentials(t *testing.T) {
 	defer server.Close()
 	defer mock.Close()
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/jobs", keySecret,
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/tasks/audio", keySecret,
 		`{"model":"volc.seedasr.auc","input_url":"https://oss.example.com/audio/meeting.wav"}`, nil)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("缺凭据创建 status=%d body=%s, want 400（本地确定性配置错误）", response.StatusCode, payload)

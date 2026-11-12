@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // Usage statistics bucket consistency check mirroring
@@ -221,7 +223,8 @@ func (s *Store) sumUsageStatsHourly(ctx context.Context, systemAccountID, scopeT
 	var cells [usageStatsConsistencyMetricsCount]any
 	err := s.db.QueryRowContext(ctx, query,
 		systemAccountID, scopeType, scopeID,
-		statDate+"T00", NextDateKey(statDate)+"T00").Scan(
+		statsagg.CalendarDBValue("stat_hour", statDate+"T00"),
+		statsagg.CalendarDBValue("stat_hour", NextDateKey(statDate)+"T00")).Scan(
 		&cells[0], &cells[1], &cells[2], &cells[3], &cells[4], &cells[5], &cells[6],
 		&cells[7], &cells[8], &cells[9], &cells[10], &cells[11], &cells[12], &cells[13], &cells[14])
 	if errors.Is(err, sql.ErrNoRows) {

@@ -312,7 +312,7 @@ func TestWeCatalogDisplayPerProvider(t *testing.T) {
 }
 
 // TestWeCatalogDisplaySourceDisclosureNotGenerated 钉住披露 section 停生成契约
-//（供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
+// （供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
 // 来源文本不进客户可见目录；CNY 行与 USD 行都不再渲染美元换算或来源披露，
 // 原始来源留档仍在 catalogdata JSON 的 sourcePricingNote 字段。
 func TestWeCatalogDisplaySourceDisclosureNotGenerated(t *testing.T) {

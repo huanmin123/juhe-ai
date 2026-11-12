@@ -7,6 +7,7 @@
     "  ③ 运行时 backend-go/projects/gateway/internal/gatewayopenai/mapping.go isOpenAIModelMappingRuntimeConversionSupported / IsAdmissibleModelMapping（协议等价判定：同族改名 + Gemini stream 归一）；",
     "  ④ 前端 frontend/src/views/accounts/accountModelMappingProtocolMatrix.ts accountModelMappingProtocolRules（普通）+ （openai/hybrid 已退役）。",
     "2026-11-07 跨协议模型映射退役：responses->chat_completions bridge 删除，矩阵从 8 pair 收敛为 7 pair（同族改名 + Gemini stream_generate_content->generate_content 归一）。",
+    "2026-11-12 B7 工具端点：embedding/rerank/moderation 三个同族模型名改写 pair 入矩阵，当前共 10 pair / 16 个请求形态。",
     "矩阵演化时必须先改本文件，再同步修改四方实现；两侧自动断言守护：",
     "  Go：backend-go/projects/gateway/internal/accounts/entry_mapping_pairs_golden_test.go（go test -run TestEntryMapping ./internal/accounts/）；",
     "  前端：frontend/src/scripts/regression/account-model-mapping-model-options-regression.ts（npm run test:account-model-mapping-model-options）。",
@@ -100,6 +101,39 @@
         "ordinary"
       ],
       "note": "同步语音生成，只有一个形态"
+    },
+    {
+      "pair": "embed_content -> embed_content",
+      "designDocRow": 8,
+      "targetModes": [
+        "embed_content"
+      ],
+      "frontendRuleSets": [
+        "ordinary"
+      ],
+      "note": "B7 工具端点同族模型名改写，只有一个同步形态"
+    },
+    {
+      "pair": "rerank -> rerank",
+      "designDocRow": 9,
+      "targetModes": [
+        "rerank_json"
+      ],
+      "frontendRuleSets": [
+        "ordinary"
+      ],
+      "note": "B7 工具端点同族模型名改写，只有一个同步形态"
+    },
+    {
+      "pair": "moderation -> moderation",
+      "designDocRow": 10,
+      "targetModes": [
+        "moderation_json"
+      ],
+      "frontendRuleSets": [
+        "ordinary"
+      ],
+      "note": "B7 工具端点同族模型名改写，只有一个同步形态"
     }
   ]
 }

@@ -53,6 +53,22 @@ type VideoProviderAdapter interface {
 	SupportsCancel() bool
 }
 
+// VideoBillingResolutionProvider 是可选能力：厂商按输出分辨率分档计价时，
+// 返回本次创建参数对应的计费分辨率（"480p"/"720p"/"768p"/"1080p"/"2k"/
+// "4k"）。不实现或返回空串表示创建时无法确定分辨率，结算回落目录主档价；
+// 分辨率已知但目录无该档 → 不产行项（不静默按主档收费）。
+type VideoBillingResolutionProvider interface {
+	BillingResolution(params NormalizedVideoParams) string
+}
+
+// VideoModelTaskAdapter 是可选能力：同一 provider 注册键下不同模型走不同
+// 任务面协议时（minimax Hailuo v1 与 H3 v2），按创建时冻结的模型解析轮询
+// 路径与响应形态。未实现时链上层沿用 VideoProviderAdapter 的默认方法。
+type VideoModelTaskAdapter interface {
+	BuildPollRequestForModel(model, upstreamJobID string) (method, path string, body []byte)
+	ParsePollResponseForModel(model string, statusCode int, body []byte) (*MediaJobIR, error)
+}
+
 // VideoCreateInput 是创建请求的输入：归一参数 + provider_options 对象形态
 // （键=provider_code，Create 内按本 provider 取命中子对象 deep-merge 覆盖
 // 同名 L2 值，其余子对象忽略，契约 §2.1 L3/§2.4 规则 4）。

@@ -76,7 +76,7 @@ interface AccountCloneFormLoadInput {
 }
 
 export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEditFormLoadResult {
-  const { account, advanced, credentials } = input
+  const { advanced, credentials } = input
   const basicPatch = buildAccountBasicFormPatch(input)
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '账户详情错误处理策略')
   const inheritedErrorPolicyRules = loadInheritedErrorPolicyRules(advanced.effectiveErrorHandlingRules)
@@ -139,6 +139,9 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
   })
   return {
     ...defaults,
+    // 编辑/克隆必须回填账户自身场景：表单默认 values 来自当前筛选域，全部
+    // 场景视图或跨域编辑时不能把 chat 默认值写回保存载荷。
+    capabilityDomain: account.capabilityDomain ?? defaults.capabilityDomain,
     providerCode: providerIdentity.providerCode,
     providerProtocolProfileId: providerIdentity.providerProtocolProfileId || defaults.providerProtocolProfileId,
     name: account.name,
@@ -205,6 +208,7 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
   })
   const patch: AccountFormModel = {
     ...defaults,
+    capabilityDomain: account.capabilityDomain ?? defaults.capabilityDomain,
     providerCode: providerIdentity.providerCode,
     providerProtocolProfileId: providerIdentity.providerProtocolProfileId || defaults.providerProtocolProfileId,
     name: cloneAccountName(account.name),

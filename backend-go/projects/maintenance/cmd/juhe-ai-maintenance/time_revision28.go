@@ -335,8 +335,66 @@ func applyRevision28(ctx context.Context, dsn string) (upgradepipeline.Detail, e
 		}
 		applied++
 	}
+	for _, c := range revision28Columns {
+		if c.Kind != "calendar_date" && c.Kind != "calendar_hour" {
+			continue
+		}
+		present, err := relationPresent(ctx, db, "juhe_stats", c.Table)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
+		}
+		if err := applyRevision28CalendarCheck(ctx, tx, c); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return upgradepipeline.Detail{"applied": applied, "columns": len(revision28Columns)}, nil
+}
+
+// applyRevision28CalendarCheck 在类型迁移后补日历约束：周键必须是周一，
+// 月键必须是 1 日，小时/分钟不得携带非零低位时间。约束名固定，重复执行
+// 通过 pg_constraint 判定幂等；存量违例在加约束前以计数错误阻断。
+func applyRevision28CalendarCheck(ctx context.Context, tx *sql.Tx, c revision28Column) error {
+	column := quotePGIdentifier(c.Column)
+	var predicate string
+	switch {
+	case c.Column == "stat_week":
+		predicate = fmt.Sprintf("EXTRACT(ISODOW FROM %s) = 1", column)
+	case c.Column == "stat_month":
+		predicate = fmt.Sprintf("EXTRACT(DAY FROM %s) = 1", column)
+	case c.Column == "stat_hour":
+		predicate = fmt.Sprintf("EXTRACT(MINUTE FROM %s) = 0 AND EXTRACT(SECOND FROM %s) = 0", column, column)
+	case c.Column == "stat_minute":
+		predicate = fmt.Sprintf("EXTRACT(SECOND FROM %s) = 0", column)
+	default:
+		return nil
+	}
+	table := quotePGIdentifier("juhe_stats") + "." + quotePGIdentifier(c.Table)
+	var invalid int64
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s WHERE NOT (%s)`, table, predicate)).Scan(&invalid); err != nil {
+		return fmt.Errorf("校验 %s.%s 日历约束失败: %w", c.Table, c.Column, err)
+	}
+	if invalid > 0 {
+		return fmt.Errorf("%s.%s 有 %d 行违反日历约束", c.Table, c.Column, invalid)
+	}
+	constraint := "chk_" + c.Table + "_" + c.Column + "_calendar"
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass
+	)`, constraint, table).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s)`,
+		table, quotePGIdentifier(constraint), predicate)); err != nil {
+		return fmt.Errorf("添加 %s.%s 日历约束失败: %w", c.Table, c.Column, err)
+	}
+	return nil
 }

@@ -65,7 +65,8 @@ func isValidDraftHealthCheckEndpointMode(value string) bool {
 		"responses_json", "responses_sse",
 		"messages_json", "messages_sse",
 		"generate_content_json", "generate_content_sse",
-		"interactions_json", "interactions_sse":
+		"interactions_json", "interactions_sse",
+		"embed_content", "rerank_json", "moderation_json":
 		return true
 	}
 	return false
@@ -346,7 +347,8 @@ func normalizeDraftEndpointModes(draft *DraftSnapshot) map[accountprobe.Endpoint
 			accountprobe.ModeMessagesJSON, accountprobe.ModeMessagesSSE,
 			accountprobe.ModeGenerateContentJSON, accountprobe.ModeGenerateContentSSE,
 			accountprobe.ModeInteractionsJSON, accountprobe.ModeInteractionsSSE,
-			accountprobe.ModeImagesJSON:
+			accountprobe.ModeImagesJSON,
+			accountprobe.ModeEmbedContent, accountprobe.ModeRerankJSON, accountprobe.ModeModerationJSON:
 			modes[accountprobe.EndpointMode(text)] = true
 		}
 	}

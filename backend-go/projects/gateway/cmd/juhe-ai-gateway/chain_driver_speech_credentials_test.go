@@ -28,7 +28,7 @@ func TestChainDriverVolcengineSpeechCredentialCandidateGate(t *testing.T) {
 		t.Fatalf("缺 speech_token 的语音候选 reason = %q, want speech_credentials_missing", got)
 	}
 
-	jobsReq := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/jobs",
+	jobsReq := mappedURLTestRequest(t, http.MethodPost, "/v1/tasks/audio",
 		`{"model":"volc.seedasr.auc","input_url":"https://example.com/a.wav"}`)
 	if got := driver.gatewayRequestCapabilityMismatchReasonFor(jobsReq, base, ""); got != "speech_credentials_missing" {
 		t.Fatalf("缺 speech_token 的长音频候选 reason = %q, want speech_credentials_missing", got)

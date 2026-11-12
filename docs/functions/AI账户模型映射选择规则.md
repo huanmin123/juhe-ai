@@ -1,7 +1,7 @@
 # AI 账户模型映射选择规则
 
 > **状态覆盖（2026-10-17）。** 本文的“普通账户 / Hybrid 账户”分支是重构前实现基线。目标版本统一使用 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) 的 `account_entry_mappings`、`account_connections` 与其 §5.2 固定矩阵；本文旧的 Hybrid 特判不能继续作为新代码依据。
-> **退役标注（2026-11-07）。** ① Hybrid（混合供应商）账户已随 2026-11-05 通用连接器退役一并退役，本文所有 Hybrid 分支均已双重过期，仅作历史基线保留。② 跨协议模型映射（含 `Responses -> Chat Completions`）已随 2026-11-07 用户裁决整体退役：映射协议强制同族（唯一例外 Gemini `stream_generate_content → generate_content` 归一），跨协议转换映射的 rank 1 机制整体删除，协议等价映射（同族改名或 Gemini 归一）与直接支持同权 rank 0。现行矩阵为 7 个协议等价 pair / 13 个请求形态。
+> **退役标注（2026-11-07）。** ① Hybrid（混合供应商）账户已随 2026-11-05 通用连接器退役一并退役，本文所有 Hybrid 分支均已双重过期，仅作历史基线保留。② 跨协议模型映射（含 `Responses -> Chat Completions`）已随 2026-11-07 用户裁决整体退役：映射协议强制同族（唯一例外 Gemini `stream_generate_content → generate_content` 归一），跨协议转换映射的 rank 1 机制整体删除，协议等价映射（同族改名或 Gemini 归一）与直接支持同权 rank 0。现行矩阵为 10 个协议等价 pair / 16 个请求形态（B7 增补 embedding/rerank/moderation 同族）。
 > 状态：重构前实现基线（历史文档，两级退役标注后不再描述现行行为）；现行契约以 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5 为准。
 > 变更记录（2026-10-24，方案B，用户裁决）：同族改名映射（映射行 source 与 target/upstream endpoint family 相同）在网关调度排序中升为与直接支持同权（rank 0），跨协议转换映射（两族不同）保留在直接支持之后（rank 1）。§2.4 与 §5 已同步。（2026-11-07：rank 1 随跨协议映射退役删除。）
 > 更新时间：2026-07-27。
@@ -77,7 +77,7 @@
 
 ## 3. 供应商规则
 
-> 2026-11-07 退役标注：下表所有 `Responses -> Chat`（显式 bridge）方向均已退役；现行允许方向只有同族改名 + Gemini `stream_generate_content → generate_content` 归一（7 个协议等价 pair）。Hybrid 行已随 2026-11-05 退役，“通用 OpenAI-compatible”档案已随 2026-11-05 供应商退役消失。下表仅作历史基线保留。
+> 2026-11-07 退役标注：下表所有 `Responses -> Chat`（显式 bridge）方向均已退役；现行允许方向只有同族改名 + Gemini `stream_generate_content → generate_content` 归一（B7 后 10 个协议等价 pair，含 embedding/rerank/moderation 同族）。Hybrid 行已随 2026-11-05 退役，“通用 OpenAI-compatible”档案已随 2026-11-05 供应商退役消失。下表仅作历史基线保留。
 
 | 供应商 / 档案 | 左侧模型范围 | 允许的协议方向 |
 | --- | --- | --- |
@@ -119,7 +119,7 @@
 
 1. `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily` 非空。
 2. 同一 `sourceModel + sourceEndpointFamily` 只能存在一条映射。
-3. 协议方向命中现行矩阵（7 个协议等价 pair）；跨族组合返回中文 400「客户端协议与上游协议必须一致」。
+3. 协议方向命中现行矩阵（10 个协议等价 pair）；跨族组合返回中文 400「客户端协议与上游协议必须一致」。
 4. 启用映射的右侧协议具备对应账户上游接口能力；停用映射可以保留。
 5. 普通账户左侧模型存在于当前供应商目录（2026-11-07 起放宽为跨供应商、按所选协议过滤，协议校验由前端选择器与导入提示承担）；（已退役）Hybrid 左侧模型存在于来源协议全局模型池。
 6. 右侧模型存在于当前供应商目录（或 Hybrid 目标协议池，已退役）。

@@ -12,9 +12,9 @@ func TestDispatchDomainOfLane(t *testing.T) {
 		label string
 	}{
 		{LaneText, DispatchDomainConversation, "文本对话走 ConversationDispatch"},
-		{LaneImage, DispatchDomainStatelessMedia, "图像创建走 StatelessMediaDispatch"},
-		{LaneAudio, DispatchDomainStatelessMedia, "同步音频创建走 StatelessMediaDispatch"},
-		{LaneVideo, DispatchDomainStatelessMedia, "视频/长音频创建走 StatelessMediaDispatch"},
+		{LaneImage, DispatchDomainStateless, "图像创建走 StatelessDispatch"},
+		{LaneAudio, DispatchDomainStateless, "同步音频创建走 StatelessDispatch"},
+		{LaneVideo, DispatchDomainStateless, "视频/长音频创建走 StatelessDispatch"},
 		{LaneRealtime, DispatchDomainRealtime, "Realtime 是连接生命周期能力，不归入媒体创建域"},
 		{RequestLane(""), DispatchDomainConversation, "空 lane（解析前兜底形态）保持对话语义"},
 		{RequestLane("unknown"), DispatchDomainConversation, "未知 lane 保持对话语义"},

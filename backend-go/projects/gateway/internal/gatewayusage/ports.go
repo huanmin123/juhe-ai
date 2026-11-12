@@ -179,8 +179,14 @@ type PricingCostInput struct {
 	InputAudioTokens   *int
 	OutputAudioTokens  *int
 	OutputImageCount   *int
+	// OutputImagePixels 是图像输出像素数（按像素档选按张价，2026-11-12 档位批）。
+	OutputImagePixels *int64
+	// InputImageCount 是请求侧输入图片张数（输入图按张计费）。
+	InputImageCount *int64
 	// TtsInputChars / AudioInputSeconds 是 M1 同步音频计量（音频设计 §10）。
-	TtsInputChars     *int64
+	TtsInputChars *int64
+	// TtsCalls 是 token 口径 TTS 无 usage 时的按次计量（2026-11-12 用户裁决）。
+	TtsCalls          *int64
 	AudioInputSeconds *float64
 }
 

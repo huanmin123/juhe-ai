@@ -1,7 +1,7 @@
 package gatewaypreauth
 
 // T10 对话与非对话媒体调度分离落地：preflight 的调度域不变量回归
-// （对话与非对话媒体调度分离设计 §5）。媒体创建域（StatelessMediaDispatch）
+// （对话与非对话媒体调度分离设计 §5）。媒体创建域（StatelessDispatch）
 // 的 preflight 结果必须满足三类亲和输入恒空：
 //
 //	SessionAffinityKey = ""

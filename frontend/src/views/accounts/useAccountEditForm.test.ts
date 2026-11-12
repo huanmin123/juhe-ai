@@ -546,4 +546,20 @@ describe('useAccountEditForm.openEdit（代理标签回填）', () => {
       detailSpy.mockRestore()
     }
   })
+
+  it('全部场景视图：编辑态场景取账户行 capabilityDomain，不回落筛选默认 chat', async () => {
+    const detailSpy = vi.spyOn(api.myAccounts, 'editBasicDetail').mockResolvedValue(createdOAuthDetail)
+    const { ctx, unmount } = mountMediaEditForm(() => async () => undefined)
+    try {
+      await ctx.openEdit(accountListRow({
+        id: createdOAuthDetail.id,
+        capabilityDomain: 'rerank'
+      }))
+      await flushTicks()
+      expect(ctx.editingCapabilityDomain.value).toBe('rerank')
+    } finally {
+      unmount()
+      detailSpy.mockRestore()
+    }
+  })
 })

@@ -3,7 +3,7 @@ import type { AccountType, ProviderCode } from './base'
 export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
-export type ProviderModelMode = 'text' | 'image' | 'audio' | 'video'
+export type ProviderModelMode = 'text' | 'image' | 'audio' | 'video' | 'embedding' | 'rerank' | 'moderation'
 export type ProviderModelServiceTier = string
 export type ProviderModelReasoningEffort = string
 export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'
@@ -59,6 +59,8 @@ export type ProviderModelApiProtocol =
   | 'audio_transcription'
   | 'video'
   | 'realtime'
+  | 'rerank'
+  | 'moderation'
 
 export interface ProviderDefinition {
   id: string
@@ -162,12 +164,25 @@ export interface ProviderModelPricing {
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
+  /** 按输出像素分档的按张价（maxPixels=0 表示无上限）。 */
+  outputUsdPerImageTiers?: Array<{ maxPixels: number; usdPerImage: number }>
+  /** 输入图按张价（USD/张）与每请求免费张数（厂商首张/前 N 张免费）。 */
+  inputUsdPerImage?: number
+  inputImageFreeCount?: number
   /** 视频输出每秒价（USD/秒）。 */
   videoOutputUsdPerSecond?: number
+  /** 视频输出每秒价按分辨率分档（键 "480p"/"720p"/"1080p"，USD/秒）。 */
+  videoOutputUsdPerSecondByResolution?: Record<string, number>
   /** 视频输出每次价（USD/次），目录中与每秒价互斥落库。 */
   videoOutputUsdPerCall?: number
+  /** 视频输出每次价按输出时长分档（键 "6"/"10"，USD/次）。 */
+  videoOutputUsdPerCallBySeconds?: Record<string, number>
+  /** 视频输出每次价按“分辨率-秒数”组合分档（键 "1080p-6"，USD/次）。 */
+  videoOutputUsdPerCallByResolutionSeconds?: Record<string, number>
   /** 语音合成（TTS）每百万字符价（USD/1M 字符）。 */
   ttsInputUsdPer1MChars?: number
+  /** 语音合成无 usage 时的按次固定价（USD/次）。 */
+  ttsOutputUsdPerCall?: number
   /** 语音识别（ASR）每秒价（USD/秒）。 */
   audioInputUsdPerSecond?: number
   maxInputTokens?: number

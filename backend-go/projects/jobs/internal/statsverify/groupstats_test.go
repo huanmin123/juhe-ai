@@ -1,7 +1,6 @@
 package statsverify
 
-import (
-)
+import ()
 
 // Golden derivations follow group-account-stats-cache.repository.ts:
 //   - dirty consumption: '__all__' full rebuild first (cursor stored in the
@@ -13,4 +12,3 @@ import (
 //   - cache rewrite: DELETE per group chunk then INSERT (empty groups keep a
 //     zero row);
 //   - dirty rows are deleted with an updated_at CAS.
-

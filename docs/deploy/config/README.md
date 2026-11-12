@@ -33,6 +33,7 @@
 | `JUHE_AI_LOG_MAX_FILE_MB` / `JUHE_AI_LOG_MAX_FILES` / `JUHE_AI_LOG_RETENTION_DAYS` | 文件日志轮转（默认 100MB / 500 个 / 30 天） |
 | `JUHE_AI_LOG_INSTANCE_ID` | 可选；gateway 运行日志文件名实例段（`juhe-ai.<id>.log`）与 `build_info.instance_id`，默认 hostname，多 gateway 共享日志目录时必须唯一 |
 | `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS` | 成功正文热保留窗口（默认 1 小时）；成功正文长期保留 3 天且恒全量采样 |
+| `JUHE_AI_GATEWAY_PUBLIC_BASE_URL` | 可选；gateway 对外公共地址（裸 http(s) origin，如 `https://<domain>`）。New API 任务面无直链时的回退 content URL 前缀；未配置回退相对路径，功能不受影响，域名入口生产建议显式配置 |
 
 ## 3. 语义与边界
 

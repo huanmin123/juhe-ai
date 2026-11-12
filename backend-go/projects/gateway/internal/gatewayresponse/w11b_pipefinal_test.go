@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -737,9 +736,12 @@ func TestW11BFlushPreCommitChunksWriteError(t *testing.T) {
 	pipe, _ := w11bNewFinalPipe(t, nil)
 	pipe.downstream.Res = &w11bFailingWriter{inner: gatewaypreauth.NewTrackingWriter(httptest.NewRecorder())}
 	AppendStreamPreCommitChunk(pipe.preCommitBuffer, []byte("chunk"))
-	err := pipe.flushPreCommitChunks()
-	if err == nil || !strings.Contains(err.Error(), "write failed") {
+	// 写失败不再上抛：标记 clientGone 转入 drain，继续读上游用量。
+	if err := pipe.flushPreCommitChunks(); err != nil {
 		t.Fatalf("err = %v", err)
+	}
+	if !pipe.clientGone {
+		t.Fatal("write failure must mark clientGone")
 	}
 	// 空 buffer no-op。
 	pipe.preCommitBuffer.Chunks = nil

@@ -557,4 +557,3 @@ func TestW1DateKeyRejectsNonNumericComponent(t *testing.T) {
 		t.Fatal("date key with a non-numeric year component must be rejected")
 	}
 }
-

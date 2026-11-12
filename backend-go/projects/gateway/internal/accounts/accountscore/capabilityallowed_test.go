@@ -55,6 +55,16 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		{name: "xai+audio 矩阵拒绝", domain: "audio", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{}},
 		{name: "xai+image 矩阵开通（2026-10-31 实测出图）", domain: "image", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{"images_json"}},
 		{name: "qwen+image 矩阵开通（2026-11-11 Qwen-Image 实测出图）", domain: "image", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"images_json"}},
+		// B7 工具域矩阵：gpt 向量/安全、qwen 向量/重排，其余格拒绝。
+		{name: "gpt embedding", domain: "embedding", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI, want: []string{"embed_content"}},
+		{name: "gpt moderation", domain: "moderation", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI, want: []string{"moderation_json"}},
+		{name: "gpt rerank 矩阵拒绝", domain: "rerank", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI, want: []string{}},
+		{name: "qwen embedding", domain: "embedding", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"embed_content"}},
+		{name: "qwen rerank", domain: "rerank", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"rerank_json"}},
+		{name: "qwen moderation 矩阵拒绝", domain: "moderation", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{}},
+		{name: "gemini embedding 暂缓", domain: "embedding", providerCode: "gemini", accountType: "api_key", profile: geminiNative, want: []string{}},
+		{name: "gemini moderation 暂缓", domain: "moderation", providerCode: "gemini", accountType: "api_key", profile: geminiNative, want: []string{}},
+		{name: "anthropic embedding 矩阵拒绝", domain: "embedding", providerCode: "anthropic", accountType: "api_key", profile: anthropicV1, want: []string{}},
 		{name: "gemini openai-chat+video 矩阵拒绝", domain: "video", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
 		{name: "gemini openai-chat+audio 矩阵拒绝", domain: "audio", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
 		{name: "gemini openai-chat+image 矩阵拒绝", domain: "image", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
@@ -190,16 +200,44 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 func TestDefaultHealthCheckEndpointModeForDomain(t *testing.T) {
 	// 对话域流式优先（chat_sse）；未知/空域同落 chat_sse。
 	cases := map[string]string{
-		"chat":  "chat_sse",
-		"image": "images_json",
-		"audio": "audio_speech",
-		"video": "video_create",
-		"bogus": "chat_sse",
-		"":      "chat_sse",
+		"chat":       "chat_sse",
+		"image":      "images_json",
+		"audio":      "audio_speech",
+		"video":      "video_create",
+		"embedding":  "embed_content",
+		"rerank":     "rerank_json",
+		"moderation": "moderation_json",
+		"bogus":      "chat_sse",
+		"":           "chat_sse",
 	}
 	for domain, want := range cases {
 		if got := DefaultHealthCheckEndpointModeForDomain(domain); got != want {
 			t.Fatalf("DefaultHealthCheckEndpointModeForDomain(%q) = %q, want %q", domain, got, want)
+		}
+	}
+}
+
+func TestDefaultEndpointModesForUtilityDomains(t *testing.T) {
+	gpt := capabilityAllowedPredicate("gpt", "openai", "v1", GptOpenAIV1ProfileID)
+	qwen := capabilityAllowedPredicate("qwen", "openai", "v1", QwenOpenAIV1ProfileID)
+	xai := capabilityAllowedPredicate("xai", "openai", "v1", XaiOpenAIV1ProfileID)
+	cases := []struct {
+		domain, provider string
+		profile          ProtocolPredicate
+		want             []string
+	}{
+		{CapabilityDomainEmbedding, "gpt", gpt, []string{"embed_content"}},
+		{CapabilityDomainModeration, "gpt", gpt, []string{"moderation_json"}},
+		{CapabilityDomainEmbedding, "qwen", qwen, []string{"embed_content"}},
+		{CapabilityDomainRerank, "qwen", qwen, []string{"rerank_json"}},
+		{CapabilityDomainRerank, "gpt", gpt, []string{}},
+		{CapabilityDomainModeration, "qwen", qwen, []string{}},
+		{CapabilityDomainEmbedding, "xai", xai, []string{}},
+	}
+	for _, tc := range cases {
+		got := DefaultEndpointModesForDomain(tc.domain, tc.provider, "api_key", tc.profile)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%s/%s default = %v, want %v", tc.provider, tc.domain, got, tc.want)
 		}
 	}
 }

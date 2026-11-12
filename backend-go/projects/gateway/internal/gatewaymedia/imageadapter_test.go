@@ -1,6 +1,7 @@
 package gatewaymedia
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -31,23 +32,41 @@ func TestIsImageGenerationPath(t *testing.T) {
 	}
 }
 
-func TestOpenAIImageAdapterPassthroughWithoutProviderOptions(t *testing.T) {
+func TestOpenAIImageAdapterPassthroughWithoutMetadata(t *testing.T) {
 	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat"}`)
-	got, err := BuildImageUpstreamRequest("gpt", raw)
+	result, err := BuildImageUpstreamRequestForPath("gpt", "/v1/images/generations", "application/json", raw)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if got != nil {
-		t.Fatalf("gpt without provider_options should preserve bytes, got %s", got)
+	if result.Body != nil {
+		t.Fatalf("gpt without metadata should preserve bytes, got %s", result.Body)
+	}
+}
+
+func TestImageMetadataNullTreatedAsAbsent(t *testing.T) {
+	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat","metadata":null}`)
+	result, err := BuildImageUpstreamRequestForPath("gpt", "/v1/images/generations", "application/json", raw)
+	if err != nil {
+		t.Fatalf("metadata null should be tolerated: %v", err)
+	}
+	if result.Body == nil {
+		t.Fatal("metadata null should be removed from wire body")
+	}
+	body := decodeImageTestBody(t, result.Body)
+	for _, key := range []string{"metadata", "provider_options"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s must not be forwarded: %s", key, result.Body)
+		}
 	}
 }
 
 func TestOpenAIImageAdapterIgnoresStreamParams(t *testing.T) {
 	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat","stream":true,"partial_images":1}`)
-	got, err := BuildImageUpstreamRequest("gpt", raw)
+	result, err := BuildImageUpstreamRequestForPath("gpt", "/v1/images/generations", "application/json", raw)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
+	got := result.Body
 	body := decodeImageTestBody(t, got)
 	for _, key := range []string{"stream", "partial_images"} {
 		if _, ok := body[key]; ok {
@@ -57,92 +76,105 @@ func TestOpenAIImageAdapterIgnoresStreamParams(t *testing.T) {
 	if body["model"] != "gpt-image-2" || body["prompt"] != "a cat" {
 		t.Fatalf("base params changed: %s", got)
 	}
-	echo := ImageEchoForRequest("gpt", decodeImageTestBody(t, raw))
 	for _, key := range []string{"stream", "partial_images"} {
-		if !imageTestContainsString(echo.ParamsIgnored, key) {
-			t.Fatalf("params ignored = %v, want %s", echo.ParamsIgnored, key)
+		if !imageTestContainsString(result.ParamsIgnored, key) {
+			t.Fatalf("params ignored = %v, want %s", result.ParamsIgnored, key)
 		}
 	}
 }
 
-func TestOpenAIImageAdapterMergesProviderOptions(t *testing.T) {
-	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat","provider_options":{"openai":{"quality":"high"},"xai":{"n":2}}}`)
-	got, err := BuildImageUpstreamRequest("gpt", raw)
+func TestOpenAIImageAdapterMergesMetadata(t *testing.T) {
+	raw := []byte(`{"model":"gpt-image-2","prompt":"a cat","metadata":{"quality":"high"}}`)
+	result := mustBuildImageForPath(t, "gpt", "/v1/images/generations", "application/json", raw)
+	body := decodeImageTestBody(t, result.Body)
+	if body["quality"] != "high" {
+		t.Fatalf("quality = %v, want high", body["quality"])
+	}
+	for _, key := range []string{"metadata", "provider_options"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s must not be forwarded: %s", key, result.Body)
+		}
+	}
+	if !imageTestContainsString(result.ProviderOptionsApplied, "quality") {
+		t.Fatalf("provider options applied = %v, want quality", result.ProviderOptionsApplied)
+	}
+}
+
+// 公开 provider_options 已退役，但 adapter 仍消费内部投影：直接调用 adapter
+// 验证 provider_options 子对象 deep-merge 语义未被移除。
+func TestOpenAIImageAdapterBuildMergesInternalProviderOptions(t *testing.T) {
+	adapter := openAIImageAdapter{}
+	result, err := adapter.Build(ParseImageRequest(map[string]any{
+		"model":            "gpt-image-2",
+		"prompt":           "a cat",
+		"provider_options": map[string]any{"openai": map[string]any{"quality": "high"}},
+	}, "gpt"))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	body := decodeImageTestBody(t, got)
+	body := decodeImageTestBody(t, result.Body)
 	if body["quality"] != "high" {
 		t.Fatalf("quality = %v, want high", body["quality"])
 	}
 	if _, ok := body["provider_options"]; ok {
-		t.Fatalf("provider_options must not be forwarded: %s", got)
+		t.Fatalf("provider_options must not be forwarded: %s", result.Body)
 	}
-	if _, ok := body["n"]; ok {
-		t.Fatalf("other provider subobject must be ignored: %s", got)
+	if !imageTestContainsString(result.ProviderOptionsApplied, "quality") {
+		t.Fatalf("provider options applied = %v, want quality", result.ProviderOptionsApplied)
 	}
 }
 
 func TestXaiImageAdapterIgnoresOpenAIOnlyParams(t *testing.T) {
-	raw := []byte(`{"model":"grok-imagine-image-2.0","prompt":"a cat","stream":true,"partial_images":2,"quality":"high","n":1,"size":"1024x1024","provider_options":{"xai":{"response_format":"url"}}}`)
-	got, err := BuildImageUpstreamRequest("xai", raw)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body := decodeImageTestBody(t, got)
-	for _, key := range []string{"stream", "partial_images", "quality", "provider_options"} {
+	raw := []byte(`{"model":"grok-imagine-image-2.0","prompt":"a cat","stream":true,"partial_images":2,"quality":"high","n":1,"size":"1024x1024","metadata":{"response_format":"url"}}`)
+	result := mustBuildImageForPath(t, "xai", "/v1/images/generations", "application/json", raw)
+	body := decodeImageTestBody(t, result.Body)
+	for _, key := range []string{"stream", "partial_images", "quality", "metadata", "provider_options"} {
 		if _, ok := body[key]; ok {
-			t.Fatalf("%s must be removed: %s", key, got)
+			t.Fatalf("%s must be removed: %s", key, result.Body)
 		}
 	}
 	if body["response_format"] != "url" || body["size"] != "1024x1024" {
-		t.Fatalf("documented params should pass through: %s", got)
+		t.Fatalf("documented params should pass through: %s", result.Body)
 	}
-	echo := ImageEchoForRequest("xai", decodeImageTestBody(t, raw))
+	echo := ImageEchoForPath("xai", "/v1/images/generations", "application/json", raw)
 	if !imageTestContainsString(echo.ParamsIgnored, "stream") || !imageTestContainsString(echo.ParamsIgnored, "quality") {
 		t.Fatalf("params ignored = %v, want stream/quality", echo.ParamsIgnored)
+	}
+	if echo.Metadata["response_format"] != "url" {
+		t.Fatalf("echo metadata = %#v, want response_format", echo.Metadata)
 	}
 }
 
 func TestVolcengineImageAdapterDefaultsWatermarkFalse(t *testing.T) {
-	raw := []byte(`{"model":"doubao-seedream-5-0-flash-260915","prompt":"a cat","quality":"high","stream":true,"provider_options":{"volcengine":{"sequential_image_generation":"disabled"}}}`)
-	got, err := BuildImageUpstreamRequest("volcengine", raw)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body := decodeImageTestBody(t, got)
+	raw := []byte(`{"model":"doubao-seedream-5-0-flash-260915","prompt":"a cat","quality":"high","stream":true,"metadata":{"sequential_image_generation":"disabled"}}`)
+	result := mustBuildImageForPath(t, "volcengine", "/v1/images/generations", "application/json", raw)
+	body := decodeImageTestBody(t, result.Body)
 	if body["watermark"] != false {
 		t.Fatalf("watermark = %v, want false", body["watermark"])
 	}
 	if body["sequential_image_generation"] != "disabled" {
-		t.Fatalf("provider option not merged: %s", got)
+		t.Fatalf("metadata not merged: %s", result.Body)
 	}
-	for _, key := range []string{"quality", "stream", "provider_options"} {
+	for _, key := range []string{"quality", "stream", "metadata", "provider_options"} {
 		if _, ok := body[key]; ok {
-			t.Fatalf("%s must be removed: %s", key, got)
+			t.Fatalf("%s must be removed: %s", key, result.Body)
 		}
 	}
 }
 
-func TestVolcengineImageAdapterProviderOptionsCanEnableWatermark(t *testing.T) {
-	raw := []byte(`{"model":"doubao-seedream-5-0-flash-260915","prompt":"a cat","provider_options":{"volcengine":{"watermark":true}}}`)
-	got, err := BuildImageUpstreamRequest("volcengine", raw)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body := decodeImageTestBody(t, got)
+func TestVolcengineImageAdapterMetadataCanEnableWatermark(t *testing.T) {
+	raw := []byte(`{"model":"doubao-seedream-5-0-flash-260915","prompt":"a cat","metadata":{"watermark":true}}`)
+	result := mustBuildImageForPath(t, "volcengine", "/v1/images/generations", "application/json", raw)
+	body := decodeImageTestBody(t, result.Body)
 	if body["watermark"] != true {
 		t.Fatalf("watermark = %v, want true", body["watermark"])
 	}
 }
 
 func TestQwenImageAdapterBuildsNativeRequest(t *testing.T) {
-	raw := []byte(`{"model":"qwen-image-3.0","prompt":"a cat","n":2,"size":"1024x1024","response_format":"b64_json","stream":true,"provider_options":{"qwen":{"negative_prompt":"blur","prompt_extend":false,"seed":42,"stream":true,"quality":"high"}}}`)
-	got, err := BuildImageUpstreamRequest("qwen", raw)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body := decodeImageTestBody(t, got)
+	raw := []byte(`{"model":"qwen-image-3.0","prompt":"a cat","n":2,"size":"1024x1024","response_format":"b64_json","stream":true,"metadata":{"negative_prompt":"blur","prompt_extend":false,"seed":42,"stream":true,"quality":"high"}}`)
+	result := mustBuildImageForPath(t, "qwen", "/v1/images/generations", "application/json", raw)
+	body := decodeImageTestBody(t, result.Body)
 	if body["model"] != "qwen-image-3.0" {
 		t.Fatalf("model = %v", body["model"])
 	}
@@ -168,17 +200,20 @@ func TestQwenImageAdapterBuildsNativeRequest(t *testing.T) {
 	}
 	for _, key := range []string{"stream", "quality"} {
 		if _, ok := parameters[key]; ok {
-			t.Fatalf("provider_options 内的 %s 也必须忽略: %#v", key, parameters)
+			t.Fatalf("metadata 内的 %s 也必须忽略: %#v", key, parameters)
 		}
 	}
-	echo := ImageEchoForRequest("qwen", decodeImageTestBody(t, raw))
+	echo := ImageEchoForPath("qwen", "/v1/images/generations", "application/json", raw)
 	if !imageTestContainsString(echo.ParamsIgnored, "response_format") || !imageTestContainsString(echo.ParamsIgnored, "stream") {
 		t.Fatalf("params ignored = %v, want response_format/stream", echo.ParamsIgnored)
+	}
+	if echo.Metadata["negative_prompt"] != "blur" {
+		t.Fatalf("echo metadata = %#v, want negative_prompt", echo.Metadata)
 	}
 }
 
 func TestQwenImageAdapterRequiresPrompt(t *testing.T) {
-	if _, err := BuildImageUpstreamRequest("qwen", []byte(`{"model":"qwen-image-3.0"}`)); err == nil {
+	if _, err := BuildImageUpstreamRequestForPath("qwen", "/v1/images/generations", "application/json", []byte(`{"model":"qwen-image-3.0"}`)); err == nil {
 		t.Fatal("qwen image without prompt should fail")
 	}
 }
@@ -230,32 +265,114 @@ func TestQwenImageTransformResponseWithoutImageFails(t *testing.T) {
 	}
 }
 
+// qwen 转换响应写请求 metadata 原值（仅非空时）；无 metadata 不产生该键。
+func TestQwenImageTransformResponseEchoesMetadata(t *testing.T) {
+	adapter := ImageAdapterForProvider("qwen")
+	upstream := []byte(`{"output":{"choices":[{"message":{"content":[{"image":"https://example.com/a.png"}]}}]},"usage":{"image_count":1}}`)
+	metadata := map[string]any{"negative_prompt": "blur", "seed": float64(42)}
+	transformed, err := adapter.TransformResponse(ImageRequest{Metadata: metadata}, upstream)
+	if err != nil {
+		t.Fatalf("transform: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(transformed, &out); err != nil {
+		t.Fatalf("decode transformed: %v", err)
+	}
+	echoed, _ := out["metadata"].(map[string]any)
+	if echoed["negative_prompt"] != "blur" || echoed["seed"] != float64(42) {
+		t.Fatalf("metadata = %#v, want request metadata", out["metadata"])
+	}
+	withoutMetadata, err := adapter.TransformResponse(ImageRequest{}, upstream)
+	if err != nil {
+		t.Fatalf("transform without metadata: %v", err)
+	}
+	var emptyOut map[string]any
+	if err := json.Unmarshal(withoutMetadata, &emptyOut); err != nil {
+		t.Fatalf("decode transformed: %v", err)
+	}
+	if _, ok := emptyOut["metadata"]; ok {
+		t.Fatalf("empty request metadata must not add key: %s", withoutMetadata)
+	}
+}
+
 func TestQwenImageAdapterSizeAutoIgnored(t *testing.T) {
 	raw := []byte(`{"model":"qwen-image-3.0","prompt":"a cat","size":"auto"}`)
-	got, err := BuildImageUpstreamRequest("qwen", raw)
+	result, err := BuildImageUpstreamRequestForPath("qwen", "/v1/images/generations", "application/json", raw)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	body := decodeImageTestBody(t, got)
+	body := decodeImageTestBody(t, result.Body)
 	parameters, _ := body["parameters"].(map[string]any)
 	if _, ok := parameters["size"]; ok {
 		t.Fatalf("qwen size=auto must be omitted: %#v", parameters)
 	}
-	echo := ImageEchoForRequest("qwen", decodeImageTestBody(t, raw))
-	if !imageTestContainsString(echo.ParamsIgnored, "size") {
-		t.Fatalf("size=auto should be params_ignored: %v", echo.ParamsIgnored)
+	if !imageTestContainsString(result.ParamsIgnored, "size") {
+		t.Fatalf("size=auto should be params_ignored: %v", result.ParamsIgnored)
 	}
-	if imageTestContainsString(echo.ParamsApplied, "size") {
-		t.Fatalf("size=auto must not be params_applied: %v", echo.ParamsApplied)
+	if imageTestContainsString(result.ParamsApplied, "size") {
+		t.Fatalf("size=auto must not be params_applied: %v", result.ParamsApplied)
 	}
 }
 
-func TestBuildImageUpstreamRequestRejectsNonObjectProviderOptions(t *testing.T) {
-	if _, err := BuildImageUpstreamRequest("gpt", []byte(`{"model":"gpt-image-2","prompt":"a cat","provider_options":{"gpt":"bad"}}`)); err == nil {
-		t.Fatal("non-object provider_options should fail")
+func TestBuildImageRequestForPathRejectsRetiredProviderOptions(t *testing.T) {
+	generation := []byte(`{"model":"gpt-image-2","prompt":"a cat","provider_options":{"gpt":{"quality":"high"}}}`)
+	for _, provider := range []string{"gpt", "xai", "volcengine", "qwen"} {
+		_, err := BuildImageUpstreamRequestForPath(provider, "/v1/images/generations", "application/json", generation)
+		if err == nil || !strings.Contains(err.Error(), "provider_options 已退役") {
+			t.Fatalf("%s generation provider_options error = %v, want retired hint", provider, err)
+		}
 	}
-	if _, err := BuildImageUpstreamRequest("qwen", []byte(`{"model":"qwen-image-3.0","prompt":"a cat","provider_options":[]}`)); err == nil {
-		t.Fatal("array provider_options should fail")
+	edit := []byte(`{"model":"gpt-image-2","prompt":"p","images":[{"image_url":"https://example.com/a.png"}],"provider_options":{"openai":{"quality":"high"}}}`)
+	for _, provider := range []string{"gpt", "xai", "volcengine", "qwen"} {
+		_, err := BuildImageUpstreamRequestForPath(provider, "/v1/images/edits", "application/json", edit)
+		if err == nil || !strings.Contains(err.Error(), "provider_options 已退役") {
+			t.Fatalf("%s edit provider_options error = %v, want retired hint", provider, err)
+		}
+	}
+}
+
+func TestBuildImageRequestForPathRejectsNonObjectMetadata(t *testing.T) {
+	cases := []string{
+		`{"model":"gpt-image-2","prompt":"a cat","metadata":"x"}`,
+		`{"model":"gpt-image-2","prompt":"a cat","metadata":[]}`,
+	}
+	for _, raw := range cases {
+		_, err := BuildImageUpstreamRequestForPath("gpt", "/v1/images/generations", "application/json", []byte(raw))
+		if err == nil || !strings.Contains(err.Error(), "metadata 必须是 JSON 对象") {
+			t.Fatalf("metadata case %s error = %v, want object hint", raw, err)
+		}
+	}
+	edit := []byte(`{"model":"gpt-image-2","prompt":"p","images":[{"image_url":"https://example.com/a.png"}],"metadata":"x"}`)
+	if _, err := BuildImageUpstreamRequestForPath("gpt", "/v1/images/edits", "application/json", edit); err == nil ||
+		!strings.Contains(err.Error(), "metadata 必须是 JSON 对象") {
+		t.Fatalf("edit metadata error = %v, want object hint", err)
+	}
+}
+
+// metadata 的投影键是 adapter 注册键（gpt → openai），且 metadata 不留在
+// 归一后的 body 中。
+func TestNormalizeImageMetadataBodyProjectsToAdapterProviderKey(t *testing.T) {
+	normalized, metadata, err := normalizeImageMetadataBody("gpt",
+		[]byte(`{"model":"x","prompt":"p","metadata":{"quality":"high"}}`))
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if metadata["quality"] != "high" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	body := decodeImageTestBody(t, normalized)
+	if _, ok := body["metadata"]; ok {
+		t.Fatalf("metadata must be removed: %s", normalized)
+	}
+	options, _ := body["provider_options"].(map[string]any)
+	if _, ok := options["openai"]; !ok {
+		t.Fatalf("provider_options = %#v, want openai key", body["provider_options"])
+	}
+	// 无 metadata 时保持原始字节（零改写）。
+	original := []byte(`{"model":"x","prompt":"p"}`)
+	unchanged, absent, err := normalizeImageMetadataBody("gpt", original)
+	if err != nil || absent != nil || !bytes.Equal(unchanged, original) {
+		t.Fatalf("zero rewrite failed: body=%s metadata=%#v err=%v", unchanged, absent, err)
 	}
 }
 

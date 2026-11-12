@@ -383,7 +383,8 @@ func TestW10BHotSearchArms(t *testing.T) {
 
 func TestW10BNormalizeRetentionAndHelperArms(t *testing.T) {
 	// normalizeRetentionConfig 错误臂。
-	base := RetentionConfig{SuccessHotCutoff: time.Now(), SuccessCutoff: time.Now(), FailureCutoff: time.Now(), ErrorGroupCutoff: time.Now()}
+	now := time.Now()
+	base := RetentionConfig{SuccessHotCutoff: now, SuccessCutoff: now, FailureCutoff: now, ErrorGroupCutoff: now}
 	if _, err := normalizeRetentionConfig(RetentionConfig{}); err == nil {
 		t.Fatal("零 cutoff 必须拒绝")
 	}

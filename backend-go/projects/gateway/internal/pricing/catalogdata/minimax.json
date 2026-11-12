@@ -20,12 +20,21 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 文生/图生视频 768P-6s 2.00 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 核对；此前落国际站 $0.28 明文，按国内口径回正），按约定汇率 7.0 换算 $0.2857/条（2÷7.0）；768P-10s 4.00 元、1080P-6s 3.50 元留档；Hailuo-2.3-Fast 已单独补录（见该行）",
+      "sourcePricingNote": "官方人民币价 文生/图生视频 768P-6s 2.00 元/条 主档、768P-10s 4.00 元/条、1080P-6s 3.50 元/条（platform.minimax.cn 定价概览 历史模型行，2026-10-17 核对、2026-11-13 复核；1080P 仅 6s，720P 对 2.3 不可用），按约定汇率 7.0 换算 $0.2857/$0.5714/$0.5；Hailuo-2.3-Fast 已单独补录（见该行）",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerCall": 0.2857142857142857
+      "videoOutputCostPerCall": 0.2857142857142857,
+      "videoOutputCostPerCallBySeconds": {
+        "6": 0.2857142857142857,
+        "10": 0.5714285714285714
+      },
+      "videoOutputCostPerCallByResolutionSeconds": {
+        "768p-6": 0.2857142857142857,
+        "768p-10": 0.5714285714285714,
+        "1080p-6": 0.5
+      }
     },
     {
       "catalogOrder": 9,
@@ -47,12 +56,56 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 图生视频 768P-6s 1.35 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 补录），按约定汇率 7.0 换算 $0.19286/条（1.35÷7.0）；768P-10s 2.25 元、1080P-6s 2.31 元留档",
+      "sourcePricingNote": "官方人民币价 图生视频 768P-6s 1.35 元/条 主档、768P-10s 2.25 元、1080P-6s 2.31 元（platform.minimax.cn 定价概览 历史模型行，2026-10-17 补录、2026-11-13 复核；1080P 仅 6s），按约定汇率 7.0 换算 $0.19286/$0.3214/$0.33",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerCall": 0.19285714285714287
+      "videoOutputCostPerCall": 0.19285714285714287,
+      "videoOutputCostPerCallBySeconds": {
+        "6": 0.19285714285714287,
+        "10": 0.32142857142857145
+      },
+      "videoOutputCostPerCallByResolutionSeconds": {
+        "768p-6": 0.19285714285714287,
+        "768p-10": 0.32142857142857145,
+        "1080p-6": 0.33
+      }
+    },
+    {
+      "cacheReadInputTokenCost": 1.4285714285714286e-08,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1.4285714285714286e-07,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 524288,
+      "mode": "chat",
+      "model": "MiniMax-M3.1-Flash",
+      "outputCostPerToken": 5.714285714285714e-07,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-11-13",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 1.00/4.00 元、缓存读 0.10 元每百万 tokens（platform.minimax.cn 定价概览，2026-11-13 核对；platform.minimax.io Model List 标 1M context、frontier multimodal coding model），按约定汇率 7.0 换算 $0.142857/$0.571429/$0.014286；maxOutputTokens 524288 取自 tokenrhythm 中转模型列表（官方 FAQ 未列最大值），发布日官方未给留空",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
     },
     {
       "cacheReadInputTokenCost": 6e-08,
@@ -312,12 +365,16 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 $0.08 明文，按国内口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；2K 0.80 元/秒留档；输入素材：图片 5 张内免费/超出 0.20 元/张，视频输入按生成分辨率秒价计费",
+      "sourcePricingNote": "官方人民币价 H3 按输出分辨率分档：768P 0.50、2K 0.80 元/秒（platform.minimax.cn 定价概览，2026-11-13 复核），主档 768P 按约定汇率 7.0 换算 $0.07143/秒、2K $0.11429/秒；输入素材：图片 5 张内免费/超出 0.20 元/张，视频输入按生成分辨率秒价计费（统一入口仅支持首帧 1 张，落在免费额度内，扩展面待做）",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.07142857142857142
+      "videoOutputCostPerSecond": 0.07142857142857142,
+      "videoOutputCostPerSecondByResolution": {
+        "768p": 0.07142857142857142,
+        "2k": 0.11428571428571428
+      }
     },
     {
       "catalogOrder": 11,
@@ -339,12 +396,16 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 480P 档 $0.05 折算，按国内 768P 主档口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；480P 0.33 元/秒低档留档；输入素材：图片 2 张内免费/超出 0.50 元/张",
+      "sourcePricingNote": "官方人民币价 H3-Max 按输出分辨率分档：768P 0.50、480P 0.33 元/秒（platform.minimax.cn 定价概览，2026-11-13 复核），主档 768P 按约定汇率 7.0 换算 $0.07143/秒、480P $0.04714/秒；输入素材：图片 2 张内免费/超出 0.50 元/张，输入视频 768P 0.97、480P 0.37 元/秒（统一入口仅支持首帧 1 张，输入视频面未开放，扩展面待做）",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.07142857142857142
+      "videoOutputCostPerSecond": 0.07142857142857142,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.04714285714285714,
+        "768p": 0.07142857142857142
+      }
     },
     {
       "catalogOrder": 12,

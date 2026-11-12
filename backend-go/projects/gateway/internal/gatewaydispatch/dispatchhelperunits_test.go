@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -1326,6 +1327,31 @@ func TestGatewayRequestEndpointFamilyVariants(t *testing.T) {
 	queryReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions?beta=true", nil))
 	if family := GatewayRequestEndpointFamily(queryReq); family != gatewayrouting.EndpointFamilyChatCompletions {
 		t.Fatalf("query family = %q", family)
+	}
+	// B7 工具端点族：embedding/rerank/moderation，子路径同族。
+	for path, want := range map[string]string{
+		"/v1/embeddings":            gatewayrouting.EndpointFamilyEmbedContent,
+		"/v1/embeddings/multimodal": gatewayrouting.EndpointFamilyEmbedContent,
+		"/v1/rerank":                gatewayrouting.EndpointFamilyRerank,
+		"/v1/moderations":           gatewayrouting.EndpointFamilyModeration,
+	} {
+		req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, path, nil))
+		if family := GatewayRequestEndpointFamily(req); family != want {
+			t.Fatalf("%s family = %q, want %q", path, family, want)
+		}
+	}
+	// 媒体创建族：视频归 video_generation、语音归 tts；长音频通用任务面无
+	// 模型映射族（旧 /audio/jobs 与 New API /tasks/audio 同为空族）。
+	for path, want := range map[string]string{
+		"/v1/video/generations": gatewayopenai.FamilyVideoGeneration,
+		"/v1/audio/speech":      gatewayopenai.FamilyTts,
+		"/v1/tasks/audio":       "",
+		"/v1/audio/jobs":        "",
+	} {
+		req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, path, nil))
+		if family := GatewayRequestEndpointFamily(req); family != want {
+			t.Fatalf("%s family = %q, want %q", path, family, want)
+		}
 	}
 }
 

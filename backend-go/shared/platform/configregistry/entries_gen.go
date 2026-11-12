@@ -57,6 +57,7 @@ func init() {
 	register(Entry{Name: "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS", Process: []string{"gateway"}})
+	register(Entry{Name: "JUHE_AI_GATEWAY_PUBLIC_BASE_URL", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL", Process: []string{"gateway"}})
 	register(Entry{Name: "JUHE_AI_HOST", Process: []string{"gateway"}})

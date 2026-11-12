@@ -17,6 +17,8 @@ func TestServeImagesScenarios(t *testing.T) {
 		{ScenarioMediaImagesB64OK, `"b64_json":"bW9jay1iNjQ="`},
 		{ScenarioMediaImagesNoImage, `"data":[]`},
 		{ScenarioMediaImagesRelayModelMismatch, `"model":"grok-imagine-image-2.0"`},
+		{ScenarioMediaImagesEditOK, `"url":"https://mock-images.example/generated/edit-0001.png"`},
+		{ScenarioMediaImagesEditNoImage, `"data":[]`},
 		{ScenarioMediaXaiImageOK, `"mime_type":"image/png"`},
 		{ScenarioMediaXaiImageNoImage, `"data":[]`},
 		{ScenarioMediaVolcengineImageOK, `"generated_images":1`},
@@ -39,12 +41,32 @@ func TestServeImagesScenarios(t *testing.T) {
 func TestImageMediaEndpointWhitelist(t *testing.T) {
 	for _, path := range []string{
 		"/v1/images/generations",
+		"/v1/images/edits",
 		"/api/v3/images/generations",
 		"/api/v1/services/aigc/multimodal-generation/generation",
 	} {
 		if !acceptsMediaEndpoint(http.MethodPost, path) {
 			t.Errorf("image endpoint %s not accepted", path)
 		}
+	}
+	if acceptsMediaEndpoint(http.MethodGet, "/v1/images/edits") {
+		t.Error("GET /v1/images/edits must not be accepted")
+	}
+}
+
+// TestServeImagesEditEndpointDispatch 验证 /v1/images/edits 经引擎分派到
+// serveImages 并返回编辑 OK 载荷（2026-11-12 T216 mock 契约）。
+func TestServeImagesEditEndpointDispatch(t *testing.T) {
+	server := New()
+	defer server.Close()
+	code, _, body := doMedia(t, server.Server, http.MethodPost, "/v1/images/edits",
+		string(ScenarioMediaImagesEditOK), "multipart/form-data; boundary=BOUNDARY",
+		[]byte("--BOUNDARY\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-image-2\r\n--BOUNDARY--\r\n"))
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	if !strings.Contains(string(body), "edit-0001.png") {
+		t.Fatalf("body = %s, want edit-0001.png", body)
 	}
 }
 

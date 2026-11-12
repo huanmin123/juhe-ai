@@ -3,7 +3,7 @@
 // "gemini" 条目）。报文依据契约 §5.2（置信度 B：多源确认）：创建
 // POST /v1beta/models/{model}:predictLongRunning（body
 // {instances,parameters}），受理凭据 = 响应 name 字段
-//（"models/<model>/operations/<op_id>"）；轮询 GET /v1beta/{name} →
+// （"models/<model>/operations/<op_id>"）；轮询 GET /v1beta/{name} →
 // operation 对象（done/error/response.generateVideoResponse.
 // generatedSamples[].video.uri，uri 为 GCS 签名 URL 约 2 天时效、直连下载
 // 无凭据）；取消 POST /v1beta/{name}:cancel。URL 前缀按账户 base_url +
@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -31,7 +32,9 @@ func (veoVideoAdapter) Provider() string { return "gemini" }
 //     图生视频首帧 → true，但仅支持 base64/data URL 直传（url 形态不做下载，
 //     零存储，Create 内 400）；
 //   - SupportsSeconds/SupportsN/SupportsSeed/SupportsAudio：请求面无对应
-//     字段 → false（忽略 + 回显 params_ignored，契约 §2.4 规则 1）。
+//     字段 → false（忽略 + 回显 params_ignored，契约 §2.4 规则 1）；
+//   - DefaultSeconds：Veo 3 系未指定时长时按 8 秒输出（契约 §2.8.2/§5.2），
+//     作为按秒计价的计费基源，不写入上游报文。
 func (veoVideoAdapter) Capabilities() VideoCapabilities {
 	return VideoCapabilities{
 		SupportsNegativePrompt: true,
@@ -40,6 +43,7 @@ func (veoVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        false,
+		DefaultSeconds:         8,
 	}
 }
 
@@ -102,6 +106,44 @@ func veoInputReferenceBase64(reference string) (string, error) {
 	return trimmed, nil
 }
 
+// veoBillingProviderOptionKeysOf 返回 provider_options.gemini 子对象中改变
+// 计费数量/时长的字段路径（durationSeconds / sampleCount，含嵌套 parameters
+// 层）。计费基源在创建计划按顶层参数冻结，L3 覆盖必须 400 而不是静默丢弃。
+func veoBillingProviderOptionKeysOf(opts map[string]any) []string {
+	if len(opts) == 0 {
+		return nil
+	}
+	for key, value := range opts {
+		if !providerOptionKeyMatches("gemini", key) {
+			continue
+		}
+		sub, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		var found []string
+		walkVeoBillingProviderOptionKeys(sub, "", &found)
+		sort.Strings(found)
+		return found
+	}
+	return nil
+}
+
+func walkVeoBillingProviderOptionKeys(value map[string]any, prefix string, found *[]string) {
+	for key, item := range value {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if key == "durationSeconds" || key == "sampleCount" {
+			*found = append(*found, path)
+		}
+		if nested, ok := item.(map[string]any); ok {
+			walkVeoBillingProviderOptionKeys(nested, path, found)
+		}
+	}
+}
+
 // Create 构造契约 §5.2 创建报文：POST
 // /v1beta/models/{model}:predictLongRunning，body 为
 // {instances:[{prompt,image?}],parameters:{aspectRatio?,resolution?,
@@ -141,6 +183,14 @@ func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	}
 	if len(parameters) > 0 {
 		body["parameters"] = parameters
+	}
+	// 计费字段封禁（2026-11-13 T219）：durationSeconds / sampleCount 改变
+	// 实际产出时长与段数，而计费基源已在创建计划按顶层 seconds（Veo 不支持
+	// → 厂商默认 8 秒）与 n 冻结；允许 L3 覆盖会造成产出与计费不一致。
+	// 顶层已有 seconds/n 表达通道，命中即 400（fail-closed，不静默丢弃）。
+	if keys := veoBillingProviderOptionKeysOf(in.ProviderOptions); len(keys) > 0 {
+		return VideoCreateOutput{}, fmt.Errorf("%w: provider_options.gemini 不得覆盖计费字段 %s（请使用顶层 seconds/n，网关按顶层参数冻结计费基源）",
+			ErrParamUnsupported, strings.Join(keys, ","))
 	}
 	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
 	encoded, err := json.Marshal(body)
@@ -225,8 +275,9 @@ type veoOperationError struct {
 //     不猜测产物可达性。
 //
 // usage：Veo operation 响应不回报输出秒数，且 seconds 属 ignored 参数
-// （Capabilities）不构成计量基源——不填 OutputVideoSeconds，终态计费由
-// 链上按契约 §2.8 兜底（0 计费 + usage_missing 标记，不猜测）。
+// （Capabilities）不构成计量基源——adapter 不填 OutputVideoSeconds；终态
+// 计费由链上按 Capabilities.DefaultSeconds（Veo 3 系默认 8 秒）冻结的计费
+// 秒数基源结算（契约 §2.8.2），不再落 0。
 func (veoVideoAdapter) ParsePollResponse(statusCode int, body []byte) (*MediaJobIR, error) {
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, &UpstreamStatusError{StatusCode: statusCode, Body: string(body)}

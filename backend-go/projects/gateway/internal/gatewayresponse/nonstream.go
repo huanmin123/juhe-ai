@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +46,9 @@ type NonStreamPipeResult struct {
 	CaptureTruncated        bool
 	FullyBuffered           bool
 	InspectionLimitExceeded bool
+	// DownstreamGone 表示写下游失败（客户端断开）：管道已停止写入并继续读
+	// 完上游，usage 仍可从完整响应体抽取（2026-11-12 计费漏记修复）。
+	DownstreamGone bool
 }
 
 // NonStreamPipeInput 对齐 pipeNonStreamUpstreamResponse 的入参子集。
@@ -75,12 +81,16 @@ type NonStreamPipeInput struct {
 	// :305 双管线——纯透传管线 true、检查管线 false）。
 	OnFirstByteDeadlineSuperseded func()
 	Signal                        interface{ Done() <-chan struct{} }
-	PrepareDownstream             func()
-	OnChunkRead                   func(chunk []byte)
-	OnChunkWritten                func(bytesWritten int64)
-	OnBodyCompleted               func(transferredBytes int64)
-	OnFirstByte                   func()
-	NowMs                         func() int64
+	// ClientSignal 是原始客户端请求的 Done 通道（已脱钩的上游 Signal 不会
+	// 因客户端断开取消）：断连瞬间标记 DownstreamGone 并启动 drain 预算，
+	// 不依赖首次写失败。nil = 未装配。
+	ClientSignal      interface{ Done() <-chan struct{} }
+	PrepareDownstream func()
+	OnChunkRead       func(chunk []byte)
+	OnChunkWritten    func(bytesWritten int64)
+	OnBodyCompleted   func(transferredBytes int64)
+	OnFirstByte       func()
+	NowMs             func() int64
 }
 
 // PipeNonStreamUpstreamResponse 对齐 pipeNonStreamUpstreamResponse /
@@ -111,6 +121,9 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 	var firstByteMs *int64
 	transferred := int64(0)
 	committedAny := false
+	// downstreamGone：写下游失败（客户端断开）后停止写入并继续读完上游，
+	// usage 仍从完整/已捕获正文抽取（2026-11-12 计费漏记修复）。
+	downstreamGone := false
 	inspectionMode := input.InspectBytes > 0
 	bufferOverflow := false
 	// 检查窗口内的原始分片缓冲（整分片保存，超限冲刷时不丢跨界分片的
@@ -129,6 +142,10 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		}
 	}
 	writeThrough := func(chunk []byte) error {
+		if downstreamGone {
+			// 客户端已断开：继续读上游（调用方持有 body），但不再写下游。
+			return nil
+		}
 		if !committedAny && input.PrepareDownstream != nil {
 			committedAny = true
 			input.PrepareDownstream()
@@ -136,10 +153,14 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		written, err := input.Downstream.Res.Write(chunk)
 		FlushGateway(input.Downstream.Res)
 		transferred += int64(written)
+		if err != nil {
+			downstreamGone = true
+			return nil
+		}
 		if input.OnChunkWritten != nil {
 			input.OnChunkWritten(int64(written))
 		}
-		return err
+		return nil
 	}
 	partialFailure := func(original error) (NonStreamPipeResult, error) {
 		result.TransferredBytes = transferred
@@ -149,6 +170,7 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		result.DiagnosticBodyText, _ = capture.ToDiagnosticText()
 		result.UsageTailText, _ = usageTail.Text()
 		result.CaptureTruncated = capture.IsTruncated()
+		result.DownstreamGone = downstreamGone
 		return result, &NonStreamBodyPipeError{OriginalError: original, PartialResult: partialResultOf(result)}
 	}
 
@@ -165,6 +187,32 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		// body.ts:169）。
 		racedChunk, racedDone, racedErr = raceFirstNonStreamChunkWithDeadline(input, !inspectionMode, nowMs)
 		deadlineRaced = true
+	}
+
+	// 原始客户端断开 / drain 预算：上游 Signal 已脱钩，客户端断开不再体现为
+	// Signal 取消；此处监听原始请求 Done，断连即标记 DownstreamGone 并从该
+	// 时刻起算 30s 预算，避免上游长正文无限占用并发槽。
+	var clientDone <-chan struct{}
+	if input.ClientSignal != nil {
+		clientDone = input.ClientSignal.Done()
+	}
+	var drainTimer <-chan time.Time
+	nextChunk := func() (ChunkResult, bool, error) {
+		for {
+			if downstreamGone && drainTimer == nil {
+				drainTimer = time.After(time.Duration(ClientGoneDrainBudgetMs) * time.Millisecond)
+			}
+			select {
+			case <-clientDone:
+				clientDone = nil
+				downstreamGone = true
+				continue
+			case <-drainTimer:
+				return ChunkResult{}, false, errClientGoneDrainBudget
+			case chunkResult, ok := <-input.Body.Next():
+				return chunkResult, ok, nil
+			}
+		}
 	}
 
 	for {
@@ -186,7 +234,11 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 			chunkResult = racedChunk
 		} else {
 			var ok bool
-			chunkResult, ok = <-input.Body.Next()
+			var readErr error
+			chunkResult, ok, readErr = nextChunk()
+			if readErr != nil {
+				return partialFailure(readErr)
+			}
 			if !ok {
 				break
 			}
@@ -251,6 +303,7 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		result.UsageTailText = text
 	}
 	result.CaptureTruncated = capture.IsTruncated()
+	result.DownstreamGone = downstreamGone
 	if inspectionMode && !bufferOverflow {
 		// 完整缓冲：不写下游，由调用方检查后发送（res.send(completeBody)）。
 		result.FullyBuffered = true
@@ -495,6 +548,11 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	// provider lies about content-type（Node nonStreamJsonProtocolValidationAllowed）。
 	protocolValidationEnabled := transportResponseSuccessful &&
 		nonStreamJsonProtocolValidationAllowed(input, responseEndpointFamily)
+	// B7 工具端点（embeddings/rerank/moderations）的成功响应可能很大（批量
+	// embeddings 的 data 数组可远超 1 MiB）。协议校验窗口内仍完整缓冲并做
+	// 结构校验；超过窗口时转透传，不按“未验证正文”整单 502——否则合法批量
+	// 向量请求会稳定失败。超限后不做结构校验，但保留 2xx 成功结算。
+	streamableUtilityResponse := isUtilityResponsePath(input.Req.PathAndQuery())
 
 	var pipeResult NonStreamPipeResult
 	var pipeErr error
@@ -541,11 +599,12 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			(isOpenAIJSONResponseContentType(input.UpstreamResponse.Header.Get("Content-Type")) &&
 				shouldBufferNonStreamJSONResponse(input))
 		pipeSpec := NonStreamPipeInput{
-			Body:        input.UpstreamResponse.Body,
-			Downstream:  input.Downstream,
-			StartedAtMs: input.StartedAtMs,
-			CaptureBody: !input.UpstreamResponse.OK() || input.AuditCapture.ShouldCaptureSuccessPayloads() || responseEndpointFamily == gatewayproto.EndpointFamilyResponses,
-			Signal:      input.Signal,
+			Body:         input.UpstreamResponse.Body,
+			Downstream:   input.Downstream,
+			StartedAtMs:  input.StartedAtMs,
+			CaptureBody:  !input.UpstreamResponse.OK() || input.AuditCapture.ShouldCaptureSuccessPayloads() || responseEndpointFamily == gatewayproto.EndpointFamilyResponses,
+			Signal:       input.Signal,
+			ClientSignal: clientSignalOf(input.ClientCtx),
 			PrepareDownstream: func() {
 				prepareUpstreamResponseForDownstream(input.Downstream, input.UpstreamResponse, false)
 				input.DownstreamCommitState.MarkTransportCommitted(0)
@@ -590,8 +649,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				pipeSpec.RequireFullyBuffered = true
 			} else {
 				pipeSpec.InspectBytes = NonStreamResponseInspectionMaxBytes
-				// Node requireFullyBuffered: protocolValidationEnabled。
-				pipeSpec.RequireFullyBuffered = protocolValidationEnabled
+				// Node requireFullyBuffered: protocolValidationEnabled。工具端点
+				// 允许窗口溢出后转透传（批量 embeddings 合法大响应）。
+				pipeSpec.RequireFullyBuffered = protocolValidationEnabled && !streamableUtilityResponse
 			}
 		}
 		pipeResult, pipeErr = PipeNonStreamUpstreamResponse(pipeSpec)
@@ -599,6 +659,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	if pipeErr != nil {
 		return input.handleNonStreamPipeError(pipeErr)
 	}
+	// 客户端断开后管道已继续读完上游（写失败不再抛错）：最终响应仍按失败
+	// 收口，但 usage 从完整/已捕获正文抽取，避免上游已计费却记 0。
+	downstreamGone := pipeResult.DownstreamGone
 
 	// 同步图像原生响应转换（qwen）：完整缓冲后把 DashScope multimodal-generation
 	// 响应转为 OpenAI Images。转换成功继续走普通发送路径，usage/审计消费转换后
@@ -649,12 +712,14 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	// 完整缓冲与协议校验的提交契约（finalization.ts:1007-1086）：
 	// - 协议校验开启且超过验证窗口：管道已停止转发，按“拒绝透传未验证正文”
 	//   以 502 协议诊断收尾（validateBufferedJsonProtocolResponse 的
-	//   protocolValidationLimitExceeded 分支）。
+	//   protocolValidationLimitExceeded 分支）。B7 工具端点例外：窗口溢出后
+	//   转透传，不整单拒绝（合法批量 embeddings 响应可远超窗口），超限时跳过
+	//   结构校验但保留 2xx 成功结算。
 	// - 协议校验开启且完整缓冲：校验通过后发送完整正文（res.send(downstreamBody)）。
 	// - 协议校验关闭但完整缓冲（上游 4xx/5xx 错误体、策略要求缓冲的小 2xx）：
 	//   原样发送缓冲正文，客户端收到上游状态与正文（D-108 空 200 修复）。
 	// - 非必需缓冲超限：管道已边转发，仅记录检查省略告警。
-	if protocolValidationEnabled && pipeResult.InspectionLimitExceeded {
+	if protocolValidationEnabled && pipeResult.InspectionLimitExceeded && !streamableUtilityResponse {
 		parsedForValidation := ParseGatewayNonStreamJsonBody(responseBodyText, len(responseBodyText) > 0, input.UpstreamResponse.Header)
 		// limitExceeded=true 时 ValidateBufferedJsonProtocolResponse 必返回失败。
 		failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, true, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery()))
@@ -701,10 +766,13 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				},
 				NowMs: nowMsOf(&input),
 			}
-			if err := SendFullyBufferedNonStreamBody(forwardInput, audio); err != nil {
-				return UpstreamResponseHandlingResult{}, err
+			if !downstreamGone {
+				if err := SendFullyBufferedNonStreamBody(forwardInput, audio); err != nil {
+					downstreamGone = true
+				} else {
+					markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
+				}
 			}
-			markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
 			// 转换成功：usage（gemini usageMetadata token 计量）从缓冲 JSON
 			// 抽取，媒体计量（TTS 字符数）在下方统一注入。
 			responseBodyText = pipeResult.CapturedBodyText
@@ -712,7 +780,7 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	}
 	// 媒体转换分支已发送音频字节并 return/或仅覆盖 responseBodyText；原
 	// JSON 发送路径对 media 请求跳过（不重复发送缓冲 JSON）。
-	if pipeResult.FullyBuffered && !mediaSpeechTransform.active {
+	if pipeResult.FullyBuffered && !mediaSpeechTransform.active && !downstreamGone {
 		// 检查策略主链（D-112）：完整缓冲 JSON 先跑响应检查策略（含 codex
 		// 契约帧），命中时由此收尾（失败改写或服务端换号重试）；未命中回退
 		// 协议校验与原样发送。
@@ -781,9 +849,10 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			NowMs: nowMsOf(&input),
 		}
 		if err := SendFullyBufferedNonStreamBody(forwardInput, pipeResult.CapturedBody); err != nil {
-			return UpstreamResponseHandlingResult{}, err
+			downstreamGone = true
+		} else {
+			markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
 		}
-		markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
 	} else if pipeResult.InspectionLimitExceeded {
 		input.logger().Warn("gateway_non_stream_response_inspection_omitted", map[string]any{
 			"accountId":        input.Account.GetID(),
@@ -810,8 +879,12 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		}
 	}
 	if parsedJsonBody.Status == NonStreamJSONStatusValid {
-		usage = driver.ExtractUsageFromJSONValue(parsedJsonBody.Value)
-	} else if pipeResult.UsageTailText != "" {
+		if transportResponseSuccessful {
+			// 2026-11-12 裁决：非 2xx 错误响应体不解析 usage；失败尝试的
+			// token/成本只看流式可见输出或已观测 usage，否则记 0。
+			usage = driver.ExtractUsageFromJSONValue(parsedJsonBody.Value)
+		}
+	} else if transportResponseSuccessful && pipeResult.UsageTailText != "" {
 		usage = driver.ExtractUsageFromJSONTextFragment(pipeResult.UsageTailText, parsedJsonBody.Status == NonStreamJSONStatusInvalid)
 	}
 	// 2026-11-07 跨协议桥退役：原 DD-C6（T86）非流式桥接 usage 快照消费臂随
@@ -868,13 +941,16 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			usage.TtsInputChars = &chars
 			// token 口径 TTS（gpt-4o-mini-tts / gpt-4o-tts 系）：上游
 			// 二进制响应无 usage 回报，网关无 token 自算维度（字符自算
-			// 只服务 tts-1 族字符口径）→ 0 计费 + usage_missing（§2.8
-			// 不猜测；沿 STT 的置位先例）。gemini TTS（generateContent
+			// 只服务 tts-1 族字符口径）→ 按次固定价兜底（2026-11-12 用户
+			// 裁决：不解析音频、不估算 token，但账单不空着）；usage_missing
+			// 仍置位以记录“上游无 usage”事实。gemini TTS（generateContent
 			// JSON）usageMetadata 沿既有抽取链，不命中本词表。
 			speechModel, _ := speechBody["model"].(string)
 			if usage.InputTokens == nil && usage.OutputTokens == nil &&
 				gatewaymedia.IsTokenMeteredSpeechModel(speechModel) {
 				usage.UsageMissing = true
+				calls := int64(1)
+				usage.TtsCalls = &calls
 			}
 		case gatewaymedia.IsTranscriptionPath(requestPath):
 			if usage.InputTokens == nil && usage.OutputTokens == nil {
@@ -887,6 +963,20 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				} else {
 					usage.UsageMissing = true
 				}
+			}
+		case gatewaymedia.IsImagePath(requestPath):
+			// 图像像素档（2026-11-12 档位批）：请求 size W×H 是输出像素档的
+			// 计费事实（如 Seedream 5.0 Pro ≤2.61M/>2.61M 两张价）；解析失败
+			// 或未带 size 保持 nil，结算回落目录主档价。
+			if usage.OutputImageCount != nil {
+				if pixels, ok := imageRequestPixels(input.Req); ok {
+					usage.OutputImagePixels = &pixels
+				}
+			}
+			// 输入图按张（2026-11-12 输入素材批）：请求 image（字符串或数组）
+			// 计数；厂商首张/前 N 张免费在计价层扣减。
+			if count, ok := imageRequestInputCount(input.Req); ok {
+				usage.InputImageCount = &count
 			}
 		}
 	}
@@ -905,7 +995,14 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			Message: "上游 Responses 返回失败终态",
 		}
 	}
-	forwardedResponseSuccessful := transportResponseSuccessful && !responsesFailedTerminal
+	if downstreamGone {
+		// 客户端断开优先：上游已给出的 usage 保留，错误面固定 client_canceled。
+		errorPayload = gatewayproto.ErrorPayload{
+			Code:    ClientCanceledErrorCode,
+			Message: DownstreamConnectionClosedMessage,
+		}
+	}
+	forwardedResponseSuccessful := transportResponseSuccessful && !responsesFailedTerminal && !downstreamGone
 
 	// 图像 JSON 正文省略。
 	var bodyOmission *StreamBodyOmissionSummary
@@ -929,22 +1026,32 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		responseBody = secPolOriginalBody
 		responseBodyText = string(pipeResult.CapturedBody)
 	}
+	errorPhase := errorPhaseFor(forwardedResponseSuccessful)
+	if downstreamGone {
+		errorPhase = "downstream"
+	}
 	input.AuditCapture.CompleteAttempt(input.AuditAttemptID, AttemptAuditInput{
 		StatusCode:      input.UpstreamResponse.Status,
 		ResponseHeaders: input.UpstreamResponse.Header,
 		ResponseBody:    responseBody,
 		Success:         forwardedResponseSuccessful,
-		ErrorPhase:      errorPhaseFor(forwardedResponseSuccessful),
+		ErrorPhase:      errorPhase,
 		ErrorCode:       errorPayload.Code,
 		ErrorMessage:    errorPayload.Message,
 	})
 
-	protocolValidated := forwardedResponseSuccessful && ProtocolValidatedNonStreamResponse(
+	protocolValidated := forwardedResponseSuccessful && (ProtocolValidatedNonStreamResponse(
 		parsedJsonBody,
 		input.UpstreamResponse.Status,
 		string(responseEndpointFamily),
 		LowercasedRequestPath(input.Req.PathAndQuery()),
-	)
+	) || (streamableUtilityResponse && pipeResult.InspectionLimitExceeded))
+	// 链面只消费 client_canceled 这一稳定码做中性结算；上游错误体 code 由
+	// 上游可控，不透传到 handling 的分类面。
+	handlingErrorCode := ""
+	if downstreamGone {
+		handlingErrorCode = ClientCanceledErrorCode
+	}
 	return UpstreamResponseHandlingResult{
 		Usage:                      usage,
 		FirstTokenMs:               pipeResult.FirstByteMs,
@@ -952,6 +1059,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		BodyOmission:               bodyOmission,
 		ProtocolValidatedSuccess:   protocolValidated,
 		PassthroughUpstreamFailure: false,
+		DownstreamGone:             downstreamGone,
+		ErrorCode:                  handlingErrorCode,
+		GatewayLocalFailure:        downstreamGone,
 		ErrorPayload:               errorPayload,
 	}, nil
 }
@@ -1000,6 +1110,62 @@ func (input *HandleUpstreamResponseInput) handleNonStreamPipeError(pipeErr error
 			Success:         false,
 			ErrorPhase:      "downstream",
 			ErrorMessage:    DownstreamConnectionClosedMessage,
+		})
+		return UpstreamResponseHandlingResult{}, pipeErr
+	}
+	// 上游正文读取中断（非客户端取消）：此前只把错误抛给链面，链面兜底不写
+	// usage，形成“已请求上游但零记录”。2026-11-12 修复：补一条 0 token 失败
+	// 行并收尾审计，错误仍原样上抛。
+	var bodyPipeErr *NonStreamBodyPipeError
+	if errors.As(pipeErr, &bodyPipeErr) {
+		// 本地首字截止/墙钟截止是调度决策（中性），不是上游正文中断；补行会
+		// 把速度优先切号污染成 account_upstream 失败，破坏热质量/质量统计。
+		var firstByteErr *gatewaydispatch.GatewayFirstByteTimeoutError
+		var localFirstByteErr *FirstByteTimeoutError
+		var precommitErr *ResponsePrecommitDeadlineError
+		if origin := bodyPipeErr.OriginalError; origin != nil &&
+			(errors.As(origin, &firstByteErr) || errors.As(origin, &localFirstByteErr) || errors.As(origin, &precommitErr)) {
+			return UpstreamResponseHandlingResult{}, pipeErr
+		}
+		errorCode := UpstreamBodyInterruptedErrorCode
+		attribution := "account_upstream"
+		if bodyPipeErr.PartialResult.DownstreamGone {
+			// 写失败已发生、随后上游正文又断：按客户端断开口径归因。
+			errorCode = ClientCanceledErrorCode
+			attribution = FailureAttributionDownstreamClosed
+		}
+		if input.Deps != nil && input.Deps.AccountEffects != nil {
+			input.Deps.AccountEffects.ForgetSessionAffinity(input.SessionAffinityKey, input.Account.GetID())
+		}
+		if input.Deps != nil && input.Deps.UsageRecords != nil {
+			input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
+				UsageContext:       input.UsageContext,
+				Account:            input.Account,
+				RequestedModel:     requestModelHint(input.Req),
+				StatusCode:         input.UpstreamResponse.Status,
+				Success:            false,
+				Stream:             gatewaypreauth.IsOpenAIStreamRequest(input.Req),
+				StartedAtMs:        input.StartedAtMs,
+				Usage:              usageWithObservedModel(gatewayproto.EmptyUsage(), input.UpstreamResponse.UpstreamResponseModel),
+				ErrorCode:          errorCode,
+				ErrorMessage:       bodyPipeErr.Error(),
+				FailureAttribution: attribution,
+				RequestSnapshot:    usageRequestSnapshotView(input.UsageContext),
+				ResponseSnapshot: &UsageResponseSnapshotView{
+					UpstreamURL:  input.UpstreamURL,
+					StatusCode:   input.UpstreamResponse.Status,
+					Headers:      headerView(input.UpstreamResponse.Header),
+					ErrorMessage: bodyPipeErr.Error(),
+				},
+			})
+		}
+		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, AttemptAuditInput{
+			StatusCode:      input.UpstreamResponse.Status,
+			ResponseHeaders: input.UpstreamResponse.Header,
+			Success:         false,
+			ErrorPhase:      "upstream_response",
+			ErrorCode:       errorCode,
+			ErrorMessage:    bodyPipeErr.Error(),
 		})
 	}
 	return UpstreamResponseHandlingResult{}, pipeErr
@@ -1228,6 +1394,18 @@ func isKnownNonStreamJSONRequestPath(requestPath string) bool {
 	return false
 }
 
+// isUtilityResponsePath 判定 B7 工具端点（含子路径）：这些端点的成功响应允许
+// 超过非流式协议校验窗口后转透传，不整单拒绝。
+func isUtilityResponsePath(requestPath string) bool {
+	normalized := normalizeV1PrefixPath(LowercasedRequestPath(requestPath))
+	for _, root := range []string{"/embeddings", "/rerank", "/moderations"} {
+		if normalized == root || strings.HasPrefix(normalized, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	imagePathPattern = regexp.MustCompile(`^/images/(?:generations|edits|variations)$`)
 	batchesPattern   = regexp.MustCompile(`^/(?:batches|fine_tuning|vector_stores)(?:/|$)`)
@@ -1244,9 +1422,15 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 		input.UpstreamResponse.OK() &&
 		driver.EndpointFamilyForPath(input.Req.PathAndQuery()) == gatewayproto.EndpointFamilyResponses &&
 		(upstreamProtocolFailure || ResponsesFailureStatusFromCapturedJSON(result.ResponseBodyText))
-	forwardedResponseSuccessful := input.UpstreamResponse.OK() && !passthroughUpstreamFailure && !responsesFailedTerminal && !upstreamProtocolFailure
+	forwardedResponseSuccessful := input.UpstreamResponse.OK() && !passthroughUpstreamFailure && !responsesFailedTerminal && !upstreamProtocolFailure && !result.DownstreamGone
 	finalErrorCode := result.ErrorPayload.Code
 	finalErrorMessage := result.ErrorPayload.Message
+	if result.DownstreamGone {
+		// 客户端断开的终态事实优先：usage 仍按已解析结果记账，错误面固定
+		// client_canceled / downstream_closed。
+		finalErrorCode = ClientCanceledErrorCode
+		finalErrorMessage = DownstreamConnectionClosedMessage
+	}
 	if finalErrorCode == "" {
 		switch {
 		case passthroughUpstreamFailure:
@@ -1289,7 +1473,7 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 			UsageContext:                        input.UsageContext,
 			Account:                             input.Account,
 			RequestedModel:                      requestModelHint(input.Req),
-			Stream:                              true,
+			Stream:                              gatewaypreauth.IsOpenAIStreamRequest(input.Req),
 			StatusCode:                          input.UpstreamResponse.Status,
 			Success:                             forwardedResponseSuccessful,
 			ProtocolValidatedSuccess:            forwardedResponseSuccessful && result.ProtocolValidatedSuccess,
@@ -1299,7 +1483,7 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 			Usage:                               usageWithObservedModel(result.Usage, observedModel),
 			ErrorCode:                           finalErrorCode,
 			ErrorMessage:                        finalErrorMessage,
-			FailureAttribution:                  failureAttributionFor(forwardedResponseSuccessful),
+			FailureAttribution:                  failureAttributionForResult(forwardedResponseSuccessful, result.DownstreamGone),
 			RequestSnapshot:                     requestSnapshot,
 			ResponseSnapshot:                    responseSnapshot,
 		})
@@ -1327,13 +1511,21 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 		finalStatusCode = 502
 		finalResponseBody = marshalClientPayload(clientPayload)
 	}
+	auditOutcome := auditOutcomeFor(forwardedResponseSuccessful)
+	auditPhase := errorPhaseFor(forwardedResponseSuccessful)
+	if result.DownstreamGone {
+		// 客户端断开是中性终态：审计落 downstream_closed/downstream，避免被
+		// 归入上游失败族（2026-11-12 修复）。
+		auditOutcome = "downstream_closed"
+		auditPhase = "downstream"
+	}
 	input.AuditCapture.Finalize(gatewaypreauth.AuditFinalizeInput{
-		Outcome:          auditOutcomeFor(forwardedResponseSuccessful),
+		Outcome:          auditOutcome,
 		Success:          forwardedResponseSuccessful,
 		StatusCode:       finalStatusCode,
 		ResponseBody:     finalResponseBody,
 		ResponsePartType: responsePartTypeFor(forwardedResponseSuccessful),
-		ErrorPhase:       errorPhaseFor(forwardedResponseSuccessful),
+		ErrorPhase:       auditPhase,
 		ErrorCode:        finalErrorCode,
 		ErrorMessage:     finalErrorMessage,
 	})
@@ -1344,6 +1536,15 @@ func failureAttributionFor(forwarded bool) string {
 		return ""
 	}
 	return "opaque_upstream"
+}
+
+// failureAttributionForResult 在通用失败归因上叠加上游已读完、下游写失败的
+// 断连事实（2026-11-12 计费漏记修复）。
+func failureAttributionForResult(forwarded bool, downstreamGone bool) string {
+	if downstreamGone {
+		return FailureAttributionDownstreamClosed
+	}
+	return failureAttributionFor(forwarded)
 }
 
 func auditOutcomeFor(forwarded bool) string {
@@ -1376,3 +1577,111 @@ func isKnownBinaryGatewayDownloadPath(requestPath string) bool {
 }
 
 var binaryDownloadPattern = regexp.MustCompile(`^/files/[^/]+/content(?:/|$)|^/vector_stores/[^/]+/files/[^/]+/content(?:/|$)`)
+
+// imageRequestPixels 解析图像请求 JSON 的 size（WxH）为像素数；非 JSON、
+// 缺 size 或形态非法返回 false（不猜测输出像素）。
+func imageRequestPixels(req *gatewaypreauth.GatewayRequest) (int64, bool) {
+	if req == nil {
+		return 0, false
+	}
+	if req.Body == nil || len(req.Body.RawBody) == 0 {
+		return 0, false
+	}
+	var body map[string]any
+	if json.Unmarshal(req.Body.RawBody, &body) != nil || body == nil {
+		return 0, false
+	}
+	size, _ := body["size"].(string)
+	widthText, heightText, ok := strings.Cut(strings.TrimSpace(size), "x")
+	if !ok {
+		return 0, false
+	}
+	width, widthErr := strconv.ParseInt(widthText, 10, 64)
+	height, heightErr := strconv.ParseInt(heightText, 10, 64)
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return 0, false
+	}
+	return width * height, true
+}
+
+// imageRequestInputCount 统计图像请求的输入图张数（2026-11-12 输入素材批，
+// 2026-11-13 编辑面补齐）：JSON 生成面顶层 image 为字符串计 1、数组计元素
+// 数；JSON 编辑面 images[] 计元素数（与 image 同时出现时以 images 为准，不
+// 重复计数）；multipart 编辑面按 image / image[] 文件 part 计数（mask 不计）。
+// 缺省、空串、空数组或形态非法返回 false（不猜测）。
+func imageRequestInputCount(req *gatewaypreauth.GatewayRequest) (int64, bool) {
+	if req == nil || req.Body == nil || len(req.Body.RawBody) == 0 {
+		return 0, false
+	}
+	var body map[string]any
+	if json.Unmarshal(req.Body.RawBody, &body) == nil && body != nil {
+		// 编辑面会剔除 metadata.image/images（统一契约只认 images[]/multipart
+		// part），生成面才把 metadata 的其余键投影进 provider_options；因此
+		// metadata 计费参考图只在生成面生效，避免编辑面双计/误计。
+		includeMetadata := !strings.Contains(strings.ToLower(req.PathAndQuery()), "/images/edits")
+		return imageJSONInputCount(body, includeMetadata)
+	}
+	return imageMultipartInputCount(req.Body.RawBody, req.Body.ContentTypeHeader)
+}
+
+func imageJSONInputCount(body map[string]any, includeMetadata bool) (int64, bool) {
+	// metadata 的其余键在生成面投影为该厂商 provider_options 并 deep-merge 进
+	// 上游报文（契约 §2.9）：metadata.image/images 与顶层同键等价，且 merge
+	// 在后、覆盖顶层。优先按 metadata 计数，避免 L3 参考图漏计输入图费用。
+	if includeMetadata {
+		if metadata, ok := body["metadata"].(map[string]any); ok {
+			if count, ok := imageJSONInputCount(metadata, false); ok {
+				return count, true
+			}
+		}
+	}
+	if images, ok := body["images"].([]any); ok {
+		if len(images) == 0 {
+			return 0, false
+		}
+		return int64(len(images)), true
+	}
+	switch image := body["image"].(type) {
+	case string:
+		if strings.TrimSpace(image) == "" {
+			return 0, false
+		}
+		return 1, true
+	case []any:
+		if len(image) == 0 {
+			return 0, false
+		}
+		return int64(len(image)), true
+	default:
+		return 0, false
+	}
+}
+
+func imageMultipartInputCount(rawBody []byte, contentType string) (int64, bool) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/") || strings.TrimSpace(params["boundary"]) == "" {
+		return 0, false
+	}
+	reader := multipart.NewReader(bytes.NewReader(rawBody), params["boundary"])
+	var count int64
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return 0, false
+		}
+		// 字段归类与 gatewaymedia 编辑解析器共用（image / image[] / image[N]，
+		// 大小写不敏感 + TrimSpace）：计费口径不得窄于参与生成的参考图集合。
+		if gatewaymedia.ImageEditFileFieldIsImage(part.FormName()) {
+			count++
+		}
+		_, _ = io.Copy(io.Discard, part)
+		_ = part.Close()
+	}
+	if count == 0 {
+		return 0, false
+	}
+	return count, true
+}

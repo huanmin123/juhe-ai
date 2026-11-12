@@ -457,7 +457,7 @@ func execOverviewWindowInsertRows(ctx context.Context, tx *sql.Tx, dialect Diale
 
 func (w *WindowRefresher) loadDailyWindowRows(ctx context.Context, tx *sql.Tx, systemAccountID, scopeID, earliestDate, todayKey string) ([]DailyWindowRow, error) {
 	query := w.Dialect.bind(`
-		SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+		SELECT to_char(stat_date, 'YYYY-MM-DD') AS stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
 		  cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
 		  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
 		  first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
@@ -471,7 +471,7 @@ func (w *WindowRefresher) loadDailyWindowRows(ctx context.Context, tx *sql.Tx, s
 
 func (w *WindowRefresher) loadHourlyWindowRows(ctx context.Context, tx *sql.Tx, systemAccountID, scopeID, earliestDate, todayKey string) ([]HourlyWindowRow, error) {
 	query := w.Dialect.bind(`
-		SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+		SELECT to_char(stat_hour, 'YYYY-MM-DD"T"HH24') AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
 		  cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
 		  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count
 		FROM ` + w.Dialect.StatsTable("usage_stats_hourly") + `
@@ -479,7 +479,8 @@ func (w *WindowRefresher) loadHourlyWindowRows(ctx context.Context, tx *sql.Tx, 
 		  AND stat_hour >= ? AND stat_hour <= ?
 		ORDER BY stat_hour ASC
 	`)
-	return scanHourlyWindowRows(tx.QueryContext(ctx, query, systemAccountID, scopeID, earliestDate+"T00", todayKey+"T23"))
+	return scanHourlyWindowRows(tx.QueryContext(ctx, query, systemAccountID, scopeID,
+		CalendarDBValue("stat_hour", earliestDate+"T00"), CalendarDBValue("stat_hour", todayKey+"T23")))
 }
 
 func scanDailyWindowRows(rows *sql.Rows, err error) ([]DailyWindowRow, error) {
@@ -687,7 +688,7 @@ func aggregateUsageErrorRows(rowsByDate map[string][]usageErrorWindowRow, rangeV
 
 func (w *WindowRefresher) refreshUsageModelRankWindows(ctx context.Context, tx *sql.Tx, systemAccountID string, ranges []StatsRange, earliestDate, todayKey, updatedAt string) error {
 	query := w.Dialect.bind(`
-		SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+		SELECT to_char(stat_date, 'YYYY-MM-DD') AS stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
 		  cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd
 		FROM ` + w.Dialect.StatsTable("usage_model_daily") + `
 		WHERE system_account_id = ? AND stat_date >= ? AND stat_date <= ?
@@ -758,7 +759,7 @@ func consumeModelRows(rows *sql.Rows, scan func(statDate, providerCode, model st
 
 func (w *WindowRefresher) refreshUsageErrorRankWindows(ctx context.Context, tx *sql.Tx, systemAccountID string, ranges []StatsRange, earliestDate, todayKey, updatedAt string) error {
 	query := w.Dialect.bind(`
-		SELECT stat_date, error_group, provider_code, error_code, status_code, error_message, error_count
+		SELECT to_char(stat_date, 'YYYY-MM-DD') AS stat_date, error_group, provider_code, error_code, status_code, error_message, error_count
 		FROM ` + w.Dialect.StatsTable("usage_error_daily") + `
 		WHERE system_account_id = ? AND stat_date >= ? AND stat_date <= ?
 		ORDER BY stat_date ASC
@@ -946,7 +947,7 @@ func (w *WindowRefresher) aiPerformanceSummaryRows(ctx context.Context, tx *sql.
 
 func (w *WindowRefresher) loadAiPerformanceSourceRows(ctx context.Context, tx *sql.Tx, systemAccountID, earliestDate, todayKey string) ([]DailyWindowRow, error) {
 	query := w.Dialect.bind(`
-		SELECT stat_date,
+		SELECT to_char(stat_date, 'YYYY-MM-DD') AS stat_date,
 		  COALESCE(SUM(request_count), 0) AS request_count,
 		  COALESCE(SUM(success_count), 0) AS success_count,
 		  COALESCE(SUM(error_count), 0) AS error_count,
@@ -963,7 +964,7 @@ func (w *WindowRefresher) loadAiPerformanceSourceRows(ctx context.Context, tx *s
 		  MAX(last_used_at) AS last_used_at
 		FROM ` + w.Dialect.StatsTable("usage_stats_daily") + `
 		WHERE system_account_id = ? AND scope_type = 'account' AND stat_date >= ? AND stat_date <= ?
-		GROUP BY stat_date
+		GROUP BY to_char(stat_date, 'YYYY-MM-DD')
 		ORDER BY stat_date ASC
 	`)
 	rows, err := tx.QueryContext(ctx, query, systemAccountID, earliestDate, todayKey)

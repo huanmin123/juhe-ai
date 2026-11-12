@@ -166,16 +166,16 @@ func TestChainMediaJobTaskPlaneConsumesAccountProxy(t *testing.T) {
 
 	// 创建（引擎出站，同账户代理消费）：受理 + queued。
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","seconds":5,"size":"1920x1080"}`,
+		`{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","duration":5,"width":1920,"height":1080}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenCreatePending)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("创建响应 status = %v, want queued", job["status"])
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := mediaVideoMetadataOf(t, job)["provider_job_id"].(string)
 
 	// 轮询三次（任务面 mediaJobRequestUpstream 经代理）：queued→in_progress→
 	// completed。
@@ -191,7 +191,7 @@ func TestChainMediaJobTaskPlaneConsumesAccountProxy(t *testing.T) {
 
 	// content 下载（任务面 mediaJobArtifactRequestUpstream 绝对 URL 经代理）：
 	// mp4 流落客户端。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -262,9 +262,9 @@ func TestChainMediaJobTaskPlaneProxyUnavailableFailsClosed(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
-		`{"model":"sora-2","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720"}`,
+		`{"model":"sora-2","prompt":"一只猫在弹钢琴","duration":4,"width":1280,"height":720}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll3)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 	if first := mediaVideoPollOnce(t, server.URL, fixture.apiKeySecret, jobID); first["status"] != "in_progress" {
 		t.Fatalf("首轮轮询 status = %v, want in_progress（档案启用臂经代理）", first["status"])
 	}
@@ -275,7 +275,7 @@ func TestChainMediaJobTaskPlaneProxyUnavailableFailsClosed(t *testing.T) {
 	if _, err := fixture.db.Exec(`UPDATE proxy_profiles SET enabled = 0 WHERE id = 'proxy_media'`); err != nil {
 		t.Fatalf("disable proxy profile: %v", err)
 	}
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("停用后轮询 status = %d, want 503, body=%s", response.StatusCode, payload)
 	}
@@ -285,7 +285,7 @@ func TestChainMediaJobTaskPlaneProxyUnavailableFailsClosed(t *testing.T) {
 	if _, err := fixture.db.Exec(`DELETE FROM proxy_profiles WHERE id = 'proxy_media'`); err != nil {
 		t.Fatalf("delete proxy profile: %v", err)
 	}
-	response2, payload2 := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	response2, payload2 := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response2.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("删除后轮询 status = %d, want 503, body=%s", response2.StatusCode, payload2)
 	}

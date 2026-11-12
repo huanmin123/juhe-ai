@@ -1079,7 +1079,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			requestLane = gatewayproto.LaneImage
 			// 2026-11-06 复审 F6：text 入口请求因候选账户模型映射到图像模型
 			// 而升级 lane 时，亲和键在升级前已按对话域解析；升级后请求由
-			// StatelessMediaDispatch 承载，媒体域不变量要求三类亲和输入恒空，
+			// StatelessDispatch 承载，媒体域不变量要求三类亲和输入恒空，
 			// 否则会把图像账户写进该会话的账户/组亲和。候选选择已完成，此处
 			// 清空只影响后续 Claim/Remember/Forget，不改变本次候选。
 			if dispatchDomainIsConversation {

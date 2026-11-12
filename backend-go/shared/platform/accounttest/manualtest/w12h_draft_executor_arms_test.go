@@ -123,9 +123,11 @@ func TestW12HNormalizeDraftEndpointModes(t *testing.T) {
 		t.Fatalf("缺失 supported_endpoint_modes 必须为空集合: %v", modes)
 	}
 	modes := normalizeDraftEndpointModes(&DraftSnapshot{Credentials: map[string]any{
-		"supported_endpoint_modes": []any{"chat_json", "images_json", "bogus_mode", 7},
+		"supported_endpoint_modes": []any{"chat_json", "images_json", "embed_content", "rerank_json", "moderation_json", "bogus_mode", 7},
 	}})
-	if !modes[accountprobe.ModeChatJSON] || !modes[accountprobe.ModeImagesJSON] || len(modes) != 2 {
+	if !modes[accountprobe.ModeChatJSON] || !modes[accountprobe.ModeImagesJSON] ||
+		!modes[accountprobe.ModeEmbedContent] || !modes[accountprobe.ModeRerankJSON] || !modes[accountprobe.ModeModerationJSON] ||
+		len(modes) != 5 {
 		t.Fatalf("形态过滤不符: %v", modes)
 	}
 }

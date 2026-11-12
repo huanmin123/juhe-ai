@@ -173,17 +173,17 @@ func TestParseEndpointModesTable(t *testing.T) {
 	}
 }
 
-// TestKnownModesClosure 断言已知词表与对话锚集合的闭合关系：已知 25 值 =
-// 对话 13 + 媒体 12（v8-A 只移动成员，并集不变），对话集合与媒体集合不相交；
-// 对话域纯粹化移动的三项归属同时钉住。
+// TestKnownModesClosure 断言已知词表与对话锚集合的闭合关系：已知 27 值 =
+// 对话 12 + 媒体 12 + 工具 3（B7 把 embed_content 移入工具场景），对话集合与
+// 媒体/工具集合不相交；对话域纯粹化移动的项归属同时钉住。
 func TestKnownModesClosure(t *testing.T) {
 	chat := ChatModes()
 	known := KnownModes()
-	if len(chat) != 13 {
-		t.Fatalf("对话 modes 锚集合必须为 13 值（v8-A 移出三项），实际 %d", len(chat))
+	if len(chat) != 12 {
+		t.Fatalf("对话 modes 锚集合必须为 12 值（B7 移出 embed_content），实际 %d", len(chat))
 	}
-	if len(known) != 25 {
-		t.Fatalf("已知词表必须为 25 值（对话 13 + 媒体 12），实际 %d", len(known))
+	if len(known) != 27 {
+		t.Fatalf("已知词表必须为 27 值（对话 12 + 媒体 12 + 工具 3），实际 %d", len(known))
 	}
 	chatSet := map[string]bool{}
 	for _, mode := range chat {
@@ -195,16 +195,16 @@ func TestKnownModesClosure(t *testing.T) {
 			overlap++
 		}
 	}
-	// known 内落在对话锚集合的值应恰为 13（媒体 12 值不在对话集合内）。
-	if overlap != 13 {
-		t.Fatalf("known ∩ chat 应为 13 值，实际 %d", overlap)
+	// known 内落在对话锚集合的值应恰为 12（媒体 12 + 工具 3 不在对话集合内）。
+	if overlap != 12 {
+		t.Fatalf("known ∩ chat 应为 12 值，实际 %d", overlap)
 	}
-	for _, mode := range mediaModes {
+	for _, mode := range append(append([]string{}, mediaModes...), utilityModes...) {
 		if chatSet[mode] {
-			t.Fatalf("媒体值 %q 不得出现在对话锚集合内", mode)
+			t.Fatalf("媒体/工具值 %q 不得出现在对话锚集合内", mode)
 		}
 	}
-	for _, mode := range append(chat, mediaModes...) {
+	for _, mode := range append(append(append([]string{}, chat...), mediaModes...), utilityModes...) {
 		if !knownModeSet[mode] {
 			t.Fatalf("词表值 %q 未登记进 knownModeSet", mode)
 		}
@@ -242,6 +242,9 @@ func TestDeriveDomainOfParsedFixtures(t *testing.T) {
 		{"volcengine 混合", `{"supported_endpoint_modes":["chat_json","video_create","video_get","video_content","video_cancel","audio_speech"]}`, DomainChat},
 		{"minimax 纯媒体", `{"supported_endpoint_modes":["video_create","video_get","video_content","video_cancel","audio_speech"]}`, DomainVideo},
 		{"纯图像", `{"supported_endpoint_modes":["images_json"]}`, DomainImage},
+		{"纯向量", `{"supported_endpoint_modes":["embed_content"]}`, DomainEmbedding},
+		{"纯重排", `{"supported_endpoint_modes":["rerank_json"]}`, DomainRerank},
+		{"纯安全", `{"supported_endpoint_modes":["moderation_json"]}`, DomainModeration},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

@@ -577,6 +577,28 @@ func TestW1GChainCatalogPricingMediaRatesFromStaticSnapshot(t *testing.T) {
 	if unknown.AudioInputUsdPerSecond != nil || unknown.VideoOutputUsdPerSecond != nil {
 		t.Fatalf("静态未命中媒体价必须保持 nil: %#v", unknown.PriceSet)
 	}
+
+	// 2026-11-12 档位/输入素材批：静态层档表与输入图价同样必须穿透运行态
+	// 转换，否则同步图像计费读不到档位、退回主档或零计费。
+	imageMode := "image_generation"
+	image := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "doubao-seedream-5-0-pro-260628", Mode: &imageMode,
+	})
+	if len(image.OutputUsdPerImageTiers) != 2 || image.OutputUsdPerImageTiers[1].MaxPixels != 0 {
+		t.Fatalf("Seedream Pro 像素档必须穿透 chainCatalogPricing: %#v", image.OutputUsdPerImageTiers)
+	}
+	if image.InputUsdPerImage == nil || *image.InputUsdPerImage != 0.002857142857142857 || image.InputImageFreeCount != 1 {
+		t.Fatalf("Seedream Pro 输入图价/免费张数必须穿透: %#v free=%d", image.InputUsdPerImage, image.InputImageFreeCount)
+	}
+	if got := video.VideoOutputUsdPerSecondByResolution["480p"]; got != 0.0714 {
+		t.Fatalf("视频分辨率档必须穿透 chainCatalogPricing: %#v", video.VideoOutputUsdPerSecondByResolution)
+	}
+	hailuo := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "minimax", Model: "MiniMax-Hailuo-2.3", Mode: &videoMode,
+	})
+	if got := hailuo.VideoOutputUsdPerCallBySeconds["6"]; got != 0.2857142857142857 {
+		t.Fatalf("视频按次时长档必须穿透 chainCatalogPricing: %#v", hailuo.VideoOutputUsdPerCallBySeconds)
+	}
 }
 
 // 维度修正批真实复现钉：DB 行无 token 价但静态层命中媒体价的目录行

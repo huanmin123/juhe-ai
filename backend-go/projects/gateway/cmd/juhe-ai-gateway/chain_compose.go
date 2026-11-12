@@ -105,9 +105,11 @@ type chainRuntimeDeps struct {
 	//（media_jobs 仓储 + 账户亲和水合读面，juhe_business schema 限定）；
 	// MediaJobsSecret 是账户凭据解密密钥（生产与 newChainAccountsSelector
 	// 的 cfg.Secret 同源）。DB 为 nil 仅组合测试——任务面端点显式 503 降级
-	//（不静默吞请求）。
-	MediaJobsDB     *sql.DB
-	MediaJobsSecret string
+	//（不静默吞请求）。MediaJobsPublicBaseURL 是 New API 任务面回退 content
+	// URL 的公共地址前缀（JUHE_AI_GATEWAY_PUBLIC_BASE_URL；空串保持相对路径）。
+	MediaJobsDB             *sql.DB
+	MediaJobsSecret         string
+	MediaJobsPublicBaseURL string
 
 	// RealtimeTokens 是 M5b realtime ephemeral token 签发/校验面（Realtime
 	// 设计 §4；runtimeStateDriver!=='redis' 时 nil——client_secrets 端点显式
@@ -579,10 +581,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	var mediaJobs *mediaJobsRuntime
 	if deps.MediaJobsDB != nil {
 		mediaJobs = &mediaJobsRuntime{
-			repo:      gatewaymedia.NewMediaJobsRepo(deps.MediaJobsDB, clock.Now),
-			db:        deps.MediaJobsDB,
-			secret:    deps.MediaJobsSecret,
-			transport: engine.Transport,
+			repo:          gatewaymedia.NewMediaJobsRepo(deps.MediaJobsDB, clock.Now),
+			db:            deps.MediaJobsDB,
+			secret:        deps.MediaJobsSecret,
+			publicBaseURL: deps.MediaJobsPublicBaseURL,
+			transport:     engine.Transport,
 		}
 	}
 	// B-3（BUG-0174）波1遗留接线：Redis 轮转计数器（nil 保持进程内回退）。

@@ -57,7 +57,7 @@ func createMinimax(t *testing.T, m *Server, scenario string) parsedMinimaxQuery 
 		t.Fatalf("minimax create (%s) status = %d, want 200 (%s)", scenario, code, raw)
 	}
 	var obj struct {
-		TaskID string `json:"task_id"`
+		TaskID   string `json:"task_id"`
 		BaseResp *struct {
 			StatusCode int `json:"status_code"`
 		} `json:"base_resp"`
@@ -260,5 +260,65 @@ func TestMediaMinimaxFaceWhitelist(t *testing.T) {
 	}
 	if acceptsMinimaxVideoEndpoint(http.MethodPost, "/v1/video_generation/extra") {
 		t.Fatal("create path 带尾段不得进白名单")
+	}
+}
+
+// TestMediaMinimaxH3V2FullChain pins the H3 v2 face: POST /v2/video_generation
+// answers only {"task_id"}, GET /v2/query/video_generation/{id} returns the
+// nested {"task":{status,content.url}} object, and the artifact URL serves
+// mp4 bytes without credentials.
+func TestMediaMinimaxH3V2FullChain(t *testing.T) {
+	m := New()
+	defer m.Close()
+
+	code, _, raw := doMedia(t, m.Server, http.MethodPost,
+		"/v2/video_generation", string(ScenarioMediaMinimaxCreateOK), "application/json",
+		[]byte(`{"model":"MiniMax-H3","content":[{"type":"text","text":"p"}],"duration":6,"resolution":"768P","ratio":"16:9"}`))
+	if code != http.StatusOK {
+		t.Fatalf("h3 create status = %d, want 200 (%s)", code, raw)
+	}
+	var created struct {
+		TaskID   string          `json:"task_id"`
+		BaseResp json.RawMessage `json:"base_resp"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil || !minimaxIDPattern.MatchString(created.TaskID) {
+		t.Fatalf("h3 create body = %s (%v)", raw, err)
+	}
+	if len(created.BaseResp) != 0 {
+		t.Fatalf("h3 create must not carry v1 base_resp: %s", raw)
+	}
+
+	code, _, raw = doMedia(t, m.Server, http.MethodGet,
+		"/v2/query/video_generation/"+created.TaskID, "", "", nil)
+	if code != http.StatusOK || !strings.Contains(string(raw), `"status":"processing"`) {
+		t.Fatalf("h3 poll #1 = %d %s, want processing", code, raw)
+	}
+	code, _, raw = doMedia(t, m.Server, http.MethodGet,
+		"/v2/query/video_generation/"+created.TaskID, "", "", nil)
+	if code != http.StatusOK || !strings.Contains(string(raw), `"status":"succeeded"`) || !strings.Contains(string(raw), `"content":{"url":`) {
+		t.Fatalf("h3 poll #2 = %d %s, want succeeded + content.url", code, raw)
+	}
+	var succeeded struct {
+		Task struct {
+			Content struct {
+				URL string `json:"url"`
+			} `json:"content"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(raw, &succeeded); err != nil || succeeded.Task.Content.URL == "" {
+		t.Fatalf("h3 success body = %s (%v)", raw, err)
+	}
+	request, err := http.NewRequest(http.MethodGet, succeeded.Task.Content.URL, nil)
+	if err != nil {
+		t.Fatalf("build artifact request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("artifact download: %v", err)
+	}
+	defer response.Body.Close()
+	payload, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK || len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("h3 artifact = %d % x", response.StatusCode, payload[:min(12, len(payload))])
 	}
 }

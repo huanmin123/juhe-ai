@@ -95,7 +95,7 @@ func (e *testEnv) seedQuotaHourlySplit(systemAccountID, scopeType, scopeID, stat
 	e.exec(e.dialect.bind(`INSERT INTO `+e.dialect.StatsTable("usage_stats_hourly")+` (
 		system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, success_cost_usd, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, '2026-04-18T00:00:00.000Z')`),
-		systemAccountID, scopeType, scopeID, statHour, totalCostUsd, successCostUsd)
+		systemAccountID, scopeType, scopeID, CalendarDBValue("stat_hour", statHour), totalCostUsd, successCostUsd)
 }
 
 type quotaWindowRow struct {
@@ -285,7 +285,7 @@ func TestQuotaHourlyWindowsExpiryCursorInvalidTimestamp(t *testing.T) {
 	refresher := e.quotaRefresher(nil)
 	pgSeedQuotaBinding(t, e, "sa1", "api_key", "keyA", 1)
 	e.exec(`INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES ('global', '', 'usage_quota_hourly_windows_expiry', 'not-a-time', '2026-04-18T11', '2026-04-18T11:00:00.000Z')`)
+		VALUES ('global', '', 'usage_quota_hourly_windows_expiry', 'not-a-time', '2026-04-18 11:00:00', '2026-04-18T11:00:00.000Z')`)
 
 	err := refresher.refreshQuotaHourlyWindowsIncremental(context.Background(), e.zone, &QuotaHourlyWindowRefreshResult{})
 	if err == nil {

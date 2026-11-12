@@ -97,13 +97,13 @@ func TestXaiVideoAdapterCreate(t *testing.T) {
 		t.Fatalf("create 出站形态 = %s %s, want POST /videos/generations", output.Method, output.Path)
 	}
 	var body struct {
-		Model         string          `json:"model"`
-		Prompt        string          `json:"prompt"`
-		Duration      float64         `json:"duration"`
-		AspectRatio   string          `json:"aspect_ratio"`
-		Resolution    string          `json:"resolution"`
-		Image         string          `json:"image"`
-		GenerateAudio bool            `json:"generate_audio"`
+		Model         string         `json:"model"`
+		Prompt        string         `json:"prompt"`
+		Duration      float64        `json:"duration"`
+		AspectRatio   string         `json:"aspect_ratio"`
+		Resolution    string         `json:"resolution"`
+		Image         string         `json:"image"`
+		GenerateAudio bool           `json:"generate_audio"`
 		Other         map[string]any `json:"-"`
 	}
 	var raw map[string]any
@@ -205,8 +205,8 @@ func TestXaiVideoAspectRatioVocabulary(t *testing.T) {
 		{"960x640", "3:2", "720p"},
 		{"640x960", "2:3", "720p"},
 		{"600x800", "3:4", "720p"},
-		{"599x800", "599:800", "-"},  // 反例：词表外宽高比
-		{"480x640", "3:4", "480p"},   // 短边 480 → 480p 下限档
+		{"599x800", "599:800", "-"}, // 反例：词表外宽高比
+		{"480x640", "3:4", "480p"},  // 短边 480 → 480p 下限档
 		{"1920x1080", "16:9", "1080p"},
 	}
 	for _, testCase := range positive {

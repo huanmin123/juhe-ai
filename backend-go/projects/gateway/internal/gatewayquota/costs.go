@@ -195,7 +195,7 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 		SELECT COALESCE(success_cost_usd, 0) AS total_cost
 		FROM `+statsTable("usage_stats_monthly")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_month = ?`),
-		input.SystemAccountID, input.ScopeType, input.ScopeID, monthKey(input.Now, location)).Scan(&monthlyCost)
+		input.SystemAccountID, input.ScopeType, input.ScopeID, monthKeyForDB(input.Now, location)).Scan(&monthlyCost)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RequestQuotaCosts{}, err
 	}
@@ -355,7 +355,7 @@ func (s *StatsStore) LoadCostsBatch(ctx context.Context, inputs []CostInput, loc
 				placeholders := make([]string, len(tableDef.columns))
 				for i, column := range tableDef.columns {
 					placeholders[i] = column + " = ?"
-					args = append(args, values[i])
+					args = append(args, batchCostDBValue(column, values[i]))
 				}
 				clauses = append(clauses, "("+strings.Join(placeholders, " AND ")+")")
 			}
@@ -363,7 +363,7 @@ func (s *StatsStore) LoadCostsBatch(ctx context.Context, inputs []CostInput, loc
 			// extra key columns, then the aliased cost.
 			selectColumns := []string{"system_account_id", "scope_type", "scope_id"}
 			for _, column := range tableDef.columns[3:] {
-				selectColumns = append(selectColumns, column)
+				selectColumns = append(selectColumns, batchCostSelectColumn(column))
 			}
 			query := "SELECT " + strings.Join(selectColumns, ", ") + ", COALESCE(" + tableDef.costColumn + ", 0) AS total_cost FROM " +
 				statsTable(tableDef.name) + " WHERE " + strings.Join(clauses, " OR ")
@@ -406,6 +406,29 @@ func (s *StatsStore) LoadCostsBatch(ctx context.Context, inputs []CostInput, loc
 		}
 	}
 	return output, nil
+}
+
+// batchCostDBValue 把 API 日历键转换为 date 列值：月键 "YYYY-MM" 必须
+// 落月首日；查询结果再由 batchCostSelectColumn 投影回 API 文本。
+func batchCostDBValue(column, value string) string {
+	if column == "stat_month" && len(value) == 7 {
+		return value + "-01"
+	}
+	return value
+}
+
+// batchCostSelectColumn 把数据库日历列投影回 API 日历键文本：date 类型
+// 直接扫描会得到 time.Time，无法与请求侧 "YYYY-MM-DD"/"YYYY-MM" 元组键
+// 对齐。
+func batchCostSelectColumn(column string) string {
+	switch column {
+	case "stat_date", "stat_week":
+		return "to_char(" + column + ", 'YYYY-MM-DD') AS " + column
+	case "stat_month":
+		return "to_char(" + column + ", 'YYYY-MM') AS " + column
+	default:
+		return column
+	}
 }
 
 // costRowScan is the shared scan target for batch cost rows: the fixed base

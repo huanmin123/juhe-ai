@@ -36,7 +36,8 @@ export interface MediaCreateDefaultsContext {
 /**
  * 从允许集中选择安全代表检查形态：视频优先 video_create、图像 images_json；
  * 音频优先 audio_speech，其次 audio_transcription_json，最后 audio_job_get
- * （绝不用 audio_job_create，避免后台/测试 POST 创建真实任务）。
+ * （绝不用 audio_job_create，避免后台/测试 POST 创建真实任务）；工具场景
+ * 各取唯一 mode。
  */
 function representativeHealthCheckMode(
   capabilityDomain: AccountCapabilityDomain,
@@ -46,7 +47,13 @@ function representativeHealthCheckMode(
     ? ['video_create']
     : capabilityDomain === 'image'
       ? ['images_json']
-      : ['audio_speech', 'audio_transcription_json', 'audio_job_get']
+      : capabilityDomain === 'embedding'
+        ? ['embed_content']
+        : capabilityDomain === 'rerank'
+          ? ['rerank_json']
+          : capabilityDomain === 'moderation'
+            ? ['moderation_json']
+            : ['audio_speech', 'audio_transcription_json', 'audio_job_get']
   return (candidates.find((mode) => allowed.includes(mode))
     ?? allowed[0]
     ?? 'chat_sse') as AccountFormModel['healthCheckEndpointMode']

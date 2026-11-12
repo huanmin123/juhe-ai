@@ -94,12 +94,14 @@ var (
 		"images_json",
 	}
 	// QwenEndpointModeValues 是 qwen 档案可声明的全部端点模式（M3 §10.1 +
-	// M3f 长音频 §10.2 + 对话批 chat + 2026-11-11 图像批）：chat 对 + video_*
-	// 四值 + audio_job_* 四值（CosyVoice TTS 未回填不收录 audio_speech）+
-	// images_json（Qwen-Image 同步生图，原生 multimodal-generation 端点）。
-	// 全部 opt-in；默认集 video_get（零费用档）。
+	// M3f 长音频 §10.2 + 对话批 chat + 2026-11-11 图像批 + B7 工具批）：chat 对
+	// + video_* 四值 + audio_job_* 四值（CosyVoice TTS 未回填不收录
+	// audio_speech）+ images_json（Qwen-Image 同步生图，原生
+	// multimodal-generation 端点）+ embed_content（compatible-mode embeddings）+
+	// rerank_json（DashScope 原生 text-rerank）。全部 opt-in；默认集 video_get
+	//（零费用档）。
 	QwenEndpointModeValues = []string{
-		"chat_json", "chat_sse", "images_json",
+		"chat_json", "chat_sse", "images_json", "embed_content", "rerank_json",
 		"video_create", "video_get", "video_content", "video_cancel",
 		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 	}

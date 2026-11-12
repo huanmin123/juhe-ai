@@ -11,11 +11,11 @@
 //     请求链显式 400 失败（speech_credentials_missing，账户级配置缺位的
 //     确定性错误，不静默回退）且零上游出站（对齐链级
 //     TestChainMediaVolcengineSpeechMissingCredentials 语义）；
-//  2. TestFullchainT5QwenAudioJobCancel：qwen 长音频任务型能力的取消链
-//     ——§10.2 面无上游取消 API，DELETE /v1/audio/jobs/{id} 本地收敛
-//     cancelled + 204，零上游出站，终态轮询回本地对象（补齐
-//     TestFullchainMediaAudioJobParaformer 覆盖的创建/查询/内容之外的
-//     第四个任务型操作）；
+//  2. TestFullchainT5QwenAudioJobCancelNotProvided：qwen 长音频任务型能力的
+//     删除面负例——New API 通用任务面无取消/删除操作，DELETE
+//     /v1/tasks/audio/{id}（及旧 /v1/audio/jobs/{id}）恒 404，本地行保持
+//     queued、零上游取消流量（补齐 TestFullchainMediaAudioJobParaformer
+//     覆盖的创建/查询/内容之外的删除面边界）；
 //  3. TestFullchainT5ImagesSharedLaneCoCandidates：图像请求的共同候选与
 //     换户链（v8 后语义：images_json 声明隔离在 image 域内，chat 域新增
 //     声明不再携带图像 lane——原 D2 跨域共享 lane 对照随域纯粹化裁撤，
@@ -115,15 +115,14 @@ func TestFullchainT5VolcengineSpeechMissingCredentials(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. qwen 长音频任务取消链（任务型能力第四操作）
+// 2. qwen 长音频任务取消/删除面不提供（New API 通用任务面无对应面）
 // ---------------------------------------------------------------------------
 
-// TestFullchainT5QwenAudioJobCancel 验证 T5 任务型能力的取消操作（契约
-// §10.2：qwen 长转写面无上游取消 API，SupportsCancel=false 本地收敛）：
-// 创建 audiojob_ 任务 → DELETE /v1/audio/jobs/{id} → 204 + media_jobs 行
-// 本地收敛 cancelled → 终态 GET 回本地 cancelled 对象；上游命中仅创建
-// 1 次，取消与终态轮询零上游出站。
-func TestFullchainT5QwenAudioJobCancel(t *testing.T) {
+// TestFullchainT5QwenAudioJobCancelNotProvided 验证 New API 通用任务面不提供
+// 取消/删除操作：创建 audiojob_ 任务 → DELETE /v1/tasks/audio/{id} 与旧
+// DELETE /v1/audio/jobs/{id} 都返回 404 → media_jobs 行保持 queued（未被
+// 本地取消）→ 上游命中仅创建 1 次，删除面无任何取消流量。
+func TestFullchainT5QwenAudioJobCancelNotProvided(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
 
@@ -138,7 +137,7 @@ func TestFullchainT5QwenAudioJobCancel(t *testing.T) {
 
 	// 创建：queued 任务（与 paraformer 主流程用例同一 mock 场景）。
 	f.mock.script(key, platformmock.ScenarioMediaQwenASRCreatePending)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/audio/jobs", fullchainQwenASRCreateBody)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/tasks/audio", fullchainQwenASRCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("T5 qwen cancel create status=%d body=%s", created.Status, created.Body)
 	}
@@ -147,29 +146,21 @@ func TestFullchainT5QwenAudioJobCancel(t *testing.T) {
 		t.Fatalf("T5 qwen cancel job id 缺少 audiojob_ 前缀: %s", jobID)
 	}
 
-	// 取消：204 + 本地行 cancelled（不依赖上游取消端点）。
-	cancelled := f.videoT(t, apiKey, http.MethodDelete, "/v1/audio/jobs/"+jobID, "")
-	if cancelled.Status != http.StatusNoContent {
-		t.Fatalf("T5 qwen cancel DELETE status=%d body=%s, want 204", cancelled.Status, cancelled.Body)
+	// 删除面 404（新旧路径一致，不保留兼容别名）。
+	for _, path := range []string{"/v1/tasks/audio/" + jobID, "/v1/audio/jobs/" + jobID} {
+		cancelled := f.videoT(t, apiKey, http.MethodDelete, path, "")
+		if cancelled.Status != http.StatusNotFound {
+			t.Fatalf("T5 qwen cancel DELETE %s status=%d body=%s, want 404（New API 无取消/删除面）", path, cancelled.Status, cancelled.Body)
+		}
 	}
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
-		return row.Status == "cancelled"
-	}, "cancelled")
+		return row.Status == "queued"
+	}, "queued")
 	if row.Kind != "audio_transcription" {
 		t.Fatalf("T5 qwen cancel row kind=%s, want audio_transcription", row.Kind)
 	}
 
-	// 终态轮询回本地对象：200 + cancelled，不再打上游。
-	polled := f.videoT(t, apiKey, http.MethodGet, "/v1/audio/jobs/"+jobID, "")
-	if polled.Status != http.StatusOK {
-		t.Fatalf("T5 qwen cancel poll status=%d body=%s", polled.Status, polled.Body)
-	}
-	if object := decodeVideoJob(t, polled); object["status"] != "cancelled" {
-		t.Fatalf("T5 qwen cancel poll status 字段 = %v, want cancelled", object["status"])
-	}
-
-	// 账户亲和：上游命中仅创建 1 次（POST transcription），取消与终态轮询
-	// 零上游出站（无 /api/v1/tasks 流量）。
+	// 账户亲和：上游命中仅创建 1 次（POST transcription），删除面零上游出站。
 	calls := f.mock.callsByKey(key)
 	if len(calls) != 1 {
 		t.Fatalf("T5 qwen cancel 上游命中 %d 次, want 1（仅创建）: %+v", len(calls), calls)

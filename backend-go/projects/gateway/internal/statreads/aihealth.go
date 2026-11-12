@@ -60,7 +60,7 @@ func (d *Deps) aiHealthListHandler(selfOnly bool) http.HandlerFunc {
 			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
 			return
 		}
-		// M3 域筛选（计划 §M3 配套适配）：可选 domain 四枚举；缺省/"all" =
+		// M3 域筛选（计划 §M3 配套适配）：可选 domain 场景枚举；缺省/"all" =
 		// 不过滤（默认行为零变化），非法值 400。
 		capabilityDomain, domainOK := optionalCapabilityDomainFilter(values.Get(capabilityDomainFilterParam))
 		if !domainOK {
@@ -208,7 +208,7 @@ func (d *Deps) aiHealthHourDetail(r *http.Request, scope AccessScope, accountID,
 		FROM `+d.statsTable("account_health_hourly")+`
 		WHERE account_id = ? AND stat_hour = ?
 		LIMIT 1
-	`, accountID, statHour)
+	`, accountID, calendarDBValue("stat_hour", statHour))
 	if err != nil {
 		return nil, false, err
 	}
@@ -401,7 +401,8 @@ func (d *Deps) loadAccountHealthRows(r *http.Request, accountIds []string, hourB
 			FROM `+d.statsTable("account_health_hourly")+`
 			WHERE account_id IN (`+placeholders(len(chunk))+`) AND stat_hour >= ? AND stat_hour <= ?
 			ORDER BY account_id ASC, stat_hour ASC
-		`, flatParams(idsToAny(chunk), startHour, endHour)...)
+		`, flatParams(idsToAny(chunk),
+			calendarDBValue("stat_hour", startHour), calendarDBValue("stat_hour", endHour))...)
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +639,7 @@ func timestampValue(value string) int64 {
 func mapAiHealthList(page []aiHealthAccount, hasMore bool, options aiHealthOptions, rows []Row, hourBuckets []string, j1Outcomes []j1Outcome) aiHealthListResult {
 	rowsByAccountHour := map[string]Row{}
 	for _, row := range rows {
-		key := row.text("account_id") + "\x00" + row.text("stat_hour")
+		key := row.text("account_id") + "\x00" + row.hour("stat_hour")
 		existing, ok := rowsByAccountHour[key]
 		if !ok || timestampValue(row.text("last_observed_at")) >= timestampValue(existing.text("last_observed_at")) {
 			rowsByAccountHour[key] = row

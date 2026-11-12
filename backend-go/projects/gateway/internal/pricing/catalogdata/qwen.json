@@ -24,7 +24,11 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.1
+      "videoOutputCostPerSecond": 0.1,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.02,
+        "1080p": 0.09999999999999999
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -397,7 +401,12 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.08571428571428572
+      "videoOutputCostPerSecond": 0.08571428571428572,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.04285714285714286,
+        "720p": 0.08571428571428572,
+        "1080p": 0.17142857142857143
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -422,7 +431,11 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.08571428571428572
+      "videoOutputCostPerSecond": 0.08571428571428572,
+      "videoOutputCostPerSecondByResolution": {
+        "720p": 0.08571428571428572,
+        "1080p": 0.14285714285714285
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -433,6 +446,7 @@
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
+      "inputCostPerImage": 0.002857142857142857,
       "model": "qwen-image-3.0",
       "outputCostPerImage": 0.025714285714285714,
       "outputModalities": [
@@ -443,7 +457,42 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 1k 0.18 元/张（2k 同价 0.18；pro 变体 1k 0.25 元/张留档）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 图像生成段），按约定汇率 7.0 换算 0.02571/张（0.18÷7.0）；此前落国际站 $0.03 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 qwen-image-3.0：输出 1k/2k 同价 0.18 元/张、输入图 0.02 元/张（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页，2026-11-13 复核，北京/全球区），按约定汇率 7.0 换算输出 0.02571/张、输入图 0.002857/张；此前落国际站 $0.03 明文，按国内口径回正",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "defaultReasoningEffort": "",
+      "inputCostPerImage": 0.002857142857142857,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "qwen-image-3.0-pro",
+      "outputCostPerImage": 0.03571428571428571,
+      "outputCostPerImageTiers": [
+        {
+          "maxPixels": 1048576,
+          "usdPerImage": 0.03571428571428571
+        },
+        {
+          "maxPixels": 0,
+          "usdPerImage": 0.07142857142857142
+        }
+      ],
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-11-13",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 qwen-image-3.0-pro：输出 1k 0.25、2k 0.50 元/张，输入图 0.02 元/张（help.aliyun.com/zh/model-studio/model-pricing，2026-11-13 复核，北京/全球区），最大输出 2048×2048（help.aliyun.com/zh/model-studio/image-model）；1K/2K 边界按输出像素 ≤1024×1024 为 1K、>1024×1024 为 2K（官方价格页只标 1k/2k 未给像素边界，本目录取 1024² 为 1K 上限），÷7.0 → 1K $0.035714/张、2K $0.071429/张、输入图 $0.002857/张",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -471,6 +520,29 @@
       "sourcePricingNote": "官方人民币价 0.5 元/百万 tokens（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 向量段），按约定汇率 7.0 换算 0.0714/百万 tokens（0.5÷7.0）；此前落国际站 $0.07 明文（近似值 7e-08），按国内口径回正为精确值",
       "supportedAPIProtocols": [
         "embed_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7.142857142857142e-08,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "rerank",
+      "model": "qwen3.7-text-rerank",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-08-31",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-11-12",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "阿里云百炼模型计费页 help.aliyun.com/zh/model-studio/model-pricing 排序模型段（2026-11-12 核对）：qwen3.7-text-rerank 0.5 元/百万 input tokens，按输入 Token 计费、输出不计费；按约定汇率 7.0 换算 0.0714286/百万 tokens",
+      "supportedAPIProtocols": [
+        "rerank"
       ],
       "supportsPromptCaching": false
     }

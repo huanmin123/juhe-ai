@@ -63,6 +63,8 @@ type minimaxVideoTask struct {
 	pollCount int
 	done      bool
 	failed    bool
+	// v2 marks H3/H3-Max tasks (create {"task_id"}, poll nested {"task":...}).
+	v2 bool
 }
 
 // minimaxVideoTaskID extracts the task_id query parameter from the query
@@ -94,31 +96,37 @@ func minimaxFileID(query string) string {
 // handlers — a missing query parameter falls through to the same 404 as an
 // unknown id).
 func acceptsMinimaxVideoEndpoint(method, path string) bool {
-	if method == http.MethodPost && (path == "/v1/video_generation" || path == "/v1/t2a_v2") {
+	if method == http.MethodPost && (path == "/v1/video_generation" || path == "/v1/t2a_v2" || path == "/v2/video_generation") {
 		return true
 	}
 	if method != http.MethodGet {
 		return false
 	}
-	return path == "/v1/query/video_generation" || path == "/v1/files/retrieve"
+	return path == "/v1/query/video_generation" || path == "/v1/files/retrieve" ||
+		strings.HasPrefix(path, "/v2/query/video_generation/")
 }
 
 // isMinimaxVideoPath reports whether the path belongs to the minimax face.
 // It only runs after the method-aware whitelist accepted the request.
 func isMinimaxVideoPath(path string) bool {
 	return path == "/v1/video_generation" || path == "/v1/query/video_generation" ||
-		path == "/v1/files/retrieve" || path == "/v1/t2a_v2"
+		path == "/v1/files/retrieve" || path == "/v1/t2a_v2" ||
+		path == "/v2/video_generation" || strings.HasPrefix(path, "/v2/query/video_generation/")
 }
 
 // serveMinimax dispatches an accepted minimax request to its endpoint
 // handler.
 func (m *Server) serveMinimax(w http.ResponseWriter, r *http.Request, idx int, scenario Scenario) {
-	switch r.URL.Path {
-	case "/v1/video_generation":
-		m.serveMinimaxVideoCreate(w, scenario)
-	case "/v1/query/video_generation":
-		m.serveMinimaxVideoPoll(w, minimaxVideoTaskID(r.URL.RawQuery))
-	case "/v1/files/retrieve":
+	switch {
+	case r.URL.Path == "/v1/video_generation":
+		m.serveMinimaxVideoCreate(w, scenario, false)
+	case r.URL.Path == "/v2/video_generation":
+		m.serveMinimaxVideoCreate(w, scenario, true)
+	case r.URL.Path == "/v1/query/video_generation":
+		m.serveMinimaxVideoPoll(w, minimaxVideoTaskID(r.URL.RawQuery), false)
+	case strings.HasPrefix(r.URL.Path, "/v2/query/video_generation/"):
+		m.serveMinimaxVideoPoll(w, strings.TrimPrefix(r.URL.Path, "/v2/query/video_generation/"), true)
+	case r.URL.Path == "/v1/files/retrieve":
 		m.serveMinimaxFileRetrieve(w, minimaxFileID(r.URL.RawQuery))
 	default: // /v1/t2a_v2
 		m.serveMinimaxTTS(w, idx, scenario)
@@ -161,14 +169,20 @@ func (m *Server) newMinimaxTaskIDLocked() string {
 // Pre-accept rejections reuse the engine-level generic fault scenarios
 // (status_429 etc.) per contract §3.2.4; the OK face never answers a
 // non-zero base_resp on creation.
-func (m *Server) serveMinimaxVideoCreate(w http.ResponseWriter, scenario Scenario) {
+func (m *Server) serveMinimaxVideoCreate(w http.ResponseWriter, scenario Scenario, v2 bool) {
 	m.mu.Lock()
 	id := m.newMinimaxTaskIDLocked()
-	m.minimaxVideoTasks[id] = &minimaxVideoTask{id: id, scenario: minimaxScriptFor(scenario)}
-	body, _ := json.Marshal(map[string]any{
-		"task_id":   id,
-		"base_resp": map[string]any{"status_code": 0, "status_msg": ""},
-	})
+	m.minimaxVideoTasks[id] = &minimaxVideoTask{id: id, scenario: minimaxScriptFor(scenario), v2: v2}
+	var body []byte
+	if v2 {
+		// H3 v2 create: acceptance credential is the top-level task_id only.
+		body, _ = json.Marshal(map[string]any{"task_id": id})
+	} else {
+		body, _ = json.Marshal(map[string]any{
+			"task_id":   id,
+			"base_resp": map[string]any{"status_code": 0, "status_msg": ""},
+		})
+	}
 	m.mu.Unlock()
 	writeJSONStatus(w, http.StatusOK, string(body))
 }
@@ -184,6 +198,9 @@ func (m *Server) minimaxArtifactURLLocked(task *minimaxVideoTask) string {
 // minimaxQueryBodyLocked renders the query/video_generation object for the
 // current state. Callers must hold m.mu.
 func (m *Server) minimaxQueryBodyLocked(task *minimaxVideoTask) string {
+	if task.v2 {
+		return m.minimaxH3QueryBodyLocked(task)
+	}
 	switch {
 	case task.failed:
 		return fmt.Sprintf(`{"task_id":%q,"status":"Fail","base_resp":{"status_code":1004,"status_msg":"video generation failed"}}`, task.id)
@@ -226,7 +243,13 @@ func (m *Server) advanceMinimaxVideoTaskLocked(task *minimaxVideoTask) {
 		task.done = true
 		task.failed = true
 	default: // media_minimax_create_ok and the normalized default script
-		if task.pollCount >= 3 {
+		// H3 v2 脚本为 processing → succeeded（2 次轮询）；v1 保持
+		// Preparing → Queueing → Processing → Success（3 次）。
+		threshold := 3
+		if task.v2 {
+			threshold = 2
+		}
+		if task.pollCount >= threshold {
 			task.done = true
 		}
 	}
@@ -235,16 +258,30 @@ func (m *Server) advanceMinimaxVideoTaskLocked(task *minimaxVideoTask) {
 // serveMinimaxVideoPoll implements GET /v1/query/video_generation?task_id=:
 // unknown ids answer 404 (minimax error envelope); otherwise the frozen
 // script advances once and the query object is returned.
-func (m *Server) serveMinimaxVideoPoll(w http.ResponseWriter, taskID string) {
+func (m *Server) serveMinimaxVideoPoll(w http.ResponseWriter, taskID string, v2 bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.minimaxVideoTasks[taskID]
-	if !ok {
+	if !ok || task.v2 != v2 {
 		writeJSONStatus(w, http.StatusNotFound, `{"base_resp":{"status_code":1005,"status_msg":"task not exist"}}`)
 		return
 	}
 	m.advanceMinimaxVideoTaskLocked(task)
 	writeJSONStatus(w, http.StatusOK, m.minimaxQueryBodyLocked(task))
+}
+
+// minimaxH3QueryBodyLocked renders the H3 v2 nested query object
+// ({"task":{"status","content":{"url"},"error"}}). Callers must hold m.mu.
+func (m *Server) minimaxH3QueryBodyLocked(task *minimaxVideoTask) string {
+	switch {
+	case task.failed:
+		return fmt.Sprintf(`{"task":{"status":"failed","error":{"code":1004,"message":"video generation failed"}}}`)
+	case task.done:
+		url, _ := json.Marshal(m.minimaxArtifactURLLocked(task))
+		return fmt.Sprintf(`{"task":{"status":"succeeded","content":{"url":%s}}}`, string(url))
+	default:
+		return `{"task":{"status":"processing"}}`
+	}
 }
 
 // serveMinimaxFileRetrieve implements the artifact download endpoint

@@ -91,7 +91,7 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 	// len(registeredSteps)，空库上目标态判据式步骤（违规计数类）空真满足归
 	// adopt，其余 pending；两列表必须恰好不重不漏覆盖全部步骤 ID。
 	total := len(dryReport.Plan.Pending) + len(dryReport.Plan.Adopt)
-	if total != 20 {
+	if total != 26 {
 		t.Fatalf("fresh dry-run 步骤总数不符: pending=%d adopt=%d 合计=%d destructive=%d",
 			len(dryReport.Plan.Pending), len(dryReport.Plan.Adopt), total, dryReport.Plan.DestructiveDDLStatements)
 	}
@@ -107,8 +107,8 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 			t.Fatalf("步骤 %s 在 pending/adopt 出现 %d 次（应恰好一次）", stepID, count)
 		}
 	}
-	if len(seen) != 20 {
-		t.Fatalf("步骤 ID 去重后 %d 个，want 20（rev7 已随 AI 问答退役删除；rev13 为 T91-3 schedulable 归一；rev20 为跨协议入口映射退役；rev22 为高并发分组退役；rev23 为 usage shard 目录退役；rev24 为时间类型 Phase 2-1；rev25 为 Phase 2-2 CRUD；rev26 为 Phase 2-3 accounts；rev27 为 Phase 2-4 dataset/jobs）", len(seen))
+	if len(seen) != 26 {
+		t.Fatalf("步骤 ID 去重后 %d 个，want 26（rev7 已随 AI 问答退役删除；rev13 为 T91-3 schedulable 归一；rev20 为跨协议入口映射退役；rev22 为高并发分组退役；rev23 为 usage shard 目录退役；rev24 为时间类型 Phase 2-1；rev25 为 Phase 2-2 CRUD；rev26 为 Phase 2-3 accounts；rev27 为 Phase 2-4 dataset/jobs；rev28 为 Phase 3 统计域；rev29-31 为 usage_records prepare/swap/retire；rev32-34 为 Phase 5 运行态批次）", len(seen))
 	}
 	for _, item := range dryReport.Plan.Pending {
 		t.Logf("pending rev=%d %s", item.Revision, item.StepID)

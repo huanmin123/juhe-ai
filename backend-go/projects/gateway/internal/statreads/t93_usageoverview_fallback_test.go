@@ -100,7 +100,7 @@ func TestT93UsageOverviewWindowSectionsPreferSnapshots(t *testing.T) {
 	if _, err := fixture.db.Exec(`
 		INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour,
 			request_count, error_count, duration_ms_sum, duration_ms_count)
-		VALUES ('global', 'system_account', 'global', '2026-09-04T00', 1, 0, 100, 1);
+		VALUES ('global', 'system_account', 'global', '2026-09-04 00:00:00', 1, 0, 100, 1);
 		INSERT INTO juhe_stats.usage_model_daily (system_account_id, stat_date, provider_code, model,
 			request_count, input_tokens, output_tokens, total_cost_usd)
 		VALUES ('global', '2026-09-04', 'openai', 'fact-model', 1, 1, 1, 0.1);
@@ -112,7 +112,7 @@ func TestT93UsageOverviewWindowSectionsPreferSnapshots(t *testing.T) {
 	if _, err := fixture.db.Exec(`
 		INSERT INTO juhe_stats.usage_overview_trend_windows (system_account_id, window_key, start_date, end_date,
 			bucket_key, request_count, error_count, duration_ms_sum, duration_ms_count)
-		VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04T00', 77, 7, 7000, 7);
+		VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04 00:00:00', 77, 7, 7000, 7);
 		INSERT INTO juhe_stats.usage_model_rank_windows (system_account_id, window_key, start_date, end_date,
 			rank, provider_code, model, request_count, input_tokens, output_tokens, total_cost_usd)
 		VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', 1, 'window-provider', 'window-model', 88, 800, 400, 8.8);
@@ -163,10 +163,10 @@ func TestT93UsageOverviewHourlyTrendFallsBackToRealtime(t *testing.T) {
 		INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour,
 			request_count, error_count, duration_ms_sum, duration_ms_count)
 		VALUES
-			('global', 'system_account', 'global', '2026-09-02T01', 2, 1, 1000, 2),
-			('global', 'system_account', 'global', '2026-09-02T07', 3, 0, 3000, 3),
-			('global', 'system_account', 'global', '2026-09-03T23', 5, 2, 5000, 5),
-			('sys-other', 'system_account', 'sys-other', '2026-09-02T01', 99, 99, 9900, 99)`); err != nil {
+			('global', 'system_account', 'global', '2026-09-02 01:00:00', 2, 1, 1000, 2),
+			('global', 'system_account', 'global', '2026-09-02 07:00:00', 3, 0, 3000, 3),
+			('global', 'system_account', 'global', '2026-09-03 23:00:00', 5, 2, 5000, 5),
+			('sys-other', 'system_account', 'sys-other', '2026-09-02 01:00:00', 99, 99, 9900, 99)`); err != nil {
 		t.Fatalf("seed hourly: %v", err)
 	}
 	handler := fixture.deps.overviewSectionHandler(false)

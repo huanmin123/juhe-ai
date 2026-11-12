@@ -537,7 +537,7 @@ func TestW1VHandleUpstreamResponseAbortsAndRenders503(t *testing.T) {
 			Body:   io.NopCloser(strings.NewReader(`{}`)),
 		},
 	}
-	handling := loop.c.handleUpstreamResponse(req, res, loop.auditCapture, loop.current, dispatched, loop.startedAt,
+	handling := loop.c.handleUpstreamResponse(nil, req, res, loop.auditCapture, loop.current, dispatched, loop.startedAt,
 		gatewayruntimecache.GatewaySettings{}, requestBudgets{}, nil)
 	if handling.RetryUpstream || handling.ErrorCode != "" {
 		t.Fatalf("中止出口必须返回零值结果: %+v", handling)

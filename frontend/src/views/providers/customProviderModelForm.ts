@@ -55,6 +55,28 @@ export interface CustomModelForm {
   outputUsdPerImage?: number
 }
 
+/** 工具用途模式：与文本共用价格表分组，但协议/能力/价格字段只保留工具面。 */
+const CUSTOM_MODEL_UTILITY_PROTOCOLS: Partial<Record<ProviderModelMode, ProviderModelApiProtocol>> = {
+  embedding: 'embed_content',
+  rerank: 'rerank',
+  moderation: 'moderation'
+}
+
+export function isCustomModelUtilityMode(mode: string | undefined): mode is 'embedding' | 'rerank' | 'moderation' {
+  return mode === 'embedding' || mode === 'rerank' || mode === 'moderation'
+}
+
+export function customModelUtilityProtocol(mode: string | undefined): ProviderModelApiProtocol | undefined {
+  return isCustomModelUtilityMode(mode) ? CUSTOM_MODEL_UTILITY_PROTOCOLS[mode] : undefined
+}
+
+/** 表单回填：工具 mode 必须原样保留，不能按文本分类折叠成 text。 */
+export function normalizeCustomModelUIMode(mode: string | undefined, model: string): ProviderModelMode {
+  const normalized = (mode ?? '').trim().toLowerCase()
+  if (isCustomModelUtilityMode(normalized)) return normalized
+  return categoryFromModeOrModel(normalized, model)
+}
+
 export const emptyCustomModelForm: CustomModelForm = {
   scope: 'personal',
   model: '',
@@ -78,7 +100,7 @@ export function createCustomModelFormFromPricing(
     scope: record.scope === 'global' ? 'global' : 'personal',
     model: record.model,
     status: record.status ?? 'active',
-    mode: categoryFromModeOrModel(record.mode, record.model),
+    mode: normalizeCustomModelUIMode(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedToolsByProtocol: cloneToolsByProtocol(record.supportedToolsByProtocol),
     inputModalities: [...(record.inputModalities ?? [])],
@@ -106,7 +128,7 @@ export function createCustomModelFormFromPricing(
   }
 
   const category = categoryFromModeOrModel(form.mode, form.model)
-  clearCustomModelPricesOutsideCategory(form, category)
+  clearCustomModelPricesForMode(form, category)
   return form
 }
 
@@ -142,10 +164,11 @@ export function buildCustomModelPayload(
     Object.assign(payload, buildCustomModelDirectPricePayload(form, category))
   }
   if (options.includeRequestCapabilities) {
-    const supportedReasoningEfforts = category === 'text'
+    const supportsChatCapabilities = category === 'text' && !isCustomModelUtilityMode(form.mode)
+    const supportedReasoningEfforts = supportsChatCapabilities
       ? normalizeReasoningEfforts(form.supportedReasoningEfforts)
       : []
-    payload.supportedServiceTiers = category === 'text'
+    payload.supportedServiceTiers = supportsChatCapabilities
       ? normalizeServiceTiers(form.supportedServiceTiers)
       : []
     payload.supportedReasoningEfforts = supportedReasoningEfforts
@@ -257,7 +280,16 @@ export function availableCustomModelModeOptions(providerCode: string, providerMo
   if (code === 'gpt') {
     categories.add('image')
   }
-  return modelModeOptions.filter((option) => categories.has(option.value))
+  // B7 工具分类只在官方支持的厂商开放（gpt：向量/安全；qwen：向量/重排），
+  // 其余厂商无官方工具端点，不再「先放开再修」。
+  const utilityModes: ProviderModelMode[] = code === 'gpt'
+    ? ['embedding', 'moderation']
+    : code === 'qwen'
+      ? ['embedding', 'rerank']
+      : []
+  return modelModeOptions.filter((option) => (
+    utilityModes.includes(option.value) || categories.has(option.value as ModelCategoryKey)
+  ))
 }
 
 /** 表单回填价格归一：Number() 天然去尾零（0.10000000 → 0.1、2.00000000 → 2），数值等价不损精度。 */
@@ -332,6 +364,22 @@ function cloneProviderModelPayloadValue<T>(value: T): T {
   return value
 }
 
+export function customModelVisiblePriceFields(mode: ProviderModelMode, category: ModelCategoryKey): DirectPriceFieldKey[] {
+  if (isCustomModelUtilityMode(mode)) return ['inputUsdPer1M']
+  return directPriceFieldsByCategory[category]
+}
+
+export function clearCustomModelPricesForMode(form: CustomModelForm, category: ModelCategoryKey): void {
+  if (isCustomModelUtilityMode(form.mode)) {
+    for (const field of directPriceFieldKeys) {
+      if (field !== 'inputUsdPer1M') form[field] = undefined
+    }
+    form.serviceTierPrices = {}
+    return
+  }
+  clearCustomModelPricesOutsideCategory(form, category)
+}
+
 export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, category: ModelCategoryKey): void {
   const visibleFields = new Set(directPriceFieldsByCategory[category])
   for (const field of directPriceFieldKeys) {
@@ -343,7 +391,7 @@ export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, cat
 }
 
 function buildCustomModelDirectPricePayload(form: CustomModelForm, category: ModelCategoryKey) {
-  const visibleFields = new Set(directPriceFieldsByCategory[category])
+  const visibleFields = new Set(customModelVisiblePriceFields(form.mode, category))
   const payload: Partial<Record<DirectPriceFieldKey, number | null>> = {}
   for (const field of directPriceFieldKeys) {
     payload[field] = !visibleFields.has(field)

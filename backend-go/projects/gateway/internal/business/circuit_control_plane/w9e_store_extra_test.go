@@ -187,7 +187,7 @@ func TestW9EDedupeReceiptWithoutIncident(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 	// 先手工落下 dedupe 回执，但不写 incident 行。
-	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('evt','` + ProjectionKey + `','incident:tr-orphan','incident_changed','a1','a1','w9e-orphan','inc-w9e-orphan','tr-orphan',1,1,'pending',1,0,1,1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('evt','` + ProjectionKey + `','incident:tr-orphan','incident_changed','a1','a1','w9e-orphan','inc-w9e-orphan','tr-orphan',1,1,'pending',to_timestamp(1/1000.0),0,to_timestamp(1/1000.0),to_timestamp(1/1000.0))`); err != nil {
 		t.Fatal(err)
 	}
 	mut := wkBaseIncident("w9e-orphan", "a1", 1)

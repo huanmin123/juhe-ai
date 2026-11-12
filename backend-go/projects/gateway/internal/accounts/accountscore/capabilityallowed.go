@@ -39,6 +39,10 @@ var (
 	audioTranscriptionLaneModes = []string{"audio_transcription_json"}
 	realtimeSessionLaneModes    = []string{"realtime_session"}
 	imageDomainLaneModes        = []string{"images_json"}
+	// B7 工具场景 lane：向量/重排/安全各一个同步形态。
+	embeddingDomainLaneModes  = []string{"embed_content"}
+	rerankDomainLaneModes     = []string{"rerank_json"}
+	moderationDomainLaneModes = []string{"moderation_json"}
 )
 
 // CapabilityDomainLabels 是场景的用户可见名称（错误文案用）。
@@ -78,6 +82,12 @@ func domainLaneModes(domain string) []string {
 			audioTranscriptionLaneModes...), realtimeSessionLaneModes...)
 	case CapabilityDomainImage:
 		return append([]string{}, imageDomainLaneModes...)
+	case CapabilityDomainEmbedding:
+		return append([]string{}, embeddingDomainLaneModes...)
+	case CapabilityDomainRerank:
+		return append([]string{}, rerankDomainLaneModes...)
+	case CapabilityDomainModeration:
+		return append([]string{}, moderationDomainLaneModes...)
 	}
 	return nil
 }
@@ -123,7 +133,9 @@ const (
 // resolveCapabilityWriteContext 的行判定，导入/批量经同一对函数自动覆盖。
 // xai 行 audio 位待上游契约回填后随计划矩阵更新开通。
 var capabilityDomainMatrix = map[string]map[string]bool{
-	capabilityMatrixOpenAI: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
+	// B7：gpt OpenAI 档案新增向量/安全域（官方 /v1/embeddings、/v1/moderations）；
+	// 重排无官方端点，不开放。
+	capabilityMatrixOpenAI: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true, CapabilityDomainEmbedding: true, CapabilityDomainModeration: true},
 	// xai 行图像格 2026-10-31 开通（真实上游取证：用户经 api.shenwenai.com/v1
 	// 中转对 grok-imagine-image 以 OpenAI images 形态实测出图成功；演练场
 	// E2E 驱动，连接注册表 xai_openai_v1 同批补 DomainImage 组合）。
@@ -144,7 +156,9 @@ var capabilityDomainMatrix = map[string]map[string]bool{
 	// qwen 图像格 2026-11-11 开通（图像同步批：DashScope Qwen-Image 2.0/3.0
 	// 真实探针 200；连接注册表 qwen_dashscope 同批补 images_json + DomainImage，
 	// gatewaymedia qwenImageAdapter 承接原生 multimodal-generation 报文）。
-	capabilityMatrixQwen: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
+	// B7：qwen 新增向量域（compatible-mode /embeddings）与重排域（DashScope
+	// text-rerank 原生端点）；安全域无对应端点，不开放。
+	capabilityMatrixQwen: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true, CapabilityDomainEmbedding: true, CapabilityDomainRerank: true},
 }
 
 // capabilityDomainMatrixAllows 查矩阵门：行未列出（未知上下文）默认拒绝，
@@ -315,18 +329,21 @@ func DefaultEndpointModesForDomain(domain, providerCode, accountType string, pro
 		// video_get）：落词表内基础对话对，保证 chat 域缺省恒 ⊆ 允许集
 		// （BUG-0323 根治）。
 		return intersectLaneModes([]string{"chat_json", "chat_sse"}, vocabulary)
-	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage:
-		// 媒体域：默认集 = 允许集全量（域 lane 集 × 矩阵门 × 写侧词表）。
+	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage,
+		CapabilityDomainEmbedding, CapabilityDomainRerank, CapabilityDomainModeration:
+		// 媒体/工具域：默认集 = 允许集全量（域 lane 集 × 矩阵门 × 写侧词表）。
 		return intersectLaneModes(domainLaneModes(domain), vocabulary)
 	}
 	return []string{}
 }
 
-// CapabilityDomainIsMedia 判定媒体域（video/audio/image）：媒体账户没有用户
-// 可配置的上游接口能力开关，声明集恒等于域允许集全量。
+// CapabilityDomainIsMedia 判定媒体/工具域（video/audio/image/embedding/rerank/
+// moderation）：这些账户没有用户可配置的上游接口能力开关，声明集恒等于域
+// 允许集全量（工具域各只有一个 mode，效果相同）。
 func CapabilityDomainIsMedia(domain string) bool {
 	switch domain {
-	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage:
+	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage,
+		CapabilityDomainEmbedding, CapabilityDomainRerank, CapabilityDomainModeration:
 		return true
 	default:
 		return false
@@ -334,12 +351,14 @@ func CapabilityDomainIsMedia(domain string) bool {
 }
 
 // EffectiveEndpointModesForDomain 返回账户最终生效的声明集语义：chat 域保留
-// 用户声明（可为收窄集合）；媒体域（video/audio/image）恒等于该上下文允许集
-// 全量——媒体账户没有用户可配置的上游接口能力开关（2026-11-11 裁决）。
+// 用户声明（可为收窄集合）；媒体/工具域（video/audio/image/embedding/rerank/
+// moderation）恒等于该上下文允许集全量——这些账户没有用户可配置的上游接口
+// 能力开关（2026-11-11 裁决，B7 工具域沿用）。
 // 调用方仍需先对显式提交值做域外校验，再以本函数收敛落库值。
 func EffectiveEndpointModesForDomain(domain string, allowed, declared []string) []string {
 	switch domain {
-	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage:
+	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage,
+		CapabilityDomainEmbedding, CapabilityDomainRerank, CapabilityDomainModeration:
 		return append([]string{}, allowed...)
 	default:
 		return declared
@@ -349,7 +368,8 @@ func EffectiveEndpointModesForDomain(domain string, allowed, declared []string) 
 // DefaultHealthCheckEndpointModeForDomain 是新建账户
 // health_check_endpoint_mode 的按域默认落值（媒体账户生命周期定案表）：
 // chat=chat_sse（流式优先，AI账户检查模型与人工测试设计 2026-10-19 定案；
-// 原 chat_json）、image=images_json、audio=audio_speech、video=video_create。
+// 原 chat_json）、image=images_json、audio=audio_speech、video=video_create、
+// embedding=embed_content、rerank=rerank_json、moderation=moderation_json。
 // 仅入参未显式提供时使用。
 func DefaultHealthCheckEndpointModeForDomain(domain string) string {
 	switch domain {
@@ -359,6 +379,12 @@ func DefaultHealthCheckEndpointModeForDomain(domain string) string {
 		return "audio_speech"
 	case CapabilityDomainImage:
 		return "images_json"
+	case CapabilityDomainEmbedding:
+		return "embed_content"
+	case CapabilityDomainRerank:
+		return "rerank_json"
+	case CapabilityDomainModeration:
+		return "moderation_json"
 	}
 	return "chat_sse"
 }

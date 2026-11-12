@@ -410,7 +410,7 @@ func w1MergeCoverageProfiles(t *testing.T, unitPath, bootPath, outPath string) {
 
 // w1BuildSystemApiEvidence 返回系统 API 组合根启动所需的基础 env。
 // 清理批次 C1（2026-09-30）：cutover evidence 构造已随切流门禁退役
-//（evidencePath 恒空，保留签名兼容调用点）；门禁 env 家族不再解析。
+// （evidencePath 恒空，保留签名兼容调用点）；门禁 env 家族不再解析。
 // 2026-10-24 存储形态收口：原 sqlite 库路径键（BUSINESS/CHAT_DATABASE_PATH）
 // 随存储形态退役删除，调用方按 PG 唯一形态注入连接串。
 func w1BuildSystemApiEvidence(t *testing.T, root string) (evidencePath string, env map[string]string) {

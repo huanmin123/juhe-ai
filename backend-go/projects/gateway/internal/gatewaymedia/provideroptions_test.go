@@ -4,6 +4,7 @@ package gatewaymedia
 // 归一；Merge 的覆盖同名/忽略未命中/嵌套合并/不修改入参。
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -57,8 +58,8 @@ func TestMergeProviderOptions(t *testing.T) {
 	}
 	opts := map[string]any{
 		"openai": map[string]any{ // 命中子对象
-			"prompt": "an overridden cat",   // 同名覆盖（L2 值）
-			"options": map[string]any{       // 嵌套合并
+			"prompt": "an overridden cat", // 同名覆盖（L2 值）
+			"options": map[string]any{ // 嵌套合并
 				"nested": map[string]any{"over": "vendor"},
 			},
 			"vendor_extra": "raw", // 未知键原样透传
@@ -133,7 +134,7 @@ func TestMergeProviderOptions(t *testing.T) {
 // TestProviderOptionAliasMatching M2 复审 Minor-1 观察项 2：匹配键同时认
 // 账户 provider_code 原键（gpt——openai 的 OAuth 子供应商）与 adapter 注册
 // 键（openai）：gpt 账户的 {"gpt":{...}} 与 {"openai":{...}} 同样生效
-//（providerFamilyAlias 在归一映射处折叠子供应商代码）。
+// （providerFamilyAlias 在归一映射处折叠子供应商代码）。
 func TestProviderOptionAliasMatching(t *testing.T) {
 	base := map[string]any{"model": "sora-2", "prompt": "a cat"}
 	merged := MergeProviderOptions(base, "openai", map[string]any{
@@ -181,5 +182,42 @@ func TestAppliedProviderOptionKeys(t *testing.T) {
 	}
 	if got := AppliedProviderOptionKeys("openai", nil); got != nil {
 		t.Fatalf("空输入应返回 nil: %v", got)
+	}
+}
+
+// TestBillingProviderOptionsGuards 锁定 2026-11-13 T219 收口：视频 L3 不得
+// 覆盖 duration/resolution/size/content/image 等计费字段；图像 L3 不得覆盖
+// size（image/images 是契约 §9.3 允许的参考图通道，由请求计数纳入计费）。
+func TestBillingProviderOptionsGuards(t *testing.T) {
+	videoCases := []map[string]any{
+		{"minimax": map[string]any{"resolution": "2K"}},
+		{"minimax": map[string]any{"parameters": map[string]any{"duration": 10}}},
+		{"volcengine": map[string]any{"content": []any{}}},
+		{"gemini": map[string]any{"parameters": map[string]any{"sampleCount": 2}}},
+	}
+	for _, opts := range videoCases {
+		provider := ""
+		for key := range opts {
+			provider = key
+		}
+		if err := ValidateVideoBillingProviderOptions(provider, opts); !errors.Is(err, ErrParamUnsupported) {
+			t.Fatalf("视频计费字段应 400: %v / %v", opts, err)
+		}
+	}
+	if err := ValidateVideoBillingProviderOptions("minimax", map[string]any{
+		"minimax": map[string]any{"camera_fixed": true, "prompt_optimizer": true},
+	}); err != nil {
+		t.Fatalf("非计费视频键应放行: %v", err)
+	}
+
+	if err := ValidateImageBillingProviderOptions("volcengine", map[string]map[string]any{
+		"volcengine": {"size": "2048x2048"},
+	}); !errors.Is(err, ErrParamUnsupported) {
+		t.Fatalf("图像 size 覆盖应 400: %v", err)
+	}
+	if err := ValidateImageBillingProviderOptions("volcengine", map[string]map[string]any{
+		"volcengine": {"image": "https://example.com/ref.png", "watermark": false},
+	}); err != nil {
+		t.Fatalf("参考图 image 应放行: %v", err)
 	}
 }

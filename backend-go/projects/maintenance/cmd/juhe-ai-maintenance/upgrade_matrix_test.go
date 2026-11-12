@@ -119,8 +119,8 @@ func runMatrixForRef(t *testing.T, ref, matrixSecret string, mockdata bool) {
 	//（rev7 已随退役删除；14..19、21 为纯 DDL 空号不入账本），当前 20 个注册
 	//步骤；fresh schema 已是 revision 27 类型，rev24/25/26/27 由 Satisfied 直接采纳，
 	//账本（含 adopted 行）为 20 行；schema_state 才按最高 revision 落值。
-	if applied != 20 || stateRevision != contracts.SchemaRevision {
-		t.Fatalf("[%s] 账本 applied=%d（want 20 步）/ state revision=%d（want %d）",
+	if applied != 26 || stateRevision != contracts.SchemaRevision {
+		t.Fatalf("[%s] 账本 applied=%d（want 26 步）/ state revision=%d（want %d）",
 			ref, applied, stateRevision, contracts.SchemaRevision)
 	}
 

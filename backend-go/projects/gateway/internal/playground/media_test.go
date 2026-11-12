@@ -234,9 +234,9 @@ func TestImagesValidation(t *testing.T) {
 	}
 }
 
-// TestVideosCreateAndPoll 视频创建与轮询：创建体（model/prompt/size/seconds/
-// input_reference data URL）、响应 {jobId}；轮询 in_progress→running 归一、
-// error 透出、purpose 头与 GET 方法。
+// TestVideosCreateAndPoll 视频创建与轮询：创建体（New API 字段 model/prompt/
+// width/height/duration/image data URL）、响应 {jobId}；轮询 in_progress→
+// running 归一、url 直链回显、error 透出、purpose 头与 GET 方法。
 func TestVideosCreateAndPoll(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
 	catalog := deps.ProviderCatalog.(*staticCatalog)
@@ -245,8 +245,8 @@ func TestVideosCreateAndPoll(t *testing.T) {
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
-		{Body: []byte(`{"id":"job_v1","status":"queued","progress":0}`)},
-		{Body: []byte(`{"id":"job_v1","status":"in_progress","progress":40}`)},
+		{Body: []byte(`{"id":"job_v1","task_id":"job_v1","status":"queued","object":"video"}`)},
+		{Body: []byte(`{"task_id":"job_v1","status":"in_progress","progress":40,"url":"https://cdn.invalid/clip.mp4"}`)},
 	}
 	mux, _ := newTestRoutes(deps)
 	payload, _ := json.Marshal(map[string]any{
@@ -258,30 +258,32 @@ func TestVideosCreateAndPoll(t *testing.T) {
 		t.Fatalf("创建状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
 	createCall := dispatch.calls[0]
-	if createCall.Request.Path != "/v1/videos" || createCall.Request.Method != "POST" {
+	if createCall.Request.Path != "/v1/video/generations" || createCall.Request.Method != "POST" {
 		t.Fatalf("创建派发目标 = %s %s", createCall.Request.Method, createCall.Request.Path)
 	}
 	if createCall.Request.Headers["x-juhe-ai-purpose"] != "playground_videos" {
 		t.Fatalf("purpose 头 = %q", createCall.Request.Headers["x-juhe-ai-purpose"])
 	}
 	var createOutbound struct {
-		Model          string   `json:"model"`
-		Prompt         string   `json:"prompt"`
-		Size           string   `json:"size"`
-		Seconds        *float64 `json:"seconds"`
-		InputReference string   `json:"input_reference"`
+		Model    string   `json:"model"`
+		Prompt   string   `json:"prompt"`
+		Width    int      `json:"width"`
+		Height   int      `json:"height"`
+		Duration *float64 `json:"duration"`
+		Image    string   `json:"image"`
 	}
 	if err := json.Unmarshal(createCall.Request.Body, &createOutbound); err != nil {
 		t.Fatalf("创建请求体解析失败: %v", err)
 	}
-	if createOutbound.Model != "grok-imagine-video-1.5" || createOutbound.Prompt != "一只猫在跳舞" || createOutbound.Size != "1280x720" {
+	if createOutbound.Model != "grok-imagine-video-1.5" || createOutbound.Prompt != "一只猫在跳舞" ||
+		createOutbound.Width != 1280 || createOutbound.Height != 720 {
 		t.Fatalf("创建体不符: %+v", createOutbound)
 	}
-	if createOutbound.Seconds == nil || *createOutbound.Seconds != 5 {
-		t.Fatalf("seconds 透传不符: %v", createOutbound.Seconds)
+	if createOutbound.Duration == nil || *createOutbound.Duration != 5 {
+		t.Fatalf("duration 透传不符: %v", createOutbound.Duration)
 	}
-	if !strings.HasPrefix(createOutbound.InputReference, "data:image/png;base64,") {
-		t.Fatalf("首帧 input_reference 应为 data URL: %q", createOutbound.InputReference)
+	if !strings.HasPrefix(createOutbound.Image, "data:image/png;base64,") {
+		t.Fatalf("首帧 image 应为 data URL: %q", createOutbound.Image)
 	}
 	var created struct {
 		Data struct {
@@ -297,13 +299,14 @@ func TestVideosCreateAndPoll(t *testing.T) {
 		t.Fatalf("轮询状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
 	pollCall := dispatch.calls[1]
-	if pollCall.Request.Method != "GET" || pollCall.Request.Path != "/v1/videos/job_v1" {
+	if pollCall.Request.Method != "GET" || pollCall.Request.Path != "/v1/video/generations/job_v1" {
 		t.Fatalf("轮询派发 = %s %s", pollCall.Request.Method, pollCall.Request.Path)
 	}
 	var pollPayload struct {
 		Data struct {
 			Status   string `json:"status"`
 			Progress *int64 `json:"progress"`
+			URL      string `json:"url"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &pollPayload); err != nil {
@@ -311,6 +314,9 @@ func TestVideosCreateAndPoll(t *testing.T) {
 	}
 	if pollPayload.Data.Status != "running" || pollPayload.Data.Progress == nil || *pollPayload.Data.Progress != 40 {
 		t.Fatalf("轮询归一不符: %+v", pollPayload.Data)
+	}
+	if pollPayload.Data.URL != "https://cdn.invalid/clip.mp4" {
+		t.Fatalf("轮询 url 直链回显不符: %+v", pollPayload.Data)
 	}
 }
 
@@ -356,7 +362,7 @@ func TestVideosContentStreamsPassthrough(t *testing.T) {
 	if !bytes.Equal(recorder.Body.Bytes(), videoBytes) {
 		t.Fatalf("产物字节不符（len %d）", recorder.Body.Len())
 	}
-	if dispatch.calls[0].Request.Path != "/v1/videos/job_c/content" {
+	if dispatch.calls[0].Request.Path != "/v1/video/generations/job_c/content" {
 		t.Fatalf("派发路径 = %q", dispatch.calls[0].Request.Path)
 	}
 }
@@ -467,7 +473,7 @@ func mustJSON(value any) []byte {
 func TestVideosPollUnknownStatusKeepsRawText(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{Body: []byte(`{"id":"job_u","status":"weird_state","progress":10}`)}}
+	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_u","status":"weird_state","progress":10}`)}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_u?accountId=acc_1", nil)
 	if recorder.Code != http.StatusOK {
@@ -499,7 +505,7 @@ func TestVideosPollUnknownStatusKeepsRawText(t *testing.T) {
 func TestVideosPollKnownStatusNoSyntheticError(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{Body: []byte(`{"id":"job_k","status":"expired","progress":100}`)}}
+	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_k","status":"expired","progress":100}`)}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_k?accountId=acc_1", nil)
 	if recorder.Code != http.StatusOK {

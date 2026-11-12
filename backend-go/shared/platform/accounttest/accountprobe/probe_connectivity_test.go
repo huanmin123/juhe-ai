@@ -242,7 +242,8 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 // /api/v3/tts/create + X-Api-Key speech_token），账户 base_url（ark /api/v3）
 // 不参与拼接；body 必须带 model（缺 model 会被 45000030 挡在 resource_id
 // 解析层，无法证明密钥有效）。
-func TestConnectivityProbeVolcengineSpeech(t *testing.T) {	capture := &connectivityCapture{}
+func TestConnectivityProbeVolcengineSpeech(t *testing.T) {
+	capture := &connectivityCapture{}
 	server := newConnectivityServer(t, http.StatusBadRequest, `{"code":45001116,"message":"text_prompt is required"}`, capture)
 	defer server.Close()
 	original := volcengineSpeechBaseURL
@@ -293,5 +294,88 @@ func TestConnectivityProbeLimitedMaskMessage(t *testing.T) {
 	}
 	if !observation.Evidence.Connectivity {
 		t.Fatal("evidence 必须带 connectivity 标记")
+	}
+}
+
+// TestUtilityConnectivityRequestShapes 锁定 B7 工具账户人工连通性测试：
+// 空输入 POST 到同族端点，qwen 走 compatible-mode / DashScope 原生路径，
+// 历史版本根先剥离，不产生真实向量/重排/审核结果。
+func TestUtilityConnectivityRequestShapes(t *testing.T) {
+	cases := []struct {
+		name       string
+		provider   string
+		baseSuffix string
+		mode       EndpointMode
+		model      string
+		wantPath   string
+		wantBody   []string
+	}{
+		{
+			name: "gpt embeddings", provider: "gpt", mode: ModeEmbedContent, model: "text-embedding-3-small",
+			wantPath: "/embeddings", wantBody: []string{`"model":"text-embedding-3-small"`, `"input":[]`},
+		},
+		{
+			name: "qwen embeddings strips compatible-mode root", provider: "qwen", baseSuffix: "/compatible-mode/v1",
+			mode: ModeEmbedContent, model: "text-embedding-v4",
+			wantPath: "/compatible-mode/v1/embeddings", wantBody: []string{`"model":"text-embedding-v4"`, `"input":[]`},
+		},
+		{
+			name: "qwen rerank", provider: "qwen", mode: ModeRerankJSON, model: "qwen3.7-text-rerank",
+			wantPath: "/api/v1/services/rerank/text-rerank/text-rerank",
+			wantBody: []string{`"model":"qwen3.7-text-rerank"`, `"input":{"documents":[],"query":""}`},
+		},
+		{
+			name: "gpt moderation", provider: "gpt", mode: ModeModerationJSON, model: "omni-moderation-latest",
+			wantPath: "/moderations", wantBody: []string{`"model":"omni-moderation-latest"`, `"input":[]`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			view := connectivityView("https://upstream.example"+tc.baseSuffix, tc.mode, tc.model)
+			view.ProviderCode = tc.provider
+			req, err := buildConnectivityRequest(context.Background(), view, tc.mode, tc.model, "sk-test")
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if req.Method != http.MethodPost || req.URL.Path != tc.wantPath {
+				t.Fatalf("request = %s %s, want POST %s", req.Method, req.URL.Path, tc.wantPath)
+			}
+			raw, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			for _, fragment := range tc.wantBody {
+				if !strings.Contains(string(raw), fragment) {
+					t.Fatalf("body = %s, want %s", raw, fragment)
+				}
+			}
+		})
+	}
+}
+
+func TestUtilityConnectivityModeRecognized(t *testing.T) {
+	for _, mode := range []EndpointMode{ModeEmbedContent, ModeRerankJSON, ModeModerationJSON} {
+		if !isConnectivityProbeMode(mode) {
+			t.Fatalf("%s 必须走连通性探测", mode)
+		}
+		if !connectivityExpectedRejectionCodes(mode)[http.StatusBadRequest] {
+			t.Fatalf("%s 必须把 400 视为可达", mode)
+		}
+		if !connectivityExpectedRejectionCodes(mode)[http.StatusUnprocessableEntity] {
+			t.Fatalf("%s 必须把 422 视为可达", mode)
+		}
+	}
+}
+
+func TestResolveUtilityEndpointMode(t *testing.T) {
+	view := &View{
+		Type:                    "api_key",
+		ProtocolCode:            "openai",
+		HealthCheckEndpointMode: string(ModeEmbedContent),
+		NormalizeEndpointModes:  map[EndpointMode]bool{ModeEmbedContent: true},
+	}
+	got, err := resolveEndpointMode(view, ModeEmbedContent)
+	if err != nil || got != ModeEmbedContent {
+		t.Fatalf("resolveEndpointMode = %q, %v, want embed_content", got, err)
 	}
 }

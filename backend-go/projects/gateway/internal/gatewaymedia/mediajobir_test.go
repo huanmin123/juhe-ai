@@ -6,9 +6,9 @@ import "testing"
 
 func TestNormalizeOpenAIStatus(t *testing.T) {
 	cases := []struct {
-		raw      string
-		want     MediaJobStatus
-		known    bool
+		raw   string
+		want  MediaJobStatus
+		known bool
 	}{
 		{"queued", JobStatusQueued, true},
 		{"in_progress", JobStatusInProgress, true},

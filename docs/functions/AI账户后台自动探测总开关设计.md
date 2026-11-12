@@ -17,7 +17,7 @@
 - 该字段属于账户配置：创建 / 更新 / PATCH 接受 `backgroundProbeEnabled`；详情、列表、克隆上下文、导入导出、健康监控响应返回 `backgroundProbeEnabled`。
 - 变更走既有账户更新链路（`config_revision + 1`、审计、缓存失效）；在途探针结果因版本 / 代次不匹配自动作废。
 - **授权实例**只读继承来源账户值，不允许实例单独设置；来源翻转时沿 `temporaryUnavailableContinuousProbeEnabled` 的既有传播链同步实例行。
-- **全部场景统一适用**（D0/D6，2026-11-12）：chat/video/audio/image 以及后续工具/实时场景都使用同一开关；J1 已具备媒体连通性探测，video/audio 不再例外。前端统一显示开关与「手动」标签，后端创建/编辑/PATCH 一致接受 `backgroundProbeEnabled`；`SkipsConversationHealthStateMachine` 域特判已删除。
+- **全部场景统一适用**（D0/D6，2026-11-12）：chat/video/audio/image 以及 B7 向量/重排/安全（后续实时场景同规则）都使用同一开关；J1 已具备媒体连通性探测，video/audio 不再例外。前端统一显示开关与「手动」标签，后端创建/编辑/PATCH 一致接受 `backgroundProbeEnabled`；`SkipsConversationHealthStateMachine` 域特判已删除。
 
 ## 3. 关闭后的探测门禁（双重）
 

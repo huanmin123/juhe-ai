@@ -387,7 +387,7 @@ func TestWdAiPerformanceBaseHandler(t *testing.T) {
 		`INSERT INTO juhe_stats.ai_performance_summary_windows (system_account_id, window_key, start_date, end_date, request_count, first_token_ms_sum, first_token_ms_count, first_token_ms_max, duration_ms_sum, duration_ms_count, duration_ms_max)
 			VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', 10, 500, 4, 200, 1000, 5, 300)`,
 		`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max)
-			VALUES ('global', 'account', 'acct-p1', '2026-09-04T09', 4, 400, 4, 120, 480, 4, 150)`,
+			VALUES ('global', 'account', 'acct-p1', '2026-09-04 09:00:00', 4, 400, 4, 120, 480, 4, 150)`,
 	)
 	recorder := wdGet(t, fixture.deps.aiPerformanceBaseHandler(false),
 		"/?startDate=2026-09-04&endDate=2026-09-04", adminAuth(""))

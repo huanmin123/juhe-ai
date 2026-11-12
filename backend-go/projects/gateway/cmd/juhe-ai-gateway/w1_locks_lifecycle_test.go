@@ -213,7 +213,7 @@ func TestW1SChainAccountLocksAcquireCASHurdle(t *testing.T) {
 		deathTimeout: 300, retryInterval: 5, generation: 1,
 		incidentID:    sql.NullString{String: "w1s-1:1:t", Valid: true},
 		deadlineAt:    sql.NullString{String: isoMillisOf(time.UnixMilli(nowMs + 300_000)), Valid: true},
-		nextRetryAtMs: sql.NullInt64{Int64: nowMs + 10_000, Valid: true}})
+		nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(nowMs + 10_000), Valid: true}})
 
 	// generation 被并发改动 -> CAS 不命中。
 	if _, err := fixture.db.Exec(fixtureBind(`UPDATE account_lock_states SET generation = 99 WHERE account_id = ?`), "w1s-1"); err != nil {
@@ -245,9 +245,9 @@ func TestW1SChainAccountLocksConsumeExpiredLease(t *testing.T) {
 		deathTimeout: 300, retryInterval: 5, generation: 2,
 		incidentID:    sql.NullString{String: "w1s-1:2:t", Valid: true},
 		deadlineAt:    sql.NullString{String: isoMillisOf(time.UnixMilli(nowMs + 300_000)), Valid: true},
-		nextRetryAtMs: sql.NullInt64{Int64: nowMs - 1, Valid: true},
+		nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(nowMs - 1), Valid: true},
 		leaseID:       sql.NullString{String: "expired-lease", Valid: true},
-		leaseUntilMs:  sql.NullInt64{Int64: nowMs - 1, Valid: true}})
+		leaseUntilMs:  sql.NullTime{Time: time.UnixMilli(nowMs - 1), Valid: true}})
 	consumed, err := fixture.locks.ConsumeRetryLeaseAsync(ctx, "w1s-1", "expired-lease")
 	if err != nil || consumed {
 		t.Fatalf("过期租约 consume = (%v, %v), want (false, nil)", consumed, err)
@@ -259,9 +259,9 @@ func TestW1SChainAccountLocksConsumeExpiredLease(t *testing.T) {
 		deathTimeout: 300, retryInterval: 5, generation: 1,
 		incidentID:    sql.NullString{String: "w1s-2:1:t", Valid: true},
 		deadlineAt:    sql.NullString{String: isoMillisOf(time.UnixMilli(nowMs + 300_000)), Valid: true},
-		nextRetryAtMs: sql.NullInt64{Int64: nowMs - 5, Valid: true},
+		nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(nowMs - 5), Valid: true},
 		leaseID:       sql.NullString{String: "live-lease", Valid: true},
-		leaseUntilMs:  sql.NullInt64{Int64: nowMs + 60_000, Valid: true}})
+		leaseUntilMs:  sql.NullTime{Time: time.UnixMilli(nowMs + 60_000), Valid: true}})
 	consumed, err = fixture.locks.ConsumeRetryLeaseAsync(ctx, "w1s-2", "live-lease")
 	if err != nil || !consumed {
 		t.Fatalf("到期且有效租约 consume = (%v, %v), want (true, nil)", consumed, err)
@@ -297,9 +297,9 @@ func TestW1SChainAccountLocksAbandonNoOp(t *testing.T) {
 		deathTimeout: 300, retryInterval: 5, generation: 1,
 		incidentID:    sql.NullString{String: "w1s-2:1:t", Valid: true},
 		deadlineAt:    sql.NullString{String: isoMillisOf(time.UnixMilli(nowMs + 300_000)), Valid: true},
-		nextRetryAtMs: sql.NullInt64{Int64: nowMs + 5_000, Valid: true},
+		nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(nowMs + 5_000), Valid: true},
 		leaseID:       sql.NullString{String: "L-mismatch", Valid: true},
-		leaseUntilMs:  sql.NullInt64{Int64: nowMs + 5_000 + 60_001, Valid: true}})
+		leaseUntilMs:  sql.NullTime{Time: time.UnixMilli(nowMs + 5_000 + 60_001), Valid: true}})
 	if err := fixture.locks.AbandonRetryReservationAsync(ctx, gatewaydispatch.AccountLockRetryLease{AccountID: "w1s-2", LeaseID: "L-mismatch"}); err != nil {
 		t.Fatalf("abandon(mismatch) = %v", err)
 	}
@@ -315,15 +315,15 @@ func TestW1SChainAccountLocksAbandonNoOp(t *testing.T) {
 func TestW1SChainAccountLockRetryReservationDueAtMs(t *testing.T) {
 	cases := []struct {
 		name        string
-		nextRetry   sql.NullInt64
+		nextRetry   sql.NullTime
 		nowMs       int64
 		wantDue     int64
 		wantPresent bool
 	}{
-		{"未设置", sql.NullInt64{}, 5000, 0, false},
-		{"已过期立即到期", sql.NullInt64{Int64: 1000, Valid: true}, 5000, 5000, true},
-		{"未来到期", sql.NullInt64{Int64: 9000, Valid: true}, 5000, 9000, true},
-		{"恰好等于 now", sql.NullInt64{Int64: 5000, Valid: true}, 5000, 5000, true},
+		{"未设置", sql.NullTime{}, 5000, 0, false},
+		{"已过期立即到期", sql.NullTime{Time: time.UnixMilli(1000), Valid: true}, 5000, 5000, true},
+		{"未来到期", sql.NullTime{Time: time.UnixMilli(9000), Valid: true}, 5000, 9000, true},
+		{"恰好等于 now", sql.NullTime{Time: time.UnixMilli(5000), Valid: true}, 5000, 5000, true},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

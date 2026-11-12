@@ -47,7 +47,7 @@ func t87OpenStore(t *testing.T) (*Store, *sql.DB) {
 // 行后、ack 保留期内仍在的 dispatched outbox 行）。
 func t87DispatchOutbox(t *testing.T, db *sql.DB, dedupeKey string) {
 	t.Helper()
-	if _, err := db.Exec(`UPDATE ` + defaultBusinessSchema + `.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=2000 WHERE dedupe_key='` + dedupeKey + `'`); err != nil {
+	if _, err := db.Exec(`UPDATE ` + defaultBusinessSchema + `.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=to_timestamp(2000/1000.0) WHERE dedupe_key='` + dedupeKey + `'`); err != nil {
 		t.Fatalf("置 dispatched 失败: %v", err)
 	}
 }

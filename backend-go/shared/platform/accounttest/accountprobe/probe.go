@@ -1043,6 +1043,12 @@ func protocolName(protocol DiagnosticProtocol, mode EndpointMode) string {
 		return "OpenAI Audio Speech"
 	case mode == ModeAudioTranscriptionJSON:
 		return "OpenAI Audio Transcription"
+	case mode == ModeEmbedContent:
+		return "OpenAI Embeddings"
+	case mode == ModeRerankJSON:
+		return "OpenAI Rerank"
+	case mode == ModeModerationJSON:
+		return "OpenAI Moderations"
 	case mode == ModeChatJSON || mode == ModeChatSSE:
 		return "OpenAI Chat Completions"
 	default:

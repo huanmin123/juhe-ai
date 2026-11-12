@@ -93,13 +93,15 @@ func (d *Deps) usageOverviewHourlyTrendRealtime(r *http.Request, rng Range, syst
 			AND stat_hour <= ?
 		GROUP BY stat_hour
 		ORDER BY stat_hour ASC
-	`, systemAccountID, scopeID, rng.StartDate+"T00", rng.EndDate+"T23")
+	`, systemAccountID, scopeID,
+		calendarDBValue("stat_hour", rng.StartDate+"T00"),
+		calendarDBValue("stat_hour", rng.EndDate+"T23"))
 	if err != nil {
 		return nil, err
 	}
 	buckets := map[string]*usageOverviewTrendBucket{}
 	for _, row := range rows {
-		key := usageOverviewTrendBucketKey(row.text("stat_hour"), rng.Days)
+		key := usageOverviewTrendBucketKey(row.hour("stat_hour"), rng.Days)
 		bucket, ok := buckets[key]
 		if !ok {
 			bucket = &usageOverviewTrendBucket{}

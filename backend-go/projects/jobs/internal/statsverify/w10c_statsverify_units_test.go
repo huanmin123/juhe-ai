@@ -187,4 +187,3 @@ func TestW10CAggregateBatchNilStoreErrors(t *testing.T) {
 		t.Fatalf("nil store Refresh 应报错")
 	}
 }
-

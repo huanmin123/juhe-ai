@@ -287,9 +287,9 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 				lockState: "ENGAGED", deathTimeout: 300, retryInterval: 5, generation: 5,
 				incidentID:    sql.NullString{String: "acc-ro-consume:5:t", Valid: true},
 				deadlineAt:    sql.NullString{String: future, Valid: true},
-				nextRetryAtMs: sql.NullInt64{Int64: fixed.Add(-time.Minute).UnixMilli(), Valid: true},
+				nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(fixed.Add(-time.Minute).UnixMilli()), Valid: true},
 				leaseID:       sql.NullString{String: "lk-w1t", Valid: true},
-				leaseUntilMs:  sql.NullInt64{Int64: fixed.Add(time.Hour).UnixMilli(), Valid: true}})
+				leaseUntilMs:  sql.NullTime{Time: time.UnixMilli(fixed.Add(time.Hour).UnixMilli()), Valid: true}})
 		})
 		if _, err := locks.ConsumeRetryLeaseAsync(ctx, "acc-ro-consume", "lk-w1t"); err == nil {
 			t.Fatal("query_only 连接上的消费 UPDATE 必须失败")
@@ -304,7 +304,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 				incidentID:   sql.NullString{String: "acc-ro-release:6:t", Valid: true},
 				deadlineAt:   sql.NullString{String: future, Valid: true},
 				leaseID:      sql.NullString{String: "lk-w1t-r", Valid: true},
-				leaseUntilMs: sql.NullInt64{Int64: time.Now().Add(time.Hour).UnixMilli(), Valid: true}})
+				leaseUntilMs: sql.NullTime{Time: time.UnixMilli(time.Now().Add(time.Hour).UnixMilli()), Valid: true}})
 		})
 		_, err := locks.ReleaseRetryLeaseAsync(ctx, gatewaydispatch.ReleaseRetryLeaseInput{
 			AccountID: "acc-ro-release", LeaseID: "lk-w1t-r", ScheduleNextRetry: true, GlobalDelayMs: 3_000,
@@ -384,7 +384,7 @@ func TestW1TAccountLocksDuplicateRowCASArms(t *testing.T) {
 				lockState: "ENGAGED", deathTimeout: 300, retryInterval: 5, generation: 2,
 				incidentID:    sql.NullString{String: "acc-dup-acquire:2:t", Valid: true},
 				deadlineAt:    sql.NullString{String: future, Valid: true},
-				nextRetryAtMs: sql.NullInt64{Int64: time.Now().Add(-time.Minute).UnixMilli(), Valid: true}})
+				nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(time.Now().Add(-time.Minute).UnixMilli()), Valid: true}})
 		}
 		lease, err := locks.AcquireRetryLeaseAsync(ctx, "acc-dup-acquire", 3_000)
 		if err != nil {

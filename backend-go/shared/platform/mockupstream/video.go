@@ -129,6 +129,82 @@ func isVideoPath(path string) bool {
 	return path == "/v1/videos" || strings.HasPrefix(path, "/v1/videos/")
 }
 
+// newAPIVideoInternalPathOf maps the New API compatible public video paths
+// (POST /v1/video/generations, GET /v1/video/generations/{id} and
+// .../{id}/content) onto the existing OpenAI /v1/videos handler shape. The
+// gateway's own New API surface is served by the gateway; this alias keeps the
+// mock usable when a test drives the New API path straight at the mock.
+func newAPIVideoInternalPathOf(path string) string {
+	return "/v1/videos" + strings.TrimPrefix(path, "/v1/video/generations")
+}
+
+// acceptsNewAPIVideoEndpoint whitelists the New API video face: POST on the
+// bare /v1/video/generations path, GET on /{id} and /{id}/content with a
+// non-empty single-segment id. List/cancel are not part of the New API
+// surface (the gateway answers 404 for them); the mock does not serve them.
+func acceptsNewAPIVideoEndpoint(method, path string) bool {
+	if path == "/v1/video/generations" {
+		return method == http.MethodPost
+	}
+	rest, ok := strings.CutPrefix(path, "/v1/video/generations/")
+	if !ok || rest == "" {
+		return false
+	}
+	id, tail, hasTail := strings.Cut(rest, "/")
+	if id == "" {
+		return false
+	}
+	if !hasTail {
+		return method == http.MethodGet
+	}
+	return tail == "content" && method == http.MethodGet
+}
+
+// isNewAPIVideoPath reports whether the path belongs to the New API video
+// alias family (method-aware whitelist has already accepted the request).
+func isNewAPIVideoPath(path string) bool {
+	return path == "/v1/video/generations" || strings.HasPrefix(path, "/v1/video/generations/")
+}
+
+// acceptsNewAPIAudioEndpoint whitelists the New API generic task face for long
+// audio (2026-11-12 gateway migration): POST on the bare /v1/tasks/audio
+// path, GET on /{id} and /{id}/content with a non-empty single-segment id.
+// List/cancel are not part of the New API task surface (the gateway answers
+// 404 for them); the mock does not serve them.
+func acceptsNewAPIAudioEndpoint(method, path string) bool {
+	if path == "/v1/tasks/audio" {
+		return method == http.MethodPost
+	}
+	rest, ok := strings.CutPrefix(path, "/v1/tasks/audio/")
+	if !ok || rest == "" {
+		return false
+	}
+	id, tail, hasTail := strings.Cut(rest, "/")
+	if id == "" {
+		return false
+	}
+	if !hasTail {
+		return method == http.MethodGet
+	}
+	return tail == "content" && method == http.MethodGet
+}
+
+// isNewAPIAudioPath reports whether the path belongs to the New API long-audio
+// task alias family (method-aware whitelist has already accepted the request).
+func isNewAPIAudioPath(path string) bool {
+	return path == "/v1/tasks/audio" || strings.HasPrefix(path, "/v1/tasks/audio/")
+}
+
+// newAPIAudioInternalPathOf maps the New API generic task-face audio paths
+// (POST /v1/tasks/audio, GET /v1/tasks/audio/{id} and .../{id}/content) onto
+// the existing async job handler shape. The mock does not have a dedicated
+// long-audio upstream face; this alias keeps the mock usable when a test
+// drives the New API task path straight at the mock (same reuse pattern as
+// the New API video alias above).
+func newAPIAudioInternalPathOf(path string) string {
+	return "/v1/videos" + strings.TrimPrefix(path, "/v1/tasks/audio")
+}
+
 // serveVideo dispatches an accepted videos request to its endpoint handler.
 func (m *Server) serveVideo(w http.ResponseWriter, r *http.Request, idx int, scenario Scenario) {
 	if r.URL.Path == "/v1/videos" {

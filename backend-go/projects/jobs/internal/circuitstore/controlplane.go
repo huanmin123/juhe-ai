@@ -87,16 +87,16 @@ type incidentRow struct {
 	transitionID                        string
 	leaseID                             sql.NullString
 	leasePurpose                        sql.NullString
-	leaseUntilMS                        sql.NullInt64
+	leaseUntilMS                        sql.NullTime
 	backoffLevel                        int64
 	consecutiveFailures                 int64
 	confirmationFailuresRequired        int64
 	confirmationFailureEvidenceKeysJSON string
 	recoveringSuccesses                 int64
-	nextTransitionAtMS                  sql.NullInt64
-	openUntilMS                         sql.NullInt64
+	nextTransitionAtMS                  sql.NullTime
+	openUntilMS                         sql.NullTime
 	lastFailureClass                    sql.NullString
-	updatedAtMS                         int64
+	updatedAtMS                         sql.NullTime
 }
 
 const incidentScanTargets = `
@@ -159,7 +159,7 @@ func mapIncidentRow(row incidentRow) (opsjobs.CircuitIncidentRecord, error) {
 		ConfirmationFailuresRequired:    int(row.confirmationFailuresRequired),
 		ConfirmationFailureEvidenceKeys: evidenceKeys,
 		RecoveringSuccesses:             int(row.recoveringSuccesses),
-		UpdatedAtMS:                     row.updatedAtMS,
+		UpdatedAtMS:                     row.updatedAtMS.Time.UnixMilli(),
 	}
 	if row.parentIncidentID.Valid && row.parentIncidentID.String != "" {
 		record.ParentIncidentID = row.parentIncidentID.String
@@ -183,15 +183,15 @@ func mapIncidentRow(row incidentRow) (opsjobs.CircuitIncidentRecord, error) {
 		record.LeasePurpose = row.leasePurpose.String
 	}
 	if row.leaseUntilMS.Valid {
-		value := row.leaseUntilMS.Int64
+		value := row.leaseUntilMS.Time.UnixMilli()
 		record.LeaseUntilMS = &value
 	}
 	if row.nextTransitionAtMS.Valid {
-		value := row.nextTransitionAtMS.Int64
+		value := row.nextTransitionAtMS.Time.UnixMilli()
 		record.NextTransitionAtMS = &value
 	}
 	if row.openUntilMS.Valid {
-		value := row.openUntilMS.Int64
+		value := row.openUntilMS.Time.UnixMilli()
 		record.OpenUntilMS = &value
 	}
 	if row.lastFailureClass.Valid && row.lastFailureClass.String != "" {
@@ -427,6 +427,23 @@ func casNullStringPtr(value sql.NullString) *string {
 	return &copied
 }
 
+func casNullMillisPtr(value sql.NullTime) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	copied := value.Time.UnixMilli()
+	return &copied
+}
+
+func circuitMS(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
+
+func msPtr(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return circuitMS(*value)
+}
+
 func casNullInt64Ptr(value sql.NullInt64) *int64 {
 	if !value.Valid {
 		return nil
@@ -438,33 +455,34 @@ func casNullInt64Ptr(value sql.NullInt64) *int64 {
 // scanIncidentCASRow 按 incidentCASColumns 列序扫描全字段行。
 func scanIncidentCASRow(row interface{ Scan(...any) error }) (opsjobs.IncidentCASRow, error) {
 	var (
-		v                opsjobs.IncidentCASRow
-		keyFingerprint   sql.NullString
-		protocolCode     sql.NullString
-		requestLane      sql.NullString
-		modelFamily      sql.NullString
-		clientModel      sql.NullString
-		capabilityHash   sql.NullString
-		credentialSource sql.NullString
-		clientEndpoint   sql.NullString
-		finalUpstream    sql.NullString
-		upstreamMode     sql.NullString
-		parentIncidentID sql.NullString
-		causedBy         sql.NullString
-		failureScope     sql.NullString
-		children         string
-		evidence         string
-		openUntil        sql.NullInt64
-		nextTransition   sql.NullInt64
-		leaseID          sql.NullString
-		leasePurpose     sql.NullString
-		leaseOwnerRunID  sql.NullString
-		leaseUntil       sql.NullInt64
-		attemptStarted   sql.NullInt64
-		attemptDeadline  sql.NullInt64
-		upstreamObserved int
-		lastFailureClass sql.NullString
-		retainedUntil    sql.NullInt64
+		createdAt, updatedAt sql.NullTime
+		v                    opsjobs.IncidentCASRow
+		keyFingerprint       sql.NullString
+		protocolCode         sql.NullString
+		requestLane          sql.NullString
+		modelFamily          sql.NullString
+		clientModel          sql.NullString
+		capabilityHash       sql.NullString
+		credentialSource     sql.NullString
+		clientEndpoint       sql.NullString
+		finalUpstream        sql.NullString
+		upstreamMode         sql.NullString
+		parentIncidentID     sql.NullString
+		causedBy             sql.NullString
+		failureScope         sql.NullString
+		children             string
+		evidence             string
+		openUntil            sql.NullTime
+		nextTransition       sql.NullTime
+		leaseID              sql.NullString
+		leasePurpose         sql.NullString
+		leaseOwnerRunID      sql.NullString
+		leaseUntil           sql.NullTime
+		attemptStarted       sql.NullTime
+		attemptDeadline      sql.NullTime
+		upstreamObserved     int
+		lastFailureClass     sql.NullString
+		retainedUntil        sql.NullTime
 	)
 	if err := row.Scan(
 		&v.CircuitScopeKey, &v.AccountID, &v.AccountRuntimeKey, &v.ScopeKind,
@@ -480,7 +498,7 @@ func scanIncidentCASRow(row interface{ Scan(...any) error }) (opsjobs.IncidentCA
 		&attemptStarted, &attemptDeadline,
 		&upstreamObserved, &v.BackoffLevel, &v.ConsecutiveFailures, &v.ConfirmationFailuresRequired,
 		&evidence, &v.RecoveringSuccesses,
-		&lastFailureClass, &retainedUntil, &v.CreatedAtMS, &v.UpdatedAtMS,
+		&lastFailureClass, &retainedUntil, &createdAt, &updatedAt,
 	); err != nil {
 		return opsjobs.IncidentCASRow{}, err
 	}
@@ -507,17 +525,19 @@ func scanIncidentCASRow(row interface{ Scan(...any) error }) (opsjobs.IncidentCA
 	v.ParentIncidentID = casNullStringPtr(parentIncidentID)
 	v.CausedByTerminalOutcomeID = casNullStringPtr(causedBy)
 	v.FailureScope = casNullStringPtr(failureScope)
-	v.OpenUntilMS = casNullInt64Ptr(openUntil)
-	v.NextTransitionAtMS = casNullInt64Ptr(nextTransition)
+	v.OpenUntilMS = casNullMillisPtr(openUntil)
+	v.NextTransitionAtMS = casNullMillisPtr(nextTransition)
 	v.LeaseID = casNullStringPtr(leaseID)
 	v.LeasePurpose = casNullStringPtr(leasePurpose)
 	v.LeaseOwnerRunID = casNullStringPtr(leaseOwnerRunID)
-	v.LeaseUntilMS = casNullInt64Ptr(leaseUntil)
-	v.AttemptStartedAtMS = casNullInt64Ptr(attemptStarted)
-	v.AttemptHardDeadlineMS = casNullInt64Ptr(attemptDeadline)
+	v.LeaseUntilMS = casNullMillisPtr(leaseUntil)
+	v.AttemptStartedAtMS = casNullMillisPtr(attemptStarted)
+	v.AttemptHardDeadlineMS = casNullMillisPtr(attemptDeadline)
 	v.UpstreamAttemptObserved = upstreamObserved != 0
 	v.LastFailureClass = casNullStringPtr(lastFailureClass)
-	v.RetainedUntilMS = casNullInt64Ptr(retainedUntil)
+	v.RetainedUntilMS = casNullMillisPtr(retainedUntil)
+	v.CreatedAtMS = createdAt.Time.UnixMilli()
+	v.UpdatedAtMS = updatedAt.Time.UnixMilli()
 	return v, nil
 }
 
@@ -726,12 +746,12 @@ func (r *ControlPlaneRepo) upsertIncidentCAS(ctx context.Context, tx *sql.Tx, v 
 		v.State, v.FailureScope,
 		v.Generation, v.DispatchRevision, v.LedgerRevision, v.ProjectedLedgerRevision,
 		v.TransitionID, v.CooldownObservationGeneration,
-		v.OpenUntilMS, v.NextTransitionAtMS,
-		v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS,
-		v.AttemptStartedAtMS, v.AttemptHardDeadlineMS,
+		msPtr(v.OpenUntilMS), msPtr(v.NextTransitionAtMS),
+		v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, msPtr(v.LeaseUntilMS),
+		msPtr(v.AttemptStartedAtMS), msPtr(v.AttemptHardDeadlineMS),
 		casBoolInt(v.UpstreamAttemptObserved), v.BackoffLevel, v.ConsecutiveFailures, v.ConfirmationFailuresRequired,
 		string(evidence), v.RecoveringSuccesses,
-		v.LastFailureClass, v.RetainedUntilMS, v.CreatedAtMS, v.UpdatedAtMS)
+		v.LastFailureClass, msPtr(v.RetainedUntilMS), circuitMS(v.CreatedAtMS), circuitMS(v.UpdatedAtMS))
 	if err != nil {
 		return err
 	}
@@ -1339,7 +1359,7 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
           AND projection_key = ?
           AND ((status = 'pending' AND available_at_ms <= ?)
             OR (status = 'processing' AND claim_until_ms <= ?))`,
-			claimToken, ownerID, nowMS+leaseMS, nowMS, row.eventID, ProjectionKey, nowMS, nowMS)
+			claimToken, ownerID, circuitMS(nowMS+leaseMS), circuitMS(nowMS), row.eventID, ProjectionKey, circuitMS(nowMS), circuitMS(nowMS))
 		if err != nil {
 			return nil, err
 		}
@@ -1450,7 +1470,7 @@ func (r *ControlPlaneRepo) Ack(ctx context.Context, event opsjobs.OutboxEvent, a
     SET status = 'dispatched', claim_token = NULL, claimed_by = NULL, claim_until_ms = NULL,
         acknowledged_at_ms = ?, last_error_class = NULL, updated_at_ms = ?
     WHERE event_id = ? AND status = 'processing' AND claim_token = ? AND projection_key = ?`,
-		acknowledgedAtMS, acknowledgedAtMS, eventID, claimToken, projectionKey)
+		circuitMS(acknowledgedAtMS), circuitMS(acknowledgedAtMS), eventID, claimToken, projectionKey)
 	if err != nil {
 		return false, err
 	}
@@ -1510,7 +1530,7 @@ func (r *ControlPlaneRepo) ReleaseForReplay(ctx context.Context, event opsjobs.O
     SET status = 'pending', available_at_ms = ?, claim_token = NULL, claimed_by = NULL,
         claim_until_ms = NULL, last_error_class = ?, updated_at_ms = ?
     WHERE event_id = ? AND status = 'processing' AND claim_token = ?`,
-		nowMS+retryDelayMS, errorClass, nowMS, eventID, claimToken)
+		circuitMS(nowMS+retryDelayMS), errorClass, circuitMS(nowMS), eventID, claimToken)
 	if err != nil {
 		return err
 	}

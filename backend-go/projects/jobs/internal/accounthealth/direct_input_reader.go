@@ -654,7 +654,7 @@ LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authoriza
 WHERE a.deleted_at IS NULL
   AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'minimax_media', 'volcengine_ark', 'volcengine_openspeech', 'qwen_dashscope')
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
-  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'video_create', 'audio_speech', 'audio_job_get')
+  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'video_create', 'audio_speech', 'audio_job_get', 'embed_content', 'rerank_json', 'moderation_json')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
   -- Background auto-probe master switch (设计 §3 候选筛选): instance rows take
   -- the source account's value, so flipping the source hides both rows.
@@ -976,7 +976,7 @@ ORDER BY updated_at DESC LIMIT 1`, candidate.authorizationResourceID, candidate.
 func loadDirectQuotaCosts(ctx context.Context, tx *sql.Tx, systemAccount, scopeType, scopeID string, limits DirectQuotaLimits, now time.Time, location *time.Location) (DirectQuotaCosts, error) {
 	local := now.In(location)
 	dateKey := local.Format("2006-01-02")
-	monthKey := local.Format("2006-01")
+	monthKey := local.Format("2006-01") + "-01"
 	weekday := int(local.Weekday())
 	if weekday == 0 {
 		weekday = 7

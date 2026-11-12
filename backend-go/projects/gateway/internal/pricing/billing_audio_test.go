@@ -120,3 +120,45 @@ func mustFindPricingForTest(t *testing.T, providerCode, model string) *Pricing {
 	}
 	return pricing
 }
+
+// TestBuildCostBreakdownTtsOutputCallsLine 锁定 token 口径 TTS 无 usage 的
+// 按次固定价（2026-11-12 用户裁决）：gpt-4o-mini-tts $0.3/次，行项
+// tts_output_calls（unit=call）；无 TtsCalls 不产行项。
+func TestBuildCostBreakdownTtsOutputCallsLine(t *testing.T) {
+	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "gpt", "gpt-4o-mini-tts"), CostInput{
+		TtsCalls: audioTestFloat(1),
+	})
+	if breakdown == nil {
+		t.Fatal("breakdown = nil")
+	}
+	var line *CostLineItem
+	for index := range breakdown.LineItems {
+		if breakdown.LineItems[index].Kind == CostLineKindTtsOutputCalls {
+			line = &breakdown.LineItems[index]
+		}
+	}
+	if line == nil {
+		t.Fatalf("tts_output_calls line missing: %+v", breakdown.LineItems)
+	}
+	if line.Quantity != 1 || line.Unit != LineUnitCall || line.UnitSize != 1 {
+		t.Fatalf("line = %+v", line)
+	}
+	if line.UnitPriceUsd != 0.3 || line.CostUsd != 0.3 {
+		t.Fatalf("line price/cost = %v/%v want 0.3/0.3", line.UnitPriceUsd, line.CostUsd)
+	}
+	if breakdown.AccountChargeUsd == nil || *breakdown.AccountChargeUsd != 0.3 {
+		t.Fatalf("account charge = %v want 0.3", breakdown.AccountChargeUsd)
+	}
+	// 无 TtsCalls 时不得凭空产按次行项。
+	without := BuildCostBreakdown(mustFindPricingForTest(t, "gpt", "gpt-4o-mini-tts"), CostInput{
+		TtsInputChars: audioTestFloat(10),
+	})
+	for _, item := range without.LineItems {
+		if item.Kind == CostLineKindTtsOutputCalls {
+			t.Fatalf("TtsCalls absent must not emit tts_output_calls: %+v", without.LineItems)
+		}
+	}
+	if !hasAnyCostDimension(CostInput{TtsCalls: audioTestFloat(1)}) {
+		t.Fatal("TtsCalls alone must count as a cost dimension")
+	}
+}

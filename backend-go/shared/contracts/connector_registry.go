@@ -2,12 +2,12 @@
 // capability domain 与 endpoint mode 的编译期唯一事实源。
 //
 // 数据与计数契约来自 docs/functions/供应商与上游协议面重构设计.md：
-//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 43 个
+//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 47 个
 //     允许连接组合与 134 个单 mode 组合；
-//   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 15 条、Anthropic 2 条、Gemini native 8 条）；
-//   - §2.2 的域 lane（chat 13、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
+//   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 17 条、Anthropic 2 条、Gemini native 8 条）；
+//   - §2.2 的域 lane（chat 12、video 4、audio 7、image 1、embedding/rerank/moderation 各 1）、preset 词表（8 行）与 driver 收窄规则。
 //
-// 43 与 134 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
+// 47 与 134 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
 // 禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断规则」）。
 //
 // 2026-11 裁决：registry 只注册九家真实厂商（gpt/xai/deepseek/anthropic/gemini/
@@ -113,9 +113,9 @@ const (
 	PresetQwenDashScope          = "qwen_dashscope"
 )
 
-// endpoint mode（设计 §2.2 域 lane 的并集，恰好 25 个值）。
+// endpoint mode（设计 §2.2 域 lane 的并集，恰好 27 个值）。
 const (
-	// chat lane（13 个）。
+	// chat lane（12 个；B7 起 embed_content 归向量场景）。
 	ModeChatJSON             = "chat_json"
 	ModeChatSSE              = "chat_sse"
 	ModeResponsesJSON        = "responses_json"
@@ -128,7 +128,6 @@ const (
 	ModeInteractionsJSON     = "interactions_json"
 	ModeInteractionsSSE      = "interactions_sse"
 	ModeCountTokens          = "count_tokens"
-	ModeEmbedContent         = "embed_content"
 
 	// video lane（4 个）。
 	ModeVideoCreate  = "video_create"
@@ -149,6 +148,7 @@ const (
 	ModeImagesJSON = "images_json"
 
 	// 工具场景 lane（3 个；D10 独立场景，不与 chat 混用）。
+	ModeEmbedContent   = "embed_content"
 	ModeRerankJSON     = "rerank_json"
 	ModeModerationJSON = "moderation_json"
 )
@@ -506,7 +506,7 @@ var connectorComboRows = []connectorComboRow{
 	{Driver: DriverGemini, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGeminiOpenAIChatV1Beta,
 		Domains: []string{DomainChat}},
 	{Driver: DriverGemini, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGeminiNativeV1Beta,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainEmbedding}},
+		Domains: []string{DomainChat, DomainVideo, DomainAudio}},
 	{Driver: DriverGemini, AccountTypes: []string{AccountTypeGoogleOAuth},
 		OAuthTypes: []string{OAuthTypeCodeAssist, OAuthTypeGoogleOne, OAuthTypeAIStudio},
 		Preset:     PresetGeminiNativeV1Beta,
@@ -528,7 +528,7 @@ var connectorComboRows = []connectorComboRow{
 }
 
 // ---------------------------------------------------------------------------
-// 派生数据（43 连接组合与 134 单 mode 组合的唯一来源）
+// 派生数据（47 连接组合与 134 单 mode 组合的唯一来源）
 // ---------------------------------------------------------------------------
 
 // ConnectorCombo 是一个允许的连接组合（设计 §1.1 五元组 + driver/preset 投影字段）。
@@ -576,7 +576,7 @@ var (
 )
 
 var (
-	// connectorCombos 是 43 条允许连接组合的排序稳定清单。
+	// connectorCombos 是 47 条允许连接组合的排序稳定清单。
 	connectorCombos = buildConnectorCombos()
 	// endpointModeCombos 是 134 条单 mode 组合的排序稳定清单。
 	endpointModeCombos = buildEndpointModeCombos()
@@ -795,7 +795,7 @@ func AllowedModes(domain, preset, accountType, oauthType string) []string {
 // 公开 API（设计 §1.1：三个项目绑定同一 tuple，不得复制允许集合）
 // ---------------------------------------------------------------------------
 
-// AllowedConnectorCombos 返回全部 43 个允许连接组合，
+// AllowedConnectorCombos 返回全部 47 个允许连接组合，
 // 按 driver、account type、oauth type、preset、domain 的字典序稳定排序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedConnectorCombos() []ConnectorCombo {
@@ -817,13 +817,13 @@ func IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain stri
 }
 
 // ConnectorComboVerdict 是笛卡尔积判定辅助，语义与 IsAllowedConnectorCombo 相同，
-// 供外部遍历全组合空间（9 driver × 3 account type × 4 oauth 值 × 14 preset × 4 domain
-// = 6048）时统计允许/拒绝结论。
+// 供外部遍历全组合空间（9 driver × 3 account type × 4 oauth 值 × 14 preset × 7 domain
+// = 10584）时统计允许/拒绝结论。
 func ConnectorComboVerdict(driver, accountType, oauthType, preset, domain string) (allowed bool) {
 	return IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain)
 }
 
-// ComboDriverCounts 返回 43 条连接组合按 driver 的计数。
+// ComboDriverCounts 返回 47 条连接组合按 driver 的计数。
 func ComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(connectorCombos))
 	for _, combo := range connectorCombos {

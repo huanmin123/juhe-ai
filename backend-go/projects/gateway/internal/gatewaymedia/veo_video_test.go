@@ -17,17 +17,17 @@ import (
 )
 
 // veoCreateAcceptedFixture 对齐 mockupstream 创建响应形态
-//（media_gemini_video_create_ok，受理凭据 = name 字段）。
+// （media_gemini_video_create_ok，受理凭据 = name 字段）。
 const veoCreateAcceptedFixture = `{"name":"models/veo-3.0-generate-preview/operations/0123456789ab"}`
 
 const veoPollRunningFixture = `{"done":false}`
 
 // veoPollDoneURIFixture 对齐 mockupstream done:true 成功形态
-//（media_gemini_video_poll_done_uri，uri 为绝对签名 URL）。
+// （media_gemini_video_poll_done_uri，uri 为绝对签名 URL）。
 const veoPollDoneURIFixture = `{"done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"https://storage.googleapis.com/mock-bucket/veo%2Fsample.mp4?X-Goog-Signature=abc"}}]}}}`
 
 // veoPollErrorFixture 对齐 mockupstream done:true 失败形态
-//（media_gemini_video_poll_error，gemini 错误三元组）。
+// （media_gemini_video_poll_error，gemini 错误三元组）。
 const veoPollErrorFixture = `{"done":true,"error":{"code":500,"message":"Video generation failed after the request was accepted","status":"INTERNAL"}}`
 
 func TestVeoVideoAdapterRegistry(t *testing.T) {
@@ -309,5 +309,39 @@ func TestVeoVideoAdapterParsePollResponse(t *testing.T) {
 	// 非 JSON → 报错。
 	if _, err := adapter.ParsePollResponse(http.StatusOK, []byte(`not-json`)); err == nil {
 		t.Fatal("非 JSON 应报错")
+	}
+}
+
+// TestVeoVideoAdapterRejectsBillingProviderOptions 锁定 T219 计费字段封禁：
+// provider_options.gemini 的 durationSeconds / sampleCount 会改变实际产出，
+// 但计费基源已按顶层参数冻结 → 必须 400，不得静默丢弃或按错基源计费。
+func TestVeoVideoAdapterRejectsBillingProviderOptions(t *testing.T) {
+	adapter := VideoAdapterForProvider("gemini")
+	params, err := ParseVideoParams(map[string]any{
+		"model":  "veo-3.0-generate-preview",
+		"prompt": "p",
+	}, adapter.Capabilities())
+	if err != nil {
+		t.Fatalf("ParseVideoParams err = %v", err)
+	}
+	for _, billingKey := range []string{"durationSeconds", "sampleCount"} {
+		_, err := adapter.Create(context.Background(), VideoCreateInput{
+			Params: params,
+			ProviderOptions: map[string]any{
+				"gemini": map[string]any{"parameters": map[string]any{billingKey: 8}},
+			},
+		})
+		if !errors.Is(err, ErrParamUnsupported) || !strings.Contains(err.Error(), billingKey) {
+			t.Fatalf("%s 覆盖应 400（ErrParamUnsupported）: %v", billingKey, err)
+		}
+	}
+	// 非计费键不受影响。
+	if _, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: params,
+		ProviderOptions: map[string]any{
+			"gemini": map[string]any{"parameters": map[string]any{"personGeneration": "allow_all"}},
+		},
+	}); err != nil {
+		t.Fatalf("非计费 provider_options 不应被拒绝: %v", err)
 	}
 }

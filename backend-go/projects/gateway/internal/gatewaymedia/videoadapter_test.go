@@ -28,7 +28,7 @@ const pollCompletedFixture = `{"id":"video_0123456789abcdef","object":"video","s
 const pollFailedFixture = `{"id":"video_0123456789abcdef","object":"video","status":"failed","progress":0,"model":"sora-2","prompt":"a cat","seconds_length":4,"size":"1280x720","error":{"code":"video_generation_failed","message":"Video generation failed after the request was accepted"}}`
 
 // createError400Fixture 对齐 mockupstream media_video_create_400_bad_size 错误包
-//（受理前 4xx，链上层不换账户）。
+// （受理前 4xx，链上层不换账户）。
 const createError400Fixture = `{"error":{"message":"Invalid size: value must be one of 1280x720, 720x1280, 960x960","type":"invalid_request_error","code":"invalid_size"}}`
 
 func TestVideoAdapterRegistry(t *testing.T) {
@@ -186,10 +186,10 @@ func TestOpenAIVideoAdapterParsePollResponse(t *testing.T) {
 	adapter := VideoAdapterForProvider("openai")
 
 	cases := []struct {
-		name      string
+		name       string
 		statusCode int
-		body      string
-		check     func(*testing.T, *MediaJobIR)
+		body       string
+		check      func(*testing.T, *MediaJobIR)
 	}{
 		{
 			name: "queued（创建受理形态）", statusCode: 200, body: pollQueuedFixture,

@@ -230,12 +230,22 @@ func w13cNewPipe(t *testing.T, mutate func(*StreamPipeOptions), chunks ...[]byte
 	})
 }
 
-func TestW13CPipeClientClosedArm(t *testing.T) {
+func TestW13CPipeClientGoneDrainsInsteadOfAborting(t *testing.T) {
 	pipe := w13cNewPipe(t, nil, []byte(chatDeltaChunk))
-	pipe.clientClosed = true
-	_, err := pipe.loop()
-	if err == nil || !strings.Contains(err.Error(), "客户端连接已断开") {
-		t.Fatalf("client closed err = %v", err)
+	pipe.clientGone = true
+	pipe.clientGoneAtMs = 1000
+	result, err := pipe.run()
+	if err != nil {
+		t.Fatalf("clientGone drain err = %v", err)
+	}
+	if !result.ClientGone {
+		t.Fatal("result must carry ClientGone")
+	}
+	if result.ErrorCode != ClientCanceledErrorCode {
+		t.Fatalf("errorCode = %q, want %q", result.ErrorCode, ClientCanceledErrorCode)
+	}
+	if result.Completed {
+		t.Fatal("clientGone drain must settle as failure")
 	}
 }
 

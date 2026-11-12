@@ -255,7 +255,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		} else if videoErr != nil {
 			return nil, videoErr
 		}
-		// M3f 长音频任务创建（POST /v1/audio/jobs）：qwen 账户（paraformer，
+		// M3f 长音频任务创建（POST /v1/tasks/audio）：qwen 账户（paraformer，
 		// 契约 §10.2）出站 opPath 自带 /api/v1 全路径（双根特例 base=origin），
 		// 经 upstreamenvelope.JoinUpstreamURL 直拼；volcengine 账户（录音文件识别 2.0，契约
 		// §9.2 长转写臂）host
@@ -342,11 +342,14 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// 守卫随桥删除；协议等价映射（同族改名）不改变请求路径，模型改名由
 		// driver body transform 承载。
 		pathAndQuery := req.PathAndQuery()
-		// 同步图像（2026-11-11 图像生成统一协议）：gpt/xai/volcengine 沿用
-		// OpenAI Images 直拼；qwen 由 image adapter 给出 DashScope 原生全路径，
-		// 并把账户误配的 /compatible-mode/v1、/api/v1、/v1 版本根剥离到 origin。
-		// adapter 返回原路径时继续走下方通用 openai 分支（零行为变化）。
-		if gatewaymedia.IsImageGenerationPath(pathAndQuery) {
+		// 同步图像（2026-11-11 图像生成统一协议；2026-11-12 T216 扩到编辑
+		// 面）：gpt/xai 沿用 OpenAI Images 直拼（编辑仍是各自原生
+		// /v1/images/edits）；volcengine 编辑改写为 /images/generations（Ark
+		// 无独立 edits 端点）；qwen 由 image adapter 给出 DashScope 原生全
+		// 路径，并把账户误配的 /compatible-mode/v1、/api/v1、/v1 版本根剥离
+		// 到 origin。adapter 返回原路径时继续走下方通用 openai 分支（零行为
+		// 变化）。
+		if gatewaymedia.IsImagePath(pathAndQuery) {
 			if adapter := gatewaymedia.ImageAdapterForProvider(account.VendorCode); adapter != nil {
 				if upstreamPath := adapter.UpstreamPath(pathAndQuery); upstreamPath != pathAndQuery {
 					baseURL := gatewaymedia.ImageBaseURLForProvider(account.VendorCode, account.BaseURL)
@@ -374,6 +377,31 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 					return nil, urlErr
 				}
 				return []string{upstreamURL}, nil
+			}
+		}
+		// B7 工具端点：qwen 向量走 compatible-mode 兼容面，重排走 DashScope
+		// 原生 rerank 全路径；其余厂商走 OpenAI 直拼（gpt 的 /embeddings、
+		// /moderations）。
+		if utilityKind := chainUtilityPathKind(pathAndQuery); utilityKind != "" {
+			if chainNormalizeProviderToken(account.VendorCode) == "qwen" {
+				// qwen 工具端点使用 DashScope 原生路径：base 配置成
+				// /compatible-mode/v1、/api/v1、/v1 版本根时先剥到 origin，
+				// 再拼厂商全路径，避免双重版本段。
+				qwenBase := gatewaymedia.ImageBaseURLForProvider(account.VendorCode, account.BaseURL)
+				if utilityKind == "embeddings" {
+					upstreamURL, urlErr := chainQwenChatUpstreamURL(qwenBase, pathAndQuery)
+					if urlErr != nil {
+						return nil, urlErr
+					}
+					return []string{upstreamURL}, nil
+				}
+				if utilityKind == "rerank" {
+					upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(qwenBase, chainQwenRerankPath)
+					if urlErr != nil {
+						return nil, urlErr
+					}
+					return []string{upstreamURL}, nil
+				}
 			}
 		}
 		openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, pathAndQuery)
@@ -421,7 +449,7 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	} else if videoErr != nil {
 		return gatewaydispatch.PreparedRequestParts{}, videoErr
 	}
-	// M3f 长音频任务创建（POST /v1/audio/jobs，媒体设计 §4.2/§5）：结构与
+	// M3f 长音频任务创建（POST /v1/tasks/audio，媒体设计 §4.2/§5）：结构与
 	// 视频创建短路一致——adapter 出站报文（URL 与 body 同源 adapter.Create）
 	// 在协议透传之前短路返回；paraformer 的 ExtraHeaders 恒 nil（天然异步
 	// 服务无 DashScope 私有头，契约 §10.2）。
@@ -445,6 +473,10 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: audioPlan.createRequest.Body}, nil
 	} else if audioErr != nil {
 		return gatewaydispatch.PreparedRequestParts{}, audioErr
+	}
+	// B7 工具端点：在对话/媒体改写链之前短路，按供应商做透传或翻译。
+	if kind := chainUtilityPathKind(req.PathAndQuery()); kind != "" {
+		return d.buildUtilityRequestParts(req, account, kind)
 	}
 	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
 	if adapter, ir, ok, speechErr := d.geminiSpeechRequest(req, account); speechErr != nil {
@@ -659,13 +691,16 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	// 注入发生在全部既有 body 组装/改写（兼容体、模型映射、gpt 覆盖、reasoning
 	// 归一）之后、发出之前，不回写请求级 body 缓存（候选轮换语义不变）。
 	body = chainMaybeInjectChatStreamUsageOption(req, account, modelMapping, body)
-	// 同步图像（2026-11-11 图像生成统一协议）：在模型映射/gpt 覆盖之后按
-	// vendor 归一图像 body——gpt 仅消费 provider_options（无扩展参数时返回
-	// nil，保持字节级透传）；xai/volcengine 合并扩展参数并忽略未文档化字段；
-	// qwen 改写为 DashScope 原生 multimodal-generation 报文。provider_options
-	// 不转发上游。
-	if gatewaymedia.IsImageGenerationPath(req.PathAndQuery()) {
-		imageBody, imageErr := gatewaymedia.BuildImageUpstreamRequest(account.VendorCode, body)
+	// 同步图像（2026-11-11 图像生成统一协议；2026-11-12 T216 扩到编辑面）：
+	// 在模型映射/gpt 覆盖之后按 vendor 归一图像 body——生成面 gpt 仅消费
+	// provider_options（无扩展参数时返回 nil，保持字节级透传）；编辑面 gpt
+	// multipart 也保持字节级透传（仅删 stream/partial_images 文本字段时按原
+	// part 重建）；xai/volcengine 合并扩展参数并忽略未文档化字段；qwen 改写
+	// 为 DashScope 原生 multimodal-generation 报文。provider_options 不转发
+	// 上游。编辑请求的 multipart/JSON 形态按客户端 Content-Type 判定。
+	if gatewaymedia.IsImagePath(req.PathAndQuery()) {
+		imageResult, imageErr := gatewaymedia.BuildImageUpstreamRequestForPath(
+			account.VendorCode, req.PathAndQuery(), req.Header("Content-Type"), body)
 		if imageErr != nil {
 			return gatewaydispatch.PreparedRequestParts{}, gatewaypreauth.NewGatewayRequestValidationError(
 				imageErr.Error(),
@@ -673,10 +708,14 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 				gatewaypreauth.WithValidationErrorStatusCode(http.StatusBadRequest),
 			)
 		}
-		if imageBody != nil {
-			body = imageBody
+		if imageResult.Body != nil {
+			body = imageResult.Body
 			headers = headers.Clone()
-			headers.Set("Content-Type", "application/json")
+			contentType := imageResult.ContentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			headers.Set("Content-Type", contentType)
 		}
 	}
 	// xAI（Grok）OAuth 透传出站的 Grok CLI 身份三头（xAI 账号接入文档口径，
@@ -1068,13 +1107,21 @@ func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 		return "count_tokens"
 	default:
 		if req.MethodUpper() == http.MethodPost {
-			switch chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path))) {
-			case "/videos":
+			normalized := chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path)))
+			switch {
+			case normalized == "/videos", normalized == "/video/generations":
 				// 仅创建形态归媒体映射族（任务面 GET/DELETE 走账户亲和直连，
-				// 不经映射解析）。
+				// 不经映射解析）。/video/generations 是 2026-11-12 起的对外
+				// New API 创建路径，/videos 词表保留供内部判定复用。
 				return gatewayopenai.FamilyVideoGeneration
-			case "/audio/speech":
+			case normalized == "/audio/speech":
 				return gatewayopenai.FamilyTts
+			case normalized == "/embeddings" || strings.HasPrefix(normalized, "/embeddings/"):
+				return gatewayopenai.FamilyEmbeddings
+			case normalized == "/rerank" || strings.HasPrefix(normalized, "/rerank/"):
+				return gatewayopenai.FamilyRerank
+			case normalized == "/moderations" || strings.HasPrefix(normalized, "/moderations/"):
+				return gatewayopenai.FamilyModeration
 			}
 		}
 		if chainStripGatewayVersionPrefix(path) == "/messages" && req.MethodUpper() == "POST" {
@@ -2049,7 +2096,7 @@ func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequ
 }
 
 // audioJobCreateRequest 解析"长音频任务创建请求 + 账户"的 adapter 出站计划
-// （M3f，POST /v1/audio/jobs，媒体设计 §4.2/§5；当前仅 openai 协议族——
+// （M3f，POST /v1/tasks/audio，媒体设计 §4.2/§5；当前仅 openai 协议族——
 // paraformer 经 qwen 媒体档案 profile_qwen_openai_v1 承载，gemini 族无长
 // 转写 adapter：写侧词表不含 audio_job_*，账户不会进入本分支）。ok=false
 // 且 err=nil 表示本请求不是长音频创建形态；err 非 nil 是构造失败（请求体非

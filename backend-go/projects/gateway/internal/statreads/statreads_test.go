@@ -38,7 +38,7 @@ const pgTestSchema = `
 	CREATE SCHEMA IF NOT EXISTS juhe_business;
 	CREATE SCHEMA IF NOT EXISTS juhe_usage;
 	CREATE TABLE juhe_stats.usage_stats_daily (
-		system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT,
+		system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date DATE,
 		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
 		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
 		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
@@ -53,7 +53,7 @@ const pgTestSchema = `
 		first_token_ms_sum BIGINT DEFAULT 0, first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT,
 		last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
 	CREATE TABLE juhe_stats.usage_stats_hourly (
-		system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_hour TEXT,
+		system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_hour TIMESTAMP(0),
 		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
 		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
 		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
@@ -68,7 +68,7 @@ const pgTestSchema = `
 		first_token_ms_sum BIGINT DEFAULT 0, first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT,
 		last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
 	CREATE TABLE juhe_stats.usage_model_daily (
-		system_account_id TEXT, stat_date TEXT, provider_code TEXT, model TEXT,
+		system_account_id TEXT, stat_date DATE, provider_code TEXT, model TEXT,
 		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
 		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
 		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
@@ -80,7 +80,7 @@ const pgTestSchema = `
 		output_video_seconds DOUBLE PRECISION DEFAULT 0,
 		total_cost_usd DOUBLE PRECISION DEFAULT 0, updated_at TEXT);
 	CREATE TABLE juhe_stats.usage_error_daily (
-		system_account_id TEXT, stat_date TEXT, error_group TEXT, provider_code TEXT, error_code TEXT,
+		system_account_id TEXT, stat_date DATE, error_group TEXT, provider_code TEXT, error_code TEXT,
 		status_code INTEGER DEFAULT 0, error_message TEXT, request_count BIGINT DEFAULT 0,
 		error_count BIGINT DEFAULT 0, updated_at TEXT);
 	CREATE TABLE juhe_stats.usage_scope_range_windows (
@@ -124,7 +124,7 @@ const pgTestSchema = `
 		first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT, duration_ms_sum BIGINT DEFAULT 0,
 		duration_ms_count BIGINT DEFAULT 0, duration_ms_max BIGINT);
 	CREATE TABLE juhe_stats.account_health_hourly (
-		account_id TEXT, system_account_id TEXT, provider_code TEXT, stat_hour TEXT,
+		account_id TEXT, system_account_id TEXT, provider_code TEXT, stat_hour TIMESTAMP(0),
 		status TEXT, last_observed_at TEXT, last_record_id TEXT, status_code INTEGER,
 		error_code TEXT, error_message TEXT, updated_at TEXT);
 	CREATE TABLE juhe_business.system_settings (
@@ -168,7 +168,7 @@ const pgTestSchema = `
 const testSchema = `
 	CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key));
 	CREATE TABLE usage_stats_daily (
-		system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, stat_date TEXT NOT NULL,
+		system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, stat_date DATE NOT NULL,
 		request_count REAL NOT NULL DEFAULT 0, success_count REAL NOT NULL DEFAULT 0, error_count REAL NOT NULL DEFAULT 0,
 		input_tokens REAL NOT NULL DEFAULT 0, output_tokens REAL NOT NULL DEFAULT 0, cache_read_tokens REAL NOT NULL DEFAULT 0,
 		cache_read_cost_usd REAL NOT NULL DEFAULT 0, cache_write_tokens REAL NOT NULL DEFAULT 0,
@@ -204,7 +204,7 @@ const testSchema = `
 		rank INTEGER NOT NULL, provider_code TEXT NOT NULL, error_code TEXT, status_code INTEGER, error_message TEXT,
 		error_count REAL NOT NULL DEFAULT 0, PRIMARY KEY (system_account_id, window_key, start_date, end_date, rank));
 	CREATE TABLE usage_stats_hourly (
-		system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, stat_hour TEXT NOT NULL,
+		system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, stat_hour TIMESTAMP(0) NOT NULL,
 		request_count REAL NOT NULL DEFAULT 0, duration_ms_sum REAL NOT NULL DEFAULT 0, duration_ms_count REAL NOT NULL DEFAULT 0,
 		duration_ms_max REAL, first_token_ms_sum REAL NOT NULL DEFAULT 0, first_token_ms_count REAL NOT NULL DEFAULT 0,
 		first_token_ms_max REAL, PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour));
@@ -219,7 +219,7 @@ const testSchema = `
 		duration_ms_count REAL NOT NULL DEFAULT 0, duration_ms_max REAL,
 		PRIMARY KEY (system_account_id, window_key, start_date, end_date));
 	CREATE TABLE account_health_hourly (
-		account_id TEXT NOT NULL, stat_hour TEXT NOT NULL, status TEXT NOT NULL, last_observed_at TEXT,
+		account_id TEXT NOT NULL, stat_hour TIMESTAMP(0) NOT NULL, status TEXT NOT NULL, last_observed_at TEXT,
 		status_code INTEGER, error_code TEXT, error_message TEXT, PRIMARY KEY (account_id, stat_hour));
 	CREATE TABLE usage_scope_range_windows (
 		system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL,
@@ -437,7 +437,7 @@ func TestUsageOverviewHourlyAndErrorsWindows(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
 		`INSERT INTO juhe_stats.usage_overview_trend_windows (system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count, duration_ms_sum, duration_ms_count)
-			VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04T00', 6, 1, 3000, 6)`,
+			VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04 00:00:00', 6, 1, 3000, 6)`,
 		`INSERT INTO juhe_stats.usage_error_rank_windows (system_account_id, window_key, start_date, end_date, rank, provider_code, error_code, status_code, error_message, error_count)
 			VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', 1, 'openai', 'rate_limit_exceeded', 429, 'slow down', 3)`,
 	}
@@ -706,9 +706,9 @@ func TestAiHealthListReadsHourlyStrip(t *testing.T) {
 	seed := []string{
 		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status, last_used_at) VALUES ('acct-a', '账户A', 'sys-user-1', 'openai', 'api_key', 'active', '2026-09-04T10:00:00.000Z')`,
 		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at)
-			VALUES ('acct-a', '2026-09-04T10', 'success', '2026-09-04T10:30:00.000Z')`,
+			VALUES ('acct-a', '2026-09-04 10:00:00', 'success', '2026-09-04T10:30:00.000Z')`,
 		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at)
-			VALUES ('acct-a', '2026-09-04T09', 'failure', '2026-09-04T09:30:00.000Z')`,
+			VALUES ('acct-a', '2026-09-04 09:00:00', 'failure', '2026-09-04T09:30:00.000Z')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -755,7 +755,7 @@ func TestAiPerformanceSeriesReadsHourly(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
 		`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max)
-			VALUES ('global', 'account', 'acct-a', '2026-09-04T10', 4, 400, 4, 150, 800, 4, 300)`,
+			VALUES ('global', 'account', 'acct-a', '2026-09-04 10:00:00', 4, 400, 4, 150, 800, 4, 300)`,
 		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 	}
 	for _, statement := range seed {

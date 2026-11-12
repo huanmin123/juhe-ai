@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // ProviderOptionsKey 是请求体中 L3 扩展通道的固定键名（契约 §2.2 表）。
@@ -66,7 +67,7 @@ func MergeProviderOptions(base map[string]any, providerCode string, opts map[str
 }
 
 // AppliedProviderOptionKeys 返回 opts 中命中 providerCode 的子对象键名摘要
-//（字典序稳定，不含值——契约 §2.4 规则 4 的回显面：创建响应/任务面 job
+// （字典序稳定，不含值——契约 §2.4 规则 4 的回显面：创建响应/任务面 job
 // 对象的 provider_options_applied 来源）。未命中（或命中子对象非对象）返回
 // nil。匹配语义与 MergeProviderOptions 同源（providerOptionKeyMatches）——
 // 回显的键名集合恒等于实际合并的键名集合。
@@ -105,7 +106,7 @@ func providerOptionKeyMatches(providerCode, key string) bool {
 }
 
 // providerFamilyAlias 把 OAuth 子供应商 provider_code 归一到协议族基键
-//（与视频 adapter 归一 chainVideoAdapterKeyOfProvider 的 openai/gpt →
+// （与视频 adapter 归一 chainVideoAdapterKeyOfProvider 的 openai/gpt →
 // "openai" 同一事实，媒体域内两处镜像）。无别名映射的键原样返回。
 func providerFamilyAlias(key string) string {
 	switch key {
@@ -148,4 +149,102 @@ func deepCopyMap(source map[string]any) map[string]any {
 		copied[key] = value
 	}
 	return copied
+}
+
+// videoBillingProviderOptionKeys 是视频 L3 扩展通道中会改变计费数量/时长/
+// 分辨率或产物输入的键（2026-11-13 T219 收口）。这些维度必须走顶层
+// seconds/size/n/input_reference，计费基源在创建时按顶层参数冻结；L3 再覆盖
+// 会让实际产出与计费不一致，命中即 400（fail-closed，不静默丢弃）。
+var videoBillingProviderOptionKeys = map[string]bool{
+	"duration":          true,
+	"durationseconds":   true,
+	"seconds":           true,
+	"resolution":        true,
+	"size":              true,
+	"ratio":             true,
+	"samplecount":       true,
+	"n":                 true,
+	"content":           true,
+	"image":             true,
+	"images":            true,
+	"video":             true,
+	"video_url":         true,
+	"first_frame_image": true,
+	"first_frame":       true,
+	"last_frame":        true,
+	"reference_image":   true,
+	"reference_video":   true,
+	"audio_url":         true,
+}
+
+// ValidateVideoBillingProviderOptions 校验命中 provider 的 L3 子对象不含
+// 计费字段（含嵌套层）。未命中/空对象放行；命中返回 ErrParamUnsupported，
+// 错误消息列出字段路径（有序）。
+func ValidateVideoBillingProviderOptions(providerCode string, opts map[string]any) error {
+	sub, ok := matchedProviderOptionSubObject(providerCode, opts)
+	if !ok || len(sub) == 0 {
+		return nil
+	}
+	var found []string
+	walkBillingOptionKeys(sub, "", videoBillingProviderOptionKeys, &found)
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	return fmt.Errorf("%w: provider_options/metadata 不得覆盖计费字段 %s（计费基源按顶层 seconds/size/n/input_reference 冻结）",
+		ErrParamUnsupported, strings.Join(found, ","))
+}
+
+// imageBillingProviderOptionKeys 是图像 L3 扩展通道的计费键：size 决定
+// 输出像素档，L3 覆盖会让计费与请求 size 脱节。image/images 不在封禁列表
+// （契约 §9.3 明确允许 provider_options.volcengine.image 传参考图），其张数
+// 由响应侧请求计数覆盖 metadata.image/images 纳入输入图计费。
+var imageBillingProviderOptionKeys = map[string]bool{
+	"size": true,
+}
+
+// ValidateImageBillingProviderOptions 校验命中 provider 的图像 L3 子对象不含
+// 计费字段（含嵌套层）；命中返回 ErrParamUnsupported。
+func ValidateImageBillingProviderOptions(providerCode string, opts map[string]map[string]any) error {
+	target := map[string]any{}
+	for key, sub := range opts {
+		if providerOptionKeyMatches(providerCode, key) {
+			target = sub
+			break
+		}
+	}
+	var found []string
+	walkBillingOptionKeys(target, "", imageBillingProviderOptionKeys, &found)
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	return fmt.Errorf("%w: metadata/provider_options 不得覆盖图像计费字段 %s（size 走顶层参数）",
+		ErrParamUnsupported, strings.Join(found, ","))
+}
+
+func matchedProviderOptionSubObject(providerCode string, opts map[string]any) (map[string]any, bool) {
+	for key, value := range opts {
+		if !providerOptionKeyMatches(providerCode, key) {
+			continue
+		}
+		sub, ok := value.(map[string]any)
+		return sub, ok
+	}
+	return nil, false
+}
+
+func walkBillingOptionKeys(value map[string]any, prefix string, banned map[string]bool, found *[]string) {
+	for key, item := range value {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if banned[strings.ToLower(strings.TrimSpace(key))] {
+			*found = append(*found, path)
+		}
+		if nested, ok := item.(map[string]any); ok {
+			walkBillingOptionKeys(nested, path, banned, found)
+		}
+	}
 }

@@ -98,3 +98,107 @@ func TestBuildCostBreakdownTokenPricedImageRowBillsImageTokens(t *testing.T) {
 		t.Fatalf("account charge = %v, want %v", breakdown.AccountChargeUsd, want)
 	}
 }
+
+// TestEstimateProviderCostUsdImagePixelTiers 锁定按输出像素分档的按张价
+// （2026-11-12 档位批）：Seedream 5.0 Pro 官方 ≤2.61M 像素 0.30 元/张、
+// >2.61M 0.60 元/张（÷7.0）；请求未带 size 时回落主档价。
+func TestEstimateProviderCostUsdImagePixelTiers(t *testing.T) {
+	smallPixels := int64(1024 * 1024)
+	largePixels := int64(2048 * 2048)
+	small := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "volcengine", Model: "doubao-seedream-5-0-pro-260628",
+		OutputImageCount: audioTestFloat(1), OutputImagePixels: &smallPixels,
+	})
+	if small == nil || *small != 0.0428571429 {
+		t.Fatalf("small image cost = %v want 0.0428571429（0.30/7）", small)
+	}
+	large := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "volcengine", Model: "doubao-seedream-5-0-pro-260628",
+		OutputImageCount: audioTestFloat(1), OutputImagePixels: &largePixels,
+	})
+	if large == nil || *large != 0.0857142857 {
+		t.Fatalf("large image cost = %v want 0.0857142857（0.60/7）", large)
+	}
+	noPixels := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "volcengine", Model: "doubao-seedream-5-0-pro-260628",
+		OutputImageCount: audioTestFloat(1),
+	})
+	if noPixels == nil || *noPixels != 0.04286 {
+		t.Fatalf("no-size image cost = %v want 0.04286（main tier）", noPixels)
+	}
+}
+
+// TestEstimateProviderCostUsdImageInputImages 锁定输入图按张价与免费额度
+// （2026-11-12 输入素材批）：Seedream 5.0 Pro 首张免费、后续 0.02 元/张
+// （÷7.0）；只传 1 张不产生输入图行项。
+func TestEstimateProviderCostUsdImageInputImages(t *testing.T) {
+	two := 2.0
+	one := 1.0
+	cost := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "volcengine", Model: "doubao-seedream-5-0-pro-260628",
+		InputImageCount: &two,
+	})
+	if cost == nil || *cost != 0.0028571429 {
+		t.Fatalf("2 input images cost = %v want 0.0028571429（1 张计费 × 0.02/7）", cost)
+	}
+	free := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "volcengine", Model: "doubao-seedream-5-0-pro-260628",
+		InputImageCount: &one,
+	})
+	if free == nil || *free != 0 {
+		t.Fatalf("1 input image must be free, cost = %v want 0", free)
+	}
+}
+
+// TestEstimateProviderCostUsdQwenImageInputImages 锁定 qwen-image-3.0 输入图
+// 0.02 元/张（÷7.0，无每请求免费张数；官方免费额度是账号级“输入输出共
+// 10 张”，不进单请求计费）：输出按张 + 输入图按张同时成行。
+func TestEstimateProviderCostUsdQwenImageInputImages(t *testing.T) {
+	one := 1.0
+	inputOnly := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "qwen", Model: "qwen-image-3.0",
+		InputImageCount: &one,
+	})
+	if inputOnly == nil || *inputOnly != 0.0028571429 {
+		t.Fatalf("qwen 1 input image cost = %v want 0.0028571429", inputOnly)
+	}
+	combined := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "qwen", Model: "qwen-image-3.0",
+		InputImageCount:  &one,
+		OutputImageCount: &one,
+	})
+	if combined == nil || *combined != 0.0285714286 {
+		t.Fatalf("qwen output+input cost = %v want 0.0285714286", combined)
+	}
+}
+
+// TestEstimateProviderCostUsdQwenImageProPixelTiers 锁定 qwen-image-3.0-pro
+// 1K/2K 输出档（2026-11-13）：≤1024×1024 按 1K 0.25 元/张，>1024×1024 按
+// 2K 0.50 元/张（÷7.0）；输入图 0.02 元/张另计。
+func TestEstimateProviderCostUsdQwenImageProPixelTiers(t *testing.T) {
+	one := 1.0
+	small := int64(1024 * 1024)
+	large := int64(2048 * 2048)
+	cost := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "qwen", Model: "qwen-image-3.0-pro",
+		OutputImageCount: &one, OutputImagePixels: &small, InputImageCount: &one,
+	})
+	if cost == nil || *cost != 0.0385714286 {
+		t.Fatalf("qwen pro 1K + 1 input = %v want 0.0385714286", cost)
+	}
+	cost = EstimateProviderCostUsd(CostInput{
+		ProviderCode: "qwen", Model: "qwen-image-3.0-pro",
+		OutputImageCount: &one, OutputImagePixels: &large, InputImageCount: &one,
+	})
+	if cost == nil || *cost != 0.0742857143 {
+		t.Fatalf("qwen pro 2K + 1 input = %v want 0.0742857143", cost)
+	}
+	justAbove := int64(1024*1024 + 1)
+	cost = EstimateProviderCostUsd(CostInput{
+		ProviderCode: "qwen", Model: "qwen-image-3.0-pro",
+		OutputImageCount: &one, OutputImagePixels: &justAbove,
+	})
+	if cost == nil || *cost != 0.0714285714 {
+		t.Fatalf("qwen pro >1K 像素应落 2K 档: %v want 0.0714285714", cost)
+	}
+}

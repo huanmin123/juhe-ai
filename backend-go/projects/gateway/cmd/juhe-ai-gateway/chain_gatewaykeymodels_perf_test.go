@@ -78,7 +78,7 @@ func unionPerfSourceNameB(accountIndex, k int) string {
 // upstreamFamily）。k < 8：chat 同族改名（2026-11-07 跨协议映射退役，原
 // responses→chat_completions 跨族改写夹具随 7 pair 矩阵移除；协议等价映射与
 // 直连同权 rank 0）且 upstream ∈ 本账户 64 宽 SM 窗口；k = 8/9：恒等行
-//（source == upstream 且同族），取窗口末尾两个模型，IsAdmissibleModelMapping
+// （source == upstream 且同族），取窗口末尾两个模型，IsAdmissibleModelMapping
 // 恒拒。
 func unionPerfMappingRowA(i, k int) (string, string, string, string) {
 	if k < unionPerfAdmissibleA {

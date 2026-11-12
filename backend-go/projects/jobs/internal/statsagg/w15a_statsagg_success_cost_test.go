@@ -95,7 +95,7 @@ func TestAggregateSuccessCostUsdSplitMixedAttempts(t *testing.T) {
 		0.07, 0.02)
 	env.assertFloats("api_key hourly mixed attempts",
 		env.queryRowFloats(`SELECT total_cost_usd, success_cost_usd
-			FROM juhe_stats.usage_stats_hourly WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_hour='2026-04-18T10'`),
+			FROM juhe_stats.usage_stats_hourly WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_hour='2026-04-18 10:00:00'`),
 		0.07, 0.02)
 
 	// UPSERT 增量合并后的口径：重放同一批聚合（幂等场景由游标保证，这里

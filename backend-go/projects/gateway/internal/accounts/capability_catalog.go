@@ -202,6 +202,18 @@ func probeModesFor(domain scenario.Type, allowed []string) []string {
 		if contains("audio_job_get") {
 			return []string{"audio_job_get"}
 		}
+	case scenario.TypeEmbedding:
+		if contains("embed_content") {
+			return []string{"embed_content"}
+		}
+	case scenario.TypeRerank:
+		if contains("rerank_json") {
+			return []string{"rerank_json"}
+		}
+	case scenario.TypeModeration:
+		if contains("moderation_json") {
+			return []string{"moderation_json"}
+		}
 	}
 	return nil
 }
@@ -226,7 +238,7 @@ func endpointModeOrder(mode string) int {
 		"audio_transcription_json", "video_create", "video_get",
 		"video_content", "video_cancel", "audio_job_create",
 		"audio_job_get", "audio_job_content", "audio_job_cancel",
-		"realtime_session",
+		"realtime_session", "rerank_json", "moderation_json",
 	}
 	for index, candidate := range order {
 		if candidate == mode {

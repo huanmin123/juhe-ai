@@ -61,6 +61,11 @@ var entryMappingPairTargetModes = map[string][]string{
 	"video_generation\x00video_generation": {"video_create", "video_get", "video_content", "video_cancel"},
 	// §5.2 #17：TTS 只有一个同步语音形态。
 	"tts\x00tts": {"audio_speech"},
+	// B7 工具端点映射族：向量/重排/安全都是同族模型名改写，各自只有一个
+	// 上游形态（无流式、无任务面）。
+	"embed_content\x00embed_content": {"embed_content"},
+	"rerank\x00rerank":               {"rerank_json"},
+	"moderation\x00moderation":       {"moderation_json"},
 }
 
 // validateEntryMappingFamilyLinkage 校验一条映射在目标连接/模型的 endpoint

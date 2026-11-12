@@ -964,7 +964,7 @@ func TestW1TAccountLocksTailArms(t *testing.T) {
 			deathTimeout: 300, retryInterval: 5, generation: 3,
 			incidentID:   sql.NullString{String: "acc_w1t_cas:3:t", Valid: true},
 			leaseID:      sql.NullString{String: "lease-held", Valid: true},
-			leaseUntilMs: sql.NullInt64{Int64: time.Now().Add(time.Hour).UnixMilli(), Valid: true}})
+			leaseUntilMs: sql.NullTime{Time: time.UnixMilli(time.Now().Add(time.Hour).UnixMilli()), Valid: true}})
 		leaseID := ""
 		if err := fixture.locks.RecordFailureAsync(ctx, "acc_w1t_cas", "boom",
 			&gatewaydispatch.AccountLockObservation{Generation: 3, IncidentID: "acc_w1t_cas:3:t", LeaseID: &leaseID}); err != nil {
@@ -1015,8 +1015,8 @@ func TestW1TAccountLocksTailArms(t *testing.T) {
 			deathTimeout: 300, retryInterval: 5, generation: 2,
 			incidentID:    sql.NullString{String: "acc_w1t_lease:2:t", Valid: true},
 			deadlineAt:    sql.NullString{String: isoMillisOf(future), Valid: true},
-			nextRetryAtMs: sql.NullInt64{Int64: time.Now().Add(-time.Minute).UnixMilli(), Valid: true},
-			leaseUntilMs:  sql.NullInt64{Int64: future.UnixMilli(), Valid: true}})
+			nextRetryAtMs: sql.NullTime{Time: time.UnixMilli(time.Now().Add(-time.Minute).UnixMilli()), Valid: true},
+			leaseUntilMs:  sql.NullTime{Time: time.UnixMilli(future.UnixMilli()), Valid: true}})
 		lease, err := fixture.locks.AcquireRetryLeaseAsync(ctx, "acc_w1t_lease", 3_000)
 		if err != nil {
 			t.Fatalf("AcquireRetryLeaseAsync: %v", err)

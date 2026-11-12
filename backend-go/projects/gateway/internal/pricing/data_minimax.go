@@ -23,6 +23,10 @@ package pricing
 //     §2.8 按次计费）；按条 → 每秒是推导，禁止折算（裁决 §2.4 维持）
 //     ——不落 VideoOutputCostPerSecond；轮询响应不回报时长（契约 §8.1
 //     query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
+//     2026-11-12 时长档批：按 platform.minimax.cn 官方价目表补 6s/10s 两档
+//     （Hailuo-2.3 2.00/4.00 元、Fast 1.35/2.25 元，÷7.0），落
+//     VideoOutputCostPerCallBySeconds；创建时请求秒数按最近档收敛，
+//     结算按 billingSeconds 选档。
 //
 // 2026-10-17 全供应商口径核对批：目录主口径由「国际站 USD 明文直落」整体
 // 回正为「国内站人民币明文 ÷ 约定汇率 7.0」——账户协议档案实际连接

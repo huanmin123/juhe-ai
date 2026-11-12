@@ -1,9 +1,10 @@
 package acceptance
 
-// M3f 长音频任务 E2E（契约 §10.2 paraformer；媒体设计 §4.2 /v1/audio/jobs
-// 端点族）：管理面配置（qwen 分组 + paraformer-v2 账户，audio_job_* 端点
+// M3f 长音频任务 E2E（契约 §10.2 paraformer；媒体设计 §4.2 New API 通用
+// 任务面 /v1/tasks/audio 端点族）：管理面配置（qwen 分组 + paraformer-v2
+// 账户，audio_job_* 端点
 // 模式写侧门禁）→ 创建（transcription 报文改写、无 X-DashScope-Async 头、
-// 统一 audio_job 对象、language→language_hints 映射经 provider_options 命中
+// New API task 创建对象、language→language_hints 映射经 metadata 命中
 // 回显）→ 轮询 queued → in_progress → completed（transcription_url 冻结）→
 // content 经绝对 URL 无凭据直连下载转写结果 JSON → 管理面 media-jobs 行终态
 //（kind=audio_transcription、usage duration 时长计量照落、目录无 USD 秒价
@@ -20,9 +21,10 @@ import (
 
 // fullchainQwenASRCreateBody 是 qwen 长转写创建请求体：input_url 公网音频
 // URL（唯一输入形态——契约 §10.2 上游只收 file_urls、零存储不暂存）、
-// language "zh" 映射 parameters.language_hints ["zh"]、diarization_enabled
-// 经 provider_options.qwen 命中 → provider_options_applied 回显。
-const fullchainQwenASRCreateBody = `{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","provider_options":{"qwen":{"parameters":{"diarization_enabled":true}}}}`
+// metadata 是唯一扩展通道（language 提升为公共参数 → parameters.
+// language_hints ["zh"]；diarization_enabled 并入 qwen provider_options →
+// provider_options_applied 回显）。
+const fullchainQwenASRCreateBody = `{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","metadata":{"diarization_enabled":true}}`
 
 // fullchainCreateQwenASRAccount 经管理面创建指向 mock 上游的 qwen api_key
 // 账户并绑定分组（qwen 供应商 + 媒体档案 profile_qwen_openai_v1）；
@@ -96,7 +98,7 @@ func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, grou
 }
 
 // TestFullchainMediaAudioJobParaformer 验证 M3f qwen（paraformer）长转写链
-// 主流程（契约 §10.2）：创建 200 + 统一 audio_job 对象（audiojob_ 前缀、
+// 主流程（契约 §10.2）：创建 200 + New API task 创建对象（audiojob_ 前缀、
 // status queued、provider_job_id 为 uuid 任务 id、params_applied 含
 // model/input_url/language、provider_options_applied 含 parameters）→ 轮询
 // 三态推进 → content 下载转写结果 JSON（application/json + transcripts
@@ -118,11 +120,11 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 	apiKey := f.createAPIKey("全链路-MVqwenASR-Key", strategyID)
 	apiKeyID := f.apiKeyIDByName("全链路-MVqwenASR-Key")
 
-	// 创建：200 + 统一 audio_job 对象。paraformer 天然异步（无 X-DashScope-
-	// Async 头，契约 §10.2），创建成功即证明链上未注入万相异步头（链级测试
-	// 直接断言头缺席）。
+	// 创建：200 + New API 通用任务面创建对象（id/task_id 同值、object=task）。
+	// paraformer 天然异步（无 X-DashScope-Async 头，契约 §10.2），创建成功即
+	// 证明链上未注入万相异步头（链级测试直接断言头缺席）。
 	f.mock.script(key, platformmock.ScenarioMediaQwenASRCreatePending)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/audio/jobs", fullchainQwenASRCreateBody)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/tasks/audio", fullchainQwenASRCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV qwen asr create status=%d body=%s", created.Status, created.Body)
 	}
@@ -131,36 +133,40 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 	if !strings.HasPrefix(jobID, "audiojob_") {
 		t.Fatalf("MV qwen asr job id 缺少 audiojob_ 前缀: %#v", job)
 	}
-	if job["object"] != "audio_job" {
-		t.Fatalf("MV qwen asr object = %v, want audio_job", job["object"])
+	if str(job["task_id"]) != jobID {
+		t.Fatalf("MV qwen asr task_id = %v, want 与 id 同值 %s", job["task_id"], jobID)
+	}
+	if job["object"] != "task" {
+		t.Fatalf("MV qwen asr object = %v, want task", job["object"])
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("MV qwen asr create status 字段 = %v, want queued", job["status"])
 	}
-	if job["provider"] != "qwen" {
-		t.Fatalf("MV qwen asr provider = %v, want qwen", job["provider"])
+	metadata, _ := job["metadata"].(map[string]any)
+	if metadata["provider"] != "qwen" {
+		t.Fatalf("MV qwen asr provider = %v, want qwen", metadata["provider"])
 	}
-	if job["language"] != "zh" {
-		t.Fatalf("MV qwen asr language 回显 = %v, want zh", job["language"])
+	if metadata["diarization_enabled"] != true {
+		t.Fatalf("MV qwen asr metadata 回显缺少请求原值 diarization_enabled: %v", job["metadata"])
 	}
-	providerJobID := str(job["provider_job_id"])
+	providerJobID := str(metadata["provider_job_id"])
 	if len(providerJobID) != 36 || !strings.Contains(providerJobID, "-") {
 		t.Fatalf("MV qwen asr provider_job_id = %q, want uuid 任务 id 形态（与万相同一任务接口）", providerJobID)
 	}
-	applied := fmt.Sprintf("%v", job["params_applied"])
+	applied := fmt.Sprintf("%v", metadata["params_applied"])
 	for _, want := range []string{"model", "input_url", "language"} {
 		if !strings.Contains(applied, want) {
-			t.Fatalf("MV qwen asr params_applied 缺少 %s: %v", want, job["params_applied"])
+			t.Fatalf("MV qwen asr params_applied 缺少 %s: %v", want, metadata["params_applied"])
 		}
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "parameters") {
-		t.Fatalf("MV qwen asr provider_options_applied 缺少 parameters（qwen 子对象命中键名回显）: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", metadata["provider_options_applied"]), "diarization_enabled") {
+		t.Fatalf("MV qwen asr provider_options_applied 缺少 diarization_enabled（metadata 剩余键并入 qwen 子对象）: %v", metadata["provider_options_applied"])
 	}
 
 	// 轮询三次：queued → in_progress（RUNNING 归一）→ completed（SUCCEEDED +
 	// output.results[].transcription_url 冻结 + usage duration 时长计量）。
 	for index, want := range []string{"queued", "in_progress", "completed"} {
-		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/audio/jobs/"+jobID, "")
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/tasks/audio/"+jobID, "")
 		if polled.Status != http.StatusOK {
 			t.Fatalf("MV qwen asr poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
 		}
@@ -171,7 +177,7 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 
 	// content 下载：completed 的 transcription_url 是引擎渲染的绝对 URL，网关
 	// 无凭据直连。产物是转写结果 JSON 文件（契约 §10.2），非音频字节。
-	content := f.videoT(t, apiKey, http.MethodGet, "/v1/audio/jobs/"+jobID+"/content", "")
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/tasks/audio/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV qwen asr content status=%d body=%s", content.Status, content.Body)
 	}
@@ -492,7 +498,7 @@ func TestFullchainMediaSpeechVolcengineTTS(t *testing.T) {
 // fullchainCreateVolcengineASRAccount 经管理面创建指向 mock 上游的
 // volcengine api_key 长转写账户并绑定分组（volcengine 供应商 + 媒体档案
 // profile_volcengine_openai_v1，承接批起声明 audio_transcription family）；
-// 凭据显式声明 audio_job_* 四端点模式（opt-in，/v1/audio/jobs 创建链按
+// 凭据显式声明 audio_job_* 四端点模式（opt-in，/v1/tasks/audio 创建链按
 // audio_job_create 候选过滤）+ **单值 speech_token**（语音识别与 TTS 共用
 // 新版语音控制台 API Key——上游鉴权 key，mock 上游按它归因）。模型约束种
 // volc.seedasr.auc（目录现役行随静态层编译生效，无需自定义目录行）。
@@ -566,7 +572,7 @@ func (f *fullchainFixture) fullchainEnsureVolcengineASRCatalogModel(model string
 // TestFullchainMediaAudioJobVolcengineASR 验证火山长转写 adapter 链（契约
 // §9.2，2026-10-17 承接批 /api/v3/auc/bigmodel/submit|query 头驱动协议）：
 // 管理面配置（volcengine 分组 + 语音单值凭据账户 + audio_job_* 端点模式
-// 写侧门禁）→ POST /v1/audio/jobs → 出站 POST /api/v3/auc/bigmodel/submit
+// 写侧门禁）→ POST /v1/tasks/audio → 出站 POST /api/v3/auc/bigmodel/submit
 // （固定语音服务域——测试 seam env 把网关出站指回 mock；`X-Api-Key:
 // <speech_token>` 单头 + `X-Api-Resource-Id: volc.seedasr.auc` + 网关生成
 // `X-Api-Request-Id` 任务 ID，Authorization 不出站；submit 成功响应 body
@@ -597,10 +603,10 @@ func TestFullchainMediaAudioJobVolcengineASR(t *testing.T) {
 	apiKey := f.createAPIKey("全链路-MVvolcengineASR-Key", strategyID)
 	apiKeyID := f.apiKeyIDByName("全链路-MVvolcengineASR-Key")
 
-	// 创建：头驱动受理——submit 成功即 queued 统一 job 对象；任务 ID =
+	// 创建：头驱动受理——submit 成功即 queued New API 任务对象；任务 ID =
 	// 网关生成 X-Api-Request-Id（volcasr-<24hex>，轮询/content 复用）。
 	f.mock.script(speechToken, platformmock.ScenarioMediaVolcengineASRCreateOK)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/audio/jobs",
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/tasks/audio",
 		`{"model":"volc.seedasr.auc","input_url":"https://oss.example.com/audio/meeting.wav"}`)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV volcengine asr create status=%d body=%s", created.Status, created.Body)
@@ -610,16 +616,17 @@ func TestFullchainMediaAudioJobVolcengineASR(t *testing.T) {
 	if !strings.HasPrefix(jobID, "audiojob_") {
 		t.Fatalf("MV volcengine asr job id 缺少 audiojob_ 前缀: %#v", job)
 	}
-	if job["object"] != "audio_job" {
-		t.Fatalf("MV volcengine asr object = %v, want audio_job", job["object"])
+	if job["object"] != "task" {
+		t.Fatalf("MV volcengine asr object = %v, want task", job["object"])
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("MV volcengine asr create status 字段 = %v, want queued", job["status"])
 	}
-	if job["provider"] != "volcengine" {
-		t.Fatalf("MV volcengine asr provider = %v, want volcengine", job["provider"])
+	metadata, _ := job["metadata"].(map[string]any)
+	if metadata["provider"] != "volcengine" {
+		t.Fatalf("MV volcengine asr provider = %v, want volcengine", metadata["provider"])
 	}
-	providerJobID := str(job["provider_job_id"])
+	providerJobID := str(metadata["provider_job_id"])
 	if !strings.HasPrefix(providerJobID, "volcasr-") || len(providerJobID) != len("volcasr-")+24 {
 		t.Fatalf("MV volcengine asr provider_job_id = %q, want volcasr-<24hex> 网关生成任务 ID", providerJobID)
 	}
@@ -628,7 +635,7 @@ func TestFullchainMediaAudioJobVolcengineASR(t *testing.T) {
 	// → #2 终态 completed（20000000 + audio_info.duration=1118 毫秒 + 转写
 	// 文本）。轮询响应的毫秒时长由 adapter ÷1000 落 audio_input_seconds。
 	for index, want := range []string{"in_progress", "completed"} {
-		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/audio/jobs/"+jobID, "")
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/tasks/audio/"+jobID, "")
 		if polled.Status != http.StatusOK {
 			t.Fatalf("MV volcengine asr poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
 		}
@@ -640,7 +647,7 @@ func TestFullchainMediaAudioJobVolcengineASR(t *testing.T) {
 	// content 下载：火山无产物下载 URL（qwen transcription_url 同构物不存
 	// 在），content = adapter 同构 query 请求再查一次上游，终态 body 直接
 	// 代理（application/json + 实测转写文本）。
-	content := f.videoT(t, apiKey, http.MethodGet, "/v1/audio/jobs/"+jobID+"/content", "")
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/tasks/audio/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV volcengine asr content status=%d body=%s", content.Status, content.Body)
 	}

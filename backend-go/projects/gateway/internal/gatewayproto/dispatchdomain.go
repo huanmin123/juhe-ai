@@ -5,10 +5,12 @@ package gatewayproto
 //
 //	ConversationDispatch   ：Chat、Responses、Messages、Gemini 对话（文本域）。
 //	                         保持会话连续性，消费会话亲和、缓存率排序和复杂恢复。
-//	StatelessMediaDispatch ：图像、同步音频、视频创建、长音频创建（媒体创建域）。
-//	                         快速找到一个可承接账户；失败时按受理边界有限换号，
-//	                         不产生/写回会话亲和、不进入热质量与速度优先、不等待
-//	                         账户恢复、不派发请求失败健康检查。
+//	StatelessDispatch      ：图像、同步音频、视频创建、长音频创建与非对话
+//	                         工具端点（向量/重排/安全）。快速找到一个可承接
+//	                         账户；失败时按受理边界有限换号，不产生/写回会话
+//	                         亲和、不进入热质量与速度优先、不等待账户恢复、
+//	                         不派发请求失败健康检查。B7 前 token 为
+//	                         stateless_media，语义已扩为全部无状态请求。
 //	DispatchDomainRealtime ：Realtime 连接生命周期能力（设计 §1：不归入媒体创建
 //	                         域）。GET /v1/realtime WS 升级在链入口短路进专用
 //	                         handler，不进 preflight / 派发循环，本域仅作显式
@@ -20,9 +22,10 @@ package gatewayproto
 type DispatchDomain string
 
 const (
-	DispatchDomainConversation   DispatchDomain = "conversation"
-	DispatchDomainStatelessMedia DispatchDomain = "stateless_media"
-	DispatchDomainRealtime       DispatchDomain = "realtime"
+	DispatchDomainConversation DispatchDomain = "conversation"
+	// DispatchDomainStateless 是全部无状态请求域（媒体创建 + B7 工具端点）。
+	DispatchDomainStateless DispatchDomain = "stateless"
+	DispatchDomainRealtime  DispatchDomain = "realtime"
 )
 
 // DispatchDomainOfLane 把请求车道投影为调度域。未知值（空串等）按文本对话域
@@ -30,7 +33,7 @@ const (
 func DispatchDomainOfLane(lane RequestLane) DispatchDomain {
 	switch lane {
 	case LaneImage, LaneAudio, LaneVideo, LaneUtility:
-		return DispatchDomainStatelessMedia
+		return DispatchDomainStateless
 	case LaneRealtime:
 		return DispatchDomainRealtime
 	default:

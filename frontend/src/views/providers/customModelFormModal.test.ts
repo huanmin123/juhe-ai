@@ -7,8 +7,12 @@ import type { ProviderModelUpsertPayload } from '@/types/domain'
 import {
   buildCustomModelMutationPatch,
   buildCustomModelPayload,
+  clearCustomModelPricesForMode,
+  createCustomModelFormFromPricing,
+  customModelVisiblePriceFields,
   emptyCustomModelForm,
   hasCustomModelMutationChanges,
+  normalizeCustomModelUIMode,
   type CustomModelForm
 } from './customProviderModelForm'
 
@@ -230,5 +234,69 @@ describe('CustomModelFormModal 组件契约（源码级锚点）', () => {
     expect(setupSource).toContain('supportedToolsByProtocol: _supportedToolsByProtocol')
     expect(setupSource).toContain('inputModalities: _inputModalities')
     expect(setupSource).toContain('outputModalities: _outputModalities')
+  })
+})
+
+describe('B7 工具用途模型（embedding/rerank/moderation）', () => {
+  it('回填保留工具用途，不被文本分类折叠成 text', () => {
+    expect(normalizeCustomModelUIMode('embedding', 'text-embedding-3-small')).toBe('embedding')
+    expect(normalizeCustomModelUIMode('rerank', 'qwen3.7-text-rerank')).toBe('rerank')
+    expect(normalizeCustomModelUIMode('moderation', 'omni-moderation-latest')).toBe('moderation')
+    expect(normalizeCustomModelUIMode('chat', 'gpt-5')).toBe('text')
+  })
+
+  it('工具用途只保留输入价字段，清除输出/缓存/服务等级价格', () => {
+    expect(customModelVisiblePriceFields('rerank', 'text')).toEqual(['inputUsdPer1M'])
+    const form = personalTextForm({
+      mode: 'rerank',
+      supportedApiProtocols: ['rerank'],
+      inputUsdPer1M: 0.5,
+      outputUsdPer1M: 1,
+      cachedInputUsdPer1M: 0.1,
+      serviceTierPrices: { priority: { inputUsdPer1M: 2 } }
+    })
+    clearCustomModelPricesForMode(form, 'text')
+    expect(form.inputUsdPer1M).toBe(0.5)
+    expect(form.outputUsdPer1M).toBeUndefined()
+    expect(form.cachedInputUsdPer1M).toBeUndefined()
+    expect(form.serviceTierPrices).toEqual({})
+  })
+
+  it('编辑回填：来源记录 mode=embedding 时表单与载荷都保持工具用途与协议', () => {
+    const record = {
+      id: 'm-1',
+      providerCode: 'gpt',
+      model: 'text-embedding-3-small',
+      scope: 'personal',
+      status: 'active',
+      mode: 'embedding',
+      supportedApiProtocols: ['embed_content'],
+      inputUsdPer1M: 0.02,
+      outputUsdPer1M: 9,
+      serviceTierPrices: {},
+      updatedAt: '2026-11-12T00:00:00Z'
+    } as never
+    const form = createCustomModelFormFromPricing(record, [])
+    expect(form.mode).toBe('embedding')
+    expect(form.supportedApiProtocols).toEqual(['embed_content'])
+    expect(form.inputUsdPer1M).toBe(0.02)
+    expect(form.outputUsdPer1M).toBeUndefined()
+    const payload = buildCustomModelPayload(form, 'text', { includeRequestCapabilities: true, includePrices: true })
+    expect(payload).toMatchObject({
+      mode: 'embedding',
+      supportedApiProtocols: ['embed_content'],
+      inputUsdPer1M: 0.02,
+      outputUsdPer1M: null,
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: [],
+      serviceTierPrices: {}
+    })
+  })
+
+  it('组件模式切换：工具用途固定同族协议且不套文本模板', () => {
+    expect(setupSource).toContain('const utilityProtocol = customModelUtilityProtocol(customModelForm.mode)')
+    expect(setupSource).toContain('customModelForm.supportedApiProtocols = [utilityProtocol]')
+    expect(setupSource).toContain('if (isCustomModelUtilityMode(customModelForm.mode)) return')
+    expect(setupSource).toContain('if (isCustomModelUtilityMode(customModelForm.mode)) return []')
   })
 })

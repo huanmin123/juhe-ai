@@ -225,3 +225,150 @@ func TestVideoCallSecondPriceMutualExclusion(t *testing.T) {
 		}
 	}
 }
+
+// TestEstimateProviderCostUsdVideoCallDurationTiers 锁定按次时长档结算
+// （2026-11-12 档位批）：Hailuo-2.3 官方 768P 6s 2.00 元/条、10s 4.00 元/条
+// （platform.minimax.cn，÷7.0）；结算链给出 VideoCallSeconds 时按档位价，
+// 不命中档位不回退主档（宁可不计，不按错档收费）。
+func TestEstimateProviderCostUsdVideoCallDurationTiers(t *testing.T) {
+	cases := []struct {
+		name    string
+		model   string
+		seconds *float64
+		want    float64
+	}{
+		{"Hailuo-2.3 6s", "MiniMax-Hailuo-2.3", audioTestFloat(6), 0.2857142857},
+		{"Hailuo-2.3 10s", "MiniMax-Hailuo-2.3", audioTestFloat(10), 0.5714285714},
+		{"Hailuo-2.3-Fast 6s", "MiniMax-Hailuo-2.3-Fast", audioTestFloat(6), 0.1928571429},
+		{"Hailuo-2.3-Fast 10s", "MiniMax-Hailuo-2.3-Fast", audioTestFloat(10), 0.3214285714},
+		{"Hailuo-2.3 无秒数用主档", "MiniMax-Hailuo-2.3", nil, 0.2857142857},
+		{"Hailuo-2.3 非档位秒数不计", "MiniMax-Hailuo-2.3", audioTestFloat(8), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := EstimateProviderCostUsd(CostInput{
+				ProviderCode:     "minimax",
+				Model:            tc.model,
+				VideoCalls:       audioTestFloat(1),
+				VideoCallSeconds: tc.seconds,
+			})
+			if cost == nil {
+				t.Fatalf("cost = nil want %v", tc.want)
+			}
+			if *cost != tc.want {
+				t.Fatalf("cost = %v want %v", *cost, tc.want)
+			}
+		})
+	}
+}
+
+// TestVideoCallTierSeconds 锁定创建时按最近档收敛（等距取小档）：请求值
+// 不落在档位上时，出站与计费都用收敛后的档位。
+func TestVideoCallTierSeconds(t *testing.T) {
+	cases := []struct {
+		seconds float64
+		want    float64
+	}{
+		{6, 6}, {7, 6}, {8, 6}, {9, 10}, {10, 10}, {12, 10},
+	}
+	for _, tc := range cases {
+		tier := VideoCallTierSeconds("minimax", "MiniMax-Hailuo-2.3", tc.seconds)
+		if tier == nil || *tier != tc.want {
+			t.Fatalf("VideoCallTierSeconds(%v) = %v want %v", tc.seconds, tier, tc.want)
+		}
+	}
+	if tier := VideoCallTierSeconds("minimax", "MiniMax-H3", 7); tier != nil {
+		t.Fatalf("per-second row must not have call tiers, got %v", *tier)
+	}
+	if tier := VideoCallTierSeconds("openai", "sora-2", 8); tier != nil {
+		t.Fatalf("unknown row must return nil, got %v", *tier)
+	}
+}
+
+// TestEstimateProviderCostUsdVideoResolutionTiers 锁定秒价分辨率档结算
+// （2026-11-12 分辨率档批）：xAI 官方 480p $0.08 / 720p $0.14 / 1080p $0.25
+// 每秒；Volcengine/Qwen 为国内人民币 ÷7.0。分辨率已知但无该档 → 不产行项
+// （0，不回退主档）；分辨率为空 → 主档价。
+func TestEstimateProviderCostUsdVideoResolutionTiers(t *testing.T) {
+	cases := []struct {
+		name       string
+		provider   string
+		model      string
+		seconds    float64
+		resolution string
+		want       float64
+	}{
+		{"xai 1.5 480p", "xai", "grok-imagine-video-1.5", 10, "480p", 0.8},
+		{"xai 1.5 720p", "xai", "grok-imagine-video-1.5", 10, "720p", 1.4},
+		{"xai 1.5 1080p", "xai", "grok-imagine-video-1.5", 10, "1080p", 2.5},
+		{"xai lite 1080p", "xai", "grok-imagine-video-1.5-lite", 10, "1080p", 1.4},
+		{"xai 未知档位不计", "xai", "grok-imagine-video-1.5", 10, "2k", 0},
+		{"xai 无分辨率用主档", "xai", "grok-imagine-video-1.5", 10, "", 1.4},
+		{"volcengine 2.5 1080p", "volcengine", "doubao-seedance-2-5-260628", 5, "1080p", 2.6714285714},
+		{"qwen wan3.0 480p", "qwen", "wan3.0-video", 5, "480p", 0.2142857143},
+		{"minimax H3 2K", "minimax", "MiniMax-H3", 10, "2k", 1.1428571429},
+		{"minimax H3 768P", "minimax", "MiniMax-H3", 10, "768P", 0.7142857143},
+		{"minimax H3 未知档位不计", "minimax", "MiniMax-H3", 10, "1080p", 0},
+		{"minimax H3 无分辨率用主档", "minimax", "MiniMax-H3", 10, "", 0.7142857143},
+		{"minimax H3-Max 480P", "minimax", "MiniMax-H3-Max", 10, "480p", 0.4714285714},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := EstimateProviderCostUsd(CostInput{
+				ProviderCode:          tc.provider,
+				Model:                 tc.model,
+				OutputVideoSeconds:    audioTestFloat(tc.seconds),
+				OutputVideoResolution: tc.resolution,
+			})
+			if cost == nil {
+				t.Fatalf("cost = nil want %v", tc.want)
+			}
+			if *cost != tc.want {
+				t.Fatalf("cost = %v want %v", *cost, tc.want)
+			}
+		})
+	}
+}
+
+// TestEstimateProviderCostUsdVideoCallResolutionTiers 锁定 Hailuo 2.3 的
+// “分辨率 × 时长”按次组合档（2026-11-13）：768P 6s/10s 与 1080P 6s 各自
+// 采用官方条价；1080P 无 10s 档 → 不产行项（不回退 768P 主档）。
+func TestEstimateProviderCostUsdVideoCallResolutionTiers(t *testing.T) {
+	one := 1.0
+	six := 6.0
+	ten := 10.0
+	cases := []struct {
+		name       string
+		model      string
+		seconds    float64
+		resolution string
+		want       float64
+	}{
+		{"hailuo 768P 6s", "MiniMax-Hailuo-2.3", six, "768P", 0.2857142857},
+		{"hailuo 768P 10s", "MiniMax-Hailuo-2.3", ten, "768P", 0.5714285714},
+		{"hailuo 1080P 6s", "MiniMax-Hailuo-2.3", six, "1080P", 0.5},
+		{"hailuo 1080P 10s 无档", "MiniMax-Hailuo-2.3", ten, "1080P", 0},
+		{"hailuo 无分辨率回主档 6s", "MiniMax-Hailuo-2.3", six, "", 0.2857142857},
+		{"hailuo fast 1080P 6s", "MiniMax-Hailuo-2.3-Fast", six, "1080P", 0.33},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := EstimateProviderCostUsd(CostInput{
+				ProviderCode:          "minimax",
+				Model:                 tc.model,
+				VideoCalls:            &one,
+				VideoCallSeconds:      &tc.seconds,
+				OutputVideoResolution: tc.resolution,
+			})
+			if tc.want == 0 {
+				if cost != nil && *cost != 0 {
+					t.Fatalf("cost = %v want 0（无档不回退主档）", *cost)
+				}
+				return
+			}
+			if cost == nil || *cost != tc.want {
+				t.Fatalf("cost = %v want %v", cost, tc.want)
+			}
+		})
+	}
+}

@@ -227,3 +227,114 @@ func TestMediaSpeechRequestVolcengineOpenspeechRequiresSpeechToken(t *testing.T)
 		t.Fatal("mediaSpeechRequest error = nil, want missing speech_token error")
 	}
 }
+
+func TestProbeUtilityConnectivityUsesEmptyInputPOST(t *testing.T) {
+	cases := []struct {
+		name        string
+		provider    string
+		mode        string
+		model       string
+		wantPath    string
+		wantBody    []string
+		wantNotBody string
+	}{
+		{
+			name:     "gpt embeddings",
+			provider: "gpt",
+			mode:     "embed_content",
+			model:    "text-embedding-3-small",
+			wantPath: "/embeddings",
+			wantBody: []string{`"model":"text-embedding-3-small"`, `"input":[]`},
+		},
+		{
+			name:     "qwen embeddings compatible mode",
+			provider: "qwen",
+			mode:     "embed_content",
+			model:    "text-embedding-v4",
+			wantPath: "/compatible-mode/v1/embeddings",
+			wantBody: []string{`"model":"text-embedding-v4"`, `"input":[]`},
+		},
+		{
+			name:     "qwen rerank dashscope shape",
+			provider: "qwen",
+			mode:     "rerank_json",
+			model:    "qwen3.7-text-rerank",
+			wantPath: "/api/v1/services/rerank/text-rerank/text-rerank",
+			wantBody: []string{`"model":"qwen3.7-text-rerank"`, `"input":{"documents":[],"query":""}`},
+		},
+		{
+			name:     "gpt moderations",
+			provider: "gpt",
+			mode:     "moderation_json",
+			model:    "omni-moderation-latest",
+			wantPath: "/moderations",
+			wantBody: []string{`"model":"omni-moderation-latest"`, `"input":[]`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var method, path, body string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				method, path = r.Method, r.URL.Path
+				raw, _ := io.ReadAll(r.Body)
+				body = string(raw)
+				w.WriteHeader(http.StatusBadRequest)
+			}))
+			defer server.Close()
+			baseURL, _ := url.Parse(server.URL)
+			result := probeMediaConnectivity(context.Background(), server.Client(), baseURL, Input{
+				Provider:     tc.provider,
+				EndpointMode: tc.mode,
+				HealthModel:  tc.model,
+			}, "sk-test", ProbeOptions{Timeout: 2 * time.Second})
+			if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusBadRequest {
+				t.Fatalf("result = %+v, want success 400", result)
+			}
+			if method != http.MethodPost || path != tc.wantPath {
+				t.Fatalf("request = %s %s, want POST %s", method, path, tc.wantPath)
+			}
+			for _, fragment := range tc.wantBody {
+				if !strings.Contains(body, fragment) {
+					t.Fatalf("body = %s, want %s", body, fragment)
+				}
+			}
+		})
+	}
+}
+
+func TestProbeUtilityConnectivityRejectsAuthFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	baseURL, _ := url.Parse(server.URL)
+	result := probeMediaConnectivity(context.Background(), server.Client(), baseURL, Input{
+		Provider:     "gpt",
+		EndpointMode: "moderation_json",
+		HealthModel:  "omni-moderation-latest",
+	}, "sk-test", ProbeOptions{Timeout: 2 * time.Second})
+	if result.Outcome == OutcomeSuccess || result.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("result = %+v, want auth failure 401", result)
+	}
+}
+
+func TestProbeUtilityConnectivityStripsQwenVersionRoot(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	baseURL, _ := url.Parse(server.URL + "/compatible-mode/v1")
+	result := probeMediaConnectivity(context.Background(), server.Client(), baseURL, Input{
+		Provider:     "qwen",
+		EndpointMode: "embed_content",
+		HealthModel:  "text-embedding-v4",
+	}, "sk-test", ProbeOptions{Timeout: 2 * time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusBadRequest {
+		t.Fatalf("result = %+v, want success 400", result)
+	}
+	if gotPath != "/compatible-mode/v1/embeddings" {
+		t.Fatalf("path = %q, want /compatible-mode/v1/embeddings", gotPath)
+	}
+}

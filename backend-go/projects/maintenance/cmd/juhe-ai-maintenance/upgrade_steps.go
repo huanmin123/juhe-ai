@@ -1427,5 +1427,153 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				return nil
 			},
 		},
+		{
+			// 时间类型迁移 Phase 4 prepare（计划 §Phase 4）：构建
+			// juhe_usage_migrate 影子父表/日分区，复制数据与索引并校验行数。
+			// 非破坏；swap 在 revision 30 的停写窗口执行。
+			Revision: 29, ID: "usage-records-timestamptz-prepare",
+			Title:       "usage_records timestamptz 影子表 prepare",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: false,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision29Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision29(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision29Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("usage_records 影子表未就绪或行数与源表不一致")
+				}
+				return nil
+			},
+		},
+		{
+			// 时间类型迁移 Phase 4 swap（计划 §Phase 4）：停写窗口内锁表、
+			// 反连接追平、计数校验、旧族逐分区移入 juhe_usage_retired、新族
+			// 逐分区移入 juhe_usage。Destructive：contract/all 相执行。
+			Revision: 30, ID: "usage-records-timestamptz-swap",
+			Title:       "usage_records 分区族换表",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision30Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision30(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision30Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("usage_records 未切换到 timestamptz 分区族")
+				}
+				return nil
+			},
+		},
+		{
+			// 时间类型迁移 Phase 4 retire（计划 §Phase 4）：观察期结束后删除
+			// juhe_usage_retired 旧族。Destructive：不可逆。
+			Revision: 31, ID: "usage-records-timestamptz-retire",
+			Title:       "usage_records 旧族退役",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision31Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision31(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision31Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("juhe_usage_retired 旧族仍存在")
+				}
+				return nil
+			},
+		},
+		{
+			// 时间类型 Phase 5 首批（计划 §Phase 5）：account_lock_states 两个
+			// epoch 毫秒瞬时列迁 timestamptz(6)。Destructive：停写窗口执行。
+			Revision: 32, ID: "account-lock-state-timestamptz",
+			Title:       "账户锁状态 instant 时间列迁移",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision32Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision32(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision32Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("account_lock_states instant 列未迁移到 timestamptz(6)")
+				}
+				return nil
+			},
+		},
+		{
+			Revision: 33, ID: "account-list-availability-dirty-timestamptz",
+			Title:       "账户列表可用性脏标记 instant 时间列迁移",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision33Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision33(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision33Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("account_list_availability_dirty instant 列未迁移到 timestamptz(6)")
+				}
+				return nil
+			},
+		},
+		{
+			Revision: 34, ID: "circuit-runtime-timestamptz",
+			Title:       "熔断 incident/outbox instant 时间列迁移",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return revision34Satisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyRevision34(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := revision34Satisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return errors.New("circuit incident/outbox instant 列未迁移到 timestamptz(6)")
+				}
+				return nil
+			},
+		},
 	}
 }

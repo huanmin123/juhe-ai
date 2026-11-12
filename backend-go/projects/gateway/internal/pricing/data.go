@@ -38,8 +38,15 @@ type rawModel struct {
 	CacheReadInputTokenCostFlex                 *float64
 	CacheReadInputImageTokenCost                *float64
 
-	InputCostPerImageToken         *float64
-	OutputCostPerImage             *float64
+	InputCostPerImageToken *float64
+	OutputCostPerImage     *float64
+	// OutputCostPerImageTiers 是按输出像素分档的按张价（2026-11-12 档位批）：
+	// MaxPixels 为 0 表示无上限；主档仍落 OutputCostPerImage。
+	OutputCostPerImageTiers []ImagePriceTier
+	// InputCostPerImage 是输入图按张价；InputImageFreeCount 是每请求免费张数
+	// （2026-11-12 输入素材批）。
+	InputCostPerImage              *float64
+	InputImageFreeCount            *int
 	OutputCostPerImageToken        *float64
 	InputCostPerAudioToken         *float64
 	InputCostPerAudioTokenPriority *float64
@@ -48,15 +55,31 @@ type rawModel struct {
 	// M1 同步音频维度（音频设计 §10）：TTS 输入按 USD/字符字面量
 	// （perMillion 折算 USD/1M chars）；STT 输入按 USD/秒字面量。
 	// M2 视频维度（媒体设计 §10）：视频输出按 USD/秒字面量。
-	TtsInputCostPerChar      *float64
+	TtsInputCostPerChar *float64
+	// TtsOutputCostPerCall 是 token 口径 TTS 无 usage 时的按次固定价
+	// （2026-11-12 用户裁决：按次兜底，不空着）。
+	TtsOutputCostPerCall     *float64
 	AudioInputCostPerSecond  *float64
 	VideoOutputCostPerSecond *float64
+	// VideoOutputCostPerSecondByResolution 是按输出分辨率分档的秒价表，
+	// 键为 "480p"/"720p"/"1080p"/"2k"/"4k"（大小写不敏感）。厂商按分辨率
+	// 定价时（xAI/Volcengine/Qwen 视频）用它表达；主档仍落
+	// VideoOutputCostPerSecond。
+	VideoOutputCostPerSecondByResolution map[string]float64
 	// VideoOutputCostPerCall 是视频按次计费单价字面量（2026-10-05 用户裁决：
 	// 无法返回 usage 的上游按官网计费规则、按输入计——cogvideox/Hailuo 等
 	// 按次上游，一次任务 = 一次调用）。与 OutputCostPerImage 同构的按次单
 	// 槽位；与 VideoOutputCostPerSecond 互斥（同一行两字段只落其一，互斥
 	// 门禁测试钉住），秒价行不得再落按次价、反之亦然。
 	VideoOutputCostPerCall *float64
+	// VideoOutputCostPerCallBySeconds 是按输出时长（秒）分档的按次价表，
+	// 键为秒数串（"6"/"10"）。用于厂商按“条 × 时长档”计价的模型
+	// （MiniMax Hailuo-2.3 6s/10s）；与 VideoOutputCostPerSecond 仍互斥。
+	VideoOutputCostPerCallBySeconds map[string]float64
+	// VideoOutputCostPerCallByResolutionSeconds 是“分辨率 × 时长”二维按次
+	// 价表，键为 "<resolution>-<seconds>"（如 "1080p-6"）；用于 Hailuo
+	// 1080P 仅 6s 这类组合档位。主档仍由 BySeconds 表达。
+	VideoOutputCostPerCallByResolutionSeconds map[string]float64
 
 	ContextWindowTokens *int
 	MaxInputTokens      *int

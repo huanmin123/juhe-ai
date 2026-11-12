@@ -18,6 +18,7 @@ package pricing
 
 import (
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -33,10 +34,14 @@ type tokenBillingLabels struct {
 	audioInput      string
 	audioOutput     string
 	imageOutputUnit string
+	imageInputUnit  string
 	// ttsInputChars / audioInputSeconds 是 M1 音频行项标签（音频设计 §10）；
 	// videoOutputSeconds 是 M2 视频行项标签（媒体设计 §10）；
 	// videoOutputCalls 是视频按次行项标签（2026-10-05 按次计费批，契约 §2.8）。
 	ttsInputChars string
+	// ttsOutputCalls 是 token 口径 TTS 无 usage 时的按次固定价行项标签
+	//（2026-11-12 用户裁决：官方按 token、上游不回报 → 按次固定价，不空着）。
+	ttsOutputCalls string
 	// audioInputSeconds 是音频秒行项标签（音频设计 §10）：承载 STT 输入秒
 	// 与 volcengine TTS 生成秒（2026-10-17 维度修正批）——同一 usage 行只
 	// 会是其一，费率按模型目录无混算。
@@ -123,6 +128,7 @@ var billingPolicies = []*billingPolicy{
 			imageOutputUnit: "输出图片",
 			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
+			ttsOutputCalls:     defaultTokenBillingLabels.ttsOutputCalls,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
 			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
@@ -146,6 +152,7 @@ var billingPolicies = []*billingPolicy{
 			imageOutputUnit: "输出图片",
 			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
+			ttsOutputCalls:     defaultTokenBillingLabels.ttsOutputCalls,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
 			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
@@ -175,6 +182,7 @@ var billingPolicies = []*billingPolicy{
 			imageOutputUnit: "输出图片",
 			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
+			ttsOutputCalls:     defaultTokenBillingLabels.ttsOutputCalls,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
 			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
@@ -197,6 +205,7 @@ var billingPolicies = []*billingPolicy{
 			imageOutputUnit: "输出图片",
 			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
+			ttsOutputCalls:     defaultTokenBillingLabels.ttsOutputCalls,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
 			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
@@ -427,6 +436,15 @@ func serviceTierRates(pricing *Pricing, input CostInput) resolvedRates {
 	if resolved.OutputUsdPerImage == nil {
 		resolved.OutputUsdPerImage = finite(pricing.OutputUsdPerImage)
 	}
+	if len(resolved.OutputUsdPerImageTiers) == 0 {
+		resolved.OutputUsdPerImageTiers = pricing.OutputUsdPerImageTiers
+	}
+	if resolved.InputUsdPerImage == nil {
+		resolved.InputUsdPerImage = finite(pricing.InputUsdPerImage)
+	}
+	if resolved.InputImageFreeCount == 0 {
+		resolved.InputImageFreeCount = pricing.InputImageFreeCount
+	}
 	if resolved.TtsInputUsdPer1MChars == nil {
 		resolved.TtsInputUsdPer1MChars = finite(pricing.TtsInputUsdPer1MChars)
 	}
@@ -436,8 +454,17 @@ func serviceTierRates(pricing *Pricing, input CostInput) resolvedRates {
 	if resolved.VideoOutputUsdPerSecond == nil {
 		resolved.VideoOutputUsdPerSecond = finite(pricing.VideoOutputUsdPerSecond)
 	}
+	if len(resolved.VideoOutputUsdPerSecondByResolution) == 0 {
+		resolved.VideoOutputUsdPerSecondByResolution = pricing.VideoOutputUsdPerSecondByResolution
+	}
 	if resolved.VideoOutputUsdPerCall == nil {
 		resolved.VideoOutputUsdPerCall = finite(pricing.VideoOutputUsdPerCall)
+	}
+	if len(resolved.VideoOutputUsdPerCallBySeconds) == 0 {
+		resolved.VideoOutputUsdPerCallBySeconds = pricing.VideoOutputUsdPerCallBySeconds
+	}
+	if len(resolved.VideoOutputUsdPerCallByResolutionSeconds) == 0 {
+		resolved.VideoOutputUsdPerCallByResolutionSeconds = pricing.VideoOutputUsdPerCallByResolutionSeconds
 	}
 	source, multiplier := tierPricingMetadata(pricing.PriceSet, tierRates)
 	return resolvedRates{
@@ -504,8 +531,14 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	if rates.AudioOutputUsdPer1M != nil {
 		outputAudioTokens = nonNegative(input.OutputAudioTokens)
 	}
+	// 按张价选档（2026-11-12 档位批）：目录带像素档表且请求给出输出像素时
+	// 按档位价；档位不命中 → 无按张价（不回退主档）；像素未知 → 主档价。
+	outputImageRate := rates.OutputUsdPerImage
+	if len(rates.OutputUsdPerImageTiers) > 0 && input.OutputImagePixels != nil {
+		outputImageRate = selectImageTierRate(rates.OutputUsdPerImageTiers, *input.OutputImagePixels)
+	}
 	outputImageCount := 0.0
-	if rates.OutputUsdPerImage != nil {
+	if outputImageRate != nil {
 		outputImageCount = nonNegative(input.OutputImageCount)
 	}
 	// 张数计量在图像模型缺按张价时的裁决：token 计价的图像行（gpt-image 族，
@@ -514,7 +547,7 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	// 零计费（2026-11-06 dev 复现：gpt-image-2 返回 1 张 + 343 image tokens，
 	// costUsd 为 NULL）。非图像模型或完全没有图像 token 价的配置仍按
 	// “未定价张数”拒绝整单（既有契约测试 gpt-5.5 合成张数场景）。
-	if nonNegative(input.OutputImageCount) > 0 && rates.OutputUsdPerImage == nil {
+	if nonNegative(input.OutputImageCount) > 0 && outputImageRate == nil {
 		if !(pricing.Mode == "image_generation" && rates.ImageOutputUsdPer1M != nil) {
 			return nil
 		}
@@ -567,22 +600,102 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	lines = addTokenLine(lines, "image_output", LineImageOutput, options.labels.imageOutput, outputImageTokens, rates.ImageOutputUsdPer1M)
 	lines = addTokenLine(lines, "audio_input", LineAudioInput, options.labels.audioInput, inputAudioTokens, rates.AudioInputUsdPer1M)
 	lines = addTokenLine(lines, "audio_output", LineAudioOutput, options.labels.audioOutput, outputAudioTokens, rates.AudioOutputUsdPer1M)
-	lines = addUnitLine(lines, "image_output_unit", LineImageOutUnit, options.labels.imageOutputUnit, outputImageCount, LineUnitImage, rates.OutputUsdPerImage)
+	lines = addUnitLine(lines, "image_output_unit", LineImageOutUnit, options.labels.imageOutputUnit, outputImageCount, LineUnitImage, outputImageRate)
+	// 输入图按张价（2026-11-12 输入素材批）：厂商首张/前 N 张免费时先扣免费
+	// 额度，再按张计费；无价或扣完为 0 不产行项（输入图费用是可选项）。
+	billableInputImages := math.Max(nonNegative(input.InputImageCount)-float64(rates.InputImageFreeCount), 0)
+	lines = addUnitLine(lines, "image_input_unit", CostLineKindImageInputUnit, options.labels.imageInputUnit, billableInputImages, LineUnitImage, rates.InputUsdPerImage)
 	// M1 同步音频行项（音频设计 §10）：TTS 按输入字符（USD/1M chars，与
 	// token 行同构的 UnitSize=1M 折算）、STT 按音频秒（USD/s 直乘）。无价格
 	// 或计量为 0 不产行项（0 计费不产生行，与 token 行一致）。
 	lines = addPerMillionUnitLine(lines, "tts_input_chars", CostLineKindTtsInputChars, options.labels.ttsInputChars, nonNegative(input.TtsInputChars), LineUnitChar, rates.TtsInputUsdPer1MChars)
+	// token 口径 TTS 无 usage 的按次固定价（2026-11-12 用户裁决）：官方按
+	// 输出音频 token，上游二进制响应不回报 usage → 一次请求 = 一次调用，
+	// 成本 = 次价 × 1；不解析音频、不估算 token。无次价不产行项。
+	lines = addUnitLine(lines, "tts_output_calls", CostLineKindTtsOutputCalls, options.labels.ttsOutputCalls, nonNegative(input.TtsCalls), LineUnitCall, rates.TtsOutputUsdPerCall)
 	lines = addUnitLine(lines, "audio_input_seconds", CostLineKindAudioInputSeconds, options.labels.audioInputSeconds, nonNegative(input.AudioInputSeconds), LineUnitSecond, rates.AudioInputUsdPerSecond)
 	// M2 视频行项（媒体设计 §10）：视频按输出秒计费（USD/s 直乘，与
 	// audio_input_seconds 同构）。无价格或计量为 0 不产行项（失败任务不虚计）。
-	lines = addUnitLine(lines, "video_output_seconds", CostLineKindVideoOutputSeconds, options.labels.videoOutputSeconds, nonNegative(input.OutputVideoSeconds), LineUnitSecond, rates.VideoOutputUsdPerSecond)
+	// 2026-11-12 分辨率档批：目录行带 VideoOutputUsdPerSecondByResolution 且
+	// 创建时冻结了计费分辨率时按档位价；分辨率已知但档位不命中 → 不产行项
+	//（不回退主档）；分辨率为空（创建时无法确定）→ 用主档价。
+	videoSecondRate := rates.VideoOutputUsdPerSecond
+	if len(rates.VideoOutputUsdPerSecondByResolution) > 0 && input.OutputVideoResolution != "" {
+		if tierRate, ok := rates.VideoOutputUsdPerSecondByResolution[normalizeResolutionKey(input.OutputVideoResolution)]; ok {
+			videoSecondRate = &tierRate
+		} else {
+			videoSecondRate = nil
+		}
+	}
+	lines = addUnitLine(lines, "video_output_seconds", CostLineKindVideoOutputSeconds, options.labels.videoOutputSeconds, nonNegative(input.OutputVideoSeconds), LineUnitSecond, videoSecondRate)
 	// 视频按次行项（2026-10-05 按次计费批，契约 §2.8）：按次上游一次任务 =
 	// 一次调用（VideoCalls 由结算链按任务粒度填 1），USD/次直乘。秒价与次
 	// 价互斥（目录门禁：同一行两槽位只落其一），同一行最多产出两行项之一；
-	// 无价格或计量为 0 不产行项。
-	lines = addUnitLine(lines, "video_output_calls", CostLineKindVideoOutputCalls, options.labels.videoOutputCalls, nonNegative(input.VideoCalls), LineUnitCall, rates.VideoOutputUsdPerCall)
+	// 无价格或计量为 0 不产行项。2026-11-12 时长档批 + 2026-11-13 分辨率×
+	// 时长组合档：先按 "分辨率-秒数" 选档，未命中再按秒数档（主档分辨率），
+	// 已知分辨率有专门档但组合不命中 → 不产行项（不回退主档）。
+	lines = addUnitLine(lines, "video_output_calls", CostLineKindVideoOutputCalls, options.labels.videoOutputCalls, nonNegative(input.VideoCalls), LineUnitCall, selectVideoCallRate(rates.PriceSet, input))
 
 	return legacyBreakdownFromLines(lines, input, rates)
+}
+
+// selectVideoCallRate 选择按次价（2026-11-12 时长档批 + 2026-11-13 分辨率
+// ×时长组合档）：优先 composite 表 "<resolution>-<seconds>"；该分辨率没有
+// 任何组合档时回落按秒数档表（主档分辨率价）；该分辨率有专门档但当前时长
+// 组合不命中 → nil（不回退主档）。秒数档表存在但秒数不命中同样 nil。
+func selectVideoCallRate(rates PriceSet, input CostInput) *float64 {
+	if input.VideoCallSeconds == nil {
+		return rates.VideoOutputUsdPerCall
+	}
+	secondsKey := formatSecondsKey(*input.VideoCallSeconds)
+	if secondsKey == "" {
+		return rates.VideoOutputUsdPerCall
+	}
+	if len(rates.VideoOutputUsdPerCallByResolutionSeconds) > 0 && input.OutputVideoResolution != "" {
+		resolution := normalizeResolutionKey(input.OutputVideoResolution)
+		if tierRate, ok := rates.VideoOutputUsdPerCallByResolutionSeconds[resolution+"-"+secondsKey]; ok {
+			return &tierRate
+		}
+		prefix := resolution + "-"
+		for key := range rates.VideoOutputUsdPerCallByResolutionSeconds {
+			if strings.HasPrefix(key, prefix) {
+				return nil
+			}
+		}
+	}
+	if len(rates.VideoOutputUsdPerCallBySeconds) > 0 {
+		if tierRate, ok := rates.VideoOutputUsdPerCallBySeconds[secondsKey]; ok {
+			return &tierRate
+		}
+		return nil
+	}
+	return rates.VideoOutputUsdPerCall
+}
+
+// selectImageTierRate 按输出像素选择按张档位价（2026-11-12 档位批）：档位按
+// MaxPixels 升序，返回第一个 pixels ≤ MaxPixels 的档；MaxPixels ≤ 0 视为
+// 无上限。全部不命中返回 nil（不静默回退主档）。
+func selectImageTierRate(tiers []ImagePriceTier, pixels int64) *float64 {
+	ordered := make([]ImagePriceTier, 0, len(tiers))
+	ordered = append(ordered, tiers...)
+	sort.SliceStable(ordered, func(left, right int) bool {
+		leftLimit := ordered[left].MaxPixels
+		rightLimit := ordered[right].MaxPixels
+		if leftLimit <= 0 {
+			leftLimit = math.MaxInt64
+		}
+		if rightLimit <= 0 {
+			rightLimit = math.MaxInt64
+		}
+		return leftLimit < rightLimit
+	})
+	for _, tier := range ordered {
+		if tier.MaxPixels <= 0 || pixels <= tier.MaxPixels {
+			rate := tier.UsdPerImage
+			return &rate
+		}
+	}
+	return nil
 }
 
 // orRate mirrors the `a ?? b` rate fallbacks.
@@ -679,10 +792,20 @@ func directRates(set PriceSet) PriceSet {
 		AudioInputUsdPer1M:          finite(set.AudioInputUsdPer1M),
 		AudioOutputUsdPer1M:         finite(set.AudioOutputUsdPer1M),
 		OutputUsdPerImage:           finite(set.OutputUsdPerImage),
+		OutputUsdPerImageTiers:      set.OutputUsdPerImageTiers,
+		InputUsdPerImage:            finite(set.InputUsdPerImage),
+		InputImageFreeCount:         set.InputImageFreeCount,
 		TtsInputUsdPer1MChars:       finite(set.TtsInputUsdPer1MChars),
+		TtsOutputUsdPerCall:         finite(set.TtsOutputUsdPerCall),
 		AudioInputUsdPerSecond:      finite(set.AudioInputUsdPerSecond),
 		VideoOutputUsdPerSecond:     finite(set.VideoOutputUsdPerSecond),
-		VideoOutputUsdPerCall:       finite(set.VideoOutputUsdPerCall),
+		// 分辨率秒价档表是价格事实而非费率，直接继承（2026-11-12 档位批）。
+		VideoOutputUsdPerSecondByResolution: set.VideoOutputUsdPerSecondByResolution,
+		VideoOutputUsdPerCall:               finite(set.VideoOutputUsdPerCall),
+		// 档位表是价格事实而非费率，直接继承（2026-11-12 档位批）。
+		VideoOutputUsdPerCallBySeconds: set.VideoOutputUsdPerCallBySeconds,
+		// 分辨率×时长组合档同属价格事实（2026-11-13 Hailuo 1080P 批）。
+		VideoOutputUsdPerCallByResolutionSeconds: set.VideoOutputUsdPerCallByResolutionSeconds,
 	}
 }
 

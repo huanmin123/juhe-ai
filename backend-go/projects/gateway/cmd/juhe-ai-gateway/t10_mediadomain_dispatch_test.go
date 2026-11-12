@@ -21,7 +21,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// t10MediaLanes 是 StatelessMediaDispatch 域的 lane 词表。
+// t10MediaLanes 是 StatelessDispatch 域的 lane 词表。
 var t10MediaLanes = []string{"image", "audio", "video"}
 
 // t10NewHealthOutboxFixture 建表后的 outbox 夹具：零行断言需要表已存在。

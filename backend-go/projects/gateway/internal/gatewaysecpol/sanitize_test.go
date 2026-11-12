@@ -432,3 +432,52 @@ func TestAnthropicRedactedThinkingDataUntouched(t *testing.T) {
 		t.Fatalf("redacted_thinking data 不得产生命中计数：%v", result.Hits)
 	}
 }
+
+func TestToolFields(t *testing.T) {
+	policy := singleRule(t, phonePlaceholderRule())
+	body := []byte(`{"model":"m","input":["电话 13812345678","无号码"],"query":"查 13912345678","documents":["文档 13712345678",{"text":"对象 13612345678","id":7}],"width":1024}`)
+	result := SanitizeBody(policy, body, FamilyTool)
+	for _, field := range []string{
+		`"电话 [[PHONE_1]]"`,
+		`"query":"查 [[PHONE_2]]"`,
+		`"文档 [[PHONE_3]]"`,
+		`"text":"对象 [[PHONE_4]]"`,
+	} {
+		if !bytes.Contains(result.Body, []byte(field)) {
+			t.Fatalf("tool 字段替换缺失 %s：\n%s", field, result.Body)
+		}
+	}
+	if !bytes.Contains(result.Body, []byte(`"width":1024`)) || !bytes.Contains(result.Body, []byte(`"id":7`)) {
+		t.Fatalf("未命中数字/非文本字段不应改动：\n%s", result.Body)
+	}
+	if bytes.Contains(result.Body, []byte("【隐私保护说明】")) {
+		t.Fatalf("tool 协议族不应注入系统提示：\n%s", result.Body)
+	}
+	if result.Hits["PHONE"] != 4 {
+		t.Fatalf("PHONE 命中数应为 4，得到 %d", result.Hits["PHONE"])
+	}
+}
+
+func TestToolTokenIDArraysAreNotSanitized(t *testing.T) {
+	policy := singleRule(t, phonePlaceholderRule())
+	body := []byte(`{"model":"m","input":[13812345678,13912345678]}`)
+	result := SanitizeBody(policy, body, FamilyTool)
+	if result.Applied || result.TotalHits != 0 {
+		t.Fatalf("token id 数字数组不应被改写：hits=%d body=%s", result.TotalHits, result.Body)
+	}
+	if !bytes.Equal(result.Body, body) {
+		t.Fatalf("token id 数字数组应逐字节保持不变：%s", result.Body)
+	}
+}
+
+func TestToolModerationMultimodalText(t *testing.T) {
+	policy := singleRule(t, phonePlaceholderRule())
+	body := []byte(`{"model":"m","input":[{"type":"text","text":"电话 13812345678"},{"type":"image_url","image_url":{"url":"https://x/y.png"}}]}`)
+	result := SanitizeBody(policy, body, FamilyTool)
+	if !bytes.Contains(result.Body, []byte(`"text":"电话 [[PHONE_1]]"`)) {
+		t.Fatalf("moderation 多模态 text 条目应脱敏：%s", result.Body)
+	}
+	if !bytes.Contains(result.Body, []byte(`"url":"https://x/y.png"`)) {
+		t.Fatalf("image_url 不应改动：%s", result.Body)
+	}
+}

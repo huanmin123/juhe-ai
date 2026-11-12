@@ -552,11 +552,11 @@ func requiredScopePart(value, name string) (string, error) {
 }
 
 // requiredRequestLane 校验 protocol_model 作用域的 requestLane。词表读
-// gatewayproto 的车道常量（text/image/audio/video/realtime，媒体设计 §3
-// 与 Realtime 设计 §6 的唯一权威源，不在此重复维护清单）：媒体车道不归并
-// text、不拒斥（2026-10-04 主代理裁决 + 媒体设计 §3 车道行为规则；M5b
-// realtime 同语义），以独立 lane 维度入作用域键，与 text/image 电路自然
-// 隔离；账户级熔断保护语义不变。
+// gatewayproto 的车道常量（text/image/audio/video/utility/realtime，媒体
+// 设计 §3、Realtime 设计 §6 与工具端点设计 §3 的唯一权威源，不在此重复
+// 维护清单）：媒体与工具车道不归并 text、不拒斥（2026-10-04 主代理裁决 +
+// 媒体设计 §3 车道行为规则；M5b realtime 同语义），以独立 lane 维度入作用
+// 域键，与 text/image 电路自然隔离；账户级熔断保护语义不变。
 func requiredRequestLane(value string) (string, error) {
 	switch value {
 	case string(gatewayproto.LaneText),

@@ -38,7 +38,7 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 		return upgradeSteps(td.DSN, testSecret)
 	}
 
-	// 1) 落后库 dry-run：blocked/3，pending 应为 7 步 = 注册表 16 步中排除
+	// 1) 落后库 dry-run：blocked/3，pending 应为 12 步 = 注册表 26 步中排除
 	// fresh-adopt 的 9 步（rev6/10/11/12/13/20/22/23/24；rev8 upstream-base-url
 	// 空库无行仍 pending；各步 Satisfied 在空库按目标态判据即为真，见
 	// upgrade_steps.go 各步注释；存量库 schema 已存在则 rev20/23/24 正常
@@ -48,8 +48,8 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 	if out.ExitCode != upgradepipeline.ExitNeedsHuman || out.Report == nil || out.Report.Result != upgradepipeline.ResultBlocked {
 		t.Fatalf("dry-run 应 blocked/3，got code=%d result=%v", out.ExitCode, reportResult(out.Report))
 	}
-	if len(out.Report.Plan.Pending) != 7 {
-		t.Fatalf("fresh 库 pending 步骤数 = %d, want 7（13 步 - 6 步 fresh-adopt）", len(out.Report.Plan.Pending))
+	if len(out.Report.Plan.Pending) != 12 {
+		t.Fatalf("fresh 库 pending 步骤数 = %d, want 12（含 revision 32/33/34）", len(out.Report.Plan.Pending))
 	}
 
 	// 2) 缺确认：exit 2。
@@ -78,8 +78,8 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 		`SELECT count(*) FROM juhe_business.schema_migrations WHERE status = 'applied'`).Scan(&applied); err != nil {
 		t.Fatalf("读账本失败: %v", err)
 	}
-	if applied != 20 {
-		t.Fatalf("applied 行数 = %d, want 20", applied)
+	if applied != 26 {
+		t.Fatalf("applied 行数 = %d, want 26", applied)
 	}
 	var stateRevision int64
 	if err := db.QueryRowContext(context.Background(),

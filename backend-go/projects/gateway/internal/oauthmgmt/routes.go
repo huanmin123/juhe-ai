@@ -475,7 +475,7 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 		input.Notes = &text
 	}
 	// capabilityDomain（B5 收键）：可选，仅类型校验（非字符串 → 参数无效）；
-	// 值域（四枚举）与「空 → chat」缺省由 accounts 写面统一承载（非法值 400
+	// 值域（已注册场景）与「空 → chat」缺省由 accounts 写面统一承载（非法值 400
 	// 「能力域无效」），路由层透传不重复校验（契约 §2）。
 	if value, present := body["capabilityDomain"]; present && value != nil {
 		text, ok := value.(string)

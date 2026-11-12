@@ -69,6 +69,10 @@ type StreamPipeResult struct {
 	// DownstreamFirstWriteMs 是首个下游字节写出时刻 − 请求开始（客户端可感知
 	// 首字延迟的真口径，含窗口停留）。
 	DownstreamFirstWriteMs *int64
+	// ClientGone 表示下游写入已失败（客户端断开）：管道停止写下游并继续读到
+	// 协议终态或 drain 预算上限；结算按失败口径记录实际/估算 usage
+	// （2026-11-12 计费漏记修复）。
+	ClientGone bool
 }
 
 // 审计捕获上限，对齐 stream.ts 常量。

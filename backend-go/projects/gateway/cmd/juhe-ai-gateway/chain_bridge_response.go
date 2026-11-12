@@ -43,6 +43,9 @@ func (t *chainBridgeResponseTransformer) TransformUpstreamResponseForAccount(
 	if req == nil || response == nil || !response.OK() || response.Body == nil {
 		return response, nil
 	}
+	if transformed, handled, err := transformUtilityUpstreamResponse(input); handled {
+		return transformed, err
+	}
 	mapping := chainBridgeResponseMappingOf(req, input.Account)
 	return t.transformGeminiCodeAssistIfApplicable(input, mapping, response)
 }

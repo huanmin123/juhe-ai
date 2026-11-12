@@ -63,7 +63,7 @@ func ownerJobRecordOf(id, apiKeyID, ownerSystemAccountID string) MediaJobRecord 
 		AccountID:            "acc_1",
 		UpstreamJobID:        "up_" + id,
 		Status:               JobStatusQueued,
-		RequestSnapshot:      MediaJobRequestSnapshot{Model: "sora-2", Prompt: "owner"},
+		RequestSnapshot:      MediaJobRequestSnapshot{Model: "sora-2", Prompt: "owner", Metadata: map[string]any{"negative_prompt": "低清", "seed": float64(7)}},
 	}
 }
 
@@ -92,6 +92,10 @@ func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
 	}
 	if loaded.OwnerSystemAccountID != "sys_1" || loaded.APIKeyID != "key_1" {
 		t.Fatalf("loaded = %#v", loaded)
+	}
+	// New API metadata 随 request_snapshot_json 原样往返（纯元数据）。
+	if loaded.RequestSnapshot.Metadata["negative_prompt"] != "低清" || loaded.RequestSnapshot.Metadata["seed"] != float64(7) {
+		t.Fatalf("metadata round trip = %#v", loaded.RequestSnapshot.Metadata)
 	}
 
 	// GetByIDAndOwner：跨属主与空 owner 一律未命中。

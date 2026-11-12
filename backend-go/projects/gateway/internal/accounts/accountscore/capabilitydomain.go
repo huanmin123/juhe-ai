@@ -18,6 +18,12 @@ const (
 	CapabilityDomainAudio = string(scenario.TypeAudio)
 	// CapabilityDomainImage 图像域。
 	CapabilityDomainImage = string(scenario.TypeImage)
+	// CapabilityDomainEmbedding 向量域（B7）。
+	CapabilityDomainEmbedding = string(scenario.TypeEmbedding)
+	// CapabilityDomainRerank 重排域（B7）。
+	CapabilityDomainRerank = string(scenario.TypeRerank)
+	// CapabilityDomainModeration 安全域（B7）。
+	CapabilityDomainModeration = string(scenario.TypeModeration)
 )
 
 // AccountCapabilityDomainSet 是 domain 列表过滤参数的合法取值集。

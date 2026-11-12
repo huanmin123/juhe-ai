@@ -18,7 +18,9 @@ func TestWAEndpointFamilyFromPath(t *testing.T) {
 		{"/v1/responses", FamilyResponses, true},
 		{"/v1/models/responses/list", FamilyResponses, true}, // 包含匹配
 		{"", "", false},
-		{"/v1/embeddings", "", false},
+		{"/v1/embeddings", FamilyEmbeddings, true},
+		{"/v1/rerank", FamilyRerank, true},
+		{"/v1/moderations", FamilyModeration, true},
 	}
 	for _, tc := range cases {
 		family, ok := endpointFamilyFromPath(tc.path)
@@ -59,7 +61,15 @@ func TestWAIsProtocolRequestPath(t *testing.T) {
 		{"/v1/embeddings", true},
 		{"/v1/audio/transcriptions", true},
 		{"/v1/audio", true},
+		{"/v1/video/generations", true},
+		{"/v1/video/generations/video_1", true},
+		{"/v1/video/generations/video_1/content", true},
+		{"/v1/tasks/audio", true},
+		{"/v1/tasks/audio/audiojob_1", true},
+		{"/v1/tasks/audio/audiojob_1/content", true},
+		{"/v1/tasks", false},
 		{"/v1/other", false},
+		{"/v1/video", false},
 		{"/messages", false},
 	}
 	for _, tc := range cases {
@@ -124,7 +134,9 @@ func TestWAEndpointModeForShape(t *testing.T) {
 		{"/v1/chat/completions", true, gatewayproto.EndpointModeChatSSE, true},
 		{"/v1/responses", false, gatewayproto.EndpointModeResponsesJSON, true},
 		{"/v1/responses", true, gatewayproto.EndpointModeResponsesSSE, true},
-		{"/v1/embeddings", false, "", false},
+		{"/v1/embeddings", false, gatewayproto.EndpointModeEmbedContent, true},
+		{"/v1/rerank", false, gatewayproto.EndpointModeRerankJSON, true},
+		{"/v1/moderations", false, gatewayproto.EndpointModeModerationJSON, true},
 	}
 	for _, tc := range cases {
 		got, found := endpointModeForShape(tc.path, tc.stream)

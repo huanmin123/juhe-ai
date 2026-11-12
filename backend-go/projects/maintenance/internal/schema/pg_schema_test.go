@@ -162,9 +162,10 @@ import (
 // （4 CREATE TABLE + 10 CREATE INDEX，revision 23）。
 // 627→628：D13 非对话账户 cutover——juhe_business +1
 // （account-capability-domain-drop-check 幂等 DO 块；建表/加列原位去 CHECK
-// 不计新增语句）。
+// 不计新增语句）。628→629：B7 account_endpoint_modes 25→27 值 CHECK
+// 幂等迁移 +1。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 628
+const goldenPostgresSchemaStatementCount = 629
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -205,7 +206,7 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// CONCURRENTLY；审计报告-2026-11-04 §6）。
 	// 338→340：2026-11-09 演练场产物暂存 PG bytea +2（playground_artifacts
 	// 建表 + created_at 索引；多节点无需共享盘）。
-	"juhe_business": 341,
+	"juhe_business": 342,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -361,9 +362,10 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
 	// ALTER DO 块。7→8：D13 非对话账户 cutover 新增 capability_domain
-	// drop-check DO 块。
-	if doBlocks != 8 {
-		t.Fatalf("DO block count = %d, want 8", doBlocks)
+	// drop-check DO 块。8→9：B7 新增 account_endpoint_modes 25→27 值 CHECK
+	// 重建 DO 块。
+	if doBlocks != 9 {
+		t.Fatalf("DO block count = %d, want 9", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
@@ -449,25 +451,27 @@ func TestPostgresQualityScheduleIntervalCheckContract(t *testing.T) {
 // health_check_endpoint_mode / health_check_model 三列 nullable（NOT NULL +
 // 复合外键会让 fresh 库任何插入顺序都无法创建账户；创建事务先插 accounts 暂
 // NULL、事务内同一条 UPDATE 补齐）、health_check_endpoint_mode 列级 CHECK
-// 精确覆盖 §2.2 的 25 值、复合外键 (id, health_check_connection_id) 保留，
-// CHECK 迁移 DO 块按 message_token_counting 判别旧 22 值（及更早）约束。
+// 精确覆盖 §2.2 的 27 值、复合外键 (id, health_check_connection_id) 保留，
+// CHECK 迁移 DO 块按 message_token_counting / rerank_json 判别旧约束。
 // DO 块无法在无服务环境下执行，与 interval CHECK 契约测试同口径只断言 SQL
 // 文本；三列 nullable 的实际插入顺序行为由 SQLite 同构 DDL 测试
 // （TestSQLiteAccountsHealthCheckNullabilityAndForeignKey）覆盖。
 func TestPostgresAccountsHealthCheckContract(t *testing.T) {
-	var createAccounts, modeMigration, dirtyTriggers string
+	var createAccounts, modeMigration, endpointModeMigration, dirtyTriggers string
 	for _, statement := range postgresSchemaStatements {
 		switch {
 		case statement.Source == "business" && strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS accounts ("):
 			createAccounts = statement.SQL
 		case statement.Source == "accounts-health-check-endpoint-mode-pg-check":
 			modeMigration = statement.SQL
+		case statement.Source == "account-endpoint-modes-pg-check":
+			endpointModeMigration = statement.SQL
 		case statement.Source == "account-list-projection-pg-dirty-triggers":
 			dirtyTriggers = statement.SQL
 		}
 	}
-	if createAccounts == "" || modeMigration == "" || dirtyTriggers == "" {
-		t.Fatalf("missing accounts CREATE TABLE, endpoint-mode migration or dirty trigger statement")
+	if createAccounts == "" || modeMigration == "" || endpointModeMigration == "" || dirtyTriggers == "" {
+		t.Fatalf("missing accounts CREATE TABLE, endpoint-mode migrations or dirty trigger statement")
 	}
 	// B-1：三列必须 nullable，不得保留 NOT NULL。
 	for _, fragment := range []string{
@@ -488,23 +492,36 @@ func TestPostgresAccountsHealthCheckContract(t *testing.T) {
 	if !strings.Contains(createAccounts, "FOREIGN KEY (id, health_check_connection_id) REFERENCES account_connections(account_id, id)") {
 		t.Fatalf("accounts CREATE TABLE must keep the composite health-check FK")
 	}
-	// B-2：建表内联 CHECK 覆盖 §2.2 全 25 值（accounts 语句中 mode 值只出现在
+	// B-2：建表内联 CHECK 覆盖 §2.2 全 27 值（accounts 语句中 mode 值只出现在
 	// health_check_endpoint_mode CHECK 词表内）。
 	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
 		if !strings.Contains(createAccounts, "'"+mode+"'") {
-			t.Fatalf("accounts health_check_endpoint_mode CHECK must cover %q (25 值词表)", mode)
+			t.Fatalf("accounts health_check_endpoint_mode CHECK must cover %q (27 值词表)", mode)
 		}
 	}
-	// DO 块：判别谓词改为按 25 值新值定位旧约束，具名重建同样覆盖 25 值。
+	// DO 块：判别谓词改为按 27 值新值定位旧约束，具名重建同样覆盖 27 值。
 	if !strings.Contains(modeMigration, `NOT LIKE '%message_token_counting%'`) {
 		t.Fatalf("endpoint-mode migration must locate legacy 22-value CHECKs via message_token_counting")
+	}
+	if !strings.Contains(modeMigration, `NOT LIKE '%rerank_json%'`) {
+		t.Fatalf("endpoint-mode migration must locate legacy 25-value CHECKs via rerank_json")
 	}
 	if strings.Contains(modeMigration, `NOT LIKE '%realtime_session%'`) {
 		t.Fatalf("endpoint-mode migration must drop the retired realtime-only legacy predicate")
 	}
 	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
 		if !strings.Contains(modeMigration, "''"+mode+"''") {
-			t.Fatalf("endpoint-mode migration named CHECK must cover %q (25 值词表)", mode)
+			t.Fatalf("endpoint-mode migration named CHECK must cover %q (27 值词表)", mode)
+		}
+	}
+	// account_endpoint_modes 存量表同样必须重建 25→27 值 CHECK；只改建表
+	// DDL 会让旧库创建工具账户时违反旧约束。
+	if !strings.Contains(endpointModeMigration, `NOT LIKE '%rerank_json%'`) {
+		t.Fatalf("account_endpoint_modes migration must locate legacy 25-value CHECKs via rerank_json")
+	}
+	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
+		if !strings.Contains(endpointModeMigration, "''"+mode+"''") {
+			t.Fatalf("account_endpoint_modes migration named CHECK must cover %q (27 值词表)", mode)
 		}
 	}
 	// 顺手项：dirty 触发器 ROW() 比较纳入协议面新列与健康检查连接列。
@@ -520,9 +537,10 @@ func TestPostgresAccountsHealthCheckContract(t *testing.T) {
 	}
 }
 
-// sqliteHealthCheckEndpointModeVocabulary 是设计 §2.2 的 25 值全词表
+// sqliteHealthCheckEndpointModeVocabulary 是设计 §2.2 的 27 值全词表
 // （与 account_endpoint_modes CHECK、accounts.health_check_endpoint_mode
-// CHECK、registry capabilityDomainLanes 并集同源）。
+// CHECK、registry capabilityDomainLanes 并集同源；B7 增补 rerank_json /
+// moderation_json）。
 var sqliteHealthCheckEndpointModeVocabulary = []string{
 	"images_json", "chat_json", "chat_sse",
 	"responses_json", "responses_sse",
@@ -532,7 +550,7 @@ var sqliteHealthCheckEndpointModeVocabulary = []string{
 	"audio_speech", "audio_transcription_json",
 	"video_create", "video_get", "video_content", "video_cancel",
 	"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
-	"realtime_session",
+	"realtime_session", "rerank_json", "moderation_json",
 }
 
 func TestPostgresSeedPasswordHashFormat(t *testing.T) {

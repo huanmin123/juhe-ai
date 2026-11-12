@@ -59,6 +59,13 @@ func (qwenVideoAdapter) Capabilities() VideoCapabilities {
 	}
 }
 
+// BillingResolution 实现分辨率分档计费的计费档位（契约 §2.8.3）：Qwen 官方
+// 词表为 480P/720P/1080P，出站 parameters.size 由请求 size 直传；按同一
+// 短边规则选档，未带 size 时返回空串由结算回落主档价。
+func (qwenVideoAdapter) BillingResolution(params NormalizedVideoParams) string {
+	return videoResolutionTierForSize(params.Size)
+}
+
 // qwenSizeOf 把公共 size 的 WxH 像素串（归一层已校验形态）换算为万相
 // parameters.size 的 "W*H" 形态（官方分隔符是星号 *，2026-10-04 官方 API
 // 参考核实，如 1920*1080/832*480；公共层是 x 分隔，纯格式转换语义不变）。

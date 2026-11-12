@@ -303,11 +303,16 @@ func TestSecurityPolicyFamilyForRequest(t *testing.T) {
 		{http.MethodPost, "/v1beta/models/gemini-pro:generateContent", "gemini"},
 		{http.MethodPost, "/v1beta/models/gemini-pro:streamGenerateContent", "gemini"},
 		{http.MethodPost, "/v1/videos", "media"},
+		{http.MethodPost, "/v1/video/generations", "media"},
+		{http.MethodPost, "/v1/tasks/audio", "media"},
 		{http.MethodPost, "/v1/audio/speech", "media"},
 		{http.MethodPost, "/v1/audio/jobs", "media"},
 		{http.MethodPost, "/v1/images/generations", "media"},
+		{http.MethodPost, "/v1/images/edits", "media"},
 		{http.MethodGet, "/v1/models", ""},
-		{http.MethodPost, "/v1/embeddings", ""},
+		{http.MethodPost, "/v1/embeddings", "tool"},
+		{http.MethodPost, "/v1/rerank", "tool"},
+		{http.MethodPost, "/v1/moderations", "tool"},
 		{http.MethodPost, "/v1/audio/transcriptions", "media"},
 	}
 	for _, c := range cases {

@@ -356,6 +356,8 @@ var catalogEndpointModeLegacyProjection = map[string][][2]string{
 	"message_token_counting":   {{"embedding", "message_token_counting"}},
 	"count_tokens":             {{"embedding", "count_tokens"}},
 	"embed_content":            {{"embedding", "embed_content"}},
+	"rerank_json":              {{"rerank", "rerank"}},
+	"moderation_json":          {{"moderation", "moderation"}},
 }
 
 // catalogDeriveLegacyModeAndProtocols 从 supportedEndpointModes 行键反推旧目
@@ -364,7 +366,7 @@ var catalogEndpointModeLegacyProjection = map[string][][2]string{
 // mode 值域一致），协议 token 去重升序；空 mode 集（draft/disabled 行）不注入
 // mode 键（旧行为 NULL→absent），协议投影保持空数组。
 func catalogDeriveLegacyModeAndProtocols(row map[string]any) {
-	modeRank := map[string]int{"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5}
+	modeRank := map[string]int{"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5, "rerank": 6, "moderation": 7}
 	seenProtocols := map[string]bool{}
 	protocols := []string{}
 	bestMode := ""

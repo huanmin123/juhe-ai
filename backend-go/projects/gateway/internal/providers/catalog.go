@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
@@ -92,6 +93,9 @@ type ModelCatalogItem struct {
 	AudioInputUsdPer1M                      *float64                 `json:"audioInputUsdPer1M,omitempty"`
 	AudioOutputUsdPer1M                     *float64                 `json:"audioOutputUsdPer1M,omitempty"`
 	OutputUsdPerImage                       *float64                 `json:"outputUsdPerImage,omitempty"`
+	OutputUsdPerImageTiers                  []pricing.ImagePriceTier `json:"outputUsdPerImageTiers,omitempty"`
+	InputUsdPerImage                        *float64                 `json:"inputUsdPerImage,omitempty"`
+	InputImageFreeCount                     int64                    `json:"inputImageFreeCount,omitempty"`
 	SupportsPromptCaching                   bool                     `json:"supportsPromptCaching"`
 	SupportsServiceTier                     bool                     `json:"supportsServiceTier"`
 	PricingNotes                            *string                  `json:"pricingNotes,omitempty"`
@@ -106,10 +110,14 @@ type ModelCatalogItem struct {
 	SourceExchangeRateDate                  string                   `json:"sourceExchangeRateDate,omitempty"`
 	SourcePricingNote                       string                   `json:"sourcePricingNote,omitempty"`
 	// 媒体单价四维（静态定价表透传；目录表无列，仅供目录展示与前端渲染）。
-	VideoOutputUsdPerSecond *float64 `json:"videoOutputUsdPerSecond,omitempty"`
-	VideoOutputUsdPerCall   *float64 `json:"videoOutputUsdPerCall,omitempty"`
-	TtsInputUsdPer1MChars   *float64 `json:"ttsInputUsdPer1MChars,omitempty"`
-	AudioInputUsdPerSecond  *float64 `json:"audioInputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerSecond                  *float64           `json:"videoOutputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerSecondByResolution      map[string]float64 `json:"videoOutputUsdPerSecondByResolution,omitempty"`
+	VideoOutputUsdPerCall                    *float64           `json:"videoOutputUsdPerCall,omitempty"`
+	VideoOutputUsdPerCallBySeconds           map[string]float64 `json:"videoOutputUsdPerCallBySeconds,omitempty"`
+	VideoOutputUsdPerCallByResolutionSeconds map[string]float64 `json:"videoOutputUsdPerCallByResolutionSeconds,omitempty"`
+	TtsInputUsdPer1MChars                    *float64           `json:"ttsInputUsdPer1MChars,omitempty"`
+	TtsOutputUsdPerCall                      *float64           `json:"ttsOutputUsdPerCall,omitempty"`
+	AudioInputUsdPerSecond                   *float64           `json:"audioInputUsdPerSecond,omitempty"`
 	// CatalogDisplay mirrors withCatalogDisplay: present on every merged
 	// catalog row (possibly []), absent on the save/mutation responses
 	// (Node toCustomCatalogItem carries no catalogDisplay).
@@ -130,11 +138,11 @@ type ModelSelectionOption struct {
 	DefaultReasoningEffort    *string  `json:"defaultReasoningEffort,omitempty"`
 }
 
-// ProviderCatalogModeValues mirrors the six-value directory mode word list of
-// the /models/options `modes` query（旧 provider_model_catalog.mode 值域）。
-// models 单表无 mode 列：过滤时经 catalogModeEndpointModeExpansion 展开成
-// 25 值 endpoint mode 集做 json 交集。
-var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "audio", "video", "image_generation"}
+// ProviderCatalogModeValues mirrors the directory mode word list of the
+// /models/options `modes` query（旧 provider_model_catalog.mode 值域 + B7
+// 工具场景）。models 单表无 mode 列：过滤时经 catalogModeEndpointModeExpansion
+// 展开成 29 值 endpoint mode 集做 json 交集。
+var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "audio", "video", "image_generation", "rerank", "moderation"}
 
 // ModelCapabilities mirrors the findProviderModelCapabilitiesAsync payload.
 type ModelCapabilities struct {
@@ -397,9 +405,17 @@ func ApplyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
 	if resolved.SourceExchangeRateToUsd != nil {
 		item.SourceExchangeRateToUsd = resolved.SourceExchangeRateToUsd
 	}
+	item.OutputUsdPerImage = resolved.OutputUsdPerImage
+	item.OutputUsdPerImageTiers = resolved.OutputUsdPerImageTiers
+	item.InputUsdPerImage = resolved.InputUsdPerImage
+	item.InputImageFreeCount = resolved.InputImageFreeCount
 	item.VideoOutputUsdPerSecond = resolved.VideoOutputUsdPerSecond
+	item.VideoOutputUsdPerSecondByResolution = resolved.VideoOutputUsdPerSecondByResolution
 	item.VideoOutputUsdPerCall = resolved.VideoOutputUsdPerCall
+	item.VideoOutputUsdPerCallBySeconds = resolved.VideoOutputUsdPerCallBySeconds
+	item.VideoOutputUsdPerCallByResolutionSeconds = resolved.VideoOutputUsdPerCallByResolutionSeconds
 	item.TtsInputUsdPer1MChars = resolved.TtsInputUsdPer1MChars
+	item.TtsOutputUsdPerCall = resolved.TtsOutputUsdPerCall
 	item.AudioInputUsdPerSecond = resolved.AudioInputUsdPerSecond
 	item.GenerationParameterCapabilities = resolved.GenerationParameterCapabilities
 }
@@ -749,8 +765,11 @@ func hasDirectPrice(item ModelCatalogItem) bool {
 		item.AudioOutputUsdPer1M != nil || item.OutputUsdPerImage != nil {
 		return true
 	}
-	if item.VideoOutputUsdPerSecond != nil || item.VideoOutputUsdPerCall != nil ||
-		item.TtsInputUsdPer1MChars != nil || item.AudioInputUsdPerSecond != nil {
+	if item.VideoOutputUsdPerSecond != nil || len(item.VideoOutputUsdPerSecondByResolution) > 0 ||
+		item.VideoOutputUsdPerCall != nil || len(item.VideoOutputUsdPerCallBySeconds) > 0 ||
+		len(item.VideoOutputUsdPerCallByResolutionSeconds) > 0 ||
+		item.TtsInputUsdPer1MChars != nil || item.TtsOutputUsdPerCall != nil ||
+		item.AudioInputUsdPerSecond != nil {
 		return true
 	}
 	return len(item.ServiceTierPrices) > 0
@@ -1074,6 +1093,8 @@ func catalogModeFilterExpansion() map[string][]string {
 		"audio":            {"audio_speech", "audio_transcription_json", "realtime_session"},
 		"video":            {"video_create", "video_get", "video_content", "video_cancel"},
 		"image_generation": {"images_json"},
+		"rerank":           {"rerank_json"},
+		"moderation":       {"moderation_json"},
 	}
 }
 

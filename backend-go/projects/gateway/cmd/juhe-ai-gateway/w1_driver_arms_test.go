@@ -349,6 +349,12 @@ func TestW1GRequestMappingSourceFamilyOf(t *testing.T) {
 		{"gemini stream generate", http.MethodPost, "/v1beta/models/x:streamGenerateContent?alt=sse", true, "stream_generate_content"},
 		{"gemini count tokens keeps count_tokens family", http.MethodPost, "/v1beta/models/x:countTokens", true, "count_tokens"},
 		{"anthropic messages post", http.MethodPost, "/v1/messages", true, "messages"},
+		{"B7 embeddings", http.MethodPost, "/v1/embeddings", true, gatewayopenai.FamilyEmbeddings},
+		{"B7 embeddings subpath", http.MethodPost, "/v1/embeddings/multimodal", true, gatewayopenai.FamilyEmbeddings},
+		{"B7 rerank", http.MethodPost, "/v1/rerank", true, gatewayopenai.FamilyRerank},
+		{"B7 rerank subpath", http.MethodPost, "/v1/rerank/batch", true, gatewayopenai.FamilyRerank},
+		{"B7 moderations", http.MethodPost, "/v1/moderations", true, gatewayopenai.FamilyModeration},
+		{"B7 moderations subpath", http.MethodPost, "/v1/moderations/batch", true, gatewayopenai.FamilyModeration},
 		{"anthropic messages get falls back", http.MethodGet, "/v1/messages", false, "chat_completions"},
 		{"unknown path falls back", http.MethodGet, "/v1/models", false, "chat_completions"},
 	}

@@ -556,3 +556,53 @@ func TestMediaVideoRequestRecording(t *testing.T) {
 		t.Fatalf("create recording missing prompt: %q", reqs[0].Body)
 	}
 }
+
+// TestMediaVideoNewAPICompatAlias proves the New API compatible paths
+// (POST /v1/video/generations, GET /v1/video/generations/{id} and
+// .../{id}/content) are accepted and dispatched onto the existing OpenAI
+// videos handler: same job entry, same script advance, same mp4 channel.
+// List/cancel stay outside the New API surface (404).
+func TestMediaVideoNewAPICompatAlias(t *testing.T) {
+	m := New()
+	defer m.Close()
+
+	code, _, raw := doMedia(t, m.Server, http.MethodPost, "/v1/video/generations",
+		string(ScenarioMediaVideoOKPoll3), "application/json", []byte(videoCreateBody))
+	if code != http.StatusOK {
+		t.Fatalf("new API create status = %d, want 200 (%s)", code, raw)
+	}
+	var created parsedVideoObject
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("new API create body: %v (%s)", err, raw)
+	}
+	if !videoIDPattern.MatchString(created.ID) {
+		t.Fatalf("new API create id = %q, want video_ hex", created.ID)
+	}
+
+	code, polled, pollRaw := func() (int, parsedVideoObject, string) {
+		c, _, body := doMedia(t, m.Server, http.MethodGet, "/v1/video/generations/"+created.ID, "", "", nil)
+		var obj parsedVideoObject
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &obj); err != nil {
+				t.Fatalf("new API poll body: %v (%s)", err, body)
+			}
+		}
+		return c, obj, string(body)
+	}()
+	if code != http.StatusOK {
+		t.Fatalf("new API poll status = %d, want 200 (%s)", code, pollRaw)
+	}
+	assertVideoState(t, "new API poll #1", polled, videoStatusInProgress, 33, false, false)
+
+	if code, header, body := doMedia(t, m.Server, http.MethodGet, "/v1/video/generations/"+created.ID+"/content", "", "", nil); code == http.StatusOK {
+		t.Fatalf("content before completed must not be 200 (content-type %q, %d bytes)", header.Get("Content-Type"), len(body))
+	}
+
+	// List/cancel are not part of the New API surface.
+	if code, _, _ := doMedia(t, m.Server, http.MethodGet, "/v1/video/generations", "", "", nil); code != http.StatusNotFound {
+		t.Fatalf("new API list status = %d, want 404", code)
+	}
+	if code, _, _ := doMedia(t, m.Server, http.MethodDelete, "/v1/video/generations/"+created.ID, "", "", nil); code != http.StatusNotFound {
+		t.Fatalf("new API delete status = %d, want 404", code)
+	}
+}

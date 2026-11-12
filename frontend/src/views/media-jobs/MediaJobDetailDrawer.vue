@@ -80,14 +80,6 @@
               preload="metadata"
               class="artifact-media"
             ></video>
-            <audio
-              v-else-if="detail.kind === 'audio_speech'"
-              :key="artifactContentUrl"
-              :src="artifactContentUrl"
-              controls
-              preload="metadata"
-              class="artifact-audio"
-            ></audio>
             <p class="artifact-line">
               <a :href="artifactContentUrl" target="_blank" rel="noopener">打开产物内容</a>
               <span v-if="detail.artifact?.expiresAt" class="muted-cell">（上游时效至 {{ formatDateTime(detail.artifact?.expiresAt ?? '') }}，过期后产物不可再取回）</span>
@@ -412,11 +404,6 @@ watch(() => [props.open, props.jobId] as const, ([open, jobId]) => {
   width: 100%;
   border-radius: 8px;
   background: var(--juhe-surface);
-}
-
-.artifact-audio {
-  display: block;
-  width: 100%;
 }
 
 .artifact-line {

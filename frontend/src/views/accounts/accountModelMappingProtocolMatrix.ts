@@ -9,6 +9,9 @@ import {
   OPENAI_RESPONSES_FAMILY,
   OPENAI_TTS_FAMILY,
   OPENAI_VIDEO_GENERATION_FAMILY,
+  OPENAI_EMBED_CONTENT_FAMILY,
+  OPENAI_RERANK_FAMILY,
+  OPENAI_MODERATION_FAMILY,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
   isOpenAIProtocolProfile
@@ -49,6 +52,15 @@ export function isMediaMappingEndpointFamily(
   return value === OPENAI_VIDEO_GENERATION_FAMILY || value === OPENAI_TTS_FAMILY
 }
 
+// B7 工具端点映射族（镜像后端 model_mapping_protocol_matrix.go）：向量/重排/
+// 安全同族模型名改写，上游面是 OpenAI 兼容工具端点，只允许 OpenAI 兼容协议
+// 档案声明。
+export function isUtilityMappingEndpointFamily(
+  value: AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
+): boolean {
+  return value === OPENAI_EMBED_CONTENT_FAMILY || value === OPENAI_RERANK_FAMILY || value === OPENAI_MODERATION_FAMILY
+}
+
 // 2026-11-07 跨协议模型映射退役（计划 PLAN-20261106T162344524Z）：唯一允许方向
 // 是协议等价——同族改名，外加 Gemini stream_generate_content → generate_content
 // 归一；responses → chat_completions bridge 已随 Chat bridge 全链删除。与后端
@@ -63,7 +75,12 @@ export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[]
   // 上游面是 OpenAI 形态媒体端点，仅 openai 档案供应商可声明（能力门要求
   // 账户启用 video_create / audio_speech 端点模式）。
   { source: OPENAI_VIDEO_GENERATION_FAMILY, upstream: OPENAI_VIDEO_GENERATION_FAMILY, upstreamProfile: 'openai' },
-  { source: OPENAI_TTS_FAMILY, upstream: OPENAI_TTS_FAMILY, upstreamProfile: 'openai' }
+  { source: OPENAI_TTS_FAMILY, upstream: OPENAI_TTS_FAMILY, upstreamProfile: 'openai' },
+  // B7 工具端点映射：向量/重排/安全同族模型名改写，仅 openai 档案供应商可
+  // 声明（能力门要求账户启用对应 endpoint mode）。
+  { source: OPENAI_EMBED_CONTENT_FAMILY, upstream: OPENAI_EMBED_CONTENT_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_RERANK_FAMILY, upstream: OPENAI_RERANK_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_MODERATION_FAMILY, upstream: OPENAI_MODERATION_FAMILY, upstreamProfile: 'openai' }
 ] as const
 
 // 单协议下拉选项（前端变化契约）：每行映射只有一个协议选择，选项即协议等价
@@ -84,7 +101,10 @@ const accountModelMappingProtocolOptionLabels: Record<AccountModelMappingSourceE
   [GEMINI_GENERATE_CONTENT_FAMILY]: 'Gemini GenerateContent',
   [GEMINI_STREAM_GENERATE_CONTENT_FAMILY]: 'Gemini StreamGenerateContent',
   [OPENAI_VIDEO_GENERATION_FAMILY]: '视频生成',
-  [OPENAI_TTS_FAMILY]: '语音合成'
+  [OPENAI_TTS_FAMILY]: '语音合成',
+  [OPENAI_EMBED_CONTENT_FAMILY]: '向量',
+  [OPENAI_RERANK_FAMILY]: '重排',
+  [OPENAI_MODERATION_FAMILY]: '安全'
 }
 
 export const accountModelMappingProtocolOptions: readonly AccountModelMappingProtocolOption[] = (
@@ -193,8 +213,11 @@ function accountModelMappingProtocolStructureValidationMessage(
   if (isMediaMappingEndpointFamily(sourceEndpointFamily) && !openAIProfile) {
     return '当前供应商协议不支持媒体模型映射账号别名'
   }
-  if (openAIProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && !isMediaMappingEndpointFamily(upstreamEndpointFamily)) {
-    return '模型映射 OpenAI 协议账号只能使用 Chat Completions、Responses 或媒体族同协议映射'
+  if (isUtilityMappingEndpointFamily(sourceEndpointFamily) && !openAIProfile) {
+    return '当前供应商协议不支持工具端点模型映射账号别名'
+  }
+  if (openAIProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && !isMediaMappingEndpointFamily(upstreamEndpointFamily) && !isUtilityMappingEndpointFamily(upstreamEndpointFamily)) {
+    return '模型映射 OpenAI 协议账号只能使用 Chat Completions、Responses、媒体族或工具端点同协议映射'
   }
   if (anthropicProfile && upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY) {
     return '模型映射 Anthropic 协议账号只能使用 Messages 同协议映射'
@@ -225,6 +248,9 @@ export function accountModelMappingEndpointFamilyText(
   if (value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) return 'Gemini StreamGenerateContent'
   if (value === OPENAI_VIDEO_GENERATION_FAMILY) return '视频生成'
   if (value === OPENAI_TTS_FAMILY) return '语音合成'
+  if (value === OPENAI_EMBED_CONTENT_FAMILY) return '向量'
+  if (value === OPENAI_RERANK_FAMILY) return '重排'
+  if (value === OPENAI_MODERATION_FAMILY) return '安全'
   return value === OPENAI_RESPONSES_FAMILY ? 'Responses' : 'Chat Completions'
 }
 
@@ -254,6 +280,15 @@ export function hasAccountModelMappingUpstreamEndpointFamilyCapability(
   if (upstreamEndpointFamily === OPENAI_TTS_FAMILY) {
     // M4b：语音映射上游面要求账户可承接 /v1/audio/speech。
     return modes.some((mode) => mode === 'audio_speech')
+  }
+  if (upstreamEndpointFamily === OPENAI_EMBED_CONTENT_FAMILY) {
+    return modes.some((mode) => mode === 'embed_content')
+  }
+  if (upstreamEndpointFamily === OPENAI_RERANK_FAMILY) {
+    return modes.some((mode) => mode === 'rerank_json')
+  }
+  if (upstreamEndpointFamily === OPENAI_MODERATION_FAMILY) {
+    return modes.some((mode) => mode === 'moderation_json')
   }
   return modes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
 }

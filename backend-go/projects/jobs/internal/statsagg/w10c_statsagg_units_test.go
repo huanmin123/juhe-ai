@@ -620,8 +620,8 @@ func TestW10CRankSnapshotStages(t *testing.T) {
 	// 授权月成本排行：account_authorization 与 group_authorization 两个 scope。
 	env.exec(`INSERT INTO juhe_stats.usage_stats_monthly (system_account_id, scope_type, scope_id, stat_month, request_count, total_cost_usd, last_used_at, updated_at)
 		VALUES
-		('alice', 'account_authorization', 'auth-1', '2026-04', 2, 3.5, '2026-04-10T10:00:00.000Z', '2026-04-10T10:00:00.000Z'),
-		('alice', 'group_authorization', 'gauth-1', '2026-04', 1, 2.5, '2026-04-11T10:00:00.000Z', '2026-04-11T10:00:00.000Z')`)
+		('alice', 'account_authorization', 'auth-1', '2026-04-01', 2, 3.5, '2026-04-10T10:00:00.000Z', '2026-04-10T10:00:00.000Z'),
+		('alice', 'group_authorization', 'gauth-1', '2026-04-01', 1, 2.5, '2026-04-11T10:00:00.000Z', '2026-04-11T10:00:00.000Z')`)
 	if _, err := env.refresher().RunStages(context.Background(), []WindowStageName{StageAccountAuthorizationCurrentMonthRank, StageGroupAuthorizationCurrentMonthRank}, RefreshOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -650,8 +650,8 @@ func TestW10CAccountHealthUpsert(t *testing.T) {
 	// 预置既有行：一条更新（10:00 < 10:30 → 覆盖）、一条拒绝（11:00 > 10:30 → 保留）。
 	env.exec(`INSERT INTO juhe_stats.account_health_hourly (account_id, system_account_id, provider_code, stat_hour, status, last_observed_at, last_record_id, updated_at)
 		VALUES
-		('acc-older', 'alice', 'openai', '2026-04-18T10', 'failure', '2026-04-18T10:00:00.000Z', 'rec-old', '2026-04-18T10:00:00.000Z'),
-		('acc-newer', 'alice', 'openai', '2026-04-18T10', 'failure', '2026-04-18T11:00:00.000Z', 'rec-new', '2026-04-18T11:00:00.000Z')`)
+		('acc-older', 'alice', 'openai', '2026-04-18 10:00:00', 'failure', '2026-04-18T10:00:00.000Z', 'rec-old', '2026-04-18T10:00:00.000Z'),
+		('acc-newer', 'alice', 'openai', '2026-04-18 10:00:00', 'failure', '2026-04-18T11:00:00.000Z', 'rec-new', '2026-04-18T11:00:00.000Z')`)
 	env.seedUsageRecord(w10cHealthRow(func(r *UsageStatsRecordRow) {
 		r.ID = "rec-h1"
 		r.AccountID = strPtr("acc-older")

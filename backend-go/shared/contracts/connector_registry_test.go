@@ -28,8 +28,8 @@ var testPresets = []string{
 	PresetMiniMaxMedia, PresetVolcengineArk, PresetVolcengineOpenSpeech, PresetQwenDashScope,
 }
 
-// testDomains 是 4 个 capability domain。
-var testDomains = []string{DomainChat, DomainVideo, DomainAudio, DomainImage}
+// testDomains 是 7 个 capability domain。
+var testDomains = []string{DomainChat, DomainVideo, DomainAudio, DomainImage, DomainEmbedding, DomainRerank, DomainModeration}
 
 // trailingFieldPattern 匹配 canonical JSON 中 defaultBaseUrl 之后仍有后续字段的
 // 反例（defaultBaseUrl 必须是每元素的末位字段，其后只允许元素收尾 `}`）。
@@ -64,16 +64,15 @@ func stringSliceContains(values []string, target string) bool {
 	return false
 }
 
-// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 去掉 generic_http 后的 43 条
-// 与按 driver 计数。
+// TestConnectorRegistryComboCounts 断言 B7 后 47 条允许连接组合与按 driver 计数。
 func TestConnectorRegistryComboCounts(t *testing.T) {
 	combos := AllowedConnectorCombos()
-	if len(combos) != 43 {
-		t.Fatalf("AllowedConnectorCombos() = %d 条, want 43", len(combos))
+	if len(combos) != 47 {
+		t.Fatalf("AllowedConnectorCombos() = %d 条, want 47", len(combos))
 	}
 	counts := ComboDriverCounts()
 	expected := map[string]int{
-		DriverGPT:        5,
+		DriverGPT:        7,
 		DriverXAI:        4,
 		DriverDeepSeek:   2,
 		DriverAnthropic:  2,
@@ -81,7 +80,7 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 		DriverGLM:        7,
 		DriverMiniMax:    2,
 		DriverVolcengine: 4,
-		DriverQwen:       4,
+		DriverQwen:       6,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -93,8 +92,9 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 134 条与按 driver 计数，
-// 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
+// TestConnectorRegistryModeComboCounts 断言 134 条单 mode 组合与按 driver 计数，
+// 并复核每条 mode combo 都来自同一份 AllowedModes 推导。B7 只在域间移动
+// embed_content 并新增工具 lane，总数不变。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
 	if len(modeCombos) != 134 {
@@ -102,15 +102,15 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	}
 	counts := ModeComboDriverCounts()
 	expected := map[string]int{
-		DriverGPT:        18,
+		DriverGPT:        20,
 		DriverXAI:        11,
 		DriverDeepSeek:   6,
 		DriverAnthropic:  6,
-		DriverGemini:     46,
+		DriverGemini:     42,
 		DriverGLM:        18,
 		DriverMiniMax:    5,
 		DriverVolcengine: 13,
-		DriverQwen:       11,
+		DriverQwen:       13,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ModeComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -126,7 +126,7 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
 	}
 	if sum != 134 {
-		t.Fatalf("43 个组合的 AllowedModes 求和 = %d, want 134", sum)
+		t.Fatalf("47 个组合的 AllowedModes 求和 = %d, want 134", sum)
 	}
 }
 
@@ -147,14 +147,14 @@ func TestConnectorRegistrySortedStable(t *testing.T) {
 }
 
 // TestConnectorRegistryCartesianProduct 遍历 9 driver × 3 account type × 4 oauth 值 ×
-// 14 preset × 4 domain = 6048 组合，断言恰 43 允许、6005 拒绝，且允许集合与
+// 14 preset × 7 domain = 10584 组合，断言恰 47 允许、10537 拒绝，且允许集合与
 // AllowedConnectorCombos() 精确一致。
 func TestConnectorRegistryCartesianProduct(t *testing.T) {
 	total := len(testDriverCodes) * len(testAccountTypes) * len(testOAuthTypes) * len(testPresets) * len(testDomains)
-	if total != 6048 {
-		t.Fatalf("笛卡尔积空间 = %d, want 6048", total)
+	if total != 10584 {
+		t.Fatalf("笛卡尔积空间 = %d, want 10584", total)
 	}
-	allowedKeys := make(map[string]struct{}, 43)
+	allowedKeys := make(map[string]struct{}, 47)
 	for _, combo := range AllowedConnectorCombos() {
 		allowedKeys[connectorComboKey(combo.Driver, combo.AccountType, combo.OAuthType, combo.Preset, combo.Domain)] = struct{}{}
 	}
@@ -185,34 +185,40 @@ func TestConnectorRegistryCartesianProduct(t *testing.T) {
 			}
 		}
 	}
-	if allowed != 43 {
-		t.Fatalf("允许组合数 = %d, want 43", allowed)
+	if allowed != 47 {
+		t.Fatalf("允许组合数 = %d, want 47", allowed)
 	}
-	if rejected != 6005 {
-		t.Fatalf("拒绝组合数 = %d, want 6005", rejected)
+	if rejected != 10537 {
+		t.Fatalf("拒绝组合数 = %d, want 10537", rejected)
 	}
 }
 
-// TestDomainLanes 断言设计 §2.2 域 lane 的 13/4/7/1 与 25 个唯一 mode。
+// TestDomainLanes 断言设计 §2.2 域 lane 的 12/4/7/1 + 工具 1/1/1 与 27 个唯一 mode。
 func TestDomainLanes(t *testing.T) {
-	if len(capabilityDomainLanes) != 4 {
-		t.Fatalf("域 lane 数 = %d, want 4", len(capabilityDomainLanes))
+	if len(capabilityDomainLanes) != 7 {
+		t.Fatalf("域 lane 数 = %d, want 7", len(capabilityDomainLanes))
 	}
 	expected := map[string][]string{
 		DomainChat: {
 			ModeChatJSON, ModeChatSSE, ModeResponsesJSON, ModeResponsesSSE,
 			ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting,
 			ModeGenerateContentJSON, ModeGenerateContentSSE,
-			ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens, ModeEmbedContent,
+			ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens,
 		},
 		DomainVideo: {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
 		DomainAudio: {
 			ModeAudioSpeech, ModeAudioTranscriptionJSON, ModeAudioJobCreate,
 			ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel, ModeRealtimeSession,
 		},
-		DomainImage: {ModeImagesJSON},
+		DomainImage:      {ModeImagesJSON},
+		DomainEmbedding:  {ModeEmbedContent},
+		DomainRerank:     {ModeRerankJSON},
+		DomainModeration: {ModeModerationJSON},
 	}
-	expectedSizes := map[string]int{DomainChat: 13, DomainVideo: 4, DomainAudio: 7, DomainImage: 1}
+	expectedSizes := map[string]int{
+		DomainChat: 12, DomainVideo: 4, DomainAudio: 7, DomainImage: 1,
+		DomainEmbedding: 1, DomainRerank: 1, DomainModeration: 1,
+	}
 	seen := make(map[string]int)
 	for domain, want := range expected {
 		got, ok := capabilityDomainLanes[domain]
@@ -229,8 +235,8 @@ func TestDomainLanes(t *testing.T) {
 			seen[mode]++
 		}
 	}
-	if len(seen) != 25 {
-		t.Fatalf("域 lane 并集 = %d 个唯一 mode, want 25", len(seen))
+	if len(seen) != 27 {
+		t.Fatalf("域 lane 并集 = %d 个唯一 mode, want 27", len(seen))
 	}
 	for mode, count := range seen {
 		if count != 1 {
@@ -763,6 +769,8 @@ func TestRegistryInternalConsistency(t *testing.T) {
 		},
 		PresetQwenDashScope: {
 			"POST /compatible-mode/v1/chat/completions",
+			"POST /compatible-mode/v1/embeddings",
+			"POST /api/v1/services/rerank/text-rerank/text-rerank",
 			"POST /api/v1/services/aigc/multimodal-generation/generation",
 			"POST /api/v1/services/audio/asr/transcription",
 			"POST /api/v1/services/aigc/video-generation/video-synthesis",
@@ -779,11 +787,11 @@ func TestRegistryInternalConsistency(t *testing.T) {
 }
 
 // TestBasePathValidationTemplates 断言凭据域路径校验数据源（R8）：三个公共
-// 协议面已去版本前缀模板的并集副本，共 15+2+8=25 条，不包含 qwen 媒体模板。
+// 协议面已去版本前缀模板的并集副本，共 17+2+8=27 条，不包含 qwen 媒体模板。
 func TestBasePathValidationTemplates(t *testing.T) {
 	union := BasePathValidationTemplates()
-	if len(union) != 25 {
-		t.Fatalf("BasePathValidationTemplates() = %d 条, want 25", len(union))
+	if len(union) != 27 {
+		t.Fatalf("BasePathValidationTemplates() = %d 条, want 27", len(union))
 	}
 	want := toSet(append(append(append([]string{}, openAIOperationTemplates...), anthropicOperationTemplates...), geminiNativeOperationTemplates...))
 	if !setsEqual(toSet(union), want) {

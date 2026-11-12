@@ -587,7 +587,6 @@ func TestGatewayModelsBindingsExpandsSuperMembers(t *testing.T) {
 	}
 }
 
-
 func TestPreflightResultIsRouteAction(t *testing.T) {
 	if (PreflightResult{}).IsRouteAction() {
 		t.Fatal("空结果不是 RouteAction")

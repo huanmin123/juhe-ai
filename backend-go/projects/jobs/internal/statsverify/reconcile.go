@@ -273,7 +273,7 @@ func (s *Store) RunUsageStatsReconciliation(ctx context.Context, now time.Time, 
 }
 
 // usageStatsAggregationCursor 读取用量聚合的全局游标（stats_job_state
-// global/''/usage_stats_aggregation）。缺行 / NULL / 空串返回 ok=false。
+// global/”/usage_stats_aggregation）。缺行 / NULL / 空串返回 ok=false。
 func (s *Store) usageStatsAggregationCursor(ctx context.Context) (time.Time, bool, error) {
 	query := `SELECT cursor_created_at FROM ` + s.statsTable("stats_job_state") +
 		` WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'`
@@ -300,7 +300,7 @@ func (s *Store) usageStatsAggregationCursor(ctx context.Context) (time.Time, boo
 // （caller 账户 system_account_id == scope_id，global 为 global/global）。
 func (s *Store) sumUsageStatsHourlySystemScope(ctx context.Context, startHourKey, endHourKey string) (map[statsagg.SystemHourlyTotalsKey]statsagg.UsageStatsAccumulator, error) {
 	query := fmt.Sprintf(`
-		SELECT system_account_id, scope_id, stat_hour,
+		SELECT system_account_id, scope_id, to_char(stat_hour, 'YYYY-MM-DD"T"HH24') AS stat_hour,
 		  request_count, success_count, error_count, input_tokens, output_tokens,
 		  cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
 		  cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
@@ -310,7 +310,8 @@ func (s *Store) sumUsageStatsHourlySystemScope(ctx context.Context, startHourKey
 		  AND stat_hour >= %s
 		  AND stat_hour < %s
 	`, s.statsTable("usage_stats_hourly"), s.placeholder(1), s.placeholder(2))
-	rows, err := s.db.QueryContext(ctx, query, startHourKey, endHourKey)
+	rows, err := s.db.QueryContext(ctx, query,
+		statsagg.CalendarDBValue("stat_hour", startHourKey), statsagg.CalendarDBValue("stat_hour", endHourKey))
 	if err != nil {
 		return nil, fmt.Errorf("读取 usage_stats_hourly 对账样本失败: %w", err)
 	}

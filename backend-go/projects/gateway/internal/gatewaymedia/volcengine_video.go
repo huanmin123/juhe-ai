@@ -48,7 +48,17 @@ func (volcengineVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		// duration 未传时官方默认 5 秒（契约 §2.8.2/§9.1），作为按秒计价的
+		// 计费基源；上游终态回报的 duration 优先于本值。
+		DefaultSeconds: 5,
 	}
+}
+
+// BillingResolution 实现分辨率分档计费的计费档位（契约 §2.8.3）：火山出站
+// resolution 由 size 短边换算（480p/720p/1080p）；请求未带 size 时无法确定
+// 上游默认档，返回空串由结算回落主档价。
+func (volcengineVideoAdapter) BillingResolution(params NormalizedVideoParams) string {
+	return videoResolutionTierForSize(params.Size)
 }
 
 // volcengineRatioOf 把公共 size 的宽高比归约为火山 ratio 档位（官方词表
@@ -125,7 +135,7 @@ func volcengineSizeToResolutionRatio(size string) (resolution, ratio string, err
 }
 
 // Create 构造契约 §9.1 创建报文：POST {base}/contents/generations/tasks
-//（opPath 按 v2 契约不含版本段；/api/v3 服务根由账户 base_url 版本根承载），
+// （opPath 按 v2 契约不含版本段；/api/v3 服务根由账户 base_url 版本根承载），
 // body 为 {model,content,resolution?,ratio?,duration?,seed?}。映射与透传
 // 规则（官方 API 参考 2026-10-04 核实，契约 §2.7 volcengine 列）：
 //   - prompt → content[0] = {"type":"text","text":...}（content 数组原生形态）；
@@ -191,7 +201,7 @@ func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (
 }
 
 // BuildPollRequest 构造轮询请求：GET {base}/contents/generations/tasks/{id}
-//（契约 §9.1；id 即创建响应的受理凭据，官方 id 为 URL 安全串直拼；opPath
+// （契约 §9.1；id 即创建响应的受理凭据，官方 id 为 URL 安全串直拼；opPath
 // 不含版本段，/api/v3 由 base_url 版本根承载）。
 func (volcengineVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
 	return http.MethodGet, "/contents/generations/tasks/" + upstreamJobID, nil

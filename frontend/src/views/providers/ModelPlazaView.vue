@@ -160,7 +160,7 @@
           <span v-if="isManagementView && record.systemAccountId">归属 {{ record.systemAccountId }}</span>
         </div>
         <section v-if="modelPriceTable(record).rows.length" class="model-drawer-section">
-          <h4 class="model-drawer-section-title">计费价格 <span class="model-drawer-section-unit">USD / 1M tokens</span></h4>
+          <h4 class="model-drawer-section-title">计费价格 <span class="model-drawer-section-unit">{{ modelPriceTableUnit(record) }}</span></h4>
           <table class="model-drawer-table">
             <thead>
               <tr>
@@ -285,6 +285,7 @@ import {
   modelInfoItems,
   modelPriceSlots,
   modelPriceTable,
+  modelPriceTableUnit,
   modelScopeColor,
   modelStatusColor,
   type ModelCategoryKey

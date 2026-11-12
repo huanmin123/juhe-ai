@@ -61,9 +61,9 @@ type chainAccountLockRow struct {
 	deadlineAt     sql.NullString
 	originalStatus sql.NullString
 	provenance     sql.NullString
-	nextRetryAtMs  sql.NullInt64
+	nextRetryAtMs  sql.NullTime
 	leaseID        sql.NullString
-	leaseUntilMs   sql.NullInt64
+	leaseUntilMs   sql.NullTime
 	generation     int64
 	updatedAt      string
 }
@@ -72,6 +72,8 @@ const chainAccountLockRowColumns = `account_id, enabled, lock_state,
 		lock_death_timeout_seconds, lock_retry_interval_seconds, incident_id,
 		incident_started_at, deadline_at, original_status, provenance,
 		next_retry_at_ms, lease_id, lease_until_ms, generation, updated_at`
+
+func msTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
 
 func scanChainAccountLockRow(scan func(dest ...any) error) (*chainAccountLockRow, error) {
 	var row chainAccountLockRow
@@ -194,9 +196,9 @@ func (s *chainAccountLocks) findState(ctx context.Context, accountID string) (*c
 			recovered.deadlineAt = sql.NullString{}
 			recovered.originalStatus = sql.NullString{}
 			recovered.provenance = sql.NullString{}
-			recovered.nextRetryAtMs = sql.NullInt64{}
+			recovered.nextRetryAtMs = sql.NullTime{}
 			recovered.leaseID = sql.NullString{}
-			recovered.leaseUntilMs = sql.NullInt64{}
+			recovered.leaseUntilMs = sql.NullTime{}
 			recovered.updatedAt = updatedAt
 			return &recovered, nil
 		}
@@ -560,11 +562,11 @@ func (s *chainAccountLocks) SettleDeadlineAsync(ctx context.Context, accountID s
 // chainAccountLockRetryReservationDueAtMs mirrors
 // accountLockRetryReservationDueAtMs (:62-65): a due time already in the past
 // is claimed now, a future due time is preserved.
-func chainAccountLockRetryReservationDueAtMs(nextRetryAtMs sql.NullInt64, nowMs int64) (int64, bool) {
+func chainAccountLockRetryReservationDueAtMs(nextRetryAtMs sql.NullTime, nowMs int64) (int64, bool) {
 	if !nextRetryAtMs.Valid {
 		return 0, false
 	}
-	return maxInt64(nextRetryAtMs.Int64, nowMs), true
+	return maxInt64(nextRetryAtMs.Time.UnixMilli(), nowMs), true
 }
 
 // sampleLockDelayMs mirrors sampleLockDelayMs (:487-494): interval base with a
@@ -625,10 +627,10 @@ func (s *chainAccountLocks) AcquireRetryLeaseAsync(ctx context.Context, accountI
 		return gatewaydispatch.LockLeaseAcquire{Allowed: true, WaitMs: 0}, nil
 	}
 	if current.leaseID.Valid && current.leaseID.String != "" &&
-		current.leaseUntilMs.Valid && current.leaseUntilMs.Int64 > nowMs {
-		waitUntil := current.leaseUntilMs.Int64
-		if current.nextRetryAtMs.Valid && current.nextRetryAtMs.Int64 > nowMs {
-			waitUntil = current.nextRetryAtMs.Int64
+		current.leaseUntilMs.Valid && current.leaseUntilMs.Time.UnixMilli() > nowMs {
+		waitUntil := current.leaseUntilMs.Time.UnixMilli()
+		if current.nextRetryAtMs.Valid && current.nextRetryAtMs.Time.UnixMilli() > nowMs {
+			waitUntil = current.nextRetryAtMs.Time.UnixMilli()
 		}
 		return gatewaydispatch.LockLeaseAcquire{Allowed: false, WaitMs: waitUntil - nowMs}, nil
 	}
@@ -636,8 +638,8 @@ func (s *chainAccountLocks) AcquireRetryLeaseAsync(ctx context.Context, accountI
 	if !ok {
 		desiredAt = nowMs + maxInt64(maxInt64(0, configuredDelayMs), sampleLockDelayMs(current.retryInterval, s.newToken()))
 	}
-	if current.nextRetryAtMs.Valid && current.nextRetryAtMs.Int64 > nowMs {
-		return gatewaydispatch.LockLeaseAcquire{Allowed: false, WaitMs: current.nextRetryAtMs.Int64 - nowMs}, nil
+	if current.nextRetryAtMs.Valid && current.nextRetryAtMs.Time.UnixMilli() > nowMs {
+		return gatewaydispatch.LockLeaseAcquire{Allowed: false, WaitMs: current.nextRetryAtMs.Time.UnixMilli() - nowMs}, nil
 	}
 	leaseID := s.newToken()
 	updatedAt := isoMillisOf(s.now())
@@ -646,8 +648,8 @@ func (s *chainAccountLocks) AcquireRetryLeaseAsync(ctx context.Context, accountI
 		WHERE account_id = ? AND enabled = 1 AND lock_state = 'ENGAGED' AND generation = ?
 		  AND incident_id = ? AND (lease_until_ms IS NULL OR lease_until_ms <= ?)
 		  AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)`),
-		desiredAt, leaseID, desiredAt+chainAccountLockReservationLeaseDurationMs, updatedAt,
-		id, current.generation, nullStringText(current.incidentID), nowMs, nowMs)
+		msTime(desiredAt), leaseID, msTime(desiredAt+chainAccountLockReservationLeaseDurationMs), updatedAt,
+		id, current.generation, nullStringText(current.incidentID), msTime(nowMs), msTime(nowMs))
 	if err != nil {
 		return gatewaydispatch.LockLeaseAcquire{}, err
 	}
@@ -671,8 +673,8 @@ func (s *chainAccountLocks) ConsumeRetryLeaseAsync(ctx context.Context, accountI
 		return false, nil
 	}
 	if current.leaseID.String != leaseID ||
-		!current.nextRetryAtMs.Valid || current.nextRetryAtMs.Int64 > nowMs ||
-		!current.leaseUntilMs.Valid || current.leaseUntilMs.Int64 <= nowMs {
+		!current.nextRetryAtMs.Valid || current.nextRetryAtMs.Time.UnixMilli() > nowMs ||
+		!current.leaseUntilMs.Valid || current.leaseUntilMs.Time.UnixMilli() <= nowMs {
 		return false, nil
 	}
 	updatedAt := isoMillisOf(s.now())
@@ -680,8 +682,8 @@ func (s *chainAccountLocks) ConsumeRetryLeaseAsync(ctx context.Context, accountI
 		SET next_retry_at_ms = ?, lease_until_ms = ?, updated_at = ?
 		WHERE account_id = ? AND enabled = 1 AND lock_state = 'ENGAGED' AND generation = ?
 		  AND incident_id = ? AND lease_id = ? AND next_retry_at_ms <= ? AND lease_until_ms > ?`),
-		nowMs, nowMs+chainAccountLockDispatchLeaseDurationMs, updatedAt,
-		id, current.generation, nullStringText(current.incidentID), leaseID, nowMs, nowMs)
+		msTime(nowMs), msTime(nowMs+chainAccountLockDispatchLeaseDurationMs), updatedAt,
+		id, current.generation, nullStringText(current.incidentID), leaseID, msTime(nowMs), msTime(nowMs))
 	if err != nil {
 		return false, err
 	}
@@ -704,14 +706,14 @@ func (s *chainAccountLocks) ReleaseRetryLeaseAsync(ctx context.Context, input ga
 	}
 	var nextRetryAtMs any
 	if input.ScheduleNextRetry {
-		nextRetryAtMs = completedAtMs + maxInt64(maxInt64(0, input.GlobalDelayMs), sampleLockDelayMs(current.retryInterval, s.newToken()))
+		nextRetryAtMs = msTime(completedAtMs + maxInt64(maxInt64(0, input.GlobalDelayMs), sampleLockDelayMs(current.retryInterval, s.newToken())))
 	}
 	updatedAt := isoMillisOf(s.now())
 	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_lock_states")+`
 		SET next_retry_at_ms = ?, lease_id = NULL, lease_until_ms = NULL, updated_at = ?
 		WHERE account_id = ? AND enabled = 1 AND lock_state = 'ENGAGED' AND generation = ?
 		  AND incident_id = ? AND lease_id = ? AND lease_until_ms > ?`),
-		nextRetryAtMs, updatedAt, id, current.generation, nullStringText(current.incidentID), input.LeaseID, completedAtMs)
+		nextRetryAtMs, updatedAt, id, current.generation, nullStringText(current.incidentID), input.LeaseID, msTime(completedAtMs))
 	if err != nil {
 		return false, err
 	}

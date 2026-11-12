@@ -510,9 +510,13 @@ type FetchFirstAvailableUpstreamArgs struct {
 	// GroupAffinityKey / RouteStrategyID 承载组级会话黏性写回上下文（策略路由
 	// 分组会话亲和设计 §5.1）：键空串 = 范围外（无会话键 / 模式不在范围 /
 	// 绑定数不足），写回静默跳过。写回组取本尝试派发上下文的组。
-	GroupAffinityKey                string
-	RouteStrategyID                 string
-	Signal                          context.Context
+	GroupAffinityKey string
+	RouteStrategyID  string
+	Signal           context.Context
+	// ClientSignal 是原始客户端请求 ctx（未脱钩）：首个候选尝试后若客户端
+	// 已断开，停止后续换号重试（避免为无人接收的请求重复消耗上游）。
+	// nil = 未装配（测试 / 非网关调用），行为与修复前一致。
+	ClientSignal                    context.Context
 	ClientIPAccountAvoidanceTracker gatewaypreauth.ClientIPAccountAvoidanceTracker
 	// RememberUpstreamAttemptFailure 是来源避让记账回调（调度慢失败直切与墙钟
 	// 收尾修复设计 §3 B1）：chain 层从 DispatchContext.ClientIPAccountAvoidance
@@ -979,8 +983,13 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 		}
 		activeSegments = nextSegments
 	}
+	attemptedAny := false
 wholePoolRound:
 	for {
+		if attemptedAny && args.ClientSignal != nil && args.ClientSignal.Err() != nil {
+			// 客户端已断开且已尝试过至少一个候选：不再换号重试。
+			break wholePoolRound
+		}
 		if !activeSegmentsHaveRoundCandidates(activeSegments) {
 			break
 		}
@@ -1027,6 +1036,10 @@ wholePoolRound:
 				switchTargetGate := SwitchTargetGateFromContext(ctx)
 
 				for _, originalAccount := range roundQueue {
+					if attemptedAny && args.ClientSignal != nil && args.ClientSignal.Err() != nil {
+						// 客户端已断开且已尝试过候选：同轮内也不再继续下一个候选。
+						break wholePoolRound
+					}
 					if err := throwIfRequestAborted(signal); err != nil {
 						return UpstreamDispatchResult{}, err
 					}
@@ -1095,6 +1108,7 @@ wholePoolRound:
 						}
 						accountCircuitAttempt = preparation.Attempt
 					}
+					attemptedAny = true
 					kind, singleResult, loopErr := e.dispatchSingleAccount(ctx, dispatchSingleAccountInput{
 						args:                                 &args,
 						coordination:                         coordination,

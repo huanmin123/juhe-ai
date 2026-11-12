@@ -31,6 +31,46 @@ func wgValidDirectInput(t *testing.T, secret string) DirectInput {
 	}
 }
 
+// TestToInputUtilityModes 覆盖 B7 工具账户的 J1 装配全链：gpt 向量/安全与
+// qwen 向量/重排必须通过 ToInput 的 provider/profile/mode 门禁，否则账户会
+// 永久停在 pending_test（direct_input_invalid）。
+func TestToInputUtilityModes(t *testing.T) {
+	secret := "toinput-utility-secret"
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		provider string
+		profile  string
+		mode     string
+		model    string
+	}{
+		{"gpt", "", "embed_content", "text-embedding-3-small"},
+		{"gpt", "", "moderation_json", "omni-moderation-latest"},
+		{"qwen", "profile_qwen_openai_v1", "embed_content", "text-embedding-v4"},
+		{"qwen", "profile_qwen_openai_v1", "rerank_json", "qwen3.7-text-rerank"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider+"-"+tc.mode, func(t *testing.T) {
+			direct := wgValidDirectInput(t, secret)
+			direct.Account.Provider = tc.provider
+			direct.Account.ProtocolProfileID = tc.profile
+			direct.Account.EndpointMode = tc.mode
+			direct.Account.HealthModel = tc.model
+			if tc.provider == "qwen" {
+				direct.Account.ProtocolCode = "openai"
+				direct.Account.ProtocolVersion = "v1"
+				direct.Account.ConnectionBaseURL = "https://dashscope.aliyuncs.com"
+			}
+			input, err := direct.ToInput(secret, now)
+			if err != nil {
+				t.Fatalf("工具账户 J1 装配必须成功: %v", err)
+			}
+			if input.EndpointMode != tc.mode || input.Provider != tc.provider {
+				t.Fatalf("工具账户输入形状错误: %+v", input)
+			}
+		})
+	}
+}
+
 // TestToInputSuccessPaths 覆盖 api_key 与 OAuth 两条成功装配路径。
 func TestToInputSuccessPaths(t *testing.T) {
 	secret := "toinput-secret"

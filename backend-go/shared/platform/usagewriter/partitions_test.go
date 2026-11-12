@@ -149,12 +149,12 @@ func TestEnsurePostgresUsageRecordPartitionsCreatesMissingPartitions(t *testing.
 		{
 			`CREATE TABLE IF NOT EXISTS juhe_usage."usage_records_20260909"`,
 			"PARTITION OF juhe_usage.usage_records",
-			"FOR VALUES FROM ('2026-09-09') TO ('2026-09-10')",
+			"FOR VALUES FROM ('2026-09-09T00:00:00Z') TO ('2026-09-10T00:00:00Z')",
 		},
 		{
 			`CREATE TABLE IF NOT EXISTS juhe_usage."usage_records_20260910"`,
 			"PARTITION OF juhe_usage.usage_records",
-			"FOR VALUES FROM ('2026-09-10') TO ('2026-09-11')",
+			"FOR VALUES FROM ('2026-09-10T00:00:00Z') TO ('2026-09-11T00:00:00Z')",
 		},
 	}
 	for index, fragments := range wantFragments {
@@ -276,7 +276,7 @@ func TestEnsureChainConsumesWritePlanCreatedAts(t *testing.T) {
 		t.Fatalf("issued %d statements, want 1: %v", len(statements), statements)
 	}
 	if !strings.Contains(statements[0], `usage_records_20260910`) ||
-		!strings.Contains(statements[0], "FOR VALUES FROM ('2026-09-10') TO ('2026-09-11')") {
+		!strings.Contains(statements[0], "FOR VALUES FROM ('2026-09-10T00:00:00Z') TO ('2026-09-11T00:00:00Z')") {
 		t.Fatalf("statement %q does not cover the write-plan day", statements[0])
 	}
 }

@@ -1,7 +1,7 @@
 package mockupstream
 
 // Qwen (Alibaba Bailian DashScope / paraformer) async long-audio ASR task
-// face for the M3f /v1/audio/jobs chain, per
+// face for the M3f /v1/tasks/audio chain, per
 // docs/functions/媒体上游协议契约与Mock上游规格.md §3.2 (scenario naming
 // media_<provider>_<behavior>) and §10.2 (paraformer transcription wire
 // contract, confidence B, backfilled 2026-10-04):

@@ -81,8 +81,11 @@ func TestW11BEofFlushPhaseBranches(t *testing.T) {
 	pipe5.preCommitSseEvidence.OnlyNonSemanticFramingObserved = false
 	pipe5.interceptor = &w11bPassInterceptor{onFlush: StreamInterceptorSseResult{Chunks: [][]byte{[]byte(chatDeltaChunk)}}}
 	_, err = pipe5.eofFlushPhase()
-	if err == nil || !strings.Contains(err.Error(), "write failed") {
+	if err != nil {
 		t.Fatalf("e: err = %v", err)
+	}
+	if !pipe5.clientGone {
+		t.Fatal("e: write failure must mark clientGone")
 	}
 
 	// f) 检查器 EOF 解析跳过日志（ParserSkipped）。

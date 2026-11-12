@@ -1,7 +1,6 @@
 package statsverify
 
-import (
-)
+import ()
 
 // Golden derivations follow the Node chain
 // aggregateClientIpStatsBatchAsync -> writeClientIpStatsAggregatesFromUsageRowsAsync:
@@ -11,4 +10,3 @@ import (
 //   - daily UPSERT accumulates every metric and keeps MAX(duration_ms_max);
 //   - registry keeps MIN(first_seen_at) / MAX(last_seen_at);
 //   - the job-state cursor lands on the last processed (created_at, id).
-

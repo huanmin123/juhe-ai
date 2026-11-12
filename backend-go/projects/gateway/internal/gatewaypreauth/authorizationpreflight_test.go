@@ -207,4 +207,3 @@ func TestRejectGatewayAuthorizationQuotaIfExceeded(t *testing.T) {
 func strPtr(value string) *string { return &value }
 
 func boolRef(value bool) *bool { return &value }
-

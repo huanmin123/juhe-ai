@@ -1,12 +1,14 @@
 package playground
 
-// POST /videos + 轮询/下载 —— 异步视频（设计 §3.5）：POST /v1/videos 创建（
-// 响应 {jobId}，服务端不落库，jobId 由前端持有）、GET /v1/videos/{jobId} 代理
-// 上游轮询（归一 status/progress/error）、GET /v1/videos/{jobId}/content 流式
-// 代理视频字节。请求构造是 internal/chat/generation_media.go CreateChatVideo/
+// POST /videos + 轮询/下载 —— 异步视频（设计 §3.5）：POST /v1/video/generations
+// 创建（New API 兼容面，响应 {task_id,status,...}，服务端不落库，任务 id 由
+// 前端持有）、GET /v1/video/generations/{id} 代理上游轮询（归一
+// status/url/error）、GET /v1/video/generations/{id}/content 流式代理视频
+// 字节。请求构造是 internal/chat/generation_media.go CreateChatVideo/
 // PollChatMediaTask/DownloadChatMediaContent 的同构精简版（该包有并行未提交
-// 改动且将整体退役，不 import）。首帧图生视频经 /v1 链的 input_reference 通道
-// （gatewaymedia.ParseVideoParams：image_url 或 base64 data URL 字符串）。
+// 改动且将整体退役，不 import）。首帧图生视频经 /v1 链的 image 通道（New API
+// 请求字段，网关内部归一为 input_reference：image_url 或 base64 data URL
+// 字符串）；尺寸经 width/height、时长经 duration 传递。
 
 import (
 	"context"
@@ -14,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,10 +48,13 @@ type videosCreateResponse struct {
 }
 
 // videosPollResponse 是轮询归一响应（设计 §3.5：status 枚举
-// queued|running|completed|failed|cancelled，progress/error 可选）。
+// queued|running|completed|failed|cancelled，progress/error 可选；url 优先
+// 上游产物直链，为空且 completed 时为网关 content 回退相对路径，前端需带
+// API Key 取流）。
 type videosPollResponse struct {
 	Status   string           `json:"status"`
 	Progress *int64           `json:"progress,omitempty"`
+	URL      string           `json:"url,omitempty"`
 	Error    *videosPollError `json:"error,omitempty"`
 }
 
@@ -115,15 +121,16 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 		return nil, invalidRequest("prompt 不能为空")
 	}
 	payloadValues := map[string]any{"model": model, "prompt": prompt}
-	if size := strings.TrimSpace(req.Size); size != "" {
-		payloadValues["size"] = size
+	if width, height, ok := videoSizeDimensions(req.Size); ok {
+		payloadValues["width"] = width
+		payloadValues["height"] = height
 	}
 	if req.Seconds != nil && *req.Seconds > 0 {
-		payloadValues["seconds"] = *req.Seconds
+		payloadValues["duration"] = *req.Seconds
 	}
 	if reference := strings.TrimSpace(req.InputImageBase64); reference != "" {
-		// 首帧引用按 /v1 链 input_reference 通道透传（image_url 或 base64
-		// data URL 字符串；裸 base64 补 data URL 前缀，MIME 按嗅探缺省 png）。
+		// 首帧引用按 New API `image` 通道透传（image_url 或 base64 data URL
+		// 字符串；裸 base64 补 data URL 前缀，MIME 按嗅探缺省 png）。
 		if !strings.Contains(reference, ",") && !strings.HasPrefix(reference, "http") {
 			decoded, err := decodeBase64Image(cleanBase64(reference))
 			if err != nil {
@@ -135,12 +142,12 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 			}
 			reference = "data:" + mime + ";base64," + cleanBase64(reference)
 		}
-		payloadValues["input_reference"] = reference
+		payloadValues["image"] = reference
 	}
 	payload, _ := json.Marshal(payloadValues)
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
 		AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
-		Path: "/v1/videos", Method: http.MethodPost,
+		Path: "/v1/video/generations", Method: http.MethodPost,
 		Headers: map[string]string{
 			"accept":         "application/json",
 			"content-type":   "application/json",
@@ -164,14 +171,21 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 	}
 	var job struct {
 		ID     string `json:"id"`
+		TaskID string `json:"task_id"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal(respBody, &job); err != nil || strings.TrimSpace(job.ID) == "" {
-		return nil, dispatchFailed("视频创建响应缺少任务凭据（job id）")
+	if err := json.Unmarshal(respBody, &job); err != nil {
+		return nil, dispatchFailed("视频创建响应解析失败")
 	}
-	// 任务引用随暂存记录（§3.8 单条覆盖）：上游有初始状态则归一记录，缺省
-	// queued；存储失败显式 500（jobId 未交付，用户重试即可）。
-	jobID := strings.TrimSpace(job.ID)
+	jobID := strings.TrimSpace(job.TaskID)
+	if jobID == "" {
+		jobID = strings.TrimSpace(job.ID)
+	}
+	if jobID == "" {
+		return nil, dispatchFailed("视频创建响应缺少任务凭据（task_id）")
+	}
+	// 任务引用随暂存记录（§3.8 单条覆盖）：New API 创建响应恒为 queued；
+	// 存储失败显式 500（jobId 未交付，用户重试即可）。
 	status := strings.TrimSpace(job.Status)
 	if status == "" {
 		status = "queued"
@@ -221,7 +235,7 @@ func (rt *playgroundRoutes) videosPollHandler(w http.ResponseWriter, r *http.Req
 func (rt *playgroundRoutes) runVideosPoll(ctx context.Context, scope Scope, accountID, jobID string) (*videosPollResponse, *HTTPError) {
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
 		AccountID: accountID, OwnerID: scope.ViewerID,
-		Path: "/v1/videos/" + jobID, Method: http.MethodGet,
+		Path: "/v1/video/generations/" + jobID, Method: http.MethodGet,
 		Headers: map[string]string{
 			"accept":         "application/json",
 			purposeHeaderKey: playgroundPurposeVideos,
@@ -243,6 +257,7 @@ func (rt *playgroundRoutes) runVideosPoll(ctx context.Context, scope Scope, acco
 	}
 	var job struct {
 		Status   string `json:"status"`
+		URL      string `json:"url"`
 		Progress *int64 `json:"progress"`
 		Error    *struct {
 			Code    string `json:"code"`
@@ -253,7 +268,7 @@ func (rt *playgroundRoutes) runVideosPoll(ctx context.Context, scope Scope, acco
 		return nil, dispatchFailed("视频任务响应解析失败")
 	}
 	rawStatus := strings.TrimSpace(job.Status)
-	out := &videosPollResponse{Status: normalizeVideoStatus(rawStatus), Progress: job.Progress}
+	out := &videosPollResponse{Status: normalizeVideoStatus(rawStatus), Progress: job.Progress, URL: strings.TrimSpace(job.URL)}
 	if job.Error != nil {
 		out.Error = &videosPollError{Code: strings.TrimSpace(job.Error.Code), Message: strings.TrimSpace(job.Error.Message)}
 	} else if !videoStatusKnown(rawStatus) {
@@ -271,6 +286,21 @@ func videoStatusKnown(status string) bool {
 		return true
 	}
 	return false
+}
+
+// videoSizeDimensions 把管理面 `WxH` 尺寸串换算为 New API 的 width/height
+// 正整数；空串或非法形态返回 ok=false（由网关侧能力裁决，不在此猜测）。
+func videoSizeDimensions(size string) (int, int, bool) {
+	widthText, heightText, ok := strings.Cut(strings.TrimSpace(size), "x")
+	if !ok {
+		return 0, 0, false
+	}
+	width, widthErr := strconv.Atoi(strings.TrimSpace(widthText))
+	height, heightErr := strconv.Atoi(strings.TrimSpace(heightText))
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
 }
 
 // normalizeVideoStatus 把 /v1 链的任务状态归一到设计 §3.5 枚举：in_progress→
@@ -307,7 +337,7 @@ func (rt *playgroundRoutes) videosContentHandler(w http.ResponseWriter, r *http.
 	}
 	response, err := rt.deps.Dispatch.Dispatch(r.Context(), DispatchRequest{
 		AccountID: accountID, OwnerID: scope.ViewerID,
-		Path: "/v1/videos/" + jobID + "/content", Method: http.MethodGet,
+		Path: "/v1/video/generations/" + jobID + "/content", Method: http.MethodGet,
 		Headers: map[string]string{
 			"accept":         "application/json",
 			purposeHeaderKey: playgroundPurposeVideos,

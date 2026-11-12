@@ -15,7 +15,7 @@ import (
 const capabilityDomainFilterParam = "domain"
 
 // optionalCapabilityDomainFilter 解析可选域筛选值：空或 "all" 归一为 ""
-// （不过滤）；其余值必须是 accounts.capability_domain 的四枚举之一。第二返
+// （不过滤）；其余值必须是 accounts.capability_domain 的已注册场景之一。第二返
 // 回 false 表示值非法，调用方按各端点既有参数错误文案回答 400。
 func optionalCapabilityDomainFilter(raw string) (string, bool) {
 	value := strings.TrimSpace(raw)

@@ -116,6 +116,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const accountAdvancedDetailLoading = ref(false)
   const accountAdvancedDetailLoaded = ref(false)
   const editingId = ref<string>()
+  // 编辑/克隆态的真实场景：列表筛选可能是「全部场景」，不能用筛选值冒充账户
+  // 场景；打开账户时从列表行或创建成功表单回填，创建态保持 undefined。
+  const editingCapabilityDomain = ref<AccountCapabilityDomain>()
   const editingAccountDetail = ref<AccountEditBasicDetail>()
   const editingAccountAdvancedDetail = ref<AccountAdvancedDetail>()
   const savedApiKeyRuntimeSnapshot = ref<SavedAccountApiKeyRuntimeSnapshot>()
@@ -362,6 +365,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return
     }
     editingId.value = undefined
+    editingCapabilityDomain.value = undefined
     editingAccountDetail.value = undefined
     editingAccountAdvancedDetail.value = undefined
     editingScheduleFingerprint.value = undefined
@@ -414,11 +418,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     () => {
       const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
       if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
-      // 音频/视频域账户无后台探针，health_check_endpoint_mode 仅为记录值：失效时
-      // 兜底域常量（镜像 DefaultHealthCheckEndpointModeForDomain），不得落 chat 族
-      // 默认——qwen 长音频声明集没有任何检查形态词表值，落 chat_json 会被保存校验
-      // 拒绝（R5）。
-      if (form.capabilityDomain === 'audio' || form.capabilityDomain === 'video') {
+      // 非对话域（媒体 + 工具）的健康检查形态必须落域默认，不得落 chat 族
+      // 默认——qwen 长音频声明集没有任何检查形态词表值，落 chat_json 会被保存
+      // 校验拒绝（R5）；工具域 J1 探针也按域默认形态执行。
+      if (capabilityDomainIsMedia(form.capabilityDomain)) {
         form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
           capabilityDomain: form.capabilityDomain
         })
@@ -558,6 +561,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     // 代理候选是懒加载的：冷会话直接打开编辑时下拉无候选，先用列表行回填标签缓存，
     // 避免把裸 proxy id 当成最终展示（前端通用组件规范 §3.5）。
     rememberAccountProxyLabel(account)
+    // 全部场景视图下筛选值不是账户场景：编辑/克隆必须用行上的真实 capabilityDomain。
+    editingCapabilityDomain.value = account.capabilityDomain
     await openEditAtPath(account.id, accountOperationScopeParams(account, options.accountScopeParams.value), account)
   }
 
@@ -576,6 +581,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   ): Promise<void> {
     const requestToken = nextFormOpenRequestToken()
     const editScopeParams = scopeParams
+    if (listAccount?.capabilityDomain) editingCapabilityDomain.value = listAccount.capabilityDomain
     editingId.value = accountId
     editingAccountDetail.value = undefined
     editingAccountAdvancedDetail.value = undefined
@@ -664,6 +670,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   // 列表行，编辑 scope 用创建时的 createScopeParams 桥接——新账户就建在该
   // systemAccount 下；openEditAtPath 会清掉 creatingAccountScopeParams，必须先取快照。
   async function reopenCreatedAccountForEdit(accountId: string): Promise<void> {
+    // 创建向导允许在「全部场景」下改场景，转编辑必须沿用刚提交的场景，
+    // 不能回落到列表筛选值。
+    editingCapabilityDomain.value = form.capabilityDomain
     await openEditAtPath(accountId, createScopeParams.value, undefined)
   }
 
@@ -899,6 +908,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return
     }
     if (!isCurrentFormOpenRequest(requestToken)) return
+    editingCapabilityDomain.value = sourceAccount.capabilityDomain ?? account.capabilityDomain
     accountEditDetailLoading.value = false
     editingId.value = undefined
     editingAccountDetail.value = undefined
@@ -1065,6 +1075,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     allProviderModelScopeParams,
     lastValidationFailure,
     editingId,
+    editingCapabilityDomain,
     editingAccountDetail,
     editingAccountAdvancedDetail,
     editingAuthorizedAccount,

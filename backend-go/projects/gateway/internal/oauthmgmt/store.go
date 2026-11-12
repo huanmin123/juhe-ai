@@ -781,12 +781,12 @@ func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, li
 		WHERE scope = 'builtin' AND vendor_code = ? AND status = 'active'
 			AND NOT EXISTS (
 				SELECT 1 FROM `+modesSource+` AS endpoint_mode
-				WHERE endpoint_mode.value IN (?, ?, ?, ?)
+				WHERE endpoint_mode.value IN (?, ?, ?, ?, ?, ?)
 			)
 		ORDER BY CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END,
 			release_date DESC, upstream_model ASC
 		LIMIT `+itoa(limit)), providerCode,
-		"images_json", "embed_content", "count_tokens", "message_token_counting")
+		"images_json", "embed_content", "count_tokens", "message_token_counting", "rerank_json", "moderation_json")
 	if err != nil {
 		return nil, err
 	}

@@ -3132,7 +3132,7 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 			// 过期行保留网关内容相对路径：演示"定位指针存在但需 API Key 鉴权
 			// 实时取回、控制台不内嵌预览"的形态（上游时效已过）。
 			artifact = map[string]any{
-				"ContentURL": "/v1/videos/" + id + "/content",
+				"ContentURL": "/v1/video/generations/" + id + "/content",
 				"ExpiresAt":  w.at(-2 * time.Hour),
 			}
 			usage = map[string]any{"output_video_seconds": 4.0}
@@ -3162,17 +3162,16 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		cost     float64
 		applied  []string
 	}{
-		{id: "audiojob_" + CleanupIDPrefix + "speech_completed", kind: "audio_speech", model: "gpt-4o-mini-tts",
-			prompt: CleanupNamePrefix + "长音频合成任务样本", status: "completed", ageHours: 5,
-			artifact: map[string]any{"ContentURL": mediaJobContentDataURI("audio/wav", chatCodexWAV()), "ExpiresAt": w.at(24 * time.Hour)},
-			usage:    map[string]any{"tts_input_chars": 24}, cost: 0.012, applied: []string{"speed"}},
 		{id: "audiojob_" + CleanupIDPrefix + "transcription_completed", kind: "audio_transcription", model: "gpt-4o-transcribe",
 			prompt: CleanupNamePrefix + "长音频转写任务样本", status: "completed", ageHours: 3,
 			snapshot: map[string]any{"language": "zh"},
 			usage:    map[string]any{"audio_input_seconds": 12.5}, cost: 0.006, applied: []string{"language"}},
-		{id: "audiojob_" + CleanupIDPrefix + "speech_failed", kind: "audio_speech", model: "gpt-4o-mini-tts",
-			prompt: CleanupNamePrefix + "长音频合成失败任务样本", status: "failed", ageHours: 8,
-			jobError: map[string]any{"code": "upstream_timeout", "message": CleanupNamePrefix + "模拟语音合成上游超时"}},
+		{id: "audiojob_" + CleanupIDPrefix + "transcription_failed", kind: "audio_transcription", model: "gpt-4o-transcribe",
+			prompt: CleanupNamePrefix + "长音频转写失败任务样本", status: "failed", ageHours: 8,
+			jobError: map[string]any{"code": "upstream_timeout", "message": CleanupNamePrefix + "模拟长音频转写上游超时"}},
+		{id: "audiojob_" + CleanupIDPrefix + "transcription_in_progress", kind: "audio_transcription", model: "gpt-4o-transcribe",
+			prompt: CleanupNamePrefix + "长音频转写进行中任务样本", status: "in_progress", ageHours: 1,
+			snapshot: map[string]any{"language": "en"}},
 	}
 	for _, seed := range audioSeeds {
 		if err := insertMediaJob(apiKeyID, seed.id, seed.kind, seed.model, seed.prompt, seed.status, seed.ageHours,
@@ -3192,12 +3191,12 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 			[]string{"seconds", "size"}, []string{"n"}); err != nil {
 			return err
 		}
-		if err := insertMediaJob(opsKeyID, "audiojob_"+CleanupIDPrefix+"user_ops_speech_completed", "audio_speech", "gpt-4o-mini-tts",
-			CleanupNamePrefix+"运营用户语音合成任务样本", "completed", 6,
+		if err := insertMediaJob(opsKeyID, "audiojob_"+CleanupIDPrefix+"user_ops_transcription_completed", "audio_transcription", "gpt-4o-transcribe",
+			CleanupNamePrefix+"运营用户长音频转写任务样本", "completed", 6,
+			map[string]any{"language": "zh"},
 			nil,
-			map[string]any{"ContentURL": mediaJobContentDataURI("audio/wav", chatCodexWAV()), "ExpiresAt": w.at(24 * time.Hour)},
-			map[string]any{}, map[string]any{"tts_input_chars": 18}, 0.012,
-			[]string{"speed"}, []string{}); err != nil {
+			map[string]any{}, map[string]any{"audio_input_seconds": 9.0}, 0.005,
+			[]string{"language"}, []string{}); err != nil {
 			return err
 		}
 	}

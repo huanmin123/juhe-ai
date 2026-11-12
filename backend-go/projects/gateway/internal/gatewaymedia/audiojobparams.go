@@ -1,4 +1,4 @@
-// audiojobparams.go 是对外 POST /v1/audio/jobs 请求体的统一参数归一层
+// audiojobparams.go 是对外 POST /v1/tasks/audio 请求体的统一参数归一层
 // （媒体设计 §4.2/§6 自建规范 L1/L2/L3；M3f 首版输入形态：model + input_url
 // 公网音频 URL——paraformer 系上游只收 file_urls 不收文件、网关零存储不
 // 暂存，multipart 文件输入待有文件上传型上游再开）。产出
@@ -26,7 +26,7 @@ type NormalizedAudioJobParams struct {
 	ParamsIgnored []string
 }
 
-// ParseAudioJobParams 从已解析的对外 POST /v1/audio/jobs 请求 JSON 对象
+// ParseAudioJobParams 从已解析的对外 POST /v1/tasks/audio 请求 JSON 对象
 // 提取归一参数。校验面：
 //   - L1 必填：model、input_url 非空字符串（input_url 是唯一输入形态；
 //     multipart 文件输入在链上层以"请求体必须是 JSON 对象"前置 400——

@@ -6,6 +6,7 @@ import {
   modelInfoItems,
   modelPriceSlots,
   modelPriceTable,
+  modelPriceTableUnit,
   trimNumber,
   type ModelPriceSlot
 } from './providerModelFormatters'
@@ -314,5 +315,130 @@ describe('formatModelServiceTier', () => {
     expect(formatModelServiceTier('priority')).toBe('Priority')
     expect(formatModelServiceTier('flex')).toBe('Flex')
     expect(formatModelServiceTier('scale')).toBe('scale')
+  })
+})
+
+describe('modelPriceSlots 视频/音频档位（2026-11-12 档位批）', () => {
+  it('视频分辨率档按 480p→1080p 升序最多三槽', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'video',
+      videoOutputUsdPerSecond: 0.2157,
+      videoOutputUsdPerSecondByResolution: { '1080p': 0.5343, '480p': 0.0957, '720p': 0.2157 }
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '视频 480p', value: '0.0957', unit: '/秒' },
+      { label: '视频 720p', value: '0.2157', unit: '/秒' },
+      { label: '视频 1080p', value: '0.5343', unit: '/秒' }
+    ])
+  })
+
+  it('视频按次时长档按秒数升序', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'video',
+      videoOutputUsdPerCall: 0.2857,
+      videoOutputUsdPerCallBySeconds: { '10': 0.5714, '6': 0.2857 }
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '视频 6s', value: '0.2857', unit: '/次' },
+      { label: '视频 10s', value: '0.5714', unit: '/次' }
+    ])
+  })
+
+  it('minimax H3 768P/2K 档按 480p→2k 升序', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'video',
+      videoOutputUsdPerSecondByResolution: { '2k': 0.11428571428571428, '768p': 0.07142857142857142 }
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '视频 768p', value: '0.0714', unit: '/秒' },
+      { label: '视频 2k', value: '0.1143', unit: '/秒' }
+    ])
+  })
+
+  it('Hailuo 分辨率×时长组合档优先于纯秒数档', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'video',
+      videoOutputUsdPerCallBySeconds: { '6': 0.2857, '10': 0.5714 },
+      videoOutputUsdPerCallByResolutionSeconds: {
+        '1080p-6': 0.5, '768p-10': 0.5714285714285714, '768p-6': 0.2857142857142857
+      }
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '视频 768p 6s', value: '0.2857', unit: '/次' },
+      { label: '视频 768p 10s', value: '0.5714', unit: '/次' },
+      { label: '视频 1080p 6s', value: '0.5', unit: '/次' }
+    ])
+  })
+
+  it('token 口径 TTS 无 usage 时展示按次固定价', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'audio_speech',
+      ttsOutputUsdPerCall: 0.3
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '语音合成（每次）', value: '0.3', unit: '/次' }
+    ])
+  })
+})
+
+describe('modelPriceTableUnit', () => {
+  it('纯 token 表维持 USD / 1M tokens', () => {
+    expect(modelPriceTableUnit(providerModel({
+      catalogDisplay: [{ key: 'token_pricing', label: 'Token 计费', items: [pricingEntry('input', '输入', 1)] }]
+    }))).toBe('USD / 1M tokens')
+  })
+
+  it('按张价表标 USD / 张', () => {
+    expect(modelPriceTableUnit(providerModel({
+      catalogDisplay: [{
+        key: 'image_generation',
+        label: '图片生成',
+        items: [{ key: 'output_image', label: '每张', format: 'usd_per_image', value: 0.05 }]
+      }]
+    }))).toBe('USD / 张')
+  })
+
+  it('媒体 text 行只标 USD', () => {
+    expect(modelPriceTableUnit(providerModel({
+      catalogDisplay: [
+        { key: 'token_pricing', label: 'Token 计费', items: [pricingEntry('input', '输入', 1)] },
+        {
+          key: 'media_pricing',
+          label: '媒体计费',
+          items: [{ key: 'video_per_second_720p', label: '视频 720P（每秒）', format: 'text', value: '$0.2157/s' }]
+        }
+      ]
+    }))).toBe('USD')
+  })
+
+  it('空表返回空串', () => {
+    expect(modelPriceTableUnit(providerModel())).toBe('')
+  })
+})
+
+describe('modelPriceSlots 图像像素档（2026-11-12 档位批）', () => {
+  it('按 maxPixels 升序展示像素档，末档用前一档阈值写 >', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'image_generation',
+      outputUsdPerImage: 0.04286,
+      outputUsdPerImageTiers: [
+        { maxPixels: 0, usdPerImage: 0.08571428571428572 },
+        { maxPixels: 2610000, usdPerImage: 0.04285714285714286 }
+      ]
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '每张 ≤2.61M', value: '0.0429', unit: '/张' },
+      { label: '每张 >2.61M', value: '0.0857', unit: '/张' }
+    ])
+  })
+
+  it('输入图按张价补第三槽并标注首张免费', () => {
+    expect(modelPriceSlots(providerModel({
+      mode: 'image_generation',
+      outputUsdPerImageTiers: [
+        { maxPixels: 2610000, usdPerImage: 0.04285714285714286 },
+        { maxPixels: 0, usdPerImage: 0.08571428571428572 }
+      ],
+      inputUsdPerImage: 0.002857142857142857,
+      inputImageFreeCount: 1
+    }))).toEqual<ModelPriceSlot[]>([
+      { label: '每张 ≤2.61M', value: '0.0429', unit: '/张' },
+      { label: '每张 >2.61M', value: '0.0857', unit: '/张' },
+      { label: '输入图（首张免费）', value: '0.0029', unit: '/张' }
+    ])
   })
 })

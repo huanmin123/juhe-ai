@@ -114,7 +114,9 @@ func hasDirectPriceFields(entry map[string]any) bool {
 		"cacheCreationInputTokenCost", "cacheReadInputTokenCost", "cacheStorageInputTokenCostPerHour",
 		"inputCostPerImageToken", "outputCostPerImage", "outputCostPerImageToken",
 		"inputCostPerAudioToken", "outputCostPerAudioToken", "ttsInputCostPerChar",
+		"ttsOutputCostPerCall",
 		"audioInputCostPerSecond", "videoOutputCostPerSecond", "videoOutputCostPerCall",
+		"videoOutputCostPerCallBySeconds", "videoOutputCostPerSecondByResolution",
 	}
 	for _, key := range priceKeys {
 		if _, ok := entry[key]; ok {

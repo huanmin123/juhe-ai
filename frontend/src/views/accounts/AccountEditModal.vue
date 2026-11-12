@@ -315,7 +315,7 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
-                  v-if="!isMediaDomain"
+                  v-if="!isMediaDomain || isUtilityDomain"
                   :open="advancedActiveKeys.includes('strategy')"
                   name="策略与模型"
                   :summary="strategyCardSummary"
@@ -331,6 +331,7 @@
                   </div>
                   <div v-else class="advanced-section-stack">
                       <AccountGptRequestOverridesSection
+                        v-if="!isUtilityDomain"
                         :form="form"
                         :model-options="modelOptions"
                         :models-loading="modelsLoading"
@@ -340,6 +341,7 @@
 
                       <AccountStrategySection
                         :form="form"
+                        :capability-domain="effectiveCapabilityDomain"
                         :is-management-view="isManagementView"
                         :is-o-auth-form="isOAuthForm"
                         :mapping-source-model-options="mappingSourceModelOptions"
@@ -567,7 +569,7 @@
               <!-- 与编辑态同款折叠摘要卡（AccountAdvancedCard 壳）；创建态不加载高级详情，卡体不含 advancedLoading/advancedPending 分支。 -->
               <div class="bench-cards">
                 <AccountAdvancedCard
-                  v-if="!isMediaDomain"
+                  v-if="!isMediaDomain || isUtilityDomain"
                   :open="advancedActiveKeys.includes('strategy')"
                   name="策略与模型"
                   :summary="strategyCardSummary"
@@ -577,6 +579,7 @@
                 >
                   <div class="advanced-section-stack">
                     <AccountGptRequestOverridesSection
+                      v-if="!isUtilityDomain"
                       :form="form"
                       :model-options="modelOptions"
                       :models-loading="modelsLoading"
@@ -586,6 +589,7 @@
 
                     <AccountStrategySection
                       :form="form"
+                      :capability-domain="effectiveCapabilityDomain"
                       :is-management-view="isManagementView"
                       :is-o-auth-form="isOAuthForm"
                       :mapping-source-model-options="mappingSourceModelOptions"
@@ -844,6 +848,8 @@ import {
   ACCOUNT_CAPABILITY_DOMAIN_LABELS,
   allowedEndpointModesFor,
   capabilityDomainAccountTypes,
+  capabilityDomainIsMedia,
+  isUtilityCapabilityDomain,
   mediaDomainModelProtocolTokens
 } from './accountCapabilityDomains'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
@@ -992,12 +998,11 @@ function handleCreateCapabilityDomainChange(value: string | number): void {
   emit('select-provider', '')
 }
 
-// 媒体域（video/audio/image）标志：对话/媒体共用同一双形态表单壳，媒体域只
-// 裁剪字段（供应商/类型按域矩阵过滤、插入域内模型与语音双值、隐藏对话专属卡）。
-const isMediaDomain = computed(() =>
-  effectiveCapabilityDomain.value === 'video'
-  || effectiveCapabilityDomain.value === 'audio'
-  || effectiveCapabilityDomain.value === 'image')
+// 媒体/工具域标志：对话与其他场景共用同一双形态表单壳，非对话域只裁剪字段
+// （供应商/类型按域矩阵过滤、插入域内模型与语音双值、隐藏对话专属卡）。
+const isMediaDomain = computed(() => capabilityDomainIsMedia(effectiveCapabilityDomain.value))
+// 工具域展示「策略与模型」卡以配置同族模型别名；媒体域仍隐藏。
+const isUtilityDomain = computed(() => isUtilityCapabilityDomain(effectiveCapabilityDomain.value))
 
 // 供应商高峰快捷预设（时间计划闸门设计 §6）：来源为供应商目录 peakWindows
 // （后端 providers 包 peak_windows.go 单一数据源），随所选供应商联动；未选

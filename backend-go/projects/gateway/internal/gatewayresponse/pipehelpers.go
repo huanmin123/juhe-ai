@@ -41,10 +41,19 @@ func (p *streamPipe) ensureBeforeDownstreamCommit() error {
 
 // writeDownstreamChunk 对齐 writeDownstreamChunk：Go 的响应写是同步的，
 // 背压由底层 Write 阻塞承担；每个分片后 flush 保持事件边界可见。
+//
+// 2026-11-12 计费漏记修复：下游写失败不再把错误抛回主循环（那会立即中止
+// 上游读取、丢掉已产生消耗的 usage）。首次写失败标记 clientGone，此后写
+// 调用变 no-op，主循环继续读取上游直到协议终态或 drain 预算上限。
 func (p *streamPipe) writeDownstreamChunk(chunk []byte, semantic bool) (struct{ WriteMs int64 }, error) {
 	var out struct{ WriteMs int64 }
 	if err := p.ensureBeforeDownstreamCommit(); err != nil {
 		return out, err
+	}
+	if p.clientGone {
+		// 客户端已断开：不再触碰下游，也不计“已写下游”字节/正文（drain 阶段
+		// 的 chunk 只进上游 inspector 计量）。
+		return out, nil
 	}
 	p.captureDownstreamChunk(chunk)
 	p.prepareDownstreamForWrite()
@@ -55,7 +64,8 @@ func (p *streamPipe) writeDownstreamChunk(chunk []byte, semantic bool) (struct{ 
 	}
 	started := p.nowMs()
 	if _, err := p.downstream.Res.Write(chunk); err != nil {
-		return out, err
+		p.markClientGone(err)
+		return out, nil
 	}
 	FlushGateway(p.downstream.Res)
 	out.WriteMs = p.nowMs() - started
@@ -69,6 +79,31 @@ func (p *streamPipe) writeDownstreamChunk(chunk []byte, semantic bool) (struct{ 
 		p.downstreamCommit.MarkTransportCommitted(int64(len(chunk)))
 	}
 	return out, nil
+}
+
+// markClientGone 记录客户端断开（首次写失败或原始请求 ctx 取消）：管道转入
+// drain 模式，停止下游写入并继续读取上游。后续事件不再覆盖首次原因。
+func (p *streamPipe) markClientGone(writeErr error) {
+	if p.clientGone {
+		return
+	}
+	p.clientGone = true
+	p.clientGoneAtMs = p.nowMs()
+	if p.clientGoneDrainBudget > 0 {
+		p.clientGoneTimerCh = timeAfter(p.clientGoneDrainBudget)
+	}
+	reason := "client_ctx_canceled"
+	if writeErr != nil {
+		reason = writeErr.Error()
+	}
+	p.logger.Warn("gateway_stream_client_gone_drain_started", map[string]any{
+		"elapsedMs":          p.nowMs() - p.startedAt,
+		"chunkCount":         p.chunkIndex,
+		"totalUpstreamBytes": p.totalUpstreamBytes,
+		"totalResponseBytes": p.totalResponseBytes,
+		"outputReceived":     p.lastInspection.OutputReceived,
+		"error":              reason,
+	}, "下游连接已断开，停止写下游并继续读取上游用量")
 }
 
 func (p *streamPipe) captureDownstreamChunk(chunk []byte) {
@@ -403,6 +438,7 @@ func (p *streamPipe) finishStreamResult(args finishArgs) StreamPipeResult {
 	result.InvalidProtocolEventCount = p.lastInspection.InvalidProtocolEventCount
 	result.WindowDurationMs = p.replayWindowDurationMs
 	result.DownstreamFirstWriteMs = p.downstreamFirstWriteMs
+	result.ClientGone = p.clientGone
 	return result
 }
 

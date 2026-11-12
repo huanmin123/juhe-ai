@@ -1123,7 +1123,7 @@ func chainMarkListAvailabilityDirtyRow(ctx context.Context, tx *sql.Tx, accountI
     claimed_by = NULL,
     claim_until_ms = NULL,
     updated_at_ms = excluded.updated_at_ms`,
-		accountID, reason, availableAtMs, nowMs, nowMs, accountID)
+		accountID, reason, msTime(availableAtMs), msTime(nowMs), msTime(nowMs), accountID)
 	return err
 }
 

@@ -270,7 +270,7 @@ func TestObservabilityRunSeedsAllSegments(t *testing.T) {
 
 	// 审计面：媒体端点、错误分组回填、重试尝试、payload 引用完整性。
 	if n := observabilityQueryInt(t, db, "SELECT COUNT(*) FROM "+obsTable("audit_logs")+
-		" WHERE path IN ('/v1/audio/speech', '/v1/videos')"); n < 2 {
+		" WHERE path IN ('/v1/audio/speech', '/v1/video/generations')"); n < 2 {
 		t.Fatalf("媒体端点审计样本不足: %d", n)
 	}
 	if n := observabilityQueryInt(t, db, "SELECT COUNT(*) FROM "+obsTable("audit_logs")+

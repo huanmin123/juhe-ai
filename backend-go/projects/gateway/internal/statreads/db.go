@@ -21,6 +21,61 @@ func (r Row) value(key string) any { return r[key] }
 
 func (r Row) text(key string) string { return toText(r[key]) }
 
+// calendarDBValue converts an API calendar key to the value PostgreSQL
+// expects for the column: timestamp(0) needs full seconds, date month keys
+// need the first day.
+func calendarDBValue(column, value string) string {
+	switch {
+	case column == "stat_month" && len(value) == 7:
+		return value + "-01"
+	case column == "stat_hour" && len(value) == 13:
+		return value[:10] + " " + value[11:13] + ":00:00"
+	case column == "stat_minute" && len(value) == 16:
+		return value[:10] + " " + value[11:16] + ":00"
+	default:
+		return value
+	}
+}
+
+// calendarText normalizes a driver-decoded calendar column to its API text:
+// pgx returns date/timestamp values as time.Time, while the read contracts keep
+// "YYYY-MM-DD", "YYYY-MM-DDTHH" and "YYYY-MM".
+func (r Row) calendarText(key, layout string) string {
+	if typed, ok := r[key].(time.Time); ok {
+		return typed.Format(layout)
+	}
+	value := toText(r[key])
+	switch layout {
+	case "2006-01-02":
+		if len(value) >= 10 {
+			return value[:10]
+		}
+	case "2006-01-02T15":
+		if len(value) >= 13 {
+			return value[:10] + "T" + value[11:13]
+		}
+	case "2006-01":
+		if len(value) >= 7 {
+			return value[:7]
+		}
+	}
+	return value
+}
+
+func (r Row) day(key string) string { return r.calendarText(key, "2006-01-02") }
+
+func (r Row) hour(key string) string { return r.calendarText(key, "2006-01-02T15") }
+
+func (r Row) month(key string) string { return r.calendarText(key, "2006-01") }
+
+func (r Row) nullDay(key string) *string {
+	if r[key] == nil {
+		return nil
+	}
+	value := r.day(key)
+	return &value
+}
+
 func (r Row) nullText(key string) *string {
 	if r[key] == nil {
 		return nil

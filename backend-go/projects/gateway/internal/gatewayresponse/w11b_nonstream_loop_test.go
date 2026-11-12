@@ -524,3 +524,29 @@ func TestW11BStreamDownstreamFaces(t *testing.T) {
 	_ = io.EOF
 	_ = context.Background
 }
+
+// TestW11BPipeNonStreamLargeUtilityPayloadStreams 验证 B7 大批量 embeddings
+// 场景的底层管道行为：超过 1 MiB 校验窗口且 RequireFullyBuffered=false 时，
+// 已缓冲字节先冲刷、后续边读边转发，usage 尾部仍被捕获；调用方据此不再
+// 把合法大响应整单 502。
+func TestW11BPipeNonStreamLargeUtilityPayloadStreams(t *testing.T) {
+	payload := []byte(`{"data":["` + strings.Repeat("x", 2*1024*1024) + `"],"usage":{"prompt_tokens":1,"total_tokens":1}}`)
+	recorder := httptest.NewRecorder()
+	input := w11bNonStreamInput(NewSliceUpstreamBody(payload))
+	input.Downstream = StreamDownstream{Res: gatewaypreauth.NewTrackingWriter(recorder)}
+	input.InspectBytes = NonStreamResponseInspectionMaxBytes
+	input.RequireFullyBuffered = false
+	result, err := PipeNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !result.InspectionLimitExceeded || result.FullyBuffered {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.TransferredBytes != int64(len(payload)) || recorder.Body.Len() != len(payload) {
+		t.Fatalf("transferred=%d downstream=%d want=%d", result.TransferredBytes, recorder.Body.Len(), len(payload))
+	}
+	if !strings.Contains(result.UsageTailText, `"usage"`) {
+		t.Fatalf("usage tail missing: %q", result.UsageTailText)
+	}
+}

@@ -1,5 +1,5 @@
 // xai_video.go 是 M3 回填池的 xAI（Grok Imagine Video）出站 adapter
-//（媒体设计 §5：媒体 IR → 每厂商一个 adapter，注册表组织；本文件挂
+// （媒体设计 §5：媒体 IR → 每厂商一个 adapter，注册表组织；本文件挂
 // videoAdapters 的 "xai" 条目）。报文依据契约 §6.1（置信度 A：官方文档
 // 原文抓取 2026-10-04 经本地代理 web reader）：创建 POST /v1/videos/
 // generations（Bearer API Key），请求 {model,prompt,duration?,aspect_ratio?,
@@ -50,6 +50,16 @@ func (xaiVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
 	}
+}
+
+// BillingResolution 实现分辨率分档计费的计费档位（契约 §2.8.3）：xAI 官方
+// 输出按 480p/720p/1080p 分档；请求未带 size 时官方默认 480p，size 非法
+// 返回空串（结算回落主档价，不猜档）。
+func (xaiVideoAdapter) BillingResolution(params NormalizedVideoParams) string {
+	if strings.TrimSpace(params.Size) == "" {
+		return "480p"
+	}
+	return videoResolutionTierForSize(params.Size)
 }
 
 // xaiAspectRatioOf 把公共 size 的宽高比归约为 xAI aspect_ratio 档位（官方
@@ -204,7 +214,7 @@ func (xaiVideoAdapter) BuildContentRequest(string) (string, string) {
 
 // BuildCancelRequest 在 xai 形态下不参与取消：契约 §6.1 面无任务取消端点，
 // SupportsCancel 为 false，链上层不发上游请求、直接本地收敛 cancelled
-//（§2.6 cancelled 本地终态语义，沿 glm/minimax/volcengine/qwen 裁决）。
+// （§2.6 cancelled 本地终态语义，沿 glm/minimax/volcengine/qwen 裁决）。
 func (xaiVideoAdapter) BuildCancelRequest(string) (string, string) {
 	return http.MethodPost, ""
 }
@@ -243,7 +253,7 @@ type xaiVideoError struct {
 // §6.1 状态归一行）：pending→in_progress、done→completed、failed→failed、
 // expired→expired（上游原生终态，直接收敛——MediaJobStatus 词表已有该值，
 // 终态语义 Terminal() 覆盖）。空串（创建响应无 status 字段）→ in_progress
-//（受理凭据确立即已受理，pending 同义）；未知非空值归 in_progress 并返回
+// （受理凭据确立即已受理，pending 同义）；未知非空值归 in_progress 并返回
 // 原始值记入 RawStatus（契约 §2.6 归一规则：不猜测失败）。
 func xaiTaskStatusOf(status string) (MediaJobStatus, bool) {
 	switch strings.TrimSpace(status) {

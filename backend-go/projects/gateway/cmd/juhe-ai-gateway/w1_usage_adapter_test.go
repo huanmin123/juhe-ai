@@ -24,7 +24,7 @@ func TestW1UsageAttemptRecorderRoundTrip(t *testing.T) {
 	spool := newUsageSpool(t.TempDir(), gatewaypreauth.SystemClock{}, newTestSlogLogger(), usageSpoolCapacity{})
 	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: newTestSlogLogger()}, spool)
 	dispatch := gatewayusage.NewFinalizationDispatch(recorder, 0, 0)
-		service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
+	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithClock(gatewaypreauth.SystemClock{})
 	adapter := usageAttemptRecorderAdapter{service: service}
 	request := gatewaypreauth.NewGatewayRequest(gatewaypreauthHTTPPost())

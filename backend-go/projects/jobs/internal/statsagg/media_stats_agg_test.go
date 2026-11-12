@@ -107,11 +107,11 @@ func TestAggregateMediaMeteringColumns(t *testing.T) {
 		1200, 0, 4567, 62.5, 4)
 	env.assertFloats("api_key minute tts bucket",
 		env.queryRowFloats(`SELECT tts_input_chars
-			FROM juhe_stats.usage_stats_minute WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_minute='2026-04-18T08:30'`),
+			FROM juhe_stats.usage_stats_minute WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_minute='2026-04-18 08:30:00'`),
 		4567)
 	env.assertFloats("api_key minute video bucket",
 		env.queryRowFloats(`SELECT output_video_seconds
-			FROM juhe_stats.usage_stats_minute WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_minute='2026-04-18T10:05'`),
+			FROM juhe_stats.usage_stats_minute WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_minute='2026-04-18 10:05:00'`),
 		4)
 
 	// usage_model_daily：模型桶按模型分行（caller 系统账户行）。

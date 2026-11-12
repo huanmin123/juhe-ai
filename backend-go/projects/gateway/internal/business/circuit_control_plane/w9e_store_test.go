@@ -310,7 +310,7 @@ func TestW9EClaimOutboxFences(t *testing.T) {
 	// 正常 claim + 过期重claim。使用主投影键与 dispatch 事件形态：ClaimOutbox
 	// 只认领主键，incident 事件还要求 scope/incident/generation/ledger 非空
 	// （生产 CHECK）。
-	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('e1','` + ProjectionKey + `','d1','dispatch_revision_changed','a1','a1','t1',1,'pending',100,0,100,100)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('e1','` + ProjectionKey + `','d1','dispatch_revision_changed','a1','a1','t1',1,'pending',to_timestamp(100/1000.0),0,to_timestamp(100/1000.0),to_timestamp(100/1000.0))`); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := s.ClaimOutbox(ctx, "owner", 200, 1000, 10)
@@ -365,7 +365,7 @@ func TestW9EAcknowledgeOutboxFences(t *testing.T) {
 }
 
 func (s *Store) ackSeed(ctx context.Context, db *sql.DB) error {
-	_, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('e1','` + ProjectionKey + `','d1','incident_changed','a1','a1','t1',1,'processing',100,'tok','owner',9999,1,100,100)`)
+	_, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('e1','` + ProjectionKey + `','d1','incident_changed','a1','a1','t1',1,'processing',to_timestamp(100/1000.0),'tok','owner',to_timestamp(9999/1000.0),1,to_timestamp(100/1000.0),to_timestamp(100/1000.0))`)
 	return err
 }
 
@@ -416,7 +416,7 @@ func TestW9EReleaseOutboxForReplayFences(t *testing.T) {
 	}
 	var status, errClass string
 	var availableAt int64
-	if err := db.QueryRow(`SELECT status,last_error_class,available_at_ms FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE event_id='e1'`).Scan(&status, &errClass, &availableAt); err != nil {
+	if err := db.QueryRow(`SELECT status,last_error_class,(EXTRACT(EPOCH FROM available_at_ms)*1000)::bigint FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE event_id='e1'`).Scan(&status, &errClass, &availableAt); err != nil {
 		t.Fatal(err)
 	}
 	if status != "pending" || errClass != "timeout_before_complete" || availableAt != 250 {

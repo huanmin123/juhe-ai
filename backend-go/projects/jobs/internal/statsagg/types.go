@@ -10,40 +10,40 @@ const (
 // UsageStatsRecordRow mirrors usage-stats-types.ts UsageStatsRecordRow。
 // 数值列以 float64 承载（对齐 Node Number 语义），nullable 列用指针。
 type UsageStatsRecordRow struct {
-	ID                               string
-	SystemAccountID                  string
-	TraceID                          string
-	TrafficSource                    string
-	ClientIP                         *string
-	APIKeyID                         *string
-	GroupID                          *string
-	AccountID                        *string
-	Endpoint                         *string
-	ProviderCode                     *string
-	ProviderProtocolProfileID        *string
-	Model                            *string
-	StatusCode                       *float64
-	Success                          float64
-	FailureAttribution               *string
-	FirstTokenMs                     *float64
-	DurationMs                       *float64
-	InputTokens                      *float64
-	OutputTokens                     *float64
-	CacheReadTokens                  *float64
-	CacheReadCostUsd                 *float64
-	CacheWriteTokens                 *float64
-	CacheWrite1hTokens               *float64
-	CacheWriteCostUsd                *float64
-	ThinkingTokens                   *float64
-	InputImageTokens                 *float64
-	OutputImageTokens                *float64
+	ID                        string
+	SystemAccountID           string
+	TraceID                   string
+	TrafficSource             string
+	ClientIP                  *string
+	APIKeyID                  *string
+	GroupID                   *string
+	AccountID                 *string
+	Endpoint                  *string
+	ProviderCode              *string
+	ProviderProtocolProfileID *string
+	Model                     *string
+	StatusCode                *float64
+	Success                   float64
+	FailureAttribution        *string
+	FirstTokenMs              *float64
+	DurationMs                *float64
+	InputTokens               *float64
+	OutputTokens              *float64
+	CacheReadTokens           *float64
+	CacheReadCostUsd          *float64
+	CacheWriteTokens          *float64
+	CacheWrite1hTokens        *float64
+	CacheWriteCostUsd         *float64
+	ThinkingTokens            *float64
+	InputImageTokens          *float64
+	OutputImageTokens         *float64
 	// 媒体计量列（M4a，从 usage_records 聚合进统计表族）。
-	InputAudioTokens   *float64
-	OutputAudioTokens  *float64
-	TTSInputChars      *float64
-	AudioInputSeconds  *float64
-	OutputVideoSeconds *float64
-	CostUsd            *float64
+	InputAudioTokens                 *float64
+	OutputAudioTokens                *float64
+	TTSInputChars                    *float64
+	AudioInputSeconds                *float64
+	OutputVideoSeconds               *float64
+	CostUsd                          *float64
 	ErrorCode                        *string
 	ErrorMessage                     *string
 	AccountOwnerSystemAccountID      *string
@@ -132,6 +132,22 @@ func (k UsageStatsTimeKeys) timeValue(valueKey string) string {
 		return k.StatMonth
 	}
 	return ""
+}
+
+// CalendarDBValue 把对外日历键转换为数据库列值：stat_month 的 API/内存键是
+// "YYYY-MM"，date 列需要 "YYYY-MM-01"；其余日历键（date/week/hour/minute）
+// 的规范文本可直接被 PostgreSQL 对应类型解析。
+func CalendarDBValue(column, value string) string {
+	switch {
+	case column == "stat_month" && len(value) == 7:
+		return value + "-01"
+	case column == "stat_hour" && len(value) == 13:
+		return value[:10] + " " + value[11:13] + ":00:00"
+	case column == "stat_minute" && len(value) == 16:
+		return value[:10] + " " + value[11:16] + ":00"
+	default:
+		return value
+	}
 }
 
 // TimeBucketDefinition mirrors usage-stats-time-buckets.ts

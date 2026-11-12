@@ -49,6 +49,13 @@ import (
 // 裁决，契约 §2.8）：按次上游单槽位（一次任务 = 一次调用），与秒价槽位
 // 互斥（同一目录行两字段只落其一）。计费引擎行项消费由 billing 扩展另行
 // 交付，本结构只承载目录单价。
+// ImagePriceTier 是按输出像素分档的按张价（2026-11-12 档位批）。
+// MaxPixels 为 0 表示无上限（最后一档）；档位按 MaxPixels 升序匹配。
+type ImagePriceTier struct {
+	MaxPixels   int64   `json:"maxPixels"`
+	UsdPerImage float64 `json:"usdPerImage"`
+}
+
 type PriceSet struct {
 	InputUsdPer1M               *float64
 	OutputUsdPer1M              *float64
@@ -61,10 +68,37 @@ type PriceSet struct {
 	AudioInputUsdPer1M          *float64
 	AudioOutputUsdPer1M         *float64
 	OutputUsdPerImage           *float64
-	TtsInputUsdPer1MChars       *float64
-	AudioInputUsdPerSecond      *float64
-	VideoOutputUsdPerSecond     *float64
-	VideoOutputUsdPerCall       *float64
+	// OutputUsdPerImageTiers 是按输出像素分档的按张价表（2026-11-12 档位批）；
+	// OutputUsdPerImage 保留为主档价（无档表或请求未带 size 时使用）。
+	OutputUsdPerImageTiers []ImagePriceTier
+	// InputUsdPerImage 是输入图按张价（2026-11-12 输入素材批）；
+	// InputImageFreeCount 是每请求免费输入图张数（厂商首张/前 N 张免费）。
+	InputUsdPerImage      *float64
+	InputImageFreeCount   int64
+	TtsInputUsdPer1MChars *float64
+	// TtsOutputUsdPerCall 是 token 口径 TTS 在“上游不回报 usage、无法按 token
+	// 计价”时的按次固定价（2026-11-12 用户裁决：按次兜底，不空着）。
+	TtsOutputUsdPerCall     *float64
+	AudioInputUsdPerSecond  *float64
+	VideoOutputUsdPerSecond *float64
+	// VideoOutputUsdPerSecondByResolution 是按输出分辨率分档的秒价表，
+	// 键为规范化分辨率（"480p"/"720p"/"1080p"/"2k"/"4k"）。厂商按分辨率
+	// 定价时（xAI/Volcengine/Qwen 视频）用它表达；VideoOutputUsdPerSecond
+	// 保留为默认/主档价（无档位表、或创建时无法确定分辨率时使用）。
+	VideoOutputUsdPerSecondByResolution map[string]float64
+	VideoOutputUsdPerCall               *float64
+	// VideoOutputUsdPerCallBySeconds 是按输出时长（秒）分档的按次价表，
+	// 键为秒数的规范十进制串（如 "6"/"10"）。厂商按“条 × 时长档”计价时
+	// （MiniMax Hailuo-2.3 6s/10s）用它表达；VideoOutputUsdPerCall 保留为
+	// 默认/主档价（无档位表或旧记录缺秒时使用）。有表但请求秒数不命中档位
+	// 时不回退主档——宁可不计，不按错误档位收费。
+	VideoOutputUsdPerCallBySeconds map[string]float64
+	// VideoOutputUsdPerCallByResolutionSeconds 是“分辨率 × 输出时长”二维
+	// 按次价表，键为 "<resolution>-<seconds>"（如 "1080p-6"）。厂商按
+	// 分辨率与时长组合定价时（MiniMax Hailuo-2.3 1080P 仅 6s）用它表达；
+	// 命中优先于 VideoOutputUsdPerCallBySeconds，未命中回落后者（主档
+	// 768P 时长档），两者都不命中不回退 VideoOutputUsdPerCall。
+	VideoOutputUsdPerCallByResolutionSeconds map[string]float64
 }
 
 // ServiceTierPrices mirrors Record<string, ModelPriceSet> (priority/flex/batch).
@@ -150,11 +184,27 @@ type CostInput struct {
 	InputAudioTokens   *float64
 	OutputAudioTokens  *float64
 	OutputImageCount   *float64
-	TtsInputChars      *float64
+	// OutputImagePixels 是本次图像输出的像素数（请求 size W×H），用于在
+	// OutputUsdPerImageTiers 中选档；nil 时使用主档价。
+	OutputImagePixels *int64
+	// InputImageCount 是本次请求的输入图片张数（图生图/编辑），用于按张
+	// 输入图价减去免费额度后的计费。
+	InputImageCount *float64
+	TtsInputChars   *float64
+	// TtsCalls 是 token 口径 TTS 在无 usage 时的按次计量（2026-11-12 用户
+	// 裁决：按次固定价兜底）；行项由 billing.go 的 tts_output_calls 消费。
+	TtsCalls           *float64
 	AudioInputSeconds  *float64
 	OutputVideoSeconds *float64
-	VideoCalls         *float64
-	CostUsd            *float64
+	// OutputVideoResolution 是秒价行的计费分辨率（"480p"/"720p"/"1080p"/
+	// "2k"/"4k"），用于在 VideoOutputUsdPerSecondByResolution 中选档；
+	// 空串表示创建时无法确定，使用主档价。
+	OutputVideoResolution string
+	VideoCalls            *float64
+	// VideoCallSeconds 是按次计价行的输出时长档位（秒），用于在
+	// VideoOutputUsdPerCallBySeconds 中选档；nil 时使用主档价。
+	VideoCallSeconds *float64
+	CostUsd          *float64
 }
 
 // CostLineKind mirrors ProviderCostLineKind.
@@ -176,6 +226,11 @@ const (
 	// 行项生成（billing.go 消费）由计费扩展另行交付。
 	CostLineKindTtsInputChars     CostLineKind = "tts_input_chars"
 	CostLineKindAudioInputSeconds CostLineKind = "audio_input_seconds"
+	// CostLineKindImageInputUnit 是输入图按张行项（2026-11-12 输入素材批）。
+	CostLineKindImageInputUnit CostLineKind = "image_input_unit"
+	// CostLineKindTtsOutputCalls 是 token 口径 TTS 在无 usage 时的按次固定价
+	// 行项（2026-11-12 用户裁决）：一次请求 = 一次调用，成本 = 次价 × 1。
+	CostLineKindTtsOutputCalls CostLineKind = "tts_output_calls"
 	// M2 视频行项（媒体设计 §10）：视频按输出秒计费（video_output_seconds）。
 	// 行项生成由 billing.go 消费（终态计费任务交付），本枚举先落词表。
 	CostLineKindVideoOutputSeconds CostLineKind = "video_output_seconds"
@@ -351,15 +406,20 @@ func hasAnyRate(set PriceSet) bool {
 		set.CacheWriteUsdPer1M, set.CacheWrite1hUsdPer1M,
 		set.CacheStorageUsdPer1MPerHour, set.ImageInputUsdPer1M,
 		set.ImageOutputUsdPer1M, set.AudioInputUsdPer1M,
-		set.AudioOutputUsdPer1M, set.OutputUsdPerImage,
-		set.TtsInputUsdPer1MChars, set.AudioInputUsdPerSecond,
+		set.AudioOutputUsdPer1M, set.OutputUsdPerImage, set.InputUsdPerImage,
+		set.TtsInputUsdPer1MChars, set.TtsOutputUsdPerCall, set.AudioInputUsdPerSecond,
 		set.VideoOutputUsdPerSecond, set.VideoOutputUsdPerCall,
 	} {
 		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
 			return true
 		}
 	}
-	return false
+	// 按次时长档表 / 分辨率秒价档表 / 图像像素档表本身也是有效价格事实
+	// （2026-11-12 档位批）：即使主档价缺席，只要档位表非空，该行仍可计费。
+	return len(set.VideoOutputUsdPerCallBySeconds) > 0 ||
+		len(set.VideoOutputUsdPerCallByResolutionSeconds) > 0 ||
+		len(set.VideoOutputUsdPerSecondByResolution) > 0 ||
+		len(set.OutputUsdPerImageTiers) > 0
 }
 
 // hasDirectBaseRate 报告是否存在“默认流量必然使用”的基础计价维度。
@@ -371,15 +431,18 @@ func hasDirectBaseRate(set PriceSet) bool {
 		set.InputUsdPer1M, set.OutputUsdPer1M,
 		set.ImageInputUsdPer1M, set.ImageOutputUsdPer1M,
 		set.AudioInputUsdPer1M, set.AudioOutputUsdPer1M,
-		set.OutputUsdPerImage,
-		set.TtsInputUsdPer1MChars, set.AudioInputUsdPerSecond,
+		set.OutputUsdPerImage, set.InputUsdPerImage,
+		set.TtsInputUsdPer1MChars, set.TtsOutputUsdPerCall, set.AudioInputUsdPerSecond,
 		set.VideoOutputUsdPerSecond, set.VideoOutputUsdPerCall,
 	} {
 		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
 			return true
 		}
 	}
-	return false
+	return len(set.VideoOutputUsdPerCallBySeconds) > 0 ||
+		len(set.VideoOutputUsdPerCallByResolutionSeconds) > 0 ||
+		len(set.VideoOutputUsdPerSecondByResolution) > 0 ||
+		len(set.OutputUsdPerImageTiers) > 0
 }
 
 // HasCatalogDirectPrice 报告一行目录价格事实是否可被计价引擎直接消费——
@@ -400,8 +463,14 @@ func HasCatalogDirectPrice(providerCode, model string, set PriceSet) bool {
 		return true
 	}
 	if media := FindProviderModelPricing(providerCode, model); media != nil {
-		if media.TtsInputUsdPer1MChars != nil || media.AudioInputUsdPerSecond != nil ||
-			media.VideoOutputUsdPerSecond != nil || media.VideoOutputUsdPerCall != nil {
+		if media.TtsInputUsdPer1MChars != nil || media.TtsOutputUsdPerCall != nil ||
+			media.InputUsdPerImage != nil ||
+			media.AudioInputUsdPerSecond != nil ||
+			media.VideoOutputUsdPerSecond != nil || media.VideoOutputUsdPerCall != nil ||
+			len(media.VideoOutputUsdPerCallBySeconds) > 0 ||
+			len(media.VideoOutputUsdPerCallByResolutionSeconds) > 0 ||
+			len(media.VideoOutputUsdPerSecondByResolution) > 0 ||
+			len(media.OutputUsdPerImageTiers) > 0 {
 			return true
 		}
 	}
@@ -417,6 +486,7 @@ func hasAnyCostDimension(input CostInput) bool {
 		input.CacheWrite1hTokens != nil || input.InputImageTokens != nil ||
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
 		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
-		input.TtsInputChars != nil || input.AudioInputSeconds != nil ||
+		input.TtsInputChars != nil || input.TtsCalls != nil || input.AudioInputSeconds != nil ||
+		input.InputImageCount != nil ||
 		input.OutputVideoSeconds != nil || input.VideoCalls != nil
 }

@@ -168,8 +168,9 @@ assertIncludes(adminHelpSource, '接口能力 / 模型别名', '帮助必须展�
 
 // ---- 单协议下拉（2026-11-07 跨协议模型映射退役，批次 E 前端契约） ----
 
-// 单协议选项 = 协议等价 pair：7 个选项，value 即 source 端点族，target 由选项表派生。
-assertEqual(accountModelMappingProtocolOptions.length, 7, '单协议下拉必须恰好提供 7 个协议等价选项')
+// 单协议选项 = 协议等价 pair：10 个选项（7 原有 + B7 工具三族），value 即
+// source 端点族，target 由选项表派生。
+assertEqual(accountModelMappingProtocolOptions.length, 10, '单协议下拉必须恰好提供 10 个协议等价选项')
 for (const option of accountModelMappingProtocolOptions) {
   assertEqual(option.value, option.source, `协议选项 ${option.value} 的下拉值必须是 source 端点族`)
   assertEqual(

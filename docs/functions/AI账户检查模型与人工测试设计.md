@@ -14,13 +14,13 @@
 
 ## 健康检查请求形态
 
-- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`、`audio_speech`、`audio_transcription_json`、`audio_job_get`、`video_create`；`images_json` 必须有模型目录 `images` 能力证据，音频形态必须有模型目录 `audio` 能力证据；`video_create`、`audio_speech`、`audio_job_get` 进入 J1 无副作用连通性探测。
+- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`、`audio_speech`、`audio_transcription_json`、`audio_job_get`、`video_create`、`embed_content`、`rerank_json`、`moderation_json`；`images_json` 必须有模型目录 `images` 能力证据，音频形态必须有模型目录 `audio` 能力证据；`video_create`、`audio_speech`、`audio_job_get` 进入 J1 无副作用连通性探测。
 - 音频检查形态（M1 已实施，2026-10-04，`accountprobe` 内置，账户表单与健康检查可选）：
   - `audio_speech`：openai 协议向 `POST /v1/audio/speech` 发起短字符 TTS 请求（`response_format=wav`，最小化计费成本），判活 = 2xx + `audio/*` content-type；gemini 协议上游无该端点（恒 404），按契约 §5.1 改发 `POST /v1beta/models/{model}:generateContent`（contents 文本 + `responseModalities=["AUDIO"]` + `voiceName="Kore"`），判活 = 2xx + 响应 JSON 含 `candidates[0].content.parts[].inlineData`（不要求特定格式）。**2026-11-01 用户裁决起人工测试不再触发上述真实 TTS 生成**：`audio_speech` 人工测试改为密钥连通性探测（volcengine 走固定语音域 `POST https://openspeech.bytedance.com/api/v3/tts/create` + `X-Api-Key: speech_token` + `{"model":<model>}`；gpt/glm/xai 走 `POST {base}/audio/speech`；minimax 走 `POST {base}/t2a_v2`；gemini 走 `POST {base}/models/{model}:generateContent`，见 §17）；上述真实请求形态仅作为探针包内保留的历史构造路径存在。
   - `audio_transcription_json`：向 `POST /v1/audio/transcriptions` 发起 multipart 请求，`file` 使用探针内置小 WAV 样本（不依赖用户上传）；判活 = 2xx + JSON 信封含 `text` 字段（字段存在即判活，不要求非空——静音样本真实上游可能返回空 `text`）。不在 2026-11-01 裁决范围，保持真实请求语义。
   - `audio_transcription_json` 仍为真实付费小请求（无免费目录探针等价物），走账户保存的精确 mode 与检查模型；判活证据为上述协议成功信号，不以响应体之外的目录事实替代。
 - 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE；其中 `images_json` 使用 `GET /v1/models` 并确认目录含检查模型，避免后台付费生图。
-- 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、当前 GLM Chat 和 Gemini OpenAI profile 使用 `chat_sse`；目标 `profile_glm_coding_openai_responses_v1` 实施后单独使用 `responses_sse`；Anthropic profile 使用 `messages_sse`；Gemini Native 使用 `generate_content_sse`。能力域拆分 M2 起，新建账户未显式提交 `health_check_endpoint_mode` 时按能力域默认落值：对话域沿用上述现行默认，图像域 `images_json`、音频域 `audio_speech`（连接允许集不含时落 `audio_job_get`）、视频域 `video_create`；存量账户库中现值不变。
+- 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、当前 GLM Chat 和 Gemini OpenAI profile 使用 `chat_sse`；目标 `profile_glm_coding_openai_responses_v1` 实施后单独使用 `responses_sse`；Anthropic profile 使用 `messages_sse`；Gemini Native 使用 `generate_content_sse`。能力域拆分 M2 起，新建账户未显式提交 `health_check_endpoint_mode` 时按能力域默认落值：对话域沿用上述现行默认，图像域 `images_json`、音频域 `audio_speech`（连接允许集不含时落 `audio_job_get`）、视频域 `video_create`、向量域 `embed_content`、重排域 `rerank_json`、安全域 `moderation_json`；存量账户库中现值不变。
 - **流式优先（2026-10-19 定案）**：检查形态默认值一律优先取流式形态。理由是真实流量以流式为主，非流式 2xx 可能被上游伪造或退化（实测样例：某中转对 `stream:false` 返回空 `choices` 的 SSE 帧仍回 HTTP 200），流式形态能更早暴露上游真实异常并复用同一份完成证据判定。该口径覆盖全部缺省生产面：前端建户表单、按能力域默认落值、OAuth 管理式建户、公开推送建户、导入适配器合成与导入缺省回退、人工测试形态顺序；显式提交的非流式形态仍然生效，存量账户现值不变。
 - 首选 mode 未启用时，先取 `supported_endpoint_modes` 中第一个已启用的流式 mode，再取第一个已启用 JSON mode，最后取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
 - 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`；其他账户优先保留旧检查族对应的、已启用且可检查的 JSON / SSE mode，同族不可用时才回退到首个已启用可检查 mode。加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
@@ -312,14 +312,14 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 - 修改模型目录默认检查模型只影响后续新账户初始化，不改变已有账户。
 - 多 Key 人工测试不写 Key 状态，后台激活和 Key 恢复探针可以按职责写入 Key 状态。
 - 模型级失败不把账户整体标记为不可用，账户级故障达到策略条件后才进入保护状态。
-- 能力域拆分后（2026-11-12 D0/D6 并轨）：所有场景新建账户统一 `pending_test`，由 J1 首次激活检查转 `active`（手动模式除外）；导入账户同样保留 `pending_test`。媒体账户的 `health_check_endpoint_mode` 必须是连接允许集内的安全探测形态（图像 `images_json`、视频 `video_create`、音频 `audio_speech` / `audio_transcription_json` / 长音频 `audio_job_get`）；`audio_job_create` 仅作记录，不执行 POST。视频恢复准入与成功 CAS 保留，但不再是激活的唯一路径。
+- 能力域拆分后（2026-11-12 D0/D6 并轨）：所有场景新建账户统一 `pending_test`，由 J1 首次激活检查转 `active`（手动模式除外）；导入账户同样保留 `pending_test`。媒体/工具账户的 `health_check_endpoint_mode` 必须是连接允许集内的安全探测形态（图像 `images_json`、视频 `video_create`、音频 `audio_speech` / `audio_transcription_json` / 长音频 `audio_job_get`、向量 `embed_content`、重排 `rerank_json`、安全 `moderation_json`）；`audio_job_create` 仅作记录，不执行 POST。视频恢复准入与成功 CAS 保留，但不再是激活的唯一路径。
 
 ## 16. 媒体账户检查边界（2026-11-12 D0/D6 并轨）
 
 来源：AI 账户能力域拆分 v7 + 2026-11-12 D0/D6 裁决。媒体账户与对话账户共用 J1 健康状态机；差异只在探针请求形态（媒体用无副作用连通性探测）和模型/协议选择入口（人工测试不选模型/协议）。
 
-- **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_sse`、图像 `images_json`、视频 `video_create`、音频 `audio_speech`；若连接允许集不含该默认值（例如 qwen 长音频只有 `audio_job_*`），落允许集内的安全代表模式 `audio_job_get`。仅影响新建账户，存量账户库中现值不改。
-- **后台周期检查（J1）参与范围**：J1 候选白名单含对话族、`images_json`、`video_create`、`audio_speech`、`audio_job_get`；媒体账户与对话账户一样进入激活、周期、冷却恢复和锁死相关探测。`audio_job_create` 不在候选白名单，永不 POST 创建真实任务。
+- **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_sse`、图像 `images_json`、视频 `video_create`、音频 `audio_speech`、向量 `embed_content`、重排 `rerank_json`、安全 `moderation_json`；若连接允许集不含该默认值（例如 qwen 长音频只有 `audio_job_*`），落允许集内的安全代表模式 `audio_job_get`。仅影响新建账户，存量账户库中现值不改。
+- **后台周期检查（J1）参与范围**：J1 候选白名单含对话族、`images_json`、`video_create`、`audio_speech`、`audio_job_get`、`embed_content`、`rerank_json`、`moderation_json`；媒体账户与对话账户一样进入激活、周期、冷却恢复和锁死相关探测。`audio_job_create` 不在候选白名单，永不 POST 创建真实任务。
 - **激活检查（pending_test 首检）**：所有场景新建账户默认 `pending_test`；J1 首次激活检查成功转 `active`，失败转 `error`（确定性硬门）或按锁死/冷却状态机处置。导入账户同样保持 `pending_test`。
 - **模型检测（J3b）参与范围**：媒体形态仍不参与对话模型检测；媒体账户用 J1 连通性探测和人工 `kind=connectivity`。图像 `images_json` 后台探测为只读 `GET {base}/models`（厂商任务查询例外），不构造真实出图请求。
 - **检查失败对派发的影响**：媒体同步 lane 受候选窗健康门（status / schedulable / cooldown + endpoint mode 门）；任务面（videos / audio jobs 查询、下载）账户亲和直连不查健康。锁定账户的可恢复探针失败不提前终结 hold（D12）。
@@ -339,9 +339,9 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 | `audio_job_get` | `GET` 查询固定占位任务：qwen `GET {base}/api/v1/tasks/{id}`；其余 OpenAI 兼容任务面 `GET {base}/audio/jobs/{id}` | 无；绝不 POST `audio_job_create` |
 | `audio_transcription_json` | 内置 10ms 静音 WAV 的真实转写请求（既有实现） | multipart WAV；无文本 prompt |
 
-`kind=connectivity` 时服务端按账户场景选择代表模式：视频 `video_create`、图像 `images_json`、音频优先 `audio_speech`，其次 `audio_transcription_json`，仅长任务账户用 `audio_job_get`；不要求用户选模型/协议。
+`kind=connectivity` 时服务端按账户场景选择代表模式：视频 `video_create`、图像 `images_json`、音频优先 `audio_speech`，其次 `audio_transcription_json`，仅长任务账户用 `audio_job_get`；向量 `embed_content`、重排 `rerank_json`、安全 `moderation_json`；不要求用户选模型/协议。
 
-分类表（`video_create` / `images_json` / `audio_speech` 的探测结果 evidence 带 `connectivity: true` 标记；`audio_transcription_json` 沿用既有 WAV 探针证据；`<code>` 为实际上游状态码）：
+分类表（`video_create` / `images_json` / `audio_speech` / `embed_content` / `rerank_json` / `moderation_json` 的探测结果 evidence 带 `connectivity: true` 标记；`audio_transcription_json` 沿用既有 WAV 探针证据；`<code>` 为实际上游状态码）：
 
 | 上游状态 | 判定 | 文案 |
 | --- | --- | --- |
@@ -361,3 +361,17 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 - 人工测试请求新增 `kind=connectivity`（`POST /{id}/test` 与 `POST /test-draft`）：非对话账户不要求 `model`/`testEndpointMode`，服务端按账户场景 + 健康检查模型/连接选代表模式；对话账户保持原 `model + testEndpointMode` 契约。
 - gemini 原生 google_oauth 的 `ai_studio` 账户可按 `video_create` / `audio_speech` 进入媒体探测；`code_assist` / `google_one` 仍只允许 GenerateContent 探活，不开放媒体形态。
 - 人工测试请求词表（`POST /{id}/test` 的 `testEndpointMode` 校验）同批增补 `video_create`；探针视图模式白名单同批保留连接声明的 `video_create` / `audio_speech`（探针侧此前会把两者过滤为空，导致媒体模式解析不到请求形态）。
+
+### 17.1 B7 工具端点连通性探测（2026-11-12）
+
+向量/重排/安全账户与媒体账户共用同一 `kind=connectivity` 入口、同一状态码分类和同一 J1 状态机；差异只在请求形态：
+
+| 模式 | 连通性请求 | 请求体 |
+| --- | --- | --- |
+| `embed_content` | `POST` 向量端点：gpt `{base}/embeddings`；qwen `{base}/compatible-mode/v1/embeddings`（base 含 `/compatible-mode/v1`、`/api/v1`、`/v1` 时先剥到 origin） | `{"model":<health model>,"input":[]}`；空输入由上游参数校验拒绝，不产生真实向量结果 |
+| `rerank_json` | `POST` qwen `{base}/api/v1/services/rerank/text-rerank/text-rerank`（base 归一规则同上） | `{"model":<health model>,"input":{"query":"","documents":[]}}`；空查询/文档由上游拒绝 |
+| `moderation_json` | `POST` gpt `{base}/moderations` | `{"model":<health model>,"input":[]}`；空输入由上游拒绝或返回空结果，不产生真实审核影响 |
+
+- 判读：2xx 或 400/422 视为 Key + Base URL 可达；401/403 为凭据失败；5xx/传输错误按既有分类。工具探测与媒体探测一样不写业务流量状态、不生成产物；`diagnostics=limited` 沿用统一脱敏。
+- J1 候选白名单、写侧 `AccountHealthCheckEndpointModes` 与 DB CHECK 均含三值；创建后 `pending_test`，首次激活探测通过转 `active`，周期/冷却恢复/锁死 hold 语义与媒体账户一致。
+- 工具账户人工测试只显示“密钥连通性”，不展示模型/协议选择；`test-options` 对工具场景返回空模型列表也不影响入口（服务端按健康检查模型选代表模式）。

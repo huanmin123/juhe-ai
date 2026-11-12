@@ -33,6 +33,8 @@ export type AccountSupportedEndpointMode =
   | 'audio_job_content'
   | 'audio_job_cancel'
   | 'realtime_session'
+  | 'rerank_json'
+  | 'moderation_json'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
   | 'images_json'
@@ -57,6 +59,9 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'audio_job_content'
   | 'audio_job_cancel'
   | 'realtime_session'
+  | 'embed_content'
+  | 'rerank_json'
+  | 'moderation_json'
 >
 export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
@@ -288,13 +293,14 @@ export interface GroupAccountStats {
 
 export interface AccountModelMapping {
   sourceModel: string
-  // M4b 媒体映射族（媒体设计 §9）：video_generation / tts 同族
-  // 模型名改写，与后端 write.go accountSourceEndpointFamilies 同枚举。
-  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts'
+  // M4b 媒体映射族（媒体设计 §9）与 B7 工具映射族：同族模型名改写，
+  // 与后端 write.go accountSourceEndpointFamilies 同枚举（embed_content
+  // 沿用 gatewayrouting 的 endpoint family token）。
+  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts' | 'embed_content' | 'rerank' | 'moderation'
   upstreamModel: string
   // 上游枚举与后端 accountUpstreamEndpointFamilies 同集（stream_generate_content
-  // 仅作 source，媒体族上游面恒为 OpenAI 形态媒体端点）。
-  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'video_generation' | 'tts'
+  // 仅作 source，媒体/工具族上游面恒为 OpenAI 兼容端点）。
+  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'video_generation' | 'tts' | 'embed_content' | 'rerank' | 'moderation'
   enabled: boolean
 }
 
@@ -741,6 +747,8 @@ export interface AccountCloneContext {
   name: string
   notes?: string
   type: AccountType
+  /** 源账户能力域：克隆目标必须保持同域（后端创建入口断言）。 */
+  capabilityDomain?: AccountCapabilityDomain
   status: AccountStatus
   credentialOptions: AccountCloneCredentialOptions
   concurrencyLimit: number

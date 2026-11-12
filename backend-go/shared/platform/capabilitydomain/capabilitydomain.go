@@ -24,16 +24,20 @@ import "fmt"
 type Domain string
 
 const (
-	DomainChat  Domain = "chat"
-	DomainVideo Domain = "video"
-	DomainAudio Domain = "audio"
-	DomainImage Domain = "image"
+	DomainChat       Domain = "chat"
+	DomainVideo      Domain = "video"
+	DomainAudio      Domain = "audio"
+	DomainImage      Domain = "image"
+	DomainEmbedding  Domain = "embedding"
+	DomainRerank     Domain = "rerank"
+	DomainModeration Domain = "moderation"
 )
 
-// Valid 判定域值是否在四值词表内。
+// Valid 判定域值是否在已注册场景词表内（B7 起向量/重排/安全为独立场景）。
 func (d Domain) Valid() bool {
 	switch d {
-	case DomainChat, DomainVideo, DomainAudio, DomainImage:
+	case DomainChat, DomainVideo, DomainAudio, DomainImage,
+		DomainEmbedding, DomainRerank, DomainModeration:
 		return true
 	}
 	return false
@@ -45,9 +49,9 @@ func (d Domain) Valid() bool {
 // 语义差异仅影响导入/批量新建户，由计划 §对话域纯粹化记录该裁量。
 const RuleVersion = 1
 
-// chatModes 是「对话 modes」锚集合（v8-A 对话域纯粹化后 13 值，计划
-// §推导规则 + §对话域纯粹化；前端 accountCapabilityDomains.ts 与网关词表
-// 镜像，本包不 import 两侧实现，以计划文本为唯一事实源）。v8-A 把
+// chatModes 是「对话 modes」锚集合（12 值，计划 §推导规则 + §对话域纯粹化；
+// B7 起 embed_content 移出到向量场景）。前端 accountCapabilityDomains.ts 与
+// 网关词表镜像，本包不 import 两侧实现，以计划文本为唯一事实源。v8-A 把
 // audio_transcription_json 与 realtime_session 移出对话域（归音频域）；
 // images_json 本就不在锚集（v8-A 后对话域不再追加，图像 lane 一律归图像域）。
 var chatModes = []string{
@@ -62,16 +66,12 @@ var chatModes = []string{
 	"interactions_json",
 	"interactions_sse",
 	"count_tokens",
-	"embed_content",
 	"message_token_counting",
 }
 
 // mediaModes 是媒体侧全部 lane 值：图像 lane、语音合成、视频任务四值、
 // 长音频任务四值与 v8-A 自对话域移入的短转写/实时会话。KnownModes =
-// chatModes ∪ mediaModes，与网关四档案族词表并集闭合
-// （chainOpenAIEndpointModeValues / chainAnthropicEndpointModes /
-// chainGeminiDefaultModes / chainHybridEndpointModes 的并集恰为这 25 值；
-// v8-A 只在对话/媒体两侧间移动成员，并集不变）。
+// chatModes ∪ mediaModes ∪ utilityModes，与网关档案族词表并集闭合。
 var mediaModes = []string{
 	"images_json",
 	"audio_speech",
@@ -85,6 +85,14 @@ var mediaModes = []string{
 	"audio_job_cancel",
 	"audio_transcription_json",
 	"realtime_session",
+}
+
+// utilityModes 是 B7 工具场景的 lane 值：向量、重排、安全各一个同步形态。
+// embed_content 自对话锚集移入（v8-A 的 13 值锚集收缩为 12 值）。
+var utilityModes = []string{
+	"embed_content",
+	"rerank_json",
+	"moderation_json",
 }
 
 // videoModes / audioModes / imageModes 是推导规则 ②③④ 的命中集。v8-A 后
@@ -101,17 +109,23 @@ var (
 		"audio_transcription_json",
 		"realtime_session",
 	}
-	imageModes = []string{"images_json"}
+	imageModes      = []string{"images_json"}
+	embeddingModes  = []string{"embed_content"}
+	rerankModes     = []string{"rerank_json"}
+	moderationModes = []string{"moderation_json"}
 )
 
 // knownModeSet 是全部已知 endpoint mode 值；声明中出现集合外的字符串即为
 // 未知模式，纳入失败清单（不能用通配符把未知 video_* 自动视为合法能力）。
 var knownModeSet = func() map[string]bool {
-	set := make(map[string]bool, len(chatModes)+len(mediaModes))
+	set := make(map[string]bool, len(chatModes)+len(mediaModes)+len(utilityModes))
 	for _, mode := range chatModes {
 		set[mode] = true
 	}
 	for _, mode := range mediaModes {
+		set[mode] = true
+	}
+	for _, mode := range utilityModes {
 		set[mode] = true
 	}
 	return set
@@ -122,10 +136,12 @@ func ChatModes() []string {
 	return append([]string{}, chatModes...)
 }
 
-// KnownModes 返回全部已知 endpoint mode 值的副本（对话 13 + 媒体 12，
-// 并集恒为 25 值）。
+// KnownModes 返回全部已知 endpoint mode 值的副本（对话 12 + 媒体 12 + 工具 3，
+// 并集 27 值）。
 func KnownModes() []string {
-	return append(append([]string{}, chatModes...), mediaModes...)
+	out := append([]string{}, chatModes...)
+	out = append(out, mediaModes...)
+	return append(out, utilityModes...)
 }
 
 // DeriveDomain 按 ruleVersion=1 对已验证声明集推导域（按序命中即停）：
@@ -135,7 +151,10 @@ func KnownModes() []string {
 //     realtime_session 或任一 audio_job_* → audio（v8-A：短转写与实时会话
 //     自对话域移入音频域命中集）；
 //  4. 不含对话 modes 且含 images_json → image；
-//  5. 其余 → chat（对话域零命中；声明集中落域 lane 之外的值由迁移命令裁剪
+//  5. 不含对话 modes 且含 embed_content → embedding；
+//  6. 不含对话 modes 且含 rerank_json → rerank；
+//  7. 不含对话 modes 且含 moderation_json → moderation；
+//  8. 其余 → chat（对话域零命中；声明集中落域 lane 之外的值由迁移命令裁剪
 //     至域内）。
 //
 // 输入必须已通过 ParseEndpointModes 的 ModesOK 校验（元素全部在词表内）；
@@ -151,14 +170,24 @@ func DeriveDomain(modes []string) Domain {
 		if containsAny(modes, imageModes) {
 			return DomainImage
 		}
+		if containsAny(modes, embeddingModes) {
+			return DomainEmbedding
+		}
+		if containsAny(modes, rerankModes) {
+			return DomainRerank
+		}
+		if containsAny(modes, moderationModes) {
+			return DomainModeration
+		}
 	}
 	return DomainChat
 }
 
-// LaneModesForDomain 返回域 lane 集的副本（chat=对话 13 值锚集、video=视频
-// 四值、audio=语音合成+长音频四值+短转写+实时会话、image=images_json）；
-// 未知域返回 nil。迁移命令用它把声明集裁剪至落域 lane 内，网关侧允许集另经
-// 供应商矩阵与写侧词表求交（在 accountscore，本包不复制那份语义）。
+// LaneModesForDomain 返回域 lane 集的副本（chat=对话 12 值锚集、video=视频
+// 四值、audio=语音合成+长音频四值+短转写+实时会话、image=images_json、
+// embedding/rerank/moderation=各自单一工具 mode）；未知域返回 nil。迁移命令
+// 用它把声明集裁剪至落域 lane 内，网关侧允许集另经供应商矩阵与写侧词表求交
+// （在 accountscore，本包不复制那份语义）。
 func LaneModesForDomain(d Domain) []string {
 	switch d {
 	case DomainChat:
@@ -169,6 +198,12 @@ func LaneModesForDomain(d Domain) []string {
 		return append([]string{}, audioModes...)
 	case DomainImage:
 		return append([]string{}, imageModes...)
+	case DomainEmbedding:
+		return append([]string{}, embeddingModes...)
+	case DomainRerank:
+		return append([]string{}, rerankModes...)
+	case DomainModeration:
+		return append([]string{}, moderationModes...)
 	}
 	return nil
 }

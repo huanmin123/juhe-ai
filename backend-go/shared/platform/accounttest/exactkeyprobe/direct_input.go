@@ -437,14 +437,16 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 		if accountType == "oauth" {
 			return mode == "responses_json" || mode == "responses_sse"
 		}
-		return mode == "chat_json" || mode == "chat_sse" || mode == "responses_json" || mode == "responses_sse" || mode == "images_json"
+		return mode == "chat_json" || mode == "chat_sse" || mode == "responses_json" || mode == "responses_sse" ||
+			mode == "images_json" || mode == "embed_content" || mode == "moderation_json"
 	}
 	switch profile {
 	case "profile_gpt_openai_v1":
 		if provider != "gpt" {
 			return false
 		}
-		return openAIProfileMode(accountType, mode, true) || mode == "video_create" || mode == "audio_speech" || mode == "audio_job_get"
+		return openAIProfileMode(accountType, mode, true) || mode == "video_create" || mode == "audio_speech" ||
+			mode == "audio_job_get" || mode == "embed_content" || mode == "moderation_json"
 	case "profile_xai_openai_v1":
 		if provider != "xai" {
 			return false
@@ -461,7 +463,9 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 	case "profile_volcengine_openspeech_v1":
 		return provider == "volcengine" && accountType == "api_key" && mode == "audio_speech"
 	case "profile_qwen_openai_v1":
-		return provider == "qwen" && accountType == "api_key" && (mode == "video_create" || mode == "images_json" || mode == "audio_job_get")
+		return provider == "qwen" && accountType == "api_key" &&
+			(mode == "video_create" || mode == "images_json" || mode == "audio_job_get" ||
+				mode == "embed_content" || mode == "rerank_json")
 	case "profile_gemini_openai_chat_v1beta":
 		return provider == "gemini" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
 	case "profile_anthropic_anthropic_v1":

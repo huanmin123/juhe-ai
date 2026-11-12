@@ -235,6 +235,10 @@ type StreamPipeOptions struct {
 	PreCommitReplayWindowDisabled bool
 	// NowMs 注入时钟（Date.now 等价物）；nil 用真实时间。
 	NowMs func() int64
+	// ClientSignal 是原始客户端请求的 Done 通道：上游 Signal 已脱钩，客户端
+	// 断开不再通过取消上游体现；管道用它在断连瞬间启动 30s drain 预算（无需
+	// 等到首次写失败）。nil = 未装配（测试 / 非网关调用）。
+	ClientSignal interface{ Done() <-chan struct{} }
 }
 
 // PipeUpstreamStreamInput 对齐 pipeUpstreamStream 的位置参数。

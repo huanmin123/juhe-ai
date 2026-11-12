@@ -167,7 +167,6 @@ func TestWAOpenAIDriverBuildUpstreamRequestBridgeRetired(t *testing.T) {
 	}
 }
 
-
 // 模型映射请求体约束：必须为 JSON 对象。
 func TestWABuildModelMappedJSONBody(t *testing.T) {
 	root := mustParseJSON(t, `{"model":"a","x":1}`)

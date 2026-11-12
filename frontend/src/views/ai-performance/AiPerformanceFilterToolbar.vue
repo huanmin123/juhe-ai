@@ -179,7 +179,7 @@ type AiPerformanceAccountFilterItem = {
   isDefault: boolean
 }
 
-// 能力域筛选值：'all' 哨兵 = 全部（不下发 domain），其余为四枚举域。
+// 能力域筛选值：'all' 哨兵 = 全部（不下发 domain），其余为场景枚举域。
 export type CapabilityDomainFilterValue = AccountCapabilityDomain | 'all'
 
 const capabilityDomainOptions: Array<{ label: string; value: CapabilityDomainFilterValue }> = [

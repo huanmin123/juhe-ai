@@ -68,7 +68,7 @@ func (c *gatewayChain) serveMediaJobsCenterContent(w http.ResponseWriter, r *htt
 		writeMediaJobsCenterError(w, http.StatusServiceUnavailable, "媒体任务账户不可用（已删除或禁用）")
 		return
 	}
-	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode)
+	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode, record.RequestSnapshot.Model)
 	if adapter == nil {
 		writeMediaJobsCenterError(w, http.StatusServiceUnavailable, "该任务种类暂不支持内容获取")
 		return

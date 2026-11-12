@@ -97,7 +97,7 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 # revision 23 会在同一 upgrade 停写窗口 DROP usage shard 目录四表（不可逆）；
 # 执行前用 psql 记录四表 count(*) 并确认备份可恢复。
 # revision 24 同窗口把 23 张小表 58 个时间列迁 timestamptz（毫秒截断不可逆）；
-# revision 25 继续把 16 张 CRUD 表 44 个时间列迁 timestamptz，revision 26 把 24 张 accounts 聚合/投影表 73 个时间列迁 timestamptz，revision 27 把 17 张 dataset/jobs/taskruns 表 40 个时间列迁 timestamptz（均不可逆）；
+# revision 25 继续把 16 张 CRUD 表 44 个时间列迁 timestamptz，revision 26 把 24 张 accounts 聚合/投影表 73 个时间列迁 timestamptz，revision 27 把 17 张 dataset/jobs/taskruns 表 40 个时间列迁 timestamptz，revision 28 把 53 张统计表 144 列迁 timestamptz/date/timestamp(0)（均不可逆）；
 # 先跑 migrate-instant-columns --scope phase2 核对预检，失败会阻断整批。
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-group-policy --dry-run \
   --manifest-out /opt/juhe-ai/data/group-policy-$(date +%Y%m%d-%H%M).json \

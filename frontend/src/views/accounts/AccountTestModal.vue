@@ -170,6 +170,12 @@ const connectivityHint = computed(() => {
       return '只验证 API Key 与 Base URL 连通性：发送空音频请求，不生成真实音频。'
     case 'image':
       return '只验证 API Key 与 Base URL 连通性：发送空 prompt，不生成真实图片。'
+    case 'embedding':
+      return '只验证 API Key 与 Base URL 连通性：发送空向量输入，不产生真实向量结果。'
+    case 'rerank':
+      return '只验证 API Key 与 Base URL 连通性：发送空查询/文档，不产生真实重排结果。'
+    case 'moderation':
+      return '只验证 API Key 与 Base URL 连通性：发送空审核输入，不产生真实审核结果。'
     default:
       return '只验证 API Key 与 Base URL 连通性，不选择模型或协议。'
   }

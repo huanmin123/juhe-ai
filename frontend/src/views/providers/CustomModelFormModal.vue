@@ -260,9 +260,12 @@ import {
   buildCustomModelPayload as buildCustomModelUpsertPayload,
   canManageModelPricesForView,
   clearCustomModelGptCapabilities,
-  clearCustomModelPricesOutsideCategory,
+  clearCustomModelPricesForMode,
   createCustomModelFormFromPricing,
+  customModelUtilityProtocol,
+  customModelVisiblePriceFields,
   emptyCustomModelForm,
+  isCustomModelUtilityMode,
   normalizeCustomModelRequestCapabilities,
   reconcileCustomModelServiceTierPrices,
   type CustomModelForm
@@ -338,7 +341,11 @@ const systemAccountFilterValue = computed(() => (props.systemAccountFilter ?? ''
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑内置模型' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const customModelTargetProviderCode = computed(() => editingCustomModelProviderCode.value ?? targetProvider.value?.code ?? '')
-const customModelDirectPriceFields = computed(() => customModelPriceFields(customModelTargetProviderCode.value, customModelPricingCategory.value))
+const customModelDirectPriceFields = computed(() => {
+  const visible = new Set(customModelVisiblePriceFields(customModelForm.mode, customModelPricingCategory.value))
+  return customModelPriceFields(customModelTargetProviderCode.value, customModelPricingCategory.value)
+    .filter((field) => visible.has(field.key))
+})
 const customModelTierPriceFieldOptions = computed(() => customModelTierPriceFields(customModelTargetProviderCode.value))
 const customModelPriceSectionTitle = computed(() => {
   if (customModelPricingCategory.value === 'image') return '图像计费 · USD'
@@ -357,14 +364,18 @@ const customModelCapabilitySelectMode = computed(() => customModelTargetProvider
 const customModelDefaultReasoningEffortOptions = computed(() => customModelReasoningEffortOptions.value.filter((option) => (
   customModelForm.supportedReasoningEfforts.includes(option.value)
 )))
-const showCustomModelServiceTiers = computed(() => customModelPricingCategory.value === 'text' && customModelServiceTierOptions.value.length > 0)
-const showCustomModelReasoningEfforts = computed(() => customModelPricingCategory.value === 'text' && customModelReasoningEffortOptions.value.length > 0)
+const showCustomModelServiceTiers = computed(() => customModelPricingCategory.value === 'text' &&
+  !isCustomModelUtilityMode(customModelForm.mode) && customModelServiceTierOptions.value.length > 0)
+const showCustomModelReasoningEfforts = computed(() => customModelPricingCategory.value === 'text' &&
+  !isCustomModelUtilityMode(customModelForm.mode) && customModelReasoningEffortOptions.value.length > 0)
 const showCustomModelRequestCapabilities = computed(() => showCustomModelServiceTiers.value || showCustomModelReasoningEfforts.value)
 const customModelStatusOptions = computed(() => {
   const options = availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value)
   return editingBuiltInModel.value ? options.filter((option) => option.value !== 'draft') : options
 })
 const customModelApiProtocolOptions = computed(() => {
+  const utilityProtocol = customModelUtilityProtocol(customModelForm.mode)
+  if (utilityProtocol) return apiProtocolOptions.filter((option) => option.value === utilityProtocol)
   const supported = new Set(customModelCategoryRecords.value.flatMap((item) => item.supportedApiProtocols ?? []))
   for (const protocol of defaultProtocolsForCurrentProviderCategory(customModelPricingCategory.value)) supported.add(protocol)
   return apiProtocolOptions.filter((option) => supported.has(option.value))
@@ -384,12 +395,16 @@ const selectedModelOwnerLabel = computed(() => {
   return account?.displayName || principalLabelForId('system_account', systemAccountId) || '所选用户'
 })
 
-const configurationTemplateOptions = computed(() => buildConfigurationTemplateOptions(
-  props.models,
-  customModelForm.model,
-  customModelPricingCategory.value,
-  customModelForm.scope
-))
+const configurationTemplateOptions = computed(() => {
+  // 工具用途没有对话模板可套：套文本模板会把 mode/协议/服务等级整体改写。
+  if (isCustomModelUtilityMode(customModelForm.mode)) return []
+  return buildConfigurationTemplateOptions(
+    props.models,
+    customModelForm.model,
+    customModelPricingCategory.value,
+    customModelForm.scope
+  )
+})
 
 /** 公开入口：父级持 ref 调用打开创建/编辑表单；打开本身经 update:open 契约化。 */
 defineExpose({
@@ -407,8 +422,14 @@ function openCreate(
   customModelForm.scope = options.scope ?? 'personal'
   customModelForm.status = 'active'
   customModelForm.mode = options.mode ?? 'text'
-  customModelForm.supportedApiProtocols = defaultProtocolsForCurrentProviderCategory(customModelForm.mode)
-  applyDefaultConfigurationTemplate()
+  const utilityProtocol = customModelUtilityProtocol(customModelForm.mode)
+  if (utilityProtocol) {
+    customModelForm.supportedApiProtocols = [utilityProtocol]
+    clearCustomModelPricesForMode(customModelForm, categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
+  } else {
+    customModelForm.supportedApiProtocols = defaultProtocolsForCurrentProviderCategory(categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
+    applyDefaultConfigurationTemplate()
+  }
   emit('update:open', true)
 }
 
@@ -580,10 +601,20 @@ function handleCustomModelServiceTiersChange(): void {
 }
 
 function handleCustomModelModeChange() {
+  const utilityProtocol = customModelUtilityProtocol(customModelForm.mode)
+  if (utilityProtocol) {
+    // 工具用途：协议固定为同族工具协议，不套文本模板、不继承 chat 能力/价格。
+    customModelForm.supportedApiProtocols = [utilityProtocol]
+    customModelForm.configurationTemplateId = undefined
+    clearCustomModelPricesForMode(customModelForm, customModelPricingCategory.value)
+    clearCustomModelGptCapabilities(customModelForm)
+    customModelForm.serviceTierPrices = {}
+    return
+  }
   const category = customModelPricingCategory.value
   customModelForm.supportedApiProtocols = defaultProtocolsForCurrentProviderCategory(category)
   customModelForm.configurationTemplateId = undefined
-  clearCustomModelPricesOutsideCategory(customModelForm, category)
+  clearCustomModelPricesForMode(customModelForm, category)
   if (!showCustomModelRequestCapabilities.value) {
     clearCustomModelGptCapabilities(customModelForm)
   }
@@ -603,6 +634,7 @@ function handleConfigurationTemplateChange(id?: string) {
 }
 
 function applyDefaultConfigurationTemplate(): void {
+  if (isCustomModelUtilityMode(customModelForm.mode)) return
   const id = configurationTemplateOptions.value[0]?.value
   if (id) handleConfigurationTemplateChange(id)
 }

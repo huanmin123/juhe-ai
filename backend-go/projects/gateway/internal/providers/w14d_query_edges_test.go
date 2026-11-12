@@ -336,7 +336,7 @@ func TestW14dNormalizeCustomModelCapabilitiesDirect(t *testing.T) {
 		input    customModelCapabilityInput
 		wantErr  string
 	}{
-		{"invalid mode", "gpt", customModelCapabilityInput{Mode: stringPtr("realtime")}, "当前只支持文本、图像、音频和视频自定义模型"},
+		{"invalid mode", "gpt", customModelCapabilityInput{Mode: stringPtr("realtime")}, "当前只支持文本、图像、音频、视频、向量、重排和安全自定义模型"},
 		{"video with tiers", "gpt", customModelCapabilityInput{Mode: stringPtr("video"), SupportedServiceTiers: []string{"priority"}}, "只有文本自定义模型支持服务等级和思考能力配置"},
 		{"bad tier token", "gpt", customModelCapabilityInput{SupportedServiceTiers: []string{"!!"}}, "服务等级包含不支持的值"},
 		{"bad effort token", "gpt", customModelCapabilityInput{SupportedReasoningEfforts: []string{"!"}}, "思考级别包含不支持的值"},

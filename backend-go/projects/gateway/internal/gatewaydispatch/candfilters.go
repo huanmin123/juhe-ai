@@ -424,10 +424,17 @@ func mediaRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {
 	}
 	path = stripV1Prefix(path)
 	switch path {
-	case "/videos":
+	case "/videos", "/video/generations":
+		// /video/generations 是 2026-11-12 起的对外 New API 创建路径（旧
+		// /v1/videos 已 404，词表保留供内部判定复用）。
 		return gatewayopenai.FamilyVideoGeneration
 	case "/audio/speech":
 		return gatewayopenai.FamilyTts
+	case "/tasks/audio", "/audio/jobs":
+		// New API 通用任务面长音频创建（2026-11-12；旧 /audio/jobs 已 404）。
+		// 长转写不设模型映射族（hybrid 不承接 audio jobs）：显式识别为媒体
+		// 创建形态但不归族——不得回落 chat_completions 让对话映射误命中。
+		return ""
 	}
 	return ""
 }

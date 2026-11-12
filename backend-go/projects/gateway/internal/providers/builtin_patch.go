@@ -280,7 +280,7 @@ func (s *Store) builtinPatchAssignments(current *ModelCatalogItem, patch []built
 // 投影为 endpoint modes：协议非空走协议映射（未知协议容忍跳过——管理面内置
 // 补丁的历史值域含 completions 等无 mode 映射的遗留声明，与 maintenance 种子
 // 的空集映射同口径），协议为空回退目录 mode 缺省集
-//（catalogModeFilterExpansion）。
+// （catalogModeFilterExpansion）。
 func forwardBuiltinEndpointModes(mode *string, protocols []string) []string {
 	seen := map[string]bool{}
 	modes := []string{}

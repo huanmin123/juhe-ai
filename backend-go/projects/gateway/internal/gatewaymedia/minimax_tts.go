@@ -34,7 +34,7 @@ const (
 var minimaxSpeechOutputFormats = []string{"mp3", "pcm", "flac", "wav"}
 
 // minimaxSpeechContentTypeOf 按 response_format 推导下游 content-type
-//（minimax 响应对象不回显 mime 信息，契约 §8.2；rate 按请求面默认采样率
+// （minimax 响应对象不回显 mime 信息，契约 §8.2；rate 按请求面默认采样率
 // 32000 声明 pcm 形态）。空 format 是 OpenAI 默认 mp3 语义。
 func minimaxSpeechContentTypeOf(format string) string {
 	switch strings.TrimSpace(format) {
@@ -117,24 +117,24 @@ func (a minimaxSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte, er
 
 // minimaxSpeechResponseBody 是 §8.2 响应的最小消费面：data.audio（hex
 // 编码音频）、base_resp（错误信封，status_code!=0 即失败）、extra_info
-//（usage_characters 是字符计量上游回报，由链上计量分支消费）。
+// （usage_characters 是字符计量上游回报，由链上计量分支消费）。
 type minimaxSpeechResponseBody struct {
 	Data struct {
 		Audio  string `json:"audio"`
 		Status int    `json:"status"`
 	} `json:"data"`
-	BaseResp   *minimaxBaseResp `json:"base_resp"`
+	BaseResp  *minimaxBaseResp `json:"base_resp"`
 	ExtraInfo *struct {
-		AudioLength      float64 `json:"audio_length"`
-		UsageCharacters  float64 `json:"usage_characters"`
-		WordSize         float64 `json:"word_size"`
-		AudioSampleRate  float64 `json:"audio_sampling_rate"`
+		AudioLength     float64 `json:"audio_length"`
+		UsageCharacters float64 `json:"usage_characters"`
+		WordSize        float64 `json:"word_size"`
+		AudioSampleRate float64 `json:"audio_sampling_rate"`
 	} `json:"extra_info"`
 }
 
 // TransformResponse 解码 data.audio 的 hex 载荷（契约 §8.2：hex→bytes，
 // 不得把 hex 字符串当音频下发）。contentType 按请求 response_format 推导
-//（minimax 响应不回显 mime，minimaxSpeechContentTypeOf；request 缺省按
+// （minimax 响应不回显 mime，minimaxSpeechContentTypeOf；request 缺省按
 // mp3 语义）。base_resp.status_code != 0 → 上游错误上抛（不猜测音频可
 // 用性）。
 func (a minimaxSpeechAdapter) TransformResponse(upstreamBody []byte, request SpeechRequest) ([]byte, string, error) {

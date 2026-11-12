@@ -24,7 +24,10 @@ import {
   ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION,
   DOMAIN_ENDPOINT_MODES_AUDIO,
   DOMAIN_ENDPOINT_MODES_CHAT,
+  DOMAIN_ENDPOINT_MODES_EMBEDDING,
   DOMAIN_ENDPOINT_MODES_IMAGE,
+  DOMAIN_ENDPOINT_MODES_MODERATION,
+  DOMAIN_ENDPOINT_MODES_RERANK,
   DOMAIN_ENDPOINT_MODES_VIDEO,
   DOMAIN_MODEL_MODES,
   accountCapabilityDomainLabel,
@@ -42,8 +45,8 @@ import { FALLBACK_PROVIDERS } from './accountOptions'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 
 describe('能力域枚举与标签', () => {
-  it('域枚举固定为四值，顺序与 CHECK 约束一致', () => {
-    expect([...ACCOUNT_CAPABILITY_DOMAINS]).toEqual(['chat', 'video', 'audio', 'image'])
+  it('域枚举固定为七值（B7 工具场景），顺序稳定', () => {
+    expect([...ACCOUNT_CAPABILITY_DOMAINS]).toEqual(['chat', 'video', 'audio', 'image', 'embedding', 'rerank', 'moderation'])
   })
 
   it('中文标签覆盖全部域', () => {
@@ -51,7 +54,10 @@ describe('能力域枚举与标签', () => {
       chat: '对话',
       video: '视频',
       audio: '音频',
-      image: '图像'
+      image: '图像',
+      embedding: '向量',
+      rerank: '重排',
+      moderation: '安全'
     })
     for (const domain of ACCOUNT_CAPABILITY_DOMAINS) {
       expect(accountCapabilityDomainLabel(domain)).toBe(ACCOUNT_CAPABILITY_DOMAIN_LABELS[domain])
@@ -64,7 +70,7 @@ describe('能力域枚举与标签', () => {
 })
 
 describe('对话 modes 集合完整性', () => {
-  it('锚集合恰为 13 值（v8-A 移出三项）且顺序与计划锚定义一致', () => {
+  it('锚集合恰为 12 值（B7 移出 embed_content）且顺序与计划锚定义一致', () => {
     expect([...DOMAIN_ENDPOINT_MODES_CHAT]).toEqual([
       'chat_json',
       'chat_sse',
@@ -77,7 +83,6 @@ describe('对话 modes 集合完整性', () => {
       'interactions_json',
       'interactions_sse',
       'count_tokens',
-      'embed_content',
       'message_token_counting'
     ])
   })
@@ -107,10 +112,17 @@ describe('对话 modes 集合完整性', () => {
     expect([...DOMAIN_ENDPOINT_MODES_IMAGE]).toEqual(['images_json'])
   })
 
-  it('对话锚集合与媒体触发集合两两不相交', () => {
+  it('对话锚集合与媒体/工具触发集合两两不相交', () => {
     const chatModes = new Set<string>(DOMAIN_ENDPOINT_MODES_CHAT)
-    for (const mode of [...DOMAIN_ENDPOINT_MODES_VIDEO, ...DOMAIN_ENDPOINT_MODES_AUDIO, ...DOMAIN_ENDPOINT_MODES_IMAGE]) {
-      expect(chatModes.has(mode), `媒体触发值 ${mode} 不得出现在对话 modes 锚集合`).toBe(false)
+    for (const mode of [
+      ...DOMAIN_ENDPOINT_MODES_VIDEO,
+      ...DOMAIN_ENDPOINT_MODES_AUDIO,
+      ...DOMAIN_ENDPOINT_MODES_IMAGE,
+      ...DOMAIN_ENDPOINT_MODES_EMBEDDING,
+      ...DOMAIN_ENDPOINT_MODES_RERANK,
+      ...DOMAIN_ENDPOINT_MODES_MODERATION
+    ]) {
+      expect(chatModes.has(mode), `媒体/工具触发值 ${mode} 不得出现在对话 modes 锚集合`).toBe(false)
     }
   })
 
@@ -138,8 +150,28 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
       expected: 'chat'
     },
     {
-      name: '对话辅助 modes：message_token_counting/count_tokens/embed_content 属对话锚集合',
-      modes: ['count_tokens', 'embed_content', 'message_token_counting'],
+      name: '对话辅助 modes：message_token_counting/count_tokens 属对话锚集合',
+      modes: ['count_tokens', 'message_token_counting'],
+      expected: 'chat'
+    },
+    {
+      name: 'B7：embed_content 单值归向量场景',
+      modes: ['embed_content'],
+      expected: 'embedding'
+    },
+    {
+      name: 'B7：rerank_json 单值归重排场景',
+      modes: ['rerank_json'],
+      expected: 'rerank'
+    },
+    {
+      name: 'B7：moderation_json 单值归安全场景',
+      modes: ['moderation_json'],
+      expected: 'moderation'
+    },
+    {
+      name: 'B7：对话 + embed_content 混合仍归 chat（含对话 modes 即停）',
+      modes: ['chat_json', 'embed_content'],
       expected: 'chat'
     },
     {
@@ -298,14 +330,13 @@ describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 �
     ])
   })
 
-  it('gemini native：generateContent/interactions/countTokens/embedContent，images_json 不在词表', () => {
+  it('gemini native chat：B7 起 embed_content 归向量场景，不在 chat 允许集', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: geminiNativeProfile, accountType: 'api_key' })).toEqual([
       'generate_content_json',
       'generate_content_sse',
       'interactions_json',
       'interactions_sse',
-      'count_tokens',
-      'embed_content'
+      'count_tokens'
     ])
   })
 
@@ -397,8 +428,13 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
       { profile: minimaxProfile, type: 'api_key' }
     ]
     for (const item of cases) {
+      // B7 起 chat 域锚集合不含 embed_content：默认集先与域允许集求交
+      // （与后端 DefaultEndpointModesForDomain chat 分支同口径）。
+      const allowed = allowedEndpointModesFor({ capabilityDomain: 'chat', profile: item.profile, accountType: item.type })
+      const expected = defaultEndpointModesForAccount({ profile: item.profile, type: item.type })
+        .filter((mode) => allowed.includes(mode))
       expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: item.profile, type: item.type }))
-        .toEqual(defaultEndpointModesForAccount({ profile: item.profile, type: item.type }))
+        .toEqual(expected.length ? expected : allowed.filter((mode) => mode === 'chat_json' || mode === 'chat_sse'))
     }
   })
 
@@ -446,6 +482,9 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
     // qwen 长音频默认集首值是 audio_job_create（非检查形态词表值），不得作为记录值兜底。
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).not.toBe('audio_job_create')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'video' })).toBe('video_create')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'embedding' })).toBe('embed_content')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'rerank' })).toBe('rerank_json')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'moderation' })).toBe('moderation_json')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'chat' })).toBe('chat_sse')
   })
 
@@ -456,28 +495,34 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
     expect(defaultStatusForCapabilityDomain('image')).toBe('pending_test')
   })
 
-  it('媒体域判定与目录协议 token 词表', () => {
+  it('媒体域判定与目录协议 token 词表（含 B7 工具场景）', () => {
     expect(capabilityDomainIsMedia('chat')).toBe(false)
     expect(capabilityDomainIsMedia(undefined)).toBe(false)
-    for (const domain of ['video', 'audio', 'image'] as const) {
+    for (const domain of ['video', 'audio', 'image', 'embedding', 'rerank', 'moderation'] as const) {
       expect(capabilityDomainIsMedia(domain)).toBe(true)
     }
     expect(mediaDomainModelProtocolTokens('video')).toEqual(['video'])
     expect(mediaDomainModelProtocolTokens('audio')).toEqual(['audio_speech', 'audio_transcription', 'realtime'])
     expect(mediaDomainModelProtocolTokens('image')).toEqual(['images'])
+    expect(mediaDomainModelProtocolTokens('embedding')).toEqual(['embed_content'])
+    expect(mediaDomainModelProtocolTokens('rerank')).toEqual(['rerank'])
+    expect(mediaDomainModelProtocolTokens('moderation')).toEqual(['moderation'])
     expect(mediaDomainModelProtocolTokens('chat')).toEqual([])
   })
 
-  it('v8-C 域→目录 mode 白名单：四域取值与目录词表六值对齐，embedding 不属于任何域', () => {
+  it('v8-C/B7 域→目录 mode 白名单：七域取值与目录词表八值对齐', () => {
     expect(DOMAIN_MODEL_MODES.chat).toEqual(['chat', 'responses'])
     expect(DOMAIN_MODEL_MODES.video).toEqual(['video'])
     expect(DOMAIN_MODEL_MODES.audio).toEqual(['audio'])
     expect(DOMAIN_MODEL_MODES.image).toEqual(['image_generation'])
-    // 四域 mode 值互不相交，且全部落在目录 mode 词表内（embedding 仅目录存在，
-    // 不放行给任何账户域）；词表与服务端 ProviderCatalogModeValues 同源。
+    expect(DOMAIN_MODEL_MODES.embedding).toEqual(['embedding'])
+    expect(DOMAIN_MODEL_MODES.rerank).toEqual(['rerank'])
+    expect(DOMAIN_MODEL_MODES.moderation).toEqual(['moderation'])
+    // 七域 mode 值互不相交，且全部落在目录 mode 词表内；词表与服务端
+    // ProviderCatalogModeValues 同源。
     const domainModes = ACCOUNT_CAPABILITY_DOMAINS.flatMap((domain) => [...DOMAIN_MODEL_MODES[domain]])
     expect(new Set(domainModes).size).toBe(domainModes.length)
-    const catalogModeValues = ['chat', 'responses', 'embedding', 'audio', 'video', 'image_generation']
+    const catalogModeValues = ['chat', 'responses', 'embedding', 'audio', 'video', 'image_generation', 'rerank', 'moderation']
     for (const mode of domainModes) {
       expect(catalogModeValues).toContain(mode)
     }
@@ -604,5 +649,20 @@ describe('能力目录优先（B1.3）', () => {
     } finally {
       setAccountCapabilityCatalog(null)
     }
+  })
+})
+
+describe('B7 工具场景账户类型矩阵', () => {
+  it('gpt 向量/安全与 qwen 向量/重排只开放 api_key 账户', () => {
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'embedding', providerCode: 'gpt' })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'moderation', providerCode: 'gpt' })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'embedding', providerCode: 'qwen' })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'rerank', providerCode: 'qwen' })).toEqual(['api_key'])
+  })
+
+  it('厂商与场景不匹配时不返回可创建账户类型', () => {
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'rerank', providerCode: 'gpt' })).toEqual([])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'moderation', providerCode: 'qwen' })).toEqual([])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'embedding', providerCode: 'deepseek' })).toEqual([])
   })
 })

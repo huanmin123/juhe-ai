@@ -15,7 +15,10 @@
 package providers
 
 import (
+	"math"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
@@ -35,10 +38,18 @@ type staticPricingSnapshot struct {
 	SourcePricingNote               string
 	// 媒体单价四维（目录表无列，读取链从静态定价表透传供目录展示；计费
 	// 真实读取处在 internal/pricing PriceSet，两者同源）：
-	VideoOutputUsdPerSecond *float64
-	VideoOutputUsdPerCall   *float64
-	TtsInputUsdPer1MChars   *float64
-	AudioInputUsdPerSecond  *float64
+	OutputUsdPerImage                        *float64
+	OutputUsdPerImageTiers                   []pricing.ImagePriceTier
+	InputUsdPerImage                         *float64
+	InputImageFreeCount                      int64
+	VideoOutputUsdPerSecond                  *float64
+	VideoOutputUsdPerSecondByResolution      map[string]float64
+	VideoOutputUsdPerCall                    *float64
+	VideoOutputUsdPerCallBySeconds           map[string]float64
+	VideoOutputUsdPerCallByResolutionSeconds map[string]float64
+	TtsInputUsdPer1MChars                    *float64
+	TtsOutputUsdPerCall                      *float64
+	AudioInputUsdPerSecond                   *float64
 }
 
 // staticPricingFor is the internal/pricing seam. nil result = the static
@@ -50,18 +61,25 @@ func staticPricingFor(providerCode, model string) *staticPricingSnapshot {
 		return nil
 	}
 	snapshot := &staticPricingSnapshot{
-		InputModalities:          found.InputModalities,
-		OutputModalities:         found.OutputModalities,
-		SupportedToolsByProtocol: pricing.CopyToolsByProtocol(found.SupportedToolsByProtocol),
-		CachedImageInputUsdPer1M: found.CachedImageInputUsdPer1M,
-		SourcePricingCurrency:    found.SourcePricingCurrency,
-		SourceExchangeRateToUsd:  found.SourceExchangeRateToUsd,
-		SourceExchangeRateDate:   found.SourceExchangeRateDate,
-		SourcePricingNote:        found.SourcePricingNote,
-		VideoOutputUsdPerSecond:  found.VideoOutputUsdPerSecond,
-		VideoOutputUsdPerCall:    found.VideoOutputUsdPerCall,
-		TtsInputUsdPer1MChars:    found.TtsInputUsdPer1MChars,
-		AudioInputUsdPerSecond:   found.AudioInputUsdPerSecond,
+		InputModalities:                          found.InputModalities,
+		OutputModalities:                         found.OutputModalities,
+		SupportedToolsByProtocol:                 pricing.CopyToolsByProtocol(found.SupportedToolsByProtocol),
+		CachedImageInputUsdPer1M:                 found.CachedImageInputUsdPer1M,
+		SourcePricingCurrency:                    found.SourcePricingCurrency,
+		SourceExchangeRateToUsd:                  found.SourceExchangeRateToUsd,
+		SourceExchangeRateDate:                   found.SourceExchangeRateDate,
+		SourcePricingNote:                        found.SourcePricingNote,
+		VideoOutputUsdPerSecond:                  found.VideoOutputUsdPerSecond,
+		VideoOutputUsdPerSecondByResolution:      found.VideoOutputUsdPerSecondByResolution,
+		VideoOutputUsdPerCall:                    found.VideoOutputUsdPerCall,
+		VideoOutputUsdPerCallBySeconds:           found.VideoOutputUsdPerCallBySeconds,
+		VideoOutputUsdPerCallByResolutionSeconds: found.VideoOutputUsdPerCallByResolutionSeconds,
+		OutputUsdPerImage:                        found.OutputUsdPerImage,
+		OutputUsdPerImageTiers:                   found.OutputUsdPerImageTiers,
+		InputUsdPerImage:                         found.InputUsdPerImage,
+		InputImageFreeCount:                      found.InputImageFreeCount,
+		TtsInputUsdPer1MChars:                    found.TtsInputUsdPer1MChars,
+		AudioInputUsdPerSecond:                   found.AudioInputUsdPerSecond,
 	}
 	if snapshot.SupportedToolsByProtocol == nil {
 		snapshot.SupportedToolsByProtocol = map[string][]string{}
@@ -92,11 +110,19 @@ type BuiltInStaticDerivedCapabilities struct {
 	SourceExchangeRateDate   string
 	SourcePricingNote        string
 	// 媒体单价四维（同 staticPricingSnapshot，目录表无列的透传展示）。
-	VideoOutputUsdPerSecond *float64
-	VideoOutputUsdPerCall   *float64
-	TtsInputUsdPer1MChars   *float64
-	AudioInputUsdPerSecond  *float64
-	GenerationParameterCapabilities map[string]any
+	OutputUsdPerImage                        *float64
+	OutputUsdPerImageTiers                   []pricing.ImagePriceTier
+	InputUsdPerImage                         *float64
+	InputImageFreeCount                      int64
+	VideoOutputUsdPerSecond                  *float64
+	VideoOutputUsdPerSecondByResolution      map[string]float64
+	VideoOutputUsdPerCall                    *float64
+	VideoOutputUsdPerCallBySeconds           map[string]float64
+	VideoOutputUsdPerCallByResolutionSeconds map[string]float64
+	TtsInputUsdPer1MChars                    *float64
+	TtsOutputUsdPerCall                      *float64
+	AudioInputUsdPerSecond                   *float64
+	GenerationParameterCapabilities          map[string]any
 }
 
 // ResolveBuiltInStaticDerivedCapabilities ports the toBuiltInCatalogItem
@@ -130,9 +156,17 @@ func ResolveBuiltInStaticDerivedCapabilities(providerCode, model string, maxOutp
 			resolved.SourceExchangeRateToUsd = static.SourceExchangeRateToUsd
 			resolved.SourceExchangeRateDate = static.SourceExchangeRateDate
 			resolved.SourcePricingNote = static.SourcePricingNote
+			resolved.OutputUsdPerImage = static.OutputUsdPerImage
+			resolved.OutputUsdPerImageTiers = static.OutputUsdPerImageTiers
+			resolved.InputUsdPerImage = static.InputUsdPerImage
+			resolved.InputImageFreeCount = static.InputImageFreeCount
 			resolved.VideoOutputUsdPerSecond = static.VideoOutputUsdPerSecond
+			resolved.VideoOutputUsdPerSecondByResolution = static.VideoOutputUsdPerSecondByResolution
 			resolved.VideoOutputUsdPerCall = static.VideoOutputUsdPerCall
+			resolved.VideoOutputUsdPerCallBySeconds = static.VideoOutputUsdPerCallBySeconds
+			resolved.VideoOutputUsdPerCallByResolutionSeconds = static.VideoOutputUsdPerCallByResolutionSeconds
 			resolved.TtsInputUsdPer1MChars = static.TtsInputUsdPer1MChars
+			resolved.TtsOutputUsdPerCall = static.TtsOutputUsdPerCall
 			resolved.AudioInputUsdPerSecond = static.AudioInputUsdPerSecond
 		}
 	}
@@ -371,15 +405,54 @@ func buildProviderCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection
 // 不再因缺列而在目录页无价格信息。unknown provider 路径与各具名投影
 // 出口都应经过本函数（具名投影各自收尾调用）。
 func appendStaticMediaPriceSections(sections []catalogDisplaySection, item *ModelCatalogItem) []catalogDisplaySection {
-	entries := make([]catalogDisplayItem, 0, 4)
-	if item.VideoOutputUsdPerSecond != nil {
+	entries := make([]catalogDisplayItem, 0, 8)
+	// 分辨率秒价档（2026-11-12 档位批）：目录行带分档表时逐档展示，主档不再
+	// 重复；无分档表时才回退单条主档价。档位顺序按官方分辨率从低到高。
+	if len(item.VideoOutputUsdPerSecondByResolution) > 0 {
+		for _, resolution := range sortedResolutionKeys(item.VideoOutputUsdPerSecondByResolution) {
+			price := item.VideoOutputUsdPerSecondByResolution[resolution]
+			entries = append(entries, catalogDisplayItem{
+				Key:    "video_per_second_" + resolution,
+				Label:  "视频 " + strings.ToUpper(resolution) + "（每秒）",
+				Value:  "$" + trimTrailingZeros(fixedNumber(price, 4)) + "/s",
+				Format: "text",
+			})
+		}
+	} else if item.VideoOutputUsdPerSecond != nil {
 		entries = append(entries, catalogDisplayItem{Key: "video_per_second", Label: "视频（每秒）", Value: "$" + trimTrailingZeros(fixedNumber(*item.VideoOutputUsdPerSecond, 4)) + "/s", Format: "text"})
 	}
-	if item.VideoOutputUsdPerCall != nil {
+	// 按次时长档（2026-11-12 档位批）：按秒数从低到高逐档展示。
+	// 2026-11-13 分辨率×时长组合档批：有组合档时优先逐档展示（如
+	// 「视频 768P 6s」「视频 1080P 6s」），不再重复展示纯秒数档。
+	if len(item.VideoOutputUsdPerCallByResolutionSeconds) > 0 {
+		for _, key := range sortedResolutionSecondsKeys(item.VideoOutputUsdPerCallByResolutionSeconds) {
+			resolution, seconds, _ := strings.Cut(key, "-")
+			price := item.VideoOutputUsdPerCallByResolutionSeconds[key]
+			entries = append(entries, catalogDisplayItem{
+				Key:    "video_per_call_" + key,
+				Label:  "视频 " + strings.ToUpper(resolution) + " " + seconds + "s（每次）",
+				Value:  "$" + trimTrailingZeros(fixedNumber(price, 4)) + "/video",
+				Format: "text",
+			})
+		}
+	} else if len(item.VideoOutputUsdPerCallBySeconds) > 0 {
+		for _, seconds := range sortedSecondsKeys(item.VideoOutputUsdPerCallBySeconds) {
+			price := item.VideoOutputUsdPerCallBySeconds[seconds]
+			entries = append(entries, catalogDisplayItem{
+				Key:    "video_per_call_" + seconds + "s",
+				Label:  "视频 " + seconds + "s（每次）",
+				Value:  "$" + trimTrailingZeros(fixedNumber(price, 4)) + "/video",
+				Format: "text",
+			})
+		}
+	} else if item.VideoOutputUsdPerCall != nil {
 		entries = append(entries, catalogDisplayItem{Key: "video_per_call", Label: "视频（每次）", Value: "$" + trimTrailingZeros(fixedNumber(*item.VideoOutputUsdPerCall, 4)) + "/video", Format: "text"})
 	}
 	if item.TtsInputUsdPer1MChars != nil {
 		entries = append(entries, catalogDisplayItem{Key: "tts_chars", Label: "语音合成（每百万字符）", Value: "$" + trimTrailingZeros(fixedNumber(*item.TtsInputUsdPer1MChars, 4)), Format: "text"})
+	}
+	if item.TtsOutputUsdPerCall != nil {
+		entries = append(entries, catalogDisplayItem{Key: "tts_per_call", Label: "语音合成（每次）", Value: "$" + trimTrailingZeros(fixedNumber(*item.TtsOutputUsdPerCall, 4)) + "/次", Format: "text"})
 	}
 	if item.AudioInputUsdPerSecond != nil {
 		entries = append(entries, catalogDisplayItem{Key: "asr_per_second", Label: "语音识别（每秒）", Value: "$" + trimTrailingZeros(fixedNumber(*item.AudioInputUsdPerSecond, 8)) + "/s", Format: "text"})
@@ -388,6 +461,81 @@ func appendStaticMediaPriceSections(sections []catalogDisplaySection, item *Mode
 		return sections
 	}
 	return append(sections, catalogDisplaySection{Key: "media_pricing", Label: "媒体计费", Items: entries})
+}
+
+// resolutionTierRank 是展示排序用的官方分辨率从低到高档位序；未知键排最后。
+func resolutionTierRank(key string) int {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "480p":
+		return 1
+	case "720p":
+		return 2
+	case "768p":
+		return 3
+	case "1080p":
+		return 4
+	case "2k":
+		return 5
+	case "4k":
+		return 6
+	default:
+		return 99
+	}
+}
+
+func sortedResolutionKeys(values map[string]float64) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(left, right int) bool {
+		leftRank, rightRank := resolutionTierRank(keys[left]), resolutionTierRank(keys[right])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return keys[left] < keys[right]
+	})
+	return keys
+}
+
+func sortedSecondsKeys(values map[string]float64) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(left, right int) bool {
+		leftSeconds, leftErr := strconv.ParseFloat(keys[left], 64)
+		rightSeconds, rightErr := strconv.ParseFloat(keys[right], 64)
+		if leftErr == nil && rightErr == nil {
+			return leftSeconds < rightSeconds
+		}
+		return keys[left] < keys[right]
+	})
+	return keys
+}
+
+// sortedResolutionSecondsKeys 按分辨率从低到高、同分辨率按秒数升序排列
+// “分辨率-秒数”组合档键（2026-11-13 Hailuo 1080P 批）。
+func sortedResolutionSecondsKeys(values map[string]float64) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(left, right int) bool {
+		leftResolution, leftSecondsText, _ := strings.Cut(keys[left], "-")
+		rightResolution, rightSecondsText, _ := strings.Cut(keys[right], "-")
+		leftRank, rightRank := resolutionTierRank(leftResolution), resolutionTierRank(rightResolution)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		leftSeconds, leftErr := strconv.ParseFloat(leftSecondsText, 64)
+		rightSeconds, rightErr := strconv.ParseFloat(rightSecondsText, 64)
+		if leftErr == nil && rightErr == nil && leftSeconds != rightSeconds {
+			return leftSeconds < rightSeconds
+		}
+		return keys[left] < keys[right]
+	})
+	return keys
 }
 
 func openAICatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
@@ -644,9 +792,64 @@ func textSection(key, label string, entries []catalogDisplayItem) *catalogDispla
 }
 
 func imageUnitSection(item *ModelCatalogItem) *catalogDisplaySection {
-	return priceSection("image_generation", "图片生成", []catalogDisplayItem{
-		priceEntry("output_image", "每张", item.OutputUsdPerImage, "usd_per_image"),
+	entries := []catalogDisplayItem{}
+	if len(item.OutputUsdPerImageTiers) > 0 {
+		entries = append(entries, imageTierEntries(item.OutputUsdPerImageTiers)...)
+	} else {
+		entries = append(entries, priceEntry("output_image", "每张", item.OutputUsdPerImage, "usd_per_image"))
+	}
+	if item.InputUsdPerImage != nil {
+		label := "输入图"
+		if item.InputImageFreeCount > 0 {
+			label = "输入图（首张免费）"
+		}
+		entries = append(entries, priceEntry("input_image", label, item.InputUsdPerImage, "usd_per_image"))
+	}
+	return priceSection("image_generation", "图片生成", entries)
+}
+
+// imageTierEntries 把按像素分档的按张价转成目录展示条目（2026-11-12 档位
+// 批）：阈值写成「≤2.61M 像素」「>2.61M 像素」，末档 MaxPixels=0 表示无上限。
+func imageTierEntries(tiers []pricing.ImagePriceTier) []catalogDisplayItem {
+	ordered := append([]pricing.ImagePriceTier(nil), tiers...)
+	sort.SliceStable(ordered, func(left, right int) bool {
+		leftLimit, rightLimit := ordered[left].MaxPixels, ordered[right].MaxPixels
+		if leftLimit <= 0 {
+			leftLimit = math.MaxInt64
+		}
+		if rightLimit <= 0 {
+			rightLimit = math.MaxInt64
+		}
+		return leftLimit < rightLimit
 	})
+	entries := make([]catalogDisplayItem, 0, len(ordered))
+	previousLimit := int64(0)
+	for _, tier := range ordered {
+		label := "每张"
+		key := "output_image"
+		if tier.MaxPixels > 0 {
+			label = "每张（≤" + formatPixelLimit(tier.MaxPixels) + " 像素）"
+			key = "output_image_tier_" + itoaInt64(tier.MaxPixels)
+		} else if previousLimit > 0 {
+			label = "每张（>" + formatPixelLimit(previousLimit) + " 像素）"
+			key = "output_image_tier_unlimited"
+		}
+		price := tier.UsdPerImage
+		entries = append(entries, priceEntry(key, label, &price, "usd_per_image"))
+		if tier.MaxPixels > 0 {
+			previousLimit = tier.MaxPixels
+		}
+	}
+	return entries
+}
+
+// formatPixelLimit 把像素阈值格式化为 M 单位（2,610,000 → "2.61M"）。
+func formatPixelLimit(pixels int64) string {
+	return formatUsdRateNoSign(float64(pixels)/1_000_000) + "M"
+}
+
+func formatUsdRateNoSign(value float64) string {
+	return trimTrailingZeros(fixedNumber(value, 2))
 }
 
 func capacitySection(item *ModelCatalogItem) *catalogDisplaySection {

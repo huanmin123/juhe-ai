@@ -4,9 +4,132 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// formatSecondsKey 把秒数规范化为目录档位表的键（"6"/"10"，不带小数点
+// 尾巴）；非有限值返回空串。
+func formatSecondsKey(seconds float64) string {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return ""
+	}
+	return strconv.FormatFloat(seconds, 'f', -1, 64)
+}
+
+// normalizeSecondsPriceMap 规范按次时长档表的键；空表返回 nil。
+func normalizeSecondsPriceMap(values map[string]float64) map[string]float64 {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make(map[string]float64, len(values))
+	for key, value := range values {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(key), 64)
+		if err != nil {
+			continue
+		}
+		formatted := formatSecondsKey(parsed)
+		if formatted == "" {
+			continue
+		}
+		normalized[formatted] = value
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+// int64Value 把可选 int 指针转为 int64（nil → 0）。
+func int64Value(value *int) int64 {
+	if value == nil {
+		return 0
+	}
+	return int64(*value)
+}
+
+// normalizeResolutionKey 规范化分辨率档位键（小写、去空格）："1080P" →
+// "1080p"、"2K" → "2k"。
+func normalizeResolutionKey(value string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(value)), " ", "")
+}
+
+// normalizeResolutionPriceMap 规范分辨率秒价表的键；空表返回 nil。
+func normalizeResolutionPriceMap(values map[string]float64) map[string]float64 {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make(map[string]float64, len(values))
+	for key, value := range values {
+		formatted := normalizeResolutionKey(key)
+		if formatted == "" {
+			continue
+		}
+		normalized[formatted] = value
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+// normalizeResolutionSecondsPriceMap 规范“分辨率-秒数”二维按次价表的键
+// （"1080P-6" → "1080p-6"）；空表返回 nil。
+func normalizeResolutionSecondsPriceMap(values map[string]float64) map[string]float64 {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make(map[string]float64, len(values))
+	for key, value := range values {
+		resolution, secondsText, ok := strings.Cut(key, "-")
+		if !ok {
+			continue
+		}
+		seconds, err := strconv.ParseFloat(strings.TrimSpace(secondsText), 64)
+		if err != nil {
+			continue
+		}
+		resolution = normalizeResolutionKey(resolution)
+		formattedSeconds := formatSecondsKey(seconds)
+		if resolution == "" || formattedSeconds == "" {
+			continue
+		}
+		normalized[resolution+"-"+formattedSeconds] = value
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+// VideoCallTierSeconds 返回该模型按次时长档表中与 seconds 最接近的档位
+// （等距取小档，契约 §2.2 固定档换算规则）；模型没有按次时长档表时返回
+// nil（调用方保持原值）。providerCode/model 与计费读取同源（账户 vendor +
+// 出站模型名），保证创建时冻结的档位与终端结算选档一致。
+func VideoCallTierSeconds(providerCode, model string, seconds float64) *float64 {
+	pricing := FindProviderModelPricing(providerCode, model)
+	if pricing == nil || len(pricing.VideoOutputUsdPerCallBySeconds) == 0 {
+		return nil
+	}
+	bestSeconds := 0.0
+	bestDiff := math.MaxFloat64
+	for key := range pricing.VideoOutputUsdPerCallBySeconds {
+		tierSeconds, err := strconv.ParseFloat(key, 64)
+		if err != nil {
+			continue
+		}
+		diff := math.Abs(tierSeconds - seconds)
+		if diff < bestDiff || (diff == bestDiff && tierSeconds < bestSeconds) {
+			bestDiff = diff
+			bestSeconds = tierSeconds
+		}
+	}
+	if bestDiff == math.MaxFloat64 {
+		return nil
+	}
+	return &bestSeconds
+}
 
 // isOpenAICompatibleProviderCode mirrors provider-protocol
 // isOpenAICompatibleProviderCode: 'openai' plus the 'gpt' vendor code.
@@ -421,13 +544,23 @@ func toProviderModelPricing(item *rawModel, entry *providerEntry, providerCode s
 			AudioInputUsdPer1M:          perMillion(item.InputCostPerAudioToken),
 			AudioOutputUsdPer1M:         perMillion(item.OutputCostPerAudioToken),
 			OutputUsdPerImage:           normalizePrice(item.OutputCostPerImage),
+			OutputUsdPerImageTiers:      append([]ImagePriceTier(nil), item.OutputCostPerImageTiers...),
+			InputUsdPerImage:            normalizePrice(item.InputCostPerImage),
+			InputImageFreeCount:         int64Value(item.InputImageFreeCount),
 			TtsInputUsdPer1MChars:       perMillion(item.TtsInputCostPerChar),
+			TtsOutputUsdPerCall:         normalizePrice(item.TtsOutputCostPerCall),
 			AudioInputUsdPerSecond:      normalizePrice(item.AudioInputCostPerSecond),
 			VideoOutputUsdPerSecond:     normalizePrice(item.VideoOutputCostPerSecond),
+			// 分辨率秒价档表：键规范化为小写（"1080p"/"2k"），值直通。
+			VideoOutputUsdPerSecondByResolution: normalizeResolutionPriceMap(item.VideoOutputCostPerSecondByResolution),
 			// VideoOutputUsdPerCall 同秒价处理：直通单价不折算（按次字面量，
 			// 2026-10-05 按次计费批）；目录表无按次列，只落本静态层（同秒价
 			// 先例，计费真实读取处）。
 			VideoOutputUsdPerCall: normalizePrice(item.VideoOutputCostPerCall),
+			// 按次时长档表：键规范化为秒数的十进制串（"6"/"10"），值直通。
+			VideoOutputUsdPerCallBySeconds: normalizeSecondsPriceMap(item.VideoOutputCostPerCallBySeconds),
+			// 分辨率×时长组合档（"1080p-6"）：键规范化后直通。
+			VideoOutputUsdPerCallByResolutionSeconds: normalizeResolutionSecondsPriceMap(item.VideoOutputCostPerCallByResolutionSeconds),
 		},
 		CachedImageInputUsdPer1M: perMillion(item.CacheReadInputImageTokenCost),
 		ServiceTierPrices:        rawServiceTierPrices(item),

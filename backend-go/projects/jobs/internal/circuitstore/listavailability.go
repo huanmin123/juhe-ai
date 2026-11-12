@@ -250,7 +250,7 @@ func (r *ListAvailabilityRepo) markDirtyTx(ctx context.Context, tx txLike, accou
 		"%projections%", r.table("account_list_availability_projections"),
 		"%accounts%", r.table("accounts"),
 	).Replace(markDirtySQL)
-	if _, err := tx.ExecContext(ctx, query, accountID, reason, availableAtMS, nowMS, nowMS, accountID); err != nil {
+	if _, err := tx.ExecContext(ctx, query, accountID, reason, time.UnixMilli(availableAtMS).UTC(), time.UnixMilli(nowMS).UTC(), time.UnixMilli(nowMS).UTC(), accountID); err != nil {
 		return err
 	}
 	var count int
@@ -635,8 +635,8 @@ func (r *ListAvailabilityRepo) ClaimDirty(ctx context.Context, ownerID string, l
       WITH candidates AS (
         SELECT account_id
         FROM ` + dirty + `
-        WHERE available_at_ms <= FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint
-          AND (claim_until_ms IS NULL OR claim_until_ms <= FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)
+        WHERE available_at_ms <= clock_timestamp()
+          AND (claim_until_ms IS NULL OR claim_until_ms <= clock_timestamp())
         ORDER BY available_at_ms ASC, created_at_ms ASC, account_id ASC
         LIMIT ?
         FOR UPDATE SKIP LOCKED
@@ -644,9 +644,9 @@ func (r *ListAvailabilityRepo) ClaimDirty(ctx context.Context, ownerID string, l
       UPDATE ` + dirty + ` dirty_accounts
       SET claim_token = ?,
           claimed_by = ?,
-          claim_until_ms = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint + ?,
+          claim_until_ms = clock_timestamp() + (? * INTERVAL '1 millisecond'),
           attempt_count = dirty_accounts.attempt_count + 1,
-          updated_at_ms = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint
+          updated_at_ms = clock_timestamp()
       FROM candidates
       WHERE dirty_accounts.account_id = candidates.account_id
       RETURNING dirty_accounts.account_id, dirty_accounts.viewer_system_account_id,
@@ -1187,8 +1187,8 @@ func (r *ListAvailabilityRepo) ReleaseForReplay(ctx context.Context, input opsjo
 		}
 		result, err = tx.ExecContext(ctx, `
       UPDATE `+dirty+`
-      SET reason = ?, available_at_ms = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint + ?, claim_token = NULL,
-          claimed_by = NULL, claim_until_ms = NULL, updated_at_ms = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint
+      SET reason = ?, available_at_ms = clock_timestamp() + (? * INTERVAL '1 millisecond'), claim_token = NULL,
+          claimed_by = NULL, claim_until_ms = NULL, updated_at_ms = clock_timestamp()
       WHERE account_id = ? AND generation = ? AND claim_token = ?`,
 			reason, input.RetryDelayMS, accountID, input.Generation, claimToken)
 		if err != nil {

@@ -135,6 +135,12 @@ func monthKey(t time.Time, location *time.Location) string {
 	return string(statcalendar.MonthOf(t, location))
 }
 
+// monthKeyForDB 返回 date 列可接受的月首日；monthKey 仍是 API/CostKey 的
+// "YYYY-MM" 日历月标签。
+func monthKeyForDB(t time.Time, location *time.Location) string {
+	return string(statcalendar.MonthOf(t, location)) + "-01"
+}
+
 // weekKey mirrors weekKey: the Monday-start week date key of the zoned
 // calendar date.
 func weekKey(t time.Time, location *time.Location) string {

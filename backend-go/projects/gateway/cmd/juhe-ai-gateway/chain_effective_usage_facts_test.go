@@ -99,7 +99,7 @@ func TestHandleUpstreamResponseBackfillsEffectiveUsageFacts(t *testing.T) {
 	req := gatewaypreauth.NewGatewayRequest(request)
 	res := gatewaypreauth.NewTrackingWriter(httptest.NewRecorder())
 
-	handling := loop.c.handleUpstreamResponse(req, res, loop.auditCapture, loop.current, dispatched, loop.startedAt,
+	handling := loop.c.handleUpstreamResponse(nil, req, res, loop.auditCapture, loop.current, dispatched, loop.startedAt,
 		gatewayruntimecache.GatewaySettings{}, requestBudgets{}, nil)
 
 	// 走到与 R5 相同的首字截止切号早退分支，确认装配有效。

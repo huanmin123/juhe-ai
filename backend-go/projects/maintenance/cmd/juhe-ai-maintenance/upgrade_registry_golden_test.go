@@ -44,6 +44,12 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		{26, "instant-timestamptz-accounts", 1},
 		{27, "instant-timestamptz-dataset-jobs", 1},
 		{28, "stats-calendar-timestamptz", 1},
+		{29, "usage-records-timestamptz-prepare", 1},
+		{30, "usage-records-timestamptz-swap", 1},
+		{31, "usage-records-timestamptz-retire", 1},
+		{32, "account-lock-state-timestamptz", 1},
+		{33, "account-list-availability-dirty-timestamptz", 1},
+		{34, "circuit-runtime-timestamptz", 1},
 	}
 	if len(steps) != len(want) {
 		t.Fatalf("注册表步骤数 = %d, want %d", len(steps), len(want))

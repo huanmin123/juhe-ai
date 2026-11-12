@@ -56,17 +56,21 @@ const (
 // visited-group markers of resolveRouteAction (routeActionVisitedGroupIds) and
 // switchToFallbackGroup (enteredRouteGroupIds), and the fallback hop counter.
 type v1DispatchLoop struct {
-	c                   *gatewayChain
-	req                 *gatewaypreauth.GatewayRequest
-	res                 *gatewaypreauth.TrackingWriter
-	auditCapture        gatewaypreauth.AuditCaptureContext
-	requestSnapshot     gatewaypreauth.UsageRequestSnapshot
-	budgets             requestBudgets
-	serverRetryBudget   *gatewaypreauth.ServerRetryBudget
-	startedAt           int64
-	endpoint            string
-	traceID             string
-	current             *gatewaypreauth.DispatchContext
+	c                 *gatewayChain
+	req               *gatewaypreauth.GatewayRequest
+	res               *gatewaypreauth.TrackingWriter
+	auditCapture      gatewaypreauth.AuditCaptureContext
+	requestSnapshot   gatewaypreauth.UsageRequestSnapshot
+	budgets           requestBudgets
+	serverRetryBudget *gatewaypreauth.ServerRetryBudget
+	startedAt         int64
+	endpoint          string
+	traceID           string
+	current           *gatewaypreauth.DispatchContext
+	// upstreamCtx 是上游执行面（派发 signal + 响应读取）的脱钩上下文：
+	// context.WithoutCancel(请求 ctx)，客户端断开不取消在途上游请求；下游
+	// 写入/错误渲染仍用请求 ctx。nil 回退请求 ctx（直接构造 loop 的测试）。
+	upstreamCtx         context.Context
 	actionVisitedGroups map[string]bool
 	enteredGroups       map[string]bool
 	fallbackSwitches    int
@@ -196,6 +200,29 @@ const (
 	// 走客户端交接（断连重试），不得落到终态耗尽 503。
 	v1FallbackLockHold v1FallbackSwitch = "lock_hold"
 )
+
+// detachUpstreamContext 返回上游执行面上下文：保留请求 ctx 的值链（trace /
+// identity / 请求级载体），剥离取消但保留原 deadline（与门户实现同口径：
+// 执行截止仍生效，客户端断开不取消在途上游）。调用方负责 defer cancel。
+func detachUpstreamContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.Background(), func() {}
+	}
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
+	}
+	return context.WithCancel(detached)
+}
+
+// upstreamSignal 返回上游执行面上下文：脱钩信号已装配时优先使用，直接构造
+// loop 的测试未装配时回退请求 ctx（行为与修复前一致）。
+func (l *v1DispatchLoop) upstreamSignal(ctx context.Context) context.Context {
+	if l != nil && l.upstreamCtx != nil {
+		return l.upstreamCtx
+	}
+	return ctx
+}
 
 // stopWaitHeartbeat 终止 D-120 等待心跳：请求 handler 返回即下游终态
 // （Node 由 res 的 close/error 监听承载），防止心跳 goroutine 泄漏或在
@@ -410,11 +437,11 @@ func (l *v1DispatchLoop) stopCompactSseWaitHeartbeat() {
 	}
 }
 
-// dispatchDomainStatelessMediaOf 判定当前派发上下文是否属于媒体创建调度域
+// dispatchDomainStatelessOf 判定当前派发上下文是否属于媒体创建调度域
 // （对话与非对话媒体调度分离设计 §5）。nil 上下文按对话域处理。
-func dispatchDomainStatelessMediaOf(current *gatewaypreauth.DispatchContext) bool {
+func dispatchDomainStatelessOf(current *gatewaypreauth.DispatchContext) bool {
 	return current != nil &&
-		gatewayproto.DispatchDomainOfLane(current.RequestLane) == gatewayproto.DispatchDomainStatelessMedia
+		gatewayproto.DispatchDomainOfLane(current.RequestLane) == gatewayproto.DispatchDomainStateless
 }
 
 // streamBridgeDownstreamProtocolOf 判定下游协议是否属于受限窗口排除面（流式
@@ -441,7 +468,7 @@ func streamBridgeDownstreamProtocolOf(downstreamProtocol string) bool {
 // 的既有读取）：副作用请求即使尚未输出也禁止隐式重放（调研文档 L123 硬禁令）。
 // nil 上下文按对话域处理；ParseError 隔离与异常终局判定不受本判定影响。
 func preCommitReplayWindowDisabledOf(req *gatewaypreauth.GatewayRequest, context *gatewaypreauth.DispatchContext) bool {
-	if dispatchDomainStatelessMediaOf(context) {
+	if dispatchDomainStatelessOf(context) {
 		return true
 	}
 	if streamBridgeDownstreamProtocolOf(clientStrategyViewOf(context).DownstreamProtocol) {
@@ -459,7 +486,7 @@ func preCommitReplayWindowDisabledOf(req *gatewaypreauth.GatewayRequest, context
 // 到当前组预算交接才切组。媒体创建域恒 false（对话与非对话媒体调度分离设计
 // §3.2/§4.1：不等待账户恢复，候选耗尽立即返回最终错误）。
 func (l *v1DispatchLoop) waitForRecoverableFailures(current *gatewaypreauth.DispatchContext) bool {
-	if dispatchDomainStatelessMediaOf(current) {
+	if dispatchDomainStatelessOf(current) {
 		return false
 	}
 	bindings := 0
@@ -589,8 +616,10 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			SessionAffinityOwnerWaitBudgetMs: l.sessionAffinityOwnerWaitBudgetMs,
 			GroupAffinityKey:                 current.GroupAffinityKey,
 			RouteStrategyID:                  current.RouteStrategyID,
-			Signal:                           ctx,
-			ClientIPAccountAvoidanceTracker:  current.ClientIPAccountAvoidance,
+			Signal:                           l.upstreamSignal(ctx),
+			// 原始客户端 ctx：首个候选尝试后客户端断开则停止换号重试。
+			ClientSignal:                    l.req.HTTP.Context(),
+			ClientIPAccountAvoidanceTracker: current.ClientIPAccountAvoidance,
 			// B1 记账回调（调度慢失败直切与墙钟收尾修复设计 §3）：从请求级来源
 			// 避让 tracker 构造；tracker 缺席或探针/诊断流量返回 nil（不记账）。
 			RememberUpstreamAttemptFailure: l.clientIPAccountAvoidanceRememberFunc(current),
@@ -691,7 +720,7 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 							dispatched.ReleaseHalfOpenLease()
 						}
 					}()
-					return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
+					return l.c.handleUpstreamResponse(l.upstreamSignal(ctx), l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
 				}()
 				// BUG-0267 post-verdict 结算块（Node routes.ts:1780-1877）：引擎
 				// OK 臂已收回前置 ReportFramingComplete，circuit confirmation 与
@@ -800,7 +829,7 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	// RetryUpstream verdict 不换号、不写排除集，按既有耗尽契约渲染终态（用法
 	// 失败行与审计已由 verdict 生产面落库，此处 recordUsage:false 不重复计费）。
 	// codex 加密上下文恢复臂在媒体域不可达（恢复臂只由 codex 客户端画像产生）。
-	if dispatchDomainStatelessMediaOf(l.current) {
+	if dispatchDomainStatelessOf(l.current) {
 		l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "media_dispatch_server_retry_cut")
 		l.auditCapture.AddGatewayMetadata("media_dispatch_server_retry_cut", map[string]any{
 			"retryReason":      handling.RetryReason,
@@ -1260,7 +1289,7 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 					clientStrategy: &l.current.ClientStrategy,
 				})
 			case fallback == v1FallbackNone && len(attempt.RecoverableAccountIDs) > 0 &&
-				!dispatchDomainStatelessMediaOf(l.current) &&
+				!dispatchDomainStatelessOf(l.current) &&
 				!l.serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil):
 				// Node routes.ts:1479-1486：切组未成但仍有可恢复账户、等待预算
 				// 未到 recoverable_later 交接点——置强制等待并继续循环，下一轮
@@ -2084,6 +2113,14 @@ func (l *v1DispatchLoop) settleHotQualityTerminal(
 		// upstream_response），提交前换号与提交后断开两形态一致；AlreadyFinalized
 		// 渲染族的 unknown / request_lifecycle 臂不适用于该失败族（它有明确的上游
 		// 归因），显式分支保持缺省终态。
+	case handling.DownstreamGone:
+		// 非流式：上游已读完、下游写失败（客户端断开）。中性终态，不能计入
+		// 上游响应失败（2026-11-12 计费漏记修复）。
+		terminal = gatewaydispatch.HotQualityTerminal{
+			OutcomeClass: gatewaydispatch.HotQualityOutcomeUnknown,
+			FailureScope: "none",
+			Source:       "request_lifecycle",
+		}
 	case handling.TransportFailure != nil:
 		terminal = gatewaydispatch.HotQualityTerminal{
 			OutcomeClass: transportFailureOutcomeClass(handling.TransportFailure.Kind),
@@ -2393,7 +2430,8 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 ) {
 	class := classifyPostVerdictOutcome(dispatched, handling)
 	aborted := ctx.Err() != nil
-	downstreamClosed := handling.ErrorCode == "downstream_connection_closed"
+	downstreamClosed := handling.ErrorCode == "downstream_connection_closed" ||
+		handling.ErrorCode == gatewayresponse.ClientCanceledErrorCode
 
 	// 账户锁失败侧（Node :1813-1823）：accountLockTrafficEnabled 与引擎同源
 	//（TrafficSource == gateway，即链面传给引擎的 AccountStateMutationEnabled）。

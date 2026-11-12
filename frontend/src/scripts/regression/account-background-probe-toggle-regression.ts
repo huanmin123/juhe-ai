@@ -56,48 +56,27 @@ const manualSavePayload = buildAccountSavePayload({
 assert.equal(manualSavePayload.backgroundProbeEnabled, false, '手动模式创建 payload 必须携带关闭值')
 assert.equal(buildAccountUpdatePayload(manualSavePayload).backgroundProbeEnabled, false, '手动模式编辑 payload 必须保留关闭值')
 
-// audio/video 媒体域不适用总开关：载荷不携带该键（总开关设计 §2）。
-for (const domain of ['audio', 'video'] as const) {
-  const mediaForm = defaultAccountForm('qwen', 'api_key')
-  mediaForm.capabilityDomain = domain
-  mediaForm.name = '媒体域载荷回归'
-  mediaForm.groupId = 'grp-test'
-  mediaForm.apiKey = 'sk-media'
-  mediaForm.apiKeys = ['sk-media']
-  mediaForm.baseUrl = 'https://dashscope.aliyuncs.com'
-  mediaForm.supportedModels = ['qwen-tts']
-  mediaForm.healthCheckModel = 'qwen-tts'
-  mediaForm.backgroundProbeEnabled = false
-  const mediaPayload = buildAccountSavePayload({
+// 所有非对话场景统一适用总开关（D0/D6 并轨）：audio/video/image 与 B7
+// 向量/重排/安全账户的载荷都必须携带该键，手动模式才可持久化。
+for (const domain of ['audio', 'video', 'image', 'embedding', 'rerank', 'moderation'] as const) {
+  const domainForm = defaultAccountForm('qwen', 'api_key')
+  domainForm.capabilityDomain = domain
+  domainForm.name = '场景域载荷回归'
+  domainForm.groupId = 'grp-test'
+  domainForm.apiKey = 'sk-media'
+  domainForm.apiKeys = ['sk-media']
+  domainForm.baseUrl = 'https://dashscope.aliyuncs.com'
+  domainForm.supportedModels = ['qwen-tts']
+  domainForm.healthCheckModel = 'qwen-tts'
+  domainForm.backgroundProbeEnabled = false
+  const domainPayload = buildAccountSavePayload({
     accounts: [],
-    form: mediaForm,
+    form: domainForm,
     errorPolicyRules: [],
     responseInspectionRules: []
   })
-  assert.equal('backgroundProbeEnabled' in mediaPayload, false, `${domain} 域创建 payload 不得携带后台自动探测键`)
-  assert.equal('backgroundProbeEnabled' in buildAccountUpdatePayload(mediaPayload), false, `${domain} 域编辑 payload 不得携带后台自动探测键`)
-}
-// image 域适用总开关（2026-10-30 二轮复审裁决：图像账户存在激活/冷却复测等
-// 后台探测）：载荷必须携带该键，手动模式 image 账户才可持久化。
-for (const domain of ['image'] as const) {
-  const imageForm = defaultAccountForm('qwen', 'api_key')
-  imageForm.capabilityDomain = domain
-  imageForm.name = '图像域载荷回归'
-  imageForm.groupId = 'grp-test'
-  imageForm.apiKey = 'sk-media'
-  imageForm.apiKeys = ['sk-media']
-  imageForm.baseUrl = 'https://dashscope.aliyuncs.com'
-  imageForm.supportedModels = ['qwen-tts']
-  imageForm.healthCheckModel = 'qwen-tts'
-  imageForm.backgroundProbeEnabled = false
-  const imagePayload = buildAccountSavePayload({
-    accounts: [],
-    form: imageForm,
-    errorPolicyRules: [],
-    responseInspectionRules: []
-  })
-  assert.equal(imagePayload.backgroundProbeEnabled, false, `${domain} 域创建 payload 必须携带后台自动探测键（开关适用）`)
-  assert.equal(buildAccountUpdatePayload(imagePayload).backgroundProbeEnabled, false, `${domain} 域编辑 payload 必须保留后台自动探测键`)
+  assert.equal(domainPayload.backgroundProbeEnabled, false, `${domain} 域创建 payload 必须携带后台自动探测键`)
+  assert.equal(buildAccountUpdatePayload(domainPayload).backgroundProbeEnabled, false, `${domain} 域编辑 payload 必须保留后台自动探测键`)
 }
 
 // ---- 手动模式提交拦截（总开关设计 §4 二态状态门禁）----
@@ -176,15 +155,12 @@ assert.equal(
 // 开关缺省（旧数据未返回）按开启处理，行为零变化。
 assert.equal(accountStatusText(accountFixture({ status: 'temporary_unavailable' })), '临时不可调用', '缺省开关的临时不可调用账户保持现有文案')
 assert.equal(accountStatusText(accountFixture({ status: 'active' })), '可调度', '缺省开关的正常账户保持「可调度」文案')
-// audio/video 媒体域不适用：开关关闭也不套用二态映射。
-const mediaAccount = accountFixture({ status: 'active', backgroundProbeEnabled: false, capabilityDomain: 'audio' })
-assert.equal(accountStatusText(mediaAccount), '可调度', '媒体域账户不适用手动模式二态映射')
-// image 域适用（二轮复审裁决）：开关关闭套用二态映射并显示「手动」标签。
-const imageAccount = accountFixture({ status: 'active', backgroundProbeEnabled: false, capabilityDomain: 'image' })
-assert.equal(accountStatusText(imageAccount), '正常', 'image 域手动账户必须套用手动模式二态映射')
-const imageManualTag = accountManualModeTag(imageAccount)
-assert.equal(imageManualTag?.label, '手动', 'image 域手动账户必须显示「手动」标签')
-assert.equal(accountManualModeTag(accountFixture({ status: 'active', backgroundProbeEnabled: false, capabilityDomain: 'video' })), undefined, 'video 域账户不得显示手动标签')
+// 所有场景统一套用二态映射并显示「手动」标签（D0/D6 并轨）。
+for (const domain of ['audio', 'video', 'image', 'embedding', 'rerank', 'moderation'] as const) {
+  const manualAccount = accountFixture({ status: 'active', backgroundProbeEnabled: false, capabilityDomain: domain })
+  assert.equal(accountStatusText(manualAccount), '正常', `${domain} 域手动账户必须套用手动模式二态映射`)
+  assert.equal(accountManualModeTag(manualAccount)?.label, '手动', `${domain} 域手动账户必须显示「手动」标签`)
+}
 
 // ---- 状态 tooltip（总开关设计 §9）----
 
@@ -223,7 +199,7 @@ const manualTag = accountManualModeTag(manualAccountFixture({ status: 'active' }
 assert.equal(manualTag?.color, 'default', '手动标签必须使用灰色 default')
 assert.equal(manualTag?.label, '手动', '手动标签文案必须为「手动」')
 assert.equal(accountManualModeTag(accountFixture({ status: 'active' })), undefined, '开启探测的账户不得显示手动标签')
-assert.equal(accountManualModeTag(mediaAccount), undefined, 'audio/video 媒体域账户不得显示手动标签')
+assert.equal(accountManualModeTag(accountFixture({ backgroundProbeEnabled: true, capabilityDomain: 'audio' })), undefined, '开启探测的音频账户不得显示手动标签')
 assertTrue(accountManualModeTooltipText(manualAccountFixture({ status: 'active' })).includes('异常需手动处理'), '手动标签 tooltip 必须说明异常需手动处理')
 
 // ---- 表单模板断言（总开关设计 §4/§7，两段模板分支都要）----
@@ -279,7 +255,7 @@ assert.match(menuActionsSource, /手动模式不适用锁死/, '手动账户锁�
 assert.match(menuActionsSource, /手动模式不适用特供恢复/, '手动账户特供操作必须提示不适用')
 assert.match(menuActionsSource, /accountBackgroundProbeDisabled\(account\) \|\| isAuthorizedAccount\(account\) \|\| !isPendingHealthCheckFailed\(account\)/, '手动账户重新检查入口必须拦截')
 
-console.log('后台自动探测总开关前端回归通过：默认值、保存载荷、媒体域排除（audio/video）、image 域适用、手动模式提交拦截、二态状态映射、tooltip、手动标签、表单两段分支、健康页展示、列表操作拦截')
+console.log('后台自动探测总开关前端回归通过：默认值、全场景统一保存载荷、手动模式提交拦截、二态状态映射、tooltip、手动标签、表单两段分支、健康页展示、列表操作拦截')
 
 // ---- fixtures 与断言助手 ----
 

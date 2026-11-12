@@ -495,7 +495,12 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.14
+      "videoOutputCostPerSecond": 0.14,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.08,
+        "720p": 0.14,
+        "1080p": 0.25
+      }
     },
     {
       "codexDefaultReasoningLevel": "",
@@ -520,7 +525,12 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.03
+      "videoOutputCostPerSecond": 0.03,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.02,
+        "720p": 0.03,
+        "1080p": 0.14
+      }
     },
     {
       "audioInputCostPerSecond": 2.777777777777778e-05,
@@ -619,7 +629,11 @@
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.07
+      "videoOutputCostPerSecond": 0.07,
+      "videoOutputCostPerSecondByResolution": {
+        "480p": 0.05,
+        "720p": 0.07
+      }
     }
   ],
   "provider": "xai"

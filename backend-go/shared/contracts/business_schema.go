@@ -107,9 +107,10 @@ type BusinessForeignKeySpec struct {
 // （业务/API 列毫秒、投影/租约列微秒）。
 // v27 (business-postgres-gateway-v27) 是 Phase 2-4：dataset/jobs/taskruns
 // 17 张表的 40 个 instant 列由 text 迁 timestamptz。v28 (business-postgres-
-// gateway-v28) 是 Phase 3 统计域：53 张表 144 个时间列同表重写。契约 map
-// 只冻结列集；版本递增让旧二进制在迁移后 fail-closed。
-const BusinessSchemaVersion = "business-postgres-gateway-v28"
+// gateway-v28) 是 Phase 3 统计域：53 张表 144 个时间列同表重写；v29 是
+// Phase 4 prepare：usage_records 影子表构建；v30 是 Phase 4 swap；v31 是 Phase 4 retire；v32 是 Phase 5 账户锁状态两列；v33 是列表可用性 dirty 四列；v34 是熔断 incident/outbox 13 列。契约 map 只冻结列集；版本递增
+// 让旧二进制在迁移后 fail-closed。
+const BusinessSchemaVersion = "business-postgres-gateway-v34"
 
 var BusinessSchema = map[string]BusinessTableSpec{
 	"system_accounts":              {Columns: []string{"id", "username", "display_name", "status", "role", "must_change_password", "password_hash", "expedited_account_limit", "last_login_at", "updated_at"}, Indexes: []string{"idx_system_accounts_username_unique_lower", "idx_system_accounts_display_name_unique_lower"}, IndexDefinitions: []BusinessIndexDefinition{{Name: "idx_system_accounts_username_unique_lower", Columns: []string{"lower(username)"}, Unique: true}, {Name: "idx_system_accounts_display_name_unique_lower", Columns: []string{"lower(display_name)"}, Unique: true}}},

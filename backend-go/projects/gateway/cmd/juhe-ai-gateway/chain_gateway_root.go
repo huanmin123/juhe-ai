@@ -83,10 +83,17 @@ func mountGatewayRootForms(kern *kernel.Kernel, chain http.Handler) {
 	kern.Register("/images/{rest...}", v1Adapter)
 	kern.Register("/audio", v1Adapter)
 	kern.Register("/audio/{rest...}", v1Adapter)
-	// M2 视频任务面（媒体设计 §4.2）：/videos 族根形态与 /audio 同批放行，
-	// 经 v1Adapter 补 /v1 前缀进链（创建走派发、任务面走账户亲和直连）。
-	kern.Register("/videos", v1Adapter)
-	kern.Register("/videos/{rest...}", v1Adapter)
+	// M2 视频任务面（媒体设计 §4.2；2026-11-12 New API 兼容批）：对外只注册
+	// /video/generations 族（创建/轮询/content），旧 /videos 族不再注册——
+	// 未注册路径落 kernel 404 兜底（硬 404，不保留兼容别名）。列表/取消面
+	// 在链内按 New API 语义返回 404（见 serveMediaJobTaskPlane）。
+	kern.Register("/video/generations", v1Adapter)
+	kern.Register("/video/generations/{rest...}", v1Adapter)
+	// M3f 长音频任务面（2026-11-12 New API 通用任务面批）：对外只注册
+	// /tasks/audio 族（创建/轮询/content），旧 /audio/jobs 族不再注册（链内
+	// 入口同样硬 404）。列表/取消/删除在链内按 New API 语义返回 404。
+	kern.Register("/tasks/audio", v1Adapter)
+	kern.Register("/tasks/audio/{rest...}", v1Adapter)
 	kern.Register("/files", v1Adapter)
 	kern.Register("/files/{rest...}", v1Adapter)
 	kern.Register("/containers", v1Adapter)

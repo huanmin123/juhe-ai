@@ -174,4 +174,13 @@ describe('buildAccountCloneFormLoad 档案派生（T102：克隆链同源缺口�
     expect(patch.providerCode).toBe('volcengine')
     expect(patch.providerProtocolProfileId).toBe('profile_volcengine_openai_v1')
   })
+
+  it('克隆保留源账户 capabilityDomain，不沿用筛选域默认 chat', () => {
+    const defaults = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
+    const { patch } = buildAccountCloneFormLoad({
+      account: cloneContext({ providerCode: 'gpt', capabilityDomain: 'rerank' }),
+      defaults
+    })
+    expect(patch.capabilityDomain).toBe('rerank')
+  })
 })

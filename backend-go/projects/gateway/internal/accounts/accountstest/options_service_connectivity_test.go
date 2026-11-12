@@ -47,6 +47,36 @@ func TestResolveAccountConnectivitySelection(t *testing.T) {
 			wantMode:  "audio_job_get",
 		},
 		{
+			name: "embedding uses embed_content",
+			context: &ManualTestContext{
+				CapabilityDomain:        accountscore.CapabilityDomainEmbedding,
+				HealthCheckModel:        "embedding-model",
+				HealthCheckEndpointMode: "chat_sse",
+			},
+			wantModel: "embedding-model",
+			wantMode:  "embed_content",
+		},
+		{
+			name: "rerank uses rerank_json",
+			context: &ManualTestContext{
+				CapabilityDomain:        accountscore.CapabilityDomainRerank,
+				HealthCheckModel:        "rerank-model",
+				HealthCheckEndpointMode: "rerank_json",
+			},
+			wantModel: "rerank-model",
+			wantMode:  "rerank_json",
+		},
+		{
+			name: "moderation uses moderation_json",
+			context: &ManualTestContext{
+				CapabilityDomain:        accountscore.CapabilityDomainModeration,
+				HealthCheckModel:        "moderation-model",
+				HealthCheckEndpointMode: "moderation_json",
+			},
+			wantModel: "moderation-model",
+			wantMode:  "moderation_json",
+		},
+		{
 			name: "chat is rejected",
 			context: &ManualTestContext{
 				CapabilityDomain: accountscore.CapabilityDomainChat,

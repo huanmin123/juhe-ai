@@ -142,34 +142,34 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","seconds":6,"size":"1280x720","input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","seed":42,"audio":false,"provider_options":{"xai":{"reference_audios":["voice-1"]}}}`,
+		`{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","duration":6,"width":1280,"height":720,"image":"data:image/png;base64,aGVsbG8=","metadata":{"negative_prompt":"模糊","seed":42,"audio":false,"reference_audios":["voice-1"]}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaXaiVideoCreateRequestID)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
 	// 创建响应 {"request_id"} 无 status 字段 → 空归一 in_progress（pending
 	// 同义，受理凭据确立即已受理）。
-	if job["status"] != "in_progress" {
-		t.Fatalf("创建响应 status = %v, want in_progress（创建响应无 status，空归一）", job["status"])
+	if job["status"] != "queued" {
+		t.Fatalf("创建响应 status = %v, want queued（New API 创建响应恒 queued）", job["status"])
 	}
-	if job["provider"] != "xai" {
-		t.Fatalf("provider = %v, want xai", job["provider"])
+	if mediaVideoMetadataOf(t, job)["provider"] != "xai" {
+		t.Fatalf("provider = %v, want xai", mediaVideoMetadataOf(t, job)["provider"])
 	}
-	providerJobID, _ := job["provider_job_id"].(string)
+	providerJobID, _ := mediaVideoMetadataOf(t, job)["provider_job_id"].(string)
 	if len(providerJobID) != 36 || !strings.Contains(providerJobID, "-") {
 		t.Fatalf("provider_job_id = %q, want uuid request_id 形态", providerJobID)
 	}
 	applied := mediaVideoJobKeys(t, job, "params_applied")
 	for _, want := range []string{"model", "prompt", "seconds", "size", "input_reference", "audio"} {
 		if !applied[want] {
-			t.Fatalf("params_applied 缺少 %s: %v", want, job["params_applied"])
+			t.Fatalf("params_applied 缺少 %s: %v", want, mediaVideoMetadataOf(t, job)["params_applied"])
 		}
 	}
 	ignored := mediaVideoJobKeys(t, job, "params_ignored")
 	for _, want := range []string{"negative_prompt", "seed"} {
 		if !ignored[want] {
-			t.Fatalf("params_ignored 缺少 %s（xai 请求面无对应字段）: %v", want, job["params_ignored"])
+			t.Fatalf("params_ignored 缺少 %s（xai 请求面无对应字段）: %v", want, mediaVideoMetadataOf(t, job)["params_ignored"])
 		}
 	}
 
@@ -255,7 +255,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 
 	// content 下载：completed 的 video.url 是引擎渲染的绝对 URL（不经记录层），
 	// 网关无凭据直连——记录层无第四次命中可证。响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -279,7 +279,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	// 秒计量（outputVideoSeconds），目录无价 → 无 costUsd 行项、无
 	// usageMissing 标记（契约 §2.8：计量照落成本不虚计）。
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"outputVideoSeconds":6`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"outputVideoSeconds":6`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "xai completed 秒计量终态记录")
 }
 
@@ -299,22 +299,23 @@ func TestChainMediaXaiVideoCancelLocalConverge(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"grok-imagine-video-1.5","prompt":"取消路径"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaXaiVideoPollPending)})
-	jobID, _ := job["id"].(string)
+	jobID := mediaVideoTaskIDOf(t, job)
 
-	// DELETE：204，本地收敛 cancelled，不发上游请求（记录层仍只有创建一条）。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("cancel status=%d body=%s", response.StatusCode, payload)
+	// New API 无取消面（契约 §4.2：列表/取消/删除不提供）：DELETE 恒 404，
+	// 本地行保持非终态，且不发上游 cancel 请求（记录层仍只有创建一条）。
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE status=%d body=%s, want 404", response.StatusCode, payload)
 	}
 	var status string
 	if err := fixture.db.QueryRow(`SELECT status FROM media_jobs WHERE id = ?`, jobID).Scan(&status); err != nil {
-		t.Fatalf("查询 media_jobs 行: %v", err)
+		t.Fatalf("查询 media_jobs: %v", err)
 	}
-	if status != "cancelled" {
-		t.Fatalf("media_jobs status = %s, want cancelled（本地收敛）", status)
+	if status == "cancelled" {
+		t.Fatalf("DELETE 不得本地收敛 cancelled（取消面已裁剪）: %s", status)
 	}
-	if calls := recorder.snapshot(); len(calls) != 1 {
-		t.Fatalf("取消不得发上游请求（SupportsCancel=false）: %+v", calls)
+	if records := recorder.snapshot(); len(records) != 1 {
+		t.Fatalf("取消面 404 不得发上游请求: %+v", records)
 	}
 }
 
@@ -331,7 +332,7 @@ func TestChainMediaXaiVideoAspectRatioOutOfVocabulary(t *testing.T) {
 	server := httptest.NewServer(chain)
 	defer server.Close()
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/videos", apiKey,
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/video/generations", apiKey,
 		`{"model":"grok-imagine-video-1.5","prompt":"参数边界","size":"854x480"}`, nil)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("词表外宽高比 status=%d body=%s, want 400", response.StatusCode, payload)

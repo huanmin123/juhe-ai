@@ -51,4 +51,3 @@ func seedDailyForWindows(t *testing.T, ctx context.Context, store *Store, ipHash
 		0, 0, 0, 0, 0,
 		lastUsedAt, nil, "2026-03-01T00:00:00.000Z")
 }
-

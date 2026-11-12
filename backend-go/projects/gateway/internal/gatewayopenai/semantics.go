@@ -49,6 +49,36 @@ func ExtractJSONSemanticFrames(value any, endpointFamily gatewayproto.ResponseEn
 	return attachRawJSON(frames, root)
 }
 
+// extractUtilityJSONFrames 为工具端点（embeddings/rerank/moderations）产出
+// 完成证据：响应必须是 JSON 对象且包含对应结果数组，空数组不算完成。
+func extractUtilityJSONFrames(root map[string]any, endpointFamily gatewayproto.ResponseEndpointFamily) []gatewayproto.SemanticFrame {
+	complete := false
+	output := false
+	switch endpointFamily {
+	case gatewayproto.EndpointFamilyEmbedContent:
+		if items, ok := root["data"].([]any); ok && len(items) > 0 {
+			complete = true
+			output = true
+		}
+	case gatewayproto.EndpointFamilyRerank:
+		if results, ok := root["results"].([]any); ok && len(results) > 0 {
+			complete = true
+			output = true
+		}
+	case gatewayproto.EndpointFamilyModeration:
+		if results, ok := root["results"].([]any); ok && len(results) > 0 {
+			complete = true
+			output = true
+		}
+	}
+	if !complete {
+		return nil
+	}
+	frame := completedFrame(endpointFamily, gatewayproto.TransportJSON, "stop", "", "", 0)
+	frame.VisibleOutput = output
+	return []gatewayproto.SemanticFrame{frame}
+}
+
 // ExtractSseSemanticFrames mirrors extractOpenAISseSemanticFrames.
 func ExtractSseSemanticFrames(event ParsedStreamEvent, endpointFamily gatewayproto.ResponseEndpointFamily) []gatewayproto.SemanticFrame {
 	data := event.Data

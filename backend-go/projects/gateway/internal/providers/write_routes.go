@@ -35,6 +35,9 @@ var customModelProtocolEnum = map[string]bool{
 	"audio_speech": true, "audio_transcription": true,
 	"video":    true,
 	"realtime": true,
+	// B7 工具端点协议（与 customProviderModelProtocolSet / 目录
+	// supportedApiProtocols 同源；模型映射面只做同族映射）。
+	"rerank": true, "moderation": true,
 }
 
 // providerModelValidationFields mirrors providerModelValidationFields.
@@ -349,7 +352,8 @@ func parseCustomModelBody(body map[string]json.RawMessage, options customModelPa
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return fail()
 			}
-			if value != nil && *value != "text" && *value != "image" && *value != "audio" && *value != "video" {
+			if value != nil && *value != "text" && *value != "image" && *value != "audio" && *value != "video" &&
+				*value != "embedding" && *value != "rerank" && *value != "moderation" {
 				return fail()
 			}
 			parsed.present[key] = true
@@ -1043,6 +1047,9 @@ func customInputHasCompletePrice(input customProviderModelUpsertInput) bool {
 		// draft/disabled 不受影响；不回落 token 价通道（视频按秒计费，token
 		// 价无意义，不猜测）。
 		return false
+	case "embedding", "rerank", "moderation":
+		// B7 工具模型没有输出 token 维度，只要求输入价。
+		return input.InputUsdPer1M != nil
 	default:
 		if customInputIsEmbeddingOnly(input) {
 			return input.InputUsdPer1M != nil
@@ -1068,7 +1075,7 @@ func customInputIsEmbeddingOnly(input customProviderModelUpsertInput) bool {
 	}
 	for _, protocol := range input.SupportedAPIProtocols {
 		switch protocol {
-		case "message_token_counting", "count_tokens", "embed_content":
+		case "message_token_counting", "count_tokens", "embed_content", "rerank", "moderation":
 		default:
 			return false
 		}
@@ -1091,7 +1098,8 @@ func validateBuiltInModelCompleteness(next *ModelCatalogItem) string {
 	if next.Mode != nil {
 		mode = *next.Mode
 	}
-	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") && mode != "embedding" && mode != "video"
+	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") &&
+		mode != "embedding" && mode != "video" && mode != "rerank" && mode != "moderation"
 	if isTextModel && (next.ContextWindowTokens == nil || *next.ContextWindowTokens == 0) &&
 		(next.MaxInputTokens == nil || *next.MaxInputTokens == 0) {
 		return "内置文本模型必须配置上下文或最大输入容量"

@@ -125,6 +125,19 @@ func jsonToRawModel(entry map[string]any) (rawModel, error) {
 			if !ok {
 				return out, fmt.Errorf("%s: want array, got %T", key, raw)
 			}
+			if field.Type().Elem().Kind() != reflect.String {
+				// 结构体切片（如图像像素档表）：按字段类型走 JSON 往返。
+				encoded, err := json.Marshal(raw)
+				if err != nil {
+					return out, fmt.Errorf("%s: marshal array: %w", key, err)
+				}
+				target := reflect.New(field.Type())
+				if err := json.Unmarshal(encoded, target.Interface()); err != nil {
+					return out, fmt.Errorf("%s: decode array: %w", key, err)
+				}
+				field.Set(target.Elem())
+				continue
+			}
 			items := make([]string, 0, len(list))
 			for _, element := range list {
 				text, ok := element.(string)
@@ -141,23 +154,39 @@ func jsonToRawModel(entry map[string]any) (rawModel, error) {
 			if !ok {
 				return out, fmt.Errorf("%s: want object, got %T", key, raw)
 			}
-			matrix := map[string][]string{}
-			for protocol, toolsRaw := range nested {
-				tools, ok := toolsRaw.([]any)
-				if !ok {
-					return out, fmt.Errorf("%s.%s: want array, got %T", key, protocol, toolsRaw)
-				}
-				names := make([]string, 0, len(tools))
-				for _, tool := range tools {
-					text, ok := tool.(string)
+			switch field.Type().Elem().Kind() {
+			case reflect.Slice:
+				matrix := map[string][]string{}
+				for protocol, toolsRaw := range nested {
+					tools, ok := toolsRaw.([]any)
 					if !ok {
-						return out, fmt.Errorf("%s.%s: want string elements, got %T", key, protocol, tool)
+						return out, fmt.Errorf("%s.%s: want array, got %T", key, protocol, toolsRaw)
 					}
-					names = append(names, text)
+					names := make([]string, 0, len(tools))
+					for _, tool := range tools {
+						text, ok := tool.(string)
+						if !ok {
+							return out, fmt.Errorf("%s.%s: want string elements, got %T", key, protocol, tool)
+						}
+						names = append(names, text)
+					}
+					matrix[protocol] = names
 				}
-				matrix[protocol] = names
+				field.Set(reflect.ValueOf(matrix))
+			case reflect.Float64:
+				// 秒数档位价表等 map[string]float64（2026-11-12 档位批）。
+				numbers := map[string]float64{}
+				for tier, priceRaw := range nested {
+					number, ok := priceRaw.(float64)
+					if !ok {
+						return out, fmt.Errorf("%s.%s: want number, got %T", key, tier, priceRaw)
+					}
+					numbers[tier] = number
+				}
+				field.Set(reflect.ValueOf(numbers))
+			default:
+				return out, fmt.Errorf("%s: unsupported map elem kind %s", key, field.Type().Elem().Kind())
 			}
-			field.Set(reflect.ValueOf(matrix))
 		default:
 			return out, fmt.Errorf("%s: unsupported field kind %s", key, field.Kind())
 		}

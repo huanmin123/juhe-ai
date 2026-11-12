@@ -72,4 +72,3 @@ func queryFloat(t *testing.T, db *sql.DB, query string, args ...any) float64 {
 	}
 	return value
 }
-

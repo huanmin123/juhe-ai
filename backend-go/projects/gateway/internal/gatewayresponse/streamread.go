@@ -25,6 +25,9 @@ type streamChunkReadResult struct {
 	chunk                     ChunkResult
 	firstByteDeadlineObserved bool
 	decision                  *streamFirstByteDeadlineReadDecision
+	// clientGoneDetected 表示原始客户端请求已断开：调用方应标记 clientGone
+	// 并从断连时刻起算 drain 预算（不中止上游读取）。
+	clientGoneDetected bool
 }
 
 // pendingRead 对齐 ObservedFirstBytePendingRead：单写入 goroutine 桥接上游
@@ -87,7 +90,11 @@ type readStatus struct {
 }
 
 func (p *streamPipe) readNextStreamChunk() (streamChunkReadResult, error) {
-	pending := newPendingRead(p.body.Next(), p.nowMs)
+	pending := p.pendingClientGoneRead
+	p.pendingClientGoneRead = nil
+	if pending == nil {
+		pending = newPendingRead(p.body.Next(), p.nowMs)
+	}
 	firstByteDeadlineObserved := p.firstByteDeadlineObserved
 
 	for {
@@ -145,7 +152,14 @@ func (p *streamPipe) readNextStreamChunk() (streamChunkReadResult, error) {
 		if readPlan != nil && readPlan.TimeoutMs <= 0 {
 			return streamChunkReadResult{}, p.streamReadPlanTimeoutError(readPlan)
 		}
-		race := raceStreamReadWithDeadlines(pending, p.signalChannel(), firstByteRemainingMs, planTimeoutMs(readPlan), responsePrecommitRemainingMs, p.replayWindowTimerCh)
+		// 客户端断开后的 drain 预算参与读等待竞速：单次计时器在
+		// markClientGone 时创建，跨 chunk 复用；上游长时间无新数据时预算
+		// 到点也必须收口。
+		var clientGoneTimerCh <-chan time.Time
+		if p.clientGone {
+			clientGoneTimerCh = p.clientGoneTimerCh
+		}
+		race := raceStreamReadWithDeadlinesClientGone(pending, p.signalChannel(), firstByteRemainingMs, planTimeoutMs(readPlan), responsePrecommitRemainingMs, p.replayWindowTimerCh, clientGoneTimerCh, p.clientSignalChannel())
 		switch race.kind {
 		case raceRead:
 			if p.options.ResponsePrecommitDeadlineAtMs != nil && !p.semanticResultReceived {
@@ -159,6 +173,13 @@ func (p *streamPipe) readNextStreamChunk() (streamChunkReadResult, error) {
 				}
 			}
 			return streamChunkReadResult{chunk: race.chunk, firstByteDeadlineObserved: firstByteDeadlineObserved}, nil
+		case raceClientGoneSignal:
+			// 保留 pending：客户端断开只改变“是否写下游”，不改变上游读取
+			// 归属；下一轮继续消费同一 future。
+			p.pendingClientGoneRead = pending
+			return streamChunkReadResult{clientGoneDetected: true}, nil
+		case raceClientGoneBudget:
+			return streamChunkReadResult{}, errClientGoneDrainBudget
 		case raceWindowDeadline:
 			// 受限重放窗口真实截止到点（设计 §3.1 条件③）：强制关窗并 flush
 			// 窗口缓冲。pending 读取保持归属——已 settle 则随本结果带回（窗口
@@ -362,6 +383,12 @@ const (
 	// raceWindowDeadline 是受限重放窗口的真实截止到点（设计 §3.1 条件③）：
 	// 读取静默期间 T 到点强制关窗 flush，不依赖后续 chunk 驱动。
 	raceWindowDeadline
+	// raceClientGoneBudget 是客户端断开后 drain 预算到点（2026-11-12 计费
+	// 漏记修复）：上游长时间无新数据时也必须按预算收口。
+	raceClientGoneBudget
+	// raceClientGoneSignal 是原始客户端请求断开（不等首次写失败）：标记
+	// clientGone 并继续读上游，预算从断连时刻起算。
+	raceClientGoneSignal
 )
 
 type raceOutcome struct {
@@ -386,6 +413,13 @@ func planTimeoutMs(plan *StreamReadPlan) *int64 {
 // 重合时保留 precommit 归因；replayWindowCh 为 nil（窗口未开启/已关闭）时不
 // 参与竞速。
 func raceStreamReadWithDeadlines(pending *pendingRead, signal <-chan struct{}, softTimeoutMs *int64, planTimeout *int64, responsePrecommitTimeoutMs *int64, replayWindowCh <-chan time.Time) raceOutcome {
+	return raceStreamReadWithDeadlinesClientGone(pending, signal, softTimeoutMs, planTimeout, responsePrecommitTimeoutMs, replayWindowCh, nil, nil)
+}
+
+// raceStreamReadWithDeadlinesClientGone 在既有竞速面上增加客户端断开信号与
+// drain 预算：clientDone 选中表示客户端原始请求已断开（标记 clientGone 并
+// 继续读取），clientGoneTimerCh 为 nil（未断连/预算关闭）时不参与竞速。
+func raceStreamReadWithDeadlinesClientGone(pending *pendingRead, signal <-chan struct{}, softTimeoutMs *int64, planTimeout *int64, responsePrecommitTimeoutMs *int64, replayWindowCh <-chan time.Time, clientGoneTimerCh <-chan time.Time, clientDone <-chan struct{}) raceOutcome {
 	var timers []raceTimer
 	if softTimeoutMs != nil {
 		timers = append(timers, raceTimer{raceSoftTimeout, timeAfter(*softTimeoutMs)})
@@ -399,12 +433,18 @@ func raceStreamReadWithDeadlines(pending *pendingRead, signal <-chan struct{}, s
 	if replayWindowCh != nil {
 		timers = append(timers, raceTimer{raceWindowDeadline, replayWindowCh})
 	}
+	if clientGoneTimerCh != nil {
+		timers = append(timers, raceTimer{raceClientGoneBudget, clientGoneTimerCh})
+	}
 
 	for {
-		cases := make([]reflect.SelectCase, 0, 2+len(timers))
+		cases := make([]reflect.SelectCase, 0, 3+len(timers))
 		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(pending.ch)})
 		if signal != nil {
 			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(signal)})
+		}
+		if clientDone != nil {
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(clientDone)})
 		}
 		for _, timer := range timers {
 			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(timer.ch)})
@@ -418,14 +458,20 @@ func raceStreamReadWithDeadlines(pending *pendingRead, signal <-chan struct{}, s
 			result, _ := value.Interface().(ChunkResult)
 			return raceOutcome{kind: raceRead, chunk: result}
 		}
-		if signal != nil && chosen == 1 {
-			return raceOutcome{kind: raceAbort}
-		}
-		timerIndex := chosen - 1
+		firstTimerIndex := 1
 		if signal != nil {
-			timerIndex--
+			if chosen == firstTimerIndex {
+				return raceOutcome{kind: raceAbort}
+			}
+			firstTimerIndex++
 		}
-		timer := timers[timerIndex]
+		if clientDone != nil {
+			if chosen == firstTimerIndex {
+				return raceOutcome{kind: raceClientGoneSignal}
+			}
+			firstTimerIndex++
+		}
+		timer := timers[chosen-firstTimerIndex]
 		if timer.kind == raceSoftTimeout &&
 			responsePrecommitTimeoutMs != nil &&
 			(softTimeoutMs == nil || *responsePrecommitTimeoutMs <= *softTimeoutMs) {
@@ -443,6 +489,15 @@ func (p *streamPipe) signalChannel() <-chan struct{} {
 		return nil
 	}
 	return p.input.Signal.Done()
+}
+
+// clientSignalChannel 是原始客户端请求的 Done 通道：clientGone 后不再参与
+// 竞速（避免同一断连事件重复触发）。
+func (p *streamPipe) clientSignalChannel() <-chan struct{} {
+	if p.clientGone || p.options.ClientSignal == nil {
+		return nil
+	}
+	return p.options.ClientSignal.Done()
 }
 
 func derefInt64(value *int64) int64 {

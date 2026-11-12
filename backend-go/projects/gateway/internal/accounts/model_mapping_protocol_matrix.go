@@ -39,7 +39,19 @@ const (
 	// 模型名），执行走 OpenAI 形态媒体端点直连真实上游。
 	mappingFamilyVideoGeneration = "video_generation"
 	mappingFamilyTts             = "tts"
+	// B7 工具端点映射族：向量/重排/安全同族模型名改写，各只有一个上游形态
+	//（embed_content / rerank_json / moderation_json）。
+	mappingFamilyEmbeddings = "embed_content"
+	mappingFamilyRerank     = "rerank"
+	mappingFamilyModeration = "moderation"
 )
+
+// isUtilityMappingEndpointFamily 报告端点族是否 B7 工具端点映射族。工具族
+// 上游面是 OpenAI 兼容 /v1/embeddings、/v1/rerank、/v1/moderations，只允许
+// OpenAI 兼容协议档案声明。
+func isUtilityMappingEndpointFamily(value string) bool {
+	return value == mappingFamilyEmbeddings || value == mappingFamilyRerank || value == mappingFamilyModeration
+}
 
 // isMediaMappingEndpointFamily 报告端点族是否媒体映射族（M4b）。媒体族的
 // 上游面恒为 OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech），只允许
@@ -78,6 +90,12 @@ var accountModelMappingProtocolRules = []protocolConversionRule{
 	//（能力门要求账户启用 video_create / audio_speech 端点模式）。
 	{source: mappingFamilyVideoGeneration, upstream: mappingFamilyVideoGeneration, upstreamProfile: "openai"},
 	{source: mappingFamilyTts, upstream: mappingFamilyTts, upstreamProfile: "openai"},
+	// B7 工具端点映射（向量/重排/安全）：同族模型名改写，上游面是 OpenAI
+	// 兼容工具端点，仅 openai 档案供应商可声明（能力门要求账户启用对应
+	// endpoint mode）。
+	{source: mappingFamilyEmbeddings, upstream: mappingFamilyEmbeddings, upstreamProfile: "openai"},
+	{source: mappingFamilyRerank, upstream: mappingFamilyRerank, upstreamProfile: "openai"},
+	{source: mappingFamilyModeration, upstream: mappingFamilyModeration, upstreamProfile: "openai"},
 }
 
 // hybridAccountModelMappingProtocolRules（混合供应商账户 15 条跨协议矩阵）
@@ -111,6 +129,12 @@ func accountModelMappingEndpointFamilyLabel(value string) string {
 		return "Video Generation"
 	case mappingFamilyTts:
 		return "TTS"
+	case mappingFamilyEmbeddings:
+		return "Embeddings"
+	case mappingFamilyRerank:
+		return "Rerank"
+	case mappingFamilyModeration:
+		return "Moderations"
 	}
 	return "Chat Completions"
 }
@@ -139,6 +163,12 @@ func hasAccountModelMappingUpstreamEndpointFamilyCapability(upstream string, mod
 	case mappingFamilyTts:
 		// M4b：语音映射上游面要求账户可承接 /v1/audio/speech。
 		allowed = []string{"audio_speech"}
+	case mappingFamilyEmbeddings:
+		allowed = []string{"embed_content"}
+	case mappingFamilyRerank:
+		allowed = []string{"rerank_json"}
+	case mappingFamilyModeration:
+		allowed = []string{"moderation_json"}
 	default:
 		allowed = []string{"generate_content_json", "generate_content_sse"}
 	}
@@ -229,6 +259,11 @@ func assertAccountModelMappingProtocolAllowed(mapping ModelMapping, profile prot
 	// 端点，仅 openai 档案供应商可声明（anthropic/gemini 档案无对应执行面）。
 	if isMediaMappingEndpointFamily(mapping.SourceEndpointFamily) && !openAIProfile {
 		return &ValidationError{Message: "当前供应商协议不支持媒体账号模型别名"}
+	}
+	// B7：工具端点映射族（embeddings/rerank/moderation）同样是 OpenAI 兼容
+	// 上游面，仅 openai 档案供应商可声明。
+	if isUtilityMappingEndpointFamily(mapping.SourceEndpointFamily) && !openAIProfile {
+		return &ValidationError{Message: "当前供应商协议不支持工具端点账号模型别名"}
 	}
 	if mapping.SourceEndpointFamily == mappingFamilyMessages && !anthropicProfile {
 		return &ValidationError{Message: "当前供应商协议不支持 Anthropic Messages 账号模型别名"}

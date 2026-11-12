@@ -42,6 +42,11 @@ export const OPENAI_RESPONSES_FAMILY = 'responses'
 // minimax 档案（profile_minimax_openai_v1）只挂这两个族。
 export const OPENAI_VIDEO_GENERATION_FAMILY = 'video_generation'
 export const OPENAI_TTS_FAMILY = 'tts'
+// B7 工具端点映射族：与 gatewayrouting 的 endpoint family token 对齐
+//（embed_content 同时是 endpoint mode 名，count_tokens 同先例）。
+export const OPENAI_EMBED_CONTENT_FAMILY = 'embed_content'
+export const OPENAI_RERANK_FAMILY = 'rerank'
+export const OPENAI_MODERATION_FAMILY = 'moderation'
 export const OPENAI_AUDIO_TRANSCRIPTION_FAMILY = 'audio_transcription'
 export const ANTHROPIC_MESSAGES_FAMILY = 'messages'
 export const ANTHROPIC_MODELS_FAMILY = 'models'

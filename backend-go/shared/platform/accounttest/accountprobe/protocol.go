@@ -55,6 +55,11 @@ const (
 	// 密钥连通性探测（绝不触碰创建端点，见 probe_connectivity.go），
 	// 不存在真实视频生成探针。
 	ModeVideoCreate EndpointMode = "video_create"
+	// B7 工具端点连通性形态：空输入 POST，上游参数校验拒绝即证明密钥可达，
+	// 不产生真实向量/重排/审核结果。
+	ModeEmbedContent   EndpointMode = "embed_content"
+	ModeRerankJSON     EndpointMode = "rerank_json"
+	ModeModerationJSON EndpointMode = "moderation_json"
 )
 
 func (m EndpointMode) streaming() bool {
@@ -244,7 +249,7 @@ func manualTestEndpointModes(defaultMode EndpointMode, normalizedModes map[Endpo
 // 定案）：真实流量以流式为主，_sse 恒先于 _json，与
 // accounts/accountstest.AccountTestEndpointModeOrder 同序。
 func EndpointModeOrderOpenAI() []EndpointMode {
-	return []EndpointMode{ModeChatSSE, ModeResponsesSSE, ModeChatJSON, ModeResponsesJSON, ModeAudioSpeech, ModeAudioTranscriptionJSON}
+	return []EndpointMode{ModeChatSSE, ModeResponsesSSE, ModeChatJSON, ModeResponsesJSON, ModeAudioSpeech, ModeAudioTranscriptionJSON, ModeEmbedContent, ModeRerankJSON, ModeModerationJSON}
 }
 
 // EndpointModeOrderAnthropic / Gemini / OAuth 对齐 Node 其余分支（流式优先）。

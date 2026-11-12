@@ -381,10 +381,10 @@ func TestW10AMediaMappingMatrix(t *testing.T) {
 		t.Fatalf("anthropic 档案媒体映射应拒绝：%v", err)
 	}
 
-	// chat 语义零变化回归：普通账户规则行数不变（媒体族映射只经 openai 档案
-	// 白名单声明），chat 拒绝臂不受媒体族影响。
-	if len(accountModelMappingProtocolRules) != 7 {
-		t.Fatalf("普通账户规则行数 = %d, want 7（4 文本族 + 1 Gemini stream 归一 + 2 媒体）", len(accountModelMappingProtocolRules))
+	// chat 语义零变化回归：普通账户规则行数随 B7 工具族扩至 10（4 文本族 +
+	// 1 Gemini stream 归一 + 2 媒体 + 3 工具），chat 拒绝臂不受影响。
+	if len(accountModelMappingProtocolRules) != 10 {
+		t.Fatalf("普通账户规则行数 = %d, want 10（4 文本 + 1 Gemini 归一 + 2 媒体 + 3 工具）", len(accountModelMappingProtocolRules))
 	}
 	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
 		SourceEndpointFamily: mappingFamilyChatCompletions, UpstreamEndpointFamily: mappingFamilyChatCompletions,

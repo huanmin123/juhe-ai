@@ -582,3 +582,42 @@ func TestWAClassifyStreamEvent(t *testing.T) {
 		}
 	})
 }
+
+// B7 工具端点：向量 data / 重排与安全 results 都产出完成证据；空数组不完成。
+func TestWAExtractUtilityJSONFrames(t *testing.T) {
+	cases := []struct {
+		name   string
+		root   string
+		family gatewayproto.ResponseEndpointFamily
+		ok     bool
+	}{
+		{"embeddings data", `{"data":[{"embedding":[0.1]}],"usage":{"prompt_tokens":1}}`, gatewayproto.EndpointFamilyEmbedContent, true},
+		{"embeddings empty", `{"data":[]}`, gatewayproto.EndpointFamilyEmbedContent, false},
+		{"rerank results", `{"results":[{"index":0,"relevance_score":0.9}]}`, gatewayproto.EndpointFamilyRerank, true},
+		{"rerank empty", `{"results":[]}`, gatewayproto.EndpointFamilyRerank, false},
+		{"moderation results", `{"results":[{"flagged":false}]}`, gatewayproto.EndpointFamilyModeration, true},
+		{"moderation empty", `{"results":[]}`, gatewayproto.EndpointFamilyModeration, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := ExtractJSONSemanticFrames(waOParse(t, tc.root), tc.family)
+			completed := 0
+			visible := false
+			for _, frame := range frames {
+				if frame.FrameType == gatewayproto.FrameTypeCompleted {
+					completed++
+					visible = frame.VisibleOutput
+				}
+			}
+			if tc.ok {
+				if completed != 1 || !visible {
+					t.Fatalf("frames = %+v, want one visible completed frame", frames)
+				}
+				return
+			}
+			if completed != 0 {
+				t.Fatalf("空结果不得产出完成帧：%+v", frames)
+			}
+		})
+	}
+}

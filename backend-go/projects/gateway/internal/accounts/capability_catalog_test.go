@@ -46,8 +46,11 @@ func TestScenarioRegistryRejectsUnknown(t *testing.T) {
 	if scenario.Valid("unknown") {
 		t.Fatal("unknown scenario must be rejected")
 	}
-	if scenario.Valid(string(scenario.TypeEmbedding)) {
-		t.Fatal("embedding is not registered until B7")
+	if !scenario.Valid(string(scenario.TypeEmbedding)) {
+		t.Fatal("embedding 已随 B7 注册")
+	}
+	if scenario.Valid(string(scenario.TypeRealtime)) {
+		t.Fatal("realtime 尚未注册（B8）")
 	}
 	if !scenario.IsNonChat(string(scenario.TypeAudio)) {
 		t.Fatal("audio must be non-chat")
