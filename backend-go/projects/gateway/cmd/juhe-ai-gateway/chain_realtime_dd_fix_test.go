@@ -29,11 +29,11 @@ func TestDDG9ConnectionLimiterReleasesKeysAtZero(t *testing.T) {
 	if limiter.acquire("key_dd_g9", 2) {
 		t.Fatal("超限 acquire 必须拒绝")
 	}
-	limiter.release("key_dd_g9")
+	limiter.release("key_dd_g9", "")
 	if limiter.count("key_dd_g9") != 1 {
 		t.Fatalf("count = %d, want 1", limiter.count("key_dd_g9"))
 	}
-	limiter.release("key_dd_g9")
+	limiter.release("key_dd_g9", "")
 	if limiter.count("key_dd_g9") != 0 {
 		t.Fatalf("count = %d, want 0", limiter.count("key_dd_g9"))
 	}
@@ -44,7 +44,7 @@ func TestDDG9ConnectionLimiterReleasesKeysAtZero(t *testing.T) {
 		t.Fatalf("活跃归零后键未删除: map 大小 = %d, want 0（DD-G9 无界累积）", mapSize)
 	}
 	// 幂等 release：对已删键继续 release 不回弹、不复活键。
-	limiter.release("key_dd_g9")
+	limiter.release("key_dd_g9", "")
 	limiter.mutex.Lock()
 	mapSize = len(limiter.counts)
 	limiter.mutex.Unlock()
@@ -77,7 +77,7 @@ func TestDDG9ConnectionLimiterConcurrentAcquireRelease(t *testing.T) {
 				default:
 				}
 				if limiter.acquire("hot_dd_g9", limit) {
-					limiter.release("hot_dd_g9")
+					limiter.release("hot_dd_g9", "")
 				}
 			}
 		}()

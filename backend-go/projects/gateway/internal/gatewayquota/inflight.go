@@ -456,10 +456,12 @@ func (s *InflightQuotaService) ReserveGatewayCost(ctx context.Context, input Gat
 	})
 }
 
-// inflightRelease 是一条待释放在途预留（状态键 + 本次预留成本）。
+// inflightRelease 是一条待释放在途预留（状态键 + 本次预留成本 + 预留 token）。
+// reservationToken 让 Redis 释放按成员精确幂等删除（BUG-0362 同构根治）。
 type inflightRelease struct {
-	stateKey string
-	costUsd  float64
+	stateKey         string
+	costUsd          float64
+	reservationToken string
 }
 
 // createReservation mirrors createReservation: immediate release via the
@@ -489,13 +491,25 @@ func (s *InflightQuotaService) createReservation(releases []inflightRelease, rel
 
 func (s *InflightQuotaService) release(releases []inflightRelease) {
 	if s.remote != nil {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := s.remote.release(releaseCtx, releases); err != nil {
-			s.log("gateway_api_key_inflight_quota_release_failed", map[string]any{
-				"error": err.Error(),
-			}, "API Key 在途额度 Redis 释放失败，等待 TTL 兜底")
+		// release 脚本按 reservationToken 存在性判定后删除（幂等）；失败
+		// 退避重试 3 次，覆盖 Redis 抖动/超时。仍失败则由每条预留的独立
+		// 租约到期精确回收（不再受同 scope 其他流量续期影响）。
+		delays := []time.Duration{0, 250 * time.Millisecond, time.Second}
+		var lastErr error
+		for _, delay := range delays {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			lastErr = s.remote.release(releaseCtx, releases)
+			cancel()
+			if lastErr == nil {
+				return
+			}
 		}
+		s.log("gateway_api_key_inflight_quota_release_failed", map[string]any{
+			"error": lastErr.Error(),
+		}, "API Key 在途额度 Redis 释放失败，等待预留租约到期回收")
 		return
 	}
 	s.mu.Lock()

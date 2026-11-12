@@ -809,6 +809,9 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 				if waitResult != accountLockWaitCompleted {
 					switch waitResult {
 					case accountLockWaitAborted:
+						// 生产实现的 aborted 出口此时 Allowed=false、LeaseID 为空
+						// （预约写失败/已有租约），无预约可归还；真正持有预约的
+						// aborted/wall 分支在下方第二个 wait 块统一 abandon。
 						return "", nil
 					case accountLockWaitWall:
 						return "", &GatewayRequestWallBudgetExhaustedError{
