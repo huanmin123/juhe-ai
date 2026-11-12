@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/statcalendar"
 )
 
 // DB is the minimal database surface the statreads stores consume (either a
@@ -85,22 +87,17 @@ func parseDateKeyParts(value string) (int, int, int, bool) {
 
 // dateKeyTime parses a validated YYYY-MM-DD key into the UTC midnight instant.
 func dateKeyTime(value string) (time.Time, bool) {
-	year, month, day, ok := parseDateKeyParts(value)
-	if !ok {
-		return time.Time{}, false
-	}
-	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), true
+	return statcalendar.ParseDay(statcalendar.Day(value))
 }
 
 // dateKeyIn mirrors dateKey(date, timezone): the timezone-local calendar key.
 func dateKeyIn(instant time.Time, location *time.Location) string {
-	local := instant.In(location)
-	return local.Format("2006-01-02")
+	return string(statcalendar.DayOf(instant, location))
 }
 
 // hourKeyIn mirrors hourKey(date, timezone).
 func hourKeyIn(instant time.Time, location *time.Location) string {
-	return instant.In(location).Format("2006-01-02T15")
+	return string(statcalendar.HourOf(instant, location))
 }
 
 // timezoneLocation resolves and caches a validated timezone per request path.

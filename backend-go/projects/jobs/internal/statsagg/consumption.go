@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
@@ -107,14 +108,14 @@ func OldestPendingUsageRecordCreatedAt(ctx context.Context, q SQLRowQueryer, col
 	}
 	query := sqldialect.BindSQL(`SELECT MIN(created_at) FROM ` + usageRecordsTableSQL +
 		` WHERE ` + string(column) + ` IS NULL`)
-	var oldest sql.NullString
+	var oldest dbtime.Nullable
 	if err := q.QueryRowContext(ctx, query).Scan(&oldest); err != nil {
 		return "", false, fmt.Errorf("读取待统计消费的最旧使用记录失败: %w", err)
 	}
-	if !oldest.Valid || strings.TrimSpace(oldest.String) == "" {
+	if !oldest.Valid {
 		return "", false, nil
 	}
-	return oldest.String, true, nil
+	return oldest.APIString(), true, nil
 }
 
 // BootstrapUsageRecordConsumption 在「水位列首次启用」时结算存量行，返回 true

@@ -14,6 +14,8 @@ import (
 	// zone names identically to Node's Intl.DateTimeFormat on every host
 	// (Windows dev boxes and distroless containers included).
 	_ "time/tzdata"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/statcalendar"
 )
 
 // StatsTimezoneProvider mirrors usageStatsTimezone()/usageStatsTimezoneAsync:
@@ -125,25 +127,16 @@ func (s *staticTimezoneSource) StatsTimezone(context.Context) (*time.Location, e
 
 // dateKey mirrors usage-stats-helpers dateKey: YYYY-MM-DD in the zone.
 func dateKey(t time.Time, location *time.Location) string {
-	year, month, day := t.In(location).Date()
-	return fmt.Sprintf("%04d-%02d-%02d", year, int(month), day)
+	return string(statcalendar.DayOf(t, location))
 }
 
 // monthKey mirrors monthKey: YYYY-MM in the zone.
 func monthKey(t time.Time, location *time.Location) string {
-	year, month, _ := t.In(location).Date()
-	return fmt.Sprintf("%04d-%02d", year, int(month))
+	return string(statcalendar.MonthOf(t, location))
 }
 
 // weekKey mirrors weekKey: the Monday-start week date key of the zoned
-// calendar date. Weekday and week arithmetic are pure calendar operations on
-// (year, month, day), so they are computed at UTC noon to stay independent
-// of the host zone and DST transitions.
+// calendar date.
 func weekKey(t time.Time, location *time.Location) string {
-	year, month, day := t.In(location).Date()
-	weekday := time.Date(year, month, day, 12, 0, 0, 0, time.UTC).Weekday()
-	daysSinceMonday := (int(weekday) + 6) % 7 // Monday=0 ... Sunday=6
-	weekStart := time.Date(year, month, day, 12, 0, 0, 0, time.UTC).AddDate(0, 0, -daysSinceMonday)
-	wYear, wMonth, wDay := weekStart.Date()
-	return fmt.Sprintf("%04d-%02d-%02d", wYear, int(wMonth), wDay)
+	return string(statcalendar.WeekOf(t, location))
 }

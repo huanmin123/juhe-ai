@@ -160,10 +160,12 @@ const REALTIME_SESSION: readonly AccountSupportedEndpointMode[] = ['realtime_ses
 const IMAGES_JSON: readonly AccountSupportedEndpointMode[] = ['images_json']
 
 // qwen 音频域仅长音频任务四值（CosyVoice TTS 契约未回填，audio_speech 不进允许集；
-// 词表亦无短转写/实时会话值）。
-const QWEN_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] }
-// xai：视频（grok imagine）已实施；语音/图像待契约回填，不做预留占位。
-const XAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [], image: [] }
+// 词表亦无短转写/实时会话值）。图像域 2026-11-11 同步批开通：Qwen-Image
+// 原生 multimodal-generation 同步生图，允许集 images_json。
+const QWEN_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: IMAGES_JSON }
+// xai：视频（grok imagine）已实施；2026-11-11 图像同步批开通 Grok Imagine
+// Image（OpenAI Images 兼容面），图像域允许集 images_json；语音待契约回填。
+const XAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [], image: IMAGES_JSON }
 // glm：视频（CogVideoX）+ 语音（cogtts 透传 audio_speech）+ STT 透传
 // （audio_transcription_json，M6）；词表无 realtime_session。写侧词表不含
 // images_json → 无 image 域。
@@ -171,9 +173,10 @@ const GLM_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUD
 // gemini native：Veo adapter（视频）+ TTS adapter（audio_speech）；词表无
 // 短转写/实时会话。gemini 图像域另行立项。
 const GEMINI_NATIVE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
-// openai/gpt 本体直连：sora（视频）+ tts（audio_speech）+ images；v8-A 后
-// 短转写与实时会话归音频域。
-const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
+// openai/gpt 本体直连：sora（视频）+ tts（audio_speech）+ 长音频任务四值
+// + images；v8-A 后短转写与实时会话归音频域。音频域允许集与后端
+// openAIFamilyVocabulary（OpenAIEndpointModeValues）对齐。
+const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_JOB_GROUP, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
 // minimax：hailuo（视频）+ t2a_v2（audio_speech）；无 chat/image 域，词表无新值。
 const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
 // volcengine：seedance（视频）+ 豆包音频生成 TTS（audio_speech，新版语音
@@ -281,12 +284,10 @@ export function allowedEndpointModesFor(input: {
 }
 
 /**
- * 默认能力集（default）按域收窄：chat 域逐项复用现行 `defaultEndpointModesForAccount`
- * （对话域行为零变化，I3）；video 域 = 视频四值组；audio 域 = 音频组按供应商实际接入
- * （qwen 长音频四值，其余 audio_speech）；image 域 = `images_json`。媒体域默认集
- * 与「服务端统一校验」节的后端缺省解析镜像。v8-A：音频域默认集维持现状语义，
- * 不含新移入的 audio_transcription_json / realtime_session（默认集不收，显式
- * 勾选承担，契约 §媒体域表单完整性升级 v8-B 联动明文）。
+ * 默认能力集（default）：chat 域逐项复用现行 `defaultEndpointModesForAccount`
+ * （对话域行为零变化，I3）；视频/音频/图像媒体域恒等于该供应商该域允许集
+ * （2026-11-11 裁决：媒体账户不提供上游接口能力开关，默认即全部支持）。
+ * 媒体域默认集与「服务端统一校验」节的后端缺省解析镜像。
  */
 export function defaultEndpointModesForCapabilityDomain(input: {
   capabilityDomain: AccountCapabilityDomain
@@ -319,12 +320,8 @@ export function defaultEndpointModesForCapabilityDomain(input: {
     profile: input.profile,
     accountType: input.type
   })
-  if (input.capabilityDomain === 'image') return [...allowed]
-  if (input.capabilityDomain === 'video') return [...allowed]
-  // audio：qwen 长音频四值整组为默认；其余供应商默认 audio_speech。
-  return allowed.includes('audio_speech')
-    ? ['audio_speech']
-    : [...allowed]
+  // 媒体域（video/audio/image）：默认集 = 允许集全量，不存在用户收窄入口。
+  return [...allowed]
 }
 
 /**

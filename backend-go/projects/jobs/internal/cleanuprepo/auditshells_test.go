@@ -20,7 +20,7 @@ func TestAuditShellStoreReapStaleInProgressPG(t *testing.T) {
 				id text PRIMARY KEY,
 				lifecycle_status text NOT NULL,
 				capture_status text NOT NULL,
-				created_at text NOT NULL
+				created_at timestamptz NOT NULL
 			)`)
 		return err
 	})}

@@ -308,8 +308,9 @@ func TestDataRetentionPGErrorStages(t *testing.T) {
 			if strings.HasPrefix(stage.name, "partition") {
 				rec.script("FROM pg_inherits inherit", []string{"partition_name", "partition_bound"},
 					[][]driver.Value{{"usage_records_20260101", "FOR VALUES FROM ('2026-01-01') TO ('2026-01-02')"}})
-				rec.script("usage_stats_aggregated_at IS NULL", []string{"count"}, [][]driver.Value{{int64(0)}})
-				rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(3)}})
+				rec.script(`FROM juhe_usage."usage_records_20260101"`,
+					[]string{"total", "pending", "min_created", "max_created"},
+					[][]driver.Value{{int64(3), int64(0), nil, nil}})
 			}
 			rec.script("SELECT id, created_at", []string{"id", "created_at"},
 				[][]driver.Value{{"rec-1", "2026-01-05T01:00:00.000Z"}})

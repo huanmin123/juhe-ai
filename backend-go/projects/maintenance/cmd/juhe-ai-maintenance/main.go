@@ -67,6 +67,12 @@ func runMaintenance(argv []string) int {
 	if len(argv) > 0 && argv[0] == "migrate-group-policy" {
 		return runMigrateGroupPolicyCommand(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == auditTimeColumnsCommandName {
+		return runAuditTimeColumnsCommand(argv[1:])
+	}
+	if len(argv) > 0 && argv[0] == migrateInstantColumnsCommandName {
+		return runMigrateInstantColumnsCommand(argv[1:])
+	}
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	printVersion := fs.Bool("version", false, "print the maintenance build version, commit and schema revision")
 	check := fs.Bool("check-boundary", false, "verify the scaffold boundary")

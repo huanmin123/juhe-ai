@@ -249,7 +249,7 @@ const props = withDefaults(defineProps<{
   capabilityDomain: 'chat'
 })
 
-// 媒体域（video/audio/image）经 AccountMediaForm 复用本组件。支持模型/检查模型
+// 媒体域（video/audio/image）经 AccountEditModal 复用本组件。支持模型/检查模型
 // 仅在「chat 域托管四家（gpt/anthropic/gemini/xai）OAuth 创建态 + 后端会派生模型
 // 的授权形态」隐藏——托管派生只存在于 code/refresh_token/sso 三形态（oauthmgmt
 // CreateOAuthAccount）；access_token 直录走普通 create 端点，后端对空支持模型硬

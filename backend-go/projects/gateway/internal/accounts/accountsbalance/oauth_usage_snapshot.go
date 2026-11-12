@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // OAuth usage snapshot read projections over the stats-side
@@ -113,18 +114,18 @@ func (s *Service) loadOAuthUsageSnapshots(ctx context.Context, kind string, acco
 				source       sql.NullString
 				snapshotJSON string
 				refresh      sql.NullString
-				lastAttempt  sql.NullString
-				lastSuccess  sql.NullString
-				nextRefresh  sql.NullString
+				lastAttempt  dbtime.Nullable
+				lastSuccess  dbtime.Nullable
+				nextRefresh  dbtime.Nullable
 				lastError    sql.NullString
-				updatedAt    string
+				updatedAt    dbtime.Nullable
 			)
 			if err := rows.Scan(&accountID, &source, &snapshotJSON, &refresh, &lastAttempt, &lastSuccess, &nextRefresh, &lastError, &updatedAt); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			snapshot, err := parseOAuthUsageSnapshotRow(kind, source.String, snapshotJSON, refresh.String,
-				lastAttempt.String, lastSuccess.String, nextRefresh.String, lastError.String, updatedAt)
+				lastAttempt.APIString(), lastSuccess.APIString(), nextRefresh.APIString(), lastError.String, updatedAt.APIString())
 			if err != nil {
 				rows.Close()
 				return nil, err

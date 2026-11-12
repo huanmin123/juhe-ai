@@ -14,10 +14,6 @@ const accountsViewSource = readFileSync(
   fileURLToPath(new URL('../../views/accounts/AccountsView.vue', import.meta.url)),
   'utf8'
 )
-const mediaFormSource = readFileSync(
-  fileURLToPath(new URL('../../views/accounts/AccountMediaForm.vue', import.meta.url)),
-  'utf8'
-)
 
 const selectorTemplate = componentTemplate(selectorSource)
 const selectorScript = componentScript(selectorSource)
@@ -113,8 +109,10 @@ assert.match(modalSelectorSlice, /:open="open"/, '对话域 AccountFormSelector 
 assert.match(modalSelectorSlice, /@select-provider="\$emit\('select-provider', \$event\)"/, 'select-provider 事件必须原样上抛')
 assert.match(modalSelectorSlice, /@select-type-choice="\$emit\('select-type-choice', \$event\)"/, 'select-type-choice 事件必须原样上抛')
 
-const modalMediaFormSlice = sourceBetween(modalSource, '<AccountMediaForm', '/>')
-assert.match(modalMediaFormSlice, /:account-counts="accountCounts"/, '媒体域 AccountMediaForm 必须接收 accountCounts')
+// 2026-11-11：媒体域与对话域共用同一 AccountFormSelector，域过滤在弹窗内完成。
+assert.match(modalSelectorSlice, /:providers="isMediaDomain \? mediaDomainProviders : providers"/, '媒体域必须按域矩阵过滤供应商清单')
+assert.match(modalSelectorSlice, /:account-type-choices="isMediaDomain \? mediaDomainAccountTypeChoices : accountTypeChoices"/, '媒体域必须按域矩阵过滤账户类型选项')
+assert.doesNotMatch(modalSource, /AccountMediaForm/, '媒体域不得再使用独立表单组件（统一走对话双形态）')
 
 // 既有 open-watch 默认名逻辑与第 3 步探活文案不受影响
 assert.match(modalSource, /if \(!props\.editing && !props\.form\.name\.trim\(\)\) \{[\s\S]*?defaultAccountNameFromBaseUrl\(props\.form\.baseUrl\)/, 'open-watch 默认名逻辑不得移动')
@@ -136,40 +134,31 @@ assert.match(countsLoaderSource, /message\.error\(extractApiErrorMessage\(error,
 const countsWatchSource = sourceBetween(accountsViewSource, 'watch(modalOpen', 'watch(')
 assert.match(countsWatchSource, /if \(!editingId\.value\) void loadProviderAccountCounts\(\)/, '只有创建态打开弹窗才拉取计数（编辑态无卡片墙）')
 
-assert.match(mediaFormSource, /accountCounts\?: Record<string, number>/, 'AccountMediaForm 必须声明 accountCounts 透传 prop')
-const mediaSelectorSlice = sourceBetween(mediaFormSource, '<AccountFormSelector', '/>')
-assert.match(mediaSelectorSlice, /:account-counts="accountCounts"/, '媒体域内嵌 AccountFormSelector 必须接收 accountCounts')
-assert.match(mediaSelectorSlice, /:open="open"/, '媒体域内嵌 AccountFormSelector 必须接收 open 以复位展开状态')
-assert.doesNotMatch(mediaSelectorSlice, /loadCurrentProviderModelOptions|providers\.definitions|api\./, '媒体域供应商选择不得引入预取调用')
+// 媒体域与对话域共用同一选择器：accountCounts/open/cloning 单点接线。
+assert.match(modalSource, /accountCounts\?: Record<string, number>/, 'AccountEditModal 必须声明 accountCounts 透传 prop')
+assert.doesNotMatch(modalSelectorSlice, /loadCurrentProviderModelOptions|providers\.definitions|api\./, '供应商选择不得引入预取调用')
 
 // ---- ⑤ 两阶段交互（弹窗/媒体侧）：阶段一弹窗只呈现供应商卡片 ----
 
 assert.match(modalSource, /const providerPickerExpanded = ref\(true\)/, '弹窗必须持有卡片墙展开状态')
 assert.match(modalSource, /const providerSelectionStage = computed\(\(\) => !props\.editing && !props\.cloning && providerPickerExpanded\.value\)/, '弹窗必须以「卡片墙展开且非编辑/克隆」判定阶段一（克隆豁免阶段一）')
 assert.match(modalSelectorSlice, /@picker-expanded-change="providerPickerExpanded = \$event"/, '弹窗必须监听选择器展开状态事件')
-assert.match(modalMediaFormSlice, /@picker-expanded-change="providerPickerExpanded = \$event"/, '媒体域 AccountMediaForm 必须把展开状态事件上抛弹窗')
-assert.match(modalSource, /v-show="editing \|\| \(wizardStep === 1 && !providerPickerExpanded\)"/, '对话域凭据配置区必须在卡片墙展开期间隐藏')
+assert.match(modalSource, /v-show="editing \|\| \(wizardStep === 1 && !providerPickerExpanded\)"/, '凭据配置区必须在卡片墙展开期间隐藏（两域共用）')
 assert.match(modalSource, /<span v-if="!editing \|\| loading">\{\{ displayTitle \}\}<\/span>/, '标题槽必须经 displayTitle 呈现')
 assert.match(modalSource, /const displayTitle = computed\(\(\) => \(providerSelectionStage\.value \? '添加账户' : props\.title\)\)/, '阶段一标题必须是中性的「添加账户」')
 assert.match(modalSource, /:footer="modalFooter"/, '阶段一必须隐藏底部按钮区')
 assert.match(modalSource, /const modalFooter = computed\(\(\) => \(providerSelectionStage\.value \? null : undefined\)\)/, '底部按钮区必须由 modalFooter 控制而非写死')
 assert.match(modalSource, /v-if="!editing && !providerSelectionStage" class="wizard-steps"/, '阶段一必须隐藏向导步骤指示')
 
-assert.match(mediaFormSource, /const providerPickerExpanded = ref\(true\)/, '媒体表单必须持有卡片墙展开状态')
-assert.match(mediaSelectorSlice, /@picker-expanded-change="handlePickerExpandedChange"/, '媒体表单必须监听内嵌选择器展开状态事件')
-assert.match(mediaFormSource, /function handlePickerExpandedChange\(expanded: boolean\): void \{[\s\S]*?providerPickerExpanded\.value = expanded[\s\S]*?emit\('picker-expanded-change', expanded\)/, '媒体表单必须同步本地展开状态并上抛弹窗')
-assert.match(mediaFormSource, /<div v-show="!providerPickerExpanded" class="media-section-label">/, '阶段一必须隐藏「凭据」小节头')
-assert.equal((mediaFormSource.match(/v-show="!providerPickerExpanded"/g) ?? []).length, 4, '媒体域段1凭据标签与字段、段2/段3配置区必须在卡片墙展开期间隐藏')
+assert.match(modalSource, /const providerPickerExpanded = ref\(true\)/, '弹窗必须持有卡片墙展开状态（两域共用）')
+assert.doesNotMatch(modalSource, /handlePickerExpandedChange/, '媒体域旧的内嵌展开状态处理必须随独立表单移除')
 
 // ---- ⑥ 克隆态豁免阶段一：克隆打开即阶段二（来源供应商已预选），「更换」只在表单内展开卡片墙 ----
 
 assert.match(selectorScript, /cloning\?: boolean/, 'AccountFormSelector 必须声明 cloning prop')
 assert.match(modalSource, /cloning\?: boolean/, 'AccountEditModal 必须声明 cloning prop')
-assert.match(mediaFormSource, /cloning\?: boolean/, 'AccountMediaForm 必须声明 cloning 透传 prop')
-assert.match(modalSelectorSlice, /:cloning="cloning"/, '对话域 AccountFormSelector 必须接收 cloning')
-assert.match(modalMediaFormSlice, /:cloning="cloning"/, '媒体域 AccountMediaForm 必须接收 cloning')
+assert.match(modalSelectorSlice, /:cloning="cloning"/, 'AccountFormSelector 必须接收 cloning（两域共用）')
 assert.match(accountsViewModalSlice, /:cloning="Boolean\(cloningSourceId\)"/, 'AccountsView 必须以 cloningSourceId 驱动弹窗克隆态')
-assert.match(mediaSelectorSlice, /:cloning="cloning"/, '媒体域内嵌 AccountFormSelector 必须接收克隆透传')
 
 console.log('账户供应商卡片墙回归通过：阶段一弹窗只呈现供应商卡片（中性标题/无向导/无凭据头/无底部按钮）+ 横向卡片（logo/名称/账户类型/账户数）+ 全量计数读时聚合（provider-counts 双面接口，不受分页筛选影响）+ 搜索/排序 + 编辑态零卡片墙 + 克隆态豁免阶段一（打开即阶段二，更换仅在表单内展开）+ 卡片点击零预取')
 

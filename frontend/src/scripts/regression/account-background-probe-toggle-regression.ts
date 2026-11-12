@@ -19,7 +19,6 @@ const statusTagSource = readFileSync(fileURLToPath(new URL('../../views/accounts
 const healthViewSource = readFileSync(fileURLToPath(new URL('../../views/ai-health/AiHealthView.vue', import.meta.url)), 'utf8')
 const healthTypesSource = readFileSync(fileURLToPath(new URL('../../types/domain/usage-stats.ts', import.meta.url)), 'utf8')
 const menuActionsSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountMenuActions.ts', import.meta.url)), 'utf8')
-const mediaFormSource = readFileSync(fileURLToPath(new URL('../../views/accounts/AccountMediaForm.vue', import.meta.url)), 'utf8')
 const balanceSectionSource = readFileSync(fileURLToPath(new URL('../../views/accounts/AccountBalanceQuerySection.vue', import.meta.url)), 'utf8')
 const payloadSource = readFileSync(fileURLToPath(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url)), 'utf8')
 
@@ -230,7 +229,8 @@ assertTrue(accountManualModeTooltipText(manualAccountFixture({ status: 'active' 
 // ---- 表单模板断言（总开关设计 §4/§7，两段模板分支都要）----
 
 const toggleBindings = modalSource.match(/v-model:checked="form\.backgroundProbeEnabled"/g) ?? []
-assert.equal(toggleBindings.length, 2, '编辑态与创建态两段稳定性卡都必须渲染后台自动探测总开关')
+// 对话域编辑/创建两段稳定性卡 + image 媒体域编辑/创建两段「后台自动探测」卡。
+assert.equal(toggleBindings.length, 4, '对话两段稳定性卡与 image 域两段探测卡都必须渲染后台自动探测总开关')
 assert.match(modalSource, /v-model:checked="form\.backgroundProbeEnabled"/, '总开关必须绑定 form.backgroundProbeEnabled')
 assert.match(modalSource, /manualProbeMode/, '手动模式判定必须由表单总开关驱动')
 assert.match(modalSource, /:disabled="authorizedEditing \|\| manualProbeMode"/, '持续恢复探活子开关必须在手动模式下置灰')
@@ -245,14 +245,15 @@ assert.match(modalSource, /statusSegmentedOptions/, '编辑态标题状态选项
 assert.match(modalSource, /label: '正常', value: 'active'/, '手动模式状态选项必须提供正常')
 assert.match(modalSource, /disabled: true/, '异常状态必须以只读禁用项回显')
 
-// image 域表单渲染总开关（二轮复审裁决）：开关区仅 image 域出现，经
-// background-probe-toggle 事件走 modal 同款关闭确认；audio/video 仍不渲染。
-assert.match(mediaFormSource, /capabilityDomain === 'image'/, '媒体域表单必须仅在 image 域渲染后台自动探测开关')
-assert.match(mediaFormSource, /background-probe-toggle/, 'image 域开关必须经 background-probe-toggle 事件走 modal 关闭确认')
+// image 域表单渲染总开关（二轮复审裁决）：开关卡仅 image 域出现，经
+// handleBackgroundProbeToggle 走 modal 同款关闭确认；audio/video 仍不渲染。
+assert.match(modalSource, /v-if="isMediaDomain && capabilityDomain === 'image'"/, '媒体域必须仅在 image 域渲染后台自动探测开关')
+assert.match(modalSource, /name="后台自动探测"/, 'image 域开关必须由独立折叠卡承载')
+assert.match(modalSource, /@update:checked="handleBackgroundProbeToggle"/, 'image 域开关必须走 modal 同款关闭确认')
 assert.match(
-  mediaFormSource,
+  modalSource,
   /v-model:checked="form\.backgroundProbeEnabled"/,
-  'image 域开关必须以 v-model 写回 form.backgroundProbeEnabled（确认后写值，取消回弹 true；单向 :checked 不落值）'
+  '开关必须以 v-model 写回 form.backgroundProbeEnabled（确认后写值，取消回弹 true；单向 :checked 不落值）'
 )
 // 余额查询卡片不纳入本开关（总开关设计 §12）。
 assert.doesNotMatch(balanceSectionSource, /backgroundProbe/, '余额查询组件不得引用后台自动探测开关')

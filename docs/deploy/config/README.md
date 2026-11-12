@@ -41,7 +41,7 @@
 - **已知容量边界**：`circuit`（账户电路）、`keymodel`（Key 模型运行态）、`hotquality`（短窗口热质量）三个热点域内部有全局索引/多键原子脚本，只能落单个 slot，无法再拆；其他域按域分布。热点域压力靠垂直扩容，不是集群能解决的。
 - PG 子系统 URL 已收口：审计/操作日志/J3b/J2/J3a/账户健康 store 等不再有独立连接串，统一主库。需要独立库隔离的只剩 `ACCOUNT_HEALTH_INPUT`，必须显式配置且不回退（运行日志 PG 索引已随 F1 下架）。
 - `application_name` 不再写进连接串：三个进程启动时由 `pgcfg.PrepareProcessEnv` 设置 `PGAPPNAME`，慢 SQL 与 `pg_stat_activity` 仍可区分来源。
-- maintenance 的 `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres` / `--postgres-schema-snapshot` 全部改用 `--dsn "$JUHE_AI_POSTGRES_URL"`，不再读取 `JUHE_AI_MAINTENANCE_*` / `JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`。
+- maintenance 的 `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres` / `--postgres-schema-snapshot` / `audit-time-columns` 全部改用 `--dsn "$JUHE_AI_POSTGRES_URL"`，不再读取 `JUHE_AI_MAINTENANCE_*` / `JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`。`audit-time-columns` 是只读时间迁移清单工具，输出列目标类型/精度与主键/分区键/索引/约束/触发器依赖；`migrate-instant-columns` 基于清单生成 Phase 2 的只读 ALTER TYPE 计划（不执行 DDL，执行由升级 revision 承载）。
 - SQLite/内存模式已退役：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER`、全部 `*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_*`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_*`、`*_STORE` 等都不要再写；残留只会产生未知变量 WARN。
 - 本次硬切删除的配置（不得回填）：`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_URL`、`JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE`、`JUHE_AI_BUSINESS_POSTGRES_URL`、`JUHE_AI_AUDIT_LOG_POSTGRES_URL`、`JUHE_AI_OPERATION_LOG_POSTGRES_URL`、`JUHE_AI_J3B_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL`、`JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL`、`JUHE_AI_PROXY_LATENCY_POSTGRES_URL`、`JUHE_AI_MAINTENANCE_*_POSTGRES_URL`、`JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL`、`JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL`、`JUHE_AI_USAGE_SPOOL_*`（整族，2026-11-09 T188 网关直投 PG 后退役）、`JUHE_AI_COOKIE_SAME_SITE`、`JUHE_AI_BUSINESS_OWNER`、`JUHE_AI_PROCESS_ROLE`、`JUHE_AI_J3B_OWNER`、`JUHE_AI_MODEL_CHECK_ENABLED`、`JUHE_AI_ACCOUNT_BALANCE_STORE`、`JUHE_AI_PROXY_LATENCY_STORE`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE`、`JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE`、`JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`。
 - 系统指标/表监控已下线：`JUHE_AI_GO_RUNTIME_METRICS_*`、`JUHE_AI_TABLE_MONITOR_*`、gateway 侧 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS` 不要再写。
@@ -75,6 +75,8 @@ JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=/app/backend/data/audit-payload-blobs
 ```
 
 > `NODE_ENV=production` 与 `TZ=Asia/Shanghai` 由 compose 为三个服务注入，不需要写进 `.env`。
+>
+> **数据库会话时区（2026-11-11 起）**：三个 Go 进程启动时由 `pgcfg.PrepareProcessEnv` 无条件设置 `PGTZ=UTC`，pgx 将其映射为连接启动参数 `timezone=UTC`。因此 `timestamptz` 的文本渲染、`now()`/`to_char` 等会话行为恒为 UTC；compose 的 `TZ=Asia/Shanghai` 只影响进程本地时间、日志和少数依赖 `time.Local` 的路径，不改变数据库会话。不要在 `JUHE_AI_POSTGRES_URL` 中显式写 `timezone=`，DSN 参数会覆盖 `PGTZ` 并破坏该契约。
 >
 > 密码建议用字母数字（`openssl rand -hex 32`）；`.env` 值里不要出现 `$`，compose 会按变量插值解析。密码必须含 `@` `:` `/` `#` 等字符时，写进 URL 需 percent-encode；只写 `POSTGRES_PASSWORD`/`REDIS_PASSWORD` 则无需转义。
 

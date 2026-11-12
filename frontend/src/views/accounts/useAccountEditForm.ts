@@ -198,7 +198,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   // （providerModelsForProtocolProfile，gpt images 分支已随对话域纯粹化删除）；
   // 媒体域旁路聊天档案协议过滤——媒体行的协议 token（video/audio_speech/images）
   // 与对话档案 endpointFamilies 不相交，经其过滤会把域内模型清空，媒体域的协议
-  // 正确性由 AccountMediaForm 的域 token 过滤承担。
+  // 正确性由 AccountEditModal 的域 token 过滤承担。
   const providerModelOptions = computed(() => capabilityDomainIsMedia(form.capabilityDomain)
     ? loadedProviderModelOptions.value
     : providerModelsForProtocolProfile(

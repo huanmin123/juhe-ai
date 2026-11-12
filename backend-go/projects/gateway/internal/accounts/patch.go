@@ -1212,6 +1212,28 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err != nil {
 			return nil, err
 		}
+		// 媒体域（video/audio/image）没有用户可配置的上游接口能力开关
+		// （2026-11-11 裁决）：归一化后的最终声明集恒等于该上下文允许集全量，
+		// 显式窄集合静默展开；域外值仍在下方显式声明校验中 400。
+		if accountscore.CapabilityDomainIsMedia(row.capabilityDomain) {
+			allowedModes := accountscore.AllowedEndpointModes(row.capabilityDomain, row.providerCode, row.accountType, accountscore.ProtocolPredicate{
+				ProviderCode:              row.providerCode,
+				ProtocolCode:              row.protocolCode,
+				ProtocolVersion:           row.protocolVersion,
+				ProviderProtocolProfileID: row.providerProtocolProfileID,
+			})
+			if len(allowedModes) > 0 {
+				// 先对显式提交值做域外校验（禁止借“媒体恒全量”掩盖乱填值），
+				// 再把最终值收敛为允许集全量。
+				if credentialModesExplicitlyDeclared(input) {
+					if outliers := accountscore.OutOfDomainModes(credentialEndpointModes(normalized), allowedModes); len(outliers) > 0 {
+						return nil, accountscore.CapabilityDomainOutlierError(row.capabilityDomain, outliers)
+					}
+				}
+				normalized["supported_endpoint_modes"] = anyStrings(
+					accountscore.EffectiveEndpointModesForDomain(row.capabilityDomain, allowedModes, credentialEndpointModes(normalized)))
+			}
+		}
 		currentCredentials = current
 		haveCredentials = true
 		if !credentialsDeepEqual(current, normalized) {

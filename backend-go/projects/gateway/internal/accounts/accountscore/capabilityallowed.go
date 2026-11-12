@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/scenario"
 )
 
 // AI 账户能力域拆分（PLAN-20261011T141004000Z）：服务端统一保存规则的
@@ -40,13 +41,15 @@ var (
 	imageDomainLaneModes        = []string{"images_json"}
 )
 
-// CapabilityDomainLabels 是四个域的用户可见名称（错误文案用）。
-var CapabilityDomainLabels = map[string]string{
-	CapabilityDomainChat:  "对话",
-	CapabilityDomainVideo: "视频",
-	CapabilityDomainAudio: "音频",
-	CapabilityDomainImage: "图像",
-}
+// CapabilityDomainLabels 是场景的用户可见名称（错误文案用）。
+// 由 scenario 注册表派生，避免与前端/文档各维护一份。
+var CapabilityDomainLabels = func() map[string]string {
+	labels := make(map[string]string, len(scenario.All()))
+	for _, profile := range scenario.All() {
+		labels[string(profile.Type)] = profile.Label
+	}
+	return labels
+}()
 
 // CapabilityDomainLabel 返回域的用户可见名称；未知域原样返回。
 func CapabilityDomainLabel(domain string) string {
@@ -138,7 +141,10 @@ var capabilityDomainMatrix = map[string]map[string]bool{
 	// usage）；Agent Plan 专属端点 /api/plan/v3/images/generations 实测可用，
 	// 出站 URL 由链上层按 base_url 版本根直拼承接）。
 	capabilityMatrixVolcengine: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
-	capabilityMatrixQwen:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
+	// qwen 图像格 2026-11-11 开通（图像同步批：DashScope Qwen-Image 2.0/3.0
+	// 真实探针 200；连接注册表 qwen_dashscope 同批补 images_json + DomainImage，
+	// gatewaymedia qwenImageAdapter 承接原生 multimodal-generation 报文）。
+	capabilityMatrixQwen: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
 }
 
 // capabilityDomainMatrixAllows 查矩阵门：行未列出（未知上下文）默认拒绝，
@@ -287,13 +293,10 @@ func AllowedEndpointModes(domain, providerCode, accountType string, profile Prot
 // DefaultEndpointModesForDomain 返回新建账户 modes 缺省时按域落下的默认集：
 // chat 域=现行默认与域 lane 集、词表求交（BUG-0323 根治：缺省恒 ⊆ 域允许集；
 // 现行默认本就域内的供应商逐项不变，媒体优先供应商缺省不含对话值时落词表内
-// 基础对话对）；video=四值组；audio=audio_speech
-// （无 audio_speech 词表的供应商退为长音频四值，如 qwen）；image=
-// images_json——经同一矩阵门与写侧词表求交（与 AllowedEndpointModes 单收敛
-// 点），空集视为该供应商不支持该域。v8-A：音频域默认集维持现状语义，不含
-// 新移入的 audio_transcription_json / realtime_session（默认集不收，显式
-// 勾选承担，契约 §媒体域表单完整性升级 v8-B 联动明文），纯转写账户显式选
-// audio_transcription_json。
+// 基础对话对）；video/audio/image 域=该上下文域允许集全量——经同一矩阵门与
+// 写侧词表求交（与 AllowedEndpointModes 单收敛点），空集视为该供应商不支持
+// 该域。2026-11-11 裁决：媒体账户不提供上游接口能力开关，默认即全部支持，
+// 不再保留 audio 只落 audio_speech、转写/实时会话显式 opt-in 的旧语义。
 func DefaultEndpointModesForDomain(domain, providerCode, accountType string, profile ProtocolPredicate) []string {
 	row, vocabulary := resolveCapabilityWriteContext(providerCode, accountType, profile)
 	if len(vocabulary) == 0 {
@@ -312,17 +315,35 @@ func DefaultEndpointModesForDomain(domain, providerCode, accountType string, pro
 		// video_get）：落词表内基础对话对，保证 chat 域缺省恒 ⊆ 允许集
 		// （BUG-0323 根治）。
 		return intersectLaneModes([]string{"chat_json", "chat_sse"}, vocabulary)
-	case CapabilityDomainVideo:
-		return intersectLaneModes(videoDomainLaneModes, vocabulary)
-	case CapabilityDomainAudio:
-		if speech := intersectLaneModes(audioSpeechLaneModes, vocabulary); len(speech) > 0 {
-			return speech
-		}
-		return intersectLaneModes(audioJobLaneModes, vocabulary)
-	case CapabilityDomainImage:
-		return intersectLaneModes(imageDomainLaneModes, vocabulary)
+	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage:
+		// 媒体域：默认集 = 允许集全量（域 lane 集 × 矩阵门 × 写侧词表）。
+		return intersectLaneModes(domainLaneModes(domain), vocabulary)
 	}
 	return []string{}
+}
+
+// CapabilityDomainIsMedia 判定媒体域（video/audio/image）：媒体账户没有用户
+// 可配置的上游接口能力开关，声明集恒等于域允许集全量。
+func CapabilityDomainIsMedia(domain string) bool {
+	switch domain {
+	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveEndpointModesForDomain 返回账户最终生效的声明集语义：chat 域保留
+// 用户声明（可为收窄集合）；媒体域（video/audio/image）恒等于该上下文允许集
+// 全量——媒体账户没有用户可配置的上游接口能力开关（2026-11-11 裁决）。
+// 调用方仍需先对显式提交值做域外校验，再以本函数收敛落库值。
+func EffectiveEndpointModesForDomain(domain string, allowed, declared []string) []string {
+	switch domain {
+	case CapabilityDomainVideo, CapabilityDomainAudio, CapabilityDomainImage:
+		return append([]string{}, allowed...)
+	default:
+		return declared
+	}
 }
 
 // DefaultHealthCheckEndpointModeForDomain 是新建账户

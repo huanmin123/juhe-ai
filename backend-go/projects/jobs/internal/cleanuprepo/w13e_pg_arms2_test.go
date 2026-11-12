@@ -159,13 +159,18 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			t.Fatalf("PG 存在性查询失败应透传")
 		}
 	}
-	// 分区裁剪：pg_inherits 行 + COUNT 失败（ErrNoRows）/ 成功路径 / DETACH / DROP。
-	partitionScript := func(rec *pgRecorder) {
+	// 分区裁剪：pg_inherits 行 + 守卫查询失败（ErrNoRows）/ 成功路径 / DETACH / DROP。
+	partitionListScript := func(rec *pgRecorder) {
 		rec.script("FROM pg_inherits inherit", []string{"partition_name", "partition_bound"}, [][]driver.Value{
 			{"usage_records_20260101", "FOR VALUES FROM ('2026-01-01') TO ('2026-01-02')"},
 			{"usage_records_other", "FOR VALUES FROM ('x') TO ('y')"},
 		})
-		rec.script("usage_stats_aggregated_at IS NULL", []string{"count"}, [][]driver.Value{{int64(0)}})
+	}
+	partitionScript := func(rec *pgRecorder) {
+		partitionListScript(rec)
+		rec.script(`FROM juhe_usage."usage_records_20260101"`,
+			[]string{"total", "pending", "min_created", "max_created"},
+			[][]driver.Value{{int64(7), int64(0), nil, nil}})
 	}
 	{
 		rec := newPGRecorder()
@@ -173,8 +178,8 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			{"usage_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 			{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 		})
-		partitionScript(rec)
-		// COUNT 查询不脚本化 → ErrNoRows → 错误臂。
+		partitionListScript(rec)
+		// 守卫查询不脚本化 → ErrNoRows → 错误臂。
 		store := &UsageRecordsStore{Catalog: openRecorderPG(rec), Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {
 			t.Fatalf("分区计数失败应透传")
@@ -187,7 +192,6 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 		})
 		partitionScript(rec)
-		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
 		store := &UsageRecordsStore{Catalog: openRecorderPG(rec), Stats: openRecorderPG(rec)}
 		batch, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5)
 		if err != nil || batch.DroppedPartitions != 1 || batch.DeletedRows != 7 {
@@ -201,7 +205,6 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 		})
 		partitionScript(rec)
-		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
 		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DETACH PARTITION"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {
@@ -215,7 +218,6 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 		})
 		partitionScript(rec)
-		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
 		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DROP TABLE IF EXISTS"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {
@@ -229,7 +231,6 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 			{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
 		})
 		partitionScript(rec)
-		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
 		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failCommit: true})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {

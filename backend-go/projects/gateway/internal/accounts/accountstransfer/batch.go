@@ -1055,6 +1055,25 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			return result, err
 		}
 		nextCredentials = normalized
+		// 媒体域（video/audio/image）没有用户可配置的上游接口能力开关
+		// （2026-11-11 裁决）：最终声明集恒等于该账户域允许集全量。显式提交
+		// 值先做域外校验（不掩盖乱填值），再覆盖为全量；后续连接行同步与
+		// 凭据封存都使用全量集合。
+		if hasOwn("supportedEndpointModes") && accountscore.CapabilityDomainIsMedia(account.capabilityDomain) {
+			allowedModes := accountscore.AllowedEndpointModes(account.capabilityDomain, account.providerCode, account.accountType, accountscore.ProtocolPredicate{
+				ProviderCode:              account.providerCode,
+				ProtocolCode:              account.protocolCode,
+				ProtocolVersion:           account.protocolVersion,
+				ProviderProtocolProfileID: account.providerProtocolProfileID,
+			})
+			if len(allowedModes) > 0 {
+				if outliers := accountscore.OutOfDomainModes(StoredEndpointModes(nextCredentials["supported_endpoint_modes"]), allowedModes); len(outliers) > 0 {
+					return result, accountscore.CapabilityDomainOutlierError(account.capabilityDomain, outliers)
+				}
+				nextCredentials["supported_endpoint_modes"] = accountscore.AnySlice(
+					accountscore.EffectiveEndpointModesForDomain(account.capabilityDomain, allowedModes, StoredEndpointModes(nextCredentials["supported_endpoint_modes"])))
+			}
+		}
 		for _, pair := range batchCredentialFieldMap {
 			if !hasOwn(pair[0]) {
 				continue

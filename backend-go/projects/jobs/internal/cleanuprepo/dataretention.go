@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/statcalendar"
 )
 
 // data-retention.repository.ts 的清理侧移植（public_api_logs / system_sessions /
@@ -567,7 +570,8 @@ func (s *UsageRecordsStore) postgresFloorCursor(ctx context.Context) (*cleanupCu
 	jobNames := map[string]bool{}
 	firstCursor := (*cleanupCursor)(nil)
 	for rows.Next() {
-		var jobName, createdAt, id sql.NullString
+		var jobName, id sql.NullString
+		var createdAt dbtime.Nullable
 		if err := rows.Scan(&jobName, &createdAt, &id); err != nil {
 			return nil, err
 		}
@@ -575,7 +579,7 @@ func (s *UsageRecordsStore) postgresFloorCursor(ctx context.Context) (*cleanupCu
 			jobNames[normalized] = true
 		}
 		if firstCursor == nil {
-			cursorCreatedAt := strings.TrimSpace(createdAt.String)
+			cursorCreatedAt := createdAt.APIString()
 			cursorID := strings.TrimSpace(id.String)
 			if cursorCreatedAt != "" && cursorID != "" {
 				firstCursor = &cleanupCursor{CreatedAt: cursorCreatedAt, ID: cursorID}
@@ -614,25 +618,41 @@ type partitionDropOutcome struct {
 	HasMore           bool
 }
 
-var postgresPartitionBoundPattern = regexp.MustCompile(`FOR VALUES FROM \('(\d{4}-\d{2}-\d{2})'\) TO \('(\d{4}-\d{2}-\d{2})'\)`)
 var postgresPartitionNamePattern = regexp.MustCompile(`^usage_records_(\d{8})$`)
 
+type usageRecordPartition struct {
+	name  string
+	start time.Time
+	end   time.Time
+	bound string
+}
+
+// dropEligiblePartitions 按“分区名 + 数据守卫”判断可删分区，不解析
+// pg_get_expr 的边界文本：
+//   - 分区名必须是 usage_records_YYYYMMDD 且是合法 UTC 日历日；
+//   - 整个 UTC 日的结束必须 <= min(cutoff, cursor)；
+//   - 分区内不能有未结算水位行；
+//   - 非空分区的 min/max(created_at) 必须落在名字对应的 UTC 日内，否则
+//     说明名字与数据不一致，跳过并告警。
 func (s *UsageRecordsStore) dropEligiblePartitions(ctx context.Context, cutoffCreatedAt string, cursor cleanupCursor) (partitionDropOutcome, error) {
 	outcome := partitionDropOutcome{}
-	cutoffDate := isoDatePrefix(cutoffCreatedAt)
-	cursorDate := isoDatePrefix(cursor.CreatedAt)
-	if cutoffDate == "" || cursorDate == "" {
+	cutoffInstant, ok := dbtime.ParseDB(cutoffCreatedAt)
+	if !ok {
+		slog.Warn("usage records 分区清理跳过：cutoff 时间格式非法",
+			"cutoff", cutoffCreatedAt)
 		return outcome, nil
 	}
-	safeEndDate := cutoffDate
-	if cursorDate < safeEndDate {
-		safeEndDate = cursorDate
+	cursorInstant, ok := dbtime.ParseDB(cursor.CreatedAt)
+	if !ok {
+		slog.Warn("usage records 分区清理跳过：cursor 时间格式非法",
+			"cursor_created_at", cursor.CreatedAt, "cursor_id", cursor.ID)
+		return outcome, nil
 	}
-	type partition struct {
-		name  string
-		start string
-		end   string
+	safeEnd := cutoffInstant
+	if cursorInstant.Before(safeEnd) {
+		safeEnd = cursorInstant
 	}
+
 	rows, err := s.Catalog.QueryContext(ctx, `
       SELECT child.relname AS partition_name,
              pg_get_expr(child.relpartbound, child.oid) AS partition_bound
@@ -648,7 +668,7 @@ func (s *UsageRecordsStore) dropEligiblePartitions(ctx context.Context, cutoffCr
 	if err != nil {
 		return outcome, err
 	}
-	var eligible []partition
+	var candidates []usageRecordPartition
 	for rows.Next() {
 		var name, bound sql.NullString
 		if err := rows.Scan(&name, &bound); err != nil {
@@ -656,102 +676,107 @@ func (s *UsageRecordsStore) dropEligiblePartitions(ctx context.Context, cutoffCr
 			return outcome, err
 		}
 		nameText := strings.TrimSpace(name.String)
-		if !postgresPartitionNamePattern.MatchString(nameText) {
+		start, ok := usageRecordPartitionDayStart(nameText)
+		if !ok {
 			continue
 		}
-		match := postgresPartitionBoundPattern.FindStringSubmatch(bound.String)
-		if match == nil {
+		end := start.AddDate(0, 0, 1)
+		if end.After(safeEnd) {
 			continue
 		}
-		if match[2] <= safeEndDate {
-			eligible = append(eligible, partition{name: nameText, start: match[1], end: match[2]})
-		}
+		candidates = append(candidates, usageRecordPartition{
+			name: nameText, start: start, end: end, bound: strings.TrimSpace(bound.String),
+		})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return outcome, err
 	}
 	rows.Close()
-	sort.Slice(eligible, func(left, right int) bool {
-		return eligible[left].start < eligible[right].start
+	sort.Slice(candidates, func(left, right int) bool {
+		return candidates[left].start.Before(candidates[right].start)
 	})
-	if len(eligible) == 0 {
-		return outcome, nil
-	}
-	// 分区 DROP 前必须确认分区内没有未结算水位行：cursor 只能证明“已消费到
-	// 哪个时间点”，不能证明 cursor 覆盖范围内的晚到行已被消费。存在 NULL
-	// 行的分区跳过，等聚合器结算后再删。
-	target := partition{}
-	for _, candidate := range eligible {
-		var pending int64
+	for index, candidate := range candidates {
+		// 分区 DROP 前必须确认分区内没有未结算水位行：cursor 只能证明“已消费到
+		// 哪个时间点”，不能证明 cursor 覆盖范围内的晚到行已被消费。存在 NULL
+		// 行的分区跳过，等聚合器结算后再删。
+		var total, pending int64
+		var minCreated, maxCreated dbtime.Nullable
 		if err := s.Catalog.QueryRowContext(ctx, fmt.Sprintf(
-			`SELECT COUNT(*) FROM juhe_usage.%s WHERE usage_stats_aggregated_at IS NULL OR client_ip_stats_aggregated_at IS NULL`,
-			pgQuoteIdentifier(candidate.name))).Scan(&pending); err != nil {
+			`SELECT COUNT(*) AS total,
+			        COUNT(*) FILTER (WHERE usage_stats_aggregated_at IS NULL OR client_ip_stats_aggregated_at IS NULL) AS pending,
+			        MIN(created_at) AS min_created,
+			        MAX(created_at) AS max_created
+			 FROM juhe_usage.%s`, pgQuoteIdentifier(candidate.name))).Scan(
+			&total, &pending, &minCreated, &maxCreated); err != nil {
 			return outcome, err
 		}
 		if pending > 0 {
 			continue
 		}
-		target = candidate
-		break
+		if minCreated.Valid || maxCreated.Valid {
+			if !minCreated.Valid || !maxCreated.Valid ||
+				minCreated.Time.Before(candidate.start) || !maxCreated.Time.Before(candidate.end) {
+				slog.Warn("使用记录分区名与数据范围不一致，跳过清理",
+					"partition", candidate.name,
+					"partition_bound", candidate.bound,
+					"min_created_at", nullableLogTime(minCreated),
+					"max_created_at", nullableLogTime(maxCreated),
+					"expected_start", candidate.start.Format(time.RFC3339),
+					"expected_end", candidate.end.Format(time.RFC3339))
+				continue
+			}
+		}
+		tx, err := s.Catalog.BeginTx(ctx, nil)
+		if err != nil {
+			return outcome, err
+		}
+		if _, err := tx.ExecContext(ctx, `SET LOCAL lock_timeout = '2s'`); err != nil {
+			_ = tx.Rollback()
+			return outcome, err
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`ALTER TABLE juhe_usage.usage_records DETACH PARTITION juhe_usage.%s`, pgQuoteIdentifier(candidate.name))); err != nil {
+			_ = tx.Rollback()
+			return outcome, err
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`DROP TABLE IF EXISTS juhe_usage.%s`, pgQuoteIdentifier(candidate.name))); err != nil {
+			_ = tx.Rollback()
+			return outcome, err
+		}
+		if err := tx.Commit(); err != nil {
+			return outcome, err
+		}
+		return partitionDropOutcome{
+			DeletedRows:       total,
+			DroppedPartitions: 1,
+			HasMore:           index+1 < len(candidates),
+		}, nil
 	}
-	if target.name == "" {
-		return outcome, nil
+	return outcome, nil
+}
+
+// usageRecordPartitionDayStart 从分区名解析 UTC 日 00:00；名字不匹配或日期
+// 非法返回 false。
+func usageRecordPartitionDayStart(name string) (time.Time, bool) {
+	match := postgresPartitionNamePattern.FindStringSubmatch(strings.TrimSpace(name))
+	if match == nil {
+		return time.Time{}, false
 	}
-	var rowCount int64
-	if err := s.Catalog.QueryRowContext(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) AS total FROM juhe_usage.%s`, pgQuoteIdentifier(target.name))).Scan(&rowCount); err != nil {
-		return outcome, err
+	raw := match[1]
+	return statcalendar.ParseDay(statcalendar.Day(raw[0:4] + "-" + raw[4:6] + "-" + raw[6:8]))
+}
+
+func nullableLogTime(value dbtime.Nullable) any {
+	if !value.Valid {
+		return nil
 	}
-	tx, err := s.Catalog.BeginTx(ctx, nil)
-	if err != nil {
-		return outcome, err
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-		`ALTER TABLE juhe_usage.usage_records DETACH PARTITION juhe_usage.%s`, pgQuoteIdentifier(target.name))); err != nil {
-		_ = tx.Rollback()
-		return outcome, err
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-		`DROP TABLE IF EXISTS juhe_usage.%s`, pgQuoteIdentifier(target.name))); err != nil {
-		_ = tx.Rollback()
-		return outcome, err
-	}
-	if err := tx.Commit(); err != nil {
-		return outcome, err
-	}
-	return partitionDropOutcome{DeletedRows: rowCount, DroppedPartitions: 1, HasMore: len(eligible) > 1}, nil
+	return dbtime.API6(value.Time)
 }
 
 func pgQuoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
-}
-
-// isoDatePrefix 照 Node isoDatePrefix：RFC3339 前缀的 YYYY-MM-DD（校验合法日期）。
-func isoDatePrefix(value string) string {
-	trimmed := strings.TrimSpace(value)
-	pattern := regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})`)
-	match := pattern.FindStringSubmatch(trimmed)
-	if match == nil {
-		return ""
-	}
-	year, month, day := match[1], match[2], match[3]
-	parsed, err := time.Parse("2006-01-02", year+"-"+month+"-"+day)
-	if err != nil || parsed.UTC().Year() != atoi(year) || int(parsed.UTC().Month()) != atoi(month) || parsed.UTC().Day() != atoi(day) {
-		return ""
-	}
-	return year + "-" + month + "-" + day
-}
-
-func atoi(value string) int {
-	out := 0
-	for _, ch := range value {
-		if ch < '0' || ch > '9' {
-			return -1
-		}
-		out = out*10 + int(ch-'0')
-	}
-	return out
 }
 
 func (s *UsageRecordsStore) selectPostgresCleanupRows(ctx context.Context, cutoffCreatedAt string, cursor cleanupCursor, limit int) ([]UsageCleanupRow, error) {

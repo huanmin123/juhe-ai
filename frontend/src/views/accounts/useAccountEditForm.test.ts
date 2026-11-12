@@ -128,7 +128,7 @@ function racingDefinitionLoader(definitions: ProviderDefinition[]) {
 }
 
 // ---- 挂载 harness：useAccountEditForm + 模拟媒体表单的域默认 watch
-//（与 AccountMediaForm 相同的触发源，复用提取后的同一纯函数）。 ----
+//（与 AccountEditModal 相同的触发源，复用提取后的同一纯函数）。 ----
 
 type EditFormContext = ReturnType<typeof useAccountEditForm>
 
@@ -162,8 +162,7 @@ function mountMediaEditForm(
         systemAccounts,
         ...overrides
       })
-      // 模拟 AccountMediaForm 新建态域默认 watch（编辑态不重放；用例不触发
-      // 域外类型回退分支，故省略 select-type-choice 回退）。
+      // 模拟 AccountEditModal 媒体域默认 watch（编辑态不重放状态默认值）。
       watch(
         [context.modalOpen, context.editingId, () => context!.form.providerCode, () => context!.form.providerProtocolProfileId, () => context!.form.type],
         () => {

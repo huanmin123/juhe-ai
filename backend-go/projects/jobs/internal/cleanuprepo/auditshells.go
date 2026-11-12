@@ -35,9 +35,9 @@ func (s *AuditShellStore) ReapStaleInProgress(ctx context.Context, cutoff time.T
       WHERE ctid IN (
         SELECT ctid FROM juhe_dataset.audit_logs
         WHERE lifecycle_status='in_progress' AND capture_status='metadata_only'
-          AND (created_at)::timestamptz < ?::timestamptz
+          AND created_at < ?
         ORDER BY created_at ASC, ctid ASC
         LIMIT ?
       )
-	`, cutoff.UTC().Format(time.RFC3339Nano), batchLimit(limit))
+	`, cutoff.UTC(), batchLimit(limit))
 }

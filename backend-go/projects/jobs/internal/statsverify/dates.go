@@ -1,86 +1,65 @@
 package statsverify
 
 import (
-	"fmt"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/statcalendar"
 )
 
-// Date key helpers mirroring storage/usage-stats-helpers.ts and
-// storage/usage-stats-window-helpers.ts.
+// Date key helpers 统一委托 shared/platform/statcalendar。
+// 保留本包导出的函数名与签名，避免迁移期大范围改调用点。
 
 // FixedRangeWindowDays mirrors FIXED_RANGE_WINDOW_DAYS
 // (usage-stats-window-helpers.ts line 6).
 const FixedRangeWindowDays = 31
 
-// DateKeyIn mirrors dateKey(date, timezone)
-// (usage-stats-helpers.ts lines 140-143): the calendar date of t in the
-// given stats timezone, formatted "YYYY-MM-DD". Node renders through
-// Intl.DateTimeFormat('en-CA', {timeZone}) which resolves IANA timezone
-// names; Go resolves the same names through time.LoadLocation.
+// DateKeyIn 返回 t 在统计时区下的 "YYYY-MM-DD"。
 func DateKeyIn(t time.Time, location *time.Location) string {
-	return t.In(location).Format("2006-01-02")
+	return string(statcalendar.DayOf(t, location))
 }
 
-// HourKeyIn mirrors hourKey(date, timezone)
-// (usage-stats-helpers.ts lines 237-240): "YYYY-MM-DDTHH" in the stats
-// timezone, hour cycle h23.
+// HourKeyIn 返回 t 在统计时区下的 "YYYY-MM-DDTHH"。
 func HourKeyIn(t time.Time, location *time.Location) string {
-	return t.In(location).Format("2006-01-02T15")
+	return string(statcalendar.HourOf(t, location))
 }
 
-// NextDateKey mirrors nextDateKey (usage-stats-window-helpers.ts lines
-// 152-158): advances a "YYYY-MM-DD" key by one calendar day using the host
-// local timezone (Node constructs `new Date(y, m-1, d)` in local time and
-// reads local parts back). Invalid inputs are returned unchanged.
+// NextDateKey 返回下一个日历日；非法输入原样返回。
 func NextDateKey(value string) string {
 	return NextDateKeyIn(value, time.Local)
 }
 
-// NextDateKeyIn is NextDateKey with an explicit location so tests can pin
-// the host timezone Node would have used.
-func NextDateKeyIn(value string, location *time.Location) string {
-	parts, ok := parseDateKeyParts(value)
-	if !ok {
-		return value
-	}
-	date := time.Date(parts.year, time.Month(parts.month), parts.day, 0, 0, 0, 0, location).AddDate(0, 0, 1)
-	return date.Format("2006-01-02")
+// NextDateKeyIn 是 NextDateKey 的显式 location 版本。日期键加减是纯日历
+// 运算，结果与宿主 location 无关；保留参数以兼容旧调用点。
+func NextDateKeyIn(value string, _ *time.Location) string {
+	return string(statcalendar.NextDay(statcalendar.Day(value)))
 }
 
-// AddCalendarDaysIn offsets a "YYYY-MM-DD" key by days without DST drift by
-// constructing local midnight and using AddDate (calendar arithmetic),
-// mirroring the addDays/localDateKey helpers in usage-stats-helpers.ts.
-func AddCalendarDaysIn(value string, days int, location *time.Location) string {
-	parts, ok := parseDateKeyParts(value)
-	if !ok {
-		return value
-	}
-	return time.Date(parts.year, time.Month(parts.month), parts.day, 0, 0, 0, 0, location).AddDate(0, 0, days).Format("2006-01-02")
+// AddCalendarDaysIn 按日历日偏移；非法输入原样返回。
+func AddCalendarDaysIn(value string, days int, _ *time.Location) string {
+	return string(statcalendar.AddDays(statcalendar.Day(value), days))
 }
 
-// FixedUsageStatsDateKeys mirrors fixedUsageStatsDateKeys
-// (usage-stats-window-helpers.ts lines 38-43): the 31 date keys ending at
-// todayKey.
-func FixedUsageStatsDateKeys(location *time.Location, todayKey string) []string {
-	if _, ok := parseDateKeyParts(todayKey); !ok {
+// FixedUsageStatsDateKeys 返回以 todayKey 结尾的 31 个连续日期键。
+func FixedUsageStatsDateKeys(_ *time.Location, todayKey string) []string {
+	if _, ok := statcalendar.ParseDay(statcalendar.Day(todayKey)); !ok {
 		return nil
 	}
-	keys := make([]string, 0, FixedRangeWindowDays)
-	earliest := AddCalendarDaysIn(todayKey, -(FixedRangeWindowDays - 1), location)
-	for index := 0; index < FixedRangeWindowDays; index++ {
-		keys = append(keys, AddCalendarDaysIn(earliest, index, location))
+	earliest := statcalendar.AddDays(statcalendar.Day(todayKey), -(FixedRangeWindowDays - 1))
+	days := statcalendar.DaysInclusive(earliest, statcalendar.Day(todayKey))
+	if len(days) == 0 {
+		return nil
+	}
+	keys := make([]string, len(days))
+	for index, day := range days {
+		keys[index] = string(day)
 	}
 	return keys
 }
 
-// ParseRFC3339 mirrors requiredRfc3339Instant: an instant must carry an
-// explicit "Z" or numeric offset. The parsed instant is returned in UTC.
+// ParseRFC3339 解析必须带 Z 或数值 offset 的 RFC3339 时间，返回 UTC。
 func ParseRFC3339(value string, label string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%s 必须是带 Z 或数值 offset 的 RFC3339 时间: %w", label, err)
-	}
-	return t.UTC(), nil
+	return dbtime.ParseDBRequired(value, label)
 }
 
 type dateKeyParts struct {
@@ -89,19 +68,12 @@ type dateKeyParts struct {
 	day   int
 }
 
+// parseDateKeyParts 保留给本包测试的窄接口；实现委托 statcalendar。
 func parseDateKeyParts(value string) (dateKeyParts, bool) {
-	if len(value) != 10 || value[4] != '-' || value[7] != '-' {
+	parsed, ok := statcalendar.ParseDay(statcalendar.Day(value))
+	if !ok {
 		return dateKeyParts{}, false
 	}
-	year, month, day := 0, 0, 0
-	if _, err := fmt.Sscanf(value, "%04d-%02d-%02d", &year, &month, &day); err != nil {
-		return dateKeyParts{}, false
-	}
-	// Mirror parseDateKeyStrict: reject impossible calendar dates (Go's
-	// time.Date normalizes out-of-range components, so verify round-trip).
-	date := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
-	if date.Year() != year || int(date.Month()) != month || date.Day() != day {
-		return dateKeyParts{}, false
-	}
-	return dateKeyParts{year: year, month: month, day: day}, true
+	year, month, day := parsed.Date()
+	return dateKeyParts{year: year, month: int(month), day: day}, true
 }

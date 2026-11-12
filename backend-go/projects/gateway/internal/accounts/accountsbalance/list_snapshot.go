@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // AccountBalanceSnapshotPublic mirrors AccountBalanceSnapshot（列表公共形状，
@@ -130,14 +131,17 @@ func (s *Service) LoadRelayBalanceSnapshotRecords(ctx context.Context, accountID
 			var (
 				accountID        string
 				snapshotJSON     string
-				nextRefreshAfter sql.NullString
-				updatedAt        string
+				nextRefreshAfter dbtime.Nullable
+				updatedAt        dbtime.Nullable
 			)
 			if err := rows.Scan(&accountID, &snapshotJSON, &nextRefreshAfter, &updatedAt); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			record := &BalanceSnapshotRecord{NextRefreshAfter: nextRefreshAfter, UpdatedAt: updatedAt}
+			record := &BalanceSnapshotRecord{
+				NextRefreshAfter: sql.NullString{String: nextRefreshAfter.APIString(), Valid: nextRefreshAfter.Valid},
+				UpdatedAt:        updatedAt.APIString(),
+			}
 			if strings.TrimSpace(snapshotJSON) != "" {
 				if err := json.Unmarshal([]byte(snapshotJSON), &record.Snapshot); err != nil {
 					rows.Close()

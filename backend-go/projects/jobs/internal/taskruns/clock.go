@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timefmt"
 )
 
 // Clock 注入时间源；测试用 FakeClock 保证可回放。
@@ -45,7 +46,7 @@ func (c *FakeClock) Advance(d time.Duration) {
 
 // RFC3339 毫秒 UTC 文本，等价 Node `new Date().toISOString()`。
 func FormatInstant(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	return timefmt.FormatRFC3339Millis(t)
 }
 
 // NowIso 返回当前时刻的 RFC3339 毫秒 UTC 文本。

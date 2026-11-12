@@ -62,7 +62,7 @@ systemctl enable --now juhe-ai-gateway juhe-ai-jobs
 
 ## 4. 配置
 
-- `.env` 变量与 Docker 形态同源（见[配置参考](../config/README.md)）；区别是连接串指向**真实 PG/Redis 地址**而不是容器名，三个进程启动时自动设置 `PGAPPNAME`（慢 SQL 归因用），不需要也不应在 URL 内写 `application_name`。
+- `.env` 变量与 Docker 形态同源（见[配置参考](../config/README.md)）；区别是连接串指向**真实 PG/Redis 地址**而不是容器名，三个进程启动时自动设置 `PGAPPNAME`（慢 SQL 归因用）与 `PGTZ=UTC`（数据库会话时区），不需要也不应在 URL 内写 `application_name` 或 `timezone`。
 - `JUHE_AI_HOST` / `JUHE_AI_PORT` 默认 `127.0.0.1:3000`；对外暴露需在前面放 Caddy/Nginx（见 [https](../https/README.md)）。
 - `JUHE_AI_FRONTEND_DIST_PATH` 指向前端 `dist` 绝对路径（不配则不挂管理 SPA）。
 - `JUHE_AI_LOG_DIR` 显式指向与 jobs 索引器相同的日志目录。
@@ -96,6 +96,9 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 # --global-max 必须与旧 gateway 实际运行的 JUHE_AI_CONCURRENCY_GLOBAL_MAX（1-50000）一致。
 # revision 23 会在同一 upgrade 停写窗口 DROP usage shard 目录四表（不可逆）；
 # 执行前用 psql 记录四表 count(*) 并确认备份可恢复。
+# revision 24 同窗口把 23 张小表 58 个时间列迁 timestamptz（毫秒截断不可逆）；
+# revision 25 继续把 16 张 CRUD 表 44 个时间列迁 timestamptz（同样不可逆）；
+# 先跑 migrate-instant-columns --scope phase2 核对预检，失败会阻断整批。
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-group-policy --dry-run \
   --manifest-out /opt/juhe-ai/data/group-policy-$(date +%Y%m%d-%H%M).json \
   --global-max "${JUHE_AI_CONCURRENCY_GLOBAL_MAX:-5000}" \

@@ -328,15 +328,15 @@ describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 �
 
 describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供应商写侧词表）', () => {
   it.each([
-    // v8-A：音频域允许集补 audio_transcription_json / realtime_session（按
-    // 各供应商词表实际支持取舍；qwen/gemini/minimax/volcengine 词表无则不行值）。
-    { name: 'gpt', profile: gptProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
-    { name: 'xai', profile: xaiProfile, video: VIDEO_GROUP, audio: [], image: [] },
+    // 音频域允许集补 audio_transcription_json / realtime_session / 长音频任务四值
+    //（按各供应商词表实际支持取舍；qwen/gemini/minimax/volcengine 词表无则不行值）。
+    { name: 'gpt', profile: gptProfile, video: VIDEO_GROUP, audio: ['audio_speech', ...AUDIO_JOB_GROUP, 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
+    { name: 'xai', profile: xaiProfile, video: VIDEO_GROUP, audio: [], image: ['images_json'] },
     { name: 'glm', profile: glmProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json'], image: [] },
     { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech', ...AUDIO_JOB_GROUP], image: ['images_json'] },
-    { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
+    { name: 'qwen（长音频任务四值 + 同步图像）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: ['images_json'] },
     { name: 'deepseek', profile: deepseekProfile, video: [], audio: [], image: [] },
     { name: 'anthropic', profile: anthropicProfile, video: [], audio: [], image: [] },
     { name: 'gemini OpenAI Chat（无媒体行）', profile: geminiOpenAIChatProfile, video: [], audio: [], image: [] }
@@ -417,13 +417,20 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'video', profile, type })).toEqual(expected)
   })
 
-  it('audio 域默认按供应商：audio_speech（qwen 除外）与 qwen 长音频四值；v8-A 默认集不含新移入两项', () => {
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineProfile, type: 'api_key' })).toEqual(['audio_speech'])
+  it('audio 域默认 = 该供应商音频域允许集全量（2026-11-11：媒体账户无能力勾选）', () => {
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineProfile, type: 'api_key' })).toEqual([
+      'audio_speech',
+      ...AUDIO_JOB_GROUP
+    ])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: qwenProfile, type: 'api_key' })).toEqual([...AUDIO_JOB_GROUP])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: xaiProfile, type: 'api_key' })).toEqual([])
-    // v8-A：gpt 词表含 audio_transcription_json / realtime_session，但音频域
-    // 默认集维持现状语义只落 audio_speech（默认集不收，显式勾选承担）。
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: gptProfile, type: 'api_key' })).toEqual(['audio_speech'])
+    // gpt 词表含长音频任务、短转写与实时会话：默认集即全量。
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: gptProfile, type: 'api_key' })).toEqual([
+      'audio_speech',
+      ...AUDIO_JOB_GROUP,
+      'audio_transcription_json',
+      'realtime_session'
+    ])
   })
 
   it('image 域默认 = images_json（glm 无 image 域为空）', () => {

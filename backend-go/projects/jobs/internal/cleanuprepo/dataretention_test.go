@@ -36,14 +36,15 @@ func TestHardCleanupCutoffs(t *testing.T) {
 	}
 }
 
-// TestIsoDatePrefix：合法日期校验（含 2026-02-30 拒绝）。
-func TestIsoDatePrefix(t *testing.T) {
-	if got := isoDatePrefix(" 2026-01-05T03:04:05.000Z"); got != "2026-01-05" {
-		t.Fatalf("isoDatePrefix = %q", got)
+// TestUsageRecordPartitionDayStart：分区名到 UTC 日的解析与非法日期拒绝。
+func TestUsageRecordPartitionDayStart(t *testing.T) {
+	start, ok := usageRecordPartitionDayStart("usage_records_20260105")
+	if !ok || start.Format("2006-01-02") != "2026-01-05" {
+		t.Fatalf("start = %v, ok = %v", start, ok)
 	}
-	for _, value := range []string{"", "abc", "2026-02-30T00:00:00.000Z", "2026-13-01"} {
-		if got := isoDatePrefix(value); got != "" {
-			t.Fatalf("isoDatePrefix(%q) = %q, 期望空", value, got)
+	for _, value := range []string{"", "abc", "usage_records_20260230", "usage_records_20261301", "usage_records_other"} {
+		if _, ok := usageRecordPartitionDayStart(value); ok {
+			t.Fatalf("usageRecordPartitionDayStart(%q) 应拒绝", value)
 		}
 	}
 }
@@ -53,14 +54,20 @@ func TestDropEligiblePartitions(t *testing.T) {
 	store := &UsageRecordsStore{Catalog: openRecorderPG(rec), Stats: openRecorderPG(rec)}
 	rec.script("FROM pg_inherits inherit", []string{"partition_name", "partition_bound"},
 		[][]driver.Value{
-			{"usage_records_20260101", "FOR VALUES FROM ('2026-01-01') TO ('2026-01-02')"},
+			{"usage_records_20260101", "FOR VALUES FROM ('2025-12-31') TO ('2026-01-01')"}, // 名字与数据不一致
 			{"usage_records_20260102", "FOR VALUES FROM ('2026-01-02') TO ('2026-01-03')"},
+			{"usage_records_20260103", "FOR VALUES FROM ('2026-01-03') TO ('2026-01-04')"},
 			{"usage_records_other", "FOR VALUES FROM ('2026-01-03') TO ('2026-01-04')"}, // 命名不匹配
-			{"usage_records_20260103", "FOR VALUES FROM INHERIT ('x')"},                 // bound 不匹配
 			{"usage_records_20260999", "FOR VALUES FROM ('2026-09-01') TO ('2026-09-02')"},
 		})
-	rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(5)}})
-	rec.script("usage_stats_aggregated_at IS NULL", []string{"count"}, [][]driver.Value{{int64(0)}})
+	// 20260101 的数据守卫失败：min 落在名字日之前，跳过并告警。
+	rec.script(`FROM juhe_usage."usage_records_20260101"`,
+		[]string{"total", "pending", "min_created", "max_created"},
+		[][]driver.Value{{int64(1), int64(0), "2025-12-31T23:59:59.000Z", "2026-01-01T00:00:00.000Z"}})
+	// 20260102 通过守卫，成为目标。
+	rec.script(`FROM juhe_usage."usage_records_20260102"`,
+		[]string{"total", "pending", "min_created", "max_created"},
+		[][]driver.Value{{int64(5), int64(0), "2026-01-02T00:00:00.000Z", "2026-01-02T23:59:59.000Z"}})
 
 	outcome, err := store.dropEligiblePartitions(context.Background(),
 		"2026-09-10T00:00:00.000Z", cleanupCursor{CreatedAt: "2026-01-05T00:00:00.000Z", ID: "rec-0"})
@@ -75,11 +82,14 @@ func TestDropEligiblePartitions(t *testing.T) {
 		joined = append(joined, statement.query)
 	}
 	allText := strings.Join(joined, "\n")
-	if !strings.Contains(allText, `ALTER TABLE juhe_usage.usage_records DETACH PARTITION juhe_usage."usage_records_20260101"`) {
+	if !strings.Contains(allText, `ALTER TABLE juhe_usage.usage_records DETACH PARTITION juhe_usage."usage_records_20260102"`) {
 		t.Fatalf("缺少 DETACH 语句：\n%s", allText)
 	}
-	if !strings.Contains(allText, `DROP TABLE IF EXISTS juhe_usage."usage_records_20260101"`) {
+	if !strings.Contains(allText, `DROP TABLE IF EXISTS juhe_usage."usage_records_20260102"`) {
 		t.Fatalf("缺少 DROP 语句")
+	}
+	if !strings.Contains(allText, `SET LOCAL lock_timeout = '2s'`) {
+		t.Fatalf("缺少 lock_timeout")
 	}
 	// 非法日期 cursor → 空结果。
 	outcome, err = store.dropEligiblePartitions(context.Background(), "2026-09-10T00:00:00.000Z", cleanupCursor{CreatedAt: "bad"})

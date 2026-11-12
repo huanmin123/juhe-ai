@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // BalanceKeySnapshot mirrors AccountBalanceKeySnapshot
@@ -175,8 +176,8 @@ func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []stri
 func (s *Service) LoadBalanceSnapshotRecord(ctx context.Context, accountID string) (*BalanceSnapshotRecord, error) {
 	var (
 		snapshotJSON     string
-		nextRefreshAfter sql.NullString
-		updatedAt        string
+		nextRefreshAfter dbtime.Nullable
+		updatedAt        dbtime.Nullable
 	)
 	err := s.statsDB().QueryRowContext(ctx, s.store.Bind(`SELECT account_id, snapshot_json, next_refresh_after, updated_at
 		FROM `+s.StatsTable("account_usage_snapshots")+`
@@ -188,7 +189,10 @@ func (s *Service) LoadBalanceSnapshotRecord(ctx context.Context, accountID strin
 	if err != nil {
 		return nil, err
 	}
-	record := &BalanceSnapshotRecord{NextRefreshAfter: nextRefreshAfter, UpdatedAt: updatedAt}
+	record := &BalanceSnapshotRecord{
+		NextRefreshAfter: sql.NullString{String: nextRefreshAfter.APIString(), Valid: nextRefreshAfter.Valid},
+		UpdatedAt:        updatedAt.APIString(),
+	}
 	if strings.TrimSpace(snapshotJSON) != "" {
 		_ = json.Unmarshal([]byte(snapshotJSON), &record.Snapshot)
 	}

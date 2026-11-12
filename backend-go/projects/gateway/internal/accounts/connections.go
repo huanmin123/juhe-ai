@@ -120,10 +120,10 @@ func resolveConnectionSet(domain, driver, accountType, oauthType string, connect
 		if echo := strings.TrimSpace(connection.ProtocolSurfaceCode); echo != "" && echo != surface {
 			return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d] protocolSurfaceCode %q 与 registry 预设 %q 的协议面不一致", index, echo, preset)}
 		}
-		if len(connection.EndpointModes) == 0 {
-			return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpointModes 不能为空", index, preset)}
-		}
 		allowed := contracts.AllowedModes(domain, preset, accountType, oauthType)
+		if len(allowed) == 0 {
+			return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）没有可用的 endpoint mode 允许集合", index, preset)}
+		}
 		allowedSet := map[string]bool{}
 		for _, mode := range allowed {
 			allowedSet[mode] = true
@@ -140,6 +140,14 @@ func resolveConnectionSet(domain, driver, accountType, oauthType string, connect
 			}
 			seenModes[mode] = true
 			modes = append(modes, mode)
+		}
+		// 媒体域（video/audio/image）没有用户可配置的上游接口能力开关
+		// （2026-11-11 裁决）：连接行事实源恒等于该组合允许集全量；空提交
+		// 也按全量填充（chat 域保持「endpointModes 不能为空」的严格契约）。
+		if accountscore.CapabilityDomainIsMedia(domain) {
+			modes = append([]string{}, allowed...)
+		} else if len(modes) == 0 {
+			return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpointModes 不能为空", index, preset)}
 		}
 		baseURL := strings.TrimSpace(connection.BaseURL)
 		templates, ok := connectionURLContract(driver, accountType, oauthType, preset, domain)

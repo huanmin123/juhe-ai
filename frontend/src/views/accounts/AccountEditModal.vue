@@ -45,64 +45,8 @@
           </template>
         </a-spin>
       </div>
-      <!-- 媒体域（video/audio/image）：精简三段式（D7 清单表驱动）；对话域维持现行双形态。 -->
-      <AccountMediaForm
-        v-else-if="isMediaDomain"
-        :account-counts="accountCounts"
-        :account-type-choices="accountTypeChoices"
-        :advanced-loaded="advancedLoaded"
-        :advanced-loading="advancedLoading"
-        :auth-loading="authLoading"
-        :auth-result="authResult"
-        :authorized-editing="authorizedEditing"
-        @background-probe-toggle="handleBackgroundProbeToggle"
-        :balance-query-can-run="balanceQueryCanRun"
-        :balance-query-loading="balanceQueryLoading"
-        :base-url-placeholder="baseUrlPlaceholder"
-        :capability-domain="capabilityDomain"
-        :cloning="cloning"
-        :credential-title="credentialTitle"
-        :deleting-tag-id="deletingTagId"
-        :editing="editing"
-        v-model:error-policy-rules="errorPolicyRules"
-        @picker-expanded-change="providerPickerExpanded = $event"
-        :form="form"
-        :group-options="groupOptions"
-        :group-options-loading="groupOptionsLoading"
-        :inherited-error-policy-rules="inheritedErrorPolicyRules"
-        :is-management-view="isManagementView"
-        :model-options="modelOptions"
-        :models-loading="modelsLoading"
-        :models-settled="modelsSettled"
-        :models-truncated="modelsTruncated"
-        :model-syncing="modelSyncing"
-        :open="open"
-        :providers="mediaProviders"
-        :proxy-options="proxyOptions"
-        :proxy-pools="proxyPools"
-        :proxy-options-loading="proxyOptionsLoading"
-        :selected-protocol-profile="selectedProtocolProfile"
-        :selected-provider="selectedProvider"
-        :tag-options="tagOptions"
-        :tag-options-loading="tagOptionsLoading"
-        @advanced-open="$emit('advanced-open')"
-        @balance-query="$emit('balance-query')"
-        @copy-auth-url="$emit('copy-auth-url', $event)"
-        @delete-tag="$emit('delete-tag', $event)"
-        @generate-auth-url="$emit('generate-auth-url')"
-        @group-options-dropdown="$emit('group-options-dropdown', $event)"
-        @group-options-search="$emit('group-options-search', $event)"
-        @model-options-open="$emit('model-options-open', $event)"
-        @model-options-search="$emit('model-options-search', $event)"
-        @open-auth-url="$emit('open-auth-url')"
-        @proxyOptionsDropdown="$emit('proxyOptionsDropdown', $event)"
-        @proxyOptionsSearch="$emit('proxyOptionsSearch', $event)"
-        @refresh-models="$emit('refresh-models')"
-        @select-provider="$emit('select-provider', $event)"
-        @select-type-choice="$emit('select-type-choice', $event)"
-        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
-      />
-      <template v-else>
+      <!-- 对话/媒体共用同一双形态表单壳；媒体域按域矩阵过滤供应商与类型，
+           并在凭据区插入域内模型/语音双值字段（2026-11-11 统一）。 -->
         <div v-if="!editing && !providerSelectionStage" class="wizard-steps" aria-label="创建步骤">
           <div class="wizard-step" :class="{ current: wizardStep === 1, done: wizardStep > 1 }">
             <span class="wizard-step-no">{{ wizardStep > 1 ? '✓' : '1' }}</span>
@@ -134,12 +78,12 @@
               v-show="!editing && wizardStep === 1"
               :account-counts="accountCounts"
               :account-type="form.type"
-              :account-type-choices="accountTypeChoices"
+              :account-type-choices="isMediaDomain ? mediaDomainAccountTypeChoices : accountTypeChoices"
               :cloning="cloning"
               :editing="editing"
               :open="open"
               :provider-code="form.providerCode"
-              :providers="providers"
+              :providers="isMediaDomain ? mediaDomainProviders : providers"
               :selected-protocol-profile="selectedProtocolProfile"
               :selected-provider="selectedProvider"
               @picker-expanded-change="providerPickerExpanded = $event"
@@ -166,7 +110,7 @@
                 :base-url-placeholder="baseUrlPlaceholder"
                 :editing="editing"
                 :form="form"
-                :model-options="modelOptions"
+                :model-options="isMediaDomain ? mediaDomainModelOptions : modelOptions"
                 :models-loading="modelsLoading"
                 :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
@@ -174,6 +118,7 @@
                 :protocol-code="selectedProtocolProfile?.protocolCode"
                 :protocol-version="selectedProtocolProfile?.protocolVersion"
                 :title="credentialTitle"
+                :variant="isMediaDomain ? 'media' : 'chat'"
                 @load-api-key-runtime="(force) => $emit('load-api-key-runtime', force)"
                 @model-options-open="$emit('model-options-open', $event)"
                 @model-options-search="$emit('model-options-search', $event)"
@@ -191,11 +136,11 @@
                 :is-open-a-i="isOpenAIOAuthForm"
                 :is-google-o-auth="form.type === 'google_oauth'"
                 :is-management-view="isManagementView"
-                :model-options="modelOptions"
+                :model-options="isMediaDomain ? mediaDomainModelOptions : modelOptions"
                 :models-loading="modelsLoading"
                 :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
-                :profile-default-endpoint-modes="defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
+                :profile-default-endpoint-modes="isMediaDomain ? [] : defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
                   provider: selectedProvider,
                   protocolProfile: selectedProtocolProfile
                 })"
@@ -208,6 +153,29 @@
                 @refresh-models="$emit('refresh-models')"
                 @model-options-open="$emit('model-options-open', $event)"
                 @model-options-search="$emit('model-options-search', $event)"
+              />
+
+              <!-- 媒体域 API Key 账户：支持模型从凭据组件内移到凭据区（与对话账户
+                   同一位置语义），域目录协议 token 过滤与空目录提示由该字段承接。
+                   必须排在 OAuth 的 v-if/v-else-if 链之后，避免打断分支相邻关系。 -->
+              <AccountMediaModelField
+                v-if="isMediaDomain && isApiKeyForm && !authorizedEditing"
+                :authorized-editing="authorizedEditing"
+                :capability-domain="capabilityDomain"
+                :form="form"
+                :model-options="mediaDomainModelOptions"
+                :model-syncing="modelSyncing"
+                :models-loading="modelsLoading"
+                :models-settled="modelsSettled"
+                :models-truncated="modelsTruncated"
+                @model-options-open="$emit('model-options-open', $event)"
+                @model-options-search="$emit('model-options-search', $event)"
+                @refresh-models="$emit('refresh-models')"
+              />
+
+              <AccountMediaSpeechCredentials
+                v-if="isMediaDomain && isVolcengineAudio && !authorizedEditing"
+                :form="form"
               />
 
               <section v-if="authorizedEditing" class="form-section readonly-config-section">
@@ -338,6 +306,7 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
+                  v-if="!isMediaDomain"
                   :open="advancedActiveKeys.includes('strategy')"
                   name="策略与模型"
                   :summary="strategyCardSummary"
@@ -378,6 +347,7 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
+                  v-if="!isMediaDomain"
                   :open="advancedActiveKeys.includes('stability')"
                   name="稳定性与锁死"
                   :summary="stabilityCardSummary"
@@ -458,6 +428,41 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
+                  v-if="isMediaDomain && capabilityDomain === 'image'"
+                  :open="advancedActiveKeys.includes('probe')"
+                  name="后台自动探测"
+                  :summary="probeCardSummary"
+                  :count="probeCardCount"
+                  :icon="HeartOutlined"
+                  tone="ok"
+                  @toggle="toggleBenchCard('probe')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
+                    <section class="form-section probe-toggle-row">
+                      <div class="probe-toggle-label">
+                        <span>后台自动探测</span>
+                        <a-tooltip title="关闭后系统不再自动检查/恢复本账户；手动测试和真实请求不受影响。">
+                          <QuestionCircleOutlined class="probe-toggle-help" />
+                        </a-tooltip>
+                      </div>
+                      <a-switch
+                        v-model:checked="form.backgroundProbeEnabled"
+                        :disabled="authorizedEditing"
+                        checked-children="开启"
+                        un-checked-children="关闭"
+                        @update:checked="handleBackgroundProbeToggle"
+                      />
+                    </section>
+                  </div>
+                </AccountAdvancedCard>
+
+                <AccountAdvancedCard
                   :open="advancedActiveKeys.includes('balance')"
                   name="余额与到期"
                   :summary="balanceCardSummary"
@@ -513,9 +518,9 @@
 
                 <AccountAdvancedCard
                   :open="advancedActiveKeys.includes('policy')"
-                  name="错误与响应规则"
-                  :summary="policyCardSummary"
-                  :count="policyCardCount"
+                  :name="isMediaDomain ? '错误处理策略' : '错误与响应规则'"
+                  :summary="isMediaDomain ? mediaPolicyCardSummary : policyCardSummary"
+                  :count="isMediaDomain ? errorPolicyRules.length : policyCardCount"
                   :icon="FlagOutlined"
                   tone="warn"
                   @toggle="toggleBenchCard('policy')"
@@ -535,6 +540,7 @@
                       />
 
                       <AccountResponseInspectionPolicyCard
+                        v-if="!isMediaDomain"
                         v-model:rules="responseInspectionRules"
                         :readonly="authorizedEditing"
                       />
@@ -552,6 +558,7 @@
               <!-- 与编辑态同款折叠摘要卡（AccountAdvancedCard 壳）；创建态不加载高级详情，卡体不含 advancedLoading/advancedPending 分支。 -->
               <div class="bench-cards">
                 <AccountAdvancedCard
+                  v-if="!isMediaDomain"
                   :open="advancedActiveKeys.includes('strategy')"
                   name="策略与模型"
                   :summary="strategyCardSummary"
@@ -586,6 +593,7 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
+                  v-if="!isMediaDomain"
                   :open="advancedActiveKeys.includes('stability')"
                   name="稳定性与锁死"
                   :summary="stabilityCardSummary"
@@ -660,6 +668,41 @@
                 </AccountAdvancedCard>
 
                 <AccountAdvancedCard
+                  v-if="isMediaDomain && capabilityDomain === 'image'"
+                  :open="advancedActiveKeys.includes('probe')"
+                  name="后台自动探测"
+                  :summary="probeCardSummary"
+                  :count="probeCardCount"
+                  :icon="HeartOutlined"
+                  tone="ok"
+                  @toggle="toggleBenchCard('probe')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
+                    <section class="form-section probe-toggle-row">
+                      <div class="probe-toggle-label">
+                        <span>后台自动探测</span>
+                        <a-tooltip title="关闭后系统不再自动检查/恢复本账户；手动测试和真实请求不受影响。">
+                          <QuestionCircleOutlined class="probe-toggle-help" />
+                        </a-tooltip>
+                      </div>
+                      <a-switch
+                        v-model:checked="form.backgroundProbeEnabled"
+                        :disabled="authorizedEditing"
+                        checked-children="开启"
+                        un-checked-children="关闭"
+                        @update:checked="handleBackgroundProbeToggle"
+                      />
+                    </section>
+                  </div>
+                </AccountAdvancedCard>
+
+                <AccountAdvancedCard
                   :open="advancedActiveKeys.includes('balance')"
                   name="余额与到期"
                   :summary="balanceCardSummary"
@@ -703,9 +746,9 @@
 
                 <AccountAdvancedCard
                   :open="advancedActiveKeys.includes('policy')"
-                  name="错误与响应规则"
-                  :summary="policyCardSummary"
-                  :count="policyCardCount"
+                  :name="isMediaDomain ? '错误处理策略' : '错误与响应规则'"
+                  :summary="isMediaDomain ? mediaPolicyCardSummary : policyCardSummary"
+                  :count="isMediaDomain ? errorPolicyRules.length : policyCardCount"
                   :icon="FlagOutlined"
                   tone="warn"
                   @toggle="toggleBenchCard('policy')"
@@ -730,13 +773,12 @@
             </section>
           </div>
         </div>
-      </template>
     </a-form>
 
     <template #footer>
       <div class="account-modal-footer">
         <a-button v-if="!oauthCreateTestHidden && !isMediaDomain" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
-        <template v-if="!editing && !isMediaDomain">
+        <template v-if="!editing">
           <a-button v-if="wizardStep > 1" @click="wizardStep -= 1">上一步</a-button>
           <a-button v-if="wizardStep < 3" @click="goToNextWizardStep">下一步</a-button>
         </template>
@@ -776,7 +818,8 @@ import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountProxyField from './AccountProxyField.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
-import AccountMediaForm from './AccountMediaForm.vue'
+import AccountMediaModelField from './AccountMediaModelField.vue'
+import AccountMediaSpeechCredentials from './AccountMediaSpeechCredentials.vue'
 import { statusText } from './accountFormatters'
 import {
   accountEndpointModeText,
@@ -787,7 +830,14 @@ import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './account
 import { accountModelMappingEndpointFamilyText } from './accountModelMappingProtocolMatrix'
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
+import {
+  allowedEndpointModesFor,
+  capabilityDomainAccountTypes,
+  mediaDomainModelProtocolTokens
+} from './accountCapabilityDomains'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
+import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
+import { isVolcengineProviderCode } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
@@ -811,7 +861,7 @@ const advancedActiveKeys = ref<string[]>([])
 const wizardStep = ref(1)
 
 // 供应商卡片墙展开状态（阶段一=独立供应商选择，配置区隐藏；阶段二=已选摘要 + 配置）。
-// 真值由 AccountFormSelector / AccountMediaForm 透传的 picker-expanded-change 事件驱动。
+// 真值由 AccountFormSelector 透传的 picker-expanded-change 事件驱动。
 const providerPickerExpanded = ref(true)
 
 // 阶段一：弹窗只呈现供应商卡片——标题不指向供应商、隐藏向导步骤指示与底部按钮区。
@@ -820,8 +870,8 @@ const providerSelectionStage = computed(() => !props.editing && !props.cloning &
 const displayTitle = computed(() => (providerSelectionStage.value ? '添加账户' : props.title))
 const modalFooter = computed(() => (providerSelectionStage.value ? null : undefined))
 
-// 编辑态 6 张折叠摘要卡的展开 key。
-const benchCardAllKeys = ['dispatch', 'strategy', 'stability', 'balance', 'schedule', 'policy']
+// 编辑态折叠摘要卡的展开 key（probe 仅 image 媒体域渲染）。
+const benchCardAllKeys = ['dispatch', 'strategy', 'stability', 'probe', 'balance', 'schedule', 'policy']
 
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
@@ -901,7 +951,8 @@ const props = withDefaults(defineProps<{
   testLoading: false
 })
 
-// 媒体域（video/audio/image）分发开关：三段式表单与对话双形态互斥。
+// 媒体域（video/audio/image）标志：对话/媒体共用同一双形态表单壳，媒体域只
+// 裁剪字段（供应商/类型按域矩阵过滤、插入域内模型与语音双值、隐藏对话专属卡）。
 const isMediaDomain = computed(() =>
   props.capabilityDomain === 'video'
   || props.capabilityDomain === 'audio'
@@ -941,6 +992,43 @@ const mediaProviders = computed(() => mergeAccountProviderDefinitions(
   mediaProviderDefinitions.value ?? []
 ))
 
+// 媒体域供应商/类型按域矩阵过滤（与供应商卡片墙同一判据）：只列该域允许集
+// 非空的供应商与账户类型（minimax 无 chat 域、deepseek/anthropic 无媒体域）。
+const mediaDomainProviders = computed(() => mediaProviders.value.filter((provider) => (
+  provider.protocolProfiles.some((profile) => (
+    capabilityDomainAccountTypes({
+      capabilityDomain: props.capabilityDomain,
+      providerCode: provider.code,
+      profile
+    }).length > 0
+  ))
+)))
+
+const mediaDomainAccountTypeChoices = computed(() => {
+  const profileId = props.selectedProtocolProfile?.id ?? ''
+  const allowedTypes = capabilityDomainAccountTypes({
+    capabilityDomain: props.capabilityDomain,
+    providerCode: props.form.providerCode,
+    profile: props.selectedProtocolProfile
+  })
+  return props.accountTypeChoices.filter((choice) => (
+    allowedTypes.includes(choice.type)
+    && (!profileId || choice.providerProtocolProfileId === profileId)
+  ))
+})
+
+// 媒体域支持模型候选的协议 token 二次过滤（服务端已按域目录 mode 过滤，
+// 这里与 model_catalog 种子同源再保险）。
+const mediaDomainModelOptions = computed(() => {
+  const tokens = new Set(mediaDomainModelProtocolTokens(props.capabilityDomain))
+  if (!tokens.size) return props.modelOptions
+  return props.modelOptions.filter((option) =>
+    option.supportedApiProtocols?.some((protocol) => tokens.has(protocol)))
+})
+
+const isVolcengineAudio = computed(() =>
+  props.capabilityDomain === 'audio' && isVolcengineProviderCode(props.form.providerCode))
+
 // 能力域上下文同步（D3）：域由路由注入、不是可编辑字段。表单在新建/编辑/克隆
 // 装载路径会被整块 Object.assign 重置，这里在弹窗打开与结构字段变化后重放注入，
 // 保证保存时刻 payload 携带的域与当前路由域一致（保存按钮在装载完成前禁用，
@@ -962,6 +1050,38 @@ watch(
   { immediate: true }
 )
 
+// 媒体域默认值归一（2026-11-11 裁决：媒体账户无上游接口能力开关）：
+// supported_endpoint_modes 恒等于该供应商该域允许集全量，新建/编辑装载/克隆/
+// 切换供应商或类型都重放；新建态同时落域默认检查形态与 active 状态。
+watch(
+  [
+    open,
+    isMediaDomain,
+    () => props.loading,
+    () => props.form.providerCode,
+    () => props.form.providerProtocolProfileId,
+    () => props.form.type
+  ],
+  () => {
+    if (!open.value || !isMediaDomain.value || !props.form.type) return
+    const allowed = allowedEndpointModesFor({
+      capabilityDomain: props.capabilityDomain,
+      providerCode: props.form.providerCode,
+      profile: props.selectedProtocolProfile,
+      accountType: props.form.type
+    })
+    if (!allowed.length) return
+    applyMediaCreateDefaults(props.form, {
+      capabilityDomain: props.capabilityDomain,
+      providerCode: props.form.providerCode,
+      profile: props.selectedProtocolProfile,
+      type: props.form.type,
+      editing: props.editing
+    })
+  },
+  { immediate: true }
+)
+
 // OAuth 账户新建态没有可测凭据（授权码/token 一次性，落库后才能测）：
 // 隐藏底部测试按钮，编辑态（accountDetail 已加载）保留。
 const oauthCreateTestHidden = computed(() => props.isOAuthForm && !props.accountDetail?.id)
@@ -974,7 +1094,10 @@ const publicCredentialItems = computed(() => {
     credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
     credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
     credentialItem('plan_type', '套餐类型', credentials.plan_type),
-    credentialItem('supported_endpoint_modes', '上游接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))
+    // 媒体域无用户可配置能力集（恒等于域允许集），只读区不展示。
+    ...(isMediaDomain.value
+      ? []
+      : [credentialItem('supported_endpoint_modes', '上游接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))])
   ]
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
 })
@@ -1001,8 +1124,8 @@ const expeditedRecoveryNote = computed(() => {
 
 // ---- 后台自动探测总开关（总开关设计 §4/§7 手动模式）----
 
-// 手动模式：总开关关闭（image 域走 AccountMediaForm 分支并经
-// background-probe-toggle 事件复用本 handler；audio/video 媒体域不渲染开关）。
+// 手动模式：总开关关闭（image 媒体域在「后台自动探测」卡渲染开关；
+// audio/video 媒体域不渲染开关，对话域在稳定性卡渲染）。
 const manualProbeMode = computed(() => props.form.backgroundProbeEnabled === false)
 
 const continuousProbeTooltipText = computed(() => manualProbeMode.value
@@ -1174,6 +1297,13 @@ const scheduleCardCount = computed(() => (props.form.availabilitySchedule.enable
 const policyCardSummary = computed(() =>
   `错误 ${errorPolicyRules.value.length} 条 · 响应 ${responseInspectionRules.value.length} 条`)
 const policyCardCount = computed(() => errorPolicyRules.value.length + responseInspectionRules.value.length)
+// 媒体域只渲染错误处理策略，不渲染响应检查策略。
+const mediaPolicyCardSummary = computed(() => `错误 ${errorPolicyRules.value.length} 条`)
+
+// image 媒体域专属「后台自动探测」卡摘要（audio/video 不渲染该卡）。
+const probeCardSummary = computed(() =>
+  `后台自动探测${props.form.backgroundProbeEnabled ? '开启' : '关闭'}`)
+const probeCardCount = computed(() => (props.form.backgroundProbeEnabled ? 0 : 1))
 
 function toggleBenchCard(key: string): void {
   const index = advancedActiveKeys.value.indexOf(key)

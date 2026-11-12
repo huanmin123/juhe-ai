@@ -1461,6 +1461,14 @@ func assertImportCapabilityDomainBounds(source *NormalizedImportAccount, provide
 	declared := StoredEndpointModes(source.credentials["supported_endpoint_modes"])
 	if outliers := accountscore.OutOfDomainModes(declared, allowed); len(outliers) > 0 {
 		source.Push(accountscore.CapabilityDomainOutlierError(source.capabilityDomain, outliers).Error())
+		return
+	}
+	// 媒体域（video/audio/image）没有用户可配置的上游接口能力开关
+	// （2026-11-11 裁决）：最终声明集恒等于允许集全量，包内窄集合静默展开；
+	// 域外值已在上一步报冲突，不静默裁剪非法能力。
+	if accountscore.CapabilityDomainIsMedia(source.capabilityDomain) {
+		source.credentials["supported_endpoint_modes"] = accountscore.AnySlice(
+			accountscore.EffectiveEndpointModesForDomain(source.capabilityDomain, allowed, declared))
 	}
 }
 

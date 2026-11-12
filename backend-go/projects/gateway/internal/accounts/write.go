@@ -600,6 +600,13 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if outliers := accountscore.OutOfDomainModes(declaredModes, allowedModes); len(outliers) > 0 {
 		return nil, accountscore.CapabilityDomainOutlierError(domain, outliers)
 	}
+	// 媒体域（video/audio/image）没有用户可配置的上游接口能力开关
+	// （2026-11-11 裁决）：最终声明集恒等于该上下文允许集全量，显式窄集合
+	// 静默展开（域外值已在上一步 400）。
+	if accountscore.CapabilityDomainIsMedia(domain) {
+		declaredModes = accountscore.EffectiveEndpointModesForDomain(domain, allowedModes, declaredModes)
+		credentials["supported_endpoint_modes"] = anyStrings(declaredModes)
+	}
 	// Gemini 兼容校验联动（计划 §服务端统一校验）：chat 域 gemini（native
 	// 档案，api_key/google_oauth）保持「至少一种对话能力」；媒体域 gemini
 	// 走 native 档案域内允许集，不适用对话能力要求；chat 域其他供应商不新增

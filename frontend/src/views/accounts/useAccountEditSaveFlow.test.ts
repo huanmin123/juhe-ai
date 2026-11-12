@@ -34,7 +34,7 @@ describe('managedOAuthCreatedAccountText（方案 B：创建成功转编辑）',
 
 // ---- 方案 B 转编辑谓词：托管 OAuth 创建成功后的分域行为（B1） ----
 // gemini google_oauth 是唯一同时出现在 chat 域与媒体域的托管创建入口：
-// 媒体域经 AccountMediaForm 复用同一 saveAccount，转编辑必须只在 chat 域生效。
+// 媒体域经 AccountEditModal 复用同一 saveAccount，转编辑必须只在 chat 域生效。
 
 function mountedOAuthCreateFlow(capabilityDomain: AccountFormModel['capabilityDomain']) {
   const reopenCreatedAccountForEdit = vi.fn(async () => {})

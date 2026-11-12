@@ -288,6 +288,23 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("video 域健康检查默认应为 video_create：%s", mode)
 	}
 
+	// 媒体域无上游接口能力开关（2026-11-11）：显式提交窄集合（video_get）时，
+	// 凭据声明集与连接行事实源都归一为该域允许集全量。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		m2CreateBody("m2-video-narrow", "gpt", "prof-gpt", "api_key", "video", apiKeyCredentials(),
+			[]string{"video_get"}))
+	if code != http.StatusCreated {
+		t.Fatalf("gpt video 窄集合创建应 201（服务端归一全量）：%d %v", code, payload)
+	}
+	narrowVideoID := dataMap(t, payload)["id"].(string)
+	if modes := m2AccountModes(t, env, narrowVideoID); !unorderedStringListEqual(modes, []string{"video_create", "video_get", "video_content", "video_cancel"}) {
+		t.Fatalf("video 窄集合应归一为允许集全量：%v", modes)
+	}
+	narrowConnectionID := env.queryCell(t, `SELECT id FROM account_connections WHERE account_id = ?`, narrowVideoID)
+	if got := env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ?`, narrowConnectionID); got != 4 {
+		t.Fatalf("连接行事实源应写入四值全量，实际 %d 条", got)
+	}
+
 	// video 域 modes 缺省 → 按域默认集（volcengine 词表含视频四值组）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-video-absent", "volcengine", volcengineOpenAIV1ProfileID, "api_key", "video",
@@ -300,14 +317,26 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("video 域缺省 modes 应落四值组：%v", modes)
 	}
 
-	// audio 域 modes 缺省 → audio_speech。
+	// audio 域 modes 缺省 → 允许集全量（媒体账户无能力开关，2026-11-11）。
 	// B1 断点批（§1.1 组合表）：volcengine_ark 无 audio 域，audio 缺省 modes 臂
-	// 改走 gpt（gpt_openai_v1 audio lane 注册 audio_speech），断言语义不变。
-	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+	// 改走 gpt（gpt_openai_v1 audio lane 注册语音/长音频/短转写/实时会话）。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-audio-absent", "gpt", "prof-gpt", "api_key", "audio",
 			map[string]any{"api_key": "ak-volc-m2", "base_url": "https://api.openai.com/v1"}, nil))
 	if code != http.StatusCreated {
-		t.Fatalf("volcengine audio 创建应 201：%d", code)
+		t.Fatalf("gpt audio 创建应 201：%d %v", code, payload)
+	}
+	audioAbsentID := dataMap(t, payload)["id"].(string)
+	wantAudioFull := []string{
+		"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+		"audio_transcription_json", "realtime_session",
+	}
+	if modes := m2AccountModes(t, env, audioAbsentID); !unorderedStringListEqual(modes, wantAudioFull) {
+		t.Fatalf("audio 缺省应落允许集全量：%v", modes)
+	}
+	audioConnectionID := env.queryCell(t, `SELECT id FROM account_connections WHERE account_id = ?`, audioAbsentID)
+	if got := env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ?`, audioConnectionID); got != len(wantAudioFull) {
+		t.Fatalf("音频连接行事实源应为全量 %d 条，实际 %d 条", len(wantAudioFull), got)
 	}
 
 	// chat 域 modes 缺省 → 按域默认集播种（BUG-0323 已根治：媒体优先供应商
@@ -739,6 +768,21 @@ func TestM2PatchStrictDeclarationSubset(t *testing.T) {
 		t.Fatalf("volcengine chat 删键应重置为词表内基础对话对：%v", modes)
 	}
 
+	// 媒体域 PATCH（2026-11-11）：显式窄集合被归一为允许集全量；域外值仍 400。
+	m2SeedDomainAccountWithModes(t, env, "acc-m2-media-narrow", adminID, "m2-media-narrow",
+		"minimax", minimaxOpenAIV1ProfileID, "video", []string{"video_get"})
+	code, payload = patchAccount("acc-m2-media-narrow", `{"expectedConfigRevision":1,"credentialsPatch":{"supported_endpoint_modes":["video_get"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("媒体域窄集合 PATCH 应 200（服务端归一全量）：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, "acc-m2-media-narrow"); !unorderedStringListEqual(modes, minimaxVideoDefaults) {
+		t.Fatalf("媒体域 PATCH 应归一为允许集全量：%v want %v", modes, minimaxVideoDefaults)
+	}
+	code, payload = patchAccount("acc-m2-media-narrow", `{"expectedConfigRevision":2,"credentialsPatch":{"supported_endpoint_modes":["chat_json"]}}`)
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "账户能力域视频不支持上游接口能力") {
+		t.Fatalf("媒体域域外值仍应 400：%d %v", code, payload)
+	}
+
 	// 域不可变：携带 ≠ 现值 → 400「能力域不可更改」。
 	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"capabilityDomain":"video"}`)
 	if code != http.StatusBadRequest || m2Message(payload) != "能力域不可更改" {
@@ -874,13 +918,13 @@ func TestM2ImportCapabilityDomainStrict(t *testing.T) {
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 
-	videoModes := []any{"video_create", "video_get", "video_content", "video_cancel"}
 	mixedAccount := w2APIKeyAccount("m2-导入混合", "导入分组")
 	mixedAccount["credentials"].(map[string]any)["supported_endpoint_modes"] = []any{"chat_json", "video_create"}
 	videoAccount := w2APIKeyAccount("m2-导入视频", "导入分组")
-	videoAccount["credentials"].(map[string]any)["supported_endpoint_modes"] = videoModes
+	// 媒体域无能力开关（2026-11-11）：包内窄集合在导入落库时归一为允许集全量。
+	videoAccount["credentials"].(map[string]any)["supported_endpoint_modes"] = []any{"video_get"}
 	// B1 断点批：视频域账户的连接集合改写为 video lane 全集 + video_create 检查形态。
-	videoAccount["connections"] = []any{map[string]any{"connectionPresetCode": "gpt_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": videoModes, "enabled": true}}
+	videoAccount["connections"] = []any{map[string]any{"connectionPresetCode": "gpt_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"video_get"}, "enabled": true}}
 	videoAccount["healthCheckConnectionPresetCode"] = "gpt_openai_v1"
 	videoAccount["healthCheckEndpointMode"] = "video_create"
 	videoAccount["healthCheckModel"] = "gpt-4o-mini"
@@ -931,7 +975,7 @@ func TestM2ImportCapabilityDomainStrict(t *testing.T) {
 		t.Fatalf("导入视频账户应落 video 域：%s", domain)
 	}
 	if modes := m2AccountModes(t, env, videoRowID); !unorderedStringListEqual(modes, []string{"video_create", "video_get", "video_content", "video_cancel"}) {
-		t.Fatalf("导入视频账户声明集应保留：%v", modes)
+		t.Fatalf("导入视频账户窄集合应归一为允许集全量：%v", modes)
 	}
 	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, videoRowID); mode != "video_create" {
 		t.Fatalf("导入视频账户健康检查默认应为 video_create：%s", mode)

@@ -50,7 +50,7 @@ JUHE_AI_REDIS_URL=redis://127.0.0.1:6379
 
 新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。F3 审计与 F4 操作日志已完全进程内写入（去跨进程战役第四刀），不存在独立的输入端点密钥；审计派发、操作日志写入与 `JUHE_AI_SECRET` 派生的 owner lease 全部在 gateway 进程内完成。项目运行时不承担旧数据迁移或旧结构兼容。存储按功能域分库：各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时回退 `JUHE_AI_POSTGRES_URL`；`JUHE_AI_DATA_DIR` 及其派生目录（usage-record-spool、codex-context、logs、chat-assets、audit-blob）仍是普通文件目录契约，不承载任何数据库文件。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
-发布包启动器会为 Go 子进程设置 `TZ=UTC`。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone（在管理后台「系统设置」中配置，持久化于 `system_settings`）。
+发布包启动器会为 Go 子进程设置 `TZ=UTC`，进程启动时还会固定 `PGTZ=UTC`（数据库会话时区，pgx 映射为 `timezone=UTC`）；不要在连接串里写 `timezone=` 覆盖。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone（在管理后台「系统设置」中配置，持久化于 `system_settings`）。
 
 启动脚本先启动 `juhe-ai-go-gateway` 并等待 owner health `3306 /health` 返回 `200`，然后确认业务端口 `/__aisys__/api/health` 返回 `200`；随后启动 `juhe-ai-go-jobs` 并确认 `3305 /health` 返回 `200`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）和 `backend/logs/juhe-ai-{gateway,jobs}.log`。
 

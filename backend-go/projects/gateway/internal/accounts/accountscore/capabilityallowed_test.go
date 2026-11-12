@@ -54,6 +54,7 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		{name: "deepseek openai+image 矩阵拒绝", domain: "image", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI, want: []string{}},
 		{name: "xai+audio 矩阵拒绝", domain: "audio", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{}},
 		{name: "xai+image 矩阵开通（2026-10-31 实测出图）", domain: "image", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{"images_json"}},
+		{name: "qwen+image 矩阵开通（2026-11-11 Qwen-Image 实测出图）", domain: "image", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"images_json"}},
 		{name: "gemini openai-chat+video 矩阵拒绝", domain: "video", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
 		{name: "gemini openai-chat+audio 矩阵拒绝", domain: "audio", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
 		{name: "gemini openai-chat+image 矩阵拒绝", domain: "image", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
@@ -134,13 +135,13 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 	if got := DefaultEndpointModesForDomain("audio", "qwen", "api_key", qwen); !reflect.DeepEqual(got, []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}) {
 		t.Fatalf("qwen audio 默认集应为长音频四值：%v", got)
 	}
-	if got := DefaultEndpointModesForDomain("audio", "volcengine", "api_key", volcengine); !reflect.DeepEqual(got, []string{"audio_speech"}) {
-		t.Fatalf("volcengine audio 默认集应为 audio_speech：%v", got)
+	if got := DefaultEndpointModesForDomain("audio", "volcengine", "api_key", volcengine); !reflect.DeepEqual(got, []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}) {
+		t.Fatalf("volcengine audio 默认集应为允许集全量（语音 + 长音频四值）：%v", got)
 	}
-	// v8-A：音频域默认集维持现状语义，不含新移入的短转写/实时会话（默认集
-	// 不收，显式勾选承担；gpt 词表含两项但默认集仍只落 audio_speech）。
-	if got := DefaultEndpointModesForDomain("audio", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"audio_speech"}) {
-		t.Fatalf("gpt audio 默认集应为 audio_speech（v8-A 不收新移入两项）：%v", got)
+	// 2026-11-11 裁决：媒体账户无上游接口能力开关，默认即全部支持；gpt 音频域
+	// 写侧词表含长音频任务、短转写与实时会话，默认集一并纳入。
+	if got := DefaultEndpointModesForDomain("audio", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "audio_transcription_json", "realtime_session"}) {
+		t.Fatalf("gpt audio 默认集应为允许集全量：%v", got)
 	}
 	if got := DefaultEndpointModesForDomain("image", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"images_json"}) {
 		t.Fatalf("gpt image 默认集应为 images_json：%v", got)

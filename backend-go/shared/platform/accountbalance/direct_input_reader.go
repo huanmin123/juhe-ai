@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/dbtime"
 )
 
 // PostgresDirectInputReader reads a repeatable, read-only snapshot of the
@@ -179,7 +181,7 @@ func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time)
 	var id, systemID, provider, typ, status, credentials, configJSON, fingerprint sql.NullString
 	var revision, dispatch int64
 	var schedulable, enabled sql.NullInt64
-	var next sql.NullString
+	var next dbtime.Nullable
 	var proxyRequired, proxyID, proxyType, proxyHost, proxyUser, proxyPassword sql.NullString
 	var proxyPort sql.NullInt64
 	var proxyEnabled sql.NullBool
@@ -215,14 +217,7 @@ func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time)
 		config = QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}
 	}
 	candidate := Candidate{AccountID: id.String, SystemAccountID: systemID.String, InputVersion: dispatch, ConfigRevision: revision, Provider: candidateProvider(provider), Type: typ.String, Status: status.String, Schedulable: schedulable.Valid && schedulable.Int64 == 1, BalanceEnabled: enabled.Valid && enabled.Int64 == 1, FirstProbe: !enabled.Valid || enabled.Int64 == 0, Recovery: !next.Valid && enabled.Valid && enabled.Int64 == 1, APIKeyCount: len(keys), APIKey: CredentialEnvelope{Kind: "api_key", Ciphertext: credentials.String}, CredentialFingerprint: strings.TrimSpace(fingerprint.String), ConfigJSON: strings.TrimSpace(configJSON.String), ProxyProfileID: strings.TrimSpace(proxyID.String), BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), Config: config, IssuedAt: now, ExpiresAt: now.Add(r.ttl)}
-	if next.Valid {
-		value, err := time.Parse(time.RFC3339Nano, next.String)
-		if err != nil {
-			return Candidate{}, fmt.Errorf("J2 account=%s next_refresh_at 非 RFC3339: %w", id.String, err)
-		}
-		value = value.UTC()
-		candidate.NextRefreshAt = &value
-	}
+	candidate.NextRefreshAt = next.Ptr()
 	if proxyPoolID.Valid && strings.TrimSpace(proxyPoolID.String) != "" {
 		// 池绑定（代理池设计 §7.5/§10.3）：只读任务不补租约；无有效租约、
 		// 池停用或成员不可分配时该候选明确失败，绝不直连或用旧成员。
