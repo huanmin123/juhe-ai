@@ -76,3 +76,12 @@ backend-go/docker/single-server/build/bin/
 /backend-go/projects/jobs/data/
 /backend-go/projects/jobs/cmd/juhe-ai-jobs/data/
 /backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/data/*.key
+
+# Go 编译产物：go build 在任意工作目录下以二进制名落盘，一律不入库
+# （2026-11-13 清理误入库的 backend-go/juhe-ai-gateway、
+# backend-go/projects/gateway/juhe-ai-gateway、
+# backend-go/projects/maintenance/juhe-ai-maintenance）
+/backend-go/juhe-ai-gateway
+/backend-go/projects/gateway/juhe-ai-gateway
+/backend-go/projects/jobs/juhe-ai-jobs
+/backend-go/projects/maintenance/juhe-ai-maintenance
