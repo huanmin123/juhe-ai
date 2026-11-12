@@ -90,11 +90,11 @@ func (s *OverlayRedisStore) namespaced(key string) string {
 	return redisNamespacedKey(key, s.namespace)
 }
 
-// concurrencyKey 指向 gateway 并发计数 HASH（DomainConcurrency 域，键名与
-// gatewayclientip.RedisAccountConcurrency 写入面一致）：v2 槽位键仅 Node 时代
-// 存在，Go 网关不再写，jobs 必须读 live 键才能看到当前并发。
+// concurrencyKey 指向 gateway 并发槽集合（DomainConcurrency 域，键名与
+// gatewayclientip.RedisAccountConcurrency 的 slotsKey 一致：ZSET，member 为
+// "<lane>:<token>"、score 为槽租约到期毫秒；并发数 = 清理过期成员后的 ZCARD）。
 func (s *OverlayRedisStore) concurrencyKey(accountID string) string {
-	return redisNamespacedKey("juhe-ai:gateway-account-concurrency:account-concurrency:"+accountID, s.concurrencyNamespace)
+	return redisNamespacedKey("juhe-ai:gateway-account-concurrency:account-concurrency:"+accountID+":slots", s.concurrencyNamespace)
 }
 
 func (s *OverlayRedisStore) dirtyKey() string {
@@ -122,13 +122,15 @@ end
 return results
 `
 
-// gatewayConcurrencySnapshotScript 读 gateway live 并发 HASH：每个 key 返回
-// [total, PTTL 毫秒]。PTTL 作为 next_reconcile_at（key 级 6h 泄漏兜底 TTL 到期
-// 时重新对账）；key 不存在时 total=0、PTTL=-2。
+// gatewayConcurrencySnapshotScript 读 gateway 并发槽集合：每个 key 先清理
+// 过期租约，再返回 [ZCARD, PTTL 毫秒]。PTTL 作为 next_reconcile_at（键级
+// 回收兜底；槽租约到期即不再计入）；key 不存在时 total=0、PTTL=-2。
 const gatewayConcurrencySnapshotScript = `
+local now_ms = tonumber(ARGV[1])
 local results = {}
 for i = 1, #KEYS do
-  local total = tonumber(redis.call('HGET', KEYS[i], 'total') or '0')
+  redis.call('ZREMRANGEBYSCORE', KEYS[i], '-inf', now_ms)
+  local total = redis.call('ZCARD', KEYS[i])
   local ttl = redis.call('PTTL', KEYS[i])
   table.insert(results, total)
   table.insert(results, ttl)
@@ -219,9 +221,9 @@ func (s *OverlayRedisStore) Acknowledge(ctx context.Context, entries []opsjobs.O
 	return s.client.Eval(ctx, acknowledgeScript, []string{s.dirtyKey(), s.generationKey()}, args...).Err()
 }
 
-// LoadSnapshots 读 gateway live 并发 HASH（DomainConcurrency 域）：返回当前
-// total 并发与 key 剩余 TTL（作为 nextReconcileAt）。分批 100，与 jobs 投影
-// 批量一致；不再依赖 Node 时代 account-concurrency-v2 槽位 ZSET。
+// LoadSnapshots 读 gateway 并发槽集合（DomainConcurrency 域，ZSET）：先清理
+// 过期租约成员再返回 ZCARD 与 key 剩余 TTL（作为 nextReconcileAt）。分批
+// 100，与 jobs 投影批量一致。
 func (s *OverlayRedisStore) LoadSnapshots(ctx context.Context, accountIDs []string) ([]opsjobs.OverlaySnapshot, error) {
 	ids, err := normalizedIDList(accountIDs)
 	if err != nil {
@@ -238,7 +240,7 @@ func (s *OverlayRedisStore) LoadSnapshots(ctx context.Context, accountIDs []stri
 		for _, accountID := range chunk {
 			keys = append(keys, s.concurrencyKey(accountID))
 		}
-		raw, err := s.client.Eval(ctx, gatewayConcurrencySnapshotScript, keys).Result()
+		raw, err := s.client.Eval(ctx, gatewayConcurrencySnapshotScript, keys, time.Now().UnixMilli()).Result()
 		if err != nil {
 			return nil, err
 		}

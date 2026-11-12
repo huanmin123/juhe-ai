@@ -222,10 +222,21 @@ type accountConcurrencyTracker interface {
 	ConsumeRPM(ctx context.Context, accountID string, rpmLimit int) (bool, int, int64, error)
 }
 
-// redisAccountConcurrencySlotTTL 是 Redis 并发槽的泄漏兜底 TTL。正常请求
-// 结束时 Release 会立即递减；TTL 只覆盖进程崩溃/释放丢失，取值需大于最长
-// SSE/视频请求时长，同时避免故障后永久占槽。
-const redisAccountConcurrencySlotTTL = 6 * time.Hour
+// redisAccountConcurrencySlotTTL 是 Redis 并发槽的租约时长（槽集合中成员的
+// score = 到期时刻）。正常请求结束时 Release 立即 ZREM；进程崩溃、release
+// RPC 超时、acquire EVAL at-most-once 等异常窗口由租约到期自动回收，不再依赖
+// 6h 键级泄漏兜底。取值覆盖单请求墙钟上限（默认 270s，媒体/长流留足余量）；
+// realtime 长连接在 WS ping 周期调用 slot.Refresh 续租。
+const redisAccountConcurrencySlotTTL = 30 * time.Minute
+
+// redisAccountConcurrencyAutoRefreshInterval / Max 是普通 HTTP 请求的槽自动
+// 续租节奏：租约 30m，每 20m 续一次，最多 12 次（约 4h）；覆盖图片 attempt
+// 默认 1h 上限与常规长流。超过该时长的已提交 SSE 不再由后台续租（realtime
+// 由 WS ping 单独续租），槽到期后少计并发，作为已知边界登记。
+const (
+	redisAccountConcurrencyAutoRefreshInterval = 20 * time.Minute
+	redisAccountConcurrencyAutoRefreshMax      = 12
+)
 
 // chainConcurrencyStore adapts the account concurrency tracker onto the
 // dispatch AccountConcurrencyStore port. Production uses the Redis driver so
@@ -313,10 +324,9 @@ func (s *chainConcurrencyStore) TryAcquireAsync(ctx context.Context, accountID s
 			redisAccountConcurrencySlotTTL.Milliseconds(), concurrencyLimit, laneLimit, options.RPMLimit)
 		if err != nil {
 			// EVAL 单次往返的 at-most-once 窗口：脚本可能已在 Redis 生效而
-			// 客户端只拿到超时/断连错误，此槽没有 Release 闭包可归还，只能
-			// 依赖 key TTL 回收。记录 WARN 以便对账定位（此路径不是 release
-			// 失败，正常不触发 "release failed" 日志）。
-			slog.Warn("account concurrency Redis acquire failed; slot may be leaked until TTL",
+			// 客户端只拿到超时/断连错误，此槽没有 Release 闭包可归还；槽集合
+			// 的 30m 租约会在到期后自动回收，无需对账。记录 WARN 以便定位。
+			slog.Warn("account concurrency Redis acquire failed; slot lease will recover",
 				"accountId", accountID, "lane", options.Lane, "error", err)
 			return gatewaydispatch.ConcurrencySlot{}, err
 		}
@@ -339,18 +349,74 @@ func (s *chainConcurrencyStore) TryAcquireAsync(ctx context.Context, accountID s
 	slot.Acquired = true
 	accountIDCopy := accountID
 	laneCopy := options.Lane
-	slot.Release = func() {
-		switch tracker := s.tracker.(type) {
-		case *gatewayclientip.MemoryAccountConcurrency:
-			tracker.Release(accountIDCopy, laneCopy)
-		case *gatewayclientip.RedisAccountConcurrency:
-			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if err := tracker.ReleaseAccountConcurrency(releaseCtx, accountIDCopy, laneCopy); err != nil {
-				slog.Warn("account concurrency Redis release failed; slot TTL will recover",
-					"accountId", accountIDCopy, "lane", laneCopy, "error", err)
-			}
+	tokenCopy := outcome.Token
+	redisTracker, isRedis := s.tracker.(*gatewayclientip.RedisAccountConcurrency)
+
+	// refreshSlot 续租当前槽：realtime WS ping 与普通 HTTP 长请求自动续租
+	// 共用。槽已被释放或租约过期时 Refresh 返回 false，不复活。
+	refreshSlot := func() {
+		if !isRedis || tokenCopy == "" {
+			return
 		}
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		refreshed, err := redisTracker.RefreshAccountConcurrency(refreshCtx, accountIDCopy, laneCopy, tokenCopy,
+			redisAccountConcurrencySlotTTL.Milliseconds())
+		if err != nil {
+			slog.Warn("account concurrency Redis refresh failed; slot lease will recover",
+				"accountId", accountIDCopy, "lane", laneCopy, "error", err)
+			return
+		}
+		if !refreshed {
+			// Redis 重启/槽被清理；会话仍在跑但不再计入并发（宁可少计，
+			// 不重新占槽），留痕便于排障。
+			slog.Warn("account concurrency Redis slot missing on refresh",
+				"accountId", accountIDCopy, "lane", laneCopy)
+		}
+	}
+	slot.Refresh = refreshSlot
+
+	stopAutoRefresh := make(chan struct{})
+	if isRedis {
+		// 普通 HTTP 请求的后台续租：租约 30m，每 20m 续一次，最多 12 次。
+		// release 时关闭；进程崩溃/漏释放时 goroutine 随最大次数自然退出，
+		// 槽租约到期回收，不会无限续命。
+		go func() {
+			ticker := time.NewTicker(redisAccountConcurrencyAutoRefreshInterval)
+			defer ticker.Stop()
+			for tick := 0; tick < redisAccountConcurrencyAutoRefreshMax; tick++ {
+				select {
+				case <-ticker.C:
+					refreshSlot()
+				case <-stopAutoRefresh:
+					return
+				}
+			}
+		}()
+	}
+	var releaseOnce sync.Once
+	slot.Release = func() {
+		releaseOnce.Do(func() {
+			close(stopAutoRefresh)
+			switch tracker := s.tracker.(type) {
+			case *gatewayclientip.MemoryAccountConcurrency:
+				tracker.Release(accountIDCopy, laneCopy)
+			case *gatewayclientip.RedisAccountConcurrency:
+				// ZREM 幂等：首次 3s 超时后用 1s 重试一次，覆盖「脚本已执行但
+				// RPC 超时」的 release 丢失窗口；仍失败则由槽租约到期回收。
+				release := func(timeout time.Duration) error {
+					releaseCtx, cancel := context.WithTimeout(context.Background(), timeout)
+					defer cancel()
+					return tracker.ReleaseAccountConcurrency(releaseCtx, accountIDCopy, laneCopy, tokenCopy)
+				}
+				if err := release(3 * time.Second); err != nil {
+					if retryErr := release(time.Second); retryErr != nil {
+						slog.Warn("account concurrency Redis release failed; slot lease will recover",
+							"accountId", accountIDCopy, "lane", laneCopy, "error", retryErr)
+					}
+				}
+			}
+		})
 	}
 	return slot, nil
 }

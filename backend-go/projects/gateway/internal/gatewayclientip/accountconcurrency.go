@@ -27,14 +27,14 @@ type AccountConcurrencySource interface {
 	// LoadAccountCurrentConcurrencyByLane mirrors
 	// loadAccountCurrentConcurrencyByIdsAsync(ids, lane).
 	LoadAccountCurrentConcurrencyByLane(ctx context.Context, accountIDs []string, lane string) (map[string]int, error)
-	// CurrentAccountConcurrency mirrors getAccountCurrentConcurrency — the
-	// process-local synchronous read (memory driver only).
+	// CurrentAccountConcurrency 返回单账户并发快照（同步读面：内存驱动直接
+	// 读 map；Redis 驱动清理过期槽后 ZCARD，失败按 0 降级）。
 	CurrentAccountConcurrency(accountID string, lane string) int
 	// LoadAccountRPMByID 批量读取账户 RPM 窗口计数（AI 账户每分钟请求上限
 	// 设计 §5.2：派发容量/忙判定消费）。
 	LoadAccountRPMByID(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error)
 	// CurrentAccountRPM 返回单账户 RPM 窗口快照（本地驱动的同步读取，与
-	// CurrentAccountConcurrency 同层；Redis 驱动读 HASH）。
+	// CurrentAccountConcurrency 同层；Redis 驱动读独立 RPM HASH）。
 	CurrentAccountRPM(accountID string) AccountRPMState
 	// SubscribeAccountConcurrencyRelease mirrors
 	// subscribeAccountConcurrencyRelease; the returned func unsubscribes.
@@ -94,6 +94,9 @@ type AccountConcurrencyAcquireOutcome struct {
 	RPMCurrent   int
 	RPMLimit     int
 	RPMResetAtMs int64
+	// Token 是 Redis 驱动本次占位的唯一槽标识（release/refresh 凭它定位
+	// ZSET 成员）；内存驱动为空。
+	Token string
 }
 
 // rpmWindowResetAtMs 返回 RPM 窗口结束时刻（自然分钟固定窗口，设计 §4.2）。

@@ -81,7 +81,7 @@ RPM 按每次真实向上游出站的尝试计 1 次，不按客户端请求或�
 自然分钟固定窗口：`bucket = floor(nowMs / 60000)`，窗口结束时刻 `(bucket+1)*60000`。
 
 - 账户计数器保存 `rpmBucket` 与 `rpmCount`；读取或判定时发现 `rpmBucket != 当前 bucket`，视为 `count = 0` 并就地重置。
-- Redis 实现使用同一 HASH 的 `rpm_bucket` / `rpm_count` 字段，`PEXPIRE` 沿用并发 acquire 脚本的 TTL（120000ms），窗口滚动后旧字段自然过期。
+- Redis 实现使用独立 RPM HASH 的 `rpm_bucket` / `rpm_count` 字段（与并发槽 ZSET 分离），键 TTL 只保留 2 个窗口（120000ms），窗口滚动后旧字段自然过期。
 - 不采用 60 秒滑动窗口：精确滑动窗口需要保存窗口内每次请求时间戳，1000 账户 × 600 RPM 约 60 万条记录（约 10–15MB 及持续清理开销），Redis ZSET 成本更高；固定窗口内存 O(1)，且与多数上游「每分钟」口径一致。
 
 ### 4.3 原子判定
@@ -104,12 +104,25 @@ TryAcquire(accountID, totalLimit, lane, laneLimit, rpmLimit, nowMs):
 - 拒绝时**不得**自增任何计数。
 - `Release` 只回退 `total` 与 lane 计数，**不回退** `rpmCount`（请求已经出站或已占用配额）。
 - 返回结构新增 `RPMCurrent`、`RPMLimit`、`RPMResetAtMs`，供错误文案、审计和列表展示使用。
-- `ConsumeRPM` 与 `TryAcquire` 共用同一窗口字段（memory map / Redis HASH），只自增 `rpmCount`，不碰并发与 lane；窗口滚动就地重置，Redis TTL 续 120s。首次占位的预记由调用方消费，后续每次真实出站再调用一次，避免双重计数。
-- `MemoryAccountConcurrency` 是生产唯一装配实现，必须先改；`RedisAccountConcurrency` 同步扩展同一 HASH 的 acquire Lua 与 `ConsumeRPM` 脚本，保持契约完整，虽然当前组合根未装配。
+- `ConsumeRPM` 与 `TryAcquire` 共用同一 RPM 窗口字段（memory map / Redis RPM HASH），只自增 `rpmCount`，不碰并发槽集合；窗口滚动就地重置，Redis TTL 续 120s。首次占位的预记由调用方消费，后续每次真实出站再调用一次，避免双重计数。
+- `MemoryAccountConcurrency` 与 `RedisAccountConcurrency` 同契约；Redis 驱动的并发槽自 2026-11-13 起为 ZSET 槽集合（见 §4.5），RPM 仍为独立 HASH。
 
 ### 4.4 预留槽
 
 speed-first 切号预留槽在预留（`TryAcquireAsync`）时消耗 1 次 RPM；未使用的预留槽释放时只退还并发，不退还 RPM。理由：预留本身已经为潜在出站占用配额，且实现保持简单；该路径低频，保守口径不影响正确性。
+
+### 4.5 并发槽租约模型（Redis，2026-11-13 根治）
+
+历史实现用 `HINCRBY total/lane` 维护计数器，异常路径（进程崩溃、release RPC 超时、acquire `EVAL` at-most-once、切号预留未消费）会永久留下非零计数，且 acquire 持续 `PEXPIRE 6h` 使泄漏值在活跃账户上无法回收（BUG-0361）。现行模型改为**槽集合**：
+
+- 键：`juhe-ai:<ns>:gateway-account-concurrency:account-concurrency:<accountID>:slots`（总集合）与 `...:slots:<lane>`（lane 集合），均为 ZSET；member = `<lane>:<token>`，score = 槽租约到期毫秒。
+- 当前并发 = 清理过期成员后的 `ZCARD`；acquire 在同一 Lua 内先 `ZREMRANGEBYSCORE -inf now` 再校验上限并 `ZADD`；release = `ZREM`（幂等，重复释放/超时重试不会产生负计数）。
+- 槽租约 30 分钟（覆盖单请求墙钟上限并留余量）；普通 HTTP 请求在 acquire 后每 20 分钟自动续租一次（最多 12 次≈4h，覆盖图片 attempt 默认 1h 上限与常规长流）；realtime 长连接在 WS ping（20s）周期调用 `Refresh` 续租。进程崩溃、release 丢失、acquire 结果不确定等窗口均在租约到期后自动回收。超过 4h 的已提交 SSE 不再由后台续租，槽到期后该请求不再计入并发（只少计、不泄漏），作为已知边界。
+- 空 lane 读语义：`CurrentAccountConcurrency(accountID, "")` 与 `LoadAccountCurrentConcurrencyByID` 返回账户总量；`LoadAccountCurrentConcurrencyByLane` 传具体 lane 时返回该 lane 集合大小。
+- 键级 TTL = 租约 + 5m 宽限，只用于空闲账户整体回收；不再作为泄漏兜底，也不会被持续流量无限续期。
+- jobs 投影读面（`OverlayRedisStore.LoadSnapshots` / `OverlayConcurrencySource`）读同一 ZSET：先清理过期成员再 `ZCARD`，键 PTTL 作为 `next_reconcile_at`。
+- RPM 仍在同账户 HASH（`rpm_bucket`/`rpm_count`，TTL 120s），acquire 时清理旧实现的 `total/text/image/realtime` 并发字段。
+- 发布/回滚约束：gateway 与 jobs 必须同批发布、同批回滚，禁止新旧二进制混跑（旧 gateway 只写/读旧 HASH `total`，新 gateway 只写/读 ZSET；混跑会各自少计）。回滚窗口内并发计数从头累积（短期可能放宽硬并发），RPM 与调度正确性不受影响。
 
 ## 5. 调度语义
 
@@ -208,7 +221,7 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 
 ### 7.3 回滚
 
-新列为纯加法、带默认值，旧二进制不读；回滚只需换回旧二进制，不需要删列。运行态 RPM 计数自 2026-11-07 起与并发槽同存 Redis HASH，重启不清零；窗口按自然分钟滚动，残留字段由 acquire/consume 的 TTL 兜底，不存在数据迁移。
+新列为纯加法、带默认值，旧二进制不读；回滚只需换回旧二进制，不需要删列。运行态 RPM 计数仍存 Redis HASH（与并发槽 ZSET 分离），重启不清零；窗口按自然分钟滚动，残留字段由 acquire/consume 的 TTL 兜底，不存在数据迁移。并发槽自 2026-11-13 起为 ZSET 槽集合（§4.5），旧二进制回滚只读旧 HASH `total`（新代码不再维护），回滚窗口内并发计数从头累积，详见 §4.5 回滚边界。
 
 ## 8. 实施范围（最小非重叠）
 
@@ -230,5 +243,5 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 
 - 固定窗口在分钟边界可能出现短时双倍突发（例如 10:59:59 用满 60 次、11:00:00 再用 60 次）；上游仍可能在边界返回 429，走既有错误策略。
 - 占槽后未出站的少见跳过路径会消耗 1 次 RPM（保守，不超配额）。
-- 生产已装配 Redis tracker（共享 runtime-state client）；跨实例 acquire/ConsumeRPM/release 由 `chain_concurrency_redis_test.go` 与真实 dev Redis 外部用例覆盖。ConsumeRPM 只延长不足 2 个窗口的 TTL，不会缩短并发槽的 6h 泄漏兜底。
+- 生产已装配 Redis tracker（共享 runtime-state client）；跨实例 acquire/ConsumeRPM/release 由 `chain_concurrency_redis_test.go` 与真实 dev Redis 外部用例覆盖。并发槽为 30m 租约的 ZSET 槽集合（§4.5），release 为幂等 `ZREM`；RPM 的 `ConsumeRPM` 只延长不足 2 个窗口的 TTL，与并发槽租约互不影响。
 - 授权实例的列表 `rpmCurrent` 按来源账户读；现有 `currentConcurrency` 叠加仍按行 ID，二者口径差异在本批不改动 `concurrency` 历史行为。

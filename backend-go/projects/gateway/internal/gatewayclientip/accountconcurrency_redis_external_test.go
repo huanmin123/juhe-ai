@@ -43,7 +43,7 @@ func TestRedisAccountConcurrencyExternal(t *testing.T) {
 	trackerB := newTracker()
 	key := trackerA.accountConcurrencyKey("acc-external")
 	t.Cleanup(func() {
-		_ = client.Del(context.Background(), key).Err()
+		_ = client.Del(context.Background(), key, trackerA.slotsKey("acc-external"), trackerA.laneSlotsKey("acc-external", AccountConcurrencyLaneText)).Err()
 	})
 
 	outcome, err := trackerA.AcquireAccountConcurrency(ctx, "acc-external", AccountConcurrencyLaneText, time.Minute.Milliseconds(), 1, 1, 2)
@@ -58,7 +58,7 @@ func TestRedisAccountConcurrencyExternal(t *testing.T) {
 	if err != nil || !allowed || current != 2 {
 		t.Fatalf("B consume RPM: allowed=%v current=%d err=%v", allowed, current, err)
 	}
-	if err := trackerA.ReleaseAccountConcurrency(ctx, "acc-external", AccountConcurrencyLaneText); err != nil {
+	if err := trackerA.ReleaseAccountConcurrency(ctx, "acc-external", AccountConcurrencyLaneText, outcome.Token); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	currentConcurrency, err := trackerB.LoadAccountCurrentConcurrencyByID(ctx, []string{"acc-external"})

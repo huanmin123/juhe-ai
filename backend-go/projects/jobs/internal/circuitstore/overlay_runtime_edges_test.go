@@ -51,8 +51,9 @@ func TestOverlayRedisStoreKeysAndConstruction(t *testing.T) {
 		t.Fatalf("自建连接 Close: %v", err)
 	}
 	store := newOverlayStore(t, server)
-	// 并发键指向 gateway live HASH（DomainConcurrency 域，键名与 gateway 写面一致）。
-	expectedConcurrencyKey := "juhe-ai:{ns:concurrency}:gateway-account-concurrency:account-concurrency:acc-1"
+	// 并发键指向 gateway 并发槽集合（ZSET，DomainConcurrency 域，键名与
+	// gateway 写面一致）。
+	expectedConcurrencyKey := "juhe-ai:{ns:concurrency}:gateway-account-concurrency:account-concurrency:acc-1:slots"
 	if store.concurrencyKey("acc-1") != expectedConcurrencyKey {
 		t.Fatalf("并发键形状不符: %s", store.concurrencyKey("acc-1"))
 	}
@@ -185,7 +186,7 @@ func TestOverlayAcknowledgeKeepsFutureReconcile(t *testing.T) {
 	}
 }
 
-// TestOverlayLoadSnapshots 覆盖 gateway live 并发 HASH 快照：total 为当前并发，
+// TestOverlayLoadSnapshots 覆盖 gateway 并发槽集合快照：ZCARD 为当前并发，
 // key PTTL 作为下次对账时间；缺失 key 为零值。
 func TestOverlayLoadSnapshots(t *testing.T) {
 	server := miniredis.RunT(t)
@@ -196,7 +197,10 @@ func TestOverlayLoadSnapshots(t *testing.T) {
 	ctx := context.Background()
 
 	concurrencyKey := store.concurrencyKey("acc-1")
-	server.HSet(concurrencyKey, "total", "1", "text", "1")
+	expiry := time.Now().Add(time.Hour).UnixMilli()
+	if err := store.client.ZAdd(ctx, concurrencyKey, redis.Z{Score: float64(expiry), Member: "text:test"}).Err(); err != nil {
+		t.Fatalf("预置并发槽: %v", err)
+	}
 	server.SetTTL(concurrencyKey, 6*time.Hour)
 
 	snapshots, err := store.LoadSnapshots(ctx, []string{"acc-1", "acc-empty"})
@@ -628,8 +632,8 @@ func TestUniqueRuntimeKeys(t *testing.T) {
 	}
 }
 
-// TestOverlayConcurrencySource 覆盖并发读源适配：读 gateway live 并发 HASH
-// （DomainConcurrency 域，键名与 gatewayclientip 写面一致），total 字段为当前
+// TestOverlayConcurrencySource 覆盖并发读源适配：读 gateway 并发槽集合
+// （DomainConcurrency 域，键名与 gatewayclientip 写面一致），ZCARD 为当前
 // 并发，PTTL 作为下次对账时间。
 func TestOverlayConcurrencySource(t *testing.T) {
 	server := miniredis.RunT(t)
@@ -637,9 +641,15 @@ func TestOverlayConcurrencySource(t *testing.T) {
 	base := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 	server.SetTime(base)
 	store := newOverlayStore(t, server)
+	expiry := time.Now().Add(time.Hour).UnixMilli()
 	for accountID, total := range map[string]int{"acc-1": 1, "acc-2": 2} {
 		key := store.concurrencyKey(accountID)
-		server.HSet(key, "total", fmt.Sprintf("%d", total))
+		for index := 0; index < total; index++ {
+			member := fmt.Sprintf("text:t%d", index)
+			if err := store.client.ZAdd(context.Background(), key, redis.Z{Score: float64(expiry), Member: member}).Err(); err != nil {
+				t.Fatalf("预置 %s 并发槽: %v", accountID, err)
+			}
+		}
 		server.SetTTL(key, 6*time.Hour)
 	}
 	source := NewOverlayConcurrencySource(store)

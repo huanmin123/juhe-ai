@@ -666,6 +666,11 @@ func (b *realtimeBridge) run() {
 			if s.connections != nil {
 				go s.connections.refresh(s.apiKeyID)
 			}
+			// 账户并发槽是租约模型（30m），长连接随 ping 周期续租；断开/进程
+			// 退出后槽在租约到期时自动回收。
+			if s.concurrencySlot != nil && s.concurrencySlot.Refresh != nil {
+				go s.concurrencySlot.Refresh()
+			}
 		case result := <-clientReads:
 			if result.err != nil {
 				if isRealtimeTimeoutError(result.err) {
