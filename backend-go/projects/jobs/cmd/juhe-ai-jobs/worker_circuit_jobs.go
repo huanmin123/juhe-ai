@@ -22,7 +22,7 @@ import (
 //     circuitstore 的业务库双模适配器提供；RunMaintenance 之后追加孤儿 incident
 //     结清扫描（opsjobs.OrphanIncidentCloser）与 ledger / dispatched outbox
 //     Cleanup（circuitstore.ControlPlaneRepo.Cleanup 三臂，含 T87r 起的
-//     dispatched outbox ack 保留期回收））；
+//     dispatched/failed outbox ack 保留期回收））；
 //   - account-circuit-recovery（opsjobs.CircuitRecoveryService：同一 CircuitStore，
 //     恢复探针目标解析走 proberepo 账户域读取链 + accountprobe limited 诊断；
 //     mutation 经 opsjobs.CircuitIncidentProjector 投影回业务库 ledger——

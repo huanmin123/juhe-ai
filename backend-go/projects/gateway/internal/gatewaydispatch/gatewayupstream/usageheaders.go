@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	platformrecordmaintenance "github.com/huanminabc/juhe-ai/backend-go-platform/recordmaintenance"
 )
 
 // Codex usage headers, migrated from adapters/gpt-codex/usage.service.ts.
@@ -65,7 +67,13 @@ type RecordMaintenanceQueue interface {
 // 不随成功/失败面变化。
 const (
 	// AccountUsageSnapshotKindAnthropicClaude 是 anthropic OAuth 快照行 kind。
-	AccountUsageSnapshotKindAnthropicClaude = "anthropic_claude"
+	// 事实源在 shared/platform/recordmaintenance（gateway 投递端校验与 jobs
+	// 消费端校验共用同一白名单，T207 C1 去重）。
+	AccountUsageSnapshotKindAnthropicClaude = platformrecordmaintenance.SnapshotKindAnthropicClaude
+
+	// AccountUsageSnapshotKindOpenAICodex 是 codex usage headers 快照行 kind
+	// （buildOpenAICodexUsageRecordMaintenanceJob 使用，同一共享白名单）。
+	AccountUsageSnapshotKindOpenAICodex = platformrecordmaintenance.SnapshotKindOpenAICodex
 
 	anthropicUnifiedStatusHeader  = "Anthropic-Ratelimit-Unified-Status"
 	anthropic5hUtilizationHeader  = "Anthropic-Ratelimit-Unified-5h-Utilization"
@@ -265,7 +273,7 @@ func buildOpenAICodexUsageRecordMaintenanceJob(accountID string, headers http.He
 	return &RecordMaintenanceJob{
 		Type:      "account_usage_snapshot_upsert",
 		AccountID: accountID,
-		Kind:      "openai_codex",
+		Kind:      AccountUsageSnapshotKindOpenAICodex,
 		Source:    source,
 		Snapshot:  payload,
 		UpdatedAt: updatedAt,

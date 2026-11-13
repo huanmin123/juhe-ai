@@ -336,8 +336,9 @@ func TestWriterOverflowDropAndSpool(t *testing.T) {
 		t.Fatalf("spool items = %d", spooled)
 	}
 
-	// A spool failure drops the record with the dispatch counter and the
-	// Node log copy.
+	// A spool failure no longer drops the record (T207-C2): the record is
+	// force-admitted back into the queue and the dispatch counter books the
+	// deferred retry instead of a terminal drop.
 	spool.mu.Lock()
 	spool.failed = true
 	spool.mu.Unlock()
@@ -346,9 +347,12 @@ func TestWriterOverflowDropAndSpool(t *testing.T) {
 	}
 	runtime = writer.Runtime()
 	if runtime.DroppedDispatchCount != 1 {
-		t.Fatalf("dispatch drop counter = %+v", runtime)
+		t.Fatalf("deferred dispatch counter = %+v", runtime)
 	}
-	if got := logger.lastWarn(); !strings.Contains(got, "使用记录投递后台 worker 失败，已跳过投递") {
+	if runtime.QueueLength != 3 {
+		t.Fatalf("failed-spill record not retained in queue: %+v", runtime)
+	}
+	if got := logger.lastWarn(); !strings.Contains(got, "使用记录溢出落盘失败，已保留队列等待重试") {
 		t.Fatalf("dispatch failure log = %q", got)
 	}
 

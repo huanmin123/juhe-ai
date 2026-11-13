@@ -72,7 +72,10 @@ func (w *probeUsageWriter) RecordProbeUsage(ctx context.Context, observation acc
 		input.ErrorMessage = observation.ErrorMessage
 	}
 	w.resolveScope(ctx, observation.AccountID, &input)
-	if err := w.writer.Enqueue(ctx, input); err != nil {
+	// T207-C2：探针用量与溢出 spool 回放共用 durable 交接语义——队列满且
+	// 溢出落盘失败时返回错误（上游 recordProbeUsage 按失败 warn 留痕），
+	// 不再走 best-effort Enqueue 的溢出丢弃臂。
+	if err := w.writer.EnqueueDurable(ctx, input); err != nil {
 		return err
 	}
 	return nil

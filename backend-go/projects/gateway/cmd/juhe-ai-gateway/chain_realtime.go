@@ -165,16 +165,25 @@ func (l *chainRealtimeConnectionLimiter) release(apiKeyID, token string) {
 }
 
 // refresh 续租本连接的槽租约（Redis 路径），由 WS ping 循环周期调用。只续
-// 自己的 token：槽已被过期清理/释放时不复活；失败只记录日志并依赖租约兜底。
+// 自己的 token：槽已被过期清理/释放时不复活；失败与槽缺失都只记录日志并依
+// 赖租约兜底（C12：槽缺失不留痕会掩盖 Redis 重启/泄漏回收，refreshed=false
+// 同样告警）。
 func (l *chainRealtimeConnectionLimiter) refresh(apiKeyID, token string) {
-	if l == nil || l.remote == nil || apiKeyID == "" {
+	if l == nil || l.remote == nil || apiKeyID == "" || token == "" {
+		// 空 token（无 Redis 槽可续）不是「槽缺失」：跳过，不产生误导 WARN。
 		return
 	}
 	refreshCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := l.remote.refresh(refreshCtx, apiKeyID, token); err != nil {
+	refreshed, err := l.remote.refresh(refreshCtx, apiKeyID, token)
+	if err != nil {
 		slog.Warn("realtime Redis connection refresh failed; lease will recover",
 			"apiKeyId", apiKeyID, "error", err)
+		return
+	}
+	if !refreshed {
+		slog.Warn("realtime connection Redis slot missing on refresh",
+			"event", "realtime_connection_slot_missing_on_refresh", "apiKeyId", apiKeyID)
 	}
 }
 

@@ -98,8 +98,8 @@ func TestWriterOverflowPersistsToSpoolInsteadOfDropping(t *testing.T) {
 }
 
 // TestWriterOverflowSpoolFailureCountsDispatchDrop 锁定 2c 行为侧：溢出落
-// 盘失败时记录按 dispatch 失败计数（recordUsageRecordDispatchFailure 镜像），
-// 不得重复计入 droppedOverflowCount。
+// 盘失败时记录按 dispatch 计数记账（T207-C2 起语义为 deferred 延迟重试，
+// 记录强制回队补偿暂存），不得重复计入 droppedOverflowCount。
 func TestWriterOverflowSpoolFailureCountsDispatchDrop(t *testing.T) {
 	store := &mockStore{}
 	// Directory 指向一个已存在的文件 → MkdirAll 必然失败 → Persist 报错。
@@ -128,10 +128,14 @@ func TestWriterOverflowSpoolFailureCountsDispatchDrop(t *testing.T) {
 	if runtime.DroppedOverflowCount != 0 {
 		t.Fatalf("溢出落盘失败不得重复计入 droppedOverflowCount: %+v", runtime)
 	}
+	// T207-C2：失败记录强制回队等待重试，不再终态丢弃。
+	if runtime.QueueLength != 2 {
+		t.Fatalf("溢出落盘失败记录必须保留队列: %+v", runtime)
+	}
 	found := false
 	for _, warn := range logger.warns {
 		// captureLogger 只保留 msg 文案；event 字段在 fields map 中。
-		if strings.Contains(warn, "使用记录投递后台 worker 失败") {
+		if strings.Contains(warn, "使用记录溢出落盘失败，已保留队列等待重试") {
 			found = true
 		}
 	}

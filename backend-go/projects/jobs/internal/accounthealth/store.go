@@ -877,6 +877,16 @@ ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cool
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_source_config_revision BIGINT;
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
 ALTER TABLE juhe_jobs.account_health_outcomes ADD COLUMN IF NOT EXISTS next_due_at TIMESTAMPTZ;
+-- 投影消费水位（T207 C3，2026-11-13；BUG-0345 同族根治）：NULL = 未被 J1
+-- 投影 drain 消费，RFC3339 UTC 文本打标。旧口径按 observed_at 逻辑时间单调
+-- 游标消费，隐含「游标越过时行已落库」——并发双探针下晚到旧行被游标永久
+-- 跳过。新口径选行与落库时刻无关：取未消费的最旧行（observed_at,outcome_id），
+-- 投影事务内打标（见 projection.go）。account_health_projection_cursors
+-- 游标保留作诊断面，不再闸门消费。
+ALTER TABLE juhe_jobs.account_health_outcomes ADD COLUMN IF NOT EXISTS projection_consumed_at TEXT;
+-- 待消费扫描的部分索引：只索引未标记行，索引大小随积压而非全表
+-- （idx_account_health_outcomes_read_cover/observed 与消费口径无关，不动）。
+CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_projection_pending ON juhe_jobs.account_health_outcomes(observed_at, outcome_id) WHERE projection_consumed_at IS NULL;
 -- 读面覆盖索引（2026-10-31）：gateway ai-health 单次范围读取的全部投影——含
 -- 上一行 ALTER 落列的 next_due_at 实体列——都在索引元组内，读面走 Index Only
 -- Scan，冷缓存不再逐行回表拖慢盘随机读（当日生产实测冷缓存首开 2×5s 读预算

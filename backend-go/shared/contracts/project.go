@@ -64,8 +64,15 @@ const ArchitectureVersion = "go-projects-v1"
 // juhe_usage.usage_record_shard_entries / usage_record_account_shards /
 // usage_record_api_key_shards / usage_record_shards；生产写入链路只写
 // juhe_usage.usage_records，列表与清理均直接读该日分区表，四表无生产读取方。
-// 步骤写入 schema_migrations，只在 contract/all 相执行。当前值 23。
-const SchemaRevision int64 = 23
+// 步骤写入 schema_migrations，只在 contract/all 相执行。2026-11-13 revision
+// 24 账户熔断 outbox 终态 failed（T207 收口）：juhe_business.account_circuit_
+// outbox 的 status 词表 CHECK 与状态不变式 CHECK 放宽 'failed' 终态臂并具名
+// （account_circuit_outbox_status_check / account_circuit_outbox_status_
+// invariant），新增幂等约束替换 DO 块（account-circuit-outbox-status-failed-
+// pg-check）把存量表旧约束按定义文本定位替换；jobs circuitstore 与 gateway
+// circuit_control_plane 的 ReleaseForReplay 在 attempt 达上限时写 failed。
+// 纯 DDL 空号，无数据步骤，不写入 schema_migrations。当前值 24。
+const SchemaRevision int64 = 24
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

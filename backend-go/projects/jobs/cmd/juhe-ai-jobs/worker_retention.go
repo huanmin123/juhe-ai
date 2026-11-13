@@ -15,6 +15,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/cleanuprepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/recordmaintenance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
@@ -220,6 +221,11 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		if err := family.cleanupAccountBalanceOutcomes(taskCtx); err != nil {
 			return jobsched.TaskResult{}, err
 		}
+		// T207 C1：record_maintenance_jobs 交接表按行龄滚动清理（含毒丸
+		// failed 行），生产者停止后表最终归零；同节拍同失败语义。
+		if err := family.cleanupRecordMaintenanceJobs(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
 		return jobsched.TaskResult{}, nil
 	})
 
@@ -313,6 +319,9 @@ type retentionFamily struct {
 	modelCheckRetention *cleanuprepo.ModelCheckRetentionStore
 	// accountBalanceOutcomesDB 是 J2 余额刷新遥测的保留清理句柄（juhe_jobs）。
 	accountBalanceOutcomesDB *cleanuprepo.DB
+	// recordMaintenanceJobsDB 是 record_maintenance_jobs 交接表的保留清理
+	// 句柄（juhe_dataset，与 drain 同一 dataset 池；T207 C1）。
+	recordMaintenanceJobsDB *cleanuprepo.DB
 
 	recordCleanup *cleanuprepo.RecordCleanupStore
 	dbService     *familyDbService
@@ -704,6 +713,49 @@ func (f *retentionFamily) cleanupAccountBalanceOutcomes(ctx context.Context) err
 			"deleted", deleted,
 			"retentionDays", accountBalanceOutcomesRetentionDays,
 			"cutoff", cutoff.Format(time.RFC3339))
+	}
+	return nil
+}
+
+// recordMaintenanceJobsRetentionDays 是 record_maintenance_jobs 交接表的
+// 滚动保留窗口（T207 C1，2026-11-13）：35 天，与 account_health_outcomes /
+// client_ip 统计 / 余额遥测共享同一保留口径；批次与轮次复用共享节拍参数
+// retentionTimeSeriesBatchSize / retentionTimeSeriesMaxPasses。
+const recordMaintenanceJobsRetentionDays = 35
+
+// cleanupRecordMaintenanceJobs 执行一轮 record_maintenance_jobs 交接表保留
+// 清理（T207 C1）：按 created_at 滚动 35 天窗口最旧优先批删（含 pending /
+// failed），清理 SQL 在 recordmaintenance 包（表归属 gateway/jobs 交接契约
+// 不动）。此前该表全仓无删除路径——毒丸行修复后由本清理把残留行（含
+// failed 终态）最终归零，保证生产者停止后表不无限滞留。失败让本轮任务以
+// 错误收场（走既有失败退避），不静默降级。
+func (f *retentionFamily) cleanupRecordMaintenanceJobs(ctx context.Context) error {
+	if f.recordMaintenanceJobsDB == nil {
+		return nil
+	}
+	// RFC3339 毫秒 UTC 文本，与表内 created_at 的规范化格式一致（TEXT 列按
+	// 字典序比较，同格式字符串与时间序等价）。
+	cutoff := time.Now().UTC().AddDate(0, 0, -recordMaintenanceJobsRetentionDays).Format("2006-01-02T15:04:05.000Z07:00")
+	var deleted int64
+	for pass := 0; pass < retentionTimeSeriesMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		batch, err := recordmaintenance.CleanupJobsBefore(ctx, f.recordMaintenanceJobsDB.DB, cutoff, retentionTimeSeriesBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 record_maintenance_jobs 失败: %w", err)
+		}
+		deleted += batch
+		if batch < retentionTimeSeriesBatchSize {
+			break
+		}
+	}
+	if deleted > 0 {
+		f.assembly.logger.Info("record_maintenance_jobs 交接表保留清理完成",
+			"event", "record_maintenance_jobs_retention_cleanup",
+			"deleted", deleted,
+			"retentionDays", recordMaintenanceJobsRetentionDays,
+			"cutoff", cutoff)
 	}
 	return nil
 }

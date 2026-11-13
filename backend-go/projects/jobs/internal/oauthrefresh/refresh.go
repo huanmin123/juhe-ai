@@ -83,6 +83,14 @@ type RefreshLock interface {
 	Unlock(ctx context.Context, accountID, token string) error
 }
 
+// LockRenewer 是 RefreshLock 的可选续租能力（T207 C11）：实现方支持
+// compare-token 续租（crossprocessstate.Client.Renew 语义：键不存在或 token
+// 已被他人重新持有时返回 false）时提供。RefreshLock 接口本身不加方法，
+// 未升级的装配与测试 fake 保持既有 TTL 语义。
+type LockRenewer interface {
+	Renew(ctx context.Context, accountID, token string, ttl time.Duration) (bool, error)
+}
+
 // CrossProcessRefreshLockTTL 与单次刷新预算（transport 25s/60s）对齐；
 // PG config_revision CAS 仍是兜底，锁过期不会造成静默覆盖。
 const CrossProcessRefreshLockTTL = 60 * time.Second
@@ -97,6 +105,10 @@ type accountLocks struct {
 	remote     RefreshLock
 	logger     *slog.Logger
 	lastWarnAt time.Time
+	// renewInterval 是跨进程锁续租周期（T207 C11）；零值取
+	// CrossProcessRefreshLockTTL/3。仅测试注入短周期验证续租行为，
+	// 不设配置面。
+	renewInterval time.Duration
 }
 
 func newAccountLocks() *accountLocks {
@@ -191,7 +203,12 @@ func (l *accountLocks) acquireRemote(ctx context.Context, accountID string) (boo
 	if !acquired {
 		return false, nil, nil
 	}
+	stopRenewal := l.startLockRenewal(ctx, accountID, token)
 	release := func() {
+		// 先停续租协程再释放锁：明确顺序，避免释放后的 in-flight 续租。
+		if stopRenewal != nil {
+			stopRenewal()
+		}
 		// 请求 ctx 可能已取消，释放锁用 detached 上下文，避免锁占到 TTL 过期。
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
@@ -200,6 +217,72 @@ func (l *accountLocks) acquireRemote(ctx context.Context, accountID string) (boo
 		}
 	}
 	return true, release, nil
+}
+
+// startLockRenewal 在持锁窗口内按 TTL/3 周期 compare-token 续租（T207 C11）：
+// 上游换发慢路径（transport 60s 预算 + race 重试的第二次上游调用）可能让
+// 持锁窗口超过 60s TTL，锁静默过期后另一进程会并发进入同一账户换发。
+// 续租失败/失租只 WARN 不中断任务：失锁后上游换发仍会因 PG config_revision
+// bump 幂等收敛（RotateCredentials CAS 失败方走 tryRecoverRace 读取最新
+// 凭据），不改变业务行为。实现不支持续租时返回 nil（保持既有 TTL 语义）。
+func (l *accountLocks) startLockRenewal(ctx context.Context, accountID, token string) func() {
+	renewer, ok := l.remote.(LockRenewer)
+	if !ok {
+		return nil
+	}
+	interval := l.renewInterval
+	if interval <= 0 {
+		interval = CrossProcessRefreshLockTTL / 3
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				// 续租与释放同理用 detached 上下文：持锁窗口在请求 ctx 取消
+				// 后仍存活到 release 前，2s 预算防止 Redis 卡死拖住协程。
+				renewCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				renewed, renewErr := renewer.Renew(renewCtx, accountID, token, CrossProcessRefreshLockTTL)
+				cancel()
+				if renewErr != nil {
+					l.warnRenew(accountID, renewErr)
+					continue
+				}
+				if !renewed {
+					l.warnRenew(accountID, errors.New("刷新锁 token 已失配（锁过期后被他人接管）"))
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+// warnRenew 续租失败/失租告警：与 warnRemote 共享同一分钟级限流，避免批量
+// 任务中多账户同时续租失败刷屏。
+func (l *accountLocks) warnRenew(accountID string, err error) {
+	if l.logger == nil {
+		return
+	}
+	l.mu.Lock()
+	if time.Since(l.lastWarnAt) < time.Minute {
+		l.mu.Unlock()
+		return
+	}
+	l.lastWarnAt = time.Now()
+	l.mu.Unlock()
+	l.logger.Warn("OAuth 刷新跨进程锁续租失败，失锁后由 PG config_revision CAS 幂等收敛",
+		"event", "oauth_refresh_cross_process_lock_renew_error",
+		"accountId", accountID, "error", err)
 }
 
 func (l *accountLocks) warnRemote(accountID string, err error) {

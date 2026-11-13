@@ -128,14 +128,20 @@ func (r *realtimeConnectionRedis) release(ctx context.Context, apiKeyID string, 
 	return r.client.Eval(runCtx, realtimeConnectionReleaseScript, []string{r.key(apiKeyID)}, token).Err()
 }
 
-func (r *realtimeConnectionRedis) refresh(ctx context.Context, apiKeyID string, token string) error {
+// refresh 续租本连接的槽成员；Lua 脚本返回 0/1。refreshed=false 表示槽已不
+// 存在（过期清理/释放/Redis 重启），不复活也不报错（C12：调用方据此留痕）。
+func (r *realtimeConnectionRedis) refresh(ctx context.Context, apiKeyID string, token string) (bool, error) {
 	if strings.TrimSpace(token) == "" {
-		return nil
+		return false, nil
 	}
 	runCtx, cancel := context.WithTimeout(ctxOrBackground(ctx), 3*time.Second)
 	defer cancel()
-	return r.client.Eval(runCtx, realtimeConnectionRefreshScript,
-		[]string{r.key(apiKeyID)}, token, r.clock(), realtimeConnectionRedisTTL.Milliseconds()).Err()
+	refreshed, err := r.client.Eval(runCtx, realtimeConnectionRefreshScript,
+		[]string{r.key(apiKeyID)}, token, r.clock(), realtimeConnectionRedisTTL.Milliseconds()).Int()
+	if err != nil {
+		return false, err
+	}
+	return refreshed == 1, nil
 }
 
 func (r *realtimeConnectionRedis) count(ctx context.Context, apiKeyID string) (int64, error) {

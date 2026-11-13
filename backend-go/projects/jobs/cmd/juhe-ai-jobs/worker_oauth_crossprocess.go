@@ -40,6 +40,12 @@ func (l oauthCrossProcessLock) Unlock(ctx context.Context, accountID, token stri
 	return l.client.Unlock(ctx, crossprocessstate.EntityOAuthRefreshLock, accountID, token)
 }
 
+// Renew implements oauthrefresh.LockRenewer（T207-C11）：持有刷新锁的窗口
+// 超过 60s TTL 时由 oauthrefresh 周期续租；compare-token 只续自己的锁。
+func (l oauthCrossProcessLock) Renew(ctx context.Context, accountID, token string, ttl time.Duration) (bool, error) {
+	return l.client.Renew(ctx, crossprocessstate.EntityOAuthRefreshLock, accountID, token, ttl)
+}
+
 // oauthCredentialVersionBumper 把共享契约适配为
 // oauthrefresh.CredentialVersionBumper。
 type oauthCredentialVersionBumper struct {

@@ -83,3 +83,32 @@ func TestRealtimeConnectionLimiterRedisErrorFailsClosed(t *testing.T) {
 		t.Fatalf("Redis failure must return error and not acquire: ok=%v err=%v", ok, err)
 	}
 }
+
+// C12 回归：refresh 必须区分「续租成功」与「槽已不存在」（Lua 0/1 →
+// refreshed=false），调用方据此留痕；错误仍按 error 上抛。unknown token 与
+// 已过期成员（score <= now 被脚本拒续）都不得复活为 true。
+func TestRealtimeConnectionRefreshReportsMissingSlot(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	limiter := newChainRealtimeConnectionLimiter(client, "realtime-test")
+	ctx := context.Background()
+	nowMs := int64(1_800_000_000_000)
+	limiter.remote.clock = func() int64 { return nowMs }
+
+	token, ok, err := limiter.acquireContext(ctx, "key-refresh", 2)
+	if err != nil || !ok || token == "" {
+		t.Fatalf("acquire: token=%q ok=%v err=%v", token, ok, err)
+	}
+	if refreshed, err := limiter.remote.refresh(ctx, "key-refresh", token); err != nil || !refreshed {
+		t.Fatalf("活槽续租必须 refreshed=true: refreshed=%v err=%v", refreshed, err)
+	}
+	if refreshed, err := limiter.remote.refresh(ctx, "key-refresh", "token-unknown"); err != nil || refreshed {
+		t.Fatalf("未知 token 不得续租: refreshed=%v err=%v", refreshed, err)
+	}
+	// 已过期成员：把时钟推过租约期后，脚本按 score<=now 拒续（不复活）。
+	nowMs += 11 * time.Minute.Milliseconds()
+	if refreshed, err := limiter.remote.refresh(ctx, "key-refresh", token); err != nil || refreshed {
+		t.Fatalf("过期槽不得被 refresh 复活: refreshed=%v err=%v", refreshed, err)
+	}
+}

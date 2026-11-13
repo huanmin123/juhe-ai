@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -421,6 +422,58 @@ func TestW9EReleaseOutboxForReplayFences(t *testing.T) {
 	}
 	if status != "pending" || errClass != "timeout_before_complete" || availableAt != 250 {
 		t.Fatalf("released row = %s %s %d", status, errClass, availableAt)
+	}
+}
+
+// TestW9EReleaseOutboxForReplayAttemptCap 收口 C5：attempt_count 达
+// outboxMaxAttempts 的 processing 行 release 时不再回 pending，改置终态 failed
+// （claim 面清空、acknowledged_at_ms 落 now）；未达上限仍回 pending。与 jobs
+// circuitstore 的 C5 语义对齐。
+func TestW9EReleaseOutboxForReplayAttemptCap(t *testing.T) {
+	s, db := wkReadyStore(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	seed := func(eventID string, attemptCount int64) {
+		t.Helper()
+		// attemptCount 为代码内常量，内联进 SQL（pgx stdlib 不支持 ? 占位）。
+		_, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('` + eventID + `','` + ProjectionKey + `','d-` + eventID + `','incident_changed','a1','a1','t1',1,'processing',100,'tok','owner',9999,` + strconv.FormatInt(attemptCount, 10) + `,100,100)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 未达上限：回 pending。
+	seed("e-below", outboxMaxAttempts-1)
+	ok, err := s.ReleaseOutboxForReplay(ctx, "e-below", "tok", "timeout_before_complete", 200, 50)
+	if err != nil || !ok {
+		t.Fatalf("未达上限 release 应回 pending, got %v err=%v", ok, err)
+	}
+	var status string
+	var acknowledgedAt any
+	if err := db.QueryRow(`SELECT status,acknowledged_at_ms FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE event_id='e-below'`).Scan(&status, &acknowledgedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || acknowledgedAt != nil {
+		t.Fatalf("below-cap row = %s ack=%v", status, acknowledgedAt)
+	}
+	// 达上限：终态 failed，claim 面清空、acknowledged_at_ms 落 now。
+	seed("e-cap", outboxMaxAttempts)
+	ok, err = s.ReleaseOutboxForReplay(ctx, "e-cap", "tok", "projection_failed", 200, 50)
+	if err != nil || !ok {
+		t.Fatalf("达上限 release 应成功, got %v err=%v", ok, err)
+	}
+	var claimToken any
+	var lastError string
+	if err := db.QueryRow(`SELECT status,claim_token,claimed_by,claim_until_ms,acknowledged_at_ms,last_error_class FROM `+defaultBusinessSchema+`.account_circuit_outbox WHERE event_id='e-cap'`).Scan(&status, &claimToken, new(any), new(any), &acknowledgedAt, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || claimToken != nil || acknowledgedAt.(int64) != 200 || lastError != "projection_failed" {
+		t.Fatalf("capped row = %s token=%v ack=%v err=%s", status, claimToken, acknowledgedAt, lastError)
+	}
+	// failed 行不再被 release/claim 命中。
+	ok, err = s.ReleaseOutboxForReplay(ctx, "e-cap", "tok", "projection_failed", 300, 50)
+	if err != nil || ok {
+		t.Fatalf("failed 终态行应不可再释放, got %v err=%v", ok, err)
 	}
 }
 

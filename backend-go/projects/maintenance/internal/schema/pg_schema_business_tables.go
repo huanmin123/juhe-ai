@@ -888,7 +888,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       dispatch_revision bigint NOT NULL CHECK (dispatch_revision >= 1),
       generation bigint,
       ledger_revision bigint,
-      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
+      status text NOT NULL DEFAULT 'pending' CONSTRAINT account_circuit_outbox_status_check CHECK (status IN ('pending', 'processing', 'dispatched', 'failed')),
       available_at_ms bigint NOT NULL,
       claim_token text,
       claimed_by text,
@@ -908,10 +908,93 @@ var postgresSchemaBusinessTables = []PGStatement{
       CHECK (last_error_class IS NULL OR length(last_error_class) BETWEEN 1 AND 64),
       CHECK ((event_type = 'dispatch_revision_changed' AND circuit_scope_key IS NULL AND incident_id IS NULL AND generation IS NULL AND ledger_revision IS NULL)
         OR (event_type = 'incident_changed' AND circuit_scope_key IS NOT NULL AND incident_id IS NOT NULL AND generation IS NOT NULL AND ledger_revision IS NOT NULL)),
-      CHECK ((status = 'pending' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NULL)
+      CONSTRAINT account_circuit_outbox_status_invariant CHECK ((status = 'pending' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NULL)
         OR (status = 'processing' AND claim_token IS NOT NULL AND claimed_by IS NOT NULL AND claim_until_ms IS NOT NULL AND acknowledged_at_ms IS NULL)
-        OR (status = 'dispatched' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NOT NULL))
+        OR (status = 'dispatched' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NOT NULL)
+        OR (status = 'failed' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NOT NULL))
     )`,
+	},
+	{
+		// account_circuit_outbox status 终态 failed 约束替换（T207 收口，revision
+		// 24 纯 DDL 空号）：jobs circuitstore 与 gateway circuit_control_plane 的
+		// ReleaseForReplay 在 attempt 达上限时把 processing 行置为终态 failed，
+		// 旧三值词表与三臂不变式会拒绝该写入。CREATE TABLE IF NOT EXISTS 只对
+		// 新库生效，存量表上的旧 CHECK 必须由 DO 块幂等替换——沿
+		// accounts-health-check-endpoint-mode-pg-check 先例按「表 + conkey 列 +
+		// 约束定义文本」定位旧约束（列级词表用单列 conkey + ARRAY 词表形态锚定，
+		// 表级不变式用 claim_until_ms/acknowledged_at_ms 列组合锚定并排除无
+		// failed 臂的新库约束），先删旧再按具名补新。建表 DDL 已含四值新库：
+		// 列级内联约束的具名（account_circuit_outbox_status_check）与表级具名
+		// 不变式（account_circuit_outbox_status_invariant）均已在位，两步 IF
+		// NOT EXISTS 直接命中跳过，不产生重复约束；重复执行无副作用。
+		SchemaName: "juhe_business",
+		Source:     "account-circuit-outbox-status-failed-pg-check",
+		SQL: `DO $$
+DECLARE
+  legacy_status_check text;
+  legacy_status_invariant text;
+BEGIN
+  IF to_regclass('juhe_business.account_circuit_outbox') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_status_check
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'account_circuit_outbox'
+      AND c.contype = 'c'
+      AND array_length(c.conkey, 1) = 1
+      AND pg_get_constraintdef(c.oid) LIKE '%status%'
+      AND pg_get_constraintdef(c.oid) LIKE '%dispatched%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%failed%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'status'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_status_check IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.account_circuit_outbox DROP CONSTRAINT %I', legacy_status_check);
+    END IF;
+    SELECT c.conname INTO legacy_status_invariant
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'account_circuit_outbox'
+      AND c.contype = 'c'
+      AND array_length(c.conkey, 1) > 1
+      AND pg_get_constraintdef(c.oid) LIKE '%claim_until_ms%'
+      AND pg_get_constraintdef(c.oid) LIKE '%acknowledged_at_ms%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%failed%';
+    IF legacy_status_invariant IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.account_circuit_outbox DROP CONSTRAINT %I', legacy_status_invariant);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'account_circuit_outbox'
+        AND c.conname = 'account_circuit_outbox_status_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.account_circuit_outbox ADD CONSTRAINT account_circuit_outbox_status_check CHECK (status IN (''pending'', ''processing'', ''dispatched'', ''failed''))';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'account_circuit_outbox'
+        AND c.conname = 'account_circuit_outbox_status_invariant'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.account_circuit_outbox ADD CONSTRAINT account_circuit_outbox_status_invariant CHECK ((status = ''pending'' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NULL)
+        OR (status = ''processing'' AND claim_token IS NOT NULL AND claimed_by IS NOT NULL AND claim_until_ms IS NOT NULL AND acknowledged_at_ms IS NULL)
+        OR (status = ''dispatched'' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NOT NULL)
+        OR (status = ''failed'' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NOT NULL))';
+    END IF;
+  END IF;
+END
+$$`,
 	},
 	{
 		SchemaName: "juhe_business",

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 )
 
 // writerLeaseKeeperRetryInterval 是写租约 keeper 丢失后的 Revive 重试周期，
@@ -96,17 +98,11 @@ func runWriterLeaseReviver[T writerLeaseReviver](ctx context.Context, keeper T, 
 
 // writerLeaseKeeperClosed 判定 Revive 失败是否属于「keeper 已 Close」类：
 // 进程关闭态下 keeper 不可复活，runner 视为不可复活并优雅退出（T203 裁决），
-// 不让 supervisor 在停机窗口再做一轮错误重试。当前并行契约以「已关闭 /
-// closed」措辞的错误承载该语义（两包 Close 既有 Warn 日志同款措辞），这里
-// 保守匹配中英文措辞；并行实现若后续导出哨兵错误，应改为 errors.Is 精确
-// 判定。ctx 取消/超时类错误不属于关闭态（由 runner 的 ctx.Err 分支处理）。
+// 不让 supervisor 在停机窗口再做一轮错误重试。BUG-0360 改进项：两 keeper
+// 已导出哨兵错误（auditlog.ErrKeeperClosed / operationlog.ErrKeeperClosed），
+// 这里按 errors.Is 精确判定（reviver 收到的错误可能来自任一 keeper，二者
+// 任一命中即关闭态），替换旧的「已关闭 / closed」错误文案子串桥接判定；
+// ctx 取消/超时类错误不属于关闭态（由 runner 的 ctx.Err 分支处理）。
 func writerLeaseKeeperClosed(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "已关闭") || strings.Contains(strings.ToLower(msg), "closed")
+	return errors.Is(err, auditlog.ErrKeeperClosed) || errors.Is(err, operationlog.ErrKeeperClosed)
 }

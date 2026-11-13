@@ -116,7 +116,7 @@ func TestW35CooldownSuccessRevivalSurvivesNanosecondAnchorPrecisionDrift(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := projector.projectOutcome(context.Background(), outcome)
+	result, err := projector.projectOutcome(context.Background(), outcome, false)
 	if err != nil {
 		t.Fatalf("projectOutcome 执行失败: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestW35FenceGuardStillRejectsGenerationChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := projector.projectOutcome(context.Background(), outcome)
+	result, err := projector.projectOutcome(context.Background(), outcome, false)
 	if err != nil {
 		t.Fatalf("projectOutcome 执行失败: %v", err)
 	}

@@ -342,6 +342,35 @@ func randomToken(length int) string {
 	return string(buffer)
 }
 
+// ReleaseProbeClaim 释放本进程此前 claim 的冷却复测租约（T207 C6）：
+// compare-delete——只有 probe_claim_token 仍为本进程 claim 写入值时清空
+// token 与租约，已被其他进程重新 claim（token 不匹配）或行已变化时不命中，
+// 返回是否命中本进程的 claim。冷却复测的异常路径（探针调用异常、无诊断
+// 结果）在返回前调用，避免本次空跑占住 probeClaimLeaseSeconds（600s）租约
+// 期间该 Key 无法被任何进程复测；正常路径的 RecordKeySuccess/RecordKeyFailure/
+// DeferKeyProbe 写入时已顺带清空 claim，不需要本方法。
+func (s *Store) ReleaseProbeClaim(ctx context.Context, accountID string, keyFingerprint string, claimToken string) (bool, error) {
+	if strings.TrimSpace(accountID) == "" || strings.TrimSpace(keyFingerprint) == "" || strings.TrimSpace(claimToken) == "" {
+		return false, errors.New("probe claim 释放参数无效")
+	}
+	query := fmt.Sprintf(`
+    UPDATE %s
+    SET probe_claim_token = NULL, probe_claimed_until = NULL
+    WHERE account_id = ?
+      AND key_fingerprint = ?
+      AND probe_claim_token = ?
+  `, s.table("account_api_key_runtime_states"))
+	result, err := s.db.ExecContext(ctx, s.bind(query), accountID, keyFingerprint, claimToken)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return changed == 1, nil
+}
+
 // RecordKeySuccess 实现 accountquality.CooldownMutation（record_account_api_key_success）。
 func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySuccessInput) (accountquality.KeyMutationResult, error) {
 	if input.Expected.Status == "error" {

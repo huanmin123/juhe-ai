@@ -39,6 +39,17 @@ import (
 // projection）；业务库写入逐条在一个事务内完成 receipt 幂等检查、fence 校验、
 // CAS 更新、dispatch revision 推进与 receipt 落行。全部 CAS 失败 = stale 终态
 // 跳过（幂等，不重试）；SQL/解码错误保留游标整批重试。
+//
+// 消费口径（T207 C3，BUG-0345 同族根治）：旧口径按 observed_at 逻辑时间单调
+// 游标消费，隐含「游标越过时行已落库」——J1 outcome 由探针 drain 并发写
+// （outbox 并发 2），先落库的行把游标推过尚未落库的更旧 observed_at 后，晚到
+// 旧行永久跳过。新口径消费 outcome 行上的水位列 projection_consumed_at
+// （NULL = 未消费）：每批读未消费的最旧行，投影事务内打标，选行与落库时刻
+// 无关；重复消费安全——projection 以 receipt（outcome_id）幂等，水位打标同值
+// 覆盖，两个 drain worker 取到同一批时后到方命中 receipt 直接跳过（业务效果
+// exactly-once，工作量 at-least-once）。account_health_projection_cursors
+// 游标保留作诊断面，单调推进但不闸门消费；存量行在水位首次启用时按旧游标
+// 一次性自举结算（BootstrapProjectionConsumption 语义见 DrainOnce）。
 
 // DefaultProjectionConsumerKey 与归档 runtime 的 consumerKey 一致。
 const DefaultProjectionConsumerKey = "juhe-ai-account-health-jobs-projector-v1"
@@ -203,7 +214,20 @@ const (
 	maxProjectionBatchSize        = 1000
 	// drainPageLimit 是归档 drain 的单页上限（每页最多 100 条）。
 	drainPageLimit = 100
+
+	// projectionBootstrapBatchRows 是存量自举结算每轮最多标记的行数（对齐
+	// statsagg bootstrapBatchRows 与 CleanupOutcomesBefore 的批大小惯例；单轮
+	// 必须显著低于任务预算）。积压超出一轮时由 bootstrapProjectionConsumption
+	// 循环多轮结算，超过 projectionBootstrapMaxPasses 轮仍未收敛即报错停投影
+	//（自举未完成不得把历史行当新数据重放）。
+	projectionBootstrapBatchRows = 5000
+	projectionBootstrapMaxPasses = 200
 )
+
+// accountHealthOutcomesTableSQL 是消费水位读写的源表限定名（jobs store 的
+// 表；此处固定常量，列名 projection_consumed_at 直接拼进 SQL，不接受外部
+// 输入）。
+const accountHealthOutcomesTableSQL = "juhe_jobs.account_health_outcomes"
 
 // OutcomeProjector 是独立的 J1 outcome 投影组件（supervisor.Component.Run）。
 type OutcomeProjector struct {
@@ -281,9 +305,11 @@ func (p *OutcomeProjector) Run(ctx context.Context) error {
 	}
 }
 
-// DrainOnce 执行一轮有界 drain（归档 drainAccountHealthJobsOutcomes 语义）：
-// 按 cursor 分页读取未投影 outcome，逐条先投影后推进游标；游标推进失败即停
-// （归档唯一停止分支）。
+// DrainOnce 执行一轮有界 drain（T207 C3 消费水位口径）：每页读未消费
+//（projection_consumed_at IS NULL）的最旧行，逐条投影并在同一事务内打标
+// 消费水位，直到空批或本轮预算用尽。晚到旧行（observed_at 早于已消费行）在
+// 落库后自然进入下一页，不再被单调游标永久跳过。游标仍单调推进，仅作诊断
+// 面（不再闸门消费，推进失败即停的旧分支随之移除）。
 func (p *OutcomeProjector) DrainOnce(ctx context.Context) (ProjectionDrainResult, error) {
 	result := ProjectionDrainResult{}
 	cursor, err := p.loadCursor(ctx)
@@ -291,12 +317,21 @@ func (p *OutcomeProjector) DrainOnce(ctx context.Context) (ProjectionDrainResult
 		return result, err
 	}
 	result.LastCursor = cursor
+	// 存量自举结算（BUG-0345 同款口径）：水位列首次启用时按旧游标把已消费
+	// 历史一次性打标，绝不把已投影历史重放一遍；本轮结算则不消费。
+	bootstrapped, err := p.bootstrapProjectionConsumption(ctx, cursor)
+	if err != nil {
+		return result, err
+	}
+	if bootstrapped {
+		return result, nil
+	}
 	for result.Processed < p.batch {
 		pageLimit := p.batch - result.Processed
 		if pageLimit > drainPageLimit {
 			pageLimit = drainPageLimit
 		}
-		page, err := p.store.listProjectedOutcomes(ctx, cursor, pageLimit)
+		page, err := p.store.listProjectedOutcomes(ctx, pageLimit)
 		if err != nil {
 			return result, err
 		}
@@ -305,20 +340,22 @@ func (p *OutcomeProjector) DrainOnce(ctx context.Context) (ProjectionDrainResult
 		}
 		for _, item := range page {
 			next := &OutcomeCursor{ObservedAtText: item.StorageObservedAtText, ObservedAt: item.StorageObservedAt, OutcomeID: item.Outcome.OutcomeID}
-			if _, err := p.projectOutcome(ctx, item.Outcome); err != nil {
+			if _, err := p.projectOutcome(ctx, item.Outcome, true); err != nil {
 				return result, err
 			}
 			// 小时条带直写（BUG-0194 第二层）：在游标推进前落库；失败 warn
-			// 不阻塞（派生数据由同账户下轮观测覆盖），游标语义与投影一致。
+			// 不阻塞（派生数据由同账户下轮观测覆盖）。
 			p.recordHourly(ctx, item.Outcome)
+			// 游标推进（诊断面）：失败即停保留（诊断写失败可能与存储异常
+			// 同源，本轮收口下轮重试）；未推进（晚到旧行落后于游标，存储游
+			// 标保持单调）不再停止消费，本地诊断值只在真推进时跟随。
 			advanced, err := p.advanceCursor(ctx, next)
 			if err != nil {
 				return result, err
 			}
-			if !advanced {
-				return result, nil
+			if advanced {
+				cursor = next
 			}
-			cursor = next
 			result.Processed++
 		}
 		if len(page) < pageLimit {
@@ -366,22 +403,19 @@ func (value *projectionDBTime) parseText(text string) error {
 
 // listProjectedOutcomes 按 durable 排序读取 outcome 页（归档
 // listAccountHealthJobsOutcomes 的只读窄口；含 stale/审计行——无 projection 的
-// 行经 validate 落 ignored receipt 后由游标推进收敛）。Store 的只读附加方法，
-// 不改动既有 store 逻辑。
-func (s *Store) listProjectedOutcomes(ctx context.Context, after *OutcomeCursor, limit int) ([]DrainedOutcome, error) {
+// 行经 validate 落 ignored receipt 后由水位打标收敛）。T207 C3：只取未消费
+// 行（projection_consumed_at IS NULL）的最旧一页（observed_at, outcome_id 升
+// 序），与游标无关；晚到旧行落库后自然进入读取面。不持锁读取：并发 drain
+// worker 可能取到同一批，靠投影 receipt（outcome_id）幂等 + 水位打标同值
+// 覆盖保证重放安全（见包注释）。Store 的只读附加方法，不改动既有 store 逻辑。
+func (s *Store) listProjectedOutcomes(ctx context.Context, limit int) ([]DrainedOutcome, error) {
 	if limit < 1 {
 		return nil, errors.New("J1 outcome 读取 limit 无效")
 	}
-	var query string
-	var args []any
-	query = `SELECT payload, observed_at FROM juhe_jobs.account_health_outcomes`
-	if after != nil {
-		query += ` WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2)`
-		args = append(args, after.ObservedAt, after.OutcomeID)
-	}
-	query += ` ORDER BY observed_at ASC, outcome_id ASC LIMIT $` + strconv.Itoa(len(args)+1)
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	query := `SELECT payload, observed_at FROM ` + accountHealthOutcomesTableSQL + `
+WHERE projection_consumed_at IS NULL
+ORDER BY observed_at ASC, outcome_id ASC LIMIT $1`
+	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("读取 J1 outcome 投影页失败: %w", err)
 	}
@@ -416,6 +450,85 @@ func (s *Store) listProjectedOutcomes(ctx context.Context, after *OutcomeCursor,
 		result = append(result, DrainedOutcome{StorageObservedAtText: observed.RawText, StorageObservedAt: observed.Time.UTC(), Outcome: outcome})
 	}
 	return result, rows.Err()
+}
+
+// bootstrapProjectionConsumption 在消费水位列首次启用时按旧游标结算存量行
+//（BUG-0345 同款自举口径，statsagg.BootstrapUsageRecordConsumption 同型），
+// 返回 true 表示本轮执行了结算、调用方本轮不再消费。
+//
+// 为什么必须有这一步：加列后存量行全是 NULL，若直接把全表当待消费，会把旧
+// 游标已经投影过的历史整段重放。结算口径取「旧游标已消费到的最晚一行」——
+// (observed_at, outcome_id) 不晚于游标的行按旧口径已进过投影（或被游标越过
+// 的晚到损失，无法与已投影区分），统一打标为已消费；游标之后的行保持未消费，
+// 正常消费。宁可保留已知的历史缺口，也不冒全量重投影的风险。
+//
+// 已存在任一打标行即说明水位列已启用过，直接正常消费（未启用的库这里扫到
+// 表尾，启用后第一页即命中）。游标不存在（全新库）时不结算：投影面为空，
+// 全部 outcome 都该被消费。并发 drain 下两个 worker 同时进入自举：ctid 子
+// 查询 FOR UPDATE SKIP LOCKED 让双方各取不相交批次；即便重复标记同一批，
+// 水位同值覆盖幂等，不影响正确性。
+//
+// 存量超出一轮批次时循环结算（每轮独立语句、无长事务持锁），超过
+// projectionBootstrapMaxPasses 轮仍未收敛返回错误——自举未完成不得进入正常
+// 消费（会把剩余历史行当新数据重放），宁可显式失败由人工核对积压规模。
+func (p *OutcomeProjector) bootstrapProjectionConsumption(ctx context.Context, cursor *OutcomeCursor) (bool, error) {
+	var probe int
+	err := p.store.db.QueryRowContext(ctx, `SELECT 1 FROM `+accountHealthOutcomesTableSQL+
+		` WHERE projection_consumed_at IS NOT NULL LIMIT 1`).Scan(&probe)
+	if err == nil {
+		return false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("探测 J1 投影消费水位失败: %w", err)
+	}
+	if cursor == nil {
+		return false, nil
+	}
+	consumedAt := p.now().UTC().Format(time.RFC3339Nano)
+	query := `UPDATE ` + accountHealthOutcomesTableSQL + ` SET projection_consumed_at = $1
+WHERE ctid IN (
+	SELECT ctid FROM ` + accountHealthOutcomesTableSQL + `
+	WHERE projection_consumed_at IS NULL
+	  AND (observed_at < $2 OR (observed_at = $2 AND outcome_id <= $3))
+	ORDER BY observed_at ASC, outcome_id ASC
+	LIMIT $4
+	FOR UPDATE SKIP LOCKED
+)`
+	totalAffected := int64(0)
+	for pass := 0; pass < projectionBootstrapMaxPasses; pass++ {
+		result, err := p.store.db.ExecContext(ctx, query, consumedAt, cursor.ObservedAt, cursor.OutcomeID, projectionBootstrapBatchRows)
+		if err != nil {
+			return false, fmt.Errorf("结算存量 J1 投影消费水位失败: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("读取存量 J1 投影结算影响行数失败: %w", err)
+		}
+		totalAffected += affected
+		// 本轮结算不满一批即收敛（0 行说明游标存在但表内没有可结算行：全部
+		// 晚于游标 / 表已清空 / 已被保留清理）。
+		if affected < projectionBootstrapBatchRows {
+			if totalAffected == 0 {
+				return false, nil
+			}
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("存量 J1 投影自举超过 %d 轮（每轮 %d 行）仍未收敛，游标后积压异常大，请人工核对 account_health_outcomes 后再重跑", projectionBootstrapMaxPasses, projectionBootstrapBatchRows)
+}
+
+// markProjectionConsumed 在投影事务内把 outcome 行打上消费水位（T207 C3）：
+// 投影失败回滚时打标一并回滚，行会被重新选中，不出现「已标记未投影」的空洞。
+// 同值重复打标幂等（并发 drain 重放安全）。行已被保留清理删除时影响 0 行，
+// 不视为错误（投影已完成，行无需保留）。业务事务可跨 schema 触达
+// juhe_jobs（同一数据库），与归档跨 schema 投影链一致。
+func (p *OutcomeProjector) markProjectionConsumed(ctx context.Context, tx *sql.Tx, outcomeID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE `+accountHealthOutcomesTableSQL+` SET projection_consumed_at = $1 WHERE outcome_id = $2`,
+		p.now().UTC().Format(time.RFC3339Nano), outcomeID)
+	if err != nil {
+		return fmt.Errorf("标记 J1 投影消费水位失败: %w", err)
+	}
+	return nil
 }
 
 // loadCursor 读取业务库游标（归档 currentAccountHealthProjectionCursor）并按
@@ -558,16 +671,18 @@ func compareProjectionCursor(left, right *OutcomeCursor) int {
 
 // ProjectOutcomeNow 对单条 outcome 直接执行与 drain 消费（DrainOnce）同源的
 // 投影事务（BUG-0260：J1 终态投影补落地通道，供 Runner 的
-// cooldown_terminal_reproject kind 调用）。不推进 drain 游标：receipt 以
-// outcome_id 幂等，后续 drain 重放到同一 outcome 时命中 receipt 直接跳过，
-// 不会二次改写业务行。
+// cooldown_terminal_reproject kind 调用）。不推进 drain 游标、不打消费水位：
+// receipt 以 outcome_id 幂等，后续 drain 重放到同一 outcome 时命中 receipt
+// 直接跳过并补打水位，不会二次改写业务行。
 func (p *OutcomeProjector) ProjectOutcomeNow(ctx context.Context, outcome Outcome) (ProjectionResult, error) {
-	return p.projectOutcome(ctx, outcome)
+	return p.projectOutcome(ctx, outcome, false)
 }
 
 // projectOutcome 对单条 outcome 执行投影事务（归档
 // projectAccountHealthJobsOutcome/projectAccountHealthJobsOutcomeAsync）。
-func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) (ProjectionResult, error) {
+// consume=true（drain 消费路径）时在同一事务内打消费水位 projection_consumed_at
+// （T207 C3）：投影回滚则打标回滚，行重新入选，不产生「已标记未投影」空洞。
+func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome, consume bool) (ProjectionResult, error) {
 	base := ProjectionResult{OutcomeID: outcome.OutcomeID, AccountID: outcome.AccountID, InputVersion: outcome.InputVersion}
 	tx, err := p.business.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -585,6 +700,9 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	// 器互斥），最后才取 accounts/input_versions 行锁。仅 PG 方言执行。
 	// BUG-0313：7001001 的取锁等待受事务级 lock_timeout 约束，超时 55P03
 	// 失败本轮——J1 投影 receipt 未落库，下轮重放同一 outcome，不无限排队。
+	// T207 C3：水位打标（juhe_jobs.account_health_outcomes 行锁）统一放在
+	// 事务尾部（投影结论落定之后），锁获取顺序保持 7001001 → projection 键
+	// → business 行 → outcome 行，不与上述契约交叉。
 	if err := advisorylock.LockAccountListDirty(ctx, tx); err != nil {
 		return base, err
 	}
@@ -596,12 +714,26 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 		return base, err
 	}
 	if existing != nil {
+		// receipt 已存在：投影无需重放（幂等跳过），但 drain 消费路径仍须
+		// 补打水位（ProjectOutcomeNow 通道投影过但未经 drain 的行、或历史
+		// 自举边界行），否则行滞留未消费被无限重选。
+		if consume {
+			if err := p.markProjectionConsumed(ctx, tx, outcome.OutcomeID); err != nil {
+				return base, err
+			}
+			return *existing, tx.Commit()
+		}
 		return *existing, nil
 	}
 	validation := validateProjection(outcome)
 	if validation.terminal {
 		if err := p.insertReceipt(ctx, tx, base, validation.disposition, validation.reason); err != nil {
 			return base, err
+		}
+		if consume {
+			if err := p.markProjectionConsumed(ctx, tx, outcome.OutcomeID); err != nil {
+				return base, err
+			}
 		}
 		return ProjectionResult{OutcomeID: base.OutcomeID, AccountID: base.AccountID, InputVersion: base.InputVersion, Disposition: validation.disposition, Reason: validation.reason}, tx.Commit()
 	}
@@ -621,6 +753,11 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 		if err := p.insertReceipt(ctx, tx, base, ProjectionStale, fenceReason); err != nil {
 			return base, err
 		}
+		if consume {
+			if err := p.markProjectionConsumed(ctx, tx, outcome.OutcomeID); err != nil {
+				return base, err
+			}
+		}
 		return ProjectionResult{OutcomeID: base.OutcomeID, AccountID: base.AccountID, InputVersion: base.InputVersion, Disposition: ProjectionStale, Reason: fenceReason}, tx.Commit()
 	}
 	plan, err := p.activationPlanForProjection(account, record)
@@ -634,6 +771,11 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	if !applied {
 		if err := p.insertReceipt(ctx, tx, base, ProjectionStale, "projection_compare_and_set_missed"); err != nil {
 			return base, err
+		}
+		if consume {
+			if err := p.markProjectionConsumed(ctx, tx, outcome.OutcomeID); err != nil {
+				return base, err
+			}
 		}
 		return ProjectionResult{OutcomeID: base.OutcomeID, AccountID: base.AccountID, InputVersion: base.InputVersion, Disposition: ProjectionStale, Reason: "projection_compare_and_set_missed"}, tx.Commit()
 	}
@@ -653,6 +795,11 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	}
 	if err := p.insertReceipt(ctx, tx, base, ProjectionApplied, ""); err != nil {
 		return base, err
+	}
+	if consume {
+		if err := p.markProjectionConsumed(ctx, tx, outcome.OutcomeID); err != nil {
+			return base, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return base, err

@@ -147,7 +147,7 @@ func w184RecordedProjector(t *testing.T) []w184RecordedStatement {
 		t.Fatalf("装配录制投影器失败: %v", err)
 	}
 	outcome := Outcome{OutcomeID: "w184-outcome", AccountID: "w184-acct", InputVersion: 1}
-	result, err := projector.projectOutcome(context.Background(), outcome)
+	result, err := projector.projectOutcome(context.Background(), outcome, false)
 	if err != nil {
 		t.Fatalf("projectOutcome 执行失败: %v", err)
 	}
