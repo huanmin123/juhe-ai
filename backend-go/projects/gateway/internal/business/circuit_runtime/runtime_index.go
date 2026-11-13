@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -230,6 +231,8 @@ if redis.call('HGET', KEYS[2], 'version') ~= '1' or redis.call('HGET', KEYS[2], 
   return redis.error_reply('account circuit runtime index build epoch is invalid')
 end
 redis.call('HSET', KEYS[2], 'status', 'ready', 'ownerMode', 'go-runtime-state-v1', 'auditAtMs', ARGV[3], 'phase', 'ready', 'cursor', '0')
+-- 收敛时清掉上次失败残留的 error 字段（invalidate 臂写入），避免 ready 与错误原文并存误导诊断。
+redis.call('HDEL', KEYS[2], 'error')
 return 1
 `
 
@@ -285,18 +288,61 @@ type accountCircuitRuntimeIndexItem struct {
 type accountCircuitRuntimeIndexStateEntry struct {
 	State             accountCircuitRuntimeStateWire `json:"state"`
 	ClosedExpiresAtMS *int64                         `json:"closedExpiresAtMs,omitempty"`
-	ReplayOrder       []string                       `json:"replayOrder"`
+	ReplayOrder       circuitRuntimeReplayIDs        `json:"replayOrder"`
+}
+
+// circuitRuntimeEvidenceScope 是 escalation HASH 条目的单 scope 证据。
+type circuitRuntimeEvidenceScope struct {
+	ScopeKey              string `json:"scopeKey"`
+	IncidentID            string `json:"incidentId"`
+	EvidenceID            string `json:"evidenceId"`
+	ConfirmedFailureCount int    `json:"confirmedFailureCount"`
+	ObservedAtMS          int64  `json:"observedAtMs"`
+}
+
+// circuitRuntimeEvidenceScopes 容忍 cjson 空表编码（BUG-0364）：Lua 侧空
+// scopes 数组被编码成 `{}`（空对象），解码时视为空数组，其余形态仍严格校验。
+type circuitRuntimeEvidenceScopes []circuitRuntimeEvidenceScope
+
+func (s *circuitRuntimeEvidenceScopes) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if string(trimmed) == "{}" || string(trimmed) == "null" {
+		*s = []circuitRuntimeEvidenceScope{}
+		return nil
+	}
+	var decoded []circuitRuntimeEvidenceScope
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return err
+	}
+	*s = decoded
+	return nil
 }
 
 type accountCircuitRuntimeIndexEvidence struct {
-	DispatchRevision string `json:"dispatchRevision"`
-	Scopes           []struct {
-		ScopeKey              string `json:"scopeKey"`
-		IncidentID            string `json:"incidentId"`
-		EvidenceID            string `json:"evidenceId"`
-		ConfirmedFailureCount int    `json:"confirmedFailureCount"`
-		ObservedAtMS          int64  `json:"observedAtMs"`
-	} `json:"scopes"`
+	DispatchRevision string                      `json:"dispatchRevision"`
+	Scopes           circuitRuntimeEvidenceScopes `json:"scopes"`
+}
+
+// circuitRuntimeReplayIDs 容忍 cjson 空表编码（BUG-0364）：Lua 侧
+// `entry['replayOrder'] or {}` 回写把空回放列表编码成 `{}`（空对象），运行时
+// Lua 读路径天然容忍（空表 ipairs 零迭代），但本文件 backfill 的严格解码曾
+// 被它全量中止（2026-11-13 revision 24 升级窗实录，数据面修复 15 分钟后即被
+// 运行进程复发）。解码时把 `{}`/null 视为空数组；其余非法形态（非数组、对象
+// 非空、字符串等）仍原样报错，不放宽校验。
+type circuitRuntimeReplayIDs []string
+
+func (s *circuitRuntimeReplayIDs) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if string(trimmed) == "{}" || string(trimmed) == "null" {
+		*s = []string{}
+		return nil
+	}
+	var decoded []string
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return err
+	}
+	*s = decoded
+	return nil
 }
 
 type AccountCircuitRuntimeIndexBackfiller struct {
