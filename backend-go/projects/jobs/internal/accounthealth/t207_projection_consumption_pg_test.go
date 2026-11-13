@@ -12,9 +12,9 @@ package accounthealth
 // terminal ignored receipt + 水位打标路径，不触达 accounts 行锁链）。
 
 import (
-	"fmt"
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -37,9 +37,9 @@ func newProjectionWatermarkPG(t *testing.T) (*sql.DB, *OutcomeProjector) {
 		}
 		_, err := db.ExecContext(ctx, `CREATE TABLE juhe_business.account_health_projection_cursors (
 			consumer_key text PRIMARY KEY,
-			observed_at text,
+			observed_at timestamptz(6),
 			outcome_id text,
-			updated_at text NOT NULL,
+			updated_at timestamptz(3) NOT NULL,
 			CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
 		)`)
 		if err != nil {
@@ -51,7 +51,7 @@ func newProjectionWatermarkPG(t *testing.T) (*sql.DB, *OutcomeProjector) {
 			input_version integer NOT NULL CHECK (input_version >= 1),
 			disposition text NOT NULL CHECK (disposition IN ('applied', 'stale', 'ignored', 'rejected')),
 			reason text,
-			applied_at text NOT NULL
+			applied_at timestamptz(3) NOT NULL
 		)`)
 		return err
 	})
@@ -161,9 +161,14 @@ func TestT207ConsumesLateArrivingOutcome(t *testing.T) {
 		t.Fatalf("重复 drain 后 receipt 行数 = %d want 3（不重放）", got)
 	}
 	// 游标诊断面保留：推进到已消费的最晚一行。
-	var observedAt, outcomeID sql.NullString
+	var observedAt sql.NullTime
+	var outcomeID sql.NullString
 	if err := db.QueryRow(`SELECT observed_at, outcome_id FROM juhe_business.account_health_projection_cursors WHERE consumer_key = $1`, DefaultProjectionConsumerKey).Scan(&observedAt, &outcomeID); err != nil {
 		t.Fatalf("read cursor: %v", err)
+	}
+	wantObservedAt := time.Date(2026, time.November, 13, 10, 5, 0, 0, time.UTC)
+	if !observedAt.Valid || !observedAt.Time.Equal(wantObservedAt) {
+		t.Fatalf("诊断游标 observed_at = %v want %v", observedAt, wantObservedAt)
 	}
 	if outcomeID.String != "t207-out-b" {
 		t.Fatalf("诊断游标 outcome_id = %q want t207-out-b（晚到行不回退游标）", outcomeID.String)
@@ -179,9 +184,17 @@ func TestT207BootstrapSettlesByCursor(t *testing.T) {
 	t207SeedOutcome(t, db, "t207-boot-b", "req-b", "2026-11-13T10:05:00Z")
 	t207SeedOutcome(t, db, "t207-boot-c", "req-c", "2026-11-13T10:10:00Z")
 	// 模拟改造前的库：旧游标已推进到 boot-b（boot-a/boot-b 按旧口径已消费）。
+	observedAt, err := time.Parse(time.RFC3339, "2026-11-13T10:05:00Z")
+	if err != nil {
+		t.Fatalf("parse cursor observed_at: %v", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, t207ProjectionNow)
+	if err != nil {
+		t.Fatalf("parse cursor updated_at: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.account_health_projection_cursors
 		(consumer_key, observed_at, outcome_id, updated_at) VALUES ($1, $2, 't207-boot-b', $3)`,
-		DefaultProjectionConsumerKey, "2026-11-13T10:05:00Z", t207ProjectionNow); err != nil {
+		DefaultProjectionConsumerKey, observedAt, updatedAt); err != nil {
 		t.Fatalf("seed cursor: %v", err)
 	}
 

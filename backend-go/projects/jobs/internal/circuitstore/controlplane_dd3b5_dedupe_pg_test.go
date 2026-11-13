@@ -59,14 +59,14 @@ CREATE TABLE juhe_business.account_circuit_incidents (
   projected_ledger_revision bigint NOT NULL DEFAULT 0,
   transition_id text NOT NULL,
   cooldown_observation_generation integer NOT NULL DEFAULT 0,
-  open_until_ms bigint,
-  next_transition_at_ms bigint,
+  open_until_ms timestamptz(6),
+  next_transition_at_ms timestamptz(6),
   lease_id text,
   lease_purpose text,
   lease_owner_run_id text,
-  lease_until_ms bigint,
-  attempt_started_at_ms bigint,
-  attempt_hard_deadline_ms bigint,
+  lease_until_ms timestamptz(6),
+  attempt_started_at_ms timestamptz(6),
+  attempt_hard_deadline_ms timestamptz(6),
   upstream_attempt_observed integer NOT NULL DEFAULT 0,
   backoff_level integer NOT NULL DEFAULT 0,
   consecutive_failures integer NOT NULL DEFAULT 0,
@@ -74,9 +74,9 @@ CREATE TABLE juhe_business.account_circuit_incidents (
   confirmation_failure_evidence_keys_json text NOT NULL DEFAULT '[]',
   recovering_successes integer NOT NULL DEFAULT 0,
   last_failure_class text,
-  retained_until_ms bigint,
-  created_at_ms bigint NOT NULL,
-  updated_at_ms bigint NOT NULL
+  retained_until_ms timestamptz(6),
+  created_at_ms timestamptz(6) NOT NULL,
+  updated_at_ms timestamptz(6) NOT NULL
 );
 CREATE TABLE juhe_business.account_circuit_outbox (
   event_id text PRIMARY KEY,
@@ -92,15 +92,15 @@ CREATE TABLE juhe_business.account_circuit_outbox (
   generation bigint,
   ledger_revision bigint,
   status text NOT NULL DEFAULT 'pending',
-  available_at_ms bigint NOT NULL,
+  available_at_ms timestamptz(6) NOT NULL,
   claim_token text,
   claimed_by text,
-  claim_until_ms bigint,
+  claim_until_ms timestamptz(6),
   attempt_count integer NOT NULL DEFAULT 0,
   last_error_class text,
-  acknowledged_at_ms bigint,
-  created_at_ms bigint NOT NULL,
-  updated_at_ms bigint NOT NULL,
+  acknowledged_at_ms timestamptz(6),
+  created_at_ms timestamptz(6) NOT NULL,
+  updated_at_ms timestamptz(6) NOT NULL,
   UNIQUE (projection_key, dedupe_key)
 )`
 
@@ -149,7 +149,7 @@ func TestDD3B5DispatchedOutboxMissingIncidentRetriesViaInsert(t *testing.T) {
 	input := dd3b5FirstCAS(t, repo, "scope-dd3b5-a", "acc-dd3b5-a")
 
 	// 模拟 Cleanup 后状态：outbox 行 dispatch 完成、incident 行物理删除。
-	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=2000 WHERE dedupe_key='incident:tr-scope-dd3b5-a'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=to_timestamp(2000/1000.0) WHERE dedupe_key='incident:tr-scope-dd3b5-a'`); err != nil {
 		t.Fatalf("置 dispatched 失败: %v", err)
 	}
 	if _, err := db.Exec(`DELETE FROM juhe_business.account_circuit_incidents WHERE circuit_scope_key='scope-dd3b5-a'`); err != nil {
@@ -212,7 +212,7 @@ func TestDD3B5DispatchedOutboxWithIncidentRowGoesThroughCAS(t *testing.T) {
 	repo, db := dd3b5OpenRepo(t, "acc-dd3b5-c")
 	input := dd3b5FirstCAS(t, repo, "scope-dd3b5-c", "acc-dd3b5-c")
 
-	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=2000 WHERE dedupe_key='incident:tr-scope-dd3b5-c'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=to_timestamp(2000/1000.0) WHERE dedupe_key='incident:tr-scope-dd3b5-c'`); err != nil {
 		t.Fatalf("置 dispatched 失败: %v", err)
 	}
 

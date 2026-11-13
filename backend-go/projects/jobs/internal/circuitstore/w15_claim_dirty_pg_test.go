@@ -30,8 +30,8 @@ func TestW15ClaimDirtyPostgres(t *testing.T) {
 
 	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.account_list_availability_dirty
 		(account_id, viewer_system_account_id, generation, applied_generation, reason, available_at_ms, created_at_ms, updated_at_ms)
-		VALUES ('w15-acct', 'w15-sys', 1, 0, 'w15-test', 1, 1, 1)
-		ON CONFLICT (account_id) DO UPDATE SET generation = 1, available_at_ms = 1, claim_token = NULL, claimed_by = NULL, claim_until_ms = NULL`); err != nil {
+		VALUES ('w15-acct', 'w15-sys', 1, 0, 'w15-test', to_timestamp(1/1000.0), to_timestamp(1/1000.0), to_timestamp(1/1000.0))
+		ON CONFLICT (account_id) DO UPDATE SET generation = 1, available_at_ms = to_timestamp(1/1000.0), claim_token = NULL, claimed_by = NULL, claim_until_ms = NULL`); err != nil {
 		t.Fatalf("dirty 种子行插入失败: %v", err)
 	}
 

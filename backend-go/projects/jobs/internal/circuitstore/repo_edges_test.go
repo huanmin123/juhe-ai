@@ -24,7 +24,7 @@ func seedOutboxEvent(t *testing.T, db *sql.DB, eventID string, availableAtMS int
 			circuit_scope_key, transition_id, dispatch_revision, status, available_at_ms,
 			attempt_count, created_at_ms, updated_at_ms
 		) VALUES ($1, 'account_circuit_runtime_v1', $2, 'dispatch_revision_changed', 'acc-1', 'acc-1',
-			'sk-1', 'tr-1', 9, 'pending', $3, 0, 1, 1)`, eventID, "dedupe:"+eventID, availableAtMS); err != nil {
+			'sk-1', 'tr-1', 9, 'pending', to_timestamp($3/1000.0), 0, to_timestamp(1/1000.0), to_timestamp(1/1000.0))`, eventID, "dedupe:"+eventID, availableAtMS); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -206,7 +206,7 @@ func TestApplyClaimsGuards(t *testing.T) {
 		INSERT INTO juhe_business.account_list_availability_dirty (
 			account_id, viewer_system_account_id, generation, applied_generation, reason,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
-		) VALUES ('acc-1', 'viewer-1', 2, 0, 'projection_refresh_failed', $1, 0, $1, $1)`, nowMS); err != nil {
+		) VALUES ('acc-1', 'viewer-1', 2, 0, 'projection_refresh_failed', to_timestamp($1/1000.0), 0, to_timestamp($1/1000.0), to_timestamp($1/1000.0))`, nowMS); err != nil {
 		t.Fatal(err)
 	}
 	claims, err := repo.ClaimDirty(ctx, "owner-1", 10, 30_000, nowMS)
@@ -243,7 +243,7 @@ func TestApplyDeletionClaimWithoutProjection(t *testing.T) {
 		INSERT INTO juhe_business.account_list_availability_dirty (
 			account_id, viewer_system_account_id, generation, applied_generation, reason,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
-		) VALUES ('acc-2', 'viewer-1', 3, 0, 'projection_scope_removed', $1, 0, $1, $1)`, nowMS); err != nil {
+		) VALUES ('acc-2', 'viewer-1', 3, 0, 'projection_scope_removed', to_timestamp($1/1000.0), 0, to_timestamp($1/1000.0), to_timestamp($1/1000.0))`, nowMS); err != nil {
 		t.Fatal(err)
 	}
 	claims, err := repo.ClaimDirty(ctx, "owner-1", 10, 30_000, nowMS)

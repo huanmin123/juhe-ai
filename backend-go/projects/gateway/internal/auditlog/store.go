@@ -1074,7 +1074,7 @@ func (s *sqlStore) upsertLog(ctx context.Context, tx *sql.Tx, input AuditLogInpu
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO NOTHING RETURNING id`
 	var insertedID string
-	err := tx.QueryRowContext(ctx, s.bind(query), input.ID, input.TraceID, string(input.TrafficSource), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.ConversationKey), nullText(input.SessionID), nullText(input.SessionClientType), nullText(input.GroupID), nullText(input.RouteGroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Method, input.Path, nullText(input.QueryString), nullText(input.Model), nullText(input.UpstreamModel), nullText(input.PricingModel), boolValue(input.ModelMappingApplied), nullText(input.ModelMappingSource), nullText(input.SourceEndpointFamily), nullText(input.UpstreamEndpointFamily), boolValue(input.Stream), nullText(input.ClientIP), nullText(input.UserAgent), string(input.AuditOutcome), input.Success, input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), nullText(input.ErrorMessage), input.SampleBucket, input.SampleReason, len(input.Attempts), len(input.Payloads), raw, compressed, maxInt64(0, raw-compressed), capture, string(lifecycle), dbTimeText(input.StartedAt), dbTimeText(input.EndedAt), input.DurationMS, nullableTime(input.HTTPCompletedAt), input.HTTPDurationMS, input.FirstTokenMS, nullableTime(createdAt)).Scan(&insertedID)
+	err := tx.QueryRowContext(ctx, s.bind(query), input.ID, input.TraceID, string(input.TrafficSource), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.ConversationKey), nullText(input.SessionID), nullText(input.SessionClientType), nullText(input.GroupID), nullText(input.RouteGroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Method, input.Path, nullText(input.QueryString), nullText(input.Model), nullText(input.UpstreamModel), nullText(input.PricingModel), boolValue(input.ModelMappingApplied), nullText(input.ModelMappingSource), nullText(input.SourceEndpointFamily), nullText(input.UpstreamEndpointFamily), boolValue(input.Stream), nullText(input.ClientIP), nullText(input.UserAgent), string(input.AuditOutcome), input.Success, input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), nullText(input.ErrorMessage), input.SampleBucket, input.SampleReason, len(input.Attempts), len(input.Payloads), raw, compressed, maxInt64(0, raw-compressed), capture, string(lifecycle), auditInstant(input.StartedAt), auditInstant(input.EndedAt), input.DurationMS, nullableTime(input.HTTPCompletedAt), input.HTTPDurationMS, input.FirstTokenMS, nullableTime(createdAt)).Scan(&insertedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1093,7 +1093,7 @@ func (s *sqlStore) insertFinalChildren(ctx context.Context, tx *sql.Tx, input Au
 		}
 		query := `INSERT INTO ` + s.table("audit_log_attempts") + ` (id,audit_log_id,attempt_index,account_id,account_owner_system_account_id,group_id,member_group_id,proxy_url,provider_code,attempt_model,attempt_upstream_model,attempt_pricing_model,attempt_model_mapping_applied,attempt_model_mapping_source,attempt_source_endpoint_family,attempt_upstream_endpoint_family,upstream_method,upstream_url,upstream_status_code,success,error_phase,error_code,error_message,started_at,ended_at,duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING id`
 		var insertedID string
-		err := tx.QueryRowContext(ctx, s.bind(query), id, input.ID, attempt.AttemptIndex, nullText(attempt.AccountID), nullText(attempt.AccountOwnerSystemAccountID), nullText(attempt.GroupID), nullText(attempt.MemberGroupID), nullText(attempt.ProxyURL), nullText(attempt.ProviderCode), nullText(attempt.Model), nullText(attempt.UpstreamModel), nullText(attempt.PricingModel), boolValue(attempt.ModelMappingApplied), nullText(attempt.ModelMappingSource), nullText(attempt.SourceEndpointFamily), nullText(attempt.UpstreamEndpointFamily), attempt.UpstreamMethod, attempt.UpstreamURL, attempt.UpstreamStatusCode, boolValue(attempt.Success), nullText(attempt.ErrorPhase), nullText(attempt.ErrorCode), nullText(attempt.ErrorMessage), dbTimeText(attempt.StartedAt), nullableTime(attempt.EndedAt), attempt.DurationMS).Scan(&insertedID)
+		err := tx.QueryRowContext(ctx, s.bind(query), id, input.ID, attempt.AttemptIndex, nullText(attempt.AccountID), nullText(attempt.AccountOwnerSystemAccountID), nullText(attempt.GroupID), nullText(attempt.MemberGroupID), nullText(attempt.ProxyURL), nullText(attempt.ProviderCode), nullText(attempt.Model), nullText(attempt.UpstreamModel), nullText(attempt.PricingModel), boolValue(attempt.ModelMappingApplied), nullText(attempt.ModelMappingSource), nullText(attempt.SourceEndpointFamily), nullText(attempt.UpstreamEndpointFamily), attempt.UpstreamMethod, attempt.UpstreamURL, attempt.UpstreamStatusCode, boolValue(attempt.Success), nullText(attempt.ErrorPhase), nullText(attempt.ErrorCode), nullText(attempt.ErrorMessage), auditInstant(attempt.StartedAt), nullableTime(attempt.EndedAt), attempt.DurationMS).Scan(&insertedID)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("audit_log_attempts")+` WHERE id=? AND audit_log_id=?`), id, input.ID).Scan(&insertedID)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1196,7 +1196,7 @@ func (s *sqlStore) upsertErrorGroup(ctx context.Context, tx *sql.Tx, input Audit
 	}
 	query := `INSERT INTO ` + table + ` (id,fingerprint,window_started_at,window_ended_at,system_account_id,api_key_id,group_id,account_id,provider_code,path,model,status_code,error_phase,error_code,error_type,request_fingerprint,error_fingerprint,count,first_event_id,last_event_id,sample_event_id,last_message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?, ?,?,?) ON CONFLICT(fingerprint,window_started_at) DO UPDATE SET count=` + table + `.count+1,window_ended_at=CASE WHEN excluded.window_ended_at > ` + table + `.window_ended_at THEN excluded.window_ended_at ELSE ` + table + `.window_ended_at END,first_event_id=CASE WHEN excluded.created_at < ` + table + `.created_at OR (excluded.created_at = ` + table + `.created_at AND excluded.first_event_id < ` + table + `.first_event_id) THEN excluded.first_event_id ELSE ` + table + `.first_event_id END,last_event_id=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_event_id ELSE ` + table + `.last_event_id END,last_message=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_message ELSE ` + table + `.last_message END,created_at=CASE WHEN excluded.created_at < ` + table + `.created_at THEN excluded.created_at ELSE ` + table + `.created_at END,updated_at=CASE WHEN excluded.updated_at > ` + table + `.updated_at THEN excluded.updated_at ELSE ` + table + `.updated_at END RETURNING id`
 	var returned string
-	if err := tx.QueryRowContext(ctx, s.bind(query), id, group.fingerprint, dbTimeText(group.windowStartedAt), dbTimeText(group.windowEndedAt), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.GroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Path, nullText(input.Model), input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), string(input.AuditOutcome), group.requestFingerprint, group.errorFingerprint, input.ID, input.ID, input.ID, nullText(input.ErrorMessage), eventTime, eventTime).Scan(&returned); err != nil {
+	if err := tx.QueryRowContext(ctx, s.bind(query), id, group.fingerprint, auditInstant(group.windowStartedAt), auditInstant(group.windowEndedAt), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.GroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Path, nullText(input.Model), input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), string(input.AuditOutcome), group.requestFingerprint, group.errorFingerprint, input.ID, input.ID, input.ID, nullText(input.ErrorMessage), eventTime, eventTime).Scan(&returned); err != nil {
 		return fmt.Errorf("写入 audit_error_groups 失败: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_logs")+` SET error_group_id=? WHERE id=?`), returned, input.ID); err != nil {
@@ -1221,7 +1221,7 @@ func (s *sqlStore) latestErrorGroupSample(ctx context.Context, tx *sql.Tx, finge
 	if err != nil {
 		return "", "", "", fmt.Errorf("查询错误组当前保留样本失败: %w", err)
 	}
-	// 列值经 dbTimeText（RFC3339Nano）写出，整秒的 .000 毫秒被省略；统一回
+	// 列值经 auditInstant（RFC3339Nano）写出，整秒的 .000 毫秒被省略；统一回
 	// nodeISOString 形态，与内存中的 group.windowStartedAt 同形比较，窗口
 	// 不可解析时返回空串（按未知窗口处理）。
 	windowStartedAt := ""
@@ -1595,12 +1595,12 @@ func (s *sqlStore) bind(query string) string {
 	return builder.String()
 }
 
-func dbTimeText(value string) any {
+func auditInstant(value string) any {
 	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
 	if err != nil {
 		return nil
 	}
-	return parsed.UTC().Format(time.RFC3339Nano)
+	return parsed.UTC()
 }
 func nullableTime(value string) any {
 	if strings.TrimSpace(value) == "" {

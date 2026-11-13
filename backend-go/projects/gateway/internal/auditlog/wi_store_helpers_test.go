@@ -182,12 +182,12 @@ func TestWIStoreScalarHelpers(t *testing.T) {
 	if got := boolValue(nil); got != false {
 		t.Fatalf("nil boolValue=%v", got)
 	}
-	// dbTimeText / nullableTime。
+	// auditInstant / nullableTime。
 	utc := time.Date(2026, 9, 10, 8, 30, 0, 123_000_000, time.UTC)
-	if got := dbTimeText(utc.Format(time.RFC3339Nano)); got == nil {
+	if got := auditInstant(utc.Format(time.RFC3339Nano)); got == nil {
 		t.Fatal("合法文本必须归一化")
 	}
-	if got := dbTimeText("not-a-time"); got != nil {
+	if got := auditInstant("not-a-time"); got != nil {
 		t.Fatalf("非法文本=%v", got)
 	}
 	if got := nullableTime("  "); got != nil {

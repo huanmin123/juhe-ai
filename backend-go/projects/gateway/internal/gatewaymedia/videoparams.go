@@ -1,6 +1,8 @@
-// videoparams.go 是对外 POST /v1/videos 请求体的统一参数归一层（媒体设计
-// §6 自建规范 L1/L2/L3；契约 §2.2 视频创建参数表、§2.4 忽略/拒绝/回显规则、
-// §2.7 映射表）。产出 NormalizedVideoParams 供 adapter 构造上游报文与链上
+// videoparams.go 是视频任务创建请求体的统一参数归一层（内部统一词表
+// seconds/size/input_reference；对外 New API 词表 duration/width+height/image
+// 由链面归一后进入本层。媒体设计 §6 自建规范 L1/L2/L3；契约 §2.2 视频创建
+// 参数表、§2.4 忽略/拒绝/回显规则、§2.7 映射表）。产出 NormalizedVideoParams
+// 供 adapter 构造上游报文与链上
 // 回显 params_applied/params_ignored；与 adapter 能力相关的裁决（n>1、
 // input_reference）在此按 Capabilities 做出 400 语义裁决（ErrParamUnsupported）。
 package gatewaymedia
@@ -56,7 +58,7 @@ type NormalizedVideoParams struct {
 	ParamsIgnored  []string
 }
 
-// ParseVideoParams 从已解析的对外 POST /v1/videos 请求 JSON 对象提取归一
+// ParseVideoParams 从已解析的视频创建请求 JSON 对象（内部统一词表）提取归一
 // 参数。校验面：
 //   - L1 必填：model、prompt 非空；
 //   - L2 形态：seconds 数字/数字字符串兼容且 >0（契约 §4.3 openai 原生

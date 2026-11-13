@@ -821,7 +821,7 @@ func (r *ControlPlaneRepo) insertIncidentChangedOutboxRow(ctx context.Context, t
 		eventID, projectionKey, dedupe, "incident_changed",
 		v.AccountID, v.AccountRuntimeKey, &scopeKey, &incidentID,
 		v.TransitionID, v.DispatchRevision, &generation, &ledgerRevision,
-		"pending", nowMS, 0, nowMS, nowMS)
+		"pending", circuitMS(nowMS), 0, circuitMS(nowMS), circuitMS(nowMS))
 	if err != nil {
 		return err
 	}
@@ -890,7 +890,7 @@ func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (CleanupRes
 	if ackCutoff < 0 {
 		ackCutoff = 0
 	}
-	outboxResult, err := tx.ExecContext(ctx, "DELETE FROM "+outbox+" WHERE event_id IN (SELECT event_id FROM "+outbox+" WHERE status IN ('dispatched','failed') AND acknowledged_at_ms<=? ORDER BY acknowledged_at_ms,event_id LIMIT ?)", ackCutoff, circuitIncidentCleanupBatchLimit)
+	outboxResult, err := tx.ExecContext(ctx, "DELETE FROM "+outbox+" WHERE event_id IN (SELECT event_id FROM "+outbox+" WHERE status IN ('dispatched','failed') AND acknowledged_at_ms<=? ORDER BY acknowledged_at_ms,event_id LIMIT ?)", circuitMS(ackCutoff), circuitIncidentCleanupBatchLimit)
 	if err != nil {
 		return out, err
 	}
@@ -916,7 +916,7 @@ func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (CleanupRes
 		}
 		return scopeKeys, rows.Err()
 	}
-	closedKeys, err := collect(closedCondition, nowMS)
+	closedKeys, err := collect(closedCondition, circuitMS(nowMS))
 	if err != nil {
 		return out, err
 	}

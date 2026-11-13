@@ -1763,70 +1763,7 @@ END $$`,
 	{
 		SchemaName: "juhe_business",
 		Source:     "account-list-projection-pg-dirty-triggers",
-		SQL: `
-CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_accounts(
-  p_account_ids text[],
-  p_reason text
-) RETURNS void
-LANGUAGE plpgsql
-SET search_path = juhe_business, public
-AS $function$
-DECLARE
-  v_now_ms bigint;
-  v_prev_lock_timeout text := current_setting('lock_timeout', true);
-BEGIN
-  IF COALESCE(array_length(p_account_ids, 1), 0) = 0 THEN
-    RETURN;
-  END IF;
-  -- 问题-0192：本函数是全部触发器隐式 dirty 写入的公共汇聚点，与所有应用侧
-  -- dirty 写事务（Go advisorylock.AccountListDirty = 7001001）共用 advisory 锁，
-  -- 使触发器路径也纳入 dirty 写串行化，消除与批量写事务的锁序死锁（40P01）。
-  -- pg_advisory_xact_lock 事务级可重入：已持锁事务经触发器再次取锁无阻塞。
-  -- 问题-0313 后续（PLAN-20261017T030349000Z）：仅本次 advisory 等待有界，
-  -- 与 Go 侧 advisorylock.ListDirtyLockWaitTimeout 同口径 2s；包裹+恢复使宿主
-  -- 事务其余锁等待行为不变（零外溢）。55P03 中止宿主事务——「触发变更提交
-  -- ⇔ dirty 行写入」同生共死，不做捕获跳过（捕获=静默漂移，禁止）。
-  PERFORM set_config('lock_timeout', '2s', true);
-  PERFORM pg_advisory_xact_lock(7001001);
-  PERFORM set_config('lock_timeout', COALESCE(v_prev_lock_timeout, '0'), true);
-  v_now_ms := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
-  WITH requested_accounts AS (
-    SELECT DISTINCT requested.account_id
-    FROM unnest(p_account_ids) AS requested(account_id)
-    WHERE account_id IS NOT NULL AND btrim(account_id) <> ''
-  ), affected_accounts AS (
-    SELECT DISTINCT accounts.id
-    FROM accounts
-    INNER JOIN requested_accounts
-      ON accounts.id = requested_accounts.account_id
-        OR accounts.authorization_instance_source_account_id = requested_accounts.account_id
-  )
-  INSERT INTO account_list_availability_dirty (
-    account_id, viewer_system_account_id, generation, applied_generation, reason,
-    available_at_ms, claim_token, claimed_by, claim_until_ms, attempt_count,
-    created_at_ms, updated_at_ms
-  )
-  SELECT accounts.id, accounts.system_account_id,
-    COALESCE((
-      SELECT MAX(projections.source_generation)
-      FROM account_list_availability_projections projections
-      WHERE projections.account_id = accounts.id
-    ), 0) + 1,
-    0, left(p_reason, 128), v_now_ms, NULL, NULL, NULL, 0, v_now_ms, v_now_ms
-  FROM affected_accounts
-  INNER JOIN accounts ON accounts.id = affected_accounts.id
-  ON CONFLICT (account_id) DO UPDATE SET
-    viewer_system_account_id = excluded.viewer_system_account_id,
-    generation = account_list_availability_dirty.generation + 1,
-    reason = excluded.reason,
-    available_at_ms = LEAST(account_list_availability_dirty.available_at_ms, excluded.available_at_ms),
-    claim_token = NULL,
-    claimed_by = NULL,
-    claim_until_ms = NULL,
-    updated_at_ms = excluded.updated_at_ms;
-END;
-$function$;
-
+		SQL: DirtyAvailabilityFunctionInstallerSQL() + `
 CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_account_family(
   p_account_id text,
   p_reason text

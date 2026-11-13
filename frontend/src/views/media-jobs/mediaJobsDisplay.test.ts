@@ -22,6 +22,11 @@ describe('mediaJobsDisplay 枚举标签映射', () => {
     expect(formatMediaJobKind(undefined)).toBe('-')
     expect(formatMediaJobStatus(undefined)).toBe('-')
   })
+
+  it('DB 保留值（audio_speech 无创建路径）渲染原始串不崩（历史行兜底）', () => {
+    // @ts-expect-error audio_speech 是 media_jobs.kind 的 DB 保留值（无创建路径），类型面已收窄
+    expect(formatMediaJobKind('audio_speech')).toBe('audio_speech')
+  })
 })
 
 describe('mediaJobsDisplay 数值格式化', () => {

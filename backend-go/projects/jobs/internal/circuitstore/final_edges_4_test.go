@@ -105,7 +105,7 @@ func TestApplyClaimsUpsertFailurePaths(t *testing.T) {
 				INSERT INTO juhe_business.account_list_availability_dirty (
 					account_id, viewer_system_account_id, generation, applied_generation, reason,
 					available_at_ms, attempt_count, created_at_ms, updated_at_ms
-				) VALUES ('acc-1', 'viewer-1', 1, 0, 'projection_missing', 0, 0, $1, $1)`, nowMS); err != nil {
+				) VALUES ('acc-1', 'viewer-1', 1, 0, 'projection_missing', to_timestamp(0/1000.0), 0, to_timestamp($1/1000.0), to_timestamp($1/1000.0))`, nowMS); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Exec(`DROP TABLE juhe_business.` + dropTable); err != nil {

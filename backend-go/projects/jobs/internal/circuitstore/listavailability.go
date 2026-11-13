@@ -80,13 +80,34 @@ func optionalUpdatedAt(updatedAt string) (string, error) {
 	return normalized, nil
 }
 
+// projectionTime 解析投影协议 RFC3339 文本；非法输入返回零值并由 SQL 守卫
+// 拒绝，不在边界补时间。
+func projectionTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
+}
+
+func projectionText(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func projectionNullable(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return projectionTime(*value)
+}
+
 func (r *ListAvailabilityRepo) requireUpdatedAt(updatedAt string) (string, error) {
 	normalized, err := optionalUpdatedAt(updatedAt)
 	if err != nil {
 		return "", err
 	}
 	if normalized == "" {
-		normalized = r.now().UTC().Format(time.RFC3339Nano)
+		normalized = projectionText(r.now())
 	}
 	return normalized, nil
 }
@@ -445,7 +466,7 @@ func (r *ListAvailabilityRepo) EnqueueAllForRuntimeRecovery(ctx context.Context,
       claim_token = NULL,
       claimed_by = NULL,
       claim_until_ms = NULL,
-      updated_at_ms = excluded.updated_at_ms`, nowMS, nowMS, nowMS)
+      updated_at_ms = excluded.updated_at_ms`, time.UnixMilli(nowMS).UTC(), time.UnixMilli(nowMS).UTC(), time.UnixMilli(nowMS).UTC())
 	if err != nil {
 		return 0, err
 	}
@@ -479,7 +500,7 @@ func (r *ListAvailabilityRepo) EnqueueAllForRuntimeRecovery(ctx context.Context,
           OR authorizations.status IN ('active', 'paused', 'expired')
         )
       ORDER BY accounts.system_account_id
-    )`, r.now().UTC().Format(time.RFC3339Nano)); err != nil {
+    )`, projectionText(r.now())); err != nil {
 		return 0, err
 	}
 	if err := tx2.Commit(); err != nil {
@@ -511,7 +532,7 @@ func (r *ListAvailabilityRepo) EnsureViewerHealth(ctx context.Context, limit int
     WHERE health.viewer_system_account_id IS NULL
     ORDER BY system_accounts.id ASC
     LIMIT ?
-    ON CONFLICT(viewer_system_account_id) DO NOTHING`, updated, limit)
+    ON CONFLICT(viewer_system_account_id) DO NOTHING`, projectionTime(updated), limit)
 	if err != nil {
 		return 0, err
 	}
@@ -811,7 +832,7 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 	if createdAtSortKey == "" || len(createdAtSortKey) > 64 {
 		return normalizedProjection{}, errors.New("createdAtSortKey 长度必须为 1..64")
 	}
-	projectedAt := write.Now.UTC().Format(time.RFC3339Nano)
+	projectedAt := projectionText(write.Now)
 	// effectiveAvailable 对齐 Node schedulableBucket(item, effectiveStatus)
 	// 的 item.effectiveAvailability.available：loader 显式给出时优先，
 	// payload 适配键次之，缺省视为可用（port 既有默认）。
@@ -912,7 +933,7 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 		value.accountType, value.boundGroupID, value.nameSortKey, value.prioritySortKey,
 		value.superPrioritySortKey, value.fallbackSortKey, value.concurrencySortKey,
 		value.accountExpiresAtSortKey, value.lastUsedAtSortKey, value.createdAtSortKey,
-		string(value.payload), value.sourceGeneration, value.nextTransitionAt, value.projectedAt)
+		string(value.payload), value.sourceGeneration, projectionNullable(value.nextTransitionAt), projectionTime(value.projectedAt))
 	if err != nil {
 		return false, err
 	}
@@ -1003,7 +1024,7 @@ func (r *ListAvailabilityRepo) markViewerHealthStaleTx(ctx context.Context, tx t
     ) VALUES (?, 0, NULL, NULL, 0, ?)
     ON CONFLICT(viewer_system_account_id) DO UPDATE SET
       is_current = 0,
-      updated_at = excluded.updated_at`, viewerSystemAccountID, updatedAt)
+      updated_at = excluded.updated_at`, viewerSystemAccountID, projectionTime(updatedAt))
 	return err
 }
 
@@ -1127,7 +1148,7 @@ func (r *ListAvailabilityRepo) ApplyDeletionClaim(ctx context.Context, claim ops
 		return false, err
 	}
 	if deleted > 0 {
-		if err := r.markViewerHealthStaleTx(ctx, tx, claim.ViewerSystemAccountID, r.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if err := r.markViewerHealthStaleTx(ctx, tx, claim.ViewerSystemAccountID, projectionText(r.now())); err != nil {
 			return false, err
 		}
 	}

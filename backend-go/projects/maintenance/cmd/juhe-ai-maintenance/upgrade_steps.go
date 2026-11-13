@@ -1549,6 +1549,13 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				if !satisfied {
 					return errors.New("account_list_availability_dirty instant 列未迁移到 timestamptz(6)")
 				}
+				functionSatisfied, err := revision33FunctionSatisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !functionSatisfied {
+					return errors.New("account_list_availability_mark_dirty_accounts 未安装 timestamptz 函数")
+				}
 				return nil
 			},
 		},

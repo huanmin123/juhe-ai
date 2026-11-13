@@ -430,7 +430,7 @@ func TestW10BNormalizeRetentionAndHelperArms(t *testing.T) {
 	if nodeStatusCode(nil) != "" {
 		t.Fatal("nil 状态码必须映射为空字符串")
 	}
-	if dbTimeText("garbage") != nil || nullableTime("garbage") != nil {
+	if auditInstant("garbage") != nil || nullableTime("garbage") != nil {
 		t.Fatal("非法时间必须映射为 nil")
 	}
 	if nullIfEmpty("") != nil || nullIfEmpty("v") != "v" {

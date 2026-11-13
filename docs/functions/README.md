@@ -1,5 +1,7 @@
 # 功能文档目录
 
+> **方案修订稿（2026-11-13，r3，未实施）：**[分组模型目录与单协议连接器重构设计](分组模型目录与单协议连接器重构设计.md)取消组级连接器清单，账户直接选择连接器，模型保留兼容绑定；纳入模板固定表单、同模板复制填值、连接字段按需展示和视频双向适配的简化方案。账户唯一归组、官方组自有账户、来源计价及旧组限制 / 超级组退役规则保留。[关联评估计划](../plans/计划-20261113T050841000Z-分组模型目录与单协议连接器重构评估.md)记录证据与实施前细化项；当前仅更新方案，不替代下述运行契约，后续见 [C3](../待办与阻塞事项.md#c3)。
+
 > **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档（归档已移出仓库，git 历史可溯）；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
 
 > **供应商/协议面重构目标（2026-10-17，2026-11-05 退役裁决）。** [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) 是供应商、协议档案、模型目录、账户映射和分组边界的唯一目标契约。`openai` 兼容、`hybrid` 与 `generic_http` 已于 2026-11-05 全量退役，只保留九家真实厂商；本文及下列旧文档中与 `providerCode=openai`、`providerCode=hybrid`、混合供应商、自定义协议连接、普通账户/Hybrid 两套映射语义冲突的内容均标记为历史基线，不得当作新实现依据。

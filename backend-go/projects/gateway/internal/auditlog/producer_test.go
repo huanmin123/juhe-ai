@@ -22,7 +22,7 @@ type fakeStore struct {
 	persistCalls int
 	hotCalls     int
 
-	renewOK bool
+	renewOK  bool
 	renewErr error
 	// renewFailFirst 让前 N 次续约失败（复现首次续约超时的生产形态）；
 	// 默认 0 不改变既有行为。

@@ -150,22 +150,34 @@ var ListAvailabilityDirtyColumns = []Column{
 // ApplyColumns 在停写窗口内把指定 epoch 毫秒瞬时列迁到 timestamptz(6)。
 // 先跑只读预检；所有列在同一事务内 ALTER，失败整体回滚。
 func ApplyColumns(ctx context.Context, db *sql.DB, columns []Column) (int, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	applied, err := ApplyColumnsTx(ctx, tx, columns)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return applied, nil
+}
+
+// ApplyColumnsTx 在调用方事务内执行预检和转换，使依赖 DDL 与列变更同生共死。
+func ApplyColumnsTx(ctx context.Context, tx *sql.Tx, columns []Column) (int, error) {
 	for _, item := range columns {
 		var outOfRange int64
 		query := fmt.Sprintf(`SELECT count(*) FROM "juhe_business"."%s" WHERE "%s" IS NOT NULL AND ("%s" < 0 OR "%s" > %d)`,
 			item.Table, item.Column, item.Column, item.Column, MaxEpochMillis)
-		if err := db.QueryRowContext(ctx, query).Scan(&outOfRange); err != nil {
+		if err := tx.QueryRowContext(ctx, query).Scan(&outOfRange); err != nil {
 			return 0, fmt.Errorf("预检 %s.%s 失败: %w", item.Table, item.Column, err)
 		}
 		if outOfRange > 0 {
 			return 0, fmt.Errorf("%s.%s 有 %d 行超出 epoch 毫秒范围", item.Table, item.Column, outOfRange)
 		}
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `SET LOCAL lock_timeout='5s'; SET LOCAL timezone='UTC'`); err != nil {
 		return 0, err
 	}
@@ -189,9 +201,6 @@ func ApplyColumns(ctx context.Context, db *sql.DB, columns []Column) (int, error
 			return 0, fmt.Errorf("迁移 %s.%s 失败: %w", item.Table, item.Column, err)
 		}
 		applied++
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
 	}
 	return applied, nil
 }

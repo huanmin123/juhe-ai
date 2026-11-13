@@ -278,10 +278,27 @@ func TestPostgresSchemaStatementCountsPerSchema(t *testing.T) {
 }
 
 // postgresDOHasIdempotencyGuard 保留既有的 IS NOT NULL 守卫识别，并识别
-// account_lock_states 旧 text 列的精确类型守卫。只接受包含 schema、表、列
-// 和原始类型完整限定的条件，避免把任意 IF EXISTS 当作幂等证据。
+// account_lock_states 旧 text 列及 dirty 四列的精确类型守卫。类型守卫
+// 必须完整限定 schema、表、列与类型，避免把任意 IF EXISTS 当作幂等证据。
 func postgresDOHasIdempotencyGuard(sql string) bool {
 	upper := strings.ToUpper(sql)
+	if strings.HasPrefix(strings.TrimSpace(upper), "DO $DIRTY_INSTALL$") {
+		normalized := strings.Join(strings.Fields(upper), " ")
+		for _, required := range []string{
+			"COUNT(*) FILTER (WHERE DATA_TYPE = 'BIGINT')",
+			"COUNT(*) FILTER (WHERE DATA_TYPE = 'TIMESTAMP WITH TIME ZONE' AND DATETIME_PRECISION = 6)",
+			"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'JUHE_BUSINESS' AND TABLE_NAME = 'ACCOUNT_LIST_AVAILABILITY_DIRTY'",
+			"COLUMN_NAME IN ('AVAILABLE_AT_MS', 'CLAIM_UNTIL_MS', 'CREATED_AT_MS', 'UPDATED_AT_MS')",
+			"IF V_COLUMNS = 4 AND V_LEGACY = 4 THEN",
+			"ELSIF V_COLUMNS = 4 AND V_NATIVE = 4 THEN",
+			"RAISE SQLSTATE '42804'",
+		} {
+			if !strings.Contains(normalized, required) {
+				return false
+			}
+		}
+		return true
+	}
 	if strings.Contains(upper, "IS NOT NULL") {
 		return true
 	}
@@ -297,6 +314,9 @@ func TestPostgresDOHasIdempotencyGuard(t *testing.T) {
 		want bool
 	}{
 		{name: "existing_guard", sql: "IF to_regclass('x') IS NOT NULL THEN", want: true},
+		{name: "dirty_type_guard", sql: DirtyAvailabilityFunctionInstallerSQL(), want: true},
+		{name: "dirty_missing_column", sql: strings.Replace(DirtyAvailabilityFunctionInstallerSQL(), "'claim_until_ms', ", "", 1)},
+		{name: "dirty_missing_error", sql: strings.Replace(DirtyAvailabilityFunctionInstallerSQL(), "RAISE SQLSTATE '42804'", "PERFORM 1", 1)},
 		{name: "column_type_guard", sql: guard, want: true},
 		{name: "unguarded", sql: "DO $$ BEGIN ALTER TABLE x ALTER COLUMN y TYPE bigint; END $$"},
 		{name: "arbitrary_exists", sql: "IF EXISTS (SELECT 1) THEN"},
@@ -399,9 +419,9 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
 	// ALTER DO 块。7→8：D13 非对话账户 cutover 新增 capability_domain
 	// drop-check DO 块。8→9：B7 新增 account_endpoint_modes 25→27 值 CHECK
-	// 重建 DO 块。9→10：T207 outbox failed CHECK 幂等迁移。
-	if doBlocks != 10 {
-		t.Fatalf("DO block count = %d, want 10", doBlocks)
+	// 重建 DO 块。9→10：T207 outbox failed CHECK 幂等迁移；10→11：dirty 函数按列类型安装。
+	if doBlocks != 11 {
+		t.Fatalf("DO block count = %d, want 11", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)

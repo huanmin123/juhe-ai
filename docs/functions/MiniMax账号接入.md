@@ -39,11 +39,11 @@ type ProviderCode = 'minimax'
 - **Capabilities 只声明媒体**（`video_generation`/`tts`，与 Endpoint Families 同名）：不声明 `chat`/`responses`/`passthrough`——MiniMax 聊天端点非 `/v1/chat/completions`，档案不得让聊天流量路由进来；模型门双保险（目录无 chat 模型行）。
 - 协议 `openai/v1` 是媒体 adapter 的报文承载协议（出站路径经 openai 族 URL 归一），不是聊天透传声明。
 - 内置分组：`grp_default_minimax_sys_admin`（默认 MiniMax 分组，seed `pgSeedGroups`）。
-- 新增 openai 协议端点族（seed `pgSeedEndpointFamilies`，M3）：`openai_v1_video_generation`（code `video_generation`）、`openai_v1_tts`（code `tts`）——统一 `/v1/videos`、`/v1/audio/speech` 面承载的厂商原生媒体形态。
+- 新增 openai 协议端点族（seed `pgSeedEndpointFamilies`，M3）：`openai_v1_video_generation`（code `video_generation`）、`openai_v1_tts`（code `tts`）——统一 `/v1/video/generations`、`/v1/audio/speech` 面承载的厂商原生媒体形态（2026-11-12 New API 收敛前为 `/v1/videos`）。
 
 ## 网关请求边界
 
-### 视频（`POST /v1/videos` 统一面，M3 已实施 adapter）
+### 视频（`POST /v1/video/generations` 统一面，M3 已实施 adapter）
 
 - 创建报文改写（`gatewaymedia/minimax_video.go`）：`model`/`prompt` 直传；`seconds` → `duration` **数值秒直传**（Hailuo 支持数值档，不做换算猜测）；`input_reference` → `first_frame_image`（**仅 base64/data URL 直传**，url 形态本地 400——网关零资源存储不代为下载，沿 veo 裁决）；`prompt_optimizer` 等厂商个例经 `provider_options.minimax` deep-merge；`negative_prompt`/`n`/`seed`/`audio` 请求面无对应字段 → `params_ignored` 回显。
 - 受理凭据 = 创建响应 `task_id`；`base_resp.status_code != 0` 视为受理前错误（不落 `media_jobs`）。

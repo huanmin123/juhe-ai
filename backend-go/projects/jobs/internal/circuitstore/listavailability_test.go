@@ -36,13 +36,13 @@ CREATE TABLE juhe_business.account_list_availability_dirty (
 	generation bigint NOT NULL,
 	applied_generation integer NOT NULL,
 	reason text NOT NULL,
-	available_at_ms bigint NOT NULL,
+	available_at_ms timestamptz(6) NOT NULL,
 	claim_token text,
 	claimed_by text,
-	claim_until_ms bigint,
+	claim_until_ms timestamptz(6),
 	attempt_count integer NOT NULL DEFAULT 0,
-	created_at_ms bigint NOT NULL,
-	updated_at_ms bigint NOT NULL
+	created_at_ms timestamptz(6) NOT NULL,
+	updated_at_ms timestamptz(6) NOT NULL
 );
 CREATE TABLE juhe_business.account_list_availability_projections (
 	viewer_system_account_id text NOT NULL,
@@ -342,7 +342,7 @@ func TestListAvailabilityClaimProjectRefresh(t *testing.T) {
 		INSERT INTO juhe_business.account_list_availability_dirty (
 			account_id, viewer_system_account_id, generation, applied_generation, reason,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
-		) VALUES ('acc-2', 'viewer-1', 2, 0, 'projection_scope_removed', $1, 0, $1, $1)`, nowMS); err != nil {
+		) VALUES ('acc-2', 'viewer-1', 2, 0, 'projection_scope_removed', to_timestamp($1/1000.0), 0, to_timestamp($1/1000.0), to_timestamp($1/1000.0))`, nowMS); err != nil {
 		t.Fatal(err)
 	}
 	deletionClaims, err := repo.ClaimDirty(ctx, "owner-1", 100, 30_000, nowMS)
@@ -371,7 +371,7 @@ func TestListAvailabilityClaimProjectRefresh(t *testing.T) {
 		INSERT INTO juhe_business.account_list_availability_dirty (
 			account_id, viewer_system_account_id, generation, applied_generation, reason,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
-		) VALUES ('acc-1', 'viewer-1', 3, 0, 'projection_refresh_failed', $1, 1, $1, $1)`, nowMS); err != nil {
+		) VALUES ('acc-1', 'viewer-1', 3, 0, 'projection_refresh_failed', to_timestamp($1/1000.0), 1, to_timestamp($1/1000.0), to_timestamp($1/1000.0))`, nowMS); err != nil {
 		t.Fatal(err)
 	}
 	replayClaims, err := repo.ClaimDirty(ctx, "owner-1", 100, 30_000, nowMS)
@@ -393,7 +393,7 @@ func TestListAvailabilityClaimProjectRefresh(t *testing.T) {
 		t.Fatal("合法 claim 必须可释放重放")
 	}
 	var pendingCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_list_availability_dirty WHERE claim_token IS NULL AND available_at_ms > $1`, nowMS).Scan(&pendingCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_list_availability_dirty WHERE claim_token IS NULL AND (EXTRACT(EPOCH FROM available_at_ms)*1000)::bigint > $1`, nowMS).Scan(&pendingCount); err != nil {
 		t.Fatal(err)
 	}
 	if pendingCount != 1 {

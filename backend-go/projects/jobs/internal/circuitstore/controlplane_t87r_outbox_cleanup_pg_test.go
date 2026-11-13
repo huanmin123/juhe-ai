@@ -23,6 +23,7 @@ package circuitstore
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // t87rNow 是各用例共用的 Cleanup nowMS 基准（任意远期常数，ack 时间相对其
@@ -57,8 +58,8 @@ func TestT87RCleanupRetiresAgedDispatchedOutbox(t *testing.T) {
 			created_at_ms, updated_at_ms
 		) VALUES ($1, 'projection:circuit', $2, $3, 'acc-t87r-a', 'acc-t87r-a',
 			$4, $5, 'tr-'||$1, 9, $6, $7,
-			$8, 0, NULL, NULL, NULL, 0, $9,
-			0, 0)`,
+			$8, to_timestamp(0/1000.0), NULL, NULL, NULL, 0, to_timestamp($9/1000.0),
+			to_timestamp(0/1000.0), to_timestamp(0/1000.0))`,
 			eventID, dedupeKey, eventType, scopeKey, incidentID, generation, ledgerRevision, status, ackedMS); err != nil {
 			t.Fatalf("插入 outbox 行 %s 失败: %v", eventID, err)
 		}
@@ -130,7 +131,7 @@ func TestT87RCleanupIncidentArmsUnchangedByOutboxArm(t *testing.T) {
 			projected_ledger_revision, transition_id, retained_until_ms, created_at_ms, updated_at_ms
 		) VALUES ($1, 'acc-t87r-b', 'acc-t87r-b', 'account', 'incident-'||$1,
 			'[]', $2, 1, 9, 1,
-			1, 'tr-'||$1, $3, 0, 0)`,
+			1, 'tr-'||$1, to_timestamp($3/1000.0), to_timestamp(0/1000.0), to_timestamp(0/1000.0))`,
 			scopeKey, state, retainedUntilMS); err != nil {
 			t.Fatalf("插入 incident 行 %s 失败: %v", scopeKey, err)
 		}
@@ -143,7 +144,7 @@ func TestT87RCleanupIncidentArmsUnchangedByOutboxArm(t *testing.T) {
 			status, available_at_ms, attempt_count, acknowledged_at_ms, created_at_ms, updated_at_ms
 		) VALUES ($1, 'projection:circuit', 'dedupe-'||$1, 'incident_changed', 'acc-t87r-b', 'acc-t87r-b',
 			$2, 'incident-'||$2, 'tr-'||$2, 9, 1, 1,
-			$3, 0, 0, $4, 0, 0)`,
+			$3, to_timestamp(0/1000.0), 0, to_timestamp($4/1000.0), to_timestamp(0/1000.0), to_timestamp(0/1000.0))`,
 			eventID, scopeKey, status, ackedMS); err != nil {
 			t.Fatalf("插入 outbox 行 %s 失败: %v", eventID, err)
 		}
@@ -222,8 +223,17 @@ func TestT87RJ3bProcessingRowBlocksTombstoneUntilAck(t *testing.T) {
 		projected_ledger_revision, transition_id, retained_until_ms, created_at_ms, updated_at_ms
 	) VALUES ($1, 'acc-t87r-j3b', 'acc-t87r-j3b', 'protocol_model', 'incident-t87r-j3b',
 		'[]', 'CLOSED', 20, 13, 41,
-		41, 'tr-t87r-j3b', $2, 0, 0)`, scopeKey, retainedExpired); err != nil {
+		41, 'tr-t87r-j3b', to_timestamp($2/1000.0), to_timestamp(0/1000.0), to_timestamp(0/1000.0))`, scopeKey, retainedExpired); err != nil {
 		t.Fatalf("插入 CLOSED 墓碑失败: %v", err)
+	}
+	circuitAny := func(value any) any {
+		if typed, ok := value.(*int64); ok {
+			if typed == nil {
+				return nil
+			}
+			return time.UnixMilli(*typed).UTC()
+		}
+		return value
 	}
 	insertOutbox := func(eventID, projectionKey, status string, claimToken, claimedBy any, claimUntil, ackedAt any) {
 		t.Helper()
@@ -234,9 +244,9 @@ func TestT87RJ3bProcessingRowBlocksTombstoneUntilAck(t *testing.T) {
 			created_at_ms, updated_at_ms
 		) VALUES ($1, $2, 'incident:tr-t87r-j3b', 'incident_changed', 'acc-t87r-j3b', 'acc-t87r-j3b',
 			$3, 'incident-t87r-j3b', 'tr-t87r-j3b', 13, 20, 41,
-			$4, 0, $5, $6, $7, 0, $8,
-			0, 0)`,
-			eventID, projectionKey, scopeKey, status, claimToken, claimedBy, claimUntil, ackedAt); err != nil {
+			$4, to_timestamp(0/1000.0), $5, $6, $7, 0, $8,
+			to_timestamp(0/1000.0), to_timestamp(0/1000.0))`,
+			eventID, projectionKey, scopeKey, status, claimToken, claimedBy, circuitAny(claimUntil), circuitAny(ackedAt)); err != nil {
 			t.Fatalf("插入 outbox 行 %s 失败: %v", eventID, err)
 		}
 	}
@@ -256,7 +266,7 @@ func TestT87RJ3bProcessingRowBlocksTombstoneUntilAck(t *testing.T) {
 	// 模拟 J3b ack：processing -> dispatched，清 claim、写 acknowledged_at_ms。
 	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_outbox
 		SET status='dispatched', claim_token=NULL, claimed_by=NULL, claim_until_ms=NULL, acknowledged_at_ms=$1
-		WHERE event_id='evt-j3b-row'`, freshAck); err != nil {
+		WHERE event_id='evt-j3b-row'`, time.UnixMilli(freshAck).UTC()); err != nil {
 		t.Fatalf("模拟 J3b ack 失败: %v", err)
 	}
 	recovered, err := repo.Cleanup(ctx, t87rNow)

@@ -151,6 +151,32 @@ func TestChainNewAPIVideoBodyOfRejectsLegacyChannels(t *testing.T) {
 	}
 }
 
+func TestChainNewAPIBodyOfMetadataNullTreatedAsAbsent(t *testing.T) {
+	// 视频与长音频两族同口径：metadata 显式 null 按未携带处理——容忍不 400、
+	// 不提升公共参数、不并入厂商 provider_options、响应 metadata 回显为空
+	//（出站报文由 adapter 按 params 构造，扩展键不进上游 wire；与图像面
+	// normalizeImageMetadataBody 的 null 删除语义等效。2026-11-13 复审测试
+	// 缺口补齐）。
+	videoNormalized, err := chainNewAPIVideoBodyOf(map[string]any{
+		"model": "sora-2", "prompt": "空 metadata", "metadata": nil,
+	})
+	if err != nil {
+		t.Fatalf("video: null metadata must be tolerated: %v", err)
+	}
+	if len(videoNormalized.metadata) != 0 || len(videoNormalized.providerOptions) != 0 {
+		t.Fatalf("video: null metadata must not promote/merge: %#v / %#v", videoNormalized.metadata, videoNormalized.providerOptions)
+	}
+	audioNormalized, err := chainNewAPIAudioBodyOf(map[string]any{
+		"model": "m", "input_url": "https://audio.invalid/a.wav", "metadata": nil,
+	}, "qwen")
+	if err != nil {
+		t.Fatalf("audio: null metadata must be tolerated: %v", err)
+	}
+	if len(audioNormalized.metadata) != 0 || len(audioNormalized.providerOptions) != 0 {
+		t.Fatalf("audio: null metadata must not promote/merge: %#v / %#v", audioNormalized.metadata, audioNormalized.providerOptions)
+	}
+}
+
 func TestChainNewAPIVideoCreateObjectShape(t *testing.T) {
 	record := &gatewaymedia.MediaJobRecord{
 		ID:            "video_abc",

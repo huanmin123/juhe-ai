@@ -8,7 +8,8 @@ package gatewaymedia
 import "time"
 
 // MediaJobKind 是异步任务种类（媒体设计 §8.2 media_jobs.kind 词表：video |
-// audio_transcription | audio_speech；M2 仅 video 生效，音频 jobs 为 M3）。
+// audio_transcription；audio_speech 为 DB 保留值——2026-11-13 前端/种子清理
+// 后无创建路径，任务面仅派发前两值）。
 type MediaJobKind string
 
 const (

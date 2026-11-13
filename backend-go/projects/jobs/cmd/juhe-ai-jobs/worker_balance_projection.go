@@ -246,19 +246,29 @@ func balanceSnapshotFromJ2(source *accountbalance.Snapshot, configRevision int64
 
 // projectRow 把一行 J2 快照 UPSERT 到 stats（列集合/冲突目标/
 // next_refresh_after 语义与 ReplaceSnapshotIfCurrent 一致）。
+// parseBalancePersistInstant 把快照 JSON 里的 RFC3339 文本恢复为 DB 瞬时；
+// 反序列化快照文本是协议边界，PG 写入仍是 time.Time。
+func parseBalancePersistInstant(value string) any {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil
+	}
+	return parsed.UTC()
+}
+
 func (r *balanceProjectionRuntime) projectRow(ctx context.Context, row projectSourceRow, systemAccountID string) error {
 	persist, serialized, err := projectBalanceSnapshot(row.SnapshotJSON, row.ConfigRevision)
 	if err != nil {
 		return fmt.Errorf("投影账户 %s 快照失败: %w", row.AccountID, err)
 	}
 	now := r.nowFunc().UTC()
-	lastAttempt := now.Format(time.RFC3339Nano)
+	lastAttempt := any(now)
 	if persist.LastAttemptAt != "" {
-		lastAttempt = persist.LastAttemptAt
+		lastAttempt = parseBalancePersistInstant(persist.LastAttemptAt)
 	}
 	var lastSuccess any
 	if persist.LastSuccessAt != "" {
-		lastSuccess = persist.LastSuccessAt
+		lastSuccess = parseBalancePersistInstant(persist.LastSuccessAt)
 	}
 	var nextRefreshAfter any
 	if row.NextRefreshAt != nil {
@@ -281,7 +291,7 @@ func (r *balanceProjectionRuntime) projectRow(ctx context.Context, row projectSo
   `, statsTable("account_usage_snapshots"))
 	if _, err := r.db.ExecContext(ctx, upsert,
 		textParam(systemAccountID), textParam(row.AccountID), textParam(serialized), textParam(persist.Status),
-		textParam(lastAttempt), lastSuccess, nextRefreshAfter, nullableTextPtr(persist.ErrorMessage),
+		lastAttempt, lastSuccess, nextRefreshAfter, nullableTextPtr(persist.ErrorMessage),
 		timeParam(now), timeParam(now)); err != nil {
 		return fmt.Errorf("写入余额快照投影失败: %w", err)
 	}

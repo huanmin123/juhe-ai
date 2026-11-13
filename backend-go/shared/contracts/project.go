@@ -79,7 +79,9 @@ const ArchitectureVersion = "go-projects-v1"
 // timestamp(0)）。revision 29..34 为后续时间类型迁移步骤。
 // revision 35 为 T207 account_circuit_outbox failed 状态 CHECK 幂等替换，
 // 纯 DDL 空号，不新增 schema_migrations 步骤；确保 revision 34 库执行 DDL。
-const SchemaRevision int64 = 35
+// revision 36 修复账户列表可用性 dirty 触发器对 timestamptz 列的写入，
+// 同为纯 DDL 空号，不新增 schema_migrations 步骤；确保 revision 35 库执行 DDL。
+const SchemaRevision int64 = 36
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

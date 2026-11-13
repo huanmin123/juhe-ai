@@ -87,7 +87,9 @@ set -a && . ./.env && set +a
 systemctl start juhe-ai-gateway juhe-ai-jobs
 ```
 
-**合并版升级契约**：合并版 `SchemaRevision=35`、`MinRequiredRevision=35`；业务形状指纹 `BusinessSchemaVersion` 保持 `business-postgres-gateway-v34`，两者含义不同。历史生产修复版 revision 24 是 outbox failed 纯 DDL 空号，`schema_migrations` 无 revision 24；本地时间迁移的 revision 24–34 保持步骤身份。合并版 revision 35 承载 outbox 具名四态 CHECK 与幂等 DO 替换，无新增迁移步骤。升级器先执行 EnsureDDL，再按账本执行全部未记账步骤：从生产 revision 24 升级时仍会执行未记账的时间迁移 24–34；从本地 revision 34 升级到 35 也会执行 EnsureDDL，不会被已最新短路。升级须停写并验证可恢复的整库备份；`upgrade --phase=all|contract` 将 `min_readable_binary_revision` 写为 35，revision 34 及更旧二进制均被拒绝。时间迁移不可逆，回滚须恢复升级前整库备份并使用与备份匹配的镜像。
+**revision 36 升级契约**：`SchemaRevision=36`、`MinRequiredRevision=36`，`BusinessSchemaVersion=business-postgres-gateway-v34` 不变；revision 35 为 outbox failed 纯 DDL 空号，revision 36 为 dirty 公共触发器修正的纯 DDL 空号，两者均不写 `schema_migrations`，时间迁移步骤 24–34 及其 `ImplVersion=1` 保持不变。维护安装期按 dirty 表实际列类型显式安装旧 bigint 或新 timestamptz 触发器函数，函数缺失时也安装；运行时函数为单一类型。step 33 的四列转换和函数切换在同一事务中完成，失败整体回滚；expand 阶段旧 bigint 列不切换类型且保持旧型函数。34→36、35→36 均执行 EnsureDDL，不会被已最新短路；`all` / `contract` 完成后 `min_readable_binary_revision=36`，revision 35 及更旧二进制被拒绝。涉及不可逆时间迁移时，回滚须恢复升级前整库备份并使用匹配旧二进制。
+
+**revision 35 历史契约**：当时 `SchemaRevision=35`、`MinRequiredRevision=35`；业务形状指纹 `BusinessSchemaVersion` 保持 `business-postgres-gateway-v34`，两者含义不同。历史生产修复版 revision 24 是 outbox failed 纯 DDL 空号，`schema_migrations` 无 revision 24；本地时间迁移的 revision 24–34 保持步骤身份。合并版 revision 35 承载 outbox 具名四态 CHECK 与幂等 DO 替换，无新增迁移步骤。升级器先执行 EnsureDDL，再按账本执行全部未记账步骤：从生产 revision 24 升级时仍会执行未记账的时间迁移 24–34；从本地 revision 34 升级到 35 也会执行 EnsureDDL，不会被已最新短路。升级须停写并验证可恢复的整库备份；`upgrade --phase=all|contract` 将 `min_readable_binary_revision` 写为 35，revision 34 及更旧二进制均被拒绝。时间迁移不可逆，回滚须恢复升级前整库备份并使用与备份匹配的镜像。
 
 已有库升级：
 
@@ -126,7 +128,7 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ## 7. 升级门禁与回滚
 
 - gateway/jobs 启动时只读比对库 revision；落后于二进制认识的值会 fail-fast 并提示 `upgrade`。
-- 当前 revision 为 35；`all` / `contract` 升级后 `min_readable_binary_revision=35`，revision 34 及更旧二进制会被启动门禁拒绝。时间类型迁移不可逆，回滚须恢复升级前整库备份并使用与备份匹配的旧二进制，不支持只下调 revision 后启动。
+- 当前 revision 为 36；`all` / `contract` 升级后 `min_readable_binary_revision=36`，revision 35 及更旧二进制会被启动门禁拒绝。时间类型迁移不可逆，回滚须恢复升级前整库备份并使用与备份匹配的旧二进制，不支持只下调 revision 后启动。
 - 直跑没有 compose 的健康等待：升级失败保持两个 unit 停止，修复后重跑 `upgrade`（账本断点续跑）。
 
 ## 8. 日志与排障

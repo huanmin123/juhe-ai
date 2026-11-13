@@ -617,7 +617,7 @@ func (p *OutcomeProjector) advanceCursor(ctx context.Context, next *OutcomeCurso
 	case existing != nil && compareProjectionCursor(existing, next) >= 0:
 		// 已越过或同位：仅同一不可变 outcome ID 允许一次性规范精度表示。
 		if existing.OutcomeID == next.OutcomeID && existing.ObservedAtText != next.ObservedAtText {
-			result, execErr := tx.ExecContext(ctx, p.business.bind(`UPDATE `+table+` SET observed_at = ?, updated_at = ? WHERE consumer_key = ? AND outcome_id = ?`), next.ObservedAtText, nowText, p.consumerKey, existing.OutcomeID)
+			result, execErr := tx.ExecContext(ctx, p.business.bind(`UPDATE `+table+` SET observed_at = ?, updated_at = ? WHERE consumer_key = ? AND outcome_id = ?`), projectionTime(next.ObservedAtText), projectionTime(nowText), p.consumerKey, existing.OutcomeID)
 			if execErr != nil {
 				return false, execErr
 			}
@@ -628,7 +628,7 @@ func (p *OutcomeProjector) advanceCursor(ctx context.Context, next *OutcomeCurso
 			updated = affected == 1
 		}
 	case existing != nil:
-		result, execErr := tx.ExecContext(ctx, p.business.bind(`UPDATE `+table+` SET observed_at = ?, outcome_id = ?, updated_at = ? WHERE consumer_key = ?`), next.ObservedAtText, next.OutcomeID, nowText, p.consumerKey)
+		result, execErr := tx.ExecContext(ctx, p.business.bind(`UPDATE `+table+` SET observed_at = ?, outcome_id = ?, updated_at = ? WHERE consumer_key = ?`), projectionTime(next.ObservedAtText), next.OutcomeID, projectionTime(nowText), p.consumerKey)
 		if execErr != nil {
 			return false, execErr
 		}
@@ -638,7 +638,7 @@ func (p *OutcomeProjector) advanceCursor(ctx context.Context, next *OutcomeCurso
 		}
 		updated = affected == 1
 	default:
-		if _, execErr := tx.ExecContext(ctx, p.business.bind(`INSERT INTO `+table+`(consumer_key, observed_at, outcome_id, updated_at) VALUES (?, ?, ?, ?)`), p.consumerKey, next.ObservedAtText, next.OutcomeID, nowText); execErr != nil {
+		if _, execErr := tx.ExecContext(ctx, p.business.bind(`INSERT INTO `+table+`(consumer_key, observed_at, outcome_id, updated_at) VALUES (?, ?, ?, ?)`), p.consumerKey, projectionTime(next.ObservedAtText), next.OutcomeID, projectionTime(nowText)); execErr != nil {
 			return false, execErr
 		}
 		updated = true
@@ -862,7 +862,7 @@ func (p *OutcomeProjector) insertReceipt(ctx context.Context, tx *sql.Tx, base P
 	if reason != "" {
 		reasonValue = reason
 	}
-	_, err := tx.ExecContext(ctx, p.business.bind(`INSERT INTO `+p.business.table("account_health_projection_receipts")+`(outcome_id, account_id, input_version, disposition, reason, applied_at) VALUES (?, ?, ?, ?, ?, ?)`), base.OutcomeID, base.AccountID, base.InputVersion, string(disposition), reasonValue, p.now().UTC().Format(time.RFC3339Nano))
+	_, err := tx.ExecContext(ctx, p.business.bind(`INSERT INTO `+p.business.table("account_health_projection_receipts")+`(outcome_id, account_id, input_version, disposition, reason, applied_at) VALUES (?, ?, ?, ?, ?, ?)`), base.OutcomeID, base.AccountID, base.InputVersion, string(disposition), reasonValue, p.now().UTC())
 	if err != nil {
 		return fmt.Errorf("写入 J1 投影 receipt 失败: %w", err)
 	}
@@ -1062,7 +1062,7 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		return false, errors.New("J1 projection 缺少输出 cooldown fence")
 	}
 	updates := []string{"updated_at = ?"}
-	params := []any{p.now().UTC().Format(time.RFC3339Nano)}
+	params := []any{p.now().UTC()}
 	set := func(column string, value any) {
 		updates = append(updates, column+" = ?")
 		params = append(params, value)
@@ -1077,7 +1077,7 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		if value == nil || value.IsZero() {
 			return nil
 		}
-		return value.UTC().Format(time.RFC3339Nano)
+		return value.UTC()
 	}
 	intOrNil := func(value int) any {
 		if value == 0 {
@@ -1092,7 +1092,7 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		}
 		return *value
 	}
-	observedText := outcome.ObservedAt.UTC().Format(time.RFC3339Nano)
+	observedText := outcome.ObservedAt.UTC()
 	scheduleBalanceAutoDetection := func() error {
 		scheduleBalance, err := p.shouldScheduleBalanceAutoDetection(account, outcome, plan)
 		if err != nil {
@@ -1344,6 +1344,15 @@ func projectedHealthFailureCount(outcome Outcome) int {
 // fenceGuardText 输出与业务库 text 列一致的 fence 时间文本（accounts 相关列
 // 为 TEXT）。format/parse 往返稳定，保证投影自写 fence 的后续 cooldown 复测
 // fence 守卫文本逐字一致。
+// projectionTime 把游标协议中的 RFC3339 文本恢复为 DB 瞬时。
+func projectionTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
+}
+
 func fenceGuardText(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
