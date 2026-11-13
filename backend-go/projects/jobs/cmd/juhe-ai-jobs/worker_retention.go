@@ -585,8 +585,7 @@ func (f *retentionFamily) cleanupModelCheck(ctx context.Context) error {
 	// created_at / observation_created_at 是 RFC3339 文本列，按字面序比较；
 	// RFC3339Nano 在整秒时以 Z 结尾、带小数时以 . 结尾，同秒边界存在字面
 	// 序差异，多留 1 小时边界余量（30 天窗口下无业务影响）。
-	cutoffText := now.AddDate(0, 0, -retentionDays).Add(-time.Hour).Format(time.RFC3339Nano)
-	cutoffTime := now.AddDate(0, 0, -retentionDays)
+	cutoffTime := now.AddDate(0, 0, -retentionDays).Add(-time.Hour)
 	// account_quality_health_hourly.stat_hour 是业务时区 YYYY-MM-DDTHH
 	// （gateway NewHealthStatHourFunc 唯一写入格式），cutoff 必须同格式
 	// 同业务时区，不能用 UTC RFC3339 字面比较。
@@ -596,11 +595,11 @@ func (f *retentionFamily) cleanupModelCheck(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
-		deletedRuns, err := store.CleanupRunsBefore(ctx, cutoffText, retentionTimeSeriesBatchSize)
+		deletedRuns, err := store.CleanupRunsBefore(ctx, cutoffTime, retentionTimeSeriesBatchSize)
 		if err != nil {
 			return fmt.Errorf("清理 model_check_runs 失败: %w", err)
 		}
-		deletedReceipts, err := store.CleanupObservationReceiptsBefore(ctx, cutoffText, retentionTimeSeriesBatchSize)
+		deletedReceipts, err := store.CleanupObservationReceiptsBefore(ctx, cutoffTime, retentionTimeSeriesBatchSize)
 		if err != nil {
 			return fmt.Errorf("清理 model_trust_observation_receipts 失败: %w", err)
 		}
@@ -663,7 +662,7 @@ func (f *retentionFamily) cleanupModelCheck(ctx context.Context) error {
 			"deletedCappedRuns", cappedRuns,
 			"retentionDays", retentionDays,
 			"perAccountRunCap", modelCheckPerAccountRunCap,
-			"cutoff", cutoffText)
+			"cutoff", cutoffTime.Format(time.RFC3339Nano))
 	}
 	return nil
 }

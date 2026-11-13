@@ -93,8 +93,8 @@ func (w *healthHourlyWriter) RecordAccountHealthHourly(ctx context.Context, obse
 		provider = "unknown"
 	}
 	statHour := observation.ObservedAt.In(location).Format("2006-01-02T15")
-	lastObservedAt := observation.ObservedAt.UTC().Format("2006-01-02T15:04:05.000Z")
-	updatedAt := w.now().UTC().Format(time.RFC3339Nano)
+	lastObservedAt := observation.ObservedAt.UTC()
+	updatedAt := w.now().UTC()
 	table := statsTable("account_health_hourly")
 	query := w.bind(`INSERT INTO ` + table + ` (
 		  account_id, system_account_id, provider_code, stat_hour, status,

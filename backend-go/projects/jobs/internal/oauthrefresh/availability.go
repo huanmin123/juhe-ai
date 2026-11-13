@@ -477,13 +477,9 @@ func (s *Store) updateScheduleNextCheckAt(ctx context.Context, tx *sql.Tx, table
 	return err
 }
 
-// scheduleInstant 决定时间参数的绑定类型：Revision 25 起 api_keys 与其事件表
-// 的时间列已是 timestamptz，必须绑定 time.Time；accounts 及其事件表仍是 text
-// （Phase 2-3 迁移），继续按 ISO 文本绑定。
+// scheduleInstant 决定时间参数的绑定类型：Revision 25/26 起 api_keys、accounts
+// 及其事件表的时间列均已是 timestamptz，统一绑定 time.Time。
 func scheduleInstant(table, value string) any {
-	if !strings.HasSuffix(table, "api_keys") && !strings.HasSuffix(table, "api_key_schedule_status_events") {
-		return value
-	}
 	return dbtime.DBArg(value)
 }
 

@@ -15,12 +15,11 @@ func TestModelCheckRetentionPGStatementShape(t *testing.T) {
 	rec := newPGRecorder()
 	store := &ModelCheckRetentionStore{DB: openRecorderPG(rec)}
 	ctx := context.Background()
-	cutoffText := "2026-10-10T00:00:00Z"
 	cutoffTime := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
-	if _, err := store.CleanupRunsBefore(ctx, cutoffText, 7); err != nil {
+	if _, err := store.CleanupRunsBefore(ctx, cutoffTime, 7); err != nil {
 		t.Fatalf("cleanup runs: %v", err)
 	}
-	if _, err := store.CleanupObservationReceiptsBefore(ctx, cutoffText, 7); err != nil {
+	if _, err := store.CleanupObservationReceiptsBefore(ctx, cutoffTime, 7); err != nil {
 		t.Fatalf("cleanup receipts: %v", err)
 	}
 	if _, err := store.CleanupExecutionClaimsBefore(ctx, cutoffTime, 7); err != nil {
@@ -161,7 +160,6 @@ func TestModelCheckRetentionPGRollingWindow(t *testing.T) {
 		return nil
 	})
 	store := &ModelCheckRetentionStore{DB: db}
-	cutoffText := "2026-10-10T00:00:00Z"
 	cutoff := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
 	seedRun := func(id, account, createdAt string) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO juhe_j3b.model_check_runs (id, account_id, created_at) VALUES ($1, $2, $3)`, id, account, createdAt); err != nil {
@@ -169,7 +167,7 @@ func TestModelCheckRetentionPGRollingWindow(t *testing.T) {
 		}
 	}
 	seedRun("run-old", "acct-1", "2026-10-09T23:59:59Z")
-	seedRun("run-boundary", "acct-1", cutoffText)
+	seedRun("run-boundary", "acct-1", "2026-10-10T00:00:00Z")
 	seedRun("run-new", "acct-1", "2026-10-10T00:00:01Z")
 	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_j3b.model_check_items (id, run_id) VALUES ('item-old', 'run-old')`); err != nil {
 		t.Fatalf("seed item: %v", err)
@@ -216,7 +214,7 @@ func TestModelCheckRetentionPGRollingWindow(t *testing.T) {
 		t.Fatalf("seed failed future task: %v", err)
 	}
 
-	if deleted, err := store.CleanupRunsBefore(ctx, cutoffText, 10); err != nil || deleted != 1 {
+	if deleted, err := store.CleanupRunsBefore(ctx, cutoff, 10); err != nil || deleted != 1 {
 		t.Fatalf("runs cleanup deleted=%d err=%v, want 1", deleted, err)
 	}
 	var items, observations int
@@ -229,7 +227,7 @@ func TestModelCheckRetentionPGRollingWindow(t *testing.T) {
 	if items != 0 || observations != 0 {
 		t.Fatalf("items/observations 必须随 run 级联删除：items=%d observations=%d", items, observations)
 	}
-	if deleted, err := store.CleanupObservationReceiptsBefore(ctx, cutoffText, 10); err != nil || deleted != 1 {
+	if deleted, err := store.CleanupObservationReceiptsBefore(ctx, cutoff, 10); err != nil || deleted != 1 {
 		t.Fatalf("receipts cleanup deleted=%d err=%v, want 1", deleted, err)
 	}
 	if deleted, err := store.CleanupExecutionClaimsBefore(ctx, cutoff, 10); err != nil || deleted != 1 {

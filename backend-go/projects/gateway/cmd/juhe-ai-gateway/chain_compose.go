@@ -107,8 +107,8 @@ type chainRuntimeDeps struct {
 	// 的 cfg.Secret 同源）。DB 为 nil 仅组合测试——任务面端点显式 503 降级
 	//（不静默吞请求）。MediaJobsPublicBaseURL 是 New API 任务面回退 content
 	// URL 的公共地址前缀（JUHE_AI_GATEWAY_PUBLIC_BASE_URL；空串保持相对路径）。
-	MediaJobsDB             *sql.DB
-	MediaJobsSecret         string
+	MediaJobsDB            *sql.DB
+	MediaJobsSecret        string
 	MediaJobsPublicBaseURL string
 
 	// RealtimeTokens 是 M5b realtime ephemeral token 签发/校验面（Realtime

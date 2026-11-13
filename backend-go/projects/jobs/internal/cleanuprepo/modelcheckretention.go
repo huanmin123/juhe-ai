@@ -38,16 +38,16 @@ func (s *ModelCheckRetentionStore) table(name string) string {
 
 // CleanupRunsBefore 删除 created_at 严格早于 cutoff 的 run 行，最旧优先，
 // 单批最多 limit 行。model_check_items / model_check_observations 有
-// `run_id ... ON DELETE CASCADE`，随 run 一并删除。created_at 是 RFC3339
-// 文本列，cutoff 用同格式 UTC 文本。
-func (s *ModelCheckRetentionStore) CleanupRunsBefore(ctx context.Context, cutoff string, limit int) (int64, error) {
+// `run_id ... ON DELETE CASCADE`，随 run 一并删除。created_at 是 timestamptz。
+func (s *ModelCheckRetentionStore) CleanupRunsBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
 	return deleteRowsBefore(ctx, s.DB, s.schema(), "model_check_runs", "created_at", cutoff, limit)
 }
 
 // CleanupObservationReceiptsBefore 删除 observation_created_at 严格早于
 // cutoff 的信任聚合回执行。receipt 与 observation 无外键，必须独立收敛，
-// 否则 observation 级联删除后会留下无主回执。
-func (s *ModelCheckRetentionStore) CleanupObservationReceiptsBefore(ctx context.Context, cutoff string, limit int) (int64, error) {
+// 否则 observation 级联删除后会留下无主回执。observation_created_at 是
+// timestamptz。
+func (s *ModelCheckRetentionStore) CleanupObservationReceiptsBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
 	return deleteRowsBefore(ctx, s.DB, s.schema(), "model_trust_observation_receipts", "observation_created_at", cutoff, limit)
 }
 

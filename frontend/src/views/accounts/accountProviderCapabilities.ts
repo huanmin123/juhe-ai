@@ -67,9 +67,10 @@ export const responsesEndpointModes: AccountSupportedEndpointMode[] = ['response
 // M1 同步音频新增 audio_speech（POST /v1/audio/speech）与
 // audio_transcription_json（POST /v1/audio/transcriptions|translations），与
 // accounts.health_check_endpoint_mode CHECK 及 gatewaypreauth 端点模式词表同步
-// （音频设计 §11.1/§11.6）；M2 视频新增 video_create（POST /v1/videos）、
-// video_get（GET /v1/videos|/v1/videos/{id}）、video_content
-// （GET /v1/videos/{id}/content）、video_cancel（DELETE /v1/videos/{id}），同步
+// （音频设计 §11.1/§11.6）；M2 视频新增 video_create（POST
+// /v1/video/generations）、video_get（GET /v1/video/generations/{id}）、
+// video_content（GET /v1/video/generations/{id}/content）、video_cancel（旧
+// DELETE 词表已随 2026-11-12 New API 收敛退役，token 保留为能力表达），同步
 // 口径同上（媒体设计 §11.6）；同样只能显式开启，不进默认集（视频不做自动
 // 真实生成探针，媒体设计 §11.9）。
 export const openAIEndpointModes: AccountSupportedEndpointMode[] = [

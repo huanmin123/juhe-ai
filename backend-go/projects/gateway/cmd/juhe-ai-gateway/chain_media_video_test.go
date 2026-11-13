@@ -37,9 +37,18 @@ import (
 // （业务库句柄 + 方言 + 凭据解密 secret，与 selector 同源）。
 func composeMediaVideoChain(t *testing.T, fixture *chainFixture, spoolDir string) http.Handler {
 	t.Helper()
+	return composeMediaVideoChainWithPublicBase(t, fixture, spoolDir, "")
+}
+
+// composeMediaVideoChainWithPublicBase 是 composeMediaVideoChain 的公共地址
+// 前缀变体（JUHE_AI_GATEWAY_PUBLIC_BASE_URL 链级验证：组合根 deps →
+// mediaJobsRuntime.publicBaseURL → 查询响应回退 content 绝对地址）。
+func composeMediaVideoChainWithPublicBase(t *testing.T, fixture *chainFixture, spoolDir, publicBaseURL string) http.Handler {
+	t.Helper()
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir)
 	deps.MediaJobsDB = fixture.db
 	deps.MediaJobsSecret = "chain-test-secret"
+	deps.MediaJobsPublicBaseURL = publicBaseURL
 	chain, shutdown, err := composeGatewayChain(deps)
 	if err != nil {
 		t.Fatalf("compose gateway chain: %v", err)
@@ -57,7 +66,7 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 }
 
 // seedMediaVideoAccountWithVendor 是 seedMediaVideoAccount 的 vendor 泛化形
-//（任务行 vendor 读面从 accounts.vendor_code 水合；xai 等直链厂商用例需要
+// （任务行 vendor 读面从 accounts.vendor_code 水合；xai 等直链厂商用例需要
 // 非 gpt 账户行承接）。
 func seedMediaVideoAccountWithVendor(t *testing.T, db *sql.DB, fixture *chainFixture, id, baseURL, apiKey string, priority int, vendor string, videoMode bool) {
 	t.Helper()
@@ -1203,17 +1212,19 @@ func TestChainMediaVideoTerminalStatusNormalization(t *testing.T) {
 	insert("video_direct", gatewaymedia.JobStatusCompleted, gatewaymedia.MediaJobArtifact{ContentURL: "https://cdn.invalid/out/clip.webm"}, "acc_video_term_xai")
 	insert("video_fallback", gatewaymedia.JobStatusCompleted, gatewaymedia.MediaJobArtifact{}, "acc_video_term")
 
-	for _, tc := range []struct {
+	type termCase struct {
 		id         string
 		wantStatus string
 		wantURL    string
 		wantFormat string
 		wantErr    string
-	}{
-		{"video_cancelled", "failed", "", "mp4", "cancelled"},
-		{"video_expired", "failed", "", "mp4", "expired"},
-		{"video_direct", "completed", "https://cdn.invalid/out/clip.webm", "webm", ""},
-		{"video_fallback", "completed", "/v1/video/generations/video_fallback/content", "mp4", ""},
+		wantVendor string
+	}
+	for _, tc := range []termCase{
+		{"video_cancelled", "failed", "", "mp4", "cancelled", "gpt"},
+		{"video_expired", "failed", "", "mp4", "expired", "gpt"},
+		{"video_direct", "completed", "https://cdn.invalid/out/clip.webm", "webm", "", "xai"},
+		{"video_fallback", "completed", "/v1/video/generations/video_fallback/content", "mp4", "", "gpt"},
 	} {
 		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+tc.id, fixture.apiKeySecret, "", nil)
 		if response.StatusCode != http.StatusOK {
@@ -1239,8 +1250,42 @@ func TestChainMediaVideoTerminalStatusNormalization(t *testing.T) {
 			t.Fatalf("%s error 应携带 code=%s: %s", tc.id, tc.wantErr, payload)
 		}
 		metadata, _ := object["metadata"].(map[string]any)
-		if metadata == nil || metadata["trace"] != "t1" || metadata["provider"] != "gpt" || metadata["provider_job_id"] != "up_term" {
+		if metadata == nil || metadata["trace"] != "t1" || metadata["provider"] != tc.wantVendor || metadata["provider_job_id"] != "up_term" {
 			t.Fatalf("%s metadata 回显不符: %s", tc.id, payload)
 		}
+	}
+}
+
+// TestChainMediaVideoPublicBaseURLAbsoluteFallback 是
+// JUHE_AI_GATEWAY_PUBLIC_BASE_URL 的链级验证（组合根 deps → mediaJobsRuntime
+// → 查询响应）：配置前缀后 gpt 回退 content URL 为绝对地址，未配置保持相对
+// 路径（相对分支由 TestChainMediaVideoTerminalStatusNormalization 钉扎）。
+func TestChainMediaVideoPublicBaseURLAbsoluteFallback(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedMediaVideoAccount(t, fixture.db, fixture, "acc_video_pub", mock.URL, "sk-video-pub", 0, true)
+
+	chain := composeMediaVideoChainWithPublicBase(t, fixture, filepath.Join(t.TempDir(), "spool"), "https://api.example.com")
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	repo := gatewaymedia.NewMediaJobsRepo(fixture.db, time.Now)
+	record := gatewaymedia.MediaJobRecord{
+		ID: "video_pub_base", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_1",
+		OwnerSystemAccountID: fixture.systemAccount, AccountID: "acc_video_pub",
+		VendorCode: "gpt", UpstreamJobID: "up_pub", Status: gatewaymedia.JobStatusCompleted,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2"},
+	}
+	if err := repo.Insert(context.Background(), record); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/video_pub_base", fixture.apiKeySecret, "", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, payload)
+	}
+	object := mediaVideoDecodeJob(t, payload)
+	if object["url"] != "https://api.example.com/v1/video/generations/video_pub_base/content" {
+		t.Fatalf("url = %v, want absolute content fallback", object["url"])
 	}
 }

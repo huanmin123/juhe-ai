@@ -1018,8 +1018,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// M2 媒体任务面（媒体设计 §8.2）：media_jobs 仓储 + 账户亲和水合走
 			// 同一业务库；secret 与 chain_runtime.go newChainAccountsSelector
 			// 的 cfg.Secret 同源（B-1 同款约定）。
-			MediaJobsDB:             composed.db,
-			MediaJobsSecret:         cfg.Secret,
+			MediaJobsDB:            composed.db,
+			MediaJobsSecret:        cfg.Secret,
 			MediaJobsPublicBaseURL: cfg.PublicBaseURL,
 			// D-147 / D-192+D-146（BUG-0175）：用量收尾队列与全局并发容量、
 			// 请求期上游 URL 安全配置的组合根传参。spool 容量旋钮随 T188 直投
