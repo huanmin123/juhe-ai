@@ -110,7 +110,8 @@ docker/single-server/
 gateway/jobs 的全部"路径类"env 未配置时按 datadir 约定派生为 `<DATA_DIR>/<固定名>`，而 `JUHE_AI_DATA_DIR` 缺省是 `./data`——**相对进程 cwd**（gateway/jobs 的 `internal/datadir` 包注释即此约定）；文件日志等同族运行时路径同样相对 cwd。`Dockerfile.runtime` 只创建 `/app/backend/{data,logs}` 目录但**未设 `WORKDIR`**（Alpine 默认 cwd 为 `/`），因此：
 
 - **compose 必须为 gateway/jobs 保持 `working_dir: /app/backend`**（2026-09-26 起，BUG-0193）。丢了这一行，`data/`、`logs/` 会解析到容器私有可写层 `/data`、`/logs`：文件日志、审计 blob、account-health-input 等全部写进临时层，容器重建即静默丢失。
-- **gateway↔jobs 已无文件交接**（2026-11-09 T188）：用量记录由 gateway 直接写 PG `juhe_usage.usage_records`（共享 `usagewriter`，定价冻结同源），`usage-record-spool` 目录、`JUHE_AI_USAGE_SPOOL_*` env 与 jobs 的 drain 消费面已删除；两侧 `data/` 不再要求同源。
+- **gateway↔jobs 主路径无文件交接**（2026-11-09 T188）：用量记录由 gateway 直接写 PG `juhe_usage.usage_records`（共享 `usagewriter`，定价冻结同源），`usage-record-spool` 目录、`JUHE_AI_USAGE_SPOOL_*` env 已删除。
+- **gateway 用量溢出 spool 子目录**（2026-11-13 BUG-0363 终审 M1）：gateway writer 内部队列满溢时记录落盘 `data/usage-record-overflow-spool/gateway/<UnixMilli>-<pid>-<uuid>.json`（DATA_DIR 派生，无 env/开关），不再终态丢弃；jobs 侧溢出 spool 同根（子目录 `jobs/`），其 drain 扫描根目录下**全部**实例子目录并幂等回放 PG（ON CONFLICT DO NOTHING）。单机 compose gateway/jobs 共用 `./data/app/data` 同一宿主目录，gateway 溢出文件由 jobs 自动回放，闭环成立；多节点/不同源形态下 gateway 溢出文件滞留本节点 data/ 不丢也无自动清理，需手工把 `gateway/` 子目录复制到 jobs 可见的同根 `usage-record-overflow-spool/` 下等待回放（或按文件内记录手工入库）。
 - 非 compose 部署（systemd/裸进程直跑）同理：必须让进程 cwd 锚定到含 `data/`、`logs/` 的工作目录，或显式配置绝对路径（`JUHE_AI_DATA_DIR`、`JUHE_AI_LOG_DIR`）。
 - 症状速查：统计页面全空但接口 200 → 先查 `SELECT count(*) FROM juhe_usage.usage_records;` 是否 0 行，再看 gateway 日志是否有 `usage_record_delivery_failed` / `usage_record_delivery_unavailable`（进程日志本地落盘，按 `JUHE_AI_LOG_DIR` 查找）。
 
