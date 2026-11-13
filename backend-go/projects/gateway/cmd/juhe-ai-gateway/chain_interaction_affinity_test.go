@@ -6,6 +6,7 @@ package main
 // interaction_affinity_unavailable（下游不提交；Node routes.ts:1621 契约）。
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -223,5 +225,114 @@ func TestChainInteractionAffinityWriteFailure503(t *testing.T) {
 	}
 	if requests := recorder.snapshot(); len(requests) != 1 {
 		t.Fatalf("上游应已收到创建请求（写失败发生在成功后）: %v", requests)
+	}
+}
+
+// interactionAffinityDeleteFailingStore 写面正常、删除恒失败：先经 create 2xx
+// 建立亲和绑定（Remember 的 SetJSON 正常，DELETE preflight Resolve 才能命中
+// 路由到上游），DELETE 的提交前移除（Delete）命中故障窗口——BUG-0329 的触发
+// 条件（亲和存储故障只落在 Delete 面）。
+type interactionAffinityDeleteFailingStore struct {
+	mu      sync.Mutex
+	binding map[string][]byte
+}
+
+func (s *interactionAffinityDeleteFailingStore) GetJSON(_ context.Context, key string, out any) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.binding[key]
+	if !ok {
+		return false, nil
+	}
+	return true, json.Unmarshal(raw, out)
+}
+
+func (s *interactionAffinityDeleteFailingStore) SetJSON(_ context.Context, key string, value any, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if s.binding == nil {
+		s.binding = map[string][]byte{}
+	}
+	s.binding[key] = raw
+	return nil
+}
+
+func (s *interactionAffinityDeleteFailingStore) Delete(_ context.Context, _ string) error {
+	return errors.New("affinity store down")
+}
+
+// newInteractionDeleteBodyUpstream create 回 200 fixture JSON、DELETE 回 200
+// 带大体 mock（区别于既有 204 空体）。体必须超过 ReaderUpstreamBody.pump 的
+// 32KiB 读 buffer：不足一次读尽的体（LimitedReader 在读满 Content-Length 的
+// 同一次 Read 附带 io.EOF）会在 slotReleasingBody.Read 层命中 EOF 分支当场
+// 释放全局槽——只有未读尽（pump 卡在无缓冲 channel 的中间 chunk 发送、无
+// 消费者）时槽才随 responseSnapshot.Body 滞留，BUG-0329 的缺口才显形。
+func newInteractionDeleteBodyUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	largeBody := strings.Repeat("x", 128*1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1beta/interactions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(interactionFixtureJSON))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1beta/interactions/ix_e2e":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"deleted":true,"padding":"` + largeBody + `"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// BUG-0329 回归（档案验收标准 1+2）：亲和 Delete 失败臂显式关上游体归还全局
+// 并发槽。容量 1 governor（compose 后替换，fetch 每 attempt 动态读
+// e.Transport）+ create 建立绑定 + DELETE 2xx 带体上游 + 亲和 Delete 注入失败：
+// 第一个 DELETE 收到 503 interaction_affinity_unavailable（行为不变），且第二个
+// DELETE 必须在短窗口内穿过 governor.Acquire 走完同一链路——修复前首个请求的
+// 槽随 responseSnapshot.Body 滞留，第二个请求阻塞在 Acquire 直至超时。
+func TestChainInteractionAffinityDeleteFailureReleasesGlobalSlot(t *testing.T) {
+	fixture := newChainFixture(t)
+	upstream := newInteractionDeleteBodyUpstream(t)
+	// v2 直拼契约：gemini base_url 是版本根（/v1beta），入站 /v1beta 已剥除。
+	keySecret := seedInteractionGeminiAccount(t, fixture, "acc_gem_int_slot", upstream.URL+"/v1beta")
+
+	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
+	deps.Affinity = gatewaygemini.NewInteractionAffinity(&interactionAffinityDeleteFailingStore{})
+	chain, shutdown, err := composeGatewayChain(deps)
+	if err != nil {
+		t.Fatalf("compose gateway chain: %v", err)
+	}
+	defer shutdown()
+	chain.engine.Transport.Governor = gatewaydispatch.NewBoundedConcurrencyGovernor(1)
+
+	server := httptest.NewServer(chain)
+	defer server.Close()
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	// 前置：create 2xx → Remember 成功（Delete 失败面不涉及 Remember），绑定
+	// 在位 DELETE 的 preflight Resolve 才能命中路由到上游。
+	createResponse, createBody := doInteractionRequest(t, client, http.MethodPost, server.URL+"/v1beta/interactions", keySecret, `{"model":"gemini-3-pro","stream":false}`)
+	if createResponse.StatusCode != http.StatusOK {
+		t.Fatalf("create 应成功建立亲和绑定: status=%d body=%s", createResponse.StatusCode, createBody)
+	}
+
+	first, firstBody := doInteractionRequest(t, client, http.MethodDelete, server.URL+"/v1beta/interactions/ix_e2e", keySecret, "")
+	if first.StatusCode != http.StatusServiceUnavailable || !strings.Contains(firstBody, "interaction_affinity_unavailable") {
+		t.Fatalf("亲和删除失败应 503 interaction_affinity_unavailable: status=%d body=%s", first.StatusCode, firstBody)
+	}
+
+	// 槽归还的决定性断言：第二个请求用短超时客户端发同一 DELETE（绑定未被
+	// 移除，preflight 仍命中），能再次穿过 governor.Acquire 收到同一 503；
+	// 修复前 Acquire 阻塞直至 client 超时（红）。
+	shortClient := &http.Client{Timeout: 3 * time.Second}
+	second, secondBody := doInteractionRequest(t, shortClient, http.MethodDelete, server.URL+"/v1beta/interactions/ix_e2e", keySecret, "")
+	if second.StatusCode != http.StatusServiceUnavailable || !strings.Contains(secondBody, "interaction_affinity_unavailable") {
+		t.Fatalf("第二个请求应穿过全局 governor 收到同一 503（全局槽已归还）: status=%d body=%s", second.StatusCode, secondBody)
 	}
 }

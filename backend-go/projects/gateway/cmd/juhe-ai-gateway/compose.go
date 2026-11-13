@@ -886,8 +886,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if cfg.ChainEnabled {
 		// 2026-11-09 T188：用量记录改为网关直投 PG（共享 usagewriter +
 		// usagepricing），不再创建/依赖用量文件交接目录，也不再有
-		// gateway→jobs 的 spool 交接。
-		usageDeliverer, closeUsageWriter := newUsageWriterDeliverer(composed.statsDB, composed.db)
+		// gateway→jobs 的 spool 交接。2026-11-13 BUG-0363 终审 M1：writer
+		// 装配溢出 spool（DATA_DIR 派生，jobs Drainer 回放），队列满溢不再
+		// 终态丢弃。
+		usageDeliverer, closeUsageWriter := newUsageWriterDeliverer(composed.statsDB, composed.db, cfg.DataDir)
 		if usageDeliverer == nil {
 			return nil, errors.New("AI 网关链缺少 usage 直投 PG 句柄（composed.statsDB 为空）")
 		}
