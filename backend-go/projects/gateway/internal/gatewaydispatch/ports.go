@@ -765,6 +765,9 @@ type ConcurrencySlot struct {
 	RPMResetAtMs int64
 	// Release mirrors slot.release.
 	Release func()
+	// Refresh 续租已占位的槽租约（Redis 驱动；realtime 长连接 ping 周期调用）。
+	// nil 表示该驱动无租约（内存驱动），调用方无需处理。
+	Refresh func()
 	// MarkFirstOutput mirrors slot.markFirstOutput (image-lane probe
 	// accounting); nil-safe.
 	MarkFirstOutput func()

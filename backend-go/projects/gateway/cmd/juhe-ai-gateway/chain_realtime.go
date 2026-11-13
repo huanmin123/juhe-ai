@@ -111,14 +111,16 @@ type chainRealtimeConnectionLimiter struct {
 // acquire 原子占一个连接位；超出 limit 回退并返回 false。Redis 错误按
 // “未占位”返回；需要区分基础设施失败的调用方使用 acquireContext。
 func (l *chainRealtimeConnectionLimiter) acquire(apiKeyID string, limit int64) bool {
-	ok, _ := l.acquireContext(context.Background(), apiKeyID, limit)
+	_, ok, _ := l.acquireContext(context.Background(), apiKeyID, limit)
 	return ok
 }
 
 // acquireContext 是生产入口：Redis 故障返回 error，调用方必须 fail-closed。
-func (l *chainRealtimeConnectionLimiter) acquireContext(ctx context.Context, apiKeyID string, limit int64) (bool, error) {
+// 成功时返回连接租约 token（Redis 路径），release/refresh 凭它只作用于本次
+// 连接的成员，不会误放/误续其他连接。
+func (l *chainRealtimeConnectionLimiter) acquireContext(ctx context.Context, apiKeyID string, limit int64) (string, bool, error) {
 	if l == nil || apiKeyID == "" || limit <= 0 {
-		return true, nil
+		return "", true, nil
 	}
 	if l.remote != nil {
 		return l.remote.acquire(ctx, apiKeyID, limit)
@@ -130,23 +132,23 @@ func (l *chainRealtimeConnectionLimiter) acquireContext(ctx context.Context, api
 	}
 	current := l.counts[apiKeyID]
 	if current+1 > limit {
-		return false, nil
+		return "", false, nil
 	}
 	l.counts[apiKeyID] = current + 1
-	return true, nil
+	return "", true, nil
 }
 
 // release 释放一个连接位；减到 0 即删除键（DD-G9：键集合只反映有活跃连接
-// 的 apiKeyID，不再无界累积）。
-func (l *chainRealtimeConnectionLimiter) release(apiKeyID string) {
+// 的 apiKeyID，不再无界累积）。Redis 路径按 token ZREM（幂等）。
+func (l *chainRealtimeConnectionLimiter) release(apiKeyID, token string) {
 	if l == nil || apiKeyID == "" {
 		return
 	}
 	if l.remote != nil {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := l.remote.release(releaseCtx, apiKeyID); err != nil {
-			slog.Warn("realtime Redis connection release failed; TTL will recover",
+		if err := l.remote.release(releaseCtx, apiKeyID, token); err != nil {
+			slog.Warn("realtime Redis connection release failed; lease will recover",
 				"apiKeyId", apiKeyID, "error", err)
 		}
 		return
@@ -162,17 +164,26 @@ func (l *chainRealtimeConnectionLimiter) release(apiKeyID string) {
 	}
 }
 
-// refresh 续租连接计数 key（Redis 路径），由 WS ping 循环周期调用。失败只
-// 记录日志并依赖短 TTL 兜底；不改变已持有的连接位。
-func (l *chainRealtimeConnectionLimiter) refresh(apiKeyID string) {
-	if l == nil || l.remote == nil || apiKeyID == "" {
+// refresh 续租本连接的槽租约（Redis 路径），由 WS ping 循环周期调用。只续
+// 自己的 token：槽已被过期清理/释放时不复活；失败与槽缺失都只记录日志并依
+// 赖租约兜底（C12：槽缺失不留痕会掩盖 Redis 重启/泄漏回收，refreshed=false
+// 同样告警）。
+func (l *chainRealtimeConnectionLimiter) refresh(apiKeyID, token string) {
+	if l == nil || l.remote == nil || apiKeyID == "" || token == "" {
+		// 空 token（无 Redis 槽可续）不是「槽缺失」：跳过，不产生误导 WARN。
 		return
 	}
 	refreshCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := l.remote.refresh(refreshCtx, apiKeyID); err != nil {
-		slog.Warn("realtime Redis connection refresh failed; TTL will recover",
+	refreshed, err := l.remote.refresh(refreshCtx, apiKeyID, token)
+	if err != nil {
+		slog.Warn("realtime Redis connection refresh failed; lease will recover",
 			"apiKeyId", apiKeyID, "error", err)
+		return
+	}
+	if !refreshed {
+		slog.Warn("realtime connection Redis slot missing on refresh",
+			"event", "realtime_connection_slot_missing_on_refresh", "apiKeyId", apiKeyID)
 	}
 }
 
@@ -234,7 +245,7 @@ func (c *gatewayChain) serveRealtimeUpgrade(ctx context.Context, req *gatewaypre
 	}
 	// 资源释放（LIFO）：先释放 per-key 连接位与账户并发槽，再回收审计捕
 	// 获/完成信号（上方 defer）。
-	defer c.realtimeConnections.release(session.apiKeyID)
+	defer c.realtimeConnections.release(session.apiKeyID, session.connectionToken)
 	defer func() {
 		if slot := session.concurrencySlot; slot != nil && slot.Release != nil {
 			slot.Release()
@@ -263,8 +274,10 @@ type realtimeSession struct {
 	// concurrencySlot 是账户并发槽（受理前获取，终态释放）。
 	concurrencySlot *gatewaydispatch.ConcurrencySlot
 	// connections 是每 API Key 连接计数器的引用，用于 ping 周期续租 Redis
-	// 连接位 TTL；nil 表示测试/非生产组合，无需续租。
+	// 连接位租约；nil 表示测试/非生产组合，无需续租。
 	connections *chainRealtimeConnectionLimiter
+	// connectionToken 是本次连接的槽租约标识；release/refresh 只作用于它。
+	connectionToken string
 	// usage 是会话级汇总器（含目录行引用，终态计费用）。
 	usage          realtimeUsageAccumulator
 	catalogItem    *gatewayruntimecache.ProviderModelCatalogItem
@@ -382,7 +395,7 @@ func (c *gatewayChain) prepareRealtimeSession(ctx context.Context, req *gatewayp
 	}
 
 	// 每 API Key 并发连接数检查（受理前拒绝，不占任何账户资源）。
-	connectionAcquired, connectionErr := c.realtimeConnections.acquireContext(ctx, apiKey.ID, connectionLimit)
+	connectionToken, connectionAcquired, connectionErr := c.realtimeConnections.acquireContext(ctx, apiKey.ID, connectionLimit)
 	if connectionErr != nil {
 		c.renderRealtimeError(res, http.StatusServiceUnavailable,
 			"realtime 连接计数暂不可用，请稍后重试", "server_error", "realtime_connection_limit_unavailable")
@@ -397,7 +410,7 @@ func (c *gatewayChain) prepareRealtimeSession(ctx context.Context, req *gatewayp
 	connectionHeld := false
 	defer func() {
 		if !connectionHeld {
-			c.realtimeConnections.release(apiKey.ID)
+			c.realtimeConnections.release(apiKey.ID, connectionToken)
 		}
 	}()
 
@@ -439,6 +452,7 @@ func (c *gatewayChain) prepareRealtimeSession(ctx context.Context, req *gatewayp
 		runtime:         runtime,
 		concurrencySlot: dial.slot,
 		connections:     c.realtimeConnections,
+		connectionToken: connectionToken,
 		catalogItem:     catalogItem,
 		idleTimeout:     idleTimeout,
 		maxSession:      maxSession,
@@ -664,7 +678,12 @@ func (b *realtimeBridge) run() {
 			b.sendClientPing()
 			// 异步续租，避免 Redis 抖动阻塞帧转发；失败由短 TTL 兜底。
 			if s.connections != nil {
-				go s.connections.refresh(s.apiKeyID)
+				go s.connections.refresh(s.apiKeyID, s.connectionToken)
+			}
+			// 账户并发槽是租约模型（30m），长连接随 ping 周期续租；断开/进程
+			// 退出后槽在租约到期时自动回收。
+			if s.concurrencySlot != nil && s.concurrencySlot.Refresh != nil {
+				go s.concurrencySlot.Refresh()
 			}
 		case result := <-clientReads:
 			if result.err != nil {

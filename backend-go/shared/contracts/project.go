@@ -76,8 +76,10 @@ const ArchitectureVersion = "go-projects-v1"
 // 2026-11-12 revision 27 是 Phase 2-4 dataset/jobs/taskruns 域：17 张表 40 个
 // instant text 列迁 timestamptz。2026-11-12 revision 28 是 Phase 3 统计域：
 // 53 张表 144 个时间列同表重写（instant → timestamptz、日历键 → date/
-// timestamp(0)）。当前值 28。
-const SchemaRevision int64 = 34
+// timestamp(0)）。revision 29..34 为后续时间类型迁移步骤。
+// revision 35 为 T207 account_circuit_outbox failed 状态 CHECK 幂等替换，
+// 纯 DDL 空号，不新增 schema_migrations 步骤；确保 revision 34 库执行 DDL。
+const SchemaRevision int64 = 35
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

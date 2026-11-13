@@ -417,10 +417,21 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
     exit 1
   fi
 
+  echo "== 推进 latest 镜像别名（upgrade 成功即推进，防中断恢复用旧镜像）=="
+  # T207 收口批实录（2026-11-13）：upgrade 中途失败（init/索引阻塞等）退出后
+  # latest-* 仍指旧版本，操作者按提示手动 `docker compose up -d`（无
+  # JUHE_AI_IMAGE_TAG，取 latest）会用旧二进制 fail-fast。别名在 upgrade 落库
+  # 成功后立即推进——此后任何时点的手动/脚本拉起都拿到本次镜像；版本 tag 仍是
+  # 不可变回滚锚点。失败仅告警不阻断（服务可用性优先，末尾成功路径会重试）。
+  if ! tag_latest_image_aliases "${TARGETS[@]}"; then
+    echo "[WARN] latest 别名推进失败：手动恢复前先执行 for p in ${TARGETS[*]}; do docker tag juhe-ai-single-server:${BUILD_VERSION}-\$p juhe-ai-single-server:latest-\$p; done" >&2
+  fi
+
   echo "== 重建账户电路运行态索引（Redis namespace 变更后必需）=="
   INIT_CMD="set -a && . ./.env && set +a && $REMOTE_COMPOSE_ENV docker compose run --rm gateway -init-account-circuit-runtime-index"
   if ! $SSH "$SERVER" "bash -c 'cd $SERVER_DIR && set -o pipefail; $INIT_CMD'"; then
     echo "[FAIL] 电路索引重建失败：gateway 启动会 fail-fast。修复后重跑该命令再拉起。" >&2
+    echo "       latest-* 别名已推进到本次版本，手动 docker compose up -d gateway jobs 即为新镜像。" >&2
     exit 1
   fi
 

@@ -2,7 +2,9 @@ package gatewayquota
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -13,13 +15,25 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
-// redisInflightQuota stores reserved cost in a single Redis hash plus an
-// expiry ZSET. All keys share one hash tag (`<namespace>:quota`) so the
-// multi-scope check/commit Lua script is atomic on Redis Cluster as well as
-// single-node deployments.
+// redisInflightQuota stores in-flight quota reservations as a per-reservation
+// slot set plus a scope aggregate hash.
+//
+// BUG-0362 同构根治：旧实现用「scope token -> 累计成本」一个 HASH 字段 +
+// 一条 ZSET 分数表示所有预留；同 scope 的任意新预留都会把该 scope 的过期
+// 时间重写为 now+30m，于是单个泄漏预留会被同 scope 的其他流量永久续命，
+// 且 release 按聚合成本相减（重试/迟到释放会多减）。现模型：
+//   - 每次 reserve 生成唯一 reservationToken，每个 scope 一条独立 ZSET 成员
+//     `<scopeToken>|<reservationToken>`（score=本预留自己的到期时间）；
+//   - entries HASH 记录成员 -> 本次预留成本；scope 聚合 HASH 只用于限额判定；
+//   - release 按成员存在性判定后删除并精确扣减（幂等，重复/迟到释放 no-op）；
+//   - 过期清理按成员逐条扣减，不再受同 scope 其他预留影响。
+//
+// Legacy 兼容：旧数据在聚合 HASH 里是裸 scopeToken、ZSET 成员也不含 `|`；
+// 过期清理与 snapshot 会把旧成员按「整 scope 归零」处理，新预留走新格式。
 type redisInflightQuota struct {
 	client      redis.UniversalClient
 	hashKey     string
+	entriesKey  string
 	expiryKey   string
 	operationTO time.Duration
 }
@@ -33,37 +47,60 @@ const redisInflightOperationTimeout = 3 * time.Second
 
 const redisInflightReserveScript = `
 local hash = KEYS[1]
-local zset = KEYS[2]
-local cost = tonumber(ARGV[1])
+local entries = KEYS[2]
+local zset = KEYS[3]
+local cost = ARGV[1]
+local cost_num = tonumber(cost)
 local ttl = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
+local reservation = ARGV[4]
+
+-- 清理过期预留：每个成员独立扣减，旧格式（裸 scopeToken）整 scope 归零。
 local expired = redis.call('ZRANGEBYSCORE', zset, '-inf', now, 'LIMIT', 0, 200)
 for _, member in ipairs(expired) do
-  redis.call('HDEL', hash, member)
+  local sep = string.find(member, '|', 1, true)
+  if sep then
+    local scope = string.sub(member, 1, sep - 1)
+    local entry_cost = redis.call('HGET', entries, member)
+    if entry_cost then
+      redis.call('HDEL', entries, member)
+      local next_cost = redis.call('HINCRBYFLOAT', hash, scope, -tonumber(entry_cost))
+      if tonumber(next_cost) <= 0 then
+        redis.call('HDEL', hash, scope)
+      end
+    end
+  else
+    redis.call('HDEL', hash, member)
+  end
   redis.call('ZREM', zset, member)
 end
-local count = (#ARGV - 3) / 16
-local idx = 4
+
+-- 限额判定仍读 scope 聚合（旧/新预留都计入）。
+local count = (#ARGV - 4) / 16
+local idx = 5
 for i = 1, count do
-  local token = ARGV[idx]
-  local base = idx + 1
-  local reserved = tonumber(redis.call('HGET', hash, token) or '0') or 0
-  local projected = reserved + cost
+  local scope = ARGV[idx]
+  local reserved = tonumber(redis.call('HGET', hash, scope) or '0') or 0
+  local projected = reserved + cost_num
   for w = 1, 5 do
-    local current = tonumber(ARGV[base + w - 1])
-    local enabled = tonumber(ARGV[base + 5 + w - 1])
-    local limit = tonumber(ARGV[base + 10 + w - 1])
+    local current = tonumber(ARGV[idx + w])
+    local enabled = tonumber(ARGV[idx + 5 + w])
+    local limit = tonumber(ARGV[idx + 10 + w])
     if enabled == 1 and current + projected > limit then
       return {0, i}
     end
   end
-  idx = base + 15
+  idx = idx + 16
 end
-idx = 4
+
+-- 占位：每个 scope 一条独立成员 + 聚合成本。
+idx = 5
 for i = 1, count do
-  local token = ARGV[idx]
-  redis.call('HINCRBYFLOAT', hash, token, cost)
-  redis.call('ZADD', zset, now + ttl, token)
+  local scope = ARGV[idx]
+  local member = scope .. '|' .. reservation
+  redis.call('HINCRBYFLOAT', hash, scope, cost_num)
+  redis.call('HSET', entries, member, cost)
+  redis.call('ZADD', zset, now + ttl, member)
   idx = idx + 16
 end
 return {1, 0}
@@ -71,17 +108,21 @@ return {1, 0}
 
 const redisInflightReleaseScript = `
 local hash = KEYS[1]
-local zset = KEYS[2]
-local cost = tonumber(ARGV[1])
-for i = 2, #ARGV do
-  local token = ARGV[i]
-  local current = tonumber(redis.call('HGET', hash, token) or '0') or 0
-  local next = current - cost
-  if next <= 0 then
-    redis.call('HDEL', hash, token)
-    redis.call('ZREM', zset, token)
-  else
-    redis.call('HSET', hash, token, tostring(next))
+local entries = KEYS[2]
+local zset = KEYS[3]
+local cost = ARGV[1]
+local cost_num = tonumber(cost)
+local reservation = ARGV[2]
+-- 成员存在才扣减（幂等）：重复释放、过期清理后的迟到释放均为 no-op。
+for i = 3, #ARGV do
+  local member = ARGV[i] .. '|' .. reservation
+  if redis.call('HGET', entries, member) then
+    redis.call('HDEL', entries, member)
+    redis.call('ZREM', zset, member)
+    local next_cost = redis.call('HINCRBYFLOAT', hash, ARGV[i], -cost_num)
+    if tonumber(next_cost) <= 0 then
+      redis.call('HDEL', hash, ARGV[i])
+    end
   end
 end
 return 1
@@ -89,22 +130,28 @@ return 1
 
 const redisInflightSnapshotScript = `
 local hash = KEYS[1]
-local zset = KEYS[2]
+local entries = KEYS[2]
+local zset = KEYS[3]
 local now = tonumber(ARGV[1])
-local entries = redis.call('HGETALL', hash)
-local out = {}
-for i = 1, #entries, 2 do
-  local token = entries[i]
-  local expiry = tonumber(redis.call('ZSCORE', zset, token) or '0') or 0
-  if expiry > now then
-    table.insert(out, token)
-    table.insert(out, entries[i + 1])
+local expired = redis.call('ZRANGEBYSCORE', zset, '-inf', now, 'LIMIT', 0, 200)
+for _, member in ipairs(expired) do
+  local sep = string.find(member, '|', 1, true)
+  if sep then
+    local scope = string.sub(member, 1, sep - 1)
+    local entry_cost = redis.call('HGET', entries, member)
+    if entry_cost then
+      redis.call('HDEL', entries, member)
+      local next_cost = redis.call('HINCRBYFLOAT', hash, scope, -tonumber(entry_cost))
+      if tonumber(next_cost) <= 0 then
+        redis.call('HDEL', hash, scope)
+      end
+    end
   else
-    redis.call('HDEL', hash, token)
-    redis.call('ZREM', zset, token)
+    redis.call('HDEL', hash, member)
   end
+  redis.call('ZREM', zset, member)
 end
-return out
+return redis.call('HGETALL', hash)
 `
 
 func newRedisInflightQuota(client redis.UniversalClient, namespace string) (*redisInflightQuota, error) {
@@ -119,9 +166,18 @@ func newRedisInflightQuota(client redis.UniversalClient, namespace string) (*red
 	return &redisInflightQuota{
 		client:      client,
 		hashKey:     "juhe-ai:{" + tag + "}:inflight",
+		entriesKey:  "juhe-ai:{" + tag + "}:inflight-entries",
 		expiryKey:   "juhe-ai:{" + tag + "}:inflight-expiry",
 		operationTO: redisInflightOperationTimeout,
 	}, nil
+}
+
+// newInflightReservationToken 生成本次预留的唯一标识（release 凭它精确定位
+// 自己的成员）。
+func newInflightReservationToken() string {
+	var buffer [8]byte
+	_, _ = rand.Read(buffer[:])
+	return strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + hex.EncodeToString(buffer[:])
 }
 
 func (r *redisInflightQuota) reserve(ctx context.Context, input ReserveInput) (InflightDecision, []inflightRelease, error) {
@@ -149,8 +205,9 @@ func (r *redisInflightQuota) reserveScopesInternal(ctx context.Context, scopes [
 		return InflightDecision{Allowed: true}, nil, nil
 	}
 	nowMs := time.Now().UnixMilli()
-	args := make([]any, 0, 3+len(scopes)*16)
-	args = append(args, strconv.FormatFloat(cost, 'f', -1, 64), reservationLeakTTL.Milliseconds(), nowMs)
+	reservationToken := newInflightReservationToken()
+	args := make([]any, 0, 4+len(scopes)*16)
+	args = append(args, strconv.FormatFloat(cost, 'f', -1, 64), reservationLeakTTL.Milliseconds(), nowMs, reservationToken)
 	for _, scope := range scopes {
 		args = append(args, scopeToken(scope.ScopeKey),
 			scope.CurrentCosts.Hourly, scope.CurrentCosts.Daily, scope.CurrentCosts.Weekly,
@@ -165,7 +222,8 @@ func (r *redisInflightQuota) reserveScopesInternal(ctx context.Context, scopes [
 	}
 	runCtx, cancel := context.WithTimeout(ctxOrBackground(ctx), r.operationTO)
 	defer cancel()
-	raw, err := r.client.Eval(runCtx, redisInflightReserveScript, []string{r.hashKey, r.expiryKey}, args...).Result()
+	raw, err := r.client.Eval(runCtx, redisInflightReserveScript,
+		[]string{r.hashKey, r.entriesKey, r.expiryKey}, args...).Result()
 	if err != nil {
 		return InflightDecision{}, nil, fmt.Errorf("inflight quota reserve: %w", err)
 	}
@@ -188,7 +246,11 @@ func (r *redisInflightQuota) reserveScopesInternal(ctx context.Context, scopes [
 	}
 	releases := make([]inflightRelease, 0, len(scopes))
 	for _, scope := range scopes {
-		releases = append(releases, inflightRelease{stateKey: scope.ScopeKey, costUsd: cost})
+		releases = append(releases, inflightRelease{
+			stateKey:         scope.ScopeKey,
+			costUsd:          cost,
+			reservationToken: reservationToken,
+		})
 	}
 	return InflightDecision{
 		Allowed:             true,
@@ -237,23 +299,25 @@ func (r *redisInflightQuota) release(ctx context.Context, releases []inflightRel
 	if len(releases) == 0 {
 		return nil
 	}
-	// All releases created by one reservation share the same cost.
+	// All releases created by one reservation share the same cost/token.
 	cost := releases[0].costUsd
-	args := make([]any, 0, 1+len(releases))
-	args = append(args, strconv.FormatFloat(cost, 'f', -1, 64))
+	reservationToken := releases[0].reservationToken
+	args := make([]any, 0, 2+len(releases))
+	args = append(args, strconv.FormatFloat(cost, 'f', -1, 64), reservationToken)
 	for _, entry := range releases {
 		args = append(args, scopeToken(entry.stateKey))
 	}
 	runCtx, cancel := context.WithTimeout(ctxOrBackground(ctx), r.operationTO)
 	defer cancel()
-	return r.client.Eval(runCtx, redisInflightReleaseScript, []string{r.hashKey, r.expiryKey}, args...).Err()
+	return r.client.Eval(runCtx, redisInflightReleaseScript,
+		[]string{r.hashKey, r.entriesKey, r.expiryKey}, args...).Err()
 }
 
 func (r *redisInflightQuota) snapshot(ctx context.Context) ([]redisInflightSnapshotState, error) {
 	runCtx, cancel := context.WithTimeout(ctxOrBackground(ctx), r.operationTO)
 	defer cancel()
 	raw, err := r.client.Eval(runCtx, redisInflightSnapshotScript,
-		[]string{r.hashKey, r.expiryKey}, time.Now().UnixMilli()).Result()
+		[]string{r.hashKey, r.entriesKey, r.expiryKey}, time.Now().UnixMilli()).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +344,7 @@ func (r *redisInflightQuota) snapshot(ctx context.Context) ([]redisInflightSnaps
 func (r *redisInflightQuota) clear(ctx context.Context) error {
 	runCtx, cancel := context.WithTimeout(ctxOrBackground(ctx), r.operationTO)
 	defer cancel()
-	return r.client.Del(runCtx, r.hashKey, r.expiryKey).Err()
+	return r.client.Del(runCtx, r.hashKey, r.entriesKey, r.expiryKey).Err()
 }
 
 func scopeToken(scopeKey string) string {

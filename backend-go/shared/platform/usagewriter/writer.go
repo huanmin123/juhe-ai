@@ -103,7 +103,9 @@ type Runtime struct {
 	RetainedOverflowWarningCount int    `json:"retainedOverflowWarningCount"`
 	DroppedOverflowCount         int    `json:"droppedOverflowCount"`
 	DroppedOversizeCount         int    `json:"droppedOversizeCount"`
-	DroppedDispatchCount         int    `json:"droppedDispatchCount"`
+	// T207-C2：DroppedDispatchCount 语义从「丢弃」改为「延迟重试」计数——
+	// 溢出落盘失败与死信落盘失败的记录已强制回队/保留，不再终态丢失。
+	DroppedDispatchCount int `json:"droppedDispatchCount"`
 	DeadLetterCount              int    `json:"deadLetterCount"`
 	ActiveDeadLetterCount        int    `json:"activeDeadLetterCount"`
 	FlushFailureCount            int    `json:"flushFailureCount"`
@@ -314,13 +316,16 @@ func (w *Writer) finishAdmission(outcome admissionOutcome) {
 
 // Enqueue mirrors enqueueUsageRecord (the UsageRecorder port contract):
 // normalize, freeze pricing facts at the enqueue instant, then admit into
-// the bounded in-process queue. Admission failures are terminal for the
-// record: oversize/overflow records are spooled (performance mode) or
-// dropped with the Node counters and sampled log copy.
+// the bounded in-process queue. Oversize records stay terminal drops; a
+// queue-full record is spooled (performance mode) or dropped with the Node
+// counters and sampled log copy.
 //
-// BUG-0304：本方法保持 best-effort 语义——队列满且溢出落盘失败时按终态丢
-// 弃计数并仍返回 nil。durable spool 交接消费方（usagespooldrain）必须使用
-// EnqueueDurable，不得用本方法的 best-effort 语义删除持久源。
+// BUG-0304：本方法保持 best-effort 语义（错误不外抛、恒返回 nil）。
+// T207-C2 起队列满且溢出落盘失败不再是终态丢弃：记录由 writer 强制回队补
+// 偿暂存等待重试（见 spoolOverflow；droppedDispatchCount 语义随之改为
+// deferred 计数）。durable spool 交接消费方（usagespooldrain）必须使用
+// EnqueueDurable——本方法的失败臂无法向调用方回报「未接收」，不得用于删
+// 除持久源。
 func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 	normalized, bytes, err := w.prepareForAdmission(ctx, input)
 	if err != nil {
@@ -341,9 +346,10 @@ func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 	}
 	if w.queueFullLocked(bytes) {
 		w.mu.Unlock()
-		// 溢出补偿（performance 语义）：先落 spool；spool 成功则记录不丢，
-		// spool 未配置或失败时按 Node 本地队列语义丢弃并计数。
-		if !w.spoolOverflow(ctx, normalized) {
+		// 溢出补偿（performance 语义）：先落 spool；spool 未配置时按 Node
+		// 本地队列语义丢弃并计数，落盘失败时由 spoolOverflow 强制回队重试
+		// （T207-C2，不再终态丢弃）。
+		if !w.spoolOverflow(ctx, normalized, bytes) {
 			w.mu.Lock()
 			w.recordLocalDropLocked(queuedRecord{input: normalized, bytes: bytes}, "overflow")
 			w.mu.Unlock()
@@ -359,7 +365,8 @@ func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 // EnqueueDurable 是溢出 spool 回放专用的入队端口（BUG-0304）：与 Enqueue
 // 共享前置流程与准入尾部，区别只在队列满的溢出分支——未接收时返回可重试
 // 错误，而不是按终态丢弃后返回 nil。2026-11-09 T188 起 gateway 用量记录
-// 直投 PG，durable spool 交接消费方只剩 jobs 的溢出回放。
+// 直投 PG；T207-C2 起 jobs 探针用量等 durable 生产者也走本端口（未接收可
+// 重试，不再经 best-effort Enqueue 的丢弃臂）。
 //
 // 契约：返回 nil ⇔ 记录已被接受（进入内存队列、幂等重复、溢出落盘成功，
 // 或 oversize 终态丢弃）；返回非 nil ⇔ 记录未被接收，调用方必须保留
@@ -408,36 +415,42 @@ func (w *Writer) EnqueueDurable(ctx Ctx, input UsageRecordInput) error {
 
 // spoolOverflow mirrors persistUsageRecordForQueueOverflow: the
 // performance-mode compensation for records that could not be admitted.
-// Returns whether the overflow path consumed the record (terminal either
-// way): true after a successful persist, and also true after a FAILED
-// persist — the failure path books the drop with droppedDispatchCount and
-// the sampled dispatch-failure log (mirroring recordUsageRecordDispatchFailure),
-// so the caller must not double-book it as a queue-overflow drop. false only
-// when no spool is configured, letting the caller apply the Node
-// local-queue overflow drop.
-func (w *Writer) spoolOverflow(ctx Ctx, input UsageRecordInput) bool {
+// Returns whether the overflow path consumed the record: true after a
+// successful persist (spooled for drain replay), and also true after a
+// FAILED persist — T207-C2 起失败不再终态丢弃：记录强制回队补偿暂存（容量
+// 上限瞬时超一条），下轮冲刷重试写库。false only when no spool is
+// configured, letting the caller apply the Node local-queue overflow drop.
+func (w *Writer) spoolOverflow(ctx Ctx, input UsageRecordInput, bytes int) bool {
 	if w.spool == nil {
 		return false
 	}
-	if err := w.spool.Persist(ctx, input); err != nil {
-		w.mu.Lock()
-		w.droppedDispatchCount++
-		count := w.droppedDispatchCount
-		w.mu.Unlock()
-		if w.logger != nil {
-			w.logger.Warn("使用记录投递后台 worker 失败，已跳过投递", map[string]any{
-				"event":                "usage_record_queue_dispatch_failed",
-				"usageRecordId":        input.ID,
-				"traceId":              input.TraceID,
-				"trafficSource":        input.TrafficSource,
-				"systemAccountId":      input.SystemAccountID,
-				"endpoint":             input.Endpoint,
-				"statusCode":           input.StatusCode,
-				"errorCode":            input.ErrorCode,
-				"droppedDispatchCount": count,
-				"error":                err.Error(),
-			})
-		}
+	err := w.spool.Persist(ctx, input)
+	if err == nil {
+		return true
+	}
+	// 落盘失败臂（T207-C2）：强制回队等待重试，不再按 dispatch 终态丢弃。
+	// droppedDispatchCount 保留为该路径的计数名，语义从「丢弃」改为「延迟
+	// 重试」（Runtime.DroppedDispatchCount 注释同步）；沿用 dispatch 失败
+	// 的采样日志键，仅文案改述新语义。
+	w.mu.Lock()
+	w.droppedDispatchCount++
+	count := w.droppedDispatchCount
+	outcome := w.admitTailLocked(input, bytes)
+	w.mu.Unlock()
+	w.finishAdmission(outcome)
+	if w.logger != nil {
+		w.logger.Warn("使用记录溢出落盘失败，已保留队列等待重试", map[string]any{
+			"event":                "usage_record_queue_dispatch_failed",
+			"usageRecordId":        input.ID,
+			"traceId":              input.TraceID,
+			"trafficSource":        input.TrafficSource,
+			"systemAccountId":      input.SystemAccountID,
+			"endpoint":             input.Endpoint,
+			"statusCode":           input.StatusCode,
+			"errorCode":            input.ErrorCode,
+			"droppedDispatchCount": count,
+			"error":                err.Error(),
+		})
 	}
 	return true
 }
@@ -553,9 +566,17 @@ func (w *Writer) flushCycle() {
 			continue
 		}
 		if w.handleFlushFailure(batch, err) {
-			// Retry budget exhausted: the batch moved to the dead-letter
-			// terminal state; flushing continues with the next batch.
-			w.deadLetterBatch(batch)
+			// Retry budget exhausted: move the batch to the dead-letter
+			// terminal state. T207-C2：spool 落盘失败时批次未出队——按固定
+			// 退避重试；失败预算未重置，下轮写库失败后立即再走死信落盘。
+			if !w.deadLetterBatch(batch) {
+				if !w.waitRetry() {
+					return
+				}
+				continue
+			}
+			// The batch moved to the dead-letter terminal state; flushing
+			// continues with the next batch.
 			continue
 		}
 		if !w.waitRetry() {
@@ -686,7 +707,38 @@ func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int)
 // deadLetterBatch moves an exhausted batch into the terminal dead-letter
 // state: counted, bounded retention of the newest records for diagnostics.
 // The consecutive-failure budget resets for the next batch.
-func (w *Writer) deadLetterBatch(batch []queuedRecord) {
+//
+// T207-C2：spool 已装配时死信不再是内存终态——整批先持久化到溢出 spool
+//（既有 drain 回放链路按稳定 id 幂等重投），全部成功才出队清 pending；任
+// 一失败则整批保留队列（不计 deadLetter 终态、不重置失败预算，返回 false
+// 让调用方按固定退避重试）。spool 未装配时保持 Node 内存环形语义（终态丢
+// 弃仅留诊断样本）。
+func (w *Writer) deadLetterBatch(batch []queuedRecord) bool {
+	if w.spool != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), usageRecordWriteTimeout)
+		defer cancel()
+		for _, item := range batch {
+			if err := w.spool.Persist(ctx, item.input); err != nil {
+				// deferred 计数与 spoolOverflow 失败臂同语义（T207-C2）：
+				// 记录未出队，droppedDispatchCount 记延迟重试次数。
+				w.mu.Lock()
+				w.droppedDispatchCount++
+				count := w.droppedDispatchCount
+				w.mu.Unlock()
+				if w.logger != nil {
+					w.logger.Warn("使用记录死信落盘失败，已保留队列等待重试", map[string]any{
+						"event":                "usage_record_queue_dead_letter_persist_failed",
+						"usageRecordId":        item.input.ID,
+						"traceId":              item.input.TraceID,
+						"batchSize":            len(batch),
+						"droppedDispatchCount": count,
+						"error":                err.Error(),
+					})
+				}
+				return false
+			}
+		}
+	}
 	const deadLetterRetention = 100
 	w.mu.Lock()
 	batchBytes := 0
@@ -707,6 +759,7 @@ func (w *Writer) deadLetterBatch(batch []queuedRecord) {
 	w.flushFailureCount = 0
 	w.firstFlushFailureAt = time.Time{}
 	w.mu.Unlock()
+	return true
 }
 
 // waitRetry mirrors scheduleUsageRecordFlush(retryDelayMs): wait the fixed

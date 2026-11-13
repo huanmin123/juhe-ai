@@ -14,7 +14,6 @@ package operationlog
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -117,8 +116,8 @@ func TestLeaseKeeperReviveRefusedAfterClose(t *testing.T) {
 	if err == nil {
 		t.Fatal("Close 后 Revive 必须返回错误")
 	}
-	if !strings.Contains(err.Error(), "已关闭") {
-		t.Fatalf("拒绝错误必须说明 keeper 已关闭: %v", err)
+	if !errors.Is(err, ErrKeeperClosed) {
+		t.Fatalf("拒绝错误必须是 ErrKeeperClosed 哨兵（BUG-0360）: %v", err)
 	}
 	store.mu.Lock()
 	acquires := store.acquireCalls

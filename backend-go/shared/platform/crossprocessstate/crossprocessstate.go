@@ -78,6 +78,14 @@ end
 return 0
 `
 
+const renewScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	redis.call('PEXPIRE', KEYS[1], ARGV[2])
+	return 1
+end
+return 0
+`
+
 const bumpVersionScript = `
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')
 local next = tonumber(ARGV[1])
@@ -170,6 +178,29 @@ func (c *Client) Unlock(ctx context.Context, entity, id, token string) error {
 	}
 	_, err := c.exec.Eval(ctx, unlockScript, []string{c.Key(entity, id)}, token)
 	return err
+}
+
+// Renew 对仍由 token 持有的锁续期（compare-token PEXPIRE，T207 C11）：键不
+// 存在或 token 已被他人重新持有（TTL 过期后 SetNX 接管）时返回 false 且不
+// 改写键。供持锁方在长窗口任务内周期续租（如 OAuth 刷新锁的慢路径换发），
+// 失租语义与 Unlock 的 compare-delete 一致：不命中即视为已失锁。
+func (c *Client) Renew(ctx context.Context, entity, id, token string, ttl time.Duration) (bool, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false, nil
+	}
+	if ttl <= 0 {
+		ttl = DefaultLockTTL
+	}
+	raw, err := c.exec.Eval(ctx, renewScript, []string{c.Key(entity, id)}, token, ttl.Milliseconds())
+	if err != nil {
+		return false, err
+	}
+	value, ok := toInt64(raw)
+	if !ok {
+		return false, fmt.Errorf("crossprocessstate 锁续租返回值不是整数: %v", raw)
+	}
+	return value == 1, nil
 }
 
 // BumpVersion 把实体版本单调推进到 revision（通常为 PG 的 config_revision），

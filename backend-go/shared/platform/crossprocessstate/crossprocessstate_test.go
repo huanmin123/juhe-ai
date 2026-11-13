@@ -62,7 +62,8 @@ func (f *fakeExecutor) Eval(_ context.Context, script string, keys []string, arg
 		f.values[key] = strconv.FormatInt(current, 10)
 		f.ttls[key] = time.Duration(args[0].(int64)) * time.Millisecond
 		return current, nil
-	case strings.Contains(script, "PEXPIRE"):
+	case strings.Contains(script, "tonumber"):
+		// bumpVersionScript：单调版本写入 + 续期。
 		key := keys[0]
 		next := args[0].(int64)
 		current, _ := strconv.ParseInt(f.values[key], 10, 64)
@@ -78,6 +79,16 @@ func (f *fakeExecutor) Eval(_ context.Context, script string, keys []string, arg
 		key := keys[0]
 		if len(args) > 0 && f.values[key] == args[0].(string) {
 			delete(f.values, key)
+			return int64(1), nil
+		}
+		return int64(0), nil
+	case strings.Contains(script, "PEXPIRE"):
+		// renewScript：compare-token PEXPIRE（T207 C11 锁续租）。
+		key := keys[0]
+		token := args[0].(string)
+		ttl := time.Duration(args[1].(int64)) * time.Millisecond
+		if f.values[key] == token {
+			f.ttls[key] = ttl
 			return int64(1), nil
 		}
 		return int64(0), nil
@@ -210,6 +221,61 @@ func TestUnlockEmptyTokenIsNoop(t *testing.T) {
 	}
 	if exec.lastEval != "" {
 		t.Fatalf("空 token 不应触发 EVAL")
+	}
+}
+
+// TestRenewExtendsOnlyOwnToken 锁定 Renew 的 compare-token 语义（T207 C11）：
+// 仅本进程 token 仍持有时续期并返回 true；token 不匹配（TTL 过期后他人重新
+// 持有）、键不存在、空 token 一律 false 且不改写键。
+func TestRenewExtendsOnlyOwnToken(t *testing.T) {
+	client, exec := newTestClient(t)
+	ctx := context.Background()
+	token, acquired, err := client.TryLock(ctx, EntityOAuthRefreshLock, "acc-renew", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("TryLock: %q/%v/%v", token, acquired, err)
+	}
+	renewed, err := client.Renew(ctx, EntityOAuthRefreshLock, "acc-renew", token, 2*time.Minute)
+	if err != nil || !renewed {
+		t.Fatalf("本进程 token 续租 = (%v,%v), want (true,nil)", renewed, err)
+	}
+	if ttl := exec.ttls[client.LockKey(EntityOAuthRefreshLock, "acc-renew")]; ttl != 2*time.Minute {
+		t.Fatalf("续租后 TTL = %v, want 2m", ttl)
+	}
+
+	// token 不匹配（他人持有）：false 且 TTL 不被改写。
+	exec.ttls[client.LockKey(EntityOAuthRefreshLock, "acc-renew")] = time.Minute
+	if renewed, err := client.Renew(ctx, EntityOAuthRefreshLock, "acc-renew", token+"-stale", 2*time.Minute); err != nil || renewed {
+		t.Fatalf("他人 token 续租 = (%v,%v), want (false,nil)", renewed, err)
+	}
+	if ttl := exec.ttls[client.LockKey(EntityOAuthRefreshLock, "acc-renew")]; ttl != time.Minute {
+		t.Fatalf("失配续租不得改写 TTL: %v", ttl)
+	}
+
+	// 释放后键不存在：false。
+	if err := client.Unlock(ctx, EntityOAuthRefreshLock, "acc-renew", token); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	if renewed, err := client.Renew(ctx, EntityOAuthRefreshLock, "acc-renew", token, 2*time.Minute); err != nil || renewed {
+		t.Fatalf("键不存在续租 = (%v,%v), want (false,nil)", renewed, err)
+	}
+
+	// 空 token 是 no-op（调用方未拿到锁），不触发 EVAL。
+	exec.mu.Lock()
+	lastEvalBefore := exec.lastEval
+	exec.mu.Unlock()
+	if renewed, err := client.Renew(ctx, EntityOAuthRefreshLock, "acc-renew", "  ", time.Minute); err != nil || renewed {
+		t.Fatalf("空 token 续租 = (%v,%v), want (false,nil)", renewed, err)
+	}
+	exec.mu.Lock()
+	if exec.lastEval != lastEvalBefore {
+		t.Fatalf("空 token 不应触发 EVAL")
+	}
+	exec.mu.Unlock()
+
+	// Redis 错误按错误返回，供调用方按 WARN 收敛。
+	exec.evalErr = errors.New("redis down")
+	if _, err := client.Renew(ctx, EntityOAuthRefreshLock, "acc-renew", token, time.Minute); err == nil {
+		t.Fatal("Redis 错误应返回 error")
 	}
 }
 

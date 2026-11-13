@@ -39,6 +39,16 @@ const (
 	J3bProjectionKey = circuitstate.ProjectionKeyJ3B
 )
 
+// outboxMaxAttempts 是 circuit outbox 单事件的派发尝试上限（C5，T207 扫描
+// 项）：确定性失败（身份/投影键冲突等恒败错误）的事件按 retryDelay 无限回
+// pending 重派只会空转。ReleaseForReplay 释放 claim 时读出本次 attempt_count
+// （Claim 每次认领 +1），达到上限即置终态 failed——claim 面清空、
+// acknowledged_at_ms 落 now、last_error_class 保留——不再被任何 claim 查询
+// 选中（claim 只认 pending/processing），并按 ack 保留期随 dispatched 行
+// 一起物理回收。后续同 transition_id 的 CAS 写侧重试由 dedupe 插入臂冲突
+// 重置吸收（新派发生命周期，attempt 从 0 重计）。
+const outboxMaxAttempts = 8
+
 // ControlPlaneConfig 组装 ledger/outbox 适配器。
 type ControlPlaneConfig struct {
 	DB       *sql.DB
@@ -404,12 +414,13 @@ const incidentCASColumns = "circuit_scope_key,account_id,account_runtime_key,sco
 // dispatched outbox 两类删除共用同一批上限）。
 const circuitIncidentCleanupBatchLimit = 500
 
-// circuitDispatchedOutboxRetentionMS 是 dispatched outbox 行 ack 后的保留期
-// （T87r，2026-11-01 起 jobs Cleanup 负责回收，替代 gateway 写侧已删除的
-// Store.Cleanup）。dispatched 行对正确性已无害（incident 臂 dedupe 回放排除
-// dispatched、同 tid 重试由插入臂冲突重置吸收），保留期只服务投影问题排查
-// 取证；incident CLOSED 墓碑保留期仅 5 分钟（DefaultClosedRetentionMs），
-// 取 24 小时为排查窗口与无界累积之间的取舍。
+// circuitDispatchedOutboxRetentionMS 是 dispatched/failed 终态 outbox 行
+// acknowledged 后的保留期（T87r，2026-11-01 起 jobs Cleanup 负责回收，替代
+// gateway 写侧已删除的 Store.Cleanup；C5 起 failed 终态行同走本保留期）。两
+// 类终态行对正确性已无害（incident 臂 dedupe 回放排除 dispatched、同 tid 重
+// 试由插入臂冲突重置吸收），保留期只服务投影问题排查取证；incident CLOSED
+// 墓碑保留期仅 5 分钟（DefaultClosedRetentionMs），取 24 小时为排查窗口与
+// 无界累积之间的取舍。
 const circuitDispatchedOutboxRetentionMS = int64(24 * 60 * 60 * 1000)
 
 func casBoolInt(value bool) int {
@@ -852,7 +863,8 @@ type CleanupResult struct {
 //     dispatch 重试由 CAS stale 臂兜底；incident 臂 dedupe 回放已排除
 //     dispatched 行，incident 行删除后、dedupe 行保留期内的同 tid 重试由
 //     insertIncidentChangedOutbox 冲突重置吸收，dedupe 行也删除后直接走
-//     新行插入——两条路径都不依赖 dispatched 行永生。
+//     新行插入——两条路径都不依赖 dispatched 行永生。C5（T207）起 failed
+//     终态行（attempt 超限，acknowledged_at_ms 同落值）并入本臂回收。
 func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (CleanupResult, error) {
 	if nowMS < 0 {
 		return CleanupResult{}, errors.New("nowMs 必须是非负整数")
@@ -870,12 +882,15 @@ func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (CleanupRes
 	defer func() { _ = tx.Rollback() }()
 	out := CleanupResult{}
 	// outbox 臂先于 incident 臂执行（与原 gateway Cleanup 同序）：只删
-	// dispatched 行，不影响 incident 两臂共用的 noPendingOutbox 守卫。
+	// dispatched/failed 终态行（C5：failed 行 acknowledged_at_ms 同样落值，
+	// 按同一保留期回收，不永生累积），不影响 incident 两臂共用的
+	// noPendingOutbox 守卫（failed 行在保留期内同样按 status<>'dispatched'
+	// 保守阻断 incident 删除）。
 	ackCutoff := nowMS - circuitDispatchedOutboxRetentionMS
 	if ackCutoff < 0 {
 		ackCutoff = 0
 	}
-	outboxResult, err := tx.ExecContext(ctx, "DELETE FROM "+outbox+" WHERE event_id IN (SELECT event_id FROM "+outbox+" WHERE status='dispatched' AND acknowledged_at_ms<=? ORDER BY acknowledged_at_ms,event_id LIMIT ?)", ackCutoff, circuitIncidentCleanupBatchLimit)
+	outboxResult, err := tx.ExecContext(ctx, "DELETE FROM "+outbox+" WHERE event_id IN (SELECT event_id FROM "+outbox+" WHERE status IN ('dispatched','failed') AND acknowledged_at_ms<=? ORDER BY acknowledged_at_ms,event_id LIMIT ?)", ackCutoff, circuitIncidentCleanupBatchLimit)
 	if err != nil {
 		return out, err
 	}
@@ -1330,7 +1345,7 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
         AND ((status = 'pending' AND available_at_ms <= ?)
           OR (status = 'processing' AND claim_until_ms <= ?))
       ORDER BY available_at_ms ASC, created_at_ms ASC, event_id ASC
-      LIMIT ? FOR UPDATE SKIP LOCKED`, ProjectionKey, nowMS, nowMS, limit)
+      LIMIT ? FOR UPDATE SKIP LOCKED`, ProjectionKey, circuitMS(nowMS), circuitMS(nowMS), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1508,7 +1523,11 @@ func (r *ControlPlaneRepo) Ack(ctx context.Context, event opsjobs.OutboxEvent, a
 	return true, tx.Commit()
 }
 
-// ReleaseForReplay 对齐 releaseAccountCircuitOutboxForReplayInClient。
+// ReleaseForReplay 对齐 releaseAccountCircuitOutboxForReplayInClient，并追加
+// C5 attempt 上限（outboxMaxAttempts）：未达上限按 retryDelay 回 pending；
+// 达上限不再回 pending，改置终态 failed（见 outboxMaxAttempts 注释）。事务
+// 内 SELECT FOR UPDATE 锁行后再分支，与 Ack 同构，避免 claim 过期被抢后误
+// 释放他人行。
 func (r *ControlPlaneRepo) ReleaseForReplay(ctx context.Context, event opsjobs.OutboxEvent, errorClass string, nowMS int64, retryDelayMS int64) error {
 	eventID := strings.TrimSpace(event.EventID)
 	if eventID == "" || len(eventID) > 256 {
@@ -1525,8 +1544,40 @@ func (r *ControlPlaneRepo) ReleaseForReplay(ctx context.Context, event opsjobs.O
 	if nowMS < 0 || retryDelayMS < 0 || retryDelayMS > 24*60*60_000 {
 		return errors.New("retryDelayMs 必须是 0..86400000 的非负整数")
 	}
-	result, err := r.db.ExecContext(ctx, `
-    UPDATE `+r.table("account_circuit_outbox")+`
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	outboxTable := r.table("account_circuit_outbox")
+	var attemptCount int64
+	selectQuery := `
+    SELECT attempt_count
+    FROM ` + outboxTable + `
+    WHERE event_id = ? AND status = 'processing' AND claim_token = ?`
+	selectQuery += " FOR UPDATE"
+	err = tx.QueryRowContext(ctx, selectQuery, eventID, claimToken).Scan(&attemptCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("账户 circuit outbox 释放重放未命中 claim")
+	}
+	if err != nil {
+		return err
+	}
+	if attemptCount >= outboxMaxAttempts {
+		// 终态 failed：保留 last_error_class 供排查，acknowledged_at_ms 落
+		// now 使其与 dispatched 行同走 ack 保留期回收臂。
+		if _, err := tx.ExecContext(ctx, `
+    UPDATE `+outboxTable+`
+    SET status = 'failed', claim_token = NULL, claimed_by = NULL, claim_until_ms = NULL,
+        acknowledged_at_ms = ?, last_error_class = ?, updated_at_ms = ?
+    WHERE event_id = ? AND status = 'processing' AND claim_token = ?`,
+			circuitMS(nowMS), errorClass, circuitMS(nowMS), eventID, claimToken); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	result, err := tx.ExecContext(ctx, `
+    UPDATE `+outboxTable+`
     SET status = 'pending', available_at_ms = ?, claim_token = NULL, claimed_by = NULL,
         claim_until_ms = NULL, last_error_class = ?, updated_at_ms = ?
     WHERE event_id = ? AND status = 'processing' AND claim_token = ?`,
@@ -1541,7 +1592,7 @@ func (r *ControlPlaneRepo) ReleaseForReplay(ctx context.Context, event opsjobs.O
 	if changed != 1 {
 		return errors.New("账户 circuit outbox 释放重放未命中 claim")
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ---- ReconcileCursorStore（PG/SQLite 双模持久化游标）----

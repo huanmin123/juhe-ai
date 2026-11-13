@@ -129,7 +129,7 @@ func TestRedisAccountConcurrencyAcquireEnforcesLimits(t *testing.T) {
 	if err != nil || laneFull.Acquired || laneFull.Total != 1 || laneFull.LaneCurrent != 1 {
 		t.Fatalf("image lane 满后 acquire = %+v err %v, want 拒绝", laneFull, err)
 	}
-	// redis 驱动 total 字段经 ByID 读取（CurrentAccountConcurrency 空 lane 回落 text 字段）。
+	// redis 驱动 total 经 ByID 读取（CurrentAccountConcurrency 空 lane = total）。
 	byID, err := instance.LoadAccountCurrentConcurrencyByID(ctx, []string{"acc-2"})
 	if err != nil || byID["acc-2"] != 1 {
 		t.Fatalf("lane 拒绝后 total=%+v err %v want 1", byID, err)

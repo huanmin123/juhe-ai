@@ -25,6 +25,11 @@
 // 其余列写 ” / 0 哨兵。列集与 jobs internal/recordmaintenance/queue.go 的
 // schema 逐字一致；对既有 6 列旧表按列名补 ALTER ADD COLUMN（幂等，见
 // ensureSnapshotColumns），DDL 双侧先到先建、各侧自升级。
+//
+// 投递端毒丸防线（T207 C1）：快照行 kind 在入队前经共享白名单
+//（shared/platform/recordmaintenance，与 jobs 消费端执行器同一集合）校验，
+// 非法 kind 直接拒绝并 ERROR——jobs 侧的确定性失败终态（status='failed'）
+// 是消费端兜底，投递端拦截让毒丸根本不入库。
 package recordmaintenance
 
 import (
@@ -34,11 +39,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	platformrecordmaintenance "github.com/huanminabc/juhe-ai/backend-go-platform/recordmaintenance"
 )
 
 // RecordMaintenanceJobTypeNonBusinessDataCleanup 与 Node job.type 一致
@@ -74,12 +82,25 @@ var recordMaintenanceSchema = `CREATE TABLE IF NOT EXISTS juhe_dataset.record_ma
   kind TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT '',
   snapshot_json TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL DEFAULT ''
+  updated_at TEXT NOT NULL DEFAULT '',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at_ms BIGINT NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','failed'))
 )`
 
 // recordMaintenanceSnapshotColumns 是 v2 契约对既有 6 列旧表的加法式升级列
 // （account_usage_snapshot_upsert 载荷；顺序即建表 DDL 中的列序）。
 var recordMaintenanceSnapshotColumns = []string{"account_id", "kind", "source", "snapshot_json", "updated_at"}
+
+// recordMaintenanceRetryColumnSQLs 是 T207 C1 队列语义列（attempt_count/
+// next_attempt_at_ms/status）对既有表的加法式升级 DDL；逐字一致于 jobs 侧
+// internal/recordmaintenance/queue.go retryColumnSQLs（PG 原生 IF NOT EXISTS
+// 幂等）。
+var recordMaintenanceRetryColumnSQLs = []string{
+	"ALTER TABLE %s ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+	"ALTER TABLE %s ADD COLUMN IF NOT EXISTS next_attempt_at_ms BIGINT NOT NULL DEFAULT 0",
+	"ALTER TABLE %s ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','failed'))",
+}
 
 // DispatchResult mirrors RecordMaintenanceEnqueueResult: queued=false keeps
 // the Node droppedReason vocabulary (worker_dispatch_failed = the durable
@@ -158,6 +179,12 @@ func (d *DurableDispatch) ensureSchema(ctx context.Context) error {
 			return d.ensureErr
 		}
 	}
+	for _, statement := range recordMaintenanceRetryColumnSQLs {
+		if _, err := d.db.ExecContext(ctx, d.bind(fmt.Sprintf(statement, d.table()))); err != nil {
+			d.ensureErr = err
+			return d.ensureErr
+		}
+	}
 	d.ensured = true
 	return nil
 }
@@ -201,10 +228,18 @@ type RecordMaintenanceSnapshotJob struct {
 
 // EnqueueAccountUsageSnapshotUpsert writes the account_usage_snapshot_upsert
 // job row（Node enqueueRecordMaintenanceJob 对该 job 的规范化 + 投递等价）。
+// kind 在投递前经共享白名单校验（T207 C1）：非法 kind ERROR 拒绝，不落行——
+// 消费端 retention 执行器会以同一集合拒绝同类行，投递端拦截阻止毒丸入库。
 // updatedAt 规范化为 UTC ISO（jobs 执行器会再次校验，无效值在通道口拒绝，
 // 避免毒化队头）；快照序列化失败同样回 worker_dispatch_failed，调用面
 // 保持 fire-and-forget 契约。
 func (d *DurableDispatch) EnqueueAccountUsageSnapshotUpsert(ctx context.Context, job RecordMaintenanceSnapshotJob) DispatchResult {
+	if !platformrecordmaintenance.IsValidAccountUsageSnapshotKind(job.Kind) {
+		slog.Error("账号用量快照 kind 非法，拒绝投递 record_maintenance_jobs",
+			"event", "record_maintenance_snapshot_kind_rejected",
+			"accountId", job.AccountID, "kind", job.Kind, "source", job.Source)
+		return DispatchResult{Queued: false, DroppedReason: "worker_dispatch_failed"}
+	}
 	updatedAt, ok := canonicalInstant(job.UpdatedAt)
 	if !ok {
 		return DispatchResult{Queued: false, DroppedReason: "worker_dispatch_failed"}

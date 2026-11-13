@@ -135,10 +135,10 @@ func TestRedisAccountConcurrencyConsumeRPM(t *testing.T) {
 	if err != nil || !allowed || current != 2 || resetAtMs != 1_860_000 {
 		t.Fatalf("第二次消费 = allowed=%v current=%d reset=%d err=%v, want 2", allowed, current, resetAtMs, err)
 	}
-	// ConsumeRPM 只延长不足 120s 的 TTL，不能把并发槽的 6h 泄漏兜底缩短。
+	// RPM 键 TTL 只覆盖窗口（2 个窗口）；并发槽是独立 ZSET，不受此 TTL 影响。
 	ttl, err := client.PTTL(ctx, instance.accountConcurrencyKey("acc-consume")).Result()
-	if err != nil || ttl < 5*time.Hour {
-		t.Fatalf("consume 后 key TTL = %v err %v, want 仍接近 6h", ttl, err)
+	if err != nil || ttl < 100*time.Second {
+		t.Fatalf("consume 后 RPM key TTL = %v err %v, want >= 100s", ttl, err)
 	}
 	allowed, current, resetAtMs, err = instance.ConsumeRPM(ctx, "acc-consume", 2)
 	if err != nil || allowed || current != 2 || resetAtMs != 1_860_000 {
@@ -245,15 +245,18 @@ func TestRedisAccountConcurrencyReleasePreservesRPMWindow(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// 契约：并发排空（total 归 0）不得清掉同一 HASH 的 RPM 窗口计数——release
-	// 只删并发字段，残留字段由 acquire 的 PEXPIRE TTL 自然过期。
+	// 契约：并发排空（槽集合归 0）不得清掉同一 HASH 的 RPM 窗口计数——release
+	// 只删并发槽成员，RPM 字段由键 TTL 自然过期。
+	tokens := make([]string, 0, 2)
 	for index := 0; index < 2; index++ {
-		if _, acquireErr := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 120_000, 5, 5, 5); acquireErr != nil {
+		outcome, acquireErr := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 120_000, 5, 5, 5)
+		if acquireErr != nil {
 			t.Fatalf("第 %d 次 acquire 失败: %v", index+1, acquireErr)
 		}
+		tokens = append(tokens, outcome.Token)
 	}
-	for index := 0; index < 2; index++ {
-		if releaseErr := instance.ReleaseAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText); releaseErr != nil {
+	for index, token := range tokens {
+		if releaseErr := instance.ReleaseAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, token); releaseErr != nil {
 			t.Fatalf("第 %d 次 release 失败: %v", index+1, releaseErr)
 		}
 	}
@@ -373,7 +376,7 @@ func TestRedisAccountConcurrencyWritesProjectionDirty(t *testing.T) {
 	if _, err := client.ZScore(ctx, dirtyKey, "acc-dirty").Result(); err != nil {
 		t.Fatalf("acquire 后 dirty 队列缺少账户: %v", err)
 	}
-	if err := instance.ReleaseAccountConcurrency(ctx, "acc-dirty", AccountConcurrencyLaneText); err != nil {
+	if err := instance.ReleaseAccountConcurrency(ctx, "acc-dirty", AccountConcurrencyLaneText, outcome.Token); err != nil {
 		t.Fatal(err)
 	}
 	generation, err = client.HGet(ctx, genKey, "acc-dirty").Result()

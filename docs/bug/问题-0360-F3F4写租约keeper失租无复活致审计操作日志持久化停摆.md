@@ -37,7 +37,7 @@
 - 生产缺口：audit_logs 缺失区间 2026-11-09 23:20 → 2026-11-11 01:05、2026-11-11 02:49:50 → 修复发布时点；按 T203 下一步④默认不补偿（评估后裁决）。
 - 遗留清理（随统一发布窗执行）：两个租约表的历史实例键残行（2026-11-08/09 五个实例 ID 行，`audit_log_owner_leases` / `operation_log_owner_leases` 各 5 行）为无主旧行、永不匹配，可在发布窗内按 owner 不等于当前实例 ID 且 lease_until 已过期的口径一次性 DELETE。
 - 监控补位（#T204）：`AppAuditPersistErrorRate` 等三条 2026-11-03 规则未同步 infra，本次停摆无告警；同步另行执行。
-- 改进项（复审非 blocker，随下次触碰）：`writer_lease_reviver.go` 对「keeper 已关闭」的判定现以错误文案子串桥接，极端情况下底层错误恰含 closed 字样（如 `sql.ErrConnDone`）会被误判为关闭态而停止重试；后续两包导出哨兵错误（`ErrKeeperClosed`）改 `errors.Is` 精判。
+- 改进项（复审非 blocker，**已随 T207 批次/BUG-0363 完成**）：`writer_lease_reviver.go` 对「keeper 已关闭」的判定原以错误文案子串桥接，极端情况下底层错误恰含 closed 字样（如 `sql.ErrConnDone`）会被误判为关闭态而停止重试；两包已导出哨兵错误（`ErrKeeperClosed`），reviver 改 `errors.Is` 精判。
 
 ## 关联
 

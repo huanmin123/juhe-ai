@@ -208,6 +208,37 @@ type CooldownRetestRunner struct {
 	concurrency QueueConcurrency
 }
 
+// claimReleaser 是 CooldownMutation 的可选释放能力（T207 C6）：实现方支持
+// compare-delete 释放冷却复测 claim 租约时提供（生产 proberepo.Store）；
+// 未装配时异常路径回落既有 600s（probeClaimLeaseSeconds）claim 租约兜底
+// 过期，测试 mock 不受接口变化影响。
+type claimReleaser interface {
+	ReleaseProbeClaim(ctx context.Context, accountID string, keyFingerprint string, claimToken string) (bool, error)
+}
+
+// releaseProbeClaimBestEffort 在复测异常路径上尽力释放本次 claim（T207 C6）：
+// 探针调用异常/无诊断结果的空跑不得占住 600s claim 租约（期间该 Key 无法
+// 被任何进程复测）。compare-delete 只清本进程 token，未命中（已被他人重新
+// claim）属正常竞态；释放失败只告警，600s 租约兜底保留，不改变调用方
+// 原有返回语义。
+func (r *CooldownRetestRunner) releaseProbeClaimBestEffort(ctx context.Context, candidate CooldownProbeCandidate) {
+	releaser, ok := r.mutation.(claimReleaser)
+	if !ok || strings.TrimSpace(candidate.ProbeClaimToken) == "" {
+		return
+	}
+	// 复测异常可能由调用方取消触发，释放 claim 用 detached 上下文，避免
+	// claim 租约占到 600s 兜底过期。
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if _, err := releaser.ReleaseProbeClaim(releaseCtx, candidate.AccountID, candidate.KeyFingerprint, candidate.ProbeClaimToken); err != nil {
+		r.logger.Warn("background_account_api_key_cooldown_retest_claim_release_failed", map[string]any{
+			"accountId":      candidate.AccountID,
+			"accountName":    candidate.AccountName,
+			"keyFingerprint": candidate.KeyFingerprint,
+		}, "账户内 API Key 复测异常后释放 claim 失败，等待 claim 租约兜底过期")
+	}
+}
+
 // CooldownQueueItem 等价 Node AccountApiKeyCooldownRetestQueueItem
 // （candidate + maxRecoveryHours）。
 type CooldownQueueItem struct {
@@ -414,6 +445,8 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 		FixedKeyIndex:       candidate.KeyIndex,
 	})
 	if probeErr != nil {
+		// 异常路径释放本次 claim（T207 C6）：空跑不占 600s claim 租约。
+		r.releaseProbeClaimBestEffort(ctx, candidate)
 		r.logger.Warn("background_account_api_key_cooldown_retest_attempt_failed", map[string]any{
 			"accountId":      account.ID,
 			"accountName":    account.Name,
@@ -423,6 +456,8 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 		return false, fmt.Errorf("账户 %s 的 API Key 复测存在调用异常: %w", account.ID, probeErr)
 	}
 	if observation == nil {
+		// 异常路径释放本次 claim（T207 C6）：空跑不占 600s claim 租约。
+		r.releaseProbeClaimBestEffort(ctx, candidate)
 		r.logger.Warn("background_account_api_key_cooldown_retest_missing_diagnostic_result", map[string]any{
 			"accountId":      account.ID,
 			"accountName":    account.Name,

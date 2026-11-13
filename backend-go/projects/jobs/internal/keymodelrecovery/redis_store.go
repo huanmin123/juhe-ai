@@ -324,6 +324,11 @@ for _, hash in ipairs(hashes) do
     redis.call('ZREM', KEYS[2], hash)
     redis.call('DECR', KEYS[3])
     removed = removed + 1
+  elseif not raw then
+    -- state 已被外部删除/丢失：capacity 仍含该 hash，回收计数（不低于 0）。
+    redis.call('ZREM', KEYS[2], hash)
+    local remaining = redis.call('DECR', KEYS[3])
+    if tonumber(remaining) < 0 then redis.call('SET', KEYS[3], '0') end
   end
   redis.call('ZREM', KEYS[1], hash)
 end

@@ -52,6 +52,9 @@ func (a *workerAssembly) wireRecordMaintenanceTableDrain(family *retentionFamily
 	if err != nil {
 		return fmt.Errorf("initialize record_maintenance_jobs schema: %w", err)
 	}
+	// T207 C1：交接表保留清理复用同一 dataset 池句柄，随
+	// data-retention-cleanup 节拍执行（见 worker_retention.go）。
+	family.recordMaintenanceJobsDB = dataset
 	drainer := &recordmaintenance.Drainer{
 		Store:     store,
 		Runner:    familyTableDrainRunner{family: family},

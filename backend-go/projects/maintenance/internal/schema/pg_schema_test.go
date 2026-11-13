@@ -164,8 +164,9 @@ import (
 // （account-capability-domain-drop-check 幂等 DO 块；建表/加列原位去 CHECK
 // 不计新增语句）。628→629：B7 account_endpoint_modes 25→27 值 CHECK
 // 幂等迁移 +1。
+// 629→630：T207 outbox failed CHECK 幂等迁移（revision 35）+1。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 629
+const goldenPostgresSchemaStatementCount = 630
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -206,7 +207,8 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// CONCURRENTLY；审计报告-2026-11-04 §6）。
 	// 338→340：2026-11-09 演练场产物暂存 PG bytea +2（playground_artifacts
 	// 建表 + created_at 索引；多节点无需共享盘）。
-	"juhe_business": 342,
+	// 342→343：T207 outbox failed CHECK 幂等迁移 +1。
+	"juhe_business": 343,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -275,6 +277,40 @@ func TestPostgresSchemaStatementCountsPerSchema(t *testing.T) {
 	}
 }
 
+// postgresDOHasIdempotencyGuard 保留既有的 IS NOT NULL 守卫识别，并识别
+// account_lock_states 旧 text 列的精确类型守卫。只接受包含 schema、表、列
+// 和原始类型完整限定的条件，避免把任意 IF EXISTS 当作幂等证据。
+func postgresDOHasIdempotencyGuard(sql string) bool {
+	upper := strings.ToUpper(sql)
+	if strings.Contains(upper, "IS NOT NULL") {
+		return true
+	}
+	normalized := strings.Join(strings.Fields(upper), " ")
+	return strings.Contains(normalized, "IF EXISTS ( SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='JUHE_BUSINESS' AND TABLE_NAME='ACCOUNT_LOCK_STATES' AND COLUMN_NAME='NEXT_RETRY_AT_MS' AND DATA_TYPE IN ('TEXT','CHARACTER VARYING') ) THEN")
+}
+
+func TestPostgresDOHasIdempotencyGuard(t *testing.T) {
+	guard := "IF EXISTS ( SELECT 1 FROM information_schema.columns WHERE table_schema='juhe_business' AND table_name='account_lock_states' AND column_name='next_retry_at_ms' AND data_type IN ('text','character varying') ) THEN"
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{name: "existing_guard", sql: "IF to_regclass('x') IS NOT NULL THEN", want: true},
+		{name: "column_type_guard", sql: guard, want: true},
+		{name: "unguarded", sql: "DO $$ BEGIN ALTER TABLE x ALTER COLUMN y TYPE bigint; END $$"},
+		{name: "arbitrary_exists", sql: "IF EXISTS (SELECT 1) THEN"},
+		{name: "wrong_column", sql: strings.Replace(guard, "next_retry_at_ms", "other_column", 1)},
+		{name: "missing_type", sql: strings.Replace(guard, " AND data_type IN ('text','character varying')", "", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := postgresDOHasIdempotencyGuard(tc.sql); got != tc.want {
+				t.Fatalf("guard = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	var doBlocks, alterColumns, droppedColumns, extensions, triggerBlocks, triggers, droppedTriggers int
 	for i, statement := range postgresSchemaStatements {
@@ -305,7 +341,7 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 		}
 		if strings.HasPrefix(upper, "DO ") {
 			doBlocks++
-			if !strings.Contains(upper, "IS NOT NULL") {
+			if !postgresDOHasIdempotencyGuard(statement.SQL) {
 				t.Fatalf("statement %d (%s) is an unguarded DO block", i, statement.Source)
 			}
 		}
@@ -363,9 +399,9 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
 	// ALTER DO 块。7→8：D13 非对话账户 cutover 新增 capability_domain
 	// drop-check DO 块。8→9：B7 新增 account_endpoint_modes 25→27 值 CHECK
-	// 重建 DO 块。
-	if doBlocks != 9 {
-		t.Fatalf("DO block count = %d, want 9", doBlocks)
+	// 重建 DO 块。9→10：T207 outbox failed CHECK 幂等迁移。
+	if doBlocks != 10 {
+		t.Fatalf("DO block count = %d, want 10", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)

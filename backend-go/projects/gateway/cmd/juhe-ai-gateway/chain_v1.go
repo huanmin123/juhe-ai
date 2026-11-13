@@ -860,6 +860,15 @@ func (c *gatewayChain) handleUpstreamResponse(
 	// deleteGeminiInteractionBeforeDownstreamCommit）：先于响应体处理执行；
 	// 写失败以 AffinityUnavailableError 进入下方 503 分支（下游未提交）。
 	if affinityErr := c.deleteInteractionAffinityBeforeCommit(ctx, req, context, dispatched, auditCapture); affinityErr != nil {
+		// BUG-0329：本错误臂短路两个响应处理器——唯一会消费并关闭
+		// responseSnapshot.Body（ReaderUpstreamBody → slotReleasingBody，持有
+		// 全局并发槽）的管道不被调用，pump goroutine 阻塞在无缓冲 channel 的
+		// 首个 chunk 发送上，slotReleasingBody 停在非 EOF 状态（槽只在 EOF /
+		// Close 释放），JUHE_AI_CONCURRENCY_GLOBAL_MAX 槽永久泄漏。Close 幂等
+		// （once 守卫）：取消 pump 并关闭底层体归还全局并发槽；503 渲染语义
+		// 不变。BUG-0328 的引擎 transform 错误兜底只覆盖 attempt 循环内，成功
+		// 返回链面后本臂没有可传导的 Close。
+		responseSnapshot.Body.Close()
 		err = affinityErr
 	} else if handleAsStream {
 		handling, err = gatewayresponse.HandleStreamUpstreamResponse(*input)

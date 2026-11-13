@@ -34,6 +34,12 @@ import (
 // terminal; the supervisor restart then re-enters RunOwner, which re-acquires
 // a fresh lease (new fence token) instead of replaying the stored error
 // without touching the database.
+// ErrKeeperClosed 是 keeper 已 Close 后 Revive 被拒绝的哨兵错误（BUG-0360
+// 改进项）：writer lease reviver 以 errors.Is 精确判定「已关闭」态并优雅
+// 退出，不再对错误文案做 "closed" 子串桥接。文案沿用既有 Revive 拒绝错误
+// 原文。
+var ErrKeeperClosed = errors.New("F3 audit lease keeper 已关闭，复活会重建无法释放的租约，拒绝执行")
+
 type LeaseKeeper struct {
 	store Store
 	owner string
@@ -314,7 +320,7 @@ func (k *LeaseKeeper) reacquire(ctx context.Context) error {
 // abandoned the row, and a lease rebuilt after Close could never be released.
 func (k *LeaseKeeper) Revive(ctx context.Context) error {
 	if k.closed.Load() {
-		return fmt.Errorf("F3 audit lease keeper 已关闭，复活会重建无法释放的租约，拒绝执行")
+		return ErrKeeperClosed
 	}
 	return k.reacquire(ctx)
 }

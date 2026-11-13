@@ -150,6 +150,13 @@ const defaultBusinessSchema = "juhe_business"
 const (
 	maxClaimLeaseMS = int64(60 * 60_000)
 	maxRetryDelayMS = int64(24 * 60 * 60_000)
+	// outboxMaxAttempts 是 circuit outbox 单事件的派发尝试上限（C5，T207 扫描
+	// 收口）：事件重放若持续失败，无条件回 pending 只会无限空转。Release
+	// ForReplay 释放 claim 时读出本次 attempt_count，未达上限按 retryDelay 回
+	// pending；达上限改置终态 failed（acknowledged_at_ms 落 now，与 dispatched
+	// 行同走 ack 保留期回收臂）。与 jobs circuitstore 的 outboxMaxAttempts 对齐，
+	// 双侧消费器共用同一张表、同一上限语义。
+	outboxMaxAttempts = 8
 	// This is a transaction/recovery window, never an artificial throughput or
 	// concurrency limit. Keep it far above the former Node event-loop batch cap.
 	maxBatchLimit = 100_000
@@ -777,12 +784,39 @@ func (s *Store) ReleaseOutboxForReplay(ctx context.Context, eventID, claimToken,
 		return false, errors.New("retry delay exceeds timestamp bounds")
 	}
 	now := nowMS
-	res, err := s.db.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='pending',available_at_ms=?,claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,last_error_class=?,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=?"), msTime(now+delayMS), errorClass, msTime(now), eventID, claimToken)
+	// 对齐 jobs circuitstore ReleaseForReplay（C5）：事务内锁行读 attempt_count，
+	// 达上限置终态 failed（不变式要求 failed 臂 claim 面清空且 acknowledged_at_ms
+	// 非空），未达上限回 pending 按 delayMS 重试；claim 过期被抢后不误释放他人行。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var attemptCount int64
+	err = tx.QueryRowContext(ctx, s.bind("SELECT attempt_count FROM "+s.table("account_circuit_outbox")+" WHERE event_id=? AND status='processing' AND claim_token=?"+s.forUpdate()), eventID, claimToken).Scan(&attemptCount)
+	if err != nil {
+		// claim 未命中（过期被抢/已 ack/不存在）返回 false；其余真实 DB 错误
+		// 保留原样上抛，不静默吞掉（对齐 jobs 侧 ReleaseForReplay）。
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if attemptCount >= outboxMaxAttempts {
+		if _, err := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='failed',claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,acknowledged_at_ms=?,last_error_class=?,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=?"), msTime(now), errorClass, msTime(now), eventID, claimToken); err != nil {
+			return false, err
+		}
+		return true, tx.Commit()
+	}
+	res, err := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("account_circuit_outbox")+" SET status='pending',available_at_ms=?,claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,last_error_class=?,updated_at_ms=? WHERE event_id=? AND status='processing' AND claim_token=?"), msTime(now+delayMS), errorClass, msTime(now), eventID, claimToken)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
-	return n == 1, nil
+	if n != 1 {
+		return false, nil
+	}
+	return true, tx.Commit()
 }
 
 func (s *Store) ListForRebuild(ctx context.Context, nowMS, afterUpdatedMS int64, afterScope string, limit int) (RebuildPage, error) {

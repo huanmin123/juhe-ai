@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 )
 
 // fakeWriterLeaseKeeper 按 writer_lease_reviver.go 的并行契约模拟写租约
@@ -152,7 +155,7 @@ func TestWriterLeaseReviverStopsOnClosedKeeper(t *testing.T) {
 	defer cancel()
 	keeper := newFakeWriterLeaseKeeper()
 	keeper.lose(errors.New("lease lost by fake fatal"))
-	keeper.reviveErrs = []error{errors.New("F3 audit lease keeper 已关闭"), errors.New("never reached")}
+	keeper.reviveErrs = []error{auditlog.ErrKeeperClosed, errors.New("never reached")}
 	done := make(chan error, 1)
 	go func() {
 		done <- runWriterLeaseReviver(ctx, keeper, 10*time.Millisecond, reviverTestLogger())
@@ -197,6 +200,9 @@ func TestWriterLeaseReviverNilKeeperReturnsImmediately(t *testing.T) {
 	}
 }
 
+// TestWriterLeaseReviverClosedClassClassification 钉住 BUG-0360 哨兵化后的
+// 关闭态判定：只有 auditlog/operationlog 两包的 ErrKeeperClosed（含包装链）
+// 命中；错误文案巧合含「已关闭 / closed」的普通错误不再被桥接匹配。
 func TestWriterLeaseReviverClosedClassClassification(t *testing.T) {
 	scenarios := []struct {
 		name string
@@ -204,9 +210,12 @@ func TestWriterLeaseReviverClosedClassClassification(t *testing.T) {
 		want bool
 	}{
 		{"nil error", nil, false},
-		{"chinese closed wording", errors.New("F3 audit lease keeper 已关闭"), true},
-		{"english closed wording", errors.New("lease keeper is closed"), true},
-		{"wrapped closed wording", fmt.Errorf("revive F4 keeper: %w", errors.New("keeper 已关闭")), true},
+		{"auditlog sentinel", auditlog.ErrKeeperClosed, true},
+		{"wrapped auditlog sentinel", fmt.Errorf("revive F3 keeper: %w", auditlog.ErrKeeperClosed), true},
+		{"operationlog sentinel", operationlog.ErrKeeperClosed, true},
+		{"wrapped operationlog sentinel", fmt.Errorf("revive F4 keeper: %w", operationlog.ErrKeeperClosed), true},
+		{"chinese closed wording without sentinel", errors.New("F3 audit lease keeper 已关闭"), false},
+		{"english closed wording without sentinel", errors.New("lease keeper is closed"), false},
 		{"transport failure", errors.New("connection refused"), false},
 		{"lease held elsewhere", errors.New("重启后 F4 operation log owner lease 仍被其他 owner 持有"), false},
 		{"ctx canceled", context.Canceled, false},

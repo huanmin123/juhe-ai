@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	platformrecordmaintenance "github.com/huanminabc/juhe-ai/backend-go-platform/recordmaintenance"
 )
 
 // Record-maintenance job family, ported from
@@ -25,12 +27,15 @@ const (
 	// JobTypeNonBusinessDataCleanup mirrors non_business_data_cleanup.
 	JobTypeNonBusinessDataCleanup = "non_business_data_cleanup"
 	// JobTypeAccountUsageSnapshotUpsert mirrors account_usage_snapshot_upsert.
-	JobTypeAccountUsageSnapshotUpsert   = "account_usage_snapshot_upsert"
-	AccountUsageSnapshotKindOpenAICodex = "openai_codex"
+	JobTypeAccountUsageSnapshotUpsert = "account_usage_snapshot_upsert"
+	// 快照行 kind 白名单的唯一事实源在 shared/platform/recordmaintenance
+	// （gateway 投递端与 jobs 消费端共用，T207 C1 去重）；这里保持别名导出，
+	// 既有引用面不动。
+	AccountUsageSnapshotKindOpenAICodex = platformrecordmaintenance.SnapshotKindOpenAICodex
 	// AccountUsageSnapshotKindAnthropicClaude 是 anthropic（Claude OAuth）
 	// unified rate limit 头快照行 kind（AI账户Grok用量快照设计 §8.2，
 	// gateway 失败面/成功面被动采集 → record_maintenance_jobs → 本执行器）。
-	AccountUsageSnapshotKindAnthropicClaude = "anthropic_claude"
+	AccountUsageSnapshotKindAnthropicClaude = platformrecordmaintenance.SnapshotKindAnthropicClaude
 )
 
 // RecordMaintenanceJob mirrors the Node RecordMaintenanceJob union as one
@@ -170,12 +175,15 @@ func ValidateRecordMaintenanceJob(job RecordMaintenanceJob) error {
 
 // isValidAccountUsageSnapshotKind 收敛快照行的合法 kind 集合：新采集族
 // （anthropic_claude，AI账户Grok用量快照设计 §8.2）与既有 openai_codex。
+// 集合事实源已提为共享包（T207 C1），gateway 投递端同用一份白名单。
 func isValidAccountUsageSnapshotKind(kind string) bool {
-	switch kind {
-	case AccountUsageSnapshotKindOpenAICodex, AccountUsageSnapshotKindAnthropicClaude:
-		return true
-	}
-	return false
+	return platformrecordmaintenance.IsValidAccountUsageSnapshotKind(kind)
+}
+
+// IsValidAccountUsageSnapshotKind 是快照行 kind 白名单的导出校验（drain 消费
+// 侧毒丸分类用），实现与执行器校验同一集合。
+func IsValidAccountUsageSnapshotKind(kind string) bool {
+	return isValidAccountUsageSnapshotKind(kind)
 }
 
 // UsageRecordsCleanupJob builds a normalized usage_records_cleanup job (the

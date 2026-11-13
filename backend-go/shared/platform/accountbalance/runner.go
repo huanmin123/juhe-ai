@@ -73,6 +73,68 @@ type Runner struct {
 	dueAdvancer               BusinessDueAdvancer
 	manualOwnerLeaseKeyPrefix string
 	dialGuard                 *upstreamhttp.DialGuard
+	// ownerLeaseRenewIntervalFixed 是 owner lease 续租周期的测试注入值；
+	// 零值走 ownerLeaseRenewInterval() 的默认推导（TTL/3，下限 5s）。
+	ownerLeaseRenewIntervalFixed time.Duration
+}
+
+// ownerLeaseRenewInterval 返回 owner lease 续租周期：TTL/3（下限 5s），
+// 保证任一次续租失败仍有两次机会在 lease_until 过期前补续。
+func (r *Runner) ownerLeaseRenewInterval() time.Duration {
+	if r.ownerLeaseRenewIntervalFixed > 0 {
+		return r.ownerLeaseRenewIntervalFixed
+	}
+	interval := r.ownerLeaseTTL / 3
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+	return interval
+}
+
+// startOwnerLeaseRenewal 在批次持有 owner lease 的整个窗口内周期续租
+// （T207 C4）：周期批次整批处理时长不受租约 TTL 保护，上游探测慢路径会让
+// lease_until 在批中途过期，剩余全部 AppendOutcome 被 verifyOwnerTx 以失租
+// 拒绝。失租（RenewOwnerLease 返回 false，owner/fence 校验不命中）置原子
+// 标志并停止续租，runInputs 的输入循环在分派每个 input 前检查该标志，把
+// 剩余 inputs 计入 Skipped。返回失租标志与停止函数（defer 关闭并等待，
+// 防协程泄漏）。续租失败（瞬时 DB 错误）不终止续租：lease_until 未过期时
+// 后续 tick 仍可补续。
+//
+// 账户级租约不在此续租：单次上游探测受 ProbeTimeout 硬上限约束（生产 15s，
+// 默认 defaultBalanceTimeout），小于账户租约 TTL 30s，无静默过期窗口；
+// owner 续租只覆盖批次级处理时长（周期批可达 input 数 × 单探测时长）。
+func (r *Runner) startOwnerLeaseRenewal(ctx context.Context, leaseKey string, owner OwnerLease) (*atomic.Bool, func()) {
+	leaseLost := &atomic.Bool{}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(r.ownerLeaseRenewInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				renewed, renewErr := r.store.RenewOwnerLease(ctx, leaseKey, owner, r.ownerLeaseTTL)
+				if renewErr != nil {
+					r.logger.Debug("J2 account-balance owner 租约续租失败，保留租约等待下个周期重试",
+						"event", "account_balance_owner_lease_renew_error", "leaseKey", leaseKey, "error", renewErr)
+					continue
+				}
+				if !renewed {
+					leaseLost.Store(true)
+					r.logger.Warn("J2 account-balance owner 租约已失效（owner/fence 校验不命中），停止本批剩余输入",
+						"event", "account_balance_owner_lease_lost", "leaseKey", leaseKey)
+					return
+				}
+			}
+		}
+	}()
+	return leaseLost, func() {
+		close(stop)
+		<-done
+	}
 }
 
 func NewRunner(config RunnerConfig) (*Runner, error) {
@@ -249,6 +311,10 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 				"event", "account_balance_owner_lease_release_failed", "leaseKey", leaseKey, "accountId", accountID, "error", releaseErr)
 		}
 	}()
+	// defer 顺序：先停续租协程再释放 owner lease（后注册先执行），停续租
+	// 等待协程退出后再释放，避免释放后仍有 in-flight 续租误判失租。
+	leaseLost, stopRenewal := r.startOwnerLeaseRenewal(ctx, leaseKey, owner)
+	defer stopRenewal()
 
 	ioWorkers := r.ioConcurrency
 	if ioWorkers > len(inputs) {
@@ -378,7 +444,18 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 			}
 		}()
 	}
-	for _, input := range inputs {
+	for index, input := range inputs {
+		if leaseLost.Load() {
+			// 失租后剩余 inputs 不再分派：owner lease 失效会让所有
+			// AppendOutcome 被 fence 校验拒绝，继续探测只是浪费上游调用。
+			// 按 Skipped 既有口径上报（在途 input 的结果按 fence 语义自然
+			// 落 Errors/Stale），不新增返回结构。
+			remaining := len(inputs) - index - 1
+			skipped.Add(int64(remaining))
+			r.logger.Warn("J2 account-balance owner 租约失效，跳过本批剩余输入",
+				"event", "account_balance_owner_lease_lost_skip", "leaseKey", leaseKey, "remaining", remaining)
+			break
+		}
 		select {
 		case <-ctx.Done():
 			close(ioJobs)

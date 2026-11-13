@@ -51,6 +51,11 @@ const (
 type runtimeConfig struct {
 	PostgresURL string
 
+	// DataDir 是 datadir.Dir(getenv) 的解析结果（JUHE_AI_DATA_DIR，缺省
+	// 相对 cwd 的 ./data）；组合根据以派生普通文件目录面（当前只有用量
+	// 溢出 spool 根，BUG-0363 终审 M1）。不新增 env，派生约定不变。
+	DataDir string
+
 	// RedisURL/Mode/Password 是唯一 Redis 连接配置；cache/state/J3b 通过
 	// rediscfg.DomainNamespace 派生域 namespace，不再各自配置 URL。
 	RedisURL       string
@@ -309,6 +314,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// 固定名表）：codex-context segments 根、logs 均落
 	// <JUHE_AI_DATA_DIR=./data>/<固定名>。用量文件交接已随网关直投 PG 删除；sqlite 专库文件族路径派生已随存储形态退役删除。
 	dataDir := datadir.Dir(getenv)
+	cfg.DataDir = dataDir
 
 	cfg.Host = strings.TrimSpace(getenv("JUHE_AI_HOST"))
 	if cfg.Host == "" {

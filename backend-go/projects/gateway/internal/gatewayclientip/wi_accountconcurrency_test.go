@@ -119,34 +119,35 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 	instance, _ := newTestRedisAccountConcurrency(t, server, "dev")
 	ctx := context.Background()
 
-	// 契约：AcquireAccountConcurrency 对 account hash 的 lane 字段做 HINCRBY 并续 TTL；
-	// 空 lane 归入 text。并发上限传 0 表示不设限；RPM 上限传 5 以覆盖窗口计数保留语义。
-	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 0, 0, 5); err != nil {
-		t.Fatalf("AcquireAccountConcurrency 失败: %v", err)
+	// 契约：acquire 在账户槽集合与 lane 槽集合中各写入一个带租约的成员；
+	// 空 lane 归入 text。并发上限传 0 表示不设限；RPM 上限传 5 以覆盖窗口计数。
+	first, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 0, 0, 5)
+	if err != nil || !first.Acquired || first.Token == "" {
+		t.Fatalf("首次 AcquireAccountConcurrency = %+v err %v", first, err)
 	}
-	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000, 0, 0, 5); err != nil {
-		t.Fatalf("AcquireAccountConcurrency(空 lane=text) 失败: %v", err)
+	second, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000, 0, 0, 5)
+	if err != nil || !second.Acquired || second.Token == "" {
+		t.Fatalf("空 lane acquire = %+v err %v", second, err)
 	}
-	key := "juhe-ai:{dev}:gateway-account-concurrency:account-concurrency:acc-1"
-	if got := server.HGet(key, AccountConcurrencyLaneText); got != "2" {
-		t.Fatalf("text lane 字段=%q want 2", got)
+	slotsKey := instance.slotsKey("acc-1")
+	textKey := instance.laneSlotsKey("acc-1", AccountConcurrencyLaneText)
+	if got := wiZCard(t, server, slotsKey); got != 2 {
+		t.Fatalf("total 槽集合大小=%d want 2", got)
 	}
-	if !server.Exists(key) {
-		t.Fatal("acquire 后 hash key 必须存在")
+	if got := wiZCard(t, server, textKey); got != 2 {
+		t.Fatalf("text lane 槽集合大小=%d want 2", got)
 	}
-	// w13d 修复后契约：AcquireAccountConcurrency 同时 HINCRBY total 与 lane
-	// 字段（原先只写 lane，ByID 读取的 total 恒缺，属于已修复缺陷）。
+	// 并发读数 = 清理过期成员后的 ZCARD。
 	byID, err := instance.LoadAccountCurrentConcurrencyByID(ctx, []string{"acc-1", "acc-missing"})
 	if err != nil {
 		t.Fatalf("LoadAccountCurrentConcurrencyByID 失败: %v", err)
 	}
 	if byID["acc-1"] != 2 || byID["acc-missing"] != 0 {
-		t.Fatalf("redis ByID 读取（total 字段）错误: %v", byID)
+		t.Fatalf("redis ByID 读取错误: %v", byID)
 	}
 	if instance.CurrentAccountConcurrency("acc-1", "") != 2 {
-		t.Fatalf("CurrentAccountConcurrency(空 lane 回落 text 字段) 应为 2")
+		t.Fatalf("CurrentAccountConcurrency(total) 应为 2")
 	}
-	// lane 读取走 lane 字段。
 	byLane, err := instance.LoadAccountCurrentConcurrencyByLane(ctx, []string{"acc-1"}, AccountConcurrencyLaneText)
 	if err != nil || byLane["acc-1"] != 2 {
 		t.Fatalf("redis lane 读取错误: %v %v", byLane, err)
@@ -158,26 +159,31 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 		t.Fatal("空账号必须直接读 0")
 	}
 
-	// 契约：ReleaseAccountConcurrency 减到 <=0 时只删并发字段（total + lane），
-	// 保留 rpm_bucket/rpm_count（RPM 窗口计数不随并发排空丢失，key 由 acquire
-	// 的 PEXPIRE 自然过期）。
-	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", ""); err != nil {
+	// 契约：release 只移除本次 token 的槽成员（ZREM 幂等），RPM 窗口计数保留。
+	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", "", first.Token); err != nil {
 		t.Fatalf("ReleaseAccountConcurrency 失败: %v", err)
 	}
-	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText); err != nil {
+	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, second.Token); err != nil {
 		t.Fatalf("ReleaseAccountConcurrency 失败: %v", err)
 	}
-	if got := server.HGet(key, "total"); got != "" {
-		t.Fatalf("计数减到 0 后 total 字段必须被删除, got %q", got)
+	if got := wiZCard(t, server, slotsKey); got != 0 {
+		t.Fatalf("释放后槽集合大小=%d want 0", got)
 	}
-	if got := server.HGet(key, AccountConcurrencyLaneText); got != "" {
-		t.Fatalf("计数减到 0 后 lane 字段必须被删除, got %q", got)
+	if got := wiZCard(t, server, textKey); got != 0 {
+		t.Fatalf("释放后 lane 槽集合大小=%d want 0", got)
 	}
-	if got := server.HGet(key, "rpm_count"); got != "2" {
+	if got := server.HGet(instance.accountConcurrencyKey("acc-1"), "rpm_count"); got != "2" {
 		t.Fatalf("RPM 窗口计数必须保留, got %q want 2", got)
 	}
 	if got, err := instance.LoadAccountCurrentConcurrencyByID(ctx, []string{"acc-1"}); err != nil || got["acc-1"] != 0 {
 		t.Fatalf("删除后读取必须为 0 无错: %v %v", got, err)
+	}
+	// 重复释放幂等：ZREM 不存在的成员不报错，也不会产生负计数。
+	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", "", first.Token); err != nil {
+		t.Fatalf("重复 release 必须幂等: %v", err)
+	}
+	if got := instance.CurrentAccountConcurrency("acc-1", ""); got != 0 {
+		t.Fatalf("重复 release 后并发=%d want 0", got)
 	}
 
 	// 空列表直读空 map；Subscribe 是运行层托管的空实现。
@@ -234,7 +240,13 @@ func TestWIRedisAccountConcurrencyLoadByLaneAndErrors(t *testing.T) {
 	instance, _ := newTestRedisAccountConcurrency(t, server, "ns")
 	ctx := context.Background()
 
-	server.HSet("juhe-ai:{ns}:gateway-account-concurrency:account-concurrency:acc-1", "image", "3")
+	laneKey := "juhe-ai:{ns}:gateway-account-concurrency:account-concurrency:acc-1:slots:image"
+	expiry := float64(time.Now().Add(time.Hour).UnixMilli())
+	for _, member := range []string{"image:t1", "image:t2", "image:t3"} {
+		if err := instance.client.ZAdd(ctx, laneKey, redis.Z{Score: expiry, Member: member}).Err(); err != nil {
+			t.Fatalf("预置 lane 槽失败: %v", err)
+		}
+	}
 	byLane, err := instance.LoadAccountCurrentConcurrencyByLane(ctx, []string{"acc-1"}, AccountConcurrencyLaneImage)
 	if err != nil || byLane["acc-1"] != 3 {
 		t.Fatalf("lane 读取错误: %v %v", byLane, err)
@@ -247,7 +259,7 @@ func TestWIRedisAccountConcurrencyLoadByLaneAndErrors(t *testing.T) {
 	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 1_000, 0, 0, 0); err == nil {
 		t.Fatal("Redis 故障时 acquire 必须报错")
 	}
-	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", ""); err == nil {
+	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", "", "tok"); err == nil {
 		t.Fatal("Redis 故障时 release 必须报错")
 	}
 }
