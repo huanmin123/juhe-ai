@@ -3,6 +3,7 @@ package gatewayclientip
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
@@ -113,5 +114,32 @@ func TestRedisAccountConcurrencyLaneIsolation(t *testing.T) {
 	}
 	if got := instance.CurrentAccountConcurrency("acc-lane", ""); got != 1 {
 		t.Fatalf("释放 text 后 total=%d want 1", got)
+	}
+}
+
+// BUG-0365 回归：默认时钟（不注入 Clock）必须随真实时间推进。方法值写法
+// `time.Now().UnixMilli` 会把构造时刻那份 time.Time 值接收者固化，clock()
+// 恒等于进程启动毫秒——清理阈值冻结后，真实时间下已过期的租约永不被回收
+// （生产事故：jobs 按真实时钟把在途槽当过期清空致列表并发恒 0、lane 死槽
+// 累积、RPM 分钟桶永不滚动）。两次采样必须单调推进，且与真实时刻同量级。
+func TestRedisAccountConcurrencyDefaultClockAdvances(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	instance, err := NewRedisAccountConcurrency(RedisAccountConcurrencyOptions{
+		Client:    client,
+		Namespace: "default-clock-test",
+	})
+	if err != nil {
+		t.Fatalf("NewRedisAccountConcurrency: %v", err)
+	}
+	before := instance.clock()
+	time.Sleep(2 * time.Millisecond)
+	after := instance.clock()
+	if after <= before {
+		t.Fatalf("默认时钟未随时间推进：before=%d after=%d（clock 是否被方法值固化在构造时刻？）", before, after)
+	}
+	if drift := time.Now().UnixMilli() - after; drift < -50 || drift > 5_000 {
+		t.Fatalf("默认时钟偏离真实时刻 %dms：after=%d", drift, after)
 	}
 }

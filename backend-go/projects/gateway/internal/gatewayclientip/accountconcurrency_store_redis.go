@@ -85,7 +85,12 @@ func NewRedisAccountConcurrency(opts RedisAccountConcurrencyOptions) (*RedisAcco
 	}
 	clock := opts.Clock
 	if clock == nil {
-		clock = time.Now().UnixMilli
+		// BUG-0365：必须用闭包每次调用取当前时间。`time.Now().UnixMilli` 是
+		// 方法值，会把构造时刻那份 time.Time 值接收者固化——clock() 恒等于
+		// 进程启动毫秒，槽 score/清理阈值/RPM bucket 全部冻结在启动时刻
+		// （jobs 用真实时钟读同一 :slots 总键即把在途槽当过期清空，列表并发
+		// 恒 0；lane 死槽永不回收；RPM 分钟桶永不滚动）。
+		clock = func() int64 { return time.Now().UnixMilli() }
 	}
 	name := opts.Name
 	if strings.TrimSpace(name) == "" {
