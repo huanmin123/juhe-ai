@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0365
-- 状态：已修复（2026-11-14 本地落地，随发布窗上线）
+- 状态：已修复已发布（v2026.11.14，2026-11-14；3 天观察期至 2026-11-17，见 #T208）
 - 严重程度：P1（限流判定失真 + 可观测面失效；业务请求本身不受影响）
 - 发现时间：2026-11-14
 - 发现方式：用户反馈（管理页并发列恒 0）+ 生产取证
@@ -52,7 +52,7 @@
 | 功能基线 | 受影响包全量 | `go test ./internal/gatewayclientip/ -count=1` | 全绿 | ok 16.463s | 通过 |
 | 装配回归 | cmd 并发定向 | `go test ./cmd/juhe-ai-gateway/ -run 'Concurrency\|ChainAccountConcurrencyReader\|SlotLease\|AccountRPM' -count=1` | 全绿 | ok 3.530s | 通过 |
 | 构建/静态 | gateway 模块 | `go build ./... && go vet ./...` | 通过 | 退出码 0 | 通过 |
-| 生产验证 | tracker 时钟/列表读数/死槽清理 | 上线后 MONITOR now_ms=当前、在途请求期间列表并发>0 并随结束回落、`:slots:text` 死槽清零 | 见执行记录 | 待上线后回填 | 待执行 |
+| 生产验证 | tracker 时钟/列表读数/死槽清理 | 上线后 MONITOR now_ms=当前、在途请求期间列表并发>0 并随结束回落、`:slots:text` 死槽清零 | 见执行记录 | `now_ms=1794648826268`（≈now，发布前恒 `1794548348847`）；d129 在途 ZCARD=1 持续采到；鸡毛z 4/d129 3 个死槽自愈清零；重启后 12 分钟 ERROR 0；rpm_limit>0 配置面 0 | 通过 |
 
 ## 复发记录
 
