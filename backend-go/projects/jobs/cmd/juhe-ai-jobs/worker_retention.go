@@ -191,8 +191,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	dataRetentionJob.Enqueuer = &queueEnqueuer{queue: queue}
 	// 2026-11-07 codex-context 退役：原 CodexStorage segments 清理处理器与
 	// JUHE_AI_CODEX_CONTEXT_ROOT 装配随桥删除。
-	// W13 兜底（2026-10-29）：陈旧 in_progress 元数据空壳清扫，复用 dataset 句柄。
-	dataRetentionJob.AuditShells = &cleanuprepo.AuditShellStore{DB: dataset}
 
 	a.scheduleWiredJob("data-retention-cleanup", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		// 缺陷1修复：先执行 jobs 运行历史/租约保留清理，再跑既有数据保留任务；

@@ -12,7 +12,7 @@ import (
 )
 
 // fixedNow 是测试族共用的固定钟（原定义于 chat_test.go，随 chat-retention
-// 退役迁至本文件；auditshells 等存活测试仍消费）。
+// 退役迁至本文件）。
 func fixedNow() time.Time {
 	return time.Date(2026, 9, 4, 20, 30, 0, 0, time.UTC)
 }
