@@ -267,6 +267,48 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 	return plan, nil
 }
 
+// RejectedRecord 是写计划期确定性失败的单条记录。写库方（usagewriter.Writer）
+// 将其转入死信终态目录，并继续写入同批其余合法记录——一条非法记录不得楔死
+// 整批（BUG-0367：单条空 systemAccountId 曾让 800+ 条合法用量长期写不进库）。
+type RejectedRecord struct {
+	Input  UsageRecordInput
+	Reason string
+}
+
+// BuildWritePlanIsolated 逐条复用 BuildWritePlan 的校验与构造（保持单一事实
+// 源），把记录级错误收集进 rejects，合法记录合并为一份计划。返回值中的
+// error 保留给非记录级故障（当前恒为 nil）。
+//
+// 与 BuildWritePlan 的分工：后者保持「首错即整批失败」的历史契约（测试与
+// 其它调用方不变），生产写入路径使用本函数做按记录隔离。
+func BuildWritePlanIsolated(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions, clock Clock) (WritePlan, []RejectedRecord, error) {
+	plan := WritePlan{}
+	shardIndex := map[string]int{}
+	rejects := make([]RejectedRecord, 0)
+	for _, input := range inputs {
+		single, err := BuildWritePlan(ctx, []UsageRecordInput{input}, options, clock)
+		if err != nil {
+			rejects = append(rejects, RejectedRecord{Input: input, Reason: err.Error()})
+			continue
+		}
+		mergeWritePlan(&plan, shardIndex, single)
+	}
+	return plan, rejects, nil
+}
+
+// mergeWritePlan 把单条记录产生的计划并入累计计划，保持分片首次出现的顺序。
+func mergeWritePlan(plan *WritePlan, shardIndex map[string]int, single WritePlan) {
+	for _, shard := range single.RowsByShard {
+		index, exists := shardIndex[shard.ShardKey]
+		if !exists {
+			index = len(plan.RowsByShard)
+			shardIndex[shard.ShardKey] = index
+			plan.RowsByShard = append(plan.RowsByShard, ShardRows{ShardKey: shard.ShardKey})
+		}
+		plan.RowsByShard[index].Rows = append(plan.RowsByShard[index].Rows, shard.Rows...)
+	}
+}
+
 // MergeShardWriteResult mirrors mergeUsageRecordShardWriteResult over the
 // collected side-effect rows: keep the max ISO value per account.
 func MergeShardWriteResult(lastUsedAt map[string]string, healthSuccessAt map[string]string, rows []ShardWriteRow) {

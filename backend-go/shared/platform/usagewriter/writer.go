@@ -45,6 +45,8 @@ const (
 	queueSaturationWarnGapMs = 60_000
 	// droppedLogSampleLimit mirrors `droppedCount > 10 && % 100 !== 0`.
 	droppedLogSampleLimit = 10
+	// deadLetterRetention 是内存死信诊断样本环上限；落盘死信不受此限。
+	deadLetterRetention = 100
 )
 
 // Config carries the writer knobs; zero values fall back to the Node
@@ -105,17 +107,17 @@ type Runtime struct {
 	DroppedOversizeCount         int    `json:"droppedOversizeCount"`
 	// T207-C2：DroppedDispatchCount 语义从「丢弃」改为「延迟重试」计数——
 	// 溢出落盘失败与死信落盘失败的记录已强制回队/保留，不再终态丢失。
-	DroppedDispatchCount int `json:"droppedDispatchCount"`
-	DeadLetterCount              int    `json:"deadLetterCount"`
-	ActiveDeadLetterCount        int    `json:"activeDeadLetterCount"`
-	FlushFailureCount            int    `json:"flushFailureCount"`
-	OldestQueuedMs               int64  `json:"oldestQueuedMs"`
-	LastFlushMs                  int64  `json:"lastFlushMs"`
-	MaxFlushMs                   int64  `json:"maxFlushMs"`
-	SlowFlushCount               int    `json:"slowFlushCount"`
-	LastSlowFlushAt              string `json:"lastSlowFlushAt,omitempty"`
-	HandledRecords               int    `json:"handledRecords"`
-	WrittenRecords               int    `json:"writtenRecords"`
+	DroppedDispatchCount  int    `json:"droppedDispatchCount"`
+	DeadLetterCount       int    `json:"deadLetterCount"`
+	ActiveDeadLetterCount int    `json:"activeDeadLetterCount"`
+	FlushFailureCount     int    `json:"flushFailureCount"`
+	OldestQueuedMs        int64  `json:"oldestQueuedMs"`
+	LastFlushMs           int64  `json:"lastFlushMs"`
+	MaxFlushMs            int64  `json:"maxFlushMs"`
+	SlowFlushCount        int    `json:"slowFlushCount"`
+	LastSlowFlushAt       string `json:"lastSlowFlushAt,omitempty"`
+	HandledRecords        int    `json:"handledRecords"`
+	WrittenRecords        int    `json:"writtenRecords"`
 }
 
 // Writer is the direct async usage-record writer: bounded in-process queue,
@@ -129,7 +131,10 @@ type Writer struct {
 	idFactory UsageRecordIDFactory
 	catalog   CatalogPricing
 	spool     OverflowSpool
-	logger    Logger
+	// deadLetterSpool 是死信终态目录，必须与 spool（回放目录）隔离：
+	// 死信若落在回放目录会形成「死信→回放→再失败」无限环（BUG-0367）。
+	deadLetterSpool DeadLetterSpool
+	logger          Logger
 	// RetryWait allows tests to skip the fixed retry backoff; nil sleeps the
 	// real delay, abortable by Close.
 	RetryWait func(ctx Ctx, delay time.Duration) bool
@@ -178,6 +183,12 @@ func WithCatalog(catalog CatalogPricing) Option { return func(w *Writer) { w.cat
 
 // WithOverflowSpool injects the overflow compensation spool.
 func WithOverflowSpool(spool OverflowSpool) Option { return func(w *Writer) { w.spool = spool } }
+
+// WithDeadLetterSpool injects the dead-letter terminal spool. It must point at
+// a directory the overflow replay drainer never scans (BUG-0367).
+func WithDeadLetterSpool(spool DeadLetterSpool) Option {
+	return func(w *Writer) { w.deadLetterSpool = spool }
+}
 
 // WithIDFactory injects the usage-record id factory (defaults to
 // generateUsageRecordId over randomUUID entropy).
@@ -559,10 +570,13 @@ func (w *Writer) flushCycle() {
 		}
 
 		startedAt := time.Now()
-		inserted, err := w.writeBatch(batch)
+		inserted, rejects, err := w.writeBatchIsolated(batch)
 		w.recordFlushDuration(time.Since(startedAt))
 		if err == nil {
-			w.removeBatch(batch, batchBytes, inserted)
+			w.removeBatchWithRejects(batch, batchBytes, inserted, rejects)
+			if len(rejects) > 0 {
+				w.logRejected(rejects)
+			}
 			continue
 		}
 		if w.handleFlushFailure(batch, err) {
@@ -629,23 +643,107 @@ func (w *Writer) handleFlushFailure(batch []queuedRecord, err error) bool {
 	return exhausted
 }
 
-// writeBatch mirrors createUsageRecordsBatchAsync: build the write plan for
-// the batch inputs and hand it to the store.
-func (w *Writer) writeBatch(batch []queuedRecord) (int, error) {
+// writeBatchIsolated mirrors createUsageRecordsBatchAsync with per-record
+// isolation (BUG-0367): 写计划期确定性失败的记录转死信终态，同批合法记录
+// 照常写库。返回的 error 只表示整批可重试故障（写库失败或死信落盘失败），
+// 调用方保留批次按固定退避重试。
+func (w *Writer) writeBatchIsolated(batch []queuedRecord) (int, []RejectedRecord, error) {
 	inputs := make([]UsageRecordInput, 0, len(batch))
 	for _, item := range batch {
 		inputs = append(inputs, item.input)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), usageRecordWriteTimeout)
 	defer cancel()
-	plan, err := BuildWritePlan(ctx, inputs, WritePlanOptions{
+	plan, rejects, err := BuildWritePlanIsolated(ctx, inputs, WritePlanOptions{
 		Catalog:    w.catalog,
 		ShardCount: w.config.ShardCount,
 	}, w.clock)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return w.store.WriteBatch(ctx, plan)
+	if len(rejects) > 0 {
+		// 死信先落盘、再写合法记录：死信按 usageRecordId 命名幂等，
+		// 后续重试覆盖同名文件，不会在隔离区堆积副本。
+		if err := w.persistRejected(ctx, rejects); err != nil {
+			return 0, nil, err
+		}
+	}
+	if !writePlanHasRows(plan) {
+		return 0, rejects, nil
+	}
+	inserted, err := w.store.WriteBatch(ctx, plan)
+	if err != nil {
+		return 0, nil, err
+	}
+	return inserted, rejects, nil
+}
+
+// writePlanHasRows 报告计划是否含可写行（全部记录被隔离时跳过写库调用）。
+func writePlanHasRows(plan WritePlan) bool {
+	for _, shard := range plan.RowsByShard {
+		if len(shard.Rows) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// persistRejected 把写计划期确定性失败的记录转入死信终态目录。落盘失败按
+// 可重试故障处理（批次保留，重试按 usageRecordId 幂等覆盖同名文件）。
+// 计数与告警由 removeBatchWithRejects（出队临界区）与 logRejected 在批次
+// 成功出队后执行，避免写库失败重试时对同一批重复计数。
+func (w *Writer) persistRejected(ctx Ctx, rejects []RejectedRecord) error {
+	persist := w.deadLetterPersist()
+	if persist == nil {
+		// 未装配死信落盘面（历史/测试形态）：不落盘，由出队临界区按内存终态
+		// 计数，绝不回灌队列——否则非法记录仍会楔死整批。
+		return nil
+	}
+	for _, rejected := range rejects {
+		if err := persist(ctx, rejected.Input); err != nil {
+			return fmt.Errorf("usage 死信终态落盘失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// logRejected 写单条死信告警；计数由 removeBatchWithRejects 在出队临界区
+// 内完成，避免门禁窗口与重复计数。
+func (w *Writer) logRejected(rejects []RejectedRecord) {
+	if w.logger == nil {
+		return
+	}
+	for _, rejected := range rejects {
+		w.logger.Error("使用记录写计划校验失败，已转入死信终态", map[string]any{
+			"event":         "usage_record_rejected_invalid",
+			"usageRecordId": rejected.Input.ID,
+			"traceId":       rejected.Input.TraceID,
+			"trafficSource": rejected.Input.TrafficSource,
+			"reason":        rejected.Reason,
+		})
+	}
+}
+
+// deadLetterPersist 返回死信落盘函数：只认独立死信目录。绝不回退到溢出
+// spool——后者会被 usagespooldrain 回放重投，形成无终态无限环（BUG-0367）。
+// 未注入死信目录时按内存终态语义处理（计数 + 有界诊断样本，不落盘）。
+func (w *Writer) deadLetterPersist() func(Ctx, UsageRecordInput) error {
+	if w.deadLetterSpool != nil {
+		return w.deadLetterSpool.Persist
+	}
+	return nil
+}
+
+// bookDeadLettersLocked 记死信计数与有界内存诊断样本（caller holds mu）。
+func (w *Writer) bookDeadLettersLocked(rejects []RejectedRecord) {
+	for _, rejected := range rejects {
+		w.deadLetterCount++
+		w.activeDeadLetterCount++
+		w.deadLetters = append(w.deadLetters, rejected.Input)
+	}
+	if len(w.deadLetters) > deadLetterRetention {
+		w.deadLetters = w.deadLetters[len(w.deadLetters)-deadLetterRetention:]
+	}
 }
 
 func (w *Writer) recordFlushDuration(elapsed time.Duration) {
@@ -689,7 +787,17 @@ func (w *Writer) peekBatchLocked() ([]queuedRecord, int) {
 }
 
 // removeBatch mirrors removeUsageRecordFlushBatch after a successful write.
+// removeBatch 出队一个成功写入的批次（无隔离记录记账；保留给直接调用与
+// 测试）。生产冲刷路径使用 removeBatchWithRejects。
 func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int) {
+	w.removeBatchWithRejects(batch, batchBytes, inserted, nil)
+}
+
+// removeBatchWithRejects 在同一临界区内完成出队与死信记账：一次成功写入
+// 证明写路径已恢复，先解除旧死信门控，再把本批判离记录计回 active 计数；
+// 出队与记账若分成两次加锁，中间窗口会让 ingest 门禁观察到「记录已出队且
+// active=0」而放行统计游标（BUG-0367 复审 M3）。
+func (w *Writer) removeBatchWithRejects(batch []queuedRecord, batchBytes int, inserted int, rejects []RejectedRecord) {
 	w.mu.Lock()
 	w.pending = w.pending[len(batch):]
 	w.pendingBytes -= batchBytes
@@ -699,8 +807,10 @@ func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int)
 	w.writtenRecords += inserted
 	w.flushFailureCount = 0
 	w.firstFlushFailureAt = time.Time{}
-	// 一次成功写入证明写路径已恢复；解除死信门控（累计计数保留用于观测）。
+	// 一次成功写入证明写路径已恢复；解除历史死信门控（累计计数保留用于观测）。
 	w.activeDeadLetterCount = 0
+	// 本批隔离记录在同一临界区计回门控（见方法注释）。
+	w.bookDeadLettersLocked(rejects)
 	w.mu.Unlock()
 }
 
@@ -708,17 +818,19 @@ func (w *Writer) removeBatch(batch []queuedRecord, batchBytes int, inserted int)
 // state: counted, bounded retention of the newest records for diagnostics.
 // The consecutive-failure budget resets for the next batch.
 //
-// T207-C2：spool 已装配时死信不再是内存终态——整批先持久化到溢出 spool
-//（既有 drain 回放链路按稳定 id 幂等重投），全部成功才出队清 pending；任
-// 一失败则整批保留队列（不计 deadLetter 终态、不重置失败预算，返回 false
-// 让调用方按固定退避重试）。spool 未装配时保持 Node 内存环形语义（终态丢
-// 弃仅留诊断样本）。
+// T207-C2：spool 已装配时死信不再是内存终态——整批先持久化到死信目录，
+// 全部成功才出队清 pending；任一失败则整批保留队列（不计 deadLetter 终态、
+// 不重置失败预算，返回 false 让调用方按固定退避重试）。没有任何落盘面时
+// 保持 Node 内存环形语义（终态丢弃仅留诊断样本）。
+//
+// BUG-0367：死信必须落独立死信目录（WithDeadLetterSpool），不得落回
+// 溢出 spool——后者会被 usagespooldrain 回放重投，形成无终态无限环。
 func (w *Writer) deadLetterBatch(batch []queuedRecord) bool {
-	if w.spool != nil {
+	if persist := w.deadLetterPersist(); persist != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), usageRecordWriteTimeout)
 		defer cancel()
 		for _, item := range batch {
-			if err := w.spool.Persist(ctx, item.input); err != nil {
+			if err := persist(ctx, item.input); err != nil {
 				// deferred 计数与 spoolOverflow 失败臂同语义（T207-C2）：
 				// 记录未出队，droppedDispatchCount 记延迟重试次数。
 				w.mu.Lock()
@@ -739,7 +851,6 @@ func (w *Writer) deadLetterBatch(batch []queuedRecord) bool {
 			}
 		}
 	}
-	const deadLetterRetention = 100
 	w.mu.Lock()
 	batchBytes := 0
 	for _, item := range batch {
@@ -815,7 +926,7 @@ func (w *Writer) flushOnceShutdown() {
 		return
 	}
 	startedAt := time.Now()
-	inserted, err := w.writeBatch(batch)
+	inserted, rejects, err := w.writeBatchIsolated(batch)
 	w.recordFlushDuration(time.Since(startedAt))
 	if err != nil {
 		w.mu.Lock()
@@ -833,7 +944,10 @@ func (w *Writer) flushOnceShutdown() {
 		}
 		return
 	}
-	w.removeBatch(batch, batchBytes, inserted)
+	w.removeBatchWithRejects(batch, batchBytes, inserted, rejects)
+	if len(rejects) > 0 {
+		w.logRejected(rejects)
+	}
 }
 
 // Drain synchronously flushes everything queued (flushAllUsageRecordQueue:

@@ -22,7 +22,8 @@ func TestT207DeadLetterPersistsToSpoolBeforeDequeuing(t *testing.T) {
 	config := Config{
 		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 2,
 	}
-	writer, _ := newTestWriter(t, config, store, WithOverflowSpool(spool))
+	// BUG-0367：死信只落独立死信目录，不再复用溢出回放目录。
+	writer, _ := newTestWriter(t, config, store, WithDeadLetterSpool(spool))
 	if err := writer.Enqueue(context.Background(), gatewayInput("t207-a")); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestT207DeadLetterSpoolFailureKeepsBatchQueued(t *testing.T) {
 	logger := &captureLogger{}
 	writer := NewWriter(Config{
 		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 2, RetryDelayMs: 5,
-	}, store, fixedClock("2026-01-02T03:04:05.000Z"), WithOverflowSpool(spool), WithLogger(logger))
+	}, store, fixedClock("2026-01-02T03:04:05.000Z"), WithDeadLetterSpool(spool), WithLogger(logger))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -125,7 +126,7 @@ func TestT207DeadLetterSpoolFailureThenDBRecovers(t *testing.T) {
 	config := Config{
 		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 2,
 	}
-	writer, _ := newTestWriter(t, config, store, WithOverflowSpool(spool), WithLogger(logger))
+	writer, _ := newTestWriter(t, config, store, WithDeadLetterSpool(spool), WithLogger(logger))
 	if err := writer.Enqueue(context.Background(), gatewayInput("t207-back")); err != nil {
 		t.Fatal(err)
 	}

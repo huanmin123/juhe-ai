@@ -169,20 +169,7 @@ func TestWriterPostgresPlanFastFail(t *testing.T) {
 	}
 }
 
-// TestWriterSQLiteDefaultAcceptsEmptySystemAccountID 锁定默认（SQLite）分支
-// 行为不变：Postgres=false 时缺 systemAccountId 的记录照常进 store。
-func TestWriterSQLiteDefaultAcceptsEmptySystemAccountID(t *testing.T) {
-	store := &mockStore{}
-	config := Config{
-		BatchSize: 1, FlushIntervalMs: 5_000}
-	writer, _ := newTestWriter(t, config, store)
-	input := gatewayInput("sqlite-missing-account")
-	input.SystemAccountID = ""
-	if err := writer.Enqueue(context.Background(), input); err != nil {
-		t.Fatal(err)
-	}
-	eventually(2*time.Second, func() bool { return store.batchCount() == 1 })
-	if writer.Runtime().DeadLetterCount != 0 {
-		t.Fatalf("SQLite 分支不得死信: %+v", writer.Runtime())
-	}
-}
+// 原 TestWriterSQLiteDefaultAcceptsEmptySystemAccountID 已删除：SQLite 驱动
+// 退役后 PG 是唯一写入形态（Config 注释「Postgres 收敛后恒为唯一驱动形
+// 态」），缺 systemAccountId 的记录必须转死信终态而不是照常写库；该用例断
+// 言的 SQLite 分支已不存在，且 eventually 超时不失败使其长期空跑。

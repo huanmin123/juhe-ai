@@ -882,6 +882,16 @@ func workerUsageOverflowSpoolDirectory(config workerConfig) string {
 	return filepath.Join(config.DataDir, usageOverflowSpoolDirName)
 }
 
+// usageDeadLetterDirName 是死信终态目录名（BUG-0367）：必须与溢出 spool
+// 分根——usagespooldrain 只扫描溢出目录，死信落回放目录会形成
+// 「死信→回放→再失败」无限环。
+const usageDeadLetterDirName = "usage-record-dead-letter"
+
+// workerUsageDeadLetterDirectory 派生死信终态目录（BUG-0367）。
+func workerUsageDeadLetterDirectory(config workerConfig) string {
+	return filepath.Join(config.DataDir, usageDeadLetterDirName)
+}
+
 // wireUsageWriterFamily：usagewriter 直接异步写库（Node Redis Stream /
 // ingest-worker IPC 路径按总设计消灭后的 Go 单路径），启动 flush 循环、
 // 停机排空。BUG-0175 D-72 补齐注入缺口：
@@ -911,6 +921,9 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	//   - Postgres：镜像 ShardStore 驱动，恢复写计划期"PG 必须有
 	//     systemAccountId"的快速失败（空值此前到 INSERT 才撞 NOT NULL）。
 	overflowSpool := usagewriter.NewFileOverflowSpool(workerUsageOverflowSpoolDirectory(a.config))
+	// 死信终态目录（BUG-0367）：与溢出回放目录分根，回放器不扫描；
+	// 耗尽重试/写计划期非法记录落盘后由人工处置，不再回灌队列。
+	deadLetterSpool := usagewriter.NewFileDeadLetterSpool(workerUsageDeadLetterDirectory(a.config))
 	writer := usagewriter.NewWriter(usagewriter.Config{
 		ShardCount:       usageWriterShardCount,
 		FreezePricing:    true,
@@ -918,7 +931,8 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	}, store, nil,
 		usagewriter.WithLogger(slogWriterLogger{logger: a.logger}),
 		usagewriter.WithCatalog(pricingCatalog),
-		usagewriter.WithOverflowSpool(overflowSpool))
+		usagewriter.WithOverflowSpool(overflowSpool),
+		usagewriter.WithDeadLetterSpool(deadLetterSpool))
 	a.writer = writer
 	a.addCloser(func() error {
 		if catalogDB != nil {

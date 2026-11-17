@@ -34,7 +34,15 @@ const (
 	// （文件名仍为 `<UnixMilli>-<pid>-<uuid>.json` 同型；jobs 侧 Drainer 扫
 	// 描根目录下全部实例子目录，名字只需各进程稳定不混淆）。
 	usageOverflowSpoolInstanceDirectory = "gateway"
+	// usageDeadLetterDirName 是死信终态目录名（BUG-0367）：与溢出回放目录
+	// 分根，jobs 的 usagespooldrain 不扫描该目录。
+	usageDeadLetterDirName = "usage-record-dead-letter"
 )
+
+// gatewayUsageDeadLetterDirectory 派生死信终态目录（BUG-0367）。
+func gatewayUsageDeadLetterDirectory(dataDir string) string {
+	return filepath.Join(dataDir, usageDeadLetterDirName)
+}
 
 // gatewayUsageOverflowSpoolDirectory 派生 writer 溢出 spool 根目录：DATA_DIR
 // 下固定名，与 jobs 侧 workerUsageOverflowSpoolDirectory 同根同名。单机
@@ -108,6 +116,10 @@ func newUsageWriterDeliverer(db, businessDB *sql.DB, dataDir string) (usageRecor
 	// 恒非空（DATA_DIR 派生），恒接线，无 env/开关。
 	overflowSpool := usagewriter.NewFileOverflowSpool(gatewayUsageOverflowSpoolDirectory(dataDir))
 	overflowSpool.InstanceDirectory = usageOverflowSpoolInstanceDirectory
+	// 死信终态目录（BUG-0367）：与溢出回放目录分根，jobs Drainer 不扫描；
+	// 耗尽重试/写计划期非法记录落盘后由人工处置，不再回灌队列。
+	deadLetterSpool := usagewriter.NewFileDeadLetterSpool(gatewayUsageDeadLetterDirectory(dataDir))
+	deadLetterSpool.InstanceDirectory = usageOverflowSpoolInstanceDirectory
 	writer := usagewriter.NewWriter(usagewriter.Config{
 		ShardCount:       gatewayUsageWriterShardCount,
 		FreezePricing:    true,
@@ -115,7 +127,8 @@ func newUsageWriterDeliverer(db, businessDB *sql.DB, dataDir string) (usageRecor
 	}, store, nil,
 		usagewriter.WithLogger(usageWriterLogger{inner: slog.Default()}),
 		usagewriter.WithCatalog(usagepricing.NewCatalog(businessDB)),
-		usagewriter.WithOverflowSpool(overflowSpool))
+		usagewriter.WithOverflowSpool(overflowSpool),
+		usagewriter.WithDeadLetterSpool(deadLetterSpool))
 	writer.Start()
 	return usageWriterDeliverer{writer: writer}, func() {
 		// 停机排空必须有界：DB 黑洞时 writer 内部的 flush goroutine 可能仍
