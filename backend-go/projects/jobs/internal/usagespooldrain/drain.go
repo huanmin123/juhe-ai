@@ -217,6 +217,12 @@ func parseSpoolRecord(content []byte, filePath string) (usagewriter.UsageRecordI
 	if err != nil {
 		return usagewriter.UsageRecordInput{}, fmt.Errorf("usage spool 文件记录校验失败：%s", filepath.Base(filePath))
 	}
+	// PG 写入要求 systemAccountId 非空（rows.go WritePlan 硬校验）；空 owner
+	// 记录若放行入队会整批楔死 writer 队列（2026-11-17 生产事故根因），按
+	// 损坏文件语义隔离，保留现场且不阻塞后续文件。
+	if strings.TrimSpace(normalized.SystemAccountID) == "" {
+		return usagewriter.UsageRecordInput{}, fmt.Errorf("usage spool 文件记录缺少 systemAccountId（PG 写入必填）：%s", filepath.Base(filePath))
+	}
 	return normalized, nil
 }
 

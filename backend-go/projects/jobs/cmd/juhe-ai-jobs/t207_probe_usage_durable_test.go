@@ -32,8 +32,11 @@ func (t207FailingSpool) Persist(ctx usagewriter.Ctx, input usagewriter.UsageReco
 	return errors.New("spool disk full")
 }
 
-// t207FailingDriver 让 resolveScope 的业务库查询立即失败（查询错误按既有契
-// 约静默跳过作用域解析）。
+// t207FailingDriver 让 resolveScope 的业务库查询立即失败。2026-11-17 起
+// 查询失败在 resolveScope 即返回错误（不再降级无作用域入队，避免空
+// systemAccountId 毒批次），本用例据此验证两件事：探针路径在作用域解析
+// 失败时返回错误且不触达 enqueue；EnqueueDurable 的队列满+溢出落盘失败
+// 拒绝语义（直接调用验证）。
 type t207FailingDriver struct{}
 
 func (t207FailingDriver) Open(name string) (driver.Conn, error) {
@@ -76,7 +79,17 @@ func TestT207RecordProbeUsageDurableEnqueueRejectsOnFullQueueAndSpoolFailure(t *
 		t.Fatal(err)
 	}
 	// 第二条：队列满 + 溢出落盘失败 → EnqueueDurable 返回错误（记录未被接
-	// 收）；best-effort Enqueue 在同场景会静默返回 nil 并丢弃。
+	// 收）；best-effort Enqueue 在同场景会静默返回 nil 并丢弃。2026-11-17
+	// 起探针路径先经 resolveScope（此驱动恒失败），在触达 enqueue 前即返回
+	// 错误——直接调用 EnqueueDurable 保持本用例对 durable 拒绝语义的覆盖。
+	err = writer.EnqueueDurable(context.Background(), usagewriter.UsageRecordInput{
+		TrafficSource:   usagewriter.TrafficSourceGateway,
+		SystemAccountID: "sys1",
+		Success:         true,
+	})
+	if err == nil {
+		t.Fatal("durable enqueue must surface the rejection, got nil")
+	}
 	err = probe.RecordProbeUsage(context.Background(), accounthealth.ProbeUsageObservation{
 		AccountID:     "acc1",
 		TrafficSource: accounthealth.ProbeTrafficSourceAccountHealthCheck,

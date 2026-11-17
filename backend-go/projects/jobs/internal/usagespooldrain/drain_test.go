@@ -129,6 +129,9 @@ func TestDrainOnceQuarantinesCorruptFiles(t *testing.T) {
 		{"0003-noid", `{"traceId":"t","createdAt":"2026-01-02T03:04:05.000Z"}` + "\n", "缺少稳定 id"},
 		{"0004-nocreatedat", `{"id":"x","traceId":"t"}` + "\n", "缺少稳定 createdAt"},
 		{"0005-badcreatedat", `{"id":"x","createdAt":"not-a-time"}` + "\n", "createdAt 非法"},
+		// 2026-11-17 生产事故回归：空 systemAccountId 记录必须在准入隔离，
+		// 否则会以整批拒绝楔死 writer 队列（毒批次）。
+		{"0006-nowner", `{"id":"x","createdAt":"2026-01-02T03:04:05.000Z","trafficSource":"gateway","success":true}` + "\n", "缺少 systemAccountId"},
 	}
 	for _, testCase := range cases {
 		instanceDirectory := filepath.Join(directory, "gateway-chain")

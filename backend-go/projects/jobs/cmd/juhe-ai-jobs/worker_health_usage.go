@@ -18,6 +18,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
@@ -48,7 +50,11 @@ func (a *workerAssembly) wireProbeUsageRecorder() (accounthealth.ProbeUsageRecor
 
 // RecordProbeUsage 实现 accounthealth.ProbeUsageRecorder：解析账户归属与
 // 作用域五元组，归一化后经 usagewriter 投递。账户已删除时跳过；作用域解析
-// 失败降级为无作用域记录（归一化清空对应组），不因查询失败丢弃观测。
+// 失败（查询错误或 owner 缺失）返回错误且不投递——PG 写入要求 systemAccountId
+// 非空，空 owner 记录会毒化整批 flush（2026-11-17 生产事故：一批探针记录
+// 在 PG 抖动窗口以空 owner 入队，整批 1000 条被拒、队头永久阻塞，统计聚合
+// 停摆 6.5h+）。探针观测本身已由 account_health_outcomes 落库，此处只跳过
+// 用量补记，不丢观测。
 func (w *probeUsageWriter) RecordProbeUsage(ctx context.Context, observation accounthealth.ProbeUsageObservation) error {
 	if w == nil || w.writer == nil {
 		return nil
@@ -71,7 +77,12 @@ func (w *probeUsageWriter) RecordProbeUsage(ctx context.Context, observation acc
 	if observation.ErrorMessage != "" {
 		input.ErrorMessage = observation.ErrorMessage
 	}
-	w.resolveScope(ctx, observation.AccountID, &input)
+	if err := w.resolveScope(ctx, observation.AccountID, &input); err != nil {
+		if errors.Is(err, errProbeUsageAccountGone) {
+			return nil
+		}
+		return err
+	}
 	// T207-C2：探针用量与溢出 spool 回放共用 durable 交接语义——队列满且
 	// 溢出落盘失败时返回错误（上游 recordProbeUsage 按失败 warn 留痕），
 	// 不再走 best-effort Enqueue 的溢出丢弃臂。
@@ -90,9 +101,16 @@ type probeUsageScopeRow struct {
 	effectiveSourceTeamID   sql.NullString
 }
 
-// resolveScope 按账户行 + 授权实例 + 分组绑定补齐作用域五元组；查询失败
-// 静默保留无作用域输入（归一化整组清空，不阻塞观测补记）。
-func (w *probeUsageWriter) resolveScope(ctx context.Context, accountID string, input *usagewriter.UsageRecordInput) {
+// errProbeUsageAccountGone 标记探针账户已删除/不存在：按既有承诺跳过补记
+// （不产生使用记录、不产生告警噪音）。
+var errProbeUsageAccountGone = errors.New("probe usage account gone")
+
+// resolveScope 按账户行 + 授权实例 + 分组绑定补齐作用域五元组。返回
+// errProbeUsageAccountGone 表示账户已删除（调用方跳过）；其它错误为查询
+// 失败或 owner 缺失（调用方失败本轮，绝不入队无 owner 记录——空
+// systemAccountId 会被 PG 写入整批拒绝并永久阻塞队列）。分组作用域查询
+// 失败维持可空语义（归一化整组清空，PG 不要求组字段）。
+func (w *probeUsageWriter) resolveScope(ctx context.Context, accountID string, input *usagewriter.UsageRecordInput) error {
 	var row probeUsageScopeRow
 	err := w.business.db.QueryRowContext(ctx, w.business.bind(`SELECT COALESCE(a.vendor_code, ''), a.system_account_id,
 			a.authorization_instance_authorization_id,
@@ -102,8 +120,14 @@ func (w *probeUsageWriter) resolveScope(ctx context.Context, accountID string, i
 		WHERE a.id = ? AND a.deleted_at IS NULL`), accountID).Scan(
 		&row.providerCode, &row.systemAccountID, &row.instanceAuthorizationID,
 		&row.resourceOwner, &row.authorizationStatus, &row.effectiveSourceTeamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errProbeUsageAccountGone
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("解析探针用量账户作用域失败（accountID=%s）: %w", accountID, err)
+	}
+	if strings.TrimSpace(row.systemAccountID.String) == "" {
+		return fmt.Errorf("探针用量账户作用域缺少 systemAccountId（accountID=%s），跳过补记", accountID)
 	}
 	if input.ProviderCode == "" {
 		input.ProviderCode = row.providerCode.String
@@ -142,7 +166,7 @@ func (w *probeUsageWriter) resolveScope(ctx context.Context, accountID string, i
 		ORDER BY ga.updated_at DESC, ga.group_id ASC LIMIT 1`),
 		row.systemAccountID.String, now, accountID).Scan(&groupID, &groupOwner, &groupAuthzID, &groupTeamID)
 	if err != nil || groupID.String == "" || groupOwner.String == "" || !groupAuthzID.Valid || groupAuthzID.String == "" {
-		return
+		return nil
 	}
 	input.GroupID = groupID.String
 	input.GroupOwnerSystemAccountID = groupOwner.String
@@ -154,4 +178,5 @@ func (w *probeUsageWriter) resolveScope(ctx context.Context, accountID string, i
 	} else {
 		input.GroupAuthorizationSourceType = usagewriter.AuthorizationSourceTypeManual
 	}
+	return nil
 }
