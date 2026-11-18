@@ -149,6 +149,134 @@
       "supportsPromptCaching": true
     },
     {
+      "cacheCreationInputTokenCost": 1e-05,
+      "cacheCreationInputTokenCostPriority": 2e-05,
+      "cacheReadInputTokenCost": 4e-07,
+      "cacheReadInputTokenCostPriority": 8e-07,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 8e-06,
+      "inputCostPerTokenPriority": 1.6e-05,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6.2-astra",
+      "outputCostPerToken": 4e-05,
+      "outputCostPerTokenPriority": 8e-05,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-11-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 2.5e-06,
+      "cacheCreationInputTokenCostPriority": 5e-06,
+      "cacheReadInputTokenCost": 1e-07,
+      "cacheReadInputTokenCostPriority": 2e-07,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenPriority": 4e-06,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6.2-sol",
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenPriority": 2e-05,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-11-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
       "cacheCreationInputTokenCost": 1.25e-06,
       "cacheCreationInputTokenCostFlex": 6.25e-07,
       "cacheCreationInputTokenCostPriority": 2.5e-06,
