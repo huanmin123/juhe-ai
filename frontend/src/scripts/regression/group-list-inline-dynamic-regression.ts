@@ -30,15 +30,16 @@ const rowGroupBase = {
   canReturn: false
 } as unknown as GroupListItem
 
-// 摘要文案按契约（普通分组可选调度策略设计 §2.3）：未启用 / 阈值 N / 单 IP N（超限拒绝）。
+// 摘要文案按契约（普通分组可选调度策略设计 §2.3；单键化见 API Key 单 IP 并发
+// 限制设计 §2.4）：未启用 / 阈值 N。单 IP 摘要已迁至 API Key，不再出现在分组列表。
 const enabledPolicyRow = {
   ...rowGroupBase,
-  schedulingPolicy: { defaultSoftConcurrency: 3, clientIpConcurrencyLimit: 5 }
+  schedulingPolicy: { defaultSoftConcurrency: 3 }
 } as unknown as GroupListItem
 assert.equal(
   groupPolicySummary(enabledPolicyRow),
-  '单账户排队阈值 3，单 IP 并发 5（超限拒绝）',
-  '两项策略同时启用时摘要必须同时展示阈值与单 IP 上限'
+  '单账户排队阈值 3',
+  '阈值启用时摘要只展示单账户排队阈值'
 )
 assert.equal(
   groupPolicySummary({ ...enabledPolicyRow, schedulingPolicy: null }),
@@ -46,14 +47,17 @@ assert.equal(
   'NULL 策略摘要必须显示未启用可选调度策略'
 )
 assert.equal(
-  groupPolicySummary({ ...enabledPolicyRow, schedulingPolicy: { defaultSoftConcurrency: 3, clientIpConcurrencyLimit: 0 } }),
-  '单账户排队阈值 3',
-  '仅阈值启用时摘要只显示排队阈值'
+  groupPolicySummary({ ...enabledPolicyRow, schedulingPolicy: { defaultSoftConcurrency: -1 } }),
+  '未启用可选调度策略',
+  '阈值 -1 时摘要必须回到未启用文案'
 )
 assert.equal(
-  groupPolicySummary({ ...enabledPolicyRow, schedulingPolicy: { defaultSoftConcurrency: -1, clientIpConcurrencyLimit: 5 } }),
-  '单 IP 并发 5（超限拒绝）',
-  '仅 IP 限制启用时摘要必须标注超限拒绝'
+  groupPolicySummary({
+    ...enabledPolicyRow,
+    schedulingPolicy: { defaultSoftConcurrency: 3, clientIpConcurrencyLimit: 5 }
+  } as unknown as GroupListItem),
+  '可选调度策略数据异常，请编辑后重新保存',
+  '旧两键策略必须被严格单键模型拒绝，不得继续渲染单 IP 摘要'
 )
 assert.equal(
   groupPolicySummary({ ...enabledPolicyRow, groupKind: 'super' }),

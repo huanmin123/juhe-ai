@@ -101,7 +101,7 @@ func TestW14EShimsAndCapacityArms(t *testing.T) {
 	if got := gatewayhotqualityEffectiveImageLaneConcurrencyLimit(5, nil); got != 5 {
 		t.Fatalf("nil policy limit = %d", got)
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2, ClientIPConcurrencyLimit: 1}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2}
 	if got := gatewayhotqualityEffectiveImageLaneConcurrencyLimit(9, &policy); got != 9 {
 		t.Fatalf("policy limit = %d, want 硬上限 9", got)
 	}

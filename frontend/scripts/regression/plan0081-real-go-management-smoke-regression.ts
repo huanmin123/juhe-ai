@@ -1402,6 +1402,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     groupPatchPath(temporaryGroupId),
     groupDetailPath(temporaryGroupId),
     groupPatchPath(temporaryGroupId),
+    groupPatchPath(temporaryGroupId),
     groupDeletePath(temporaryGroupId),
     groupDetailPath(temporaryGroupId),
     groupDetailPath(temporaryGroupId)
@@ -1422,17 +1423,28 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     /^PLAN-0081 real Go management smoke [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   )
   const patchRequests = requestRecords.filter((record) => record.method === 'PATCH')
-  assert.equal(patchRequests.length, 2, 'mutation smoke must send exactly the policy PATCH and the retired-type negative PATCH')
+  assert.equal(
+    patchRequests.length,
+    3,
+    'mutation smoke must send exactly the policy PATCH, the retired client-IP policy negative PATCH, and the retired-type negative PATCH'
+  )
   assert.deepEqual(patchRequests[0]?.body, {
     name: `${String(recordBody(createRequest).name)} updated`,
     description: 'PLAN-0081 W5 group CRUD real Go smoke',
     schedulingPolicy: {
-      defaultSoftConcurrency: 7,
-      clientIpConcurrencyLimit: 3
+      defaultSoftConcurrency: 7
     },
     expectedUpdatedAt: '2026-07-15T08:00:00.000Z'
   })
-  const retiredTypeBody = patchRequests[1]?.body
+  const retiredClientIpBody = patchRequests[1]?.body
+  assert(retiredClientIpBody !== undefined && typeof retiredClientIpBody === 'object')
+  assert.deepEqual((retiredClientIpBody as Record<string, unknown>).schedulingPolicy, {
+    defaultSoftConcurrency: 7,
+    clientIpConcurrencyLimit: 3
+  })
+  assert.equal(typeof (retiredClientIpBody as Record<string, unknown>).expectedUpdatedAt, 'string')
+  assert.notEqual((retiredClientIpBody as Record<string, unknown>).expectedUpdatedAt, '')
+  const retiredTypeBody = patchRequests[2]?.body
   assert(retiredTypeBody !== undefined && typeof retiredTypeBody === 'object')
   assert.equal((retiredTypeBody as Record<string, unknown>).groupType, 'high_concurrency')
   assert.equal(typeof (retiredTypeBody as Record<string, unknown>).expectedUpdatedAt, 'string')
@@ -1913,7 +1925,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (req.method === 'POST' && url.pathname === '/__aisys__/api/groups') {
     const input = recordBody({ body })
     const name = String(input.name ?? '')
-    const providerCode = String(input.providerCode ?? '')
     const created = groupFixture(temporaryGroupId, name, false, 'owner')
     groups.set(created.id, created)
     res.statusCode = 201
@@ -2172,22 +2183,33 @@ async function handleGroupDetailRequest(
       group.description = input.description
     }
     if (Object.hasOwn(input, 'schedulingPolicy')) {
-      // 普通分组可选调度策略（设计 §2.2）：null 清空；对象必须两键齐全整对象替换；
-      // 两项都为默认值时存 NULL（mock 用删除键模拟 NULL）。
+      // 普通分组可选调度策略（设计 §2.2；单键化见 API Key 单 IP 并发限制设计 §2.4）：
+      // null 清空；对象必须只含 defaultSoftConcurrency 单键整对象替换；-1 时存 NULL
+      // （mock 用删除键模拟 NULL）。旧 clientIpConcurrencyLimit 键按未知字段返回 400。
       const policy = input.schedulingPolicy
+      const policyRecord = policy && typeof policy === 'object' && !Array.isArray(policy)
+        ? policy as Record<string, unknown>
+        : undefined
+      const policyKeys = policyRecord ? Object.keys(policyRecord).sort().join(',') : ''
+      const threshold = policyRecord?.defaultSoftConcurrency
       if (policy === null) {
         delete group.schedulingPolicy
-      } else if (policy && typeof policy === 'object' && !Array.isArray(policy)
-        && 'defaultSoftConcurrency' in policy && 'clientIpConcurrencyLimit' in policy) {
-        if ((policy as Record<string, unknown>).defaultSoftConcurrency === -1
-          && (policy as Record<string, unknown>).clientIpConcurrencyLimit === 0) {
+      } else if (
+        policyRecord
+        && policyKeys === 'defaultSoftConcurrency'
+        && Number.isInteger(threshold)
+        && Number(threshold) >= -1
+        && Number(threshold) <= 1_000_000
+        && threshold !== 0
+      ) {
+        if (threshold === -1) {
           delete group.schedulingPolicy
         } else {
-          group.schedulingPolicy = policy as Record<string, unknown>
+          group.schedulingPolicy = { defaultSoftConcurrency: threshold }
         }
       } else {
         res.statusCode = 400
-        res.end(JSON.stringify({ message: '分组调度策略必须两键齐全' }))
+        res.end(JSON.stringify({ message: '分组调度策略只接受 defaultSoftConcurrency' }))
         return
       }
     }
@@ -2261,7 +2283,7 @@ function groupFixture(
 
 function groupListItem(group: MockGroup): Record<string, unknown> {
   const { accountIds: _accountIds, ...item } = groupResponse(group)
-  // 列表投影（真实 gateway 同形）：策略键恒存在，NULL 时显式 null，非空时为规范化两键对象。
+  // 列表投影（真实 gateway 同形）：策略键恒存在，NULL 时显式 null，非空时为规范化单键对象。
   return item
 }
 
@@ -2556,6 +2578,8 @@ function apiKeyFixture(idSuffix: string, includeOwner: boolean): Record<string, 
     routeStrategyName: 'PLAN-0081 route',
     routeStrategyMode: 'normal',
     routeStrategyStatus: 'active',
+    // 单 IP 并发限制（API Key 单 IP 并发限制设计 §3.1）：列表项恒带 0..1000000。
+    clientIpConcurrencyLimit: idSuffix.endsWith('secondary') ? 0 : 12,
     expiresAt: '2026-08-01T00:00:00.000Z',
     quotaLimits: { dailyUsd: 10 },
     availabilitySchedule: { enabled: false, timezone: 'Asia/Shanghai', mode: 'allow', windows: [] },

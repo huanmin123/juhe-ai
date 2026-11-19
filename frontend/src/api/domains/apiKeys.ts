@@ -18,6 +18,8 @@ export interface ApiKeyMutationPayload {
   schedulingPreferenceId?: string
   /** 绑定安全策略；创建缺省内置「默认安全策略」，PATCH 缺失保持原值、显式内置 ID/null = 回默认，同值 no-op 由后端处理。 */
   securityPolicyId?: string
+  /** 单 IP 并发上限：创建缺省 0；PATCH 缺失保持原值、显式 0 = 关闭；合法范围 0..1000000。 */
+  clientIpConcurrencyLimit?: number
   status?: 'active' | 'disabled'
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits | null

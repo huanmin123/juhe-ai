@@ -485,15 +485,15 @@ func TestW9CMigrationCandidateKeysLocked(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW9CValidateGroupSchedulingPolicyArms(t *testing.T) {
-	policy, err := ResolveGroupSchedulingPolicy(&gatewayscheduling.Policy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2})
+	policy, err := ResolveGroupSchedulingPolicy(&gatewayscheduling.Policy{DefaultSoftConcurrency: 5})
 	if err != nil {
 		t.Fatalf("policy = %v", err)
 	}
-	if policy.DefaultSoftConcurrency != 5 || policy.ClientIPConcurrencyLimit != 2 {
+	if policy.DefaultSoftConcurrency != 5 {
 		t.Fatalf("policy = %+v", *policy)
 	}
 	defaults, err := ResolveGroupSchedulingPolicy(nil)
-	if err != nil || defaults.DefaultSoftConcurrency != -1 || defaults.ClientIPConcurrencyLimit != 0 {
+	if err != nil || defaults.DefaultSoftConcurrency != -1 {
 		t.Fatalf("defaults = %+v, %v", defaults, err)
 	}
 	enabled := gatewayscheduling.Policy{DefaultSoftConcurrency: 5}

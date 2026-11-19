@@ -322,7 +322,7 @@ func TestW1AccountsSecretHelpers(t *testing.T) {
 		t.Fatal("legacy 缺策略必须报错")
 	}
 	policy, err := chainParseGroupSchedulingPolicy(sql.NullString{String: `{"defaultSoftConcurrency":10,"clientIpConcurrencyLimit":2}`, Valid: true}, true, 5000)
-	if err != nil || policy == nil || policy.DefaultSoftConcurrency != 10 || policy.ClientIPConcurrencyLimit != 2 {
+	if err != nil || policy == nil || policy.DefaultSoftConcurrency != 10 {
 		t.Fatalf("策略 = %+v, %v", policy, err)
 	}
 	if _, err := chainParseGroupSchedulingPolicy(sql.NullString{String: "bad", Valid: true}, true, 5000); err == nil {

@@ -22,7 +22,7 @@ func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
 		GroupOwnerSystemAccountID:      "sys_owner",
 		GroupAccessType:                "shared",
 		GroupType:                      &groupType,
-		SchedulingPolicy:               &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2},
+		SchedulingPolicy:               &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5},
 		GroupAuthorizationID:           &authzID,
 		GroupAuthorizationQuotaLimited: boolPtr(true),
 	}
@@ -180,7 +180,7 @@ func TestW1ProjectAPIKeyRowHelperArms(t *testing.T) {
 	if renderSchedulingPolicy(nil) != "" {
 		t.Fatal("nil policy 渲染必须为空")
 	}
-	if !strings.Contains(renderSchedulingPolicy(&gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}), "defaultSoftConcurrency") {
+	if !strings.Contains(renderSchedulingPolicy(&gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}), "defaultSoftConcurrency") {
 		t.Fatal("policy 渲染丢失")
 	}
 	result := (chainCapabilityFilter{}).FilterAccountsByRequestCapability(context.Background(),

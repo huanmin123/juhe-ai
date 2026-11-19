@@ -2,16 +2,20 @@ package gatewayscheduling
 
 import "testing"
 
-// 两键普通分组策略的纯函数契约：阈值换算、软忙判定、严格两键校验、旧行 16 键
-// 按 globalMax 归一映射与退役分组类型读归一。
+// 单键普通分组策略的纯函数契约：阈值换算、软忙判定、严格单键读写校验、旧两键
+// 读兼容（clientIpConcurrencyLimit 忽略）、旧行 16 键按 globalMax 归一映射与退役
+// 分组类型读归一。
 
 func TestDefaultPolicyIsDisabled(t *testing.T) {
 	policy := DefaultPolicy()
-	if policy.DefaultSoftConcurrency != -1 || policy.ClientIPConcurrencyLimit != 0 {
-		t.Fatalf("default policy = %+v, want {-1, 0}", policy)
+	if policy.DefaultSoftConcurrency != -1 {
+		t.Fatalf("default policy = %+v, want {-1}", policy)
 	}
 	if !policy.IsDefault() {
 		t.Fatal("default policy must report IsDefault")
+	}
+	if (Policy{DefaultSoftConcurrency: 1}).IsDefault() {
+		t.Fatal("enabled policy must not report IsDefault")
 	}
 }
 
@@ -56,43 +60,62 @@ func TestSoftBusyArms(t *testing.T) {
 	}
 }
 
-func TestParseMapTwoKeyContract(t *testing.T) {
-	policy, err := ParseMap(map[string]any{"defaultSoftConcurrency": float64(-1), "clientIpConcurrencyLimit": float64(0)}, false, 0)
-	if err != nil || policy != (Policy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: 0}) {
-		t.Fatalf("默认两键 = %+v err=%v", policy, err)
+func TestParseMapSingleKeyContract(t *testing.T) {
+	policy, err := ParseMap(map[string]any{"defaultSoftConcurrency": float64(-1)}, false, 0)
+	if err != nil || policy != (Policy{DefaultSoftConcurrency: -1}) {
+		t.Fatalf("默认单键 = %+v err=%v", policy, err)
 	}
-	policy, err = ParseMap(map[string]any{"defaultSoftConcurrency": float64(1_000_000), "clientIpConcurrencyLimit": float64(1_000_000)}, false, 0)
-	if err != nil || policy.DefaultSoftConcurrency != 1_000_000 || policy.ClientIPConcurrencyLimit != 1_000_000 {
-		t.Fatalf("上限两键 = %+v err=%v", policy, err)
+	policy, err = ParseMap(map[string]any{"defaultSoftConcurrency": float64(1_000_000)}, false, 0)
+	if err != nil || policy.DefaultSoftConcurrency != 1_000_000 {
+		t.Fatalf("上限单键 = %+v err=%v", policy, err)
+	}
+	// 读兼容：旧两键 JSON 可读，clientIpConcurrencyLimit 被忽略。
+	policy, err = ParseMap(map[string]any{"defaultSoftConcurrency": float64(5), "clientIpConcurrencyLimit": float64(2)}, false, 0)
+	if err != nil || policy.DefaultSoftConcurrency != 5 {
+		t.Fatalf("旧两键读兼容 = %+v err=%v", policy, err)
 	}
 	errors := []struct {
 		name   string
 		object map[string]any
 	}{
-		{name: "threshold 0 invalid", object: map[string]any{"defaultSoftConcurrency": float64(0), "clientIpConcurrencyLimit": float64(0)}},
-		{name: "threshold over max", object: map[string]any{"defaultSoftConcurrency": float64(1_000_001), "clientIpConcurrencyLimit": float64(0)}},
-		{name: "ip limit negative", object: map[string]any{"defaultSoftConcurrency": float64(-1), "clientIpConcurrencyLimit": float64(-1)}},
-		{name: "unknown key", object: map[string]any{"defaultSoftConcurrency": float64(-1), "clientIpConcurrencyLimit": float64(0), "mode": "queue"}},
-		{name: "missing key", object: map[string]any{"defaultSoftConcurrency": float64(-1)}},
-		{name: "non integer", object: map[string]any{"defaultSoftConcurrency": 1.5, "clientIpConcurrencyLimit": float64(0)}},
+		{name: "threshold 0 invalid", object: map[string]any{"defaultSoftConcurrency": float64(0)}},
+		{name: "threshold over max", object: map[string]any{"defaultSoftConcurrency": float64(1_000_001)}},
+		{name: "unknown key", object: map[string]any{"defaultSoftConcurrency": float64(-1), "mode": "queue"}},
+		{name: "missing key", object: map[string]any{}},
+		{name: "legacy ip key only", object: map[string]any{"clientIpConcurrencyLimit": float64(2)}},
+		{name: "non integer", object: map[string]any{"defaultSoftConcurrency": 1.5}},
 	}
 	for _, tc := range errors {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ParseMap(tc.object, false, 0); err == nil {
-				t.Fatal("非法两键必须报错")
+				t.Fatal("非法单键必须报错")
 			}
 		})
 	}
 }
 
-// 旧行读归一：16 键旧策略只取两键；旧默认 globalMax 等价硬上限不迁移成阈值；
-// 未知旧键容忍。
+// 写面只接受单键：旧 clientIpConcurrencyLimit 在新建/PATCH 输入中按未知键拒绝。
+func TestParseWriteRejectsLegacyTwoKeyShape(t *testing.T) {
+	policy, err := ParseWrite(map[string]any{"defaultSoftConcurrency": float64(5)})
+	if err != nil || policy.DefaultSoftConcurrency != 5 {
+		t.Fatalf("单键写入 = %+v err=%v", policy, err)
+	}
+	if _, err := ParseWrite(map[string]any{"defaultSoftConcurrency": float64(5), "clientIpConcurrencyLimit": float64(2)}); err == nil {
+		t.Fatal("写面双键必须拒绝")
+	}
+	if _, err := ParseWrite(map[string]any{"clientIpConcurrencyLimit": float64(2)}); err == nil {
+		t.Fatal("仅旧 IP 键必须拒绝")
+	}
+}
+
+// 旧行读归一：16 键旧策略只取 defaultSoftConcurrency，旧 IP 键忽略；旧默认
+// globalMax 等价硬上限不迁移成阈值；未知旧键容忍。
 func TestParseStoredLegacyRowMapping(t *testing.T) {
 	policy, err := ParseStored(`{"defaultSoftConcurrency":500,"clientIpConcurrencyLimit":7,"mode":"balanced_fast","maxQueueSize":8}`, true, true, 1234)
 	if err != nil {
 		t.Fatalf("legacy parse: %v", err)
 	}
-	if policy.DefaultSoftConcurrency != 500 || policy.ClientIPConcurrencyLimit != 7 {
+	if policy.DefaultSoftConcurrency != 500 {
 		t.Fatalf("legacy policy = %+v", policy)
 	}
 	// 旧默认 ≥ globalMax：等价硬上限，不迁移成阈值（回落 -1）。
@@ -109,10 +132,15 @@ func TestParseStoredLegacyRowMapping(t *testing.T) {
 	if _, err := ParseStored("", false, true, 5000); err == nil {
 		t.Fatal("legacy 行缺策略必须报错")
 	}
-	// 非 legacy 空/NULL → 默认两键。
+	// 非 legacy 空/NULL → 默认单键。
 	policy, err = ParseStored("", false, false, 5000)
 	if err != nil || policy != DefaultPolicy() {
 		t.Fatalf("NULL 策略 = %+v err=%v", policy, err)
+	}
+	// 非 legacy 旧两键（迁移前 revision 22 行）读兼容。
+	policy, err = ParseStored(`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`, true, false, 5000)
+	if err != nil || policy.DefaultSoftConcurrency != 5 {
+		t.Fatalf("旧两键读兼容 = %+v err=%v", policy, err)
 	}
 }
 

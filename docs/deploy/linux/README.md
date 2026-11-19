@@ -96,9 +96,14 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 # --global-max 必须与旧 gateway 实际运行的 JUHE_AI_CONCURRENCY_GLOBAL_MAX（1-50000）一致。
 # revision 23 会在同一 upgrade 停写窗口 DROP usage shard 目录四表（不可逆）；
 # 执行前用 psql 记录四表 count(*) 并确认备份可恢复。
+# revision 25 会在同一窗口把旧分组 clientIpConcurrencyLimit 迁到可达 API Key 并单键化
+# 分组策略；多个不同旧值默认阻断，先跑只读盘点核对 conflicts/needsReview。
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-group-policy --dry-run \
   --manifest-out /opt/juhe-ai/data/group-policy-$(date +%Y%m%d-%H%M).json \
   --global-max "${JUHE_AI_CONCURRENCY_GLOBAL_MAX:-5000}" \
+  --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
+/opt/juhe-ai/bin/juhe-ai-maintenance migrate-key-client-ip-limit --dry-run \
+  --manifest-out /opt/juhe-ai/data/key-client-ip-limit-$(date +%Y%m%d-%H%M).json \
   --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
 /opt/juhe-ai/bin/juhe-ai-maintenance upgrade \
   --dsn "$JUHE_AI_POSTGRES_URL" --secret "$JUHE_AI_SECRET" \
@@ -121,7 +126,7 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ## 7. 升级门禁与回滚
 
 - gateway/jobs 启动时只读比对库 revision；落后于二进制认识的值会 fail-fast 并提示 `upgrade`。
-- 回滚二进制时若库 revision 高于旧二进制认识的值，启动门禁会拒绝：恢复升级前备份（当前 revision 17；本次清退与 accounts CHECK 均不可逆，不支持只下调 revision 后启动旧二进制）。
+- 回滚二进制时若库 revision 高于旧二进制认识的值，启动门禁会拒绝：恢复升级前备份（当前 revision 25；revision 17 的清退与 accounts CHECK、revision 20 的映射/schema 删除、revision 22 的分组行迁移、revision 23 的四表 DROP、revision 25 的单键化与 Key 值迁移均不可逆，不支持只下调 revision 后启动旧二进制）。
 - 直跑没有 compose 的健康等待：升级失败保持两个 unit 停止，修复后重跑 `upgrade`（账本断点续跑）。
 
 ## 8. 日志与排障

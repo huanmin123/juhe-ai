@@ -212,6 +212,7 @@ const aipublicPGFixtureSchema = `
       availability_schedule_json text,
       availability_schedule_next_check_at text,
       availability_schedule_gate integer,
+      client_ip_concurrency_limit integer NOT NULL DEFAULT 0,
       scheduling_preference_id text,
       security_policy_id text,
       last_used_at text,

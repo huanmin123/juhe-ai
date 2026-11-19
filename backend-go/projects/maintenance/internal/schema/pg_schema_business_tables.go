@@ -1453,6 +1453,10 @@ $$`,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
       availability_schedule_gate integer,
+      -- 单 IP 并发限制（API Key 单 IP 并发限制设计 §2.1/§4.1，revision 25）：
+      -- 0 = 关闭；1..1000000 = 每 (system_account_id, group_id, api_key_id,
+      -- client_ip) 并发上限，超限固定 429。
+      client_ip_concurrency_limit integer NOT NULL DEFAULT 0,
       last_used_at text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -1730,6 +1734,15 @@ $$`,
 		SchemaName: "juhe_business",
 		Source:     "api-key-availability-schedule-gate-pg-column",
 		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS availability_schedule_gate integer`,
+	},
+	{
+		// 单 IP 并发限制迁至 API Key（API Key 单 IP 并发限制设计 §2.1/§4.1，
+		// revision 25）：存量库守卫加列；新库由上方 api_keys 建表内联，不另计
+		// 语句。0 = 关闭；1..1000000 = 按
+		// (system_account_id, group_id, api_key_id, client_ip) 计数，超限 429。
+		SchemaName: "juhe_business",
+		Source:     "api-key-client-ip-concurrency-limit-pg-column",
+		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS client_ip_concurrency_limit integer NOT NULL DEFAULT 0`,
 	},
 	{
 		SchemaName: "juhe_business",

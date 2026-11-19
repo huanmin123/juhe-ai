@@ -644,7 +644,7 @@ func TestW11DTypesCloneArms(t *testing.T) {
 	}
 
 	// CloneGroupUsageAccessMetadata：调度策略深拷贝。
-	policy := GroupSchedulingPolicy{DefaultSoftConcurrency: 1, ClientIPConcurrencyLimit: 2}
+	policy := GroupSchedulingPolicy{DefaultSoftConcurrency: 1}
 	access := GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", SchedulingPolicy: &policy}
 	accessClone := CloneGroupUsageAccessMetadata(access)
 	if accessClone.SchedulingPolicy == nil {

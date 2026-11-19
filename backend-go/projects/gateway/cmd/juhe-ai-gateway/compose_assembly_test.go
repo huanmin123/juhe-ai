@@ -113,7 +113,7 @@ func TestComposeSystemAPIWiresAPIKeyHandovers(t *testing.T) {
 		t.Fatalf("legacy group detail: %d %v", code, payload)
 	}
 	legacyPolicy, _ := data(payload)["schedulingPolicy"].(map[string]any)
-	if legacyPolicy["defaultSoftConcurrency"] != float64(1234) || legacyPolicy["clientIpConcurrencyLimit"] != float64(5) {
+	if legacyPolicy["defaultSoftConcurrency"] != float64(1234) || len(legacyPolicy) != 1 {
 		t.Fatalf("legacy policy mapping drift: %v", legacyPolicy)
 	}
 	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.groups

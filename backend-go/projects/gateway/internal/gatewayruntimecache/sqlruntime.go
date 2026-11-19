@@ -229,7 +229,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 	var purpose, schedulingPreferenceID, schedulingPreferenceJoinedID sql.NullString
 	var schedulingPreferenceChatMode, schedulingPreferenceConfigJSON sql.NullString
 	var securityPolicyID, securityPolicyJoinedID, securityPolicyRulesJSON sql.NullString
-	var imageGenerationEnabled int
+	var imageGenerationEnabled, clientIPConcurrencyLimit int
 	// 调度偏好独立实体 P1（读取分阶段契约）：api_keys.scheduling_preference_id
 	// 与 api_keys.purpose 进 SELECT，LEFT JOIN scheduling_preferences 区分「无
 	// 绑定/NULL」与「绑定引用错误」——绑定谓词要求行属于 Key owner 或为全局
@@ -249,6 +249,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 			api_keys.availability_schedule_gate,
 			api_keys.expires_at,
 			api_keys.quota_limits_json,
+			api_keys.client_ip_concurrency_limit,
 			system_accounts.image_generation_enabled,
 			system_accounts.request_limits_json,
 			api_keys.purpose,
@@ -278,7 +279,8 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 		WHERE `+predicate+`
 		LIMIT 1`), value).
 		Scan(&id, &systemAccountID, &routeStrategyID, &routeStrategyMode, &routeConfigJSON,
-			&status, &availabilityScheduleGate, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON,
+			&status, &availabilityScheduleGate, &expiresAt, &quotaLimitsJSON, &clientIPConcurrencyLimit,
+			&imageGenerationEnabled, &requestLimitsJSON,
 			&purpose, &schedulingPreferenceID, &schedulingPreferenceJoinedID,
 			&schedulingPreferenceChatMode, &schedulingPreferenceConfigJSON,
 			&securityPolicyID, &securityPolicyJoinedID, &securityPolicyRulesJSON)
@@ -322,6 +324,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 		Status:                              status,
 		ExpiresAt:                           nullToStrPtr(expiresAt),
 		QuotaLimitsJSON:                     nullToStrPtr(quotaLimitsJSON),
+		ClientIPConcurrencyLimit:            clientIPConcurrencyLimit,
 		SystemAccountImageGenerationEnabled: imageGenerationEnabled,
 		SystemAccountRequestLimitsJSON:      nullToStrPtr(requestLimitsJSON),
 		SystemAccountRequestLimits:          parseUserRequestLimitsJSON(requestLimitsJSON),

@@ -11,13 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
-
-// wiIPGatePolicy 构造两键普通分组策略（clientIpConcurrencyLimit 生效）。
-func wiIPGatePolicy(limit int) *gatewayscheduling.Policy {
-	return &gatewayscheduling.Policy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: limit}
-}
 
 // 排队溢出模式的内存/Redis 测试已随队列退役删除；IP 闸口只保留 reject 即时
 // 拒绝语义（获取/满额拒绝/释放恢复/取消/scope 隔离见 concurrency_test.go）。
@@ -36,7 +30,7 @@ func TestWIClientIPConcurrencyRedisSlotContract(t *testing.T) {
 	ctx := context.Background()
 	input := ClientIPConcurrencyAcquireInput{
 		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
-		ClientIP: "10.0.0.1", Policy: wiIPGatePolicy(1),
+		ClientIP: "10.0.0.1", Limit: 1,
 	}
 	key := clientIPConcurrencyKey("sys", "grp", "key", "10.0.0.1")
 
@@ -73,7 +67,7 @@ func TestWIClientIPConcurrencyRedisSlotContract(t *testing.T) {
 	rejectInput := ClientIPConcurrencyAcquireInput{
 		SystemAccountID: "sys", GroupID: "grp", APIKeyID: "key",
 		ClientIP: "10.0.0.2",
-		Policy:   wiIPGatePolicy(1),
+		Limit:    1,
 	}
 	held, err := concurrency.AcquireClientIPSlot(ctx, rejectInput)
 	if err != nil || !held.Acquired {

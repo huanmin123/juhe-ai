@@ -115,13 +115,12 @@ func TestChainClientIPConcurrencySlotLifecycle(t *testing.T) {
 	}
 	defer slots.Close()
 	port := newChainClientIPConcurrency(slots)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: 1}
 	input := gatewaydispatch.ClientIPConcurrencyInput{
 		SystemAccountID: "sys",
 		GroupID:         "grp",
 		APIKeyID:        "key",
 		ClientIP:        "10.0.0.8",
-		Policy:          &policy,
+		Limit:           1,
 	}
 	first, err := port.Acquire(context.Background(), input)
 	if err != nil {

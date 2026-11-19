@@ -1,6 +1,6 @@
 // Package gatewayclientip owns the G13a "client-ip runtime family": the
 // Client-IP policy cache + hit buffer, the per client-IP concurrency slots
-// (ordinary groups, immediate 429), the client-IP error circuit (including the
+// (API-Key-level limit, immediate 429), the client-IP error circuit (including the
 // pre-auth circuit) and the client-IP account avoidance memory.
 //
 // Node → Go mapping (backend/src/modules/gateway/runtime/):

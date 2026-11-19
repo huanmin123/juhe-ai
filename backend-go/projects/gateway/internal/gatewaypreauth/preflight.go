@@ -1140,7 +1140,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		// W1b 续：预过滤（能力/模型）跳过明细透传给决策摘要。
 		PreFilterSkipped: candidateFilter.PreFilterSkipped,
 		GroupAccess:      *groupAccess, SystemAccountID: systemAccountID,
-		APIKeyID: apiKeyID, GroupID: groupID,
+		APIKeyID: apiKeyID, APIKeyClientIPConcurrencyLimit: recordClientIPConcurrencyLimit(apiKeyRecord),
+		GroupID:                     groupID,
 		RouteStrategyID:             recordRouteStrategyID(apiKeyRecord),
 		NormalRouteSpeedFirstConfig: normalRouteSpeedFirstConfig,
 		ClientIP:                    gatewayClientIP, ClientStrategy: clientStrategy,
@@ -1783,6 +1784,16 @@ func recordRouteStrategyID(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) s
 		return ""
 	}
 	return apiKeyRecord.RouteStrategyID
+}
+
+// recordClientIPConcurrencyLimit mirrors
+// `apiKeyRecord?.clientIpConcurrencyLimit ?? 0`: 无 API Key 的内部请求视为
+// 关闭（0），与单 IP 并发计数作用域契约一致。
+func recordClientIPConcurrencyLimit(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) int {
+	if apiKeyRecord == nil {
+		return 0
+	}
+	return apiKeyRecord.ClientIPConcurrencyLimit
 }
 
 // defaultTrafficSource mirrors `options.trafficSource ?? 'gateway'`.

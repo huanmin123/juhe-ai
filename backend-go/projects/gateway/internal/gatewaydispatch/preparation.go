@@ -1112,7 +1112,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		})
 	}
 
-	// 单 IP 并发闸口：普通分组按 clientIpConcurrencyLimit 生效，0 时服务
+	// 单 IP 并发闸口：API Key 级 clientIpConcurrencyLimit 生效，0 时服务
 	// 直接返回 disabled/acquired，零额外开销。未装配（组合测试/降级）时跳过。
 	if e.ClientIPConcurrency != nil {
 		clientIpConcurrency, err := e.ClientIPConcurrency.Acquire(ctx, ClientIPConcurrencyInput{
@@ -1120,7 +1120,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			GroupID:         req.GroupID,
 			APIKeyID:        req.APIKeyID,
 			ClientIP:        req.ClientIP,
-			Policy:          req.GroupAccess.SchedulingPolicy,
+			Limit:           req.APIKeyClientIPConcurrencyLimit,
 			Signal:          req.Signal,
 		})
 		if err != nil {
@@ -1202,7 +1202,9 @@ func clientIpConcurrencyAuditMetadata(decision ClientIPConcurrencyDecision) map[
 }
 
 func clientIpConcurrencyFailureMessage(decision ClientIPConcurrencyDecision) string {
-	return "当前 IP 并发已达到分组限制，请稍后重试"
+	// 限制自 2026-11-19 起配置在 API Key（API Key 单 IP 并发限制设计 §2.1），
+	// 文案不再指向分组，避免用户误以为要改分组策略。
+	return "当前 IP 并发已达到限制，请稍后重试"
 }
 
 func noopRelease() {}

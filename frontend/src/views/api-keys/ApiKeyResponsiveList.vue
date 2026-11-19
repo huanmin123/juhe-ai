@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2330 : 2150"
+    :scroll-x="isManagementView ? 2450 : 2270"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -88,6 +88,9 @@
           <a-tag v-if="record.securityPolicyBuiltIn" color="blue">内置</a-tag>
         </div>
       </template>
+      <template v-else-if="column.key === 'clientIpConcurrencyLimit'">
+        <span :class="apiKeyClientIpConcurrencyEnabled(record) ? '' : 'muted-cell'">{{ apiKeyClientIpConcurrencyText(record) }}</span>
+      </template>
       <template v-else-if="column.key === 'systemAccount'">
         <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
       </template>
@@ -161,6 +164,10 @@
             <span>安全策略</span>
             <strong>{{ apiKeySecurityPolicyText(record) }}</strong>
           </div>
+          <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>单 IP 并发</span>
+            <strong>{{ apiKeyClientIpConcurrencyText(record) }}</strong>
+          </div>
           <div v-if="record.description" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
             <strong>{{ record.description }}</strong>
@@ -187,6 +194,8 @@ import { formatDateTime } from '@/shared/formatters'
 import type { ApiKeySummary } from '@/types/domain'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import {
+  apiKeyClientIpConcurrencyEnabled,
+  apiKeyClientIpConcurrencyText,
   apiKeyRouteStrategyModeText,
   apiKeyRouteStrategyName,
   apiKeyRouteStrategyTagColor,

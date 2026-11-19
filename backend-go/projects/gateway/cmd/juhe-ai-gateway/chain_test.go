@@ -207,7 +207,8 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT, name TEXT,
 			key_hash TEXT NOT NULL, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT,
 			status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT,
-			expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT,
+			expires_at TEXT, quota_limits_json TEXT, client_ip_concurrency_limit INTEGER NOT NULL DEFAULT 0,
+			availability_schedule_json TEXT,
 			availability_schedule_gate INTEGER,
 			scheduling_preference_id TEXT, security_policy_id TEXT, created_at TEXT, updated_at TEXT)`,
 		// API Key 安全策略实体（安全策略设计 §4.1，批B2 运行链接入的引用目标，

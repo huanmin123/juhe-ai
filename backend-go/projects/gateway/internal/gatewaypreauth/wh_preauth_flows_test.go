@@ -553,6 +553,14 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 	if recordRouteStrategyID(nil) != "" {
 		t.Fatal("nil 记录策略 ID 为空")
 	}
+	if recordClientIPConcurrencyLimit(nil) != 0 {
+		t.Fatal("无 API Key 的内部请求必须视为单 IP 并发关闭")
+	}
+	limited := *row
+	limited.ClientIPConcurrencyLimit = 7
+	if recordClientIPConcurrencyLimit(&limited) != 7 {
+		t.Fatal("API Key 单 IP 并发上限必须从运行时行透传")
+	}
 	if !apiKeyHasActiveBindingForGroup(*row, "group_1") {
 		t.Fatal("激活绑定必须命中")
 	}

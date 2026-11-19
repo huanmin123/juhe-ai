@@ -217,8 +217,11 @@ assert.match(customFormModalSource, /v-model:value="customModelForm\.supportedTo
 assert.match(customFormModalSource, /:options="modelToolOptions"/, '工具矩阵选项必须复用工具词表单一来源')
 assert.match(customFormModalSource, /watch\(\(\) => \[\.\.\.customModelForm\.supportedApiProtocols\]/, '协议变化必须触发矩阵越界键清理')
 assert.match(customFormModalSource, /supportedToolsByProtocol: _supportedToolsByProtocol/, '内置模型编辑载荷必须剥离能力声明三键（契约仅 custom 行可写）')
-assert.match(plazaViewSource, /repeat\(auto-fill, minmax\(280px, 1fr\)\)/, '模型目录必须使用 auto-fill 卡片网格承载模型列表')
+assert.match(plazaViewSource, /repeat\(auto-fill, minmax\(300px, 1fr\)\)/, '模型广场卡片网格必须使用 300px 起点的 auto-fill 列宽')
 assert.match(plazaViewSource, /modelPriceSlots\(/, '模型目录卡片必须按候选序列接线价格槽位')
+assert.match(plazaViewSource, /modelCapabilityTags\(/, '卡面能力标签必须经 modelCapabilityTags 统一投影')
+assert.match(plazaViewSource, /modelCardSpecs\(/, '卡面规格行必须经 modelCardSpecs 统一投影')
+assert.match(plazaViewSource, /modelCardPriceMeta\(/, '卡面价格标题必须经 modelCardPriceMeta 统一投影')
 // 抽屉「计费价格」一张表 + 「基础信息」网格（§6.2/§6.3，对齐 portal 形态）：
 // 模板字面调用 modelPriceTable(record) / modelInfoItems(record)（不得包 computed 别名，否则断言失效）。
 assert.match(plazaViewSource, /modelPriceTable\(record\)/, '详情抽屉「计费价格」必须按一张价格表渲染当前模型')

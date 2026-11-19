@@ -83,6 +83,9 @@ type PublicApiKeySummary struct {
 	RouteStrategyStatus  *string `json:"routeStrategyStatus,omitempty"`
 	ExpiresAt            *string `json:"expiresAt,omitempty"`
 	AvailabilitySchedule any     `json:"availabilitySchedule,omitempty"`
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：0 关闭，1..1000000
+	// 生效，超限固定 429；与内面 ApiKeyListItem 同字段同语义。
+	ClientIPConcurrencyLimit int `json:"clientIpConcurrencyLimit"`
 	// 调度偏好绑定投影（P1）：与内面 ApiKeyListItem 同规则，null = 历史沿
 	// 用策略路由（迁移期）；摘要不返回完整速度参数。
 	SchedulingPreferenceID      *string `json:"schedulingPreferenceId"`
@@ -244,6 +247,7 @@ func sanitizeApiKeyItem(item *apikeys.ListItem) PublicApiKeySummary {
 		RouteStrategyStatus:         item.RouteStrategyStatus,
 		ExpiresAt:                   item.ExpiresAt,
 		AvailabilitySchedule:        availabilityScheduleValue(item.AvailabilitySchedule),
+		ClientIPConcurrencyLimit:    item.ClientIPConcurrencyLimit,
 		SchedulingPreferenceID:      item.SchedulingPreferenceID,
 		SchedulingPreferenceName:    item.SchedulingPreferenceName,
 		SchedulingPreferenceBuiltIn: item.SchedulingPreferenceBuiltIn,

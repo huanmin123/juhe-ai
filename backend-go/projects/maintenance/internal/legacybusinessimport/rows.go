@@ -203,11 +203,13 @@ func importTeams(ctx context.Context, source *sql.DB, tx *sql.Tx, report *Report
 // kept default is the lowest group id per owner, which is stable across reruns.
 //
 // 2026-11-09 高并发分组退役（普通分组可选调度策略设计 §5.2）：group_type 一律
-// 归一 personal，策略列经迁移内核 NormalizeRow 映射为两键/NULL（16 键旧策略
-// 只保留 defaultSoftConcurrency / clientIpConcurrencyLimit；globalMax 取
-// 旧进程默认值，upgrade 链 revision 22 会对导入库再做同口径完成态核验）。
-// needs_review 形状（畸形 JSON/未知键/未知 group_type）中断导入并保留原始
-// 错误，不静默修复。
+// 归一 personal，策略列经迁移内核 NormalizeRow 校验/映射为两键或 NULL。这里
+// **故意保留两键历史形状**（包括 clientIpConcurrencyLimit）：回迁目标库是空
+// 业务库，导入后必须执行 maintenance upgrade 初始化账本；revision 25 的
+// migrate-key-client-ip-limit 步骤随后把旧分组 IP 限制映射到可达 API Key 并把
+// 分组策略单键化。若导入直接写单键，旧 IP 值会在 upgrade 前被丢弃且无法恢复。
+// 本命令自身不写 api_keys.client_ip_concurrency_limit。needs_review 形状
+// （畸形 JSON/未知键/未知 group_type）中断导入并保留原始错误，不静默修复。
 func importGroups(ctx context.Context, source *sql.DB, tx *sql.Tx, owners map[string]struct{}, report *Report) (map[string]struct{}, error) {
 	rows, err := source.QueryContext(ctx, `
 		SELECT id, system_account_id, name, COALESCE(description,''), enabled, is_default, group_type,
@@ -258,6 +260,8 @@ func importGroups(ctx context.Context, source *sql.DB, tx *sql.Tx, owners map[st
 		}
 		var policyArg any
 		if !target.TargetNull {
+			// 保留两键历史形状，交给导入后 upgrade 链的 revision 25 迁移（见
+			// importGroups 注释）；导入命令自身不写 Key 级 IP 限制。
 			policyArg = target.TargetPolicy.TargetJSON()
 		}
 		if _, err := tx.ExecContext(ctx, `

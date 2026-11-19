@@ -777,7 +777,7 @@ func TestW1VPureProjections(t *testing.T) {
 	}
 
 	// chainSchedulingPolicyValueOf：nil 返回默认两键值（-1/0），非 nil 原样返回。
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
 	if got := chainSchedulingPolicyValueOf(nil); !got.IsDefault() {
 		t.Fatalf("nil policy = %v, want default", got)
 	}

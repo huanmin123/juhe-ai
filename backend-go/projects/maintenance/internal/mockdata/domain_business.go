@@ -465,7 +465,7 @@ type mockUserSeed struct {
 // mockGroupSeed 是一条分组样本（设计 §8：分组无供应商维度）。
 // groupType/groupKind 为空按 personal/standard；超级分组不接受账户直绑，账户
 // 绑定由 seedSuperGroupMembers 落到其成员普通分组上。policyOverride 非空时
-// 生成两键可选调度策略（普通分组可选调度策略设计 §2.2；两项都默认存 NULL）。
+// 生成单键可选调度策略（普通分组可选调度策略设计 §2.2；默认值存 NULL）。
 type mockGroupSeed struct {
 	id             string
 	name           string
@@ -804,14 +804,13 @@ func boolInt(value bool) int {
 	return 0
 }
 
-// mockTwoKeySchedulingPolicy 生成普通分组可选调度策略（普通分组可选调度策略
-// 设计 §2.2）：严格两键，defaultSoftConcurrency 默认 -1（关闭）、
-// clientIpConcurrencyLimit 默认 0（关闭）。2026-11-09 高并发分组退役后不再
-// 生成 16 键旧策略；两项都默认时由调用方存 NULL（与 gateway 写面一致）。
-func mockTwoKeySchedulingPolicy(overrides map[string]any) map[string]any {
+// mockSingleKeySchedulingPolicy 生成普通分组可选调度策略（普通分组可选调度
+// 策略设计 §2.2，2026-11-19 修订后单键化）：只含 defaultSoftConcurrency，
+// 默认 -1（关闭）；clientIpConcurrencyLimit 已迁至 API Key（revision 25），
+// 造数不再写 IP 键。默认值由调用方存 NULL（与 gateway 写面一致）。
+func mockSingleKeySchedulingPolicy(overrides map[string]any) map[string]any {
 	policy := map[string]any{
-		"defaultSoftConcurrency":   -1,
-		"clientIpConcurrencyLimit": 0,
+		"defaultSoftConcurrency": -1,
 	}
 	for key, value := range overrides {
 		policy[key] = value
@@ -828,25 +827,22 @@ type mockGroupInfo struct {
 // seedGroups 写入分组样本：管理员级普通分组、每用户 1 个默认分组、管理员自有
 // 分组与 3 个"授权给别人"的分组（设计 §8：分组不再携带供应商维度），以及 1 个
 // 由两个普通分组成员构成的超级分组。2026-11-09 高并发分组退役：分组类型只有
-// personal，「高并发」样本改为带两键可选调度策略的普通分组（阈值 + 单 IP 并发）。
+// personal；2026-11-19 起分组策略单键化，样本只带 defaultSoftConcurrency。
 func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []mockUserSeed) (map[string]string, map[string]mockGroupInfo, error) {
 	thresholdPolicy := map[string]any{
-		"defaultSoftConcurrency":   12,
-		"clientIpConcurrencyLimit": 8,
+		"defaultSoftConcurrency": 12,
 	}
 	managerThresholdPolicy := map[string]any{
-		"defaultSoftConcurrency":   10,
-		"clientIpConcurrencyLimit": 6,
+		"defaultSoftConcurrency": 10,
 	}
 	opsGrantedPolicy := map[string]any{
-		"defaultSoftConcurrency":   6,
-		"clientIpConcurrencyLimit": 4,
+		"defaultSoftConcurrency": 6,
 	}
 	seeds := []mockGroupSeed{
 		{id: CleanupIDPrefix + "group_main", name: CleanupNamePrefix + "主力分组", owner: guard.adminID,
 			desc: "主力业务分组，包含高优先级与常规账户", enabled: true},
 		{id: CleanupIDPrefix + "group_high", name: CleanupNamePrefix + "高并发 AI 分组", owner: guard.adminID,
-			desc:           "普通分组，启用可选调度策略（单账户排队阈值 + 单 IP 并发限制），用于分组管理页策略摘要展示",
+			desc:           "普通分组，启用可选调度策略（单账户排队阈值），用于分组管理页策略摘要展示",
 			enabled:        true,
 			policyOverride: thresholdPolicy},
 		{id: CleanupIDPrefix + "group_backup", name: CleanupNamePrefix + "备用分组", owner: guard.adminID,
@@ -862,14 +858,14 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 			desc:  "普通管理员自有分组，用于管理员模式按管理员角色筛选和创建目标验收", enabled: true},
 		{id: CleanupIDPrefix + "group_manager_high", name: CleanupNamePrefix + "管理员高并发分组",
 			owner:   CleanupIDPrefix + "user_admin",
-			desc:    "普通管理员自有分组，启用两键可选调度策略，用于管理员角色下的 AI 分组管理验收",
+			desc:    "普通管理员自有分组，启用可选调度策略（单账户排队阈值），用于管理员角色下的 AI 分组管理验收",
 			enabled: true, policyOverride: managerThresholdPolicy},
 		{id: CleanupIDPrefix + "group_dev_granted", name: CleanupNamePrefix + "研发授权分组",
 			owner: CleanupIDPrefix + "user_dev",
 			desc:  "研发用户自有分组，主动授权给超级管理员，用于 AI 分组管理查看授权分组", enabled: true},
 		{id: CleanupIDPrefix + "group_ops_granted", name: CleanupNamePrefix + "运维授权高并发分组",
 			owner:   CleanupIDPrefix + "user_ops",
-			desc:    "运维用户自有普通分组（带单 IP 并发限制），授权给超级管理员后暂停，用于授权状态展示",
+			desc:    "运维用户自有普通分组（带单账户排队阈值），授权给超级管理员后暂停，用于授权状态展示",
 			enabled: true, policyOverride: opsGrantedPolicy},
 		{id: CleanupIDPrefix + "group_tester_granted", name: CleanupNamePrefix + "测试授权过期分组",
 			owner: CleanupIDPrefix + "user_tester",
@@ -903,9 +899,9 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 		}
 		var policy any
 		if seed.policyOverride != nil {
-			normalized := mockTwoKeySchedulingPolicy(seed.policyOverride)
-			// 两项都默认时存 NULL（与 gateway 写面语义一致，契约 §2.2 规则 6）。
-			if normalized["defaultSoftConcurrency"] != -1 || normalized["clientIpConcurrencyLimit"] != 0 {
+			normalized := mockSingleKeySchedulingPolicy(seed.policyOverride)
+			// 默认值存 NULL（与 gateway 写面语义一致，契约 §2.2 规则 6）。
+			if normalized["defaultSoftConcurrency"] != -1 {
 				encoded, err := w.putJSON(normalized)
 				if err != nil {
 					return nil, nil, err

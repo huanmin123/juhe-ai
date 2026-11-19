@@ -337,7 +337,7 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		super := f.createSuper(t, "指纹不一致")
 		personal := f.createStandard(t, "个人组")
 		code, payload := f.env.do(t, http.MethodPost, f.prefix+"/groups",
-			`{"name":"阈值组","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":3,"clientIpConcurrencyLimit":0}}`)
+			`{"name":"阈值组","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":3}}`)
 		if code != http.StatusCreated {
 			t.Fatalf("create policy group: %d %v", code, payload)
 		}
@@ -363,7 +363,7 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		}
 		memberRevision := f.groupRevision(t, g1)
 		status, payload := f.env.do(t, http.MethodPatch, f.prefix+"/groups/"+g1,
-			`{"expectedUpdatedAt":`+fmt.Sprintf("%q", memberRevision)+`,"schedulingPolicy":{"defaultSoftConcurrency":3,"clientIpConcurrencyLimit":0}}`)
+			`{"expectedUpdatedAt":`+fmt.Sprintf("%q", memberRevision)+`,"schedulingPolicy":{"defaultSoftConcurrency":3}}`)
 		assertCode(t, status, payload, http.StatusConflict, CodeSuperGroupMemberDispatchConflict)
 	})
 

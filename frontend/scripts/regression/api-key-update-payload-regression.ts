@@ -7,19 +7,25 @@ import {
   buildApiKeyCreatePayload,
   buildApiKeyMutationPatch,
   hasApiKeyMutationChanges,
+  isValidApiKeyClientIpConcurrencyLimit,
   mergeApiKeyMutationResult,
   type ApiKeyEditableSnapshot
 } from '../../src/views/api-keys/apiKeyMutation'
 
 const frontendRoot = resolve(import.meta.dirname, '../..')
 const apiSource = readFileSync(resolve(frontendRoot, 'src/api/domains/apiKeys.ts'), 'utf8')
+const accessTypeSource = readFileSync(resolve(frontendRoot, 'src/types/domain/access.ts'), 'utf8')
 const modalSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/ApiKeyEditModal.vue'), 'utf8')
 const rowActionsSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/useApiKeyRowActions.ts'), 'utf8')
+const tableConfigSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/apiKeyTableConfig.ts'), 'utf8')
+const responsiveListSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/ApiKeyResponsiveList.vue'), 'utf8')
+const formatterSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/apiKeyFormatters.ts'), 'utf8')
 
 const baseline: ApiKeyEditableSnapshot = {
   name: 'Key A',
   routeStrategyId: 'route_1',
   schedulingPreferenceId: 'pref_1',
+  clientIpConcurrencyLimit: 0,
   status: 'active',
   expiresAt: '2026-08-01T00:00:00.000Z',
   description: 'before',
@@ -58,6 +64,20 @@ const schedulingPreferencePatch = buildApiKeyMutationPatch(baseline, {
 })
 assert.deepEqual(schedulingPreferencePatch, { schedulingPreferenceId: 'pref_2' }, '只改调度偏好时只能发送 schedulingPreferenceId')
 
+// 单 IP 并发限制（API Key 单 IP 并发限制设计 §3.1）：delta 只发送该字段；
+// 0 是有效关闭值，不能被任何 null/空值删除逻辑忽略。
+const clientIpPatch = buildApiKeyMutationPatch(baseline, {
+  ...structuredClone(baseline),
+  clientIpConcurrencyLimit: 5
+})
+assert.deepEqual(clientIpPatch, { clientIpConcurrencyLimit: 5 }, '只改单 IP 并发限制时只能发送 clientIpConcurrencyLimit')
+const clientIpBaseline: ApiKeyEditableSnapshot = { ...structuredClone(baseline), clientIpConcurrencyLimit: 5 }
+assert.deepEqual(
+  buildApiKeyMutationPatch(clientIpBaseline, { ...structuredClone(clientIpBaseline), clientIpConcurrencyLimit: 0 }),
+  { clientIpConcurrencyLimit: 0 },
+  '把单 IP 并发限制改为 0 必须作为有效变更提交'
+)
+
 // 偏好清空不是「缺失保持原值」：契约要求显式回默认（内置 ID）。
 const schedulingPreferenceResetPatch = buildApiKeyMutationPatch(baseline, {
   ...structuredClone(baseline),
@@ -76,6 +96,7 @@ assert.deepEqual(
 const defaultCreatePayload = buildApiKeyCreatePayload({
   name: 'Key B',
   routeStrategyId: 'route_default',
+  clientIpConcurrencyLimit: 0,
   status: 'active',
   expiresAt: null,
   description: '',
@@ -83,10 +104,13 @@ const defaultCreatePayload = buildApiKeyCreatePayload({
   availabilitySchedule: null
 }, { routeStrategyTouched: false })
 // 契约变更（PLAN-20261012T033000000Z P1）：创建总是提交显式偏好 ID，未选择时持久化内置默认行。
+// 安全策略与单 IP 并发限制（0 = 关闭）同样在创建时显式提交。
 assert.deepEqual(defaultCreatePayload, {
   name: 'Key B',
-  schedulingPreferenceId: 'schpref-builtin-chat-cost-first'
-}, '新建必须携带显式调度偏好 ID：未选择时提交内置默认调度偏好')
+  schedulingPreferenceId: 'schpref-builtin-chat-cost-first',
+  securityPolicyId: 'secpol-builtin-default',
+  clientIpConcurrencyLimit: 0
+}, '新建必须携带显式调度偏好 ID、默认安全策略与单 IP 并发限制 0')
 assert.deepEqual(buildApiKeyCreatePayload({
   ...baseline,
   description: '  configured  '
@@ -94,11 +118,21 @@ assert.deepEqual(buildApiKeyCreatePayload({
   name: baseline.name,
   routeStrategyId: baseline.routeStrategyId,
   schedulingPreferenceId: baseline.schedulingPreferenceId,
+  securityPolicyId: 'secpol-builtin-default',
+  clientIpConcurrencyLimit: baseline.clientIpConcurrencyLimit,
   expiresAt: baseline.expiresAt,
   description: 'configured',
   quotaLimits: baseline.quotaLimits,
   availabilitySchedule: baseline.availabilitySchedule
 }, '新建提交用户选择的偏好 ID 与实际配置的非默认字段')
+assert.equal(
+  buildApiKeyCreatePayload({
+    ...baseline,
+    clientIpConcurrencyLimit: 12
+  }, { routeStrategyTouched: true }).clientIpConcurrencyLimit,
+  12,
+  '新建必须提交表单中的正数单 IP 并发限制'
+)
 
 const current: ApiKeySummary = {
   id: 'key_1',
@@ -113,6 +147,7 @@ const current: ApiKeySummary = {
   schedulingPreferenceId: baseline.schedulingPreferenceId,
   schedulingPreferenceName: '偏好一',
   schedulingPreferenceBuiltIn: false,
+  clientIpConcurrencyLimit: 9,
   quotaLimits: baseline.quotaLimits,
   availabilitySchedule: baseline.availabilitySchedule ?? undefined,
   usage: { requestCount: 1, totalTokens: 2, totalCost: 0.1 }
@@ -148,6 +183,22 @@ const nulledPreference = mergeApiKeyMutationResult(current, {
 assert.equal(nulledPreference.schedulingPreferenceId, undefined, 'rowPatch null 偏好绑定必须在列表行归一化为缺失值')
 assert.equal(nulledPreference.schedulingPreferenceName, undefined, 'rowPatch null 偏好名称必须在列表行归一化为缺失值')
 assert.equal(nulledPreference.schedulingPreferenceBuiltIn, undefined, 'rowPatch null 内置标识必须在列表行归一化为缺失值')
+
+const zeroClientIpMerged = mergeApiKeyMutationResult(current, {
+  id: current.id,
+  revision: 'revision-4',
+  changedFields: ['clientIpConcurrencyLimit'],
+  rowPatch: { revision: 'revision-4', clientIpConcurrencyLimit: 0 }
+})
+assert.equal(zeroClientIpMerged.clientIpConcurrencyLimit, 0, 'rowPatch 必须回写单 IP 并发限制 0，0 不是删除值')
+assert.equal(zeroClientIpMerged.revision, 'revision-4', '单 IP 并发限制 rowPatch 必须推进 revision')
+const positiveClientIpMerged = mergeApiKeyMutationResult(current, {
+  id: current.id,
+  revision: 'revision-5',
+  changedFields: ['clientIpConcurrencyLimit'],
+  rowPatch: { revision: 'revision-5', clientIpConcurrencyLimit: 21 }
+})
+assert.equal(positiveClientIpMerged.clientIpConcurrencyLimit, 21, 'rowPatch 必须回写正数单 IP 并发限制')
 
 assert.match(apiSource, /interface ApiKeyUpdatePayload[\s\S]*expectedRevision:\s*string/, 'PATCH payload 必须携带 expectedRevision')
 assert.match(apiSource, /unwrap<ApiKeyMutationResult>\(http\.patch/, 'PATCH 响应必须使用最小 mutation result')
@@ -190,7 +241,76 @@ assert.doesNotMatch(schedulingPreferenceField, /allow-clear/, '调度偏好选�
 assert.match(modalSource, /请选择调度偏好/, '编辑保存必须校验调度偏好必选（无「未选择」可提交态）')
 assert.doesNotMatch(modalSource, /系统默认（/, '内置行显示名由后端下发，前端不得拼装「系统默认（…）」包装')
 
-console.log('API Key delta PATCH 与最小 mutation result 回归测试通过')
+// 单 IP 并发限制（API Key 单 IP 并发限制设计 §2.1/§3.2）：类型、payload、表单、
+// 列表和移动端全链路接入。
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(0), true, '0 是合法的关闭值')
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(1), true, '1 是合法下限')
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(1_000_000), true, '1000000 是合法上限')
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(-1), false, '负数不是合法单 IP 并发限制')
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(1_000_001), false, '超过 1000000 不是合法单 IP 并发限制')
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(1.5), false, '非整数不是合法单 IP 并发限制')
+assert.equal(isValidApiKeyClientIpConcurrencyLimit(undefined), false, '缺失值不是合法单 IP 并发限制')
+
+assert.match(apiSource, /clientIpConcurrencyLimit\?: number/, 'API mutation payload 必须声明 clientIpConcurrencyLimit')
+assert.match(
+  sourceBetween(accessTypeSource, 'export interface ApiKeySummary', 'export interface ApiKeyListResult'),
+  /clientIpConcurrencyLimit\?: number/,
+  'ApiKeySummary 必须声明 clientIpConcurrencyLimit'
+)
+assert.match(
+  sourceBetween(accessTypeSource, 'export interface ApiKeyMutationRowPatch', 'export interface ApiKeyMutationResult'),
+  /clientIpConcurrencyLimit\?: number/,
+  'ApiKeyMutationRowPatch 必须声明 clientIpConcurrencyLimit'
+)
+const clientIpConcurrencyField = sourceBetween(modalSource, 'label="单 IP 并发限制"', '</a-form-item>')
+assert.match(clientIpConcurrencyField, /:min="0"/, '单 IP 并发限制输入最小值为 0')
+assert.match(clientIpConcurrencyField, /:max="1000000"/, '单 IP 并发限制输入最大值为 1000000')
+assert.match(clientIpConcurrencyField, /:precision="0"/, '单 IP 并发限制输入必须为整数')
+assert.match(
+  clientIpConcurrencyField,
+  /0 表示不限制；设置后同一 IP 超过并发立即返回 429/,
+  '单 IP 并发限制帮助文案必须按契约逐字表述'
+)
+assert.match(modalSource, /<div class="modal-section-title">并发限制<\/div>/, 'API Key 表单必须提供并发限制区块')
+assert.match(
+  sourceBetween(modalSource, 'if (schedulingPreferenceSelectorVisible.value', 'try {'),
+  /isValidApiKeyClientIpConcurrencyLimit\(form\.clientIpConcurrencyLimit\)[\s\S]*message\.warning[\s\S]*return/,
+  '保存时必须校验单 IP 并发限制，非法值 warning 并中止'
+)
+assert.match(
+  sourceBetween(modalSource, 'function openCreate', 'function openEdit'),
+  /clientIpConcurrencyLimit:\s*0/,
+  '新建表单必须把单 IP 并发限制重置为 0'
+)
+assert.match(
+  sourceBetween(modalSource, 'function openEdit', 'function apiKeyOperationScopeParams'),
+  /clientIpConcurrencyLimit:\s*apiKey\.clientIpConcurrencyLimit \?\? 0/,
+  '编辑表单必须从列表行回填 clientIpConcurrencyLimit'
+)
+assert.match(
+  sourceBetween(modalSource, 'function currentApiKeyEditableSnapshot', 'function schedulingPreferenceSnapshotId'),
+  /clientIpConcurrencyLimit:/,
+  '编辑快照必须包含 clientIpConcurrencyLimit'
+)
+assert.match(
+  tableConfigSource,
+  /title: '单 IP 并发', key: 'clientIpConcurrencyLimit', width: 120/,
+  'API Key 桌面列表必须提供单 IP 并发列（宽 120，位于安全策略与运行状态之间）'
+)
+assert.match(responsiveListSource, /column\.key === 'clientIpConcurrencyLimit'/, '桌面列表必须渲染单 IP 并发列')
+assert.match(
+  responsiveListSource,
+  /<span>单 IP 并发<\/span>[\s\S]*apiKeyClientIpConcurrencyText\(record\)/,
+  '移动端必须与桌面摘要一致展示单 IP 并发（0 显示不限制，不隐藏）'
+)
+assert.match(responsiveListSource, /:scroll-x="isManagementView \? 2450 : 2270"/, '列表横向滚动宽度必须包含新增列')
+assert.match(
+  formatterSource,
+  /apiKeyClientIpConcurrencyText[\s\S]*limit > 0 \? String\(limit\) : '不限制'/,
+  '单 IP 并发为 0 时必须显示不限制'
+)
+
+console.log('API Key delta PATCH、单 IP 并发限制与最小 mutation result 回归测试通过')
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start)

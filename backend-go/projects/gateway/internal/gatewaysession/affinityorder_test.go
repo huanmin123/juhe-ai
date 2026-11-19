@@ -144,7 +144,7 @@ func TestOrderSoftConcurrencyPrefersBoundAndLessLoaded(t *testing.T) {
 	if _, ok := service.ClaimOpenAIAccountForSessionAsync(context.Background(), key, "bound", scope); !ok {
 		t.Fatal("claim failed")
 	}
-	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 0}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
 	ordered, err := service.OrderOpenAIAccountsBySessionAffinity(accounts, key, DispatchOrderingOptions{
 		GroupType:        GroupTypePersonal,
 		SchedulingPolicy: policy,

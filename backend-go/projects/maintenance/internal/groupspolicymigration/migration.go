@@ -10,8 +10,8 @@
 //     3，契约 §5.2），不静默补默认或猜测修复；不更新 updated_at（§8-13，
 //     由发布流程重启进程刷新运行时缓存）；
 //   - Satisfied / VerifyPostflight：完成态谓词（两表无 personal 之外的
-//     group_type、策略列只含两键或 NULL），供 CLI postflight 与 upgrade
-//     步骤同源使用。
+//     group_type、策略列为 NULL / 单键 defaultSoftConcurrency（revision 25 后
+//     的新终态）/ 历史两键），供 CLI postflight 与 upgrade 步骤同源使用。
 //
 // 幂等：完成态重跑盘点全部 unchanged，零 UPDATE（契约 §5.3）。映射纯函数见
 // policy.go（与 gateway internal/groups 读兼容口径同源）。
@@ -483,7 +483,8 @@ type VerifyReport struct {
 	Examples                  []string `json:"examples,omitempty"` // 前 10 条违规行说明
 }
 
-// Ready 报告完成态：两表无 personal 之外的 group_type、策略列只含两键或 NULL。
+// Ready 报告完成态：两表无 personal 之外的 group_type、策略列为 NULL / 单键
+// defaultSoftConcurrency（revision 25 后）/ 历史两键。
 func (r VerifyReport) Ready() bool {
 	return r.NonPersonalGroups == 0 && r.NonPersonalAuthSettings == 0 &&
 		r.InvalidPolicyGroups == 0 && r.InvalidPolicyAuthSettings == 0
@@ -537,8 +538,8 @@ func VerifyPostflight(ctx context.Context, db *sql.DB) (VerifyReport, error) {
 }
 
 // countInvalidPolicies 读出一张表全部非 NULL 策略行并按完成态形状校验（行数
-// 量级为业务分组数，全量读可接受；两键形状谓词无法用 SQL 表达）。样例追加进
-// examples（上限 10 条）。
+// 量级为业务分组数，全量读可接受；单键/两键形状谓词无法用 SQL 表达）。样例
+// 追加进 examples（上限 10 条）。
 func countInvalidPolicies(ctx context.Context, db *sql.DB, table string, examples []string) (int, []string, error) {
 	keyColumn := "id"
 	if table == TableAuthSettings {
@@ -562,7 +563,7 @@ func countInvalidPolicies(ctx context.Context, db *sql.DB, table string, example
 		if err := rows.Scan(&id, &raw); err != nil {
 			return invalid, examples, fmt.Errorf("读取 %s 策略行失败: %w", table, err)
 		}
-		if ValidateStoredTwoKeyPolicy(raw) {
+		if ValidateStoredPolicy(raw) {
 			continue
 		}
 		invalid++

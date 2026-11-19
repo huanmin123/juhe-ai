@@ -76,41 +76,58 @@
             @click="handleCardClick($event, item)"
             @keydown="handleCardKeydown($event, item)"
           >
-            <div class="model-card-head">
-              <span class="model-card-provider">
-                <ProviderIcon
-                  :provider-code="item.providerCode"
-                  :name="plazaProvidersMap.get(item.providerCode)?.name ?? item.providerCode"
-                  :size="14"
-                />
-                <span class="model-card-provider-name">{{ plazaProvidersMap.get(item.providerCode)?.name ?? item.providerCode }}</span>
-              </span>
-              <span class="model-card-model mono-cell">{{ item.model }}</span>
-              <a-button class="model-card-copy" size="small" type="text" aria-label="复制模型 ID" @click.stop="copyModelId(item)">
-                <template #icon>
-                  <CopyOutlined />
+            <div class="model-card-body">
+              <div class="model-card-head">
+                <h3 class="model-card-title">{{ item.model }}</h3>
+                <span class="model-card-provider">
+                  <ProviderIcon
+                    :provider-code="item.providerCode"
+                    :name="plazaProvidersMap.get(item.providerCode)?.name ?? item.providerCode"
+                    :size="14"
+                  />
+                  <span class="model-card-provider-name">{{ plazaProvidersMap.get(item.providerCode)?.name ?? item.providerCode }}</span>
+                </span>
+              </div>
+              <div class="model-card-caps">
+                <span v-for="tag in modelCapabilityTags(item)" :key="tag" class="model-card-cap">{{ tag }}</span>
+              </div>
+              <div v-if="modelCardSpecs(item).length" class="model-card-specs">
+                <template v-for="(spec, index) in modelCardSpecs(item)" :key="spec.label">
+                  <span v-if="index > 0" class="model-card-spec-sep" aria-hidden="true"></span>
+                  <span class="model-card-spec">{{ spec.label }} {{ spec.value }}</span>
                 </template>
-              </a-button>
-            </div>
-            <div class="model-card-badges">
-              <a-tag v-if="item.scope !== 'built_in'" :color="modelScopeColor(item.scope)">{{ formatModelScope(item.scope) }}</a-tag>
-              <a-tag v-for="tier in modelServiceTierBadges(item)" :key="tier">{{ formatModelServiceTier(tier) }}</a-tag>
-              <a-tag v-if="item.status !== 'active'" :color="modelStatusColor(item.status)">{{ formatModelStatus(item.status) }}</a-tag>
-              <a-tag v-if="item.shutdownDate" color="orange">将停用 {{ item.shutdownDate }}</a-tag>
-            </div>
-            <div v-if="modelPriceSlots(item).length" class="model-card-prices">
-              <div class="model-card-price-list">
-                <div v-for="slot in modelPriceSlots(item)" :key="slot.label" class="model-card-price">
-                  <span class="model-card-price-label">{{ slot.label }}</span>
-                  <span class="model-card-price-value">${{ slot.value }}</span>
+              </div>
+              <div v-if="modelPriceSlots(item).length" class="model-card-price">
+                <div class="model-card-price-caption">
+                  <span class="model-card-price-dot" aria-hidden="true"></span>
+                  <span class="model-card-price-caption-text">{{ modelCardPriceMeta(item, modelPriceSlots(item)).caption }}</span>
+                  <span v-if="modelCardPriceMeta(item, modelPriceSlots(item)).pill" class="model-card-price-pill">
+                    {{ modelCardPriceMeta(item, modelPriceSlots(item)).pill }}
+                  </span>
+                </div>
+                <div class="model-card-price-grid">
+                  <div v-for="slot in modelPriceSlots(item)" :key="slot.label" class="model-card-price-item">
+                    <span class="model-card-price-label">{{ slot.label }}</span>
+                    <strong class="model-card-price-value">{{ slot.value }}</strong>
+                  </div>
                 </div>
               </div>
             </div>
-            <div class="model-card-capacity">
-              {{ formatModelCategory(item) }} · 上下文 {{ formatSpec(item.contextWindowTokens) }} · 输出 {{ formatSpec(item.maxOutputTokens) }}
-            </div>
-            <div v-if="rowActions(item).length" class="model-card-actions" @click.stop @keydown.stop>
-              <RowActions :actions="rowActions(item)" @action-click="handleModelAction($event, item)" />
+            <div class="model-card-footer">
+              <div v-if="hasCardMeta(item)" class="model-card-meta">
+                <a-tag v-if="item.scope !== 'built_in'" :color="modelScopeColor(item.scope)">{{ formatModelScope(item.scope) }}</a-tag>
+                <a-tag v-for="tier in modelServiceTierBadges(item)" :key="tier">{{ formatModelServiceTier(tier) }}</a-tag>
+                <a-tag v-if="item.status !== 'active'" :color="modelStatusColor(item.status)">{{ formatModelStatus(item.status) }}</a-tag>
+                <a-tag v-if="item.shutdownDate" color="orange">将停用 {{ item.shutdownDate }}</a-tag>
+              </div>
+              <div class="model-card-actions" @click.stop @keydown.stop>
+                <a-button class="model-card-copy" size="small" type="text" aria-label="复制模型 ID" @click="copyModelId(item)">
+                  <template #icon>
+                    <CopyOutlined />
+                  </template>
+                </a-button>
+                <RowActions v-if="rowActions(item).length" :actions="rowActions(item)" @action-click="handleModelAction($event, item)" />
+              </div>
             </div>
           </article>
         </div>
@@ -274,14 +291,15 @@ import {
   findFirstModelCategory,
   formatApiProtocol,
   formatModelCatalogDisplayValue,
-  formatModelCategory,
   formatModelModalities,
   formatModelScope,
   formatModelServiceTier,
   formatModelStatus,
   formatPriceTableCell,
-  formatSpec,
   getModelCategory,
+  modelCapabilityTags,
+  modelCardPriceMeta,
+  modelCardSpecs,
   modelInfoItems,
   modelPriceSlots,
   modelPriceTable,
@@ -636,6 +654,14 @@ function modelServiceTierBadges(item: ProviderModelPricing): string[] {
   })
 }
 
+/** 卡面页脚是否有管理端元信息（范围/服务档位/非启用状态/停用日期）。 */
+function hasCardMeta(item: ProviderModelPricing): boolean {
+  return item.scope !== 'built_in'
+    || modelServiceTierBadges(item).length > 0
+    || item.status !== 'active'
+    || Boolean(item.shutdownDate)
+}
+
 function modelRowKey(record: ProviderModelPricing): string {
   return record.id || [record.providerCode, record.scope, record.systemAccountId ?? '', record.model].join(':')
 }
@@ -754,8 +780,8 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   display: grid;
   align-content: start;
   flex: 1 1 auto;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
   min-height: 0;
   overflow-y: auto;
 }
@@ -763,8 +789,8 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
 .model-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: 12px;
+  padding: 18px;
   cursor: pointer;
   background: var(--juhe-surface);
   border: 1px solid var(--juhe-border);
@@ -777,11 +803,36 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   box-shadow: var(--juhe-shadow-card);
 }
 
+.model-card:focus-visible {
+  outline: 2px solid var(--juhe-accent);
+  outline-offset: 2px;
+}
+
+.model-card-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
 .model-card-head {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.model-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--juhe-fg);
+  font-family: var(--juhe-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .model-card-provider {
@@ -789,103 +840,170 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   flex: none;
   align-items: center;
   gap: 4px;
-  padding: 0 6px;
+  height: 26px;
   color: var(--juhe-muted);
   font-size: 11px;
-  background: var(--juhe-surface);
-  border: 1px solid var(--juhe-border);
-  border-radius: 999px;
-}
-
-.model-card-provider-name {
-  max-width: 96px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-card-model {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  white-space: normal;
+.model-card-provider-name {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-card-copy {
   flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--juhe-muted);
 }
 
-.model-card-badges,
-.model-drawer-badges {
+.model-card-copy:hover {
+  color: var(--juhe-fg);
+}
+
+.model-card-caps {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-}
-
-.model-card-badges :deep(.ant-tag),
-.model-drawer-badges :deep(.ant-tag) {
-  margin-inline-end: 0;
-}
-
-.model-card-prices {
-  display: grid;
   gap: 6px;
 }
 
-.model-card-prices-title {
+.model-card-cap {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
   color: var(--juhe-muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--juhe-surface-soft);
+  border-radius: 6px;
 }
 
-.model-card-price-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-  gap: 6px;
+.model-card-specs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--juhe-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-card-spec-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--juhe-border);
 }
 
 .model-card-price {
+  display: grid;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--juhe-border);
+}
+
+.model-card-price-caption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--juhe-muted);
+  font-size: 12px;
+}
+
+.model-card-price-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  background: var(--juhe-faint);
+  border-radius: 50%;
+}
+
+.model-card-price-caption-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.model-card-price-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  color: var(--juhe-muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid var(--juhe-border);
+  border-radius: 999px;
+}
+
+.model-card-price-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.model-card-price-item {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
 .model-card-price-label {
-  color: var(--juhe-faint);
-  font-size: 11px;
-  overflow-wrap: anywhere;
+  color: var(--juhe-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .model-card-price-value {
   color: var(--juhe-fg);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
+  font-family: var(--juhe-font-display);
+  font-size: 18px;
   font-weight: 600;
-}
-
-.model-card-price-unit {
-  color: var(--juhe-faint);
-  font-size: 10px;
-  font-weight: 400;
-}
-
-.model-card-capacity {
-  color: var(--juhe-muted);
-  font-size: 12px;
+  letter-spacing: -0.2px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.model-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.model-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.model-card-meta :deep(.ant-tag) {
+  margin-inline-end: 0;
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .model-card-actions {
   display: flex;
-  flex: 1 0 auto;
-  align-items: flex-end;
+  flex: none;
+  align-items: center;
   justify-content: flex-end;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .model-card-skeleton {
-  padding: 12px;
+  padding: 18px;
   background: var(--juhe-surface);
   border: 1px solid var(--juhe-border);
   border-radius: var(--juhe-radius);
@@ -912,6 +1030,10 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   gap: 4px;
 }
 
+.model-drawer-badges :deep(.ant-tag) {
+  margin-inline-end: 0;
+}
+
 .model-drawer-name-row {
   display: flex;
   align-items: baseline;
@@ -923,9 +1045,10 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
 .model-drawer-model-name {
   min-width: 0;
   margin: 0;
-  font-size: 20px;
+  font-family: var(--juhe-font-display);
+  font-size: 22px;
   font-weight: 600;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.3px;
   line-height: 1.3;
   overflow-wrap: anywhere;
   white-space: normal;

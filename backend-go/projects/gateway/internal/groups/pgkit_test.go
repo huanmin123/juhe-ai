@@ -513,9 +513,10 @@ func (e *testEnv) bindRouteStrategy(t *testing.T, strategyID, ownerID, groupID, 
 
 func boolPtr(v bool) *bool { return &v }
 
-// storedPolicyJSON builds a full strict stored scheduling policy document
-// (the shape Node parseGroupSchedulingPolicyJson demands on read: every
-// stored key present, only stored keys present).
+// storedPolicyJSON builds a retired revision-22 16-key policy document for
+// legacy high_concurrency read-compat fixtures: the new reader keeps only
+// defaultSoftConcurrency (globalMax-mapped) and ignores the rest, including the
+// migrated clientIpConcurrencyLimit key.
 func storedPolicyJSON(t *testing.T, overrides map[string]any) string {
 	t.Helper()
 	policy := map[string]any{

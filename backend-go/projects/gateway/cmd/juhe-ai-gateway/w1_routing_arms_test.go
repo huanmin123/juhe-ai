@@ -34,7 +34,7 @@ func w1rGatewayBodyRequest(raw string, parsed map[string]any, state *gatewaybody
 // GroupType/授权字段 deref，SchedulingPolicy 保持原样 JSON 文本，三态布尔
 // 指针原样透传。
 func TestW1RProjectGroupAccessForRouting(t *testing.T) {
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
 		GroupAccessType:                "owner",
@@ -56,7 +56,7 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 	if projected.GroupType != "personal" {
 		t.Errorf("GroupType = %q, want personal（指针已 deref）", projected.GroupType)
 	}
-	if projected.SchedulingPolicy != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}` {
+	if projected.SchedulingPolicy != `{"defaultSoftConcurrency":5}` {
 		t.Errorf("SchedulingPolicy = %q, want 原样 JSON 文本", projected.SchedulingPolicy)
 	}
 	if projected.GroupAuthorizationID != "authz_1" || projected.GroupAuthorizationExpiresAt != "2999-01-01T00:00:00.000Z" {
@@ -111,12 +111,12 @@ func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 
 	// SchedulingPolicy 合法 JSON：解析为策略对象。
 	valid := base
-	valid.SchedulingPolicy = `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`
+	valid.SchedulingPolicy = `{"defaultSoftConcurrency":5}`
 	out = projectGroupAccessForRuntime(valid)
 	if out.SchedulingPolicy == nil {
 		t.Fatal("合法 SchedulingPolicy 必须解析为策略指针")
 	}
-	if out.SchedulingPolicy.DefaultSoftConcurrency != 5 || out.SchedulingPolicy.ClientIPConcurrencyLimit != 2 {
+	if out.SchedulingPolicy.DefaultSoftConcurrency != 5 {
 		t.Errorf("SchedulingPolicy 解析结果 = %+v, want 5/2", *out.SchedulingPolicy)
 	}
 
@@ -366,8 +366,8 @@ func TestW1RDerefStringPtrRenderSchedulingPolicy(t *testing.T) {
 	if got := renderSchedulingPolicy(nil); got != "" {
 		t.Errorf("renderSchedulingPolicy(nil) = %q, want 空字符串", got)
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
-	if got := renderSchedulingPolicy(&policy); got != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}` {
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
+	if got := renderSchedulingPolicy(&policy); got != `{"defaultSoftConcurrency":5}` {
 		t.Errorf("renderSchedulingPolicy = %q, want 原样 JSON", got)
 	}
 }
@@ -522,7 +522,7 @@ func TestW1RRehydrateGroupAccess(t *testing.T) {
 	fallback := gatewayrouting.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_fb",
 		GroupAccessType:           "owner",
-		SchedulingPolicy:          `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`,
+		SchedulingPolicy:          `{"defaultSoftConcurrency":5}`,
 		GroupAuthorizationID:      "authz_fb",
 	}
 
@@ -534,7 +534,7 @@ func TestW1RRehydrateGroupAccess(t *testing.T) {
 	if projected.GroupAuthorizationID == nil || *projected.GroupAuthorizationID != "authz_fb" {
 		t.Errorf("空 groupID 授权 = %v, want 指针 authz_fb", projected.GroupAuthorizationID)
 	}
-	if projected.SchedulingPolicy == nil || projected.SchedulingPolicy.DefaultSoftConcurrency != 5 || projected.SchedulingPolicy.ClientIPConcurrencyLimit != 2 {
+	if projected.SchedulingPolicy == nil || projected.SchedulingPolicy.DefaultSoftConcurrency != 5 {
 		t.Errorf("空 groupID 策略 = %v, want 5/2", projected.SchedulingPolicy)
 	}
 

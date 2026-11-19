@@ -101,7 +101,7 @@ CoverageReport JSON（`--verify-mockdata-coverage` stdout）：`driver` / `dsn` 
 
 | 域 | schema / 表 | 造数内容 | 状态 |
 | --- | --- | --- | --- |
-| `business` | `juhe_business` | 配套用户 7 个（1 个普通管理员 + 6 个角色用户）、13 个普通分组（含 1 个超级分组；分组类型统一 `personal`，样本含两键可选策略）、25+ AI 账户样本（含状态与类型覆盖、连接面三表、支持模型与入口映射）、路由策略与 API Key 18 条（含本地网关明文 Key）、38 条授权样本（含团队来源与授权实例账户）、团队、代理与代理池样本（池/成员/租约）、公告、模型目录样本、响应检查策略、外部来源系统与 Token、账户测试任务三态、熔断/锁/Key 运行态、媒体任务（video 六状态 + 音频三样本）、题库三态 | 已交付 |
+| `business` | `juhe_business` | 配套用户 7 个（1 个普通管理员 + 6 个角色用户）、13 个普通分组（含 1 个超级分组；分组类型统一 `personal`，样本含单键可选策略）、25+ AI 账户样本（含状态与类型覆盖、连接面三表、支持模型与入口映射）、路由策略与 API Key 18 条（含本地网关明文 Key，Key 样本含单 IP 并发限制字段）、38 条授权样本（含团队来源与授权实例账户）、团队、代理与代理池样本（池/成员/租约）、公告、模型目录样本、响应检查策略、外部来源系统与 Token、账户测试任务三态、熔断/锁/Key 运行态、媒体任务（video 六状态 + 音频三样本）、题库三态 | 已交付 |
 | `usage` | `juhe_usage`：`usage_records` 日分区 | 按天插入使用记录并 ensure 日分区；含三条上游响应模型定向样本与音频/视频计量样本；退役的 shard 目录四表不再写入 | 已交付 |
 | `stats` | `juhe_stats`（`background_task_runs`、`account_usage_snapshots`、dirty 标记） | 原始写入面（`background_task_runs` 由本域独占）；派生聚合表不伪造 | 已交付 |
 | `observability` | `juhe_dataset` 维护面（`public_api_logs`、记录清理目标）+ 属主表（`audit_logs` / `operation_logs`） | 公开接口日志、清理目标；属主表缺失时域内跳过；`runtime_logs` 族已随 F1 下架，不再造数 | 已交付 |

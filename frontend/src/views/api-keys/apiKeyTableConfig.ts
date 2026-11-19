@@ -14,6 +14,7 @@ export function buildApiKeyTableColumns(isManagementView: boolean): Array<Record
     { title: '策略路由', key: 'routeStrategy', width: 240 },
     { title: '调度偏好', key: 'schedulingPreference', width: 160 },
     { title: '安全策略', key: 'securityPolicy', width: 150 },
+    { title: '单 IP 并发', key: 'clientIpConcurrencyLimit', width: 120 },
     { title: '运行状态', key: 'status', width: 120 },
     { title: '时间计划', key: 'availabilitySchedule', width: 260 },
     { title: '累计用量', key: 'usage', width: 180 },

@@ -144,10 +144,9 @@ func TestW1GroupBindingRowProjections(t *testing.T) {
 func TestW1ClientIPConcurrencyAcquire(t *testing.T) {
 	slots, err := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{})
 	adapter := newChainClientIPConcurrency(slots)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	decision, err := adapter.Acquire(context.Background(), gatewaydispatch.ClientIPConcurrencyInput{
 		SystemAccountID: "sys_1", GroupID: "grp_1", APIKeyID: "key_1", ClientIP: "203.0.113.5",
-		Policy: &policy, Signal: context.Background(),
+		Limit: 1, Signal: context.Background(),
 	})
 	if err != nil {
 		t.Fatalf("acquire = %v", err)
@@ -159,7 +158,7 @@ func TestW1ClientIPConcurrencyAcquire(t *testing.T) {
 		t.Fatal("获取后必须携带释放闭包")
 	}
 	decision.Release()
-	// nil 策略：同样可获取。
+	// limit 0（API Key 未配置）同样可获取但闸口关闭。
 	decision2, err := adapter.Acquire(context.Background(), gatewaydispatch.ClientIPConcurrencyInput{
 		SystemAccountID: "sys_1", GroupID: "grp_1", ClientIP: "203.0.113.6", Signal: context.Background(),
 	})

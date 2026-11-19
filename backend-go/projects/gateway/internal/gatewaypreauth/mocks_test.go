@@ -394,6 +394,9 @@ type fakeCandidates struct {
 	// lastFallbackInput captures the most recent fallback candidate input so
 	// tests can pin the field pass-through (F5-1 ExcludedAccountIDs).
 	lastFallbackInput *GroupFallbackCandidateInput
+	// lastPrepareInput captures the most recent dispatch preparation input so
+	// tests can pin the API Key IP-limit pass-through.
+	lastPrepareInput *DispatchPreparationInput
 }
 
 func (f *fakeCandidates) FilterCandidates(context.Context, CandidateFilterInput) (CandidateFilterResult, error) {
@@ -402,7 +405,9 @@ func (f *fakeCandidates) FilterCandidates(context.Context, CandidateFilterInput)
 	}
 	return f.filterResult, nil
 }
-func (f *fakeCandidates) PrepareDispatchAccounts(context.Context, DispatchPreparationInput) (DispatchPreparationResult, error) {
+func (f *fakeCandidates) PrepareDispatchAccounts(_ context.Context, input DispatchPreparationInput) (DispatchPreparationResult, error) {
+	captured := input
+	f.lastPrepareInput = &captured
 	if f.prepareErr != nil {
 		return DispatchPreparationResult{}, f.prepareErr
 	}

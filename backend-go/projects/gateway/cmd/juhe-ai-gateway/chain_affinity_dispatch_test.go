@@ -59,7 +59,7 @@ func w17RedisAffinityService(t *testing.T, mr *miniredis.Miniredis, namespace st
 
 // TestChainDispatchOrderingOptionsOf: 完整选项映射（含 nil 分支与解引用）。
 func TestChainDispatchOrderingOptionsOf(t *testing.T) {
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 7, ClientIPConcurrencyLimit: 3}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 7}
 	rankByAccountID := map[string]int{"acc-a": 0, "acc-b": 1}
 	converted := chainDispatchOrderingOptionsOf(gatewaydispatch.AffinityOrderingOptions{
 		GroupType:        "personal",
@@ -382,7 +382,7 @@ func TestChainSessionAffinityDispatchPortSoftThresholdOrder(t *testing.T) {
 	owner.CurrentConcurrency = &ownerConcurrency
 	peer := w17Account("acc-b")
 	peer.CurrentConcurrency = &peerConcurrency
-	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 1, ClientIPConcurrencyLimit: 0}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 1}
 
 	ordered, err := port.OrderAsync(ctx, []gatewaydispatch.AccountCandidate{owner, peer}, key, gatewaydispatch.AffinityOrderingOptions{
 		GroupType:        "personal",

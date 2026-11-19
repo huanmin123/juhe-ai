@@ -713,13 +713,14 @@ type ClientIPConcurrencyAcquirer interface {
 	Acquire(ctx context.Context, input ClientIPConcurrencyInput) (ClientIPConcurrencyDecision, error)
 }
 
-// ClientIPConcurrencyInput mirrors the acquire input.
+// ClientIPConcurrencyInput mirrors the acquire input; Limit comes from the
+// API Key runtime row (api_keys.client_ip_concurrency_limit, 0 disables).
 type ClientIPConcurrencyInput struct {
 	SystemAccountID string
 	GroupID         string
 	APIKeyID        string
 	ClientIP        string
-	Policy          *gatewayruntimecache.GroupSchedulingPolicy
+	Limit           int
 	Signal          context.Context
 }
 

@@ -75,7 +75,7 @@ func TestGroupLegacyPolicyUsesInjectedGlobalMax(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := detail.SchedulingPolicy.(map[string]any)
-	if policy["defaultSoftConcurrency"] != 500 || policy["clientIpConcurrencyLimit"] != 7 {
+	if len(policy) != 1 || policy["defaultSoftConcurrency"] != 500 {
 		t.Fatalf("legacy policy mapping = %v", policy)
 	}
 	if detail.GroupType != GroupTypePersonal {
@@ -137,14 +137,15 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t, "root", "root-pass", "super_admin")
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"deep-eq","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":100,"clientIpConcurrencyLimit":0}}`)
+		`{"name":"deep-eq","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":100}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, created)
 	}
 	groupID := dataMap(t, created)["id"].(string)
 
-	// Rewrite the stored document with a different key order and whitespace —
-	// the same semantic policy (Node isDeepStrictEqual → no-op).
+	// Rewrite the stored document with a different key order and the retired
+	// legacy IP key — the same normalized single-key policy (Node
+	// isDeepStrictEqual → no-op; read compatibility ignores the IP key).
 	reordered := `{"clientIpConcurrencyLimit":0,  "defaultSoftConcurrency":100}`
 	env.exec(t, `UPDATE groups SET scheduling_policy_json = ? WHERE id = ?`, reordered, groupID)
 
@@ -155,7 +156,7 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	updatedAt := dataMap(t, detail)["updatedAt"].(string)
 
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+groupID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":100,"clientIpConcurrencyLimit":0}}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":100}}`)
 	if code != http.StatusOK {
 		t.Fatalf("noop patch: %d %v", code, patched)
 	}
@@ -174,9 +175,9 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	if stored != reordered {
 		t.Fatalf("noop patch must not rewrite the stored document")
 	}
-	// A real change still lands; objects must carry both keys.
+	// A real change still lands; objects must carry the single key.
 	code, changed := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+groupID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":200,"clientIpConcurrencyLimit":0}}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":200}}`)
 	if code != http.StatusOK {
 		t.Fatalf("real patch: %d %v", code, changed)
 	}

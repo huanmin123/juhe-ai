@@ -23,26 +23,20 @@
           <a-radio-button value="super">超级分组</a-radio-button>
         </a-radio-group>
       </a-form-item>
-      <div v-if="form.groupKind !== 'super'" class="scheduling-policy-grid">
-        <a-form-item label="最大单账户排队阈值" tooltip="-1 表示不启用；设置后达到阈值的账户在新请求排序中让位，让账户使用更平均。">
-          <a-input-number
-            :value="form.schedulingPolicy.defaultSoftConcurrency"
-            :min="-1"
-            :max="1000000"
-            :disabled="editingAuthorizedGroup"
-            @update:value="emit('default-soft-concurrency-change', $event)"
-          />
-        </a-form-item>
-        <a-form-item label="单 IP 并发限制" tooltip="0 表示不限制；设置后同一 IP 超过并发立即返回 429。">
-          <a-input-number
-            :value="form.schedulingPolicy.clientIpConcurrencyLimit"
-            :min="0"
-            :max="1000000"
-            :disabled="editingAuthorizedGroup"
-            @update:value="emit('client-ip-concurrency-limit-change', $event)"
-          />
-        </a-form-item>
-      </div>
+      <a-form-item
+        v-if="form.groupKind !== 'super'"
+        label="最大单账户排队阈值"
+        tooltip="-1 表示不启用；设置后达到阈值的账户在新请求排序中让位，让账户使用更平均。"
+      >
+        <a-input-number
+          :value="form.schedulingPolicy.defaultSoftConcurrency"
+          :min="-1"
+          :max="1000000"
+          :disabled="editingAuthorizedGroup"
+          class="scheduling-policy-input"
+          @update:value="emit('default-soft-concurrency-change', $event)"
+        />
+      </a-form-item>
       <a-form-item label="说明" tooltip="仅用于后台识别分组用途，不参与调度规则。">
         <a-textarea v-model:value="form.description" :rows="3" :disabled="editingAuthorizedGroup" />
       </a-form-item>
@@ -68,7 +62,6 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (event: 'client-ip-concurrency-limit-change', value: unknown): void
   (event: 'default-soft-concurrency-change', value: unknown): void
   (event: 'save'): void
   (event: 'update:open', value: boolean): void
@@ -84,19 +77,7 @@ const emit = defineEmits<{
   margin-top: 16px;
 }
 
-.scheduling-policy-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 16px;
-}
-
-.scheduling-policy-grid :deep(.ant-input-number) {
+.scheduling-policy-input {
   width: 100%;
-}
-
-@media (max-width: 640px) {
-  .scheduling-policy-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

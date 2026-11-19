@@ -163,8 +163,11 @@ import (
 // 627→628：2026-11-13 T207 收口批（revision 24）——juhe_business +1
 // （account-circuit-outbox-status-failed-pg-check：outbox 终态 failed 的
 // 幂等 CHECK 约束替换 DO 块；建表 DDL 原位放宽词表/不变式并具名不改计数）。
+// 628→629：2026-11-19 单 IP 并发限制迁至 API Key 批（revision 25）——
+// juhe_business +1（api-key-client-ip-concurrency-limit-pg-column 幂等
+// ALTER；api_keys 建表 DDL 原位加列不另计语句）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 628
+const goldenPostgresSchemaStatementCount = 629
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -207,7 +210,9 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 建表 + created_at 索引；多节点无需共享盘）。
 	// 340→341：2026-11-13 T207 收口批 +1（account-circuit-outbox-status-failed-pg-check
 	// 约束替换 DO 块，revision 24；详见总数注释）。
-	"juhe_business": 341,
+	// 341→342：2026-11-19 revision 25 单 IP 并发限制迁至 API Key +1
+	// （api-key-client-ip-concurrency-limit-pg-column 幂等 ALTER）。
+	"juhe_business": 342,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -352,8 +357,10 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// security_policy_id + usage_records security_policy_applied / pii_hits_json，
 	// API Key 安全策略与出站内容脱敏设计 §4.1）。104→105：同日防护次数写后
 	// 缓存批 +1（security_policies.protection_count，设计 §4.3.1）。
-	if alterColumns != 105 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 105", alterColumns)
+	// 105→106：2026-11-19 revision 25 单 IP 并发限制迁至 API Key +1
+	// （api_keys.client_ip_concurrency_limit 幂等 ALTER）。
+	if alterColumns != 106 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 106", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。

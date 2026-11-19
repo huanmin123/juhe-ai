@@ -58,15 +58,11 @@ export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefin
   }
 
   // 阈值输入允许 -1 与 1..1000000，禁止 0（普通分组可选调度策略设计 §2.2）：
-  // 非法值不写入表单，输入框失焦后回显当前合法值。
+  // 非法值不写入表单，输入框失焦后回显当前合法值。单 IP 并发限制已迁至 API Key，
+  // 分组策略不再有第二个可编辑字段。
   function setFormDefaultSoftConcurrency(value: unknown) {
     if (typeof value !== 'number' || !Number.isInteger(value) || value === 0 || value < -1 || value > schedulingPolicyValueMax) return
     form.schedulingPolicy.defaultSoftConcurrency = value
-  }
-
-  function setFormClientIpConcurrencyLimit(value: unknown) {
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > schedulingPolicyValueMax) return
-    form.schedulingPolicy.clientIpConcurrencyLimit = value
   }
 
   function groupEditPatch(): Record<string, unknown> {
@@ -79,7 +75,7 @@ export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefin
       if (current.description !== editBaseline.description) payload.description = current.description
       if (!sameSchedulingPolicy(current.schedulingPolicy, editBaseline.schedulingPolicy)) {
         // PATCH 语义（普通分组可选调度策略设计 §2.2 规则 7）：整对象替换；
-        // 两项都为默认值时显式发 null 清空为 NULL，不做键级合并。
+        // 阈值为默认 -1 时显式发 null 清空为 NULL，不做键级合并。
         payload.schedulingPolicy = writableSchedulingPolicyValue(current.schedulingPolicy)
       }
     }
@@ -95,7 +91,7 @@ export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefin
       enabled: current.enabled,
       groupType: current.groupType,
       groupKind: current.groupKind,
-      // 创建语义（§2.2 规则 6）：缺省 → 存 NULL；非默认时传两键齐全的对象。
+      // 创建语义（§2.2 规则 6）：缺省 → 存 NULL；非默认时传单键对象。
       ...(schedulingPolicy === null ? {} : { schedulingPolicy })
     }
   }
@@ -112,10 +108,9 @@ export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefin
   }
 
   function writableSchedulingPolicyValue(policy: Required<GroupSchedulingPolicy>): GroupSchedulingPolicy | null {
-    if (policy.defaultSoftConcurrency === -1 && policy.clientIpConcurrencyLimit === 0) return null
+    if (policy.defaultSoftConcurrency === -1) return null
     return {
-      defaultSoftConcurrency: policy.defaultSoftConcurrency,
-      clientIpConcurrencyLimit: policy.clientIpConcurrencyLimit
+      defaultSoftConcurrency: policy.defaultSoftConcurrency
     }
   }
 
@@ -124,7 +119,6 @@ export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefin
     right: Required<GroupSchedulingPolicy>
   ): boolean {
     return left.defaultSoftConcurrency === right.defaultSoftConcurrency
-      && left.clientIpConcurrencyLimit === right.clientIpConcurrencyLimit
   }
 
   return {
@@ -133,7 +127,6 @@ export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefin
     groupCreatePayload,
     groupEditPatch,
     resetGroupFormForCreate,
-    setFormClientIpConcurrencyLimit,
     setFormDefaultSoftConcurrency
   }
 }

@@ -95,7 +95,14 @@ type BusinessForeignKeySpec struct {
 // pool_health_status / pool_health_failure_streak / pool_health_checked_at
 // 三列及到期索引。Gateway 请求解析依赖这些对象，旧库缺任一对象时
 // schemaReady 门 fail-closed。
-const BusinessSchemaVersion = "business-postgres-gateway-v23"
+// v24 (business-postgres-gateway-v24) 增加 API Key 单 IP 并发限制
+// （API Key 单 IP 并发限制设计 §2.1/§4.1）：
+// api_keys.client_ip_concurrency_limit integer NOT NULL DEFAULT 0（0 = 关闭，
+// 1..1000000 = 生效；超限固定 429）。本契约 map 只冻结 gateway 依赖的最小
+// 表集（不含 api_keys），因此该列由升级链 revision 25 加法相补齐，缺列时
+// gateway 查询报错、不在 schemaReady 门内；版本号仍随运行时新依赖递增以便
+// 检查器区分契约代次。
+const BusinessSchemaVersion = "business-postgres-gateway-v24"
 
 var BusinessSchema = map[string]BusinessTableSpec{
 	"system_accounts":              {Columns: []string{"id", "username", "display_name", "status", "role", "must_change_password", "password_hash", "expedited_account_limit", "last_login_at", "updated_at"}, Indexes: []string{"idx_system_accounts_username_unique_lower", "idx_system_accounts_display_name_unique_lower"}, IndexDefinitions: []BusinessIndexDefinition{{Name: "idx_system_accounts_username_unique_lower", Columns: []string{"lower(username)"}, Unique: true}, {Name: "idx_system_accounts_display_name_unique_lower", Columns: []string{"lower(display_name)"}, Unique: true}}},

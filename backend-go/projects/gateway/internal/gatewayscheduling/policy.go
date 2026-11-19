@@ -1,5 +1,5 @@
 // Package gatewayscheduling owns the retired high_concurrency policy mapping and
-// the two-key ordinary-group policy contract shared by the management plane,
+// the single-key ordinary-group policy contract shared by the management plane,
 // runtime cache and dispatch. It has no store or HTTP dependencies.
 package gatewayscheduling
 
@@ -18,23 +18,23 @@ const (
 	DefaultGlobalConcurrencyMax    = 5_000
 )
 
-const (
-	KeyDefaultSoftConcurrency   = "defaultSoftConcurrency"
-	KeyClientIPConcurrencyLimit = "clientIpConcurrencyLimit"
-)
+const KeyDefaultSoftConcurrency = "defaultSoftConcurrency"
 
-// Policy is the closed ordinary-group scheduling policy: -1/0 mean disabled.
+// legacyKeyClientIPConcurrencyLimit 是已迁至 API Key 的旧分组策略键：
+// 读取旧两键 JSON 时识别并忽略（仅读兼容），写面把该键当未知键拒绝。
+const legacyKeyClientIPConcurrencyLimit = "clientIpConcurrencyLimit"
+
+// Policy is the closed ordinary-group scheduling policy: -1 means disabled.
 type Policy struct {
-	DefaultSoftConcurrency   int `json:"defaultSoftConcurrency"`
-	ClientIPConcurrencyLimit int `json:"clientIpConcurrencyLimit"`
+	DefaultSoftConcurrency int `json:"defaultSoftConcurrency"`
 }
 
 func DefaultPolicy() Policy {
-	return Policy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: 0}
+	return Policy{DefaultSoftConcurrency: -1}
 }
 
 func (p Policy) IsDefault() bool {
-	return p.DefaultSoftConcurrency == -1 && p.ClientIPConcurrencyLimit == 0
+	return p.DefaultSoftConcurrency == -1
 }
 
 // SoftLimit returns the effective soft threshold for an account hard limit;
@@ -73,7 +73,8 @@ func NormalizeGroupType(value string) (normalized string, legacy bool, err error
 
 // ParseStored parses scheduling_policy_json for runtime/response use. NULL or
 // empty yields the default policy. Legacy rows map the old 16-key policy with
-// globalMax; non-legacy rows must be the strict two-key shape.
+// globalMax; non-legacy rows accept the single-key shape plus the retired
+// clientIpConcurrencyLimit key, which is read-compatible and ignored.
 func ParseStored(raw string, valid bool, legacy bool, globalMax int) (Policy, error) {
 	if !valid || strings.TrimSpace(raw) == "" {
 		if legacy {
@@ -96,9 +97,18 @@ func ParseMap(object map[string]any, legacy bool, globalMax int) (Policy, error)
 	if legacy {
 		return mapLegacyPolicy(object, globalMax)
 	}
-	return validateTwoKeyPolicy(object)
+	return parseSingleKeyPolicy(object)
 }
 
+// ParseWrite validates a management-plane create/PATCH policy object against
+// the strict single-key contract: the retired clientIpConcurrencyLimit key is
+// no longer accepted on the write face and is rejected as unknown.
+func ParseWrite(object map[string]any) (Policy, error) {
+	return validateSingleKeyPolicy(object, false)
+}
+
+// mapLegacyPolicy maps the retired 16-key high_concurrency policy onto the
+// single-key contract. The migrated clientIpConcurrencyLimit key is ignored.
 func mapLegacyPolicy(object map[string]any, globalMax int) (Policy, error) {
 	if globalMax <= 0 {
 		globalMax = DefaultGlobalConcurrencyMax
@@ -114,23 +124,21 @@ func mapLegacyPolicy(object map[string]any, globalMax int) (Policy, error) {
 			policy.DefaultSoftConcurrency = value
 		}
 	}
-	if raw, present := object[KeyClientIPConcurrencyLimit]; present && raw != nil {
-		value, ok := policyInteger(raw)
-		if !ok {
-			return Policy{}, fmt.Errorf("分组调度策略 %s 必须是整数", KeyClientIPConcurrencyLimit)
-		}
-		if value < 0 || value > 1_000_000 {
-			return Policy{}, fmt.Errorf("分组调度策略 %s 必须在 0-1000000 之间", KeyClientIPConcurrencyLimit)
-		}
-		policy.ClientIPConcurrencyLimit = value
-	}
 	return policy, nil
 }
 
-func validateTwoKeyPolicy(object map[string]any) (Policy, error) {
+// parseSingleKeyPolicy is the read-side validator: only defaultSoftConcurrency
+// is accepted as data; the retired clientIpConcurrencyLimit key is tolerated
+// and ignored (revision 25 moved it to API Key), any other key is rejected.
+func parseSingleKeyPolicy(object map[string]any) (Policy, error) {
+	return validateSingleKeyPolicy(object, true)
+}
+
+func validateSingleKeyPolicy(object map[string]any, allowLegacyIPKey bool) (Policy, error) {
 	unknown := make([]string, 0, len(object))
 	for key := range object {
-		if key != KeyDefaultSoftConcurrency && key != KeyClientIPConcurrencyLimit {
+		legacyIPKey := allowLegacyIPKey && key == legacyKeyClientIPConcurrencyLimit
+		if key != KeyDefaultSoftConcurrency && !legacyIPKey {
 			unknown = append(unknown, key)
 		}
 	}
@@ -138,30 +146,18 @@ func validateTwoKeyPolicy(object map[string]any) (Policy, error) {
 		sort.Strings(unknown)
 		return Policy{}, fmt.Errorf("分组调度策略包含未知字段：%s", strings.Join(unknown, "、"))
 	}
-	missing := make([]string, 0, 2)
-	for _, key := range []string{KeyDefaultSoftConcurrency, KeyClientIPConcurrencyLimit} {
-		if value, present := object[key]; !present || value == nil {
-			missing = append(missing, key)
-		}
+	raw, present := object[KeyDefaultSoftConcurrency]
+	if !present || raw == nil {
+		return Policy{}, fmt.Errorf("分组调度策略缺少字段：%s", KeyDefaultSoftConcurrency)
 	}
-	if len(missing) > 0 {
-		return Policy{}, fmt.Errorf("分组调度策略缺少字段：%s", strings.Join(missing, "、"))
-	}
-	threshold, ok := policyInteger(object[KeyDefaultSoftConcurrency])
+	threshold, ok := policyInteger(raw)
 	if !ok {
 		return Policy{}, fmt.Errorf("分组调度策略 %s 必须是整数", KeyDefaultSoftConcurrency)
 	}
 	if threshold != -1 && (threshold < 1 || threshold > 1_000_000) {
 		return Policy{}, fmt.Errorf("分组调度策略 %s 必须是 -1 或 1-1000000", KeyDefaultSoftConcurrency)
 	}
-	ipLimit, ok := policyInteger(object[KeyClientIPConcurrencyLimit])
-	if !ok {
-		return Policy{}, fmt.Errorf("分组调度策略 %s 必须是整数", KeyClientIPConcurrencyLimit)
-	}
-	if ipLimit < 0 || ipLimit > 1_000_000 {
-		return Policy{}, fmt.Errorf("分组调度策略 %s 必须在 0-1000000 之间", KeyClientIPConcurrencyLimit)
-	}
-	return Policy{DefaultSoftConcurrency: threshold, ClientIPConcurrencyLimit: ipLimit}, nil
+	return Policy{DefaultSoftConcurrency: threshold}, nil
 }
 
 func policyInteger(raw any) (int, bool) {

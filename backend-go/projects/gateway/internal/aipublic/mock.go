@@ -327,6 +327,20 @@ func mockStrategySummary(id, name, mode, status string, bindings []PublicBinding
 	}
 }
 
+// mockClientIPConcurrencyLimit echoes the parsed JSON number for the mock
+// (test-token) surface; the schema parser has already validated the value.
+func mockClientIPConcurrencyLimit(body map[string]any) int {
+	value, exists := body["clientIpConcurrencyLimit"]
+	if !exists || value == nil {
+		return 0
+	}
+	number, isNumber := value.(float64)
+	if !isNumber {
+		return 0
+	}
+	return int(number)
+}
+
 func (d *Deps) mockApiKeyAdd(w http.ResponseWriter, body map[string]any) {
 	name := textFrom(body, "name")
 	if name == "" {
@@ -349,7 +363,8 @@ func (d *Deps) mockApiKeyAdd(w http.ResponseWriter, body map[string]any) {
 		Key: strPtr("juis_mock_public_api_key"), Status: status,
 		RouteStrategyID: routeStrategyID, RouteStrategyName: strPtr("公开接口策略路由"),
 		RouteStrategyMode: strPtr("normal"), RouteStrategyStatus: strPtr("active"),
-		ExpiresAt: expiresAt,
+		ExpiresAt:                expiresAt,
+		ClientIPConcurrencyLimit: mockClientIPConcurrencyLimit(body),
 	}
 	d.writeMockEnvelope(w, http.StatusOK, map[string]any{
 		"action": "mock", "target": mockTarget(mockUsername(textFrom(body, "targetUsername"))), "apiKey": summary,
@@ -377,7 +392,8 @@ func (d *Deps) mockApiKeyUpdate(w http.ResponseWriter, body map[string]any) {
 		ID: apiKeyID, Name: name, KeyPrefix: "juis_mock", Status: status,
 		RouteStrategyID: routeStrategyID, RouteStrategyName: strPtr("公开接口策略路由"),
 		RouteStrategyMode: strPtr("normal"), RouteStrategyStatus: strPtr("active"),
-		ExpiresAt: optionalTextPointer(body, "expiresAt"),
+		ExpiresAt:                optionalTextPointer(body, "expiresAt"),
+		ClientIPConcurrencyLimit: mockClientIPConcurrencyLimit(body),
 	}
 	d.writeMockEnvelope(w, http.StatusOK, map[string]any{
 		"action": "mock", "target": mockTarget(mockUsername(textFrom(body, "targetUsername"))), "apiKey": summary,

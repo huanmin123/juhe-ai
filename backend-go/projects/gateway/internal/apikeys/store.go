@@ -584,6 +584,10 @@ type ListItem struct {
 	// 解耦设计》§3.1）：NULL = 无计划（恒开）/ 1 = 时段内 / 0 = 时段外。前端
 	// 以 status=active && gate=0 显示「非时间段」次级标签。
 	AvailabilityScheduleGate *int `json:"availabilityScheduleGate,omitempty"`
+	// ClientIPConcurrencyLimit 是 Key 级单 IP 并发上限（API Key 单 IP 并发
+	// 限制设计 §2.1）：0 关闭，1..1000000 生效，超限固定 429。计数作用域仍
+	// 为 (system_account_id, group_id, api_key_id, client_ip)。
+	ClientIPConcurrencyLimit int `json:"clientIpConcurrencyLimit"`
 	// 调度偏好绑定投影（P1）：null = 历史「沿用策略路由（迁移期）」，前端
 	// 不得回显为成本优先；绑定行回显 id/name/builtIn（enabled 已随 v2 第 4 条
 	// 退役，无停用行）。
@@ -695,6 +699,7 @@ type apiKeyRow struct {
 	quotaJSON           sql.NullString
 	scheduleJSON        sql.NullString
 	scheduleGate        sql.NullInt64
+	clientIPLimit       int
 	updatedAt           string
 
 	schedulingPreferenceID      sql.NullString
@@ -719,7 +724,8 @@ func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error
 		&row.schedulingPreferenceID, &row.schedulingPreferenceName, &row.schedulingPreferenceBuiltIn,
 		&row.securityPolicyID, &row.securityPolicyName, &row.securityPolicyBuiltIn,
 		&row.name, &row.description, &row.keyPrefix, &row.keySuffix, &row.status, &row.isDefault,
-		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.scheduleGate, &row.updatedAt)
+		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.scheduleGate,
+		&row.clientIPLimit, &row.updatedAt)
 	err := scan(targets...)
 	return row, err
 }
@@ -795,7 +801,8 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		` + apiKeySecurityPolicyColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
-		api_keys.availability_schedule_json, api_keys.availability_schedule_gate, api_keys.updated_at`
+		api_keys.availability_schedule_json, api_keys.availability_schedule_gate,
+		api_keys.client_ip_concurrency_limit, api_keys.updated_at`
 	args = append(args, normalized.PageSize+1, (normalized.Page-1)*normalized.PageSize)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+columns+`
 		FROM `+s.table("api_keys")+` api_keys`+join+apiKeyJoin(s)+where+`
@@ -957,6 +964,7 @@ func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error)
 		QuotaLimits:                 quotaLimits,
 		AvailabilitySchedule:        schedule,
 		AvailabilityScheduleGate:    nullPtrInt(row.scheduleGate),
+		ClientIPConcurrencyLimit:    row.clientIPLimit,
 		SchedulingPreferenceID:      nullPtrString(row.schedulingPreferenceID),
 		SchedulingPreferenceName:    nullPtrString(row.schedulingPreferenceName),
 		SchedulingPreferenceBuiltIn: nullPtrBoolFromNullInt64(row.schedulingPreferenceBuiltIn),
@@ -1022,7 +1030,8 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		` + apiKeySecurityPolicyColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
-		api_keys.availability_schedule_json, api_keys.availability_schedule_gate, api_keys.updated_at`
+		api_keys.availability_schedule_json, api_keys.availability_schedule_gate,
+		api_keys.client_ip_concurrency_limit, api_keys.updated_at`
 	where := ""
 	args := []any{id}
 	if scoped := access.manageableID(); scoped != "" {
@@ -1114,6 +1123,9 @@ type CreateInput struct {
 	AvailabilitySchedule   any
 	SchedulingPreferenceID *string
 	SecurityPolicyID       *string
+	// ClientIPConcurrencyLimit 是 Key 级单 IP 并发上限：缺省/null 由 HTTP 层
+	// 归一为 0（关闭）；store 层仍校验 0..1000000 防止非 HTTP 调用越界。
+	ClientIPConcurrencyLimit int
 }
 
 // Create mirrors createApiKeyRecordAsync: sealed random key, default-strategy
@@ -1141,6 +1153,12 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 		return nil, nil, err
 	}
 	schedule, err := normalizeScheduleWithDefault(input.AvailabilitySchedule, s.defaultScheduleTimezone)
+	if err != nil {
+		return nil, nil, err
+	}
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺省 0，0..1000000。
+	// HTTP 层已做类型/整数校验，store 层保留范围校验以覆盖非 HTTP 调用方。
+	clientIPLimit, err := normalizeClientIPConcurrencyLimit(input.ClientIPConcurrencyLimit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1208,12 +1226,12 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 		(id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
 		 key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json,
 		 availability_schedule_json, availability_schedule_next_check_at, availability_schedule_gate,
-		 scheduling_preference_id, security_policy_id,
+		 client_ip_concurrency_limit, scheduling_preference_id, security_policy_id,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, ownerID, strategy.id, name, description, HashSecret(key), keyPrefix, keySuffix,
 		sealed, status, expiresAt, quotaJSONValue, scheduleJSONValue, nextCheckAt, scheduleGateValue,
-		preference.id, policy.id, nowISO, revision)
+		clientIPLimit, preference.id, policy.id, nowISO, revision)
 	if err != nil {
 		if duplicate := duplicateAPIKeyNameError(err, name); duplicate != nil {
 			return nil, nil, duplicate

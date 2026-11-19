@@ -1015,7 +1015,7 @@ func fullchainG1(t *testing.T, f *fullchainFixture) {
 	route := f.newRoute("G1", "normal", []fullchainGroupSpec{
 		{
 			groupType:        "personal",
-			schedulingPolicy: map[string]any{"defaultSoftConcurrency": 1, "clientIpConcurrencyLimit": 0},
+			schedulingPolicy: map[string]any{"defaultSoftConcurrency": 1},
 			accounts: []fullchainAccountSpec{
 				{key: holdKey, script: []platformmock.Scenario{fullchainHoldScenario}, extra: map[string]any{"concurrencyLimit": 1}},
 			},

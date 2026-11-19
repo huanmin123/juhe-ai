@@ -199,32 +199,66 @@ func TestTwoKeyPolicyTargetJSONShape(t *testing.T) {
 	}
 }
 
-func TestValidateStoredTwoKeyPolicy(t *testing.T) {
+// TestNormalizeRowSingleKeyPolicyIsTerminal 钉住 revision 25 兼容：单键
+// defaultSoftConcurrency 是完成态，soft 原样读取（不再走 globalMax 映射），
+// 且重跑判定 unchanged（不会把单键写回两键）。
+func TestNormalizeRowSingleKeyPolicyIsTerminal(t *testing.T) {
+	target, reason := NormalizeRow(GroupTypePersonal, nullPolicy(`{"defaultSoftConcurrency":5000}`), 5000)
+	if reason != "" {
+		t.Fatalf("单键策略不应进入 needs_review: %s", reason)
+	}
+	if target.TargetNull || target.TargetPolicy.SoftConcurrency != 5000 || target.TargetPolicy.ClientIPLimit != 0 {
+		t.Fatalf("单键目标 = %+v, want soft=5000/ip=0/NULL=false", target)
+	}
+	if !rowMatchesTarget(GroupTypePersonal, nullPolicy(`{"defaultSoftConcurrency":5000}`), target) {
+		t.Fatal("单键同值应判定 unchanged（不得写回两键）")
+	}
+	if rowMatchesTarget(GroupTypePersonal, nullPolicy(`{"defaultSoftConcurrency":6}`), target) {
+		t.Fatal("单键不同值应判定需要改写")
+	}
+	nullTarget, reason := NormalizeRow(GroupTypePersonal, nullPolicy(`{"defaultSoftConcurrency":-1}`), 5000)
+	if reason != "" || !nullTarget.TargetNull {
+		t.Fatalf("单键 -1 目标应为 NULL: %+v/%s", nullTarget, reason)
+	}
+	if !rowMatchesTarget(GroupTypePersonal, nullPolicy(`{"defaultSoftConcurrency":-1}`), nullTarget) {
+		t.Fatal("单键 -1 应判定 unchanged")
+	}
+	if _, reason := NormalizeRow(GroupTypePersonal, nullPolicy(`{"defaultSoftConcurrency":0}`), 5000); reason != ReviewInvalidValue {
+		t.Fatalf("单键 0 应为 invalid_value，got %q", reason)
+	}
+}
+
+func TestValidateStoredPolicy(t *testing.T) {
 	valid := []string{
-		``,
+		``, // NULL/空串历史完成态
 		`{"clientIpConcurrencyLimit":5,"defaultSoftConcurrency":5}`,
 		`{"clientIpConcurrencyLimit":0,"defaultSoftConcurrency":-1}`,
 		`{"clientIpConcurrencyLimit":1000000,"defaultSoftConcurrency":1000000}`,
+		// revision 25 完成态：单键 defaultSoftConcurrency。
+		`{"defaultSoftConcurrency":5}`,
+		`{"defaultSoftConcurrency":-1}`,
+		`{"defaultSoftConcurrency":1000000}`,
 	}
 	for _, text := range valid {
-		if !ValidateStoredTwoKeyPolicy(nullPolicy(text)) {
+		if !ValidateStoredPolicy(nullPolicy(text)) {
 			t.Fatalf("%q 应判定完成态合规", text)
 		}
 	}
 	invalid := []string{
 		`{}`,
-		`{"defaultSoftConcurrency":5}`,
 		`{"clientIpConcurrencyLimit":5}`,
 		`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":5,"mode":"balanced_fast"}`,
 		`{"defaultSoftConcurrency":0,"clientIpConcurrencyLimit":5}`,
+		`{"defaultSoftConcurrency":0}`,
 		`{"defaultSoftConcurrency":1000001,"clientIpConcurrencyLimit":5}`,
 		`{"clientIpConcurrencyLimit":-1,"defaultSoftConcurrency":5}`,
 		`{"defaultSoftConcurrency":5.5,"clientIpConcurrencyLimit":5}`,
+		`{"defaultSoftConcurrency":5.5}`,
 		`not json`,
 		`[1]`,
 	}
 	for _, text := range invalid {
-		if ValidateStoredTwoKeyPolicy(nullPolicy(text)) {
+		if ValidateStoredPolicy(nullPolicy(text)) {
 			t.Fatalf("%q 应判定完成态违规", text)
 		}
 	}

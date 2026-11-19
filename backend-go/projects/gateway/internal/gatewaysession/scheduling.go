@@ -4,17 +4,17 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
-// SchedulingPolicyValues is the closed two-key ordinary-group policy. The
+// SchedulingPolicyValues is the closed single-key ordinary-group policy. The
 // retired high_concurrency fields are gone; -1/0 mean disabled.
 type SchedulingPolicyValues = gatewayscheduling.Policy
 
 // SchedulingDefaults is retained for the affinity service constructor; the
-// two-key policy no longer has globalMax-backed defaults.
+// single-key policy no longer has globalMax-backed defaults.
 type SchedulingDefaults struct {
 	GlobalMax int64
 }
 
-// ResolveGroupSchedulingPolicy parses the two-key policy. nil means the
+// ResolveGroupSchedulingPolicy parses the single-key policy. nil means the
 // default (both disabled).
 func ResolveGroupSchedulingPolicy(value *gatewayscheduling.Policy) (*SchedulingPolicyValues, error) {
 	if value == nil {

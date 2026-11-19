@@ -69,13 +69,15 @@ func (f *flagClientSourceAvoidancePort) OrderAsync(_ context.Context, accounts [
 }
 
 type configurableClientIPConcurrency struct {
-	enabled  bool
-	acquired bool
-	reason   string
-	released atomic.Int64
+	enabled   bool
+	acquired  bool
+	reason    string
+	released  atomic.Int64
+	lastInput ClientIPConcurrencyInput
 }
 
-func (f *configurableClientIPConcurrency) Acquire(context.Context, ClientIPConcurrencyInput) (ClientIPConcurrencyDecision, error) {
+func (f *configurableClientIPConcurrency) Acquire(_ context.Context, input ClientIPConcurrencyInput) (ClientIPConcurrencyDecision, error) {
+	f.lastInput = input
 	decision := ClientIPConcurrencyDecision{Enabled: f.enabled, Acquired: f.acquired, Reason: f.reason, Current: 1, Limit: 2}
 	if f.acquired {
 		decision.Release = func() { f.released.Add(1) }
@@ -95,22 +97,22 @@ func dispatchPreparationInput(t *testing.T, accounts []AccountCandidate) gateway
 		t.Fatalf("wall budget: %v", err)
 	}
 	return gatewaypreauth.DispatchPreparationInput{
-		GatewayRequestWallBudget: wallBudget,
-		Req:                      req,
-		AuditCapture:             &frozenAudit{sink: &fakeAuditSink{}},
-		UsageContext:             testUsageContext(),
-		StartedAt:                gatewayupstream.NowMs(),
-		CandidateAccounts:        accounts,
-		ModelPriority:            &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
-		GroupAccess:              gatewayruntimecache.GroupUsageAccessMetadata{},
-		SystemAccountID:          "system-1",
-		APIKeyID:                 "apikey-1",
-		GroupID:                  "group-1",
-		ClientStrategy:           gatewaypreauth.ClientStrategyContext{},
-		RequestLane:              "text",
-		ServerRetryBudget:        gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),
-		RouteCoordinator:         &capturingCoordinator{},
-		Signal:                   context.Background(),
+		GatewayRequestWallBudget:       wallBudget,
+		Req:                            req,
+		AuditCapture:                   &frozenAudit{sink: &fakeAuditSink{}},
+		UsageContext:                   testUsageContext(),
+		StartedAt:                      gatewayupstream.NowMs(),
+		CandidateAccounts:              accounts,
+		ModelPriority:                  &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
+		GroupAccess:                    gatewayruntimecache.GroupUsageAccessMetadata{},
+		SystemAccountID:                "system-1",
+		APIKeyID:                       "apikey-1",
+		APIKeyClientIPConcurrencyLimit: 1,
+		GroupID:                        "group-1",
+		ClientStrategy:                 gatewaypreauth.ClientStrategyContext{}, RequestLane: "text",
+		ServerRetryBudget: gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),
+		RouteCoordinator:  &capturingCoordinator{},
+		Signal:            context.Background(),
 	}
 }
 
@@ -255,7 +257,8 @@ func TestPrepareDispatchAccountsOrdinaryGroupReady(t *testing.T) {
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 0}}
 	engine.Affinity = &fakeAffinity{}
-	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: true}
+	gate := &configurableClientIPConcurrency{enabled: true, acquired: true}
+	engine.ClientIPConcurrency = gate
 	driver := engine.Driver.(*fakeDriver)
 	driver.urlByAccount = map[string][]string{
 		"a-1": {okServer.URL + "/v1/chat/completions"},
@@ -269,6 +272,9 @@ func TestPrepareDispatchAccountsOrdinaryGroupReady(t *testing.T) {
 	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts || len(result.Accounts) != 1 {
 		t.Fatalf("result = %#v", result)
 	}
+	if gate.lastInput.Limit != 1 {
+		t.Fatalf("client IP limit 必须来自 API Key（input.Limit=1），实际 %d", gate.lastInput.Limit)
+	}
 	if result.ReleaseClientIPConcurrency == nil {
 		t.Fatal("client IP 并发释放闭包必须存在")
 	}
@@ -281,7 +287,8 @@ func TestPrepareDispatchAccountsClientIPConcurrencyRejected429(t *testing.T) {
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{}}
 	engine.Affinity = &fakeAffinity{}
-	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: false, reason: "limit_reached"}
+	gate := &configurableClientIPConcurrency{enabled: true, acquired: false, reason: "limit_reached"}
+	engine.ClientIPConcurrency = gate
 	input := dispatchPreparationInput(t, testAccounts("a-1"))
 	input.GroupAccess = ordinaryGroupAccess(&policy)
 	coordinator := &capturingCoordinator{}
@@ -290,10 +297,13 @@ func TestPrepareDispatchAccountsClientIPConcurrencyRejected429(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareDispatchAccounts: %v", err)
 	}
+	if gate.lastInput.Limit != 1 {
+		t.Fatalf("client IP limit 必须来自 API Key（input.Limit=1），实际 %d", gate.lastInput.Limit)
+	}
 	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
 		t.Fatalf("outcome = %s", result.Outcome)
 	}
-	if coordinator.failure == nil || coordinator.failure.Message != "当前 IP 并发已达到分组限制，请稍后重试" {
+	if coordinator.failure == nil || coordinator.failure.Message != "当前 IP 并发已达到限制，请稍后重试" {
 		t.Fatalf("failure = %#v", coordinator.failure)
 	}
 }
@@ -302,7 +312,7 @@ func TestPrepareDispatchAccountsClientIPConcurrencyRejected429(t *testing.T) {
 // 不产生排队或 429——账户并发未达硬限（4）时照常取得容量并 ready。
 func TestPrepareDispatchAccountsAllSoftBusyStillDispatches(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3, ClientIPConcurrencyLimit: 0}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3}
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 3, "a-2": 3}}
 	engine.Affinity = &fakeAffinity{}
 	engine.ClientIPConcurrency = &configurableClientIPConcurrency{enabled: true, acquired: true}

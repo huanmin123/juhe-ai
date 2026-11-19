@@ -1206,13 +1206,13 @@ export interface AccountExportResult {
   }
 }
 
-// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：非空对象必须同时
-// 包含两个键；NULL 等价于两项都取默认值。旧 16 键高并发策略已退役。
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2；单键化见
+// API Key 单 IP 并发限制设计 §2.4）：非空对象只允许 defaultSoftConcurrency
+// 一个键；NULL 等价于默认值 -1。旧 16 键高并发策略与单 IP 并发限制键均已退出
+// 分组策略。单 IP 并发限制现由 API Key 的 clientIpConcurrencyLimit 承载。
 export interface GroupSchedulingPolicy {
   /** 最大单账户排队阈值：-1 关闭（默认）；1..1000000 生效；0 不是合法值。 */
   defaultSoftConcurrency?: number
-  /** 单 IP 并发上限：0 不限制（默认）；1..1000000 生效，超限立即返回 429。 */
-  clientIpConcurrencyLimit?: number
 }
 
 export type GroupKind = 'standard' | 'super'
@@ -1229,7 +1229,7 @@ export interface GroupSummary {
   groupType: GroupType
   /** 分组形态：普通分组直接拥有账号；超级分组只拥有成员关系（超级分组设计 §3.1）。 */
   groupKind?: GroupKind
-  /** 可选调度策略：NULL/缺省 = 两项都取默认值（普通分组可选调度策略设计 §2.2）。 */
+  /** 可选调度策略：NULL/缺省 = 最大单账户排队阈值取默认 -1（普通分组可选调度策略设计 §2.2）。 */
   schedulingPolicy?: GroupSchedulingPolicy | null
   accountIds?: string[]
   accountStats: GroupAccountStats

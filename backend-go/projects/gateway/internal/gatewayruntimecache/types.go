@@ -204,6 +204,10 @@ type GatewayAPIKeyRow struct {
 	AvailabilityScheduleGate *int64  `json:"availability_schedule_gate,omitempty"`
 	ExpiresAt                *string `json:"expires_at"`
 	QuotaLimitsJSON          *string `json:"quota_limits_json"`
+	// ClientIPConcurrencyLimit 是 api_keys.client_ip_concurrency_limit
+	// （《API Key 单 IP 并发限制设计》§2.1）：0 = 关闭；1..1000000 = 生效。
+	// 计数作用域仍为 (system_account_id, group_id, api_key_id, client_ip)。
+	ClientIPConcurrencyLimit int `json:"client_ip_concurrency_limit"`
 	// 调度偏好独立实体 P1 快照三字段（SP-C1/SP-C2 冻结接口）：三者全空 =
 	// 历史策略路径（scheduling_preference_id IS NULL 或 purpose=chat，v1 运行
 	// 态键，行为与旧版逐项一致）；SchedulingPreferenceFingerprint 非空 = 合成
@@ -441,7 +445,7 @@ func cloneCredentials(input map[string]any) map[string]any {
 }
 
 // GroupSchedulingPolicy is the closed ordinary-group policy shared with the
-// management plane and dispatch (defaultSoftConcurrency/clientIpConcurrencyLimit).
+// management plane and dispatch (single-key defaultSoftConcurrency).
 type GroupSchedulingPolicy = gatewayscheduling.Policy
 
 // GroupUsageAccessMetadata mirrors GroupUsageAccessMetadata

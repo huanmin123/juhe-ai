@@ -685,7 +685,7 @@ func chainNormalizeGroupType(value sql.NullString) (*string, bool, error) {
 	return &normalized, legacy, nil
 }
 
-// chainParseGroupSchedulingPolicy parses the optional two-key policy; legacy
+// chainParseGroupSchedulingPolicy parses the optional single-key policy; legacy
 // high_concurrency rows map their old 16-key payload with globalMax.
 func chainParseGroupSchedulingPolicy(value sql.NullString, legacy bool, globalMax int) (*gatewayruntimecache.GroupSchedulingPolicy, error) {
 	policy, err := gatewayscheduling.ParseStored(value.String, value.Valid, legacy, globalMax)

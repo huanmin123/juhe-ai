@@ -1,4 +1,4 @@
-// `maintenance upgrade` 的 15 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 16 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
@@ -34,6 +34,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/groupspolicymigration"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/keyipmigration"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upgradepipeline"
 )
 
@@ -668,6 +669,142 @@ func verifyGroupPolicyMigration(ctx context.Context, dsn string) error {
 	return errors.New("revision 22 完成态谓词未满足")
 }
 
+// ---------- revision 25：单 IP 并发限制迁至 API Key ----------
+//
+// API Key 单 IP 并发限制设计 §4（2026-11-19 裁决）：退役分组策略里的
+// clientIpConcurrencyLimit，把存量值映射到路由策略可达的 API Key，并把分组
+// 策略重写为单键 defaultSoftConcurrency 或 NULL。一个 Destructive 步骤在
+// 停写窗口内：
+//  1. 对每个 Key 解析 route_strategy_groups 全量绑定（不过滤 status/enabled）、
+//     超级分组展开全部成员（不过滤 enabled），收集旧分组 IP 正值；
+//  2. 唯一正值写入 Key；无正值写 0；多个不同正值默认 needs_review/exit 3，
+//     upgrade 步骤无人工 flag 面固定 block（人工先用 CLI --conflict-policy=min
+//     或手工设置 Key 值收敛）；
+//  3. 分组策略重写为单键/NULL，超级分组自身行按首成员重算；成员
+//     defaultSoftConcurrency 不一致进入 needs_review；
+//  4. 不更新 updated_at；幂等重跑零写入。
+//
+// needs_review 时 Apply 零写入返回 detail：错误由 Verify 复查处以 exit 3 停止
+// 账本（Apply 直接返回错误会被引擎归为 exit 1）。Satisfied/Verify 与迁移内核
+// 完成态谓词同源；升级前先跑 CLI --dry-run 复核 manifest。
+func keyClientIPLimitSatisfied(ctx context.Context, dsn string) (bool, error) {
+	exists, err := tableExists(ctx, dsn, "juhe_business", "groups")
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return true, nil
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	return keyipmigration.Satisfied(ctx, db)
+}
+
+// applyKeyClientIPLimitMigration 是 revision 25 的 Apply：调用与
+// migrate-key-client-ip-limit CLI 同一迁移内核。needs_review 阻断时零写入并
+// 返回 detail + nil，让管线进入 Verify 并以 exit 3 停止（detail_json 记录
+// manifest 摘要，账本停于 running）。
+func applyKeyClientIPLimitMigration(ctx context.Context, dsn string) (upgradepipeline.Detail, error) {
+	db, err := openPG(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	plan, applyErr := keyipmigration.Apply(ctx, db, keyipmigration.Options{
+		ConflictPolicy: keyipmigration.ConflictPolicyBlock,
+	})
+	detail := upgradepipeline.Detail{
+		"keysTotal":             plan.KeysTotal,
+		"keysUpdated":           plan.KeysUpdated,
+		"keysPreexisting":       plan.KeysPreexisting,
+		"keysUnchanged":         plan.KeysUnchanged,
+		"keyColumnPresent":      plan.KeyColumnPresent,
+		"groupsRewritten":       plan.GroupsRewritten,
+		"superGroupsRecomputed": plan.SuperGroupsRecomputed,
+		"emptySuperGroups":      plan.EmptySuperGroups,
+		"conflicts":             plan.Conflicts,
+		"blockedCount":          plan.Blocked,
+		"appliedCount":          plan.Applied,
+		"needsReview":           plan.NeedsReview,
+	}
+	if errors.Is(applyErr, keyipmigration.ErrNeedsReview) {
+		fmt.Fprintf(os.Stderr, "revision 25 单 IP 并发限制迁移被阻断：%d 行 needs_review（零写入）；人工确认后用 CLI --conflict-policy=min 或手工设置 Key 值收敛后重跑\n",
+			plan.Blocked)
+		// 不把 Apply 错误交给引擎（Apply 错误 → exit 1）；由 Verify 复查失败
+		// 以 exit 3 停止账本（协调裁决：needs_review → upgrade exit 3）。
+		return detail, nil
+	}
+	if applyErr != nil {
+		return detail, applyErr
+	}
+	fmt.Fprintf(os.Stderr, "revision 25 单 IP 并发限制迁移：Key update %d（preexisting %d / unchanged %d），分组重写 %d（超级分组重算 %d，空超级 %d），needs_review %d\n",
+		plan.KeysUpdated, plan.KeysPreexisting, plan.KeysUnchanged,
+		plan.GroupsRewritten, plan.SuperGroupsRecomputed, plan.EmptySuperGroups, plan.Blocked)
+	return detail, nil
+}
+
+// verifyKeyClientIPLimitMigration 是 Apply 后的完成态核验（与 Satisfied 同一
+// 谓词，逐项给出可归因计数）。
+func verifyKeyClientIPLimitMigration(ctx context.Context, dsn string) error {
+	satisfied, err := keyClientIPLimitSatisfied(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	if satisfied {
+		return nil
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	report, err := keyipmigration.VerifyPostflight(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !report.KeyColumnPresent {
+		return errors.New("revision 25 迁移未完成：api_keys.client_ip_concurrency_limit 列不存在")
+	}
+	if report.LegacyIPKeyGroups > 0 {
+		return fmt.Errorf("revision 25 迁移未完成：仍有 %d 个分组策略含 clientIpConcurrencyLimit", report.LegacyIPKeyGroups)
+	}
+	if report.InvalidPolicyGroups > 0 {
+		return fmt.Errorf("revision 25 迁移未完成：%d 个分组策略不是单键/NULL 完成态形状：%v",
+			report.InvalidPolicyGroups, report.Examples)
+	}
+	if report.InvalidKeyLimitValues > 0 {
+		return fmt.Errorf("revision 25 迁移未完成：%d 个 API Key 的 client_ip_concurrency_limit 为空或越界", report.InvalidKeyLimitValues)
+	}
+	if report.SuperGroupMismatches > 0 {
+		return fmt.Errorf("revision 25 迁移未完成：%d 个超级分组自身行与首成员不一致：%v",
+			report.SuperGroupMismatches, report.Examples)
+	}
+	// 形状检查通过但盘点仍有 needs_review（典型：成员阈值不一致且无旧 IP
+	// 值、拓扑 owner 不一致）时同样判未完成，落实设计 §4.2-7「不静默选边」。
+	plan, err := keyipmigration.BuildPlan(ctx, db, keyipmigration.Options{ConflictPolicy: keyipmigration.ConflictPolicyBlock})
+	if err != nil {
+		return err
+	}
+	if plan.Blocked > 0 {
+		examples := make([]string, 0, 5)
+		for _, review := range plan.NeedsReview {
+			if len(examples) == 5 {
+				break
+			}
+			examples = append(examples, fmt.Sprintf("%s:%s(%s)", review.Target, review.ID, review.Reason))
+		}
+		return fmt.Errorf("revision 25 迁移存在 %d 行 needs_review：%v", plan.Blocked, examples)
+	}
+	if plan.KeysUpdated > 0 || plan.GroupsRewritten > 0 {
+		return fmt.Errorf("revision 25 迁移未完成：%d 个 API Key / %d 个分组仍待写入",
+			plan.KeysUpdated, plan.GroupsRewritten)
+	}
+	return errors.New("revision 25 完成态谓词未满足")
+}
+
 // ---------- revision 23：退役 usage shard 目录四表 ----------
 //
 // 2026-11-10 用户裁决：shard 目录四表没有现行需求，生产写入链路只写
@@ -742,7 +879,7 @@ func applyUsageShardCatalogRetirement(ctx context.Context, dsn string) (upgradep
 	return upgradepipeline.Detail{"dropped": dropped, "alreadyRetired": false}, nil
 }
 
-// upgradeSteps 返回 15 步骤注册表（revision 升序；引擎再做一次排序校验）。
+// upgradeSteps 返回 16 步骤注册表（revision 升序；引擎再做一次排序校验）。
 // secret 为空时，凭据类 Check 不允许调用（第 8 步门禁保证到 Apply 阶段必有；
 // dry-run 阶段 Check 若需要 secret 会以错误呈现——预检语义可接受）。
 func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
@@ -1289,6 +1426,27 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 					return errors.New("usage shard 目录四表未清退干净")
 				}
 				return nil
+			},
+		},
+		{
+			// API Key 单 IP 并发限制设计 §4（2026-11-19 裁决）。Destructive=true：
+			// expand 相被引擎过滤，contract/all 相执行数据迁移；DDL 加法列由
+			// 加法相幂等补齐。Satisfied/Verify 同源（内核完成态谓词）；Apply 与
+			// migrate-key-client-ip-limit CLI 共用迁移内核；needs_review 零写入
+			// 后由 Verify 失败以 exit 3 停账本（升级前先跑 CLI --dry-run 复核）。
+			Revision: 25, ID: "migrate-key-client-ip-limit",
+			Title:       "单 IP 并发限制从分组迁移至 API Key（分组策略单键化）",
+			Target:      upgradepipeline.TargetPrimary,
+			Destructive: true,
+			ImplVersion: 1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return keyClientIPLimitSatisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyKeyClientIPLimitMigration(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				return verifyKeyClientIPLimitMigration(ctx, primaryDSN)
 			},
 		},
 	}

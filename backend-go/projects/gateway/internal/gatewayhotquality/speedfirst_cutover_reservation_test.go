@@ -169,7 +169,7 @@ func TestEffectiveImageLaneConcurrencyLimit(t *testing.T) {
 		want   int
 	}{
 		{"hard limit", 10, gatewayruntimecache.GroupSchedulingPolicy{}, 10},
-		{"policy does not cap", 10, gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3, ClientIPConcurrencyLimit: 5}, 10},
+		{"policy does not cap", 10, gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3}, 10},
 		{"invalid hard limit falls back", 0, gatewayruntimecache.GroupSchedulingPolicy{}, 1},
 		{"oversized hard limit falls back", 2_000_000, gatewayruntimecache.GroupSchedulingPolicy{}, 1},
 	}

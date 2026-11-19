@@ -120,7 +120,7 @@ type chainRuntimeServices struct {
 	// 组合测试的 nil 仅出现在未装配组合（链条回落 disabled*/degraded*）。----
 	// AccountCircuits is the D-131 account-circuit service.
 	AccountCircuits *gatewaycircuit.CircuitService
-	// ClientIPSlots is the D-109 client-IP slot family (ordinary-group
+	// ClientIPSlots is the D-109 client-IP slot family (API-Key-level
 	// clientIpConcurrencyLimit; limit 0 is disabled).
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
 	// ConcurrencyTracker 是唯一的账户并发事实源（E2E-FINDING #13）：组合根

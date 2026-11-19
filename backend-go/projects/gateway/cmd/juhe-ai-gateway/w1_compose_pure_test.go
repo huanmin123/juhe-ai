@@ -759,8 +759,9 @@ func TestW1CChainNormalizeGroupType(t *testing.T) {
 }
 
 func TestW1CChainParseGroupSchedulingPolicy(t *testing.T) {
-	// 普通分组只接受两键；legacy high_concurrency 行按 globalMax 映射并忽略
-	// 其余旧键（普通分组可选调度策略设计 §2.2/§5.2）。
+	// 普通分组只接受单键，旧两键行读兼容并忽略 clientIpConcurrencyLimit；
+	// legacy high_concurrency 行按 globalMax 映射并忽略其余旧键（普通分组可选
+	// 调度策略设计 §2.2/§5.2、APIKey单IP并发限制设计 §2.4）。
 	cases := []struct {
 		name      string
 		value     sql.NullString
@@ -771,10 +772,10 @@ func TestW1CChainParseGroupSchedulingPolicy(t *testing.T) {
 	}{
 		{"personal NULL 返回 nil", sql.NullString{}, false, 5000, false, nil},
 		{"personal 空对象报错", sql.NullString{String: "{}", Valid: true}, false, 5000, true, nil},
-		{"personal 两键", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`, Valid: true}, false, 5000, false, &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}},
+		{"personal 两键读兼容", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}`, Valid: true}, false, 5000, false, &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}},
 		{"personal 未知键报错", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2,"maxConcurrent":5}`, Valid: true}, false, 5000, true, nil},
 		{"legacy NULL 报错", sql.NullString{}, true, 5000, true, nil},
-		{"legacy 旧键映射", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2,"maxQueueWaitMs":60000}`, Valid: true}, true, 5000, false, &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}},
+		{"legacy 旧键映射", sql.NullString{String: `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2,"maxQueueWaitMs":60000}`, Valid: true}, true, 5000, false, &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}},
 		{"legacy 默认阈值收敛", sql.NullString{String: `{"defaultSoftConcurrency":5000}`, Valid: true}, true, 5000, false, nil},
 		{"非法JSON", sql.NullString{String: "{bad", Valid: true}, false, 5000, true, nil},
 	}

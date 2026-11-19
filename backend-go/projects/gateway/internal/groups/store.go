@@ -933,7 +933,7 @@ func hasActiveManualSource(rows []authorizedSourceRow) bool {
 // summary, and renders the authorized permissions whenever the row owner
 // differs from the viewer.
 // newListItem mirrors groupListItemFromRow: the list projection validates the
-// stored group type and now carries the two-key optional scheduling policy
+// stored group type and now carries the single-key optional scheduling policy
 // (NULL renders as null), so list summaries do not need a per-row detail call.
 func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[string]string, includeSystemAccountFields bool, viewer string) (ListItem, error) {
 	groupType, err := normalizeStoredGroupType(row.row.groupType)
@@ -1661,7 +1661,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			afterJSON = policyJSONString(encoded)
 		case legacyBefore:
 			// 旧 high_concurrency 行在首次编辑时顺带归一为 personal +
-			// 两键策略，避免新二进制把旧 16 键继续写回。
+			// 单键策略，避免新二进制把旧 16 键继续写回。
 			encoded, policyErr := policyValueJSON(beforePolicy)
 			if policyErr != nil {
 				return nil, policyErr
@@ -1673,7 +1673,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			return nil, &ValidationError{Message: parseErr.Error()}
 		}
 		// 策略写入按语义等值判定：仅键序/空白差异不回写、不 bump updatedAt。
-		// legacy 行即使映射后语义相同，也把旧 16 键文档归一为两键规范文本。
+		// legacy 行即使映射后语义相同，也把旧 16 键文档归一为单键规范文本。
 		policyChanged := canonicalPolicy(beforePolicy) != canonicalPolicy(afterPolicy)
 		normalizationNeeded := legacyBefore && current.schedulingJSON != afterJSON
 		if policyChanged || normalizationNeeded {

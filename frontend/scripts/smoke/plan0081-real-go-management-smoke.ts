@@ -135,6 +135,7 @@ const apiKeyListItemFieldSet = new Set([
   'securityPolicyId',
   'securityPolicyName',
   'securityPolicyBuiltIn',
+  'clientIpConcurrencyLimit',
   'expiresAt',
   'quotaLimits',
   'availabilitySchedule',
@@ -154,11 +155,11 @@ const builtInProviderCodes = new Set([
   'volcengine',
   'qwen'
 ])
-// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：策略严格只含两键，
-// 分组类型写入面已只接受 personal。
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2；单键化见 API Key 单 IP
+// 并发限制设计 §2.4）：策略严格只含 defaultSoftConcurrency 单键，分组类型写入面
+// 已只接受 personal；单 IP 并发限制写入面由 API Key 承载。
 const mutationSchedulingPolicy = {
-  defaultSoftConcurrency: 7,
-  clientIpConcurrencyLimit: 3
+  defaultSoftConcurrency: 7
 } as const
 
 export type SmokeEnvironment = Readonly<Record<string, string | undefined>>
@@ -350,6 +351,8 @@ interface PublicApiLogSummary {
   statusCode?: number
   success: boolean
   durationMs?: number
+  requestCaptureStatus: PublicApiLogCaptureStatus
+  responseCaptureStatus: PublicApiLogCaptureStatus
   createdAt: string
 }
 
@@ -1090,6 +1093,22 @@ async function runGroupMutationSmoke(
   const patchedDetail = assertGroupDetail(patchedDetailData)
   assertPatchedTemporaryGroup(patchedDetail, identity, patchedName, 'temporary group detail after PATCH')
 
+  // API Key 单 IP 并发限制设计 §2.4：分组策略写入面只接受 defaultSoftConcurrency，
+  // 旧 clientIpConcurrencyLimit 键必须按未知字段拒绝（400），不得静默忽略。
+  await expectResponseStatus(
+    groupDetailUrl(config, identity.id),
+    config,
+    'temporary group PATCH with retired client IP policy',
+    {
+      method: 'PATCH',
+      body: {
+        expectedUpdatedAt: patchedDetail.updatedAt,
+        schedulingPolicy: { defaultSoftConcurrency: mutationSchedulingPolicy.defaultSoftConcurrency, clientIpConcurrencyLimit: 3 }
+      },
+      expectedStatuses: [400]
+    }
+  )
+
   // 契约验收 §7.9：废弃分组类型的写入面必须返回 400「分组类型无效」。
   await expectResponseStatus(
     groupDetailUrl(config, identity.id),
@@ -1346,7 +1365,7 @@ function assertPatchedTemporaryGroup(
   expect(group.groupType === 'personal', `${label} must remain personal`)
   const policy = group.schedulingPolicy
   expect(isRecord(policy), `${label}.schedulingPolicy must be an object`)
-  assertTwoKeySchedulingPolicy(policy, `${label}.schedulingPolicy`)
+  assertSingleKeySchedulingPolicy(policy, `${label}.schedulingPolicy`)
   for (const [field, value] of Object.entries(mutationSchedulingPolicy)) {
     expect(policy[field] === value, `${label}.schedulingPolicy.${field} does not match`)
   }
@@ -1466,7 +1485,10 @@ async function getEnvelopeData(
   return requestEnvelopeData(url, config, label, {
     method: 'GET',
     expectedStatus: 200,
-    requirePragmaNoCache
+    requirePragmaNoCache,
+    // 管理面 GET 统一要求 Cache-Control: no-store（错误场景回归
+    // public_api_logs_no_store/public_api_log_detail_no_store 依赖该断言）。
+    requireNoStore: true
   })
 }
 
@@ -1501,6 +1523,7 @@ async function requestEnvelopeData(
     body?: Record<string, unknown>
     expectedStatus: number
     requirePragmaNoCache?: boolean
+    requireNoStore?: boolean
   }
 ): Promise<unknown> {
   const response = await sendRequest(url, config, label, options)
@@ -1510,6 +1533,9 @@ async function requestEnvelopeData(
   }
   if (options.requirePragmaNoCache) {
     expect(response.headers.get('pragma') === 'no-cache', `${label} must return Pragma: no-cache`)
+  }
+  if (options.requireNoStore) {
+    assertNoStore(response, label)
   }
   return parseEnvelopeData(response, label)
 }
@@ -2123,6 +2149,14 @@ function assertPublicAPILogSummary(value: unknown, label: string): PublicApiLogS
   if (Object.hasOwn(value, 'durationMs')) {
     expect(isNonNegativeInteger(value.durationMs), `${label}.durationMs must be a non-negative integer when present`)
   }
+  expect(
+    isPublicAPILogCaptureStatus(value.requestCaptureStatus),
+    `${label}.requestCaptureStatus must be a valid capture status`
+  )
+  expect(
+    isPublicAPILogCaptureStatus(value.responseCaptureStatus),
+    `${label}.responseCaptureStatus must be a valid capture status`
+  )
   expect(isNonEmptyString(value.createdAt), `${label}.createdAt must be a non-empty string`)
   return value as unknown as PublicApiLogSummary
 }
@@ -2229,6 +2263,12 @@ function assertApiKeyListItem(value: unknown, scope: 'admin' | 'self', label: st
       `${label}.securityPolicyBuiltIn must be a boolean or null`
     )
   }
+  // 单 IP 并发限制（API Key 单 IP 并发限制设计 §2.1/§3.1）：列表项必带，0..1000000。
+  expect(isNonNegativeInteger(value.clientIpConcurrencyLimit), `${label}.clientIpConcurrencyLimit must be a non-negative integer`)
+  expect(
+    Number(value.clientIpConcurrencyLimit) <= 1_000_000,
+    `${label}.clientIpConcurrencyLimit must be within 0..1000000`
+  )
   if (scope === 'admin') {
     expect(isNonEmptyString(value.systemAccountId), `${label}.systemAccountId must be a non-empty string`)
     expect(isNonEmptyString(value.systemAccountName), `${label}.systemAccountName must be a non-empty string`)
@@ -2586,9 +2626,9 @@ function assertGroupDetail(value: unknown): GroupDetailRecord {
   expect(isRecord(value) && Array.isArray(value.accountIds), 'group detail accountIds must be an array')
   assertStringArray(value.accountIds, 'group detail accountIds')
   expect(isRecord(value.permissions), 'group detail permissions must be an object')
-  // 详情（GroupSummary 同形）携带规范化两键 schedulingPolicy 或 null；列表项已瘦身省略。
+  // 详情（GroupSummary 同形）携带规范化单键 schedulingPolicy 或 null；列表项已瘦身省略。
   if (group.schedulingPolicy !== undefined && group.schedulingPolicy !== null) {
-    assertTwoKeySchedulingPolicy(group.schedulingPolicy, 'group detail schedulingPolicy')
+    assertSingleKeySchedulingPolicy(group.schedulingPolicy, 'group detail schedulingPolicy')
   }
   return group as GroupDetailRecord
 }
@@ -2614,16 +2654,19 @@ function assertGroup(value: unknown, label: string): GroupRecord {
   return value as unknown as GroupRecord
 }
 
-// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：响应只允许规范化两键。
-function assertTwoKeySchedulingPolicy(value: Record<string, unknown>, label: string): void {
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2；单键化见 API Key 单 IP
+// 并发限制设计 §2.4）：响应只允许规范化单键 defaultSoftConcurrency。
+function assertSingleKeySchedulingPolicy(value: Record<string, unknown>, label: string): void {
   const keys = Object.keys(value).sort()
   expect(
-    JSON.stringify(keys) === JSON.stringify(['clientIpConcurrencyLimit', 'defaultSoftConcurrency']),
-    `${label} must contain exactly defaultSoftConcurrency/clientIpConcurrencyLimit`
+    JSON.stringify(keys) === JSON.stringify(['defaultSoftConcurrency']),
+    `${label} must contain exactly defaultSoftConcurrency`
   )
-  for (const field of ['defaultSoftConcurrency', 'clientIpConcurrencyLimit'] as const) {
-    expect(Number.isInteger(value[field]), `${label}.${field} must be an integer`)
-  }
+  const threshold = value.defaultSoftConcurrency
+  expect(
+    Number.isInteger(threshold) && Number(threshold) >= -1 && Number(threshold) <= 1_000_000 && threshold !== 0,
+    `${label}.defaultSoftConcurrency must be -1 or 1..1000000`
+  )
 }
 
 function assertProviderOptions(value: unknown): void {

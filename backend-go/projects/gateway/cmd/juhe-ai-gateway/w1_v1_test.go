@@ -46,7 +46,7 @@ func TestW1ChainSpeedFirstProjectionHelpers(t *testing.T) {
 	if got := chainSchedulingPolicyValueOf(nil); !got.IsDefault() {
 		t.Fatalf("nil policy = %v, want default", got)
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}
 	if got := chainSchedulingPolicyValueOf(&policy); got != policy {
 		t.Fatal("policy 值丢失")
 	}

@@ -55,9 +55,9 @@ func TestW16KClientIPConcurrencyCopyArms(t *testing.T) {
 		t.Fatalf("rejected metadata = %+v", rejected)
 	}
 
-	// 溢出队列模式退役后，全部拒绝原因统一为分组限制文案。
+	// 溢出队列模式退役后，全部拒绝原因统一为 IP 并发限制文案。
 	for _, reason := range []string{"limit_reached", "timeout", "aborted"} {
-		if msg := clientIpConcurrencyFailureMessage(ClientIPConcurrencyDecision{Enabled: true, Reason: reason}); msg != "当前 IP 并发已达到分组限制，请稍后重试" {
+		if msg := clientIpConcurrencyFailureMessage(ClientIPConcurrencyDecision{Enabled: true, Reason: reason}); msg != "当前 IP 并发已达到限制，请稍后重试" {
 			t.Fatalf("reason %q message = %q", reason, msg)
 		}
 	}

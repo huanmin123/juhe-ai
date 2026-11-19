@@ -74,23 +74,23 @@ func TestGroupAdminLifecycle(t *testing.T) {
 		t.Fatalf("ignored provider create: %d %v", code, ignoredProvider)
 	}
 
-	// Ordinary group carries the optional two-key policy.
+	// Ordinary group carries the optional single-key policy.
 	code, policyGroup := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":100,"clientIpConcurrencyLimit":3}}`)
+		`{"name":"policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":100}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("policy create: %d %v", code, policyGroup)
 	}
 	policyID := dataMap(t, policyGroup)["id"].(string)
 	code, policyDetail := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+policyID, "")
 	policy := dataMap(t, policyDetail)["schedulingPolicy"].(map[string]any)
-	if policy["defaultSoftConcurrency"] != float64(100) || policy["clientIpConcurrencyLimit"] != float64(3) || len(policy) != 2 {
+	if policy["defaultSoftConcurrency"] != float64(100) || len(policy) != 1 {
 		t.Fatalf("policy: %v", policy)
 	}
 	// 运行时相关字段（schedulingPolicy）变更必须触发 gateway runtime 失效；
 	// name/description 不承载运行时语义，不要求 group_updated。
 	policyUpdatedAt := dataMap(t, policyDetail)["updatedAt"].(string)
 	code, policyPatched := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+policyID,
-		`{"expectedUpdatedAt":"`+policyUpdatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":101,"clientIpConcurrencyLimit":4}}`)
+		`{"expectedUpdatedAt":"`+policyUpdatedAt+`","schedulingPolicy":{"defaultSoftConcurrency":101}}`)
 	if code != http.StatusOK {
 		t.Fatalf("policy patch: %d %v", code, policyPatched)
 	}
@@ -104,7 +104,7 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	}
 	code, afterOmitted := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+policyID, "")
 	omittedPolicy := dataMap(t, afterOmitted)["schedulingPolicy"].(map[string]any)
-	if omittedPolicy["defaultSoftConcurrency"] != float64(101) || omittedPolicy["clientIpConcurrencyLimit"] != float64(4) {
+	if omittedPolicy["defaultSoftConcurrency"] != float64(101) || len(omittedPolicy) != 1 {
 		t.Fatalf("omitted schedulingPolicy must stay unchanged: %v", omittedPolicy)
 	}
 	omittedUpdatedAt := dataMap(t, afterOmitted)["updatedAt"].(string)
@@ -429,9 +429,15 @@ func TestGroupPermissionMatrixAnonymousAndValidation(t *testing.T) {
 		t.Fatalf("bad expectedUpdatedAt: %d %v", code, badVersion)
 	}
 	code, badPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"policy-broken","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":0,"clientIpConcurrencyLimit":0}}`)
+		`{"name":"policy-broken","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":0}}`)
 	if code != http.StatusBadRequest || badPolicy["message"] != "分组参数无效" {
 		t.Fatalf("bad policy: %d %v", code, badPolicy)
+	}
+	// 写面拒绝已迁出的旧分组 IP 键（未知键）。
+	code, legacyPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups",
+		`{"name":"policy-legacy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}}`)
+	if code != http.StatusBadRequest || legacyPolicy["message"] != "分组参数无效" {
+		t.Fatalf("legacy ip policy: %d %v", code, legacyPolicy)
 	}
 	// Route-level schema rejects null optional fields and null/float/unknown
 	// schedulingPolicy sub-keys exactly like the Node zod schema (BUG-0163
@@ -442,11 +448,11 @@ func TestGroupPermissionMatrixAnonymousAndValidation(t *testing.T) {
 		t.Fatalf("null description: %d %v", code, nullDescription)
 	}
 	code, nullSubKey := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"null-policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":null,"clientIpConcurrencyLimit":0}}`)
+		`{"name":"null-policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":null}}`)
 	if code != http.StatusBadRequest || nullSubKey["message"] != "分组参数无效" {
 		t.Fatalf("null policy sub-key: %d %v", code, nullSubKey)
 	}
-	unknownSubKey := `{"name":"unknown-policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":-1,"clientIpConcurrencyLimit":0,"bogusKey":1}}`
+	unknownSubKey := `{"name":"unknown-policy","providerCode":"openai","groupType":"personal","schedulingPolicy":{"defaultSoftConcurrency":-1,"bogusKey":1}}`
 	code, unknownPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups", unknownSubKey)
 	if code != http.StatusBadRequest || unknownPolicy["message"] != "分组参数无效" {
 		t.Fatalf("unknown policy sub-key: %d %v", code, unknownPolicy)

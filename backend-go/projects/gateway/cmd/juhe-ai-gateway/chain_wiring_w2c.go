@@ -184,15 +184,15 @@ func newChainClientIPConcurrency(slots *gatewayclientip.ClientIPConcurrency) *ch
 	return &chainClientIPConcurrency{slots: slots}
 }
 
-// Acquire mirrors the Node acquire: the two-key scheduling policy rides
-// through and the returned release keeps the store's idempotent once guard.
+// Acquire mirrors the Node acquire: the API Key level limit rides through and
+// the returned release keeps the store's idempotent once guard.
 func (c *chainClientIPConcurrency) Acquire(ctx context.Context, input gatewaydispatch.ClientIPConcurrencyInput) (gatewaydispatch.ClientIPConcurrencyDecision, error) {
 	decision, err := c.slots.AcquireClientIPSlot(ctx, gatewayclientip.ClientIPConcurrencyAcquireInput{
 		SystemAccountID: input.SystemAccountID,
 		GroupID:         input.GroupID,
 		APIKeyID:        input.APIKeyID,
 		ClientIP:        input.ClientIP,
-		Policy:          input.Policy,
+		Limit:           input.Limit,
 		Signal:          input.Signal,
 	})
 	if err != nil {

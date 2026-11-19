@@ -238,7 +238,7 @@ type chainRuntimeDeps struct {
 	// 组合测试，链条回落 chain_ports.go 的 disabled*/degraded* 直通。 ----
 	// AccountCircuits 是 D-131 账户电路服务（SUSPECT/confirmation/恢复）。
 	AccountCircuits *gatewaycircuit.CircuitService
-	// ClientIPSlots 是 D-109 普通分组的 client-IP 并发槽。
+	// ClientIPSlots 是 D-109 API Key 级 client-IP 并发槽。
 	ClientIPSlots gatewaydispatch.ClientIPConcurrencyAcquirer
 	// KeyModelStore 是 D-133 的 key-model 前台准入状态存储（driver 选择器）。
 	KeyModelStore gatewayaccounteffects.KeyModelRuntimeStore
@@ -631,7 +631,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		engine.KeyModel = chainKeyModelAdmission{healthDispatch: deps.KeyModelHealthDispatch}
 		engine.KeyModelStore = deps.KeyModelStore
 	}
-	// D-109（BUG-0175）接线：普通分组的 client-IP 并发槽（nil 时
+	// D-109（BUG-0175）接线：API Key 级 client-IP 并发槽（nil 时
 	// preparation 的槽获取段不会运行——组合根缺槽即 panic 风险，故
 	// chainRuntimeServices 保证非 nil）。
 	if deps.ClientIPSlots != nil {

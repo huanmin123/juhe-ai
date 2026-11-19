@@ -487,8 +487,9 @@ func normalizeGroupTypeValue(value sql.NullString) (string, bool, error) {
 	return gatewayscheduling.NormalizeGroupType(value.String)
 }
 
-// parseGroupSchedulingPolicyJSON parses the optional two-key policy; retired
-// high_concurrency rows map their old 16-key payload with globalMax.
+// parseGroupSchedulingPolicyJSON parses the optional single-key policy; retired
+// high_concurrency rows map their old 16-key payload with globalMax, and the
+// retired clientIpConcurrencyLimit key is read-compatible and ignored.
 func parseGroupSchedulingPolicyJSON(raw sql.NullString, legacy bool, globalMax int) (*GroupSchedulingPolicy, error) {
 	policy, err := gatewayscheduling.ParseStored(raw.String, raw.Valid, legacy, globalMax)
 	if err != nil {

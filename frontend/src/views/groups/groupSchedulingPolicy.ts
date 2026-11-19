@@ -1,11 +1,11 @@
 import type { GroupSchedulingPolicy, GroupSummary, GroupType } from '@/types/domain'
 
-// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：策略列 NULL 等价于
-// 两项都取默认值；非空对象必须同时包含两个键，缺键、未知键、越界或非整数一律
-// 无效，不做静默补默认。
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2；单键化见
+// API Key 单 IP 并发限制设计 §2.4）：策略列 NULL 等价于默认 -1；非空对象只允许
+// defaultSoftConcurrency 单键，缺键、未知键、越界或非整数一律无效，不做静默补默认。
+// 单 IP 并发限制已迁至 API Key，分组策略不再读写该键。
 export const defaultGroupSchedulingPolicy: Required<GroupSchedulingPolicy> = {
-  defaultSoftConcurrency: -1,
-  clientIpConcurrencyLimit: 0
+  defaultSoftConcurrency: -1
 }
 
 export const schedulingPolicyValueMax = 1_000_000
@@ -20,8 +20,7 @@ export function cloneGroupSchedulingPolicy(source?: GroupSchedulingPolicy | null
   const input = source as Record<string, unknown>
   assertGroupSchedulingPolicyKeys(input)
   return {
-    defaultSoftConcurrency: normalizeGroupSchedulingInteger(input.defaultSoftConcurrency, 'defaultSoftConcurrency', -1, schedulingPolicyValueMax, { forbidden: [0] }),
-    clientIpConcurrencyLimit: normalizeGroupSchedulingInteger(input.clientIpConcurrencyLimit, 'clientIpConcurrencyLimit', 0, schedulingPolicyValueMax)
+    defaultSoftConcurrency: normalizeGroupSchedulingInteger(input.defaultSoftConcurrency, 'defaultSoftConcurrency', -1, schedulingPolicyValueMax, { forbidden: [0] })
   }
 }
 
@@ -43,8 +42,9 @@ export function groupKindColor(group: Pick<GroupSummary, 'groupType' | 'groupKin
   return group.groupKind === 'super' ? 'geekblue' : groupTypeColor(group.groupType)
 }
 
-// 摘要文案按契约（普通分组可选调度策略设计 §2.3）：两项都默认显示「未启用可选
-// 调度策略」；阈值启用显示「单账户排队阈值 N」；IP 限制启用显示「单 IP 并发 N（超限拒绝）」。
+// 摘要文案按契约（普通分组可选调度策略设计 §2.3）：阈值默认显示「未启用可选
+// 调度策略」；阈值启用显示「单账户排队阈值 N」。单 IP 并发限制摘要已随配置
+// 归属迁移删除，只在 API Key 列表/表单展示。
 export function groupPolicySummary(group: Pick<GroupSummary, 'groupType' | 'groupKind'> & Partial<Pick<GroupSummary, 'schedulingPolicy'>>): string {
   if (group.groupKind === 'super') {
     return '超级分组按成员顺序展开成员分组的账号候选'
@@ -56,14 +56,10 @@ export function groupPolicySummary(group: Pick<GroupSummary, 'groupType' | 'grou
   } catch {
     return '可选调度策略数据异常，请编辑后重新保存'
   }
-  const parts: string[] = []
   if (policy.defaultSoftConcurrency > 0) {
-    parts.push(`单账户排队阈值 ${policy.defaultSoftConcurrency}`)
+    return `单账户排队阈值 ${policy.defaultSoftConcurrency}`
   }
-  if (policy.clientIpConcurrencyLimit > 0) {
-    parts.push(`单 IP 并发 ${policy.clientIpConcurrencyLimit}（超限拒绝）`)
-  }
-  return parts.length ? parts.join('，') : '未启用可选调度策略'
+  return '未启用可选调度策略'
 }
 
 function assertGroupSchedulingPolicyKeys(input: Record<string, unknown>): void {

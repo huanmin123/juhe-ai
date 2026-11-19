@@ -395,6 +395,7 @@ var patchChangeLabels = []struct{ Field, Label string }{
 	{"expiresAt", "过期时间"},
 	{"quotaLimits", "额度限制"},
 	{"availabilitySchedule", "时间计划"},
+	{"clientIpConcurrencyLimit", "单 IP 并发限制"},
 }
 
 // diffSafePatchChanges mirrors diffSafeFields + safeChange for the patch
@@ -642,7 +643,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 	}
 	for key := range body {
 		switch key {
-		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule":
+		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "clientIpConcurrencyLimit":
 		default:
 			return CreateInput{}, "API Key 参数无效"
 		}
@@ -717,6 +718,16 @@ func createBody(body map[string]any) (CreateInput, string) {
 			return CreateInput{}, "API Key 参数无效"
 		}
 		input.AvailabilitySchedule = object
+	}
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺省或显式 null →
+	// 0（关闭）；提供时必须是 0..1000000 的 JSON 整数，超界/小数/非数字按
+	// 字段校验错误 400，不静默截断或取整。
+	if value, exists := body["clientIpConcurrencyLimit"]; exists && value != nil {
+		limit, issue := parseClientIPConcurrencyLimitField(value)
+		if issue != "" {
+			return CreateInput{}, issue
+		}
+		input.ClientIPConcurrencyLimit = limit
 	}
 	return input, ""
 }

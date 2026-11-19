@@ -184,13 +184,28 @@ func NormalizeRow(groupType string, raw sql.NullString, globalMax int) (RowTarge
 	if !ok {
 		return RowTarget{}, ReviewMalformedJSON
 	}
-	if !knownPolicyKeysOnly(object) {
-		return RowTarget{}, ReviewUnknownKey
-	}
 	switch groupType {
 	case GroupTypePersonal, LegacyGroupTypeHighConcurrency:
 	default:
 		return RowTarget{}, ReviewUnknownGroupType
+	}
+	// 2026-11-19 revision 25 兼容（API Key 单 IP 并发限制设计 §2.4）：单键
+	// 策略已是新终态，soft 值必须原样读取——不能再走 MapLegacyPolicy 的
+	// globalMax 映射，否则显式 5000 会被误改写为 -1。单键只允许
+	// defaultSoftConcurrency（-1 / 1..1000000），其余形状仍按历史 16 键词表
+	// 与两键映射处理。
+	if len(object) == 1 {
+		if rawSoft, present := object[PolicyKeyDefaultSoftConcurrency]; present {
+			value, ok := policyInteger(rawSoft)
+			if !ok || (value != -1 && (value < 1 || value > softLimitMax)) {
+				return RowTarget{}, ReviewInvalidValue
+			}
+			policy := TwoKeyPolicy{SoftConcurrency: value, ClientIPLimit: 0}
+			return RowTarget{TargetType: GroupTypePersonal, TargetPolicy: policy, TargetNull: value == -1}, ""
+		}
+	}
+	if !knownPolicyKeysOnly(object) {
+		return RowTarget{}, ReviewUnknownKey
 	}
 	policy, ok := MapLegacyPolicy(object, globalMax)
 	if !ok {
@@ -209,6 +224,11 @@ func NormalizeRow(groupType string, raw sql.NullString, globalMax int) (RowTarge
 // rowMatchesTarget 判定现值是否已是目标形状（group_type 一致且策略列与目标
 // 语义等值）。语义比较经 JSON 规范化（数值统一为 float64 形态），键序与空白
 // 差异不触发改写；完成态重跑因此零写入（幂等，契约 §5.3）。
+//
+// 2026-11-19 revision 25 后分组策略只允许单键 defaultSoftConcurrency：
+// 单键现值按「缺 IP 键 = 0」与目标语义比较，soft 相同即 unchanged——这样
+// revision 25 迁移后的库重跑 revision 22 步骤或 migrate-group-policy 不会
+// 把单键写回两键。两键现值仍按历史形状比较（含显式默认组合重写为 NULL）。
 func rowMatchesTarget(groupType string, raw sql.NullString, target RowTarget) bool {
 	if groupType != target.TargetType {
 		return false
@@ -219,6 +239,9 @@ func rowMatchesTarget(groupType string, raw sql.NullString, target RowTarget) bo
 	}
 	if text == "" {
 		return target.TargetNull
+	}
+	if soft, ok := singleKeyPolicySoft(text); ok {
+		return soft == target.TargetPolicy.SoftConcurrency && target.TargetPolicy.ClientIPLimit == 0
 	}
 	if target.TargetNull {
 		// 目标 NULL 而现值非空：一律重写为 NULL。空对象 `{}` 也不是合法的
@@ -236,6 +259,29 @@ func rowMatchesTarget(groupType string, raw sql.NullString, target RowTarget) bo
 	return reflect.DeepEqual(decoded, normalized)
 }
 
+// singleKeyPolicySoft 报告策略文本是否为「仅 defaultSoftConcurrency」的单键
+// 对象，是则返回其整数值。revision 25 完成态形状；其余形状返回 ok=false，
+// 由调用方按两键/历史路径处理。
+func singleKeyPolicySoft(text string) (int, bool) {
+	var decoded any
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		return 0, false
+	}
+	object, ok := decoded.(map[string]any)
+	if !ok || len(object) != 1 {
+		return 0, false
+	}
+	rawSoft, present := object[PolicyKeyDefaultSoftConcurrency]
+	if !present {
+		return 0, false
+	}
+	value, ok := policyInteger(rawSoft)
+	if !ok {
+		return 0, false
+	}
+	return value, true
+}
+
 // rawIsEmptyObject 判定文本是合法 JSON 的空对象（仅保留给历史调用方；
 // 空对象不是合法两键策略，迁移会重写为 NULL）。
 func rawIsEmptyObject(text string) bool {
@@ -246,10 +292,11 @@ func rawIsEmptyObject(text string) bool {
 	return len(decoded) == 0
 }
 
-// ValidateStoredTwoKeyPolicy 校验存储行是否为完成态形状（契约 §5.3：策略列
-// 只含两键或 NULL，且取值合法）。postflight / upgrade Satisfied 与 Verify
-// 共用本谓词。非空对象必须两键齐全；空对象不是合法策略。
-func ValidateStoredTwoKeyPolicy(raw sql.NullString) bool {
+// ValidateStoredPolicy 校验存储行是否为完成态形状（契约 §5.3 + revision 25：
+// 策略列只含两键（历史）或单键 defaultSoftConcurrency，或 NULL，且取值合法）。
+// postflight / upgrade Satisfied 与 Verify 共用本谓词。单键只允许
+// defaultSoftConcurrency；两键必须齐全；空对象不是合法策略。
+func ValidateStoredPolicy(raw sql.NullString) bool {
 	text := ""
 	if raw.Valid {
 		text = strings.TrimSpace(raw.String)
@@ -284,7 +331,9 @@ func ValidateStoredTwoKeyPolicy(raw sql.NullString) bool {
 			return false
 		}
 	}
-	return seenSoft && seenIP
+	// revision 25 完成态：单键 defaultSoftConcurrency 合法；历史两键仍接受，
+	// 让尚未执行 revision 25 的库与 revision 22 的 postflight 保持通过。
+	return seenSoft && (seenIP || len(object) == 1)
 }
 
 // knownPolicyKeysOnly 报告对象键集合是否都在 16 键词表内。

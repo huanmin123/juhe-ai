@@ -14,8 +14,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	redis "github.com/redis/go-redis/v9"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
 // Reject reasons mirror ClientIpConcurrencyRejectReason. The queue overflow
@@ -31,14 +29,14 @@ const (
 	redisClientIPConcurrencyRenewInterval = 30 * time.Second
 )
 
-// ClientIPConcurrencyAcquireInput mirrors the ordinary-group IP gate input.
+// ClientIPConcurrencyAcquireInput mirrors the per-API-Key IP gate input.
 type ClientIPConcurrencyAcquireInput struct {
 	SystemAccountID string
 	GroupID         string
 	APIKeyID        string
 	ClientIP        string
-	// Policy is the two-key ordinary-group policy (nil means disabled).
-	Policy *gatewayscheduling.Policy
+	// Limit is api_keys.client_ip_concurrency_limit: 0 disables the gate.
+	Limit  int
 	Signal context.Context
 }
 
@@ -141,10 +139,7 @@ func (c *ClientIPConcurrency) Close() {
 // AcquireClientIPSlot acquires one per-client-IP slot; limit 0
 // or blank IP is the disabled fast path.
 func (c *ClientIPConcurrency) AcquireClientIPSlot(ctx context.Context, input ClientIPConcurrencyAcquireInput) (ClientIPConcurrencyDecision, error) {
-	limit := 0
-	if input.Policy != nil {
-		limit = input.Policy.ClientIPConcurrencyLimit
-	}
+	limit := input.Limit
 	clientIP := strings.TrimSpace(input.ClientIP)
 	if clientIP == "" || limit <= 0 {
 		return ClientIPConcurrencyDecision{Enabled: false, Acquired: true}, nil

@@ -14,20 +14,19 @@ func TestResolveGroupSchedulingPolicyDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if policy.DefaultSoftConcurrency != -1 || policy.ClientIPConcurrencyLimit != 0 {
+		if policy.DefaultSoftConcurrency != -1 {
 			t.Fatalf("policy = %+v", *policy)
 		}
 	})
 
-	t.Run("two-key policy", func(t *testing.T) {
+	t.Run("single-key policy", func(t *testing.T) {
 		policy, err := ResolveGroupSchedulingPolicy(&gatewayscheduling.Policy{
-			DefaultSoftConcurrency:   5,
-			ClientIPConcurrencyLimit: 3,
+			DefaultSoftConcurrency: 5,
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if policy.DefaultSoftConcurrency != 5 || policy.ClientIPConcurrencyLimit != 3 {
+		if policy.DefaultSoftConcurrency != 5 {
 			t.Fatalf("policy = %+v", *policy)
 		}
 	})

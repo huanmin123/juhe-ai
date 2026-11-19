@@ -9,8 +9,10 @@ package groups
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -502,29 +504,32 @@ func TestW11FSchedulingPure(t *testing.T) {
 		t.Fatal("normalizeStoredGroupType bogus must fail")
 	}
 
-	// schedulingPolicyJSON: nil clears; strict two-key objects; defaults store NULL.
+	// schedulingPolicyJSON: nil clears; strict single-key objects; default stores NULL.
 	if raw, err := schedulingPolicyJSON(nil); raw != nil || err != nil {
 		t.Fatalf("nil policy = %v/%v", raw, err)
 	}
 	if _, err := schedulingPolicyJSON("nope"); err == nil {
 		t.Fatal("non-object policy must fail")
 	}
-	if _, err := schedulingPolicyJSON(map[string]any{"mode": "x", "defaultSoftConcurrency": -1, "clientIpConcurrencyLimit": 0}); err == nil {
+	if _, err := schedulingPolicyJSON(map[string]any{"mode": "x", "defaultSoftConcurrency": -1}); err == nil {
 		t.Fatal("unknown key must fail")
 	}
-	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": -1}); err == nil {
+	if _, err := schedulingPolicyJSON(map[string]any{}); err == nil {
 		t.Fatal("missing key must fail")
 	}
-	if raw, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": -1, "clientIpConcurrencyLimit": 0}); raw != nil || err != nil {
+	if _, err := schedulingPolicyJSON(map[string]any{"clientIpConcurrencyLimit": 2}); err == nil {
+		t.Fatal("legacy ip key alone must fail")
+	}
+	if raw, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": -1}); raw != nil || err != nil {
 		t.Fatalf("defaults must store NULL: %v/%v", raw, err)
 	}
-	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 0, "clientIpConcurrencyLimit": 0}); err == nil {
+	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 0}); err == nil {
 		t.Fatal("zero threshold must fail")
 	}
-	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 1, "clientIpConcurrencyLimit": -1}); err == nil {
-		t.Fatal("negative ip limit must fail")
+	if _, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 1, "clientIpConcurrencyLimit": 0}); err == nil {
+		t.Fatal("legacy ip key must fail on the write face")
 	}
-	raw, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 5, "clientIpConcurrencyLimit": 3})
+	raw, err := schedulingPolicyJSON(map[string]any{"defaultSoftConcurrency": 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,21 +537,22 @@ func TestW11FSchedulingPure(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["defaultSoftConcurrency"] != float64(5) || decoded["clientIpConcurrencyLimit"] != float64(3) {
+	if len(decoded) != 1 || decoded["defaultSoftConcurrency"] != float64(5) {
 		t.Fatalf("policy = %v", decoded)
 	}
 
-	// parseStoredSchedulingPolicy: personal NULL / valid two keys / strict errors.
+	// parseStoredSchedulingPolicy: personal NULL / single key / read-compatible
+	// legacy two-key rows / strict errors.
 	if value, err := parseStoredSchedulingPolicy("x", false, false, 5000); value != nil || err != nil {
 		t.Fatalf("personal NULL = %v/%v", value, err)
 	}
-	if value, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":-1,"clientIpConcurrencyLimit":0}`, true, false, 5000); value != nil || err != nil {
+	if value, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":-1}`, true, false, 5000); value != nil || err != nil {
 		t.Fatalf("default policy must render null: %v/%v", value, err)
 	}
-	if _, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1}`, true, false, 5000); err == nil {
+	if _, err := parseStoredSchedulingPolicy(`{}`, true, false, 5000); err == nil {
 		t.Fatal("missing key must fail")
 	}
-	if _, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1,"clientIpConcurrencyLimit":0,"mode":"x"}`, true, false, 5000); err == nil {
+	if _, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1,"mode":"x"}`, true, false, 5000); err == nil {
 		t.Fatal("unknown key must fail")
 	}
 	if _, err := parseStoredSchedulingPolicy("{bad", true, false, 5000); err == nil {
@@ -557,11 +563,11 @@ func TestW11FSchedulingPure(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed := parsedAny.(map[string]any)
-	if parsed["defaultSoftConcurrency"] != 5 || parsed["clientIpConcurrencyLimit"] != 3 {
+	if len(parsed) != 1 || parsed["defaultSoftConcurrency"] != 5 {
 		t.Fatalf("parsed policy = %v", parsed)
 	}
 
-	// Legacy high_concurrency mapping (globalMax aware).
+	// Legacy high_concurrency mapping (globalMax aware); the retired IP key is ignored.
 	if _, err := parseStoredSchedulingPolicy("", false, true, 5000); err == nil {
 		t.Fatal("legacy NULL policy must fail")
 	}
@@ -570,34 +576,34 @@ func TestW11FSchedulingPure(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyPolicy := legacyAny.(map[string]any)
-	if legacyPolicy["defaultSoftConcurrency"] != 500 || legacyPolicy["clientIpConcurrencyLimit"] != 7 {
+	if len(legacyPolicy) != 1 || legacyPolicy["defaultSoftConcurrency"] != 500 {
 		t.Fatalf("legacy mapping = %v", legacyPolicy)
 	}
 	if value, err := parseStoredSchedulingPolicy(`{"defaultSoftConcurrency":1234,"clientIpConcurrencyLimit":0}`, true, true, 1234); value != nil || err != nil {
 		t.Fatalf("legacy globalMax default must map to disabled: %v/%v", value, err)
 	}
 
-	// validateSchedulingPolicyInput: route shape.
-	valid := map[string]any{"defaultSoftConcurrency": float64(-1), "clientIpConcurrencyLimit": float64(0)}
+	// validateSchedulingPolicyInput: route shape is strict single-key.
+	valid := map[string]any{"defaultSoftConcurrency": float64(-1)}
 	if !validateSchedulingPolicyInput(valid) {
 		t.Fatal("valid policy rejected")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(-1)}) {
+	if validateSchedulingPolicyInput(map[string]any{}) {
 		t.Fatal("missing key must be invalid")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(0), "clientIpConcurrencyLimit": float64(0)}) {
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(-1), "clientIpConcurrencyLimit": float64(0)}) {
+		t.Fatal("legacy ip key must be invalid on the write face")
+	}
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(0)}) {
 		t.Fatal("zero threshold must be invalid")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1_000_001), "clientIpConcurrencyLimit": float64(0)}) {
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1_000_001)}) {
 		t.Fatal("oversized threshold must be invalid")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1), "clientIpConcurrencyLimit": float64(1_000_001)}) {
-		t.Fatal("oversized ip limit must be invalid")
-	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1.5), "clientIpConcurrencyLimit": float64(0)}) {
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1.5)}) {
 		t.Fatal("fractional threshold must be invalid")
 	}
-	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1), "clientIpConcurrencyLimit": float64(0), "maxQueueWaitMs": float64(1)}) {
+	if validateSchedulingPolicyInput(map[string]any{"defaultSoftConcurrency": float64(1), "maxQueueWaitMs": float64(1)}) {
 		t.Fatal("retired key must be invalid")
 	}
 
@@ -780,3 +786,45 @@ func TestW11FStoreHelpers(t *testing.T) {
 }
 
 // TestW11FPermissionHelpers 覆盖 options.go 权限与授权视图辅助。
+
+// TestW11FGroupDispatchFingerprintV2 钉住超级分组成员调度指纹 v2：
+// 输入只含 group_type + 规范化单键策略；旧 clientIpConcurrencyLimit 不参与，
+// 旧 high_concurrency 行归一后与 personal 等价指纹一致。
+func TestW11FGroupDispatchFingerprintV2(t *testing.T) {
+	fingerprint := func(groupType, policy string) string {
+		t.Helper()
+		got, err := groupDispatchFingerprint(groupType, sql.NullString{String: policy, Valid: true}, 5000)
+		if err != nil {
+			t.Fatalf("fingerprint(%s, %s): %v", groupType, policy, err)
+		}
+		return got
+	}
+	base := fingerprint("personal", `{"defaultSoftConcurrency":5}`)
+	if len(base) != 64 {
+		t.Fatalf("fingerprint length = %d", len(base))
+	}
+	if other := fingerprint("personal", `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":999}`); other != base {
+		t.Fatalf("retired ip key must not change fingerprint: %s != %s", other, base)
+	}
+	if other := fingerprint("high_concurrency", `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2,"maxQueueWaitMs":60000}`); other != base {
+		t.Fatalf("legacy high_concurrency row must normalize to the same fingerprint: %s != %s", other, base)
+	}
+	if other := fingerprint("personal", `{"defaultSoftConcurrency":6}`); other == base {
+		t.Fatal("threshold change must change fingerprint")
+	}
+	// 默认策略等值：显式 -1 与 NULL（无策略）归一为 null。
+	explicit := fingerprint("personal", `{"defaultSoftConcurrency":-1}`)
+	nullFingerprint, err := groupDispatchFingerprint("personal", sql.NullString{}, 5000)
+	if err != nil {
+		t.Fatalf("null fingerprint: %v", err)
+	}
+	if explicit != nullFingerprint {
+		t.Fatal("explicit -1 must normalize to null fingerprint")
+	}
+	// 算法版本前缀契约：v2 canonical JSON。
+	canonical := `{"group_type":"personal","scheduling_policy_json":{"defaultSoftConcurrency":5}}`
+	sum := sha256.Sum256([]byte("group-dispatch-fingerprint:v2\n" + canonical))
+	if want := hex.EncodeToString(sum[:]); base != want {
+		t.Fatalf("fingerprint = %s, want v2 canonical %s", base, want)
+	}
+}

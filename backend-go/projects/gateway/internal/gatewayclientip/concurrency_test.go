@@ -8,8 +8,6 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
 )
 
 func newTestConcurrency(t *testing.T, mutate func(*ClientIPConcurrencyOptions)) (*ClientIPConcurrency, *manualClock) {
@@ -36,27 +34,22 @@ func baseAcquireInput(ip string) ClientIPConcurrencyAcquireInput {
 	}
 }
 
-func ipGatePolicy(limit int) *gatewayscheduling.Policy {
-	return &gatewayscheduling.Policy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: limit}
-}
-
-// 普通分组 IP 闸口关闭臂：nil 策略、显式 0 与空白 IP 都是 disabled 快速通道。
+// API Key 级 IP 闸口关闭臂：limit 0/负数与空白 IP 都是 disabled 快速通道。
 func TestAcquireClientIPSlotDisabledTable(t *testing.T) {
 	tests := []struct {
-		name   string
-		policy *gatewayscheduling.Policy
-		ip     string
+		name  string
+		limit int
+		ip    string
 	}{
-		{name: "blank ip", policy: ipGatePolicy(3), ip: "  "},
-		{name: "nil policy", policy: nil, ip: "10.0.0.1"},
-		{name: "limit 0 default", policy: &gatewayscheduling.Policy{}, ip: "10.0.0.1"},
-		{name: "explicit limit 0", policy: ipGatePolicy(0), ip: "10.0.0.1"},
+		{name: "blank ip", limit: 3, ip: "  "},
+		{name: "limit 0", limit: 0, ip: "10.0.0.1"},
+		{name: "negative limit", limit: -1, ip: "10.0.0.1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			slots, _ := newTestConcurrency(t, nil)
 			input := baseAcquireInput(tc.ip)
-			input.Policy = tc.policy
+			input.Limit = tc.limit
 			decision, err := slots.AcquireClientIPSlot(context.Background(), input)
 			if err != nil {
 				t.Fatal(err)
@@ -73,14 +66,14 @@ func TestAcquireClientIPSlotDisabledTable(t *testing.T) {
 func TestClientIPConcurrencyLocalSlotLifecycle(t *testing.T) {
 	slots, _ := newTestConcurrency(t, nil)
 	ctx := context.Background()
-	// 0 上限（默认策略）关闭；换非零策略后同键立即生效（禁用→启用边界）。
+	// 0 上限关闭；换非零 limit 后同键立即生效（禁用→启用边界）。
 	closed := baseAcquireInput("10.0.0.1")
-	closed.Policy = &gatewayscheduling.Policy{}
+	closed.Limit = 0
 	if decision, err := slots.AcquireClientIPSlot(ctx, closed); err != nil || decision.Enabled {
 		t.Fatalf("closed=%+v err=%v", decision, err)
 	}
 	input := baseAcquireInput("10.0.0.1")
-	input.Policy = ipGatePolicy(2)
+	input.Limit = 2
 
 	first, err := slots.AcquireClientIPSlot(ctx, input)
 	if err != nil {
@@ -130,14 +123,14 @@ func TestClientIPConcurrencyScopeIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	ipA := baseAcquireInput("10.0.0.1")
-	ipA.Policy = ipGatePolicy(1)
+	ipA.Limit = 1
 	ipB := baseAcquireInput("10.0.0.2")
-	ipB.Policy = ipGatePolicy(1)
+	ipB.Limit = 1
 	keyB := baseAcquireInput("10.0.0.1")
-	keyB.Policy = ipGatePolicy(1)
+	keyB.Limit = 1
 	keyB.APIKeyID = "key-b"
 	groupB := baseAcquireInput("10.0.0.1")
-	groupB.Policy = ipGatePolicy(1)
+	groupB.Limit = 1
 	groupB.GroupID = "grp-b"
 
 	for _, input := range []ClientIPConcurrencyAcquireInput{ipA, ipB, keyB, groupB} {
@@ -165,7 +158,7 @@ func TestClientIPConcurrencyConcurrentAcquireNeverExceedsLimit(t *testing.T) {
 	const workers = 32
 	run := func(t *testing.T, slots *ClientIPConcurrency) {
 		input := baseAcquireInput("10.9.0.1")
-		input.Policy = ipGatePolicy(limit)
+		input.Limit = limit
 		var wg sync.WaitGroup
 		var acquired atomic.Int64
 		decisions := make(chan ClientIPConcurrencyDecision, workers)
@@ -226,7 +219,7 @@ func TestClientIPConcurrencyCanceledSignalFastReject(t *testing.T) {
 	slots, _ := newTestConcurrency(t, nil)
 	ctx := context.Background()
 	input := baseAcquireInput("10.0.0.3")
-	input.Policy = ipGatePolicy(1)
+	input.Limit = 1
 	first, err := slots.AcquireClientIPSlot(ctx, input)
 	if err != nil || !first.Acquired {
 		t.Fatalf("first=%+v err=%v", first, err)
@@ -261,7 +254,7 @@ func TestClientIPConcurrencyRedisMode(t *testing.T) {
 	t.Cleanup(slots.Close)
 	ctx := context.Background()
 	input := baseAcquireInput("10.0.0.4")
-	input.Policy = ipGatePolicy(1)
+	input.Limit = 1
 	first, err := slots.AcquireClientIPSlot(ctx, input)
 	if err != nil {
 		t.Fatal(err)

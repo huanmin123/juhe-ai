@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  formatCardSpec,
   formatModelServiceTier,
   formatSpec,
+  modelCapabilityTags,
+  modelCardPriceMeta,
+  modelCardSpecs,
   modelInfoItems,
   modelPriceSlots,
   modelPriceTable,
@@ -306,6 +310,86 @@ describe('formatSpec', () => {
     expect(formatSpec(1_500)).toBe('1.5k')
     expect(formatSpec(1_000_000)).toBe('1m')
     expect(formatSpec(1_048_576)).toBe('1m')
+  })
+})
+
+describe('卡面投影（模型广场卡片视觉层级）', () => {
+  it('formatCardSpec 使用大写 K/M 后缀，0/缺失保持 -', () => {
+    expect(formatCardSpec(393_216)).toBe('393.2K')
+    expect(formatCardSpec(1_048_576)).toBe('1M')
+    expect(formatCardSpec(128_000)).toBe('128K')
+    expect(formatCardSpec(0)).toBe('-')
+    expect(formatCardSpec(undefined)).toBe('-')
+  })
+
+  it('modelCardSpecs 最大输出在前、上下文在后，缺失项不占位', () => {
+    expect(modelCardSpecs(providerModel({
+      maxOutputTokens: 393_216,
+      contextWindowTokens: 1_048_576
+    }))).toEqual([
+      { label: '最大输出', value: '393.2K' },
+      { label: '上下文', value: '1M' }
+    ])
+    expect(modelCardSpecs(providerModel({ contextWindowTokens: 128_000 }))).toEqual([
+      { label: '上下文', value: '128K' }
+    ])
+    expect(modelCardSpecs(providerModel())).toEqual([])
+  })
+
+  it('modelCapabilityTags：用途分类 + 视觉/推理/函数调用，只取有事实支撑的项', () => {
+    expect(modelCapabilityTags(providerModel({
+      supportedReasoningEfforts: ['high'],
+      supportedToolsByProtocol: {
+        responses: ['function_calling', 'web_search']
+      }
+    }))).toEqual(['对话', '推理', '函数调用'])
+    expect(modelCapabilityTags(providerModel({
+      inputModalities: ['text', 'image']
+    }))).toEqual(['对话', '视觉'])
+    expect(modelCapabilityTags(providerModel({ mode: 'image' }))).toEqual(['图像'])
+    expect(modelCapabilityTags(providerModel({ mode: 'audio' }))).toEqual(['音频'])
+  })
+
+  it('modelCardPriceMeta：文本无高峰档为日常价/全天同价，有高峰档为高峰价/按高峰价结算', () => {
+    const daily = providerModel({ inputUsdPer1M: 0.15, outputUsdPer1M: 0.6, cachedInputUsdPer1M: 0.003 })
+    expect(modelCardPriceMeta(daily, modelPriceSlots(daily))).toEqual({
+      caption: '日常价 · USD / 1M tokens',
+      pill: '全天同价'
+    })
+
+    const deepseek = providerModel({
+      providerCode: 'deepseek',
+      model: 'deepseek-v4.1-flash',
+      inputUsdPer1M: 0.15,
+      outputUsdPer1M: 0.6,
+      catalogDisplay: [
+        { key: 'offpeak_pricing', label: '空闲时段参考价', items: [pricingEntry('cache_miss', '输入', 0.075)] }
+      ]
+    })
+    expect(modelCardPriceMeta(deepseek, modelPriceSlots(deepseek))).toEqual({
+      caption: '高峰价 · USD / 1M tokens',
+      pill: '按高峰价结算'
+    })
+  })
+
+  it('modelCardPriceMeta：媒体单位唯一时上移，多单位时只保留 USD', () => {
+    const image = providerModel({ mode: 'image', outputUsdPerImage: 0.04 })
+    expect(modelCardPriceMeta(image, modelPriceSlots(image))).toEqual({
+      caption: '目录价 · USD / 张',
+      pill: ''
+    })
+
+    const audio = providerModel({
+      mode: 'audio',
+      audioInputUsdPer1M: 1,
+      ttsInputUsdPer1MChars: 20
+    })
+    expect(modelCardPriceMeta(audio, modelPriceSlots(audio))).toEqual({
+      caption: '目录价 · USD',
+      pill: ''
+    })
+
+    expect(modelCardPriceMeta(providerModel(), [])).toEqual({ caption: '', pill: '' })
   })
 })
 

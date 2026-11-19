@@ -84,6 +84,37 @@ func TestWhPreflightRuntimeResolvedHappyPath(t *testing.T) {
 	}
 }
 
+// API Key 单 IP 并发限制必须从运行时 API Key 行透传到派发准备输入（设计
+// §2.1/§2.3）：0 关闭；内部无 Key 请求由 helper 归 0，不在这里重复。
+func TestWhPreflightPassesAPIKeyClientIPConcurrencyLimit(t *testing.T) {
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai", Status: "active"}
+	cache := whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
+	runtime := cache.runtimeByKey["sk-good"]
+	row := *runtime.APIKey
+	row.ClientIPConcurrencyLimit = 42
+	runtime.APIKey = &row
+	cache.runtimeByKey["sk-good"] = runtime
+	candidates := whSuccessfulCandidates(account)
+	service, _, _ := newTestService(t, func(s *Service) {
+		s.RuntimeCache = cache
+		s.Candidates = candidates
+		s.Codex = &fakeCodex{}
+	})
+	req, _, writer := whAuthorizedChatRequest()
+	if _, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
+		Req: req, Res: writer, AuditCapture: &fakeAuditCapture{}, Options: &PreflightOptions{},
+		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
+	}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if candidates.lastPrepareInput == nil {
+		t.Fatal("PrepareDispatchAccounts 未被调用")
+	}
+	if got := candidates.lastPrepareInput.APIKeyClientIPConcurrencyLimit; got != 42 {
+		t.Fatalf("APIKeyClientIPConcurrencyLimit = %d, want 42", got)
+	}
+}
+
 // 运行态缺失：finalize 认证失败审计并在预检阶段结束。
 func TestWhPreflightRuntimeMissing(t *testing.T) {
 	service, _, sink := newTestService(t, func(s *Service) {

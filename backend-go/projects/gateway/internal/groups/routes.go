@@ -177,7 +177,7 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, access AccessScope) 
 }
 
 // rejectedGroupType reports whether the body carries a retired group type on
-// the write face. high_concurrency was retired with the two-key policy
+// the write face. high_concurrency was retired with the single-key policy
 // (普通分组可选调度策略设计 §2.1); the route renders 400「分组类型无效」.
 func rejectedGroupType(body map[string]any) bool {
 	value, exists := body["groupType"]

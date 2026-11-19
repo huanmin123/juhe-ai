@@ -149,6 +149,7 @@ func catalogAPIKeyFields(prefix string) []catalogField {
 		catalogFieldEx(prefix+".routeStrategyStatus", "string", false, "策略路由状态：active 或 disabled。", "active"),
 		catalogFieldEx(prefix+".expiresAt", "string", false, "API Key 到期时间，ISO 8601 字符串；未设置时缺省。", "2026-12-31T23:59:59.000Z"),
 		catalogFieldEx(prefix+".availabilitySchedule", "object", false, "API Key 时间计划；未设置时缺省。计划边界只切换可用时段（availabilityScheduleGate），不改写 API Key 状态。"),
+		catalogFieldEx(prefix+".clientIpConcurrencyLimit", "number", false, "单 IP 并发上限：0 表示关闭，1..1000000 生效；超限立即返回 429。", 0),
 	}
 }
 
@@ -370,6 +371,7 @@ func externalPublicAPICatalog() externalAPICatalog {
 		"id": "key_xxx", "name": "公益站访问密钥", "keyPrefix": "juis_xxx", "status": "active",
 		"routeStrategyId": "rts_xxx", "routeStrategyName": "公益站默认路由",
 		"routeStrategyMode": "normal", "routeStrategyStatus": "active",
+		"clientIpConcurrencyLimit": 0,
 	}
 	account := map[string]any{
 		"id": "acc_xxx", "name": "公益站-青芽主通道", "providerCode": vendorCodeGPT,
@@ -461,14 +463,15 @@ func externalPublicAPICatalog() externalAPICatalog {
 					catalogFieldEx("status", "string", false, "状态：active 或 disabled，默认 active。", "active"),
 					catalogFieldEx("expiresAt", "string", false, "API Key 到期时间，ISO 8601 字符串；未填写表示不过期。"),
 					catalogFieldEx("quotaLimits", "object|null", false, "请求成本额度限制；传 null 表示清空。"),
-					catalogFieldEx("availabilitySchedule", "object|null", false, "时间计划；null 表示清空计划，未填写表示不设置计划。")},
+					catalogFieldEx("availabilitySchedule", "object|null", false, "时间计划；null 表示清空计划，未填写表示不设置计划。"),
+					catalogFieldEx("clientIpConcurrencyLimit", "number", false, "单 IP 并发上限：0 表示关闭，1..1000000 生效；缺省或 null 视为 0。", 0)},
 				Example: map[string]any{"targetUsername": "huanmin", "name": "公益站访问密钥", "routeStrategyId": "rts_xxx", "status": "active"},
 			},
 			ResponseExample: responseEnvelope(map[string]any{"action": "created", "target": target, "apiKey": apiKeyWithKey}),
 		},
 		{
 			ID: "api-key-update", Name: "API Key 修改",
-			Summary: "修改指定 API Key 的名称、状态、策略路由绑定、额度或时间计划。",
+			Summary: "修改指定 API Key 的名称、状态、策略路由绑定、额度、时间计划或单 IP 并发限制。",
 			Status:  "available", Method: "POST", Path: "/__aipublic__/api-key/update",
 			Headers: []catalogHeader{catalogAuthHeader},
 			Query:   []catalogField{},
@@ -484,6 +487,7 @@ func externalPublicAPICatalog() externalAPICatalog {
 					catalogFieldEx("expiresAt", "string|null", false, "新的到期时间；传 null 表示清空。"),
 					catalogFieldEx("quotaLimits", "object|null", false, "新的请求成本额度限制；传 null 表示清空。"),
 					catalogFieldEx("availabilitySchedule", "object|null", false, "时间计划；null 表示清空计划，未填写表示保留。"),
+					catalogFieldEx("clientIpConcurrencyLimit", "number", false, "新的单 IP 并发上限：0 表示关闭，1..1000000 生效；未填写表示保留。", 0),
 				},
 				Example: map[string]any{"apiKeyId": "key_xxx", "status": "disabled"},
 			},

@@ -148,10 +148,12 @@ type apiKeyAddBody struct {
 	HasQuotaLimits         bool
 	AvailabilitySchedule   any
 	HasSchedule            bool
+	// 单 IP 并发上限：缺省/null → 0（关闭）；提供时必须为 0..1000000 整数。
+	ClientIPConcurrencyLimit int
 }
 
 func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
+	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "clientIpConcurrencyLimit")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -216,6 +218,17 @@ func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
 	if bodyHas(body, "availabilitySchedule") {
 		parsed.AvailabilitySchedule, parsed.HasSchedule = body["availabilitySchedule"], true
 	}
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺省或显式 null →
+	// 0；提供时必须是 0..1000000 的 JSON 整数，越界/小数/类型错误 400。
+	if bodyHas(body, "clientIpConcurrencyLimit") {
+		if value := body["clientIpConcurrencyLimit"]; value != nil {
+			limit, _, issue := bodyOptionalInt(value, true, 0, apikeys.MaxClientIPConcurrencyLimit)
+			if issue != "" {
+				return nil, issue
+			}
+			parsed.ClientIPConcurrencyLimit = limit
+		}
+	}
 	return parsed, ""
 }
 
@@ -246,8 +259,9 @@ func (d *Deps) addApiKey(w http.ResponseWriter, r *http.Request) {
 		RouteStrategyID: &parsed.RouteStrategyID,
 		// 目标 Key owner（target.SystemAccountID）名下的偏好/策略校验由 store
 		// 层绑定解析收敛（同 owner 自定义行或全局内置行）。
-		SchedulingPreferenceID: parsed.SchedulingPreferenceID,
-		SecurityPolicyID:       parsed.SecurityPolicyID,
+		SchedulingPreferenceID:   parsed.SchedulingPreferenceID,
+		SecurityPolicyID:         parsed.SecurityPolicyID,
+		ClientIPConcurrencyLimit: parsed.ClientIPConcurrencyLimit,
 	}
 	if parsed.HasStatus {
 		status := parsed.Status
@@ -306,12 +320,15 @@ type apiKeyUpdateBody struct {
 	HasQuotaLimits          bool
 	AvailabilitySchedule    any
 	HasSchedule             bool
+	// 单 IP 并发上限：缺失保持原值；提供时必须为 0..1000000 整数（0 关闭）。
+	ClientIPConcurrencyLimit    int
+	HasClientIPConcurrencyLimit bool
 }
 
-var apiKeyUpdateMutableFields = []string{"name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule"}
+var apiKeyUpdateMutableFields = []string{"name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "clientIpConcurrencyLimit"}
 
 func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "apiKeyId", "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
+	unknown := strictObjectKeys(body, "targetUsername", "apiKeyId", "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "clientIpConcurrencyLimit")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -397,6 +414,16 @@ func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
 	if bodyHas(body, "availabilitySchedule") {
 		parsed.AvailabilitySchedule, parsed.HasSchedule = body["availabilitySchedule"], true
 	}
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失保持原值；
+	// null/小数/越界/类型错误按字段校验错误 400，显式 0 是合法关闭。
+	if bodyHas(body, "clientIpConcurrencyLimit") {
+		limit, _, issue := bodyOptionalInt(body["clientIpConcurrencyLimit"], true, 0, apikeys.MaxClientIPConcurrencyLimit)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.ClientIPConcurrencyLimit = limit
+		parsed.HasClientIPConcurrencyLimit = true
+	}
 	if !hasAnyField(body, apiKeyUpdateMutableFields) {
 		return nil, "API Key 修改至少提供一个要修改的字段"
 	}
@@ -480,6 +507,10 @@ func (d *Deps) updateApiKey(w http.ResponseWriter, r *http.Request) {
 	if parsed.HasSchedule {
 		input.AvailabilitySchedule = parsed.AvailabilitySchedule
 		input.HasSchedule = true
+	}
+	if parsed.HasClientIPConcurrencyLimit {
+		input.ClientIPConcurrencyLimit = parsed.ClientIPConcurrencyLimit
+		input.HasClientIPConcurrencyLimit = true
 	}
 	outcome, err := d.ApiKeys.Patch(r.Context(), parsed.ApiKeyID, input, access)
 	if err != nil {

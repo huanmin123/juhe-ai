@@ -672,6 +672,52 @@ export function formatSpec(value?: number | null): string {
   return String(value)
 }
 
+/** 卡面规格速览：与 formatSpec 同源，后缀按卡面视觉使用大写 K/M（393.2K / 1M）。 */
+export function formatCardSpec(value?: number | null): string {
+  const text = formatSpec(value)
+  if (text.endsWith('m')) return `${text.slice(0, -1)}M`
+  if (text.endsWith('k')) return `${text.slice(0, -1)}K`
+  return text
+}
+
+export interface ModelCardSpec {
+  label: string
+  value: string
+}
+
+/** 卡面规格行：最大输出在前、上下文在后（对齐门户模型广场卡片层级），缺失项不占位。 */
+export function modelCardSpecs(item: ProviderModelPricing): ModelCardSpec[] {
+  const specs: ModelCardSpec[] = []
+  const maxOutput = formatCardSpec(item.maxOutputTokens)
+  if (maxOutput !== '-') specs.push({ label: '最大输出', value: maxOutput })
+  const context = formatCardSpec(item.contextWindowTokens)
+  if (context !== '-') specs.push({ label: '上下文', value: context })
+  return specs
+}
+
+const modelCardCategoryLabels: Record<ModelCategoryKey, string> = {
+  text: '对话',
+  image: '图像',
+  audio: '音频',
+  video: '视频'
+}
+
+/** 卡面能力标签：用途分类 + 视觉 + 推理 + 函数调用；只展示有目录事实支撑的项。 */
+export function modelCapabilityTags(item: ProviderModelPricing): string[] {
+  const category = getModelCategory(item)
+  const tags = [modelCardCategoryLabels[category]]
+  if (category !== 'image' && (item.inputModalities?.includes('image') || typeof item.imageInputUsdPer1M === 'number')) {
+    tags.push('视觉')
+  }
+  if (item.supportedReasoningEfforts?.length) tags.push('推理')
+  if (modelToolDeclared(item, 'function_calling')) tags.push('函数调用')
+  return tags
+}
+
+function modelToolDeclared(item: ProviderModelPricing, tool: string): boolean {
+  return Object.values(item.supportedToolsByProtocol ?? {}).some((tools) => tools.includes(tool))
+}
+
 type ModelPriceSlotField =
   | 'inputUsdPer1M'
   | 'outputUsdPer1M'
@@ -755,4 +801,31 @@ export function modelPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
   const slots = collectModelPriceSlots(item, modelPriceSlotCandidates[getModelCategory(item)])
   if (slots.length) return slots
   return collectModelPriceSlots(item, modelPriceSlotFallbackCandidates)
+}
+
+export interface ModelCardPriceMeta {
+  caption: string
+  pill: string
+}
+
+/** 卡面价格标题与右侧口径胶囊（模型目录卡片化与详情抽屉设计 §5.2）：
+ * - 文本模型无高峰档：日常价 + 全天同价（全天按该价结算）；
+ * - 文本模型有高峰档（DeepSeek）：槽位是计费价（高峰价），附「按高峰价结算」说明；
+ * - 媒体模型：目录价 + 单位；多槽位单位不一致时单位只留各槽位自身语义，标题只留 USD。 */
+export function modelCardPriceMeta(item: ProviderModelPricing, slots: ModelPriceSlot[]): ModelCardPriceMeta {
+  if (!slots.length) return { caption: '', pill: '' }
+  const isText = getModelCategory(item) === 'text'
+  const hasOffpeak = modelCatalogDisplaySections(item).some((section) => section.key === 'offpeak_pricing')
+  const label = isText ? (hasOffpeak ? '高峰价' : '日常价') : '目录价'
+  const units = new Set(slots.map((slot) => slot.unit))
+  const unit = units.size === 1 ? formatCardPriceUnit(slots[0]?.unit ?? '') : ''
+  return {
+    caption: `${label} · USD${unit}`,
+    pill: isText ? (hasOffpeak ? '按高峰价结算' : '全天同价') : ''
+  }
+}
+
+function formatCardPriceUnit(unit: string): string {
+  if (!unit) return ''
+  return unit.startsWith('/') ? ` / ${unit.slice(1)}` : ` ${unit}`
 }

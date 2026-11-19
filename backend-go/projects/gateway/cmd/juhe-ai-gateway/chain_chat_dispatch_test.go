@@ -491,7 +491,7 @@ func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 	if dispatchContext.GroupSchedulingPolicy == nil {
 		t.Fatalf("调度策略未对齐到承载分组: %+v", dispatchContext.GroupSchedulingPolicy)
 	}
-	if got, want := *dispatchContext.GroupSchedulingPolicy, (gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5, ClientIPConcurrencyLimit: 2}); got != want {
+	if got, want := *dispatchContext.GroupSchedulingPolicy, (gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5}); got != want {
 		t.Fatalf("调度策略内容不符: %+v want %+v", got, want)
 	}
 	if dispatchContext.UsageContext.GroupID != "group_hc" {

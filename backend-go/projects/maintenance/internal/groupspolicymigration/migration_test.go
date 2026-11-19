@@ -232,6 +232,44 @@ func TestApplyNormalizesEmptySuperGroup(t *testing.T) {
 	}
 }
 
+// TestApplyAcceptsSingleKeyPostRevision25 钉住 revision 25 后兼容：分组策略
+// 已单键化时，revision 22 步骤重跑 / migrate-group-policy 独立重跑必须判定
+// 完成态并把单键视为终态——0 写入、soft 原样保留（不回落 globalMax 映射），
+// 不得把单键写回两键。
+func TestApplyAcceptsSingleKeyPostRevision25(t *testing.T) {
+	db := openFixture(t)
+	insertGroup(t, db, "g_single_high", "u1", "单键大阈值", "standard", GroupTypePersonal,
+		`{"defaultSoftConcurrency":5000}`)
+	insertGroup(t, db, "g_single_off", "u1", "单键关闭", "standard", GroupTypePersonal,
+		`{"defaultSoftConcurrency":-1}`)
+	insertGroup(t, db, "g_member", "u1", "超级成员", "standard", GroupTypePersonal,
+		`{"defaultSoftConcurrency":5}`)
+	insertGroup(t, db, "g_super", "u1", "超级", "super", GroupTypePersonal,
+		`{"defaultSoftConcurrency":5}`)
+	insertSuperMember(t, db, "g_super", "g_member", 1)
+	before := snapshotGroups(t, db)
+
+	plan, err := Apply(context.Background(), db, Options{GlobalMax: 5000})
+	if err != nil {
+		t.Fatalf("revision 25 后重跑 Apply: %v", err)
+	}
+	if plan.Applied != 0 || plan.Mapped != 0 || plan.Blocked != 0 {
+		t.Fatalf("单键终态重跑 = (applied %d, mapped %d, blocked %d), want 全零",
+			plan.Applied, plan.Mapped, plan.Blocked)
+	}
+	after := snapshotGroups(t, db)
+	if !equalSnapshots(before, after) {
+		t.Fatal("单键终态不得被写回两键")
+	}
+	if _, policy, _ := groupFact(t, db, "g_single_high"); policy.String != `{"defaultSoftConcurrency":5000}` {
+		t.Fatalf("g_single_high 单键 5000 被改写: %v", policy)
+	}
+	satisfied, err := Satisfied(context.Background(), db)
+	if err != nil || !satisfied {
+		t.Fatalf("revision 25 后 Satisfied = %t/%v, want true", satisfied, err)
+	}
+}
+
 func TestApplyIsIdempotentRerunZeroWrites(t *testing.T) {
 	db := openFixture(t)
 	seedLegacyDataset(t, db)

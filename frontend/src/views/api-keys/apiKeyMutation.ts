@@ -8,6 +8,16 @@ import type { ApiKeyMutationPayload } from '@/api/domains/apiKeys'
 import { BUILTIN_SECURITY_POLICY_ID } from '@/api/domains/securityPolicies'
 import { SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID } from '@/api/domains/schedulingPreferences'
 
+/** 单 IP 并发限制契约上限（API Key 单 IP 并发限制设计 §2.1）。 */
+export const apiKeyClientIpConcurrencyLimitMax = 1_000_000
+
+export function isValidApiKeyClientIpConcurrencyLimit(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= apiKeyClientIpConcurrencyLimitMax
+}
+
 export interface ApiKeyEditableSnapshot {
   name: string
   routeStrategyId?: string
@@ -15,6 +25,8 @@ export interface ApiKeyEditableSnapshot {
   schedulingPreferenceId?: string
   /** 绑定安全策略；undefined 归一为内置「默认安全策略」（空规则 = 原样转发）。 */
   securityPolicyId?: string
+  /** 单 IP 并发上限：0 = 不限制；1..1000000 生效，超限立即返回 429。 */
+  clientIpConcurrencyLimit: number
   status: 'active' | 'disabled'
   expiresAt: string | null
   description: string
@@ -36,6 +48,10 @@ export function buildApiKeyCreatePayload(
     schedulingPreferenceId: snapshot.schedulingPreferenceId || SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
     // 安全策略无迁移期：创建缺省内置 ID（null = 默认策略），未绑定与显式默认同义。
     securityPolicyId: snapshot.securityPolicyId || BUILTIN_SECURITY_POLICY_ID,
+    // 单 IP 并发限制创建恒发归一化整数：默认 0（关闭）也显式提交，避免后端缺省路径差异。
+    clientIpConcurrencyLimit: isValidApiKeyClientIpConcurrencyLimit(snapshot.clientIpConcurrencyLimit)
+      ? snapshot.clientIpConcurrencyLimit
+      : 0,
     ...(snapshot.status === 'disabled' ? { status: snapshot.status } : {}),
     ...(snapshot.expiresAt ? { expiresAt: snapshot.expiresAt } : {}),
     ...(description ? { description } : {}),
@@ -49,6 +65,7 @@ const editableFields = [
   'routeStrategyId',
   'schedulingPreferenceId',
   'securityPolicyId',
+  'clientIpConcurrencyLimit',
   'status',
   'expiresAt',
   'description',
@@ -73,6 +90,7 @@ const rowPatchFields = [
   'securityPolicyId',
   'securityPolicyName',
   'securityPolicyBuiltIn',
+  'clientIpConcurrencyLimit',
   'expiresAt',
   'quotaLimits',
   'availabilitySchedule'

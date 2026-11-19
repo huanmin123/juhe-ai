@@ -75,6 +75,11 @@ type PatchInput struct {
 
 	AvailabilitySchedule any
 	HasSchedule          bool
+
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失 = 保持原值；
+	// 显式提交必须是 0..1000000 的整数，显式 0 是合法关闭。
+	ClientIPConcurrencyLimit    int
+	HasClientIPConcurrencyLimit bool
 }
 
 // patchTypeName mirrors the zod v3 parsed-type names used by the default
@@ -260,6 +265,17 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 		}
 		input.AvailabilitySchedule = value
 	}
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失保持原值；
+	// 提供时必须是 0..1000000 的 JSON 整数（显式 0 关闭），null/小数/字符串/
+	// 越界按字段校验错误 400，不静默截断或取整。
+	if value, exists := body["clientIpConcurrencyLimit"]; exists {
+		input.HasClientIPConcurrencyLimit = true
+		limit, issue := parseClientIPConcurrencyLimitField(value)
+		if issue != "" {
+			return nil, issue
+		}
+		input.ClientIPConcurrencyLimit = limit
+	}
 	if value, exists := body["expectedRevision"]; exists {
 		text, isString := value.(string)
 		if !isString {
@@ -276,7 +292,7 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 	var unknown []string
 	for key := range body {
 		switch key {
-		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "expectedRevision":
+		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "securityPolicyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "clientIpConcurrencyLimit", "expectedRevision":
 		default:
 			unknown = append(unknown, key)
 		}
@@ -293,7 +309,7 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 	}
 	if !input.HasName && !input.HasDescription && !input.HasRouteStrategyID &&
 		!input.HasSchedulingPreferenceID && !input.HasSecurityPolicyID && !input.HasStatus && !input.HasExpiresAt &&
-		!input.HasQuotaLimits && !input.HasSchedule {
+		!input.HasQuotaLimits && !input.HasSchedule && !input.HasClientIPConcurrencyLimit {
 		return nil, "请提供要修改的 API Key 内容"
 	}
 	return input, ""
@@ -350,14 +366,17 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	var rowID, ownerID, name, routeStrategyID, status, keyHash string
 	var description, purpose, expiresAt, quotaJSON, scheduleJSON, updatedAt, schedulingPreferenceID, securityPolicyID sql.NullString
 	var isDefault int
+	var clientIPLimit int
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.description, api_keys.route_strategy_id, api_keys.status, api_keys.is_default, api_keys.purpose,
 			api_keys.key_hash, api_keys.expires_at, api_keys.quota_limits_json, api_keys.availability_schedule_json,
+			api_keys.client_ip_concurrency_limit,
 			api_keys.scheduling_preference_id, api_keys.security_policy_id, api_keys.updated_at
 		FROM `+s.table("api_keys")+` api_keys
 		WHERE api_keys.id = ?`+where+` LIMIT 1`+lock), args...).
 		Scan(&rowID, &ownerID, &name, &description, &routeStrategyID, &status, &isDefault, &purpose,
-			&keyHash, &expiresAt, &quotaJSON, &scheduleJSON, &schedulingPreferenceID, &securityPolicyID, &updatedAt)
+			&keyHash, &expiresAt, &quotaJSON, &scheduleJSON, &clientIPLimit,
+			&schedulingPreferenceID, &securityPolicyID, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -572,6 +591,21 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		}
 	}
 
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失保持原值；
+	// 同值提交是 no-op；显式 0 是合法关闭。
+	if input.HasClientIPConcurrencyLimit {
+		limit, err := normalizeClientIPConcurrencyLimit(input.ClientIPConcurrencyLimit)
+		if err != nil {
+			return nil, err
+		}
+		if limit != clientIPLimit {
+			addChange("clientIpConcurrencyLimit", clientIPLimit, limit)
+			setClauses = append(setClauses, "client_ip_concurrency_limit = ?")
+			setArgs = append(setArgs, limit)
+			rowPatch["clientIpConcurrencyLimit"] = limit
+		}
+	}
+
 	if input.HasStatus {
 		requestedStatus := input.Status
 		if requestedStatus != "active" && requestedStatus != "disabled" {
@@ -651,10 +685,12 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 				outcome.ValidationCacheError = err
 			}
 		}
-		if containsString(changed, "name") || containsString(changed, "availabilitySchedule") {
+		if containsString(changed, "name") || containsString(changed, "availabilitySchedule") ||
+			containsString(changed, "clientIpConcurrencyLimit") {
 			// 计划变化会改写派生闸门 availability_schedule_gate（时间计划闸门与
 			// 账户状态解耦设计 §5.2）：复用既有运行时缓存失效链，让网关立即按
-			// 新闸门鉴权，不等 TTL。
+			// 新闸门鉴权，不等 TTL。单 IP 并发上限属于运行时分派保护参数，同样
+			// 需要刷新 API Key 运行时行，避免旧限值在 TTL 内继续生效。
 			s.inval.InvalidateRuntime(id, ReasonAPIKeyUpdated)
 		}
 		if containsString(changed, "quotaLimits") {

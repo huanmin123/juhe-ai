@@ -1211,7 +1211,7 @@ func TestDerefPolicyAndModelPriorityRankMap(t *testing.T) {
 	if derefPolicy(nil) != (gatewayruntimecache.GroupSchedulingPolicy{}) {
 		t.Fatal("nil policy 解引用应为零值两键策略")
 	}
-	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3, ClientIPConcurrencyLimit: 1}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 3}
 	if derefPolicy(&policy) != policy {
 		t.Fatal("非 nil policy 应解引用为同值")
 	}

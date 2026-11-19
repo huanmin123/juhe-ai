@@ -53,7 +53,7 @@ func TestSoftBusyAccountIDsFor(t *testing.T) {
 		{ID: "nil-current", ConcurrencyLimit: 4},
 		{ID: "at-hard-limit", ConcurrencyLimit: 2, CurrentConcurrency: gatewayDispatchTestInt(2)},
 	}
-	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2, ClientIPConcurrencyLimit: 0}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2}
 	got := softBusyAccountIDsFor(accounts, policy)
 	if len(got) != 2 || !got["soft"] || !got["at-hard-limit"] || got["idle"] || got["nil-current"] {
 		t.Fatalf("softBusy set = %+v", got)
@@ -61,7 +61,7 @@ func TestSoftBusyAccountIDsFor(t *testing.T) {
 	if len(softBusyAccountIDsFor(accounts, nil)) != 0 {
 		t.Fatal("nil policy must yield empty softBusy set")
 	}
-	disabled := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: -1, ClientIPConcurrencyLimit: 0}
+	disabled := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: -1}
 	if len(softBusyAccountIDsFor(accounts, disabled)) != 0 {
 		t.Fatal("disabled policy must yield empty softBusy set")
 	}

@@ -89,10 +89,11 @@ type SuperMembersSummary struct {
 	Members      []SuperMemberSummary `json:"members"`
 }
 
-// groupDispatchFingerprint 计算成员调度指纹（设计 §3.3）：
-// SHA256("group-dispatch-fingerprint:v1\n" + canonical_json({group_type,
+// groupDispatchFingerprint 计算成员调度指纹（设计 §2.5 / §3.3）：
+// SHA256("group-dispatch-fingerprint:v2\n" + canonical_json({group_type,
 // scheduling_policy_json}))。group_type 先归一（旧 high_concurrency 视同
-// personal），策略先按两键契约解析/映射，保证迁移前后等价指纹一致。
+// personal），策略只按规范化单键 defaultSoftConcurrency 参与（NULL → null），
+// 旧 clientIpConcurrencyLimit 已迁至 API Key、不再影响一致性。
 func groupDispatchFingerprint(groupType string, schedulingJSON sql.NullString, globalMax int) (string, error) {
 	normalizedType, err := normalizeStoredGroupType(groupType)
 	if err != nil {
@@ -109,7 +110,7 @@ func groupDispatchFingerprint(groupType string, schedulingJSON sql.NullString, g
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(append([]byte("group-dispatch-fingerprint:v1\n"), canonical...))
+	sum := sha256.Sum256(append([]byte("group-dispatch-fingerprint:v2\n"), canonical...))
 	return hex.EncodeToString(sum[:]), nil
 }
 
@@ -341,7 +342,7 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 	// 成员集合变更后，把成员组的调度事实回写到超级分组自身（group_type 与
 	// scheduling_policy_json）：超级分组目标在运行期按自身 GroupAccess 执行
 	// 容量门，只有与成员一致才符合设计 §4.3「按实际成员分组执行」。旧
-	// high_concurrency 成员在此归一为 personal + 两键策略。
+	// high_concurrency 成员在此归一为 personal + 单键策略。
 	if len(normalized) > 0 {
 		firstMemberID := normalized[0].MemberGroupID
 		var memberType string

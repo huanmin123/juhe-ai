@@ -7,9 +7,10 @@ import { computed } from 'vue'
 import { useGroupFormModel } from '../../views/groups/groupFormModel'
 import { cloneGroupSchedulingPolicy, defaultGroupSchedulingPolicy } from '../../views/groups/groupSchedulingPolicy'
 
-// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2）：策略只含两键，NULL 等
-// 价于两项默认（-1/0）；阈值 -1 合法、0 非法；非空对象必须两键齐全。
-const enabledPolicy = { defaultSoftConcurrency: 7, clientIpConcurrencyLimit: 2 }
+// 普通分组可选调度策略（普通分组可选调度策略设计 §2.2；单键化见 API Key 单 IP
+// 并发限制设计 §2.4）：策略只含 defaultSoftConcurrency 单键，NULL 等价于默认 -1；
+// 阈值 -1 合法、0 非法；单 IP 并发限制键已迁出分组策略。
+const enabledPolicy = { defaultSoftConcurrency: 7 }
 const policyGroup = {
   name: '阈值分组',
   description: '原说明',
@@ -22,21 +23,26 @@ const policyGroup = {
 const model = useGroupFormModel(computed(() => []))
 
 assert.throws(
-  () => cloneGroupSchedulingPolicy({ defaultSoftConcurrency: 0, clientIpConcurrencyLimit: 0 }),
+  () => cloneGroupSchedulingPolicy({ defaultSoftConcurrency: 0 }),
   /defaultSoftConcurrency 不能为 0/,
   '排队阈值 0 不是合法值，关闭只能用 -1'
 )
 assert.throws(
-  () => cloneGroupSchedulingPolicy({ defaultSoftConcurrency: 5 }),
+  () => cloneGroupSchedulingPolicy({}),
   /缺少字段/,
-  '非空策略必须两键齐全，缺键一律无效'
+  '非空策略必须包含唯一键 defaultSoftConcurrency，缺键一律无效'
 )
 assert.throws(
   () => cloneGroupSchedulingPolicy({ ...enabledPolicy, maxQueueWaitMs: 60000 }),
   /未知字段/,
   '旧高并发策略键已退役，不得再进入前端模型'
 )
-assert.deepEqual(cloneGroupSchedulingPolicy(null), defaultGroupSchedulingPolicy, 'NULL 策略等价于两项默认（-1/0）')
+assert.throws(
+  () => cloneGroupSchedulingPolicy({ defaultSoftConcurrency: 5, clientIpConcurrencyLimit: 2 }),
+  /未知字段.*clientIpConcurrencyLimit/,
+  '单 IP 并发限制已迁至 API Key，旧两键分组策略必须被严格单键模型拒绝'
+)
+assert.deepEqual(cloneGroupSchedulingPolicy(null), defaultGroupSchedulingPolicy, 'NULL 策略等价于默认 -1')
 
 model.applyGroupToForm(policyGroup)
 assert.deepEqual(model.groupEditPatch(), {}, '未修改分组不得生成 PATCH 字段')
@@ -47,12 +53,12 @@ assert.deepEqual(model.groupEditPatch(), { description: '新说明' }, '说明�
 model.applyGroupToForm(policyGroup)
 model.form.schedulingPolicy.defaultSoftConcurrency = 8
 assert.deepEqual(model.groupEditPatch(), {
-  schedulingPolicy: { defaultSoftConcurrency: 8, clientIpConcurrencyLimit: 2 }
-}, '策略修改必须整对象提交两键，不得附带名称、说明、状态或分组类型')
+  schedulingPolicy: { defaultSoftConcurrency: 8 }
+}, '策略修改必须整对象提交单键，不得附带名称、说明、状态或分组类型')
 
 model.applyGroupToForm(policyGroup)
-model.form.schedulingPolicy = { defaultSoftConcurrency: -1, clientIpConcurrencyLimit: 0 }
-assert.deepEqual(model.groupEditPatch(), { schedulingPolicy: null }, '两项都恢复默认时 PATCH 显式发 null 清空为 NULL')
+model.form.schedulingPolicy = { defaultSoftConcurrency: -1 }
+assert.deepEqual(model.groupEditPatch(), { schedulingPolicy: null }, '阈值恢复默认时 PATCH 显式发 null 清空为 NULL')
 
 model.applyGroupToForm({
   name: '普通分组',
@@ -61,10 +67,10 @@ model.applyGroupToForm({
   groupType: 'personal',
   accessType: 'owner'
 })
-model.form.schedulingPolicy.clientIpConcurrencyLimit = 3
+model.form.schedulingPolicy.defaultSoftConcurrency = 3
 assert.deepEqual(model.groupEditPatch(), {
-  schedulingPolicy: { defaultSoftConcurrency: -1, clientIpConcurrencyLimit: 3 }
-}, '从 NULL 启用 IP 限制须提交两键齐全对象')
+  schedulingPolicy: { defaultSoftConcurrency: 3 }
+}, '从 NULL 启用阈值须提交单键对象')
 
 model.applyGroupToForm({ ...policyGroup, accessType: 'authorized' })
 model.form.name = '不允许提交的授权名称'
@@ -91,23 +97,23 @@ model.form.schedulingPolicy.defaultSoftConcurrency = 5
 const enabledCreatePayload = model.groupCreatePayload()
 assert.deepEqual(
   enabledCreatePayload.schedulingPolicy,
-  { defaultSoftConcurrency: 5, clientIpConcurrencyLimit: 0 },
-  '非默认策略创建必须两键齐全整对象提交'
+  { defaultSoftConcurrency: 5 },
+  '非默认策略创建必须单键整对象提交'
 )
 
 const groupEditModalSource = readFileSync(fileURLToPath(new URL('../../views/groups/GroupEditModal.vue', import.meta.url)), 'utf8')
 assert.doesNotMatch(groupEditModalSource, /分组类型|high_concurrency/, '分组编辑弹窗不得再保留分组类型选项（普通分组可选调度策略设计 §2.3）')
 assert.match(groupEditModalSource, /最大单账户排队阈值/, '普通分组编辑必须提供最大单账户排队阈值输入')
-assert.match(groupEditModalSource, /单 IP 并发限制/, '普通分组编辑必须提供单 IP 并发限制输入')
+assert.doesNotMatch(groupEditModalSource, /单 IP 并发限制|clientIpConcurrencyLimit/, '分组编辑不得再提供单 IP 并发限制输入（已迁至 API Key）')
 assert.match(groupEditModalSource, /-1 表示不启用；设置后达到阈值的账户在新请求排序中让位，让账户使用更平均/, '阈值帮助文案必须按契约表述')
-assert.match(groupEditModalSource, /0 表示不限制；设置后同一 IP 超过并发立即返回 429/, 'IP 限制帮助文案必须按契约表述')
 assert.match(groupEditModalSource, /form\.groupKind !== 'super'/, '超级分组必须隐藏调度策略区块')
+assert.doesNotMatch(groupEditModalSource, /scheduling-policy-grid/, '单字段策略不得保留两列 grid 半宽布局')
 assert.doesNotMatch(groupEditModalSource, /form\.enabled\s*=\s*false/, '切换为超级分组不得强制把启用状态改为停用')
 const superGroupMembersModalSource = readFileSync(fileURLToPath(new URL('../../views/groups/SuperGroupMembersModal.vue', import.meta.url)), 'utf8')
 assert.doesNotMatch(superGroupMembersModalSource, /至少需要两个启用成员/, '超级分组成员弹窗不得提示启用需要两个以上成员')
 
 const schedulingPolicySource = readFileSync(fileURLToPath(new URL('../../views/groups/groupSchedulingPolicy.ts', import.meta.url)), 'utf8')
-assert.doesNotMatch(schedulingPolicySource, /high_concurrency|fastFirstEnabled|fallbackOnQueueEnabled|maxQueueWaitMs|clientIpConcurrencyOverflowMode|imageLaneMaxConcurrency/, '旧高并发策略键不得再出现在前端策略模型')
+assert.doesNotMatch(schedulingPolicySource, /high_concurrency|fastFirstEnabled|fallbackOnQueueEnabled|maxQueueWaitMs|clientIpConcurrencyOverflowMode|imageLaneMaxConcurrency|clientIpConcurrencyLimit/, '旧高并发策略键与已迁移的单 IP 限制键不得再出现在前端分组策略模型')
 assert.doesNotMatch(schedulingPolicySource, /purple/, '高并发紫色类型标签必须删除')
 assert.match(schedulingPolicySource, /未启用可选调度策略/, '摘要必须提供「未启用可选调度策略」文案')
 
@@ -138,4 +144,4 @@ assert.match(removeSource, /await groupsApi\.delete[\s\S]*removeGroupItems/, '�
 assert.match(removeSource, /await groupsApi\.returnAuthorization[\s\S]*removeGroupItems/, '归还授权分组成功必须从本地列表移除目标行')
 assert.doesNotMatch(removeSource, /\bloadData\s*\(/, '删除或归还成功后不得重复刷新整页')
 
-console.log('分组前端差异 PATCH 回归通过：两键策略 PATCH/Create 语义、列表摘要同步与编辑、删除、归还本地合并均符合普通分组可选调度策略契约')
+console.log('分组前端差异 PATCH 回归通过：单键策略 PATCH/Create 语义、列表摘要同步与编辑、删除、归还本地合并均符合普通分组可选调度策略契约')

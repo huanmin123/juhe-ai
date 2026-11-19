@@ -69,7 +69,6 @@
       :show-target-alert="!editingId && isManagementView"
       :target-system-account-label="targetSystemAccountLabel"
       :title="groupModalTitle"
-      @client-ip-concurrency-limit-change="setFormClientIpConcurrencyLimit"
       @default-soft-concurrency-change="setFormDefaultSoftConcurrency"
       @save="saveGroup"
     />
@@ -144,7 +143,6 @@ const {
   groupCreatePayload,
   groupEditPatch,
   resetGroupFormForCreate,
-  setFormClientIpConcurrencyLimit,
   setFormDefaultSoftConcurrency
 } = useGroupFormModel(computed(() => []))
 type GroupEditTarget = Pick<GroupListItem, 'id' | 'systemAccountId' | 'updatedAt'> & {

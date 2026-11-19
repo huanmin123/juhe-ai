@@ -19,7 +19,7 @@ const gatewayRuntimeCacheFixtureSchema = `
 	CREATE SCHEMA IF NOT EXISTS juhe_business;
 	CREATE TABLE juhe_business.system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin');
 	CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT);
-	CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, availability_schedule_gate INTEGER, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT, security_policy_id TEXT);
+	CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, availability_schedule_gate INTEGER, expires_at TEXT, quota_limits_json TEXT, client_ip_concurrency_limit INTEGER NOT NULL DEFAULT 0, purpose TEXT, scheduling_preference_id TEXT, security_policy_id TEXT);
 	-- 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
 	CREATE TABLE juhe_business.scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
 	-- API Key 安全策略实体（安全策略设计 §4.1，批A 存储；loadGatewayAPIKeyRow
@@ -194,7 +194,7 @@ func seedGatewayKeyFixture(t *testing.T, db *sql.DB) {
 		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
 		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, client_ip_concurrency_limit, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active', 7, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 2, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, NULL, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b3', 'rs1', 'sys_owner', 'g_disabled', 3, 1, 'disabled', '2026-01-01T00:00:00.000Z')`,
@@ -230,6 +230,10 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	}
 	if runtime.APIKey.ID != "key1" || runtime.APIKey.SelectedGroupID != "g1" {
 		t.Fatalf("key row mismatch: %+v", runtime.APIKey)
+	}
+	// 新列必须进入运行时快照，否则派发闸口永远读到 0（API Key 单 IP 并发限制设计 §2.1）。
+	if runtime.APIKey.ClientIPConcurrencyLimit != 7 {
+		t.Fatalf("clientIpConcurrencyLimit = %d, want 7", runtime.APIKey.ClientIPConcurrencyLimit)
 	}
 	// 绑定过滤：disabled 剔除；NULL 权重归一化为 1，有效权重保留。
 	bindings := runtime.APIKey.GroupBindings

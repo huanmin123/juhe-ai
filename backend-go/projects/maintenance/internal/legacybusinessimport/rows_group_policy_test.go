@@ -14,6 +14,8 @@ import (
 // 回迁不再复制 high_concurrency 分组类型与 16 键旧策略——groups 一律归一
 // personal + 两键/NULL（globalMax 取旧进程默认 5000），授权设置策略列恒 NULL
 // （覆盖退役）；needs_review 形状中断导入并保留原始错误。
+// 2026-11-19 revision 25：回迁**保留两键形状**（含 clientIpConcurrencyLimit），
+// 由导入后 upgrade 链把旧分组 IP 值迁移到 API Key；导入命令自身不写 Key 级值。
 var groupPolicyImportDDLs = []string{
 	`CREATE TABLE juhe_business.groups (
 		id text PRIMARY KEY, system_account_id text NOT NULL, name text NOT NULL,
@@ -84,7 +86,8 @@ func TestImportGroupsNormalizesLegacyPolicy(t *testing.T) {
 	if len(ids) != 3 {
 		t.Fatalf("导入分组数 = %d, want 3", len(ids))
 	}
-	// 旧默认 5000 → 两项都默认 → NULL；显式阈值保留两键形状。
+	// 旧默认 5000 → 两项都默认 → NULL；显式阈值保留两键形状（含旧 IP 值），
+	// 供导入后 upgrade 的 revision 25 迁移到 API Key。
 	for id, wantPolicy := range map[string]string{
 		"g_hc_default":  "",
 		"g_hc_explicit": `{"clientIpConcurrencyLimit":8,"defaultSoftConcurrency":12}`,

@@ -144,7 +144,7 @@ func TestPrepareDispatchAccountsDoesNotPromoteSoftBusyOwnerViaSlotPlan(t *testin
 	}}
 	engine.Affinity = affinity
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 2}}
-	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2, ClientIPConcurrencyLimit: 0}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2}
 	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
 	input.SessionAffinityKey = "aff-slot-soft-owner"
 	input.GroupAccess = ordinaryGroupAccess(policy)
@@ -173,7 +173,7 @@ func TestPrepareDispatchAccountsSoftBusyOwnerAllowsFallbackMove(t *testing.T) {
 	}}
 	engine.Affinity = affinity
 	engine.Concurrency = &mapBackedConcurrencyStore{current: map[string]int{"a-1": 2}}
-	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2, ClientIPConcurrencyLimit: 0}
+	policy := &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 2}
 	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
 	input.SessionAffinityKey = "aff-slot-soft-fallback"
 	input.GroupAccess = ordinaryGroupAccess(policy)
