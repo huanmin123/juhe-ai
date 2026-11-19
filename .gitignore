@@ -76,3 +76,7 @@ backend-go/docker/single-server/build/bin/
 /backend-go/projects/jobs/data/
 /backend-go/projects/jobs/cmd/juhe-ai-jobs/data/
 /backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/data/*.key
+/backend-go/projects/gateway/juhe-ai-gateway
+/backend-go/juhe-ai-gateway
+/backend-go/projects/jobs/juhe-ai-jobs
+/backend-go/projects/maintenance/juhe-ai-maintenance
