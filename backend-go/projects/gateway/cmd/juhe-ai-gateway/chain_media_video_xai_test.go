@@ -142,9 +142,9 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","seconds":6,"size":"1280x720","input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","seed":42,"audio":false,"provider_options":{"xai":{"reference_audios":["voice-1"]}}}`,
+		`{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","seconds":6,"size":"1280x720","input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","seed":42,"audio":false,"metadata":{"reference_audios":["voice-1"]}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaXaiVideoCreateRequestID)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -175,7 +175,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 
 	// 创建出站断言：POST /v1/videos/generations + Bearer 认证头（openai 族
 	// 认权分支）+ 转换报文（duration 整数、aspect_ratio/resolution 档位、
-	// image 直传、generate_audio 布尔、provider_options deep-merge），
+	// image 直传、generate_audio 布尔、metadata deep-merge），
 	// ignored 键不进报文。
 	records := recorder.snapshot()
 	if len(records) != 1 || records[0].Method != http.MethodPost || records[0].Path != "/v1/videos/generations" {
@@ -255,7 +255,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 
 	// content 下载：completed 的 video.url 是引擎渲染的绝对 URL（不经记录层），
 	// 网关无凭据直连——记录层无第四次命中可证。响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -279,7 +279,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	// 秒计量（outputVideoSeconds），目录无价 → 无 costUsd 行项、无
 	// usageMissing 标记（契约 §2.8：计量照落成本不虚计）。
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"outputVideoSeconds":6`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"outputVideoSeconds":6`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "xai completed 秒计量终态记录")
 }
 
@@ -299,10 +299,10 @@ func TestChainMediaXaiVideoCancelLocalConverge(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"grok-imagine-video-1.5","prompt":"取消路径"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaXaiVideoPollPending)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	// DELETE：204，本地收敛 cancelled，不发上游请求（记录层仍只有创建一条）。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("cancel status=%d body=%s", response.StatusCode, payload)
 	}
@@ -331,7 +331,7 @@ func TestChainMediaXaiVideoAspectRatioOutOfVocabulary(t *testing.T) {
 	server := httptest.NewServer(chain)
 	defer server.Close()
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/videos", apiKey,
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/video/generations", apiKey,
 		`{"model":"grok-imagine-video-1.5","prompt":"参数边界","size":"854x480"}`, nil)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("词表外宽高比 status=%d body=%s, want 400", response.StatusCode, payload)

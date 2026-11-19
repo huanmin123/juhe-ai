@@ -58,8 +58,8 @@ func TestParseVideoParamsValidFull(t *testing.T) {
 		t.Fatalf("audio = %v", params.Audio)
 	}
 	wantApplied := strings.Join([]string{
-		"model", "prompt", "seconds", "size", "n", "input_reference",
-		"negative_prompt", "seed", "audio",
+		"model", "input_reference", "prompt", "seconds", "size", "seed", "n",
+		"negative_prompt", "audio",
 	}, ",")
 	if got := strings.Join(params.ParamsApplied, ","); got != wantApplied {
 		t.Fatalf("applied = %q, want %q", got, wantApplied)
@@ -72,9 +72,9 @@ func TestParseVideoParamsValidFull(t *testing.T) {
 func TestParseVideoParamsMinimalAndDefaults(t *testing.T) {
 	// 数字形态 seconds 与未传 n：n 默认 1 且不进 applied。
 	params, err := ParseVideoParams(map[string]any{
-		"model":    "sora-2",
-		"prompt":   "a cat",
-		"seconds":  float64(4),
+		"model":            "sora-2",
+		"prompt":           "a cat",
+		"seconds":          float64(4),
 		"provider_options": map[string]any{"openai": map[string]any{}},
 	}, openaiVideoCapsForTest())
 	if err != nil {
@@ -235,4 +235,137 @@ func noCapsForIgnoredTest() VideoCapabilities { return VideoCapabilities{} }
 // 事实源，不复制字面量）。
 func openaiVideoCapsForTest() VideoCapabilities {
 	return videoAdapters["openai"].Capabilities()
+}
+
+// TestParseVideoParamsUnifiedFaceFields 覆盖唯一视频面的新增/别名参数
+// （设计 §4.2.1）：image/images/input_reference 三词同义、duration/seconds
+// 同义、width/height 合成 size、fps/resolution/mode/user 的能力裁决、metadata
+// 唯一扩展通道。
+func TestParseVideoParamsUnifiedFaceFields(t *testing.T) {
+	caps := allSupportedCaps()
+	caps.SupportsFPS = true
+	base := func() map[string]any {
+		return map[string]any{"model": "m", "prompt": "p"}
+	}
+
+	// image 单独给出、prompt 可省。
+	body := map[string]any{"model": "m", "image": "https://example.test/a.png"}
+	params, err := ParseVideoParams(body, caps)
+	if err != nil {
+		t.Fatalf("image-only: %v", err)
+	}
+	if params.InputReference == nil || *params.InputReference != "https://example.test/a.png" || params.ReferenceField != "image" {
+		t.Fatalf("image 归一 = %+v", params)
+	}
+	if strings.Contains(strings.Join(params.ParamsApplied, ","), "prompt") {
+		t.Fatalf("省 prompt 不应回显 applied: %v", params.ParamsApplied)
+	}
+
+	// input_reference 与 image 同值双给可接受；不同值 400。
+	body = base()
+	body["image"] = "u"
+	body["input_reference"] = "u"
+	if _, err := ParseVideoParams(body, caps); err != nil {
+		t.Fatalf("同值别名: %v", err)
+	}
+	body["input_reference"] = "v"
+	if _, err := ParseVideoParams(body, caps); err == nil {
+		t.Fatal("别名取值不一致应 400")
+	}
+
+	// images 只接受 1 个。
+	body = base()
+	body["images"] = []any{"u", "v"}
+	if _, err := ParseVideoParams(body, caps); err == nil {
+		t.Fatal("images 多值应 400")
+	}
+
+	// duration 与 seconds 同义：相等接受、不等 400。
+	body = base()
+	body["duration"] = float64(4)
+	body["seconds"] = "4"
+	params, err = ParseVideoParams(body, caps)
+	if err != nil || params.Seconds == nil || *params.Seconds != 4 {
+		t.Fatalf("duration/seconds 同值 = %+v, %v", params, err)
+	}
+	if got := strings.Join(params.ParamsApplied, ","); !strings.Contains(got, "duration") || !strings.Contains(got, "seconds") {
+		t.Fatalf("同义时长字段都应回显: %v", got)
+	}
+	body["seconds"] = "5"
+	if _, err := ParseVideoParams(body, caps); err == nil {
+		t.Fatal("duration/seconds 不一致应 400")
+	}
+
+	// width/height 成对合成 size；与 size 不一致 400。
+	body = base()
+	body["width"] = float64(1280)
+	body["height"] = float64(720)
+	params, err = ParseVideoParams(body, caps)
+	if err != nil || params.Size != "1280x720" {
+		t.Fatalf("width/height = %+v, %v", params, err)
+	}
+	body["size"] = "720x1280"
+	if _, err := ParseVideoParams(body, caps); err == nil {
+		t.Fatal("size 与 width/height 不一致应 400")
+	}
+
+	// size 与 resolution 同时给出 → 400；单独 resolution 按能力 applied/ignored。
+	body = base()
+	body["resolution"] = "720p"
+	params, err = ParseVideoParams(body, caps)
+	if err != nil || params.Resolution != "720p" {
+		t.Fatalf("resolution = %+v, %v", params, err)
+	}
+	noResolution := caps
+	noResolution.SupportsResolution = false
+	params, err = ParseVideoParams(body, noResolution)
+	if err != nil || !strings.Contains(strings.Join(params.ParamsIgnored, ","), "resolution") {
+		t.Fatalf("resolution 无能力应 ignored: %+v, %v", params, err)
+	}
+	body["size"] = "1280x720"
+	if _, err := ParseVideoParams(body, caps); err == nil {
+		t.Fatal("size 与 resolution 同时给出应 400")
+	}
+
+	// fps：有消费能力进 applied，无能力进 ignored。
+	body = base()
+	body["fps"] = float64(30)
+	params, err = ParseVideoParams(body, caps)
+	if err != nil || params.FPS == nil || *params.FPS != 30 {
+		t.Fatalf("fps = %+v, %v", params, err)
+	}
+	noFPS := caps
+	noFPS.SupportsFPS = false
+	params, _ = ParseVideoParams(body, noFPS)
+	if !strings.Contains(strings.Join(params.ParamsIgnored, ","), "fps") {
+		t.Fatalf("fps 无能力应 ignored: %v", params.ParamsIgnored)
+	}
+
+	// mode/user 接受但恒进 ignored。
+	body = base()
+	body["mode"] = "pro"
+	body["user"] = "u-1"
+	params, err = ParseVideoParams(body, caps)
+	if err != nil {
+		t.Fatalf("mode/user: %v", err)
+	}
+	ignored := strings.Join(params.ParamsIgnored, ",")
+	if !strings.Contains(ignored, "mode") || !strings.Contains(ignored, "user") {
+		t.Fatalf("mode/user 应 ignored: %v", ignored)
+	}
+
+	// metadata：对象与 JSON 字符串均可；规范字段冲突 400。
+	body = base()
+	body["metadata"] = map[string]any{"camera_fixed": true}
+	if params, err = ParseVideoParams(body, caps); err != nil || params.Metadata["camera_fixed"] != true {
+		t.Fatalf("metadata 对象 = %+v, %v", params, err)
+	}
+	body["metadata"] = `{"camera_fixed":true}`
+	if params, err = ParseVideoParams(body, caps); err != nil || params.Metadata["camera_fixed"] != true {
+		t.Fatalf("metadata 字符串 = %+v, %v", params, err)
+	}
+	body["metadata"] = map[string]any{"prompt": "x"}
+	if _, err = ParseVideoParams(body, caps); !errors.Is(err, ErrMetadataReservedField) {
+		t.Fatalf("metadata 规范字段冲突应 ErrMetadataReservedField: %v", err)
+	}
 }

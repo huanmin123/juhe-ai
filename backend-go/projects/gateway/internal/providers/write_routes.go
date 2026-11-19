@@ -19,6 +19,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
@@ -46,9 +47,53 @@ var providerModelValidationFields = map[string]bool{
 	"cacheStorageUsdPer1MPerHour": true, "serviceTierPrices": true,
 	"imageInputUsdPer1M": true, "imageOutputUsdPer1M": true,
 	"audioInputUsdPer1M": true, "audioOutputUsdPer1M": true,
-	"outputUsdPerImage": true,
+	"outputUsdPerImage": true, "mediaPricing": true,
 	// T82 显式能力声明三键：提交任一即触发能力校验（矩阵键 ⊆ 生效协议集）。
 	"supportedToolsByProtocol": true, "inputModalities": true, "outputModalities": true,
+}
+
+// customModelPriceKeySet 是「价格字段」全集（含 legacy 媒体价、token 价、
+// 服务档位价与统一媒体模板）。非管理员提交任一键一律 400（设计 §5.2/§7.3）。
+var customModelPriceKeySet = map[string]bool{
+	"inputUsdPer1M": true, "outputUsdPer1M": true, "cachedInputUsdPer1M": true,
+	"cacheWriteUsdPer1M": true, "cacheWrite1hUsdPer1M": true,
+	"cacheStorageUsdPer1MPerHour": true, "serviceTierPrices": true,
+	"imageInputUsdPer1M": true, "imageOutputUsdPer1M": true,
+	"audioInputUsdPer1M": true, "audioOutputUsdPer1M": true,
+	"outputUsdPerImage": true, "mediaPricing": true,
+}
+
+// customModelLegacyPriceKeySet 是 mediaPricing 的双口径判定集合：同一次写入
+// 提交非 null mediaPricing 与任一 legacy 价格键（即使值为 null）即 400。
+var customModelLegacyPriceKeySet = map[string]bool{
+	"inputUsdPer1M": true, "outputUsdPer1M": true, "cachedInputUsdPer1M": true,
+	"cacheWriteUsdPer1M": true, "cacheWrite1hUsdPer1M": true,
+	"cacheStorageUsdPer1MPerHour": true, "serviceTierPrices": true,
+	"imageInputUsdPer1M": true, "imageOutputUsdPer1M": true,
+	"audioInputUsdPer1M": true, "audioOutputUsdPer1M": true,
+	"outputUsdPerImage": true,
+}
+
+func (p *customModelParsedInput) hasPriceKeys() bool {
+	for key := range p.present {
+		if customModelPriceKeySet[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *customModelParsedInput) hasLegacyPriceKeys() bool {
+	for key := range p.present {
+		if customModelLegacyPriceKeySet[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *customModelParsedInput) hasMediaPricingConflict() bool {
+	return p.present["mediaPricing"] && p.values.MediaPricing != nil && p.hasLegacyPriceKeys()
 }
 
 // customModelParseOptions selects the schema variant: POST (full object),
@@ -532,6 +577,19 @@ func parseCustomModelBody(body map[string]json.RawMessage, options customModelPa
 			}
 			parsed.present[key] = true
 			parsed.values.OutputUsdPerImage = value
+		case "mediaPricing":
+			parsed.present[key] = true
+			// null = 清空（仅自定义 personal 行允许；目录/全局行在 handler
+			// 拒绝）。非 null 必须通过 shared/mediapricing 严格 schema。
+			if strings.TrimSpace(string(raw)) == "null" {
+				parsed.values.MediaPricing = nil
+				break
+			}
+			value, err := mediapricing.Parse(raw)
+			if err != nil {
+				return fail()
+			}
+			parsed.values.MediaPricing = value
 		case "pricingNotes", "capabilityNotes", "notes":
 			if !options.allowNotes {
 				return fail()
@@ -696,6 +754,14 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "自定义模型参数无效")
 		return
 	}
+	if !isAdminRole(auth.Role) && parsed.hasPriceKeys() {
+		kernel.WriteBadRequest(w, "非管理员不能配置模型价格")
+		return
+	}
+	if parsed.hasMediaPricingConflict() {
+		kernel.WriteBadRequest(w, "不能同时提交统一媒体价格与旧价格字段")
+		return
+	}
 	scope := parsed.scope
 	if scope == "" {
 		scope = "personal"
@@ -735,6 +801,26 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 	applyParsedCustomModelFields(&effective, parsed)
 	effective.Model = parsed.model
 	effective.DefaultReasoningEffort = nil
+	// 管理员新建媒体模型未提交 mediaPricing 时复制同供应商同 mode 同 unit
+	// 同协议族的最近一行（设计 §5.3）；无模板 400，不落未定价 active 行。
+	if isAdminRole(auth.Role) && !parsed.present["mediaPricing"] && effective.MediaPricing == nil {
+		mode := ""
+		if effective.Mode != nil {
+			mode = *effective.Mode
+		}
+		if _, mediaMode := mediapricing.KindForMode(mode); mediaMode {
+			template, templateErr := d.Store.findMediaPricingTemplate(ctx, provider.Code, mode, effective.SupportedAPIProtocols)
+			if templateErr != nil {
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", templateErr)
+				return
+			}
+			if template == nil {
+				kernel.WriteBadRequest(w, "请先配置媒体统一价格")
+				return
+			}
+			effective.MediaPricing = template
+		}
+	}
 	if message := validateCustomModelPricing(provider.Code, effective); message != "" {
 		kernel.WriteBadRequest(w, message)
 		return
@@ -820,6 +906,8 @@ func applyParsedCustomModelFields(target *customProviderModelUpsertInput, parsed
 			target.AudioOutputUsdPer1M = parsed.values.AudioOutputUsdPer1M
 		case "outputUsdPerImage":
 			target.OutputUsdPerImage = parsed.values.OutputUsdPerImage
+		case "mediaPricing":
+			target.MediaPricing = parsed.values.MediaPricing.Clone()
 		case "pricingNotes":
 			target.PricingNotes = parsed.values.PricingNotes
 		case "capabilityNotes":
@@ -834,6 +922,14 @@ func applyParsedCustomModelFields(target *customProviderModelUpsertInput, parsed
 
 // customModelInputFromConfigurationTemplate ports the same-named helper.
 func customModelInputFromConfigurationTemplate(template *ModelCatalogItem) customProviderModelUpsertInput {
+	// 模板价格是服务端可信来源：复制统一媒体模板时同样带 Has 语义
+	// （0 价有效），不把它当作客户端价格提交。
+	var templateMediaPricing *mediapricing.Pricing
+	if template.HasMediaPricing && len(template.MediaPricing) > 0 {
+		if parsed, err := mediapricing.Parse(template.MediaPricing); err == nil {
+			templateMediaPricing = parsed
+		}
+	}
 	mode := "text"
 	if template.Mode != nil && *template.Mode == "image" {
 		mode = "image"
@@ -875,6 +971,7 @@ func customModelInputFromConfigurationTemplate(template *ModelCatalogItem) custo
 		AudioInputUsdPer1M:          template.AudioInputUsdPer1M,
 		AudioOutputUsdPer1M:         template.AudioOutputUsdPer1M,
 		OutputUsdPerImage:           template.OutputUsdPerImage,
+		MediaPricing:                templateMediaPricing.Clone(),
 		PricingNotes:                template.PricingNotes,
 		CapabilityNotes:             template.CapabilityNotes,
 		Notes:                       template.Notes,
@@ -903,8 +1000,45 @@ func validateCustomModelPricing(providerCode string, input customProviderModelUp
 	if message := validateCustomModelCapabilities(providerCode, input); message != "" {
 		return message
 	}
+	if message := validateCustomModelMediaPricing(input); message != "" {
+		return message
+	}
 	if status == "active" && !customInputHasCompletePrice(input) {
 		return "启用的自定义模型必须配置完整当前价格"
+	}
+	return ""
+}
+
+// validateCustomModelMediaPricing 校验统一媒体模板与 mode/协议匹配
+// （设计 §3、§5.2）：mediaPricing 只允许 image/audio/video 模式；音频必须有
+// 媒体音频协议（realtime / chat 音频继续 token 计费）；unit/档位由 shared
+// mediapricing 严格校验。非法值不回落 legacy 猜测。
+func validateCustomModelMediaPricing(input customProviderModelUpsertInput) string {
+	if input.MediaPricing == nil {
+		return ""
+	}
+	mode := "text"
+	if input.Mode != nil {
+		mode = *input.Mode
+	}
+	kind, ok := mediapricing.KindForMode(mode)
+	if !ok {
+		return "只有图像/音频/视频模型支持统一媒体价格"
+	}
+	if err := input.MediaPricing.ValidateFor(kind); err != nil {
+		return "媒体统一价格无效"
+	}
+	if kind == mediapricing.KindAudio {
+		mediaProtocol := false
+		for _, protocol := range input.SupportedAPIProtocols {
+			if protocol == "audio_speech" || protocol == "audio_transcription" {
+				mediaProtocol = true
+				break
+			}
+		}
+		if !mediaProtocol {
+			return "音频模型必须声明 audio_speech 或 audio_transcription 协议"
+		}
 	}
 	return ""
 }
@@ -1032,6 +1166,10 @@ func customInputHasCompletePrice(input customProviderModelUpsertInput) bool {
 	if input.Mode != nil {
 		mode = *input.Mode
 	}
+	// 统一媒体模板存在即视为该模式已定价（0 价有效）；非法模板不通过。
+	if input.MediaPricing != nil {
+		return input.MediaPricing.ValidateForMode(mode) == nil
+	}
 	switch mode {
 	case "image":
 		return input.OutputUsdPerImage != nil
@@ -1076,8 +1214,46 @@ func customInputIsEmbeddingOnly(input customProviderModelUpsertInput) bool {
 	return true
 }
 
+// validateBuiltInMediaPricing 校验目录行的统一媒体模板与 mode/协议匹配。
+func validateBuiltInMediaPricing(item *ModelCatalogItem) string {
+	if item == nil || !item.HasMediaPricing || len(item.MediaPricing) == 0 {
+		return ""
+	}
+	parsed, err := mediapricing.Parse(item.MediaPricing)
+	if err != nil {
+		return "媒体统一价格无效"
+	}
+	mode := ""
+	if item.Mode != nil {
+		mode = *item.Mode
+	}
+	kind, ok := mediapricing.KindForMode(mode)
+	if !ok {
+		return "只有图像/音频/视频模型支持统一媒体价格"
+	}
+	if err := parsed.ValidateFor(kind); err != nil {
+		return "媒体统一价格无效"
+	}
+	if kind == mediapricing.KindAudio {
+		mediaProtocol := false
+		for _, protocol := range item.SupportedAPIProtocols {
+			if protocol == "audio_speech" || protocol == "audio_transcription" {
+				mediaProtocol = true
+				break
+			}
+		}
+		if !mediaProtocol {
+			return "音频模型必须声明 audio_speech 或 audio_transcription 协议"
+		}
+	}
+	return ""
+}
+
 // validateBuiltInModelCompleteness ports validateBuiltInModelCompleteness.
 func validateBuiltInModelCompleteness(next *ModelCatalogItem) string {
+	if message := validateBuiltInMediaPricing(next); message != "" {
+		return message
+	}
 	if next.ReleaseDate == nil {
 		return "内置模型必须配置发布时间"
 	}
@@ -1241,6 +1417,12 @@ func customCatalogItemFromRecord(record *customProviderModelRecord) ModelCatalog
 		Notes:                         record.Notes,
 		CreatedAt:                     record.CreatedAt,
 		UpdatedAt:                     record.UpdatedAt,
+	}
+	if record.MediaPricing != nil {
+		if canonical, err := record.MediaPricing.CanonicalJSON(); err == nil {
+			item.MediaPricing = canonical
+			item.HasMediaPricing = true
+		}
 	}
 	return item
 }

@@ -108,7 +108,7 @@ func volcASRUpstreamHeaders(requestID string) http.Header {
 //   - input_url → audio.url（只接受公网 URL——上游服务端自行拉取，与零存储
 //     对齐；multipart 在归一层前置拒绝）；
 //   - audio.format 由 URL 后缀推断（.wav/.mp3/.ogg），可经
-//     provider_options.volcengine.audio_format 覆盖，缺省 wav；
+//     metadata.audio_format 覆盖，缺省 wav；
 //   - language 无对应字段（Capabilities 不声明）由归一层忽略回显；
 //   - 任务 ID 本请求即确立：按 model+input_url+audio_format 确定性派生
 //     X-Api-Request-Id 放 ExtraHeaders（上游不回传任务 id，链上受理判定
@@ -122,10 +122,8 @@ func (volcengineASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (A
 		return AudioJobCreateOutput{}, fmt.Errorf("长音频转写请求缺少 input_url")
 	}
 	audioFormat := volcASRAudioFormatOf(params.InputURL)
-	if options, ok := in.ProviderOptions["volcengine"].(map[string]any); ok {
-		if override, ok := options["audio_format"].(string); ok && strings.TrimSpace(override) != "" {
-			audioFormat = strings.TrimSpace(override)
-		}
+	if override, ok := in.Metadata["audio_format"].(string); ok && strings.TrimSpace(override) != "" {
+		audioFormat = strings.TrimSpace(override)
 	}
 	body := map[string]any{
 		"user": map[string]any{"uid": volcASRUpstreamUserID},
@@ -134,6 +132,20 @@ func (volcengineASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (A
 			"format": audioFormat,
 		},
 		"request": map[string]any{"model_name": volcASRUpstreamModelName},
+	}
+	// metadata 其余键按唯一扩展通道语义并入报文（audio_format 已消费；
+	// 未知键交上游裁决）。
+	if len(in.Metadata) > 0 {
+		rest := make(map[string]any, len(in.Metadata))
+		for key, value := range in.Metadata {
+			if key == "audio_format" {
+				continue
+			}
+			rest[key] = value
+		}
+		if len(rest) > 0 {
+			body = MergeMetadata(body, rest)
+		}
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

@@ -25,7 +25,7 @@ type VideoProviderAdapter interface {
 	// Capabilities 声明该厂商视频请求面能力（参数归一与 ignored 计算的
 	// 裁决输入）。
 	Capabilities() VideoCapabilities
-	// Create 把归一参数 + provider_options（对象形态，键=provider_code）
+	// Create 把归一参数 + metadata（键=厂商原生参数名）
 	// 映射为上游创建请求。错误为请求侧 400 语义（能力边界裁决）。
 	Create(ctx context.Context, in VideoCreateInput) (VideoCreateOutput, error)
 	// BuildPollRequest 构造轮询请求（GET /v1/videos/{id} 族）。upstreamJobID
@@ -53,12 +53,12 @@ type VideoProviderAdapter interface {
 	SupportsCancel() bool
 }
 
-// VideoCreateInput 是创建请求的输入：归一参数 + provider_options 对象形态
+// VideoCreateInput 是创建请求的输入：归一参数 + metadata 对象形态
 // （键=provider_code，Create 内按本 provider 取命中子对象 deep-merge 覆盖
 // 同名 L2 值，其余子对象忽略，契约 §2.1 L3/§2.4 规则 4）。
 type VideoCreateInput struct {
-	Params          NormalizedVideoParams
-	ProviderOptions map[string]any
+	Params   NormalizedVideoParams
+	Metadata map[string]any
 }
 
 // VideoCreateOutput 是创建请求的构造结果：Method/Path/Body 组成上游出站
@@ -106,16 +106,54 @@ func VideoAdapterForProvider(providerCode string) VideoProviderAdapter {
 	return videoAdapters[normalizeProviderKey(providerCode)]
 }
 
+// VideoDefaultSecondsProvider 是视频 adapter 的可选能力：按模型声明厂商默认
+// 时长（非对话媒体统一计费设计 §7.1/§14.4 #4）。默认时长只进 adapter 常量/
+// 表，不进 media_pricing_json；未实现该接口的 adapter 不猜默认值。
+type VideoDefaultSecondsProvider interface {
+	DefaultSecondsForModel(model string) (float64, bool)
+}
+
+// VideoArtifactDurationProbeProvider 是视频 adapter 的可选能力：声明允许在
+// 上游未回报时长、请求无生效 seconds、且无 adapter 默认时长时，对
+// Artifact.ContentURL 做有界 Range 探测（非对话媒体统一计费设计 §8.4 P4）。
+// 默认未实现 = 关闭；只有产物 URL 可直接下载且上游确实不保证回报时长的
+// adapter 才显式开启，避免无依据地发起额外网络请求。
+type VideoArtifactDurationProbeProvider interface {
+	ProbeArtifactDuration() bool
+}
+
+// VideoArtifactDurationProbeForProvider 解析某供应商是否允许产物时长探测。
+func VideoArtifactDurationProbeForProvider(providerCode string) bool {
+	adapter := VideoAdapterForProvider(providerCode)
+	provider, ok := adapter.(VideoArtifactDurationProbeProvider)
+	return ok && provider.ProbeArtifactDuration()
+}
+
+// VideoDefaultSecondsForModel 解析某供应商/模型的厂商默认时长。second=true
+// 时调用方按 QuantitySource=default 计费；false=未声明，仍走 usage_missing。
+func VideoDefaultSecondsForModel(providerCode, model string) (float64, bool) {
+	adapter := VideoAdapterForProvider(providerCode)
+	provider, ok := adapter.(VideoDefaultSecondsProvider)
+	if !ok {
+		return 0, false
+	}
+	return provider.DefaultSecondsForModel(model)
+}
+
 // openaiVideoAdapter 实现 openai（sora-2 系）视频直连转换。对外契约即本体
 // （契约 §4.3：网关直连转发），本 adapter 承担：seconds 归一值的原生字符串
-// 形态序列化、provider_options 合并、轮询响应 → MediaJobIR 归一。
+// 形态序列化、metadata 合并、轮询响应 → MediaJobIR 归一。
 type openaiVideoAdapter struct{}
 
 func (openaiVideoAdapter) Provider() string { return "openai" }
 
 // Capabilities 按 sora 现状声明（契约 §2.2/§2.7/§4.3）：
-//   - SupportsSeconds/SupportsN/SupportsInputReference：§4.3 请求面原生
-//     字段（seconds/size/n/input_reference）→ true；
+//   - SupportsSeconds/SupportsInputReference：§4.3 请求面原生字段
+//     （seconds/size/input_reference）→ true；
+//   - SupportsN：非对话媒体统一计费设计 §14.4 #5 / AC-026 裁决 P1 不进入
+//     统一计费——MediaJobIR 只承载单产物/单秒数，n>1 在参数层 400
+//     （ErrParamUnsupported），不调上游、不按 1 个少计；多产物另立需求。
+//     故即使 sora 协议面有 n，本 adapter 也声明 false；
 //   - SupportsNegativePrompt：sora 请求面无该参数 → false（忽略+回显）；
 //   - SupportsSeed：sora 请求面无该参数 → false（忽略+回显）；
 //   - SupportsAudio：sora 2 视频原生带音频但请求面无开关参数（契约 §2.2
@@ -125,7 +163,7 @@ func (openaiVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsNegativePrompt: false,
 		SupportsSeed:           false,
 		SupportsAudio:          false,
-		SupportsN:              true,
+		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
 	}
@@ -144,13 +182,15 @@ func (a openaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vide
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
 	body := map[string]any{
-		"model":  params.Model,
-		"prompt": params.Prompt,
-		"n":      params.N,
+		"model": params.Model,
+		"n":     params.N,
+	}
+	if params.Prompt != "" {
+		body["prompt"] = params.Prompt
 	}
 	if params.Seconds != nil {
 		body["seconds"] = strconv.FormatFloat(*params.Seconds, 'f', -1, 64)
@@ -161,7 +201,7 @@ func (a openaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vide
 	if params.InputReference != nil {
 		body["input_reference"] = *params.InputReference
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 openai 视频创建请求体失败: %w", err)

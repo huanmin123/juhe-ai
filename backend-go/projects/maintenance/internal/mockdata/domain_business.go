@@ -3128,7 +3128,7 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 			// 过期行保留网关内容相对路径：演示"定位指针存在但需 API Key 鉴权
 			// 实时取回、控制台不内嵌预览"的形态（上游时效已过）。
 			artifact = map[string]any{
-				"ContentURL": "/v1/videos/" + id + "/content",
+				"ContentURL": "/v1/video/generations/" + id + "/content",
 				"ExpiresAt":  w.at(-2 * time.Hour),
 			}
 			usage = map[string]any{"output_video_seconds": 4.0}

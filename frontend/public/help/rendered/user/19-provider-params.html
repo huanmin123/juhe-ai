@@ -75,18 +75,16 @@ curl -s &quot;$BASE_URL/v1/chat/completions&quot; \
 <p><strong>5. 个别端点的格式归一。</strong> <code>/chat/completions</code> 与 <code>/responses</code> 上 <code>reasoning</code> 与 <code>reasoning_effort</code> 双形态会被归一为该端点的规范形态（语义不变）；Anthropic <code>/messages</code> 请求体里的 <code>&quot;stream&quot;: false</code> 会被删除（等价语义）。</p>
 <h2>请求头：你的认证头到不了上游</h2>
 <p>顺带说清请求头的规则：网关转发时<strong>删除</strong>你带来的 <code>Authorization</code>、<code>x-api-key</code>、<code>x-goog-api-key</code>、<code>Cookie</code> 等凭据头，替换为上游账户自己的认证。你的 API Key 只用于网关鉴权，永远不出网关。</p>
-<h2>视频/音频是另一套规则：provider_options 通道</h2>
-<p><strong>媒体端点（<code>/v1/videos</code>、<code>/v1/audio/speech</code>、<code>/v1/audio/jobs</code> 等）不透传请求体</strong>——网关按规范化结构重建出站报文，直接在请求体里写供应商原生顶层参数是<strong>无效</strong>的。</p>
-<p>想传供应商专有参数（如音色复刻参考音频、情感、音量、方言等），走唯一的 <code>provider_options</code> 通道：</p>
+<h2>视频/音频是另一套规则：metadata 通道</h2>
+<p><strong>媒体端点（<code>/v1/video/generations</code>、<code>/v1/audio/speech</code>、<code>/v1/audio/jobs</code> 等）不透传请求体</strong>——网关按规范化结构重建出站报文，直接在请求体里写供应商原生顶层参数是<strong>无效</strong>的。</p>
+<p>想传供应商专有参数（如音色复刻参考音频、情感、音量、方言等），走唯一的 <code>metadata</code> 通道：</p>
 <pre><code class="language-json">{
   &quot;model&quot;: &quot;glm-tts&quot;,
   &quot;input&quot;: &quot;今天天气不错&quot;,
   &quot;voice&quot;: &quot;default&quot;,
-  &quot;provider_options&quot;: {
-    &quot;glm&quot;: {
-      &quot;ref_audio&quot;: &quot;https://example.com/ref.wav&quot;,
-      &quot;ref_text&quot;: &quot;参考音频对应的文字&quot;
-    }
+  &quot;metadata&quot;: {
+    &quot;ref_audio&quot;: &quot;https://example.com/ref.wav&quot;,
+    &quot;ref_text&quot;: &quot;参考音频对应的文字&quot;
   }
 }
 </code></pre>
@@ -100,23 +98,23 @@ curl -s &quot;$BASE_URL/v1/chat/completions&quot; \
 </thead>
 <tbody><tr>
 <td>结构</td>
-<td><code>provider_options</code> 是对象，键是供应商代码（<code>glm</code>/<code>qwen</code>/<code>openai</code>…，<code>gpt</code> 是 <code>openai</code> 的别名），值是参数对象</td>
-</tr>
-<tr>
-<td>生效范围</td>
-<td>网关只取<strong>与你这次请求实际命中的供应商</strong>匹配的那个子对象，其余子对象整体忽略（混合分组不串参数）</td>
+<td><code>metadata</code> 是对象（也接受 JSON 字符串），键直接写厂商原生参数名</td>
 </tr>
 <tr>
 <td>键域</td>
-<td>开放——键名直接写厂商原生参数名，网关不校验，未知键原样到上游</td>
+<td>开放但不能与规范字段同名（如 <code>model</code>/<code>prompt</code>/<code>input</code>/<code>voice</code>/<code>duration</code>/<code>size</code>），冲突返回 400 <code>metadata_conflict</code></td>
 </tr>
 <tr>
 <td>优先级</td>
-<td>命中的子对象<strong>覆盖同名的规范参数</strong>（如规范层 <code>speed</code> 与 <code>provider_options</code> 里的同名键并存时，后者赢）；嵌套对象深合并</td>
+<td>规范映射完成后逐键并入厂商报文，嵌套对象深合并；未知键原样到上游，由上游裁决</td>
 </tr>
 <tr>
 <td>回显</td>
-<td>任务/响应里的 <code>provider_options_applied</code> 回显实际生效的键名（不含值），可用来核对</td>
+<td>任务对象里的 <code>metadata_applied</code> 回显实际并入的键名（不含值），可用来核对</td>
+</tr>
+<tr>
+<td>已退役</td>
+<td>旧的 <code>provider_options</code>（按供应商命名空间）已下线，请求里带它会被忽略且不回显</td>
 </tr>
 </tbody></table>
 <p>各供应商支持哪些键（如 GLM 声音复刻的 <code>ref_audio</code>/<code>ref_text</code>）查各供应商官方文档；网关层不设白名单。</p>
@@ -144,12 +142,12 @@ curl -s &quot;$BASE_URL/v1/chat/completions&quot; \
 </tbody></table>
 <h2>怎么验证参数真的生效了</h2>
 <ol>
-<li><strong>媒体请求</strong>：看响应/任务对象里的 <code>params_applied</code>（规范参数生效情况）、<code>provider_options_applied</code>（专有参数命中的键名）。</li>
+<li><strong>媒体请求</strong>：看响应/任务对象里的 <code>params_applied</code>（规范参数生效情况）、<code>metadata_applied</code>（扩展参数并入的键名）。</li>
 <li><strong>文本请求</strong>：网关不改不删，效果直接看上游回答；参数不合法时上游报错会原样透传回来——错误信息里通常带字段名。</li>
 <li><strong>不确定某参数上游认不认</strong>：先用最小请求带上它试一次，看报错与回答差异，再上正式调用。</li>
 </ol>
 <h2>一条重要建议</h2>
-<p>供应商特有参数与<strong>模型（进而与供应商）绑定</strong>：<code>enable_thinking</code> 只有 Qwen 认、<code>thinking</code> 只有 GLM 认。如果你的分组里同模型名由多家供应商账户混合承接、或故障重试会切到另一家账户，特有参数可能打到不认识它的上游。要稳定用某个供应商的特有参数，找管理员把该模型固定到对应供应商的账户/分组上。</p>
+<p>供应商特有参数与<strong>模型（进而与供应商）绑定</strong>：<code>enable_thinking</code> 只有 Qwen 认、<code>thinking</code> 只有 GLM 认。<code>metadata</code> 不再按供应商命名空间隔离——如果你的分组里同模型名由多家供应商账户混合承接、或故障重试会切到另一家账户，特有参数可能打到不认识它的上游。要稳定用某个供应商的特有参数，找管理员把该模型固定到对应供应商的账户/分组上。</p>
 <h2>接下来</h2>
 <ul>
 <li>逐家供应商的特有参数清单：《各供应商参数差异速查》</li>

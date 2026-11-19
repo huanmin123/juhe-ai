@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
@@ -224,6 +225,11 @@ func (r *spooledUsageRecorder) deliver(input gatewayusage.UsageRecordInput) {
 // 超时（每键 5s）而变慢，不能让 chain shutdown 无限等待；超时后未排空的记录
 // 随进程退出丢弃（直投语义已知取舍），但停机流程必须可预期完成。
 const usageRecorderCloseTimeout = 4 * time.Second
+
+// usageFinalizationDrainTimeoutMs 是停机时等待 usage 收尾队列空闲的上限：
+// 必须在 recorder.Close() 之前排空，否则关闭后到达的 finalization 任务会走
+// persistOverflow 直投，写入落在停机流程之后（W55 的根因）。
+const usageFinalizationDrainTimeoutMs = 2000
 
 // Close stops accepting records and drains the buffer (有界等待).
 func (r *spooledUsageRecorder) Close() {
@@ -589,6 +595,8 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	record.TtsInputChars = input.Usage.TtsInputChars
 	record.AudioInputSeconds = input.Usage.AudioInputSeconds
 	record.OutputVideoSeconds = input.Usage.OutputVideoSeconds
+	record.ResolutionTier = input.Usage.ResolutionTier
+	record.QuantitySource = input.Usage.QuantitySource
 	record.UsageMissing = input.Usage.UsageMissing
 	// 快照为失败记录专属契约（docs/functions/核心功能设计.md:568-569；Node
 	// finalization.ts:2211-2241 成功时显式 undefined）：成功行输入恒 nil（响应
@@ -608,6 +616,42 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		record.ResponseSnapshot = chainUsageRecordSnapshot(input.UsageContext.TrafficSource, gatewayFailureResponseSnapshotOf(input.ResponseSnapshot))
 	}
 	applyUsageAccountScope(&record, input.Account)
+	// 计价键对齐 Node usageCostCatalogModel：pricingModel ?? upstreamModel ??
+	// requestedModel；upstream_response_model 是上游响应观察事实，不是模型
+	// 映射、计费、路由或失败判定机制（docs/functions/上游响应模型不一致审计.md）。
+	costModel := firstNonEmptyChainUsage(pricingModel, accounting.upstreamModel, input.RequestedModel)
+	mediaPriced := false
+	if u.pricing != nil && costModel != "" {
+		mediaPriced = u.pricing.HasMediaPricing(providerCode, catalogSystemAccountID, costModel)
+	}
+	// 统一媒体模板行才消费网关解析/估算秒数（TTS 音频/STT 上传音频）。legacy
+	// 行保持原口径，并且在持久化记录上同样收敛，避免 usagewriter 冻结路径
+	// 依据记录字段按旧秒价重算造成字符+秒或 token+秒双重计费：
+	//   - 上游回报时长（volcengine 同步 TTS 原始时长、STT verbose_json
+	//     duration 且无 token 计量）是既有口径 → 保留秒数、清字符；
+	//   - 网关解析/字符估算秒数（gateway_parse/estimated）以及 minimax
+	//     audio_length 是统一模板新增量 → 清秒数、保留原字符/token 维度。
+	if !mediaPriced {
+		record.QuantitySource = ""
+		if chainUsageLegacyAudioSecondsEligible(input) {
+			record.TtsInputChars = nil
+		} else {
+			record.AudioInputSeconds = nil
+			// legacy STT 无 token 且上游无 duration：沿用旧口径的 0 计量 +
+			// usage_missing（请求音频解析秒数不进入 legacy 计费）。
+			if gatewaymedia.IsTranscriptionPath(input.UsageContext.Endpoint) &&
+				record.InputTokens == nil && record.OutputTokens == nil {
+				record.UsageMissing = true
+			}
+			// legacy volcengine 同步 TTS：旧口径 duration 缺失即 0 计量 +
+			// usage_missing，不落字符（字符非官方计费维度）；网关解析/字符
+			// 估算秒数被清空后必须恢复该口径，不能留下字符造成假计费依据。
+			if chainUsageLegacyVolcengineSyncTTS(input) {
+				record.TtsInputChars = nil
+				record.UsageMissing = true
+			}
+		}
+	}
 	// 成本估算对齐 Node recordCompletedUpstreamAttempt 的“记录时同步估算”
 	// 语义：gate 由组合根表达（cacheDriver !== 'redis' ⇒
 	// SyncPricingAllowed=true，chain_compose.go 与 usageService 同源），gate
@@ -615,11 +659,9 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	// 无维度/目录未命中已内置守卫，返回 nil 一律保持 NULL（不写 0）。
 	// cost_breakdown_snapshot_json 快照列链路不在本步骤范围。
 	if u.syncPricingAllowed && u.pricing != nil {
-		// 计价键对齐 Node usageCostCatalogModel：pricingModel ?? upstreamModel
-		// ?? requestedModel；upstream_response_model 是上游响应观察事实，不是
-		// 模型映射、计费、路由或失败判定机制（docs/functions/上游响应模型不一致审计.md）。
-		costModel := firstNonEmptyChainUsage(pricingModel, accounting.upstreamModel, input.RequestedModel)
 		if costModel != "" {
+			audioSeconds := record.AudioInputSeconds
+			quantitySource := record.QuantitySource
 			costInput := gatewayusage.PricingCostInput{
 				ProviderCode:    providerCode,
 				SystemAccountID: catalogSystemAccountID,
@@ -640,9 +682,22 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 				OutputAudioTokens:  input.Usage.OutputAudioTokens,
 				OutputImageCount:   input.Usage.OutputImageCount,
 				// M1 同步音频计量维度（音频设计 §10）：tts_input_chars /
-				// audio_input_seconds 行项经同步定价目录估算。
-				TtsInputChars:     input.Usage.TtsInputChars,
-				AudioInputSeconds: input.Usage.AudioInputSeconds,
+				// audio_input_seconds 行项经同步定价目录估算。取值用已按
+				// mediaPricing/legacy 归一后的记录字段，避免旧口径双重计费。
+				TtsInputChars:      record.TtsInputChars,
+				AudioInputSeconds:  audioSeconds,
+				OutputVideoSeconds: input.Usage.OutputVideoSeconds,
+				// 同步图片计量的档位与数量来源（设计 §7.3）：ResolutionTier
+				// 由请求 size 归桶，QuantitySource 区分上游 data[]/请求 n。
+				ResolutionTier: input.Usage.ResolutionTier,
+				QuantitySource: quantitySource,
+			}
+			// 统一媒体音频行以秒数为唯一计费维度：只要拿到上游/解析/估算
+			// 秒数就清除 legacy 的 usage_missing；全缺才保留标记。
+			if mediaPriced && (gatewaymedia.IsSpeechPath(input.UsageContext.Endpoint) ||
+				gatewaymedia.IsTranscriptionPath(input.UsageContext.Endpoint) ||
+				record.AudioInputSeconds != nil || record.TtsInputChars != nil) {
+				record.UsageMissing = audioSeconds == nil || *audioSeconds <= 0
 			}
 			record.CostUsd = u.pricing.EstimateCost(costInput)
 			record.CacheReadCostUsd = u.pricing.EstimateCacheReadCost(costInput)
@@ -1008,4 +1063,40 @@ func usageStableHash(value string) int {
 		hash *= 16777619
 	}
 	return int(hash)
+}
+
+// chainUsageLegacyVolcengineSyncTTS 判定请求是否 legacy volcengine 同步 TTS
+// （1.0 非流式模型）：旧口径只认响应顶层 duration，缺失即 usage_missing，
+// 不落字符。统一模板行不走本判定。
+func chainUsageLegacyVolcengineSyncTTS(input gatewayresponse.CompletedAttemptInput) bool {
+	if !gatewaymedia.IsSpeechPath(input.UsageContext.Endpoint) || input.Account == nil {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(input.Account.GetProviderCode())) != "volcengine" {
+		return false
+	}
+	return input.RequestedModel == "" || !gatewaymedia.IsVolcengineTTSStreamModel(input.RequestedModel)
+}
+
+// chainUsageLegacyAudioSecondsEligible 判定 legacy（无 media_pricing_json）
+// 音频行是否允许使用 AudioInputSeconds 计费。只保留统一媒体计费上线前的
+// 两条既有上游时长口径：
+//   - 同步 TTS：仅 volcengine 1.0（seed-audio-1.0/doubao-tts）顶层 duration；
+//     minimax audio_length、2.0 流式面与网关解析/字符估算秒数均不进入；
+//   - STT：上游 verbose_json duration，且响应无 token usage（有 token 时
+//     沿用既有 token 计费，避免 token+秒双计）。
+//
+// 统一媒体模板行不走本判定（mediaPriced=true 直接使用最佳来源秒数）。
+func chainUsageLegacyAudioSecondsEligible(input gatewayresponse.CompletedAttemptInput) bool {
+	// legacy 只消费上游回报的时长事实；网关解析/字符估算/minimax
+	// audio_length 都是统一模板新增量，不得进入 legacy 行（避免与字符或
+	// token 行双重计费）。
+	if input.Usage.AudioInputSeconds == nil || input.Usage.QuantitySource != "upstream" {
+		return false
+	}
+	endpoint := input.UsageContext.Endpoint
+	if gatewaymedia.IsTranscriptionPath(endpoint) {
+		return input.Usage.InputTokens == nil && input.Usage.OutputTokens == nil
+	}
+	return chainUsageLegacyVolcengineSyncTTS(input)
 }

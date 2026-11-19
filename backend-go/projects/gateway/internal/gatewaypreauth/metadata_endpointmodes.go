@@ -13,9 +13,10 @@ import (
 // Account endpoint mode vocabulary (domain/types.ts AccountSupportedEndpointMode).
 // M1 同步音频新增 audio_speech（POST /v1/audio/speech）与
 // audio_transcription_json（POST /v1/audio/transcriptions|translations）两个
-// token（音频设计 §11.6）；M2 视频新增 video_create（POST /v1/videos）、
-// video_get（GET /v1/videos 与 /v1/videos/{id}）、video_content
-// （GET /v1/videos/{id}/content）、video_cancel（DELETE /v1/videos/{id}）四个
+// token（音频设计 §11.6）；M2 视频新增 video_create（POST
+// /v1/video/generations）、video_get（GET /v1/video/generations 与
+// /v1/video/generations/{id}）、video_content（GET .../{id}/content）、
+// video_cancel（DELETE .../{id}）四个
 // token（媒体设计 §11.6；任务面端点不设候选过滤 mode，走账户亲和直连，
 // 词表仅为能力表达与健康检查形态）；M3f 长音频任务族新增 audio_job_create
 // （POST /v1/audio/jobs，候选过滤消费面——按本 token 过滤账户）、audio_job_get
@@ -83,11 +84,11 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return EndpointModeAudioSpeech
 	case method == "POST" && (normalizedV1StrippedPath(path) == "/audio/transcriptions" || normalizedV1StrippedPath(path) == "/audio/translations"):
 		return EndpointModeAudioTranscriptionJSON
-	case method == "POST" && normalizedV1StrippedPath(path) == "/videos":
+	case method == "POST" && normalizedV1StrippedPath(path) == "/video/generations":
 		return EndpointModeVideoCreate
 	case method == "GET" && videoGetEndpointMode(path) != "":
 		return videoGetEndpointMode(path)
-	case method == "DELETE" && strings.HasPrefix(normalizedV1StrippedPath(path), "/videos/"):
+	case method == "DELETE" && strings.HasPrefix(normalizedV1StrippedPath(path), "/video/generations/"):
 		return EndpointModeVideoCancel
 	case method == "POST" && normalizedV1StrippedPath(path) == "/audio/jobs":
 		return EndpointModeAudioJobCreate
@@ -157,16 +158,16 @@ func normalizedV1StrippedPath(path string) string {
 	return path
 }
 
-// videoGetEndpointMode maps the GET /v1/videos* family (M2 视频，媒体设计
-// §11.6）：列表（GET /v1/videos）与轮询（GET /v1/videos/{id}）是 video_get，
-// 产物下载（GET /v1/videos/{id}/content）是 video_content。非本族路径返回
-// 空串（调用方不进入 video 判定）。
+// videoGetEndpointMode maps the GET /v1/video/generations* family（设计
+// 《对外协议面对齐 new-api 设计》§4.2）：列表（GET /v1/video/generations）与
+// 轮询（GET .../{task_id}）是 video_get，产物下载（GET .../{task_id}/content）
+// 是 video_content。非本族路径返回空串（调用方不进入 video 判定）。
 func videoGetEndpointMode(path string) string {
 	stripped := normalizedV1StrippedPath(path)
-	if stripped == "/videos" {
+	if stripped == "/video/generations" {
 		return EndpointModeVideoGet
 	}
-	if !strings.HasPrefix(stripped, "/videos/") {
+	if !strings.HasPrefix(stripped, "/video/generations/") {
 		return ""
 	}
 	if strings.HasSuffix(stripped, "/content") {

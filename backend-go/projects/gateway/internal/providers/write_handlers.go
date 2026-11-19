@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // patchModel serves PATCH /{code}/models/{modelId}: ids outside the
@@ -60,6 +61,19 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 	})
 	if !ok {
 		kernel.WriteBadRequest(w, "自定义模型参数无效")
+		return
+	}
+	if !isAdminRole(auth.Role) && parsed.hasPriceKeys() {
+		kernel.WriteBadRequest(w, "非管理员不能配置模型价格")
+		return
+	}
+	if parsed.hasMediaPricingConflict() {
+		kernel.WriteBadRequest(w, "不能同时提交统一媒体价格与旧价格字段")
+		return
+	}
+	if parsed.present["mediaPricing"] && parsed.values.MediaPricing == nil &&
+		existing.MediaPricing != nil && existing.Scope == catalogScopeGlobal {
+		kernel.WriteBadRequest(w, "目录模型不允许清空统一媒体价格")
 		return
 	}
 	if existing.UpdatedAt != parsed.expectedUpdatedAt {
@@ -128,6 +142,14 @@ func (d *Deps) patchBuiltInModel(w http.ResponseWriter, r *http.Request, auth *a
 	})
 	if !ok {
 		kernel.WriteBadRequest(w, "内置模型配置参数无效")
+		return
+	}
+	if parsed.hasMediaPricingConflict() {
+		kernel.WriteBadRequest(w, "不能同时提交统一媒体价格与旧价格字段")
+		return
+	}
+	if parsed.present["mediaPricing"] && parsed.values.MediaPricing == nil && builtIn.HasMediaPricing {
+		kernel.WriteBadRequest(w, "目录模型不允许清空统一媒体价格")
 		return
 	}
 	if builtIn.UpdatedAt != parsed.expectedUpdatedAt {
@@ -276,6 +298,12 @@ func builtInSubmittedFields(parsed *customModelParsedInput) []builtinPatchField 
 			fields = append(fields, builtinPatchField{Name: key, Value: jsonNullable(values.AudioOutputUsdPer1M)})
 		case "outputUsdPerImage":
 			fields = append(fields, builtinPatchField{Name: key, Value: jsonNullable(values.OutputUsdPerImage)})
+		case "mediaPricing":
+			var value any
+			if values.MediaPricing != nil {
+				value = mediaPricingCanonicalString(values.MediaPricing)
+			}
+			fields = append(fields, builtinPatchField{Name: key, Value: value})
 		}
 	}
 	return fields
@@ -347,6 +375,18 @@ func mergedBuiltInItem(current *ModelCatalogItem, patch []builtinPatchField) *Mo
 			next.AudioOutputUsdPer1M = pointerFromJSON[float64](field.Value)
 		case "outputUsdPerImage":
 			next.OutputUsdPerImage = pointerFromJSON[float64](field.Value)
+		case "mediaPricing":
+			if text, ok := field.Value.(string); ok && strings.TrimSpace(text) != "" {
+				if parsed, err := mediapricing.Parse([]byte(text)); err == nil {
+					if canonical, canonicalErr := parsed.CanonicalJSON(); canonicalErr == nil {
+						next.MediaPricing = canonical
+						next.HasMediaPricing = true
+					}
+				}
+			} else {
+				next.MediaPricing = nil
+				next.HasMediaPricing = false
+			}
 		}
 	}
 	return &next
@@ -469,6 +509,7 @@ func mergedCustomModelUpsertInput(existing *customProviderModelRecord, parsed *c
 		AudioInputUsdPer1M:          existing.AudioInputUsdPer1M,
 		AudioOutputUsdPer1M:         existing.AudioOutputUsdPer1M,
 		OutputUsdPerImage:           existing.OutputUsdPerImage,
+		MediaPricing:                existing.MediaPricing.Clone(),
 		PricingNotes:                existing.PricingNotes,
 		CapabilityNotes:             existing.CapabilityNotes,
 		Notes:                       existing.Notes,

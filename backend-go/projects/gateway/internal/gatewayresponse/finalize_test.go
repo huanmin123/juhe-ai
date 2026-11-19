@@ -364,3 +364,47 @@ func TestEmptyUpstreamBodyDeleteInteractionsSucceeds(t *testing.T) {
 		t.Fatalf("body = %q", recorder.Body.String())
 	}
 }
+
+func TestFinalizeHandledUpstreamResponseAppliesImageMetering(t *testing.T) {
+	input, _ := newInputFixture(nil, 200, nil)
+	input.UpstreamResponse.Body = nil
+	input.Req = newImageMeteringRequest(t, "/v1/images/generations",
+		[]byte(`{"model":"gpt-image-2","size":"1536x1024","n":2}`), "application/json")
+	usage := &mockUsageRecords{}
+	input.Deps = &FinalizationDeps{UsageRecords: usage}
+
+	FinalizeHandledUpstreamResponse(input, UpstreamResponseHandlingResult{
+		Usage:                    gatewayproto.EmptyUsage(),
+		ProtocolValidatedSuccess: true,
+	})
+	if len(usage.completed) != 1 {
+		t.Fatalf("usage records = %d", len(usage.completed))
+	}
+	record := usage.completed[0]
+	if record.Usage.OutputImageCount == nil || *record.Usage.OutputImageCount != 2 {
+		t.Fatalf("outputImageCount = %v, want 2", record.Usage.OutputImageCount)
+	}
+	if record.Usage.QuantitySource != "request" || record.Usage.ResolutionTier != "2k" {
+		t.Fatalf("source/tier = %q/%q, want request/2k", record.Usage.QuantitySource, record.Usage.ResolutionTier)
+	}
+}
+
+func TestFinalizeHandledUpstreamResponseSkipsImageMeteringOnFailure(t *testing.T) {
+	input, _ := newInputFixture(nil, 500, nil)
+	input.UpstreamResponse.Body = nil
+	input.Req = newImageMeteringRequest(t, "/v1/images/generations",
+		[]byte(`{"size":"1536x1024","n":2}`), "application/json")
+	usage := &mockUsageRecords{}
+	input.Deps = &FinalizationDeps{UsageRecords: usage}
+
+	FinalizeHandledUpstreamResponse(input, UpstreamResponseHandlingResult{
+		Usage: gatewayproto.EmptyUsage(),
+	})
+	if len(usage.completed) != 1 {
+		t.Fatalf("usage records = %d", len(usage.completed))
+	}
+	record := usage.completed[0]
+	if record.Usage.OutputImageCount != nil || record.Usage.ResolutionTier != "" || record.Usage.QuantitySource != "" {
+		t.Fatalf("失败响应不得按请求参数计量: %#v", record.Usage)
+	}
+}

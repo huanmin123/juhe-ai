@@ -38,6 +38,8 @@ package pricing
 import (
 	"math"
 	"strconv"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // PriceSet mirrors provider-billing.types ProviderBillingPriceSet. nil means
@@ -81,6 +83,10 @@ type Pricing struct {
 	ReleaseDate  string
 	ShutdownDate string
 	PriceSet
+
+	// MediaPricing 是 models.media_pricing_json 的统一媒体计费模板；
+	// nil = legacy 维度计价。非 nil 时即使 BaseUsd=0 也是有效价格。
+	MediaPricing *mediapricing.Pricing
 
 	CachedImageInputUsdPer1M *float64
 	ServiceTierPrices        ServiceTierPrices
@@ -134,6 +140,13 @@ type Pricing struct {
 // 一次任务 = 一次调用（结算链按任务粒度填 1），行项由 billing.go 的
 // video_output_calls 消费；与 OutputVideoSeconds 是互斥维度（同一目录行只
 // 落秒价/按次价其一，按各自槽位计价）。
+//
+// MediaPricing / HasMediaPricing 是异步任务终态按创建快照结算的显式覆盖
+// （非对话媒体统一计费设计 §6.1/§14.2）：MediaPricing 非 nil 时优先于
+// Pricing.MediaPricing；HasMediaPricing 仅标记覆盖事实（nil 时表示沿用
+// 目录行）。ResolutionTier 是计量层选定的分辨率档（空=用 baseTier；非法档
+// 不回落猜测）；QuantitySource 是数量来源标记
+// （upstream/request/request_media/gateway_parse/default/estimated）。
 type CostInput struct {
 	ProviderCode string
 	Model        string
@@ -155,6 +168,11 @@ type CostInput struct {
 	OutputVideoSeconds *float64
 	VideoCalls         *float64
 	CostUsd            *float64
+
+	MediaPricing    *mediapricing.Pricing
+	HasMediaPricing bool
+	ResolutionTier  string
+	QuantitySource  string
 }
 
 // CostLineKind mirrors ProviderCostLineKind.
@@ -196,6 +214,11 @@ const (
 )
 
 // CostLineItem mirrors ProviderCostLineItem.
+//
+// Tier / BaseUnitPriceUsd / Multiplier / QuantitySource 是统一媒体模板
+// （media_unified_v1）的行项扩展（非对话媒体统一计费设计 §6.2）：历史快照
+// 读取不受影响（零值即缺省）；BaseUnitPriceUsd / Multiplier 用指针保留
+// 免费 0 价与 1.0 倍率（omitempty 不能丢 0/1）。
 type CostLineItem struct {
 	Key          string
 	Kind         CostLineKind
@@ -205,6 +228,11 @@ type CostLineItem struct {
 	UnitSize     float64
 	UnitPriceUsd float64
 	CostUsd      float64
+
+	Tier             string   `json:"tier,omitempty"`
+	BaseUnitPriceUsd *float64 `json:"baseUnitPriceUsd,omitempty"`
+	Multiplier       *float64 `json:"multiplier,omitempty"`
+	QuantitySource   string   `json:"quantitySource,omitempty"`
 }
 
 // ServiceTierPricingSource mirrors the ProviderCostBreakdown discriminant.

@@ -31,6 +31,7 @@ func (glmVideoAdapter) Provider() string { return "glm" }
 //     最近档，契约 §2.4 规则 3）→ true；
 //   - SupportsInputReference：image_url 原生字段（glm 本就是 URL 形态，
 //     url 与 base64 字符串均透传，网关不代为下载，零存储）→ true；
+//   - SupportsFPS：fps 原生字段（CogVideoX）→ true；
 //   - SupportsN/SupportsSeed：请求面无对应字段 → false（忽略 + 回显
 //     params_ignored，契约 §2.4 规则 1）。
 func (glmVideoAdapter) Capabilities() VideoCapabilities {
@@ -41,6 +42,7 @@ func (glmVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsFPS:            true,
 	}
 }
 
@@ -81,19 +83,19 @@ func absFloat64(value float64) float64 {
 //     URL 形态，网关不解析不下载）；
 //   - audio → with_audio：布尔直传；
 //   - n/seed 归一层判为 ignored，不进报文；
-//   - provider_options 命中 glm 的子对象 deep-merge 覆盖同名键（契约 §2.1
+//   - metadata 逐键 deep-merge 覆盖同名键（契约 §2.1
 //     L3，如 {"glm":{"fps":30,"quality":"quality"}}）。
 func (a glmVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
-	body := map[string]any{
-		"model":  params.Model,
-		"prompt": params.Prompt,
+	body := map[string]any{"model": params.Model}
+	if params.Prompt != "" {
+		body["prompt"] = params.Prompt
 	}
 	if params.NegativePrompt != "" {
 		body["negative_prompt"] = params.NegativePrompt
@@ -110,7 +112,10 @@ func (a glmVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.Audio != nil {
 		body["with_audio"] = *params.Audio
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	if params.FPS != nil {
+		body["fps"] = *params.FPS
+	}
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 glm 视频创建请求体失败: %w", err)
@@ -133,6 +138,12 @@ func (glmVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, [
 // 链上层直连该 URL（无凭据，沿 Veo uri 直连先例），不调用
 // BuildContentRequest。
 func (glmVideoAdapter) ContentFromArtifact() bool { return true }
+
+// ProbeArtifactDuration 声明 glm 允许 P4 产物 Range 探测（非对话媒体统一
+// 计费设计 §8.4）：async-result 只回 task_status 与 video_result.url，不回
+// 生成时长；请求未携带生效 seconds 时，上游默认时长只能从产物容器读取。
+// 探测失败关闭为 usage_missing，不猜测。
+func (glmVideoAdapter) ProbeArtifactDuration() bool { return true }
 
 // BuildContentRequest 在 glm 形态下不参与下载定位（ContentFromArtifact 为
 // true，链上层直连 Artifact.ContentURL）；保留接口实现返回空路径，误调用

@@ -91,9 +91,16 @@ type UsageRecordInput struct {
 	// M1 同步音频计量（音频设计 §10）：TTS 输入字符数、STT 音频秒数与
 	// usage_missing 标记（上游无 usage 回报也无 duration）。
 	// M2 视频计量（媒体设计 §10）：OutputVideoSeconds 是视频任务输出秒数。
+	// 统一媒体模板（非对话媒体统一计费设计 §6.1）：VideoCalls 是视频按次
+	// 计量（任务粒度 1）；ResolutionTier 是计量层选定档位；
+	// QuantitySource 是数量来源（upstream/request/request_media/
+	// gateway_parse/default/estimated）。
 	TtsInputChars      *int64   `json:"ttsInputChars,omitempty"`
 	AudioInputSeconds  *float64 `json:"audioInputSeconds,omitempty"`
 	OutputVideoSeconds *float64 `json:"outputVideoSeconds,omitempty"`
+	VideoCalls         *float64 `json:"videoCalls,omitempty"`
+	ResolutionTier     string   `json:"resolutionTier,omitempty"`
+	QuantitySource     string   `json:"quantitySource,omitempty"`
 	UsageMissing       bool     `json:"usageMissing,omitempty"`
 	CostUsd            *float64 `json:"costUsd,omitempty"`
 	ErrorCode          string   `json:"errorCode,omitempty"`

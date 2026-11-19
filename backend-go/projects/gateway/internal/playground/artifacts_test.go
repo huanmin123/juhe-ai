@@ -179,8 +179,8 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
-		{Body: []byte(`{"id":"job_v1","status":"queued"}`)},
-		{Body: []byte(`{"id":"job_v2"}`)},
+		{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)},
+		{Body: []byte(`{"task_id":"job_v2"}`)},
 	}
 	mux, _ := newTestRoutes(deps)
 	payload, _ := json.Marshal(map[string]any{
@@ -249,7 +249,7 @@ func TestArtifactsListingShape(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("语音状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
-	dispatch.script = []scriptedResponse{{Body: []byte(`{"id":"job_v1","status":"queued"}`)}}
+	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/videos", mustJSON(map[string]any{
 		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
 	}))
@@ -349,7 +349,7 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &speechOut); err != nil {
 		t.Fatalf("语音响应解析失败: %v", err)
 	}
-	dispatch.script = []scriptedResponse{{Body: []byte(`{"id":"job_v1","status":"queued"}`)}}
+	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/videos", mustJSON(map[string]any{
 		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
 	}))

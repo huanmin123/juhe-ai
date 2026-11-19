@@ -2,7 +2,7 @@
 // rows) by dump_model_catalog.mts next to this file. DO NOT hand-edit:
 // regenerate with the backend tsx (see the dump script header) and re-verify
 // the row count against the fresh Node dump. The rows are the 128
-// static rows (39 seed parameters minus created_at/updated_at) that Node
+// static rows (40 seed parameters minus created_at/updated_at) that Node
 // seedDefaults/seedPostgresDefaults insert for the built-in pricing providers
 // (gpt, xai, deepseek, anthropic, gemini, glm; hybrid and openai are skipped
 // exactly like Node). Row order is the Node listProviderModelPricing order
@@ -121,6 +121,7 @@ package schema
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // seedStrPtr/seedInt64Ptr/seedFloat64Ptr build the optional seed parameters
@@ -173,14 +174,36 @@ type modelCatalogSeedRow struct {
 	AudioInputUsdPer1M                      *float64
 	AudioOutputUsdPer1M                     *float64
 	OutputUsdPerImage                       *float64
+	MediaPricingJSON                        *string
 	SupportsPromptCaching                   bool
 	CatalogVisible                          bool
 	Source                                  string
 }
 
+// SeedMediaPricingJSON 返回内置目录行（provider_code + model）的生成
+// mediaPricing JSON。仅供 manual-override 迁移校验 token 换算是否与目录
+// 秒价一致；不参与运行时定价，也不是新增的目录 API。返回 false 表示该
+// provider/model 不在生成目录中（自定义行）。
+func SeedMediaPricingJSON(providerCode, model string) (string, bool) {
+	normalizedProvider := strings.ToLower(strings.TrimSpace(providerCode))
+	trimmedModel := strings.TrimSpace(model)
+	if normalizedProvider == "" || trimmedModel == "" {
+		return "", false
+	}
+	for index := range modelCatalogSeedRows {
+		row := &modelCatalogSeedRows[index]
+		if strings.ToLower(strings.TrimSpace(row.ProviderCode)) != normalizedProvider ||
+			strings.TrimSpace(row.Model) != trimmedModel || row.MediaPricingJSON == nil {
+			continue
+		}
+		return *row.MediaPricingJSON, true
+	}
+	return "", false
+}
+
 // modelCatalogSeedRows 已迁移至 model_catalog_data_gen.go（Code generated，
 // 由 gateway pricing.TestGenerateSeedCatalog 从 catalogdata/*.json 生成，
-// 计划-20261005T230500000Z 步骤 4）——手工同步废除。seed 行的 JSON→39 列
+// 计划-20261005T230500000Z 步骤 4）——手工同步废除。seed 行的 JSON→40 列
 // 投影规则见生成器 seedRowLiteral；种子 helper（seedStrPtr 等）留在本文件。
 // 历史手写批次记录见 git 历史与 docs/functions/厂商模型目录更新与清洗指南.md。
 
@@ -227,6 +250,7 @@ type modelSeedTargetRow struct {
 	AudioInputUsdPer1M                      *float64
 	AudioOutputUsdPer1M                     *float64
 	OutputUsdPerImage                       *float64
+	MediaPricingJSON                        *string
 }
 
 // modelSeedStatusActive / modelSeedStatusDisabled 是 models.status 在 seed
@@ -354,6 +378,7 @@ func modelSeedTargetRows(asOfUTCDate string) ([]modelSeedTargetRow, error) {
 			AudioInputUsdPer1M:                      source.AudioInputUsdPer1M,
 			AudioOutputUsdPer1M:                     source.AudioOutputUsdPer1M,
 			OutputUsdPerImage:                       source.OutputUsdPerImage,
+			MediaPricingJSON:                        source.MediaPricingJSON,
 		})
 	}
 	return rows, nil

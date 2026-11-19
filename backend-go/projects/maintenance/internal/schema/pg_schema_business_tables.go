@@ -152,6 +152,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       audio_output_usd_per_1m double precision,
       output_usd_per_image double precision,
       currency text NOT NULL DEFAULT 'USD',
+      media_pricing_json text,
       FOREIGN KEY (vendor_code) REFERENCES vendors(code),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       CHECK (status IN ('draft', 'active', 'disabled')),
@@ -164,6 +165,10 @@ var postgresSchemaBusinessTables = []PGStatement{
       CHECK (jsonb_typeof(output_modalities_json::jsonb) = 'array'),
       CHECK (jsonb_typeof(codex_supported_reasoning_levels_json::jsonb) = 'array'),
       CHECK (jsonb_typeof(service_tier_prices_json::jsonb) = 'object'),
+      CHECK (
+        media_pricing_json IS NULL
+        OR jsonb_typeof(media_pricing_json::jsonb) = 'object'
+      ),
       CHECK (
         (scope = 'personal' AND system_account_id IS NOT NULL)
         OR (scope IN ('builtin', 'global') AND system_account_id IS NULL)
@@ -1743,6 +1748,16 @@ $$`,
 		SchemaName: "juhe_business",
 		Source:     "api-key-client-ip-concurrency-limit-pg-column",
 		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS client_ip_concurrency_limit integer NOT NULL DEFAULT -1`,
+	},
+	{
+		// 非对话媒体统一计费（《非对话媒体统一计费设计》§5.1，revision 26）：
+		// 存量库守卫加列；新库由上方 models 建表内联，不另计语句。
+		// NULL/空串 = 继续 legacy 维度；非空必须是 JSON 对象（严格语义由
+		// shared/platform/mediapricing 在读写路径校验）。
+		SchemaName: "juhe_business",
+		Source:     "models-media-pricing-json-pg-column",
+		SQL: `ALTER TABLE models ADD COLUMN IF NOT EXISTS media_pricing_json text
+  CHECK (media_pricing_json IS NULL OR jsonb_typeof(media_pricing_json::jsonb) = 'object')`,
 	},
 	{
 		SchemaName: "juhe_business",

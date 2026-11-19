@@ -10,6 +10,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.05714285714285714,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":1.4583333333333333,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "MiniMax-Hailuo-2.3",
       "outputModalities": [
@@ -20,7 +21,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 文生/图生视频 768P-6s 2.00 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 核对；此前落国际站 $0.28 明文，按国内口径回正），按约定汇率 7.0 换算 $0.2857/条（2÷7.0）；768P-10s 4.00 元、1080P-6s 3.50 元留档；Hailuo-2.3-Fast 已单独补录（见该行）",
+      "sourcePricingNote": "官方人民币价 文生/图生视频 768P-6s 2.00 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 核对；此前落国际站 $0.28 明文，按国内口径回正），按约定汇率 7.0 换算 $0.2857/条（2÷7.0）；768P-10s 4.00 元、1080P-6s 3.50 元留档；Hailuo-2.3-Fast 已单独补录（见该行）；统一媒体计费 P3：按 10s 套餐总价 ÷10 折算 baseUsd=4.00/7/10=$0.057142857/s @720p；1080p 倍率取 6s 每秒价 (3.50/6)÷(4.00/10)=1.458333，不用 6s 总价 ÷10。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -37,6 +38,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.03214285714285715,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":1.711111111111111,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "MiniMax-Hailuo-2.3-Fast",
       "outputModalities": [
@@ -47,7 +49,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 图生视频 768P-6s 1.35 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 补录），按约定汇率 7.0 换算 $0.19286/条（1.35÷7.0）；768P-10s 2.25 元、1080P-6s 2.31 元留档",
+      "sourcePricingNote": "官方人民币价 图生视频 768P-6s 1.35 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 补录），按约定汇率 7.0 换算 $0.19286/条（1.35÷7.0）；768P-10s 2.25 元、1080P-6s 2.31 元留档；统一媒体计费 P3：按 10s 套餐总价 ÷10 折算 baseUsd=2.25/7/10=$0.032142857/s @720p；1080p 倍率取 6s 每秒价 (2.31/6)÷(2.25/10)=1.711111，不用 6s 总价 ÷10。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -173,6 +175,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0002,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "speech-2.8-hd",
       "outputModalities": [
@@ -189,7 +192,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 3.5 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），在售 同步/异步同价，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $50/百万字符（3.5×100÷7.0）；计费 1 汉字=2 字符",
+      "sourcePricingNote": "官方人民币价 3.5 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），在售 同步/异步同价，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $50/百万字符（3.5×100÷7.0）；计费 1 汉字=2 字符；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -205,6 +208,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0001142857142857143,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "speech-2.8-turbo",
       "outputModalities": [
@@ -221,7 +225,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 2.0 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），在售 同步/异步同价，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $28.57/百万字符（2.0×100÷7.0）；计费 1 汉字=2 字符",
+      "sourcePricingNote": "官方人民币价 2.0 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），在售 同步/异步同价，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $28.57/百万字符（2.0×100÷7.0）；计费 1 汉字=2 字符；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -237,6 +241,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0002,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "speech-2.6-hd",
       "outputModalities": [
@@ -253,7 +258,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 3.5 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），历史模型行，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $50/百万字符（3.5×100÷7.0）；计费 1 汉字=2 字符",
+      "sourcePricingNote": "官方人民币价 3.5 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），历史模型行，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $50/百万字符（3.5×100÷7.0）；计费 1 汉字=2 字符；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -269,6 +274,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0001142857142857143,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "speech-2.6-turbo",
       "outputModalities": [
@@ -285,7 +291,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 2.0 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），历史模型行，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $28.57/百万字符（2.0×100÷7.0）；计费 1 汉字=2 字符",
+      "sourcePricingNote": "官方人民币价 2.0 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），历史模型行，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $28.57/百万字符（2.0×100÷7.0）；计费 1 汉字=2 字符；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -302,6 +308,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.07142857142857142,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":1.3,"1440p":1.6,"2160p":5.0}},
       "mode": "video",
       "model": "MiniMax-H3",
       "outputModalities": [
@@ -312,7 +319,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 $0.08 明文，按国内口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；2K 0.80 元/秒留档；输入素材：图片 5 张内免费/超出 0.20 元/张，视频输入按生成分辨率秒价计费",
+      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 $0.08 明文，按国内口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；2K 0.80 元/秒留档；输入素材：图片 5 张内免费/超出 0.20 元/张，视频输入按生成分辨率秒价计费；统一媒体计费 P3：2K 0.80 元/秒 ÷ 768P 0.50 元/秒 → 1440p 倍率 1.6；1080p 取 1.3 保持档位单调，2160p 按默认模板。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -329,6 +336,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.07142857142857142,"baseTier":"720p","tierMultipliers":{"480p":0.66,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "MiniMax-H3-Max",
       "outputModalities": [
@@ -339,7 +347,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 480P 档 $0.05 折算，按国内 768P 主档口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；480P 0.33 元/秒低档留档；输入素材：图片 2 张内免费/超出 0.50 元/张",
+      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 480P 档 $0.05 折算，按国内 768P 主档口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；480P 0.33 元/秒低档留档；输入素材：图片 2 张内免费/超出 0.50 元/张；统一媒体计费 P3：480P 0.33 元/秒 ÷ 768P 0.50 元/秒 → 480p 倍率 0.66。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -356,6 +364,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.0035714285714285718,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "image-01",
       "outputCostPerImage": 0.0035714285714285718,
@@ -553,6 +562,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.04285714285714286,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "MiniMax-H3-Regeneration",
       "outputModalities": [

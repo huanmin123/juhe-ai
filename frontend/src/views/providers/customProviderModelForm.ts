@@ -1,5 +1,6 @@
 import type {
   ProviderModelApiProtocol,
+  ProviderModelMediaPricing,
   ProviderModelMode,
   ProviderModelPricing,
   ProviderModelPriceSet,
@@ -53,6 +54,8 @@ export interface CustomModelForm {
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
+  /** 统一媒体价格（图像/音频/视频）；存在时不再提交 legacy 价格键。 */
+  mediaPricing?: ProviderModelMediaPricing
 }
 
 export const emptyCustomModelForm: CustomModelForm = {
@@ -102,7 +105,8 @@ export function createCustomModelFormFromPricing(
     imageOutputUsdPer1M: normalizePriceInput(record.imageOutputUsdPer1M),
     audioInputUsdPer1M: normalizePriceInput(record.audioInputUsdPer1M),
     audioOutputUsdPer1M: normalizePriceInput(record.audioOutputUsdPer1M),
-    outputUsdPerImage: normalizePriceInput(record.outputUsdPerImage)
+    outputUsdPerImage: normalizePriceInput(record.outputUsdPerImage),
+    mediaPricing: cloneMediaPricing(record.mediaPricing)
   }
 
   const category = categoryFromModeOrModel(form.mode, form.model)
@@ -138,8 +142,14 @@ export function buildCustomModelPayload(
     payload.configurationTemplateId = form.configurationTemplateId
   }
   if (options.includePrices !== false) {
-    payload.serviceTierPrices = cloneServiceTierPrices(form.serviceTierPrices)
-    Object.assign(payload, buildCustomModelDirectPricePayload(form, category))
+    // 统一媒体价格与 legacy 价格键互斥（后端按键存在与否 400）：启用模板时
+    // 只发 mediaPricing，连 null 占位也不能带。
+    if (category !== 'text' && form.mediaPricing) {
+      payload.mediaPricing = cloneMediaPricing(form.mediaPricing)
+    } else {
+      payload.serviceTierPrices = cloneServiceTierPrices(form.serviceTierPrices)
+      Object.assign(payload, buildCustomModelDirectPricePayload(form, category))
+    }
   }
   if (options.includeRequestCapabilities) {
     const supportedReasoningEfforts = category === 'text'
@@ -212,6 +222,7 @@ export function applyConfigurationTemplateToCustomModelForm(
     form[field] = visibleFields.has(field) ? normalizePriceInput(template[field]) : undefined
   }
   form.serviceTierPrices = cloneServiceTierPrices(template.serviceTierPrices)
+  form.mediaPricing = cloneMediaPricing(template.mediaPricing)
   reconcileCustomModelServiceTierPrices(form)
 }
 
@@ -317,7 +328,8 @@ const editableProviderModelPayloadKeys = [
   'imageOutputUsdPer1M',
   'audioInputUsdPer1M',
   'audioOutputUsdPer1M',
-  'outputUsdPerImage'
+  'outputUsdPerImage',
+  'mediaPricing'
 ] as const satisfies ReadonlyArray<keyof ProviderModelUpsertPayload>
 
 function providerModelPayloadValuesEqual(left: unknown, right: unknown): boolean {
@@ -339,7 +351,15 @@ export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, cat
       form[field] = undefined
     }
   }
-  if (category !== 'text') form.serviceTierPrices = {}
+  if (category !== 'text') {
+    form.serviceTierPrices = {}
+    const expectedUnit = category === 'image' ? 'image' : 'second'
+    if (form.mediaPricing && form.mediaPricing.unit !== expectedUnit) {
+      form.mediaPricing = defaultMediaPricingForCategory(category)
+    }
+  } else {
+    form.mediaPricing = undefined
+  }
 }
 
 function buildCustomModelDirectPricePayload(form: CustomModelForm, category: ModelCategoryKey) {
@@ -351,6 +371,51 @@ function buildCustomModelDirectPricePayload(form: CustomModelForm, category: Mod
       : numberToNull(form[field])
   }
   return payload
+}
+
+export const mediaPricingVideoTiers = ['480p', '720p', '1080p', '1440p', '2160p'] as const
+export const mediaPricingImageTiers = ['1k', '2k', '4k'] as const
+
+/** 默认统一媒体模板：视频 720p / 图片 1k 锚点，音频无档位。 */
+export function defaultMediaPricingForCategory(category: ModelCategoryKey): ProviderModelMediaPricing | undefined {
+  if (category === 'video') {
+    return {
+      version: 1,
+      unit: 'second',
+      baseUsd: 0,
+      baseTier: '720p',
+      tierMultipliers: { '480p': 0.5, '720p': 1, '1080p': 2, '1440p': 3, '2160p': 5 }
+    }
+  }
+  if (category === 'image') {
+    return {
+      version: 1,
+      unit: 'image',
+      baseUsd: 0,
+      baseTier: '1k',
+      tierMultipliers: { '1k': 1, '2k': 1.6, '4k': 3 }
+    }
+  }
+  if (category === 'audio') {
+    return { version: 1, unit: 'second', baseUsd: 0, baseTier: '', tierMultipliers: {} }
+  }
+  return undefined
+}
+
+export function mediaPricingTiers(pricing: ProviderModelMediaPricing | undefined): string[] {
+  if (!pricing) return []
+  return Object.keys(pricing.tierMultipliers)
+}
+
+export function cloneMediaPricing(pricing: ProviderModelMediaPricing | null | undefined): ProviderModelMediaPricing | undefined {
+  if (!pricing) return undefined
+  return {
+    version: 1,
+    unit: pricing.unit,
+    baseUsd: pricing.baseUsd,
+    baseTier: pricing.baseTier,
+    tierMultipliers: { ...pricing.tierMultipliers }
+  }
 }
 
 function trimToUndefined(value: unknown): string | undefined {

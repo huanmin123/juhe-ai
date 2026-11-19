@@ -73,13 +73,16 @@ const ArchitectureVersion = "go-projects-v1"
 // circuit_control_plane 的 ReleaseForReplay 在 attempt 达上限时写 failed。
 // 纯 DDL 空号，无数据步骤，不写入 schema_migrations。2026-11-19 revision 25
 // 单 IP 并发限制迁至 API Key（APIKey单IP并发限制设计 §4）：api_keys 新增
-// client_ip_concurrency_limit integer NOT NULL DEFAULT 0 加法列，并注册
+// client_ip_concurrency_limit integer NOT NULL DEFAULT -1 加法列，并注册
 // migrate-key-client-ip-limit 数据/破坏步骤（revision 25），把存量
 // groups.scheduling_policy_json.clientIpConcurrencyLimit 映射到可达 API Key、
 // 分组策略重写为单键 defaultSoftConcurrency 或 NULL、超级分组自身行按首成员
 // 重算；冲突默认 needs_review/exit 3，显式 --conflict-policy=min 收敛。
-// 步骤写入 schema_migrations，只在 contract/all 相执行。当前值 25。
-const SchemaRevision int64 = 25
+// 步骤写入 schema_migrations，只在 contract/all 相执行。2026-11-19 revision 26
+// 非对话媒体统一计费（《非对话媒体统一计费设计》§5.1）：models 新增
+// media_pricing_json text 加法列与对象形状 CHECK；纯 DDL 空号，无数据步骤，
+// 不写入 schema_migrations。当前值 26。
+const SchemaRevision int64 = 26
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

@@ -702,7 +702,7 @@ var pgSeedEndpointFamilies = []pgSeedEndpointFamily{
 	{ID: "gemini_v1beta_count_tokens", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Code: "count_tokens", Name: "countTokens", Description: "Gemini v1beta :countTokens 接口族", Enabled: 1},
 	{ID: "gemini_v1beta_embed_content", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Code: "embed_content", Name: "embedContent", Description: "Gemini v1beta :embedContent 接口族", Enabled: 1},
 	// M3 媒体新增（媒体设计 §9/§11.2）：openai 协议族的厂商原生媒体端点族——
-	// 统一 /v1/videos、/v1/audio/speech 面承载，厂商原生报文经媒体 adapter
+	// 统一 /v1/video/generations、/v1/audio/speech 面承载，厂商原生报文经媒体 adapter
 	// 改写（minimax video_generation / t2a_v2，契约 §8）。
 	{ID: "openai_v1_video_generation", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "video_generation", Name: "Video Generation", Description: "OpenAI v1 统一 /videos 面承载的厂商原生视频生成任务形态", Enabled: 1},
 	{ID: "openai_v1_tts", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "tts", Name: "TTS", Description: "OpenAI v1 统一 /audio/speech 面承载的厂商原生语音合成形态", Enabled: 1},

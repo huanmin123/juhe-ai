@@ -118,6 +118,7 @@ func TestGatewayRootFormsPassRealProtocolGate(t *testing.T) {
 		{http.MethodPost, "/embeddings"},
 		{http.MethodPost, "/images/generations"},
 		{http.MethodPost, "/audio/transcriptions"},
+		{http.MethodPost, "/video/generations"},
 		{http.MethodPost, "/messages"},
 		{http.MethodPost, "/messages/count_tokens"},
 	}

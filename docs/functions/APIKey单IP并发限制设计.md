@@ -1,8 +1,8 @@
 # API Key 单 IP 并发限制设计
 
-> 设计状态：**已实施（2026-11-19，代码与受影响范围测试完成；生产 revision 25 发布窗口待 T213）**。本文是「单 IP 并发限制」从分组调度策略迁移到 API Key 的唯一目标契约。
+> 设计状态：**已实施（2026-11-19，代码与受影响范围测试完成；生产 revision 25 发布窗口待 T213）**。本文是「单 IP 并发限制」从分组调度策略迁移到 API Key 的唯一目标契约。2026-11-19 同日修订：「不限制」统一为 `-1`，`0` 非法，与分组阈值语义对齐。
 >
-> 关联裁决：2026-11-19 用户确认「单 IP 并发限制」不应在分组里配置，应在 API Key 维度配置；「最大单账户排队阈值」保留在分组。本次只迁移配置归属，**不改变**计数作用域 `(system_account_id, group_id, api_key_id, client_ip)`。
+> 关联裁决：2026-11-19 用户确认「单 IP 并发限制」不应在分组里配置，应在 API Key 维度配置；「最大单账户排队阈值」保留在分组。同日追加裁决：「不限制」统一使用 `-1`（与分组 `defaultSoftConcurrency` 一致），`0` 不再是合法配置值。本次只迁移配置归属，**不改变**计数作用域 `(system_account_id, group_id, api_key_id, client_ip)`。
 
 ## 1. 背景与决策
 
@@ -20,7 +20,7 @@
 
 ### 目标
 
-1. API Key 增加 `clientIpConcurrencyLimit` 配置，`0` 关闭，`1..1000000` 生效，超限固定 `429`。
+1. API Key 增加 `clientIpConcurrencyLimit` 配置，`-1` 不限制，`1..1000000` 生效，超限固定 `429`；`0` 不是合法值，避免与分组阈值的 `-1` 语义分叉。
 2. 删除 `groups.scheduling_policy_json.clientIpConcurrencyLimit`；普通分组策略只允许 `defaultSoftConcurrency` 一个键。
 3. 计数作用域保持 `(system_account_id, group_id, api_key_id, client_ip)` 不变；现有单分组 Key 的运行行为不变。
 4. 超级分组调度指纹只按 `group_type + defaultSoftConcurrency` 计算，IP 限制不再参与分组指纹。
@@ -41,16 +41,17 @@
 `api_keys` 增加：
 
 ```sql
-client_ip_concurrency_limit integer NOT NULL DEFAULT 0
+client_ip_concurrency_limit integer NOT NULL DEFAULT -1
 ```
 
 | 字段 | 类型 | 默认 | 合法范围 | 语义 |
 | --- | --- | --- | --- | --- |
-| `clientIpConcurrencyLimit` | 整数 | `0` | `0..1000000` | 单 IP 并发上限；`0` 关闭；超限立即 429 |
+| `clientIpConcurrencyLimit` | 整数 | `-1` | `-1` 或 `1..1000000` | 单 IP 并发上限；`-1` 不限制；超限立即 429 |
 
 - JSON 字段名为 `clientIpConcurrencyLimit`，列名为 `client_ip_concurrency_limit`。
-- 创建缺省或显式 `null` → 持久化 `0`；PATCH 缺省 → 保持原值；PATCH 显式 `0` → 关闭。
-- 超界、非整数按字段校验错误拒绝（400），不静默截断。
+- `-1` 是「不限制」的唯一配置取值，与分组 `defaultSoftConcurrency` 的关闭语义一致；`0` 不是合法值。
+- 创建缺省或显式 `null` → 持久化 `-1`；PATCH 缺省 → 保持原值；PATCH 显式 `-1` → 不限制。
+- 显式 `0`、小于 `-1`、超过 `1000000` 或非整数按字段校验错误拒绝（400），不静默截断、映射或取整。
 - 该字段与 API Key 的 `quotaLimits`、`availabilitySchedule`、`securityPolicyId`、`schedulingPreferenceId` 同属 Key 级配置，管理面与个人面均可读写；写入口与现有 API Key 更新一致，受 owner 校验与 `expectedRevision` CAS 约束。
 
 ### 2.2 计数作用域
@@ -66,12 +67,12 @@ systemAccountId + groupId + apiKeyId + clientIp
 - 同一 Key 在同一分组、同一 IP 下的并发共享一个计数；
 - 不同 Key、不同分组、不同 IP、不同系统账户互不影响；
 - 一个 Key 经策略路由到达多个分组时，每个分组各自计数；
-- 无 API Key 的内部请求（内部身份通道）视为 `limit=0`，不启用闸口；
+- 无 API Key 的内部请求（内部身份通道）视为 `limit=-1`，不启用闸口；
 - `clientIp` 为空时不启用闸口（沿用现行行为）。
 
 ### 2.3 闸口行为
 
-- `limit = 0`：完全不启用，零额外开销。
+- `limit = -1`：不限制，完全不启用闸口，零额外开销。
 - `limit > 0`：在分组解析完成、账号准入/派发前，按作用域获取一个 IP 槽；达到上限立即返回 `429`，不占账号并发、不进入任何等待队列、不写账号状态。
 - IP 槽在响应结束（成功/失败/流中断/取消）释放；客户端断开同样释放。
 - 路由计划还有后续分组时，按既有跨组回退逻辑处理；IP 限制不改变跨组回退语义。
@@ -121,7 +122,7 @@ SHA256(canonical_json({
 ### 3.2 前端
 
 - 分组创建/编辑表单删除「单 IP 并发限制」输入与校验；分组列表/详情摘要删除对应文案，只保留「单账户排队阈值」。
-- API Key 创建/编辑表单增加「单 IP 并发限制」整数输入：默认 `0`，帮助文案「0 表示不限制；设置后同一 IP 超过并发立即返回 429」。
+- API Key 创建/编辑表单增加「单 IP 并发限制」整数输入：默认 `-1`，帮助文案挂在字段 label 的问号提示上（「-1 表示不限制；设置后同一 IP 超过并发立即返回 429」），不设独立区块标题。
 - API Key 列表按「列表只做概览」原则决定是否展示摘要；至少编辑弹窗必须可回填与保存。
 - 更新相关类型、表单模型、mutation payload、回归脚本与 smoke 断言。
 
@@ -129,7 +130,7 @@ SHA256(canonical_json({
 
 ### 4.1 Schema
 
-- `api_keys` 加法列 `client_ip_concurrency_limit integer NOT NULL DEFAULT 0`；`BusinessSchemaVersion` 升至 `business-postgres-gateway-v24`。
+- `api_keys` 加法列 `client_ip_concurrency_limit integer NOT NULL DEFAULT -1`；`BusinessSchemaVersion` 升至 `business-postgres-gateway-v24`。
 - `SchemaRevision` 升至 25（当前 24）；注册 `migrate-key-client-ip-limit` 数据步骤，标记 Destructive，只能在停写窗口执行。
 - DDL 在 upgrade 的加法相幂等执行；数据步骤与 DDL 同批，不拆到 `--ensure-schema`。
 
@@ -153,15 +154,15 @@ juhe-ai-maintenance migrate-key-client-ip-limit \
 
 1. 可达分组按**配置拓扑全量**解析：`route_strategy_groups` 的全部绑定行（不过滤策略/绑定状态、分组 enabled、授权有效期与绑定数量上限）；超级分组展开全部 `super_group_members`（不过滤成员 enabled）；合并路由按绑定的全部分组。manifest 对每个可达分组标注配置可达性（`runtimeActive` = 绑定 `active` + 分组/成员 `enabled`，不含授权有效期、授权开关与策略状态），供操作者核对差异，但过滤与否不改变迁移取值。迁移语义是搬配置，不丢 disabled 分组上的旧值。**分组 owner 与 Key owner 不同不视为异常**：被授权人可用自己的策略绑定授权分组，绑定行 owner 是 grantee、分组行 owner 是 grantor；只有 Key 与策略/绑定 owner 不一致这类非法拓扑才进入 `needs_review`。
 2. 对每个 API Key，收集可达分组旧 `clientIpConcurrencyLimit` 的正值。
-3. 只对当前 `client_ip_concurrency_limit = 0` 的 Key 写入推导值：唯一正值 → 写入；无正值 → 保持 `0`（不产生 UPDATE）。
-4. 当前值已 `>0` 的 Key 视为 `preexisting`，**不覆盖**：若该值等于可达分组观测到的任一正值，视为人工裁决已生效（保留并继续）；若观测集非空且与全部观测值都不同，记 `existing_key_limit_conflict` 进入 `needs_review`，`min` 模式也不改写已有值，只在 manifest 记录冲突；若观测集为空（旧分组本来没有 IP 值，或迁移完成后的幂等重跑），保留当前值且不记冲突。这样人工把冲突 Key 设为某个候选值后重跑可以收敛，既不会被清空也不会再次阻断。
-5. 多个不同正值（针对当前值为 0 的 Key）：
+3. 只对当前 `client_ip_concurrency_limit = -1` 的 Key 写入推导值：唯一正值 → 写入；无正值 → 保持 `-1`（不产生 UPDATE）。revision 25 未发布版本曾使用 `0` 作为临时关闭值，迁移按未设置处理并归一为 `-1`（无观测值时产生一次归一 UPDATE），避免 `0` 残留在新契约。
+4. 当前值已 `>0` 的 Key 视为 `preexisting`，**不覆盖**：若该值等于可达分组观测到的任一正值，视为人工裁决已生效（保留并继续）；若观测集非空且与全部观测值都不同，记 `existing_key_limit_conflict` 进入 `needs_review`，`min` 模式也不改写已有值，只在 manifest 记录冲突；若观测集为空（旧分组本来没有 IP 值，或迁移完成后的幂等重跑），保留当前值且不记冲突。这样人工把冲突 Key 设为某个候选值后重跑可以收敛，既不会被清空也不会再次阻断。当前值小于 `-1` 或大于 `1000000` 属于非法存量，记 `invalid_key_limit_value` 进入 `needs_review`。
+5. 多个不同正值（针对当前值为 `-1` 的 Key）：
    - `block`（默认）：该 Key 进入 `needs_review`，apply 以退出码 3 零写入阻断，由人工确认后用 `min` 重跑或手工设置；
    - `min`：取正值集合的最小值写入，并在 manifest 中记录 `conflict` 行与原值集合。
 6. 分组策略 JSON 重写为 `{"defaultSoftConcurrency":X}`；`X=-1` 时写 `NULL`。未知键/损坏 JSON 进入 `needs_review`。单键 soft 值必须原样读取，不得按旧 `globalMax` 规则二次映射。
 7. 超级分组自身行：先检查全部成员（不论 enabled）的 `defaultSoftConcurrency` 是否一致；不一致进入 `needs_review` 阻断，不静默选边；一致但自身行不一致时按首成员重算。空超级分组写 `personal + NULL`。
 8. 不更新 `groups.updated_at` 与 `api_keys.updated_at`，避免前端乐观锁 churn；发布流程重启 gateway/jobs 刷新运行时缓存。
-9. 迁移必须可重跑：首次成功后重跑零写入（分组已单键、Key 已非零或保持 0），不得把已迁移值清回 `0`。
+9. 迁移必须可重跑：首次成功后重跑零写入（分组已单键、Key 已为正值或 `-1`），不得把已迁移值清回 `-1`。
 
 ### 4.3 兼容与回滚
 
@@ -171,15 +172,15 @@ juhe-ai-maintenance migrate-key-client-ip-limit \
 - `legacybusinessimport`（旧库回迁）在 revision 25 之前运行时**保留旧两键历史形状**（含 `clientIpConcurrencyLimit`），由回迁后 `upgrade` 链的 revision 25 步骤统一映射到 API Key 并把分组策略单键化；导入命令自身不写 `api_keys.client_ip_concurrency_limit`，也不直接写单键，避免旧 IP 值在迁移前被丢弃。该命令的导入目标是空库，必须随后执行 maintenance upgrade，不做向后兼容承诺。
 - 迁移完成后 postflight 必须确认：
   - `groups.scheduling_policy_json` 不含 `clientIpConcurrencyLimit`；
-  - 所有 API Key 的 `client_ip_concurrency_limit` 非空且在 `0..1000000`；
+  - 所有 API Key 的 `client_ip_concurrency_limit` 非空且为 `-1` 或 `1..1000000`；
   - 超级分组自身行与首成员策略一致。
 - 回滚限制：旧二进制不认识单键分组策略与 API Key 新列，回滚只能恢复升级前备份；新旧行为差异必须在发布说明中列明。
-- 新 Key 默认 `0`；升级后新建 Key 不会自动继承旧分组值，需按需配置。
+- 新 Key 默认 `-1`（不限制）；升级后新建 Key 不会自动继承旧分组值，需按需配置。
 
 ## 5. 验收标准
 
 1. **配置归属**：API Key 创建/编辑可设置 `clientIpConcurrencyLimit`，分组创建/编辑不再接受该字段；分组策略只剩 `defaultSoftConcurrency`。
-2. **运行行为**：`limit=0` 零开销；`limit>0` 超限 429、不占账号并发；不同 Key/分组/IP/系统账户隔离；响应结束与取消/断流释放。
+2. **运行行为**：`limit=-1` 零开销；`limit>0` 超限 429、不占账号并发；不同 Key/分组/IP/系统账户隔离；响应结束与取消/断流释放。
 3. **行为保持**：现有单分组 Key 在迁移前后并发上限行为一致；同一 Key 跨多个分组仍按分组各自计数。
 4. **指纹**：超级分组指纹只由 `group_type + defaultSoftConcurrency` 决定；改 API Key 的 IP 限制不影响超级分组一致性。
 5. **迁移**：dry-run 报告完整；冲突 Key 默认阻断；`min` 模式可收敛；迁移幂等；旧两键 JSON 可读、写面拒绝；postflight 通过。

@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/usagewriter"
 )
 
@@ -237,8 +238,8 @@ func (c *usagePricingCatalog) bind(query string) string {
 // usageCatalogPricingColumns 是 models 单表的定价读取列（供应商与上游协议面
 // 重构设计 §3：内置目录与自定义模型同表，列集以 pg_schema_business_tables.go
 // 的 models 定义为准）。模型身份为 public_model，upstream_model 用于上游回包
-// 名称回退匹配；mode 由 supported_endpoint_modes_json 反推（本文件只消费
-// image_generation 分支）。
+// 名称回退匹配；mode 由 supported_endpoint_modes_json 反推（统一媒体模板
+// 据此判定 video/image/audio 计量维度）。
 var usageCatalogPricingColumns = strings.Join([]string{
 	"public_model", "upstream_model", "supported_endpoint_modes_json",
 	"supported_service_tiers_json", "service_tier_prices_json",
@@ -246,6 +247,7 @@ var usageCatalogPricingColumns = strings.Join([]string{
 	"cache_write_usd_per_1m", "cache_write_1h_usd_per_1m", "cache_storage_usd_per_1m_per_hour",
 	"image_input_usd_per_1m", "image_output_usd_per_1m",
 	"audio_input_usd_per_1m", "audio_output_usd_per_1m", "output_usd_per_image",
+	"media_pricing_json",
 	"long_context_input_token_threshold", "long_context_input_token_threshold_inclusive",
 	"long_context_input_cost_multiplier", "long_context_output_cost_multiplier",
 }, ", ")
@@ -289,6 +291,7 @@ func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, args .
 			endpointModesJSON  sql.NullString
 			supportedTiersJSON sql.NullString
 			tierPricesJSON     sql.NullString
+			mediaPricingJSON   sql.NullString
 			scope              sql.NullString
 			longContext        usageCatalogLongContextScan
 		)
@@ -299,6 +302,7 @@ func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, args .
 			&row.cacheWriteUsdPer1M, &row.cacheWrite1hUsdPer1M, &row.cacheStorageUsdPer1MPerHour,
 			&row.imageInputUsdPer1M, &row.imageOutputUsdPer1M,
 			&row.audioInputUsdPer1M, &row.audioOutputUsdPer1M, &row.outputUsdPerImage,
+			&mediaPricingJSON,
 			&longContext.threshold, &longContext.thresholdInclusive,
 			&longContext.inputMultiplier, &longContext.outputMultiplier,
 			&scope,
@@ -309,6 +313,7 @@ func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, args .
 		row.mode = usageCatalogModeFromEndpointModes(endpointModesJSON.String)
 		row.supportedServiceTiers = decodeUsageCatalogStringList(supportedTiersJSON)
 		row.serviceTierPrices = decodeUsageCatalogTierPrices(tierPricesJSON)
+		applyUsageCatalogMediaPricing(&row, mediaPricingJSON)
 		if longContext.threshold.Valid {
 			value := longContext.threshold.Int64
 			row.longContextInputTokenThreshold = &value
@@ -395,6 +400,23 @@ func decodeUsageCatalogTierPrices(raw sql.NullString) map[string]usageCatalogPri
 	return decoded
 }
 
+// applyUsageCatalogMediaPricing 解析 models.media_pricing_json（运行时唯一
+// 权威，设计 §5.3）。空串/缺列 = legacy；结构非法不回落 legacy 猜测，标记
+// mediaPricingInvalid 后该行按无价处理（AC-016）。有效 0 价用
+// hasMediaPricing 保留（不得按 <=0 判成未定价）。
+func applyUsageCatalogMediaPricing(row *usageCatalogPricingRow, raw sql.NullString) {
+	if row == nil || !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return
+	}
+	parsed, err := mediapricing.Parse([]byte(raw.String))
+	if err != nil {
+		row.mediaPricingInvalid = true
+		return
+	}
+	row.mediaPricing = parsed
+	row.hasMediaPricing = true
+}
+
 // ---- 目录行形状与计费引擎（gateway/internal/pricing 忠实移植，仅覆盖
 // 冻结路径消费面 BuildCostBreakdown；display/candidate 机器不在端口面内）----
 
@@ -415,23 +437,30 @@ type usageCatalogPriceSet struct {
 
 // usageCatalogPricingRow mirrors pricing.Pricing 的目录行消费面。
 type usageCatalogPricingRow struct {
-	model                                   string
-	upstreamModel                           string
-	mode                                    string
-	scope                                   string
-	supportedServiceTiers                   []string
-	serviceTierPrices                       map[string]usageCatalogPriceSet
-	inputUsdPer1M                           *float64
-	outputUsdPer1M                          *float64
-	cachedInputUsdPer1M                     *float64
-	cacheWriteUsdPer1M                      *float64
-	cacheWrite1hUsdPer1M                    *float64
-	cacheStorageUsdPer1MPerHour             *float64
-	imageInputUsdPer1M                      *float64
-	imageOutputUsdPer1M                     *float64
-	audioInputUsdPer1M                      *float64
-	audioOutputUsdPer1M                     *float64
-	outputUsdPerImage                       *float64
+	model                       string
+	upstreamModel               string
+	mode                        string
+	scope                       string
+	supportedServiceTiers       []string
+	serviceTierPrices           map[string]usageCatalogPriceSet
+	inputUsdPer1M               *float64
+	outputUsdPer1M              *float64
+	cachedInputUsdPer1M         *float64
+	cacheWriteUsdPer1M          *float64
+	cacheWrite1hUsdPer1M        *float64
+	cacheStorageUsdPer1MPerHour *float64
+	imageInputUsdPer1M          *float64
+	imageOutputUsdPer1M         *float64
+	audioInputUsdPer1M          *float64
+	audioOutputUsdPer1M         *float64
+	outputUsdPerImage           *float64
+	// mediaPricing 是 models.media_pricing_json 的统一媒体模板（运行时唯一
+	// 权威）；hasMediaPricing=true 时即使 BaseUsd=0 也是有效价格。
+	// mediaPricingInvalid 表示列存在但结构非法：该行按无价处理，不回落
+	// legacy 猜测（设计 §5.2）。
+	mediaPricing                            *mediapricing.Pricing
+	hasMediaPricing                         bool
+	mediaPricingInvalid                     bool
 	longContextInputTokenThreshold          *int64
 	longContextInputTokenThresholdInclusive bool
 	longContextInputCostMultiplier          *float64
@@ -579,7 +608,21 @@ func usageCatalogApplyLongContext(row usageCatalogPricingRow, inputTokens *int, 
 // buildUsageCatalogCostBreakdown mirrors pricing.BuildCostBreakdown 于目录行：
 // 计费策略按 provider 选择（目录行归属 provider），输出加 USD 币种与策略
 // 戳；nil=Node undefined（未知 provider、tier 不支持或用量无定价）。
+//
+// 统一媒体模板先于供应商策略（非对话媒体统一计费设计 §6.1）：模板非空时
+// 只产出 media_unified_v1 行项；模板为空才走 legacy。非法 media_pricing_json
+// 不回落 legacy（AC-016）。媒体模板不依赖 provider 策略表，因此 volcengine/
+// qwen/minimax 等未入 legacy 策略表的媒体行也可计价。
 func buildUsageCatalogCostBreakdown(row usageCatalogPricingRow, providerCode string, serviceTier string, input usagewriter.UsageRecordInput) *usagewriter.CostBreakdown {
+	if row.mediaPricingInvalid || (row.hasMediaPricing && row.mediaPricing == nil) {
+		return nil
+	}
+	if row.hasMediaPricing && row.mediaPricing != nil {
+		return buildUsageCatalogMediaBreakdown(row, input)
+	}
+	if !usageCatalogRowHasAnyRate(row) {
+		return nil
+	}
 	policy := usageCatalogBillingPolicyFor(providerCode)
 	if policy == nil {
 		return nil
@@ -591,6 +634,123 @@ func buildUsageCatalogCostBreakdown(row usageCatalogPricingRow, providerCode str
 	breakdown.Currency = "USD"
 	breakdown.BillingPolicy = policy.id
 	return breakdown
+}
+
+// usageCatalogMediaPolicy 是统一媒体模板的计费策略戳（与 gateway
+// pricing.BillingPolicyMediaUnified 同值）。
+const usageCatalogMediaPolicy = "media_unified_v1"
+
+// buildUsageCatalogMediaBreakdown 是 pricing.buildMediaUnifiedCostBreakdown 的
+// 同源移植（设计 §6.1/AC-015）：档位/倍率、数量维度、唯一行项、免费 0 价、
+// QuantitySource 与 costUsd 覆盖语义必须逐项一致。
+func buildUsageCatalogMediaBreakdown(row usageCatalogPricingRow, input usagewriter.UsageRecordInput) *usagewriter.CostBreakdown {
+	template := row.mediaPricing
+	kind, kindOK := usageCatalogMediaKindForInput(row.mode, input)
+	if !kindOK {
+		return nil
+	}
+	if err := template.ValidateFor(kind); err != nil {
+		return nil
+	}
+	unitPrice, multiplier, tier, err := template.PriceForTier(input.ResolutionTier)
+	if err != nil {
+		return nil
+	}
+
+	var (
+		quantity float64
+		key      string
+		label    string
+		unit     string
+	)
+	switch template.Unit {
+	case mediapricing.UnitSecond:
+		if kind == mediapricing.KindVideo {
+			if input.OutputVideoSeconds == nil && input.AudioInputSeconds != nil {
+				return nil
+			}
+			quantity = nonNegativeUsageCatalogFloat64(input.OutputVideoSeconds)
+			key = "video_output_seconds"
+			label = "视频秒（" + tier + "）"
+			unit = "second"
+		} else {
+			if input.AudioInputSeconds == nil && input.OutputVideoSeconds != nil {
+				return nil
+			}
+			quantity = nonNegativeUsageCatalogFloat64(input.AudioInputSeconds)
+			key = "audio_input_seconds"
+			label = "音频秒"
+			unit = "second"
+		}
+	case mediapricing.UnitImage:
+		quantity = nonNegativeUsageCatalogFloat(input.OutputImageCount)
+		key = "image_output_unit"
+		label = "输出图片（" + tier + "）"
+		unit = "image"
+	case mediapricing.UnitCall:
+		if kind != mediapricing.KindVideo || input.ResolutionTier != "" {
+			return nil
+		}
+		quantity = nonNegativeUsageCatalogFloat64(input.VideoCalls)
+		key = "video_output_calls"
+		label = "按次"
+		unit = "call"
+	default:
+		return nil
+	}
+
+	baseUsd := template.BaseUsd
+	actualMultiplier := multiplier
+	breakdown := &usagewriter.CostBreakdown{
+		Currency:                 "USD",
+		BillingPolicy:            usageCatalogMediaPolicy,
+		Multiplier:               1,
+		ServiceTierPricingSource: usagewriter.TierSourceDefault,
+	}
+	calculated := 0.0
+	if quantity > 0 {
+		cost := roundUsageCatalogCost(quantity * unitPrice)
+		calculated = cost
+		breakdown.LineItems = []usagewriter.CostLineItem{{
+			Key:              key,
+			Kind:             key,
+			Label:            label,
+			Quantity:         quantity,
+			Unit:             unit,
+			UnitSize:         1,
+			UnitPriceUsd:     unitPrice,
+			CostUsd:          cost,
+			Tier:             tier,
+			BaseUnitPriceUsd: &baseUsd,
+			Multiplier:       &actualMultiplier,
+			QuantitySource:   input.QuantitySource,
+		}}
+		if template.Unit == mediapricing.UnitImage {
+			breakdown.OutputImageUnitCostUsd = &cost
+			breakdown.OutputUsdPerImage = &unitPrice
+		}
+	}
+	calculated = roundUsageCatalogCost(calculated)
+	breakdown.AccountChargeUsd = orUsageCatalogRate(finiteUsageCatalogRate(input.CostUsd), &calculated)
+	return breakdown
+}
+
+// usageCatalogMediaKindForInput 与 pricing.mediaUnifiedKindForInput 同构：
+// 目录 mode 优先，缺失时按实际计量维度兜底。
+func usageCatalogMediaKindForInput(mode string, input usagewriter.UsageRecordInput) (mediapricing.Kind, bool) {
+	if kind, ok := mediapricing.KindForMode(mode); ok {
+		return kind, true
+	}
+	switch {
+	case input.OutputVideoSeconds != nil:
+		return mediapricing.KindVideo, true
+	case input.AudioInputSeconds != nil:
+		return mediapricing.KindAudio, true
+	case input.OutputImageCount != nil:
+		return mediapricing.KindImage, true
+	default:
+		return "", false
+	}
 }
 
 func (p *usageCatalogBillingPolicy) buildUsageCatalogBreakdown(row usageCatalogPricingRow, serviceTier string, input usagewriter.UsageRecordInput) *usagewriter.CostBreakdown {
@@ -897,6 +1057,16 @@ func usageCatalogHasAnyRate(set usageCatalogPriceSet) bool {
 		set.OutputUsdPerImage != nil
 }
 
+// usageCatalogRowHasAnyRate 是目录行级「是否存在可计价价格」判定：统一媒体
+// 模板（含免费 0 价）与 legacy token/媒体价任一在场即为有价。媒体模板不得因
+// legacy 维度全空被判成无价（设计 §6.1）。
+func usageCatalogRowHasAnyRate(row usageCatalogPricingRow) bool {
+	if row.hasMediaPricing {
+		return true
+	}
+	return usageCatalogHasAnyRate(row.priceSet())
+}
+
 func normalizedUsageCatalogTier(value string) string {
 	tier := strings.TrimSpace(value)
 	if tier == "" || tier == "default" || tier == "standard" {
@@ -924,6 +1094,15 @@ func nonNegativeUsageCatalogFloat(value *int) float64 {
 		return 0
 	}
 	return math.Max(float64(*value), 0)
+}
+
+// nonNegativeUsageCatalogFloat64 是统一媒体秒/次维度的非负收敛（nil=0，
+// NaN/Inf=0，负值=0；与 gateway pricing.nonNegative 同构）。
+func nonNegativeUsageCatalogFloat64(value *float64) float64 {
+	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) {
+		return 0
+	}
+	return math.Max(*value, 0)
 }
 
 func usageCatalogFloatPtr(value *int) *float64 {

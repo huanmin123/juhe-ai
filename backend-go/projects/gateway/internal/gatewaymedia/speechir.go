@@ -15,8 +15,8 @@ import (
 // Voice；L2：Speed/ResponseFormat/Instructions/Language（契约 §2.3 值域，
 // 校验裁决按厂商 adapter 承载——openai 族直连透传由上游裁决，gemini 等转换
 // 型 adapter 在 BuildSpeechUpstreamRequest 内做能力裁决）。
-// ProviderOptions 是 L3 扩展通道的对象形态投影（键=provider_code，契约
-// §2.1；M3 minimax TTS 起消费——vol/pitch 等厂商个例参数 deep-merge 进
+// Metadata 是唯一扩展通道的厂商参数包（设计《对外协议面对齐 new-api 设计》
+// §5.1；M3 minimax TTS 起消费——vol/pitch 等厂商个例参数 deep-merge 进
 // t2a_v2 报文；openai 族直连与 gemini TTS 不消费该字段）。
 // AccountVendorRefs 是链上注入的账户级厂商引用（非请求面参数，客户端不可
 // 控制；M6 火山 TTS 起消费——speech_appid 构造 user.uid 固定值，契约 §9.2；
@@ -29,7 +29,7 @@ type SpeechRequest struct {
 	ResponseFormat    string
 	Instructions      string
 	Language          string
-	ProviderOptions   map[string]any
+	Metadata          map[string]any
 	AccountVendorRefs map[string]string
 }
 

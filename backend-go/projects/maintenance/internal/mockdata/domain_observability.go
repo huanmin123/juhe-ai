@@ -423,7 +423,7 @@ func observabilitySetText(columns map[string]any, values map[string]string) {
 // observabilityAuditSample 是审计日志样本矩阵的一行：覆盖成功 / 重试成功 / 模型
 // 映射 / 上游失败 / 网关失败 / 请求体拒绝 / 流式中断 / 下游断开 / 健康检查流量
 // 来源；端点覆盖 /v1/responses、/v1/chat/completions、/v1/images/generations、
-// /v1/models 与媒体端点 /v1/audio/speech、/v1/videos（媒体契约 §3.4）。
+// /v1/models 与媒体端点 /v1/audio/speech、/v1/video/generations（媒体契约 §3.4）。
 type observabilityAuditSample struct {
 	Method         string
 	Path           string
@@ -481,7 +481,7 @@ var observabilityAuditSamples = []observabilityAuditSample{
 		Attempts: 1, Parts: []string{"client_request", "upstream_response", "gateway_response"},
 	},
 	{
-		Method: "POST", Path: "/v1/videos", Family: "videos",
+		Method: "POST", Path: "/v1/video/generations", Family: "videos",
 		Model: "sora-2", UpstreamModel: "sora-2", PricingModel: "sora-2",
 		TrafficSource: "gateway", ClientType: "generic_openai",
 		Outcome: "success", Success: true, StatusCode: 200, SampleReason: "always",

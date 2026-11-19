@@ -26,6 +26,11 @@ type usageSpoolCapacity struct{}
 type fileUsageDeliverer struct {
 	directory string
 	sequence  atomic.Uint64
+	// stopped 由 StopReplay（t.Cleanup 注册，晚于 t.TempDir 登记、早于其
+	// 目录移除执行）置位：停机排空之后仍可能有异步收尾任务走到这里，
+	// 继续落盘会与 t.TempDir 清理竞争（W55 复现形态：清理报
+	// "directory not empty"）。停机后丢弃即可——测例断言的是请求期记录。
+	stopped atomic.Bool
 }
 
 func newUsageSpool(directory string, clock gatewaypreauth.Clock, logger *slog.Logger, capacity usageSpoolCapacity) *fileUsageDeliverer {
@@ -39,6 +44,9 @@ func newUsageSpool(directory string, clock gatewaypreauth.Clock, logger *slog.Lo
 }
 
 func (d *fileUsageDeliverer) Persist(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
+	if d.stopped.Load() {
+		return nil
+	}
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -51,8 +59,9 @@ func (d *fileUsageDeliverer) Persist(ctx gatewayusage.Ctx, input gatewayusage.Us
 	return os.WriteFile(filepath.Join(instance, name), append(encoded, '\n'), 0o600)
 }
 
-// StopReplay 保留旧清理调用点：文件捕获投递器没有回放循环。
-func (d *fileUsageDeliverer) StopReplay() {}
+// StopReplay 保留旧清理调用点：文件捕获投递器没有回放循环；这里兼作停机
+// 闸口——置位后不再落盘，避免异步收尾记录在 t.TempDir 清理期间写目录。
+func (d *fileUsageDeliverer) StopReplay() { d.stopped.Store(true) }
 
 // failingUsageDeliverer 模拟持久投递面不可用，供失败计数与告警测试。
 type failingUsageDeliverer struct{}

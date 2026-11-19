@@ -17,9 +17,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
@@ -57,6 +59,7 @@ type customProviderModelRecord struct {
 	AudioInputUsdPer1M          *float64
 	AudioOutputUsdPer1M         *float64
 	OutputUsdPerImage           *float64
+	MediaPricing                *mediapricing.Pricing
 	PricingNotes                *string
 	CapabilityNotes             *string
 	Notes                       *string
@@ -102,6 +105,7 @@ type customProviderModelUpsertInput struct {
 	AudioInputUsdPer1M          *float64
 	AudioOutputUsdPer1M         *float64
 	OutputUsdPerImage           *float64
+	MediaPricing                *mediapricing.Pricing
 	PricingNotes                *string
 	CapabilityNotes             *string
 	Notes                       *string
@@ -137,7 +141,7 @@ const customProviderModelColumns = `id, COALESCE(vendor_code, '') AS provider_co
 	release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
 	input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
 	image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-	output_usd_per_image, currency, pricing_notes, capability_notes, notes,
+	output_usd_per_image, media_pricing_json, currency, pricing_notes, capability_notes, notes,
 	created_by, updated_by, created_at, updated_at`
 
 // findCustomProviderModelByID ports findCustomProviderModelByIdAsync; a
@@ -202,6 +206,123 @@ func (s *Store) findCustomProviderModelByScope(ctx context.Context, providerCode
 	return nil, rows.Err()
 }
 
+// findMediaPricingTemplate 为管理员新建媒体模型复制统一价格模板（设计 §5.3）：
+// 同供应商 + 同 mode + 同 unit + 同媒体协议族的最近一行，排序为
+// release_date DESC NULLS LAST, catalog_order DESC NULLS LAST, id ASC。
+// 视频 call 不参与复制（必须显式提交）；目录/全局行才作为可信模板来源。
+func (s *Store) findMediaPricingTemplate(ctx context.Context, providerCode, mode string, protocols []string) (*mediapricing.Pricing, error) {
+	kind, ok := mediapricing.KindForMode(mode)
+	if !ok {
+		return nil, nil
+	}
+	targetUnit := mediapricing.DefaultUnitForKind(kind)
+	targetFamily := mediaPricingProtocolFamily(kind, protocols)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, media_pricing_json, release_date, catalog_order, supported_endpoint_modes_json
+		FROM `+s.table("models")+`
+		WHERE vendor_code = ? AND scope IN ('builtin', 'global') AND status = 'active'
+		  AND media_pricing_json IS NOT NULL AND trim(media_pricing_json) <> ''`), providerCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type candidate struct {
+		pricing      *mediapricing.Pricing
+		releaseDate  string
+		catalogOrder *int64
+		id           string
+	}
+	candidates := []candidate{}
+	for rows.Next() {
+		var (
+			id            string
+			rawPricing    string
+			releaseDate   sql.NullString
+			catalogOrder  sql.NullInt64
+			endpointModes sql.NullString
+		)
+		if err := rows.Scan(&id, &rawPricing, &releaseDate, &catalogOrder, &endpointModes); err != nil {
+			return nil, err
+		}
+		candidateMode, candidateProtocols := deriveCustomModelProjection(endpointModes)
+		candidateKind, ok := mediapricing.KindForMode(stringValueOrEmpty(candidateMode))
+		if !ok || candidateKind != kind {
+			continue
+		}
+		parsed, err := mediapricing.Parse([]byte(rawPricing))
+		if err != nil {
+			continue
+		}
+		if parsed.Unit != targetUnit {
+			continue
+		}
+		if kind == mediapricing.KindVideo && parsed.Unit == mediapricing.UnitCall {
+			continue
+		}
+		if mediaPricingProtocolFamily(kind, candidateProtocols) != targetFamily {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			pricing:      parsed,
+			releaseDate:  strings.TrimSpace(releaseDate.String),
+			catalogOrder: nullInt64Ptr(catalogOrder),
+			id:           id,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		a, b := candidates[left], candidates[right]
+		if a.releaseDate != b.releaseDate {
+			if a.releaseDate == "" {
+				return false
+			}
+			if b.releaseDate == "" {
+				return true
+			}
+			return a.releaseDate > b.releaseDate
+		}
+		switch {
+		case a.catalogOrder != nil && b.catalogOrder != nil && *a.catalogOrder != *b.catalogOrder:
+			return *a.catalogOrder > *b.catalogOrder
+		case a.catalogOrder != nil && b.catalogOrder == nil:
+			return true
+		case a.catalogOrder == nil && b.catalogOrder != nil:
+			return false
+		}
+		return a.id < b.id
+	})
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	return candidates[0].pricing.Clone(), nil
+}
+
+// mediaPricingProtocolFamily 区分 TTS / STT / 视频时间型 / 图片，防止把
+// TTS 秒价复制给 STT（设计 §5.3）。
+func mediaPricingProtocolFamily(kind mediapricing.Kind, protocols []string) string {
+	switch kind {
+	case mediapricing.KindAudio:
+		for _, protocol := range protocols {
+			if protocol == "audio_transcription" {
+				return "audio_transcription"
+			}
+		}
+		for _, protocol := range protocols {
+			if protocol == "audio_speech" {
+				return "audio_speech"
+			}
+		}
+		return "audio_other"
+	case mediapricing.KindVideo:
+		return "video"
+	case mediapricing.KindImage:
+		return "image"
+	default:
+		return string(kind)
+	}
+}
+
 func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderModelRecord, error) {
 	var (
 		record          customProviderModelRecord
@@ -224,6 +345,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		tierPrices                    sql.NullString
 		imageIn, imageOut, audioIn    sql.NullFloat64
 		audioOut, outputPerImage      sql.NullFloat64
+		mediaPricing                  sql.NullString
 		currency                      sql.NullString
 		pricingNotes, capabilityNotes sql.NullString
 		notes                         sql.NullString
@@ -233,7 +355,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		&catalogVisible, &endpointModes, &tiers, &efforts, &toolsByProtocol, &inputModalities, &outputModalities, &defaultEffort,
 		&releaseDate, &shutdownDate, &contextWindow, &maxInput, &maxOutput,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage, &tierPrices,
-		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &currency,
+		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &mediaPricing, &currency,
 		&pricingNotes, &capabilityNotes, &notes,
 		&record.CreatedBy, &updatedBy, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return nil, err
@@ -267,11 +389,43 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	record.AudioInputUsdPer1M = nullFloat64Ptr(audioIn)
 	record.AudioOutputUsdPer1M = nullFloat64Ptr(audioOut)
 	record.OutputUsdPerImage = nullFloat64Ptr(outputPerImage)
+	record.MediaPricing = parseMediaPricingNullable(mediaPricing)
 	record.PricingNotes = textPtr(pricingNotes)
 	record.CapabilityNotes = textPtr(capabilityNotes)
 	record.Notes = textPtr(notes)
 	record.UpdatedBy = nullPtrString(updatedBy)
 	return &record, nil
+}
+
+// parseMediaPricingNullable 解析可空 media_pricing_json；非法值按无价处理
+// （Has 标志由非 nil 指针表达，0 价仍是有效价格）。
+func parseMediaPricingNullable(value sql.NullString) *mediapricing.Pricing {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	parsed, err := mediapricing.Parse([]byte(value.String))
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
+// mediaPricingJSONValue 返回写入列的值（nil = 清空/legacy）。
+func mediaPricingJSONValue(p *mediapricing.Pricing) any {
+	if p == nil {
+		return nil
+	}
+	canonical, err := p.CanonicalString()
+	if err != nil {
+		return nil
+	}
+	return canonical
+}
+
+// mediaPricingCanonicalString 返回用于比较/审计的规范 JSON。
+func mediaPricingCanonicalString(p *mediapricing.Pricing) string {
+	value, _ := mediaPricingJSONValue(p).(string)
+	return value
 }
 
 // deriveCustomModelProjection 把 supported_endpoint_modes_json 列值逆映射成自
@@ -452,6 +606,7 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		nullableFloat64Ptr(input.ImageInputUsdPer1M), nullableFloat64Ptr(input.ImageOutputUsdPer1M),
 		nullableFloat64Ptr(input.AudioInputUsdPer1M), nullableFloat64Ptr(input.AudioOutputUsdPer1M),
 		nullableFloat64Ptr(input.OutputUsdPerImage),
+		mediaPricingJSONValue(input.MediaPricing),
 		// currency (Node inlines the 'USD' literal)
 		"USD",
 		nullableTextPtr(input.PricingNotes), nullableTextPtr(input.CapabilityNotes), nullableTextPtr(input.Notes),
@@ -464,10 +619,10 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
 		input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
 		image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-		output_usd_per_image, currency, pricing_notes, capability_notes, notes,
+		output_usd_per_image, media_pricing_json, currency, pricing_notes, capability_notes, notes,
 		created_by, updated_by, created_at, updated_at
 	)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		vendor_code = excluded.vendor_code,
 		public_model = excluded.public_model,
@@ -501,6 +656,7 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		audio_input_usd_per_1m = excluded.audio_input_usd_per_1m,
 		audio_output_usd_per_1m = excluded.audio_output_usd_per_1m,
 		output_usd_per_image = excluded.output_usd_per_image,
+		media_pricing_json = excluded.media_pricing_json,
 		pricing_notes = excluded.pricing_notes,
 		capability_notes = excluded.capability_notes,
 		notes = excluded.notes,
@@ -896,6 +1052,9 @@ func (s *Store) customProviderModelPatchAssignments(current *customProviderModel
 		func() { merged.AudioOutputUsdPer1M = next.AudioOutputUsdPer1M })
 	add("outputUsdPerImage", "output_usd_per_image", nullableFloat64Ptr(next.OutputUsdPerImage), nullableFloat64Ptr(current.OutputUsdPerImage),
 		func() { merged.OutputUsdPerImage = next.OutputUsdPerImage })
+	add("mediaPricing", "media_pricing_json",
+		mediaPricingJSONValue(next.MediaPricing), mediaPricingJSONValue(current.MediaPricing),
+		func() { merged.MediaPricing = next.MediaPricing.Clone() })
 	add("pricingNotes", "pricing_notes", nullableTextPtr(next.PricingNotes), nullableTextPtr(current.PricingNotes),
 		func() { merged.PricingNotes = next.PricingNotes })
 	add("capabilityNotes", "capability_notes", nullableTextPtr(next.CapabilityNotes), nullableTextPtr(current.CapabilityNotes),

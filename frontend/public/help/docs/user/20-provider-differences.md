@@ -61,7 +61,7 @@
 | `temperature` | GLM 可能不接受大于 1 的值——网关照传，由上游报真实错误 | 顶层 |
 | `developer` role | OpenAI 新式 `developer` role 可能被 GLM 拒绝——对 GLM 模型用 `system` 更稳 | `messages[].role` |
 
-回包：思考内容在 `message.reasoning_content`（诊断字段，不拼入正文 `content`）。媒体面专有键：`provider_options.glm`（如 TTS 声音复刻 `ref_audio` / `ref_text`）。
+回包：思考内容在 `message.reasoning_content`（诊断字段，不拼入正文 `content`）。媒体面专有键：`metadata`（如 TTS 声音复刻 `ref_audio` / `ref_text`）。
 
 ## Qwen / 通义百炼
 
@@ -70,7 +70,7 @@
 | 项 | 说明 |
 | --- | --- |
 | 回包特例 | DashScope 的 `usage` 是 JSON 字符串（内嵌一层），网关已兼容解析，你看到的仍是正常对象 |
-| 媒体专有键 | `provider_options.qwen`：视频 `prompt_extend`；ASR `diarization_enabled` / `disfluency_removal_enabled` / `vocabulary_id` |
+| 媒体专有键 | `metadata`：视频 `prompt_extend`；ASR `diarization_enabled` / `disfluency_removal_enabled` / `vocabulary_id` |
 | 视频参数映射 | 网关自动转换：`negative_prompt` 生效（Qwen 是支持它的视频供应商）、`size` 的 `WxH` 会转为其 `W*H` 星号形态 |
 
 ## DeepSeek
@@ -91,7 +91,7 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 视频专有键 | `provider_options.minimax`（如 `prompt_optimizer`） |
+| 视频专有键 | `metadata`（如 `prompt_optimizer`） |
 | `input_reference` | **仅接受 base64 / data URL**，http(s) URL 会被拒 |
 | TTS `speed` | 有效区间 **0.5–2.0**，越界本地 400 |
 | 回包特例 | TTS 音频为 hex 编码字符串，网关解码后你拿到的已是二进制音频 |
@@ -101,11 +101,11 @@
 | 项 | 说明 |
 | --- | --- |
 | 对话面 | OpenAI Chat 零改写直传 |
-| 视频专有键 | `provider_options.volcengine`（如 `camera_fixed`） |
+| 视频专有键 | `metadata`（如 `camera_fixed`） |
 | 视频分辨率 | `size` 的 WxH 会换算为 `resolution` + `ratio`；**ratio 必须精确命中词表**（16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9），不命中本地 400 |
 | `input_reference` | URL / base64 都可以 |
 | TTS `speed` | 有效区间 **0.2–3.0**（对应 `speed_ratio`） |
-| TTS 专有键 | `provider_options.volcengine`（如 `emotion`） |
+| TTS 专有键 | `metadata`（如 `emotion`） |
 | 回包特例 | TTS 音频为 base64（与 MiniMax 的 hex 不同，但你拿到的都是网关解码后的二进制） |
 
 ## xAI / Grok
@@ -143,6 +143,6 @@
 
 ## 接下来
 
-- 透传总规则与 provider_options 通道：《供应商参数怎么传：透传规则》
+- 透传总规则与 metadata 通道：《供应商参数怎么传：透传规则》
 - 三类协议面怎么选：《协议总览：三类协议面怎么选》
 - 模型目录与可用性：《模型列表：我能用什么模型》

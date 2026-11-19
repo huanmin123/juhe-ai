@@ -78,10 +78,10 @@ func mountGatewayRootForms(kern *kernel.Kernel, chain http.Handler) {
 	kern.Register("/images/{rest...}", v1Adapter)
 	kern.Register("/audio", v1Adapter)
 	kern.Register("/audio/{rest...}", v1Adapter)
-	// M2 视频任务面（媒体设计 §4.2）：/videos 族根形态与 /audio 同批放行，
+	// M2 视频任务面（媒体设计 §4.2）：/video 族根形态与 /audio 同批放行，
 	// 经 v1Adapter 补 /v1 前缀进链（创建走派发、任务面走账户亲和直连）。
-	kern.Register("/videos", v1Adapter)
-	kern.Register("/videos/{rest...}", v1Adapter)
+	kern.Register("/video", v1Adapter)
+	kern.Register("/video/{rest...}", v1Adapter)
 	kern.Register("/files", v1Adapter)
 	kern.Register("/files/{rest...}", v1Adapter)
 	kern.Register("/containers", v1Adapter)

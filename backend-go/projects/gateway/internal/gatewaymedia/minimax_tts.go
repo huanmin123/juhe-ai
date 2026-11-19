@@ -7,7 +7,7 @@
 // input→text、voice→voice_setting.voice_id、speed（厂商区间 0.5–2.0，
 // 公共 0.25–4.0 超区间按契约 §2.4 规则 2 本地 400）、response_format→
 // audio_setting.format（mp3/pcm/flac/wav，零转码）；厂商个例（vol/pitch/
-// 情感）经 provider_options.minimax deep-merge。响应 data.audio 是
+// 情感）经 metadata deep-merge。响应 data.audio 是
 // **hex 编码**音频字符串——本 adapter 必须 hex→bytes 解码后透传，不得把
 // hex 字符串当音频下发（契约 §8.2 加粗约束）；计量面 extra_info 的
 // usage_characters 是 TTS 字符计量的上游回报优先来源（§2.8）。
@@ -104,10 +104,10 @@ func (a minimaxSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte, er
 	if ir.Speed != nil {
 		body["voice_setting"].(map[string]any)["speed"] = *ir.Speed
 	}
-	// provider_options 命中 minimax 的子对象 deep-merge（契约 §2.1 L3，
+	// metadata 逐键 deep-merge（契约 §2.1 L3，
 	// 如 {"minimax":{"voice_setting":{"vol":2,"pitch":2}}} 覆盖/补齐厂商
 	// 个例参数）。
-	body = MergeProviderOptions(body, a.Provider(), ir.ProviderOptions)
+	body = MergeMetadata(body, ir.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", nil, fmt.Errorf("编码 minimax TTS 请求体失败: %w", err)

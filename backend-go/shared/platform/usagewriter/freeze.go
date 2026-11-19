@@ -59,6 +59,11 @@ type CostBreakdown struct {
 }
 
 // CostLineItem mirrors ProviderCostLineItem.
+//
+// Tier / BaseUnitPriceUsd / Multiplier / QuantitySource 是统一媒体模板
+// （media_unified_v1）的行项扩展（非对话媒体统一计费设计 §6.2）：历史快照
+// 读取不受影响；BaseUnitPriceUsd / Multiplier 用指针保留免费 0 价与 1.0
+// 倍率（omitempty 不能丢 0/1）。
 type CostLineItem struct {
 	Key          string  `json:"key"`
 	Kind         string  `json:"kind"`
@@ -68,6 +73,11 @@ type CostLineItem struct {
 	UnitSize     float64 `json:"unitSize"`
 	UnitPriceUsd float64 `json:"unitPriceUsd"`
 	CostUsd      float64 `json:"costUsd"`
+
+	Tier             string   `json:"tier,omitempty"`
+	BaseUnitPriceUsd *float64 `json:"baseUnitPriceUsd,omitempty"`
+	Multiplier       *float64 `json:"multiplier,omitempty"`
+	QuantitySource   string   `json:"quantitySource,omitempty"`
 }
 
 // ServiceTierPricingSource 取值（provider-billing.types.ts）。
@@ -97,6 +107,10 @@ type CatalogPricing interface {
 }
 
 // HasCostDimension mirrors hasUsageRecordCostDimension.
+//
+// 统一媒体计费维度必须纳入（设计 §6.1）：TtsInputChars / AudioInputSeconds /
+// OutputVideoSeconds / VideoCalls 任一在场都可能构成可计费用量；漏掉会让
+// 冻结路径提前返回，既不生成行项也不落 cost_usd。
 func HasCostDimension(input UsageRecordInput) bool {
 	return input.InputTokens != nil ||
 		input.OutputTokens != nil ||
@@ -107,7 +121,11 @@ func HasCostDimension(input UsageRecordInput) bool {
 		input.OutputImageTokens != nil ||
 		input.InputAudioTokens != nil ||
 		input.OutputAudioTokens != nil ||
-		input.OutputImageCount != nil
+		input.OutputImageCount != nil ||
+		input.TtsInputChars != nil ||
+		input.AudioInputSeconds != nil ||
+		input.OutputVideoSeconds != nil ||
+		input.VideoCalls != nil
 }
 
 // HasPricingSnapshotFact mirrors hasUsageRecordPricingSnapshotFact.

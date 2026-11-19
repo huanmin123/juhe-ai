@@ -1,10 +1,10 @@
 package main
 
 // M2 异步媒体任务链（媒体设计 §4.2/§7/§8、契约 §2.2/§2.4/§4.3 视频 +
-// §10.2 长转写；M3f 起任务面按 media_jobs.kind 泛化，覆盖 /v1/videos* 与
+// §10.2 长转写；M3f 起任务面按 media_jobs.kind 泛化，覆盖 /v1/video/generations* 与
 // /v1/audio/jobs* 两族端点）：
 //
-//   - 创建（POST /v1/videos 与 POST /v1/audio/jobs）：走既有派发循环（受理
+//   - 创建（POST /v1/video/generations 与 POST /v1/audio/jobs）：走既有派发循环（受理
 //     边界生效——引擎 attempt 语义原样复用，429/5xx/网络错误换候选、耗尽
 //     渲染既有契约，不新写重试）；出站报文经 gatewaymedia 注册表 adapter
 //     构造（视频表与长转写表按 kind 分离，driver 内短路分支，与 M1 gemini
@@ -51,23 +51,24 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // ---------------------------------------------------------------------------
-// 路径族判定（/videos 与 /audio/jobs 两族媒体任务路径的 chain 侧词表落点）
+// 路径族判定（/video/generations 与 /audio/jobs 两族媒体任务路径的 chain 侧词表落点）
 // ---------------------------------------------------------------------------
 
-// chainVideoRequestShape 是媒体任务族请求形态（/videos 与 /audio/jobs 共用
+// chainVideoRequestShape 是媒体任务族请求形态（/video/generations 与 /audio/jobs 共用
 // 形态词表：创建/列表/轮询/下载/取消五形态，媒体设计 §4.2 端点集——两族
 // 按 kind 区分，形态语义同构）。
 type chainVideoRequestShape int
 
 const (
 	chainVideoShapeNone    chainVideoRequestShape = iota
-	chainVideoShapeCreate                         // POST /v1/videos | POST /v1/audio/jobs
-	chainVideoShapeList                           // GET /v1/videos | GET /v1/audio/jobs
-	chainVideoShapePoll                           // GET /v1/videos/{id} | GET /v1/audio/jobs/{id}
+	chainVideoShapeCreate                         // POST /v1/video/generations | POST /v1/audio/jobs
+	chainVideoShapeList                           // GET /v1/video/generations | GET /v1/audio/jobs
+	chainVideoShapePoll                           // GET /v1/video/generations/{id} | GET /v1/audio/jobs/{id}
 	chainVideoShapeContent                        // GET .../{id}/content
 	chainVideoShapeCancel                         // DELETE .../{id}
 )
@@ -82,7 +83,7 @@ func chainMediaJobStrippedPathOf(pathAndQuery string) string {
 	return chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path)))
 }
 
-// chainMediaJobShapeUnderPrefix 判定单一任务族（collection 形如 "/videos" 或
+// chainMediaJobShapeUnderPrefix 判定单一任务族（collection 形如 "/video/generations" 或
 // "/audio/jobs"）的请求形态。第二返回值是路径上的 job id（poll/content/
 // cancel 形态非空）。
 func chainMediaJobShapeUnderPrefix(method, strippedPath, collection string) (chainVideoRequestShape, string) {
@@ -118,10 +119,10 @@ func chainMediaJobShapeUnderPrefix(method, strippedPath, collection string) (cha
 	return chainVideoShapeNone, ""
 }
 
-// chainVideoRequestShapeOf 判定 /videos 族的方法 + 路径形态（媒体设计 §4.2
-// 视频端点集；kind 恒为 video）。
+// chainVideoRequestShapeOf 判定 /video/generations 族的方法 + 路径形态（设计
+// 《对外协议面对齐 new-api 设计》§4.2：唯一视频面；kind 恒为 video）。
 func chainVideoRequestShapeOf(method, pathAndQuery string) (chainVideoRequestShape, string) {
-	return chainMediaJobShapeUnderPrefix(method, chainMediaJobStrippedPathOf(pathAndQuery), "/videos")
+	return chainMediaJobShapeUnderPrefix(method, chainMediaJobStrippedPathOf(pathAndQuery), "/video/generations")
 }
 
 // chainAudioJobRequestShapeOf 判定 /audio/jobs 族的方法 + 路径形态（媒体设计
@@ -130,7 +131,7 @@ func chainAudioJobRequestShapeOf(method, pathAndQuery string) (chainVideoRequest
 	return chainMediaJobShapeUnderPrefix(method, chainMediaJobStrippedPathOf(pathAndQuery), "/audio/jobs")
 }
 
-// chainMediaJobRequestShapeOf 判定全媒体任务族（/videos 优先，/audio/jobs
+// chainMediaJobRequestShapeOf 判定全媒体任务族（/video/generations 优先，/audio/jobs
 // 次之——两族路径不重叠）：返回形态、路径上的 job id 与任务种类（任务面
 // 按 kind 泛化的判定入口，M3f）。
 func chainMediaJobRequestShapeOf(method, pathAndQuery string) (chainVideoRequestShape, string, gatewaymedia.MediaJobKind) {
@@ -162,7 +163,7 @@ func chainIsAudioJobCreateRequest(req *gatewaypreauth.GatewayRequest) bool {
 	return shape == chainVideoShapeCreate
 }
 
-// chainIsMediaJobCreateRequest 报告请求是否任一媒体任务创建形态（/v1/videos
+// chainIsMediaJobCreateRequest 报告请求是否任一媒体任务创建形态（/v1/video/generations
 // 或 /v1/audio/jobs 的 POST；chain_v1 响应面拦截按此泛化，M3f）。
 func chainIsMediaJobCreateRequest(req *gatewaypreauth.GatewayRequest) bool {
 	return chainIsVideoCreateRequest(req) || chainIsAudioJobCreateRequest(req)
@@ -384,7 +385,7 @@ func chainVideoCreateDeterministicParamStatus(statusCode int) bool {
 }
 
 // chainMediaCreateParamErrorShortCircuit 报告失败派发输入是否命中"创建参数
-// 错误短路"：媒体异步任务 lane（LaneVideo；POST /v1/videos 与 POST
+// 错误短路"：媒体异步任务 lane（LaneVideo；POST /v1/video/generations 与 POST
 // /v1/audio/jobs 两个创建形态——M3f 起长音频任务同走 LaneVideo，媒体设计
 // §3 车道裁决；音频同步 lane 的受理凭据是 2xx 响应头到达，参数 400 属普通
 // 失败语义，不在此列）+ 确定性参数类 4xx。消费点是 chain_ports.go
@@ -444,13 +445,13 @@ func chainRebuiltUpstreamErrorResponse(response *gatewayupstream.GatewayUpstream
 // ---------------------------------------------------------------------------
 
 // chainVideoCreatePlan 是视频创建请求的解析产物：adapter 出站报文 + 归一
-// 参数（params_applied/params_ignored 回显来源）+ provider_options 生效键名
-// 摘要（provider_options_applied 回显来源，契约 §2.4 规则 4）。
+// 参数（params_applied/params_ignored 回显来源）+ metadata 生效键名摘要
+// （metadata_applied 回显来源，设计 §5.1）。
 type chainVideoCreatePlan struct {
-	adapter                gatewaymedia.VideoProviderAdapter
-	createRequest          gatewaymedia.VideoCreateOutput
-	params                 gatewaymedia.NormalizedVideoParams
-	providerOptionsApplied []string
+	adapter         gatewaymedia.VideoProviderAdapter
+	createRequest   gatewaymedia.VideoCreateOutput
+	params          gatewaymedia.NormalizedVideoParams
+	metadataApplied []string
 }
 
 // jobKind/snapshotFields/paramsApplied/paramsIgnored 实现
@@ -461,12 +462,14 @@ func (p *chainVideoCreatePlan) jobKind() gatewaymedia.MediaJobKind {
 
 func (p *chainVideoCreatePlan) snapshotFields() gatewaymedia.MediaJobRequestSnapshot {
 	return gatewaymedia.MediaJobRequestSnapshot{
-		Model:                  p.params.Model,
-		Prompt:                 p.params.Prompt,
-		Seconds:                p.params.Seconds,
-		Size:                   p.params.Size,
-		N:                      p.params.N,
-		ProviderOptionsApplied: p.providerOptionsApplied,
+		Model:           p.params.Model,
+		Prompt:          p.params.Prompt,
+		Seconds:         p.params.Seconds,
+		Size:            p.params.Size,
+		N:               p.params.N,
+		FPS:             p.params.FPS,
+		Seed:            p.params.Seed,
+		MetadataApplied: p.metadataApplied,
 	}
 }
 
@@ -476,7 +479,7 @@ func (p *chainVideoCreatePlan) paramsIgnored() []string { return p.params.Params
 // chainVideoCreatePlanOf 解析请求体并构造 adapter 出站报文。body 为 nil
 // （请求体未解析且无原始体）时返回 (nil, nil)（沿 geminiSpeechRequest 语义：
 // 由 capability/url 链路以各自错误语义拒绝）。参数能力边界错误
-// （ErrParamUnsupported / L2 形态错误 / provider_options 形态错误）在此包装为
+// （ErrParamUnsupported / L2 形态错误 / metadata 形态错误）在此包装为
 // GatewayRequestValidationError——本地 400 不换账户（媒体设计 §7、契约 §2.4
 // 规则 2），沿 dispatch 错误通路渲染 invalid_request_error；不包装会落入 503
 // "上游暂时不可用"契约，把客户端参数错误误报成上游故障
@@ -493,13 +496,13 @@ func chainVideoCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayRequ
 	if body == nil {
 		return nil, nil
 	}
-	providerOptions, err := chainVideoProviderOptionsOf(body)
+	metadata, err := chainMediaMetadataOf(body, gatewaymedia.VideoMetadataReserved)
 	if err != nil {
 		return nil, err
 	}
 	params, err := gatewaymedia.ParseVideoParams(body, adapter.Capabilities())
 	if err != nil {
-		return nil, gatewaypreauth.NewGatewayRequestValidationError(err.Error())
+		return nil, chainMediaParamValidationError(err)
 	}
 	// M4b 媒体映射（媒体设计 §9 hybrid 行）：source model → upstream model
 	// 改写出站报文；映射优先于账户 canonical 拼写（与 chat 链 modelMapping
@@ -511,21 +514,24 @@ func chainVideoCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayRequ
 		params.Model = canonical
 	}
 	createRequest, err := adapter.Create(context.Background(), gatewaymedia.VideoCreateInput{
-		Params:          params,
-		ProviderOptions: providerOptions,
+		Params:   params,
+		Metadata: metadata,
 	})
 	if err != nil {
 		return nil, gatewaypreauth.NewGatewayRequestValidationError(err.Error())
 	}
-	// 生效键名摘要与 merge 同源匹配（AppliedProviderOptionKeys 与
-	// MergeProviderOptions 共用 providerOptionKeyMatches）：回显集合恒等于
-	// 实际合并的键名集合；providerCode 取 adapter 注册键（merge 的同一入参）。
-	providerOptionsApplied := gatewaymedia.AppliedProviderOptionKeys(adapter.Provider(), providerOptions)
-	return &chainVideoCreatePlan{adapter: adapter, createRequest: createRequest, params: params, providerOptionsApplied: providerOptionsApplied}, nil
+	// 回显集合恒等于实际并入报文的键名集合（adapter 在 Create 内 MergeMetadata，
+	// 与 AppliedMetadataKeys 同源）。
+	return &chainVideoCreatePlan{
+		adapter:         adapter,
+		createRequest:   createRequest,
+		params:          params,
+		metadataApplied: gatewaymedia.AppliedMetadataKeys(metadata),
+	}, nil
 }
 
 // chainVideoMappedModel 解析账号媒体映射（M4b，媒体设计 §9 hybrid 行）：
-// POST /v1/videos 创建形态的 source model → upstream model（video_generation
+// POST /v1/video/generations 创建形态的 source model → upstream model（video_generation
 // 族，经 requestMappingSourceFamilyOf 与构造/候选过滤/记账侧同词表解析）。
 // 无映射或请求缺模型返回空串（调用方回落 canonical 拼写）。
 func chainVideoMappedModel(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) string {
@@ -546,28 +552,25 @@ func chainVideoMappedModel(req *gatewaypreauth.GatewayRequest, account gatewaydi
 	return strings.TrimSpace(mapping.UpstreamModel)
 }
 
-// chainVideoProviderOptionsOf 从已解析请求体提取 L3 扩展通道（契约 §2.1）：
-// 经 ExtractProviderOptions 做形态校验（子值必须为对象），再投影为对象形态
-// （键=provider_code，VideoCreateInput/AudioJobCreateInput.ProviderOptions 共用
-// 消费面——M3f 起长音频任务同走本通道）。
-func chainVideoProviderOptionsOf(body map[string]any) (map[string]any, error) {
-	raw, present := body[gatewaymedia.ProviderOptionsKey]
-	if !present || raw == nil {
-		return nil, nil
-	}
-	encoded, err := json.Marshal(raw)
+// chainMediaMetadataOf 从已解析请求体提取唯一扩展通道 metadata（设计
+// §5.1）：形态校验 + 规范字段冲突 400，媒体创建面（视频/语音/长音频）共用。
+func chainMediaMetadataOf(body map[string]any, reserved map[string]struct{}) (map[string]any, error) {
+	metadata, err := gatewaymedia.ExtractMetadata(body[gatewaymedia.MetadataKey], reserved)
 	if err != nil {
-		return nil, gatewaypreauth.NewGatewayRequestValidationError("provider_options 必须是 JSON 对象")
+		return nil, chainMediaParamValidationError(err)
 	}
-	extracted, err := gatewaymedia.ExtractProviderOptions(encoded)
-	if err != nil {
-		return nil, gatewaypreauth.NewGatewayRequestValidationError(err.Error())
+	return metadata, nil
+}
+
+// chainMediaParamValidationError 把媒体创建参数错误包装为本地 400（不换账户）：
+// metadata 覆盖规范字段走专用码 metadata_conflict，其余按统一
+// invalid_gateway_request。
+func chainMediaParamValidationError(err error) error {
+	if errors.Is(err, gatewaymedia.ErrMetadataReservedField) {
+		return gatewaypreauth.NewGatewayRequestValidationError(err.Error(),
+			gatewaypreauth.WithValidationErrorCode("metadata_conflict"))
 	}
-	out := make(map[string]any, len(extracted))
-	for key, value := range extracted {
-		out[key] = value
-	}
-	return out, nil
+	return gatewaypreauth.NewGatewayRequestValidationError(err.Error())
 }
 
 // ---------------------------------------------------------------------------
@@ -575,13 +578,13 @@ func chainVideoProviderOptionsOf(body map[string]any) (map[string]any, error) {
 // ---------------------------------------------------------------------------
 
 // chainAudioJobCreatePlan 是长音频任务创建请求的解析产物（结构与
-// chainVideoCreatePlan 同构：adapter 出站报文 + 归一参数 + provider_options
-// 生效键名摘要）。
+// chainVideoCreatePlan 同构：adapter 出站报文 + 归一参数 + metadata 生效
+// 键名摘要）。
 type chainAudioJobCreatePlan struct {
-	adapter                gatewaymedia.AudioJobProviderAdapter
-	createRequest          gatewaymedia.AudioJobCreateOutput
-	params                 gatewaymedia.NormalizedAudioJobParams
-	providerOptionsApplied []string
+	adapter         gatewaymedia.AudioJobProviderAdapter
+	createRequest   gatewaymedia.AudioJobCreateOutput
+	params          gatewaymedia.NormalizedAudioJobParams
+	metadataApplied []string
 }
 
 // jobKind/snapshotFields/paramsApplied/paramsIgnored 实现
@@ -592,9 +595,9 @@ func (p *chainAudioJobCreatePlan) jobKind() gatewaymedia.MediaJobKind {
 
 func (p *chainAudioJobCreatePlan) snapshotFields() gatewaymedia.MediaJobRequestSnapshot {
 	return gatewaymedia.MediaJobRequestSnapshot{
-		Model:                  p.params.Model,
-		Language:               p.params.Language,
-		ProviderOptionsApplied: p.providerOptionsApplied,
+		Model:           p.params.Model,
+		Language:        p.params.Language,
+		MetadataApplied: p.metadataApplied,
 	}
 }
 
@@ -617,30 +620,29 @@ func chainAudioJobCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayR
 	if body == nil {
 		return nil, gatewaypreauth.NewGatewayRequestValidationError("长音频任务请求体必须是 JSON 对象（唯一输入形态 input_url 公网音频 URL，不支持 multipart 文件输入）")
 	}
-	providerOptions, err := chainVideoProviderOptionsOf(body)
+	metadata, err := chainMediaMetadataOf(body, gatewaymedia.AudioJobMetadataReserved)
 	if err != nil {
 		return nil, err
 	}
 	params, err := gatewaymedia.ParseAudioJobParams(body, adapter.Capabilities())
 	if err != nil {
-		return nil, gatewaypreauth.NewGatewayRequestValidationError(err.Error())
+		return nil, chainMediaParamValidationError(err)
 	}
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		params.Model = canonical
 	}
 	createRequest, err := adapter.Create(context.Background(), gatewaymedia.AudioJobCreateInput{
-		Params:          params,
-		ProviderOptions: providerOptions,
+		Params:   params,
+		Metadata: metadata,
 	})
 	if err != nil {
 		return nil, gatewaypreauth.NewGatewayRequestValidationError(err.Error())
 	}
-	providerOptionsApplied := gatewaymedia.AppliedProviderOptionKeys(adapter.Provider(), providerOptions)
 	return &chainAudioJobCreatePlan{
-		adapter:                adapter,
-		createRequest:          createRequest,
-		params:                 params,
-		providerOptionsApplied: providerOptionsApplied,
+		adapter:         adapter,
+		createRequest:   createRequest,
+		params:          params,
+		metadataApplied: gatewaymedia.AppliedMetadataKeys(metadata),
 	}, nil
 }
 
@@ -667,65 +669,161 @@ func chainMediaJobCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayR
 // 对外 job 对象（契约 §4.3 + §2.4 规则 5 固定回显字段）
 // ---------------------------------------------------------------------------
 
-// chainVideoJobObject 是统一 job 对象（创建/轮询/列表共用渲染）。
-// params_applied/params_ignored/provider/provider_job_id 固定携带（契约
-// §2.4 规则 5、设计 §6 便于排查）；provider_options_applied 回显 L3 命中
-// 子对象键名摘要（契约 §2.4 规则 4，创建时冻结，空数组 = 未使用扩展通道）；
-// progress/seconds_length 等按可得性回显（media_jobs 不持久化 progress，
-// 轮询响应取上游即时值，列表/终态行省略）。
+// chainVideoJobObject 是唯一视频面（/v1/video/generations）的 job 对象
+// （创建/轮询/列表共用渲染，设计 §4.2.2/§4.2.3）：task_id/status/url/format/
+// metadata/error 为 new-api 文档契约字段；provider/provider_job_id/
+// params_applied/params_ignored/metadata_applied 为网关诊断加法字段。
+// progress 仅在轮询即时可得时回显（media_jobs 不持久化 progress）。
 type chainVideoJobObject struct {
-	ID                     string                      `json:"id"`
-	Object                 string                      `json:"object"`
-	Status                 string                      `json:"status"`
-	Progress               *int                        `json:"progress,omitempty"`
-	Model                  string                      `json:"model,omitempty"`
-	Prompt                 string                      `json:"prompt,omitempty"`
-	SecondsLength          *int                        `json:"seconds_length,omitempty"`
-	Size                   string                      `json:"size,omitempty"`
-	Error                  *gatewaymedia.MediaJobError `json:"error,omitempty"`
-	Provider               string                      `json:"provider"`
-	ProviderJobID          string                      `json:"provider_job_id"`
-	ParamsApplied          []string                    `json:"params_applied"`
-	ParamsIgnored          []string                    `json:"params_ignored"`
-	ProviderOptionsApplied []string                    `json:"provider_options_applied"`
+	TaskID          string                      `json:"task_id"`
+	Status          string                      `json:"status"`
+	URL             string                      `json:"url,omitempty"`
+	Format          string                      `json:"format,omitempty"`
+	Metadata        *chainVideoJobMetadata      `json:"metadata,omitempty"`
+	Model           string                      `json:"model,omitempty"`
+	Progress        *int                        `json:"progress,omitempty"`
+	Error           *gatewaymedia.MediaJobError `json:"error,omitempty"`
+	CreatedAt       int64                       `json:"created_at,omitempty"`
+	CompletedAt     int64                       `json:"completed_at,omitempty"`
+	Provider        string                      `json:"provider"`
+	ProviderJobID   string                      `json:"provider_job_id"`
+	ParamsApplied   []string                    `json:"params_applied"`
+	ParamsIgnored   []string                    `json:"params_ignored"`
+	MetadataApplied []string                    `json:"metadata_applied"`
 }
 
-// chainVideoJobObjectOf 由行 + 即时状态渲染 job 对象。liveStatus/liveProgress
-// 为空/nil 时回落行内状态（列表与终态 GET）。
-func chainVideoJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatewaymedia.MediaJobStatus, liveProgress *int) chainVideoJobObject {
+// chainVideoJobMetadata 是响应侧视频元数据（设计 §4.2.3：与请求侧扩展包
+// 同名不同义）。duration 优先取终态实测秒，无实测回落请求生效值；fps/
+// width/height/seed 取创建时冻结的请求快照。
+type chainVideoJobMetadata struct {
+	Duration float64 `json:"duration,omitempty"`
+	FPS      int     `json:"fps,omitempty"`
+	Width    int     `json:"width,omitempty"`
+	Height   int     `json:"height,omitempty"`
+	Seed     *int64  `json:"seed,omitempty"`
+}
+
+// chainVideoJobObjectOf 由行 + 即时状态渲染 job 对象。contentURL 为空时不输出
+// url（创建响应、非终态、产物缺失）；liveStatus/liveProgress 为空/nil 时回落
+// 行内状态（列表与终态 GET）。
+func chainVideoJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatewaymedia.MediaJobStatus, liveProgress *int, contentURL string) chainVideoJobObject {
 	status := record.Status
 	if liveStatus != "" {
 		status = liveStatus
 	}
 	object := chainVideoJobObject{
-		ID:                     record.ID,
-		Object:                 "video",
-		Status:                 string(status),
-		Progress:               liveProgress,
-		Model:                  record.RequestSnapshot.Model,
-		Prompt:                 record.RequestSnapshot.Prompt,
-		Size:                   record.RequestSnapshot.Size,
-		Error:                  record.Error,
-		Provider:               record.VendorCode,
-		ProviderJobID:          record.UpstreamJobID,
-		ParamsApplied:          record.ParamsApplied,
-		ParamsIgnored:          record.ParamsIgnored,
-		ProviderOptionsApplied: record.RequestSnapshot.ProviderOptionsApplied,
+		TaskID:          record.ID,
+		Status:          string(status),
+		Model:           record.RequestSnapshot.Model,
+		Progress:        liveProgress,
+		Error:           record.Error,
+		Provider:        record.VendorCode,
+		ProviderJobID:   record.UpstreamJobID,
+		ParamsApplied:   record.ParamsApplied,
+		ParamsIgnored:   record.ParamsIgnored,
+		MetadataApplied: record.RequestSnapshot.MetadataApplied,
 	}
-	if record.RequestSnapshot.Seconds != nil {
-		seconds := int(*record.RequestSnapshot.Seconds)
-		object.SecondsLength = &seconds
+	if !record.CreatedAt.IsZero() {
+		object.CreatedAt = record.CreatedAt.Unix()
 	}
+	if status == gatewaymedia.JobStatusCompleted {
+		if contentURL != "" {
+			object.URL = contentURL
+			object.Format = chainMediaJobFormatOf(record)
+		}
+		if !record.UpdatedAt.IsZero() {
+			object.CompletedAt = record.UpdatedAt.Unix()
+		}
+	}
+	object.Metadata = chainVideoJobMetadataOf(record)
 	if object.ParamsApplied == nil {
 		object.ParamsApplied = []string{}
 	}
 	if object.ParamsIgnored == nil {
 		object.ParamsIgnored = []string{}
 	}
-	if object.ProviderOptionsApplied == nil {
-		object.ProviderOptionsApplied = []string{}
+	if object.MetadataApplied == nil {
+		object.MetadataApplied = []string{}
 	}
 	return object
+}
+
+// chainVideoJobMetadataOf 组装响应侧元数据：字段全缺时返回 nil（省略整个
+// 对象）。duration 取终态实测秒优先，否则用请求秒；宽高从生效 size 拆解，
+// fps/seed 取快照。
+func chainVideoJobMetadataOf(record *gatewaymedia.MediaJobRecord) *chainVideoJobMetadata {
+	metadata := chainVideoJobMetadata{}
+	if record.Usage.OutputVideoSeconds != nil {
+		metadata.Duration = *record.Usage.OutputVideoSeconds
+	} else if record.RequestSnapshot.Seconds != nil {
+		metadata.Duration = *record.RequestSnapshot.Seconds
+	}
+	if record.RequestSnapshot.FPS != nil {
+		metadata.FPS = *record.RequestSnapshot.FPS
+	}
+	if width, height, ok := chainMediaJobSizeOf(record.RequestSnapshot.Size); ok {
+		metadata.Width = width
+		metadata.Height = height
+	}
+	metadata.Seed = record.RequestSnapshot.Seed
+	if metadata.Duration == 0 && metadata.FPS == 0 && metadata.Width == 0 && metadata.Height == 0 && metadata.Seed == nil {
+		return nil
+	}
+	return &metadata
+}
+
+// chainMediaJobSizeOf 拆解 "WxH" 像素串（归一层已校验形态；拆解失败返回
+// false，不伪造宽高）。解析口径与请求 size 计量共享 mediapricing.ParseSize。
+func chainMediaJobSizeOf(size string) (int, int, bool) {
+	return mediapricing.ParseSize(size)
+}
+
+// chainMediaJobFormatOf 取产物扩展名（设计 §4.2.3：无法判定时 mp4）。
+func chainMediaJobFormatOf(record *gatewaymedia.MediaJobRecord) string {
+	path := record.Artifact.ContentURL
+	if index := strings.IndexAny(path, "?#"); index >= 0 {
+		path = path[:index]
+	}
+	if dot := strings.LastIndex(path, "."); dot >= 0 && dot < len(path)-1 {
+		suffix := strings.ToLower(path[dot+1:])
+		if len(suffix) <= 5 && suffix != "" {
+			return suffix
+		}
+	}
+	return "mp4"
+}
+
+// chainMediaJobContentURL 构造对外产物下载绝对地址（设计 §4.2.4）：scheme 取
+// X-Forwarded-Proto 首值，缺省按请求 TLS；host 取 X-Forwarded-Host/Host。
+// 反代未透传时回落相对路径（客户端可自行拼 base）。
+func chainMediaJobContentURL(req *gatewaypreauth.GatewayRequest, jobID string) string {
+	relative := "/v1/video/generations/" + jobID + "/content"
+	if req == nil || req.HTTP == nil {
+		return relative
+	}
+	scheme := ""
+	if value := strings.TrimSpace(req.HTTP.Header.Get("X-Forwarded-Proto")); value != "" {
+		if index := strings.Index(value, ","); index >= 0 {
+			value = value[:index]
+		}
+		scheme = strings.ToLower(strings.TrimSpace(value))
+	} else if req.HTTP.TLS != nil {
+		scheme = "https"
+	} else {
+		scheme = "http"
+	}
+	host := strings.TrimSpace(req.HTTP.Header.Get("X-Forwarded-Host"))
+	if index := strings.Index(host, ","); index >= 0 {
+		host = host[:index]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = strings.TrimSpace(req.HTTP.Host)
+	}
+	if host == "" {
+		return relative
+	}
+	return scheme + "://" + host + relative
 }
 
 // chainAudioJobObject 是长音频任务（kind=audio_transcription）的统一 job
@@ -734,18 +832,18 @@ func chainVideoJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatew
 // 5、设计 §6）；progress 按可得性回显（media_jobs 不持久化 progress，轮询
 // 响应取上游即时值）。
 type chainAudioJobObject struct {
-	ID                     string                      `json:"id"`
-	Object                 string                      `json:"object"`
-	Status                 string                      `json:"status"`
-	Progress               *int                        `json:"progress,omitempty"`
-	Model                  string                      `json:"model,omitempty"`
-	Language               string                      `json:"language,omitempty"`
-	Error                  *gatewaymedia.MediaJobError `json:"error,omitempty"`
-	Provider               string                      `json:"provider"`
-	ProviderJobID          string                      `json:"provider_job_id"`
-	ParamsApplied          []string                    `json:"params_applied"`
-	ParamsIgnored          []string                    `json:"params_ignored"`
-	ProviderOptionsApplied []string                    `json:"provider_options_applied"`
+	ID              string                      `json:"id"`
+	Object          string                      `json:"object"`
+	Status          string                      `json:"status"`
+	Progress        *int                        `json:"progress,omitempty"`
+	Model           string                      `json:"model,omitempty"`
+	Language        string                      `json:"language,omitempty"`
+	Error           *gatewaymedia.MediaJobError `json:"error,omitempty"`
+	Provider        string                      `json:"provider"`
+	ProviderJobID   string                      `json:"provider_job_id"`
+	ParamsApplied   []string                    `json:"params_applied"`
+	ParamsIgnored   []string                    `json:"params_ignored"`
+	MetadataApplied []string                    `json:"metadata_applied"`
 }
 
 // chainAudioJobObjectOf 由行 + 即时状态渲染长音频 job 对象。
@@ -755,18 +853,18 @@ func chainAudioJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatew
 		status = liveStatus
 	}
 	object := chainAudioJobObject{
-		ID:                     record.ID,
-		Object:                 "audio_job",
-		Status:                 string(status),
-		Progress:               liveProgress,
-		Model:                  record.RequestSnapshot.Model,
-		Language:               record.RequestSnapshot.Language,
-		Error:                  record.Error,
-		Provider:               record.VendorCode,
-		ProviderJobID:          record.UpstreamJobID,
-		ParamsApplied:          record.ParamsApplied,
-		ParamsIgnored:          record.ParamsIgnored,
-		ProviderOptionsApplied: record.RequestSnapshot.ProviderOptionsApplied,
+		ID:              record.ID,
+		Object:          "audio_job",
+		Status:          string(status),
+		Progress:        liveProgress,
+		Model:           record.RequestSnapshot.Model,
+		Language:        record.RequestSnapshot.Language,
+		Error:           record.Error,
+		Provider:        record.VendorCode,
+		ProviderJobID:   record.UpstreamJobID,
+		ParamsApplied:   record.ParamsApplied,
+		ParamsIgnored:   record.ParamsIgnored,
+		MetadataApplied: record.RequestSnapshot.MetadataApplied,
 	}
 	if object.ParamsApplied == nil {
 		object.ParamsApplied = []string{}
@@ -774,19 +872,19 @@ func chainAudioJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatew
 	if object.ParamsIgnored == nil {
 		object.ParamsIgnored = []string{}
 	}
-	if object.ProviderOptionsApplied == nil {
-		object.ProviderOptionsApplied = []string{}
+	if object.MetadataApplied == nil {
+		object.MetadataApplied = []string{}
 	}
 	return object
 }
 
 // chainMediaJobObjectOf 按行内 kind 渲染对应族 job 对象（任务面列表/轮询/
 // 创建响应共用，M3f 泛化入口）。
-func chainMediaJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatewaymedia.MediaJobStatus, liveProgress *int) any {
+func chainMediaJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatewaymedia.MediaJobStatus, liveProgress *int, contentURL string) any {
 	if record.Kind == gatewaymedia.JobKindAudioTranscription {
 		return chainAudioJobObjectOf(record, liveStatus, liveProgress)
 	}
-	return chainVideoJobObjectOf(record, liveStatus, liveProgress)
+	return chainVideoJobObjectOf(record, liveStatus, liveProgress, contentURL)
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,7 +1237,7 @@ func (m *mediaJobsRuntime) markMediaAccountActiveAfterJobSuccess(ctx context.Con
 // 超限即上游协议异常，不落表）。
 const maxMediaJobObjectBytes = 1 << 20
 
-// handleMediaJobCreateUpstreamResponse 处理媒体任务创建（POST /v1/videos 与
+// handleMediaJobCreateUpstreamResponse 处理媒体任务创建（POST /v1/video/generations 与
 // POST /v1/audio/jobs）的上游 2xx 响应（chain_v1.go handleUpstreamResponse 的
 // 媒体短路分支，按 kind 泛化——M3f）：ParsePollResponse 归一创建响应（视频
 // 契约 §4.3 创建响应即 video 对象；长音频契约 §10.2 创建响应即任务对象），
@@ -1251,25 +1349,55 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		ParamsApplied:        plan.paramsApplied(),
 		ParamsIgnored:        plan.paramsIgnored(),
 	}
+	// 创建时冻结统一媒体价格模板与生效档位（AC-018）：终态按快照结算，
+	// 不受中途改价影响。目录无模板时保持 nil，终态走 legacy。
+	c.freezeMediaJobPricing(ctx, req, dispatched.Account, &record)
+	accountView := &chainMediaJobAccount{
+		ID:                        dispatched.Account.ID,
+		OwnerSystemAccountID:      dispatched.Account.AccountOwnerSystemAccountID,
+		ProviderCode:              dispatched.Account.VendorCode,
+		ProviderProtocolProfileID: dispatched.Account.ProviderProtocolProfileID,
+		ProtocolCode:              dispatched.Account.ProtocolCode,
+		ProtocolVersion:           dispatched.Account.ProtocolVersion,
+	}
+	// 创建响应即 completed（设计 §14.4 #2）：落库前先走与轮询终态相同的
+	// 结算函数，cost/usage 随 INSERT 一次写入，随后只入队一次 usage。
+	var settlement chainMediaJobSettlement
+	if ir.Status == gatewaymedia.JobStatusCompleted {
+		record.Usage = ir.Usage
+		settlement = c.chainMediaJobTerminalSettlement(ctx, accountView, &record, ir)
+		// P4 产物探测成功时结算会回填 ir.Usage.OutputVideoSeconds；落库
+		// usage JSON 必须与结算使用同一份终态计量。
+		record.Usage = ir.Usage
+		record.CostUsd = settlement.costUSD
+	}
 	if insertErr := c.mediaJobs.repo.Insert(ctx, record); insertErr != nil {
 		// 受理凭据已确立但本地行落库失败：任务已在上游存在，客户端拿到错误
 		// 后重试会创建新任务；保留原始错误供排查（不静默降级为成功）。
 		slog.Error("媒体任务受理后落库失败",
 			"event", "media_job_insert_failed", "traceId", context.UsageContext.TraceID,
 			"accountId", dispatched.Account.ID, "upstreamJobId", ir.UpstreamJobID,
+			"model", record.RequestSnapshot.Model,
+			"requestSnapshotHash", chainMediaJobRequestSnapshotHash(record.RequestSnapshot),
 			"error", insertErr.Error())
 		c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeGatewayFailed, false, http.StatusInternalServerError, nil, "", gatewaypreauth.AuditPartGatewayError, "gateway_response", "internal_error", jobLabel+"任务受理后落库失败")
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, jobLabel+"任务受理后落库失败", "internal_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
-	object := chainMediaJobObjectOf(&record, ir.Status, ir.Progress)
+	if ir.Status == gatewaymedia.JobStatusCompleted {
+		c.enqueueMediaJobTerminalUsage(ctx, context.UsageContext.TraceID, apiKeyOwnerSystemAccountIDOf(req), req.SuppressUsage, &record, accountView, ir, settlement)
+		if record.Kind == gatewaymedia.JobKindVideo && c.mediaJobs != nil {
+			c.mediaJobs.markMediaAccountActiveAfterJobSuccess(ctx, record.AccountID)
+		}
+	}
+	object := chainMediaJobObjectOf(&record, ir.Status, ir.Progress, chainMediaJobContentURL(req, record.ID))
 	responseBody, _ := json.Marshal(object)
 	c.writeMediaVideoJSON(res, http.StatusOK, object)
 	c.finalizeMediaAudit(auditCapture, gatewaypreauth.AuditOutcomeSuccess, true, http.StatusOK, responseHeadersOf(upstream), string(responseBody), gatewaypreauth.AuditPartGatewayResponse, "", "", "")
 	return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, ProtocolValidatedSuccess: true}
 }
 
-// handleVideoCreateUpstreamErrorPassthrough 处理媒体任务创建（/v1/videos 与
+// handleVideoCreateUpstreamErrorPassthrough 处理媒体任务创建（/v1/video/generations 与
 // /v1/audio/jobs）参数类 4xx 的短路透传（chain_v1.go handleUpstreamResponse
 // 的媒体错误分支）：失败派发器对媒体任务 lane（LaneVideo）的 400/413/422
 // 已短路为 ReturnResponse（媒体设计 §7：确定性参数错误不换账户），错误状态
@@ -1433,7 +1561,7 @@ func mediaJobOwnershipOf(req *gatewaypreauth.GatewayRequest) mediaJobOwnership {
 }
 
 // serveMediaJobTaskPlane 处理任务面请求（chain_v1.go 入口短路分支：preauth
-// 认证完成之后、派发预检之前；M3f 起按 kind 泛化覆盖 /v1/videos* 与
+// 认证完成之后、派发预检之前；M3f 起按 kind 泛化覆盖 /v1/video/generations* 与
 // /v1/audio/jobs* 两族）。任务面是网关本地应答（不发起上游账户尝试），按
 // 2026-10-16 审计收录范围收窄不再落审计；链入口 defer 的 CancelAuditCapture
 // 对未 Finalize 的捕获兜底。
@@ -1548,7 +1676,7 @@ func chainMediaJobAccountPollEligible(account *chainMediaJobAccount, record *gat
 	return cooldown <= now.UnixMilli()
 }
 
-// serveMediaJobList GET /v1/videos 与 GET /v1/audio/jobs：本地行列表（按归属
+// serveMediaJobList GET /v1/video/generations 与 GET /v1/audio/jobs：本地行列表（按归属
 // + kind 倒序过滤，两族互不混行），不经上游（媒体设计 §8.2：不为闲置任务
 // 消耗上游配额）。归属键按 ownership 分流：内部通道按系统账户（owner 列），
 // 外部请求按 API Key（Key 级隔离不变）。
@@ -1569,7 +1697,7 @@ func (c *gatewayChain) serveMediaJobList(ctx context.Context, res *gatewaypreaut
 	}
 	data := make([]any, 0, len(records))
 	for _, record := range records {
-		data = append(data, chainMediaJobObjectOf(record, "", nil))
+		data = append(data, chainMediaJobObjectOf(record, "", nil, chainMediaJobContentURL(req, record.ID)))
 	}
 	c.writeMediaVideoJSON(res, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
@@ -1597,7 +1725,7 @@ func chainMediaJobLabelOf(record *gatewaymedia.MediaJobRecord) string {
 	return "视频"
 }
 
-// serveMediaJobPoll GET /v1/videos/{id} 与 GET /v1/audio/jobs/{id}：终态行
+// serveMediaJobPoll GET /v1/video/generations/{id} 与 GET /v1/audio/jobs/{id}：终态行
 // 直接回本地对象（终态后不再被轮询推进，mediajobir Terminal 语义）；非终态行
 // 账户亲和转发（adapter 按行内 kind 解析），响应归一后推进本地状态，
 // completed/failed 终态触发 usage spool 回填。
@@ -1607,7 +1735,7 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		return
 	}
 	if record.Status.Terminal() {
-		c.writeMediaVideoJSON(res, http.StatusOK, chainMediaJobObjectOf(record, "", nil))
+		c.writeMediaVideoJSON(res, http.StatusOK, chainMediaJobObjectOf(record, "", nil, chainMediaJobContentURL(req, record.ID)))
 		return
 	}
 	account := c.loadMediaVideoAccount(ctx, res, req, record)
@@ -1632,7 +1760,7 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 			if statusErr.StatusCode == http.StatusNotFound {
 				// 契约 §2.6：上游 404 查询且本地非终态 → 保持本地状态直至
 				// TTL 过期（不得伪造终态）；回显本地对象。
-				c.writeMediaVideoJSON(res, http.StatusOK, chainMediaJobObjectOf(record, "", nil))
+				c.writeMediaVideoJSON(res, http.StatusOK, chainMediaJobObjectOf(record, "", nil, chainMediaJobContentURL(req, record.ID)))
 				return
 			}
 			c.renderMediaVideoLocalError(res, req, http.StatusBadGateway,
@@ -1652,13 +1780,19 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		}
 	}
 	if ir.Status.Terminal() {
-		// 终态计费（媒体设计 §10：任务终态由轮询响应驱动回填）：completed 按
-		// 静态目录价估成本——视频先按次（目录行有按次价 → PerCall × 1），再
-		// 按秒计量（上游回报优先、无回报按生效请求 seconds 自算）× 秒价；长
-		// 音频 AudioInputSeconds × 秒价（契约 §2.8 网关自算口径 + 按次计费），
-		// 失败/无计量依据（usage_missing）不虚计；成本随终态一次落行。
-		costUsd := chainMediaJobTerminalCostUsd(account, record, ir)
-		updated, updateErr := c.mediaJobs.repo.UpdateTerminal(ctx, record.ID, ir.Status, ir.Error, ir.Artifact, ir.Usage, costUsd)
+		// 终态计费（媒体设计 §10 + 非对话媒体统一计费设计 §6.1）：统一媒体
+		// 模板优先，按创建时冻结价算出 CostBreakdown 与 cost_usd；无模板的
+		// legacy 行保持原静态目录按次/秒价口径。失败/无计量依据不虚计。
+		settlement := c.chainMediaJobTerminalSettlement(ctx, account, record, ir)
+		if settlement.media && record.RequestSnapshot.MediaPricing == nil {
+			// 历史在途任务无价格快照：回退当前目录价，留可定位日志（设计
+			// §7.1），不阻断结算。
+			c.observability.Logger().Warn("media_pricing_snapshot_missing", map[string]any{
+				"event": "media_pricing_snapshot_missing", "jobId": record.ID,
+				"accountId": record.AccountID, "model": record.RequestSnapshot.Model,
+			}, "媒体任务缺少创建时价格快照，按当前目录价结算")
+		}
+		updated, updateErr := c.mediaJobs.repo.UpdateTerminal(ctx, record.ID, ir.Status, ir.Error, ir.Artifact, ir.Usage, settlement.costUSD)
 		if updateErr != nil {
 			c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "回填媒体任务终态失败", "internal_error")
 			return
@@ -1668,8 +1802,9 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		// 终态——终态只入队一次（否则同 job 产生两条 usage 行/双份计费）。
 		// 行内终态已是事实，本响应照常回显终态对象。
 		if updated == 1 {
-			record.CostUsd = costUsd
-			c.enqueueMediaJobTerminalUsage(ctx, traceID, apiKeyOwnerSystemAccountIDOf(req), req.SuppressUsage, record, account, ir, costUsd)
+			record.CostUsd = settlement.costUSD
+			record.Usage = ir.Usage
+			c.enqueueMediaJobTerminalUsage(ctx, traceID, apiKeyOwnerSystemAccountIDOf(req), req.SuppressUsage, record, account, ir, settlement)
 			// 成功回写臂（媒体账户生命周期定案表）：视频任务 completed 是视频
 			// 域账户的真实上游成功观测，CAS 把滞留 pending_test/冷却态搬回
 			// active（失败静默容忍，方法内留日志）。挂在 updated==1 之后：
@@ -1690,10 +1825,10 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 	if ir.Error != nil {
 		record.Error = ir.Error
 	}
-	c.writeMediaVideoJSON(res, http.StatusOK, chainMediaJobObjectOf(record, ir.Status, ir.Progress))
+	c.writeMediaVideoJSON(res, http.StatusOK, chainMediaJobObjectOf(record, ir.Status, ir.Progress, chainMediaJobContentURL(req, record.ID)))
 }
 
-// serveMediaJobContent GET /v1/videos/{id}/content 与 GET /v1/audio/jobs/{id}/
+// serveMediaJobContent GET /v1/video/generations/{id}/content 与 GET /v1/audio/jobs/{id}/
 // content：completed 才可下载；上游产物 http 流式转发（io.Copy 零缓冲落盘，
 // content-type 透传——媒体设计 §8.1.2 纯流式透传代理；长音频产物是转写
 // 结果 JSON 文件，契约 §10.2）。下载定位按 adapter 声明二分：openai 族由
@@ -1766,7 +1901,7 @@ func (c *gatewayChain) serveMediaJobContent(ctx context.Context, res *gatewaypre
 	}
 }
 
-// serveMediaJobCancel DELETE /v1/videos/{id} 与 DELETE /v1/audio/jobs/{id}：
+// serveMediaJobCancel DELETE /v1/video/generations/{id} 与 DELETE /v1/audio/jobs/{id}：
 // 转发上游取消；上游 2xx、404（任务已被上游删除）或 405（上游不暴露取消
 // 方法——M3 gemini 裁决：operations :cancel 不被支持时本地收敛 cancelled，
 // 不把能力缺口透传成客户端错误）均置本地 cancelled，回 204。上游其他失败
@@ -2055,9 +2190,9 @@ func chainMediaJobVideoUsageSecondsOf(record *gatewaymedia.MediaJobRecord, ir *g
 // chainMediaJobTerminalCostUsd 计算终态成本（媒体设计 §10；契约 §2.8 网关
 // 自算口径，M3f 起按 kind 分维度；2026-10-05 按次计费 + 请求参数自算批）。
 // completed 才计费，视频行按三级顺序裁决：
-//  1. 按次计费（目录行有 VideoOutputCostPerCall）：成本 = PerCall × 1（一次
-//     任务 = 一次调用），不依赖秒计量（cogvideox/Hailuo 等按次上游，契约
-//     §2.8 按次计费）；
+//  1. 按次计费（目录行 unit=call / legacy VideoOutputCostPerCall）：成本 =
+//     PerCall × 1（一次任务 = 一次调用），不依赖秒计量（seed3d 等按次上游；
+//     Hailuo 在 P3 迁移后已按秒，契约 §2.8 按次计费）；
 //  2. 秒计量计费：上游轮询回报优先，无回报时按创建请求 seconds 自算
 //     （seconds 须生效——ignored 不构成计量基源），秒数 × 目录秒价；
 //  3. 两者都缺 → 0（usage_missing，不猜测）。
@@ -2132,11 +2267,11 @@ func accountProviderCodeForPricing(account *chainMediaJobAccount) string {
 // Key 直调）的抑制标记：置位时记录仍入队，由持久化唯一闸口
 // （gatewayusage.FinalizationDispatch.DispatchUsageRecord 入口，覆盖正常
 // 入队与溢出 spool 两臂）丢弃——不落 usage_records、不写 spool。
-func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID, apiKeyOwnerSystemAccountID string, suppressUsage bool, record *gatewaymedia.MediaJobRecord, account *chainMediaJobAccount, ir *gatewaymedia.MediaJobIR, costUsd float64) {
+func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID, apiKeyOwnerSystemAccountID string, suppressUsage bool, record *gatewaymedia.MediaJobRecord, account *chainMediaJobAccount, ir *gatewaymedia.MediaJobIR, settlement chainMediaJobSettlement) {
 	if c.finalizationUsage == nil || (ir.Status != gatewaymedia.JobStatusCompleted && ir.Status != gatewaymedia.JobStatusFailed) {
 		return
 	}
-	endpoint := "/v1/videos"
+	endpoint := "/v1/video/generations"
 	if record.Kind == gatewaymedia.JobKindAudioTranscription {
 		endpoint = "/v1/audio/jobs"
 	}
@@ -2183,27 +2318,35 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 	input.GroupAuthorizationSourceType = snapshot.GroupAuthorizationSourceType
 	input.GroupAuthorizationSourceTeamID = snapshot.GroupAuthorizationSourceTeamID
 	if ir.Status == gatewaymedia.JobStatusCompleted {
-		if record.Kind == gatewaymedia.JobKindAudioTranscription {
-			if ir.Usage.AudioInputSeconds != nil {
-				input.AudioInputSeconds = ir.Usage.AudioInputSeconds
-			} else {
-				input.UsageMissing = true
-			}
-		} else if chainMediaJobVideoPerCallCostUsd(account, record) > 0 {
-			// 按次计费行（契约 §2.8 按次上游，2026-10-05 按次计费批）：一次
-			// 任务 = 一次调用，成本已随 CostUsd 落行；usage 行不落秒计量
-			//（按次上游无秒计量概念），也不打 usage_missing——计量与计费依据
-			// 都是目录按次价 × 任务粒度。
-		} else if seconds := chainMediaJobVideoUsageSecondsOf(record, ir); seconds != nil {
-			// 上游回报优先；无回报时为创建请求参数自算（usage_source=request
-			// 语义，见 chainMediaJobVideoUsageSecondsOf）。usage_records/IR 无
-			// 计量来源字段，来源以注释与链级测试钉住，不加 schema 列。
-			input.OutputVideoSeconds = seconds
-		} else {
+		// 统一媒体模板路径（design §6.1）：计量维度/来源与成本由终态结算一次
+		// 算好，usage 行携带完整 CostBreakdown 快照（AC-018），不让
+		// usagepricing 按当前目录重算。legacy 路径保持原维度判定。
+		switch settlement.dimension {
+		case chainMediaJobDimensionAudioSeconds:
+			seconds := settlement.quantity
+			input.AudioInputSeconds = &seconds
+		case chainMediaJobDimensionVideoSeconds:
+			seconds := settlement.quantity
+			input.OutputVideoSeconds = &seconds
+		case chainMediaJobDimensionVideoCalls:
+			calls := settlement.quantity
+			input.VideoCalls = &calls
+		}
+		input.ResolutionTier = settlement.resolutionTier
+		input.QuantitySource = settlement.quantitySource
+		if settlement.usageMissing {
 			input.UsageMissing = true
 		}
-		if costUsd > 0 {
-			cost := costUsd
+		if settlement.snapshot != nil {
+			input.PricingSnapshot = settlement.snapshot
+		}
+		// 有价即落 cost（含有效 0 价）：有效免费价不得被当成未定价；无价/
+		// 计量缺失由 usage_missing 标记且不写 CostUsd（沿用原语义）。
+		if settlement.breakdown != nil {
+			cost := settlement.costUSD
+			input.CostUsd = &cost
+		} else if settlement.costUSD > 0 {
+			cost := settlement.costUSD
 			input.CostUsd = &cost
 		}
 	} else {

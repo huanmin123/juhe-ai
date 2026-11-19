@@ -1112,7 +1112,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		})
 	}
 
-	// 单 IP 并发闸口：API Key 级 clientIpConcurrencyLimit 生效，0 时服务
+	// 单 IP 并发闸口：API Key 级 clientIpConcurrencyLimit 生效，-1 时服务
 	// 直接返回 disabled/acquired，零额外开销。未装配（组合测试/降级）时跳过。
 	if e.ClientIPConcurrency != nil {
 		clientIpConcurrency, err := e.ClientIPConcurrency.Acquire(ctx, ClientIPConcurrencyInput{

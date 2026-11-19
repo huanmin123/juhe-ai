@@ -74,22 +74,20 @@ curl -s "$BASE_URL/v1/chat/completions" \
 
 顺带说清请求头的规则：网关转发时**删除**你带来的 `Authorization`、`x-api-key`、`x-goog-api-key`、`Cookie` 等凭据头，替换为上游账户自己的认证。你的 API Key 只用于网关鉴权，永远不出网关。
 
-## 视频/音频是另一套规则：provider_options 通道
+## 视频/音频是另一套规则：metadata 通道
 
-**媒体端点（`/v1/videos`、`/v1/audio/speech`、`/v1/audio/jobs` 等）不透传请求体**——网关按规范化结构重建出站报文，直接在请求体里写供应商原生顶层参数是**无效**的。
+**媒体端点（`/v1/video/generations`、`/v1/audio/speech`、`/v1/audio/jobs` 等）不透传请求体**——网关按规范化结构重建出站报文，直接在请求体里写供应商原生顶层参数是**无效**的。
 
-想传供应商专有参数（如音色复刻参考音频、情感、音量、方言等），走唯一的 `provider_options` 通道：
+想传供应商专有参数（如音色复刻参考音频、情感、音量、方言等），走唯一的 `metadata` 通道：
 
 ```json
 {
   "model": "glm-tts",
   "input": "今天天气不错",
   "voice": "default",
-  "provider_options": {
-    "glm": {
-      "ref_audio": "https://example.com/ref.wav",
-      "ref_text": "参考音频对应的文字"
-    }
+  "metadata": {
+    "ref_audio": "https://example.com/ref.wav",
+    "ref_text": "参考音频对应的文字"
   }
 }
 ```
@@ -98,11 +96,11 @@ curl -s "$BASE_URL/v1/chat/completions" \
 
 | 规则 | 说明 |
 | --- | --- |
-| 结构 | `provider_options` 是对象，键是供应商代码（`glm`/`qwen`/`openai`…，`gpt` 是 `openai` 的别名），值是参数对象 |
-| 生效范围 | 网关只取**与你这次请求实际命中的供应商**匹配的那个子对象，其余子对象整体忽略（混合分组不串参数） |
-| 键域 | 开放——键名直接写厂商原生参数名，网关不校验，未知键原样到上游 |
-| 优先级 | 命中的子对象**覆盖同名的规范参数**（如规范层 `speed` 与 `provider_options` 里的同名键并存时，后者赢）；嵌套对象深合并 |
-| 回显 | 任务/响应里的 `provider_options_applied` 回显实际生效的键名（不含值），可用来核对 |
+| 结构 | `metadata` 是对象（也接受 JSON 字符串），键直接写厂商原生参数名 |
+| 键域 | 开放但不能与规范字段同名（如 `model`/`prompt`/`input`/`voice`/`duration`/`size`），冲突返回 400 `metadata_conflict` |
+| 优先级 | 规范映射完成后逐键并入厂商报文，嵌套对象深合并；未知键原样到上游，由上游裁决 |
+| 回显 | 任务对象里的 `metadata_applied` 回显实际并入的键名（不含值），可用来核对 |
+| 已退役 | 旧的 `provider_options`（按供应商命名空间）已下线，请求里带它会被忽略且不回显 |
 
 各供应商支持哪些键（如 GLM 声音复刻的 `ref_audio`/`ref_text`）查各供应商官方文档；网关层不设白名单。
 
@@ -119,13 +117,13 @@ curl -s "$BASE_URL/v1/chat/completions" \
 
 ## 怎么验证参数真的生效了
 
-1. **媒体请求**：看响应/任务对象里的 `params_applied`（规范参数生效情况）、`provider_options_applied`（专有参数命中的键名）。
+1. **媒体请求**：看响应/任务对象里的 `params_applied`（规范参数生效情况）、`metadata_applied`（扩展参数并入的键名）。
 2. **文本请求**：网关不改不删，效果直接看上游回答；参数不合法时上游报错会原样透传回来——错误信息里通常带字段名。
 3. **不确定某参数上游认不认**：先用最小请求带上它试一次，看报错与回答差异，再上正式调用。
 
 ## 一条重要建议
 
-供应商特有参数与**模型（进而与供应商）绑定**：`enable_thinking` 只有 Qwen 认、`thinking` 只有 GLM 认。如果你的分组里同模型名由多家供应商账户混合承接、或故障重试会切到另一家账户，特有参数可能打到不认识它的上游。要稳定用某个供应商的特有参数，找管理员把该模型固定到对应供应商的账户/分组上。
+供应商特有参数与**模型（进而与供应商）绑定**：`enable_thinking` 只有 Qwen 认、`thinking` 只有 GLM 认。`metadata` 不再按供应商命名空间隔离——如果你的分组里同模型名由多家供应商账户混合承接、或故障重试会切到另一家账户，特有参数可能打到不认识它的上游。要稳定用某个供应商的特有参数，找管理员把该模型固定到对应供应商的账户/分组上。
 
 ## 接下来
 

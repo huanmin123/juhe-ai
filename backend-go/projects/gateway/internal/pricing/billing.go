@@ -19,6 +19,8 @@ package pricing
 import (
 	"math"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // tokenBillingLabels mirrors provider-billing.shared TokenBillingLabels.
@@ -248,14 +250,30 @@ func billingPolicyForProvider(providerCode string) *billingPolicy {
 	return nil
 }
 
+// BillingPolicyMediaUnified 是统一媒体模板的计费策略戳（非对话媒体统一计费
+// 设计 §6.1）：两处引擎（gateway pricing / usagepricing）产出同一 policy id。
+const BillingPolicyMediaUnified = "media_unified_v1"
+
 // BuildCostBreakdown mirrors buildProviderBillingCostBreakdown: the policy
 // is selected by pricing.ProviderCode (never the input's), and the Node
 // output always stamps currency 'USD' plus the policy id. nil mirrors the
 // Node undefined breakdown (unknown provider, unsupported tier or unpriced
 // usage).
+//
+// 统一媒体模板先于供应商策略（设计 §6.1）：模板非空时只产出一行
+// media_unified_v1 行项，legacy 媒体/token 行项一律不产出；模板为空才走既有
+// per-provider 策略。CostInput.MediaPricing 是异步任务创建时冻结价的显式
+// 覆盖（优先于目录行），非 nil 即有效价（含 0 价）。
 func BuildCostBreakdown(pricing *Pricing, input CostInput) *CostBreakdown {
 	if pricing == nil {
 		return nil
+	}
+	template := input.MediaPricing
+	if template == nil {
+		template = pricing.MediaPricing
+	}
+	if template != nil {
+		return buildMediaUnifiedCostBreakdown(pricing, template, input)
 	}
 	policy := billingPolicyForProvider(pricing.ProviderCode)
 	if policy == nil {
@@ -268,6 +286,132 @@ func BuildCostBreakdown(pricing *Pricing, input CostInput) *CostBreakdown {
 	breakdown.Currency = "USD"
 	breakdown.BillingPolicy = policy.id
 	return breakdown
+}
+
+// buildMediaUnifiedCostBreakdown 是统一媒体模板的唯一行项分支（设计 §6.1）：
+//
+//  1. 档位：ResolutionTier 为空用 baseTier；非空但不在倍率表中视为价格数据
+//     无效——不回落 baseTier 猜测（PriceForTier 返回 error → nil）；
+//     unit=call/audio-second 要求档位为空，倍率恒 1.0。
+//  2. 数量：video second → OutputVideoSeconds；audio second →
+//     AudioInputSeconds；image → OutputImageCount；call → VideoCalls。
+//  3. 唯一行项带 tier/baseUnitPriceUsd/multiplier/quantitySource；
+//     baseUsd=0 是有效免费价，行项仍保留（cost 0 不等于未定价）。
+//
+// 数量缺失/为 0 时不产行项（账户费用 0），由调用方按 usage_missing 裁决；
+// 不猜测数量。kind 由目录 mode 判定，mode 缺失时按实际计量维度兜底。
+func buildMediaUnifiedCostBreakdown(pricing *Pricing, template *mediapricing.Pricing, input CostInput) *CostBreakdown {
+	kind, kindOK := mediaUnifiedKindForInput(pricing.Mode, input)
+	if !kindOK {
+		return nil
+	}
+	if err := template.ValidateFor(kind); err != nil {
+		return nil
+	}
+	unitPrice, multiplier, tier, err := template.PriceForTier(input.ResolutionTier)
+	if err != nil {
+		return nil
+	}
+
+	var (
+		quantity float64
+		key      string
+		lineKind CostLineKind
+		label    string
+		unit     string
+	)
+	switch template.Unit {
+	case mediapricing.UnitSecond:
+		if kind == mediapricing.KindVideo {
+			if input.OutputVideoSeconds == nil && input.AudioInputSeconds != nil {
+				return nil
+			}
+			quantity = nonNegative(input.OutputVideoSeconds)
+			key = "video_output_seconds"
+			lineKind = CostLineKindVideoOutputSeconds
+			label = "视频秒（" + tier + "）"
+			unit = LineUnitSecond
+		} else {
+			if input.AudioInputSeconds == nil && input.OutputVideoSeconds != nil {
+				return nil
+			}
+			quantity = nonNegative(input.AudioInputSeconds)
+			key = "audio_input_seconds"
+			lineKind = CostLineKindAudioInputSeconds
+			label = "音频秒"
+			unit = LineUnitSecond
+		}
+	case mediapricing.UnitImage:
+		quantity = nonNegative(input.OutputImageCount)
+		key = "image_output_unit"
+		lineKind = LineImageOutUnit
+		label = "输出图片（" + tier + "）"
+		unit = LineUnitImage
+	case mediapricing.UnitCall:
+		if kind != mediapricing.KindVideo || input.ResolutionTier != "" {
+			return nil
+		}
+		quantity = nonNegative(input.VideoCalls)
+		key = "video_output_calls"
+		lineKind = CostLineKindVideoOutputCalls
+		label = "按次"
+		unit = LineUnitCall
+	default:
+		return nil
+	}
+
+	baseUsd := template.BaseUsd
+	actualMultiplier := multiplier
+	breakdown := &CostBreakdown{
+		Currency:                 "USD",
+		BillingPolicy:            BillingPolicyMediaUnified,
+		Multiplier:               1,
+		ServiceTierPricingSource: TierSourceDefault,
+	}
+	calculated := 0.0
+	if quantity > 0 {
+		cost := roundCost(quantity * unitPrice)
+		calculated = cost
+		breakdown.LineItems = []CostLineItem{{
+			Key:              key,
+			Kind:             lineKind,
+			Label:            label,
+			Quantity:         quantity,
+			Unit:             unit,
+			UnitSize:         1,
+			UnitPriceUsd:     unitPrice,
+			CostUsd:          cost,
+			Tier:             tier,
+			BaseUnitPriceUsd: &baseUsd,
+			Multiplier:       &actualMultiplier,
+			QuantitySource:   input.QuantitySource,
+		}}
+		if template.Unit == mediapricing.UnitImage {
+			breakdown.OutputImageUnitCostUsd = &cost
+			breakdown.OutputUsdPerImage = &unitPrice
+		}
+	}
+	calculated = roundCost(calculated)
+	breakdown.AccountChargeUsd = orRate(finite(input.CostUsd), &calculated)
+	return breakdown
+}
+
+// mediaUnifiedKindForInput 解析统一模板的媒体类型：目录 mode 优先；mode
+// 缺失（历史行/手工行）时按实际计量维度兜底，不猜测档位。
+func mediaUnifiedKindForInput(mode string, input CostInput) (mediapricing.Kind, bool) {
+	if kind, ok := mediapricing.KindForMode(mode); ok {
+		return kind, true
+	}
+	switch {
+	case input.OutputVideoSeconds != nil:
+		return mediapricing.KindVideo, true
+	case input.AudioInputSeconds != nil:
+		return mediapricing.KindAudio, true
+	case input.OutputImageCount != nil:
+		return mediapricing.KindImage, true
+	default:
+		return "", false
+	}
 }
 
 // buildCostBreakdown mirrors the per-provider policy bodies in

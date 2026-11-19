@@ -29,12 +29,18 @@ type fakeChainUsagePricingCatalog struct {
 	cost           *float64
 	cacheReadCost  *float64
 	cacheWriteCost *float64
+	// hasMediaPricing 是 HasMediaPricing 的应答（统一模板行判定）。
+	hasMediaPricing bool
 	// inputs 记录 EstimateCost 收到的输入（三个方法入参同构，记录一份即可）。
 	inputs []gatewayusage.PricingCostInput
 }
 
 func (f *fakeChainUsagePricingCatalog) ResolvePricingModel(providerCode, systemAccountID, model string) string {
 	return ""
+}
+
+func (f *fakeChainUsagePricingCatalog) HasMediaPricing(providerCode, systemAccountID, model string) bool {
+	return f.hasMediaPricing
 }
 
 func (f *fakeChainUsagePricingCatalog) EstimateCost(input gatewayusage.PricingCostInput) *float64 {

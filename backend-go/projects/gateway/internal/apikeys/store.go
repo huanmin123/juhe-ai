@@ -585,7 +585,7 @@ type ListItem struct {
 	// 以 status=active && gate=0 显示「非时间段」次级标签。
 	AvailabilityScheduleGate *int `json:"availabilityScheduleGate,omitempty"`
 	// ClientIPConcurrencyLimit 是 Key 级单 IP 并发上限（API Key 单 IP 并发
-	// 限制设计 §2.1）：0 关闭，1..1000000 生效，超限固定 429。计数作用域仍
+	// 限制设计 §2.1）：-1 不限制，1..1000000 生效，超限固定 429。计数作用域仍
 	// 为 (system_account_id, group_id, api_key_id, client_ip)。
 	ClientIPConcurrencyLimit int `json:"clientIpConcurrencyLimit"`
 	// 调度偏好绑定投影（P1）：null = 历史「沿用策略路由（迁移期）」，前端

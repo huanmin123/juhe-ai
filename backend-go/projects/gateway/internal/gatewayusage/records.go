@@ -14,6 +14,12 @@ import (
 // 仍是 gateway 进程内字段（json:"-"），随别名保留。
 type UsageRecordInput = usagewriter.UsageRecordInput
 
+// CostBreakdown / CostLineItem 同样是 usagewriter 的类型别名：异步媒体终态
+// 把网关引擎算出的完整 CostBreakdown 作为 PricingSnapshot 传入时，类型与
+// 落库快照结构由编译期保证一致（非对话媒体统一计费设计 §6.1）。
+type CostBreakdown = usagewriter.CostBreakdown
+type CostLineItem = usagewriter.CostLineItem
+
 // UsageFailureAttribution mirrors the Node union.
 type UsageFailureAttribution = string
 

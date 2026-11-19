@@ -1,3 +1,6 @@
+//go:build windows
+
+// 依赖 Windows 专用覆盖 helper（Ctrl-Break/进程组/插桩二进制）；其余测试三平台可编译，见 docs/develop/后端测试分层规则.md §7.7。
 package main
 
 // w16b（覆盖率收尾批次二，装配/SQL 错误臂）：对照

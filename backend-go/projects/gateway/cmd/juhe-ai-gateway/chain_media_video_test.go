@@ -121,9 +121,9 @@ func mediaVideoClientDo(t *testing.T, serverURL, method, path, apiKey string, bo
 // mediaVideoCreateJob 创建一个视频任务并断言受理（2xx + 对外 job 对象）。
 func mediaVideoCreateJob(t *testing.T, serverURL, apiKey, body string, headers map[string]string) map[string]any {
 	t.Helper()
-	response, payload := mediaVideoClientDo(t, serverURL, http.MethodPost, "/v1/videos", apiKey, body, headers)
+	response, payload := mediaVideoClientDo(t, serverURL, http.MethodPost, "/v1/video/generations", apiKey, body, headers)
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("POST /v1/videos status=%d body=%s", response.StatusCode, payload)
+		t.Fatalf("POST /v1/video/generations status=%d body=%s", response.StatusCode, payload)
 	}
 	var object map[string]any
 	if err := json.Unmarshal(payload, &object); err != nil {
@@ -157,7 +157,7 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll3)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -183,13 +183,13 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	// 轮询三次：in_progress(33) → in_progress(66) → completed(100)。
 	progressByStatus := map[string]float64{}
 	for poll := 0; poll < 3; poll++ {
-		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("poll #%d status=%d body=%s", poll+1, response.StatusCode, payload)
 		}
 		object := mediaVideoDecodeJob(t, payload)
-		if object["id"] != jobID {
-			t.Fatalf("poll id = %v, want %s", object["id"], jobID)
+		if object["task_id"] != jobID {
+			t.Fatalf("poll task_id = %v, want %s", object["task_id"], jobID)
 		}
 		status, _ := object["status"].(string)
 		progress, _ := object["progress"].(float64)
@@ -219,7 +219,7 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	}
 
 	// content 下载：流式转发 mp4（ftyp magic bytes + video/mp4）。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", fixture.apiKeySecret, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -231,7 +231,7 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	}
 
 	// 列表回显：归属 Key 过滤，含本任务终态行。
-	listResponse, listPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos", fixture.apiKeySecret, "", nil)
+	listResponse, listPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations", fixture.apiKeySecret, "", nil)
 	if listResponse.StatusCode != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listResponse.StatusCode, listPayload)
 	}
@@ -242,7 +242,7 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	if err := json.Unmarshal(listPayload, &listObject); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if listObject.Object != "list" || len(listObject.Data) != 1 || listObject.Data[0]["id"] != jobID {
+	if listObject.Object != "list" || len(listObject.Data) != 1 || listObject.Data[0]["task_id"] != jobID {
 		t.Fatalf("list 回显错误: %s", listPayload)
 	}
 	if listObject.Data[0]["status"] != "completed" {
@@ -269,7 +269,7 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 				if err != nil {
 					t.Fatalf("读 spool 文件: %v", err)
 				}
-				if strings.Contains(string(raw), `"outputVideoSeconds":4`) && strings.Contains(string(raw), `"endpoint":"/v1/videos"`) {
+				if strings.Contains(string(raw), `"outputVideoSeconds":4`) && strings.Contains(string(raw), `"endpoint":"/v1/video/generations"`) {
 					found = true
 					break
 				}
@@ -338,7 +338,7 @@ func TestChainMediaVideoCreate429SwitchesAccount(t *testing.T) {
 	}
 	// 落表亲和第二账户。
 	var accountID string
-	if err := fixture.db.QueryRow(`SELECT account_id FROM media_jobs WHERE id = ?`, job["id"]).Scan(&accountID); err != nil {
+	if err := fixture.db.QueryRow(`SELECT account_id FROM media_jobs WHERE id = ?`, job["task_id"]).Scan(&accountID); err != nil {
 		t.Fatalf("查询 media_jobs: %v", err)
 	}
 	if accountID != "acc_video_ok" {
@@ -365,9 +365,9 @@ func TestChainMediaVideoPoll500KeepsAccount(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"轮询故障不换账户","seconds":"4","size":"1280x720"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoPoll500)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("poll 500 应向客户端报错（502），实际 status=%d body=%s", response.StatusCode, payload)
 	}
@@ -419,12 +419,12 @@ func TestChainMediaVideoFailedTerminalZeroCost(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"失败任务不计费","seconds":"4"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoFailAfterAccept)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	// 第 1 轮 in_progress(50)，第 2 轮 failed（终态 + error）。
 	second := map[string]any{}
 	for poll := 0; poll < 2; poll++ {
-		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("poll #%d status=%d body=%s", poll+1, response.StatusCode, payload)
 		}
@@ -462,7 +462,7 @@ func TestChainMediaVideoFailedTerminalZeroCost(t *testing.T) {
 					t.Fatalf("读 spool 文件: %v", err)
 				}
 				text := string(raw)
-				if strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`) {
+				if strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`) {
 					found = true
 					if strings.Contains(text, "outputVideoSeconds") {
 						t.Fatalf("失败任务 usage 行不得带秒计量: %s", text)
@@ -501,14 +501,14 @@ func TestChainMediaVideoContentExpired(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"产物时效","seconds":"4"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoContentExpired)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	// 第一次轮询即 completed（content_expired 脚本 fast path）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "completed" {
 		t.Fatalf("poll 未到 completed: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}
 	// content：上游 404 → 明确"产物已过期"错误码。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", fixture.apiKeySecret, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusGone {
 		t.Fatalf("content 过期 status=%d, want 410", response.StatusCode)
 	}
@@ -532,10 +532,10 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoCancelOK)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	// 上游成功取消：204 + 本地 cancelled。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
 	}
@@ -549,7 +549,7 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 
 	// 终态行轮询回本地对象，不再打上游（请求计数不变）。
 	upstreamRequests := len(mock.Requests())
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
 		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}
@@ -558,7 +558,7 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 	}
 
 	// 上游 404（任务已被上游删除）同样置本地 cancelled：重复 DELETE。
-	response, payload = mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	response, payload = mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("重复 DELETE status=%d body=%s, want 204（上游 404 同置 cancelled）", response.StatusCode, payload)
 	}
@@ -573,10 +573,131 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 	other := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"他人任务"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoCancelOK)})
-	otherID, _ := other["id"].(string)
-	response, payload = mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+otherID, otherSecret, "", nil)
+	otherID, _ := other["task_id"].(string)
+	response, payload = mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+otherID, otherSecret, "", nil)
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("非本人 DELETE status=%d body=%s, want 404", response.StatusCode, payload)
+	}
+}
+
+// TestChainMediaVideoUnifiedFaceAliasesOutbound 覆盖唯一视频面的同义参数在
+// 链上落成上游报文（设计 §4.2.1）：duration→seconds、image→input_reference、
+// width+height→size；能力外 fps 进 params_ignored 且不进报文。
+func TestChainMediaVideoUnifiedFaceAliasesOutbound(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedMediaVideoAccount(t, fixture.db, fixture, "acc_video_alias", mock.URL, "sk-video-alias", 0, true)
+
+	chain := composeMediaVideoChain(t, fixture, filepath.Join(t.TempDir(), "spool"))
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
+		`{"model":"sora-2","prompt":"别名归一","duration":4,"image":"data:image/png;base64,aGVsbG8=","width":1280,"height":720,"fps":24}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll1)})
+
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"image", "duration", "width", "height"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("params_applied 缺少 %s: %s", want, applied)
+		}
+	}
+	ignored := fmt.Sprintf("%v", job["params_ignored"])
+	if !strings.Contains(ignored, "fps") {
+		t.Fatalf("params_ignored 应含 fps（sora 请求面无该字段）: %s", ignored)
+	}
+
+	var createBody string
+	for _, request := range mock.Requests() {
+		if request.Method == http.MethodPost && request.Path == "/v1/videos" {
+			createBody = request.Body
+			break
+		}
+	}
+	if createBody == "" {
+		t.Fatalf("未记录创建出站报文: %#v", mock.Requests())
+	}
+	var outbound map[string]any
+	if err := json.Unmarshal([]byte(createBody), &outbound); err != nil {
+		t.Fatalf("解析创建报文: %v: %s", err, createBody)
+	}
+	if outbound["seconds"] != "4" {
+		t.Fatalf("duration 未落成 seconds 字符串: %v", outbound["seconds"])
+	}
+	if outbound["size"] != "1280x720" {
+		t.Fatalf("width/height 未合成 size: %v", outbound["size"])
+	}
+	if outbound["input_reference"] != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image 未落成 input_reference: %v", outbound["input_reference"])
+	}
+	if _, exists := outbound["fps"]; exists {
+		t.Fatalf("能力外 fps 不得进上游报文: %s", createBody)
+	}
+}
+
+// TestChainMediaVideoMetadataConflictAndProviderOptionsRetired 覆盖唯一扩展
+// 通道裁决（设计《对外协议面对齐 new-api 设计》§5.1、§7.1 验收 4/5）：
+// metadata 键与规范字段同名 → 400 metadata_conflict 且零上游出站；已退役的
+// provider_options 按未知字段忽略、不产生回显。
+func TestChainMediaVideoMetadataConflictAndProviderOptionsRetired(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedMediaVideoAccount(t, fixture.db, fixture, "acc_video_meta", mock.URL, "sk-video-meta", 0, true)
+
+	chain := composeMediaVideoChain(t, fixture, filepath.Join(t.TempDir(), "spool"))
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/video/generations", fixture.apiKeySecret,
+		`{"model":"sora-2","prompt":"冲突","metadata":{"prompt":"覆盖尝试"}}`, nil)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("metadata 冲突 status=%d body=%s, want 400", response.StatusCode, payload)
+	}
+	if !strings.Contains(string(payload), "metadata_conflict") {
+		t.Fatalf("400 响应缺少 metadata_conflict 错误码: %s", payload)
+	}
+	if count := len(mock.Requests()); count != 0 {
+		t.Fatalf("metadata 冲突不得打上游，实际 %d 次: %#v", count, mock.Requests())
+	}
+
+	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
+		`{"model":"sora-2","prompt":"退役通道","provider_options":{"openai":{"camera_fixed":true}}}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll1)})
+	if applied := fmt.Sprintf("%v", job["metadata_applied"]); applied != "[]" {
+		t.Fatalf("provider_options 已退役，metadata_applied 应为空数组: %v", applied)
+	}
+}
+
+// TestChainMediaVideoLegacyVideosPathGone 验证唯一视频面裁决：/v1/videos 全族
+// 已删除（设计《对外协议面对齐 new-api 设计》§4.2、§7.1 验收 6）——协议门不
+// 再识别，回落统一 404 JSON，且零上游出站（不留兼容转发）。
+func TestChainMediaVideoLegacyVideosPathGone(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedMediaVideoAccount(t, fixture.db, fixture, "acc_video_legacy", mock.URL, "sk-video-legacy", 0, true)
+
+	chain := composeMediaVideoChain(t, fixture, filepath.Join(t.TempDir(), "spool"))
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	probes := []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/videos", `{"model":"sora-2","prompt":"旧面不得受理"}`},
+		{http.MethodGet, "/v1/videos", ""},
+		{http.MethodGet, "/v1/videos/video_x", ""},
+		{http.MethodGet, "/v1/videos/video_x/content", ""},
+		{http.MethodDelete, "/v1/videos/video_x", ""},
+	}
+	for _, probe := range probes {
+		response, payload := mediaVideoClientDo(t, server.URL, probe.method, probe.path, fixture.apiKeySecret, probe.body, nil)
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s %s status=%d body=%s, want 404", probe.method, probe.path, response.StatusCode, payload)
+		}
+	}
+	if requests := mock.Requests(); len(requests) != 0 {
+		t.Fatalf("旧 /v1/videos 不得产生上游出站: %#v", requests)
 	}
 }
 
@@ -620,11 +741,10 @@ func TestChainMediaVideoParamsIgnoredEcho(t *testing.T) {
 	}
 }
 
-// TestChainMediaVideoProviderOptionsAppliedEcho 覆盖 Minor-1 回显面（契约
-// §2.4 规则 4）：创建请求带 provider_options → 创建响应 job 对象回显
-// provider_options_applied（命中子对象键名摘要，不含值；未命中 provider 的
-// 子对象不回显）；上游报文含命中子对象合并键；轮询回显同一摘要（快照冻结）。
-func TestChainMediaVideoProviderOptionsAppliedEcho(t *testing.T) {
+// TestChainMediaVideoMetadataAppliedEcho 覆盖唯一扩展通道 metadata 的回显面
+// （设计 §5.1）：创建请求带 metadata → 创建响应 job 对象回显 metadata_applied
+// （键名摘要，不含值）；上游报文含合并键；轮询回显同一摘要（快照冻结）。
+func TestChainMediaVideoMetadataAppliedEcho(t *testing.T) {
 	fixture := newChainFixture(t)
 	mock := platformmock.New()
 	defer mock.Close()
@@ -635,37 +755,31 @@ func TestChainMediaVideoProviderOptionsAppliedEcho(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
-		`{"model":"sora-2","prompt":"L3 回显","seconds":"4","provider_options":{"openai":{"vendor_flag":true,"nested":{"k":1}},"gemini":{"aspectRatio":"16:9"}}}`,
+		`{"model":"sora-2","prompt":"L3 回显","seconds":"4","metadata":{"vendor_flag":true,"nested":{"k":1}}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll3)})
-	applied := fmt.Sprintf("%v", job["provider_options_applied"])
+	applied := fmt.Sprintf("%v", job["metadata_applied"])
 	if !strings.Contains(applied, "vendor_flag") || !strings.Contains(applied, "nested") {
-		t.Fatalf("provider_options_applied 缺少命中键名: %v", applied)
-	}
-	if strings.Contains(applied, "aspectRatio") {
-		t.Fatalf("未命中 provider 的键不得回显: %v", applied)
+		t.Fatalf("metadata_applied 缺少键名: %v", applied)
 	}
 	if strings.Contains(applied, "true") {
-		t.Fatalf("provider_options_applied 不得含值: %v", applied)
+		t.Fatalf("metadata_applied 不得含值: %v", applied)
 	}
 	// 上游报文：命中子对象 deep-merge 进创建体，未命中的不进。
 	for _, request := range mock.Requests() {
 		if request.Method == http.MethodPost && request.Path == "/v1/videos" {
 			if !strings.Contains(request.Body, `"vendor_flag":true`) {
-				t.Fatalf("上游创建报文缺少 provider_options 合并键: %s", request.Body)
-			}
-			if strings.Contains(request.Body, "aspectRatio") {
-				t.Fatalf("上游创建报文不得含未命中 provider 键: %s", request.Body)
+				t.Fatalf("上游创建报文缺少 metadata 合并键: %s", request.Body)
 			}
 		}
 	}
 	// 轮询回显同一摘要（request_snapshot 冻结，创建后原始请求不可得）。
-	jobID, _ := job["id"].(string)
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, fixture.apiKeySecret, "", nil)
+	jobID, _ := job["task_id"].(string)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("poll status=%d body=%s", response.StatusCode, payload)
 	}
-	if polled := fmt.Sprintf("%v", mediaVideoDecodeJob(t, payload)["provider_options_applied"]); !strings.Contains(polled, "vendor_flag") {
-		t.Fatalf("轮询回显 provider_options_applied 缺失: %s", payload)
+	if polled := fmt.Sprintf("%v", mediaVideoDecodeJob(t, payload)["metadata_applied"]); !strings.Contains(polled, "vendor_flag") {
+		t.Fatalf("轮询回显 metadata_applied 缺失: %s", payload)
 	}
 }
 
@@ -790,7 +904,7 @@ func TestChainMediaVideoCreate400BadSizeKeepsAccount(t *testing.T) {
 	defer server.Close()
 
 	// size=9999x9999 形态合法（WxH 像素串）、值域由上游裁决 → 上游 400。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/videos", fixture.apiKeySecret,
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/video/generations", fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"参数错误不换账户","seconds":"4","size":"9999x9999"}`, nil)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("create status=%d body=%s, want 400（上游参数错误透传客户端）", response.StatusCode, payload)
@@ -932,7 +1046,7 @@ func TestChainMediaVideoConcurrentTerminalSingleUsage(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, fixture.apiKeySecret,
 		`{"model":"sora-2","prompt":"并发终态只入队一次","seconds":"4","size":"1280x720"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll1)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	type pollResult struct {
 		status int
@@ -942,7 +1056,7 @@ func TestChainMediaVideoConcurrentTerminalSingleUsage(t *testing.T) {
 	results := make(chan pollResult, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/videos/"+jobID, nil)
+			request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/video/generations/"+jobID, nil)
 			if err != nil {
 				results <- pollResult{err: err}
 				return

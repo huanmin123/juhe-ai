@@ -42,7 +42,7 @@ const (
 )
 
 // isMediaMappingEndpointFamily 报告端点族是否媒体映射族（M4b）。媒体族的
-// 上游面恒为 OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech），只允许
+// 上游面恒为 OpenAI 形态媒体端点（/v1/video/generations、/v1/audio/speech），只允许
 // OpenAI 兼容协议档案声明。
 func isMediaMappingEndpointFamily(value string) bool {
 	return value == mappingFamilyVideoGeneration || value == mappingFamilyTts
@@ -133,7 +133,7 @@ func hasAccountModelMappingUpstreamEndpointFamilyCapability(upstream string, mod
 	case mappingFamilyMessages:
 		allowed = []string{"messages_json", "messages_sse"}
 	case mappingFamilyVideoGeneration:
-		// M4b：视频映射上游面要求账户可承接 /v1/videos 创建（候选过滤的
+		// M4b：视频映射上游面要求账户可承接 /v1/video/generations 创建（候选过滤的
 		// opt-in 模式，与 dispatch 侧 requiredSupportedEndpointMode 同词表）。
 		allowed = []string{"video_create"}
 	case mappingFamilyTts:

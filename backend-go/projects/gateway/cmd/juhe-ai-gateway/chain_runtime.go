@@ -121,7 +121,7 @@ type chainRuntimeServices struct {
 	// AccountCircuits is the D-131 account-circuit service.
 	AccountCircuits *gatewaycircuit.CircuitService
 	// ClientIPSlots is the D-109 client-IP slot family (API-Key-level
-	// clientIpConcurrencyLimit; limit 0 is disabled).
+	// clientIpConcurrencyLimit; -1 is unlimited/disabled).
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
 	// ConcurrencyTracker 是唯一的账户并发事实源（E2E-FINDING #13）：组合根
 	// 必须把同一实例传给 engine.Concurrency（chainRuntimeDeps.

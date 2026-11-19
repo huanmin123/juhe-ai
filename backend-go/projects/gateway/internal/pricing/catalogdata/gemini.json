@@ -1232,6 +1232,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0005,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gemini-3.1-flash-tts-preview",
       "outputCostPerAudioToken": 2e-05,
@@ -1245,7 +1246,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：audio token 价 × 25 tokens/秒（保守估算）。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -1262,6 +1263,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.000225,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gemini-3.8-flash-tts",
       "outputCostPerAudioToken": 9e-06,
@@ -1275,7 +1277,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：audio token 价 × 25 tokens/秒（保守估算）。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -1292,6 +1294,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.00015,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gemini-3.8-flash-lite-tts",
       "outputCostPerAudioToken": 6e-06,
@@ -1305,7 +1308,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：audio token 价 × 25 tokens/秒（保守估算）。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -1322,6 +1325,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.00025,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gemini-2.5-flash-preview-tts",
       "outputCostPerAudioToken": 1e-05,
@@ -1335,7 +1339,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：audio token 价 × 25 tokens/秒（保守估算）。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -1352,6 +1356,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0005,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gemini-2.5-pro-preview-tts",
       "outputCostPerAudioToken": 2e-05,
@@ -1365,7 +1370,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：audio token 价 × 25 tokens/秒（保守估算）。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -1380,6 +1385,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.4,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "veo-3.0-generate-preview",
       "outputModalities": [
@@ -1405,6 +1411,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.15,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "veo-3.0-fast-generate-preview",
       "outputModalities": [
@@ -1430,6 +1437,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.1,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "veo-3.1-fast-generate-preview",
       "outputModalities": [
@@ -1455,6 +1463,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.4,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "veo-3.1-generate-preview",
       "outputModalities": [
@@ -1480,6 +1489,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.05,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "veo-3.1-lite-generate-preview",
       "outputModalities": [
@@ -1507,6 +1517,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.0672,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gemini-3.1-flash-image",
       "outputCostPerImageToken": 6e-05,
@@ -1519,7 +1530,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1120 tokens/张 估算 1K 每张价（3.x 族估算；3 Pro 与官方 $0.134/张 口径一致）。",
       "supportedAPIProtocols": [
         "generate_content",
         "stream_generate_content"
@@ -1537,6 +1548,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.1344,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gemini-3-pro-image",
       "outputCostPerImageToken": 0.00012,
@@ -1549,7 +1561,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1120 tokens/张 估算 1K 每张价（与官方 $0.134/张 口径一致）。",
       "supportedAPIProtocols": [
         "generate_content",
         "stream_generate_content"
@@ -1568,6 +1580,7 @@
         "video"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.0336,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gemini-3.1-flash-lite-image",
       "outputCostPerImageToken": 3e-05,
@@ -1580,7 +1593,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1120 tokens/张 估算 1K 每张价（3.x 族估算）。",
       "supportedAPIProtocols": [
         "generate_content",
         "stream_generate_content"
@@ -1598,6 +1611,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":5e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gemini-3.5-transcribe",
       "outputCostPerToken": 1.2e-05,

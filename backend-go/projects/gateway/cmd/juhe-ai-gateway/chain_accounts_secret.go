@@ -520,7 +520,7 @@ var (
 	// adapter 承载；gemini 无 /v1/audio/transcriptions 直连形态），M3 补
 	// video_create / video_get / video_content / video_cancel（veo adapter
 	// 承载，契约 §5.2；词表缺失会让显式勾选的账户在 secret 投影时被滤除，
-	// /v1/videos 创建链按 video_create 候选过滤无账户可命中）。
+	// /v1/video/generations 创建链按 video_create 候选过滤无账户可命中）。
 	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech", "video_create", "video_get", "video_content", "video_cancel"}
 )
 

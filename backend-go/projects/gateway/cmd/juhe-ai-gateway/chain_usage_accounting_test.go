@@ -42,11 +42,17 @@ type accountingPricingCatalog struct {
 	resolveModels []string
 	// inputs 记录 EstimateCost 收到的估算入参。
 	inputs []gatewayusage.PricingCostInput
+	// hasMediaPricing 是 HasMediaPricing 的应答。
+	hasMediaPricing bool
 }
 
 func (c *accountingPricingCatalog) ResolvePricingModel(providerCode, systemAccountID, model string) string {
 	c.resolveModels = append(c.resolveModels, model)
 	return c.resolvedPricingModel
+}
+
+func (c *accountingPricingCatalog) HasMediaPricing(providerCode, systemAccountID, model string) bool {
+	return c.hasMediaPricing
 }
 
 func (c *accountingPricingCatalog) EstimateCost(input gatewayusage.PricingCostInput) *float64 {

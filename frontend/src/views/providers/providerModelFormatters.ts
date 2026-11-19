@@ -785,7 +785,24 @@ function collectModelPriceSlots(
   return slots
 }
 
+function mediaPricingSlots(item: ProviderModelPricing): ModelPriceSlot[] {
+  if (!item.hasMediaPricing || !item.mediaPricing) return []
+  const pricing = item.mediaPricing
+  const unit = pricing.unit === 'image' ? '/张' : pricing.unit === 'call' ? '/次' : '/秒'
+  const tiers = Object.keys(pricing.tierMultipliers ?? {})
+  if (!tiers.length) {
+    return [{ label: pricing.unit === 'call' ? '按次' : '音频', value: trimNumber(pricing.baseUsd), unit }]
+  }
+  return tiers.slice(0, 3).map((tier) => ({
+    label: tier,
+    value: trimNumber(Number((pricing.baseUsd * (pricing.tierMultipliers[tier] ?? 1)).toFixed(6))),
+    unit
+  }))
+}
+
 export function modelPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
+  const mediaSlots = mediaPricingSlots(item)
+  if (mediaSlots.length) return mediaSlots
   // 单 Token 价合并只跟随后端投影（token_pricing 分组恰为单「token」条目），
   // 不做字段级全局判定；其余行保持候选序列原口径。
   const tokenPricingSection = modelCatalogDisplaySections(item).find((section) => section.key === 'token_pricing')

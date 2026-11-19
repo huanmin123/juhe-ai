@@ -59,7 +59,7 @@ export interface MediaJobDetail {
   size?: string
   n?: number
   language?: string
-  providerOptionsApplied?: string[]
+  metadataApplied?: string[]
   apiKeyId?: string
   accountId?: string
   costUsd?: number

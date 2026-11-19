@@ -92,10 +92,10 @@ type BuiltInStaticDerivedCapabilities struct {
 	SourceExchangeRateDate   string
 	SourcePricingNote        string
 	// 媒体单价四维（同 staticPricingSnapshot，目录表无列的透传展示）。
-	VideoOutputUsdPerSecond *float64
-	VideoOutputUsdPerCall   *float64
-	TtsInputUsdPer1MChars   *float64
-	AudioInputUsdPerSecond  *float64
+	VideoOutputUsdPerSecond         *float64
+	VideoOutputUsdPerCall           *float64
+	TtsInputUsdPer1MChars           *float64
+	AudioInputUsdPerSecond          *float64
 	GenerationParameterCapabilities map[string]any
 }
 

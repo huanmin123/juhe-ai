@@ -2,7 +2,7 @@ package gatewaymedia
 
 // openai 视频 adapter 测试（契约 §4.3 报文，fixture 形态与 mockupstream
 // videoObject 同源派生——Mock 上游按同一契约实现）：创建报文构造（含
-// seconds 字符串形态与 provider_options 合并）、轮询/下载/取消请求构造、
+// seconds 字符串形态与 metadata 合并）、轮询/下载/取消请求构造、
 // 轮询响应归一（含未知状态、404/5xx、completed 缺 content 的协议违约）。
 import (
 	"context"
@@ -28,7 +28,7 @@ const pollCompletedFixture = `{"id":"video_0123456789abcdef","object":"video","s
 const pollFailedFixture = `{"id":"video_0123456789abcdef","object":"video","status":"failed","progress":0,"model":"sora-2","prompt":"a cat","seconds_length":4,"size":"1280x720","error":{"code":"video_generation_failed","message":"Video generation failed after the request was accepted"}}`
 
 // createError400Fixture 对齐 mockupstream media_video_create_400_bad_size 错误包
-//（受理前 4xx，链上层不换账户）。
+// （受理前 4xx，链上层不换账户）。
 const createError400Fixture = `{"error":{"message":"Invalid size: value must be one of 1280x720, 720x1280, 960x960","type":"invalid_request_error","code":"invalid_size"}}`
 
 func TestVideoAdapterRegistry(t *testing.T) {
@@ -52,13 +52,24 @@ func TestVideoAdapterRegistry(t *testing.T) {
 
 func TestOpenAIVideoAdapterCapabilities(t *testing.T) {
 	caps := VideoAdapterForProvider("openai").Capabilities()
-	// sora 现状（契约 §2.2/§4.3）：seconds/size/n/input_reference 原生支持；
-	// negative_prompt/seed/audio 请求面无该参数 → 忽略 + 回显。
-	if !caps.SupportsSeconds || !caps.SupportsN || !caps.SupportsInputReference {
-		t.Fatalf("sora 应支持 seconds/n/input_reference: %+v", caps)
+	// 非对话媒体统一计费设计 §14.4 #5 / AC-026：P1 参数层拒绝 n>1，
+	// sora adapter 即使协议面有 n 也声明 false；seconds/input_reference
+	// 仍原生支持；negative_prompt/seed/audio 请求面无该参数 → 忽略 + 回显。
+	if !caps.SupportsSeconds || caps.SupportsN || !caps.SupportsInputReference {
+		t.Fatalf("sora 应支持 seconds/input_reference 且不支持 n>1: %+v", caps)
 	}
 	if caps.SupportsNegativePrompt || caps.SupportsSeed || caps.SupportsAudio {
 		t.Fatalf("sora 请求面无 negative_prompt/seed/audio: %+v", caps)
+	}
+}
+
+func TestOpenAIVideoAdapterRejectsMultiOutput(t *testing.T) {
+	adapter := VideoAdapterForProvider("openai")
+	_, err := ParseVideoParams(map[string]any{
+		"model": "sora-2", "prompt": "a cat surfing", "n": float64(2),
+	}, adapter.Capabilities())
+	if !errors.Is(err, ErrParamUnsupported) {
+		t.Fatalf("n>1 必须 400 ErrParamUnsupported，不调上游: %v", err)
 	}
 }
 
@@ -70,7 +81,7 @@ func TestOpenAIVideoAdapterCreateRequest(t *testing.T) {
 		"prompt":          "a cat surfing",
 		"seconds":         "8",
 		"size":            "720x1280",
-		"n":               float64(2),
+		"n":               float64(1),
 		"input_reference": reference,
 	}, adapter.Capabilities())
 	if err != nil {
@@ -93,7 +104,7 @@ func TestOpenAIVideoAdapterCreateRequest(t *testing.T) {
 	if got := body["seconds"]; got != "8" {
 		t.Fatalf("seconds 应为 openai 原生字符串形态, got %T %v", got, got) // 契约 §4.3 "seconds":"4"
 	}
-	if body["size"] != "720x1280" || body["n"] != float64(2) {
+	if body["size"] != "720x1280" || body["n"] != float64(1) {
 		t.Fatalf("size/n = %v", body)
 	}
 	if body["input_reference"] != reference {
@@ -130,7 +141,7 @@ func TestOpenAIVideoAdapterCreateMinimalBody(t *testing.T) {
 	}
 }
 
-func TestOpenAIVideoAdapterCreateMergesProviderOptions(t *testing.T) {
+func TestOpenAIVideoAdapterCreateMergesMetadata(t *testing.T) {
 	adapter := VideoAdapterForProvider("openai")
 	params, err := ParseVideoParams(map[string]any{
 		"model":  "sora-2",
@@ -141,9 +152,9 @@ func TestOpenAIVideoAdapterCreateMergesProviderOptions(t *testing.T) {
 	}
 	out, err := adapter.Create(context.Background(), VideoCreateInput{
 		Params: params,
-		ProviderOptions: map[string]any{
-			"openai": map[string]any{"prompt": "a vendor cat", "vendor_extra": float64(1)},
-			"gemini": map[string]any{"aspectRatio": "16:9"}, // 未命中：忽略
+		Metadata: map[string]any{
+			"vendor_extra": float64(1),
+			"nested":       map[string]any{"flag": true},
 		},
 	})
 	if err != nil {
@@ -153,14 +164,14 @@ func TestOpenAIVideoAdapterCreateMergesProviderOptions(t *testing.T) {
 	if err := json.Unmarshal(out.Body, &body); err != nil {
 		t.Fatalf("body 不是 JSON: %v", err)
 	}
-	if body["prompt"] != "a vendor cat" {
-		t.Fatalf("L3 同名覆盖 L2 失败: %v", body["prompt"])
+	if body["prompt"] != "a cat" {
+		t.Fatalf("metadata 不应改写规范字段: %v", body["prompt"])
 	}
 	if body["vendor_extra"] != float64(1) {
 		t.Fatalf("未知键应透传: %v", body["vendor_extra"])
 	}
-	if _, exists := body["aspectRatio"]; exists {
-		t.Fatal("未命中 provider 子对象不应进报文")
+	if nested, ok := body["nested"].(map[string]any); !ok || nested["flag"] != true {
+		t.Fatalf("嵌套扩展键应 deep-merge: %v", body["nested"])
 	}
 }
 
@@ -186,10 +197,10 @@ func TestOpenAIVideoAdapterParsePollResponse(t *testing.T) {
 	adapter := VideoAdapterForProvider("openai")
 
 	cases := []struct {
-		name      string
+		name       string
 		statusCode int
-		body      string
-		check     func(*testing.T, *MediaJobIR)
+		body       string
+		check      func(*testing.T, *MediaJobIR)
 	}{
 		{
 			name: "queued（创建受理形态）", statusCode: 200, body: pollQueuedFixture,

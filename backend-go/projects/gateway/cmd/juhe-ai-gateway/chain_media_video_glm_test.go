@@ -142,7 +142,7 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"cogvideox-3","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"6","audio":true,"seed":42}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmVideoCreateOK)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -235,7 +235,7 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 
 	// content 下载：completed 的 url 是引擎渲染的绝对 URL（不经记录层），
 	// 网关无凭据直连——引擎侧 Authorization 记录为空可证。响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -259,7 +259,7 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 	// 照落 outputVideoSeconds=6、无 costUsd、不打 usage_missing（契约 §2.8：
 	// 计量照落成本不虚计）。
 	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"model":"cogvideox-3"`)
+		return strings.Contains(text, `"endpoint":"/v1/video/generations"`) && strings.Contains(text, `"model":"cogvideox-3"`)
 	}, "glm completed 无价兜底终态记录")
 	if !strings.Contains(record, `"outputVideoSeconds":6`) {
 		t.Fatalf("glm 无价 usage 行缺少 outputVideoSeconds=6（请求自算计量照落）: %s", record)
@@ -288,7 +288,7 @@ func TestChainMediaGlmVideoFailedTerminal(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"cogvideox-3","prompt":"失败终态","size":"720x1440"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmVideoPollFail)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -307,7 +307,7 @@ func TestChainMediaGlmVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "glm failed 终态记录")
 }
 
@@ -326,9 +326,9 @@ func TestChainMediaGlmVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"cogvideox-3","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmVideoPollProcessing)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
 	}
@@ -347,7 +347,7 @@ func TestChainMediaGlmVideoCancel(t *testing.T) {
 	}
 
 	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
 		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}

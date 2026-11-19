@@ -17,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysecpol"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediaduration"
 )
 
 // 非流式管道与终态，对齐 finalization.ts 的 handleNonStreamUpstreamResponse /
@@ -497,9 +498,20 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 
 	var pipeResult NonStreamPipeResult
 	var pipeErr error
-	// M1 同步音频：媒体 speech 转换计划（gemini 账户 + /audio/speech + 2xx
-	// 时激活），透传管道与检查管道共用。
+	// 同步音频：媒体 speech 转换计划（gemini/minimax/volcengine 转换型
+	// 账户 + /audio/speech + 2xx 时激活），透传管道与检查管道共用。
 	mediaSpeechTransform := mediaSpeechTransformPlan(input)
+	// TTS 二进制透传的流式时长计量：转换型响应在 TransformResponse 后
+	// 直接解析音频字节，纯透传响应在 OnChunkRead 喂 Meter（只保留有界
+	// 状态，不缓冲整段音频）。
+	var speechDurationMeter *mediaduration.Meter
+	var speechTransformedAudio []byte
+	var speechTransformedContentType string
+	if transportResponseSuccessful && !mediaSpeechTransform.active &&
+		input.Req != nil && gatewaymedia.IsSpeechPath(input.Req.PathAndQuery()) {
+		speechDurationMeter = mediaduration.NewMeter(
+			speechDurationMeterOptions(input.Req, input.UpstreamResponse.Header.Get("Content-Type")))
+	}
 	if input.UpstreamResponse.Body == nil {
 		if input.UpstreamResponse.Status == 204 || input.UpstreamResponse.Status == 205 {
 			if !input.successfulEmptyUpstreamAllowed() {
@@ -549,6 +561,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				input.DownstreamCommitState.MarkTransportCommitted(0)
 			},
 			OnChunkRead: func(chunk []byte) {
+				if speechDurationMeter != nil {
+					_, _ = speechDurationMeter.Write(chunk)
+				}
 				if responsesTracker != nil {
 					responsesTracker.Push(chunk)
 				}
@@ -645,6 +660,8 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				value := nowMsOf(&input)() - input.StartedAtMs
 				pipeResult.FirstByteMs = &value
 			}
+			speechTransformedAudio = audio
+			speechTransformedContentType = contentType
 			if input.UpstreamResponse.Header == nil {
 				input.UpstreamResponse.Header = http.Header{}
 			}
@@ -778,37 +795,23 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	// 2026-11-07 跨协议桥退役：原 DD-C6（T86）非流式桥接 usage 快照消费臂随
 	// 桥删除（唯一生产者 chainBridgeUsageSlot/carrier 已删）；结算回到上方
 	// driver 抽取与估算兜底路径。
-	// M1 同步音频计量注入（契约 §2.8 计量来源表，仅成功转发计量）：
-	//   - TTS speech：上游无 usage 回报，网关按请求 input 字符数自算；
-	//     token 口径模型（gpt-4o-mini-tts / gpt-4o-tts 系）无 token 事实时
-	//     同样置 usage_missing（不猜测）；volcengine TTS 按生成原始时长
-	//     （响应 duration 秒，官方计费维度，2026-10-17 维度修正批），不落
-	//     字符口径；
-	//   - STT：usage token（上方 driver 抽取已落既有 token 字段）优先，缺
-	//     失时取 verbose_json duration 秒；两者都缺 → 计量 0 + usage_missing
-	//     标记（不猜测）。
-	if forwardedMetering := transportResponseSuccessful && !responsesFailedTerminal; forwardedMetering {
+	// 同步音频计量注入（非对话媒体统一计费设计 §7.2/§7.3，仅成功转发计量）：
+	//   - TTS：上游回报时长（volcengine 顶层 duration 秒 / minimax
+	//     extra_info.audio_length 毫秒）→ 网关解析产物音频时长
+	//     （gateway_parse）→ 请求 input 字符数 ÷ charsPerSecond（estimated）；
+	//     三者都缺 → usage_missing。TtsInputChars 仍保留为审计事实（统一
+	//     模板按秒计价时计费引擎忽略该维度，legacy 行由 chain 侧按来源
+	//     门控是否消费秒数）。
+	//   - STT：上游 verbose_json duration → 请求上传音频解析
+	//     （request_media）；两者都缺且无 token 用量 → usage_missing。
+	//     token 用量存在时不在本层置 missing（legacy token 口径沿用旧行为，
+	//     统一模板行由 chain 侧按秒数是否可得重算）。
+	if forwardedMetering := transportResponseSuccessful && !responsesFailedTerminal; forwardedMetering && input.Req != nil {
 		requestPath := input.Req.PathAndQuery()
 		switch {
 		case gatewaymedia.IsSpeechPath(requestPath):
-			streamModel := mediaSpeechTransform.active &&
-				gatewaymedia.IsVolcengineTTSStreamModel(mediaSpeechTransform.request.Model)
-			if mediaSpeechTransform.active && mediaSpeechTransform.providerKey == "volcengine" && !streamModel {
-				// volcengine TTS（契约 §9.2/§2.8，2026-10-17 维度修正批）：
-				// 官方计费维度是生成原始时长（响应顶层 duration 秒，精确
-				// 至秒），字符不是计费维度——落 audio_input_seconds 秒计
-				// 量，不落字符口径；duration 缺失/非正值 → 0 计量 +
-				// usage_missing（不猜测）。
-				if seconds, hasDuration := gatewaymedia.SpeechReportedDurationSecondsFromJSON(parsedJsonBody.Value); hasDuration {
-					usage.AudioInputSeconds = &seconds
-				} else {
-					usage.UsageMissing = true
-				}
-				break
-			}
-			// 火山 2.0 流式面（seed-tts-2.0，桥接设计 V1a）落字符口径：
-			// 官方计费维度为字符（3 元/万字符），沿下方 TtsInputChars 既有
-			// 请求自算路径——与 1.0 同步面的时长口径按 model 分流。
+			// 请求侧字符口径（gemini/minimax/volcengine 转换型响应也会走到
+			// 这里；转换产物由下方秒数解析优先）。
 			speechBody := input.Req.ParsedJSONObjectBody()
 			if speechBody == nil && input.Req.Body != nil && len(input.Req.Body.RawBody) > 0 {
 				var parsed map[string]any
@@ -827,27 +830,36 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				}
 			}
 			usage.TtsInputChars = &chars
-			// token 口径 TTS（gpt-4o-mini-tts / gpt-4o-tts 系）：上游
-			// 二进制响应无 usage 回报，网关无 token 自算维度（字符自算
-			// 只服务 tts-1 族字符口径）→ 0 计费 + usage_missing（§2.8
-			// 不猜测；沿 STT 的置位先例）。gemini TTS（generateContent
-			// JSON）usageMetadata 沿既有抽取链，不命中本词表。
+
+			if seconds, source, ok := ttsAudioSeconds(input.Req, parsedJsonBody.Value,
+				speechTransformedAudio, speechTransformedContentType,
+				speechDurationMeter, chars); ok {
+				usage.AudioInputSeconds = &seconds
+				usage.QuantitySource = source
+			} else {
+				usage.UsageMissing = true
+			}
+			// token 口径 TTS（gpt-4o-mini-tts / gpt-4o-tts 系）在 legacy 目录
+			// 只有 audio token 价：无 token 事实时保持 usage_missing（不猜测）。
+			// 统一模板行（media_pricing_json）由 chain 侧按秒数重算 missing。
 			speechModel, _ := speechBody["model"].(string)
 			if usage.InputTokens == nil && usage.OutputTokens == nil &&
 				gatewaymedia.IsTokenMeteredSpeechModel(speechModel) {
 				usage.UsageMissing = true
 			}
 		case gatewaymedia.IsTranscriptionPath(requestPath):
-			if usage.InputTokens == nil && usage.OutputTokens == nil {
-				if root, ok := parsedJsonBody.Value.(map[string]any); ok {
-					if seconds, hasDuration := gatewaymedia.SttDurationSeconds(root); hasDuration {
-						usage.AudioInputSeconds = &seconds
-					} else {
-						usage.UsageMissing = true
-					}
-				} else {
-					usage.UsageMissing = true
+			if root, ok := parsedJsonBody.Value.(map[string]any); ok {
+				if seconds, hasDuration := gatewaymedia.SttDurationSeconds(root); hasDuration {
+					usage.AudioInputSeconds = &seconds
+					usage.QuantitySource = "upstream"
+					break
 				}
+			}
+			if seconds, ok := sttRequestAudioDuration(input.Req); ok {
+				usage.AudioInputSeconds = &seconds
+				usage.QuantitySource = "request_media"
+			} else if usage.InputTokens == nil && usage.OutputTokens == nil {
+				usage.UsageMissing = true
 			}
 		}
 	}
@@ -1246,6 +1258,10 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 				BodyText:    result.ResponseBodyText,
 			}
 		}
+		usage := usageWithObservedModel(result.Usage, observedModel)
+		if forwardedResponseSuccessful {
+			usage = usageWithRequestMediaMetering(input.Req, usage)
+		}
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 			UsageContext:                        input.UsageContext,
 			Account:                             input.Account,
@@ -1257,7 +1273,7 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 			AccountAPIKeySuccessAlreadyRecorded: true,
 			FirstTokenMs:                        result.FirstTokenMs,
 			StartedAtMs:                         input.StartedAtMs,
-			Usage:                               usageWithObservedModel(result.Usage, observedModel),
+			Usage:                               usage,
 			ErrorCode:                           finalErrorCode,
 			ErrorMessage:                        finalErrorMessage,
 			FailureAttribution:                  failureAttributionFor(forwardedResponseSuccessful),

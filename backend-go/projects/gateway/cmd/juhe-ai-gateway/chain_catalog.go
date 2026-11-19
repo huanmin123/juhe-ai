@@ -56,6 +56,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,9 @@ var chainCatalogColumns = [][2]string{
 	{"audio_input_usd_per_1m", "audioInputUsdPer1M"},
 	{"audio_output_usd_per_1m", "audioOutputUsdPer1M"},
 	{"output_usd_per_image", "outputUsdPerImage"},
+	// 非对话媒体统一计费（设计 §5.1/§6.1）：运行时唯一权威列；空/NULL 由
+	// scanCatalogRows 归一为无价格标志，legacy 扁平价格仅作回退。
+	{"media_pricing_json", "mediaPricing"},
 	{"supports_prompt_caching", "supportsPromptCaching"},
 	{"catalog_visible", "catalogVisible"},
 	{"source", "source"},
@@ -614,6 +618,10 @@ func chainCatalogTokenBoundaryEnd(model string, index int) bool {
 // 两处若各自维护，就会出现「能绑定但计价目录查不到」的裂缝
 // （BUG-0344：成功流量 cost NULL）。
 func chainHasDirectCatalogPrice(item gatewayruntimecache.ProviderModelCatalogItem) bool {
+	// 统一媒体模板存在即为有价，0 价同样有效（设计 §5.2）。
+	if item.HasMediaPricing {
+		return true
+	}
 	return pricing.HasCatalogDirectPrice(item.ProviderCode, item.Model, pricing.PriceSet{
 		InputUsdPer1M:               item.InputUsdPer1M,
 		OutputUsdPer1M:              item.OutputUsdPer1M,
@@ -846,6 +854,20 @@ func scanCatalogRows(rows *sql.Rows, columns [][2]string, decorate func(map[stri
 		var item gatewayruntimecache.ProviderModelCatalogItem
 		if err := json.Unmarshal(encoded, &item); err != nil {
 			return nil, err
+		}
+		// 运行期非法 media_pricing_json 不得静默回落 legacy 猜测：该行按无有效
+		// 价格处理（HasMediaPricing=false），绑定/计价按无价拒绝（设计 §5.2）。
+		if len(item.MediaPricing) > 0 {
+			parsed, err := mediapricing.Parse(item.MediaPricing)
+			if err != nil {
+				item.MediaPricing = nil
+				item.HasMediaPricing = false
+			} else {
+				if canonical, canonicalErr := parsed.CanonicalJSON(); canonicalErr == nil {
+					item.MediaPricing = canonical
+				}
+				item.HasMediaPricing = true
+			}
 		}
 		items = append(items, item)
 	}

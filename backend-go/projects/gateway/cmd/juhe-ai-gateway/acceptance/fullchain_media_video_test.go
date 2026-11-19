@@ -2,7 +2,7 @@ package acceptance
 
 // M2 视频链路全链路验收（媒体矩阵 Stage 3）——在 fullchain 夹具（真实
 // gateway 二进制 + 场景控制器 mock 上游 + 管理面全量配置）之上覆盖四条
-// /v1/videos 业务链，场景用 mockupstream media_video_*（契约 §4.3）：
+// /v1/video/generations 业务链，场景用 mockupstream media_video_*（契约 §4.3）：
 //
 //  1. TestFullchainMediaVideoLifecycle：完整生命周期——创建（统一 job 对象、
 //     params_ignored 回显 negative_prompt）→ 轮询 33→66→completed → content
@@ -39,7 +39,7 @@ import (
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
 )
 
-// fullchainVideoMockModel 是 openai 形态 /v1/videos 面验收用的自定义目录行：
+// fullchainVideoMockModel 是 openai 形态视频面验收用的自定义目录行：
 // 2026-10-12 核对批起官方 sora-2 系已标停用（shutdown 2026-09-24，活跃目录
 // 与 hybrid 协议模型池都不再收录），而启用态自定义行只有文本价通道可过
 // validateCustomModelPricing（视频自定义行无价格通道恒不可启用）——故以
@@ -93,7 +93,7 @@ func fullchainVideoAccountExtra() map[string]any {
 	}
 }
 
-// videoT 调用 /v1/videos 族端点（POST 创建 / GET 任务面），body 为完整 JSON
+// videoT 调用 /v1/video/generations 族端点（POST 创建 / GET 任务面），body 为完整 JSON
 // 字符串（空串表示无请求体）。
 func (f *fullchainFixture) videoT(t *testing.T, apiKey, method, path, body string) fullchainChatResponse {
 	t.Helper()
@@ -200,12 +200,12 @@ func TestFullchainMediaVideoLifecycle(t *testing.T) {
 
 	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
 	// params_ignored 含 negative_prompt、params_applied 覆盖核心参数）。
-	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos", fullchainVideoCreateBody)
+	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/video/generations", fullchainVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV lifecycle create status=%d body=%s calls=%+v", created.Status, created.Body, f.mock.callsByKey(route.upstreamKeys[0]))
 	}
 	job := decodeVideoJob(t, created)
-	jobID := str(job["id"])
+	jobID := str(job["task_id"])
 	if !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("MV lifecycle job id 缺少 video_ 前缀: %#v", job)
 	}
@@ -228,7 +228,7 @@ func TestFullchainMediaVideoLifecycle(t *testing.T) {
 		status   string
 	}{{33, "in_progress"}, {66, "in_progress"}, {100, "completed"}}
 	for index, want := range wantProgress {
-		polled := f.videoT(t, route.apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		polled := f.videoT(t, route.apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 		if polled.Status != http.StatusOK {
 			t.Fatalf("MV lifecycle poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
 		}
@@ -242,7 +242,7 @@ func TestFullchainMediaVideoLifecycle(t *testing.T) {
 
 	// content 下载：video/mp4 + ftyp magic bytes（ISO-BMFF 首盒，mock 契约
 	// §3.2.3 的确定性 72 字节载荷）。
-	content := f.videoT(t, route.apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	content := f.videoT(t, route.apiKey, http.MethodGet, "/v1/video/generations/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV lifecycle content status=%d body=%s", content.Status, content.Body)
 	}
@@ -296,11 +296,11 @@ func TestFullchainMediaVideoAcceptanceBoundary(t *testing.T) {
 
 	// 任务 1：创建经 A 429 → 换 B（ok_poll1）受理成功。
 	f.mock.script(keyB, platformmock.ScenarioMediaVideoOKPoll1)
-	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos", fullchainVideoCreateBody)
+	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/video/generations", fullchainVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV boundary create#1 status=%d body=%s", created.Status, created.Body)
 	}
-	job1ID := str(decodeVideoJob(t, created)["id"])
+	job1ID := str(decodeVideoJob(t, created)["task_id"])
 
 	// 换账户证据：A、B 各收到创建请求（A 的 429 尝试 + B 的成功受理）。
 	countCreateCalls := func(key string) int {
@@ -323,24 +323,24 @@ func TestFullchainMediaVideoAcceptanceBoundary(t *testing.T) {
 		t.Fatalf("MV boundary job#1 accountId=%s, want B(%s)", row1.AccountID, route.accountIDs[1])
 	}
 	// 推进任务 1 到终态（ok_poll1 快路径），与后续新任务互不干扰。
-	if polled := f.videoT(t, route.apiKey, http.MethodGet, "/v1/videos/"+job1ID, ""); polled.Status != http.StatusOK {
+	if polled := f.videoT(t, route.apiKey, http.MethodGet, "/v1/video/generations/"+job1ID, ""); polled.Status != http.StatusOK {
 		t.Fatalf("MV boundary poll#1 status=%d body=%s", polled.Status, polled.Body)
 	}
 
 	// 任务 2（同一账户 B 的新任务）：受理后轮询 500。
 	f.mock.script(keyB, platformmock.ScenarioMediaVideoPoll500)
-	created2 := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos", fullchainVideoCreateBody)
+	created2 := f.videoT(t, route.apiKey, http.MethodPost, "/v1/video/generations", fullchainVideoCreateBody)
 	if created2.Status != http.StatusOK {
 		t.Fatalf("MV boundary create#2 status=%d body=%s", created2.Status, created2.Body)
 	}
 	job2 := decodeVideoJob(t, created2)
-	job2ID, providerJob2ID := str(job2["id"]), str(job2["provider_job_id"])
+	job2ID, providerJob2ID := str(job2["task_id"]), str(job2["provider_job_id"])
 	if job2["status"] != "queued" {
 		t.Fatalf("MV boundary create#2 status 字段 = %v, want queued", job2["status"])
 	}
 
 	// 轮询 500：网关透出错误（502 upstream_error，受理后不换账户不伪造终态）。
-	pollFailed := f.videoT(t, route.apiKey, http.MethodGet, "/v1/videos/"+job2ID, "")
+	pollFailed := f.videoT(t, route.apiKey, http.MethodGet, "/v1/video/generations/"+job2ID, "")
 	if pollFailed.Status != http.StatusBadGateway {
 		t.Fatalf("MV boundary poll#2 status=%d, want 502（上游轮询 500 透出为网关错误）body=%s", pollFailed.Status, pollFailed.Body)
 	}
@@ -390,7 +390,7 @@ func TestFullchainMediaVideoCreate400BadSizeNoSwitch(t *testing.T) {
 	keyB := route.upstreamKeys[1]
 
 	// size=9999x9999：本地 WxH 形态校验通过，值域由上游裁决 → 上游 400。
-	failed := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos",
+	failed := f.videoT(t, route.apiKey, http.MethodPost, "/v1/video/generations",
 		`{"model":"`+fullchainVideoMockModel+`","prompt":"参数错误不换账户","seconds":"4","size":"9999x9999"}`)
 	if failed.Status != http.StatusBadRequest {
 		t.Fatalf("MV 400 create status=%d body=%s, want 400（上游参数错误透传）", failed.Status, failed.Body)
@@ -439,13 +439,13 @@ func TestFullchainMediaVideoArtifactExpired(t *testing.T) {
 		}},
 	}, nil, nil)
 
-	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos", fullchainVideoCreateBody)
+	created := f.videoT(t, route.apiKey, http.MethodPost, "/v1/video/generations", fullchainVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV expired create status=%d body=%s", created.Status, created.Body)
 	}
-	jobID := str(decodeVideoJob(t, created)["id"])
+	jobID := str(decodeVideoJob(t, created)["task_id"])
 
-	polled := f.videoT(t, route.apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	polled := f.videoT(t, route.apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 	if polled.Status != http.StatusOK {
 		t.Fatalf("MV expired poll status=%d body=%s", polled.Status, polled.Body)
 	}
@@ -453,7 +453,7 @@ func TestFullchainMediaVideoArtifactExpired(t *testing.T) {
 		t.Fatalf("MV expired poll status 字段 = %v, want completed（content_expired 脚本轮询即完成）", object["status"])
 	}
 
-	content := f.videoT(t, route.apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	content := f.videoT(t, route.apiKey, http.MethodGet, "/v1/video/generations/"+jobID+"/content", "")
 	if content.Status != http.StatusGone {
 		t.Fatalf("MV expired content status=%d, want 410 body=%s", content.Status, content.Body)
 	}
@@ -533,12 +533,12 @@ func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
 	// provider_job_id 为 operation 名、params_applied 含 size/negative_prompt、
 	// params_ignored 含 seconds）。
 	f.mock.script(key, platformmock.ScenarioMediaGeminiVideoCreateOK)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainGeminiVideoCreateBody)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/video/generations", fullchainGeminiVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV gemini create status=%d body=%s", created.Status, created.Body)
 	}
 	job := decodeVideoJob(t, created)
-	jobID := str(job["id"])
+	jobID := str(job["task_id"])
 	if !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("MV gemini job id 缺少 video_ 前缀: %#v", job)
 	}
@@ -563,14 +563,14 @@ func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
 	}
 
 	// 轮询两次：queued（done:false）→ completed（done:true + uri 冻结）。
-	first := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	first := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 	if first.Status != http.StatusOK {
 		t.Fatalf("MV gemini poll#1 status=%d body=%s", first.Status, first.Body)
 	}
 	if object := decodeVideoJob(t, first); object["status"] != "queued" {
 		t.Fatalf("MV gemini poll#1 status 字段 = %v, want queued", object["status"])
 	}
-	second := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	second := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 	if second.Status != http.StatusOK {
 		t.Fatalf("MV gemini poll#2 status=%d body=%s", second.Status, second.Body)
 	}
@@ -580,7 +580,7 @@ func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
 
 	// content 下载：completed 的产物 uri 是引擎渲染的绝对签名 URL，网关
 	// 无凭据直连（video/mp4 + ftyp magic bytes）。
-	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV gemini content status=%d body=%s", content.Status, content.Body)
 	}
@@ -629,8 +629,8 @@ func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
 // fullchainMinimaxVideoCreateBody 是 minimax 视频创建请求体：seconds 数值
 // 直传 duration、input_reference（base64 data URL）进 first_frame_image；
 // seed 对 minimax 请求面不存在 → params_ignored 回显；prompt_optimizer 经
-// provider_options.minimax 命中 → provider_options_applied 回显。
-const fullchainMinimaxVideoCreateBody = `{"model":"MiniMax-Hailuo-2.3","prompt":"一只猫在弹钢琴","seconds":"6","input_reference":"data:image/png;base64,aGVsbG8=","seed":42,"provider_options":{"minimax":{"prompt_optimizer":true}}}`
+// metadata（minimax 参数） 命中 → metadata_applied 回显。
+const fullchainMinimaxVideoCreateBody = `{"model":"MiniMax-Hailuo-2.3","prompt":"一只猫在弹钢琴","seconds":"6","input_reference":"data:image/png;base64,aGVsbG8=","seed":42,"metadata":{"prompt_optimizer":true}}`
 
 // fullchainCreateMinimaxVideoAccount 经管理面创建指向 mock 上游的 minimax
 // api_key 账户并绑定分组（minimax 供应商 + 媒体档案 profile_minimax_openai_
@@ -675,7 +675,7 @@ func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey,
 // TestFullchainMediaVideoMinimaxHailuo 验证 M3 minimax（Hailuo）视频链主流程
 // （契约 §8.1）：管理面配置（minimax 分组 + Hailuo 模型账户，媒体档案无
 // chat 模式）→ 创建（video_generation 报文改写、统一 job 对象、provider=
-// minimax、params 回显 seed 进 ignored / provider_options_applied 命中）→
+// minimax、params 回显 seed 进 ignored / metadata_applied 命中）→
 // 轮询 queued → queued → completed（status 归一 + file_download_url 冻结）→
 // content 经绝对 URL 无凭据直连下载 mp4 → 管理面 media-jobs 行终态
 // （按次计费口径 cost=roundCost(2/7)=0.2857142857，2026-10-05 按次计费批）→ 账户亲和（上游命中
@@ -695,15 +695,15 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 
 	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
 	// provider_job_id 为 16 hex 任务 id、params_applied 含 seconds/
-	// input_reference、params_ignored 含 seed、provider_options_applied 含
+	// input_reference、params_ignored 含 seed、metadata_applied 含
 	// minimax）。
 	f.mock.script(key, platformmock.ScenarioMediaMinimaxCreateOK)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainMinimaxVideoCreateBody)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/video/generations", fullchainMinimaxVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV minimax create status=%d body=%s", created.Status, created.Body)
 	}
 	job := decodeVideoJob(t, created)
-	jobID := str(job["id"])
+	jobID := str(job["task_id"])
 	if !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("MV minimax job id 缺少 video_ 前缀: %#v", job)
 	}
@@ -726,14 +726,14 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	if !strings.Contains(fmt.Sprintf("%v", job["params_ignored"]), "seed") {
 		t.Fatalf("MV minimax params_ignored 缺少 seed（minimax 请求面无 seed）: %v", job["params_ignored"])
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "prompt_optimizer") {
-		t.Fatalf("MV minimax provider_options_applied 缺少 prompt_optimizer（minimax 子对象命中键名回显）: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", job["metadata_applied"]), "prompt_optimizer") {
+		t.Fatalf("MV minimax metadata_applied 缺少 prompt_optimizer（minimax 子对象命中键名回显）: %v", job["metadata_applied"])
 	}
 
 	// 轮询三次：queued（Preparing）→ queued（Queueing）→ completed
 	//（Success + file_download_url 冻结）。
 	for index, want := range []string{"queued", "queued", "completed"} {
-		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 		if polled.Status != http.StatusOK {
 			t.Fatalf("MV minimax poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
 		}
@@ -744,7 +744,7 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 
 	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
 	// 直连（video/mp4 + ftyp magic bytes）。
-	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV minimax content status=%d body=%s", content.Status, content.Body)
 	}
@@ -797,9 +797,9 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 // parameters.duration、seed 直传、input_reference（base64 data URL）进
 // input.img_url 直传、negative_prompt 进 input.negative_prompt（官方原生
 // 字段，M3 首个 negative_prompt 生效的视频供应商）；audio 对 qwen 请求面
-// 无生成开关 → params_ignored 回显；prompt_extend 经 provider_options.qwen
-// 命中 → provider_options_applied 回显。
-const fullchainQwenVideoCreateBody = `{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","seconds":5,"size":"1920x1080","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"provider_options":{"qwen":{"parameters":{"prompt_extend":true}}}}`
+// 无生成开关 → params_ignored 回显；prompt_extend 经 metadata（qwen 参数）
+// 命中 → metadata_applied 回显。
+const fullchainQwenVideoCreateBody = `{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","seconds":5,"size":"1920x1080","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"metadata":{"parameters":{"prompt_extend":true}}}`
 
 // fullchainCreateQwenVideoAccount 经管理面创建指向 mock 上游的 qwen api_key
 // 账户并绑定分组（qwen 供应商 + 媒体档案 profile_qwen_openai_v1；目录 seed
@@ -846,7 +846,7 @@ func (f *fullchainFixture) fullchainCreateQwenVideoAccount(name, upstreamKey, gr
 // 模式）→ 创建（video-synthesis 报文改写 + X-DashScope-Async 异步头——mock
 // 引擎对无头创建按上游语义拒绝 400，创建成功本身即异步头到达的行为断言、
 // 统一 job 对象、provider=qwen、params 回显 negative_prompt 生效 / audio 进
-// ignored / provider_options_applied 命中）→ 轮询 queued → in_progress →
+// ignored / metadata_applied 命中）→ 轮询 queued → in_progress →
 // completed（task_status 归一 + output.video_url 冻结）→ content 经绝对 URL
 // 无凭据直连下载 mp4 → 管理面 media-jobs 行终态（usage JSON 字符串解析出
 // 5 秒计量照落、目录无 USD 秒价 cost=0 不虚计）→ 账户亲和（上游命中只打
@@ -867,16 +867,16 @@ func TestFullchainMediaVideoQwenWanx(t *testing.T) {
 	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
 	// provider_job_id 为 uuid 任务 id、params_applied 含 seconds/size/seed/
 	// input_reference/negative_prompt、params_ignored 含 audio、
-	// provider_options_applied 含 qwen 子对象键名）。X-DashScope-Async 头
+	// metadata_applied 含 qwen 子对象键名）。X-DashScope-Async 头
 	// 由 mock 引擎的创建门禁校验（缺失即 400，契约 §10.1）——创建成功即
 	// 证明链上已注入异步头（链级测试另直接断言头值）。
 	f.mock.script(key, platformmock.ScenarioMediaQwenCreatePending)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainQwenVideoCreateBody)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/video/generations", fullchainQwenVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV qwen create status=%d body=%s", created.Status, created.Body)
 	}
 	job := decodeVideoJob(t, created)
-	jobID := str(job["id"])
+	jobID := str(job["task_id"])
 	if !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("MV qwen job id 缺少 video_ 前缀: %#v", job)
 	}
@@ -900,14 +900,14 @@ func TestFullchainMediaVideoQwenWanx(t *testing.T) {
 	if !strings.Contains(ignoredList, "audio") {
 		t.Fatalf("MV qwen params_ignored 缺少 audio（qwen 请求面无生成音频开关）: %v", job["params_ignored"])
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "parameters") {
-		t.Fatalf("MV qwen provider_options_applied 缺少 parameters（qwen 子对象命中键名回显）: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", job["metadata_applied"]), "parameters") {
+		t.Fatalf("MV qwen metadata_applied 缺少 parameters（qwen 子对象命中键名回显）: %v", job["metadata_applied"])
 	}
 
 	// 轮询三次：queued → in_progress（RUNNING 归一）→ completed（SUCCEEDED +
 	// output.video_url 冻结 + usage JSON 字符串解析出 5 秒计量）。
 	for index, want := range []string{"queued", "in_progress", "completed"} {
-		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 		if polled.Status != http.StatusOK {
 			t.Fatalf("MV qwen poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
 		}
@@ -918,7 +918,7 @@ func TestFullchainMediaVideoQwenWanx(t *testing.T) {
 
 	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
 	// 直连（video/mp4 + ftyp magic bytes）。
-	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV qwen content status=%d body=%s", content.Status, content.Body)
 	}
@@ -972,9 +972,9 @@ func TestFullchainMediaVideoQwenWanx(t *testing.T) {
 // aspect_ratio 16:9 + resolution 720p、seconds 6 整数化直传 duration、
 // input_reference（base64 data URL）进 image 直传、audio=false 直传
 // generate_audio；negative_prompt/seed 对 xai 请求面不存在 → params_ignored
-// 回显；reference_audios 经 provider_options.xai 命中 → provider_options_
+// 回显；reference_audios 经 metadata 命中 → metadata_
 // applied 回显（契约 §6.1 范围外能力经 L3 通道可达）。
-const fullchainXaiVideoCreateBody = `{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","seconds":6,"size":"1280x720","input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","seed":42,"audio":false,"provider_options":{"xai":{"reference_audios":["voice-1"]}}}`
+const fullchainXaiVideoCreateBody = `{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","seconds":6,"size":"1280x720","input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","seed":42,"audio":false,"metadata":{"reference_audios":["voice-1"]}}`
 
 // fullchainCreateXaiVideoAccount 经管理面创建指向 mock 上游的 xai api_key
 // 账户并绑定分组（xai 供应商 + 既有文本档案 profile_xai_openai_v1——与
@@ -1022,7 +1022,7 @@ func (f *fullchainFixture) fullchainCreateXaiVideoAccount(name, upstreamKey, gro
 // 账户，既有文本档案 opt-in 视频）→ 创建（报文改写 + 统一 job 对象、
 // provider=xai、创建响应无 status 字段空归一 in_progress、params 回显
 // negative_prompt/seed 进 ignored / audio 生效进 applied /
-// provider_options_applied 命中）→ 轮询 in_progress（pending 归一）→
+// metadata_applied 命中）→ 轮询 in_progress（pending 归一）→
 // completed（done 归一 + video.url 冻结 + duration 秒计量）→ content 经绝对
 // URL 无凭据直连下载 mp4 → 终态 usage 行落账（video.duration=6 秒计量照抽，
 // 秒数值断言在链级 TestChainMediaXaiVideoFullFlowLifecycle 的 spool 记录）+
@@ -1046,14 +1046,14 @@ func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 	// 创建响应只有 request_id 无 status 字段，空归一 pending 同义、
 	// provider_job_id 为 uuid request_id、params_applied 含 seconds/size/
 	// input_reference/audio、params_ignored 含 negative_prompt/seed、
-	// provider_options_applied 含 xai 子对象键名）。
+	// metadata_applied 含 xai 子对象键名）。
 	f.mock.script(key, platformmock.ScenarioMediaXaiVideoCreateRequestID)
-	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainXaiVideoCreateBody)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/video/generations", fullchainXaiVideoCreateBody)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV xai create status=%d body=%s", created.Status, created.Body)
 	}
 	job := decodeVideoJob(t, created)
-	jobID := str(job["id"])
+	jobID := str(job["task_id"])
 	if !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("MV xai job id 缺少 video_ 前缀: %#v", job)
 	}
@@ -1079,14 +1079,14 @@ func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 			t.Fatalf("MV xai params_ignored 缺少 %s（xai 请求面无对应字段）: %v", want, job["params_ignored"])
 		}
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "reference_audios") {
-		t.Fatalf("MV xai provider_options_applied 缺少 reference_audios（xai 子对象命中键名回显）: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", job["metadata_applied"]), "reference_audios") {
+		t.Fatalf("MV xai metadata_applied 缺少 reference_audios（xai 子对象命中键名回显）: %v", job["metadata_applied"])
 	}
 
 	// 轮询两次：in_progress（pending 归一）→ completed（done + video.url
 	// 冻结 + duration 秒计量抽取）。
 	for index, want := range []string{"in_progress", "completed"} {
-		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID, "")
 		if polled.Status != http.StatusOK {
 			t.Fatalf("MV xai poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
 		}
@@ -1097,7 +1097,7 @@ func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 
 	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
 	// 直连（video/mp4 + ftyp magic bytes）。
-	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/video/generations/"+jobID+"/content", "")
 	if content.Status != http.StatusOK {
 		t.Fatalf("MV xai content status=%d body=%s", content.Status, content.Body)
 	}
@@ -1122,11 +1122,11 @@ func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 	if row.CostUsd != 0.84 {
 		t.Fatalf("MV xai row costUsd=%v, want 0.84（$0.14/s × 6s）", row.CostUsd)
 	}
-	// 终态 usage 行落账（completed 成功行，endpoint=/v1/videos，模型直达）：
+	// 终态 usage 行落账（completed 成功行，endpoint=/v1/video/generations，模型直达）：
 	// usage_missing 语义在链级测试钉住（计量在场时无该标记）。
 	f.waitUsageRecords(t, apiKeyID, func(rows []fullchainUsageRecord) bool {
 		for _, record := range rows {
-			if record.Endpoint == "/v1/videos" && record.Success && record.Model == "grok-imagine-video-1.5" {
+			if record.Endpoint == "/v1/video/generations" && record.Success && record.Model == "grok-imagine-video-1.5" {
 				return true
 			}
 		}

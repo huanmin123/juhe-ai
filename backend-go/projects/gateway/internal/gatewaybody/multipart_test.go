@@ -244,3 +244,95 @@ func TestMultipartLimitSemantics(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractMultipartImageMetering(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		parts     []string
+		wantSize  string
+		wantCount int
+	}{
+		{
+			name:      "size and n after file part",
+			path:      "/v1/images/edits",
+			parts:     []string{filePart("image", "a.png"), formField("size", " 2048X2048 "), formField("n", "2")},
+			wantSize:  "2048x2048",
+			wantCount: 2,
+		},
+		{
+			name:      "missing n",
+			path:      "/images/variations",
+			parts:     []string{formField("size", "1024x1024")},
+			wantSize:  "1024x1024",
+			wantCount: 0,
+		},
+		{
+			name:      "duplicate size voids value",
+			path:      "/v1/images/edits",
+			parts:     []string{formField("size", "1024x1024"), formField("size", "2048x2048")},
+			wantCount: 0,
+		},
+		{
+			name:      "invalid n ignored",
+			path:      "/v1/images/edits",
+			parts:     []string{formField("n", "many")},
+			wantCount: 0,
+		},
+		{
+			name:      "non-image path untouched",
+			path:      "/v1/audio/transcriptions",
+			parts:     []string{formField("size", "1024x1024"), formField("n", "2")},
+			wantCount: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body, contentType := multipartBody(t, tc.parts)
+			size, count := ExtractMultipartImageMetering(body, contentType, tc.path)
+			if size != tc.wantSize || count != tc.wantCount {
+				t.Fatalf("metering = %q,%d want %q,%d", size, count, tc.wantSize, tc.wantCount)
+			}
+		})
+	}
+}
+
+func TestExtractMultipartFilePart(t *testing.T) {
+	body, contentType := multipartBody(t, []string{
+		formField("model", "whisper-1"),
+		"Content-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\nAUDIODATA",
+	})
+	data, partType, ok := ExtractMultipartFilePart(body, contentType, "file")
+	if !ok || string(data) != "AUDIODATA" {
+		t.Fatalf("file part = %q ok=%v, want AUDIODATA", data, ok)
+	}
+	if partType != "audio/mpeg" {
+		t.Fatalf("part content-type = %q, want audio/mpeg", partType)
+	}
+	if _, _, ok := ExtractMultipartFilePart(body, contentType, "image"); ok {
+		t.Fatal("missing field must not be extracted")
+	}
+	if _, _, ok := ExtractMultipartFilePart(body, "application/json", "file"); ok {
+		t.Fatal("non-multipart content-type must be rejected")
+	}
+}
+
+func TestExtractMultipartFilePartDuplicateFileField(t *testing.T) {
+	body, contentType := multipartBody(t, []string{
+		filePart("file", "a.mp3"),
+		filePart("file", "b.mp3"),
+	})
+	if _, _, ok := ExtractMultipartFilePart(body, contentType, "file"); !ok {
+		t.Fatal("first matching file part should be returned")
+	}
+	// 文件数超限由 multipartMaxFiles 限制；目标文件在第 6 个时整体拒绝。
+	parts := make([]string, 0, multipartMaxFiles+1)
+	for i := 0; i < multipartMaxFiles; i++ {
+		parts = append(parts, filePart("other", "a.mp3"))
+	}
+	parts = append(parts, filePart("file", "target.mp3"))
+	body, contentType = multipartBody(t, parts)
+	if _, _, ok := ExtractMultipartFilePart(body, contentType, "file"); ok {
+		t.Fatal("file count over limit must be rejected")
+	}
+}

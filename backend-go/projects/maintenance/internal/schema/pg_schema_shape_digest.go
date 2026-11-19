@@ -1,5 +1,5 @@
 // PostgresActualShapeDigest 计算 juhe_business schema 的「库内实际形态」指纹
-//（T84-3，2026-11-08 用户裁决「根治」：选定 B 口径并与 A 口径版本前缀区分）。
+// （T84-3，2026-11-08 用户裁决「根治」：选定 B 口径并与 A 口径版本前缀区分）。
 //
 // 序列化范围：columns + indexes + constraints 的标准化行（触发器等运行时对象
 // 不入指纹——dirty 触发器由各自的 ensure/清理逻辑管理，属可再生态）。行排序后

@@ -368,6 +368,13 @@ func billingBreakdown(t *testing.T, providerCode, model string, input CostInput)
 	return BuildCostBreakdown(pricing, input)
 }
 
+// billingLegacyBreakdown 与 billingBreakdown 相同，但显式去掉 mediaPricing，
+// 用于继续覆盖 legacy 扁平价格字段分支（P3 迁移后内置媒体行默认走统一模板）。
+func billingLegacyBreakdown(t *testing.T, providerCode, model string, input CostInput) *CostBreakdown {
+	t.Helper()
+	return BuildCostBreakdown(legacyPricingForTest(t, providerCode, model), input)
+}
+
 func wantFloat(t *testing.T, name string, got *float64, want float64) {
 	t.Helper()
 	if got == nil {
@@ -636,10 +643,11 @@ func TestBuildCostBreakdownGeminiLongContext(t *testing.T) {
 }
 
 func TestBuildCostBreakdownOpenAIImagePolicy(t *testing.T) {
-	// gpt-image-2 (mode image_generation): input 5, image input 8, image
-	// output 30. Without explicit outputImageTokens the text output stream
-	// is billed as image output.
-	got := billingBreakdown(t, "openai", "gpt-image-2", CostInput{
+	// gpt-image-2 legacy 分支 (mode image_generation): input 5, image input 8,
+	// image output 30. Without explicit outputImageTokens the text output
+	// stream is billed as image output. P3 迁移后该行已有 mediaPricing；本
+	// 用例显式走 legacy 副本，统一模板分支见 billing_media_unified_test.go。
+	got := billingLegacyBreakdown(t, "openai", "gpt-image-2", CostInput{
 		ProviderCode:     "openai",
 		Model:            "gpt-image-2",
 		InputTokens:      f64p(1_000_000),

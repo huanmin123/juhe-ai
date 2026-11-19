@@ -39,22 +39,23 @@ type ProviderCode = 'minimax'
 - **Capabilities 只声明媒体**（`video_generation`/`tts`，与 Endpoint Families 同名）：不声明 `chat`/`responses`/`passthrough`——MiniMax 聊天端点非 `/v1/chat/completions`，档案不得让聊天流量路由进来；模型门双保险（目录无 chat 模型行）。
 - 协议 `openai/v1` 是媒体 adapter 的报文承载协议（出站路径经 openai 族 URL 归一），不是聊天透传声明。
 - 内置分组：`grp_default_minimax_sys_admin`（默认 MiniMax 分组，seed `pgSeedGroups`）。
-- 新增 openai 协议端点族（seed `pgSeedEndpointFamilies`，M3）：`openai_v1_video_generation`（code `video_generation`）、`openai_v1_tts`（code `tts`）——统一 `/v1/videos`、`/v1/audio/speech` 面承载的厂商原生媒体形态。
+- 新增 openai 协议端点族（seed `pgSeedEndpointFamilies`，M3）：`openai_v1_video_generation`（code `video_generation`）、`openai_v1_tts`（code `tts`）——统一 `/v1/video/generations`、`/v1/audio/speech` 面承载的厂商原生媒体形态。
 
 ## 网关请求边界
 
-### 视频（`POST /v1/videos` 统一面，M3 已实施 adapter）
+### 视频（`POST /v1/video/generations` 统一面，M3 已实施 adapter）
 
-- 创建报文改写（`gatewaymedia/minimax_video.go`）：`model`/`prompt` 直传；`seconds` → `duration` **数值秒直传**（Hailuo 支持数值档，不做换算猜测）；`input_reference` → `first_frame_image`（**仅 base64/data URL 直传**，url 形态本地 400——网关零资源存储不代为下载，沿 veo 裁决）；`prompt_optimizer` 等厂商个例经 `provider_options.minimax` deep-merge；`negative_prompt`/`n`/`seed`/`audio` 请求面无对应字段 → `params_ignored` 回显。
+- 创建报文改写（`gatewaymedia/minimax_video.go`）：`model`/`prompt` 直传；`seconds` → `duration` **数值秒直传**（Hailuo 支持数值档，不做换算猜测）；`input_reference` → `first_frame_image`（**仅 base64/data URL 直传**，url 形态本地 400——网关零资源存储不代为下载，沿 veo 裁决）；`prompt_optimizer` 等厂商个例经 `metadata`（键即厂商字段名） deep-merge；`negative_prompt`/`n`/`seed`/`audio` 请求面无对应字段 → `params_ignored` 回显。
 - 受理凭据 = 创建响应 `task_id`；`base_resp.status_code != 0` 视为受理前错误（不落 `media_jobs`）。
 - 轮询 `GET /v1/query/video_generation?task_id=`：`Preparing`/`Queueing` → `queued`、`Processing` → `in_progress`、`Success` → `completed`（`file_download_url` 冻结进 `Artifact.ContentURL`）、`Fail` → `failed`（错误摘要 code 取 `base_resp.status_code` 数字串）；未知状态归 `in_progress` 记 `RawStatus`。
 - 产物下载：契约 §8.1"`GET /v1/files/retrieve?file_id=` 或 `file_download_url`，以回填为准"——**取 `file_download_url` 直连**（无凭据，与 Veo uri / glm video_result.url 同族先例）。
+- 时长计量：query 响应不回 duration。请求带 `duration` 时按生效请求秒数（`source=request`）；未带时由 P4 对 `file_download_url` 做有界 Range 探测（前 2MB + 尾 4MB、≤8MB、10s，`source=gateway_parse`），探测失败/不支持 Range 落 `usage_missing`，不整段下载、不猜测（设计《非对话媒体统一计费设计》§8.4）。
 - 取消：MiniMax 无上游取消端点 → `SupportsCancel=false`，网关不发上游请求直接本地收敛 `cancelled`。
 - Capabilities：`NegativePrompt=false`、`Audio=false`、`Seconds=true`、`InputReference=true`、`N=false`、`Seed=false`。
 
 ### 语音合成（`POST /v1/audio/speech` 统一面，M3 已实施 adapter）
 
-- 报文改写（`gatewaymedia/minimax_tts.go`）：`input` → `text`、`voice` → `voice_setting.voice_id`、`response_format` → `audio_setting.format`（词表 `mp3`/`pcm`/`flac`/`wav`，零转码，空缺省按 OpenAI 默认 `mp3`）；`speed` 厂商区间 **0.5–2.0**，公共区间 0.25–4.0 超出部分本地 400（契约 §2.4 规则 2，不裁剪不猜测）；`vol`/`pitch` 等厂商个例经 `provider_options.minimax` deep-merge。
+- 报文改写（`gatewaymedia/minimax_tts.go`）：`input` → `text`、`voice` → `voice_setting.voice_id`、`response_format` → `audio_setting.format`（词表 `mp3`/`pcm`/`flac`/`wav`，零转码，空缺省按 OpenAI 默认 `mp3`）；`speed` 厂商区间 **0.5–2.0**，公共区间 0.25–4.0 超出部分本地 400（契约 §2.4 规则 2，不裁剪不猜测）；`vol`/`pitch` 等厂商个例经 `metadata`（键即厂商字段名） deep-merge。
 - 响应转换：`data.audio` 是 **hex 编码**音频字符串——网关 hex→bytes 解码后以二进制透传（不得把 hex 字符串当音频下发，契约 §8.2 加粗约束）；content-type 按请求 `response_format` 推导（`mp3`→`audio/mpeg`、`wav`→`audio/wav`、`flac`→`audio/flac`、`pcm`→`audio/L16;rate=32000`——t2a_v2 响应不回显 mime）。`base_resp.status_code != 0` → 上游错误上抛。
 - 异步长音频（长转写）：契约 §8.2 待回填，未实现。
 
@@ -85,8 +86,9 @@ type ProviderCode = 'minimax'
 - **TTS 四行**（speech-2.8-hd/turbo、speech-2.6-hd/turbo；`speech-02-turbo` 已随 2025 前模型清理批移除）：国内同价 hd 3.50 元/万字符、turbo 2.00 元/万字符（同步/异步同价），÷7.0 落 `TtsInputUsdPer1MChars`；计费 1 汉字=2 字符。字符计量照常落 usage（`extra_info.usage_characters` 回报优先，契约 §2.8）。
 - **asr-1.0 已随 2025 前模型清理批移除**（2.50 元/小时 ÷3600 ÷7.0 的秒价口径随行留档于 git 历史；现役 STT 秒价载体见 qwen3-asr-flash）。
 - **MiniMax-H3 / H3-Max**：768P 主档 0.50 元/秒 ÷7.0 落 `VideoOutputUsdPerSecond`（H3-Max 的 480P 低档 0.33 元/秒留注记；输入素材：H3 图片 5 张内免费/超出 0.20 元/张、H3-Max 2 张内/0.50 元，留注记）。
-- **MiniMax-Hailuo-2.3-Fast**（2026-10-17 缺口补录批）：按次/档位计费与 Hailuo-2.3 同规则，按 768P-6s 主档 1.35 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（768P-10s 2.25 元、1080P-6s 2.31 元留注记）；不落每秒价（按次 → 每秒是推导，裁决 §2.4 维持）。
-- **MiniMax-Hailuo-2.3**：按次/档位计费（分辨率 × 时长），按 768P-6s 主档 2.00 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（一次任务 = 一次调用，契约 §2.8 按次计费；768P-10s 4.00 元、1080P-6s 3.50 元留注记）；按次 → 每秒是推导，禁止折算（裁决 §2.4 维持）——不落 `VideoOutputCostPerSecond`；轮询响应不回报时长（契约 §8.1 query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
+- **2026-11-20 P3 已实施**：Hailuo 2.3/2.3-Fast 已改按秒结算，10s 套餐总价 ÷10 折算 `baseUsd`——2.3 `4.00/7/10 = $0.057142857/s @720p`、2.3-Fast `2.25/7/10 = $0.032142857/s @720p`；1080P 倍率分别 `1.458333` / `1.711111`，2.3 的 6s 短套餐因此约高 20%，Fast 线性（设计 §9.3/§14.4 #8）。以下两条按次 / 不折秒为 legacy 字段与历史口径，运行时按 `mediaPricing` 秒价结算。
+- **MiniMax-Hailuo-2.3-Fast（legacy 字段）**（2026-10-17 缺口补录批）：按次/档位计费与 Hailuo-2.3 同规则，按 768P-6s 主档 1.35 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（768P-10s 2.25 元、1080P-6s 2.31 元留注记）；不落每秒价（按次 → 每秒是推导，裁决 §2.4 维持）。
+- **MiniMax-Hailuo-2.3（legacy 字段）**：按次/档位计费（分辨率 × 时长），按 768P-6s 主档 2.00 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（一次任务 = 一次调用，契约 §2.8 按次计费；768P-10s 4.00 元、1080P-6s 3.50 元留注记）；按次 → 每秒是推导，禁止折算（裁决 §2.4 维持）——不落 `VideoOutputCostPerSecond`；轮询响应不回报时长（契约 §8.1 query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
 - **image-01**：0.025 元/张 ÷7.0 落 `OutputUsdPerImage`（image-01-live 同价留注记）。
 - **M3 / M2.7 / M2.7-highspeed**：国内 2.10/8.40（M3 ≤512k 永久五折实付，恰与国际明文 $0.3/$1.2 等价）、M2.7 2.1/8.4、highspeed 4.2/16.8 元；缓存读 0.42 元、缓存写 2.625 元/百万 tokens；M3 >512k 恢复刊例（恰为 ×2 长上下文分档）、优先服务 1.5 倍留注记。
 - **M2 家族五行**（M2.5/M2.5-highspeed/M2.1/M2.1-highspeed/M2；2026-10-17 缺口补录第二批）：定价概览历史模型小节 2.1/8.4 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（highspeed 4.2/16.8，缓存价同档）÷7.0；官方页无发布日期与上下文窗口，`releaseDate`/`contextWindowTokens` 不臆造留空（公开发布时间线 M2 2025-10 起满足 2025-01 收录下限）。

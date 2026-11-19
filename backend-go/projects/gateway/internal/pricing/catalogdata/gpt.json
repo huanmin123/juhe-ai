@@ -2508,6 +2508,7 @@
       ],
       "longContextInputTokenThresholdInclusive": false,
       "maxOutputTokens": 65536,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.03168,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-2.5-sunburst",
       "outputCostPerImageToken": 3e-05,
@@ -2518,7 +2519,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images",
         "responses"
@@ -2540,6 +2541,7 @@
       ],
       "longContextInputTokenThresholdInclusive": false,
       "maxOutputTokens": 65536,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.03168,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-2.5-flare",
       "outputCostPerImageToken": 3e-05,
@@ -2550,7 +2552,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images",
         "responses"
@@ -2570,6 +2572,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.03168,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-2",
       "outputCostPerImageToken": 3e-05,
@@ -2580,7 +2583,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -2599,6 +2602,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.03168,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-2-2026-04-21",
       "outputCostPerImageToken": 3e-05,
@@ -2609,7 +2613,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -2628,6 +2632,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.033792,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-1.5",
       "outputCostPerImageToken": 3.2e-05,
@@ -2640,7 +2645,7 @@
       "shutdownDate": "2026-12-01",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -2659,6 +2664,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.008448,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-1-mini",
       "outputCostPerImageToken": 8e-06,
@@ -2670,7 +2676,7 @@
       "shutdownDate": "2026-12-01",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -2689,6 +2695,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.04224,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "gpt-image-1",
       "outputCostPerImageToken": 4e-05,
@@ -2699,7 +2706,7 @@
       "shutdownDate": "2026-10-23",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：image token 价 × 1056 tokens/张 估算 1K 每张价（1024×1024 medium 官方输出 token 数）。",
       "supportedAPIProtocols": [
         "images",
         "responses"
@@ -2947,6 +2954,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0003,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gpt-4o-mini-tts",
       "outputCostPerAudioToken": 1.2e-05,
@@ -2965,7 +2973,7 @@
       "shutdownDate": "2027-01-06",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "；统一媒体计费 P3 自定价折算：audio token 价 × 25 tokens/秒（保守估算）。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -2982,6 +2990,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0001,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gpt-4o-transcribe",
       "outputCostPerToken": 1e-05,
@@ -3009,6 +3018,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":5e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gpt-4o-mini-transcribe",
       "outputCostPerToken": 5e-06,
@@ -3340,6 +3350,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":7.5e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "gpt-transcribe",
       "outputModalities": [
@@ -3436,6 +3447,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.1,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "sora-2",
       "outputModalities": [
@@ -3461,6 +3473,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.3,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "sora-2-pro",
       "outputModalities": [

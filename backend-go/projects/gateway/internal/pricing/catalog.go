@@ -431,6 +431,7 @@ func toProviderModelPricing(item *rawModel, entry *providerEntry, providerCode s
 		},
 		CachedImageInputUsdPer1M: perMillion(item.CacheReadInputImageTokenCost),
 		ServiceTierPrices:        rawServiceTierPrices(item),
+		MediaPricing:             item.MediaPricing.Clone(),
 
 		SupportedAPIProtocols:     entry.inferAPIProtocols(item),
 		InputModalities:           append([]string(nil), item.InputModalities...),

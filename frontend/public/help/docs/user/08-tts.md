@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | `POST /v1/audio/speech`（本篇） | 同步 | 响应体直接是音频二进制，存文件即得 |
 | `POST /v1/audio/transcriptions`（短音频转写） | 同步 | 响应体直接是文本 JSON |
-| `POST /v1/audio/jobs`（长音频转写）、`POST /v1/videos`（视频） | 异步 | 先拿任务 id，轮询完成后另行取结果 |
+| `POST /v1/audio/jobs`（长音频转写）、`POST /v1/video/generations`（视频） | 异步 | 先拿任务 id，轮询完成后另行取结果 |
 
 本篇的 `model` 同样必须是你的 Key 绑定分组支持的模型：缺失报 503 `missing_model`，分组无账户支持报 503 `unsupported_model`（type 均为 `service_unavailable`）（message 形如「当前分组无账户支持请求模型：X」）。
 

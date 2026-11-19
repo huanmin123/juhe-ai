@@ -3,7 +3,7 @@
 // "gemini" 条目）。报文依据契约 §5.2（置信度 B：多源确认）：创建
 // POST /v1beta/models/{model}:predictLongRunning（body
 // {instances,parameters}），受理凭据 = 响应 name 字段
-//（"models/<model>/operations/<op_id>"）；轮询 GET /v1beta/{name} →
+// （"models/<model>/operations/<op_id>"）；轮询 GET /v1beta/{name} →
 // operation 对象（done/error/response.generateVideoResponse.
 // generatedSamples[].video.uri，uri 为 GCS 签名 URL 约 2 天时效、直连下载
 // 无凭据）；取消 POST /v1beta/{name}:cancel。URL 前缀按账户 base_url +
@@ -32,6 +32,8 @@ func (veoVideoAdapter) Provider() string { return "gemini" }
 //     零存储，Create 内 400）；
 //   - SupportsSeconds/SupportsN/SupportsSeed/SupportsAudio：请求面无对应
 //     字段 → false（忽略 + 回显 params_ignored，契约 §2.4 规则 1）。
+//     SupportsSeconds=false 不表示无默认时长：Veo 3.0/3.1 系按
+//     DefaultSecondsForModel 固定 8s（AC-027），出站显式携带。
 func (veoVideoAdapter) Capabilities() VideoCapabilities {
 	return VideoCapabilities{
 		SupportsNegativePrompt: true,
@@ -41,6 +43,34 @@ func (veoVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsInputReference: true,
 		SupportsSeconds:        false,
 	}
+}
+
+// veoDefaultDurationSeconds 是 Veo 3.0/3.1 系五模型的厂商默认时长（非对话
+// 媒体统一计费设计 §7.1/§14.4 #4 / AC-027）：创建请求无生效 seconds 且上游
+// 不回报 duration 时按 8s 计费（source=default）；出站也显式携带，避免上游
+// 默认值漂移。未列出的模型不猜默认值，仍走 usage_missing。
+const veoDefaultDurationSeconds = 8
+
+var veoDefaultDurationModels = map[string]struct{}{
+	"veo-3.0-generate-preview":      {},
+	"veo-3.0-fast-generate-preview": {},
+	"veo-3.1-generate-preview":      {},
+	"veo-3.1-fast-generate-preview": {},
+	"veo-3.1-lite-generate-preview": {},
+}
+
+func veoDefaultSecondsForModel(model string) (float64, bool) {
+	_, ok := veoDefaultDurationModels[strings.ToLower(strings.TrimSpace(model))]
+	if !ok {
+		return 0, false
+	}
+	return veoDefaultDurationSeconds, true
+}
+
+// DefaultSecondsForModel 实现 VideoDefaultSecondsProvider：Veo 3.0/3.1 系五
+// 模型默认 8s；其余模型未声明。
+func (veoVideoAdapter) DefaultSecondsForModel(model string) (float64, bool) {
+	return veoDefaultSecondsForModel(model)
 }
 
 // veoAspectRatioAndResolutionOf 把 size 像素串换算为 Veo 的 aspectRatio 与
@@ -107,7 +137,7 @@ func veoInputReferenceBase64(reference string) (string, error) {
 // {instances:[{prompt,image?}],parameters:{aspectRatio?,resolution?,
 // negativePrompt?}}。归一层判为 ignored 的词表外字段（seconds/n/seed/audio）
 // 不进报文；size 换算为 aspectRatio+resolution（无精确档取最近档，契约
-// §2.4 规则 3，实际档位以上游报文为准）；provider_options 命中 gemini 的
+// §2.4 规则 3，实际档位以上游报文为准）；metadata 命中 gemini 的
 // 子对象 deep-merge 进顶层（厂商个例参数如经 {"gemini":{"parameters":
 // {...}}} 覆盖换算结果，契约 §2.1 L3）。
 func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
@@ -115,10 +145,13 @@ func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
-	instance := map[string]any{"prompt": params.Prompt}
+	instance := map[string]any{}
+	if params.Prompt != "" {
+		instance["prompt"] = params.Prompt
+	}
 	if params.InputReference != nil {
 		base64Encoded, err := veoInputReferenceBase64(*params.InputReference)
 		if err != nil {
@@ -139,10 +172,15 @@ func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.NegativePrompt != "" {
 		parameters["negativePrompt"] = params.NegativePrompt
 	}
+	// Veo 3.0/3.1 系默认 8s（AC-027）：请求面不支持 seconds，出站显式携带，
+	// 既固定厂商默认值，也让终态计费有确定的 default 来源。
+	if seconds, ok := veoDefaultSecondsForModel(params.Model); ok {
+		parameters["durationSeconds"] = seconds
+	}
 	if len(parameters) > 0 {
 		body["parameters"] = parameters
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 gemini 视频创建请求体失败: %w", err)

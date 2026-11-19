@@ -57,9 +57,14 @@ func TestSpeechMeteringPaths(t *testing.T) {
 	}{
 		{"/v1/audio/speech", true, false},
 		{"/audio/speech", true, false},
+		// usage 上下文的审计 endpoint 形态（METHOD path）。
+		{"POST /v1/audio/speech", true, false},
+		{"post /v1/audio/speech?foo=1", true, false},
 		{"/v1/audio/transcriptions", false, true},
-		{"/v1/audio/translations?foo=1", false, true},
+		{"POST /v1/audio/transcriptions", false, true},
+		{"POST /v1/audio/translations?foo=1", false, true},
 		{"/v1/chat/completions", false, false},
+		{"POST /v1/chat/completions", false, false},
 	}
 	for _, c := range cases {
 		if got := IsSpeechPath(c.path); got != c.speech {
@@ -257,5 +262,39 @@ func TestIsTokenMeteredSpeechModel(t *testing.T) {
 		if IsTokenMeteredSpeechModel(model) {
 			t.Fatalf("%s must not classify as token metered", model)
 		}
+	}
+}
+
+func TestSpeechReportedSecondsFromJSON(t *testing.T) {
+	if seconds, ok := SpeechReportedSecondsFromJSON(map[string]any{"duration": 3.28}); !ok || seconds != 3.28 {
+		t.Fatalf("volcengine duration = %v ok=%v, want 3.28", seconds, ok)
+	}
+	if seconds, ok := SpeechReportedSecondsFromJSON(map[string]any{
+		"extra_info": map[string]any{"audio_length": float64(3056)},
+	}); !ok || seconds != 3.056 {
+		t.Fatalf("minimax audio_length = %v ok=%v, want 3.056", seconds, ok)
+	}
+	for name, root := range map[string]any{
+		"missing":  map[string]any{},
+		"zero":     map[string]any{"extra_info": map[string]any{"audio_length": 0.0}},
+		"negative": map[string]any{"duration": -1.0},
+		"non map":  "x",
+		"nil":      nil,
+	} {
+		if _, ok := SpeechReportedSecondsFromJSON(root); ok {
+			t.Fatalf("%s should not report seconds", name)
+		}
+	}
+}
+
+func TestTTSCharsFallbackSeconds(t *testing.T) {
+	if got := TTSCharsFallbackSeconds(40); got != 10 {
+		t.Fatalf("40 chars = %v, want 10s", got)
+	}
+	if got := TTSCharsFallbackSeconds(0); got != 0 {
+		t.Fatalf("0 chars = %v, want 0", got)
+	}
+	if got := TTSCharsFallbackSeconds(-1); got != 0 {
+		t.Fatalf("negative chars = %v, want 0", got)
 	}
 }

@@ -136,7 +136,7 @@ func securityPolicyFamilyForRequest(req *gatewaypreauth.GatewayRequest) string {
 		return ""
 	}
 	if method == http.MethodPost {
-		// 媒体域优先：audio/video lane（/v1/audio/speech、/v1/videos、
+		// 媒体域优先：audio/video lane（/v1/audio/speech、/v1/video/generations、
 		// /v1/audio/jobs 等）与图像生成的 prompt/text 类 JSON 出站体都判
 		// media（STT 的 multipart 输入不是 JSON，SanitizeBody 顶层 fail-open）。
 		if lane, known := gatewaymedia.RequestLaneForPath(method, path); known &&

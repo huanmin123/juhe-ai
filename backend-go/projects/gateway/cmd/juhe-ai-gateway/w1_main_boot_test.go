@@ -1,3 +1,6 @@
+//go:build windows
+
+// 依赖 Windows 专用覆盖 helper（Ctrl-Break/进程组/插桩二进制）；其余测试三平台可编译，见 docs/develop/后端测试分层规则.md §7.7。
 package main
 
 // w1（业务层）：进程级 boot 覆盖收割。按 docs/develop/后端测试分层规则.md，

@@ -369,7 +369,9 @@ function openEdit(apiKey: ApiKeySummary) {
     routeStrategy: apiKeyRouteStrategySelection(apiKey),
     schedulingPreferenceId: apiKey.schedulingPreferenceId ?? '',
     securityPolicyId: apiKey.securityPolicyId?.trim() || BUILTIN_SECURITY_POLICY_ID,
-    clientIpConcurrencyLimit: apiKey.clientIpConcurrencyLimit ?? -1,
+    clientIpConcurrencyLimit: isValidApiKeyClientIpConcurrencyLimit(apiKey.clientIpConcurrencyLimit)
+      ? apiKey.clientIpConcurrencyLimit
+      : -1,
     status: apiKey.status,
     expiresAt,
     description: apiKey.description ?? '',

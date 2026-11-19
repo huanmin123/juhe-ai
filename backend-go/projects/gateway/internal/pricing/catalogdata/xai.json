@@ -406,6 +406,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.04,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.5,"4k":3.0}},
       "mode": "image_generation",
       "model": "grok-imagine-image-2.0",
       "outputCostPerImage": 0.04,
@@ -416,7 +417,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出按分辨率×质量分档：1K·Low $0.04（目录落值）/1.5K·Low $0.05/2K·Low $0.06/1K·Medium $0.06/1.5K·Medium $0.07/2K·Medium $0.08 每张；媒体输入 $0.01/img（目录无输入槽位留档）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "sourcePricingNote": "官方美元价 输出按分辨率×质量分档：1K·Low $0.04（目录落值）/1.5K·Low $0.05/2K·Low $0.06/1K·Medium $0.06/1.5K·Medium $0.07/2K·Medium $0.08 每张；媒体输入 $0.01/img（目录无输入槽位留档）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；统一媒体计费 P3：2K $0.06/$0.04=1.5。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -431,6 +432,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.02,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.0,"4k":3.0}},
       "mode": "image_generation",
       "model": "grok-imagine-image",
       "outputCostPerImage": 0.02,
@@ -441,7 +443,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出 1K $0.02 / 2K $0.02 每张（目录落值）；媒体输入 $0.002/img 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "sourcePricingNote": "官方美元价 输出 1K $0.02 / 2K $0.02 每张（目录落值）；媒体输入 $0.002/img 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；统一媒体计费 P3：2K 与 1K 同价 $0.02，2k 倍率 1.0。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -456,6 +458,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.05,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.4,"4k":3.0}},
       "mode": "image_generation",
       "model": "grok-imagine-image-quality",
       "outputCostPerImage": 0.05,
@@ -466,7 +469,7 @@
       "shutdownDate": "2026-11-02",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出 1K $0.05（目录落值）/1.5K $0.06/2K $0.07 每张；媒体输入 $0.01/img；官方公告 2026-11-02 退役（Imagine Image Quality Retirement）留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "sourcePricingNote": "官方美元价 输出 1K $0.05（目录落值）/1.5K $0.06/2K $0.07 每张；媒体输入 $0.01/img；官方公告 2026-11-02 退役（Imagine Image Quality Retirement）留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；统一媒体计费 P3：2K $0.07/$0.05=1.4。",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -481,6 +484,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.14,"baseTier":"720p","tierMultipliers":{"480p":0.5714285714285714,"720p":1.0,"1080p":1.7857142857142856,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "grok-imagine-video-1.5",
       "outputModalities": [
@@ -490,7 +494,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出分档 480p $0.08 / 720p $0.14（目录主档）/1080p $0.25 每秒；图生视频输入 $0.01/img 留档；旧 grok-imagine-video（480p $0.05/720p $0.07）已单独补录（见该行）；grok-imagine-video-1.5-lite 已单独补录（见该行）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.08 / 720p $0.14（目录主档）/1080p $0.25 每秒；图生视频输入 $0.01/img 留档；旧 grok-imagine-video（480p $0.05/720p $0.07）已单独补录（见该行）；grok-imagine-video-1.5-lite 已单独补录（见该行）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；统一媒体计费 P3：480p 0.08/0.14=0.571429、1080p 0.25/0.14=1.785714。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -506,6 +510,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.03,"baseTier":"720p","tierMultipliers":{"480p":0.6666666666666667,"720p":1.0,"1080p":4.666666666666667,"1440p":7.0,"2160p":11.666666666666668}},
       "mode": "video",
       "model": "grok-imagine-video-1.5-lite",
       "outputModalities": [
@@ -515,7 +520,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出分档 480p $0.02 / 720p $0.03（目录主档，沿 video-1.5 非最低档主档先例）/1080p $0.14 每秒；图生视频输入 $0.01/img 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.02 / 720p $0.03（目录主档，沿 video-1.5 非最低档主档先例）/1080p $0.14 每秒；图生视频输入 $0.01/img 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；统一媒体计费 P3：480p 0.02/0.03=0.666667、1080p 0.14/0.03=4.666667；1440p/2160p 按 1080p 官方/默认比例等比 7.0/11.666667。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -531,6 +536,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":2.777777777777778e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "grok-voice-transcribe-2.0",
       "outputModalities": [
@@ -580,6 +586,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":6e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "grok-tts",
       "outputModalities": [
@@ -589,7 +596,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 Text to Speech $15.00/1M chars 折 $1.5e-05/字符（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））。grok-tts 为占位名：官方 POST /v1/tts 面请求体无 model 字段（text/voice_id/language），端点级定价——行名仅作统一面路由与计价载体（doubao-tts 占位先例），非官方模型 ID",
+      "sourcePricingNote": "官方美元价 Text to Speech $15.00/1M chars 折 $1.5e-05/字符（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））。grok-tts 为占位名：官方 POST /v1/tts 面请求体无 model 字段（text/voice_id/language），端点级定价——行名仅作统一面路由与计价载体（doubao-tts 占位先例），非官方模型 ID；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -605,6 +612,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.07,"baseTier":"720p","tierMultipliers":{"480p":0.7142857142857143,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "grok-imagine-video",
       "outputModalities": [
@@ -614,7 +622,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出分档 480p $0.05 / 720p $0.07（目录主档，沿 video-1.5 非最低档主档先例）每秒；图生视频输入 $0.002/img、视频输入 $0.01/sec 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；旧版发布日期官方页未给（公开发布时间线 2025-10 Imagine 上线，晚于 2025-01 收录下限），releaseDate 留空",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.05 / 720p $0.07（目录主档，沿 video-1.5 非最低档主档先例）每秒；图生视频输入 $0.002/img、视频输入 $0.01/sec 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；旧版发布日期官方页未给（公开发布时间线 2025-10 Imagine 上线，晚于 2025-01 收录下限），releaseDate 留空；统一媒体计费 P3：480p 0.05/0.07=0.714286。",
       "supportedAPIProtocols": [
         "video"
       ],

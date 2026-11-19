@@ -28,6 +28,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // gatewayusagePricingCostInput aliases the frozen usage pricing input so the
@@ -167,6 +168,16 @@ func (c *chainUsagePricingCatalog) ResolvePricingModel(providerCode, systemAccou
 	return item.Model
 }
 
+// HasMediaPricing 报告目录行是否携带有效统一媒体模板（只认运行时目录的
+// HasMediaPricing 标志与非空 JSON；静态 legacy 层不算，避免把未迁移行误判）。
+func (c *chainUsagePricingCatalog) HasMediaPricing(providerCode, systemAccountID, model string) bool {
+	if c == nil || c.cache == nil || strings.TrimSpace(model) == "" {
+		return false
+	}
+	item := c.findItem(providerCode, systemAccountID, model)
+	return item != nil && item.HasMediaPricing && len(item.MediaPricing) > 0
+}
+
 // EstimateCost mirrors estimateCatalogCostUsd; nil = the Node undefined.
 func (c *chainUsagePricingCatalog) EstimateCost(input gatewayusagePricingCostInput) *float64 {
 	breakdown := c.breakdownFor(input, true)
@@ -281,16 +292,20 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 	if item == nil {
 		return nil
 	}
-	// 媒体单价维度（TTS 字符 / 音频秒 / 视频秒 / 视频按次）不在
-	// provider_model_catalog 列集内（39 列种子无此四维），唯一权威源是
-	// go:embed 静态快照层（catalogdata/*.json——计价落法"目录表无列、
-	// 计费读静态层"，2026-10-17 维度修正批起 seed-audio 秒价/视频主档秒价
-	// 在该层落值）：从静态层按 provider+model 补齐，静态未命中保持 nil
+	// legacy 媒体单价维度（TTS 字符 / 音频秒 / 视频秒 / 视频按次）没有
+	// models 扁平列，历史口径从 go:embed 静态快照层按 provider+model 补齐；
+	// 该回退只在 media_pricing_json 为空时生效，静态未命中保持 nil
 	//（成本不虚计）。token 价仍以 DB 行为运行时权威。
 	mediaRates := pricing.FindProviderModelPricing(item.ProviderCode, item.Model)
 	var mediaSet pricing.PriceSet
 	if mediaRates != nil {
 		mediaSet = mediaRates.PriceSet
+	}
+	// models.media_pricing_json 是运行时唯一权威；仅当为空时静态层 legacy
+	// 媒体价继续作为回退（设计 §5.3）。
+	var mediaPricing *mediapricing.Pricing
+	if item.HasMediaPricing && len(item.MediaPricing) > 0 {
+		mediaPricing, _ = mediapricing.Parse(item.MediaPricing)
 	}
 	return &pricing.Pricing{
 		ProviderCode: item.ProviderCode,
@@ -315,6 +330,7 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 		},
 		CachedImageInputUsdPer1M: item.CachedImageInputUsdPer1M,
 		ServiceTierPrices:        chainServiceTierPrices(item.ServiceTierPrices),
+		MediaPricing:             mediaPricing,
 
 		SupportedServiceTiers: append([]string(nil), item.SupportedServiceTiers...),
 
@@ -361,17 +377,23 @@ func chainPricingCostInput(catalogPricing *pricing.Pricing, input gatewayusagePr
 		OutputImageCount:   chainIntToFloat(input.OutputImageCount),
 		TtsInputChars:      chainInt64ToFloat(input.TtsInputChars),
 		AudioInputSeconds:  input.AudioInputSeconds,
+		OutputVideoSeconds: input.OutputVideoSeconds,
+		VideoCalls:         input.VideoCalls,
+		ResolutionTier:     input.ResolutionTier,
+		QuantitySource:     input.QuantitySource,
 	}
 }
 
-// chainHasAnyCostDimension mirrors hasAnyCostDimension（M1 音频计量维度计入）.
+// chainHasAnyCostDimension mirrors hasAnyCostDimension（M1 音频与统一媒体
+// 计量维度计入）.
 func chainHasAnyCostDimension(input gatewayusagePricingCostInput) bool {
 	return input.InputTokens != nil || input.OutputTokens != nil ||
 		input.CacheReadTokens != nil || input.CacheWriteTokens != nil ||
 		input.CacheWrite1hTokens != nil || input.InputImageTokens != nil ||
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
 		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
-		input.TtsInputChars != nil || input.AudioInputSeconds != nil
+		input.TtsInputChars != nil || input.AudioInputSeconds != nil ||
+		input.OutputVideoSeconds != nil || input.VideoCalls != nil
 }
 
 func chainIntToFloat(value *int) *float64 {

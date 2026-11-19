@@ -38,7 +38,7 @@ type AudioJobProviderAdapter interface {
 	// Capabilities 声明该厂商长转写请求面能力（参数归一与 ignored 计算
 	// 的裁决输入）。
 	Capabilities() AudioJobCapabilities
-	// Create 把归一参数 + provider_options（对象形态，键=provider_code）
+	// Create 把归一参数 + metadata（键=厂商原生参数名）
 	// 映射为上游创建请求。错误为请求侧 400 语义（能力边界裁决）。
 	Create(ctx context.Context, in AudioJobCreateInput) (AudioJobCreateOutput, error)
 	// BuildPollRequest 构造轮询请求（GET 任务查询族）。upstreamJobID 由
@@ -79,12 +79,12 @@ type AudioJobCapabilities struct {
 	SupportsLanguage bool
 }
 
-// AudioJobCreateInput 是创建请求的输入：归一参数 + provider_options 对象
+// AudioJobCreateInput 是创建请求的输入：归一参数 + metadata 对象
 // 形态（键=provider_code，Create 内按本 provider 取命中子对象 deep-merge
 // 覆盖，其余子对象忽略，契约 §2.1 L3/§2.4 规则 4）。
 type AudioJobCreateInput struct {
-	Params          NormalizedAudioJobParams
-	ProviderOptions map[string]any
+	Params   NormalizedAudioJobParams
+	Metadata map[string]any
 }
 
 // AudioJobCreateOutput 是创建请求的构造结果（与 VideoCreateOutput 同构；
@@ -132,7 +132,7 @@ func (qwenASRAdapter) Capabilities() AudioJobCapabilities {
 //     暂存文件，multipart 在归一层前置拒绝）；
 //   - language → parameters.language_hints：单字符串 → 单元素数组（官方
 //     字段是数组形态，纯格式转换语义不变；未传不带该键）；
-//   - provider_options 命中 qwen 的子对象 deep-merge 覆盖同名键（契约
+//   - metadata 键 deep-merge 覆盖同名键（契约
 //     §2.1 L3，嵌套对象递归合并，如 {"qwen":{"parameters":{
 //     "diarization_enabled":true}}}）；
 //   - 无 X-DashScope-Async 头（契约 §10.2：该服务天然异步，ExtraHeaders
@@ -156,7 +156,7 @@ func (a qwenASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (Audio
 			"language_hints": []string{params.Language},
 		}
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return AudioJobCreateOutput{}, fmt.Errorf("编码 qwen 长转写创建请求体失败: %w", err)

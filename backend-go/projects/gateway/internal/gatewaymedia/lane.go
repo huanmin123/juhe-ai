@@ -43,7 +43,7 @@ func RequestLaneForPath(method, path string) (gatewayproto.RequestLane, bool) {
 	case "/v1/audio/transcriptions", "/audio/transcriptions",
 		"/v1/audio/translations", "/audio/translations":
 		return gatewayproto.LaneAudio, true
-	case "/v1/videos", "/videos":
+	case "/v1/video/generations", "/video/generations":
 		return gatewayproto.LaneVideo, true
 	case "/v1/audio/jobs", "/audio/jobs":
 		return gatewayproto.LaneVideo, true

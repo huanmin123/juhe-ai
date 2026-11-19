@@ -14,12 +14,16 @@ package gatewaymedia
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // MediaJobRetentionTTL 是任务行保留时长（媒体设计 §8.2 清理任务：TTL 过期置
@@ -74,14 +78,22 @@ type MediaJobRequestSnapshot struct {
 	Seconds *float64 `json:"seconds,omitempty"`
 	Size    string   `json:"size,omitempty"`
 	N       int      `json:"n,omitempty"`
+	FPS     *int     `json:"fps,omitempty"`
+	Seed    *int64   `json:"seed,omitempty"`
 	// Language 是长转写任务的语言提示（M3f，kind=audio_transcription 行；
 	// 纯参数元数据）。input_url 不入快照（资源定位指针，沿 video 行不存
 	// InputReference 的零存储裁决）。
 	Language string `json:"language,omitempty"`
-	// ProviderOptionsApplied 是 provider_options 命中子对象的键名摘要
-	//（不含值，契约 §2.4 规则 4 回显）：创建时随快照冻结，任务面/列表的
-	// job 对象回显同一份数据（终态后原始请求不可得）。
-	ProviderOptionsApplied []string `json:"providerOptionsApplied,omitempty"`
+	// MetadataApplied 是唯一扩展通道 metadata 的键名摘要（不含值，设计
+	// §5.1 回显）：创建时随快照冻结，任务面/列表的 job 对象回显同一份数据
+	//（终态后原始请求不可得）。
+	MetadataApplied []string `json:"metadataApplied,omitempty"`
+	// MediaPricing / ResolutionTier 是统一媒体计费在创建时冻结的价格快照
+	// （非对话媒体统一计费设计 §6.1/AC-018）：终态按此结算，不受中途改价
+	// 影响；历史在途任务无此快照时回退当前目录价。MediaPricing 只存模板
+	// 元数据（baseUsd/档位倍率），不含任何资源内容。
+	MediaPricing   *mediapricing.Pricing `json:"mediaPricing,omitempty"`
+	ResolutionTier string                `json:"resolutionTier,omitempty"`
 	// Account scope 五元组（account_access_type=account_authorized 时
 	// accountAuthorizationID 必填，否则归一化清空整组——NormalizeUsageRecordInput 规则）。
 	AccountAccessType                string `json:"accountAccessType,omitempty"`
@@ -138,7 +150,17 @@ func (r *MediaJobsRepo) bind(query string) string {
 
 // Insert 落一行新任务（受理凭据确立后：2xx + 上游 job id）。ID 由调用方生成
 // （对外 id，不用上游 id，媒体设计 §8.2）。
+//
+// 创建响应即 completed 时调用方已先算好终态 usage/cost，随 INSERT 一次落行
+// （设计 §14.4 #2：不依赖 UpdateTerminal 的非终态 WHERE 补写）。
+// 受理后落库失败按同请求最多重试 3 次（约 50/200/500ms，仅连接/序列化/
+// 资源类可重试 DB 错误；设计 §14.4 #3），仍失败返回原错误由链上层记
+// media_job_insert_failed。唯一键冲突视为幂等成功（上一次 INSERT 可能已
+// 提交但连接中断）。
 func (r *MediaJobsRepo) Insert(ctx context.Context, record MediaJobRecord) error {
+	if err := validateMediaJobCost(record.CostUsd); err != nil {
+		return err
+	}
 	now := r.now().UTC()
 	snapshotJSON, err := json.Marshal(record.RequestSnapshot)
 	if err != nil {
@@ -158,19 +180,97 @@ func (r *MediaJobsRepo) Insert(ctx context.Context, record MediaJobRecord) error
 	}
 	applied := marshalStringList(record.ParamsApplied)
 	ignored := marshalStringList(record.ParamsIgnored)
-	_, err = r.db.ExecContext(ctx, r.bind(`INSERT INTO `+r.table()+` (
-		id, kind, api_key_id, owner_system_account_id, account_id,
-		upstream_job_id, status, request_snapshot_json, artifact_json, error_json, usage_json,
-		params_applied_json, params_ignored_json, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		record.ID, string(record.Kind), record.APIKeyID, record.OwnerSystemAccountID, record.AccountID,
-		record.UpstreamJobID, string(record.Status),
-		string(snapshotJSON), string(artifactJSON), errorJSON, usageJSON,
-		applied, ignored, mediaJobTimeLayout(now), mediaJobTimeLayout(now))
-	if err != nil {
-		return fmt.Errorf("写入媒体任务行失败: %w", err)
+	insert := func() error {
+		_, err := r.db.ExecContext(ctx, r.bind(`INSERT INTO `+r.table()+` (
+			id, kind, api_key_id, owner_system_account_id, account_id,
+			upstream_job_id, status, request_snapshot_json, artifact_json, error_json, usage_json,
+			cost_usd, params_applied_json, params_ignored_json, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			record.ID, string(record.Kind), record.APIKeyID, record.OwnerSystemAccountID, record.AccountID,
+			record.UpstreamJobID, string(record.Status),
+			string(snapshotJSON), string(artifactJSON), errorJSON, usageJSON, record.CostUsd,
+			applied, ignored, mediaJobTimeLayout(now), mediaJobTimeLayout(now))
+		if err != nil {
+			return fmt.Errorf("写入媒体任务行失败: %w", err)
+		}
+		return nil
+	}
+	err = insert()
+	if err == nil || isMediaJobDuplicateKeyError(err) {
+		return nil
+	}
+	if !isRetryableMediaJobInsertError(err) {
+		return err
+	}
+	for _, delay := range []time.Duration{50 * time.Millisecond, 200 * time.Millisecond, 500 * time.Millisecond} {
+		if !sleepMediaJobInsertRetry(ctx, delay) {
+			return err
+		}
+		err = insert()
+		if err == nil || isMediaJobDuplicateKeyError(err) {
+			return nil
+		}
+		if !isRetryableMediaJobInsertError(err) {
+			return err
+		}
+	}
+	return err
+}
+
+// validateMediaJobCost 拒绝负值/NaN/Inf 成本（与 UpdateTerminal 同口径）。
+func validateMediaJobCost(costUsd float64) error {
+	if costUsd < 0 || math.IsNaN(costUsd) || math.IsInf(costUsd, 0) {
+		return fmt.Errorf("媒体任务成本非法: %v", costUsd)
 	}
 	return nil
+}
+
+// sleepMediaJobInsertRetry 等待重试间隔；ctx 取消返回 false（不再重试）。
+func sleepMediaJobInsertRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// mediaJobSQLState 提取驱动错误的 SQLSTATE（pgx/pgconn 的 PgError 实现）。
+type mediaJobSQLState interface {
+	SQLState() string
+}
+
+// isMediaJobDuplicateKeyError 识别唯一键冲突（SQLSTATE 23505）：同 id 的
+// INSERT 已生效，重试视为幂等成功。
+func isMediaJobDuplicateKeyError(err error) bool {
+	var stateErr mediaJobSQLState
+	return errors.As(err, &stateErr) && stateErr.SQLState() == "23505"
+}
+
+// isRetryableMediaJobInsertError 识别可重试的连接/序列化/资源类错误：
+// SQLSTATE 08（连接）、40（事务回滚/死锁）、53（资源不足）、57（运维干预）；
+// database/sql 的 ErrBadConn 与网络超时同样可重试。上下文取消/超时不重试。
+func isRetryableMediaJobInsertError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, driver.ErrBadConn) {
+		return true
+	}
+	var stateErr mediaJobSQLState
+	if errors.As(err, &stateErr) {
+		state := stateErr.SQLState()
+		if len(state) >= 2 {
+			switch state[:2] {
+			case "08", "40", "53", "57":
+				return true
+			}
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // UpdateStatus 推进非终态行的轮询状态（含取消置 cancelled）。WHERE 限定
@@ -273,14 +373,14 @@ func (r *MediaJobsRepo) GetManagementByID(ctx context.Context, id string) (*Medi
 	return rows[0], nil
 }
 
-// ListByAPIKey 按归属 API Key 倒序分页（外部 GET /v1/videos 列表消费，Key 级
-// 隔离；kind 过滤由 ListByAPIKeyAndKind 承载——/v1/videos 与 /v1/audio/jobs
+// ListByAPIKey 按归属 API Key 倒序分页（外部 GET /v1/video/generations 列表消费，Key 级
+// 隔离；kind 过滤由 ListByAPIKeyAndKind 承载——/v1/video/generations 与 /v1/audio/jobs
 // 列表互不混行，M3f 起按 kind 泛化）。
 func (r *MediaJobsRepo) ListByAPIKey(ctx context.Context, apiKeyID string, limit, offset int) ([]*MediaJobRecord, error) {
 	return r.listByAPIKeyWhere(ctx, apiKeyID, "", limit, offset)
 }
 
-// ListByAPIKeyAndKind 按归属 API Key + 任务种类倒序分页（外部 GET /v1/videos
+// ListByAPIKeyAndKind 按归属 API Key + 任务种类倒序分页（外部 GET /v1/video/generations
 // 与 GET /v1/audio/jobs 列表消费：kind 空串 = 不过滤）。
 func (r *MediaJobsRepo) ListByAPIKeyAndKind(ctx context.Context, apiKeyID string, kind MediaJobKind, limit, offset int) ([]*MediaJobRecord, error) {
 	return r.listByAPIKeyWhere(ctx, apiKeyID, string(kind), limit, offset)

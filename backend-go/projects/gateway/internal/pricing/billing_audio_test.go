@@ -11,7 +11,7 @@ func audioTestFloat(v float64) *float64 { return &v }
 func TestBuildCostBreakdownTtsInputCharsLine(t *testing.T) {
 	// minimax speech-2.8-turbo（2026-10-17 国内口径批）：2.00 元/万字符 ÷7.0
 	// = $28.5714/1M chars，无 token 单价（tts-1 等旧行已按 2025 前模型清理批移除）。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "speech-2.8-turbo"), CostInput{
+	breakdown := BuildCostBreakdown(legacyPricingForTest(t, "minimax", "speech-2.8-turbo"), CostInput{
 		TtsInputChars: audioTestFloat(2_000_000),
 	})
 	if breakdown == nil {
@@ -42,7 +42,7 @@ func TestBuildCostBreakdownTtsInputCharsLine(t *testing.T) {
 
 func TestBuildCostBreakdownTtsInputCharsNoMeteringNoLine(t *testing.T) {
 	// 无计量（nil）：纯 TTS 模型也不产生行项，charge 回落 0。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "speech-2.8-turbo"), CostInput{
+	breakdown := BuildCostBreakdown(legacyPricingForTest(t, "minimax", "speech-2.8-turbo"), CostInput{
 		TtsInputChars: audioTestFloat(0),
 	})
 	if breakdown == nil {
@@ -61,7 +61,7 @@ func TestBuildCostBreakdownTtsInputCharsNoMeteringNoLine(t *testing.T) {
 func TestBuildCostBreakdownTtsNoPriceNoLine(t *testing.T) {
 	// 无字符价的模型（gpt-4o-mini-tts 按 token 计价）携带字符计量：
 	// 不产行项、不虚计。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "gpt", "gpt-4o-mini-tts"), CostInput{
+	breakdown := BuildCostBreakdown(legacyPricingForTest(t, "gpt", "gpt-4o-mini-tts"), CostInput{
 		TtsInputChars: audioTestFloat(1000),
 	})
 	if breakdown == nil {
@@ -119,4 +119,15 @@ func mustFindPricingForTest(t *testing.T, providerCode, model string) *Pricing {
 		t.Fatalf("pricing not found: %s/%s", providerCode, model)
 	}
 	return pricing
+}
+
+// legacyPricingForTest 返回去掉 mediaPricing 的同一行副本，用于继续覆盖
+// legacy（无统一模板）计价分支：P3 迁移后内置行默认走 media_unified_v1，
+// 回滚窗口与自定义 legacy 行仍依赖旧分支。
+func legacyPricingForTest(t *testing.T, providerCode, model string) *Pricing {
+	t.Helper()
+	pricing := mustFindPricingForTest(t, providerCode, model)
+	copy := *pricing
+	copy.MediaPricing = nil
+	return &copy
 }

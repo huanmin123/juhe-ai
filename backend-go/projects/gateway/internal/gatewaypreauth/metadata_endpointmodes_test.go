@@ -110,27 +110,27 @@ func TestRequestSupportedEndpointMode(t *testing.T) {
 		},
 		{
 			name:   "video create",
-			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/videos", nil)},
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/video/generations", nil)},
 			expect: EndpointModeVideoCreate,
 		},
 		{
 			name:   "video list",
-			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/videos", nil)},
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/video/generations", nil)},
 			expect: EndpointModeVideoGet,
 		},
 		{
 			name:   "video get item",
-			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/videos/video_1", nil)},
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/video/generations/video_1", nil)},
 			expect: EndpointModeVideoGet,
 		},
 		{
 			name:   "video content",
-			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/videos/video_1/content", nil)},
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/video/generations/video_1/content", nil)},
 			expect: EndpointModeVideoContent,
 		},
 		{
 			name:   "video cancel",
-			req:    &GatewayRequest{HTTP: httptest.NewRequest("DELETE", "/v1/videos/video_1", nil)},
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("DELETE", "/v1/video/generations/video_1", nil)},
 			expect: EndpointModeVideoCancel,
 		},
 		{

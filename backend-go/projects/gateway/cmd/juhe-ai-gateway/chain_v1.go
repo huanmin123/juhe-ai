@@ -351,9 +351,9 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	defer httpCompletion.complete(time.Now().UnixMilli())
 
 	// M2 视频任务面（媒体设计 §4.2/§7；M3f 起含长音频 /v1/audio/jobs* 族）：
-	// GET/DELETE /v1/videos* 与 /v1/audio/jobs* 是受理后操作，不走派发循环
+	// GET/DELETE /v1/video/generations* 与 /v1/audio/jobs* 是受理后操作，不走派发循环
 	// ——preauth 认证完成后短路到账户亲和直连（查表定位原账户原上游）。
-	// 创建请求（POST /v1/videos 与 POST /v1/audio/jobs）继续走下方完整派发
+	// 创建请求（POST /v1/video/generations 与 POST /v1/audio/jobs）继续走下方完整派发
 	// 链（受理边界生效）。任务面是网关本地应答（零上游尝试），2026-10-16
 	// 收窄后不再落审计。
 	// M5b realtime ephemeral token 签发面（Realtime 设计 §2/§4）：POST

@@ -474,7 +474,7 @@ func normalizeDeepSeekEndpointModesForWrite(value optionalValue, context endpoin
 // normalizeGLMEndpointModesForWrite mirrors the glm driver body: anthropic
 // profiles pin the messages pair, openai profiles pin the chat pair + the M3
 // video tokens (opt-in, cogvideo adapter; 契约 §7.1——词表缺失会让显式勾选
-// 视频能力的 glm 账户在创建/编辑时被拒，/v1/videos 创建链按 video_create
+// 视频能力的 glm 账户在创建/编辑时被拒，/v1/video/generations 创建链按 video_create
 // 候选过滤无账户可命中，与 M2 openai 族 video_* 同语义，不进默认集)。
 func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	anthropicMessagesModes := accountscore.StringSet(accountscore.AnthropicMessagesEndpointModeValues)

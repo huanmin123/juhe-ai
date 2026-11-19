@@ -581,6 +581,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0001142857142857143,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "cogtts",
       "outputModalities": [
@@ -591,7 +592,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 2 元/万字符（open.bigmodel.cn/pricing（2026-10-17 web_reader 渲染核对） GLM-TTS 行，与 cogtts 同族现行价），按约定汇率 7.0 换算 28.57/百万字符（2×100÷7.0）；此前落值按 2×10÷7.0 换算少 10 倍（$2.857/百万字符），本批回正",
+      "sourcePricingNote": "官方人民币价 2 元/万字符（open.bigmodel.cn/pricing（2026-10-17 web_reader 渲染核对） GLM-TTS 行，与 cogtts 同族现行价），按约定汇率 7.0 换算 28.57/百万字符（2×100÷7.0）；此前落值按 2×10÷7.0 换算少 10 倍（$2.857/百万字符），本批回正；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -744,6 +745,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.0001142857142857143,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "glm-tts",
       "outputModalities": [
@@ -754,7 +756,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 2 元/万字符（open.bigmodel.cn/pricing（2026-10-17 web_reader 渲染核对） GLM-TTS 行，与 cogtts 同族现行价），按约定汇率 7.0 换算 28.57/百万字符（2×100÷7.0）；此前落值按 2×10÷7.0 换算少 10 倍（$2.857/百万字符），本批回正",
+      "sourcePricingNote": "官方人民币价 2 元/万字符（open.bigmodel.cn/pricing（2026-10-17 web_reader 渲染核对） GLM-TTS 行，与 cogtts 同族现行价），按约定汇率 7.0 换算 28.57/百万字符（2×100÷7.0）；此前落值按 2×10÷7.0 换算少 10 倍（$2.857/百万字符），本批回正；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -769,6 +771,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.014285714285714287,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.6,"4k":3.0}},
       "mode": "image_generation",
       "model": "glm-image",
       "outputCostPerImage": 0.014285714285714287,

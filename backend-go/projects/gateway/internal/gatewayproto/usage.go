@@ -27,7 +27,13 @@ type ParsedUsage struct {
 	TtsInputChars         *int64
 	AudioInputSeconds     *float64
 	OutputVideoSeconds    *float64
-	UsageMissing          bool
+	// ResolutionTier / QuantitySource 是统一媒体模板（非对话媒体统一计费
+	// 设计 §7.3）的计量档位与数量来源：图片请求 size → 1k/2k/4k，数量
+	// data[] → upstream、请求 n → request；其余维度留空。只影响计费行项，
+	// 不改变解析出的 token/张数事实。
+	ResolutionTier string
+	QuantitySource string
+	UsageMissing   bool
 }
 
 // EmptyUsage returns the zero-evidence usage value.
@@ -63,6 +69,8 @@ func MergeUsage(current, next ParsedUsage) ParsedUsage {
 		TtsInputChars:         orInt64(next.TtsInputChars, current.TtsInputChars),
 		AudioInputSeconds:     orFloat64(next.AudioInputSeconds, current.AudioInputSeconds),
 		OutputVideoSeconds:    orFloat64(next.OutputVideoSeconds, current.OutputVideoSeconds),
+		ResolutionTier:        orString(next.ResolutionTier, current.ResolutionTier),
+		QuantitySource:        orString(next.QuantitySource, current.QuantitySource),
 		UsageMissing:          current.UsageMissing || next.UsageMissing,
 	}
 }

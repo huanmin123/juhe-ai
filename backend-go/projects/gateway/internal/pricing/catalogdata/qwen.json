@@ -9,6 +9,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.1,"baseTier":"1080p","tierMultipliers":{"480p":0.2,"720p":0.5,"1080p":1.0,"1440p":1.5,"2160p":2.5}},
       "mode": "video",
       "model": "wan2.2-t2v-plus",
       "outputModalities": [
@@ -19,7 +20,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 480P 0.14 / 1080P 0.70 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算，目录落 1080P 档 $0.1/秒（480P $0.02/秒注释登记）；2026-10-17 help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 浏览器渲染复核一致（1080P 0.70 元/秒未变），口径为国内÷7.0 与账户实际连接国内站一致",
+      "sourcePricingNote": "官方人民币价 480P 0.14 / 1080P 0.70 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算，目录落 1080P 档 $0.1/秒（480P $0.02/秒注释登记）；2026-10-17 help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 浏览器渲染复核一致（1080P 0.70 元/秒未变），口径为国内÷7.0 与账户实际连接国内站一致；统一媒体计费 P3：baseTier=1080p（0.70 元/秒），480p 倍率 0.14/0.70=0.2，720p/1440p/2160p 按 1080p 锚点默认倍率 0.5/1.5/2.5。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -306,6 +307,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":4.5714285714285716e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "qwen3-tts-flash",
       "outputModalities": [
@@ -316,7 +318,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 0.8 元/万字符、输出不计费（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 语音合成段），按约定汇率 7.0 换算 11.43/百万字符（0.8×100÷7.0）；此前落国际站 $0.1/万字符 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 0.8 元/万字符、输出不计费（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 语音合成段），按约定汇率 7.0 换算 11.43/百万字符（0.8×100÷7.0）；此前落国际站 $0.1/万字符 明文，按国内口径回正；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -331,6 +333,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":5.714285714285715e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "cosyvoice-v3-flash",
       "outputModalities": [
@@ -341,7 +344,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 1 元/万字符（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） CosyVoice 段；同段 v3-plus 2 元、v3.5-flash 0.8 元/万字符留档），按约定汇率 7.0 换算 14.29/百万字符（1×100÷7.0）；此前落国际站 $0.13/万字符 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 1 元/万字符（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） CosyVoice 段；同段 v3-plus 2 元、v3.5-flash 0.8 元/万字符留档），按约定汇率 7.0 换算 14.29/百万字符（1×100÷7.0）；此前落国际站 $0.13/万字符 明文，按国内口径回正；统一媒体计费 P3 自定价折算：字符价 × 4 字符/秒。",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
@@ -357,6 +360,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":3.142857142857143e-05,"baseTier":"","tierMultipliers":{}},
       "mode": "audio",
       "model": "qwen3-asr-flash",
       "outputModalities": [
@@ -382,6 +386,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.08571428571428572,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":2.0,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "wan3.0-video",
       "outputModalities": [
@@ -392,7 +397,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 720P 原价 0.6 元/秒（现限时 7 折实付 0.42；480P 0.3、1080P 1.2 元/秒）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 万相-图生视频段），按约定汇率 7.0 换算 0.08571/秒（720P 刊例价÷7.0，限时折扣留档）；此前落国际站 $0.10 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 720P 原价 0.6 元/秒（现限时 7 折实付 0.42；480P 0.3、1080P 1.2 元/秒）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 万相-图生视频段），按约定汇率 7.0 换算 0.08571/秒（720P 刊例价÷7.0，限时折扣留档）；此前落国际站 $0.10 明文，按国内口径回正；统一媒体计费 P3：480P 0.3/0.6=0.5、1080P 1.2/0.6=2.0。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -407,6 +412,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":0.08571428571428572,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1.0,"1080p":1.6666666666666667,"1440p":3.0,"2160p":5.0}},
       "mode": "video",
       "model": "wan2.7-t2v",
       "outputModalities": [
@@ -417,7 +423,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 720P 0.6 元/秒（1080P 1 元/秒）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 万相-文生视频段），按约定汇率 7.0 换算 0.08571/秒（720P÷7.0）；此前落国际站 $0.10 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 720P 0.6 元/秒（1080P 1 元/秒）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 万相-文生视频段），按约定汇率 7.0 换算 0.08571/秒（720P÷7.0）；此前落国际站 $0.10 明文，按国内口径回正；统一媒体计费 P3：1080P 1.0/0.6=1.666667。",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -432,6 +438,7 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"image","baseUsd":0.025714285714285714,"baseTier":"1k","tierMultipliers":{"1k":1.0,"2k":1.0,"4k":3.0}},
       "mode": "image_generation",
       "model": "qwen-image-3.0",
       "outputCostPerImage": 0.025714285714285714,
@@ -443,7 +450,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 1k 0.18 元/张（2k 同价 0.18；pro 变体 1k 0.25 元/张留档）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 图像生成段），按约定汇率 7.0 换算 0.02571/张（0.18÷7.0）；此前落国际站 $0.03 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 1k 0.18 元/张（2k 同价 0.18；pro 变体 1k 0.25 元/张留档）（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 图像生成段），按约定汇率 7.0 换算 0.02571/张（0.18÷7.0）；此前落国际站 $0.03 明文，按国内口径回正；统一媒体计费 P3：2K 与 1K 同价 0.18 元/张，2k 倍率 1.0。",
       "supportedAPIProtocols": [
         "images"
       ],

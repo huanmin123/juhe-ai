@@ -1,8 +1,9 @@
 package playground
 
-// POST /videos + 轮询/下载 —— 异步视频（设计 §3.5）：POST /v1/videos 创建（
-// 响应 {jobId}，服务端不落库，jobId 由前端持有）、GET /v1/videos/{jobId} 代理
-// 上游轮询（归一 status/progress/error）、GET /v1/videos/{jobId}/content 流式
+// POST /videos + 轮询/下载 —— 异步视频（设计 §3.5）：POST
+// /v1/video/generations 创建（响应 {jobId}，服务端不落库，jobId 由前端持有）、
+// GET /v1/video/generations/{jobId} 代理
+// 上游轮询（归一 status/progress/error）、GET /v1/video/generations/{jobId}/content 流式
 // 代理视频字节。请求构造是 internal/chat/generation_media.go CreateChatVideo/
 // PollChatMediaTask/DownloadChatMediaContent 的同构精简版（该包有并行未提交
 // 改动且将整体退役，不 import）。首帧图生视频经 /v1 链的 input_reference 通道
@@ -140,7 +141,7 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 	payload, _ := json.Marshal(payloadValues)
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
 		AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
-		Path: "/v1/videos", Method: http.MethodPost,
+		Path: "/v1/video/generations", Method: http.MethodPost,
 		Headers: map[string]string{
 			"accept":         "application/json",
 			"content-type":   "application/json",
@@ -163,15 +164,15 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 		return nil, dispatchFailed(upstreamDispatchMessage("视频创建", response.Status, respBody))
 	}
 	var job struct {
-		ID     string `json:"id"`
+		TaskID string `json:"task_id"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal(respBody, &job); err != nil || strings.TrimSpace(job.ID) == "" {
-		return nil, dispatchFailed("视频创建响应缺少任务凭据（job id）")
+	if err := json.Unmarshal(respBody, &job); err != nil || strings.TrimSpace(job.TaskID) == "" {
+		return nil, dispatchFailed("视频创建响应缺少任务凭据（task_id）")
 	}
 	// 任务引用随暂存记录（§3.8 单条覆盖）：上游有初始状态则归一记录，缺省
 	// queued；存储失败显式 500（jobId 未交付，用户重试即可）。
-	jobID := strings.TrimSpace(job.ID)
+	jobID := strings.TrimSpace(job.TaskID)
 	status := strings.TrimSpace(job.Status)
 	if status == "" {
 		status = "queued"
@@ -221,7 +222,7 @@ func (rt *playgroundRoutes) videosPollHandler(w http.ResponseWriter, r *http.Req
 func (rt *playgroundRoutes) runVideosPoll(ctx context.Context, scope Scope, accountID, jobID string) (*videosPollResponse, *HTTPError) {
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
 		AccountID: accountID, OwnerID: scope.ViewerID,
-		Path: "/v1/videos/" + jobID, Method: http.MethodGet,
+		Path: "/v1/video/generations/" + jobID, Method: http.MethodGet,
 		Headers: map[string]string{
 			"accept":         "application/json",
 			purposeHeaderKey: playgroundPurposeVideos,
@@ -307,7 +308,7 @@ func (rt *playgroundRoutes) videosContentHandler(w http.ResponseWriter, r *http.
 	}
 	response, err := rt.deps.Dispatch.Dispatch(r.Context(), DispatchRequest{
 		AccountID: accountID, OwnerID: scope.ViewerID,
-		Path: "/v1/videos/" + jobID + "/content", Method: http.MethodGet,
+		Path: "/v1/video/generations/" + jobID + "/content", Method: http.MethodGet,
 		Headers: map[string]string{
 			"accept":         "application/json",
 			purposeHeaderKey: playgroundPurposeVideos,

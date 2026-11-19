@@ -128,10 +128,10 @@ func (a volcengineSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte,
 		"speaker":      ir.Voice,
 		"audio_config": audioConfig,
 	}
-	// provider_options 命中 volcengine 的子对象 deep-merge（契约 §2.1 L3，
+	// metadata 逐键 deep-merge（契约 §2.1 L3，
 	// 如 {"volcengine":{"audio_config":{"loudness_rate":10}}} 覆盖/补齐厂商
 	// 个例参数——厂商值覆盖同名键，嵌套对象递归合并）。
-	body = MergeProviderOptions(body, a.Provider(), ir.ProviderOptions)
+	body = MergeMetadata(body, ir.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", nil, fmt.Errorf("编码火山 TTS 请求体失败: %w", err)

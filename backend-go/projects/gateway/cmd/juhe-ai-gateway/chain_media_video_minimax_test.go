@@ -147,9 +147,9 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"MiniMax-Hailuo-2.3","prompt":"一只猫在弹钢琴","seconds":"6","input_reference":"data:image/png;base64,aGVsbG8=","seed":42,"provider_options":{"minimax":{"prompt_optimizer":true}}}`,
+		`{"model":"MiniMax-Hailuo-2.3","prompt":"一只猫在弹钢琴","seconds":"6","input_reference":"data:image/png;base64,aGVsbG8=","seed":42,"metadata":{"prompt_optimizer":true}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaMinimaxCreateOK)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -174,7 +174,7 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	}
 
 	// 创建出站断言：POST /v1/video_generation + Bearer 认证头 + 转换报文
-	//（duration 数值、first_frame_image 裸 base64、provider_options 合并），
+	//（duration 数值、first_frame_image 裸 base64、metadata 合并），
 	// ignored 键不进报文。
 	records := recorder.snapshot()
 	if len(records) != 1 || records[0].Method != http.MethodPost || records[0].Path != "/v1/video_generation" {
@@ -259,7 +259,7 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	// content 下载：completed 的 file_download_url 是引擎渲染的绝对 URL
 	//（不经记录层），网关无凭据直连——引擎侧 Authorization 记录为空可证。
 	// 响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -283,7 +283,7 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	// 打 usage_missing——计量与计费依据都是目录按次价 × 任务粒度（契约
 	// §2.8 按次计费）。
 	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"model":"MiniMax-Hailuo-2.3"`)
+		return strings.Contains(text, `"endpoint":"/v1/video/generations"`) && strings.Contains(text, `"model":"MiniMax-Hailuo-2.3"`)
 	}, "minimax completed 按次计费终态记录")
 	if !strings.Contains(record, `"costUsd":0.2857142857`) {
 		t.Fatalf("minimax 按次计费 usage 行缺少 costUsd 0.2857142857: %s", record)
@@ -312,7 +312,7 @@ func TestChainMediaMinimaxVideoFailedTerminal(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"MiniMax-Hailuo-2.3","prompt":"失败终态"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaMinimaxPollFail)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -331,7 +331,7 @@ func TestChainMediaMinimaxVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "minimax failed 终态记录")
 }
 
@@ -350,9 +350,9 @@ func TestChainMediaMinimaxVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"MiniMax-Hailuo-2.3","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaMinimaxPollRunning)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
 	}
@@ -371,7 +371,7 @@ func TestChainMediaMinimaxVideoCancel(t *testing.T) {
 	}
 
 	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
 		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}

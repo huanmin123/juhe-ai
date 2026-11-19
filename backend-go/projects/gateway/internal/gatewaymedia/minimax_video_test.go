@@ -76,6 +76,12 @@ func TestMinimaxVideoAdapterArtifactAndCancelDeclarations(t *testing.T) {
 	if minimax.SupportsCancel() {
 		t.Fatal("minimax 无上游取消端点，SupportsCancel 应为 false")
 	}
+	if !VideoArtifactDurationProbeForProvider("minimax") {
+		t.Fatal("minimax 不回 duration，P4 产物探测应开启")
+	}
+	if VideoArtifactDurationProbeForProvider("volcengine") {
+		t.Fatal("volcengine 上游回报 duration，P4 产物探测应关闭（对比项）")
+	}
 }
 
 func TestMinimaxVideoAdapterCreate(t *testing.T) {
@@ -89,8 +95,8 @@ func TestMinimaxVideoAdapterCreate(t *testing.T) {
 			Seconds:        &seconds,
 			InputReference: &reference,
 		},
-		ProviderOptions: map[string]any{
-			"minimax": map[string]any{"prompt_optimizer": true},
+		Metadata: map[string]any{
+			"prompt_optimizer": true,
 		},
 	})
 	if err != nil {
@@ -249,8 +255,8 @@ func TestMinimaxSpeechAdapterBuildRequest(t *testing.T) {
 		Voice:          "male-qn-qingse",
 		Speed:          &speed,
 		ResponseFormat: "wav",
-		ProviderOptions: map[string]any{
-			"minimax": map[string]any{"voice_setting": map[string]any{"vol": 2}},
+		Metadata: map[string]any{
+			"voice_setting": map[string]any{"vol": 2},
 		},
 	})
 	if err != nil {
@@ -261,9 +267,9 @@ func TestMinimaxSpeechAdapterBuildRequest(t *testing.T) {
 		t.Fatalf("path = %q, want /t2a_v2", path)
 	}
 	var parsed struct {
-		Model  string `json:"model"`
-		Text   string `json:"text"`
-		Stream bool   `json:"stream"`
+		Model        string `json:"model"`
+		Text         string `json:"text"`
+		Stream       bool   `json:"stream"`
 		VoiceSetting struct {
 			VoiceID string  `json:"voice_id"`
 			Speed   float64 `json:"speed"`

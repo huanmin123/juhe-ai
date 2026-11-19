@@ -341,7 +341,7 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 		UpstreamJobID: "up_detail", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
 			Model: "sora-2", Prompt: "全量提示词", Seconds: &seconds, Size: "1280x720", N: 1,
-			ProviderOptionsApplied: []string{"resolution"},
+			MetadataApplied: []string{"resolution"},
 		},
 		ParamsApplied: []string{"seconds", "size"}, ParamsIgnored: []string{"seed"},
 	})
@@ -385,9 +385,9 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	if detail["providerJobId"] != "up_detail" || detail["apiKeyId"] != "key_detail" || detail["accountId"] != "acc_detail" || detail["costUsd"] != 0.8 {
 		t.Fatalf("detail 归属/成本错误: %#v", detail)
 	}
-	options, _ := detail["providerOptionsApplied"].([]any)
+	options, _ := detail["metadataApplied"].([]any)
 	if len(options) != 1 || options[0] != "resolution" {
-		t.Fatalf("providerOptionsApplied 错误: %#v", detail["providerOptionsApplied"])
+		t.Fatalf("metadataApplied 错误: %#v", detail["metadataApplied"])
 	}
 	artifactPayload, _ := detail["artifact"].(map[string]any)
 	if artifactPayload == nil || artifactPayload["contentUrl"] != "https://upstream.example/content.mp4" {

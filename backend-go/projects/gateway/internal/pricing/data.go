@@ -2,6 +2,8 @@ package pricing
 
 import (
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // rawModel mirrors provider-driver.types RawModelPricing — the LiteLLM/
@@ -57,6 +59,10 @@ type rawModel struct {
 	// 槽位；与 VideoOutputCostPerSecond 互斥（同一行两字段只落其一，互斥
 	// 门禁测试钉住），秒价行不得再落按次价、反之亦然。
 	VideoOutputCostPerCall *float64
+
+	// MediaPricing 是 catalogdata JSON 的嵌套对象 mediaPricing
+	// （非对话媒体统一计费设计 §5.1）。JSON 反射映射需显式分支。
+	MediaPricing *mediapricing.Pricing
 
 	ContextWindowTokens *int
 	MaxInputTokens      *int

@@ -35,7 +35,8 @@ type ClientIPConcurrencyAcquireInput struct {
 	GroupID         string
 	APIKeyID        string
 	ClientIP        string
-	// Limit is api_keys.client_ip_concurrency_limit: 0 disables the gate.
+	// Limit is api_keys.client_ip_concurrency_limit: -1 disables the gate
+	// (limit <= 0 is tolerated as disabled for internal/legacy callers).
 	Limit  int
 	Signal context.Context
 }

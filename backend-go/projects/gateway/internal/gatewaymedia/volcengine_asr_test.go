@@ -78,7 +78,7 @@ func TestVolcengineASRAdapterCreateValidationAndFormatOverride(t *testing.T) {
 	// provider_options.volcengine.audio_format 覆盖后缀推断。
 	output, err := adapter.Create(context.Background(), AudioJobCreateInput{
 		Params:          NormalizedAudioJobParams{Model: "volc.seedasr.auc", InputURL: "https://oss.example.com/a.wav"},
-		ProviderOptions: map[string]any{"volcengine": map[string]any{"audio_format": "ogg"}},
+		Metadata: map[string]any{"audio_format": "ogg"},
 	})
 	if err != nil {
 		t.Fatalf("Create override: %v", err)

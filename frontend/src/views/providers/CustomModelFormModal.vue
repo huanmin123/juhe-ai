@@ -135,9 +135,31 @@
             </template>
           </template>
           <template v-else>
-            <a-form-item v-for="field in customModelDirectPriceFields" :key="field.key" :label="field.label" :extra="field.description">
-              <a-input-number v-model:value="customModelForm[field.key]" :min="0" style="width: 100%" />
+            <a-form-item label="统一媒体价格" extra="按秒/张/次计价；0 表示免费。启用后不再提交旧价格字段，视频按秒并乘分辨率倍率。">
+              <a-switch v-model:checked="customModelMediaPricingEnabled" />
             </a-form-item>
+            <template v-if="customModelForm.mediaPricing">
+              <a-form-item label="基准单价（USD）" :extra="customModelForm.mediaPricing.unit === 'second' ? '每秒价格（视频/音频）' : customModelForm.mediaPricing.unit === 'image' ? '每张价格' : '每次价格'">
+                <a-input-number v-model:value="customModelForm.mediaPricing.baseUsd" :min="0" style="width: 100%" />
+              </a-form-item>
+              <template v-if="customModelMediaPricingTiers.length">
+                <a-form-item label="基准档" extra="基准档倍率固定为 1.0；切换基准档时自动置 1。">
+                  <a-select
+                    v-model:value="customModelForm.mediaPricing.baseTier"
+                    :options="customModelMediaTierOptions"
+                    @change="handleCustomModelMediaBaseTierChange"
+                  />
+                </a-form-item>
+                <a-form-item v-for="tier in customModelMediaPricingTiers" :key="tier" :label="`${tier} 倍率`">
+                  <a-input-number v-model:value="customModelForm.mediaPricing.tierMultipliers[tier]" :min="0.000001" style="width: 100%" />
+                </a-form-item>
+              </template>
+            </template>
+            <template v-else>
+              <a-form-item v-for="field in customModelDirectPriceFields" :key="field.key" :label="field.label" :extra="field.description">
+                <a-input-number v-model:value="customModelForm[field.key]" :min="0" style="width: 100%" />
+              </a-form-item>
+            </template>
           </template>
         </template>
       </div>
@@ -262,7 +284,9 @@ import {
   clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
+  defaultMediaPricingForCategory,
   emptyCustomModelForm,
+  mediaPricingTiers,
   normalizeCustomModelRequestCapabilities,
   reconcileCustomModelServiceTierPrices,
   type CustomModelForm
@@ -340,9 +364,25 @@ const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFrom
 const customModelTargetProviderCode = computed(() => editingCustomModelProviderCode.value ?? targetProvider.value?.code ?? '')
 const customModelDirectPriceFields = computed(() => customModelPriceFields(customModelTargetProviderCode.value, customModelPricingCategory.value))
 const customModelTierPriceFieldOptions = computed(() => customModelTierPriceFields(customModelTargetProviderCode.value))
+const customModelMediaPricingTiers = computed(() => mediaPricingTiers(customModelForm.mediaPricing))
+const customModelMediaTierOptions = computed(() => customModelMediaPricingTiers.value.map((tier) => ({ value: tier, label: tier })))
+const customModelMediaPricingEnabled = computed({
+  get: () => Boolean(customModelForm.mediaPricing),
+  set: (enabled: boolean) => {
+    customModelForm.mediaPricing = enabled
+      ? defaultMediaPricingForCategory(customModelPricingCategory.value)
+      : undefined
+  }
+})
+
+function handleCustomModelMediaBaseTierChange(value: string): void {
+  if (!customModelForm.mediaPricing) return
+  customModelForm.mediaPricing.tierMultipliers[value] = 1
+}
 const customModelPriceSectionTitle = computed(() => {
   if (customModelPricingCategory.value === 'image') return '图像计费 · USD'
   if (customModelPricingCategory.value === 'audio') return '音频计费 · USD'
+  if (customModelPricingCategory.value === 'video') return '视频计费 · USD'
   return 'Token 计费 · USD / 1M Token'
 })
 const customModelCategoryRecords = computed(() => props.models.filter((item) => getModelCategory(item) === customModelPricingCategory.value))

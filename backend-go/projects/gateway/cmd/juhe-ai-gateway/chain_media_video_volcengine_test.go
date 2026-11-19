@@ -144,9 +144,9 @@ func TestChainMediaVolcengineVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"doubao-seedance-1-0-pro-250528","prompt":"一只猫在弹钢琴","seconds":5,"size":"1280x720","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"provider_options":{"volcengine":{"camera_fixed":true}}}`,
+		`{"model":"doubao-seedance-1-0-pro-250528","prompt":"一只猫在弹钢琴","seconds":5,"size":"1280x720","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"metadata":{"camera_fixed":true}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcengineCreateOK)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -175,7 +175,7 @@ func TestChainMediaVolcengineVideoFullFlowLifecycle(t *testing.T) {
 
 	// 创建出站断言：POST /api/v3/contents/generations/tasks + Bearer 认证头 +
 	// 转换报文（content 数组 text/image_url 段、resolution/ratio 换算、
-	// duration 数值、seed、provider_options 合并），ignored 键不进报文。
+	// duration 数值、seed、metadata 合并），ignored 键不进报文。
 	records := recorder.snapshot()
 	if len(records) != 1 || records[0].Method != http.MethodPost || records[0].Path != "/api/v3/contents/generations/tasks" {
 		t.Fatalf("创建出站请求形态错误: %+v", records)
@@ -252,7 +252,7 @@ func TestChainMediaVolcengineVideoFullFlowLifecycle(t *testing.T) {
 	// content 下载：completed 的 content.video_url 是引擎渲染的绝对 URL
 	//（不经记录层），网关无凭据直连——引擎侧 Authorization 记录为空可证。
 	// 响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -278,7 +278,7 @@ func TestChainMediaVolcengineVideoFullFlowLifecycle(t *testing.T) {
 	// 不打 usage_missing；目录无 USD 秒价 → 无 costUsd（usage_source 无
 	// schema 字段，来源以本断言与结算注释钉住）。
 	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"outputVideoSeconds":5`)
+		return strings.Contains(text, `"endpoint":"/v1/video/generations"`) && strings.Contains(text, `"outputVideoSeconds":5`)
 	}, "volcengine completed 上游回报计量终态记录")
 	if strings.Contains(record, "usageMissing") {
 		t.Fatalf("volcengine 请求自算计量 usage 行不得打 usage_missing（有生效请求参数）: %s", record)
@@ -304,7 +304,7 @@ func TestChainMediaVolcengineVideoFailedTerminal(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"doubao-seedance-1-0-pro-250528","prompt":"失败终态"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcenginePollFailedError)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -323,7 +323,7 @@ func TestChainMediaVolcengineVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "volcengine failed 终态记录")
 }
 
@@ -342,9 +342,9 @@ func TestChainMediaVolcengineVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"doubao-seedance-1-0-pro-250528","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcenginePollRunning)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
 	}
@@ -363,7 +363,7 @@ func TestChainMediaVolcengineVideoCancel(t *testing.T) {
 	}
 
 	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
 		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}
@@ -384,7 +384,7 @@ func TestChainMediaVolcengineVideoCreateSizeRatioLocal400(t *testing.T) {
 	server := httptest.NewServer(chain)
 	defer server.Close()
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/videos", apiKey,
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/video/generations", apiKey,
 		`{"model":"doubao-seedance-1-0-pro-250528","prompt":"词表外宽高比","size":"1279x720"}`,
 		nil)
 	if response.StatusCode != http.StatusBadRequest {

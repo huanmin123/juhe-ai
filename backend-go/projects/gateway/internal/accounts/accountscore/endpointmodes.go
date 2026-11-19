@@ -119,7 +119,7 @@ var (
 	// video_content / video_cancel 四 token 同语义追加（进词表、opt-in、
 	// 不进默认集；与 gatewaypreauth 词表、链路投影词表
 	// chainOpenAIEndpointModeValues 及 accounts.health_check_endpoint_mode
-	// CHECK 一致。词表缺失会让管理面无法创建视频账户，/v1/videos 创建链
+	// CHECK 一致。词表缺失会让管理面无法创建视频账户，/v1/video/generations 创建链
 	// 按 video_create 候选过滤无账户可命中）。
 	// M3f 长音频任务族（媒体设计 §4.2，契约 §10.2）：audio_job_create /
 	// audio_job_get / audio_job_content / audio_job_cancel 四 token 同语义

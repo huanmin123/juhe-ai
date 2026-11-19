@@ -38,7 +38,7 @@ func (qwenVideoAdapter) Provider() string { return "qwen" }
 //     适用于全部可选模型）→ true；
 //   - SupportsAudio：请求面无"生成音频"开关参数（wan2.5/2.6 的 input.
 //     audio_url 是输入音频素材字段、非输出开关，语义不同，经 L3
-//     provider_options 传递）→ false（忽略 + 回显 params_ignored）；
+//     metadata 传递）→ false（忽略 + 回显 params_ignored）；
 //   - SupportsN：请求面无多段参数 → false；
 //   - SupportsInputReference：input.img_url 原生字段承接公共
 //     input_reference（图生视频形态，同端点）→ true；官方支持公网 URL 与
@@ -90,7 +90,7 @@ func qwenSizeOf(size string) (string, error) {
 //     档位合法性由上游裁决，契约 §2.4 规则 3）；
 //   - seed → parameters.seed：整数直传；
 //   - n/audio 归一层判为 ignored，不进报文（§2.4 规则 1）；
-//   - provider_options 命中 qwen 的子对象 deep-merge 覆盖同名键（契约
+//   - metadata 键 deep-merge 覆盖同名键（契约
 //     §2.1 L3，嵌套对象递归合并，如 {"qwen":{"parameters":{"prompt_extend":
 //     true}}}）。
 //
@@ -102,11 +102,12 @@ func (a qwenVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoC
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
-	input := map[string]any{
-		"prompt": params.Prompt,
+	input := map[string]any{}
+	if params.Prompt != "" {
+		input["prompt"] = params.Prompt
 	}
 	if params.InputReference != nil {
 		reference := strings.TrimSpace(*params.InputReference)
@@ -139,7 +140,7 @@ func (a qwenVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoC
 	if len(parameters) > 0 {
 		body["parameters"] = parameters
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 qwen 视频创建请求体失败: %w", err)

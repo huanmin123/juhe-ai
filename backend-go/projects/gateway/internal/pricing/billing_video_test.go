@@ -121,13 +121,14 @@ func TestHasAnyCostDimensionVideoMetering(t *testing.T) {
 	}
 }
 
-// TestBuildCostBreakdownVideoOutputCallsLine 锁定按次行项（2026-10-05 按次
-// 计费批，契约 §2.8 按次计费）：MiniMax-Hailuo-2.3 静态快照按国内明文
-// 768P-6s 2.00 元/条 ÷7.0（2026-10-17 口径批回正，按次计费每条=每次；
-// cogvideox 载体已随 2025 前模型清理批移除）；一次任务 = 一次调用（结算链
-// 按任务粒度填 VideoCalls=1），行项 video_output_calls 直乘。
+// TestBuildCostBreakdownVideoOutputCallsLine 锁定 legacy 按次行项（2026-10-05
+// 按次计费批，契约 §2.8 按次计费）：MiniMax-Hailuo-2.3 的 legacy 快照按国内
+// 明文 768P-6s 2.00 元/条 ÷7.0（2026-10-17 口径批回正，按次计费每条=每次）；
+// 一次任务 = 一次调用（结算链按任务粒度填 VideoCalls=1），行项
+// video_output_calls 直乘。P3 迁移后该内置行已有 mediaPricing（按秒），本
+// 用例显式去掉模板以继续覆盖 legacy 分支。
 func TestBuildCostBreakdownVideoOutputCallsLine(t *testing.T) {
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "MiniMax-Hailuo-2.3"), CostInput{
+	breakdown := BuildCostBreakdown(legacyPricingForTest(t, "minimax", "MiniMax-Hailuo-2.3"), CostInput{
 		VideoCalls: audioTestFloat(1),
 	})
 	if breakdown == nil {
@@ -156,7 +157,7 @@ func TestBuildCostBreakdownVideoOutputCallsLine(t *testing.T) {
 		t.Fatalf("account charge = %v want 0.2857142857", breakdown.AccountChargeUsd)
 	}
 	// 次价行无秒价槽位（互斥）：秒计量在场也不产生秒行项。
-	withoutSeconds := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "MiniMax-Hailuo-2.3"), CostInput{
+	withoutSeconds := BuildCostBreakdown(legacyPricingForTest(t, "minimax", "MiniMax-Hailuo-2.3"), CostInput{
 		VideoCalls:         audioTestFloat(1),
 		OutputVideoSeconds: audioTestFloat(6),
 	})
@@ -169,7 +170,7 @@ func TestBuildCostBreakdownVideoOutputCallsLine(t *testing.T) {
 
 func TestBuildCostBreakdownVideoNoCallsNoLine(t *testing.T) {
 	// 失败任务不虚计：无次数计量（0）不产行项，charge 回落 0。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "MiniMax-Hailuo-2.3"), CostInput{
+	breakdown := BuildCostBreakdown(legacyPricingForTest(t, "minimax", "MiniMax-Hailuo-2.3"), CostInput{
 		VideoCalls: audioTestFloat(0),
 	})
 	if breakdown == nil {
@@ -186,16 +187,21 @@ func TestBuildCostBreakdownVideoNoCallsNoLine(t *testing.T) {
 }
 
 func TestEstimateProviderCostUsdVideoCalls(t *testing.T) {
-	// MiniMax-Hailuo-2.3：国内按条明文主档 768P-6s 2.00 元/条 ÷7.0（2026-10-17 回正；
-	// cogvideox 载体已随 2025 前模型清理批移除，按次机制消费面由 Hailuo 承接）。
-	hailuo := EstimateProviderCostUsd(CostInput{
-		ProviderCode: "minimax", Model: "MiniMax-Hailuo-2.3", VideoCalls: audioTestFloat(1),
+	// P3 迁移后唯一按次视频行：doubao-seed3d 2.40 元/次 ÷7.0 = $0.342857/次。
+	seed3d := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "volcengine", Model: "doubao-seed3d-2-0-260328", VideoCalls: audioTestFloat(1),
 	})
-	if hailuo == nil || *hailuo != 0.2857142857 {
-		t.Fatalf("MiniMax-Hailuo-2.3 cost = %v want 0.2857142857（roundCost(2/7)）", hailuo)
+	if seed3d == nil || *seed3d != 0.3428571429 {
+		t.Fatalf("doubao-seed3d cost = %v want 0.3428571429（roundCost(2.4/7)）", seed3d)
 	}
-	// 秒价行（MiniMax-H3 $0.08/s）填次数计量：无 PerCall 槽位 → 不按次计，
-	// 估出 0（结算链据此回退秒价链）。
+	// P3 迁移后的 Hailuo 2.3 按秒结算：10s × 10s 套餐折算价 0.057142857/s。
+	hailuo := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "minimax", Model: "MiniMax-Hailuo-2.3", OutputVideoSeconds: audioTestFloat(10),
+	})
+	if hailuo == nil || *hailuo != 0.5714285714 {
+		t.Fatalf("MiniMax-Hailuo-2.3 seconds cost = %v want 0.5714285714（roundCost(10×4/7/10)）", hailuo)
+	}
+	// 秒价行填次数计量：统一模板只消费秒数，估出 0（不按次虚计）。
 	perSecond := EstimateProviderCostUsd(CostInput{
 		ProviderCode: "minimax", Model: "MiniMax-H3", VideoCalls: audioTestFloat(1),
 	})

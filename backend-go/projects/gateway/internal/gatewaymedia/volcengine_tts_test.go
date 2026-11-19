@@ -33,10 +33,8 @@ func TestVolcengineSpeechAdapterBuildRequestContract(t *testing.T) {
 		Voice:          "BV700_streaming",
 		ResponseFormat: "mp3",
 		Speed:          &speed,
-		ProviderOptions: map[string]any{
-			"volcengine": map[string]any{
-				"audio_config": map[string]any{"loudness_rate": 10},
-			},
+		Metadata: map[string]any{
+			"audio_config": map[string]any{"loudness_rate": 10},
 		},
 	})
 	if err != nil {

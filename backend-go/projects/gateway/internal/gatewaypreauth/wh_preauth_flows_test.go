@@ -553,8 +553,8 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 	if recordRouteStrategyID(nil) != "" {
 		t.Fatal("nil 记录策略 ID 为空")
 	}
-	if recordClientIPConcurrencyLimit(nil) != 0 {
-		t.Fatal("无 API Key 的内部请求必须视为单 IP 并发关闭")
+	if recordClientIPConcurrencyLimit(nil) != -1 {
+		t.Fatal("无 API Key 的内部请求必须视为单 IP 并发不限制（-1）")
 	}
 	limited := *row
 	limited.ClientIPConcurrencyLimit = 7

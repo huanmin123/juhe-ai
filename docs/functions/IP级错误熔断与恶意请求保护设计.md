@@ -5,7 +5,7 @@
 当前网关已经具备两类客户端 IP 相关保护：
 
 - **IP 级账号回避**：当前序账号形成本地可验证 transport failure、后续账号形成完整 framing 后，让同一 `clientIp + API Key` 短期优先避让前序传输失败账号；opaque HTTP/协议失败不进入。
-- **单 IP 并发保护**：API Key 可按同一 `系统账户 + 分组 + API Key + 客户端 IP` 限制同时进入调度的请求数量（`clientIpConcurrencyLimit`，0 关闭，超限固定 429）；配置归属自 2026-11-19 起为 API Key，分组策略不再承载该字段，完整契约见 [API Key 单 IP 并发限制设计](APIKey单IP并发限制设计.md)。
+- **单 IP 并发保护**：API Key 可按同一 `系统账户 + 分组 + API Key + 客户端 IP` 限制同时进入调度的请求数量（`clientIpConcurrencyLimit`，-1 不限制，超限固定 429）；配置归属自 2026-11-19 起为 API Key，分组策略不再承载该字段，完整契约见 [API Key 单 IP 并发限制设计](APIKey单IP并发限制设计.md)。
 
 这两类能力都不是“错误频率拦截”。如果某个客户端 IP 使用有效 API Key 持续构造错误请求，或者在认证前反复缺少 Bearer / 使用无效 API Key 探测，当前系统会通过 IP 级错误熔断按短 TTL 自动短路高置信来源错误风暴；API Key 额度、账号硬并发、分组整池等待和可选单 IP 并发限制只负责各自的授权或容量边界。
 

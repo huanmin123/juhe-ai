@@ -11,7 +11,7 @@ import (
 
 // M3f qwen paraformer 长转写 adapter 单测（契约 §10.2）：创建报文映射
 //（input_url → input.file_urls 单元素数组、language → parameters.
-// language_hints 数组、provider_options deep-merge、无 X-DashScope-Async
+// language_hints 数组、metadata deep-merge、无 X-DashScope-Async
 // 异步头）、轮询响应归一（PENDING/RUNNING/SUCCEEDED/FAILED 同万相词表、
 // transcription_url 冻结、usage JSON 字符串/对象双形态时长解析、output.
 // message 错误摘要、受理凭据缺失与产物缺失协议违约、非 2xx
@@ -26,8 +26,8 @@ func TestQwenASRAdapterCreateBodyMapping(t *testing.T) {
 			InputURL: url,
 			Language: "zh",
 		},
-		ProviderOptions: map[string]any{
-			"qwen": map[string]any{"parameters": map[string]any{"diarization_enabled": true}},
+		Metadata: map[string]any{
+			"parameters": map[string]any{"diarization_enabled": true},
 		},
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestQwenASRAdapterCreateBodyMapping(t *testing.T) {
 		t.Fatalf("parameters.language_hints = %v, want [zh]（language 单字符串映射单元素数组）", parameters["language_hints"])
 	}
 	if parameters["diarization_enabled"] != true {
-		t.Fatalf("provider_options.qwen.parameters.diarization_enabled 未 deep-merge: %v", body)
+		t.Fatalf("metadata.parameters.diarization_enabled 未 deep-merge: %v", body)
 	}
 }
 

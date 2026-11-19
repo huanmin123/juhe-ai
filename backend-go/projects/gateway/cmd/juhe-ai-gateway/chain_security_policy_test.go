@@ -302,7 +302,7 @@ func TestSecurityPolicyFamilyForRequest(t *testing.T) {
 		{http.MethodPost, "/v1/messages", "anthropic"},
 		{http.MethodPost, "/v1beta/models/gemini-pro:generateContent", "gemini"},
 		{http.MethodPost, "/v1beta/models/gemini-pro:streamGenerateContent", "gemini"},
-		{http.MethodPost, "/v1/videos", "media"},
+		{http.MethodPost, "/v1/video/generations", "media"},
 		{http.MethodPost, "/v1/audio/speech", "media"},
 		{http.MethodPost, "/v1/audio/jobs", "media"},
 		{http.MethodPost, "/v1/images/generations", "media"},

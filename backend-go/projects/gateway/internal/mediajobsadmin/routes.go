@@ -166,28 +166,28 @@ type mediaJobDetailUsage struct {
 // mediaJobDetailRow 是详情行渲染形状（列表行字段 + 全量细节：prompt 全文、
 // 请求参数快照回显、产物定位、用量、参数回显列表）。
 type mediaJobDetailRow struct {
-	ID                     string                      `json:"id"`
-	Kind                   string                      `json:"kind"`
-	Status                 string                      `json:"status"`
-	ProviderCode           string                      `json:"providerCode"`
-	ProviderJobID          string                      `json:"providerJobId,omitempty"`
-	Model                  string                      `json:"model"`
-	Prompt                 string                      `json:"prompt,omitempty"`
-	Seconds                *float64                    `json:"seconds,omitempty"`
-	Size                   string                      `json:"size,omitempty"`
-	N                      int                         `json:"n,omitempty"`
-	Language               string                      `json:"language,omitempty"`
-	ProviderOptionsApplied []string                    `json:"providerOptionsApplied,omitempty"`
-	APIKeyID               string                      `json:"apiKeyId"`
-	AccountID              string                      `json:"accountId"`
-	CreatedAt              string                      `json:"createdAt"`
-	UpdatedAt              string                      `json:"updatedAt"`
-	CostUsd                float64                     `json:"costUsd"`
-	Artifact               *mediaJobDetailArtifact     `json:"artifact,omitempty"`
-	Usage                  *mediaJobDetailUsage        `json:"usage,omitempty"`
-	ParamsApplied          []string                    `json:"paramsApplied,omitempty"`
-	ParamsIgnored          []string                    `json:"paramsIgnored,omitempty"`
-	Error                  *gatewaymedia.MediaJobError `json:"error,omitempty"`
+	ID              string                      `json:"id"`
+	Kind            string                      `json:"kind"`
+	Status          string                      `json:"status"`
+	ProviderCode    string                      `json:"providerCode"`
+	ProviderJobID   string                      `json:"providerJobId,omitempty"`
+	Model           string                      `json:"model"`
+	Prompt          string                      `json:"prompt,omitempty"`
+	Seconds         *float64                    `json:"seconds,omitempty"`
+	Size            string                      `json:"size,omitempty"`
+	N               int                         `json:"n,omitempty"`
+	Language        string                      `json:"language,omitempty"`
+	MetadataApplied []string                    `json:"metadataApplied,omitempty"`
+	APIKeyID        string                      `json:"apiKeyId"`
+	AccountID       string                      `json:"accountId"`
+	CreatedAt       string                      `json:"createdAt"`
+	UpdatedAt       string                      `json:"updatedAt"`
+	CostUsd         float64                     `json:"costUsd"`
+	Artifact        *mediaJobDetailArtifact     `json:"artifact,omitempty"`
+	Usage           *mediaJobDetailUsage        `json:"usage,omitempty"`
+	ParamsApplied   []string                    `json:"paramsApplied,omitempty"`
+	ParamsIgnored   []string                    `json:"paramsIgnored,omitempty"`
+	Error           *gatewaymedia.MediaJobError `json:"error,omitempty"`
 }
 
 // detailHandler 服务 GET /__aisys__/api/media-jobs/{id}：按 id 取单行全量
@@ -276,22 +276,22 @@ func mediaJobDetailPayload(record *gatewaymedia.MediaJobRecord, includeProviderJ
 		Kind:   string(record.Kind),
 		Status: string(record.Status),
 		// providerCode 键保持前端契约，值经账户 vendor_code 水合（B4①）。
-		ProviderCode:           record.VendorCode,
-		Model:                  record.RequestSnapshot.Model,
-		Prompt:                 strings.TrimSpace(record.RequestSnapshot.Prompt),
-		Seconds:                record.RequestSnapshot.Seconds,
-		Size:                   record.RequestSnapshot.Size,
-		N:                      record.RequestSnapshot.N,
-		Language:               record.RequestSnapshot.Language,
-		ProviderOptionsApplied: record.RequestSnapshot.ProviderOptionsApplied,
-		APIKeyID:               record.APIKeyID,
-		AccountID:              record.AccountID,
-		CreatedAt:              mediaJobListTime(record.CreatedAt),
-		UpdatedAt:              mediaJobListTime(record.UpdatedAt),
-		CostUsd:                record.CostUsd,
-		ParamsApplied:          record.ParamsApplied,
-		ParamsIgnored:          record.ParamsIgnored,
-		Error:                  record.Error,
+		ProviderCode:    record.VendorCode,
+		Model:           record.RequestSnapshot.Model,
+		Prompt:          strings.TrimSpace(record.RequestSnapshot.Prompt),
+		Seconds:         record.RequestSnapshot.Seconds,
+		Size:            record.RequestSnapshot.Size,
+		N:               record.RequestSnapshot.N,
+		Language:        record.RequestSnapshot.Language,
+		MetadataApplied: record.RequestSnapshot.MetadataApplied,
+		APIKeyID:        record.APIKeyID,
+		AccountID:       record.AccountID,
+		CreatedAt:       mediaJobListTime(record.CreatedAt),
+		UpdatedAt:       mediaJobListTime(record.UpdatedAt),
+		CostUsd:         record.CostUsd,
+		ParamsApplied:   record.ParamsApplied,
+		ParamsIgnored:   record.ParamsIgnored,
+		Error:           record.Error,
 	}
 	if includeProviderJobID {
 		row.ProviderJobID = record.UpstreamJobID

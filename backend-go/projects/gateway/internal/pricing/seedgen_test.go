@@ -2,7 +2,7 @@ package pricing
 
 // seedgen —— 种子自动生成（计划-20261005T230500000Z 步骤 4）：catalogdata/
 // *.json 是唯一数据源，本生成器经 toProviderModelPricing 投影输出
-// maintenance 的 39 列种子 Go 源码（model_catalog_data_gen.go，Code
+// maintenance 的 40 列种子 Go 源码（model_catalog_data_gen.go，Code
 // generated 头）。跨模块不 import：生成的是文本，ID 列输出
 // providerModelCatalogID("provider", "model") 调用表达式，由 maintenance
 // 的同算法函数保证一致。受 JUHE_AI_GENERATE_SEED=1 触发（开发机一次性
@@ -77,7 +77,7 @@ var modelCatalogSeedRows = []modelCatalogSeedRow{
 }
 
 // seedRowLiteral 把一行 Pricing 投影文本化为 modelCatalogSeedRow 字面量
-// （39 列；列序与手写种子一致）。
+// （40 列；列序与手写种子一致）。
 func seedRowLiteral(provider string, p *Pricing) string {
 	strPtr := func(v string) string {
 		if v == "" {
@@ -138,6 +138,14 @@ func seedRowLiteral(provider string, p *Pricing) string {
 		}
 		return strconv.Quote("{" + strings.Join(segments, ",") + "}")
 	}
+	mediaPricingJSON := "nil"
+	if p.MediaPricing != nil {
+		canonical, err := p.MediaPricing.CanonicalString()
+		if err != nil {
+			panic(err)
+		}
+		mediaPricingJSON = "seedStrPtr(" + strconv.Quote(canonical) + ")"
+	}
 	fields := []string{
 		"ID: " + fmt.Sprintf("providerModelCatalogID(%s, %s)", strconv.Quote(provider), strconv.Quote(p.Model)),
 		"ProviderCode: " + strconv.Quote(provider),
@@ -173,6 +181,7 @@ func seedRowLiteral(provider string, p *Pricing) string {
 		"AudioInputUsdPer1M: " + f64Ptr(p.AudioInputUsdPer1M),
 		"AudioOutputUsdPer1M: " + f64Ptr(p.AudioOutputUsdPer1M),
 		"OutputUsdPerImage: " + f64Ptr(p.OutputUsdPerImage),
+		"MediaPricingJSON: " + mediaPricingJSON,
 		fmt.Sprintf("SupportsPromptCaching: %v", p.SupportsPromptCaching),
 		fmt.Sprintf("CatalogVisible: %v", p.CatalogVisible),
 		"Source: " + strconv.Quote(p.Source),

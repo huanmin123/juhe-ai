@@ -1,3 +1,6 @@
+//go:build windows
+
+// 依赖 Windows 专用覆盖 helper（Ctrl-Break/进程组/插桩二进制）；其余测试三平台可编译，见 docs/develop/后端测试分层规则.md §7.7。
 package main
 
 // w2（调度与状态核心组残余覆盖批次，w2a/TestW2A 前缀）：对照

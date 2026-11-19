@@ -4,8 +4,12 @@ package gatewayresponse
 // 秒 / 双缺 usage_missing，契约 §2.8）、TTS 字符计量注入，以及 gemini
 // speech 响应的 inlineData → PCM 转换（契约 §5.1）。
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,8 +69,11 @@ func TestNonStreamSttMeteringUsageTokensWin(t *testing.T) {
 		result.Usage.OutputTokens == nil || *result.Usage.OutputTokens != 32 {
 		t.Fatalf("usage tokens = %+v", result.Usage)
 	}
-	if result.Usage.AudioInputSeconds != nil {
-		t.Fatalf("token evidence present, seconds must stay nil: %+v", result.Usage)
+	// 统一模板按秒计价：token 不再阻止记录上游 duration（legacy token 行由
+	// chain 侧按来源门控是否消费秒数）。
+	if result.Usage.AudioInputSeconds == nil || *result.Usage.AudioInputSeconds != 9.9 ||
+		result.Usage.QuantitySource != "upstream" {
+		t.Fatalf("upstream duration with tokens = %+v want 9.9/upstream", result.Usage)
 	}
 }
 
@@ -242,8 +249,13 @@ func TestNonStreamVolcengineSpeechMeteringDurationSeconds(t *testing.T) {
 	if result.Usage.AudioInputSeconds == nil || *result.Usage.AudioInputSeconds != 3.28 {
 		t.Fatalf("AudioInputSeconds = %v want 3.28", result.Usage.AudioInputSeconds)
 	}
-	if result.Usage.TtsInputChars != nil {
-		t.Fatalf("TtsInputChars must stay nil for duration-billed volcengine TTS: %+v", result.Usage)
+	if result.Usage.QuantitySource != "upstream" {
+		t.Fatalf("QuantitySource = %q want upstream", result.Usage.QuantitySource)
+	}
+	// 字符保留为可观测性字段（设计 §343）；legacy 秒计行由 chain 侧清空
+	// 字符维度，避免字符+秒双重计费。
+	if result.Usage.TtsInputChars == nil || *result.Usage.TtsInputChars != 7 {
+		t.Fatalf("TtsInputChars = %v want 7 (audit fact)", result.Usage.TtsInputChars)
 	}
 	if result.Usage.UsageMissing {
 		t.Fatalf("duration evidence present, usage_missing must stay false: %+v", result.Usage)
@@ -251,7 +263,8 @@ func TestNonStreamVolcengineSpeechMeteringDurationSeconds(t *testing.T) {
 }
 
 func TestNonStreamVolcengineSpeechMeteringMissingDurationMarked(t *testing.T) {
-	// duration 缺失 → 0 计量 + usage_missing（不猜测；不落字符口径）。
+	// duration 缺失且音频字节不可解析 → 字符/4 估算兜底（estimated），不落
+	// usage_missing；只有字符也为 0 时才置 missing。
 	payload, _ := json.Marshal(map[string]any{
 		"audio": base64.StdEncoding.EncodeToString([]byte("ID3-no-duration")),
 		"url":   "https://cdn.example/tts.mp3",
@@ -265,10 +278,101 @@ func TestNonStreamVolcengineSpeechMeteringMissingDurationMarked(t *testing.T) {
 	if recorder.Code != 200 {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if result.Usage.AudioInputSeconds != nil || result.Usage.TtsInputChars != nil {
-		t.Fatalf("no metering evidence expected: %+v", result.Usage)
+	if result.Usage.AudioInputSeconds == nil || *result.Usage.AudioInputSeconds != 0.5 ||
+		result.Usage.QuantitySource != "estimated" {
+		t.Fatalf("AudioInputSeconds/QuantitySource = %v/%q, want 0.5/estimated",
+			result.Usage.AudioInputSeconds, result.Usage.QuantitySource)
 	}
-	if !result.Usage.UsageMissing {
-		t.Fatalf("usage_missing must be set without duration: %+v", result.Usage)
+	if result.Usage.TtsInputChars == nil || *result.Usage.TtsInputChars != 2 {
+		t.Fatalf("TtsInputChars = %v want 2", result.Usage.TtsInputChars)
 	}
+	if result.Usage.UsageMissing {
+		t.Fatalf("estimated seconds present, usage_missing must stay false: %+v", result.Usage)
+	}
+}
+
+// TestNonStreamSttMeteringRequestAudioParsed：STT 上游无 duration/usage 时，
+// 从 multipart 上传音频解析秒数（request_media），不再直接 usage_missing。
+func TestNonStreamSttMeteringRequestAudioParsed(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "a.wav")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(buildTestWAV(24000, 1, 16, 0.1)); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	if err := writer.WriteField("model", "whisper-1"); err != nil {
+		t.Fatalf("write model field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	input, _ := newAudioInputFixture(t, "POST", "/v1/audio/transcriptions", body.Bytes(),
+		NewSliceUpstreamBody([]byte(`{"text":"MOCK-TRANSCRIPT"}`)),
+		200, map[string]string{"Content-Type": "application/json"}, "openai")
+	input.Req.HTTP.Header.Set("Content-Type", writer.FormDataContentType())
+	input.Deps = &FinalizationDeps{NowMs: func() int64 { return 1200 }}
+	result, err := HandleNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Usage.AudioInputSeconds == nil || math.Abs(*result.Usage.AudioInputSeconds-0.1) > 1e-9 {
+		t.Fatalf("AudioInputSeconds = %v want 0.1", result.Usage.AudioInputSeconds)
+	}
+	if result.Usage.QuantitySource != "request_media" {
+		t.Fatalf("QuantitySource = %q want request_media", result.Usage.QuantitySource)
+	}
+	if result.Usage.UsageMissing {
+		t.Fatalf("request audio parsed, usage_missing must stay false: %+v", result.Usage)
+	}
+}
+
+// TestNonStreamTtsMeteringParsedAudioDuration：TTS 二进制透传且上游无
+// duration 时，Meter 解析响应音频秒数（gateway_parse），字符/4 只在解析
+// 失败时兜底。
+func TestNonStreamTtsMeteringParsedAudioDuration(t *testing.T) {
+	requestBody := []byte(`{"model":"tts-1","input":"abc","voice":"alloy","response_format":"wav"}`)
+	input, recorder := newAudioInputFixture(t, "POST", "/v1/audio/speech", requestBody,
+		NewSliceUpstreamBody(buildTestWAV(24000, 1, 16, 0.1)), 200,
+		map[string]string{"Content-Type": "audio/wav"}, "openai")
+	input.Deps = &FinalizationDeps{NowMs: func() int64 { return 1200 }}
+	result, err := HandleNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if result.Usage.AudioInputSeconds == nil || math.Abs(*result.Usage.AudioInputSeconds-0.1) > 1e-9 {
+		t.Fatalf("AudioInputSeconds = %v want 0.1 (parsed response audio)", result.Usage.AudioInputSeconds)
+	}
+	if result.Usage.QuantitySource != "gateway_parse" {
+		t.Fatalf("QuantitySource = %q want gateway_parse", result.Usage.QuantitySource)
+	}
+	if result.Usage.UsageMissing {
+		t.Fatalf("parsed audio present, usage_missing must stay false: %+v", result.Usage)
+	}
+}
+
+// buildTestWAV 构造指定时长的 16bit PCM WAV。
+func buildTestWAV(sampleRate, channels, bits int, seconds float64) []byte {
+	blockAlign := channels * bits / 8
+	dataLen := int(float64(sampleRate*blockAlign) * seconds)
+	data := make([]byte, 44+dataLen)
+	copy(data[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(data[4:8], uint32(36+dataLen))
+	copy(data[8:12], "WAVE")
+	copy(data[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(data[16:20], 16)
+	binary.LittleEndian.PutUint16(data[20:22], 1)
+	binary.LittleEndian.PutUint16(data[22:24], uint16(channels))
+	binary.LittleEndian.PutUint32(data[24:28], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(data[28:32], uint32(sampleRate*blockAlign))
+	binary.LittleEndian.PutUint16(data[32:34], uint16(blockAlign))
+	binary.LittleEndian.PutUint16(data[34:36], uint16(bits))
+	copy(data[36:40], "data")
+	binary.LittleEndian.PutUint32(data[40:44], uint32(dataLen))
+	return data
 }

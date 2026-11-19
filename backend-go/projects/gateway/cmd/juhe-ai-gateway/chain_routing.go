@@ -692,7 +692,7 @@ func routingRequestView(req *gatewaypreauth.GatewayRequest, record *gatewayrunti
 	}
 	// 媒体映射族 override（供应商与上游协议面重构切片联修）：路由层
 	// requestEndpointFamily 的路径词表只覆盖 chat/responses/messages/gemini，
-	// /v1/videos 与 /v1/audio/speech 落空族——账户媒体映射（source family
+	// /v1/video/generations 与 /v1/audio/speech 落空族——账户媒体映射（source family
 	// video_generation / tts，媒体设计 §9）在路由模型过滤不可见，媒体映射
 	// 承载的模型把 normal 路由推进 models 目录终局误判。此处按派发侧
 	// requestMappingSourceFamilyOf（chain_driver.go）同词表补媒体族 override，
@@ -706,7 +706,7 @@ func routingRequestView(req *gatewaypreauth.GatewayRequest, record *gatewayrunti
 
 // routingMediaEndpointFamilyOverrideOf 把媒体创建形态的请求路径归一到账户
 // 映射存储族（与 requestMappingSourceFamilyOf 的媒体臂同词表）：POST
-// /v1/videos → video_generation；POST /v1/audio/speech → tts。非媒体形态
+// /v1/video/generations → video_generation；POST /v1/audio/speech → tts。非媒体形态
 // 返回空串（族由路由层路径词表推导，行为不变）。
 func routingMediaEndpointFamilyOverrideOf(req *gatewaypreauth.GatewayRequest) string {
 	if req == nil || req.MethodUpper() != "POST" {
@@ -714,7 +714,7 @@ func routingMediaEndpointFamilyOverrideOf(req *gatewaypreauth.GatewayRequest) st
 	}
 	path := chainStripGatewayVersionPrefix(gatewaypreauth.RequestPathWithoutQuery(req))
 	switch path {
-	case "/videos":
+	case "/video/generations":
 		return gatewayopenai.FamilyVideoGeneration
 	case "/audio/speech":
 		return gatewayopenai.FamilyTts

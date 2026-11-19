@@ -35,7 +35,7 @@ package pricing
 // 留档。wan2.2-t2v-plus 国际站未售，按国内人民币明文价以约定汇率 7.0
 // 换算落价（2026-10-05 用户裁决补价，行内 Source 元信息可溯）；
 // paraformer-v2 于 2026-10-05 取证批改落国际站 USD 明文 $0.000012/秒
-//（Model Studio 计费页 China Beijing tab，行内 Source 元信息可溯）。
+// （Model Studio 计费页 China Beijing tab，行内 Source 元信息可溯）。
 //   - usage 计量照抽（契约 §10.1/§10.2：轮询响应 usage 是 DashScope 的 JSON
 //     字符串形态，adapter 双形态兼容解析）：万相 wan2.5 及以下版本字段族
 //     video_duration/video_ratio，wan2.6 字段族 duration/

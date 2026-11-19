@@ -18,6 +18,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 //go:embed catalogdata/*.json
@@ -79,6 +81,18 @@ func jsonToRawModel(entry map[string]any) (rawModel, error) {
 			continue
 		}
 		if raw == nil {
+			continue
+		}
+		if key == "mediaPricing" {
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				return out, fmt.Errorf("%s: marshal nested object: %w", key, err)
+			}
+			parsed, err := mediapricing.Parse(encoded)
+			if err != nil {
+				return out, fmt.Errorf("%s: %w", key, err)
+			}
+			out.MediaPricing = parsed
 			continue
 		}
 		switch field.Kind() {
@@ -176,6 +190,13 @@ func rawModelToJSON(m rawModel) map[string]any {
 		field := typ.Field(index)
 		key := strings.ToLower(field.Name[:1]) + field.Name[1:]
 		fieldValue := value.Field(index)
+		if field.Name == "MediaPricing" {
+			if fieldValue.IsNil() {
+				continue
+			}
+			out[key] = fieldValue.Interface()
+			continue
+		}
 		switch fieldValue.Kind() {
 		case reflect.String:
 			out[key] = fieldValue.String()

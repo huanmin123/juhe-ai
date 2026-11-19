@@ -17,17 +17,17 @@ import (
 )
 
 // veoCreateAcceptedFixture 对齐 mockupstream 创建响应形态
-//（media_gemini_video_create_ok，受理凭据 = name 字段）。
+// （media_gemini_video_create_ok，受理凭据 = name 字段）。
 const veoCreateAcceptedFixture = `{"name":"models/veo-3.0-generate-preview/operations/0123456789ab"}`
 
 const veoPollRunningFixture = `{"done":false}`
 
 // veoPollDoneURIFixture 对齐 mockupstream done:true 成功形态
-//（media_gemini_video_poll_done_uri，uri 为绝对签名 URL）。
+// （media_gemini_video_poll_done_uri，uri 为绝对签名 URL）。
 const veoPollDoneURIFixture = `{"done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"https://storage.googleapis.com/mock-bucket/veo%2Fsample.mp4?X-Goog-Signature=abc"}}]}}}`
 
 // veoPollErrorFixture 对齐 mockupstream done:true 失败形态
-//（media_gemini_video_poll_error，gemini 错误三元组）。
+// （media_gemini_video_poll_error，gemini 错误三元组）。
 const veoPollErrorFixture = `{"done":true,"error":{"code":500,"message":"Video generation failed after the request was accepted","status":"INTERNAL"}}`
 
 func TestVeoVideoAdapterRegistry(t *testing.T) {
@@ -178,19 +178,25 @@ func TestVeoVideoAdapterCreateSizeConversion(t *testing.T) {
 				} `json:"image"`
 			} `json:"instances"`
 			Parameters *struct {
-				AspectRatio string `json:"aspectRatio"`
-				Resolution  string `json:"resolution"`
+				AspectRatio     string `json:"aspectRatio"`
+				Resolution      string `json:"resolution"`
+				DurationSeconds int    `json:"durationSeconds"`
 			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(out.Body, &body); err != nil {
 			t.Fatalf("decode body: %v: %s", err, out.Body)
 		}
+		// AC-027：Veo 3.0/3.1 系固定显式携带 durationSeconds=8，
+		// 未传 size 时也不得携带 aspectRatio/resolution。
+		if body.Parameters == nil || body.Parameters.DurationSeconds != 8 {
+			t.Fatalf("Veo 3 系必须显式携带 durationSeconds=8: %s", out.Body)
+		}
 		if tc.size == "" {
-			if body.Parameters != nil {
-				t.Fatalf("未传 size 不得携带 parameters: %s", out.Body)
+			if body.Parameters.AspectRatio != "" || body.Parameters.Resolution != "" {
+				t.Fatalf("未传 size 不得携带 aspectRatio/resolution: %s", out.Body)
 			}
 		} else {
-			if body.Parameters == nil || body.Parameters.AspectRatio != tc.aspectRatio || body.Parameters.Resolution != tc.resolution {
+			if body.Parameters.AspectRatio != tc.aspectRatio || body.Parameters.Resolution != tc.resolution {
 				t.Fatalf("size=%s 换算错误，want %s/%s: %s", tc.size, tc.aspectRatio, tc.resolution, out.Body)
 			}
 		}
@@ -204,7 +210,7 @@ func TestVeoVideoAdapterCreateSizeConversion(t *testing.T) {
 	}
 }
 
-func TestVeoVideoAdapterProviderOptionsMerge(t *testing.T) {
+func TestVeoVideoAdapterMetadataMerge(t *testing.T) {
 	adapter := VideoAdapterForProvider("gemini")
 	params, err := ParseVideoParams(map[string]any{
 		"model":  "veo-3.0-generate-preview",
@@ -216,23 +222,16 @@ func TestVeoVideoAdapterProviderOptionsMerge(t *testing.T) {
 	}
 	out, err := adapter.Create(context.Background(), VideoCreateInput{
 		Params: params,
-		// 命中 gemini 子对象：覆盖换算结果 + 厂商个例键原样透传（L3）；
-		// 未命中的 openai 子对象不进报文。
-		ProviderOptions: map[string]any{
-			"gemini": map[string]any{
-				"parameters": map[string]any{"aspectRatio": "9:16", "personGeneration": "allow_all"},
-			},
-			"openai": map[string]any{"vendor_flag": true},
+		// metadata：覆盖换算结果 + 厂商个例键原样透传（设计 §5.1）。
+		Metadata: map[string]any{
+			"parameters": map[string]any{"aspectRatio": "9:16", "personGeneration": "allow_all"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("Create err = %v", err)
 	}
 	if !strings.Contains(string(out.Body), `"aspectRatio":"9:16"`) || !strings.Contains(string(out.Body), `"personGeneration":"allow_all"`) {
-		t.Fatalf("provider_options 命中子对象未 deep-merge: %s", out.Body)
-	}
-	if strings.Contains(string(out.Body), "vendor_flag") {
-		t.Fatalf("未命中 provider 的键不得进报文: %s", out.Body)
+		t.Fatalf("metadata 未 deep-merge: %s", out.Body)
 	}
 }
 
@@ -309,5 +308,28 @@ func TestVeoVideoAdapterParsePollResponse(t *testing.T) {
 	// 非 JSON → 报错。
 	if _, err := adapter.ParsePollResponse(http.StatusOK, []byte(`not-json`)); err == nil {
 		t.Fatal("非 JSON 应报错")
+	}
+}
+
+// TestVeoDefaultSecondsForModel 钉住 AC-027 的默认时长声明面：仅 Veo
+// 3.0/3.1 系五模型返回 8s，其余模型不猜默认值（终态 usage_missing）。
+func TestVeoDefaultSecondsForModel(t *testing.T) {
+	for _, model := range []string{
+		"veo-3.0-generate-preview",
+		"veo-3.0-fast-generate-preview",
+		"veo-3.1-generate-preview",
+		"veo-3.1-fast-generate-preview",
+		"veo-3.1-lite-generate-preview",
+	} {
+		seconds, ok := VideoDefaultSecondsForModel("gemini", model)
+		if !ok || seconds != 8 {
+			t.Fatalf("%s 默认时长 = %v/%v, want 8/true", model, seconds, ok)
+		}
+	}
+	if _, ok := VideoDefaultSecondsForModel("gemini", "veo-4-unknown"); ok {
+		t.Fatal("未声明模型不得猜测默认时长")
+	}
+	if _, ok := VideoDefaultSecondsForModel("openai", "sora-2"); ok {
+		t.Fatal("非 Veo adapter 不得声明默认时长")
 	}
 }

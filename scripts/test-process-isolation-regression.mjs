@@ -24,12 +24,12 @@ const SUBPROCESS_PATTERNS = [
   /os\.Executable\(/,
 ]
 
-// 历史遗留例外（2026-09 前已存在；清单与 docs/develop/后端测试分层规则.md §5
-// 第 6 条一致；数值 = 允许的最大命中行数，只减不增）。禁止新增模仿。
+// 历史遗留例外（数值 = 允许的最大命中行数，只减不增）。禁止新增模仿；唯一
+// 开口是「追认」：已合入且进程内无法实现的既有调用点，须注明来源提交与理由
+// （规则源 docs/develop/后端测试分层规则.md §7.4；文件删除后同步删条目）。
 const LEGACY_EXCEPTION_BASELINE = {
   // gateway cmd boot / acceptance 系列
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_boot_arms_test.go': 1,
-  'backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_boot_chain_test.go': 1,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_boot_cover_test.go': 3,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_boot_owner_test.go': 1,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_main_boot_test.go': 11,
@@ -38,15 +38,21 @@ const LEGACY_EXCEPTION_BASELINE = {
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w2_assembly_tail_test.go': 1,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/fullchain_clients_test.go': 2,
   // acceptance harness（2026-10-08 追认 9ef312ce9：模型检测零配置自动认领
-  // 验收新增 maintenance --apply-j3b-model-check-postgres 子进程调用点）
-  'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/harness_test.go': 3,
+  // 验收新增 maintenance --apply-j3b-model-check-postgres 子进程调用点；
+  // 2026-11-19 追认 490b90512：schema 预置臂扩到 account-balance / j3a /
+  // j3b 三个 --apply-*-postgres 与 upgrade 账本收敛，均为 isolation 库一次性
+  // 预置，进程内无法创建 schema，计数由 3 校正为实际 6）
+  'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/harness_test.go': 6,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/main_test.go': 1,
   // jobs cmd main arms / e2e 系列
   'backend-go/projects/jobs/cmd/juhe-ai-jobs/w13g8_cmd_main_arms_test.go': 2,
   'backend-go/projects/jobs/cmd/juhe-ai-jobs/w16d_cmd_main_arms_test.go': 2,
   'backend-go/projects/jobs/cmd/juhe-ai-jobs/wg_main_e2e_test.go': 2,
-  // jobs internal 历史遗留（spawn 外部 node 进程读文件创建时间）
-  'backend-go/projects/jobs/internal/runtimelog/runtimelog_test.go': 1,
+  // maintenance 升级矩阵/回放（2026-11-19 追认 db342ced3：升级兼容与回放
+  // 验证必须在临时目录里 `git archive` 取历史树、`tar` 解档、`go build`
+  // 构建旧版二进制并运行它，无法进程内化；产物全部落 t.TempDir，不入仓库）。
+  'backend-go/projects/maintenance/cmd/juhe-ai-maintenance/upgrade_matrix_test.go': 4,
+  'backend-go/projects/maintenance/cmd/juhe-ai-maintenance/upgrade_rehearsal_test.go': 6,
 }
 
 export class TestProcessIsolationError extends Error {
@@ -125,7 +131,7 @@ export async function checkProcessIsolation(rootDir = BACKEND_GO_ROOT) {
     const details = violations
       .map(entry => `  ${entry.file}\n${entry.hits.map(hit => `    line ${hit.line}: ${hit.text}`).join('\n')}`)
       .join('\n')
-    fail(`subprocess patterns are forbidden in go tests (see docs/develop/后端测试分层规则.md §5):\n${details}`)
+    fail(`subprocess patterns are forbidden in go tests (see docs/develop/后端测试分层规则.md §3.2 第 5 条与 §7.4):\n${details}`)
   }
   if (expandedExceptions.length > 0) {
     const details = expandedExceptions
@@ -152,7 +158,7 @@ async function main() {
   process.stdout.write(
     `test-process-isolation: OK — scanned ${summary.scannedFiles} *_test.go files under backend-go; `
     + `${summary.exceptionFilesScanned} legacy exception file(s) within baseline (${summary.exceptionHitLines} hit line(s))${missingNote}\n`
-    + 'rule: docs/develop/后端测试分层规则.md §5 测试进程纪律（硬性）\n',
+    + 'rule: docs/develop/后端测试分层规则.md §3.2 第 5 条（进程纪律）+ §7.4（子进程隔离守卫）\n',
   )
 }
 

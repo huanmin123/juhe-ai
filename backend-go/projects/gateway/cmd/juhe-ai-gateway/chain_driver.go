@@ -286,7 +286,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			return nil, audioErr
 		}
 		// M6 同步音频（契约 §7.2）：glm 账户的 speech/transcriptions 请求走
-		// openai 透传（报文零改写，provider_options.glm 深合并在 prepared
+		// openai 透传（报文零改写，metadata 深合并在 prepared
 		// parts 分支承载），URL 按 v2 直拼（官方 audio/speech|transcriptions
 		// 端点；opPath /audio/... 不含版本段，/api/paas/v4 通用根由账户
 		// base_url 版本根承载——glmSpeechUpstreamPathOf 同规）。
@@ -443,7 +443,7 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	// M3 同步音频：minimax t2a_v2 adapter 分派（URL/body 同源 BuildRequest，
-	// 契约 §8.2；provider_options 已投影进 SpeechRequest）。
+	// 契约 §8.2；metadata 已投影进 SpeechRequest）。
 	if adapter, ir, ok, speechErr := d.minimaxSpeechRequest(req, account); speechErr != nil {
 		return gatewaydispatch.PreparedRequestParts{}, speechErr
 	} else if ok {
@@ -456,8 +456,8 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	// M6 同步音频（契约 §7.2）：glm 账户的 speech 请求走 openai 透传——唯一
-	// body 改写是 provider_options.glm 子对象 deep-merge 进上游 body（官方
-	// 厂商扩展 ref_audio/ref_text 声音复刻参数），网关私有 provider_options
+	// body 改写是 metadata 扩展包 deep-merge 进上游 body（官方
+	// 厂商扩展 ref_audio/ref_text 声音复刻参数），网关私有 metadata
 	// 通道键不透传上游；无扩展参数时维持字节级透传（不进本分支）。
 	// transcriptions/translations（multipart 表单）零改写，由通用透传链转发
 	//（URL 已在 BuildGatewayUpstreamURLsForAccount 归一）。
@@ -647,7 +647,46 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	// 见 applyXaiGrokOAuthIdentityHeaders）：仅按账户与目标主机条件注入，
 	// body 不再改写。
 	applyXaiGrokOAuthIdentityHeaders(headers, account)
+	// 媒体创建面的扩展通道是网关私有：适配器分支已在构造时报文消费
+	// metadata，走到通用透传分支的（如 openai 账户的 speech 直连）必须
+	// 剥除该键，避免把网关私有字段发往上游（设计 §5.1）。
+	body, err = chainStripMediaMetadataKey(req, body)
+	if err != nil {
+		return gatewaydispatch.PreparedRequestParts{}, err
+	}
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+}
+
+// chainStripMediaMetadataKey 在媒体创建请求的通用透传 body 中剥除 metadata
+// 通道键（字节级透传仅在该键存在时改写；非媒体路径零行为差异）。语音直连
+// 面在此做通道形态与规范字段冲突校验（适配器分支已在各自入口校验过）。
+func chainStripMediaMetadataKey(req *gatewaypreauth.GatewayRequest, body []byte) ([]byte, error) {
+	if req == nil || len(body) == 0 {
+		return body, nil
+	}
+	speech := gatewaymedia.IsSpeechPath(req.PathAndQuery())
+	if !chainIsMediaJobCreateRequest(req) && !speech {
+		return body, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(body, &object); err != nil {
+		return body, nil
+	}
+	raw, exists := object[gatewaymedia.MetadataKey]
+	if !exists {
+		return body, nil
+	}
+	if speech {
+		if _, err := gatewaymedia.ExtractMetadata(raw, gatewaymedia.SpeechMetadataReserved); err != nil {
+			return nil, chainMediaParamValidationError(err)
+		}
+	}
+	delete(object, gatewaymedia.MetadataKey)
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return body, nil
+	}
+	return encoded, nil
 }
 
 // xaiGrokCLIOAuthUpstreamHost 是 xAI Grok CLI OAuth 上游主机（xAI 账号接入
@@ -914,7 +953,7 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 			// §5），不要求 gemini 原生路径族，也不受 code assist 运行时门
 			// （geminiSpeechRequest 对 code assist 账户自身短路拒绝）；后续
 			// endpoint mode 与模型门继续生效（audio_speech mode 过滤沿
-			// images_json 语义）。M3 视频：POST /v1/videos 创建形态同理由
+			// images_json 语义）。M3 视频：POST /v1/video/generations 创建形态同理由
 			// veo adapter 承载（契约 §5.2），不要求原生路径族，但 code
 			// assist 运行时仍不支持（predictLongRunning 不在其端点集）；
 			// video_create 端点模式门继续生效。
@@ -1008,7 +1047,7 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 // the same vocabulary (dispatch/candfilters.go gatewayRequestEndpointFamily);
 // the previous chat/responses-only view made messages-source bridge mappings
 // unresolvable in the driver chain (D-149). M4b 媒体映射（媒体设计 §9 hybrid
-// 行）：POST /v1/videos 创建形态归 video_generation、POST /v1/audio/speech
+// 行）：POST /v1/video/generations 创建形态归 video_generation、POST /v1/audio/speech
 // 归 tts——两侧（构造/记账/冻结与候选过滤）同词表解析媒体映射。
 func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 	if req == nil {
@@ -1033,7 +1072,7 @@ func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 	default:
 		if req.MethodUpper() == http.MethodPost {
 			switch chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path))) {
-			case "/videos":
+			case "/video/generations":
 				// 仅创建形态归媒体映射族（任务面 GET/DELETE 走账户亲和直连，
 				// 不经映射解析）。
 				return gatewayopenai.FamilyVideoGeneration
@@ -1740,14 +1779,13 @@ func geminiSpeechAdapterBoundaryError(err error) error {
 // 分派语义（与 volcengineSpeechRequest 同根因同构修复，2026-10-17 实测回填
 // 批）：minimax 账户 + speech 路径成立后，请求体不是 JSON 对象、或 JSON
 // 对象经 ParseSpeechRequest 校验失败（voice/model/input 必填缺失等 L1 面）、
-// 或 provider_options 形态非法 → GatewayRequestValidationError（400
+// 或 metadata 形态非法 → GatewayRequestValidationError（400
 // invalid_gateway_request，消息透传校验原文）——不得静默 ok=false 落 openai
 // 通用透传链，否则参数错误会被送上游 /v1/audio/speech 404 后以 503
 // upstream_retryable_error 伪装（minimax 官方语音面是 /v1/t2a_v2，透传链
 // URL 本就打不中）。SpeechIR 从请求体解析（模型映射面不介入：请求模型直达
-// 上游；账户 canonical 拼写优先）；provider_options 命中 minimax 的子对象
-// 投影进 SpeechRequest.ProviderOptions（vol/pitch 等厂商个例参数，契约
-// §2.1 L3）。
+// 上游；账户 canonical 拼写优先）；metadata 扩展包投影进
+// SpeechRequest.Metadata（vol/pitch 等厂商个例参数，设计 §5.1）。
 func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
 	if req == nil || req.HTTP == nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
@@ -1777,11 +1815,11 @@ func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRe
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
-	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
+	metadata, optionsErr := chainMediaMetadataOf(body, gatewaymedia.SpeechMetadataReserved)
 	if optionsErr != nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, optionsErr
 	}
-	ir.ProviderOptions = providerOptions
+	ir.Metadata = metadata
 	return adapter, ir, true, nil
 }
 
@@ -1791,14 +1829,14 @@ func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRe
 // speech / adapter 注册缺失，保持既有"非本 provider"语义）。error 返回承载
 // 分派语义（契约 §9.2，2026-10-17 实测回填批）：volcengine 账户 + speech
 // 路径成立后，请求体不是 JSON 对象、或 JSON 对象经 ParseSpeechRequest 校验
-// 失败（voice/model/input 必填缺失等 L1 面）、或 provider_options 形态非法
+// 失败（voice/model/input 必填缺失等 L1 面）、或 metadata 形态非法
 // → GatewayRequestValidationError（400 invalid_gateway_request，消息透传
 // 校验原文）——不得静默 ok=false 落 openai 通用透传链，否则参数错误会被
 // BuildUpstreamURL(base, /v1/audio/speech) 送上游 404 后以 503
 // upstream_retryable_error 伪装（错误语义与可重试性双重错乱）。
 // SpeechIR 从请求体解析（模型映射面不介入：请求模型直达上游；账户 canonical
-// 拼写优先）；provider_options 命中 volcengine 的子对象投影进
-// SpeechRequest.ProviderOptions（emotion 等厂商个例参数，契约 §2.1 L3）。
+// 拼写优先）；metadata 扩展包投影进 SpeechRequest.Metadata（emotion 等
+// 厂商个例参数，设计 §5.1）。
 // 语音凭据（speech_token 单值）不在此分支承载——由
 // chainVolcengineSpeechCredentials 在 URL/parts 两个消费点先行校验注入。
 func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
@@ -1830,11 +1868,11 @@ func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.Gatewa
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
-	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
+	metadata, optionsErr := chainMediaMetadataOf(body, gatewaymedia.SpeechMetadataReserved)
 	if optionsErr != nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, optionsErr
 	}
-	ir.ProviderOptions = providerOptions
+	ir.Metadata = metadata
 	return adapter, ir, true, nil
 }
 
@@ -1856,9 +1894,9 @@ func glmSpeechUpstreamPathOf(req *gatewaypreauth.GatewayRequest) (string, bool) 
 }
 
 // glmSpeechUpstreamBody 构造 glm 账户 speech 请求的上游 body（M6，契约
-// §7.2 透传语义）：openai 形态报文原样透传，唯一改写是 provider_options.glm
-// 子对象 deep-merge 进顶层（ref_audio/ref_text 声音复刻扩展），并剥除网关
-// 私有的 provider_options 通道键（契约 §2.1：L3 通道不是上游参数）。
+// §7.2 透传语义）：openai 形态报文原样透传，唯一改写是 metadata 扩展包
+// deep-merge 进顶层（ref_audio/ref_text 声音复刻扩展），并剥除网关私有的
+// metadata 通道键（设计 §5.1：扩展通道不是上游参数）。
 // ok=false 表示维持通用透传：非 glm 账户、非 speech 路径、body 非 JSON 对象
 // 或未携带扩展参数（字节级透传不改写）。
 func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) ([]byte, bool) {
@@ -1878,12 +1916,12 @@ func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayR
 	if body == nil {
 		return nil, false
 	}
-	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
-	if optionsErr != nil || len(providerOptions) == 0 {
+	metadata, optionsErr := chainMediaMetadataOf(body, gatewaymedia.SpeechMetadataReserved)
+	if optionsErr != nil || len(metadata) == 0 {
 		return nil, false
 	}
-	merged := gatewaymedia.MergeProviderOptions(body, "glm", providerOptions)
-	delete(merged, gatewaymedia.ProviderOptionsKey)
+	merged := gatewaymedia.MergeMetadata(body, metadata)
+	delete(merged, gatewaymedia.MetadataKey)
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return nil, false

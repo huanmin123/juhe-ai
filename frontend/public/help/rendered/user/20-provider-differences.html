@@ -175,7 +175,7 @@
 <td><code>messages[].role</code></td>
 </tr>
 </tbody></table>
-<p>回包：思考内容在 <code>message.reasoning_content</code>（诊断字段，不拼入正文 <code>content</code>）。媒体面专有键：<code>provider_options.glm</code>（如 TTS 声音复刻 <code>ref_audio</code> / <code>ref_text</code>）。</p>
+<p>回包：思考内容在 <code>message.reasoning_content</code>（诊断字段，不拼入正文 <code>content</code>）。媒体面专有键：<code>metadata</code>（如 TTS 声音复刻 <code>ref_audio</code> / <code>ref_text</code>）。</p>
 <h2>Qwen / 通义百炼</h2>
 <p>对话面是 <strong>OpenAI Chat 报文零改写直传</strong>——各家官方参数（如思考开关类字段）直接按阿里云百炼官方文档写即可，网关不校验不转码。</p>
 <table>
@@ -191,7 +191,7 @@
 </tr>
 <tr>
 <td>媒体专有键</td>
-<td><code>provider_options.qwen</code>：视频 <code>prompt_extend</code>；ASR <code>diarization_enabled</code> / <code>disfluency_removal_enabled</code> / <code>vocabulary_id</code></td>
+<td><code>metadata</code>：视频 <code>prompt_extend</code>；ASR <code>diarization_enabled</code> / <code>disfluency_removal_enabled</code> / <code>vocabulary_id</code></td>
 </tr>
 <tr>
 <td>视频参数映射</td>
@@ -245,7 +245,7 @@
 </thead>
 <tbody><tr>
 <td>视频专有键</td>
-<td><code>provider_options.minimax</code>（如 <code>prompt_optimizer</code>）</td>
+<td><code>metadata</code>（如 <code>prompt_optimizer</code>）</td>
 </tr>
 <tr>
 <td><code>input_reference</code></td>
@@ -274,7 +274,7 @@
 </tr>
 <tr>
 <td>视频专有键</td>
-<td><code>provider_options.volcengine</code>（如 <code>camera_fixed</code>）</td>
+<td><code>metadata</code>（如 <code>camera_fixed</code>）</td>
 </tr>
 <tr>
 <td>视频分辨率</td>
@@ -290,7 +290,7 @@
 </tr>
 <tr>
 <td>TTS 专有键</td>
-<td><code>provider_options.volcengine</code>（如 <code>emotion</code>）</td>
+<td><code>metadata</code>（如 <code>emotion</code>）</td>
 </tr>
 <tr>
 <td>回包特例</td>
@@ -361,7 +361,7 @@
 </ol>
 <h2>接下来</h2>
 <ul>
-<li>透传总规则与 provider_options 通道：《供应商参数怎么传：透传规则》</li>
+<li>透传总规则与 metadata 通道：《供应商参数怎么传：透传规则》</li>
 <li>三类协议面怎么选：《协议总览：三类协议面怎么选》</li>
 <li>模型目录与可用性：《模型列表：我能用什么模型》</li>
 </ul>

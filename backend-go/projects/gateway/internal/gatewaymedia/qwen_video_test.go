@@ -89,8 +89,8 @@ func TestQwenVideoAdapterCreate(t *testing.T) {
 			NegativePrompt: "模糊",
 			InputReference: &reference,
 		},
-		ProviderOptions: map[string]any{
-			"qwen": map[string]any{"parameters": map[string]any{"prompt_extend": true}},
+		Metadata: map[string]any{
+			"parameters": map[string]any{"prompt_extend": true},
 		},
 	})
 	if err != nil {

@@ -74,7 +74,7 @@ func TestW9ABusinessSchemaContract(t *testing.T) {
 // TestW9ABusinessSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
-	if BusinessSchemaVersion != "business-postgres-gateway-v24" {
+	if BusinessSchemaVersion != "business-postgres-gateway-v25" {
 		t.Fatalf("schema version drifted: %q", BusinessSchemaVersion)
 	}
 	for _, table := range []string{
@@ -216,7 +216,8 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 	models := BusinessSchema["models"]
 	// 48→51：v19 能力声明三列（supported_tools_by_protocol_json /
 	// input_modalities_json / output_modalities_json，T82 根治批）。
-	if len(models.Columns) != 51 {
+	// 51→52：v25 媒体统一计费 media_pricing_json。
+	if len(models.Columns) != 52 {
 		t.Fatalf("models column count drifted: %d", len(models.Columns))
 	}
 	vendorFK := false

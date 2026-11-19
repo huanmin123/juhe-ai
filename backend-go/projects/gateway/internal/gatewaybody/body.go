@@ -56,6 +56,11 @@ type BodyState struct {
 	ImageGenerationForced   bool
 	StrictOutputRequirement bool
 	CodexCompactionTrigger  bool
+	// ImageRequestSize / ImageRequestCount 缓存图片请求的生效 size 与 n
+	//（非对话媒体统一计费设计 §7.3）：JSON 体在 CreateBodyState 阶段读取，
+	// multipart 上传体在 capture 扫描阶段写入，终态计量不再二次扫描。
+	ImageRequestSize  *string
+	ImageRequestCount *int
 }
 
 // IsJSONContentType mirrors isGatewayJsonContentType: a content type is JSON
@@ -108,6 +113,8 @@ type BodyStateInput struct {
 	ImageGenerationForced   *bool
 	StrictOutputRequirement *bool
 	CodexCompactionTrigger  *bool
+	ImageRequestSize        *string
+	ImageRequestCount       *int
 }
 
 // CreateBodyState mirrors createGatewayRequestBodyState.
@@ -130,6 +137,16 @@ func CreateBodyState(input BodyStateInput) *BodyState {
 		state.Model = input.Model
 	} else if value, ok := parsedString(parsed, "model"); ok {
 		state.Model = &value
+	}
+	if input.ImageRequestSize != nil {
+		state.ImageRequestSize = input.ImageRequestSize
+	} else if value, ok := parsedString(parsed, "size"); ok && value != "" {
+		state.ImageRequestSize = &value
+	}
+	if input.ImageRequestCount != nil {
+		state.ImageRequestCount = input.ImageRequestCount
+	} else if value, ok := safeNonNegativeInteger(parsedValue(parsed, "n")); ok && value > 0 {
+		state.ImageRequestCount = &value
 	}
 	if input.Stream != nil {
 		state.Stream = input.Stream

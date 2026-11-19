@@ -245,7 +245,7 @@ func TestVideosCreateAndPoll(t *testing.T) {
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
-		{Body: []byte(`{"id":"job_v1","status":"queued","progress":0}`)},
+		{Body: []byte(`{"task_id":"job_v1","status":"queued","progress":0}`)},
 		{Body: []byte(`{"id":"job_v1","status":"in_progress","progress":40}`)},
 	}
 	mux, _ := newTestRoutes(deps)
@@ -258,7 +258,7 @@ func TestVideosCreateAndPoll(t *testing.T) {
 		t.Fatalf("创建状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
 	createCall := dispatch.calls[0]
-	if createCall.Request.Path != "/v1/videos" || createCall.Request.Method != "POST" {
+	if createCall.Request.Path != "/v1/video/generations" || createCall.Request.Method != "POST" {
 		t.Fatalf("创建派发目标 = %s %s", createCall.Request.Method, createCall.Request.Path)
 	}
 	if createCall.Request.Headers["x-juhe-ai-purpose"] != "playground_videos" {
@@ -297,7 +297,7 @@ func TestVideosCreateAndPoll(t *testing.T) {
 		t.Fatalf("轮询状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
 	pollCall := dispatch.calls[1]
-	if pollCall.Request.Method != "GET" || pollCall.Request.Path != "/v1/videos/job_v1" {
+	if pollCall.Request.Method != "GET" || pollCall.Request.Path != "/v1/video/generations/job_v1" {
 		t.Fatalf("轮询派发 = %s %s", pollCall.Request.Method, pollCall.Request.Path)
 	}
 	var pollPayload struct {
@@ -356,7 +356,7 @@ func TestVideosContentStreamsPassthrough(t *testing.T) {
 	if !bytes.Equal(recorder.Body.Bytes(), videoBytes) {
 		t.Fatalf("产物字节不符（len %d）", recorder.Body.Len())
 	}
-	if dispatch.calls[0].Request.Path != "/v1/videos/job_c/content" {
+	if dispatch.calls[0].Request.Path != "/v1/video/generations/job_c/content" {
 		t.Fatalf("派发路径 = %q", dispatch.calls[0].Request.Path)
 	}
 }
@@ -467,7 +467,7 @@ func mustJSON(value any) []byte {
 func TestVideosPollUnknownStatusKeepsRawText(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{Body: []byte(`{"id":"job_u","status":"weird_state","progress":10}`)}}
+	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_u","status":"weird_state","progress":10}`)}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_u?accountId=acc_1", nil)
 	if recorder.Code != http.StatusOK {
@@ -499,7 +499,7 @@ func TestVideosPollUnknownStatusKeepsRawText(t *testing.T) {
 func TestVideosPollKnownStatusNoSyntheticError(t *testing.T) {
 	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{Body: []byte(`{"id":"job_k","status":"expired","progress":100}`)}}
+	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_k","status":"expired","progress":100}`)}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_k?accountId=acc_1", nil)
 	if recorder.Code != http.StatusOK {

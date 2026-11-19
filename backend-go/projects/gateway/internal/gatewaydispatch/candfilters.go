@@ -395,7 +395,7 @@ func resolveAccountModelMapping(account AccountCandidate, requestedModel, source
 // GatewayRequestEndpointFamily mirrors gatewayRequestEndpointFamily(req):
 // the OpenAI family wins, then anthropic messages, then gemini. M4b 媒体映射
 // （媒体设计 §9 hybrid 行）：chat/responses/messages 之后的媒体创建形态归
-// 媒体映射族（POST /v1/videos → video_generation、POST /v1/audio/speech →
+// 媒体映射族（POST /v1/video/generations → video_generation、POST /v1/audio/speech →
 // tts），让候选过滤/模型感知加载与构造侧 requestMappingSourceFamilyOf 用
 // 同一词表解析媒体映射（此前空族使映射账户在模型过滤恒 miss）。
 func GatewayRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {
@@ -424,7 +424,7 @@ func mediaRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {
 	}
 	path = stripV1Prefix(path)
 	switch path {
-	case "/videos":
+	case "/video/generations":
 		return gatewayopenai.FamilyVideoGeneration
 	case "/audio/speech":
 		return gatewayopenai.FamilyTts

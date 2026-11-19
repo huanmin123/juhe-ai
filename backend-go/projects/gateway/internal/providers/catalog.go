@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // ModelPriceSet mirrors ProviderModelPriceSet.
@@ -90,19 +92,23 @@ type ModelCatalogItem struct {
 	AudioInputUsdPer1M                      *float64                 `json:"audioInputUsdPer1M,omitempty"`
 	AudioOutputUsdPer1M                     *float64                 `json:"audioOutputUsdPer1M,omitempty"`
 	OutputUsdPerImage                       *float64                 `json:"outputUsdPerImage,omitempty"`
-	SupportsPromptCaching                   bool                     `json:"supportsPromptCaching"`
-	SupportsServiceTier                     bool                     `json:"supportsServiceTier"`
-	PricingNotes                            *string                  `json:"pricingNotes,omitempty"`
-	CapabilityNotes                         *string                  `json:"capabilityNotes,omitempty"`
-	Notes                                   *string                  `json:"notes,omitempty"`
-	CreatedAt                               string                   `json:"createdAt"`
-	UpdatedAt                               string                   `json:"updatedAt"`
-	Source                                  string                   `json:"source"`
-	CachedImageInputUsdPer1M                *float64                 `json:"cachedImageInputUsdPer1M,omitempty"`
-	SourcePricingCurrency                   string                   `json:"sourcePricingCurrency,omitempty"`
-	SourceExchangeRateToUsd                 *float64                 `json:"sourceExchangeRateToUsd,omitempty"`
-	SourceExchangeRateDate                  string                   `json:"sourceExchangeRateDate,omitempty"`
-	SourcePricingNote                       string                   `json:"sourcePricingNote,omitempty"`
+	// MediaPricing 是 models.media_pricing_json 的严格 JSON；HasMediaPricing
+	// 区分有效 0 价与无价/非法价（非对话媒体统一计费设计 §5.2）。
+	MediaPricing             json.RawMessage `json:"mediaPricing,omitempty"`
+	HasMediaPricing          bool            `json:"hasMediaPricing"`
+	SupportsPromptCaching    bool            `json:"supportsPromptCaching"`
+	SupportsServiceTier      bool            `json:"supportsServiceTier"`
+	PricingNotes             *string         `json:"pricingNotes,omitempty"`
+	CapabilityNotes          *string         `json:"capabilityNotes,omitempty"`
+	Notes                    *string         `json:"notes,omitempty"`
+	CreatedAt                string          `json:"createdAt"`
+	UpdatedAt                string          `json:"updatedAt"`
+	Source                   string          `json:"source"`
+	CachedImageInputUsdPer1M *float64        `json:"cachedImageInputUsdPer1M,omitempty"`
+	SourcePricingCurrency    string          `json:"sourcePricingCurrency,omitempty"`
+	SourceExchangeRateToUsd  *float64        `json:"sourceExchangeRateToUsd,omitempty"`
+	SourceExchangeRateDate   string          `json:"sourceExchangeRateDate,omitempty"`
+	SourcePricingNote        string          `json:"sourcePricingNote,omitempty"`
 	// 媒体单价四维（静态定价表透传；目录表无列，仅供目录展示与前端渲染）。
 	VideoOutputUsdPerSecond *float64 `json:"videoOutputUsdPerSecond,omitempty"`
 	VideoOutputUsdPerCall   *float64 `json:"videoOutputUsdPerCall,omitempty"`
@@ -237,7 +243,7 @@ const builtInCatalogColumns = `id, COALESCE(vendor_code, '') AS provider_code, p
 	long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
 	long_context_input_cost_multiplier, long_context_output_cost_multiplier,
 	image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-	output_usd_per_image, supports_prompt_caching, catalog_visible, COALESCE(source, '') AS source, created_at, updated_at`
+	output_usd_per_image, media_pricing_json, supports_prompt_caching, catalog_visible, COALESCE(source, '') AS source, created_at, updated_at`
 
 // listBuiltInCatalogModels reads the builtin arm：scope='builtin' 行按
 // vendor_code 窗口，availability 过滤（active + catalog_visible + 未 shutdown）
@@ -297,6 +303,7 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		longInputMultiplier, longOutMult sql.NullFloat64
 		imageIn, imageOut, audioIn       sql.NullFloat64
 		audioOut, outputPerImage         sql.NullFloat64
+		mediaPricing                     sql.NullString
 		promptCaching, catalogVisible    sql.NullBool
 	)
 	var defaultEffort sql.NullString
@@ -306,7 +313,7 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		&contextWindow, &maxInput, &maxOut, &maxTokens,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices, &longThreshold, &longInclusive, &longInputMultiplier, &longOutMult,
-		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage,
+		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &mediaPricing,
 		&promptCaching, &catalogVisible, &item.Source, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return ModelCatalogItem{}, err
 	}
@@ -346,12 +353,31 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.AudioInputUsdPer1M = nullFloat64Ptr(audioIn)
 	item.AudioOutputUsdPer1M = nullFloat64Ptr(audioOut)
 	item.OutputUsdPerImage = nullFloat64Ptr(outputPerImage)
+	applyCatalogMediaPricing(&item, mediaPricing)
 	item.SupportsPromptCaching = promptCaching.Bool && promptCaching.Valid
 	visible := catalogVisible.Bool && catalogVisible.Valid
 	item.CatalogVisible = &visible
 	ApplyBuiltInStaticDerivedFields(&item)
 	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0
 	return item, nil
+}
+
+// applyCatalogMediaPricing 解析 models.media_pricing_json：非法值按「无有效
+// 价格」处理（HasMediaPricing=false），不回落 legacy 猜测（设计 §5.2）。
+func applyCatalogMediaPricing(item *ModelCatalogItem, value sql.NullString) {
+	if item == nil || !value.Valid || strings.TrimSpace(value.String) == "" {
+		return
+	}
+	parsed, err := mediapricing.Parse([]byte(value.String))
+	if err != nil {
+		return
+	}
+	canonical, err := parsed.CanonicalJSON()
+	if err != nil {
+		return
+	}
+	item.MediaPricing = canonical
+	item.HasMediaPricing = true
 }
 
 // deriveLegacyCatalogProjection 把 supported_endpoint_modes_json 列值逆映射成
@@ -437,7 +463,7 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
 			cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
 			image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-			output_usd_per_image, supports_prompt_caching, pricing_notes, capability_notes, notes, created_at, updated_at
+			output_usd_per_image, media_pricing_json, supports_prompt_caching, pricing_notes, capability_notes, notes, created_at, updated_at
 		FROM `+s.table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+`
 		ORDER BY provider_code ASC, scope ASC, `+s.modelOrderExpression()+` ASC, id ASC`), args...)
@@ -475,6 +501,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		tierPrices                    sql.NullString
 		imageIn, imageOut, audioIn    sql.NullFloat64
 		audioOut, outputPerImage      sql.NullFloat64
+		mediaPricing                  sql.NullString
 		pricingNotes, capabilityNotes sql.NullString
 		notes                         sql.NullString
 		promptCaching                 sql.NullBool
@@ -484,7 +511,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		&contextWindow, &maxInput, &maxOut,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices,
-		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage,
+		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &mediaPricing,
 		&promptCaching, &pricingNotes, &capabilityNotes, &notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return ModelCatalogItem{}, err
 	}
@@ -522,6 +549,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.AudioInputUsdPer1M = nullFloat64Ptr(audioIn)
 	item.AudioOutputUsdPer1M = nullFloat64Ptr(audioOut)
 	item.OutputUsdPerImage = nullFloat64Ptr(outputPerImage)
+	applyCatalogMediaPricing(&item, mediaPricing)
 	item.PricingNotes = textPtr(pricingNotes)
 	item.CapabilityNotes = textPtr(capabilityNotes)
 	item.Notes = textPtr(notes)
@@ -734,6 +762,9 @@ func modelTokenBoundaryEnd(model string, index int) bool {
 // 把 cogvideox/doubao-tts/seedance/paraformer 等纯媒体行误判为无价、在
 // priced-only 目录请求里整行消失（用户验收报「缺行」的直接根因）。
 func hasDirectPrice(item ModelCatalogItem) bool {
+	if item.HasMediaPricing {
+		return true
+	}
 	if item.InputUsdPer1M != nil || item.OutputUsdPer1M != nil || item.CachedInputUsdPer1M != nil ||
 		item.CacheWriteUsdPer1M != nil || item.CacheWrite1hUsdPer1M != nil ||
 		item.CacheStorageUsdPer1MPerHour != nil || item.ImageInputUsdPer1M != nil ||

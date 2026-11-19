@@ -290,8 +290,8 @@ assert.match(
 )
 assert.match(
   sourceBetween(modalSource, 'function openEdit', 'function apiKeyOperationScopeParams'),
-  /clientIpConcurrencyLimit:\s*apiKey\.clientIpConcurrencyLimit \?\? -1/,
-  '编辑表单必须从列表行回填 clientIpConcurrencyLimit'
+  /clientIpConcurrencyLimit:\s*isValidApiKeyClientIpConcurrencyLimit\(apiKey\.clientIpConcurrencyLimit\)[\s\S]*?:\s*-1/,
+  '编辑表单必须从列表行回填 clientIpConcurrencyLimit，非法存量归一为 -1'
 )
 assert.match(
   sourceBetween(modalSource, 'function currentApiKeyEditableSnapshot', 'function schedulingPreferenceSnapshotId'),

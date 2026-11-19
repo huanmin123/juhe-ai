@@ -64,8 +64,8 @@
           <a-descriptions-item v-if="detail.size" label="尺寸">{{ detail.size }}</a-descriptions-item>
           <a-descriptions-item v-if="detail.n" label="生成数量">{{ detail.n }}</a-descriptions-item>
           <a-descriptions-item v-if="detail.language" label="语言">{{ detail.language }}</a-descriptions-item>
-          <a-descriptions-item v-if="detail.providerOptionsApplied?.length" label="生效供应商参数">
-            <a-tag v-for="item in detail.providerOptionsApplied" :key="item" class="mono-cell">{{ item }}</a-tag>
+          <a-descriptions-item v-if="detail.metadataApplied?.length" label="生效扩展参数">
+            <a-tag v-for="item in detail.metadataApplied" :key="item" class="mono-cell">{{ item }}</a-tag>
           </a-descriptions-item>
         </a-descriptions>
 
@@ -199,7 +199,7 @@ const artifactContentUrl = computed(() => safeArtifactContentUrl(detail.value?.a
 const hasRequestParams = computed(() => {
   const row = detail.value
   if (!row) return false
-  return Boolean(row.prompt || row.seconds !== undefined || row.size || row.n || row.language || row.providerOptionsApplied?.length)
+  return Boolean(row.prompt || row.seconds !== undefined || row.size || row.n || row.language || row.metadataApplied?.length)
 })
 const hasUsageRaw = computed(() => Object.keys(detail.value?.usage?.raw ?? {}).length > 0)
 const usageRawText = computed(() => JSON.stringify(detail.value?.usage?.raw ?? {}, null, 2))

@@ -3,7 +3,7 @@ package acceptance
 // M3f 长音频任务 E2E（契约 §10.2 paraformer；媒体设计 §4.2 /v1/audio/jobs
 // 端点族）：管理面配置（qwen 分组 + paraformer-v2 账户，audio_job_* 端点
 // 模式写侧门禁）→ 创建（transcription 报文改写、无 X-DashScope-Async 头、
-// 统一 audio_job 对象、language→language_hints 映射经 provider_options 命中
+// 统一 audio_job 对象、language→language_hints 映射经 metadata 命中
 // 回显）→ 轮询 queued → in_progress → completed（transcription_url 冻结）→
 // content 经绝对 URL 无凭据直连下载转写结果 JSON → 管理面 media-jobs 行终态
 //（kind=audio_transcription、usage duration 时长计量照落、目录无 USD 秒价
@@ -21,8 +21,8 @@ import (
 // fullchainQwenASRCreateBody 是 qwen 长转写创建请求体：input_url 公网音频
 // URL（唯一输入形态——契约 §10.2 上游只收 file_urls、零存储不暂存）、
 // language "zh" 映射 parameters.language_hints ["zh"]、diarization_enabled
-// 经 provider_options.qwen 命中 → provider_options_applied 回显。
-const fullchainQwenASRCreateBody = `{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","provider_options":{"qwen":{"parameters":{"diarization_enabled":true}}}}`
+// 经 metadata（qwen 参数） 命中 → metadata_applied 回显。
+const fullchainQwenASRCreateBody = `{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","metadata":{"parameters":{"diarization_enabled":true}}}`
 
 // fullchainCreateQwenASRAccount 经管理面创建指向 mock 上游的 qwen api_key
 // 账户并绑定分组（qwen 供应商 + 媒体档案 profile_qwen_openai_v1）；
@@ -98,7 +98,7 @@ func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, grou
 // TestFullchainMediaAudioJobParaformer 验证 M3f qwen（paraformer）长转写链
 // 主流程（契约 §10.2）：创建 200 + 统一 audio_job 对象（audiojob_ 前缀、
 // status queued、provider_job_id 为 uuid 任务 id、params_applied 含
-// model/input_url/language、provider_options_applied 含 parameters）→ 轮询
+// model/input_url/language、metadata_applied 含 parameters）→ 轮询
 // 三态推进 → content 下载转写结果 JSON（application/json + transcripts
 // 字段）→ 管理面 media-jobs 行 kind=audio_transcription 终态（时长计量
 // 62.5s 照落；paraformer-v2 目录行已随 2025 前模型清理批移除 → 无秒价
@@ -153,8 +153,8 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 			t.Fatalf("MV qwen asr params_applied 缺少 %s: %v", want, job["params_applied"])
 		}
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "parameters") {
-		t.Fatalf("MV qwen asr provider_options_applied 缺少 parameters（qwen 子对象命中键名回显）: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", job["metadata_applied"]), "parameters") {
+		t.Fatalf("MV qwen asr metadata_applied 缺少 parameters（qwen 子对象命中键名回显）: %v", job["metadata_applied"])
 	}
 
 	// 轮询三次：queued → in_progress（RUNNING 归一）→ completed（SUCCEEDED +
@@ -266,7 +266,7 @@ func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, gr
 // TestFullchainMediaSpeechGlmTTS 验证 M6 glm 语音透传链（契约 §7.2）：管理面
 // 配置（glm 分组 + cogtts 语音账户，audio_speech 端点模式写侧门禁）→
 // POST /v1/audio/speech → 出站 POST /api/paas/v4/audio/speech（官方通用根
-// 归一、Bearer 认证；provider_options.glm 的 ref_audio/ref_text 深合并由链级
+// 归一、Bearer 认证；metadata（glm 声线扩展） 的 ref_audio/ref_text 深合并由链级
 // 测试断言，E2E 侧以 mock 按请求 response_format 协商回 wav 佐证透传面）→
 // 客户端收到 wav 二进制（RIFF magic bytes）；usage 按请求字符自算落账
 // （透传面无上游回报）。
@@ -285,7 +285,7 @@ func TestFullchainMediaSpeechGlmTTS(t *testing.T) {
 
 	f.mock.script(key, platformmock.ScenarioMediaGlmTTSOK)
 	response := f.videoT(t, apiKey, http.MethodPost, "/v1/audio/speech",
-		`{"model":"cogtts","input":"你好智谱","voice":"tongtong","response_format":"wav","provider_options":{"glm":{"ref_audio":"data:audio/wav;base64,aGVsbG8=","ref_text":"样本文本"}}}`)
+		`{"model":"cogtts","input":"你好智谱","voice":"tongtong","response_format":"wav","metadata":{"ref_audio":"data:audio/wav;base64,aGVsbG8=","ref_text":"样本文本"}}`)
 	if response.Status != http.StatusOK {
 		t.Fatalf("MV glm tts status=%d body=%s", response.Status, response.Body)
 	}

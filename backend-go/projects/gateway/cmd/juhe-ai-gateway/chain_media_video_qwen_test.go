@@ -147,9 +147,9 @@ func TestChainMediaQwenVideoFullFlowLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
-		`{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","seconds":5,"size":"1920x1080","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"provider_options":{"qwen":{"parameters":{"prompt_extend":true}}}}`,
+		`{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","seconds":5,"size":"1920x1080","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"metadata":{"parameters":{"prompt_extend":true}}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenCreatePending)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -257,7 +257,7 @@ func TestChainMediaQwenVideoFullFlowLifecycle(t *testing.T) {
 	// content 下载：completed 的 output.video_url 是引擎渲染的绝对 URL（不经
 	// 记录层），网关无凭据直连——引擎侧 Authorization 记录为空可证。响应为
 	// mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -281,7 +281,7 @@ func TestChainMediaQwenVideoFullFlowLifecycle(t *testing.T) {
 	// 5 秒输出计量（outputVideoSeconds），目录无价 → 无 costUsd 行项、无
 	// usageMissing 标记（契约 §2.8：计量照落成本不虚计）。
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"outputVideoSeconds":5`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"outputVideoSeconds":5`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "qwen completed 秒计量终态记录")
 }
 
@@ -301,7 +301,7 @@ func TestChainMediaQwenVideoFailedTerminal(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"wan2.2-t2v-plus","prompt":"失败终态"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenPollFailedError)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -320,7 +320,7 @@ func TestChainMediaQwenVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "qwen failed 终态记录")
 }
 
@@ -339,9 +339,9 @@ func TestChainMediaQwenVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"wan2.2-t2v-plus","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenPollRunning)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
 	}
@@ -360,7 +360,7 @@ func TestChainMediaQwenVideoCancel(t *testing.T) {
 	}
 
 	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
 		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}
@@ -381,7 +381,7 @@ func TestChainMediaQwenVideoCreateSizeFormLocal400(t *testing.T) {
 	server := httptest.NewServer(chain)
 	defer server.Close()
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/videos", apiKey,
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/video/generations", apiKey,
 		`{"model":"wan2.2-t2v-plus","prompt":"比例串形态","size":"16:9"}`,
 		nil)
 	if response.StatusCode != http.StatusBadRequest {

@@ -154,6 +154,10 @@ type DefaultUsageProviderCodeResolver interface {
 type PricingCatalog interface {
 	// ResolvePricingModel mirrors resolveCatalogPricingModel.
 	ResolvePricingModel(providerCode string, systemAccountID string, model string) string
+	// HasMediaPricing 报告解析到的目录行是否携带有效统一媒体模板
+	//（非对话媒体统一计费设计 §6.1）：网关侧 TTS/STT 只有在该行为 true 时
+	// 才把网关解析/估算秒数送入计费，legacy 行保持原字符/上游时长口径。
+	HasMediaPricing(providerCode string, systemAccountID string, model string) bool
 	// EstimateCost mirrors estimateCatalogCostUsd; nil = undefined.
 	EstimateCost(input PricingCostInput) *float64
 	// EstimateCacheReadCost mirrors estimateCatalogCacheReadCostUsd.
@@ -182,6 +186,12 @@ type PricingCostInput struct {
 	// TtsInputChars / AudioInputSeconds 是 M1 同步音频计量（音频设计 §10）。
 	TtsInputChars     *int64
 	AudioInputSeconds *float64
+	// OutputVideoSeconds / VideoCalls / ResolutionTier / QuantitySource 是
+	// 统一媒体模板的计量维度与档位/来源（非对话媒体统一计费设计 §6.1）。
+	OutputVideoSeconds *float64
+	VideoCalls         *float64
+	ResolutionTier     string
+	QuantitySource     string
 }
 
 // UpstreamFailureMetricRecorder ports recordGatewayUpstreamFailureMetric

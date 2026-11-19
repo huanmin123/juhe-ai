@@ -4,7 +4,7 @@ package gatewaymedia
 // mockupstream volcengineQueryBody 同源派生——Mock 上游按同一契约实现）：
 // 视频创建报文构造（prompt→content[].text、input_reference url/base64 双
 // 形态直传、size→resolution+ratio 档位换算与词表外 400、seconds→duration
-// 数值直传、seed 直传、provider_options 合并）、轮询请求构造与产物定位/
+// 数值直传、seed 直传、metadata 合并）、轮询请求构造与产物定位/
 // 取消声明、轮询响应归一（queued/running/succeeded/failed、succeeded 缺
 // video_url 的协议违约、未知状态 RawStatus、非 2xx）、duration 秒计量抽取
 //（2026-10-17 实测回填：succeeded 正值照抽、缺失/0 不猜测、非终态不抽）。
@@ -84,8 +84,8 @@ func TestVolcengineVideoAdapterCreate(t *testing.T) {
 			Seed:           &seed,
 			InputReference: &reference,
 		},
-		ProviderOptions: map[string]any{
-			"volcengine": map[string]any{"camera_fixed": true},
+		Metadata: map[string]any{
+			"camera_fixed": true,
 		},
 	})
 	if err != nil {

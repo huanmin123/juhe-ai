@@ -4,7 +4,7 @@ package gatewaymedia
 // mockupstream xaiTaskBodyLocked 同源派生——Mock 上游按同一契约实现）：
 // 视频创建报文构造（duration 整数化、size→aspect_ratio+resolution 七值词表
 // 换算与词表外 400、image 首帧直传、generate_audio 直传、零值字段省略、
-// provider_options 合并）、轮询请求构造与产物定位/取消声明、轮询响应归一
+// metadata 合并）、轮询请求构造与产物定位/取消声明、轮询响应归一
 //（pending/done/failed/expired 四状态 + duration 秒计量、request_id 缺失
 // 受理失败、未知状态 RawStatus、非 2xx）。
 import (
@@ -85,8 +85,8 @@ func TestXaiVideoAdapterCreate(t *testing.T) {
 			InputReference: &reference,
 			Audio:          &audio,
 		},
-		ProviderOptions: map[string]any{
-			"xai": map[string]any{"reference_audios": []any{"voice-1"}},
+		Metadata: map[string]any{
+			"reference_audios": []any{"voice-1"},
 		},
 	})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestXaiVideoAdapterCreate(t *testing.T) {
 	if body.GenerateAudio {
 		t.Fatalf("generate_audio = true, want false（布尔直传）")
 	}
-	// provider_options 命中 xai 的子对象 deep-merge（契约 §6.1 范围外的
+	// metadata 键 deep-merge（契约 §6.1 范围外的
 	// reference_audios 经 L3 通道可达）。
 	if _, ok := raw["reference_audios"]; !ok {
 		t.Fatalf("reference_audios 未合并: %s", output.Body)

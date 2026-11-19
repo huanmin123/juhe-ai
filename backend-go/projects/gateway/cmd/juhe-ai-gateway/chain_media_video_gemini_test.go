@@ -143,7 +143,7 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"veo-3.0-generate-preview","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"模糊","seconds":"8"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGeminiVideoCreateOK)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
 		t.Fatalf("对外 job id 缺失或非 video_ 前缀: %#v", job)
 	}
@@ -229,7 +229,7 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 
 	// content 下载：completed 的 uri 是引擎渲染的绝对 URL（不经记录层），
 	// 网关无凭据直连——引擎侧 Authorization 记录为空可证。响应为 mp4 流。
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID+"/content", apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID+"/content", apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
 	}
@@ -252,7 +252,7 @@ func TestChainMediaGeminiVideoFullFlowLifecycle(t *testing.T) {
 	//（契约 §2.8：上游不回报且请求参数非计量基源 → 0 计费 + usage_missing，
 	// 不猜测）。
 	waitGeminiSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"usageMissing":true`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"usageMissing":true`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "gemini completed usage_missing 终态记录")
 }
 
@@ -271,7 +271,7 @@ func TestChainMediaGeminiVideoFailedTerminal(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"veo-3.0-generate-preview","prompt":"失败终态","size":"720x1280"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGeminiVideoPollError)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 
 	terminal := mediaVideoPollOnce(t, server.URL, apiKey, jobID)
 	if terminal["status"] != "failed" {
@@ -290,7 +290,7 @@ func TestChainMediaGeminiVideoFailedTerminal(t *testing.T) {
 		t.Fatalf("media_jobs = %s/%v, want failed/0（失败不虚计）", status, costUsd)
 	}
 	waitGeminiSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
+		return strings.Contains(text, `"success":false`) && strings.Contains(text, `"endpoint":"/v1/video/generations"`)
 	}, "gemini failed 终态记录")
 }
 
@@ -308,10 +308,10 @@ func TestChainMediaGeminiVideoCancel(t *testing.T) {
 	job := mediaVideoCreateJob(t, server.URL, apiKey,
 		`{"model":"veo-3.0-generate-preview","prompt":"取消语义"}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGeminiVideoPollRunning)})
-	jobID, _ := job["id"].(string)
+	jobID, _ := job["task_id"].(string)
 	providerJobID, _ := job["provider_job_id"].(string)
 
-	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE status=%d body=%s, want 204", response.StatusCode, payload)
 	}
@@ -328,7 +328,7 @@ func TestChainMediaGeminiVideoCancel(t *testing.T) {
 	}
 
 	// 终态行轮询回本地对象，不再打上游（记录数不变）。
-	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	pollResponse, pollPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if pollResponse.StatusCode != http.StatusOK || mediaVideoDecodeJob(t, pollPayload)["status"] != "cancelled" {
 		t.Fatalf("终态轮询应回本地 cancelled: status=%d body=%s", pollResponse.StatusCode, pollPayload)
 	}
@@ -340,7 +340,7 @@ func TestChainMediaGeminiVideoCancel(t *testing.T) {
 // mediaVideoPollOnce 轮询一次并解码 job 对象。
 func mediaVideoPollOnce(t *testing.T, serverURL, apiKey, jobID string) map[string]any {
 	t.Helper()
-	response, payload := mediaVideoClientDo(t, serverURL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	response, payload := mediaVideoClientDo(t, serverURL, http.MethodGet, "/v1/video/generations/"+jobID, apiKey, "", nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("poll %s status=%d body=%s", jobID, response.StatusCode, payload)
 	}

@@ -47,7 +47,7 @@
         {
           "id": "07-video",
           "title": "视频生成：从提交到取片",
-          "summary": "POST /v1/videos 提交任务、轮询状态、下载成片的完整生命周期。",
+          "summary": "POST /v1/video/generations 提交任务、轮询状态、下载成片的完整生命周期。",
           "file": "user/07-video.md"
         },
         {
@@ -95,7 +95,7 @@
         {
           "id": "19-provider-params",
           "title": "供应商参数怎么传：透传规则",
-          "summary": "供应商特有参数直接写请求体顶层即可透传；网关会改写/拒绝的五种例外；媒体 provider_options 通道。",
+          "summary": "供应商特有参数直接写请求体顶层即可透传；网关会改写/拒绝的五种例外；媒体 metadata 通道。",
           "file": "user/19-provider-params.md"
         },
         {

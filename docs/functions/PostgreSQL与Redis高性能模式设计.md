@@ -199,7 +199,7 @@ Go 三项目没有 Redis 任务队列（Node 时代的 Redis Streams consumer gr
   - 常规路径零 JSON 转换（`gatewayusage.UsageRecordInput` 是 writer 输入的类型别名）；
   - 收尾队列满时生产启用 drop-on-full（`DroppedCount` + `gateway_usage_finalization_dropped` 采样日志），不反压请求；gateway 侧 writer 队列满按 `usage_record_queue_*` 采样告警丢弃并计数；进程崩溃/优雅停机超时会丢失内存队列内未落库记录（直投语义的已知取舍）；
   - 账户 `last_used_at` 副作用在 usage 事务提交后逐账户短 UPDATE，失败忽略，不把业务账户行锁横跨整批写入；
-  - 防止挂死：目录回源 5s、单批落库 30s、队头连续失败总时长 10min、recorder 停机排空 4s、writer 停机排空 5s 均为硬上限；超时按失败批次重试/死信或随进程退出丢弃，不允许无限等待；
+  - 防止挂死：目录回源 5s、单批落库 30s、队头连续失败总时长 10min、**收尾队列停机排空 2s（先于 recorder 关闭）**、recorder 停机排空 4s、writer 停机排空 5s 均为硬上限；超时按失败批次重试/死信或随进程退出丢弃，不允许无限等待。顺序不可换：recorder 关闭后到达的收尾任务会走直投（`persistOverflow`），把写入推到停机流程之后；
 - 审计与操作日志：gateway 进程内 F3 / F4 owner 包直接写入，不经队列。
 - 公开接口日志由 gateway 进程内组件写入：单批写入 10s 超时、连续 5 次失败丢弃队头批次、停机 Close 10s 有界；运行日志只写 gateway 本地 JSONL（F1 PG 索引已下架，集中检索走 ELK/Loki 外部抓取），文件路经 `processlog.AsyncWriter` 单 worker 有界队列异步落盘（队列满丢弃，停机排空上限 2s），慢盘/NFS 卡死不会阻塞请求协程；hot-search 镜像不做 fsync。
 - 后台任务族由 `jobregistry` 统一注册，lease 围栏、单持有者、固定退避语义见 `backend-go/projects/jobs/internal/jobregistry/registry.go`；低优先级清理不得阻塞关键用量与审计链路。

@@ -56,7 +56,7 @@
 </ol>
 <p>不确定客户端属于哪类？看它要的配置：要 <code>base_url</code> + OpenAI 格式的是第一类；要 <code>ANTHROPIC_BASE_URL</code> 的是第二类；要 Gemini API key 配置的是第三类。</p>
 <h2>自定义的视频、音频协议在哪</h2>
-<p>视频生成、语音合成、语音转文字、实时语音这些能力，<strong>没有各供应商的私有形态</strong>——网关把它们统一成 OpenAI 兼容族里的自定义端点（<code>/v1/videos</code>、<code>/v1/audio/*</code>、<code>/v1/realtime</code>），请求响应结构与 OpenAI 习惯一致，上游供应商差异同样被网关消化。所以视频/音频不需要&quot;某供应商协议&quot;的专门篇目，直接看对应篇目即可。</p>
+<p>视频生成、语音合成、语音转文字、实时语音这些能力，<strong>没有各供应商的私有形态</strong>——网关把它们统一成一套自定义端点（<code>/v1/video/generations</code>、<code>/v1/audio/*</code>、<code>/v1/realtime</code>），请求响应结构与 OpenAI 习惯一致，上游供应商差异同样被网关消化。所以视频/音频不需要&quot;某供应商协议&quot;的专门篇目，直接看对应篇目即可。</p>
 <h2>错误信封也按协议来</h2>
 <p>网关返回的错误会自动跟随你请求的协议形态：</p>
 <table>

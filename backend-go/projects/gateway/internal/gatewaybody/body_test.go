@@ -515,3 +515,33 @@ func TestSerializedBodyAssociation(t *testing.T) {
 		t.Fatalf("binding mismatch")
 	}
 }
+
+func TestCreateBodyStateCachesImageMetering(t *testing.T) {
+	state := CreateBodyState(BodyStateInput{
+		ContentType:     "application/json",
+		JSONParseStatus: JSONParseStatusParsed,
+		ParsedBody:      map[string]any{"size": "1536x1024", "n": float64(2)},
+	})
+	if state.ImageRequestSize == nil || *state.ImageRequestSize != "1536x1024" {
+		t.Fatalf("imageRequestSize = %v, want 1536x1024", state.ImageRequestSize)
+	}
+	if state.ImageRequestCount == nil || *state.ImageRequestCount != 2 {
+		t.Fatalf("imageRequestCount = %v, want 2", state.ImageRequestCount)
+	}
+
+	explicit := 4
+	overridden := CreateBodyState(BodyStateInput{
+		ImageRequestCount: &explicit,
+		ParsedBody:        map[string]any{"n": float64(2)},
+	})
+	if overridden.ImageRequestCount == nil || *overridden.ImageRequestCount != 4 {
+		t.Fatalf("explicit imageRequestCount = %v, want 4", overridden.ImageRequestCount)
+	}
+
+	invalid := CreateBodyState(BodyStateInput{
+		ParsedBody: map[string]any{"n": float64(0)},
+	})
+	if invalid.ImageRequestCount != nil {
+		t.Fatalf("n=0 must not be cached: %v", invalid.ImageRequestCount)
+	}
+}

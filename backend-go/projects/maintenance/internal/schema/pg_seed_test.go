@@ -19,7 +19,7 @@ func TestBuildPostgresModelSeedUpsertRendering(t *testing.T) {
 		t.Fatalf("modelSeedTargetRows: %v", err)
 	}
 	query, args := buildPostgresModelSeedUpsert(rows, "2026-09-04T08:00:00.123Z")
-	if got := len(rows) * 40; len(args) != got {
+	if got := len(rows) * 41; len(args) != got {
 		t.Fatalf("bulk upsert arg count = %d, want %d", len(args), got)
 	}
 	if !strings.Contains(query, `INSERT INTO "juhe_business"."models"`) {
@@ -40,10 +40,10 @@ func TestBuildPostgresModelSeedUpsertRendering(t *testing.T) {
 	if got := strings.Count(query, "'USD'"); got != len(rows) {
 		t.Fatalf("'USD' literal count = %d, want %d", got, len(rows))
 	}
-	// 第二行行首元素格式校验：每行 40 参数，第二行从 $41 重启，且字面量列序
+	// 第二行行首元素格式校验：每行 41 参数，第二行从 $42 重启，且字面量列序
 	// 与首行一致（'builtin' 后紧跟 system_account_id 的 NULL，再接 status）。
-	if !strings.Contains(query, "),\n          ($41, $42, $43, $44, 'builtin', NULL, $45") {
-		t.Fatal("bulk upsert second row misses the 40-parameter restart with builtin/NULL literals")
+	if !strings.Contains(query, "),\n          ($42, $43, $44, $45, 'builtin', NULL, $46") {
+		t.Fatal("bulk upsert second row misses the 41-parameter restart with builtin/NULL literals")
 	}
 	if !strings.Contains(query, "$"+strconv.Itoa(len(args))) {
 		t.Fatalf("bulk upsert misses the final placeholder $%d", len(args))
@@ -60,7 +60,33 @@ func TestBuildPostgresModelSeedUpsertRendering(t *testing.T) {
 		t.Fatalf("first row status arg = %v, want %v", args[4], first.Status)
 	}
 	if args[39] != seedNullableFloat64(first.OutputUsdPerImage) {
-		t.Fatalf("first row final arg = %v, want OutputUsdPerImage %v (currency 是语句内字面量)", args[39], first.OutputUsdPerImage)
+		t.Fatalf("first row output image arg = %v, want OutputUsdPerImage %v", args[39], first.OutputUsdPerImage)
+	}
+	if args[40] != seedNullableString(first.MediaPricingJSON) {
+		t.Fatalf("first row media pricing arg = %v, want MediaPricingJSON %v (currency 是语句内字面量)", args[40], first.MediaPricingJSON)
+	}
+}
+
+// TestPostgresModelSeedMediaPricingManualOverrideGuard 锁定设计 §9.2：人工
+// 覆盖行若仍有 legacy 媒体价格且 media_pricing_json 为空，seed 必须保持
+// NULL（继续 legacy），不得用 catalogdata 目录价静默替换人工价。
+func TestPostgresModelSeedMediaPricingManualOverrideGuard(t *testing.T) {
+	for _, fragment := range []string{
+		`media_pricing_json = CASE`,
+		`source = 'manual-override'`,
+		`"juhe_business"."models".media_pricing_json IS NULL`,
+		`btrim("juhe_business"."models".media_pricing_json) = ''`,
+		`"juhe_business"."models".image_input_usd_per_1m IS NOT NULL`,
+		`"juhe_business"."models".image_output_usd_per_1m IS NOT NULL`,
+		`"juhe_business"."models".audio_input_usd_per_1m IS NOT NULL`,
+		`"juhe_business"."models".audio_output_usd_per_1m IS NOT NULL`,
+		`"juhe_business"."models".output_usd_per_image IS NOT NULL`,
+		`THEN "juhe_business"."models".media_pricing_json`,
+		`ELSE COALESCE(NULLIF("juhe_business"."models".media_pricing_json, ''), excluded.media_pricing_json)`,
+	} {
+		if !strings.Contains(pgSeedModelsUpsertSuffix, fragment) {
+			t.Fatalf("media_pricing_json manual-override guard misses %q", fragment)
+		}
 	}
 }
 
@@ -169,8 +195,8 @@ func seedUpsertInsertColumnCount(t *testing.T, insertStatement string) int {
 
 // TestPostgresModelSeedUpsertRowArityMatchesTargetColumns 是 PG models 批量
 // upsert 的 arity 防线：目标列数 N 取自 pgSeedModelsColumns 本身，对渲染出的
-// 每一行 VALUES 元组做顶层逗号元素计数，逐行断言 == N，且每行恰有 40 个 $n
-// 占位符（40 参数 + 8 字面量）。历史 blocker：目标列 48 列而每行只渲染 43 值，
+// 每一行 VALUES 元组做顶层逗号元素计数，逐行断言 == N，且每行恰有 41 个 $n
+// 占位符（41 参数 + 8 字面量）。历史 blocker：目标列 48 列而每行只渲染 43 值，
 // PG 执行报 42601 且第 25 列起整体错位。
 func TestPostgresModelSeedUpsertRowArityMatchesTargetColumns(t *testing.T) {
 	columnCount := seedUpsertInsertColumnCount(t, pgSeedModelsColumns)
@@ -179,8 +205,8 @@ func TestPostgresModelSeedUpsertRowArityMatchesTargetColumns(t *testing.T) {
 		t.Fatalf("modelSeedTargetRows: %v", err)
 	}
 	query, args := buildPostgresModelSeedUpsert(rows, "2026-09-04T08:00:00.123Z")
-	if len(args) != len(rows)*40 {
-		t.Fatalf("bulk upsert arg count = %d, want %d", len(args), len(rows)*40)
+	if len(args) != len(rows)*41 {
+		t.Fatalf("bulk upsert arg count = %d, want %d", len(args), len(rows)*41)
 	}
 	valuesIndex := strings.Index(query, ") VALUES")
 	conflictIndex := strings.Index(query, "ON CONFLICT")
@@ -202,7 +228,7 @@ func TestPostgresModelSeedUpsertRowArityMatchesTargetColumns(t *testing.T) {
 				placeholders++
 			}
 		}
-		if placeholders != 40 {
+		if placeholders != 41 {
 			t.Fatalf("VALUES row %d placeholder count = %d, want 40", index+1, placeholders)
 		}
 	}

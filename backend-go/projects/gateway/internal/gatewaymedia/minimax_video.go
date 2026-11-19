@@ -3,7 +3,7 @@
 // videoAdapters 的 "minimax" 条目）。报文依据契约 §8.1（置信度 B：多源
 // 确认）：创建 POST /v1/video_generation（Bearer API Key），请求
 // {model,prompt,duration,first_frame_image?}（prompt_optimizer 等厂商个例
-// 经 provider_options.minimax deep-merge），响应
+// 经 metadata deep-merge），响应
 // {task_id,base_resp:{status_code,status_msg}}——受理凭据 = task_id，
 // base_resp.status_code != 0 视为失败（受理前错误）；轮询 GET
 // /v1/query/video_generation?task_id= → task_id + status ∈
@@ -79,19 +79,19 @@ func minimaxInputReferenceBase64(reference string) (string, error) {
 //   - input_reference → first_frame_image：base64/data URL 直传
 //     （minimaxInputReferenceBase64）；
 //   - negative_prompt/n/seed/audio 归一层判为 ignored，不进报文；
-//   - provider_options 命中 minimax 的子对象 deep-merge 覆盖同名键
+//   - metadata 逐键 deep-merge 覆盖同名键
 //     （契约 §2.1 L3，如 {"minimax":{"prompt_optimizer":true}}）。
 func (a minimaxVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
-	body := map[string]any{
-		"model":  params.Model,
-		"prompt": params.Prompt,
+	body := map[string]any{"model": params.Model}
+	if params.Prompt != "" {
+		body["prompt"] = params.Prompt
 	}
 	if params.Seconds != nil {
 		body["duration"] = *params.Seconds
@@ -103,7 +103,7 @@ func (a minimaxVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vid
 		}
 		body["first_frame_image"] = base64Encoded
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 minimax 视频创建请求体失败: %w", err)
@@ -131,6 +131,12 @@ func (minimaxVideoAdapter) BuildPollRequest(upstreamJobID string) (string, strin
 // 不调用 BuildContentRequest。
 func (minimaxVideoAdapter) ContentFromArtifact() bool { return true }
 
+// ProbeArtifactDuration 声明 minimax 允许 P4 产物 Range 探测（非对话媒体
+// 统一计费设计 §8.4）：query/video_generation 只回 status 与
+// file_download_url，不回生成时长；请求未携带生效 seconds 时，上游默认
+// 时长只能从产物容器读取。探测失败关闭为 usage_missing，不猜测。
+func (minimaxVideoAdapter) ProbeArtifactDuration() bool { return true }
+
 // BuildContentRequest 在 minimax 形态下不参与下载定位（ContentFromArtifact
 // 为 true，链上层直连 Artifact.ContentURL）；保留接口实现返回空路径，误
 // 调用属链上层接线错误。
@@ -154,11 +160,11 @@ func (minimaxVideoAdapter) SupportsCancel() bool { return false }
 // 携带 status 词表与 Success 形态的 file_id/file_download_url，Fail 形态
 // 携带非零 base_resp（错误摘要来源）。
 type minimaxVideoObject struct {
-	TaskID          string            `json:"task_id"`
-	Status          string            `json:"status"`
-	FileID          string            `json:"file_id"`
-	FileDownloadURL string            `json:"file_download_url"`
-	BaseResp        *minimaxBaseResp  `json:"base_resp"`
+	TaskID          string           `json:"task_id"`
+	Status          string           `json:"status"`
+	FileID          string           `json:"file_id"`
+	FileDownloadURL string           `json:"file_download_url"`
+	BaseResp        *minimaxBaseResp `json:"base_resp"`
 }
 
 // minimaxBaseResp 是 minimax 的通用错误/状态信封（status_code=0 为成功）。
@@ -206,7 +212,7 @@ func minimaxTaskStatusOf(status string) (MediaJobStatus, bool) {
 // usage：minimax 轮询响应不回报时长/用量字段（§8.1 计费口径"任务响应
 // 含用量/按次（回填）"未回填），Hailuo 按次/档位计费且网关计费面只有
 // 秒价维度——不填 OutputVideoSeconds，终态计费由链上按契约 §2.8 兜底
-//（0 计费 + usage_missing 标记，不猜测）。
+// （0 计费 + usage_missing 标记，不猜测）。
 func (minimaxVideoAdapter) ParsePollResponse(statusCode int, body []byte) (*MediaJobIR, error) {
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, &UpstreamStatusError{StatusCode: statusCode, Body: string(body)}

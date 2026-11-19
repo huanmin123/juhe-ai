@@ -798,6 +798,14 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 
 	shutdown := func() {
+		// 收尾队列先排空再关 recorder（顺序不可换）：recorder 关闭后仍到达的
+		// EnqueueUsageRecord 会走 persistOverflow 直投（chain_usage.go），把
+		// 写盘/落库推迟到停机返回之后——测试侧表现为 t.TempDir 清理与 spool
+		// 写入竞争（W55），生产侧表现为停机窗口内的写入逃逸。
+		if !dispatch.WaitForIdle(usageFinalizationDrainTimeoutMs) {
+			logger.Warn("usage 收尾队列停机排空超时，未完成记录按丢弃计数",
+				"event", "usage_finalization_shutdown_drain_timeout")
+		}
 		recorder.Close()
 		// caller tier 影子事件在 Redis 形态下由后台 worker 消费；停机时尽力
 		// 排空（有界，不阻塞进程退出）。

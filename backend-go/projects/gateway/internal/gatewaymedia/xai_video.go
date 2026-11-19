@@ -133,7 +133,7 @@ func xaiSizeToAspectRatioResolution(size string) (aspectRatio, resolution string
 //   - audio → generate_audio：布尔直传（nil 不传，上游默认 true）；
 //   - negative_prompt/seed/n 归一层判为 ignored（n>1 本地 400），不进报文
 //     （§2.4 规则 1）；
-//   - provider_options 命中 xai 的子对象 deep-merge 覆盖同名键（契约 §2.1
+//   - metadata 逐键 deep-merge 覆盖同名键（契约 §2.1
 //     L3，如 {"xai":{"reference_audios":[...]}}——§6.1 记录的范围外能力经
 //     该通道可达）。
 func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
@@ -141,12 +141,12 @@ func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
-	body := map[string]any{
-		"model":  params.Model,
-		"prompt": params.Prompt,
+	body := map[string]any{"model": params.Model}
+	if params.Prompt != "" {
+		body["prompt"] = params.Prompt
 	}
 	if params.Seconds != nil {
 		body["duration"] = int64(math.Round(*params.Seconds))
@@ -169,7 +169,7 @@ func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.Audio != nil {
 		body["generate_audio"] = *params.Audio
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 xai 视频创建请求体失败: %w", err)

@@ -131,6 +131,15 @@ export interface ProviderProtocolProfileDefinition {
   endpointFamilies: ProtocolEndpointFamilyDefinition[]
 }
 
+/** 统一媒体计费模板（非对话媒体统一计费设计 §5.1）。 */
+export interface ProviderModelMediaPricing {
+  version: 1
+  unit: 'second' | 'image' | 'call'
+  baseUsd: number
+  baseTier: string
+  tierMultipliers: Record<string, number>
+}
+
 export interface ProviderModelPricing {
   providerCode: ProviderCode
   model: string
@@ -162,6 +171,10 @@ export interface ProviderModelPricing {
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
+  /** 统一媒体价格模板；存在时 legacy 媒体价不参与结算。 */
+  mediaPricing?: ProviderModelMediaPricing | null
+  /** 区分有效 0 价与无价/非法价（后端权威）。 */
+  hasMediaPricing?: boolean
   /** 视频输出每秒价（USD/秒）。 */
   videoOutputUsdPerSecond?: number
   /** 视频输出每次价（USD/次），目录中与每秒价互斥落库。 */
@@ -256,6 +269,8 @@ export interface ProviderModelUpsertPayload {
   audioInputUsdPer1M?: number | null
   audioOutputUsdPer1M?: number | null
   outputUsdPerImage?: number | null
+  /** 统一媒体价格；提交非 null 时不得同时提交任何 legacy 价格键。 */
+  mediaPricing?: ProviderModelMediaPricing | null
 }
 
 export type ProviderModelPatchPayload = Partial<Omit<

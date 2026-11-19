@@ -627,50 +627,54 @@ type ProviderModelCatalogItem struct {
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（工具体系设计 6.4）：键为
 	// 该行协议枚举，值为该协议下可用的工具集。一维 SupportedTools 已随阶段 2
 	// 全链退场。
-	SupportedToolsByProtocol                map[string][]string `json:"supportedToolsByProtocol"`
-	GenerationParameterCapabilities         json.RawMessage     `json:"generationParameterCapabilities,omitempty"`
-	InputUsdPer1M                           *float64            `json:"inputUsdPer1M,omitempty"`
-	OutputUsdPer1M                          *float64            `json:"outputUsdPer1M,omitempty"`
-	CachedInputUsdPer1M                     *float64            `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUsdPer1M                      *float64            `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUsdPer1M                    *float64            `json:"cacheWrite1hUsdPer1M,omitempty"`
-	CacheStorageUsdPer1MPerHour             *float64            `json:"cacheStorageUsdPer1MPerHour,omitempty"`
-	ServiceTierPrices                       json.RawMessage     `json:"serviceTierPrices,omitempty"`
-	ImageInputUsdPer1M                      *float64            `json:"imageInputUsdPer1M,omitempty"`
-	CachedImageInputUsdPer1M                *float64            `json:"cachedImageInputUsdPer1M,omitempty"`
-	ImageOutputUsdPer1M                     *float64            `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUsdPer1M                      *float64            `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUsdPer1M                     *float64            `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUsdPerImage                       *float64            `json:"outputUsdPerImage,omitempty"`
-	ContextWindowTokens                     *int64              `json:"contextWindowTokens,omitempty"`
-	MaxInputTokens                          *int64              `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens                         *int64              `json:"maxOutputTokens,omitempty"`
-	MaxTokens                               *int64              `json:"maxTokens,omitempty"`
-	LongContextInputTokenThreshold          *int64              `json:"longContextInputTokenThreshold,omitempty"`
-	LongContextInputTokenThresholdInclusive *bool               `json:"longContextInputTokenThresholdInclusive,omitempty"`
-	LongContextInputCostMultiplier          *float64            `json:"longContextInputCostMultiplier,omitempty"`
-	LongContextOutputCostMultiplier         *float64            `json:"longContextOutputCostMultiplier,omitempty"`
-	SupportsPromptCaching                   bool                `json:"supportsPromptCaching"`
-	SupportedServiceTiers                   []string            `json:"supportedServiceTiers"`
-	SupportedReasoningEfforts               []string            `json:"supportedReasoningEfforts"`
-	DefaultReasoningEffort                  *string             `json:"defaultReasoningEffort,omitempty"`
-	CodexSupportedReasoningLevels           json.RawMessage     `json:"codexSupportedReasoningLevels,omitempty"`
-	CodexDefaultReasoningLevel              json.RawMessage     `json:"codexDefaultReasoningLevel,omitempty"`
-	CodexMultiAgentVersion                  *string             `json:"codexMultiAgentVersion,omitempty"`
-	SupportsServiceTier                     bool                `json:"supportsServiceTier"`
-	CatalogVisible                          *bool               `json:"catalogVisible,omitempty"`
-	SourcePricingCurrency                   *string             `json:"sourcePricingCurrency,omitempty"`
-	SourceExchangeRateToUsd                 *float64            `json:"sourceExchangeRateToUsd,omitempty"`
-	SourceExchangeRateDate                  *string             `json:"sourceExchangeRateDate,omitempty"`
-	SourcePricingNote                       *string             `json:"sourcePricingNote,omitempty"`
-	Source                                  string              `json:"source"`
-	SystemAccountID                         *string             `json:"systemAccountId,omitempty"`
-	PricingNotes                            *string             `json:"pricingNotes,omitempty"`
-	CapabilityNotes                         *string             `json:"capabilityNotes,omitempty"`
-	Notes                                   *string             `json:"notes,omitempty"`
-	CreatedAt                               *string             `json:"createdAt,omitempty"`
-	UpdatedAt                               *string             `json:"updatedAt,omitempty"`
-	CatalogDisplay                          json.RawMessage     `json:"catalogDisplay,omitempty"`
+	SupportedToolsByProtocol        map[string][]string `json:"supportedToolsByProtocol"`
+	GenerationParameterCapabilities json.RawMessage     `json:"generationParameterCapabilities,omitempty"`
+	InputUsdPer1M                   *float64            `json:"inputUsdPer1M,omitempty"`
+	OutputUsdPer1M                  *float64            `json:"outputUsdPer1M,omitempty"`
+	CachedInputUsdPer1M             *float64            `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUsdPer1M              *float64            `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUsdPer1M            *float64            `json:"cacheWrite1hUsdPer1M,omitempty"`
+	CacheStorageUsdPer1MPerHour     *float64            `json:"cacheStorageUsdPer1MPerHour,omitempty"`
+	ServiceTierPrices               json.RawMessage     `json:"serviceTierPrices,omitempty"`
+	ImageInputUsdPer1M              *float64            `json:"imageInputUsdPer1M,omitempty"`
+	CachedImageInputUsdPer1M        *float64            `json:"cachedImageInputUsdPer1M,omitempty"`
+	ImageOutputUsdPer1M             *float64            `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUsdPer1M              *float64            `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUsdPer1M             *float64            `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUsdPerImage               *float64            `json:"outputUsdPerImage,omitempty"`
+	// MediaPricing 是 models.media_pricing_json 的原始严格 JSON；
+	// HasMediaPricing 区分「有效 0 价」与「无价/非法价」（设计 §5.2）。
+	MediaPricing                            json.RawMessage `json:"mediaPricing,omitempty"`
+	HasMediaPricing                         bool            `json:"hasMediaPricing"`
+	ContextWindowTokens                     *int64          `json:"contextWindowTokens,omitempty"`
+	MaxInputTokens                          *int64          `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens                         *int64          `json:"maxOutputTokens,omitempty"`
+	MaxTokens                               *int64          `json:"maxTokens,omitempty"`
+	LongContextInputTokenThreshold          *int64          `json:"longContextInputTokenThreshold,omitempty"`
+	LongContextInputTokenThresholdInclusive *bool           `json:"longContextInputTokenThresholdInclusive,omitempty"`
+	LongContextInputCostMultiplier          *float64        `json:"longContextInputCostMultiplier,omitempty"`
+	LongContextOutputCostMultiplier         *float64        `json:"longContextOutputCostMultiplier,omitempty"`
+	SupportsPromptCaching                   bool            `json:"supportsPromptCaching"`
+	SupportedServiceTiers                   []string        `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts               []string        `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort                  *string         `json:"defaultReasoningEffort,omitempty"`
+	CodexSupportedReasoningLevels           json.RawMessage `json:"codexSupportedReasoningLevels,omitempty"`
+	CodexDefaultReasoningLevel              json.RawMessage `json:"codexDefaultReasoningLevel,omitempty"`
+	CodexMultiAgentVersion                  *string         `json:"codexMultiAgentVersion,omitempty"`
+	SupportsServiceTier                     bool            `json:"supportsServiceTier"`
+	CatalogVisible                          *bool           `json:"catalogVisible,omitempty"`
+	SourcePricingCurrency                   *string         `json:"sourcePricingCurrency,omitempty"`
+	SourceExchangeRateToUsd                 *float64        `json:"sourceExchangeRateToUsd,omitempty"`
+	SourceExchangeRateDate                  *string         `json:"sourceExchangeRateDate,omitempty"`
+	SourcePricingNote                       *string         `json:"sourcePricingNote,omitempty"`
+	Source                                  string          `json:"source"`
+	SystemAccountID                         *string         `json:"systemAccountId,omitempty"`
+	PricingNotes                            *string         `json:"pricingNotes,omitempty"`
+	CapabilityNotes                         *string         `json:"capabilityNotes,omitempty"`
+	Notes                                   *string         `json:"notes,omitempty"`
+	CreatedAt                               *string         `json:"createdAt,omitempty"`
+	UpdatedAt                               *string         `json:"updatedAt,omitempty"`
+	CatalogDisplay                          json.RawMessage `json:"catalogDisplay,omitempty"`
 }
 
 // CloneProviderModelCatalogItems mirrors the per-item {...item} shallow clone.
@@ -698,6 +702,9 @@ func CloneProviderModelCatalogItems(items []ProviderModelCatalogItem) []Provider
 		}
 		if item.SupportedReasoningEfforts != nil {
 			cloned.SupportedReasoningEfforts = append([]string(nil), item.SupportedReasoningEfforts...)
+		}
+		if item.MediaPricing != nil {
+			cloned.MediaPricing = append(json.RawMessage(nil), item.MediaPricing...)
 		}
 		out[i] = cloned
 	}

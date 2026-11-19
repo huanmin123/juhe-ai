@@ -36,7 +36,7 @@ CREATE TABLE route_strategy_groups (
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE api_keys (
   id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, name TEXT NOT NULL,
-  client_ip_concurrency_limit INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  client_ip_concurrency_limit INTEGER NOT NULL DEFAULT -1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 `
 
 // TestMigrateKeyClientIPLimitUsageGates 钉住参数与停写/备份门禁：apply 缺任一
@@ -88,7 +88,7 @@ func TestMigrateKeyClientIPLimitCLIPostgres(t *testing.T) {
 	exec(`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
 		VALUES ('b1', 's1', 'u1', 'g1', 1, 1, 'active', $1, $1)`, now)
 	exec(`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, name, client_ip_concurrency_limit, created_at, updated_at)
-		VALUES ('k1', 'u1', 's1', 'key1', 0, $1, $1)`, now)
+		VALUES ('k1', 'u1', 's1', 'key1', -1, $1, $1)`, now)
 
 	groupState := func() string {
 		var raw string
@@ -132,7 +132,7 @@ func TestMigrateKeyClientIPLimitCLIPostgres(t *testing.T) {
 		manifest.ConflictPolicy != "block" {
 		t.Fatalf("manifest = %+v", manifest)
 	}
-	if groupState() != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}` || keyState() != 0 {
+	if groupState() != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}` || keyState() != -1 {
 		t.Fatal("dry-run 后库必须保持原状")
 	}
 
@@ -145,7 +145,7 @@ func TestMigrateKeyClientIPLimitCLIPostgres(t *testing.T) {
 	if code := runMaintenance([]string{"migrate-key-client-ip-limit", "--dsn", dsn}); code != 2 {
 		t.Fatalf("apply without gates exit = %d, want 2", code)
 	}
-	if keyState() != 0 {
+	if keyState() != -1 {
 		t.Fatal("缺门禁不得写库")
 	}
 	if code := runMaintenance([]string{"migrate-key-client-ip-limit", "--dsn", dsn,

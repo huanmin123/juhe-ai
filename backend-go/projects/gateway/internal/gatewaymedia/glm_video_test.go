@@ -59,6 +59,12 @@ func TestGlmVideoAdapterArtifactAndCancelDeclarations(t *testing.T) {
 	if VideoAdapterForProvider("openai").ContentFromArtifact() {
 		t.Fatal("openai 产物定位应由 job id 构造（对比项）")
 	}
+	if !VideoArtifactDurationProbeForProvider("glm") {
+		t.Fatal("glm 不回 duration，P4 产物探测应开启")
+	}
+	if VideoArtifactDurationProbeForProvider("openai") {
+		t.Fatal("openai 无产物绝对 URL，P4 产物探测应关闭（对比项）")
+	}
 	// glm 无取消 API（契约 §7.1）→ 链上层本地收敛；openai/veo 有取消端点。
 	if glm.SupportsCancel() {
 		t.Fatal("glm 无上游取消端点，SupportsCancel 应为 false")
@@ -102,9 +108,9 @@ func TestGlmVideoAdapterCreateRequest(t *testing.T) {
 	}
 	out, err := adapter.Create(context.Background(), VideoCreateInput{
 		Params: params,
-		ProviderOptions: map[string]any{
-			"glm":    map[string]any{"fps": float64(30), "quality": "quality"},
-			"openai": map[string]any{"must_not": float64(1)},
+		Metadata: map[string]any{
+			"fps":     float64(30),
+			"quality": "quality",
 		},
 	})
 	if err != nil {
@@ -244,24 +250,14 @@ func TestGlmVideoAdapterParsePollResponse(t *testing.T) {
 	}
 }
 
-// TestGlmProviderOptionKeyIdentity 锁定 provider_options 的 glm 命中语义：
-// glm 无子供应商代码，provider_code 与注册键恒等（含大小写归一）；任务书
-// 的「alias 补 glm」在恒等映射下无需扩展 providerFamilyAlias——本测试钉住
-// 该事实，防止后续误加别名或误破坏。
-func TestGlmProviderOptionKeyIdentity(t *testing.T) {
-	if !providerOptionKeyMatches("glm", "glm") || !providerOptionKeyMatches("glm", " GLM ") {
-		t.Fatal("glm 注册键/账户 provider_code 恒等匹配失败（含归一）")
-	}
-	if providerOptionKeyMatches("glm", "openai") || providerOptionKeyMatches("glm", "gpt") {
-		t.Fatal("glm 不得命中其他 provider 的子对象")
-	}
-	merged := MergeProviderOptions(map[string]any{"model": "cogvideox-3"}, "glm", map[string]any{
-		"glm": map[string]any{"fps": float64(30)},
-	})
+// TestGlmMetadataMerge 锁定唯一扩展通道 metadata 的合并语义（设计 §5.1）：
+// 厂商键原样并入报文；规范字段由网关归一，扩展包不得改写。
+func TestGlmMetadataMerge(t *testing.T) {
+	merged := MergeMetadata(map[string]any{"model": "cogvideox-3"}, map[string]any{"fps": float64(30)})
 	if merged["fps"] != float64(30) || merged["model"] != "cogvideox-3" {
-		t.Fatalf("glm 子对象应 deep-merge: %#v", merged)
+		t.Fatalf("metadata 应 deep-merge: %#v", merged)
 	}
-	if keys := AppliedProviderOptionKeys("glm", map[string]any{"glm": map[string]any{"fps": float64(30)}}); len(keys) != 1 || keys[0] != "fps" {
-		t.Fatalf("AppliedProviderOptionKeys = %v, want [fps]", keys)
+	if keys := AppliedMetadataKeys(map[string]any{"fps": float64(30), "quality": "quality"}); len(keys) != 2 || keys[0] != "fps" || keys[1] != "quality" {
+		t.Fatalf("AppliedMetadataKeys = %v, want [fps quality]", keys)
 	}
 }

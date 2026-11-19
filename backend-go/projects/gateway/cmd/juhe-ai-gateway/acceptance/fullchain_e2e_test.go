@@ -307,13 +307,13 @@ func fullchainScriptableRequest(r *http.Request, model string) bool {
 // fullchainMediaScriptable 按「媒体契约 §3.2.1 全部端点」匹配方法 + 路径族，
 // 与 shared/platform/mockupstream 的 acceptsMediaEndpoint 同一端点清单：
 //   - POST /v1/audio/speech | /v1/audio/transcriptions | /v1/audio/translations
-//   - /v1/videos 全 5 端点：POST 创建、GET 列表、GET 单个、GET content、DELETE
+//   - /v1/video/generations 全 5 端点：POST 创建、GET 列表、GET 单个、GET content、DELETE
 //   - POST /v1beta/models/{model}:generateContent（Gemini TTS 形态，{model}
 //     为非空单段模型名）
 //   - M3 Gemini Veo 形态（契约 §5.2）：POST /v1beta/models/{model}:
 //     predictLongRunning、GET /v1beta/models/{model}/operations/{op}、POST
 //     同路径 :cancel、GET 同路径 /content（轮询/取消/产物按引擎任务表脚本
-//     推进，场景值不读——与 /v1/videos 任务面同语义）
+//     推进，场景值不读——与 /v1/video/generations 任务面同语义）
 //   - M3 GLM CogVideoX 形态（契约 §7.1）：POST /api/paas/v4/videos/
 //     generations、GET /api/paas/v4/async-result/{id}（与 /content 产物，
 //     同上不读场景值；glm 无取消端点）
@@ -371,7 +371,7 @@ func fullchainMediaScriptable(method, path string) bool {
 	}
 	// M3 GLM CogVideoX（契约 §7.1）：POST /api/paas/v4/videos/generations 创建
 	// 与 GET /api/paas/v4/async-result/{id} 轮询/产物（轮询按引擎任务表脚本
-	// 推进，场景值不读——与 /v1/videos 任务面同语义；glm 无取消端点）。
+	// 推进，场景值不读——与 /v1/video/generations 任务面同语义；glm 无取消端点）。
 	if method == http.MethodPost && path == "/api/paas/v4/videos/generations" {
 		return true
 	}
@@ -424,7 +424,7 @@ func fullchainMediaScriptable(method, path string) bool {
 	// M3 通义百炼万相（契约 §10.1）：POST /api/v1/services/aigc/video-
 	// generation/video-synthesis 创建（X-DashScope-Async 异步头由引擎按契约
 	// 校验）与 GET /api/v1/tasks/{task_id}[/content] 轮询/产物（轮询按引擎
-	// 任务表脚本推进，场景值不读——与 /v1/videos 任务面同语义；qwen §10.1
+	// 任务表脚本推进，场景值不读——与 /v1/video/generations 任务面同语义；qwen §10.1
 	// 面无取消端点）。
 	if method == http.MethodPost && path == "/api/v1/services/aigc/video-generation/video-synthesis" {
 		return true

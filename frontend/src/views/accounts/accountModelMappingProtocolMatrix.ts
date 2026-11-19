@@ -41,7 +41,7 @@ type ProtocolConversionRule = {
 
 // isMediaMappingEndpointFamily 报告端点族是否媒体映射族（M4b，镜像后端
 // model_mapping_protocol_matrix.go）：媒体族映射是同族模型名改写，上游面恒为
-// OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech），只允许 OpenAI 兼容
+// OpenAI 形态媒体端点（/v1/video/generations、/v1/audio/speech），只允许 OpenAI 兼容
 // 协议档案声明。
 export function isMediaMappingEndpointFamily(
   value: AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
@@ -247,7 +247,7 @@ export function hasAccountModelMappingUpstreamEndpointFamilyCapability(
     return modes.some((mode) => mode === 'messages_json' || mode === 'messages_sse')
   }
   if (upstreamEndpointFamily === OPENAI_VIDEO_GENERATION_FAMILY) {
-    // M4b：视频映射上游面要求账户可承接 /v1/videos 创建（候选过滤的
+    // M4b：视频映射上游面要求账户可承接 /v1/video/generations 创建（候选过滤的
     // opt-in 模式，与 dispatch 侧 requiredSupportedEndpointMode 同词表）。
     return modes.some((mode) => mode === 'video_create')
   }

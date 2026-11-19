@@ -76,10 +76,12 @@ func IsProtocolRequestPath(originalPathAndQuery string) bool {
 		return true
 	case normalized == "/audio", strings.HasPrefix(normalized, "/audio/"):
 		return true
-	// M2 视频任务面（媒体设计 §4.2）：/videos 路径族整体放行（POST 创建、
-	// GET 列表/轮询、GET content、DELETE 取消），与 /images* 白名单同风格；
-	// 方法与子路径的细分由链内各处理面裁决（创建走派发、任务面走账户亲和）。
-	case normalized == "/videos", strings.HasPrefix(normalized, "/videos/"):
+	// 唯一视频面（设计《对外协议面对齐 new-api 设计》§4.2）：
+	// /video/generations 路径族整体放行（POST 创建、GET 列表/轮询、GET
+	// content、DELETE 取消），与 /images* 白名单同风格；方法与子路径的细分
+	// 由链内各处理面裁决（创建走派发、任务面走账户亲和）。/videos 已删除，
+	// 不再进协议面（回落统一 404）。
+	case normalized == "/video/generations", strings.HasPrefix(normalized, "/video/generations/"):
 		return true
 	// M5b realtime（Realtime 设计 §2）：ephemeral token 签发端点进协议面
 	//（POST /v1/realtime/client_secrets，preauth API Key 认证后链内短路）；

@@ -4,7 +4,7 @@ package main
 // 设计 §4.2/§7/§8）：进程内 fixture（newChainFixture 先例）+ qwen 分组/
 // audio_job 账户 + mockupstream media_qwen_asr_* 场景。覆盖四条链路：
 //  1. 创建（transcription 报文改写：input_url → input.file_urls 单元素数组、
-//     language → parameters.language_hints 数组、provider_options deep-merge、
+//     language → parameters.language_hints 数组、metadata deep-merge、
 //     Bearer 认证、**无 X-DashScope-Async 头**（天然异步服务）、/api/v1 服务
 //     根 URL 归一 + params 回显）→ 轮询 PENDING→RUNNING→SUCCEEDED
 //    （output.results[].transcription_url 冻结 + usage JSON 字符串解析出
@@ -19,7 +19,7 @@ package main
 //
 // M6 追加（契约 §7.2/§9.2）：
 //  5. glm TTS 透传链路：/v1/audio/speech → 出站 POST /api/paas/v4/audio/speech
-//     （glm 通用根归一，非 openai /v1 补缀）+ Bearer + provider_options.glm
+//     （glm 通用根归一，非 openai /v1 补缀）+ Bearer + metadata（glm 声线扩展）
 //     的 ref_audio/ref_text 深合并进顶层 body（通道键不透传），mock
 //     media_glm_tts_ok 回 wav 载荷（RIFF magic bytes）；
 //  6. volcengine TTS adapter 链路：/v1/audio/speech → 出站 POST /api/v3/tts
@@ -135,7 +135,7 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	defer server.Close()
 
 	job := mediaAudioJobCreate(t, server.URL, apiKey,
-		`{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","provider_options":{"qwen":{"parameters":{"diarization_enabled":true}}}}`,
+		`{"model":"paraformer-v2","input_url":"https://oss.example.com/audio/meeting.mp3","language":"zh","metadata":{"parameters":{"diarization_enabled":true}}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaQwenASRCreatePending)})
 	jobID, _ := job["id"].(string)
 	if jobID == "" || !strings.HasPrefix(jobID, "audiojob_") {
@@ -163,8 +163,8 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 			t.Fatalf("params_applied 缺少 %s: %v", want, job["params_applied"])
 		}
 	}
-	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "parameters") {
-		t.Fatalf("provider_options_applied 缺少 parameters: %v", job["provider_options_applied"])
+	if !strings.Contains(fmt.Sprintf("%v", job["metadata_applied"]), "parameters") {
+		t.Fatalf("metadata_applied 缺少 parameters: %v", job["metadata_applied"])
 	}
 
 	// 创建出站断言：POST /api/v1/services/audio/asr/transcription + Bearer 认证
@@ -265,7 +265,7 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 		}
 	}
 
-	// 列表 kind 过滤：/v1/audio/jobs 含本任务（object=audio_job），/v1/videos
+	// 列表 kind 过滤：/v1/audio/jobs 含本任务（object=audio_job），/v1/video/generations
 	// 不混入长音频行（两族互不混行，M3f 泛化）。
 	listResponse, listPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs", apiKey, "", nil)
 	if listResponse.StatusCode != http.StatusOK {
@@ -275,12 +275,12 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	if len(listObject) != 1 || listObject[0]["id"] != jobID || listObject[0]["object"] != "audio_job" {
 		t.Fatalf("/v1/audio/jobs 列表回显错误: %s", listPayload)
 	}
-	videoListResponse, videoListPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos", apiKey, "", nil)
+	videoListResponse, videoListPayload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/video/generations", apiKey, "", nil)
 	if videoListResponse.StatusCode != http.StatusOK {
 		t.Fatalf("video list status=%d body=%s", videoListResponse.StatusCode, videoListPayload)
 	}
 	if objects := mediaAudioDecodeList(t, videoListPayload); len(objects) != 0 {
-		t.Fatalf("/v1/videos 列表不得混入长音频行: %s", videoListPayload)
+		t.Fatalf("/v1/video/generations 列表不得混入长音频行: %s", videoListPayload)
 	}
 
 	// 终态 usage：spool 链异步落盘，completed 携带 usage JSON 字符串解析出的
@@ -421,7 +421,7 @@ func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL,
 // TestChainMediaGlmSpeechUrlPassthroughRefAudio 覆盖 M6 链路 5（契约 §7.2）：
 // glm 账户 /v1/audio/speech 走 openai 透传——出站 URL 归一到官方通用根
 // /api/paas/v4/audio/speech（CogVideo 同根去重先例，非 openai /v1 补缀）、
-// provider_options.glm 的 ref_audio/ref_text 深合并进顶层（通道键不透传）、
+// metadata（glm 声线扩展） 的 ref_audio/ref_text 深合并进顶层（通道键不透传）、
 // Bearer 认证；mock media_glm_tts_ok 回 wav 载荷（RIFF magic bytes——未转换
 // 的报文通道即音频二进制）；usage 按请求字符自算（透传面无上游回报）。
 func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
@@ -436,7 +436,7 @@ func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
 	defer server.Close()
 
 	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/speech", apiKey,
-		`{"model":"cogtts","input":"你好智谱","voice":"tongtong","response_format":"wav","provider_options":{"glm":{"ref_audio":"data:audio/wav;base64,aGVsbG8=","ref_text":"样本文本"}}}`,
+		`{"model":"cogtts","input":"你好智谱","voice":"tongtong","response_format":"wav","metadata":{"ref_audio":"data:audio/wav;base64,aGVsbG8=","ref_text":"样本文本"}}`,
 		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmTTSOK)})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("glm speech status=%d body=%s", response.StatusCode, payload)
@@ -450,7 +450,7 @@ func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
 	}
 
 	// 出站断言：POST /api/paas/v4/audio/speech（官方通用根归一）+ Bearer +
-	// ref_audio/ref_text 深合并进顶层 + provider_options 通道键不透传。
+	// ref_audio/ref_text 深合并进顶层 + metadata 通道键不透传。
 	requests := mock.Requests()
 	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/api/paas/v4/audio/speech" {
 		t.Fatalf("glm speech 出站请求形态错误: %+v", requests)
@@ -467,8 +467,8 @@ func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
 			t.Fatalf("出站报文缺少 %s: %s", want, body)
 		}
 	}
-	if strings.Contains(body, `"provider_options"`) {
-		t.Fatalf("网关私有 provider_options 通道键不得透传上游: %s", body)
+	if strings.Contains(body, `"metadata"`) {
+		t.Fatalf("网关私有 metadata 通道键不得透传上游: %s", body)
 	}
 
 	// usage：透传面无上游字符回报 → 网关按请求 input 自算（4 runes）。

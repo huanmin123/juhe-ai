@@ -39,6 +39,10 @@ func (s *stubPricing) ResolvePricingModel(providerCode string, systemAccountID s
 	return s.model
 }
 
+func (s *stubPricing) HasMediaPricing(providerCode string, systemAccountID string, model string) bool {
+	return false
+}
+
 func (s *stubPricing) EstimateCost(input PricingCostInput) *float64 {
 	value := s.cost
 	return &value

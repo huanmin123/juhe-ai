@@ -408,15 +408,21 @@ func (m *Middleware) Capture(w http.ResponseWriter, r *http.Request, rawBody []b
 		})
 		req.Body = nil
 	} else if !isJSON {
-		model, _ := ExtractMultipartImageModel(rawBody, contentType, requestPath)
+		imageMetadata := ExtractMultipartImageMetadata(rawBody, contentType, requestPath)
 		responseFormat, _ := ExtractMultipartAudioResponseFormat(rawBody, contentType, requestPath)
 		input := BodyStateInput{
 			RawBody:         rawBody,
 			ContentType:     contentType,
 			JSONParseStatus: JSONParseStatusNotJSON,
 		}
-		if model != "" {
-			input.Model = &model
+		if imageMetadata.HasModel {
+			input.Model = &imageMetadata.Model
+		}
+		if imageMetadata.Size != "" {
+			input.ImageRequestSize = &imageMetadata.Size
+		}
+		if imageMetadata.N > 0 {
+			input.ImageRequestCount = &imageMetadata.N
 		}
 		if responseFormat != "" {
 			input.ResponseFormat = &responseFormat

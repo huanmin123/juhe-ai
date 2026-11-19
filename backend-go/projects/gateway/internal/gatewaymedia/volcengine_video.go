@@ -137,18 +137,19 @@ func volcengineSizeToResolutionRatio(size string) (resolution, ratio string, err
 //     裁决，契约 §2.4 规则 3）；
 //   - seed → seed：整数直传；
 //   - negative_prompt/n/audio 归一层判为 ignored，不进报文（§2.4 规则 1）；
-//   - provider_options 命中 volcengine 的子对象 deep-merge 覆盖同名键
+//   - metadata 逐键 deep-merge 覆盖同名键
 //     （契约 §2.1 L3，如 {"volcengine":{"camera_fixed":true}}）。
 func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
 		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 model")
 	}
-	if params.Prompt == "" {
-		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt")
+	if params.Prompt == "" && params.InputReference == nil {
+		return VideoCreateOutput{}, fmt.Errorf("视频生成请求缺少 prompt（无图引用时必填）")
 	}
-	content := []map[string]any{
-		{"type": "text", "text": params.Prompt},
+	var content []map[string]any
+	if params.Prompt != "" {
+		content = append(content, map[string]any{"type": "text", "text": params.Prompt})
 	}
 	if params.InputReference != nil {
 		reference := strings.TrimSpace(*params.InputReference)
@@ -178,7 +179,7 @@ func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (
 	if params.Seed != nil {
 		body["seed"] = *params.Seed
 	}
-	body = MergeProviderOptions(body, a.Provider(), in.ProviderOptions)
+	body = MergeMetadata(body, in.Metadata)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 volcengine 视频创建请求体失败: %w", err)

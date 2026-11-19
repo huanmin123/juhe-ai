@@ -103,7 +103,7 @@ func TestCatalogDisplayRequiredSectionsByMode(t *testing.T) {
 }
 
 // TestCatalogDisplaySourceDisclosureNotGenerated 钉住披露 section 停生成契约
-//（供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
+// （供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
 // 来源文本不进客户可见目录；CNY 行、USD 行、未声明币种行都不再渲染
 // currency_conversion / source_disclosure，原始来源留档仍在 catalogdata
 // JSON 的 sourcePricingNote 字段。
@@ -153,9 +153,9 @@ func TestCatalogDisplayDeepSeekOffPeakOnlyForDeepSeek(t *testing.T) {
 	price := 1.14285714
 	cacheRead := 0.28571429
 	deepseek := &ModelCatalogItem{
-		ProviderCode:       "deepseek",
-		Model:              "deepseek-chat",
-		InputUsdPer1M:      &price,
+		ProviderCode:        "deepseek",
+		Model:               "deepseek-chat",
+		InputUsdPer1M:       &price,
 		CachedInputUsdPer1M: &cacheRead,
 	}
 	sections := map[string]catalogDisplaySection{}
@@ -190,8 +190,8 @@ func TestCatalogDisplayDeepSeekOffPeakOnlyForDeepSeek(t *testing.T) {
 	}
 
 	glm := &ModelCatalogItem{
-		ProviderCode: "glm",
-		Model:        "glm-5",
+		ProviderCode:  "glm",
+		Model:         "glm-5",
 		InputUsdPer1M: &price,
 	}
 	for _, section := range buildProviderCatalogDisplay(glm) {

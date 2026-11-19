@@ -15,30 +15,44 @@ import (
 func billingTestSeconds(v float64) *float64 { return &v }
 
 // TestChainMediaJobTerminalCostUsdVideoPerCall 锁定按次行结算（契约 §2.8
-// 按次计费）：目录行有 VideoOutputCostPerCall（cogvideox-3 国内 1 元/次
-// ÷7.0）→ 一次任务 = 一次调用，成本 = PerCall × 1，不依赖秒计量（glm 轮询
-// 无时长回报，快照请求秒数也不进秒价链）。
+// 按次计费）：P3 迁移后唯一 unit=call 视频行是 doubao-seed3d（2.40 元/次
+// ÷7.0）→ 一次任务 = 一次调用，成本 = baseUsd × 1，不依赖秒计量。
 func TestChainMediaJobTerminalCostUsdVideoPerCall(t *testing.T) {
-	// cogvideox 载体已随 2025 前模型清理批移除，按次机制载体换现役
-	// MiniMax-Hailuo-2.3（国内 768P-6s 主档 2.00 元/条 ÷7.0）。
 	// B4①：计价键取水合账户 vendor（media_jobs 不再持久化 provider_code）。
-	account := &chainMediaJobAccount{ProviderCode: "minimax"}
+	account := &chainMediaJobAccount{ProviderCode: "volcengine"}
 	record := &gatewaymedia.MediaJobRecord{
 		Kind: gatewaymedia.JobKindVideo,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
-			Model:   "MiniMax-Hailuo-2.3",
-			Seconds: billingTestSeconds(6),
+			Model: "doubao-seed3d-2-0-260328",
 		},
-		ParamsApplied: []string{"model", "prompt", "seconds"},
+		ParamsApplied: []string{"model", "prompt"},
 	}
 	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
-	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0.2857142857 {
-		t.Fatalf("Hailuo-2.3 per-call cost = %v, want 0.2857142857（roundCost(2/7)，PerCall × 1）", cost)
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0.3428571429 {
+		t.Fatalf("doubao-seed3d per-call cost = %v, want 0.3428571429（roundCost(2.4/7)）", cost)
 	}
 	// failed 不虚计（按次行同样只在 completed 计费）。
 	ir.Status = gatewaymedia.JobStatusFailed
 	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0 {
 		t.Fatalf("failed per-call cost = %v, want 0", cost)
+	}
+}
+
+// TestChainMediaJobTerminalCostUsdHailuoMigratedSeconds 锁定 P3 迁移后的
+// Hailuo 2.3 按秒结算：10s × 10s 套餐折算价 0.057142857/s（不再按条）。
+func TestChainMediaJobTerminalCostUsdHailuoMigratedSeconds(t *testing.T) {
+	account := &chainMediaJobAccount{ProviderCode: "minimax"}
+	record := &gatewaymedia.MediaJobRecord{
+		Kind: gatewaymedia.JobKindVideo,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
+			Model:   "MiniMax-Hailuo-2.3",
+			Seconds: billingTestSeconds(10),
+		},
+		ParamsApplied: []string{"model", "prompt", "seconds"},
+	}
+	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0.5714285714 {
+		t.Fatalf("Hailuo-2.3 10s cost = %v, want 0.5714285714（roundCost(10×4/7/10)）", cost)
 	}
 }
 

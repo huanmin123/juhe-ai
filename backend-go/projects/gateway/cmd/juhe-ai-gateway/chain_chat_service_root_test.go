@@ -35,7 +35,7 @@ func TestChainChatCompletionsPathDetection(t *testing.T) {
 		{"/V1/Chat/Completions", true},
 		{"/v1/responses", false},
 		{"/v1/models", false},
-		{"/v1/videos", false},
+		{"/v1/video/generations", false},
 		{"/v1/audio/speech", false},
 		{"/api/v3/chat/completions", true},
 	}

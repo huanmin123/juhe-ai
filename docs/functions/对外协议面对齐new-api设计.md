@@ -1,6 +1,6 @@
 # 对外协议面对齐 new-api 设计
 
-> 状态：设计定稿（2026-11-19）；**2026-11-19 用户裁决「对外只留一套协议、不做兼容」后修订**：视频改为唯一面 `/v1/video/generations`、`/v1/videos*` 整套删除、扩展通道统一为 `metadata`。代码未实施，实施分期与验收见 §7，待办登记 `#T214`。
+> 状态：**P0 已实施（2026-11-19）**；设计定稿同日按用户裁决「对外只留一套协议、不做兼容」修订：视频唯一面 `/v1/video/generations`、`/v1/videos*` 整套删除、扩展通道统一为 `metadata`。P0 实施与验证记录见 §7.1；P1（rerank）/P2（图像/向量/音频规范化）未实施，待办登记 `#T214`。
 > 调研基线：`/Users/anminhu/temp-project/new-api` @ `0409deccfff2b0e8babc28ca552af44d526375bf`（2026-11-10，下称"new-api"）。文中每条 new-api 事实均给出文件路径，未给出官方文档出处的厂商报文一律按《媒体上游协议契约与Mock上游规格》§1 置信度规则标注，接入前必须回填。
 > 本文是 `/v1` **对外协议面**（路径、请求体、响应体、扩展通道、错误语义）的目标契约；媒体域内部实现（IR、adapter、`media_jobs`、受理边界、零存储）仍以 [音频视频模型接入与统一媒体网关设计](音频视频模型接入与统一媒体网关设计.md) 与 [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md) 为权威。两者冲突处，本文只接管"对外形态"，并在 §6.4 列出需同批修订的既有条款。
 
@@ -181,11 +181,11 @@
 | `seed` | int | L2 | 随机种子；不支持 → ignored | `Seed` |
 | `n` | int | L2 | ≥1，默认 1；`n>1` 且 adapter 不支持 → 400 | `N` |
 | `response_format` | string | L2 | **仅 `url`**（零存储不返回内联 base64）；其它值 → 400 | — |
-| `user` | string | L2 | 调用方标识，**只进审计**，不透传上游 | 新增 `User` |
+| `user` | string | L2-接受 | 调用方标识，**只进审计**，不透传上游；当前进 `params_ignored`（不静默丢弃） | 新增 `User` |
 | `audio` | bool | L2 | 原生音轨开关；不支持 → ignored | `Audio` |
 | `negative_prompt` | string | L2 | 负向提示；不支持 → ignored | `NegativePrompt` |
 | `resolution` | string | L2 | 档位（`480p`/`720p`/`1080p`…）；与 `size` 冲突 → 400；仅在无 `size` 时作为 adapter 换算输入 | 新增 `Resolution` |
-| `mode` | string | L2-透传 | new-api 宿主词表字段（`std`/`pro` 等厂商模式）；无消费者的 adapter 进 `params_ignored` | 新增 `Mode`（透传 adapter extras） |
+| `mode` | string | L2-接受 | new-api 宿主词表字段（`std`/`pro` 等厂商模式）；当前无 adapter 映射 → 恒进 `params_ignored`（接受不丢弃、不静默） | 新增 `Mode`（P2 再给 adapter 映射） |
 | `metadata` | object \| JSON 字符串 | L3（唯一扩展通道） | 厂商参数包（字符串形态按其 JSON 解析，行为与 new-api 一致）；**键名不得与上表规范字段同名**（400 `metadata_conflict`）；逐键并入厂商报文，未知键由厂商裁决 | 新增 `Metadata` |
 
 规则要点：
@@ -379,9 +379,9 @@
 
 - 所有媒体创建端点接受：视频 `POST /v1/video/generations`、语音 `POST /v1/audio/speech`、长音频 `POST /v1/audio/jobs`；图像 adapter 落地时同规则开放。multipart 的 STT 不适用（无 JSON body）。
 - 对象或 JSON 字符串两种形态（与 new-api 一致）。
-- 只允许"新增键"：与规范字段同名 → 400 `invalid_request_error`（`message` 指明冲突键），**不覆盖**。这是相对 new-api「metadata 可覆盖 body」的唯一收紧，理由是静默覆盖会让 `params_applied`/审计失真。
+- 只允许"新增键"：与规范字段同名 → 400（`code=metadata_conflict`，`message` 指明冲突键），**不覆盖**。这是相对 new-api「metadata 可覆盖 body」的唯一收紧，理由是静默覆盖会让 `params_applied`/审计失真。
 - 逐键并入厂商报文，未知键由厂商裁决（可能被厂商 400，网关不改写、不丢弃、不重试）。
-- 应用结果回显 `metadata_applied`（键名数组，不含值）；响应不再有 `provider_options_applied`。
+- 应用结果回显 `metadata_applied`（键名数组，不含值）；响应不再有 `provider_options_applied`。同步 `/v1/audio/speech` 的响应是音频字节、无 JSON 体，因此该面不回落显字段（键名以链内 `provider_options`→`metadata` 合并日志与上游报文核对）。
 - **`provider_options` 退役**：`gatewaymedia.ExtractProviderOptions` / `MergeProviderOptions` / `AppliedProviderOptionKeys` 的公开入口下线，内部参数合并改为「规范映射后按 `metadata` 逐键覆盖（不覆盖规范字段）」；`media_jobs.request_snapshot_json.providerOptionsApplied` 停止写入也不再读取（历史行的该键不展示，不影响任务执行与轮询）。
 - 风险与缓解：`metadata` 不再按 provider 命名空间隔离，混合分组下同一模型若跨厂商可能把 A 的参数发给 B。缓解：①模型目录/映射保证同模型同厂；②adapter 只消费自己认识的键，未知键交给厂商拒绝；③`metadata_applied` 回显让用户可核对。该风险是"直接抄生态"的代价，已记入 §8。
 
@@ -497,6 +497,15 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 6. **`/v1/videos*` 全族 404**（协议门移除，不留重定向）；演练场视频页走新路径仍可用（内部派发断言 `/v1/video/generations*`）。
 7. 存量视频账户无需改动即可命中候选（`video_create` 复用）；存量 `media_jobs` 行可用新路径轮询/下载。
 8. 语音 `POST /v1/audio/speech` 与长音频 `POST /v1/audio/jobs` 用 `metadata` 传厂商参数生效，`provider_options` 不再生效且不回显。
+
+**P0 实施记录（2026-11-19）**：
+
+- 代码：协议门/根形态/lane/endpoint mode/媒体映射族切换、`videoparams` 新参数与同义冲突校验、五形态任务面、统一 job 渲染（`task_id`/`url`/`format`/`metadata`）、`metadata` 通道替换 `provider_options`（视频/语音/长音频 + 适配器）、演练场派发迁移、管理面 `metadataApplied`、前端类型/抽屉与回归清单。
+- 已验证（本机 macOS）：`go build ./projects/gateway/...` 通过；`go test ./projects/gateway/internal/gatewaymedia/ ./projects/gateway/internal/gatewaypreauth/ ./projects/gateway/internal/gatewayopenai/ ./projects/gateway/internal/playground/ ./projects/gateway/internal/gatewaydispatch/ ./projects/gateway/internal/mediajobsadmin/` 全绿；`GOOS=windows go vet ./projects/gateway/...` 无输出；`GOOS=windows go test -c` 生成 `cmd/juhe-ai-gateway` 测试二进制成功。
+- **本机链级/acceptance 执行（2026-11-19，macOS + 真实 dev PG）**：`cmd/juhe-ai-gateway` 原先因 10 个依赖 Windows 进程控制 helper 的测试文件未加标签，整包测试在 macOS 无法编译（复审轮先用临时包副本验证）。当日已把这些文件显式标注 `//go:build windows`（见 `docs/develop/后端测试分层规则.md` §7.7），其余测试三平台可编译：`JUHE_AI_TEST_EXTERNAL=1 go test ./projects/gateway/cmd/juhe-ai-gateway/ -run 'Media|Video|Playground' -count=1` 就地通过（244s，0 失败）；acceptance `JUHE_AI_E2E_FULLCHAIN=1 go test ./projects/gateway/cmd/juhe-ai-gateway/acceptance/ -run 'Media|Video'` 13 项全 PASS。注意：不带 `JUHE_AI_TEST_EXTERNAL=1` 时链级用例全部 `t.Skip`，`ok` 不构成验证证据。同日另修两处测试/停机缺陷：`chain_compose.go` 停机时先排空 usage 收尾队列（≤2s）再关 recorder（关闭后到达的任务会走直投，把写入推到停机之后），测试替身 spool 停机后不再落盘——此前 `TestChainMediaVolcengineSpeechMissingCredentials` 在整包运行时约 1/3 概率以 `TempDir RemoveAll cleanup: directory not empty` 失败，修后 60 次隔离 + 5 次整包连续通过。
+- 复审轮修掉 3 处测试侧缺陷（均为本轮批量改写引入，非运行时代码）：`chain_media_video_xai_test.go` 把**上游**轮询断言误改 `/v1/video/generations`；`chain_media_video_test.go` 的并发终态 barrier 误判**上游** `r.URL.Path`（静默失去并发覆盖）；acceptance `listMediaJobRows` 把管理面行的 `id` 误改为 `task_id`（6 个 acceptance 用例因此恒取不到行）。另新增 3 条协议级用例：`/v1/videos*` 全族 404 且零上游出站、`metadata` 冲突 400 `metadata_conflict` + `provider_options` 退役不回显、同义参数（duration/image/width+height）落上游报文。
+- 前端与帮助文档：`frontend` 的 `vue-tsc --noEmit` 除既有 `src/views/stats/statsChartOptions.ts:176`（与本批无关，HEAD 同错）外无新增错误；`test:help-content`、`test:account-import-protocol` 两条回归脚本通过；用户手册 `frontend/public/help/docs/user/{07-video,08-tts,16-protocol-overview,19-provider-params,20-provider-differences}.md` 与 `manifest.json` 已按唯一面改写并重渲染。
+- 已知既有失败（与本批无关）：`internal/auditlog` 的 `TestW10BNormalizeRetentionAndHelperArms` 在未改动的 HEAD 代码上失败（保留期钳制断言）。
 
 ### 7.2 P1：`/v1/rerank`
 

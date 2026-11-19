@@ -293,11 +293,12 @@ func seedPostgresGPTVendorCodexAutoReviewRemoval(ctx context.Context, client pos
 	return exec(pgSeedGPTVendorCodexAutoReviewRemovalUpdate, seedStringify(kept), now, gptVendorCode)
 }
 
-// pgSeedModelsColumns lists the models bulk upsert target columns: 48 列，与
-// buildPostgresModelSeedUpsert 每行渲染的 40 参数 + 8 字面量一一对应；
+// pgSeedModelsColumns lists the models bulk upsert target columns: 49 列，与
+// buildPostgresModelSeedUpsert 每行渲染的 41 参数 + 8 字面量一一对应；
 // scope='builtin'、system_account_id=NULL、pricing_notes/capability_notes/
 // notes/created_by/updated_by 五个备注/操作者 NULL 列、currency='USD' 是语句
-// 内字面量（设计 §3 列集）。
+// 内字面量（设计 §3 列集）。media_pricing_json 走 COALESCE 语义，见
+// pgSeedModelsUpsertSuffix。
 const pgSeedModelsColumns = `
         INSERT INTO "juhe_business"."models" (
           id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
@@ -312,7 +313,7 @@ const pgSeedModelsColumns = `
           long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
           long_context_input_cost_multiplier, long_context_output_cost_multiplier,
           image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-          output_usd_per_image, currency
+          output_usd_per_image, currency, media_pricing_json
         ) VALUES
           `
 
@@ -367,6 +368,23 @@ const pgSeedModelsUpsertSuffix = `
           audio_input_usd_per_1m = CASE WHEN "juhe_business"."models".source = 'manual-override' THEN "juhe_business"."models".audio_input_usd_per_1m ELSE excluded.audio_input_usd_per_1m END,
           audio_output_usd_per_1m = CASE WHEN "juhe_business"."models".source = 'manual-override' THEN "juhe_business"."models".audio_output_usd_per_1m ELSE excluded.audio_output_usd_per_1m END,
           output_usd_per_image = CASE WHEN "juhe_business"."models".source = 'manual-override' THEN "juhe_business"."models".output_usd_per_image ELSE excluded.output_usd_per_image END,
+          -- 媒体统一价格是运行时权威：已有非空值（管理员保存/手工覆盖）不覆盖，
+          -- NULL/空串才由目录 seed 补齐（设计 §5.3）。manual-override 行若仍有
+          -- legacy 媒体价格且 mediaPricing 为空，保持 NULL 继续 legacy——否则
+          -- seed 会用目录价静默替换人工价（设计 §9.2）；这类行由一次性迁移
+          -- 脚本先按现有 legacy 值换算，或登记人工补价。
+          media_pricing_json = CASE
+            WHEN "juhe_business"."models".source = 'manual-override'
+              AND ("juhe_business"."models".media_pricing_json IS NULL
+                   OR btrim("juhe_business"."models".media_pricing_json) = '')
+              AND ("juhe_business"."models".image_input_usd_per_1m IS NOT NULL
+                   OR "juhe_business"."models".image_output_usd_per_1m IS NOT NULL
+                   OR "juhe_business"."models".audio_input_usd_per_1m IS NOT NULL
+                   OR "juhe_business"."models".audio_output_usd_per_1m IS NOT NULL
+                   OR "juhe_business"."models".output_usd_per_image IS NOT NULL)
+            THEN "juhe_business"."models".media_pricing_json
+            ELSE COALESCE(NULLIF("juhe_business"."models".media_pricing_json, ''), excluded.media_pricing_json)
+          END,
           supports_prompt_caching = excluded.supports_prompt_caching,
           source = CASE
             WHEN "juhe_business"."models".source IN ('manual-override', 'manual-visibility-override')
@@ -553,7 +571,7 @@ func seedPostgresModelCatalog(ctx context.Context, client postgresSeedClient, ex
 // capability_notes/notes/created_by/updated_by 五列为 NULL、currency='USD'，
 // 全部是语句内字面量。
 func buildPostgresModelSeedUpsert(rows []modelSeedTargetRow, now string) (string, []any) {
-	args := make([]any, 0, len(rows)*40)
+	args := make([]any, 0, len(rows)*41)
 	rowTemplates := make([]string, 0, len(rows))
 	for _, model := range rows {
 		first := len(args) + 1
@@ -598,8 +616,9 @@ func buildPostgresModelSeedUpsert(rows []modelSeedTargetRow, now string) (string
 			seedNullableFloat64(model.AudioInputUsdPer1M),
 			seedNullableFloat64(model.AudioOutputUsdPer1M),
 			seedNullableFloat64(model.OutputUsdPerImage),
+			seedNullableString(model.MediaPricingJSON),
 		)
-		// 列序（与 pgSeedModelsColumns 的 48 列一一对齐）：
+		// 列序（与 pgSeedModelsColumns 的 49 列一一对齐）：
 		//   1-4  = $first..$first+3（id/vendor_code/public_model/upstream_model）
 		//   5-6  = 'builtin' / NULL 字面量（scope/system_account_id）
 		//   7-24 = $first+4..$first+21（status..source）
@@ -607,6 +626,7 @@ func buildPostgresModelSeedUpsert(rows []modelSeedTargetRow, now string) (string
 		//          created_by/updated_by）
 		//   30-47 = $first+22..$first+39（created_at..output_usd_per_image）
 		//   48   = 'USD' 字面量（currency）
+		//   49   = $first+40（media_pricing_json）
 		row := "($" + strconv.Itoa(first) + ", $" + strconv.Itoa(first+1) + ", $" + strconv.Itoa(first+2) +
 			", $" + strconv.Itoa(first+3) + ", 'builtin', NULL, $" + strconv.Itoa(first+4)
 		for index := 5; index < 22; index++ {
@@ -616,7 +636,7 @@ func buildPostgresModelSeedUpsert(rows []modelSeedTargetRow, now string) (string
 		for index := 24; index < 40; index++ {
 			row += ", $" + strconv.Itoa(first+index)
 		}
-		row += ", 'USD')"
+		row += ", 'USD', $" + strconv.Itoa(first+40) + ")"
 		rowTemplates = append(rowTemplates, row)
 	}
 	return pgSeedModelsColumns + strings.Join(rowTemplates, ",\n          ") + pgSeedModelsUpsertSuffix, args

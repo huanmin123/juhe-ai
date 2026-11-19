@@ -113,6 +113,11 @@ func builtInCurrentValue(current *ModelCatalogItem, field string) any {
 		return nullableFloat64Ptr(current.AudioOutputUsdPer1M)
 	case "outputUsdPerImage":
 		return nullableFloat64Ptr(current.OutputUsdPerImage)
+	case "mediaPricing":
+		if !current.HasMediaPricing {
+			return nil
+		}
+		return string(current.MediaPricing)
 	}
 	return nil
 }
@@ -271,6 +276,8 @@ func (s *Store) builtinPatchAssignments(current *ModelCatalogItem, patch []built
 			add("audio_output_usd_per_1m", nullablePriceJSON(field.Value))
 		case "outputUsdPerImage":
 			add("output_usd_per_image", nullablePriceJSON(field.Value))
+		case "mediaPricing":
+			add("media_pricing_json", nullableText(field.Value))
 		}
 	}
 	return assignments, params
@@ -280,7 +287,7 @@ func (s *Store) builtinPatchAssignments(current *ModelCatalogItem, patch []built
 // 投影为 endpoint modes：协议非空走协议映射（未知协议容忍跳过——管理面内置
 // 补丁的历史值域含 completions 等无 mode 映射的遗留声明，与 maintenance 种子
 // 的空集映射同口径），协议为空回退目录 mode 缺省集
-//（catalogModeFilterExpansion）。
+// （catalogModeFilterExpansion）。
 func forwardBuiltinEndpointModes(mode *string, protocols []string) []string {
 	seen := map[string]bool{}
 	modes := []string{}

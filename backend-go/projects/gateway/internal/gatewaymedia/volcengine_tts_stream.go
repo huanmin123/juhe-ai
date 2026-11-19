@@ -90,7 +90,7 @@ type volcengineTTSStreamRequest struct {
 // 裁决（沿同步面 §2.4 规则 2 先例）：response_format 词表外 → 400；speed
 // 超流式面官方可表达区间 [0.5, 2.0] → 400（speech_rate = (speed-1)×100 换算
 // 后官方可表达范围仅 [-50, 100]；同步面 [0.2, 3.0] 是倍率直传的另一 API
-// 区间，不适用于流式面）。provider_options 命中 volcengine 的子对象
+// 区间，不适用于流式面）。metadata 键
 // deep-merge 到 req_params 层（厂商个例参数如 enable_emotion，契约 §2.1 L3）。
 func buildVolcengineTTSStreamRequest(ir SpeechRequest) (string, []byte, error) {
 	format := strings.TrimSpace(ir.ResponseFormat)
