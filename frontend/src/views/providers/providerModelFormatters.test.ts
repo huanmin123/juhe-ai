@@ -350,7 +350,7 @@ describe('卡面投影（模型广场卡片视觉层级）', () => {
     expect(modelCapabilityTags(providerModel({ mode: 'audio' }))).toEqual(['音频'])
   })
 
-  it('modelCardPriceMeta：文本无高峰档为日常价/全天同价，有高峰档为高峰价/按高峰价结算', () => {
+  it('modelCardPriceMeta：文本无高峰档为日常价/全天同价，有高峰档为高峰价/峰谷价', () => {
     const daily = providerModel({ inputUsdPer1M: 0.15, outputUsdPer1M: 0.6, cachedInputUsdPer1M: 0.003 })
     expect(modelCardPriceMeta(daily, modelPriceSlots(daily))).toEqual({
       caption: '日常价 · USD / 1M tokens',
@@ -368,7 +368,7 @@ describe('卡面投影（模型广场卡片视觉层级）', () => {
     })
     expect(modelCardPriceMeta(deepseek, modelPriceSlots(deepseek))).toEqual({
       caption: '高峰价 · USD / 1M tokens',
-      pill: '按高峰价结算'
+      pill: '峰谷价'
     })
   })
 

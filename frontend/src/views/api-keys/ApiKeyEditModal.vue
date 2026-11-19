@@ -68,14 +68,13 @@
       <a-form-item label="说明">
         <a-textarea v-model:value="form.description" :rows="2" placeholder="可选" />
       </a-form-item>
-      <div class="modal-section-title">并发限制</div>
       <a-form-item
         label="单 IP 并发限制"
-        extra="0 表示不限制；设置后同一 IP 超过并发立即返回 429"
+        tooltip="-1 表示不限制；设置后同一 IP 超过并发立即返回 429"
       >
         <a-input-number
           v-model:value="form.clientIpConcurrencyLimit"
-          :min="0"
+          :min="-1"
           :max="1000000"
           :precision="0"
           class="full-width-control"
@@ -228,7 +227,7 @@ const form = reactive({
   routeStrategy: undefined as RouteStrategySelection | undefined,
   schedulingPreferenceId: SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID as string | undefined,
   securityPolicyId: BUILTIN_SECURITY_POLICY_ID as string,
-  clientIpConcurrencyLimit: 0,
+  clientIpConcurrencyLimit: -1,
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
@@ -329,7 +328,7 @@ function openCreate() {
     routeStrategy: defaultStrategy,
     schedulingPreferenceId: SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
     securityPolicyId: BUILTIN_SECURITY_POLICY_ID,
-    clientIpConcurrencyLimit: 0,
+    clientIpConcurrencyLimit: -1,
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -370,7 +369,7 @@ function openEdit(apiKey: ApiKeySummary) {
     routeStrategy: apiKeyRouteStrategySelection(apiKey),
     schedulingPreferenceId: apiKey.schedulingPreferenceId ?? '',
     securityPolicyId: apiKey.securityPolicyId?.trim() || BUILTIN_SECURITY_POLICY_ID,
-    clientIpConcurrencyLimit: apiKey.clientIpConcurrencyLimit ?? 0,
+    clientIpConcurrencyLimit: apiKey.clientIpConcurrencyLimit ?? -1,
     status: apiKey.status,
     expiresAt,
     description: apiKey.description ?? '',
@@ -417,7 +416,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     return
   }
   if (!isValidApiKeyClientIpConcurrencyLimit(form.clientIpConcurrencyLimit)) {
-    message.warning('单 IP 并发限制必须是 0 到 1000000 之间的整数')
+    message.warning('单 IP 并发限制必须是 -1（不限制）或 1 到 1000000 之间的整数')
     return
   }
   try {
@@ -482,7 +481,7 @@ function currentApiKeyEditableSnapshot(
     securityPolicyId: securityPolicySnapshotId(),
     clientIpConcurrencyLimit: isValidApiKeyClientIpConcurrencyLimit(form.clientIpConcurrencyLimit)
       ? form.clientIpConcurrencyLimit
-      : 0,
+      : -1,
     status: form.status,
     expiresAt: formatServerDateTimeInput(form.expiresAt),
     description: form.description,

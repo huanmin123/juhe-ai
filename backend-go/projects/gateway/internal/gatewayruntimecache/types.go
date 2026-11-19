@@ -205,7 +205,7 @@ type GatewayAPIKeyRow struct {
 	ExpiresAt                *string `json:"expires_at"`
 	QuotaLimitsJSON          *string `json:"quota_limits_json"`
 	// ClientIPConcurrencyLimit 是 api_keys.client_ip_concurrency_limit
-	// （《API Key 单 IP 并发限制设计》§2.1）：0 = 关闭；1..1000000 = 生效。
+	// （《API Key 单 IP 并发限制设计》§2.1）：-1 = 不限制；1..1000000 = 生效。
 	// 计数作用域仍为 (system_account_id, group_id, api_key_id, client_ip)。
 	ClientIPConcurrencyLimit int `json:"client_ip_concurrency_limit"`
 	// 调度偏好独立实体 P1 快照三字段（SP-C1/SP-C2 冻结接口）：三者全空 =

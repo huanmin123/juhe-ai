@@ -11,13 +11,15 @@
 //     任一 needs_review 行即整体阻断（ErrNeedsReview，CLI 退出码 3；upgrade
 //     步骤由 Verify 复查处以 exit 3），零写入；不更新 updated_at；
 //   - Satisfied / VerifyPostflight：完成态谓词（分组策略无
-//     clientIpConcurrencyLimit、单键/ NULL 形状合法、所有 Key 值在 0..1000000、
-//     超级分组自身行与首成员一致），供 CLI postflight 与 upgrade 步骤同源使用。
+//     clientIpConcurrencyLimit、单键/ NULL 形状合法、所有 Key 值为 -1 或
+//     1..1000000、超级分组自身行与首成员一致），供 CLI postflight 与 upgrade
+//     步骤同源使用。
 //
 // preexisting 语义（2026-11-19 裁决补充）：只对当前
-// client_ip_concurrency_limit = 0 的 Key 写入推导值；当前值 >0 的 Key 视为
-// 人工裁决/存量值，等于任一观测正值即保留且不阻断，否则按
-// existing_key_limit_conflict 处置（block 阻断 / min 保留并记冲突）。
+// client_ip_concurrency_limit 为 -1（或未发布版本的临时值 0）的 Key 写入
+// 推导值；当前值 >0 的 Key 视为人工裁决/存量值，等于任一观测正值即保留且不
+// 阻断，否则按 existing_key_limit_conflict 处置（block 阻断 / min 保留并记
+// 冲突）。0 归一为 -1，非法负数或越界值进入 needs_review。
 package keyipmigration
 
 import (
@@ -118,7 +120,7 @@ type Plan struct {
 	ConflictPolicy string `json:"conflictPolicy"`
 	KeysTotal      int    `json:"keysTotal"`
 	// KeyColumnPresent 报告 api_keys.client_ip_concurrency_limit 是否已存在。
-	// dry-run 可在 upgrade 加法相之前执行（缺列按 current=0 盘点）；apply 缺列
+	// dry-run 可在 upgrade 加法相之前执行（缺列按 current=-1 盘点）；apply 缺列
 	// 直接失败，要求先执行 upgrade/ensure-schema。
 	KeyColumnPresent      bool `json:"keyColumnPresent"`
 	KeysUpdated           int  `json:"keysUpdated"`
@@ -808,7 +810,7 @@ func scanBindings(ctx context.Context, q querier) ([]scannedBinding, error) {
 }
 
 func scanKeys(ctx context.Context, q querier, hasColumn bool) ([]scannedKey, error) {
-	currentExpr := "0"
+	currentExpr := "-1"
 	if hasColumn {
 		currentExpr = "client_ip_concurrency_limit"
 	}
@@ -848,7 +850,7 @@ type VerifyReport struct {
 }
 
 // Ready 报告完成态：分组策略无 clientIpConcurrencyLimit 且为单键/ NULL，
-// 所有 Key 值非空且在 0..1000000，超级分组自身行与首成员一致。
+// 所有 Key 值为 -1 或 1..1000000，超级分组自身行与首成员一致。
 func (r VerifyReport) Ready() bool {
 	return r.KeyColumnPresent &&
 		r.LegacyIPKeyGroups == 0 && r.InvalidPolicyGroups == 0 &&
@@ -883,7 +885,7 @@ func Satisfied(ctx context.Context, db *sql.DB) (bool, error) {
 	// 分组自身行已与首成员一致、但成员之间阈值不一致且没有旧 IP 值时，
 	// postflight 的列/策略/值检查会通过，却违反设计 §4.2-7「不静默选边」。
 	// 同时要求盘点无待写入行（Key 待更新 / 分组待单键化），否则「形状看似
-	// 完成、数据仍在 0」的库会被 upgrade 跳过。
+	// 完成、数据仍在 -1」的库会被 upgrade 跳过。
 	plan, err := BuildPlan(ctx, db, Options{ConflictPolicy: ConflictPolicyBlock})
 	if err != nil {
 		return false, err
@@ -922,13 +924,14 @@ func VerifyPostflight(ctx context.Context, db *sql.DB) (VerifyReport, error) {
 		if err := db.QueryRowContext(ctx, `
 			SELECT count(*) FROM juhe_business.api_keys
 			 WHERE client_ip_concurrency_limit IS NULL
-			    OR client_ip_concurrency_limit < 0
+			    OR client_ip_concurrency_limit < -1
+			    OR client_ip_concurrency_limit = 0
 			    OR client_ip_concurrency_limit > $1`, IPLimitMax).Scan(&report.InvalidKeyLimitValues); err != nil {
 			return report, fmt.Errorf("统计 API Key 单 IP 并发限制非法值失败: %w", err)
 		}
 		if report.InvalidKeyLimitValues > 0 {
 			report.Examples = append(report.Examples,
-				fmt.Sprintf("%d 个 API Key 的 client_ip_concurrency_limit 为空或越界（合法 0..%d）",
+				fmt.Sprintf("%d 个 API Key 的 client_ip_concurrency_limit 为空、为 0 或越界（合法 -1 或 1..%d）",
 					report.InvalidKeyLimitValues, IPLimitMax))
 		}
 	}

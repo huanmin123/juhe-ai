@@ -19,14 +19,14 @@ export function apiKeySecurityPolicyText(apiKey: ApiKeySummary): string {
   return apiKey.securityPolicyName?.trim() || BUILTIN_SECURITY_POLICY_NAME
 }
 
-/** 单 IP 并发限制展示：0/缺失显示「不限制」，正数显示上限值。 */
+/** 单 IP 并发限制展示：-1/缺失显示「不限制」，正数显示上限值。 */
 export function apiKeyClientIpConcurrencyText(apiKey: Pick<ApiKeySummary, 'clientIpConcurrencyLimit'>): string {
-  const limit = apiKey.clientIpConcurrencyLimit ?? 0
+  const limit = apiKey.clientIpConcurrencyLimit ?? -1
   return limit > 0 ? String(limit) : '不限制'
 }
 
 export function apiKeyClientIpConcurrencyEnabled(apiKey: Pick<ApiKeySummary, 'clientIpConcurrencyLimit'>): boolean {
-  return (apiKey.clientIpConcurrencyLimit ?? 0) > 0
+  return (apiKey.clientIpConcurrencyLimit ?? -1) > 0
 }
 
 export function apiKeyRouteStrategyModeText(mode?: RouteStrategyMode): string {

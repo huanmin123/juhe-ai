@@ -74,12 +74,12 @@ try {
   assert.ok(existsSync(sidecarEnv.JUHE_AI_LOG_DIR), 'dev log root must exist before gateway cold start')
   // owner 租约启动参数默认注入：旧进程被强杀（taskkill /f、关终端窗口、
   // Windows 8s 宽限兜底）后租约未释放；gateway F3/F4 注入有界等待让立即重
-  // 启自动接管而不是 fail-fast，jobs F1 靠 supervisor 重试。dev TTL 统一
-  // 收紧到 10s（F3/F4 与 F1 生产默认 30s）让接管等待以秒计。
+  // 启自动接管而不是 fail-fast。dev TTL 统一收紧到 10s（生产默认 30s）让接
+  // 管等待以秒计；F1 runtime-log 租约已随运行日志索引器收口退役，不再注入。
   assert.equal(sidecarEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
-  assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
+  assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, undefined, 'the retired runtime log owner lease env must not be forwarded')
   // 2026-10-14 监控改造：gometrics / F2 表监控两家族 env 整体退役，残留值
   // 必须按前缀 drop（不得转发，也不再注入租约默认值）。
   assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, undefined, 'the retired Go runtime metrics env must not be forwarded')

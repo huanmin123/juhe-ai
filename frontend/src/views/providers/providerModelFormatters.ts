@@ -810,7 +810,8 @@ export interface ModelCardPriceMeta {
 
 /** 卡面价格标题与右侧口径胶囊（模型目录卡片化与详情抽屉设计 §5.2）：
  * - 文本模型无高峰档：日常价 + 全天同价（全天按该价结算）；
- * - 文本模型有高峰档（DeepSeek）：槽位是计费价（高峰价），附「按高峰价结算」说明；
+ * - 文本模型有高峰档（DeepSeek）：左侧标题标注当前展示档位「高峰价」，
+ *   右侧胶囊只表达计价结构「峰谷价」，不重复档位或结算口径；
  * - 媒体模型：目录价 + 单位；多槽位单位不一致时单位只留各槽位自身语义，标题只留 USD。 */
 export function modelCardPriceMeta(item: ProviderModelPricing, slots: ModelPriceSlot[]): ModelCardPriceMeta {
   if (!slots.length) return { caption: '', pill: '' }
@@ -821,7 +822,7 @@ export function modelCardPriceMeta(item: ProviderModelPricing, slots: ModelPrice
   const unit = units.size === 1 ? formatCardPriceUnit(slots[0]?.unit ?? '') : ''
   return {
     caption: `${label} · USD${unit}`,
-    pill: isText ? (hasOffpeak ? '按高峰价结算' : '全天同价') : ''
+    pill: isText ? (hasOffpeak ? '峰谷价' : '全天同价') : ''
   }
 }
 

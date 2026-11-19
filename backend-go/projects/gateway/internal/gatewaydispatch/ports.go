@@ -714,7 +714,7 @@ type ClientIPConcurrencyAcquirer interface {
 }
 
 // ClientIPConcurrencyInput mirrors the acquire input; Limit comes from the
-// API Key runtime row (api_keys.client_ip_concurrency_limit, 0 disables).
+// API Key runtime row (api_keys.client_ip_concurrency_limit, -1 disables).
 type ClientIPConcurrencyInput struct {
 	SystemAccountID string
 	GroupID         string

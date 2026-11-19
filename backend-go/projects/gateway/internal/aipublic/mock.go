@@ -332,11 +332,11 @@ func mockStrategySummary(id, name, mode, status string, bindings []PublicBinding
 func mockClientIPConcurrencyLimit(body map[string]any) int {
 	value, exists := body["clientIpConcurrencyLimit"]
 	if !exists || value == nil {
-		return 0
+		return apikeys.DisabledClientIPConcurrencyLimit
 	}
 	number, isNumber := value.(float64)
 	if !isNumber {
-		return 0
+		return apikeys.DisabledClientIPConcurrencyLimit
 	}
 	return int(number)
 }

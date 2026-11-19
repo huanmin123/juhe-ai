@@ -1123,9 +1123,11 @@ type CreateInput struct {
 	AvailabilitySchedule   any
 	SchedulingPreferenceID *string
 	SecurityPolicyID       *string
-	// ClientIPConcurrencyLimit 是 Key 级单 IP 并发上限：缺省/null 由 HTTP 层
-	// 归一为 0（关闭）；store 层仍校验 0..1000000 防止非 HTTP 调用越界。
-	ClientIPConcurrencyLimit int
+	// ClientIPConcurrencyLimit 是 Key 级单 IP 并发上限：-1 不限制，1..1000000
+	// 生效。HasClientIPConcurrencyLimit 区分 Go 零值与调用方未提供：未提供时
+	// 落库 -1；显式 0 非法（HTTP 层已按字段校验拒绝）。
+	ClientIPConcurrencyLimit    int
+	HasClientIPConcurrencyLimit bool
 }
 
 // Create mirrors createApiKeyRecordAsync: sealed random key, default-strategy
@@ -1156,11 +1158,16 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err != nil {
 		return nil, nil, err
 	}
-	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺省 0，0..1000000。
-	// HTTP 层已做类型/整数校验，store 层保留范围校验以覆盖非 HTTP 调用方。
-	clientIPLimit, err := normalizeClientIPConcurrencyLimit(input.ClientIPConcurrencyLimit)
-	if err != nil {
-		return nil, nil, err
+	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：未提供落 -1（不限制）；
+	// 提供时必须是 -1 或 1..1000000。HTTP 层已做类型/整数校验，store 层保留
+	// 范围校验以覆盖非 HTTP 调用方。
+	clientIPLimit := DisabledClientIPConcurrencyLimit
+	if input.HasClientIPConcurrencyLimit {
+		normalized, err := normalizeClientIPConcurrencyLimit(input.ClientIPConcurrencyLimit)
+		if err != nil {
+			return nil, nil, err
+		}
+		clientIPLimit = normalized
 	}
 	// status 枚举由 HTTP 层先行校验（createBody / bodyOptionalEnumField 均
 	// 限定 active|disabled），store 层不再重复。

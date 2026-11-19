@@ -265,7 +265,7 @@ type DispatchPreparationInput struct {
 	SystemAccountID  string
 	APIKeyID         string
 	// APIKeyClientIPConcurrencyLimit 是 API Key 级单 IP 并发上限
-	// （api_keys.client_ip_concurrency_limit，0 关闭；内部请求视为 0）。
+	// （api_keys.client_ip_concurrency_limit，-1 不限制；内部请求视为 -1）。
 	APIKeyClientIPConcurrencyLimit  int
 	GroupID                         string
 	RouteStrategyID                 string

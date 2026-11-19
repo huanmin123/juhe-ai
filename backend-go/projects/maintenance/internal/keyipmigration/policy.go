@@ -21,6 +21,10 @@ const (
 const (
 	SoftLimitMax = 1_000_000
 	IPLimitMax   = 1_000_000
+	// DisabledKeyIPLimit 是 Key 级单 IP 上限的「不限制」值，与分组
+	// defaultSoftConcurrency 的 -1 语义一致。0 是 revision 25 未发布版本用过
+	// 的临时关闭值，迁移按未设置归一为 -1。
+	DisabledKeyIPLimit = -1
 )
 
 // needs_review 原因词表（manifest/报告固定口径；apply 阶段任一行命中即阻断，
@@ -42,6 +46,7 @@ const (
 	ReviewSourceGroupInvalid            = "source_group_invalid"                // 可达分组策略畸形/需要复核
 	ReviewMultipleIPLimits              = "multiple_ip_limits"                  // 多个不同旧 IP 值且当前 Key 无人工裁决值
 	ReviewExistingKeyLimitConflict      = "existing_key_limit_conflict"         // 当前 Key 值不等于任何观测值
+	ReviewInvalidKeyLimitValue          = "invalid_key_limit_value"             // 当前 Key 值不是 -1 或 1..1000000
 )
 
 // 计划行动作词表。
@@ -215,6 +220,10 @@ type keyDecision struct {
 // DecideKeyTarget 按设计 §4.2 与 preexisting 语义计算单个 Key 的目标值。
 // observed 是可达分组观测到的旧 IP 正值（调用方去重前可含重复）。
 //
+// 当前值取 -1 表示不限制（新契约）；0 是 revision 25 未发布版本的临时关闭
+// 值，按未设置归一为 -1；其余负数或超过 1000000 视为非法存量，进入
+// needs_review 由人工裁决。
+//
 // preexisting 语义（2026-11-19 裁决补充）：当前 Key 值 >0 时——
 //   - 等于任一观测正值：视为人工裁决已生效，保留且不算冲突（多值冲突也由此
 //     收敛，不再阻断）；
@@ -223,12 +232,22 @@ type keyDecision struct {
 //   - 观测集为空：保留当前值且不记冲突——迁移完成后的幂等重跑、或旧分组本来
 //     就没有 IP 值，都不能反过来把人工设置值判成冲突。
 //
-// 观测为空且 current=0 → unchanged；观测为空且 current>0 → preexisting。
+// 观测为空且 current=-1 → unchanged；current=0 → 归一为 -1（update）。
 func DecideKeyTarget(current int, observed []int, policy ConflictPolicy) keyDecision {
+	if current < DisabledKeyIPLimit || current > IPLimitMax {
+		return keyDecision{Target: current, Action: ActionNeedsReview, Reason: ReviewInvalidKeyLimitValue}
+	}
+	normalizeZero := current == 0
+	if normalizeZero {
+		current = DisabledKeyIPLimit
+	}
 	values := distinctSorted(observed)
 	if len(values) == 0 {
-		if current == 0 {
-			return keyDecision{Target: 0, Action: ActionUnchanged}
+		if current == DisabledKeyIPLimit {
+			if normalizeZero {
+				return keyDecision{Target: DisabledKeyIPLimit, Action: ActionUpdate}
+			}
+			return keyDecision{Target: DisabledKeyIPLimit, Action: ActionUnchanged}
 		}
 		return keyDecision{Target: current, Action: ActionPreexisting}
 	}
@@ -238,7 +257,7 @@ func DecideKeyTarget(current int, observed []int, policy ConflictPolicy) keyDeci
 	}
 	if len(values) == 1 {
 		chosen := values[0]
-		if current == 0 {
+		if current == DisabledKeyIPLimit {
 			return keyDecision{Target: chosen, Action: ActionUpdate}
 		}
 		// current != chosen（current > 0 且不在观测集合）。

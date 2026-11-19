@@ -148,8 +148,10 @@ type apiKeyAddBody struct {
 	HasQuotaLimits         bool
 	AvailabilitySchedule   any
 	HasSchedule            bool
-	// 单 IP 并发上限：缺省/null → 0（关闭）；提供时必须为 0..1000000 整数。
-	ClientIPConcurrencyLimit int
+	// 单 IP 并发上限：缺省/null → -1（不限制）；提供时必须为 -1 或
+	// 1..1000000 的整数。0 不是合法关闭值。
+	ClientIPConcurrencyLimit    int
+	HasClientIPConcurrencyLimit bool
 }
 
 func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
@@ -219,14 +221,19 @@ func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
 		parsed.AvailabilitySchedule, parsed.HasSchedule = body["availabilitySchedule"], true
 	}
 	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺省或显式 null →
-	// 0；提供时必须是 0..1000000 的 JSON 整数，越界/小数/类型错误 400。
+	// -1（不限制）；提供时必须是 -1 或 1..1000000 的 JSON 整数，0/越界/小数/
+	// 类型错误 400。
 	if bodyHas(body, "clientIpConcurrencyLimit") {
 		if value := body["clientIpConcurrencyLimit"]; value != nil {
-			limit, _, issue := bodyOptionalInt(value, true, 0, apikeys.MaxClientIPConcurrencyLimit)
+			limit, _, issue := bodyOptionalInt(value, true, apikeys.DisabledClientIPConcurrencyLimit, apikeys.MaxClientIPConcurrencyLimit)
 			if issue != "" {
 				return nil, issue
 			}
+			if !apikeys.IsValidClientIPConcurrencyLimit(limit) {
+				return nil, apikeys.ClientIPConcurrencyLimitRangeMessage
+			}
 			parsed.ClientIPConcurrencyLimit = limit
+			parsed.HasClientIPConcurrencyLimit = true
 		}
 	}
 	return parsed, ""
@@ -259,9 +266,10 @@ func (d *Deps) addApiKey(w http.ResponseWriter, r *http.Request) {
 		RouteStrategyID: &parsed.RouteStrategyID,
 		// 目标 Key owner（target.SystemAccountID）名下的偏好/策略校验由 store
 		// 层绑定解析收敛（同 owner 自定义行或全局内置行）。
-		SchedulingPreferenceID:   parsed.SchedulingPreferenceID,
-		SecurityPolicyID:         parsed.SecurityPolicyID,
-		ClientIPConcurrencyLimit: parsed.ClientIPConcurrencyLimit,
+		SchedulingPreferenceID:      parsed.SchedulingPreferenceID,
+		SecurityPolicyID:            parsed.SecurityPolicyID,
+		ClientIPConcurrencyLimit:    parsed.ClientIPConcurrencyLimit,
+		HasClientIPConcurrencyLimit: parsed.HasClientIPConcurrencyLimit,
 	}
 	if parsed.HasStatus {
 		status := parsed.Status
@@ -320,7 +328,8 @@ type apiKeyUpdateBody struct {
 	HasQuotaLimits          bool
 	AvailabilitySchedule    any
 	HasSchedule             bool
-	// 单 IP 并发上限：缺失保持原值；提供时必须为 0..1000000 整数（0 关闭）。
+	// 单 IP 并发上限：缺失保持原值；提供时必须为 -1（不限制）或 1..1000000
+	// 整数。0 不是合法关闭值。
 	ClientIPConcurrencyLimit    int
 	HasClientIPConcurrencyLimit bool
 }
@@ -415,11 +424,15 @@ func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
 		parsed.AvailabilitySchedule, parsed.HasSchedule = body["availabilitySchedule"], true
 	}
 	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失保持原值；
-	// null/小数/越界/类型错误按字段校验错误 400，显式 0 是合法关闭。
+	// 提供时必须是 -1 或 1..1000000 的 JSON 整数，0/null/小数/越界/类型错误
+	// 按字段校验错误 400。
 	if bodyHas(body, "clientIpConcurrencyLimit") {
-		limit, _, issue := bodyOptionalInt(body["clientIpConcurrencyLimit"], true, 0, apikeys.MaxClientIPConcurrencyLimit)
+		limit, _, issue := bodyOptionalInt(body["clientIpConcurrencyLimit"], true, apikeys.DisabledClientIPConcurrencyLimit, apikeys.MaxClientIPConcurrencyLimit)
 		if issue != "" {
 			return nil, issue
+		}
+		if !apikeys.IsValidClientIPConcurrencyLimit(limit) {
+			return nil, apikeys.ClientIPConcurrencyLimitRangeMessage
 		}
 		parsed.ClientIPConcurrencyLimit = limit
 		parsed.HasClientIPConcurrencyLimit = true

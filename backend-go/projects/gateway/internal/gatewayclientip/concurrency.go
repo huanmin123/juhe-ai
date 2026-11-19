@@ -136,8 +136,9 @@ func (c *ClientIPConcurrency) Close() {
 	c.closeFns = nil
 }
 
-// AcquireClientIPSlot acquires one per-client-IP slot; limit 0
-// or blank IP is the disabled fast path.
+// AcquireClientIPSlot acquires one per-client-IP slot; limit -1 (or blank IP)
+// is the disabled fast path. limit <= 0 keeps tolerating other disabled
+// sentinels from older rows/internal callers.
 func (c *ClientIPConcurrency) AcquireClientIPSlot(ctx context.Context, input ClientIPConcurrencyAcquireInput) (ClientIPConcurrencyDecision, error) {
 	limit := input.Limit
 	clientIP := strings.TrimSpace(input.ClientIP)

@@ -720,14 +720,15 @@ func createBody(body map[string]any) (CreateInput, string) {
 		input.AvailabilitySchedule = object
 	}
 	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺省或显式 null →
-	// 0（关闭）；提供时必须是 0..1000000 的 JSON 整数，超界/小数/非数字按
-	// 字段校验错误 400，不静默截断或取整。
+	// -1（不限制）；提供时必须是 -1 或 1..1000000 的 JSON 整数，0/超界/小数/
+	// 非数字按字段校验错误 400，不静默截断或取整。
 	if value, exists := body["clientIpConcurrencyLimit"]; exists && value != nil {
 		limit, issue := parseClientIPConcurrencyLimitField(value)
 		if issue != "" {
 			return CreateInput{}, issue
 		}
 		input.ClientIPConcurrencyLimit = limit
+		input.HasClientIPConcurrencyLimit = true
 	}
 	return input, ""
 }

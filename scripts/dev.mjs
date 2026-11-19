@@ -288,11 +288,8 @@ function resolveGoProjectEnv() {
   // UPDATE，压力可忽略。用户显式配置时不覆盖。
   childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
-  // jobs 侧 F1 同样会被强杀残留租约卡住：F1 runtime-log 生产默认 30s，
-  // 且没有 F3/F4 的有界等待——supervisor 直接按 1s~30s 退避重试并逐次打
-  // ERROR。dev 统一收紧到 10s，让重试窗口以秒计。用户显式配置时不覆盖。
-  // （原 F2 table-monitor 租约注入已随 2026-10-14 监控改造删除。）
-  childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
+  // F1 runtime-log 租约注入已随运行日志索引器收口退役（原 F2 table-monitor
+  // 租约注入已于 2026-10-14 监控改造删除）；当前 Go 进程不再读取该变量。
   for (const name of removedInputServerEnvNames) delete childEnv[name]
   for (const name of removedSqliteModeEnvNames) delete childEnv[name]
   for (const name of removedUnifiedConfigEnvNames) delete childEnv[name]

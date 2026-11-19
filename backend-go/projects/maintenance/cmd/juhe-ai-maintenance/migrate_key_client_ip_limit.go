@@ -10,7 +10,7 @@
 //     取最小值收敛多值冲突。跨 owner 的授权分组绑定属合法拓扑，不阻断。
 //   - --check=preflight：迁移前只读盘点报告（不写 manifest）；
 //   - --check=postflight：完成态核验（分组策略无 clientIpConcurrencyLimit、
-//     所有 Key 值在 0..1000000、超级分组自身行一致），未就绪退出码 3。
+//     所有 Key 值为 -1 或 1..1000000、超级分组自身行一致），未就绪退出码 3。
 //
 // 退出码契约：0 成功（含 dry-run/preflight/postflight 通过）、1 运行失败、
 // 2 用法错误、3 needs_review 阻断或 postflight 未就绪。

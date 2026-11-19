@@ -18,15 +18,19 @@ func TestParseApiKeyClientIPConcurrency(t *testing.T) {
 	}
 
 	add, issue := parseApiKeyAddBody(baseAdd(map[string]any{"clientIpConcurrencyLimit": float64(7)}))
-	if issue != "" || add.ClientIPConcurrencyLimit != 7 {
+	if issue != "" || add.ClientIPConcurrencyLimit != 7 || !add.HasClientIPConcurrencyLimit {
 		t.Fatalf("add limit: %+v %q", add, issue)
 	}
+	add, issue = parseApiKeyAddBody(baseAdd(map[string]any{"clientIpConcurrencyLimit": float64(-1)}))
+	if issue != "" || add.ClientIPConcurrencyLimit != -1 || !add.HasClientIPConcurrencyLimit {
+		t.Fatalf("add disabled: %+v %q", add, issue)
+	}
 	add, issue = parseApiKeyAddBody(baseAdd(map[string]any{"clientIpConcurrencyLimit": nil}))
-	if issue != "" || add.ClientIPConcurrencyLimit != 0 {
+	if issue != "" || add.ClientIPConcurrencyLimit != 0 || add.HasClientIPConcurrencyLimit {
 		t.Fatalf("add null default: %+v %q", add, issue)
 	}
 	add, issue = parseApiKeyAddBody(baseAdd(nil))
-	if issue != "" || add.ClientIPConcurrencyLimit != 0 {
+	if issue != "" || add.ClientIPConcurrencyLimit != 0 || add.HasClientIPConcurrencyLimit {
 		t.Fatalf("add absent default: %+v %q", add, issue)
 	}
 
@@ -37,7 +41,8 @@ func TestParseApiKeyClientIPConcurrency(t *testing.T) {
 	}{
 		{"string", "5", zodInvalidType("number", "5")},
 		{"float", float64(1.5), "Expected integer, received float"},
-		{"negative", float64(-1), zodNumberMin(0)},
+		{"zero", float64(0), apikeys.ClientIPConcurrencyLimitRangeMessage},
+		{"below disabled", float64(-2), zodNumberMin(apikeys.DisabledClientIPConcurrencyLimit)},
 		{"over max", float64(apikeys.MaxClientIPConcurrencyLimit + 1), zodNumberMax(apikeys.MaxClientIPConcurrencyLimit)},
 	} {
 		if _, issue := parseApiKeyAddBody(baseAdd(map[string]any{"clientIpConcurrencyLimit": testCase.value})); issue != testCase.issue {
@@ -46,10 +51,13 @@ func TestParseApiKeyClientIPConcurrency(t *testing.T) {
 	}
 
 	update, issue := parseApiKeyUpdateBody(map[string]any{
-		"apiKeyId": "key-1", "clientIpConcurrencyLimit": float64(0),
+		"apiKeyId": "key-1", "clientIpConcurrencyLimit": float64(-1),
 	})
-	if issue != "" || !update.HasClientIPConcurrencyLimit || update.ClientIPConcurrencyLimit != 0 {
-		t.Fatalf("update explicit zero: %+v %q", update, issue)
+	if issue != "" || !update.HasClientIPConcurrencyLimit || update.ClientIPConcurrencyLimit != -1 {
+		t.Fatalf("update explicit disabled: %+v %q", update, issue)
+	}
+	if _, issue := parseApiKeyUpdateBody(map[string]any{"apiKeyId": "key-1", "clientIpConcurrencyLimit": float64(0)}); issue != apikeys.ClientIPConcurrencyLimitRangeMessage {
+		t.Fatalf("update zero: %q", issue)
 	}
 	update, issue = parseApiKeyUpdateBody(map[string]any{"apiKeyId": "key-1", "name": "renamed"})
 	if issue != "" || update.HasClientIPConcurrencyLimit {

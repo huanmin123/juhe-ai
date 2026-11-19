@@ -77,7 +77,7 @@ type PatchInput struct {
 	HasSchedule          bool
 
 	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失 = 保持原值；
-	// 显式提交必须是 0..1000000 的整数，显式 0 是合法关闭。
+	// 显式提交必须是 -1（不限制）或 1..1000000 的整数。0 不是合法关闭值。
 	ClientIPConcurrencyLimit    int
 	HasClientIPConcurrencyLimit bool
 }
@@ -266,7 +266,7 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 		input.AvailabilitySchedule = value
 	}
 	// 单 IP 并发上限（API Key 单 IP 并发限制设计 §2.1）：缺失保持原值；
-	// 提供时必须是 0..1000000 的 JSON 整数（显式 0 关闭），null/小数/字符串/
+	// 提供时必须是 -1（不限制）或 1..1000000 的 JSON 整数，0/null/小数/字符串/
 	// 越界按字段校验错误 400，不静默截断或取整。
 	if value, exists := body["clientIpConcurrencyLimit"]; exists {
 		input.HasClientIPConcurrencyLimit = true

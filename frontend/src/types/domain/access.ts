@@ -404,7 +404,7 @@ export interface ApiKeySummary {
   securityPolicyId?: string | null
   securityPolicyName?: string
   securityPolicyBuiltIn?: boolean
-  /** 单 IP 并发上限：0 不限制（默认）；1..1000000 生效，超限立即返回 429。 */
+  /** 单 IP 并发上限：-1 不限制（默认）；1..1000000 生效，超限立即返回 429。 */
   clientIpConcurrencyLimit?: number
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
@@ -445,7 +445,7 @@ export interface ApiKeyMutationRowPatch {
   securityPolicyId?: string | null
   securityPolicyName?: string
   securityPolicyBuiltIn?: boolean
-  /** 单 IP 并发上限：0 不限制；PATCH 显式 0 表示关闭。 */
+  /** 单 IP 并发上限：-1 不限制；PATCH 显式 -1 表示不限制。 */
   clientIpConcurrencyLimit?: number
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits

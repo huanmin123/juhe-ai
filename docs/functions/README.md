@@ -24,12 +24,12 @@
 - [AI 工具创建规范](AI工具创建规范.md)：模型决策、参数契约、执行器校验和外部副作用的稳定边界，含工具创建与评审清单（自 architecture/backend 迁入，与后端语言无关）。
 - [统一会话身份与审计串联设计](统一会话身份与审计串联设计.md)：只从厂商官方客户端的会话 Header 识别会话，按客户端隔离亲和，并统一写入审计 `session_id`。
 - [内容指纹会话身份设计](内容指纹会话身份设计.md)：无官方会话 Header 客户端以上下文锚点（前导 system / 首 user / 首 assistant / 第二 user）派生确定性降级身份——审计临时档首请求可用、三层亲和确认档第二请求起可用（增长判别器挡批量重放）、来源阶梯新增 `content_fingerprint` 档使来源级避让与 L2 负面缓存升级会话级作用域（消除共享出口 IP 连带）；IP 熔断与 IP 级账号回避维持 IP 维度。已实施：锚点扫描器与指纹函数在 `backend-go/projects/gateway/internal/gatewaybody`（contentfingerprint.go），谱系判别器在 `internal/gatewaysession`，消费接缝为 `cmd/juhe-ai-gateway/chain_ports.go` 的 `sessionIdentityAdapter` 与 `internal/gatewaycodex/sourceidentity.go` 阶梯；fullchain 验收在 `acceptance/fullchain_contentfingerprint_session_test.go`（JUHE_AI_E2E_FULLCHAIN 门控）。
-- [时间计划闸门与账户状态解耦设计](时间计划闸门与账户状态解耦设计.md)：时间计划不再写 `accounts.status` / `api_keys.status`，改为独立派生列 `availability_schedule_gate`（NULL=无计划 / 1=时段内 / 0=时段外）；时段外表现为「正常 · 非时间段」并暂停调度，人工停用持久不被计划边界复活，时段外 Key 返回可区分的 401 文案；含存量迁移判定口径与 schema revision 15 升级契约。已实施（2026-11-03，gateway + jobs + 前端同批；待发布与真机验收，见 #T112）。
+- [时间计划闸门与账户状态解耦设计](时间计划闸门与账户状态解耦设计.md)：时间计划不再写 `accounts.status` / `api_keys.status`，改为独立派生列 `availability_schedule_gate`（NULL=无计划 / 1=时段内 / 0=时段外）；时段外表现为「正常 · 非时间段」并暂停调度，人工停用持久不被计划边界复活，时段外 Key 返回可区分的 401 文案；含存量迁移判定口径与 schema revision 15 升级契约。已实施并随 2026-11-05 发布上线（gateway + jobs + 前端同批；2026-11-08 真机验收通过）。
 - [用户请求限制设计](用户请求限制设计.md)：定义全局与用户级每分钟 / 日 / 周 / 月请求限制、进程内零 I/O 快速判断、Redis 后台延迟协调、快速失败和个人信息展示。
 - [AI 账户每分钟请求上限设计](AI账户每分钟请求上限设计.md)：账户级 `rpm_limit`（每分钟向上游派发次数，0=不限制）与硬并发上限正交叠加——同一 `TryAcquire` 原子临界区判定、自然分钟固定窗口、候选切换与全池有界等待后 429、列表双行展示、schema revision 14 升级契约。设计稿 2026-11-03，待实施。
 - [用户个人信息页面设计](用户个人信息页面设计.md)：头像菜单统一进入个人信息页面，集中展示账号、角色、状态、生图权限和时间，并维护用户名称与登录密码。
-- [模型价格数据源与取证指南](模型价格数据源与取证指南.md)：catalogdata/*.json 价格事实的官方数据源清单、抓取方式矩阵（JS 渲染价格表必须浏览器渲染抓取——web_reader 只回骨架）、sourcePricingNote 留档规范（原句+URL+日期+方式+口径裁决+算式）与历次核对台账；2026-11-19 起范围收窄为对话 / embedding token 价格，媒体模型改按统一计费模板自定价。
-- [非对话媒体统一计费设计](非对话媒体统一计费设计.md)：非对话媒体模型（image/audio/video，不含 realtime 对话语音）的统一计价模板——秒/张/次 + 分辨率倍率 + `media_pricing_json` 自定价、纯 Go 时长解析、83 个媒体行口径梳理（66 行迁移）与验收；取代媒体域按厂商真实定价维度逐行适配的旧口径（历史快照仍按旧口径读取）。
+- [模型价格数据源与取证指南](模型价格数据源与取证指南.md)：catalogdata/*.json 价格事实的官方数据源清单、抓取方式矩阵（JS 渲染价格表必须浏览器渲染抓取——web_reader 只回骨架）、sourcePricingNote 留档规范（原句+URL+日期+方式+口径裁决+算式）与历次核对台账；统一媒体计费实施后范围收窄为对话 / embedding token 价格，媒体模型改按统一计费模板自定价（当前设计定稿、代码未实施）。
+- [非对话媒体统一计费设计](非对话媒体统一计费设计.md)：非对话媒体模型（image/audio/video，不含 realtime 对话语音）的统一计价模板——秒/张/次 + 分辨率倍率 + `media_pricing_json` 自定价、纯 Go 时长解析、83 个媒体行口径梳理（66 行迁移）与验收；取代媒体域按厂商真实定价维度逐行适配的旧口径（历史快照仍按旧口径读取）。2026-11-19 设计定稿，代码未实施。
 - [供应商独立计费与模型目录展示设计](供应商独立计费与模型目录展示设计.md)：统一美元结算结果，各供应商独立解释 usage、价格档位、缓存、长上下文与展示分组；当前实现为 gateway `internal/pricing` 与网关链计费消费方。
 - [运行日志降噪与终态语义设计](运行日志降噪与终态语义设计.md)：正常快速 DB / 网关阶段不进入默认 info，保留慢请求、失败和单次耗时汇总，并修正成功协议终态被 close 覆盖。
 - [使用记录详情退场设计](使用记录详情退场设计.md)：使用记录管理与我的使用记录统一收敛为列表-only，删除操作列、详情接口、请求 / 响应快照展示和日志跳转。

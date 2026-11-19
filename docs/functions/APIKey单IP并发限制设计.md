@@ -147,7 +147,7 @@ juhe-ai-maintenance migrate-key-client-ip-limit \
   --dsn "$JUHE_AI_POSTGRES_URL"
 ```
 
-默认 `--conflict-policy=block`。`--check`、`--dry-run` 全程只读；`--dry-run` 必须提供 `--manifest-out`（唯一写入是 manifest 文件），正式 apply 可选提供 `--manifest-out` 留档。正式 apply 必须同时带 `--stop-write-confirmed --backup-confirmed`（缺一 exit 2），命令本身不负责停进程。
+默认 `--conflict-policy=block`。`--check`、`--dry-run` 全程只读；`--dry-run` 必须提供 `--manifest-out`（唯一写入是 manifest 文件），正式 apply 可选提供 `--manifest-out` 留档。正式 apply 必须同时带 `--stop-write-confirmed --backup-confirmed`（缺一 exit 2），命令本身不负责停进程。独立 apply 的前提是 revision 22 已完成（`groups.group_type` 已全部为 `personal`）；正常发布序列由 `upgrade` 按 revision 顺序执行，不单独先跑本命令。
 
 映射规则：
 

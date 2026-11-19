@@ -1786,12 +1786,12 @@ func recordRouteStrategyID(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) s
 	return apiKeyRecord.RouteStrategyID
 }
 
-// recordClientIPConcurrencyLimit mirrors
-// `apiKeyRecord?.clientIpConcurrencyLimit ?? 0`: 无 API Key 的内部请求视为
-// 关闭（0），与单 IP 并发计数作用域契约一致。
+// recordClientIPConcurrencyLimit mirrors `apiKeyRecord?.clientIpConcurrencyLimit
+// ?? -1`: 无 API Key 的内部请求视为不限制（-1），与单 IP 并发计数作用域契约
+// 一致。
 func recordClientIPConcurrencyLimit(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) int {
 	if apiKeyRecord == nil {
-		return 0
+		return -1
 	}
 	return apiKeyRecord.ClientIPConcurrencyLimit
 }

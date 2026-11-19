@@ -2263,11 +2263,11 @@ function assertApiKeyListItem(value: unknown, scope: 'admin' | 'self', label: st
       `${label}.securityPolicyBuiltIn must be a boolean or null`
     )
   }
-  // 单 IP 并发限制（API Key 单 IP 并发限制设计 §2.1/§3.1）：列表项必带，0..1000000。
-  expect(isNonNegativeInteger(value.clientIpConcurrencyLimit), `${label}.clientIpConcurrencyLimit must be a non-negative integer`)
+  // 单 IP 并发限制（API Key 单 IP 并发限制设计 §2.1/§3.1）：列表项必带，-1 或 1..1000000。
+  const clientIpLimit = Number(value.clientIpConcurrencyLimit)
   expect(
-    Number(value.clientIpConcurrencyLimit) <= 1_000_000,
-    `${label}.clientIpConcurrencyLimit must be within 0..1000000`
+    Number.isInteger(clientIpLimit) && (clientIpLimit === -1 || (clientIpLimit >= 1 && clientIpLimit <= 1_000_000)),
+    `${label}.clientIpConcurrencyLimit must be -1 or within 1..1000000`
   )
   if (scope === 'admin') {
     expect(isNonEmptyString(value.systemAccountId), `${label}.systemAccountId must be a non-empty string`)

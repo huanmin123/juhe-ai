@@ -74,19 +74,23 @@ func TestDecideKeyTarget(t *testing.T) {
 		reason   string
 		conflict bool
 	}{
-		{name: "无值0", current: 0, policy: ConflictPolicyBlock, want: 0, action: ActionUnchanged},
+		{name: "无值-1", current: -1, policy: ConflictPolicyBlock, want: -1, action: ActionUnchanged},
+		{name: "未发布版本0归一为-1", current: 0, policy: ConflictPolicyBlock, want: -1, action: ActionUpdate},
 		{name: "无值preexisting保留", current: 5, policy: ConflictPolicyBlock, want: 5, action: ActionPreexisting},
-		{name: "唯一值写入", current: 0, observed: []int{8}, policy: ConflictPolicyBlock, want: 8, action: ActionUpdate},
+		{name: "唯一值写入", current: -1, observed: []int{8}, policy: ConflictPolicyBlock, want: 8, action: ActionUpdate},
+		{name: "零值按未设置填充", current: 0, observed: []int{8}, policy: ConflictPolicyBlock, want: 8, action: ActionUpdate},
 		{name: "唯一值相等", current: 8, observed: []int{8}, policy: ConflictPolicyBlock, want: 8, action: ActionPreexisting},
 		{name: "唯一值冲突block", current: 5, observed: []int{8}, policy: ConflictPolicyBlock, want: 5, action: ActionNeedsReview, reason: ReviewExistingKeyLimitConflict},
 		{name: "唯一值冲突min保留", current: 5, observed: []int{8}, policy: ConflictPolicyMin, want: 5, action: ActionPreexisting, conflict: true},
-		{name: "多值block", current: 0, observed: []int{5, 10}, policy: ConflictPolicyBlock, want: 0, action: ActionNeedsReview, reason: ReviewMultipleIPLimits},
-		{name: "多值min取最小", current: 0, observed: []int{10, 5}, policy: ConflictPolicyMin, want: 5, action: ActionUpdate, conflict: true},
+		{name: "多值block", current: -1, observed: []int{5, 10}, policy: ConflictPolicyBlock, want: -1, action: ActionNeedsReview, reason: ReviewMultipleIPLimits},
+		{name: "多值min取最小", current: -1, observed: []int{10, 5}, policy: ConflictPolicyMin, want: 5, action: ActionUpdate, conflict: true},
 		{name: "多值人工值命中观测值不阻断", current: 10, observed: []int{5, 10}, policy: ConflictPolicyBlock, want: 10, action: ActionPreexisting},
 		{name: "多值人工值命中非最小值也不阻断", current: 5, observed: []int{5, 10}, policy: ConflictPolicyBlock, want: 5, action: ActionPreexisting},
 		{name: "多值人工值全部不同block", current: 7, observed: []int{5, 10}, policy: ConflictPolicyBlock, want: 7, action: ActionNeedsReview, reason: ReviewExistingKeyLimitConflict},
 		{name: "多值人工值全部不同min保留", current: 7, observed: []int{5, 10}, policy: ConflictPolicyMin, want: 7, action: ActionPreexisting, conflict: true},
-		{name: "重复观测值去重", current: 0, observed: []int{5, 5}, policy: ConflictPolicyBlock, want: 5, action: ActionUpdate},
+		{name: "重复观测值去重", current: -1, observed: []int{5, 5}, policy: ConflictPolicyBlock, want: 5, action: ActionUpdate},
+		{name: "非法负值阻断", current: -2, observed: []int{5}, policy: ConflictPolicyBlock, want: -2, action: ActionNeedsReview, reason: ReviewInvalidKeyLimitValue},
+		{name: "非法越界值阻断", current: 1000001, policy: ConflictPolicyBlock, want: 1000001, action: ActionNeedsReview, reason: ReviewInvalidKeyLimitValue},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

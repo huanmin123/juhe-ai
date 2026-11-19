@@ -35,7 +35,7 @@ CREATE TABLE route_strategy_groups (
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE api_keys (
   id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, name TEXT NOT NULL,
-  client_ip_concurrency_limit INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  client_ip_concurrency_limit INTEGER NOT NULL DEFAULT -1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 `
 
 const fixtureNow = "2026-11-01T00:00:00Z"
@@ -131,7 +131,7 @@ func TestApplyMapsUniqueValueAndRewritesGroups(t *testing.T) {
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
 	insertBinding(t, db, "b2", "s1", "u1", "g2", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	plan, err := Apply(context.Background(), db, Options{})
 	if err != nil {
@@ -168,7 +168,7 @@ func TestApplyBlockByMultipleValuesZeroWrites(t *testing.T) {
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
 	insertBinding(t, db, "b2", "s1", "u1", "g2", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	plan, err := Apply(context.Background(), db, Options{ConflictPolicy: ConflictPolicyBlock})
 	if !errors.Is(err, ErrNeedsReview) {
@@ -177,8 +177,8 @@ func TestApplyBlockByMultipleValuesZeroWrites(t *testing.T) {
 	if plan.Applied != 0 || plan.Blocked == 0 {
 		t.Fatalf("计数 = applied %d / blocked %d", plan.Applied, plan.Blocked)
 	}
-	if value, _ := keyFact(t, db, "k1"); value != 0 {
-		t.Fatalf("阻断后 Key 值 = %d, want 0", value)
+	if value, _ := keyFact(t, db, "k1"); value != -1 {
+		t.Fatalf("阻断后 Key 值 = %d, want -1", value)
 	}
 	_, policy, _ := groupFact(t, db, "g1")
 	if policy.String != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":5}` {
@@ -196,7 +196,7 @@ func TestApplyMinResolvesMultipleAndRecordsConflict(t *testing.T) {
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
 	insertBinding(t, db, "b2", "s1", "u1", "g2", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	plan, err := Apply(context.Background(), db, Options{ConflictPolicy: ConflictPolicyMin})
 	if err != nil {
@@ -285,7 +285,7 @@ func TestApplyInvalidJSONNeedsReview(t *testing.T) {
 	insertGroup(t, db, "g_broken", "u1", "损坏", "standard", "personal", true,
 		`{"defaultSoftConcurrency":`)
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	plan, err := Apply(context.Background(), db, Options{})
 	if !errors.Is(err, ErrNeedsReview) {
@@ -314,7 +314,7 @@ func TestSuperGroupRecomputeAndMemberConsistency(t *testing.T) {
 		insertSuperMember(t, db, "sg", "m2", 2, false)
 		insertStrategy(t, db, "s1", "u1", "normal", "active")
 		insertBinding(t, db, "b1", "s1", "u1", "sg", "active")
-		insertKey(t, db, "k1", "u1", "s1", 0)
+		insertKey(t, db, "k1", "u1", "s1", -1)
 
 		plan, err := Apply(context.Background(), db, Options{})
 		if err != nil {
@@ -362,7 +362,7 @@ func TestSuperGroupRecomputeAndMemberConsistency(t *testing.T) {
 		insertSuperMember(t, db, "sg", "m2", 2, true)
 		insertStrategy(t, db, "s1", "u1", "normal", "active")
 		insertBinding(t, db, "b1", "s1", "u1", "sg", "active")
-		insertKey(t, db, "k1", "u1", "s1", 0)
+		insertKey(t, db, "k1", "u1", "s1", -1)
 
 		if _, err := Apply(context.Background(), db, Options{}); err != nil {
 			t.Fatalf("Apply: %v", err)
@@ -390,7 +390,7 @@ func TestSuperGroupRecomputeAndMemberConsistency(t *testing.T) {
 		insertSuperMember(t, db, "sg", "m1", 1, true)
 		insertSuperMember(t, db, "sg", "m2", 2, true)
 		insertStrategy(t, db, "s1", "u1", "normal", "active")
-		insertKey(t, db, "k1", "u1", "s1", 0)
+		insertKey(t, db, "k1", "u1", "s1", -1)
 
 		if _, err := Apply(context.Background(), db, Options{}); !errors.Is(err, ErrNeedsReview) {
 			t.Fatalf("成员阈值不一致必须阻断: %v", err)
@@ -413,7 +413,7 @@ func TestSuperGroupRecomputeAndMemberConsistency(t *testing.T) {
 		insertSuperMember(t, db, "sg", "m1", 1, true)
 		insertSuperMember(t, db, "sg", "m2", 2, true)
 		insertStrategy(t, db, "s1", "u1", "normal", "active")
-		insertKey(t, db, "k1", "u1", "s1", 0)
+		insertKey(t, db, "k1", "u1", "s1", -1)
 
 		if _, err := Apply(context.Background(), db, Options{}); !errors.Is(err, ErrNeedsReview) {
 			t.Fatalf("成员阈值不一致必须阻断: %v", err)
@@ -461,7 +461,7 @@ func TestApplyIdempotentRerunZeroWrites(t *testing.T) {
 		`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}`)
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 	if _, err := Apply(context.Background(), db, Options{}); err != nil {
 		t.Fatalf("首次 Apply: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestAuthorizedCrossOwnerGroupIsMapped(t *testing.T) {
 		`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}`)
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	plan, err := Apply(context.Background(), db, Options{})
 	if err != nil {
@@ -526,7 +526,7 @@ func TestAuthorizedCrossOwnerGroupIsMapped(t *testing.T) {
 func TestRouteStrategyOwnerMismatchNeedsReview(t *testing.T) {
 	db := openFixture(t)
 	insertStrategy(t, db, "s1", "u2", "normal", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	if _, err := Apply(context.Background(), db, Options{}); !errors.Is(err, ErrNeedsReview) {
 		t.Fatalf("路由策略 owner 不一致必须阻断: %v", err)
@@ -540,7 +540,7 @@ func TestSatisfiedPlanGuardIndependentOfPostflight(t *testing.T) {
 	db := openFixture(t)
 	insertGroup(t, db, "g1", "u1", "组一", "standard", "personal", true,
 		`{"defaultSoftConcurrency":5}`)
-	insertKey(t, db, "k1", "u1", "s_missing", 0)
+	insertKey(t, db, "k1", "u1", "s_missing", -1)
 
 	report, err := VerifyPostflight(context.Background(), db)
 	if err != nil {
@@ -567,7 +567,7 @@ func TestSatisfiedRequiresNoPendingWrites(t *testing.T) {
 		`{"defaultSoftConcurrency":-1}`)
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	report, err := VerifyPostflight(context.Background(), db)
 	if err != nil || !report.Ready() {
@@ -599,7 +599,7 @@ func TestBuildPlanDryRunZeroWrites(t *testing.T) {
 		`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}`)
 	insertStrategy(t, db, "s1", "u1", "normal", "active")
 	insertBinding(t, db, "b1", "s1", "u1", "g1", "active")
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 
 	plan, err := BuildPlan(context.Background(), db, Options{DryRun: true})
 	if err != nil {
@@ -608,8 +608,8 @@ func TestBuildPlanDryRunZeroWrites(t *testing.T) {
 	if !plan.DryRun || plan.Applied != 0 {
 		t.Fatalf("dry-run 报告 = %+v", plan)
 	}
-	if value, _ := keyFact(t, db, "k1"); value != 0 {
-		t.Fatalf("dry-run 写入 Key = %d, want 0", value)
+	if value, _ := keyFact(t, db, "k1"); value != -1 {
+		t.Fatalf("dry-run 写入 Key = %d, want -1", value)
 	}
 	_, policy, _ := groupFact(t, db, "g1")
 	if policy.String != `{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}` {
@@ -622,7 +622,7 @@ func TestVerifyPostflightDetectsLegacyKey(t *testing.T) {
 	db := openFixture(t)
 	insertGroup(t, db, "g1", "u1", "组一", "standard", "personal", true,
 		`{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":8}`)
-	insertKey(t, db, "k1", "u1", "s1", 0)
+	insertKey(t, db, "k1", "u1", "s1", -1)
 	report, err := VerifyPostflight(context.Background(), db)
 	if err != nil {
 		t.Fatalf("VerifyPostflight: %v", err)

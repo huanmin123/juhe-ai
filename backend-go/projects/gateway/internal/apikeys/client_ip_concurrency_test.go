@@ -28,31 +28,31 @@ func TestAPIKeyClientIPConcurrencyCreateDefaultsAndValidation(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
 
-	// 缺省 → 0：列落默认值，列表恒返回该字段。
+	// 缺省 → -1：列落默认值，列表恒返回该字段。
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"limit-default"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create default: %d %v", code, created)
 	}
 	defaultID := dataMap(t, created)["id"].(string)
-	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, defaultID); got != "0" {
+	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, defaultID); got != "-1" {
 		t.Fatalf("default column: %q", got)
 	}
 	code, listed := env.do(t, http.MethodGet, "/__aisys__/api/api-keys?keyword=limit-default", "")
 	if code != http.StatusOK {
 		t.Fatalf("list default: %d %v", code, listed)
 	}
-	if item := listItemByName(t, listed, "limit-default"); item["clientIpConcurrencyLimit"] != float64(0) {
+	if item := listItemByName(t, listed, "limit-default"); item["clientIpConcurrencyLimit"] != float64(-1) {
 		t.Fatalf("default list item: %v", item)
 	}
 
-	// 显式 null → 0。
+	// 显式 null → -1。
 	code, nullCreated := env.do(t, http.MethodPost, "/__aisys__/api/api-keys",
 		`{"name":"limit-null","clientIpConcurrencyLimit":null}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create null: %d %v", code, nullCreated)
 	}
 	nullID := dataMap(t, nullCreated)["id"].(string)
-	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, nullID); got != "0" {
+	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, nullID); got != "-1" {
 		t.Fatalf("null column: %q", got)
 	}
 
@@ -97,7 +97,8 @@ func TestAPIKeyClientIPConcurrencyCreateDefaultsAndValidation(t *testing.T) {
 		body string
 	}{
 		{"limit-over", `{"name":"limit-over","clientIpConcurrencyLimit":1000001}`},
-		{"limit-negative", `{"name":"limit-negative","clientIpConcurrencyLimit":-1}`},
+		{"limit-zero", `{"name":"limit-zero","clientIpConcurrencyLimit":0}`},
+		{"limit-below", `{"name":"limit-below","clientIpConcurrencyLimit":-2}`},
 		{"limit-float", `{"name":"limit-float","clientIpConcurrencyLimit":1.5}`},
 		{"limit-string", `{"name":"limit-string","clientIpConcurrencyLimit":"5"}`},
 		{"limit-bool", `{"name":"limit-bool","clientIpConcurrencyLimit":true}`},
@@ -165,19 +166,19 @@ func TestAPIKeyClientIPConcurrencyPatchSemantics(t *testing.T) {
 		t.Fatal("no-op must not log or invalidate")
 	}
 
-	// 显式 0 → 关闭：changedFields/rowPatch/审计标签/运行时缓存失效。
+	// 显式 -1 → 不限制：changedFields/rowPatch/审计标签/运行时缓存失效。
 	code, disabled := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/"+keyID,
-		`{"expectedRevision":"`+revision+`","clientIpConcurrencyLimit":0}`)
+		`{"expectedRevision":"`+revision+`","clientIpConcurrencyLimit":-1}`)
 	if code != http.StatusOK {
 		t.Fatalf("disable: %d %v", code, disabled)
 	}
 	if fields := changedFieldsOf(t, disabled); len(fields) != 1 || fields[0] != "clientIpConcurrencyLimit" {
 		t.Fatalf("disable changedFields: %v", fields)
 	}
-	if patch := rowPatchOf(t, disabled); patch["clientIpConcurrencyLimit"] != float64(0) {
+	if patch := rowPatchOf(t, disabled); patch["clientIpConcurrencyLimit"] != float64(-1) {
 		t.Fatalf("disable rowPatch: %v", patch)
 	}
-	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, keyID); got != "0" {
+	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, keyID); got != "-1" {
 		t.Fatalf("disable column: %q", got)
 	}
 	updates := updateEntries(env.sink)
@@ -185,7 +186,7 @@ func TestAPIKeyClientIPConcurrencyPatchSemantics(t *testing.T) {
 		t.Fatalf("update logs: %d (want %d)", len(updates), logsBefore+1)
 	}
 	change := fieldChange(t, updates[len(updates)-1], "clientIpConcurrencyLimit")
-	if change.Label != "单 IP 并发限制" || change.Before != "10" || change.After != "0" {
+	if change.Label != "单 IP 并发限制" || change.Before != "10" || change.After != "-1" {
 		t.Fatalf("limit change: %+v", change)
 	}
 	if !env.inval.has("api_key_updated") {
@@ -202,7 +203,8 @@ func TestAPIKeyClientIPConcurrencyPatchSemantics(t *testing.T) {
 	revision = dataMap(t, enabled)["revision"].(string)
 	for _, body := range []string{
 		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":1000001}`,
-		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":-1}`,
+		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":0}`,
+		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":-2}`,
 		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":1.25}`,
 		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":"5"}`,
 		`{"expectedRevision":"` + revision + `","clientIpConcurrencyLimit":null}`,
@@ -242,14 +244,14 @@ func TestAPIKeyClientIPConcurrencySelfSurface(t *testing.T) {
 	}
 
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/my-api-keys/"+keyID,
-		`{"expectedRevision":"`+revision+`","clientIpConcurrencyLimit":0}`)
+		`{"expectedRevision":"`+revision+`","clientIpConcurrencyLimit":-1}`)
 	if code != http.StatusOK {
 		t.Fatalf("self patch: %d %v", code, patched)
 	}
 	if fields := changedFieldsOf(t, patched); len(fields) != 1 || fields[0] != "clientIpConcurrencyLimit" {
 		t.Fatalf("self patch changedFields: %v", fields)
 	}
-	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, keyID); got != "0" {
+	if got := env.queryCell(t, `SELECT client_ip_concurrency_limit FROM api_keys WHERE id = ?`, keyID); got != "-1" {
 		t.Fatalf("self patch column: %q", got)
 	}
 
@@ -266,7 +268,7 @@ func TestClientIPConcurrencyFieldParsers(t *testing.T) {
 		raw  any
 		want int
 	}{
-		{float64(0), 0},
+		{float64(-1), -1},
 		{float64(5), 5},
 		{float64(MaxClientIPConcurrencyLimit), MaxClientIPConcurrencyLimit},
 		{float64(1e2), 100},
@@ -285,7 +287,8 @@ func TestClientIPConcurrencyFieldParsers(t *testing.T) {
 		{nil, "Expected number, received null"},
 		{true, "Expected number, received boolean"},
 		{float64(1.5), "Expected integer, received float"},
-		{float64(-1), "Number must be greater than or equal to 0"},
+		{float64(-2), "Number must be greater than or equal to -1"},
+		{float64(0), "Number must be -1 (unlimited) or between 1 and 1000000"},
 		{float64(MaxClientIPConcurrencyLimit + 1), "Number must be less than or equal to 1000000"},
 	}
 	for _, testCase := range invalid {
@@ -294,13 +297,13 @@ func TestClientIPConcurrencyFieldParsers(t *testing.T) {
 			t.Fatalf("parse %v: %d %q (want %q)", testCase.raw, got, issue, testCase.issue)
 		}
 	}
-	if value, err := normalizeClientIPConcurrencyLimit(0); err != nil || value != 0 {
-		t.Fatalf("normalize 0: %d %v", value, err)
+	if value, err := normalizeClientIPConcurrencyLimit(DisabledClientIPConcurrencyLimit); err != nil || value != DisabledClientIPConcurrencyLimit {
+		t.Fatalf("normalize disabled: %d %v", value, err)
 	}
 	if value, err := normalizeClientIPConcurrencyLimit(MaxClientIPConcurrencyLimit); err != nil || value != MaxClientIPConcurrencyLimit {
 		t.Fatalf("normalize max: %d %v", value, err)
 	}
-	for _, value := range []int{-1, MaxClientIPConcurrencyLimit + 1} {
+	for _, value := range []int{0, -2, MaxClientIPConcurrencyLimit + 1} {
 		var validation *ValidationError
 		if _, err := normalizeClientIPConcurrencyLimit(value); err == nil || !asValidationError(err, &validation) {
 			t.Fatalf("normalize %d must fail with ValidationError: %v", value, err)

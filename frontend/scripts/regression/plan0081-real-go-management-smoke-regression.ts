@@ -2578,8 +2578,8 @@ function apiKeyFixture(idSuffix: string, includeOwner: boolean): Record<string, 
     routeStrategyName: 'PLAN-0081 route',
     routeStrategyMode: 'normal',
     routeStrategyStatus: 'active',
-    // 单 IP 并发限制（API Key 单 IP 并发限制设计 §3.1）：列表项恒带 0..1000000。
-    clientIpConcurrencyLimit: idSuffix.endsWith('secondary') ? 0 : 12,
+    // 单 IP 并发限制（API Key 单 IP 并发限制设计 §3.1）：列表项恒带 -1 或 1..1000000。
+    clientIpConcurrencyLimit: idSuffix.endsWith('secondary') ? -1 : 12,
     expiresAt: '2026-08-01T00:00:00.000Z',
     quotaLimits: { dailyUsd: 10 },
     availabilitySchedule: { enabled: false, timezone: 'Asia/Shanghai', mode: 'allow', windows: [] },
