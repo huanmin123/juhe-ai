@@ -108,7 +108,7 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-key-client-ip-limit --dry-run \
   --manifest-out /opt/juhe-ai/data/key-client-ip-limit-$(date +%Y%m%d-%H%M).json \
   --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
-# 生产当前 revision 24：使用 --phase=all（若库已到 revision 25，可改用 --phase=expand）
+# 本次发布起点为 revision 24：使用 --phase=all（当前生产已于 2026-11-20 升级到 revision 26）
 /opt/juhe-ai/bin/juhe-ai-maintenance upgrade --phase=all \
   --dsn "$JUHE_AI_POSTGRES_URL" --secret "$JUHE_AI_SECRET" \
   --stop-write-confirmed --backup-confirmed </dev/null

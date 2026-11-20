@@ -82,8 +82,7 @@
       </a-form-item>
       <div class="modal-section-title">美元额度</div>
       <RequestQuotaFields :model="form.quotaLimits" />
-      <div class="modal-section-title">时间计划</div>
-      <TimeScheduleSection :form="{ availabilitySchedule: form.availabilitySchedule }" label="API Key 时间计划" :bordered="false" />
+      <TimeScheduleSection class="api-key-schedule-section" :form="{ availabilitySchedule: form.availabilitySchedule }" label="时间计划" :bordered="false" />
     </a-form>
   </a-modal>
 </template>
@@ -860,6 +859,10 @@ defineExpose({ openCreate, openEdit })
   color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 700;
+}
+
+.api-key-schedule-section {
+  margin-top: 18px;
 }
 
 .full-width-control {
