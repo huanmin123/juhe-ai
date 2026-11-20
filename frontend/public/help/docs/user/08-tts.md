@@ -13,7 +13,7 @@
 | 接口 | 形态 | 出结果方式 |
 | --- | --- | --- |
 | `POST /v1/audio/speech`（本篇） | 同步 | 响应体直接是音频二进制，存文件即得 |
-| `POST /v1/audio/transcriptions`（短音频转写） | 同步 | 响应体直接是文本 JSON |
+| `POST /v1/audio/transcriptions`（短音频转写） | 同步 | 默认文本 JSON，也可按 `response_format` 返回纯文本/字幕 |
 | `POST /v1/audio/jobs`（长音频转写）、`POST /v1/video/generations`（视频） | 异步 | 先拿任务 id，轮询完成后另行取结果 |
 
 本篇的 `model` 同样必须是你的 Key 绑定分组支持的模型：缺失报 503 `missing_model`，分组无账户支持报 503 `unsupported_model`（type 均为 `service_unavailable`）（message 形如「当前分组无账户支持请求模型：X」）。
@@ -27,7 +27,7 @@ curl -s "$BASE_URL/v1/audio/speech" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-4o-mini-tts",
     "voice": "alloy",
     "input": "你好，欢迎来到 juhe-ai。"
   }'
@@ -44,7 +44,7 @@ curl -s "$BASE_URL/v1/audio/speech" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-4o-mini-tts",
     "voice": "alloy",
     "input": "你好，欢迎来到 juhe-ai。",
     "response_format": "mp3"
@@ -92,7 +92,7 @@ while IFS= read -r line; do
     -H "Authorization: Bearer $JUHE_AI_API_KEY" \
     -H "Content-Type: application/json" \
     -d "{
-      \"model\": \"gpt-5.4\",
+      \"model\": \"gpt-4o-mini-tts\",
       \"voice\": \"alloy\",
       \"input\": \"$line\",
       \"response_format\": \"mp3\"
@@ -112,7 +112,7 @@ curl -s "$BASE_URL/v1/audio/speech" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-4o-mini-tts",
     "voice": "alloy",
     "input": "今天是十月六日，下午三点有一场会议。",
     "speed": 1.1,
@@ -127,7 +127,7 @@ curl -s "$BASE_URL/v1/audio/speech" \
 
 ## 计费怎么算
 
-TTS 按字符计费——`input` 越长费用越高，与生成音频的时长无关地取决于你送进去多少字。具体以模型目录展示的单价与用量记录为准，可在管理台对账，见《用量与统计》。
+TTS 按**生成的音频时长（秒）**计费：网关优先采用上游回报的时长，其次解析返回的音频得到秒数，再按模型目录的每秒单价结算；两者都拿不到时才按输入字符数折算估算。具体单价以模型目录展示为准，逐笔金额看用量记录，见《用量与统计》。
 
 ## 常见问题或常见错误
 

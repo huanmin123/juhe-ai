@@ -67,9 +67,18 @@ func exitErr(stepID, output string, code int) error {
 	return fmt.Errorf("%s 命令退出码 %d；输出尾部: %s", stepID, code, tail)
 }
 
+// isUndefinedRelationOrSchema 判定 PG 42P01（表/关系不存在）与 3F000
+// （schema 不存在）。fresh 空库在 EnsurePostgres 之前查询
+// `juhe_business.<table>` 会得到 3F000，与表缺失同义，必须按 0 行处理，
+// 否则 upgrade 会在建表前失败。
+func isUndefinedRelationOrSchema(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "3F000")
+}
+
 // sqlScalar 执行单值查询。fresh 库语义（§9.4-6 先于 EnsurePostgres 求值）：
-// 关系不存在（42P01）按 0 行处理——「表/列尚未建立」即「无可迁移数据」，
-// 谓词据此返回未满足或空跑；结构由后续 EnsureAll 保证收敛。
+// 关系或 schema 不存在（42P01/3F000）按 0 行处理——「表/列尚未建立」即
+// 「无可迁移数据」，谓词据此返回未满足或空跑；结构由后续 EnsureAll 保证收敛。
 func sqlScalar(ctx context.Context, dsn, query string, args ...any) (int, error) {
 	db, err := openPG(dsn)
 	if err != nil {
@@ -81,8 +90,7 @@ func sqlScalar(ctx context.Context, dsn, query string, args ...any) (int, error)
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		if isUndefinedRelationOrSchema(err) {
 			return 0, nil
 		}
 		return 0, err
@@ -90,7 +98,7 @@ func sqlScalar(ctx context.Context, dsn, query string, args ...any) (int, error)
 	return value, nil
 }
 
-// sqlExecCount 执行幂等写语句并返回受影响行数（42P01 关系不存在按 0 行，
+// sqlExecCount 执行幂等写语句并返回受影响行数（关系/schema 不存在按 0 行，
 // 与 sqlScalar 的 fresh 库语义一致）。
 func sqlExecCount(ctx context.Context, dsn, statement string) (int, error) {
 	db, err := openPG(dsn)
@@ -100,8 +108,7 @@ func sqlExecCount(ctx context.Context, dsn, statement string) (int, error) {
 	defer db.Close()
 	result, err := db.ExecContext(ctx, statement)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		if isUndefinedRelationOrSchema(err) {
 			return 0, nil
 		}
 		return 0, err
@@ -231,8 +238,8 @@ func newEntryMigrationCounters() *entryMigrationCounters {
 	}
 }
 
-// sqlCountByKey 执行 (key text, n integer) 两列查询并聚合为 map（42P01 按
-// 空集处理，与 sqlScalar 的 fresh 库语义一致）。
+// sqlCountByKey 执行 (key text, n integer) 两列查询并聚合为 map（关系/schema
+// 不存在按空集处理，与 sqlScalar 的 fresh 库语义一致）。
 func sqlCountByKey(ctx context.Context, dsn, query string, args ...any) (map[string]int, error) {
 	db, err := openPG(dsn)
 	if err != nil {
@@ -241,8 +248,7 @@ func sqlCountByKey(ctx context.Context, dsn, query string, args ...any) (map[str
 	defer db.Close()
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		if isUndefinedRelationOrSchema(err) {
 			return map[string]int{}, nil
 		}
 		return nil, err
@@ -1438,7 +1444,11 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			Title:       "单 IP 并发限制从分组迁移至 API Key（分组策略单键化）",
 			Target:      upgradepipeline.TargetPrimary,
 			Destructive: true,
-			ImplVersion: 1,
+			// 新 gateway/jobs 直接读 api_keys.client_ip_concurrency_limit，并在
+			// 运行时不读旧分组键；跳过本数据迁移会让新二进制把所有 Key 当默认
+			// -1（不限制）运行，属「启动前必需」，expand 必须 blocked（T213）。
+			RequiredBeforeStartup: true,
+			ImplVersion:           1,
 			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
 				return keyClientIPLimitSatisfied(ctx, primaryDSN)
 			},

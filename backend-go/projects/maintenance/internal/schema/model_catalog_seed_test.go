@@ -53,15 +53,16 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	//（disabled 行计入），行数仍等于快照行数。2026-10-27 GPT-6.1 Terra 新增批
 	// +1（官方 changelog 2026-10-26 明文发布，gpt 69→70）→ 213。2026-11-18
 	// GPT-6.2 Sol / Astra 新增批 +2（官方模型页 2026-11-18 抓取，gpt 70→72）
-	// → 215。
-	if len(modelCatalogSeedRows) != 215 {
-		t.Fatalf("model catalog seed rows = %d, want 215 (stale snapshot? rerun the generator from backend-go/projects/gateway/internal/pricing/catalogdata/*.json)", len(modelCatalogSeedRows))
+	// → 215；2026-11-20 百炼目录校准批 +1（恢复 paraformer-v2 作为异步文件
+	// 转写实际可用模型，qwen 16→17）→ 216。
+	if len(modelCatalogSeedRows) != 216 {
+		t.Fatalf("model catalog seed rows = %d, want 216 (stale snapshot? rerun the generator from backend-go/projects/gateway/internal/pricing/catalogdata/*.json)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 72, "xai": 17, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 19, "volcengine": 19, "qwen": 16}
+	want := map[string]int{"gpt": 72, "xai": 17, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 19, "volcengine": 19, "qwen": 17}
 	if len(perProvider) != len(want) {
 		t.Fatalf("vendor set = %v, want %v", perProvider, want)
 	}
@@ -206,7 +207,7 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 	}
 	want := map[string]int{
 		`["audio_speech"]`: 17,
-		`["audio_job_create","audio_transcription_json"]`:                                        7,
+		`["audio_job_create","audio_transcription_json"]`:                                        8,
 		`["chat_json","chat_sse"]`:                                                               43,
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse"]`: 1,
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse","interactions_json","interactions_sse"]`: 11,

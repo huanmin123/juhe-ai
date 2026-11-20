@@ -338,3 +338,27 @@ func TestQwenVideoAdapterParsePollResponse(t *testing.T) {
 		t.Fatalf("空白 video_url 应报协议违约: %v", err)
 	}
 }
+
+// TestQwenVideoAdapterRejectsAbsentNormativeMetadataPaths 钉住“请求未传
+// size/seconds 时 metadata 仍不得补写 parameters.size/duration”的计费安全
+// 边界：基础报文没有该键不代表扩展通道可以注入。
+func TestQwenVideoAdapterRejectsAbsentNormativeMetadataPaths(t *testing.T) {
+	adapter := qwenVideoAdapter{}
+	base := NormalizedVideoParams{Model: "wan2.6-t2v", Prompt: "p"}
+	for name, metadata := range map[string]map[string]any{
+		"size":     {"parameters": map[string]any{"size": "1920*1080"}},
+		"duration": {"parameters": map[string]any{"duration": float64(10)}},
+		"img_url":  {"input": map[string]any{"img_url": "https://example.com/a.png"}},
+	} {
+		if _, err := adapter.Create(context.Background(), VideoCreateInput{Params: base, Metadata: metadata}); !errors.Is(err, ErrMetadataReservedField) {
+			t.Fatalf("%s 注入应返回 ErrMetadataReservedField: %v", name, err)
+		}
+	}
+	// 非规范叶子键仍允许。
+	if _, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params:   base,
+		Metadata: map[string]any{"parameters": map[string]any{"prompt_extend": true}},
+	}); err != nil {
+		t.Fatalf("新增 parameters.prompt_extend 不应报错: %v", err)
+	}
+}

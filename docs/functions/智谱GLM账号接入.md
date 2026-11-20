@@ -109,11 +109,11 @@ GLM OpenAI Chat 档案复用 OpenAI v1 Chat Completions 协议适配器；方案
 GLM 官方通用根提供 OpenAI 兼容语音端点（契约 §7.2，B 级官方确认）：glm 账户的语音请求走 **openai 透传分支**（无独立 adapter），与 Chat 同根同凭据。
 
 - 端点：客户端 `POST /v1/audio/speech`（TTS）与 `POST /v1/audio/transcriptions|translations`（STT）；出站 URL 为版本根直拼——base 携带 glm 版本根 `/api/paas/v4`，操作路径为 `/audio/speech|transcriptions|translations`（不含版本前缀），经 `JoinUpstreamURL` 直拼、无服务根去重或 `/v1` 补缀分支（旧 `chainGlmVideoUpstreamURL` 服务根去重条款随版本根语义退役）。报文零改写透传（`response_format` 词表由上游裁决，网关零转码不做本地门禁）。
-- 厂商扩展：`metadata`（键即厂商字段名） 子对象（如声音复刻 `ref_audio`/`ref_text`）deep-merge 进上游 body 顶层，网关私有的 `metadata` 通道键不透传上游；未携带扩展参数时字节级透传。
+- 厂商扩展：`metadata`（键即厂商字段名，如声音复刻 `ref_audio`/`ref_text`）只新增并入上游 body 顶层（不覆盖既有字段，冲突 400 `metadata_conflict`），网关私有的 `metadata` 通道键不透传上游；未携带扩展参数时字节级透传。
 - 鉴权：与 Chat 相同的 `Authorization: Bearer <GLM API Key>`。
 - 端点模式：`audio_speech`/`audio_transcription_json` 属 openai 族共享 token，opt-in 显式勾选（写侧 `glmSpeechEndpointModeSet` 放行），不进默认集（glm 默认集仍只落 chat 对）。
 - 目录：`cogtts`/`glm-tts` 两行（mode=audio、协议 `audio_speech`；2026-10-17 口径批起落国内字符价——官方 2 元/万字符 ÷7.0，此前「不落字符价」与更早的 2×10÷7.0 少 10 倍换算均作废）；**GLM-ASR 行待回填**（GLM-ASR-2512 系的官方国内现价页未列明——2026-10-17 复核：目录行保留 z.ai 国际站 $0.03/MTok 存档价，此前注记国内 16 元/百万 tokens 与之矛盾且均无现价佐证，待专门取证——STT 透传链路不依赖目录行，模型门由账户 `supportedModels` 显式配置承载）。GLM 目录主口径为国内站（open.bigmodel.cn，账户档案实连）人民币明文 ÷7.0，逐行取证见《模型价格数据源与取证指南》台账，锚点钉值在 `catalogdata_price_anchors_test.go`。
-- 测试：Mock `media_glm_tts_ok`（OpenAI speech 形态回 wav）；链级 `TestChainMediaGlmSpeechUrlPassthroughRefAudio`/`TestChainMediaGlmSpeechUpstreamURLDedup`（出站 URL 归一 + ref_audio 深合并断言）；E2E `TestFullchainMediaSpeechGlmTTS`。
+- 测试：Mock `media_glm_tts_ok`（OpenAI speech 形态回 wav）；链级 `TestChainMediaGlmSpeechUrlPassthroughRefAudio`/`TestChainMediaGlmSpeechUpstreamURLDedup`（出站 URL 归一 + ref_audio 只新增断言）；E2E `TestFullchainMediaSpeechGlmTTS`。
 
 ### 三协议模型与验证策略
 

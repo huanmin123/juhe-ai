@@ -51,8 +51,24 @@ export function categoryFromModeOrModel(modeValue: string | undefined, modelValu
   return modelNameCategoryRules.find((rule) => rule.matches(model))?.category ?? 'text'
 }
 
-export function getModelCategoryFromPricing(item: Pick<ProviderModelPricing, 'mode' | 'model'>): ModelCategoryKey {
-  return categoryFromModeOrModel(item.mode, item.model)
+export function getModelCategoryFromPricing(
+  item: Pick<ProviderModelPricing, 'mode' | 'model' | 'mediaPricing' | 'outputModalities'>
+): ModelCategoryKey {
+  const projected = categoryFromModeOrModel(item.mode, item.model)
+  // mode 投影为 text 时，统一媒体模板与输出模态是更强的分类信号：Gemini
+  // generate_content 图像行的 endpoint modes 投影为 chat，仅按 mode 会把
+  // 内置图像行显示成文本分类，导致统一媒体价格不可见、保存被严格校验拒绝。
+  if (projected !== 'text') return projected
+  const unit = item.mediaPricing?.unit
+  if (unit === 'image') return 'image'
+  if (unit === 'call') return 'video'
+  const outputs = item.outputModalities ?? []
+  if (unit === 'second') {
+    if (outputs.includes('video')) return 'video'
+    if (outputs.includes('audio')) return 'audio'
+  }
+  if (outputs.includes('image')) return 'image'
+  return projected
 }
 
 function categoryFromModeAlias(mode: string): ModelCategoryKey | undefined {

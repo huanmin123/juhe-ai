@@ -104,19 +104,21 @@ func geminiUsageToProto(usage *gatewaygemini.ParsedUsage) gatewayproto.ParsedUsa
 		return gatewayproto.ParsedUsage{}
 	}
 	return gatewayproto.ParsedUsage{
-		UpstreamResponseModel: usage.UpstreamResponseModel,
-		ServiceTier:           usage.ServiceTier,
-		InputTokens:           usage.InputTokens,
-		OutputTokens:          usage.OutputTokens,
-		CacheReadTokens:       usage.CacheReadTokens,
-		CacheWriteTokens:      usage.CacheWriteTokens,
-		CacheWrite1hTokens:    usage.CacheWrite1hTokens,
-		ThinkingTokens:        usage.ThinkingTokens,
-		InputImageTokens:      usage.InputImageTokens,
-		OutputImageTokens:     usage.OutputImageTokens,
-		InputAudioTokens:      usage.InputAudioTokens,
-		OutputAudioTokens:     usage.OutputAudioTokens,
-		OutputImageCount:      usage.OutputImageCount,
+		UpstreamResponseModel:  usage.UpstreamResponseModel,
+		ServiceTier:            usage.ServiceTier,
+		InputTokens:            usage.InputTokens,
+		OutputTokens:           usage.OutputTokens,
+		CacheReadTokens:        usage.CacheReadTokens,
+		CacheWriteTokens:       usage.CacheWriteTokens,
+		CacheWrite1hTokens:     usage.CacheWrite1hTokens,
+		ThinkingTokens:         usage.ThinkingTokens,
+		InputImageTokens:       usage.InputImageTokens,
+		OutputImageTokens:      usage.OutputImageTokens,
+		InputAudioTokens:       usage.InputAudioTokens,
+		OutputAudioTokens:      usage.OutputAudioTokens,
+		OutputImageCount:       usage.OutputImageCount,
+		ImageCandidatesPresent: usage.ImageCandidatesPresent,
+		QuantitySource:         usage.QuantitySource,
 	}
 }
 

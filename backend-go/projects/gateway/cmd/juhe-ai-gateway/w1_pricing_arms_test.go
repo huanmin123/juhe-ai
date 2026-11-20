@@ -579,9 +579,36 @@ func TestW1GChainCatalogPricingMediaRatesFromStaticSnapshot(t *testing.T) {
 	}
 }
 
-// 维度修正批真实复现钉：DB 行无 token 价但静态层命中媒体价的目录行
-// （volcengine seed-audio-1.0 / seedance 系）不得被 priced 过滤剔除——
-// 否则 chainCatalogPricing 的静态层媒体价补齐永远不执行、costUsd 恒 NULL。
+// TestW1GChainCatalogPricingInvalidMediaPricingIsUnpriced 钉住 AC-016 运行期
+// 口径：media_pricing_json 非法时 chainCatalogPricing 不得从静态层补齐媒体
+// 单价，整行按无价处理（不回落 legacy、不产出计费行项）。
+func TestW1GChainCatalogPricingInvalidMediaPricingIsUnpriced(t *testing.T) {
+	mode := "video"
+	converted := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode:        "volcengine",
+		Model:               "doubao-seedance-2-0-mini-260615",
+		Mode:                &mode,
+		MediaPricingInvalid: true,
+	})
+	if !converted.MediaPricingInvalid {
+		t.Fatal("非法 media_pricing_json 必须保留 invalid 标记")
+	}
+	if converted.VideoOutputUsdPerSecond != nil || converted.AudioInputUsdPerSecond != nil {
+		t.Fatalf("非法媒体行不得回退静态 legacy 媒体价: %#v", converted.PriceSet)
+	}
+	seconds := 5.0
+	if breakdown := pricing.BuildCostBreakdown(converted, pricing.CostInput{
+		ProviderCode:       "volcengine",
+		Model:              "doubao-seedance-2-0-mini-260615",
+		OutputVideoSeconds: &seconds,
+	}); breakdown != nil {
+		t.Fatalf("非法媒体行不得产出计费行项: %#v", breakdown)
+	}
+}
+
+// TestW1GChainHasDirectCatalogPriceSeesStaticMediaRates 钉住 priced 过滤的
+// 静态媒体价放行口径：否则 DB 行无 token 价但静态层有媒体秒价的行会被
+// 误判无价并剔除。
 func TestW1GChainHasDirectCatalogPriceSeesStaticMediaRates(t *testing.T) {
 	if !chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
 		ProviderCode: "volcengine", Model: "seed-audio-1.0",

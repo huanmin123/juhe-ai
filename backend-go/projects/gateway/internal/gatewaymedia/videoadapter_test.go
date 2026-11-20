@@ -171,7 +171,7 @@ func TestOpenAIVideoAdapterCreateMergesMetadata(t *testing.T) {
 		t.Fatalf("未知键应透传: %v", body["vendor_extra"])
 	}
 	if nested, ok := body["nested"].(map[string]any); !ok || nested["flag"] != true {
-		t.Fatalf("嵌套扩展键应 deep-merge: %v", body["nested"])
+		t.Fatalf("嵌套新增键应合并: %v", body["nested"])
 	}
 }
 
@@ -242,6 +242,9 @@ func TestOpenAIVideoAdapterParsePollResponse(t *testing.T) {
 				}
 				if ir.Usage.OutputVideoSeconds == nil || *ir.Usage.OutputVideoSeconds != 4 {
 					t.Fatalf("seconds = %v", ir.Usage.OutputVideoSeconds)
+				}
+				if ir.Usage.ResolutionTier != "720p" {
+					t.Fatalf("terminal resolution tier = %q, want 720p", ir.Usage.ResolutionTier)
 				}
 			},
 		},

@@ -14,7 +14,7 @@
 
 ---
 
-## OpenAI / GPT（provider：`openai`，`gpt` 是其别名）
+## OpenAI / GPT（供应商代码 `gpt`，协议面 `openai`）
 
 | 参数 | 说明 | 写法 |
 | --- | --- | --- |
@@ -107,6 +107,8 @@
 | TTS `speed` | 有效区间 **0.2–3.0**（对应 `speed_ratio`） |
 | TTS 专有键 | `metadata`（如 `emotion`） |
 | 回包特例 | TTS 音频为 base64（与 MiniMax 的 hex 不同，但你拿到的都是网关解码后的二进制） |
+| 同步转写 | 仅 `POST /v1/audio/transcriptions`（如 `volc.seedasr.auc`）：支持 `response_format` 的 json/text/verbose_json/srt/vtt，单文件限 **25MB**；**不支持** `/v1/audio/translations`（本地 400，不伪造翻译） |
+| 转写 `language` | 只回填到 `verbose_json` 的 `language`，不作为上游识别参数 |
 
 ## xAI / Grok
 

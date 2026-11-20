@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // VideoProviderAdapter 是异步视频出站 adapter 端口（对齐媒体设计 §5 职责
@@ -54,8 +56,8 @@ type VideoProviderAdapter interface {
 }
 
 // VideoCreateInput 是创建请求的输入：归一参数 + metadata 对象形态
-// （键=provider_code，Create 内按本 provider 取命中子对象 deep-merge 覆盖
-// 同名 L2 值，其余子对象忽略，契约 §2.1 L3/§2.4 规则 4）。
+// （键=厂商原生参数名，Create 内只新增、不覆盖任何既有路径，冲突返回
+// ErrMetadataReservedField，契约 §2.1 L3/§2.4 规则 4）。
 type VideoCreateInput struct {
 	Params   NormalizedVideoParams
 	Metadata map[string]any
@@ -122,6 +124,16 @@ type VideoArtifactDurationProbeProvider interface {
 	ProbeArtifactDuration() bool
 }
 
+// VideoEffectiveMeteringProvider 是视频 adapter 的可选能力：返回归一参数
+// 经 adapter 换算后**实际出站**的秒数与分辨率档，用于创建时冻结计费快照。
+// 未实现时链上层退回请求生效秒数与标准 size 短边归档；实现了但某些字段
+// 无换算法（如无 size）时对应返回 nil/空串。这是计费口径与上游实际工作量
+// 对齐的边界：例如 GLM 请求 7s 出站 10s、xAI 请求 7.6s 出站 8s、Veo 无
+// seconds 字段出站默认 8s，均须按出站值冻结。
+type VideoEffectiveMeteringProvider interface {
+	EffectiveVideoMetering(params NormalizedVideoParams) (seconds *float64, resolutionTier string)
+}
+
 // VideoArtifactDurationProbeForProvider 解析某供应商是否允许产物时长探测。
 func VideoArtifactDurationProbeForProvider(providerCode string) bool {
 	adapter := VideoAdapterForProvider(providerCode)
@@ -166,6 +178,7 @@ func (openaiVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsSize:           true,
 	}
 }
 
@@ -201,7 +214,10 @@ func (a openaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vide
 	if params.InputReference != nil {
 		body["input_reference"] = *params.InputReference
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, openAIVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 openai 视频创建请求体失败: %w", err)
@@ -313,6 +329,12 @@ func (openaiVideoAdapter) ParsePollResponse(statusCode int, body []byte) (*Media
 		if obj.SecondsLength != nil {
 			seconds := float64(*obj.SecondsLength)
 			ir.Usage.OutputVideoSeconds = &seconds
+		}
+		// 上游终态回带 size 时按实际尺寸归档，结算优先于创建时换算档位。
+		if width, height, ok := mediapricing.ParseSize(obj.Size); ok {
+			if tier, ok := mediapricing.TierForDimensions(mediapricing.KindVideo, width, height); ok {
+				ir.Usage.ResolutionTier = tier
+			}
 		}
 	}
 	return ir, nil

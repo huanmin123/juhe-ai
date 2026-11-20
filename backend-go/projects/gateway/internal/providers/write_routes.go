@@ -992,7 +992,20 @@ func cloneServiceTierPrices(prices map[string]ModelPriceSet) map[string]ModelPri
 // 价格即可 active 会让未定价维度在结算时把整单 cost 落 NULL（可构造免费用量）。
 // 缺必填维度返回 400 文案「必须配置完整当前价格」；draft/disabled 不受影响，
 // 已有历史行不在读取/运行期重校验（只在保存/启用时校验）。
+//
+// 新建路径使用本函数（严格 mode）：chat/空 mode 新配置 mediaPricing 一律
+// 400。编辑已存在媒体模板行走 validateCustomModelPricingAllowUnknown，原因
+// 见该函数。
 func validateCustomModelPricing(providerCode string, input customProviderModelUpsertInput) string {
+	return validateCustomModelPricingAllowUnknown(providerCode, input, false)
+}
+
+// validateCustomModelPricingAllowUnknown 是 PATCH 已存在媒体模板行的入口：
+// 目录 mode 由 endpoint modes 投影而来，Gemini generate_content 图像行会
+// 投影为 chat、无 endpoint modes 的迁移行投影为空，按严格 mode 校验会拒绝
+// 编辑已有价格行（AC-009）。allowExistingUnknownMode=true 时仅对可映射的
+// 媒体 mode 校验 kind，其余按结构校验；新建行必须用严格入口。
+func validateCustomModelPricingAllowUnknown(providerCode string, input customProviderModelUpsertInput, allowExistingUnknownMode bool) string {
 	status := input.Status
 	if status == "" {
 		status = "active"
@@ -1000,10 +1013,10 @@ func validateCustomModelPricing(providerCode string, input customProviderModelUp
 	if message := validateCustomModelCapabilities(providerCode, input); message != "" {
 		return message
 	}
-	if message := validateCustomModelMediaPricing(input); message != "" {
+	if message := validateCustomModelMediaPricingAllowUnknown(input, allowExistingUnknownMode); message != "" {
 		return message
 	}
-	if status == "active" && !customInputHasCompletePrice(input) {
+	if status == "active" && !customInputHasCompletePriceAllowUnknown(input, allowExistingUnknownMode) {
 		return "启用的自定义模型必须配置完整当前价格"
 	}
 	return ""
@@ -1014,6 +1027,12 @@ func validateCustomModelPricing(providerCode string, input customProviderModelUp
 // 媒体音频协议（realtime / chat 音频继续 token 计费）；unit/档位由 shared
 // mediapricing 严格校验。非法值不回落 legacy 猜测。
 func validateCustomModelMediaPricing(input customProviderModelUpsertInput) string {
+	return validateCustomModelMediaPricingAllowUnknown(input, false)
+}
+
+// validateCustomModelMediaPricingAllowUnknown 语义见
+// validateCustomModelPricingAllowUnknown。
+func validateCustomModelMediaPricingAllowUnknown(input customProviderModelUpsertInput, allowExistingUnknownMode bool) string {
 	if input.MediaPricing == nil {
 		return ""
 	}
@@ -1021,14 +1040,14 @@ func validateCustomModelMediaPricing(input customProviderModelUpsertInput) strin
 	if input.Mode != nil {
 		mode = *input.Mode
 	}
-	kind, ok := mediapricing.KindForMode(mode)
-	if !ok {
+	kind, kindOK := mediapricing.KindForMode(mode)
+	if !kindOK && !allowExistingUnknownMode {
 		return "只有图像/音频/视频模型支持统一媒体价格"
 	}
-	if err := input.MediaPricing.ValidateFor(kind); err != nil {
+	if err := input.MediaPricing.ValidateForMappedMode(mode); err != nil {
 		return "媒体统一价格无效"
 	}
-	if kind == mediapricing.KindAudio {
+	if kindOK && kind == mediapricing.KindAudio {
 		mediaProtocol := false
 		for _, protocol := range input.SupportedAPIProtocols {
 			if protocol == "audio_speech" || protocol == "audio_transcription" {
@@ -1161,13 +1180,22 @@ func serviceTierPriceKeysWithPrices(prices map[string]ModelPriceSet) []string {
 //   - audio：维持旧口径（音频输入或输出 token 价任一），per-second/per-char
 //     价只在静态定价层、管理面无写入通道。
 //   - video：维持旧口径（无管理面秒价/次价通道 → 无直接价）。
+//
+// allowExistingUnknownMode 语义同 validateCustomModelPricingAllowUnknown。
 func customInputHasCompletePrice(input customProviderModelUpsertInput) bool {
+	return customInputHasCompletePriceAllowUnknown(input, false)
+}
+
+func customInputHasCompletePriceAllowUnknown(input customProviderModelUpsertInput, allowExistingUnknownMode bool) bool {
 	mode := "text"
 	if input.Mode != nil {
 		mode = *input.Mode
 	}
 	// 统一媒体模板存在即视为该模式已定价（0 价有效）；非法模板不通过。
 	if input.MediaPricing != nil {
+		if allowExistingUnknownMode {
+			return input.MediaPricing.ValidateForMappedMode(mode) == nil
+		}
 		return input.MediaPricing.ValidateForMode(mode) == nil
 	}
 	switch mode {
@@ -1215,7 +1243,10 @@ func customInputIsEmbeddingOnly(input customProviderModelUpsertInput) bool {
 }
 
 // validateBuiltInMediaPricing 校验目录行的统一媒体模板与 mode/协议匹配。
-func validateBuiltInMediaPricing(item *ModelCatalogItem) string {
+// allowExistingUnknownMode 与自定义模型 PATCH 同义：已有媒体模板行的目录
+// mode 可能投影为 chat/空（Gemini generate_content 图像行、无 endpoint
+// modes 迁移行），编辑价格/日期时必须放行；新建模板仍严格要求媒体 mode。
+func validateBuiltInMediaPricing(item *ModelCatalogItem, allowExistingUnknownMode bool) string {
 	if item == nil || !item.HasMediaPricing || len(item.MediaPricing) == 0 {
 		return ""
 	}
@@ -1227,14 +1258,14 @@ func validateBuiltInMediaPricing(item *ModelCatalogItem) string {
 	if item.Mode != nil {
 		mode = *item.Mode
 	}
-	kind, ok := mediapricing.KindForMode(mode)
-	if !ok {
+	kind, kindOK := mediapricing.KindForMode(mode)
+	if !kindOK && !allowExistingUnknownMode {
 		return "只有图像/音频/视频模型支持统一媒体价格"
 	}
-	if err := parsed.ValidateFor(kind); err != nil {
+	if err := parsed.ValidateForMappedMode(mode); err != nil {
 		return "媒体统一价格无效"
 	}
-	if kind == mediapricing.KindAudio {
+	if kindOK && kind == mediapricing.KindAudio {
 		mediaProtocol := false
 		for _, protocol := range item.SupportedAPIProtocols {
 			if protocol == "audio_speech" || protocol == "audio_transcription" {
@@ -1251,7 +1282,14 @@ func validateBuiltInMediaPricing(item *ModelCatalogItem) string {
 
 // validateBuiltInModelCompleteness ports validateBuiltInModelCompleteness.
 func validateBuiltInModelCompleteness(next *ModelCatalogItem) string {
-	if message := validateBuiltInMediaPricing(next); message != "" {
+	return validateBuiltInModelCompletenessAllowUnknown(next, false)
+}
+
+// validateBuiltInModelCompletenessAllowUnknown 语义见
+// validateCustomModelPricingAllowUnknown：PATCH 已存在媒体模板行（Gemini
+// generate_content 图像行/空 endpoint modes 迁移行）允许 chat/空 mode。
+func validateBuiltInModelCompletenessAllowUnknown(next *ModelCatalogItem, allowExistingUnknownMode bool) string {
+	if message := validateBuiltInMediaPricing(next, allowExistingUnknownMode); message != "" {
 		return message
 	}
 	if next.ReleaseDate == nil {
@@ -1268,6 +1306,12 @@ func validateBuiltInModelCompleteness(next *ModelCatalogItem) string {
 		mode = *next.Mode
 	}
 	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") && mode != "embedding" && mode != "video"
+	// chat/空投影的既有媒体模板行（Gemini generate_content 图像行、无
+	// endpoint modes 迁移行）不是文本模型：模板存在即媒体行，不要求上下文
+	// 容量，否则只编辑发布日期/价格也会被文本完整性拦截。
+	if isTextModel && allowExistingUnknownMode && next.HasMediaPricing {
+		isTextModel = false
+	}
 	if isTextModel && (next.ContextWindowTokens == nil || *next.ContextWindowTokens == 0) &&
 		(next.MaxInputTokens == nil || *next.MaxInputTokens == 0) {
 		return "内置文本模型必须配置上下文或最大输入容量"
@@ -1423,6 +1467,8 @@ func customCatalogItemFromRecord(record *customProviderModelRecord) ModelCatalog
 			item.MediaPricing = canonical
 			item.HasMediaPricing = true
 		}
+	} else if record.MediaPricingInvalid {
+		item.MediaPricingInvalid = true
 	}
 	return item
 }

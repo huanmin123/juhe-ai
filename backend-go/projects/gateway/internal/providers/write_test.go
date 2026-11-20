@@ -68,12 +68,15 @@ func TestProvidersCreateCustomModel(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	user1, _ := env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
+	// 当前价格只允许管理员提交（设计 §7.3）；管理员通过 systemAccountId
+	// 指定归属，验证个人模型的作用域与归属语义。
+	env.login(t, "root", "root-pass", "super_admin")
+	personalModelsPath := "/__aisys__/api/providers/gpt/models?systemAccountId=" + user1
 
 	body := `{"model":"my-model","supportedApiProtocols":["chat_completions"],"contextWindowTokens":32000,
 		"inputUsdPer1M":1.5,"outputUsdPer1M":2,"supportedServiceTiers":["priority"],
 		"serviceTierPrices":{"priority":{"inputUsdPer1M":2.5,"outputUsdPer1M":3.5}}}`
-	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", body)
+	code, created := env.do(t, http.MethodPost, personalModelsPath, body)
 	if code != http.StatusCreated {
 		t.Fatalf("create custom model: %d %v", code, created)
 	}
@@ -106,7 +109,7 @@ func TestProvidersCreateCustomModel(t *testing.T) {
 	}
 
 	// The merged catalog picks the row up with catalogDisplay present.
-	code, models := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt/models", "")
+	code, models := env.do(t, http.MethodGet, personalModelsPath, "")
 	if code != http.StatusOK {
 		t.Fatalf("models after create: %d %v", code, models)
 	}
@@ -125,7 +128,7 @@ func TestProvidersCreateCustomModel(t *testing.T) {
 	}
 
 	// Duplicate POST: same scope+model upserts onto the same row.
-	code, again := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":"my-model","inputUsdPer1M":3,"outputUsdPer1M":6}`)
+	code, again := env.do(t, http.MethodPost, personalModelsPath, `{"model":"my-model","inputUsdPer1M":3,"outputUsdPer1M":6}`)
 	if code != http.StatusCreated {
 		t.Fatalf("duplicate create: %d %v", code, again)
 	}
@@ -163,11 +166,12 @@ func TestProvidersCreateCustomModelValidation(t *testing.T) {
 		{"bad protocol", "user1", `{"model":"a","supportedApiProtocols":["nope"]}`, 400, "自定义模型参数无效"},
 		{"bad tier token", "user1", `{"model":"a","supportedServiceTiers":["!"]}`, 400, "自定义模型参数无效"},
 		{"active without price", "user1", `{"model":"a","status":"active"}`, 400, "启用的自定义模型必须配置完整当前价格"},
-		{"gpt foreign tier", "user1", `{"model":"a","inputUsdPer1M":1,"supportedServiceTiers":["fast"]}`, 400, "自定义模型参数无效"},
-		{"image with tiers", "root", `{"model":"a","mode":"image","imageInputUsdPer1M":1,"supportedServiceTiers":["priority"]}`, 400, "只有文本自定义模型支持服务等级和思考能力配置"},
-		{"tier price not supported", "user1", `{"model":"a","inputUsdPer1M":1,"serviceTierPrices":{"flex":{"inputUsdPer1M":1}}}`, 400, "服务档位价格必须属于模型支持的服务等级"},
-		{"strict tier prices", "user1", `{"model":"a","inputUsdPer1M":1,"serviceTierPrices":{"p":{"nope":1}}}`, 400, "自定义模型参数无效"},
-		{"global as user", "user1", `{"model":"a","scope":"global","inputUsdPer1M":1}`, 403, "只有管理员可以创建全局模型"},
+		// 价格键只允许管理员提交（设计 §7.3），带价校验用例统一用 root。
+		{"gpt foreign tier", "root", `{"model":"a","inputUsdPer1M":1,"supportedServiceTiers":["fast"]}`, 400, "自定义模型参数无效"},
+		{"image with tiers", "root", `{"model":"a","mode":"image","mediaPricing":` + testImageMediaPricing + `,"supportedServiceTiers":["priority"]}`, 400, "只有文本自定义模型支持服务等级和思考能力配置"},
+		{"tier price not supported", "root", `{"model":"a","inputUsdPer1M":1,"serviceTierPrices":{"flex":{"inputUsdPer1M":1}}}`, 400, "服务档位价格必须属于模型支持的服务等级"},
+		{"strict tier prices", "root", `{"model":"a","inputUsdPer1M":1,"serviceTierPrices":{"p":{"nope":1}}}`, 400, "自定义模型参数无效"},
+		{"global as user", "user1", `{"model":"a","scope":"global"}`, 403, "只有管理员可以创建全局模型"},
 		// An admin without ?systemAccountId targets their own account, so the
 		// personal-model owner fork stays satisfied and pricing validation
 		// answers first (Node providerModelRequestSystemAccountId fallback).
@@ -217,7 +221,8 @@ func TestProvidersCreateCustomModelTemplate(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
+	// 价格键只允许管理员提交（设计 §7.3）；模板继承本身与角色无关。
+	env.login(t, "root", "root-pass", "super_admin")
 
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"from-template","configurationTemplateId":"cat-2","outputUsdPer1M":0}`)
@@ -254,7 +259,9 @@ func TestProvidersPatchCustomModel(t *testing.T) {
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
 	env.requireAccount(t, "user2", "user-pass", "user")
-	env.login(t, "user1", "user-pass", "user")
+	// 价格补丁只允许管理员提交（设计 §7.3）；所有权/不可见仍由 user1、
+	// user2 会话分别断言（行不可见时先返回 404，不进入价格门）。
+	env.login(t, "root", "root-pass", "super_admin")
 
 	updatedAt := env.updatedAtOf(t, "cu-1")
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cu-1",
@@ -312,7 +319,9 @@ func TestProvidersPatchCustomModel(t *testing.T) {
 		t.Fatalf("wrong provider patch: %d %v", code, wrongProvider)
 	}
 
-	// Clearing every price while staying active fails the completeness rule.
+	// Clearing every price while staying active fails the completeness rule
+	// (管理员价格键路径).
+	env.login(t, "root", "root-pass", "super_admin")
 	code, unpriced := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cu-1",
 		`{"expectedUpdatedAt":"`+env.updatedAtOf(t, "cu-1")+`","inputUsdPer1M":null,"outputUsdPer1M":null}`)
 	if code != http.StatusBadRequest || unpriced["message"] != "启用的自定义模型必须配置完整当前价格" {
@@ -454,7 +463,7 @@ func TestProvidersPatchBuiltInModel(t *testing.T) {
 func TestProvidersDeleteCustomModel(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
-	env.seedWriteFixtures(t)
+	user1, _ := env.seedWriteFixtures(t)
 	env.login(t, "root", "root-pass", "super_admin")
 	env.login(t, "user1", "user-pass", "user")
 
@@ -468,10 +477,12 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 		t.Fatalf("double delete: %d %v", code, again)
 	}
 
-	// Another user's personal model is invisible.
-	env.login(t, "user1", "user-pass", "user")
+	// Another user's personal model is invisible. 价格只允许管理员提交，管理员
+	// 通过 systemAccountId 把新建个人模型归属到 user1。
+	env.login(t, "root", "root-pass", "super_admin")
 	second := `{"model":"user1-private","inputUsdPer1M":1,"outputUsdPer1M":2}`
-	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", second)
+	code, created := env.do(t, http.MethodPost,
+		"/__aisys__/api/providers/gpt/models?systemAccountId="+user1, second)
 	if code != http.StatusCreated {
 		t.Fatalf("second personal model: %d %v", code, created)
 	}

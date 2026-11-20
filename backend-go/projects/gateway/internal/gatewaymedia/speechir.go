@@ -16,8 +16,10 @@ import (
 // 校验裁决按厂商 adapter 承载——openai 族直连透传由上游裁决，gemini 等转换
 // 型 adapter 在 BuildSpeechUpstreamRequest 内做能力裁决）。
 // Metadata 是唯一扩展通道的厂商参数包（设计《对外协议面对齐 new-api 设计》
-// §5.1；M3 minimax TTS 起消费——vol/pitch 等厂商个例参数 deep-merge 进
-// t2a_v2 报文；openai 族直连与 gemini TTS 不消费该字段）。
+// §5.1；M3 minimax TTS 起消费——vol/pitch 等厂商个例参数只新增写入
+// t2a_v2 报文；gemini TTS 在 BuildRequest 内合并进 generateContent 报文）。
+// 所有 speech adapter 共用同一投影入口：ParseSpeechRequest 解析并校验键名
+// （SpeechMetadataReserved），不再由链上层按 vendor 二次解析。
 // AccountVendorRefs 是链上注入的账户级厂商引用（非请求面参数，客户端不可
 // 控制；M6 火山 TTS 起消费——speech_appid 构造 user.uid 固定值，契约 §9.2；
 // openai 族直连与 gemini/minimax adapter 不读取该字段）。
@@ -68,6 +70,11 @@ func ParseSpeechRequest(body map[string]any) (SpeechRequest, error) {
 		speedValue := speed
 		ir.Speed = &speedValue
 	}
+	metadata, err := ExtractMetadata(body[MetadataKey], SpeechMetadataReserved)
+	if err != nil {
+		return SpeechRequest{}, err
+	}
+	ir.Metadata = metadata
 	return ir, nil
 }
 

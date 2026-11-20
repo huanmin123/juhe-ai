@@ -6,9 +6,11 @@ package main
 // 1 元/次 ÷7.0、minimax MiniMax-H3 768P 0.50 元/s ÷7.0、gemini veo-3.0
 // $0.40/s，2026-10-17 口径批国内面回正），不依赖 mock 上游与 spool 链。
 import (
+	"context"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // billingTestSeconds 分配可空秒数（表驱动助手）。
@@ -115,5 +117,84 @@ func TestChainMediaJobTerminalCostUsdUsageMissing(t *testing.T) {
 	//（enqueue 侧据此落 usage_missing，而非自算秒数）。
 	if seconds := chainMediaJobVideoUsageSecondsOf(veo, ir); seconds != nil {
 		t.Fatalf("ignored seconds metering = %v, want nil", *seconds)
+	}
+}
+
+// TestEnqueueMediaJobTerminalUsageInvalidMediaPricingZeroCost 钉住 AC-016 异步
+// 路径：非法 media_pricing_json 的终态任务必须向 usage 行写显式 0 成本 +
+// usage_missing，不得因 breakdown=nil 留下 cost_usd=NULL（同步路径已在
+// chain_usage.go 同口径处理）。
+func TestEnqueueMediaJobTerminalUsageInvalidMediaPricingZeroCost(t *testing.T) {
+	recorder := gatewayusage.NewMemoryUsageRecorder(nil, nil)
+	chain := &gatewayChain{finalizationUsage: recorder}
+	record := &gatewaymedia.MediaJobRecord{
+		ID:        "job-invalid-pricing",
+		Kind:      gatewaymedia.JobKindVideo,
+		APIKeyID:  "key-1",
+		AccountID: "acc-1",
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
+			Model: "doubao-seedance-1-0-pro-250528",
+		},
+	}
+	account := &chainMediaJobAccount{
+		OwnerSystemAccountID: "owner-1",
+		ProviderCode:         "volcengine",
+	}
+	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
+	settlement := chainMediaJobSettlement{
+		usageMissing:        true,
+		media:               true,
+		mediaPricingInvalid: true,
+	}
+	chain.enqueueMediaJobTerminalUsage(context.Background(), "trace-1", "api-owner-1", false, record, account, ir, settlement)
+
+	records := recorder.Records()
+	if len(records) != 1 {
+		t.Fatalf("usage records = %d, want 1", len(records))
+	}
+	if records[0].CostUsd == nil || *records[0].CostUsd != 0 {
+		t.Fatalf("CostUsd = %v, want 显式 0（AC-016）", records[0].CostUsd)
+	}
+	if !records[0].UsageMissing {
+		t.Fatal("非法 media_pricing_json 必须标 usage_missing")
+	}
+}
+
+// TestEnqueueMediaJobTerminalUsageMediaMeteringMissingZeroCost 钉住统一媒体行
+// 「有效模板但计量缺失」的终态口径（设计 §5.2/§7.1）：settlement.media=true、
+// breakdown=nil、mediaPricingInvalid=false 时同样必须显式落 0 + usage_missing，
+// 不能留 cost_usd=NULL；legacy 无价行（media=false）保持原 NULL 语义。
+func TestEnqueueMediaJobTerminalUsageMediaMeteringMissingZeroCost(t *testing.T) {
+	recorder := gatewayusage.NewMemoryUsageRecorder(nil, nil)
+	chain := &gatewayChain{finalizationUsage: recorder}
+	record := &gatewaymedia.MediaJobRecord{
+		ID:        "job-metering-missing",
+		Kind:      gatewaymedia.JobKindVideo,
+		APIKeyID:  "key-1",
+		AccountID: "acc-1",
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
+			Model: "veo-3.0-generate-preview",
+		},
+	}
+	account := &chainMediaJobAccount{
+		OwnerSystemAccountID: "owner-1",
+		ProviderCode:         "gemini",
+	}
+	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
+	settlement := chainMediaJobSettlement{
+		usageMissing: true,
+		media:        true,
+	}
+	chain.enqueueMediaJobTerminalUsage(context.Background(), "trace-1", "api-owner-1", false, record, account, ir, settlement)
+
+	records := recorder.Records()
+	if len(records) != 1 {
+		t.Fatalf("usage records = %d, want 1", len(records))
+	}
+	if records[0].CostUsd == nil || *records[0].CostUsd != 0 {
+		t.Fatalf("CostUsd = %v, want 显式 0（统一媒体行计量缺失）", records[0].CostUsd)
+	}
+	if !records[0].UsageMissing {
+		t.Fatal("统一媒体行计量缺失必须标 usage_missing")
 	}
 }

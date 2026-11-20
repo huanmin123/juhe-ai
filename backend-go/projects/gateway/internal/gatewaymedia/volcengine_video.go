@@ -48,6 +48,7 @@ func (volcengineVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsSize:           true,
 	}
 }
 
@@ -125,7 +126,7 @@ func volcengineSizeToResolutionRatio(size string) (resolution, ratio string, err
 }
 
 // Create 构造契约 §9.1 创建报文：POST {base}/contents/generations/tasks
-//（opPath 按 v2 契约不含版本段；/api/v3 服务根由账户 base_url 版本根承载），
+// （opPath 按 v2 契约不含版本段；/api/v3 服务根由账户 base_url 版本根承载），
 // body 为 {model,content,resolution?,ratio?,duration?,seed?}。映射与透传
 // 规则（官方 API 参考 2026-10-04 核实，契约 §2.7 volcengine 列）：
 //   - prompt → content[0] = {"type":"text","text":...}（content 数组原生形态）；
@@ -137,8 +138,8 @@ func volcengineSizeToResolutionRatio(size string) (resolution, ratio string, err
 //     裁决，契约 §2.4 规则 3）；
 //   - seed → seed：整数直传；
 //   - negative_prompt/n/audio 归一层判为 ignored，不进报文（§2.4 规则 1）；
-//   - metadata 逐键 deep-merge 覆盖同名键
-//     （契约 §2.1 L3，如 {"volcengine":{"camera_fixed":true}}）。
+//   - metadata 只新增、不覆盖既有路径
+//     （契约 §2.1 L3，如 {"camera_fixed":true}）。
 func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -179,7 +180,10 @@ func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (
 	if params.Seed != nil {
 		body["seed"] = *params.Seed
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, volcengineVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 volcengine 视频创建请求体失败: %w", err)
@@ -191,8 +195,23 @@ func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (
 	}, nil
 }
 
+// EffectiveVideoMetering 实现 VideoEffectiveMeteringProvider：火山方舟 size
+// 换算为 resolution 档（480p/720p/1080p，无 1440p/2160p 更高档），计费快照
+// 必须按出站档位冻结，不能按原始 size 的标准短边归档产生 1440p/2160p 档。
+// duration 数值直传，不改变秒数。
+func (volcengineVideoAdapter) EffectiveVideoMetering(params NormalizedVideoParams) (*float64, string) {
+	if params.Size == "" {
+		return nil, ""
+	}
+	resolution, _, err := volcengineSizeToResolutionRatio(params.Size)
+	if err != nil {
+		return nil, ""
+	}
+	return nil, resolution
+}
+
 // BuildPollRequest 构造轮询请求：GET {base}/contents/generations/tasks/{id}
-//（契约 §9.1；id 即创建响应的受理凭据，官方 id 为 URL 安全串直拼；opPath
+// （契约 §9.1；id 即创建响应的受理凭据，官方 id 为 URL 安全串直拼；opPath
 // 不含版本段，/api/v3 由 base_url 版本根承载）。
 func (volcengineVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
 	return http.MethodGet, "/contents/generations/tasks/" + upstreamJobID, nil

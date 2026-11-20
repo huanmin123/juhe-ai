@@ -841,3 +841,33 @@ func TestPatchSupportedModelsUnorderedEqualityAndEmptyArray(t *testing.T) {
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{}, nil), scope)
 	assertValidationError(t, err, "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型")
 }
+
+// TestAccountBindingAcceptsMediaPricingOnlyModel 钉住 AC-017：只有
+// media_pricing_json、没有任何 legacy 价格列的自定义媒体模型可以被账户绑定；
+// 非法模板按无价处理且不得回落到 legacy（AC-016）。
+func TestAccountBindingAcceptsMediaPricingOnlyModel(t *testing.T) {
+	env := newTestEnv(t)
+	owner := "owner-media-pricing-only"
+	env.seedProviderAndDefaultGroup(t, owner)
+	store := env.store
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, media_pricing_json, created_at, updated_at)
+		VALUES ('mdl-media-pricing-only', 'gpt', 'media-pricing-only', 'media-pricing-only', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner,
+		`{"version":1,"unit":"call","baseUsd":0,"baseTier":"","tierMultipliers":{}}`)
+
+	if err := store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
+		[]string{"media-pricing-only"}, "gpt", owner); err != nil {
+		t.Fatalf("mediaPricing-only model (including free 0 price) must stay bindable: %v", err)
+	}
+
+	// 非法模板：即使行上仍有 legacy 价格，也必须按无价拒绝，不能回落 legacy。
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, catalog_visible, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m,
+		media_pricing_json, created_at, updated_at)
+		VALUES ('mdl-media-pricing-invalid', 'gpt', 'media-pricing-invalid', 'media-pricing-invalid', 'personal', ?, 'active',
+		'["chat_json","chat_sse"]', false, '{}', 5, 30, 'not-json', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, owner)
+	assertValidationError(t, store.assertAccountSupportedModelsInProviderCatalog(context.Background(), env.db,
+		[]string{"media-pricing-invalid"}, "gpt", owner),
+		"账户支持模型未配置基础价格，不能绑定（计价会得到空成本）：media-pricing-invalid")
+}

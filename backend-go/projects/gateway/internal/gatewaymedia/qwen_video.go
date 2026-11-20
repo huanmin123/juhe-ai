@@ -56,6 +56,7 @@ func (qwenVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsSize:           true,
 	}
 }
 
@@ -90,9 +91,9 @@ func qwenSizeOf(size string) (string, error) {
 //     档位合法性由上游裁决，契约 §2.4 规则 3）；
 //   - seed → parameters.seed：整数直传；
 //   - n/audio 归一层判为 ignored，不进报文（§2.4 规则 1）；
-//   - metadata 键 deep-merge 覆盖同名键（契约
-//     §2.1 L3，嵌套对象递归合并，如 {"qwen":{"parameters":{"prompt_extend":
-//     true}}}）。
+//   - metadata 只新增、不覆盖既有路径（契约 §2.1 L3，嵌套对象递归新增，
+//     如 {"parameters":{"prompt_extend":true}}；不得覆盖 parameters.size/
+//     duration 等规范映射字段）。
 //
 // 创建请求必须携带 X-DashScope-Async: enable 头（DashScope 异步任务约定，
 // 契约 §10.1）——经 VideoCreateOutput.ExtraHeaders 交由链上层注入，本方法
@@ -140,7 +141,10 @@ func (a qwenVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoC
 	if len(parameters) > 0 {
 		body["parameters"] = parameters
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, qwenVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 qwen 视频创建请求体失败: %w", err)

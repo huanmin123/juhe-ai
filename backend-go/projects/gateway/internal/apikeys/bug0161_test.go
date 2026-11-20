@@ -214,9 +214,9 @@ func TestAPIKeyExpiresAtWhitespaceRejected(t *testing.T) {
 	}
 }
 
-// --- Claim 6: whitespace-only stored schedule JSON is a read failure. ---
+// --- Claim 6: whitespace-only stored schedule JSON degrades to no schedule. ---
 
-func TestAPIKeyStoredWhitespaceScheduleFailsReads(t *testing.T) {
+func TestAPIKeyStoredWhitespaceScheduleDegrades(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
@@ -230,17 +230,42 @@ func TestAPIKeyStoredWhitespaceScheduleFailsReads(t *testing.T) {
 		VALUES ('key-dirty', ?, 'rs-default', 'dirty', 'hash-dirty', 'sk-dirty', 'ty-xxxx', ?, 'active', 0, 'general', '   ', ?, ?)`,
 		adminID, sealed, now, now)
 
-	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/api-keys", ""); code != http.StatusInternalServerError {
-		t.Fatalf("list with whitespace schedule must 500: %d %v", code, payload)
+	// 设计《时间计划闸门与账户状态解耦设计》§4：单条非法存量计划在列表/详情
+	// 降级为“无计划”，不得让整个列表 500；PATCH 允许直接清空修复。
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/api-keys", "")
+	if code != http.StatusOK {
+		t.Fatalf("list with whitespace schedule must 200: %d %v", code, payload)
 	}
-	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-dirty", ""); code != http.StatusInternalServerError {
-		t.Fatal("detail with whitespace schedule must 500")
+	items := dataMap(t, payload)["items"].([]any)
+	found := false
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["id"] != "key-dirty" {
+			continue
+		}
+		found = true
+		if item["availabilitySchedule"] != nil {
+			t.Fatalf("非法存量计划必须降级为 null: %v", item["availabilitySchedule"])
+		}
+	}
+	if !found {
+		t.Fatal("list must contain key-dirty")
+	}
+	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-dirty", "")
+	if code != http.StatusOK {
+		t.Fatalf("detail with whitespace schedule must 200: %d %v", code, detail)
+	}
+	if schedule := dataMap(t, detail)["availabilitySchedule"]; schedule != nil {
+		t.Fatalf("detail 非法存量计划必须降级为 null: %v", schedule)
 	}
 	revision := env.queryCell(t, `SELECT updated_at FROM api_keys WHERE id = 'key-dirty'`)
-	code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-dirty",
+	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-dirty",
 		`{"expectedRevision":"`+revision+`","availabilitySchedule":null}`)
-	if code != http.StatusInternalServerError {
-		t.Fatalf("patch touching a corrupt stored schedule must 500: %d", code)
+	if code != http.StatusOK {
+		t.Fatalf("patch clearing a corrupt stored schedule must 200: %d %v", code, patched)
+	}
+	if stored := env.queryCell(t, `SELECT COALESCE(availability_schedule_json,'') FROM api_keys WHERE id = 'key-dirty'`); stored != "" {
+		t.Fatalf("patch must clear the corrupt stored schedule: %q", stored)
 	}
 }
 

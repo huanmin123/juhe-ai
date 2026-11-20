@@ -266,7 +266,7 @@ func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, gr
 // TestFullchainMediaSpeechGlmTTS 验证 M6 glm 语音透传链（契约 §7.2）：管理面
 // 配置（glm 分组 + cogtts 语音账户，audio_speech 端点模式写侧门禁）→
 // POST /v1/audio/speech → 出站 POST /api/paas/v4/audio/speech（官方通用根
-// 归一、Bearer 认证；metadata（glm 声线扩展） 的 ref_audio/ref_text 深合并由链级
+// 归一、Bearer 认证；metadata（glm 声线扩展） 的 ref_audio/ref_text 只新增并入由链级
 // 测试断言，E2E 侧以 mock 按请求 response_format 协商回 wav 佐证透传面）→
 // 客户端收到 wav 二进制（RIFF magic bytes）；usage 按请求字符自算落账
 // （透传面无上游回报）。

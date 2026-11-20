@@ -44,31 +44,75 @@
 <p>做什么：用 multipart/form-data 同时上传音频文件和模型名，响应里直接拿文本：</p>
 <pre><code class="language-bash">curl -s &quot;$BASE_URL/v1/audio/transcriptions&quot; \
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
-  -F model=&quot;gpt-5.4&quot; \
+  -F model=&quot;gpt-4o-transcribe&quot; \
   -F file=&quot;@meeting_clip.m4a&quot;
 </code></pre>
-<p>（<code>model</code> 请替换成你列表里真实存在的转写模型名；<code>file</code> 的 <code>@</code> 表示读取本地文件。）</p>
+<p>（<code>model</code> 请替换成你列表里真实存在的转写模型名——不同供应商可用的转写模型不同，以 <code>GET /v1/models</code> 为准；<code>file</code> 的 <code>@</code> 表示读取本地文件。）</p>
 <p>结果长这样——同步返回，文本就在 <code>text</code> 字段里：</p>
 <pre><code class="language-json">{ &quot;text&quot;: &quot;大家好，今天我们讨论三个议题……&quot; }
 </code></pre>
-<p><code>translations</code> 是它的兄弟接口，把音频内容翻译成英文文本（OpenAI audio API 语义），请求方式完全一样，只换路径：</p>
-<pre><code class="language-bash">curl -s &quot;$BASE_URL/v1/audio/translations&quot; \
+<h3>response_format：一次请求拿到不同形态</h3>
+<p>可选 <code>response_format</code>，默认 <code>json</code>：</p>
+<table>
+<thead>
+<tr>
+<th>取值</th>
+<th>响应形态</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>json</code></td>
+<td><code>{&quot;text&quot;: &quot;...&quot;}</code></td>
+<td>默认；上游回报音频时长时附带 <code>duration</code>（秒）</td>
+</tr>
+<tr>
+<td><code>text</code></td>
+<td>纯文本</td>
+<td>直接是转写文本，不是 JSON</td>
+</tr>
+<tr>
+<td><code>verbose_json</code></td>
+<td>含 <code>duration</code>、<code>segments</code> 的 JSON</td>
+<td>需要分句时间轴时用</td>
+</tr>
+<tr>
+<td><code>srt</code></td>
+<td>SubRip 字幕文本</td>
+<td>每个分句一条</td>
+</tr>
+<tr>
+<td><code>vtt</code></td>
+<td>WebVTT 字幕文本</td>
+<td>带 <code>WEBVTT</code> 头</td>
+</tr>
+</tbody></table>
+<pre><code class="language-bash">curl -s &quot;$BASE_URL/v1/audio/transcriptions&quot; \
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
-  -F model=&quot;gpt-5.4&quot; \
-  -F file=&quot;@foreign_clip.mp3&quot;
+  -F model=&quot;gpt-4o-transcribe&quot; \
+  -F response_format=&quot;verbose_json&quot; \
+  -F file=&quot;@meeting_clip.m4a&quot;
 </code></pre>
+<p>取值不在上表内会返回本地 400。某个模型是否支持全部五种形态取决于所接上游；火山 openspeech 同步转写（如 <code>volc.seedasr.auc</code>）五种都支持。</p>
+<h3>上传限制与翻译接口</h3>
+<ul>
+<li>同步转写是单次上传：火山 openspeech 同步转写对单文件强制 <strong>25MB</strong> 上限，超过会本地 400；其他上游按各自限制（OpenAI 官方同类接口同为 25MB）。更长的音频请走下面的异步任务。</li>
+<li><code>POST /v1/audio/translations</code> 是转写的兄弟接口（OpenAI audio API 语义），但<strong>不是所有转写模型都有翻译能力</strong>，只有供应商与模型支持时才能用。火山 openspeech 同步转写当前只支持 <code>/v1/audio/transcriptions</code>，对这类模型调用 translations 会本地 400，不会伪造翻译结果；目录里没有可承接翻译的模型时，会按模型不支持或分组无账户返回错误。以 <code>GET /v1/models</code> 与管理台目录为准。</li>
+</ul>
+<h3>计费按音频时长</h3>
+<p>同步转写按<strong>音频秒数</strong>计费，用量记录里能看到这次调用的 <code>audio_input_seconds</code> 与金额。计量优先采用上游回报的实际时长，其次解析上传音频；两者都拿不到时该次计量为 0，并在用量记录标记缺失（不按文件大小估算）。对账口径见《用量与统计》。</p>
 <h2>方式二：长音频异步任务 POST /v1/audio/jobs</h2>
 <p>做什么：把音频的<strong>公网 URL</strong> 用 JSON 提交成任务：</p>
 <pre><code class="language-bash">curl -s &quot;$BASE_URL/v1/audio/jobs&quot; \
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -d &#39;{
-    &quot;model&quot;: &quot;gpt-5.4&quot;,
+    &quot;model&quot;: &quot;paraformer-v2&quot;,
     &quot;input_url&quot;: &quot;https://example.com/audio/long-lecture.mp3&quot;,
     &quot;language&quot;: &quot;zh&quot;
   }&#39;
 </code></pre>
-<p>（<code>model</code> 同样替换成真实存在的转写模型名。）</p>
+<p>（<code>model</code> 同样替换成真实存在的转写模型名；异步转写模型以 <code>GET /v1/models</code> 为准。）</p>
 <p><strong><code>input_url</code> 是唯一输入形态</strong>：必须是 http(s) 的、公网可直接访问的音频 URL。往这个接口上传 multipart 文件会被 400 拒绝——想直接传文件请走方式一。</p>
 <p>返回一个任务对象，与视频任务同构：<code>id</code> 以 <code>audiojob_</code> 开头、<code>object</code> 为 <code>&quot;audio_job&quot;</code>，另有 <code>status</code>、<code>progress</code>、<code>error</code> 等字段，并比视频任务多一个 <code>language</code>。把 <code>id</code> 存下来，下面轮询和取结果都用它。</p>
 <h2>异步任务的轮询、取结果与取消</h2>
@@ -130,7 +174,7 @@ done
 <td><code>file</code></td>
 <td>文件</td>
 <td>是</td>
-<td>音频文件本体</td>
+<td>音频文件本体；火山同步转写限 25MB，支持 mp3/wav/ogg/pcm</td>
 </tr>
 <tr>
 <td><code>model</code></td>
@@ -139,10 +183,16 @@ done
 <td>转写模型名</td>
 </tr>
 <tr>
+<td><code>response_format</code></td>
+<td>字符串</td>
+<td>否</td>
+<td><code>json</code>（默认）/ <code>text</code> / <code>verbose_json</code> / <code>srt</code> / <code>vtt</code>，词表外 400</td>
+</tr>
+<tr>
 <td><code>language</code></td>
 <td>字符串</td>
 <td>否</td>
-<td>语言提示（按 OpenAI audio API 形态的可选字段）</td>
+<td>语言提示；是否影响识别取决于上游（火山同步面只把该值回填到 <code>verbose_json</code> 的 <code>language</code>，不作为识别参数）</td>
 </tr>
 </tbody></table>
 <p>方式二（JSON body）：</p>
@@ -185,7 +235,7 @@ resp=$(curl -s &quot;$BASE_URL/v1/audio/jobs&quot; \
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -d &#39;{
-    &quot;model&quot;: &quot;gpt-5.4&quot;,
+    &quot;model&quot;: &quot;paraformer-v2&quot;,
     &quot;input_url&quot;: &quot;https://example.com/audio/long-lecture.mp3&quot;
   }&#39;)
 echo &quot;提交结果: $resp&quot;
@@ -231,6 +281,21 @@ fi
 <td>改用 <code>input_url</code>；或改走方式一的 multipart 接口</td>
 </tr>
 <tr>
+<td>400，提示同步转写音频不得超过 25MB</td>
+<td>上传文件超过火山同步转写上限</td>
+<td>压缩/切分音频，或改用 <code>/v1/audio/jobs</code> 异步任务</td>
+</tr>
+<tr>
+<td>400，提示不支持 <code>response_format</code></td>
+<td>取值不在 <code>json/text/verbose_json/srt/vtt</code> 内</td>
+<td>改用上表五个取值之一</td>
+</tr>
+<tr>
+<td>400，提示只支持 <code>/v1/audio/transcriptions</code></td>
+<td>该模型（如火山 openspeech 同步转写）没有翻译能力，却调用了 <code>/v1/audio/translations</code></td>
+<td>改用 <code>/v1/audio/transcriptions</code>，或换支持翻译能力的模型</td>
+</tr>
+<tr>
 <td>503 <code>missing_model</code> / <code>unsupported_model</code>（type 均为 <code>service_unavailable</code>）</td>
 <td>没传 model、模型名写错或分组不支持</td>
 <td>以 <code>GET /v1/models</code> 为准核对</td>
@@ -248,7 +313,12 @@ fi
 <tr>
 <td>转写结果为空或语言不对</td>
 <td>音频质量问题，或语言识别偏差</td>
-<td>检查音频清晰度；用 <code>language</code> 给出语言提示</td>
+<td>检查音频清晰度；用 <code>language</code> 给出语言提示（是否生效取决于上游）</td>
+</tr>
+<tr>
+<td>用量记录里音频秒数为 0 / 标记缺失</td>
+<td>上游未回报时长，网关也未能解析上传音频</td>
+<td>改用能回报 <code>duration</code> 的模型或 <code>verbose_json</code>，或联系管理员核对</td>
 </tr>
 <tr>
 <td>5xx，<code>type</code> 为 <code>server_error</code> / <code>service_unavailable</code> / <code>upstream_error</code></td>

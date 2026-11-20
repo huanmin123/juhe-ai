@@ -19,6 +19,9 @@ func TestWeProvidersCreateModelBranches(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
+	// 普通用户模板创建只能继承模板价；给 cat-2 补 output 价，使模板本身
+	// 满足启用态完整价格（模板仍需是完整可用的定价基线）。
+	env.exec(t, `UPDATE models SET output_usd_per_1m = 0 WHERE id = 'cat-2'`)
 	env.login(t, "root", "root-pass", "super_admin")
 
 	// 未知供应商 → 404。
@@ -53,15 +56,17 @@ func TestWeProvidersCreateModelBranches(t *testing.T) {
 		t.Fatalf("模板缺失: %d %v", code, badTemplate)
 	}
 
-	// 模板存在：继承模板配置并覆盖模型名（模板目录按当前调用者可见性解析）。
+	// 模板存在：普通用户继承模板配置并覆盖模型名（模板目录按当前调用者
+	// 可见性解析）；价格由服务端从模板复制，不算客户端提交价格键。
 	env.login(t, "user1", "user-pass", "user")
 	code, tplCreated := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"gpt-we-tpl2","configurationTemplateId":"cat-2","supportedApiProtocols":["chat_completions"],"outputUsdPer1M":0}`)
+		`{"model":"gpt-we-tpl2","configurationTemplateId":"cat-2","supportedApiProtocols":["chat_completions"]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("模板创建: %d %v", code, tplCreated)
 	}
 
 	// 服务档位价格必须属于支持的服务等级（text 模型 + 未声明 tier）。
+	env.login(t, "root", "root-pass", "super_admin")
 	code, unknownTier := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=all",
 		`{"model":"gpt-we-tier","supportedApiProtocols":["chat_completions"],"supportedServiceTiers":["priority"],`+
 			`"serviceTierPrices":{"flex":{"inputUsdPer1M":1}}}`)

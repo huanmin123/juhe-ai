@@ -16,7 +16,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"slices"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -42,15 +41,18 @@ const (
 //   - usageMissing 表示计量缺失或模板无价（0 成本 + usage_missing，不猜测）；
 //   - media 标记本次是否走统一媒体模板（false=legacy 行为）。
 type chainMediaJobSettlement struct {
-	costUSD        float64
-	breakdown      *pricing.CostBreakdown
-	snapshot       *gatewayusage.CostBreakdown
-	usageMissing   bool
-	dimension      string
-	quantity       float64
-	resolutionTier string
-	quantitySource string
-	media          bool
+	costUSD      float64
+	breakdown    *pricing.CostBreakdown
+	snapshot     *gatewayusage.CostBreakdown
+	usageMissing bool
+	// mediaPricingInvalid 标记目录行 media_pricing_json 非法：0 成本 +
+	// usage_missing，不回落 legacy（AC-016）。
+	mediaPricingInvalid bool
+	dimension           string
+	quantity            float64
+	resolutionTier      string
+	quantitySource      string
+	media               bool
 }
 
 // chainMediaJobPricingRow 读取运行时目录行并转换为定价引擎行。requestedModel
@@ -63,8 +65,9 @@ func (c *gatewayChain) chainMediaJobPricingRow(ctx context.Context, vendorCode, 
 	lookupCtx, cancel := context.WithTimeout(ctx, chainCatalogLookupTimeout)
 	defer cancel()
 	catalog, err := c.cache.ListCachedProviderModelCatalogAsync(lookupCtx, gatewayruntimecache.ModelCatalogListOptions{
-		ProviderCode:    vendorCode,
-		SystemAccountID: systemAccountID,
+		ProviderCode:               vendorCode,
+		SystemAccountID:            systemAccountID,
+		IncludeInvalidMediaPricing: true,
 	})
 	if err != nil {
 		return nil
@@ -101,7 +104,16 @@ func (c *gatewayChain) freezeMediaJobPricing(ctx context.Context, req *gatewaypr
 		return
 	}
 	record.RequestSnapshot.MediaPricing = row.MediaPricing.Clone()
-	record.RequestSnapshot.ResolutionTier = chainMediaJobSnapshotResolutionTier(record.Kind, record.RequestSnapshot.Size, row.MediaPricing)
+	// 创建计划已按 adapter 实际出站换算给出档位（Veo 720p/1080p、xAI/
+	// Volcengine 480p/720p/1080p）时保留该值；未给出时按标准短边归档。
+	// unit=call/audio 不承载档位，清空避免 PriceForTier 拒绝。
+	if record.Kind == gatewaymedia.JobKindVideo && row.MediaPricing.Unit == mediapricing.UnitSecond {
+		if record.RequestSnapshot.ResolutionTier == "" {
+			record.RequestSnapshot.ResolutionTier = chainMediaJobSnapshotResolutionTier(record.Kind, record.RequestSnapshot.Size, row.MediaPricing)
+		}
+	} else {
+		record.RequestSnapshot.ResolutionTier = ""
+	}
 }
 
 // chainMediaJobSnapshotResolutionTier 计算创建时冻结的生效分辨率档：
@@ -151,9 +163,25 @@ func (c *gatewayChain) mediaJobTerminalPricing(ctx context.Context, account *cha
 		row.Mode = mode
 	}
 	if frozen := record.RequestSnapshot.MediaPricing; frozen != nil {
-		row.MediaPricing = frozen.Clone()
+		// 创建时快照优先于当前目录（含当前目录后来变为非法）：在途任务按
+		// 创建价结算，管理员改价不影响已受理任务（设计 §7.1/AC-018）。
+		// 媒体类型以任务 kind 为准：创建后模型目录 mode 被改（如 video→
+		// audio）不得把冻结的视频模板按音频模板重新校验后判为无价。
+		applyFrozenMediaJobPricing(row, mode, frozen)
 	}
 	return row
+}
+
+// applyFrozenMediaJobPricing 把创建时冻结模板覆盖到终态定价行，并按任务
+// kind 固定行 mode（不受当前目录 mode 漂移影响）。独立成函数以便直接测试
+// mode 漂移场景，避免只测 cache=nil 的默认路径。
+func applyFrozenMediaJobPricing(row *pricing.Pricing, mode string, frozen *mediapricing.Pricing) {
+	if row == nil || frozen == nil {
+		return
+	}
+	row.Mode = mode
+	row.MediaPricing = frozen.Clone()
+	row.MediaPricingInvalid = false
 }
 
 // chainMediaJobTerminalSettlement 计算 completed 任务的统一结算。failed/
@@ -164,11 +192,36 @@ func (c *gatewayChain) chainMediaJobTerminalSettlement(ctx context.Context, acco
 		return chainMediaJobSettlement{}
 	}
 	row := c.mediaJobTerminalPricing(ctx, account, record)
-	if row == nil || row.MediaPricing == nil {
+	if row == nil {
+		return chainMediaJobLegacySettlement(account, record, ir)
+	}
+	if row.MediaPricingInvalid {
+		// 非法 media_pricing_json：保留计量维度供审计，但成本 0 + usage_missing，
+		// 不产生计费行项、不回落 legacy（AC-016）。
+		settlement := chainMediaJobLegacySettlement(account, record, ir)
+		settlement.costUSD = 0
+		settlement.breakdown = nil
+		settlement.snapshot = nil
+		settlement.usageMissing = true
+		settlement.media = true
+		settlement.mediaPricingInvalid = true
+		return settlement
+	}
+	if row.MediaPricing == nil {
 		return chainMediaJobLegacySettlement(account, record, ir)
 	}
 	settlement := chainMediaJobSettlement{media: true}
 	settlement.resolutionTier = record.RequestSnapshot.ResolutionTier
+	if row.MediaPricing.Unit == mediapricing.UnitSecond && record.Kind == gatewaymedia.JobKindVideo && ir.Usage.ResolutionTier != "" {
+		// 上游终态回报实际分辨率档（当前 openai 视频 size）时优先于创建时
+		// 按 adapter 换算冻结的档位，避免上游实际档位与计费档脱钩。
+		// unit=call / 音频不承载档位：即使 IR 带回 size 也不得注入，否则
+		// PriceForTier 会拒绝并让成功任务落 0 成本 + usage_missing。
+		settlement.resolutionTier = ir.Usage.ResolutionTier
+	}
+	if row.MediaPricing.Unit != mediapricing.UnitSecond || record.Kind != gatewaymedia.JobKindVideo {
+		settlement.resolutionTier = ""
+	}
 	if settlement.resolutionTier == "" && record.Kind == gatewaymedia.JobKindVideo {
 		settlement.resolutionTier = chainMediaJobSnapshotResolutionTier(record.Kind, record.RequestSnapshot.Size, row.MediaPricing)
 	}
@@ -272,7 +325,7 @@ func chainMediaJobLegacySettlement(account *chainMediaJobAccount, record *gatewa
 
 // chainMediaJobVideoQuantityOf 按优先级解析视频秒数：
 //  1. 上游终态 duration → upstream；
-//  2. 创建请求生效 seconds → request；
+//  2. 创建请求生效时长词（duration/seconds 同义）→ request；
 //  3. applyDefault=true 时 adapter 声明默认时长（P1 仅 Veo 3.0/3.1 系 8s）
 //     → default；legacy 路径传 false，保持改造前不猜默认值的行为；
 //  4. 全部缺失 → nil（调用方 usage_missing，不猜测）。
@@ -281,7 +334,7 @@ func chainMediaJobVideoQuantityOf(account *chainMediaJobAccount, record *gateway
 		return ir.Usage.OutputVideoSeconds, "upstream"
 	}
 	if record.RequestSnapshot.Seconds != nil && *record.RequestSnapshot.Seconds > 0 &&
-		slices.Contains(record.ParamsApplied, "seconds") {
+		chainMediaJobSecondsParamApplied(record) {
 		return record.RequestSnapshot.Seconds, "request"
 	}
 	if !applyDefault {

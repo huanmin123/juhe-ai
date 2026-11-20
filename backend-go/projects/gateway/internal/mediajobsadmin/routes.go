@@ -93,8 +93,8 @@ type mediaJobListRow struct {
 
 // listHandler 服务 GET /__aisys__/api/media-jobs：limit（默认 20，上限 100）、
 // offset、status?/kind?/api_key_id?/account_id? 过滤；非法数值回落默认（与
-// /v1/videos limit 解析同语义，不 400）。响应 {data:{rows,total}} kernel
-// envelope。
+// /v1/video/generations limit 解析同语义，不 400）。响应 {data:{rows,total}}
+// kernel envelope。
 func (d *Deps) listHandler(w http.ResponseWriter, r *http.Request) {
 	if d.Repo == nil {
 		kernel.WriteError(w, http.StatusServiceUnavailable, "媒体任务面未装配")

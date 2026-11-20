@@ -4,6 +4,7 @@ package providers
 // 键判定、mode/协议匹配、0 价有效性与启用态完整性。
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
@@ -24,6 +25,54 @@ const (
 	testImageMediaPricing       = `{"version":1,"unit":"image","baseUsd":0.04,"baseTier":"1k","tierMultipliers":{"1k":1,"2k":1.6,"4k":3}}`
 	testAudioMediaPricing       = `{"version":1,"unit":"second","baseUsd":0.0002,"baseTier":"","tierMultipliers":{}}`
 )
+
+func TestApplyCatalogMediaPricingModeAware(t *testing.T) {
+	videoMode := "video"
+	video := ModelCatalogItem{Mode: &videoMode}
+	applyCatalogMediaPricing(&video, sql.NullString{String: testVideoMediaPricingSecond, Valid: true})
+	if !video.HasMediaPricing || video.MediaPricingInvalid {
+		t.Fatalf("video 行 + second 模板应有效: %#v", video)
+	}
+	// mode=video 配 image 模板：结构合法但 kind 不匹配，必须按无价处理，
+	// 不能显示为有价、终态却 ValidateFor 失败落 0 + usage_missing。
+	mismatch := ModelCatalogItem{Mode: &videoMode}
+	applyCatalogMediaPricing(&mismatch, sql.NullString{String: testImageMediaPricing, Valid: true})
+	if mismatch.HasMediaPricing || !mismatch.MediaPricingInvalid {
+		t.Fatalf("video 行 + image 模板必须标记无价/非法: %#v", mismatch)
+	}
+	// chat 投影没有媒体 kind 信息（Gemini generate_content 图像行），不能
+	// 据此把真实图像价误判为非法。
+	chatMode := "chat"
+	chatImage := ModelCatalogItem{Mode: &chatMode}
+	applyCatalogMediaPricing(&chatImage, sql.NullString{String: testImageMediaPricing, Valid: true})
+	if !chatImage.HasMediaPricing || chatImage.MediaPricingInvalid {
+		t.Fatalf("chat 投影 + image 模板应保留为有效媒体价: %#v", chatImage)
+	}
+}
+
+func TestParseMediaPricingNullableDistinguishesInvalid(t *testing.T) {
+	videoMode := "video"
+	if parsed, invalid := parseMediaPricingNullable(sql.NullString{}, &videoMode); parsed != nil || invalid {
+		t.Fatalf("NULL 列应为无价且非非法: %#v/%v", parsed, invalid)
+	}
+	if parsed, invalid := parseMediaPricingNullable(sql.NullString{String: testVideoMediaPricingSecond, Valid: true}, &videoMode); parsed == nil || invalid {
+		t.Fatalf("合法 video 模板应解析成功: %#v/%v", parsed, invalid)
+	}
+	if parsed, invalid := parseMediaPricingNullable(sql.NullString{String: "{", Valid: true}, &videoMode); parsed != nil || !invalid {
+		t.Fatalf("坏 JSON 应标记非法: %#v/%v", parsed, invalid)
+	}
+	// 结构合法但 mode/unit 不匹配与“无价”必须可区分，管理面才能展示
+	// mediaPricingInvalid 诊断（设计 §5.2）。
+	if parsed, invalid := parseMediaPricingNullable(sql.NullString{String: testImageMediaPricing, Valid: true}, &videoMode); parsed != nil || !invalid {
+		t.Fatalf("video 行 + image 模板应标记非法: %#v/%v", parsed, invalid)
+	}
+	// text/chat 投影无法表达媒体 kind（自定义 generate_content 图像行），
+	// 读侧保留模板，不能误判为非法价。
+	textMode := "text"
+	if parsed, invalid := parseMediaPricingNullable(sql.NullString{String: testImageMediaPricing, Valid: true}, &textMode); parsed == nil || invalid {
+		t.Fatalf("text 投影 + image 模板应保留为有效价: %#v/%v", parsed, invalid)
+	}
+}
 
 func TestParseCustomModelBodyMediaPricing(t *testing.T) {
 	body := w14dDecodeBody(t, `{"model":"sora-x","mode":"video","supportedApiProtocols":["video"],"mediaPricing":`+testVideoMediaPricingSecond+`}`)
@@ -116,6 +165,92 @@ func TestValidateCustomModelMediaPricing(t *testing.T) {
 	}
 }
 
+func TestExistingMediaPricingAllowsUnknownProjectedMode(t *testing.T) {
+	image := parseMediaPricingForTest(t, testImageMediaPricing)
+	chatMode := "chat"
+	textMode := "text"
+	// 新建（严格）：chat/空投影不得新配置 mediaPricing。
+	for _, mode := range []*string{&chatMode, &textMode, nil} {
+		if got := validateCustomModelPricing("gpt", customProviderModelUpsertInput{
+			Mode: mode, Status: "active", MediaPricing: image,
+		}); got == "" {
+			t.Fatalf("mode %v 新配置 image 模板必须拒绝", mode)
+		}
+	}
+	// 已存在媒体模板的 PATCH：Gemini generate_content 图像行/空 endpoint
+	// modes 迁移行用 chat/text/空投影，编辑价格与日期必须放行。
+	for _, mode := range []*string{&chatMode, &textMode, nil} {
+		if got := validateCustomModelPricingAllowUnknown("gpt", customProviderModelUpsertInput{
+			Mode: mode, Status: "active", MediaPricing: image,
+		}, true); got != "" {
+			t.Fatalf("mode %v 已有模板的 PATCH 被拒绝: %s", mode, got)
+		}
+		if !customInputHasCompletePriceAllowUnknown(customProviderModelUpsertInput{
+			Mode: mode, MediaPricing: image,
+		}, true) {
+			t.Fatalf("mode %v 已有模板应视为已定价", mode)
+		}
+	}
+	// 可映射的媒体 mode 即使走 PATCH 入口仍严格校验 kind。
+	videoMode := "video"
+	if got := validateCustomModelPricingAllowUnknown("gpt", customProviderModelUpsertInput{
+		Mode: &videoMode, Status: "active", MediaPricing: image,
+	}, true); got == "" {
+		t.Fatal("video mode + image 模板即使 PATCH 也必须拒绝")
+	}
+}
+
+func TestBuiltInMediaPricingAllowsUnknownProjectedMode(t *testing.T) {
+	image := parseMediaPricingForTest(t, testImageMediaPricing)
+	canonical, err := image.CanonicalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatMode := "chat"
+	item := &ModelCatalogItem{
+		Mode:                  &chatMode,
+		MediaPricing:          canonical,
+		HasMediaPricing:       true,
+		SupportedAPIProtocols: []string{"generate_content"},
+	}
+	// 新建/严格：chat 投影不得配置媒体模板。
+	if got := validateBuiltInMediaPricing(item, false); got == "" {
+		t.Fatal("chat 投影新配置 mediaPricing 必须拒绝")
+	}
+	// 已有模板的 PATCH：放行 chat 投影。
+	if got := validateBuiltInMediaPricing(item, true); got != "" {
+		t.Fatalf("chat 投影已有模板的 PATCH 被拒绝: %s", got)
+	}
+	// 完整性校验不得再把该行当文本模型索要上下文容量（否则只改发布日期
+	// 也会 400）。
+	release := "2025-10-01"
+	complete := &ModelCatalogItem{
+		Mode:                  &chatMode,
+		MediaPricing:          canonical,
+		HasMediaPricing:       true,
+		ReleaseDate:           &release,
+		SupportedAPIProtocols: []string{"generate_content"},
+	}
+	if got := validateBuiltInModelCompletenessAllowUnknown(complete, true); got != "" {
+		t.Fatalf("chat 投影媒体模板行被文本完整性拦截: %s", got)
+	}
+	// 空投影（无 endpoint modes 历史/迁移行）同理。
+	empty := &ModelCatalogItem{MediaPricing: canonical, HasMediaPricing: true}
+	if got := validateBuiltInMediaPricing(empty, false); got == "" {
+		t.Fatal("空 mode 新配置 mediaPricing 必须拒绝")
+	}
+	if got := validateBuiltInMediaPricing(empty, true); got != "" {
+		t.Fatalf("空 mode 已有模板的 PATCH 被拒绝: %s", got)
+	}
+	// 可映射 mode 仍严格。
+	videoMode := "video"
+	if got := validateBuiltInMediaPricing(&ModelCatalogItem{
+		Mode: &videoMode, MediaPricing: canonical, HasMediaPricing: true,
+	}, true); got == "" {
+		t.Fatal("video 行 + image 模板即使 PATCH 也必须拒绝")
+	}
+}
+
 func TestCustomModelMediaPricingPriceKeys(t *testing.T) {
 	parsed := &customModelParsedInput{present: map[string]bool{"mediaPricing": true}}
 	if !parsed.hasPriceKeys() || parsed.hasLegacyPriceKeys() {
@@ -184,6 +319,35 @@ func TestBuiltinMediaPricingPatch(t *testing.T) {
 	}})
 	if len(assignments) != 1 || assignments[0] != "media_pricing_json = ?" || params[0] != string(canonical) {
 		t.Fatalf("assignments = %v, params = %v", assignments, params)
+	}
+}
+
+func TestProjectedMediaKindForTemplateCandidates(t *testing.T) {
+	cases := []struct {
+		name      string
+		mode      string
+		protocols []string
+		outputs   []string
+		unit      mediapricing.Unit
+		want      mediapricing.Kind
+		ok        bool
+	}{
+		{"direct mode", "video", nil, nil, mediapricing.UnitSecond, mediapricing.KindVideo, true},
+		{"gemini image projection", "chat", []string{"generate_content"}, []string{"text", "image"},
+			mediapricing.UnitImage, mediapricing.KindImage, true},
+		{"empty mode call", "", nil, nil, mediapricing.UnitCall, mediapricing.KindVideo, true},
+		{"audio output", "chat", []string{"generate_content"}, []string{"audio"},
+			mediapricing.UnitSecond, mediapricing.KindAudio, true},
+		{"audio protocol fallback", "chat", []string{"audio_transcription"}, nil,
+			mediapricing.UnitSecond, mediapricing.KindAudio, true},
+		{"ambiguous second", "chat", []string{"generate_content"}, []string{"text"},
+			mediapricing.UnitSecond, "", false},
+	}
+	for _, tc := range cases {
+		kind, ok := projectedMediaKind(tc.mode, tc.protocols, tc.outputs, tc.unit)
+		if kind != tc.want || ok != tc.ok {
+			t.Fatalf("%s: kind=%q ok=%v, want %q/%v", tc.name, kind, ok, tc.want, tc.ok)
+		}
 	}
 }
 

@@ -42,6 +42,7 @@ func (glmVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsSize:           true,
 		SupportsFPS:            true,
 	}
 }
@@ -53,6 +54,12 @@ var glmDurationSteps = []float64{5, 10}
 // §2.4 规则 3 / §7.1）：CogVideoX 档位 5s/10s，取数值最近档（等距取小档），
 // 换算结果随创建报文生效（实际生效值以上游受理为准）。
 func glmDurationOf(seconds float64) string {
+	return fmt.Sprintf("%gs", glmDurationSecondsOf(seconds))
+}
+
+// glmDurationSecondsOf 返回 glmDurationOf 的数值形态（计量快照用）：
+// 出站档位是 5s/10s，计费必须按实际出站秒数而非用户请求秒数冻结。
+func glmDurationSecondsOf(seconds float64) float64 {
 	nearest := glmDurationSteps[0]
 	bestGap := absFloat64(seconds - glmDurationSteps[0])
 	for _, step := range glmDurationSteps[1:] {
@@ -61,7 +68,18 @@ func glmDurationOf(seconds float64) string {
 			bestGap = gap
 		}
 	}
-	return fmt.Sprintf("%gs", nearest)
+	return nearest
+}
+
+// EffectiveVideoMetering 实现 VideoEffectiveMeteringProvider：GLM 出站
+// duration 量化到 5s/10s，快照与计费按量化后的出站秒数；size 原样直传，
+// 档位走标准短边归档（返回空串由链上层计算）。
+func (glmVideoAdapter) EffectiveVideoMetering(params NormalizedVideoParams) (*float64, string) {
+	if params.Seconds == nil {
+		return nil, ""
+	}
+	seconds := glmDurationSecondsOf(*params.Seconds)
+	return &seconds, ""
 }
 
 func absFloat64(value float64) float64 {
@@ -83,8 +101,8 @@ func absFloat64(value float64) float64 {
 //     URL 形态，网关不解析不下载）；
 //   - audio → with_audio：布尔直传；
 //   - n/seed 归一层判为 ignored，不进报文；
-//   - metadata 逐键 deep-merge 覆盖同名键（契约 §2.1
-//     L3，如 {"glm":{"fps":30,"quality":"quality"}}）。
+//   - metadata 只新增、不覆盖既有路径（契约 §2.1 L3，直接给厂商键，如
+//     {"quality":"quality"}；不再有 provider 命名空间）。
 func (a glmVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -115,7 +133,10 @@ func (a glmVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.FPS != nil {
 		body["fps"] = *params.FPS
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, glmVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 glm 视频创建请求体失败: %w", err)

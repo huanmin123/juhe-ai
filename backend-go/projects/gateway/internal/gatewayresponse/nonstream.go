@@ -501,6 +501,10 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	// 同步音频：媒体 speech 转换计划（gemini/minimax/volcengine 转换型
 	// 账户 + /audio/speech + 2xx 时激活），透传管道与检查管道共用。
 	mediaSpeechTransform := mediaSpeechTransformPlan(input)
+	// 同步转写：火山 openspeech 极速版的厂商 JSON 需转换为 OpenAI 转写
+	// 形态（json/verbose_json/text/srt/vtt），同样在完整缓冲后执行。
+	mediaTranscriptionTransform := mediaTranscriptionTransformPlan(input)
+	var mediaTranscriptionTransformed bool
 	// TTS 二进制透传的流式时长计量：转换型响应在 TransformResponse 后
 	// 直接解析音频字节，纯透传响应在 OnChunkRead 喂 Meter（只保留有界
 	// 状态，不缓冲整段音频）。
@@ -547,7 +551,8 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		// M1 同步音频：gemini 账户的 speech 请求上游回 JSON（inlineData base64
 		// PCM），必须完整缓冲转二进制音频（音频设计 §5/契约 §5.1），走媒体
 		// 转换缓冲窗口。
-		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled || mediaSpeechTransform.active ||
+		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled ||
+			mediaSpeechTransform.active || mediaTranscriptionTransform.active ||
 			(isOpenAIJSONResponseContentType(input.UpstreamResponse.Header.Get("Content-Type")) &&
 				shouldBufferNonStreamJSONResponse(input))
 		pipeSpec := NonStreamPipeInput{
@@ -688,9 +693,59 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			responseBodyText = pipeResult.CapturedBodyText
 		}
 	}
-	// 媒体转换分支已发送音频字节并 return/或仅覆盖 responseBodyText；原
-	// JSON 发送路径对 media 请求跳过（不重复发送缓冲 JSON）。
-	if pipeResult.FullyBuffered && !mediaSpeechTransform.active {
+	// 同步转写：火山极速版厂商 JSON → OpenAI 转写响应。转换后的正文同时
+	// 作为 usage 解析输入（json/verbose_json 携带 duration 秒，供统一媒体
+	// 计费按上游时长结算；text/srt/vtt 由请求音频解析兜底）。
+	if mediaTranscriptionTransform.active {
+		if pipeResult.InspectionLimitExceeded {
+			failure := &ProtocolFailure{
+				Message:   "上游同步转写响应超过网关媒体转换上限，已拒绝返回未转换响应",
+				ErrorCode: "upstream_protocol_error",
+			}
+			return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, nil, responseBodyText, driver)
+		}
+		if pipeResult.FullyBuffered {
+			transformed, contentType, transformErr := mediaTranscriptionTransform.adapter.TransformResponse(
+				input.UpstreamResponse.Status, input.UpstreamResponse.Header, pipeResult.CapturedBody, mediaTranscriptionTransform.request)
+			if transformErr != nil {
+				failure := &ProtocolFailure{
+					Message:   transformErr.Error(),
+					ErrorCode: "upstream_protocol_error",
+				}
+				return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, pipeResult.CapturedBody, pipeResult.CapturedBodyText, driver)
+			}
+			if pipeResult.FirstByteMs == nil {
+				value := nowMsOf(&input)() - input.StartedAtMs
+				pipeResult.FirstByteMs = &value
+			}
+			if input.UpstreamResponse.Header == nil {
+				input.UpstreamResponse.Header = http.Header{}
+			}
+			input.UpstreamResponse.Header.Set("Content-Type", contentType)
+			forwardInput := NonStreamPipeInput{
+				Downstream:  input.Downstream,
+				StartedAtMs: input.StartedAtMs,
+				Signal:      input.Signal,
+				PrepareDownstream: func() {
+					prepareUpstreamResponseForDownstream(input.Downstream, input.UpstreamResponse, false)
+					input.DownstreamCommitState.MarkTransportCommitted(0)
+				},
+				OnChunkWritten: func(bytesWritten int64) {
+					input.DownstreamCommitState.MarkSemanticCommitted(bytesWritten)
+				},
+				NowMs: nowMsOf(&input),
+			}
+			if err := SendFullyBufferedNonStreamBody(forwardInput, transformed); err != nil {
+				return UpstreamResponseHandlingResult{}, err
+			}
+			markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
+			responseBodyText = string(transformed)
+			mediaTranscriptionTransformed = true
+		}
+	}
+	// 媒体转换分支已发送音频字节/转写正文并 return/或仅覆盖 responseBodyText；
+	// 原 JSON 发送路径对 media 请求跳过（不重复发送缓冲 JSON）。
+	if pipeResult.FullyBuffered && !mediaSpeechTransform.active && !mediaTranscriptionTransformed {
 		// 检查策略主链（D-112）：完整缓冲 JSON 先跑响应检查策略（含 codex
 		// 契约帧），命中时由此收尾（失败改写或服务端换号重试）；未命中回退
 		// 协议校验与原样发送。

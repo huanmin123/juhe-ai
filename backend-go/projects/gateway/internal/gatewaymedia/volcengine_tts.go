@@ -128,10 +128,13 @@ func (a volcengineSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte,
 		"speaker":      ir.Voice,
 		"audio_config": audioConfig,
 	}
-	// metadata 逐键 deep-merge（契约 §2.1 L3，
-	// 如 {"volcengine":{"audio_config":{"loudness_rate":10}}} 覆盖/补齐厂商
-	// 个例参数——厂商值覆盖同名键，嵌套对象递归合并）。
-	body = MergeMetadata(body, ir.Metadata)
+	// metadata 只新增、不覆盖既有路径（契约 §2.1 L3；
+	// 如 {"audio_config":{"loudness_rate":10}} 补齐厂商个例
+	// 参数，但不得覆盖 text_prompt/audio_config 等规范映射字段）。
+	body, err := MergeMetadataReserved(body, ir.Metadata, volcengineTTSMetadataReservedPaths)
+	if err != nil {
+		return "", nil, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", nil, fmt.Errorf("编码火山 TTS 请求体失败: %w", err)

@@ -205,6 +205,30 @@ func TestChainMediaJobProbeSkippedWhenRequestSecondsApplied(t *testing.T) {
 	}
 }
 
+func TestChainMediaJobProbeSkippedWhenRequestDurationApplied(t *testing.T) {
+	// duration 与 seconds 同义：ParamsApplied 记录用户原始词 duration 时，
+	// 请求时长同样构成计量基源（不得因词表差异回落探测/usage_missing）。
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+
+	chain := probeTestChain(sharedupstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: true})
+	record, ir, account := probeTestRecord(server.URL + "/artifact.mp4")
+	seconds := 5.0
+	record.RequestSnapshot.Seconds = &seconds
+	record.ParamsApplied = []string{"duration"}
+
+	settlement := chain.chainMediaJobTerminalSettlement(context.Background(), account, record, ir)
+	if settlement.usageMissing || settlement.quantitySource != "request" || settlement.quantity != 5 {
+		t.Fatalf("settlement = %+v, want request/5", settlement)
+	}
+	if requests != 0 {
+		t.Fatalf("request duration should win over probe, got %d probe requests", requests)
+	}
+}
+
 func TestChainMediaJobProbeFailsClosedOnRangeIgnored(t *testing.T) {
 	data := probeTestMP4(1000, 1500, 7<<20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

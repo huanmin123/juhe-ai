@@ -84,7 +84,7 @@ func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service, bodyPar
 		// 数据源选 runtimecache 而非每次直查 SQL：端口在每请求构建上游请求时
 		// 调用，runtimecache 的 provider 目录读缓存（24h TTL + Bus 失效 +
 		// singleflight，chain_runtime.go 组合根单实例，键
-		// providerCode:systemAccountID:inactive:unpriced）命中即零 SQL——
+		// v3:providerCode:systemAccountID:inactive:unpriced）命中即零 SQL——
 		// 等价 Node listCachedProviderModelCatalogAsync 的 cached 语义。
 		driver.gptRequestOverrideRuntime = gatewaydispatch.GptRequestOverrideRuntime{
 			Catalog:         chainGptRequestOverrideModelCatalog{cache: cache},
@@ -285,9 +285,23 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		} else if audioErr != nil {
 			return nil, audioErr
 		}
+		// 火山 openspeech 同步转写（2026-11-20 真实上游实测批）：对外
+		// /v1/audio/transcriptions 的 multipart 文件由 sync adapter 转 base64
+		// 直传 /api/v3/auc/bigmodel/recognize/flash；host 与长转写/TTS 同属
+		// openspeech 语音服务域，仍走独立域根特例。仅登记了
+		// audio_transcription_json 的 openspeech 账户进入本分支；ark 账户
+		// 未声明该 mode，不会命中。
+		if endpoint, endpointOK := gatewaymedia.AudioEndpointPath(req.PathAndQuery()); endpointOK &&
+			endpoint == "/audio/transcriptions" &&
+			chainNormalizeProviderToken(account.VendorCode) == "volcengine" &&
+			containsTrimmedString(account.SupportedEndpointModes, "audio_transcription_json") {
+			if _, credErr := chainVolcengineSpeechCredentials(account); credErr != nil {
+				return nil, credErr
+			}
+			return []string{chainVolcengineASRUpstreamURL(gatewaymedia.VolcASRSyncPath)}, nil
+		}
 		// M6 同步音频（契约 §7.2）：glm 账户的 speech/transcriptions 请求走
-		// openai 透传（报文零改写，metadata 深合并在 prepared
-		// parts 分支承载），URL 按 v2 直拼（官方 audio/speech|transcriptions
+		// openai 透传（报文零改写，metadata 在 prepared parts 分支只新增合并），URL 按 v2 直拼（官方 audio/speech|transcriptions
 		// 端点；opPath /audio/... 不含版本段，/api/paas/v4 通用根由账户
 		// base_url 版本根承载——glmSpeechUpstreamPathOf 同规）。
 		if chainNormalizeProviderToken(account.VendorCode) == "glm" {
@@ -329,13 +343,13 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			if err != nil {
 				return nil, geminiSpeechAdapterBoundaryError(err)
 			}
-		openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
-		if urlErr != nil {
-			return nil, urlErr
+			openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{openaiURL}, nil
 		}
-		return []string{openaiURL}, nil
-	}
-	// openai-compatible (openai / hybrid and any other OpenAI-style
+		// openai-compatible (openai / hybrid and any other OpenAI-style
 		// upstream): v2 直拼——base_url 即版本根 + 入站剥 /v1 后的 opPath
 		//（不再补 /v1）。2026-11-07 跨协议 Responses→Chat 桥退役：原
 		// BUG-0178 的 responses→chat 路径改写与 accountHasNativeResponsesModes
@@ -407,8 +421,8 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	}
 	// M3f 长音频任务创建（POST /v1/audio/jobs，媒体设计 §4.2/§5）：结构与
 	// 视频创建短路一致——adapter 出站报文（URL 与 body 同源 adapter.Create）
-	// 在协议透传之前短路返回；paraformer 的 ExtraHeaders 恒 nil（天然异步
-	// 服务无 DashScope 私有头，契约 §10.2）。
+	// 在协议透传之前短路返回；qwen paraformer 的 ExtraHeaders 携带
+	// X-DashScope-Async: enable（2026-11-20 实测缺头 403），火山臂无私有头。
 	if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
 		headers := upstreamHeadersOf(req, account)
 		headers.Set("Content-Type", "application/json")
@@ -429,6 +443,34 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: audioPlan.createRequest.Body}, nil
 	} else if audioErr != nil {
 		return gatewaydispatch.PreparedRequestParts{}, audioErr
+	}
+	// 火山 openspeech 同步转写（对外 /v1/audio/transcriptions）：multipart
+	// 文件经 adapter 转 base64 极速版请求报文；鉴权与长转写同面（X-Api-Key
+	// speech_token，删掉通用 Authorization）。翻译面当前无上游对应能力，
+	// 显式 400，不把转写结果冒充翻译。
+	if transcriptionRequest, ok, transcriptionErr := d.volcengineTranscriptionRequest(req, account); transcriptionErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, transcriptionErr
+	} else if ok {
+		adapter := gatewaymedia.TranscriptionAdapterForProvider("volcengine")
+		if adapter == nil {
+			return gatewaydispatch.PreparedRequestParts{}, gatewaypreauth.NewGatewayRequestValidationError("火山同步转写 adapter 未注册")
+		}
+		_, body, extraHeaders, buildErr := adapter.BuildRequest(*transcriptionRequest)
+		if buildErr != nil {
+			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(buildErr)
+		}
+		token, credErr := chainVolcengineSpeechCredentials(account)
+		if credErr != nil {
+			return gatewaydispatch.PreparedRequestParts{}, credErr
+		}
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		headers.Del("Authorization")
+		headers.Set("X-Api-Key", token)
+		for name, value := range extraHeaders {
+			headers.Set(name, value)
+		}
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
 	if adapter, ir, ok, speechErr := d.geminiSpeechRequest(req, account); speechErr != nil {
@@ -456,12 +498,14 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	// M6 同步音频（契约 §7.2）：glm 账户的 speech 请求走 openai 透传——唯一
-	// body 改写是 metadata 扩展包 deep-merge 进上游 body（官方
+	// body 改写是 metadata 扩展包只新增进上游 body（不覆盖既有路径，官方
 	// 厂商扩展 ref_audio/ref_text 声音复刻参数），网关私有 metadata
 	// 通道键不透传上游；无扩展参数时维持字节级透传（不进本分支）。
 	// transcriptions/translations（multipart 表单）零改写，由通用透传链转发
 	//（URL 已在 BuildGatewayUpstreamURLsForAccount 归一）。
-	if body, ok := d.glmSpeechUpstreamBody(req, account); ok {
+	if body, ok, speechBodyErr := d.glmSpeechUpstreamBody(req, account); speechBodyErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(speechBodyErr)
+	} else if ok {
 		headers := upstreamHeadersOf(req, account)
 		headers.Set("Content-Type", "application/json")
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
@@ -650,17 +694,19 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	// 媒体创建面的扩展通道是网关私有：适配器分支已在构造时报文消费
 	// metadata，走到通用透传分支的（如 openai 账户的 speech 直连）必须
 	// 剥除该键，避免把网关私有字段发往上游（设计 §5.1）。
-	body, err = chainStripMediaMetadataKey(req, body)
+	body, err = chainStripMediaExtensionKeys(req, body)
 	if err != nil {
 		return gatewaydispatch.PreparedRequestParts{}, err
 	}
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 }
 
-// chainStripMediaMetadataKey 在媒体创建请求的通用透传 body 中剥除 metadata
-// 通道键（字节级透传仅在该键存在时改写；非媒体路径零行为差异）。语音直连
-// 面在此做通道形态与规范字段冲突校验（适配器分支已在各自入口校验过）。
-func chainStripMediaMetadataKey(req *gatewaypreauth.GatewayRequest, body []byte) ([]byte, error) {
+// chainStripMediaExtensionKeys 在媒体创建/语音直连的通用透传 body 中剥除
+// 网关私有扩展键：metadata（唯一扩展通道，适配器分支已在各自入口消费并
+// 校验）与已退役的 provider_options（旧客户端携带时按未知字段忽略，不发往
+// 上游）。语音直连面在此补做通道形态与规范字段冲突校验；非媒体路径零行为
+// 差异。
+func chainStripMediaExtensionKeys(req *gatewaypreauth.GatewayRequest, body []byte) ([]byte, error) {
 	if req == nil || len(body) == 0 {
 		return body, nil
 	}
@@ -672,16 +718,19 @@ func chainStripMediaMetadataKey(req *gatewaypreauth.GatewayRequest, body []byte)
 	if err := json.Unmarshal(body, &object); err != nil {
 		return body, nil
 	}
-	raw, exists := object[gatewaymedia.MetadataKey]
-	if !exists {
-		return body, nil
-	}
-	if speech {
+	raw, hasMetadata := object[gatewaymedia.MetadataKey]
+	if speech && hasMetadata {
 		if _, err := gatewaymedia.ExtractMetadata(raw, gatewaymedia.SpeechMetadataReserved); err != nil {
 			return nil, chainMediaParamValidationError(err)
 		}
 	}
+	if !hasMetadata {
+		if _, hasProviderOptions := object[gatewaymedia.RetiredProviderOptionsKey]; !hasProviderOptions {
+			return body, nil
+		}
+	}
 	delete(object, gatewaymedia.MetadataKey)
+	delete(object, gatewaymedia.RetiredProviderOptionsKey)
 	encoded, err := json.Marshal(object)
 	if err != nil {
 		return body, nil
@@ -1711,7 +1760,9 @@ func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, accoun
 // 的 IsSpeechPath 豁免臂），静默 false 会把参数错误送通用透传链打向
 // generativelanguage 404 后伪装成 503 可重试上游故障（与 volcengine 修复前
 // 同病，契约 §5.1/§9.2 分派语义同款）。SpeechIR 从请求体解析（模型映射面
-// M1 不介入：请求模型直达上游；账户 canonical 拼写优先）。
+// M1 不介入：请求模型直达上游；账户 canonical 拼写优先），metadata 扩展包
+// 由 ParseSpeechRequest 统一投影进 SpeechRequest.Metadata（gemini TTS
+// BuildRequest 合并进 generateContent 报文，设计 §5.1）。
 func (d *chainProviderDriver) geminiSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
 	if req == nil || req.HTTP == nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
@@ -1769,6 +1820,9 @@ func geminiSpeechAdapterBoundaryError(err error) error {
 	if errors.As(err, &validation) {
 		return err
 	}
+	if errors.Is(err, gatewaymedia.ErrMetadataReservedField) {
+		return chainMediaParamValidationError(err)
+	}
 	return gatewaypreauth.NewGatewayRequestValidationError(err.Error())
 }
 
@@ -1784,8 +1838,8 @@ func geminiSpeechAdapterBoundaryError(err error) error {
 // 通用透传链，否则参数错误会被送上游 /v1/audio/speech 404 后以 503
 // upstream_retryable_error 伪装（minimax 官方语音面是 /v1/t2a_v2，透传链
 // URL 本就打不中）。SpeechIR 从请求体解析（模型映射面不介入：请求模型直达
-// 上游；账户 canonical 拼写优先）；metadata 扩展包投影进
-// SpeechRequest.Metadata（vol/pitch 等厂商个例参数，设计 §5.1）。
+// 上游；账户 canonical 拼写优先）；metadata 扩展包由 ParseSpeechRequest
+// 统一投影进 SpeechRequest.Metadata（vol/pitch 等厂商个例参数，设计 §5.1）。
 func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
 	if req == nil || req.HTTP == nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
@@ -1815,11 +1869,6 @@ func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRe
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
-	metadata, optionsErr := chainMediaMetadataOf(body, gatewaymedia.SpeechMetadataReserved)
-	if optionsErr != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false, optionsErr
-	}
-	ir.Metadata = metadata
 	return adapter, ir, true, nil
 }
 
@@ -1835,8 +1884,8 @@ func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRe
 // BuildUpstreamURL(base, /v1/audio/speech) 送上游 404 后以 503
 // upstream_retryable_error 伪装（错误语义与可重试性双重错乱）。
 // SpeechIR 从请求体解析（模型映射面不介入：请求模型直达上游；账户 canonical
-// 拼写优先）；metadata 扩展包投影进 SpeechRequest.Metadata（emotion 等
-// 厂商个例参数，设计 §5.1）。
+// 拼写优先）；metadata 扩展包由 ParseSpeechRequest 统一投影进
+// SpeechRequest.Metadata（emotion 等厂商个例参数，设计 §5.1）。
 // 语音凭据（speech_token 单值）不在此分支承载——由
 // chainVolcengineSpeechCredentials 在 URL/parts 两个消费点先行校验注入。
 func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
@@ -1868,16 +1917,76 @@ func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.Gatewa
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
-	metadata, optionsErr := chainMediaMetadataOf(body, gatewaymedia.SpeechMetadataReserved)
-	if optionsErr != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false, optionsErr
-	}
-	ir.Metadata = metadata
 	return adapter, ir, true, nil
 }
 
+// volcengineTranscriptionRequest 解析"volcengine 账户 + 同步转写请求"的
+// adapter 规范输入（对外 /v1/audio/transcriptions，multipart 文件）。仅
+// 登记了 audio_transcription_json 的 openspeech 账户命中；ark 账户与其它
+// provider 保持既有透传语义（ok=false）。命中后请求体缺失/非 multipart/
+// 缺 model/file/不支持的音频格式均为请求侧 400，不落通用透传链送上游 404。
+// 翻译面（/v1/audio/translations）当前无上游对应能力，显式 400。
+func (d *chainProviderDriver) volcengineTranscriptionRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*gatewaymedia.TranscriptionRequest, bool, error) {
+	if req == nil || req.HTTP == nil {
+		return nil, false, nil
+	}
+	if chainNormalizeProviderToken(account.VendorCode) != "volcengine" {
+		return nil, false, nil
+	}
+	if !containsTrimmedString(account.SupportedEndpointModes, "audio_transcription_json") {
+		return nil, false, nil
+	}
+	endpoint, endpointOK := gatewaymedia.AudioEndpointPath(req.PathAndQuery())
+	if !endpointOK {
+		return nil, false, nil
+	}
+	switch endpoint {
+	case "/audio/translations":
+		return nil, false, gatewaypreauth.NewGatewayRequestValidationError(
+			"火山 openspeech 同步语音面只支持 /v1/audio/transcriptions，不支持 /v1/audio/translations")
+	case "/audio/transcriptions":
+	default:
+		return nil, false, nil
+	}
+	if req.Body == nil || len(req.Body.RawBody) == 0 {
+		return nil, false, gatewaypreauth.NewGatewayRequestValidationError("语音转写请求体不能为空")
+	}
+	contentType := req.Header("Content-Type")
+	if req.Body.State != nil && req.Body.State.ContentType != "" {
+		contentType = req.Body.State.ContentType
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		return nil, false, gatewaypreauth.NewGatewayRequestValidationError("语音转写请求必须是 multipart/form-data")
+	}
+	model, ok := gatewaybody.ExtractMultipartAudioModel(req.Body.RawBody, contentType, endpoint)
+	if !ok {
+		return nil, false, gatewaypreauth.NewGatewayRequestValidationError("语音转写请求缺少 model 表单字段")
+	}
+	file, partType, filename, ok := gatewaybody.ExtractMultipartFilePartInfo(req.Body.RawBody, contentType, "file")
+	if !ok || len(file) == 0 {
+		return nil, false, gatewaypreauth.NewGatewayRequestValidationError("语音转写请求缺少 file 文件字段")
+	}
+	audioFormat, formatErr := gatewaymedia.VolcASRSyncAudioFormat(partType, filename)
+	if formatErr != nil {
+		return nil, false, geminiSpeechAdapterBoundaryError(formatErr)
+	}
+	responseFormat, _ := gatewaybody.ExtractMultipartAudioResponseFormat(req.Body.RawBody, contentType, endpoint)
+	language, _ := gatewaybody.ExtractMultipartAudioLanguage(req.Body.RawBody, contentType, endpoint)
+	if canonical := canonicalAccountModel(req, account); canonical != "" {
+		model = canonical
+	}
+	return &gatewaymedia.TranscriptionRequest{
+		Model:          model,
+		Audio:          file,
+		AudioFormat:    audioFormat,
+		Filename:       filename,
+		ResponseFormat: responseFormat,
+		Language:       language,
+	}, true, nil
+}
+
 // glmSpeechUpstreamPathOf 把 glm 账户的同步音频请求路径产出为 v2 opPath
-//（契约 §7.2：{base}/audio/speech|transcriptions|translations——CogVideo
+// （契约 §7.2：{base}/audio/speech|transcriptions|translations——CogVideo
 // §7.1 同根先例；opPath 不含版本段，/api/paas/v4 通用根由账户 base_url
 // 版本根承载）。ok=false 表示非同步音频端点（chat/videos 等
 // 维持既有归一）。
@@ -1895,38 +2004,54 @@ func glmSpeechUpstreamPathOf(req *gatewaypreauth.GatewayRequest) (string, bool) 
 
 // glmSpeechUpstreamBody 构造 glm 账户 speech 请求的上游 body（M6，契约
 // §7.2 透传语义）：openai 形态报文原样透传，唯一改写是 metadata 扩展包
-// deep-merge 进顶层（ref_audio/ref_text 声音复刻扩展），并剥除网关私有的
-// metadata 通道键（设计 §5.1：扩展通道不是上游参数）。
+// 只新增进顶层（不覆盖既有路径；ref_audio/ref_text 声音复刻扩展），并剥除网关私有的
+// metadata 通道键与已退役的 provider_options（设计 §5.1：扩展通道不是
+// 上游参数）。
 // ok=false 表示维持通用透传：非 glm 账户、非 speech 路径、body 非 JSON 对象
 // 或未携带扩展参数（字节级透传不改写）。
-func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) ([]byte, bool) {
+func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) ([]byte, bool, error) {
 	if req == nil || req.HTTP == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	if chainNormalizeProviderToken(account.VendorCode) != "glm" {
-		return nil, false
+		return nil, false, nil
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
-		return nil, false
+		return nil, false, nil
 	}
 	body := req.ParsedJSONObjectBody()
 	if body == nil {
 		body = d.materializedParsedJSONObjectBody(req)
 	}
 	if body == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	metadata, optionsErr := chainMediaMetadataOf(body, gatewaymedia.SpeechMetadataReserved)
-	if optionsErr != nil || len(metadata) == 0 {
-		return nil, false
+	if optionsErr != nil {
+		return nil, false, optionsErr
 	}
-	merged := gatewaymedia.MergeMetadata(body, metadata)
+	if len(metadata) == 0 {
+		return nil, false, nil
+	}
+	// 先剥除已退役的顶层 provider_options（设计 §5.1：旧客户端携带时不发往
+	// 上游），再合并 metadata——避免 metadata 内同名的厂商键被连带删除。
+	base := make(map[string]any, len(body))
+	for key, value := range body {
+		if key == gatewaymedia.RetiredProviderOptionsKey {
+			continue
+		}
+		base[key] = value
+	}
+	merged, mergeErr := gatewaymedia.MergeMetadata(base, metadata)
+	if mergeErr != nil {
+		return nil, false, mergeErr
+	}
 	delete(merged, gatewaymedia.MetadataKey)
 	encoded, err := json.Marshal(merged)
 	if err != nil {
-		return nil, false
+		return nil, false, fmt.Errorf("编码 GLM 语音请求体失败: %w", err)
 	}
-	return encoded, true
+	return encoded, true, nil
 }
 
 // chainVolcengineSpeechCredentialMismatchReason 把「火山账户声明了语音域端点

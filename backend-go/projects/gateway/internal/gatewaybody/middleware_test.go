@@ -498,6 +498,21 @@ func TestCapturePipeline(t *testing.T) {
 		}
 	})
 
+	t.Run("multipart audio model captured", func(t *testing.T) {
+		// STT 的 model 与 file 同为 multipart 字段；缺模型会让调度在入口 404。
+		m := newTestMiddleware(newRecorderMock())
+		raw, contentType := multipartBody(t, []string{formField("model", "volc.seedasr.auc"), filePart("file", "a.mp3")})
+		r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+		r.Header.Set("Content-Type", contentType)
+		req, err := m.Capture(httptest.NewRecorder(), r, raw)
+		if err != nil || req == nil {
+			t.Fatalf("req = %+v, err = %v", req, err)
+		}
+		if req.State.Model == nil || *req.State.Model != "volc.seedasr.auc" {
+			t.Fatalf("model = %v", req.State.Model)
+		}
+	})
+
 	t.Run("aborted request releases the lease silently", func(t *testing.T) {
 		recorder := newRecorderMock()
 		m := newTestMiddleware(recorder)

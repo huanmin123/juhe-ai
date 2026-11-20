@@ -27,7 +27,7 @@
 </tbody></table>
 <p><strong>逐家速查里，没有标&quot;受控拒绝&quot;的一律是透传。</strong></p>
 <hr>
-<h2>OpenAI / GPT（provider：<code>openai</code>，<code>gpt</code> 是其别名）</h2>
+<h2>OpenAI / GPT（供应商代码 <code>gpt</code>，协议面 <code>openai</code>）</h2>
 <table>
 <thead>
 <tr>
@@ -295,6 +295,14 @@
 <tr>
 <td>回包特例</td>
 <td>TTS 音频为 base64（与 MiniMax 的 hex 不同，但你拿到的都是网关解码后的二进制）</td>
+</tr>
+<tr>
+<td>同步转写</td>
+<td>仅 <code>POST /v1/audio/transcriptions</code>（如 <code>volc.seedasr.auc</code>）：支持 <code>response_format</code> 的 json/text/verbose_json/srt/vtt，单文件限 <strong>25MB</strong>；<strong>不支持</strong> <code>/v1/audio/translations</code>（本地 400，不伪造翻译）</td>
+</tr>
+<tr>
+<td>转写 <code>language</code></td>
+<td>只回填到 <code>verbose_json</code> 的 <code>language</code>，不作为上游识别参数</td>
 </tr>
 </tbody></table>
 <h2>xAI / Grok</h2>

@@ -305,11 +305,6 @@ func TestDecideSkipsRealtimeVideoAndNonMedia(t *testing.T) {
 			row.OutputUsdPerImage = nullFloat(0.5)
 			return row
 		}(), action: ActionSkip},
-		{source: func() sourceRow {
-			row := sourceOf("input", `["chat_json"]`, `["text"]`)
-			row.ImageInputUsdPer1M = nullFloat(1)
-			return row
-		}(), action: ActionSkip},
 	}
 	for _, testCase := range cases {
 		row := decide(testCase.source)
@@ -319,6 +314,19 @@ func TestDecideSkipsRealtimeVideoAndNonMedia(t *testing.T) {
 		if row.MediaPricingJSON != "" {
 			t.Fatalf("%s must not carry pricing", row.ID)
 		}
+	}
+}
+
+func TestDecideImageInputOnlyGoesManualReview(t *testing.T) {
+	source := sourceOf("input", `["chat_json"]`, `["text"]`)
+	source.ImageInputUsdPer1M = nullFloat(1)
+
+	row := decide(source)
+	if row.Action != ActionManualReview || row.Reason != "image_input_only" {
+		t.Fatalf("decide = %s/%s, want manual_review/image_input_only", row.Action, row.Reason)
+	}
+	if row.MediaPricingJSON != "" {
+		t.Fatal("manual_review row must not carry pricing")
 	}
 }
 

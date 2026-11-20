@@ -194,11 +194,14 @@ func TestW11DCacheKeyHelpers(t *testing.T) {
 	if got := gatewayOpenAIAccountsCacheKey("g1", "sys", "m1", "responses"); got != "g1:sys:model:m1:endpoint:responses" {
 		t.Fatalf("模型+族键 = %q", got)
 	}
-	if got := providerModelCatalogCacheKey(ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "s1"}); got != "gpt:s1:active:priced" {
+	if got := providerModelCatalogCacheKey(ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "s1"}); got != "v3:gpt:s1:active:priced" {
 		t.Fatalf("目录键 = %q", got)
 	}
-	if got := providerModelCatalogCacheKey(ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "s1", IncludeInactive: true, IncludeUnpriced: true}); got != "gpt:s1:inactive:unpriced" {
+	if got := providerModelCatalogCacheKey(ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "s1", IncludeInactive: true, IncludeUnpriced: true}); got != "v3:gpt:s1:inactive:unpriced" {
 		t.Fatalf("全量目录键 = %q", got)
+	}
+	if got := providerModelCatalogCacheKey(ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "s1", IncludeInvalidMediaPricing: true}); got != "v3:gpt:s1:active:priced:invalid-media-pricing" {
+		t.Fatalf("非法媒体价目录键 = %q", got)
 	}
 	if got := gatewayCacheKey("g", "s"); got != "g:s" {
 		t.Fatalf("基础键 = %q", got)

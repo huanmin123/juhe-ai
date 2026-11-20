@@ -108,7 +108,8 @@ func TestProvidersModelCacheInvalidationCreate(t *testing.T) {
 	env, recorder := newInvalidationTestEnv(t)
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
+	// 价格只允许管理员提交（设计 §7.3），缓存失效断言用管理员会话。
+	env.login(t, "root", "root-pass", "super_admin")
 
 	// Validation failures publish nothing.
 	code, invalid := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":" "}`)
@@ -165,7 +166,8 @@ func TestProvidersModelCacheInvalidationPatchCustom(t *testing.T) {
 	env, recorder := newInvalidationTestEnv(t)
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
+	// 价格补丁只允许管理员提交（设计 §7.3）；管理员可编辑个人模型。
+	env.login(t, "root", "root-pass", "super_admin")
 
 	// The committed patch publishes the save reason (Node reuses
 	// custom_provider_model_saved on the patch path).
@@ -299,7 +301,7 @@ func TestProvidersModelCacheInvalidationNilPort(t *testing.T) {
 	}
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
+	env.login(t, "root", "root-pass", "super_admin")
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"nil-port-model","inputUsdPer1M":1,"outputUsdPer1M":2}`)
 	if code != http.StatusCreated {

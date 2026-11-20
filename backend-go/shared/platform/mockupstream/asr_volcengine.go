@@ -16,6 +16,10 @@ package mockupstream
 //     processing / 20000002 queued → both in_progress, 20000000 terminal
 //     succeeded with the transcription payload, 450000xx failure; the
 //     query body is {})
+//   - POST /api/v3/auc/bigmodel/recognize/flash        sync flash ASR
+//     (2026-11-20 batch: header-driven one-shot transcription; the body
+//     carries audio.data base64 OR audio.url, the response body carries
+//     audio_info.duration in MILLISECONDS plus result.text/utterances)
 //
 // Rejection shapes mirror the measured real forms (HTTP 200 unless noted —
 // the transport status stays 200 on this face, the protocol status is the
@@ -43,11 +47,13 @@ package mockupstream
 //	media_volcengine_asr_poll_running:        never completes (stuck case)
 //	media_volcengine_asr_poll_succeeded_text: #1 20000000 + payload (fast path)
 //	media_volcengine_asr_poll_failed:         #1 45000006 download audio failed
+//	media_volcengine_asr_sync_ok:             one-shot 20000000 + duration:3996 payload
 //
 // Unknown scenarios default to the family OK script (create_ok), mirroring
 // the qwen ASR / volcengine video defaulting philosophy.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -59,6 +65,7 @@ const (
 	ScenarioMediaVolcengineASRPollRunning       Scenario = "media_volcengine_asr_poll_running"
 	ScenarioMediaVolcengineASRPollSucceededText Scenario = "media_volcengine_asr_poll_succeeded_text"
 	ScenarioMediaVolcengineASRPollFailed        Scenario = "media_volcengine_asr_poll_failed"
+	ScenarioMediaVolcengineASRSyncOK            Scenario = "media_volcengine_asr_sync_ok"
 )
 
 // Seedasr AUC wire constants (contract §9.2): the two POST endpoints, the
@@ -66,6 +73,7 @@ const (
 const (
 	volcengineASRSubmitPath = "/api/v3/auc/bigmodel/submit"
 	volcengineASRQueryPath  = "/api/v3/auc/bigmodel/query"
+	volcengineASRSyncPath   = "/api/v3/auc/bigmodel/recognize/flash"
 	volcengineASRResourceID = "volc.seedasr.auc"
 
 	volcengineASRStatusOK          = "20000000" // terminal succeeded / submit accepted
@@ -91,11 +99,18 @@ type volcengineASRTask struct {
 }
 
 // isVolcengineASRPath reports whether the path belongs to the volcengine
-// seedasr ASR face (both endpoints are POST-only — no GET, no cancel route
-// on the §9.2 face; the whitelist entries themselves live in the
+// seedasr ASR async face (submit/query are POST-only — no GET, no cancel
+// route on the §9.2 face; the whitelist entries themselves live in the
 // mediaEndpoints map, media.go).
 func isVolcengineASRPath(path string) bool {
 	return path == volcengineASRSubmitPath || path == volcengineASRQueryPath
+}
+
+// isVolcengineASRSyncPath reports whether the path belongs to the one-shot
+// flash ASR face (recognize/flash), which shares the header-driven status
+// protocol but has no task table.
+func isVolcengineASRSyncPath(path string) bool {
+	return path == volcengineASRSyncPath
 }
 
 // volcengineASRScriptFor normalizes the creating scenario into the task
@@ -120,12 +135,29 @@ type volcengineASRSubmitBody struct {
 	} `json:"audio"`
 }
 
+// volcengineASRSyncBody is the one-shot flash recognition request face:
+// audio.data (base64) OR audio.url, plus audio.format and request.model_name.
+// The gateway's /v1/audio/transcriptions adapter always sends base64 data.
+type volcengineASRSyncBody struct {
+	Audio struct {
+		URL    string `json:"url"`
+		Data   string `json:"data"`
+		Format string `json:"format"`
+	} `json:"audio"`
+}
+
 // volcengineASRSucceededPayload is the terminal transcription body, pinned
 // byte-for-byte from the 2026-10-17 real-upstream measurement (contract
 // §9.2). audio_info.duration is MILLISECONDS (1118) — the gateway metering
 // arm divides it by 1000 into audio_input_seconds, so chain assertions
 // depend on this exact value.
 const volcengineASRSucceededPayload = `{"audio_info":{"duration":1118},"result":{"additions":{"duration":"1118"},"text":"Carry an oily rag.","utterances":[{"end_time":1040,"start_time":0,"text":"Carry an oily rag.","words":[{"confidence":0,"end_time":240,"start_time":0,"text":"Carry"},{"confidence":0,"end_time":-1,"start_time":-1,"text":" "},{"confidence":0,"end_time":480,"start_time":360,"text":"an"},{"confidence":0,"end_time":720,"start_time":560,"text":"oily"},{"confidence":0,"end_time":1040,"start_time":880,"text":"rag"}]}]}}`
+
+// volcengineASRSyncPayload is the one-shot flash recognition body pinned
+// from the 2026-11-20 real-upstream sample shape: audio_info.duration is
+// MILLISECONDS (3996) and result.utterances carries second-level boundaries
+// (450→3570ms) used by the gateway srt/vtt rendering.
+const volcengineASRSyncPayload = `{"audio_info":{"duration":3996},"result":{"text":"Hello from the mock sync transcription.","utterances":[{"start_time":450,"end_time":3570,"text":"Hello from the mock sync transcription."}]}}`
 
 // writeVolcengineASRResponse writes one header-driven protocol response:
 // the transport status stays 200 with the protocol status carried in
@@ -283,4 +315,40 @@ func (m *Server) serveVolcengineASRQuery(w http.ResponseWriter, r *http.Request)
 	statusCode, message, body := volcengineASRQueryResponse(task)
 	m.mu.Unlock()
 	writeVolcengineASRResponseEchoID(w, r, statusCode, message, body)
+}
+
+// serveVolcengineASRSync implements POST /api/v3/auc/bigmodel/recognize/flash
+// (2026-11-20 sync STT batch): the same header-driven status protocol as the
+// async face, but one-shot — no task table and no polling. The request must
+// carry X-Api-Sequence: -1 plus audio.data (base64) or audio.url; the
+// response is the pinned duration:3996 payload with X-Api-Status-Code
+// 20000000. Unknown scenarios still answer the OK payload (family default).
+func (m *Server) serveVolcengineASRSync(w http.ResponseWriter, r *http.Request) {
+	if !volcengineASRHeaderCheck(w, r) {
+		return
+	}
+	if r.Header.Get("X-Api-Sequence") != "-1" {
+		const message = "X-Api-Sequence must be -1"
+		writeVolcengineASRResponseEchoID(w, r, volcengineASRStatusBadParam, message, volcengineASREnvelope("", 45000001, message))
+		return
+	}
+	var body volcengineASRSyncBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Audio.Data == "" && body.Audio.URL == "") {
+		const message = "audio.data or audio.url is required"
+		writeVolcengineASRResponseEchoID(w, r, volcengineASRStatusBadParam, message, volcengineASREnvelope("", 45000001, message))
+		return
+	}
+	if body.Audio.Data != "" {
+		if _, err := base64.StdEncoding.DecodeString(body.Audio.Data); err != nil {
+			const message = "audio.data must be base64"
+			writeVolcengineASRResponseEchoID(w, r, volcengineASRStatusBadParam, message, volcengineASREnvelope("", 45000001, message))
+			return
+		}
+		if body.Audio.Format == "" {
+			const message = "audio.format is required with audio.data"
+			writeVolcengineASRResponseEchoID(w, r, volcengineASRStatusBadParam, message, volcengineASREnvelope("", 45000001, message))
+			return
+		}
+	}
+	writeVolcengineASRResponseEchoID(w, r, volcengineASRStatusOK, "OK", volcengineASRSyncPayload)
 }

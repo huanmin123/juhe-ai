@@ -106,7 +106,7 @@ func TestWeProvidersCreateAudioModeModel(t *testing.T) {
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"my-tts","scope":"global","mode":"audio",`+
 			`"supportedApiProtocols":["audio_speech"],`+
-			`"releaseDate":"2026-01-01","audioInputUsdPer1M":1,"audioOutputUsdPer1M":2}`)
+			`"releaseDate":"2026-01-01","mediaPricing":`+testAudioMediaPricing+`}`)
 	if code != http.StatusCreated {
 		t.Fatalf("audio create: %d %v", code, created)
 	}
@@ -122,16 +122,15 @@ func TestWeProvidersCreateAudioModeModel(t *testing.T) {
 	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"my-stt","scope":"global","mode":"audio",`+
 			`"supportedApiProtocols":["audio_transcription"],`+
-			`"releaseDate":"2026-01-01","audioInputUsdPer1M":1}`)
+			`"releaseDate":"2026-01-01","mediaPricing":`+testAudioMediaPricing+`}`)
 	if code != http.StatusCreated {
 		t.Fatalf("transcription create: %d", code)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// M2 视频：mode=video + video 协议合法（draft 创建路径）；启用态因无管理面
-// 价格通道被价格完整性校验挡住（write_routes.go customInputHasDirectPrice
-// video 分支，价格通道随 M3 计价完善交付）。
+// M2/P3 视频：mode=video + video 协议合法；统一媒体计价后启用态必须携带
+// mediaPricing（无同族模板时管理员创建返回 400「请先配置媒体统一价格」）。
 // ---------------------------------------------------------------------------
 
 func TestWeProvidersCreateVideoModeModel(t *testing.T) {
@@ -142,7 +141,7 @@ func TestWeProvidersCreateVideoModeModel(t *testing.T) {
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"my-sora","scope":"global","status":"draft","mode":"video",`+
 			`"supportedApiProtocols":["video"],`+
-			`"releaseDate":"2026-01-01"}`)
+			`"releaseDate":"2026-01-01","mediaPricing":`+testVideoMediaPricingSecond+`}`)
 	if code != http.StatusCreated {
 		t.Fatalf("video draft create: %d %v", code, created)
 	}
@@ -154,14 +153,23 @@ func TestWeProvidersCreateVideoModeModel(t *testing.T) {
 		t.Fatalf("video row persisted protocols=%s", protocols)
 	}
 
-	// 启用态（默认 status=active）被价格完整性校验挡住：视频分类无管理面
-	// 价格字段可配（M2 词表只放开分类与协议）。
+	// 启用态（默认 status=active）必须有统一媒体价格；没有同族模板可复制
+	// 时管理员创建返回明确 400，不落未定价 active 行。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"my-sora-2","scope":"global","mode":"video",`+
 			`"supportedApiProtocols":["video"],`+
 			`"releaseDate":"2026-01-01"}`)
-	if code != http.StatusBadRequest || payload["message"] != "启用的自定义模型必须配置完整当前价格" {
-		t.Fatalf("video active create: %d %v", code, payload)
+	if code != http.StatusBadRequest || payload["message"] != "请先配置媒体统一价格" {
+		t.Fatalf("video active create without pricing: %d %v", code, payload)
+	}
+
+	// 显式 mediaPricing 的启用态视频模型创建成功。
+	code, activeCreated := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"my-sora-2","scope":"global","mode":"video",`+
+			`"supportedApiProtocols":["video"],`+
+			`"releaseDate":"2026-01-01","mediaPricing":`+testVideoMediaPricingSecond+`}`)
+	if code != http.StatusCreated {
+		t.Fatalf("video active create with pricing: %d %v", code, activeCreated)
 	}
 }
 
@@ -199,19 +207,20 @@ func TestT93PricingCompletenessHTTP(t *testing.T) {
 		t.Fatalf("text draft input-only: %d %v", code, payload)
 	}
 
-	// 图片只有图片 token 价、无按张价：400。
+	// 图片模型未提交 mediaPricing 且无同族模板可复制：400（统一媒体计价后
+	// legacy 图片 token/按张价不再作为媒体模式的创建价通道）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"t93-image-half","scope":"global","mode":"image","supportedApiProtocols":["images"],`+
 			`"releaseDate":"2026-01-01","imageInputUsdPer1M":1}`)
-	if code != http.StatusBadRequest || payload["message"] != "启用的自定义模型必须配置完整当前价格" {
+	if code != http.StatusBadRequest || payload["message"] != "请先配置媒体统一价格" {
 		t.Fatalf("image token-only: %d %v", code, payload)
 	}
 
-	// 图片带按张价：201。
+	// 图片携带统一媒体模板：201。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"t93-image-full","scope":"global","mode":"image","supportedApiProtocols":["images"],`+
-			`"releaseDate":"2026-01-01","outputUsdPerImage":0.04}`)
+			`"releaseDate":"2026-01-01","mediaPricing":`+testImageMediaPricing+`}`)
 	if code != http.StatusCreated {
-		t.Fatalf("image per-image price: %d %v", code, payload)
+		t.Fatalf("image media pricing: %d %v", code, payload)
 	}
 }

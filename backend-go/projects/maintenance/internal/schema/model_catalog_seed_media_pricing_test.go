@@ -1,6 +1,6 @@
 package schema
 
-// P3 种子门禁：model_catalog_data_gen.go 必须携带 catalogdata 迁移后的 66
+// P3 种子门禁：model_catalog_data_gen.go 必须携带 catalogdata 迁移后的 67
 // 条 media_pricing_json，且 13 个 realtime、3 个 gpt-audio、1 个无价 video
 // 保持 NULL。与 gateway pricing 的 catalogdata 门禁互为两端（数据源与种子）。
 
@@ -64,14 +64,14 @@ func TestModelCatalogSeedMediaPricingRows(t *testing.T) {
 		migrated++
 		unitCounts[pricing.Unit]++
 	}
-	if migrated != 66 {
-		t.Errorf("种子 media_pricing_json 行 = %d, want 66", migrated)
+	if migrated != 67 {
+		t.Errorf("种子 media_pricing_json 行 = %d, want 67", migrated)
 	}
 	if legacy != 17 {
 		t.Errorf("种子保持 NULL 的媒体行 = %d, want 17", legacy)
 	}
 	want := map[mediapricing.Unit]int{
-		mediapricing.UnitSecond: 46,
+		mediapricing.UnitSecond: 47,
 		mediapricing.UnitImage:  19,
 		mediapricing.UnitCall:   1,
 	}

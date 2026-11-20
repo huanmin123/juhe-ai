@@ -559,9 +559,11 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 
 	if input.HasSchedule {
 		// 旧计划非法时不能阻断修复：清空或替换计划必须始终可用。解析失败按
-		// “无旧计划”处理（change 检测自然为真），由新计划覆盖坏数据；列表
-		// 读面同样降级，避免单条坏行打挂整个列表。
+		// “无旧计划”处理并强制视为变化，由新计划覆盖坏数据（否则 serialized
+		// 值同为“无计划”会漏写，坏 SQL 行保持原样）；列表读面同样降级，避免
+		// 单条坏行打挂整个列表。
 		currentSchedule, err := s.parseScheduleJSON(scheduleJSON.String)
+		currentScheduleInvalid := err != nil
 		if err != nil {
 			currentSchedule = nil
 		}
@@ -571,7 +573,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		}
 		nextScheduleJSONRaw, nextScheduleValid := ScheduleJSON(schedule)
 		currentScheduleJSONRaw, currentScheduleValid := ScheduleJSON(currentSchedule)
-		if nextScheduleJSONRaw != currentScheduleJSONRaw || nextScheduleValid != currentScheduleValid {
+		if currentScheduleInvalid || nextScheduleJSONRaw != currentScheduleJSONRaw || nextScheduleValid != currentScheduleValid {
 			nextScheduleJSON := sql.NullString{}
 			if nextScheduleValid {
 				nextScheduleJSON = sql.NullString{String: nextScheduleJSONRaw, Valid: true}

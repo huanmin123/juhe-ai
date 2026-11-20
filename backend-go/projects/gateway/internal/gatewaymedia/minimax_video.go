@@ -3,7 +3,7 @@
 // videoAdapters 的 "minimax" 条目）。报文依据契约 §8.1（置信度 B：多源
 // 确认）：创建 POST /v1/video_generation（Bearer API Key），请求
 // {model,prompt,duration,first_frame_image?}（prompt_optimizer 等厂商个例
-// 经 metadata deep-merge），响应
+// 经 metadata 只新增写入），响应
 // {task_id,base_resp:{status_code,status_msg}}——受理凭据 = task_id，
 // base_resp.status_code != 0 视为失败（受理前错误）；轮询 GET
 // /v1/query/video_generation?task_id= → task_id + status ∈
@@ -35,8 +35,10 @@ func (minimaxVideoAdapter) Provider() string { return "minimax" }
 //   - SupportsInputReference：first_frame_image 原生字段承接公共
 //     input_reference → true，但仅支持 base64/data URL 直传（url 形态
 //     不做下载，零存储，Create 内 400，沿 veo 裁决）；
-//   - SupportsNegativePrompt/SupportsAudio/SupportsN/SupportsSeed：请求面
-//     无对应字段 → false（忽略 + 回显 params_ignored，契约 §2.4 规则 1）。
+//   - SupportsNegativePrompt/SupportsAudio/SupportsN/SupportsSeed/SupportsSize：
+//     请求面无可对应字段（Hailuo 无 size 入参，分辨率/画幅由模型与上游
+//     默认决定）→ false（忽略 + 回显 params_ignored，契约 §2.4 规则 1；
+//     size 不进入计费快照，避免按未生效尺寸冻结档位）。
 func (minimaxVideoAdapter) Capabilities() VideoCapabilities {
 	return VideoCapabilities{
 		SupportsNegativePrompt: false,
@@ -79,8 +81,8 @@ func minimaxInputReferenceBase64(reference string) (string, error) {
 //   - input_reference → first_frame_image：base64/data URL 直传
 //     （minimaxInputReferenceBase64）；
 //   - negative_prompt/n/seed/audio 归一层判为 ignored，不进报文；
-//   - metadata 逐键 deep-merge 覆盖同名键
-//     （契约 §2.1 L3，如 {"minimax":{"prompt_optimizer":true}}）。
+//   - metadata 只新增、不覆盖既有路径
+//     （契约 §2.1 L3，如 {"prompt_optimizer":true}）。
 func (a minimaxVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -103,7 +105,10 @@ func (a minimaxVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vid
 		}
 		body["first_frame_image"] = base64Encoded
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, minimaxVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 minimax 视频创建请求体失败: %w", err)

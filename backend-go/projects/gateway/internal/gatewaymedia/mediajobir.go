@@ -57,7 +57,11 @@ type MediaJobError struct {
 type MediaJobUsage struct {
 	OutputVideoSeconds *float64
 	AudioInputSeconds  *float64
-	Raw                map[string]any
+	// ResolutionTier 是上游终态回报的实际分辨率档（当前 openai 视频轮询
+	// 对象携带 size；其余厂商无回报时不填）。存在时结算优先于创建时按
+	// adapter 换算冻结的档位，避免上游实际按更高/更低档产出时计费错档。
+	ResolutionTier string
+	Raw            map[string]any
 }
 
 // MediaJobArtifact 是产物定位（上游 uri / 重新调用参数 + 上游时效）。零资源

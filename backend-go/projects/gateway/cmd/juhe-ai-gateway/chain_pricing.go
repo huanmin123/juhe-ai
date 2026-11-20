@@ -178,6 +178,17 @@ func (c *chainUsagePricingCatalog) HasMediaPricing(providerCode, systemAccountID
 	return item != nil && item.HasMediaPricing && len(item.MediaPricing) > 0
 }
 
+// MediaPricingInvalid 报告目录行的 media_pricing_json 存在但非法（AC-016）。
+// 行级标志来自运行时目录扫描；非法行按无价处理，调用方据此落 0 成本 +
+// usage_missing，不回落 legacy，也不产出计费行项。
+func (c *chainUsagePricingCatalog) MediaPricingInvalid(providerCode, systemAccountID, model string) bool {
+	if c == nil || c.cache == nil || strings.TrimSpace(model) == "" {
+		return false
+	}
+	item := c.findItem(providerCode, systemAccountID, model)
+	return item != nil && item.MediaPricingInvalid
+}
+
 // EstimateCost mirrors estimateCatalogCostUsd; nil = the Node undefined.
 func (c *chainUsagePricingCatalog) EstimateCost(input gatewayusagePricingCostInput) *float64 {
 	breakdown := c.breakdownFor(input, true)
@@ -270,8 +281,9 @@ func (c *chainUsagePricingCatalog) findItem(providerCode, systemAccountID, model
 	ctx, cancel := context.WithTimeout(context.Background(), chainCatalogLookupTimeout)
 	defer cancel()
 	catalog, err := c.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{
-		ProviderCode:    providerCode,
-		SystemAccountID: systemAccountID,
+		ProviderCode:               providerCode,
+		SystemAccountID:            systemAccountID,
+		IncludeInvalidMediaPricing: true,
 	})
 	if err != nil {
 		return nil
@@ -296,16 +308,23 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 	// models 扁平列，历史口径从 go:embed 静态快照层按 provider+model 补齐；
 	// 该回退只在 media_pricing_json 为空时生效，静态未命中保持 nil
 	//（成本不虚计）。token 价仍以 DB 行为运行时权威。
-	mediaRates := pricing.FindProviderModelPricing(item.ProviderCode, item.Model)
+	// media_pricing_json 非法时整行按无价处理（AC-016）：不得用静态层补齐
+	// 媒体单价，也不得产出 MediaPricing，避免把非法价当免费/legacy 价结算。
+	mediaPricingInvalid := item.MediaPricingInvalid
 	var mediaSet pricing.PriceSet
-	if mediaRates != nil {
-		mediaSet = mediaRates.PriceSet
+	if !mediaPricingInvalid {
+		if mediaRates := pricing.FindProviderModelPricing(item.ProviderCode, item.Model); mediaRates != nil {
+			mediaSet = mediaRates.PriceSet
+		}
 	}
 	// models.media_pricing_json 是运行时唯一权威；仅当为空时静态层 legacy
 	// 媒体价继续作为回退（设计 §5.3）。
 	var mediaPricing *mediapricing.Pricing
-	if item.HasMediaPricing && len(item.MediaPricing) > 0 {
+	if !mediaPricingInvalid && item.HasMediaPricing && len(item.MediaPricing) > 0 {
 		mediaPricing, _ = mediapricing.Parse(item.MediaPricing)
+		if mediaPricing == nil {
+			mediaPricingInvalid = true
+		}
 	}
 	return &pricing.Pricing{
 		ProviderCode: item.ProviderCode,
@@ -331,6 +350,7 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 		CachedImageInputUsdPer1M: item.CachedImageInputUsdPer1M,
 		ServiceTierPrices:        chainServiceTierPrices(item.ServiceTierPrices),
 		MediaPricing:             mediaPricing,
+		MediaPricingInvalid:      mediaPricingInvalid,
 
 		SupportedServiceTiers: append([]string(nil), item.SupportedServiceTiers...),
 

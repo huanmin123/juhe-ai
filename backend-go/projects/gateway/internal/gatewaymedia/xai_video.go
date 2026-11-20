@@ -1,5 +1,5 @@
 // xai_video.go 是 M3 回填池的 xAI（Grok Imagine Video）出站 adapter
-//（媒体设计 §5：媒体 IR → 每厂商一个 adapter，注册表组织；本文件挂
+// （媒体设计 §5：媒体 IR → 每厂商一个 adapter，注册表组织；本文件挂
 // videoAdapters 的 "xai" 条目）。报文依据契约 §6.1（置信度 A：官方文档
 // 原文抓取 2026-10-04 经本地代理 web reader）：创建 POST /v1/videos/
 // generations（Bearer API Key），请求 {model,prompt,duration?,aspect_ratio?,
@@ -49,6 +49,7 @@ func (xaiVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsSize:           true,
 	}
 }
 
@@ -133,9 +134,9 @@ func xaiSizeToAspectRatioResolution(size string) (aspectRatio, resolution string
 //   - audio → generate_audio：布尔直传（nil 不传，上游默认 true）；
 //   - negative_prompt/seed/n 归一层判为 ignored（n>1 本地 400），不进报文
 //     （§2.4 规则 1）；
-//   - metadata 逐键 deep-merge 覆盖同名键（契约 §2.1
-//     L3，如 {"xai":{"reference_audios":[...]}}——§6.1 记录的范围外能力经
-//     该通道可达）。
+//   - metadata 只新增、不覆盖既有路径（契约 §2.1
+//     L3，如 {"reference_audios":[...]}——§6.1 记录的范围外能力经该通道
+//     可达）。
 func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -169,7 +170,10 @@ func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if params.Audio != nil {
 		body["generate_audio"] = *params.Audio
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, xaiVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 xai 视频创建请求体失败: %w", err)
@@ -180,6 +184,24 @@ func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 		Path: "/videos/generations",
 		Body: encoded,
 	}, nil
+}
+
+// EffectiveVideoMetering 实现 VideoEffectiveMeteringProvider：xAI duration
+// 出站前四舍五入到整数秒，size 换算为 resolution 档（480p/720p/1080p），
+// 两者都必须按出站值冻结计费快照，不能沿用请求原值。
+func (xaiVideoAdapter) EffectiveVideoMetering(params NormalizedVideoParams) (*float64, string) {
+	var seconds *float64
+	if params.Seconds != nil {
+		rounded := math.Round(*params.Seconds)
+		seconds = &rounded
+	}
+	resolutionTier := ""
+	if params.Size != "" {
+		if _, resolution, err := xaiSizeToAspectRatioResolution(params.Size); err == nil {
+			resolutionTier = resolution
+		}
+	}
+	return seconds, resolutionTier
 }
 
 // BuildPollRequest 构造轮询请求：GET {base}/videos/{request_id}（契约 §6.1；
@@ -204,7 +226,7 @@ func (xaiVideoAdapter) BuildContentRequest(string) (string, string) {
 
 // BuildCancelRequest 在 xai 形态下不参与取消：契约 §6.1 面无任务取消端点，
 // SupportsCancel 为 false，链上层不发上游请求、直接本地收敛 cancelled
-//（§2.6 cancelled 本地终态语义，沿 glm/minimax/volcengine/qwen 裁决）。
+// （§2.6 cancelled 本地终态语义，沿 glm/minimax/volcengine/qwen 裁决）。
 func (xaiVideoAdapter) BuildCancelRequest(string) (string, string) {
 	return http.MethodPost, ""
 }
@@ -243,7 +265,7 @@ type xaiVideoError struct {
 // §6.1 状态归一行）：pending→in_progress、done→completed、failed→failed、
 // expired→expired（上游原生终态，直接收敛——MediaJobStatus 词表已有该值，
 // 终态语义 Terminal() 覆盖）。空串（创建响应无 status 字段）→ in_progress
-//（受理凭据确立即已受理，pending 同义）；未知非空值归 in_progress 并返回
+// （受理凭据确立即已受理，pending 同义）；未知非空值归 in_progress 并返回
 // 原始值记入 RawStatus（契约 §2.6 归一规则：不猜测失败）。
 func xaiTaskStatusOf(status string) (MediaJobStatus, bool) {
 	switch strings.TrimSpace(status) {

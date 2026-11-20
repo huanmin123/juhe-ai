@@ -22,33 +22,113 @@ import (
 //
 // 只处理图片端点；token 等既有 usage 事实不变。失败响应不调用本函数，
 // 避免把请求参数当作成功计量。
+//
+// Gemini 原生 generateContent 图像面（媒体设计 §6.2）：响应完整 JSON 的
+// inlineData 图片张数由 gatewaygemini 解析为 upstream 计数；流式分片不做
+// part 计数（避免同一张图的分片重复计费），无上游计数时按请求
+// generationConfig.candidateCount（缺省 1）兜底并标 request。
 func usageWithRequestMediaMetering(req *gatewaypreauth.GatewayRequest, usage gatewayproto.ParsedUsage) gatewayproto.ParsedUsage {
 	if req == nil {
 		return usage
 	}
 	path := req.PathAndQuery()
-	if !isSyncImageGenerationPath(path) {
+	if isSyncImageGenerationPath(path) {
+		requestSize, requestCount := imageRequestMetering(req, path)
+		if usage.OutputImageCount == nil {
+			count := requestCount
+			if count <= 0 {
+				count = 1
+			}
+			usage.OutputImageCount = &count
+			usage.QuantitySource = "request"
+		} else if usage.QuantitySource == "" {
+			usage.QuantitySource = "upstream"
+		}
+		if usage.ResolutionTier == "" {
+			if width, height, ok := mediapricing.ParseSize(requestSize); ok {
+				if tier, ok := mediapricing.ImageTierForSize(width, height); ok {
+					usage.ResolutionTier = tier
+				}
+			}
+		}
 		return usage
 	}
-	requestSize, requestCount := imageRequestMetering(req, path)
-	if usage.OutputImageCount == nil {
-		count := requestCount
-		if count <= 0 {
-			count = 1
-		}
-		usage.OutputImageCount = &count
-		usage.QuantitySource = "request"
-	} else if usage.QuantitySource == "" {
-		usage.QuantitySource = "upstream"
-	}
-	if usage.ResolutionTier == "" {
-		if width, height, ok := mediapricing.ParseSize(requestSize); ok {
-			if tier, ok := mediapricing.ImageTierForSize(width, height); ok {
-				usage.ResolutionTier = tier
+	if count, ok := geminiRequestImageCount(req, path); ok {
+		if usage.OutputImageCount == nil {
+			if usage.ImageCandidatesPresent {
+				// 完整非流式响应有 candidates 但无图片 part：上游明确 0 张，
+				// 不得回落请求 candidateCount 造成超收（流式片段不置该标志，
+				// 仍按请求候选数兜底）。
+				zero := 0
+				usage.OutputImageCount = &zero
+				usage.QuantitySource = "upstream"
+			} else {
+				usage.OutputImageCount = &count
+				usage.QuantitySource = "request"
 			}
+		} else if usage.QuantitySource == "" {
+			usage.QuantitySource = "upstream"
 		}
 	}
 	return usage
+}
+
+// geminiRequestImageCount 识别 Gemini 原生 generateContent/streamGenerateContent
+// 图像请求并返回请求张数（candidateCount，缺省 1）。识别信号按可靠性排序：
+// imageConfig、responseModalities 含 IMAGE、模型名含 image；三者都无则不是
+// 图像请求。流式分片不计 inlineData part，仍按请求候选数兜底（一次请求
+// 只计一次，避免同一张图的分片重复计费）。
+func geminiRequestImageCount(req *gatewaypreauth.GatewayRequest, path string) (int, bool) {
+	endpoint := strings.ToLower(gatewaybody.EndpointPathOf(path))
+	// 流式与非流式共用同一请求形态与 candidateCount 语义；只在响应解析层
+	// 区分是否按 inlineData part 计数。
+	if !strings.Contains(endpoint, ":generatecontent") &&
+		!strings.Contains(endpoint, ":streamgeneratecontent") {
+		return 0, false
+	}
+	object := imageRequestJSONObject(req)
+	imageRequest := false
+	count := 1
+	if object != nil {
+		if config, ok := object["generationConfig"].(map[string]any); ok {
+			if _, hasImageConfig := config["imageConfig"]; hasImageConfig {
+				imageRequest = true
+			}
+			if modalities, ok := config["responseModalities"].([]any); ok {
+				for _, raw := range modalities {
+					if text, ok := raw.(string); ok && strings.EqualFold(strings.TrimSpace(text), "IMAGE") {
+						imageRequest = true
+					}
+				}
+			}
+			if parsed, valid := imageRequestCountWithin(config["candidateCount"], maxGeminiImageCandidateCount); valid {
+				count = parsed
+			}
+		}
+		if model, ok := object["model"].(string); ok && strings.Contains(strings.ToLower(model), "image") {
+			imageRequest = true
+		}
+	}
+	if strings.Contains(strings.ToLower(geminiModelFromRequestPath(endpoint)), "image") {
+		imageRequest = true
+	}
+	if !imageRequest {
+		return 0, false
+	}
+	return count, true
+}
+
+// geminiModelFromRequestPath 取 /models/{model}:generateContent 中的模型名。
+func geminiModelFromRequestPath(endpoint string) string {
+	index := strings.Index(endpoint, "/models/")
+	if index < 0 {
+		return ""
+	}
+	model := endpoint[index+len("/models/"):]
+	if colon := strings.Index(model, ":"); colon >= 0 {
+		model = model[:colon]
+	}
+	return model
 }
 
 // isSyncImageGenerationPath 匹配 OpenAI images 生成/编辑/变体端点族，兼容
@@ -128,26 +208,32 @@ func imageRequestJSONObject(req *gatewaypreauth.GatewayRequest) map[string]any {
 // imageRequestCount 解析请求 n（JSON number/字符串或 multipart 字符串）。
 // 非正整数与异常超大值视为缺失，避免无依据的数量进入计费。
 func imageRequestCount(value any) (int, bool) {
+	return imageRequestCountWithin(value, maxImageRequestCount)
+}
+
+// imageRequestCountWithin 同 imageRequestCount，但按供应商语义收窄上限
+// （Gemini candidateCount 远小于 OpenAI images n 的防御上限）。
+func imageRequestCountWithin(value any, limit int) (int, bool) {
 	switch typed := value.(type) {
 	case float64:
-		if typed <= 0 || typed != math.Trunc(typed) || typed > maxImageRequestCount {
+		if typed <= 0 || typed != math.Trunc(typed) || typed > float64(limit) {
 			return 0, false
 		}
 		return int(typed), true
 	case int:
-		if typed <= 0 || typed > int(maxImageRequestCount) {
+		if typed <= 0 || typed > limit {
 			return 0, false
 		}
 		return typed, true
 	case json.Number:
 		parsed, err := strconv.Atoi(typed.String())
-		if err != nil || parsed <= 0 || parsed > int(maxImageRequestCount) {
+		if err != nil || parsed <= 0 || parsed > limit {
 			return 0, false
 		}
 		return parsed, true
 	case string:
 		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err != nil || parsed <= 0 || parsed > int(maxImageRequestCount) {
+		if err != nil || parsed <= 0 || parsed > limit {
 			return 0, false
 		}
 		return parsed, true
@@ -159,3 +245,7 @@ func imageRequestCount(value any) (int, bool) {
 // maxImageRequestCount 是请求 n 的计量上限：只用于拒绝异常值，不改变
 // 上游实际返回 data[] 的计数口径。
 const maxImageRequestCount = 1000000
+
+// maxGeminiImageCandidateCount 是 Gemini 图像 candidateCount 的语义上限
+// （官方 1..8）；无上游计数时超限按缺失回落 1，避免异常值被当成兜底张数。
+const maxGeminiImageCandidateCount = 8

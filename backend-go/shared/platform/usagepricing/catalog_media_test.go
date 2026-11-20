@@ -183,6 +183,32 @@ func TestUsageCatalogMediaInvalidJSONIsUnpriced(t *testing.T) {
 	}
 }
 
+func TestUsageCatalogMediaModeMismatchIsUnpriced(t *testing.T) {
+	row := usageCatalogPricingRow{mode: "video"}
+	applyUsageCatalogMediaPricing(&row, sql.NullString{
+		String: `{"version":1,"unit":"image","baseUsd":0.04,"baseTier":"1k","tierMultipliers":{"1k":1,"2k":1.6,"4k":3}}`,
+		Valid:  true,
+	})
+	if row.hasMediaPricing || !row.mediaPricingInvalid {
+		t.Fatalf("video 行 + image 模板必须标记无价/非法: %#v", row)
+	}
+}
+
+func TestUsageCatalogMediaNonMediaModeKeepsPricing(t *testing.T) {
+	// chat/responses/embedding/空 mode 不参与媒体 kind 推断：Gemini
+	// generate_content 图像行与无 endpoint modes 的历史/迁移行必须保留模板。
+	for _, mode := range []string{"chat", "responses", "embedding", ""} {
+		row := usageCatalogPricingRow{mode: mode}
+		applyUsageCatalogMediaPricing(&row, sql.NullString{
+			String: `{"version":1,"unit":"image","baseUsd":0.04,"baseTier":"1k","tierMultipliers":{"1k":1,"2k":1.6,"4k":3}}`,
+			Valid:  true,
+		})
+		if !row.hasMediaPricing || row.mediaPricingInvalid {
+			t.Fatalf("mode %q + image 模板应保留为有效媒体价: %#v", mode, row)
+		}
+	}
+}
+
 func TestUsageCatalogMediaFreeZeroPriceIsPriced(t *testing.T) {
 	template := usagepricingAudioTemplate()
 	template.BaseUsd = 0

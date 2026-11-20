@@ -1,6 +1,6 @@
 package pricing
 
-// P3 媒体目录迁移门禁（设计 §9.2/§9.3）：catalogdata 中 66 个可迁移媒体行
+// P3 媒体目录迁移门禁（设计 §9.2/§9.3）：catalogdata 中 67 个可迁移媒体行
 // 必须带合法 mediaPricing，13 个 realtime 行、3 个 gpt-audio 对话音频行与
 // 1 个无价 video 行保持 legacy/NULL；并锁定 Hailuo 套餐折算、字符/token
 // 换算、图片 token 估价与官方分辨率倍率等关键锚点。
@@ -81,6 +81,40 @@ func catalogMediaExpectedLegacy(t *testing.T, entry catalogMediaEntry) bool {
 	return false
 }
 
+// TestCatalogDataGenerateContentImageModeProjection 钉住 Gemini 原生
+// generate_content 图像行的读侧回归：seed 只按协议写 endpoint modes，
+// generate_content 投影为 chat；读侧必须用 ValidateForMappedMode 保留图像
+// 模板，不能按 ValidateForMode("chat") 误判为非法价（否则成功图片请求
+// 0 成本 + usage_missing、账户绑定被拒）。
+func TestCatalogDataGenerateContentImageModeProjection(t *testing.T) {
+	seen := 0
+	for _, entry := range loadCatalogMediaEntries(t) {
+		if entry.Pricing == nil || entry.Mode != "image_generation" {
+			continue
+		}
+		generateContent := false
+		for _, protocol := range entry.Protocols {
+			if protocol == "generate_content" || protocol == "stream_generate_content" {
+				generateContent = true
+				break
+			}
+		}
+		if !generateContent {
+			continue
+		}
+		seen++
+		if err := entry.Pricing.ValidateForMappedMode("chat"); err != nil {
+			t.Errorf("%s/%s: chat 投影下的合法图像模板被误判: %v", entry.Provider, entry.Model, err)
+		}
+		if err := entry.Pricing.ValidateFor(mediapricing.KindImage); err != nil {
+			t.Errorf("%s/%s: 图像模板结构非法: %v", entry.Provider, entry.Model, err)
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("generate_content 图像行 = %d, want 3（gemini 3.1 flash/pro/lite image）", seen)
+	}
+}
+
 func TestCatalogDataMediaPricingMigration(t *testing.T) {
 	entries := loadCatalogMediaEntries(t)
 	migrated, keptLegacy := 0, 0
@@ -111,14 +145,14 @@ func TestCatalogDataMediaPricingMigration(t *testing.T) {
 		migrated++
 		unitCounts[entry.Pricing.Unit]++
 	}
-	if migrated != 66 {
-		t.Errorf("迁移行 = %d, want 66（video 22 + call 1 + image 19 + TTS 17 + STT 7）", migrated)
+	if migrated != 67 {
+		t.Errorf("迁移行 = %d, want 67（video 22 + call 1 + image 19 + TTS 17 + STT 8）", migrated)
 	}
 	if keptLegacy != 17 {
 		t.Errorf("保持 legacy 行 = %d, want 17（realtime 13 + gpt-audio 3 + 无价 video 1）", keptLegacy)
 	}
 	wantUnits := map[mediapricing.Unit]int{
-		mediapricing.UnitSecond: 46, // video 22 + TTS 17 + STT 7
+		mediapricing.UnitSecond: 47, // video 22 + TTS 17 + STT 8
 		mediapricing.UnitImage:  19,
 		mediapricing.UnitCall:   1,
 	}
@@ -201,6 +235,7 @@ func TestCatalogDataMediaPricingAnchors(t *testing.T) {
 		{"gemini", "gemini-2.5-flash-preview-tts", mediapricing.UnitSecond, 0.00001 * 25, "", nil},
 		// STT：现有秒价直接迁移。
 		{"qwen", "qwen3-asr-flash", mediapricing.UnitSecond, 0.00022 / 7.0, "", nil},
+		{"qwen", "paraformer-v2", mediapricing.UnitSecond, 0.00008 / 7.0, "", nil},
 		{"gpt", "gpt-4o-transcribe", mediapricing.UnitSecond, 0.0001, "", nil},
 		// 图像：按张直接迁移；token 行按每张 token 估算 1K 价。
 		{"xai", "grok-imagine-image-2.0", mediapricing.UnitImage, 0.04, "1k", map[string]float64{"1k": 1.0, "2k": 0.06 / 0.04}},

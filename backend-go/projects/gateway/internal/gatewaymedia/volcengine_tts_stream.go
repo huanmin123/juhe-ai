@@ -90,8 +90,8 @@ type volcengineTTSStreamRequest struct {
 // 裁决（沿同步面 §2.4 规则 2 先例）：response_format 词表外 → 400；speed
 // 超流式面官方可表达区间 [0.5, 2.0] → 400（speech_rate = (speed-1)×100 换算
 // 后官方可表达范围仅 [-50, 100]；同步面 [0.2, 3.0] 是倍率直传的另一 API
-// 区间，不适用于流式面）。metadata 键
-// deep-merge 到 req_params 层（厂商个例参数如 enable_emotion，契约 §2.1 L3）。
+// 区间，不适用于流式面）。metadata 键只新增到 req_params 层（不得覆盖既有
+// 路径，厂商个例参数如 enable_emotion，契约 §2.1 L3）。
 func buildVolcengineTTSStreamRequest(ir SpeechRequest) (string, []byte, error) {
 	format := strings.TrimSpace(ir.ResponseFormat)
 	if format == "" {
@@ -118,13 +118,23 @@ func buildVolcengineTTSStreamRequest(ir SpeechRequest) (string, []byte, error) {
 		// (speed-1)×100，非倍率直传——1.5 直传会被上游解析为 1.015 倍速。
 		audioParams["speech_rate"] = volcengineTTSStreamSpeedRate(*ir.Speed)
 	}
+	reqParams := map[string]any{
+		"text":         ir.Input,
+		"speaker":      ir.Voice,
+		"audio_params": audioParams,
+	}
+	// metadata 键相对 req_params 层只新增（不得覆盖 text/speaker/audio_params
+	// 等规范路径；enable_emotion 等厂商个例参数经该通道生效，契约 §2.1 L3）。
+	if len(ir.Metadata) > 0 {
+		merged, mergeErr := MergeMetadataReserved(reqParams, ir.Metadata, volcengineTTSStreamMetadataReservedPaths)
+		if mergeErr != nil {
+			return "", nil, mergeErr
+		}
+		reqParams = merged
+	}
 	body := volcengineTTSStreamRequest{
-		User: map[string]any{"uid": volcASRUpstreamUserID},
-		ReqParams: map[string]any{
-			"text":         ir.Input,
-			"speaker":      ir.Voice,
-			"audio_params": audioParams,
-		},
+		User:      map[string]any{"uid": volcASRUpstreamUserID},
+		ReqParams: reqParams,
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

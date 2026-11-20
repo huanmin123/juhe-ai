@@ -240,14 +240,15 @@ func TestWeSupportedCatalogModelAndScopePriority(t *testing.T) {
 		t.Fatal("video 模式无 video 协议不受支持")
 	}
 
-	// hasDirectPrice：直接价格或层级价格任一存在即视为有价。
+	// hasDirectPrice：基础直价/静态媒体层/统一模板任一存在才视为有价；
+	// 仅 service tier 价不算（DR-P7，与账户绑定判据同源）。
 	if hasDirectPrice(ModelCatalogItem{}) {
 		t.Fatal("无价格应为 false")
 	}
 	if !hasDirectPrice(ModelCatalogItem{OutputUsdPerImage: ptrFloat64(0.1)}) {
 		t.Fatal("每图价格应视为有价")
 	}
-	if !hasDirectPrice(ModelCatalogItem{ServiceTierPrices: map[string]ModelPriceSet{"priority": {}}}) {
-		t.Fatal("层级价格应视为有价")
+	if hasDirectPrice(ModelCatalogItem{ServiceTierPrices: map[string]ModelPriceSet{"priority": {}}}) {
+		t.Fatal("仅层级价格不得视为有价")
 	}
 }

@@ -144,7 +144,11 @@ func (volcengineASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (A
 			rest[key] = value
 		}
 		if len(rest) > 0 {
-			body = MergeMetadata(body, rest)
+			merged, err := MergeMetadataReserved(body, rest, volcengineASRMetadataReservedPaths)
+			if err != nil {
+				return AudioJobCreateOutput{}, err
+			}
+			body = merged
 		}
 	}
 	encoded, err := json.Marshal(body)

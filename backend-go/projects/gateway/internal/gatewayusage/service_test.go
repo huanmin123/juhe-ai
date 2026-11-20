@@ -43,6 +43,10 @@ func (s *stubPricing) HasMediaPricing(providerCode string, systemAccountID strin
 	return false
 }
 
+func (s *stubPricing) MediaPricingInvalid(providerCode string, systemAccountID string, model string) bool {
+	return false
+}
+
 func (s *stubPricing) EstimateCost(input PricingCostInput) *float64 {
 	value := s.cost
 	return &value

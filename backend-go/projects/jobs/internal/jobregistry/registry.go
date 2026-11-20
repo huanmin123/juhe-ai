@@ -348,7 +348,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"business:media_jobs"},
 			GoStatus: GoWired, GoPackage: "retention",
-			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄复用；未终态置 expired → 全部超期行删除，id 子查询 LIMIT 500 限流）",
+			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄复用；未终态置 expired；completed/failed/cancelled 按 created_at、expired 按 updated_at 各保留一个 TTL 后删除，id 子查询 LIMIT 500 限流）",
 		},
 	}
 }

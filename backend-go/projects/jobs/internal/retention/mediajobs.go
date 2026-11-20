@@ -8,8 +8,10 @@ package retention
 //   - 未终态行（queued/in_progress）先置 expired（终态化——本地终态语义，
 //     契约 §2.6：上游 404 后不伪造失败，TTL 到期由本地收敛）；UPDATE 带
 //     非终态守卫，网关并发终态回填先落时不再覆盖（终态只落一次）；
-//   - 超期行中的终态/已 expired 行删除——先标后删同轮连续执行，DELETE
-//     只删终态行（未终态残留留给下一轮终态化后再删），批次独立限流；
+//   - 超期行删除分两类：completed/failed/cancelled 按 created_at 超期删除；
+//     expired 行按 updated_at（即置 expired 的时刻）超期才删除——保留一个
+//     完整 TTL，客户端在 TTL 内可观察到 expired 终态与 410，审计/请求快照
+//     也不在终态化同轮被抹掉（AC-022）。删除只针对终态行，批次独立限流；
 //     过期清理不产生计费（媒体设计 §10）；
 //   - 分批限流（默认每轮每阶段 ≤500 行）+ 零任务快速返回（一轮 SELECT
 //     空即退出，不扫第二遍）。
@@ -48,8 +50,9 @@ type MediaJobsStore interface {
 	//（queued/in_progress）置 expired（带非终态守卫，不覆盖网关并发落的
 	// 终态），返回受影响行数（≤ limit）。
 	ExpireNonTerminalBefore(ctx context.Context, expiredBefore string, limit int) (int64, error)
-	// DeleteExpiredBefore 删除 created_at 早于 expiredBefore 的行中已处
-	// 终态（completed/failed/cancelled/expired）的行，返回删除行数（≤
+	// DeleteExpiredBefore 删除超期行：completed/failed/cancelled 按
+	// created_at 判定；expired 按 updated_at（置 expired 时刻）判定，保留
+	// 一个完整 TTL 供客户端观察终态与审计快照（AC-022）。返回删除行数（≤
 	// limit）；未终态行先经终态化再删，不直接删除。
 	DeleteExpiredBefore(ctx context.Context, expiredBefore string, limit int) (int64, error)
 }
@@ -168,8 +171,8 @@ func (s *MediaJobsSQLStore) table() string {
 // ExpireNonTerminalBefore 未终态超期行置 expired（每状态一条 UPDATE，id
 // 子查询 LIMIT 限流——SQLite UPDATE 不支持 LIMIT，统一走子查询定位）。
 // 外层 WHERE 重复非终态守卫：子查询快照与行锁之间网关可能并发落终态
-//（轮询 completed/failed），无守卫的 UPDATE 会把已终态行改写为 expired
-//（终态覆盖）；外层条件使并发竞争下未终态判定在写入时刻重新成立。
+// （轮询 completed/failed），无守卫的 UPDATE 会把已终态行改写为 expired
+// （终态覆盖）；外层条件使并发竞争下未终态判定在写入时刻重新成立。
 func (s *MediaJobsSQLStore) ExpireNonTerminalBefore(ctx context.Context, expiredBefore string, limit int) (int64, error) {
 	var total int64
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -201,23 +204,27 @@ func (s *MediaJobsSQLStore) ExpireNonTerminalBefore(ctx context.Context, expired
 	return total, nil
 }
 
-// DeleteExpiredBefore 删除超期行（id 子查询 LIMIT 限流）。只删终态/已
-// expired 的行：未终态行必须先经 ExpireNonTerminalBefore 终态化（先标后删
-// 的次序语义），未被本轮终态化覆盖的超期未终态行（批次限流残留）留给
-// 下一轮，不直接删除——避免与网关并发终态回填竞争时删除仍在推进的行。
+// DeleteExpiredBefore 删除超期行（id 子查询 LIMIT 限流）。completed/failed/
+// cancelled 按 created_at 判定；expired 按 updated_at（置 expired 时刻）
+// 判定——未终态行本轮刚被终态化为 expired 时 updated_at=now，不在同轮删除，
+// 保留完整 TTL 让客户端观察到 expired/410 与审计快照（AC-022）。只删终态
+// 行：未被本轮终态化覆盖的超期未终态行（批次限流残留）留给下一轮，不直接
+// 删除——避免与网关并发终态回填竞争时删除仍在推进的行。
 func (s *MediaJobsSQLStore) DeleteExpiredBefore(ctx context.Context, expiredBefore string, limit int) (int64, error) {
 	var result sql.Result
 	var err error
 	if s.Postgres {
 		result, err = s.DB.ExecContext(ctx, fmt.Sprintf(
-			`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE created_at < $1
-			 AND status IN ('completed','failed','cancelled','expired') LIMIT $2)`,
+			`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE
+			 ((status IN ('completed','failed','cancelled') AND created_at < $1)
+			  OR (status = 'expired' AND updated_at < $1)) LIMIT $2)`,
 			s.table(), s.table()), expiredBefore, limit)
 	} else {
 		result, err = s.DB.ExecContext(ctx, fmt.Sprintf(
-			`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE created_at < ?
-			 AND status IN ('completed','failed','cancelled','expired') LIMIT ?)`,
-			s.table(), s.table()), expiredBefore, limit)
+			`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE
+			 ((status IN ('completed','failed','cancelled') AND created_at < ?)
+			  OR (status = 'expired' AND updated_at < ?)) LIMIT ?)`,
+			s.table(), s.table()), expiredBefore, expiredBefore, limit)
 	}
 	if err != nil {
 		return 0, err

@@ -97,13 +97,13 @@ func TestXaiVideoAdapterCreate(t *testing.T) {
 		t.Fatalf("create 出站形态 = %s %s, want POST /videos/generations", output.Method, output.Path)
 	}
 	var body struct {
-		Model         string          `json:"model"`
-		Prompt        string          `json:"prompt"`
-		Duration      float64         `json:"duration"`
-		AspectRatio   string          `json:"aspect_ratio"`
-		Resolution    string          `json:"resolution"`
-		Image         string          `json:"image"`
-		GenerateAudio bool            `json:"generate_audio"`
+		Model         string         `json:"model"`
+		Prompt        string         `json:"prompt"`
+		Duration      float64        `json:"duration"`
+		AspectRatio   string         `json:"aspect_ratio"`
+		Resolution    string         `json:"resolution"`
+		Image         string         `json:"image"`
+		GenerateAudio bool           `json:"generate_audio"`
 		Other         map[string]any `json:"-"`
 	}
 	var raw map[string]any
@@ -132,7 +132,7 @@ func TestXaiVideoAdapterCreate(t *testing.T) {
 	if body.GenerateAudio {
 		t.Fatalf("generate_audio = true, want false（布尔直传）")
 	}
-	// metadata 键 deep-merge（契约 §6.1 范围外的
+	// metadata 新增键（契约 §6.1 范围外的
 	// reference_audios 经 L3 通道可达）。
 	if _, ok := raw["reference_audios"]; !ok {
 		t.Fatalf("reference_audios 未合并: %s", output.Body)
@@ -205,8 +205,8 @@ func TestXaiVideoAspectRatioVocabulary(t *testing.T) {
 		{"960x640", "3:2", "720p"},
 		{"640x960", "2:3", "720p"},
 		{"600x800", "3:4", "720p"},
-		{"599x800", "599:800", "-"},  // 反例：词表外宽高比
-		{"480x640", "3:4", "480p"},   // 短边 480 → 480p 下限档
+		{"599x800", "599:800", "-"}, // 反例：词表外宽高比
+		{"480x640", "3:4", "480p"},  // 短边 480 → 480p 下限档
 		{"1920x1080", "16:9", "1080p"},
 	}
 	for _, testCase := range positive {
@@ -356,5 +356,21 @@ func TestXaiVideoAdapterParsePollResponse(t *testing.T) {
 	// 未知形态防御：done 带 video.url 空白串同样拒绝。
 	if _, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"status":"done","video":{"url":"  "}}`)); err == nil || !strings.Contains(err.Error(), "video.url") {
 		t.Fatalf("空白 video.url 应报协议违约: %v", err)
+	}
+}
+
+// TestXaiVideoAdapterRejectsAbsentNormativeMetadataPaths 钉住请求未传 size/
+// seconds 时 metadata 不得补写 resolution/duration 等规范路径。
+func TestXaiVideoAdapterRejectsAbsentNormativeMetadataPaths(t *testing.T) {
+	adapter := xaiVideoAdapter{}
+	base := NormalizedVideoParams{Model: "grok-imagine-video-1.5", Prompt: "p"}
+	for name, metadata := range map[string]map[string]any{
+		"resolution":   {"resolution": "1080p"},
+		"duration":     {"duration": float64(10)},
+		"aspect_ratio": {"aspect_ratio": "9:16"},
+	} {
+		if _, err := adapter.Create(context.Background(), VideoCreateInput{Params: base, Metadata: metadata}); !errors.Is(err, ErrMetadataReservedField) {
+			t.Fatalf("%s 注入应返回 ErrMetadataReservedField: %v", name, err)
+		}
 	}
 }

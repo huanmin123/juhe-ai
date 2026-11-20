@@ -135,10 +135,17 @@
             </template>
           </template>
           <template v-else>
-            <a-form-item label="统一媒体价格" extra="按秒/张/次计价；0 表示免费。启用后不再提交旧价格字段，视频按秒并乘分辨率倍率。">
+            <a-form-item label="统一媒体价格" extra="按秒/张/次计价；0 表示免费。启用后不再提交旧价格字段。视频可按秒（乘分辨率倍率）或按次（3D 等无时长产物）。">
               <a-switch v-model:checked="customModelMediaPricingEnabled" />
             </a-form-item>
             <template v-if="customModelForm.mediaPricing">
+              <a-form-item v-if="customModelPricingCategory === 'video'" label="计量单位" extra="按秒或按次；切换会重置单价与档位，需重新填写。">
+                <a-select
+                  :value="customModelForm.mediaPricing.unit"
+                  :options="customModelMediaUnitOptions"
+                  @change="handleCustomModelMediaUnitChange"
+                />
+              </a-form-item>
               <a-form-item label="基准单价（USD）" :extra="customModelForm.mediaPricing.unit === 'second' ? '每秒价格（视频/音频）' : customModelForm.mediaPricing.unit === 'image' ? '每张价格' : '每次价格'">
                 <a-input-number v-model:value="customModelForm.mediaPricing.baseUsd" :min="0" style="width: 100%" />
               </a-form-item>
@@ -366,6 +373,13 @@ const customModelDirectPriceFields = computed(() => customModelPriceFields(custo
 const customModelTierPriceFieldOptions = computed(() => customModelTierPriceFields(customModelTargetProviderCode.value))
 const customModelMediaPricingTiers = computed(() => mediaPricingTiers(customModelForm.mediaPricing))
 const customModelMediaTierOptions = computed(() => customModelMediaPricingTiers.value.map((tier) => ({ value: tier, label: tier })))
+const customModelMediaUnitOptions = computed(() => {
+  if (customModelPricingCategory.value !== 'video') return []
+  return [
+    { value: 'second', label: '按秒（时长型视频）' },
+    { value: 'call', label: '按次（3D 等无时长产物）' }
+  ]
+})
 const customModelMediaPricingEnabled = computed({
   get: () => Boolean(customModelForm.mediaPricing),
   set: (enabled: boolean) => {
@@ -378,6 +392,11 @@ const customModelMediaPricingEnabled = computed({
 function handleCustomModelMediaBaseTierChange(value: string): void {
   if (!customModelForm.mediaPricing) return
   customModelForm.mediaPricing.tierMultipliers[value] = 1
+}
+
+function handleCustomModelMediaUnitChange(value: 'second' | 'call'): void {
+  if (customModelPricingCategory.value !== 'video') return
+  customModelForm.mediaPricing = defaultMediaPricingForCategory('video', value)
 }
 const customModelPriceSectionTitle = computed(() => {
   if (customModelPricingCategory.value === 'image') return '图像计费 · USD'

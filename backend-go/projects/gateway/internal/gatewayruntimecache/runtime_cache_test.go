@@ -1095,6 +1095,38 @@ func TestCatalogSingleflight(t *testing.T) {
 	}
 }
 
+// TestCatalogCacheVersionIgnoresLegacyEntries 钉住跨版本目录缓存边界：旧
+// 二进制写入的 key 没有当前 v3 前缀且条目缺 mediaPricing* 字段；新二进制必须
+// 视为 miss 并回源，不能用 TTL 内旧条目遮蔽统一媒体价。
+func TestCatalogCacheVersionIgnoresLegacyEntries(t *testing.T) {
+	models := newFakeModels()
+	models.catalog["gpt"] = []ProviderModelCatalogItem{catalogItem("gpt", "new-model")}
+	clock := newManualClock()
+	shared := newFakeSharedFactory()
+	svc := newTestService(t, models, clock, func(o *Options) { o.Shared = shared })
+	ctx := context.Background()
+
+	legacy := []ProviderModelCatalogItem{catalogItem("gpt", "legacy-cache-model")}
+	if err := shared.Cache(providerModelCatalogCacheName).Set(ctx, "gpt::active:priced", legacy, time.Hour); err != nil {
+		t.Fatalf("seed legacy catalog cache: %v", err)
+	}
+	got, err := svc.ListCachedProviderModelCatalogAsync(ctx, ModelCatalogListOptions{ProviderCode: "gpt"})
+	if err != nil {
+		t.Fatalf("catalog read: %v", err)
+	}
+	for _, item := range got {
+		if item.Model == "legacy-cache-model" {
+			t.Fatal("新二进制命中了旧版本目录缓存条目")
+		}
+	}
+	if len(got) != 1 || got[0].Model != "new-model" {
+		t.Fatalf("目录应回源加载当前行，got %#v", got)
+	}
+	if calls := models.catalogCalls["gpt"]; calls != 1 {
+		t.Fatalf("旧键不得命中，loader calls = %d", calls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // inspection policies
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
@@ -94,8 +95,10 @@ type ModelCatalogItem struct {
 	OutputUsdPerImage                       *float64                 `json:"outputUsdPerImage,omitempty"`
 	// MediaPricing 是 models.media_pricing_json 的严格 JSON；HasMediaPricing
 	// 区分有效 0 价与无价/非法价（非对话媒体统一计费设计 §5.2）。
+	// MediaPricingInvalid 表示列存在但解析失败：按无价处理，不回落 legacy。
 	MediaPricing             json.RawMessage `json:"mediaPricing,omitempty"`
 	HasMediaPricing          bool            `json:"hasMediaPricing"`
+	MediaPricingInvalid      bool            `json:"mediaPricingInvalid,omitempty"`
 	SupportsPromptCaching    bool            `json:"supportsPromptCaching"`
 	SupportsServiceTier      bool            `json:"supportsServiceTier"`
 	PricingNotes             *string         `json:"pricingNotes,omitempty"`
@@ -363,17 +366,33 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 }
 
 // applyCatalogMediaPricing 解析 models.media_pricing_json：非法值按「无有效
-// 价格」处理（HasMediaPricing=false），不回落 legacy 猜测（设计 §5.2）。
+// 价格」处理（HasMediaPricing=false、MediaPricingInvalid=true），不回落 legacy
+// 猜测（设计 §5.2/AC-016）。
 func applyCatalogMediaPricing(item *ModelCatalogItem, value sql.NullString) {
 	if item == nil || !value.Valid || strings.TrimSpace(value.String) == "" {
 		return
 	}
 	parsed, err := mediapricing.Parse([]byte(value.String))
 	if err != nil {
+		item.MediaPricingInvalid = true
 		return
+	}
+	// 结构合法还不够：目录 mode 能映射到媒体类型时，unit/档位必须匹配
+	// （如 mode=video 但 unit=image 的行在结算时 ValidateFor(KindVideo) 必然
+	// 失败），运行期直接按无价处理；chat/responses/embedding/空 mode 无法
+	// 表达真实媒体类型（Gemini generate_content 图像行投影为 chat），保留
+	// 模板并由结算按请求 kind 兜底。
+	if item.Mode != nil {
+		if mode := strings.TrimSpace(*item.Mode); mode != "" {
+			if err := parsed.ValidateForMappedMode(mode); err != nil {
+				item.MediaPricingInvalid = true
+				return
+			}
+		}
 	}
 	canonical, err := parsed.CanonicalJSON()
 	if err != nil {
+		item.MediaPricingInvalid = true
 		return
 	}
 	item.MediaPricing = canonical
@@ -756,27 +775,40 @@ func modelTokenBoundaryEnd(model string, index int) bool {
 	return false
 }
 
-// hasDirectPrice ports hasDirectPrice. 2026-10-05 验收批补媒体四维：静态
-// 层派生的视频秒价/按次价、TTS 字符价、ASR 秒价已由
-// ApplyBuiltInStaticDerivedFields 填充到 item（目录表无列），不纳入判断会
-// 把 cogvideox/doubao-tts/seedance/paraformer 等纯媒体行误判为无价、在
+// hasDirectPrice 复用 pricing.HasCatalogDirectPrice 这一「可计价」唯一判据
+// （模型价格与用量统计口径 §2 / DR-P7）：有效统一媒体模板 / 基础直价列 /
+// 静态媒体层三选一；非法 media_pricing_json 判无价且不回落 legacy；仅
+// service tier 价或仅缓存价不算有价。2026-10-05 验收批补媒体四维：静态层
+// 派生的视频秒价/按次价、TTS 字符价、ASR 秒价已由
+// ApplyBuiltInStaticDerivedFields 填充到 item（目录表无列），否则会把
+// cogvideox/doubao-tts/seedance/paraformer 等纯媒体行误判为无价、在
 // priced-only 目录请求里整行消失（用户验收报「缺行」的直接根因）。
+// 管理面 priced 过滤、内置模型模板校验与账户绑定断言必须同源，避免
+// 「管理列表显示有价、账户绑定 400」的分叉。
 func hasDirectPrice(item ModelCatalogItem) bool {
-	if item.HasMediaPricing {
-		return true
-	}
-	if item.InputUsdPer1M != nil || item.OutputUsdPer1M != nil || item.CachedInputUsdPer1M != nil ||
-		item.CacheWriteUsdPer1M != nil || item.CacheWrite1hUsdPer1M != nil ||
-		item.CacheStorageUsdPer1MPerHour != nil || item.ImageInputUsdPer1M != nil ||
-		item.ImageOutputUsdPer1M != nil || item.AudioInputUsdPer1M != nil ||
-		item.AudioOutputUsdPer1M != nil || item.OutputUsdPerImage != nil {
-		return true
-	}
-	if item.VideoOutputUsdPerSecond != nil || item.VideoOutputUsdPerCall != nil ||
-		item.TtsInputUsdPer1MChars != nil || item.AudioInputUsdPerSecond != nil {
-		return true
-	}
-	return len(item.ServiceTierPrices) > 0
+	return pricing.HasCatalogDirectPrice(pricing.CatalogPriceFacts{
+		ProviderCode:        item.ProviderCode,
+		Model:               item.Model,
+		HasMediaPricing:     item.HasMediaPricing,
+		MediaPricingInvalid: item.MediaPricingInvalid,
+		Set: pricing.PriceSet{
+			InputUsdPer1M:               item.InputUsdPer1M,
+			OutputUsdPer1M:              item.OutputUsdPer1M,
+			CachedInputUsdPer1M:         item.CachedInputUsdPer1M,
+			CacheWriteUsdPer1M:          item.CacheWriteUsdPer1M,
+			CacheWrite1hUsdPer1M:        item.CacheWrite1hUsdPer1M,
+			CacheStorageUsdPer1MPerHour: item.CacheStorageUsdPer1MPerHour,
+			ImageInputUsdPer1M:          item.ImageInputUsdPer1M,
+			ImageOutputUsdPer1M:         item.ImageOutputUsdPer1M,
+			AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
+			AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
+			OutputUsdPerImage:           item.OutputUsdPerImage,
+			TtsInputUsdPer1MChars:       item.TtsInputUsdPer1MChars,
+			AudioInputUsdPerSecond:      item.AudioInputUsdPerSecond,
+			VideoOutputUsdPerSecond:     item.VideoOutputUsdPerSecond,
+			VideoOutputUsdPerCall:       item.VideoOutputUsdPerCall,
+		},
+	})
 }
 
 // compareProviderModelCatalogItems ports compareProviderModelCatalogItems:

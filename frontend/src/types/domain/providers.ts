@@ -175,6 +175,8 @@ export interface ProviderModelPricing {
   mediaPricing?: ProviderModelMediaPricing | null
   /** 区分有效 0 价与无价/非法价（后端权威）。 */
   hasMediaPricing?: boolean
+  /** 列存在但模板非法：后端按无价处理、不回落 legacy；仅诊断展示。 */
+  mediaPricingInvalid?: boolean
   /** 视频输出每秒价（USD/秒）。 */
   videoOutputUsdPerSecond?: number
   /** 视频输出每次价（USD/次），目录中与每秒价互斥落库。 */

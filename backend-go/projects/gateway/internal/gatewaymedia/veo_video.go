@@ -42,6 +42,7 @@ func (veoVideoAdapter) Capabilities() VideoCapabilities {
 		SupportsN:              false,
 		SupportsInputReference: true,
 		SupportsSeconds:        false,
+		SupportsSize:           true,
 	}
 }
 
@@ -137,9 +138,10 @@ func veoInputReferenceBase64(reference string) (string, error) {
 // {instances:[{prompt,image?}],parameters:{aspectRatio?,resolution?,
 // negativePrompt?}}。归一层判为 ignored 的词表外字段（seconds/n/seed/audio）
 // 不进报文；size 换算为 aspectRatio+resolution（无精确档取最近档，契约
-// §2.4 规则 3，实际档位以上游报文为准）；metadata 命中 gemini 的
-// 子对象 deep-merge 进顶层（厂商个例参数如经 {"gemini":{"parameters":
-// {...}}} 覆盖换算结果，契约 §2.1 L3）。
+// §2.4 规则 3，实际档位以上游报文为准）；metadata 只新增、不覆盖既有
+// 路径（厂商个例参数如 {"parameters":{"personGeneration":"allow_all"}}；
+// 不得覆盖换算出的 parameters.aspectRatio/resolution/durationSeconds，
+// 契约 §2.1 L3）。
 func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -180,7 +182,10 @@ func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	if len(parameters) > 0 {
 		body["parameters"] = parameters
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, veoVideoMetadataReservedPaths)
+	if err != nil {
+		return VideoCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return VideoCreateOutput{}, fmt.Errorf("编码 gemini 视频创建请求体失败: %w", err)
@@ -190,6 +195,24 @@ func (a veoVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 		Path:   "/v1beta/models/" + params.Model + ":predictLongRunning",
 		Body:   encoded,
 	}, nil
+}
+
+// EffectiveVideoMetering 实现 VideoEffectiveMeteringProvider：Veo 请求面
+// 不支持 seconds，出站固定为模型默认 8s（仅 3.0/3.1 系五模型）；size 换算
+// 为两档 resolution（短边 <1080 一律 720p、≥1080 为 1080p）。计费快照必须
+// 按这两个出站值冻结，不能沿用请求 seconds 或标准短边归档。
+func (veoVideoAdapter) EffectiveVideoMetering(params NormalizedVideoParams) (*float64, string) {
+	var seconds *float64
+	if defaultValue, ok := veoDefaultSecondsForModel(params.Model); ok {
+		seconds = &defaultValue
+	}
+	resolutionTier := ""
+	if params.Size != "" {
+		if _, resolution, err := veoAspectRatioAndResolutionOf(params.Size); err == nil {
+			resolutionTier = resolution
+		}
+	}
+	return seconds, resolutionTier
 }
 
 // BuildPollRequest 构造轮询请求：GET /v1beta/{name}（契约 §5.2；name 即

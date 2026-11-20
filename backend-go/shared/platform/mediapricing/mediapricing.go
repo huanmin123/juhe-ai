@@ -301,6 +301,21 @@ func (p *Pricing) ValidateForMode(mode string) error {
 	return p.ValidateFor(kind)
 }
 
+// ValidateForMappedMode 是读侧口径：只在校验对象能从目录 mode 映射到媒体
+// 类型（video/image/audio）时检查 unit/档位组合；chat/responses/embedding
+// 或空 mode 不参与 kind 推断，保留结构合法的模板，由结算时按请求 kind 的
+// ValidateFor 兜底。存在该口径是因为目录 mode 由 endpoint modes 投影而
+// 来：Gemini generate_content 图像行、以及无 endpoint modes 的历史/迁移
+// 行会投影为 chat/空串，若按 ValidateForMode 严格拒绝会把真实媒体行误判
+// 为非法价（成功请求落 0 成本 + usage_missing）。写入路径仍使用
+// ValidateForMode，非媒体 mode 新配置 mediaPricing 一律 400。
+func (p *Pricing) ValidateForMappedMode(mode string) error {
+	if _, ok := KindForMode(mode); !ok {
+		return p.Validate()
+	}
+	return p.ValidateForMode(mode)
+}
+
 // Valid 报告 unit 是否是已知枚举值。
 func (u Unit) Valid() bool {
 	switch u {

@@ -28,6 +28,7 @@ type VideoCapabilities struct {
 	SupportsN              bool
 	SupportsInputReference bool
 	SupportsSeconds        bool
+	SupportsSize           bool
 	SupportsFPS            bool
 	SupportsResolution     bool
 }
@@ -43,7 +44,9 @@ type NormalizedVideoParams struct {
 	// 实际使用的字段名（ignored 回显按用户词表，不伪造）。
 	Seconds       *float64
 	SecondsFields []string
-	Size          string
+	// Size 仅在 adapter 声明 SupportsSize 时写入；不支持的 adapter 保留
+	// SizeFields 供 ignored 回显，Size 留空，避免计费按未生效尺寸冻结档位。
+	Size string
 	// SizeFields 记录 size / width / height 中用户实际使用的字段名。
 	SizeFields     []string
 	N              int
@@ -75,12 +78,14 @@ type NormalizedVideoParams struct {
 //     image/images/input_reference 值不一致 → 400；size 与 resolution 同时
 //     指定 → 400（两者都表达分辨率，不做猜测性合并）；
 //   - 能力裁决：n>1 且 adapter 不支持多段、input_reference 已传但 adapter
-//     无图生视频能力 → ErrParamUnsupported；fps/resolution 不支持 → ignored；
+//     无图生视频能力 → ErrParamUnsupported；size/fps/resolution 不支持 →
+//     ignored（size 同时不进入快照计费档）；
 //   - 扩展通道：metadata 键不得与规范字段同名（400，设计 §5.1）。
 //
 // ParamsApplied 固定顺序：model、图引用词、prompt、时长词、尺寸词、fps、
-// seed、n、negative_prompt、audio、response_format、resolution。user/mode
-// 接受但恒进 ignored（无 adapter 映射）。
+// seed、n、negative_prompt、audio、response_format、resolution。size 仅在
+// adapter 声明 SupportsSize 时进入 applied；user/mode 接受但恒进 ignored
+// （无 adapter 映射）。
 func ParseVideoParams(body map[string]any, caps VideoCapabilities) (NormalizedVideoParams, error) {
 	if body == nil {
 		return NormalizedVideoParams{}, fmt.Errorf("视频生成请求体必须是 JSON 对象")
@@ -130,9 +135,11 @@ func ParseVideoParams(body map[string]any, caps VideoCapabilities) (NormalizedVi
 		return NormalizedVideoParams{}, err
 	}
 	if size != "" {
-		params.Size = size
 		params.SizeFields = sizeFields
-		params.ParamsApplied = append(params.ParamsApplied, sizeFields...)
+		if caps.SupportsSize {
+			params.Size = size
+			params.ParamsApplied = append(params.ParamsApplied, sizeFields...)
+		}
 	}
 
 	if raw, present := body["fps"]; present && raw != nil {
@@ -214,7 +221,7 @@ func ParseVideoParams(body map[string]any, caps VideoCapabilities) (NormalizedVi
 		if !ok || strings.TrimSpace(text) == "" {
 			return NormalizedVideoParams{}, fmt.Errorf("视频生成请求 resolution 必须是非空字符串")
 		}
-		if params.Size != "" {
+		if len(params.SizeFields) > 0 {
 			return NormalizedVideoParams{}, fmt.Errorf("%w: size 与 resolution 只能指定一个", ErrParamUnsupported)
 		}
 		params.Resolution = strings.TrimSpace(text)
@@ -386,7 +393,8 @@ func parseOptionalVideoDimension(body map[string]any, name string) (int, bool, e
 
 // ComputeParamsIgnored 按 adapter 能力产出被忽略的键名列表（契约 §2.4 规则
 // 1：L2 可选语义参数厂商不支持 → 忽略 + 回显，不静默）。顺序固定：
-// duration/seconds（按用户词）、fps、negative_prompt、seed、audio、resolution。
+// duration/seconds（按用户词）、size/width/height（按用户词）、fps、
+// negative_prompt、seed、audio、resolution。
 func ComputeParamsIgnored(params NormalizedVideoParams, caps VideoCapabilities) []string {
 	var ignored []string
 	if params.Seconds != nil && !caps.SupportsSeconds {
@@ -395,6 +403,13 @@ func ComputeParamsIgnored(params NormalizedVideoParams, caps VideoCapabilities) 
 		} else {
 			// 直接构造结构（非 ParseVideoParams 路径）时的稳定回显词。
 			ignored = append(ignored, "seconds")
+		}
+	}
+	if !caps.SupportsSize && (len(params.SizeFields) > 0 || params.Size != "") {
+		if len(params.SizeFields) > 0 {
+			ignored = append(ignored, params.SizeFields...)
+		} else {
+			ignored = append(ignored, "size")
 		}
 	}
 	if params.FPS != nil && !caps.SupportsFPS {

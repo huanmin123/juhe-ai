@@ -28,11 +28,14 @@ WHERE table_schema = 'juhe_business' AND table_name = 'schema_migrations'`).Scan
 	return count > 0, nil
 }
 
-// isUndefinedTable 判定 PG 42P01（表不存在）。
+// isUndefinedTable 判定 PG 42P01（表不存在）或 3F000（schema 不存在）。
+// 全新空库在 EnsurePostgres 之前就可能被账本/步骤谓词读取：已限定
+// juhe_business schema 的查询会返回 invalid_schema_name（3F000），与表缺失
+// 同义，都必须按「未初始化」处理，否则 upgrade 会在建表前 exit 1。
 func isUndefinedTable(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "42P01"
+		return pgErr.Code == "42P01" || pgErr.Code == "3F000"
 	}
 	return false
 }

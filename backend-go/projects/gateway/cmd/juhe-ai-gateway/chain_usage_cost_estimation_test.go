@@ -43,6 +43,10 @@ func (f *fakeChainUsagePricingCatalog) HasMediaPricing(providerCode, systemAccou
 	return f.hasMediaPricing
 }
 
+func (f *fakeChainUsagePricingCatalog) MediaPricingInvalid(providerCode, systemAccountID, model string) bool {
+	return false
+}
+
 func (f *fakeChainUsagePricingCatalog) EstimateCost(input gatewayusage.PricingCostInput) *float64 {
 	f.inputs = append(f.inputs, input)
 	return f.cost

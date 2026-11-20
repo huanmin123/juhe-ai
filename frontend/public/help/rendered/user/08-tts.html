@@ -27,7 +27,7 @@
 <tr>
 <td><code>POST /v1/audio/transcriptions</code>（短音频转写）</td>
 <td>同步</td>
-<td>响应体直接是文本 JSON</td>
+<td>默认文本 JSON，也可按 <code>response_format</code> 返回纯文本/字幕</td>
 </tr>
 <tr>
 <td><code>POST /v1/audio/jobs</code>（长音频转写）、<code>POST /v1/video/generations</code>（视频）</td>
@@ -42,7 +42,7 @@
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -d &#39;{
-    &quot;model&quot;: &quot;gpt-5.4&quot;,
+    &quot;model&quot;: &quot;gpt-4o-mini-tts&quot;,
     &quot;voice&quot;: &quot;alloy&quot;,
     &quot;input&quot;: &quot;你好，欢迎来到 juhe-ai。&quot;
   }&#39;
@@ -54,7 +54,7 @@
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -d &#39;{
-    &quot;model&quot;: &quot;gpt-5.4&quot;,
+    &quot;model&quot;: &quot;gpt-4o-mini-tts&quot;,
     &quot;voice&quot;: &quot;alloy&quot;,
     &quot;input&quot;: &quot;你好，欢迎来到 juhe-ai。&quot;,
     &quot;response_format&quot;: &quot;mp3&quot;
@@ -137,7 +137,7 @@ while IFS= read -r line; do
     -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
     -H &quot;Content-Type: application/json&quot; \
     -d &quot;{
-      \&quot;model\&quot;: \&quot;gpt-5.4\&quot;,
+      \&quot;model\&quot;: \&quot;gpt-4o-mini-tts\&quot;,
       \&quot;voice\&quot;: \&quot;alloy\&quot;,
       \&quot;input\&quot;: \&quot;$line\&quot;,
       \&quot;response_format\&quot;: \&quot;mp3\&quot;
@@ -152,7 +152,7 @@ curl -s &quot;$BASE_URL/v1/audio/speech&quot; \
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -d &#39;{
-    &quot;model&quot;: &quot;gpt-5.4&quot;,
+    &quot;model&quot;: &quot;gpt-4o-mini-tts&quot;,
     &quot;voice&quot;: &quot;alloy&quot;,
     &quot;input&quot;: &quot;今天是十月六日，下午三点有一场会议。&quot;,
     &quot;speed&quot;: 1.1,
@@ -163,7 +163,7 @@ curl -s &quot;$BASE_URL/v1/audio/speech&quot; \
 <p>预期结果：得到 <code>notice.wav</code>，语速略快于默认，语气平稳。文件后缀要和 <code>response_format</code> 一致，否则有的播放器会拒绝识别。</p>
 <p><code>response_format</code> 怎么挑：要直接播放、分享，选 <code>mp3</code> 或 <code>wav</code> 最省事；<code>opus</code> / <code>aac</code> / <code>flac</code> / <code>pcm</code> 更适合有特定解码需求的程序化场景，其中 <code>pcm</code> 是无文件头的原始音频样本（OpenAI 语义），一般不适合直接双击播放。</p>
 <h2>计费怎么算</h2>
-<p>TTS 按字符计费——<code>input</code> 越长费用越高，与生成音频的时长无关地取决于你送进去多少字。具体以模型目录展示的单价与用量记录为准，可在管理台对账，见《用量与统计》。</p>
+<p>TTS 按**生成的音频时长（秒）**计费：网关优先采用上游回报的时长，其次解析返回的音频得到秒数，再按模型目录的每秒单价结算；两者都拿不到时才按输入字符数折算估算。具体单价以模型目录展示为准，逐笔金额看用量记录，见《用量与统计》。</p>
 <h2>常见问题或常见错误</h2>
 <p>统一错误信封：<code>{&quot;error&quot;:{&quot;message&quot;:&quot;...&quot;,&quot;type&quot;:&quot;...&quot;,&quot;code&quot;:&quot;...&quot;}}</code></p>
 <table>

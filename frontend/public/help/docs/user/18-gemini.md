@@ -107,7 +107,7 @@ client = genai.Client(
 ## 能力边界
 
 - `countTokens`、`embedContent`、`interactions` 族只在管理员配置了 Gemini 协议账户时可用，不会跨协议代答。
-- 是否存在"Gemini 请求自动转换到其他协议账户"的调度，是管理员在账户层的配置结果；不要假设它一定存在，模型可用性一律以目录与实际调用为准。
+- 不存在"Gemini 请求自动转换到其他协议账户"的调度：请求只会由 Gemini 协议账户承接（同族流式 → GenerateContent 归一除外），模型可用性一律以目录与实际调用为准。
 
 ## 接下来
 

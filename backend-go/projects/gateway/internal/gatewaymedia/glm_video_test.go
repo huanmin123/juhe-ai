@@ -97,6 +97,7 @@ func TestGlmVideoAdapterCreateRequest(t *testing.T) {
 		"size":            "1280x720",
 		"seconds":         "6",
 		"audio":           true,
+		"fps":             float64(30),
 		// seed 属 ignored（Capabilities 裁决），进 params_ignored。
 		"seed": float64(42),
 	}, adapter.Capabilities())
@@ -109,7 +110,6 @@ func TestGlmVideoAdapterCreateRequest(t *testing.T) {
 	out, err := adapter.Create(context.Background(), VideoCreateInput{
 		Params: params,
 		Metadata: map[string]any{
-			"fps":     float64(30),
 			"quality": "quality",
 		},
 	})
@@ -251,11 +251,17 @@ func TestGlmVideoAdapterParsePollResponse(t *testing.T) {
 }
 
 // TestGlmMetadataMerge 锁定唯一扩展通道 metadata 的合并语义（设计 §5.1）：
-// 厂商键原样并入报文；规范字段由网关归一，扩展包不得改写。
+// 厂商新增键原样并入报文；规范字段由网关归一，扩展包不得改写。
 func TestGlmMetadataMerge(t *testing.T) {
-	merged := MergeMetadata(map[string]any{"model": "cogvideox-3"}, map[string]any{"fps": float64(30)})
+	merged, err := MergeMetadata(map[string]any{"model": "cogvideox-3"}, map[string]any{"fps": float64(30)})
+	if err != nil {
+		t.Fatalf("新增键应允许: %v", err)
+	}
 	if merged["fps"] != float64(30) || merged["model"] != "cogvideox-3" {
-		t.Fatalf("metadata 应 deep-merge: %#v", merged)
+		t.Fatalf("metadata 应只新增: %#v", merged)
+	}
+	if _, err := MergeMetadata(map[string]any{"model": "cogvideox-3"}, map[string]any{"model": "other"}); !errors.Is(err, ErrMetadataReservedField) {
+		t.Fatalf("规范字段覆盖应拒绝: %v", err)
 	}
 	if keys := AppliedMetadataKeys(map[string]any{"fps": float64(30), "quality": "quality"}); len(keys) != 2 || keys[0] != "fps" || keys[1] != "quality" {
 		t.Fatalf("AppliedMetadataKeys = %v, want [fps quality]", keys)

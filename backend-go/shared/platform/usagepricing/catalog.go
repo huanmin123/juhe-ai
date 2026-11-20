@@ -413,6 +413,16 @@ func applyUsageCatalogMediaPricing(row *usageCatalogPricingRow, raw sql.NullStri
 		row.mediaPricingInvalid = true
 		return
 	}
+	// 与运行期目录同口径：可映射到媒体类型的 mode 必须匹配 unit/档位，
+	// 非法组合按无价处理；chat/responses/embedding/空 mode（Gemini
+	// generate_content 图像行、无 endpoint modes 的历史/迁移行）保留合法
+	// 模板，由结算按请求 kind 的 ValidateFor 兜底。
+	if mode := strings.TrimSpace(row.mode); mode != "" {
+		if err := parsed.ValidateForMappedMode(mode); err != nil {
+			row.mediaPricingInvalid = true
+			return
+		}
+	}
 	row.mediaPricing = parsed
 	row.hasMediaPricing = true
 }

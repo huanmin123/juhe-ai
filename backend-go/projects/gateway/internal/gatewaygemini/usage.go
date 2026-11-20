@@ -29,6 +29,13 @@ type ParsedUsage struct {
 	InputAudioTokens      *int
 	OutputAudioTokens     *int
 	OutputImageCount      *int
+	// ImageCandidatesPresent 标记完整非流式响应根存在 candidates 数组但
+	// 没有 image/* inlineData（上游明确 0 张）。仅作为 gatewayresponse 图片
+	// 计量的零张依据，不进入 HasAnyUsageValue（文本响应仍是“无图片事实”）。
+	ImageCandidatesPresent bool
+	// QuantitySource 标记 OutputImageCount 的来源（upstream=响应 inlineData
+	// 计数；request=请求 candidateCount 兜底由 gatewayresponse 补齐）。
+	QuantitySource string
 }
 
 // EmptyUsage 返回空 usage。
@@ -49,19 +56,21 @@ func MergeUsage(current, next ParsedUsage) ParsedUsage {
 		return a
 	}
 	return ParsedUsage{
-		UpstreamResponseModel: pickString(current.UpstreamResponseModel, next.UpstreamResponseModel),
-		ServiceTier:           pickString(current.ServiceTier, next.ServiceTier),
-		InputTokens:           pick(current.InputTokens, next.InputTokens),
-		OutputTokens:          pick(current.OutputTokens, next.OutputTokens),
-		CacheReadTokens:       pick(current.CacheReadTokens, next.CacheReadTokens),
-		CacheWriteTokens:      pick(current.CacheWriteTokens, next.CacheWriteTokens),
-		CacheWrite1hTokens:    pick(current.CacheWrite1hTokens, next.CacheWrite1hTokens),
-		ThinkingTokens:        pick(current.ThinkingTokens, next.ThinkingTokens),
-		InputImageTokens:      pick(current.InputImageTokens, next.InputImageTokens),
-		OutputImageTokens:     pick(current.OutputImageTokens, next.OutputImageTokens),
-		InputAudioTokens:      pick(current.InputAudioTokens, next.InputAudioTokens),
-		OutputAudioTokens:     pick(current.OutputAudioTokens, next.OutputAudioTokens),
-		OutputImageCount:      pick(current.OutputImageCount, next.OutputImageCount),
+		UpstreamResponseModel:  pickString(current.UpstreamResponseModel, next.UpstreamResponseModel),
+		ServiceTier:            pickString(current.ServiceTier, next.ServiceTier),
+		InputTokens:            pick(current.InputTokens, next.InputTokens),
+		OutputTokens:           pick(current.OutputTokens, next.OutputTokens),
+		CacheReadTokens:        pick(current.CacheReadTokens, next.CacheReadTokens),
+		CacheWriteTokens:       pick(current.CacheWriteTokens, next.CacheWriteTokens),
+		CacheWrite1hTokens:     pick(current.CacheWrite1hTokens, next.CacheWrite1hTokens),
+		ThinkingTokens:         pick(current.ThinkingTokens, next.ThinkingTokens),
+		InputImageTokens:       pick(current.InputImageTokens, next.InputImageTokens),
+		OutputImageTokens:      pick(current.OutputImageTokens, next.OutputImageTokens),
+		InputAudioTokens:       pick(current.InputAudioTokens, next.InputAudioTokens),
+		OutputAudioTokens:      pick(current.OutputAudioTokens, next.OutputAudioTokens),
+		OutputImageCount:       pick(current.OutputImageCount, next.OutputImageCount),
+		ImageCandidatesPresent: current.ImageCandidatesPresent || next.ImageCandidatesPresent,
+		QuantitySource:         pickString(current.QuantitySource, next.QuantitySource),
 	}
 }
 
@@ -103,12 +112,73 @@ func ParseUsageFromJSONBuffer(responseBody []byte) ParsedUsage {
 	if len(responseBody) == 0 {
 		return EmptyUsage()
 	}
+	var value any
+	if err := json.Unmarshal(responseBody, &value); err == nil {
+		// 完整非流式响应：candidates 在场即视为上游明确的图片张数事实，
+		// 无 inlineData 图片时写 0，不能回落请求 candidateCount 造成超收。
+		return usageWithInlineImageCount(value, ExtractUsage(value), true)
+	}
 	return ParseUsageFromJSONTextFragment(string(responseBody), false)
 }
 
 // ParseUsageFromJSONValue 对齐 parseGeminiUsageFromJsonValue：整对象入口。
 func ParseUsageFromJSONValue(value any) ParsedUsage {
-	return ExtractUsage(value)
+	return usageWithInlineImageCount(value, ExtractUsage(value), true)
+}
+
+// usageWithInlineImageCount 从 generateContent 完整响应统计内联图片张数
+// （非流式唯一事实；流式分片不计数，避免把同一张图的分片重复计费，由
+// gatewayresponse 用请求 candidateCount 兜底）。张数进入统一媒体计费
+// image 维度（设计 §6.2/§7.3），上游计数优先。complete=true 时 candidates
+// 数组在场但无图片 part 视为上游明确 0 张；complete=false（流式片段/文本
+// 片段）只在 count>0 时写入，避免分片把兜底路径提前置 0。
+func usageWithInlineImageCount(value any, usage ParsedUsage, complete bool) ParsedUsage {
+	if usage.OutputImageCount != nil {
+		return usage
+	}
+	count, present := geminiInlineImageCount(value)
+	if count > 0 {
+		usage.OutputImageCount = &count
+		usage.QuantitySource = "upstream"
+	} else if complete && present {
+		// 完整响应有 candidates 但没有图片 part：上游明确 0 张。由
+		// gatewayresponse 仅对图片请求写 0，避免文本响应被误计为图片。
+		usage.ImageCandidatesPresent = true
+	}
+	return usage
+}
+
+// geminiInlineImageCount 统计 candidates[].content.parts[].inlineData 中
+// mimeType 为 image/* 且带 data 的 part 数；present 表示响应根存在
+// candidates 数组（即使为空或全是文本 part），用于区分「上游明确 0 张」与
+// 「不是 generateContent 响应」。音频/文本 part 不计入。
+func geminiInlineImageCount(value any) (count int, present bool) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	candidates, ok := root["candidates"].([]any)
+	if !ok {
+		return 0, false
+	}
+	for _, candidate := range candidates {
+		candidateObject, _ := candidate.(map[string]any)
+		content, _ := candidateObject["content"].(map[string]any)
+		parts, _ := content["parts"].([]any)
+		for _, part := range parts {
+			partObject, _ := part.(map[string]any)
+			inline, _ := partObject["inlineData"].(map[string]any)
+			if inline == nil {
+				continue
+			}
+			data, _ := inline["data"].(string)
+			mimeType, _ := inline["mimeType"].(string)
+			if data != "" && strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+				count++
+			}
+		}
+	}
+	return count, true
 }
 
 // ParseUsageFromJSONTextFragment 对齐 parseGeminiUsageFromJsonTextFragment：
@@ -121,7 +191,7 @@ func ParseUsageFromJSONTextFragment(text string, skipFullDocumentParse bool) Par
 	if !skipFullDocumentParse {
 		var value any
 		if err := json.Unmarshal([]byte(text), &value); err == nil {
-			return ExtractUsage(value)
+			return usageWithInlineImageCount(value, ExtractUsage(value), false)
 		}
 		// 大响应检查可能只提供有界 JSON 片段而不是完整文档。
 	}

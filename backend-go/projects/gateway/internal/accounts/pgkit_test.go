@@ -290,6 +290,7 @@ const accountsPGFixtureSchema = `
       audio_input_usd_per_1m double precision,
       audio_output_usd_per_1m double precision,
       output_usd_per_image double precision,
+      media_pricing_json text,
       created_at text NOT NULL,
       updated_at text NOT NULL
     );

@@ -26,7 +26,7 @@
 curl -s "$BASE_URL/v1/realtime/client_secrets" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{ "model": "gpt-5.4" }'
+  -d '{ "model": "gpt-realtime-2.1" }'
 ```
 
 （`model` 请替换成 Realtime 目录里真实存在的模型名。）

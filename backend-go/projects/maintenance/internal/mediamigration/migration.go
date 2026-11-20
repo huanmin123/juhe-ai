@@ -279,7 +279,10 @@ func decideWithCatalog(source sourceRow, catalogMediaPricing func(providerCode, 
 	row.Kind = kind
 	if reason != "" && kind != KindImage && kind != KindTTS && kind != KindSTT {
 		row.Action = ActionSkip
-		if kind == KindUnknown {
+		// image_input_only 只有输入图价、没有输出张价，无法判定是否为图像
+		// 生成行（也可能是视觉对话行），不猜测输出价：留 manual_review 由
+		// 维护者裁决（设计 §9.3 判定表）。
+		if kind == KindUnknown || reason == "image_input_only" {
 			row.Action = ActionManualReview
 		}
 		row.Reason = reason

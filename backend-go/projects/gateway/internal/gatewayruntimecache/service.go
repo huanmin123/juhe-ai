@@ -138,6 +138,12 @@ type ModelCatalogListOptions struct {
 	SystemAccountID string
 	IncludeInactive bool
 	IncludeUnpriced bool
+	// IncludeInvalidMediaPricing 让运行期计价查询仍能看到 media_pricing_json
+	// 非法的行：这类行按无价处理（绑定/目录展示拒绝），但结算必须识别
+	// MediaPricingInvalid 后落 0 成本 + usage_missing，不能因 priced 过滤
+	// 直接 miss 而回退静态 legacy 价（AC-016）。管理面/绑定查询保持默认
+	// false，只由网关同步/异步计价读取打开。
+	IncludeInvalidMediaPricing bool
 }
 
 // ReadModels is the loader seam: every fetch runtime-cache.service.ts performs
@@ -542,6 +548,15 @@ func responseInspectionPolicyCacheKey(protocolCode, providerCode string) string 
 	return protocolCode + ":" + providerCode
 }
 
+// providerModelCatalogCacheKeyVersion 是目录缓存条目的结构性版本。缓存值按
+// ProviderModelCatalogItem JSON 直接透传；新增字段（2026-11-19 统一媒体计价
+// 的 mediaPricing/hasMediaPricing/mediaPricingInvalid）后，旧二进制写入的
+// 24h 条目解码会把这些字段静默留空，导致新二进制的统一媒体价在 TTL 内不可见。
+// 2026-11-20 百炼目录校准新增 paraformer-v2、隐藏 qwen3-asr-flash，目录行集
+// 变化同样会被 TTL 内旧条目遮蔽，故升 v3：新旧键互不命中，旧键由 TTL 自然
+// 回收；缓存失效按桶名 Clear，新旧键都会被清理。
+const providerModelCatalogCacheKeyVersion = "v3"
+
 // providerModelCatalogCacheKey mirrors the Node catalog cache key join.
 func providerModelCatalogCacheKey(input ModelCatalogListOptions) string {
 	inactive := "active"
@@ -552,7 +567,11 @@ func providerModelCatalogCacheKey(input ModelCatalogListOptions) string {
 	if input.IncludeUnpriced {
 		unpriced = "unpriced"
 	}
-	return strings.Join([]string{input.ProviderCode, input.SystemAccountID, inactive, unpriced}, ":")
+	parts := []string{providerModelCatalogCacheKeyVersion, input.ProviderCode, input.SystemAccountID, inactive, unpriced}
+	if input.IncludeInvalidMediaPricing {
+		parts = append(parts, "invalid-media-pricing")
+	}
+	return strings.Join(parts, ":")
 }
 
 // normalizeProviderModelRouteKey mirrors normalizeProviderModelRouteKey.

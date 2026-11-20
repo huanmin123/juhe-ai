@@ -607,14 +607,19 @@ func marshalMediaJobError(jobError *MediaJobError) (string, error) {
 // audio_input_seconds）+ Raw 原样保留（厂商原生用量字段，openai 无）。
 func marshalMediaJobUsage(usage MediaJobUsage) (string, error) {
 	payload := map[string]any{}
+	// 先铺 Raw，再由结构化字段覆盖：Raw 里同名的历史/厂商键不得遮蔽网关
+	// 已归一的事实（unmarshal 会删除这些保留键，这里仍显式保证优先级）。
+	for key, value := range usage.Raw {
+		payload[key] = value
+	}
 	if usage.OutputVideoSeconds != nil {
 		payload["output_video_seconds"] = *usage.OutputVideoSeconds
 	}
 	if usage.AudioInputSeconds != nil {
 		payload["audio_input_seconds"] = *usage.AudioInputSeconds
 	}
-	for key, value := range usage.Raw {
-		payload[key] = value
+	if usage.ResolutionTier != "" {
+		payload["resolution_tier"] = usage.ResolutionTier
 	}
 	if len(payload) == 0 {
 		return "{}", nil
@@ -644,6 +649,10 @@ func unmarshalMediaJobUsage(raw string, usage *MediaJobUsage) error {
 		value := seconds
 		usage.AudioInputSeconds = &value
 		delete(payload, "audio_input_seconds")
+	}
+	if tier, ok := payload["resolution_tier"].(string); ok {
+		usage.ResolutionTier = tier
+		delete(payload, "resolution_tier")
 	}
 	if len(payload) > 0 {
 		usage.Raw = payload

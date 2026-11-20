@@ -158,6 +158,10 @@ type PricingCatalog interface {
 	//（非对话媒体统一计费设计 §6.1）：网关侧 TTS/STT 只有在该行为 true 时
 	// 才把网关解析/估算秒数送入计费，legacy 行保持原字符/上游时长口径。
 	HasMediaPricing(providerCode string, systemAccountID string, model string) bool
+	// MediaPricingInvalid 报告目录行的 media_pricing_json 存在但非法
+	//（AC-016）：该行按无价处理，已发生请求按 0 成本 + usage_missing 落库，
+	// 不回落 legacy、不产生计费行项。
+	MediaPricingInvalid(providerCode string, systemAccountID string, model string) bool
 	// EstimateCost mirrors estimateCatalogCostUsd; nil = undefined.
 	EstimateCost(input PricingCostInput) *float64
 	// EstimateCacheReadCost mirrors estimateCatalogCacheReadCostUsd.

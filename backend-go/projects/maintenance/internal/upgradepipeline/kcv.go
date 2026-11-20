@@ -62,10 +62,11 @@ func verifySecretAgainstDatabase(ctx context.Context, db *sql.DB, secret string)
 	return false, nil
 }
 
-// isUndefinedTableError reports PostgreSQL 42P01. Fresh databases have no
-// business tables before the additive ensure-schema phase, so KCV must treat
-// missing carriers as "no ciphertext to verify" instead of blocking upgrade.
+// isUndefinedTableError reports PostgreSQL 42P01 (missing table) and 3F000
+// (missing schema). Fresh databases have no business schema/tables before the
+// additive ensure-schema phase, so KCV must treat missing carriers as "no
+// ciphertext to verify" instead of blocking upgrade.
 func isUndefinedTableError(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
+	return errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "3F000")
 }

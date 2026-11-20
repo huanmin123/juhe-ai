@@ -24,9 +24,13 @@ type ParsedUsage struct {
 	InputAudioTokens      *int
 	OutputAudioTokens     *int
 	OutputImageCount      *int
-	TtsInputChars         *int64
-	AudioInputSeconds     *float64
-	OutputVideoSeconds    *float64
+	// ImageCandidatesPresent 是 Gemini 完整非流式响应的「candidates 在场
+	// 但无图片 part」事实（上游明确 0 张）。仅供图片请求计量器区分
+	// 「上游明确 0 张」与「无上游计数，需请求 candidateCount 兜底」。
+	ImageCandidatesPresent bool
+	TtsInputChars          *int64
+	AudioInputSeconds      *float64
+	OutputVideoSeconds     *float64
 	// ResolutionTier / QuantitySource 是统一媒体模板（非对话媒体统一计费
 	// 设计 §7.3）的计量档位与数量来源：图片请求 size → 1k/2k/4k，数量
 	// data[] → upstream、请求 n → request；其余维度留空。只影响计费行项，
@@ -53,25 +57,26 @@ func IntToken(value int) *int { return &value }
 // MergeUsage mirrors mergeUsage: next wins whenever it carries a value.
 func MergeUsage(current, next ParsedUsage) ParsedUsage {
 	return ParsedUsage{
-		UpstreamResponseModel: orString(next.UpstreamResponseModel, current.UpstreamResponseModel),
-		ServiceTier:           orString(next.ServiceTier, current.ServiceTier),
-		InputTokens:           orInt(next.InputTokens, current.InputTokens),
-		OutputTokens:          orInt(next.OutputTokens, current.OutputTokens),
-		CacheReadTokens:       orInt(next.CacheReadTokens, current.CacheReadTokens),
-		CacheWriteTokens:      orInt(next.CacheWriteTokens, current.CacheWriteTokens),
-		CacheWrite1hTokens:    orInt(next.CacheWrite1hTokens, current.CacheWrite1hTokens),
-		ThinkingTokens:        orInt(next.ThinkingTokens, current.ThinkingTokens),
-		InputImageTokens:      orInt(next.InputImageTokens, current.InputImageTokens),
-		OutputImageTokens:     orInt(next.OutputImageTokens, current.OutputImageTokens),
-		InputAudioTokens:      orInt(next.InputAudioTokens, current.InputAudioTokens),
-		OutputAudioTokens:     orInt(next.OutputAudioTokens, current.OutputAudioTokens),
-		OutputImageCount:      orInt(next.OutputImageCount, current.OutputImageCount),
-		TtsInputChars:         orInt64(next.TtsInputChars, current.TtsInputChars),
-		AudioInputSeconds:     orFloat64(next.AudioInputSeconds, current.AudioInputSeconds),
-		OutputVideoSeconds:    orFloat64(next.OutputVideoSeconds, current.OutputVideoSeconds),
-		ResolutionTier:        orString(next.ResolutionTier, current.ResolutionTier),
-		QuantitySource:        orString(next.QuantitySource, current.QuantitySource),
-		UsageMissing:          current.UsageMissing || next.UsageMissing,
+		UpstreamResponseModel:  orString(next.UpstreamResponseModel, current.UpstreamResponseModel),
+		ServiceTier:            orString(next.ServiceTier, current.ServiceTier),
+		InputTokens:            orInt(next.InputTokens, current.InputTokens),
+		OutputTokens:           orInt(next.OutputTokens, current.OutputTokens),
+		CacheReadTokens:        orInt(next.CacheReadTokens, current.CacheReadTokens),
+		CacheWriteTokens:       orInt(next.CacheWriteTokens, current.CacheWriteTokens),
+		CacheWrite1hTokens:     orInt(next.CacheWrite1hTokens, current.CacheWrite1hTokens),
+		ThinkingTokens:         orInt(next.ThinkingTokens, current.ThinkingTokens),
+		InputImageTokens:       orInt(next.InputImageTokens, current.InputImageTokens),
+		OutputImageTokens:      orInt(next.OutputImageTokens, current.OutputImageTokens),
+		InputAudioTokens:       orInt(next.InputAudioTokens, current.InputAudioTokens),
+		OutputAudioTokens:      orInt(next.OutputAudioTokens, current.OutputAudioTokens),
+		OutputImageCount:       orInt(next.OutputImageCount, current.OutputImageCount),
+		ImageCandidatesPresent: current.ImageCandidatesPresent || next.ImageCandidatesPresent,
+		TtsInputChars:          orInt64(next.TtsInputChars, current.TtsInputChars),
+		AudioInputSeconds:      orFloat64(next.AudioInputSeconds, current.AudioInputSeconds),
+		OutputVideoSeconds:     orFloat64(next.OutputVideoSeconds, current.OutputVideoSeconds),
+		ResolutionTier:         orString(next.ResolutionTier, current.ResolutionTier),
+		QuantitySource:         orString(next.QuantitySource, current.QuantitySource),
+		UsageMissing:           current.UsageMissing || next.UsageMissing,
 	}
 }
 

@@ -44,6 +44,8 @@ type accountingPricingCatalog struct {
 	inputs []gatewayusage.PricingCostInput
 	// hasMediaPricing 是 HasMediaPricing 的应答。
 	hasMediaPricing bool
+	// mediaPricingInvalid 是 MediaPricingInvalid 的应答。
+	mediaPricingInvalid bool
 }
 
 func (c *accountingPricingCatalog) ResolvePricingModel(providerCode, systemAccountID, model string) string {
@@ -53,6 +55,10 @@ func (c *accountingPricingCatalog) ResolvePricingModel(providerCode, systemAccou
 
 func (c *accountingPricingCatalog) HasMediaPricing(providerCode, systemAccountID, model string) bool {
 	return c.hasMediaPricing
+}
+
+func (c *accountingPricingCatalog) MediaPricingInvalid(providerCode, systemAccountID, model string) bool {
+	return c.mediaPricingInvalid
 }
 
 func (c *accountingPricingCatalog) EstimateCost(input gatewayusage.PricingCostInput) *float64 {
@@ -608,5 +614,37 @@ func TestNewAuditCaptureCarriesSourceEndpointFamilyForModelAccounting(t *testing
 	}
 	if logs[0].UpstreamModel != "deepseek-v4.1-flash" {
 		t.Errorf("审计日志 UpstreamModel = %q, want deepseek-v4.1-flash", logs[0].UpstreamModel)
+	}
+}
+
+// TestChainFinalizationUsageInvalidMediaPricingZeroesCost 钉住 AC-016 同步
+// 路径：media_pricing_json 非法的目录行不得回落 legacy 估算，记录必须显式
+// 落 0 成本并标 usage_missing（不能被误读为有效免费价或未定价）。
+func TestChainFinalizationUsageInvalidMediaPricingZeroesCost(t *testing.T) {
+	recorder := gatewayusage.NewMemoryUsageRecorder(nil, nil)
+	catalog := &accountingPricingCatalog{mediaPricingInvalid: true}
+	usage := chainFinalizationUsage{
+		recorder:             recorder,
+		pricing:              catalog,
+		syncPricingAllowed:   true,
+		requestedModel:       "glm-5.3-flash",
+		sourceEndpointFamily: gatewayopenai.FamilyChatCompletions,
+		models:               usageModelResolverAdapter{},
+	}
+	usage.RecordCompletedUpstreamAttempt(accountingCompletedInput())
+
+	records := recorder.Records()
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	record := records[0]
+	if record.CostUsd == nil || *record.CostUsd != 0 {
+		t.Fatalf("CostUsd = %v, want 显式 0（非法模板按无价处理）", record.CostUsd)
+	}
+	if !record.UsageMissing {
+		t.Fatal("非法 media_pricing_json 必须标 usage_missing")
+	}
+	if len(catalog.inputs) != 0 {
+		t.Fatalf("非法模板不得调用 legacy/静态估算，实际调用 %d 次", len(catalog.inputs))
 	}
 }

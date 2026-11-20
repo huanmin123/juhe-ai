@@ -352,7 +352,34 @@
       "ttsInputCostPerChar": 1.4285714285714287e-05
     },
     {
+      "audioInputCostPerSecond": 1.1428571428571428e-05,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mediaPricing": {"version":1,"unit":"second","baseUsd":1.1428571428571428e-05,"baseTier":"","tierMultipliers":{}},
+      "mode": "audio",
+      "model": "paraformer-v2",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-11-20",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.00008 元/秒（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页 2026-11-20 抓取：Paraformer 录音文件识别 paraformer-v2 0.00008 元/秒），按约定汇率 7.0 换算 1.143e-05/秒（0.00008÷7.0）；2026-11-20 真实上游回归：该模型为网关已承接的异步文件转写接口实际可用模型（qwen3-asr-flash 不接受 input.file_urls）",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
       "audioInputCostPerSecond": 3.142857142857143e-05,
+      "catalogVisible": false,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
@@ -371,7 +398,7 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 0.00022 元/秒（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 语音识别段；realtime 变体 0.00033 元/秒留档），按约定汇率 7.0 换算 3.143e-05/秒（0.00022÷7.0）；此前落国际站 $0.000035 明文，按国内口径回正",
+      "sourcePricingNote": "官方人民币价 0.00022 元/秒（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 语音识别段；realtime 变体 0.00033 元/秒留档），按约定汇率 7.0 换算 3.143e-05/秒（0.00022÷7.0）；此前落国际站 $0.000035 明文，按国内口径回正；2026-11-20 真实上游回归：该模型不被 /api/v1/services/audio/asr/transcription 文件转写接口接受（input.file_urls 400 url error），网关当前无承接该模型的上游面，catalogVisible=false 隐藏以避免账户绑定后请求必败，待接入其原生短音频/多模态接口后恢复",
       "supportedAPIProtocols": [
         "audio_transcription"
       ],

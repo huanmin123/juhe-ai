@@ -87,6 +87,10 @@ type Pricing struct {
 	// MediaPricing 是 models.media_pricing_json 的统一媒体计费模板；
 	// nil = legacy 维度计价。非 nil 时即使 BaseUsd=0 也是有效价格。
 	MediaPricing *mediapricing.Pricing
+	// MediaPricingInvalid 表示 media_pricing_json 存在但不是合法模板
+	//（AC-016）：整行按无价处理，禁止回落 legacy 静态价；已发生请求按
+	// 0 成本 + usage_missing 结算，不产生计费行项。
+	MediaPricingInvalid bool
 
 	CachedImageInputUsdPer1M *float64
 	ServiceTierPrices        ServiceTierPrices
@@ -410,12 +414,26 @@ func hasDirectBaseRate(set PriceSet) bool {
 	return false
 }
 
+// CatalogPriceFacts 是一行目录的完整直价事实。HasMediaPricing 表示
+// models.media_pricing_json 解析成功（含 baseUsd=0 的免费价）；
+// MediaPricingInvalid 表示该列存在但不是合法模板——此时必须按无价处理，
+// 不得回落到 legacy 维度（《非对话媒体统一计费设计》§5.2/AC-016）。
+type CatalogPriceFacts struct {
+	ProviderCode        string
+	Model               string
+	Set                 PriceSet
+	HasMediaPricing     bool
+	MediaPricingInvalid bool
+}
+
 // HasCatalogDirectPrice 报告一行目录价格事实是否可被计价引擎直接消费——
 // 「可绑定」与「计价目录可见」必须共用这一判据（BUG-0344 根治）：
 //
-//  1. 任一基础直价维度（文本输入/输出、图片/音频 token、按张、TTS 字符、
+//  1. models.media_pricing_json 是运行时唯一权威：解析成功即有效价（含 0 价），
+//     非法值直接判无价，不回落 legacy；
+//  2. 否则任一基础直价维度（文本输入/输出、图片/音频 token、按张、TTS 字符、
 //     音频秒、视频秒/按次）非空；
-//  2. 否则按静态媒体层补查（TTS 字符 / 音频秒 / 视频秒 / 视频按次——这四维
+//  3. 否则按静态媒体层补查（TTS 字符 / 音频秒 / 视频秒 / 视频按次——这四维
 //     不在 models 列集内，唯一权威源是 catalogdata 静态快照）。
 //
 // 仅档位价或仅缓存价（cache read/write/storage）不构成可绑定价格：普通请求
@@ -423,11 +441,17 @@ func hasDirectBaseRate(set PriceSet) bool {
 //
 // chain_catalog.go 的 priced 过滤与 accounts 的绑定断言都调用本函数；两处若
 // 各自维护判据，就会出现「能绑定但计价查不到 → 成功流量 cost NULL」的裂缝。
-func HasCatalogDirectPrice(providerCode, model string, set PriceSet) bool {
-	if hasDirectBaseRate(set) {
+func HasCatalogDirectPrice(facts CatalogPriceFacts) bool {
+	if facts.MediaPricingInvalid {
+		return false
+	}
+	if facts.HasMediaPricing {
 		return true
 	}
-	if media := FindProviderModelPricing(providerCode, model); media != nil {
+	if hasDirectBaseRate(facts.Set) {
+		return true
+	}
+	if media := FindProviderModelPricing(facts.ProviderCode, facts.Model); media != nil {
 		if media.TtsInputUsdPer1MChars != nil || media.AudioInputUsdPerSecond != nil ||
 			media.VideoOutputUsdPerSecond != nil || media.VideoOutputUsdPerCall != nil {
 			return true

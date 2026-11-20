@@ -644,8 +644,11 @@ type ProviderModelCatalogItem struct {
 	OutputUsdPerImage               *float64            `json:"outputUsdPerImage,omitempty"`
 	// MediaPricing 是 models.media_pricing_json 的原始严格 JSON；
 	// HasMediaPricing 区分「有效 0 价」与「无价/非法价」（设计 §5.2）。
+	// MediaPricingInvalid 表示该列存在但不能解析为合法模板：按无价处理，
+	// 禁止回落 legacy 维度（AC-016）。
 	MediaPricing                            json.RawMessage `json:"mediaPricing,omitempty"`
 	HasMediaPricing                         bool            `json:"hasMediaPricing"`
+	MediaPricingInvalid                     bool            `json:"mediaPricingInvalid,omitempty"`
 	ContextWindowTokens                     *int64          `json:"contextWindowTokens,omitempty"`
 	MaxInputTokens                          *int64          `json:"maxInputTokens,omitempty"`
 	MaxOutputTokens                         *int64          `json:"maxOutputTokens,omitempty"`

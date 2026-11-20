@@ -11,7 +11,7 @@ import (
 
 // M3f qwen paraformer 长转写 adapter 单测（契约 §10.2）：创建报文映射
 //（input_url → input.file_urls 单元素数组、language → parameters.
-// language_hints 数组、metadata deep-merge、无 X-DashScope-Async
+// language_hints 数组、metadata 只新增、X-DashScope-Async: enable
 // 异步头）、轮询响应归一（PENDING/RUNNING/SUCCEEDED/FAILED 同万相词表、
 // transcription_url 冻结、usage JSON 字符串/对象双形态时长解析、output.
 // message 错误摘要、受理凭据缺失与产物缺失协议违约、非 2xx
@@ -36,8 +36,8 @@ func TestQwenASRAdapterCreateBodyMapping(t *testing.T) {
 	if out.Method != http.MethodPost || out.Path != "/api/v1/services/audio/asr/transcription" {
 		t.Fatalf("出站请求形态错误: %s %s", out.Method, out.Path)
 	}
-	if out.ExtraHeaders != nil {
-		t.Fatalf("paraformer 创建不得携带厂商私有头（天然异步，无 X-DashScope-Async）: %v", out.ExtraHeaders)
+	if out.ExtraHeaders["X-DashScope-Async"] != "enable" {
+		t.Fatalf("paraformer 创建必须携带 X-DashScope-Async: enable: %v", out.ExtraHeaders)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(out.Body, &body); err != nil {
@@ -57,7 +57,7 @@ func TestQwenASRAdapterCreateBodyMapping(t *testing.T) {
 		t.Fatalf("parameters.language_hints = %v, want [zh]（language 单字符串映射单元素数组）", parameters["language_hints"])
 	}
 	if parameters["diarization_enabled"] != true {
-		t.Fatalf("metadata.parameters.diarization_enabled 未 deep-merge: %v", body)
+		t.Fatalf("metadata.parameters.diarization_enabled 未合并: %v", body)
 	}
 }
 

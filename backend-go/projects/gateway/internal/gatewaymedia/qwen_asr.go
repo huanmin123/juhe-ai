@@ -3,8 +3,11 @@
 // 语义 → 媒体 IR → 每厂商一个 adapter，注册表组织；本文件挂
 // audioJobAdapters 的 "qwen" 条目）。报文依据契约 §10.2（B 级，2026-10-04
 // 回填）：创建 POST /api/v1/services/audio/asr/transcription，Bearer
-// DASHSCOPE_API_KEY 认证，**无需 X-DashScope-Async 头**（该服务天然异步，
-// 与万相视频不同），请求 {"model":"paraformer-v2","input":{"file_urls":
+// DASHSCOPE_API_KEY 认证，**必须携带 X-DashScope-Async: enable**（2026-11-20
+// 真实上游实测：缺该头时 paraformer-v2 返回 403 "current user api does not
+// support synchronous calls"；该头与万相视频 §10.1 同源，异步任务是
+// DashScope 的显式开关，不是“天然异步”），请求 {"model":"paraformer-v2",
+// "input":{"file_urls":
 // ["<公网音频 URL>"]},"parameters":{"language_hints":[...],
 // "diarization_enabled":true,...}}——只接受公网 URL 数组不支持文件上传
 // （与零存储对齐：对外 /v1/audio/jobs 首版输入只支持 input_url）；响应
@@ -80,16 +83,15 @@ type AudioJobCapabilities struct {
 }
 
 // AudioJobCreateInput 是创建请求的输入：归一参数 + metadata 对象
-// 形态（键=provider_code，Create 内按本 provider 取命中子对象 deep-merge
-// 覆盖，其余子对象忽略，契约 §2.1 L3/§2.4 规则 4）。
+// 形态（键=厂商原生参数名，Create 内只新增、不覆盖任何既有路径，冲突
+// 返回 ErrMetadataReservedField，契约 §2.1 L3/§2.4 规则 4）。
 type AudioJobCreateInput struct {
 	Params   NormalizedAudioJobParams
 	Metadata map[string]any
 }
 
 // AudioJobCreateOutput 是创建请求的构造结果（与 VideoCreateOutput 同构；
-// paraformer 无厂商私有创建头——天然异步服务不需要 X-DashScope-Async，
-// ExtraHeaders 恒 nil）。
+// qwen 创建必须携带 X-DashScope-Async: enable，见 Create）。
 type AudioJobCreateOutput struct {
 	Method       string
 	Path         string
@@ -132,11 +134,10 @@ func (qwenASRAdapter) Capabilities() AudioJobCapabilities {
 //     暂存文件，multipart 在归一层前置拒绝）；
 //   - language → parameters.language_hints：单字符串 → 单元素数组（官方
 //     字段是数组形态，纯格式转换语义不变；未传不带该键）；
-//   - metadata 键 deep-merge 覆盖同名键（契约
-//     §2.1 L3，嵌套对象递归合并，如 {"qwen":{"parameters":{
-//     "diarization_enabled":true}}}）；
-//   - 无 X-DashScope-Async 头（契约 §10.2：该服务天然异步，ExtraHeaders
-//     恒 nil——与万相视频 §10.1 的关键差异）。
+//   - metadata 只新增、不覆盖既有路径（契约 §2.1 L3，嵌套对象递归新增，
+//     如 {"parameters":{"diarization_enabled":true}}）；
+//   - X-DashScope-Async: enable（2026-11-20 实测：缺头 403，异步开关为
+//     上游硬要求，与万相视频 §10.1 同源）。
 func (a qwenASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (AudioJobCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -156,7 +157,10 @@ func (a qwenASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (Audio
 			"language_hints": []string{params.Language},
 		}
 	}
-	body = MergeMetadata(body, in.Metadata)
+	body, err := MergeMetadataReserved(body, in.Metadata, qwenASRMetadataReservedPaths)
+	if err != nil {
+		return AudioJobCreateOutput{}, err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return AudioJobCreateOutput{}, fmt.Errorf("编码 qwen 长转写创建请求体失败: %w", err)
@@ -165,6 +169,9 @@ func (a qwenASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (Audio
 		Method: http.MethodPost,
 		Path:   "/api/v1/services/audio/asr/transcription",
 		Body:   encoded,
+		ExtraHeaders: map[string]string{
+			"X-DashScope-Async": "enable",
+		},
 	}, nil
 }
 

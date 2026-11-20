@@ -106,24 +106,31 @@ func ExtractMultipartImageMetadata(rawBody []byte, contentType string, path stri
 // 上传音频时长解析：不复制 64MB 级上传体，也不落盘。字段缺失/重复/结构
 // 不完整返回 ok=false。
 func ExtractMultipartFilePart(rawBody []byte, contentType, fieldName string) (data []byte, partContentType string, ok bool) {
+	data, partContentType, _, ok = ExtractMultipartFilePartInfo(rawBody, contentType, fieldName)
+	return data, partContentType, ok
+}
+
+// ExtractMultipartFilePartInfo 与 ExtractMultipartFilePart 同源，额外返回
+// 文件 part 的 filename（同步转写需从无 Content-Type 的上传推断音频格式）。
+func ExtractMultipartFilePartInfo(rawBody []byte, contentType, fieldName string) (data []byte, partContentType, filename string, ok bool) {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
-		return nil, "", false
+		return nil, "", "", false
 	}
 	boundary := params["boundary"]
 	if boundary == "" {
-		return nil, "", false
+		return nil, "", "", false
 	}
 	first := []byte("--" + boundary)
 	delimiter := []byte("\r\n--" + boundary)
 	index := bytes.Index(rawBody, first)
 	if index < 0 {
-		return nil, "", false
+		return nil, "", "", false
 	}
 	if index > 0 {
 		index = bytes.Index(rawBody, delimiter)
 		if index < 0 {
-			return nil, "", false
+			return nil, "", "", false
 		}
 	}
 	partCount := 0
@@ -131,43 +138,43 @@ func ExtractMultipartFilePart(rawBody []byte, contentType, fieldName string) (da
 	for {
 		partCount++
 		if partCount > multipartMaxParts {
-			return nil, "", false
+			return nil, "", "", false
 		}
 		headerStart := index + len(delimiter)
 		if bytes.HasPrefix(rawBody[index:], first) {
 			headerStart = index + len(first)
 		}
 		if headerStart+2 > len(rawBody) || rawBody[headerStart] != '\r' || rawBody[headerStart+1] != '\n' {
-			return nil, "", false
+			return nil, "", "", false
 		}
 		headerStart += 2
 		headerEnd := bytes.Index(rawBody[headerStart:], []byte("\r\n\r\n"))
 		if headerEnd < 0 {
-			return nil, "", false
+			return nil, "", "", false
 		}
 		headers := rawBody[headerStart : headerStart+headerEnd]
 		contentStart := headerStart + headerEnd + 4
 		next := bytes.Index(rawBody[contentStart:], delimiter)
 		if next < 0 {
-			return nil, "", false
+			return nil, "", "", false
 		}
 		contentEnd := contentStart + next
-		name, filename, partType := multipartPartHeaders(headers)
-		if filename != "" {
+		name, partFilename, partType := multipartPartHeaders(headers)
+		if partFilename != "" {
 			fileCount++
 			if fileCount > multipartMaxFiles {
-				return nil, "", false
+				return nil, "", "", false
 			}
 			if name == fieldName {
-				return rawBody[contentStart:contentEnd], partType, true
+				return rawBody[contentStart:contentEnd], partType, partFilename, true
 			}
 		}
 		index = contentEnd + 2 // 跳过 CRLF，指向下一个 --boundary
 		if index+len(first) > len(rawBody) || !bytes.HasPrefix(rawBody[index:], first) {
-			return nil, "", false
+			return nil, "", "", false
 		}
 		if bytes.HasPrefix(rawBody[index+len(first):], []byte("--")) {
-			return nil, "", false
+			return nil, "", "", false
 		}
 	}
 }
@@ -194,12 +201,48 @@ func multipartPartHeaders(headers []byte) (name, filename, contentType string) {
 	return name, filename, contentType
 }
 
+// ExtractMultipartAudioModel 提取 multipart 语音转写请求的 model 字段。
+// STT 的 model 与 file 同为 form-data 字段（对外协议面 §2.1），但请求体
+// 不是 JSON，不能走 ExtractJSONBodyMetadata；缺此提取会让调度在入口按
+// 「请求缺少 model」404。字段重复、截断或非安全 model ID 时返回 false。
+func ExtractMultipartAudioModel(rawBody []byte, contentType string, path string) (string, bool) {
+	if !isAudioTranscriptionEndpointPath(EndpointPathOf(path)) || !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		return "", false
+	}
+	value, fields := scanMultipartField(rawBody, contentType, "model", maxMultipartModelBytes,
+		func(value string) (string, bool) {
+			normalized := trimJSSpace(value)
+			return normalized, normalized != "" && isSafeModelID(normalized)
+		})
+	if fields != 1 {
+		return "", false
+	}
+	return value, value != ""
+}
+
 // ExtractMultipartAudioResponseFormat mirrors extractGatewayMultipartAudioResponseFormat.
 func ExtractMultipartAudioResponseFormat(rawBody []byte, contentType string, path string) (string, bool) {
 	if !isAudioTranscriptionEndpointPath(EndpointPathOf(path)) || !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
 		return "", false
 	}
 	value, fields := scanMultipartField(rawBody, contentType, "response_format", maxMultipartResponseFormatBytes,
+		func(value string) (string, bool) {
+			normalized := strings.ToLower(trimJSSpace(value))
+			return normalized, normalized != ""
+		})
+	if fields != 1 {
+		return "", false
+	}
+	return value, value != ""
+}
+
+// ExtractMultipartAudioLanguage 提取语音转写 multipart 请求的 language 字段
+// （可选；用于 verbose_json 回显）。字段重复/截断/空值按缺省处理。
+func ExtractMultipartAudioLanguage(rawBody []byte, contentType, path string) (string, bool) {
+	if !isAudioTranscriptionEndpointPath(EndpointPathOf(path)) || !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		return "", false
+	}
+	value, fields := scanMultipartField(rawBody, contentType, "language", maxMultipartResponseFormatBytes,
 		func(value string) (string, bool) {
 			normalized := strings.ToLower(trimJSSpace(value))
 			return normalized, normalized != ""

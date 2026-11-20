@@ -24,11 +24,11 @@
 ```bash
 curl -s "$BASE_URL/v1/audio/transcriptions" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
-  -F model="gpt-5.4" \
+  -F model="gpt-4o-transcribe" \
   -F file="@meeting_clip.m4a"
 ```
 
-（`model` 请替换成你列表里真实存在的转写模型名；`file` 的 `@` 表示读取本地文件。）
+（`model` 请替换成你列表里真实存在的转写模型名——不同供应商可用的转写模型不同，以 `GET /v1/models` 为准；`file` 的 `@` 表示读取本地文件。）
 
 结果长这样——同步返回，文本就在 `text` 字段里：
 
@@ -36,14 +36,36 @@ curl -s "$BASE_URL/v1/audio/transcriptions" \
 { "text": "大家好，今天我们讨论三个议题……" }
 ```
 
-`translations` 是它的兄弟接口，把音频内容翻译成英文文本（OpenAI audio API 语义），请求方式完全一样，只换路径：
+### response_format：一次请求拿到不同形态
+
+可选 `response_format`，默认 `json`：
+
+| 取值 | 响应形态 | 说明 |
+| --- | --- | --- |
+| `json` | `{"text": "..."}` | 默认；上游回报音频时长时附带 `duration`（秒） |
+| `text` | 纯文本 | 直接是转写文本，不是 JSON |
+| `verbose_json` | 含 `duration`、`segments` 的 JSON | 需要分句时间轴时用 |
+| `srt` | SubRip 字幕文本 | 每个分句一条 |
+| `vtt` | WebVTT 字幕文本 | 带 `WEBVTT` 头 |
 
 ```bash
-curl -s "$BASE_URL/v1/audio/translations" \
+curl -s "$BASE_URL/v1/audio/transcriptions" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
-  -F model="gpt-5.4" \
-  -F file="@foreign_clip.mp3"
+  -F model="gpt-4o-transcribe" \
+  -F response_format="verbose_json" \
+  -F file="@meeting_clip.m4a"
 ```
+
+取值不在上表内会返回本地 400。某个模型是否支持全部五种形态取决于所接上游；火山 openspeech 同步转写（如 `volc.seedasr.auc`）五种都支持。
+
+### 上传限制与翻译接口
+
+- 同步转写是单次上传：火山 openspeech 同步转写对单文件强制 **25MB** 上限，超过会本地 400；其他上游按各自限制（OpenAI 官方同类接口同为 25MB）。更长的音频请走下面的异步任务。
+- `POST /v1/audio/translations` 是转写的兄弟接口（OpenAI audio API 语义），但**不是所有转写模型都有翻译能力**，只有供应商与模型支持时才能用。火山 openspeech 同步转写当前只支持 `/v1/audio/transcriptions`，对这类模型调用 translations 会本地 400，不会伪造翻译结果；目录里没有可承接翻译的模型时，会按模型不支持或分组无账户返回错误。以 `GET /v1/models` 与管理台目录为准。
+
+### 计费按音频时长
+
+同步转写按**音频秒数**计费，用量记录里能看到这次调用的 `audio_input_seconds` 与金额。计量优先采用上游回报的实际时长，其次解析上传音频；两者都拿不到时该次计量为 0，并在用量记录标记缺失（不按文件大小估算）。对账口径见《用量与统计》。
 
 ## 方式二：长音频异步任务 POST /v1/audio/jobs
 
@@ -54,13 +76,13 @@ curl -s "$BASE_URL/v1/audio/jobs" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "paraformer-v2",
     "input_url": "https://example.com/audio/long-lecture.mp3",
     "language": "zh"
   }'
 ```
 
-（`model` 同样替换成真实存在的转写模型名。）
+（`model` 同样替换成真实存在的转写模型名；异步转写模型以 `GET /v1/models` 为准。）
 
 **`input_url` 是唯一输入形态**：必须是 http(s) 的、公网可直接访问的音频 URL。往这个接口上传 multipart 文件会被 400 拒绝——想直接传文件请走方式一。
 
@@ -108,9 +130,10 @@ curl -s "$BASE_URL/v1/audio/jobs/audiojob_xxx/content" \
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `file` | 文件 | 是 | 音频文件本体 |
+| `file` | 文件 | 是 | 音频文件本体；火山同步转写限 25MB，支持 mp3/wav/ogg/pcm |
 | `model` | 字符串 | 是 | 转写模型名 |
-| `language` | 字符串 | 否 | 语言提示（按 OpenAI audio API 形态的可选字段） |
+| `response_format` | 字符串 | 否 | `json`（默认）/ `text` / `verbose_json` / `srt` / `vtt`，词表外 400 |
+| `language` | 字符串 | 否 | 语言提示；是否影响识别取决于上游（火山同步面只把该值回填到 `verbose_json` 的 `language`，不作为识别参数） |
 
 方式二（JSON body）：
 
@@ -134,7 +157,7 @@ resp=$(curl -s "$BASE_URL/v1/audio/jobs" \
   -H "Authorization: Bearer $JUHE_AI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "paraformer-v2",
     "input_url": "https://example.com/audio/long-lecture.mp3"
   }')
 echo "提交结果: $resp"
@@ -172,10 +195,14 @@ fi
 | 症状 | 原因 | 处理 |
 | --- | --- | --- |
 | 往 `/v1/audio/jobs` 传文件被 400 拒绝 | 该接口只收 JSON + `input_url`，multipart 不是合法输入 | 改用 `input_url`；或改走方式一的 multipart 接口 |
+| 400，提示同步转写音频不得超过 25MB | 上传文件超过火山同步转写上限 | 压缩/切分音频，或改用 `/v1/audio/jobs` 异步任务 |
+| 400，提示不支持 `response_format` | 取值不在 `json/text/verbose_json/srt/vtt` 内 | 改用上表五个取值之一 |
+| 400，提示只支持 `/v1/audio/transcriptions` | 该模型（如火山 openspeech 同步转写）没有翻译能力，却调用了 `/v1/audio/translations` | 改用 `/v1/audio/transcriptions`，或换支持翻译能力的模型 |
 | 503 `missing_model` / `unsupported_model`（type 均为 `service_unavailable`） | 没传 model、模型名写错或分组不支持 | 以 `GET /v1/models` 为准核对 |
 | 400 `invalid_request_error` | `input_url` 不是 http(s) URL，或 multipart 字段名缺失 | 检查 URL 协议与 `-F` 字段拼写（`file`、`model`） |
 | URL 提交后任务 `failed` | 上游取不到音频：URL 404、内网地址、需要登录才能下载 | 换成公网可直接下载的 URL 重新提交 |
-| 转写结果为空或语言不对 | 音频质量问题，或语言识别偏差 | 检查音频清晰度；用 `language` 给出语言提示 |
+| 转写结果为空或语言不对 | 音频质量问题，或语言识别偏差 | 检查音频清晰度；用 `language` 给出语言提示（是否生效取决于上游） |
+| 用量记录里音频秒数为 0 / 标记缺失 | 上游未回报时长，网关也未能解析上传音频 | 改用能回报 `duration` 的模型或 `verbose_json`，或联系管理员核对 |
 | 5xx，`type` 为 `server_error` / `service_unavailable` / `upstream_error` | 网关或上游临时故障 | 原样重试，反复失败按《错误码与排障》取证 |
 
 ## 接下来

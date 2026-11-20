@@ -268,6 +268,11 @@ func BuildCostBreakdown(pricing *Pricing, input CostInput) *CostBreakdown {
 	if pricing == nil {
 		return nil
 	}
+	// 非法 media_pricing_json 按无价行处理：整行拒绝计价，不回落 legacy
+	// 静态价或 token 列（设计 §5.2 / AC-016）。
+	if pricing.MediaPricingInvalid {
+		return nil
+	}
 	template := input.MediaPricing
 	if template == nil {
 		template = pricing.MediaPricing

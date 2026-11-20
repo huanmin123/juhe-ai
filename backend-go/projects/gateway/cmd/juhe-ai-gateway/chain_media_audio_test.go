@@ -4,13 +4,14 @@ package main
 // 设计 §4.2/§7/§8）：进程内 fixture（newChainFixture 先例）+ qwen 分组/
 // audio_job 账户 + mockupstream media_qwen_asr_* 场景。覆盖四条链路：
 //  1. 创建（transcription 报文改写：input_url → input.file_urls 单元素数组、
-//     language → parameters.language_hints 数组、metadata deep-merge、
-//     Bearer 认证、**无 X-DashScope-Async 头**（天然异步服务）、/api/v1 服务
+//     language → parameters.language_hints 数组、metadata 只新增、
+//     Bearer 认证、**X-DashScope-Async: enable 头**（异步任务开关）、/api/v1 服务
 //     根 URL 归一 + params 回显）→ 轮询 PENDING→RUNNING→SUCCEEDED
 //    （output.results[].transcription_url 冻结 + usage JSON 字符串解析出
 //     duration=62.5 时长计量）→ content 经绝对 URL 无凭据直连下载转写结果
-//     JSON + 终态 usage spool（audioInputSeconds 计量照落、目录无 USD 秒价
-//     成本 0，不虚计）+ /v1/audio/jobs 列表 kind 过滤（不与视频行混行）；
+//     JSON + 终态 usage spool（audioInputSeconds 计量照落、按 paraformer-v2
+//     目录秒价计费，不标记 usage_missing）+ /v1/audio/jobs 列表 kind 过滤
+//     （不与视频行混行）；
 //  2. multipart 文件输入 → 本地 400（唯一输入形态 input_url，零存储不暂存，
 //     不打上游）；
 //  3. DELETE 取消（qwen §10.2 面无取消 API → 不发上游请求，本地收敛
@@ -20,7 +21,7 @@ package main
 // M6 追加（契约 §7.2/§9.2）：
 //  5. glm TTS 透传链路：/v1/audio/speech → 出站 POST /api/paas/v4/audio/speech
 //     （glm 通用根归一，非 openai /v1 补缀）+ Bearer + metadata（glm 声线扩展）
-//     的 ref_audio/ref_text 深合并进顶层 body（通道键不透传），mock
+//     的 ref_audio/ref_text 只新增并入顶层 body（通道键不透传），mock
 //     media_glm_tts_ok 回 wav 载荷（RIFF magic bytes）；
 //  6. volcengine TTS adapter 链路：/v1/audio/speech → 出站 POST /api/v3/tts
 //     （固定语音服务域，经测试 seam env 指回 mock）+ `Authorization:
@@ -32,11 +33,13 @@ package main
 //（断言认证头与异步头缺席），内层为 mockupstream 引擎；completed 的产物
 // url 由引擎按自身 URL 渲染，网关直连该 URL（不经过记录层）。
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -168,9 +171,9 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	}
 
 	// 创建出站断言：POST /api/v1/services/audio/asr/transcription + Bearer 认证
-	// 头 + **无 X-DashScope-Async 头**（天然异步服务，契约 §10.2 与万相 §10.1
-	// 的关键差异）+ 转换报文（input.file_urls 单元素数组、parameters.
-	// language_hints 数组、diarization_enabled 嵌套合并）。
+	// 头 + **X-DashScope-Async: enable**（2026-11-20 真实上游实测：缺头 403；
+	// 与万相 §10.1 同一异步开关）+ 转换报文（input.file_urls 单元素数组、
+	// parameters.language_hints 数组、diarization_enabled 嵌套合并）。
 	records := recorder.snapshot()
 	if len(records) != 1 || records[0].Method != http.MethodPost || records[0].Path != "/api/v1/services/audio/asr/transcription" {
 		t.Fatalf("创建出站请求形态错误: %+v", records)
@@ -178,8 +181,8 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	if records[0].Authorization != "Bearer sk-dashscope-asr-a" {
 		t.Fatalf("创建请求 Authorization = %q, want Bearer sk-dashscope-asr-a", records[0].Authorization)
 	}
-	if records[0].DashScopeAsync != "" {
-		t.Fatalf("长转写创建不得携带 X-DashScope-Async 头（天然异步服务）: %q", records[0].DashScopeAsync)
+	if records[0].DashScopeAsync != "enable" {
+		t.Fatalf("长转写创建必须携带 X-DashScope-Async: enable: %q", records[0].DashScopeAsync)
 	}
 	createBody := ""
 	for _, request := range mock.Requests() {
@@ -225,9 +228,8 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	}
 
 	// media_jobs 行终态：kind=audio_transcription + completed + 时长计量照抽
-	//（usage JSON 字符串 duration=62.5）按目录 USD 秒价计费（2026-10-05
-	// 取证批：国际站 Model Studio USD 明文 $0.000012/秒覆盖换算值——核对批
-	// 换算值 $0.00001143/秒作废；本断言随定价事实回正非语义变更）。
+	//（usage JSON 字符串 duration=62.5）按 paraformer-v2 目录 USD 秒价计费
+	//（qwen 17 行恢复批：0.00008 元/秒 ÷ 7.0 = 1.142857e-05 USD/秒）。
 	var kind, status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT kind, status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&kind, &status, &upstreamJobID, &costUsd); err != nil {
@@ -236,11 +238,12 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	if kind != "audio_transcription" || status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s/%s, want audio_transcription/completed/%s", kind, status, upstreamJobID, providerJobID)
 	}
-	// paraformer-v2 已随 2025 前模型清理批移除目录行：无秒价 → cost 0，
-	// usage 行计量照落（audioInputSeconds 62.5）不打 usage_missing（契约
-	// §2.8/§10.2：计量照落成本不虚计）。
-	if costUsd != 0 {
-		t.Fatalf("paraformer 无目录价 cost_usd = %v, want 0（2025 前模型清理批后兜底）", costUsd)
+	// paraformer-v2 目录秒价 1.142857e-05 USD/秒 × 62.5 秒 = 0.0007142857
+	//（cost_usd 按 fixedNumber 10 位小数舍入）；usage 行计量照落
+	//（audioInputSeconds 62.5）不打 usage_missing（契约 §2.8/§10.2）。
+	wantCostUsd := 62.5 * 0.000011428571428571427
+	if math.Abs(costUsd-wantCostUsd) > 1e-10 {
+		t.Fatalf("paraformer cost_usd = %v, want ≈%v（62.5s × 目录秒价，10 位小数舍入）", costUsd, wantCostUsd)
 	}
 
 	// content 下载：completed 的 transcription_url 是引擎渲染的绝对 URL（不经
@@ -284,12 +287,17 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	}
 
 	// 终态 usage：spool 链异步落盘，completed 携带 usage JSON 字符串解析出的
-	// 62.5 秒输入时长计量（audioInputSeconds）+ endpoint=/v1/audio/jobs；目录
-	// 无价 → 无 costUsd 行项、无 usageMissing 标记（契约 §2.8/§10.2：计量
-	// 照落成本不虚计）。
-	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+	// 62.5 秒输入时长计量（audioInputSeconds）+ endpoint=/v1/audio/jobs；按
+	// paraformer-v2 目录秒价落 costUsd，且不标记 usageMissing（契约 §2.8/§10.2）。
+	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
 		return strings.Contains(text, `"audioInputSeconds":62.5`) && strings.Contains(text, `"endpoint":"/v1/audio/jobs"`)
 	}, "qwen asr completed 时长计量终态记录")
+	if strings.Contains(record, `"usageMissing":true`) {
+		t.Fatalf("有上游 duration 且目录有价，不得标记 usageMissing: %s", record)
+	}
+	if !strings.Contains(record, `"costUsd":0.0007142857`) {
+		t.Fatalf("spool 缺少目录秒价成本 costUsd=0.0007142857: %s", record)
+	}
 }
 
 // TestChainMediaAudioJobMultipartRejected 覆盖链路 2：multipart 文件输入 →
@@ -421,7 +429,7 @@ func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL,
 // TestChainMediaGlmSpeechUrlPassthroughRefAudio 覆盖 M6 链路 5（契约 §7.2）：
 // glm 账户 /v1/audio/speech 走 openai 透传——出站 URL 归一到官方通用根
 // /api/paas/v4/audio/speech（CogVideo 同根去重先例，非 openai /v1 补缀）、
-// metadata（glm 声线扩展） 的 ref_audio/ref_text 深合并进顶层（通道键不透传）、
+// metadata（glm 声线扩展） 的 ref_audio/ref_text 只新增并入顶层（通道键不透传）、
 // Bearer 认证；mock media_glm_tts_ok 回 wav 载荷（RIFF magic bytes——未转换
 // 的报文通道即音频二进制）；usage 按请求字符自算（透传面无上游回报）。
 func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
@@ -450,7 +458,7 @@ func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
 	}
 
 	// 出站断言：POST /api/paas/v4/audio/speech（官方通用根归一）+ Bearer +
-	// ref_audio/ref_text 深合并进顶层 + metadata 通道键不透传。
+	// ref_audio/ref_text 只新增并入顶层 + metadata 通道键不透传。
 	requests := mock.Requests()
 	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/api/paas/v4/audio/speech" {
 		t.Fatalf("glm speech 出站请求形态错误: %+v", requests)
@@ -750,6 +758,59 @@ func TestChainMediaOpenAISpeechMissingVoicePassthrough(t *testing.T) {
 	}
 	if strings.Contains(requests[0].Body, `"voice"`) {
 		t.Fatalf("openai 透传不得私造 voice 字段: %s", requests[0].Body)
+	}
+}
+
+// TestChainStripMediaExtensionKeysRetiredProviderOptions 钉住 speech 直连
+// 通用透传面的扩展键剥离（设计 §5.1）：metadata 与已退役 provider_options
+// 都不发往上游；非媒体路径零改写；speech metadata 规范字段冲突仍映射
+// metadata_conflict。
+func TestChainStripMediaExtensionKeysRetiredProviderOptions(t *testing.T) {
+	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
+		`{"model":"tts-1","input":"hi","voice":"alloy","metadata":{"emotion":"happy"},"provider_options":{"openai":{"a":1}}}`)
+	out, err := chainStripMediaExtensionKeys(req, []byte(`{"model":"tts-1","input":"hi","voice":"alloy","metadata":{"emotion":"happy"},"provider_options":{"openai":{"a":1}}}`))
+	if err != nil {
+		t.Fatalf("strip: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("out not json: %v", err)
+	}
+	if _, ok := body["metadata"]; ok {
+		t.Fatalf("metadata 不得透传上游: %s", out)
+	}
+	if _, ok := body["provider_options"]; ok {
+		t.Fatalf("provider_options 已退役，不得透传上游: %s", out)
+	}
+	if body["model"] != "tts-1" || body["input"] != "hi" || body["voice"] != "alloy" {
+		t.Fatalf("规范字段不得被改写: %s", out)
+	}
+
+	// 仅 provider_options：同样剥离并重编码。
+	out, err = chainStripMediaExtensionKeys(req, []byte(`{"model":"tts-1","input":"hi","provider_options":{"x":1}}`))
+	if err != nil {
+		t.Fatalf("provider_options only strip: %v", err)
+	}
+	if strings.Contains(string(out), "provider_options") {
+		t.Fatalf("provider_options 未剥离: %s", out)
+	}
+
+	// 非媒体路径：字节级不变。
+	chatReq := mappedURLTestRequest(t, http.MethodPost, "/v1/chat/completions", `{"provider_options":{"x":1}}`)
+	chatBody := []byte(`{"provider_options":{"x":1}}`)
+	if out, err := chainStripMediaExtensionKeys(chatReq, chatBody); err != nil || !bytes.Equal(out, chatBody) {
+		t.Fatalf("非媒体路径不得改写: out=%s err=%v", out, err)
+	}
+
+	// speech metadata 覆盖规范字段 → metadata_conflict。
+	conflict := []byte(`{"model":"tts-1","input":"hi","voice":"alloy","metadata":{"voice":"other"}}`)
+	if _, err := chainStripMediaExtensionKeys(req, conflict); err == nil {
+		t.Fatal("metadata 覆盖规范字段应报错")
+	} else {
+		var validation *gatewaypreauth.GatewayRequestValidationError
+		if !errors.As(err, &validation) || validation.Code != "metadata_conflict" {
+			t.Fatalf("错误必须是 metadata_conflict: %v", err)
+		}
 	}
 }
 

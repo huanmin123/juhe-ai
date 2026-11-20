@@ -222,16 +222,27 @@ func TestVeoVideoAdapterMetadataMerge(t *testing.T) {
 	}
 	out, err := adapter.Create(context.Background(), VideoCreateInput{
 		Params: params,
-		// metadata：覆盖换算结果 + 厂商个例键原样透传（设计 §5.1）。
+		// metadata 只新增厂商个例键，不得改写 size 换算出的 aspectRatio。
 		Metadata: map[string]any{
-			"parameters": map[string]any{"aspectRatio": "9:16", "personGeneration": "allow_all"},
+			"parameters": map[string]any{"personGeneration": "allow_all"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("Create err = %v", err)
 	}
-	if !strings.Contains(string(out.Body), `"aspectRatio":"9:16"`) || !strings.Contains(string(out.Body), `"personGeneration":"allow_all"`) {
-		t.Fatalf("metadata 未 deep-merge: %s", out.Body)
+	if !strings.Contains(string(out.Body), `"aspectRatio":"16:9"`) ||
+		!strings.Contains(string(out.Body), `"personGeneration":"allow_all"`) {
+		t.Fatalf("metadata 新增键未并入: %s", out.Body)
+	}
+	// 覆盖既有规范路径（parameters.aspectRatio）必须拒绝，防止计费快照与
+	// 上游实际分辨率脱钩（P0）。
+	if _, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params: params,
+		Metadata: map[string]any{
+			"parameters": map[string]any{"aspectRatio": "9:16"},
+		},
+	}); !errors.Is(err, ErrMetadataReservedField) || !strings.Contains(err.Error(), "parameters.aspectRatio") {
+		t.Fatalf("覆盖 parameters.aspectRatio 应拒绝: %v", err)
 	}
 }
 
@@ -331,5 +342,28 @@ func TestVeoDefaultSecondsForModel(t *testing.T) {
 	}
 	if _, ok := VideoDefaultSecondsForModel("openai", "sora-2"); ok {
 		t.Fatal("非 Veo adapter 不得声明默认时长")
+	}
+}
+
+// TestVeoVideoAdapterRejectsAbsentNormativeMetadataPaths 钉住请求未传 size
+// 时 metadata 不得补写 parameters.resolution/aspectRatio：基础报文只有
+// durationSeconds，但这两个规范路径仍必须被拒绝。
+func TestVeoVideoAdapterRejectsAbsentNormativeMetadataPaths(t *testing.T) {
+	adapter := veoVideoAdapter{}
+	base := NormalizedVideoParams{Model: "veo-3.0-generate-preview", Prompt: "p"}
+	for name, metadata := range map[string]map[string]any{
+		"resolution":  {"parameters": map[string]any{"resolution": "1080p"}},
+		"aspectRatio": {"parameters": map[string]any{"aspectRatio": "9:16"}},
+		"duration":    {"parameters": map[string]any{"durationSeconds": float64(10)}},
+	} {
+		if _, err := adapter.Create(context.Background(), VideoCreateInput{Params: base, Metadata: metadata}); !errors.Is(err, ErrMetadataReservedField) {
+			t.Fatalf("%s 注入应返回 ErrMetadataReservedField: %v", name, err)
+		}
+	}
+	if _, err := adapter.Create(context.Background(), VideoCreateInput{
+		Params:   base,
+		Metadata: map[string]any{"parameters": map[string]any{"personGeneration": "allow_all"}},
+	}); err != nil {
+		t.Fatalf("新增 parameters.personGeneration 不应报错: %v", err)
 	}
 }

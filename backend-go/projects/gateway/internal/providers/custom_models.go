@@ -60,6 +60,7 @@ type customProviderModelRecord struct {
 	AudioOutputUsdPer1M         *float64
 	OutputUsdPerImage           *float64
 	MediaPricing                *mediapricing.Pricing
+	MediaPricingInvalid         bool
 	PricingNotes                *string
 	CapabilityNotes             *string
 	Notes                       *string
@@ -217,7 +218,8 @@ func (s *Store) findMediaPricingTemplate(ctx context.Context, providerCode, mode
 	}
 	targetUnit := mediapricing.DefaultUnitForKind(kind)
 	targetFamily := mediaPricingProtocolFamily(kind, protocols)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, media_pricing_json, release_date, catalog_order, supported_endpoint_modes_json
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, media_pricing_json, release_date, catalog_order,
+		supported_endpoint_modes_json, output_modalities_json
 		FROM `+s.table("models")+`
 		WHERE vendor_code = ? AND scope IN ('builtin', 'global') AND status = 'active'
 		  AND media_pricing_json IS NOT NULL AND trim(media_pricing_json) <> ''`), providerCode)
@@ -234,22 +236,24 @@ func (s *Store) findMediaPricingTemplate(ctx context.Context, providerCode, mode
 	candidates := []candidate{}
 	for rows.Next() {
 		var (
-			id            string
-			rawPricing    string
-			releaseDate   sql.NullString
-			catalogOrder  sql.NullInt64
-			endpointModes sql.NullString
+			id               string
+			rawPricing       string
+			releaseDate      sql.NullString
+			catalogOrder     sql.NullInt64
+			endpointModes    sql.NullString
+			outputModalities sql.NullString
 		)
-		if err := rows.Scan(&id, &rawPricing, &releaseDate, &catalogOrder, &endpointModes); err != nil {
+		if err := rows.Scan(&id, &rawPricing, &releaseDate, &catalogOrder, &endpointModes, &outputModalities); err != nil {
 			return nil, err
 		}
 		candidateMode, candidateProtocols := deriveCustomModelProjection(endpointModes)
-		candidateKind, ok := mediapricing.KindForMode(stringValueOrEmpty(candidateMode))
-		if !ok || candidateKind != kind {
-			continue
-		}
 		parsed, err := mediapricing.Parse([]byte(rawPricing))
 		if err != nil {
+			continue
+		}
+		candidateKind, ok := projectedMediaKind(stringValueOrEmpty(candidateMode), candidateProtocols,
+			parseJSONArray(outputModalities), parsed.Unit)
+		if !ok || candidateKind != kind {
 			continue
 		}
 		if parsed.Unit != targetUnit {
@@ -300,6 +304,42 @@ func (s *Store) findMediaPricingTemplate(ctx context.Context, providerCode, mode
 
 // mediaPricingProtocolFamily 区分 TTS / STT / 视频时间型 / 图片，防止把
 // TTS 秒价复制给 STT（设计 §5.3）。
+// projectedMediaKind 把目录 mode 投影 + 模板 unit + 输出模态还原为媒体类型。
+// mode 可映射时以 mode 为准；chat/空投影（Gemini generate_content 图像行、
+// 无 endpoint modes 迁移行）按 unit 与 outputModalities 推断，使这些行仍可
+// 作为同供应商新建媒体模型的自动模板候选（设计 §5.3）。
+func projectedMediaKind(mode string, protocols, outputs []string, unit mediapricing.Unit) (mediapricing.Kind, bool) {
+	if kind, ok := mediapricing.KindForMode(mode); ok {
+		return kind, true
+	}
+	switch unit {
+	case mediapricing.UnitImage:
+		return mediapricing.KindImage, true
+	case mediapricing.UnitCall:
+		return mediapricing.KindVideo, true
+	}
+	for _, output := range outputs {
+		switch output {
+		case "video":
+			return mediapricing.KindVideo, true
+		case "audio":
+			return mediapricing.KindAudio, true
+		case "image":
+			return mediapricing.KindImage, true
+		}
+	}
+	for _, protocol := range protocols {
+		switch protocol {
+		case "audio_speech", "audio_transcription", "audio_job_create", "audio_job_get",
+			"audio_job_content", "audio_job_cancel":
+			return mediapricing.KindAudio, true
+		case "video_create", "video_get", "video_content", "video_cancel":
+			return mediapricing.KindVideo, true
+		}
+	}
+	return "", false
+}
+
 func mediaPricingProtocolFamily(kind mediapricing.Kind, protocols []string) string {
 	switch kind {
 	case mediapricing.KindAudio:
@@ -389,7 +429,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	record.AudioInputUsdPer1M = nullFloat64Ptr(audioIn)
 	record.AudioOutputUsdPer1M = nullFloat64Ptr(audioOut)
 	record.OutputUsdPerImage = nullFloat64Ptr(outputPerImage)
-	record.MediaPricing = parseMediaPricingNullable(mediaPricing)
+	record.MediaPricing, record.MediaPricingInvalid = parseMediaPricingNullable(mediaPricing, record.Mode)
 	record.PricingNotes = textPtr(pricingNotes)
 	record.CapabilityNotes = textPtr(capabilityNotes)
 	record.Notes = textPtr(notes)
@@ -398,16 +438,25 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 }
 
 // parseMediaPricingNullable 解析可空 media_pricing_json；非法值按无价处理
-// （Has 标志由非 nil 指针表达，0 价仍是有效价格）。
-func parseMediaPricingNullable(value sql.NullString) *mediapricing.Pricing {
+// （Has 标志由非 nil 指针表达，0 价仍是有效价格）。mode 非空时进一步按
+// 媒体类型校验 unit/档位组合，避免读面把 video 行上的 image 模板当有效价。
+// invalid 区分“列为空/无价”与“列存在但解析或校验失败”，供管理面诊断展示。
+func parseMediaPricingNullable(value sql.NullString, mode *string) (*mediapricing.Pricing, bool) {
 	if !value.Valid || strings.TrimSpace(value.String) == "" {
-		return nil
+		return nil, false
 	}
 	parsed, err := mediapricing.Parse([]byte(value.String))
 	if err != nil {
-		return nil
+		return nil, true
 	}
-	return parsed
+	if mode != nil {
+		if normalized := strings.TrimSpace(*mode); normalized != "" {
+			if err := parsed.ValidateForMappedMode(normalized); err != nil {
+				return nil, true
+			}
+		}
+	}
+	return parsed, false
 }
 
 // mediaPricingJSONValue 返回写入列的值（nil = 清空/legacy）。

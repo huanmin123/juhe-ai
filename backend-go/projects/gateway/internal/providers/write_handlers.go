@@ -86,7 +86,10 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 	}
 	next := mergedCustomModelUpsertInput(existing, parsed)
 	if requiresCustomModelPatchValidation(parsed) {
-		if message := validateCustomModelPricing(existing.ProviderCode, next); message != "" {
+		// 已有媒体模板行的目录 mode 可能投影为 chat/空（Gemini
+		// generate_content 图像行、无 endpoint modes 的迁移行）：编辑既有
+		// 价格/日期时按既有模板放行 kind 推断；新建媒体模板仍严格拒绝。
+		if message := validateCustomModelPricingAllowUnknown(existing.ProviderCode, next, existing.MediaPricing != nil); message != "" {
 			kernel.WriteBadRequest(w, message)
 			return
 		}
@@ -168,7 +171,7 @@ func (d *Deps) patchBuiltInModel(w http.ResponseWriter, r *http.Request, auth *a
 			kernel.WriteBadRequest(w, message)
 			return
 		}
-		if message := validateBuiltInModelCompleteness(next); message != "" {
+		if message := validateBuiltInModelCompletenessAllowUnknown(next, builtIn.HasMediaPricing); message != "" {
 			kernel.WriteBadRequest(w, message)
 			return
 		}

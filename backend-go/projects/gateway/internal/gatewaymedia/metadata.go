@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // ErrMetadataReservedField 标记 metadata 试图覆盖规范字段（400
@@ -20,6 +21,11 @@ var ErrMetadataReservedField = errors.New("metadata 不允许覆盖规范字段"
 
 // MetadataKey 是请求体中扩展通道的固定键名（设计 §5.1）。
 const MetadataKey = "metadata"
+
+// RetiredProviderOptionsKey 是已退役的旧扩展通道键名（设计 §5.1：不保留
+// 别名、不做双写）。媒体创建/语音直连的通用透传面必须剥除该键，旧客户端
+// 携带时按未知字段忽略且不产生任何回显。
+const RetiredProviderOptionsKey = "provider_options"
 
 // VideoMetadataReserved 是视频创建面的规范字段名集合（设计 §4.2.1 参数表）。
 // metadata 命中其中任一键即 400：规范字段只能由网关归一，不允许扩展通道
@@ -86,22 +92,48 @@ func ExtractMetadata(raw any, reserved map[string]struct{}) (map[string]any, err
 	return object, nil
 }
 
-// MergeMetadata 把 metadata 深合并进 base 的副本（厂商值覆盖同名键，嵌套
-// 对象递归合并）。base 与 metadata 均不被修改；未知键原样进入合并结果，
-// 由上游裁决。
-func MergeMetadata(base map[string]any, metadata map[string]any) map[string]any {
-	merged := deepCopyMap(base)
+// MergeMetadata 把 metadata 逐层合并进 base 的副本，但只允许新增路径：与
+// base 中任一既有路径同名的值一律拒绝（ErrMetadataReservedField，链上层
+// 映射 400 metadata_conflict），不做覆盖。这是计费安全边界：出站报文的
+// 规范字段（如 parameters.size/duration、contents、text）决定上游实际
+// 工作量，若允许 metadata 覆盖，创建快照与计费档会与真实工作量脱钩。
+// 双方均为对象且该键不存在于 base 时递归新增；数组、标量与 base 已有键
+// 均不覆盖。base 与 metadata 均不被修改；未知键原样进入合并结果，由上游
+// 裁决。
+func MergeMetadata(base map[string]any, metadata map[string]any) (map[string]any, error) {
+	return MergeMetadataReserved(base, metadata, nil)
+}
+
+// MergeMetadataReserved 在 MergeMetadata 的“只新增”语义之上，增加 adapter
+// 声明的规范路径校验：reservedPaths 中的点号路径即使当前 base 尚未出现，
+// metadata 也不得提供（例如请求未传 size 时，metadata 仍不得注入
+// parameters.size）。这是计费安全边界：规范映射字段决定上游实际工作量，
+// 不能因为本次请求恰好省略该字段就允许扩展通道补写。
+func MergeMetadataReserved(base map[string]any, metadata map[string]any, reservedPaths []string) (map[string]any, error) {
 	if len(metadata) == 0 {
-		return merged
+		return deepCopyMap(base), nil
 	}
-	mergeMetadataValues(merged, metadata)
-	return merged
+	if err := validateMetadataReservedPaths(metadata, reservedPaths); err != nil {
+		return nil, err
+	}
+	merged := deepCopyMap(base)
+	if err := mergeMetadataValues(merged, metadata, ""); err != nil {
+		return nil, err
+	}
+	return merged, nil
 }
 
 // MergeMetadataJSON 把 metadata 合并进序列化后的厂商 JSON 报文（创建计划
 // 在 adapter 构造报文之后统一应用，adapter 无感）。body 必须是 JSON 对象；
-// metadata 为空时原样返回（零改写，字节级透传不破）。
+// metadata 为空时原样返回（零改写，字节级透传不破）。合并语义同
+// MergeMetadata：只新增、不覆盖任何既有路径。
 func MergeMetadataJSON(body []byte, metadata map[string]any) ([]byte, error) {
+	return MergeMetadataJSONReserved(body, metadata, nil)
+}
+
+// MergeMetadataJSONReserved 是 MergeMetadataJSON 的 reservedPaths 版本
+// （语义同 MergeMetadataReserved）；供序列化后统一合并的 adapter 使用。
+func MergeMetadataJSONReserved(body []byte, metadata map[string]any, reservedPaths []string) ([]byte, error) {
 	if len(metadata) == 0 {
 		return body, nil
 	}
@@ -109,7 +141,10 @@ func MergeMetadataJSON(body []byte, metadata map[string]any) ([]byte, error) {
 	if err := json.Unmarshal(body, &base); err != nil {
 		return nil, fmt.Errorf("扩展参数只能并入 JSON 对象报文: %w", err)
 	}
-	merged := MergeMetadata(base, metadata)
+	merged, err := MergeMetadataReserved(base, metadata, reservedPaths)
+	if err != nil {
+		return nil, err
+	}
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return nil, err
@@ -131,20 +166,106 @@ func AppliedMetadataKeys(metadata map[string]any) []string {
 	return keys
 }
 
-// mergeMetadataValues 把 src 递归合并进 dst：双方均为对象的键递归合并，
-// 其余（含 src 值为非对象）由 src 值覆盖。
-func mergeMetadataValues(dst, src map[string]any) {
-	for key, value := range src {
-		if sub, ok := value.(map[string]any); ok {
-			if existing, ok := dst[key].(map[string]any); ok {
-				mergeMetadataValues(existing, sub)
-				continue
+// validateMetadataReservedPaths 递归校验 metadata 是否触碰 adapter 声明的
+// 规范路径。规则：
+//   - 路径与 reserved 精确相等，或位于 reserved 子树内 → 冲突；
+//   - 非对象值占了 reserved 路径的祖先（如把 parameters 写成标量，而
+//     parameters.size 是规范路径）→ 冲突，避免整棵容器被替换；
+//   - 对象形式的祖先容器允许通过，继续递归检查子键（因此
+//     parameters.prompt_extend 这类新增叶子仍可用）。
+func validateMetadataReservedPaths(metadata map[string]any, reservedPaths []string) error {
+	if len(metadata) == 0 || len(reservedPaths) == 0 {
+		return nil
+	}
+	reserved := make(map[string]struct{}, len(reservedPaths))
+	for _, path := range reservedPaths {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			reserved[path] = struct{}{}
+		}
+	}
+	if len(reserved) == 0 {
+		return nil
+	}
+	return validateMetadataReservedValues(metadata, reserved, "")
+}
+
+func validateMetadataReservedValues(values map[string]any, reserved map[string]struct{}, prefix string) error {
+	for key, value := range values {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if metadataPathReserved(path, reserved) {
+			return fmt.Errorf("%w: %s", ErrMetadataReservedField, path)
+		}
+		if object, ok := value.(map[string]any); ok {
+			if err := validateMetadataReservedValues(object, reserved, path); err != nil {
+				return err
 			}
-			dst[key] = deepCopyMap(sub)
 			continue
 		}
-		dst[key] = value
+		if metadataPathAncestorOfReserved(path, reserved) {
+			return fmt.Errorf("%w: %s", ErrMetadataReservedField, path)
+		}
 	}
+	return nil
+}
+
+// metadataPathReserved 判断 path 是否命中 reserved 路径或其子树。
+func metadataPathReserved(path string, reserved map[string]struct{}) bool {
+	if _, exists := reserved[path]; exists {
+		return true
+	}
+	for candidate := range reserved {
+		if strings.HasPrefix(path, candidate+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// metadataPathAncestorOfReserved 判断 path 是否是某个 reserved 路径的祖先
+// （用于拒绝“以标量/数组占据规范容器”）。
+func metadataPathAncestorOfReserved(path string, reserved map[string]struct{}) bool {
+	prefix := path + "."
+	for candidate := range reserved {
+		if strings.HasPrefix(candidate, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeMetadataValues 把 src 递归新增进 dst：双方均为对象的键继续递归；
+// dst 已有任意键（对象/数组/标量）时拒绝覆盖并返回冲突路径。路径用点号
+// 连接，顶层键即键名，嵌套键如 parameters.size。
+func mergeMetadataValues(dst, src map[string]any, prefix string) error {
+	for key, value := range src {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		existing, exists := dst[key]
+		if !exists {
+			if sub, ok := value.(map[string]any); ok {
+				dst[key] = deepCopyMap(sub)
+				continue
+			}
+			dst[key] = value
+			continue
+		}
+		existingObject, existingIsObject := existing.(map[string]any)
+		valueObject, valueIsObject := value.(map[string]any)
+		if existingIsObject && valueIsObject {
+			if err := mergeMetadataValues(existingObject, valueObject, path); err != nil {
+				return err
+			}
+			continue
+		}
+		return fmt.Errorf("%w: %s", ErrMetadataReservedField, path)
+	}
+	return nil
 }
 
 // deepCopyMap 深拷贝嵌套对象树（map[string]any 递归），数组等其余值共享

@@ -47,19 +47,21 @@ const (
 // speech 透传分支的出站路径）与火山 TTS 端点（契约 §9.2：/api/v3/tts，
 // handler 在 video_volcengine.go）；承接批追加火山录音文件识别 2.0 端点
 // （契约 §9.2：/api/v3/auc/bigmodel/submit|query，头驱动面 handler 在
-// asr_volcengine.go）。
+// asr_volcengine.go）；2026-11-20 同步 STT 批追加极速版一次性识别端点
+// （/api/v3/auc/bigmodel/recognize/flash，同文件 handler）。
 var mediaEndpoints = map[endpoint]bool{
-	{http.MethodPost, "/v1/audio/speech"}:                  true,
-	{http.MethodPost, "/v1/audio/transcriptions"}:          true,
-	{http.MethodPost, "/v1/audio/translations"}:            true,
-	{http.MethodPost, "/api/paas/v4/audio/speech"}:         true,
-	{http.MethodPost, "/api/paas/v4/audio/transcriptions"}: true,
-	{http.MethodPost, "/api/paas/v4/audio/translations"}:   true,
-	{http.MethodPost, "/api/v3/tts/create"}:                true,
-	{http.MethodPost, "/api/v3/tts/unidirectional"}:        true,
-	{http.MethodPost, "/api/v3/auc/bigmodel/submit"}:       true,
-	{http.MethodPost, "/api/v3/auc/bigmodel/query"}:        true,
-	{http.MethodPost, "/v1/images/generations"}:            true,
+	{http.MethodPost, "/v1/audio/speech"}:                     true,
+	{http.MethodPost, "/v1/audio/transcriptions"}:             true,
+	{http.MethodPost, "/v1/audio/translations"}:               true,
+	{http.MethodPost, "/api/paas/v4/audio/speech"}:            true,
+	{http.MethodPost, "/api/paas/v4/audio/transcriptions"}:    true,
+	{http.MethodPost, "/api/paas/v4/audio/translations"}:      true,
+	{http.MethodPost, "/api/v3/tts/create"}:                   true,
+	{http.MethodPost, "/api/v3/tts/unidirectional"}:           true,
+	{http.MethodPost, "/api/v3/auc/bigmodel/submit"}:          true,
+	{http.MethodPost, "/api/v3/auc/bigmodel/query"}:           true,
+	{http.MethodPost, "/api/v3/auc/bigmodel/recognize/flash"}: true,
+	{http.MethodPost, "/v1/images/generations"}:               true,
 }
 
 // acceptsMediaEndpoint matches the exact audio paths, the videos family
@@ -173,7 +175,12 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 	}
 	// 火山录音文件识别 2.0（契约 §9.2 承接批）：头驱动 submit/query 两段面，
 	// handler 在 asr_volcengine.go——成功标志在 X-Api-Status-Code 响应头，
-	// 与 body 驱动的 qwen ASR 面不同构。
+	// 与 body 驱动的 qwen ASR 面不同构。2026-11-20 同步 STT 批在同一文件
+	// 增加极速版一次性识别面 recognize/flash（无任务表、无轮询）。
+	if isVolcengineASRSyncPath(r.URL.Path) {
+		m.serveVolcengineASRSync(w, r)
+		return
+	}
 	if isVolcengineASRPath(r.URL.Path) {
 		m.serveVolcengineASR(w, r, scenario)
 		return

@@ -409,6 +409,7 @@ func (m *Middleware) Capture(w http.ResponseWriter, r *http.Request, rawBody []b
 		req.Body = nil
 	} else if !isJSON {
 		imageMetadata := ExtractMultipartImageMetadata(rawBody, contentType, requestPath)
+		audioModel, hasAudioModel := ExtractMultipartAudioModel(rawBody, contentType, requestPath)
 		responseFormat, _ := ExtractMultipartAudioResponseFormat(rawBody, contentType, requestPath)
 		input := BodyStateInput{
 			RawBody:         rawBody,
@@ -417,6 +418,8 @@ func (m *Middleware) Capture(w http.ResponseWriter, r *http.Request, rawBody []b
 		}
 		if imageMetadata.HasModel {
 			input.Model = &imageMetadata.Model
+		} else if hasAudioModel {
+			input.Model = &audioModel
 		}
 		if imageMetadata.Size != "" {
 			input.ImageRequestSize = &imageMetadata.Size
@@ -705,8 +708,8 @@ func isImageGenerationModel(model string) bool {
 		strings.HasPrefix(normalized, "nano-banana") ||
 		// grok-imagine 前缀排除 grok-imagine-video 段（与 gatewayopenai.
 		// IsImageGenerationModel 同步）：xAI 官方 grok-imagine-video-* 是
-		// 视频模型（/v1/videos 面），误入图像档会让视频创建请求落 image
-		// 限额档位（64MB + Image scope），与同端点 sora 的 text 档不一致。
+		// 视频模型（/v1/video/generations 面），误入图像档会让视频创建请求落
+		// image 限额档位（64MB + Image scope），与同端点 sora 的 text 档不一致。
 		(strings.HasPrefix(normalized, "grok-imagine") && !strings.HasPrefix(normalized, "grok-imagine-video")) ||
 		geminiImageModelPattern.MatchString(normalized)
 }

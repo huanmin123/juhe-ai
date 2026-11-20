@@ -18,7 +18,9 @@ import (
 func TestCustomModelBuiltinOverlapCreateRejection(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
-	env.login(t, "user1", "user-pass", "user")
+	// 当前价格只允许管理员提交（设计 §7.3）；普通用户提交价格会先命中 400，
+	// 到不了同名重叠判定，因此用管理员会话验证该契约。
+	env.login(t, "root", "root-pass", "super_admin")
 
 	// Runtime-visible built-in rows (cat-1 gpt-4o, cat-2 gpt-4o-mini) reject.
 	code, rejected := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
@@ -126,8 +128,8 @@ func TestCustomModelBuiltinOverlapPatchRenameGuard(t *testing.T) {
 func TestCustomModelBuiltinOverlapSameNameEditUnaffected(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
-	env.requireAccount(t, "user1", "user-pass", "user")
-	env.login(t, "user1", "user-pass", "user")
+	// 价格只允许管理员提交（设计 §7.3）；编辑自身模型字段的行为与角色无关。
+	env.login(t, "root", "root-pass", "super_admin")
 
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"my-editable-model","inputUsdPer1M":1,"outputUsdPer1M":2,"notes":"before"}`)

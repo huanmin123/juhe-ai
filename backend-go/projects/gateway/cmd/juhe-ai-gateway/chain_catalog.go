@@ -45,10 +45,13 @@ package main
 // chainInheritCustomCatalogCapabilities 未改）。
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -196,8 +199,14 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 		if !input.IncludeInactive && item.Status != "active" {
 			continue
 		}
+		// 非法 media_pricing_json 行对绑定/展示仍按无价过滤；但运行期计价
+		// 查询（IncludeInvalidMediaPricing）必须能看到该行，才能识别
+		// MediaPricingInvalid 并落 0 + usage_missing，而不是目录 miss 后
+		// 回退静态 legacy 价（AC-016）。
 		if !input.IncludeUnpriced && !chainHasDirectCatalogPrice(item) {
-			continue
+			if !(input.IncludeInvalidMediaPricing && item.MediaPricingInvalid) {
+				continue
+			}
 		}
 		out = append(out, item)
 	}
@@ -614,26 +623,29 @@ func chainCatalogTokenBoundaryEnd(model string, index int) bool {
 
 // chainHasDirectCatalogPrice mirrors hasDirectPrice. 判据单一真源在
 // pricing.HasCatalogDirectPrice（accounts 绑定断言共用同一函数）：
-// 基础直价列 / 静态媒体层二选一；仅档位价或仅缓存价不算可计价（DR-P7）。
+// 统一媒体模板 / 基础直价列 / 静态媒体层三选一；非法 media_pricing_json
+// 直接判无价，不回落 legacy；仅档位价或仅缓存价不算可计价（DR-P7）。
 // 两处若各自维护，就会出现「能绑定但计价目录查不到」的裂缝
 // （BUG-0344：成功流量 cost NULL）。
 func chainHasDirectCatalogPrice(item gatewayruntimecache.ProviderModelCatalogItem) bool {
-	// 统一媒体模板存在即为有价，0 价同样有效（设计 §5.2）。
-	if item.HasMediaPricing {
-		return true
-	}
-	return pricing.HasCatalogDirectPrice(item.ProviderCode, item.Model, pricing.PriceSet{
-		InputUsdPer1M:               item.InputUsdPer1M,
-		OutputUsdPer1M:              item.OutputUsdPer1M,
-		CachedInputUsdPer1M:         item.CachedInputUsdPer1M,
-		CacheWriteUsdPer1M:          item.CacheWriteUsdPer1M,
-		CacheWrite1hUsdPer1M:        item.CacheWrite1hUsdPer1M,
-		CacheStorageUsdPer1MPerHour: item.CacheStorageUsdPer1MPerHour,
-		ImageInputUsdPer1M:          item.ImageInputUsdPer1M,
-		ImageOutputUsdPer1M:         item.ImageOutputUsdPer1M,
-		AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
-		AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
-		OutputUsdPerImage:           item.OutputUsdPerImage,
+	return pricing.HasCatalogDirectPrice(pricing.CatalogPriceFacts{
+		ProviderCode:        item.ProviderCode,
+		Model:               item.Model,
+		HasMediaPricing:     item.HasMediaPricing,
+		MediaPricingInvalid: item.MediaPricingInvalid,
+		Set: pricing.PriceSet{
+			InputUsdPer1M:               item.InputUsdPer1M,
+			OutputUsdPer1M:              item.OutputUsdPer1M,
+			CachedInputUsdPer1M:         item.CachedInputUsdPer1M,
+			CacheWriteUsdPer1M:          item.CacheWriteUsdPer1M,
+			CacheWrite1hUsdPer1M:        item.CacheWrite1hUsdPer1M,
+			CacheStorageUsdPer1MPerHour: item.CacheStorageUsdPer1MPerHour,
+			ImageInputUsdPer1M:          item.ImageInputUsdPer1M,
+			ImageOutputUsdPer1M:         item.ImageOutputUsdPer1M,
+			AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
+			AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
+			OutputUsdPerImage:           item.OutputUsdPerImage,
+		},
 	})
 }
 
@@ -836,32 +848,81 @@ func scanCatalogRows(rows *sql.Rows, columns [][2]string, decorate func(map[stri
 		if err := rows.Scan(pointers...); err != nil {
 			return nil, err
 		}
-		row := map[string]any{}
-		for index, pair := range columns {
-			value := normalizeCatalogValue(values[index])
-			if catalogBoolColumns[pair[1]] {
-				value = catalogBoolValue(value)
-			}
-			row[pair[1]] = value
-		}
-		if decorate != nil {
-			decorate(row)
-		}
-		encoded, err := json.Marshal(row)
+		row := catalogRowFromValues(values, columns, decorate)
+		item, err := catalogItemFromRow(row)
 		if err != nil {
 			return nil, err
 		}
-		var item gatewayruntimecache.ProviderModelCatalogItem
-		if err := json.Unmarshal(encoded, &item); err != nil {
-			return nil, err
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// catalogRowFromValues 把一行 SQL 值投影为 Node 目录行对象。SQL NULL 在 Node
+// 行对象里是键缺失（undefined），不是显式 null：若把 nil 写入行 map，
+// json.Marshal 会产出 `"mediaPricing":null`，json.RawMessage 解出 4 字节
+// "null"，随后 media_pricing_json 合法性判定会把所有 NULL 文本行误判为非法
+// 模板并拒绝 token 计价（BUG-0369）。因此 NULL 列一律跳过。
+func catalogRowFromValues(values []any, columns [][2]string, decorate func(map[string]any)) map[string]any {
+	row := map[string]any{}
+	for index, pair := range columns {
+		value := normalizeCatalogValue(values[index])
+		if value == nil {
+			continue
 		}
-		// 运行期非法 media_pricing_json 不得静默回落 legacy 猜测：该行按无有效
-		// 价格处理（HasMediaPricing=false），绑定/计价按无价拒绝（设计 §5.2）。
-		if len(item.MediaPricing) > 0 {
-			parsed, err := mediapricing.Parse(item.MediaPricing)
+		if catalogBoolColumns[pair[1]] {
+			value = catalogBoolValue(value)
+		}
+		row[pair[1]] = value
+	}
+	if decorate != nil {
+		decorate(row)
+	}
+	return row
+}
+
+// catalogItemFromRow 把目录行对象解码为共享 item，并执行运行期 media_pricing_json
+// 校验。单独抽出供回归测试直接构造行对象，覆盖 SQL NULL → JSON null 的语义。
+func catalogItemFromRow(row map[string]any) (gatewayruntimecache.ProviderModelCatalogItem, error) {
+	encoded, err := json.Marshal(row)
+	if err != nil {
+		return gatewayruntimecache.ProviderModelCatalogItem{}, err
+	}
+	var item gatewayruntimecache.ProviderModelCatalogItem
+	if err := json.Unmarshal(encoded, &item); err != nil {
+		return gatewayruntimecache.ProviderModelCatalogItem{}, err
+	}
+	// 运行期非法 media_pricing_json 不得静默回落 legacy 猜测：该行按无有效
+	// 价格处理（HasMediaPricing=false / MediaPricingInvalid=true），绑定/计价
+	// 按无价拒绝（设计 §5.2/AC-016），并记录可定位的 error。结构合法但
+	// unit/档位与目录 mode 不匹配（如 video 行配 unit=image）同样按非法处理；
+	// chat/responses/embedding/空 mode 不参与 kind 推断（Gemini
+	// generate_content 图像行与无 endpoint modes 的历史/迁移行会投影为
+	// chat/空串），保留模板并由结算按请求 kind 兜底。
+	item.MediaPricing = catalogRawJSONOrNil(item.MediaPricing)
+	if len(item.MediaPricing) > 0 {
+		parsed, err := mediapricing.Parse(item.MediaPricing)
+		if errors.Is(err, mediapricing.ErrEmpty) {
+			// 空串/JSON null 是「无模板」而不是非法模板（设计 §5.2）：NULL 与
+			// legacy 行继续按 token/legacy 维度计价，不得置 MediaPricingInvalid。
+			item.MediaPricing = nil
+			item.HasMediaPricing = false
+		} else {
+			if err == nil {
+				mode := ""
+				if item.Mode != nil {
+					mode = strings.TrimSpace(*item.Mode)
+				}
+				if modeErr := parsed.ValidateForMappedMode(mode); modeErr != nil {
+					err = modeErr
+				}
+			}
 			if err != nil {
+				slog.Error("运行期 media_pricing_json 非法，按无价处理且不回落 legacy",
+					"provider", item.ProviderCode, "model", item.Model, "error", err.Error())
 				item.MediaPricing = nil
 				item.HasMediaPricing = false
+				item.MediaPricingInvalid = true
 			} else {
 				if canonical, canonicalErr := parsed.CanonicalJSON(); canonicalErr == nil {
 					item.MediaPricing = canonical
@@ -869,9 +930,21 @@ func scanCatalogRows(rows *sql.Rows, columns [][2]string, decorate func(map[stri
 				item.HasMediaPricing = true
 			}
 		}
-		items = append(items, item)
 	}
-	return items, rows.Err()
+	return item, nil
+}
+
+// catalogRawJSONOrNil 把 SQL NULL/空串经 JSON 行投影后的等价空值（空字节、
+// "null"、带引号空串）归一为 nil，使「无模板」与「非法模板」在解码边界就
+// 分开，不依赖上层对 schema 约束的假设。
+func catalogRawJSONOrNil(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 ||
+		bytes.Equal(trimmed, []byte("null")) ||
+		bytes.Equal(trimmed, []byte(`""`)) {
+		return nil
+	}
+	return raw
 }
 
 // catalogBoolColumns are the boolean table columns surfaced as 0/1 integers by

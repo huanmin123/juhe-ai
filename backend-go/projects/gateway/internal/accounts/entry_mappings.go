@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 )
 
 // validationCodeModelNotFound 标记「目标模型在目录中不存在/不可见」这一类
@@ -183,6 +185,7 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		inputUsd, outputUsd, cachedInputUsd, cacheWriteUsd, cacheWrite1hUsd sql.NullFloat64
 		cacheStorageUsd, imageInputUsd, imageOutputUsd                      sql.NullFloat64
 		audioInputUsd, audioOutputUsd, outputUsdPerImage                    sql.NullFloat64
+		mediaPricingJSON, endpointModesJSON                                 sql.NullString
 	)
 	// 身份键严格按账户 vendor 解析：九家真实厂商账户只能绑定本厂商的模型行
 	// （vendor_code 相等，含 NULL→'' 归一），不再有 generic_http 账户的空 vendor
@@ -195,7 +198,8 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
 			cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour,
 			image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
-			audio_output_usd_per_1m, output_usd_per_image
+			audio_output_usd_per_1m, output_usd_per_image, media_pricing_json,
+			supported_endpoint_modes_json
 		FROM `+s.table("models")+`
 		WHERE COALESCE(vendor_code,'') = ? AND upstream_model = ? AND status = 'active'
 		  AND (scope IN ('builtin','global') OR (scope = 'personal' AND system_account_id = ?))
@@ -204,7 +208,7 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		&id, &publicModel, &rowVendor,
 		&inputUsd, &outputUsd, &cachedInputUsd, &cacheWriteUsd, &cacheWrite1hUsd,
 		&cacheStorageUsd, &imageInputUsd, &imageOutputUsd, &audioInputUsd,
-		&audioOutputUsd, &outputUsdPerImage,
+		&audioOutputUsd, &outputUsdPerImage, &mediaPricingJSON, &endpointModesJSON,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -230,7 +234,39 @@ func (s *Store) resolveEntryModelRow(ctx context.Context, q queryer, vendor, own
 		AudioOutputUsdPer1M:         nullablePriceValue(audioOutputUsd),
 		OutputUsdPerImage:           nullablePriceValue(outputUsdPerImage),
 	}
-	return id, pricing.HasCatalogDirectPrice(rowVendor, publicModel, priceSet), nil
+	// 统一媒体模板是运行时唯一权威：解析成功且 unit/档位与目录 mode 匹配
+	// 才算有效价（含 0 价），非法或 kind 不匹配按无价处理且不得回落 legacy
+	// （设计 §5.2/AC-016）。models 无物理 mode 列，按 endpoint modes 推导
+	// （与目录读投影同一 DeriveLegacyModeAndProtocols 优先级）。
+	mode := ""
+	if endpointModesJSON.Valid && strings.TrimSpace(endpointModesJSON.String) != "" {
+		var endpointModes []string
+		if unmarshalErr := json.Unmarshal([]byte(endpointModesJSON.String), &endpointModes); unmarshalErr == nil {
+			mode, _ = providers.DeriveLegacyModeAndProtocols(endpointModes)
+		}
+	}
+	hasMediaPricing := false
+	mediaPricingInvalid := false
+	// 读侧只对可映射的媒体 mode 做 kind 校验：generate_content 图像行投影
+	// 为 chat，无 endpoint modes 的行投影为空串，二者都应保留合法模板供
+	// 绑定，由结算按请求类型兜底。
+	if mediaPricingJSON.Valid && strings.TrimSpace(mediaPricingJSON.String) != "" {
+		parsed, parseErr := mediapricing.Parse([]byte(mediaPricingJSON.String))
+		if parseErr != nil {
+			mediaPricingInvalid = true
+		} else if modeErr := parsed.ValidateForMappedMode(mode); modeErr != nil {
+			mediaPricingInvalid = true
+		} else {
+			hasMediaPricing = true
+		}
+	}
+	return id, pricing.HasCatalogDirectPrice(pricing.CatalogPriceFacts{
+		ProviderCode:        rowVendor,
+		Model:               publicModel,
+		Set:                 priceSet,
+		HasMediaPricing:     hasMediaPricing,
+		MediaPricingInvalid: mediaPricingInvalid,
+	}), nil
 }
 
 // nullablePriceValue 把可空价格列收敛成 *float64（NULL → nil，0 是真实免费价）。

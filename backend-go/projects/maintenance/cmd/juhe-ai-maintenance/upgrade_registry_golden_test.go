@@ -75,6 +75,13 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 	if destructive["capability-domain"] || destructive["scheduling-preferences"] {
 		t.Fatal("capability-domain/scheduling-preferences 不应标记 destructive")
 	}
+	// 启动前必需标记：revision 25 的数据迁移结果被新二进制直接消费，expand
+	// 跳过会让 Key 落默认 -1（旧分组限制静默失效），必须显式 blocked。
+	for _, step := range steps {
+		if step.ID == "migrate-key-client-ip-limit" && !step.RequiredBeforeStartup {
+			t.Fatal("migrate-key-client-ip-limit 应标记 RequiredBeforeStartup")
+		}
+	}
 }
 
 func TestUpgradeStepsChecksumStable(t *testing.T) {

@@ -55,6 +55,30 @@ func mediaCallPricing() *mediapricing.Pricing {
 	}
 }
 
+func TestMediaUnifiedInvalidTemplateRowIsUnpriced(t *testing.T) {
+	// AC-016：media_pricing_json 非法时整行按无价处理，即使模板对象与 legacy
+	// 价同时在场也不得产出任何行项（不回落旧价、不把非法值当免费）。
+	breakdown := BuildCostBreakdown(
+		&Pricing{
+			ProviderCode:        "minimax",
+			Model:               "MiniMax-Hailuo-2.3",
+			Mode:                "video",
+			MediaPricing:        mediaVideoPricing(),
+			MediaPricingInvalid: true,
+			PriceSet:            PriceSet{VideoOutputUsdPerSecond: mediaTestFloat(0.05)},
+		},
+		CostInput{
+			ProviderCode:       "minimax",
+			Model:              "MiniMax-Hailuo-2.3",
+			OutputVideoSeconds: mediaTestFloat(10),
+			ResolutionTier:     "720p",
+		},
+	)
+	if breakdown != nil {
+		t.Fatalf("非法媒体模板不得产出计费行项: %#v", breakdown)
+	}
+}
+
 func TestMediaUnifiedVideoSecondsTierAndMultiplier(t *testing.T) {
 	breakdown := BuildCostBreakdown(
 		&Pricing{ProviderCode: "minimax", Model: "MiniMax-Hailuo-2.3", Mode: "video", MediaPricing: mediaVideoPricing()},
@@ -165,6 +189,30 @@ func TestMediaUnifiedImage(t *testing.T) {
 	}
 	if breakdown.OutputUsdPerImage == nil || *breakdown.OutputUsdPerImage != 0.064 {
 		t.Fatalf("outputUsdPerImage = %v, want 0.064", breakdown.OutputUsdPerImage)
+	}
+}
+
+func TestMediaUnifiedImageWithChatProjectedMode(t *testing.T) {
+	// Gemini generate_content 图像行的目录 mode 投影为 chat；kind 不可映射时
+	// 必须按实际计量维度（OutputImageCount）兜底为 image，不能因 mode=chat
+	// 产出 nil 或回落 token 计费。
+	breakdown := BuildCostBreakdown(
+		&Pricing{ProviderCode: "gemini", Model: "gemini-3.1-flash-image", Mode: "chat", MediaPricing: mediaImagePricing()},
+		CostInput{ProviderCode: "gemini", Model: "gemini-3.1-flash-image",
+			OutputImageCount: mediaTestFloat(1), QuantitySource: "upstream"},
+	)
+	if breakdown == nil || len(breakdown.LineItems) != 1 {
+		t.Fatalf("chat 投影图像行应产出唯一行项: %#v", breakdown)
+	}
+	line := breakdown.LineItems[0]
+	if line.Key != "image_output_unit" || line.Kind != LineImageOutUnit {
+		t.Fatalf("line = %s/%s, want image_output_unit", line.Key, line.Kind)
+	}
+	if line.Tier != "1k" || line.Multiplier == nil || *line.Multiplier != 1.0 {
+		t.Fatalf("image tier/multiplier = %q/%v, want 1k/1.0", line.Tier, line.Multiplier)
+	}
+	if line.CostUsd != 0.04 {
+		t.Fatalf("image cost = %v, want 0.04", line.CostUsd)
 	}
 }
 

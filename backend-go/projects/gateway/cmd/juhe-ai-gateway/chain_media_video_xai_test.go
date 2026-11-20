@@ -175,7 +175,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 
 	// 创建出站断言：POST /v1/videos/generations + Bearer 认证头（openai 族
 	// 认权分支）+ 转换报文（duration 整数、aspect_ratio/resolution 档位、
-	// image 直传、generate_audio 布尔、metadata deep-merge），
+	// image 直传、generate_audio 布尔、metadata 只新增），
 	// ignored 键不进报文。
 	records := recorder.snapshot()
 	if len(records) != 1 || records[0].Method != http.MethodPost || records[0].Path != "/v1/videos/generations" {

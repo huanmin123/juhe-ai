@@ -150,6 +150,27 @@ func TestValidateFor(t *testing.T) {
 	}
 }
 
+func TestValidateForMappedMode(t *testing.T) {
+	image, err := Parse([]byte(`{"version":1,"unit":"image","baseUsd":0.1,"baseTier":"1k","tierMultipliers":{"1k":1,"2k":1.6,"4k":3}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 非媒体/空 mode 无法从目录投影判定 kind（Gemini generate_content 图像
+	// 行投影为 chat、无 endpoint modes 行投影为空串），读侧必须保留模板。
+	for _, mode := range []string{"chat", "responses", "embedding", "text", ""} {
+		if err := image.ValidateForMappedMode(mode); err != nil {
+			t.Fatalf("mode %q should skip kind validation: %v", mode, err)
+		}
+	}
+	// 可映射的媒体 mode 仍严格校验。
+	if err := image.ValidateForMappedMode("video"); err == nil {
+		t.Fatal("video mode accepted image pricing")
+	}
+	if err := image.ValidateForMappedMode("image_generation"); err != nil {
+		t.Fatalf("image mode: %v", err)
+	}
+}
+
 func TestPriceForTier(t *testing.T) {
 	video, err := Parse([]byte(`{"version":1,"unit":"second","baseUsd":0.1,"baseTier":"720p","tierMultipliers":{"480p":0.5,"720p":1,"1080p":2,"1440p":3,"2160p":5}}`))
 	if err != nil {

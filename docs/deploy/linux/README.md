@@ -98,8 +98,9 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 # 执行前用 psql 记录四表 count(*) 并确认备份可恢复。
 # revision 25 会在同一窗口把旧分组 clientIpConcurrencyLimit 迁到可达 API Key 并单键化
 # 分组策略；多个不同旧值默认阻断，先跑只读盘点核对 conflicts/needsReview。
-# revision 26 为 models.media_pricing_json 加法列：首次发布必须用 --phase=expand
-# 保留 minReadable=25 的回滚窗口；默认 --phase=all 会直接关闭窗口。
+# revision 26 为 models.media_pricing_json 加法列。发布方式按库当前 revision 分流：
+#   库在 revision 24 → 必须用 --phase=all（含 revision 25 启动前必需迁移；expand 会被 blocked）；
+#   库已在 revision 25 → 可用 --phase=expand 保留 minReadable=25 的回滚窗口。
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-group-policy --dry-run \
   --manifest-out /opt/juhe-ai/data/group-policy-$(date +%Y%m%d-%H%M).json \
   --global-max "${JUHE_AI_CONCURRENCY_GLOBAL_MAX:-5000}" \
@@ -107,11 +108,12 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-key-client-ip-limit --dry-run \
   --manifest-out /opt/juhe-ai/data/key-client-ip-limit-$(date +%Y%m%d-%H%M).json \
   --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
-/opt/juhe-ai/bin/juhe-ai-maintenance upgrade --phase=expand \
+# 生产当前 revision 24：使用 --phase=all（若库已到 revision 25，可改用 --phase=expand）
+/opt/juhe-ai/bin/juhe-ai-maintenance upgrade --phase=all \
   --dsn "$JUHE_AI_POSTGRES_URL" --secret "$JUHE_AI_SECRET" \
   --stop-write-confirmed --backup-confirmed </dev/null
 
-# revision 26 存量 manual-override 媒体价换算：expand 之后、seed/启动之前执行
+# revision 26 存量 manual-override 媒体价换算：upgrade 之后、seed/启动之前执行
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-media-pricing --dry-run \
   --manifest-out /opt/juhe-ai/data/media-pricing-$(date +%Y%m%d-%H%M).json \
   --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
@@ -124,7 +126,7 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 systemctl start juhe-ai-gateway juhe-ai-jobs
 ```
 
-> 上述 `--phase=expand` 只适用于已到 revision 25、本批只剩 revision 26 加法列的库。若库仍落后且还有 revision 17-25 的破坏性步骤未执行，先按对应历史窗口完成，不能直接用 expand 跳过。
+> `--phase=expand` 只适用于已到 revision 25、本批只剩 revision 26 加法列的库。库仍落后且还有 revision 17-25 的破坏性步骤未执行时，必须走 `--phase=all`（含 revision 25 启动前必需迁移）；管线只对 `RequiredBeforeStartup=true` 的未完成步骤（未 applied 且 `Satisfied=false`，或该步骤账本残留 `running`/`outdated-impl`）直接 blocked，其余破坏性步骤进 `plan.skippedDestructive` + stderr WARN，不能靠 expand 当成已完成。
 
 ## 6. 端口与防火墙
 
@@ -141,7 +143,7 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ## 7. 升级门禁与回滚
 
 - gateway/jobs 启动时只读比对库 revision；落后于二进制认识的值会 fail-fast 并提示 `upgrade`。
-- 回滚二进制时若库 revision 高于旧二进制认识的值，启动门禁会拒绝：恢复升级前备份（当前 revision 26；revision 17 的清退与 accounts CHECK、revision 20 的映射/schema 删除、revision 22 的分组行迁移、revision 23 的四表 DROP、revision 25 的单键化与 Key 值迁移均不可逆，不支持只下调 revision 后启动旧二进制）。revision 26 的 `media_pricing_json` 为加法列：`--phase=expand` 后 minReadable 仍为 25，旧二进制可回退并忽略新列、按 legacy 价结算；观察稳定后执行 `upgrade --phase=contract --old-writers-drained --backup-confirmed` 关闭窗口，此后旧二进制不可启动。
+- 回滚二进制时若库 revision 高于旧二进制认识的值，启动门禁会拒绝：恢复升级前备份（当前 revision 26；revision 17 的清退与 accounts CHECK、revision 20 的映射/schema 删除、revision 22 的分组行迁移、revision 23 的四表 DROP、revision 25 的单键化与 Key 值迁移均不可逆，不支持只下调 revision 后启动旧二进制）。revision 26 的 `media_pricing_json` 为加法列：库在 25 时用 `--phase=expand`，minReadable 仍为 25，旧二进制可回退并忽略新列、按 legacy 价结算；观察稳定后执行 `upgrade --phase=contract --old-writers-drained --backup-confirmed` 关闭窗口，此后旧二进制不可启动。**库在 24 时走 `--phase=all`，minReadable 直接为 26，回滚只能恢复升级前备份**（revision 25 数据迁移不可逆）。
 - 直跑没有 compose 的健康等待：升级失败保持两个 unit 停止，修复后重跑 `upgrade`（账本断点续跑）。
 
 ## 8. 日志与排障

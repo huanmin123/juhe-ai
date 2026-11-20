@@ -25,16 +25,26 @@ func TestHasCatalogDirectPriceRequiresBaseRate(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := HasCatalogDirectPrice("gpt", "predicate-test-model", testCase.set); got != testCase.want {
+			if got := HasCatalogDirectPrice(CatalogPriceFacts{ProviderCode: "gpt", Model: "predicate-test-model", Set: testCase.set}); got != testCase.want {
 				t.Fatalf("HasCatalogDirectPrice=%v want %v", got, testCase.want)
 			}
 		})
+	}
+	// 统一媒体模板有效即直接可计价（0 价同样有效）；非法模板按无价处理，
+	// 即使 legacy 价格列存在也不得回落（AC-016）。
+	if !HasCatalogDirectPrice(CatalogPriceFacts{ProviderCode: "gpt", Model: "media-template-model", HasMediaPricing: true}) {
+		t.Fatal("valid mediaPricing must be directly priced even with empty legacy set")
+	}
+	if HasCatalogDirectPrice(CatalogPriceFacts{
+		ProviderCode: "gpt", Model: "media-template-invalid", Set: PriceSet{InputUsdPer1M: &positive}, MediaPricingInvalid: true,
+	}) {
+		t.Fatal("invalid mediaPricing must not fall back to legacy price columns")
 	}
 	// 静态媒体价（catalogdata）仍可计价：DR-P7 只收紧档位/缓存，不误伤 TTS/音频/视频。
 	// glm/cogtts 是只有 ttsInputCostPerChar、没有任何基础直价列的真实在售 TTS 行，
 	// 必须由静态层放行；volcengine/seed-tts-2.0 覆盖同一分支的另一厂商快照。
 	for _, media := range [][2]string{{"glm", "cogtts"}, {"volcengine", "seed-tts-2.0"}} {
-		if !HasCatalogDirectPrice(media[0], media[1], PriceSet{}) {
+		if !HasCatalogDirectPrice(CatalogPriceFacts{ProviderCode: media[0], Model: media[1]}) {
 			t.Fatalf("static media price must remain directly priced: %s/%s", media[0], media[1])
 		}
 	}

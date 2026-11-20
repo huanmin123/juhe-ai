@@ -621,8 +621,10 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	// 映射、计费、路由或失败判定机制（docs/functions/上游响应模型不一致审计.md）。
 	costModel := firstNonEmptyChainUsage(pricingModel, accounting.upstreamModel, input.RequestedModel)
 	mediaPriced := false
+	mediaPricingInvalid := false
 	if u.pricing != nil && costModel != "" {
 		mediaPriced = u.pricing.HasMediaPricing(providerCode, catalogSystemAccountID, costModel)
+		mediaPricingInvalid = u.pricing.MediaPricingInvalid(providerCode, catalogSystemAccountID, costModel)
 	}
 	// 统一媒体模板行才消费网关解析/估算秒数（TTS 音频/STT 上传音频）。legacy
 	// 行保持原口径，并且在持久化记录上同样收敛，避免 usagewriter 冻结路径
@@ -631,7 +633,9 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	//     duration 且无 token 计量）是既有口径 → 保留秒数、清字符；
 	//   - 网关解析/字符估算秒数（gateway_parse/estimated）以及 minimax
 	//     audio_length 是统一模板新增量 → 清秒数、保留原字符/token 维度。
-	if !mediaPriced {
+	// 非法模板行按无价处理，但仍保留计量维度供审计（与异步 settlement 一致），
+	// 不执行 legacy 行的秒/字符互斥清理；成本分支随后显式落 0 + usage_missing。
+	if !mediaPriced && !mediaPricingInvalid {
 		record.QuantitySource = ""
 		if chainUsageLegacyAudioSecondsEligible(input) {
 			record.TtsInputChars = nil
@@ -699,9 +703,29 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 				record.AudioInputSeconds != nil || record.TtsInputChars != nil) {
 				record.UsageMissing = audioSeconds == nil || *audioSeconds <= 0
 			}
-			record.CostUsd = u.pricing.EstimateCost(costInput)
-			record.CacheReadCostUsd = u.pricing.EstimateCacheReadCost(costInput)
-			record.CacheWriteCostUsd = u.pricing.EstimateCacheWriteCost(costInput)
+			if mediaPricingInvalid {
+				// 非法 media_pricing_json：该行按无价处理（AC-016）——不调用
+				// legacy/静态估算，显式落 0 成本并标 usage_missing，避免
+				// cost_usd=NULL 或 0 被误读为免费价。
+				zero := 0.0
+				record.CostUsd = &zero
+				record.CacheReadCostUsd = nil
+				record.CacheWriteCostUsd = nil
+				record.UsageMissing = true
+			} else {
+				record.CostUsd = u.pricing.EstimateCost(costInput)
+				record.CacheReadCostUsd = u.pricing.EstimateCacheReadCost(costInput)
+				record.CacheWriteCostUsd = u.pricing.EstimateCacheWriteCost(costInput)
+				// 统一媒体行（有效模板）估算 nil = 计量缺失或档位/维度无法
+				// 结算；设计 §5.2/§7.1 要求显式 0 成本 + usage_missing，不能
+				// 留 NULL 被统计/额度误读为未完成估算。legacy 行保持原 NULL
+				// 口径（mediaPriced=false）。
+				if mediaPriced && record.CostUsd == nil {
+					zero := 0.0
+					record.CostUsd = &zero
+					record.UsageMissing = true
+				}
+			}
 		}
 	}
 	stream := input.Stream

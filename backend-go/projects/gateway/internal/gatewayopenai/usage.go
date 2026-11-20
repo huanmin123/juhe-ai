@@ -43,15 +43,29 @@ func ParseUsageFromJSONValue(value any) gatewayproto.ParsedUsage {
 // 输入；计量照实，契约 §2.8）。条目形态门控——每个 data 元素必须是对象且含
 // b64_json 或 url 键——embeddings 的 data[]（embedding 键）与 chat/Responses
 // 响应（无 data[]）不误判；上游显式张数（output_image_count 等三键，见
-// outputImageCountValue）优先，本推导不覆盖。2026-10-17 实弹取证：volcengine
+// outputImageCountValue）优先，本推导不覆盖。data[] 存在但为空是上游明确
+// 回报「零张」，按 0 张记录（非对话媒体统一计费设计 §7.3：0 也按 0，不按
+// 请求 n 补差）；绝不回落到请求 n 造成超收。2026-10-17 实弹取证：volcengine
 // seedream /api/v3/images/generations 的 usage 只带 token 数、无张数，缺此
 // 计数时按张计费落 0 成本。
 func applyImageOutputCountFromRoot(parsed *gatewayproto.ParsedUsage, root map[string]any) {
 	if parsed.OutputImageCount != nil {
 		return
 	}
+	// 列表型非图片响应（embeddings / models / files 等）根对象带
+	// object:"list"；其 data:[] 是空列表，不是「上游明确返回 0 张图」。
+	// 图片响应根对象不带 object 字段，因此以此门控避免给非图片流量写入
+	// 虚假的图片计量。
+	if object, _ := root["object"].(string); strings.EqualFold(strings.TrimSpace(object), "list") {
+		return
+	}
 	raw, ok := root["data"].([]any)
-	if !ok || len(raw) == 0 {
+	if !ok {
+		return
+	}
+	if len(raw) == 0 {
+		count := 0
+		parsed.OutputImageCount = &count
 		return
 	}
 	for _, item := range raw {
@@ -222,17 +236,14 @@ func normalizeServiceTier(value any) string {
 }
 
 func outputImageCountValue(usage map[string]any) *int {
-	value := numberValue(usage["output_image_count"])
-	if value == nil {
-		value = numberValue(usage["output_images"])
+	for _, key := range []string{"output_image_count", "output_images", "image_count"} {
+		if value := numberValue(usage[key]); value != nil {
+			// 显式 0 是上游明确回报「零张」，必须保留；否则同步图片计量
+			// 会回落到请求 n 造成超收（非对话媒体统一计费设计 §7.3）。
+			return value
+		}
 	}
-	if value == nil {
-		value = numberValue(usage["image_count"])
-	}
-	if value == nil || *value <= 0 {
-		return nil
-	}
-	return value
+	return nil
 }
 
 // numberValue mirrors numberValue: numbers or numeric strings, finite and

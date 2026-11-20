@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
@@ -58,7 +59,12 @@ type Step struct {
 	Title       string
 	Target      Target
 	Destructive bool
-	ImplVersion int
+	// RequiredBeforeStartup 标记「新二进制运行时直接依赖其数据迁移结果」的
+	// 破坏性步骤：expand 相不得跳过它后直接放行新二进制（否则新代码会在未
+	// 迁移的旧配置/数据上运行）。纯清理型破坏性步骤保持 false，可延后到
+	// contract 执行。
+	RequiredBeforeStartup bool
+	ImplVersion           int
 	// Satisfied 只看库内事实，独立于账本求值；为真时 upgrade 记账 adopted
 	// 而不执行 Apply。
 	Satisfied func(ctx context.Context, env Env) (bool, error)
@@ -148,6 +154,11 @@ type planInfo struct {
 	Pending                  []pendingStep `json:"pending"`
 	Adopt                    []adoptStep   `json:"adopt"`
 	DestructiveDDLStatements int           `json:"destructiveDDLStatements"`
+	// SkippedDestructive 列出 expand 相因分相规则跳过、仍需后续 contract
+	// 执行的破坏性步骤（T213/非对话媒体批 P0：避免「schema_state 已到最新」
+	// 被误读为全部迁移已完成）。RequiredBeforeStartup 命中时直接 blocked，
+	// 不会出现在本列表。
+	SkippedDestructive []pendingStep `json:"skippedDestructive,omitempty"`
 }
 
 type postflightInfo struct {
@@ -357,6 +368,48 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 			"数据库结构版本高于本二进制（dbRevision="+fmtInt(dbRevision)+
 				", stepMax="+fmtInt(stepMax)+", binary="+fmtInt(int64(contracts.SchemaRevision))+
 				"）：请升级二进制后再执行 upgrade", true)
+	}
+
+	// 5.1 expand 分相不得静默：跳过破坏性步骤时把清单写入报告并 WARN；
+	// 其中「新二进制运行时直接依赖」的数据迁移（RequiredBeforeStartup）在
+	// expand 中直接 blocked——否则 schema_state 随加法相推进到最新，启动门禁
+	// 会误判迁移全部完成，新二进制在未迁移数据上运行（T213 revision 25 单 IP
+	// 并发限制即此类：跳过会让所有 Key 落默认 -1，旧分组限制静默失效）。
+	destructivePending, err := pendingDestructiveSteps(ctx, env, steps, rows)
+	if err != nil {
+		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
+	}
+	if phase == PhaseExpand && len(destructivePending) > 0 {
+		skipped := make([]pendingStep, 0, len(destructivePending))
+		blocking := make([]string, 0, len(destructivePending))
+		for _, step := range destructivePending {
+			status := "absent"
+			if row, exists := rows[step.Revision]; exists {
+				status = "outdated-impl"
+				if row.Status == "running" {
+					status = "running"
+				}
+			}
+			skipped = append(skipped, pendingStep{
+				Revision: step.Revision, StepID: step.ID, Title: step.Title,
+				Target: string(step.Target), Destructive: step.Destructive, Status: status,
+			})
+			if step.RequiredBeforeStartup {
+				blocking = append(blocking, fmt.Sprintf("revision %d %s", step.Revision, step.ID))
+			}
+		}
+		report.Plan.SkippedDestructive = skipped
+		if len(blocking) > 0 {
+			return fail(ResultBlocked, ExitNeedsHuman,
+				"expand 不能跳过启动前必需的数据迁移："+strings.Join(blocking, "；")+
+					"。请改用 upgrade --phase=all（停写 + 备份）在同一窗口完成。", true)
+		}
+		ids := make([]string, 0, len(skipped))
+		for _, item := range skipped {
+			ids = append(ids, fmt.Sprintf("revision %d %s", item.Revision, item.StepID))
+		}
+		warnNotes += fmt.Sprintf("[WARN] expand 跳过 %d 个破坏性步骤（%s），需由后续 upgrade --phase=contract 执行；schema_state 推进只代表加法相完成，不代表全部迁移完成。\n",
+			len(skipped), strings.Join(ids, "；"))
 	}
 
 	// 6. 计划（只读求值，不写账本）。只列本 phase 的步骤。
@@ -667,6 +720,47 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	report.Database.SchemaRevision = int64(contracts.SchemaRevision)
 	report.Result = ResultUpgraded
 	return outcome{ExitCode: ExitOK, Stderr: warnNotes, Report: report}
+}
+
+// pendingDestructiveSteps 返回账本未完成且完成态谓词未满足的破坏性步骤
+// （与分相过滤无关：expand 虽不执行它们，仍要显式呈现被跳过的清单）。
+//
+// 账本存在但非干净 applied（running/outdated-impl）的行一律算待执行：
+// 上次 all/contract 若在数据已提交、MarkApplied 之前中断，Satisfied 会是
+// true，但 running+destructive 残留会让 schemagate 拒绝所有二进制。expand
+// 必须把该形态视为未完成；RequiredBeforeStartup 步骤据此 blocked，尚未
+// 收尾的破坏步骤由后续 all/contract 接管。
+func pendingDestructiveSteps(ctx context.Context, env Env, steps []Step, rows map[int64]MigrationRow) ([]Step, error) {
+	var pending []Step
+	for _, step := range steps {
+		if !step.Destructive {
+			continue
+		}
+		if row, exists := rows[step.Revision]; exists {
+			if row.Status == "applied" && row.ImplVersion >= step.ImplVersion {
+				continue
+			}
+			pending = append(pending, step)
+			continue
+		}
+		if step.Satisfied != nil {
+			satisfied, err := step.Satisfied(ctx, env)
+			if err != nil {
+				if step.RequiredBeforeStartup {
+					return nil, fmt.Errorf("步骤 %s Satisfied 求值失败: %w", step.ID, err)
+				}
+				// 非启动前必需步骤：expand 本就不执行，无法判定即按未完成
+				// 呈现给 contract 复核，避免临时查询错误拖死整个 expand。
+				pending = append(pending, step)
+				continue
+			}
+			if satisfied {
+				continue
+			}
+		}
+		pending = append(pending, step)
+	}
+	return pending, nil
 }
 
 // filterStepsForPhase 按迁移相过滤步骤：expand 只含非破坏步骤，contract 只含

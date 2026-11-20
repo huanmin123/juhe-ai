@@ -8,8 +8,9 @@ package main
 //  2. 创建 429 受理前换账户（两账户不同 mock key，受理边界 §7）；
 //  3. 受理后轮询 500 只报错不换账户（断言请求只打原账户）；
 //  4. 产物过期（上游 content 404 → media_artifact_expired，§8.1.5）；
-//  5. DELETE 语义（上游 204 → 本地 cancelled；上游 404 同置 cancelled；
-//     非本人任务 404）；
+//  5. DELETE 语义（上游 204 → 本地 cancelled；终态重复 DELETE 幂等 204；
+//     非本人任务 404；上游 404/405 视同取消的分支由 handler 覆盖，本链测
+//     只锁 204 主路径）；
 //  6. params_ignored 回显（negative_prompt/seed/audio 对 sora 忽略并回显，
 //     契约 §2.4 规则 1；上游报文不含被忽略键）。
 import (
@@ -163,6 +164,9 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	}
 	if job["status"] != "queued" {
 		t.Fatalf("创建响应 status = %v, want queued", job["status"])
+	}
+	if createdAt, ok := job["created_at"].(float64); !ok || createdAt <= 0 {
+		t.Fatalf("创建响应必须回显 created_at（Unix 秒）: %#v", job)
 	}
 	if job["provider"] != "gpt" {
 		t.Fatalf("provider = %v, want gpt", job["provider"])
@@ -518,7 +522,8 @@ func TestChainMediaVideoContentExpired(t *testing.T) {
 }
 
 // TestChainMediaVideoCancelSemantics 覆盖用例 5：DELETE 语义（上游 204 → 本地
-// cancelled；上游 404 同置 cancelled；非本人任务 404；终态行轮询不再打上游）。
+// cancelled；终态重复 DELETE 幂等 204 且不请求上游；非本人任务 404；终态行
+// 轮询不再打上游）。
 func TestChainMediaVideoCancelSemantics(t *testing.T) {
 	fixture := newChainFixture(t)
 	mock := platformmock.New()
@@ -557,10 +562,14 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 		t.Fatalf("终态轮询不得再打上游（%d → %d）", upstreamRequests, len(mock.Requests()))
 	}
 
-	// 上游 404（任务已被上游删除）同样置本地 cancelled：重复 DELETE。
+	// 终态任务重复 DELETE：幂等 204，不再水合账户/请求上游/删除产物。
+	beforeRepeat := len(mock.Requests())
 	response, payload = mediaVideoClientDo(t, server.URL, http.MethodDelete, "/v1/video/generations/"+jobID, fixture.apiKeySecret, "", nil)
 	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("重复 DELETE status=%d body=%s, want 204（上游 404 同置 cancelled）", response.StatusCode, payload)
+		t.Fatalf("重复 DELETE status=%d body=%s, want 204（终态幂等）", response.StatusCode, payload)
+	}
+	if len(mock.Requests()) != beforeRepeat {
+		t.Fatalf("终态 DELETE 不得再请求上游（%d → %d）", beforeRepeat, len(mock.Requests()))
 	}
 
 	// 非本人任务 404（归属校验；不存在同形）。种第二把有效 Key（他人归属）。
@@ -764,7 +773,7 @@ func TestChainMediaVideoMetadataAppliedEcho(t *testing.T) {
 	if strings.Contains(applied, "true") {
 		t.Fatalf("metadata_applied 不得含值: %v", applied)
 	}
-	// 上游报文：命中子对象 deep-merge 进创建体，未命中的不进。
+	// 上游报文：metadata 新增键并入创建体，冲突键本地 400。
 	for _, request := range mock.Requests() {
 		if request.Method == http.MethodPost && request.Path == "/v1/videos" {
 			if !strings.Contains(request.Body, `"vendor_flag":true`) {
@@ -1124,5 +1133,145 @@ func TestChainMediaVideoConcurrentTerminalSingleUsage(t *testing.T) {
 	}
 	if usageCount != 1 {
 		t.Fatalf("终态 usage 记录 = %d 条, want 1（并发终态只入队一次）", usageCount)
+	}
+}
+
+// TestChainIsMediaJobTaskPlaneRequestRouteEdges 覆盖任务族路径形态收敛：
+// 合法任务面短路；创建形态放行；族内非法方法/尾斜杠/多余路径段也短路到
+// 本地 404（不打上游）；族外路径不受影响。
+func TestChainIsMediaJobTaskPlaneRequestRouteEdges(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+		want   bool
+	}{
+		{http.MethodPost, "/v1/video/generations", false},
+		{http.MethodPost, "/v1/audio/jobs", false},
+		{http.MethodGet, "/v1/video/generations", true},
+		{http.MethodGet, "/v1/video/generations/video_1", true},
+		{http.MethodGet, "/v1/video/generations/video_1/content", true},
+		{http.MethodDelete, "/v1/video/generations/video_1", true},
+		{http.MethodPut, "/v1/video/generations", true},
+		{http.MethodGet, "/v1/video/generations/", true},
+		{http.MethodPut, "/v1/video/generations/video_1", true},
+		{http.MethodGet, "/v1/video/generations/video_1/extra", true},
+		{http.MethodGet, "/v1/audio/jobs/", true},
+		{http.MethodPut, "/v1/audio/jobs", true},
+		{http.MethodGet, "/v1/video/generationsx", false},
+		{http.MethodGet, "/v1/videos", false},
+		{http.MethodGet, "/v1/audio/transcriptions", false},
+	}
+	for _, tc := range cases {
+		req := &gatewaypreauth.GatewayRequest{HTTP: httptest.NewRequest(tc.method, tc.path, nil)}
+		if got := chainIsMediaJobTaskPlaneRequest(req); got != tc.want {
+			t.Errorf("chainIsMediaJobTaskPlaneRequest(%s %s) = %v, want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+	if chainIsMediaJobTaskPlaneRequest(nil) {
+		t.Fatal("nil request 必须返回 false")
+	}
+}
+
+// TestChainMediaJobContentURLForwardedHeaders 覆盖产物下载地址的 scheme/host
+// 取源：X-Forwarded-* 首值优先、非法 scheme 收敛 http、Host 逐级回落。
+func TestChainMediaJobContentURLForwardedHeaders(t *testing.T) {
+	newReq := func(target string, headers map[string]string) *gatewaypreauth.GatewayRequest {
+		req := &gatewaypreauth.GatewayRequest{HTTP: httptest.NewRequest(http.MethodGet, target, nil)}
+		for name, value := range headers {
+			req.HTTP.Header.Set(name, value)
+		}
+		return req
+	}
+	jobID := "video_url_1"
+	wantPath := "/v1/video/generations/" + jobID + "/content"
+
+	forwarded := newReq("http://internal.local/v1/video/generations", map[string]string{
+		"X-Forwarded-Proto": "https, http",
+		"X-Forwarded-Host":  "api.example.com, internal.local",
+	})
+	if got, want := chainMediaJobContentURL(forwarded, jobID), "https://api.example.com"+wantPath; got != want {
+		t.Fatalf("forwarded URL = %q, want %q", got, want)
+	}
+
+	sanitized := newReq("http://internal.local/v1/video/generations", map[string]string{
+		"X-Forwarded-Proto": "javascript",
+		"X-Forwarded-Host":  "fallback.example.com",
+	})
+	if got, want := chainMediaJobContentURL(sanitized, jobID), "http://fallback.example.com"+wantPath; got != want {
+		t.Fatalf("非法 scheme 未收敛 http：got %q, want %q", got, want)
+	}
+
+	urlHost := newReq("http://url-host.example/v1/video/generations", nil)
+	urlHost.HTTP.Host = ""
+	if got, want := chainMediaJobContentURL(urlHost, jobID), "http://url-host.example"+wantPath; got != want {
+		t.Fatalf("Host 空时未回落 URL.Host：got %q, want %q", got, want)
+	}
+
+	noHost := newReq("/v1/video/generations", nil)
+	noHost.HTTP.Host = ""
+	noHost.HTTP.URL.Host = ""
+	if got := chainMediaJobContentURL(noHost, jobID); got != wantPath {
+		t.Fatalf("无 host 时未回落相对路径：got %q, want %q", got, wantPath)
+	}
+}
+
+// TestChainMediaJobRouteEdgesEndToEnd 覆盖任务面路由边界：族内非法形态与
+// 跨 kind 访问本地 404、本地 expired 产物 410，且全程不打上游。
+func TestChainMediaJobRouteEdgesEndToEnd(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedMediaVideoAccount(t, fixture.db, fixture, "acc_video_a", mock.URL, "sk-video-a", 0, true)
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	now := "2026-11-20T00:00:00.000Z"
+	seedJob := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
+			t.Fatalf("seed media_jobs row: %v: %v", query, err)
+		}
+	}
+	// 跨 kind：视频路径上查询一条长音频行；音频路径上查询一条视频行。
+	seedJob(`INSERT INTO media_jobs (id, kind, api_key_id, owner_system_account_id, account_id, upstream_job_id, status, created_at, updated_at)
+		VALUES (?, 'audio_transcription', 'key_1', '', 'acc_video_a', 'up_audio_cross', 'queued', ?, ?)`,
+		"audio_row_on_video_path", now, now)
+	seedJob(`INSERT INTO media_jobs (id, kind, api_key_id, owner_system_account_id, account_id, upstream_job_id, status, created_at, updated_at)
+		VALUES (?, 'video', 'key_1', '', 'acc_video_a', 'up_video_cross', 'queued', ?, ?)`,
+		"video_row_on_audio_path", now, now)
+	// 本地 expired 终态（retention 清理后行仍在，产物已不可取回）。
+	seedJob(`INSERT INTO media_jobs (id, kind, api_key_id, owner_system_account_id, account_id, upstream_job_id, status, created_at, updated_at)
+		VALUES (?, 'video', 'key_1', '', 'acc_video_a', 'up_video_expired', 'expired', ?, ?)`,
+		"video_expired_1", now, now)
+
+	cases := []struct {
+		method   string
+		path     string
+		status   int
+		wantCode string
+	}{
+		{http.MethodPut, "/v1/video/generations", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/v1/video/generations/", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/v1/video/generations/video_1/extra", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/v1/audio/jobs/", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/v1/video/generations/audio_row_on_video_path", http.StatusNotFound, "video_not_found"},
+		{http.MethodGet, "/v1/audio/jobs/video_row_on_audio_path", http.StatusNotFound, "audio_job_not_found"},
+		{http.MethodGet, "/v1/video/generations/video_expired_1/content", http.StatusGone, "media_artifact_expired"},
+	}
+	for _, tc := range cases {
+		response, payload := mediaVideoClientDo(t, server.URL, tc.method, tc.path, fixture.apiKeySecret, "", nil)
+		if response.StatusCode != tc.status {
+			t.Errorf("%s %s status=%d, want %d: %s", tc.method, tc.path, response.StatusCode, tc.status, payload)
+			continue
+		}
+		if !strings.Contains(string(payload), tc.wantCode) {
+			t.Errorf("%s %s 错误码不含 %q: %s", tc.method, tc.path, tc.wantCode, payload)
+		}
+	}
+	if requests := mock.Requests(); len(requests) != 0 {
+		t.Fatalf("任务面边界请求不得打上游，实际 %d 次: %+v", len(requests), requests)
 	}
 }

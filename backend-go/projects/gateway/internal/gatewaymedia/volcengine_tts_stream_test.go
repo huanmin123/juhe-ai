@@ -184,3 +184,45 @@ func TestVolcengineTTSStreamTransformResponse(t *testing.T) {
 		t.Fatalf("pcm contentType = %q err=%v", contentType, err)
 	}
 }
+
+// TestVolcengineTTSStreamMergesMetadataIntoReqParams 钉住流式面 metadata 不再
+// 被静默丢弃：新增键只并入 req_params，规范路径（text/speaker/audio_params
+// 及格式/语速）冲突 400。
+func TestVolcengineTTSStreamMergesMetadataIntoReqParams(t *testing.T) {
+	adapter := volcengineSpeechAdapter{}
+	_, body, err := adapter.BuildRequest(SpeechRequest{
+		Model: VolcengineTTSStreamModel, Input: "x", Voice: "v",
+		Metadata: map[string]any{
+			"enable_emotion": true,
+			"audio_params":   map[string]any{"emotion": "happy"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	var decoded struct {
+		ReqParams map[string]any `json:"req_params"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("body 非法 JSON: %v", err)
+	}
+	if decoded.ReqParams["enable_emotion"] != true {
+		t.Fatalf("enable_emotion 未并入 req_params: %v", decoded.ReqParams)
+	}
+	audioParams, _ := decoded.ReqParams["audio_params"].(map[string]any)
+	if audioParams == nil || audioParams["emotion"] != "happy" {
+		t.Fatalf("audio_params 新增键未并入: %v", audioParams)
+	}
+
+	for name, metadata := range map[string]map[string]any{
+		"text":        {"text": "override"},
+		"format":      {"audio_params": map[string]any{"format": "wav"}},
+		"speech_rate": {"audio_params": map[string]any{"speech_rate": float64(100)}},
+	} {
+		if _, _, err := adapter.BuildRequest(SpeechRequest{
+			Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", Metadata: metadata,
+		}); err == nil {
+			t.Fatalf("%s 冲突应报错", name)
+		}
+	}
+}

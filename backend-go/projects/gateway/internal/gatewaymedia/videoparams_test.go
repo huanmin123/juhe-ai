@@ -18,6 +18,7 @@ func allSupportedCaps() VideoCapabilities {
 		SupportsN:              true,
 		SupportsInputReference: true,
 		SupportsSeconds:        true,
+		SupportsSize:           true,
 	}
 }
 
@@ -226,6 +227,53 @@ func TestComputeParamsIgnored(t *testing.T) {
 	// 空参数：无回显。
 	if got := ComputeParamsIgnored(NormalizedVideoParams{}, noCapsForIgnoredTest()); len(got) != 0 {
 		t.Fatalf("空参数 ignored = %v", got)
+	}
+	// 无 size 能力：直接构造结构时以稳定词 size 回显；width/height 按用户词。
+	noSize := noCapsForIgnoredTest()
+	if got := strings.Join(ComputeParamsIgnored(NormalizedVideoParams{Size: "1280x720"}, noSize), ","); got != "size" {
+		t.Fatalf("size ignored = %q", got)
+	}
+	if got := strings.Join(ComputeParamsIgnored(NormalizedVideoParams{SizeFields: []string{"width", "height"}}, noSize), ","); got != "width,height" {
+		t.Fatalf("width/height ignored = %q", got)
+	}
+}
+
+// TestParseVideoParamsSizeCapabilityGate 覆盖无 size 入参的 adapter（如
+// minimax）：用户传 size 时回显 ignored，但不写入 params.Size，避免计费
+// 快照按未生效尺寸冻结分辨率档；与 resolution 的冲突校验仍按用户传入判。
+func TestParseVideoParamsSizeCapabilityGate(t *testing.T) {
+	caps := allSupportedCaps()
+	caps.SupportsSize = false
+	body := map[string]any{"model": "MiniMax-Hailuo-02", "prompt": "p", "size": "1280x720"}
+	params, err := ParseVideoParams(body, caps)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if params.Size != "" {
+		t.Fatalf("不支持 size 时不得写入 Size: %q", params.Size)
+	}
+	if strings.Join(params.SizeFields, ",") != "size" {
+		t.Fatalf("SizeFields = %v", params.SizeFields)
+	}
+	if strings.Join(params.ParamsIgnored, ",") != "size" {
+		t.Fatalf("ignored = %v", params.ParamsIgnored)
+	}
+	if strings.Contains(strings.Join(params.ParamsApplied, ","), "size") {
+		t.Fatalf("不支持 size 时不得进 applied: %v", params.ParamsApplied)
+	}
+
+	// width/height 形态同样被忽略，且不能因 Size 为空而放过 size+resolution 冲突。
+	body = map[string]any{"model": "m", "prompt": "p", "width": float64(1280), "height": float64(720)}
+	params, err = ParseVideoParams(body, caps)
+	if err != nil {
+		t.Fatalf("width/height: %v", err)
+	}
+	if params.Size != "" || strings.Join(params.ParamsIgnored, ",") != "width,height" {
+		t.Fatalf("width/height 不支持时 = %+v", params)
+	}
+	body["resolution"] = "720p"
+	if _, err := ParseVideoParams(body, caps); err == nil {
+		t.Fatal("size 与 resolution 同时给出应 400（即使 adapter 不支持 size）")
 	}
 }
 

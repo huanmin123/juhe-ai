@@ -145,6 +145,11 @@ func TestDomesticProviderCatalogPriceAnchors(t *testing.T) {
 	} else if got := floatOf(asr.AudioInputCostPerSecond); got != 3.142857142857143e-05 {
 		t.Fatalf("qwen qwen3-asr-flash AudioInputCostPerSecond = %v, want 3.142857142857143e-05", got)
 	}
+	if para, ok := qw["paraformer-v2"]; !ok {
+		t.Fatal("qwen paraformer-v2 row missing")
+	} else if got := floatOf(para.AudioInputCostPerSecond); got != 1.1428571428571428e-05 {
+		t.Fatalf("qwen paraformer-v2 AudioInputCostPerSecond = %v, want 1.1428571428571428e-05", got)
+	}
 	// 万相视频 720P 刊例 0.6 元/秒 ÷7.0（限时 7 折留注记不落值）。
 	for _, model := range []string{"wan3.0-video", "wan2.7-t2v"} {
 		row, ok := qw[model]

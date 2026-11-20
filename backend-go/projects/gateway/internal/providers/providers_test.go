@@ -55,6 +55,7 @@ var schemaStatements = []string{
 		long_context_input_cost_multiplier double precision, long_context_output_cost_multiplier double precision,
 		image_input_usd_per_1m double precision, image_output_usd_per_1m double precision, audio_input_usd_per_1m double precision,
 		audio_output_usd_per_1m double precision, output_usd_per_image double precision,
+		media_pricing_json TEXT,
 		supports_prompt_caching BOOLEAN NOT NULL DEFAULT FALSE,
 		source TEXT, pricing_notes TEXT, capability_notes TEXT, notes TEXT,
 		created_by TEXT, updated_by TEXT,

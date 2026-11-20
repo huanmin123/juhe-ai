@@ -290,15 +290,29 @@ func TestParseUsageFromJSONBufferImageOutputCountFromData(t *testing.T) {
 	assertToken(t, images.OutputTokens, 4096, "output tokens")
 	assertToken(t, images.OutputImageCount, 2, "image count from data[]")
 
+	// data[] 存在但为空：上游明确回报零张，按 0 记录（模板 §7.3：0 也按 0，
+	// 不回落到请求 n）。
+	empty := ParseUsageFromJSONBuffer([]byte(`{"created":1,"data":[],"usage":{"output_tokens":0}}`))
+	assertToken(t, empty.OutputImageCount, 0, "empty data[] image count")
+
 	// embeddings 形（条目为 embedding 键）不误判。
 	embeddings := ParseUsageFromJSONBuffer([]byte(`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":3}}`))
 	if embeddings.OutputImageCount != nil {
 		t.Fatalf("embeddings data[] 不得误判为图片张数, got %v", *embeddings.OutputImageCount)
 	}
+	// 空 embeddings 列表（object:"list"）同样不是图片零张。
+	emptyEmbeddings := ParseUsageFromJSONBuffer([]byte(`{"object":"list","data":[],"usage":{"prompt_tokens":0,"total_tokens":0}}`))
+	if emptyEmbeddings.OutputImageCount != nil {
+		t.Fatalf("空 embeddings data[] 不得写入图片计量, got %v", *emptyEmbeddings.OutputImageCount)
+	}
 
 	// 上游显式张数优先，不覆盖。
 	explicit := ParseUsageFromJSONBuffer([]byte(`{"data":[{"url":"https://img.example/a.png"}],"usage":{"output_tokens":16,"output_image_count":3}}`))
 	assertToken(t, explicit.OutputImageCount, 3, "explicit count wins")
+
+	// 上游显式 0 张也必须保留，不得因 <=0 被吞后回落请求 n（超收）。
+	explicitZero := ParseUsageFromJSONBuffer([]byte(`{"created":1,"usage":{"output_image_count":0}}`))
+	assertToken(t, explicitZero.OutputImageCount, 0, "explicit zero count preserved")
 
 	// 非对象条目门控：整体不推导。
 	mixed := ParseUsageFromJSONBuffer([]byte(`{"data":["junk"],"usage":{"output_tokens":1}}`))

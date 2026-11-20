@@ -3,14 +3,19 @@ import path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import type { ProviderModelUpsertPayload } from '@/types/domain'
+import type { ProviderModelPricing, ProviderModelUpsertPayload } from '@/types/domain'
 import {
   buildCustomModelMutationPatch,
   buildCustomModelPayload,
+  clearCustomModelPricesOutsideCategory,
+  createCustomModelFormFromPricing,
+  defaultMediaPricingForCategory,
   emptyCustomModelForm,
   hasCustomModelMutationChanges,
+  mediaPricingUnitsForCategory,
   type CustomModelForm
 } from './customProviderModelForm'
+import { getModelCategory } from './providerModelFormatters'
 
 // 契约：docs/functions/模型广场页与供应商目录退役设计.md §3、§4.3。
 // 表单创建/编辑载荷的构建核心在 customProviderModelForm 纯函数域，直接测函数；
@@ -44,6 +49,36 @@ function personalTextForm(overrides: Partial<CustomModelForm> = {}): CustomModel
     ...overrides
   }
 }
+
+describe('媒体模型分类（mode 投影例外）', () => {
+  it('Gemini generate_content 图像行投影为 chat 时仍按 mediaPricing.unit 归为图像并保留模板', () => {
+    const record = {
+      providerCode: 'gemini',
+      model: 'gemini-3.1-flash-image',
+      source: 'built-in',
+      scope: 'built_in',
+      status: 'active',
+      supportsPromptCaching: false,
+      supportsServiceTier: false,
+      defaultReasoningEffort: null,
+      mode: 'chat',
+      supportedApiProtocols: ['generate_content', 'stream_generate_content'],
+      outputModalities: ['text', 'image'],
+      mediaPricing: {
+        version: 1,
+        unit: 'image',
+        baseUsd: 0.0672,
+        baseTier: '1k',
+        tierMultipliers: { '1k': 1, '2k': 1.6, '4k': 3 }
+      },
+      hasMediaPricing: true
+    } as ProviderModelPricing
+    expect(getModelCategory(record)).toBe('image')
+    const form = createCustomModelFormFromPricing(record, [])
+    expect(form.mode).toBe('image')
+    expect(form.mediaPricing?.unit).toBe('image')
+  })
+})
 
 describe('创建载荷构建（customProviderModelForm 纯函数域）', () => {
   it('personal scope 载荷：model 去空格、字段全集随载荷下发', () => {
@@ -230,5 +265,42 @@ describe('CustomModelFormModal 组件契约（源码级锚点）', () => {
     expect(setupSource).toContain('supportedToolsByProtocol: _supportedToolsByProtocol')
     expect(setupSource).toContain('inputModalities: _inputModalities')
     expect(setupSource).toContain('outputModalities: _outputModalities')
+  })
+})
+
+describe('自定义视频模型计量单位（按秒 / 按次）', () => {
+  it('视频分类允许 second/call，图像/音频单位固定', () => {
+    expect(mediaPricingUnitsForCategory('video')).toEqual(['second', 'call'])
+    expect(mediaPricingUnitsForCategory('image')).toEqual(['image'])
+    expect(mediaPricingUnitsForCategory('audio')).toEqual(['second'])
+    expect(mediaPricingUnitsForCategory('text')).toEqual([])
+  })
+
+  it('默认模板按 unit 生成：call 无档位，second 保持 720p 锚点', () => {
+    expect(defaultMediaPricingForCategory('video', 'call')).toEqual({
+      version: 1,
+      unit: 'call',
+      baseUsd: 0,
+      baseTier: '',
+      tierMultipliers: {}
+    })
+    expect(defaultMediaPricingForCategory('video', 'second')).toMatchObject({
+      unit: 'second',
+      baseTier: '720p',
+      tierMultipliers: { '720p': 1 }
+    })
+  })
+
+  it('分类切换不误清视频 call 模板，切到音频时回落按秒', () => {
+    const form = {
+      ...emptyCustomModelForm,
+      mediaPricing: { version: 1 as const, unit: 'call' as const, baseUsd: 2.4, baseTier: '', tierMultipliers: {} }
+    }
+    clearCustomModelPricesOutsideCategory(form, 'video')
+    expect(form.mediaPricing.unit).toBe('call')
+    expect(form.mediaPricing.baseUsd).toBe(2.4)
+
+    clearCustomModelPricesOutsideCategory(form, 'audio')
+    expect(form.mediaPricing).toMatchObject({ unit: 'second', baseTier: '', tierMultipliers: {} })
   })
 })

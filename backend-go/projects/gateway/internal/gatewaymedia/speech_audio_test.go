@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,12 +22,16 @@ func TestParseSpeechRequestMinimalAndValidation(t *testing.T) {
 		"voice":           "Kore",
 		"response_format": "pcm",
 		"speed":           1.5,
+		"metadata":        map[string]any{"generationConfig": map[string]any{"temperature": 0.1}},
 	})
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if ir.Model != "gemini-2.5-flash-preview-tts" || ir.Voice != "Kore" || ir.ResponseFormat != "pcm" {
 		t.Fatalf("ir = %+v", ir)
+	}
+	if nested, _ := ir.Metadata["generationConfig"].(map[string]any); nested["temperature"] != 0.1 {
+		t.Fatalf("metadata = %+v", ir.Metadata)
 	}
 	if ir.Speed == nil || *ir.Speed != 1.5 {
 		t.Fatalf("speed = %v", ir.Speed)
@@ -46,6 +51,31 @@ func TestParseSpeechRequestMinimalAndValidation(t *testing.T) {
 	}
 	if _, err := ParseSpeechRequest(nil); err == nil {
 		t.Fatal("nil body must fail")
+	}
+}
+
+func TestParseSpeechRequestMetadataChannel(t *testing.T) {
+	// JSON 字符串形态与对象形态等价（设计 §5.1）；metadata 由 IR 统一承载。
+	ir, err := ParseSpeechRequest(map[string]any{
+		"model": "m", "input": "x", "voice": "v",
+		"metadata": `{"emotion":"happy","nested":{"vol":1}}`,
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if ir.Metadata["emotion"] != "happy" {
+		t.Fatalf("metadata = %+v", ir.Metadata)
+	}
+	if nested, _ := ir.Metadata["nested"].(map[string]any); nested["vol"] != 1.0 {
+		t.Fatalf("nested metadata = %+v", ir.Metadata)
+	}
+
+	// 规范字段冲突 → ErrMetadataReservedField（链上层映射 metadata_conflict）。
+	if _, err := ParseSpeechRequest(map[string]any{
+		"model": "m", "input": "x", "voice": "v",
+		"metadata": map[string]any{"voice": "other"},
+	}); !errors.Is(err, ErrMetadataReservedField) {
+		t.Fatalf("reserved conflict err = %v", err)
 	}
 }
 
@@ -123,6 +153,9 @@ func TestGeminiSpeechAdapterBuildRequestContract(t *testing.T) {
 		Voice: "Kore",
 		// response_format 缺省 = OpenAI 默认 mp3 语义 → gemini 400（零转码）。
 		ResponseFormat: "pcm",
+		Metadata: map[string]any{
+			"generationConfig": map[string]any{"temperature": 0.2},
+		},
 	})
 	if err != nil {
 		t.Fatalf("err = %v", err)
@@ -152,6 +185,10 @@ func TestGeminiSpeechAdapterBuildRequestContract(t *testing.T) {
 	prebuilt, _ := speechConfig["prebuiltVoiceConfig"].(map[string]any)
 	if prebuilt["voiceName"] != "Kore" {
 		t.Fatalf("voiceName = %v", prebuilt)
+	}
+	// metadata 只新增、不覆盖既有路径（唯一扩展通道，设计 §5.1）。
+	if generationConfig["temperature"] != 0.2 {
+		t.Fatalf("metadata 未并入 generationConfig: %v", generationConfig)
 	}
 	// speed 无对应字段：不换算、不猜测（body 中不出现）。
 	if _, present := generationConfig["speechSpeed"]; present {

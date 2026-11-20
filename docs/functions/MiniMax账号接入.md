@@ -45,7 +45,7 @@ type ProviderCode = 'minimax'
 
 ### 视频（`POST /v1/video/generations` 统一面，M3 已实施 adapter）
 
-- 创建报文改写（`gatewaymedia/minimax_video.go`）：`model`/`prompt` 直传；`seconds` → `duration` **数值秒直传**（Hailuo 支持数值档，不做换算猜测）；`input_reference` → `first_frame_image`（**仅 base64/data URL 直传**，url 形态本地 400——网关零资源存储不代为下载，沿 veo 裁决）；`prompt_optimizer` 等厂商个例经 `metadata`（键即厂商字段名） deep-merge；`negative_prompt`/`n`/`seed`/`audio` 请求面无对应字段 → `params_ignored` 回显。
+- 创建报文改写（`gatewaymedia/minimax_video.go`）：`model`/`prompt` 直传；`seconds` → `duration` **数值秒直传**（Hailuo 支持数值档，不做换算猜测）；`input_reference` → `first_frame_image`（**仅 base64/data URL 直传**，url 形态本地 400——网关零资源存储不代为下载，沿 veo 裁决）；`prompt_optimizer` 等厂商个例经 `metadata`（键即厂商字段名）只新增写入（不覆盖既有路径，冲突 400 `metadata_conflict`）；`negative_prompt`/`n`/`seed`/`audio` 请求面无对应字段 → `params_ignored` 回显。
 - 受理凭据 = 创建响应 `task_id`；`base_resp.status_code != 0` 视为受理前错误（不落 `media_jobs`）。
 - 轮询 `GET /v1/query/video_generation?task_id=`：`Preparing`/`Queueing` → `queued`、`Processing` → `in_progress`、`Success` → `completed`（`file_download_url` 冻结进 `Artifact.ContentURL`）、`Fail` → `failed`（错误摘要 code 取 `base_resp.status_code` 数字串）；未知状态归 `in_progress` 记 `RawStatus`。
 - 产物下载：契约 §8.1"`GET /v1/files/retrieve?file_id=` 或 `file_download_url`，以回填为准"——**取 `file_download_url` 直连**（无凭据，与 Veo uri / glm video_result.url 同族先例）。
@@ -55,7 +55,7 @@ type ProviderCode = 'minimax'
 
 ### 语音合成（`POST /v1/audio/speech` 统一面，M3 已实施 adapter）
 
-- 报文改写（`gatewaymedia/minimax_tts.go`）：`input` → `text`、`voice` → `voice_setting.voice_id`、`response_format` → `audio_setting.format`（词表 `mp3`/`pcm`/`flac`/`wav`，零转码，空缺省按 OpenAI 默认 `mp3`）；`speed` 厂商区间 **0.5–2.0**，公共区间 0.25–4.0 超出部分本地 400（契约 §2.4 规则 2，不裁剪不猜测）；`vol`/`pitch` 等厂商个例经 `metadata`（键即厂商字段名） deep-merge。
+- 报文改写（`gatewaymedia/minimax_tts.go`）：`input` → `text`、`voice` → `voice_setting.voice_id`、`response_format` → `audio_setting.format`（词表 `mp3`/`pcm`/`flac`/`wav`，零转码，空缺省按 OpenAI 默认 `mp3`）；`speed` 厂商区间 **0.5–2.0**，公共区间 0.25–4.0 超出部分本地 400（契约 §2.4 规则 2，不裁剪不猜测）；`vol`/`pitch` 等厂商个例经 `metadata`（键即厂商字段名）只新增写入，如 `{"voice_setting":{"vol":2,"pitch":2}}`（不覆盖既有路径，冲突 400 `metadata_conflict`）。
 - 响应转换：`data.audio` 是 **hex 编码**音频字符串——网关 hex→bytes 解码后以二进制透传（不得把 hex 字符串当音频下发，契约 §8.2 加粗约束）；content-type 按请求 `response_format` 推导（`mp3`→`audio/mpeg`、`wav`→`audio/wav`、`flac`→`audio/flac`、`pcm`→`audio/L16;rate=32000`——t2a_v2 响应不回显 mime）。`base_resp.status_code != 0` → 上游错误上抛。
 - 异步长音频（长转写）：契约 §8.2 待回填，未实现。
 

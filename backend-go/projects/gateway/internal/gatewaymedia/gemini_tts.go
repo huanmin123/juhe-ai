@@ -94,7 +94,9 @@ type geminiSpeechPrebuiltVoice struct {
 // BuildRequest 构造 §5.1 报文：model 进 URL 路径段（:generateContent 前），
 // voice 透传公共值到 voiceName（voice 值域按目录 voices 清单校验属管理面
 // 元数据承载，M1 目录未承载 voices 清单，网关侧不硬编码音色词表——上游
-// 对非法音色 400，见任务报告缺口说明）。
+// 对非法音色 400，见任务报告缺口说明）。metadata 只新增、不覆盖既有路径
+// 并入报文（唯一扩展通道，设计 §5.1；M1 speech 的 speed/instructions/
+// language 无原生字段仍为忽略语义）。
 func (a geminiSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte, error) {
 	if ir.Model == "" {
 		return "", nil, fmt.Errorf("语音合成请求缺少 model")
@@ -132,6 +134,12 @@ func (a geminiSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte, err
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", nil, fmt.Errorf("编码 Gemini TTS 请求体失败: %w", err)
+	}
+	// metadata 是唯一扩展通道（设计 §5.1）：只新增、不覆盖既有路径，未知键
+	// 交上游裁决；覆盖规范字段（含 contents/generationConfig）由合并层拒绝。
+	encoded, err = MergeMetadataJSONReserved(encoded, ir.Metadata, geminiTTSMetadataReservedPaths)
+	if err != nil {
+		return "", nil, fmt.Errorf("合并 Gemini TTS metadata 失败: %w", err)
 	}
 	return "/v1beta/models/" + ir.Model + ":generateContent", encoded, nil
 }

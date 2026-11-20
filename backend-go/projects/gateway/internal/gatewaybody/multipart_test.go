@@ -167,6 +167,64 @@ func TestExtractMultipartAudioResponseFormat(t *testing.T) {
 	}
 }
 
+func TestExtractMultipartAudioModel(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		parts  []string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:  "model on transcription path with file part",
+			path:  "/v1/audio/transcriptions",
+			parts: []string{filePart("file", "a.mp3"), formField("model", " volc.seedasr.auc ")},
+			want:  "volc.seedasr.auc", wantOK: true,
+		},
+		{
+			name:  "model on translation path",
+			path:  "/audio/translations",
+			parts: []string{formField("model", "whisper-1")},
+			want:  "whisper-1", wantOK: true,
+		},
+		{
+			name:  "model at 200 bytes accepted",
+			path:  "/v1/audio/transcriptions",
+			parts: []string{formField("model", strings.Repeat("m", 200))},
+			want:  strings.Repeat("m", 200), wantOK: true,
+		},
+		{
+			name:  "oversize model rejected",
+			path:  "/v1/audio/transcriptions",
+			parts: []string{formField("model", strings.Repeat("m", 201))},
+		},
+		{
+			name:  "empty model rejected",
+			path:  "/v1/audio/transcriptions",
+			parts: []string{formField("model", "   ")},
+		},
+		{
+			name:  "second model voids",
+			path:  "/v1/audio/transcriptions",
+			parts: []string{formField("model", "a"), formField("model", "b")},
+		},
+		{
+			name:  "wrong path ignored",
+			path:  "/v1/audio/speech",
+			parts: []string{formField("model", "whisper-1")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, contentType := multipartBody(t, tt.parts)
+			got, ok := ExtractMultipartAudioModel(raw, contentType, tt.path)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("ExtractMultipartAudioModel() = %q, %v; want %q, %v", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestMultipartLimitSemantics(t *testing.T) {
 	t.Run("fields beyond the busboy cap are ignored", func(t *testing.T) {
 		parts := make([]string, 0, 20)

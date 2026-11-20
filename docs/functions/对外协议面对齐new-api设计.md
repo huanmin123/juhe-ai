@@ -112,7 +112,7 @@
 
 | 机制 | 位置 | 语义 | 我们的裁决 |
 | --- | --- | --- | --- |
-| `metadata: {…}` | 视频/音频请求体 | 厂商个例参数**直接并入厂商报文**（可覆盖同名规范字段） | **采纳为唯一扩展通道**（`provider_options` 退役），但收紧：不得覆盖规范字段、冲突 400（§5） |
+| `metadata: {…}` | 视频/音频请求体 | 厂商个例参数**直接并入厂商报文**（可覆盖同名规范字段） | **采纳为唯一扩展通道**（`provider_options` 退役），但收紧：只新增、不覆盖任何既有路径（含嵌套），冲突 400（§5） |
 | `vendorBody: {…}` | 统一面请求体 | 整包厂商原生报文，绕过全部映射 | **不采纳**：绕过参数归一与审计，多厂商分组会串协议 |
 | JS 插件协议声明 | `plugins/tasks/*/plugin.js` + `pkg/jsplugin` | 供应商以 JS 声明 `meta/routes/protocols`，宿主无需改代码即可新增原生路径、host protocol、查询与呈现 | **不采纳运行时**：我们以 Go adapter 注册表 + 模型目录 + endpoint mode 作扩展缝（§5.3） |
 
@@ -175,7 +175,7 @@
 | `input_reference` | string | L2 | `image` 的同义别名（OpenAI 词）；同时给出且值不同 → 400 | `InputReference` |
 | `duration` | number | L2 | 时长（秒，>0）；与 `seconds` 同时给出且不等 → 400 | `Seconds` |
 | `seconds` | number \| string | L2 | 同义别名（`"4"` 与 `4` 等价） | `Seconds` |
-| `size` | string | L2 | `"WxH"` 像素串（严格两段正整数、小写 `x`）；与 `width/height` 不一致 → 400 | `Size` |
+| `size` | string | L2 | `"WxH"` 像素串（严格两段正整数、小写 `x`）；与 `width/height` 不一致 → 400；adapter 不支持尺寸入参（如 minimax）→ `params_ignored` 回显且**不进入计费快照**（`Size` 留空，不按未生效尺寸冻结分辨率档） | `Size`（capability 位 `SupportsSize`） |
 | `width`/`height` | int | L2 | 必须成对；仅当无 `size` 时参与换算成 `"WxH"` | `Size` |
 | `fps` | int | L2 | ≥1；adapter 不支持 → `params_ignored` 回显 | 新增 `FPS`（capability 位） |
 | `seed` | int | L2 | 随机种子；不支持 → ignored | `Seed` |
@@ -184,9 +184,9 @@
 | `user` | string | L2-接受 | 调用方标识，**只进审计**，不透传上游；当前进 `params_ignored`（不静默丢弃） | 新增 `User` |
 | `audio` | bool | L2 | 原生音轨开关；不支持 → ignored | `Audio` |
 | `negative_prompt` | string | L2 | 负向提示；不支持 → ignored | `NegativePrompt` |
-| `resolution` | string | L2 | 档位（`480p`/`720p`/`1080p`…）；与 `size` 冲突 → 400；仅在无 `size` 时作为 adapter 换算输入 | 新增 `Resolution` |
+| `resolution` | string | L2 | 档位（`480p`/`720p`/`1080p`…）；与 `size` 冲突 → 400；当前无 adapter 声明 `SupportsResolution`，单独传入只回显 `params_ignored`，待 adapter 实现后才作为换算输入 | 新增 `Resolution` |
 | `mode` | string | L2-接受 | new-api 宿主词表字段（`std`/`pro` 等厂商模式）；当前无 adapter 映射 → 恒进 `params_ignored`（接受不丢弃、不静默） | 新增 `Mode`（P2 再给 adapter 映射） |
-| `metadata` | object \| JSON 字符串 | L3（唯一扩展通道） | 厂商参数包（字符串形态按其 JSON 解析，行为与 new-api 一致）；**键名不得与上表规范字段同名**（400 `metadata_conflict`）；逐键并入厂商报文，未知键由厂商裁决 | 新增 `Metadata` |
+| `metadata` | object \| JSON 字符串 | L3（唯一扩展通道） | 厂商参数包（字符串形态按其 JSON 解析，行为与 new-api 一致）；**只新增路径，任何既有路径（含 `parameters.size` 等嵌套路径）冲突 400 `metadata_conflict`**；新增键并入厂商报文，未知键由厂商裁决 | 新增 `Metadata` |
 
 规则要点：
 
@@ -264,12 +264,13 @@
 - `format`：产物扩展名；无法判定时 `"mp4"`。
 - `metadata`：**响应侧元数据**（与请求侧扩展包同名不同义，new-api 文档如此）；`duration` 优先取终态实测秒（`media_jobs.usage.outputVideoSeconds`），无实测回落请求生效值；`fps`/`width`/`height`/`seed` 取创建时冻结的请求快照；无值字段省略。
 - `error`：仅在 `failed`/`cancelled`/`expired` 出现，`{code,message}`（脱敏后的终态摘要，沿用 `media_jobs.error`）。
-- 任务不存在或非本人 → 404 `video_not_found`（不区分两种情况）。
+- 任务不存在或非本人 → 404（不区分两种情况）：任务族按 id 前缀给出 `video_not_found` / `audio_job_not_found`；`/v1/video/generations` 只服务 `kind=video` 行、`/v1/audio/jobs` 只服务 `kind=audio_transcription` 行，跨族拿同一 id 访问同样按不存在返回 404（不泄露归属）。
 
 #### 4.2.4 产物下载（`GET /v1/video/generations/{task_id}/content`）
 
 - 账户亲和直连、边收边转、零存储（复用现有 `serveMediaJobContent`）。
-- 非 `completed` → 409 `media_job_not_completed`；产物过期/上游清除 → 410 `media_artifact_expired`。
+- 本地 `expired` 终态（retention 清理）优先返回 410 `media_artifact_expired`，不以 409「未完成」混淆；其余非 `completed` → 409 `media_job_not_completed`。上游 404/410、产物 URL 缺失或已被清理 → 410 `media_artifact_expired`。
+- 轮询响应与列表项的 `url` 只在 `completed` 出现，构造时优先采用反代的 `X-Forwarded-Proto` / `X-Forwarded-Host`（各自取首个值），其次请求 scheme/host；scheme 仅保留 `http`/`https`，无 host 时回落相对路径。
 - 该端点是 new-api 的**方法扩展**（new-api 只回上游直链，无代理）；对我们必需：产物地址可能内嵌上游凭据，且零存储不缓存。仍属同一路径族，不构成第二套协议。
 
 #### 4.2.5 列表与取消（同一路径族的方法扩展）
@@ -277,13 +278,14 @@
 | 端点 | 响应 | 语义 |
 | --- | --- | --- |
 | `GET /v1/video/generations?limit=20` | `{"object":"list","data":[<§4.2.3 统一 job 对象>]}` | 按当前 API Key（或系统账户）过滤；`limit` 默认 20、上限 100、非法回落默认 |
-| `DELETE /v1/video/generations/{task_id}` | `204` | 非终态取消；上游无取消端点则本地收敛 `cancelled`（并发终态守卫不变） |
+| `DELETE /v1/video/generations/{task_id}` | `204` | 非终态取消；上游无取消端点则本地收敛 `cancelled`（并发终态守卫不变）。已是终态（completed/failed/cancelled/expired）时幂等 204，不水合账户、不请求上游、不删除本地行或产物 |
 
 两者复用现有 `serveMediaJobList` / `serveMediaJobCancel`，行为与错误码不变；**列表项改为统一 job 对象（`task_id` 取代 `id`、无 `object:"video"`）**，与轮询响应同形。
 
 #### 4.2.6 唯一面（无兼容面）
 
 - 视频只有这一套路径：`/v1/videos*` 在协议门移除，直接 404；不保留 301/410 转发、不保留旧响应字段别名（如 `seconds_length`）。
+- 路径族内的非法形态（未定义方法、尾斜杠、多余路径段、未定义子路径）同样在网关本地收敛为 404 `not_found`，不落通用派发链、不请求上游；POST 仅精确匹配集合路径 `/v1/video/generations` 才是创建。
 - 列表/取消/下载都在 `/v1/video/generations` 路径族内，是方法扩展而非第二套协议。
 - 内部消费者（演练场）同批改派发路径，见 §4.3。
 
@@ -355,7 +357,7 @@
 
 **音频**：
 
-- 三个同步端点已是 OpenAI 形态，保持；新增声明：`stream_format`（speech SSE）当前不支持 → 400 而非静默降级（实施前按实际行为核实——现行透传链可能直接送上游）。speech 的扩展参数改用 `metadata`（按 §5 规则），`provider_options` 不再接受。
+- 三个同步端点已是 OpenAI 形态，保持；新增声明：`stream_format`（speech SSE）当前不支持 → 400 而非静默降级（实施前按实际行为核实——现行透传链可能直接送上游）。speech 的扩展参数统一用 `metadata`（按 §5 规则）：gemini/minimax/volcengine adapter 合并进各自出站报文，glm/openai 直连面剥离网关通道键；`provider_options` 不再接受（退役，直连面剥离且不产生回显）。
 - STT 的 `response_format` 非 JSON（`text`/`srt`/`vtt`/`verbose_json`）为透传语义，转换型 adapter（gemini/minimax）不支持时 400。
 
 ### 4.6 不采纳清单（结论与理由）
@@ -379,10 +381,10 @@
 
 - 所有媒体创建端点接受：视频 `POST /v1/video/generations`、语音 `POST /v1/audio/speech`、长音频 `POST /v1/audio/jobs`；图像 adapter 落地时同规则开放。multipart 的 STT 不适用（无 JSON body）。
 - 对象或 JSON 字符串两种形态（与 new-api 一致）。
-- 只允许"新增键"：与规范字段同名 → 400（`code=metadata_conflict`，`message` 指明冲突键），**不覆盖**。这是相对 new-api「metadata 可覆盖 body」的唯一收紧，理由是静默覆盖会让 `params_applied`/审计失真。
+- 只允许"新增路径"：与规范字段同名，或命中 adapter 声明的规范路径（**与基础报文本次是否写入无关**，如请求未传 size 时的 `parameters.size`、未传 seconds 时的 `parameters.duration`，以及 `contents` 等嵌套路径）→ 400（`code=metadata_conflict`，`message` 指明冲突路径），**不覆盖**。递归合并只新增叶子键，不覆盖任何既有值。这是相对 new-api「metadata 可覆盖 body」的唯一收紧，理由是静默覆盖会让 `params_applied`/计费快照/审计失真（低档位请求 + metadata 抬高上游分辨率/时长会形成计费绕过）。
 - 逐键并入厂商报文，未知键由厂商裁决（可能被厂商 400，网关不改写、不丢弃、不重试）。
-- 应用结果回显 `metadata_applied`（键名数组，不含值）；响应不再有 `provider_options_applied`。同步 `/v1/audio/speech` 的响应是音频字节、无 JSON 体，因此该面不回落显字段（键名以链内 `provider_options`→`metadata` 合并日志与上游报文核对）。
-- **`provider_options` 退役**：`gatewaymedia.ExtractProviderOptions` / `MergeProviderOptions` / `AppliedProviderOptionKeys` 的公开入口下线，内部参数合并改为「规范映射后按 `metadata` 逐键覆盖（不覆盖规范字段）」；`media_jobs.request_snapshot_json.providerOptionsApplied` 停止写入也不再读取（历史行的该键不展示，不影响任务执行与轮询）。
+- 应用结果回显 `metadata_applied`（键名数组，不含值）；响应不再有 `provider_options_applied`。同步 `/v1/audio/speech` 的响应是音频字节、无 JSON 体，因此该面不回落显字段（键名以链内 metadata 合并日志与上游报文核对）。
+- **`provider_options` 退役**：`gatewaymedia.ExtractProviderOptions` / `MergeProviderOptions` / `AppliedProviderOptionKeys` 的公开入口下线，内部参数合并改为「规范映射后按 `metadata` 只新增、不覆盖任何既有路径」；`media_jobs.request_snapshot_json.providerOptionsApplied` 停止写入也不再读取（历史行的该键不展示，不影响任务执行与轮询）。
 - 风险与缓解：`metadata` 不再按 provider 命名空间隔离，混合分组下同一模型若跨厂商可能把 A 的参数发给 B。缓解：①模型目录/映射保证同模型同厂；②adapter 只消费自己认识的键，未知键交给厂商拒绝；③`metadata_applied` 回显让用户可核对。该风险是"直接抄生态"的代价，已记入 §8。
 
 ### 5.2 不采纳 `vendorBody`
@@ -470,7 +472,7 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 | 现行条款 | 冲突 | 本设计裁决 |
 | --- | --- | --- |
 | [音频视频模型接入与统一媒体网关设计](音频视频模型接入与统一媒体网关设计.md) §4.2「视频采用 OpenAI Sora 形态（生态兼容最大）」 | 与「只留一套」冲突 | 改为「唯一视频面 `/v1/video/generations`（new-api 统一面）；`/v1/videos` 已删除」，并写明破坏性变更 |
-| [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md) §2.1「只开放 `provider_options` 这一个通道，不引入 `extra_body` 等第二通道」 | 通道改为生态的 `metadata` | 改为「唯一扩展通道 `metadata`（不得覆盖规范字段）；`provider_options` 退役」 |
+| [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md) §2.1「只开放 `provider_options` 这一个通道，不引入 `extra_body` 等第二通道」 | 通道改为生态的 `metadata` | 改为「唯一扩展通道 `metadata`（只新增、不覆盖任何既有路径，冲突 400）；`provider_options` 退役」 |
 | 同文 §2.2 视频创建参数表（`POST /v1/videos`，`prompt` L1 必填） | 路径与 `prompt` 条件必填 | 参数表改为 `POST /v1/video/generations`；`prompt` 改为「无图必填」；新增字段与冲突规则 |
 | 同文 §4.3 创建响应 video 对象（含 `seconds_length`） | 字段名与唯一面 | 改为 §4.2 的统一面 job 对象（`task_id`/`status`/`url`/`format`/`metadata`/`error`），删除 `seconds_length` |
 | [接口契约与权限矩阵](接口契约与权限矩阵.md)「异步视频任务端点」章 | 只描述了 `/v1/videos` | 整章替换为「统一视频端点」；新增「重排端点」小节 |
@@ -497,6 +499,7 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 6. **`/v1/videos*` 全族 404**（协议门移除，不留重定向）；演练场视频页走新路径仍可用（内部派发断言 `/v1/video/generations*`）。
 7. 存量视频账户无需改动即可命中候选（`video_create` 复用）；存量 `media_jobs` 行可用新路径轮询/下载。
 8. 语音 `POST /v1/audio/speech` 与长音频 `POST /v1/audio/jobs` 用 `metadata` 传厂商参数生效，`provider_options` 不再生效且不回显。
+9. 路径族边界：未定义方法、尾斜杠、多余路径段与未定义子路径在本地 404 `not_found` 且零上游出站；`/v1/video/generations` 与 `/v1/audio/jobs` 跨族拿同一 id 访问返回 404（`video_not_found`/`audio_job_not_found`）；本地 `expired` 任务 content 返回 410 `media_artifact_expired`；终态 DELETE 幂等 204（不水合账户、不请求上游）；反代请求的轮询 `url` 采用 `X-Forwarded-Proto`/`X-Forwarded-Host`。
 
 **P0 实施记录（2026-11-19）**：
 
@@ -525,7 +528,7 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 | `metadata` 不分厂商命名空间 | 混合分组下厂商参数串扰 | 模型目录/映射保证同模型同厂；adapter 只消费已知键；`metadata_applied` 可核对；厂商自身拒绝未知键 |
 | 旧字段 `provider_options` 被静默忽略 | 老客户端参数失效 | 发布说明明确列出；不做别名/双写；`metadata_applied` 为空即提示未生效（可排查） |
 | rerank 引入 schema revision | 发布窗口依赖 | 与下一次发布窗口合并，按《升级兼容与迁移账本设计》执行 |
-| `metadata` 被当作"万能透传"滥用 | 协议面失控 | 明确只补字段、不覆盖规范字段、冲突 400、仅媒体创建面；文档与错误文案写明 |
+| `metadata` 被当作"万能透传"滥用 | 协议面失控 | 明确只补字段、不覆盖任何既有路径、冲突 400、仅媒体创建面；文档与错误文案写明 |
 | 原 Sora 客户端的 multipart 创建诉求 | 无法直接迁移（统一面 JSON-only） | 明确不支持；需要文件输入的客户端先自行转 base64/URL（零存储边界不变） |
 
 ## 9. 证据索引（new-api）

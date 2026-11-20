@@ -1,11 +1,12 @@
 package gatewaymedia
 
 // 唯一扩展通道 metadata 的解析/合并/回显测试（设计《对外协议面对齐 new-api
-// 设计》§5.1）：对象与 JSON 字符串双形态、规范字段冲突 400、深合并覆盖、
-// 键名摘要稳定排序。
+// 设计》§5.1）：对象与 JSON 字符串双形态、规范字段冲突 400、只新增不覆盖
+// 既有路径（含嵌套路径）、键名摘要稳定排序。
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -64,27 +65,79 @@ func TestMergeMetadata(t *testing.T) {
 		"scalar": "base",
 	}
 	metadata := map[string]any{
-		"nested":  map[string]any{"overwrite": "new", "added": true},
-		"scalar":  "ext",
+		"nested":  map[string]any{"added": true},
 		"unknown": float64(7),
 	}
-	merged := MergeMetadata(base, metadata)
-	nested := merged["nested"].(map[string]any)
-	if nested["keep"] != true || nested["overwrite"] != "new" || nested["added"] != true {
-		t.Fatalf("嵌套合并 = %#v", nested)
+	merged, err := MergeMetadata(base, metadata)
+	if err != nil {
+		t.Fatalf("只新增不应报错: %v", err)
 	}
-	if merged["scalar"] != "ext" || merged["unknown"] != float64(7) || merged["model"] != "cogvideox-3" {
+	nested := merged["nested"].(map[string]any)
+	if nested["keep"] != true || nested["overwrite"] != "old" || nested["added"] != true {
+		t.Fatalf("嵌套新增 = %#v", nested)
+	}
+	if merged["unknown"] != float64(7) || merged["model"] != "cogvideox-3" || merged["scalar"] != "base" {
 		t.Fatalf("顶层合并 = %#v", merged)
+	}
+	// 覆盖既有路径（含嵌套路径）一律拒绝，并带冲突路径。
+	for name, metadata := range map[string]map[string]any{
+		"顶层标量":  {"scalar": "ext"},
+		"嵌套标量":  {"nested": map[string]any{"overwrite": "new"}},
+		"标量变对象": {"scalar": map[string]any{"x": 1}},
+	} {
+		if _, err := MergeMetadata(base, metadata); !errors.Is(err, ErrMetadataReservedField) {
+			t.Fatalf("%s 覆盖应返回 ErrMetadataReservedField: %v", name, err)
+		}
+	}
+	if _, err := MergeMetadata(base, map[string]any{"nested": map[string]any{"overwrite": "new"}}); err == nil ||
+		!strings.Contains(err.Error(), "nested.overwrite") {
+		t.Fatalf("冲突错误应包含嵌套路径: %v", err)
 	}
 	// 入参不被修改（base 是调用方的报文，metadata 是请求体快照）。
 	if base["scalar"] != "base" || base["nested"].(map[string]any)["overwrite"] != "old" {
 		t.Fatalf("base 被修改: %#v", base)
 	}
-	if metadata["nested"].(map[string]any)["overwrite"] != "new" {
+	if metadata["nested"].(map[string]any)["added"] != true {
 		t.Fatalf("metadata 被修改: %#v", metadata)
 	}
-	if got := MergeMetadata(nil, nil); len(got) != 0 {
-		t.Fatalf("空合并 = %#v", got)
+	if got, err := MergeMetadata(nil, nil); err != nil || len(got) != 0 {
+		t.Fatalf("空合并 = %#v, %v", got, err)
+	}
+}
+
+// TestMergeMetadataReservedRejectsAbsentNormativePaths 覆盖基础报文尚未
+// 出现的规范路径：请求未传 size/seconds 时，metadata 仍不得补写
+// parameters.size/duration（否则上游工作量与创建快照脱钩）。
+func TestMergeMetadataReservedRejectsAbsentNormativePaths(t *testing.T) {
+	reserved := []string{"parameters.size", "parameters.duration", "input.img_url"}
+	base := map[string]any{"model": "wan2.6-t2v", "input": map[string]any{"prompt": "p"}}
+
+	// 新增非规范叶子键仍允许。
+	merged, err := MergeMetadataReserved(base, map[string]any{
+		"parameters": map[string]any{"prompt_extend": true},
+	}, reserved)
+	if err != nil {
+		t.Fatalf("新增 parameters.prompt_extend 不应报错: %v", err)
+	}
+	if parameters := merged["parameters"].(map[string]any); parameters["prompt_extend"] != true {
+		t.Fatalf("新增扩展键未合并: %#v", merged)
+	}
+
+	for name, metadata := range map[string]map[string]any{
+		"缺失的 size":     {"parameters": map[string]any{"size": "1920*1080"}},
+		"缺失的 duration": {"parameters": map[string]any{"duration": float64(10)}},
+		"缺失的 img_url":  {"input": map[string]any{"img_url": "https://example.com/a.png"}},
+		"规范路径子树":       {"parameters": map[string]any{"size": map[string]any{"nested": true}}},
+		"标量占据容器":       {"parameters": "not-an-object"},
+	} {
+		if _, err := MergeMetadataReserved(base, metadata, reserved); !errors.Is(err, ErrMetadataReservedField) {
+			t.Fatalf("%s 应返回 ErrMetadataReservedField: %v", name, err)
+		}
+	}
+	if _, err := MergeMetadataReserved(base, map[string]any{
+		"parameters": map[string]any{"duration": float64(5)},
+	}, reserved); err == nil || !strings.Contains(err.Error(), "parameters.duration") {
+		t.Fatalf("冲突错误应包含规范路径: %v", err)
 	}
 }
 
@@ -108,6 +161,9 @@ func TestMergeMetadataJSON(t *testing.T) {
 	nested := decoded["nested"].(map[string]any)
 	if nested["k"] != "v" || nested["k2"] != "v2" {
 		t.Fatalf("嵌套未合并: %#v", nested)
+	}
+	if _, err := MergeMetadataJSON(body, map[string]any{"nested": map[string]any{"k": "changed"}}); !errors.Is(err, ErrMetadataReservedField) {
+		t.Fatalf("嵌套覆盖应拒绝: %v", err)
 	}
 	if _, err := MergeMetadataJSON([]byte(`[1]`), map[string]any{"x": 1}); err == nil {
 		t.Fatal("非对象报文应报错")

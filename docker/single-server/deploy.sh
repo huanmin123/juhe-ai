@@ -417,6 +417,18 @@ if [ "${UPGRADE_MODE:-0}" = "1" ]; then
     exit 1
   fi
 
+  echo "== 媒体统一价格存量换算（revision 26，幂等；upgrade 后、启动新二进制前）=="
+  # 非对话媒体统一计费设计 §9.2/§9.3：manual-override 存量行的一次性换算。
+  # 必须在 upgrade 之后（media_pricing_json 列已由加法相建出）与 gateway/jobs
+  # 拉起之前执行；命令自身要求停写/备份确认并持有升级编排锁。无法自动换算的
+  # 行保持 NULL 并在 manifest 的 manual_review 中列出，不阻断发布。
+  MEDIA_MIGRATE_MANIFEST="/app/backend/data/media-pricing-\$(date +%Y%m%d-%H%M%S).json"
+  MEDIA_MIGRATE_CMD="cd $SERVER_DIR && set -a && . ./.env && set +a && $REMOTE_COMPOSE_ENV docker compose --profile tool run --rm maintenance migrate-media-pricing --dsn \"\$JUHE_AI_POSTGRES_URL\" --stop-write-confirmed --backup-confirmed --manifest-out \"$MEDIA_MIGRATE_MANIFEST\""
+  if ! $SSH "$SERVER" "bash -c '$MEDIA_MIGRATE_CMD'"; then
+    echo "[FAIL] 媒体统一价格存量换算失败：gateway/jobs 仍保持停止。修复后重跑 migrate-media-pricing（见 docs/deploy/部署指南.md §9.4 第 6.5 步），成功后再拉起；也可恢复升级前备份重试。" >&2
+    exit 1
+  fi
+
   echo "== 推进 latest 镜像别名（upgrade 成功即推进，防中断恢复用旧镜像）=="
   # T207 收口批实录（2026-11-13）：upgrade 中途失败（init/索引阻塞等）退出后
   # latest-* 仍指旧版本，操作者按提示手动 `docker compose up -d`（无

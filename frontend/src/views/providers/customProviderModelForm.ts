@@ -81,7 +81,7 @@ export function createCustomModelFormFromPricing(
     scope: record.scope === 'global' ? 'global' : 'personal',
     model: record.model,
     status: record.status ?? 'active',
-    mode: categoryFromModeOrModel(record.mode, record.model),
+    mode: getModelCategory(record),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedToolsByProtocol: cloneToolsByProtocol(record.supportedToolsByProtocol),
     inputModalities: [...(record.inputModalities ?? [])],
@@ -353,8 +353,8 @@ export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, cat
   }
   if (category !== 'text') {
     form.serviceTierPrices = {}
-    const expectedUnit = category === 'image' ? 'image' : 'second'
-    if (form.mediaPricing && form.mediaPricing.unit !== expectedUnit) {
+    const allowedUnits = mediaPricingUnitsForCategory(category)
+    if (form.mediaPricing && !allowedUnits.includes(form.mediaPricing.unit)) {
       form.mediaPricing = defaultMediaPricingForCategory(category)
     }
   } else {
@@ -375,10 +375,22 @@ function buildCustomModelDirectPricePayload(form: CustomModelForm, category: Mod
 
 export const mediaPricingVideoTiers = ['480p', '720p', '1080p', '1440p', '2160p'] as const
 export const mediaPricingImageTiers = ['1k', '2k', '4k'] as const
+export const mediaPricingVideoUnits = ['second', 'call'] as const
 
-/** 默认统一媒体模板：视频 720p / 图片 1k 锚点，音频无档位。 */
-export function defaultMediaPricingForCategory(category: ModelCategoryKey): ProviderModelMediaPricing | undefined {
+/** 媒体分类允许的计量单位：视频可按秒或按次（3D 等无时长产物），图像按张，音频按秒。 */
+export function mediaPricingUnitsForCategory(category: ModelCategoryKey): ProviderModelMediaPricing['unit'][] {
+  if (category === 'video') return [...mediaPricingVideoUnits]
+  if (category === 'image') return ['image']
+  if (category === 'audio') return ['second']
+  return []
+}
+
+/** 默认统一媒体模板：视频 720p / 图片 1k 锚点，音频无档位；视频可按次（无档位）。 */
+export function defaultMediaPricingForCategory(category: ModelCategoryKey, unit?: ProviderModelMediaPricing['unit']): ProviderModelMediaPricing | undefined {
   if (category === 'video') {
+    if (unit === 'call') {
+      return { version: 1, unit: 'call', baseUsd: 0, baseTier: '', tierMultipliers: {} }
+    }
     return {
       version: 1,
       unit: 'second',

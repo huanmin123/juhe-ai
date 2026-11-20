@@ -228,10 +228,10 @@ func TestW14dHasDirectPriceAndSupport(t *testing.T) {
 	if hasDirectPrice(ModelCatalogItem{}) {
 		t.Fatal("empty item carries no price")
 	}
-	if !hasDirectPrice(ModelCatalogItem{ServiceTierPrices: map[string]ModelPriceSet{
+	if hasDirectPrice(ModelCatalogItem{ServiceTierPrices: map[string]ModelPriceSet{
 		"priority": {InputUsdPer1M: ptrFloat64(1)},
 	}}) {
-		t.Fatal("tier price counts as a direct price")
+		t.Fatal("仅 service tier 价不算直接价（DR-P7，与账户绑定判据同源）")
 	}
 	if !isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active"}) {
 		t.Fatal("plain active model is supported")
