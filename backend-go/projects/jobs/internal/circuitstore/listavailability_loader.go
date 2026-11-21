@@ -174,7 +174,6 @@ type hydratedEntry struct {
 	runtimeNextAttemptAt           *string
 	runtimeRecoveryAt              *string
 	statusBoundaryAt               *string
-	quotaResetAt                   *string
 	availabilityScheduleJSON       *string
 	sourceAvailabilityScheduleJSON *string
 }
@@ -236,8 +235,7 @@ func (l *ProjectionItemLoader) projectionItemFromEntry(entry hydratedEntry, now 
 	// instanceSourceCooldownUntil / apiKeyRuntime.nextProbeAt /
 	// runtimeAvailability.probePresentation.schedule.nextAttemptAt /
 	// runtimeAvailability.probePresentation.recoveryAt /
-	// availabilityPresentation.statusBoundary.at /
-	// accountListProjectionNextTransitionAt（= quotaResetAt）+ 两个
+	// availabilityPresentation.statusBoundary.at + 两个
 	// availability schedule 的下一次检查点。
 	candidates := []string{
 		derefString(entry.accountExpiresAt),
@@ -249,7 +247,6 @@ func (l *ProjectionItemLoader) projectionItemFromEntry(entry hydratedEntry, now 
 		derefString(entry.runtimeNextAttemptAt),
 		derefString(entry.runtimeRecoveryAt),
 		derefString(entry.statusBoundaryAt),
-		derefString(entry.quotaResetAt),
 		nextAvailabilityScheduleCheckAt(parseSchedulePtr(entry.availabilityScheduleJSON), now),
 		nextAvailabilityScheduleCheckAt(parseSchedulePtr(entry.sourceAvailabilityScheduleJSON), now),
 	}

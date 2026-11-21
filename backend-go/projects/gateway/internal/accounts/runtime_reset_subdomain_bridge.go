@@ -38,9 +38,6 @@ type (
 	// AccountAPIKeyTransientSelectionState mirrors the consumed projection of
 	// AccountApiKeyRuntimeSelectionState.
 	AccountAPIKeyTransientSelectionState = accountsreset.AccountAPIKeyTransientSelectionState
-	// AuthorizationQuotaCheckInput mirrors the Node authorizationQuotaExceeded
-	// inputs.
-	AuthorizationQuotaCheckInput = accountsreset.AuthorizationQuotaCheckInput
 	// RuntimeResetResult mirrors AccountRuntimeResetResult.
 	RuntimeResetResult = accountsreset.RuntimeResetResult
 	// RuntimeResetOutcome mirrors AccountRuntimeResetOutcome.
@@ -127,10 +124,6 @@ func (s *Store) resetEffectiveAvailability(ctx context.Context, account *resetSu
 
 func (s *Store) authorizedResetUnavailableMessage(ctx context.Context, row authorizedDispatchResetRow, binding authorizedDispatchResetBinding, access AccessScope) (string, error) {
 	return s.resetService().AuthorizedResetUnavailableMessage(ctx, row, binding, access)
-}
-
-func (s *Store) resetAuthorizationQuotaExceeded(ctx context.Context, row authorizedDispatchResetRow, access AccessScope) bool {
-	return s.resetService().ResetAuthorizationQuotaExceeded(ctx, row, access)
 }
 
 // ---- 自由函数转发（重置域纯函数，根包测试沿用旧名） ----

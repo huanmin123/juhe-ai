@@ -33,10 +33,6 @@ package main
 //	                                       internal-api service); fire-and-forget
 //	                                       — a rejected dispatch logs and the
 //	                                       reset continues
-//	AuthorizationQuotaExceeded           → gatewayquota StatsStore.LoadCostsBatch +
-//	                                       IsRequestQuotaExceeded over the
-//	                                       authorization + team-grant limits
-//	                                       (Node loadAuthorizationQuotaExceededByAuthorizationIdAsync)
 //	APIKeyPoolAllUnavailable             → accountkeystates.Store.AllUnavailable
 //	                                       (Node loadAccountApiKeyRuntimeSummariesByAccountIdsAsync
 //	                                       的 allUnavailable 投影；非池账户按部分可用
@@ -61,7 +57,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
@@ -73,7 +68,7 @@ import (
 // fails fast on a missing business handle / runtime secret. healthDispatch is
 // the in-process probe-request outbox writer (an inert nil-DB writer keeps
 // the dispatch on its logged skip contract).
-func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainProbeRequestOutboxWriter) (*accountsRuntimeResetBridge, error) {
+func newAccountsRuntimeResetBridge(composed *composition, services *chainRuntimeServices, secret string, healthDispatch *chainProbeRequestOutboxWriter) (*accountsRuntimeResetBridge, error) {
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
 		DB:     composed.db,
 		Secret: secret,
@@ -90,13 +85,10 @@ func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingVa
 	return &accountsRuntimeResetBridge{
 		bus:       composed.Bus,
 		db:        composed.db,
-		settings:  settingValue,
 		latency:   services.LatencyDegradation,
 		guard:     services.AccountAPIKeyGuard,
-		stats:     services.QuotaStats,
 		keyStates: keyStates,
 		health:    healthDispatch,
-		now:       time.Now,
 	}, nil
 }
 
@@ -104,13 +96,10 @@ func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingVa
 type accountsRuntimeResetBridge struct {
 	bus       *inval.Bus
 	db        *sql.DB
-	settings  SettingValueFunc
 	latency   *gatewayproxyhealth.LatencyDegradationService
 	guard     *gatewayaccounteffects.AccountAPIKeyFailureGuard
-	stats     *gatewayquota.StatsStore
 	keyStates *accountkeystates.Store
 	health    *chainProbeRequestOutboxWriter
-	now       func() time.Time
 
 	// transientGenerations remembers the opaque Redis CAS generation strings
 	// reported by LoadAPIKeyTransientStates. The accounts port models the
@@ -268,111 +257,6 @@ func (d chainKeyModelHealthDispatcher) DispatchAccountHealthCheck(accountID stri
 
 var _ gatewayaccounteffects.AccountHealthCheckDispatcher = chainKeyModelHealthDispatcher{}
 
-// AuthorizationQuotaExceeded bridges the quota gate: the authorization-scoped
-// limits plus the effective team grant, costed through the shared
-// gatewayquota StatsStore (Node loadAuthorizationQuotaExceededByAuthorizationIdAsync:
-// any exceeded check marks the authorization exceeded).
-func (b *accountsRuntimeResetBridge) AuthorizationQuotaExceeded(ctx context.Context, input accounts.AuthorizationQuotaCheckInput) (bool, error) {
-	authorizationID := strings.TrimSpace(input.AuthorizationID)
-	granteeID := strings.TrimSpace(input.GranteeSystemAccountID)
-	if authorizationID == "" || granteeID == "" {
-		return false, nil
-	}
-	location, err := settingsTimezoneProvider{read: b.settings}.StatsTimezone(ctx)
-	if err != nil {
-		return false, err
-	}
-	now := b.now()
-
-	type quotaCheck struct {
-		input  gatewayquota.CostInput
-		limits gatewayquota.RequestQuotaLimits
-	}
-	var checks []quotaCheck
-
-	appendCheck := func(limits gatewayquota.RequestQuotaLimits, scopeType, scopeID string) {
-		hourly, hasHourly := 0, false
-		if limits.Hourly != nil {
-			hourly, hasHourly = limits.Hourly.Hours, true
-		}
-		checks = append(checks, quotaCheck{
-			limits: limits,
-			input: gatewayquota.CostInput{
-				SystemAccountID:   granteeID,
-				ScopeType:         scopeType,
-				ScopeID:           scopeID,
-				Now:               now,
-				HourlyWindowHours: hourly,
-				HasHourlyWindow:   hasHourly,
-			},
-		})
-	}
-
-	// 1. direct authorization limits (resource_authorizations.limits_json).
-	authorizationLimits, err := b.authorizationLimitsJSON(ctx, authorizationID)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(authorizationLimits) != "" {
-		limits, parseErr := gatewayquota.ParseRequestQuotaLimitsJSON(authorizationLimits)
-		if parseErr != nil {
-			return false, parseErr
-		}
-		if gatewayquota.HasEnabledRequestQuotaLimit(limits) {
-			appendCheck(limits, gatewayquota.ScopeTypeAccountAuthorization, authorizationID)
-		}
-	}
-
-	// 2. the effective team grant limits (resource_authorization_grants joined
-	// through the authorization's effective source team).
-	teamID := strings.TrimSpace(input.EffectiveSourceTeamID)
-	if teamID != "" {
-		teamLimits, err := b.teamGrantLimitsJSON(ctx, authorizationID, now)
-		if err != nil {
-			return false, err
-		}
-		if strings.TrimSpace(teamLimits) != "" {
-			limits, parseErr := gatewayquota.ParseRequestQuotaLimitsJSON(teamLimits)
-			if parseErr != nil {
-				return false, parseErr
-			}
-			if gatewayquota.HasEnabledRequestQuotaLimit(limits) {
-				// The team bucket is keyed per authorized instance
-				// (<instanceId>:<teamId>); every instance sharing the
-				// authorization participates (Node keys the exceeded map by
-				// authorization id, so any exceeded instance marks the whole
-				// authorization).
-				instanceIDs, err := b.authorizationInstanceIDs(ctx, authorizationID)
-				if err != nil {
-					return false, err
-				}
-				for _, instanceID := range instanceIDs {
-					appendCheck(limits, gatewayquota.ScopeTypeAccountAuthorizationTeam, instanceID+":"+teamID)
-				}
-			}
-		}
-	}
-
-	if len(checks) == 0 {
-		return false, nil
-	}
-	inputs := make([]gatewayquota.CostInput, 0, len(checks))
-	for _, check := range checks {
-		inputs = append(inputs, check.input)
-	}
-	costsByKey, err := b.stats.LoadCostsBatch(ctx, inputs, location)
-	if err != nil {
-		return false, err
-	}
-	for _, check := range checks {
-		costs, ok := costsByKey[gatewayquota.CostKey(check.input, location)]
-		if ok && gatewayquota.IsRequestQuotaExceeded(check.limits, costs) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // APIKeyPoolAllUnavailable bridges the pool availability projection
 // (accountkeystates.Store.AllUnavailable)：非池账户 / 无运行态账户返回 false
 // （部分可用），与 Node summaries 缺省投影一致。
@@ -455,67 +339,4 @@ func (b *accountsRuntimeResetBridge) bind(query string) string {
 		}
 	}
 	return out.String()
-}
-
-// authorizationLimitsJSON reads resource_authorizations.limits_json.
-func (b *accountsRuntimeResetBridge) authorizationLimitsJSON(ctx context.Context, authorizationID string) (string, error) {
-	var limits sql.NullString
-	err := b.db.QueryRowContext(ctx, b.bind(`SELECT limits_json FROM `+b.table("resource_authorizations")+` WHERE id = ?`), authorizationID).Scan(&limits)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return limits.String, nil
-}
-
-// teamGrantLimitsJSON mirrors loadTeamAuthorizationGrantLimitJsonByAuthorizationIdAsync
-// for a single authorization: the active team grant over the authorization's
-// effective source team.
-func (b *accountsRuntimeResetBridge) teamGrantLimitsJSON(ctx context.Context, authorizationID string, now time.Time) (string, error) {
-	nowISO := now.UTC().Format("2006-01-02T15:04:05.000") + "Z"
-	var limits sql.NullString
-	err := b.db.QueryRowContext(ctx, b.bind(`SELECT grant_rows.limits_json
-		FROM `+b.table("resource_authorizations")+` ra
-		INNER JOIN `+b.table("resource_authorization_grants")+` grant_rows
-			ON grant_rows.resource_type = ra.resource_type
-			AND grant_rows.resource_id = ra.resource_id
-			AND grant_rows.grantee_type = 'team'
-			AND grant_rows.grantee_team_id = ra.effective_source_team_id
-			AND grant_rows.status = 'active'
-			AND (grant_rows.expires_at IS NULL OR grant_rows.expires_at > ?)
-		WHERE ra.status = 'active'
-			AND (ra.expires_at IS NULL OR ra.expires_at > ?)
-			AND ra.effective_source_team_id IS NOT NULL
-			AND ra.id = ?
-		LIMIT 1`), nowISO, nowISO, authorizationID).Scan(&limits)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return limits.String, nil
-}
-
-// authorizationInstanceIDs lists the authorized instance accounts sharing the
-// authorization (the team quota bucket key).
-func (b *accountsRuntimeResetBridge) authorizationInstanceIDs(ctx context.Context, authorizationID string) ([]string, error) {
-	rows, err := b.db.QueryContext(ctx, b.bind(`SELECT id FROM `+b.table("accounts")+`
-		WHERE authorization_instance_authorization_id = ?
-			AND deleted_at IS NULL`), authorizationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }

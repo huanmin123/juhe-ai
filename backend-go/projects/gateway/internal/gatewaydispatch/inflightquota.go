@@ -15,22 +15,20 @@ import (
 )
 
 // 在途额度拒绝的 scope 类别（与 gatewayquota 的同名常量同值；本包不 import
-// gatewayquota，端口用纯字符串跨包传递，避免调度内核依赖额度实现）。
+// gatewayquota，端口用纯字符串跨包传递，避免调度内核依赖额度实现；授权
+// scope 已随授权额度退役移除）。
 const (
-	InflightDeniedAPIKey        = "api_key"
-	InflightDeniedAuthorization = "authorization"
+	InflightDeniedAPIKey = "api_key"
 )
 
 // InflightQuotaReserveInput 是一次上游尝试前的在途预留输入。
 type InflightQuotaReserveInput struct {
-	SystemAccountID        string
-	APIKeyID               string
-	APIKeyQuotaLimitsJSON  string
-	GroupID                string
-	GroupAuthorizationID   string
-	AccountID              string
-	AccountAuthorizationID string
-	ProviderCode           string
+	SystemAccountID       string
+	APIKeyID              string
+	APIKeyQuotaLimitsJSON string
+	GroupID               string
+	AccountID             string
+	ProviderCode          string
 	// Model 是上游映射后的最终模型名（计价目录查找键）。
 	Model string
 	// ServiceTier 是本次上游请求的实际档位（空按 default）。
@@ -76,11 +74,9 @@ func (e *GatewayInflightQuotaExceededError) Error() string {
 }
 
 // GatewayQuotaRejection 让压缩摘要派发（gatewaycodex）把额度拒绝渲染为 429
-// 而不是 502「上游摘要请求失败」（T93-1/T93-4 文案契约与 preflight 一致）。
+// 而不是 502「上游摘要请求失败」（T93-1/T93-4 文案契约与 preflight 一致；
+// 授权 scope 拒绝臂已随授权额度退役移除）。
 func (e *GatewayInflightQuotaExceededError) GatewayQuotaRejection() (status int, errorType string, code string, message string) {
-	if e != nil && e.DeniedKind == InflightDeniedAuthorization {
-		return 429, "rate_limit_exceeded", "rate_limit_exceeded", gatewaypreauth.AuthorizationQuotaExceededMessage
-	}
 	return 429, "rate_limit_exceeded", "api_key_inflight_quota_exceeded", gatewaypreauth.APIKeyQuotaExceededMessage
 }
 
@@ -109,17 +105,15 @@ func (e *Engine) reserveUpstreamInflightQuota(ctx context.Context, req *gatewayp
 		upstreamModel = mapping.UpstreamModel
 	}
 	input := InflightQuotaReserveInput{
-		SystemAccountID:        firstNonEmptyString(account.AccountOwnerSystemAccountID, usageContext.SystemAccountID),
-		APIKeyID:               usageContext.APIKeyID,
-		APIKeyQuotaLimitsJSON:  requestAPIKeyQuotaLimitsJSON(req),
-		GroupID:                usageContext.GroupID,
-		GroupAuthorizationID:   usageContext.GroupAuthorizationID,
-		AccountID:              account.ID,
-		AccountAuthorizationID: derefStringPtr(account.AccountAuthorizationID),
-		ProviderCode:           account.VendorCode,
-		Model:                  upstreamModel,
-		ServiceTier:            effectiveServiceTier,
-		BodyBytes:              int64(len(body)),
+		SystemAccountID:       firstNonEmptyString(account.AccountOwnerSystemAccountID, usageContext.SystemAccountID),
+		APIKeyID:              usageContext.APIKeyID,
+		APIKeyQuotaLimitsJSON: requestAPIKeyQuotaLimitsJSON(req),
+		GroupID:               usageContext.GroupID,
+		AccountID:             account.ID,
+		ProviderCode:          account.VendorCode,
+		Model:                 upstreamModel,
+		ServiceTier:           effectiveServiceTier,
+		BodyBytes:             int64(len(body)),
 	}
 	if metadata := PreparedUpstreamBodyMetadata(req, body); metadata != nil && metadata.MaxOutputTokens != nil {
 		input.HasMaxOutputTokens = true

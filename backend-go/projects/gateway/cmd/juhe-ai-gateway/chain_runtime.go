@@ -58,7 +58,6 @@ type chainRuntimeServices struct {
 	// DefaultRecoverableWaitCoordinator）。
 	DispatchRecoverableWait *gatewaycircuit.PreAuthRecoverableWait
 	APIKeyQuota             *gatewayquota.APIKeyQuotaService
-	AuthzQuota              *gatewayquota.AuthorizationQuotaService
 	InflightQuota           *gatewayquota.InflightQuotaService
 	Accounts                *chainAccountsSelector
 	// ProxyPoolTargets 是 dispatch 准备阶段的池绑定请求时健康门/租约修复
@@ -81,11 +80,6 @@ type chainRuntimeServices struct {
 	// system-api rate limiter (nil keeps the memory store); see task item 9.
 	RateLimitStore ratelimit.Store
 
-	// QuotaStats is the shared G07 stats reader; the accounts runtime-reset
-	// bridge (compose_accounts_reset.go) reuses it for the
-	// AuthorizationQuotaExceeded port so both consumers read the same
-	// juhe_stats projections through one instance.
-	QuotaStats *gatewayquota.StatsStore
 	// LatencyDegradation is the store-backed normal-route latency degradation
 	// service. The dispatch-side ordering port stays explicitly degraded
 	// (chain_dispatch.go degradedLatency); this instance owns the
@@ -561,7 +555,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		services.Close()
 		return nil, fmt.Errorf("create gateway quota stats store: %w", err)
 	}
-	services.QuotaStats = statsStore
 	snapshotRuntimeState, err := gatewayquota.NewRedisRuntimeStateStore(stateClient, rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainQuota), gatewayquota.GatewayQuotaSnapshotRuntimeStateStoreName)
 	if err != nil {
 		services.Close()
@@ -592,24 +585,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create api-key quota service: %w", err)
 	}
 	services.APIKeyQuota = apiKeyQuota
-	authzQuotaShared, err := newQuotaShared("gateway:authorization-quota")
-	if err != nil {
-		return nil, err
-	}
-	authzQuota, err := gatewayquota.NewAuthorizationQuotaService(gatewayquota.AuthorizationQuotaConfig{
-		Modes:    quotaModes,
-		Business: composed.db,
-		Stats:    statsStore,
-		Timezone: settingsTimezoneProvider{read: settingValue},
-		Snapshot: snapshotCache,
-		Shared:   authzQuotaShared,
-		Now:      time.Now,
-	})
-	if err != nil {
-		services.Close()
-		return nil, fmt.Errorf("create authorization quota service: %w", err)
-	}
-	services.AuthzQuota = authzQuota
 	// Estimator mounts the pricing catalog cost estimator (G20 phase-3): the
 	// in-flight reservation then derives real USD estimates like the Node
 	// estimateGatewayRequestCostUsd path.
@@ -619,7 +594,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// D-129（BUG-0175）：快照 miss 的精确成本兜底走进程内 stats 数据库
 		// 直读（Node 为 db-service IPC；Go 无跨进程，同一进程共享数据库），
 		// 避免「快照恒 miss → 保护性恒 429」的反向破坏。
-		DBService:      newChainQuotaDBService(apiKeyQuota, authzQuota),
+		DBService:      newChainQuotaDBService(apiKeyQuota),
 		Redis:          stateClient,
 		RedisNamespace: rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainQuota),
 	})

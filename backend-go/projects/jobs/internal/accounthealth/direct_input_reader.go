@@ -255,7 +255,7 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	if _, err := tx.ExecContext(ctx, "SET LOCAL TRANSACTION READ ONLY"); err != nil {
 		return DirectInputLoadResult{}, fmt.Errorf("设置 PG direct input 只读事务失败: %w", err)
 	}
-	schedule, timezone, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (exactkeyprobe.Schedule, *time.Location, error) {
+	schedule, _, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (exactkeyprobe.Schedule, *time.Location, error) {
 		return loadDirectSchedule(fetchCtx, tx)
 	})
 	if err != nil {
@@ -318,20 +318,9 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 				member := memberProxy
 				candidate.proxy = &member
 			}
-			if candidate.authorization != nil {
-				eligible, err := authorizationQuotaEligible(ctx, tx, candidate, now, timezone)
-				if err != nil {
-					return 0, err
-				}
-				// A valid authorization that has exhausted its own or team scope is
-				// not a malformed input and must not make unrelated accounts fail to
-				// load. Node applies the same fail-closed eligibility filter before
-				// dispatch; omit it rather than probing or returning a fallback input.
-				if !eligible {
-					continue
-				}
-				candidate.authorization.QuotaEligible = eligible
-			}
+			// 授权额度资格门（authorizationQuotaEligible）已随授权额度退役
+			// 移除：授权有效性由 validateDirectAuthorization 的状态/到期判定
+			// 承接。
 			disabledFingerprints := []string(nil)
 			if accountID != "" {
 				// B3-H25：恢复/显式探针不得使用人工置 disabled 的 Key。仅显式
@@ -490,7 +479,6 @@ func (r *PostgresDirectInputReader) resolvePoolMemberProxies(ctx context.Context
 type directCandidate struct {
 	account                 exactkeyprobe.DirectAccount
 	authorization           *exactkeyprobe.DirectAuthorization
-	authorizationLimits     string
 	source                  *exactkeyprobe.DirectSource
 	binding                 exactkeyprobe.DirectBinding
 	proxy                   *exactkeyprobe.DirectProxy
@@ -499,7 +487,6 @@ type directCandidate struct {
 	systemAccount           string
 	authorizationResourceID string
 	authorizationOwner      string
-	authorizationTeam       string
 	// proxyPoolID / sourceProxyPoolID 是配置池绑定行事实（代理池设计 §5.2）：
 	// 授权实例取 source 池（实例自身池绑定不参与），普通账户取自身池；非空
 	// 即走共享解析器的池成员只读解析。
@@ -619,7 +606,7 @@ SELECT
   a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id, a.background_probe_enabled,
-  ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
+  ra.id, ra.status, ra.expires_at, ra.resource_id, ra.resource_owner_system_account_id,
   source.id, source.config_revision, source.vendor_code, source.oauth_type, source.protocol_code, source.protocol_version, source.type,
   source_hc.connection_preset_code, source_hc.base_url,
   source.status, source.schedulable,
@@ -743,8 +730,8 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var continuousProbe sql.NullBool
 	var expeditedRecovery sql.NullInt64
 	var accountExpires, cooldownUntil, observationStarted, cooldownGeneration sql.NullString
-	var authorizationID, authorizationStatus, authorizationExpires, authorizationLimits sql.NullString
-	var authorizationResourceID, authorizationOwner, authorizationTeam sql.NullString
+	var authorizationID, authorizationStatus, authorizationExpires sql.NullString
+	var authorizationResourceID, authorizationOwner sql.NullString
 	var accountVendor, accountOAuthType, accountProtocol, accountProtocolVersion sql.NullString
 	var accountEndpointMode, accountHealthModel sql.NullString
 	var accountPreset, accountBaseURL sql.NullString
@@ -765,7 +752,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		&accountPreset, &accountBaseURL,
 		&result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe, &expeditedRecovery,
 		&observationStarted, &cooldownGeneration, &result.systemAccount, &accountBackgroundProbe,
-		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
+		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationResourceID, &authorizationOwner,
 		&sourceID, &sourceRevision, &sourceVendor, &sourceOAuthType, &sourceProtocol, &sourceProtocolVersion, &sourceType,
 		&sourcePreset, &sourceBaseURL,
 		&sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
@@ -822,10 +809,8 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 			return result, err
 		}
 		result.authorization = &exactkeyprobe.DirectAuthorization{ID: authorizationID.String, Status: authorizationStatus.String, ExpiresAt: expiresAt}
-		result.authorizationLimits = authorizationLimits.String
 		result.authorizationResourceID = authorizationResourceID.String
 		result.authorizationOwner = authorizationOwner.String
-		result.authorizationTeam = authorizationTeam.String
 	}
 	if sourceID.Valid {
 		expiresAt, err := parseNullableDirectTime(sourceExpires)
@@ -935,78 +920,6 @@ func directSettingInt(values map[string]string, label, key string, minimum, maxi
 		return 0, fmt.Errorf("%s 系统设置 %s 无效", label, key)
 	}
 	return value, nil
-}
-
-func authorizationQuotaEligible(ctx context.Context, tx *sql.Tx, candidate directCandidate, now time.Time, location *time.Location) (bool, error) {
-	if candidate.authorization == nil {
-		return true, nil
-	}
-	limits, err := ParseDirectQuotaLimits(candidate.authorizationLimits)
-	if err != nil {
-		return false, err
-	}
-	costs, err := loadDirectQuotaCosts(ctx, tx, candidate.systemAccount, "account_authorization", candidate.authorization.ID, limits, now, location)
-	if err != nil {
-		return false, err
-	}
-	if DirectQuotaExceeded(limits, costs) {
-		return false, nil
-	}
-	if strings.TrimSpace(candidate.authorizationTeam) == "" {
-		return true, nil
-	}
-	var grantLimitsRaw sql.NullString
-	err = tx.QueryRowContext(ctx, `
-SELECT limits_json FROM juhe_business.resource_authorization_grants
-WHERE resource_type = 'account' AND resource_id = $1 AND resource_owner_system_account_id = $2
-  AND grantee_type = 'team' AND grantee_team_id = $3 AND status = 'active'
-  AND (expires_at IS NULL OR expires_at > $4)
-ORDER BY updated_at DESC LIMIT 1`, candidate.authorizationResourceID, candidate.authorizationOwner, candidate.authorizationTeam, now.Format(time.RFC3339Nano)).Scan(&grantLimitsRaw)
-	if err == sql.ErrNoRows {
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("读取 PG direct input authorization team grant 失败: %w", err)
-	}
-	grantLimits, err := ParseDirectQuotaLimits(grantLimitsRaw.String)
-	if err != nil {
-		return false, err
-	}
-	teamCosts, err := loadDirectQuotaCosts(ctx, tx, candidate.systemAccount, "account_authorization_team", candidate.authorization.ID+":"+candidate.authorizationTeam, grantLimits, now, location)
-	if err != nil {
-		return false, err
-	}
-	return !DirectQuotaExceeded(grantLimits, teamCosts), nil
-}
-
-func loadDirectQuotaCosts(ctx context.Context, tx *sql.Tx, systemAccount, scopeType, scopeID string, limits DirectQuotaLimits, now time.Time, location *time.Location) (DirectQuotaCosts, error) {
-	local := now.In(location)
-	dateKey := local.Format("2006-01-02")
-	monthKey := local.Format("2006-01")
-	weekday := int(local.Weekday())
-	if weekday == 0 {
-		weekday = 7
-	}
-	weekKey := local.AddDate(0, 0, 1-weekday).Format("2006-01-02")
-	result := DirectQuotaCosts{}
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(total_cost_usd, 0) FROM juhe_stats.usage_stats_totals WHERE system_account_id=$1 AND scope_type=$2 AND scope_id=$3`, systemAccount, scopeType, scopeID).Scan(&result.Total); err != nil && err != sql.ErrNoRows {
-		return DirectQuotaCosts{}, fmt.Errorf("读取 PG direct input total quota cost 失败: %w", err)
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(total_cost_usd, 0) FROM juhe_stats.usage_stats_daily WHERE system_account_id=$1 AND scope_type=$2 AND scope_id=$3 AND stat_date=$4`, systemAccount, scopeType, scopeID, dateKey).Scan(&result.Daily); err != nil && err != sql.ErrNoRows {
-		return DirectQuotaCosts{}, fmt.Errorf("读取 PG direct input daily quota cost 失败: %w", err)
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(total_cost_usd, 0) FROM juhe_stats.usage_stats_weekly WHERE system_account_id=$1 AND scope_type=$2 AND scope_id=$3 AND stat_week=$4`, systemAccount, scopeType, scopeID, weekKey).Scan(&result.Weekly); err != nil && err != sql.ErrNoRows {
-		return DirectQuotaCosts{}, fmt.Errorf("读取 PG direct input weekly quota cost 失败: %w", err)
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(total_cost_usd, 0) FROM juhe_stats.usage_stats_monthly WHERE system_account_id=$1 AND scope_type=$2 AND scope_id=$3 AND stat_month=$4`, systemAccount, scopeType, scopeID, monthKey).Scan(&result.Monthly); err != nil && err != sql.ErrNoRows {
-		return DirectQuotaCosts{}, fmt.Errorf("读取 PG direct input monthly quota cost 失败: %w", err)
-	}
-	if limits.Hourly != nil && limits.Hourly.Enabled {
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(total_cost_usd, 0) FROM juhe_stats.usage_quota_hourly_windows WHERE system_account_id=$1 AND scope_type=$2 AND scope_id=$3 AND window_hours=$4`, systemAccount, scopeType, scopeID, limits.Hourly.Hours).Scan(&result.Hourly); err != nil && err != sql.ErrNoRows {
-			return DirectQuotaCosts{}, fmt.Errorf("读取 PG direct input hourly quota cost 失败: %w", err)
-		}
-	}
-	return result, nil
 }
 
 func parseNullableDirectTime(value sql.NullString) (*time.Time, error) {

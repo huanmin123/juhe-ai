@@ -63,12 +63,11 @@ type PreparationResult struct {
 	PrecheckHalfOpenEligible                 bool
 	HotQualityExplorationReservation         *HotQualityReservation
 	SettleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
-	// W1b 决策摘要带出：窗口级授权配额批查否决的账户 ID 与 lane 容量快照
-	// 中繁忙的候选 ID（busy 候选仍留在窗口内，仅排序降位）。ready 出口摘要
-	// 以此为数据源；fallback/completed 终态出口的决策摘要（2026-10-02 起）
-	// 由 emitTerminalDispatchDecision 在各出口直接产出，不经这两个字段（见
-	// docs/functions/网关全链路轨迹日志设计.md 能力二）。
-	QuotaDeniedAccountIDs  []string
+	// W1b 决策摘要带出：lane 容量快照中繁忙的候选 ID（busy 候选仍留在窗口
+	// 内，仅排序降位）。ready 出口摘要以此为数据源；fallback/completed 终态
+	// 出口的决策摘要（2026-10-02 起）由 emitTerminalDispatchDecision 在各出
+	// 口直接产出，不经该字段（见 docs/functions/网关全链路轨迹日志设计.md
+	// 能力二）。
 	CapacityBusyAccountIDs []string
 	// 期二（缓存率设计 5.6）：最终生效那次 OrderAsync 排序的决策解释；
 	// 未执行质量排序（媒体车道/降级端口/排序失败）时为 nil。
@@ -105,8 +104,6 @@ const (
 	// DispatchSkipReasonModelUnsupported：模型秩判定为 unsupported 的被跳
 	// 账户（从未进入候选准备窗口）。
 	DispatchSkipReasonModelUnsupported = "model_unsupported"
-	// DispatchSkipReasonQuotaDenied：窗口级授权配额批查否决的候选。
-	DispatchSkipReasonQuotaDenied = "quota_denied"
 )
 
 // dispatchDecisionSummaryListCap 是摘要各列表字段的截断上限：大分组不得
@@ -194,7 +191,6 @@ type DispatchDecisionSummaryInput struct {
 	// PreFilterSkipped 是窗口之前能力/模型过滤的逐账户跳过明细（W1b 续：
 	// 使决策日志自含"为什么不在窗口里"的完整答案）。
 	PreFilterSkipped []AccountSkip
-	QuotaDenied      []string
 	Busy             []string
 	Suppressed       []string
 	Degraded         []string
@@ -205,8 +201,8 @@ type DispatchDecisionSummaryInput struct {
 }
 
 // BuildDispatchDecisionSummary 把候选窗口既有决策数据汇成可序列化摘要。
-// skipped 顺序：配额否决在前、模型秩 unsupported 在后，各自按账户 ID 稳定
-// 排序——截断窗口对同一输入确定可回放（Mock/回归可回放约束）。
+// skipped 为模型秩 unsupported 的账户，按账户 ID 稳定排序——截断窗口对同一
+// 输入确定可回放（Mock/回归可回放约束）。
 func BuildDispatchDecisionSummary(input DispatchDecisionSummaryInput) DispatchDecisionSummary {
 	summary := DispatchDecisionSummary{
 		Outcome:            input.Outcome,
@@ -228,12 +224,8 @@ func BuildDispatchDecisionSummary(input DispatchDecisionSummaryInput) DispatchDe
 		summary.PreFilterSkippedCount = len(preFilterSkipped)
 		summary.PreFilterSkipped, summary.PreFilterSkippedTrunc = cappedSlice(preFilterSkipped)
 	}
-	quotaDenied := sortedStringsCopy(input.QuotaDenied)
 	modelSkipped := modelRankSkippedIDs(input.ModelPriority)
-	skipped := make([]DispatchDecisionSkip, 0, len(quotaDenied)+len(modelSkipped))
-	for _, accountID := range quotaDenied {
-		skipped = append(skipped, DispatchDecisionSkip{AccountID: accountID, Reason: DispatchSkipReasonQuotaDenied})
-	}
+	skipped := make([]DispatchDecisionSkip, 0, len(modelSkipped))
 	for _, accountID := range modelSkipped {
 		skipped = append(skipped, DispatchDecisionSkip{AccountID: accountID, Reason: DispatchSkipReasonModelUnsupported})
 	}
@@ -373,7 +365,7 @@ func SetDispatchDecisionObserver(observer func(DispatchDecisionEvent)) {
 // "准备期终态出口摘要"）。契约：
 //   - 摘要只按该出口作用域内实际可得的数据填充：CandidateTotal 统一取窗口
 //     总量，调用方只传该出口主导的跳过列表（本地抑制出口填 Suppressed、
-//     配额出口填 QuotaDenied、降级出口填 Degraded），拿不到的保持空，
+//     降级出口填 Degraded），拿不到的保持空，
 //     Eligible/SelectedAccountID 恒空——不得为凑字段伪造数据；
 //   - 审计写入与 ready 出口同名的 gateway_dispatch_candidates 标签（同一
 //     AuditCapture 开关门控），是对既有 local_account_suppression 等专项
@@ -446,14 +438,15 @@ func SetRecoverableUnavailableRuntimeWaiterNotifier(notify func(runtimeKey strin
 }
 
 // requestRouteFallback mirrors requestRouteFallback with the account-lock
-// guard from preparation.ts.
+// guard from preparation.ts（授权额度出口已随额度退役移除，锁死守卫对其余
+// 全部出口生效）.
 func (p *CandidatePipeline) requestRouteFallback(
 	ctx context.Context,
 	input gatewaypreauth.DispatchPreparationInput,
 	candidateAccounts []AccountCandidate,
 	reason string,
 ) (attempted bool, contextValue any, err error) {
-	if reason != "authorization_quota_exceeded" && p.engine.Locks != nil {
+	if p.engine.Locks != nil {
 		ids := make([]string, 0, len(candidateAccounts))
 		for _, account := range candidateAccounts {
 			ids = append(ids, account.ID)
@@ -845,7 +838,6 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 		ModelPriority:  input.ModelPriority,
 		// W1b 续：预过滤跳过明细从端口类型投影回引擎侧同形结构。
 		PreFilterSkipped: accountSkipsOfPreFilter(input.PreFilterSkipped),
-		QuotaDenied:      readyPreparation.QuotaDeniedAccountIDs,
 		Busy:             readyPreparation.CapacityBusyAccountIDs,
 		Suppressed:       localSuppressionFilter.SuppressedAccountIDs,
 		Degraded: append(append([]string{}, runtimeDegradationOrder.DegradedAccountIDs...),
@@ -919,14 +911,13 @@ func isAccountProbeTrafficSource(trafficSource string) bool {
 }
 
 // prepareQuotaAndCapacityReadyAccounts mirrors
-// prepareQuotaAndCapacityReadyAccounts.
+// prepareQuotaAndCapacityReadyAccounts（窗口级授权配额批查已随授权额度退役
+// 移除；候选直通容量排序）.
 func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Context, input quotaCapacityInput) (PreparationResult, error) {
 	e := p.engine
 	req := input.input
-	var authorizationQuotaDeniedAccountCount int
-	var quotaDeniedAccountIDs []string
 	var capacityBusyAccountIDs []string
-	accounts := []AccountCandidate{}
+	accounts := input.accounts
 	var hotQualityExplorationReservation *HotQualityReservation
 	var settleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
 	// 期二（缓存率设计 5.6）：最终生效排序的解释，随 ready 出口/终态决策
@@ -934,58 +925,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	var hotQualityExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
 	var err error
 
-	// 超级分组目标跳过窗口级配额批查——此处用窗口组 GroupAccess 对成员展开
-	// 后的整池 CheckBatchAsync 会以超级分组窗口自身（若带组级配额）否决整池。
-	// 超级分组的权威门是解析期逐片段成员级批查（组合根 chain_routing.go
-	// superGroupSegmentAccounts），此门有意跳过；全池实际耗尽由下方
-	// no_available_upstream_account 终局承接。
-	if req.SkipGroupQuotaWindowCheck {
-		accounts = input.accounts
-	} else {
-		accountQuotaDecisions, batchErr := e.Quota.CheckBatchAsync(ctx, req.GroupAccess, input.accounts)
-		if batchErr != nil {
-			return PreparationResult{}, batchErr
-		}
-		for _, account := range input.accounts {
-			decision, ok := accountQuotaDecisions[account.ID]
-			if ok && !decision.Allowed {
-				authorizationQuotaDeniedAccountCount++
-				// W1b：被否决账户 ID 随 ready 出口汇入决策摘要。
-				quotaDeniedAccountIDs = append(quotaDeniedAccountIDs, account.ID)
-				continue
-			}
-			accounts = append(accounts, account)
-		}
-	}
-
 	if len(accounts) == 0 {
-		if authorizationQuotaDeniedAccountCount > 0 {
-			fallbackAttempted, fallbackContext, err := p.requestRouteFallback(ctx, req, accounts, "authorization_quota_exceeded")
-			if err != nil {
-				return PreparationResult{}, err
-			}
-			if fallbackAttempted {
-				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "authorization_quota_exceeded", DispatchDecisionSummaryInput{
-					QuotaDenied:           quotaDeniedAccountIDs,
-					HotQualityExplanation: hotQualityExplanation,
-				})
-				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "authorization_quota_exceeded", Context: fallbackContext}, nil
-			}
-			if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
-				StatusCode: 429,
-				Message:    gatewayquotaAuthorizationQuotaExceededMessage,
-				ErrorType:  "rate_limit_exceeded",
-				ErrorCode:  "rate_limit_exceeded",
-				ErrorPhase: "quota",
-			}); err != nil {
-				return PreparationResult{}, err
-			}
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
-				QuotaDenied:           quotaDeniedAccountIDs,
-				HotQualityExplanation: hotQualityExplanation,
-			})
-			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
-		}
 		if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
 			StatusCode: 503,
 			Message:    "没有可用的上游账户",
@@ -1169,7 +1109,6 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		ReleaseClientIPConcurrency:               releaseClientIPConcurrencyOnce,
 		HotQualityExplorationReservation:         hotQualityExplorationReservation,
 		SettleHotQualityExplorationAfterDispatch: settleHotQualityExplorationAfterDispatch,
-		QuotaDeniedAccountIDs:                    quotaDeniedAccountIDs,
 		CapacityBusyAccountIDs:                   capacityBusyAccountIDs,
 		HotQualityOrderExplanation:               hotQualityExplanation,
 	}, nil
@@ -1231,7 +1170,3 @@ func requestModelOrEmpty(req *gatewaypreauth.GatewayRequest) string {
 func isNonConversationDispatchLane(lane string) bool {
 	return gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(lane)) != gatewayproto.DispatchDomainConversation
 }
-
-// gatewayquotaAuthorizationQuotaExceededMessage mirrors
-// AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE.
-const gatewayquotaAuthorizationQuotaExceededMessage = "额度已用完，请联系管理员提升额度"

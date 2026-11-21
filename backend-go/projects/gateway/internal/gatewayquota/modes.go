@@ -17,10 +17,10 @@ type Modes struct {
 	RedisRuntimeState bool
 }
 
-// Decision mirrors GatewayQuotaDecision / ApiKeyQuotaDecision /
-// AuthorizationQuotaDecision — the identical {allowed, message?} shape. The
-// JSON tags keep the shared-cache and runtime-state payloads byte-compatible
-// with Node (message omitted when empty).
+// Decision mirrors GatewayQuotaDecision / ApiKeyQuotaDecision — the identical
+// {allowed, message?} shape. The JSON tags keep the shared-cache and
+// runtime-state payloads byte-compatible with Node (message omitted when
+// empty).
 type Decision struct {
 	Allowed bool   `json:"allowed"`
 	Message string `json:"message,omitempty"`
@@ -56,12 +56,6 @@ type APIKeyRow struct {
 	QuotaLimitsJSON string
 }
 
-// AccountRef mirrors the { accountId, accountAuthorizationId } batch items.
-type AccountRef struct {
-	AccountID              string
-	AccountAuthorizationID string
-}
-
 // DBServiceClient is the exact-read port the in-flight quota service uses as
 // the cost-snapshot fallback (D-129: Go 进程内 stats 直读适配，非跨进程 IPC)。
 type DBServiceClient interface {
@@ -69,12 +63,6 @@ type DBServiceClient interface {
 	CheckAPIKeyQuota(ctx context.Context, apiKey APIKeyRow) (Decision, error)
 	// ReadAPIKeyQuotaCosts mirrors { type: 'read_api_key_quota_costs', apiKey }.
 	ReadAPIKeyQuotaCosts(ctx context.Context, apiKey APIKeyRow) (RequestQuotaCosts, error)
-	// CheckAuthorizationQuota mirrors { type: 'check_authorization_quota',
-	// groupAuthorizationId, accountAuthorizationId }.
-	CheckAuthorizationQuota(ctx context.Context, groupAuthorizationID, accountAuthorizationID string) (Decision, error)
-	// CheckAuthorizationQuotaBatch mirrors { type:
-	// 'check_authorization_quota_batch', groupAuthorizationId, accounts }.
-	CheckAuthorizationQuotaBatch(ctx context.Context, groupAuthorizationID string, accounts []AccountRef) ([]Decision, error)
 }
 
 // InvalidationSyncer mirrors syncGatewayCacheInvalidationsFromRuntimeState.
@@ -336,33 +324,4 @@ func (c *quotaMemoryCache) clear() {
 	defer c.mu.Unlock()
 	c.lru.clear()
 	c.index = map[string]map[string]struct{}{}
-}
-
-// simpleMemoryCache is the plain decision LRU (authorization quota runtime
-// cache, no index).
-type simpleMemoryCache struct {
-	mu  sync.Mutex
-	lru *lruCache[CachedDecision]
-}
-
-func newSimpleMemoryCache(now func() time.Time, ttl time.Duration, max int) *simpleMemoryCache {
-	return &simpleMemoryCache{lru: newLRUCache[CachedDecision](max, ttl, now, nil)}
-}
-
-func (c *simpleMemoryCache) get(cacheKey string) (CachedDecision, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.lru.get(cacheKey)
-}
-
-func (c *simpleMemoryCache) set(cacheKey string, entry CachedDecision) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lru.set(cacheKey, entry)
-}
-
-func (c *simpleMemoryCache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lru.clear()
 }

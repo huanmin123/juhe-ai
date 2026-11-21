@@ -279,12 +279,6 @@ type DispatchPreparationInput struct {
 	Signal                          context.Context
 	IgnoreAccountRuntimeSuppression bool
 	RouteCoordinator                gatewayrouting.GatewayRouteCoordinatorOwner
-	// SkipGroupQuotaWindowCheck：超级分组目标必须跳过以窗口组 GroupAccess 对
-	// 成员展开整池做 CheckBatchAsync 的窗口级配额门——超级分组窗口组带组级
-	// 配额时会否决整池。权威门是解析期逐成员片段批查（组合根
-	// chain_routing.go superGroupSegmentAccounts）。preflight 组装处对超级分组
-	// 目标置 true，其余场景保持 false（行为不变）。
-	SkipGroupQuotaWindowCheck bool
 }
 
 // SchedulingExclusions 是通用调度排除集的端口镜像（调度内核通用化设计 5.1；

@@ -36,10 +36,6 @@ func (l *ProjectionItemLoader) hydratePage(ctx context.Context, page *management
 	if err != nil {
 		return nil, err
 	}
-	quotaByAuth, resetByAuth, err := l.loadAuthorizationQuotaStatus(ctx, rows, now, timezone)
-	if err != nil {
-		return nil, err
-	}
 	todayUsage, authorizationTotal, err := l.loadUsageSummaries(ctx, rows, now, timezone)
 	if err != nil {
 		return nil, err
@@ -97,8 +93,6 @@ func (l *ProjectionItemLoader) hydratePage(ctx context.Context, page *management
 			payload:       payload,
 			now:           now,
 			timezone:      timezone,
-			quotaExceeded: quotaByAuth[row.authorizationID.String],
-			quotaResetAt:  resetByAuth[row.authorizationID.String],
 			todayUsage:    todayUsage[row.id],
 			authTotal:     authorizationTotal[row.id],
 			runtime:       runtimeByKeys[key],
@@ -170,8 +164,6 @@ type composeInput struct {
 	payload       map[string]any
 	now           time.Time
 	timezone      *time.Location
-	quotaExceeded bool
-	quotaResetAt  string
 	todayUsage    usageValue
 	authTotal     usageValue
 	runtime       AccountRuntimeAvailability
@@ -242,7 +234,6 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		groupBindStatus:             bindingStatus(binding),
 		authorizationStatus:         row.authorizationStatus.String,
 		authorizationExpiresAt:      row.authorizationExpiresAt.String,
-		authorizationQuotaExceeded:  authorized && input.quotaExceeded,
 		sourceAccountID:             row.authorizationInstanceSourceID.String,
 		sourceStatus:                row.sourceStatus.String,
 		sourceSchedulable:           sourceSchedulablePtr(row),
@@ -267,7 +258,7 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 	}, now)
 
 	// ---- 投影状态分类（accountFilterStatuses；无法唯一归类即抛错）----
-	statuses := accountFilterStatuses(status, &availability, authorized && input.quotaExceeded)
+	statuses := accountFilterStatuses(status, &availability)
 	if len(statuses) != 1 {
 		return hydratedEntry{}, fmt.Errorf("账户 %s 无法归类为唯一投影状态", row.id)
 	}
@@ -305,20 +296,6 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 	}
 	if row.authorizationExpiresAt.Valid && row.authorizationExpiresAt.String != "" {
 		payload["authorizationExpiresAt"] = row.authorizationExpiresAt.String
-	}
-	if authorized {
-		// Node filterSeedsDirect：authorized 行恒写入（false 也保留），
-		// owner 行 undefined 省略。
-		payload["authorizationQuotaExceeded"] = input.quotaExceeded
-	}
-	if authorized {
-		// Node authorizationLimits：parseRequestQuotaLimitsJson 空串返回
-		// 空对象（payload 恒有该键）；非法 JSON 抛错走释放重放。
-		limits, limitsErr := parseQuotaLimitsPayload(row.authorizationLimitsJSON.String)
-		if limitsErr != nil {
-			return hydratedEntry{}, limitsErr
-		}
-		payload["authorizationLimits"] = limits
 	}
 	if lastUsedAt != nil {
 		payload["lastUsedAt"] = *lastUsedAt
@@ -405,8 +382,7 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		apiKeyNextProbeAt:              apiKeyNextProbeAt,
 		runtimeNextAttemptAt:           runtimeNextAttemptAt,
 		runtimeRecoveryAt:              runtimeRecoveryAt,
-		statusBoundaryAt:               statusBoundaryAtOf(&availability, row, input.quotaResetAt, runtimeRecoveryAt),
-		quotaResetAt:                   ptrStringIf(input.quotaResetAt),
+		statusBoundaryAt:               statusBoundaryAtOf(&availability, row, runtimeRecoveryAt),
 		availabilityScheduleJSON:       textPtrOf(row.availabilityScheduleJSON),
 		sourceAvailabilityScheduleJSON: textPtrOf(row.sourceAvailabilityScheduleJSON),
 	}, nil
@@ -454,7 +430,7 @@ func authorizationExpired(expiresAt string, now time.Time) bool {
 
 // statusBoundaryAtOf 对齐 accountAvailabilityPresentation 的 statusBoundary
 // 分支（含 runtime_local_suppressed 的 policy_ttl_expiry recoveryAt）。
-func statusBoundaryAtOf(availability *effectiveAvailability, row managementRow, quotaResetAt string, runtimeRecoveryAt *string) *string {
+func statusBoundaryAtOf(availability *effectiveAvailability, row managementRow, runtimeRecoveryAt *string) *string {
 	if availability == nil {
 		return nil
 	}
@@ -470,10 +446,6 @@ func statusBoundaryAtOf(availability *effectiveAvailability, row managementRow, 
 	case "instance_expired":
 		if row.accountExpiresAt.Valid && row.accountExpiresAt.String != "" {
 			return &row.accountExpiresAt.String
-		}
-	case "authorization_quota_exceeded":
-		if quotaResetAt != "" {
-			return &quotaResetAt
 		}
 	case "source_cooldown":
 		if row.sourceCooldownUntil.Valid && row.sourceCooldownUntil.String != "" {

@@ -43,14 +43,10 @@ type CostInput struct {
 	HasHourlyWindow   bool
 }
 
-// Scope types used by the quota subsystem.
+// Scope types used by the quota subsystem（授权 scope 常量已随授权额度退役
+// 移除；用量读面的 scope_type 字符串在 accounts/groups 各自本地常量维护）.
 const (
-	ScopeTypeAPIKey                   = "api_key"
-	ScopeTypeAccountAuthorization     = "account_authorization"
-	ScopeTypeGroupAuthorization       = "group_authorization"
-	ScopeTypeAccountAuthorizationTeam = "account_authorization_team"
-	ScopeTypeGroupAuthorizationTeam   = "group_authorization_team"
-	ScopeTypeAuthorizationRuntime     = "authorization_runtime"
+	ScopeTypeAPIKey = "api_key"
 )
 
 // NormalizeHourlyWindowHours mirrors normalizeHourlyWindowHours /

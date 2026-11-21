@@ -826,7 +826,7 @@ func importAuthorizations(ctx context.Context, source *sql.DB, tx *sql.Tx, group
 	rows, err := source.QueryContext(ctx, `
 		SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		       scope, status, effective_source_type, effective_source_team_id, activated_at,
-		       last_source_changed_at, remark, expires_at, limits_json, created_by, created_at,
+		       last_source_changed_at, remark, expires_at, created_by, created_at,
 		       revoked_by, revoked_at, revoked_reason, updated_at
 		FROM juhe_business.resource_authorizations`)
 	if err != nil {
@@ -837,10 +837,10 @@ func importAuthorizations(ctx context.Context, source *sql.DB, tx *sql.Tx, group
 	var keptRows []kept
 	for rows.Next() {
 		var id, resourceType, resourceID, owner, grantee, scope, status, createdBy, createdAt, updatedAt string
-		var effectiveType, effectiveTeam, activatedAt, lastSourceChanged, remark, expiresAt, limits, revokedBy,
+		var effectiveType, effectiveTeam, activatedAt, lastSourceChanged, remark, expiresAt, revokedBy,
 			revokedAt, revokedReason sql.NullString
 		if err := rows.Scan(&id, &resourceType, &resourceID, &owner, &grantee, &scope, &status,
-			&effectiveType, &effectiveTeam, &activatedAt, &lastSourceChanged, &remark, &expiresAt, &limits,
+			&effectiveType, &effectiveTeam, &activatedAt, &lastSourceChanged, &remark, &expiresAt,
 			&createdBy, &createdAt, &revokedBy, &revokedAt, &revokedReason, &updatedAt); err != nil {
 			return fmt.Errorf("扫描旧授权: %w", err)
 		}
@@ -860,11 +860,11 @@ func importAuthorizations(ctx context.Context, source *sql.DB, tx *sql.Tx, group
 			INSERT INTO juhe_business.resource_authorizations
 				(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 				 scope, status, effective_source_type, effective_source_team_id, activated_at,
-				 last_source_changed_at, remark, expires_at, limits_json, created_by, created_at,
+				 last_source_changed_at, remark, expires_at, created_by, created_at,
 				 revoked_by, revoked_at, revoked_reason, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 			id, resourceType, resourceID, owner, grantee, scope, status, effectiveType, effectiveTeam,
-			activatedAt, lastSourceChanged, remark, expiresAt, limits, createdBy, createdAt,
+			activatedAt, lastSourceChanged, remark, expiresAt, createdBy, createdAt,
 			revokedBy, revokedAt, revokedReason, updatedAt); err != nil {
 			return fmt.Errorf("写入授权 %s: %w", id, err)
 		}
@@ -927,7 +927,7 @@ func importAuthorizationGrants(ctx context.Context, source *sql.DB, tx *sql.Tx, 
 	rows, err := source.QueryContext(ctx, `
 		SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
 		       grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
-		       limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+		       created_by, created_at, revoked_by, revoked_at, updated_at
 		FROM juhe_business.resource_authorization_grants`)
 	if err != nil {
 		return fmt.Errorf("读取旧授权记录: %w", err)
@@ -936,9 +936,9 @@ func importAuthorizationGrants(ctx context.Context, source *sql.DB, tx *sql.Tx, 
 	count := 0
 	for rows.Next() {
 		var id, resourceType, resourceID, owner, granteeType, scope, status, createdBy, createdAt, updatedAt string
-		var granteeUser, granteeTeam, remark, expiresAt, limits, revokedBy, revokedAt sql.NullString
+		var granteeUser, granteeTeam, remark, expiresAt, revokedBy, revokedAt sql.NullString
 		if err := rows.Scan(&id, &resourceType, &resourceID, &owner, &granteeType, &granteeUser, &granteeTeam,
-			&scope, &status, &remark, &expiresAt, &limits, &createdBy, &createdAt, &revokedBy, &revokedAt, &updatedAt); err != nil {
+			&scope, &status, &remark, &expiresAt, &createdBy, &createdAt, &revokedBy, &revokedAt, &updatedAt); err != nil {
 			return fmt.Errorf("扫描旧授权记录: %w", err)
 		}
 		switch resourceType {
@@ -957,10 +957,10 @@ func importAuthorizationGrants(ctx context.Context, source *sql.DB, tx *sql.Tx, 
 			INSERT INTO juhe_business.resource_authorization_grants
 				(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
 				 grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
-				 limits_json, created_by, created_at, revoked_by, revoked_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+				 created_by, created_at, revoked_by, revoked_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 			id, resourceType, resourceID, owner, granteeType, granteeUser, granteeTeam, scope, status,
-			remark, expiresAt, limits, createdBy, createdAt, revokedBy, revokedAt, updatedAt); err != nil {
+			remark, expiresAt, createdBy, createdAt, revokedBy, revokedAt, updatedAt); err != nil {
 			return fmt.Errorf("写入授权记录 %s: %w", id, err)
 		}
 		count++

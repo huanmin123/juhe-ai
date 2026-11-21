@@ -121,7 +121,6 @@ type Engine struct {
 	// nil = 未装配，最终协议成功不写回组绑定。
 	GroupAffinity       GroupAffinityPort
 	ClientIPConcurrency ClientIPConcurrencyAcquirer
-	Quota               AuthorizationQuotaChecker
 	// InflightQuota 是请求级在途额度预占端口（T93-1/T93-4）：nil = 未装配，
 	// 只保留 preflight 的已结算额度拒绝，不做在途预留。
 	InflightQuota   InflightQuotaPort

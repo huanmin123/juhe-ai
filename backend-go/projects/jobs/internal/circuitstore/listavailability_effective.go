@@ -29,7 +29,6 @@ type availabilityInput struct {
 	groupBindStatus             string
 	authorizationStatus         string
 	authorizationExpiresAt      string
-	authorizationQuotaExceeded  bool
 	sourceAccountID             string
 	sourceStatus                string
 	sourceSchedulable           *bool
@@ -61,9 +60,6 @@ func accountEffectiveAvailability(input availabilityInput, now time.Time) effect
 		}
 		if blocker := authorizationAvailability(input, now); blocker != nil {
 			return *blocker
-		}
-		if input.authorizationQuotaExceeded {
-			return blockedAvailability("authorization_quota_exceeded", "授权额度已用完", "red", "authorization", "授权额度已用完，当前账户不能调用", "")
 		}
 		if blocker := sourceAccountAvailability(input, now); blocker != nil {
 			return *blocker
@@ -245,7 +241,7 @@ func filterStatusForEffectiveAvailabilityStatus(status string) string {
 		return "error"
 	case "source_quality_isolated", "instance_quality_isolated":
 		return "quality_isolated"
-	case "authorization_quota_exceeded", "source_rate_limited", "instance_rate_limited":
+	case "source_rate_limited", "instance_rate_limited":
 		return "rate_limited"
 	case "source_temporary_unavailable", "source_cooldown", "instance_temporary_unavailable",
 		"instance_cooldown", "api_key_pool_unavailable", "runtime_local_suppressed",
@@ -262,14 +258,11 @@ func filterStatusForEffectiveAvailabilityStatus(status string) string {
 
 // accountFilterStatuses 对齐 accountFilterStatuses：返回唯一投影状态；
 // 无法唯一归类时返回空集合（调用方抛错，Node 同）。
-func accountFilterStatuses(itemStatus string, item *effectiveAvailability, authorizationQuotaExceeded bool) []string {
+func accountFilterStatuses(itemStatus string, item *effectiveAvailability) []string {
 	if item != nil {
 		if derived := filterStatusForEffectiveAvailabilityStatus(item.status); derived != "" {
 			return []string{derived}
 		}
-	}
-	if authorizationQuotaExceeded {
-		return []string{"rate_limited"}
 	}
 	if itemStatus == "active" && item != nil && !item.available {
 		return []string{}
@@ -298,7 +291,7 @@ func presentationPayload(availability *effectiveAvailability, row managementRow,
 	} else if availability.status == "instance_error" && strings.HasPrefix(row.lastErrorCode.String, "cooldown_retest_") {
 		presentation["action"] = "restore_account"
 	}
-	if boundary := statusBoundaryAtOf(availability, row, "", runtimeRecoveryAt); boundary != nil {
+	if boundary := statusBoundaryAtOf(availability, row, runtimeRecoveryAt); boundary != nil {
 		presentation["statusBoundary"] = map[string]any{"at": *boundary, "kind": boundaryKindOf(availability.status)}
 		return presentation
 	}
@@ -316,8 +309,6 @@ func boundaryKindOf(status string) string {
 		return "source_expired"
 	case "instance_expired":
 		return "account_expired"
-	case "authorization_quota_exceeded":
-		return "quota_reset"
 	case "source_cooldown", "instance_cooldown":
 		return "cooldown_expiry"
 	case "runtime_local_suppressed":
@@ -335,7 +326,7 @@ func presentationMapping(status string) (string, string) {
 		return "permission_denied", "contact_admin"
 	case "authorization_expired":
 		return "expired", "renew_authorization"
-	case "authorization_paused", "authorization_unavailable", "authorization_quota_exceeded":
+	case "authorization_paused", "authorization_unavailable":
 		return "authorization_blocked", "contact_authorizer"
 	case "source_deleted", "source_disabled", "source_unschedulable":
 		return "source_blocked", "contact_authorizer"

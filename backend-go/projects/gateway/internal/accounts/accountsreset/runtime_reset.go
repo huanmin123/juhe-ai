@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -152,7 +151,6 @@ type ResetSummary struct {
 	AuthorizationStatus          sql.NullString
 	AuthorizationExpiresAt       sql.NullString
 	AuthorizationEffectiveTeamID sql.NullString
-	AuthorizationQuotaLimited    bool
 	SourceAccountID              sql.NullString
 	SourceID                     sql.NullString
 	SourceStatus                 sql.NullString
@@ -162,10 +160,9 @@ type ResetSummary struct {
 	SourceLastErrorMessage       sql.NullString
 	SourceCooldownUntil          sql.NullString
 	// bound group (latest enabled group_accounts row).
-	BindingSystemAccountID     sql.NullString
-	BoundGroupID               sql.NullString
-	BoundGroupAuthorizationID  sql.NullString
-	AuthorizationQuotaExceeded bool
+	BindingSystemAccountID    sql.NullString
+	BoundGroupID              sql.NullString
+	BoundGroupAuthorizationID sql.NullString
 }
 
 // ResetAccountRuntimeState mirrors resetAccountRuntimeStateAsync. A nil
@@ -241,7 +238,6 @@ func (s *Service) ResetAccountRuntimeState(ctx context.Context, accountID string
 			before.LastErrorCode.String == "account_expired" ||
 			sourceExplicitPolicyCooldown ||
 			IsFutureTimestamp(before.SourceCooldownUntil.String, now) ||
-			before.AuthorizationQuotaExceeded ||
 			IsExplicitAccountErrorPolicyCooldown(before.LastErrorCode.String, before.LastErrorMessage.String) ||
 			lockBlocksPersistentReset ||
 			manualUnschedulable
@@ -260,10 +256,7 @@ func (s *Service) ResetAccountRuntimeState(ctx context.Context, accountID string
 		if manualUnschedulable {
 			addSkipped("manual_unschedulable")
 		}
-		if before.AuthorizationQuotaExceeded {
-			addSkipped("authorization_quota")
-		}
-		if sourceBlocked && !before.AuthorizationQuotaExceeded {
+		if sourceBlocked {
 			addSkipped("authorization_source_blocked")
 		}
 		if sourceExplicitPolicyCooldown || IsExplicitAccountErrorPolicyCooldown(before.LastErrorCode.String, before.LastErrorMessage.String) {
@@ -930,7 +923,6 @@ type AuthorizedDispatchResetRow struct {
 	AuthorizationInstanceAuthorizationID sql.NullString
 	AuthorizationStatus                  sql.NullString
 	AuthorizationExpiresAt               sql.NullString
-	AuthorizationLimitsJSON              sql.NullString
 	AuthorizationEffectiveTeamID         sql.NullString
 	SourceID                             sql.NullString
 	SourceStatus                         sql.NullString
@@ -987,7 +979,6 @@ func (s *Service) UpdateAuthorizedBindingDispatchForReset(ctx context.Context, i
 			accounts.authorization_instance_authorization_id,
 			authorizations.status AS authorization_status,
 			authorizations.expires_at AS authorization_expires_at,
-			authorizations.limits_json AS authorization_limits_json,
 			authorizations.effective_source_team_id AS authorization_effective_source_team_id,
 			source_accounts.id AS source_id,
 			source_accounts.status AS source_status,
@@ -1018,7 +1009,7 @@ func (s *Service) UpdateAuthorizedBindingDispatchForReset(ctx context.Context, i
 		&row.StreamFailureWindowStartedAt, &row.AuthorizationInstanceSourceAccountID,
 		&row.AuthorizationInstanceAuthorizationID,
 		&row.AuthorizationStatus, &row.AuthorizationExpiresAt,
-		&row.AuthorizationLimitsJSON, &row.AuthorizationEffectiveTeamID,
+		&row.AuthorizationEffectiveTeamID,
 		&row.SourceID, &row.SourceStatus, &row.SourceSchedulable,
 		&row.SourceExpiresAt, &row.SourceCooldownUntil,
 		&row.SourceLastErrorCode, &row.SourceLastErrorMessage)
@@ -1229,9 +1220,6 @@ func (s *Service) AuthorizedResetUnavailableMessage(ctx context.Context, row Aut
 	if row.AuthorizationStatus.Valid && (row.AuthorizationStatus.String == "revoked" || row.AuthorizationStatus.String == "returned") {
 		return "授权关系已失效，当前账户不能调用", nil
 	}
-	if s.ResetAuthorizationQuotaExceeded(ctx, row, access) {
-		return "授权额度已用完，当前账户不能调用", nil
-	}
 	if !row.SourceID.Valid || row.SourceID.String == "" || !row.SourceStatus.Valid || row.SourceStatus.String == "" {
 		return "授权方原账户不存在或已删除，当前账户不能调用", nil
 	}
@@ -1275,48 +1263,6 @@ func (s *Service) AuthorizedResetUnavailableMessage(ctx context.Context, row Aut
 	}
 	_ = nowMillis
 	return "", nil
-}
-
-// resetSummaryQuotaExceeded resolves the authorization-quota gate for the
-// authorized summary projection (Node loadAuthorizedAccountSummaryContextAsync
-// authorizationQuotaExceededByAuthorization).
-func (s *Service) resetSummaryQuotaExceeded(ctx context.Context, summary *ResetSummary) bool {
-	effects := s.effectsOrNil()
-	if effects == nil {
-		return false
-	}
-	exceeded, err := effects.AuthorizationQuotaExceeded(ctx, AuthorizationQuotaCheckInput{
-		AuthorizationID:        summary.AuthorizationID.String,
-		GranteeSystemAccountID: summary.SystemAccountID,
-		EffectiveSourceTeamID:  summary.AuthorizationEffectiveTeamID.String,
-	})
-	if err != nil {
-		slog.Warn("runtime-reset 授权额度读取失败，按未超额处理",
-			"event", "account_runtime_reset_authorization_quota_read_failed",
-			"accountId", summary.ID, "error", err)
-		return false
-	}
-	return exceeded
-}
-
-// ResetAuthorizationQuotaExceeded resolves the quota gate through the port.
-func (s *Service) ResetAuthorizationQuotaExceeded(ctx context.Context, row AuthorizedDispatchResetRow, access accountscore.AccessScope) bool {
-	effects := s.effectsOrNil()
-	if effects == nil {
-		return false
-	}
-	exceeded, err := effects.AuthorizationQuotaExceeded(ctx, AuthorizationQuotaCheckInput{
-		AuthorizationID:        row.AuthorizationInstanceAuthorizationID.String,
-		GranteeSystemAccountID: row.SystemAccountID,
-		EffectiveSourceTeamID:  row.AuthorizationEffectiveTeamID.String,
-	})
-	if err != nil {
-		slog.Warn("runtime-reset 授权额度读取失败，按未超额处理",
-			"event", "account_runtime_reset_authorization_quota_read_failed",
-			"accountId", row.ID, "error", err)
-		return false
-	}
-	return exceeded
 }
 
 // ---- dispatch revision fence (standalone variant) ----
@@ -1726,7 +1672,6 @@ func (s *Service) findAuthorizedResetSummary(ctx context.Context, id, scoped str
 			row.Credentials = accountscore.Credentials{}
 		}
 	}
-	row.AuthorizationQuotaExceeded = s.resetSummaryQuotaExceeded(ctx, &row)
 	return &row, nil
 }
 
@@ -1771,9 +1716,6 @@ func (s *Service) ResetEffectiveAvailability(ctx context.Context, account *Reset
 			}
 		}
 		if IsResourceAuthorizationExpired(account.AuthorizationExpiresAt.String, now) {
-			return false
-		}
-		if account.AuthorizationQuotaExceeded {
 			return false
 		}
 		// sourceAccountAvailability.

@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
@@ -71,7 +70,6 @@ type OptionSummary struct {
 	AccessType             string              `json:"accessType"`
 	GroupAuthorizationID   *string             `json:"groupAuthorizationId,omitempty"`
 	AuthorizationExpiresAt *string             `json:"authorizationExpiresAt,omitempty"`
-	AuthorizationLimits    any                 `json:"authorizationLimits"`
 	AuthorizationStatus    *string             `json:"authorizationStatus,omitempty"`
 	Permissions            ResourcePermissions `json:"permissions"`
 }
@@ -121,7 +119,6 @@ type optionRow struct {
 	authorizationID         sql.NullString
 	authorizationStatus     sql.NullString
 	authorizationExpiresAt  sql.NullString
-	authorizationLimitsJSON sql.NullString
 }
 
 const optionRowSelectColumns = `g.id, g.system_account_id, g.name,
@@ -131,7 +128,7 @@ const optionRowSelectColumns = `g.id, g.system_account_id, g.name,
 const optionOuterSelectColumns = `id, system_account_id, name,
 		enabled, is_default, group_type, group_kind, scheduling_policy_json,
 		created_at, updated_at,
-		access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json`
+		access_type, authorization_id, authorization_status, authorization_expires_at`
 
 // authorizedOptionRowSelectColumns mirrors authorizedGroupRowSelectColumns:
 // per-grantee enabled override plus the settings-aware updated_at. Group type
@@ -168,8 +165,7 @@ func (s *Store) authorizedOptionArm() string {
 			'authorized' AS access_type,
 			ra.id AS authorization_id,
 			ra.status AS authorization_status,
-			ra.expires_at AS authorization_expires_at,
-			ra.limits_json AS authorization_limits_json
+			ra.expires_at AS authorization_expires_at
 		FROM ` + s.table("resource_authorizations") + ` ra
 		INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
 		` + s.authorizationSettingsJoin() + `
@@ -182,7 +178,7 @@ func scanOptionRow(scan func(...any) error) (optionRow, error) {
 		&row.enabled, &row.isDefault, &row.groupType, &row.groupKind, &row.schedulingJSON,
 		&row.createdAt, &row.updatedAt,
 		&row.accessType, &row.authorizationID, &row.authorizationStatus,
-		&row.authorizationExpiresAt, &row.authorizationLimitsJSON)
+		&row.authorizationExpiresAt)
 	return row, err
 }
 
@@ -270,8 +266,7 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 			'owner' AS access_type,
 			NULL AS authorization_id,
 			NULL AS authorization_status,
-			NULL AS authorization_expires_at,
-			NULL AS authorization_limits_json
+			NULL AS authorization_expires_at
 			FROM ` + s.table("groups") + ` g` + where + `
 			ORDER BY ` + orderColumn
 		queryArgs = args
@@ -290,8 +285,7 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 			'owner' AS access_type,
 			NULL AS authorization_id,
 			NULL AS authorization_status,
-			NULL AS authorization_expires_at,
-			NULL AS authorization_limits_json
+			NULL AS authorization_expires_at
 			FROM ` + s.table("groups") + ` g
 			WHERE ` + strings.Join(clauses, " AND ") + `
 			ORDER BY ` + orderColumn
@@ -305,8 +299,7 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 				'owner' AS access_type,
 				NULL AS authorization_id,
 				NULL AS authorization_status,
-				NULL AS authorization_expires_at,
-				NULL AS authorization_limits_json
+				NULL AS authorization_expires_at
 			FROM ` + s.table("groups") + ` g
 			WHERE g.system_account_id = ?
 			UNION ALL
@@ -442,7 +435,7 @@ func ownerOrViewer(owner, viewer string) string {
 
 // newOptionSummary mirrors buildGroupOptionSummaries' per-row projection:
 // authorized rows force isDefault=false, carry the runtime authorization
-// columns plus the parsed limits document, and render
+// columns, and render
 // authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row)) whenever
 // the row's owner differs from the viewer. Corrupted stored group types or
 // scheduling policies propagate as read errors (the Node read path throws).
@@ -472,11 +465,6 @@ func (s *Store) newOptionSummary(row optionRow, names map[string]string, include
 		AuthorizationStatus:    nullPtrString(row.authorizationStatus),
 		Permissions:            ownerPermissions(),
 	}
-	limits, err := parseAuthorizationLimitsView(row.authorizationLimitsJSON)
-	if err != nil {
-		return OptionSummary{}, err
-	}
-	summary.AuthorizationLimits = limits
 	if authorized && row.systemAccountID != viewer {
 		canBind, err := s.canBindAuthorizedGroupRow(row)
 		if err != nil {
@@ -934,49 +922,3 @@ func (s *Store) authorizationExpired(expiresAt sql.NullString) (bool, error) {
 	return parsed.UnixMilli() <= s.now().UnixMilli(), nil
 }
 
-// authorizedQuotaLimit/authorizedQuotaLimits mirror the JSON projection of
-// RequestQuotaLimit/RequestHourlyQuotaLimit/RequestQuotaLimits (disabled
-// entries stripped by normalization, omitted from the document).
-type authorizedQuotaLimit struct {
-	Enabled bool    `json:"enabled"`
-	Hours   int     `json:"hours,omitempty"`
-	Limit   float64 `json:"limit"`
-}
-
-type authorizedQuotaLimits struct {
-	Hourly  *authorizedQuotaLimit `json:"hourly,omitempty"`
-	Daily   *authorizedQuotaLimit `json:"daily,omitempty"`
-	Weekly  *authorizedQuotaLimit `json:"weekly,omitempty"`
-	Monthly *authorizedQuotaLimit `json:"monthly,omitempty"`
-	Total   *authorizedQuotaLimit `json:"total,omitempty"`
-}
-
-// parseAuthorizationLimitsView mirrors parseRequestQuotaLimitsJson: absent
-// columns render the empty limits document, stored documents are normalized
-// through the shared gatewayquota alignment (ParseRequestQuotaLimitsJSON)
-// and parse/normalize errors propagate to the caller (the Node read path
-// throws into the route's 500).
-func parseAuthorizationLimitsView(raw sql.NullString) (any, error) {
-	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
-		return struct{}{}, nil
-	}
-	limits, err := gatewayquota.ParseRequestQuotaLimitsJSON(raw.String)
-	if err != nil {
-		return nil, err
-	}
-	view := authorizedQuotaLimits{}
-	if limits.Hourly != nil {
-		view.Hourly = &authorizedQuotaLimit{Enabled: limits.Hourly.Enabled, Hours: limits.Hourly.Hours, Limit: limits.Hourly.Limit}
-	}
-	convert := func(limit *gatewayquota.QuotaLimit) *authorizedQuotaLimit {
-		if limit == nil {
-			return nil
-		}
-		return &authorizedQuotaLimit{Enabled: limit.Enabled, Limit: limit.Limit}
-	}
-	view.Daily = convert(limits.Daily)
-	view.Weekly = convert(limits.Weekly)
-	view.Monthly = convert(limits.Monthly)
-	view.Total = convert(limits.Total)
-	return view, nil
-}

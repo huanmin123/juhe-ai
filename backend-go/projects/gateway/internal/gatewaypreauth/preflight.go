@@ -845,17 +845,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	if rejected {
 		return PreflightResult{}, nil
 	}
-	rejected, err = s.RejectGatewayAuthorizationQuotaIfExceeded(ctx, AuthorizationQuotaInput{
-		Req: req, Res: res, AuditCapture: auditCapture,
-		UsageContext: usageContext, StartedAt: input.StartedAt,
-		GroupAccess: groupAccess,
-	})
-	if err != nil {
-		return PreflightResult{}, err
-	}
-	if rejected {
-		return PreflightResult{}, nil
-	}
 
 	modelsResponseProtocol := initialModelsResponseProtocol
 	if hasModelsProtocol := hasInitialModelsResponseProtocol; hasModelsProtocol && trafficSource == TrafficSourceGateway && apiKeyID != "" {
@@ -1151,9 +1140,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Signal:                          input.Signal,
 		IgnoreAccountRuntimeSuppression: options.IgnoreAccountRuntimeSuppression,
 		RouteCoordinator:                routeCoordinator,
-		// 超级分组目标跳过窗口级配额门：成员级配额由组合根逐片段批查
-		// （chain_routing.go superGroupSegmentAccounts）。
-		SkipGroupQuotaWindowCheck: len(superTargetMemberIDs(apiKeyRecord, groupID)) > 0,
 	})
 	if err != nil {
 		return PreflightResult{}, err

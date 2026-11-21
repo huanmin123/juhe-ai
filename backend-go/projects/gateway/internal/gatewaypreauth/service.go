@@ -51,15 +51,9 @@ type APIKeyQuotaChecker interface {
 	CheckAPIKeyQuotaAsync(ctx context.Context, apiKey gatewayquota.APIKeyRow) (gatewayquota.Decision, error)
 }
 
-// AuthorizationQuotaChecker mirrors checkGatewayAuthorizationQuotaAsync. The
-// concrete *gatewayquota.AuthorizationQuotaService implements it.
-type AuthorizationQuotaChecker interface {
-	CheckAuthorizationQuotaAsync(ctx context.Context, groupAccess gatewayquota.GroupAccessMetadata, account *gatewayquota.AccountAuthorizationSummary) (gatewayquota.Decision, error)
-}
-
 // InflightReserver 已随 T93-1（C3-H1）退役：在途成本预占后移到派发层
 // （gatewaydispatch.Engine.reserveUpstreamInflightQuota），preflight 只保留
-// 已结算额度拒绝。
+// 已结算额度拒绝（授权额度门已随授权额度退役移除）。
 
 // GeminiInteractionAffinity removed: the preflight uses the concrete
 // *gatewaygemini.InteractionAffinity (G04) which is fully injectable through
@@ -79,13 +73,12 @@ type GatewayAPIKeyValidator interface {
 // collaborators arrive through the ports.
 type Service struct {
 	// direct collaborators (import + reuse)
-	RuntimeCache       RuntimeCacheReader
-	APIKeyQuota        APIKeyQuotaChecker
-	AuthorizationQuota AuthorizationQuotaChecker
-	Affinity           *gatewaygemini.InteractionAffinity
-	APIKeyValidator    GatewayAPIKeyValidator
-	RouteResolver      RouteResolver
-	AccountAvoidance   ClientIPAccountAvoidanceFactory
+	RuntimeCache     RuntimeCacheReader
+	APIKeyQuota      APIKeyQuotaChecker
+	Affinity         *gatewaygemini.InteractionAffinity
+	APIKeyValidator  GatewayAPIKeyValidator
+	RouteResolver    RouteResolver
+	AccountAvoidance ClientIPAccountAvoidanceFactory
 
 	// ports toward later slices
 	Circuits        PreAuthCircuits

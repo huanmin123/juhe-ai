@@ -28,17 +28,14 @@ import (
 //	DispatchAccountHealthCheck           → the health-check dispatcher
 //	                                       (Node dispatchAccountHealthCheck,
 //	                                       internal-api service)
-//	AuthorizationQuotaExceeded           → gatewayquota.AuthorizationQuotaService /
-//	                                       StatsStore cost read (Node
-//	                                       authorizationQuotaExceeded)
 //	APIKeyPoolAllUnavailable             → the api key runtime pool summary projection
 //	                                       (Node loadAccountApiKeyRuntimeSummariesByAccountIdsAsync,
 //	                                       allUnavailable flag)
 //
 // A nil port keeps the endpoint self-contained for tests: runtime clears
-// report unchanged/zero, the quota gate reports false and the health-check
-// dispatch is skipped. Production assembly MUST wire a real bridge — see the
-// migration report's runtime-reset port assembly table.
+// report unchanged/zero and the health-check dispatch is skipped. Production
+// assembly MUST wire a real bridge — see the migration report's runtime-reset
+// port assembly table.
 type RuntimeResetEffects interface {
 	ClearAccountRuntimeAvailability(ctx context.Context, input RuntimeAvailabilityClearInput) (RuntimeAvailabilityClearResult, error)
 	ClearNormalRouteLatencyDegradation(ctx context.Context, systemAccountID, accountID string) (int64, error)
@@ -47,7 +44,6 @@ type RuntimeResetEffects interface {
 	ClearAPIKeyFailureGuard(accountID, keyFingerprint string, transientGeneration *int64) bool
 	ClearAPIKeyTransientFailure(ctx context.Context, accountID, keyFingerprint string, transientGeneration *int64) (bool, error)
 	DispatchAccountHealthCheck(accountID, reason string)
-	AuthorizationQuotaExceeded(ctx context.Context, input AuthorizationQuotaCheckInput) (bool, error)
 	APIKeyPoolAllUnavailable(ctx context.Context, accountID string) (bool, error)
 }
 
@@ -93,17 +89,6 @@ type AccountAPIKeyTransientSelectionState struct {
 	KeyFingerprint      string
 	TransientGeneration int64
 	HasGeneration       bool
-}
-
-// AuthorizationQuotaCheckInput mirrors the inputs of the Node
-// authorizationQuotaExceeded helper: the direct account-authorization limits
-// plus the effective team grant.
-type AuthorizationQuotaCheckInput struct {
-	AuthorizationID        string
-	GranteeSystemAccountID string
-	EffectiveSourceTeamID  string
-	AuthorizationExpiresAt string
-	AuthorizationStatus    string
 }
 
 // effectsOrNil resolves the wired port for the reset paths (装配断线时保持

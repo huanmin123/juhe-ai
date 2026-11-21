@@ -177,29 +177,17 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidateForArgs(ctx context
 				continue
 			}
 		}
-		quotaDecisions, err := p.engine.Quota.CheckBatchAsync(ctx, groupAccess, modelFilter.Accounts)
-		if err != nil {
-			return GroupFallbackCandidateOutput{}, false, err
-		}
-		quotaAllowed := make([]AccountCandidate, 0, len(modelFilter.Accounts))
-		for _, account := range modelFilter.Accounts {
-			decision, ok := quotaDecisions[account.ID]
-			if !ok || decision.Allowed {
-				quotaAllowed = append(quotaAllowed, account)
-			}
-		}
-		if len(quotaAllowed) == 0 {
-			continue
-		}
-		degradationOrder := p.engine.Degradation.OrderGatewayAccountsByRuntimeDegradation(quotaAllowed, modelFilter.ModelPriority.RankByAccountID)
+		// 窗口级授权配额批查已随授权额度退役移除：模型过滤幸存账户直通降级
+		// 排序与容量 busy 检查。
+		degradationOrder := p.engine.Degradation.OrderGatewayAccountsByRuntimeDegradation(modelFilter.Accounts, modelFilter.ModelPriority.RankByAccountID)
 		if input.Reason == "runtime_degraded" && degradationOrder.BypassedAllDegraded {
 			continue
 		}
-		orderedQuotaAllowedAccounts := degradationOrder.Accounts
+		orderedAccounts := degradationOrder.Accounts
 		// m4（BUG-0174）：对齐归档 api-key-group-fallback-candidate.ts:123-125，
 		// busy 检查无条件执行（当前装配恒注入 Concurrency；Node 无 nil 守卫）。
 		if input.Reason == "group_capacity_busy" {
-			busy, err := AreGatewayAccountsCapacityBusyForLaneAsync(ctx, p.engine.Concurrency, orderedQuotaAllowedAccounts, gatewayprotoLane(input.RequestLane), groupAccess.SchedulingPolicy)
+			busy, err := AreGatewayAccountsCapacityBusyForLaneAsync(ctx, p.engine.Concurrency, orderedAccounts, gatewayprotoLane(input.RequestLane), groupAccess.SchedulingPolicy)
 			if err != nil {
 				return GroupFallbackCandidateOutput{}, false, err
 			}
@@ -209,7 +197,7 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidateForArgs(ctx context
 		}
 		output := GroupFallbackCandidateOutput{
 			GroupID:                    candidateGroupID,
-			Accounts:                   orderedQuotaAllowedAccounts,
+			Accounts:                   orderedAccounts,
 			ResponseInspectionPolicies: []gatewayruntimecache.ResponseInspectionPolicySummary{},
 			RoutePlanSnapshot:          nil,
 		}

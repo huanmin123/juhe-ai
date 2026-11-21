@@ -930,20 +930,14 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 			accessType = text
 		}
 	}
-	quotaExceeded := false
-	if payloadMap := map[string]any{}; json.Unmarshal(value.payload, &payloadMap) == nil {
-		if flag, ok := payloadMap["authorizationQuotaExceeded"].(bool); ok {
-			quotaExceeded = flag
-		}
-	}
 	if _, err := tx.ExecContext(ctx, `
     INSERT INTO `+r.table("account_list_availability_projection_index")+` (
       viewer_system_account_id, account_id, effective_status, schedulable_bucket,
       account_type, bound_group_id,
       name_sort_key, priority_sort_key, super_priority_sort_key, fallback_sort_key,
       concurrency_sort_key, account_expires_at_sort_key, last_used_at_sort_key,
-      created_at_sort_key, access_type_sort_key, authorization_quota_exceeded
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      created_at_sort_key, access_type_sort_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(viewer_system_account_id, account_id) DO UPDATE SET
       effective_status = excluded.effective_status,
       schedulable_bucket = excluded.schedulable_bucket,
@@ -957,13 +951,12 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
       account_expires_at_sort_key = excluded.account_expires_at_sort_key,
       last_used_at_sort_key = excluded.last_used_at_sort_key,
       created_at_sort_key = excluded.created_at_sort_key,
-      access_type_sort_key = excluded.access_type_sort_key,
-      authorization_quota_exceeded = excluded.authorization_quota_exceeded`,
+      access_type_sort_key = excluded.access_type_sort_key`,
 		value.viewerSystemAccountID, value.accountID, value.effectiveStatus, value.schedulableBucket,
 		value.accountType, value.boundGroupID,
 		value.nameSortKey, value.prioritySortKey, value.superPrioritySortKey, value.fallbackSortKey,
 		value.concurrencySortKey, value.accountExpiresAtSortKey, value.lastUsedAtSortKey,
-		value.createdAtSortKey, accessType, boolParam(quotaExceeded)); err != nil {
+		value.createdAtSortKey, accessType); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `

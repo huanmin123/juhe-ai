@@ -94,10 +94,9 @@ type DirectSource struct {
 }
 
 type DirectAuthorization struct {
-	ID            string
-	Status        string
-	ExpiresAt     *time.Time
-	QuotaEligible bool
+	ID        string
+	Status    string
+	ExpiresAt *time.Time
 }
 
 type DirectBinding struct {
@@ -403,7 +402,9 @@ func validateDirectAuthorization(input DirectInput, now time.Time) error {
 	}
 	authorization := input.Authorization
 	source := input.Source
-	if strings.TrimSpace(authorization.ID) == "" || authorization.Status != "active" || !authorization.QuotaEligible || (authorization.ExpiresAt != nil && !authorization.ExpiresAt.After(now)) {
+	// QuotaEligible 门已随授权额度退役（revision 31）移除：授权有效性只看
+	// 状态与到期。
+	if strings.TrimSpace(authorization.ID) == "" || authorization.Status != "active" || (authorization.ExpiresAt != nil && !authorization.ExpiresAt.After(now)) {
 		return fmt.Errorf("PG direct input 的授权不可用")
 	}
 	if input.Binding.AuthorizationBindingID != authorization.ID {

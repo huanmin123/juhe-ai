@@ -58,7 +58,6 @@ type managementRow struct {
 	authorizationID                     sql.NullString
 	authorizationStatus                 sql.NullString
 	authorizationExpiresAt              sql.NullString
-	authorizationLimitsJSON             sql.NullString
 	authorizationEffectiveSourceType    sql.NullString
 	authorizationEffectiveSourceTeamID  sql.NullString
 	authorizationResourceOwnerID        sql.NullString
@@ -164,7 +163,6 @@ const managementRowColumns = `
       account_rows.authorization_id,
       account_rows.authorization_status,
       account_rows.authorization_expires_at,
-      account_rows.authorization_limits_json,
       account_rows.authorization_effective_source_type,
       account_rows.authorization_effective_source_team_id,
       account_rows.authorization_resource_owner_system_account_id,
@@ -272,7 +270,6 @@ func managementAccountRowsCTE(table func(string) string) string {
         authorizations.id AS authorization_id,
         authorizations.status AS authorization_status,
         authorizations.expires_at AS authorization_expires_at,
-        authorizations.limits_json AS authorization_limits_json,
         authorizations.effective_source_type AS authorization_effective_source_type,
         authorizations.effective_source_team_id AS authorization_effective_source_team_id,
         authorizations.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
@@ -496,7 +493,6 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.authorizationID,
 		&row.authorizationStatus,
 		&row.authorizationExpiresAt,
-		&row.authorizationLimitsJSON,
 		&row.authorizationEffectiveSourceType,
 		&row.authorizationEffectiveSourceTeamID,
 		&row.authorizationResourceOwnerID,

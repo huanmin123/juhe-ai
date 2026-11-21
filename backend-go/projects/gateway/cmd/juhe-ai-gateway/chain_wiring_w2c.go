@@ -855,11 +855,10 @@ func (l *chainHotQualityAttemptLifecycle) RecordTerminal(ctx context.Context, te
 // process shares the database without a broker hop (去跨进程原则).
 type chainQuotaDBService struct {
 	apiKeys *gatewayquota.APIKeyQuotaService
-	authz   *gatewayquota.AuthorizationQuotaService
 }
 
-func newChainQuotaDBService(apiKeys *gatewayquota.APIKeyQuotaService, authz *gatewayquota.AuthorizationQuotaService) *chainQuotaDBService {
-	return &chainQuotaDBService{apiKeys: apiKeys, authz: authz}
+func newChainQuotaDBService(apiKeys *gatewayquota.APIKeyQuotaService) *chainQuotaDBService {
+	return &chainQuotaDBService{apiKeys: apiKeys}
 }
 
 // CheckAPIKeyQuota mirrors { type: 'check_api_key_quota' }.
@@ -871,18 +870,6 @@ func (s *chainQuotaDBService) CheckAPIKeyQuota(ctx context.Context, apiKey gatew
 // exact stats-database cost load (ReadAPIKeyQuotaCostsExactAsync).
 func (s *chainQuotaDBService) ReadAPIKeyQuotaCosts(ctx context.Context, apiKey gatewayquota.APIKeyRow) (gatewayquota.RequestQuotaCosts, error) {
 	return s.apiKeys.ReadAPIKeyQuotaCostsExactAsync(ctx, apiKey, time.Now())
-}
-
-// CheckAuthorizationQuota mirrors { type: 'check_authorization_quota' } via
-// the id-keyed exact read (CheckAuthorizationQuotaByIDs).
-func (s *chainQuotaDBService) CheckAuthorizationQuota(ctx context.Context, groupAuthorizationID, accountAuthorizationID string) (gatewayquota.Decision, error) {
-	return s.authz.CheckAuthorizationQuotaByIDs(ctx, groupAuthorizationID, accountAuthorizationID, time.Now())
-}
-
-// CheckAuthorizationQuotaBatch mirrors { type: 'check_authorization_quota_batch' }
-// via the id-keyed exact read (CheckAuthorizationQuotaBatchByIDs).
-func (s *chainQuotaDBService) CheckAuthorizationQuotaBatch(ctx context.Context, groupAuthorizationID string, accounts []gatewayquota.AccountRef) ([]gatewayquota.Decision, error) {
-	return s.authz.CheckAuthorizationQuotaBatchByIDs(ctx, groupAuthorizationID, accounts, time.Now())
 }
 
 // ---------------------------------------------------------------------------

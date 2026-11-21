@@ -19,7 +19,7 @@
 
 历史存量（2026-11-04 前写入的 `framing_complete_neutral` 行）在 outcome 投影 replay 与 current-state 读取时归一为 `upstream_http_failure`，新探针不再产生旧值。
 
-不得从上游 HTTP status/body 推断凭据失效、授权失败、限流、封禁或服务故障。本地可验证的配置、解密和 OAuth token 生命周期问题走独立路径。除精确匹配保存检查配置的列表测试恢复例外外，人工测试与模型检测始终无状态。
+不得从上游 HTTP status/body 推断凭据失效、授权失败、限流、封禁或服务故障。本地可验证的配置、解密和 OAuth token 生命周期问题走独立路径。人工测试与模型检测始终无状态。（2026-11-22 回正：原「精确匹配保存检查配置的列表测试恢复例外」（§8 `account-test-local-restore-regression`）为 Node 时代设计，Go 未迁移——`manualtest` 执行链只写 `account_test_*` 结果表，无任何账户状态恢复 mutation，代码落在更严格读法；本文 §8 对应条目已同步注销，与《AI账户检查模型与人工测试设计》「人工测试没有任何状态恢复例外」口径归一。）
 
 ## 3. 待检查 transport 失败
 
@@ -58,7 +58,7 @@
 - 自有 `error` 账户执行异常恢复时只能进入 `pending_test`，不能直接进入 `active`。
 - 异常恢复会清空健康检查、冷却复测和运行失败标记，关闭调度并立即投递后台激活检查；只有后台检查成功才能恢复正常。
 - 所有非 `disabled` 的自有账户都允许执行“停用账户”，包括 `pending_test`、`error`、`temporary_unavailable` 和 `rate_limited`。
-- 手动启用仍只针对真正的 `disabled` 账户；待检查、异常和冷却状态不能借“启用账户”直接变为正常。待检查账户仅可通过上述确认风险的“恢复可调度”人工操作例外直接恢复。
+- 手动启用仍只针对真正的 `disabled` 账户；待检查、异常和冷却状态不能借“启用账户”直接变为正常。待检查账户仅可通过上述确认风险的“恢复可调度”人工操作例外直接恢复。（2026-11-22 回正：本节收敛是**前端菜单入口**口径；后端 API `PATCH status` 按「请求值」放行（`patch_runtime_state.go` `assertStatusMutationAllowed` 只校验目标值合法性），`error`/`temporary_unavailable` 直接 PATCH `active` 会被接受并按 active 臂清冷却/错误/复测列族，属受控人工动作，与「异常恢复」等效但绕过 pending_test 激活检查闸门。前端不暴露该入口；如需 API 面强制本节收敛须另行立项。）
 - 正常自有账户提供“人工隔离”操作。该名称只表示人工触发动作，不新增账户状态；操作与“超级优先”一致，点击后不做二次确认，立即把账户写为 `temporary_unavailable`，由现有路由过滤、网关缓存失效、账号级冷却复测和成功恢复链路接管。授权账户实例不提供该操作，避免使用方改变来源账户的持久运行态。
 - 授权实例沿用自身的本地调度状态规则，本次“所有状态可停用”只扩展自有账户。
 - 列表“恢复可调度/异常恢复”（`clearFailureState`）原子翻转持久状态：`temporary_unavailable` / `rate_limited` 直接恢复 `active + schedulable`（只受套餐到期约束；时段外由 `availability_schedule_gate=0` 表达为「非时间段」，不改写 `status`），`error` 进入不可调度的 `pending_test` 并立即投递后台激活检查；与授权实例恢复（`patchAuthorizedDispatchTx`）同语义，恢复后不得残留“冷却态但无冷却锚点”的账户行（BUG-0288）。
@@ -95,5 +95,5 @@ accounts.health_check_failure_started_at
 - `cooldown-retest-recovery-regression`：长期阶段每小时复检、transport 与 HTTP 失败证据各自推进 7 天终态、本地任务失败不触发终态、显式来源恢复边界及终态恢复。
 - `disabled-account-state-guard-regression`：待检查和异常自有账户均可停用，异常恢复不直接激活。
 - `account-status-formatters-regression`：菜单名称、重新检查资格、异常/待检查停用入口和提示文案。
-- `account-test-local-restore-regression`：保存账户的模型和精确请求形态匹配时仅恢复自有不可调度账户；任一选择不匹配时保持原状态。
+- ~~`account-test-local-restore-regression`~~：已注销（2026-11-22 回正）——保存账户的模型和精确请求形态匹配时仅恢复自有不可调度账户。该例外为 Node 时代设计，Go 未迁移（`manualtest` 执行链无任何账户状态恢复 mutation），现行契约见《AI账户检查模型与人工测试设计》「人工测试没有任何状态恢复例外」。
 - Go migration 契约测试：PostgreSQL 新字段和非破坏性 Down 约束。

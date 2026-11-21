@@ -421,28 +421,26 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 		SchedulingPolicy:               schedulingPolicy,
 		GroupAuthorizationID:           strPtrIfSet(authorization.id),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
-		GroupAuthorizationQuotaLimited: boolPtr(authorization.quotaLimited),
 		GroupAuthorizationSourceType:   authorization.sourceType,
 		GroupAuthorizationSourceTeamID: authorization.sourceTeamID,
 	}, nil
 }
 
-// authorizationRow is the resource_authorizations subset the selector reads.
+// authorizationRow is the resource_authorizations subset the selector reads
+// （授权额度退役：额度列与 quotaLimited 判定随之移除）.
 type authorizationRow struct {
 	id           string
 	expiresAt    *string
-	quotaLimited bool
 	sourceType   *string
 	sourceTeamID *string
 }
 
-// activeGroupAuthorization mirrors activeResourceAuthorization('group', ...) +
-// resourceAuthorizationQuotaLimited.
+// activeGroupAuthorization mirrors activeResourceAuthorization('group', ...).
 func (m *SQLReadModels) activeGroupAuthorization(ctx context.Context, groupID, granteeID string) (*authorizationRow, error) {
 	nowISO := m.now().UTC().Format("2006-01-02T15:04:05.000") + "Z"
 	var id string
-	var expiresAt, sourceType, sourceTeamID, limitsJSON sql.NullString
-	err := m.db.QueryRowContext(ctx, m.bind(`SELECT id, effective_source_type, effective_source_team_id, expires_at, limits_json
+	var expiresAt, sourceType, sourceTeamID sql.NullString
+	err := m.db.QueryRowContext(ctx, m.bind(`SELECT id, effective_source_type, effective_source_team_id, expires_at
 		FROM `+m.table("resource_authorizations")+`
 		WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ?
 			AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)
@@ -457,7 +455,7 @@ func (m *SQLReadModels) activeGroupAuthorization(ctx context.Context, groupID, g
 				        AND src.source_team_id = `+m.table("resource_authorizations")+`.effective_source_team_id))
 			)
 		LIMIT 1`), groupID, granteeID, nowISO).
-		Scan(&id, &sourceType, &sourceTeamID, &expiresAt, &limitsJSON)
+		Scan(&id, &sourceType, &sourceTeamID, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -467,24 +465,9 @@ func (m *SQLReadModels) activeGroupAuthorization(ctx context.Context, groupID, g
 	return &authorizationRow{
 		id:           id,
 		expiresAt:    nullToStrPtr(expiresAt),
-		quotaLimited: limitsHaveEnabledQuota(limitsJSON),
 		sourceType:   nullToStrPtr(sourceType),
 		sourceTeamID: nullToStrPtr(sourceTeamID),
 	}, nil
-}
-
-// limitsHaveEnabledQuota mirrors resourceAuthorizationQuotaLimited: an
-// enabled entry anywhere in the parsed request quota limits marks the
-// authorization quota limited; unparsable limits are treated as absent.
-func limitsHaveEnabledQuota(limitsJSON sql.NullString) bool {
-	if !limitsJSON.Valid || strings.TrimSpace(limitsJSON.String) == "" {
-		return false
-	}
-	limits, err := apikeys.ParseQuotaLimitsJSON(limitsJSON.String)
-	if err != nil {
-		return false
-	}
-	return quotaLimitsHasEnabled(limits)
 }
 
 // quotaLimitsHasEnabled mirrors apikeys.QuotaLimits.hasEnabled (private in the

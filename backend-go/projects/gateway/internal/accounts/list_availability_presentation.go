@@ -120,7 +120,7 @@ func presentationMapping(status string) (string, string) {
 		return "permission_denied", "contact_admin"
 	case "authorization_expired":
 		return "expired", "renew_authorization"
-	case "authorization_paused", "authorization_unavailable", "authorization_quota_exceeded":
+	case "authorization_paused", "authorization_unavailable":
 		return "authorization_blocked", "contact_authorizer"
 	case "source_deleted", "source_disabled", "source_unschedulable":
 		return "source_blocked", "contact_authorizer"
@@ -181,8 +181,6 @@ func boundaryKindOf(status string) string {
 		return "source_expired"
 	case "instance_expired":
 		return "account_expired"
-	case "authorization_quota_exceeded":
-		return "quota_reset"
 	case "source_cooldown", "instance_cooldown":
 		return "cooldown_expiry"
 	case "schedule_out_of_window":

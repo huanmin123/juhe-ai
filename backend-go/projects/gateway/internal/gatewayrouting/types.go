@@ -88,7 +88,6 @@ type GroupUsageAccessMetadata struct {
 	SchedulingPolicy               string
 	GroupAuthorizationID           string
 	GroupAuthorizationExpiresAt    string
-	GroupAuthorizationQuotaLimited *bool
 	GroupAuthorizationSourceType   string
 	GroupAuthorizationSourceTeamID string
 }

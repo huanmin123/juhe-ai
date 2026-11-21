@@ -2,7 +2,7 @@
 
 > **历史截面提示。** 本文部分段落撰写于 Node 过渡期，涉及 Node 进程生命周期 / Node worker 承载的句子为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
 
-> 状态：最终实现契约 v1.2，代码尚未按本契约落地。
+> 状态：最终实现契约 v1.2，Go 已按本契约落地（2026-11-22 回正：原「代码尚未落地」头注过期——Key-模型短屏蔽已由 gateway `internal/gatewayaccounteffects/keymodelruntime.go`（退避 5s/15s/1m/5m）与 jobs `internal/keymodelrecovery`（1s 扫描、3 次恢复阈值、2 分钟 gap）及 `key-model-memory-recovery` 任务实现，常量与本文 §4.7 逐字一致）。
 >
 > 本文是本轮生产调度问题的唯一实现依据，并覆盖 [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md) 在“非主模型短屏蔽”部分的早期目标方案。它是对现有账户健康探测、API Key 故障隔离和网关调度的局部修复，不采用重做整套多模型账户健康聚合的方案。实现、测试、运行态验证和发布门禁完成前，不能把本文当作已上线能力。文中“固定”参数不得被实现者替换为环境默认值、随机值或未记录的配置；需要调整必须先修改本文并重新走评审。
 

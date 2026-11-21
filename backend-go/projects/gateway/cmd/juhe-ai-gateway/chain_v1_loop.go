@@ -26,7 +26,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -1401,7 +1400,7 @@ func superTargetClassificationFromReason(reason string) string {
 		return superTargetUpstreamExhausted
 	case "no_candidate_accounts", "all_accounts_cooldown":
 		return superTargetNoCandidate
-	case "authorization_quota_exceeded", "group_capacity_busy":
+	case "group_capacity_busy":
 		return superTargetCapacityExhausted
 	}
 	return ""
@@ -1502,7 +1501,7 @@ func (l *v1DispatchLoop) renderSuperTargetExhausted(attempt *gatewaydispatch.Ups
 	switch classification {
 	case superTargetCapacityExhausted:
 		statusCode = http.StatusTooManyRequests
-		message = gatewayquota.AuthorizationQuotaExceededMessage
+		message = gatewayCapacityQuotaExceededMessage
 		errorType = "rate_limit_exceeded"
 		errorCode = "rate_limit_exceeded"
 		errorPhase = "quota"

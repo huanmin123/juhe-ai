@@ -24,10 +24,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
@@ -89,7 +87,6 @@ func projectGroupAccessForRouting(meta gatewayruntimecache.GroupUsageAccessMetad
 		SchedulingPolicy:               renderSchedulingPolicy(meta.SchedulingPolicy),
 		GroupAuthorizationID:           deref(meta.GroupAuthorizationID),
 		GroupAuthorizationExpiresAt:    deref(meta.GroupAuthorizationExpiresAt),
-		GroupAuthorizationQuotaLimited: meta.GroupAuthorizationQuotaLimited,
 		GroupAuthorizationSourceType:   deref(meta.GroupAuthorizationSourceType),
 		GroupAuthorizationSourceTeamID: deref(meta.GroupAuthorizationSourceTeamID),
 	}
@@ -219,10 +216,6 @@ func (chainCapabilityFilter) FilterAccountsByRequestCapability(_ context.Context
 type chainRouteResolver struct {
 	cache  *gatewayruntimecache.Service
 	normal *gatewayrouting.NormalModelRouteService
-	// quota 承载超级分组解析期逐片段配额批查（权威门）。与 dispatch 窗口
-	// 门同一底层服务（chainDispatchQuota）；nil（部分组合测试零值）时片段
-	// 配额剔除不生效，生产组合根 fail-fast 要求必装配。
-	quota gatewaydispatch.AuthorizationQuotaChecker
 	// globalConcurrencyMax 与 selector/read models 同源，用于 fallback 投影
 	// 映射 legacy 16 键策略；0 表示未注入（按默认值）。
 	globalConcurrencyMax int
@@ -337,7 +330,7 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 		out.MemberSkips = memberSkips
 		if out.APIKeyRecord != nil {
 			out.APIKeyRecord.SelectedGroupID = result.GroupID
-			// 绑定行必须与选中目标一致：superTargetMemberIDs / 窗口配额跳过 /
+			// 绑定行必须与选中目标一致：superTargetMemberIDs /
 			// 候选与可恢复 loader 都按绑定行的 GroupKind+MemberGroupIDs 扇出。
 			if selectedBinding, ok := bindingForGroup(input.APIKeyRecord, result.GroupID); ok {
 				out.APIKeyRecord.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{selectedBinding}
@@ -478,6 +471,12 @@ func skippedSuperTargetOutcomes(groupIDs []string) []gatewaypreauth.NormalRouteT
 	return outcomes
 }
 
+// gatewayCapacityQuotaExceededMessage 是分组容量耗尽（group_capacity_busy /
+// 并发与 RPM 耗尽）429 的用户文案，沿用原授权额度同款提示；授权额度评估链
+// 已随 revision 31 退役，常量迁入组合根（原 gatewayquota.AuthorizationQuota
+// ExceededMessage）。
+const gatewayCapacityQuotaExceededMessage = "额度已用完，请联系管理员提升额度"
+
 // superTargetExhaustedResult 按设计 §4.2 的固定优先级构造外层终态：
 // 任一 capacity → 429；全部 no_candidate → 503 model_target_group_unavailable；
 // 其余 → 503 upstream_candidates_exhausted。
@@ -505,7 +504,7 @@ func superTargetExhaustedResult(requestedModel string, record *gatewayruntimecac
 		base.StatusCode = 429
 		base.Type = "rate_limit_exceeded"
 		base.Code = "rate_limit_exceeded"
-		base.Message = gatewayquota.AuthorizationQuotaExceededMessage
+		base.Message = gatewayCapacityQuotaExceededMessage
 	case allNoCandidate:
 		base.StatusCode = 503
 		base.Type = "service_unavailable"
@@ -520,9 +519,9 @@ func superTargetExhaustedResult(requestedModel string, record *gatewayruntimecac
 	return base
 }
 
-// superGroupSegmentAccounts 展开一个超级分组目标的成员片段并执行成员级配额
-// 批查；被否决账号剔除，返回幸存账号（全局 route_rank 序）与逐成员跳过原因
-// （设计 §4.2：member_disabled / no_candidate / capacity_exhausted）。
+// superGroupSegmentAccounts 展开一个超级分组目标的成员片段；授权额度已退役，
+// 片段不再做成员级配额批查，返回成员账号（全局 route_rank 序）与逐成员跳过
+// 原因（设计 §4.2：member_disabled / no_candidate）。
 func (r *chainRouteResolver) superGroupSegmentAccounts(
 	ctx context.Context,
 	systemAccountID, endpointFamily string,
@@ -555,26 +554,7 @@ func (r *chainRouteResolver) superGroupSegmentAccounts(
 			account.BoundGroupID = &boundGroupID
 			fragment = append(fragment, account)
 		}
-		if len(fragment) == 0 || r.quota == nil {
-			accounts = append(accounts, fragment...)
-			continue
-		}
-		groupAccess := r.rehydrateGroupAccess(ctx, segment.GroupID, systemAccountID, segment.GroupAccess)
-		decisions, err := r.quota.CheckBatchAsync(ctx, *groupAccess, fragment)
-		if err != nil {
-			return nil, nil, err
-		}
-		survivors := 0
-		for _, account := range fragment {
-			if decision, ok := decisions[account.ID]; ok && !decision.Allowed {
-				continue
-			}
-			accounts = append(accounts, account)
-			survivors++
-		}
-		if survivors == 0 {
-			skips = append(skips, gatewaypreauth.NormalRouteMemberSkip{GroupID: segment.GroupID, Reason: "capacity_exhausted"})
-		}
+		accounts = append(accounts, fragment...)
 	}
 	// enabled 成员未进入片段：被能力/模型过滤后没有候选（设计 §4.2）。
 	for _, memberID := range binding.MemberGroupIDs {

@@ -725,20 +725,8 @@ type ClientIPConcurrencyInput struct {
 }
 
 // ---------------------------------------------------------------------------
-// Quota + concurrency + runtime cache + locks
+// concurrency + runtime cache + locks
 // ---------------------------------------------------------------------------
-
-// QuotaDecision mirrors the per-account quota decision.
-type QuotaDecision struct {
-	Allowed           bool
-	RetryAfterSeconds *int64
-}
-
-// AuthorizationQuotaChecker mirrors
-// quota/authorization-quota.service.ts checkGatewayAuthorizationQuotaBatchAsync.
-type AuthorizationQuotaChecker interface {
-	CheckBatchAsync(ctx context.Context, groupAccess gatewayruntimecache.GroupUsageAccessMetadata, accounts []AccountCandidate) (map[string]QuotaDecision, error)
-}
 
 // ConcurrencySlot mirrors AccountConcurrencySlot. RPMCurrent/RPMLimit/
 // RPMResetAtMs 是占位尝试时刻的 RPM 窗口观测（AI 账户每分钟请求上限设计

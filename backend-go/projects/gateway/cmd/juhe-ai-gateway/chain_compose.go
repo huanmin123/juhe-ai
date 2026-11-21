@@ -126,7 +126,6 @@ type chainRuntimeDeps struct {
 	// G05 preauth quota + client-ip collaborator services (required: the
 	// preflight dereferences the quota ports on every authenticated request).
 	APIKeyQuota   *gatewayquota.APIKeyQuotaService
-	AuthzQuota    *gatewayquota.AuthorizationQuotaService
 	InflightQuota *gatewayquota.InflightQuotaService
 	Avoidance     gatewaypreauth.ClientIPAccountAvoidanceFactory
 	Affinity      *gatewaygemini.InteractionAffinity
@@ -312,9 +311,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	if deps.APIKeyQuota == nil {
 		missing = append(missing, "gatewaypreauth.APIKeyQuota（gatewayquota.APIKeyQuotaService）")
 	}
-	if deps.AuthzQuota == nil {
-		missing = append(missing, "gatewaypreauth.AuthorizationQuota（gatewayquota.AuthorizationQuotaService）")
-	}
 	if deps.InflightQuota == nil {
 		missing = append(missing, "gatewaydispatch.InflightQuota（gatewayquota.InflightQuotaService）")
 	}
@@ -450,12 +446,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		chainRoutingCache{cache: deps.Cache},
 		chainCapabilityFilter{},
 	)
-	// 超级分组解析期逐片段配额批查与 dispatch 窗口门共用同一 G07 服务
-	// （chainDispatchQuota → gatewaydispatch.AuthorizationQuotaChecker）。
 	routeResolver := &chainRouteResolver{
 		cache:                deps.Cache,
 		normal:               normalRoute,
-		quota:                newChainDispatchQuota(deps.AuthzQuota),
 		globalConcurrencyMax: deps.ConcurrencyGlobalMax,
 	}
 
@@ -656,11 +649,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		engine.ClientSourceAvoidance = &degradedClientSourceAvoidance{}
 	}
 	engine.ClientIPAvoidance = newChainClientIPAvoidance(deps.AvoidanceTracker)
-	engine.Quota = newChainDispatchQuota(deps.AuthzQuota)
-	// T93-1（C3-H1）+ T93-4（C3-H8）：请求级在途额度预占（API Key + 授权/
-	// 团队 scope）在选定账户、拿到 vendor 与上游映射模型之后执行；nil = 未
-	// 装配时只保留 preflight 的已结算额度拒绝。
-	engine.InflightQuota = newChainRequestInflightQuota(deps.InflightQuota, deps.APIKeyQuota, deps.AuthzQuota)
+	// T93-1（C3-H1）+ T93-4（C3-H8）：请求级在途额度预占（API Key scope）在
+	// 选定账户、拿到 vendor 与上游映射模型之后执行；nil = 未装配时只保留
+	// preflight 的已结算额度拒绝。
+	engine.InflightQuota = newChainRequestInflightQuota(deps.InflightQuota, deps.APIKeyQuota)
 	if deps.ConcurrencyTracker == nil {
 		// nil 兜底仅供组合测试：生产组合根必须传 chainServices.
 		// ConcurrencyTracker（engine 并发槽与容量忙判定共用同一事实源）。
@@ -713,7 +705,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		UserLimits:         deps.UserLimits,
 		ModelsRateLimit:    deps.ModelsRateLimit,
 		APIKeyQuota:        deps.APIKeyQuota,
-		AuthorizationQuota: deps.AuthzQuota,
 		Affinity:           deps.Affinity,
 		AccountAvoidance:   deps.Avoidance,
 		APIKeyValidator:    &chainAPIKeyValidator{cache: deps.Cache},

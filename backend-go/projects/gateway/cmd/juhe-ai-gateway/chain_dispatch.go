@@ -30,7 +30,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -179,39 +178,6 @@ func (a *chainClientIPAvoidance) OrderAsync(ctx context.Context, accounts []gate
 		AvoidedAccountIDs:  result.AvoidedAccountIDs,
 		BypassedAllAvoided: result.BypassedAllAvoided,
 	}, nil
-}
-
-// chainDispatchQuota adapts the G07 authorization quota service onto the
-// dispatch AuthorizationQuotaChecker port.
-type chainDispatchQuota struct {
-	quota *gatewayquota.AuthorizationQuotaService
-}
-
-func newChainDispatchQuota(quota *gatewayquota.AuthorizationQuotaService) *chainDispatchQuota {
-	return &chainDispatchQuota{quota: quota}
-}
-
-func (q *chainDispatchQuota) CheckBatchAsync(ctx context.Context, groupAccess gatewayruntimecache.GroupUsageAccessMetadata, accounts []gatewaydispatch.AccountCandidate) (map[string]gatewaydispatch.QuotaDecision, error) {
-	entries := make([]gatewayquota.AccountAuthorizationSummary, 0, len(accounts))
-	for _, account := range accounts {
-		entries = append(entries, gatewayquota.AccountAuthorizationSummary{
-			ID:                               account.ID,
-			AccountAuthorizationID:           deref(account.AccountAuthorizationID),
-			AccountAuthorizationQuotaLimited: account.AccountAuthorizationQuotaLimited != nil && *account.AccountAuthorizationQuotaLimited,
-		})
-	}
-	decisions, err := q.quota.CheckAuthorizationQuotaBatchAsync(ctx, gatewayquota.GroupAccessMetadata{
-		GroupAuthorizationID:           deref(groupAccess.GroupAuthorizationID),
-		GroupAuthorizationQuotaLimited: groupAccess.GroupAuthorizationQuotaLimited != nil && *groupAccess.GroupAuthorizationQuotaLimited,
-	}, entries)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]gatewaydispatch.QuotaDecision, len(decisions))
-	for accountID, decision := range decisions {
-		out[accountID] = gatewaydispatch.QuotaDecision{Allowed: decision.Allowed}
-	}
-	return out, nil
 }
 
 // accountConcurrencyTracker 是 memory / Redis 两种账户并发事实源的共同接口。

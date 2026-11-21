@@ -318,3 +318,13 @@ func (c *RedisSharedCache) Clear(ctx context.Context) error {
 	}
 	return c.client.Set(ctx, c.versionKey, nextCacheVersion(time.Now().UnixMilli()), sharedCacheVersionTTL).Err()
 }
+
+// toAnySlice 把 []string 展开为 go-redis 可变参数所需的 []any（原
+// authzquota.go 的共享小工具，随其删除迁入本文件）。
+func toAnySlice(values []string) []any {
+	args := make([]any, len(values))
+	for i, value := range values {
+		args[i] = value
+	}
+	return args
+}

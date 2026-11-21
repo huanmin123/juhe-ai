@@ -2,8 +2,8 @@ package main
 
 // T93-1（C3-H1）+ T93-4（C3-H8）链面接线：把 gatewayquota 的请求级在途预留器
 // 适配成 dispatch 引擎端口。预占点在引擎内「选定账户 + 上游映射模型 + 最终
-// 上游请求体定稿之后、发上游请求之前」；API Key 与授权/团队 scope 一次原子
-// 预留，释放走既有 inflight 生命周期。
+// 上游请求体定稿之后、发上游请求之前」；API Key scope 预留释放走既有
+// inflight 生命周期（授权 scope 随授权额度退役移除）。
 
 import (
 	"context"
@@ -19,11 +19,11 @@ type chainRequestInflightQuota struct {
 
 // newChainRequestInflightQuota 装配端口；inflight 缺席时返回 nil（引擎保持
 // 未装配语义：只做 preflight 已结算额度拒绝）。
-func newChainRequestInflightQuota(inflight *gatewayquota.InflightQuotaService, apiKeys *gatewayquota.APIKeyQuotaService, authz *gatewayquota.AuthorizationQuotaService) gatewaydispatch.InflightQuotaPort {
+func newChainRequestInflightQuota(inflight *gatewayquota.InflightQuotaService, apiKeys *gatewayquota.APIKeyQuotaService) gatewaydispatch.InflightQuotaPort {
 	if inflight == nil {
 		return nil
 	}
-	return &chainRequestInflightQuota{reserver: gatewayquota.NewRequestInflightReserver(inflight, apiKeys, authz)}
+	return &chainRequestInflightQuota{reserver: gatewayquota.NewRequestInflightReserver(inflight, apiKeys)}
 }
 
 // ReserveUpstreamRequest implements gatewaydispatch.InflightQuotaPort.
@@ -34,15 +34,13 @@ func (c *chainRequestInflightQuota) ReserveUpstreamRequest(ctx context.Context, 
 			SystemAccountID: input.SystemAccountID,
 			QuotaLimitsJSON: input.APIKeyQuotaLimitsJSON,
 		},
-		ProviderCode:           input.ProviderCode,
-		SystemAccountID:        input.SystemAccountID,
-		Model:                  input.Model,
-		ServiceTier:            input.ServiceTier,
-		RawBodyBytes:           input.BodyBytes,
-		HasMaxOutputTokens:     input.HasMaxOutputTokens,
-		MaxOutputTokens:        input.MaxOutputTokens,
-		GroupAuthorizationID:   input.GroupAuthorizationID,
-		AccountAuthorizationID: input.AccountAuthorizationID,
+		ProviderCode:       input.ProviderCode,
+		SystemAccountID:    input.SystemAccountID,
+		Model:              input.Model,
+		ServiceTier:        input.ServiceTier,
+		RawBodyBytes:       input.BodyBytes,
+		HasMaxOutputTokens: input.HasMaxOutputTokens,
+		MaxOutputTokens:    input.MaxOutputTokens,
 	})
 	if err != nil {
 		return gatewaydispatch.InflightQuotaReserveOutcome{}, err

@@ -167,7 +167,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - `RuntimeProbeStateStore` 是运行态探针专用存储。standalone 使用 memory；performance 使用 Redis state URL。
 - Redis 存储拆为 JSON 状态、due sorted set 和 generation key。写状态时同时写 due 索引；删除状态时同时清理 due。
 - generation 使用 Redis `INCR + PEXPIRE` 原子递增；探针执行和事前确认每次回写前都读取当前 generation，旧结果直接丢弃。
-- server 进程启动后会启动 Redis due sweep，周期读取 due 索引并执行到期探针；worker 和 DB service 不执行运行态恢复探针。
+- server 进程启动后会启动 Redis due sweep，周期读取 due 索引并执行到期探针；worker 和 DB service 不执行运行态恢复探针。（2026-11-22 回正：本句为 Node 历史截面，Go 现状相反——运行态恢复探针由 jobs 承载：传输电路恢复 `account-circuit-recovery`（5s/轮）与速度优先首字慢恢复 `normal-route-speed-first-recovery-probe`（5s/轮）均注册在 jobs（`jobregistry/schedule.go`，`worker_circuit_jobs.go` 接线）；gateway 侧 `gatewaycircuit/recovery.go` 为同契约镜像但组合根未装配（`NewRecoveryService` 无 cmd 引用）；`RuntimeProbeStateStore` 的 Redis 驱动尚未迁移（`chain_turn_probe_store.go` 自述），现网仅 memory 版服务 codex turn 探测。）
 - 调度过滤在 Redis runtime state 下读取共享探针状态，但使用 `1s` 正向缓存和 `500ms` 负向缓存降低热路径 Redis 读放大；后台探针或主动健康检查形成匹配来源的 `framing_complete_neutral` 时，只按 generation 清理轻量 transport 怀疑并更新诊断，普通请求完整响应不能清理账户级运行态；`complete_success`、专属 TTL 或人工恢复才可清理对应运行态或持久业务状态。
 - Redis 探针状态只保存非敏感元数据：`runtimeKey`、`accountId`、账号展示名、供应商、系统账户 / 分组 ID、设置快照、失败计数、观察时间、下一次探针时间、原因和 generation。
 - Redis 探针状态不保存账号凭据、API Key、OAuth token、代理密码、完整请求 / 响应正文、失败请求 model、endpoint、stream 或用户 payload。执行探针前必须通过 DB service 按 `accountId + groupId + systemAccountId` 重载账号凭据，并允许读取当前不可用账号用于恢复验证。

@@ -533,7 +533,7 @@ type APIKeyInflightQuotaState struct {
 }
 
 // Snapshot mirrors apiKeyInflightQuotaSnapshot: 只返回 API Key scope 的在途
-// 状态（授权/团队 scope 走 ScopeSnapshot，保持既有快照契约不变）。
+// 状态（授权/团队 scope 快照臂已随授权额度退役移除）。
 func (s *InflightQuotaService) Snapshot() []APIKeyInflightQuotaState {
 	if s.remote != nil {
 		states, err := s.remote.snapshot(context.Background())
@@ -543,9 +543,7 @@ func (s *InflightQuotaService) Snapshot() []APIKeyInflightQuotaState {
 		}
 		out := make([]APIKeyInflightQuotaState, 0, len(states))
 		for _, state := range states {
-			if !isAuthorizationInflightScopeKey(state.ScopeKey) {
-				out = append(out, APIKeyInflightQuotaState{APIKeyID: state.ScopeKey, ReservedCostUsd: state.ReservedCostUsd})
-			}
+			out = append(out, APIKeyInflightQuotaState{APIKeyID: state.ScopeKey, ReservedCostUsd: state.ReservedCostUsd})
 		}
 		return out
 	}
@@ -553,46 +551,9 @@ func (s *InflightQuotaService) Snapshot() []APIKeyInflightQuotaState {
 	defer s.mu.Unlock()
 	out := make([]APIKeyInflightQuotaState, 0, len(s.states))
 	for stateKey, state := range s.states {
-		if isAuthorizationInflightScopeKey(stateKey) {
-			continue
-		}
 		out = append(out, APIKeyInflightQuotaState{APIKeyID: stateKey, ReservedCostUsd: state.reservedCostUsd})
 	}
 	return out
-}
-
-// ScopeSnapshot 返回授权/团队 scope 的在途状态（T93-4）。
-func (s *InflightQuotaService) ScopeSnapshot() []InflightScopeState {
-	if s.remote != nil {
-		states, err := s.remote.snapshot(context.Background())
-		if err != nil {
-			s.log("gateway_api_key_inflight_quota_snapshot_failed", map[string]any{"error": err.Error()}, "授权 scope 在途额度快照读取失败")
-			return nil
-		}
-		out := make([]InflightScopeState, 0, len(states))
-		for _, state := range states {
-			if isAuthorizationInflightScopeKey(state.ScopeKey) {
-				out = append(out, InflightScopeState{ScopeKey: state.ScopeKey, ReservedCostUsd: state.ReservedCostUsd})
-			}
-		}
-		return out
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]InflightScopeState, 0, len(s.states))
-	for stateKey, state := range s.states {
-		if !isAuthorizationInflightScopeKey(stateKey) {
-			continue
-		}
-		out = append(out, InflightScopeState{ScopeKey: stateKey, ReservedCostUsd: state.reservedCostUsd})
-	}
-	return out
-}
-
-// InflightScopeState 是一条授权/团队 scope 的在途状态。
-type InflightScopeState struct {
-	ScopeKey        string
-	ReservedCostUsd float64
 }
 
 // ClearForTest mirrors clearApiKeyInflightQuotaReservationsForTest.
