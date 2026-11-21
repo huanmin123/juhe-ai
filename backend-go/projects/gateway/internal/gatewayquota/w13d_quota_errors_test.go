@@ -259,162 +259,6 @@ func w13dAPIKeyCacheKey(t *testing.T, service *APIKeyQuotaService, apiKeyID stri
 // authzquota: Async 各模式分支与错误注入
 // ---------------------------------------------------------------------------
 
-func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	business := newTestDB(t, "w13d-authz-modes-biz")
-	statsDB := newTestDB(t, "w13d-authz-modes-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-
-	// Async 入口（内存快照模式）：走批量精确装载并写 memory 缓存。
-	memoryService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	decision, err := memoryService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
-	if err != nil || !decision.Allowed {
-		t.Fatalf("memory 模式必须放行: (%+v, %v)", decision, err)
-	}
-	// memory 命中：第二次调用直接返回缓存决策。
-	decision, err = memoryService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
-	if err != nil || !decision.Allowed {
-		t.Fatalf("memory 命中必须放行: (%+v, %v)", decision, err)
-	}
-
-	// PG 模式：Async 走 ByIDsExactAsync 批量精确路径，业务表/统计表经生产
-	// PG 臂方言真实查询（SQLite 时代依赖 schema 前缀表在 SQLite 不存在注入
-	// 错误，迁真实 PG 后重钉为成功路径断言）。
-	pgService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	decision, err = pgService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
-	if err != nil {
-		t.Fatalf("PG 模式 Async 批量精确检查必须成功: %v", err)
-	}
-	if !decision.Allowed {
-		t.Fatalf("PG 模式未超额必须放行: %+v", decision)
-	}
-
-	// 坏时区：Async 的 cacheKey 构造错误透传（两种模式）。
-	brokenTZ, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Business: business, Stats: stats, Timezone: w13dBrokenTZ{},
-		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := brokenTZ.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("坏时区必须报错")
-	}
-	// 无授权 ID 的空输入在任何配额校验前直接放行。
-	if decision, err := brokenTZ.CheckAuthorizationQuotaAsync(ctx, GroupAccessMetadata{}, nil); err != nil || !decision.Allowed {
-		t.Fatalf("空输入必须直接放行: (%+v, %v)", decision, err)
-	}
-
-	// syncer 错误透传。
-	syncerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisRuntimeState: true},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{}, clock),
-		Syncer:   &wjMockSyncer{err: errors.New("失效同步失败")}, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := syncerService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("syncer 错误必须透传")
-	}
-}
-
-func TestW13DAuthorizationByIDsErrorPaths(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	business := newTestDB(t, "w13d-authz-byids-err")
-	statsDB := newTestDB(t, "w13d-authz-byids-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	brokenTZ, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Business: business, Stats: stats, Timezone: w13dBrokenTZ{},
-		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// ByIDs / ByIDsReadOnly / ByIDsExactAsync 的批量错误透传。
-	if _, err := brokenTZ.CheckAuthorizationQuotaByIDs(ctx, "ga1", "aa1", clock.Now()); err == nil {
-		t.Fatal("ByIDs 批量错误必须透传")
-	}
-	if _, err := brokenTZ.CheckAuthorizationQuotaByIDsReadOnly(ctx, "ga1", "aa1", clock.Now()); err == nil {
-		t.Fatal("ReadOnly 批量错误必须透传")
-	}
-	if _, err := brokenTZ.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", clock.Now()); err == nil {
-		t.Fatal("Exact 批量错误必须透传")
-	}
-	// 空 account 与空 group：批量决策为空 → 包装层回落允许。
-	ok, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	empty, err := ok.CheckAuthorizationQuotaBatchByIDsReadOnly(ctx, "", nil, clock.Now())
-	if err != nil || len(empty) != 0 {
-		t.Fatalf("空输入批量=%+v err=%v", empty, err)
-	}
-	if decision, err := ok.CheckAuthorizationQuotaByIDsReadOnly(ctx, "", "", clock.Now()); err != nil || !decision.Allowed {
-		t.Fatalf("空批量必须放行: (%+v, %v)", decision, err)
-	}
-	if decision, err := ok.CheckAuthorizationQuotaByIDs(ctx, "", "", clock.Now()); err != nil || !decision.Allowed {
-		t.Fatalf("空批量必须放行: (%+v, %v)", decision, err)
-	}
-	// syncer 错误（ExactAsync 批量）。
-	syncerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisRuntimeState: true},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{}, clock),
-		Syncer:   &wjMockSyncer{err: errors.New("失效同步失败")}, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := syncerService.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, "ga1", []AccountRef{{AccountID: "u1", AccountAuthorizationID: "aa1"}}, clock.Now()); err == nil {
-		t.Fatal("syncer 错误必须透传")
-	}
-	// 重复 scope 去重。
-	scopes := authorizationQuotaScopeList("ga1", []AccountRef{
-		{AccountID: "u1", AccountAuthorizationID: "aa1"},
-		{AccountID: "u2", AccountAuthorizationID: "aa1"},
-	})
-	if len(uniqueAuthorizationQuotaScopes(scopes)) != len(scopes)-1 {
-		t.Fatalf("重复 scope 必须去重: %d -> %d", len(scopes), len(uniqueAuthorizationQuotaScopes(scopes)))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// redis shared cache + runtime state
-// ---------------------------------------------------------------------------
-
 func TestW13DRedisCacheConstructionGuards(t *testing.T) {
 	if _, err := NewRedisRuntimeStateStore(nil, "dev", "store"); err == nil {
 		t.Fatal("缺 client 必须报错")
@@ -554,21 +398,15 @@ func TestW13DSnapshotCacheRedisReads(t *testing.T) {
 
 	// worker 侧发布快照（写 runtime state）后 gateway 可读；先越过 memo TTL。
 	clock.Advance(sharedSnapshotMemoTTL + time.Second)
-	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
+	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true)
 	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, complete, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := snapshot.ReadCostsSnapshotAsync(ctx, costEntry); err != nil || !found {
 		t.Fatalf("found=%v err=%v", found, err)
 	}
-	if _, found, err := snapshot.ReadAuthorizationSnapshotAsync(ctx, string(ScopeTypeGroupAuthorization), "ga"); err != nil || !found {
-		t.Fatalf("authz found=%v err=%v", found, err)
-	}
 	if complete, err := snapshot.IsCostSnapshotCompleteAsync(ctx); err != nil || !complete {
 		t.Fatalf("complete=%v err=%v", complete, err)
-	}
-	if incomplete, err := snapshot.IsAuthorizationSnapshotIncompleteAsync(ctx); err != nil || incomplete {
-		t.Fatalf("incomplete=%v err=%v", incomplete, err)
 	}
 	if has, err := snapshot.HasGatewayQuotaSnapshotAsync(ctx); err != nil || !has {
 		t.Fatalf("has=%v err=%v", has, err)
@@ -595,14 +433,11 @@ func TestW13DSnapshotCacheRedisReads(t *testing.T) {
 
 	// 发布的快照 generatedAt 非法 → 回源处理错误透传。
 	badGenerated := "not-a-time"
-	badDoc := snapshotFixture(badGenerated, true, true)
+	badDoc := snapshotFixture(badGenerated, true)
 	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, badDoc, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := snapshot.ReadCostsSnapshotAsync(ctx, costEntry); err == nil {
-		t.Fatal("坏 generatedAt 必须透传")
-	}
-	if _, _, err := snapshot.ReadAuthorizationSnapshotAsync(ctx, string(ScopeTypeGroupAuthorization), "ga"); err == nil {
 		t.Fatal("坏 generatedAt 必须透传")
 	}
 	if _, err := snapshot.IsCostSnapshotIncompleteAsync(ctx); err == nil {
@@ -611,82 +446,8 @@ func TestW13DSnapshotCacheRedisReads(t *testing.T) {
 	if _, err := snapshot.HasGatewayQuotaSnapshotAsync(ctx); err == nil {
 		t.Fatal("坏 generatedAt 必须透传")
 	}
-
-	// 授权失效水位 + 坏 generatedAt → usable 校验错误透传。
-	clock.Advance(sharedSnapshotMemoTTL + time.Second)
-	if err := snapshot.InvalidateAuthorizationQuotaSnapshot(nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := snapshot.ReadAuthorizationSnapshotAsync(ctx, string(ScopeTypeGroupAuthorization), "ga"); err == nil {
-		t.Fatal("失效水位下的坏 generatedAt 必须透传")
-	}
-	// 授权失效：publishedAt 非法报错。
-	goodSnapshot, err := NewSnapshotCache(Modes{RedisCache: true, RedisRuntimeState: true}, runtimeState, clock.Now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := goodSnapshot.InvalidateAuthorizationQuotaSnapshot(nil); err != nil {
-		t.Fatal(err)
-	}
-	badTime := "not-a-time"
-	if err := goodSnapshot.InvalidateAuthorizationQuotaSnapshot(&badTime); err == nil {
-		t.Fatal("非法 publishedAt 必须报错")
-	}
 }
 
-func TestW13DSnapshotDecisionFromSnapshotBranches(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	business := newTestDB(t, "w13d-authz-decision-biz")
-	statsDB := newTestDB(t, "w13d-authz-decision-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := NewSnapshotCache(Modes{}, nil, clock.Now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes: Modes{}, Business: business, Stats: stats,
-		Timezone: mustTZ(t, time.UTC), Snapshot: snapshot, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-
-	// 完整快照 + account 条目拒绝 → decisionFromSnapshot 返回拒绝决策。
-	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	complete.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeAccountAuthorization, AuthorizationID: "aa1", Decision: DeniedDecision(AuthorizationQuotaExceededMessage)},
-	}
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(complete); err != nil {
-		t.Fatal(err)
-	}
-	input := authorizationSnapshotInput{accountAuthorizationID: "aa1", accountAuthorizationQuotaLimited: true}
-	if decision := service.decisionFromSnapshot(input); decision.Allowed {
-		t.Fatalf("account 拒绝必须生效: %+v", decision)
-	}
-	if decision, err := service.decisionFromSnapshotAsync(ctx, input); err != nil || decision.Allowed {
-		t.Fatalf("async account 拒绝必须生效: (%+v, %v)", decision, err)
-	}
-	// 不完整快照 + 缺失条目 → 保护性拒绝。
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(incomplete); err != nil {
-		t.Fatal(err)
-	}
-	missing := authorizationSnapshotInput{groupAuthorizationID: "g-missing", groupAuthorizationQuotaLimited: true}
-	if decision := service.decisionFromSnapshot(missing); decision.Allowed {
-		t.Fatalf("缺失条目必须保护性拒绝: %+v", decision)
-	}
-	if decision, err := service.decisionFromSnapshotAsync(ctx, missing); err != nil || decision.Allowed {
-		t.Fatalf("async 缺失条目必须保护性拒绝: (%+v, %v)", decision, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // helpers: modes / inflight / rfc3339 / statwindow / limits
 // ---------------------------------------------------------------------------
 
@@ -896,88 +657,6 @@ func (c *w13dCountingTZ) StatsTimezone(context.Context) (*time.Location, error) 
 	return c.location, nil
 }
 
-func TestW13DAuthorizationCacheWriteErrors(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	_, realShared, snapshot, runtimeState := newRedisQuotaStack(t, clock)
-	shared := &w13dSharedOverride{inner: realShared}
-	business := newTestDB(t, "w13d-authz-write-err-biz")
-	statsDB := newTestDB(t, "w13d-authz-write-err-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true, RedisRuntimeState: true},
-		Business: business,
-		Stats:    stats,
-		Timezone: mustTZ(t, time.UTC),
-		Snapshot: snapshot,
-		Shared:   shared,
-		Now:      clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}}
-
-	// 发布完整快照（条目齐全）→ 快照可用 + 无需补判 → 决策写入 shared 失败
-	// 必须透传（单条与批量）。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	doc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: AllowedDecision()},
-		{ScopeType: ScopeTypeAccountAuthorization, AuthorizationID: "aa1", Decision: AllowedDecision()},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	shared.setErrAt = 1
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("单条快照决策的 shared 写入失败必须透传")
-	}
-	if _, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err == nil {
-		t.Fatal("批量快照决策的 shared 写入失败必须透传")
-	}
-
-	// db 补判成功但写入失败 → 透传（快照不完整 + 条目缺失）。
-	doc.AuthorizationEntriesComplete = boolPtr(false)
-	doc.AuthorizationEntries = doc.AuthorizationEntries[:1]
-	clock.Advance(sharedSnapshotMemoTTL + time.Second)
-	service.ClearCache(ctx)
-	if _, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err == nil {
-		t.Fatal("批量补判决策的 shared 写入失败必须透传")
-	}
-
-	// 坏 business 库 → worker 批量与单条的 ByIDs 错误透传。
-	if err := business.Close(); err != nil {
-		t.Fatal(err)
-	}
-	workerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: snapshot, Shared: shared, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := workerService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("业务库故障单条检查必须透传")
-	}
-	if _, err := workerService.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err == nil {
-		t.Fatal("业务库故障批量检查必须透传")
-	}
-	// business 库故障时的 ByIDs 系列透传。
-	if _, err := workerService.CheckAuthorizationQuotaByIDs(ctx, "ga1", "aa1", clock.Now()); err == nil {
-		t.Fatal("ByIDs 业务库故障必须透传")
-	}
-	if _, err := workerService.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", clock.Now()); err == nil {
-		t.Fatal("ByIDsExact 业务库故障必须透传")
-	}
-}
-
 func TestW13DAPIKeyQuotaCountingTimezoneErrors(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-counting-tz")
@@ -1093,167 +772,11 @@ func TestW13DAPIKeyQuotaReadExactAsyncPGGuards(t *testing.T) {
 	}
 }
 
-func TestW13DAuthorizationWorkerBatchCacheWriteError(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	_, realShared, _, _ := newRedisQuotaStack(t, clock)
-	shared := &w13dSharedOverride{inner: realShared}
-	business := newTestDB(t, "w13d-authz-worker-batch-biz")
-	statsDB := newTestDB(t, "w13d-authz-worker-batch-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{}, clock),
-		Shared:   shared, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}}
-	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-
-	// worker 批量成功后写入 shared 失败 → 透传。
-	shared.setErrAt = 1
-	if _, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err == nil {
-		t.Fatal("worker 批量 shared 写入失败必须透传")
-	}
-	// 写入正常 → 决策产出。
-	shared.setErrAt = 0
-	batch, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(batch) == 0 {
-		t.Fatal("批量决策不能为空")
-	}
-
-}
-
-// ---------------------------------------------------------------------------
-// w13d 补充：快照回退判定的 account 维度与 ByIDs 空批量
-// ---------------------------------------------------------------------------
-
-func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	business := newTestDB(t, "w13d-authz-fallback-acct-biz")
-	statsDB := newTestDB(t, "w13d-authz-fallback-acct-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := NewSnapshotCache(Modes{}, nil, clock.Now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: snapshot, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-
-	// 不完整快照 + 仅 account 维度缺失 → needsDBFallback 的 account 分支。
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(incomplete); err != nil {
-		t.Fatal(err)
-	}
-	accountOnly := authorizationSnapshotInput{accountAuthorizationID: "aa-missing", accountAuthorizationQuotaLimited: true}
-	if !service.snapshotNeedsDBFallback(accountOnly) {
-		t.Fatal("account 维度缺失必须回退")
-	}
-	needs, err := service.snapshotNeedsDBFallbackAsync(ctx, accountOnly)
-	if err != nil || !needs {
-		t.Fatalf("async account 回退=%v err=%v", needs, err)
-	}
-	// account 条目存在 → 不回退（表达式 false 分支）。
-	found := authorizationSnapshotInput{accountAuthorizationID: "aa", accountAuthorizationQuotaLimited: true}
-	if service.snapshotNeedsDBFallback(found) {
-		t.Fatal("完整快照存在条目不回退")
-	}
-	// decisionFromSnapshot 的 account 缺失保护拒绝。
-	if decision := service.decisionFromSnapshot(accountOnly); decision.Allowed {
-		t.Fatalf("缺失 account 必须保护性拒绝: %+v", decision)
-	}
-	// batchSnapshotNeedsDBFallback 携带非空 accounts。
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{{ID: "u1", AccountAuthorizationID: "aa-missing", AccountAuthorizationQuotaLimited: true}}
-	if !service.batchSnapshotNeedsDBFallback(groupAccess, accounts) {
-		t.Fatal("accounts 内缺失条目必须回退")
-	}
-	// 完整快照 + accounts 非空 → 遍历后返回 false。
-	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(complete); err != nil {
-		t.Fatal(err)
-	}
-	if service.batchSnapshotNeedsDBFallback(groupAccess, accounts) {
-		t.Fatal("完整快照批量不回退")
-	}
-	// decisionFromSnapshotAsync 的 account 缺失保护拒绝（完整快照 → 允许）。
-	if decision, err := service.decisionFromSnapshotAsync(ctx, found); err != nil || !decision.Allowed {
-		t.Fatalf("async account 缺失按完整快照放行: (%+v, %v)", decision, err)
-	}
-}
-
-func TestW13DAuthorizationByIDsEmptyBatchAllowed(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{}, clock, "w13d-empty-batch")
-	ctx := context.Background()
-	// scope 列表非空但行不存在 → 决策空 → 包装层回落允许。
-	decision, err := service.CheckAuthorizationQuotaByIDs(ctx, "ghost", "ghost-acct", clock.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = decision
-	decisions, err := service.CheckAuthorizationQuotaBatchByIDs(ctx, "ghost", []AccountRef{{AccountID: "u1", AccountAuthorizationID: ""}}, clock.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = decisions
-}
-
-// ---------------------------------------------------------------------------
-// w13d 补充：空批量回落与快照并发装载
-// ---------------------------------------------------------------------------
-
-func TestW13DAuthorizationByIDsEmptyScopesAllowed(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{}, clock, "w13d-empty-scopes")
-	ctx := context.Background()
-	// group 与 account 授权 ID 均为空 → scope 列表为空 → 决策为空 → 包装层回落允许。
-	if decision, err := service.CheckAuthorizationQuotaByIDs(ctx, "", "", clock.Now()); err != nil || !decision.Allowed {
-		t.Fatalf("空 scope ByIDs 必须放行: (%+v, %v)", decision, err)
-	}
-	if decision, err := service.CheckAuthorizationQuotaByIDsReadOnly(ctx, "", "", clock.Now()); err != nil || !decision.Allowed {
-		t.Fatalf("空 scope ReadOnly 必须放行: (%+v, %v)", decision, err)
-	}
-	if decision, err := service.CheckAuthorizationQuotaByIDsExactAsync(ctx, "", "", clock.Now()); err != nil || !decision.Allowed {
-		t.Fatalf("空 scope Exact 必须放行: (%+v, %v)", decision, err)
-	}
-	if decisions, err := service.CheckAuthorizationQuotaBatchByIDs(ctx, "", []AccountRef{{AccountID: "u1", AccountAuthorizationID: ""}}, clock.Now()); err != nil || len(decisions) != 1 || !decisions[0].Allowed {
-		t.Fatalf("无授权 ID 的批量必须按允许判定: (%+v, %v)", decisions, err)
-	}
-	if decisions, err := service.CheckAuthorizationQuotaBatchByIDsReadOnly(ctx, "", []AccountRef{{AccountID: "u1", AccountAuthorizationID: ""}}, clock.Now()); err != nil || len(decisions) != 1 || !decisions[0].Allowed {
-		t.Fatalf("无授权 ID 的 ReadOnly 批量必须按允许判定: (%+v, %v)", decisions, err)
-	}
-}
-
 func TestW13DSnapshotCacheConcurrentLoading(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	server, _, snapshot, runtimeState := newRedisQuotaStack(t, clock)
 	ctx := context.Background()
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
+	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true)
 	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -1311,7 +834,7 @@ func TestW13DQuotaConstructionAndFallbackGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
+	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true)
 	if err := memorySnapshot.ReplaceGatewayQuotaSnapshot(complete); err != nil {
 		t.Fatal(err)
 	}

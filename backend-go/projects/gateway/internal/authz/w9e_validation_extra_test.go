@@ -1,7 +1,8 @@
 package authz
 
-// w9e 覆盖率战役：补 validation.go 的媒体类型/严格解码/查询解析全分支、
-// limits 归一化纯函数与 return_group/expiry 的可达分支。本地构造无外部依赖。
+// w9e 覆盖率战役：补 validation.go 的媒体类型/严格解码/查询解析全分支与
+// expiry 纯函数可达分支。本地构造无外部依赖。（limits 归一化纯函数专测随
+// 授权额度域退役删除。）
 
 import (
 	"net/http"
@@ -194,52 +195,6 @@ func TestW9EQueryParserAllBranches(t *testing.T) {
 		t.Fatalf("sortStrings = %v", values)
 	}
 }
-
-func TestW9ELimitsNormalizationHelpers(t *testing.T) {
-	// 合法 limits 规范化。
-	normalized, err := normalizeAuthorizationLimitsJSON(`{"daily":{"enabled":true,"limit":10.123456}}`)
-	if err != nil || normalized == nil {
-		t.Fatalf("normalize = %v err=%v", normalized, err)
-	}
-	// 空/空白 → nil（SQL NULL）。
-	if got, err := normalizeAuthorizationLimitsJSON(""); err != nil || got != nil {
-		t.Fatalf("empty = %v err=%v", got, err)
-	}
-	if got, err := normalizeAuthorizationLimitsJSON("   "); err != nil || got != nil {
-		t.Fatalf("blank = %v err=%v", got, err)
-	}
-	// 非法字段 → 错误。
-	if _, err := normalizeAuthorizationLimitsJSON(`{"foo":{"enabled":true,"limit":1}}`); err == nil {
-		t.Fatal("未知 limits 字段必须失败")
-	}
-	// canonical：nil/空白 → 空。
-	if got := canonicalAuthorizationLimits(nil); got != "" {
-		t.Fatalf("nil canonical = %q", got)
-	}
-	if got := canonicalAuthorizationLimits(strPtrW9E("  ")); got != "" {
-		t.Fatalf("blank canonical = %q", got)
-	}
-	// canonical：非法存储原样返回（读路径兜底）。
-	raw := "{not-json"
-	if got := canonicalAuthorizationLimits(strPtrW9E(raw)); got != raw {
-		t.Fatalf("invalid canonical = %q", got)
-	}
-	// decodeAuthorizationLimits：空/坏/空对象 → nil。
-	if decodeAuthorizationLimits("") != nil {
-		t.Fatal("空 limits 应为 nil")
-	}
-	if decodeAuthorizationLimits("{bad") != nil {
-		t.Fatal("坏 limits 应为 nil")
-	}
-	if decodeAuthorizationLimits("{}") != nil {
-		t.Fatal("空对象 limits 应为 nil")
-	}
-	if decodeAuthorizationLimits(`{"daily":{"enabled":true,"limit":1}}`) == nil {
-		t.Fatal("非空 limits 不应为 nil")
-	}
-}
-
-func strPtrW9E(v string) *string { return &v }
 
 func TestW9EExpiryPureHelpers(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)

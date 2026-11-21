@@ -11,7 +11,8 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// mockDBService records calls and returns canned results.
+// mockDBService records calls and returns canned results（授权额度域退役后，
+// DBServiceClient 只剩 API Key 两方法）。
 type mockDBService struct {
 	mu sync.Mutex
 
@@ -24,18 +25,6 @@ type mockDBService struct {
 	readCostsArgs  []APIKeyRow
 	readCosts      RequestQuotaCosts
 	readCostsErr   error
-
-	checkAuthzCalls int
-	checkAuthzGroup []string
-	checkAuthzAcct  []string
-	checkAuthzDec   Decision
-	checkAuthzErr   error
-
-	checkBatchCalls int
-	checkBatchGroup []string
-	checkBatchAccts [][]AccountRef
-	checkBatchDecs  []Decision
-	checkBatchErr   error
 }
 
 func (m *mockDBService) CheckAPIKeyQuota(_ context.Context, apiKey APIKeyRow) (Decision, error) {
@@ -52,24 +41,6 @@ func (m *mockDBService) ReadAPIKeyQuotaCosts(_ context.Context, apiKey APIKeyRow
 	m.readCostsCalls++
 	m.readCostsArgs = append(m.readCostsArgs, apiKey)
 	return m.readCosts, m.readCostsErr
-}
-
-func (m *mockDBService) CheckAuthorizationQuota(_ context.Context, groupAuthorizationID, accountAuthorizationID string) (Decision, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.checkAuthzCalls++
-	m.checkAuthzGroup = append(m.checkAuthzGroup, groupAuthorizationID)
-	m.checkAuthzAcct = append(m.checkAuthzAcct, accountAuthorizationID)
-	return m.checkAuthzDec, m.checkAuthzErr
-}
-
-func (m *mockDBService) CheckAuthorizationQuotaBatch(_ context.Context, groupAuthorizationID string, accounts []AccountRef) ([]Decision, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.checkBatchCalls++
-	m.checkBatchGroup = append(m.checkBatchGroup, groupAuthorizationID)
-	m.checkBatchAccts = append(m.checkBatchAccts, accounts)
-	return m.checkBatchDecs, m.checkBatchErr
 }
 
 type logRecorder struct {

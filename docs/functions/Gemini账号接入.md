@@ -315,7 +315,7 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 - 成本按 `providerCode = gemini` 和实际计价模型查找。
 - 缓存、thinking、多模态 token 不要折叠成普通 input / output 后丢失来源。
 - Interactions 的 `total_*_tokens` 与 GenerateContent `usageMetadata` 统一归一到 Gemini usage semantic；步骤事件和终止状态只作为响应语义，不重复计费。
-- 业务统计、授权额度、趋势和 TopN 仍必须由 worker 增量聚合，不在 API 路由扫描明细。
+- 业务统计、趋势和 TopN 仍必须由 worker 增量聚合，不在 API 路由扫描明细。
 
 ## 分组、授权与 API Key 路由
 

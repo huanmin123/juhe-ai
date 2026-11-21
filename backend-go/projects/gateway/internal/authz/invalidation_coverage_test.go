@@ -1,6 +1,6 @@
 // Coverage-table behavior tests (网关模型列表账户并集设计 6.3 "写路径 → 失效覆盖
 // 依据"): the committed-write entry points that open their own transaction —
-// the expiry sweeps (ExpireSweep, ReconcileExpiredGrants) and the standalone
+// the expiry sweeps (ExpireDueOffers, ReconcileExpiredGrants) and the standalone
 // team-cascade wrappers (RevokeAllTeamSources, ReactivateTeamGrants,
 // RevokeTeamSourcesForMember) — must fire the same post-commit invalidation
 // fan-out as the business mutations pinned by TestWritePathsFireInvalidationFanout.
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// TestExpirySweepsFireExpiredFanout pins both committed expiry sweeps: a
+// TestExpirySweepsFireExpiredFanout pins the committed expiry sweep: a
 // no-due sweep publishes nothing, a committed flip publishes
 // resource_authorization_expired, and the jobs-sweep convergence replay
 // (ReconcileExpiredGrants) publishes again after its own commit.
@@ -28,35 +28,37 @@ func TestExpirySweepsFireExpiredFanout(t *testing.T) {
 	f.store.AttachWriteInvalidator(stats, bus)
 
 	future := f.now.Add(time.Hour).UTC().Format(time.RFC3339Nano)
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
+		GranteeType: "system_account", GranteeUsername: "grantee",
 		ExpiresAt: &future,
-	}, "owner")
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertOneFanout(t, stats, bus, 0, 0, invalidationReasonCreated)
 
 	// Nothing due yet: the sweep commits no write and stays silent.
-	if _, err := f.store.ExpireSweep(context.Background(), 10); err != nil {
+	if _, err := f.store.ExpireDueOffers(context.Background(),
+		f.now.UTC().Format(time.RFC3339Nano), 10); err != nil {
 		t.Fatal(err)
 	}
 	assertNoFanout(t, stats, bus, 1, 3)
 
 	// Age the grant past its expiry so the sweep materializes the flip.
 	past := f.now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`), past, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`), past, created.GrantID); err != nil {
 		t.Fatal(err)
 	}
-	swept, err := f.store.ExpireSweep(context.Background(), 10)
-	if err != nil || swept != 1 {
-		t.Fatalf("ExpireSweep = %d, %v", swept, err)
+	swept, err := f.store.ExpireDueOffers(context.Background(),
+		f.now.UTC().Format(time.RFC3339Nano), 10)
+	if err != nil || swept.GrantsExpired != 1 {
+		t.Fatalf("ExpireDueOffers = %+v, %v", swept, err)
 	}
 	assertOneFanout(t, stats, bus, 1, 3, invalidationReasonExpired)
-	var grantStatus string
-	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil || grantStatus != StatusExpired {
-		t.Fatalf("grant status = %q, %v", grantStatus, err)
+	var grantStatus, endedReason string
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(ended_reason,'') FROM resource_authorization_grants WHERE id = ?`), created.GrantID).Scan(&grantStatus, &endedReason); err != nil || grantStatus != StatusExpired {
+		t.Fatalf("grant status = %q/%q, %v", grantStatus, endedReason, err)
 	}
 
 	// The reconcile replay re-projects the same flipped grant inside the
@@ -68,10 +70,10 @@ func TestExpirySweepsFireExpiredFanout(t *testing.T) {
 	assertOneFanout(t, stats, bus, 2, 6, invalidationReasonExpired)
 }
 
-// TestTeamCascadeStandaloneWrappersFireFanout pins the three own-transaction
+// TestTeamCascadeStandaloneWrappersFireFanout pins the own-transaction
 // cascade wrappers: each committed pass fires the fan-out with the business
 // reason of the state change it materialized (revocation →
-// resource_authorization_revoked, re-expansion → resource_authorization_updated).
+// resource_authorization_revoked); the reactivate no-op stays silent.
 func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
@@ -84,8 +86,8 @@ func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 
 	now := f.now.UTC().Format(time.RFC3339Nano)
 	// seedTeamGrantRuntime seeds one active runtime authorization row plus one
-	// active team source for the member (the unique user index forces
-	// delete-before-reseed between the revocation arms).
+	// active team source for the member (delete-before-reseed between the
+	// revocation arms).
 	seedTeamGrantRuntime := func(t *testing.T) {
 		t.Helper()
 		for _, statement := range []string{
@@ -130,15 +132,10 @@ func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 	}
 	assertOneFanout(t, stats, bus, 1, 3, invalidationReasonRevoked)
 
-	// ReactivateTeamGrants is an intentional no-op under recipient consent: a
+	// ReactivateTeamGrants is an intentional no-op under send-and-claim: a
 	// disabled team cannot resurrect old member consents. Re-enabling must go
-	// through a new offer / member acceptance, so no fan-out fires and the
-	// revoked runtime stays revoked.
-	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
-		resource_owner_system_account_id, grantee_type, grantee_team_id, status, created_by, created_at, updated_at)
-		VALUES ('rauthgrant_t1', 'group', 'grp_1', 'owner', 'team', 'team_1', 'active', 'owner', ?, ?)`), now, now); err != nil {
-		t.Fatal(err)
-	}
+	// through a new offer / member claim, so no fan-out fires and the revoked
+	// runtime stays revoked.
 	if err := f.store.ReactivateTeamGrants(context.Background(), "team_1", "owner"); err != nil {
 		t.Fatal(err)
 	}

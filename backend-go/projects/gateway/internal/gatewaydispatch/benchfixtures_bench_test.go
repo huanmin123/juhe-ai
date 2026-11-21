@@ -64,7 +64,6 @@ func benchNewEngine() (*Engine, *fakeDriver, *fakeFailureDispatcher) {
 	engine.HotQuality = &fakeHotQuality{}
 	engine.Affinity = &fakeAffinity{}
 	engine.ClientIPConcurrency = &fakeClientIPConcurrency{}
-	engine.Quota = &fakeQuota{}
 	engine.Concurrency = &fakeConcurrencyStore{}
 	engine.Cache = &fakeCache{}
 	engine.Locks = &fakeLocks{}

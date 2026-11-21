@@ -1,29 +1,24 @@
 // Post-commit invalidation fan-out tests (BUG-0175 D-56/D-65/D-115): mock
 // ports assert that every committed business write fires exactly the archived
-// whole-surface set — refreshAfterResourceAuthorizationBusinessWrite
-// (write.repository.ts:2706-2731) for create/patch/revoke with reasons
-// resource_authorization_created/updated/revoked, and
-// refreshAfterResourceAuthorizationReturnedWrite
-// (return.repository.ts:791-800) with resource_authorization_returned for the
-// direct-grant return and the group return. The third archived return path
-// (the account instance return, return.repository.ts:242-291) delegates its
-// terminal write to Store.Return through the accounts
-// AuthorizationGrantReturner port, so the Store.Return assertions here carry
-// that route too.
+// whole-surface set keyed by reason (create/claim/pause/extend/expire/revoke/
+// decline/return). The authorization-quota bus topic retired with the quota
+// domain (revision 31): the served set per committed write is the group-stats
+// MarkAll plus the API-key validation and gateway runtime topics.
 //
 // The mocked set per committed write (Node six-piece → Go channels, see
 // invalidation.go): one group-stats MarkAll with the reason, then the bus
-// publishes the reason on the API-key validation, gateway runtime (which
-// folds invalidateGroupAccountIdsCache) and authorization quota topics. The
-// no-write outcomes (idempotent re-create, unchanged, not_found, conflict)
-// fire nothing — the archive returns before its refresh tail. A failing
-// stats marker never fails the committed write and the remaining bus arms
-// still run.
+// publishes the reason on the API-key validation and gateway runtime topics
+// (the group-account-ids cache folds into the runtime topic; piece 4 is the
+// documented no-op; piece 6 retired). The no-write outcomes (idempotent
+// re-offer, unchanged, not_found, conflict) fire nothing — the store returns
+// before its refresh tail. A failing stats marker never fails the committed
+// write and the remaining bus arms still run.
 package authz
 
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
@@ -39,8 +34,7 @@ func (r *recordingStatsDirty) MarkAllGroupAccountStatsDirty(_ context.Context, r
 	return r.err
 }
 
-// recordingBus captures the bus publishes (pieces 2/3+5/6) as
-// "topic reason" pairs.
+// recordingBus captures the bus publishes as "topic reason" pairs.
 type recordingBus struct {
 	calls []string
 }
@@ -53,12 +47,11 @@ func busSet(reason string) []string {
 	return []string{
 		inval.TopicGatewayAPIKeyValidation + " " + reason,
 		inval.TopicGatewayRuntime + " " + reason,
-		inval.TopicAuthorizationQuota + " " + reason,
 	}
 }
 
-// assertOneFanout asserts that exactly one six-piece set with the given
-// reason was appended since the baseline counts.
+// assertOneFanout asserts that exactly one set with the given reason was
+// appended since the baseline counts.
 func assertOneFanout(t *testing.T, stats *recordingStatsDirty, bus *recordingBus,
 	statsBaseline, busBaseline int, reason string) {
 	t.Helper()
@@ -91,11 +84,10 @@ func assertNoFanout(t *testing.T, stats *recordingStatsDirty, bus *recordingBus,
 	}
 }
 
-// TestWritePathsFireInvalidationFanout walks grant A through create →
-// idempotent re-create → patch → no-op patch → not_found patch → conflict
-// revoke → revoke → unchanged revoke, and grant B through create → return →
-// unchanged return, pinning the fan-out set of each committed write against
-// the archive reasons.
+// TestWritePathsFireInvalidationFanout walks grant A through offer →
+// idempotent re-offer → claim → pause → resume → revoke → idempotent revoke,
+// grant B through offer → decline, and grant C through offer → claim →
+// return, pinning the fan-out set of each committed write.
 func TestWritePathsFireInvalidationFanout(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
@@ -105,87 +97,84 @@ func TestWritePathsFireInvalidationFanout(t *testing.T) {
 	stats := &recordingStatsDirty{}
 	bus := &recordingBus{}
 	f.store.AttachWriteInvalidator(stats, bus)
+	nowText := f.now.UTC().Format(time.RFC3339Nano)
 
-	// Grant A: create fires resource_authorization_created.
-	created, err := f.store.Create(context.Background(), CreateInput{
+	// Grant A: the offer fires resource_authorization_created.
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertOneFanout(t, stats, bus, 0, 0, invalidationReasonCreated)
 
-	// The identical re-create is idempotent (created=false) and the archive
-	// skips its refresh (write.repository.ts:343-345 condition).
-	if _, err := f.store.Create(context.Background(), CreateInput{
+	// The identical re-offer resolves the open offer (created=false) and the
+	// store skips its refresh tail.
+	if _, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner"); err != nil {
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner"); err != nil {
 		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, 1, 3)
+	assertNoFanout(t, stats, bus, 1, 2)
 
-	// Patch with a real change fires resource_authorization_updated.
-	paused := StatusPaused
-	patched, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused},
-		created.Item.UpdatedAt, "owner")
-	if err != nil || patched.Status != "updated" {
-		t.Fatalf("patch: %+v %v", patched, err)
-	}
-	assertOneFanout(t, stats, bus, 1, 3, invalidationReasonUpdated)
-
-	// The no-op patch lands unchanged and never refreshes (Node :801).
-	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused},
-		patched.Result.UpdatedAt, "owner"); err != nil {
+	// The claim fires resource_authorization_updated.
+	if _, err := f.store.AcceptSource(context.Background(), "grantee", created.SourceID, AcceptInput{}, nowText); err != nil {
 		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, 2, 6)
+	assertOneFanout(t, stats, bus, 1, 2, invalidationReasonUpdated)
 
-	// not_found and conflict never refresh.
-	if outcome, err := f.store.Patch(context.Background(), "rauthgrant_missing", PatchInput{Status: &paused},
-		patched.Result.UpdatedAt, "owner"); err != nil || outcome.Status != "not_found" {
-		t.Fatalf("missing patch: %+v %v", outcome, err)
-	}
-	if outcome, err := f.store.Revoke(context.Background(), created.Item.ID, "bogus-version", "owner"); err != nil ||
-		outcome.Status != "conflict" {
-		t.Fatalf("conflict revoke: %+v %v", outcome, err)
-	}
-	assertNoFanout(t, stats, bus, 2, 6)
-
-	// Revoke fires resource_authorization_revoked; the second revoke is
-	// unchanged and stays silent.
-	if _, err := f.store.Revoke(context.Background(), created.Item.ID, patched.Result.UpdatedAt, "owner"); err != nil {
+	// Pause fires resource_authorization_updated.
+	if err := f.store.SetOfferPaused(context.Background(), created.GrantID, "owner", true, false, nowText); err != nil {
 		t.Fatal(err)
 	}
-	assertOneFanout(t, stats, bus, 2, 6, invalidationReasonRevoked)
-	if _, err := f.store.Revoke(context.Background(), created.Item.ID, patched.Result.UpdatedAt, "owner"); err != nil {
+	assertOneFanout(t, stats, bus, 2, 4, invalidationReasonUpdated)
+
+	// Resume fires resource_authorization_updated.
+	if err := f.store.SetOfferPaused(context.Background(), created.GrantID, "owner", false, false, nowText); err != nil {
 		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, 3, 9)
+	assertOneFanout(t, stats, bus, 3, 6, invalidationReasonUpdated)
 
-	// Grant B: return fires resource_authorization_returned (this write point
-	// also carries the accounts instance-return route through its port); the
-	// second return is unchanged and stays silent.
-	grantB, err := f.store.Create(context.Background(), CreateInput{
+	// Revoke fires resource_authorization_revoked; the second revoke hits the
+	// already-revoked short-circuit and stays silent.
+	if err := f.store.RevokeOffer(context.Background(), created.GrantID, "owner", false, nowText); err != nil {
+		t.Fatal(err)
+	}
+	assertOneFanout(t, stats, bus, 4, 8, invalidationReasonRevoked)
+	if err := f.store.RevokeOffer(context.Background(), created.GrantID, "owner", false, nowText); err != nil {
+		t.Fatal(err)
+	}
+	assertNoFanout(t, stats, bus, 5, 10)
+
+	// Grant B: the decline fires resource_authorization_updated.
+	declined, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee2",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee2",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertOneFanout(t, stats, bus, 3, 9, invalidationReasonCreated)
+	assertOneFanout(t, stats, bus, 5, 10, invalidationReasonCreated)
+	if err := f.store.DeclineSource(context.Background(), "grantee2", declined.SourceID, nowText); err != nil {
+		t.Fatal(err)
+	}
+	assertOneFanout(t, stats, bus, 6, 12, invalidationReasonUpdated)
 
-	returned, err := f.store.Return(context.Background(), grantB.Item.ID, grantB.Item.UpdatedAt, "grantee2")
-	if err != nil || returned.Status != "updated" {
-		t.Fatalf("return: %+v %v", returned, err)
+	// Grant C: the receiver-side return fires resource_authorization_updated.
+	returned, err := f.store.CreateOffer(context.Background(), OfferInput{
+		ResourceType: "group", ResourceID: "grp_1",
+		GranteeType: "system_account", GranteeUsername: "grantee2",
+	}, "owner", false, "owner")
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertOneFanout(t, stats, bus, 4, 12, invalidationReasonReturned)
-	if outcome, err := f.store.Return(context.Background(), grantB.Item.ID, returned.Result.UpdatedAt, "grantee2"); err != nil ||
-		outcome.Status != "unchanged" {
-		t.Fatalf("unchanged return: %+v %v", outcome, err)
+	assertOneFanout(t, stats, bus, 7, 14, invalidationReasonCreated)
+	if err := f.store.ReturnSource(context.Background(), "grantee2", returned.SourceID, nowText); err != nil {
+		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, 5, 15)
+	assertOneFanout(t, stats, bus, 8, 16, invalidationReasonUpdated)
 }
 
 // TestReturnGroupFiresReturnedFanout pins the group return write point the
@@ -221,15 +210,15 @@ func TestReturnGroupFiresReturnedFanout(t *testing.T) {
 		stats.reasons[got-1] != invalidationReasonReturned {
 		t.Fatalf("stats dirty reasons = %v, want updated+returned", stats.reasons)
 	}
-	if got := len(bus.calls); got != busBaseline+6 {
-		t.Fatalf("bus calls = %d, want %d (%v)", got, busBaseline+6, bus.calls)
+	if got := len(bus.calls); got != busBaseline+4 {
+		t.Fatalf("bus calls = %d, want %d (%v)", got, busBaseline+4, bus.calls)
 	}
 
 	// The second return resolves no returnable grant and stays silent.
 	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "grantee"); err != nil {
 		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, statsBaseline+2, busBaseline+6)
+	assertNoFanout(t, stats, bus, statsBaseline+2, busBaseline+4)
 }
 
 // TestUnwiredInvalidationStaysSilent pins the nil-tolerance contract: stores
@@ -241,14 +230,19 @@ func TestUnwiredInvalidationStaysSilent(t *testing.T) {
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_1", "owner")
 
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.Revoke(context.Background(), created.Item.ID, created.Item.UpdatedAt, "owner"); err != nil {
+	if _, err := f.store.AcceptSource(context.Background(), "grantee", created.SourceID, AcceptInput{},
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.RevokeOffer(context.Background(), created.GrantID, "owner", false,
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -266,10 +260,10 @@ func TestInvalidationPartialFailureDoesNotFailWrite(t *testing.T) {
 	bus := &recordingBus{}
 	f.store.AttachWriteInvalidator(stats, bus)
 
-	if _, err := f.store.Create(context.Background(), CreateInput{
+	if _, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner"); err != nil {
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner"); err != nil {
 		t.Fatalf("committed write must not fail on the stats marker: %v", err)
 	}
 	if len(stats.reasons) != 1 {

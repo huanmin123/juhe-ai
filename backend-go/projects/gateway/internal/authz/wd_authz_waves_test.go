@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWdListFilterMatrixAndListPage(t *testing.T) {
@@ -19,18 +20,31 @@ func TestWdListFilterMatrixAndListPage(t *testing.T) {
 	f.seedTeamWithMember(t, "team_f", "grantee")
 	f.seedGroup(t, "grp_f1", "owner")
 	f.seedGroup(t, "grp_f2", "owner")
-	direct, err := f.store.Create(context.Background(), CreateInput{
+	direct, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_f1",
-		GranteeType: "system_account", GranteeID: "grantee", Remark: ptrString("备注关键字"),
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee", Remark: ptrStringWd("备注关键字"),
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	teamGrant, err := f.store.Create(context.Background(), CreateInput{
+	if _, err := f.store.AcceptSource(context.Background(), "grantee", direct.SourceID, AcceptInput{},
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	teamGrant, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_f2",
-		GranteeType: "team", GranteeID: "team_f",
-	}, "owner")
+		GranteeType: "team", TeamID: "team_f",
+	}, "owner", false, "owner")
 	if err != nil {
+		t.Fatal(err)
+	}
+	var teamSourceID string
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorization_sources
+		WHERE grant_id = ? AND status = 'pending' LIMIT 1`), teamGrant.GrantID).Scan(&teamSourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.AcceptSource(context.Background(), "grantee", teamSourceID, AcceptInput{},
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	viewer := accessInfo{ViewerID: "admin", IsAdmin: true}
@@ -40,16 +54,16 @@ func TestWdListFilterMatrixAndListPage(t *testing.T) {
 		filters Filters
 		wantIDs []string
 	}{
-		{"资源类型", Filters{ResourceType: "group", Status: "all"}, []string{direct.Item.ID, teamGrant.Item.ID}},
-		{"资源 ID", Filters{ResourceID: "grp_f2", Status: "all"}, []string{teamGrant.Item.ID}},
-		{"owner 过滤", Filters{ResourceOwnerSystemAccountID: "owner", Status: "all"}, []string{direct.Item.ID, teamGrant.Item.ID}},
-		{"被授权人过滤", Filters{GranteeSystemAccountID: "grantee", Status: "all"}, []string{direct.Item.ID}},
-		{"团队过滤", Filters{TeamID: "team_f", Status: "all"}, []string{teamGrant.Item.ID}},
-		{"状态过滤", Filters{Status: StatusActive}, []string{direct.Item.ID, teamGrant.Item.ID}},
-		{"来源 manual", Filters{SourceType: "manual", Status: "all"}, []string{direct.Item.ID}},
-		{"来源 team", Filters{SourceType: "team", Status: "all"}, []string{teamGrant.Item.ID}},
-		{"关键字命中备注", Filters{Keyword: "备注关键", Status: "all"}, []string{direct.Item.ID}},
-		{"关键字命中资源 ID", Filters{Keyword: "grp_f2", Status: "all"}, []string{teamGrant.Item.ID}},
+		{"资源类型", Filters{ResourceType: "group", Status: "all"}, []string{direct.GrantID, teamGrant.GrantID}},
+		{"资源 ID", Filters{ResourceID: "grp_f2", Status: "all"}, []string{teamGrant.GrantID}},
+		{"owner 过滤", Filters{ResourceOwnerSystemAccountID: "owner", Status: "all"}, []string{direct.GrantID, teamGrant.GrantID}},
+		{"被授权人过滤", Filters{GranteeSystemAccountID: "grantee", Status: "all"}, []string{direct.GrantID}},
+		{"团队过滤", Filters{TeamID: "team_f", Status: "all"}, []string{teamGrant.GrantID}},
+		{"状态过滤", Filters{Status: StatusActive}, []string{direct.GrantID, teamGrant.GrantID}},
+		{"来源 manual", Filters{SourceType: "manual", Status: "all"}, []string{direct.GrantID}},
+		{"来源 team", Filters{SourceType: "team", Status: "all"}, []string{teamGrant.GrantID}},
+		{"关键字命中备注", Filters{Keyword: "备注关键", Status: "all"}, []string{direct.GrantID}},
+		{"关键字命中资源 ID", Filters{Keyword: "grp_f2", Status: "all"}, []string{teamGrant.GrantID}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,10 +104,10 @@ func TestWdListFilterMatrixAndListPage(t *testing.T) {
 
 func TestWdRouteReadErrorsSurfaceAs400Or500(t *testing.T) {
 	f, deps, sink := wdNewRouteFixture(t)
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_r",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,15 +151,6 @@ func TestWdRouteReadErrorsSurfaceAs400Or500(t *testing.T) {
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("patch 存储错误应 500: %d", recorder.Code)
 	}
-	// The whole-grant return endpoint no longer touches storage; it is a
-	// deterministic 409 retired-surface response.
-	recorder = httptest.NewRecorder()
-	returnRequest := wdJSONRequest(t, http.MethodDelete, "/", `{}`, wdAuthCtx("grantee", "user"))
-	returnRequest.SetPathValue("id", "any")
-	deps.returnValue(recorder, returnRequest, true)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("retired return 应 409: %d", recorder.Code)
-	}
 	if len(sink.entries) != 0 {
 		t.Fatalf("失败路径不应写操作日志: %#v", sink.entries)
 	}
@@ -153,13 +158,22 @@ func TestWdRouteReadErrorsSurfaceAs400Or500(t *testing.T) {
 
 func TestWdCreateRouteLimitsAndConflict(t *testing.T) {
 	f, deps, _ := wdNewRouteFixture(t)
-	// limits 合法 JSON：创建成功并回显 grant/source 标识。
+	// limits 键随授权额度域退役：严格 schema 直接拒绝。
 	recorder := httptest.NewRecorder()
-	createBody := `{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeUsername":"grantee","limits":{"daily":{"enabled":true,"limit":3}}}`
+	retiredLimitsBody := `{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeUsername":"grantee","limits":{"daily":{"enabled":true,"limit":3}}}`
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
+		retiredLimitsBody, wdAuthCtx("owner", "user")))
+	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "Unrecognized key(s) in object: 'limits'" {
+		t.Fatalf("limits 键应被严格 schema 拒绝: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// 无 limits 直发：创建成功并回显 grant/source 标识。
+	recorder = httptest.NewRecorder()
+	createBody := `{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeUsername":"grantee"}`
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
 		createBody, wdAuthCtx("owner", "user")))
 	if recorder.Code != http.StatusCreated {
-		t.Fatalf("带 limits 创建应 201: %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("直发创建应 201: %d %s", recorder.Code, recorder.Body.String())
 	}
 	data := wdDecodeMap(t, recorder)
 	if data["grantId"] == nil || data["sourceId"] == nil {

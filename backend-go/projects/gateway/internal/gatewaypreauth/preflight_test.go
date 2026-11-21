@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -166,59 +165,6 @@ func TestPreflight_InvalidJSONBody(t *testing.T) {
 	if input.Audit.ErrorCode != "invalid_json" {
 		t.Fatalf("audit = %+v", input.Audit)
 	}
-}
-
-func TestPreflight_QuotaRejectionOrdering(t *testing.T) {
-	t.Run("API Key 配额先于授权配额", func(t *testing.T) {
-		quota := &fakeAPIKeyQuota{decision: gatewayquota.DeniedDecision("额度已用完，请联系管理员提升额度")}
-		authz := &fakeAuthorizationQuota{decision: gatewayquota.DeniedDecision("x")}
-		service, _, sink := newTestService(t, func(s *Service) {
-			s.APIKeyQuota = quota
-			s.AuthorizationQuota = authz
-			s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
-		})
-		audit := &fakeAuditCapture{}
-		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
-		result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-			Req: req, Res: writer, AuditCapture: audit,
-			Options: plainPreflightOptions(), StartedAt: 1, TraceID: "trace",
-			Endpoint: "POST /v1/chat/completions", RequestSnapshot: UsageRequestSnapshot{},
-		})
-		if err != nil {
-			t.Fatalf("err = %v", err)
-		}
-		if result.DispatchContext != nil {
-			t.Fatal("配额拒绝不应派发")
-		}
-		if len(quota.rows) != 1 || len(authz.calls) != 0 {
-			t.Fatalf("api 配额调用 = %d, 授权配额调用 = %d", len(quota.rows), len(authz.calls))
-		}
-		input, _ := sink.lastFailure()
-		if input.Audit.ErrorPhase != "quota" {
-			t.Fatalf("audit = %+v", input.Audit)
-		}
-	})
-	t.Run("授权配额其次", func(t *testing.T) {
-		authz := &fakeAuthorizationQuota{decision: gatewayquota.DeniedDecision("授权已超额")}
-		service, _, sink := newTestService(t, func(s *Service) {
-			s.AuthorizationQuota = authz
-			s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
-		})
-		audit := &fakeAuditCapture{}
-		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
-		result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-			Req: req, Res: writer, AuditCapture: audit,
-			Options: plainPreflightOptions(), StartedAt: 1, TraceID: "trace",
-			Endpoint: "POST /v1/chat/completions", RequestSnapshot: UsageRequestSnapshot{},
-		})
-		if err != nil || result.DispatchContext != nil {
-			t.Fatalf("result = %+v err = %v", result, err)
-		}
-		input, _ := sink.lastFailure()
-		if input.StatusCode != http.StatusTooManyRequests || input.ResponsePayload.Error.Message != "授权已超额" {
-			t.Fatalf("failure = %+v", input)
-		}
-	})
 }
 
 func TestPreflight_MissingGroupAccess(t *testing.T) {

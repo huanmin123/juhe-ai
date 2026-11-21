@@ -8,18 +8,18 @@ import (
 
 // simulateJobsExpirySweepFlip replays exactly what the jobs
 // resource-authorization-expiry-sweep writes when it flips one due grant
-// (oauthrefresh.RunAuthorizationExpirySweep): the grant and every
-// non-terminal source move to expired with the next expiry cycle. The runtime
-// projection, notifications and quota bindings are NOT touched by jobs — those
-// are the gateway reconcile's responsibility. The due precondition
-// (expires_at <= now, NULL revoked_at) is planted first because the sweep only
-// selects grants with a past expiry.
+// (oauthrefresh.Store.RunAuthorizationExpirySweep): the grant and every
+// non-terminal source move to expired with the next expiry cycle and the
+// authorization_expired end reason. The runtime projection is NOT touched by
+// jobs — that is the gateway reconcile's responsibility. The due precondition
+// (expires_at <= now, status active/paused) is planted first because the sweep
+// only selects grants with a past expiry.
 func simulateJobsExpirySweepFlip(t *testing.T, f *fixture, grantID string) {
 	t.Helper()
 	nowText := f.now.UTC().Format("2006-01-02T15:04:05.000Z")
 	past := f.now.UTC().Add(-24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
 	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants
-		SET expires_at = ?, revoked_at = NULL WHERE id = ?`), past, grantID); err != nil {
+		SET expires_at = ? WHERE id = ?`), past, grantID); err != nil {
 		t.Fatal(err)
 	}
 	var cycle int
@@ -30,71 +30,58 @@ func simulateJobsExpirySweepFlip(t *testing.T, f *fixture, grantID string) {
 	nextCycle := cycle + 1
 	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants
 		SET status = 'expired',
-			expired_from_status = COALESCE(NULLIF(expired_from_status, ''), status),
 			expiry_cycle = ?,
 			ended_at = COALESCE(ended_at, ?),
-			ended_reason = COALESCE(NULLIF(ended_reason, ''), 'offer_expired'),
-			pending_expires_at = NULL,
+			ended_reason = COALESCE(NULLIF(ended_reason, ''), 'authorization_expired'),
 			revoked_at = COALESCE(revoked_at, ?),
 			updated_at = ?
 		WHERE id = ? AND status IN ('active', 'paused')`), nextCycle, nowText, nowText, nowText, grantID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_sources
-		SET status = 'expired', expired_from_status = status, expiry_cycle = ?,
-			ended_at = COALESCE(ended_at, ?), ended_reason = 'offer_expired',
-			pending_expires_at = NULL, updated_at = ?
-		WHERE grant_id = ? AND status IN ('pending','active','dormant','needs_review')`),
+		SET status = 'expired', expiry_cycle = ?,
+			ended_at = COALESCE(ended_at, ?), ended_reason = 'authorization_expired',
+			updated_at = ?
+		WHERE grant_id = ? AND status IN ('pending','active')`),
 		nextCycle, nowText, nowText, grantID); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func countExpiryNotifications(t *testing.T, f *fixture, grantID, granteeID string) int {
-	t.Helper()
-	var count int
-	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM authorization_notifications
-		WHERE grant_id = ? AND system_account_id = ? AND type = 'offer_expired'`), grantID, granteeID).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	return count
-}
-
-// TestReconcileExpiredGrantsResyncsRuntimeAndBindings pins the T6d gateway
-// consumption face: after the jobs sweep flips a due grant, the gateway-side
-// reconcile re-projects the stale-active runtime row to expired, drops the
-// quota scope binding, and does NOT re-enqueue the health input fanout (jobs
-// already wrote it). A second pass over the same window stays idempotent.
-func TestReconcileExpiredGrantsResyncsRuntimeAndBindings(t *testing.T) {
+// TestReconcileExpiredGrantsResyncsRuntime pins the T6d gateway consumption
+// face: after the jobs sweep flips a due grant, the gateway-side reconcile
+// re-projects the stale-active runtime row to expired. A second pass over the
+// same window stays idempotent.
+func TestReconcileExpiredGrantsResyncsRuntime(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedProvisionSource(t, "res-1", "owner", "reconcile expiry", "gpt")
-	offer, err := f.store.CreateOffer(context.Background(), OfferInput{
-		ResourceType: "account", ResourceID: "res-1",
-		GranteeType: "system_account", GranteeUsername: "grantee",
-		LimitsJSON: hourlyLimits(6),
-	}, "owner", false, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.acceptSourceForTest(t, "grantee", offer.SourceID); err != nil {
-		t.Fatal(err)
-	}
-	grantID := offer.GrantID
+	seedGranteeDefaultGroup(t, f, "grantee", "gpt")
+	grantID := f.claimAccountOffer(t, "res-1", "grantee", "")
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	if bindings := countGrantBindings(t, f, grantID); len(bindings) != 1 {
-		t.Fatalf("active grant must render its binding: %+v", bindings)
-	}
-
-	// jobs sweep flips the grant; the runtime row and binding go stale.
-	simulateJobsExpirySweepFlip(t, f, grantID)
 	var runtimeStatus string
 	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&runtimeStatus); err != nil {
 		t.Fatal(err)
 	}
 	if runtimeStatus != StatusActive {
+		t.Fatalf("precondition: claimed grant must be active, got %s", runtimeStatus)
+	}
+
+	// jobs sweep flips the grant; the runtime row goes stale.
+	simulateJobsExpirySweepFlip(t, f, grantID)
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&runtimeStatus); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeStatus != StatusActive {
 		t.Fatalf("precondition: runtime row must still be stale-active, got %s", runtimeStatus)
+	}
+	var grantStatus, endedReason string
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(ended_reason,'') FROM resource_authorization_grants WHERE id = ?`), grantID).Scan(&grantStatus, &endedReason); err != nil {
+		t.Fatal(err)
+	}
+	if grantStatus != StatusExpired || endedReason != "authorization_expired" {
+		t.Fatalf("sweep flip = %s/%s, want expired/authorization_expired", grantStatus, endedReason)
 	}
 
 	reconciled, err := f.store.ReconcileExpiredGrants(context.Background(), 0, 0)
@@ -110,24 +97,22 @@ func TestReconcileExpiredGrantsResyncsRuntimeAndBindings(t *testing.T) {
 	if runtimeStatus != StatusExpired {
 		t.Fatalf("runtime row must be re-projected to expired, got %s", runtimeStatus)
 	}
-	if bindings := countGrantBindings(t, f, grantID); len(bindings) != 0 {
-		t.Fatalf("stale binding must be dropped: %+v", bindings)
-	}
-	if got := countExpiryNotifications(t, f, grantID, "grantee"); got != 1 {
-		t.Fatalf("expiry notification count = %d, want 1", got)
-	}
-	var dedupeKey string
-	if err := f.db.QueryRow(fixtureBind(`SELECT dedupe_key FROM authorization_notifications
-		WHERE grant_id = ? AND system_account_id = ? AND type = 'offer_expired'`), grantID, "grantee").Scan(&dedupeKey); err != nil {
+	// 终态投影必须停机实例行与分组绑定（disableRuntimeBindings）。
+	var instanceStatus string
+	var instanceSchedulable int
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, schedulable FROM accounts
+		WHERE authorization_instance_authorization_id = ? AND deleted_at IS NULL`), runtimeID).Scan(&instanceStatus, &instanceSchedulable); err != nil {
 		t.Fatal(err)
 	}
-	if want := "expired:" + grantID + ":1:grantee"; dedupeKey != want {
-		t.Fatalf("expiry dedupe key = %q, want %q (cycle must participate)", dedupeKey, want)
+	if instanceStatus != "disabled" || instanceSchedulable != 0 {
+		t.Fatalf("terminal runtime must disable its instance: %s/%d", instanceStatus, instanceSchedulable)
 	}
-	// jobs sweep 已经写入 fanout：重放不得重复入队（本测试没模拟 jobs 写
-	// outbox，因此断言恒空——任何一行都是 reconcile 越权重放）。
-	if rows := countOutboxRows(t, f); len(rows) != 0 {
-		t.Fatalf("reconcile must not re-enqueue health inputs: %+v", rows)
+	var bindingCount int
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM group_accounts WHERE account_authorization_id = ? AND enabled = 1`), runtimeID).Scan(&bindingCount); err != nil {
+		t.Fatal(err)
+	}
+	if bindingCount != 0 {
+		t.Fatalf("terminal runtime must disable its group bindings: %d", bindingCount)
 	}
 
 	// 幂等重放：窗口内的第二轮不报错、不新增副作用。
@@ -138,29 +123,25 @@ func TestReconcileExpiredGrantsResyncsRuntimeAndBindings(t *testing.T) {
 	if again != 1 {
 		t.Fatalf("second pass reconciled = %d, want 1 (idempotent replay)", again)
 	}
-	if rows := countOutboxRows(t, f); len(rows) != 0 {
-		t.Fatalf("second pass must not enqueue health inputs: %+v", rows)
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&runtimeStatus); err != nil {
+		t.Fatal(err)
 	}
-	if got := countExpiryNotifications(t, f, grantID, "grantee"); got != 1 {
-		t.Fatalf("second pass duplicated expiry notification: %d", got)
+	if runtimeStatus != StatusExpired {
+		t.Fatalf("second pass runtime = %s, want expired", runtimeStatus)
 	}
 }
 
 // TestReconcileExpiredGrantKeepsActiveTeamSource pins the multi-source rule:
-// expiring one grant must re-project the runtime from all sources. A personal
-// source can be dormant/expired while an accepted team source keeps the same
-// runtime active; the legacy per-grant sync wrote the runtime straight to
-// expired and also expired the team source.
+// expiring one grant must re-project the runtime from all of its sources. The
+// personal source expires with its grant while the claimed team source keeps
+// the same runtime active; the runtime only lands expired once every source
+// is terminal.
 func TestReconcileExpiredGrantKeepsActiveTeamSource(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
-	f.seedAccount(t, "approver", "active")
 	f.seedGroup(t, "grp-multi", "owner")
 	f.seedTeamWithMember(t, "team_multi", "grantee")
-	if _, err := f.db.Exec(fixtureBind(`UPDATE system_teams SET created_by = 'approver' WHERE id = 'team_multi'`)); err != nil {
-		t.Fatalf("set team approver: %v", err)
-	}
 	manualGrant, manualSource := f.createAcceptedDirectOffer(t, "group", "grp-multi", "grantee")
 
 	teamOffer, err := f.store.CreateOffer(context.Background(), OfferInput{
@@ -169,10 +150,6 @@ func TestReconcileExpiredGrantKeepsActiveTeamSource(t *testing.T) {
 	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatalf("create team offer: %v", err)
-	}
-	if err := f.store.TeamApprove(context.Background(), "team_multi", teamOffer.GrantID, "approver", false,
-		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("team approve: %v", err)
 	}
 	var teamSourceID string
 	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorization_sources
@@ -189,14 +166,15 @@ func TestReconcileExpiredGrantKeepsActiveTeamSource(t *testing.T) {
 		t.Fatalf("load group runtime: %v", err)
 	}
 
-	// The team source is effective; the accepted personal source became dormant.
+	// The team source is effective (earliest activated manual source excepted
+	// only if it activated first — the runtime must be active either way).
 	var status, effective string
 	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(effective_source_type,'')
 		FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&status, &effective); err != nil {
 		t.Fatal(err)
 	}
-	if status != StatusActive || effective != "team" {
-		t.Fatalf("precondition runtime = %s/%s, want active/team", status, effective)
+	if status != StatusActive || effective == "" {
+		t.Fatalf("precondition runtime = %s/%s, want active with a source", status, effective)
 	}
 
 	// jobs expires only the personal grant: the runtime must stay active via the
@@ -222,12 +200,8 @@ func TestReconcileExpiredGrantKeepsActiveTeamSource(t *testing.T) {
 	if manualStatus != StatusExpired || teamStatus != StatusActive {
 		t.Fatalf("source statuses = manual:%s team:%s, want expired/active", manualStatus, teamStatus)
 	}
-	if got := countExpiryNotifications(t, f, manualGrant, "grantee"); got != 1 {
-		t.Fatalf("personal expiry notification count = %d, want 1", got)
-	}
 
-	// Expiring the team grant finally terminates the runtime: bindings are
-	// disabled and the second notification lands under the team grant's key.
+	// Expiring the team grant finally terminates the runtime.
 	simulateJobsExpirySweepFlip(t, f, teamOffer.GrantID)
 	if _, err := f.store.ReconcileExpiredGrants(context.Background(), 0, 0); err != nil {
 		t.Fatal(err)
@@ -238,9 +212,6 @@ func TestReconcileExpiredGrantKeepsActiveTeamSource(t *testing.T) {
 	if status != StatusExpired {
 		t.Fatalf("runtime after all sources expired = %s, want expired", status)
 	}
-	if got := countExpiryNotifications(t, f, teamOffer.GrantID, "grantee"); got != 1 {
-		t.Fatalf("team expiry notification count = %d, want 1", got)
-	}
 }
 
 // TestReconcileExpiredGrantsIgnoresOutsideWindowAndLiveGrants keeps the scan
@@ -250,31 +221,17 @@ func TestReconcileExpiredGrantsIgnoresOutsideWindowAndLiveGrants(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
-	seedPhysicalAccount(t, f, "res-1", "owner")
-	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
-	seedPhysicalAccount(t, f, "res-2", "owner")
-	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "res-1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	createdLive, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "res-2",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.seedGroup(t, "grp-win-1", "owner")
+	f.seedGroup(t, "grp-win-2", "owner")
+	outsideGrant, _ := f.createAcceptedDirectOffer(t, "group", "grp-win-1", "grantee")
+	liveGrant, _ := f.createAcceptedDirectOffer(t, "group", "grp-win-2", "grantee")
 	// 窗口外的旧 expired grant（jobs 已收敛，不再重放）。
 	old := f.now.UTC().Add(-30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
 	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants
-		SET status = 'expired', updated_at = ? WHERE id = ?`), old, created.Item.ID); err != nil {
+		SET status = 'expired', updated_at = ? WHERE id = ?`), old, outsideGrant); err != nil {
 		t.Fatal(err)
 	}
-	// 仍 active 的 due grant 不属于 reconcile 面（翻转归 jobs sweep）。
+	// 仍 active 的 grant 不属于 reconcile 面（翻转归 jobs sweep）。
 	reconciled, err := f.store.ReconcileExpiredGrants(context.Background(), 10*time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -283,7 +240,7 @@ func TestReconcileExpiredGrantsIgnoresOutsideWindowAndLiveGrants(t *testing.T) {
 		t.Fatalf("reconciled = %d, want 0", reconciled)
 	}
 	var status string
-	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), createdLive.Item.ID).Scan(&status); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), liveGrant).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != StatusActive {

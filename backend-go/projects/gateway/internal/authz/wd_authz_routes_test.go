@@ -80,7 +80,7 @@ func wdNewRouteFixture(t *testing.T) (*fixture, *Deps, *wdSink) {
 }
 
 func TestWdCreateRouteContracts(t *testing.T) {
-	_, deps, sink := wdNewRouteFixture(t)
+	f, deps, sink := wdNewRouteFixture(t)
 
 	// 无认证上下文 → 401。
 	recorder := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		t.Fatalf("admin 未指定 scope 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// 管理面代授权方发起 → 进入待授权方审批，接收方尚不可见。
+	// 管理面代授权方发起 → 直发 pending，接收方立即可领取（无 owner 审批位）。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
 		wdCreateBody("group", "grp_r", "system_account", "grantee", ""), wdAuthCtx("admin", "admin")))
@@ -106,7 +106,7 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		t.Fatalf("admin create 应 201: %d %s", recorder.Code, recorder.Body.String())
 	}
 	created := wdDecodeMap(t, recorder)
-	if created["status"] != StatusPendingOwnerApproval || created["ownerApprovalRequired"] != true || created["created"] != true {
+	if created["status"] != StatusPending || created["created"] != true {
 		t.Fatalf("admin create 结果错误: %#v", created)
 	}
 	if len(sink.entries) != 1 || sink.entries[0].Action != "create_offer" || sink.entries[0].Mode != "admin" {
@@ -134,7 +134,7 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		{"缺字段", `{"resourceType":"group"}`, "owner", "授权参数不合法"},
 		{"资源类型非法", wdCreateBody("model", "m1", "system_account", "grantee", ""), "owner", "授权参数不合法"},
 		{"被授权类型非法", wdCreateBody("group", "grp_r", "robot", "grantee", ""), "owner", "授权参数不合法"},
-		{"目标分组已退役", wdCreateBody("account", "acc1", "system_account", "grantee", "tg1"), "owner", "授权不再支持 targetGroupId，请由接收方接受后自行绑定"},
+		{"目标分组键已退役", wdCreateBody("account", "acc1", "system_account", "grantee", "tg1"), "owner", "Unrecognized key(s) in object: 'targetGroupId'"},
 	}
 	for _, tc := range badBodies {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,15 +177,24 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		t.Fatalf("my create 日志 mode 应为 self: %#v", sink.entries)
 	}
 
-	// my-* 团队 offer → pending_team_approval，由团队审批后逐成员发送。
+	// my-* 团队 offer → 直发 pending，发起时即为每个活跃成员展开 pending 来源
+	//（无团队审批位，成员领取即可用）。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
 		wdCreateBody("group", "grp_team", "team", "team_r", ""), wdAuthCtx("owner", "user")))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("my team create 应 201: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if teamOffer := wdDecodeMap(t, recorder); teamOffer["status"] != StatusPendingTeamApproval {
-		t.Fatalf("团队 offer 应为 pending_team_approval: %#v", teamOffer)
+	if teamOffer := wdDecodeMap(t, recorder); teamOffer["status"] != StatusPending {
+		t.Fatalf("团队 offer 应为 pending: %#v", teamOffer)
+	}
+	var teamPendingSources int
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM resource_authorization_sources
+		WHERE source_type = 'team' AND status = 'pending'`)).Scan(&teamPendingSources); err != nil {
+		t.Fatal(err)
+	}
+	if teamPendingSources != 1 {
+		t.Fatalf("团队发起应立即展开成员 pending 来源: %d", teamPendingSources)
 	}
 
 	// 普通用户不允许直接指定 ID。
@@ -205,7 +214,7 @@ func TestWdCreateRouteContracts(t *testing.T) {
 	}
 }
 
-func TestWdRevokeAndReturnContracts(t *testing.T) {
+func TestWdRevokeContracts(t *testing.T) {
 	f, deps, sink := wdNewRouteFixture(t)
 	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_r",
@@ -244,40 +253,16 @@ func TestWdRevokeAndReturnContracts(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("revoke 幂等重放应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
-
-	// 旧的整体归还路由已退役：团队/个人都必须按来源归还。
-	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, request(http.MethodDelete, "/", "", wdAuthCtx("grantee", "user")), true)
-	var conflictBody struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &conflictBody); err != nil {
-		t.Fatalf("return decode: %v (%s)", err, recorder.Body.String())
-	}
-	if recorder.Code != http.StatusConflict || conflictBody.Code != "state_conflict" ||
-		!strings.Contains(conflictBody.Message, "按来源归还") {
-		t.Fatalf("旧归还路由应 409 state_conflict: %d %s", recorder.Code, recorder.Body.String())
-	}
 }
 
 func TestWdPatchContracts(t *testing.T) {
 	f, deps, sink := wdNewRouteFixture(t)
-	created, err := f.store.CreateOffer(context.Background(), OfferInput{
-		ResourceType: "group", ResourceID: "grp_r",
-		GranteeType: "system_account", GranteeUsername: "grantee",
-	}, "owner", false, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Authorizations can only be edited while active/paused; the offer flow's
-	// acceptance path is covered separately, so promote the row directly here.
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'active' WHERE id = ?`), created.GrantID); err != nil {
-		t.Fatal(err)
-	}
+	// UpdateOffer only accepts active/paused grants: drive the claim path to
+	// reach that state (no direct row promotion of retired statuses).
+	grantID, _ := f.createAcceptedDirectOffer(t, "group", "grp_r", "grantee")
 	request := func(body string, auth *authsys.AuthContext) *http.Request {
-		request := wdJSONRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+created.GrantID, body, auth)
-		request.SetPathValue("id", created.GrantID)
+		request := wdJSONRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+grantID, body, auth)
+		request.SetPathValue("id", grantID)
 		return request
 	}
 
@@ -292,11 +277,17 @@ func TestWdPatchContracts(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "请提供要修改的授权内容" {
 		t.Fatalf("无内容应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
-	// status 已从更新契约移除（暂停/恢复走独立语义），严格对象拒绝。
+	// status/limits 已从更新契约移除（额度域退役，暂停/恢复走独立语义），
+	// 严格对象拒绝。
 	recorder = httptest.NewRecorder()
 	deps.patchScoped(recorder, request(`{"status":"paused"}`, wdAuthCtx("owner", "user")), false, true)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status 键应被严格 schema 拒绝: %d %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	deps.patchScoped(recorder, request(`{"limits":{"daily":{"enabled":true,"limit":2}}}`, wdAuthCtx("owner", "user")), false, true)
+	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "Unrecognized key(s) in object: 'limits'" {
+		t.Fatalf("limits 键应被严格 schema 拒绝: %d %s", recorder.Code, recorder.Body.String())
 	}
 	// 非法 expiresAt。
 	recorder = httptest.NewRecorder()
@@ -304,10 +295,9 @@ func TestWdPatchContracts(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "过期时间格式不正确" {
 		t.Fatalf("非法 expiresAt 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 成功路径：remark + limits（响应只回 updated）。
+	// 成功路径：remark（响应只回 updated）。
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"remark":"调整额度","limits":{"daily":{"enabled":true,"limit":2}}}`,
-		wdAuthCtx("owner", "user")), false, true)
+	deps.patchScoped(recorder, request(`{"remark":"调整备注"}`, wdAuthCtx("owner", "user")), false, true)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("patch 应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -318,7 +308,7 @@ func TestWdPatchContracts(t *testing.T) {
 		t.Fatalf("patch 日志缺失: %#v", sink.entries)
 	}
 
-	// expire 面：expireOnly 拒绝 limits/remark 键（严格 schema）。
+	// expire 面：expireOnly 拒绝 remark 键（严格 schema）。
 	recorder = httptest.NewRecorder()
 	deps.patchScoped(recorder, request(`{"remark":"x"}`, wdAuthCtx("owner", "user")), true, true)
 	if recorder.Code != http.StatusBadRequest {

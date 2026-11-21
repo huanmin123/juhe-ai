@@ -42,12 +42,6 @@ func (errorClientSourceAvoidancePort) OrderAsync(context.Context, []AccountCandi
 	return AvoidanceOrder{}, errPortBoom
 }
 
-type errorQuotaPort struct{}
-
-func (errorQuotaPort) CheckBatchAsync(context.Context, gatewayruntimecache.GroupUsageAccessMetadata, []AccountCandidate) (map[string]QuotaDecision, error) {
-	return nil, errPortBoom
-}
-
 type errorHotQualityPort struct{}
 
 func (errorHotQualityPort) OrderAsync(context.Context, HotQualityOrderInput) (HotQualityOrder, error) {
@@ -134,7 +128,6 @@ func TestPrepareDispatchAccountsPortErrorsPropagate(t *testing.T) {
 		{"proxy_health", func(engine *Engine) { engine.ProxyHealth = errorProxyHealthPort{} }},
 		{"client_ip_avoidance", func(engine *Engine) { engine.ClientIPAvoidance = errorClientIPAvoidancePort{} }},
 		{"client_source_avoidance", func(engine *Engine) { engine.ClientSourceAvoidance = errorClientSourceAvoidancePort{} }},
-		{"quota", func(engine *Engine) { engine.Quota = errorQuotaPort{} }},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

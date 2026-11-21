@@ -177,3 +177,19 @@ func (q *manualTimerQueue) len() int {
 }
 
 func fmtAny(v any) string { return fmt.Sprintf("%v", v) }
+
+// snapshotFixture 重建 GatewayQuotaSnapshot 种子（授权条目臂随授权额度域退役
+// 删除，只保留成本条目与 complete 标记）。
+func snapshotFixture(generatedAt string, costComplete bool) GatewayQuotaSnapshot {
+	hours := 3
+	return GatewayQuotaSnapshot{
+		GeneratedAt: generatedAt,
+		CostEntries: []QuotaCostSnapshotEntry{
+			{SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak", HourlyWindowHours: &hours,
+				Costs: RequestQuotaCosts{Hourly: 1, Daily: 2, Weekly: 3, Monthly: 4, Total: 5}},
+		},
+		CostEntriesComplete: &costComplete,
+	}
+}
+
+func intPtr(value int) *int { return &value }

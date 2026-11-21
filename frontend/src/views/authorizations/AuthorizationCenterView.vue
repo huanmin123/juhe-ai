@@ -14,7 +14,7 @@
       </a-space>
     </template>
 
-    <a-tabs v-model:active-key="activeTab" @change="handleTabChange">
+    <a-tabs v-model:active-key="activeTab" class="authorization-center__tabs" @change="handleTabChange">
       <a-tab-pane v-for="tab in tabs" :key="tab.key" :tab="tab.label">
         <a-alert
           v-if="tab.key === 'inbound'"
@@ -24,114 +24,185 @@
           style="margin-bottom: 12px"
         />
 
-        <a-spin :spinning="loading">
-          <template v-if="tab.key === 'inbound'">
-            <a-table
-              :columns="sourceColumns"
-              :data-source="sources"
-              :pagination="false"
-              :row-key="(row: AuthorizationSourceSummary) => row.sourceId"
-              size="middle"
-              :scroll="{ x: 1270 }"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'resource'">
-                  {{ record.resourceName || record.resourceId }}
-                </template>
-                <template v-else-if="column.key === 'resourceType'">
-                  <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'owner'">
-                  {{ record.resourceOwnerName || record.resourceOwnerSystemAccountId }}
-                </template>
-                <template v-else-if="column.key === 'source'">
-                  <a-tag :color="record.sourceType === 'team' ? 'purple' : 'default'">
-                    {{ record.sourceType === 'team' ? `团队：${record.teamName || record.teamId}` : '个人' }}
-                  </a-tag>
-                </template>
-                <template v-else-if="column.key === 'vendor'">
-                  {{ record.vendorCode || '—' }}
-                </template>
-                <template v-else-if="column.key === 'status'">
-                  <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'expiry'">
-                  {{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}
-                </template>
-                <template v-else-if="column.key === 'binding'">
-                  <a-tag v-if="record.resourceType === 'account'" :color="record.bound ? 'green' : 'default'">
-                    {{ record.bound ? '已绑定分组' : '未绑定分组' }}
-                  </a-tag>
-                  <span v-else class="authorization-center__muted">—</span>
-                </template>
-                <template v-else-if="column.key === 'actions'">
-                  <a-space wrap>
-                    <a-button v-if="record.canAccept" size="small" type="primary" @click="openAccept(record)">领取</a-button>
-                    <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
-                      <a-button size="small" danger>归还</a-button>
-                    </a-popconfirm>
-                    <a-popconfirm v-if="record.canDecline" title="拒绝后该授权作废，确定拒绝？" @confirm="run(() => api.myAuthorizationCenter.decline(record.sourceId), '已拒绝授权')">
-                      <a-button size="small" danger>拒绝</a-button>
-                    </a-popconfirm>
-                    <a-button size="small" type="link" @click="openDetail(record)">详情</a-button>
-                  </a-space>
-                </template>
+        <template v-if="tab.key === 'inbound'">
+          <ResponsiveDataList
+            table-class="page-table authorization-center-table"
+            :columns="sourceColumns"
+            :data-source="sources"
+            row-key="sourceId"
+            :loading="loading"
+            :scroll-x="1270"
+            size="middle"
+          >
+            <template #emptyText>
+              <a-empty description="暂无收到的授权" />
+            </template>
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'resource'">
+                {{ record.resourceName || record.resourceId }}
               </template>
-            </a-table>
-            <a-empty v-if="!loading && !sources.length" description="暂无收到的授权" />
-          </template>
-
-          <template v-else-if="tab.key === 'outbound' || tab.key === 'owned' || tab.key === 'all'">
-            <a-table
-              :columns="offerColumns"
-              :data-source="offers"
-              :pagination="false"
-              :row-key="(row: AuthorizationOfferSummary) => row.grantId"
-              size="middle"
-              :scroll="{ x: 1200 }"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'resource'">
-                  {{ record.resourceName || record.resourceId }}
-                </template>
-                <template v-else-if="column.key === 'resourceType'">
-                  <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'grantee'">
-                  <a-tag :color="record.granteeType === 'team' ? 'purple' : 'default'">
-                    {{ record.granteeType === 'team' ? `团队：${record.teamName || record.teamId}` : record.granteeName || record.granteeSystemAccountId }}
-                  </a-tag>
-                </template>
-                <template v-else-if="column.key === 'createdBy'">
-                  {{ record.createdByName || record.createdBy }}
-                </template>
-                <template v-else-if="column.key === 'status'">
-                  <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'expiry'">
-                  {{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}
-                </template>
-                <template v-else-if="column.key === 'endedReason'">
-                  <span v-if="record.endedReason">{{ endedReasonLabel(record.endedReason) }}</span>
-                  <span v-else class="authorization-center__muted">—</span>
-                </template>
-                <template v-else-if="column.key === 'actions'">
-                  <a-space v-if="canPause(record) || canResume(record) || canExtend(record) || canRevoke(record)" wrap>
-                    <a-button v-if="canPause(record)" size="small" @click="run(() => currentApi().pause(record.grantId), '已暂停授权')">暂停</a-button>
-                    <a-button v-if="canResume(record)" size="small" @click="run(() => currentApi().resume(record.grantId), '已恢复授权')">恢复</a-button>
-                    <a-button v-if="canExtend(record)" size="small" @click="openExtend(record)">延长</a-button>
-                    <a-popconfirm v-if="canRevoke(record)" title="回收后所有非终态来源立即撤销，确定回收？" @confirm="run(() => currentApi().revoke(record.grantId), '已回收授权')">
-                      <a-button size="small" danger>回收</a-button>
-                    </a-popconfirm>
-                  </a-space>
-                  <span v-else class="authorization-center__muted">—</span>
-                </template>
+              <template v-else-if="column.key === 'resourceType'">
+                <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
               </template>
-            </a-table>
-            <a-empty v-if="!loading && !offers.length" description="暂无授权记录" />
-          </template>
+              <template v-else-if="column.key === 'owner'">
+                {{ record.resourceOwnerName || record.resourceOwnerSystemAccountId }}
+              </template>
+              <template v-else-if="column.key === 'source'">
+                <a-tag :color="record.sourceType === 'team' ? 'purple' : 'default'">
+                  {{ record.sourceType === 'team' ? `团队：${record.teamName || record.teamId}` : '个人' }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'vendor'">
+                {{ record.vendorCode || '—' }}
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'expiry'">
+                {{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}
+              </template>
+              <template v-else-if="column.key === 'binding'">
+                <a-tag v-if="record.resourceType === 'account'" :color="record.bound ? 'green' : 'default'">
+                  {{ record.bound ? '已绑定分组' : '未绑定分组' }}
+                </a-tag>
+                <span v-else class="authorization-center__muted">—</span>
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <a-space wrap>
+                  <a-button v-if="record.canAccept" size="small" type="primary" @click="openAccept(record)">领取</a-button>
+                  <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
+                    <a-button size="small" danger>归还</a-button>
+                  </a-popconfirm>
+                  <a-popconfirm v-if="record.canDecline" title="拒绝后该授权作废，确定拒绝？" @confirm="run(() => api.myAuthorizationCenter.decline(record.sourceId), '已拒绝授权')">
+                    <a-button size="small" danger>拒绝</a-button>
+                  </a-popconfirm>
+                  <a-button size="small" type="link" @click="openDetail(record)">详情</a-button>
+                </a-space>
+              </template>
+            </template>
+            <template #card="{ record }">
+              <article class="mobile-list-card">
+                <div class="mobile-list-card-head">
+                  <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
+                  <div class="mobile-list-card-tags">
+                    <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
+                    <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+                  </div>
+                </div>
+                <div class="mobile-list-meta-grid">
+                  <div class="mobile-list-meta-item">
+                    <span>授权方</span>
+                    <strong>{{ record.resourceOwnerName || record.resourceOwnerSystemAccountId }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>来源</span>
+                    <strong>{{ record.sourceType === 'team' ? `团队：${record.teamName || record.teamId}` : '个人' }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>到期</span>
+                    <strong>{{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}</strong>
+                  </div>
+                </div>
+                <a-space wrap style="margin-top: 10px">
+                  <a-button v-if="record.canAccept" size="small" type="primary" @click="openAccept(record)">领取</a-button>
+                  <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
+                    <a-button size="small" danger>归还</a-button>
+                  </a-popconfirm>
+                  <a-popconfirm v-if="record.canDecline" title="拒绝后该授权作废，确定拒绝？" @confirm="run(() => api.myAuthorizationCenter.decline(record.sourceId), '已拒绝授权')">
+                    <a-button size="small" danger>拒绝</a-button>
+                  </a-popconfirm>
+                  <a-button size="small" type="link" @click="openDetail(record)">详情</a-button>
+                </a-space>
+              </article>
+            </template>
+          </ResponsiveDataList>
+        </template>
 
-        </a-spin>
+        <template v-else-if="tab.key === 'outbound' || tab.key === 'owned' || tab.key === 'all'">
+          <ResponsiveDataList
+            table-class="page-table authorization-center-table"
+            :columns="offerColumns"
+            :data-source="offers"
+            row-key="grantId"
+            :loading="loading"
+            :scroll-x="1200"
+            size="middle"
+          >
+            <template #emptyText>
+              <a-empty description="暂无授权记录" />
+            </template>
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'resource'">
+                {{ record.resourceName || record.resourceId }}
+              </template>
+              <template v-else-if="column.key === 'resourceType'">
+                <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'grantee'">
+                <a-tag :color="record.granteeType === 'team' ? 'purple' : 'default'">
+                  {{ record.granteeType === 'team' ? `团队：${record.teamName || record.teamId}` : record.granteeName || record.granteeSystemAccountId }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'createdBy'">
+                {{ record.createdByName || record.createdBy }}
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'expiry'">
+                {{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}
+              </template>
+              <template v-else-if="column.key === 'endedReason'">
+                <span v-if="record.endedReason">{{ endedReasonLabel(record.endedReason) }}</span>
+                <span v-else class="authorization-center__muted">—</span>
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <a-space v-if="canPause(record) || canResume(record) || canExtend(record) || canRevoke(record)" wrap>
+                  <a-button v-if="canPause(record)" size="small" @click="run(() => currentApi().pause(record.grantId), '已暂停授权')">暂停</a-button>
+                  <a-button v-if="canResume(record)" size="small" @click="run(() => currentApi().resume(record.grantId), '已恢复授权')">恢复</a-button>
+                  <a-button v-if="canExtend(record)" size="small" @click="openExtend(record)">延长</a-button>
+                  <a-popconfirm v-if="canRevoke(record)" title="回收后所有非终态来源立即撤销，确定回收？" @confirm="run(() => currentApi().revoke(record.grantId), '已回收授权')">
+                    <a-button size="small" danger>回收</a-button>
+                  </a-popconfirm>
+                </a-space>
+                <span v-else class="authorization-center__muted">—</span>
+              </template>
+            </template>
+            <template #card="{ record }">
+              <article class="mobile-list-card">
+                <div class="mobile-list-card-head">
+                  <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
+                  <div class="mobile-list-card-tags">
+                    <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
+                    <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+                  </div>
+                </div>
+                <div class="mobile-list-meta-grid">
+                  <div class="mobile-list-meta-item">
+                    <span>接收方</span>
+                    <strong>{{ record.granteeType === 'team' ? `团队：${record.teamName || record.teamId}` : record.granteeName || record.granteeSystemAccountId }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>发起人</span>
+                    <strong>{{ record.createdByName || record.createdBy }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>到期</span>
+                    <strong>{{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}</strong>
+                  </div>
+                </div>
+                <a-space v-if="canPause(record) || canResume(record) || canExtend(record) || canRevoke(record)" wrap style="margin-top: 10px">
+                  <a-button v-if="canPause(record)" size="small" @click="run(() => currentApi().pause(record.grantId), '已暂停授权')">暂停</a-button>
+                  <a-button v-if="canResume(record)" size="small" @click="run(() => currentApi().resume(record.grantId), '已恢复授权')">恢复</a-button>
+                  <a-button v-if="canExtend(record)" size="small" @click="openExtend(record)">延长</a-button>
+                  <a-popconfirm v-if="canRevoke(record)" title="回收后所有非终态来源立即撤销，确定回收？" @confirm="run(() => currentApi().revoke(record.grantId), '已回收授权')">
+                    <a-button size="small" danger>回收</a-button>
+                  </a-popconfirm>
+                </a-space>
+              </article>
+            </template>
+          </ResponsiveDataList>
+        </template>
       </a-tab-pane>
     </a-tabs>
 
@@ -299,6 +370,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type {
   AuthorizationInboxSummary,
   AuthorizationOfferSummary,
@@ -329,6 +401,8 @@ const activeTab = ref(isManagementView.value ? 'all' : 'inbound')
 const summary = ref<AuthorizationInboxSummary>()
 const sources = ref<AuthorizationSourceSummary[]>([])
 const offers = ref<AuthorizationOfferSummary[]>([])
+// 列表数据由后端单次全量返回（上限 500 条）：分页交给 ResponsiveDataList
+// 的默认客户端分页（每页 20 条 + 总数），滚动高度由组件按容器量测。
 const detail = ref<AuthorizationSourceDetail>()
 const detailOpen = ref(false)
 const acceptOpen = ref(false)
@@ -788,5 +862,28 @@ onMounted(refresh)
   color: #d4380d;
   font-size: 12px;
   line-height: 1.5;
+}
+/* responsive-page-card 契约（固定高度 + overflow hidden）要求页面自管内部
+   滚动：把 tabs 高度链打通到视口，ResponsiveDataList 按容器量测出表格
+   scroll.y，列表在卡片内滚动、分页钉在表格底部。 */
+.authorization-center__tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+.authorization-center__tabs :deep(.ant-tabs-content-holder) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.authorization-center__tabs :deep(.ant-tabs-content),
+.authorization-center__tabs :deep(.ant-tabs-tabpane-active) {
+  height: 100%;
+}
+.authorization-center__tabs :deep(.ant-tabs-tabpane-active) {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 </style>

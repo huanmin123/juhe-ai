@@ -56,29 +56,33 @@ func TestWdUsageDetailParserContract(t *testing.T) {
 	}
 }
 
+func ptrStringWd(value string) *string { return &value }
+
 func TestWdListAccountResourceProjection(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedTeamWithMember(t, "team_acc", "grantee")
-	// 授权资源账户带到期时间；另一条经实例克隆命名。
+	// 授权资源账户带到期时间；名称投影来自账户行。
 	f.execResourceAccount(t, "acc_exp", "owner")
 	if _, err := f.db.Exec(`UPDATE accounts SET account_expires_at = '2027-01-01T00:00:00.000Z' WHERE id = 'acc_exp'`); err != nil {
 		t.Fatal(err)
 	}
 	f.seedGroup(t, "grp_acc", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
+	// 直发账户授权（带备注与到期）+ 直发团队授权，均为 pending 列表行。
+	expiresAt := "2026-12-31T00:00:00Z"
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "account", ResourceID: "acc_exp",
-		GranteeType: "system_account", GranteeID: "grantee",
-		Remark: ptrString("带备注"), ExpiresAt: func() *string { v := "2026-12-31T00:00:00Z"; return &v }(),
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+		Remark: ptrStringWd("带备注"), ExpiresAt: &expiresAt,
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	teamGrant, err := f.store.Create(context.Background(), CreateInput{
+	teamGrant, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_acc",
-		GranteeType: "team", GranteeID: "team_acc",
-	}, "owner")
+		GranteeType: "team", TeamID: "team_acc",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +97,7 @@ func TestWdListAccountResourceProjection(t *testing.T) {
 	for _, item := range items {
 		byID[item.ID] = item
 	}
-	accountItem := byID[created.Item.ID]
+	accountItem := byID[created.GrantID]
 	if accountItem.ResourceName == nil || *accountItem.ResourceName != "Account acc_exp" {
 		t.Fatalf("账户资源名投影错误: %#v", accountItem.ResourceName)
 	}
@@ -106,7 +110,7 @@ func TestWdListAccountResourceProjection(t *testing.T) {
 	if accountItem.ExpiresAt == nil {
 		t.Fatalf("授权到期投影缺失: %#v", accountItem.ExpiresAt)
 	}
-	// 管理者可见 limits 键位（无 limits → nil 保留键位由 JSON 层处理）。
+	// 直发单来源 → 生效来源 manual。
 	if accountItem.EffectiveSourceType != "manual" {
 		t.Fatalf("直授生效来源错误: %q", accountItem.EffectiveSourceType)
 	}

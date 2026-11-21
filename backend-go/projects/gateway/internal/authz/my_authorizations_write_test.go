@@ -82,15 +82,10 @@ func TestMyAuthorizationsWriteSurfaceLifecycle(t *testing.T) {
 		t.Fatalf("grantee inbound revoke must be hidden as 授权不存在 = %d %s", granteeRevokeRec.Code, granteeRevokeRec.Body.String())
 	}
 
-	// The receiver accepts the source, which activates the runtime.
-	var observedRevision string
-	var revisionVersion int
-	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
-		FROM resource_authorization_sources WHERE id = ?`), sourceID).Scan(&observedRevision, &revisionVersion); err != nil {
-		t.Fatal(err)
-	}
+	// The receiver accepts the source, which activates the runtime（领取体只收
+	// targetGroupId，无版本预读位）。
 	acceptReq := identity(jsonRequest(t, http.MethodPost, "/__aisys__/api/my-authorization-sources/"+sourceID+"/accept",
-		`{"expectedRevision":"`+observedRevision+`","expectedRevisionVersion":`+strconv.Itoa(revisionVersion)+`}`), "grantee")
+		`{}`), "grantee")
 	acceptReq.SetPathValue("sourceId", sourceID)
 	acceptRec := httptest.NewRecorder()
 	deps.acceptSource(acceptRec, acceptReq)
@@ -98,9 +93,9 @@ func TestMyAuthorizationsWriteSurfaceLifecycle(t *testing.T) {
 		t.Fatalf("source accept = %d %s", acceptRec.Code, acceptRec.Body.String())
 	}
 
-	// PATCH /my-authorizations/{id}: the owner edits remark/limits.
+	// PATCH /my-authorizations/{id}: the owner edits the remark（额度域已退役）。
 	patchReq := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+grantID,
-		`{"remark":"updated","limits":{"daily":{"enabled":true,"limit":3}}}`), "owner")
+		`{"remark":"updated"}`), "owner")
 	patchReq.SetPathValue("id", grantID)
 	patchRec := httptest.NewRecorder()
 	deps.patchSelf(patchRec, patchReq, false)

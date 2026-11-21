@@ -213,7 +213,7 @@ func TestUsageEndpointsQueryContract(t *testing.T) {
 }
 
 // TestMutationBodyUnknownKeyRejected replays the zod .strict() body objects on
-// the create/revoke/return surfaces (the patch/expire surfaces are covered by
+// the create/revoke surfaces (the patch/expire surfaces are covered by
 // TestAuthorizationRouteInputContract).
 func TestMutationBodyUnknownKeyRejected(t *testing.T) {
 	env := newUsageRouteEnv(t, "admin")
@@ -227,42 +227,41 @@ func TestMutationBodyUnknownKeyRejected(t *testing.T) {
 		t.Fatalf("create unknown key = %d %s", status, payload)
 	}
 
-	// Create the grant through the store for the revoke surface.
-	created, err := env.f.store.Create(context.Background(), CreateInput{
+	// Create the offer through the store for the revoke surface.
+	created, err := env.f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_usage",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner1")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner1", false, "owner1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Revoke retired the request body schema: unknown keys are ignored and the
 	// domain write still runs.
-	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/authorizations/"+created.Item.ID,
-		`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","reason":"x"}`)
+	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/authorizations/"+created.GrantID,
+		`{"expectedUpdatedAt":"2020-01-01T00:00:00Z","reason":"x"}`)
 	if status != http.StatusOK {
 		t.Fatalf("revoke with retired body = %d %s", status, payload)
 	}
 
-	// The whole-grant return endpoint is retired in favour of per-source
-	// return; it always answers 409 regardless of the body.
-	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+created.Item.ID+"/return",
+	// The whole-grant return endpoint is retired with the per-source return:
+	// the route is no longer mounted and the kernel answers 404.
+	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+created.GrantID+"/return",
 		`{"force":true}`)
-	if status != http.StatusConflict || !strings.Contains(payload, "请前往授权中心按来源归还") {
-		t.Fatalf("retired return = %d %s", status, payload)
+	if status != http.StatusNotFound {
+		t.Fatalf("retired return route = %d %s", status, payload)
 	}
 }
 
-// TestAdminReturnAndUsageDetail covers the admin return surface (the
-// userVisible grantee resolution) and the per-authorization usage detail on
+// TestAdminUsageDetailSurfaces covers the per-authorization usage detail on
 // both surfaces, including the owner-scope 404.
-func TestAdminReturnAndUsageDetail(t *testing.T) {
+func TestAdminUsageDetailSurfaces(t *testing.T) {
 	env := newUsageRouteEnv(t, "admin")
 	env.f.seedGroup(t, "grp_detail", "owner1")
-	created, err := env.f.store.Create(context.Background(), CreateInput{
+	created, err := env.f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_detail",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner1")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner1", false, "owner1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +287,7 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 
 	// Admin without the filter reads the unscoped detail (admin scope has no
 	// owner filter), usage numbers come from the usage_scope_range_windows row.
-	status, payload := env.do(t, http.MethodGet, "/__aisys__/api/authorizations/"+created.Item.ID+"/usage", "")
+	status, payload := env.do(t, http.MethodGet, "/__aisys__/api/authorizations/"+created.GrantID+"/usage", "")
 	if status != http.StatusOK {
 		t.Fatalf("admin usage status = %d body = %s", status, payload)
 	}
@@ -307,40 +306,20 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 	}
 
 	// A filtered admin scope that does not own the grant reads not found.
-	status, _ = env.do(t, http.MethodGet, "/__aisys__/api/authorizations/"+created.Item.ID+"/usage?systemAccountId=plainuser", "")
+	status, _ = env.do(t, http.MethodGet, "/__aisys__/api/authorizations/"+created.GrantID+"/usage?systemAccountId=plainuser", "")
 	if status != http.StatusNotFound {
 		t.Fatalf("filtered usage status = %d", status)
 	}
 
 	// The grantee reads the same detail on the my surface.
 	userEnv := newUsageRouteEnv(t, "grantee", env.f)
-	status, payload = userEnv.do(t, http.MethodGet, "/__aisys__/api/my-authorizations/"+created.Item.ID+"/usage", "")
+	status, payload = userEnv.do(t, http.MethodGet, "/__aisys__/api/my-authorizations/"+created.GrantID+"/usage", "")
 	if status != http.StatusOK {
 		t.Fatalf("my usage status = %d body = %s", status, payload)
 	}
 	// A third user cannot see the grant at all.
 	otherEnv := newUsageRouteEnv(t, "plainuser", env.f)
-	if status, _ := otherEnv.do(t, http.MethodGet, "/__aisys__/api/my-authorizations/"+created.Item.ID+"/usage", ""); status != http.StatusNotFound {
+	if status, _ := otherEnv.do(t, http.MethodGet, "/__aisys__/api/my-authorizations/"+created.GrantID+"/usage", ""); status != http.StatusNotFound {
 		t.Fatalf("stranger usage status = %d", status)
-	}
-
-	// The whole-grant return surface is retired for administrators too: they
-	// must revoke, while the receiver returns per source. Both calls answer
-	// the state-conflict gate and leave the grant untouched.
-	for _, url := range []string{
-		"/__aisys__/api/authorizations/" + created.Item.ID + "/return",
-		"/__aisys__/api/authorizations/" + created.Item.ID + "/return?systemAccountId=grantee",
-	} {
-		status, payload = env.do(t, http.MethodDelete, url, `{}`)
-		if status != http.StatusConflict || !strings.Contains(payload, "请前往授权中心按来源归还") {
-			t.Fatalf("retired admin return %s = %d body = %s", url, status, payload)
-		}
-	}
-	var grantStatus string
-	if err := env.f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
-		t.Fatal(err)
-	}
-	if grantStatus != StatusActive {
-		t.Fatalf("grant after retired admin return = %s", grantStatus)
 	}
 }

@@ -2,14 +2,16 @@ package authz
 
 // authz 单授权用量明细补充测试（wd_ 前缀，独占新增）：usage_detail.go 的
 // 直授/团队两条读链（窗口行水合、成员分页、团队窗口摘要、分组/实例回退），
-// 加上访问范围矩阵与纯函数契约。构造沿用既有 usageFixture（stats 句柄 +
-// UTC 时区源）。
+// 加上访问范围矩阵与纯函数契约。授权种子走直发+领取新契约（领取建立
+// usage detail 读链依赖的运行时行），构造沿用既有 usageFixture（stats 句柄
+// + UTC 时区源）。
 
 import (
 	"context"
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 )
 
 func wdInsertScopeWindow(t *testing.T, f *fixture, systemAccountID, scopeType, scopeID, start, end string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
@@ -38,26 +40,39 @@ func wdInsertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, teamID, res
 
 var wdDetailRange = UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 31, MaxDays: 31}
 
+// wdOfferClaimDirect 发起 direct offer 并由接收方领取，返回 grant id（领取
+// 建立 usage detail 读链依赖的运行时行；账户授权需给 targetGroupID 或接收方
+// 默认分组）。
+func (f *fixture) wdOfferClaimDirect(t *testing.T, resourceType, resourceID, granteeID, targetGroupID string) string {
+	t.Helper()
+	ctx := context.Background()
+	offer, err := f.store.CreateOffer(ctx, OfferInput{
+		ResourceType: resourceType, ResourceID: resourceID,
+		GranteeType: "system_account", GranteeUsername: granteeID,
+	}, "owner", false, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.AcceptSource(ctx, granteeID, offer.SourceID, AcceptInput{TargetGroupID: targetGroupID},
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	return offer.GrantID
+}
+
 func TestWdUsageDetailDirectGrant(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
-	f.seedAccount(t, "member", "active")
 	f.seedGroup(t, "grp_d", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_d",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID := f.wdOfferClaimDirect(t, "group", "grp_d", "grantee", "")
 	runtimeID := wdRuntimeID(t, f, "group", "grp_d", "grantee")
 	// 窗口行：键 = 运行时行 id，账户归属 = 资源类型 group → owner。
 	wdInsertScopeWindow(t, f, "owner", "group_authorization", runtimeID, "2026-08-08", "2026-09-06",
 		9, 90, 45, 0.9, "2026-09-06T05:00:00.000Z")
 
 	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
-	detail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
+	detail, err := f.store.usageDetailSummary(context.Background(), grantID, admin, wdDetailRange, 1, 0)
 	if err != nil {
 		t.Fatalf("usage detail: %v", err)
 	}
@@ -80,7 +95,7 @@ func TestWdUsageDetailDirectGrant(t *testing.T) {
 		t.Fatalf("rangeUsage 回显错误: %#v", detail.UsageBySystemAccount[0])
 	}
 	// page=2：首页为空但 total 保持 1（分页上界契约）。
-	paged, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 2, 1)
+	paged, err := f.store.usageDetailSummary(context.Background(), grantID, admin, wdDetailRange, 2, 1)
 	if err != nil || paged == nil {
 		t.Fatalf("page=2: %v", err)
 	}
@@ -92,7 +107,7 @@ func TestWdUsageDetailDirectGrant(t *testing.T) {
 	if _, err := f.db.Exec(fixtureBind(`DELETE FROM resource_authorizations WHERE id = ?`), runtimeID); err != nil {
 		t.Fatal(err)
 	}
-	empty, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
+	empty, err := f.store.usageDetailSummary(context.Background(), grantID, admin, wdDetailRange, 1, 0)
 	if err != nil || empty == nil {
 		t.Fatalf("无运行时行: %v", err)
 	}
@@ -109,13 +124,7 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	f.seedTeamWithMember(t, "team_d", "member1")
 	f.seedTeamWithMember(t, "team_d", "member2")
 	f.seedGroup(t, "grp_t", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_t",
-		GranteeType: "team", GranteeID: "team_d",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID := wdOfferTeamGrant(t, f, "group", "grp_t", "owner", "team_d", []string{"member1", "member2"})
 	// 每个成员的运行时行 + 窗口行（member2 更晚的 lastUsedAt 排前）。
 	id1 := wdRuntimeID(t, f, "group", "grp_t", "member1")
 	id2 := wdRuntimeID(t, f, "group", "grp_t", "member2")
@@ -127,7 +136,7 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	wdInsertTeamDailyRow(t, f, "owner", "team_d", "group", "grp_t", 10, 1.0, "2026-09-06T03:00:00.000Z")
 
 	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
-	detail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
+	detail, err := f.store.usageDetailSummary(context.Background(), grantID, admin, wdDetailRange, 1, 0)
 	if err != nil || detail == nil {
 		t.Fatalf("team usage detail: %v", err)
 	}
@@ -152,7 +161,7 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	}
 	wdInsertScopeWindow(t, f, "owner", "group_authorization_team", "grp_t:team_d", "2026-08-08", "2026-09-06",
 		5, 50, 25, 0.5, "2026-09-06T04:00:00.000Z")
-	fallback, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
+	fallback, err := f.store.usageDetailSummary(context.Background(), grantID, admin, wdDetailRange, 1, 0)
 	if err != nil || fallback == nil {
 		t.Fatalf("fallback detail: %v", err)
 	}
@@ -171,13 +180,7 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	f.seedAccount(t, "member1", "active")
 	f.seedTeamWithMember(t, "team_w", "member1")
 	f.seedGroup(t, "grp_w", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_w",
-		GranteeType: "team", GranteeID: "team_w",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID := wdOfferTeamGrant(t, f, "group", "grp_w", "owner", "team_w", []string{"member1"})
 	// 3 天窗内的两行日摘要（09-02 / 09-04），窗外一行不参与聚合。
 	insertTeamDailyRow(t, f, "owner", "2026-09-02", "team_w", "group", "grp_w", 2, 20, 10, 0.25, "2026-09-02T01:00:00.000Z")
 	insertTeamDailyRow(t, f, "owner", "2026-09-04", "team_w", "group", "grp_w", 3, 30, 15, 0.5, "2026-09-04T05:00:00.000Z")
@@ -186,7 +189,7 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
 	// 自定义非锚点 3 天区间：仅折叠 09-02 与 09-04 两行。
 	custom := UsageStatsRange{StartDate: "2026-09-02", EndDate: "2026-09-04", Days: 3, MaxDays: 31}
-	detail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, custom, 1, 0)
+	detail, err := f.store.usageDetailSummary(context.Background(), grantID, admin, custom, 1, 0)
 	if err != nil || detail == nil {
 		t.Fatalf("custom range team detail: %v", err)
 	}
@@ -198,7 +201,7 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	}
 	// 旧锚点区间同样只读日摘要聚合，读取链不回落到已退役的窗口表。
 	anchor := UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 31, MaxDays: 31}
-	anchorDetail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, anchor, 1, 0)
+	anchorDetail, err := f.store.usageDetailSummary(context.Background(), grantID, admin, anchor, 1, 0)
 	if err != nil || anchorDetail == nil {
 		t.Fatalf("anchor range team detail: %v", err)
 	}
@@ -212,27 +215,24 @@ func TestWdUsageDetailTeamAccountFallbackViaInstances(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "member1", "active")
 	f.seedTeamWithMember(t, "team_acc", "member1")
-	// 资源账户必须先存在：Create 校验授权资源存在。
+	// 资源账户必须先存在：发起账户授权校验授权资源存在。
 	f.execResourceAccount(t, "acc_wd", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc_wd",
-		GranteeType: "team", GranteeID: "team_acc",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 接收方默认分组：账户授权领取一步装载实例并绑定。
+	f.seedGranteeGroup(t, "tg_wd_m1", "member1", "", 1, 1)
+	grantID := wdOfferTeamGrant(t, f, "account", "acc_wd", "owner", "team_acc", []string{"member1"})
 	runtimeID := wdRuntimeID(t, f, "account", "acc_wd", "member1")
-	// 授权实例账户（克隆）：authorization id → 实例账户 id。
-	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, authorization_instance_authorization_id)
-		VALUES ('inst_1', 'member1', '实例A', ?)`), runtimeID); err != nil {
+	// 领取装载的授权实例账户（克隆）：authorization id → 实例账户 id。
+	var instanceID string
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM accounts
+		WHERE authorization_instance_authorization_id = ? AND deleted_at IS NULL`), runtimeID).Scan(&instanceID); err != nil {
 		t.Fatal(err)
 	}
 	// 账户回退键 = 实例账户 id + 团队 id，账户归属被授权成员。
-	wdInsertScopeWindow(t, f, "member1", "account_authorization_team", "inst_1:team_acc", "2026-08-08", "2026-09-06",
+	wdInsertScopeWindow(t, f, "member1", "account_authorization_team", instanceID+":team_acc", "2026-08-08", "2026-09-06",
 		4, 40, 20, 0.4, "2026-09-06T06:00:00.000Z")
 
 	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
-	detail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
+	detail, err := f.store.usageDetailSummary(context.Background(), grantID, admin, wdDetailRange, 1, 0)
 	if err != nil || detail == nil {
 		t.Fatalf("account team fallback: %v", err)
 	}
@@ -258,49 +258,49 @@ func TestWdFindScopedUsageGrantMatrix(t *testing.T) {
 	f.seedAccount(t, "outsider", "active")
 	f.seedTeamWithMember(t, "team_m", "grantee")
 	f.seedGroup(t, "grp_m", "owner")
-	direct, err := f.store.Create(context.Background(), CreateInput{
+	direct, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_m",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	teamGrant, err := f.store.Create(context.Background(), CreateInput{
+	teamGrant, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_m",
-		GranteeType: "team", GranteeID: "team_m",
-	}, "owner")
+		GranteeType: "team", TeamID: "team_m",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// 未过滤 admin：可见。
-	grant, err := f.store.findScopedUsageGrant(context.Background(), direct.Item.ID, accessInfo{ViewerID: "admin", IsAdmin: true})
+	grant, err := f.store.findScopedUsageGrant(context.Background(), direct.GrantID, accessInfo{ViewerID: "admin", IsAdmin: true})
 	if err != nil || grant == nil {
 		t.Fatalf("unscoped admin: %v", err)
 	}
 	// 过滤 admin 与 owner 不符 → 不可见。
-	grant, err = f.store.findScopedUsageGrant(context.Background(), direct.Item.ID, accessInfo{ViewerID: "admin", IsAdmin: true, FilterID: "someone-else"})
+	grant, err = f.store.findScopedUsageGrant(context.Background(), direct.GrantID, accessInfo{ViewerID: "admin", IsAdmin: true, FilterID: "someone-else"})
 	if err != nil || grant != nil {
 		t.Fatalf("filtered admin mismatch 应不可见: %v %#v", err, grant)
 	}
 	// grantee 本人可见。
-	if grant, err = f.store.findScopedUsageGrant(context.Background(), direct.Item.ID, accessInfo{ViewerID: "grantee"}); err != nil || grant == nil {
+	if grant, err = f.store.findScopedUsageGrant(context.Background(), direct.GrantID, accessInfo{ViewerID: "grantee"}); err != nil || grant == nil {
 		t.Fatalf("grantee 可见: %v", err)
 	}
 	// 无关用户不可见。
-	if grant, err = f.store.findScopedUsageGrant(context.Background(), direct.Item.ID, accessInfo{ViewerID: "outsider"}); err != nil || grant != nil {
+	if grant, err = f.store.findScopedUsageGrant(context.Background(), direct.GrantID, accessInfo{ViewerID: "outsider"}); err != nil || grant != nil {
 		t.Fatalf("outsider 应不可见: %v %#v", err, grant)
 	}
 	// 空 viewer 不可见。
-	if grant, err = f.store.findScopedUsageGrant(context.Background(), direct.Item.ID, accessInfo{}); err != nil || grant != nil {
+	if grant, err = f.store.findScopedUsageGrant(context.Background(), direct.GrantID, accessInfo{}); err != nil || grant != nil {
 		t.Fatalf("空 viewer 应不可见: %v %#v", err, grant)
 	}
 	// 团队成员对团队授权可见。
-	if grant, err = f.store.findScopedUsageGrant(context.Background(), teamGrant.Item.ID, accessInfo{ViewerID: "grantee"}); err != nil || grant == nil {
+	if grant, err = f.store.findScopedUsageGrant(context.Background(), teamGrant.GrantID, accessInfo{ViewerID: "grantee"}); err != nil || grant == nil {
 		t.Fatalf("团队成员可见团队授权: %v", err)
 	}
 	// 非成员不可见团队授权。
-	if grant, err = f.store.findScopedUsageGrant(context.Background(), teamGrant.Item.ID, accessInfo{ViewerID: "outsider"}); err != nil || grant != nil {
+	if grant, err = f.store.findScopedUsageGrant(context.Background(), teamGrant.GrantID, accessInfo{ViewerID: "outsider"}); err != nil || grant != nil {
 		t.Fatalf("非成员不可见团队授权: %v %#v", err, grant)
 	}
 }

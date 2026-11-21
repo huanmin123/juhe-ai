@@ -116,7 +116,6 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 // gatewayquota package constant.
 const APIKeyQuotaExceededMessage = gatewayquota.APIKeyQuotaExceededMessage
 
-
 // APIKeyQuotaInput mirrors the Node input.
 type APIKeyQuotaInput struct {
 	Req          *GatewayRequest

@@ -99,44 +99,11 @@ func TestT93ReserveUsesUpstreamModelAndVendor(t *testing.T) {
 	if !input.HasMaxOutputTokens || input.MaxOutputTokens != 77 {
 		t.Fatalf("maxOutputTokens = %v/%d, want 77", input.HasMaxOutputTokens, input.MaxOutputTokens)
 	}
-	if input.GroupAuthorizationID != "ga1" || input.AccountAuthorizationID != "aa1" {
-		t.Fatalf("authorization scopes = %q/%q", input.GroupAuthorizationID, input.AccountAuthorizationID)
-	}
-	// 账户所有者优先作为计价目录 scope（与全链 finalization 同源）。
 	if input.SystemAccountID != "owner_sys" {
 		t.Fatalf("systemAccountID = %q, want account owner", input.SystemAccountID)
 	}
 	if input.APIKeyID != "key_1" || input.GroupID != "group_1" || input.AccountID != "acc_1" {
 		t.Fatalf("identity = %+v", input)
-	}
-}
-
-func TestT93DenialReturnsQuotaError(t *testing.T) {
-	port := &fakeInflightQuotaPort{outcome: InflightQuotaReserveOutcome{
-		Allowed:     false,
-		DeniedKind:  InflightDeniedAuthorization,
-		EstimateUSD: 0.5,
-		HasEstimate: true,
-	}}
-	engine := &Engine{InflightQuota: port}
-	raw := `{"model":"client-model"}`
-	req := t93Request(t, raw)
-
-	err := engine.reserveUpstreamInflightQuota(context.Background(), req, gatewaypreauth.GatewayFailureUsageContext{APIKeyID: "key_1"}, t93Account(), []byte(raw), "default")
-	var quotaErr *GatewayInflightQuotaExceededError
-	if !errors.As(err, &quotaErr) {
-		t.Fatalf("err = %v, want GatewayInflightQuotaExceededError", err)
-	}
-	if quotaErr.DeniedKind != InflightDeniedAuthorization || !quotaErr.HasEstimate || quotaErr.EstimateUSD != 0.5 {
-		t.Fatalf("quota error = %+v", quotaErr)
-	}
-	status, errorType, code, message := quotaErr.GatewayQuotaRejection()
-	if status != http.StatusTooManyRequests || errorType != "rate_limit_exceeded" ||
-		code != "rate_limit_exceeded" || message != gatewaypreauth.AuthorizationQuotaExceededMessage {
-		t.Fatalf("authorization rejection = %d/%s/%s/%s", status, errorType, code, message)
-	}
-	if req.InflightQuotaReserved {
-		t.Fatal("拒绝不得标记已预留")
 	}
 }
 

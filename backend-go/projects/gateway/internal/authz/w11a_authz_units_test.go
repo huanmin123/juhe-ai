@@ -7,7 +7,6 @@ package authz
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,12 +37,6 @@ func TestW11AStoreConstructorAndDialectArms(t *testing.T) {
 	}
 	if got := itoa(42); got != "42" {
 		t.Fatalf("itoa = %q", got)
-	}
-	if got := sqlInOutList("s", 3); got != "s (?, ?, ?)" {
-		t.Fatalf("sqlInOutList = %q", got)
-	}
-	if got := sqlPlaceholders(3); got != "?, ?, ?" {
-		t.Fatalf("sqlPlaceholders = %q", got)
 	}
 }
 
@@ -105,39 +98,7 @@ func TestW11AExpiryHelperArms(t *testing.T) {
 	}
 }
 
-func TestW11AJSONEqualityAndTextArms(t *testing.T) {
-	if !nullableJSONEqual(nil, "") || nullableJSONEqual(strPtrW11A("x"), "") {
-		t.Fatal("nullableJSONEqual nil semantics broken")
-	}
-	if !nullableJSONEqual(strPtrW11A(`{"a":1}`), `{"a":1}`) || nullableJSONEqual(strPtrW11A(`{"a":1}`), `{"a":2}`) {
-		t.Fatal("nullableJSONEqual value semantics broken")
-	}
-	if !nullableJSONEqual(strPtrW11A("{invalid"), "{invalid") || nullableJSONEqual(strPtrW11A(`{"a":1}`), "{invalid") {
-		t.Fatal("nullableJSONEqual invalid-json semantics broken")
-	}
-	if !nullableTextEqual(nil, sql.NullString{}) || nullableTextEqual(strPtrW11A("a"), sql.NullString{String: "b", Valid: true}) {
-		t.Fatal("nullableTextEqual broken")
-	}
-	stored := sql.NullString{String: `{"a":1}`, Valid: true}
-	if !authorizationLimitsSemanticallyEqual(strPtrW11A(`{"a":1}`), stored) ||
-		authorizationLimitsSemanticallyEqual(strPtrW11A(`{"a":2}`), stored) {
-		t.Fatal("limits semantic equality broken")
-	}
-	if !authorizationLimitsAssignmentEqual(strPtrW11A(`{"daily":{"enabled":true,"limit":1}}`), sql.NullString{String: `{"daily":{"enabled":true,"limit":1}}`, Valid: true}) {
-		t.Fatal("limits assignment equality broken")
-	}
-	if got := grantLimitsText(sql.NullString{}); got != "" {
-		t.Fatalf("empty limits text = %q", got)
-	}
-	if got := grantNullStringPointer(sql.NullString{String: "x", Valid: true}); got == nil || *got != "x" {
-		t.Fatal("grantNullStringPointer broken")
-	}
-	if got := nullStringPointer(sql.NullString{}); got != nil {
-		t.Fatal("nullStringPointer broken")
-	}
-	if got := limitsPointerOrNil(sql.NullString{String: "1", Valid: true}); got == nil {
-		t.Fatal("limitsPointerOrNil broken")
-	}
+func TestW11ATextNormalizationArms(t *testing.T) {
 	values := make([]string, 55)
 	for i := range values {
 		values[i] = "k" + itoa(i)
@@ -150,6 +111,9 @@ func TestW11AJSONEqualityAndTextArms(t *testing.T) {
 	}
 	if got := textPrefixUpperBound("ab"); got != "ac" {
 		t.Fatalf("plain bound = %q", got)
+	}
+	if normalizeTextList(nil) != nil {
+		t.Fatal("empty input must stay nil")
 	}
 }
 

@@ -971,6 +971,10 @@ var authzClaimRetiredColumns = []struct{ table, column string }{
 	// 回填臂同批退役（引用 limits_json 的 CHECK 不存在）。
 	{"resource_authorization_grants", "limits_json"},
 	{"resource_authorizations", "limits_json"},
+	// 额度域最后一处残壳列（2026-11-22 补删）：jobs 可用性投影排序索引表的
+	// 授权额度标志，schema 定义层已原位删除，写入点随额度闸门链退役；存量
+	// dev 库由本步骤 DROP（CHECK 由列 DROP 连带移除）。
+	{"account_list_availability_projection_index", "authorization_quota_exceeded"},
 }
 
 // authzClaimRetiredChecks 是先于状态收敛显式 DROP 的退役/旧值 CHECK 约束

@@ -22,12 +22,10 @@
 //     usage_quota_hourly_windows row (window_hours), daily/weekly/monthly use
 //     the timezone-aware stat_date/stat_week(Monday)/stat_month keys of "now",
 //     so a reset happens exactly when the zoned key rolls over.
-//   - snapshot invalidation: the authorization snapshot keeps a version
-//     counter plus publishedAt watermark (monotonic max) so readers reject
-//     snapshots generated before the invalidation, mirroring the Node
-//     authorization_quota_cache invalidator contract. The composition root
-//     wires these methods to internal/inval topics:
-//     inval.TopicAuthorizationQuota / inval.TopicAPIKeyQuota, and provides the
+//   - snapshot invalidation: the authorization snapshot arm (version counter,
+//     publishedAt watermark, inval.TopicAuthorizationQuota wiring) retired
+//     with the authorization quota domain (revision 31). The API-key quota
+//     invalidation still rides inval.TopicAPIKeyQuota via the
 //     InvalidationSyncer port backed by inval.Bus.SyncFromShared (Node
 //     syncGatewayCacheInvalidationsFromRuntimeState).
 //

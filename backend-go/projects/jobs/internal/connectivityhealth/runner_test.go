@@ -76,59 +76,9 @@ func TestClampConnectivityBudget(t *testing.T) {
 	}
 }
 
-// TestUpstreamOrigin 锁定同上游限流的分组键：scheme://host:port 归一，解析
-// 失败回落原始字符串，空值共享空键（保守限流，不放大瞬时压力）。
-func TestUpstreamOrigin(t *testing.T) {
-	cases := []struct {
-		baseURL, want string
-	}{
-		{"https://api.openai.com/v1", "https://api.openai.com"},
-		{"https://api.openai.com:8443/v1", "https://api.openai.com:8443"},
-		{"  https://dashscope.aliyuncs.com  ", "https://dashscope.aliyuncs.com"},
-		{"http://api.qwen.com", "http://api.qwen.com"},
-		{"https://api.openai.com/v1#fragment", "https://api.openai.com"},
-		// 非法 URL 回落原串：同一非法值恒映射同一键。
-		{"://bad url", "://bad url"},
-		{"not-a-url", "not-a-url"},
-		{"", ""},
-	}
-	for _, test := range cases {
-		if got := upstreamOrigin(test.baseURL); got != test.want {
-			t.Fatalf("upstreamOrigin(%q) = %q, want %q", test.baseURL, got, test.want)
-		}
-	}
-}
-
-// TestUpstreamLimiterBucketIsolation 锁定同上游限流桶语义：同 origin 共享
-// 容量 perUpstreamConcurrency 的桶，不同 origin 各自独立（互不占额）。
-func TestUpstreamLimiterBucketIsolation(t *testing.T) {
-	limiter := newUpstreamLimiter()
-	a := limiter.bucket("https://api.example.com")
-	a2 := limiter.bucket("https://api.example.com")
-	b := limiter.bucket("https://other.example.com")
-	if a != a2 {
-		t.Fatal("同 origin 必须共享同一个限流桶")
-	}
-	if a == b {
-		t.Fatal("不同 origin 必须使用独立限流桶")
-	}
-	// 桶容量 = perUpstreamConcurrency：塞满后再次获取阻塞，释放后可复用。
-	for i := 0; i < perUpstreamConcurrency; i++ {
-		a <- struct{}{}
-	}
-	full := limiter.bucket("https://api.example.com")
-	select {
-	case full <- struct{}{}:
-		t.Fatal("同源桶塞满后不得继续放行")
-	default:
-	}
-	<-a
-	select {
-	case full <- struct{}{}:
-	default:
-		t.Fatal("释放一个名额后应可再次获取")
-	}
-}
+// TestUpstreamOrigin 与 TestUpstreamLimiterBucketIsolation 已随实现收敛迁移
+// 到共享包 upstreamlimit（2026-11-22）；本通道保留「每轮新建、探测预算外
+// 排队」的持有语义，见 runner.go Run 的 limiter 构造注释。
 
 func TestUsesConnectionTest(t *testing.T) {
 	cases := []struct {

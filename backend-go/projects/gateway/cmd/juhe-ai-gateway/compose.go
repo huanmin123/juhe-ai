@@ -1431,18 +1431,6 @@ func (a accountsBusInvalidator) ClearResourceAuthorizationLookupCaches() error {
 	return nil
 }
 
-// InvalidateAuthorizationQuota mirrors the
-// notifyAuthorizationQuotaCacheInvalidation arm of
-// invalidateAuthorizationRuntimeAfterBusinessWrite: the authorization quota
-// snapshot invalidation rides the shared authorization quota topic.
-func (a accountsBusInvalidator) InvalidateAuthorizationQuota(reason string) error {
-	if a.bus == nil {
-		return errors.New("cache invalidation bus is not wired")
-	}
-	a.bus.Invalidate(inval.TopicAuthorizationQuota, reason)
-	return nil
-}
-
 // InvalidateRuntime / InvalidateAPIKeyValidation mirror the authsys
 // double-channel shape for the oauthmgmt rotation (CacheInvalidator port).
 func (a accountsBusInvalidator) InvalidateRuntime(reason string) error {

@@ -48,7 +48,6 @@ import (
 const (
 	TopicGatewayRuntime          = "topic:gateway_runtime_cache"
 	TopicGatewayAPIKeyValidation = "topic:gateway_api_key_validation_cache"
-	TopicAuthorizationQuota      = "topic:authorization_quota_cache"
 	TopicAPIKeyQuota             = "topic:api_key_quota_cache"
 )
 

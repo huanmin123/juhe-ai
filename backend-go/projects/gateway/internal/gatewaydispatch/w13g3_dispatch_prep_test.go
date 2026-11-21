@@ -123,18 +123,6 @@ func (c *w13g3ConcurrencyHC) LoadCurrentByLaneAsync(ctx context.Context, account
 	return map[string]int{}, nil
 }
 
-type w13g3Quota struct {
-	fakeQuota
-	err error
-}
-
-func (q *w13g3Quota) CheckBatchAsync(ctx context.Context, groupAccess gatewayruntimecache.GroupUsageAccessMetadata, accounts []AccountCandidate) (map[string]QuotaDecision, error) {
-	if q.err != nil {
-		return nil, q.err
-	}
-	return q.fakeQuota.CheckBatchAsync(ctx, groupAccess, accounts)
-}
-
 type w13g3ClientIPConcurrency struct {
 	fakeClientIPConcurrency
 	decision ClientIPConcurrencyDecision
@@ -492,8 +480,7 @@ func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 
 	t.Run("quota fallback error and complete failure error", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Quota = &w13g3Quota{fakeQuota: fakeQuota{denied: map[string]struct{}{"a-1": {}}}}
+		pipeline, _, _, _ := newPipeline(t)
 		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1"), &w13g3Coordinator{fallbackErr: errW13g3})
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
 			t.Fatalf("expected quota fallback error, got %v", err)
@@ -505,8 +492,7 @@ func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
 	})
 
 	t.Run("quota check error surfaces", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Quota = &w13g3Quota{err: errW13g3}
+		pipeline, _, _, _ := newPipeline(t)
 		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1"), &w13g3Coordinator{})
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
 			t.Fatalf("expected quota error, got %v", err)
@@ -520,7 +506,6 @@ func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
 		// 全抑制 + 回退未尝试 → 空账户 → CompleteFailure 错误。
 		input.UsageContext.TrafficSource = "probe" // 绕过回退前抑制
 		input.IgnoreAccountRuntimeSuppression = true
-		engine.Quota = &w13g3Quota{}
 		// 空候选列表触发 503。
 		input.CandidateAccounts = nil
 		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
@@ -676,19 +661,6 @@ func TestW13g3GroupFallbackRoutePlanAndErrors(t *testing.T) {
 		}
 		if !found || candidate.GroupID != "group-2" || candidate.RoutePlanSnapshot == nil || candidate.RoutePlanSnapshot.Cursor != 1 {
 			t.Fatalf("candidate = %#v", candidate)
-		}
-	})
-
-	t.Run("quota error surfaces", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Cache = &fakeCacheFallback{accounts: map[string][]AccountCandidate{"group-2": testAccounts("b-1")}}
-		engine.Quota = &w13g3Quota{err: errW13g3}
-		_, _, err := pipeline.ResolveNextGroupFallbackCandidateForArgs(context.Background(), GroupFallbackArgs{
-			Req: req, Reason: "upstream_accounts_exhausted", APIKeyRecord: apiKeyRecord,
-			SystemAccountID: "system-1", GroupID: "group-1", RequestLane: "text",
-		})
-		if !errors.Is(err, errW13g3) {
-			t.Fatalf("expected quota error, got %v", err)
 		}
 	})
 

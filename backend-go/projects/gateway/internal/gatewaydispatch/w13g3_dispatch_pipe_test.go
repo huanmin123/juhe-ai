@@ -213,7 +213,6 @@ func TestW13g3GroupFallbackNilRecordAndErrors(t *testing.T) {
 	t.Run("quota denied skip group", func(t *testing.T) {
 		pipeline, engine, _, _ := newPipeline(t)
 		engine.Cache = &w13g3FallbackCache{accounts: map[string][]AccountCandidate{"group-2": testAccounts("b-1")}}
-		engine.Quota = &fakeQuota{denied: map[string]struct{}{"b-1": {}}}
 		record := &gatewayruntimecache.GatewayAPIKeyRow{ID: "k", GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
 			{GroupID: "group-1", Status: "active", GroupEnabled: 1},
 			{GroupID: "group-2", Status: "active", GroupEnabled: 1},

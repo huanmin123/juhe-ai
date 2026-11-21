@@ -1,17 +1,20 @@
-// BUG-0175 (D-64/D-74) provisioning tests: the create-tail instance
-// derivation + grantee-group binding ported from the archived Node
-// resource-authorization-write-state.repository.ts (:183-224 bind,
-// :225-257 source-rename sync, :259-370 ensure, :371-423 name/group helpers).
+// BUG-0175 (D-64/D-74) provisioning tests: the claim-time instance
+// derivation + grantee-group binding (instance_provision.go ensure /
+// bind / name+group helpers). The send-and-claim model provisions at
+// AcceptSource: one step creates the instance and binds it into the
+// grantee-selected group (empty target falls back to the grantee's enabled
+// default group).
 package authz
 
 import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedProvisionSource inserts a source account carrying the columns the
-// restore/insert arms inherit (provider, protocol, concurrency, health,
+// restore/insert arms inherit (vendor, protocol, concurrency, health,
 // probe switch) plus non-default credentials so the empty-credential
 // assertion is meaningful.
 func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerCode string) {
@@ -33,9 +36,10 @@ func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerC
 	}
 }
 
-// provisionVendorIdentity 把 provider 语义映射为目标账户身份列（设计 §2.1）：
-// 9 个真实厂商 vendor_code = 驱动 = providerCode；其余 generic 语义
-// （openai/hybrid 等）vendor_code 为 NULL、driver 为 generic_http。
+// provisionVendorIdentity maps provider semantics onto the target account
+// identity columns (设计 §2.1): the 9 real vendors carry vendor_code = driver =
+// providerCode; generic semantics (openai/hybrid 等) keep vendor_code NULL and
+// driver generic_http.
 func provisionVendorIdentity(providerCode string) (any, string) {
 	switch providerCode {
 	case "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen":
@@ -44,8 +48,8 @@ func provisionVendorIdentity(providerCode string) (any, string) {
 	return nil, "generic_http"
 }
 
-// seedGranteeGroup inserts a group owned by the grantee with the provider,
-// enabled and default flags the binding validations read.
+// seedGranteeGroup inserts a group owned by the grantee with the enabled and
+// default flags the binding validations read.
 func (f *fixture) seedGranteeGroup(t *testing.T, id, granteeID, _ string, enabled, isDefault int) {
 	t.Helper()
 	// 组无 provider 维度（设计 §8）：providerCode 入参仅为调用点兼容保留。
@@ -129,22 +133,14 @@ func (f *fixture) provisionBinding(t *testing.T, instanceID, resourceID, grantee
 	return groupID, enabled
 }
 
-func TestProvisionInstanceOnCreateWithTargetGroup(t *testing.T) {
+func TestProvisionInstanceOnClaimWithTargetGroup(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedProvisionSource(t, "acc-src", "owner", "生产账户", "gpt")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	result, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = result
+	f.claimAccountOffer(t, "acc-src", "grantee", "grp-target")
 
 	row := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 	if row.id == "" || row.systemAccountID != "grantee" {
@@ -155,7 +151,7 @@ func TestProvisionInstanceOnCreateWithTargetGroup(t *testing.T) {
 		t.Fatalf("instance name = %q", row.name)
 	}
 	// Static configuration inherits the source; runtime/credential state stays
-	// empty and active (archived :355-370 column set).
+	// empty and active.
 	if row.status != "active" || row.schedulable != 1 {
 		t.Fatalf("instance runtime state: status=%q schedulable=%d", row.status, row.schedulable)
 	}
@@ -204,14 +200,7 @@ func TestProvisionInstanceNameFallsBackWhenTaken(t *testing.T) {
 	// A live grantee account already owns the candidate base name.
 	f.seedNamedAccount(t, "acc-other", "grantee", "生产账户")
 
-	_, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.claimAccountOffer(t, "acc-src", "grantee", "grp-target")
 
 	row := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 	// The name ladder keys off the runtime authorization id suffix (the id the
@@ -230,6 +219,9 @@ func TestProvisionInstanceNameFallsBackWhenTaken(t *testing.T) {
 	}
 }
 
+// TestProvisionTargetGroupValidationsVerbatim: the claim path carries the four
+// verbatim group rejections, and a rejected claim leaves the pending offer
+// without instance/binding side effects (the offer itself stays claimable).
 func TestProvisionTargetGroupValidationsVerbatim(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -266,38 +258,66 @@ func TestProvisionTargetGroupValidationsVerbatim(t *testing.T) {
 			f.seedProvisionSource(t, "acc-src", "owner", "生产账户", "gpt")
 			testCase.setup(f)
 
-			var target *string
-			if testCase.target != "" {
-				target = strPtr(testCase.target)
-			}
-			result, err := f.store.Create(context.Background(), CreateInput{
+			offer, err := f.store.CreateOffer(context.Background(), OfferInput{
 				ResourceType: "account", ResourceID: "acc-src",
-				GranteeType: "system_account", GranteeID: "grantee",
-				TargetGroupID: target,
-			}, "owner")
+				GranteeType: "system_account", GranteeUsername: "grantee",
+			}, "owner", false, "owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.store.AcceptSource(context.Background(), "grantee", offer.SourceID,
+				AcceptInput{TargetGroupID: testCase.target}, f.now.UTC().Format(time.RFC3339Nano))
 			if err == nil {
-				t.Fatalf("expected rejection, got %+v", result)
+				t.Fatalf("expected rejection")
 			}
 			fail, ok := err.(*Fail)
 			if !ok || fail.Message != testCase.wantErr {
 				t.Fatalf("error = %v, want Fail %q", err, testCase.wantErr)
 			}
-			// The rejection rolls the whole create back: no grant, no instance,
-			// no binding.
-			var grantCount, instanceCount, bindingCount int
-			if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorization_grants WHERE resource_id = 'acc-src'`).Scan(&grantCount); err != nil {
-				t.Fatal(err)
-			}
+			// The rejection keeps the pending offer but writes no instance and no
+			// binding; the source stays pending so the grantee can retry.
+			var instanceCount, bindingCount int
+			var pendingSources int
 			if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id = 'acc-src'`).Scan(&instanceCount); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.db.QueryRow(`SELECT COUNT(*) FROM group_accounts WHERE account_authorization_id IS NOT NULL`).Scan(&bindingCount); err != nil {
 				t.Fatal(err)
 			}
-			if grantCount != 0 || instanceCount != 0 || bindingCount != 0 {
-				t.Fatalf("rollback incomplete: grants=%d instances=%d bindings=%d", grantCount, instanceCount, bindingCount)
+			if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM resource_authorization_sources WHERE id = ? AND status = 'pending'`), offer.SourceID).Scan(&pendingSources); err != nil {
+				t.Fatal(err)
+			}
+			if instanceCount != 0 || bindingCount != 0 || pendingSources != 1 {
+				t.Fatalf("rejected claim side effects: instances=%d bindings=%d pendingSources=%d", instanceCount, bindingCount, pendingSources)
 			}
 		})
+	}
+}
+
+// TestProvisionSuperGroupTargetRejected pins the super-group binding guard
+// (超级分组设计 §5): a super group must never directly hold group_accounts
+// rows.
+func TestProvisionSuperGroupTargetRejected(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedProvisionSource(t, "acc-src-super", "owner", "生产账户", "gpt")
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, group_kind, updated_at)
+		VALUES ('grp-super', '超级', 'grantee', 'active', 1, 0, 'super', '2026-01-01T00:00:00Z')`)); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := f.store.CreateOffer(context.Background(), OfferInput{
+		ResourceType: "account", ResourceID: "acc-src-super",
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.store.AcceptSource(context.Background(), "grantee", offer.SourceID,
+		AcceptInput{TargetGroupID: "grp-super"}, f.now.UTC().Format(time.RFC3339Nano))
+	fail, ok := err.(*Fail)
+	if !ok || fail.Code != "group_kind_conflict" {
+		t.Fatalf("super group target must return group_kind_conflict: %#v", err)
 	}
 }
 
@@ -308,20 +328,13 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 	f.seedProvisionSource(t, "acc-src", "owner", "生产账户", "gpt")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	result, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID := f.claimAccountOffer(t, "acc-src", "grantee", "grp-target")
 	first := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 
 	// Simulate the archived deleted-instance state (the production path is the
 	// source-account delete cascade in internal/accounts/delete.go): the
-	// terminal grant revives through a re-create while the instance row stays
-	// soft-deleted with degraded runtime fields.
+	// terminal grant revives through a re-send + re-claim while the instance row
+	// stays soft-deleted with degraded runtime fields.
 	if _, err := f.db.Exec(fixtureBind(`UPDATE accounts SET deleted_at = '2026-02-01T00:00:00Z', deleted_by = 'owner',
 		status = 'disabled', schedulable = 0, cooldown_until = '2026-02-01T01:00:00Z',
 		last_error_code = 'upstream_401', stream_failure_count = 3,
@@ -330,21 +343,15 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 		WHERE id = ?`), first.id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'revoked',
-		revoked_by = 'owner', revoked_at = '2026-02-01T00:00:00Z' WHERE id = ?`), result.Item.ID); err != nil {
+	if err := f.store.RevokeOffer(context.Background(), grantID, "owner", false,
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 
-	revived, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if revived.Created {
-		t.Fatalf("re-create must revive the terminal grant, got created=true")
+	// 终态 grant 不复用：重发是一条全新 pending grant，再次领取复用实例行。
+	second := f.claimAccountOffer(t, "acc-src", "grantee", "grp-target")
+	if second == grantID {
+		t.Fatalf("re-offer must create a fresh grant id, got %q again", second)
 	}
 
 	restored := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
@@ -385,42 +392,37 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 	}
 }
 
-func TestRevokeKeepsInstanceTerminalState(t *testing.T) {
+// TestRevokeDisablesInstanceTerminalState pins the terminal side effect of
+// the send-and-claim model: the grant flips, the instance row stays in place
+// but is disabled and unschedulable, and the read surface drops it.
+func TestRevokeDisablesInstanceTerminalState(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedProvisionSource(t, "acc-src", "owner", "生产账户", "gpt")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	result, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID := f.claimAccountOffer(t, "acc-src", "grantee", "grp-target")
 	row := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 
-	var updatedAt string
-	if err := f.db.QueryRow(fixtureBind(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`), result.Item.ID).Scan(&updatedAt); err != nil {
+	if err := f.store.RevokeOffer(context.Background(), grantID, "owner", false,
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
-	}
-	outcome, err := f.store.Revoke(context.Background(), result.Item.ID, updatedAt, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.Status != "updated" {
-		t.Fatalf("revoke status = %q", outcome.Status)
 	}
 
-	// Archived revoke semantics: the grant flips, the instance row and its
-	// group binding stay untouched (the terminal cascade is the source-account
-	// delete path, already covered by internal/accounts/delete.go). The read
-	// surface drops the instance because the runtime row is no longer active.
+	// The instance row stays (the delete cascade is the source-account delete
+	// path) but lands disabled and unschedulable; the group binding flips to
+	// disabled.
 	after := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 	if after.deletedAt != nil || after.id != row.id {
 		t.Fatalf("revoke must not delete the instance: %+v", after)
+	}
+	if after.status != "disabled" || after.schedulable != 0 {
+		t.Fatalf("revoke must disable the instance: %+v", after)
+	}
+	_, bindingEnabled := f.provisionBinding(t, row.id, "acc-src", "grantee")
+	if bindingEnabled != 0 {
+		t.Fatalf("revoke must disable the group binding: %d", bindingEnabled)
 	}
 	readable, err := f.store.AuthorizedReadableAccountIDs(context.Background(), "grantee")
 	if err != nil {
@@ -438,14 +440,7 @@ func TestSyncInstanceNamesFollowsSourceRename(t *testing.T) {
 	f.seedProvisionSource(t, "acc-src", "owner", "生产账户", "gpt")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	_, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.claimAccountOffer(t, "acc-src", "grantee", "grp-target")
 	row := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 
 	// A blocking live account forces the ladder past the plain base name.
@@ -487,60 +482,49 @@ func TestSyncInstanceNamesFollowsSourceRename(t *testing.T) {
 	}
 }
 
-func TestProvisionTeamGrantMemberWithoutDefaultGroupFailsAndExpiredExpiry(t *testing.T) {
+// TestProvisionTeamClaimWithoutDefaultGroupFails pins the team-account claim
+// path: a member without an enabled default group fails his own claim (the
+// pending offer and the other members stay intact), and a past expiry is
+// rejected before any source exists.
+func TestProvisionTeamClaimWithoutDefaultGroupFails(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "member", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedProvisionSource(t, "acc-src", "owner", "生产账户", "gpt")
 	f.seedTeamWithMember(t, "team_1", "member")
+	f.seedTeamWithMember(t, "team_1", "grantee")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	// 团队 AI 账户授权展开时只使用成员已存在且启用的同供应商默认分组（设计
-	// :257）：member 缺少默认分组 → 整个创建事务失败并指明成员，不自动补建。
-	result, err := f.store.Create(context.Background(), CreateInput{
+	offer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "team", GranteeID: "team_1",
-	}, "owner")
-	if err == nil {
-		t.Fatalf("member without default group must fail the team grant, got %+v", result)
-	}
-	fail, ok := err.(*Fail)
-	if !ok || fail.Message != "团队成员 member 缺少该供应商的默认分组，无法完成团队授权" {
-		t.Fatalf("missing default group error = %v, want member-identifying Fail", err)
-	}
-	// The rejection rolls the whole create back.
-	var grantCount, runtimeCount, instanceCount int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorization_grants WHERE resource_id = 'acc-src'`).Scan(&grantCount); err != nil {
+		GranteeType: "team", TeamID: "team_1",
+	}, "owner", false, "owner")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorizations WHERE resource_id = 'acc-src'`).Scan(&runtimeCount); err != nil {
-		t.Fatal(err)
+	// member 缺少启用的默认分组 → 自己的领取失败并给出数据契约修复指引；
+	// grantee（有默认分组）不受影响。
+	_, memberErr := f.store.AcceptSource(context.Background(), "member",
+		pendingTeamSourceFor(t, f, offer.GrantID, "team_1", "member"),
+		AcceptInput{}, f.now.UTC().Format(time.RFC3339Nano))
+	if memberErr == nil || !strings.Contains(memberErr.Error(), "目标用户缺少启用的默认分组") {
+		t.Fatalf("member without default group must fail his claim: %v", memberErr)
 	}
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id = 'acc-src'`).Scan(&instanceCount); err != nil {
-		t.Fatal(err)
-	}
-	if grantCount != 0 || runtimeCount != 0 || instanceCount != 0 {
-		t.Fatalf("rollback incomplete: grants=%d runtimes=%d instances=%d", grantCount, runtimeCount, instanceCount)
+	if _, err := f.store.AcceptSource(context.Background(), "grantee",
+		pendingTeamSourceFor(t, f, offer.GrantID, "team_1", "grantee"),
+		AcceptInput{}, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("grantee claim must succeed: %v", err)
 	}
 
-	// A past expiry is rejected before provisioning (create validation), so no
-	// instance appears; the bind gating inside provisioning is the second,
-	// archived-parity guard for cascade-style callers.
+	// 过期时间校验发生在来源写入之前：过去时间被拒绝，不产生任何领取面。
 	expired := "2020-01-01T00:00:00Z"
-	if _, err := f.store.Create(context.Background(), CreateInput{
+	if _, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-		ExpiresAt:     &expired,
-	}, "owner"); err == nil {
+		GranteeType: "system_account", GranteeUsername: "grantee",
+		ExpiresAt: &expired,
+	}, "owner", false, "owner"); err == nil {
 		t.Fatalf("past expiry must be rejected by create validation")
-	}
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id = 'acc-src' AND system_account_id = 'grantee'`).Scan(&instanceCount); err != nil {
-		t.Fatal(err)
-	}
-	if instanceCount != 0 {
-		t.Fatalf("rejected grant provisioned %d instances", instanceCount)
 	}
 }
 

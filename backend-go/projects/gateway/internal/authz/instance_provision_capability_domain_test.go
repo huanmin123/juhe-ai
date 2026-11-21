@@ -1,11 +1,13 @@
 // AI 账户能力域拆分 M1（PLAN-20261011T141004000Z D3）：授权实例域继承——
 // 插入臂携带源账户 capability_domain，软删除恢复臂把实例域同步回源当前域。
-// 实例域恒等于源域（随源继承，不独立赋值）。
+// 实例域恒等于源域（随源继承，不独立赋值）。装载入口为发送-领取模型的
+// 一步领取（AcceptSource → ensureAccountAuthorizationInstance）。
 package authz
 
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestProvisionInstanceInheritsSourceCapabilityDomainOnInsert(t *testing.T) {
@@ -18,13 +20,7 @@ func TestProvisionInstanceInheritsSourceCapabilityDomainOnInsert(t *testing.T) {
 	}
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	if _, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src-video",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner"); err != nil {
-		t.Fatal(err)
-	}
+	f.claimAccountOffer(t, "acc-src-video", "grantee", "grp-target")
 
 	row := f.provisionInstanceByAuthorization(t, "acc-src-video", "grantee")
 	if row.capabilityDomain != "video" {
@@ -33,13 +29,7 @@ func TestProvisionInstanceInheritsSourceCapabilityDomainOnInsert(t *testing.T) {
 
 	// 缺省源（列 DEFAULT 'chat'）：实例域继承 'chat'，无独立赋值臂。
 	f.seedProvisionSource(t, "acc-src-chat", "owner", "对话账户", "gpt")
-	if _, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src-chat",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner"); err != nil {
-		t.Fatal(err)
-	}
+	f.claimAccountOffer(t, "acc-src-chat", "grantee", "grp-target")
 	chatRow := f.provisionInstanceByAuthorization(t, "acc-src-chat", "grantee")
 	if chatRow.capabilityDomain != "chat" {
 		t.Fatalf("缺省源实例域应为 chat，got %q", chatRow.capabilityDomain)
@@ -56,14 +46,7 @@ func TestProvisionRestoresInstanceCapabilityDomainFromSource(t *testing.T) {
 	}
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	result, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src-audio",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID := f.claimAccountOffer(t, "acc-src-audio", "grantee", "grp-target")
 	first := f.provisionInstanceByAuthorization(t, "acc-src-audio", "grantee")
 
 	// 实例软删除 + 陈旧域（模拟删除后源域语义变化的存量形态）：恢复臂必须
@@ -72,18 +55,12 @@ func TestProvisionRestoresInstanceCapabilityDomainFromSource(t *testing.T) {
 		capability_domain = 'chat', status = 'disabled' WHERE id = ?`), first.id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'revoked',
-		revoked_by = 'owner', revoked_at = '2026-02-01T00:00:00Z' WHERE id = ?`), result.Item.ID); err != nil {
+	if err := f.store.RevokeOffer(context.Background(), grantID, "owner", false,
+		f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "account", ResourceID: "acc-src-audio",
-		GranteeType: "system_account", GranteeID: "grantee",
-		TargetGroupID: strPtr("grp-target"),
-	}, "owner"); err != nil {
-		t.Fatal(err)
-	}
+	f.claimAccountOffer(t, "acc-src-audio", "grantee", "grp-target")
 
 	restored := f.provisionInstanceByAuthorization(t, "acc-src-audio", "grantee")
 	if restored.id != first.id {

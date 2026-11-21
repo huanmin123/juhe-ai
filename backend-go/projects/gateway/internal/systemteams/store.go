@@ -138,8 +138,9 @@ func NewStore(db *sql.DB, now func() time.Time, authzStore *authz.Store, options
 // afterCommit mirrors refreshGroupAccountStatsAfterWriteAsync +
 // invalidateAuthorizationRuntimeAfterBusinessWrite
 // (system-team.repository.ts:1478-1494): one group-stats dirty marker write
-// plus gateway runtime / authorization quota cache invalidation, both keyed
-// by the Node reason strings.
+// plus gateway runtime cache invalidation keyed by the Node reason strings.
+// The authorization quota cache arm retired with the authorization quota
+// domain (revision 31).
 func (s *Store) afterCommit(ctx context.Context, reason string) error {
 	if s.stats != nil {
 		if err := s.stats.MarkAllGroupAccountStatsDirty(ctx, reason); err != nil {
@@ -148,7 +149,6 @@ func (s *Store) afterCommit(ctx context.Context, reason string) error {
 	}
 	if s.inval != nil {
 		s.inval.Invalidate(inval.TopicGatewayRuntime, reason)
-		s.inval.Invalidate(inval.TopicAuthorizationQuota, reason)
 	}
 	return nil
 }

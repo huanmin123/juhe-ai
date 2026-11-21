@@ -365,22 +365,6 @@ func TestPrepareDispatchAccountsPartiallyBusyStaysInGroup(t *testing.T) {
 		t.Fatalf("accounts = %v", accountIDs(result.Accounts))
 	}
 }
-
-func TestPrepareDispatchAccountsQuotaDeniedFallback(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	engine.Quota = &fakeQuota{denied: map[string]struct{}{"a-1": {}}}
-	coordinator := &capturingCoordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}}
-	input := dispatchPreparationInput(t, testAccounts("a-1"))
-	input.RouteCoordinator = coordinator
-	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
-	if err != nil {
-		t.Fatalf("PrepareDispatchAccounts: %v", err)
-	}
-	if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "authorization_quota_exceeded" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
 func TestRequestRouteFallbackLockGuardBlocks(t *testing.T) {
 	_, engine, _, _ := newPipeline(t)
 	engine.Locks = &blockingLocks{}

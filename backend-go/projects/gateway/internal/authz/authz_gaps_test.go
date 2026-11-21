@@ -1,11 +1,10 @@
-// authz_gaps_test.go：授权面补齐切片的覆盖 —— 详情读路径 limits 回显、
-// keyword 名称维度检索、写路径存储错误 500 分流、{id}/usage 读路径去内联
-// sweep、admin 详情 owner scope 强制与 admin 列表全量语义。
+// authz_gaps_test.go：授权面补齐切片的覆盖 —— keyword 名称维度检索、写路径
+// 存储错误 500 分流、{id}/usage 读路径不内联 sweep、admin 详情 owner scope
+// 强制与 admin 列表全量语义。
 package authz
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,53 +24,6 @@ func gapDetailRequest(t *testing.T, deps *Deps, id, query, accountID, role strin
 	return rec
 }
 
-// TestGapFindDetailEchoesLimits 详情读路径（GET /authorizations/{id} 与
-// GET /my-authorizations/{id} 背后的 store.Find）必须回显规范化 limits
-// （BUG-0175 D-126：列表行已带 limits，详情不再缺失）。
-func TestGapFindDetailEchoesLimits(t *testing.T) {
-	f := newFixture(t)
-	f.seedAccount(t, "owner", "active")
-	f.seedAccount(t, "grantee", "active")
-	f.seedGroup(t, "grp_lim", "owner")
-	limits := `{"daily":{"enabled":true,"limit":7.5}}`
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_lim",
-		GranteeType: "system_account", GranteeID: "grantee", LimitsJSON: &limits,
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	summary, err := f.store.Find(context.Background(), created.Item.ID)
-	if err != nil || summary == nil {
-		t.Fatalf("find: %v %v", summary, err)
-	}
-	if summary.Limits == nil {
-		t.Fatalf("detail read must echo limits: %+v", summary)
-	}
-	encoded, err := json.Marshal(summary.Limits)
-	if err != nil || !strings.Contains(string(encoded), `"limit":7.5`) {
-		t.Fatalf("limits echo = %s err=%v", encoded, err)
-	}
-
-	// 路由级：admin 详情响应携带 limits。
-	deps := &Deps{Store: f.store}
-	rec := gapDetailRequest(t, deps, created.Item.ID, "", "admin", "admin", false)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("admin detail = %d %s", rec.Code, rec.Body.String())
-	}
-	var payload struct {
-		Data struct {
-			Limits any `json:"limits"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Data.Limits == nil {
-		t.Fatalf("detail response must carry limits: %s", rec.Body.String())
-	}
-}
-
 // TestGapKeywordMatchesNameDimensions keyword 前缀检索按设计 :330 命中资源
 // 名称、被授权用户展示名、被授权团队名称与资源归属人展示名。
 func TestGapKeywordMatchesNameDimensions(t *testing.T) {
@@ -79,20 +31,20 @@ func TestGapKeywordMatchesNameDimensions(t *testing.T) {
 	f.seedAccount(t, "张三", "active")
 	f.seedAccount(t, "李四", "active")
 	f.seedTeamWithMember(t, "team_alpha", "李四")
-	f.seedNamedAccount(t, "acc_prod", "张三", "生产账户-01")
+	f.seedProvisionSource(t, "acc_prod", "张三", "生产账户-01", "gpt")
 	f.seedGroup(t, "grp_prod", "张三")
 
-	direct, err := f.store.Create(context.Background(), CreateInput{
+	direct, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "account", ResourceID: "acc_prod",
-		GranteeType: "system_account", GranteeID: "李四",
-	}, "张三")
+		GranteeType: "system_account", GranteeUsername: "李四",
+	}, "张三", false, "张三")
 	if err != nil {
 		t.Fatal(err)
 	}
-	teamGrant, err := f.store.Create(context.Background(), CreateInput{
+	teamOffer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_prod",
-		GranteeType: "team", GranteeID: "team_alpha",
-	}, "张三")
+		GranteeType: "team", TeamID: "team_alpha",
+	}, "张三", false, "张三")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,13 +75,13 @@ func TestGapKeywordMatchesNameDimensions(t *testing.T) {
 		}
 	}
 	// 资源名称（accounts.name）前缀。
-	assert("生产账", direct.Item.ID)
+	assert("生产账", direct.GrantID)
 	// 被授权用户展示名/用户名前缀。
-	assert("李四", direct.Item.ID)
+	assert("李四", direct.GrantID)
 	// 资源归属人展示名/用户名前缀（两行归属人都是张三）。
-	assert("张三", direct.Item.ID, teamGrant.Item.ID)
+	assert("张三", direct.GrantID, teamOffer.GrantID)
 	// 被授权团队名称（system_teams.name = "Team team_alpha"）前缀。
-	assert("Team team_a", teamGrant.Item.ID)
+	assert("Team team_a", teamOffer.GrantID)
 	// 无命中保持空结果。
 	assert("不存在的名字")
 }
@@ -141,10 +93,10 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_500", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_500",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +111,7 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	createBody := `{"resourceType":"group","resourceId":"grp_500","granteeType":"system_account","granteeUsername":"grantee"}`
 	createReq := httptest.NewRequest(http.MethodPost, "/authorizations?systemAccountId=owner", strings.NewReader(createBody))
 	createReq.Header.Set("Content-Type", "application/json")
-	createReq.Header.Set("Content-Length", itoaGap(len(createBody)))
+	createReq.Header.Set("Content-Length", itoa(len(createBody)))
 	createReq = createReq.WithContext(authsys.WithAuthContext(createReq.Context(), admin))
 	rec := httptest.NewRecorder()
 	deps.create(rec, createReq)
@@ -168,11 +120,10 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	}
 
 	// DELETE /authorizations/{id}。
-	revokeBody := `{"expectedUpdatedAt":"` + created.Item.UpdatedAt + `"}`
-	revokeReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID, strings.NewReader(revokeBody))
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.GrantID, strings.NewReader(`{}`))
 	revokeReq.Header.Set("Content-Type", "application/json")
-	revokeReq.Header.Set("Content-Length", itoaGap(len(revokeBody)))
-	revokeReq.SetPathValue("id", created.Item.ID)
+	revokeReq.Header.Set("Content-Length", itoa(len(`{}`)))
+	revokeReq.SetPathValue("id", created.GrantID)
 	revokeReq = revokeReq.WithContext(authsys.WithAuthContext(revokeReq.Context(), admin))
 	rec = httptest.NewRecorder()
 	deps.revoke(rec, revokeReq)
@@ -180,63 +131,32 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 		t.Fatalf("revoke storage error = %d %s", rec.Code, rec.Body.String())
 	}
 
-	// PATCH /authorizations/{id}：recipient-consent 面只允许备注/额度/到期时间，
-	// 旧 status 字段已由 strict JSON 拒绝；这里用 remark 走到存储错误。
-	patchBody := `{"expectedUpdatedAt":"` + created.Item.UpdatedAt + `","remark":"备注"}`
-	patchReq := httptest.NewRequest(http.MethodPatch, "/authorizations/"+created.Item.ID, strings.NewReader(patchBody))
+	// PATCH /authorizations/{id}：更新面只允许备注/到期时间，这里用 remark 走到
+	// 存储错误。
+	patchBody := `{"remark":"备注"}`
+	patchReq := httptest.NewRequest(http.MethodPatch, "/authorizations/"+created.GrantID, strings.NewReader(patchBody))
 	patchReq.Header.Set("Content-Type", "application/json")
-	patchReq.Header.Set("Content-Length", itoaGap(len(patchBody)))
-	patchReq.SetPathValue("id", created.Item.ID)
+	patchReq.Header.Set("Content-Length", itoa(len(patchBody)))
+	patchReq.SetPathValue("id", created.GrantID)
 	patchReq = patchReq.WithContext(authsys.WithAuthContext(patchReq.Context(), admin))
 	rec = httptest.NewRecorder()
 	deps.patch(rec, patchReq, false)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "授权操作失败") {
 		t.Fatalf("patch storage error = %d %s", rec.Code, rec.Body.String())
 	}
-
-	// 旧业务记录级归还入口固定 409：归还必须按来源在授权中心执行。
-	returnReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID+"/return", strings.NewReader(revokeBody))
-	returnReq.Header.Set("Content-Type", "application/json")
-	returnReq.Header.Set("Content-Length", itoaGap(len(revokeBody)))
-	returnReq.SetPathValue("id", created.Item.ID)
-	returnReq = returnReq.WithContext(authsys.WithAuthContext(returnReq.Context(), admin))
-	rec = httptest.NewRecorder()
-	deps.returnValue(rec, returnReq, false)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"state_conflict"`) {
-		t.Fatalf("legacy return = %d %s", rec.Code, rec.Body.String())
-	}
 }
 
-// itoaGap is the test-local integer formatter for Content-Length headers.
-func itoaGap(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	digits := ""
-	for v > 0 {
-		digits = string(rune('0'+v%10)) + digits
-		v /= 10
-	}
-	return digits
-}
-
-// TestGapUsageDetailDoesNotSweepInline {id}/usage 读路径不再内联执行过期
-// sweep：已到期的授权在响应后仍保持原状态（sweep 由 jobs 每分钟任务与
+// TestGapUsageDetailDoesNotSweepInline {id}/usage 读路径不再内联执行到期
+// 翻转：已到期的授权在响应后仍保持原状态（翻转由 jobs 每分钟任务与
 // authz-expiry-runtime-sync reconcile 承担）。
 func TestGapUsageDetailDoesNotSweepInline(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_sweep", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_sweep",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID, _ := f.createAcceptedDirectOffer(t, "group", "grp_sweep", "grantee")
 	past := "2020-01-01T00:00:00.000Z"
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`), past, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`), past, grantID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorizations SET expires_at = ?`), past); err != nil {
@@ -244,8 +164,8 @@ func TestGapUsageDetailDoesNotSweepInline(t *testing.T) {
 	}
 
 	deps := &Deps{Store: f.store}
-	req := httptest.NewRequest(http.MethodGet, "/authorizations/"+created.Item.ID+"/usage", nil)
-	req.SetPathValue("id", created.Item.ID)
+	req := httptest.NewRequest(http.MethodGet, "/authorizations/"+grantID+"/usage", nil)
+	req.SetPathValue("id", grantID)
 	req = req.WithContext(authsys.WithAuthContext(req.Context(), &authsys.AuthContext{SystemAccountID: "admin", Role: "admin"}))
 	rec := httptest.NewRecorder()
 	deps.usageDetail(rec, req, false)
@@ -253,7 +173,7 @@ func TestGapUsageDetailDoesNotSweepInline(t *testing.T) {
 		t.Fatalf("usage detail = %d %s", rec.Code, rec.Body.String())
 	}
 	var grantStatus string
-	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), grantID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	if grantStatus != StatusActive {
@@ -269,32 +189,32 @@ func TestGapAdminDetailEnforcesOwnerScope(t *testing.T) {
 	f.seedAccount(t, "other", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_scope", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_scope",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	deps := &Deps{Store: f.store}
-	if rec := gapDetailRequest(t, deps, created.Item.ID, "systemAccountId=owner", "admin", "admin", false); rec.Code != http.StatusOK {
+	if rec := gapDetailRequest(t, deps, created.GrantID, "systemAccountId=owner", "admin", "admin", false); rec.Code != http.StatusOK {
 		t.Fatalf("scoped owner detail = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := gapDetailRequest(t, deps, created.Item.ID, "systemAccountId=other", "admin", "admin", false); rec.Code != http.StatusNotFound {
+	if rec := gapDetailRequest(t, deps, created.GrantID, "systemAccountId=other", "admin", "admin", false); rec.Code != http.StatusNotFound {
 		t.Fatalf("scoped mismatch detail = %d, want 404: %s", rec.Code, rec.Body.String())
 	}
-	if rec := gapDetailRequest(t, deps, created.Item.ID, "", "admin", "admin", false); rec.Code != http.StatusOK {
+	if rec := gapDetailRequest(t, deps, created.GrantID, "", "admin", "admin", false); rec.Code != http.StatusOK {
 		t.Fatalf("unscoped admin detail = %d %s", rec.Code, rec.Body.String())
 	}
 	// "all" 过滤值与无过滤同义（accessFor 归一）。
-	if rec := gapDetailRequest(t, deps, created.Item.ID, "systemAccountId=all", "admin", "admin", false); rec.Code != http.StatusOK {
+	if rec := gapDetailRequest(t, deps, created.GrantID, "systemAccountId=all", "admin", "admin", false); rec.Code != http.StatusOK {
 		t.Fatalf("all-scoped admin detail = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
 // TestGapAdminListIgnoresLegacyDirectionScope 管理面列表是“全部业务记录”视图：
-// 不再按 ?systemAccountId / ?direction 派生归属视角（这些参数只服务于旧版
-// 单条授权语义），所有合法查询返回同一批 offer；status 过滤仍然生效。
+// 不再按 ?systemAccountId / ?direction 派生归属视角，所有合法查询返回同一批
+// offer；status 过滤仍然生效。
 func TestGapAdminListIgnoresLegacyDirectionScope(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
@@ -302,17 +222,11 @@ func TestGapAdminListIgnoresLegacyDirectionScope(t *testing.T) {
 	f.seedGroup(t, "grp_a", "owner")
 	f.seedGroup(t, "grp_b", "owner")
 	f.seedTeamWithMember(t, "team_dir", "grantee")
-	direct, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_a",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	teamGrant, err := f.store.Create(context.Background(), CreateInput{
+	direct, _ := f.createAcceptedDirectOffer(t, "group", "grp_a", "grantee")
+	teamOffer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_b",
-		GranteeType: "team", GranteeID: "team_dir",
-	}, "owner")
+		GranteeType: "team", TeamID: "team_dir",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,15 +265,17 @@ func TestGapAdminListIgnoresLegacyDirectionScope(t *testing.T) {
 			}
 		}
 	}
-	// 管理面不再按 systemAccountId / direction 派生视角：所有查询都返回完整
+	// 管理面不按 systemAccountId / direction 派生视角：所有查询都返回完整
 	// 业务记录集合。
-	expect(list("systemAccountId=owner&direction=outbound"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("systemAccountId=owner&direction=inbound"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("systemAccountId=grantee&direction=inbound"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("systemAccountId=grantee&direction=outbound"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("systemAccountId=grantee"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("direction=inbound"), direct.Item.ID, teamGrant.Item.ID)
-	// status 过滤仍按 grant 状态生效。
-	expect(list("status=active"), direct.Item.ID, teamGrant.Item.ID)
+	expect(list("systemAccountId=owner&direction=outbound"), direct, teamOffer.GrantID)
+	expect(list("systemAccountId=owner&direction=inbound"), direct, teamOffer.GrantID)
+	expect(list("systemAccountId=grantee&direction=inbound"), direct, teamOffer.GrantID)
+	expect(list("systemAccountId=grantee&direction=outbound"), direct, teamOffer.GrantID)
+	expect(list("systemAccountId=grantee"), direct, teamOffer.GrantID)
+	expect(list("direction=inbound"), direct, teamOffer.GrantID)
+	// status 过滤仍按 grant 状态生效：已领取的直接授权为 active，未领取的
+	// 团队 offer 为 pending。
+	expect(list("status=active"), direct)
+	expect(list("status=pending"), teamOffer.GrantID)
 	expect(list("status=expired"))
 }

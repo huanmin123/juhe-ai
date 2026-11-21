@@ -27,14 +27,6 @@ func (f *fixture) seedAuthorizationSource(t *testing.T, id, authorizationID, sou
 	}
 }
 
-// exec 直通 SQL（缓存命中断言需要删行）。
-func (f *fixture) exec(t *testing.T, query string) {
-	t.Helper()
-	if _, err := f.db.Exec(query); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestResourceAuthorizationStatsAggregation 锁定聚合语义（Node
 // loadResourceAuthorizationStatsByResourceIdsAsync 的 SQL 逐列对照）：
 // 0 授权 → {0,0}；多团队只数 active team 来源的 DISTINCT source_team_id；
@@ -45,7 +37,7 @@ func TestResourceAuthorizationStatsAggregation(t *testing.T) {
 
 	// acc-none：无任何授权 → {0,0}。
 	// acc-multi：两条活跃授权（不同 grantee，运行态表 UNIQUE 三元组约束）；
-	// 授权 A 挂 team1/team2 两个活跃团队来源 + 一个 superseded 团队来源 + 一个
+	// 授权 A 挂 team1/team2 两个活跃团队来源 + 一个已过期团队来源 + 一个
 	// manual 来源；授权 B 挂 team2 活跃来源（与 A 的 team2 去重后 DISTINCT =
 	// team1, team2 → 2）。
 	f.seedAuthorizationRow(t, "ra-a1", "account", "acc-multi", "grantee-1", StatusActive)
@@ -53,7 +45,7 @@ func TestResourceAuthorizationStatsAggregation(t *testing.T) {
 	f.seedAuthorizationRow(t, "ra-a3", "account", "acc-multi", "grantee-3", StatusRevoked)
 	f.seedAuthorizationSource(t, "src-1", "ra-a1", "team", "team1", "active")
 	f.seedAuthorizationSource(t, "src-2", "ra-a1", "team", "team2", "active")
-	f.seedAuthorizationSource(t, "src-3", "ra-a1", "team", "team3", "superseded")
+	f.seedAuthorizationSource(t, "src-3", "ra-a1", "team", "team3", StatusExpired)
 	f.seedAuthorizationSource(t, "src-4", "ra-a1", "manual", "", "active")
 	f.seedAuthorizationSource(t, "src-5", "ra-a2", "team", "team2", "active")
 

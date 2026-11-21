@@ -25,17 +25,8 @@ func TestWJSnapshotCacheMemoryAsyncFallback(t *testing.T) {
 	if ok, err := cache.IsCostSnapshotCompleteAsync(ctx); err != nil || ok {
 		t.Fatalf("空缓存 IsCostSnapshotCompleteAsync = (%v, %v)", ok, err)
 	}
-	if ok, err := cache.IsAuthorizationSnapshotCompleteAsync(ctx); err != nil || ok {
-		t.Fatalf("空缓存 IsAuthorizationSnapshotCompleteAsync = (%v, %v)", ok, err)
-	}
 	if ok, err := cache.IsCostSnapshotIncompleteAsync(ctx); err != nil || ok {
 		t.Fatalf("空缓存 IsCostSnapshotIncompleteAsync = (%v, %v)", ok, err)
-	}
-	if ok, err := cache.IsAuthorizationSnapshotIncompleteAsync(ctx); err != nil || ok {
-		t.Fatalf("空缓存 IsAuthorizationSnapshotIncompleteAsync = (%v, %v)", ok, err)
-	}
-	if _, ok, err := cache.ReadAuthorizationSnapshotAsync(ctx, ScopeTypeGroupAuthorization, "ga"); err != nil || ok {
-		t.Fatalf("空缓存 ReadAuthorizationSnapshotAsync = (%v, %v)", ok, err)
 	}
 	info := cache.SnapshotRuntime()
 	if info.GeneratedAt != "" || info.CostEntryCount != 0 {
@@ -43,7 +34,7 @@ func TestWJSnapshotCacheMemoryAsyncFallback(t *testing.T) {
 	}
 
 	// 装载快照后回退读必须命中；快照不完整通过 async 可见。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", false, true)
+	doc := snapshotFixture("2026-09-04T00:00:00.000Z", false)
 	doc.CostEntries = []QuotaCostSnapshotEntry{{
 		SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak",
 		Costs: RequestQuotaCosts{Total: 7},
@@ -54,10 +45,6 @@ func TestWJSnapshotCacheMemoryAsyncFallback(t *testing.T) {
 	costs, ok, err := cache.ReadCostsSnapshotAsync(ctx, QuotaCostSnapshotEntry{SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak"})
 	if err != nil || !ok || costs.Total != 7 {
 		t.Fatalf("memory ReadCostsSnapshotAsync = (%+v, %v, %v)", costs, ok, err)
-	}
-	decision, ok, err := cache.ReadAuthorizationSnapshotAsync(ctx, ScopeTypeGroupAuthorization, "ga")
-	if err != nil || !ok || decision.Allowed {
-		t.Fatalf("memory ReadAuthorizationSnapshotAsync = (%+v, %v, %v)", decision, ok, err)
 	}
 	if ok, err := cache.HasGatewayQuotaSnapshotAsync(ctx); err != nil || !ok {
 		t.Fatalf("Has = (%v, %v)", ok, err)
@@ -87,28 +74,11 @@ func TestWJSnapshotCacheRedisMissingDocAndErrors(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// 文档缺失：授权快照不完整必须回落到本进程失效水印（authzInvalidated）。
-	if ok, err := cache.IsAuthorizationSnapshotIncompleteAsync(ctx); err != nil || ok {
-		t.Fatalf("无文档且未失效 = (%v, %v)", ok, err)
-	}
-	if err := cache.InvalidateAuthorizationQuotaSnapshot(nil); err != nil {
-		t.Fatalf("invalidate: %v", err)
-	}
-	if ok, err := cache.IsAuthorizationSnapshotIncompleteAsync(ctx); err != nil || !ok {
-		t.Fatalf("无文档且已失效 = (%v, %v)", ok, err)
-	}
-	if _, ok, err := cache.ReadAuthorizationSnapshotAsync(ctx, ScopeTypeGroupAuthorization, "ga"); err != nil || ok {
-		t.Fatalf("无文档读取 = (%v, %v)", ok, err)
-	}
-
 	// 传输故障按契约降级为“无快照”（不传播错误，由 DB service 补判兜底）。
 	clock.Advance(2 * time.Second)
 	server.Close()
 	if ok, err := cache.HasGatewayQuotaSnapshotAsync(ctx); err != nil || ok {
 		t.Fatalf("传输故障后 Has 必须降级为无快照 = (%v, %v)", ok, err)
-	}
-	if _, _, err := cache.ReadAuthorizationSnapshotAsync(ctx, ScopeTypeGroupAuthorization, "ga"); err != nil {
-		t.Fatalf("传输故障后 ReadAuthz 必须降级: %v", err)
 	}
 	if _, err := cache.IsCostSnapshotIncompleteAsync(ctx); err != nil {
 		t.Fatalf("传输故障后 IsCostIncomplete 必须降级: %v", err)
@@ -130,17 +100,11 @@ func TestWJSnapshotCacheRedisCorruptDoc(t *testing.T) {
 	}
 	ctx := context.Background()
 	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey,
-		snapshotFixture("corrupt", true, true), time.Hour); err != nil {
+		snapshotFixture("corrupt", true), time.Hour); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if _, err := cache.HasGatewayQuotaSnapshotAsync(ctx); err == nil {
 		t.Fatal("损坏文档 Has 必须报错")
-	}
-	if _, _, err := cache.ReadAuthorizationSnapshotAsync(ctx, ScopeTypeGroupAuthorization, "ga"); err == nil {
-		t.Fatal("损坏文档 ReadAuthz 必须报错")
-	}
-	if _, err := cache.IsAuthorizationSnapshotIncompleteAsync(ctx); err == nil {
-		t.Fatal("损坏文档 IsAuthzIncomplete 必须报错")
 	}
 	if _, ok, err := cache.ReadCostsSnapshotAsync(ctx, QuotaCostSnapshotEntry{SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak"}); err == nil {
 		t.Fatal("损坏文档 ReadCosts 必须报错")
@@ -163,7 +127,7 @@ func TestWJSnapshotCacheRedisConcurrentLoad(t *testing.T) {
 		t.Fatalf("NewSnapshotCache: %v", err)
 	}
 	ctx := context.Background()
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
+	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true)
 	doc.CostEntries = []QuotaCostSnapshotEntry{{
 		SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak",
 		Costs: RequestQuotaCosts{Total: 9},
@@ -239,58 +203,8 @@ func TestWJSnapshotSharedReadGuards(t *testing.T) {
 	if snapshot, err := runtimeOnly.readSharedGatewayQuotaSnapshot(context.Background()); snapshot != nil || err != nil {
 		t.Fatalf("非 runtime 驱动 readShared = (%v, %v)", snapshot, err)
 	}
-	// Redis 模式空授权 ID：直接 miss，不读共享文档。
-	_, client := wjNewMiniredis(t)
-	runtimeState, err := NewRedisRuntimeStateStore(client, "dev", GatewayQuotaSnapshotRuntimeStateStoreName)
-	if err != nil {
-		t.Fatalf("NewRedisRuntimeStateStore: %v", err)
-	}
-	redisCache, err := NewSnapshotCache(Modes{RedisCache: true, RedisRuntimeState: true}, runtimeState, clock.Now, nil)
-	if err != nil {
-		t.Fatalf("NewSnapshotCache: %v", err)
-	}
-	if _, ok, err := redisCache.ReadAuthorizationSnapshotAsync(context.Background(), ScopeTypeGroupAuthorization, ""); err != nil || ok {
-		t.Fatalf("空授权 ID = (%v, %v)", ok, err)
-	}
 }
 
-// TestWJAuthzBatchServerRoleSnapshotSecondLoop 固定 server 角色（内存快照）
-// 批量判定的兜底循环：两个账户共享同一授权 ID、快照完整可判时，重复
-// cacheKey 的账户仍必须得到快照决策并被写入运行时缓存。
-
-// TestWJAuthzBatchAsyncAllCached 固定批量入口的全缓存命中短路：所有账户
-// 的运行时缓存都命中时必须直接返回，不进入缺失装载。
-func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "allcached")
-	ctx := context.Background()
-	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
-		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 1})
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1"}
-	accounts := []AccountAuthorizationSummary{{ID: "u1"}, {ID: "u2"}}
-
-	first, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("first batch: %v", err)
-	}
-	// 第二次调用全部命中内存缓存；超库后仍保持放行以证明未重新装载。
-	if _, err := statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-	second, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("second batch: %v", err)
-	}
-	for _, accountID := range []string{"u1", "u2"} {
-		if !first[accountID].Allowed || !second[accountID].Allowed {
-			t.Fatalf("%s 决策不符: first=%+v second=%+v", accountID, first[accountID], second[accountID])
-		}
-	}
-}
-
-// TestWJAPIKeyExactAsyncSharedCacheHit 固定精确异步入口的共享缓存命中：
-// 命中后直接返回缓存决策，不再批量装载成本。
 func TestWJAPIKeyExactAsyncSharedCacheHit(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-sharedhit")
 	statsSchema(t, db)

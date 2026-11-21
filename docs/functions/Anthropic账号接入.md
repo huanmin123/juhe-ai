@@ -373,7 +373,7 @@ Anthropic usage 与 OpenAI usage 不同，必须单独维护语义。
 - 缓存读写 token 不能并入普通输入 token 后丢失来源，否则 prompt cache 成本、命中率和授权消耗口径会失真。
 - `thinking_tokens` 属于输出 token 的分解字段，`output_tokens` 仍是计费权威总数；统计展示可额外显示 thinking 占比。
 - 使用记录应保存 `usage_semantic = anthropic` 或等价协议字段，避免统计 worker 用 OpenAI 口径解释 Anthropic usage。
-- 业务统计、授权额度、趋势和 TopN 仍必须由 worker 增量写入预聚合表；不能在接口请求路径临时扫描 usage 明细做 Anthropic 汇总。
+- 业务统计、趋势和 TopN 仍必须由 worker 增量写入预聚合表；不能在接口请求路径临时扫描 usage 明细做 Anthropic 汇总。
 
 价格口径：
 

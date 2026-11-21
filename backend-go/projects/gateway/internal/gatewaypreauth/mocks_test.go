@@ -251,19 +251,6 @@ func (q *fakeAPIKeyQuota) CheckAPIKeyQuotaAsync(_ context.Context, apiKey gatewa
 	return q.decision, nil
 }
 
-type fakeAuthorizationQuota struct {
-	decision gatewayquota.Decision
-	err      error
-	calls    []gatewayquota.GroupAccessMetadata
-}
-
-func (q *fakeAuthorizationQuota) CheckAuthorizationQuotaAsync(_ context.Context, groupAccess gatewayquota.GroupAccessMetadata, _ *gatewayquota.AccountAuthorizationSummary) (gatewayquota.Decision, error) {
-	q.calls = append(q.calls, groupAccess)
-	if q.err != nil {
-		return gatewayquota.Decision{}, q.err
-	}
-	return q.decision, nil
-}
 
 // fakeResponseSink records failure responses and model sends.
 type fakeResponseSink struct {
@@ -483,7 +470,6 @@ func newTestService(t *testing.T, mutate func(*Service)) (*Service, *fakeObserva
 		RuntimeCache:       &fakeRuntimeCache{},
 		APIKeyValidator:    &fakeAPIKeyValidator{row: validRuntimeRow()},
 		APIKeyQuota:        &fakeAPIKeyQuota{decision: gatewayquota.AllowedDecision()},
-		AuthorizationQuota: &fakeAuthorizationQuota{decision: gatewayquota.AllowedDecision()},
 		Circuits:           &fakeCircuits{},
 		IPPolicy:           &fakeIPPolicy{},
 		UserLimits:         &fakeUserLimits{decision: UserRequestLimitDecision{Allowed: true}},

@@ -273,25 +273,12 @@ func (f *fakeClientIPConcurrency) Acquire(ctx context.Context, input ClientIPCon
 	return ClientIPConcurrencyDecision{Enabled: false, Acquired: true, Release: func() {}}, nil
 }
 
-type fakeQuota struct {
-	denied map[string]struct{}
-}
-
-func (f *fakeQuota) CheckBatchAsync(ctx context.Context, groupAccess gatewayruntimecache.GroupUsageAccessMetadata, accounts []AccountCandidate) (map[string]QuotaDecision, error) {
-	decisions := make(map[string]QuotaDecision, len(accounts))
-	for _, account := range accounts {
-		_, denied := f.denied[account.ID]
-		decisions[account.ID] = QuotaDecision{Allowed: !denied}
-	}
-	return decisions, nil
-}
-
 type fakeConcurrencyStore struct {
-	acquired atomic.Int64
-	limit    int
+	limit int
 	// exhausted makes every acquire fail.
 	exhausted bool
 	released  atomic.Int64
+	acquired  atomic.Int64
 }
 
 func (f *fakeConcurrencyStore) LoadCurrentAsync(ctx context.Context, accountIDs []string) (map[string]int, error) {
@@ -447,7 +434,6 @@ func newTestEngine(t *testing.T) (*Engine, *fakeDriver, *fakeFailureDispatcher) 
 	engine.HotQuality = &fakeHotQuality{}
 	engine.Affinity = &fakeAffinity{}
 	engine.ClientIPConcurrency = &fakeClientIPConcurrency{}
-	engine.Quota = &fakeQuota{}
 	engine.Concurrency = &fakeConcurrencyStore{}
 	engine.Cache = &fakeCache{}
 	engine.Locks = &fakeLocks{}

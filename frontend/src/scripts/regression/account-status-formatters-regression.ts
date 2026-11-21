@@ -734,7 +734,6 @@ const effectiveAvailabilityStatusFilterExpectations = {
   authorization_expired: 'disabled',
   authorization_paused: 'disabled',
   authorization_unavailable: 'disabled',
-  authorization_quota_exceeded: 'rate_limited',
   source_deleted: 'disabled',
   source_expired: 'disabled',
   source_pending_test: 'pending_test',

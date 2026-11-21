@@ -16,7 +16,22 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamlimit"
 )
+
+// probePerUpstreamConcurrency 是同上游 origin 并发桶上限（2026-11-22 用户
+// 裁决：对话探针是秒级长请求，同源 60 条在途是持续负载而非突发风暴；探测
+// 总并发 512 不降，瓶颈在上游接受度）。
+const probePerUpstreamConcurrency = 60
+
+// probeUpstreamLimiter 是探针出站的进程级同上游限流单实例：wireProbeFamily
+// 注入 accountprobe.Service（探针族槽位层），J1 装配注入 accounthealth
+// Config（IO worker + 显式臂）——「同一上游 ≤ N 并发」在 J1 与探针族之间
+// 统一计数。包级单例：jobs 进程单装配，limiter 纯内存无外部依赖。连接测试
+// 通道 connectivityhealth 不注入本实例：它经 ConnectivityOnly 跳过 Service
+// 桶，由 runner 每轮自建 limiter 在探测预算外排队（两通道同 origin 瞬时
+// 上限为各自 60 之和）。
+var probeUpstreamLimiter = upstreamlimit.NewLimiter(probePerUpstreamConcurrency)
 
 // wireProbeFamily 把探针依赖族的三个任务翻转为 GoWired：
 //   - account-quality-refresh（RefreshRunner：统计刷新 + 失败前置确认入队，
@@ -68,10 +83,11 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return securityErr
 	}
 	probeService, err := accountprobe.NewService(accountprobe.Options{
-		Source:      store,
-		Secret:      a.config.Secret,
-		Concurrency: a.config.ProbeConcurrency,
-		DialGuard:   upstreamhttp.NewDialGuard(probeSecurityConfig, nil, nil),
+		Source:          store,
+		Secret:          a.config.Secret,
+		Concurrency:     a.config.ProbeConcurrency,
+		UpstreamLimiter: probeUpstreamLimiter,
+		DialGuard:       upstreamhttp.NewDialGuard(probeSecurityConfig, nil, nil),
 	})
 	if err != nil {
 		return err

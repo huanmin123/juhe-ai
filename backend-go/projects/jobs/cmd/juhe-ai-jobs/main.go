@@ -230,6 +230,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	logger.Info("J1 直读输入基线播种完成", "seeded", seeded)
 	accountHealthReader = reader
+	// 同上游限流（2026-11-22 用户裁决）：J1 与探针族共享进程级单实例，同一
+	// 上游 base_url 的在途模型探针 ≤ 60，总并发 512 不降。
+	accountHealthConfig.UpstreamLimiter = probeUpstreamLimiter
 	accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
 	modelRecoveryConfig, err := keymodelrecovery.LoadRedisConfig(os.Getenv)
 	if err != nil {

@@ -14,12 +14,19 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamlimit"
 )
 
 const (
-	defaultScanInterval     = 5 * time.Second
-	defaultOwnerLease       = 90 * time.Second
-	defaultProbeTimeout     = 65 * time.Second
+	defaultScanInterval = 5 * time.Second
+	// defaultOwnerLease 必须大于 defaultProbeTimeout（LoadConfig 强制校验）；
+	// 2026-11-22 随预算回正 65s→95s 同步上调，保持租约 ≥ 单账户最坏耗时余量。
+	defaultOwnerLease = 120 * time.Second
+	// defaultProbeTimeout 是定时臂单账户探针硬预算（2026-11-22 从 65s 回正
+	// 95s：文档契约《账号健康检测设计》2026-10-07 已随阶梯 20s/30s/40s 上调
+	// 95s，gateway 侧 outbox deadline env 默认同为 95000——jobs 侧默认漂移
+	// 65s 会把第三档 40s 截成 15s，阶梯晋级名存实亡）。
+	defaultProbeTimeout     = 95 * time.Second
 	defaultMaxResponseBytes = int64(256 * 1024)
 	// defaultInputTTL 对齐 Node runtime.ts:1345（D-208，BUG-0175）：
 	// integerConfig('JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS', 24*60*60_000,
@@ -70,6 +77,11 @@ type Config struct {
 	// exactkeyprobe.ProbeOptions。默认放行私网/本机时 rangeCheckAllowed 直接
 	// 放行，安装守卫不改变既有出站行为。
 	DialGuard *upstreamhttp.DialGuard
+	// UpstreamLimiter 是 J1 探针的同上游 origin 并发桶（2026-11-22 用户裁决：
+	// 同一上游 base_url 的在途模型探针 ≤ 桶上限，不同上游并行；总并发 512
+	// 不降）。组合根注入与 accountprobe.Service 共享的 jobs 进程级单实例，
+	// 使「同一上游 ≤ N 并发」跨 J1 与探针族统一计数；nil 不启用（测试形态）。
+	UpstreamLimiter *upstreamlimit.Limiter
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {

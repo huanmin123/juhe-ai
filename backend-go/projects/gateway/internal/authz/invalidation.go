@@ -38,7 +38,8 @@
 //	    exists yet (same as accountsBusInvalidator
 //	    .ClearResourceAuthorizationLookupCaches).
 //	5 → bus Invalidate(TopicGatewayRuntime, reason).
-//	6 → bus Invalidate(TopicAuthorizationQuota, reason).
+//	6 → retired with the authorization quota domain (revision 31); the
+//	    inval.TopicAuthorizationQuota topic no longer exists.
 //
 // The fan-out runs after the transaction commit and is best-effort: a failed
 // channel is logged and the remaining channels still run (the committed write
@@ -116,6 +117,6 @@ func (s *Store) invalidateAfterBusinessWrite(ctx context.Context, reason string)
 	s.invalidator.Invalidate(inval.TopicGatewayRuntime, reason)
 	// Piece 4: clearResourceAuthorizationLookupCaches — no Go process-local
 	// lookup cache exists yet; the documented no-op needs no publish.
-	// Piece 6: notifyAuthorizationQuotaCacheInvalidation.
-	s.invalidator.Invalidate(inval.TopicAuthorizationQuota, reason)
+	// Piece 6: notifyAuthorizationQuotaCacheInvalidation 随授权额度域一并退役，
+	// 不再广播（inval.TopicAuthorizationQuota 已删）。
 }

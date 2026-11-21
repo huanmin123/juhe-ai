@@ -179,20 +179,11 @@ func TestResolveNextGroupFallbackWithRoutePlanSnapshot(t *testing.T) {
 			"group-3": testAccounts("c-1"),
 		},
 	}
-	quotaDenied := false
-	engine.Quota = &quotaGate{denied: func(accountID string) bool {
-		if accountID == "c-1" {
-			quotaDenied = true
-		}
-		return false
-	}}
-	cursor := 0
 	snapshotValue, err := gatewayrouting.CreateGatewayRoutePlanSnapshot(gatewayrouting.CreateGatewayRoutePlanSnapshotInput[string]{
 		RoutePlanID:           "plan-1",
 		Mode:                  "ordered",
 		RequestAcceptedAtMs:   gatewayupstream.NowMs(),
 		OrderedAllowedTargets: []string{"group-1", "group-2", "group-3"},
-		Cursor:                &cursor,
 	})
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -224,29 +215,11 @@ func TestResolveNextGroupFallbackWithRoutePlanSnapshot(t *testing.T) {
 	if candidate.RoutePlanSnapshot == nil || candidate.RoutePlanSnapshot.Cursor != 1 {
 		t.Fatalf("snapshot = %#v", candidate.RoutePlanSnapshot)
 	}
-	// group-3 仅剩配额拒绝账户 → 跳过；快照游标推进正确即可。
-	_ = quotaDenied
-}
-
-// quotaGate 按账户 ID 决定配额。
-type quotaGate struct {
-	denied func(accountID string) bool
-}
-
-func (q *quotaGate) CheckBatchAsync(ctx context.Context, groupAccess gatewayruntimecache.GroupUsageAccessMetadata, accounts []AccountCandidate) (map[string]QuotaDecision, error) {
-	decisions := make(map[string]QuotaDecision, len(accounts))
-	for _, account := range accounts {
-		decisions[account.ID] = QuotaDecision{Allowed: !q.denied(account.ID)}
-	}
-	return decisions, nil
-}
-
-func TestCanAttemptApiKeyGroupFallbackWithSnapshot(t *testing.T) {
-	snapshot := &gatewayrouting.RoutePlanSnapshot[string]{
+	fallbackSnapshot := &gatewayrouting.RoutePlanSnapshot[string]{
 		OrderedAllowedTargets: []string{"a", "b"},
 		Cursor:                0,
 	}
-	if !CanAttemptApiKeyGroupFallback(nil, "a", snapshot) {
+	if !CanAttemptApiKeyGroupFallback(nil, "a", fallbackSnapshot) {
 		t.Fatal("快照未到末尾可回退")
 	}
 	end := &gatewayrouting.RoutePlanSnapshot[string]{

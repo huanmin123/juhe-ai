@@ -199,14 +199,8 @@ func (s *Store) finishDeleteSideEffects(ctx context.Context, accountIDs []string
 			"event", "account_delete_runtime_invalidation_failed",
 			"accountCount", len(accountIDs), "error", err)
 	}
-	// invalidateAuthorizationRuntimeAfterBusinessWrite('account_deleted')
-	// (:56-59,157,202): the gateway-runtime arm above plus the authorization
-	// quota invalidation.
-	if err := s.invalidator.InvalidateAuthorizationQuota(accountDeleteRuntimeInvalidationReason); err != nil {
-		slog.Warn("账户删除已提交，但授权额度缓存失效失败",
-			"event", "account_delete_authorization_quota_invalidation_failed",
-			"accountCount", len(accountIDs), "error", err)
-	}
+	// invalidateAuthorizationRuntimeAfterBusinessWrite('account_deleted') 的
+	// 授权额度失效臂随额度域退役（:202 原注释）；runtime 臂即上方的广播。
 }
 
 // finishCreateSideEffects mirrors the post-commit tail of createAccountAsync

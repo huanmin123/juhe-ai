@@ -490,3 +490,22 @@ func TestConnectivityRetryTimeoutsPinned(t *testing.T) {
 		}
 	}
 }
+
+// TestImageRetryTimeoutsDerivedServiceKeepsGuard 锁定 images_json 长预算档
+// 派生服务（T224 修复，2026-11-22）：整结构体拷贝只替换 retryTimeouts 为
+// 单次 120s 长预算，dialGuard 等原服务字段必须完整保留——部分字段构造曾让
+// 该分支静默失去部署级 SSRF 守卫。
+func TestImageRetryTimeoutsDerivedServiceKeepsGuard(t *testing.T) {
+	guard := upstreamhttp.NewDialGuard(upstreamhttp.URLSecurityConfig{}, nil, nil)
+	service := &Service{retryTimeouts: DiagnosticRetryTimeouts, dialGuard: guard}
+	view := probeView("https://img.example.com")
+	view.HealthCheckEndpointMode = string(ModeImagesJSON)
+	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeImagesJSON: true}
+	derived := service.withScheduleForView(view)
+	if len(derived.retryTimeouts) != len(ImageDiagnosticRetryTimeouts) || derived.retryTimeouts[0] != ImageDiagnosticRetryTimeouts[0] {
+		t.Fatalf("images 派生预算 = %v, want %v", derived.retryTimeouts, ImageDiagnosticRetryTimeouts)
+	}
+	if derived.dialGuard != service.dialGuard {
+		t.Fatal("images 派生服务必须保留原服务 dialGuard")
+	}
+}

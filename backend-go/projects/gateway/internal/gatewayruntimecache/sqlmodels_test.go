@@ -361,23 +361,10 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 	if peer.GroupAuthorizationID == nil || *peer.GroupAuthorizationID != "auth1" {
 		t.Fatalf("authorization id mismatch: %+v", peer.GroupAuthorizationID)
 	}
-	if peer.GroupAuthorizationQuotaLimited == nil || !*peer.GroupAuthorizationQuotaLimited {
-		t.Fatalf("quota limited flag must follow the enabled daily limit: %+v", peer.GroupAuthorizationQuotaLimited)
-	}
 	if peer.GroupAuthorizationSourceType == nil || *peer.GroupAuthorizationSourceType != "team" {
 		t.Fatalf("source type mismatch: %+v", peer.GroupAuthorizationSourceType)
 	}
-	// 本地授权设置禁用 → undefined。
-	if _, err := db.Exec(`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled) VALUES ('auth1', 'sys_peer', 'g1', 0)`); err != nil {
-		t.Fatal(err)
-	}
-	disabled, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_peer")
-	if err != nil {
-		t.Fatalf("disabled read: %v", err)
-	}
-	if disabled != nil {
-		t.Fatalf("disabled local settings must read as undefined, got %+v", disabled)
-	}
+	// 本地授权设置域已随授权额度域退役（无 enabled 位），本地禁用臂一并删除。
 	// 禁用组 → undefined。
 	off, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_off", "sys_owner")
 	if err != nil {

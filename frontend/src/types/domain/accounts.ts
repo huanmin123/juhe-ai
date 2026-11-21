@@ -165,7 +165,6 @@ export type AccountEffectiveAvailabilityStatus =
   | 'authorization_expired'
   | 'authorization_paused'
   | 'authorization_unavailable'
-  | 'authorization_quota_exceeded'
   | 'source_deleted'
   | 'source_expired'
   | 'source_pending_test'

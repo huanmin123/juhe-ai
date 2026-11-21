@@ -18,6 +18,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamlimit"
 )
 
 // Runner is the only J1 scheduler.  Its inputs come from the configured
@@ -67,6 +68,25 @@ type scheduledDBTask struct {
 	found   bool
 	kind    string
 	outcome Outcome
+}
+
+// acquireUpstreamSlot 抢同上游 origin 并发桶（2026-11-22 用户裁决：同一上游
+// base_url 的在途模型探针 ≤ 桶上限，不同上游并行，防止几十个并发长请求触发
+// 同一家上游限频/风控；总并发不降）。返回释放函数与是否成功；limiter 为 nil
+// 直接放行（测试形态）。获取顺序固定为全局 worker 名额 → 同上游，单向获取
+// 无死锁；已知取舍：同源等待者占用全局名额，全局饱和时会延迟跨源探针——
+// 512 全局 / 60 同源的比例下实际风险低，不引入反向抢占复杂度。
+func acquireUpstreamSlot(ctx context.Context, limiter *upstreamlimit.Limiter, baseURL string) (func(), bool) {
+	if limiter == nil {
+		return func() {}, true
+	}
+	sem := limiter.Bucket(upstreamlimit.Origin(baseURL))
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, true
+	case <-ctx.Done():
+		return func() {}, false
+	}
 }
 
 // directInputLoader permits the scheduler to load immutable, currently eligible
@@ -423,12 +443,27 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 			defer safego.Recover("accounthealth.scheduler.ioWorker")
 			defer ioWorkers.Done()
 			for input := range ioJobs {
-				task, err := r.prepareScheduledInput(ctx, lease, input, now)
-				if err != nil {
-					recordError(err)
+				release, ok := acquireUpstreamSlot(ctx, r.cfg.UpstreamLimiter, input.BaseURL)
+				if !ok {
+					// 停机：本输入未消费，保持无 current_state，下轮重新调度。
 					continue
 				}
-				if !task.ready {
+				// 桶释放走闭包 defer：prepareScheduledInput 内部 panic 被
+				// worker 的 safego.Recover 吞掉时名额不永久泄漏（进程级单例
+				// 桶泄漏 = 该 origin 容量退化直至重启）。
+				task, ready := func() (scheduledDBTask, bool) {
+					defer release()
+					task, err := r.prepareScheduledInput(ctx, lease, input, now)
+					if err != nil {
+						recordError(err)
+						return scheduledDBTask{}, false
+					}
+					if !task.ready {
+						return scheduledDBTask{}, false
+					}
+					return task, true
+				}()
+				if !ready {
 					continue
 				}
 				queuedAt := time.Now()
@@ -576,11 +611,23 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 			return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, "account_status_not_probeable", "显式请求对应的账户状态不允许 health transition")
 		}
 	}
-	probeCtx, cancel := context.WithDeadline(ctx, request.Deadline)
-	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, exactkeyprobe.ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now, DialGuard: r.cfg.DialGuard})
-	cancel()
-	if err != nil {
-		return err
+	// 显式臂与定时臂共享同一上游面，同款过桶（2026-11-22 用户裁决）；显式臂
+	// 并发上界 3（outbox drain 2 路 + 签名文件臂 1 路串行），桶等待与定时臂
+	// 在途探针互斥，不会自我堆积。极端积压时等桶会吃掉 deadline 预算——
+	// drain 先于定时批量执行，风险可忽略。桶释放走闭包 defer（panic 时名额
+	// 不泄漏）。
+	release, ok := acquireUpstreamSlot(ctx, r.cfg.UpstreamLimiter, input.BaseURL)
+	if !ok {
+		return context.Cause(ctx)
+	}
+	outcome, probeErr := func() (Outcome, error) {
+		defer release()
+		probeCtx, cancel := context.WithDeadline(ctx, request.Deadline)
+		defer cancel()
+		return ExecuteInputProbe(probeCtx, r.store, lease, input, request, exactkeyprobe.ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now, DialGuard: r.cfg.DialGuard})
+	}()
+	if probeErr != nil {
+		return probeErr
 	}
 	prior, found, err := r.store.LoadCurrentState(ctx, input.AccountID)
 	if err != nil {

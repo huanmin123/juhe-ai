@@ -1221,7 +1221,6 @@ $$`,
       last_used_at_sort_key text,
       created_at_sort_key text NOT NULL,
       access_type_sort_key text NOT NULL,
-      authorization_quota_exceeded integer NOT NULL DEFAULT 0 CHECK (authorization_quota_exceeded IN (0, 1)),
       PRIMARY KEY (viewer_system_account_id, account_id),
       FOREIGN KEY (viewer_system_account_id, account_id)
         REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)

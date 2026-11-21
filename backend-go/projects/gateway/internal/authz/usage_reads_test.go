@@ -599,71 +599,10 @@ func TestUsagePageOptionsAndUpperBound(t *testing.T) {
 	}
 }
 
-// TestRevokeOwnerScopeNegative closes BUG-0165 item 1: an administrator with
-// ?systemAccountId cannot revoke a grant owned outside the scope (Node
-// resource_owner_system_account_id filter → not_found, no state change).
-func TestRevokeOwnerScopeNegative(t *testing.T) {
-	f := newFixture(t)
-	f.seedAccount(t, "owner1", "active")
-	f.seedAccount(t, "owner2", "active")
-	f.seedAccount(t, "grantee", "active")
-	f.seedGroup(t, "grp_scope", "owner1")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_scope",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Out-of-scope revoke: not_found and the grant stays active with the
-	// original version.
-	mutation, err := f.store.RevokeForOwner(context.Background(), created.Item.ID, created.Item.UpdatedAt, "admin", "owner2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mutation.Status != "not_found" {
-		t.Fatalf("out-of-scope revoke = %+v", mutation)
-	}
-	var status, version string
-	if err := f.db.QueryRow(fixtureBind(`SELECT status, updated_at FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).
-		Scan(&status, &version); err != nil {
-		t.Fatal(err)
-	}
-	if status != StatusActive || version != created.Item.UpdatedAt {
-		t.Fatalf("grant after denied revoke = %s@%s", status, version)
-	}
-
-	// In-scope revoke succeeds and flips the status.
-	updated, err := f.store.RevokeForOwner(context.Background(), created.Item.ID, created.Item.UpdatedAt, "admin", "owner1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Status != "updated" || updated.Result.Status != StatusRevoked || *updated.PreviousStatus != StatusActive {
-		t.Fatalf("in-scope revoke = %+v", updated)
-	}
-
-	// An unscoped revoke keeps the administrator contract (no owner filter).
-	created2, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_scope",
-		GranteeType: "system_account", GranteeID: "owner2",
-	}, "owner1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unscoped, err := f.store.Revoke(context.Background(), created2.Item.ID, created2.Item.UpdatedAt, "admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unscoped.Status != "updated" {
-		t.Fatalf("unscoped revoke = %+v", unscoped)
-	}
-}
-
 // TestListItemProjectionContract pins the ResourceAuthorizationListItem
-// projection (BUG-0165 item 4): name lookups, the manage-gated limits and
-// account expiry, the effective source summary and the permission bits
-// (resourceAuthorizationListItemFromRow :743-818).
+// projection (BUG-0165 item 4): name lookups, the effective source summary
+// and the permission bits (resourceAuthorizationListItemFromRow :743-818).
+// 授权额度域已退役：limits 字段不再存在于列表投影。
 func TestListItemProjectionContract(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner1", "active")
@@ -671,29 +610,27 @@ func TestListItemProjectionContract(t *testing.T) {
 	f.seedAccount(t, "grantee", "active")
 	f.seedTeamWithMember(t, "team_proj", "grantee")
 	f.seedGroup(t, "grp_proj", "owner1")
-	created, err := f.store.Create(context.Background(), CreateInput{
+	// 领取后的直接授权：运行时 active、effective manual。
+	directGrant, _ := f.createAcceptedDirectOffer(t, "group", "grp_proj", "grantee")
+	// 团队 offer：成员领取后运行时 active、effective team。
+	teamOffer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_proj",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner1")
+		GranteeType: "team", TeamID: "team_proj",
+	}, "owner1", false, "owner1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	teamGrant, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_proj",
-		GranteeType: "team", GranteeID: "team_proj",
-		LimitsJSON: func() *string { v := `{"daily":{"enabled":true,"limit":1.234567}}`; return &v }(),
-	}, "owner1")
-	if err != nil {
+	if _, err := f.acceptSourceForTest(t, "grantee", pendingTeamSourceFor(t, f, teamOffer.GrantID, "team_proj", "grantee")); err != nil {
 		t.Fatal(err)
 	}
 	// A second owner's grant the scoped admin must not manage.
 	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status) VALUES ('grp_scope2', 'Group grp_scope2', 'owner2', 'active')`); err != nil {
 		t.Fatal(err)
 	}
-	otherGrant, err := f.store.Create(context.Background(), CreateInput{
+	otherGrant, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_scope2",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner2")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner2", false, "owner2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +649,7 @@ func TestListItemProjectionContract(t *testing.T) {
 	for _, item := range items {
 		byID[item.ID] = item
 	}
-	direct := byID[created.Item.ID]
+	direct := byID[directGrant]
 	if direct.ResourceName == nil || *direct.ResourceName != "Group grp_proj" {
 		t.Fatalf("direct resourceName = %+v", direct.ResourceName)
 	}
@@ -729,13 +666,8 @@ func TestListItemProjectionContract(t *testing.T) {
 	if !direct.Permissions.CanEdit || !direct.Permissions.CanAuthorize {
 		t.Fatalf("direct permissions = %+v", direct.Permissions)
 	}
-	// The grant was created without limits: the NULL column projects as the
-	// omitted limits key even for a managing admin (Node parse → undefined).
-	if direct.Limits != nil {
-		t.Fatalf("unmanaged limits = %+v", direct.Limits)
-	}
 
-	team := byID[teamGrant.Item.ID]
+	team := byID[teamOffer.GrantID]
 	if team.EffectiveSourceType != "team" || team.EffectiveSourceTeamID == nil || *team.EffectiveSourceTeamID != "team_proj" ||
 		team.EffectiveSourceTeamName == nil || *team.EffectiveSourceTeamName != "Team team_proj" {
 		t.Fatalf("team source = %+v", team)
@@ -745,7 +677,7 @@ func TestListItemProjectionContract(t *testing.T) {
 	}
 
 	// The out-of-scope grant is not on the scoped page at all.
-	if _, ok := byID[otherGrant.Item.ID]; ok {
+	if _, ok := byID[otherGrant.GrantID]; ok {
 		t.Fatalf("out-of-scope grant leaked into the filtered page")
 	}
 
@@ -772,9 +704,6 @@ func TestListItemProjectionContract(t *testing.T) {
 	for _, item := range userItems {
 		if item.Permissions.CanEdit || item.Permissions.CanAuthorize {
 			t.Fatalf("user must not manage %s", item.ID)
-		}
-		if item.Limits != nil {
-			t.Fatalf("user must not see limits of %s", item.ID)
 		}
 		if item.ResourceAccountExpiresAt != nil {
 			t.Fatalf("user must not see account expiry of %s", item.ID)

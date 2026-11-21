@@ -49,10 +49,9 @@ import (
 //	                                           (group-read-loaders.ts:223)
 //	ClearResourceAuthorizationLookupCaches   → clearResourceAuthorizationLookupCaches
 //	                                           (authorization-read-loaders.ts:299)
-//	InvalidateAuthorizationQuota             → notifyAuthorizationQuotaCacheInvalidation
-//	                                           (the quota arm of
-//	                                           invalidateAuthorizationRuntimeAfterBusinessWrite,
-//	                                           account-delete-cleanup.repository.ts:56-59)
+//
+// The authorization quota invalidation channel retired with the
+// authorization quota domain (revision 31).
 type CacheInvalidator interface {
 	// InvalidateAccountLookup mirrors Node invalidateAccountLookupCache
 	// (repository-lookups.ts:473): flush the per-account lookup cache entry.
@@ -73,10 +72,6 @@ type CacheInvalidator interface {
 	// hook until the Go authz read slice grows the caches, same pattern as
 	// InvalidateAccountLookup).
 	ClearResourceAuthorizationLookupCaches() error
-	// InvalidateAuthorizationQuota mirrors Node
-	// notifyAuthorizationQuotaCacheInvalidation: the authorization quota
-	// snapshot invalidation (inval.TopicAuthorizationQuota).
-	InvalidateAuthorizationQuota(reason string) error
 }
 
 // BatchDispatchRevision carries one proxy-changed account through the family

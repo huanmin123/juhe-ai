@@ -50,11 +50,7 @@ function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabili
   if (status === 'schedule_out_of_window') return 'active'
   if (status === 'source_pending_test' || status === 'instance_pending_test') return 'pending_test'
   if (status === 'source_error' || status === 'instance_error') return 'error'
-  if (
-    status === 'authorization_quota_exceeded'
-    || status === 'source_rate_limited'
-    || status === 'instance_rate_limited'
-  ) {
+  if (status === 'source_rate_limited' || status === 'instance_rate_limited') {
     return 'rate_limited'
   }
   if (

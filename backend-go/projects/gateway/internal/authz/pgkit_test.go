@@ -94,15 +94,11 @@ const authzPGFixtureSchema = `
       last_source_changed_at text,
       remark text,
       expires_at text,
-      limits_json text,
       created_by text DEFAULT '',
       created_at text DEFAULT '',
       revoked_by text,
       revoked_at text,
       revoked_reason text,
-      status_reason text,
-      status_changed_at text,
-      acceptance_mode text DEFAULT 'legacy',
       updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
@@ -119,23 +115,13 @@ const authzPGFixtureSchema = `
       revoked_by text,
       revoked_at text,
       grant_id text,
-      acceptance_mode text DEFAULT 'legacy',
       accepted_at text,
       accepted_by text,
       declined_at text,
       declined_by text,
       returned_at text,
       returned_by text,
-      needs_review_at text,
-      needs_review_reason text,
-      needs_review_detail_json text,
-      accepted_source_revision text,
-      observed_source_revision text,
-      accepted_source_revision_version integer,
-      revision_version integer DEFAULT 1,
       expiry_cycle integer DEFAULT 0,
-      expired_from_status text,
-      pending_expires_at text,
       updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
@@ -150,26 +136,14 @@ const authzPGFixtureSchema = `
       status text DEFAULT 'active',
       remark text,
       expires_at text,
-      limits_json text,
       created_by text DEFAULT '',
       created_at text DEFAULT '',
       revoked_by text,
       revoked_at text,
-      acceptance_mode text DEFAULT 'legacy',
-      accepted_at text,
-      accepted_by text,
-      team_approved_at text,
-      team_approved_by text,
-      owner_approved_at text,
-      owner_approved_by text,
       source_revision text,
       expiry_cycle integer DEFAULT 0,
-      pending_expires_at text,
-      expired_from_status text,
       ended_at text,
       ended_reason text,
-      legacy_basis text,
-      legacy_review_deadline text,
       updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.accounts (
@@ -554,56 +528,10 @@ const authzPGFixtureSchema = `
       authorization_id text PRIMARY KEY,
       system_account_id text DEFAULT '',
       group_id text DEFAULT '',
-      enabled integer DEFAULT 1,
       group_type text DEFAULT 'personal',
       scheduling_policy_json text,
-      snapshot_revision text,
-      snapshot_mode text DEFAULT 'normal',
       created_at text DEFAULT '',
       updated_at text DEFAULT ''
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_group_accounts (
-      authorization_id text DEFAULT '',
-      account_id text DEFAULT '',
-      source_revision text DEFAULT '',
-      revision_version integer DEFAULT 1,
-      accepted_at text DEFAULT '',
-      updated_at text DEFAULT '',
-      PRIMARY KEY (authorization_id, account_id)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.authorization_notifications (
-      id text PRIMARY KEY,
-      system_account_id text DEFAULT '',
-      type text DEFAULT '',
-      grant_id text,
-      source_id text,
-      payload_json text,
-      dedupe_key text DEFAULT '',
-      read_at text,
-      created_at text DEFAULT '',
-      UNIQUE (dedupe_key)
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.system_account_authorization_suspensions (
-      id text PRIMARY KEY,
-      system_account_id text DEFAULT '',
-      suspended_by text DEFAULT '',
-      reason text,
-      suspended_at text DEFAULT '',
-      lifted_at text,
-      lifted_by text
-    );
-	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_offer_cooldowns (
-      id text PRIMARY KEY,
-      grantor_system_account_id text DEFAULT '',
-      grantee_type text DEFAULT '',
-      grantee_system_account_id text,
-      grantee_team_id text,
-      member_system_account_id text,
-      resource_type text DEFAULT '',
-      resource_id text DEFAULT '',
-      until_at text DEFAULT '',
-      reason text,
-      created_at text DEFAULT ''
     );
 `
 

@@ -451,32 +451,6 @@ func TestWJSmallHelpers(t *testing.T) {
 	if statsTable("t") != "juhe_stats.t" || statsBusinessTable("t") != "juhe_business.t" {
 		t.Fatal("表名必须带 schema 前缀")
 	}
-	// itoa64 的多位与非负分支由 runtimeCacheKey 触发；这里直接验证。
-	if itoa64(0) != "0" || itoa64(42) != "42" || itoa64(-7) != "-7" {
-		t.Fatal("itoa64 数值转文本不符")
-	}
-	// chunkStrings / sqlPlaceholders / uniqueNonEmpty 的边界。
-	if got := chunkStrings([]string{"a", "b", "c"}, 2); len(got) != 2 || len(got[1]) != 1 {
-		t.Fatalf("chunkStrings 分块不符: %v", got)
-	}
-	if got := chunkStrings([]string{"a"}, 0); len(got) != 1 {
-		t.Fatalf("非法块大小必须归一化为 1: %v", got)
-	}
-	if got := sqlPlaceholders(3); got != "?,?,?" {
-		t.Fatalf("sqlPlaceholders = %s", got)
-	}
-	if got := sqlPlaceholders(0); got != "?" {
-		t.Fatalf("sqlPlaceholders 下限 = %s", got)
-	}
-	if got := uniqueNonEmpty([]string{"a", "", "a", "b"}); len(got) != 2 || got[0] != "a" || got[1] != "b" {
-		t.Fatalf("uniqueNonEmpty = %v", got)
-	}
-	if accountSummaryAuthorizationID(nil) != "" || accountSummaryQuotaLimited(nil) {
-		t.Fatal("nil account 摘要必须返回零值")
-	}
-	if accountSummaryAuthorizationID(&AccountAuthorizationSummary{AccountAuthorizationID: "aa"}) != "aa" {
-		t.Fatal("非 nil account 摘要必须返回授权 ID")
-	}
 }
 
 // TestWJSharedCacheTransportErrors 固定 Redis shared cache 在传输故障下的

@@ -33,9 +33,9 @@ func TestListInboundAllowsAcceptOfPendingTeamSourceOnActiveRuntime(t *testing.T)
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_sources
-		(id, authorization_id, grant_id, source_type, source_team_id, status, acceptance_mode,
+		(id, authorization_id, grant_id, source_type, source_team_id, status,
 		 created_by, created_at, updated_at)
-		VALUES ('src-team-list', ?, 'grant-team-list', 'team', 'team-list', 'pending', 'recipient', 'owner', ?, ?)`),
+		VALUES ('src-team-list', ?, 'grant-team-list', 'team', 'team-list', 'pending', 'owner', ?, ?)`),
 		runtimeID, now, now); err != nil {
 		t.Fatal(err)
 	}

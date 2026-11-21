@@ -227,38 +227,13 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 	if err != nil || unauthorized != nil {
 		t.Fatalf("无授权 = %v err=%v", unauthorized, err)
 	}
-	// 授权命中：限额非启用（limits NULL）→ quotaLimited=false。
+	// 授权命中（额度域退役后仅钉授权 ID 与授权访问类型）。
 	authorized, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_authorized", "sys_other")
 	if err != nil || authorized == nil || authorized.GroupAccessType != GroupAccessTypeAuthorized || authorized.GroupAuthorizationID == nil {
 		t.Fatalf("授权访问 = %+v err=%v", authorized, err)
 	}
-	if authorized.GroupAuthorizationQuotaLimited == nil || *authorized.GroupAuthorizationQuotaLimited {
-		t.Fatal("无限额授权不得标记 quotaLimited")
-	}
-	// 本地禁用 → nil。
-	locallyDisabled, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_auth_disabled_local", "sys_other")
-	if err != nil || locallyDisabled != nil {
-		t.Fatalf("本地禁用 = %v err=%v", locallyDisabled, err)
-	}
-	// 本地覆盖退役：类型/策略来自来源分组（personal + NULL），限额仍生效。
-	overridden, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_auth_overridden", "sys_other")
-	if err != nil || overridden == nil {
-		t.Fatalf("本地覆盖 = %+v err=%v", overridden, err)
-	}
-	if overridden.GroupType == nil || *overridden.GroupType != "personal" || overridden.SchedulingPolicy != nil {
-		t.Fatalf("覆盖类型/策略必须来自来源分组 = %+v", overridden)
-	}
-	if overridden.GroupAuthorizationQuotaLimited == nil || !*overridden.GroupAuthorizationQuotaLimited {
-		t.Fatal("启用限额必须标记 quotaLimited")
-	}
-	// 坏限额 JSON：按无限额处理。
-	if _, err := db.Exec(`UPDATE juhe_business.resource_authorizations SET limits_json = 'not-json' WHERE id = 'auth1'`); err != nil {
-		t.Fatal(err)
-	}
-	badLimits, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_authorized", "sys_other")
-	if err != nil || badLimits == nil || *badLimits.GroupAuthorizationQuotaLimited {
-		t.Fatalf("坏限额 = %+v err=%v", badLimits, err)
-	}
+	// 本地禁用/本地覆盖/坏限额 JSON 臂随授权额度域（limits_json/quotaLimited 位）
+	// 退役一并删除。
 	// 纯助手：normalizeGroupTypeValue / parseGroupSchedulingPolicyJSON / strPtrIfSet。
 	if _, _, err := normalizeGroupTypeValue(sql.NullString{}); err == nil {
 		t.Fatal("空类型必须报错（不得静默归 personal）")

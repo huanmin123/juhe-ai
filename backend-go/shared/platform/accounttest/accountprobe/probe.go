@@ -17,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamlimit"
 )
 
 // 诊断分级超时。Node 时代为 [10_000, 20_000, 30_000]；2026-10-07 用户裁决
@@ -129,17 +130,23 @@ type Options struct {
 	// 不安装（测试形态或显式放行）；生产装配传入部署级 URLSecurityConfig 构建的
 	// 同一实例，使手动测试与 jobs 健康探针共享同一拒绝面。
 	DialGuard *upstreamhttp.DialGuard
+	// UpstreamLimiter 是同上游 origin 并发桶（2026-11-22 用户裁决：同一上游
+	// base_url 的在途探针 ≤ 桶上限，不同上游并行）。nil 不启用（gateway 侧
+	// 构造与测试形态）；jobs 装配注入与 J1 共享的进程级单实例，使「同一上游
+	// ≤ N 并发」跨探针族与连接测试通道统一计数。
+	UpstreamLimiter *upstreamlimit.Limiter
 }
 
 // Service 实现 accountquality.Prober，并为速度优先探针提供单账户探针入口。
 type Service struct {
-	source        CandidateSource
-	client        *http.Client
-	secret        string
-	now           func() time.Time
-	slots         chan struct{}
-	retryTimeouts []time.Duration
-	dialGuard     *upstreamhttp.DialGuard
+	source          CandidateSource
+	client          *http.Client
+	secret          string
+	now             func() time.Time
+	slots           chan struct{}
+	retryTimeouts   []time.Duration
+	dialGuard       *upstreamhttp.DialGuard
+	upstreamLimiter *upstreamlimit.Limiter
 }
 
 // NewService 构建探针服务；client 为空时使用带代理不感知的默认传输。
@@ -167,7 +174,7 @@ func NewService(options Options) (*Service, error) {
 	if len(retryTimeouts) == 0 {
 		retryTimeouts = DiagnosticRetryTimeouts
 	}
-	return &Service{source: options.Source, client: client, secret: options.Secret, now: now, slots: slots, retryTimeouts: retryTimeouts, dialGuard: options.DialGuard}, nil
+	return &Service{source: options.Source, client: client, secret: options.Secret, now: now, slots: slots, retryTimeouts: retryTimeouts, dialGuard: options.DialGuard, upstreamLimiter: options.UpstreamLimiter}, nil
 }
 
 func (s *Service) nowMS() int64 { return s.now().UnixMilli() }
@@ -231,7 +238,8 @@ func (s *Service) ProbeAccountView(ctx context.Context, req accountquality.Probe
 //   - 其余 → 单凭据分级诊断（testOpenAIAccountWithDiagnosticRetries 的
 //     stage 循环；limited 只影响失败文案脱敏）；
 //   - images_json 形态走单次 120s 长预算（Node accountImageDiagnosticRetryTimeoutMs），
-//     其余形态走 [10s, 20s, 30s] 分级（accountDiagnosticRetryTimeoutMs）。
+//     其余形态走 [20s, 30s, 40s] 分级（2026-10-07 随 BUG-0287 上调；连接测试
+//     视图另有专用 [10s, 20s, 30s]，见 ConnectivityRetryTimeouts）。
 func (s *Service) ManualDiagnostics(ctx context.Context, view *View, limited bool) (*accountquality.ProbeObservation, []PoolKeyAttempt, error) {
 	if view == nil {
 		return nil, nil, errors.New("探针视图缺失")
@@ -289,7 +297,11 @@ func (s *Service) withScheduleForView(view *View) *Service {
 	}
 	mode, err := resolveEndpointMode(view, EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode)))
 	if err == nil && mode == ModeImagesJSON {
-		return &Service{source: s.source, client: s.client, secret: s.secret, now: s.now, slots: s.slots, retryTimeouts: ImageDiagnosticRetryTimeouts}
+		// 整结构体拷贝：部分字段构造会漏掉 dialGuard / upstreamLimiter 等派生
+		// 依赖（历史缺陷：images 长预算档曾静默失去 SSRF 守卫）。
+		staged := *s
+		staged.retryTimeouts = ImageDiagnosticRetryTimeouts
+		return &staged
 	}
 	return s
 }
@@ -429,6 +441,22 @@ func (s *Service) attemptWithTimeout(ctx context.Context, view *View, entry *Key
 		select {
 		case s.slots <- struct{}{}:
 			defer func() { <-s.slots }()
+		case <-ctx.Done():
+			return canceledObservation(view)
+		}
+	}
+	// 同上游限流（2026-11-22 用户裁决）：全局槽之后按 base_url origin 抢
+	// 同源桶——同一上游并发 ≤ 桶上限，不同上游之间并行，防止几十个并发
+	// 探测触发同一家上游限频/风控。获取顺序固定为全局 → 同上游，单向获取
+	// 无死锁。ConnectivityOnly（连接测试通道）跳过：该通道由
+	// connectivityhealth runner 层在探测预算 ctx 之外排队（等桶不占探测
+	// 预算），此处再过桶会让同源积压吃掉单账户硬顶。limiter 为 nil 时行为
+	// 不变（gateway 侧构造与测试形态）。
+	if s.upstreamLimiter != nil && !view.ConnectivityOnly {
+		upstreamSem := s.upstreamLimiter.Bucket(upstreamlimit.Origin(view.BaseURL))
+		select {
+		case upstreamSem <- struct{}{}:
+			defer func() { <-upstreamSem }()
 		case <-ctx.Done():
 			return canceledObservation(view)
 		}

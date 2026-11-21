@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +28,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamlimit"
 )
 
 const (
@@ -186,8 +186,11 @@ func (r *Runner) Run(ctx context.Context) (CycleResult, error) {
 	sem := make(chan struct{}, r.concurrency)
 	// 同上游限流按 view.BaseURL 的 origin 在探测前收口（候选层无 base_url：
 	// accounts 表不落该列，凭据 JSON 也不再承载，探测视图从健康检查连接行
-	// 装载后才可派生）。获取顺序固定为全局 → 同上游，单向获取无死锁。
-	limiter := newUpstreamLimiter()
+	// 装载后才可派生）。获取顺序固定为全局 → 同上游，单向获取无死锁。每轮
+	// 新建 limiter：候选批量 ≤ 总并发，桶数 ≤ 批量。排队发生在探测预算
+	// probeCtx 创建之前，等桶不占单账户 60s 硬顶——accountprobe.Service 的
+	// 进程级桶对本通道（ConnectivityOnly）跳过，避免同源积压吃掉探测预算。
+	limiter := upstreamlimit.NewLimiter(perUpstreamConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	for _, candidate := range candidates {
@@ -281,21 +284,6 @@ func (r *Runner) loadCandidates(ctx context.Context, now time.Time) ([]candidate
 	return output, nil
 }
 
-// upstreamOrigin 返回同上游限流的分组键：base_url 的 scheme://host:port。
-// 解析失败回落原始字符串（同一 base_url 恒映射同一键）；空值共享一个限流桶，
-// 按保守处理不放大瞬时压力。
-func upstreamOrigin(baseURL string) string {
-	trimmed := strings.TrimSpace(baseURL)
-	if trimmed == "" {
-		return ""
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" {
-		return trimmed
-	}
-	return parsed.Scheme + "://" + parsed.Host
-}
-
 // connectivityCandidateSQL 选出所有到期且属于连接测试口径的账户：媒体域
 // 与向量/重排域全部（向量/重排拆分设计 §7：新域恒连接测试），或 chat 域
 // 只声明非对话形态的账户。对话生成形态账户留给 J1 模型检查，两者不重叠。
@@ -358,29 +346,11 @@ type candidateResult struct {
 	outcome outcomeKind
 }
 
-// upstreamLimiter 按上游 origin 提供同源并发桶（get-or-create，mutex 保护；
-// 每轮 Run 新建，候选批量 ≤ 总并发，桶数 ≤ 批量）。
-type upstreamLimiter struct {
-	mu   sync.Mutex
-	sems map[string]chan struct{}
-}
+// upstreamLimiter 实现已收敛到共享包 upstreamlimit.Limiter（2026-11-22）：
+// 与 J1/accountprobe 共用同一实现，本通道保留「每轮新建、探测预算外排队」
+// 的持有语义。
 
-func newUpstreamLimiter() *upstreamLimiter {
-	return &upstreamLimiter{sems: make(map[string]chan struct{})}
-}
-
-func (l *upstreamLimiter) bucket(origin string) chan struct{} {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	sem, ok := l.sems[origin]
-	if !ok {
-		sem = make(chan struct{}, perUpstreamConcurrency)
-		l.sems[origin] = sem
-	}
-	return sem
-}
-
-func (r *Runner) processCandidate(ctx context.Context, item candidate, schedule healthSchedule, limiter *upstreamLimiter) candidateResult {
+func (r *Runner) processCandidate(ctx context.Context, item candidate, schedule healthSchedule, limiter *upstreamlimit.Limiter) candidateResult {
 	account, err := r.reader.LoadAccountForTest(ctx, item.ID)
 	if err != nil {
 		r.logger.Warn("load connectivity health account failed", "account_id", item.ID, "error", err)
@@ -445,7 +415,7 @@ func (r *Runner) processCandidate(ctx context.Context, item candidate, schedule 
 	// 同上游限流（2026-11-22 用户裁决）：探测请求发起前按 base_url origin
 	// 抢同源桶——同一上游并发 ≤ perUpstreamConcurrency，不同上游之间并行，
 	// 防止几十个并发探测触发同一家上游限频/风控。
-	upstreamSem := limiter.bucket(upstreamOrigin(view.BaseURL))
+	upstreamSem := limiter.Bucket(upstreamlimit.Origin(view.BaseURL))
 	select {
 	case upstreamSem <- struct{}{}:
 	case <-ctx.Done():

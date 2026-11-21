@@ -112,15 +112,14 @@ func TestW1bBuildDispatchDecisionSummaryJSONAndTruncation(t *testing.T) {
 		rankByAccountID["s-"+intToStringTest(index)] = ModelPriorityRankUnsupported
 	}
 	input := DispatchDecisionSummaryInput{
-		CandidateTotal: 27,
+		CandidateTotal: 26,
 		Eligible:       testAccounts("a-1", "a-2"),
 		ModelPriority:  &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: rankByAccountID},
-		QuotaDenied:    []string{"q-1"},
 		Busy:           []string{"z-9", "a-2"},
 		Suppressed:     []string{"x-2", "x-1", "x-1"},
 	}
 	summary := BuildDispatchDecisionSummary(input)
-	if summary.CandidateTotal != 27 || summary.EligibleCount != 2 || summary.SelectedAccountID != "a-1" {
+	if summary.CandidateTotal != 26 || summary.EligibleCount != 2 || summary.SelectedAccountID != "a-1" {
 		t.Fatalf("summary head = %d/%d/%q", summary.CandidateTotal, summary.EligibleCount, summary.SelectedAccountID)
 	}
 	if !summary.ModelRankAvailable {
@@ -129,12 +128,9 @@ func TestW1bBuildDispatchDecisionSummaryJSONAndTruncation(t *testing.T) {
 	if !summary.SkippedTruncated || len(summary.Skipped) != dispatchDecisionSummaryListCap {
 		t.Fatalf("skipped truncated/len = %v/%d", summary.SkippedTruncated, len(summary.Skipped))
 	}
-	// skipped 顺序：配额否决在前、模型秩 unsupported 在后，各按 ID 稳定排序。
-	if summary.Skipped[0].AccountID != "q-1" || summary.Skipped[0].Reason != DispatchSkipReasonQuotaDenied {
+	// skipped：模型秩 unsupported 按 ID 稳定排序（配额否决位随授权额度域退役）。
+	if summary.Skipped[0].AccountID != "s-0" || summary.Skipped[0].Reason != DispatchSkipReasonModelUnsupported {
 		t.Fatalf("skipped[0] = %#v", summary.Skipped[0])
-	}
-	if summary.Skipped[1].AccountID != "s-0" || summary.Skipped[1].Reason != DispatchSkipReasonModelUnsupported {
-		t.Fatalf("skipped[1] = %#v", summary.Skipped[1])
 	}
 	// busy 保持输入顺序（并发快照扫描顺序），suppressed 去重 + 稳定排序。
 	if !reflect.DeepEqual(summary.Busy, []string{"z-9", "a-2"}) {
@@ -159,7 +155,7 @@ func TestW1bBuildDispatchDecisionSummaryJSONAndTruncation(t *testing.T) {
 	if err := json.Unmarshal(first, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded["candidateTotal"].(float64) != 27 || decoded["eligibleCount"].(float64) != 2 {
+	if decoded["candidateTotal"].(float64) != 26 || decoded["eligibleCount"].(float64) != 2 {
 		t.Fatalf("decoded head = %#v", decoded)
 	}
 	if decoded["selectedAccountId"] != "a-1" || decoded["modelRankAvailable"] != true {
@@ -220,8 +216,7 @@ func (c *w1bRecordingAudit) single(t *testing.T, label string) map[string]any {
 
 // (c) 决策摘要经现有准备路径写入 gateway_dispatch_candidates 审计标签。
 func TestW1bPrepareDispatchAccountsEmitsGatewayDispatchCandidatesMetadata(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	engine.Quota = &fakeQuota{denied: map[string]struct{}{"a-2": {}}}
+	pipeline, _, _, _ := newPipeline(t)
 	capture := &w1bRecordingAudit{}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	input := gatewaypreauth.DispatchPreparationInput{
@@ -231,7 +226,7 @@ func TestW1bPrepareDispatchAccountsEmitsGatewayDispatchCandidatesMetadata(t *tes
 		StartedAt:         1_000,
 		CandidateAccounts: testAccounts("a-1", "a-2"),
 		ModelPriority: &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{
-			"a-1": ModelPriorityRankDirect, "a-2": ModelPriorityRankDirect,
+			"a-1": ModelPriorityRankDirect, "a-2": ModelPriorityRankUnsupported,
 		}},
 		GroupAccess:        gatewayruntimecache.GroupUsageAccessMetadata{},
 		SystemAccountID:    "system-1",
@@ -279,7 +274,7 @@ func TestW1bPrepareDispatchAccountsEmitsGatewayDispatchCandidatesMetadata(t *tes
 		t.Fatalf("skipped = %#v", metadata["skipped"])
 	}
 	entry := skipped[0].(map[string]any)
-	if entry["id"] != "a-2" || entry["reason"] != DispatchSkipReasonQuotaDenied {
+	if entry["id"] != "a-2" || entry["reason"] != DispatchSkipReasonModelUnsupported {
 		t.Fatalf("skip entry = %#v", entry)
 	}
 	// 新标签是追加：既有标签照常在场。
@@ -409,7 +404,6 @@ func TestW1bPreFilterSkippedInDecisionSummary(t *testing.T) {
 			{AccountID: "pre-1", Reason: CapabilitySkipReasonMismatch},
 			{AccountID: "pre-2", Reason: ModelSkipReasonUnsupportedConstraint},
 		},
-		QuotaDenied: []string{"q-1"},
 	}
 	summary := BuildDispatchDecisionSummary(input)
 	if summary.PreFilterSkippedCount != 2 {
@@ -530,65 +524,8 @@ func TestW1bTerminalDispatchDecisionLocalSuppressedFallback(t *testing.T) {
 		t.Fatalf("metadata suppressed = %#v", metadata["suppressedAccountIds"])
 	}
 }
-
-// 终态出口：fallback authorization_quota_exceeded——主导跳过列表是配额
-// 否决账户（skipped reason=quota_denied），eligibleCount=0，恰一条事件。
-func TestW1bTerminalDispatchDecisionQuotaExceededFallback(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	engine.Quota = &fakeQuota{denied: map[string]struct{}{"a-1": {}, "a-2": {}}}
-	coordinator := &capturingCoordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}}
-	capture := &w1bRecordingAudit{}
-	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
-	input.RouteCoordinator = coordinator
-	input.AuditCapture = capture
-	received := w1bCaptureTerminalDecision(t)
-	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
-	if err != nil {
-		t.Fatalf("PrepareDispatchAccounts: %v", err)
-	}
-	if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "authorization_quota_exceeded" {
-		t.Fatalf("result outcome/reason = %s/%q", result.Outcome, result.Reason)
-	}
-	if len(*received) != 1 {
-		t.Fatalf("events = %d (ready 与终态必须互斥，恰一条)", len(*received))
-	}
-	event := (*received)[0]
-	if event.Outcome != PreparationOutcomeFallback || event.ExitReason != "authorization_quota_exceeded" {
-		t.Fatalf("outcome/exitReason = %q/%q", event.Outcome, event.ExitReason)
-	}
-	if event.Summary.CandidateTotal != 2 || event.Summary.EligibleCount != 0 || event.Summary.SelectedAccountID != "" {
-		t.Fatalf("summary head = %#v", event.Summary)
-	}
-	want := []DispatchDecisionSkip{
-		{AccountID: "a-1", Reason: DispatchSkipReasonQuotaDenied},
-		{AccountID: "a-2", Reason: DispatchSkipReasonQuotaDenied},
-	}
-	if !reflect.DeepEqual(event.Summary.Skipped, want) {
-		t.Fatalf("skipped = %#v", event.Summary.Skipped)
-	}
-	if len(event.Summary.Suppressed) != 0 {
-		t.Fatalf("suppressed must stay empty: %#v", event.Summary.Suppressed)
-	}
-	metadata := capture.single(t, "gateway_dispatch_candidates")
-	if metadata["outcome"] != PreparationOutcomeFallback || metadata["exitReason"] != "authorization_quota_exceeded" {
-		t.Fatalf("metadata outcome/exitReason = %#v/%#v", metadata["outcome"], metadata["exitReason"])
-	}
-	skipped, ok := metadata["skipped"].([]any)
-	if !ok || len(skipped) != 2 {
-		t.Fatalf("metadata skipped = %#v", metadata["skipped"])
-	}
-	first := skipped[0].(map[string]any)
-	if first["id"] != "a-1" || first["reason"] != DispatchSkipReasonQuotaDenied {
-		t.Fatalf("metadata skipped[0] = %#v", first)
-	}
-}
-
-// 终态出口：completed（无候选 503 完成态）——outcome=completed、exitReason
-// 为空（键经 omitempty 省略）、candidateTotal=0、无主导跳过列表可填，
-// 恰一条事件（互斥）。
 func TestW1bTerminalDispatchDecisionNoCandidateCompleted(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	engine.Quota = &fakeQuota{denied: map[string]struct{}{}}
+	pipeline, _, _, _ := newPipeline(t)
 	coordinator := &capturingCoordinator{}
 	capture := &w1bRecordingAudit{}
 	input := dispatchPreparationInput(t, nil)

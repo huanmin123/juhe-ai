@@ -1,11 +1,11 @@
 package authz
 
-// authz 团队级联/资源删除/到期重放与选项读面补充测试（wd_ 前缀，独占新增）：
+// authz 团队级联/资源删除/到期重放与选项读面补充测试（wd_ 前缀）：
 //   - team_cascade.go：成员移除/团队停用/重新启用的级联语义与扇出上限。
-//   - delete_resource.go：资源删除时非终态 grant 经运行时同步域回收。
+//   - delete_resource.go：资源删除时非终态 grant 逐条回收。
 //   - expiry_reconcile.go：jobs sweep 翻转后的投影重放（幂等）。
 //   - options_routes/options_store：被授权人选项读面与查询参数镜像。
-// 全部走 SQLite 内存 fixture，断言业务契约而非自述。
+// 全部走 pgkit 真 PG 夹具，断言业务契约而非自述。
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 )
 
 // wdGrantRuntimeStatus 按资源三元组读取运行时投影行（运行时行主键与 grant id
-// 不同源，与既有测试一致按 resource+grantee 定位）。
+// 不同源，按 resource+grantee 定位）。
 func wdGrantRuntimeStatus(t *testing.T, f *fixture, resourceType, resourceID, grantee string) (string, string) {
 	t.Helper()
 	var status, effective string
@@ -37,8 +37,8 @@ func wdGrantRuntimeStatus(t *testing.T, f *fixture, resourceType, resourceID, gr
 
 func wdSourceRows(t *testing.T, f *fixture, runtimeID string) []map[string]string {
 	t.Helper()
-	rows, err := f.db.Query(fixtureBind(`SELECT source_team_id, status, COALESCE(ended_reason,'') FROM resource_authorization_sources
-		WHERE authorization_id = ? ORDER BY source_team_id`), runtimeID)
+	rows, err := f.db.Query(fixtureBind(`SELECT COALESCE(source_team_id,''), status, COALESCE(ended_reason,'') FROM resource_authorization_sources
+		WHERE authorization_id = ? ORDER BY id`), runtimeID)
 	if err != nil {
 		t.Fatalf("sources: %v", err)
 	}
@@ -54,19 +54,33 @@ func wdSourceRows(t *testing.T, f *fixture, runtimeID string) []map[string]strin
 	return result
 }
 
-func wdCreateTeamGrant(t *testing.T, f *fixture, resourceType, resourceID, owner, teamID string) CreateResult {
+// wdOfferTeamGrant 发起团队 offer 并让 members 逐个领取（发送-领取模型的
+// 激活前置），返回 grant id。
+func wdOfferTeamGrant(t *testing.T, f *fixture, resourceType, resourceID, owner, teamID string, members []string) string {
 	t.Helper()
-	result, err := f.store.Create(context.Background(), CreateInput{
+	offer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: resourceType, ResourceID: resourceID,
-		GranteeType: "team", GranteeID: teamID,
-	}, owner)
+		GranteeType: "team", TeamID: teamID,
+	}, owner, false, owner)
 	if err != nil {
-		t.Fatalf("create team grant: %v", err)
+		t.Fatalf("create team offer: %v", err)
 	}
-	if !result.Created {
-		t.Fatalf("team grant must be created: %+v", result)
+	if !offer.Created {
+		t.Fatalf("team offer must be created: %+v", offer)
 	}
-	return *result
+	for _, member := range members {
+		var sourceID string
+		if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorization_sources
+			WHERE grant_id = ? AND source_type = 'team' AND status = 'pending' AND source_team_id = ?
+			  AND authorization_id IN (SELECT id FROM resource_authorizations WHERE grantee_system_account_id = ?)
+			LIMIT 1`), offer.GrantID, teamID, member).Scan(&sourceID); err != nil {
+			t.Fatalf("load pending source for %s: %v", member, err)
+		}
+		if _, err := f.acceptSourceForTest(t, member, sourceID); err != nil {
+			t.Fatalf("member %s claim: %v", member, err)
+		}
+	}
+	return offer.GrantID
 }
 
 func TestWdCascadeLimitConstants(t *testing.T) {
@@ -89,16 +103,16 @@ func TestWdTeamCascadeRevokeMemberRevokeAllReactivate(t *testing.T) {
 	f.seedTeamWithMember(t, "team_wd", "member1")
 	f.seedTeamWithMember(t, "team_wd", "member2")
 	f.seedGroup(t, "grp_wd", "owner")
-	wdCreateTeamGrant(t, f, "group", "grp_wd", "owner", "team_wd")
+	wdOfferTeamGrant(t, f, "group", "grp_wd", "owner", "team_wd", []string{"member1", "member2"})
 
-	// 团队授权创建后：成员运行时行带 team 生效来源。
+	// 领取后：成员运行时行带 team 生效来源。
 	status, effective := wdGrantRuntimeStatus(t, f, "group", "grp_wd", "member1")
 	if status != StatusActive || effective != "team" {
-		t.Fatalf("创建后运行时错误: %s/%s", status, effective)
+		t.Fatalf("领取后运行时错误: %s/%s", status, effective)
 	}
 
 	// 移除成员：该成员的 team source 翻转 revoked（ended_reason member_removed），
-	// 运行时经 refresh 后无剩余来源 → 终态 revoked；其余成员不受影响。
+	// 运行时经重投影后无剩余来源 → 终态 revoked；其余成员不受影响。
 	if err := f.store.RevokeTeamSourcesForMember(context.Background(), "team_wd", "member1", "admin-actor"); err != nil {
 		t.Fatalf("revoke member: %v", err)
 	}
@@ -155,7 +169,7 @@ func TestWdCascadeMemberOverLimitRejected(t *testing.T) {
 	f.seedGroup(t, "grp_limit", "owner")
 	f.seedTeamWithMember(t, "team_limit", "owner")
 	now := f.now.UTC().Format(time.RFC3339Nano)
-	// 超过 MaxTeamMembersPerTeam 的活跃成员：重放应拒绝。
+	// 超过 MaxTeamMembersPerTeam 的活跃成员：级联重放应拒绝。
 	for index := 0; index <= MaxTeamMembersPerTeam; index++ {
 		memberID := "m" + strconv.Itoa(index)
 		f.seedAccount(t, memberID, "active")
@@ -164,12 +178,16 @@ func TestWdCascadeMemberOverLimitRejected(t *testing.T) {
 			t.Fatalf("seed member: %v", err)
 		}
 	}
-	_, err := f.store.CreateOffer(context.Background(), OfferInput{
+	if _, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_limit",
 		GranteeType: "team", TeamName: "Team team_limit",
-	}, "owner", false, "owner")
-	if err == nil || !strings.Contains(err.Error(), "授权团队最多支持") {
-		t.Fatalf("超限成员应拒绝: %v", err)
+	}, "owner", false, "owner"); err != nil {
+		t.Fatalf("发送-领取模型创建团队 offer 不做成员上限拒绝: %v", err)
+	}
+	// 上限守卫在级联重放：来源展开超过上限时 revokeAllTeamSourcesTx 拒绝。
+	if err := f.store.RevokeAllTeamSources(context.Background(), "team_limit", "actor", "team_disabled"); err == nil ||
+		!strings.Contains(err.Error(), "授权团队来源展开超过当前系统上限") {
+		t.Fatalf("超限来源展开应拒绝: %v", err)
 	}
 }
 
@@ -179,7 +197,7 @@ func TestWdCascadeGrantsOverLimitRejected(t *testing.T) {
 	f.seedAccount(t, "member", "active")
 	f.seedTeamWithMember(t, "team_gl", "member")
 	now := f.now.UTC().Format(time.RFC3339Nano)
-	// 直接插入 MaxTeamActiveGrantCount+1 条活跃团队 grant（绕过 store 的写入上限校验），
+	// 直接插入 MaxTeamActiveGrantCount+1 条开放团队 grant（绕过 store 的写入上限校验），
 	// 级联重放必须拒绝而不是部分应用。
 	for index := 0; index <= MaxTeamActiveGrantCount; index++ {
 		groupID := "grp_gl_" + strconv.Itoa(index)
@@ -192,7 +210,7 @@ func TestWdCascadeGrantsOverLimitRejected(t *testing.T) {
 		}
 		if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorizations
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
-			VALUES (?, 'group', ?, 'owner', 'member', 'returned', 'owner', ?, ?)`), grantID, groupID, now, now); err != nil {
+			VALUES (?, 'group', ?, 'owner', 'member', 'pending', 'owner', ?, ?)`), grantID, groupID, now, now); err != nil {
 			t.Fatalf("seed runtime: %v", err)
 		}
 	}
@@ -214,22 +232,10 @@ func TestWdRevokeGrantsForResourceDeleted(t *testing.T) {
 	f.seedAccount(t, "owner2x", "active")
 	f.seedGroup(t, "grp_del", "owner")
 	f.seedGroup(t, "grp_del2", "owner2x")
-	active, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_del",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	active, _ := f.createAcceptedDirectOffer(t, "group", "grp_del", "grantee")
 	// 另一条已终态（returned）的 grant：资源删除时保持不动。
-	returned2, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_del2",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner2x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.store.Return(context.Background(), returned2.Item.ID, returned2.Item.UpdatedAt, "grantee"); err != nil {
+	returnedGrant, returnedSource := f.createAcceptedDirectOffer(t, "group", "grp_del2", "grantee")
+	if err := f.store.ReturnSource(context.Background(), "grantee", returnedSource, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("return seed: %v", err)
 	}
 
@@ -246,7 +252,7 @@ func TestWdRevokeGrantsForResourceDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	var grantStatus, revokedBy string
-	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`), active.Item.ID).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`), active).
 		Scan(&grantStatus, &revokedBy); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +260,7 @@ func TestWdRevokeGrantsForResourceDeleted(t *testing.T) {
 		t.Fatalf("活跃 grant 应被删除回收: %s by %s", grantStatus, revokedBy)
 	}
 	// 终态 grant 保持 returned。
-	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), returned2.Item.ID).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), returnedGrant).
 		Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
@@ -278,18 +284,11 @@ func TestWdReconcileExpiredGrantsReplaysProjection(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_exp", "owner")
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_exp",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 模拟 jobs sweep：把 grant 翻成 expired——真实到期由 expires_at 过去时
-	// 驱动，refreshEffectiveSource 也据此刻画运行时状态。
+	grantID, _ := f.createAcceptedDirectOffer(t, "group", "grp_exp", "grantee")
+	// 模拟 jobs sweep：把 grant 翻成 expired（ended_reason authorization_expired）。
 	past := f.now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'expired', expires_at = ?,
-		revoked_by = 'jobs-sweep', revoked_at = ?, updated_at = ? WHERE id = ?`), past, past, past, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'expired',
+		ended_at = ?, ended_reason = 'authorization_expired', updated_at = ? WHERE id = ?`), past, past, grantID); err != nil {
 		t.Fatal(err)
 	}
 	reconciled, err := f.store.ReconcileExpiredGrants(context.Background(), 0, 0)
@@ -305,7 +304,7 @@ func TestWdReconcileExpiredGrantsReplaysProjection(t *testing.T) {
 		t.Fatalf("幂等重放错误: %d %v", again, err)
 	}
 	var grantStatus, runtimeStatus string
-	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), grantID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	runtimeStatus, _ = wdGrantRuntimeStatus(t, f, "group", "grp_exp", "grantee")
@@ -407,14 +406,7 @@ func TestWdOptionQueryHelpers(t *testing.T) {
 	if errorsAsConflict(failf("boom"), &conflictTarget) {
 		t.Fatalf("Fail 不是 Conflict")
 	}
-	if orDefault("", "fb") != "fb" || orDefault("v", "fb") != "v" {
-		t.Fatalf("orDefault 错误")
-	}
-	empty := ""
-	full := "full"
-	if orText(nil, "fb") != "fb" || orText(&empty, "fb") != "fb" || orText(&full, "fb") != "full" {
-		t.Fatalf("orText 错误")
-	}
+	// orDefault/orText 随授权额度域退役，不再有纯函数覆盖臂。
 }
 
 func TestWdJSONHelperAndMutationVersion(t *testing.T) {
@@ -441,26 +433,6 @@ func TestWdJSONHelperAndMutationVersion(t *testing.T) {
 	}
 	if !rawJSONNull(json.RawMessage("  null  ")) || !rawJSONNull(json.RawMessage("  ")) || rawJSONNull(json.RawMessage(`"x"`)) {
 		t.Fatalf("rawJSONNull 错误")
-	}
-	if status, ok := parseStatusInput(json.RawMessage(`"active"`)); !ok || status == nil || *status != StatusActive {
-		t.Fatalf("status active 解析错误")
-	}
-	if status, ok := parseStatusInput(json.RawMessage(`"paused"`)); !ok || status == nil || *status != StatusPaused {
-		t.Fatalf("status paused 解析错误")
-	}
-	if _, ok := parseStatusInput(json.RawMessage(`"weird"`)); ok {
-		t.Fatalf("非法 status 应拒绝")
-	}
-	if _, ok := parseStatusInput(json.RawMessage(`5`)); ok {
-		t.Fatalf("非字符串 status 应拒绝")
-	}
-	// 缺失与 null 都按"输入合法但无值"处理（value=nil, ok=true），
-	// 存在与否由调用方通过 rawJSONPresent 区分。
-	if value, ok := parseStatusInput(json.RawMessage("")); !ok || value != nil {
-		t.Fatalf("缺失 status 应 (nil,true): %v %v", value, ok)
-	}
-	if value, ok := parseStatusInput(json.RawMessage("null")); !ok || value != nil {
-		t.Fatalf("null status 应 (nil,true): %v %v", value, ok)
 	}
 	if _, set, ok := parseExpiresAtInput(json.RawMessage("")); set || !ok {
 		t.Fatalf("缺失 expiresAt: ok=%v set=%v", ok, set)

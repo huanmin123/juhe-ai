@@ -49,11 +49,11 @@ func TestTwoInvalidationsInsideOneSecondBothTakeEffect(t *testing.T) {
 	bus := New(clock.Now)
 	bus.SetSharedStore(shared)
 	reasons := []string{}
-	bus.Subscribe(TopicAuthorizationQuota, func(topic, reason string) { reasons = append(reasons, reason) })
+	bus.Subscribe(TopicAPIKeyQuota, func(topic, reason string) { reasons = append(reasons, reason) })
 
-	bus.Invalidate(TopicAuthorizationQuota, "grant_changed a")
+	bus.Invalidate(TopicAPIKeyQuota, "grant_changed a")
 	clock.advance(400 * time.Millisecond) // still inside the archived 1s sync window
-	bus.Invalidate(TopicAuthorizationQuota, "grant_changed b")
+	bus.Invalidate(TopicAPIKeyQuota, "grant_changed b")
 
 	if len(reasons) != 2 {
 		t.Fatalf("both invalidations must notify, got %v", reasons)
@@ -61,10 +61,10 @@ func TestTwoInvalidationsInsideOneSecondBothTakeEffect(t *testing.T) {
 	if reasons[0] != "grant_changed a" || reasons[1] != "grant_changed b" {
 		t.Fatalf("reasons = %v", reasons)
 	}
-	if got := bus.Version(TopicAuthorizationQuota); got != 2 {
+	if got := bus.Version(TopicAPIKeyQuota); got != 2 {
 		t.Fatalf("version = %d, want 2 (no bump dropped)", got)
 	}
-	if got := shared.snapshot(TopicAuthorizationQuota); got != 2 {
+	if got := shared.snapshot(TopicAPIKeyQuota); got != 2 {
 		t.Fatalf("shared version = %d, want 2 (no publish dropped)", got)
 	}
 }
@@ -205,13 +205,13 @@ func TestConcurrentPublishStaysMonotonic(t *testing.T) {
 			bus := New(clock.Now)
 			bus.SetSharedStore(observedStore)
 			for j := 0; j < rounds; j++ {
-				bus.Invalidate(TopicAuthorizationQuota, "quota_sync")
+				bus.Invalidate(TopicAPIKeyQuota, "quota_sync")
 				clock.advance(2 * time.Second)
 			}
 		}()
 	}
 	wg.Wait()
-	if got := shared.snapshot(TopicAuthorizationQuota); got < int64(rounds) {
+	if got := shared.snapshot(TopicAPIKeyQuota); got < int64(rounds) {
 		t.Fatalf("shared version = %d, want monotonic accumulation >= %d", got, rounds)
 	}
 }

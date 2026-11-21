@@ -297,7 +297,7 @@ DeepSeek OpenAI-compatible 返回应优先按 OpenAI v1 Chat 语义解析：
 
 - DeepSeek 模型成本按本地模型目录和官方价格口径估算
 - DeepSeek hosted API 是 API-key-only，不存在 OAuth 专属额度进度
-- DeepSeek Balance 接口不等价于本地 API Key / 统一授权额度；第一阶段不接入自动额度快照
+- DeepSeek Balance 接口不等价于本地 API Key 额度；第一阶段不接入自动额度快照
 - 如果后续把 DeepSeek 自托管权重接入为本地 OpenAI-compatible 上游，应作为独立自托管供应商或自定义供应商处理，不和 DeepSeek 云 API 混淆
 
 ## 模型目录
@@ -372,7 +372,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 - DeepSeek OpenAI-compatible usage 解析按 OpenAI Chat Completions 语义并补充 cache hit / miss、reasoning 等供应商扩展；DeepSeek Anthropic-compatible usage 解析按 Anthropic v1 语义，成本仍按 DeepSeek 模型价格且统计表必须区分不同 `provider_protocol_profile_id`
 - 成本和统计仍由 `usage_records` 明细和后台预聚合表驱动，API 路由和 repository 热路径不能为 DeepSeek 扫描明细表实时汇总
 - `reasoning_content`、工具调用参数和原始错误体都可能包含敏感内容，只能按现有审计容量、截断、加密 / 保留策略处理
-- DeepSeek Balance 接口不参与本地额度扣减；本地 API Key / 统一授权额度仍按使用记录成本消耗
+- DeepSeek Balance 接口不参与本地额度扣减；本地 API Key 额度仍按使用记录成本消耗
 
 ### 账户测试、模型检测与前端
 

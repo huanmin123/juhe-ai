@@ -105,20 +105,20 @@ type OptionsQuery struct {
 // groupRowSelectColumns subset the option summaries consume, plus the
 // authorization columns of the authorized UNION arm).
 type optionRow struct {
-	id                      string
-	systemAccountID         string
-	name                    string
-	enabled                 int64
-	isDefault               int64
-	groupType               string
-	groupKind               string
-	schedulingJSON          sql.NullString
-	createdAt               string
-	updatedAt               string
-	accessType              string
-	authorizationID         sql.NullString
-	authorizationStatus     sql.NullString
-	authorizationExpiresAt  sql.NullString
+	id                     string
+	systemAccountID        string
+	name                   string
+	enabled                int64
+	isDefault              int64
+	groupType              string
+	groupKind              string
+	schedulingJSON         sql.NullString
+	createdAt              string
+	updatedAt              string
+	accessType             string
+	authorizationID        sql.NullString
+	authorizationStatus    sql.NullString
+	authorizationExpiresAt sql.NullString
 }
 
 const optionRowSelectColumns = `g.id, g.system_account_id, g.name,
@@ -921,4 +921,3 @@ func (s *Store) authorizationExpired(expiresAt sql.NullString) (bool, error) {
 	}
 	return parsed.UnixMilli() <= s.now().UnixMilli(), nil
 }
-

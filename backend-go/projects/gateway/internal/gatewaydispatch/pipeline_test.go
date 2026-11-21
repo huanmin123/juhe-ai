@@ -243,44 +243,8 @@ func TestPrepareDispatchAccountsReady(t *testing.T) {
 	}
 }
 
-func TestPrepareDispatchAccountsQuotaDeniedCompletes429(t *testing.T) {
-	pipeline, engine, _, _ := newPipeline(t)
-	engine.Quota = &fakeQuota{denied: map[string]struct{}{"a-1": {}}}
-	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
-	coordinator := &capturingCoordinator{}
-	input := gatewaypreauth.DispatchPreparationInput{
-		Req:               req,
-		AuditCapture:      &frozenAudit{sink: &fakeAuditSink{}},
-		UsageContext:      testUsageContext(),
-		CandidateAccounts: testAccounts("a-1"),
-		ModelPriority:     &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
-		GroupAccess:       gatewayruntimecache.GroupUsageAccessMetadata{},
-		SystemAccountID:   "system-1",
-		GroupID:           "group-1",
-		ClientStrategy:    gatewaypreauth.ClientStrategyContext{},
-		RequestLane:       "text",
-		ServerRetryBudget: gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),
-		RouteCoordinator:  coordinator,
-		Signal:            context.Background(),
-	}
-	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
-	if err != nil {
-		t.Fatalf("PrepareDispatchAccounts: %v", err)
-	}
-	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
-		t.Fatalf("outcome = %s", result.Outcome)
-	}
-	if coordinator.failure == nil || coordinator.failure.StatusCode != 429 {
-		t.Fatalf("failure = %#v", coordinator.failure)
-	}
-	if coordinator.failure.Message != "额度已用完，请联系管理员提升额度" {
-		t.Fatalf("message = %q", coordinator.failure.Message)
-	}
-}
-
 func TestPrepareDispatchAccountsNoAvailableAccount(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
-	engine.Quota = &fakeQuota{denied: map[string]struct{}{}}
 	// All candidates suppressed → completed 503 path via empty accounts.
 	engine.Suppression = &fakeSuppression{allSuppressed: false}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
