@@ -360,6 +360,57 @@ func deriveConnectionHealthCheckTrio(domain string, connections []resolvedConnec
 	return preset, preferred, model
 }
 
+// resolveCreateHealthCheckTrio 收敛创建链健康检查三件套（§8）：
+//   - 连接测试账户：显式提交的非空字段优先；缺失/空串按最终目标连接与支持
+//     模型派生（克隆源账户可能没有三件套，如迁移前数据）。
+//   - 模型测试账户：克隆载荷缺省/空串时回填源账户三件套；源 preset 与请求
+//     均缺失按显式错误拒绝。三项最终都必须非空，nil 与空串同视为缺失。
+func resolveCreateHealthCheckTrio(
+	connectionTest bool,
+	domain string,
+	connections []resolvedConnection,
+	supportedModels []string,
+	submittedPreset, submittedMode, submittedModel *string,
+	cloneSourceID, sourcePreset, sourceMode, sourceModel string,
+) (preset, mode, model string, err error) {
+	pick := func(submitted *string, fallback string) string {
+		if submitted != nil {
+			if trimmed := strings.TrimSpace(*submitted); trimmed != "" {
+				return trimmed
+			}
+		}
+		return fallback
+	}
+	if connectionTest {
+		derivedPreset, derivedMode, derivedModel := deriveConnectionHealthCheckTrio(domain, connections, supportedModels)
+		return pick(submittedPreset, derivedPreset), pick(submittedMode, derivedMode), pick(submittedModel, derivedModel), nil
+	}
+	cloneSourceID = strings.TrimSpace(cloneSourceID)
+	if cloneSourceID != "" {
+		if pick(submittedPreset, strings.TrimSpace(sourcePreset)) == "" {
+			return "", "", "", &ValidationError{Message: "克隆源账户健康检查连接缺失，无法克隆：" + cloneSourceID}
+		}
+		sourceMode = strings.TrimSpace(sourceMode)
+		sourceModel = strings.TrimSpace(sourceModel)
+	} else {
+		// 非克隆载荷没有源事实可回填，只做完整性校验。
+		sourcePreset, sourceMode, sourceModel = "", "", ""
+	}
+	preset = pick(submittedPreset, strings.TrimSpace(sourcePreset))
+	mode = pick(submittedMode, sourceMode)
+	model = pick(submittedModel, sourceModel)
+	if model == "" {
+		return "", "", "", &ValidationError{Message: "创建载荷缺少 healthCheckModel：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	}
+	if mode == "" {
+		return "", "", "", &ValidationError{Message: "创建载荷缺少 healthCheckEndpointMode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	}
+	if preset == "" {
+		return "", "", "", &ValidationError{Message: "创建载荷缺少 healthCheckConnectionPresetCode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	}
+	return preset, mode, model, nil
+}
+
 // groupOwnerReference mirrors groupOwnerAndProviderForAccountWriteAsync rows
 // （组无 provider 维度，设计 §8）：只解析 owner 归属维度。
 type groupReference struct {
@@ -524,37 +575,34 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 提交非空 connections（克隆表单 Base URL 可编辑，前端从表单构造连接载
 	// 荷）时按表单整集合重建，preset 唯一性等既有 resolveConnectionSet 校验
 	// 照走；未提交/空数组时按源账户连接行原样重建（原克隆综合行为）。源账户
-	// 连接事实仍无条件读取：回落臂需要连接行，health 三字段回落两臂共用。
-	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
-		cloneConnections, cloneHealthPreset, cloneHealthMode, cloneHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, strings.TrimSpace(*input.CloneSourceID))
+	// 连接事实仍无条件读取：回落臂需要连接行；健康三件套事实只暂存供健康分
+	// 支按测试方式回填/派生，不在此写入 input（连接测试源账户可能没有三件套，
+	// 如迁移前数据）。
+	cloneSourceID := ""
+	cloneHealthPreset := ""
+	cloneHealthMode := ""
+	cloneHealthModel := ""
+	if input.CloneSourceID != nil {
+		cloneSourceID = strings.TrimSpace(*input.CloneSourceID)
+	}
+	if cloneSourceID != "" {
+		cloneConnections, sourceHealthPreset, sourceHealthMode, sourceHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, cloneSourceID)
 		if err != nil {
 			return nil, err
 		}
 		if len(input.Connections) == 0 {
 			input.Connections = cloneConnections
 		}
-		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
-			preset := cloneHealthPreset
-			input.HealthCheckConnectionPresetCode = &preset
-		}
-		if input.HealthCheckEndpointMode == nil {
-			mode := cloneHealthMode
-			input.HealthCheckEndpointMode = &mode
-		}
-		if input.HealthCheckModel == nil {
-			model := cloneHealthModel
-			input.HealthCheckModel = &model
-		}
-		if strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
-			return nil, &ValidationError{Message: "克隆源账户健康检查连接缺失，无法克隆：" + strings.TrimSpace(*input.CloneSourceID)}
-		}
+		cloneHealthPreset = sourceHealthPreset
+		cloneHealthMode = sourceHealthMode
+		cloneHealthModel = sourceHealthModel
 		// 后台自动探测总开关克隆继承（总开关设计 §8）：载荷缺省时继承源账户
 		// 值（载荷显式提交时客户端选择优先），克隆体与源账户同入手动模式或
 		// 探测模式，不出现克隆后静默翻转。
 		if input.BackgroundProbeEnabled == nil {
 			var sourceBackgroundProbe int
 			if err := tx.QueryRowContext(ctx, s.bind(`SELECT background_probe_enabled FROM `+s.table("accounts")+`
-				WHERE id = ?`), strings.TrimSpace(*input.CloneSourceID)).Scan(&sourceBackgroundProbe); err != nil {
+				WHERE id = ?`), cloneSourceID).Scan(&sourceBackgroundProbe); err != nil {
 				return nil, err
 			}
 			enabled := sourceBackgroundProbe == 1
@@ -963,32 +1011,22 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 本函数）统一落 vendor_code / connection_driver_code 两列。
 
 	// 健康检查三件套（供应商与上游协议面重构设计 §8）：模型测试账户必须由
-	// 载荷显式提交三字段（缺失按 400 拒绝，错误文案列明缺失字段）。连接测试
-	// 账户（图像/音频/视频与只声明输入型形态的 chat 账户）不再要求「检查模型
-	// + 检查形态」：缺省时由首个支持模型、连接已启用且注册表具备连通性规格的
-	// 形态、唯一连接 preset 派生后落库，列本身 nullable、无 schema 变更。
-	if connectionHealthCheck {
-		preset, mode, model := deriveConnectionHealthCheckTrio(domain, resolvedConnections, supportedModels)
-		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
-			input.HealthCheckConnectionPresetCode = &preset
-		}
-		if input.HealthCheckEndpointMode == nil || strings.TrimSpace(*input.HealthCheckEndpointMode) == "" {
-			input.HealthCheckEndpointMode = &mode
-		}
-		if input.HealthCheckModel == nil || strings.TrimSpace(*input.HealthCheckModel) == "" {
-			input.HealthCheckModel = &model
-		}
-	} else {
-		if input.HealthCheckModel == nil {
-			return nil, &ValidationError{Message: "创建载荷缺少 healthCheckModel：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
-		}
-		if input.HealthCheckEndpointMode == nil {
-			return nil, &ValidationError{Message: "创建载荷缺少 healthCheckEndpointMode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
-		}
-		if input.HealthCheckConnectionPresetCode == nil {
-			return nil, &ValidationError{Message: "创建载荷缺少 healthCheckConnectionPresetCode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
-		}
+	// 载荷显式提交三字段（缺失/空串按 400 拒绝，错误文案列明缺失字段）；克隆
+	// 载荷缺省时空串同样回填源账户三字段，源 preset 与请求均缺失按显式错误
+	// 拒绝。连接测试账户（图像/音频/视频与只声明输入型形态的 chat 账户）不再
+	// 要求「检查模型 + 检查形态」：显式非空字段优先，缺失/空串由首个支持模型、
+	// 最终目标连接已启用且注册表具备连通性规格的形态、唯一连接 preset 派生后
+	// 落库（克隆源账户没有三件套时同样适用），列本身 nullable、无 schema 变更。
+	healthCheckPresetValue, healthCheckModeValue, healthCheckModelValue, err := resolveCreateHealthCheckTrio(
+		connectionHealthCheck, domain, resolvedConnections, supportedModels,
+		input.HealthCheckConnectionPresetCode, input.HealthCheckEndpointMode, input.HealthCheckModel,
+		cloneSourceID, cloneHealthPreset, cloneHealthMode, cloneHealthModel)
+	if err != nil {
+		return nil, err
 	}
+	input.HealthCheckConnectionPresetCode = &healthCheckPresetValue
+	input.HealthCheckEndpointMode = &healthCheckModeValue
+	input.HealthCheckModel = &healthCheckModelValue
 	if !accountHealthCheckEndpointModes[*input.HealthCheckEndpointMode] {
 		return nil, &ValidationError{Message: "账户参数无效"}
 	}

@@ -44,13 +44,19 @@
 
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" compact />
 
-    <a-row :gutter="[16, 16]" class="ai-performance-section">
-      <a-col v-for="chart in performanceCharts" :key="chart.key" :xs="24" :lg="12">
-        <StatsChartCard :title="`${chart.title}（${currentWindowLabel}）`" :loading="initialLoading" :has-data="chart.hasData" :empty-description="chart.emptyDescription">
-          <div :ref="chart.setRef" class="chart-panel" />
-        </StatsChartCard>
-      </a-col>
-    </a-row>
+    <div class="ai-performance-charts">
+      <StatsChartCard
+        v-for="chart in performanceCharts"
+        :key="chart.metric"
+        :title="chart.title"
+        :loading="initialLoading"
+        :has-data="chart.hasData"
+        :empty-description="chart.emptyDescription"
+        compact
+      >
+        <div :ref="chart.setRef" class="chart-panel" />
+      </StatsChartCard>
+    </div>
   </div>
 </template>
 
@@ -77,6 +83,7 @@ import type { AccountCapabilityDomain } from '@/views/accounts/accountCapability
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
+import { useStatsWorkspaceFilters } from '@/views/stats/useStatsWorkspaceFilters'
 import { formatDuration, formatInteger } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 import AiPerformanceFilterToolbar, { type CapabilityDomainFilterValue } from './AiPerformanceFilterToolbar.vue'
@@ -102,7 +109,15 @@ const pageStateCache = usePageStateCache<AiPerformancePageState>(undefined, defa
   sanitize: sanitizeAiPerformancePageState,
   version: 3
 })
-const initialPageState = pageStateCache.read()
+const { clear: clearWorkspaceFilters, incoming, persist: persistWorkspaceFilters, register } = useStatsWorkspaceFilters()
+const initialFilters = incoming()
+const initialPageState = initialFilters
+  ? {
+      dateRange: [initialFilters.startDate, initialFilters.endDate],
+      selectedSystemAccountId: initialFilters.systemAccountId,
+      selectedSystemAccount: initialFilters.systemAccount
+    }
+  : pageStateCache.read()
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.dateRange
   ? {
       startDate: initialPageState.dateRange[0],
@@ -115,6 +130,12 @@ const overview = ref<AiPerformanceBaseResult>()
 const additionalSeries = ref<AiPerformanceSeriesResult>()
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
+register(() => ({
+  startDate: formatDateKey(dateRange.value[0]),
+  endDate: formatDateKey(dateRange.value[1]),
+  systemAccountId: selectedSystemAccountId.value,
+  systemAccount: selectedSystemAccount.value
+}))
 // 能力域筛选（'all' = 全部 = 不下发 domain，默认与既有行为一致；不进页状态缓存，重进页面回落全部）。
 const selectedCapabilityDomain = ref<CapabilityDomainFilterValue>('all')
 const baseLoading = ref(false)
@@ -166,6 +187,7 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
     invalidateAccountOptions()
     invalidateSystemAccountOptions()
     disconnectChartObserver()
+    visibleChartMetrics.clear()
     deactivatePerformanceRequests()
   },
   onBeforeUnmount: () => {
@@ -232,42 +254,38 @@ const durationEmptyDescription = computed(() => hasAccounts.value ? `${currentWi
 
 const performanceCharts = computed(() => [
   {
-    key: 'averageFirstToken',
-    title: '平均首token耗时监控图',
-    metric: 'averageFirstToken' as AiPerformanceMetric,
+    title: '平均首 Token 耗时',
+    metric: 'averageFirstToken',
     chartRef: averageFirstTokenChart,
     hasData: hasAverageFirstTokenData.value,
     emptyDescription: firstTokenEmptyDescription.value,
     setRef: setAverageFirstTokenChartRef
   },
   {
-    key: 'maxFirstToken',
-    title: '最大首token耗时监控图',
-    metric: 'maxFirstToken' as AiPerformanceMetric,
+    title: '最大首 Token 耗时',
+    metric: 'maxFirstToken',
     chartRef: maxFirstTokenChart,
     hasData: hasMaxFirstTokenData.value,
     emptyDescription: firstTokenEmptyDescription.value,
     setRef: setMaxFirstTokenChartRef
   },
   {
-    key: 'averageDuration',
-    title: '平均总耗时监控图',
-    metric: 'averageDuration' as AiPerformanceMetric,
+    title: '平均总耗时',
+    metric: 'averageDuration',
     chartRef: averageDurationChart,
     hasData: hasAverageDurationData.value,
     emptyDescription: durationEmptyDescription.value,
     setRef: setAverageDurationChartRef
   },
   {
-    key: 'maxDuration',
-    title: '最大总耗时监控图',
-    metric: 'maxDuration' as AiPerformanceMetric,
+    title: '最大总耗时',
+    metric: 'maxDuration',
     chartRef: maxDurationChart,
     hasData: hasMaxDurationData.value,
     emptyDescription: durationEmptyDescription.value,
     setRef: setMaxDurationChartRef
   }
-])
+] as const)
 
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
@@ -437,6 +455,7 @@ function handleDateRangeChange() {
     endDate: formatDateKey(dateRange.value[1])
   })
   dateRangeExplicit.value = true
+  persistWorkspaceFilters()
   void loadPerformanceContext()
 }
 
@@ -467,6 +486,7 @@ function handleSystemAccountChange() {
   }
   invalidateAccountOptions()
   clearAdditionalSeries()
+  persistWorkspaceFilters()
   void loadPerformanceContext()
 }
 
@@ -499,6 +519,7 @@ function resetFilters() {
   resetSystemAccountOptionsSearch()
   clearAccountState()
   pageStateCache.clear()
+  clearWorkspaceFilters()
   void loadPerformanceContext()
 }
 
@@ -560,6 +581,7 @@ function observeAndRenderPerformanceCharts(): void {
 
 function setupChartObserver(): void {
   disconnectChartObserver()
+  if (!pageActive.value) return
   const pendingCharts = performanceCharts.value.filter((chart) => !visibleChartMetrics.has(chart.metric))
   if (!pendingCharts.length) {
     renderCharts()
@@ -571,6 +593,7 @@ function setupChartObserver(): void {
     return
   }
   chartObserver = new IntersectionObserver((entries, observer) => {
+    if (observer !== chartObserver || !pageActive.value) return
     let changed = false
     for (const entry of entries) {
       if (!entry.isIntersecting) continue
@@ -580,7 +603,7 @@ function setupChartObserver(): void {
       observer.unobserve(entry.target)
       changed = true
     }
-    if (changed && pageActive.value) renderCharts()
+    if (changed) renderCharts()
   }, { rootMargin: '160px 0px' })
   for (const chart of pendingCharts) {
     const element = metricElementRef(chart.metric).value
@@ -604,7 +627,7 @@ async function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: Sha
 }
 
 function resizeCharts() {
-  resizeEcharts(performanceCharts.value.map((item) => item.chartRef.value))
+  resizeEcharts(performanceCharts.value.map((chart) => chart.chartRef.value))
 }
 
 function disposeCharts() {
@@ -693,6 +716,20 @@ function dedupeById<T>(items: T[], idFor: (item: T) => string): T[] {
 
 onActivated(() => {
   performanceRequestGate.activate()
+  const filters = incoming()
+  if (filters && (
+    filters.systemAccountId !== selectedSystemAccountId.value ||
+    filters.startDate !== formatDateKey(dateRange.value[0]) ||
+    filters.endDate !== formatDateKey(dateRange.value[1])
+  )) {
+    dateRange.value = parseDateRange(filters)
+    dateRangeExplicit.value = true
+    selectedSystemAccountId.value = filters.systemAccountId
+    selectedSystemAccount.value = filters.systemAccount
+    invalidateAccountOptions()
+    clearAccountState()
+    void loadPerformanceContext()
+  }
   void nextTick(setupChartObserver)
 })
 
@@ -719,18 +756,20 @@ watch(() => authState.revision.value, () => {
   gap: 16px;
 }
 
-.ai-performance-section {
-  margin-top: 0;
+.ai-performance-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .chart-panel {
   width: 100%;
-  height: 320px;
+  height: 270px;
 }
 
-@media (max-width: 768px) {
-  .chart-panel {
-    height: 300px;
+@media (max-width: 900px) {
+  .ai-performance-charts {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

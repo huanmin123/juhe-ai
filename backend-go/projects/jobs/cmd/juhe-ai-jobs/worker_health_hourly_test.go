@@ -97,4 +97,25 @@ func TestHealthHourlyWriter(t *testing.T) {
 	if status != "success" || lastObserved != "2026-09-26T23:45:00.000Z" {
 		t.Fatalf("older observation downgraded strip: %s/%s", status, lastObserved)
 	}
+
+	// T218 重放幂等：同一 outcome（同 last_observed_at + 同 last_record_id）
+	// 重写不得刷新任何列——drain 重放依赖该 equal-幂等分支。
+	var updatedAtBefore string
+	if err := writer.db.QueryRowContext(ctx, `SELECT updated_at FROM juhe_stats.account_health_hourly WHERE account_id = 'acc-1'`).Scan(&updatedAtBefore); err != nil {
+		t.Fatalf("read updated_at: %v", err)
+	}
+	if err := writer.RecordAccountHealthHourly(ctx, second); err != nil {
+		t.Fatalf("replay write: %v", err)
+	}
+	status, _, lastObserved, statusCode = inspect(t)
+	if status != "success" || lastObserved != "2026-09-26T23:45:00.000Z" || statusCode.String != "200" {
+		t.Fatalf("replay changed strip row: %s/%s/%v", status, lastObserved, statusCode)
+	}
+	var updatedAtAfter string
+	if err := writer.db.QueryRowContext(ctx, `SELECT updated_at FROM juhe_stats.account_health_hourly WHERE account_id = 'acc-1'`).Scan(&updatedAtAfter); err != nil {
+		t.Fatalf("read updated_at after replay: %v", err)
+	}
+	if updatedAtAfter != updatedAtBefore {
+		t.Fatalf("equal replay must not touch any column: updated_at %s -> %s", updatedAtBefore, updatedAtAfter)
+	}
 }

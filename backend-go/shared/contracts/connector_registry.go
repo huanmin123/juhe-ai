@@ -245,10 +245,11 @@ var (
 		"GET /query/video_generation",
 		"POST /t2a_v2",
 	}
-	// volcengine_ark：§9.1 seedance 视频任务创建与轮询。
+	// volcengine_ark：§9.1 seedance 视频任务创建与轮询；图像兼容端点。
 	volcengineArkOperationTemplates = []string{
 		"POST /contents/generations/tasks",
 		"GET /contents/generations/tasks/{id}",
+		"POST /images/generations",
 	}
 	// volcengine_openspeech：§9.2 豆包语音合成 + 长转写 submit/query 两段（无取消端点）。
 	volcengineOpenSpeechOperationTemplates = []string{

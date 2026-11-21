@@ -10,6 +10,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // List sort fields mirror AccountListSortField (account-list-options.ts).
@@ -234,7 +235,13 @@ type ListItem struct {
 	// CapabilityDomain 回显 accounts.capability_domain（AI 账户能力域拆分
 	// M1 读通道）：域创建时确定、不可更改（D3），授权实例域恒等于源域，读
 	// 自身行列即可。
-	CapabilityDomain   string `json:"capabilityDomain"`
+	CapabilityDomain string `json:"capabilityDomain"`
+	// TestKind 是服务端权威的手工测试方式（model / connection），与
+	// test-options 的 ManualTestKind 同源：有效连接（health_check_connection_id
+	// 指向的 enabled 连接优先，否则 enabled 按 id ASC 首个）的
+	// account_endpoint_modes 为空时回落健康检查形态标量；媒体域恒 connection，
+	// 空集同样回退 connection。恒有值，前端不自行推导。
+	TestKind           string `json:"testKind"`
 	Status             string `json:"status"`
 	ConcurrencyLimit   int    `json:"concurrencyLimit"`
 	CurrentConcurrency int    `json:"currentConcurrency"`
@@ -575,9 +582,18 @@ type listRow struct {
 	cooldownRetestLastStatusCode sql.NullInt64
 	healthCheckModel             string
 	healthCheckEndpointMode      string
-	proxyProfileID               sql.NullString
-	proxyProfileName             sql.NullString
-	proxyProfileType             sql.NullString
+	// endpointModesRaw 是有效连接的 account_endpoint_modes 集合的逗号拼接
+	// （SQL array_to_string：pgx database/sql 不把 text[] 扫进 []string）。
+	// endpointModes 是 scan 后拆分的最终集合。资源账户按
+	// COALESCE(source_accounts.id, accounts.id) 取；连接按
+	// COALESCE(source_accounts.health_check_connection_id,
+	// accounts.health_check_connection_id) 指向的 enabled 连接优先，否则
+	// enabled 按 id ASC 首个。未配置连接/形态的老数据为空集。
+	endpointModesRaw sql.NullString
+	endpointModes    []string
+	proxyProfileID   sql.NullString
+	proxyProfileName sql.NullString
+	proxyProfileType sql.NullString
 	// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用 NullBool
 	// 对齐驱动类型。
 	proxyProfileEnabled    sql.NullBool
@@ -757,6 +773,19 @@ func listItemColumns(alias string) []string {
 		alias + ".expedited_recovery_enabled",
 		// 授权实例行的来源开关值（实例跟随来源账户，总开关设计 §2）。
 		"source_accounts.background_probe_enabled AS source_background_probe_enabled",
+		// 有效连接形态（列表 testKind 的服务端权威来源）：资源账户取
+		// COALESCE(source_accounts.id, accounts.id)；连接取
+		// health_check_connection_id 指向的 enabled 连接优先，否则 enabled 按
+		// id ASC 首个（与 jobs accounthealth / secret 端点模式投影同一口径）。
+		// 恒返回逗号拼接文本（无连接/无形态为空串），扫描目标 sql.NullString
+		// 后由 scanListRow 拆分（array_to_string 保留 array_agg 的排序）。
+		`(SELECT COALESCE(array_to_string(array_agg(m.endpoint_mode ORDER BY m.endpoint_mode), ','), '')
+			FROM ` + accountscore.SQLTable("account_endpoint_modes") + ` m
+			WHERE m.connection_id = (
+				SELECT c.id FROM ` + accountscore.SQLTable("account_connections") + ` c
+				WHERE c.enabled = 1 AND c.account_id = COALESCE(source_accounts.id, ` + alias + `.id)
+				ORDER BY (c.id = COALESCE(source_accounts.health_check_connection_id, ` + alias + `.health_check_connection_id)) DESC, c.id ASC
+				LIMIT 1)) AS endpoint_modes`,
 	}
 }
 
@@ -886,8 +915,29 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.backgroundProbeEnabled,
 		&row.expeditedRecoveryEnabled,
 		&row.sourceBackgroundProbeEnabled,
+		&row.endpointModesRaw,
 	)
-	return row, err
+	if err != nil {
+		return row, err
+	}
+	row.endpointModes = splitEndpointModes(row.endpointModesRaw.String)
+	return row, nil
+}
+
+// splitEndpointModes 拆分 SQL array_to_string 的逗号拼接形态；空串返回 nil
+// （无有效连接/连接未配形态）。
+func splitEndpointModes(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	modes := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if mode := strings.TrimSpace(part); mode != "" {
+			modes = append(modes, mode)
+		}
+	}
+	return modes
 }
 
 // accountNameLikeContainsPattern 把关键字渲染成 `ILIKE ... ESCAPE '\'` 的
@@ -1164,6 +1214,20 @@ func anySlice(values []string) []any {
 	return accountscore.AnySlice(values)
 }
 
+// listItemTestKind 按服务端权威的有效连接形态派生列表 testKind：连接形态
+// 集合非空时直接用；为空（无连接/老数据未配形态）回落健康检查形态标量；
+// 两者皆空为空集。媒体域恒 connection（TestKindForAccount 负责），空集同样
+// 返回 connection（与 ManualTestKind 既有语义一致）。
+func listItemTestKind(row listRow) string {
+	modes := row.endpointModes
+	if len(modes) == 0 {
+		if mode := strings.TrimSpace(row.healthCheckEndpointMode); mode != "" {
+			modes = []string{mode}
+		}
+	}
+	return capabilitydomain.TestKindForAccount(row.capabilityDomain, modes)
+}
+
 // newListItem mirrors accountManagementListItemFromRow plus the hydrate
 // status/schedulable/availability fields. authorized marks the M10
 // authorized-instance rows: accessType flips to 'authorized' with the
@@ -1191,6 +1255,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
 		CapabilityDomain:          row.capabilityDomain,
+		TestKind:                  listItemTestKind(row),
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,
 		RPMLimit:                  row.rpmLimit,

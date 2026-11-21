@@ -26,10 +26,10 @@ type UnsafeUpstreamURLError struct{ Message string }
 // Error implements error.
 func (e *UnsafeUpstreamURLError) Error() string { return e.Message }
 
-// UnsafeResolvedUpstreamURLError mirrors UnsafeResolvedUpstreamUrlError: a
-// DNS resolution result hit a blocked range. Distinguished from the static
-// error so the dispatch failure policy can tell "配置就非法" from "解析后被
-// 重绑定/劫持到内网".
+// UnsafeResolvedUpstreamURLError mirrors UnsafeResolvedUpstreamUrlError: in
+// strict mode every resolved address hit a blocked range (or the host itself
+// was a blocked IP literal). Distinguished from the static error so the
+// dispatch failure policy can tell "配置就非法" from "解析后被重绑定/劫持到内网".
 type UnsafeResolvedUpstreamURLError struct{ Message string }
 
 // Error implements error.
@@ -314,9 +314,11 @@ var dialGuardSequence atomic.Uint64
 //
 // Allowlisted origins (JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST) and
 // deployments with AllowPrivateBaseUrls keep the historical permissive
-// behavior: prepare-time validation short-circuits without DNS and the dial
-// path uses the plain dialer. Strict targets resolve-and-dial through the
-// validated path described above.
+// behavior: prepare-time validation short-circuits without DNS and the
+// direct/HTTP(S)-proxy dial path uses the plain dialer. Local-resolution
+// SOCKS5 keeps its historical first-address local resolution without range
+// filtering. Strict targets resolve-and-dial through the validated path
+// described above.
 type DialGuard struct {
 	config   URLSecurityConfig
 	resolver Resolver
@@ -378,6 +380,12 @@ func (g *DialGuard) Key() string {
 	return strconv.FormatUint(g.id, 10)
 }
 
+// hostAllowlisted is the runtime allowlist fast path: an allowlisted host
+// matches every port. The allowlist is configured and save-side validated as
+// exact scheme+IP+effective-port origins, but the dial guard only receives
+// host/port; the scheme stays covered by the caller's static check, and the
+// host-wide port match is deliberate runtime semantics (2026-11-21 decision:
+// keep host-level runtime matching and document the difference).
 func (g *DialGuard) hostAllowlisted(host, port string) bool {
 	if g.allowedHosts[host] {
 		return true
@@ -405,8 +413,9 @@ func (g *DialGuard) rangeCheckAllowed(host, port string) bool {
 // blocked-range tables is returned, so a public+blocked answer yields the
 // public addresses only. A resolution whose IP addresses are all blocked
 // returns UnsafeResolvedUpstreamURLError; an empty/all-nil resolution returns
-// an empty slice and a nil error so callers keep their existing
-// empty-resolution semantics. IP-literal hosts are decided without DNS.
+// an empty slice and a nil error, which keeps ValidateHost's historical nil
+// result while DialContext reports no-such-host. IP-literal hosts are decided
+// without DNS.
 // Allowlisted hosts and AllowPrivateBaseUrls skip the blocked-range filter and
 // return every non-nil address.
 func (g *DialGuard) resolveDialable(ctx context.Context, host, port string) ([]net.IP, error) {
@@ -459,9 +468,11 @@ func (g *DialGuard) ValidateHost(ctx context.Context, host, port string) error {
 // the addresses that clear the policy, then dial those IPs directly so the
 // checked address is the connected address. Blocked candidates are never
 // passed to the dialer. Permissive targets (allowlisted origin or
-// AllowPrivateBaseUrls) keep the historical plain dial without extra guard
-// resolution, so a deployment that explicitly allows private upstreams does
-// not acquire a new local-DNS dependency.
+// AllowPrivateBaseUrls) keep the historical plain direct/HTTP(S)-proxy dial
+// without extra guard resolution, so a deployment that explicitly allows
+// private upstreams does not acquire a new local-DNS dependency; the
+// local-resolution SOCKS5 dialer keeps its historical first-address local
+// resolution without range filtering.
 func (g *DialGuard) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {

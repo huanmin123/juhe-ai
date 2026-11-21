@@ -1,8 +1,33 @@
 package authzrevision
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 const testSecret = "revision-test-secret"
+
+func TestDecodeEndpointModes(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "empty", raw: "[]", want: []string{}},
+		{name: "sorted values", raw: "[\"chat_json\",\"responses_sse\"]", want: []string{"chat_json", "responses_sse"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := decodeEndpointModes(test.raw)
+			if err != nil {
+				t.Fatalf("decodeEndpointModes() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("decodeEndpointModes() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
 
 func TestCredentialMaterialFingerprintsCoversFullAPIKeyPool(t *testing.T) {
 	base := map[string]any{"api_keys": []any{"sk-a", "sk-b"}, "email": "owner@example.com"}

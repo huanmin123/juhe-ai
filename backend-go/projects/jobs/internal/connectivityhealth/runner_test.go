@@ -29,6 +29,41 @@ func TestCandidateSQLOnlyConnectionTestAccounts(t *testing.T) {
 	if !strings.Contains(connectivityCandidateSQL, "LIMIT $2") {
 		t.Fatal("候选 SQL 必须保持批量上限")
 	}
+	// 授权实例没有自身连接行（资源事实归来源账户），chat 域的 EXISTS /
+	// NOT EXISTS 都必须按资源账户 ID 查连接，否则实例永不入选。
+	const resourceConnectionAccount = "c.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL\n" +
+		"            THEN a.id ELSE a.authorization_instance_source_account_id END"
+	if got := strings.Count(connectivityCandidateSQL, resourceConnectionAccount); got != 2 {
+		t.Fatalf("chat 域 EXISTS/NOT EXISTS 必须各有一次资源账户 CASE 连接归属，got %d:\n%s",
+			got, connectivityCandidateSQL)
+	}
+	if strings.Contains(connectivityCandidateSQL, "c.account_id = a.id") {
+		t.Fatal("候选 SQL 不得再用实例自身 id 查连接（授权实例无自身连接行）")
+	}
+}
+
+func TestClampConnectivityBudget(t *testing.T) {
+	cases := []struct {
+		batch, concurrency, wantBatch, wantConcurrency int
+	}{
+		{50, 512, 8, 8},
+		{50, 4, 4, 4},
+		{4, 4, 4, 4},
+		{8, 8, 8, 8},
+	}
+	for _, test := range cases {
+		batch, concurrency := clampConnectivityBudget(test.batch, test.concurrency)
+		if batch != test.wantBatch || concurrency != test.wantConcurrency {
+			t.Fatalf("clampConnectivityBudget(%d,%d) = (%d,%d), want (%d,%d)",
+				test.batch, test.concurrency, batch, concurrency, test.wantBatch, test.wantConcurrency)
+		}
+	}
+	// 默认预算经收敛后必须是一波 2 分钟，小于 job 调度 3 分钟 timeout。
+	effectiveBatch, effectiveConcurrency := clampConnectivityBudget(defaultBatchSize, maxConcurrency)
+	waves := (effectiveBatch + effectiveConcurrency - 1) / effectiveConcurrency
+	if probeTimeout*time.Duration(waves) >= 3*time.Minute {
+		t.Fatalf("默认预算最坏耗时 %s 必须小于 job 调度 timeout", probeTimeout*time.Duration(waves))
+	}
 }
 
 func TestUsesConnectionTest(t *testing.T) {

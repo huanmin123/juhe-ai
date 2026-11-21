@@ -505,6 +505,13 @@ func (s *Store) OwnerApprove(ctx context.Context, ownerID, grantID string, now s
 	if grant.Status != StatusPendingOwnerApproval {
 		return failCode("state_conflict", "授权当前不在待所有者确认状态")
 	}
+	owned, err := s.ensureResourceStillOwned(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return failCode("resource_changed", "授权资源归属已变化，请重新授权")
+	}
 	if err := s.ensureNotSuspended(ctx, tx, ownerID); err != nil {
 		return err
 	}
@@ -567,7 +574,7 @@ func (s *Store) OwnerDecline(ctx context.Context, ownerID, grantID string, now s
 	}
 	if grant.CreatedBy != "" {
 		if err := s.insertNotification(ctx, tx, grant.CreatedBy, "offer_declined", grantID, "",
-			map[string]any{"reason": "owner_declined"}, "owner-declined:"+grantID, now); err != nil {
+			map[string]any{"reason": "owner_declined"}, "owner-declined:"+grantID+":"+now, now); err != nil {
 			return err
 		}
 	}
@@ -836,7 +843,7 @@ func (s *Store) TeamDecline(ctx context.Context, teamID, grantID, actorID string
 		return err
 	}
 	if err := s.insertNotification(ctx, tx, grant.CreatedBy, "offer_declined", grantID, "",
-		map[string]any{"reason": "team_declined"}, "team-declined:"+grantID, now); err != nil {
+		map[string]any{"reason": "team_declined"}, "team-declined:"+grantID+":"+now, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -865,6 +872,27 @@ func (s *Store) Reinvite(ctx context.Context, grantID, memberID, actorID, now st
 	}
 	if grant.Status != StatusPendingMemberAcceptance && grant.Status != StatusActive {
 		return "", failCode("state_conflict", "当前状态不允许重新邀请")
+	}
+	var teamStatus string
+	var teamDeleted sql.NullString
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT status, deleted_at FROM `+s.table("system_teams")+` WHERE id = ?`),
+		grant.GranteeTeamID).Scan(&teamStatus, &teamDeleted); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", failCode("team_not_found", "团队不存在或已停用")
+		}
+		return "", err
+	}
+	if teamStatus != "active" || teamDeleted.Valid {
+		return "", failCode("team_not_found", "团队不存在或已停用")
+	}
+	var memberInTeam int
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT count(*) FROM `+s.table("system_team_members")+`
+		WHERE team_id = ? AND system_account_id = ? AND status = 'active'`),
+		grant.GranteeTeamID, memberID).Scan(&memberInTeam); err != nil {
+		return "", err
+	}
+	if memberInTeam == 0 {
+		return "", failCode("grantee_not_found", "该账户不是当前团队成员，无法重新邀请")
 	}
 	if err := s.ensureNotSuspended(ctx, tx, grant.OwnerID); err != nil {
 		return "", err
@@ -994,8 +1022,11 @@ func (s *Store) SetOfferPaused(ctx context.Context, grantID, actorID string, pau
 		notifType = "offer_resumed"
 	}
 	for _, target := range s.grantRuntimeGrantees(ctx, tx, grantID) {
+		// A grant can be paused/resumed repeatedly; the timestamp keeps each
+		// transition's notification distinct instead of being deduped forever by
+		// the first one.
 		if err := s.insertNotification(ctx, tx, target, notifType, grantID, "", nil,
-			fmt.Sprintf("%s:%s:%s", notifType, grantID, target), now); err != nil {
+			fmt.Sprintf("%s:%s:%s:%s", notifType, grantID, target, now), now); err != nil {
 			return err
 		}
 	}
@@ -1094,7 +1125,7 @@ func (s *Store) RevokeOffer(ctx context.Context, grantID, actorID string, isAdmi
 	}
 	for _, target := range s.grantRuntimeGrantees(ctx, tx, grantID) {
 		if err := s.insertNotification(ctx, tx, target, "offer_revoked", grantID, "", nil,
-			"revoked:"+grantID+":"+target, now); err != nil {
+			"revoked:"+grantID+":"+target+":"+now, now); err != nil {
 			return err
 		}
 	}

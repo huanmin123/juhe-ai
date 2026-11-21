@@ -101,11 +101,10 @@ func TestChainVolcengineChatUpstreamURL(t *testing.T) {
 }
 
 func TestChainQwenChatUpstreamURL(t *testing.T) {
-	// 动机（v2 + R6 重写）：qwen chat 通用 opPath 恒拼 chainQwenChatPathPrefix
-	//（/compatible-mode/v1）后与 base_url 直拼；不再有「base 已含服务根去重」
-	// 与「媒体服务根 base 插根」分支——chat lane 的 base_url 契约是官方
-	// origin（DashScope 双根特例：chat 走 compatible-mode，媒体任务走
-	// /api/v1 全路径）。
+	// 动机（v2 + R6 + T220）：qwen chat 通用 opPath 恒拼 chainQwenChatPathPrefix
+	//（/compatible-mode/v1）后与 base_url 直拼；base 路径尾部已带同一服务根时
+	// 先剥一次再恒拼（与 embeddings/rerank 链同构，杜绝出站双根）——连接域
+	// 写面已按全路径模板前缀拒绝带前缀 base，剥根兜底存量行与凭据域形态。
 	cases := []struct {
 		name, base, pathAndQuery, want string
 	}{
@@ -128,12 +127,19 @@ func TestChainQwenChatUpstreamURL(t *testing.T) {
 			want:         "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions?beta=true",
 		},
 		{
-			// v2 契约钉值：前缀恒拼，base 配置成兼容模式全根会重复前缀——
-			// chat lane 的 base_url 应配置 origin（不再做去重改写）。
-			name:         "prefix always prepended (no dedup branch)",
+			// T220 契约钉值：base 尾部带服务根先剥再拼，出站与 origin 形态
+			// 等价（存量行/凭据域形态，出站不再双根）。
+			name:         "prefixed base strips trailing service root once",
 			base:         "https://dashscope.aliyuncs.com/compatible-mode/v1",
 			pathAndQuery: "/v1/chat/completions",
-			want:         "https://dashscope.aliyuncs.com/compatible-mode/v1/compatible-mode/v1/chat/completions",
+			want:         "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+		},
+		{
+			// 剥根只处理尾部完整服务根：形似前缀（/compatible-mode/v11）不剥。
+			name:         "similar suffix is not stripped",
+			base:         "https://dashscope.aliyuncs.com/compatible-mode/v11",
+			pathAndQuery: "/v1/chat/completions",
+			want:         "https://dashscope.aliyuncs.com/compatible-mode/v11/compatible-mode/v1/chat/completions",
 		},
 	}
 	for _, tc := range cases {

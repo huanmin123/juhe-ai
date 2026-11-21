@@ -57,6 +57,11 @@
             </div>
           </a-card>
         </div>
+        <StatsWorkspaceNav
+          v-if="statsWorkspaceView && statsWorkspaceScope"
+          :active-view="statsWorkspaceView"
+          :view-scope="statsWorkspaceScope"
+        />
         <div class="route-view-host" :class="{ 'route-view-host-hidden': routeSwitching }">
           <router-view v-slot="{ Component, route: viewRoute }">
             <KeepAlive v-if="viewRoute.meta.keepAlive === true" :max="keepAliveMax">
@@ -137,6 +142,7 @@ import { PROFILE_PATH, requiredPasswordProfileLocation } from '@/views/profile/p
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
+import StatsWorkspaceNav from '@/views/stats/StatsWorkspaceNav.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -171,13 +177,17 @@ interface AnnouncementMarkReadOptions {
   notifyError?: boolean
 }
 
-const selectedKeys = computed(() => [pendingRoutePath.value || route.path])
+const statsRootPath = computed(() => appMenuMode.value === 'self' ? '/my-stats' : '/stats')
+const activeRouteMeta = computed(() => pendingMenuRoute.value?.meta || route.meta)
+const statsWorkspaceView = computed(() => activeRouteMeta.value.statsWorkspace)
+const statsWorkspaceScope = computed(() => activeRouteMeta.value.viewScope)
+const selectedKeys = computed(() => [statsWorkspaceView.value ? statsRootPath.value : (pendingRoutePath.value || route.path)])
 const routeSwitching = computed(() => Boolean(pendingRoutePath.value && pendingRoutePath.value !== route.path))
 const pendingMenuRoute = computed(() => pendingRoutePath.value ? menuRoutes.find((item) => item.path === pendingRoutePath.value) : undefined)
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
-const currentPageTitle = computed(() => pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
-const currentPageDescription = computed(() => pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
+const currentPageTitle = computed(() => statsWorkspaceView.value ? '统计与监控' : (pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理'))
+const currentPageDescription = computed(() => statsWorkspaceView.value ? '用量、请求性能和账户健康' : (pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key'))
 const canSwitchMenuMode = computed(() => isAdminRole(currentUser.value?.role))
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
 const userDisplayName = computed(() => currentUser.value?.displayName || '用户')
@@ -327,6 +337,7 @@ function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
 const visibleMenuRoutes = computed(() =>
   menuRoutes.filter((item) => (
     canAccessRoute(item)
+    && item.meta?.menuVisible !== false
     && (!item.meta?.requiresCapability
       || deploymentCapabilityEnabled(currentUser.value?.capabilities, item.meta.requiresCapability))
     && (item.meta?.viewScope ?? 'admin') === appMenuMode.value

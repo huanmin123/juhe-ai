@@ -153,7 +153,15 @@ type ManualTestContextRow struct {
 	healthCheckModel          string
 	healthCheckEndpointMode   sql.NullString
 	capabilityDomain          string
-	credentialsEncrypted      sql.NullString
+	// EndpointModes 是有效连接（资源账户取 COALESCE(source_accounts.id,
+	// accounts.id)；连接取 COALESCE(source_accounts.health_check_connection_id,
+	// accounts.health_check_connection_id) 指向的 enabled 连接优先，否则 enabled
+	// 按 id ASC 首个）的 account_endpoint_modes 集合，与账户列表 testKind 同源。
+	EndpointModes []string
+	// endpointModesRaw 是 SQL array_to_string 的逗号拼接原文（pgx database/sql
+	// 不把 text[] 扫进 []string），读出后拆分进 EndpointModes。
+	endpointModesRaw     sql.NullString
+	credentialsEncrypted sql.NullString
 }
 
 // ScopedOwnerID mirrors scopedSystemAccountId: admins pass the filter through
@@ -179,6 +187,16 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 	if includeCredentials {
 		credentialsColumn = `, COALESCE(source_accounts.credentials_encrypted, accounts.credentials_encrypted) AS credentials_encrypted`
 	}
+	// 有效连接形态（与账户列表 testKind 同一事实源）：手工测试上下文不再只看
+	// credentials.supported_endpoint_modes，连接行 account_endpoint_modes 集合
+	// 优先；无连接/未配形态的老数据保持空集，由调用方回落凭据形态。
+	endpointModesColumn := `, (SELECT COALESCE(array_to_string(array_agg(m.endpoint_mode ORDER BY m.endpoint_mode), ','), '')
+		FROM ` + s.store.Table("account_endpoint_modes") + ` m
+		WHERE m.connection_id = (
+			SELECT c.id FROM ` + s.store.Table("account_connections") + ` c
+			WHERE c.enabled = 1 AND c.account_id = COALESCE(source_accounts.id, accounts.id)
+			ORDER BY (c.id = COALESCE(source_accounts.health_check_connection_id, accounts.health_check_connection_id)) DESC, c.id ASC
+			LIMIT 1)) AS endpoint_modes`
 	query := `SELECT
 		accounts.id,
 		COALESCE(source_accounts.id, accounts.id),
@@ -192,7 +210,7 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 		COALESCE(source_accounts.health_check_model, accounts.health_check_model),
 		COALESCE(source_accounts.health_check_endpoint_mode, accounts.health_check_endpoint_mode),
 		COALESCE(source_accounts.capability_domain, accounts.capability_domain, 'chat')` +
-		credentialsColumn + `
+		endpointModesColumn + credentialsColumn + `
 	FROM ` + s.store.Table("accounts") + ` accounts
 	LEFT JOIN ` + s.store.Table("accounts") + ` source_accounts
 		ON source_accounts.id = accounts.authorization_instance_source_account_id
@@ -225,12 +243,12 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 		err = scan(&row.viewAccountID, &row.factAccountID, &row.ownerSystemAccountID, &row.providerCode,
 			&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.accountType,
 			&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
-			&row.capabilityDomain, &row.credentialsEncrypted)
+			&row.capabilityDomain, &row.endpointModesRaw, &row.credentialsEncrypted)
 	} else {
 		err = scan(&row.viewAccountID, &row.factAccountID, &row.ownerSystemAccountID, &row.providerCode,
 			&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.accountType,
 			&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
-			&row.capabilityDomain)
+			&row.capabilityDomain, &row.endpointModesRaw)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -238,7 +256,24 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 	if err != nil {
 		return nil, err
 	}
+	row.EndpointModes = splitEndpointModes(row.endpointModesRaw.String)
 	return &row, nil
+}
+
+// splitEndpointModes 拆分 SQL array_to_string 的逗号拼接形态；空串返回 nil
+// （无有效连接/连接未配形态）。
+func splitEndpointModes(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	modes := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if mode := strings.TrimSpace(part); mode != "" {
+			modes = append(modes, mode)
+		}
+	}
+	return modes
 }
 
 // FindManualTestOptionsContext mirrors findAccountManualTestOptionsContextAsync.
@@ -285,6 +320,12 @@ func (s *Service) FindManualTestCapabilitiesContext(ctx context.Context, account
 }
 
 func (s *Service) manualTestContextFromRow(row *ManualTestContextRow, credentials accountscore.Credentials, mappings []accountscore.ModelMapping) *ManualTestContext {
+	// 有效连接形态优先（与账户列表 testKind 同源）；连接未配形态的老数据
+	// 回落凭据声明，保持既有语义。
+	supportedEndpointModes := row.EndpointModes
+	if len(supportedEndpointModes) == 0 {
+		supportedEndpointModes = SupportedEndpointModesFromCredentials(credentials)
+	}
 	return &ManualTestContext{
 		ID:                        row.viewAccountID,
 		FactAccountID:             row.factAccountID,
@@ -298,7 +339,7 @@ func (s *Service) manualTestContextFromRow(row *ManualTestContextRow, credential
 		HealthCheckModel:          row.healthCheckModel,
 		HealthCheckEndpointMode:   row.healthCheckEndpointMode.String,
 		CapabilityDomain:          row.capabilityDomain,
-		SupportedEndpointModes:    SupportedEndpointModesFromCredentials(credentials),
+		SupportedEndpointModes:    supportedEndpointModes,
 		ModelMappings:             mappings,
 	}
 }

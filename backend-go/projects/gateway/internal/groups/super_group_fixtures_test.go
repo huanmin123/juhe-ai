@@ -395,6 +395,11 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		f.env.exec(t, `INSERT INTO resource_authorizations
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, created_by, created_at, updated_at)
 			VALUES ('ra-viewer', 'group', ?, ?, ?, 'use', 'active', ?, ?, ?)`, super, f.admin, viewer, f.admin, now, now)
+		// The authorized super group must be visible (enabled settings + snapshot
+		// revision) before the route can distinguish read-only access from 404.
+		f.env.exec(t, `INSERT INTO group_authorization_settings
+			(authorization_id, system_account_id, group_id, enabled, snapshot_revision, created_at, updated_at)
+			VALUES ('ra-viewer', ?, ?, 1, 'snap-viewer', ?, ?)`, viewer, super, now, now)
 		status, payload := f.env.do(t, http.MethodPatch, "/__aisys__/api/my-groups/"+super+"/super-members",
 			`{"expectedRevision":`+fmt.Sprintf("%q", revision)+`,"members":`+membersJSON(g1)+`}`)
 		assertCode(t, status, payload, http.StatusForbidden, CodeSuperGroupMemberUnauthorized)

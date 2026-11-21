@@ -77,6 +77,33 @@ func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query 
 			invalid := directInputLifecycleCandidateValues()
 			invalid[1] = "not-an-input-version"
 			values = [][]driver.Value{invalid}
+		} else if conn.mode == "qwen-authorized" {
+			qwen := directInputLifecycleCandidateValues()
+			qwen[33] = "qwen"
+			qwen[35] = "openai"
+			qwen[36] = "v1"
+			qwen[37] = "api_key"
+			qwen[38] = "qwen_dashscope"
+			qwen[39] = "https://dashscope.aliyuncs.com"
+			values = [][]driver.Value{qwen}
+		} else if conn.mode == "volcengine-own" {
+			volcengine := directInputLifecycleCandidateValues()
+			// 自有账户臂：清空授权（24..30）/来源（31、32）投影，走账户自身
+			// 身份与健康检查连接。
+			for index := 24; index <= 32; index++ {
+				volcengine[index] = nil
+			}
+			volcengine[48] = nil
+			volcengine[4] = "volcengine"
+			volcengine[6] = "openai"
+			volcengine[7] = "v1"
+			volcengine[8] = "api_key"
+			volcengine[9] = "active"
+			volcengine[11] = "chat_json"
+			volcengine[12] = "doubao-test"
+			volcengine[13] = "volcengine_ark"
+			volcengine[14] = "https://ark.cn-beijing.volces.com/api/v3"
+			values = [][]driver.Value{volcengine}
 		}
 		return &directInputRowsLifecycleRows{conn: conn, candidate: true, columns: directInputLifecycleCandidateColumns(), values: values}, nil
 	}
@@ -552,5 +579,162 @@ func TestBuildDirectCandidateInputIsolatesBadProxyWithoutLeakingSecrets(t *testi
 	input, failure, err := buildDirectCandidateInput(candidate, good, secret, now)
 	if err != nil || failure != nil || input.AccountID != good.Account.ID {
 		t.Fatalf("normal candidate after isolated bad candidate must stay probeable: input=%#v failure=%#v err=%v", input, failure, err)
+	}
+}
+
+// TestDirectInputJ1MappingCoversConversationVendors 锁定 J1 专用
+// preset→profile 映射：共享 10 对对话 preset 原样覆盖，并新增
+// volcengine_ark/qwen_dashscope 扩展对；正反向一致，共享映射口径不变。
+func TestDirectInputJ1MappingCoversConversationVendors(t *testing.T) {
+	expected := []struct{ preset, profile string }{
+		{"gpt_openai_v1", "profile_gpt_openai_v1"},
+		{"xai_openai_v1", "profile_xai_openai_v1"},
+		{"deepseek_openai_v1", "profile_deepseek_openai_v1"},
+		{"deepseek_anthropic_v1", "profile_deepseek_anthropic_v1"},
+		{"anthropic_v1", "profile_anthropic_anthropic_v1"},
+		{"glm_general_openai_v1", "profile_glm_general_openai_v1"},
+		{"glm_coding_openai_v1", "profile_glm_coding_openai_v1"},
+		{"glm_coding_anthropic_v1", "profile_glm_coding_anthropic_v1"},
+		{"gemini_openai_chat_v1beta", "profile_gemini_openai_chat_v1beta"},
+		{"gemini_native_v1beta", "profile_gemini_native_v1beta"},
+		{"volcengine_ark", "profile_volcengine_openai_v1"},
+		{"qwen_dashscope", "profile_qwen_openai_v1"},
+	}
+	for _, item := range expected {
+		profile, ok := directInputProfileIDForPreset(item.preset)
+		if !ok || profile != item.profile {
+			t.Fatalf("J1 forward %q = %q/%v, want %q", item.preset, profile, ok, item.profile)
+		}
+		preset, ok := directInputPresetForProfileID(item.profile)
+		if !ok || preset != item.preset {
+			t.Fatalf("J1 reverse %q = %q/%v, want %q", item.profile, preset, ok, item.preset)
+		}
+	}
+	if _, ok := directInputProfileIDForPreset("minimax_media"); ok {
+		t.Fatal("纯媒体 preset 不得进入 J1 映射")
+	}
+	// J3a/读面共享映射必须保持 10 对：J1 扩展不得写回共享表。
+	if _, ok := exactkeyprobe.ConnectionPresetProfileID("volcengine_ark"); ok {
+		t.Fatal("共享映射不得因 J1 扩面而派生 volcengine_ark")
+	}
+	if _, ok := exactkeyprobe.ConnectionPresetProfileID("qwen_dashscope"); ok {
+		t.Fatal("共享映射不得因 J1 扩面而派生 qwen_dashscope")
+	}
+	if _, ok := exactkeyprobe.ConnectionPresetForProfileID("profile_qwen_openai_v1"); ok {
+		t.Fatal("共享反向映射不得因 J1 扩面而命中 qwen profile")
+	}
+}
+
+// TestDirectInputCandidatesCoverVolcengineAndQwen 锁定候选 SQL 两处 preset
+// 白名单（账户/来源）都包含两个对话厂商，且健康检查关系已纳入只读契约。
+func TestDirectInputCandidatesCoverVolcengineAndQwen(t *testing.T) {
+	for _, preset := range []string{"volcengine_ark", "qwen_dashscope"} {
+		if count := strings.Count(directInputCandidatesSQL, "'"+preset+"'"); count != 2 {
+			t.Fatalf("候选 SQL 的 preset %q 应同时出现在账户/来源白名单（2 次），实际 %d", preset, count)
+		}
+	}
+	found := false
+	for _, relation := range directInputRequiredRelations {
+		if relation == "juhe_business.account_connections" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("J1 只读契约必须包含 account_connections（候选 SQL 实际引用）")
+	}
+}
+
+// TestDirectInputBaselineCoversConversationVendorsAndInstanceSource 锁定基线
+// 播种：preset 数组含两个新增对话 preset，连接 EXISTS 按资源账户回退
+// （授权实例取 source，普通账户取自身；source 为空时 NULL 不匹配）。
+func TestDirectInputBaselineCoversConversationVendorsAndInstanceSource(t *testing.T) {
+	if len(directInputBaselineConnectionPresetCodes) != 12 {
+		t.Fatalf("基线 preset 数组长度 = %d, want 12（共享 10 对 + 2 个 J1 扩展）", len(directInputBaselineConnectionPresetCodes))
+	}
+	presets := make(map[string]bool, len(directInputBaselineConnectionPresetCodes))
+	for _, preset := range directInputBaselineConnectionPresetCodes {
+		presets[preset] = true
+		if !strings.Contains(directInputCandidatesSQL, "'"+preset+"'") {
+			t.Fatalf("基线 preset %q 不在候选 SQL 白名单中（两处白名单必须同步）", preset)
+		}
+	}
+	for _, preset := range []string{"volcengine_ark", "qwen_dashscope"} {
+		if !presets[preset] {
+			t.Fatalf("基线 preset 数组缺少 %q", preset)
+		}
+	}
+	query := directInputBaselineSQL()
+	if !strings.Contains(query, "CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE a.authorization_instance_source_account_id END") {
+		t.Fatalf("基线连接 EXISTS 必须按资源账户回退（实例取 source）：%s", query)
+	}
+	if strings.Contains(query, "c.account_id = a.id AND c.enabled") {
+		t.Fatal("基线连接 EXISTS 不得只看实例自身连接（授权实例无自身连接）")
+	}
+	for _, preset := range []string{"volcengine_ark", "qwen_dashscope"} {
+		if !strings.Contains(query, "'"+preset+"'") {
+			t.Fatalf("基线 SQL preset 白名单缺少 %q", preset)
+		}
+	}
+}
+
+// TestPostgresDirectInputReaderAcceptsVolcengineOwnAccount 覆盖自有账户的
+// volcengine 候选扫描：J1 映射派生 profile、base 直通、ToInput 成功。
+func TestPostgresDirectInputReaderAcceptsVolcengineOwnAccount(t *testing.T) {
+	registerDirectInputRowsLifecycleDriver.Do(func() {
+		sql.Register(directInputRowsLifecycleDriverName, directInputRowsLifecycleDriver{})
+	})
+	database, err := sql.Open(directInputRowsLifecycleDriverName, "volcengine-own")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	reader, err := NewPostgresDirectInputReader(database, "direct-input-rows-lifecycle-secret", time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.LoadDueWithFailures(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("volcengine direct input load: %v", err)
+	}
+	if len(result.Failures) != 0 || len(result.Inputs) != 1 {
+		t.Fatalf("volcengine result = %#v", result)
+	}
+	input := result.Inputs[0]
+	if input.Provider != "volcengine" || input.ProtocolProfileID != "profile_volcengine_openai_v1" ||
+		input.BaseURL != "https://ark.cn-beijing.volces.com/api/v3" || input.HealthModel != "doubao-test" || input.EndpointMode != "chat_json" {
+		t.Fatalf("volcengine input = %#v", input)
+	}
+}
+
+// TestPostgresDirectInputReaderAcceptsQwenAuthorizedInstance 覆盖授权实例的
+// qwen 候选扫描：有效来源投影派生 profile 与 origin 服务根，ToInput 成功。
+func TestPostgresDirectInputReaderAcceptsQwenAuthorizedInstance(t *testing.T) {
+	registerDirectInputRowsLifecycleDriver.Do(func() {
+		sql.Register(directInputRowsLifecycleDriverName, directInputRowsLifecycleDriver{})
+	})
+	database, err := sql.Open(directInputRowsLifecycleDriverName, "qwen-authorized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	reader, err := NewPostgresDirectInputReader(database, "direct-input-rows-lifecycle-secret", time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.LoadDueWithFailures(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("qwen authorized direct input load: %v", err)
+	}
+	if len(result.Failures) != 0 || len(result.Inputs) != 1 {
+		t.Fatalf("qwen result = %#v", result)
+	}
+	input := result.Inputs[0]
+	if input.Provider != "qwen" || input.ProtocolProfileID != "profile_qwen_openai_v1" ||
+		input.BaseURL != "https://dashscope.aliyuncs.com/compatible-mode/v1" || input.EndpointMode != "chat_json" {
+		t.Fatalf("qwen input = %#v", input)
 	}
 }

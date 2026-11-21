@@ -131,6 +131,31 @@ describe('useAccountTestModels 已保存账户测试选项', () => {
     expect(testForm.testEndpointMode).toBe('account_default')
     expect(hook.testModelsReady.value).toBe(true)
   })
+
+  it('列表服务端 testKind=connection 优先于本地检查形态（混合形态账户不被误判模型测试）', () => {
+    const { hook, testForm } = setupTestModels()
+    hook.initializeSavedAccountTestOptions(
+      savedAccountListItem({ testKind: 'connection' })
+    )
+    expect(hook.testKind.value).toBe('connection')
+    expect(hook.testEndpointModes.value).toEqual([])
+    expect(testForm.model).toBe('')
+    expect(hook.testModelsReady.value).toBe(true)
+  })
+
+  it('列表服务端 testKind=model 优先于本地检查形态（旧数据形态歧义由服务端纠正）', () => {
+    const { hook, testForm } = setupTestModels()
+    hook.initializeSavedAccountTestOptions(
+      savedAccountListItem({
+        testKind: 'model',
+        healthCheckEndpointMode: 'embeddings_json' as AccountListItem['healthCheckEndpointMode']
+      })
+    )
+    expect(hook.testKind.value).toBe('model')
+    expect(testForm.model).toBe('gpt-5.6')
+    expect(hook.testEndpointModes.value.length).toBeGreaterThan(0)
+    expect(hook.testModelsReady.value).toBe(true)
+  })
 })
 
 describe('useAccountTestModels 草稿测试选项', () => {

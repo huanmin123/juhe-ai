@@ -35,9 +35,11 @@ const AuthorizationGrantHealthFanoutReason = "authorization_grant_changed"
 // authorizationFanoutProviderCodes 是 Node 白名单
 // (account-health-jobs-input-authorization-fanout.repository.ts:36/:62) 的目标
 // schema 重述（设计 §2.1/§9.11）：原 8 值中的 openai / hybrid 是 generic 语义，
-// 通用连接器退场后不再有该账户形态，这里只保留 6 个有对话健康能力的真实厂商。
+// 通用连接器退场后不再有该账户形态。词表与 jobs oauthrefresh/healthfanout 的
+// 九真实厂商全集对齐，但只保留 J1 对话健康可承载的八家（volcengine/qwen 的
+// chat 形态自本批起进入 J1）；纯媒体的 minimax 不在本白名单。
 var authorizationFanoutProviderCodes = []string{
-	"gpt", "xai", "anthropic", "deepseek", "glm", "gemini",
+	"gpt", "xai", "anthropic", "deepseek", "glm", "gemini", "volcengine", "qwen",
 }
 
 // authorizationFanoutAccountTypes mirrors the Node type whitelist

@@ -835,8 +835,19 @@ func postgresAccountQualityStatsSystemAccountID(row UsageStatsRecordRow) (string
 	return *row.AccountOwnerSystemAccountID, nil
 }
 
+// addPostgresAggregatedAccountHealthEntry 把 account_health_check 使用记录
+// 聚合进健康小时条带。T217 口径统一：成功行写 success；失败行与
+// shouldRecordPostgresAccountQualityStats 同判——只有 account_upstream /
+// account_dependency 归因的真实账号失败才写 failure，opaque_upstream /
+// gateway_capacity / gateway_policy / downstream_closed 归因与无归因失败
+// （探针补记的 upstream_http_failure 等）不计健康率（统计口径 §2.9），
+// 该小时由 jobs 直写臂的质量终态 outcome 决定或保持无条。
 func addPostgresAggregatedAccountHealthEntry(target map[string]*aggregatedAccountHealthEntry, row UsageStatsRecordRow, statHour string) {
 	if row.TrafficSource != "account_health_check" || row.AccountID == nil || *row.AccountID == "" {
+		return
+	}
+	if row.Success != 1 && (row.FailureAttribution == nil ||
+		(*row.FailureAttribution != "account_upstream" && *row.FailureAttribution != "account_dependency")) {
 		return
 	}
 	key := *row.AccountID + "\x00" + statHour

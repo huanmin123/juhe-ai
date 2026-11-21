@@ -2282,8 +2282,10 @@ func chainIsChatCompletionsPathAndQuery(pathAndQuery string) bool {
 // 客户端版本剥离后的 chat opPath 恒定拼 chainQwenChatPathPrefix 前缀
 // （R6，服务根由前缀常量承载）后与 base_url 直拼——官方 origin 形态
 // base（https://dashscope.aliyuncs.com）+ /compatible-mode/v1/chat/
-// completions。不再有 base 侧 strict 插根/去重分支（v2 契约：版本段只在
-// opPath 一侧，base_url 不参与版本判定）。
+// completions。base 路径尾部若已带同一服务根（连接域写面已按全路径模板
+// 前缀拒绝该形态（R6/R8），存量行与凭据域 base 仍可能携带，T220），先剥
+// 一次再恒拼，与 embeddings/rerank 链同构，避免出站双根
+// /compatible-mode/v1/compatible-mode/v1/...。
 func chainQwenChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
@@ -2294,8 +2296,40 @@ func chainQwenChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
 	if !strings.HasPrefix(suffix, "/") {
 		suffix = "/" + suffix
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + chainQwenChatPathPrefix + suffix
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(basePath, chainQwenChatPathPrefix) {
+		basePath = strings.TrimSuffix(basePath, chainQwenChatPathPrefix)
+	}
+	parsed.Path = basePath + chainQwenChatPathPrefix + suffix
 	return parsed.String() + query, nil
+}
+
+// chainQwenStripBaseServiceRoot 剥掉 qwen base_url 路径尾部的 DashScope
+// 服务根（`/compatible-mode/v1` 或 `/api/v1`，各剥一次，与向量/重排链
+// chain_embeddings.go / chain_rerank.go 同构）。连接域写面已按全路径模板
+// 前缀拒绝该形态（钉值 TestB1ValidateConnectionBaseURLTable），剥根兜底
+// 存量行与凭据域 base，避免媒体任务出站双根（T221）。
+func chainQwenStripBaseServiceRoot(baseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Path == "" {
+		return baseURL
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	for _, suffix := range []string{"/compatible-mode/v1", "/api/v1"} {
+		if strings.HasSuffix(basePath, suffix) {
+			basePath = strings.TrimSuffix(basePath, suffix)
+			break
+		}
+	}
+	parsed.Path = basePath
+	return parsed.String()
+}
+
+// chainQwenJoinUpstreamURL 构造 qwen 媒体任务（万相视频 / paraformer 长转写）
+// 上游 URL：base 尾部服务根先剥一次，再按全路径 opPath 直拼（T221，与
+// chat/向量/重排链对齐，qwen 四链对带前缀 base 行为一致）。
+func chainQwenJoinUpstreamURL(baseURL, path string) (string, error) {
+	return upstreamenvelope.JoinUpstreamURL(chainQwenStripBaseServiceRoot(baseURL), path)
 }
 
 // mediaJobRequestUpstream 账户亲和直连上游（不走派发循环；kind 区分任务族
@@ -2344,8 +2378,13 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 	} else {
 		// v2 直拼：adapter opPath 不含版本段（qwen /api/v1 域自带全路径），
 		// glm/volcengine 服务根由 base_url 版本根承载；不再有厂商服务根去重
-		// 归一分支。
-		built, err := upstreamenvelope.JoinUpstreamURL(account.BaseURL, path)
+		// 归一分支。qwen（T221）先剥 base 尾部服务根，避免存量行出站双根。
+		built, err := func() (string, error) {
+			if adapterKey == "qwen" {
+				return chainQwenJoinUpstreamURL(account.BaseURL, path)
+			}
+			return upstreamenvelope.JoinUpstreamURL(account.BaseURL, path)
+		}()
 		if err != nil {
 			return nil, err
 		}

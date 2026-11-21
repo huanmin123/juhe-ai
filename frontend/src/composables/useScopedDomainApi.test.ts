@@ -49,6 +49,8 @@ interface MethodSpec {
   selfArgs?: unknown[]
   /** 命名空间上的目标方法名与 scoped 方法名不同时覆盖 */
   target?: string
+  /** 管理视图已无对应后端端点，调用必须显式拒绝 */
+  managementRejects?: boolean
 }
 
 interface ScopeSpec {
@@ -101,7 +103,7 @@ const scopes: ScopeSpec[] = [
       routeStrategyOptions: { args: [{}] },
       create: { args: [{ name: 'g' }, undefined], selfArgs: [{ name: 'g' }] },
       update: { args: ['id-1', { name: 'g2' }, undefined], selfArgs: ['id-1', { name: 'g2' }] },
-      returnAuthorization: { args: ['id-1', undefined], selfArgs: ['id-1'] },
+      returnAuthorization: { args: ['id-1', undefined], selfArgs: ['id-1'], managementRejects: true },
       delete: { args: ['id-1', undefined], selfArgs: ['id-1'] }
     }
   },
@@ -185,6 +187,12 @@ for (const spec of scopes) {
       it(`${method} 按管理视图路由到对应命名空间`, async () => {
         const isManagementView = ref(true)
         const scoped = spec.factory(isManagementView)
+        if (methodSpec.managementRejects) {
+          await expect(scoped[method](...methodSpec.args)).rejects.toThrow('管理视图不支持')
+          expect(spec.managementNs[target]).not.toHaveBeenCalled()
+          expect(spec.selfNs[target]).not.toHaveBeenCalled()
+          return
+        }
         await scoped[method](...methodSpec.args)
         expect(spec.managementNs[target]).toHaveBeenCalledTimes(1)
         expect(spec.managementNs[target]).toHaveBeenCalledWith(...methodSpec.args)

@@ -30,7 +30,7 @@ assert.match(authRevisionWatcher(statsView), /invalidateStatsRequests\(\)[\s\S]*
 
 const aiPerformance = source('views/ai-performance/AiPerformanceView.vue')
 assert.match(activated(aiPerformance), /performanceRequestGate\.activate\(\)[\s\S]*setupChartObserver/, 'AI 性能重新激活必须恢复请求门禁和图表观察')
-assert.doesNotMatch(activated(aiPerformance), /\bloadPerformanceContext\s*\(/, 'AI 性能重新激活不得加载业务数据')
+assert.match(activated(aiPerformance), /if \(filters && \([\s\S]*filters\.systemAccountId !== selectedSystemAccountId\.value[\s\S]*filters\.startDate !== formatDateKey\(dateRange\.value\[0\]\)[\s\S]*filters\.endDate !== formatDateKey\(dateRange\.value\[1\]\)[\s\S]*void loadPerformanceContext\(\)\n  \}/, 'AI 性能重新激活仅能在工作区用户或日期变化时重取数据')
 assert.doesNotMatch(authRevisionWatcher(aiPerformance), /\b(?:loadPerformanceContext|loadUsageStatsWindow|load)\s*\(/, 'AI 性能身份变化不得加载主数据或系统账户选项')
 assert.match(authRevisionWatcher(aiPerformance), /invalidateAccountOptions\(\)[\s\S]*invalidateSystemAccountOptions\(\)[\s\S]*invalidatePerformanceRequests\(\)[\s\S]*systemAccounts\.value = \[\][\s\S]*selectedSystemAccountId\.value = allSystemAccountsValue[\s\S]*selectedSystemAccount\.value = undefined[\s\S]*resetSystemAccountOptionsSearch\(\)/, 'AI 性能身份变化必须使系统账户选项失效并清空旧筛选')
 

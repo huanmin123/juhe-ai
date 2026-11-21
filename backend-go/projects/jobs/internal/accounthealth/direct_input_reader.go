@@ -163,6 +163,7 @@ func (r *PostgresDirectInputReader) CheckContract(ctx context.Context) error {
 
 var directInputRequiredRelations = []string{
 	"juhe_business.accounts",
+	"juhe_business.account_connections",
 	"juhe_business.account_health_jobs_input_versions",
 	"juhe_business.group_accounts",
 	"juhe_business.proxy_profiles",
@@ -592,7 +593,8 @@ func directInputScanCap(limit int) int {
 
 // directInputCandidatesSQL 的供应商解耦读侧契约（设计 §2.1/§8）：
 //   - 身份列 vendor_code 替代 provider_code；profile 由健康检查连接行的
-//     connection_preset_code 经 exactkeyprobe.ConnectionPresetProfileID 派生
+//     connection_preset_code 经 J1 专用映射（directInputProfileIDForPreset：
+//     共享对话 preset + volcengine_ark/qwen_dashscope 扩展）派生
 //     （下游 profile_* 取值形状不变）；client_compatibility 列随目标 schema
 //     删除，恒空（codex_responses 兼容画像形态按设计退役）。
 //   - 探针连接面（preset + base_url）来自账户健康检查连接；多连接账户的确定性
@@ -602,8 +604,9 @@ func directInputScanCap(limit int) int {
 //   - provider IN 白名单等价换轴：旧 IN ('gpt','openai','xai','anthropic',
 //     'deepseek','glm','gemini','hybrid') 逐值映射为 J1 可构造探针身份的
 //     preset 值域（旧 openai-compatible→generic_*，hybrid→generic_*；旧 8 值
-//     与 13 个 preset 一一对应），final fail-closed 仍由 exactkeyprobe 的
-//     profile 门禁承担。
+//     与 13 个 preset 一一对应）。J1 专用映射在共享 10 对对话 preset 之上
+//     追加 volcengine_ark / qwen_dashscope（仅 chat 生成形态），final
+//     fail-closed 仍由 exactkeyprobe 的 profile 门禁承担。
 //   - protocol_code/protocol_version 列本批保留，语义不变。
 const directInputCandidatesSQL = `
 SELECT
@@ -652,7 +655,7 @@ LEFT JOIN LATERAL (
 ) binding ON TRUE
 LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
 WHERE a.deleted_at IS NULL
-  AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta')
+  AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'volcengine_ark', 'qwen_dashscope')
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
   AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
@@ -673,7 +676,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1 AND (source.availability_schedule_gate IS NULL OR source.availability_schedule_gate = 1)
+    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'volcengine_ark', 'qwen_dashscope') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1 AND (source.availability_schedule_gate IS NULL OR source.availability_schedule_gate = 1)
     AND source.deleted_at IS NULL AND source.last_error_code IS DISTINCT FROM 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
@@ -783,9 +786,11 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	result.account.HealthModel = accountHealthModel.String
 	result.account.ConnectionPresetCode = accountPreset.String
 	result.account.ConnectionBaseURL = accountBaseURL.String
-	// profile 由健康检查连接 preset 确定性派生；不在 J1 preset 值域的 preset
-	// 派生为空，由 exactkeyprobe 的 profile 门禁 fail closed（隔离为候选失败）。
-	result.account.ProtocolProfileID, _ = exactkeyprobe.ConnectionPresetProfileID(accountPreset.String)
+	// profile 由健康检查连接 preset 确定性派生（J1 专用映射：共享 10 对对话
+	// preset + volcengine_ark/qwen_dashscope 扩展）；不在 J1 preset 值域的
+	// preset 派生为空，由 exactkeyprobe 的 profile 门禁 fail closed（隔离为
+	// 候选失败）。
+	result.account.ProtocolProfileID, _ = directInputProfileIDForPreset(accountPreset.String)
 	result.account.Schedulable = schedulable.Valid && schedulable.Int64 == 1
 	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
 	// expedited_recovery_enabled 与 schedulable 同构（integer 0/1，NOT NULL
@@ -831,7 +836,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		if err != nil {
 			return result, err
 		}
-		sourceProfileID, _ := exactkeyprobe.ConnectionPresetProfileID(sourcePreset.String)
+		sourceProfileID, _ := directInputProfileIDForPreset(sourcePreset.String)
 		result.source = &exactkeyprobe.DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceVendor.String, OAuthType: sourceOAuthType.String, ProtocolProfileID: sourceProfileID, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ConnectionPresetCode: sourcePreset.String, ConnectionBaseURL: sourceBaseURL.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
 			value := result.source.ConfigRevision

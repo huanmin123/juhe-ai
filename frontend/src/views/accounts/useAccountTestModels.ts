@@ -58,17 +58,14 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     resetTestModels()
     selectedAccount = account
     defaultModel = healthCheckModel.trim()
-    // 首开零请求：请求形态先以本地推导的账户可测试形态集展示（检查形态
-    // 优先选中），模型下拉首次展开加载 options 后再按模型能力收敛。
-    // 列表摘要不携带凭据（无 supported_endpoint_modes），测试方式以账户保存的
-    // 检查形态为准：媒体域恒连接测试；chat 域只有真实对话生成形态才模型测试。
-    // 不按供应商默认形态兜底，避免 embeddings/rerank-only chat 账户被误判模型测试。
+    // 首开零请求：列表已返回服务端按有效连接声明形态派生的 testKind，
+    // 以此为准；旧后端缺省时才按保存的检查形态本地初判。请求形态下拉仍用
+    // 本地推导的账户可测试形态集展示，模型下拉首次展开后再按模型能力收敛。
     const modes = accountTestEndpointModesForAccount(account)
     const storedKindModes = healthCheckEndpointMode ? [healthCheckEndpointMode] : []
-    testKind.value = testKindForAccount(
-      account.capabilityDomain,
-      storedKindModes.length ? storedKindModes : modes
-    )
+    testKind.value = account.testKind === 'model' || account.testKind === 'connection'
+      ? account.testKind
+      : testKindForAccount(account.capabilityDomain, storedKindModes.length ? storedKindModes : modes)
     if (testKind.value === 'connection') {
       // 连接测试不选择模型/请求形态：初始化即就绪，等待用户点「开始测试」。
       testEndpointModes.value = []

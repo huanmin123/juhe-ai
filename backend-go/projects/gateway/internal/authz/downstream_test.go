@@ -59,7 +59,7 @@ func seedDownstreamInstance(t *testing.T, f *fixture, id, sourceAccountID, grant
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
 		config_revision, dispatch_revision, authorization_instance_source_account_id,
 		authorization_instance_authorization_id, deleted_at)
-		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`), 		id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`), id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -151,7 +151,7 @@ func accountRuntimeIDFor(t *testing.T, f *fixture, resourceID, granteeID string)
 	t.Helper()
 	var id string
 	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorizations
-		WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ?`), 		resourceID, granteeID).Scan(&id); err != nil {
+		WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ?`), resourceID, granteeID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -280,6 +280,9 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
 	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
+	// volcengine/qwen 的对话形态自本批起进入 J1：授权实例必须与 gpt 一样扇出。
+	seedDownstreamInstance(t, f, "inst-qwen", "res-1", "grantee", runtimeID, "qwen", "api_key", "")
+	seedDownstreamInstance(t, f, "inst-volcengine", "res-1", "grantee", runtimeID, "volcengine", "api_key", "")
 	// Excluded by each fanout filter: soft-deleted, provider outside the
 	// whitelist, type outside the whitelist, and an instance of another source.
 	seedDownstreamInstance(t, f, "inst-deleted", "res-1", "grantee", runtimeID, "gpt", "oauth", "2026-01-01T00:00:00.000Z")
@@ -302,13 +305,15 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 		t.Fatalf("revoked grant must drop its bindings: %+v", bindings)
 	}
 	rows := countOutboxRows(t, f)
-	if len(rows) != 1 {
-		t.Fatalf("fanout rows = %+v, want exactly the whitelisted inst-1", rows)
+	if len(rows) != 3 {
+		t.Fatalf("fanout rows = %+v, want the three whitelisted instances", rows)
 	}
-	row := rows[0]
-	if row.accountID != "inst-1" || row.inputVersion != 1 || row.eventKind != "snapshot" ||
-		row.reason != AuthorizationGrantHealthFanoutReason || row.configRevision != 3 || row.dispatchRevision != 5 {
-		t.Fatalf("fanout row = %+v", row)
+	for index, wantID := range []string{"inst-1", "inst-qwen", "inst-volcengine"} {
+		row := rows[index]
+		if row.accountID != wantID || row.inputVersion != 1 || row.eventKind != "snapshot" ||
+			row.reason != AuthorizationGrantHealthFanoutReason || row.configRevision != 3 || row.dispatchRevision != 5 {
+			t.Fatalf("fanout row[%d] = %+v", index, row)
+		}
 	}
 
 	// A second grant reuses the next epoch for the same instance account.
@@ -327,8 +332,14 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows = countOutboxRows(t, f)
-	if len(rows) != 2 || rows[1].accountID != "inst-1" || rows[1].inputVersion != 2 {
-		t.Fatalf("second fanout must reserve version 2: %+v", rows)
+	if len(rows) != 6 {
+		t.Fatalf("second fanout must reserve one row per whitelisted instance: %+v", rows)
+	}
+	for index, wantID := range []string{"inst-1", "inst-qwen", "inst-volcengine"} {
+		row := rows[3+index]
+		if row.accountID != wantID || row.inputVersion != 2 {
+			t.Fatalf("second fanout row[%d] = %+v", index, row)
+		}
 	}
 }
 
@@ -497,7 +508,7 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
 		 grantee_system_account_id, scope, status, limits_json, created_by, created_at, updated_at, expires_at)
-		VALUES ('g-due', 'account', 'res-1', 'owner', 'system_account', 'grantee', 'use', 'active', ?, 'owner', ?, ?, ?)`), 		*hourlyLimits(6), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		VALUES ('g-due', 'account', 'res-1', 'owner', 'system_account', 'grantee', 'use', 'active', ?, 'owner', ?, ?, ?)`), *hourlyLimits(6), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), past); err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +517,7 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		 scope, status, effective_source_type, activated_at, last_source_changed_at,
 		 created_by, created_at, updated_at)
-		VALUES ('ra-due', 'account', 'res-1', 'owner', 'grantee', 'use', 'active', 'manual', ?, ?, 'owner', ?, ?)`), 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		VALUES ('ra-due', 'account', 'res-1', 'owner', 'grantee', 'use', 'active', 'manual', ?, ?, 'owner', ?, ?)`), f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z")); err != nil {
 		t.Fatal(err)
 	}
@@ -633,5 +644,23 @@ func TestRevokeTeamGrantSourcesExpiredRuntimeLandsRevoked(t *testing.T) {
 	}
 	if revokedReason != "authorization_revoked" {
 		t.Fatalf("revoked_reason = %q, want 'authorization_revoked' (archive write-state:966-971)", revokedReason)
+	}
+}
+
+// TestAuthorizationFanoutProviderCodesCoverJ1ConversationVendors 锁定授权
+// 扇出白名单：volcengine/qwen 的 J1 对话形态进入白名单，纯媒体 minimax
+// 保持排除。该断言不依赖 PG，日常回归可直接执行。
+func TestAuthorizationFanoutProviderCodesCoverJ1ConversationVendors(t *testing.T) {
+	allowed := make(map[string]bool, len(authorizationFanoutProviderCodes))
+	for _, code := range authorizationFanoutProviderCodes {
+		allowed[code] = true
+	}
+	for _, code := range []string{"gpt", "xai", "anthropic", "deepseek", "glm", "gemini", "volcengine", "qwen"} {
+		if !allowed[code] {
+			t.Fatalf("健康 fanout 白名单缺少 %q", code)
+		}
+	}
+	if allowed["minimax"] {
+		t.Fatal("纯媒体 minimax 不应进入 J1 对话健康 fanout 白名单")
 	}
 }

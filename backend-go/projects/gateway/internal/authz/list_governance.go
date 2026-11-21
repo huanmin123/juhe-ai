@@ -56,7 +56,7 @@ func (s *Store) ListInboundSources(ctx context.Context, accountID string) ([]Sou
 			g.resource_type, g.resource_id,
 			COALESCE(a.name, g2.name, ''), g.resource_owner_system_account_id,
 			COALESCE(owner.display_name, owner.username, ''),
-			g.grantee_type, COALESCE(g.grantee_team_id, ''), COALESCE(t.name, ''),
+			g.grantee_type, g.status, COALESCE(g.grantee_team_id, ''), COALESCE(t.name, ''),
 			s.source_type, s.status, ra.status,
 			COALESCE(src.vendor_code, ''), COALESCE(g.limits_json, ''),
 			COALESCE(ra.expires_at, ''), COALESCE(s.pending_expires_at, ''), COALESCE(s.accepted_at, ''),
@@ -93,9 +93,10 @@ func (s *Store) scanInboundRows(ctx context.Context, rows *sql.Rows) ([]SourceSu
 		var item SourceSummary
 		var limitsJSON, detailJSON string
 		var groupEnabled, bound int
+		var grantStatus string
 		if err := rows.Scan(&item.SourceID, &item.GrantID, &item.RuntimeID,
 			&item.ResourceType, &item.ResourceID, &item.ResourceName, &item.ResourceOwnerID,
-			&item.ResourceOwnerName, &item.GranteeType, &item.TeamID, &item.TeamName,
+			&item.ResourceOwnerName, &item.GranteeType, &grantStatus, &item.TeamID, &item.TeamName,
 			&item.SourceType, &item.Status, &item.RuntimeStatus, &item.VendorCode, &limitsJSON,
 			&item.ExpiresAt, &item.PendingExpiresAt, &item.AcceptedAt,
 			&item.NeedsReviewReason, &detailJSON, &item.ObservedRevision, &item.RevisionVersion,
@@ -110,11 +111,22 @@ func (s *Store) scanInboundRows(ctx context.Context, rows *sql.Rows) ([]SourceSu
 		}
 		item.GroupEnabled = groupEnabled == 1
 		item.Bound = bound == 1
-		item.CanAccept = item.Status == StatusPending || item.Status == StatusNeedsReview
-		item.CanDecline = item.CanAccept
-		item.CanReturn = item.Status == StatusActive || item.Status == StatusDormant || item.Status == StatusNeedsReview
-		item.CanBind = item.ResourceType == "group" && (item.Status == StatusActive || item.Status == StatusDormant) &&
-			item.RuntimeStatus == StatusActive && !item.GroupEnabled
+		// Action flags mirror the store gates. AcceptSource only checks the
+		// source/parent states, not the runtime projection: a pending team offer
+		// can be accepted while another source already keeps the runtime active.
+		item.CanAccept = (item.Status == StatusPending || item.Status == StatusNeedsReview) &&
+			grantStatus != StatusPaused &&
+			(grantStatus == StatusPending || grantStatus == StatusActive ||
+				grantStatus == StatusPendingMemberAcceptance)
+		// Decline only requires a pending/needs_review source, even when the
+		// parent is paused and acceptance is unavailable.
+		item.CanDecline = item.Status == StatusPending || item.Status == StatusNeedsReview
+		item.CanReturn = item.Status == StatusActive || item.Status == StatusDormant ||
+			item.Status == StatusNeedsReview ||
+			(item.Status == StatusPending && grantStatus == StatusPaused)
+		item.CanBind = item.ResourceType == "group" &&
+			(item.Status == StatusActive || item.Status == StatusDormant) &&
+			item.RuntimeStatus == StatusActive && !item.GroupEnabled && item.SnapshotRevision != ""
 		item.CanUnbind = item.ResourceType == "group" && item.GroupEnabled
 		if item.ResourceType == "account" {
 			s.enrichSourceMaterial(ctx, &item)

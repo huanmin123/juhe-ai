@@ -89,6 +89,17 @@ func TestIsSupportedDirectProfileMatrix(t *testing.T) {
 		{"profile_gemini_native_v1beta", "gemini", "api_key", "generate_content_json", true},
 		{"profile_gemini_native_v1beta", "gemini", "google_oauth", "interactions_sse", true},
 		{"profile_gemini_native_v1beta", "gemini", "google_oauth", "chat_json", false},
+		{"profile_volcengine_openai_v1", "volcengine", "api_key", "chat_json", true},
+		{"profile_volcengine_openai_v1", "volcengine", "api_key", "chat_sse", true},
+		{"profile_volcengine_openai_v1", "volcengine", "oauth", "chat_json", false},
+		{"profile_volcengine_openai_v1", "volcengine", "api_key", "responses_json", false},
+		{"profile_volcengine_openai_v1", "volcengine", "api_key", "images_json", false},
+		{"profile_qwen_openai_v1", "qwen", "api_key", "chat_json", true},
+		{"profile_qwen_openai_v1", "qwen", "api_key", "chat_sse", true},
+		{"profile_qwen_openai_v1", "qwen", "oauth", "chat_sse", false},
+		{"profile_qwen_openai_v1", "qwen", "api_key", "responses_sse", false},
+		{"profile_qwen_openai_v1", "qwen", "api_key", "images_json", false},
+		{"profile_qwen_openai_v1", "volcengine", "api_key", "chat_json", false},
 		{"profile_unknown", "openai", "api_key", "chat_json", false},
 	}
 	for _, item := range cases {
@@ -111,6 +122,8 @@ func TestDirectProbeProtocolForModeMatrix(t *testing.T) {
 		{"profile_glm_coding_anthropic_v1", "glm", "messages_json", "anthropic"},
 		{"profile_gemini_native_v1beta", "gemini", "generate_content_json", "gemini"},
 		{"profile_gpt_openai_v1", "gpt", "chat_json", "openai"},
+		{"profile_volcengine_openai_v1", "volcengine", "chat_json", "openai"},
+		{"profile_qwen_openai_v1", "qwen", "chat_sse", "openai"},
 		{"profile_hybrid_openai_chat_v1", "hybrid", "chat_json", ""},
 		{"", "gpt", "chat_json", "openai"},
 		{"", "openai", "chat_json", ""},
@@ -136,6 +149,8 @@ func TestProbeProfileProviderMatrix(t *testing.T) {
 		"profile_anthropic_anthropic_v1":    "anthropic",
 		"profile_gemini_native_v1beta":      "gemini",
 		"profile_gemini_openai_chat_v1beta": "gemini",
+		"profile_volcengine_openai_v1":      "volcengine",
+		"profile_qwen_openai_v1":            "qwen",
 		"":                                  "gpt",
 	}
 	for profile, protocol := range cases {
@@ -157,6 +172,22 @@ func TestDirectBaseURLResolution(t *testing.T) {
 	base, err = directBaseURL(DirectAccount{ConnectionBaseURL: "https://example.com/v1///"})
 	if err != nil || base != "https://example.com/v1" {
 		t.Fatalf("尾斜杠必须裁剪: %q %v", base, err)
+	}
+	// volcengine：连接 base 原样直通（默认 base 已含 /api/v3 版本根，chat
+	// opPath 由信封直拼 /chat/completions）。
+	base, err = directBaseURL(DirectAccount{Provider: "volcengine", ConnectionBaseURL: "https://ark.cn-beijing.volces.com/api/v3/"})
+	if err != nil || base != "https://ark.cn-beijing.volces.com/api/v3" {
+		t.Fatalf("volcengine base 必须直通: %q %v", base, err)
+	}
+	// qwen：与 gateway 现行归一同构（R6 + T220）——base 尾部已带服务根先剥
+	// 一次再追加，出站与 origin 形态等价（存量行/凭据域形态，不再双根）。
+	base, err = directBaseURL(DirectAccount{Provider: "qwen", ConnectionBaseURL: "https://dashscope.aliyuncs.com/"})
+	if err != nil || base != "https://dashscope.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("qwen origin base 必须追加对话服务根: %q %v", base, err)
+	}
+	base, err = directBaseURL(DirectAccount{Provider: "qwen", ConnectionBaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"})
+	if err != nil || base != "https://dashscope.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("qwen 已带服务根时必须先剥再拼（与 gateway 同构）: %q %v", base, err)
 	}
 	if _, err := directBaseURL(DirectAccount{ProtocolProfileID: "profile_gpt_openai_v1", Type: "oauth"}); err == nil {
 		t.Fatal("缺连接 base_url 必须 fail closed")
@@ -217,6 +248,8 @@ func TestValidateDirectProtocolMetadataMatrix(t *testing.T) {
 		{"profile_gpt_openai_v1", "openai", "v1"},
 		{"profile_anthropic_anthropic_v1", "anthropic", "v1"},
 		{"profile_gemini_native_v1beta", "gemini", "v1beta"},
+		{"profile_volcengine_openai_v1", "openai", "v1"},
+		{"profile_qwen_openai_v1", "openai", "v1"},
 		{"profile_gpt_openai_v1", "", ""},
 	}
 	for _, item := range valid {
@@ -228,6 +261,8 @@ func TestValidateDirectProtocolMetadataMatrix(t *testing.T) {
 		{"profile_gpt_openai_v1", "anthropic", "v1"},
 		{"profile_gemini_native_v1beta", "gemini", "v1"},
 		{"profile_anthropic_anthropic_v1", "openai", "v9"},
+		{"profile_volcengine_openai_v1", "openai", "v1beta"},
+		{"profile_qwen_openai_v1", "anthropic", "v1"},
 	}
 	for _, item := range invalid {
 		if err := validateDirectProtocolMetadata(item[0], item[1], item[2]); err == nil {

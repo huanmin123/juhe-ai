@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -160,7 +161,7 @@ func (s *Store) expireGrant(ctx context.Context, grantID, now string) (bool, err
 	}
 	for _, target := range s.grantRuntimeGrantees(ctx, tx, grant.ID) {
 		if err := s.insertNotification(ctx, tx, target, "offer_expired", grant.ID, "", nil,
-			"expired:"+grant.ID+":"+target, now); err != nil {
+			"expired:"+grant.ID+":"+strconv.Itoa(nextCycle)+":"+target, now); err != nil {
 			return false, err
 		}
 	}
@@ -244,7 +245,7 @@ func (s *Store) expirePendingSource(ctx context.Context, sourceID, now string) (
 
 // ExtendInput is the explicit extend contract.
 type ExtendInput struct {
-	ExpiresAt             string `json:"expiresAt"`
+	ExpiresAt                string `json:"expiresAt"`
 	ConfirmExpiredFromStatus string `json:"confirmExpiredFromStatus"`
 }
 

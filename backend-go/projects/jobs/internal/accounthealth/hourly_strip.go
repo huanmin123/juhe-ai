@@ -20,7 +20,8 @@ import (
 // 修复：投影面在消费 outcome 时把每次探针观测直写统计库小时条带（newest-
 // wins，口径与 statsagg 写入方逐列一致）。statsagg 原聚合臂保留不动：未来若
 // 探针流量经网关产生使用记录，两源自然并存收敛。条带为派生数据、可由后续
-// 观测自愈，因此写失败按 warn 继续，不阻塞 current_state 投影主职责。
+// 观测自愈；T218 起写入前置到消费水位打标之前——写失败停轮保留消费水位，
+// 下轮重放重试（见 projection.go DrainOnce），不再 warn 后永久丢失。
 
 // AccountHealthHourlyObservation 是一次探针观测的小时条带投影输入。
 type AccountHealthHourlyObservation struct {
@@ -41,12 +42,28 @@ type AccountHealthHourlySink interface {
 	RecordAccountHealthHourly(ctx context.Context, observation AccountHealthHourlyObservation) error
 }
 
+// nonQualityHealthOutcomes 是不计入 AI 健康小时条带的非质量终态，与
+// gateway statreads j1NonQualityOutcomes、统计口径 §2.9 逐字成对
+// （upstream_http_failure 的历史存量别名 framing_complete_neutral 仅读存量）。
+// 跳过后该小时由后续质量终态 outcome 决定（或保持无条 = unknown），两臂与
+// 读面 J1 排除口径收敛（T217）。修改名单必须三处同步。
+var nonQualityHealthOutcomes = map[string]bool{
+	"stale":                    true,
+	"upstream_http_failure":    true,
+	"framing_complete_neutral": true,
+	"opaque_upstream":          true,
+	"gateway_capacity":         true,
+	"gateway_policy":           true,
+	"downstream_closed":        true,
+}
+
 // recordAccountHealthHourlyObservation 把一个 outcome 转成条带观测并写入：
-// `complete_success` → success，其余 outcome（http/upstream/task failure）
-// → failure（与 J1 投影自身的失败归类一致）；`stale` 不是真实探针观测，跳过。
+// `complete_success` → success，质量终态失败（upstream_failure /
+// probe_task_failure 等）→ failure；`stale` 不是真实探针观测，非质量终态
+// （upstream_http_failure 等）不计健康率，均跳过（T217 与读面口径统一）。
 // 账户已删除（无 owner/provider 行）时跳过。返回错误供调用方决定游标策略。
 func recordAccountHealthHourlyObservation(ctx context.Context, sink AccountHealthHourlySink, business *ProjectionBusinessDB, outcome Outcome) error {
-	if sink == nil || outcome.Outcome == OutcomeStale || outcome.AccountID == "" {
+	if sink == nil || nonQualityHealthOutcomes[outcome.Outcome] || outcome.AccountID == "" {
 		return nil
 	}
 	// 供应商解耦：条带的 provider 维度取 accounts.vendor_code；异常缺失值按
@@ -83,15 +100,14 @@ func recordAccountHealthHourlyObservation(ctx context.Context, sink AccountHealt
 	return nil
 }
 
-// recordHourly 是投影循环的条带写入口：失败 warn 继续（条带为派生数据，可由
-// 同账户下一轮观测自愈），不阻塞 current_state 投影主职责。
-func (p *OutcomeProjector) recordHourly(ctx context.Context, outcome Outcome) {
+// recordHourly 是投影循环的条带写入口（T218 前置）：调用方把它排在
+// projectOutcome（消费水位打标）之前，失败上抛停轮——该 outcome 未打标
+// 消费，下轮 drain 重放重试（条带 upsert newest-wins 幂等）。取舍：stats
+// 库故障会暂停 J1 投影消费（current_state 滞后），换取消费过的 outcome
+// 小时条必不丢失；stats 恢复后从队头自动续跑。
+func (p *OutcomeProjector) recordHourly(ctx context.Context, outcome Outcome) error {
 	if p.hourly == nil {
-		return
+		return nil
 	}
-	if err := recordAccountHealthHourlyObservation(ctx, p.hourly, p.business, outcome); err != nil {
-		p.logger.Warn("J1 探针小时条带写入失败，等待同账户下轮观测覆盖",
-			"event", "account_health_hourly_record_failed",
-			"accountId", outcome.AccountID, "outcomeId", outcome.OutcomeID, "error", err.Error())
-	}
+	return recordAccountHealthHourlyObservation(ctx, p.hourly, p.business, outcome)
 }

@@ -48,8 +48,8 @@ assert.match(
 
 assert.match(
   statsViewSource,
-  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\{ force: true, viewScope: isManagementView\.value \? 'admin' : 'self' \}\)[\s\S]*rangeMode\.value = mode/,
-  'stats overview quick ranges must resolve the shared window before calculating today'
+  /function handleQuickRangeChange\(value: string \| number\) \{[\s\S]*rangeMode\.value = mode[\s\S]*if \(quickRangeDateRange\(mode\)\) \{\s*syncDynamicDateRangeToStatsWindow\(\)\s*statsWorkspace\.persist\(rangeMode\.value\)\s*\}\s*void loadData\(\{ forceUsageWindow: true, persistRange: true \}\)/,
+  'stats overview must apply the known server window before switching, then recheck the refreshed window only while active'
 )
 
 assert.match(
@@ -114,13 +114,12 @@ assert.match(ipStatsViewSource, /didUsageStatsWindowLoadFail\('admin'\)/, 'IP st
 for (const [name, source, version] of [
   ['stats overview', statsViewSource, 6]
 ] as const) {
-  assert.match(source, /type\s+RangeMode\s*=\s*'auto'\s*\|\s*QuickRange\s*\|\s*'custom'/, `${name} must persist the range semantic`)
+  assert.match(source, /const rangeMode = ref<RangeMode>\(incomingWorkspace \? incomingWorkspace\.overviewRangeMode \?\? 'custom' : initialPageState\.rangeMode\)/, `${name} must restore local range semantics and treat ranges transferred from other views as fixed`)
   assert.match(source, /rangeMode:\s*RangeMode/, `${name} page-state cache must require range mode`)
   assert.match(source, new RegExp(`usePageStateCache<[\\s\\S]*version: ${version}`), `${name} must bump its cache version`)
   assert.doesNotMatch(source, /readLegacyStatsPageState/, `${name} must not read retired page-state cache versions`)
   assert.match(source, /rangeMode\.value = 'custom'[\s\S]*dateRangeExplicit\.value = true/, `${name} manual date selection must become custom`)
   assert.match(source, /rangeMode\.value = 'auto'[\s\S]*dateRangeExplicit\.value = false/, `${name} reset must restore auto mode`)
-  assert.match(source, /async\s+function\s+handleQuickRangeChange\(value: string \| number\)[\s\S]*loadUsageStatsWindow\(\{ force: true, viewScope:/, `${name} quick selection must refresh the server window`)
 }
 
 assert.match(

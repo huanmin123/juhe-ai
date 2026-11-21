@@ -170,8 +170,11 @@ func TestDialGuardValidateHostMixedResolutionSemantics(t *testing.T) {
 
 // TestDialGuardAllowPrivateSkipsLocalResolution locks the historical
 // permissive contract: AllowPrivateBaseUrls short-circuits the prepare-time
-// check without DNS and the dial path keeps the plain dialer, so enabling the
-// permissive deployment does not introduce a local resolver dependency.
+// check without DNS and the direct dial path keeps the plain dialer, so
+// enabling the permissive deployment does not introduce a local resolver
+// dependency. The dial target is a hostname (localhost) on purpose: an IP
+// literal would skip DNS in resolveDialable even if the permissive
+// short-circuit were removed, so it could not prove this contract.
 func TestDialGuardAllowPrivateSkipsLocalResolution(t *testing.T) {
 	resolver := &fakeResolver{err: errors.New("resolver must not be called")}
 	guard := NewDialGuard(URLSecurityConfig{AllowPrivateBaseUrls: true}, resolver, nil)
@@ -193,7 +196,11 @@ func TestDialGuardAllowPrivateSkipsLocalResolution(t *testing.T) {
 			_ = connection.Close()
 		}
 	}()
-	conn, err := guard.DialContext(context.Background(), "tcp", listener.Addr().String())
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := guard.DialContext(context.Background(), "tcp", net.JoinHostPort("localhost", port))
 	if err != nil {
 		t.Fatalf("allowPrivate DialContext = %v", err)
 	}

@@ -267,3 +267,49 @@ func TestDirectProbeTargetUsesSavedModeAndModel(t *testing.T) {
 		t.Fatalf("route mode=%q model=%q", mode, model)
 	}
 }
+
+// TestDirectInputSupportsVolcengineAndQwenConversationProfiles 锁定 J1 新增
+// 两个对话厂商 profile 的 ToInput 装配：自有 volcengine 账户（base 直通）与
+// qwen 授权实例（有效来源投影 + origin 服务根追加）。
+func TestDirectInputSupportsVolcengineAndQwenConversationProfiles(t *testing.T) {
+	secret := "j1-direct-input-secret"
+	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
+	credentials, err := EncryptV1Envelope(secret, []byte(`{"api_key":"key-volcengine"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedule := Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1}
+
+	volcengine, err := (DirectInput{
+		Account:      DirectAccount{ID: "volcengine-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "volcengine", ProtocolProfileID: "profile_volcengine_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "doubao-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://ark.cn-beijing.volces.com/api/v3/"},
+		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
+		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule,
+	}).ToInput(secret, now)
+	if err != nil {
+		t.Fatalf("volcengine direct input must be accepted: %v", err)
+	}
+	if volcengine.Provider != "volcengine" || volcengine.ProtocolProfileID != "profile_volcengine_openai_v1" ||
+		volcengine.BaseURL != "https://ark.cn-beijing.volces.com/api/v3" || volcengine.EndpointMode != "chat_json" || len(volcengine.APIKeys) != 1 {
+		t.Fatalf("volcengine mapped input = %#v", volcengine)
+	}
+
+	qwenCredential, err := EncryptV1Envelope(secret, []byte(`{"api_key":"key-qwen"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	qwen, err := (DirectInput{
+		Account:       DirectAccount{ID: "qwen-instance", ConfigRevision: 2, DispatchRevision: 3, Provider: "gpt", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_sse", HealthModel: "qwen-test", CredentialsEncrypted: credentials},
+		Authorization: &DirectAuthorization{ID: "auth-1", Status: "active", QuotaEligible: true},
+		Source:        &DirectSource{ID: "qwen-source", ConfigRevision: 7, Provider: "qwen", ProtocolProfileID: "profile_qwen_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", ConnectionPresetCode: "qwen_dashscope", ConnectionBaseURL: "https://dashscope.aliyuncs.com", Status: "active", Schedulable: true, CredentialsEncrypted: qwenCredential},
+		Binding:       DirectBinding{GroupID: "group-1", Enabled: true, AuthorizationBindingID: "auth-1"},
+		InputVersion:  1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule,
+	}).ToInput(secret, now)
+	if err != nil {
+		t.Fatalf("qwen authorized instance direct input must be accepted: %v", err)
+	}
+	if qwen.Provider != "qwen" || qwen.ProtocolProfileID != "profile_qwen_openai_v1" ||
+		qwen.BaseURL != "https://dashscope.aliyuncs.com/compatible-mode/v1" ||
+		qwen.HealthModel != "qwen-test" || qwen.EndpointMode != "chat_sse" || len(qwen.APIKeys) != 1 {
+		t.Fatalf("qwen mapped input = %#v", qwen)
+	}
+}

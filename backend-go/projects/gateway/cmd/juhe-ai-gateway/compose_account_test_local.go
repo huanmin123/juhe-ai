@@ -127,8 +127,8 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		return nil
 	}
 	savedStore, err := proberepo.NewStore(proberepo.Config{
-		DB: composed.db,
-		Secret:   cfg.Secret,
+		DB:     composed.db,
+		Secret: cfg.Secret,
 	})
 	if err != nil {
 		return err
@@ -139,7 +139,8 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		Concurrency: probeConcurrency,
 		// 手动账户测试与 /v1 派发共用同一部署级 URL 安全配置（D-192/D-146）：
 		// 请求期 DialGuard 对每次新连接解析-校验-钉扎拨号，strict 模式
-		//（JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false/0）下域名指向内网即拒绝。
+		//（JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false/0）下只有全部解析地址
+		// 命中保留段才拒绝；直连/本地解析 SOCKS5 只拨校验通过的地址。
 		DialGuard: sharedupstreamhttp.NewDialGuard(cfg.UpstreamURLSecurity, nil, nil),
 	})
 	if err != nil {

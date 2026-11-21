@@ -60,15 +60,21 @@ type AccountForTestView struct {
 
 // accountRowSQL 是账户主查询（owner + authorized instance 双路径合一）。
 // 供应商解耦读侧契约：身份列 vendor_code/oauth_type 替代
-// provider_code/client_compatibility；health-check 两列在授权实例行物理为
-// NULL（设计 §2.1 资源事实投影语义），按来源账户 CASE 投影。
+// provider_code/client_compatibility；授权实例行不承载资源事实（设计 §2.1），
+// type/vendor_code/oauth_type/health-check 两列与 credentials_encrypted 均按
+// 来源账户 CASE 投影（实例行的凭据只是 "{}" 占位，解密会失败）。
 const accountRowSQL = `
-    SELECT a.id, a.system_account_id, a.name, a.type, a.status, a.schedulable,
-      a.vendor_code, a.oauth_type, a.protocol_code, a.protocol_version,
-      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE src.health_check_model END,
-      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE src.health_check_endpoint_mode END,
+    SELECT a.id, a.system_account_id, a.name,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.type ELSE COALESCE(src.type, a.type) END,
+      a.status, a.schedulable,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.vendor_code ELSE COALESCE(src.vendor_code, a.vendor_code) END,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.oauth_type ELSE COALESCE(src.oauth_type, a.oauth_type) END,
+      a.protocol_code, a.protocol_version,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE COALESCE(src.health_check_model, a.health_check_model) END,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE COALESCE(src.health_check_endpoint_mode, a.health_check_endpoint_mode) END,
       a.account_expires_at, a.cooldown_until,
-      a.last_error_code, a.last_error_message, a.credentials_encrypted,
+      a.last_error_code, a.last_error_message,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.credentials_encrypted ELSE src.credentials_encrypted END,
       a.authorization_instance_authorization_id, a.authorization_instance_source_account_id,
       a.authorization_instance_owner_system_account_id,
       src.status AS source_status, src.schedulable AS source_schedulable,
@@ -150,16 +156,20 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		}
 		return nil, err
 	}
+	// 资源事实归属（设计 §2.1）：授权实例行自身只保留调度/运行态与占位凭据，
+	// 凭据、支持模型与 Key 运行态都按来源账户读取。accountRowSQL 已把实例的
+	// credentials_encrypted 投影为来源封装，此处解密失败仍按候选缺失处理。
+	resourceAccountID := resolveResourceAccountID(id.String, authzID.String, sourceID.String)
 	credentialsMap, err := s.DecryptCredentials(credentials.String)
 	if err != nil {
 		// Node openAIAccountSecretFromRow：解密失败按候选缺失处理。
 		return nil, nil
 	}
-	supportedModels, err := s.loadSupportedModels(ctx, resolveResourceAccountID(id.String, authzID.String, sourceID.String))
+	supportedModels, err := s.loadSupportedModels(ctx, resourceAccountID)
 	if err != nil {
 		return nil, err
 	}
-	apiKeyRuntime, err := s.loadAPIKeyRuntimeStatuses(ctx, id.String)
+	apiKeyRuntime, err := s.loadAPIKeyRuntimeStatuses(ctx, resourceAccountID)
 	if err != nil {
 		return nil, err
 	}

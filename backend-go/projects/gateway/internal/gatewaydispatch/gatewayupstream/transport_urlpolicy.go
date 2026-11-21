@@ -15,8 +15,7 @@ package gatewayupstream
 //   - in strict mode, a hostname target resolves and is accepted when at
 //     least one resolved address clears the blocked-range tables (mixed
 //     public/blocked answers pass); only an all-blocked resolution produces
-//     the resolved variant of the error (the attempt engine marks the account
-//     temporary-unavailable, attemptoutcomes.go);
+//     the resolved variant of the error;
 //   - in strict mode, the dial side pins through sharedupstreamhttp.DialGuard
 //     so every locally selected socket address is established against a
 //     validated address; local-resolution SOCKS5 only sends a validated
@@ -24,9 +23,10 @@ package gatewayupstream
 //
 // Permissive targets (allowlisted origin or AllowPrivateBaseUrls) keep the
 // archive's historical behavior: prepare-time validation short-circuits
-// without DNS and the connection boundary uses the plain dialer, so a
-// deployment that explicitly allows private upstreams does not acquire a new
-// resolver dependency. Strict targets are resolved at prepare time with
+// without DNS and the direct/HTTP(S) connection boundary uses the plain
+// dialer (local-resolution SOCKS5 keeps its historical local resolution), so
+// a deployment that explicitly allows private upstreams does not acquire a
+// new resolver dependency. Strict targets are resolved at prepare time with
 // allow-mixed semantics and re-resolved/pinned by DialGuard at dial time.
 
 import (

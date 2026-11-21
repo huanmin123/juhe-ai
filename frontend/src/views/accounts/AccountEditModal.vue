@@ -940,6 +940,35 @@ const wizardAccountTypeChoices = computed(() => {
 const isVolcengineAudio = computed(() =>
   props.capabilityDomain === 'audio' && isVolcengineProviderCode(props.form.providerCode))
 
+// 媒体域「档案×域」回退：当前档案不承接本域时（如 volcengine 音频默认落 Ark），
+// 按供应商 protocolProfiles 顺序找第一个域内允许集非空的档案，返回对应类型 choice。
+// 由下方域默认 watch 在新建/克隆态消费；choice 与当前 type choice 相同时调用方不
+// 再 emit，避免 watch 自触发循环。
+function currentMediaProvider(): ProviderDefinition | undefined {
+  return mediaProviders.value.find((item) => item.code === props.form.providerCode)
+    ?? props.selectedProvider
+}
+
+function mediaDomainFallbackChoice(domain: AccountCapabilityDomain): AccountTypeChoice | undefined {
+  const provider = currentMediaProvider()
+  if (!provider) return undefined
+  for (const profile of provider.protocolProfiles) {
+    if (!profile.enabled) continue
+    const candidateTypes = capabilityDomainAccountTypes({
+      capabilityDomain: domain,
+      providerCode: provider.code,
+      profile
+    })
+    if (!candidateTypes.length) continue
+    const targetType = candidateTypes.includes(props.form.type) ? props.form.type : candidateTypes[0]
+    const choice = props.accountTypeChoices.find((item) => (
+      item.providerProtocolProfileId === profile.id && item.type === targetType
+    ))
+    if (choice) return choice
+  }
+  return undefined
+}
+
 // 新建态域默认值（统一向导）：媒体域切换供应商/类型或打开弹窗时重放域默认集；
 // 编辑态不重放，避免裁剪已存声明集。
 watch(
@@ -953,12 +982,23 @@ watch(
   ] as const,
   ([isOpen, domain, editing]) => {
     if (!isOpen || editing || !capabilityDomainIsMedia(domain)) return
-    const profile = props.selectedProtocolProfile
+    // 直接从供应商档案清单解析当前档案，避免 form 档案 id 与父级 selectedProtocolProfile
+    // prop 在同一 flush 内的更新时序差把回退后的档案又当回旧档案。
+    const provider = currentMediaProvider()
+    const profile = provider?.protocolProfiles.find((item) => item.id === props.form.providerProtocolProfileId)
+      ?? props.selectedProtocolProfile
     const allowedTypes = capabilityDomainAccountTypes({
       capabilityDomain: domain,
       providerCode: props.form.providerCode,
       profile
     })
+    if (!allowedTypes.length) {
+      const fallback = mediaDomainFallbackChoice(domain)
+      if (fallback && fallback.value !== `${props.form.providerProtocolProfileId}:${props.form.type}`) {
+        emit('select-type-choice', fallback.value)
+        return
+      }
+    }
     if (props.form.type && !allowedTypes.includes(props.form.type)) {
       const fallback = props.accountTypeChoices.find((choice) => (
         allowedTypes.includes(choice.type)

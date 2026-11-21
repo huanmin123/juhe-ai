@@ -25,6 +25,7 @@ type queryer interface {
 // bindingWrite is the normalized write shape of one group binding.
 type bindingWrite struct {
 	groupID      string
+	groupOwnerID string
 	groupName    *string
 	priority     int
 	weight       int
@@ -279,6 +280,7 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 		}
 		write := bindingWrite{
 			groupID:      groupID,
+			groupOwnerID: group.ownerID,
 			groupName:    group.namePtr(),
 			priority:     derefIntOr(input.Priority, 0),
 			weight:       derefIntOr(input.Weight, 1),
@@ -407,6 +409,26 @@ func uniqueGroupIDs(inputs []BindingInput) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// rejectAdminAuthorizedBindings enforces the recipient-consent boundary on the
+// management surface: an administrator acting with a target system account may
+// manage that account's own groups, but must not bind a group authorized to the
+// receiver. Binding is an explicit receiver action (design §5.10/§6.4); the
+// administrator's governance actions are pause/resume/extend/revoke.
+func rejectAdminAuthorizedBindings(access AccessScope, ownerID string, bindings []bindingWrite) error {
+	if !access.IsAdmin || strings.TrimSpace(access.FilterID) == "" {
+		return nil
+	}
+	for _, binding := range bindings {
+		if binding.groupOwnerID != "" && binding.groupOwnerID != ownerID {
+			return &ValidationError{
+				Code:    "authorization_binding_forbidden",
+				Message: "管理员不能代接收方绑定授权分组，请由接收方在授权中心确认并自行绑定",
+			}
+		}
+	}
+	return nil
 }
 
 // validateModeBindings mirrors validateRouteStrategyModeBindings.

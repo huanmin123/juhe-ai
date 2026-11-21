@@ -370,8 +370,9 @@ func defaultProbe(ctx context.Context, state State, input exactkeyprobe.Input) O
 
 // probeWithDialGuard 用给定守卫执行一次精确 Key+模型恢复探针；nil 守卫保持
 // 既有测试/嵌入式调用语义（无 DialGuard）。生产装配经 NewRunner 注入按
-// URLSecurityConfigFromEnv 构建的守卫，域名在拨号期解析并校验，strict 模式
-// 下不允许域名指向内网。
+// URLSecurityConfigFromEnv 构建的守卫，域名在拨号期解析并校验；strict 模式
+// 下只有解析结果全部命中保留段才拒绝（混合解析放行），直连/本地解析 SOCKS5
+// 只拨校验通过的地址。
 //
 // 缺陷修复：此前 ProbeOptions 缺少 Secret，decryptToken 对空 secret 直接
 // 报"凭据 envelope 缺失"，恢复探针永远只能得到 unknown。凭据 envelope 由

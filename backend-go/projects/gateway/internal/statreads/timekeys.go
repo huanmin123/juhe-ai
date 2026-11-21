@@ -266,25 +266,54 @@ func hourBucketsForRange(r Range) []string {
 }
 
 // hourBucketsUntilNow mirrors hourBucketsUntilNow: the last `hours` local hour
-// buckets ending at the current hour. A DST fall-back repeats a local hour;
-// the display bucket is keyed by local hour, so duplicates are collapsed and
-// the same hourly row is never counted twice.
+// buckets ending at the current hour. Sampling every 15 minutes keeps partial
+// local hours at DST transitions visible; a fall-back repeats a local hour, so
+// duplicates are collapsed by their last occurrence and the current hour stays
+// last (the display bucket is keyed by local hour, never counted twice).
+const localHourBucketSampleStep = 15 * time.Minute
+
 func hourBucketsUntilNow(hours int, now time.Time, location *time.Location) []string {
 	size := hours
 	if size < 1 {
 		size = 1
 	}
+	if location == nil {
+		location = time.UTC
+	}
+	start := now.Add(-time.Duration(size-1) * time.Hour)
 	buckets := make([]string, 0, size)
 	seen := make(map[string]bool, size)
-	for index := 0; index < size; index++ {
-		key := hourKeyIn(now.Add(time.Duration(-(size-1-index))*time.Hour), location)
+	for instant := now; !instant.Before(start); instant = instant.Add(-localHourBucketSampleStep) {
+		key := hourKeyIn(instant, location)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		buckets = append(buckets, key)
 	}
+	for left, right := 0, len(buckets)-1; left < right; left, right = left+1, right-1 {
+		buckets[left], buckets[right] = buckets[right], buckets[left]
+	}
 	return buckets
+}
+
+// hourBucketSpan returns the lexicographic min/max hour keys. A DST fall-back
+// can make the bucket order non-monotonic, so callers must not use the first
+// and last elements as a SQL range.
+func hourBucketSpan(buckets []string) (string, string) {
+	if len(buckets) == 0 {
+		return "", ""
+	}
+	startHour, endHour := buckets[0], buckets[0]
+	for _, bucket := range buckets[1:] {
+		if bucket < startHour {
+			startHour = bucket
+		}
+		if bucket > endHour {
+			endHour = bucket
+		}
+	}
+	return startHour, endHour
 }
 
 // rangeWindowKey mirrors rangeWindowKey: "startDate:endDate".

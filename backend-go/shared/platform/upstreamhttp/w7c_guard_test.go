@@ -496,7 +496,8 @@ func TestW7CDialGuardContract(t *testing.T) {
 	if allowGuard.hostAllowlisted("10.0.0.9", "") || allowGuard.hostAllowlisted("10.0.0.9", "443") {
 		t.Fatal("allowlist is host-or-host:port scoped")
 	}
-	// A host entry covers every port for that host.
+	// A host entry covers every port for that host: runtime allowlist matching is
+	// intentionally host-level (2026-11-21 decision); save-side matching stays exact.
 	if !allowGuard.hostAllowlisted("127.0.0.1", "8080") {
 		t.Fatal("host entry covers every port")
 	}

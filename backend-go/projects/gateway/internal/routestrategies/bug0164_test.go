@@ -543,9 +543,15 @@ func TestRouteStrategyAuthorizedGroupBinding(t *testing.T) {
 		t.Fatalf("unauthorized bind must fail: %d %v", code, denied)
 	}
 
-	// Active grant without expiry makes the group bindable.
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, expires_at, created_at, updated_at)
-		VALUES ('auth-active', 'group', ?, ?, 'active', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, groupA, aliceID)
+	// Active grant without expiry makes the group bindable. The recipient
+	// consent model additionally requires an effective accepted source (the
+	// bindable query joins the runtime's active source row).
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, effective_source_type, expires_at, created_at, updated_at)
+		VALUES ('auth-active', 'group', ?, ?, 'active', 'manual', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, groupA, aliceID)
+	env.exec(t, `INSERT INTO resource_authorization_sources (id, authorization_id, source_type, status, created_by, created_at, updated_at)
+		VALUES ('auth-active-manual', 'auth-active', 'manual', 'active', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
+	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, snapshot_revision, created_at, updated_at)
+		VALUES ('auth-active', ?, ?, 1, 'snap-auth-active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID, groupA)
 	code, granted := env.createStrategy(t, myPath, `{"name":"with-grant","groupBindings":[{"groupId":"`+groupA+`"}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("authorized bind: %d %v", code, granted)
@@ -561,8 +567,8 @@ func TestRouteStrategyAuthorizedGroupBinding(t *testing.T) {
 	// settings enabled flag) but the row reads groupEnabled=false. Weighted
 	// mode carries the required own active binding alongside the disabled
 	// authorized one.
-	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, created_at, updated_at)
-		VALUES ('auth-active', ?, ?, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID, groupA)
+	env.exec(t, `UPDATE group_authorization_settings SET enabled = 0, updated_at = '2026-01-02T00:00:00.000Z'
+		WHERE authorization_id = 'auth-active'`)
 	aliceGroup := env.createGroup(t, aliceID, "alice-own", true)
 	code, disabledBind := env.createStrategy(t, myPath, `{"name":"settings-off","mode":"weighted","groupBindings":[{"groupId":"`+aliceGroup+`","priority":1},{"groupId":"`+groupA+`","priority":2,"status":"disabled"}]}`)
 	if code != http.StatusCreated {
@@ -586,6 +592,7 @@ func TestRouteStrategyAuthorizedGroupBinding(t *testing.T) {
 
 	// Expired grants stop binding again.
 	env.exec(t, `DELETE FROM group_authorization_settings WHERE authorization_id = 'auth-active'`)
+	env.exec(t, `DELETE FROM resource_authorization_sources WHERE authorization_id = 'auth-active'`)
 	env.exec(t, `DELETE FROM resource_authorizations WHERE id = 'auth-active'`)
 	code, expired := env.createStrategy(t, myPath, `{"name":"expired","groupBindings":[{"groupId":"`+groupA+`"}]}`)
 	if code != http.StatusBadRequest {

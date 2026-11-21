@@ -1,9 +1,9 @@
 package groups
 
 import (
-	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -23,21 +23,31 @@ func findSinkEntry(env *testEnv, module, action string) *authsys.OperationLogEnt
 	return nil
 }
 
-// seedGroupAuthorization creates a direct manual group grant through the same
-// authz store the composition wires into groups.Deps.Authz.
+// seedGroupAuthorization seeds the post-consent runtime/grant/source rows the
+// return route consumes. The groups fixture intentionally keeps only the authz
+// tables that package reads, so the offer/accept flow itself is covered in the
+// authz package; here the rows already represent an accepted manual source.
 func seedGroupAuthorization(t *testing.T, env *testEnv, groupID, ownerID, granteeID string) string {
 	t.Helper()
-	result, err := env.authz.Create(context.Background(), authz.CreateInput{
-		ResourceType: "group", ResourceID: groupID,
-		GranteeType: "system_account", GranteeID: granteeID,
-	}, ownerID)
-	if err != nil {
-		t.Fatalf("authorize group: %v", err)
-	}
-	if !result.Created {
-		t.Fatalf("authorize group must create the grant: %+v", result)
-	}
-	return result.Item.ID
+	grantID := "grant-return-" + groupID
+	runtimeID := "ra-return-" + groupID
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO resource_authorizations
+		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+		 status, effective_source_type, acceptance_mode, created_by, created_at, updated_at)
+		VALUES (?, 'group', ?, ?, ?, 'active', 'manual', 'recipient', ?, ?, ?)`,
+		runtimeID, groupID, ownerID, granteeID, ownerID, now, now)
+	env.exec(t, `INSERT INTO resource_authorization_grants
+		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+		 grantee_system_account_id, status, acceptance_mode, accepted_at, accepted_by, created_by, created_at, updated_at)
+		VALUES (?, 'group', ?, ?, 'system_account', ?, 'active', 'recipient', ?, ?, ?, ?, ?)`,
+		grantID, groupID, ownerID, granteeID, now, granteeID, ownerID, now, now)
+	env.exec(t, `INSERT INTO resource_authorization_sources
+		(id, authorization_id, grant_id, source_type, status, acceptance_mode, accepted_at, accepted_by,
+		 created_by, created_at, updated_at)
+		VALUES (?, ?, ?, 'manual', 'active', 'recipient', ?, ?, ?, ?, ?)`,
+		"src-return-"+groupID, runtimeID, grantID, now, granteeID, ownerID, now, now)
+	return grantID
 }
 
 // TestGroupsDeleteAuditTargetsLockedIn closes the M05 handover: the delete
@@ -178,10 +188,10 @@ func (e *testEnv) switchSession(t *testing.T, username, password string) {
 }
 
 // TestGroupsReturnAuthorizationContracts pins the remaining route contract:
-// unknown groups and owner-self returns 404 verbatim, the admin surface keeps
-// the scope-query gate and the admin filter acts as the grantee. Each
-// sub-case uses its own group so the mutation-guard failure window (Node
-// mutationGuard semantics, 10s) cannot collapse them into 409s.
+// unknown groups and owner-self returns 404 verbatim, and the management
+// return route is removed (404) so an admin can never return on behalf of the
+// receiver. Each sub-case uses its own group so the mutation-guard failure
+// window (Node mutationGuard semantics, 10s) cannot collapse them into 409s.
 func TestGroupsReturnAuthorizationContracts(t *testing.T) {
 	env := newTestEnv(t)
 	ownerID := env.login(t, "owner", "owner-pass", "user")
@@ -189,10 +199,10 @@ func TestGroupsReturnAuthorizationContracts(t *testing.T) {
 	// is active; the later sub-cases switch sessions deliberately.
 	ownGroup, _ := env.createGroup(t, "/__aisys__/api/my-groups", "owned")
 	blankGroup, _ := env.createGroup(t, "/__aisys__/api/my-groups", "blank-scope")
-	groupID, group := env.createGroup(t, "/__aisys__/api/my-groups", "admin-returnable")
+	groupID, _ := env.createGroup(t, "/__aisys__/api/my-groups", "admin-returnable")
 	granteeID := env.login(t, "grantee", "grantee-pass", "user")
 	grantID := seedGroupAuthorization(t, env, groupID, ownerID, granteeID)
-	rootID := env.login(t, "root", "root-pass", "super_admin")
+	env.login(t, "root", "root-pass", "super_admin")
 
 	// Unknown group on the self surface (root scope) → 404 verbatim.
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/my-groups/grp_missing/return-authorization", "")
@@ -215,42 +225,26 @@ func TestGroupsReturnAuthorizationContracts(t *testing.T) {
 	if code != http.StatusUnauthorized {
 		t.Fatalf("anonymous return: %d", code)
 	}
-	// The admin surface additionally requires the admin role (grantee session).
+	// The management return route is removed: both a normal user and an admin
+	// get 404, and nothing is written.
 	env.switchSession(t, "grantee", "grantee-pass")
-	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/groups/"+ownGroup+"-admin-surface/return-authorization", "")
-	if code != http.StatusForbidden && code != http.StatusUnauthorized {
-		t.Fatalf("user on admin surface: %d", code)
+	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/groups/"+blankGroup+"/return-authorization", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("user on removed admin route: %d", code)
 	}
-	// Restore the admin session for the remaining admin-surface cases.
 	env.switchSession(t, "root", "root-pass")
-
-	// Admin surface scope-query gate on a fresh group (blank explicit
-	// systemAccountId is a 400 with the parseRequestScopeQuery text).
-	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/groups/"+blankGroup+"/return-authorization?systemAccountId=", "")
-	if code != http.StatusBadRequest || payload["message"] != "系统账号 ID 不能为空" {
-		t.Fatalf("blank scope query: %d %v", code, payload)
+	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/groups/"+groupID+"/return-authorization?systemAccountId="+granteeID, "")
+	if code != http.StatusNotFound {
+		t.Fatalf("admin on removed admin route: %d", code)
 	}
-
-	// Admin returning on behalf of the grantee (scope filter = grantee).
-	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/groups/"+groupID+"/return-authorization?systemAccountId="+granteeID, "")
-	if code != http.StatusNoContent {
-		t.Fatalf("admin return: %d %v", code, payload)
-	}
-	var grantStatus, revokedBy string
-	if err := env.queryRow(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&grantStatus, &revokedBy); err != nil {
+	var grantStatus string
+	if err := env.queryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
-	if grantStatus != authz.StatusReturned || revokedBy != rootID {
-		t.Fatalf("admin return stamps: status=%s revokedBy=%s", grantStatus, revokedBy)
+	if grantStatus != authz.StatusActive {
+		t.Fatalf("removed admin route must not mutate the grant: %s", grantStatus)
 	}
-	entry := findSinkEntry(env, "authorizations", "return")
-	if entry == nil || entry.Mode != "admin" {
-		t.Fatalf("admin return log mode drift: %+v", entry)
-	}
-	if entry.Summary != "归还授权分组："+group["name"].(string) {
-		t.Fatalf("admin return summary drift: %q", entry.Summary)
-	}
-	if entry.OperationScopeSystemAccountID != granteeID {
-		t.Fatalf("admin return scope drift: %+v", entry)
+	if entry := findSinkEntry(env, "authorizations", "return"); entry != nil {
+		t.Fatalf("removed admin route must not write an audit record: %+v", entry)
 	}
 }

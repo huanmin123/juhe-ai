@@ -66,6 +66,7 @@ var accountPatchGatewayRuntimeFields = map[string]bool{
 	// credentialsChanged (line 898) and the clearFailureState outcome
 	// (gatewayRuntimeAffected: true at line 1215).
 	"credentials":       true,
+	"connections":       true,
 	"clearFailureState": true,
 }
 

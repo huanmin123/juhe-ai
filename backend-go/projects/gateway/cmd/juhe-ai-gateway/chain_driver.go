@@ -248,7 +248,14 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// opPath 自带全路径（双根特例 base=origin）——全部经共享 upstreamenvelope.
 		// JoinUpstreamURL 统一直拼，不再有厂商服务根归一分支。
 		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
-			upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+			var upstreamURL string
+			var urlErr error
+			if chainNormalizeProviderToken(account.VendorCode) == "qwen" {
+				// qwen 全路径 opPath（万相，T221）：base 尾部服务根先剥一次再拼。
+				upstreamURL, urlErr = chainQwenJoinUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+			} else {
+				upstreamURL, urlErr = upstreamenvelope.JoinUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+			}
 			if urlErr != nil {
 				return nil, urlErr
 			}
@@ -267,7 +274,8 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
 			switch chainAudioJobAdapterKeyOfProvider(account.VendorCode) {
 			case "qwen":
-				upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
+				// qwen 全路径 opPath（paraformer，T221）：base 尾部服务根先剥一次再拼。
+				upstreamURL, urlErr := chainQwenJoinUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
 				if urlErr != nil {
 					return nil, urlErr
 				}

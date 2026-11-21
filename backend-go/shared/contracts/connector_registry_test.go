@@ -755,6 +755,7 @@ func TestRegistryInternalConsistency(t *testing.T) {
 		PresetVolcengineArk: {
 			"POST /contents/generations/tasks",
 			"GET /contents/generations/tasks/{id}",
+			"POST /images/generations",
 		},
 		PresetVolcengineOpenSpeech: {
 			"POST /tts/create",
@@ -831,6 +832,51 @@ func TestConnectivityProbeCoverage(t *testing.T) {
 					t.Errorf("preset %q mode %q 不得把认证失败码 %d 列为预期拒绝", combo.Preset, mode, code)
 				}
 			}
+		}
+	}
+}
+
+// TestConnectivityProbePathsMatchOperationTemplates 锁定探测路径来源：
+// 每个 preset 的连通性探测 PathTemplate 必须命中自己的 OperationPathTemplates；
+// 仅允许已登记的服务根前缀例外（火山 OpenSpeech 固定语音域 /api/v3），且
+// 去前缀后仍须精确命中模板。例外必须被实际使用，避免清单腐化。
+func TestConnectivityProbePathsMatchOperationTemplates(t *testing.T) {
+	placeholder := regexp.MustCompile(`\{[a-z_]+\}`)
+	normalize := func(value string) string {
+		return placeholder.ReplaceAllString(strings.TrimSpace(value), "{*}")
+	}
+	prefixExceptions := map[string]string{
+		PresetVolcengineOpenSpeech: "/api/v3",
+	}
+	usedPrefix := map[string]bool{}
+	for _, record := range connectorPresetRecords {
+		templates := map[string]bool{}
+		for _, template := range record.OperationPathTemplates {
+			templates[normalize(template)] = true
+		}
+		for _, spec := range connectivityProbesByPreset[record.Code] {
+			for _, name := range placeholder.FindAllString(spec.PathTemplate, -1) {
+				if name != "{probe_id}" && name != "{model}" {
+					t.Errorf("preset %q mode %q 探测路径含未登记占位符 %s", record.Code, spec.EndpointMode, name)
+				}
+			}
+			key := normalize(spec.Method + " " + spec.PathTemplate)
+			if templates[key] {
+				continue
+			}
+			if prefix, ok := prefixExceptions[record.Code]; ok && strings.HasPrefix(spec.PathTemplate, prefix+"/") {
+				stripped := normalize(spec.Method + " " + strings.TrimPrefix(spec.PathTemplate, prefix))
+				if templates[stripped] {
+					usedPrefix[record.Code] = true
+					continue
+				}
+			}
+			t.Errorf("preset %q mode %q 探测路径 %q 不在该 preset 的操作模板内，也未命中已登记前缀例外", record.Code, spec.EndpointMode, spec.Method+" "+spec.PathTemplate)
+		}
+	}
+	for preset := range prefixExceptions {
+		if !usedPrefix[preset] {
+			t.Errorf("preset %q 的路径前缀例外没有任何探针使用，需删除或修正", preset)
 		}
 	}
 }

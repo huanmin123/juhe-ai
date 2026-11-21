@@ -25,13 +25,16 @@ import (
 
 // directInputBaselineConnectionPresetCodes mirrors direct_input_reader.go 的
 // J1 preset 白名单（供应商解耦：旧 provider code 白名单换轴为健康检查连接的
-// connection_preset_code 值域，两处字面量必须同步演化）。基线播种按 EXISTS
-// 判定，比候选 SQL 的「health-check 优先」单连接解析略宽——设计上无害（为暂
-// 不符合条件的账户预置版本行免二次迁移），最终资格仍由读取器运行时过滤。
-var directInputBaselineConnectionPresetCodes = [10]string{
+// connection_preset_code 值域，两处字面量必须同步演化）。J1 专用映射在共享
+// 10 对对话 preset 之上追加 volcengine_ark/qwen_dashscope（仅 chat 生成
+// 形态）。基线播种按 EXISTS 判定，比候选 SQL 的「health-check 优先」单连接
+// 解析略宽——设计上无害（为暂不符合条件的账户预置版本行免二次迁移），最终
+// 资格仍由读取器运行时过滤。
+var directInputBaselineConnectionPresetCodes = [12]string{
 	"gpt_openai_v1", "xai_openai_v1", "deepseek_openai_v1", "deepseek_anthropic_v1",
 	"anthropic_v1", "glm_general_openai_v1", "glm_coding_openai_v1", "glm_coding_anthropic_v1",
 	"gemini_openai_chat_v1beta", "gemini_native_v1beta",
+	"volcengine_ark", "qwen_dashscope",
 }
 
 // directInputBaselineAccountTypes mirrors direct_input_reader.go:452。
@@ -50,19 +53,7 @@ func seedDirectInputBaseline(ctx context.Context, db *sql.DB) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("J1 直读基线播种缺少数据库句柄")
 	}
-	const qualifier = "juhe_business."
-	query := `INSERT INTO ` + qualifier + `account_health_jobs_input_versions (account_id, current_version, reserved_at)
-SELECT a.id, 1, $1
-FROM ` + qualifier + `accounts a
-WHERE a.deleted_at IS NULL
-  AND a.type IN ('` + joinBaselineList(directInputBaselineAccountTypes[:]) + `')
-  AND EXISTS (
-    SELECT 1 FROM ` + qualifier + `account_connections c
-    WHERE c.account_id = a.id AND c.enabled = 1
-      AND c.connection_preset_code IN ('` + joinBaselineList(directInputBaselineConnectionPresetCodes[:]) + `')
-  )
-ON CONFLICT (account_id) DO NOTHING`
-	result, err := db.ExecContext(ctx, query, directInputIsoMillis(time.Now()))
+	result, err := db.ExecContext(ctx, directInputBaselineSQL(), directInputIsoMillis(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("播种 J1 直读输入基线失败: %w", err)
 	}
@@ -71,6 +62,26 @@ ON CONFLICT (account_id) DO NOTHING`
 		return 0, fmt.Errorf("读取 J1 直读输入基线播种行数失败: %w", err)
 	}
 	return seeded, nil
+}
+
+// directInputBaselineSQL 渲染基线 INSERT...SELECT 语句（$1 = reserved_at）。
+// 授权实例行不再冗余身份/连接事实，连接 EXISTS 必须按「资源账户」判定：
+// 实例取 authorization_instance_source_account_id，普通账户取自身 id；实例
+// source 为空时 CASE 返回 NULL，比较不成立（NULL 安全，不误播种）。
+func directInputBaselineSQL() string {
+	const qualifier = "juhe_business."
+	return `INSERT INTO ` + qualifier + `account_health_jobs_input_versions (account_id, current_version, reserved_at)
+SELECT a.id, 1, $1
+FROM ` + qualifier + `accounts a
+WHERE a.deleted_at IS NULL
+  AND a.type IN ('` + joinBaselineList(directInputBaselineAccountTypes[:]) + `')
+  AND EXISTS (
+    SELECT 1 FROM ` + qualifier + `account_connections c
+    WHERE c.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE a.authorization_instance_source_account_id END
+      AND c.enabled = 1
+      AND c.connection_preset_code IN ('` + joinBaselineList(directInputBaselineConnectionPresetCodes[:]) + `')
+  )
+ON CONFLICT (account_id) DO NOTHING`
 }
 
 func joinBaselineList(values []string) string {

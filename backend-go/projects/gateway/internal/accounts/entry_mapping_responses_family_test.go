@@ -33,11 +33,18 @@ func TestResponsesIdentityMappingSavesWithResponsesOnlyConnection(t *testing.T) 
 	if code != http.StatusOK {
 		t.Fatalf("切换 Responses-only 连接应成功：%d %v", code, payload)
 	}
+	// connections-only 提交必须同步凭据影子副本，映射校验面对最终声明集。
+	if modes := m2AccountModes(t, env, id); !unorderedStringListEqual(modes, []string{"responses_json", "responses_sse"}) {
+		t.Fatalf("凭据 modes 应同步为连接集合：%v", modes)
+	}
 
 	code, payload = w2PatchBody(t, env, id, `"supportedModels":["gpt-4o-mini","gpt-4o"],
 		"modelMappings":[{"sourceModel":"gpt-4o-mini","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o","upstreamEndpointFamily":"responses"}]`)
 	if code != http.StatusOK {
 		t.Fatalf("responses→responses 同族改名应保存成功：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, id); !unorderedStringListEqual(modes, []string{"responses_json", "responses_sse"}) {
+		t.Fatalf("映射提交不应改写连接同步后的 modes：%v", modes)
 	}
 	if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ?
 		AND source_endpoint_family = 'responses' AND target_endpoint_family = 'responses'
@@ -60,6 +67,10 @@ func TestResponsesIdentityMappingCoexistsWithChatAliases(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("四形态连接应成功：%d %v", code, payload)
 	}
+	if modes := m2AccountModes(t, env, id); !unorderedStringListEqual(modes,
+		[]string{"chat_json", "chat_sse", "responses_json", "responses_sse"}) {
+		t.Fatalf("凭据 modes 应同步为四形态连接集合：%v", modes)
+	}
 
 	code, payload = w2PatchBody(t, env, id, `"supportedModels":["gpt-4o-mini","gpt-4o"],
 		"modelMappings":[
@@ -68,6 +79,10 @@ func TestResponsesIdentityMappingCoexistsWithChatAliases(t *testing.T) {
 		]`)
 	if code != http.StatusOK {
 		t.Fatalf("混合同族改名应保存成功：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, id); !unorderedStringListEqual(modes,
+		[]string{"chat_json", "chat_sse", "responses_json", "responses_sse"}) {
+		t.Fatalf("映射提交不应改写连接同步后的 modes：%v", modes)
 	}
 	for _, family := range []string{"chat_completions", "responses"} {
 		if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ?

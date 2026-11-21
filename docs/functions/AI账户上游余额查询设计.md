@@ -338,7 +338,7 @@ go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除�
 
 - API Key 只在服务端内存中用于当前上游请求，不返回前端、不写日志、不写错误摘要。
 - 自定义 URL 必须复用现有上游 URL 安全校验和账户代理，不允许访问另一 Origin。
-- 出站与 `/v1` 派发共用部署级 `upstreamhttp.DialGuard`（`QueryOptions.DialGuard` / `RunnerConfig.DialGuard` / jobs J2 `RuntimeConfig.DialGuard`，由各进程组合根从同一 `URLSecurityConfig` 构造）：strict 模式下直连在拨号期解析并只拨号校验通过的地址（本地解析 socks5 同口径）；代理分支在发送前对**最终目标 host** 执行同一 `ValidateHost`，因为代理 transport 的拨号期守卫只看得到代理主机（socks5h 为远端解析，预检为 best-effort）。解析语义为混合放行：至少一个解析地址不命中 blocked ranges 即通过，只有解析结果全部命中 blocked ranges 才拒绝——本地 DNS 污染混入 blocked 地址不会掩盖可用的公网地址。strict 模式（`JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false`/`0`）下被拒绝的目标返回非临时诊断 `upstream_blocked`（错误摘要不包含解析结果），适配器循环内每条候选都在本地拒绝、不发出任何上游请求；默认放行口径与 2026-09-19 决策一致。J2 部署环境取值非法时 `LoadRuntimeConfig` fail-closed（不启动 J2），不静默放行。
+- 出站与 `/v1` 派发共用部署级 `upstreamhttp.DialGuard`（`QueryOptions.DialGuard` / `RunnerConfig.DialGuard` / jobs J2 `RuntimeConfig.DialGuard`，由各进程组合根从同一 `URLSecurityConfig` 构造）：strict 模式下直连在拨号期解析并只拨号校验通过的地址（本地解析 socks5 同口径）；代理分支在发送前对**最终目标 host** 执行同一 `ValidateHost`，因为代理 transport 的拨号期守卫只看得到代理主机（socks5h 为远端解析，预检为 best-effort；混合放行同样只约束本地预检，远端代理仍可能自行选择 blocked 地址，属已接受边界）。解析语义为混合放行：至少一个解析地址不命中 blocked ranges 即通过，只有解析结果全部命中 blocked ranges 才拒绝——本地 DNS 污染混入 blocked 地址不会掩盖可用的公网地址。strict 模式（`JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false`/`0`）下被拒绝的目标返回非临时诊断 `upstream_blocked`（错误摘要不包含解析结果），适配器循环内每条候选都在本地拒绝、不发出任何上游请求；默认放行口径与 2026-09-19 决策一致。J2 部署环境取值非法时 `LoadRuntimeConfig` fail-closed（不启动 J2），不静默放行。
 - 禁止重定向，避免同源入口把 Authorization 转发到其他主机。
 - JSON Pointer 只读取已解析、受大小限制的 JSON，不支持表达式、模板、JavaScript 或动态代码。
 - 错误摘要区分超时、HTTP 状态、鉴权失败、JSON 非法和字段不可解析，不包含完整响应正文。

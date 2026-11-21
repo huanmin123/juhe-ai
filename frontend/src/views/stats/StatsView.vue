@@ -139,6 +139,19 @@
         :on-retry="() => loadDailyTrend(true)"
         compact
       >
+        <template #title-extra>
+          <div class="stats-daily-controls">
+            <a-segmented
+              v-model:value="dailyTrendMetric"
+              :options="dailyTrendMetricOptions"
+              :disabled="dailyTrendLoading"
+              size="small"
+              aria-label="趋势指标"
+              @change="renderCharts"
+            />
+            <StatsPerspectiveSwitch value="overview" :disabled="loading" />
+          </div>
+        </template>
         <div ref="dailyTrendChartRef" class="daily-consumption-chart" />
       </StatsChartCard>
     </div>
@@ -203,6 +216,7 @@ import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useStatsWorkspaceFilters, type StatsOverviewRangeMode } from './useStatsWorkspaceFilters'
 import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -213,13 +227,14 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import type { UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
+import StatsPerspectiveSwitch from './StatsPerspectiveSwitch.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
-import { buildDailyConsumptionOption, buildErrorOption, buildModelDistributionOption, buildUsageTrendOption } from './statsChartOptions'
+import { buildDailyConsumptionOption, buildErrorOption, buildModelDistributionOption, buildUsageTrendOption, hasDailyConsumptionData } from './statsChartOptions'
 import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent } from './statsFormatters'
 
 const MAX_RANGE_DAYS = 31
 type QuickRange = 'today' | 'recent7d' | 'recent1m'
-type RangeMode = 'auto' | QuickRange | 'custom'
+type RangeMode = StatsOverviewRangeMode
 const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
   { label: '今天', value: 'today' },
   { label: '近7天', value: 'recent7d' },
@@ -252,18 +267,27 @@ const defaultStatsPageState = (): StatsPageState => ({
 })
 const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
+const statsWorkspace = useStatsWorkspaceFilters()
+const incomingWorkspace = statsWorkspace.incoming()
 
 const loading = ref(false)
 const summaryLoading = ref(false)
 const summaryError = ref('')
-const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
-const rangeMode = ref<RangeMode>(initialPageState.rangeMode)
+const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(incomingWorkspace
+  ? { startDate: incomingWorkspace.startDate, endDate: incomingWorkspace.endDate }
+  : initialPageState.range))
+const rangeMode = ref<RangeMode>(incomingWorkspace ? incomingWorkspace.overviewRangeMode ?? 'custom' : initialPageState.rangeMode)
 const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
-const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
-const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
+const selectedSystemAccountId = ref(incomingWorkspace?.systemAccountId || initialPageState.selectedSystemAccountId || allSystemAccountsValue)
+const selectedSystemAccount = ref<PrincipalSelection | undefined>(incomingWorkspace ? incomingWorkspace.systemAccount : initialPageState.selectedSystemAccount)
 const usageOverview = ref<UsageStatsOverview>()
 const dailyTrend = ref<UsageStatsOverviewDailyTrendResult>()
+const dailyTrendMetric = ref<'tokens' | 'cost'>('tokens')
+const dailyTrendMetricOptions = [
+  { label: 'Token', value: 'tokens' },
+  { label: '成本', value: 'cost' }
+] satisfies Array<{ label: string; value: 'tokens' | 'cost' }>
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
@@ -319,7 +343,7 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   onDeactivate: handlePageDeactivate
 })
 
-const hasDailyTrend = computed(() => dailyTrend.value?.dailyTrend.some((item) => item.totalTokens > 0) === true)
+const hasDailyTrend = computed(() => hasDailyConsumptionData(dailyTrend.value?.dailyTrend ?? [], dailyTrendMetric.value))
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
@@ -335,6 +359,12 @@ const quickRangeValue = computed<QuickRange | undefined>(() => {
   return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? mode : undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
+statsWorkspace.register(() => ({
+  startDate: displayRange.value[0],
+  endDate: displayRange.value[1],
+  systemAccountId: selectedSystemAccountId.value,
+  systemAccount: selectedSystemAccount.value
+}))
 // 手机端筛选抽屉开合；有非默认筛选（自定义日期或指定到具体用户，'all' 是全部用户哨兵）时在筛选按钮上打点提示。
 const mobileFilterOpen = ref(false)
 const mobileFilterActive = computed(() => quickRangeValue.value === undefined
@@ -343,7 +373,7 @@ const dailyTrendRangeLabel = computed(() => dailyTrend.value
   ? `${formatDateLabel(dailyTrend.value.range.startDate)} 至 ${formatDateLabel(dailyTrend.value.range.endDate)}`
   : currentWindowLabel.value)
 const dailyTrendTitle = computed(() => `Token 与成本（${dailyTrendRangeLabel.value}）`)
-const dailyTrendEmptyDescription = computed(() => `${dailyTrendRangeLabel.value}暂无 Token 消耗`)
+const dailyTrendEmptyDescription = computed(() => `${dailyTrendRangeLabel.value}${dailyTrendMetric.value === 'cost' ? '暂无成本数据' : '暂无 Token 消耗'}`)
 const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
@@ -371,7 +401,7 @@ function formatOptionalCost(value?: number) {
   return typeof value === 'number' && Number.isFinite(value) ? formatCost(value) : '-'
 }
 
-async function loadData(options: { force?: boolean; forceUsageWindow?: boolean } = {}) {
+async function loadData(options: { force?: boolean; forceUsageWindow?: boolean; persistRange?: boolean } = {}) {
   const requestSeq = ++statsRequestSeq
   resetDailyTrend()
   chartRequestSeq.hourlyTrend += 1
@@ -423,6 +453,7 @@ async function loadData(options: { force?: boolean; forceUsageWindow?: boolean }
       errors: []
     }
     syncDateRangeFromResponse(nextSummary.range)
+    if (options.persistRange || statsWorkspace.incoming()?.overviewRangeMode) statsWorkspace.persist(rangeMode.value)
     summaryError.value = ''
     renderCharts()
     if (dailyTrendLoaded.value) void loadDailyTrend(options.force === true)
@@ -620,6 +651,10 @@ function handlePageDeactivate(): void {
 }
 
 onActivated(() => {
+  if (applyIncomingWorkspaceFilters()) {
+    setupChartObservers(false)
+    return
+  }
   if (initialLoadInterrupted && !usageOverview.value) {
     initialLoadInterrupted = false
     void loadData({ forceUsageWindow: isDynamicRangeMode(rangeMode.value) }).finally(() => {
@@ -629,6 +664,26 @@ onActivated(() => {
   }
   setupChartObservers(false)
 })
+
+function applyIncomingWorkspaceFilters(): boolean {
+  const next = statsWorkspace.incoming()
+  if (!next) return false
+  const nextRange = parseDateRange({ startDate: next.startDate, endDate: next.endDate })
+  const nextMode = next.overviewRangeMode ?? 'custom'
+  const changed = displayRange.value[0] !== next.startDate
+    || displayRange.value[1] !== next.endDate
+    || selectedSystemAccountId.value !== next.systemAccountId
+    || rangeMode.value !== nextMode
+  if (!changed) return false
+  dateRange.value = nextRange
+  rangeMode.value = nextMode
+  dateRangeExplicit.value = nextMode !== 'auto'
+  calendarRange.value = [null, null]
+  selectedSystemAccountId.value = next.systemAccountId
+  selectedSystemAccount.value = next.systemAccount
+  void loadData()
+  return true
+}
 
 type StatsObservedSection = 'dailyTrend' | StatsChartSection
 
@@ -653,6 +708,7 @@ function handleDateRangeChange() {
   })
   rangeMode.value = 'custom'
   dateRangeExplicit.value = true
+  statsWorkspace.persist(rangeMode.value)
   void loadData()
 }
 
@@ -670,6 +726,7 @@ function handleSystemAccountChange() {
   if (selectedSystemAccountId.value === allSystemAccountsValue) {
     selectedSystemAccount.value = undefined
   }
+  statsWorkspace.persist(rangeMode.value)
   void loadData()
 }
 
@@ -683,6 +740,7 @@ function resetFilters() {
   selectedSystemAccount.value = defaults.selectedSystemAccount
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
+  statsWorkspace.clear()
   void loadData()
 }
 
@@ -709,7 +767,7 @@ async function renderDailyTrendChart() {
   }
   const chart = await ensureChart(dailyTrendChartRef, dailyTrendChart, () => pageActive.value)
   if (!chart || !dailyTrend.value || !pageActive.value) return
-  chart.setOption(buildDailyConsumptionOption(dailyTrend.value.dailyTrend), { notMerge: true })
+  chart.setOption(buildDailyConsumptionOption(dailyTrend.value.dailyTrend, dailyTrendMetric.value), { notMerge: true })
 }
 
 async function renderUsageTrendChart() {
@@ -783,18 +841,15 @@ function resolvedOverviewRangeParams(): { startDate?: string; endDate?: string }
   return range ? { startDate: range.startDate, endDate: range.endDate } : selectedRangeParams()
 }
 
-async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow({ force: true, viewScope: isManagementView.value ? 'admin' : 'self' })
+function handleQuickRangeChange(value: string | number) {
   const mode = value as QuickRange
-  const range = quickRangeDateRange(mode)
-  if (!range) return
-  dateRange.value = parseDateRange({
-    startDate: formatDateKey(range[0]),
-    endDate: formatDateKey(range[1])
-  })
   rangeMode.value = mode
   dateRangeExplicit.value = true
-  void loadData()
+  if (quickRangeDateRange(mode)) {
+    syncDynamicDateRangeToStatsWindow()
+    statsWorkspace.persist(rangeMode.value)
+  }
+  void loadData({ forceUsageWindow: true, persistRange: true })
 }
 
 function disabledDate(current: Dayjs) {

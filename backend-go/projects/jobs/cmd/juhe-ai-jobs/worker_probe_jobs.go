@@ -61,7 +61,8 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 
 	// 探针族出站 SSRF 守卫（SEC-03）：与 J1 accounthealth、gateway 手测共用
 	// 部署级 URLSecurityConfig 语义。默认 allow-private 时 ValidateHost 直接
-	// 放行；strict 模式下目标域名解析到内网会在发送前/拨号期被拒绝。
+	// 放行；strict 模式下只有全部解析地址命中保留段才在发送前拒绝，直连/
+	// 本地解析 SOCKS5 只拨校验通过的地址。
 	probeSecurityConfig, securityErr := upstreamhttp.URLSecurityConfigFromEnv(os.Getenv)
 	if securityErr != nil {
 		return securityErr

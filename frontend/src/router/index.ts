@@ -19,6 +19,8 @@ declare module 'vue-router' {
     heavy?: boolean
     menuGroup?: string
     menuGroupTitle?: string
+    menuVisible?: boolean
+    statsWorkspace?: 'usage' | 'performance' | 'health'
     public?: boolean
     viewScope?: 'admin' | 'self'
     roles?: SystemAccountRole[]
@@ -38,8 +40,9 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/my-stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
-      title: '统计概览',
-      description: '查看自己的请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和成本概览。',
+      title: '统计与监控',
+      description: '查看用量、请求性能和账户健康。',
+      statsWorkspace: 'usage',
       viewScope: 'self',
       keepAlive: true,
       heavy: true
@@ -231,7 +234,9 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '我的用量',
       description: '查看你可使用账户的每日消耗趋势，仅统计你自己发起的调用。',
       viewScope: 'self',
-      heavy: true
+      heavy: true,
+      menuVisible: false,
+      statsWorkspace: 'usage'
     }
   },
   {
@@ -241,7 +246,9 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: 'AI性能监控',
       description: '追踪你可使用 AI 账户的小时级性能趋势，包含授权给你的账户实例。',
       viewScope: 'self',
-      heavy: true
+      heavy: true,
+      menuVisible: false,
+      statsWorkspace: 'performance'
     }
   },
   {
@@ -251,7 +258,9 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: 'AI健康监控',
       description: '按小时查看你可使用 AI 账户最近一个月的健康检查结果。',
       viewScope: 'self',
-      heavy: true
+      heavy: true,
+      menuVisible: false,
+      statsWorkspace: 'health'
     }
   },
   {
@@ -280,8 +289,9 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
-      title: '统计概览',
-      description: '按监控窗口查看请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和系统性能。',
+      title: '统计与监控',
+      description: '查看用量、请求性能和账户健康。',
+      statsWorkspace: 'usage',
       viewScope: 'admin',
       roles: managementRoles,
       keepAlive: true,
@@ -431,7 +441,9 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
-      heavy: true
+      heavy: true,
+      menuVisible: false,
+      statsWorkspace: 'usage'
     }
   },
   {
@@ -444,7 +456,9 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
-      heavy: true
+      heavy: true,
+      menuVisible: false,
+      statsWorkspace: 'performance'
     }
   },
   {
@@ -457,7 +471,9 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
-      heavy: true
+      heavy: true,
+      menuVisible: false,
+      statsWorkspace: 'health'
     }
   },
   {

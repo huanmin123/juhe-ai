@@ -16,6 +16,7 @@
         <a-select v-model:value="capabilityDomainFilter" class="ai-health-domain-select" :options="capabilityDomainOptions" @change="changeCapabilityDomain" />
       </template>
       <template #actions>
+        <span class="ai-health-scope">{{ isManagementView ? '全部账户' : '我的账户' }}</span>
         <div class="ai-health-legend" aria-label="状态图例">
           <span><i class="success" />可用</span>
           <span><i class="failure" />不可用</span>
@@ -422,6 +423,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .ai-health-range-select { width: 148px; }
+.ai-health-scope { color: var(--juhe-muted); font-size: 12px; }
 .ai-health-domain-select { width: 110px; }
 .ai-health-legend { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; color: var(--juhe-muted); font-size: 13px; white-space: nowrap; }
 .ai-health-legend span { display: inline-flex; align-items: center; gap: 6px; }

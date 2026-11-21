@@ -103,6 +103,7 @@ const routeStrategiesPGFixtureSchema = `
       system_account_id text NOT NULL,
       group_id text NOT NULL,
       enabled integer NOT NULL DEFAULT 1,
+      snapshot_revision text,
       group_type text NOT NULL DEFAULT 'personal',
       scheduling_policy_json text,
       created_at text NOT NULL,
@@ -114,8 +115,25 @@ const routeStrategiesPGFixtureSchema = `
       resource_id text NOT NULL,
       grantee_system_account_id text NOT NULL,
       status text NOT NULL DEFAULT 'active',
+      effective_source_type text,
+      effective_source_team_id text,
       expires_at text,
       created_at text NOT NULL,
+      updated_at text NOT NULL
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
+      id text PRIMARY KEY,
+      authorization_id text NOT NULL,
+      source_type text NOT NULL,
+      source_team_id text,
+      status text NOT NULL DEFAULT 'active',
+      activated_at text,
+      ended_at text,
+      ended_reason text,
+      created_by text,
+      created_at text NOT NULL,
+      revoked_by text,
+      revoked_at text,
       updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (

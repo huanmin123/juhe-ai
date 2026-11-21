@@ -334,15 +334,46 @@ func TestW10CPostgresAccountHealthEntry(t *testing.T) {
 		t.Fatalf("健康新条目错误: %+v", got)
 	}
 
-	// 失败状态 + provider code 缺省 unknown。
+	// 失败状态（真实账号失败归因）+ provider code 缺省 unknown。
 	addPostgresAggregatedAccountHealthEntry(target, w10cHealthRow(func(r *UsageStatsRecordRow) {
 		r.ID = "rec-h2"
 		r.Success = 0
+		r.FailureAttribution = strPtr("account_upstream")
 		r.ProviderCode = nil
 		r.CreatedAt = "2026-04-18T10:45:00.000Z"
 	}), statHour)
 	if got := target[key]; got == nil || got.Status != "failure" || got.ProviderCode != "unknown" || got.LastObservedAt != "2026-04-18T10:45:00.000Z" {
 		t.Fatalf("健康失败条目错误: %+v", got)
+	}
+
+	// T217 非质量口径：opaque_upstream / gateway_capacity / gateway_policy /
+	// downstream_closed 归因与无归因的失败行不计健康条带。
+	for _, attribution := range []string{"opaque_upstream", "gateway_capacity", "gateway_policy", "downstream_closed"} {
+		skipped := map[string]*aggregatedAccountHealthEntry{}
+		addPostgresAggregatedAccountHealthEntry(skipped, w10cHealthRow(func(r *UsageStatsRecordRow) {
+			r.Success = 0
+			r.FailureAttribution = strPtr(attribution)
+		}), statHour)
+		if len(skipped) != 0 {
+			t.Fatalf("非质量归因 %s 不得写健康条带: %+v", attribution, skipped)
+		}
+	}
+	noAttribution := map[string]*aggregatedAccountHealthEntry{}
+	addPostgresAggregatedAccountHealthEntry(noAttribution, w10cHealthRow(func(r *UsageStatsRecordRow) {
+		r.Success = 0
+		r.FailureAttribution = nil
+	}), statHour)
+	if len(noAttribution) != 0 {
+		t.Fatalf("无归因失败行（探针补记 upstream_http_failure）不得写健康条带: %+v", noAttribution)
+	}
+	// account_dependency 归因同样是质量负样本。
+	dependency := map[string]*aggregatedAccountHealthEntry{}
+	addPostgresAggregatedAccountHealthEntry(dependency, w10cHealthRow(func(r *UsageStatsRecordRow) {
+		r.Success = 0
+		r.FailureAttribution = strPtr("account_dependency")
+	}), statHour)
+	if got := dependency[key]; got == nil || got.Status != "failure" {
+		t.Fatalf("account_dependency 失败应写 failure 条: %+v", got)
 	}
 
 	// 已有条目更旧 → 保留（comparison > 0 分支）。

@@ -92,6 +92,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authzStore.AttachRevisionSecret("test-systemteams-authz-revision-secret")
 	stats := &statsSpy{}
 	inval := &invalSpy{}
 	store, err := NewStore(db, nil, authzStore, WithSideEffects(stats, inval))

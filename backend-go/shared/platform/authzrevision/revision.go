@@ -38,14 +38,14 @@ type Queryer interface {
 // Snapshot is the canonical material-change input. Exporting it keeps the
 // migration/verification tooling able to report field-level differences.
 type Snapshot struct {
-	AccountID             string         `json:"accountId"`
-	VendorCode            string         `json:"vendorCode"`
-	ConnectionDriverCode  string         `json:"connectionDriverCode"`
-	ProtocolCode          string         `json:"protocolCode"`
-	ProtocolVersion       string         `json:"protocolVersion"`
-	AccountType           string         `json:"accountType"`
-	CapabilityDomain      string         `json:"capabilityDomain"`
-	OAuthType string `json:"oauthType"`
+	AccountID            string `json:"accountId"`
+	VendorCode           string `json:"vendorCode"`
+	ConnectionDriverCode string `json:"connectionDriverCode"`
+	ProtocolCode         string `json:"protocolCode"`
+	ProtocolVersion      string `json:"protocolVersion"`
+	AccountType          string `json:"accountType"`
+	CapabilityDomain     string `json:"capabilityDomain"`
+	OAuthType            string `json:"oauthType"`
 	// APIKeyPoolFingerprint and OAuthSubjectFingerprint are derived inside
 	// Load from the decrypted credential payload. They are HMACs (never the
 	// material itself). The accounts.credential_fingerprint column is
@@ -224,7 +224,8 @@ func loadProxyPool(ctx context.Context, db Queryer, id string) (ProxyPool, error
 func loadConnections(ctx context.Context, db Queryer, accountID string) ([]Connection, error) {
 	rows, err := db.QueryContext(ctx, `SELECT c.id, c.connection_preset_code,
 			COALESCE(c.protocol_surface_code, ''), c.base_url,
-			COALESCE(array_agg(m.endpoint_mode ORDER BY m.endpoint_mode) FILTER (WHERE m.endpoint_mode IS NOT NULL), '{}')
+		COALESCE(array_to_json(array_agg(m.endpoint_mode ORDER BY m.endpoint_mode)
+			FILTER (WHERE m.endpoint_mode IS NOT NULL)), '[]'::json)::text
 		FROM juhe_business.account_connections c
 		LEFT JOIN juhe_business.account_endpoint_modes m ON m.connection_id = c.id
 		WHERE c.account_id = $1 AND c.enabled = 1
@@ -238,9 +239,13 @@ func loadConnections(ctx context.Context, db Queryer, accountID string) ([]Conne
 	for rows.Next() {
 		var connectionID string
 		var item Connection
-		var modes []string
-		if err := rows.Scan(&connectionID, &item.ConnectionPresetCode, &item.ProtocolSurfaceCode, &item.BaseURL, &modes); err != nil {
+		var modesText string
+		if err := rows.Scan(&connectionID, &item.ConnectionPresetCode, &item.ProtocolSurfaceCode, &item.BaseURL, &modesText); err != nil {
 			return nil, err
+		}
+		modes, err := decodeEndpointModes(modesText)
+		if err != nil {
+			return nil, fmt.Errorf("解析账户连接 %s endpoint modes 失败: %w", connectionID, err)
 		}
 		item.BaseURL = NormalizeBaseURL(item.BaseURL)
 		item.EndpointModes = append([]string(nil), modes...)
@@ -292,6 +297,14 @@ func loadStringColumn(ctx context.Context, db Queryer, query string, args ...any
 		out = append(out, value)
 	}
 	return out, rows.Err()
+}
+
+func decodeEndpointModes(raw string) ([]string, error) {
+	var modes []string
+	if err := json.Unmarshal([]byte(raw), &modes); err != nil {
+		return nil, err
+	}
+	return modes, nil
 }
 
 // credentialMaterialFingerprints derives the two credential-identity HMACs

@@ -549,6 +549,9 @@ export interface AccountListItem {
   tags?: Array<Pick<AccountTagSummary, 'id' | 'name'>>
   healthCheckModel: string
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  // 服务端按有效连接声明形态派生的测试方式；旧后端/旧快照可能缺省，
+  // 前端此时回退到按能力域与检查形态本地初判。
+  testKind?: 'model' | 'connection'
   proxyProfileId?: string
   proxyProfileName?: string
   proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'

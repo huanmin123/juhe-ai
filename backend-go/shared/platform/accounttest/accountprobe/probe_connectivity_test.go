@@ -329,3 +329,63 @@ func TestConnectivityProbeOnlyContentMode(t *testing.T) {
 		}
 	}
 }
+
+// TestConnectivityProbeQwenMediaStripsBaseServiceRoot（T221）：qwen 媒体探测
+// opPath 是 DashScope 全路径（/api/v1/tasks/{probe_id}），base 尾部服务根
+// （存量行/凭据域形态）必须先剥一次再直拼，与 gateway 媒体链同构——双根
+// 出站会把有效密钥误判为不可达；非 qwen 供应商不受影响。
+func TestConnectivityProbeQwenMediaStripsBaseServiceRoot(t *testing.T) {
+	spec, ok := contracts.ConnectivityProbeForPreset(contracts.PresetQwenDashScope, string(ModeVideoGet))
+	if !ok {
+		t.Fatal("qwen 视频查询规格未登记")
+	}
+	cases := []struct {
+		name, base, want string
+	}{
+		{
+			name: "official origin stays untouched",
+			base: "https://dashscope.aliyuncs.com",
+			want: "https://dashscope.aliyuncs.com/api/v1/tasks/" + ConnectivityProbeTaskID,
+		},
+		{
+			name: "compatible-mode suffix stripped once",
+			base: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+			want: "https://dashscope.aliyuncs.com/api/v1/tasks/" + ConnectivityProbeTaskID,
+		},
+		{
+			name: "api-v1 suffix stripped once",
+			base: "https://dashscope.aliyuncs.com/api/v1/",
+			want: "https://dashscope.aliyuncs.com/api/v1/tasks/" + ConnectivityProbeTaskID,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			view := connectivityView(tc.base, ModeVideoGet, "wan2.2-t2v-plus")
+			view.ProviderCode = "qwen"
+			view.ConnectionPresetCode = contracts.PresetQwenDashScope
+			request, err := buildConnectivityRequest(context.Background(), view, spec, view.HealthCheckModel, "api-key-not-used")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.URL.String() != tc.want {
+				t.Fatalf("qwen 媒体探测 URL = %q, want %q", request.URL.String(), tc.want)
+			}
+		})
+	}
+
+	// 非 qwen：base 直通（带 /v1 尾根不被剥），保证剥根只作用于 qwen。
+	view := connectivityView("https://api.openai.com/v1", ModeVideoCreate, "sora-2")
+	view.ProviderCode = "gpt"
+	view.ConnectionPresetCode = contracts.PresetGPTOpenAIV1
+	spec, ok = contracts.ConnectivityProbeForPreset(contracts.PresetGPTOpenAIV1, string(ModeVideoCreate))
+	if !ok {
+		t.Fatal("openai 视频创建规格未登记")
+	}
+	request, err := buildConnectivityRequest(context.Background(), view, spec, view.HealthCheckModel, "api-key-not-used")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.URL.String() != "https://api.openai.com/v1/videos/"+ConnectivityProbeTaskID {
+		t.Fatalf("非 qwen 探测不得剥根: %q", request.URL.String())
+	}
+}

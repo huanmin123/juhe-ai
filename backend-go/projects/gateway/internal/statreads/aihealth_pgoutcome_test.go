@@ -4,6 +4,10 @@
 package statreads
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -427,6 +431,22 @@ func TestLocalHourBoundsUTC(t *testing.T) {
 	if err != nil {
 		t.Skipf("加载时区失败: %v", err)
 	}
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
+	sydney, err := time.LoadLocation("Australia/Sydney")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
+	troll, err := time.LoadLocation("Antarctica/Troll")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
+	lordHowe, err := time.LoadLocation("Australia/Lord_Howe")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
 	cases := []struct {
 		name      string
 		hour      string
@@ -440,8 +460,14 @@ func TestLocalHourBoundsUTC(t *testing.T) {
 		{"ny fall-back repeated hour", "2026-11-01T01", newYork, "2026-11-01T05:00:00.000Z", "2026-11-01T07:00:00.000Z", true},
 		{"ny spring-forward before gap", "2026-03-08T01", newYork, "2026-03-08T06:00:00.000Z", "2026-03-08T07:00:00.000Z", true},
 		{"ny spring-forward skipped hour", "2026-03-08T02", newYork, "", "", false},
-		{"chatham fall-back repeated hour", "2026-04-05T02", chatham, "2026-04-04T12:15:00.000Z", "2026-04-04T14:15:00.000Z", true},
+		{"paris fall-back repeated hour", "2026-10-25T02", paris, "2026-10-25T00:00:00.000Z", "2026-10-25T02:00:00.000Z", true},
+		{"sydney fall-back repeated hour", "2026-04-05T02", sydney, "2026-04-04T15:00:00.000Z", "2026-04-04T17:00:00.000Z", true},
+		{"chatham fall-back first repeated hour", "2026-04-05T02", chatham, "2026-04-04T12:15:00.000Z", "2026-04-04T14:15:00.000Z", true},
+		{"chatham fall-back second repeated hour", "2026-04-05T03", chatham, "2026-04-04T13:15:00.000Z", "2026-04-04T15:15:00.000Z", true},
 		{"chatham spring-forward partial hour", "2026-09-27T03", chatham, "2026-09-26T14:00:00.000Z", "2026-09-26T14:15:00.000Z", true},
+		{"troll two-hour fall-back repeated hour", "2026-10-25T02", troll, "2026-10-25T00:00:00.000Z", "2026-10-25T03:00:00.000Z", true},
+		{"lord howe fall-back half-hour repeat", "2026-04-05T01", lordHowe, "2026-04-04T14:00:00.000Z", "2026-04-04T15:30:00.000Z", true},
+		{"lord howe spring-forward half hour", "2026-10-04T02", lordHowe, "2026-10-03T15:30:00.000Z", "2026-10-03T16:00:00.000Z", true},
 		{"out of range year", "9999-12-31T23", time.UTC, "", "", false},
 		{"zero year", "0000-01-01T00", time.UTC, "", "", false},
 		{"invalid calendar date", "2026-02-30T10", time.UTC, "", "", false},
@@ -480,6 +506,50 @@ func TestHourBucketsUntilNowCollapsesFallBackHour(t *testing.T) {
 		if buckets[index] != want[index] {
 			t.Fatalf("fall-back bucket %d = %q, want %q", index, buckets[index], want[index])
 		}
+	}
+}
+
+func TestHourBucketsUntilNowKeepsTransitionHours(t *testing.T) {
+	chatham, err := time.LoadLocation("Pacific/Chatham")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
+	// 24 absolute hours ending 02:55 local on the fall-back day must still
+	// include the first (partial) segment of local hour 03.
+	chathamBuckets := hourBucketsUntilNow(24, time.Date(2026, 4, 4, 14, 10, 0, 0, time.UTC), chatham)
+	seen := make(map[string]bool, len(chathamBuckets))
+	for _, bucket := range chathamBuckets {
+		if seen[bucket] {
+			t.Fatalf("duplicate bucket %q in %#v", bucket, chathamBuckets)
+		}
+		seen[bucket] = true
+	}
+	if !seen["2026-04-05T03"] {
+		t.Fatalf("chatham transition hour missing: %#v", chathamBuckets)
+	}
+	if last := chathamBuckets[len(chathamBuckets)-1]; last != "2026-04-05T02" {
+		t.Fatalf("chatham current hour = %q, want 2026-04-05T02", last)
+	}
+
+	troll, err := time.LoadLocation("Antarctica/Troll")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
+	// Troll's 2h fall-back repeats hour 02 with hour 01 in between; keeping the
+	// last occurrence must leave the current hour last.
+	trollBuckets := hourBucketsUntilNow(3, time.Date(2026, 10, 25, 2, 30, 0, 0, time.UTC), troll)
+	want := []string{"2026-10-25T01", "2026-10-25T02"}
+	if len(trollBuckets) != len(want) {
+		t.Fatalf("troll buckets = %#v, want %#v", trollBuckets, want)
+	}
+	for index := range want {
+		if trollBuckets[index] != want[index] {
+			t.Fatalf("troll bucket %d = %q, want %q", index, trollBuckets[index], want[index])
+		}
+	}
+	start, end := hourBucketSpan([]string{"2026-10-25T02", "2026-10-25T01"})
+	if start != "2026-10-25T01" || end != "2026-10-25T02" {
+		t.Fatalf("hourBucketSpan = %q..%q, want 01..02", start, end)
 	}
 }
 
@@ -650,7 +720,7 @@ func TestJ1NonQualityOutcomesStayOutOfHealthRate(t *testing.T) {
 		t.Fatalf("只有 success/failure 两个质量小时可成行: %#v", rows)
 	}
 	result := mapAiHealthList([]aiHealthAccount{{ID: "acct-a"}}, false,
-		aiHealthOptions{Page: 1, PageSize: 20}, rows, hourBuckets, outcomes)
+		aiHealthOptions{Page: 1, PageSize: 20}, rows, hourBuckets, outcomes, true)
 	if len(result.Items) != 1 {
 		t.Fatalf("账户行数错误: %#v", result.Items)
 	}
@@ -676,5 +746,211 @@ func TestJ1NonQualityOutcomesStayOutOfHealthRate(t *testing.T) {
 	}
 	if got := newestJ1OutcomeHourRow(outcomes, "2026-09-04T01", location); got == nil || got.Outcome != "upstream_failure" {
 		t.Fatalf("小时详情应保留真实失败结论: %#v", got)
+	}
+}
+
+// TestJ1OutcomeRangesForHourlyRowsCoversNonMonotonicFallBackBuckets pins the
+// Antarctica/Casey 3h fall-back (2023-03-08): the last-occurrence bucket
+// order is non-monotonic (02,00,01), so a missing-hour run must extend to the
+// UTC min/max of its members or the first occurrence of the repeated hour is
+// silently dropped from the J1 read.
+func TestJ1OutcomeRangesForHourlyRowsCoversNonMonotonicFallBackBuckets(t *testing.T) {
+	casey, err := time.LoadLocation("Antarctica/Casey")
+	if err != nil {
+		t.Skipf("加载时区失败: %v", err)
+	}
+	// 2023-03-08T16:00Z: local 2023-03-09T00:00 +11 -> 2023-03-08T21:00 +8.
+	now := time.Date(2023, 3, 8, 17, 0, 0, 0, time.UTC)
+	buckets := hourBucketsUntilNow(3, now, casey)
+	wantBuckets := []string{"2023-03-09T02", "2023-03-09T00", "2023-03-09T01"}
+	if len(buckets) != len(wantBuckets) {
+		t.Fatalf("casey buckets = %#v, want %#v", buckets, wantBuckets)
+	}
+	for index := range wantBuckets {
+		if buckets[index] != wantBuckets[index] {
+			t.Fatalf("casey bucket %d = %q, want %q", index, buckets[index], wantBuckets[index])
+		}
+	}
+	windowStart := j1ObservedAfter(now, 3) // 2023-03-08T12:00:00.000Z
+	windowEnd := j1WindowEnd(now)          // 2023-03-08T19:00:00.000Z
+	freshnessFloor := now.Add(-j1ListFreshnessOverlap).UTC().Format("2006-01-02T15:04:05.000Z")
+	// No hourly rows at all: the documented per-account full-window fallback.
+	ranges := j1OutcomeRangesForHourlyRows([]string{"acct-a"}, buckets, nil, windowStart, windowEnd, freshnessFloor, casey)
+	if len(ranges) != 1 || ranges[0].ObservedAfter != windowStart || ranges[0].ObservedBefore != windowEnd {
+		t.Fatalf("no-hourly fallback = %#v, want %s..%s", ranges, windowStart, windowEnd)
+	}
+	// Hour 01 covered by an hourly row: the missing run for 02,00 must widen
+	// to 13:00Z (the old forward-only merge stopped at 15:00Z and silently
+	// lost the 13:00-15:00Z first occurrence of hour 00) and the freshness
+	// range merges into the same span.
+	covered := []Row{{
+		"account_id":       "acct-a",
+		"stat_hour":        "2023-03-09T01",
+		"status":           "success",
+		"last_observed_at": "2023-03-08T14:30:00.000Z",
+	}}
+	ranges = j1OutcomeRangesForHourlyRows([]string{"acct-a"}, buckets, covered, windowStart, windowEnd, freshnessFloor, casey)
+	if len(ranges) != 1 {
+		t.Fatalf("ranges = %#v, want one merged range", ranges)
+	}
+	if ranges[0].ObservedAfter != "2023-03-08T13:00:00.000Z" || ranges[0].ObservedBefore != "2023-03-08T19:00:00.000Z" {
+		t.Fatalf("range = %s..%s, want 2023-03-08T13:00:00.000Z..2023-03-08T19:00:00.000Z", ranges[0].ObservedAfter, ranges[0].ObservedBefore)
+	}
+}
+
+// TestJ1CollectOutcomesDegradationPaths drives the list J1 read core with a
+// fake executor: budget deadline mid-chunk keeps partial rows and degrades,
+// probe failure keeps gap rows and falls back the header, non-timeout errors
+// and client cancellation still propagate.
+func TestJ1CollectOutcomesDegradationPaths(t *testing.T) {
+	gapRow := Row{
+		"outcome_id":          "out-gap",
+		"account_id":          "acct-a",
+		"outcome":             "complete_success",
+		"storage_observed_at": "2026-09-04T09:10:00.000Z",
+	}
+	windowStart := "2026-09-04T00:00:00.000Z"
+	windowEnd := "2026-09-04T12:00:00.000Z"
+	smallRange := j1OutcomeRange{AccountID: "acct-a", ObservedAfter: "2026-09-04T09:00:00.000Z", ObservedBefore: "2026-09-04T10:00:00.000Z"}
+
+	t.Run("happy path with probe", func(t *testing.T) {
+		calls := 0
+		outcomes, probeComplete, err := j1CollectOutcomes(context.Background(),
+			func(ctx context.Context, query string, args ...any) ([]Row, error) {
+				calls++
+				if !strings.Contains(query, "LIMIT 1") {
+					return []Row{gapRow}, nil
+				}
+				return []Row{{
+					"outcome_id":          "out-latest",
+					"account_id":          "acct-a",
+					"outcome":             "complete_success",
+					"storage_observed_at": "2026-09-04T11:30:00.000Z",
+				}}, nil
+			},
+			[]j1OutcomeRange{smallRange}, windowStart, windowEnd)
+		if err != nil || !probeComplete || len(outcomes) != 2 {
+			t.Fatalf("outcomes=%#v probe=%v err=%v", outcomes, probeComplete, err)
+		}
+		if calls != 2 {
+			t.Fatalf("calls = %d, want gap + latest", calls)
+		}
+	})
+
+	t.Run("probe failure keeps gap rows and degrades header", func(t *testing.T) {
+		outcomes, probeComplete, err := j1CollectOutcomes(context.Background(),
+			func(ctx context.Context, query string, args ...any) ([]Row, error) {
+				if !strings.Contains(query, "LIMIT 1") {
+					return []Row{gapRow}, nil
+				}
+				return nil, errors.New("probe connection reset")
+			},
+			[]j1OutcomeRange{smallRange}, windowStart, windowEnd)
+		if err != nil || probeComplete {
+			t.Fatalf("probe=%v err=%v, want degraded success", probeComplete, err)
+		}
+		if len(outcomes) != 1 || outcomes[0].OutcomeID != "out-gap" {
+			t.Fatalf("gap rows must survive probe failure: %#v", outcomes)
+		}
+	})
+
+	t.Run("budget deadline mid-chunk keeps completed chunks and partial rows", func(t *testing.T) {
+		// 2049 isolated ranges force two chunks.
+		ranges := make([]j1OutcomeRange, 0, j1PostgresOutcomeRangeLimit+1)
+		for index := 0; index <= j1PostgresOutcomeRangeLimit; index++ {
+			ranges = append(ranges, j1OutcomeRange{
+				AccountID:      fmt.Sprintf("acct-%d", index),
+				ObservedAfter:  "2026-09-04T09:00:00.000Z",
+				ObservedBefore: "2026-09-04T10:00:00.000Z",
+			})
+		}
+		expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		gapCalls := 0
+		outcomes, probeComplete, err := j1CollectOutcomes(expired,
+			func(ctx context.Context, query string, args ...any) ([]Row, error) {
+				if !strings.Contains(query, "LIMIT 1") {
+					gapCalls++
+					if gapCalls == 1 {
+						return []Row{gapRow}, nil
+					}
+					// Second chunk scanned one row before the deadline hit.
+					return []Row{{
+						"outcome_id":          "out-partial",
+						"account_id":          "acct-late",
+						"outcome":             "upstream_failure",
+						"storage_observed_at": "2026-09-04T09:40:00.000Z",
+					}}, context.DeadlineExceeded
+				}
+				t.Fatal("probe must not run after a gap deadline")
+				return nil, nil
+			},
+			ranges, windowStart, windowEnd)
+		if err != nil || probeComplete {
+			t.Fatalf("probe=%v err=%v, want degraded success", probeComplete, err)
+		}
+		ids := map[string]bool{}
+		for _, outcome := range outcomes {
+			ids[outcome.OutcomeID] = true
+		}
+		if !ids["out-gap"] || !ids["out-partial"] || len(outcomes) != 2 {
+			t.Fatalf("completed chunk and partial rows must survive: %#v", outcomes)
+		}
+	})
+
+	t.Run("non-timeout gap error propagates", func(t *testing.T) {
+		outcomes, probeComplete, err := j1CollectOutcomes(context.Background(),
+			func(ctx context.Context, query string, args ...any) ([]Row, error) {
+				return nil, errors.New("syntax error")
+			},
+			[]j1OutcomeRange{{AccountID: "acct-a", ObservedAfter: windowStart, ObservedBefore: windowEnd}},
+			windowStart, windowEnd)
+		if err == nil || outcomes != nil || probeComplete {
+			t.Fatalf("must propagate: outcomes=%#v probe=%v err=%v", outcomes, probeComplete, err)
+		}
+	})
+
+	t.Run("client cancellation propagates without degradation", func(t *testing.T) {
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		outcomes, probeComplete, err := j1CollectOutcomes(canceled,
+			func(ctx context.Context, query string, args ...any) ([]Row, error) {
+				return nil, context.Canceled
+			},
+			[]j1OutcomeRange{smallRange}, windowStart, windowEnd)
+		if !errors.Is(err, context.Canceled) || outcomes != nil || probeComplete {
+			t.Fatalf("must propagate cancel: outcomes=%#v probe=%v err=%v", outcomes, probeComplete, err)
+		}
+	})
+}
+
+func TestMapAiHealthListHeaderFallsBackWhenProbeFailed(t *testing.T) {
+	lastCheck := "2026-09-04T10:50:00.000Z"
+	lastSuccess := "2026-09-04T10:50:00.000Z"
+	nextCheck := "2026-09-04T11:50:00.000Z"
+	nextDue := "2026-09-04T10:10:00.000Z"
+	account := aiHealthAccount{
+		ID:                  "acct-a",
+		LastHealthCheckAt:   &lastCheck,
+		LastHealthSuccessAt: &lastSuccess,
+		NextHealthCheckAt:   &nextCheck,
+	}
+	outcomes := []j1Outcome{{
+		AccountID:  "acct-a",
+		Outcome:    "complete_success",
+		ObservedAt: "2026-09-04T09:10:00.000Z",
+		NextDueAt:  &nextDue,
+	}}
+	result := mapAiHealthList([]aiHealthAccount{account}, false,
+		aiHealthOptions{Page: 1, PageSize: 20}, nil, []string{"2026-09-04T10"}, outcomes, false)
+	item := result.Items[0]
+	if item.LastHealthCheckAt == nil || *item.LastHealthCheckAt != lastCheck {
+		t.Fatalf("probe failure must keep hourly header, got %#v", item.LastHealthCheckAt)
+	}
+	if item.LastHealthSuccessAt == nil || *item.LastHealthSuccessAt != lastSuccess {
+		t.Fatalf("probe failure must keep hourly success, got %#v", item.LastHealthSuccessAt)
+	}
+	if item.NextHealthCheckAt == nil || *item.NextHealthCheckAt != nextCheck {
+		t.Fatalf("probe failure must keep hourly next check, got %#v", item.NextHealthCheckAt)
 	}
 }

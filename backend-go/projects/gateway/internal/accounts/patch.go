@@ -425,6 +425,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if row.configRevision != input.ExpectedConfigRevision {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
 	}
+	// Binding an authorized instance to the receiver's group is an explicit
+	// receiver action; the management surface may never perform it (including
+	// unbinding). Administrators use authorization-center governance actions.
+	if access.IsAdmin && input.GroupIDPresent && row.authorizationID.Valid {
+		return nil, &ValidationError{
+			Code:    "authorization_binding_forbidden",
+			Message: "管理员不能代接收方绑定或解绑授权账户，请由接收方自行操作",
+		}
+	}
 	// 授权实例的来源侧配置只读跟随来源账户（核心功能设计「授权实例」节）：
 	// 通用 PATCH 只接受使用侧字段（名称/备注/状态/标签/清失败态/本地分组绑定），
 	// 凭据、连接、代理、模型/映射、健康检查、余额、到期时间、时间计划与探活
@@ -535,11 +544,19 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// the post-commit configuration probe.
 	credentialsChanged := false
 	endpointModesChanged := false
+	// credentialModesSynced 标记仅提交 connections 时凭据影子副本
+	// supported_endpoint_modes 已按最终 enabled 连接集合同步重封；最终凭据
+	// 解析必须返回重封后的记录（下方 resolveFinalCredentials）。
+	credentialModesSynced := false
 	// balanceIdentityChangedFlag 供提交后的余额快照清理端口使用（缺口 2）。
 	balanceIdentityChangedFlag := false
 	// 连接面拆分（归档 :556-579）：connectionChanged 在凭据/代理两段之后按
-	// proxyChanged || baseURLChanged || (apiKeyMembershipChanged &&
-	// !retainedActiveAPIKey) 组装，见下方状态机分支。
+	// connectionsChanged || proxyChanged || baseURLChanged ||
+	// (apiKeyMembershipChanged && !retainedActiveAPIKey) 组装，见下方状态机
+	// 分支。connections 整替换同样是连接事实变化，必须并入终值；resolvedPatchConnections
+	// 保留到凭据段外层，供 connections-only 请求同步凭据影子副本。
+	resolvedPatchConnections := []resolvedConnection{}
+	connectionsChanged := false
 	proxyChanged := false
 	baseURLChanged := false
 	apiKeyMembershipChanged := false
@@ -1033,19 +1050,19 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err != nil {
 			return nil, err
 		}
-		resolvedPatchConnections, err := resolveConnectionSet(row.capabilityDomain, patchDriver, row.accountType,
+		resolvedPatchConnections, err = resolveConnectionSet(row.capabilityDomain, patchDriver, row.accountType,
 			accountOAuthTypeForRegistry(row.accountType, row.oauthType, patchCredentials), input.Connections)
 		if err != nil {
 			return nil, err
 		}
-		removed, connectionsChanged, err := s.beginAccountConnectionsReplacement(ctx, tx, row.id, resolvedPatchConnections, nowISO)
+		removed, replacementChanged, err := s.beginAccountConnectionsReplacement(ctx, tx, row.id, resolvedPatchConnections, nowISO)
 		if err != nil {
 			return nil, err
 		}
 		removedPatchConnections = removed
-		if connectionsChanged {
+		if replacementChanged {
+			connectionsChanged = true
 			addChange("connections", "连接集合", "已更新")
-			connectionChanged = true
 			// 既有映射对最终连接/mode 集合重校验（§5.3：映射可执行性依赖
 			// connection ∩ model endpoint modes；modelMappings 显式提交时由
 			// 下方映射块的整替换校验覆盖，此处只补「仅连接参与」的臂）。
@@ -1269,6 +1286,45 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// reset below.
 	var currentCredentials, nextCredentials Credentials
 	haveCredentials := false
+	// 仅提交 connections 时同步凭据影子副本：连接集合整替换是最终连接事实，
+	// credentials.supported_endpoint_modes 必须随之收敛（API 调用方只提交
+	// connections 时旧集合会残留，导致映射/兼容校验与运行时读到过期声明）。
+	// 显式凭据提交优先（含 credentialsPatch），本臂只在凭据输入缺席时执行；
+	// 仅集合真实变化（忽略顺序）才重封并披露 credentials 变更，幂等请求不写
+	// 不回版本。显式凭据路径的归一化/指纹/mask/OAuth 派生列完全保持原样。
+	if input.ConnectionsPresent && !input.CredentialsPresent {
+		connectionModes := []string{}
+		for _, connection := range resolvedPatchConnections {
+			if connection.enabled {
+				connectionModes = append(connectionModes, connection.modes...)
+			}
+		}
+		if len(connectionModes) > 0 {
+			current := Credentials{}
+			if err := DecryptJSON(s.secret, row.credentialsEncrypted, &current); err != nil {
+				return nil, err
+			}
+			if !unorderedStringListEqual(credentialEndpointModes(current), connectionModes) {
+				next := Credentials{}
+				for key, value := range current {
+					next[key] = value
+				}
+				next["supported_endpoint_modes"] = anyStrings(connectionModes)
+				sealed, err := EncryptJSON(s.secret, map[string]any(next))
+				if err != nil {
+					return nil, err
+				}
+				currentCredentials = current
+				nextCredentials = next
+				haveCredentials = true
+				credentialModesSynced = true
+				endpointModesChanged = true
+				addChange("credentials", "已设置", "已变更")
+				sets = append(sets, "credentials_encrypted = ?")
+				setArgs = append(setArgs, sealed)
+			}
+		}
+	}
 	if input.CredentialsPresent {
 		current := Credentials{}
 		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &current); err != nil {
@@ -1415,7 +1471,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if finalCredentialsResolved {
 			return finalCredentials, nil
 		}
-		if input.CredentialsPresent && credentialsChanged {
+		if credentialModesSynced {
+			finalCredentials = nextCredentials
+		} else if input.CredentialsPresent && credentialsChanged {
 			finalCredentials = nextCredentials
 		} else if input.CredentialsPresent {
 			finalCredentials = currentCredentials
@@ -1513,7 +1571,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			retainedActiveAPIKey = retained
 		}
 	}
-	connectionChanged = proxyChanged || baseURLChanged ||
+	connectionChanged = connectionsChanged || proxyChanged || baseURLChanged ||
 		(apiKeyMembershipChanged && !retainedActiveAPIKey)
 
 	hasStatusInput := input.Status != nil

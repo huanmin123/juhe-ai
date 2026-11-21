@@ -119,6 +119,9 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectAdminAuthorizedBindings(access, ownerID, bindings); err != nil {
+		return nil, err
+	}
 	if err := validateModeBindings(mode, bindings); err != nil {
 		return nil, err
 	}
@@ -350,6 +353,9 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			normalized, normalizeErr := s.normalizeBindings(ctx, tx, input.Bindings, current.systemAccountID, true)
 			if normalizeErr != nil {
 				return nil, normalizeErr
+			}
+			if err := rejectAdminAuthorizedBindings(access, current.systemAccountID, normalized); err != nil {
+				return nil, err
 			}
 			if err := validateModeBindings(mode, normalized); err != nil {
 				return nil, err

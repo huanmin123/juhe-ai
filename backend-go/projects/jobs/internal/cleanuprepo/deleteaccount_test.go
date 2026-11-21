@@ -85,6 +85,9 @@ func TestOrphanSweepPostgres(t *testing.T) {
 		"DELETE FROM juhe_business.account_tag_bindings",
 		"UPDATE juhe_business.resource_authorization_grants",
 		"request_quota_hourly_window_scope_bindings",
+		// J1 自本批起承载 volcengine/qwen 对话形态：删除清理的 tombstone
+		// SELECT 必须把这两个真实厂商纳入健康投影。
+		"'volcengine', 'qwen'",
 	} {
 		if !strings.Contains(allText, needle) {
 			t.Fatalf("缺少语句：%s", needle)

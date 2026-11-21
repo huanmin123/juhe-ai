@@ -237,10 +237,11 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 
 // accountHealthTombstoneProviderCodes / Types carry the health-capable vendor
 // vocabulary of logicallyDeleteAccounts：健康能力按 vendor_code IN 词表判定；
-// 空 vendor（generic_http 历史形态）与媒体专用厂商不参与对话健康投影，
-// 不再有独立连接器分支。
+// 空 vendor（generic_http 历史形态）与纯媒体厂商（minimax）不参与对话健康
+// 投影，不再有独立连接器分支。volcengine/qwen 的对话形态自本批起进入 J1，
+// 删除时必须同样写 tombstone。
 var (
-	accountHealthTombstoneProviderCodes = []string{"gpt", "xai", "anthropic", "deepseek", "glm", "gemini"}
+	accountHealthTombstoneProviderCodes = []string{"gpt", "xai", "anthropic", "deepseek", "glm", "gemini", "volcengine", "qwen"}
 	accountHealthTombstoneAccountTypes  = []string{"api_key", "oauth", "google_oauth"}
 )
 

@@ -165,6 +165,16 @@ func Apply(ctx context.Context, db *sql.DB, options Options) (Result, error) {
 		return result, err
 	}
 
+	// 6.5 Preflight the RESTRICT foreign keys before any VALIDATE so missing
+	// grantee accounts/teams are reported as reviewable row ids instead of a
+	// raw FK violation deep in the tightening step.
+	if reasons, err := preflightForeignKeyOrphans(ctx, tx); err != nil {
+		return result, err
+	} else if len(reasons) > 0 {
+		result.BlockedReasons = append(result.BlockedReasons, reasons...)
+		return result, fmt.Errorf("%w: %s", ErrNeedsReview, strings.Join(reasons, "; "))
+	}
+
 	// 7. Group snapshots and settings for legacy active/paused runtimes.
 	snapshots, settings, err := backfillGroupSnapshots(ctx, tx, revisions, revisionVersions, options, nowText)
 	if err != nil {
@@ -201,15 +211,10 @@ func Apply(ctx context.Context, db *sql.DB, options Options) (Result, error) {
 }
 
 func loadAccountRevisions(ctx context.Context, tx *sql.Tx, secret string) (map[string]string, map[string]int, []string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT account_id FROM (
-		SELECT resource_id AS account_id FROM juhe_business.resource_authorization_grants WHERE resource_type = 'account'
+	rows, err := tx.QueryContext(ctx, `SELECT resource_id FROM juhe_business.resource_authorization_grants
+		WHERE resource_type = 'account'
 		UNION
-		SELECT id FROM juhe_business.accounts WHERE authorization_instance_source_account_id IS NOT NULL
-		UNION
-		SELECT a.id FROM juhe_business.accounts a WHERE EXISTS (
-			SELECT 1 FROM juhe_business.resource_authorization_grants g
-			WHERE g.resource_type = 'account' AND g.resource_id = a.id)
-	) q WHERE account_id IS NOT NULL`)
+		SELECT resource_id FROM juhe_business.resource_authorizations WHERE resource_type = 'account'`)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -244,31 +249,35 @@ func loadAccountRevisions(ctx context.Context, tx *sql.Tx, secret string) (map[s
 	return revisions, versions, missing, nil
 }
 
+type legacySourceRow struct {
+	id              string
+	authorizationID string
+	grantID         string
+	grantStatus     string
+	sourceType      string
+	sourceTeamID    string
+	status          string
+	endedReason     sql.NullString
+	endedAt         sql.NullString
+	updatedAt       string
+	createdAt       string
+}
+
 func migrateSourceStatuses(ctx context.Context, tx *sql.Tx) (int, []string, error) {
-	type source struct {
-		id          string
-		grantID     string
-		grantStatus string
-		sourceType  string
-		status      string
-		endedReason sql.NullString
-		endedAt     sql.NullString
-		updatedAt   string
-		createdAt   string
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT s.id, COALESCE(s.grant_id, ''), COALESCE(g.status, ''),
-			s.source_type, s.status, s.ended_reason, s.ended_at, s.updated_at, s.created_at
+	rows, err := tx.QueryContext(ctx, `SELECT s.id, s.authorization_id, COALESCE(s.grant_id, ''), COALESCE(g.status, ''),
+			s.source_type, COALESCE(s.source_team_id, ''), s.status, s.ended_reason, s.ended_at, s.updated_at, s.created_at
 		FROM juhe_business.resource_authorization_sources s
 		LEFT JOIN juhe_business.resource_authorization_grants g ON g.id = s.grant_id
 		ORDER BY s.id`)
 	if err != nil {
 		return 0, nil, err
 	}
-	var list []source
+	var list []legacySourceRow
 	for rows.Next() {
-		var item source
-		if err := rows.Scan(&item.id, &item.grantID, &item.grantStatus, &item.sourceType, &item.status,
-			&item.endedReason, &item.endedAt, &item.updatedAt, &item.createdAt); err != nil {
+		var item legacySourceRow
+		if err := rows.Scan(&item.id, &item.authorizationID, &item.grantID, &item.grantStatus,
+			&item.sourceType, &item.sourceTeamID, &item.status, &item.endedReason, &item.endedAt,
+			&item.updatedAt, &item.createdAt); err != nil {
 			rows.Close()
 			return 0, nil, err
 		}
@@ -279,39 +288,32 @@ func migrateSourceStatuses(ctx context.Context, tx *sql.Tx) (int, []string, erro
 		return 0, nil, err
 	}
 
-	migrated := 0
+	// Preflight the post-migration live-key uniqueness before any UPDATE. The
+	// expand phase creates the open-status unique indexes before this data step;
+	// mapping superseded rows to dormant/active can therefore collide with an
+	// already live source of the same runtime (old active-only indexes allowed
+	// that combination). Detect it here and block with row ids instead of
+	// failing halfway through the status mapping with a raw duplicate-key error.
+	targets := make([]string, len(list))
 	blocked := []string{}
-	for _, item := range list {
-		nextStatus := item.status
-		endedReason := item.endedReason.String
-		clearEnded := false
-		switch {
-		case item.status == "superseded" && item.endedReason.String == "covered_by_team" && item.sourceType == "manual":
-			nextStatus = "dormant"
-			endedReason = ""
-			clearEnded = true
-		case item.status == "superseded" && item.endedReason.String == "covered_by_team" && item.sourceType == "team":
-			nextStatus = "active"
-			endedReason = ""
-			clearEnded = true
-		case item.status == "superseded" && item.endedReason.String == "authorization_expired":
-			nextStatus = "expired"
-			endedReason = "authorization_expired"
-		case item.status == "superseded" && item.endedReason.String == "authorization_returned":
-			nextStatus = "returned"
-			endedReason = "authorization_returned"
-		case item.status == "superseded" && item.endedReason.String == "authorization_revoked":
-			nextStatus = "revoked"
-			endedReason = "authorization_revoked"
-		case item.status == "revoked" && item.endedReason.String == "grantee_returned":
-			nextStatus = "returned"
-			endedReason = "grantee_returned"
-		case item.status == "revoked" && (item.endedReason.String == "account_deleted" || item.endedReason.String == "team_revoked"):
-			nextStatus = "revoked"
-		case item.status == "superseded":
+	for index, item := range list {
+		nextStatus, _, _, known := legacySourceTargetStatus(item.sourceType, item.status, item.endedReason.String)
+		if !known {
 			blocked = append(blocked, fmt.Sprintf("source %s superseded/ended_reason=%q 无法判定", item.id, item.endedReason.String))
 			continue
 		}
+		targets[index] = nextStatus
+	}
+	if len(blocked) == 0 {
+		blocked = append(blocked, detectLiveSourceCollisions(list, targets)...)
+	}
+	if len(blocked) > 0 {
+		return 0, blocked, nil
+	}
+
+	migrated := 0
+	for _, item := range list {
+		nextStatus, endedReason, clearEnded, _ := legacySourceTargetStatus(item.sourceType, item.status, item.endedReason.String)
 		if nextStatus == item.status && !clearEnded {
 			continue
 		}
@@ -353,6 +355,65 @@ func migrateSourceStatuses(ctx context.Context, tx *sql.Tx) (int, []string, erro
 		migrated++
 	}
 	return migrated, blocked, nil
+}
+
+// legacySourceTargetStatus maps one legacy source row to its revision-28
+// status. known=false means an unclassifiable superseded row must block the
+// migration for review.
+func legacySourceTargetStatus(sourceType, status, endedReason string) (nextStatus, nextEndedReason string, clearEnded, known bool) {
+	switch {
+	case status == "superseded" && endedReason == "covered_by_team" && sourceType == "manual":
+		return "dormant", "", true, true
+	case status == "superseded" && endedReason == "covered_by_team" && sourceType == "team":
+		return "active", "", true, true
+	case status == "superseded" && endedReason == "authorization_expired":
+		return "expired", "authorization_expired", false, true
+	case status == "superseded" && endedReason == "authorization_returned":
+		return "returned", "authorization_returned", false, true
+	case status == "superseded" && endedReason == "authorization_revoked":
+		return "revoked", "authorization_revoked", false, true
+	case status == "revoked" && endedReason == "grantee_returned":
+		return "returned", "grantee_returned", false, true
+	case status == "revoked" && (endedReason == "account_deleted" || endedReason == "team_revoked"):
+		return "revoked", endedReason, false, true
+	case status == "superseded":
+		return "", "", false, false
+	default:
+		return status, endedReason, false, true
+	}
+}
+
+// detectLiveSourceCollisions reports source rows that would share the new
+// open-status unique key after the status mapping. The callers use the same
+// structural key as the expand-phase indexes: authorization_id for manual
+// sources and authorization_id + source_team_id for team sources.
+func detectLiveSourceCollisions(list []legacySourceRow, targets []string) []string {
+	keyIDs := map[string][]string{}
+	keyDisplays := map[string]string{}
+	for index, item := range list {
+		if !isLiveSourceStatus(targets[index]) {
+			continue
+		}
+		key := item.authorizationID
+		display := "authorization=" + item.authorizationID + ", source_type=" + item.sourceType
+		if item.sourceType == "team" {
+			key += "\x00" + item.sourceTeamID
+			display += ", source_team_id=" + item.sourceTeamID
+		}
+		keyIDs[key] = append(keyIDs[key], item.id)
+		keyDisplays[key] = display
+	}
+	blocked := []string{}
+	for key, ids := range keyIDs {
+		if len(ids) < 2 {
+			continue
+		}
+		sort.Strings(ids)
+		blocked = append(blocked, fmt.Sprintf(
+			"source 非终态键冲突（%s）: %s", keyDisplays[key], strings.Join(ids, ",")))
+	}
+	sort.Strings(blocked)
+	return blocked
 }
 
 // migrateTerminalParentSources maps live legacy sources whose parent grant is
@@ -1191,6 +1252,88 @@ func constraintTable(name string) string {
 	default:
 		return ""
 	}
+}
+
+// preflightForeignKeyOrphans reports rows that would make the RESTRICT foreign
+// key validation fail. It is read-only: the caller blocks for review instead of
+// guessing whether an orphaned grantee/team should be revoked.
+func preflightForeignKeyOrphans(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	checks := []struct {
+		label string
+		query string
+	}{
+		{
+			label: "resource_authorizations.grantee_system_account_id",
+			query: `SELECT ra.id || ' (grantee=' || ra.grantee_system_account_id || ')'
+				FROM juhe_business.resource_authorizations ra
+				WHERE COALESCE(ra.grantee_system_account_id, '') <> ''
+				  AND NOT EXISTS (SELECT 1 FROM juhe_business.system_accounts a WHERE a.id = ra.grantee_system_account_id)
+				ORDER BY ra.id LIMIT 50`,
+		},
+		{
+			label: "resource_authorization_grants.grantee_system_account_id",
+			query: `SELECT g.id || ' (grantee=' || g.grantee_system_account_id || ')'
+				FROM juhe_business.resource_authorization_grants g
+				WHERE COALESCE(g.grantee_system_account_id, '') <> ''
+				  AND NOT EXISTS (SELECT 1 FROM juhe_business.system_accounts a WHERE a.id = g.grantee_system_account_id)
+				ORDER BY g.id LIMIT 50`,
+		},
+		{
+			label: "resource_authorization_grants.grantee_team_id",
+			query: `SELECT g.id || ' (team=' || g.grantee_team_id || ')'
+				FROM juhe_business.resource_authorization_grants g
+				WHERE COALESCE(g.grantee_team_id, '') <> ''
+				  AND NOT EXISTS (SELECT 1 FROM juhe_business.system_teams t WHERE t.id = g.grantee_team_id)
+				ORDER BY g.id LIMIT 50`,
+		},
+		{
+			label: "resource_authorization_sources.source_team_id",
+			query: `SELECT s.id || ' (team=' || s.source_team_id || ')'
+				FROM juhe_business.resource_authorization_sources s
+				WHERE COALESCE(s.source_team_id, '') <> ''
+				  AND NOT EXISTS (SELECT 1 FROM juhe_business.system_teams t WHERE t.id = s.source_team_id)
+				ORDER BY s.id LIMIT 50`,
+		},
+		{
+			label: "resource_authorization_sources.authorization_id",
+			query: `SELECT s.id || ' (authorization=' || s.authorization_id || ')'
+				FROM juhe_business.resource_authorization_sources s
+				WHERE NOT EXISTS (SELECT 1 FROM juhe_business.resource_authorizations ra WHERE ra.id = s.authorization_id)
+				ORDER BY s.id LIMIT 50`,
+		},
+		{
+			label: "resource_authorization_sources.grant_id",
+			query: `SELECT s.id || ' (grant=' || s.grant_id || ')'
+				FROM juhe_business.resource_authorization_sources s
+				WHERE COALESCE(s.grant_id, '') <> ''
+				  AND NOT EXISTS (SELECT 1 FROM juhe_business.resource_authorization_grants g WHERE g.id = s.grant_id)
+				ORDER BY s.id LIMIT 50`,
+		},
+	}
+	reasons := []string{}
+	for _, check := range checks {
+		rows, err := tx.QueryContext(ctx, check.query)
+		if err != nil {
+			return nil, err
+		}
+		ids := []string{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(ids) > 0 {
+			reasons = append(reasons, fmt.Sprintf("%s 存在孤儿行: %s", check.label, strings.Join(ids, ",")))
+		}
+	}
+	return reasons, nil
 }
 
 func tightenForeignKeys(ctx context.Context, tx *sql.Tx) ([]string, error) {

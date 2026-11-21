@@ -321,6 +321,10 @@ var directProfileProtocolMetadata = map[string][2]string{
 	"profile_glm_coding_anthropic_v1":   {"anthropic", "v1"},
 	"profile_gemini_openai_chat_v1beta": {"openai", "v1"},
 	"profile_gemini_native_v1beta":      {"gemini", "v1beta"},
+	// volcengine/qwen 只有 jobs accounthealth（J1）对话账户使用这两个
+	// canonical profile；共享 ConnectionPresetProfileID 不派生它们（见下）。
+	"profile_volcengine_openai_v1": {"openai", "v1"},
+	"profile_qwen_openai_v1":       {"openai", "v1"},
 }
 
 // ConnectionPresetProfileID 把 account_connections.connection_preset_code 确定性地
@@ -328,9 +332,12 @@ var directProfileProtocolMetadata = map[string][2]string{
 // provider_protocol_profile_id 身份列退役，探针协议目录本身未变）。映射来源：
 // shared/contracts/connector_registry.go 的 preset 词表逐条比对旧 profile 词表；
 // anthropic 目录 ID（profile_anthropic_anthropic_v1）与 preset（anthropic_v1）
-// 字面不同，按字面映射，不做字符串拼推导。不在表内的 preset（minimax_media、
-// volcengine_*、qwen_dashscope 等媒体/新增厂商）没有已注册的 J1 探针协议目录，
-// 返回 false 并由上层 fail closed。
+// 字面不同，按字面映射，不做字符串拼推导。
+// 本表刻意保持 10 对：J3a 代理延迟与代理档案读面/账户投影共用它，不得因 J1
+// 扩面而改变其 target 集。jobs accounthealth 的 J1 对话账户在共享表之上用
+// 自己的 J1 专用映射追加 volcengine_ark / qwen_dashscope（两个 preset 只参与
+// J1 候选，不在共享表中派生）；minimax_media 等纯媒体 preset 没有已注册的
+// J1 探针协议目录，共享映射返回 false 并由上层 fail closed。
 // connectionPresetProfiles 是 connection_preset_code ↔ 探针 profile ID 的唯一
 // 映射表（双向查询共用；改表即两侧同步）。
 var connectionPresetProfiles = []struct {
@@ -443,6 +450,12 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 		return provider == "deepseek" && accountType == "api_key" && openAIChatOrResponseMode(mode, true)
 	case "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1":
 		return provider == "glm" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
+	// volcengine/qwen 的 J1 目录只登记对话生成形态（preset 词表的 chat 子集）；
+	// images/video/audio/embeddings 等非对话形态不进入 J1（由连通性/媒体通道承载）。
+	case "profile_volcengine_openai_v1":
+		return provider == "volcengine" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
+	case "profile_qwen_openai_v1":
+		return provider == "qwen" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
 	case "profile_gemini_openai_chat_v1beta":
 		return provider == "gemini" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
 	case "profile_anthropic_anthropic_v1":
@@ -485,7 +498,7 @@ func directProbeProtocolForMode(profile, provider, mode string) string {
 		return "anthropic"
 	case "profile_gemini_native_v1beta":
 		return "gemini"
-	case "profile_gpt_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta":
+	case "profile_gpt_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta", "profile_volcengine_openai_v1", "profile_qwen_openai_v1":
 		return "openai"
 	case "":
 		if isDirectOpenAIProvider(provider) {
@@ -509,22 +522,41 @@ func probeProfileProvider(profile, protocol string) string {
 		return "anthropic"
 	case "profile_gemini_native_v1beta", "profile_gemini_openai_chat_v1beta":
 		return "gemini"
+	case "profile_volcengine_openai_v1":
+		return "volcengine"
+	case "profile_qwen_openai_v1":
+		return "qwen"
 	default:
 		return protocol
 	}
 }
 
+// directQwenChatPathPrefix 是 qwen 对话探针的厂商服务根前缀。qwen 的
+// base_url 语义是 origin，chat 服务路径 /compatible-mode/v1 恒由该前缀
+// 承载；与 gateway 现行出站归一（chainQwenChatUpstreamURL，R6 + T220）保持
+// 同构——base 路径尾部已带该前缀时先剥一次再追加，不在探针侧做双根分叉。
+const directQwenChatPathPrefix = "/compatible-mode/v1"
+
 // directBaseURL 解析探针上游地址。供应商解耦后单一事实源是健康检查连接行的
 // base_url（account_connections.base_url NOT NULL，设计 §2.1：凭据 JSON 不得
 // 再保存 base_url，profile 级默认上游表随 provider_protocol_profiles 一并退
 // 役）；gpt OAuth 的 Codex 固定上游由请求构造层信封（upstreamenvelope A 形态
-// fixedBaseURL）在出站时强制，与本字段解耦。
+// fixedBaseURL）在出站时强制，与本字段解耦。volcengine 直接使用连接 base
+// （默认含 /api/v3 版本根）；qwen 按 gateway 同源规则追加对话服务根前缀。
 func directBaseURL(account DirectAccount) (string, error) {
 	configured := strings.TrimSpace(account.ConnectionBaseURL)
 	if configured == "" {
 		return "", fmt.Errorf("PG direct input 的健康检查连接缺少 base_url")
 	}
-	return strings.TrimRight(configured, "/"), nil
+	base := strings.TrimRight(configured, "/")
+	if strings.TrimSpace(account.Provider) == "qwen" {
+		// 与 gateway chat 链同构（T220）：base 尾部已带服务根先剥一次再恒拼。
+		if strings.HasSuffix(base, directQwenChatPathPrefix) {
+			base = strings.TrimSuffix(base, directQwenChatPathPrefix)
+		}
+		base += directQwenChatPathPrefix
+	}
+	return base, nil
 }
 
 func decryptJSONObject(secret, encrypted, label string) (map[string]json.RawMessage, error) {

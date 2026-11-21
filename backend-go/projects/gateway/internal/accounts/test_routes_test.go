@@ -167,6 +167,19 @@ func seedTestAccount(t *testing.T, env *testEnv, ownerID string) string {
 	env.seedProviderAndDefaultGroup(t, ownerID)
 	env.seedAccount(t, "acc-test-1", ownerID, "测试账户", "active")
 	env.seedTestCatalog(t)
+	// 手工测试方式与列表 testKind 的有效连接事实源：生产账户恒有 enabled
+	// 连接及其 endpoint modes（B1 写路径契约），测试夹具补齐同一形态，避免
+	// 凭据未声明 modes 时 chat 域被误判为连接测试（test-options 返回空候选）。
+	now := "2026-01-01T00:00:00Z"
+	env.exec(t, `INSERT INTO account_connections
+		(id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn-acc-test-1', 'acc-test-1', 'gpt_openai_v1', 'https://api.openai.com/v1', 1, ?, ?)
+		ON CONFLICT DO NOTHING`, now, now)
+	for _, mode := range []string{"chat_json", "chat_sse", "responses_json", "responses_sse"} {
+		env.exec(t, `INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
+			VALUES ('conn-acc-test-1', ?) ON CONFLICT DO NOTHING`, mode)
+	}
+	env.exec(t, `UPDATE accounts SET health_check_connection_id = 'conn-acc-test-1' WHERE id = 'acc-test-1'`)
 	return "acc-test-1"
 }
 

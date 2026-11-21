@@ -608,26 +608,54 @@ func (s *Store) BindGroupSource(ctx context.Context, systemAccountID, sourceID s
 	if runtime.OwnerID == "" || group == nil || group.OwnerID != runtime.OwnerID {
 		return failCode("resource_changed", "授权资源归属已变化，请重新授权")
 	}
-	if runtime.Status != StatusActive {
-		return failCode("source_not_active", "授权运行时尚未生效")
-	}
-	if source.Status != StatusActive && source.Status != StatusDormant {
-		return failCode("source_not_active", "授权来源尚未生效")
+	// Unbinding is always allowed for an owned runtime: it only turns the
+	// receiver-side switch off, so terminal/paused runtimes need no snapshot
+	// precondition. Enabling still requires a live runtime + accepted source.
+	if enable {
+		if runtime.Status != StatusActive {
+			return failCode("source_not_active", "授权运行时尚未生效")
+		}
+		if source.Status != StatusActive && source.Status != StatusDormant {
+			return failCode("source_not_active", "授权来源尚未生效")
+		}
 	}
 	if group.Kind != "standard" {
 		return failCode("group_kind_conflict", "超级分组不能作为授权资源")
 	}
-	if _, err := tx.ExecContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorizations")+` WHERE id = ? FOR UPDATE`), runtime.ID); err != nil {
+	// The context above is an unlocked read. Re-validate under the design lock
+	// order (runtime → settings → source) so a concurrent return/revoke that
+	// committed while we waited cannot leave settings.enabled=1 on a terminal
+	// runtime.
+	var lockedRuntimeStatus string
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("resource_authorizations")+`
+		WHERE id = ? FOR UPDATE`), runtime.ID).Scan(&lockedRuntimeStatus); err != nil {
 		return err
+	}
+	if enable && lockedRuntimeStatus != StatusActive {
+		return failCode("source_not_active", "授权运行时尚未生效")
+	}
+	var lockedSourceStatus string
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("resource_authorization_sources")+`
+		WHERE id = ? AND authorization_id = ? FOR UPDATE`), source.ID, runtime.ID).Scan(&lockedSourceStatus); err != nil {
+		return err
+	}
+	if enable && lockedSourceStatus != StatusActive && lockedSourceStatus != StatusDormant {
+		return failCode("source_not_active", "授权来源尚未生效")
 	}
 	enabled, exists, snapshotRevision, snapshotMode, err := s.settingsRow(ctx, tx, runtime.ID, true)
 	if err != nil {
 		return err
 	}
 	if !exists {
+		if !enable {
+			return nil
+		}
 		return failCode("snapshot_missing_requires_review", "分组授权设置缺失，请先重建快照")
 	}
 	if snapshotRevision == "" {
+		if !enable {
+			return nil
+		}
 		return failCode("snapshot_missing_requires_review", "分组授权快照修订缺失")
 	}
 	_ = snapshotMode

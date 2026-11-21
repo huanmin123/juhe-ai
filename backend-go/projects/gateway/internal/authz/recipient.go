@@ -13,9 +13,9 @@ import (
 
 // AcceptInput carries the revision the receiver actually reviewed.
 type AcceptInput struct {
-	ExpectedRevision       string
+	ExpectedRevision        string
 	ExpectedRevisionVersion int
-	RetainFallback         *bool
+	RetainFallback          *bool
 }
 
 // AcceptResult is the acceptance response.
@@ -447,10 +447,10 @@ func (s *Store) recomputeTeamGrantAggregate(ctx context.Context, tx *sql.Tx, gra
 		return nil
 	}
 	type agg struct {
-		status        string
-		reason        string
-		accepted      bool
-		expiredCycle  bool
+		status       string
+		reason       string
+		accepted     bool
+		expiredCycle bool
 	}
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT status, COALESCE(ended_reason, ''),
 			COALESCE(accepted_source_revision, '') <> '' OR COALESCE(accepted_at, '') <> '',
@@ -691,9 +691,9 @@ func (s *Store) ReturnSource(ctx context.Context, actorID, sourceID, now string)
 
 // BlockInput selects the block scope and whether existing sources are returned.
 type BlockInput struct {
-	Scope         string `json:"scope"` // grantor | resource
-	ReturnExisting bool  `json:"returnExisting"`
-	Reason        string `json:"reason"`
+	Scope          string `json:"scope"` // grantor | resource
+	ReturnExisting bool   `json:"returnExisting"`
+	Reason         string `json:"reason"`
 }
 
 // BlockResult reports what the block withdrew.

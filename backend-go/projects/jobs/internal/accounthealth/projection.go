@@ -306,7 +306,7 @@ func (p *OutcomeProjector) Run(ctx context.Context) error {
 }
 
 // DrainOnce 执行一轮有界 drain（T207 C3 消费水位口径）：每页读未消费
-//（projection_consumed_at IS NULL）的最旧行，逐条投影并在同一事务内打标
+// （projection_consumed_at IS NULL）的最旧行，逐条投影并在同一事务内打标
 // 消费水位，直到空批或本轮预算用尽。晚到旧行（observed_at 早于已消费行）在
 // 落库后自然进入下一页，不再被单调游标永久跳过。游标仍单调推进，仅作诊断
 // 面（不再闸门消费，推进失败即停的旧分支随之移除）。
@@ -340,12 +340,23 @@ func (p *OutcomeProjector) DrainOnce(ctx context.Context) (ProjectionDrainResult
 		}
 		for _, item := range page {
 			next := &OutcomeCursor{ObservedAtText: item.StorageObservedAtText, ObservedAt: item.StorageObservedAt, OutcomeID: item.Outcome.OutcomeID}
+			// 小时条带直写（BUG-0194 第二层，T218 前置）：必须在
+			// projectOutcome 的消费水位打标之前落库——写入失败时上抛停轮，
+			// 该行 projection_consumed_at 仍为 NULL，下轮 drain 重放重试
+			//（条带 upsert newest-wins 幂等）。旧行为（打标后 warn 继续）
+			// 会把消费过的 outcome 小时条永久丢失，读面新鲜度区间之外无法
+			// 纠偏。取舍：stats 库故障期间暂停 J1 投影消费（队头阻塞，
+			// current_state 滞后），恢复后自动续跑。
+			if err := p.recordHourly(ctx, item.Outcome); err != nil {
+				p.logger.Warn("J1 探针小时条带写入失败，停轮保留消费水位等待重放",
+					"event", "account_health_hourly_record_failed",
+					"consumerKey", p.consumerKey,
+					"accountId", item.Outcome.AccountID, "outcomeId", item.Outcome.OutcomeID, "error", err.Error())
+				return result, err
+			}
 			if _, err := p.projectOutcome(ctx, item.Outcome, true); err != nil {
 				return result, err
 			}
-			// 小时条带直写（BUG-0194 第二层）：在游标推进前落库；失败 warn
-			// 不阻塞（派生数据由同账户下轮观测覆盖）。
-			p.recordHourly(ctx, item.Outcome)
 			// 游标推进（诊断面）：失败即停保留（诊断写失败可能与存储异常
 			// 同源，本轮收口下轮重试）；未推进（晚到旧行落后于游标，存储游
 			// 标保持单调）不再停止消费，本地诊断值只在真推进时跟随。
@@ -453,7 +464,7 @@ ORDER BY observed_at ASC, outcome_id ASC LIMIT $1`
 }
 
 // bootstrapProjectionConsumption 在消费水位列首次启用时按旧游标结算存量行
-//（BUG-0345 同款自举口径，statsagg.BootstrapUsageRecordConsumption 同型），
+// （BUG-0345 同款自举口径，statsagg.BootstrapUsageRecordConsumption 同型），
 // 返回 true 表示本轮执行了结算、调用方本轮不再消费。
 //
 // 为什么必须有这一步：加列后存量行全是 NULL，若直接把全表当待消费，会把旧

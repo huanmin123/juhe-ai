@@ -16,9 +16,11 @@ package accounts
 //     末尾全部 `/`（空 path 保持空，因此 `/v1` 与 `/v1/` 等价）；
 //   - R8 统一路径规则：base 路径按段切分后取任意连续后缀，命中登记的操作
 //     模板（已去版本前缀；qwen preset 保持全路径为唯一例外）的完整路径或其
-//     按段前缀 → 拒绝；版本根（/v1、/api/v3、/api/paas/v4、/compatible-mode
-//     /v1 等）、`/api/plan/v3` 类服务前缀与空路径放行。allowed_base_path_
-//     suffixes 自 R8 起不再参与写面判定（registry 数据保留）；
+//     按段前缀 → 拒绝；版本根（如 openai 族 `/v1`、ark `/api/v3`、glm
+//     `/api/paas/v4` 等）、`/api/plan/v3` 类服务前缀与空路径放行——注意
+//     qwen 全路径模板使其服务根尾缀（`/compatible-mode/v1`、`/api/v1`）
+//     命中模板按段前缀被拒（钉值 TestB1ValidateConnectionBaseURLTable）。
+//     allowed_base_path_suffixes 自 R8 起不再参与写面判定（registry 数据保留）；
 //     模板字面段区分大小写，`{name}` 匹配单个非空 segment，嵌入式占位符
 //     （`{model}:generateContent`）匹配该 segment 的非空部分。
 //

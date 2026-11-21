@@ -7,7 +7,8 @@ import {
   OPENAI_VIDEO_GENERATION_FAMILY,
   MINIMAX_OPENAI_V1_PROFILE_ID,
   QWEN_OPENAI_V1_PROFILE_ID,
-  VOLCENGINE_OPENAI_V1_PROFILE_ID
+  VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import { applyMediaCreateDefaults, type MediaCreateDefaultsForm } from './accountMediaCreateDefaults'
@@ -39,8 +40,17 @@ const volcengineProfile = mediaProfile({
   baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
   families: [
     { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
-    { code: OPENAI_VIDEO_GENERATION_FAMILY, name: 'Video Generation' },
-    { code: OPENAI_TTS_FAMILY, name: 'TTS' }
+    { code: OPENAI_VIDEO_GENERATION_FAMILY, name: 'Video Generation' }
+  ]
+})
+
+const volcengineOpenSpeechProfile = mediaProfile({
+  id: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
+  providerCode: 'volcengine',
+  baseUrl: 'https://openspeech.bytedance.com',
+  families: [
+    { code: OPENAI_TTS_FAMILY, name: 'TTS' },
+    { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: 'Audio Transcription' }
   ]
 })
 
@@ -112,6 +122,32 @@ describe('applyMediaCreateDefaults（B1：status 预选不受声明集早退分�
     expect(form.statusSelectionExplicit).toBe(false)
     expect(form.healthCheckEndpointMode).toBe('audio_speech')
     expect(form.supportedEndpointModes).toEqual(['audio_speech'])
+  })
+
+  it('volcengine×audio：Ark 档案不承接音频，默认声明集保持空且不落越界 mode', () => {
+    const form = cachedResetFormState()
+    applyMediaCreateDefaults(form, {
+      capabilityDomain: 'audio',
+      providerCode: 'volcengine',
+      profile: volcengineProfile,
+      type: 'api_key'
+    })
+    expect(form.supportedEndpointModes).toEqual([])
+    expect(form.status).toBe('pending_test')
+  })
+
+  it('volcengine×audio：OpenSpeech 档案可创建 api_key，落 audio_speech 默认声明与检查形态', () => {
+    const form = cachedResetFormState()
+    applyMediaCreateDefaults(form, {
+      capabilityDomain: 'audio',
+      providerCode: 'volcengine',
+      profile: volcengineOpenSpeechProfile,
+      type: 'api_key'
+    })
+    expect(form.supportedEndpointModes).toEqual(['audio_speech'])
+    expect(form.healthCheckEndpointMode).toBe('audio_speech')
+    expect(form.status).toBe('pending_test')
+    expect(form.statusSelectionExplicit).toBe(false)
   })
 
   it('qwen×video：声明集已落域内时仍预选 pending_test，检查形态收敛为声明集内合法值', () => {

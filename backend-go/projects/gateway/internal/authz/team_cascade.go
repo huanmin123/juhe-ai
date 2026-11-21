@@ -439,11 +439,11 @@ func (s *Store) RevokeTeamSourcesForMemberTx(ctx context.Context, tx *sql.Tx, te
 			return err
 		}
 		if err := s.insertNotification(ctx, tx, memberAccountID, "source_revoked", grantID, "", nil,
-			"member-removed:"+grantID+":"+memberAccountID, now); err != nil {
+			"member-removed:"+grantID+":"+memberAccountID+":"+now, now); err != nil {
 			return err
 		}
 		if err := s.insertNotification(ctx, tx, grant.OwnerID, "member_source_revoked", grantID, "", nil,
-			"member-removed-owner:"+grantID+":"+memberAccountID, now); err != nil {
+			"member-removed-owner:"+grantID+":"+memberAccountID+":"+now, now); err != nil {
 			return err
 		}
 	}

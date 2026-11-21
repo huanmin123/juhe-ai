@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { buildDailyConsumptionOption, hasDailyConsumptionData } from '../../views/stats/statsChartOptions'
 
 const viewSource = readFileSync(new URL('../../views/stats/StatsView.vue', import.meta.url), 'utf8')
 const routerSource = readFileSync(new URL('../../router/index.ts', import.meta.url), 'utf8')
@@ -105,7 +106,7 @@ for (const [section, reader] of usageOverviewSections) {
 
 const usageTrendOptionSource = chartSource.slice(
   chartSource.indexOf('export function buildUsageTrendOption'),
-  chartSource.indexOf('export function buildDailyConsumptionOption')
+  chartSource.indexOf('type DailyConsumptionMetric')
 )
 assert.doesNotMatch(usageTrendOptionSource, /Token 消耗|item\.totalTokens|name: 'Token'/, '小时趋势图不得继续渲染 Token 系列或 Token 纵轴')
 const dailyTrendOptionSource = chartSource.slice(
@@ -119,8 +120,17 @@ const modelDistributionOptionSource = chartSource.slice(
 assert.match(modelDistributionOptionSource, /value: item\.requestCount/, '模型分布 pie 切片 value 必须固定按请求次数')
 assert.doesNotMatch(modelDistributionOptionSource, /value: item\.totalTokens|item\.totalTokens > 0|value\s*:\s*[^,\n]*totalTokens/, '模型分布 pie 切片 value 不得使用 Token 或 fallback')
 assert.match(dailyTrendOptionSource, /type: 'bar'/, '筛选范围日消耗必须使用柱状图')
-assert.match(dailyTrendOptionSource, /value: item\.totalTokens/, '日消耗柱高必须只由 Token 决定')
-assert.doesNotMatch(dailyTrendOptionSource, /value: item\.totalCost|yAxisIndex/, '成本不得成为柱高或独立纵轴')
+assert.match(dailyTrendOptionSource, /metric: DailyConsumptionMetric/, '日消耗图必须显式接收当前指标')
+assert.match(dailyTrendOptionSource, /value: isCost \? item\.totalCost : item\.totalTokens/, '日消耗柱高必须按当前指标选择成本或 Token')
+assert.match(dailyTrendOptionSource, /name: isCost \? 'USD' : 'Token'/, '日消耗纵轴必须按当前指标标注 USD 或 Token')
+assert.match(dailyTrendOptionSource, /axisLabel: \{ formatter: isCost \? costAxisLabel : axisNumberLabel/, '成本纵轴必须使用可区分小额的精度格式')
+assert.match(viewSource, /hasDailyConsumptionData\(dailyTrend\.value\?\.dailyTrend \?\? \[\], dailyTrendMetric\.value\)/, '日消耗空态必须按当前指标判定')
+const costOnlyTrend = [{ statDate: '2026-11-21', totalTokens: 0, totalCost: 0.05 }]
+assert.equal(hasDailyConsumptionData(costOnlyTrend, 'cost'), true, '零 Token 的成本记录必须展示成本图')
+assert.equal(hasDailyConsumptionData(costOnlyTrend, 'tokens'), false, '零 Token 的成本记录不得让 Token 图显示有数据')
+const costOption = buildDailyConsumptionOption(costOnlyTrend, 'cost')
+const costAxis = costOption.yAxis as { axisLabel: { formatter: (value: number) => string } }
+assert.notEqual(costAxis.axisLabel.formatter(0.05), costAxis.axisLabel.formatter(0.1), '成本坐标必须区分小额刻度')
 assert.doesNotMatch(chartSource, /formatCompactInteger\(totalTokens\).*formatInteger\(totalTokens\)/, '日趋势 tooltip 不得在阶梯单位后重复展示精确 Token 数量')
 
 console.log('stats overview progressive loading regression passed')

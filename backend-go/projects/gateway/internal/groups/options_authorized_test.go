@@ -50,8 +50,8 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, expires_at, limits_json, created_by, created_at, updated_at)
 		VALUES ('authz-3', 'group', 'grp-exp', ?, ?, 'use', 'active', 'manual', ?, NULL, ?, ?, ?)`,
 		ownerID, granteeID, old, ownerID, now, now)
-	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('authz-1', ?, 'grp-auth', 0, 'personal', NULL, ?, ?)`, granteeID, now, now)
+	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, snapshot_revision, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('authz-1', ?, 'grp-auth', 0, 'snap-auth', 'personal', NULL, ?, ?)`, granteeID, now, now)
 
 	// purpose=account renders the full union: own rows plus the authorized
 	// projection; the revoked grant (authz-2) stays invisible to its grantee.
@@ -106,7 +106,9 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("authorized permissions mismatch: %v", permissions)
 	}
 	exp := rows["grp-exp"]
-	if exp["accessType"] != "authorized" || exp["enabled"] != true {
+	// No settings row → fail-closed disabled, even though the runtime row is
+	// still active; the expired grant remains listed but cannot be used.
+	if exp["accessType"] != "authorized" || exp["enabled"] != false {
 		t.Fatalf("expired-grant row projection mismatch: %v", exp)
 	}
 	if exp["permissions"].(map[string]any)["canBindToApiKey"] != false {

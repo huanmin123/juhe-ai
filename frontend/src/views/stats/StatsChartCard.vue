@@ -1,7 +1,18 @@
 <template>
-  <a-card :title="title" class="page-card chart-card" :class="{ compact }" :loading="loading">
+  <a-card class="page-card chart-card" :class="{ compact }" :loading="loading">
+    <template #title>
+      <div class="chart-card-title">
+        <span>{{ title }}</span>
+        <slot name="title-extra" />
+      </div>
+    </template>
     <p v-if="description" class="chart-card-description">{{ description }}</p>
-    <a-empty v-if="!hasData" :description="emptyDescription" />
+    <a-alert v-if="error" :message="error" type="error" show-icon>
+      <template v-if="onRetry" #action>
+        <a-button size="small" @click="onRetry">重试</a-button>
+      </template>
+    </a-alert>
+    <a-empty v-else-if="!hasData" :description="emptyDescription" />
     <slot v-else />
   </a-card>
 </template>
@@ -23,6 +34,14 @@ defineProps<{
 .chart-card {
   width: 100%;
   height: 100%;
+}
+
+.chart-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
 }
 
 .chart-card-description {

@@ -10,6 +10,7 @@ import {
   MINIMAX_OPENAI_V1_PROFILE_ID,
   QWEN_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
   XAI_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
@@ -270,6 +271,7 @@ const geminiNativeProfile = fallbackProfileById(GEMINI_NATIVE_V1BETA_PROFILE_ID)
 const geminiOpenAIChatProfile = fallbackProfileById(GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
 const minimaxProfile = fallbackProfileById(MINIMAX_OPENAI_V1_PROFILE_ID)
 const volcengineProfile = fallbackProfileById(VOLCENGINE_OPENAI_V1_PROFILE_ID)
+const volcengineOpenSpeechProfile = fallbackProfileById(VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID)
 const qwenProfile = fallbackProfileById(QWEN_OPENAI_V1_PROFILE_ID)
 
 describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 ∩ 供应商词表（v8-A + 协议补齐批）', () => {
@@ -391,7 +393,9 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
     { name: 'glm', profile: glmProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json'], image: [] },
     { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech', ...AUDIO_JOB_GROUP], image: ['images_json'] },
+    // volcengine 按档案×域拆分：Ark 不承接音频（TTS/长转写在 OpenSpeech 档案），
+    // OpenSpeech 音频另见档案专项用例。
+    { name: 'volcengine Ark', profile: volcengineProfile, video: VIDEO_GROUP, audio: [], image: ['images_json'] },
     { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
     { name: 'deepseek', profile: deepseekProfile, video: [], audio: [], image: [] },
     { name: 'anthropic', profile: anthropicProfile, video: [], audio: [], image: [] },
@@ -400,6 +404,29 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
     expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile, accountType: 'api_key' })).toEqual(video)
     expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile, accountType: 'api_key' })).toEqual(audio)
     expect(allowedEndpointModesFor({ capabilityDomain: 'image', profile, accountType: 'api_key' })).toEqual(image)
+  })
+
+  it('volcengine 档案×音频域：Ark 无可创建类型，OpenSpeech 可建 api_key 且允许音频声明', () => {
+    expect(capabilityDomainAccountTypes({
+      capabilityDomain: 'audio',
+      providerCode: 'volcengine',
+      profile: volcengineProfile
+    })).toEqual([])
+    expect(allowedEndpointModesFor({
+      capabilityDomain: 'audio',
+      profile: volcengineProfile,
+      accountType: 'api_key'
+    })).toEqual([])
+    expect(capabilityDomainAccountTypes({
+      capabilityDomain: 'audio',
+      providerCode: 'volcengine',
+      profile: volcengineOpenSpeechProfile
+    })).toEqual(['api_key'])
+    expect(allowedEndpointModesFor({
+      capabilityDomain: 'audio',
+      profile: volcengineOpenSpeechProfile,
+      accountType: 'api_key'
+    })).toEqual(['audio_speech', ...AUDIO_JOB_GROUP])
   })
 
   it('qwen 音频域 audio_speech 不进允许集（CosyVoice TTS 契约未回填）', () => {
@@ -437,6 +464,8 @@ describe('allowedEndpointModesFor：账户类型门（清单表：媒体域 = ap
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'audio', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual(['api_key', 'google_oauth'])
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'image', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual([])
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'video', providerCode: 'volcengine', profile: volcengineProfile })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'audio', providerCode: 'volcengine', profile: volcengineProfile })).toEqual([])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'audio', providerCode: 'volcengine', profile: volcengineOpenSpeechProfile })).toEqual(['api_key'])
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'chat', profile: gptProfile })).toEqual([])
   })
 })
@@ -474,7 +503,9 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
   })
 
   it('audio 域默认按供应商：audio_speech（qwen 除外）与 qwen 长音频四值；v8-A 默认集不含新移入两项', () => {
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineProfile, type: 'api_key' })).toEqual(['audio_speech'])
+    // volcengine 按档案拆分：默认 Ark 不承接音频，OpenSpeech 落 audio_speech。
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineProfile, type: 'api_key' })).toEqual([])
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineOpenSpeechProfile, type: 'api_key' })).toEqual(['audio_speech'])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: qwenProfile, type: 'api_key' })).toEqual([...AUDIO_JOB_GROUP])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: xaiProfile, type: 'api_key' })).toEqual([])
     // v8-A：gpt 词表含 audio_transcription_json / realtime_session，但音频域
@@ -613,19 +644,22 @@ describe('preferredMediaDomainProviderCode：媒体域新建默认供应商收�
 
 describe('媒体域三家供应商回退定义（T47）', () => {
   it.each([
-    ['minimax', ['video']],
-    ['volcengine', ['video', 'audio', 'image']],
-    ['qwen', ['video', 'audio']]
-  ] as const)('%s 在 FALLBACK_PROVIDERS 且媒体域可建户', (code, domains) => {
+    ['minimax', MINIMAX_OPENAI_V1_PROFILE_ID, ['video', 'audio']],
+    // volcengine 的媒体域按档案拆分：Ark 承接 chat/video/image，OpenSpeech 承接 audio。
+    ['volcengine', VOLCENGINE_OPENAI_V1_PROFILE_ID, ['video', 'image']],
+    ['volcengine', VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID, ['audio']],
+    ['qwen', QWEN_OPENAI_V1_PROFILE_ID, ['video', 'audio']]
+  ] as const)('%s/%s 在 FALLBACK_PROVIDERS 且按档案×域可建户', (code, profileId, domains) => {
     const provider = FALLBACK_PROVIDERS.find((item) => item.code === code)
     expect(provider, `FALLBACK_PROVIDERS 缺少媒体供应商 ${code}`).toBeTruthy()
-    expect(provider!.protocolProfiles.length).toBeGreaterThan(0)
-    for (const domain of domains) {
+    const profile = provider!.protocolProfiles.find((item) => item.id === profileId)
+    expect(profile, `FALLBACK_PROVIDERS 缺少供应商 ${code} 的档案 ${profileId}`).toBeTruthy()
+    for (const domain of ['video', 'audio', 'image'] as const) {
       expect(capabilityDomainAccountTypes({
         capabilityDomain: domain,
         providerCode: code,
-        profile: provider!.protocolProfiles[0]
-      })).toEqual(['api_key'])
+        profile: profile!
+      }), `${code}/${profileId} 域 ${domain} 可建户判定不符`).toEqual((domains as readonly string[]).includes(domain) ? ['api_key'] : [])
     }
   })
 

@@ -40,6 +40,10 @@ const (
 	probeTimeout        = 2 * time.Minute
 	defaultBatchSize    = 50
 	defaultConcurrency  = 4
+	// maxConcurrency 是连通性通道的独立并发上限：job 调度 timeout 为 3 分钟，
+	// 单账户硬上限 2 分钟，必须保证一批候选在一波内完成（batch ≤ concurrency），
+	// 否则最坏耗时 = ceil(batch/concurrency)*2m 会超过调度 timeout。
+	maxConcurrency = 8
 )
 
 // AccountReader 是 proberepo.Store 的窄读取面。
@@ -123,6 +127,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if concurrency <= 0 {
 		concurrency = defaultConcurrency
 	}
+	batchSize, concurrency = clampConnectivityBudget(batchSize, concurrency)
 	return &Runner{
 		db:           cfg.DB,
 		reader:       cfg.Reader,
@@ -133,6 +138,19 @@ func NewRunner(cfg Config) (*Runner, error) {
 		batchSize:    batchSize,
 		concurrency:  concurrency,
 	}, nil
+}
+
+// clampConnectivityBudget 把全局探针并发（JUHE_AI_JOBS_PROBE_CONCURRENCY 默认
+// 512，同时服务 J1/J2）收敛为本通道独立预算：并发不超过 maxConcurrency，批量
+// 不超过并发。这样最坏一轮 = 一波 2 分钟，小于 job 调度 3 分钟 timeout。
+func clampConnectivityBudget(batchSize, concurrency int) (int, int) {
+	if concurrency > maxConcurrency {
+		concurrency = maxConcurrency
+	}
+	if batchSize > concurrency {
+		batchSize = concurrency
+	}
+	return batchSize, concurrency
 }
 
 // Run 执行一轮健康检查。返回 error 仅代表扫描/加载级故障；单账户探测失败
@@ -271,12 +289,16 @@ WHERE a.deleted_at IS NULL
       AND EXISTS (
         SELECT 1 FROM juhe_business.account_connections c
         JOIN juhe_business.account_endpoint_modes m ON m.connection_id = c.id
-        WHERE c.account_id = a.id AND c.enabled = 1
+        WHERE c.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL
+            THEN a.id ELSE a.authorization_instance_source_account_id END
+          AND c.enabled = 1
       )
       AND NOT EXISTS (
         SELECT 1 FROM juhe_business.account_connections c
         JOIN juhe_business.account_endpoint_modes m ON m.connection_id = c.id
-        WHERE c.account_id = a.id AND c.enabled = 1
+        WHERE c.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL
+            THEN a.id ELSE a.authorization_instance_source_account_id END
+          AND c.enabled = 1
           AND m.endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse',
             'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse',
             'interactions_json', 'interactions_sse')

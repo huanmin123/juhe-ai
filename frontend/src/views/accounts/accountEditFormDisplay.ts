@@ -11,7 +11,10 @@ import {
   isDeepSeekProviderCode,
   isGeminiProviderCode,
   isGlmProviderCode,
-  isXaiProviderCode
+  isVolcengineProviderCode,
+  isXaiProviderCode,
+  VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
 
 import {
@@ -183,6 +186,12 @@ function accountTypeChoiceLabel(
   }
   if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Gemini OAuth'
   if (isXaiProviderCode(providerCode) && type === 'oauth') return 'Grok OAuth'
+  // 火山两个 api_key 档案承担不同能力域（Ark: chat/video/image；OpenSpeech: audio），
+  // 并排创建卡片必须可区分，不能都落「火山引擎 API Key」。
+  if (isVolcengineProviderCode(providerCode) && type === 'api_key') {
+    if (providerProtocolProfileId === VOLCENGINE_OPENAI_V1_PROFILE_ID) return 'Ark API Key'
+    if (providerProtocolProfileId === VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID) return 'OpenSpeech API Key'
+  }
   return accountEditAccountTypeTitle(providerCode, type, providers)
 }
 
@@ -206,5 +215,9 @@ function accountTypeChoiceTag(
   }
   if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'OAuth'
   if (isXaiProviderCode(providerCode) && type === 'oauth') return 'Grok OAuth'
+  if (isVolcengineProviderCode(providerCode) && type === 'api_key') {
+    if (providerProtocolProfileId === VOLCENGINE_OPENAI_V1_PROFILE_ID) return 'Ark'
+    if (providerProtocolProfileId === VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID) return 'OpenSpeech'
+  }
   return accountTypeText(type)
 }

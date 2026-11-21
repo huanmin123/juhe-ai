@@ -207,6 +207,11 @@ func TestGroupAvailabilityGuardCountsAuthorizedGroups(t *testing.T) {
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, expires_at, created_by, created_at, updated_at)
 		VALUES ('authz-guard', 'group', 'grp-granted', ?, ?, 'use', 'active', ?, ?, ?, ?)`,
 		ownerID, userAID, far, ownerID, now, now)
+	// Recipient-consent visibility is fail-closed: the authorized group needs
+	// an enabled settings row with a snapshot revision to count as usable.
+	env.exec(t, `INSERT INTO group_authorization_settings
+		(authorization_id, system_account_id, group_id, enabled, snapshot_revision, created_at, updated_at)
+		VALUES ('authz-guard', ?, 'grp-granted', 1, 'snap-guard', ?, ?)`, userAID, now, now)
 
 	// The authorized group is the strategy's remaining usable binding, so
 	// disabling alice's own group must succeed (the legacy owner-only count
@@ -221,8 +226,7 @@ func TestGroupAvailabilityGuardCountsAuthorizedGroups(t *testing.T) {
 	// drops the count back to zero and the guard fires again.
 	env.exec(t, `UPDATE groups SET enabled = 1 WHERE id = 'grp-alice'`)
 	env.exec(t, `UPDATE groups SET updated_at = ? WHERE id = 'grp-alice'`, later)
-	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type, created_at, updated_at)
-		VALUES ('authz-guard', ?, 'grp-granted', 0, 'personal', ?, ?)`, userAID, now, now)
+	env.exec(t, `UPDATE group_authorization_settings SET enabled = 0 WHERE authorization_id = 'authz-guard'`)
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/my-groups/grp-alice",
 		`{"expectedUpdatedAt":"`+later+`","enabled":false}`)
 	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "唯一可用启用分组") {

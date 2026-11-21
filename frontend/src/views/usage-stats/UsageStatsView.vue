@@ -142,7 +142,13 @@
       </div>
     </a-drawer>
 
-    <StatsSummaryCards :cards="summaryCards" :loading="summaryCardsLoading" compact />
+    <StatsSummaryCards
+      :cards="summaryCards"
+      :loading="rangeSummaryLoading"
+      :error="rangeSummaryError"
+      :on-retry="retryRangeSummary"
+      compact
+    />
 
     <StatsChartCard
       :title="`账户每日消耗趋势（${rangeLabel}）`"
@@ -150,9 +156,18 @@
       :has-data="hasTrendData"
       :empty-description="trendEmptyDescription"
     >
+      <template #title-extra>
+        <StatsPerspectiveSwitch value="account" :disabled="loading" />
+      </template>
       <div ref="trendChartRef" class="chart-panel" />
     </StatsChartCard>
 
+    <div v-if="selectedAccountSummary" class="usage-stats-scope-comparison">
+      所选 {{ selectedTrendAccountCount }} 个账户小计
+      · {{ formatInteger(selectedAccountSummary.requestCount) }} 次请求
+      · {{ formatCompactInteger(selectedAccountSummary.totalTokens) }} Token
+      · {{ formatCost(selectedAccountSummary.totalCost) }}
+    </div>
     <AccountUsageStatsTable
       :authorization-account-tag-text="authorizationAccountTagText"
       :cache-read-rate="cacheReadRate"
@@ -178,7 +193,7 @@
 import { message } from '@/lib/antd'
 import { FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
-import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, onActivated, reactive, ref, shallowRef, watch } from 'vue'
 
 import { api } from '@/api/client'
 import AccountManagePanel from '@/components/AccountManagePanel.vue'
@@ -189,6 +204,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useStatsWorkspaceFilters } from '@/views/stats/useStatsWorkspaceFilters'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
@@ -198,7 +214,8 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
-import { formatInteger } from '@/views/stats/statsFormatters'
+import StatsPerspectiveSwitch from '@/views/stats/StatsPerspectiveSwitch.vue'
+import { formatCompactInteger, formatCost, formatInteger } from '@/views/stats/statsFormatters'
 import AccountUsageStatsTable from './AccountUsageStatsTable.vue'
 import {
   aggregateUsageSummaries,
@@ -232,13 +249,25 @@ import { buildAccountUsageTrendOption, orderedUsageRows, type UsageTrendMetric }
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
+const statsWorkspace = useStatsWorkspaceFilters()
+const incomingWorkspace = statsWorkspace.incoming()
 
 const overview = ref<AccountUsageStatsListResult>()
 const rangeSummary = ref<AccountUsageSummary>()
-const rangeSummaryLoading = ref(false)
+const rangeSummaryLoading = ref(true)
+const rangeSummaryError = ref('')
+const rangeRowsLoaded = ref(false)
+let retryFailedRangeSummary: (() => void) | undefined
+let rangeSummaryAwaitingList = true
 const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
-const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
+const filters = reactive<UsageStatsFilters>({
+  ...initialPageState.filters,
+  ...(incomingWorkspace ? {
+    systemAccountId: incomingWorkspace.systemAccountId,
+    systemAccount: incomingWorkspace.systemAccount
+  } : {})
+})
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -251,8 +280,10 @@ const {
 })
 const metricOptions = usageStatsMetricOptions
 const selectedMetric = ref<UsageTrendMetric>(initialUsageStatsMetric(initialPageState.metric))
-const dateRange = ref<[Dayjs, Dayjs]>(parseUsageStatsDateRange(initialPageState.range))
-const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
+const dateRange = ref<[Dayjs, Dayjs]>(parseUsageStatsDateRange(incomingWorkspace
+  ? { startDate: incomingWorkspace.startDate, endDate: incomingWorkspace.endDate }
+  : initialPageState.range))
+const dateRangeExplicit = ref(Boolean(incomingWorkspace || initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedTrendAccountIds = ref<string[]>([])
 let usageStatsResourceRequestSeq = 0
@@ -276,10 +307,14 @@ const {
   fetchPage: async (options, pageState): Promise<ResponsivePagedListResult<AccountUsageStatsRow>> => {
     const resourceRequestSeq = ++usageStatsResourceRequestSeq
     if (pageState.current === 1) {
+      rangeRowsLoaded.value = false
       usageStatsSummaryRequestSeq += 1
       usageStatsTrendRequestSeq += 1
       rangeSummary.value = undefined
       rangeSummaryLoading.value = true
+      rangeSummaryError.value = ''
+      retryFailedRangeSummary = undefined
+      rangeSummaryAwaitingList = true
     }
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
     const query = accountUsageParams(isManagementView.value ? systemAccountId : undefined, pageState)
@@ -327,10 +362,17 @@ const {
     ]
   },
   mergeItems: (currentRows, nextRows) => dedupeRowsById([...currentRows, ...nextRows]),
-  onLoaded: () => renderChart(),
+  onLoaded: () => {
+    rangeRowsLoaded.value = true
+    renderChart()
+  },
   onError: (error) => {
     console.error(error)
-    rangeSummaryLoading.value = false
+    if (rangeSummaryAwaitingList) {
+      rangeSummaryAwaitingList = false
+      rangeSummaryLoading.value = false
+      rangeSummaryError.value = '用量汇总未加载，请重试'
+    }
     message.error('用量统计加载失败')
     renderChart()
   }
@@ -347,6 +389,26 @@ const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
   },
   onDeactivate: () => clearAccountOptionsSearchTimer(),
   onBeforeUnmount: () => clearAccountOptionsSearchTimer()
+})
+
+onActivated(() => {
+  const next = statsWorkspace.incoming()
+  if (!next) return
+  const nextRange = parseUsageStatsDateRange({ startDate: next.startDate, endDate: next.endDate })
+  const changed = displayRange.value[0] !== next.startDate
+    || displayRange.value[1] !== next.endDate
+    || filters.systemAccountId !== next.systemAccountId
+  if (!changed) return
+  Object.assign(filters, {
+    systemAccountId: next.systemAccountId,
+    systemAccount: next.systemAccount
+  })
+  dateRange.value = nextRange
+  dateRangeExplicit.value = true
+  calendarRange.value = [null, null]
+  clearTrendAccountState()
+  resetAccountUsagePagination()
+  void loadData()
 })
 const {
   accountOptionRows,
@@ -369,6 +431,12 @@ const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizeUsageStatsDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
+statsWorkspace.register(() => ({
+  startDate: displayRange.value[0],
+  endDate: displayRange.value[1],
+  systemAccountId: filters.systemAccountId,
+  systemAccount: filters.systemAccount
+}))
 // 手机端：筛选抽屉开合。
 // 筛选打点：指定到具体用户时提示（'all' 是全部用户哨兵；日期为必选无「非默认」态）。
 const mobileFilterOpen = ref(false)
@@ -407,24 +475,32 @@ const panelCollectionItems = computed(() => accountFilterItems.value.map((item) 
   removable: item.removable,
   isDefault: item.isDefault
 })))
+const selectedTrendAccountCount = computed(() => accountFilterItems.value.filter((item) => item.selected).length)
 const displayTablePagination = computed(() => hasSelectedTrendAccounts.value ? false : tablePagination.value)
 const displayMobileHasMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileHasMore.value)
 const displayMobileLoadingMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileLoadingMore.value)
 const tableScrollX = computed(() => accountUsageStatsTableScrollX(isManagementView.value))
 const columns = computed(() => accountUsageStatsTableColumns(isManagementView.value))
-const displaySummary = computed(() => hasSelectedTrendAccounts.value
+const selectedAccountSummary = computed(() => hasSelectedTrendAccounts.value
+  && !loading.value
+  && rangeRowsLoaded.value
+  && displayRows.value.length === selectedTrendAccountCount.value
   ? aggregateUsageSummaries(displayRows.value.map((row) => row.rangeUsage))
-  : rangeSummary.value)
-const summaryCardsLoading = computed(() => hasSelectedTrendAccounts.value ? false : rangeSummaryLoading.value)
+  : undefined)
 const summaryCards = computed(() => {
   return buildAccountUsageSummaryCards({
-    summary: displaySummary.value
+    summary: rangeSummary.value
   })
 })
 
 function refreshUsageStats() {
   resetAccountUsagePagination()
   void loadData({ forceCache: true })
+}
+
+function retryRangeSummary() {
+  if (retryFailedRangeSummary) retryFailedRangeSummary()
+  else refreshUsageStats()
 }
 
 function resetFilters() {
@@ -437,6 +513,7 @@ function resetFilters() {
   resetAccountUsagePagination()
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
+  statsWorkspace.clear()
   void loadData()
 }
 
@@ -444,6 +521,7 @@ function handleSystemAccountFilterChange() {
   if (filters.systemAccountId === allSystemAccountsValue) {
     filters.systemAccount = undefined
   }
+  statsWorkspace.persist()
   resetAccountUsagePagination()
   clearTrendAccountState()
   void loadData()
@@ -511,7 +589,10 @@ async function loadAccountUsageTrend(usageOverview: AccountUsageStatsListResult,
 
 async function loadAccountUsageSummary(range: AccountUsageStatsListResult['range'], systemAccountId?: string): Promise<void> {
   const requestSeq = ++usageStatsSummaryRequestSeq
+  rangeSummaryAwaitingList = false
   rangeSummaryLoading.value = true
+  rangeSummaryError.value = ''
+  retryFailedRangeSummary = undefined
   try {
     const params = { systemAccountId, startDate: range.startDate, endDate: range.endDate }
     const result = isManagementView.value
@@ -523,7 +604,8 @@ async function loadAccountUsageSummary(range: AccountUsageStatsListResult['range
     if (requestSeq !== usageStatsSummaryRequestSeq) return
     console.error(error)
     rangeSummary.value = undefined
-    message.error('用量汇总加载失败')
+    rangeSummaryError.value = '用量汇总加载失败，请重试'
+    retryFailedRangeSummary = () => void loadAccountUsageSummary(range, systemAccountId)
   } finally {
     if (requestSeq === usageStatsSummaryRequestSeq) rangeSummaryLoading.value = false
   }
@@ -560,6 +642,7 @@ function handleDateRangeChange() {
     endDate: formatDateKey(dateRange.value[1])
   })
   dateRangeExplicit.value = true
+  statsWorkspace.persist()
   resetAccountUsagePagination()
   void loadData()
 }
@@ -782,6 +865,11 @@ watch(mobileFilterOpen, (open) => {
 .chart-panel {
   width: 100%;
   height: 360px;
+}
+
+.usage-stats-scope-comparison {
+  color: var(--juhe-muted);
+  font-size: 12px;
 }
 
 @media (max-width: 900px) {

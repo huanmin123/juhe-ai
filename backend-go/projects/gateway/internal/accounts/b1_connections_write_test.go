@@ -12,6 +12,7 @@ package accounts
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -25,6 +26,31 @@ func b1CreatePayload(name string) string {
 		`"connections":[{"connectionPresetCode":"gpt_openai_v1","protocolSurfaceCode":"openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
 		`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini",` +
 		`"modelMappings":[{"sourceModel":"client-model","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"gpt_openai_v1","enabled":true}]}`
+}
+
+// b1CloneAccountPayload 构造克隆创建载荷：默认不携带健康检查三件套；
+// connections 为 nil 时不携带连接集合（走源连接回落臂）。
+func b1CloneAccountPayload(t *testing.T, name, domain, sourceID string, supportedModels []string, credentials map[string]any, connections []any) string {
+	t.Helper()
+	body := map[string]any{
+		"providerCode":              "gpt",
+		"providerProtocolProfileId": "prof-gpt",
+		"name":                      name,
+		"type":                      "api_key",
+		"capabilityDomain":          domain,
+		"credentials":               credentials,
+		"supportedModels":           supportedModels,
+		"status":                    "active",
+		"cloneSourceId":             sourceID,
+	}
+	if connections != nil {
+		body["connections"] = connections
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 // TestB1CreateWritesConnectionRows 是 #B1 完成判定用例：携 connections +
@@ -124,6 +150,81 @@ func TestB1CreateRequiresConnectionsAndHealthTrio(t *testing.T) {
 		if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), testCase.message) {
 			t.Fatalf("%s：%d %v（want 400 %s）", testCase.name, code, payload, testCase.message)
 		}
+	}
+}
+
+// TestB1ResolveCreateHealthCheckTrioConnectionTest 覆盖连接测试账户三件套
+// 收敛：显式非空字段优先，缺失/空串按最终目标连接派生（克隆源无三件套的
+// 核心路径；纯函数断言不依赖外部 PG）。
+func TestB1ResolveCreateHealthCheckTrioConnectionTest(t *testing.T) {
+	connections := []resolvedConnection{{
+		preset:  "gpt_openai_v1",
+		modes:   []string{"video_create", "video_get"},
+		enabled: true,
+	}}
+	preset, mode, model, err := resolveCreateHealthCheckTrio(true, "video", connections,
+		[]string{"m-default"}, nil, nil, nil, "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset != "gpt_openai_v1" || mode != "video_create" || model != "m-default" {
+		t.Fatalf("缺失三件套应按最终连接派生：%q %q %q", preset, mode, model)
+	}
+
+	explicitPreset, explicitMode, explicitModel := "explicit_preset", "video_get", "explicit-model"
+	preset, mode, model, err = resolveCreateHealthCheckTrio(true, "video", connections,
+		[]string{"m-default"}, &explicitPreset, &explicitMode, &explicitModel, "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset != explicitPreset || mode != explicitMode || model != explicitModel {
+		t.Fatalf("显式非空三件套应优先：%q %q %q", preset, mode, model)
+	}
+
+	blank := "  "
+	preset, mode, model, err = resolveCreateHealthCheckTrio(true, "image",
+		[]resolvedConnection{{preset: "volcengine_ark", modes: []string{"images_json"}, enabled: true}},
+		[]string{"m-default"}, &blank, &blank, &blank, "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset != "volcengine_ark" || mode != "images_json" || model != "m-default" {
+		t.Fatalf("空串三件套应按最终连接派生：%q %q %q", preset, mode, model)
+	}
+}
+
+// TestB1ResolveCreateHealthCheckTrioModelTest 覆盖模型测试账户三件套收敛：
+// 克隆源 preset 为空且请求未提交时显式拒绝；源非空时回填；空串同视为缺失。
+func TestB1ResolveCreateHealthCheckTrioModelTest(t *testing.T) {
+	_, _, _, err := resolveCreateHealthCheckTrio(false, "chat", nil,
+		[]string{"gpt-4o-mini"}, nil, nil, nil, "acc-source", "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "克隆源账户健康检查连接缺失，无法克隆：acc-source") {
+		t.Fatalf("模型测试克隆源三件套缺失应明确拒绝：%v", err)
+	}
+
+	preset, mode, model, err := resolveCreateHealthCheckTrio(false, "chat", nil,
+		[]string{"gpt-4o-mini"}, nil, nil, nil, "acc-source", "gpt_openai_v1", "chat_json", "gpt-4o-mini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset != "gpt_openai_v1" || mode != "chat_json" || model != "gpt-4o-mini" {
+		t.Fatalf("克隆载荷缺省应回填源三件套：%q %q %q", preset, mode, model)
+	}
+
+	blank := ""
+	preset, mode, model, err = resolveCreateHealthCheckTrio(false, "chat", nil,
+		[]string{"gpt-4o-mini"}, &blank, &blank, &blank, "acc-source", "gpt_openai_v1", "chat_json", "gpt-4o-mini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset != "gpt_openai_v1" || mode != "chat_json" || model != "gpt-4o-mini" {
+		t.Fatalf("显式空串应回填源三件套：%q %q %q", preset, mode, model)
+	}
+
+	_, _, _, err = resolveCreateHealthCheckTrio(false, "chat", nil,
+		[]string{"gpt-4o-mini"}, &blank, &blank, &blank, "", "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "创建载荷缺少 healthCheckModel") {
+		t.Fatalf("非克隆模型测试账户空串三件套应报缺失：%v", err)
 	}
 }
 
@@ -466,6 +567,196 @@ func TestB1CloneAdoptsExplicitConnections(t *testing.T) {
 	genericCloneID := dataMap(t, payload)["id"].(string)
 	if got := env.queryCell(t, `SELECT connection_preset_code || '|' || base_url || '|' || enabled FROM account_connections WHERE account_id = ?`, genericCloneID); got != "gpt_openai_v1|"+genericBaseURL+"|1" {
 		t.Fatalf("generic 回落克隆连接行应原样重建源连接：%q", got)
+	}
+}
+
+// TestB1CloneConnectionTestDerivesHealthTrioWithoutSourcePreset：视频/音频/
+// 图像连接测试源账户的三件套缺失（迁移前数据；夹具 schema 的 model/mode 列
+// 为 NOT NULL，用 NULL connection_id + 空串表示）时，克隆不带三件套仍可成功，
+// 三字段按克隆体自己的最终连接派生。
+func TestB1CloneConnectionTestDerivesHealthTrioWithoutSourcePreset(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+
+	cases := []struct {
+		domain   string
+		modes    []string
+		wantMode string
+	}{
+		{"video", []string{"video_create", "video_get", "video_content", "video_cancel"}, "video_create"},
+		{"audio", []string{"audio_speech"}, "audio_speech"},
+		{"image", []string{"images_json"}, "images_json"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.domain, func(t *testing.T) {
+			sourceCredentials := map[string]any{
+				"api_key":  "sk-b1-clone-ct-src-" + testCase.domain,
+				"base_url": "https://api.openai.com/v1",
+			}
+			code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+				m2CreateBody("b1-clone-ct-src-"+testCase.domain, "gpt", "prof-gpt", "api_key",
+					testCase.domain, sourceCredentials, testCase.modes))
+			if code != http.StatusCreated {
+				t.Fatalf("源账户创建：%d %v", code, payload)
+			}
+			sourceID := dataMap(t, payload)["id"].(string)
+			env.exec(t, `UPDATE accounts SET health_check_connection_id = NULL,
+				health_check_endpoint_mode = '', health_check_model = '' WHERE id = ?`, sourceID)
+			if got := env.queryCell(t, `SELECT health_check_endpoint_mode || '|' || health_check_model || '|' ||
+				COALESCE(health_check_connection_id, '') FROM accounts WHERE id = ?`, sourceID); got != "||" {
+				t.Fatalf("源账户三件套应已清空：%q", got)
+			}
+
+			cloneCredentials := map[string]any{
+				"api_key":                  "sk-b1-clone-ct-dst-" + testCase.domain,
+				"base_url":                 "https://api.openai.com/v1",
+				"supported_endpoint_modes": anyStrings(testCase.modes),
+			}
+			code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+				b1CloneAccountPayload(t, "b1-clone-ct-dst-"+testCase.domain, testCase.domain,
+					sourceID, []string{"m-default"}, cloneCredentials, nil))
+			if code != http.StatusCreated {
+				t.Fatalf("克隆创建：%d %v", code, payload)
+			}
+			cloneID := dataMap(t, payload)["id"].(string)
+			cloneConnectionID := env.queryCell(t, `SELECT id FROM account_connections WHERE account_id = ?`, cloneID)
+			if cloneConnectionID == "" {
+				t.Fatal("克隆体缺少连接行")
+			}
+			var healthConnection, healthMode, healthModel string
+			if err := env.db.QueryRow(`SELECT health_check_connection_id, health_check_endpoint_mode, health_check_model
+				FROM accounts WHERE id = $1`, cloneID).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
+				t.Fatal(err)
+			}
+			if healthConnection != cloneConnectionID || healthMode != testCase.wantMode || healthModel != "m-default" {
+				t.Fatalf("克隆体三件套未按最终连接派生：%q %q %q（连接 %q）",
+					healthConnection, healthMode, healthModel, cloneConnectionID)
+			}
+			if env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes
+				WHERE connection_id = ? AND endpoint_mode = ?`, cloneConnectionID, healthMode) != 1 {
+				t.Fatalf("健康检查形态 %q 不属于克隆体连接 modes", healthMode)
+			}
+		})
+	}
+}
+
+// TestB1CloneConnectionTestUsesExplicitFinalConnectionsForHealthTrio：连接测试
+// 克隆显式提交不同 endpointModes 的连接且不带三件套时，按最终连接派生而非
+// 沿用源三件套（源 mode video_create 已不在最终连接 modes 内）。
+func TestB1CloneConnectionTestUsesExplicitFinalConnectionsForHealthTrio(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+
+	allModes := []string{"video_create", "video_get", "video_content", "video_cancel"}
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		m2CreateBody("b1-clone-explicit-src", "gpt", "prof-gpt", "api_key", "video",
+			map[string]any{"api_key": "sk-b1-clone-explicit-src", "base_url": "https://api.openai.com/v1"}, allModes))
+	if code != http.StatusCreated {
+		t.Fatalf("源账户创建：%d %v", code, payload)
+	}
+	sourceID := dataMap(t, payload)["id"].(string)
+
+	explicitBaseURL := "https://b1-clone-final.example.com/v1"
+	explicitModes := []string{"video_get"}
+	cloneCredentials := map[string]any{
+		"api_key":                  "sk-b1-clone-explicit-dst",
+		"base_url":                 explicitBaseURL,
+		"supported_endpoint_modes": anyStrings(explicitModes),
+	}
+	connections := []any{map[string]any{
+		"connectionPresetCode": "gpt_openai_v1",
+		"baseUrl":              explicitBaseURL,
+		"endpointModes":        anyStrings(explicitModes),
+		"enabled":              true,
+	}}
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		b1CloneAccountPayload(t, "b1-clone-explicit-dst", "video", sourceID,
+			[]string{"m-default"}, cloneCredentials, connections))
+	if code != http.StatusCreated {
+		t.Fatalf("显式连接克隆：%d %v", code, payload)
+	}
+	cloneID := dataMap(t, payload)["id"].(string)
+	cloneConnectionID := env.queryCell(t, `SELECT id FROM account_connections WHERE account_id = ?`, cloneID)
+	if cloneConnectionID == "" {
+		t.Fatal("克隆体缺少连接行")
+	}
+	if got := env.queryCell(t, `SELECT base_url FROM account_connections WHERE id = ?`, cloneConnectionID); got != explicitBaseURL {
+		t.Fatalf("克隆连接应采纳显式 baseUrl：%q", got)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ?`, cloneConnectionID); got != 1 {
+		t.Fatalf("克隆连接 modes 应采纳显式集合：%d", got)
+	}
+	var healthConnection, healthMode, healthModel string
+	if err := env.db.QueryRow(`SELECT health_check_connection_id, health_check_endpoint_mode, health_check_model
+		FROM accounts WHERE id = $1`, cloneID).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
+		t.Fatal(err)
+	}
+	if healthConnection != cloneConnectionID || healthMode != "video_get" || healthModel != "m-default" {
+		t.Fatalf("克隆三件套未按最终连接派生：%q %q %q", healthConnection, healthMode, healthModel)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ? AND endpoint_mode = ?`,
+		cloneConnectionID, healthMode) != 1 {
+		t.Fatalf("健康检查形态 %q 不属于最终连接 modes", healthMode)
+	}
+}
+
+// TestB1CloneModelTestRequiresSourceHealthTrio：模型测试账户源三件套为空时
+// 克隆不带三件套必须 400，且不产生克隆体（不允许静默降级为连接测试派生）；
+// 源三件套完整但显式连接 modes 不含源检查形态时同样 400，不静默沿用源 preset。
+func TestB1CloneModelTestRequiresSourceHealthTrio(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", b1CreatePayload("b1-clone-model-src"))
+	if code != http.StatusCreated {
+		t.Fatalf("源账户创建：%d %v", code, payload)
+	}
+	sourceID := dataMap(t, payload)["id"].(string)
+	env.exec(t, `UPDATE accounts SET health_check_connection_id = NULL,
+		health_check_endpoint_mode = '', health_check_model = '' WHERE id = ?`, sourceID)
+
+	missingName := "b1-clone-model-missing"
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		b1CloneAccountPayload(t, missingName, "chat", sourceID, []string{"gpt-4o-mini"},
+			map[string]any{"api_key": "sk-b1-clone-model-missing", "base_url": "https://api.openai.com/v1"}, nil))
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "克隆源账户健康检查连接缺失") {
+		t.Fatalf("模型测试源三件套缺失应 400：%d %v", code, payload)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE name = ?`, missingName); got != 0 {
+		t.Fatalf("失败克隆不应产生克隆体：%d", got)
+	}
+
+	// 源三件套完整、显式 connections 只保留 chat_sse（源检查形态 chat_json 不在
+	// 最终连接 modes 内）：回填源三件套后由 finalize 以
+	// health_check_connection_conflict 拒绝，不允许静默成功。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", b1CreatePayload("b1-clone-model-conflict-src"))
+	if code != http.StatusCreated {
+		t.Fatalf("冲突臂源账户创建：%d %v", code, payload)
+	}
+	conflictSourceID := dataMap(t, payload)["id"].(string)
+	conflictName := "b1-clone-model-conflict-dst"
+	conflictCredentials := map[string]any{
+		"api_key":                  "sk-b1-clone-model-conflict",
+		"base_url":                 "https://api.openai.com/v1",
+		"supported_endpoint_modes": anyStrings([]string{"chat_sse"}),
+	}
+	conflictConnections := []any{map[string]any{
+		"connectionPresetCode": "gpt_openai_v1",
+		"baseUrl":              "https://api.openai.com/v1",
+		"endpointModes":        anyStrings([]string{"chat_sse"}),
+		"enabled":              true,
+	}}
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		b1CloneAccountPayload(t, conflictName, "chat", conflictSourceID, []string{"gpt-4o-mini"},
+			conflictCredentials, conflictConnections))
+	if code != http.StatusBadRequest {
+		t.Fatalf("模型测试显式连接与源检查形态冲突应 400：%d %v", code, payload)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM accounts WHERE name = ?`, conflictName); got != 0 {
+		t.Fatalf("冲突克隆不应产生克隆体：%d", got)
 	}
 }
 

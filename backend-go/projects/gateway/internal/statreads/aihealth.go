@@ -193,12 +193,12 @@ func (d *Deps) aiHealthList(r *http.Request, scope AccessScope, options aiHealth
 	if err != nil {
 		return nil, err
 	}
-	j1Outcomes, err := d.j1OutcomesForAccountPage(r.Context(), accountIds, now, options.Hours, hourBuckets, rows, location)
+	j1Outcomes, headerProbeComplete, err := d.j1OutcomesForAccountPage(r.Context(), accountIds, now, options.Hours, hourBuckets, rows, location)
 	if err != nil {
 		return nil, err
 	}
 	rows = append(rows, j1OutcomeHealthRows(j1Outcomes, hourBuckets, location)...)
-	return mapAiHealthList(pageItems, hasMore, options, rows, hourBuckets, j1Outcomes), nil
+	return mapAiHealthList(pageItems, hasMore, options, rows, hourBuckets, j1Outcomes, headerProbeComplete), nil
 }
 
 func (d *Deps) aiHealthHourDetail(r *http.Request, scope AccessScope, accountID, statHour string) (any, bool, error) {
@@ -400,8 +400,7 @@ func (d *Deps) loadAccountHealthRows(r *http.Request, accountIds []string, hourB
 		return nil, nil
 	}
 	rows := []Row{}
-	startHour := hourBuckets[0]
-	endHour := hourBuckets[len(hourBuckets)-1]
+	startHour, endHour := hourBucketSpan(hourBuckets)
 	for _, chunk := range chunkStrings(accountIds, 900) {
 		chunkRows, err := d.queryStats(r, `
 			SELECT account_id, stat_hour, status, last_observed_at
@@ -457,18 +456,18 @@ type j1OutcomeRange struct {
 	ObservedBefore string
 }
 
-func (d *Deps) j1OutcomesForAccountPage(ctx context.Context, accountIds []string, now time.Time, hours int, hourBuckets []string, hourlyRows []Row, location *time.Location) ([]j1Outcome, error) {
+func (d *Deps) j1OutcomesForAccountPage(ctx context.Context, accountIds []string, now time.Time, hours int, hourBuckets []string, hourlyRows []Row, location *time.Location) ([]j1Outcome, bool, error) {
 	// 空 URL 与 nil 同义：未配置的源保持合并缺席（Node absent-source 语义），
 	// 不得下探 sql.Open("")——那会拨驱动默认地址并把整个读面打成 500（B5）。
 	if d.HealthOutcomes == nil || d.HealthOutcomes.PostgresURL == "" || len(accountIds) == 0 || len(hourBuckets) == 0 {
-		return nil, nil
+		return nil, true, nil
 	}
 	windowStart := j1ObservedAfter(now, hours)
 	windowEnd := j1WindowEnd(now)
 	freshnessFloor := now.Add(-j1ListFreshnessOverlap).UTC().Format("2006-01-02T15:04:05.000Z")
 	ranges := j1OutcomeRangesForHourlyRows(accountIds, hourBuckets, hourlyRows, windowStart, windowEnd, freshnessFloor, location)
 	if len(ranges) == 0 {
-		return nil, nil
+		return nil, true, nil
 	}
 	return d.j1PostgresOutcomes(ctx, ranges, windowStart, windowEnd)
 }
@@ -531,6 +530,17 @@ func j1OutcomeRangesForHourlyRows(accountIds []string, hourBuckets []string, hou
 	}
 	ranges := make([]j1OutcomeRange, 0, len(accountIds))
 	seen := make(map[string]bool, len(accountIds))
+	// Bucket bounds are account-independent: cache per statHour for the whole
+	// page so DST slow scans run once per bucket, not once per account.
+	boundsCache := make(map[string][2]string, len(hourBuckets))
+	hourBounds := func(statHour string) (string, string) {
+		if bounds, ok := boundsCache[statHour]; ok {
+			return bounds[0], bounds[1]
+		}
+		bounds := [2]string{hourBucketStartUTC(statHour, location), hourBucketEndUTC(statHour, location)}
+		boundsCache[statHour] = bounds
+		return bounds[0], bounds[1]
+	}
 	for _, accountID := range accountIds {
 		if accountID == "" || seen[accountID] {
 			continue
@@ -545,6 +555,9 @@ func j1OutcomeRangesForHourlyRows(accountIds []string, hourBuckets []string, hou
 		if invalidObserved[accountID] {
 			accountRanges = append(accountRanges, j1OutcomeRange{AccountID: accountID, ObservedAfter: windowStart, ObservedBefore: windowEnd})
 		} else {
+			// A fall-back can order display buckets non-monotonically (e.g. a
+			// 3h shift yields 02,00,01), so a run must extend to the UTC
+			// min/max of its members instead of assuming forward order.
 			runStart, runEnd := "", ""
 			flushRun := func() {
 				if runStart == "" {
@@ -558,8 +571,7 @@ func j1OutcomeRangesForHourlyRows(accountIds []string, hourBuckets []string, hou
 					flushRun()
 					continue
 				}
-				start := hourBucketStartUTC(hour, location)
-				end := hourBucketEndUTC(hour, location)
+				start, end := hourBounds(hour)
 				if start == "" || end == "" {
 					continue
 				}
@@ -567,14 +579,12 @@ func j1OutcomeRangesForHourlyRows(accountIds []string, hourBuckets []string, hou
 					runStart, runEnd = start, end
 					continue
 				}
-				if timestampValue(start) <= timestampValue(runEnd) {
-					if timestampValue(end) > timestampValue(runEnd) {
-						runEnd = end
-					}
-					continue
+				if timestampValue(start) < timestampValue(runStart) {
+					runStart = start
 				}
-				flushRun()
-				runStart, runEnd = start, end
+				if timestampValue(end) > timestampValue(runEnd) {
+					runEnd = end
+				}
 			}
 			flushRun()
 			freshnessStart := earlierJ1Timestamp(latest[accountID], freshnessFloor)
@@ -657,8 +667,11 @@ func localHourBoundsUTC(statHour string, location *time.Location) (time.Time, ti
 		_, startOffset := start.Zone()
 		_, endOffset := end.Zone()
 		_, nextOffset := end.Add(time.Hour).Zone()
+		_, beforeOffset := start.Add(-24 * time.Hour).Zone()
+		_, afterOffset := start.Add(24 * time.Hour).Zone()
 		if hourKeyIn(start, location) == statHour && hourKeyIn(end, location) == nextHour &&
-			startOffset == endOffset && endOffset == nextOffset {
+			startOffset == endOffset && endOffset == nextOffset &&
+			startOffset == beforeOffset && startOffset == afterOffset {
 			return start, end, true
 		}
 	}
@@ -725,43 +738,65 @@ const j1PostgresOutcomeAccountLimit = 50
 // latest probe is a single backward index scan with LIMIT 1 per account; it is
 // deliberately not skipped just because an earlier gap row exists, since the
 // newest quality outcome may sit in a covered hour outside the read ranges.
-func (d *Deps) j1PostgresOutcomes(ctx context.Context, ranges []j1OutcomeRange, windowStart, windowEnd string) ([]j1Outcome, error) {
+// The bool reports whether the header probe completed; false keeps gap rows in
+// the strip but makes the caller fall back to the accounts business projection
+// header fields (last_health_* / next_health_check_at).
+func (d *Deps) j1PostgresOutcomes(ctx context.Context, ranges []j1OutcomeRange, windowStart, windowEnd string) ([]j1Outcome, bool, error) {
 	db, err := sql.Open("pgx", d.HealthOutcomes.PostgresURL)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	readCtx, cancel := context.WithTimeout(ctx, j1PostgresOutcomeBudget)
 	defer cancel()
+	return j1CollectOutcomes(readCtx, func(ctx context.Context, query string, args ...any) ([]Row, error) {
+		return queryRowsContext(ctx, db, query, args...)
+	}, ranges, windowStart, windowEnd)
+}
+
+// j1CollectOutcomes is the query-execution core of the list J1 read, kept free
+// of the pgx connection so tests can drive the degradation paths (budget
+// deadline mid-chunk, probe failure, non-timeout errors) with a fake executor.
+func j1CollectOutcomes(ctx context.Context, query func(ctx context.Context, query string, args ...any) ([]Row, error), ranges []j1OutcomeRange, windowStart, windowEnd string) ([]j1Outcome, bool, error) {
 	outcomes := make([]j1Outcome, 0, len(ranges))
 	for _, chunk := range j1OutcomeRangeChunks(ranges, j1PostgresOutcomeRangeLimit) {
 		gapQuery, gapArgs, err := j1PostgresOutcomeGapQuery(chunk)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		gapRows, err := queryRowsContext(readCtx, db, gapQuery, gapArgs...)
+		gapRows, err := query(ctx, gapQuery, gapArgs...)
 		if err != nil {
-			return nil, err
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// Extreme sparse pages may exhaust the shared budget mid-way;
+				// keep the chunks already read plus whatever this query
+				// scanned before the deadline and warn instead of a 500.
+				// Client cancellation and non-timeout errors still propagate.
+				outcomes = append(outcomes, buildJ1ListOutcomeRows(gapRows)...)
+				slog.Default().Warn("AI 健康区间分批读取超预算，返回已读部分",
+					"event", "ai_health_gap_read_degraded", "error", err)
+				return outcomes, false, nil
+			}
+			return nil, false, err
 		}
 		outcomes = append(outcomes, buildJ1ListOutcomeRows(gapRows)...)
 	}
 	latestAccountIds := j1AccountsNeedingLatestProbe(ranges, windowStart, windowEnd)
 	if len(latestAccountIds) == 0 {
-		return outcomes, nil
+		return outcomes, true, nil
 	}
 	latestQuery, latestArgs, err := j1PostgresLatestQualityQuery(latestAccountIds, windowStart, windowEnd)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	latestRows, err := queryRowsContext(readCtx, db, latestQuery, latestArgs...)
+	latestRows, err := query(ctx, latestQuery, latestArgs...)
 	if err != nil {
-		// 表头探针失败不应丢弃已经读到的缺失小时数据；小时行仍可兜底表头。
-		slog.Default().Warn("AI 健康最新质量 outcome 读取失败，表头回退小时行",
+		// 表头探针失败不应丢弃已经读到的缺失小时数据；账户业务投影字段仍可兜底表头。
+		slog.Default().Warn("AI 健康最新质量 outcome 读取失败，表头回退账户投影字段",
 			"event", "ai_health_latest_probe_failed", "error", err)
-		return outcomes, nil
+		return outcomes, false, nil
 	}
-	return append(outcomes, buildJ1ListOutcomeRows(latestRows)...), nil
+	return append(outcomes, buildJ1ListOutcomeRows(latestRows)...), true, nil
 }
 
 // j1OutcomeRangeChunks splits the page's ranges into SQL-sized chunks. The
@@ -1160,7 +1195,7 @@ func timestampValue(value string) int64 {
 }
 
 // mapAiHealthList mirrors mapAiHealthList + mapAiHealthAccount.
-func mapAiHealthList(page []aiHealthAccount, hasMore bool, options aiHealthOptions, rows []Row, hourBuckets []string, j1Outcomes []j1Outcome) aiHealthListResult {
+func mapAiHealthList(page []aiHealthAccount, hasMore bool, options aiHealthOptions, rows []Row, hourBuckets []string, j1Outcomes []j1Outcome, headerProbeComplete bool) aiHealthListResult {
 	rowsByAccountHour := map[string]Row{}
 	for _, row := range rows {
 		key := row.text("account_id") + "\x00" + row.text("stat_hour")
@@ -1171,7 +1206,10 @@ func mapAiHealthList(page []aiHealthAccount, hasMore bool, options aiHealthOptio
 	}
 	items := make([]aiHealthAccountRow, 0, len(page))
 	for _, account := range page {
-		latest := latestJ1OutcomeForAccount(j1Outcomes, account.ID)
+		var latest *j1Outcome
+		if headerProbeComplete {
+			latest = latestJ1OutcomeForAccount(j1Outcomes, account.ID)
+		}
 		items = append(items, mapAiHealthAccount(account, hourBuckets, rowsByAccountHour, latest))
 	}
 	return aiHealthListResult{Items: items, HasMore: hasMore, Page: options.Page, PageSize: options.PageSize}

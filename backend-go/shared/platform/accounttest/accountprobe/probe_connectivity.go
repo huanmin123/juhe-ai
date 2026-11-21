@@ -144,6 +144,12 @@ func buildConnectivityRequest(ctx context.Context, view *View, spec contracts.Co
 	}
 	opPath := strings.ReplaceAll(spec.PathTemplate, "{probe_id}", ConnectivityProbeTaskID)
 	opPath = strings.ReplaceAll(opPath, "{model}", connectivityProbeModelPath(model))
+	// qwen（T221）：全路径 opPath 与 gateway 媒体链同构——base 尾部服务根
+	// （/compatible-mode/v1 或 /api/v1，存量行/凭据域形态）先剥一次再直拼，
+	// 避免探测出站双根 404；其余供应商保持纯直拼。
+	if strings.EqualFold(strings.TrimSpace(view.ProviderCode), "qwen") {
+		baseURL = stripQwenBaseServiceRoot(baseURL)
+	}
 	target, err := upstreamenvelope.JoinUpstreamURL(baseURL, opPath)
 	if err != nil {
 		return nil, err
@@ -309,4 +315,25 @@ func classifyConnectivityResponse(view *View, spec contracts.ConnectorConnectivi
 			Connectivity:           true,
 		},
 	}
+}
+
+// stripQwenBaseServiceRoot 剥掉 qwen base_url 路径尾部的 DashScope 服务根
+// （`/compatible-mode/v1` 或 `/api/v1`，各剥一次），与 gateway 媒体链
+// （chain_media_video.go chainQwenStripBaseServiceRoot）同构（T221）：
+// 连接域写面已按 qwen 全路径模板前缀拒绝该形态，剥根兜底存量行与凭据域
+// base，避免媒体探测出站双根。解析失败或无 path 时原样返回。
+func stripQwenBaseServiceRoot(baseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Path == "" {
+		return baseURL
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	for _, suffix := range []string{"/compatible-mode/v1", "/api/v1"} {
+		if strings.HasSuffix(basePath, suffix) {
+			basePath = strings.TrimSuffix(basePath, suffix)
+			break
+		}
+	}
+	parsed.Path = basePath
+	return parsed.String()
 }

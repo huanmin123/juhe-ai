@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -403,5 +405,90 @@ func TestApplyRevokesOrphanAccountResourcesOnPostgres(t *testing.T) {
 	}
 	if instanceStatus != "disabled" || instanceSchedulable != 0 {
 		t.Fatalf("orphan instance = %q/%d, want disabled/0", instanceStatus, instanceSchedulable)
+	}
+}
+
+// Mapping superseded/covered_by_team manual sources to dormant can collide with
+// an already active manual source on the same runtime. The expand phase creates
+// the open-status unique index before this data step, so the migration must
+// preflight that collision and block for review instead of failing halfway
+// through the status mapping with a raw duplicate-key error.
+func TestApplyBlocksLiveSourceKeyCollisionOnPostgres(t *testing.T) {
+	db := prepareAuthzSchema(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.groups
+		(id, system_account_id, name, enabled, group_kind, created_at, updated_at)
+		VALUES ('grp-collision', 'sys-owner', 'collision', 1, 'standard', $1, $1)`, testCreatedAt)
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.resource_authorizations
+		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+		 status, created_by, created_at, updated_at)
+		VALUES ('rt-collision', 'group', 'grp-collision', 'sys-owner', 'sys-grantee', 'active', 'sys-owner', $1, $1)`,
+		testCreatedAt)
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.resource_authorization_grants
+		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+		 grantee_system_account_id, status, created_by, created_at, updated_at)
+		VALUES ('grant-collision', 'group', 'grp-collision', 'sys-owner', 'system_account',
+		 'sys-grantee', 'active', 'sys-owner', $1, $1)`, testCreatedAt)
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.resource_authorization_sources
+		(id, authorization_id, grant_id, source_type, status, accepted_source_revision,
+		 accepted_source_revision_version, created_by, created_at, updated_at)
+		VALUES ('src-collision-active', 'rt-collision', 'grant-collision', 'manual', 'active',
+		 'seed-revision', 1, 'sys-owner', $1, $1)`, testCreatedAt)
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.resource_authorization_sources
+		(id, authorization_id, grant_id, source_type, status, ended_reason, created_by, created_at, updated_at)
+		VALUES ('src-collision-superseded', 'rt-collision', 'grant-collision', 'manual', 'superseded',
+		 'covered_by_team', 'sys-owner', $1, $1)`, testCreatedAt)
+
+	result, err := authzgovernance.Apply(ctx, db, authzgovernance.Options{
+		Secret: testSecret,
+		Now:    time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC),
+	})
+	if !errors.Is(err, authzgovernance.ErrNeedsReview) {
+		t.Fatalf("Apply error = %v, want ErrNeedsReview", err)
+	}
+	reasons := strings.Join(result.BlockedReasons, "\n")
+	if !strings.Contains(reasons, "src-collision-active") || !strings.Contains(reasons, "src-collision-superseded") {
+		t.Fatalf("blocked reasons must name both colliding sources: %q", reasons)
+	}
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM juhe_business.resource_authorization_sources
+		WHERE id = 'src-collision-superseded'`).Scan(&status); err != nil {
+		t.Fatalf("read blocked source: %v", err)
+	}
+	if status != "superseded" {
+		t.Fatalf("blocked migration must roll back status mapping, got %q", status)
+	}
+}
+
+// Missing grantee accounts/teams must block with row ids before the RESTRICT
+// foreign-key validation, not fail the migration with an opaque FK error.
+func TestApplyBlocksForeignKeyOrphanGranteeOnPostgres(t *testing.T) {
+	db := prepareAuthzSchema(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	execP2Fixture(ctx, t, db, `ALTER TABLE juhe_business.resource_authorization_grants
+		DROP CONSTRAINT IF EXISTS resource_authorization_grants_grantee_system_account_id_fkey`)
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.groups
+		(id, system_account_id, name, enabled, group_kind, created_at, updated_at)
+		VALUES ('grp-orphan-grantee', 'sys-owner', 'orphan grantee', 1, 'standard', $1, $1)`, testCreatedAt)
+	execP2Fixture(ctx, t, db, `INSERT INTO juhe_business.resource_authorization_grants
+		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+		 grantee_system_account_id, status, created_by, created_at, updated_at)
+		VALUES ('grant-orphan-grantee', 'group', 'grp-orphan-grantee', 'sys-owner', 'system_account',
+		 'missing-grantee', 'active', 'sys-owner', $1, $1)`, testCreatedAt)
+
+	result, err := authzgovernance.Apply(ctx, db, authzgovernance.Options{
+		Secret: testSecret,
+		Now:    time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC),
+	})
+	if !errors.Is(err, authzgovernance.ErrNeedsReview) {
+		t.Fatalf("Apply error = %v, want ErrNeedsReview", err)
+	}
+	reasons := strings.Join(result.BlockedReasons, "\n")
+	if !strings.Contains(reasons, "grant-orphan-grantee") || !strings.Contains(reasons, "missing-grantee") {
+		t.Fatalf("blocked reasons must identify the orphan grant/grantee: %q", reasons)
 	}
 }

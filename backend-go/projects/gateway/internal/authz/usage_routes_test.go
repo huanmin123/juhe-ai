@@ -281,7 +281,7 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 	_, err = env.f.db.Exec(fixtureBind(`INSERT INTO juhe_stats.usage_scope_range_windows
 		(system_account_id, scope_type, scope_id, start_date, end_date,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES ('owner1', 'group_authorization', ?, ?, ?, 3, 30, 15, 0.5, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`), 		runtimeID, startKey, todayKey)
+		VALUES ('owner1', 'group_authorization', ?, ?, ?, 3, 30, 15, 0.5, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`), runtimeID, startKey, todayKey)
 	if err != nil {
 		t.Fatal(err)
 	}

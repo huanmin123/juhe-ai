@@ -380,18 +380,18 @@ const VOLCENGINE_PROVIDER: ProviderDefinition = {
       baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
       defaultHealthCheckModel: 'doubao-seed-2-1-pro-260915',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'video', 'audio', 'image'],
+      // Ark preset（registry volcengine_ark）域为 chat/video/image，不承接音频；
+      // TTS 与长转写由下方 OpenSpeech 档案承担，避免音频域创建落 ark 被保存链拒绝。
+      capabilities: ['chat', 'video', 'image'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
-        { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },
-        { code: OPENAI_TTS_FAMILY, name: '语音合成' },
-        { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' }
+        { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' }
       ]
     },
     // T102：OpenSpeech 音频连接（registry volcengine_openspeech，契约 §9.2 豆包
     // TTS + 长转写）的表单档案，供编辑/克隆装载派生与保存链 preset 导出闭环。
-    // accountTypes 留空：不产生创建类型卡片（volcengine 音频域创建入口属 B4
-    // 连接 preset 驱动批），对话/媒体域的既有卡片集合零变化。
+    // B4 起 accountTypes 产出 api_key 创建卡片：音频域选中 volcengine 时由统一
+    // 向导按「档案×域」把默认 Ark 档案回退到本档案；Ark 档案不再声明 audio。
     {
       id: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
       providerCode: VOLCENGINE_PROVIDER_CODE,
@@ -401,7 +401,7 @@ const VOLCENGINE_PROVIDER: ProviderDefinition = {
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://openspeech.bytedance.com',
       defaultHealthCheckModel: 'seed-tts-2.0',
-      accountTypes: [],
+      accountTypes: ['api_key'],
       capabilities: ['audio'],
       endpointFamilies: [
         { code: OPENAI_TTS_FAMILY, name: '语音合成' },

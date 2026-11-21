@@ -812,13 +812,15 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
 		// 同上（BUG-0239）：tombstone SELECT 的前置 `?` 与 IN 列表由同一次
 		// Bind 编号；lockSuffix（FOR UPDATE）无占位符不受影响。
 		// 供应商身份按目标列集判定：generic_http / 空 vendor 账户已退役（DB
-		// CHECK 禁止），这里只需按真实厂商 vendor_code 筛选健康投影。
+		// CHECK 禁止），这里只需按真实厂商 vendor_code 筛选健康投影；纯媒体
+		// minimax 不参与 J1 对话健康投影，volcengine/qwen 的对话形态自本批起
+		// 进入 J1，删除时必须同样写 tombstone。
 		tombstones, err := queryRows(ctx, tx, s.Business.Bind(fmt.Sprintf(`
 	      SELECT id, config_revision, dispatch_revision
 	      FROM %s
 	      WHERE deleted_at = ?
 	        AND id IN (%s)
-	        AND vendor_code IN ('gpt', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini')
+	        AND vendor_code IN ('gpt', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'volcengine', 'qwen')
 	        AND type IN ('api_key', 'oauth', 'google_oauth')
       ORDER BY id ASC%s
 		`, s.table("accounts"), placeholderList(len(deletedIDs)), lockSuffix)),

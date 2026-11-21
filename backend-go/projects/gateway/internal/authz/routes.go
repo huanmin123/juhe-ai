@@ -334,6 +334,12 @@ func (d *Deps) visibleTo(summary *Summary, viewerID string) bool {
 	if summary.OwnerID == viewerID {
 		return true
 	}
+	// An admin-created offer stays invisible to the receiver until the resource
+	// owner approves it. List queries already exclude this status; the detail
+	// read must enforce the same boundary by id.
+	if summary.Status == StatusPendingOwnerApproval {
+		return false
+	}
 	if summary.GranteeUserID != nil && *summary.GranteeUserID == viewerID {
 		return true
 	}

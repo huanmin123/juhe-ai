@@ -36,6 +36,7 @@ const systemTeamsPGFixtureSchema = `
       description text,
       role text NOT NULL DEFAULT 'user',
       status text NOT NULL DEFAULT 'active',
+      deleted_at text,
       password_hash text NOT NULL,
       must_change_password integer NOT NULL DEFAULT 0,
       image_generation_enabled integer NOT NULL DEFAULT 0,
@@ -100,6 +101,9 @@ const systemTeamsPGFixtureSchema = `
       revoked_by text,
       revoked_at text,
       revoked_reason text,
+      status_reason text,
+      status_changed_at text,
+      acceptance_mode text DEFAULT 'legacy',
       updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
@@ -115,6 +119,24 @@ const systemTeamsPGFixtureSchema = `
       created_at text NOT NULL,
       revoked_by text,
       revoked_at text,
+      grant_id text,
+      acceptance_mode text DEFAULT 'legacy',
+      accepted_at text,
+      accepted_by text,
+      declined_at text,
+      declined_by text,
+      returned_at text,
+      returned_by text,
+      needs_review_at text,
+      needs_review_reason text,
+      needs_review_detail_json text,
+      accepted_source_revision text,
+      observed_source_revision text,
+      accepted_source_revision_version integer,
+      revision_version integer DEFAULT 1,
+      expiry_cycle integer DEFAULT 0,
+      expired_from_status text,
+      pending_expires_at text,
       updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
@@ -134,6 +156,21 @@ const systemTeamsPGFixtureSchema = `
       created_at text NOT NULL,
       revoked_by text,
       revoked_at text,
+      acceptance_mode text DEFAULT 'legacy',
+      accepted_at text,
+      accepted_by text,
+      team_approved_at text,
+      team_approved_by text,
+      owner_approved_at text,
+      owner_approved_by text,
+      source_revision text,
+      expiry_cycle integer DEFAULT 0,
+      pending_expires_at text,
+      expired_from_status text,
+      ended_at text,
+      ended_reason text,
+      legacy_basis text,
+      legacy_review_deadline text,
       updated_at text NOT NULL,
       CHECK (
         (grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
@@ -146,7 +183,30 @@ const systemTeamsPGFixtureSchema = `
       system_account_id text NOT NULL,
       deleted_at text,
       authorization_instance_authorization_id text,
-      authorization_instance_source_account_id text
+      authorization_instance_source_account_id text,
+      status text NOT NULL DEFAULT 'active',
+      schedulable integer NOT NULL DEFAULT 1,
+      updated_at text NOT NULL DEFAULT ''
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (
+      system_account_id text NOT NULL,
+      group_id text NOT NULL,
+      account_id text NOT NULL,
+      account_authorization_id text,
+      enabled integer NOT NULL DEFAULT 1,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      PRIMARY KEY (group_id, account_id)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.group_authorization_settings (
+      authorization_id text PRIMARY KEY,
+      system_account_id text NOT NULL,
+      group_id text NOT NULL,
+      enabled integer NOT NULL DEFAULT 1,
+      snapshot_revision text,
+      snapshot_mode text DEFAULT 'normal',
+      created_at text NOT NULL,
+      updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
       system_account_id text NOT NULL,
@@ -163,6 +223,50 @@ const systemTeamsPGFixtureSchema = `
       group_id text PRIMARY KEY,
       reason text NOT NULL,
       updated_at text NOT NULL
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.authorization_notifications (
+      id text PRIMARY KEY,
+      system_account_id text DEFAULT '',
+      type text DEFAULT '',
+      grant_id text,
+      source_id text,
+      payload_json text,
+      dedupe_key text DEFAULT '',
+      read_at text,
+      created_at text DEFAULT '',
+      UNIQUE (dedupe_key)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_offer_cooldowns (
+      id text PRIMARY KEY,
+      grantor_system_account_id text DEFAULT '',
+      grantee_type text DEFAULT '',
+      grantee_system_account_id text,
+      grantee_team_id text,
+      member_system_account_id text,
+      resource_type text DEFAULT '',
+      resource_id text DEFAULT '',
+      until_at text DEFAULT '',
+      reason text,
+      created_at text DEFAULT ''
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_blocks (
+      id text PRIMARY KEY,
+      blocker_system_account_id text DEFAULT '',
+      blocked_system_account_id text,
+      blocked_resource_type text,
+      blocked_resource_id text,
+      reason text,
+      created_at text DEFAULT '',
+      updated_at text DEFAULT ''
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.system_account_authorization_suspensions (
+      id text PRIMARY KEY,
+      system_account_id text DEFAULT '',
+      suspended_by text DEFAULT '',
+      reason text,
+      suspended_at text DEFAULT '',
+      lifted_at text,
+      lifted_by text
     )
 `
 

@@ -86,8 +86,21 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
   }
 }
 
-export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendResult['dailyTrend']): EChartsOption {
+type DailyConsumptionMetric = 'cost' | 'tokens'
+
+export function hasDailyConsumptionData(
+  trend: UsageStatsOverviewDailyTrendResult['dailyTrend'],
+  metric: DailyConsumptionMetric
+): boolean {
+  return trend.some((item) => metric === 'cost' ? item.totalCost !== 0 : item.totalTokens > 0)
+}
+
+export function buildDailyConsumptionOption(
+  trend: UsageStatsOverviewDailyTrendResult['dailyTrend'],
+  metric: DailyConsumptionMetric = 'tokens'
+): EChartsOption {
   const lastDate = trend[trend.length - 1]?.statDate
+  const isCost = metric === 'cost'
   return {
     color: ['#53696b'],
     tooltip: {
@@ -98,7 +111,8 @@ export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendR
       left: 56,
       right: 20,
       top: 16,
-      bottom: 32
+      bottom: 32,
+      containLabel: isCost
     },
     xAxis: {
       type: 'category',
@@ -110,25 +124,29 @@ export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendR
     },
     yAxis: {
       type: 'value',
-      name: 'Token',
-      min: 0,
-      axisLabel: { formatter: axisNumberLabel, color: chartNeutral.axisLabel },
+      name: isCost ? 'USD' : 'Token',
+      min: isCost ? undefined : 0,
+      axisLabel: { formatter: isCost ? costAxisLabel : axisNumberLabel, color: chartNeutral.axisLabel },
       splitLine: { lineStyle: { color: chartNeutral.splitLine } }
     },
     series: [{
-      name: 'Token 消耗',
+      name: isCost ? '成本' : 'Token 消耗',
       type: 'bar',
       barMaxWidth: 24,
       itemStyle: { borderRadius: [4, 4, 0, 0] },
-        emphasis: { itemStyle: { color: chartSemantic.emphasis } },
+      emphasis: { itemStyle: { color: chartSemantic.emphasis } },
       data: trend.map((item) => ({
-        value: item.totalTokens,
+        value: isCost ? item.totalCost : item.totalTokens,
         statDate: item.statDate,
         totalTokens: item.totalTokens,
         totalCost: item.totalCost
       }))
     }]
   }
+}
+
+function costAxisLabel(value: number): string {
+  return String(Number(value.toPrecision(8)))
 }
 
 export function buildModelDistributionOption(distribution: UsageStatsOverview['modelDistribution']): EChartsOption {

@@ -270,11 +270,11 @@ func TestAddMembersFanoutRollback_C6(t *testing.T) {
 	}
 }
 
-// TestAddMembersFanoutAndSideEffects_C6_C9 pins the happy-path fan-out —
-// grant-driven team source + runtime rows carrying remark/expiresAt/limits,
-// owner skipped (repo :1574-1596, write :1574-1596) — plus the committed-write
-// side effects (repo :709-711 → :1478-1494): group-stats dirty marker and
-// gateway runtime + authorization quota invalidation.
+// TestAddMembersFanoutAndSideEffects_C6_C9 pins the recipient-consent fan-out:
+// adding a member creates a pending member offer (runtime + pending team
+// source), not active access; the owner is skipped. It also pins the
+// committed-write side effects (repo :709-711 → :1478-1494): group-stats dirty
+// marker and gateway runtime + authorization quota invalidation.
 func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "admin", "admin-pass", "super_admin")
@@ -296,20 +296,23 @@ func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 		t.Fatalf("add members: %d %v", code, payload)
 	}
 
-	// The member got a runtime row with team source and the grant remark.
-	var status, effectiveType, remark string
-	if err := env.store.db.QueryRow(fixtureBind(`SELECT status, effective_source_type, COALESCE(remark,'') FROM resource_authorizations
+	// The member got a pending team offer (recipient consent): runtime pending,
+	// source pending, no effective source until the member accepts, and no
+	// binding/instance side effect.
+	var status, effectiveType string
+	if err := env.store.db.QueryRow(fixtureBind(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
 		WHERE resource_id = 'grp_fan' AND grantee_system_account_id = ?`), memberAccountID).
-		Scan(&status, &effectiveType, &remark); err != nil {
+		Scan(&status, &effectiveType); err != nil {
 		t.Fatalf("member runtime missing: %v", err)
 	}
-	if status != "active" || effectiveType != "team" || remark != "" {
-		t.Fatalf("member runtime = %s/%s/%q", status, effectiveType, remark)
+	if status != "pending" || effectiveType != "" {
+		t.Fatalf("member runtime = %s/%s", status, effectiveType)
 	}
 	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorization_sources
 		WHERE authorization_id IN (SELECT id FROM resource_authorizations WHERE grantee_system_account_id = ?)
-		AND source_type = 'team' AND source_team_id = ? AND status = 'active'`, memberAccountID, teamID); got != 1 {
-		t.Fatalf("member team source count = %d", got)
+		AND source_type = 'team' AND source_team_id = ? AND status = 'pending' AND acceptance_mode = 'recipient'`,
+		memberAccountID, teamID); got != 1 {
+		t.Fatalf("member team pending source count = %d", got)
 	}
 	// Owner skipped (write :1579).
 	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorizations WHERE grantee_system_account_id = ?`, ownerID); got != 0 {
@@ -330,9 +333,10 @@ func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 	_ = adminID
 }
 
-// TestPatchDisableEnableCascade_C7_C8 pins the enable/disable cascade inside
-// the patch transaction (repo :525-533) with real actor bookkeeping
-// (write :1645-1658) and the reactivate grant projection (write :1574-1596).
+// TestPatchDisableEnableCascade_C7_C8 pins the disable cascade inside the
+// patch transaction (repo :525-533) with real actor bookkeeping
+// (write :1645-1658), and verifies that enable does not reactivate revoked
+// team sources: recipient consent requires a fresh offer and acceptance.
 func TestPatchDisableEnableCascade_C7_C8(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "admin", "admin-pass", "super_admin")
@@ -369,35 +373,20 @@ func TestPatchDisableEnableCascade_C7_C8(t *testing.T) {
 		t.Fatalf("disable stats reasons = %v", env.stats.recorded())
 	}
 
-	// Rollback guard (C7): >20 grants aborts the reactivation and the team
-	// stays disabled with its version unchanged.
-	disabledRevision := env.teamRevision(t, teamID)
-	for i := 0; i < 21; i++ {
-		insertTeamGrant(t, env, "gb_"+string(rune('a'+i)), "grp_"+string(rune('a'+i)), teamID, ownerID, disabledRevision)
-	}
-	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/system-teams/"+teamID,
-		`{"expectedUpdatedAt":"`+disabledRevision+`","status":"active"}`)
-	if code != http.StatusBadRequest || payload["message"] != "单个授权团队最多支持 20 条有效授权，请先回收或停用部分授权" {
-		t.Fatalf("over-limit reactivate: %d %v", code, payload)
-	}
-	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_teams WHERE id = ? AND status = 'disabled' AND updated_at = ?`, teamID, disabledRevision); got != 1 {
-		t.Fatalf("reactivate failure did not roll back the status transition")
-	}
-
-	// Trim below the ceiling → enable reactivates the grant fan-out: the
-	// runtime row returns to active with the team source restored.
-	mustExec(t, env, `DELETE FROM resource_authorization_grants WHERE id LIKE 'gb_%'`)
+	// Re-enabling is not a reactivation: recipient consent means the revoked
+	// team source stays terminal and a new offer must be approved and accepted.
+	// The grant-count ceiling therefore cannot block the status transition.
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/system-teams/"+teamID,
 		`{"expectedUpdatedAt":"`+env.teamRevision(t, teamID)+`","status":"active"}`)
 	if code != 200 {
 		t.Fatalf("enable patch: %d %v", code, payload)
 	}
-	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorizations WHERE id = 'auth_cas' AND status = 'active' AND effective_source_type = 'team'`); got != 1 {
-		t.Fatalf("reactivate did not restore the member runtime")
-	}
 	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorization_sources
-		WHERE authorization_id = 'auth_cas' AND source_type = 'team' AND status = 'active'`); got != 1 {
-		t.Fatalf("reactivate did not restore the team source")
+		WHERE authorization_id = 'auth_cas' AND source_type = 'team' AND status = 'revoked'`); got != 1 {
+		t.Fatalf("re-enable must not resurrect the revoked team source")
+	}
+	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorizations WHERE id = 'auth_cas' AND status = 'revoked'`); got != 1 {
+		t.Fatalf("re-enable must not resurrect the member runtime")
 	}
 	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ? AND status = 'active'`, memberRowID); got != 1 {
 		t.Fatalf("member must stay active through the cascade")

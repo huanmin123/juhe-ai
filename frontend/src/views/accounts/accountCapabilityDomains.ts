@@ -240,13 +240,24 @@ export function capabilityDomainAccountTypes(input: {
       ? row.audio
       : row.image
   if (!domainModes.length) return []
+  const providerCode = input.profile?.providerCode ?? input.profile?.code ?? input.providerCode
+  // volcengine 的域能力由预设档案 capabilities 声明（Ark: chat/video/image；
+  // OpenSpeech: audio）。endpointModesForProfile 的 volcengine 分支会为任意档案
+  // 追加 images_json，单靠词表求交会把 OpenSpeech 误判为可建图像户；先按档案
+  // 能力域否决，再进入词表求交。
+  if (isVolcengineProviderCode(providerCode)
+    && input.profile?.capabilities?.length
+    && !input.profile.capabilities.includes(input.capabilityDomain)) return []
   const types: AccountType[] = ['api_key']
   const profileId = input.profile?.providerProtocolProfileId ?? input.profile?.id
-  if (isGeminiProviderCode(input.profile?.providerCode ?? input.profile?.code ?? input.providerCode)
+  if (isGeminiProviderCode(providerCode)
     && (profileId === GEMINI_NATIVE_V1BETA_PROFILE_ID || (!profileId && isGeminiProtocolKind(input.profile)))) {
     types.push('google_oauth')
   }
-  return types
+  // 档案×域过滤：矩阵行只表达供应商域能力，具体档案未必承接该域（如 volcengine
+  // Ark 无 audio、OpenSpeech 只有 audio）。按档案写侧词表求交，非空才保留该类型，
+  // 保证创建类型卡片与保存链 registry 组合校验一致。
+  return types.filter((type) => intersectWithProviderVocabulary(domainModes, input.profile, type).length > 0)
 }
 
 /**

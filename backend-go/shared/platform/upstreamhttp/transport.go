@@ -41,8 +41,9 @@ type TransportOptions struct {
 	// mode direct and HTTP(S)-proxy transports resolve and validate the connect
 	// target through the guard before any socket is established. SOCKS5 local
 	// resolution consumes the same guard to pick only validated addresses in
-	// strict mode (permissive targets keep the historical plain dial); socks5h
-	// remote resolution ignores it (the proxy resolves).
+	// strict mode (permissive direct/HTTP(S) targets keep the plain dial;
+	// permissive local-resolution SOCKS5 keeps its historical local
+	// resolution); socks5h remote resolution ignores it (the proxy resolves).
 	DialGuard *DialGuard
 }
 

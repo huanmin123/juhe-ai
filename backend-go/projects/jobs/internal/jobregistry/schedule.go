@@ -270,10 +270,10 @@ func schedules() map[string]Schedule {
 			BackoffBase: 5 * second, BackoffMax: 5 * minute, LeaseTTL: 5 * minute,
 		},
 		// account-connectivity-health：Go 新增任务（非对话账户连接测试通道）。
-		// 与 J1 模型检查独立；每分钟扫描到期候选（单批上限 50、并发 4），
-		// 上游请求预算沿用 accountprobe 连接测试分级超时。external-account-
-		// maintenance lane 与余额/OAuth 探针族同槽，initial delay 65s 与
-		// 同 lane 的 60s 族错峰。
+		// 与 J1 模型检查独立；每分钟扫描到期候选（批量与并发由 runner 收敛为
+		// 单波 ≤8，最坏 2 分钟小于本任务 3 分钟 timeout），上游请求预算沿用
+		// accountprobe 连接测试分级超时。external-account-maintenance lane 与
+		// 余额/OAuth 探针族同槽，initial delay 65s 与同 lane 的 60s 族错峰。
 		"account-connectivity-health": {
 			Interval: minute, InitialDelay: 65 * second, StablePhaseWindow: 5 * second,
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance",

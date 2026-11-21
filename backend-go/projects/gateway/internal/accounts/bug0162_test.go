@@ -521,3 +521,21 @@ func TestBug0162PatchBalanceCapabilityRejected(t *testing.T) {
 		t.Fatalf("oauth balance patch: %d %v", code, payload)
 	}
 }
+
+// TestAccountHealthTombstoneVendorsCoverArkAndQwen 锁定删除 tombstone 的
+// 健康厂商词表：J1 自本批起承载 volcengine/qwen 的对话形态，删除时必须
+// 同样写 tombstone；纯媒体 minimax 保持排除。该断言不依赖 PG。
+func TestAccountHealthTombstoneVendorsCoverArkAndQwen(t *testing.T) {
+	allowed := make(map[string]bool, len(accountHealthTombstoneProviderCodes))
+	for _, code := range accountHealthTombstoneProviderCodes {
+		allowed[code] = true
+	}
+	for _, code := range []string{"gpt", "xai", "anthropic", "deepseek", "glm", "gemini", "volcengine", "qwen"} {
+		if !allowed[code] {
+			t.Fatalf("删除 tombstone 厂商词表缺少 %q", code)
+		}
+	}
+	if allowed["minimax"] {
+		t.Fatal("纯媒体 minimax 不应进入 J1 删除 tombstone 词表")
+	}
+}
