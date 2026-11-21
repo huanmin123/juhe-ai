@@ -589,7 +589,16 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	pinned := context
 	pinned.providerCode = qwenProviderCode
-	modes, err := normalizeOpenAIEndpointModesForWrite(optOrDefault(value, []string{"video_get"}), pinned)
+	modes, err := normalizeEndpointModeList(
+		optOrDefault(value, []string{"video_get"}),
+		// 值域用「openai 公共词表 ∪ rerank_json」：qwen 新增的 rerank 不属于
+		// openai 公共面，但要让后面的 provider 专属校验产出通义百炼格式的
+		// 错误文案（responses/audio 等其余非法值沿用公共词表先放行、再由
+		// qwenEndpointModeSet 拒绝），与 volcengine 分支的结构保持一致。
+		func(mode string) bool { return isOpenAIEndpointMode(mode) || mode == "rerank_json" },
+		defaultOpenAIEndpointModes(pinned),
+		"上游接口能力",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -600,7 +609,7 @@ func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointMod
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*) 或长音频转写端点 (audio_job_*)：%s",
+		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*)、向量端点 (embeddings_json)、重排端点 (rerank_json) 或长音频转写端点 (audio_job_*)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil

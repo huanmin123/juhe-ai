@@ -150,6 +150,30 @@ func TestDomesticProviderCatalogPriceAnchors(t *testing.T) {
 	} else if got := floatOf(para.AudioInputCostPerSecond); got != 1.1428571428571428e-05 {
 		t.Fatalf("qwen paraformer-v2 AudioInputCostPerSecond = %v, want 1.1428571428571428e-05", got)
 	}
+	// 2026-11-20 协议补齐批：gte-rerank-v2 0.8 元/百万 tokens ÷7.0，
+	// mode=rerank、单请求 30000 tokens 上限；text-embedding-v4 协议回正为
+	// OpenAI embeddings（价格 0.5 元/百万 ÷7.0 不变）。
+	if rerank, ok := qw["gte-rerank-v2"]; !ok {
+		t.Fatal("qwen gte-rerank-v2 row missing")
+	} else {
+		if rerank.Mode != "rerank" {
+			t.Fatalf("qwen gte-rerank-v2 mode = %q, want rerank", rerank.Mode)
+		}
+		if got := floatOf(rerank.InputCostPerToken); got != 1.1428571428571428e-07 {
+			t.Fatalf("qwen gte-rerank-v2 InputCostPerToken = %v, want 1.1428571428571428e-07", got)
+		}
+		if rerank.MaxInputTokens == nil || *rerank.MaxInputTokens != 30000 {
+			t.Fatalf("qwen gte-rerank-v2 MaxInputTokens = %v, want 30000", rerank.MaxInputTokens)
+		}
+		if len(rerank.SupportedAPIProtocols) != 1 || rerank.SupportedAPIProtocols[0] != "rerank" {
+			t.Fatalf("qwen gte-rerank-v2 protocols = %v, want [rerank]", rerank.SupportedAPIProtocols)
+		}
+	}
+	if embed, ok := qw["text-embedding-v4"]; !ok {
+		t.Fatal("qwen text-embedding-v4 row missing")
+	} else if len(embed.SupportedAPIProtocols) != 1 || embed.SupportedAPIProtocols[0] != "embeddings" {
+		t.Fatalf("qwen text-embedding-v4 protocols = %v, want [embeddings]", embed.SupportedAPIProtocols)
+	}
 	// 万相视频 720P 刊例 0.6 元/秒 ÷7.0（限时 7 折留注记不落值）。
 	for _, model := range []string{"wan3.0-video", "wan2.7-t2v"} {
 		row, ok := qw[model]

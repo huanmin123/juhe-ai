@@ -25,8 +25,10 @@ func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerC
 		temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
 		schedulable, created_at, updated_at)
 		VALUES (?, ?, ?, 'active', ?, ?, 'chat_json', 'v1', 'oauth',
-		'{"api_key":"owner-secret"}', 'sk-****cret', 7000,
-		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), id, ownerID, name, vendor, driver); err != nil {
+		?, 'sk-****cret', 7000,
+		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`),
+		id, ownerID, name, vendor, driver,
+		sealedTestCredentials(t, map[string]any{"api_key": "owner-secret"})); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -371,8 +373,9 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 		WHERE account_id = ? AND event_type = 'dispatch_revision_changed' AND status = 'pending'`), restored.id).Scan(&outboxCount); err != nil {
 		t.Fatal(err)
 	}
-	if outboxCount != 1 {
-		t.Fatalf("circuit outbox rows = %d", outboxCount)
+	// One event per circuit projection consumer (J3a + J3b), same transition.
+	if outboxCount != 2 {
+		t.Fatalf("circuit outbox rows = %d, want one per projection consumer", outboxCount)
 	}
 
 	// The binding survives through the restored grant.

@@ -529,8 +529,8 @@ func TestW7CDialGuardContract(t *testing.T) {
 		t.Fatalf("empty resolution: %v", err)
 	}
 	resolver.addresses = []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}, {IP: nil}}
-	if err := host.ValidateHost(context.Background(), "mixed.example.com", "80"); err == nil {
-		t.Fatal("mixed resolution with a private address must fail")
+	if err := host.ValidateHost(context.Background(), "all-blocked.example.com", "80"); err == nil {
+		t.Fatal("all-blocked resolution (nil entries skipped) must fail")
 	}
 	// A successful dial through the guard: use the allowlisted loopback host
 	// (a test environment cannot dial a public IP).

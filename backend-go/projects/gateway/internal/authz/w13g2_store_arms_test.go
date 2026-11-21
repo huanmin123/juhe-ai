@@ -454,8 +454,8 @@ func TestW13g2TeamCascadeArms(t *testing.T) {
 	if err := f.store.RevokeAllTeamSources(w13g2CanceledCtx(), "team_c13", "owner", "team_disabled"); err == nil {
 		t.Fatalf("canceled RevokeAll 应失败")
 	}
-	if err := f.store.ReactivateTeamGrants(w13g2CanceledCtx(), "team_c13", "owner"); err == nil {
-		t.Fatalf("canceled Reactivate 应失败")
+	if err := f.store.ReactivateTeamGrants(w13g2CanceledCtx(), "team_c13", "owner"); err != nil {
+		t.Fatalf("Reactivate 为 no-op，不应受影响: %v", err)
 	}
 	if err := f.store.RevokeTeamSourcesForMember(w13g2CanceledCtx(), "team_c13", "grantee", "owner"); err == nil {
 		t.Fatalf("canceled RevokeMember 应失败")
@@ -472,17 +472,18 @@ func TestW13g2TeamCascadeArms(t *testing.T) {
 	}
 	tx.Commit()
 
-	// 非法 limits 的 team grant → apply 归一化失败（149-152）。
+	// 非法 limits 的 team grant：新模型级联不再解析/复制额度，只为成员创建
+	// pending 来源（额度在 accept 后同步时校验），因此不应失败。
 	w13g2InsertGrantRow(t, f, "grant_c13_bad", "group", "grp_s13", "owner", "team", "grantee_team_id", "team_c13", StatusActive, `not-json`)
 	tx, err = f.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.store.ApplyActiveTeamGrantsToMembersTx(ctx, tx, "team_c13", []string{"grantee"}, "owner", now)
-	tx.Rollback()
-	if err == nil {
-		t.Fatalf("非法 limits 应失败")
+	if err := f.store.ApplyActiveTeamGrantsToMembersTx(ctx, tx, "team_c13", []string{"grantee"}, "owner", now); err != nil {
+		tx.Rollback()
+		t.Fatalf("级联应只创建 pending 来源: %v", err)
 	}
+	tx.Commit()
 
 	// 成员超限：先补足到 MaxTeamMembersPerTeam+1 行。
 	for i := 0; i < MaxTeamMembersPerTeam; i++ {
@@ -523,8 +524,8 @@ func TestW13g2TeamCascadeArms(t *testing.T) {
 	if err := f.store.RevokeTeamSourcesForMemberTx(w13g2CanceledCtx(), tx, "team_c13", "grantee", "owner", now); err == nil {
 		t.Fatalf("canceled revokeMemberTx 应失败")
 	}
-	if err := f.store.ReactivateTeamGrantsTx(w13g2CanceledCtx(), tx, "team_c13", "owner", now); err == nil {
-		t.Fatalf("canceled reactivateTx 应失败")
+	if err := f.store.ReactivateTeamGrantsTx(w13g2CanceledCtx(), tx, "team_c13", "owner", now); err != nil {
+		t.Fatalf("ReactivateTx 为 no-op，不应受影响: %v", err)
 	}
 	tx.Rollback()
 }
@@ -789,13 +790,13 @@ func TestW13g2ReturnGroupArms(t *testing.T) {
 		t.Fatalf("无 source 应 nil: %+v %v", receipt, err)
 	}
 
-	// 有 manual source 但无可归还 grant → nil（94-96）。
+	// 有 manual source 但来源缺少父 grant → fail closed（新模型要求每个来源
+	// 都必须挂在 offer/grant 上；数据不一致时不得静默按归还成功处理）。
 	f.seedGroup(t, "grp3_g13", "owner")
 	w13g2InsertRuntimeRow(t, f, "rt_g13_nogrant", "group", "grp3_g13", "owner", "grantee", StatusActive, "manual", "", nil)
 	w13g2InsertSourceRow(t, f, "src_g13_nogrant", "rt_g13_nogrant", "manual", "", "active")
-	receipt, err = f.store.ReturnGroupForGrantee(ctx, "grp3_g13", "grantee", "grantee")
-	if err != nil || receipt != nil {
-		t.Fatalf("无 grant 应 nil: %+v %v", receipt, err)
+	if _, err := f.store.ReturnGroupForGrantee(ctx, "grp3_g13", "grantee", "grantee"); err == nil {
+		t.Fatalf("来源缺少父 grant 应 fail closed")
 	}
 
 	// canceled ctx → runtime 查询失败（64-66）。

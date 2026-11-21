@@ -165,7 +165,7 @@
 
 ### 3.1 现状事实（2026-10-04 取证）
 
-- 集中 Mock 引擎：`backend-go/shared/platform/mockupstream`（17 场景、`X-Mock-Scenario`/`?scenario=` 选择、端点白名单仅 chat/responses/embeddings/models，其余 404）。
+- 集中 Mock 引擎：`backend-go/shared/platform/mockupstream`（17 场景、`X-Mock-Scenario`/`?scenario=` 选择、端点白名单含 chat/responses/embeddings/rerank/models 与 qwen origin-base 全路径（`/compatible-mode/v1/embeddings`、`/api/v1/services/rerank/text-rerank/text-rerank`），其余 404）。
 - E2E：`acceptance` 目录三件套——场景控制器 `fullchainMockUpstream`（按上游 Bearer key 的场景队列）、`createAccount`（凭据 `base_url` 注入 httptest 地址）、`JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=true` 私网放行。
 - `mockdata` 为 DB 造数体系（非请求 mock）；新页面/列表/用量必须同步扩展对应域（《Mockdata造数设计》强制约定）。
 - **缺口**：mockupstream 无媒体端点、无异步任务多态响应（状态随轮询推进）、无二进制载荷通道；`fullchainMockUpstream` 的 scriptable 判定只认 4 条 POST 路径。

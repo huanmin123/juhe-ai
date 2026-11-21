@@ -1056,6 +1056,7 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		ClientCompatibility:       candidate.ClientCompatibility,
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
+		ConnectionPresetCode:      candidate.ConnectionPresetCode,
 		SupportedModels:           account.SupportedModels,
 		ModelMappings:             candidate.ModelMappings,
 		BaseURL:                   candidate.BaseURL,
@@ -1095,6 +1096,7 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		ClientCompatibility:       candidate.ClientCompatibility,
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
+		ConnectionPresetCode:      candidate.ConnectionPresetCode,
 		SupportedModels:           account.SupportedModels,
 		ModelMappings:             candidate.ModelMappings,
 		BaseURL:                   candidate.BaseURL,
@@ -1260,14 +1262,22 @@ func NormalizedEndpointModes(protocolCode, accountType string, connectionModes [
 		case accountprobe.ModeChatJSON, accountprobe.ModeChatSSE,
 			accountprobe.ModeResponsesJSON, accountprobe.ModeResponsesSSE,
 			accountprobe.ModeMessagesJSON, accountprobe.ModeMessagesSSE,
+			accountprobe.ModeMessageTokenCounting,
 			accountprobe.ModeGenerateContentJSON, accountprobe.ModeGenerateContentSSE,
 			accountprobe.ModeInteractionsJSON, accountprobe.ModeInteractionsSSE,
+			accountprobe.ModeCountTokens, accountprobe.ModeEmbedContent,
+			accountprobe.ModeEmbeddingsJSON, accountprobe.ModeRerankJSON,
 			accountprobe.ModeImagesJSON,
-			// 媒体域连通性探测（2026-11-01 用户裁决）：视频域 video_create 与
-			// 音频域 audio_speech 的人工测试走密钥连通性探测，探针视图必须
-			// 保留连接声明的这两个模式（此前白名单过滤会把它们丢空，探针侧
-			// 解析不到请求形态）。
-			accountprobe.ModeVideoCreate, accountprobe.ModeAudioSpeech:
+			// 媒体域/非对话形态连接测试（2026-11-01 起扩展，2026-11-21 覆盖
+			// 全部非对话能力）：探针视图必须保留连接声明的形态，否则连接
+			// 测试解析不到请求形态。模型测试仍由 test-options 按目录能力
+			// 裁剪，不受本白名单影响。
+			accountprobe.ModeVideoCreate, accountprobe.ModeVideoGet,
+			accountprobe.ModeVideoContent, accountprobe.ModeVideoCancel,
+			accountprobe.ModeAudioSpeech, accountprobe.ModeAudioTranscriptionJSON,
+			accountprobe.ModeAudioJobCreate, accountprobe.ModeAudioJobGet,
+			accountprobe.ModeAudioJobContent, accountprobe.ModeAudioJobCancel,
+			accountprobe.ModeRealtimeSession:
 			modes[accountprobe.EndpointMode(text)] = true
 		}
 	}

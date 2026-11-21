@@ -3,11 +3,14 @@
 //
 // 数据与计数契约来自 docs/functions/供应商与上游协议面重构设计.md：
 //   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 42 个
-//     允许连接组合与 133 个单 mode 组合；
-//   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 15 条、Anthropic 2 条、Gemini native 8 条）；
-//   - §2.2 的域 lane（chat 13、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
+//     允许连接组合与 138 个单 mode 组合；
+//   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 16 条、Anthropic 2 条、Gemini native 8 条）；
+//   - §2.2 的域 lane（chat 15、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
+//     2026-11-20 向量/重排协议补齐批：openAIVocabulary 与 qwenDashScopeVocabulary
+//     追加新 mode（qwen 两项、OpenAI 族一项），单 mode 组合由 133 增至 138；
+//     volcengine ark 标准 /api/v3/embeddings 对其现役向量行不可用，词表不扩。
 //
-// 42 与 133 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
+// 42 与 138 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
 // 禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断规则」）。
 //
 // 2026-11 裁决：registry 只注册九家真实厂商（gpt/xai/deepseek/anthropic/gemini/
@@ -22,6 +25,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -110,9 +114,9 @@ const (
 	PresetQwenDashScope          = "qwen_dashscope"
 )
 
-// endpoint mode（设计 §2.2 域 lane 的并集，恰好 25 个值）。
+// endpoint mode（设计 §2.2 域 lane 的并集，恰好 27 个值）。
 const (
-	// chat lane（13 个）。
+	// chat lane（15 个）。
 	ModeChatJSON             = "chat_json"
 	ModeChatSSE              = "chat_sse"
 	ModeResponsesJSON        = "responses_json"
@@ -126,6 +130,9 @@ const (
 	ModeInteractionsSSE      = "interactions_sse"
 	ModeCountTokens          = "count_tokens"
 	ModeEmbedContent         = "embed_content"
+	// 2026-11-20 协议补齐批：OpenAI Embeddings 规范面与 Cohere/Jina 重排面。
+	ModeEmbeddingsJSON = "embeddings_json"
+	ModeRerankJSON     = "rerank_json"
 
 	// video lane（4 个）。
 	ModeVideoCreate  = "video_create"
@@ -157,6 +164,7 @@ var capabilityDomainLanes = map[string][]string{
 		ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting,
 		ModeGenerateContentJSON, ModeGenerateContentSSE,
 		ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens, ModeEmbedContent,
+		ModeEmbeddingsJSON, ModeRerankJSON,
 	},
 	DomainVideo: {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
 	DomainAudio: {
@@ -178,7 +186,13 @@ var capabilityDomainLanes = map[string][]string{
 // ——其 base_url 语义是 origin（默认 https://dashscope.aliyuncs.com），服务
 // 路径 /compatible-mode/v1、/api/v1 属于操作路径，保持全路径（R6）。
 var (
-	// openAIOperationTemplates 是 openai_v1 公共清单（15 条）。
+	// openAIOperationTemplates 是 openai_v1 公共清单（16 条）。重排不属于
+	// OpenAI 兼容面：`POST /rerank` 只在 qwen DashScope preset 的原生模板中
+	// 登记（openAIVocabulary 也不含 rerank_json），不能放进公共清单。
+	// OperationPathTemplates 是 surface 级协议元数据，不是授权面；preset 的
+	// 实际可写/可路由 mode 由 Vocabulary 与账户声明决定。GLM 等窄词表 preset
+	// 共用本清单时，`POST /embeddings` 仅表示 OpenAI v1 surface 存在该路径，
+	// 不表示该 preset 已授权 embeddings_json。
 	openAIOperationTemplates = []string{
 		"POST /chat/completions",
 		"POST /responses",
@@ -195,6 +209,8 @@ var (
 		"GET /videos/{id}/content",
 		"DELETE /videos/{id}",
 		"GET /realtime",
+		// 2026-11-20 协议补齐批：OpenAI Embeddings 规范面。
+		"POST /embeddings",
 	}
 
 	// anthropicOperationTemplates 是 anthropic_v1 公共清单（2 条）。
@@ -243,11 +259,14 @@ var (
 	// qwen_dashscope：§11 录音文件识别提交 + §10.1 万相视频创建 +
 	// §10.1/§11 两域共用的 DashScope 任务轮询 + OpenAI 兼容模式 chat
 	//（/compatible-mode/v1/chat/completions，R6：qwen base_url 是 origin，
-	// 服务路径随操作路径登记，保持全路径）。
+	// 服务路径随操作路径登记，保持全路径）+ 2026-11-20 向量/重排协议补齐批
+	//（兼容模式 /compatible-mode/v1/embeddings 与原生 text-rerank 服务全路径）。
 	qwenDashScopeOperationTemplates = []string{
 		"POST /compatible-mode/v1/chat/completions",
+		"POST /compatible-mode/v1/embeddings",
 		"POST /api/v1/services/audio/asr/transcription",
 		"POST /api/v1/services/aigc/video-generation/video-synthesis",
+		"POST /api/v1/services/rerank/text-rerank/text-rerank",
 		"GET /api/v1/tasks/{task_id}",
 	}
 )
@@ -257,13 +276,14 @@ var (
 // ---------------------------------------------------------------------------
 
 var (
-	// openAIVocabulary：*_openai_v1 共用（16 个 mode）。
+	// openAIVocabulary：*_openai_v1 共用（17 个 mode）。2026-11-20 协议补齐批
+	// 增 embeddings_json（OpenAI Embeddings 规范面，/v1/embeddings 精确路径）。
 	openAIVocabulary = []string{
 		ModeChatJSON, ModeChatSSE, ModeResponsesJSON, ModeResponsesSSE, ModeImagesJSON,
 		ModeAudioSpeech, ModeAudioTranscriptionJSON,
 		ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel,
 		ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel,
-		ModeRealtimeSession,
+		ModeRealtimeSession, ModeEmbeddingsJSON,
 	}
 
 	// anthropicVocabulary：*_anthropic_v1 共用（3 个 mode）。
@@ -280,7 +300,11 @@ var (
 	// geminiOpenAIChatVocabulary：gemini_openai_chat_v1beta（2 个 mode）。
 	geminiOpenAIChatVocabulary = []string{ModeChatJSON, ModeChatSSE}
 
-	// 以下 4 行为厂商媒体 preset 词表（设计 §2.2 :174-177）。
+	// 以下 4 行为厂商媒体 preset 词表（设计 §2.2 :174-177）。2026-11-20
+	// 协议补齐批：qwen 增 embeddings_json 与 rerank_json（兼容模式
+	// /compatible-mode/v1/embeddings 与 text-rerank 服务）。volcengine 标准
+	// /api/v3/embeddings 面对其现役唯一向量行报 400（仅私有
+	// /api/v3/embeddings/multimodal 可用，维持透传），故不扩 ark 词表。
 	miniMaxMediaVocabulary = []string{
 		ModeAudioSpeech, ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel,
 	}
@@ -296,6 +320,7 @@ var (
 		ModeChatJSON, ModeChatSSE,
 		ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel,
 		ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel,
+		ModeEmbeddingsJSON, ModeRerankJSON,
 	}
 )
 
@@ -461,6 +486,242 @@ var connectorPresetRecords = []connectorPresetRecord{
 }
 
 // ---------------------------------------------------------------------------
+// 连通性探测规格（连接测试单一事实源）
+// ---------------------------------------------------------------------------
+//
+// 非对话账户的人工/自动连接测试不再猜测上游路径：每个 preset 只登记其生产
+// 适配器已证实、能够证明「认证已通过」的最小请求。operation 模板是优先来源，
+// 固定语音域与版本前缀等适配器常量属已登记例外。规格按优先级排列——
+// ConnectivityProbeForModes 取账户已声明形态中第一个命中的规格。
+//
+// 判定原则：2xx 或规格声明的预期拒绝码 = 连通；401/403 恒失败；5xx/网络
+// 错误恒失败；其余失败。任何规格都不得把 401/403 放进预期拒绝码。
+
+// 连通性探测请求体种类（由 accountprobe 统一编码）。
+const (
+	ConnectivityBodyNone      = "none"
+	ConnectivityBodyEmptyJSON = "empty_json"
+	ConnectivityBodyModelOnly = "model_only"
+)
+
+// ConnectorConnectivityProbe 是一个 preset × endpoint mode 的连通性探测规格。
+// PathTemplate 支持 {probe_id} 与 {model} 占位；QueryTemplate 为可选 query
+// （如 task_id={probe_id}），由调用方与路径拼接。
+type ConnectorConnectivityProbe struct {
+	EndpointMode  string
+	Method        string
+	PathTemplate  string
+	QueryTemplate string
+	BodyKind      string
+	// ExpectedRejectionStatus 是「上游已完成认证、仅因探测请求不完整或目标
+	// 不存在而拒绝」的状态码；命中即判连通。
+	ExpectedRejectionStatus []int
+	// BaseURLOverride 非空时忽略账户 base_url（火山语音固定语音域）。
+	BaseURLOverride string
+	// AuthHeaderName / AuthTokenCredentialKey 非空时从账户凭据读取指定键
+	// 作为认证头（火山 openspeech 使用 speech_token + X-Api-Key）。
+	AuthHeaderName         string
+	AuthTokenCredentialKey string
+	// ExtraHeaders 是认证之外的上游协议必需头（如火山 AUC 的
+	// X-Api-Resource-Id / X-Api-Request-Id / X-Api-Sequence）。值支持
+	// {probe_id} 占位，由 accountprobe 统一替换。
+	ExtraHeaders map[string]string
+}
+
+var openAIConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeImagesJSON, Method: "POST", PathTemplate: "/images/generations", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+	{EndpointMode: ModeAudioSpeech, Method: "POST", PathTemplate: "/audio/speech", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+	{EndpointMode: ModeVideoCreate, Method: "GET", PathTemplate: "/videos/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoGet, Method: "GET", PathTemplate: "/videos/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobCreate, Method: "GET", PathTemplate: "/audio/jobs/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobGet, Method: "GET", PathTemplate: "/audio/jobs/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioTranscriptionJSON, Method: "POST", PathTemplate: "/audio/transcriptions", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 415, 422}},
+	{EndpointMode: ModeRealtimeSession, Method: "GET", PathTemplate: "/realtime", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404, 405, 426}},
+	{EndpointMode: ModeEmbeddingsJSON, Method: "POST", PathTemplate: "/embeddings", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+	{EndpointMode: ModeVideoContent, Method: "GET", PathTemplate: "/videos/{probe_id}/content", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobContent, Method: "GET", PathTemplate: "/audio/jobs/{probe_id}/content", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoCancel, Method: "GET", PathTemplate: "/videos/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobCancel, Method: "GET", PathTemplate: "/audio/jobs/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+}
+
+var anthropicConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeMessageTokenCounting, Method: "POST", PathTemplate: "/messages/count_tokens", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 422}},
+}
+
+var geminiNativeConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeVideoCreate, Method: "GET", PathTemplate: "/interactions/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoGet, Method: "GET", PathTemplate: "/interactions/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	// content/cancel 与 get 共用同一任务查询路径：占位任务必然不存在，不会
+	// 下载产物或取消真实任务，只验证认证与端点可达。
+	{EndpointMode: ModeVideoContent, Method: "GET", PathTemplate: "/interactions/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoCancel, Method: "GET", PathTemplate: "/interactions/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioSpeech, Method: "POST", PathTemplate: "/models/{model}:generateContent", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 422}},
+	{EndpointMode: ModeEmbedContent, Method: "POST", PathTemplate: "/models/{model}:embedContent", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 422}},
+	{EndpointMode: ModeCountTokens, Method: "POST", PathTemplate: "/models/{model}:countTokens", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 422}},
+}
+
+var miniMaxConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeVideoCreate, Method: "GET", PathTemplate: "/query/video_generation", QueryTemplate: "task_id={probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoGet, Method: "GET", PathTemplate: "/query/video_generation", QueryTemplate: "task_id={probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoContent, Method: "GET", PathTemplate: "/query/video_generation", QueryTemplate: "task_id={probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoCancel, Method: "GET", PathTemplate: "/query/video_generation", QueryTemplate: "task_id={probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioSpeech, Method: "POST", PathTemplate: "/t2a_v2", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+}
+
+var volcengineArkConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeVideoCreate, Method: "GET", PathTemplate: "/contents/generations/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoGet, Method: "GET", PathTemplate: "/contents/generations/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoContent, Method: "GET", PathTemplate: "/contents/generations/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoCancel, Method: "GET", PathTemplate: "/contents/generations/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeImagesJSON, Method: "POST", PathTemplate: "/images/generations", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+}
+
+// volcengineAUCExtraHeaders 是豆包录音文件识别 AUC submit/query 的协议必需头：
+// 生产适配器在鉴权之外必须同时携带资源 ID、请求 ID 与序号；缺失时上游可能
+// 返回 200 + 业务错误码，连接测试会误判为连通。
+var volcengineAUCExtraHeaders = map[string]string{
+	"X-Api-Resource-Id": "volc.seedasr.auc",
+	"X-Api-Request-Id":  "{uuid}",
+	"X-Api-Sequence":    "-1",
+}
+
+var volcengineOpenSpeechConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeAudioSpeech, Method: "POST", PathTemplate: "/api/v3/tts/create", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}, BaseURLOverride: "https://openspeech.bytedance.com",
+		AuthHeaderName: "X-Api-Key", AuthTokenCredentialKey: "speech_token"},
+	{EndpointMode: ModeAudioTranscriptionJSON, Method: "POST", PathTemplate: "/api/v3/auc/bigmodel/query", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 404, 422}, BaseURLOverride: "https://openspeech.bytedance.com",
+		AuthHeaderName: "X-Api-Key", AuthTokenCredentialKey: "speech_token", ExtraHeaders: volcengineAUCExtraHeaders},
+	{EndpointMode: ModeAudioJobCreate, Method: "POST", PathTemplate: "/api/v3/auc/bigmodel/query", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 404, 422}, BaseURLOverride: "https://openspeech.bytedance.com",
+		AuthHeaderName: "X-Api-Key", AuthTokenCredentialKey: "speech_token", ExtraHeaders: volcengineAUCExtraHeaders},
+	{EndpointMode: ModeAudioJobGet, Method: "POST", PathTemplate: "/api/v3/auc/bigmodel/query", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 404, 422}, BaseURLOverride: "https://openspeech.bytedance.com",
+		AuthHeaderName: "X-Api-Key", AuthTokenCredentialKey: "speech_token", ExtraHeaders: volcengineAUCExtraHeaders},
+	{EndpointMode: ModeAudioJobContent, Method: "POST", PathTemplate: "/api/v3/auc/bigmodel/query", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 404, 422}, BaseURLOverride: "https://openspeech.bytedance.com",
+		AuthHeaderName: "X-Api-Key", AuthTokenCredentialKey: "speech_token", ExtraHeaders: volcengineAUCExtraHeaders},
+	{EndpointMode: ModeAudioJobCancel, Method: "POST", PathTemplate: "/api/v3/auc/bigmodel/query", BodyKind: ConnectivityBodyEmptyJSON,
+		ExpectedRejectionStatus: []int{400, 404, 422}, BaseURLOverride: "https://openspeech.bytedance.com",
+		AuthHeaderName: "X-Api-Key", AuthTokenCredentialKey: "speech_token", ExtraHeaders: volcengineAUCExtraHeaders},
+}
+
+var qwenConnectivityProbes = []ConnectorConnectivityProbe{
+	{EndpointMode: ModeVideoCreate, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoGet, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoContent, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeVideoCancel, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobCreate, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobGet, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobContent, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioJobCancel, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeAudioTranscriptionJSON, Method: "GET", PathTemplate: "/api/v1/tasks/{probe_id}", BodyKind: ConnectivityBodyNone,
+		ExpectedRejectionStatus: []int{400, 404}},
+	{EndpointMode: ModeEmbeddingsJSON, Method: "POST", PathTemplate: "/compatible-mode/v1/embeddings", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+	{EndpointMode: ModeRerankJSON, Method: "POST", PathTemplate: "/api/v1/services/rerank/text-rerank/text-rerank", BodyKind: ConnectivityBodyModelOnly,
+		ExpectedRejectionStatus: []int{400, 422}},
+}
+
+var connectivityProbesByPreset = map[string][]ConnectorConnectivityProbe{
+	PresetGPTOpenAIV1:            openAIConnectivityProbes,
+	PresetXAIOpenAIV1:            openAIConnectivityProbes,
+	PresetDeepSeekOpenAIV1:       openAIConnectivityProbes,
+	PresetDeepSeekAnthropicV1:    anthropicConnectivityProbes,
+	PresetAnthropicV1:            anthropicConnectivityProbes,
+	PresetGeminiOpenAIChatV1Beta: nil,
+	PresetGeminiNativeV1Beta:     geminiNativeConnectivityProbes,
+	PresetGLMGeneralOpenAIV1:     openAIConnectivityProbes,
+	PresetGLMCodingOpenAIV1:      openAIConnectivityProbes,
+	PresetGLMCodingAnthropicV1:   nil,
+	PresetMiniMaxMedia:           miniMaxConnectivityProbes,
+	PresetVolcengineArk:          volcengineArkConnectivityProbes,
+	PresetVolcengineOpenSpeech:   volcengineOpenSpeechConnectivityProbes,
+	PresetQwenDashScope:          qwenConnectivityProbes,
+}
+
+// ConnectivityProbeForPreset 返回 preset × endpoint mode 的连通性探测规格。
+func ConnectivityProbeForPreset(preset, endpointMode string) (ConnectorConnectivityProbe, bool) {
+	preset = strings.TrimSpace(preset)
+	endpointMode = strings.TrimSpace(endpointMode)
+	for _, spec := range connectivityProbesByPreset[preset] {
+		if spec.EndpointMode == endpointMode {
+			return spec, true
+		}
+	}
+	return ConnectorConnectivityProbe{}, false
+}
+
+// ConnectivityProbeForModes 按 preset 的规格优先级，从账户已声明形态中选择
+// 第一个可探测的形态。modes 为空时返回 false，调用方必须 fail closed，不得
+// 猜测请求形态。
+func ConnectivityProbeForModes(preset string, modes []string) (string, ConnectorConnectivityProbe, bool) {
+	declared := make(map[string]bool, len(modes))
+	for _, mode := range modes {
+		declared[strings.TrimSpace(mode)] = true
+	}
+	if len(declared) == 0 {
+		return "", ConnectorConnectivityProbe{}, false
+	}
+	for _, spec := range connectivityProbesByPreset[strings.TrimSpace(preset)] {
+		if declared[spec.EndpointMode] {
+			return spec.EndpointMode, spec, true
+		}
+	}
+	return "", ConnectorConnectivityProbe{}, false
+}
+
+// ConnectivityProbeModesForPreset 返回 preset 已登记的连通性探测形态（按
+// 规格优先级）。仅用于测试与文档生成，不参与运行期选择。
+func ConnectivityProbeModesForPreset(preset string) []string {
+	specs := connectivityProbesByPreset[strings.TrimSpace(preset)]
+	out := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, spec.EndpointMode)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // 组合行（设计 §1.1 :29-50 的 20 行表，逐行照抄）
 // ---------------------------------------------------------------------------
 
@@ -515,7 +776,7 @@ var connectorComboRows = []connectorComboRow{
 }
 
 // ---------------------------------------------------------------------------
-// 派生数据（42 连接组合与 133 单 mode 组合的唯一来源）
+// 派生数据（42 连接组合与 138 单 mode 组合的唯一来源）
 // ---------------------------------------------------------------------------
 
 // ConnectorCombo 是一个允许的连接组合（设计 §1.1 五元组 + driver/preset 投影字段）。
@@ -539,7 +800,7 @@ type ConnectorCombo struct {
 }
 
 // EndpointModeCombo 是 ConnectorCombo 的单 mode 展开：一个连接组合允许的每个
-// endpoint mode 各一条（设计 §1.1 :54 的 133 条清单）。
+// endpoint mode 各一条（设计 §1.1 :54 的 138 条清单）。
 type EndpointModeCombo struct {
 	// Driver/Vendor/AccountType/OAuthType/Preset/Surface/Domain 语义与 ConnectorCombo 相同。
 	Driver      string
@@ -565,7 +826,7 @@ var (
 var (
 	// connectorCombos 是 42 条允许连接组合的排序稳定清单。
 	connectorCombos = buildConnectorCombos()
-	// endpointModeCombos 是 133 条单 mode 组合的排序稳定清单。
+	// endpointModeCombos 是 138 条单 mode 组合的排序稳定清单。
 	endpointModeCombos = buildEndpointModeCombos()
 	// connectorComboIndex 是五元组判定索引。
 	connectorComboIndex = buildConnectorComboIndex(connectorCombos)
@@ -789,7 +1050,7 @@ func AllowedConnectorCombos() []ConnectorCombo {
 	return connectorCombos
 }
 
-// AllowedEndpointModeCombos 返回全部 133 个单 mode 组合，
+// AllowedEndpointModeCombos 返回全部 138 个单 mode 组合，
 // 按 connectorCombos 同一排序规则追加 mode 字典序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedEndpointModeCombos() []EndpointModeCombo {
@@ -819,7 +1080,7 @@ func ComboDriverCounts() map[string]int {
 	return counts
 }
 
-// ModeComboDriverCounts 返回 133 条单 mode 组合按 driver 的计数。
+// ModeComboDriverCounts 返回 138 条单 mode 组合按 driver 的计数。
 func ModeComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(endpointModeCombos))
 	for _, combo := range endpointModeCombos {
@@ -829,7 +1090,7 @@ func ModeComboDriverCounts() map[string]int {
 }
 
 // RegistryFingerprint 返回 registry 的 SHA-256 指纹（64 位小写 hex）。
-// 计算方式（设计 §1.1 :56）：对 133 条单 mode 元素组成的 UTF-8 compact JSON 数组的
+// 计算方式（设计 §1.1 :56）：对 138 条单 mode 元素组成的 UTF-8 compact JSON 数组的
 // 原始 bytes 计算 SHA-256；数组元素按 ASCII 字典序排序；每个元素字段顺序固定为
 // driver、vendor、accountType、oauthType、preset、surface、domain、mode、
 // allowedBaseSuffixes、operationTemplates、defaultBaseUrl；oauthType/surface

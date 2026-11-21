@@ -145,8 +145,9 @@ type ProbeOptions struct {
 	MaxResponseBytes int64
 	Now              func() time.Time
 	// DialGuard 是出站 SSRF 守卫（URLSecurityConfig 的请求期一半）：直连与
-	// HTTP(S) 代理路径在每次新连接上解析-校验-钉扎拨号；SOCKS 拨号器自行
-	// 解析（socks5h 远端解析契约）。nil 表示不安装守卫（测试形态或显式放行）。
+	// HTTP(S) 代理路径在每次新连接上解析-过滤-钉扎拨号；socks5 本地解析使用
+	// 同一守卫只选校验通过的地址，socks5h 保持远端解析。nil 表示不安装守卫
+	// （测试形态或显式放行）。
 	DialGuard *upstreamhttp.DialGuard
 }
 
@@ -172,8 +173,8 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 		return taskFailure("base_url_invalid", err.Error())
 	}
 	// 发送前目标 URL 校验（SEC-03）：代理分支的 transport DialGuard 只校验
-	// 代理主机，目标由代理解析；strict 模式下目标域名指向内网必须在本地
-	// 发送前用同一部署级 URLSecurityConfig 拒绝。
+	// 代理主机，目标由代理解析；strict 模式下解析结果全部命中内网/保留段才
+	// 在本地拒绝（混合解析放行，本地选地址路径只使用校验通过的地址）。
 	if options.DialGuard != nil {
 		port := baseURL.Port()
 		if port == "" {

@@ -359,7 +359,7 @@ export const accountImportProtocolMarkdown = [
   '| `connections` | 是 | object[] | 连接集合，必须恰好一条；描述该账户唯一的上游连接（见下文 connections 条目字段）。多个 API Key 放在 credentials 中，不支持多条连接。 |',
   '| `healthCheckConnectionPresetCode` | 是 | string | 健康检查三件套之一；必须等于本账户 `connections` 中一条 `enabled: true` 连接的 `connectionPresetCode`。 |',
   '| `healthCheckModel` | 是 | string | 健康检查三件套之一；账户级检查模型，最终必须属于账户 `supportedModels`（含供应商默认回填后的集合）。 |',
-  '| `healthCheckEndpointMode` | 是 | string | 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create` 受模型目录与域能力约束），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 |',
+  '| `healthCheckEndpointMode` | 是 | string | 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create`、`embeddings_json`、`rerank_json` 受模型目录与域能力约束；后两者仅作持久化诊断形态，无自动探针），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 |',
   '| `modelMappings` | 否 | object[] | 账号模型映射列表；只允许协议等价组合（同族模型名改写，以及 Gemini 流式 GenerateContent 到 GenerateContent 归一），跨协议组合一律拒绝。`sourceModel` 可跨供应商选择但必须支持所选协议；`upstreamModel` 必须来自当前账户供应商目录与支持模型。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |',
   '| `tags` | 否 | string[] | 账户标签名称列表；不存在的标签按当前导入权限创建或报错。 |',
   '| `accountExpiresAt` | 否 | string | ISO 时间字符串。 |',

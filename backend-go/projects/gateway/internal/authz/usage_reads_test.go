@@ -126,11 +126,12 @@ func newUsageFixture(t *testing.T) *fixture {
 }
 
 // seedResourceAccount seeds the accounts projection the resource name/owner
-// lookups read (loadAccountLookupMap).
+// lookups read (loadAccountLookupMap). Credentials are sealed because offer
+// creation computes the account material revision, which decrypts them.
 func seedResourceAccount(t *testing.T, f *fixture, id, ownerID, name string) {
 	t.Helper()
-	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name) VALUES (?, ?, ?)`),
-		id, ownerID, name); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, credentials_encrypted)
+		VALUES (?, ?, ?, ?)`), id, ownerID, name, sealedTestCredentials(t, map[string]any{"api_key": "sk-test"})); err != nil {
 		t.Fatal(err)
 	}
 }

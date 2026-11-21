@@ -83,6 +83,13 @@ var goAddedBeforeAccountListAvailabilityProjectionJobNames = []string{
 	"proxy-pool-health",
 }
 
+// goAddedAfterAccountQualityJobNames 是插在 account-quality-refresh 登记
+// 位置之后的 Go 附加条目：非对话账户连通性健康检查是独立 jobs 任务
+//（《AI账户检查模型与人工测试设计》测试方式分层），不与 J1 模型检查共享通道。
+var goAddedAfterAccountQualityJobNames = []string{
+	"account-connectivity-health",
+}
+
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
 // usage-overview-windows-refresh 之后（原锚点 usage-scope-range-windows-
 // refresh 已随 D13 sqlite-only 行删除），keepalive 刷新插在 openai-oauth-
@@ -90,7 +97,7 @@ var goAddedBeforeAccountListAvailabilityProjectionJobNames = []string{
 // detect-recovery 之后（客户端版本自动跟版紧随 grok 用量快照），与
 // ScheduledEntries 的登记位置一致。
 func expectedScheduledOrder() []string {
-	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames)+len(goAddedBeforeAccountListAvailabilityProjectionJobNames))
+	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames)+len(goAddedBeforeAccountListAvailabilityProjectionJobNames)+len(goAddedAfterAccountQualityJobNames))
 	for _, name := range nodeScheduledJobNames {
 		result = append(result, name)
 		if name == "account-circuit-control-plane-maintenance" {
@@ -108,6 +115,9 @@ func expectedScheduledOrder() []string {
 		if name == "expired-deleted-account-cleanup" {
 			result = append(result, goAddedAfterRetentionJobNames...)
 		}
+		if name == "account-quality-refresh" {
+			result = append(result, goAddedAfterAccountQualityJobNames...)
+		}
 	}
 	return result
 }
@@ -118,7 +128,7 @@ func TestScheduledRegistryCoversAllNodeJobs(t *testing.T) {
 	if len(entries) != len(want) {
 		t.Fatalf("scheduled entries=%d want=%d（Node %d 项 + Go 附加 %d 项）",
 			len(entries), len(want), len(nodeScheduledJobNames),
-			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames)+len(goAddedBeforeAccountListAvailabilityProjectionJobNames))
+			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames)+len(goAddedBeforeAccountListAvailabilityProjectionJobNames)+len(goAddedAfterAccountQualityJobNames))
 	}
 	for index, name := range want {
 		if entries[index].JobName != name {

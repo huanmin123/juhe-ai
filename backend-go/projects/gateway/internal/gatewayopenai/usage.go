@@ -29,11 +29,23 @@ func ParseUsageFromJSONBuffer(body []byte) gatewayproto.ParsedUsage {
 
 // ParseUsageFromJSONValue mirrors parseOpenAIUsageFromJsonValue.
 func ParseUsageFromJSONValue(value any) gatewayproto.ParsedUsage {
+	return parseUsageFromJSONValue(value, false)
+}
+
+// ParseInputOnlyUsageFromJSONValue 用于 embeddings / rerank 等只消费输入 token
+// 的协议。只有这类协议允许在输入与输出均为 0/缺失时把 total_tokens 回填为
+// 输入规模；chat/Responses 共用 ParseUsageFromJSONValue，不得回填——上游只
+// 返回 total_tokens 或漏报输出时，total 含输出，回填会把输出误计为输入。
+func ParseInputOnlyUsageFromJSONValue(value any) gatewayproto.ParsedUsage {
+	return parseUsageFromJSONValue(value, true)
+}
+
+func parseUsageFromJSONValue(value any, inputOnly bool) gatewayproto.ParsedUsage {
 	root, ok := value.(map[string]any)
 	if !ok {
 		return gatewayproto.EmptyUsage()
 	}
-	parsed := ExtractUsage(root["usage"], normalizeServiceTier(root["service_tier"]))
+	parsed := extractUsage(root["usage"], normalizeServiceTier(root["service_tier"]), inputOnly)
 	applyImageOutputCountFromRoot(&parsed, root)
 	return parsed
 }
@@ -89,6 +101,16 @@ func applyImageOutputCountFromRoot(parsed *gatewayproto.ParsedUsage, root map[st
 // scan (from the end) for the last balanced "usage" object plus the
 // "service_tier" string.
 func ParseUsageFromJSONTextFragment(text string) gatewayproto.ParsedUsage {
+	return parseUsageFromJSONTextFragment(text, false)
+}
+
+// ParseInputOnlyUsageFromJSONTextFragment 是输入型协议的文本片段兜底，语义
+// 同 ParseInputOnlyUsageFromJSONValue（仅 embeddings / rerank 调用）。
+func ParseInputOnlyUsageFromJSONTextFragment(text string) gatewayproto.ParsedUsage {
+	return parseUsageFromJSONTextFragment(text, true)
+}
+
+func parseUsageFromJSONTextFragment(text string, inputOnly bool) gatewayproto.ParsedUsage {
 	if text == "" {
 		return gatewayproto.EmptyUsage()
 	}
@@ -104,12 +126,23 @@ func ParseUsageFromJSONTextFragment(text string) gatewayproto.ParsedUsage {
 	if err := json.Unmarshal([]byte(usageText), &usageValue); err != nil {
 		return gatewayproto.EmptyUsage()
 	}
-	return ExtractUsage(usageValue, serviceTier)
+	return extractUsage(usageValue, serviceTier, inputOnly)
 }
 
 // ExtractUsage mirrors extractOpenAIUsage: the full OpenAI / Responses /
-// Claude-cache fallback chains.
+// Claude-cache fallback chains. 共享抽取不回填 total_tokens；输入型协议使用
+// ExtractInputOnlyUsage。
 func ExtractUsage(value any, serviceTier string) gatewayproto.ParsedUsage {
+	return extractUsage(value, serviceTier, false)
+}
+
+// ExtractInputOnlyUsage 是 embeddings / rerank 的输入型抽取：输入与输出均为
+// 0/缺失时把 total_tokens 作为输入规模。只供无输出 token 的协议调用。
+func ExtractInputOnlyUsage(value any, serviceTier string) gatewayproto.ParsedUsage {
+	return extractUsage(value, serviceTier, true)
+}
+
+func extractUsage(value any, serviceTier string, inputOnly bool) gatewayproto.ParsedUsage {
 	usage, ok := value.(map[string]any)
 	if !ok {
 		return gatewayproto.EmptyUsage()
@@ -122,6 +155,16 @@ func ExtractUsage(value any, serviceTier string) gatewayproto.ParsedUsage {
 	// input_tokens 里填 0 占位，真实规模只在 prompt_tokens。
 	inputTokens := pickNonZeroToken(usage["input_tokens"], usage["prompt_tokens"])
 	outputTokens := pickNonZeroToken(usage["output_tokens"], usage["completion_tokens"])
+	// 输入零占位 + 无输出的协议（embeddings / rerank）只回 total_tokens 时，
+	// 输入口径会落 0 导致 input-only 目录行零计费。输出为 0/缺失时
+	// total_tokens 即输入规模，用它回填是精确的；输出非零时不回填，避免把
+	// chat 的 output token 误当输入。仅在 inputOnly=true 时启用，chat/
+	// Responses 的共享抽取不受影响。
+	if inputOnly && (inputTokens == nil || *inputTokens == 0) && (outputTokens == nil || *outputTokens == 0) {
+		if total := numberValue(usage["total_tokens"]); total != nil && *total > 0 {
+			inputTokens = total
+		}
+	}
 	cacheReadTokens := numberValue(responsesInputDetails["cached_tokens"])
 	if cacheReadTokens == nil {
 		cacheReadTokens = numberValue(chatInputDetails["cached_tokens"])

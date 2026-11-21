@@ -1,6 +1,6 @@
 # 对外协议面对齐 new-api 设计
 
-> 状态：**P0 已实施（2026-11-19）**；设计定稿同日按用户裁决「对外只留一套协议、不做兼容」修订：视频唯一面 `/v1/video/generations`、`/v1/videos*` 整套删除、扩展通道统一为 `metadata`。P0 实施与验证记录见 §7.1；P1（rerank）/P2（图像/向量/音频规范化）未实施，待办登记 `#T214`。
+> 状态：**P0 已实施（2026-11-19）；P1 重排与 P2 向量规范化已实施（2026-11-20，schema revision 27，已并入当前 revision 28 合并基线）**。设计定稿同日按用户裁决「对外只留一套协议、不做兼容」修订：视频唯一面 `/v1/video/generations`、`/v1/videos*` 整套删除、扩展通道统一为 `metadata`。P0 实施与验证记录见 §7.1；P1/P2 向量与重排的实施记录见 §7.2。图像规范化、音频 `stream_format`、`/v1/models/{id}` 仍未实施（范围见 §7.3）。
 > 调研基线：`/Users/anminhu/temp-project/new-api` @ `0409deccfff2b0e8babc28ca552af44d526375bf`（2026-11-10，下称"new-api"）。文中每条 new-api 事实均给出文件路径，未给出官方文档出处的厂商报文一律按《媒体上游协议契约与Mock上游规格》§1 置信度规则标注，接入前必须回填。
 > 本文是 `/v1` **对外协议面**（路径、请求体、响应体、扩展通道、错误语义）的目标契约；媒体域内部实现（IR、adapter、`media_jobs`、受理边界、零存储）仍以 [音频视频模型接入与统一媒体网关设计](音频视频模型接入与统一媒体网关设计.md) 与 [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md) 为权威。两者冲突处，本文只接管"对外形态"，并在 §6.4 列出需同批修订的既有条款。
 
@@ -10,7 +10,7 @@
 2. **统一面的请求体以 new-api 宿主层接受的结构为基线、再取超集**：new-api 统一面实际只接 `model/prompt/mode/image/images/size/duration/seconds/input_reference/metadata` 十个字段（§3.3），我们在此基础上额外接受 `width/height/fps/seed/n/response_format/user/audio/negative_prompt/resolution` 并放开「有图可省 prompt」（§4.2），并保留 `params_applied`/`params_ignored` 回显。
 3. **new-api 的 OpenAPI 文档与其运行时不符**：文档写 `{task_id,status,url,format,metadata,error}`，实际 `GET` 返回 `{code:"success",data:{…TaskDto}}`（含 `channel_id`/`quota`/`data` 等内部字段），`POST` 返回 `{id,task_id,status,model,created_at}`。我们按**文档契约**实现（干净、不泄内部字段），偏差与理由见 §3.4。
 4. **扩展通道只留一个：`metadata`。** 公开契约不再有 `provider_options`（不保留别名/双写）：视频、语音、长音频创建面统一用 `metadata`（new-api 同形），回显字段合并为 `metadata_applied`。代价与风险见 §5.1/§8（不再按 provider 命名空间隔离，靠「模型→厂商确定」与厂商自身校验兜底）。
-5. **协议面收敛**：P0 视频单一面 + 扩展通道统一；P1 `/v1/rerank`（新协议，含 schema revision）；P2 图像/向量/音频规范化与厂商 adapter、`models/{id}`；其余 new-api 路径（completions/moderations/variants/tasks-plugin/MJ/Suno/tools-search）全量列入"不采纳"并给出理由（§4.6）。
+5. **协议面收敛**：P0 视频单一面 + 扩展通道统一；P1 `/v1/rerank` 与 P2 向量规范化已实施（新 endpoint mode `rerank_json`/`embeddings_json` + schema revision 27）；图像规范化、音频 `stream_format`、`models/{id}` 仍未实施；其余 new-api 路径（completions/moderations/variants/tasks-plugin/MJ/Suno/tools-search）全量列入"不采纳"并给出理由（§4.6）。
 6. 本次改造**不改变账户配置**：复用 `video_create` / `video_get` / `video_content` 三个既有 endpoint mode，存量视频账户零迁移；但**对外是破坏性变更**（`/v1/videos` 客户端需改路径），见 §4.3。
 
 ## 2. 现状与问题
@@ -24,20 +24,22 @@
 | `/v1/messages`（Anthropic native） | POST | 已实施 | `gatewayanthropic.IsNativeRequest` |
 | `/v1beta/models/*`（Gemini native） | POST | 已实施 | `gatewaygemini.IsNativeRequest` |
 | `/v1/images/generations`、`/v1/images/edits` | POST | 已实施（**上游透传**，无厂商 adapter） | 协议门 + 通用 openai 族出站 |
-| `/v1/embeddings`（含 ark `/v1/embeddings/multimodal` 子树） | POST | 已实施（透传） | 同上 |
+| `/v1/embeddings`（规范面；精确路径，按 `embeddings_json` 闸门） | POST | 已实施（OpenAI 形态透传，qwen 走兼容模式适配） | `gatewaypreauth/metadata_endpointmodes.go` + `chain_embeddings.go` |
+| `/v1/embeddings/multimodal`（ark 私有子路径） | POST | 已实施（私有透传，不闸门、不归一） | 同上（精确路径排除） |
+| `/v1/rerank`（Cohere/Jina 形态） | POST | 已实施（2026-11-20；qwen DashScope 适配 + 响应归一） | `gatewayrerank` + `chain_rerank.go` |
 | `/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/audio/translations` | POST | 已实施（adapter） | `backend-go/projects/gateway/internal/gatewaymedia/speechir.go` |
 | `/v1/videos`（创建/列表/轮询/content/DELETE） | POST/GET/DELETE | 已实施（adapter）；**本设计删除** | `backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_media_video.go` |
 | `/v1/audio/jobs`（长音频任务族） | POST/GET/DELETE | 已实施（adapter） | 同上（kind 泛化） |
 | `/v1/realtime`、`/v1/realtime/client_secrets` | GET WS / POST | 已实施 | `chain_realtime.go` |
 | `/v1/files`、`/v1/containers`、`/v1/vector_stores` | * | 已实施（compat 族） | `chain_openaicompat.go` |
-| `/v1/rerank`、`/v1/moderations`、`/v1/completions`、`/v1/video/generations`、`/v1/models/{id}` | — | **缺失** | 协议门不识别 → 404 `{"message":"资源不存在"}` |
+| `/v1/moderations`、`/v1/completions`、`/v1/models/{id}` | — | **缺失** | 协议门不识别 → 404 `{"message":"资源不存在"}` |
 
 ### 2.2 问题定义
 
 1. **视频对外形态与国内聚合层习惯不一致**：客户端的视频代码大量按 `POST /v1/video/generations` + `{task_id}` 轮询编写（new-api 生态），我们只给 `/v1/videos`（`{id,object:"video",…}`），对方需要改代码才能接入。**用户裁决（2026-11-19）：不保留两套协议，对外只留一套，`/v1/videos` 整套删除。**
 2. **协议面零散、没有一张"对外协议总表"**：`/v1` 已支持十余条路径，但"哪些是规范面、哪些是透传、哪些是厂商私有"只散落在各设计文档里，新增协议无统一入口。
 3. **非对话协议的"统一"程度不一致**：视频/音频有 adapter 归一，图像/向量是纯透传；同一模型在 OpenAI 兼容上游可用、在原生上游（如 DashScope 图像）不可用，对外却没有任何声明。
-4. **缺重排（rerank）**：new-api 与主流聚合层早已提供 `/v1/rerank`，我们完全没有该协议面，GLM/百炼/方舟的重排模型无法接入。
+4. **重排（rerank）已补齐（2026-11-20）**：`/v1/rerank` 按 Cohere/Jina 形态落地，百炼 `gte-rerank-v2` 为首家现役上游；GLM/方舟重排因缺少可落地端点或价格证据未收录（§4.4）。
 5. **扩展通道自建、与生态不一致**：`provider_options`（按 provider 命名空间）是自研通道，new-api 生态用 `metadata`；同一能力存在两套写法，违背"对外一套"。
 
 ## 3. new-api 调研（事实）
@@ -307,7 +309,7 @@
 
 **回滚**：代码回滚即恢复旧路径；数据无迁移，回滚安全。
 
-### 4.4 重排协议（`POST /v1/rerank`，P1）
+### 4.4 重排协议（`POST /v1/rerank`，P1，已实施）
 
 > 事实校正：重排**不是 OpenAI 家族协议**（OpenAI 无 rerank 端点）；它的行业事实标准是 Cohere/Jina 的 `{query,documents,top_n,return_documents}` → `{results[{index,relevance_score,document}],usage}` 形态，new-api 只是沿用它并作为聚合层默认面。因此本节按 Cohere/Jina 形态定义，而非按 OpenAI。
 
@@ -317,11 +319,11 @@
 | --- | --- | --- | --- |
 | `model` | string | 是 | 重排模型（目录 `mode=rerank`） |
 | `query` | string | 是 | 查询文本 |
-| `documents` | array | 是 | 元素为 string，或 `{"text": "…"}`；其它对象如实透传由 adapter 裁决 |
+| `documents` | array | 是 | 元素为 string，或 `{"text": "…"}`；DashScope 适配要求对象含非空 `text`，其它对象字段透传由上游裁决 |
 | `top_n` | int | 否 | 返回前 N 条；缺省返回全部 |
 | `return_documents` | bool | 否 | 是否回显原文，默认 false |
-| `max_chunk_per_doc` | int | 否 | 兼容透传（Jina 词） |
-| `overlap_tokens` | int | 否 | 兼容透传（Jina 词） |
+| `max_chunk_per_doc` | int | 否 | 兼容透传（Jina 词）；DashScope 无对应参数，适配时忽略（不报错） |
+| `overlap_tokens` | int | 否 | 兼容透传（Jina 词）；DashScope 无对应参数，适配时忽略（不报错） |
 
 响应（200）：
 
@@ -334,14 +336,14 @@
 }
 ```
 
-- `document` 仅在 `return_documents=true` 出现。
-- 响应**不发明** `id`/`meta`（new-api OpenAPI 有、代码无；以代码为准）。
-- 车道：`text` lane（同步 JSON、无流式、无会话亲和）；候选账户须启用 `rerank_json` endpoint mode（新增，见 §6.3），模型须属 `mode=rerank` 目录。
-- 计费：按输入 token（`usage.prompt_tokens` 优先，缺失按既有文本 token 口径自算），行项沿用文本输入 token；目录新增秒价/单价前不虚计。
-- 上游映射：Jina/Cohere/方舟/GLM 等 Cohere 形态可直接透传；DashScope `text-rerank` 需 `{model,input:{query,documents},parameters:{…}}` 适配（**置信度 C，接入前按官方文档回填**，见媒体契约 §1 规则）。
-- 错误：OpenAI 信封；参数 400、模型不属目录 404 `model_not_found`（沿用既有未知模型语义，`gatewaydispatch/candidatefilter.go`）、候选缺失 503。
+- `document` 仅在 `return_documents=true` 出现；网关归一阶段再兜底一次：上游忽略 `top_n` 且返回条数超出时，先按 `relevance_score` 稳定降序再裁剪前 N 条；`return_documents=true` 而上游未回显 `document` 时，按结果 `index` 从请求原文回填（字符串文档归一为 `{text}`，对象文档保留原样）。上游回显 `null`、空串、空对象或仅含空 `text` 的对象均视为未回显；上游非标准回显字符串时同样归一为 `{text}`。
+- 响应**不发明** `id`/`meta`（new-api OpenAPI 有、代码无；以代码为准）；上游 usage 兼容 `prompt_tokens`/`input_tokens`/`total_tokens` 与 Cohere `meta.billed_units.input_tokens`，统一输出 `{prompt_tokens,total_tokens}`。
+- 车道：`text` lane（同步 JSON、无流式、无会话亲和）；候选账户须启用 `rerank_json` endpoint mode（见 §6.3），模型须属 `mode=rerank` 目录。
+- 计费：按输入 token（`usage.prompt_tokens` 优先；仅 `total_tokens` 时按 total 回填，不启用请求侧文本自算），行项沿用文本输入 token；目录新增秒价/单价前不虚计。上游 2xx 无任何 usage 证据时 0 计费并标记 `usage_missing`（不猜测）。
+- 上游映射：Jina/Cohere 等 Cohere 形态可直接透传（model 原值透传，重排不在账户模型映射矩阵内）；DashScope `text-rerank` 需 `{model,input:{query,documents},parameters:{…}}` 适配。**已按官方文档回填（2026-11-20）**：`POST /api/v1/services/rerank/text-rerank/text-rerank`，请求 `{model,input:{query,documents[]},parameters:{top_n?,return_documents?}}`，响应 `{output:{results[]},usage:{total_tokens}}`；`gte-rerank-v2` 单请求 query+documents 上限 30000 tokens。百炼为当前唯一启用的重排上游；方舟仅有 `/api/v3/rerank` 代码引用但仓库官方口径未证实，GLM 无端点/价格证据，两者均不收录。
+- 错误：OpenAI 信封；参数 400（`gatewayrerank.ParseRequest` 本地校验，禁止空 query/空 documents/非对象 body）、模型不属目录 404 `model_not_found`（沿用既有未知模型语义，`gatewaydispatch/candidatefilter.go`）、候选缺失 503。
 
-### 4.5 图像 / 向量 / 音频（规范化，P2）
+### 4.5 图像 / 向量 / 音频（规范化，P2；向量已实施）
 
 **图像**（OpenAI Images 为规范面）：
 
@@ -349,11 +351,14 @@
 - 现状：**纯透传**，只有上游本身就是 OpenAI 兼容图像端点（gpt、volcengine ark、xai）可用；qwen（DashScope 多模态生成）与 glm（CogView）图像域在能力矩阵中是关闭的（`backend-go/projects/gateway/internal/accounts/accountscore/capabilityallowed.go` 的 `capabilityDomainMatrix`）。
 - 缺口：①两厂商 adapter（请求/响应归一）；②`stream: true`（partial images SSE）支持评估——当前图像走非流式 JSON 管道；③`response_format=b64_json` 在零存储下的透传边界（上游返回 base64 时不落盘，直接转发）。
 
-**向量**：
+**向量（已实施 2026-11-20）**：
 
-- 规范面即 OpenAI Embeddings；`input` 支持 string / string[]；`encoding_format`/`dimensions` 透传。
-- `/v1/embeddings/multimodal`（ark 私有子路径）保持现状，**不算规范面**，文档标注为厂商私有。
-- 缺口：Gemini 原生路径的 `:embedContent` 已在 Gemini native 面支持（`gatewayresponse/nonstreamjson.go` 的 `embed_content` 分支、`gatewaypreauth/metadata.go` 的路径词表），但没有公开 `/v1/embeddings` → Gemini 的桥接，`:batchEmbedContents` 未见支持；P2 核实后决定是否桥接或明确不支持（不默认新增跨协议转换）。
+- 规范面即 OpenAI Embeddings；`input` 支持 string / string[]；`encoding_format`/`dimensions` 透传。`POST /v1/embeddings` 精确路径按 `embeddings_json` 闸门做候选过滤，请求体不进入 chat 模型映射/兼容性改写链。
+- 上游：OpenAI 兼容厂商走 base_url 版本根直拼规范小写 `/embeddings`（入站路径大小写不改变出站路径）；qwen 走 DashScope 兼容模式 `/compatible-mode/v1/embeddings`（base_url 为 origin 的厂商特例）。
+- 大 batch 响应体积随条数×维度增长；`/v1/embeddings` 与 `/v1/embeddings/multimodal` 的 2xx 响应不进入 1 MiB 全量协议校验，按有界透传发送（usage 由尾部捕获消费），避免合法大 batch 被 502 拒绝。
+- 目录：qwen `text-embedding-v4` 的 `supportedAPIProtocols` 由 Gemini 原生 `embed_content` 回正为 `embeddings`；方舟 `doubao-embedding-vision-251215` 仅支持私有 `/api/v3/embeddings/multimodal`（标准 `/api/v3/embeddings` 报 400，实测证据见《火山方舟账号接入》），因此**不进入** `embeddings_json` 规范面，也不扩 ark account 词表。
+- `/v1/embeddings/multimodal`（ark 私有子路径）保持现状，**不算规范面**，不闸门、不归一。
+- 缺口：Gemini 原生 `:embedContent` 已在 Gemini native 面支持，但没有公开 `/v1/embeddings` → Gemini 的桥接，`:batchEmbedContents` 未见支持；维持"不默认新增跨协议转换"（同族约束，且本次不新增桥）。
 
 **音频**：
 
@@ -457,15 +462,15 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 
 测试面（P0）：`gatewaymedia/videoparams_test.go`（新字段与冲突矩阵）、`chain_media_video_test.go`（形态判定、创建、轮询、content、错误码）、`gatewaypreauth/metadata_endpointmodes_test.go`（mode 映射）、`gatewayopenai` 协议门测试、Mock 上游 `media_video_*` 场景复用、fullchain E2E（`acceptance/fullchain_media_video_test.go`）加统一面用例。
 
-### 6.3 目录 / 计费 / endpoint mode（rerank，P1）
+### 6.3 目录 / 计费 / endpoint mode（rerank/embeddings，P1/P2，已实施）
 
 | 项 | 改动 |
 | --- | --- |
-| endpoint mode | 新增 `rerank_json`：`providers/endpoint_modes.go`、`accounts/endpoint_modes.go`（+ `accountscore`）、`gatewaypreauth/metadata_endpointmodes.go`、`frontend/src/views/accounts/accountProviderCapabilities.ts` |
-| schema | `accounts.health_check_endpoint_mode` 与 `account_endpoint_mode_declarations.endpoint_mode` 的 CHECK 约束需追加 `rerank_json` → **business schema revision +1**（`backend-go/projects/maintenance/internal/schema/pg_schema_business_tables.go`），随 `maintenance upgrade` 发布 |
-| 目录 | `ProviderCatalogModeValues` 增 `rerank`（前端不新增 Tab，按 `embedding` 同口径处理）；rerank 模型 seed（glm/qwen/volcengine）与价格来源按《模型价格数据源与取证指南》留档 |
-| 计费 | 输入 token 行项（复用文本口径），无输出 token；usage 缺失不虚计 |
-| 能力矩阵 | 对应 vendor 行开 rerank（仅在其上游确有 rerank API 时） |
+| endpoint mode | 新增 `rerank_json` 与 `embeddings_json`（均为 chat 域 lane 成员，词表 25→27）：`shared/contracts/connector_registry.go`、`shared/platform/capabilitydomain`、`providers/endpoint_modes.go`、`accounts/endpoint_modes.go`（+ `accountscore`）、`gatewaypreauth/metadata_endpointmodes.go`、`gatewayopenai/endpoint.go`、`gatewayresponse/nonstreamjson.go`、`cmd/juhe-ai-gateway/chain_catalog.go`、`business/settings/settings.go`、`frontend` 类型/选项/能力域/供应商能力面 |
+| schema | `accounts.health_check_endpoint_mode` 与 **`account_endpoint_modes.endpoint_mode`**（实际表名；设计早期误写为 `account_endpoint_mode_declarations`，已按代码更正）的 CHECK 约束追加两值 → **business schema revision 26→27**（`backend-go/projects/maintenance/internal/schema/pg_schema_business_tables.go`），随 `maintenance upgrade` 发布。revision 27 为纯 DDL 空号：`account-endpoint-mode-pg-check` 幂等 DO 块按 `NOT LIKE '%rerank_json%'` 定位旧约束并重建；`accounts-health-check-endpoint-mode-pg-check` 的旧谓词 `message_token_counting` 对 25 值约束不再命中，本批同批改为 `rerank_json` |
+| 目录 | `ProviderCatalogModeValues` 增 `rerank`（模型选择/管理面按文本分类展示，不新增 Tab）；`modelSeedProtocolEndpointModes` 增 `embeddings`→`embeddings_json`、`rerank`→`rerank_json`；qwen `gte-rerank-v2` 新增行（`mode=rerank`，输入 $0.11428571428571428/1M = 0.8 元/百万 ÷7.0，`maxInputTokens=30000`），qwen `text-embedding-v4` 协议回正为 `embeddings`；种子行数 216→217（qwen 17→18） |
+| 计费 | 输入 token 行项（复用文本口径），无输出 token；usage 缺失不虚计。响应归一保证 `usage.prompt_tokens` 可用（total-only 上游按 total 回填） |
+| 能力矩阵 | qwen 开 `rerank_json` 与 `embeddings_json`；gpt / xai / deepseek 的 OpenAI 族 account 词表开 `embeddings_json`（自定义模型可用）；gemini OpenAI Chat 窄 preset 维持连接注册表与《Gemini账号接入》口径，只开 chat 对（向量走 Gemini native `embed_content`）；GLM 的 OpenAI 档案专用词表维持 chat/video/audio，**不扩** `embeddings_json`；volcengine 标准 embeddings 面不可用，**不开** `embeddings_json`；GLM/方舟 rerank 未收录 |
 
 ### 6.4 与现行权威文档的冲突与修订（同批必须完成）
 
@@ -510,13 +515,45 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 - 前端与帮助文档：`frontend` 的 `vue-tsc --noEmit` 除既有 `src/views/stats/statsChartOptions.ts:176`（与本批无关，HEAD 同错）外无新增错误；`test:help-content`、`test:account-import-protocol` 两条回归脚本通过；用户手册 `frontend/public/help/docs/user/{07-video,08-tts,16-protocol-overview,19-provider-params,20-provider-differences}.md` 与 `manifest.json` 已按唯一面改写并重渲染。
 - 已知既有失败（与本批无关）：`internal/auditlog` 的 `TestW10BNormalizeRetentionAndHelperArms` 在未改动的 HEAD 代码上失败（保留期钳制断言）。
 
-### 7.2 P1：`/v1/rerank`
+### 7.2 P1/P2 向量与重排：实施记录（2026-11-20）
 
-验收：Mock 上游重排响应归一为 `{results,usage}`；`return_documents` 两态；`top_n` 生效；候选按 `rerank_json` 过滤（未声明账户 503）；schema revision 升级脚本在 dev 库可正反向跑通。
+已交付：
 
-### 7.3 P2：图像/向量/音频规范化与厂商 adapter
+- **协议门/候选过滤**：`gatewayopenai.IsProtocolRequestPath` 增 `/rerank`；`gatewaypreauth.RequestSupportedEndpointMode` 把精确 `/v1/embeddings`、`/v1/rerank` 映射为 `embeddings_json`/`rerank_json`；`/v1/embeddings/multimodal` 不命中（维持私有透传）。
+- **重排链**：`internal/gatewayrerank`（请求解析/校验、DashScope 报文构造、响应归一、`IsRequestPath`）；`chain_rerank.go` 负责 qwen 服务路径与通用直拼、model 原值透传、响应归一；响应变换在 Code Assist/通用映射之前短路。`gatewayresponse/nonstreamjson.go` 对 `/rerank` 增加 `results` 数组结构校验，`nonstream.go` 纳入已知非流式 JSON 路径。
+- **向量链**：`chain_embeddings.go` 负责精确路径判定、qwen 兼容模式 URL、OpenAI 形态透传（不进入 chat 映射/兼容性改写链）。
+- **账户能力**：`rerank_json`/`embeddings_json` 进入 chat 域 lane（15 值）与账户写侧词表；qwen 词表含两值，OpenAI 族词表含 `embeddings_json`、不含 `rerank_json`（重排仅 qwen 原生；GLM 专用词表不扩 embeddings），volcengine ark 词表不扩；qwen 的运行时归一使用独立词表，避免 OpenAI 公共词表误放行 `rerank_json`。健康检查侧两值按连接测试通道执行连通性探测（`embeddings_json`：OpenAI 兼容 preset 与 qwen；`rerank_json`：qwen DashScope），不进入 J1 真实模型探针，也无人工测试请求模板；前端端点选项/标签、能力域锚集合、模型协议过滤（qwen 档案追加 `embeddings`/`rerank`）同步。
+- **目录/价格**：qwen 新增 `gte-rerank-v2`（mode=rerank，输入 0.8 元/百万 ÷7.0，maxInputTokens=30000）；`text-embedding-v4` 协议回正为 `embeddings`；种子 216→217；`ProviderCatalogModeValues` 增 `rerank`，自定义模型协议集与目录 mode 过滤同步。
+- **schema**：revision 27（纯 DDL 空号），两个 CHECK 词表 25→27 + `account-endpoint-mode-pg-check` 幂等替换 DO 块；health 迁移谓词修正为 `rerank_json`。
+- **请求边界**：`/rerank`、`/embeddings`、`/embeddings/multimodal` 仅接受 POST；`/embeddings/*` 未支持子路径与错误方法在协议门后返回既有 404 JSON，不进入派发链。重排响应读取上限 1 MiB，超限按上游协议错误处理；embeddings 2xx 响应不设 1 MiB 协议校验（合法大 batch 按有界透传）；重排 `model` 原值透传，不查账户模型映射。
+- **安全策略**：出站脱敏新识别 OpenAI Embeddings / Rerank 两族（家族总数七），扫描 `input`（字符串或数组，元素可为字符串或 `{text}`）、`query`、`documents`（字符串或 `{text}`）；向量族不注入占位符引导提示。
+- **Mock/测试**：mock 上游新增 `/v1/rerank`、`/compatible-mode/v1/embeddings`、qwen DashScope rerank 路径与响应；新增 `gatewayrerank` 单测、`chain_rerank_test.go`、`chain_embeddings_test.go`、能力/注册表/schema/种子钉值测试，并补安全策略、方法/路径门、qwen 词表归一、健康检查白名单、价格锚点、目录行输入 token 结算与前端能力域用例；测试夹具 CHECK 词表统一 25→27。
+- **复审收口（2026-11-21 第二轮独立复审）**：
+  - Gemini OpenAI Chat 按窄 preset 收口：连接注册表与《Gemini账号接入》只开放 chat 对，后端 `geminiOpenAIChatVocabulary()` 与前端 `endpointModesForProfile` 同口径，不再放行 `embeddings_json`；Gemini 向量能力由 native 档案 `embed_content` 承载，未臆造上游 OpenAI 兼容 embeddings。
+  - OpenAI OAuth 写侧只保留 responses 对：前端端点模式与模型下拉同步收窄，chat-only 模型不再出现在 OAuth 下拉（回归脚本补断言）。
+  - `RequestSupportedEndpointMode` 路径统一小写后再匹配，`/v1/Embeddings`、`/v1/RERANK` 与协议门/链守卫行为一致；Gemini camelCase token 的匹配同步小写化。
+  - 健康检查前端选项与后端 27 值白名单同集（含 `video_get`/`video_content`/`video_cancel`、`audio_job_*`、`count_tokens`/`embed_content`/`message_token_counting` 等记录型值）：本批新增 `embeddings_json`/`rerank_json` 可展示与选择，并补长音频任务与 realtime 默认回退用例。
+  - 导入协议回归移除 `POST /rerank`（OpenAI 公共 operation templates 16 条），健康检查列表与计数改为动态断言；火山/通义接入文档的 embeddings 路径与默认健康检查集表述回正。
+  - 重排归一兜底：`top_n` 超量时按 `relevance_score` 稳定降序裁剪；`return_documents=true` 且上游缺 `document` 时按 `index` 从请求原文回填（字符串转 `{text}`，对象原样）。
+- **补充复审修复（2026-11-21）**：
+  - Gemini native secret 投影词表补 `embed_content`，并新增与 `accountscore.GeminiEndpointModeValues` 的逐值一致性测试；避免 legacy credentials 回退静默丢向量声明，或仅声明 `embed_content` 时被过滤成空集后按“无约束”放行。
+  - 输入-only 用量零计费：`gatewayopenai.ExtractUsage` 在输入、输出均为 0/缺失且 `total_tokens>0` 时把 total 回填为输入（输出非零时不回填，避免把 chat output 当输入）；rerank `normalizeUsage` 改为非零优先、全零保留，并补 `prompt_tokens:0`/`input_tokens:0`/仅 total/`total_tokens:0` 用例。
+  - 批量编辑健康检查白名单改为复用 `accountscore.AccountHealthCheckEndpointModes`（UI 可选即后端可存），`supportedEndpointModes` 上限 13→27；补批量校验测试。
+  - 运行时 endpoint mode 归一补两处：OAuth 对存量显式 chat 声明同样收窄为 Responses 对；qwen/volcengine 无 mode 事实时回落 chat 对，不再回落含 Responses 的 OpenAI 缺省集。
+  - rerank `return_documents=true` 时上游 `document:null`/空串/空对象按请求原文回填；`stream` 非布尔值（`"true"`/`1`）按非法流式 400；补用例。
+- **已知边界（本批未改）**：secret 投影以 `account_endpoint_modes` 为事实源（写入侧已按域∩preset 收窄），仅无 mode 行的 legacy 数据走 credentials 回退；GLM/Gemini OpenAI Chat 的 legacy 显式声明不做逐供应商二次收窄，避免部署后静默改变既有路由。`/v1/embeddings`、`/v1/rerank` 的模型目录 `mode` 校验尚未进入候选过滤，错误模型组合目前由上游 4xx 返回而非本地 404；列入 §7.3 后续项。
 
-按 §4.5 缺口逐项立项（qwen/glm 图像 adapter、gemini 向量桥接核实、speech `stream_format` 语义、`models/{id}`）。视频面**不再评估 multipart**（统一面 JSON-only 是有意裁决）。
+验收（本机已执行，未发布）：
+
+1. `go test ./projects/gateway/internal/gatewayrerank ./projects/gateway/internal/gatewaypreauth ./projects/gateway/internal/gatewayopenai ./projects/gateway/internal/gatewayresponse ./projects/gateway/internal/gatewaysecpol ./projects/gateway/internal/accounts/accountscore ./projects/gateway/internal/accounts/accountstest ./projects/gateway/internal/accounts/accountstransfer ./projects/gateway/internal/accounts ./projects/gateway/internal/providers ./projects/gateway/internal/pricing ./shared/contracts ./shared/platform/capabilitydomain ./shared/platform/mockupstream ./projects/gateway/cmd/juhe-ai-gateway -count=1` 通过（含重排归一、`top_n`/`return_documents` 两态、`document:null` 回填、非法 `stream` 400、输入-only usage 零占位、qwen/generic URL、透传与空 body 400、安全策略脱敏、POST/路径门、qwen 词表归一、Gemini `embed_content` 投影、批量编辑词表、注册表 mode 组合 133→138、endpoint mode 词表 25→27、chat 域 lane 13→15、种子 217 行）；schema 定向用例 `-run 'TestPostgresAccountsHealthCheckContract|TestModelSeed|TestPostgresSeedDataParity'` 通过（revision 27 时 631 条 DDL、217 行种子；revision 28 后 DDL 为 718 条）。
+2. `go build ./projects/gateway/... ./projects/jobs/... ./projects/maintenance/... ./shared/contracts/... ./shared/platform/...` 通过。
+3. 前端 `pnpm typecheck`、`test:account-import-protocol`、`test:help-content`、`test:account-health-check-endpoint-mode`、`test:account-test-protocols`、`test:provider-model-formatters`、`test:xai-account-capability`、`test:provider-auth-account-capability` 与 `vitest accountCapabilityDomains`（72 项）通过。
+4. 候选按 `rerank_json`/`embeddings_json` 过滤（未声明账户 503）由 `RequestSupportedEndpointMode` + 既有 dispatch 候选过滤覆盖；完整 fullchain E2E 未在本批执行（需 dev PG/Redis 与验收窗口）。
+5. **并发边界（2026-11-21 复核）**：本批交付期间 schema 整包曾因并行 T215 revision 28 未完成而失败（718 vs 631、statement 346 未守卫）；最新复核 T215 已补齐 DDL golden 与守卫，`go test ./projects/maintenance/internal/schema/ -count=1` 整包通过（117s）。当前 `contracts.SchemaRevision=28`，发布基线已包含 T215；本批 revision 27 不再有单独发布窗口，须待 T215 按其设计完成验收后，以合并批次发布。本批定向用例与全模块 `go build` 均通过。
+
+### 7.3 P2 剩余：图像/音频规范化与厂商 adapter
+
+按 §4.5 缺口逐项立项（qwen/glm 图像 adapter、gemini 向量桥接核实、speech `stream_format` 语义、`models/{id}`）。视频面**不再评估 multipart**（统一面 JSON-only 是有意裁决）。向量/重排补充项：候选过滤按模型目录 `mode=embedding`/`mode=rerank` 校验（当前仅在账户声明模型层匹配，错误模型组合会到上游返回 4xx，未落到 §4.4 的本地 404 `model_not_found`；需模型 mode 随候选加载一起扩展）。
 
 ## 8. 风险与边界
 
@@ -527,7 +564,7 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 | **破坏性变更**：`/v1/videos` 客户端直接失效 | 外部集成中断 | 发布说明标注 breaking + 迁移示例（路径与字段对照表）；不做兼容层是用户明确裁决（2026-11-19）；如需过渡只能靠文档与通知 |
 | `metadata` 不分厂商命名空间 | 混合分组下厂商参数串扰 | 模型目录/映射保证同模型同厂；adapter 只消费已知键；`metadata_applied` 可核对；厂商自身拒绝未知键 |
 | 旧字段 `provider_options` 被静默忽略 | 老客户端参数失效 | 发布说明明确列出；不做别名/双写；`metadata_applied` 为空即提示未生效（可排查） |
-| rerank 引入 schema revision | 发布窗口依赖 | 与下一次发布窗口合并，按《升级兼容与迁移账本设计》执行 |
+| rerank/embeddings 引入 schema revision 27 | 发布窗口依赖 | 与下一次发布窗口合并，按《升级兼容与迁移账本设计》执行；本批未发布 |
 | `metadata` 被当作"万能透传"滥用 | 协议面失控 | 明确只补字段、不覆盖任何既有路径、冲突 400、仅媒体创建面；文档与错误文案写明 |
 | 原 Sora 客户端的 multipart 创建诉求 | 无法直接迁移（统一面 JSON-only） | 明确不支持；需要文件输入的客户端先自行转 base64/URL（零存储边界不变） |
 

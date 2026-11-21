@@ -26,7 +26,7 @@
         <a-tag :color="accountStatusColor(account)">{{ accountStatusText(account) }}</a-tag>
       </div>
 
-      <a-form layout="vertical" class="test-form">
+      <a-form v-if="!connectionTest" layout="vertical" class="test-form">
         <div class="test-config-row">
           <a-form-item class="test-config-field" label="选择测试模型">
             <a-select
@@ -59,6 +59,10 @@
           </a-form-item>
         </div>
       </a-form>
+      <div v-else class="test-connection-hint">
+        <div class="test-connection-title">连接测试</div>
+        <div>只验证 API Key、上游地址与认证是否可达，不调用模型、不生成任何产物。</div>
+      </div>
 
       <div class="test-terminal">
         <div v-if="!outputLines.length" class="test-output-line muted">准备开始测试</div>
@@ -142,6 +146,8 @@ const props = defineProps<{
   running: boolean
   testEndpointMode: AccountTestEndpointMode
   testEndpointModes: AccountSupportedEndpointMode[]
+  /** 测试方式：connection 时隐藏模型/请求形态，只验证凭证与上游可达性。 */
+  testKind?: 'model' | 'connection'
 }>()
 
 const emit = defineEmits<{
@@ -160,6 +166,7 @@ const testEndpointModeOptions = computed(() => props.testEndpointModes.map((valu
   label: accountEndpointModeLabel(value, props.account),
   value
 })))
+const connectionTest = computed(() => props.testKind === 'connection')
 const selectedEndpointModeSelectValue = computed<AccountSupportedEndpointMode | undefined>(() => {
   if (props.testEndpointMode !== 'account_default' && props.testEndpointModes.includes(props.testEndpointMode)) {
     return props.testEndpointMode
@@ -171,13 +178,37 @@ const selectedEndpointModeText = computed(() => {
   return testEndpointModeOptions.value.find((item) => item.value === selected)?.label
     ?? '无可测试请求形态'
 })
-const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
-const runDisabled = computed(() => (
-  (!props.modelsOptional && (props.modelsLoading || Boolean(props.modelsError)))
-  || !props.modelsReady
-  || !props.model.trim()
-  || !selectedEndpointModeSelectValue.value
-))
+// 连接测试不暴露模型、请求形态、请求/响应原文：完整结果 JSON 与复制按钮
+// 使用同一白名单投影，避免“内部检查形态”被误认为连接测试的测试协议。
+const resultJson = computed(() => {
+  const result = props.result
+  if (!result) return ''
+  if (!connectionTest.value) return JSON.stringify(result, null, 2)
+  return JSON.stringify({
+    testKind: props.testKind,
+    success: result.success,
+    statusCode: result.statusCode,
+    errorCode: result.errorCode,
+    message: result.message,
+    traceId: result.traceId,
+    durationMs: result.durationMs,
+    firstTokenMs: result.firstTokenMs,
+    apiKeyPool: result.apiKeyPool,
+    accountStatusChanged: result.accountStatusChanged,
+    accountStatus: result.accountStatus,
+    errorPolicyAction: result.errorPolicyAction,
+    errorPolicyReason: result.errorPolicyReason
+  }, null, 2)
+})
+const runDisabled = computed(() => {
+  if (connectionTest.value) return !props.modelsReady
+  return (
+    (!props.modelsOptional && (props.modelsLoading || Boolean(props.modelsError)))
+    || !props.modelsReady
+    || !props.model.trim()
+    || !selectedEndpointModeSelectValue.value
+  )
+})
 const currentProviderName = computed(() => props.account
   ? props.providerName?.(props.account.providerCode) ?? '未知供应商'
   : ''
@@ -204,7 +235,8 @@ const outputLines = computed<AccountTestOutputLine[]>(() => accountTestSingleOut
   model: props.model,
   providerLabel: (account) => props.providerName?.(account.providerCode) ?? '未知供应商',
   result: props.result,
-  running: props.running
+  running: props.running,
+  testKind: props.testKind
 }))
 
 function close() {
@@ -298,6 +330,24 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
 
 .test-config-field {
   min-width: 0;
+}
+
+.test-connection-hint {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--juhe-border);
+  border-radius: 8px;
+  background: var(--juhe-surface-soft);
+  color: var(--juhe-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.test-connection-title {
+  color: var(--juhe-fg);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .test-endpoint-select {

@@ -354,12 +354,14 @@ func TestW11AReconcileAndCascadeArms(t *testing.T) {
 		if err := f.store.RevokeTeamSourcesForMember(ctx, "team_1", "grantee", "owner"); err == nil {
 			t.Fatal("broken schema must fail RevokeTeamSourcesForMember")
 		}
-		t.Run("reactivate_broken_members", func(t *testing.T) {
+		t.Run("reactivate_is_noop", func(t *testing.T) {
 			freshMembers := w11aGrantFixture(t)
 			freshMembers.seedTeamWithMember(t, "team_1", "grantee")
+			// Reactivate no longer expands old consents; it must not touch the
+			// member table at all.
 			freshMembers.exec(t, `DROP TABLE system_team_members`)
-			if err := freshMembers.store.ReactivateTeamGrants(ctx, "team_1", "owner"); err == nil {
-				t.Fatal("broken member table must fail ReactivateTeamGrants")
+			if err := freshMembers.store.ReactivateTeamGrants(ctx, "team_1", "owner"); err != nil {
+				t.Fatalf("ReactivateTeamGrants 应为 no-op: %v", err)
 			}
 		})
 	})
@@ -716,7 +718,7 @@ func TestW11AReturnGroupArms(t *testing.T) {
 
 	t.Run("happy_path_and_failures", func(t *testing.T) {
 		f := w11aGrantFixture(t)
-		w11aCreateGrant(t, f)
+		f.createAcceptedDirectOffer(t, "group", "grp_1", "grantee")
 		receipt, err := f.store.ReturnGroupForGrantee(ctx, "grp_1", "grantee", "grantee")
 		if err != nil {
 			t.Fatal(err)

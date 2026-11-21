@@ -6,7 +6,8 @@ package gatewayproto
 // M1 同步音频计量扩展（音频设计 §10/契约 §2.8）：TtsInputChars 是 TTS 请求
 // 输入字符数（网关自算，UTF-8 rune 数）；AudioInputSeconds 是 STT 音频秒数
 // （上游 verbose_json duration）；UsageMissing 标记上游既无 usage 回报也无
-// duration 的 STT 响应（0 计费 + 可审计，不猜测）。
+// duration 的 STT 响应（0 计费 + 可审计，不猜测）。embeddings / rerank 等
+// 输入型协议在 2xx 且完全无可解析 usage 时同样置位。
 // M2 视频计量扩展（媒体设计 §10/契约 §2.8）：OutputVideoSeconds 是视频任务
 // 输出秒数（任务参数 seconds 口径，网关自算；失败任务不虚计）。指针语义沿
 // M1 先例：nil = 无证据。

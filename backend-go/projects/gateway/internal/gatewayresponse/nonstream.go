@@ -14,6 +14,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysecpol"
@@ -842,10 +843,25 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			parsedJsonBody = ParseGatewayNonStreamJsonBody(text, true, input.UpstreamResponse.Header)
 		}
 	}
+	// embeddings / rerank 只消费输入 token：total-only usage 由输入型抽取
+	// 回填，且成功后完全无 usage 证据时落 usage_missing 供审计。chat/
+	// Responses 仍走共享驱动抽取，不启用该回填。
+	inputOnlyUsage := input.Req != nil && gatewayopenai.IsInputOnlyUsageRequestPath(input.Req.PathAndQuery())
 	if parsedJsonBody.Status == NonStreamJSONStatusValid {
-		usage = driver.ExtractUsageFromJSONValue(parsedJsonBody.Value)
+		if inputOnlyUsage {
+			usage = gatewayopenai.ParseInputOnlyUsageFromJSONValue(parsedJsonBody.Value)
+		} else {
+			usage = driver.ExtractUsageFromJSONValue(parsedJsonBody.Value)
+		}
 	} else if pipeResult.UsageTailText != "" {
-		usage = driver.ExtractUsageFromJSONTextFragment(pipeResult.UsageTailText, parsedJsonBody.Status == NonStreamJSONStatusInvalid)
+		if inputOnlyUsage {
+			usage = gatewayopenai.ParseInputOnlyUsageFromJSONTextFragment(pipeResult.UsageTailText)
+		} else {
+			usage = driver.ExtractUsageFromJSONTextFragment(pipeResult.UsageTailText, parsedJsonBody.Status == NonStreamJSONStatusInvalid)
+		}
+	}
+	if inputOnlyUsage && transportResponseSuccessful && usage.InputTokens == nil && usage.OutputTokens == nil {
+		usage.UsageMissing = true
 	}
 	// 2026-11-07 跨协议桥退役：原 DD-C6（T86）非流式桥接 usage 快照消费臂随
 	// 桥删除（唯一生产者 chainBridgeUsageSlot/carrier 已删）；结算回到上方
@@ -1236,12 +1252,20 @@ func nonStreamJsonProtocolValidationAllowed(input HandleUpstreamResponseInput, e
 	if imagePathPattern.MatchString(normalizeV1PrefixPath(requestPath)) {
 		return false
 	}
+	// 向量响应体积随 batch 条数与维度线性增长，合法的大 batch 响应超过 1MiB
+	// 并不异常；1MiB 全量校验会把成功响应整单拒绝为 502。与图像路径同策略
+	// 改纯透传（错误体仍由 !OK() 分支缓冲诊断），usage 由尾部捕获消费；
+	// /embeddings/multimodal 是方舟私有透传子路径，同样不进协议校验。
+	if normalized := normalizeV1PrefixPath(requestPath); normalized == "/embeddings" ||
+		normalized == "/embeddings/multimodal" {
+		return false
+	}
 	return endpointFamily != gatewayproto.EndpointFamilyUnknown || isKnownNonStreamJSONRequestPath(requestPath)
 }
 
 func isKnownNonStreamJSONRequestPath(requestPath string) bool {
 	normalized := normalizeV1PrefixPath(requestPath)
-	if normalized == "/models" || normalized == "/embeddings" || normalized == "/moderations" {
+	if normalized == "/models" || normalized == "/embeddings" || normalized == "/moderations" || normalized == "/rerank" {
 		return true
 	}
 	if imagePathPattern.MatchString(normalized) {

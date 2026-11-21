@@ -786,6 +786,32 @@ func TestM2PatchGeminiChatConversationRequirement(t *testing.T) {
 	}
 }
 
+func TestM2PatchRejectsNonGenerationHealthModeForModelTestAccount(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+
+	// 混合形态 chat 账户：声明含真实对话生成形态，测试方式为模型测试。
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		m2CreateBody("m2-mixed-health", "gpt", "prof-gpt", "api_key", "chat",
+			map[string]any{"api_key": "sk-m2-mixed-health", "base_url": "https://api.openai.com/v1"},
+			[]string{"chat_json", "embeddings_json"}))
+	if code != http.StatusCreated {
+		t.Fatalf("混合形态 chat 创建应 201：%d %v", code, payload)
+	}
+	accountID := dataMap(t, payload)["id"].(string)
+	revision := dataMap(t, payload)["configRevision"].(float64)
+
+	// 模型测试账户的检查形态必须是真实对话生成形态：把检查形态改为
+	// embeddings_json 会同时逃出 J1（非生成形态）与连通性通道（账户含生成
+	// 形态），必须在写侧拒绝。
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+accountID,
+		`{"expectedConfigRevision":`+itoa64(int64(revision))+`,"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"embeddings_json","healthCheckModel":"m-default"}`)
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "真实对话生成形态") {
+		t.Fatalf("模型测试账户改输入型检查形态应 400：%d %v", code, payload)
+	}
+}
+
 func TestM2CloneContract(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")

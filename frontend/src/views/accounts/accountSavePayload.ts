@@ -1,5 +1,5 @@
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
-import { capabilityDomainIsMedia, capabilityDomainWithoutBackgroundProbe } from './accountCapabilityDomains'
+import { accountUsesConnectionTest, capabilityDomainIsMedia } from './accountCapabilityDomains'
 import type {
   AccountEditBasicDetail,
   AccountListItem,
@@ -79,12 +79,10 @@ export type AccountSavePayload = {
   fallbackEnabled: boolean
   supportedModels: string[]
   healthCheckModel?: string
-  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
+  /** 连接测试账户可省略：后端按域与连接派生；模型测试账户仍必填。 */
+  healthCheckEndpointMode?: AccountFormModel['healthCheckEndpointMode']
   temporaryUnavailableContinuousProbeEnabled: boolean
-  /**
-   * 后台自动探测总开关（总开关设计 §2）：仅在创建或值变化时由 PATCH delta 携带；
-   * 媒体域（audio/video/image）不适用，载荷不携带该键。
-   */
+  /** 后台自动探测总开关（总开关设计 §2）：全部能力域统一适用。 */
   backgroundProbeEnabled?: boolean
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
@@ -127,9 +125,10 @@ export type AccountOAuthCreateCommonPayload = {
   fallbackEnabled: boolean
   supportedModels: string[]
   healthCheckModel?: string
-  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
+  /** 连接测试账户可省略：后端按域与连接派生；模型测试账户仍必填。 */
+  healthCheckEndpointMode?: AccountFormModel['healthCheckEndpointMode']
   temporaryUnavailableContinuousProbeEnabled: boolean
-  /** 后台自动探测总开关（总开关设计 §2/§2 媒体域豁免）：媒体域创建不携带该键。 */
+  /** 后台自动探测总开关（总开关设计 §2）：全部能力域统一适用。 */
   backgroundProbeEnabled?: boolean
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
@@ -198,13 +197,10 @@ export function validateAccountSaveForm(input: {
       : '当前供应商配置不完整，请刷新后重试'
   }
   if (!form.type) return '请先选择账户类型'
-  // 手动模式二态状态门禁（总开关设计 §4）：后台探测关闭的对话域账户不允许提交
-  // 待检查等过程态。仅拦截显式选择：temporary_unavailable/rate_limited/quality_isolated
-  // 不在表单状态模型内（装载时归并 pending_test），异常账户未显式改状态时 PATCH
-  // 不携带 status，必须放行；新建表单切手动模式由表单预选可调度兜底。
+  // 手动模式二态状态门禁（总开关设计 §4）：后台探测关闭的账户不允许提交
+  // 待检查等过程态。2026-11-21 起图像/音频/视频统一适用该开关，不再按域豁免。
   if (
-    !capabilityDomainWithoutBackgroundProbe(form.capabilityDomain)
-    && form.backgroundProbeEnabled === false
+    form.backgroundProbeEnabled === false
     && form.statusSelectionExplicit
     && form.status === 'pending_test'
   ) {
@@ -285,20 +281,19 @@ export function validateAccountSaveForm(input: {
     && ['gpt', 'anthropic', 'gemini', 'xai'].includes(form.providerCode)
     && form.oauthMode !== 'access_token'
   if (!supportedModels.length && !oauthDefaultsAllowed) return '请选择支持模型'
+  const connectionTest = accountUsesConnectionTest(form.capabilityDomain, form.supportedEndpointModes)
   const healthCheckModel = form.healthCheckModel.trim()
-  if (!healthCheckModel && !oauthDefaultsAllowed) return '请选择检查模型'
   if (healthCheckModel && !supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
-  // 音频/视频域账户无后台探针，health_check_endpoint_mode 仅为记录值（域常量，
-  // 见 defaultHealthCheckEndpointModeForCapabilityDomain），不参与「已启用能力
-  // 交集」校验——qwen 长音频声明集没有任何检查形态词表值，按交集校验会被阻断
-  // 保存（R5）；chat/image 域行为不变。
-  if (
-    form.capabilityDomain !== 'audio'
-    && form.capabilityDomain !== 'video'
-    && form.healthCheckEndpointMode !== 'images_json'
-    && !accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)
-  ) {
-    return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
+  if (!connectionTest) {
+    if (!healthCheckModel && !oauthDefaultsAllowed) return '请选择检查模型'
+    // 检查形态校验只对模型测试账户生效；连接测试账户的检查三件套由后端按连接
+    // 与注册表规格派生，不再要求用户选择「测试协议」。
+    if (
+      form.healthCheckEndpointMode !== 'images_json'
+      && !accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)
+    ) {
+      return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
+    }
   }
   // 服务等级 / 思考级别覆盖（2026-10-18 简化定案）：保存前不再做模型能力校验，
   // 值域由后端族集校验负责（单一真源 backend-go/shared/platform/requestoverride）。
@@ -312,7 +307,7 @@ export function validateAccountSaveForm(input: {
     modes: form.supportedEndpointModes,
     type: form.type,
     profile: formProviderProfile.profile ?? formProviderProfile.provider,
-    allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider)
+    allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider, form.type)
   })
   if (endpointModeValidation) return endpointModeValidation
   const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
@@ -390,13 +385,11 @@ export function buildAccountSavePayload(input: {
     fallbackEnabled: input.form.privilege === 'fallback',
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     ...(input.form.healthCheckModel.trim() ? { healthCheckModel: input.form.healthCheckModel.trim() } : {}),
-    healthCheckEndpointMode: input.form.healthCheckEndpointMode,
+    ...(input.form.healthCheckEndpointMode ? { healthCheckEndpointMode: input.form.healthCheckEndpointMode } : {}),
     temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
-    // 后台自动探测总开关（总开关设计 §2）：创建携带；audio/video 媒体域不适用
-    // 不携带该键（image 域适用，二轮复审裁决——图像账户存在后台探测）。
-    ...(capabilityDomainWithoutBackgroundProbe(input.form.capabilityDomain)
-      ? {}
-      : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
+    // 后台自动探测总开关（总开关设计 §2）：2026-11-21 起图像/音频/视频统一适用，
+    // 所有域都携带该键。
+    backgroundProbeEnabled: input.form.backgroundProbeEnabled,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     // 互斥输出（§8.3/§9.2）：裸 id 二选一；编辑链未勾选的目标显式传 null 清除，
@@ -433,7 +426,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
     ...(payload.healthCheckConnectionPresetCode
       ? { healthCheckConnectionPresetCode: payload.healthCheckConnectionPresetCode }
       : {}),
-    healthCheckEndpointMode: payload.healthCheckEndpointMode,
+    ...(payload.healthCheckEndpointMode ? { healthCheckEndpointMode: payload.healthCheckEndpointMode } : {}),
     temporaryUnavailableContinuousProbeEnabled: payload.temporaryUnavailableContinuousProbeEnabled,
     // 总开关仅在值变化时进入 PATCH delta（accountEditPatch 按基线差量）；媒体域载荷
     // 不携带该键（buildAccountSavePayload 已排除），这里按缺省透传。
@@ -479,14 +472,10 @@ export function buildOAuthCreateCommonPayload(input: {
     fallbackEnabled: input.form.privilege === 'fallback',
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     ...(input.form.healthCheckModel.trim() ? { healthCheckModel: input.form.healthCheckModel.trim() } : {}),
-    healthCheckEndpointMode: input.form.healthCheckEndpointMode,
+    ...(input.form.healthCheckEndpointMode ? { healthCheckEndpointMode: input.form.healthCheckEndpointMode } : {}),
     temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
-    // 后台自动探测总开关（总开关设计 §2）：OAuth 创建同样携带；audio/video 媒体
-    // 域（gemini 媒体 google_oauth 走此通道）不适用，不携带该键（image 域适用，
-    // 二轮复审裁决）。
-    ...(capabilityDomainWithoutBackgroundProbe(input.form.capabilityDomain)
-      ? {}
-      : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
+    // 后台自动探测总开关（总开关设计 §2）：OAuth 创建同样适用全部域。
+    backgroundProbeEnabled: input.form.backgroundProbeEnabled,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,

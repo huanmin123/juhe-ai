@@ -36,8 +36,11 @@ type QueryOptions struct {
 	// (D-192/D-146) on every outbound balance request: the target host is
 	// validated before the request is sent (this covers HTTP(S) proxy
 	// branches, whose dial-time guard only sees the proxy host) and the
-	// shared client dials through the same guard for direct transports. nil
-	// keeps the historical unguarded transport for isolated tests.
+	// shared client dials through the same guard for direct transports.
+	// Hostname validation is allow-mixed: at least one non-blocked resolved
+	// address keeps the target usable and only an all-blocked answer is
+	// rejected; socks5h stays proxy-side resolution. nil keeps the historical
+	// unguarded transport for isolated tests.
 	DialGuard *upstreamhttp.DialGuard
 }
 
@@ -346,9 +349,12 @@ func (r *balanceRequester) getJSON(path string, auth ...requestAuth) (any, *quer
 }
 
 // validateTarget applies the deployment-level upstream URL guard to the final
-// balance endpoint. A rejected target is a policy decision, not a transient
-// upstream failure: it returns a non-temporary "upstream_blocked" diagnostic
-// without echoing the resolved address. Resolver failures stay transient.
+// balance endpoint. Hostname validation is allow-mixed: only an all-blocked
+// resolution is rejected, so a polluted local DNS answer containing a blocked
+// address cannot hide a reachable public one. A rejected target is a policy
+// decision, not a transient upstream failure: it returns a non-temporary
+// "upstream_blocked" diagnostic without echoing the resolved address. Resolver
+// failures stay transient.
 func (r *balanceRequester) validateTarget(endpoint string) *queryDiagnostic {
 	if r.guard == nil {
 		return nil

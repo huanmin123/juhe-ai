@@ -28,7 +28,6 @@ export const groupsApi = {
   update: (id: string, payload: GroupPatchPayload, params?: ListParams) => unwrap<GroupMutationResult>(http.patch(`/groups/${id}`, payload, { params })),
   superMembers: (id: string, params?: ListParams) => unwrap<SuperGroupMembersSummary>(http.get(`/groups/${id}/super-members`, { params })),
   updateSuperMembers: (id: string, payload: { expectedRevision: string; members: SuperGroupMemberInput[] }, params?: ListParams) => unwrap<SuperGroupMembersSummary>(http.patch(`/groups/${id}/super-members`, payload, { params })),
-  returnAuthorization: (id: string, params?: ListParams) => http.post(`/groups/${id}/return-authorization`, {}, { params }),
   delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
 }
 

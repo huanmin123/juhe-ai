@@ -1225,16 +1225,16 @@ func customInputHasCompletePriceAllowUnknown(input customProviderModelUpsertInpu
 	}
 }
 
-// customInputIsEmbeddingOnly 报告文本用途行是否只声明了 embedding 类协议
-// （message_token_counting / count_tokens / embed_content）：这类行不产生
-// 输出 token，价格完整性只要求输入价。空协议列表按普通文本行处理。
+// customInputIsEmbeddingOnly 报告文本用途行是否只声明了输入型协议
+// （message_token_counting / count_tokens / embed_content / embeddings / rerank）：
+// 这类行不产生输出 token，价格完整性只要求输入价。空协议列表按普通文本行处理。
 func customInputIsEmbeddingOnly(input customProviderModelUpsertInput) bool {
 	if len(input.SupportedAPIProtocols) == 0 {
 		return false
 	}
 	for _, protocol := range input.SupportedAPIProtocols {
 		switch protocol {
-		case "message_token_counting", "count_tokens", "embed_content":
+		case "message_token_counting", "count_tokens", "embed_content", "embeddings", "rerank":
 		default:
 			return false
 		}
@@ -1305,7 +1305,7 @@ func validateBuiltInModelCompletenessAllowUnknown(next *ModelCatalogItem, allowE
 	if next.Mode != nil {
 		mode = *next.Mode
 	}
-	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") && mode != "embedding" && mode != "video"
+	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") && mode != "embedding" && mode != "rerank" && mode != "video"
 	// chat/空投影的既有媒体模板行（Gemini generate_content 图像行、无
 	// endpoint modes 迁移行）不是文本模型：模板存在即媒体行，不要求上下文
 	// 容量，否则只编辑发布日期/价格也会被文本完整性拦截。

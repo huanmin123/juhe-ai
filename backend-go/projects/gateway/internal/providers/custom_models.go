@@ -1153,7 +1153,11 @@ var customProviderModelProtocolSet = map[string]bool{
 	"stream_generate_content": true,
 	"count_tokens":            true,
 	"embed_content":           true,
-	"interactions":            true,
+	// 2026-11-20 协议补齐批：OpenAI Embeddings 与 Cohere/Jina 重排的目录协议
+	// token（与 embed_content 的 Gemini 原生面并列，不混用）。
+	"embeddings":             true,
+	"rerank":                 true,
+	"interactions":           true,
 	"completions":             true,
 	"images":                  true,
 	// M1 同步音频协议词表（设计 §11.3）；M2 视频协议 video（设计 §11.3）；

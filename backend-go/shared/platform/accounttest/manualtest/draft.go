@@ -9,6 +9,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // DraftSnapshot 对齐 Node AccountTestDraftSnapshot 的 worker 消费字段投影
@@ -21,6 +22,7 @@ type DraftSnapshot struct {
 	GroupName                 string `json:"groupName,omitempty"`
 	ProviderCode              string `json:"providerCode"`
 	ProviderProtocolProfileID string `json:"providerProtocolProfileId,omitempty"`
+	ConnectionPresetCode      string `json:"connectionPresetCode,omitempty"`
 	ProtocolCode              string `json:"protocolCode,omitempty"`
 	ProtocolVersion           string `json:"protocolVersion,omitempty"`
 	Name                      string `json:"name"`
@@ -64,8 +66,17 @@ func isValidDraftHealthCheckEndpointMode(value string) bool {
 		"chat_json", "chat_sse",
 		"responses_json", "responses_sse",
 		"messages_json", "messages_sse",
+		"message_token_counting",
 		"generate_content_json", "generate_content_sse",
-		"interactions_json", "interactions_sse":
+		"interactions_json", "interactions_sse",
+		"count_tokens", "embed_content", "embeddings_json", "rerank_json",
+		"audio_speech", "audio_transcription_json",
+		"video_create", "video_get", "video_content", "video_cancel",
+		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+		"realtime_session":
+		return true
+	case "":
+		// 连接测试草稿不需要检查形态；空值由执行侧按注册表规格选择。
 		return true
 	}
 	return false
@@ -97,6 +108,7 @@ func normalizeDraftSnapshot(value any) *DraftSnapshot {
 		GroupName:                 text("groupName"),
 		ProviderCode:              text("providerCode"),
 		ProviderProtocolProfileID: text("providerProtocolProfileId"),
+		ConnectionPresetCode:      text("connectionPresetCode"),
 		ProtocolCode:              text("protocolCode"),
 		ProtocolVersion:           text("protocolVersion"),
 		Name:                      text("name"),
@@ -113,14 +125,43 @@ func normalizeDraftSnapshot(value any) *DraftSnapshot {
 	}
 	if draft.ID == "" || draft.OwnerSystemAccountID == "" || draft.GroupID == "" ||
 		draft.ProviderCode == "" || draft.Name == "" || draft.Type == "" ||
-		draft.HealthCheckModel == "" || draft.Credentials == nil {
+		draft.Credentials == nil {
 		return nil
+	}
+	// 连接测试草稿不要求检查模型；模型测试草稿保持原必填契约。
+	modes := draftCredentialEndpointModes(draft.Credentials)
+	if draft.HealthCheckModel == "" {
+		if capabilitydomain.TestKindForEndpointModes(modes) == capabilitydomain.TestKindModel {
+			return nil
+		}
+		if len(draft.SupportedModels) > 0 {
+			draft.HealthCheckModel = strings.TrimSpace(draft.SupportedModels[0])
+		}
 	}
 	if !isValidDraftClientCompatibility(draft.ClientCompatibility) ||
 		!isValidDraftHealthCheckEndpointMode(draft.HealthCheckEndpointMode) {
 		return nil
 	}
 	return draft
+}
+
+// draftCredentialEndpointModes 读取草稿凭据声明的 endpoint modes。
+func draftCredentialEndpointModes(credentials map[string]any) []string {
+	raw, ok := credentials["supported_endpoint_modes"]
+	if !ok {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if text, ok := item.(string); ok {
+			out = append(out, strings.TrimSpace(text))
+		}
+	}
+	return out
 }
 
 // modelMappingsValue 解析网关保存到草稿信封中的 modelMappings。草稿快照
@@ -302,6 +343,9 @@ func draftView(secret string, draft *DraftSnapshot, modelOverride, endpointModeO
 	if strings.TrimSpace(endpointModeOverride) != "" {
 		healthMode = strings.TrimSpace(endpointModeOverride)
 	}
+	if strings.TrimSpace(healthModel) == "" && len(draft.SupportedModels) > 0 {
+		healthModel = strings.TrimSpace(draft.SupportedModels[0])
+	}
 	return &accountprobe.View{
 		AccountID:                 draft.ID,
 		AccountName:               draft.Name,
@@ -311,6 +355,7 @@ func draftView(secret string, draft *DraftSnapshot, modelOverride, endpointModeO
 		ProtocolCode:              draft.ProtocolCode,
 		ProtocolVersion:           draft.ProtocolVersion,
 		ProviderProtocolProfileID: draft.ProviderProtocolProfileID,
+		ConnectionPresetCode:      draft.ConnectionPresetCode,
 		ClientCompatibility:       draft.ClientCompatibility,
 		HealthCheckModel:          healthModel,
 		HealthCheckEndpointMode:   healthMode,
@@ -344,9 +389,18 @@ func normalizeDraftEndpointModes(draft *DraftSnapshot) map[accountprobe.Endpoint
 		case accountprobe.ModeChatJSON, accountprobe.ModeChatSSE,
 			accountprobe.ModeResponsesJSON, accountprobe.ModeResponsesSSE,
 			accountprobe.ModeMessagesJSON, accountprobe.ModeMessagesSSE,
+			accountprobe.ModeMessageTokenCounting,
 			accountprobe.ModeGenerateContentJSON, accountprobe.ModeGenerateContentSSE,
 			accountprobe.ModeInteractionsJSON, accountprobe.ModeInteractionsSSE,
-			accountprobe.ModeImagesJSON:
+			accountprobe.ModeCountTokens, accountprobe.ModeEmbedContent,
+			accountprobe.ModeEmbeddingsJSON, accountprobe.ModeRerankJSON,
+			accountprobe.ModeImagesJSON,
+			accountprobe.ModeVideoCreate, accountprobe.ModeVideoGet,
+			accountprobe.ModeVideoContent, accountprobe.ModeVideoCancel,
+			accountprobe.ModeAudioSpeech, accountprobe.ModeAudioTranscriptionJSON,
+			accountprobe.ModeAudioJobCreate, accountprobe.ModeAudioJobGet,
+			accountprobe.ModeAudioJobContent, accountprobe.ModeAudioJobCancel,
+			accountprobe.ModeRealtimeSession:
 			modes[accountprobe.EndpointMode(text)] = true
 		}
 	}

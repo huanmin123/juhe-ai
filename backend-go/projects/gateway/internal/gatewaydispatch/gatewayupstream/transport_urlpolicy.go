@@ -12,17 +12,22 @@ package gatewayupstream
 //   - a localhost name or a private/reserved IP literal fails with the
 //     static UnsafeUpstreamURLError unless the origin is allowlisted or the
 //     deployment explicitly allowed private base URLs;
-//   - a hostname target resolves with all-addresses semantics and every
-//     resolved address must clear the blocked-range tables, otherwise the
-//     resolved variant of the error is produced (the attempt engine marks
-//     the account temporary-unavailable, attemptoutcomes.go);
-//   - the dial side pins through sharedupstreamhttp.DialGuard so every new
-//     connection is established against a validated address.
+//   - in strict mode, a hostname target resolves and is accepted when at
+//     least one resolved address clears the blocked-range tables (mixed
+//     public/blocked answers pass); only an all-blocked resolution produces
+//     the resolved variant of the error (the attempt engine marks the account
+//     temporary-unavailable, attemptoutcomes.go);
+//   - in strict mode, the dial side pins through sharedupstreamhttp.DialGuard
+//     so every locally selected socket address is established against a
+//     validated address; local-resolution SOCKS5 only sends a validated
+//     CONNECT target, while socks5h keeps remote resolution.
 //
-// Deviation (allowlisted hostname resolution): the archive still resolves an
-// allowlisted hostname at prepare time only to pin the lookup result; the Go
-// dial guard re-validates at the connection boundary anyway, so the prepare
-// step skips that redundant lookup for allowlisted origins.
+// Permissive targets (allowlisted origin or AllowPrivateBaseUrls) keep the
+// archive's historical behavior: prepare-time validation short-circuits
+// without DNS and the connection boundary uses the plain dialer, so a
+// deployment that explicitly allows private upstreams does not acquire a new
+// resolver dependency. Strict targets are resolved at prepare time with
+// allow-mixed semantics and re-resolved/pinned by DialGuard at dial time.
 
 import (
 	"context"
@@ -89,10 +94,11 @@ func (p *ResolvedUpstreamURLPolicy) PrepareSafeUpstreamRequestURL(ctx context.Co
 		}
 	}
 	// Resolve half (archive: lookup(host, {all: true, verbatim: true}) with
-	// the fixed-lookup pin): IP-literal URLs skip DNS; hostname targets go
-	// through the guard, which resolves and validates every address. The
-	// guard skips the range rejection for allowlisted hosts / allowPrivate
-	// while keeping the same resolution path.
+	// the fixed-lookup pin): IP-literal URLs skip DNS; strict hostname targets
+	// go through the guard, which accepts them when at least one resolved
+	// address is dialable (mixed answers pass; all-blocked answers are
+	// rejected). Permissive targets (allowlisted host / AllowPrivateBaseUrls)
+	// short-circuit without resolution; their plain dial behavior is unchanged.
 	if net.ParseIP(host) == nil {
 		if err := p.guard.ValidateHost(ctx, host, parsed.Port()); err != nil {
 			var resolvedErr *sharedupstreamhttp.UnsafeResolvedUpstreamURLError

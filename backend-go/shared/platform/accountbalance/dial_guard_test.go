@@ -7,8 +7,11 @@ package accountbalance
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -88,5 +91,78 @@ func TestExecuteBalanceQueryAppliesDialGuard(t *testing.T) {
 	}
 	if result.Snapshot.RemainingUSD == "" {
 		t.Fatalf("permissive guard snapshot missing remaining: %#v", result.Snapshot)
+	}
+}
+
+// dialGuardScriptedResolver drives ValidateHost's DNS branch deterministically.
+type dialGuardScriptedResolver struct {
+	addresses []net.IPAddr
+}
+
+func (r *dialGuardScriptedResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return r.addresses, nil
+}
+
+// dialGuardMockDoer counts upstream requests without opening a socket.
+type dialGuardMockDoer struct {
+	hits int
+}
+
+func (d *dialGuardMockDoer) Do(*http.Request) (*http.Response, error) {
+	d.hits++
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"remaining":"12.5"}`)),
+	}, nil
+}
+
+// TestExecuteBalanceQueryMixedResolution is the W55 regression at the balance
+// consumer: a polluted resolver answer that mixes a public A record with the
+// blocked Teredo AAAA must reach the upstream, while an all-blocked answer must
+// still fail with upstream_blocked before any request is sent.
+func TestExecuteBalanceQueryMixedResolution(t *testing.T) {
+	secret := "dial-guard-mixed-secret"
+	input := dialGuardTestInput(t, secret, "https://rebind.example")
+	now := time.Now
+	doer := &dialGuardMockDoer{}
+	resolver := &dialGuardScriptedResolver{addresses: []net.IPAddr{
+		{IP: net.ParseIP("31.13.112.4")},
+		{IP: net.ParseIP("2001::68f4:2eb9")},
+	}}
+	options := QueryOptions{
+		Secret:    secret,
+		Client:    doer,
+		Now:       func() time.Time { return now() },
+		DialGuard: upstreamhttp.NewDialGuard(upstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: false}, resolver, nil),
+	}
+
+	result, err := ExecuteBalanceQuery(context.Background(), input, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ErrorCode != "" || result.Adapter != Adapter("custom") {
+		t.Fatalf("mixed resolution must keep the query: %#v", result)
+	}
+	if doer.hits != 1 {
+		t.Fatalf("mixed resolution upstream hits = %d, want 1", doer.hits)
+	}
+	if result.Snapshot.RemainingUSD == "" {
+		t.Fatalf("mixed resolution snapshot missing remaining: %#v", result.Snapshot)
+	}
+
+	resolver.addresses = []net.IPAddr{{IP: net.ParseIP("2001::68f4:2eb9")}}
+	result, err = ExecuteBalanceQuery(context.Background(), input, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ErrorCode != "upstream_blocked" {
+		t.Fatalf("all-blocked error code = %q, want upstream_blocked", result.ErrorCode)
+	}
+	if result.Temporary {
+		t.Fatal("blocked target must not be classified as transient")
+	}
+	if doer.hits != 1 {
+		t.Fatalf("all-blocked upstream hits = %d, want the probe to stop before sending", doer.hits)
 	}
 }

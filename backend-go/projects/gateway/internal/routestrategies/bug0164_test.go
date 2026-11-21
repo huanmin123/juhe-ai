@@ -927,8 +927,12 @@ func TestRouteStrategyPGFilterSQLContract(t *testing.T) {
 		t.Fatalf("bindable groups query must join authorization tables: %s", lockQuery)
 	}
 	bindingQuery := pgStore.bindingRowColumns() + " " + pgStore.bindingRowFrom()
-	if !strings.Contains(bindingQuery, "resource_authorizations") || !strings.Contains(bindingQuery, "COALESCE(group_authorization_settings.enabled, 1)") {
-		t.Fatalf("binding rows must carry the authorized group_enabled branch: %s", bindingQuery)
+	// revision 28 起授权分组的 settings 缺失必须 fail-closed（默认 0），
+	// 并要求快照已建立，才允许该绑定参与调度。
+	if !strings.Contains(bindingQuery, "resource_authorizations") ||
+		!strings.Contains(bindingQuery, "COALESCE(group_authorization_settings.enabled, 0)") ||
+		!strings.Contains(bindingQuery, "snapshot_revision") {
+		t.Fatalf("binding rows must carry the fail-closed authorized group_enabled branch: %s", bindingQuery)
 	}
 	// UTF-16 length helper parity with String.length.
 	if utf16CodeUnits("\U0001F600") != 2 || utf16CodeUnits("aé") != 2 {

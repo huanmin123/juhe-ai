@@ -73,6 +73,7 @@
       v-if="batchEditOpen"
       v-model:open="batchEditOpen"
       :accounts="selectedAccounts"
+      :capability-domain="capabilityDomain"
       :is-management-view="isManagementView"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
@@ -180,6 +181,7 @@
       :result="testResult"
       :running="testRunning"
       :test-endpoint-modes="testEndpointModes"
+      :test-kind="testKind"
       v-model:test-endpoint-mode="testForm.testEndpointMode"
       @close="closeTestModal"
       @copy-result="copyText"
@@ -337,7 +339,6 @@ import {
   accountTableScrollY,
   buildAccountTableColumns,
   accountColumnSortOrder as resolveAccountColumnSortOrder,
-  tableColumnKey,
 } from './accountTableColumns'
 import { ACCOUNT_CAPABILITY_DOMAINS, DOMAIN_MODEL_MODES, capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import { prefetchMediaDomainModelAvailability } from './mediaDomainModelAvailability'
@@ -411,11 +412,7 @@ const capabilityDomain = computed<AccountCapabilityDomain>(() => {
     ? value
     : 'chat'
 })
-const isChatDomain = computed(() => capabilityDomain.value === 'chat')
 
-// 媒体域（video/audio/image）裁剪对话专属列：优先级（域内高级调度按 M3 另行立项）
-// 与时间计划（对话专属语义，见计划 D7）；状态/供应商/分组/标签/并发等通用列保留。
-const MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS: ReadonlySet<string> = new Set(['priority', 'availabilitySchedule'])
 const {
   loading,
   accounts,
@@ -885,14 +882,10 @@ async function queryBalanceFromEdit(): Promise<void> {
   }
 }
 
-const rawColumns = computed(() => {
-  const columns = buildAccountTableColumns(
-    isManagementView.value,
-    (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
-  )
-  if (isChatDomain.value) return columns
-  return columns.filter((column) => !MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS.has(tableColumnKey(column)))
-})
+const rawColumns = computed(() => buildAccountTableColumns(
+  isManagementView.value,
+  (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
+))
 const columnStorageKey = computed(() => (isManagementView.value ? 'accounts:management' : 'accounts:self'))
 const {
   managedColumns,
@@ -903,14 +896,7 @@ const {
   requiredKeys: ['name'],
   minVisible: 1
 })
-const tableScrollX = computed(() => {
-  const base = accountTableScrollX(isManagementView.value)
-  if (isChatDomain.value) return base
-  const hiddenWidth = buildAccountTableColumns(isManagementView.value, () => null)
-    .filter((column) => MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS.has(tableColumnKey(column)))
-    .reduce((sum, column) => sum + (typeof column.width === 'number' ? column.width : 0), 0)
-  return base - hiddenWidth
-})
+const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
 
 function handleAccountTableChange(...args: unknown[]): void {
@@ -958,16 +944,14 @@ const batchEditableAccounts = computed(() => selectedAccounts.value.filter(canBa
 const batchDisableTargets = computed(() => selectedAccounts.value
   .filter(canToggleAccountStatus)
   .filter((account) => account.status !== 'disabled'))
-// 媒体域不开放批量编辑：批量弹窗含检查模型/检查请求形态/错误策略/请求覆盖等对话专属
-// 批量字段入口，域内裁剪需改 AccountBatchEditModal（不在本任务文件边界内），先在入口门控。
+// 批量编辑对全部能力域开放：批量弹窗按域裁剪对话专属字段（检查模型/检查形态、
+// 响应检查、请求覆盖），媒体域保留通用调度与模型配置。
 const batchEditDisabled = computed(() => (
-  !isChatDomain.value
-  || selectedAccounts.value.length < 2
+  selectedAccounts.value.length < 2
   || selectedAccounts.value.length > 100
   || batchEditableAccounts.value.length !== selectedAccounts.value.length
 ))
 const batchEditDisabledReason = computed(() => {
-  if (!isChatDomain.value) return '批量编辑当前仅在对话账户提供'
   if (selectedAccounts.value.length < 2) return '至少选择 2 个账户'
   if (selectedAccounts.value.length > 100) return '一次最多编辑 100 个账户'
   if (batchEditableAccounts.value.length !== selectedAccounts.value.length) {
@@ -1172,7 +1156,8 @@ async function refreshAccountModelCatalog(): Promise<void> {
     })
     const allowedProtocolModels = new Set(providerModelsForProtocolProfile(
       allowedDomainOptions.data,
-      selectedProtocolProfile.value
+      selectedProtocolProfile.value,
+      form.type
     ).map((option) => option.value))
     const allowedAddedModels = result.addedModels.filter((model) => allowedProtocolModels.has(model))
     form.supportedModels = [...new Set([
@@ -1345,6 +1330,7 @@ const {
   stopAccountTest,
   testEndpointModes,
   testForm,
+  testKind,
   testModalOpen,
   testModelOptions,
   testModelOptionsTruncated,

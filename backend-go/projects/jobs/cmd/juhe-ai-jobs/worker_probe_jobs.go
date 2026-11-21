@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/connectivityhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
@@ -138,6 +139,28 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return jobsched.TaskResult{}, cooldown.Scan(taskCtx)
 	})
 
+	// 非对话账户连通性健康检查（连接测试通道，独立于 J1 模型检查）：
+	// 媒体域全部 + chat 域只声明非对话形态的账户。请求构造与判定复用
+	// accountprobe 连接测试入口（《AI账户检查模型与人工测试设计》测试方式分层）。
+	connectivityRunner, connectivityErr := connectivityhealth.NewRunner(connectivityhealth.Config{
+		DB:           business.db,
+		Reader:       store,
+		Prober:       probeService,
+		StateVersion: a.accountStateVersionBumper(),
+		Logger:       a.logger,
+		Concurrency:  a.config.ProbeConcurrency,
+	})
+	if connectivityErr != nil {
+		a.registerDisabledJob("account-connectivity-health", "连通性健康检查装配失败："+connectivityErr.Error())
+	} else {
+		a.scheduleWiredJob("account-connectivity-health", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+			if _, err := connectivityRunner.Run(taskCtx); err != nil {
+				return jobsched.TaskResult{}, err
+			}
+			return jobsched.TaskResult{}, nil
+		})
+	}
+
 	// 保存探针族句柄供账户电路族恢复解析复用，并接线账户电路族
 	// （control-plane maintenance + circuit recovery）。
 	a.probeRepoStore = store
@@ -244,6 +267,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 func (a *workerAssembly) registerProbeFamilyDisabled(reason string) {
 	a.registerDisabledJob("account-quality-refresh", reason)
 	a.registerDisabledJob("account-api-key-cooldown-retest", reason)
+	a.registerDisabledJob("account-connectivity-health", reason)
 	a.registerDisabledJob("normal-route-speed-first-recovery-probe", reason)
 	a.registerDisabledJob("account-circuit-control-plane-maintenance", "同探针族失败："+reason)
 	a.registerDisabledJob("account-circuit-recovery", "同探针族失败："+reason)

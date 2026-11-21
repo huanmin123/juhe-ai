@@ -155,7 +155,7 @@
       hint="自动生成 · 跟随 Base URL"
       required
     />
-    <a-form-item v-if="variant !== 'media'" required>
+    <a-form-item required>
       <template #label>
         <div class="supported-models-label">
           <span>支持模型</span>
@@ -194,9 +194,12 @@
           </template>
         </a-select>
       </div>
+      <div v-if="modelsSettled && !modelsLoading && modelOptions.length === 0" class="supported-models-empty-hint">
+        该供应商在此域暂无可用目录模型
+      </div>
     </a-form-item>
     <AccountHealthCheckModelField
-      v-if="variant !== 'media'"
+      v-if="!connectionTest"
       :editing="editing"
       :form="form"
       :model-options="modelOptions"
@@ -218,6 +221,7 @@ import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHin
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { normalizedAccountApiKeys } from './accountCredentials'
+import { accountUsesConnectionTest } from './accountCapabilityDomains'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountNameField from './AccountNameField.vue'
 
@@ -231,6 +235,8 @@ const props = withDefaults(defineProps<{
   modelOptions: AccountModelSelectOption[]
   modelSyncing?: boolean
   modelsLoading: boolean
+  /** 模型候选已完成一次取数（加载成功或失败）；用于域内空目录提示。 */
+  modelsSettled?: boolean
   /** 最近一次浏览取数命中 50 条窗口时在下拉面板底部提示可搜索。 */
   modelsTruncated?: boolean
   protocolCode?: string
@@ -238,10 +244,7 @@ const props = withDefaults(defineProps<{
   /** 当前选择的上游供应商代码（anthropic/gpt/glm 等），决定 Base URL 帮助展示哪家供应商的说明。 */
   providerCode?: string
   title: string
-  /** media 变体（M2 媒体域三段式）：只渲染凭据块，支持模型/检查模型由三段式段2承接。 */
-  variant?: 'chat' | 'media'
 }>(), {
-  variant: 'chat'
 })
 
 defineEmits<{
@@ -279,6 +282,10 @@ const baseUrlHelp = computed(() => ({
 }))
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)
+// 连接测试账户（媒体域与输入型 chat 账户）不渲染「检查模型/检查请求形态」：
+// 测试只验证凭证与上游可达性，健康三件套由后端派生。
+const connectionTest = computed(() =>
+  accountUsesConnectionTest(props.form.capabilityDomain, props.form.supportedEndpointModes))
 const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const isFailoverMode = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'failover')
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
@@ -665,6 +672,13 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 .supported-models-control :deep(.ant-select) {
   flex: 1;
   min-width: 0;
+}
+
+.supported-models-empty-hint {
+  margin-top: 6px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .supported-models-refresh-button {

@@ -52,8 +52,8 @@ func TestNormalizeDraftSnapshotRejectsInvalidEnums(t *testing.T) {
 		{"healthCheckEndpointMode 外来值", func(record map[string]any) {
 			record["healthCheckEndpointMode"] = "chat_xml"
 		}},
-		{"healthCheckEndpointMode 非健康检查形态", func(record map[string]any) {
-			record["healthCheckEndpointMode"] = "count_tokens"
+		{"healthCheckEndpointMode 词表外形态", func(record map[string]any) {
+			record["healthCheckEndpointMode"] = "bogus_mode"
 		}},
 	}
 	for _, testCase := range cases {

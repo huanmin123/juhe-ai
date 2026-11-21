@@ -2,6 +2,7 @@ import type { AccountSupportedEndpointMode, AccountType, ProviderDefinition } fr
 import type { AccountFormModel } from './accountFormTypes'
 import { GEMINI_NATIVE_V1BETA_PROFILE_ID, isGeminiProviderCode, isGlmProviderCode, isGptVendorCode, isMinimaxProviderCode, isQwenProviderCode, isVolcengineProviderCode, isXaiProviderCode } from '@/shared/providerProtocol'
 import { defaultEndpointModesForAccount, endpointModesForProfile, type AccountProviderProfileLike } from './accountProviderCapabilities'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 
 // AI 账户能力域拆分（docs/plans/计划-20261011T141004000Z-AI账户能力域拆分.md
 // §域枚举与语义 / §D6 三集合模型 / §M1 清单「前端：域常量 + 推导镜像 + 三集合常量」）。
@@ -30,8 +31,10 @@ export const ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION = 1
 // 「对话 modes 集合」（锚定义，前后端镜像）：命中任一值即视为具备对话能力，
 // 规则②③④的前置条件「不含对话 modes」被否决，账户归入对话域。
 // v8-A 对话域纯粹化：audio_transcription_json 与 realtime_session 移出对话域
-// （归音频域），锚集合 15 值收敛为 13 值；images_json 本就不在锚集且 v8-A 后
-// 对话域不再追加共享（存量共享、新增隔离）。
+// （归音频域），锚集合 15→13；images_json 本就不在锚集且 v8-A 后
+// 对话域不再追加共享（存量共享、新增隔离）。2026-11-20 向量/重排协议补齐批
+// 增补 embeddings_json / rerank_json（与后端 capabilitydomain.chatModes
+// 同步，13→15）——两者是文本 lane 的非对话协议，不新增能力域。
 export const DOMAIN_ENDPOINT_MODES_CHAT: readonly AccountSupportedEndpointMode[] = [
   'chat_json',
   'chat_sse',
@@ -45,7 +48,9 @@ export const DOMAIN_ENDPOINT_MODES_CHAT: readonly AccountSupportedEndpointMode[]
   'interactions_sse',
   'count_tokens',
   'embed_content',
-  'message_token_counting'
+  'message_token_counting',
+  'embeddings_json',
+  'rerank_json'
 ]
 
 // 规则②③④的媒体触发集合（整组声明语义：视频四值、长音频四值按组出现）。
@@ -70,17 +75,18 @@ export const DOMAIN_ENDPOINT_MODES_IMAGE: readonly AccountSupportedEndpointMode[
 
 /**
  * 域→目录 mode 白名单（v8-C 模型选择器按域过滤根治）：四域允许选出的
- * `provider_model_catalog.mode` 六值词表值（与 model_catalog_data_gen.go
- * 种子及服务端 `ProviderCatalogModeValues` 同源）：chat={chat,responses}；
- * video={video}；audio={audio}（含 TTS/转写/realtime，目录统一 mode=audio）；
- * image={image_generation}。embedding 行不属于任何账户域，任何域都不放行。
+ * `provider_model_catalog.mode` 词表值（与 model_catalog_data_gen.go
+ * 种子及服务端 `ProviderCatalogModeValues` 同源）：chat={chat,responses,
+ * embedding,rerank}（向量/重排是对话域内的文本 lane，2026-11-20 协议补齐批
+ * 纳入，账户能力集合与模型选择同域）；video={video}；audio={audio}（含
+ * TTS/转写/realtime，目录统一 mode=audio）；image={image_generation}。
  * 自定义表 `custom_provider_models.mode` 是另一套四值 UI 分类词表
  * （text/image/audio/video，写入枚举固定），服务端按表翻译后过滤
  * （chat/responses→text、image_generation→image、audio/video 同形，
- * BUG-0324）：调用方始终传本表六值，不做本地换算。
+ * BUG-0324）：调用方始终传本表值，不做本地换算。
  */
 export const DOMAIN_MODEL_MODES: Record<AccountCapabilityDomain, readonly string[]> = {
-  chat: ['chat', 'responses'],
+  chat: ['chat', 'responses', 'embedding', 'rerank'],
   video: ['video'],
   audio: ['audio'],
   image: ['image_generation']
@@ -140,7 +146,7 @@ export type AccountCapabilityDeclaredSet = {
 // 媒体域（video/audio/image）的域 modes 集按「域×供应商合法矩阵」显式枚举，
 // 不依赖词表推断——矩阵依据是媒体设计供应商盘点表的「已实施」adapter + 写侧校验
 // + 凭据要求（计划 §域×供应商合法矩阵）。chat 域不枚举供应商：允许集 =
-// 13 值对话 modes 锚集合 ∩ 供应商词表（v8-A 后不追加 images_json，存量共享、
+// 15 值对话 modes 锚集合 ∩ 供应商词表（v8-A 后不追加 images_json，存量共享、
 // 新增隔离），minimax 等纯媒体词表求交后自然为空集（无 chat 域）。
 
 /** 媒体域供应商矩阵行（与计划矩阵行一一对应；deepseek/anthropic 与 gemini OpenAI Chat 档案无媒体行）。 */
@@ -212,9 +218,10 @@ function isGeminiProtocolKind(profile?: AccountProviderProfileLike): boolean {
 
 function intersectWithProviderVocabulary(
   modes: readonly AccountSupportedEndpointMode[],
-  profile?: AccountProviderProfileLike
+  profile?: AccountProviderProfileLike,
+  accountType?: AccountType
 ): AccountSupportedEndpointMode[] {
-  const vocabulary = new Set(endpointModesForProfile(profile))
+  const vocabulary = new Set(endpointModesForProfile(profile, accountType))
   return modes.filter((mode) => vocabulary.has(mode))
 }
 
@@ -247,7 +254,7 @@ export function capabilityDomainAccountTypes(input: {
  * v8-A 对话域纯粹化：chat 域不再含 images_json / audio_transcription_json / realtime_session，
  * 音频域补后两项）。
  *
- * - chat 域 = 13 值对话锚集合 ∩ 供应商词表；纯媒体词表（minimax 等）求交后为
+ * - chat 域 = 15 值对话锚集合 ∩ 供应商词表；纯媒体词表（minimax 等）求交后为
  *   空集，即该供应商无 chat 域；被移出三项不属于对话域允许集。
  * - 媒体域按域×供应商矩阵取域 modes 集，再与词表求交；gpt/xai/anthropic 系 oauth
  *   不可媒体（账户类型门），gemini native `google_oauth` 在 video/audio 域可用。
@@ -265,7 +272,8 @@ export function allowedEndpointModesFor(input: {
   if (capabilityDomain === 'chat') {
     return intersectWithProviderVocabulary(
       [...DOMAIN_ENDPOINT_MODES_CHAT],
-      profile
+      profile,
+      input.accountType
     )
   }
   const allowedTypes = capabilityDomainAccountTypes({ capabilityDomain, providerCode: input.providerCode, profile })
@@ -277,7 +285,7 @@ export function allowedEndpointModesFor(input: {
     : capabilityDomain === 'audio'
       ? row.audio
       : row.image
-  return intersectWithProviderVocabulary(domainModes, profile)
+  return intersectWithProviderVocabulary(domainModes, profile, input.accountType)
 }
 
 /**
@@ -328,12 +336,12 @@ export function defaultEndpointModesForCapabilityDomain(input: {
 }
 
 /**
- * 媒体域新建账户 `health_check_endpoint_mode` 默认落值（生命周期定案表 v7）：
- * image→images_json、audio→audio_speech、video→video_create。各分支均为纯域
- * 常量（镜像后端 DefaultHealthCheckEndpointModeForDomain）：chat/image 域具备
- * 后台探针，音频/视频域账户无后台探针、该字段仅为记录值，一律不随域内默认集
- * 首值漂移——qwen 长音频默认集首值 audio_job_create 不是合法检查形态词表值，
- * 取它会导致保存被「已启用能力交集」校验阻断（R5）。
+ * 媒体域新建账户 `health_check_endpoint_mode` 的域常量偏好（生命周期定案表
+ * v7）：image→images_json、audio→audio_speech、video→video_create。2026-11-21
+ * 连接测试分层后，该字段是连接测试记录值，实际落值必须经
+ * defaultValidHealthCheckEndpointModeForCapabilityDomain 按声明集收敛：qwen
+ * 长音频只有 audio_job_*，直接落 audio_speech 会被后端「已启用能力交集」校验
+ * 阻断（R5）。
  */
 export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
   capabilityDomain: AccountCapabilityDomain
@@ -346,25 +354,77 @@ export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
   return 'chat_sse'
 }
 
-/** 媒体账户生命周期定案（v7）：新建表单默认 status 预选——chat=pending_test（现行），image/audio/video=active。 */
-export function defaultStatusForCapabilityDomain(capabilityDomain: AccountCapabilityDomain): AccountFormModel['status'] {
-  return capabilityDomain === 'chat' ? 'pending_test' : 'active'
+/**
+ * 按账户实际声明集解析媒体域健康检查形态：优先域默认值，不在声明集时取
+ * 首个合法值（如 qwen 音频只有 audio_job_*，域默认 audio_speech 不可用）。
+ * 返回 undefined 表示声明集没有可记录的检查形态（保存会由后端明确拒绝）。
+ */
+export function defaultValidHealthCheckEndpointModeForCapabilityDomain(input: {
+  capabilityDomain: AccountCapabilityDomain
+  endpointModes: readonly AccountSupportedEndpointMode[]
+}): AccountFormModel['healthCheckEndpointMode'] | undefined {
+  const preferred = defaultHealthCheckEndpointModeForCapabilityDomain({
+    capabilityDomain: input.capabilityDomain
+  })
+  const options = accountHealthCheckEndpointModeOptions(input.endpointModes)
+  if (options.some((option) => option.value === preferred)) return preferred
+  return options[0]?.value
 }
 
-/** 域是否媒体域（video/audio/image）：媒体域走精简三段式表单与 D7 清单表语义。 */
+/** 媒体账户新建表单默认 status：开启后台探测后所有域统一 pending_test，等待首次检查。 */
+export function defaultStatusForCapabilityDomain(_capabilityDomain: AccountCapabilityDomain): AccountFormModel['status'] {
+  return 'pending_test'
+}
+
+/** 域是否媒体域（video/audio/image）：媒体域供应商/类型按域矩阵过滤。 */
 export function capabilityDomainIsMedia(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
   return capabilityDomain === 'video' || capabilityDomain === 'audio' || capabilityDomain === 'image'
 }
 
-/**
- * 域是否不适用「后台自动探测」总开关（总开关设计 §2，2026-10-30 二轮复审裁决）：
- * 仅 video/audio——不参与对话健康检查状态机、无后台探测闭环；image 域存在激活
- * 检查、冷却恢复、电路/质量预检等真实后台探测（仅豁免 active 周期巡检），开关
- * 适用并显示「手动」标签。注意与 capabilityDomainIsMedia（媒体三段式表单布局
- * 语义，含 image）区分，二者不可互替。
- */
-export function capabilityDomainWithoutBackgroundProbe(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
-  return capabilityDomain === 'video' || capabilityDomain === 'audio'
+// ---- 账户测试方式（2026-11-21 定案，与后端 capabilitydomain.TestKind* 镜像） ----
+
+/** model = 真实对话生成形态，需要模型 + 请求形态；connection = 只验证凭证与上游可达性。 */
+export type AccountTestKind = 'model' | 'connection'
+
+/** 真实对话生成形态（chatModes 去掉 count_tokens/embed_content/message_token_counting/embeddings_json/rerank_json）。 */
+export const MODEL_TEST_ENDPOINT_MODES: readonly AccountSupportedEndpointMode[] = [
+  'chat_json',
+  'chat_sse',
+  'responses_json',
+  'responses_sse',
+  'messages_json',
+  'messages_sse',
+  'generate_content_json',
+  'generate_content_sse',
+  'interactions_json',
+  'interactions_sse'
+]
+
+const MODEL_TEST_ENDPOINT_MODE_SET = new Set<string>(MODEL_TEST_ENDPOINT_MODES)
+
+export function testKindForEndpointModes(
+  modes: ReadonlyArray<AccountSupportedEndpointMode | string>
+): AccountTestKind {
+  return modes.some((mode) => MODEL_TEST_ENDPOINT_MODE_SET.has(mode)) ? 'model' : 'connection'
+}
+
+/** 账户测试方式：媒体域恒连接测试；chat 域按声明形态判定。 */
+export function testKindForAccount(
+  capabilityDomain: AccountCapabilityDomain | undefined,
+  modes: ReadonlyArray<AccountSupportedEndpointMode | string>
+): AccountTestKind {
+  if (capabilityDomain === 'video' || capabilityDomain === 'audio' || capabilityDomain === 'image') {
+    return 'connection'
+  }
+  return testKindForEndpointModes(modes)
+}
+
+/** 账户是否走连接测试（媒体域或只声明输入型形态的 chat 账户）。 */
+export function accountUsesConnectionTest(
+  capabilityDomain: AccountCapabilityDomain | undefined,
+  modes: ReadonlyArray<AccountSupportedEndpointMode | string>
+): boolean {
+  return testKindForAccount(capabilityDomain, modes) === 'connection'
 }
 
 /**

@@ -51,6 +51,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
@@ -1002,6 +1003,9 @@ type chainMediaJobAccount struct {
 	// 池 > source 代理 > 实例自身直接代理，实例自身的池绑定不参与；普通账户
 	// 用自身池/代理。池绑定出站走当前租约成员 URL（只读解析，不修复租约）。
 	SourceAccountID string
+	// AuthorizationID 是授权实例的 runtime id（空 = 普通账户）。任务轮询
+	// 必须重新校验 runtime/source/接受修订，不能只凭账户行状态。
+	AuthorizationID string
 	ProxyPoolID     string
 	SourceProfileID string
 	SourcePoolID    string
@@ -1028,6 +1032,7 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 		COALESCE(accounts.cooldown_until, ''), COALESCE(accounts.credentials_encrypted, ''), COALESCE(accounts.deleted_at, ''),
 		COALESCE(accounts.proxy_profile_id, ''),
 		COALESCE(accounts.authorization_instance_source_account_id, ''),
+		COALESCE(accounts.authorization_instance_authorization_id, ''),
 		COALESCE(accounts.proxy_pool_id, ''),
 		COALESCE(src.proxy_profile_id, ''),
 		COALESCE(src.proxy_pool_id, '')
@@ -1040,7 +1045,7 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 		&healthCheckPreset, &account.ProtocolCode, &account.ProtocolVersion,
 		&account.Type, &account.Status, &account.CapabilityDomain, &account.HealthCheckEndpointMode,
 		&account.CooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID,
-		&account.SourceAccountID, &account.ProxyPoolID, &account.SourceProfileID, &account.SourcePoolID); err != nil {
+		&account.SourceAccountID, &account.AuthorizationID, &account.ProxyPoolID, &account.SourceProfileID, &account.SourcePoolID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1061,6 +1066,146 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	account.Credentials = credentials
 	account.BaseURL = chainBaseURLOf(credentials, account.ProtocolCode, account.ProtocolVersion)
 	return &account, nil
+}
+
+// authorizationInstanceAllowed re-checks the recipient-consent runtime gate
+// for media job polling: runtime active, effective source active, accepted
+// revision equals the current source account revision.
+func (m *mediaJobsRuntime) authorizationInstanceAllowed(ctx context.Context, runtimeID, sourceAccountID, granteeID string) (bool, error) {
+	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sourceAccountID) == "" {
+		return false, nil
+	}
+	var status, resourceID, effectiveType, effectiveTeam string
+	var runtimeGrantee string
+	err := m.db.QueryRowContext(ctx, `SELECT status, resource_id, grantee_system_account_id,
+			COALESCE(effective_source_type, ''), COALESCE(effective_source_team_id, '')
+		FROM juhe_business.resource_authorizations WHERE id = ?`, runtimeID).
+		Scan(&status, &resourceID, &runtimeGrantee, &effectiveType, &effectiveTeam)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if status != "active" || runtimeGrantee != granteeID || resourceID != sourceAccountID ||
+		(effectiveType != "manual" && effectiveType != "team") {
+		return false, nil
+	}
+	var acceptedRevision string
+	var acceptedVersion, revisionVersion int
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err = m.db.QueryRowContext(ctx, `SELECT COALESCE(s.accepted_source_revision, ''),
+			COALESCE(s.accepted_source_revision_version, 0), s.revision_version
+		FROM juhe_business.resource_authorization_sources s
+		JOIN juhe_business.resource_authorization_grants g ON g.id = s.grant_id
+		JOIN juhe_business.resource_authorizations ra ON ra.id = s.authorization_id
+		WHERE s.authorization_id = ? AND s.status = 'active'
+		  AND ra.status = 'active'
+		  AND (COALESCE(ra.expires_at, '') = '' OR ra.expires_at > ?)
+		  AND g.status = 'active'
+		  AND (COALESCE(g.expires_at, '') = '' OR g.expires_at > ?)
+		  AND ((? = 'manual' AND s.source_type = 'manual')
+		    OR (? = 'team' AND s.source_type = 'team' AND s.source_team_id = ?))
+		LIMIT 1`, runtimeID, now, now, effectiveType, effectiveType, effectiveTeam).
+		Scan(&acceptedRevision, &acceptedVersion, &revisionVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	current, version, _, err := authzrevision.Compute(ctx, m.db, sourceAccountID, m.secret)
+	if err != nil {
+		return false, err
+	}
+	return acceptedRevision == current && acceptedVersion == revisionVersion && version == revisionVersion, nil
+}
+
+// groupAuthorizationAllowed re-checks a group-source media task at poll time.
+// Group-authorized media tasks use the owner's source account (no instance row),
+// so the instance gate above cannot see them. The task snapshot freezes the
+// group authorization id/owner; re-validate runtime → parent grant → source
+// revision → settings switch → snapshot membership on every poll.
+func (m *mediaJobsRuntime) groupAuthorizationAllowed(ctx context.Context, authorizationID, groupID, ownerID, granteeID, sourceAccountID string) (bool, error) {
+	authorizationID = strings.TrimSpace(authorizationID)
+	groupID = strings.TrimSpace(groupID)
+	ownerID = strings.TrimSpace(ownerID)
+	granteeID = strings.TrimSpace(granteeID)
+	sourceAccountID = strings.TrimSpace(sourceAccountID)
+	if authorizationID == "" || groupID == "" || ownerID == "" || granteeID == "" || sourceAccountID == "" {
+		return false, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var status, resourceType, resourceID, runtimeGrantee, effectiveType, effectiveTeam string
+	var expiresAt string
+	err := m.db.QueryRowContext(ctx, `SELECT status, resource_type, resource_id, grantee_system_account_id,
+			COALESCE(effective_source_type, ''), COALESCE(effective_source_team_id, ''),
+			COALESCE(expires_at, '')
+		FROM juhe_business.resource_authorizations WHERE id = ?`, authorizationID).
+		Scan(&status, &resourceType, &resourceID, &runtimeGrantee, &effectiveType, &effectiveTeam, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if status != "active" || resourceType != "group" || resourceID != groupID || runtimeGrantee != granteeID ||
+		(effectiveType != "manual" && effectiveType != "team") ||
+		(expiresAt != "" && expiresAt <= now) {
+		return false, nil
+	}
+	// settings/group owner switch + snapshot account membership.
+	var settingsEnabled int
+	var snapshotRevision, settingsGroup, settingsGrantee string
+	err = m.db.QueryRowContext(ctx, `SELECT enabled, COALESCE(snapshot_revision, ''), group_id, system_account_id
+		FROM juhe_business.group_authorization_settings WHERE authorization_id = ? LIMIT 1`, authorizationID).
+		Scan(&settingsEnabled, &snapshotRevision, &settingsGroup, &settingsGrantee)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// group_authorization_settings.system_account_id is the receiver
+	// (runtime.grantee_system_account_id), not the group owner. The group owner
+	// is still enforced by the caller and by the group_accounts membership join.
+	if settingsEnabled != 1 || snapshotRevision == "" || settingsGroup != groupID || settingsGrantee != granteeID {
+		return false, nil
+	}
+	var memberCount int
+	if err := m.db.QueryRowContext(ctx, `SELECT count(*)
+		FROM juhe_business.resource_authorization_group_accounts snap
+		JOIN juhe_business.group_accounts ga
+		  ON ga.account_id = snap.account_id AND ga.group_id = ? AND ga.enabled = 1
+		 AND ga.system_account_id = ?
+		WHERE snap.authorization_id = ? AND snap.account_id = ?`,
+		groupID, ownerID, authorizationID, sourceAccountID).Scan(&memberCount); err != nil {
+		return false, err
+	}
+	if memberCount == 0 {
+		return false, nil
+	}
+	var acceptedRevision string
+	var acceptedVersion, revisionVersion int
+	err = m.db.QueryRowContext(ctx, `SELECT COALESCE(s.accepted_source_revision, ''),
+			COALESCE(s.accepted_source_revision_version, 0), s.revision_version
+		FROM juhe_business.resource_authorization_sources s
+		JOIN juhe_business.resource_authorization_grants g ON g.id = s.grant_id
+		WHERE s.authorization_id = ? AND s.status = 'active'
+		  AND g.status = 'active'
+		  AND (COALESCE(g.expires_at, '') = '' OR g.expires_at > ?)
+		  AND ((? = 'manual' AND s.source_type = 'manual')
+		    OR (? = 'team' AND s.source_type = 'team' AND s.source_team_id = ?))
+		LIMIT 1`, authorizationID, now, effectiveType, effectiveType, effectiveTeam).
+		Scan(&acceptedRevision, &acceptedVersion, &revisionVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	current := authzrevision.Group(m.secret, groupID, ownerID)
+	return acceptedRevision == current && acceptedVersion == revisionVersion && revisionVersion == authzrevision.Version, nil
 }
 
 // mediaAccountsTable 限定 accounts 表名（juhe_business schema）。
@@ -1726,6 +1871,41 @@ func (c *gatewayChain) loadMediaVideoAccount(ctx context.Context, res *gatewaypr
 	if account == nil || account.Deleted || !chainMediaJobAccountPollEligible(account, record, time.Now().UTC()) {
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务账户不可用（已删除或禁用）", "media_job_unreachable")
 		return nil
+	}
+	if strings.TrimSpace(account.AuthorizationID) != "" {
+		allowed, gateErr := c.mediaJobs.authorizationInstanceAllowed(ctx, account.AuthorizationID,
+			account.SourceAccountID, account.OwnerSystemAccountID)
+		if gateErr != nil {
+			c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "校验媒体任务授权失败", "internal_error")
+			return nil
+		}
+		if !allowed {
+			c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务授权不可用", "media_job_unreachable")
+			return nil
+		}
+	} else if snapshot := record.RequestSnapshot; snapshot.GroupAuthorizationID != "" ||
+		snapshot.GroupAccessType == "group_authorized" {
+		// Group-authorized tasks use the group owner's source account, which has
+		// no instance row. Re-check the group snapshot and accepted revision on
+		// every poll instead of trusting the frozen creation-time snapshot.
+		sourceAccountID := account.SourceAccountID
+		if sourceAccountID == "" {
+			sourceAccountID = account.ID
+		}
+		if account.OwnerSystemAccountID != snapshot.GroupOwnerSystemAccountID {
+			c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务授权不可用", "media_job_unreachable")
+			return nil
+		}
+		allowed, gateErr := c.mediaJobs.groupAuthorizationAllowed(ctx, snapshot.GroupAuthorizationID,
+			snapshot.GroupID, snapshot.GroupOwnerSystemAccountID, apiKeyOwnerSystemAccountIDOf(req), sourceAccountID)
+		if gateErr != nil {
+			c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "校验媒体任务授权失败", "internal_error")
+			return nil
+		}
+		if !allowed {
+			c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务授权不可用", "media_job_unreachable")
+			return nil
+		}
 	}
 	if chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode) == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务账户供应商暂不支持该种类媒体任务面", "media_job_unreachable")

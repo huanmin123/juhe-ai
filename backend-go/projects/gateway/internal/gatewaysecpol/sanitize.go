@@ -11,19 +11,23 @@ import (
 
 // endpointFamily 词表（设计 §5 字段清单按协议族展开）。
 const (
-	FamilyOpenAIChat      = "openai_chat"
-	FamilyOpenAIResponses = "openai_responses"
-	FamilyAnthropic       = "anthropic"
-	FamilyGemini          = "gemini"
-	FamilyMedia           = "media"
+	FamilyOpenAIChat       = "openai_chat"
+	FamilyOpenAIResponses  = "openai_responses"
+	FamilyOpenAIEmbeddings = "openai_embeddings"
+	FamilyOpenAIRerank     = "openai_rerank"
+	FamilyAnthropic        = "anthropic"
+	FamilyGemini           = "gemini"
+	FamilyMedia            = "media"
 )
 
 var knownFamilies = map[string]bool{
-	FamilyOpenAIChat:      true,
-	FamilyOpenAIResponses: true,
-	FamilyAnthropic:       true,
-	FamilyGemini:          true,
-	FamilyMedia:           true,
+	FamilyOpenAIChat:       true,
+	FamilyOpenAIResponses:  true,
+	FamilyOpenAIEmbeddings: true,
+	FamilyOpenAIRerank:     true,
+	FamilyAnthropic:        true,
+	FamilyGemini:           true,
+	FamilyMedia:            true,
 }
 
 // SanitizeResult 是单次出站脱敏的产物（设计 §2）。
@@ -74,6 +78,10 @@ func SanitizeBody(p *CompiledPolicy, body []byte, endpointFamily string) Sanitiz
 		walkOpenAIChat(ctx, object)
 	case FamilyOpenAIResponses:
 		walkOpenAIResponses(ctx, object)
+	case FamilyOpenAIEmbeddings:
+		walkOpenAIEmbeddings(ctx, object)
+	case FamilyOpenAIRerank:
+		walkOpenAIRerank(ctx, object)
 	case FamilyAnthropic:
 		walkAnthropic(ctx, object)
 	case FamilyGemini:
@@ -447,5 +455,58 @@ func walkMedia(ctx *sanitizeContext, root *orderedObject) {
 		if text, ok := instance.get("prompt").(string); ok {
 			instance.set("prompt", ctx.sanitizeText(text))
 		}
+	}
+}
+
+// walkOpenAIEmbeddings 扫描 OpenAI Embeddings 请求的文本输入：input 允许
+// string、string[] 或 token ID 数组（[number[]] / number[]）。只处理文本
+// 叶子与多模态 input[] 中的 text 字段，token ID 数组与非文本字段原样保留。
+// 向量响应没有可还原的文本字段，§6.2 的占位符提示不注入本族。
+func walkOpenAIEmbeddings(ctx *sanitizeContext, root *orderedObject) {
+	switch input := root.get("input").(type) {
+	case string:
+		root.set("input", ctx.sanitizeText(input))
+	case []any:
+		for index, item := range input {
+			switch value := item.(type) {
+			case string:
+				input[index] = ctx.sanitizeText(value)
+			case *orderedObject:
+				if text, ok := value.get("text").(string); ok {
+					value.set("text", ctx.sanitizeText(text))
+				}
+			}
+		}
+		root.set("input", input)
+	}
+}
+
+// walkOpenAIRerank 扫描重排请求的用户文本：Cohere/Jina 形态的顶层
+// query/documents[]（string 或 {text}），以及 qwen DashScope 转换后的
+// input.{query,documents[]} 形态。model/top_n/return_documents 等控制字段
+// 不扫描；重排响应同样没有可还原文本，§6.2 提示不注入本族。
+func walkOpenAIRerank(ctx *sanitizeContext, root *orderedObject) {
+	walkRerankTextFields(ctx, root)
+	if input := asObject(root.get("input")); input != nil {
+		walkRerankTextFields(ctx, input)
+	}
+}
+
+func walkRerankTextFields(ctx *sanitizeContext, object *orderedObject) {
+	if query, ok := object.get("query").(string); ok {
+		object.set("query", ctx.sanitizeText(query))
+	}
+	if documents, ok := object.get("documents").([]any); ok {
+		for index, item := range documents {
+			switch value := item.(type) {
+			case string:
+				documents[index] = ctx.sanitizeText(value)
+			case *orderedObject:
+				if text, ok := value.get("text").(string); ok {
+					value.set("text", ctx.sanitizeText(text))
+				}
+			}
+		}
+		object.set("documents", documents)
 	}
 }

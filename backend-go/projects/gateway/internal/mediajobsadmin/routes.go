@@ -84,6 +84,7 @@ type mediaJobListRow struct {
 	Seconds       *float64                    `json:"seconds,omitempty"`
 	Size          string                      `json:"size,omitempty"`
 	APIKeyID      string                      `json:"apiKeyId"`
+	APIKeyName    string                      `json:"apiKeyName"`
 	AccountID     string                      `json:"accountId"`
 	CreatedAt     string                      `json:"createdAt"`
 	UpdatedAt     string                      `json:"updatedAt"`
@@ -136,6 +137,7 @@ func mediaJobListPayload(record *gatewaymedia.MediaJobRecord, includeProviderJob
 		Seconds:       record.RequestSnapshot.Seconds,
 		Size:          record.RequestSnapshot.Size,
 		APIKeyID:      record.APIKeyID,
+		APIKeyName:    record.APIKeyName,
 		AccountID:     record.AccountID,
 		CreatedAt:     mediaJobListTime(record.CreatedAt),
 		UpdatedAt:     mediaJobListTime(record.UpdatedAt),
@@ -179,7 +181,9 @@ type mediaJobDetailRow struct {
 	Language        string                      `json:"language,omitempty"`
 	MetadataApplied []string                    `json:"metadataApplied,omitempty"`
 	APIKeyID        string                      `json:"apiKeyId"`
+	APIKeyName      string                      `json:"apiKeyName"`
 	AccountID       string                      `json:"accountId"`
+	AccountName     string                      `json:"accountName"`
 	CreatedAt       string                      `json:"createdAt"`
 	UpdatedAt       string                      `json:"updatedAt"`
 	CostUsd         float64                     `json:"costUsd"`
@@ -285,7 +289,9 @@ func mediaJobDetailPayload(record *gatewaymedia.MediaJobRecord, includeProviderJ
 		Language:        record.RequestSnapshot.Language,
 		MetadataApplied: record.RequestSnapshot.MetadataApplied,
 		APIKeyID:        record.APIKeyID,
+		APIKeyName:      record.APIKeyName,
 		AccountID:       record.AccountID,
+		AccountName:     record.AccountName,
 		CreatedAt:       mediaJobListTime(record.CreatedAt),
 		UpdatedAt:       mediaJobListTime(record.UpdatedAt),
 		CostUsd:         record.CostUsd,

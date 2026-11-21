@@ -98,17 +98,21 @@ export interface AccountModelCatalogRefreshResult {
 export type AccountTestOptions = AccountManualTestModelOption[] & {
   total?: number
   hasMore?: boolean
+  /** 测试方式：connection 时 data 恒为空，前端不渲染模型/请求形态选择。 */
+  testKind?: 'model' | 'connection'
 }
 
 interface AccountTestOptionsEnvelope {
   data: AccountManualTestModelOption[]
   total?: number
   hasMore?: boolean
+  testKind?: 'model' | 'connection'
 }
 
 function attachAccountTestOptionsMeta(list: AccountTestOptions, payload: AccountTestOptionsEnvelope): AccountTestOptions {
   if (typeof payload.total === 'number') list.total = payload.total
   if (typeof payload.hasMore === 'boolean') list.hasMore = payload.hasMore
+  if (payload.testKind === 'model' || payload.testKind === 'connection') list.testKind = payload.testKind
   return list
 }
 
@@ -213,7 +217,6 @@ export const accountsApi = {
   cancelTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/cancel`, {}, { ...noTimeout, params })),
   testTask: (taskId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/accounts/test-tasks/${taskId}`, { ...noTimeout, params, signal: options?.signal })),
   cancelTestTask: (taskId: string, params?: ListParams) => unwrap<AccountTestTask>(http.post(`/accounts/test-tasks/${taskId}/cancel`, {}, { ...noTimeout, params })),
-  returnAuthorization: (id: string, params?: ListParams) => http.post(`/accounts/${id}/return-authorization`, {}, { params }),
   delete: (id: string, params?: ListParams) => http.delete(`/accounts/${id}`, { params })
 }
 

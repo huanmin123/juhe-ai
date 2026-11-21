@@ -45,63 +45,8 @@
           </template>
         </a-spin>
       </div>
-      <!-- 媒体域（video/audio/image）：精简三段式（D7 清单表驱动）；对话域维持现行双形态。 -->
-      <AccountMediaForm
-        v-else-if="isMediaDomain"
-        :account-counts="accountCounts"
-        :account-type-choices="accountTypeChoices"
-        :advanced-loaded="advancedLoaded"
-        :advanced-loading="advancedLoading"
-        :auth-loading="authLoading"
-        :auth-result="authResult"
-        :authorized-editing="authorizedEditing"
-        @background-probe-toggle="handleBackgroundProbeToggle"
-        :balance-query-can-run="balanceQueryCanRun"
-        :balance-query-loading="balanceQueryLoading"
-        :base-url-placeholder="baseUrlPlaceholder"
-        :capability-domain="capabilityDomain"
-        :cloning="cloning"
-        :credential-title="credentialTitle"
-        :deleting-tag-id="deletingTagId"
-        :editing="editing"
-        v-model:error-policy-rules="errorPolicyRules"
-        @picker-expanded-change="providerPickerExpanded = $event"
-        :form="form"
-        :group-options="groupOptions"
-        :group-options-loading="groupOptionsLoading"
-        :inherited-error-policy-rules="inheritedErrorPolicyRules"
-        :is-management-view="isManagementView"
-        :model-options="modelOptions"
-        :models-loading="modelsLoading"
-        :models-settled="modelsSettled"
-        :models-truncated="modelsTruncated"
-        :model-syncing="modelSyncing"
-        :open="open"
-        :providers="mediaProviders"
-        :proxy-options="proxyOptions"
-        :proxy-pools="proxyPools"
-        :proxy-options-loading="proxyOptionsLoading"
-        :selected-protocol-profile="selectedProtocolProfile"
-        :selected-provider="selectedProvider"
-        :tag-options="tagOptions"
-        :tag-options-loading="tagOptionsLoading"
-        @advanced-open="$emit('advanced-open')"
-        @balance-query="$emit('balance-query')"
-        @copy-auth-url="$emit('copy-auth-url', $event)"
-        @delete-tag="$emit('delete-tag', $event)"
-        @generate-auth-url="$emit('generate-auth-url')"
-        @group-options-dropdown="$emit('group-options-dropdown', $event)"
-        @group-options-search="$emit('group-options-search', $event)"
-        @model-options-open="$emit('model-options-open', $event)"
-        @model-options-search="$emit('model-options-search', $event)"
-        @open-auth-url="$emit('open-auth-url')"
-        @proxyOptionsDropdown="$emit('proxyOptionsDropdown', $event)"
-        @proxyOptionsSearch="$emit('proxyOptionsSearch', $event)"
-        @refresh-models="$emit('refresh-models')"
-        @select-provider="$emit('select-provider', $event)"
-        @select-type-choice="$emit('select-type-choice', $event)"
-        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
-      />
+      <!-- 2026-11-21 统一创建/编辑向导：所有能力域共用三步向导，按域裁剪字段；
+           媒体域不再维护独立三段式表单。 -->
       <template v-else>
         <div v-if="!editing && !providerSelectionStage" class="wizard-steps" aria-label="创建步骤">
           <div class="wizard-step" :class="{ current: wizardStep === 1, done: wizardStep > 1 }">
@@ -134,12 +79,12 @@
               v-show="!editing && wizardStep === 1"
               :account-counts="accountCounts"
               :account-type="form.type"
-              :account-type-choices="accountTypeChoices"
+              :account-type-choices="wizardAccountTypeChoices"
               :cloning="cloning"
               :editing="editing"
               :open="open"
               :provider-code="form.providerCode"
-              :providers="providers"
+              :providers="wizardProviders"
               :selected-protocol-profile="selectedProtocolProfile"
               :selected-provider="selectedProvider"
               @picker-expanded-change="providerPickerExpanded = $event"
@@ -168,6 +113,7 @@
                 :form="form"
                 :model-options="modelOptions"
                 :models-loading="modelsLoading"
+                :models-settled="modelsSettled"
                 :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
                 :provider-code="form.providerCode"
@@ -193,6 +139,7 @@
                 :is-management-view="isManagementView"
                 :model-options="modelOptions"
                 :models-loading="modelsLoading"
+                :models-settled="modelsSettled"
                 :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
                 :profile-default-endpoint-modes="defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
@@ -245,6 +192,25 @@
                   />
                 </div>
               </section>
+
+              <!-- 火山方舟音频域双值凭据（D7 清单表定案）：与统一向导同屏，不再由
+                   独立媒体表单承载。 -->
+              <template v-if="isVolcengineAudio && !authorizedEditing">
+                <a-form-item required>
+                  <template #label>
+                    <span class="speech-credential-label">
+                      语音应用 App ID
+                      <a-tooltip title="豆包 TTS（openspeech.bytedance.com）的语音应用双值凭据；出站请求不经账户 Base URL，缺一即显式失败。">
+                        <QuestionCircleOutlined class="speech-credential-help" />
+                      </a-tooltip>
+                    </span>
+                  </template>
+                  <a-input v-model:value="form.speechAppId" autocomplete="off" placeholder="火山语音应用 App ID" />
+                </a-form-item>
+                <a-form-item required label="语音应用 Access Token">
+                  <a-input-password v-model:value="form.speechToken" autocomplete="new-password" placeholder="火山语音应用 Access Token" />
+                </a-form-item>
+              </template>
 
               <!-- 代理字段（原「策略与代理」高级卡内）：创建向导第 1 步与编辑态常用配置区共用同一处渲染；
                    OAuth 四家（gpt / anthropic / gemini / xai）必选。 -->
@@ -353,6 +319,7 @@
                   </div>
                   <div v-else class="advanced-section-stack">
                       <AccountGptRequestOverridesSection
+                        v-if="!isMediaDomain"
                         :form="form"
                         :model-options="modelOptions"
                         :models-loading="modelsLoading"
@@ -409,7 +376,7 @@
                         />
                       </section>
 
-                      <section class="form-section probe-toggle-row">
+                      <section v-if="!isMediaDomain" class="form-section probe-toggle-row">
                         <div class="probe-toggle-label">
                           <span>持续恢复探活</span>
                           <a-tooltip :title="continuousProbeTooltipText">
@@ -424,12 +391,12 @@
                         />
                       </section>
 
-                      <div v-if="expeditedRecoveryNote && !manualProbeMode" class="expedited-recovery-note">
+                      <div v-if="expeditedRecoveryNote && !manualProbeMode && !isMediaDomain" class="expedited-recovery-note">
                         <span>{{ expeditedRecoveryNote }}</span>
                         <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
                       </div>
 
-                      <section class="form-section lock-config-row">
+                      <section v-if="!isMediaDomain" class="form-section lock-config-row">
                         <div class="probe-toggle-label">
                           <span>账户锁死</span>
                         </div>
@@ -561,6 +528,7 @@
                 >
                   <div class="advanced-section-stack">
                     <AccountGptRequestOverridesSection
+                      v-if="!isMediaDomain"
                       :form="form"
                       :model-options="modelOptions"
                       :models-loading="modelsLoading"
@@ -611,7 +579,7 @@
                       />
                     </section>
 
-                    <section class="form-section probe-toggle-row">
+                    <section v-if="!isMediaDomain" class="form-section probe-toggle-row">
                       <div class="probe-toggle-label">
                         <span>持续恢复探活</span>
                         <a-tooltip :title="continuousProbeTooltipText">
@@ -626,12 +594,12 @@
                       />
                     </section>
 
-                    <div v-if="expeditedRecoveryNote && !manualProbeMode" class="expedited-recovery-note">
+                    <div v-if="expeditedRecoveryNote && !manualProbeMode && !isMediaDomain" class="expedited-recovery-note">
                       <span>{{ expeditedRecoveryNote }}</span>
                       <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
                     </div>
 
-                    <section class="form-section lock-config-row">
+                    <section v-if="!isMediaDomain" class="form-section lock-config-row">
                       <div class="probe-toggle-label">
                         <span>账户锁死</span>
                       </div>
@@ -719,6 +687,7 @@
                     />
 
                     <AccountResponseInspectionPolicyCard
+                      v-if="!isMediaDomain"
                       v-model:rules="responseInspectionRules"
                       :readonly="authorizedEditing"
                     />
@@ -735,8 +704,8 @@
 
     <template #footer>
       <div class="account-modal-footer">
-        <a-button v-if="!oauthCreateTestHidden && !isMediaDomain" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
-        <template v-if="!editing && !isMediaDomain">
+        <a-button v-if="!oauthCreateTestHidden" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <template v-if="!editing">
           <a-button v-if="wizardStep > 1" @click="wizardStep -= 1">上一步</a-button>
           <a-button v-if="wizardStep < 3" @click="goToNextWizardStep">下一步</a-button>
         </template>
@@ -776,7 +745,6 @@ import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountProxyField from './AccountProxyField.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
-import AccountMediaForm from './AccountMediaForm.vue'
 import { statusText } from './accountFormatters'
 import {
   accountEndpointModeText,
@@ -787,6 +755,9 @@ import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './account
 import { accountModelMappingEndpointFamilyText } from './accountModelMappingProtocolMatrix'
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
+import { capabilityDomainAccountTypes, capabilityDomainIsMedia } from './accountCapabilityDomains'
+import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
+import { isVolcengineProviderCode } from '@/shared/providerProtocol'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -811,7 +782,7 @@ const advancedActiveKeys = ref<string[]>([])
 const wizardStep = ref(1)
 
 // 供应商卡片墙展开状态（阶段一=独立供应商选择，配置区隐藏；阶段二=已选摘要 + 配置）。
-// 真值由 AccountFormSelector / AccountMediaForm 透传的 picker-expanded-change 事件驱动。
+// 真值由 AccountFormSelector 透传的 picker-expanded-change 事件驱动。
 const providerPickerExpanded = ref(true)
 
 // 阶段一：弹窗只呈现供应商卡片——标题不指向供应商、隐藏向导步骤指示与底部按钮区。
@@ -941,6 +912,73 @@ const mediaProviders = computed(() => mergeAccountProviderDefinitions(
   mediaProviderDefinitions.value ?? []
 ))
 
+// 2026-11-21 统一向导：媒体域按矩阵过滤供应商与账户类型，对话域保持传入清单
+// （chat 域允许集由供应商词表决定，不做额外隐藏）。
+const wizardProviders = computed(() => {
+  if (!isMediaDomain.value) return mediaProviders.value
+  return mediaProviders.value.filter((provider) => provider.protocolProfiles.some((profile) => (
+    capabilityDomainAccountTypes({
+      capabilityDomain: props.capabilityDomain,
+      providerCode: provider.code,
+      profile
+    }).length > 0
+  )))
+})
+const wizardAccountTypeChoices = computed(() => {
+  if (!isMediaDomain.value) return props.accountTypeChoices
+  const allowedTypes = capabilityDomainAccountTypes({
+    capabilityDomain: props.capabilityDomain,
+    providerCode: props.form.providerCode,
+    profile: props.selectedProtocolProfile
+  })
+  const profileId = props.selectedProtocolProfile?.id ?? ''
+  return props.accountTypeChoices.filter((choice) => (
+    allowedTypes.includes(choice.type)
+    && (!profileId || choice.providerProtocolProfileId === profileId)
+  ))
+})
+const isVolcengineAudio = computed(() =>
+  props.capabilityDomain === 'audio' && isVolcengineProviderCode(props.form.providerCode))
+
+// 新建态域默认值（统一向导）：媒体域切换供应商/类型或打开弹窗时重放域默认集；
+// 编辑态不重放，避免裁剪已存声明集。
+watch(
+  () => [
+    open.value,
+    props.capabilityDomain,
+    props.editing,
+    props.form.providerCode,
+    props.form.providerProtocolProfileId,
+    props.form.type
+  ] as const,
+  ([isOpen, domain, editing]) => {
+    if (!isOpen || editing || !capabilityDomainIsMedia(domain)) return
+    const profile = props.selectedProtocolProfile
+    const allowedTypes = capabilityDomainAccountTypes({
+      capabilityDomain: domain,
+      providerCode: props.form.providerCode,
+      profile
+    })
+    if (props.form.type && !allowedTypes.includes(props.form.type)) {
+      const fallback = props.accountTypeChoices.find((choice) => (
+        allowedTypes.includes(choice.type)
+        && choice.providerProtocolProfileId === (profile?.id ?? choice.providerProtocolProfileId)
+      ))
+      if (fallback && fallback.value !== `${props.form.providerProtocolProfileId}:${props.form.type}`) {
+        emit('select-type-choice', fallback.value)
+        return
+      }
+    }
+    applyMediaCreateDefaults(props.form, {
+      capabilityDomain: domain,
+      providerCode: props.form.providerCode,
+      profile,
+      type: props.form.type
+    })
+  },
+  { immediate: true }
+)
+
 // 能力域上下文同步（D3）：域由路由注入、不是可编辑字段。表单在新建/编辑/克隆
 // 装载路径会被整块 Object.assign 重置，这里在弹窗打开与结构字段变化后重放注入，
 // 保证保存时刻 payload 携带的域与当前路由域一致（保存按钮在装载完成前禁用，
@@ -1001,8 +1039,7 @@ const expeditedRecoveryNote = computed(() => {
 
 // ---- 后台自动探测总开关（总开关设计 §4/§7 手动模式）----
 
-// 手动模式：总开关关闭（image 域走 AccountMediaForm 分支并经
-// background-probe-toggle 事件复用本 handler；audio/video 媒体域不渲染开关）。
+// 手动模式：总开关关闭；全部能力域共用同一表单与确认流程。
 const manualProbeMode = computed(() => props.form.backgroundProbeEnabled === false)
 
 const continuousProbeTooltipText = computed(() => manualProbeMode.value
@@ -1732,5 +1769,16 @@ const emit = defineEmits<{
     overflow: visible;
     padding-right: 0;
   }
+}
+
+.speech-credential-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.speech-credential-help {
+  color: rgba(0, 0, 0, 0.45);
+  cursor: help;
 }
 </style>

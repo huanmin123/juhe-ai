@@ -24,6 +24,9 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		id          string
 		implVersion int
 	}{
+		// upgradeSteps 的注册表切片顺序不参与执行排序（Run 内
+		// sortStepsByRevision 按 revision 升序），golden 只钉注册内容。
+		{28, "authz-recipient-consent-governance", 1},
 		{1, "j3a-proxy-latency-pg", 1},
 		{2, "j3b-model-check-pg", 1},
 		{3, "account-balance-pg", 1},
@@ -67,7 +70,7 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 	for _, step := range steps {
 		destructive[step.ID] = step.Destructive
 	}
-	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables", "retire-cross-protocol-entry-mappings", "retire-high-concurrency-groups", "retire-usage-shard-catalog", "migrate-key-client-ip-limit"} {
+	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables", "retire-cross-protocol-entry-mappings", "retire-high-concurrency-groups", "retire-usage-shard-catalog", "migrate-key-client-ip-limit", "authz-recipient-consent-governance"} {
 		if !destructive[id] {
 			t.Fatalf("步骤 %s 应标记 destructive", id)
 		}
@@ -80,6 +83,9 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 	for _, step := range steps {
 		if step.ID == "migrate-key-client-ip-limit" && !step.RequiredBeforeStartup {
 			t.Fatal("migrate-key-client-ip-limit 应标记 RequiredBeforeStartup")
+		}
+		if step.ID == "authz-recipient-consent-governance" && !step.RequiredBeforeStartup {
+			t.Fatal("authz-recipient-consent-governance 应标记 RequiredBeforeStartup")
 		}
 	}
 }

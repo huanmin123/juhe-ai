@@ -47,10 +47,10 @@
           </a-descriptions-item>
           <a-descriptions-item label="成本">{{ formatMediaJobCost(detail.costUsd) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">
-            <span :class="detail.apiKeyId ? 'mono-cell' : 'muted-cell'">{{ detail.apiKeyId || '-' }}</span>
+            <span :class="detail.apiKeyName ? '' : 'muted-cell'">{{ detail.apiKeyName || '-' }}</span>
           </a-descriptions-item>
           <a-descriptions-item label="AI 账户">
-            <span :class="detail.accountId ? 'mono-cell' : 'muted-cell'">{{ detail.accountId || '-' }}</span>
+            <span :class="detail.accountName ? '' : 'muted-cell'">{{ detail.accountName || '-' }}</span>
           </a-descriptions-item>
           <a-descriptions-item label="创建时间">{{ formatDateTime(detail.createdAt) }}</a-descriptions-item>
           <a-descriptions-item label="更新时间">{{ detail.updatedAt ? formatDateTime(detail.updatedAt) : '-' }}</a-descriptions-item>

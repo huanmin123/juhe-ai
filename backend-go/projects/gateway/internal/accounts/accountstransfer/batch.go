@@ -619,6 +619,15 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 	if result.ChangedFields == nil {
 		result.ChangedFields = []string{}
 	}
+	if marker, ok := s.store.(interface {
+		MarkAccountSourcesNeedsReview(context.Context, *sql.Tx, string, string) error
+	}); ok {
+		for _, accountID := range changedAccountIDs {
+			if err := marker.MarkAccountSourcesNeedsReview(ctx, tx, accountID, nowISO); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -1255,7 +1264,17 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			}
 		}
 		if !found {
-			return result, &accountscore.ValidationError{Message: "账户 " + account.id + " 的检查模型必须属于最终支持模型"}
+			// 连接测试账户（媒体域与仅声明输入型形态的 chat 账户）的检查模型
+			// 只是落库记录值，前端批量编辑不暴露该字段（测试方式分层，2026-11-21）。
+			// 批量改支持模型时重新派生首个新模型，避免用户因隐藏字段的旧值不在
+			// 新集合内而整批失败；显式提交 healthCheckModel 仍按严格成员校验。
+			connectionTest := !hasOwn("healthCheckModel") &&
+				accountscore.UsesConnectionHealthCheck(account.capabilityDomain, StoredEndpointModes(nextCredentials["supported_endpoint_modes"]))
+			if connectionTest && len(nextSupportedModels) > 0 {
+				nextHealthCheckModel = nextSupportedModels[0]
+			} else {
+				return result, &accountscore.ValidationError{Message: "账户 " + account.id + " 的检查模型必须属于最终支持模型"}
+			}
 		}
 	}
 	healthCheckModelChanged := hasOwn("healthCheckModel") && nextHealthCheckModel != strings.TrimSpace(account.healthCheckModel)
@@ -1282,8 +1301,16 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		if len(healthModesOverride) > 0 {
 			healthModesSource = healthModesOverride
 		}
+		modeInput := &nextHealthCheckEndpointMode
+		// 连接测试账户未显式提交检查形态时，按最终 modes 重新派生：批量修改
+		// supportedEndpointModes 后旧记录值可能已失效（qwen 音频取消
+		// audio_speech、仅转写账户等），隐藏字段不得整批 400。
+		if !hasOwn("healthCheckEndpointMode") &&
+			accountscore.UsesConnectionHealthCheck(account.capabilityDomain, healthModesSource) {
+			modeInput = nil
+		}
 		resolved, err := s.deps.ResolveHealthCheckEndpointMode(
-			&nextHealthCheckEndpointMode,
+			modeInput,
 			account.providerCode,
 			account.providerProtocolProfileID,
 			healthModesSource,
@@ -1940,13 +1967,10 @@ var BatchUpdateFields = map[string]bool{
 	"serviceTierOverride": true, "reasoningEffortOverride": true,
 }
 
-var batchHealthCheckEndpointModes = map[string]bool{
-	"images_json": true, "chat_json": true, "chat_sse": true,
-	"responses_json": true, "responses_sse": true,
-	"messages_json": true, "messages_sse": true,
-	"generate_content_json": true, "generate_content_sse": true,
-	"interactions_json": true, "interactions_sse": true,
-}
+// batchHealthCheckEndpointModes 已退役：健康检查形态白名单统一复用
+// accountscore.AccountHealthCheckEndpointModes，避免批量编辑出现「UI 可选、
+// 后端 400」的词表漂移（含 2026-11-20 新增 embeddings_json/rerank_json 与
+// 既有 audio/video/realtime 形态）。
 
 // ValidateBatchUpdateValue mirrors the per-field value schema subset the store
 // consumes (the credential-config fields keep their structural checks here and
@@ -2033,7 +2057,7 @@ func ValidateBatchUpdateValue(field string, value any) string {
 		}
 	case "healthCheckEndpointMode":
 		text, ok := value.(string)
-		if !ok || !batchHealthCheckEndpointModes[text] {
+		if !ok || !accountscore.AccountHealthCheckEndpointModes[text] {
 			return BatchFieldsPrompt
 		}
 	case "modelMappings":
@@ -2042,7 +2066,10 @@ func ValidateBatchUpdateValue(field string, value any) string {
 		}
 	case "supportedEndpointModes":
 		list, ok := value.([]any)
-		if !ok || len(list) < 1 || len(list) > 13 {
+		// 27 是 schema CHECK 的全量 endpoint mode 词表（含 2026-11-20 新增
+		// embeddings_json/rerank_json）；上限随词表扩容同步，避免合法的多能力
+		// 账户在批量编辑时被旧 13 值上限拒绝。
+		if !ok || len(list) < 1 || len(list) > 27 {
 			return BatchFieldsPrompt
 		}
 		for _, item := range list {

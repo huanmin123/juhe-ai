@@ -33,15 +33,18 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 // runs.
 func createFingerprint(r *http.Request, owner string) (any, error) {
 	return map[string]any{
-		"owner":         owner,
-		"resourceType":  kernel.TextField(kernel.BodyField(r, "resourceType")),
-		"resourceId":    kernel.TextField(kernel.BodyField(r, "resourceId")),
-		"granteeType":   kernel.TextField(kernel.BodyField(r, "granteeType")),
-		"granteeId":     kernel.TextField(kernel.BodyField(r, "granteeId")),
-		"targetGroupId": kernel.TextField(kernel.BodyField(r, "targetGroupId")),
-		"remark":        kernel.TextField(kernel.BodyField(r, "remark")),
-		"expiresAt":     kernel.TextField(kernel.BodyField(r, "expiresAt")),
-		"limits":        kernel.BodyField(r, "limits"),
+		"owner":                  owner,
+		"resourceType":           kernel.TextField(kernel.BodyField(r, "resourceType")),
+		"resourceId":             kernel.TextField(kernel.BodyField(r, "resourceId")),
+		"granteeType":            kernel.TextField(kernel.BodyField(r, "granteeType")),
+		"granteeUsername":        kernel.TextField(kernel.BodyField(r, "granteeUsername")),
+		"granteeSystemAccountId": kernel.TextField(kernel.BodyField(r, "granteeSystemAccountId")),
+		"teamName":               kernel.TextField(kernel.BodyField(r, "teamName")),
+		"teamId":                 kernel.TextField(kernel.BodyField(r, "teamId")),
+		"targetGroupId":          kernel.TextField(kernel.BodyField(r, "targetGroupId")),
+		"remark":                 kernel.TextField(kernel.BodyField(r, "remark")),
+		"expiresAt":              kernel.TextField(kernel.BodyField(r, "expiresAt")),
+		"limits":                 kernel.BodyField(r, "limits"),
 	}, nil
 }
 
@@ -222,6 +225,9 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		d.patch(w, r, true)
 	})))
 
+	// Recipient-consent governance surface (design §6).
+	d.mountGovernanceRoutes(k, prefix)
+
 	// Usage read family: 8 aggregate endpoints + the per-id usage detail and
 	// the admin return surface (usage_routes.go).
 	d.mountUsageRoutes(k, prefix+"/authorizations", prefix+"/my-authorizations")
@@ -246,83 +252,52 @@ func (d *Deps) RequireSelf(next http.Handler) http.Handler {
 }
 
 func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	// The list query schema (authorizationsQuerySchema :37-52) validates every
-	// declared key before the read; it is a plain (non-strict) object, so
-	// unknown keys are stripped. parseOrBadRequest renders the first issue.
-	parser := newQueryParser(r)
-	// keyword has trim + max(120) but no min(1): a blank keyword stays valid
-	// and simply does not filter.
-	keyword := ""
-	if parser.present("keyword") {
-		keyword = strings.TrimSpace(parser.query.Get("keyword"))
-		if len([]rune(keyword)) > 120 {
-			parser.fail("搜索关键字最多 120 个字符")
-		}
-	}
-	resourceType, _ := parser.enum("resourceType", "account", "group")
-	resourceID, _ := parser.text("resourceId", "授权资源 ID 不能为空")
-	resourceOwnerID, _ := parser.text("resourceOwnerSystemAccountId", "资源归属用户 ID 不能为空")
-	granteeID, _ := parser.text("granteeSystemAccountId", "被授权用户 ID 不能为空")
-	teamID, _ := parser.text("teamId", "团队 ID 不能为空")
-	status, _ := parser.enum("status", "active", "paused", "expired", "revoked", "returned", "all")
-	direction, _ := parser.enum("direction", "all", "outbound", "inbound")
-	sourceType, _ := parser.enum("sourceType", "all", "manual", "team")
-	// systemAccountId/startDate/endDate keep their validation (the scope
-	// account flows through accessFor; the list route discards the values like
-	// the Node `void startDate`).
-	_, _ = parser.text("systemAccountId", "系统账号 ID 不能为空")
-	_, _ = parser.date("startDate", "开始日期格式应为 YYYY-MM-DD")
-	_, _ = parser.date("endDate", "结束日期格式应为 YYYY-MM-DD")
-	page, _ := parser.int("page", "页码必须大于 0", 0, "")
-	pageSize, _ := parser.int("pageSize", "每页数量必须大于 0", 500, "每页最多 500 条")
-	if !parser.writeBadRequest(w, "查询参数不合法") {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	access := d.accessFor(r, selfOnly)
-	filters := Filters{
-		ResourceType:                 resourceType,
-		ResourceID:                   resourceID,
-		ResourceOwnerSystemAccountID: resourceOwnerID,
-		GranteeSystemAccountID:       granteeID,
-		TeamID:                       teamID,
-		Status:                       status,
-		SourceType:                   sourceType,
-		Keyword:                      keyword,
-		IsAdmin:                      access.IsAdmin,
-	}
-	// Claim #12 + the admin direction contract: the query schema validates
-	// direction on both surfaces (authorizations.routes.ts:45). The self list
-	// always forwards it (:153-159); the admin list forwards it only when
-	// ?systemAccountId selects a scope account — without a scope account the
-	// historical ignore stands, so the unscoped admin list stays unfiltered.
-	if direction == "outbound" || direction == "inbound" {
-		if selfOnly || access.FilterID != "" {
-			filters.Direction = direction
+	if !selfOnly {
+		// The admin list is the full business-record view (design §6.4): the
+		// legacy ?systemAccountId / ?direction scoping belongs to the retired
+		// single-grant semantics and must not narrow the governance inventory.
+		items, err := d.Store.ListScopedOffers(r.Context(), "",
+			"", strings.TrimSpace(r.URL.Query().Get("status")))
+		if err != nil {
+			writeGovernanceError(r, w, err)
+			return
 		}
+		d.writeData(w, map[string]any{"items": items})
+		return
 	}
-	if selfOnly {
-		filters.ViewerSystemAccountID = access.ViewerID
-		if access.FilterID != "" {
-			filters.ViewerSystemAccountID = access.FilterID
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	if direction == "" || direction == "inbound" {
+		items, err := d.Store.ListInboundSources(r.Context(), auth.SystemAccountID)
+		if err != nil {
+			writeGovernanceError(r, w, err)
+			return
 		}
-	} else if access.FilterID != "" {
-		// Admin scope filter: viewer acts as that account.
-		filters.ViewerSystemAccountID = access.FilterID
+		d.writeData(w, map[string]any{"items": items, "direction": "inbound"})
+		return
 	}
-	if page < 1 {
-		page = 1
+	var items any
+	var err error
+	switch direction {
+	case "outbound":
+		items, err = d.Store.ListOutboundOffers(r.Context(), auth.SystemAccountID)
+	case "owned":
+		items, err = d.Store.ListOwnedOffers(r.Context(), auth.SystemAccountID)
+	case "owner_pending":
+		items, err = d.Store.ListOwnerPendingOffers(r.Context(), auth.SystemAccountID)
+	default:
+		kernel.WriteBadRequest(w, "direction 参数无效")
+		return
 	}
-	if pageSize < 1 {
-		pageSize = 50
-	}
-	items, total, hasMore, err := d.Store.ListItemsPage(r.Context(), filters, page, pageSize, access)
 	if err != nil {
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		writeGovernanceError(r, w, err)
 		return
 	}
-	kernel.WriteOK(w, map[string]any{
-		"items": items, "total": total, "hasMore": hasMore, "page": page, "pageSize": pageSize,
-	}, "")
+	d.writeData(w, map[string]any{"items": items, "direction": direction})
 }
 
 func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
@@ -371,141 +346,130 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	// authorizations.routes.ts:233-237: the scope query schema runs before the
-	// body schema on both surfaces.
 	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
 	selfOnly := strings.HasSuffix(r.URL.Path, "/my-authorizations")
 	scopeAccount := strings.TrimSpace(r.URL.Query().Get("systemAccountId"))
-	if !selfOnly && authsys.IsAdminRole(auth.Role) && scopeAccount == "" {
+	isAdmin := !selfOnly && authsys.IsAdminRole(auth.Role)
+	if isAdmin && scopeAccount == "" {
 		kernel.WriteBadRequest(w, "管理员新增授权时必须指定授权人")
 		return
 	}
-	actor := scopeAccount
-	if actor == "" || selfOnly {
-		actor = auth.SystemAccountID
+	ownerScope := scopeAccount
+	if selfOnly {
+		ownerScope = auth.SystemAccountID
 	}
 	var body struct {
-		ResourceType  *string         `json:"resourceType"`
-		ResourceID    *string         `json:"resourceId"`
-		GranteeType   *string         `json:"granteeType"`
-		GranteeID     *string         `json:"granteeId"`
-		TargetGroupID *string         `json:"targetGroupId"`
-		Remark        *string         `json:"remark"`
-		ExpiresAt     *string         `json:"expiresAt"`
-		Limits        json.RawMessage `json:"limits"`
+		ResourceType           *string         `json:"resourceType"`
+		ResourceID             *string         `json:"resourceId"`
+		GranteeType            *string         `json:"granteeType"`
+		GranteeUsername        *string         `json:"granteeUsername"`
+		GranteeSystemAccountID *string         `json:"granteeSystemAccountId"`
+		TeamName               *string         `json:"teamName"`
+		TeamID                 *string         `json:"teamId"`
+		TargetGroupID          *string         `json:"targetGroupId"`
+		Remark                 *string         `json:"remark"`
+		ExpiresAt              *string         `json:"expiresAt"`
+		Limits                 json.RawMessage `json:"limits"`
 	}
-	// createAuthorizationSchema is a strict object (authorizations.routes.ts:106).
 	if !decodeStrictJSON(w, r, &body, map[string]bool{
-		"resourceType": true, "resourceId": true, "granteeType": true, "granteeId": true,
-		"targetGroupId": true, "remark": true, "expiresAt": true, "limits": true,
+		"resourceType": true, "resourceId": true, "granteeType": true,
+		"granteeUsername": true, "granteeSystemAccountId": true,
+		"teamName": true, "teamId": true, "targetGroupId": true,
+		"remark": true, "expiresAt": true, "limits": true,
 	}) {
 		return
 	}
-	if body.ResourceType == nil || body.ResourceID == nil || body.GranteeType == nil || body.GranteeID == nil ||
-		strings.TrimSpace(*body.ResourceID) == "" || strings.TrimSpace(*body.GranteeID) == "" ||
-		(body.ResourceType != nil && *body.ResourceType != "account" && *body.ResourceType != "group") ||
-		(body.GranteeType != nil && *body.GranteeType != "system_account" && *body.GranteeType != "team") {
-		kernel.WriteBadRequest(w, "授权参数不合法")
-		return
-	}
-	// superRefine rules.
-	if *body.ResourceType == "account" && *body.GranteeType == "system_account" &&
-		(body.TargetGroupID == nil || strings.TrimSpace(*body.TargetGroupID) == "") {
-		kernel.WriteBadRequest(w, "授权 AI 账户给个人时必须选择目标分组")
-		return
-	}
-	if body.TargetGroupID != nil && strings.TrimSpace(*body.TargetGroupID) != "" &&
-		!(*body.ResourceType == "account" && *body.GranteeType == "system_account") {
-		kernel.WriteBadRequest(w, "只有授权 AI 账户给个人时可以指定目标分组")
-		return
-	}
-	// Claim #8: the create schema is requestQuotaLimitsSchema.optional()
-	// (authorizations.routes.ts:105) — JSON null is not accepted.
-	if rawJSONNull(body.Limits) && len(bytes.TrimSpace(body.Limits)) > 0 {
-		kernel.WriteBadRequest(w, "授权参数不合法")
-		return
-	}
-	// Admin creating on behalf: the resource must belong to the scope account.
-	input := CreateInput{
-		ResourceType: strings.TrimSpace(*body.ResourceType),
-		ResourceID:   strings.TrimSpace(*body.ResourceID),
-		GranteeType:  strings.TrimSpace(*body.GranteeType),
-		GranteeID:    strings.TrimSpace(*body.GranteeID),
-		Remark:       body.Remark,
-		ExpiresAt:    body.ExpiresAt,
-	}
 	if body.TargetGroupID != nil && strings.TrimSpace(*body.TargetGroupID) != "" {
-		input.TargetGroupID = body.TargetGroupID
+		kernel.WriteBadRequest(w, "授权不再支持 targetGroupId，请由接收方接受后自行绑定")
+		return
 	}
-	if rawJSONPresent(body.Limits) {
+	if body.ResourceType == nil || body.ResourceID == nil || body.GranteeType == nil ||
+		strings.TrimSpace(*body.ResourceID) == "" {
+		kernel.WriteBadRequest(w, "授权参数不合法")
+		return
+	}
+	resourceType := strings.TrimSpace(*body.ResourceType)
+	granteeType := strings.TrimSpace(*body.GranteeType)
+	if resourceType != "account" && resourceType != "group" {
+		kernel.WriteBadRequest(w, "授权参数不合法")
+		return
+	}
+	if granteeType != "system_account" && granteeType != "team" {
+		kernel.WriteBadRequest(w, "授权参数不合法")
+		return
+	}
+	if !isAdmin {
+		if body.GranteeSystemAccountID != nil && strings.TrimSpace(*body.GranteeSystemAccountID) != "" {
+			kernel.WriteBadRequest(w, "普通用户请使用精确用户名发起授权")
+			return
+		}
+		if body.TeamID != nil && strings.TrimSpace(*body.TeamID) != "" {
+			kernel.WriteBadRequest(w, "普通用户请使用精确团队名发起授权")
+			return
+		}
+	}
+	input := OfferInput{
+		ResourceType:           resourceType,
+		ResourceID:             strings.TrimSpace(*body.ResourceID),
+		GranteeType:            granteeType,
+		GranteeUsername:        strings.TrimSpace(stringOrEmpty(body.GranteeUsername)),
+		GranteeSystemAccountID: strings.TrimSpace(stringOrEmpty(body.GranteeSystemAccountID)),
+		TeamName:               strings.TrimSpace(stringOrEmpty(body.TeamName)),
+		TeamID:                 strings.TrimSpace(stringOrEmpty(body.TeamID)),
+		Remark:                 body.Remark,
+		ExpiresAt:              body.ExpiresAt,
+	}
+	if rawJSONPresent(body.Limits) && !rawJSONNull(body.Limits) {
 		text := string(bytes.TrimSpace(body.Limits))
 		input.LimitsJSON = &text
 	}
-	result, err := d.Store.Create(r.Context(), input, actor)
+	result, err := d.Store.CreateOffer(r.Context(), input, auth.SystemAccountID, isAdmin, ownerScope)
 	if err != nil {
-		var fail *Fail
-		var conflict *Conflict
-		if errorsAsFail(err, &fail) {
-			writeFail(w, fail)
-			return
-		}
-		if errorsAsConflict(err, &conflict) {
-			kernel.WriteError(w, http.StatusConflict, conflict.Error())
-			return
-		}
-		// Unknown store failures are infrastructure errors: 500 with the cause
-		// recorded, the client message stays the historical text.
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "创建授权失败", err)
+		writeGovernanceError(r, w, err)
 		return
+	}
+	if result.Created {
+		if d.Sink != nil {
+			mode := "admin"
+			if selfOnly {
+				mode = "self"
+			}
+			d.Sink.Record(authsys.OperationLogEntry{
+				ActorSystemAccountID:          auth.SystemAccountID,
+				ActorUsername:                 auth.Username,
+				ActorDisplayName:              auth.DisplayName,
+				ActorRole:                     auth.Role,
+				OperationScopeSystemAccountID: ownerScope,
+				Mode:                          mode,
+				Module:                        "authorizations",
+				Action:                        "create_offer",
+				OperationKey:                  "authorizations.create",
+				ResourceType:                  "authorization",
+				ResourceID:                    result.GrantID,
+				Summary:                       "发起资源授权：" + input.ResourceID,
+				Changes: []authsys.OperationLogChange{
+					{Field: "resourceType", Label: "资源类型", After: input.ResourceType},
+					{Field: "resourceId", Label: "授权资源", After: input.ResourceID},
+					{Field: "granteeType", Label: "接收方类型", After: input.GranteeType},
+					{Field: "status", Label: "状态", After: result.Status},
+				},
+			}, r)
+		}
 	}
 	status := http.StatusOK
 	if result.Created {
 		status = http.StatusCreated
 	}
-	if result.Created || result.PreviousStatus != nil {
-		if d.Sink != nil {
-			actionSummary := "创建资源授权："
-			if result.PreviousStatus != nil {
-				actionSummary = "重新激活资源授权："
-			}
-			summary := actionSummary + result.Item.ResourceID
-			// Node mode = operationMode(requestAccess): the my-* surface runs
-			// under forceSelfAccessScope, so the log degrades to 'self'.
-			mode := "admin"
-			if selfOnly {
-				mode = "self"
-			}
-			if auth != nil {
-				d.Sink.Record(authsys.OperationLogEntry{
-					ActorSystemAccountID:          auth.SystemAccountID,
-					ActorUsername:                 auth.Username,
-					ActorDisplayName:              auth.DisplayName,
-					ActorRole:                     auth.Role,
-					OperationScopeSystemAccountID: actor,
-					Mode:                          mode,
-					Module:                        "authorizations",
-					Action:                        "create",
-					OperationKey:                  "authorizations.create",
-					ResourceType:                  "authorization",
-					ResourceID:                    result.Item.ID,
-					Summary:                       summary,
-					Changes: []authsys.OperationLogChange{
-						{Field: "resourceType", Label: "资源类型", After: result.Item.ResourceType},
-						{Field: "resourceId", Label: "授权资源", After: result.Item.ResourceID},
-						{Field: "grantee", Label: "被授权目标", After: orText(result.Item.GranteeTeamID, orText(result.Item.GranteeUserID, ""))},
-						{Field: "status", Label: "状态", After: result.Item.Status},
-					},
-				}, r)
-			}
-		}
+	kernel.WriteJSON(w, status, map[string]any{"data": result})
+}
+
+func stringOrEmpty(value *string) string {
+	if value == nil {
+		return ""
 	}
-	data := map[string]any{"item": result.Item, "created": result.Created}
-	if result.PreviousStatus != nil {
-		data["previousStatus"] = *result.PreviousStatus
-	}
-	kernel.WriteJSON(w, status, map[string]any{"data": data})
+	return *value
 }
 
 // revoke keeps the unscoped administrator surface (authorizations route
@@ -527,157 +491,53 @@ func (d *Deps) revokeScoped(w http.ResponseWriter, r *http.Request, selfOnly boo
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	// authorizations.routes.ts:385-389: scope query first, then params, then
-	// the body schema.
+	// Present-but-empty ?systemAccountId is invalid on every write surface,
+	// including revoke (the create/patch/find handlers already enforce this).
 	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
-	var body struct {
-		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
-	}
-	if !decodeStrictJSON(w, r, &body, map[string]bool{"expectedUpdatedAt": true}) {
+	isAdmin := !selfOnly && authsys.IsAdminRole(auth.Role)
+	if err := d.Store.RevokeOffer(r.Context(), r.PathValue("id"), auth.SystemAccountID, isAdmin, nowISO(d.Store)); err != nil {
+		writeGovernanceError(r, w, err)
 		return
 	}
-	// Claim #5: the shared mutation version schema validates and canonicalizes
-	// the version at the route (authorizations.routes.ts:33-35, :395-399).
-	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
-	if !ok {
-		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
-		return
-	}
-	// Node :401 passes getRequestAccessScope(query.systemAccountId) into the
-	// revoke mutation; the store filters resource_owner_system_account_id by
-	// the administrator scope and reports out-of-scope grants as not_found.
-	// The my-* surface pins the owner scope to the viewer.
-	ownerScope := d.accessFor(r, false).FilterID
-	mode := "admin"
-	if selfOnly {
-		ownerScope = auth.SystemAccountID
-		mode = "self"
-	}
-	mutation, err := d.Store.RevokeForOwner(r.Context(), r.PathValue("id"), version, auth.SystemAccountID, ownerScope)
-	if err != nil {
-		// Store errors here are infrastructure failures (not_found/conflict are
-		// outcome statuses): 500 with the cause recorded.
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "回收授权失败", err)
-		return
-	}
-	switch mutation.Status {
-	case "not_found":
-		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
-		return
-	case "conflict":
-		kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-			"message": "授权配置已被其他操作更新，请刷新后重试", "currentUpdatedAt": mutation.CurrentUpdatedAt,
-		})
-		return
-	}
-	// Claim #11: only the updated outcome writes an operation log and it
-	// carries the real previous status (authorizations.routes.ts:410-424). The
-	// log scope follows outcome.context.resourceOwnerSystemAccountId
-	// (authorizations.routes.ts:411).
-	if mutation.Status == "updated" && d.Sink != nil {
+	if d.Sink != nil {
+		mode := "admin"
+		if selfOnly {
+			mode = "self"
+		}
 		d.Sink.Record(authsys.OperationLogEntry{
-			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
-			OperationScopeSystemAccountID: mutation.Result.OwnerID,
-			Mode:                          mode, Module: "authorizations", Action: "revoke",
-			OperationKey: "authorizations.revoke", ResourceType: "authorization",
-			ResourceID: mutation.Result.ID,
-			Summary:    "回收资源授权：" + mutation.Result.ResourceID,
-			Changes: []authsys.OperationLogChange{
-				{Field: "status", Label: "状态", Before: orText(mutation.PreviousStatus, ""), After: StatusRevoked},
-			},
+			ActorSystemAccountID:          auth.SystemAccountID,
+			ActorUsername:                 auth.Username,
+			ActorDisplayName:              auth.DisplayName,
+			ActorRole:                     auth.Role,
+			OperationScopeSystemAccountID: auth.SystemAccountID,
+			Mode:                          mode,
+			Module:                        "authorizations",
+			Action:                        "revoke",
+			OperationKey:                  "authorizations.revoke",
+			ResourceType:                  "authorization",
+			ResourceID:                    r.PathValue("id"),
+			Summary:                       "回收资源授权",
 		}, r)
 	}
-	kernel.WriteOK(w, map[string]any{
-		"id": mutation.Result.ID, "status": mutation.Result.Status, "updatedAt": mutation.Result.UpdatedAt,
-	}, "")
+	d.writeData(w, map[string]any{"status": StatusRevoked})
 }
 
-// returnValue serves both the my-* surface (selfOnly, grantee pinned to the
-// viewer) and the admin /authorizations surface. Node resolves the grantee
-// through userVisibleSystemAccountId(access) (return.repository.ts:121/:166):
-// an admin ?systemAccountId filter nominates that account, everything else
-// pins the viewer. The my-* middleware downgrades the role, so the operation
-// log mode follows operationMode(requestAccess) ('admin' vs 'self').
 func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
-	// authorizations.routes.ts:313-317: the return route validates the scope
-	// query before the params/body schemas.
-	if !writeScopeQueryBadRequest(w, r) {
-		return
-	}
-	var body struct {
-		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
-	}
-	if !decodeStrictJSON(w, r, &body, map[string]bool{"expectedUpdatedAt": true}) {
-		return
-	}
-	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
-	if !ok {
-		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
-		return
-	}
-	access := d.accessFor(r, selfOnly)
-	granteeID := access.ViewerID
-	if access.FilterID != "" {
-		granteeID = access.FilterID
-	}
-	if granteeID == "" {
-		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
-		return
-	}
-	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), version, granteeID)
-	if err != nil {
-		// Store errors here are infrastructure failures (not_found/conflict are
-		// outcome statuses): 500 with the cause recorded.
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "归还授权使用权失败", err)
-		return
-	}
-	switch mutation.Status {
-	case "not_found":
-		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
-		return
-	case "conflict":
-		kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-			"message": "授权配置已被其他操作更新，请刷新后重试", "currentUpdatedAt": mutation.CurrentUpdatedAt,
-		})
-		return
-	case "updated":
-		mode := "self"
-		if !selfOnly && authsys.IsAdminRole(auth.Role) {
-			mode = "admin"
-		}
-		if d.Sink != nil {
-			d.Sink.Record(authsys.OperationLogEntry{
-				ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
-				Mode: mode, Module: "authorizations", Action: "return",
-				OperationKey: "authorizations.return", ResourceType: "authorization",
-				ResourceID: mutation.Result.ID,
-				Summary:    "归还授权使用权：" + mutation.Result.ResourceID,
-				Changes: []authsys.OperationLogChange{
-					{Field: "returned", Label: "归还授权", Before: "false", After: "true"},
-				},
-			}, r)
-		}
-	}
-	w.WriteHeader(http.StatusNoContent)
+	_ = selfOnly
+	kernel.WriteJSON(w, http.StatusConflict, map[string]any{
+		"code":    "state_conflict",
+		"message": "请前往授权中心按来源归还；团队授权不能归还整个业务记录",
+	})
 }
 
-// patch keeps the administrator surface (update + expire variants).
-func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
-	d.patchScoped(w, r, expireOnly, false)
-}
-
-// patchSelf serves PATCH /my-authorizations/{id} and /expire: the viewer is
-// pinned as the owner scope (Node forceSelfAccessScope), so the log mode
-// degrades to 'self' and inbound grants resolve as not_found.
 func (d *Deps) patchSelf(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	d.patchScoped(w, r, expireOnly, true)
+}
+
+func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
+	d.patchScoped(w, r, expireOnly, false)
 }
 
 func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, selfOnly bool) {
@@ -686,62 +546,39 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	// authorizations.routes.ts:441-445 / :497-501: scope query first.
 	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
+	_ = selfOnly
 	var body struct {
 		ExpectedUpdatedAt string          `json:"expectedUpdatedAt"`
-		Status            json.RawMessage `json:"status"`
+		Remark            *string         `json:"remark"`
 		ExpiresAt         json.RawMessage `json:"expiresAt"`
 		Limits            json.RawMessage `json:"limits"`
 	}
-	// Both the update and expire schemas are strict objects
-	// (authorizations.routes.ts:131/:142); the expire surface does not declare
-	// a status key, so an expire request carrying status fails with the zod
-	// unrecognized-keys message before the presence refine.
-	allowedKeys := map[string]bool{
-		"expectedUpdatedAt": true, "status": true, "expiresAt": true, "limits": true,
-	}
+	allowed := map[string]bool{"expectedUpdatedAt": true, "remark": true, "expiresAt": true, "limits": true}
 	if expireOnly {
-		allowedKeys = map[string]bool{"expectedUpdatedAt": true, "expiresAt": true, "limits": true}
+		allowed = map[string]bool{"expectedUpdatedAt": true, "expiresAt": true}
 	}
-	if !decodeStrictJSON(w, r, &body, allowedKeys) {
+	if !decodeStrictJSON(w, r, &body, allowed) {
 		return
 	}
-	// Claim #5: PATCH/expire share the version schema
-	// (authorizations.routes.ts:124/:136).
-	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
-	if !ok {
-		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
-		return
-	}
-	hasStatus := rawJSONPresent(body.Status)
 	hasExpiresAt := len(bytes.TrimSpace(body.ExpiresAt)) > 0
 	hasLimits := len(bytes.TrimSpace(body.Limits)) > 0
-	// The expire surface rejects a status key inside decodeStrictJSON above
-	// (the strict expire schema has no status key), so no separate guard is
-	// needed here.
-	// Presence refine (authorizations.routes.ts:131-133 / :142-144).
-	contentPresent := hasExpiresAt || hasLimits
-	if !expireOnly {
-		contentPresent = contentPresent || hasStatus
-	}
-	if !contentPresent {
+	if !hasExpiresAt && !hasLimits && body.Remark == nil {
 		kernel.WriteBadRequest(w, "请提供要修改的授权内容")
 		return
 	}
-	status, statusOK := parseStatusInput(body.Status)
-	if hasStatus && !statusOK {
-		kernel.WriteBadRequest(w, "修改授权参数不合法")
-		return
+	input := UpdateOfferInput{Remark: body.Remark, ExpiresAtSet: hasExpiresAt}
+	if hasExpiresAt {
+		expiresAt, expiresSet, ok := parseExpiresAtInput(body.ExpiresAt)
+		if !ok {
+			kernel.WriteBadRequest(w, "过期时间格式不正确")
+			return
+		}
+		input.ExpiresAt = expiresAt
+		input.ExpiresAtSet = expiresSet
 	}
-	expiresAt, expiresSet, expiresOK := parseExpiresAtInput(body.ExpiresAt)
-	if !expiresOK {
-		kernel.WriteBadRequest(w, "过期时间格式不正确")
-		return
-	}
-	input := PatchInput{Status: status, ExpiresAt: expiresAt, ExpiresAtSet: expiresSet}
 	if hasLimits {
 		input.LimitsSet = true
 		if !rawJSONNull(body.Limits) {
@@ -749,65 +586,20 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 			input.LimitsJSON = &text
 		}
 	}
-	// The my-* surface pins the owner scope to the viewer; the administrator
-	// surface narrows only when ?systemAccountId selects a scope account.
-	ownerScope := d.accessFor(r, false).FilterID
-	mode := "admin"
-	if selfOnly {
-		ownerScope = auth.SystemAccountID
-		mode = "self"
-	}
-	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, version,
-		auth.SystemAccountID, ownerScope)
-	if err != nil {
-		// Node surfaces the domain error message verbatim
-		// (authorizations.routes.ts:492/:548); unknown store failures are
-		// infrastructure errors and land on the 500 channel with the cause.
-		var fail *Fail
-		if errorsAsFail(err, &fail) {
-			writeFail(w, fail)
-			return
-		}
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "修改授权失败", err)
+	if err := d.Store.UpdateOffer(r.Context(), auth.SystemAccountID, r.PathValue("id"), input, nowISO(d.Store)); err != nil {
+		writeGovernanceError(r, w, err)
 		return
 	}
-	switch outcome.Status {
-	case "not_found":
-		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
-		return
-	case "conflict":
-		kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-			"message":          "授权配置已被其他操作更新，请刷新后重试",
-			"currentUpdatedAt": outcome.CurrentUpdatedAt,
-		})
-		return
-	}
-	action := "update"
-	summary := "更新资源授权"
-	if expireOnly {
-		action = "update_expire"
-		summary = "更新授权有效期"
-	}
-	// Node logs only the updated outcome (authorizations.routes.ts:462/:518)
-	// with mode = operationMode(requestAccess) and the owner scope
-	// (outcome.context.resourceOwnerSystemAccountId).
-	if outcome.Status == "updated" && d.Sink != nil {
+	if d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
-			OperationScopeSystemAccountID: outcome.Result.OwnerID,
-			Mode:                          mode, Module: "authorizations", Action: action,
-			OperationKey: "authorizations." + action, ResourceType: "authorization",
-			ResourceID: outcome.Result.ID,
-			Summary:    summary + "：" + outcome.Result.ResourceID,
+			OperationScopeSystemAccountID: auth.SystemAccountID,
+			Mode:                          "self", Module: "authorizations", Action: "update",
+			OperationKey: "authorizations.update", ResourceType: "authorization",
+			ResourceID: r.PathValue("id"), Summary: "更新授权额度与备注",
 		}, r)
 	}
-	// Node responds with the mutation result shape
-	// (resourceAuthorizationMutationResult :900-910): normalized limits echo.
-	kernel.WriteOK(w, map[string]any{
-		"id": outcome.Result.ID, "status": outcome.Result.Status,
-		"expiresAt": outcome.Result.ExpiresAt, "limits": outcome.Limits,
-		"updatedAt": outcome.Result.UpdatedAt,
-	}, "")
+	d.writeData(w, map[string]any{"updated": true})
 }
 
 func orDefault(value, fallback string) string {

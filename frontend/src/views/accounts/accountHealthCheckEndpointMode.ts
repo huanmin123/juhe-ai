@@ -4,20 +4,32 @@ const options: Array<{ label: string; value: AccountHealthCheckEndpointMode }> =
   { label: 'Images API', value: 'images_json' },
   { label: 'Audio Speech（TTS）', value: 'audio_speech' },
   { label: 'Audio Transcription（JSON）', value: 'audio_transcription_json' },
+  { label: 'Audio Jobs（Create）', value: 'audio_job_create' },
+  { label: 'Audio Jobs（Get）', value: 'audio_job_get' },
+  { label: 'Audio Jobs（Content）', value: 'audio_job_content' },
+  { label: 'Audio Jobs（Cancel）', value: 'audio_job_cancel' },
   { label: 'Videos API（Create）', value: 'video_create' },
   { label: 'Videos API（Get）', value: 'video_get' },
   { label: 'Videos API（Content）', value: 'video_content' },
   { label: 'Videos API（Cancel）', value: 'video_cancel' },
+  { label: 'Realtime Session', value: 'realtime_session' },
   { label: 'Chat Completions（JSON）', value: 'chat_json' },
   { label: 'Chat Completions（Streaming）', value: 'chat_sse' },
   { label: 'Responses API（JSON）', value: 'responses_json' },
   { label: 'Responses API（Streaming）', value: 'responses_sse' },
   { label: 'Messages API（JSON）', value: 'messages_json' },
   { label: 'Messages API（Streaming）', value: 'messages_sse' },
+  { label: 'Messages Token Counting', value: 'message_token_counting' },
   { label: 'GenerateContent（JSON）', value: 'generate_content_json' },
   { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' },
   { label: 'Interactions API（JSON）', value: 'interactions_json' },
-  { label: 'Interactions API（SSE）', value: 'interactions_sse' }
+  { label: 'Interactions API（SSE）', value: 'interactions_sse' },
+  { label: 'Count Tokens', value: 'count_tokens' },
+  { label: 'Embed Content', value: 'embed_content' },
+  // 2026-11-20 向量/重排协议补齐批：仅作持久化诊断形态（无自动探针）。
+  // 纯向量/纯重排账户没有 chat/media 形态，缺这两项会无法通过保存校验。
+  { label: 'Embeddings API', value: 'embeddings_json' },
+  { label: 'Rerank API', value: 'rerank_json' }
 ]
 
 const endpointModeSet = new Set<AccountHealthCheckEndpointMode>(options.map((option) => option.value))

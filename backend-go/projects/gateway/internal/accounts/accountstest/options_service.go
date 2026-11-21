@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // Manual test model options surface: the port of
@@ -40,8 +41,18 @@ type ManualTestContext struct {
 	HealthCheckModel          string
 	// capabilities-context fields
 	HealthCheckEndpointMode string
+	CapabilityDomain        string
 	SupportedEndpointModes  []string
 	ModelMappings           []accountscore.ModelMapping
+}
+
+// ManualTestKind 是 test-options / test / test-draft 共用的测试方式派生：
+// 媒体域恒连接测试；chat 域只有声明了真实对话生成形态才模型测试。
+func ManualTestKind(context *ManualTestContext) string {
+	if context == nil {
+		return capabilitydomain.TestKindConnection
+	}
+	return capabilitydomain.TestKindForAccount(context.CapabilityDomain, context.SupportedEndpointModes)
 }
 
 // ManualTestOption mirrors AccountManualTestOption.
@@ -141,6 +152,7 @@ type ManualTestContextRow struct {
 	clientCompatibility       string
 	healthCheckModel          string
 	healthCheckEndpointMode   sql.NullString
+	capabilityDomain          string
 	credentialsEncrypted      sql.NullString
 }
 
@@ -178,7 +190,8 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 		COALESCE(source_accounts.type, accounts.type),
 		'' /* client_compatibility 列已退役（设计 §9.11）：显示值按 vendor/type 派生 */,
 		COALESCE(source_accounts.health_check_model, accounts.health_check_model),
-		COALESCE(source_accounts.health_check_endpoint_mode, accounts.health_check_endpoint_mode)` +
+		COALESCE(source_accounts.health_check_endpoint_mode, accounts.health_check_endpoint_mode),
+		COALESCE(source_accounts.capability_domain, accounts.capability_domain, 'chat')` +
 		credentialsColumn + `
 	FROM ` + s.store.Table("accounts") + ` accounts
 	LEFT JOIN ` + s.store.Table("accounts") + ` source_accounts
@@ -212,11 +225,12 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 		err = scan(&row.viewAccountID, &row.factAccountID, &row.ownerSystemAccountID, &row.providerCode,
 			&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.accountType,
 			&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
-			&row.credentialsEncrypted)
+			&row.capabilityDomain, &row.credentialsEncrypted)
 	} else {
 		err = scan(&row.viewAccountID, &row.factAccountID, &row.ownerSystemAccountID, &row.providerCode,
 			&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.accountType,
-			&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode)
+			&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
+			&row.capabilityDomain)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -283,6 +297,7 @@ func (s *Service) manualTestContextFromRow(row *ManualTestContextRow, credential
 		ClientCompatibility:       row.clientCompatibility,
 		HealthCheckModel:          row.healthCheckModel,
 		HealthCheckEndpointMode:   row.healthCheckEndpointMode.String,
+		CapabilityDomain:          row.capabilityDomain,
 		SupportedEndpointModes:    SupportedEndpointModesFromCredentials(credentials),
 		ModelMappings:             mappings,
 	}
@@ -396,10 +411,21 @@ func (m ManualTestModeSource) defaultContext() accountscore.ModeDefaultContext {
 // empty → defaults, unknown values dropped)
 // （原根包私有函数，根包测试经由转发访问）.
 func NormalizeOpenAIEndpointModesForRuntime(value []string, defaults accountscore.ModeDefaultContext) []string {
+	allowed := accountscore.OpenAIEndpointModeValues
+	// qwen OpenAI 档案的写侧词表含 rerank_json（OpenAI 公共词表不含）：
+	// 手工测试选项归一化必须按供应商切换，否则 qwen 重排能力在测试入口被
+	// 静默丢弃。
+	if accountscore.IsQwenProviderCodeToken(defaults.ProviderCode) {
+		allowed = accountscore.QwenEndpointModeValues
+	}
+	allowedSet := map[string]bool{}
+	for _, mode := range allowed {
+		allowedSet[mode] = true
+	}
 	output := []string{}
 	seen := map[string]bool{}
 	for _, item := range value {
-		if !accountscore.IsOpenAIEndpointMode(item) || seen[item] {
+		if !allowedSet[item] || seen[item] {
 			continue
 		}
 		seen[item] = true
@@ -483,6 +509,12 @@ func AccountTestEndpointModeOrder(source ManualTestModeSource) []string {
 		out := []string{}
 		for _, mode := range modes {
 			if mode == "" || seen[mode] {
+				continue
+			}
+			// 2026-11-20 协议补齐批：向量/重排暂无人工测试请求模板（前端
+			// testEndpointModeProtocol 同口径不映射），即使被保存为健康检查
+			// 形态也不进入手工测试选项，避免 UI 发起未实现的测试请求。
+			if mode == "embeddings_json" || mode == "rerank_json" {
 				continue
 			}
 			seen[mode] = true

@@ -2337,6 +2337,7 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 			"grantee_system_account_id": granteeID, "grantee_team_id": granteeTeam,
 			"scope": "use", "status": seed.status, "remark": seed.remark,
 			"expires_at": expiresAt, "limits_json": limits, "created_by": guard.adminID,
+			"ended_at": endedAt, "ended_reason": endedReason,
 			"created_at": w.at(-20 * 24 * time.Hour), "revoked_by": revokedBy,
 			"revoked_at": revokedAt, "updated_at": updatedAtFor(revokedAt, now),
 		}); err != nil {
@@ -2372,15 +2373,37 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 			if seed.team != "" {
 				sourceType, sourceTeam = "team", seed.team
 			}
+			// Every seeded source has been accepted at least once, so it must
+			// carry the consent revision checked by revision 28.
+			sourceRevision := "mockdata:" + seed.key + ":" + userSlug(granteeUser)
 			if err := w.put(tx, "resource_authorization_sources", map[string]any{
 				"id":               CleanupIDPrefix + "source_" + seed.key + "_" + userSlug(granteeUser),
 				"authorization_id": authorizationID, "source_type": sourceType,
 				"source_team_id": sourceTeam, "status": sourceStatus,
+				"observed_source_revision": sourceRevision, "revision_version": 1,
+				"accepted_source_revision": sourceRevision, "accepted_source_revision_version": 1,
 				"activated_at": activatedAt, "ended_at": endedAt, "ended_reason": endedReason,
 				"created_by": guard.adminID, "created_at": w.at(-20 * 24 * time.Hour),
 				"revoked_by": revokedBy, "revoked_at": revokedAt, "updated_at": now,
 			}); err != nil {
 				return nil, err
+			}
+			// 归还来源会写入接收方冷却（设计 §5.6/§7.4），造数同步覆盖该表，
+			// 保持 business 域覆盖率断言不需要为事件表单独开白名单。
+			if seed.status == mockAuthorizationReturned && seed.team == "" {
+				if err := w.put(tx, "resource_authorization_offer_cooldowns", map[string]any{
+					"id":                        CleanupIDPrefix + "cooldown_" + seed.key + "_" + userSlug(granteeUser),
+					"grantor_system_account_id": seed.owner,
+					"grantee_type":              "system_account",
+					"grantee_system_account_id": granteeUser,
+					"resource_type":             seed.resourceType,
+					"resource_id":               seed.resourceID,
+					"until_at":                  w.at(22 * time.Hour),
+					"reason":                    "returned",
+					"created_at":                w.at(-2 * time.Hour),
+				}); err != nil {
+					return nil, err
+				}
 			}
 			if seed.resourceType == "account" && seed.status == mockAuthorizationActive && seed.team == "" {
 				instances = append(instances, mockInstanceSeed{

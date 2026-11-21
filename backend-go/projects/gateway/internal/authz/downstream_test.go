@@ -279,13 +279,13 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	// Excluded by each fanout filter: soft-deleted, provider outside the
 	// whitelist, type outside the whitelist, and an instance of another source.
-	seedDownstreamInstance(t, f, "inst-deleted", "res-1", "grantee", runtimeID, "openai", "oauth", "2026-01-01T00:00:00.000Z")
+	seedDownstreamInstance(t, f, "inst-deleted", "res-1", "grantee", runtimeID, "gpt", "oauth", "2026-01-01T00:00:00.000Z")
 	seedDownstreamInstance(t, f, "inst-provider", "res-1", "grantee", runtimeID, "minimax", "oauth", "")
-	seedDownstreamInstance(t, f, "inst-type", "res-1", "grantee", runtimeID, "openai", "completion", "")
-	seedDownstreamInstance(t, f, "inst-other", "res-9", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-type", "res-1", "grantee", runtimeID, "gpt", "completion", "")
+	seedDownstreamInstance(t, f, "inst-other", "res-9", "grantee", runtimeID, "gpt", "oauth", "")
 
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
 	if err != nil || version == nil {
@@ -386,7 +386,7 @@ func TestReturnResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
 	if err != nil || version == nil {
 		t.Fatalf("load grant: %v %v", version, err)
@@ -414,13 +414,7 @@ func TestReturnGroupResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp-1", "owner")
-	limits := hourlyLimits(4)
-	if _, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp-1",
-		GranteeType: "system_account", GranteeID: "grantee", LimitsJSON: limits,
-	}, "owner"); err != nil {
-		t.Fatal(err)
-	}
+	f.createAcceptedDirectOffer(t, "group", "grp-1", "grantee")
 	receipt, err := f.store.ReturnGroupForGrantee(context.Background(), "grp-1", "grantee", "grantee")
 	if err != nil {
 		t.Fatal(err)
@@ -455,7 +449,7 @@ func TestPatchResyncsBindingsAfterRuntimeSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
 	if err != nil || version == nil {
 		t.Fatalf("load grant: %v %v", version, err)
@@ -516,7 +510,7 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z")); err != nil {
 		t.Fatal(err)
 	}
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", "ra-due", "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", "ra-due", "gpt", "oauth", "")
 	expired, err := f.store.ExpireSweep(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -557,7 +551,7 @@ func TestQuotaBindingUpsertReplacesStaleSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "gpt", "oauth", "")
 	// Revoke → the runtime loses its source → a fresh create revives the grant
 	// and rebuilds the binding against the same runtime row.
 	version, err := f.store.GetGrantForMutation(context.Background(), nil, first.Item.ID)

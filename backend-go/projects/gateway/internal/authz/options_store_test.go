@@ -28,6 +28,14 @@ const optionsPGFixtureSchema = `
 	CREATE TABLE IF NOT EXISTS juhe_business.system_teams (
       id text PRIMARY KEY,
       name text NOT NULL,
+      status text NOT NULL DEFAULT 'active',
+      created_by text NOT NULL DEFAULT '',
+      deleted_at text
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.system_team_members (
+      id text PRIMARY KEY,
+      team_id text NOT NULL,
+      system_account_id text NOT NULL,
       status text NOT NULL DEFAULT 'active'
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.groups (
@@ -50,7 +58,8 @@ func newOptionsFixture(t *testing.T) *Store {
 	statements := []string{
 		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sa-1', 'alice', 'Alice A'), ('sa-2', 'bob', 'Bob B'), ('sa-3', 'carol', 'Carol C')`,
 		`UPDATE juhe_business.system_accounts SET status = 'disabled' WHERE id = 'sa-3'`,
-		`INSERT INTO juhe_business.system_teams (id, name) VALUES ('team-1', 'Alpha'), ('team-2', 'Beta')`,
+		`INSERT INTO juhe_business.system_teams (id, name, created_by) VALUES ('team-1', 'Alpha', 'sa-1'), ('team-2', 'Beta', 'sa-2'), ('team-3', 'Gamma', 'sa-2')`,
+		`INSERT INTO juhe_business.system_team_members (id, team_id, system_account_id) VALUES ('tm-1', 'team-2', 'sa-1')`,
 		`INSERT INTO juhe_business.groups (id, name, system_account_id, enabled, is_default, updated_at) VALUES
 			('g-1', '默认组', 'sa-1', 1, 1, '2026-01-02'),
 			('g-2', '备用组', 'sa-1', 1, 0, '2026-01-03'),
@@ -98,7 +107,7 @@ func TestGranteeTeamsOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(teams) != 2 || teams[0].Name != "Alpha" {
+	if len(teams) != 3 || teams[0].Name != "Alpha" || teams[2].Name != "Gamma" {
 		t.Fatalf("teams wrong: %#v", teams)
 	}
 }
@@ -139,6 +148,31 @@ func TestGranteeGroupsOptions(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Fatalf("empty grantee should yield no rows: %#v", empty)
+	}
+}
+
+func TestScopedGranteeOptionsOnlyExposeViewerRelations(t *testing.T) {
+	store := newOptionsFixture(t)
+
+	accounts, err := store.ListAuthorizationGranteeAccountsScoped(context.Background(), "sa-1", authorizationPrincipalOptionListOptions{Limit: 50})
+	if err != nil {
+		t.Fatalf("scoped accounts: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].ID != "sa-1" {
+		t.Fatalf("scoped accounts must only return viewer: %#v", accounts)
+	}
+
+	teams, err := store.ListAuthorizationGranteeTeamsScoped(context.Background(), "sa-1", authorizationPrincipalOptionListOptions{Limit: 50})
+	if err != nil {
+		t.Fatalf("scoped teams: %v", err)
+	}
+	gotTeams := map[string]bool{}
+	for _, team := range teams {
+		gotTeams[team.ID] = true
+	}
+	// team-1 created by sa-1, team-2 joined by sa-1; team-3 belongs to sa-2.
+	if len(gotTeams) != 2 || !gotTeams["team-1"] || !gotTeams["team-2"] || gotTeams["team-3"] {
+		t.Fatalf("scoped teams = %#v", gotTeams)
 	}
 }
 

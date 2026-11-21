@@ -1,15 +1,16 @@
-# 图像生成与文本嵌入
+# 图像生成、文本嵌入与重排
 
-> 这一篇解决：怎么用 /v1/images 画图、怎么用 /v1/embeddings 把文本变成向量，两个端点的最小可复制请求，以及计费口径。
+> 这一篇解决：怎么用 /v1/images 画图、怎么用 /v1/embeddings 把文本变成向量、怎么用 /v1/rerank 给候选文档打分排序，三个端点的最小可复制请求，以及计费口径。
 
-## 两个端点，一句话版
+## 三个端点，一句话版
 
 | 端点 | 干什么 | 兼容形态 |
 | --- | --- | --- |
 | `POST /v1/images/generations` | 文生图 | OpenAI images API |
 | `POST /v1/embeddings` | 把文本变成向量 | OpenAI embeddings |
+| `POST /v1/rerank` | 按查询给文档重排打分 | Cohere / Jina rerank |
 
-两者都是 **OpenAI 兼容形态**，网关收到后透传给上游账户。以 `/v1/images` 开头的其他图像端点同样按 OpenAI images API 的语义处理，是否可用取决于上游模型的能力。请求字段按 OpenAI 语义填写即可，本文只给最小示例，不展开本项目私有参数。认证方式与对话接口完全相同：`Authorization: Bearer <API Key>`（见《API Key 与认证》）。
+三者都按各自的行业标准形态对外；网关收到后按账户厂商适配或透传给上游。以 `/v1/images` 开头的其他图像端点同样按 OpenAI images API 的语义处理，是否可用取决于上游模型的能力。请求字段按 OpenAI 语义填写即可，本文只给最小示例，不展开本项目私有参数。认证方式与对话接口完全相同：`Authorization: Bearer <API Key>`（见《API Key 与认证》）。
 
 ## 图像生成：POST /v1/images/generations
 
@@ -83,26 +84,58 @@ curl -s "$BASE_URL/v1/embeddings" \
   }'
 ```
 
+## 文本重排：POST /v1/rerank
+
+重排不是 OpenAI 协议，而是检索场景的行业标准形态（Cohere / Jina）：你给一个查询和一批候选文档，模型返回每篇文档的相关性分数，按分数从高到低排序。
+
+最小请求只需要 `model`、`query` 和 `documents`：
+
+```bash
+curl -s "$BASE_URL/v1/rerank"   -H "Authorization: Bearer $JUHE_AI_API_KEY"   -H "Content-Type: application/json"   -d '{
+    "model": "重排模型名（以 /v1/models 返回为准）",
+    "query": "如何重置密码",
+    "documents": ["重置密码的步骤…", "发票申请流程…", "账号安全设置…"],
+    "top_n": 2,
+    "return_documents": true
+  }'
+```
+
+请求字段速查：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `model` | 是 | 重排模型名，从 `GET /v1/models` 里复制 |
+| `query` | 是 | 查询文本 |
+| `documents` | 是 | 候选文档数组：字符串，或 `{"text": "…"}` 对象；至少一项 |
+| `top_n` | 否 | 只返回得分最高的前 N 条；不传返回全部 |
+| `return_documents` | 否 | 是否在结果里回显原文，默认 `false` |
+
+响应要点：
+
+- `results[]` 每项含 `index`（对应原 `documents` 下标）与 `relevance_score`（相关性分数，越高越相关）。
+- `return_documents=true` 时结果里带 `document`；`top_n` 生效后只保留前 N 条。
+- `usage` 报告本次消耗的输入 token；重排没有输出 token。
+
 ## 与 chat completions 的差异
 
-同样是 OpenAI 兼容形态，关注点不太一样：
+同样是文本类接口，关注点不太一样：
 
-| | chat completions | images / embeddings |
+| | chat completions | images / embeddings / rerank |
 | --- | --- | --- |
-| 核心输入 | `messages` 对话 | `prompt` 或 `input` |
-| 核心输出 | `choices[].message` | `data[].url` / `b64_json` 或 `data[].embedding` |
-| 成本特点 | 单次较小 | 图像单张相对贵，批量前先算预算 |
-| 报错排障 | 见对话协议篇 | 认证与错误信封完全相同，参数按本文两张速查表核对 |
+| 核心输入 | `messages` 对话 | `prompt`、`input` 或 `query`+`documents` |
+| 核心输出 | `choices[].message` | `data[].url` / `b64_json`、`data[].embedding` 或 `results[]` |
+| 成本特点 | 单次较小 | 图像单张相对贵；嵌入/重排按输入 token，批量前先算预算 |
+| 报错排障 | 见对话协议篇 | 认证与错误信封完全相同，参数按本文速查表核对 |
 
 ## 用哪些模型
 
-- 图像和嵌入模型**同样以 `GET /v1/models` 的返回为准**，读法见《模型列表：我能用什么模型》。
+- 图像、嵌入和重排模型**同样以 `GET /v1/models` 的返回为准**，读法见《模型列表：我能用什么模型》。
 - 模型的名字、说明与**单价**以管理台 [模型广场](/__aisys__/my-models) 为权威。
-- 不是所有分组都配了图像/嵌入账户：你的 Key 链路上有没有，试一次或看列表便知，链路原理见《核心概念：一次请求的旅程》。
+- 不是所有分组都配了图像/嵌入/重排账户：你的 Key 链路上有没有，试一次或看列表便知，链路原理见《核心概念：一次请求的旅程》。
 
 ## 计费口径
 
-- 图像**按张计费**（分辨率档位会乘倍率），嵌入**按 token 计费**。
+- 图像**按张计费**（分辨率档位会乘倍率），嵌入与重排**按输入 token 计费**（重排无输出 token）。
 - 具体维度与单价在管理台 [模型广场](/__aisys__/my-models) 查看，本文不写具体数字。
 - 画图类请求成本通常明显高于文本对话。要批量跑很多图，先小批量试一次，到 [用量记录](/__aisys__/my-usage-records) 确认单张消耗、心里有数再放量。
 - 每次调用（含失败）都会留下使用记录，对账方法见《用量与统计》。
@@ -113,7 +146,7 @@ curl -s "$BASE_URL/v1/embeddings" \
 | --- | --- |
 | 401 鉴权失败 | 《API Key 与认证》的 401 检查清单 |
 | 503 `unsupported_model` | 《模型列表》：模型名是否在列表里 |
-| 400 参数类（`invalid_request_error`） | 核对请求体 JSON 拼写与必填字段；`size`、`n` 等取值是否被该模型支持 |
+| 400 参数类（`invalid_request_error`） | 核对请求体 JSON 拼写与必填字段；`size`、`n`、`query`/`documents` 等取值是否被该模型支持 |
 | 429 / 额度受限 | 《错误码与排障》；画图消耗大，优先怀疑额度 |
 | 5xx / 偶发失败 | 《错误码与排障》：健康、重试与升级路径 |
 

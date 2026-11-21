@@ -366,15 +366,17 @@ func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *t
 	}
 }
 
-func TestDirectInputCandidatesExcludeHealthyImagesFromPeriodicScan(t *testing.T) {
-	guard := "OR (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) <> 'images_json')"
-	guardIndex := strings.Index(directInputCandidatesSQL, guard)
-	dueIndex := strings.Index(directInputCandidatesSQL, "a.next_health_check_at <= $1")
-	if guardIndex < 0 || dueIndex < 0 || guardIndex > dueIndex {
-		t.Fatalf("periodic candidate SQL must exclude active image accounts before due scheduling: guard=%d due=%d", guardIndex, dueIndex)
+// TestDirectInputCandidatesExcludeNonConversationAccounts 锁定 J1 只承载
+// 真实对话形态的模型检查：图像等非对话账户不得进入 J1 候选（由
+// account-connectivity-health 连通性通道负责），也不得保留图像形态或
+// 图像周期性跳过特判。
+func TestDirectInputCandidatesExcludeNonConversationAccounts(t *testing.T) {
+	if strings.Contains(directInputCandidatesSQL, "images_json") {
+		t.Fatalf("J1 候选 SQL 不得再出现 images_json（非对话账户改由连通性健康检查承载）: %s", directInputCandidatesSQL)
 	}
+	// 显式账户装载仍可绕过周期性到期门控（$3），该分支与能力域无关。
 	if !strings.Contains(directInputCandidatesSQL, "$3::boolean") {
-		t.Fatal("explicit account loads must be able to bypass the periodic image exclusion")
+		t.Fatal("explicit account loads must be able to bypass periodic due scheduling")
 	}
 }
 

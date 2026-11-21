@@ -3,10 +3,15 @@ package upstreamhttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestIsPrivateOrReservedIPMirrorRanges(t *testing.T) {
@@ -123,16 +128,26 @@ func (f *fakeResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAdd
 	return f.addresses, nil
 }
 
-func TestDialGuardValidateHostBlocksPrivateResolution(t *testing.T) {
+func TestDialGuardValidateHostMixedResolutionSemantics(t *testing.T) {
+	// Allow-mixed: a public+private answer passes because at least one address
+	// is dialable; only the blocked candidates are filtered out at dial time.
 	resolver := &fakeResolver{addresses: []net.IPAddr{
 		{IP: net.ParseIP("93.184.216.34")},
 		{IP: net.ParseIP("10.0.0.5")},
 	}}
 	guard := NewDialGuard(URLSecurityConfig{}, resolver, nil)
+	if err := guard.ValidateHost(context.Background(), "rebind.example", "443"); err != nil {
+		t.Fatalf("mixed public/private resolution must pass: %v", err)
+	}
+	// An all-blocked resolution is the only rejected shape.
+	resolver.addresses = []net.IPAddr{
+		{IP: net.ParseIP("10.0.0.5")},
+		{IP: net.ParseIP("192.168.1.1")},
+	}
 	err := guard.ValidateHost(context.Background(), "rebind.example", "443")
 	var resolvedErr *UnsafeResolvedUpstreamURLError
 	if !errors.As(err, &resolvedErr) {
-		t.Fatalf("ValidateHost err = %v, want UnsafeResolvedUpstreamURLError", err)
+		t.Fatalf("all-blocked resolution err = %v, want UnsafeResolvedUpstreamURLError", err)
 	}
 	if resolvedErr.Message != UnsafeUpstreamURLMessage {
 		t.Fatalf("message = %q", resolvedErr.Message)
@@ -146,10 +161,92 @@ func TestDialGuardValidateHostBlocksPrivateResolution(t *testing.T) {
 	if len(resolver2.hosts) != 0 {
 		t.Fatalf("literal host resolved anyway: %v", resolver2.hosts)
 	}
-	// allowPrivateBaseUrls skips validation entirely.
+	// allowPrivateBaseUrls skips validation entirely, including all-blocked DNS.
 	guard3 := NewDialGuard(URLSecurityConfig{AllowPrivateBaseUrls: true}, resolver, nil)
 	if err := guard3.ValidateHost(context.Background(), "anything.example", "443"); err != nil {
 		t.Fatalf("allowPrivate ValidateHost = %v", err)
+	}
+}
+
+// TestDialGuardAllowPrivateSkipsLocalResolution locks the historical
+// permissive contract: AllowPrivateBaseUrls short-circuits the prepare-time
+// check without DNS and the dial path keeps the plain dialer, so enabling the
+// permissive deployment does not introduce a local resolver dependency.
+func TestDialGuardAllowPrivateSkipsLocalResolution(t *testing.T) {
+	resolver := &fakeResolver{err: errors.New("resolver must not be called")}
+	guard := NewDialGuard(URLSecurityConfig{AllowPrivateBaseUrls: true}, resolver, nil)
+	if err := guard.ValidateHost(context.Background(), "example.invalid", "443"); err != nil {
+		t.Fatalf("allowPrivate ValidateHost = %v", err)
+	}
+	if len(resolver.hosts) != 0 {
+		t.Fatalf("allowPrivate ValidateHost resolved %v", resolver.hosts)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = connection.Close()
+		}
+	}()
+	conn, err := guard.DialContext(context.Background(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("allowPrivate DialContext = %v", err)
+	}
+	_ = conn.Close()
+	if len(resolver.hosts) != 0 {
+		t.Fatalf("allowPrivate DialContext resolved %v", resolver.hosts)
+	}
+}
+
+// TestDialGuardValidateHostContaminatedAAAA is the W55 regression: a polluted
+// local resolver answer that mixes the real A record with a blocked Teredo
+// AAAA must not reject the host; only an all-blocked answer may.
+func TestDialGuardValidateHostContaminatedAAAA(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		addresses []net.IPAddr
+		wantBlock bool
+	}{
+		{
+			name: "public A plus blocked AAAA",
+			addresses: []net.IPAddr{
+				{IP: net.ParseIP("31.13.112.4")},
+				{IP: net.ParseIP("2001::68f4:2eb9")},
+			},
+		},
+		{
+			name:      "only blocked AAAA",
+			addresses: []net.IPAddr{{IP: net.ParseIP("2001::68f4:2eb9")}},
+			wantBlock: true,
+		},
+		{
+			name: "all private",
+			addresses: []net.IPAddr{
+				{IP: net.ParseIP("10.0.0.5")},
+				{IP: net.ParseIP("192.168.1.1")},
+			},
+			wantBlock: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			guard := NewDialGuard(URLSecurityConfig{}, &fakeResolver{addresses: test.addresses}, nil)
+			err := guard.ValidateHost(context.Background(), "rebind.example", "443")
+			var resolvedErr *UnsafeResolvedUpstreamURLError
+			if test.wantBlock {
+				if !errors.As(err, &resolvedErr) {
+					t.Fatalf("ValidateHost err = %v, want UnsafeResolvedUpstreamURLError", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateHost err = %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -189,10 +286,86 @@ func TestDialGuardDialContextRejectsBlockedResolution(t *testing.T) {
 	if !errors.As(err, &resolvedErr) {
 		t.Fatalf("DialContext err = %v, want UnsafeResolvedUpstreamURLError", err)
 	}
+	// An all-private v4 answer is also a policy rejection.
+	resolver.addresses = []net.IPAddr{
+		{IP: net.ParseIP("10.0.0.5")},
+		{IP: net.ParseIP("192.168.1.1")},
+	}
+	if _, err := guard.DialContext(context.Background(), "tcp", "internal.example:8443"); !errors.As(err, &resolvedErr) {
+		t.Fatalf("all-private DialContext err = %v, want UnsafeResolvedUpstreamURLError", err)
+	}
 	// AllowPrivateBaseUrls falls back to plain dialing.
 	plainGuard := NewDialGuard(URLSecurityConfig{AllowPrivateBaseUrls: true}, resolver, nil)
 	if _, err := plainGuard.DialContext(context.Background(), "tcp", "127.0.0.1:1"); err == nil {
 		t.Fatal("expected dial failure (nothing listens), not a guard error")
+	}
+}
+
+// TestDialGuardDialContextSkipsBlockedCandidates proves that a mixed
+// public/private resolution only dials the validated public candidate. The
+// test dialer allows loopback (so a wrongly selected private candidate would
+// connect and fail the zero-accept assertion) and blocks every other address
+// (so the test never opens an external connection).
+func TestDialGuardDialContextSkipsBlockedCandidates(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- connection
+		}
+	}()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var attempted []string
+	dialer := &net.Dialer{
+		Timeout: 200 * time.Millisecond,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			mu.Lock()
+			attempted = append(attempted, address)
+			mu.Unlock()
+			host, _, splitErr := net.SplitHostPort(address)
+			if splitErr != nil {
+				return splitErr
+			}
+			if host == "127.0.0.1" {
+				return nil
+			}
+			return fmt.Errorf("test dialer blocked external connection to %s", address)
+		},
+	}
+	resolver := &fakeResolver{addresses: []net.IPAddr{
+		{IP: net.ParseIP("127.0.0.1")},
+		{IP: net.ParseIP("1.2.3.4")},
+	}}
+	guard := NewDialGuard(URLSecurityConfig{}, resolver, dialer)
+	conn, err := guard.DialContext(context.Background(), "tcp", "rebind.example:"+port)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("public candidate dial must fail in the test dialer")
+	}
+	var resolvedErr *UnsafeResolvedUpstreamURLError
+	if errors.As(err, &resolvedErr) {
+		t.Fatalf("mixed resolution must not be rejected as unsafe: %v", err)
+	}
+	select {
+	case connection := <-accepted:
+		_ = connection.Close()
+		t.Fatal("blocked private candidate must never be dialed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempted) != 1 || !strings.HasPrefix(attempted[0], "1.2.3.4:") {
+		t.Fatalf("dial attempts = %v, want only the validated public candidate", attempted)
 	}
 }
 

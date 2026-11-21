@@ -77,6 +77,7 @@ func TestW13g2UsageRoute500Arms(t *testing.T) {
 // 深层错误臂（return_group.go 100-141）。
 func TestW13g2ReturnGroupSuccessChain(t *testing.T) {
 	s, fp := w13g2FailStore(t)
+	s.AttachRevisionSecret(testRevisionSecret)
 	db := s.db
 	ctx := context.Background()
 	for _, id := range []string{"owner", "rg1"} {
@@ -88,11 +89,22 @@ func TestW13g2ReturnGroupSuccessChain(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status) VALUES ('grp_rg13', 'R', 'owner', 'active')`); err != nil {
 		t.Fatal(err)
 	}
-	created, err := s.Create(ctx, CreateInput{
+	offer, err := s.CreateOffer(ctx, OfferInput{
 		ResourceType: "group", ResourceID: "grp_rg13",
-		GranteeType: "system_account", GranteeID: "rg1",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "rg1",
+	}, "owner", false, "owner")
 	if err != nil {
+		t.Fatal(err)
+	}
+	var observedRevision string
+	var revisionVersion int
+	if err := db.QueryRow(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`, offer.SourceID).Scan(&observedRevision, &revisionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptSource(ctx, "rg1", offer.SourceID, AcceptInput{
+		ExpectedRevision: observedRevision, ExpectedRevisionVersion: revisionVersion,
+	}, "2026-02-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,11 +142,11 @@ func TestW13g2ReturnGroupSuccessChain(t *testing.T) {
 
 	// 成功归还（无 failpoint）。健康输入扇出对 group 资源是空操作，
 	// enqueue 错误臂由 w13g2_failpoint2_test.go 的 SyncArms 覆盖。
-	grant, err := s.GetGrantForMutation(ctx, nil, created.Item.ID)
+	grant, err := s.GetGrantForMutation(ctx, nil, offer.GrantID)
 	if err != nil || grant == nil {
 		t.Fatal(err)
 	}
-	receipt, err := s.ReturnGroupForGrantee(ctx, "grp_rg13", "rg1", "owner")
+	receipt, err := s.ReturnGroupForGrantee(ctx, "grp_rg13", "rg1", "rg1")
 	if err != nil || receipt == nil {
 		t.Fatalf("归还应成功: %+v %v", receipt, err)
 	}

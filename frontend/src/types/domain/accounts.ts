@@ -20,6 +20,8 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
+  | 'embeddings_json'
+  | 'rerank_json'
   | 'interactions_json'
   | 'interactions_sse'
   | 'audio_speech'
@@ -46,6 +48,9 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'generate_content_sse'
   | 'interactions_json'
   | 'interactions_sse'
+  | 'message_token_counting'
+  | 'count_tokens'
+  | 'embed_content'
   | 'audio_speech'
   | 'audio_transcription_json'
   | 'video_create'
@@ -57,6 +62,9 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'audio_job_content'
   | 'audio_job_cancel'
   | 'realtime_session'
+  // 2026-11-20 向量/重排协议补齐批：只作持久化诊断形态（无自动探针）。
+  | 'embeddings_json'
+  | 'rerank_json'
 >
 export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 

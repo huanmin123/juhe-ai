@@ -1,25 +1,17 @@
-// Team-status cascade into the authorization domain: faithful port of Node
-// resource-authorization-write.repository.ts
-//   - applyActiveTeamGrantsToMembersAsync (:1574-1596)
-//   - revokeTeamSourcesForMemberAsync     (:1598-1629)
-//   - revokeAllTeamSourcesAsync           (:1631-1660)
-//   - reactivateTeamGrantSourcesAsync     (:1662-1665)
-//   - activeTeamMemberRowsAsync           (:1532-1548)
-//   - activeTeamGrantRowsAsync            (:1554-1568)
+// Team lifecycle propagation for the recipient-consent model.
 //
-// All mutating entry points are transaction-bound Tx variants: the Node
-// cascades run inside the caller's transaction (system-team.repository.ts
-// updateSystemTeamAsync :527/:531, addSystemTeamMembersAsync :696,
-// removeSystemTeamMemberAsync :777) and the standalone wrappers merely open
-// one on the caller's behalf. Node evidence for the guardrails implemented
-// here: real actor propagated into revoked_by/revoked_at and the effective
-// source refresh (:1626-1627, :1652-1658), fan-out LIMIT ceilings
-// members*grants+1 (:1640) and grants+1 (:1609, :1563, :1543).
+// The legacy Node cascades eagerly provisioned instances and pushed accounts
+// into member groups. The recipient-consent contract changes that boundary:
+// team membership only creates/withdraws member *offers*; instances, group
+// bindings and snapshots are created by the member's own accept/bind actions.
+// These transaction-bound entry points are called by systemteams inside the
+// member-add/remove and team status transactions.
 package authz
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -36,11 +28,8 @@ func cascadeTeamGrantLimit() int { return MaxTeamActiveGrantCount + 1 }
 // maxSystemTeamMembersPerTeam * maxSystemTeamActiveGrantCount + 1 (:1640).
 func cascadeFanoutLimit() int { return MaxTeamMembersPerTeam*MaxTeamActiveGrantCount + 1 }
 
-// RevokeAllTeamSources opens its own transaction and revokes every active
-// team source of a team (reason e.g. team_disabled). The committed revocation
-// fires the post-commit invalidation fan-out (网关模型列表账户并集设计 6.3
-// coverage); the Tx variant stays fan-out-free because its caller commits and
-// invalidates (systemteams afterCommit).
+// RevokeAllTeamSources opens its own transaction and revokes every non-terminal
+// team source of a team (team disabled/deleted or admin recovery).
 func (s *Store) RevokeAllTeamSources(ctx context.Context, teamID, actor, reason string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -58,165 +47,316 @@ func (s *Store) RevokeAllTeamSources(ctx context.Context, teamID, actor, reason 
 	return nil
 }
 
-// RevokeAllTeamSourcesTx is the transaction-bound variant used by the team
-// patch cascade (Node passes the new team updated_at as `now`,
-// system-team.repository.ts :527).
+// RevokeAllTeamSourcesTx is the transaction-bound variant used by team status
+// transitions. It revokes every non-terminal team source and every non-terminal
+// team grant, then re-projects each affected runtime. A team that is disabled
+// or deleted cannot resurrect old consents when re-enabled: the offer must be
+// sent and approved again.
 func (s *Store) RevokeAllTeamSourcesTx(ctx context.Context, tx *sql.Tx, teamID, actor, now, reason string) error {
 	return s.revokeAllTeamSourcesTx(ctx, tx, teamID, actor, now, reason)
 }
 
 func (s *Store) revokeAllTeamSourcesTx(ctx context.Context, tx *sql.Tx, teamID, actor, now, reason string) error {
-	rows, err := tx.QueryContext(ctx, s.bind(`SELECT DISTINCT authorization_id
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, COALESCE(grant_id, ''), authorization_id
 		FROM `+s.table("resource_authorization_sources")+`
-		WHERE source_type = 'team' AND source_team_id = ? AND status = 'active'
-		ORDER BY authorization_id ASC LIMIT ?`), teamID, cascadeFanoutLimit())
+		WHERE source_type = 'team' AND source_team_id = ? AND status IN ('pending','active','dormant','needs_review')
+		ORDER BY authorization_id ASC, id ASC LIMIT ?`), teamID, cascadeFanoutLimit())
 	if err != nil {
 		return err
 	}
-	var authorizationIDs []string
+	type sourceRow struct{ ID, GrantID, RuntimeID string }
+	var sources []sourceRow
 	for rows.Next() {
-		var authorizationID string
-		if err := rows.Scan(&authorizationID); err != nil {
+		var row sourceRow
+		if err := rows.Scan(&row.ID, &row.GrantID, &row.RuntimeID); err != nil {
 			rows.Close()
 			return err
 		}
-		authorizationIDs = append(authorizationIDs, authorizationID)
+		sources = append(sources, row)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Node :1641-1643: fan-out above the members×grants ceiling aborts the
-	// cascade (and therefore the whole enclosing transaction).
-	if len(authorizationIDs) > MaxTeamMembersPerTeam*MaxTeamActiveGrantCount {
+	if len(sources) > MaxTeamMembersPerTeam*MaxTeamActiveGrantCount {
 		return failf("授权团队来源展开超过当前系统上限，请先拆分团队或回收部分授权")
 	}
-	for _, authorizationID := range authorizationIDs {
-		// Node :1645-1657: real actor lands in revoked_by/revoked_at.
+
+	grantIDs := map[string]bool{}
+	runtimeIDs := map[string]bool{}
+	for _, source := range sources {
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
-			SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, ?),
-				revoked_by = ?, revoked_at = ?, updated_at = ?
-			WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'`),
-			now, reason, actor, now, now, authorizationID, teamID); err != nil {
+			SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = ?,
+				revoked_by = ?, revoked_at = ?, pending_expires_at = NULL, updated_at = ?
+			WHERE id = ? AND status IN ('pending','active','dormant','needs_review')`),
+			now, reason, actor, now, now, source.ID); err != nil {
 			return err
 		}
-		// Node :1658 refreshes with default options (no terminal reason).
-		if err := s.refreshEffectiveSource(ctx, tx, authorizationID, actor, now, refreshOptions{}); err != nil {
+		grantIDs[source.GrantID] = true
+		runtimeIDs[source.RuntimeID] = true
+	}
+
+	// Zero-source team grants (pending_owner_approval / pending_team_approval /
+	// pending_member_acceptance with no eligible member) must also terminate;
+	// otherwise a disabled team would keep a pending offer alive forever.
+	grantRows, err := tx.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorization_grants")+`
+		WHERE grantee_type = 'team' AND grantee_team_id = ?
+		  AND status IN ('pending_owner_approval','pending_team_approval','pending','pending_member_acceptance','active','paused')
+		ORDER BY id LIMIT ?`), teamID, cascadeFanoutLimit())
+	if err != nil {
+		return err
+	}
+	for grantRows.Next() {
+		var id string
+		if err := grantRows.Scan(&id); err != nil {
+			grantRows.Close()
 			return err
+		}
+		grantIDs[id] = true
+	}
+	grantRows.Close()
+	if err := grantRows.Err(); err != nil {
+		return err
+	}
+	for grantID := range grantIDs {
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
+			SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = ?,
+				pending_expires_at = NULL, updated_at = ?
+			WHERE id = ?
+			  AND status IN ('pending_owner_approval','pending_team_approval','pending','pending_member_acceptance','active','paused')`),
+			now, reason, now, grantID); err != nil {
+			return err
+		}
+	}
+
+	for runtimeID := range runtimeIDs {
+		if _, err := s.recomputeRuntime(ctx, tx, runtimeID, actor, now); err != nil {
+			return err
+		}
+	}
+	for grantID := range grantIDs {
+		grant, err := s.getOfferForUpdate(ctx, tx, grantID)
+		if err != nil {
+			return err
+		}
+		if grant == nil {
+			continue
+		}
+		if err := s.syncRuntimeQuotaBindings(ctx, tx, grant, now); err != nil {
+			return err
+		}
+		for _, target := range s.grantRuntimeGrantees(ctx, tx, grantID) {
+			if err := s.insertNotification(ctx, tx, target, "offer_revoked", grantID, "", nil,
+				"team-revoked:"+grantID+":"+target+":"+now, now); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// ReactivateTeamGrants opens its own transaction and re-applies active team
-// grants to their members after a team is re-enabled. The committed
-// re-expansion (runtime row upsert + instance provisioning) fires the
-// post-commit invalidation fan-out (网关模型列表账户并集设计 6.3 coverage); the Tx
-// variant stays fan-out-free because its caller commits and invalidates
-// (systemteams afterCommit).
+// ReactivateTeamGrants is intentionally a no-op in the recipient-consent
+// model. Revoked team sources are terminal (design §4.2); re-enabling a team
+// must not silently re-grant access. A new team offer must be created and
+// approved again.
 func (s *Store) ReactivateTeamGrants(ctx context.Context, teamID, actor string) error {
-	ctx = ensureCtx(ctx)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.ReactivateTeamGrantsTx(ctx, tx, teamID, actor, s.now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	s.invalidateAfterBusinessWrite(ctx, invalidationReasonUpdated)
+	_ = ctx
+	_ = teamID
+	_ = actor
 	return nil
 }
 
-// ReactivateTeamGrantsTx mirrors reactivateTeamGrantSourcesAsync
-// (:1662-1665): the active member list drives
-// applyActiveTeamGrantsToMembersAsync inside the caller's transaction (Node
-// system-team.repository.ts :531 passes the team tx and updated_at).
+// ReactivateTeamGrantsTx is the transaction-bound no-op counterpart.
 func (s *Store) ReactivateTeamGrantsTx(ctx context.Context, tx *sql.Tx, teamID, actor, now string) error {
-	members, err := s.activeTeamMemberRowsTx(ctx, tx, teamID)
-	if err != nil {
-		return err
-	}
-	return s.ApplyActiveTeamGrantsToMembersTx(ctx, tx, teamID, members, actor, now)
+	_ = ctx
+	_ = tx
+	_ = teamID
+	_ = actor
+	_ = now
+	return nil
 }
 
-// ApplyActiveTeamGrantsToMembersTx mirrors applyActiveTeamGrantsToMembersAsync
-// (:1574-1596): for every requested member × active team grant, upsert the
-// member runtime with sourceType='team' (+ sourceTeamId) carrying the grant's
-// remark/expires_at/limits, skipping the resource owner, all inside the
-// caller's transaction. The BUG-0175 (D-64/D-74) completion adds the instance
-// clone for active account grants: every covered member keeps a schedulable
-// authorization instance bound to their own enabled default group (设计 :257);
-// a member without that default fails the whole team operation.
+// ApplyActiveTeamGrantsToMembersTx turns newly added team members into member
+// offers (design §5.8): runtime + pending team source, no instance/snapshot/
+// binding. Suppression (blocklist/cooldown/history/limits) never fails the
+// team membership write; it only records a notification for the member.
 func (s *Store) ApplyActiveTeamGrantsToMembersTx(ctx context.Context, tx *sql.Tx, teamID string, memberAccountIDs []string, actor, now string) error {
-	grants, err := s.activeTeamGrantRowsTx(ctx, tx, teamID)
-	if err != nil {
-		return err
-	}
-	if len(grants) == 0 || len(memberAccountIDs) == 0 {
+	if len(memberAccountIDs) == 0 {
 		return nil
 	}
-	// The provisioning gate compares the grant expiry against the caller's
-	// transaction instant; every caller stamps `now` through RFC3339Nano, and
-	// an unparsable value falls back to the store clock.
-	nowTime, err := time.Parse(time.RFC3339Nano, now)
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorization_grants")+`
+		WHERE grantee_type = 'team' AND grantee_team_id = ?
+		  AND status IN ('pending_member_acceptance','active','paused')
+		ORDER BY created_at ASC, id ASC LIMIT ?`), teamID, cascadeTeamGrantLimit())
 	if err != nil {
-		nowTime = s.now().UTC()
+		return err
 	}
-	teamIDCopy := teamID
-	for _, memberID := range memberAccountIDs {
-		for _, grant := range grants {
-			// Node :1579: the resource owner never receives a team-sourced
-			// runtime row of their own resource.
-			if grant.OwnerID == memberID {
+	var grantIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		grantIDs = append(grantIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(grantIDs) > MaxTeamActiveGrantCount {
+		return failf("单个授权团队最多支持 %d 条有效授权，请先回收或停用部分授权", MaxTeamActiveGrantCount)
+	}
+	for _, grantID := range grantIDs {
+		grant, err := s.getOfferForUpdate(ctx, tx, grantID)
+		if err != nil {
+			return err
+		}
+		if grant == nil {
+			continue
+		}
+		createdAny := false
+		for _, memberID := range memberAccountIDs {
+			if memberID == "" || memberID == grant.OwnerID {
 				continue
 			}
-			limits, err := normalizeAuthorizationLimitsJSON(grant.LimitsJSON.String)
+			created, err := s.createTeamMemberOffer(ctx, tx, grant, memberID, actor, now)
 			if err != nil {
 				return err
 			}
-			projection := runtimeProjection{
-				Remark:     nullStringPointer(grant.Remark),
-				ExpiresAt:  nullStringPointer(grant.ExpiresAt),
-				LimitsJSON: limits,
-			}
-			if err := s.upsertRuntimeForUser(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID,
-				memberID, &teamIDCopy, projection, actor, now); err != nil {
-				return err
-			}
-			if grant.ResourceType == "account" {
-				if err := s.provisionTeamAccountInstanceForMember(ctx, tx, grant.ResourceID, grant.OwnerID,
-					memberID, grantNullStringPointer(grant.ExpiresAt), nowTime, now); err != nil {
-					return err
-				}
+			if created {
+				createdAny = true
 			}
 		}
-	}
-	// Quota-scope tail: the member-join/reactivate cascade lands on the same
-	// post-fanout contract as the create path — the hourly-window scope
-	// bindings rebuild reads the just-written runtime rows and instance
-	// clones, so a member covered by this cascade is immediately schedulable
-	// under the grant's hourly limits. Same transaction, same bindingGrant
-	// shape as the create tail.
-	for _, grant := range grants {
-		bindingGrant := grant
-		bindingGrant.GranteeType = "team"
-		bindingGrant.GranteeTeamID = sql.NullString{String: teamID, Valid: true}
-		if err := s.syncGrantQuotaScopeBindings(ctx, tx, &bindingGrant, now); err != nil {
-			return err
+		if createdAny && grant.PendingExpiresAt != "" {
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
+				SET pending_expires_at = NULL, updated_at = ? WHERE id = ?`), now, grant.ID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// RevokeTeamSourcesForMember opens its own transaction and revokes the team
-// sources of one removed member. The committed revocation fires the
-// post-commit invalidation fan-out (网关模型列表账户并集设计 6.3 coverage); the Tx
-// variant stays fan-out-free because its caller commits and invalidates
-// (systemteams afterCommit).
+// createTeamMemberOffer creates one pending member offer after applying the
+// same eligibility gates as team approval. It returns created=false for every
+// suppressed case; only database errors surface.
+func (s *Store) createTeamMemberOffer(ctx context.Context, tx *sql.Tx, grant *offerRecord, memberID, actor, now string) (bool, error) {
+	var status string
+	var deletedAt sql.NullString
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT status, deleted_at FROM `+s.table("system_accounts")+` WHERE id = ?`), memberID).
+		Scan(&status, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if status != "active" || deletedAt.Valid {
+		return false, nil
+	}
+
+	blocked, err := s.isBlocked(ctx, tx, memberID, grant.OwnerID, grant.ResourceType, grant.ResourceID)
+	if err != nil {
+		return false, err
+	}
+	if blocked {
+		// Privacy: the grantor must not learn that this member blocked them.
+		return false, nil
+	}
+
+	// Same team+resource live source already covers this member.
+	var live int
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT count(*)
+		FROM `+s.table("resource_authorization_sources")+` s
+		JOIN `+s.table("resource_authorization_grants")+` g ON g.id = s.grant_id
+		JOIN `+s.table("resource_authorizations")+` ra ON ra.id = s.authorization_id
+		WHERE ra.grantee_system_account_id = ? AND s.source_type = 'team' AND s.source_team_id = ?
+		  AND g.resource_type = ? AND g.resource_id = ? AND s.status IN ('pending','active','dormant','needs_review')
+		LIMIT 1`), memberID, grant.GranteeTeamID, grant.ResourceType, grant.ResourceID).Scan(&live); err != nil {
+		return false, err
+	}
+	if live > 0 {
+		return false, nil
+	}
+	// A member who previously declined or returned this team's offer for the
+	// same resource is not auto-reoffered; the grantor must re-invite.
+	var exited int
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT count(*)
+		FROM `+s.table("resource_authorization_sources")+` s
+		JOIN `+s.table("resource_authorization_grants")+` g ON g.id = s.grant_id
+		JOIN `+s.table("resource_authorizations")+` ra ON ra.id = s.authorization_id
+		WHERE ra.grantee_system_account_id = ? AND s.source_type = 'team' AND s.source_team_id = ?
+		  AND g.resource_type = ? AND g.resource_id = ? AND s.status IN ('declined','returned')
+		LIMIT 1`), memberID, grant.GranteeTeamID, grant.ResourceType, grant.ResourceID).Scan(&exited); err != nil {
+		return false, err
+	}
+	if exited > 0 {
+		return false, nil
+	}
+
+	if err := s.checkCooldown(ctx, tx, grant.OwnerID, "team_member", "", grant.GranteeTeamID, memberID,
+		grant.ResourceType, grant.ResourceID, now); err != nil {
+		if _, ok := err.(*Fail); ok {
+			if err := s.notifySuppressedOffer(ctx, tx, memberID, grant, "cooldown", now); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		return false, err
+	}
+	var active, pending int
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT
+			COALESCE(SUM(CASE WHEN s.status IN ('active','dormant','needs_review') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN s.status = 'pending' THEN 1 ELSE 0 END), 0)
+		FROM `+s.table("resource_authorization_sources")+` s
+		JOIN `+s.table("resource_authorizations")+` ra ON ra.id = s.authorization_id
+		WHERE ra.grantee_system_account_id = ?`), memberID).Scan(&active, &pending); err != nil {
+		return false, err
+	}
+	if active >= MaxActiveSourcesPerGrantee || pending >= MaxPendingSourcesPerGrantee {
+		if err := s.notifySuppressedOffer(ctx, tx, memberID, grant, "limit_reached", now); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	runtime, err := s.ensureRuntime(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID, memberID, actor, now)
+	if err != nil {
+		return false, err
+	}
+	revision, version, err := s.sourceCurrentRevision(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID)
+	if err != nil {
+		return false, err
+	}
+	sourceID := newSourceID(s.now)
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("resource_authorization_sources")+`
+		(id, grant_id, authorization_id, source_type, source_team_id, status, observed_source_revision,
+		 revision_version, expiry_cycle, pending_expires_at, created_by, created_at, updated_at, acceptance_mode)
+		VALUES (?, ?, ?, 'team', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 'recipient')`),
+		sourceID, grant.ID, runtime.ID, grant.GranteeTeamID, revision, version, grant.ExpiryCycle,
+		nowPlus(parseTimeOrNow(now), MemberOfferTTL), actor, now, now); err != nil {
+		return false, err
+	}
+	if _, err := s.recomputeRuntime(ctx, tx, runtime.ID, actor, now); err != nil {
+		return false, err
+	}
+	if err := s.insertNotification(ctx, tx, memberID, "member_offer_pending", grant.ID, sourceID,
+		map[string]any{"resourceType": grant.ResourceType, "resourceId": grant.ResourceID},
+		"member-offer:"+sourceID, now); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) notifySuppressedOffer(ctx context.Context, tx *sql.Tx, memberID string, grant *offerRecord, reason, now string) error {
+	return s.insertNotification(ctx, tx, memberID, "offer_suppressed", grant.ID, "",
+		map[string]any{"reason": reason, "resourceType": grant.ResourceType, "resourceId": grant.ResourceID},
+		"offer-suppressed:"+grant.ID+":"+memberID+":"+now, now)
+}
+
+// RevokeTeamSourcesForMember opens its own transaction and revokes the
+// non-terminal team sources of one removed member.
 func (s *Store) RevokeTeamSourcesForMember(ctx context.Context, teamID, memberAccountID, actor string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -234,53 +374,76 @@ func (s *Store) RevokeTeamSourcesForMember(ctx context.Context, teamID, memberAc
 	return nil
 }
 
-// RevokeTeamSourcesForMemberTx mirrors revokeTeamSourcesForMemberAsync
-// (:1598-1629) inside the caller's transaction (Node
-// removeSystemTeamMemberAsync :777 passes the team tx and updated_at): the
-// removed member's active team sources flip to revoked with the real actor in
-// revoked_by/revoked_at and each runtime row is refreshed with the default
-// (preserve-expired) options.
+// RevokeTeamSourcesForMemberTx revokes every non-terminal team source of the
+// removed member (ended_reason=member_removed), re-projects the member's
+// runtime and lets the team grant aggregate decide whether the whole team
+// offer has ended.
 func (s *Store) RevokeTeamSourcesForMemberTx(ctx context.Context, tx *sql.Tx, teamID, memberAccountID, actor, now string) error {
-	// Node :1599-1609: no ra.status filter — the grantee link alone selects
-	// the rows; ORDER BY authorization_id ASC + grants+1 ceiling.
-	rows, err := tx.QueryContext(ctx, s.bind(`SELECT ras.authorization_id
-		FROM `+s.table("resource_authorization_sources")+` ras
-		INNER JOIN `+s.table("resource_authorizations")+` ra ON ra.id = ras.authorization_id
-		WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active'
-			AND ra.grantee_system_account_id = ?
-		ORDER BY ras.authorization_id ASC LIMIT ?`), teamID, memberAccountID, cascadeTeamGrantLimit())
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT s.id, COALESCE(s.grant_id, ''), s.authorization_id
+		FROM `+s.table("resource_authorization_sources")+` s
+		JOIN `+s.table("resource_authorizations")+` ra ON ra.id = s.authorization_id
+		WHERE s.source_type = 'team' AND s.source_team_id = ?
+		  AND ra.grantee_system_account_id = ? AND s.status IN ('pending','active','dormant','needs_review')
+		ORDER BY s.authorization_id ASC, s.id ASC LIMIT ?`), teamID, memberAccountID, cascadeTeamGrantLimit())
 	if err != nil {
 		return err
 	}
-	var authorizationIDs []string
+	type sourceRow struct{ ID, GrantID, RuntimeID string }
+	var sources []sourceRow
 	for rows.Next() {
-		var authorizationID string
-		if err := rows.Scan(&authorizationID); err != nil {
+		var row sourceRow
+		if err := rows.Scan(&row.ID, &row.GrantID, &row.RuntimeID); err != nil {
 			rows.Close()
 			return err
 		}
-		authorizationIDs = append(authorizationIDs, authorizationID)
+		sources = append(sources, row)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Node :1610-1612.
-	if len(authorizationIDs) > MaxTeamActiveGrantCount {
+	if len(sources) > MaxTeamActiveGrantCount {
 		return failf("单个授权团队最多支持 %d 条有效授权，请先回收或停用部分授权", MaxTeamActiveGrantCount)
 	}
-	for _, authorizationID := range authorizationIDs {
-		// Node :1614-1626: ended_reason COALESCE keeps an earlier terminal
-		// reason; the real actor lands in revoked_by/revoked_at.
+
+	grantIDs := map[string]bool{}
+	runtimeIDs := map[string]bool{}
+	for _, source := range sources {
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
-			SET status = 'revoked', ended_at = COALESCE(ended_at, ?),
-				ended_reason = COALESCE(ended_reason, 'member_removed'),
-				revoked_by = ?, revoked_at = ?, updated_at = ?
-			WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'`),
-			now, actor, now, now, authorizationID, teamID); err != nil {
+			SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = 'member_removed',
+				revoked_by = ?, revoked_at = ?, pending_expires_at = NULL, updated_at = ?
+			WHERE id = ? AND status IN ('pending','active','dormant','needs_review')`),
+			now, actor, now, now, source.ID); err != nil {
 			return err
 		}
-		if err := s.refreshEffectiveSource(ctx, tx, authorizationID, actor, now, refreshOptions{}); err != nil {
+		grantIDs[source.GrantID] = true
+		runtimeIDs[source.RuntimeID] = true
+	}
+	for runtimeID := range runtimeIDs {
+		if _, err := s.recomputeRuntime(ctx, tx, runtimeID, actor, now); err != nil {
+			return err
+		}
+	}
+	for grantID := range grantIDs {
+		grant, err := s.getOfferForUpdate(ctx, tx, grantID)
+		if err != nil {
+			return err
+		}
+		if grant == nil {
+			continue
+		}
+		if err := s.recomputeTeamGrantAggregate(ctx, tx, grant, actor, now); err != nil {
+			return err
+		}
+		if err := s.syncRuntimeQuotaBindings(ctx, tx, grant, now); err != nil {
+			return err
+		}
+		if err := s.insertNotification(ctx, tx, memberAccountID, "source_revoked", grantID, "", nil,
+			"member-removed:"+grantID+":"+memberAccountID, now); err != nil {
+			return err
+		}
+		if err := s.insertNotification(ctx, tx, grant.OwnerID, "member_source_revoked", grantID, "", nil,
+			"member-removed-owner:"+grantID+":"+memberAccountID, now); err != nil {
 			return err
 		}
 	}

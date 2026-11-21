@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -130,18 +131,20 @@ func TestWdRouteReadErrorsSurfaceAs400Or500(t *testing.T) {
 		t.Fatalf("revoke 存储错误应 500: %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
-	patchRequest := wdJSONRequest(t, http.MethodPatch, "/", `{"expectedUpdatedAt":"2026-01-01T00:00:00Z","status":"active"}`, wdAuthCtx("owner", "user"))
+	patchRequest := wdJSONRequest(t, http.MethodPatch, "/", `{"remark":"x"}`, wdAuthCtx("owner", "user"))
 	patchRequest.SetPathValue("id", "any")
 	deps.patchScoped(recorder, patchRequest, false, true)
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("patch 存储错误应 500: %d", recorder.Code)
 	}
+	// The whole-grant return endpoint no longer touches storage; it is a
+	// deterministic 409 retired-surface response.
 	recorder = httptest.NewRecorder()
-	returnRequest := wdJSONRequest(t, http.MethodDelete, "/", `{"expectedUpdatedAt":"2026-01-01T00:00:00Z"}`, wdAuthCtx("grantee", "user"))
+	returnRequest := wdJSONRequest(t, http.MethodDelete, "/", `{}`, wdAuthCtx("grantee", "user"))
 	returnRequest.SetPathValue("id", "any")
 	deps.returnValue(recorder, returnRequest, true)
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("return 存储错误应 500: %d", recorder.Code)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("retired return 应 409: %d", recorder.Code)
 	}
 	if len(sink.entries) != 0 {
 		t.Fatalf("失败路径不应写操作日志: %#v", sink.entries)
@@ -150,27 +153,39 @@ func TestWdRouteReadErrorsSurfaceAs400Or500(t *testing.T) {
 
 func TestWdCreateRouteLimitsAndConflict(t *testing.T) {
 	f, deps, _ := wdNewRouteFixture(t)
-	// limits 合法 JSON：创建成功并在结果里回显。
+	// limits 合法 JSON：创建成功并回显 grant/source 标识。
 	recorder := httptest.NewRecorder()
-	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
-		`{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeId":"grantee","limits":{"daily":{"enabled":true,"limit":3}}}`,
-		wdAuthCtx("admin", "admin")))
+	createBody := `{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeUsername":"grantee","limits":{"daily":{"enabled":true,"limit":3}}}`
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
+		createBody, wdAuthCtx("owner", "user")))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("带 limits 创建应 201: %d %s", recorder.Code, recorder.Body.String())
 	}
-	payload := wdDecodeMap(t, recorder)
-	if payload["item"] == nil {
-		t.Fatalf("创建结果缺 item: %#v", payload)
+	data := wdDecodeMap(t, recorder)
+	if data["grantId"] == nil || data["sourceId"] == nil {
+		t.Fatalf("创建结果缺 grantId/sourceId: %#v", data)
 	}
 
-	// 同资源换内容重复授权 → 领域 Fail 原文 400（Create 只在并发复活竞争
-	// 中返回 Conflict，路由的 errorsAsConflict 分支无法确定性驱动）。
-	changed := `{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeId":"grantee","remark":"changed"}`
+	// A pending offer is idempotent on retry (no duplicate business record).
 	recorder = httptest.NewRecorder()
-	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
-		changed, wdAuthCtx("admin", "admin")))
-	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "该资源已授权给该用户，请勿重复授权" {
-		t.Fatalf("内容变化的重复授权应 400 原文: %d %s", recorder.Code, recorder.Body.String())
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
+		createBody, wdAuthCtx("owner", "user")))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("pending 重复创建应 200 幂等: %d %s", recorder.Code, recorder.Body.String())
+	}
+	retryData := wdDecodeMap(t, recorder)
+	if retryData["grantId"] != data["grantId"] || retryData["created"] != false {
+		t.Fatalf("pending 重复创建应复用同一 grant: %#v", retryData)
+	}
+
+	// An already-active offer rejects a new create with offer_already_active.
+	f.createAcceptedDirectOffer(t, "group", "grp_self", "grantee")
+	recorder = httptest.NewRecorder()
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
+		`{"resourceType":"group","resourceId":"grp_self","granteeType":"system_account","granteeUsername":"grantee"}`,
+		wdAuthCtx("owner", "user")))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "offer_already_active") {
+		t.Fatalf("生效中重复授权应 409 offer_already_active: %d %s", recorder.Code, recorder.Body.String())
 	}
 
 	// 非 JSON body → 400 请求体无效。
@@ -181,14 +196,14 @@ func TestWdCreateRouteLimitsAndConflict(t *testing.T) {
 		t.Fatalf("坏 JSON 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// 关闭库 → 创建存储错误走 500 通道（领域错误仍是 400，见上方重复授权分支）。
+	// 关闭库 → 创建存储错误走 500 通道。
 	if err := f.db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
-		`{"resourceType":"group","resourceId":"grp_x","granteeType":"team","granteeId":"team_r"}`, wdAuthCtx("owner", "user")))
-	if recorder.Code != http.StatusInternalServerError || decodeWd(recorder) != "创建授权失败" {
+		`{"resourceType":"group","resourceId":"grp_x","granteeType":"team","teamName":"Team team_r"}`, wdAuthCtx("owner", "user")))
+	if recorder.Code != http.StatusInternalServerError || decodeWd(recorder) != "授权操作失败" {
 		t.Fatalf("存储错误应 500 兜底: %d %s", recorder.Code, recorder.Body.String())
 	}
 }

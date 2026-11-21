@@ -23,6 +23,7 @@ import (
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // resolvedConnection 是校验后的单行连接事实：registry surface（纯媒体为空串，
@@ -516,8 +517,9 @@ func (s *Store) finishAccountConnectionsReplacement(ctx context.Context, q query
 // 收尾）：preset 必须解析到本账户一行 enabled 连接（health_check_connection_
 // conflict 语义），model 必须属于支持模型且其 models 行声明该 mode，mode 必须
 // 在该连接已启用 mode 内；同一 UPDATE 写入三字段并在提交前读回校验非 NULL
-// （§9 事务级校验硬规则）。
-func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, accountID, vendor, owner, preset, mode, model string, supportedModels []string) error {
+// （§9 事务级校验硬规则）。connectionTest=true 时三字段仅为记录值（连接测试
+// 不调用模型），跳过「检查模型声明该形态」的成员校验，其余归属校验保持。
+func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, accountID, vendor, owner, preset, mode, model string, supportedModels []string, connectionTest bool) error {
 	var connectionID string
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("account_connections")+`
 		WHERE account_id = ? AND connection_preset_code = ? AND enabled = 1`), accountID, preset).Scan(&connectionID)
@@ -538,11 +540,17 @@ func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, a
 	if !entryModeSet(connectionModes)[mode] {
 		return &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在该连接已启用 mode 内", mode)}
 	}
+	// 模型测试账户的检查形态必须是真实对话生成形态（设计 §“测试方式分层”）：
+	// 否则 J1 不会按该形态派发，连通性通道又因账户含生成形态而排除，形成
+	// 两条自动检查通道都不选的账户。
+	if err := validateModelTestHealthEndpointMode(mode, connectionTest); err != nil {
+		return err
+	}
 	modelModes, err := s.entryModelEndpointModes(ctx, q, modelID)
 	if err != nil {
 		return err
 	}
-	if !entryModeSet(modelModes)[mode] {
+	if !connectionTest && !entryModeSet(modelModes)[mode] {
 		return &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查模型 %s 未声明检查形态 %s", model, mode)}
 	}
 	if _, err := q.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+` SET
@@ -562,4 +570,14 @@ func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, a
 		return &ValidationError{Message: "health_check_connection_conflict: 健康检查三字段未完整落库"}
 	}
 	return nil
+}
+
+// validateModelTestHealthEndpointMode 约束模型测试账户的检查形态必须属于
+// 10 个真实对话生成形态（设计 §“测试方式分层”）；连接测试账户的检查形态
+// 只是记录值，不受此约束。
+func validateModelTestHealthEndpointMode(mode string, connectionTest bool) error {
+	if connectionTest || capabilitydomain.IsModelTestEndpointMode(mode) {
+		return nil
+	}
+	return &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 模型测试账户检查形态 %s 必须是真实对话生成形态", mode)}
 }

@@ -41,6 +41,10 @@ type MediaJobRecord struct {
 	ID       string
 	Kind     MediaJobKind
 	APIKeyID string
+	// APIKeyName 是 api_keys.name 的读面水合值（LEFT JOIN api_keys；Key 已删除
+	// 或内部免 Key 直调任务为空串）。任务行本身只持久化 api_key_id，用户面
+	// 展示必须用名称而不是内部 ID。
+	APIKeyName string
 	// OwnerSystemAccountID 是任务归属系统账户（会话 owner，AI 问答免 Key 直调
 	// 计划 §3.3）。新行由创建路径直接写入（内部通道=注入的会话 owner，外部=
 	// API Key 属主系统账户）；存量行经 maintenance ensure 从 api_keys 回填。
@@ -48,6 +52,9 @@ type MediaJobRecord struct {
 	// 的属主判定不再依赖它。
 	OwnerSystemAccountID string
 	AccountID            string
+	// AccountName 是 accounts.name 的读面水合值（与 VendorCode 同一 LEFT JOIN；
+	// 账户已删除时为空串）。详情面展示名称而不是内部 ID。
+	AccountName string
 	// VendorCode 是账户行 vendor_code 的读面水合值（LEFT JOIN accounts；B4①
 	// 起 media_jobs 不再持久化 provider_code / provider_protocol_profile_id
 	// 列——列名是 provider 维度但语义已是 vendor，且对 gpt 账户持久化的是
@@ -522,23 +529,33 @@ func (r *MediaJobsRepo) mediaJobManagementWhere(query MediaJobListQuery) (string
 
 // query 是共用的行读取（WHERE 片段 + 分页；倒序 created_at DESC, id DESC 稳定
 // 排序）。args 尾部两个整数是 LIMIT / OFFSET（管理面查询与归属过滤共用）。
-// LEFT JOIN accounts 水合 vendor_code（B4① 拆除 provider_code 列后读面唯一
-// 供应商来源；账户删除后任务行仍存在，LEFT JOIN 空vendor 回空串）。JSON 列
-// 解码失败按坏行跳过（行级容错：单行损坏不拖垮列表/轮询）。
+// LEFT JOIN accounts 水合 vendor_code/name（B4① 拆除 provider_code 列后读面
+// 唯一供应商来源；详情展示账户名称）；LEFT JOIN api_keys 水合 Key 名称（用户
+// 面展示名称而非内部 ID）。账户/Key 删除后任务行仍存在，LEFT JOIN 空值回空
+// 串。JSON 列解码失败按坏行跳过（行级容错：单行损坏不拖垮列表/轮询）。
 func (r *MediaJobsRepo) query(ctx context.Context, where string, args ...any) ([]*MediaJobRecord, error) {
-	stmt := `SELECT mj.id, mj.kind, mj.api_key_id, mj.owner_system_account_id, mj.account_id, COALESCE(acc.vendor_code, '') AS vendor_code,
+	stmt := `SELECT mj.id, mj.kind, mj.api_key_id, mj.owner_system_account_id, mj.account_id,
+		COALESCE(acc.vendor_code, '') AS vendor_code, COALESCE(acc.name, '') AS account_name,
+		COALESCE(ak.name, '') AS api_key_name,
 		mj.upstream_job_id, mj.status, mj.request_snapshot_json, mj.artifact_json, mj.error_json, mj.usage_json, mj.cost_usd,
 		mj.params_applied_json, mj.params_ignored_json, mj.created_at, mj.updated_at
 		FROM ` + r.table() + ` mj
 		LEFT JOIN ` + r.accountsTable() + ` acc ON acc.id = mj.account_id
+		LEFT JOIN ` + r.apiKeysTable() + ` ak ON ak.id = mj.api_key_id
 		` + where + ` ORDER BY mj.created_at DESC, mj.id DESC LIMIT ? OFFSET ?`
 	return r.scanRows(ctx, r.bind(stmt), args...)
 }
 
-// accountsTable 是 vendor 水合 JOIN 的 accounts 表名（与 media_jobs 同
+// accountsTable 是 vendor/名称水合 JOIN 的 accounts 表名（与 media_jobs 同
 // schema 限定）。
 func (r *MediaJobsRepo) accountsTable() string {
 	return "juhe_business.accounts"
+}
+
+// apiKeysTable 是 Key 名称水合 JOIN 的 api_keys 表名（与 media_jobs 同
+// schema 限定）。
+func (r *MediaJobsRepo) apiKeysTable() string {
+	return "juhe_business.api_keys"
 }
 
 // scanRows 执行语句并解码行集（query/selectRows 共用）。
@@ -556,7 +573,8 @@ func (r *MediaJobsRepo) scanRows(ctx context.Context, stmt string, args ...any) 
 			snapshotJSON, artifactJSON, errorJSON, usageJSON string
 			appliedJSON, ignoredJSON, createdAt, updatedAt   string
 		)
-		if err := dbRows.Scan(&record.ID, &kind, &record.APIKeyID, &record.OwnerSystemAccountID, &record.AccountID, &record.VendorCode,
+		if err := dbRows.Scan(&record.ID, &kind, &record.APIKeyID, &record.OwnerSystemAccountID, &record.AccountID,
+			&record.VendorCode, &record.AccountName, &record.APIKeyName,
 			&record.UpstreamJobID, &status, &snapshotJSON, &artifactJSON, &errorJSON, &usageJSON,
 			&record.CostUsd,
 			&appliedJSON, &ignoredJSON, &createdAt, &updatedAt); err != nil {

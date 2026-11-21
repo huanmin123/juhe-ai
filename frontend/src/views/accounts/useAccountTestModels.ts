@@ -12,6 +12,7 @@ import type {
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { accountTestEndpointModesForAccount } from './accountEndpointModes'
+import { testKindForAccount, type AccountTestKind } from './accountCapabilityDomains'
 import { accountOperationScopeParams } from './accountOperationScope'
 import type { AccountTestDraftMode } from './accountTestSessionClient'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
@@ -40,6 +41,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   // 无法判定、不改写。
   const testModelOptionsTruncated = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
+  const testKind = ref<AccountTestKind>('model')
   let selectedAccount: AccountListItem | undefined
   let loadedOptionsAccountKey = ''
   let activeOptionsRequestKey = ''
@@ -58,8 +60,25 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     defaultModel = healthCheckModel.trim()
     // 首开零请求：请求形态先以本地推导的账户可测试形态集展示（检查形态
     // 优先选中），模型下拉首次展开加载 options 后再按模型能力收敛。
+    // 列表摘要不携带凭据（无 supported_endpoint_modes），测试方式以账户保存的
+    // 检查形态为准：媒体域恒连接测试；chat 域只有真实对话生成形态才模型测试。
+    // 不按供应商默认形态兜底，避免 embeddings/rerank-only chat 账户被误判模型测试。
     const modes = accountTestEndpointModesForAccount(account)
-    testEndpointModes.value = modes.length ? modes : (healthCheckEndpointMode ? [healthCheckEndpointMode] : [])
+    const storedKindModes = healthCheckEndpointMode ? [healthCheckEndpointMode] : []
+    testKind.value = testKindForAccount(
+      account.capabilityDomain,
+      storedKindModes.length ? storedKindModes : modes
+    )
+    if (testKind.value === 'connection') {
+      // 连接测试不选择模型/请求形态：初始化即就绪，等待用户点「开始测试」。
+      testEndpointModes.value = []
+      input.testForm.testEndpointMode = 'account_default'
+      input.testForm.model = ''
+      testModelOptions.value = []
+      testModelsReady.value = true
+      return
+    }
+    testEndpointModes.value = modes
     let initialEndpointMode: AccountTestEndpointMode = 'account_default'
     if (modes.includes(healthCheckEndpointMode)) {
       initialEndpointMode = healthCheckEndpointMode
@@ -83,6 +102,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     keyword = ''
   ): Promise<AccountTestOptions | undefined> {
     if (!account) return undefined
+    if (testKind.value === 'connection') return undefined
     if (!selectedAccount) selectedAccount = account
     if (selectedAccount.id !== account.id) return undefined
     const normalizedKeyword = keyword.trim()
@@ -111,6 +131,16 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     selectedAccount = account
     const normalizedModel = model.trim()
     const modes = normalizeEndpointModes(endpointModes)
+    testKind.value = testKindForAccount(account.capabilityDomain, modes)
+    if (testKind.value === 'connection') {
+      // 媒体域/输入型草稿：连接测试不使用模型与请求形态。
+      input.testForm.model = ''
+      input.testForm.testEndpointMode = 'account_default'
+      testModelOptions.value = []
+      testEndpointModes.value = []
+      testModelsReady.value = true
+      return
+    }
     defaultModel = normalizedModel
     const defaultOption: AccountTestModelOption = {
       label: normalizedModel,
@@ -129,6 +159,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     const context = draftTestContext
     const account = context?.account
     if (!context || !account) return undefined
+    if (testKind.value === 'connection') return undefined
     if (selectedAccount?.id !== account.id) return undefined
     const normalizedKeyword = keyword.trim()
     const selectedIds = draftSelectedModelIds(context.defaultOption.value, input.testForm.model)
@@ -163,6 +194,19 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       const response = await request.fetcher(controller.signal)
       if (!isCurrentOptionsRequest(requestToken, request.account.id)) return undefined
       loadedOptionsAccountKey = request.optionsKey
+      if (response.testKind === 'connection') {
+        // 服务端判定为连接测试（含 chat 域只声明输入型形态的账户）：不展示
+        // 模型/请求形态，直接进入可执行状态。
+        testKind.value = 'connection'
+        testEndpointModes.value = []
+        input.testForm.model = ''
+        input.testForm.testEndpointMode = 'account_default'
+        testModelOptions.value = []
+        testModelsError.value = ''
+        testModelsReady.value = true
+        return response
+      }
+      if (response.testKind === 'model') testKind.value = 'model'
       request.applyResponseOptions(response)
       if (request.browse && typeof response.hasMore === 'boolean') {
         testModelOptionsTruncated.value = response.hasMore
@@ -285,6 +329,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelOptionsTruncated.value = false
     testModelOptions.value = []
     testEndpointModes.value = []
+    testKind.value = 'model'
     input.testForm.model = ''
     input.testForm.testEndpointMode = 'account_default'
   }
@@ -320,6 +365,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
+    testKind,
     testModelOptions,
     testModelOptionsTruncated,
     testModelsError,

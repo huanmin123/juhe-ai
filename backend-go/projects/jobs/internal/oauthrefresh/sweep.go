@@ -40,6 +40,7 @@ type ResourceAuthorizationGrant struct {
 	CreatedBy            string
 	ExpiresAt            string
 	UpdatedAt            string
+	ExpiryCycle          int
 }
 
 // SweepResult reports the sweep outcome.
@@ -64,7 +65,7 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 	defer tx.Rollback()
 
 	query := `SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
-		status, revoked_at, revoked_by, created_by, expires_at, updated_at
+		status, revoked_at, revoked_by, created_by, expires_at, updated_at, COALESCE(expiry_cycle, 0)
 	FROM ` + s.table("resource_authorization_grants") + `
 	WHERE status IN ('active', 'paused')
 		AND expires_at IS NOT NULL
@@ -85,7 +86,7 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 			revokedBy sql.NullString
 		)
 		if err := rows.Scan(&grant.ID, &grant.ResourceType, &grant.ResourceID, &grant.OwnerSystemAccountID, &grant.GranteeType,
-			&grant.Status, &revokedAt, &revokedBy, &grant.CreatedBy, &grant.ExpiresAt, &grant.UpdatedAt); err != nil {
+			&grant.Status, &revokedAt, &revokedBy, &grant.CreatedBy, &grant.ExpiresAt, &grant.UpdatedAt, &grant.ExpiryCycle); err != nil {
 			rows.Close()
 			return SweepResult{}, err
 		}
@@ -110,17 +111,34 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 		if nextRevokedAt == "" {
 			nextRevokedAt = now
 		}
+		nextCycle := grant.ExpiryCycle + 1
 		updated, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
 			SET status = 'expired',
+				expired_from_status = COALESCE(NULLIF(expired_from_status, ''), status),
+				expiry_cycle = ?,
+				ended_at = COALESCE(ended_at, ?),
+				ended_reason = COALESCE(NULLIF(ended_reason, ''), 'offer_expired'),
+				pending_expires_at = NULL,
 				revoked_at = COALESCE(revoked_at, ?),
 				updated_at = ?
 			WHERE id = ?
-				AND status IN ('active', 'paused')`), now, now, grant.ID)
+				AND status IN ('active', 'paused')`), nextCycle, now, now, now, grant.ID)
 		if err != nil {
 			return SweepResult{}, err
 		}
 		if affected, _ := updated.RowsAffected(); affected != 1 {
 			continue
+		}
+		// The parent expiry must end every non-terminal source in the same
+		// transaction. Otherwise extend cannot find the current expired cycle
+		// and a pending member source can stay pending forever.
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
+			SET status = 'expired', expired_from_status = status, expiry_cycle = ?,
+				ended_at = COALESCE(ended_at, ?), ended_reason = 'offer_expired',
+				pending_expires_at = NULL, updated_at = ?
+			WHERE grant_id = ? AND status IN ('pending','active','dormant','needs_review')`),
+			nextCycle, now, now, grant.ID); err != nil {
+			return SweepResult{}, err
 		}
 		if finalizer != nil {
 			grant.Status = "expired"

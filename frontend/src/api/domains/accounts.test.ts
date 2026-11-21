@@ -90,7 +90,6 @@ describe('accountsApi 请求形状', () => {
     await accountsApi.updateLockConfig('a-1', { lockDeathTimeoutSeconds: 60 })
     await accountsApi.forceActivate('a-1')
     await accountsApi.refreshBalance('a-1')
-    await accountsApi.returnAuthorization('a-1')
     await accountsApi.delete('a-1')
     expect(requestShapes()).toEqual([
       ['POST', '/accounts/a-1/api-key-runtime/revalidate'],
@@ -100,7 +99,6 @@ describe('accountsApi 请求形状', () => {
       ['POST', '/accounts/a-1/lock-config'],
       ['POST', '/accounts/a-1/force-activate'],
       ['POST', '/accounts/a-1/balance/refresh'],
-      ['POST', '/accounts/a-1/return-authorization'],
       ['DELETE', '/accounts/a-1']
     ])
   })

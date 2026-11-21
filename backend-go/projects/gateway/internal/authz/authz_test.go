@@ -12,7 +12,22 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 )
+
+const testRevisionSecret = "test-authz-revision-secret"
+
+// sealedTestCredentials seals fixture credentials with the same secret the
+// fixture store uses for material revisions; authzrevision.Load fails closed on
+// a non-envelope value.
+func sealedTestCredentials(t *testing.T, values map[string]any) string {
+	t.Helper()
+	sealed, err := accountcrypto.EncryptJSON(testRevisionSecret, values)
+	if err != nil {
+		t.Fatalf("seal fixture credentials: %v", err)
+	}
+	return sealed
+}
 
 type fixture struct {
 	store *Store
@@ -52,6 +67,7 @@ var ddl = []string{
 		credential_fingerprint TEXT,
 		credential_mask TEXT NOT NULL DEFAULT '',
 		proxy_profile_id TEXT,
+		proxy_pool_id TEXT,
 		concurrency_limit INTEGER NOT NULL DEFAULT 5000,
 		rpm_limit INTEGER NOT NULL DEFAULT 0,
 		priority INTEGER NOT NULL DEFAULT 0,
@@ -164,6 +180,9 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 新来源模型在创建/接受/重确认时计算 material revision HMAC；生产由
+	// gateway 装配注入，测试夹具提供稳定密钥。
+	store.AttachRevisionSecret(testRevisionSecret)
 	f.store = store
 	return f
 }
@@ -187,6 +206,50 @@ func (f *fixture) seedTeamWithMember(t *testing.T, teamID, memberID string) {
 		VALUES (?, ?, ?, 'active', ?, ?, ?)`), "teammem_"+memberID, teamID, memberID, now, now, now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// createAcceptedDirectOffer drives the new recipient-consent happy path
+// (owner offer → grantee accept) and returns the grant/source ids. Tests that
+// exercise post-acceptance behavior must not seed grants through the retired
+// auto-consent Create path.
+func (f *fixture) createAcceptedDirectOffer(t *testing.T, resourceType, resourceID, granteeID string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	offer, err := f.store.CreateOffer(ctx, OfferInput{
+		ResourceType: resourceType, ResourceID: resourceID,
+		GranteeType: "system_account", GranteeUsername: granteeID,
+	}, "owner", false, "owner")
+	if err != nil {
+		t.Fatalf("create offer: %v", err)
+	}
+	var observed string
+	var version int
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), offer.SourceID).Scan(&observed, &version); err != nil {
+		t.Fatalf("load source revision: %v", err)
+	}
+	if _, err := f.store.AcceptSource(ctx, granteeID, offer.SourceID, AcceptInput{
+		ExpectedRevision: observed, ExpectedRevisionVersion: version,
+	}, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("accept source: %v", err)
+	}
+	return offer.GrantID, offer.SourceID
+}
+
+// acceptSourceForTest reads the pending source revision and accepts it as the
+// given receiver, returning the store result/error for callers that assert the
+// consent outcome.
+func (f *fixture) acceptSourceForTest(t *testing.T, actorID, sourceID string) (*AcceptResult, error) {
+	t.Helper()
+	var observed string
+	var version int
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), sourceID).Scan(&observed, &version); err != nil {
+		return nil, err
+	}
+	return f.store.AcceptSource(context.Background(), actorID, sourceID, AcceptInput{
+		ExpectedRevision: observed, ExpectedRevisionVersion: version,
+	}, f.now.UTC().Format(time.RFC3339Nano))
 }
 
 func (f *fixture) seedGroup(t *testing.T, groupID, ownerID string) {
@@ -1129,10 +1192,10 @@ func TestMyAuthorizationsDirectionRouteContract(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_dir", "owner")
-	if _, err := f.store.Create(context.Background(), CreateInput{
+	if _, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_dir",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner"); err != nil {
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	deps := &Deps{Store: f.store}
@@ -1204,41 +1267,37 @@ func TestAuthorizationRouteInputContract(t *testing.T) {
 		deps.patch(rec, req, expireOnly)
 		return rec.ResponseRecorder
 	}
-	if rec := patchRequest(false, `{"expectedUpdatedAt":"nope","status":"paused"}`); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), "授权配置版本格式不正确") {
-		t.Fatalf("invalid version response = %d %s", rec.Code, rec.Body.String())
-	}
+	// recipient-consent 面只接受 remark/limits/expiresAt；旧 status 字段属于
+	// 未知键，strict JSON 直接拒绝。
 	if rec := patchRequest(false, `{"status":"paused"}`); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), "授权配置版本格式不正确") {
-		t.Fatalf("missing version response = %d %s", rec.Code, rec.Body.String())
+		!strings.Contains(rec.Body.String(), "Unrecognized key(s) in object: 'status'") {
+		t.Fatalf("legacy-status response = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := patchRequest(false, `{"expectedUpdatedAt":"2027-01-01T00:00:00Z"}`); rec.Code != http.StatusBadRequest ||
+	if rec := patchRequest(false, `{}`); rec.Code != http.StatusBadRequest ||
 		!strings.Contains(rec.Body.String(), "请提供要修改的授权内容") {
 		t.Fatalf("no-content response = %d %s", rec.Code, rec.Body.String())
 	}
-	// The expire schema is a strict object without a status key
-	// (authorizations.routes.ts:135-144): the zod unrecognized-keys message is
-	// returned verbatim, not the localized fallback.
-	if rec := patchRequest(true, `{"expectedUpdatedAt":"2027-01-01T00:00:00Z","status":"paused"}`); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), "Unrecognized key(s) in object: 'status'") {
-		t.Fatalf("expire-with-status response = %d %s", rec.Code, rec.Body.String())
+	if rec := patchRequest(false, `{"expiresAt":"not-a-time"}`); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "过期时间格式不正确") {
+		t.Fatalf("invalid-expiry response = %d %s", rec.Code, rec.Body.String())
 	}
-	// Valid version + explicit null expiry clears through the route.
-	body := `{"expectedUpdatedAt":"` + created.Item.UpdatedAt + `","expiresAt":null}`
+	// explicit null is accepted when the grant has no expiry: clearing an unset
+	// value is not an extension.
+	body := `{"remark":"新备注","expiresAt":null}`
 	if rec := patchRequest(false, body); rec.Code != http.StatusOK ||
-		!strings.Contains(rec.Body.String(), `"expiresAt":null`) {
-		t.Fatalf("null-expiry patch response = %d %s", rec.Code, rec.Body.String())
+		!strings.Contains(rec.Body.String(), `"updated":true`) {
+		t.Fatalf("remark/null-expiry patch response = %d %s", rec.Code, rec.Body.String())
 	}
-	// Revoke version validation.
-	revokeReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID, strings.NewReader(`{"expectedUpdatedAt":"bad"}`))
-	revokeReq.Header.Set("Content-Length", strconv.Itoa(len(`{"expectedUpdatedAt":"bad"}`)))
+	// 回收不再要求客户端提交旧版 expectedUpdatedAt；DELETE 只按 grantId 执行。
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID, strings.NewReader(`{}`))
+	revokeReq.Header.Set("Content-Length", strconv.Itoa(len(`{}`)))
 	revokeReq.Header.Set("Content-Type", "application/json")
 	revokeReq.SetPathValue("id", created.Item.ID)
 	revokeReq = revokeReq.WithContext(adminContext)
 	revokeRec := httptest.NewRecorder()
 	deps.revoke(revokeRec, revokeReq)
-	if revokeRec.Code != http.StatusBadRequest || !strings.Contains(revokeRec.Body.String(), "授权配置版本格式不正确") {
-		t.Fatalf("revoke invalid version response = %d %s", revokeRec.Code, revokeRec.Body.String())
+	if revokeRec.Code != http.StatusOK || !strings.Contains(revokeRec.Body.String(), `"status":"revoked"`) {
+		t.Fatalf("revoke response = %d %s", revokeRec.Code, revokeRec.Body.String())
 	}
 }
 

@@ -269,7 +269,7 @@ const (
 )
 
 // modelSeedProtocolEndpointModes 把目录行声明的上游 API 协议名映射到设计
-// §2.2 的 25 值 endpoint mode 词表；map 缺键视为未接入的协议并让 seed 报错
+// §2.2 的 27 值 endpoint mode 词表；map 缺键视为未接入的协议并让 seed 报错
 // （deny-by-default，禁止对未知协议静默产空 mode 集）。"completions" 是旧
 // /v1/completions 遗留声明，目标协议面无对应 mode，显式映射为空集。
 var modelSeedProtocolEndpointModes = map[string][]string{
@@ -282,6 +282,8 @@ var modelSeedProtocolEndpointModes = map[string][]string{
 	"message_token_counting":  {"message_token_counting"},
 	"count_tokens":            {"count_tokens"},
 	"embed_content":           {"embed_content"},
+	"embeddings":              {"embeddings_json"},
+	"rerank":                  {"rerank_json"},
 	"images":                  {"images_json"},
 	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
 	"realtime":                {"realtime_session"},

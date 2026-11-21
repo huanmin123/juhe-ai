@@ -232,6 +232,11 @@ func ValidateBufferedJsonProtocolResponse(parsedJsonBody GatewayNonStreamJsonBod
 				return protocolStructureFailurePtr("上游 Moderations JSON 响应结构无效：results 必须是数组")
 			}
 		}
+		if strings.Contains(requestPath, "/rerank") {
+			if _, ok := root["results"].([]any); !ok {
+				return protocolStructureFailurePtr("上游 Rerank JSON 响应结构无效：results 必须是数组")
+			}
+		}
 		if audioPathPattern.MatchString(requestPath) {
 			if _, ok := root["text"].(string); !ok {
 				return protocolStructureFailurePtr("上游 Audio JSON 响应结构无效：缺少 text")
@@ -368,6 +373,10 @@ func ProtocolValidatedNonStreamResponse(parsedJsonBody GatewayNonStreamJsonBody,
 			return ok
 		}
 		if strings.Contains(requestPath, "/moderations") {
+			_, ok := root["results"].([]any)
+			return ok
+		}
+		if strings.Contains(requestPath, "/rerank") {
 			_, ok := root["results"].([]any)
 			return ok
 		}

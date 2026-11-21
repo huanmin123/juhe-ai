@@ -81,7 +81,7 @@ func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
 	// health-check 三字段事务闭环（fresh accounts 含 health_check_connection_id
 	// 复合外键列集）。
 	if err := store.finalizeAccountHealthCheckTrio(ctx, db, "acc-b1-fresh", "gpt", "owner-b1-fresh",
-		"gpt_openai_v1", "chat_json", "gpt-4o-mini", []string{"gpt-4o-mini"}); err != nil {
+		"gpt_openai_v1", "chat_json", "gpt-4o-mini", []string{"gpt-4o-mini"}, false); err != nil {
 		t.Fatalf("finalizeAccountHealthCheckTrio on fresh DDL: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *test
 		t.Fatal(err)
 	}
 	if err := store.finalizeAccountHealthCheckTrio(ctx, db, "acc-b1-fk-ok", "gpt", "owner-b1-fk",
-		"gpt_openai_v1", "chat_json", "gpt-4o-mini", []string{"gpt-4o-mini"}); err != nil {
+		"gpt_openai_v1", "chat_json", "gpt-4o-mini", []string{"gpt-4o-mini"}, false); err != nil {
 		t.Fatalf("正常序三字段回填应通过复合外键：%v", err)
 	}
 	// 回填后外键生效：连接行被 RESTRICT 删除必须拒绝（health-check 引用在）。

@@ -65,10 +65,12 @@ func TestCatalogSnapshotModeFilled(t *testing.T) {
 // catalogModeVocabulary 是 mode 的统一词表：核对批把 xai 图像三行从旧词
 // 表 "image" 归一到 "image_generation"（展示投影对存量双轨兼容，新数据不
 // 得再落旧词）；"responses" 是 gpt-realtime 等 Responses 专属行的现役值
-// （归一裁决登记计划待办，词表先行收敛防新行乱写）。
+// （归一裁决登记计划待办，词表先行收敛防新行乱写）；"rerank" 是 2026-11-20
+// 向量/重排协议补齐批的新值（gte-rerank-v2，对外 Cohere/Jina 兼容 /v1/rerank）。
 var catalogModeVocabulary = map[string]bool{
 	"chat": true, "audio": true, "video": true,
 	"image_generation": true, "embedding": true, "responses": true,
+	"rerank": true,
 }
 
 func TestCatalogSnapshotModeInVocabulary(t *testing.T) {

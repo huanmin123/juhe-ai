@@ -33,6 +33,7 @@ interface SingleAccountTestOutputOptions {
   providerLabel: (account: AccountListItem) => string
   result?: AccountTestResult
   running: boolean
+  testKind?: 'model' | 'connection'
 }
 
 export function accountTestSelectedEndpointModeText(input: {
@@ -50,6 +51,7 @@ export function accountTestSelectedEndpointModeText(input: {
 export function accountTestSingleOutputLines(options: SingleAccountTestOutputOptions): AccountTestOutputLine[] {
   const account = options.account
   if (!account || (!options.running && !options.result)) return []
+  const connectionTest = options.testKind === 'connection'
   const selectedEndpointModeText = accountTestSelectedEndpointModeText({
     account,
     testEndpointMode: options.testEndpointMode,
@@ -60,13 +62,25 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     { text: `开始测试账号：${account.name}`, tone: 'info' },
     { text: `供应商：${options.providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
-    {
-      text: `测试请求形态：${selectedEndpointModeText}`,
-      tone: 'muted'
-    }
+    connectionTest
+      ? { text: '测试方式：连接测试（只验证凭证与上游可达性）', tone: 'muted' }
+      : { text: `测试请求形态：${selectedEndpointModeText}`, tone: 'muted' }
   ]
 
   if (options.running) {
+    if (connectionTest) {
+      const task = options.activeTask
+      lines.push({ text: '正在验证 API Key 与上游地址连通性...', tone: 'warning' })
+      if (task?.id) {
+        lines.push({ text: `后台任务：${task.id}（${task.cancelRequested ? '正在停止' : accountTestTaskStatusText(task.status)}）`, tone: 'muted' })
+      } else {
+        lines.push({ text: '后台任务：提交中', tone: 'muted' })
+      }
+      if (task?.message) {
+        lines.push({ text: task.message, tone: task.status === 'queued' ? 'muted' : 'info' })
+      }
+      return lines
+    }
     lines.push(...accountTestSingleRunningOutputLines({
       account,
       activeTask: options.activeTask,
@@ -78,7 +92,9 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
 
   if (!options.result) {
     lines.push({
-      text: imageTest ? '点击「开始测试」后会检查图片生成是否成功。' : '点击「开始测试」后会显示完整返回结果。',
+      text: connectionTest
+        ? '点击「开始测试」后只验证 API Key、上游地址与认证是否可达，不调用模型、不生成产物。'
+        : imageTest ? '点击「开始测试」后会检查图片生成是否成功。' : '点击「开始测试」后会显示完整返回结果。',
       tone: 'muted'
     })
     return lines
@@ -93,7 +109,9 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
       : 'API 返回错误',
     tone: options.result.success ? 'success' : 'error'
   })
-  lines.push(...accountTestModelMappingOutputLines(options.result, options.model))
+  if (!connectionTest) {
+    lines.push(...accountTestModelMappingOutputLines(options.result, options.model))
+  }
   const diagnosticParts = splitAccountDiagnosticMessage(options.result.message)
   const traceId = options.result.traceId || diagnosticParts.traceId
   if (traceId) {
@@ -102,7 +120,9 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
   if (diagnosticParts.requestId) {
     lines.push({ text: `request id：${diagnosticParts.requestId}`, tone: 'muted' })
   }
-  lines.push(accountTestActualProtocolLine(account, options.result))
+  if (!connectionTest) {
+    lines.push(accountTestActualProtocolLine(account, options.result))
+  }
   lines.push(...accountTestApiKeyPoolOutputLines(options.result))
   if (imageTest) {
     lines.push({

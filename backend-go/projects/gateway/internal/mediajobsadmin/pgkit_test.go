@@ -53,11 +53,13 @@ const mediaJobsAdminPGFixtureSchema = `
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.api_keys (
       id text PRIMARY KEY,
-      system_account_id text NOT NULL
+      system_account_id text NOT NULL,
+      name text
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.accounts (
       id text PRIMARY KEY,
-      vendor_code text
+      vendor_code text,
+      name text
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.media_jobs (
       id text PRIMARY KEY,

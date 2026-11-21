@@ -37,10 +37,12 @@ type TransportOptions struct {
 	DisableCompression  bool
 	ForceRemoteSOCKS5   bool
 	ProxyConnectHeader  http.Header
-	// DialGuard installs the SSRF validated-dial hook (D-192/D-146): direct
-	// and HTTP(S)-proxy transports resolve and validate the connect target
-	// through the guard before any socket is established. SOCKS dialers keep
-	// their own resolution and ignore the guard.
+	// DialGuard installs the SSRF validated-dial hook (D-192/D-146): in strict
+	// mode direct and HTTP(S)-proxy transports resolve and validate the connect
+	// target through the guard before any socket is established. SOCKS5 local
+	// resolution consumes the same guard to pick only validated addresses in
+	// strict mode (permissive targets keep the historical plain dial); socks5h
+	// remote resolution ignores it (the proxy resolves).
 	DialGuard *DialGuard
 }
 
@@ -99,7 +101,8 @@ func NewTransport(rawProxyURL string, options TransportOptions) (*http.Transport
 	// DialContext 非 nil），且直连路径在本段之前提前返回，导致
 	// TransportOptions.DialGuard 从未生效。按 TransportOptions 契约在直连与
 	// HTTP(S) 代理路径安装 guard（校验实际 socket 对端：直连为上游主机，代理
-	// 为代理主机）；SOCKS 拨号器保持自身解析（socks5h 为远端解析），不受影响。
+	// 为代理主机）；SOCKS5 本地解析分支通过带 guard 的拨号器只选择校验通过的
+	// 地址，socks5h 远端解析保持代理解析语义（guard 不参与选地址）。
 	installDialGuard := func() {
 		if options.DialGuard != nil {
 			transport.DialContext = options.DialGuard.DialContext
@@ -118,7 +121,7 @@ func NewTransport(rawProxyURL string, options TransportOptions) (*http.Transport
 		transport.Proxy = http.ProxyURL(proxyURL)
 		installDialGuard()
 	case "socks5", "socks5h":
-		transport.DialContext = NewSOCKS5DialContext(proxyURL, strings.EqualFold(proxyURL.Scheme, "socks5h") || options.ForceRemoteSOCKS5)
+		transport.DialContext = NewSOCKS5DialContextWithGuard(proxyURL, strings.EqualFold(proxyURL.Scheme, "socks5h") || options.ForceRemoteSOCKS5, options.DialGuard)
 	default:
 		// ParseProxyURL currently makes this unreachable. Keep the branch so a
 		// future scheme cannot silently fall back to direct connectivity.

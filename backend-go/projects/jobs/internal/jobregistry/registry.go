@@ -208,6 +208,13 @@ func ScheduledEntries() []Entry {
 			GoBinding: "RefreshRunner + PrecheckRunner 经组合根接线：AccountReader（find_account_for_test/find_openai_account_for_group 派生）、Prober（accountprobe 协议诊断）、PrecheckMutation（dispatch_revision 围栏 CAS）由 proberepo/accountprobe 提供；effectiveAvailability 的 gateway 运行态分支与授权额度分支不可达 jobs，仅影响探针跳过判断（写入路径保留 CAS 围栏）",
 		},
 		{
+			JobName: "account-connectivity-health", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
+			Writes:   []string{"business:accounts"},
+			GoStatus: GoWired, GoPackage: "connectivityhealth + proberepo + accountprobe",
+			GoBinding: "connectivityhealth.Runner 经组合根接线：候选=媒体域全部 + chat 域仅声明非对话形态的账户（background_probe_enabled=1、到期/时间计划/next_health_check_at 门禁）；proberepo 装载账户视图，accountprobe.ManualConnectivityDiagnostics 按连接器注册表执行（2xx 或预期拒绝码=成功，401/403=error，网络/5xx=只记录事实）；状态写入带 status/config_revision/dispatch_revision CAS 并 bump 账户状态版本",
+		},
+		{
 			JobName: "account-balance-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:accounts", "stats:account_usage_snapshots"},

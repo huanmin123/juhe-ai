@@ -10,6 +10,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrerank"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
@@ -42,6 +43,12 @@ func (t *chainBridgeResponseTransformer) TransformUpstreamResponseForAccount(
 	response := input.Response
 	if req == nil || response == nil || !response.OK() || response.Body == nil {
 		return response, nil
+	}
+	// 重排响应归一（设计 §4.4）：DashScope {output:{results}} 与 Jina/Cohere
+	// 直出形态统一为 {results,usage}，并兜底 top_n / return_documents；与
+	// Code Assist 解包一样在通用映射之前按请求形态短路。
+	if req.MethodUpper() == http.MethodPost && gatewayrerank.IsRequestPath(req.PathAndQuery()) {
+		return chainRerankNormalizeResponse(req, response)
 	}
 	mapping := chainBridgeResponseMappingOf(req, input.Account)
 	return t.transformGeminiCodeAssistIfApplicable(input, mapping, response)

@@ -74,7 +74,7 @@ func TestW9ABusinessSchemaContract(t *testing.T) {
 // TestW9ABusinessSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
-	if BusinessSchemaVersion != "business-postgres-gateway-v25" {
+	if BusinessSchemaVersion != "business-postgres-gateway-v26" {
 		t.Fatalf("schema version drifted: %q", BusinessSchemaVersion)
 	}
 	for _, table := range []string{
@@ -98,11 +98,14 @@ func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
 	}
 	systemAccounts := BusinessSchema["system_accounts"]
 	// v23 起 username/display_name 唯一性由 lower(...) 唯一索引表达，不再是表级
-	// UniqueConstraints 条目；冻结索引定义，避免大小写语义漂移。
+	// UniqueConstraints 条目；v26 起 username 唯一索引按 deleted_at IS NULL
+	// 收窄为部分索引，允许逻辑删除后复用用户名。冻结索引定义，避免大小写与
+	// 逻辑删除语义漂移。
 	usernameUnique := false
 	for _, definition := range systemAccounts.IndexDefinitions {
-		if definition.Name == "idx_system_accounts_username_unique_lower" && definition.Unique &&
-			len(definition.Columns) == 1 && definition.Columns[0] == "lower(username)" {
+		if definition.Name == "idx_system_accounts_username_active_unique_lower" && definition.Unique &&
+			len(definition.Columns) == 1 && definition.Columns[0] == "lower(username)" &&
+			definition.Predicate == "deleted_at IS NULL" {
 			usernameUnique = true
 		}
 	}

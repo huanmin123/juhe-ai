@@ -32,7 +32,7 @@ describe('mediaJobsDisplay 数值格式化', () => {
     expect(formatMediaJobSeconds(undefined)).toBe('-')
   })
 
-  it('成本 USD：六位小数，缺省显示 -', () => {
+  it('成本：六位小数，缺省显示 -', () => {
     expect(formatMediaJobCost(0.123456)).toBe('$0.123456')
     expect(formatMediaJobCost(0)).toBe('$0.000000')
     expect(formatMediaJobCost(undefined)).toBe('-')

@@ -70,8 +70,8 @@
         },
         {
           "id": "11-images-embeddings",
-          "title": "图像生成与文本嵌入",
-          "summary": "/v1/images 画图与 /v1/embeddings 向量的请求方式。",
+          "title": "图像生成、文本嵌入与重排",
+          "summary": "/v1/images 画图、/v1/embeddings 向量与 /v1/rerank 重排的请求方式。",
           "file": "user/11-images-embeddings.md"
         },
         {

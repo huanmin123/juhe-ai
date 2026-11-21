@@ -92,10 +92,9 @@ var invalidationCoverageTable = []coverageTableEntry{
 	},
 	{
 		file: "team_cascade.go",
-		why:  "团队级联独立事务入口（停用撤销/重启用重展开/移除成员撤销）",
+		why:  "团队级联独立事务入口（停用/删除撤销、移除成员撤销）",
 		mustContain: []string{
 			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonRevoked)`,
-			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonUpdated)`,
 		},
 	},
 	{

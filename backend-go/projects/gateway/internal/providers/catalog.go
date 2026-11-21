@@ -137,11 +137,11 @@ type ModelSelectionOption struct {
 	DefaultReasoningEffort    *string  `json:"defaultReasoningEffort,omitempty"`
 }
 
-// ProviderCatalogModeValues mirrors the six-value directory mode word list of
-// the /models/options `modes` query（旧 provider_model_catalog.mode 值域）。
+// ProviderCatalogModeValues mirrors the directory mode word list of the
+// /models/options `modes` query（旧 provider_model_catalog.mode 值域 + 重排行）。
 // models 单表无 mode 列：过滤时经 catalogModeEndpointModeExpansion 展开成
-// 25 值 endpoint mode 集做 json 交集。
-var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "audio", "video", "image_generation"}
+// 27 值 endpoint mode 集做 json 交集。
+var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "rerank", "audio", "video", "image_generation"}
 
 // ModelCapabilities mirrors the findProviderModelCapabilitiesAsync payload.
 type ModelCapabilities struct {
@@ -1101,7 +1101,7 @@ func scanModelOptionRow(scan func(...any) error, scope string, scanScope bool) (
 	return row, nil
 }
 
-// catalogModeEndpointModeExpansion 把六值目录 mode 白名单展开成 25 值 endpoint
+// catalogModeEndpointModeExpansion 把六值目录 mode 白名单展开成 27 值 endpoint
 // mode 集合（supported_endpoint_modes_json 的元素域）。单表后 builtin 行与
 // custom 行共用同一 mode 词表，旧 customVocabularyModes 的 text/image 翻译层
 // 随双表退役；展开表与逆映射 catalogEndpointModeLegacyProjection 互为镜像。
@@ -1125,7 +1125,8 @@ func catalogModeFilterExpansion() map[string][]string {
 	return map[string][]string{
 		"chat":             {"chat_json", "chat_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"},
 		"responses":        {"responses_json", "responses_sse"},
-		"embedding":        {"message_token_counting", "count_tokens", "embed_content"},
+		"embedding":        {"message_token_counting", "count_tokens", "embed_content", "embeddings_json"},
+		"rerank":           {"rerank_json"},
 		"audio":            {"audio_speech", "audio_transcription_json", "realtime_session"},
 		"video":            {"video_create", "video_get", "video_content", "video_cancel"},
 		"image_generation": {"images_json"},

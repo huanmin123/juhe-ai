@@ -121,11 +121,12 @@ func securityPolicySanitizedJSONObject(body []byte) (map[string]any, bool) {
 }
 
 // securityPolicyFamilyForRequest 把请求映射到 gatewaysecpol 出站协议族（设计
-// §5 五族）。判定来源与既有链路面同源：chat/responses 路径词表对齐 preflight
-// 的 openAIEndpointFamilyFromPath，anthropic /v1/messages 与 gemini
-// :generateContent 对齐 gatewayRequestEndpointFamily 的路径判定，媒体族用
-// gatewaymedia.RequestLaneForPath（媒体路径族的唯一词表落点，媒体设计 §3）。
-// 无法判定返回空串（调用方 fail-open 跳过扫描并记 debug 日志）。
+// §5 五族 + 2026-11-20 向量/重排两族）。判定来源与既有链路面同源：chat/
+// responses 路径词表对齐 preflight 的 openAIEndpointFamilyFromPath，anthropic
+// /v1/messages 与 gemini :generateContent 对齐 gatewayRequestEndpointFamily 的
+// 路径判定，媒体族用 gatewaymedia.RequestLaneForPath（媒体路径族的唯一词表落
+// 点，媒体设计 §3）。无法判定返回空串（调用方 fail-open 跳过扫描并记 debug
+// 日志）。
 func securityPolicyFamilyForRequest(req *gatewaypreauth.GatewayRequest) string {
 	if req == nil || req.HTTP == nil {
 		return ""
@@ -135,6 +136,7 @@ func securityPolicyFamilyForRequest(req *gatewaypreauth.GatewayRequest) string {
 	if path == "" {
 		return ""
 	}
+	normalized := securityPolicyStripV1Prefix(path)
 	if method == http.MethodPost {
 		// 媒体域优先：audio/video lane（/v1/audio/speech、/v1/video/generations、
 		// /v1/audio/jobs 等）与图像生成的 prompt/text 类 JSON 出站体都判
@@ -146,6 +148,15 @@ func securityPolicyFamilyForRequest(req *gatewaypreauth.GatewayRequest) string {
 		if strings.Contains(path, "/images/generations") {
 			return gatewaysecpol.FamilyMedia
 		}
+		// 向量/重排是文本 lane：input/query/documents 是用户文本，必须纳入
+		// 出站脱敏。规范面精确匹配；/embeddings/multimodal 是方舟私有透传
+		// 子路径，input[] 的 text 字段同样扫描。
+		if normalized == "/embeddings" || normalized == "/embeddings/multimodal" {
+			return gatewaysecpol.FamilyOpenAIEmbeddings
+		}
+		if normalized == "/rerank" {
+			return gatewaysecpol.FamilyOpenAIRerank
+		}
 	}
 	if strings.Contains(path, "/chat/completions") {
 		return gatewaysecpol.FamilyOpenAIChat
@@ -153,7 +164,7 @@ func securityPolicyFamilyForRequest(req *gatewaypreauth.GatewayRequest) string {
 	if strings.Contains(path, "/responses") {
 		return gatewaysecpol.FamilyOpenAIResponses
 	}
-	if method == http.MethodPost && securityPolicyStripV1Prefix(path) == "/messages" {
+	if method == http.MethodPost && normalized == "/messages" {
 		return gatewaysecpol.FamilyAnthropic
 	}
 	if method == http.MethodPost &&

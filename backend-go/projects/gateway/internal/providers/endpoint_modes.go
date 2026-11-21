@@ -15,8 +15,11 @@ package providers
 import "sort"
 
 // catalogProtocolEndpointModes 把目录行声明的上游 API 协议名映射到设计 §2.2
-// 的 25 值 endpoint mode 词表。"completions" 是旧 /v1/completions 遗留声明，
+// 的 27 值 endpoint mode 词表。"completions" 是旧 /v1/completions 遗留声明，
 // 目标协议面无对应 mode，显式映射为空集（与 maintenance 种子同口径）。
+// 2026-11-20 协议补齐批：embeddings（OpenAI Embeddings 规范面）与 rerank
+//（Cohere/Jina 重排面）是独立协议 token，不与 embed_content（Gemini 原生）
+// 混用。
 var catalogProtocolEndpointModes = map[string][]string{
 	"chat_completions":        {"chat_json", "chat_sse"},
 	"responses":               {"responses_json", "responses_sse"},
@@ -27,6 +30,8 @@ var catalogProtocolEndpointModes = map[string][]string{
 	"message_token_counting":  {"message_token_counting"},
 	"count_tokens":            {"count_tokens"},
 	"embed_content":           {"embed_content"},
+	"embeddings":              {"embeddings_json"},
+	"rerank":                  {"rerank_json"},
 	"images":                  {"images_json"},
 	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
 	"realtime":                {"realtime_session"},
@@ -62,9 +67,11 @@ var catalogEndpointModeLegacyProjection = map[string][][2]string{
 	"message_token_counting":   {{"embedding", "message_token_counting"}},
 	"count_tokens":             {{"embedding", "count_tokens"}},
 	"embed_content":            {{"embedding", "embed_content"}},
+	"embeddings_json":          {{"embedding", "embeddings"}},
+	"rerank_json":              {{"rerank", "rerank"}},
 }
 
-// catalogLegacyModeRank 是逆映射 mode 的词表优先序（video > audio >
+// catalogLegacyModeRank 是逆映射 mode 的词表优先序（rerank > video > audio >
 // image_generation > embedding > responses > chat，与旧 seed 行的 mode 值域
 // 一致）；链路面 chain_catalog 使用同一 rank 表。
 var catalogLegacyModeRank = map[string]int{
@@ -74,6 +81,7 @@ var catalogLegacyModeRank = map[string]int{
 	"image_generation": 3,
 	"audio":            4,
 	"video":            5,
+	"rerank":           6,
 }
 
 // DeriveLegacyModeAndProtocols 从 supported_endpoint_modes_json 元素反推旧目

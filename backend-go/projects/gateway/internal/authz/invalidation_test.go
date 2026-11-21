@@ -200,13 +200,8 @@ func TestReturnGroupFiresReturnedFanout(t *testing.T) {
 	bus := &recordingBus{}
 	f.store.AttachWriteInvalidator(stats, bus)
 
-	if _, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner"); err != nil {
-		t.Fatal(err)
-	}
-	assertOneFanout(t, stats, bus, 0, 0, invalidationReasonCreated)
+	f.createAcceptedDirectOffer(t, "group", "grp_1", "grantee")
+	statsBaseline, busBaseline := len(stats.reasons), len(bus.calls)
 
 	// The unreturnable probes (owner self, unknown group) never refresh.
 	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "owner", "owner"); err != nil {
@@ -215,18 +210,26 @@ func TestReturnGroupFiresReturnedFanout(t *testing.T) {
 	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_missing", "grantee", "grantee"); err != nil {
 		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, 1, 3)
+	assertNoFanout(t, stats, bus, statsBaseline, busBaseline)
 
-	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "actor_admin"); err != nil {
+	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "grantee"); err != nil {
 		t.Fatal(err)
 	}
-	assertOneFanout(t, stats, bus, 1, 3, invalidationReasonReturned)
+	// The source-level return commits its own updated fan-out; the
+	// compatibility group wrapper then emits the returned fan-out.
+	if got := len(stats.reasons); got != statsBaseline+2 ||
+		stats.reasons[got-1] != invalidationReasonReturned {
+		t.Fatalf("stats dirty reasons = %v, want updated+returned", stats.reasons)
+	}
+	if got := len(bus.calls); got != busBaseline+6 {
+		t.Fatalf("bus calls = %d, want %d (%v)", got, busBaseline+6, bus.calls)
+	}
 
 	// The second return resolves no returnable grant and stays silent.
-	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "actor_admin"); err != nil {
+	if _, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "grantee"); err != nil {
 		t.Fatal(err)
 	}
-	assertNoFanout(t, stats, bus, 2, 6)
+	assertNoFanout(t, stats, bus, statsBaseline+2, busBaseline+6)
 }
 
 // TestUnwiredInvalidationStaysSilent pins the nil-tolerance contract: stores

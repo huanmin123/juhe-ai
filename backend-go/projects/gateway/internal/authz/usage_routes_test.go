@@ -185,16 +185,24 @@ func TestUsageEndpointsQueryContract(t *testing.T) {
 		{"/__aisys__/api/authorizations/usage/team-summary?page=2", "Unrecognized key(s) in object: 'page'"},
 		{"/__aisys__/api/authorizations/usage/user-details?granteeSystemAccountId=", "被授权用户 ID 不能为空"},
 		{"/__aisys__/api/my-authorizations/usage/user-summary?includeSummary=true", "Unrecognized key(s) in object: 'includeSummary'"},
-		{"/__aisys__/api/my-authorizations?page=0", "页码必须大于 0"},
-		{"/__aisys__/api/my-authorizations?pageSize=501", "每页最多 500 条"},
-		{"/__aisys__/api/my-authorizations?status=nope", "Invalid enum value."},
-		{"/__aisys__/api/my-authorizations?direction=sideways", "Invalid enum value."},
-		{"/__aisys__/api/my-authorizations?keyword=" + strings.Repeat("x", 121), "搜索关键字最多 120 个字符"},
+		{"/__aisys__/api/my-authorizations?direction=sideways", "direction 参数无效"},
 	}
 	for _, testCase := range cases {
 		status, payload := env.do(t, http.MethodGet, testCase.url, "")
 		if status != http.StatusBadRequest || !strings.Contains(payload, testCase.message) {
 			t.Fatalf("%s status = %d body = %s (want %q)", testCase.url, status, payload, testCase.message)
+		}
+	}
+	// The recipient-consent list surface retired page/pageSize/status/keyword;
+	// unknown legacy parameters are ignored rather than rejected.
+	for _, url := range []string{
+		"/__aisys__/api/my-authorizations?page=0",
+		"/__aisys__/api/my-authorizations?pageSize=501",
+		"/__aisys__/api/my-authorizations?status=nope",
+		"/__aisys__/api/my-authorizations?keyword=" + strings.Repeat("x", 121),
+	} {
+		if status, payload := env.do(t, http.MethodGet, url, ""); status != http.StatusOK {
+			t.Fatalf("retired list parameter %s status = %d body = %s", url, status, payload)
 		}
 	}
 	// A valid usage request with a whitespace keyword passes (the list schema
@@ -211,14 +219,15 @@ func TestMutationBodyUnknownKeyRejected(t *testing.T) {
 	env := newUsageRouteEnv(t, "admin")
 	env.f.seedGroup(t, "grp_usage", "owner1")
 
-	// Create with an unknown key rejects before the store runs.
+	// Create with unknown keys rejects before the store runs. The retired
+	// single-grant create keys (granteeId/note) are both reported.
 	status, payload := env.do(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner1",
 		`{"resourceType":"group","resourceId":"grp_usage","granteeType":"system_account","granteeId":"grantee","note":"x"}`)
-	if status != http.StatusBadRequest || !strings.Contains(payload, "Unrecognized key(s) in object: 'note'") {
+	if status != http.StatusBadRequest || !strings.Contains(payload, "Unrecognized key(s) in object: 'granteeId', 'note'") {
 		t.Fatalf("create unknown key = %d %s", status, payload)
 	}
 
-	// Create the grant through the store for the mutation surfaces.
+	// Create the grant through the store for the revoke surface.
 	created, err := env.f.store.Create(context.Background(), CreateInput{
 		ResourceType: "group", ResourceID: "grp_usage",
 		GranteeType: "system_account", GranteeID: "grantee",
@@ -227,16 +236,20 @@ func TestMutationBodyUnknownKeyRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Revoke retired the request body schema: unknown keys are ignored and the
+	// domain write still runs.
 	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/authorizations/"+created.Item.ID,
 		`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","reason":"x"}`)
-	if status != http.StatusBadRequest || !strings.Contains(payload, "Unrecognized key(s) in object: 'reason'") {
-		t.Fatalf("revoke unknown key = %d %s", status, payload)
+	if status != http.StatusOK {
+		t.Fatalf("revoke with retired body = %d %s", status, payload)
 	}
 
+	// The whole-grant return endpoint is retired in favour of per-source
+	// return; it always answers 409 regardless of the body.
 	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+created.Item.ID+"/return",
-		`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","force":true}`)
-	if status != http.StatusBadRequest || !strings.Contains(payload, "Unrecognized key(s) in object: 'force'") {
-		t.Fatalf("return unknown key = %d %s", status, payload)
+		`{"force":true}`)
+	if status != http.StatusConflict || !strings.Contains(payload, "请前往授权中心按来源归还") {
+		t.Fatalf("retired return = %d %s", status, payload)
 	}
 }
 
@@ -311,24 +324,23 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 		t.Fatalf("stranger usage status = %d", status)
 	}
 
-	// Admin return: without the filter the grantee is the admin itself, which
-	// owns no grant → not_found.
-	status, _ = env.do(t, http.MethodDelete, "/__aisys__/api/authorizations/"+created.Item.ID+"/return",
-		`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`"}`)
-	if status != http.StatusNotFound {
-		t.Fatalf("admin self-return status = %d", status)
-	}
-	// With ?systemAccountId=grantee the nominated account returns the grant.
-	status, payload = env.do(t, http.MethodDelete, "/__aisys__/api/authorizations/"+created.Item.ID+"/return?systemAccountId=grantee",
-		`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`"}`)
-	if status != http.StatusNoContent {
-		t.Fatalf("admin return status = %d body = %s", status, payload)
+	// The whole-grant return surface is retired for administrators too: they
+	// must revoke, while the receiver returns per source. Both calls answer
+	// the state-conflict gate and leave the grant untouched.
+	for _, url := range []string{
+		"/__aisys__/api/authorizations/" + created.Item.ID + "/return",
+		"/__aisys__/api/authorizations/" + created.Item.ID + "/return?systemAccountId=grantee",
+	} {
+		status, payload = env.do(t, http.MethodDelete, url, `{}`)
+		if status != http.StatusConflict || !strings.Contains(payload, "请前往授权中心按来源归还") {
+			t.Fatalf("retired admin return %s = %d body = %s", url, status, payload)
+		}
 	}
 	var grantStatus string
 	if err := env.f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
-	if grantStatus != StatusReturned {
-		t.Fatalf("grant after admin return = %s", grantStatus)
+	if grantStatus != StatusActive {
+		t.Fatalf("grant after retired admin return = %s", grantStatus)
 	}
 }

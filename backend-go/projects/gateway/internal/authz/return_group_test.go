@@ -15,13 +15,7 @@ func TestReturnGroupForGrantee(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_1", "owner")
-
-	if _, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner"); err != nil {
-		t.Fatal(err)
-	}
+	f.createAcceptedDirectOffer(t, "group", "grp_1", "grantee")
 
 	// Owner-self returns never resolve (Node :381).
 	receipt, err := f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "owner", "owner")
@@ -37,7 +31,7 @@ func TestReturnGroupForGrantee(t *testing.T) {
 
 	// The grantee return resolves the runtime receipt (resource_name from the
 	// groups join) and flips the direct grant to returned.
-	receipt, err = f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "actor_admin")
+	receipt, err = f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "grantee")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,14 +45,16 @@ func TestReturnGroupForGrantee(t *testing.T) {
 	if receipt.ResourceName != "Group grp_1" {
 		t.Fatalf("receipt resource name drift: %q", receipt.ResourceName)
 	}
-	var grantStatus, revokedBy string
-	if err := f.db.QueryRow(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants
-		WHERE resource_type = 'group' AND resource_id = 'grp_1' AND grantee_system_account_id = 'grantee'`).
-		Scan(&grantStatus, &revokedBy); err != nil {
+	var grantStatus, returnedBy string
+	if err := f.db.QueryRow(`SELECT g.status, COALESCE(s.returned_by,'')
+		FROM resource_authorization_grants g
+		JOIN resource_authorization_sources s ON s.grant_id = g.id
+		WHERE g.resource_type = 'group' AND g.resource_id = 'grp_1' AND g.grantee_system_account_id = 'grantee'`).
+		Scan(&grantStatus, &returnedBy); err != nil {
 		t.Fatal(err)
 	}
-	if grantStatus != StatusReturned || revokedBy != "actor_admin" {
-		t.Fatalf("grant stamps: status=%s revokedBy=%s", grantStatus, revokedBy)
+	if grantStatus != StatusReturned || returnedBy != "grantee" {
+		t.Fatalf("grant stamps: status=%s returnedBy=%s", grantStatus, returnedBy)
 	}
 	var runtimeStatus string
 	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations
@@ -71,7 +67,7 @@ func TestReturnGroupForGrantee(t *testing.T) {
 	}
 
 	// A second return finds no returnable direct grant.
-	receipt, err = f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "actor_admin")
+	receipt, err = f.store.ReturnGroupForGrantee(context.Background(), "grp_1", "grantee", "grantee")
 	if err != nil || receipt != nil {
 		t.Fatalf("second return: %+v %v", receipt, err)
 	}

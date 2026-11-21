@@ -19,7 +19,7 @@
             <ProviderIcon class="provider-tag-icon" :name="providerName" :provider-code="account.providerCode" :size="14" />
             {{ providerName }}
           </a-tag>
-          <a-tooltip v-if="!accountIsMedia" :title="accountScheduleSummary(account.availabilitySchedule)">
+          <a-tooltip :title="accountScheduleSummary(account.availabilitySchedule)">
             <a-tag :color="accountScheduleTagColor(account.availabilitySchedule)">{{ accountScheduleSummary(account.availabilitySchedule) }}</a-tag>
           </a-tooltip>
           <AccountStatusTag :account="account" />
@@ -67,8 +67,8 @@
           @start-edit="$emit('start-concurrency-edit', account.id)"
         />
       </div>
-      <!-- 时间计划与优先级是对话域调度语义：媒体域不渲染（计划 D7 / 移动端卡片按域裁剪）。 -->
-      <div v-if="!accountIsMedia" class="account-mobile-meta-item">
+      <!-- 时间计划与优先级对所有域统一展示（2026-11-21 统一账户表单）。 -->
+      <div class="account-mobile-meta-item">
         <span>优先级</span>
         <div class="account-mobile-priority-row">
           <AccountPriorityEditor
@@ -134,7 +134,6 @@ import {
 } from './accountBasicFormatters'
 import { formatDateTime, isAuthorizedAccount } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
-import { capabilityDomainIsMedia } from './accountCapabilityDomains'
 import { accountMenuItemsWithClone, authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip, canReturnAuthorizedAccount } from './accountRules'
 import { accountProxyPresentation } from './accountProxyDisplay'
 
@@ -180,9 +179,6 @@ const emit = defineEmits<{
 
 // 池绑定四态展示（代理池设计 §9.3）：移动端复用桌面同一 presentation 规则。
 const proxyView = computed(() => accountProxyPresentation(props.account, props.proxy))
-
-// 媒体域（video/audio/image）裁剪对话域调度语义：缺省（无 capabilityDomain）按对话域渲染。
-const accountIsMedia = computed(() => capabilityDomainIsMedia(props.account.capabilityDomain))
 
 const proxyText = computed(() => proxyView.value.text ?? '')
 const proxyTooltip = computed(() => proxyView.value.tooltip)

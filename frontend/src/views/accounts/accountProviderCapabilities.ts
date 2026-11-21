@@ -23,6 +23,7 @@ import {
   OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
   isGptVendorCode,
   isGeminiProviderCode,
+  isGlmProviderCode,
   isMinimaxProviderCode,
   isVolcengineProviderCode,
   isQwenProviderCode,
@@ -83,6 +84,9 @@ export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
   'audio_job_content',
   'audio_job_cancel',
   'realtime_session',
+  // 2026-11-20 向量协议补齐批：OpenAI 兼容 /v1/embeddings（后端
+  // OpenAIEndpointModeValues 同批收录）；显式开启、不进默认集。
+  'embeddings_json',
   ...chatEndpointModes,
   ...responsesEndpointModes
 ]
@@ -98,7 +102,12 @@ export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['gene
 export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
   ...openAIEndpointModes,
   ...anthropicAccountEndpointModes,
-  ...geminiAccountEndpointModes
+  ...geminiAccountEndpointModes,
+  // rerank_json 是独立文本 lane，不属于 OpenAI 兼容词表：仅 qwen DashScope
+  // 原生 text-rerank 承载（对外 Cohere/Jina 形态），由 provider 分支显式追加；
+  // 收进全局词表用于能力域锚集合与 normalize/validate 的白名单，避免 qwen
+  // 已勾选的 rerank 在保存时被静默丢弃。
+  'rerank_json'
 ]
 
 export function accountProviderProtocolKind(profile?: AccountProviderProfileLike): AccountProviderProtocolKind {
@@ -283,7 +292,10 @@ export function defaultEndpointModesForAccount(input: {
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel'
         && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel'
-        && mode !== 'realtime_session')
+        && mode !== 'realtime_session'
+        // 2026-11-20 向量/重排协议补齐批：两协议与媒体模式同语义，只能显式
+        // 开启，不进新账户默认集（默认集仍为 chat/responses 推导结果）。
+        && mode !== 'embeddings_json' && mode !== 'rerank_json')
     const code = input.provider?.code ?? input.profile?.providerCode ?? ''
     if (isVolcengineProviderCode(code) || isQwenProviderCode(code)) {
       return modes.filter((mode) => mode !== 'chat_json' && mode !== 'chat_sse')
@@ -301,8 +313,17 @@ export function profileSupportsCodexResponsesChatBridge(profile?: AccountProvide
     || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }
 
-export function endpointModesForProfile(profile?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
+export function endpointModesForProfile(
+  profile?: AccountProviderProfileLike,
+  accountType?: AccountType
+): AccountSupportedEndpointMode[] {
   const protocolKind = accountProviderProtocolKind(profile)
+  // 与后端 openAIFamilyVocabulary(accountType) 对齐：OpenAI/OAuth 账户只允许
+  // responses 对；不要因为共用的 profile 定义把 chat/media/embeddings 选项
+  // 展示成可保存。Anthropic OAuth 与 Gemini google_oauth 不走该收窄。
+  if (accountType === 'oauth' && protocolKind === 'openai_v1') {
+    return [...responsesEndpointModes]
+  }
   if (protocolKind === 'anthropic_v1') return endpointModesForFamilies(profile, anthropicAccountEndpointModes, [
     { family: ANTHROPIC_MESSAGES_FAMILY, modes: ['messages_json', 'messages_sse'] },
     { family: ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY, modes: ['message_token_counting'] }
@@ -395,6 +416,11 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       if (families.has(OPENAI_AUDIO_TRANSCRIPTION_FAMILY)) {
         modes.push('audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel')
       }
+      // 2026-11-20 向量/重排协议补齐批：百炼 text-embedding-v4 经
+      // /compatible-mode/v1/embeddings、gte-rerank-v2 经 DashScope 原生
+      // text-rerank 面（对外 Cohere/Jina 兼容 /v1/rerank），均显式可选、
+      // 不进默认集。
+      modes.push('embeddings_json', 'rerank_json')
       return modes
     }
     const familyModes = endpointModesForFamilies(
@@ -405,9 +431,20 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
         { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
       ]
     )
+    // Gemini OpenAI Chat 是独立窄 preset：连接注册表与官方接入设计只开放
+    // Chat Completions 一对，不承接 Responses/Embeddings/媒体面（向量走
+    // Gemini native 的 embed_content）。不能套用通用 OpenAI 族的 opt-in 追加，
+    // 否则 UI 会展示保存必被 registry 拒绝的 mode。
+    const profileId = profile?.providerProtocolProfileId ?? profile?.id
+    if (profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
+      || isGeminiProviderCode(profile?.providerCode ?? profile?.code)) {
+      return [...chatEndpointModes]
+    }
     // images_json 与 M1 音频模式、M2 视频模式是 openai 族的显式可选能力：
     // 允许勾选（媒体 lane 派发依赖），不进默认集（defaultEndpointModesForAccount
-    // 过滤）。
+    // 过滤）。embeddings_json 只在供应商写侧词表包含它时追加：glm 的 OpenAI
+    // 档案词表只有 chat/video/audio（后端 glmOpenAIVocabulary 无 embeddings），
+    // 不能把该选项展示成可保存。
     const selectable: AccountSupportedEndpointMode[] = [
       ...familyModes,
       'images_json',
@@ -423,6 +460,9 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       'audio_job_cancel',
       'realtime_session'
     ]
+    if (!isGlmProviderCode(profile?.providerCode ?? profile?.code)) {
+      selectable.push('embeddings_json')
+    }
     return [...new Set(selectable)]
   }
   return [...allAccountEndpointModes]

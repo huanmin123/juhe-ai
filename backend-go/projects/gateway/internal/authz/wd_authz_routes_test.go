@@ -47,7 +47,14 @@ func wdJSONRequest(t *testing.T, method, target, body string, auth *authsys.Auth
 func wdCreateBody(resourceType, resourceID, granteeType, granteeID, targetGroupID string) string {
 	payload := map[string]any{
 		"resourceType": resourceType, "resourceId": resourceID,
-		"granteeType": granteeType, "granteeId": granteeID,
+		"granteeType": granteeType,
+	}
+	// Recipient-consent model: normal users address the receiver by exact
+	// username / team name; granteeId and targetGroupId are retired.
+	if granteeType == "team" {
+		payload["teamName"] = "Team " + granteeID
+	} else {
+		payload["granteeUsername"] = granteeID
 	}
 	if targetGroupID != "" {
 		payload["targetGroupId"] = targetGroupID
@@ -64,6 +71,8 @@ func wdNewRouteFixture(t *testing.T) (*fixture, *Deps, *wdSink) {
 	f.seedAccount(t, "grantee", "active")
 	f.seedAccount(t, "other", "active")
 	f.seedGroup(t, "grp_r", "owner")
+	f.seedGroup(t, "grp_self", "owner")
+	f.seedGroup(t, "grp_team", "owner")
 	f.seedTeamWithMember(t, "team_r", "grantee")
 	sink := &wdSink{}
 	deps := &Deps{Store: f.store, Sink: sink, Auth: &authsys.Deps{}}
@@ -89,26 +98,30 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		t.Fatalf("admin 未指定 scope 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// 管理面指定授权人 → 201 Created。
+	// 管理面代授权方发起 → 进入待授权方审批，接收方尚不可见。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
 		wdCreateBody("group", "grp_r", "system_account", "grantee", ""), wdAuthCtx("admin", "admin")))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("admin create 应 201: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if len(sink.entries) != 1 || sink.entries[0].Action != "create" || sink.entries[0].Mode != "admin" {
+	created := wdDecodeMap(t, recorder)
+	if created["status"] != StatusPendingOwnerApproval || created["ownerApprovalRequired"] != true || created["created"] != true {
+		t.Fatalf("admin create 结果错误: %#v", created)
+	}
+	if len(sink.entries) != 1 || sink.entries[0].Action != "create_offer" || sink.entries[0].Mode != "admin" {
 		t.Fatalf("create 操作日志错误: %#v", sink.entries)
 	}
 
-	// 重复幂等创建 → 200 + previousStatus 缺失；重新激活 → 200 + previousStatus。
+	// 重复发起同一 offer → 200 + created=false，不重复推进状态。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
 		wdCreateBody("group", "grp_r", "system_account", "grantee", ""), wdAuthCtx("admin", "admin")))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("幂等创建应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if _, hasPrevious := wdDecodeMap(t, recorder)["previousStatus"]; hasPrevious {
-		t.Fatalf("幂等创建不应带 previousStatus")
+	if duplicate := wdDecodeMap(t, recorder); duplicate["created"] != false {
+		t.Fatalf("幂等创建不应重复创建: %#v", duplicate)
 	}
 
 	// 参数校验矩阵。
@@ -121,9 +134,7 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		{"缺字段", `{"resourceType":"group"}`, "owner", "授权参数不合法"},
 		{"资源类型非法", wdCreateBody("model", "m1", "system_account", "grantee", ""), "owner", "授权参数不合法"},
 		{"被授权类型非法", wdCreateBody("group", "grp_r", "robot", "grantee", ""), "owner", "授权参数不合法"},
-		{"账户给个人缺目标分组", wdCreateBody("account", "acc1", "system_account", "grantee", ""), "owner", "授权 AI 账户给个人时必须选择目标分组"},
-		{"分组授权带目标分组", wdCreateBody("group", "grp_r", "system_account", "grantee", "tg1"), "owner", "只有授权 AI 账户给个人时可以指定目标分组"},
-		{"limits 为显式 null", `{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeId":"grantee","limits":null}`, "owner", "授权参数不合法"},
+		{"目标分组已退役", wdCreateBody("account", "acc1", "system_account", "grantee", "tg1"), "owner", "授权不再支持 targetGroupId，请由接收方接受后自行绑定"},
 	}
 	for _, tc := range badBodies {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,7 +147,7 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		})
 	}
 
-	// 资源所有者自授 → 领域 Fail 原样透出（errorsAsFail 分支）。
+	// 资源所有者自授 → 领域错误原样透出。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
 		wdCreateBody("group", "grp_r", "system_account", "owner", ""), wdAuthCtx("admin", "admin")))
@@ -144,21 +155,51 @@ func TestWdCreateRouteContracts(t *testing.T) {
 		t.Fatalf("自授应 400 原文: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// my-* 面：scope 钉到调用者，日志 mode=self；目标分组放行账户授权。
+	// 管理面 scope 指向非资源所有者 → 404 语义的领域错误。
+	recorder = httptest.NewRecorder()
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=grantee",
+		wdCreateBody("group", "grp_r", "system_account", "other", ""), wdAuthCtx("admin", "admin")))
+	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "授权资源不存在" {
+		t.Fatalf("scope 不匹配应 400/授权资源不存在: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// my-* 面：scope 钉到调用者，普通用户直接发给个人进入 pending。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
-		wdCreateBody("group", "grp_r", "team", "team_r", ""), wdAuthCtx("owner", "user")))
+		wdCreateBody("group", "grp_self", "system_account", "grantee", ""), wdAuthCtx("owner", "user")))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("my create 应 201: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if mine := wdDecodeMap(t, recorder); mine["status"] != StatusPending {
+		t.Fatalf("个人 offer 应为 pending: %#v", mine)
 	}
 	if len(sink.entries) < 2 || sink.entries[len(sink.entries)-1].Mode != "self" {
 		t.Fatalf("my create 日志 mode 应为 self: %#v", sink.entries)
 	}
 
+	// my-* 团队 offer → pending_team_approval，由团队审批后逐成员发送。
+	recorder = httptest.NewRecorder()
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
+		wdCreateBody("group", "grp_team", "team", "team_r", ""), wdAuthCtx("owner", "user")))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("my team create 应 201: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if teamOffer := wdDecodeMap(t, recorder); teamOffer["status"] != StatusPendingTeamApproval {
+		t.Fatalf("团队 offer 应为 pending_team_approval: %#v", teamOffer)
+	}
+
+	// 普通用户不允许直接指定 ID。
+	recorder = httptest.NewRecorder()
+	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
+		`{"resourceType":"group","resourceId":"grp_r","granteeType":"system_account","granteeSystemAccountId":"grantee"}`, wdAuthCtx("owner", "user")))
+	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "普通用户请使用精确用户名发起授权" {
+		t.Fatalf("普通用户带 ID 应 400: %d %s", recorder.Code, recorder.Body.String())
+	}
+
 	// 未知 body 键 → 严格对象拒绝（decodeStrictJSON 契约）。
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
-		`{"resourceType":"group","resourceId":"grp_r","granteeType":"team","granteeId":"team_r","extra":1}`, wdAuthCtx("owner", "user")))
+		`{"resourceType":"group","resourceId":"grp_r","granteeType":"team","teamName":"Team team_r","extra":1}`, wdAuthCtx("owner", "user")))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("未知键应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -166,165 +207,142 @@ func TestWdCreateRouteContracts(t *testing.T) {
 
 func TestWdRevokeAndReturnContracts(t *testing.T) {
 	f, deps, sink := wdNewRouteFixture(t)
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_r",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	version := created.Item.UpdatedAt
 	request := func(method, target, body string, auth *authsys.AuthContext) *http.Request {
 		request := wdJSONRequest(t, method, target, body, auth)
-		request.SetPathValue("id", created.Item.ID)
+		request.SetPathValue("id", created.GrantID)
 		return request
 	}
 
-	// revoke：无认证 / 版本非法 / 成功。
+	// revoke：无认证 / 非所有者 / 所有者成功 / 幂等重放。
 	recorder := httptest.NewRecorder()
-	deps.revokeScoped(recorder, request(http.MethodDelete, "/__aisys__/api/authorizations/"+created.Item.ID, `{"expectedUpdatedAt":"`+version+`"}`, nil), false)
+	deps.revokeScoped(recorder, request(http.MethodDelete, "/", "", nil), false)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("revoke 无认证应 401: %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
-	deps.revokeScoped(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"bad"}`, wdAuthCtx("owner", "user")), false)
-	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "授权配置版本格式不正确" {
-		t.Fatalf("版本非法应 400: %d %s", recorder.Code, recorder.Body.String())
+	deps.revokeScoped(recorder, request(http.MethodDelete, "/", "", wdAuthCtx("grantee", "user")), true)
+	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "授权不存在" {
+		t.Fatalf("接收方不得回收授权: %d %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	deps.revokeScoped(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"`+version+`"}`, wdAuthCtx("owner", "user")), true)
+	deps.revokeScoped(recorder, request(http.MethodDelete, "/", "", wdAuthCtx("owner", "user")), true)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("self revoke 应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if len(sink.entries) == 0 || sink.entries[len(sink.entries)-1].Action != "revoke" {
 		t.Fatalf("revoke 日志缺失: %#v", sink.entries)
 	}
-
-	// grantee 发起回收 → 410 语义不存在（scope 边界），路由层是 400 兜底或 404。
-	revived, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_r",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
 	recorder = httptest.NewRecorder()
-	deps.revokeScoped(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"`+revived.Item.UpdatedAt+`"}`, wdAuthCtx("grantee", "user")), true)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("grantee 回收应 404（owner scope 钉到 viewer）: %d %s", recorder.Code, recorder.Body.String())
+	deps.revokeScoped(recorder, request(http.MethodDelete, "/", "", wdAuthCtx("owner", "user")), true)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("revoke 幂等重放应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// return：非法版本 / 成功 204 / 幂等 not_found。
+	// 旧的整体归还路由已退役：团队/个人都必须按来源归还。
 	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"x"}`, wdAuthCtx("grantee", "user")), true)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("return 版本非法应 400: %d", recorder.Code)
+	deps.returnValue(recorder, request(http.MethodDelete, "/", "", wdAuthCtx("grantee", "user")), true)
+	var conflictBody struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
 	}
-	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"`+revived.Item.UpdatedAt+`"}`, wdAuthCtx("grantee", "user")), true)
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("return 成功应 204: %d %s", recorder.Code, recorder.Body.String())
+	if err := json.Unmarshal(recorder.Body.Bytes(), &conflictBody); err != nil {
+		t.Fatalf("return decode: %v (%s)", err, recorder.Body.String())
 	}
-	if len(sink.entries) == 0 || sink.entries[len(sink.entries)-1].Action != "return" {
-		t.Fatalf("return 日志缺失: %#v", sink.entries)
-	}
-	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"`+revived.Item.UpdatedAt+`"}`, wdAuthCtx("grantee", "user")), true)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("同版本二次 return 应乐观锁 409: %d %s", recorder.Code, recorder.Body.String())
-	}
-
-	// 空视图身份（admin 无 filter + 空 viewer）→ 404 兜底。
-	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, request(http.MethodDelete, "/", `{"expectedUpdatedAt":"`+version+`"}`, wdAuthCtx("", "admin")), false)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("空 grantee 应 404: %d", recorder.Code)
+	if recorder.Code != http.StatusConflict || conflictBody.Code != "state_conflict" ||
+		!strings.Contains(conflictBody.Message, "按来源归还") {
+		t.Fatalf("旧归还路由应 409 state_conflict: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
 func TestWdPatchContracts(t *testing.T) {
 	f, deps, sink := wdNewRouteFixture(t)
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_r",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Authorizations can only be edited while active/paused; the offer flow's
+	// acceptance path is covered separately, so promote the row directly here.
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'active' WHERE id = ?`), created.GrantID); err != nil {
+		t.Fatal(err)
+	}
 	request := func(body string, auth *authsys.AuthContext) *http.Request {
-		request := wdJSONRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+created.Item.ID, body, auth)
-		request.SetPathValue("id", created.Item.ID)
+		request := wdJSONRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+created.GrantID, body, auth)
+		request.SetPathValue("id", created.GrantID)
 		return request
 	}
 
 	// 无认证 / 内容缺失。
 	recorder := httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`"}`, nil), false, true)
+	deps.patchScoped(recorder, request(`{}`, nil), false, true)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("patch 无认证应 401: %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`"}`, wdAuthCtx("owner", "user")), false, true)
+	deps.patchScoped(recorder, request(`{}`, wdAuthCtx("owner", "user")), false, true)
 	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "请提供要修改的授权内容" {
 		t.Fatalf("无内容应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 非法 status。
+	// status 已从更新契约移除（暂停/恢复走独立语义），严格对象拒绝。
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","status":"weird"}`, wdAuthCtx("owner", "user")), false, true)
-	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "修改授权参数不合法" {
-		t.Fatalf("非法 status 应 400: %d %s", recorder.Code, recorder.Body.String())
+	deps.patchScoped(recorder, request(`{"status":"paused"}`, wdAuthCtx("owner", "user")), false, true)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status 键应被严格 schema 拒绝: %d %s", recorder.Code, recorder.Body.String())
 	}
 	// 非法 expiresAt。
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","expiresAt":"nope"}`, wdAuthCtx("owner", "user")), false, true)
+	deps.patchScoped(recorder, request(`{"expiresAt":"nope"}`, wdAuthCtx("owner", "user")), false, true)
 	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "过期时间格式不正确" {
 		t.Fatalf("非法 expiresAt 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 成功路径：status + limits。
+	// 成功路径：remark + limits（响应只回 updated）。
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","status":"paused","limits":{"daily":{"enabled":true,"limit":2}}}`,
+	deps.patchScoped(recorder, request(`{"remark":"调整额度","limits":{"daily":{"enabled":true,"limit":2}}}`,
 		wdAuthCtx("owner", "user")), false, true)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("patch 应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
-	payload := wdDecodeMap(t, recorder)
-	if payload["status"] != "paused" || payload["limits"] == nil {
+	if payload := wdDecodeMap(t, recorder); payload["updated"] != true {
 		t.Fatalf("patch 结果错误: %#v", payload)
 	}
 	if len(sink.entries) == 0 || sink.entries[len(sink.entries)-1].Action != "update" {
 		t.Fatalf("patch 日志缺失: %#v", sink.entries)
 	}
 
-	// expire 面：expireOnly 拒绝 status 键（严格 schema）。
+	// expire 面：expireOnly 拒绝 limits/remark 键（严格 schema）。
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+created.Item.UpdatedAt+`","status":"active"}`, wdAuthCtx("owner", "user")), true, true)
+	deps.patchScoped(recorder, request(`{"remark":"x"}`, wdAuthCtx("owner", "user")), true, true)
 	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expire 面带 status 应 400: %d %s", recorder.Code, recorder.Body.String())
-	}
-	// expire 成功（mode=update_expire）。
-	current, err := f.store.GetGrantForMutation(context.Background(), nil, created.Item.ID)
-	if err != nil || current == nil {
-		t.Fatalf("read grant: %v", err)
+		t.Fatalf("expire 面带 remark 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, request(`{"expectedUpdatedAt":"`+current.UpdatedAt+`","expiresAt":"2027-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user")), true, true)
+	deps.patchScoped(recorder, request(`{"expiresAt":"2027-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user")), true, true)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expire 应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if len(sink.entries) == 0 || sink.entries[len(sink.entries)-1].Action != "update_expire" {
+	if len(sink.entries) == 0 || sink.entries[len(sink.entries)-1].Action != "update" {
 		t.Fatalf("expire 日志缺失: %#v", sink.entries)
 	}
 
-	// not_found 与乐观锁 conflict。
+	// 非所有者 / 缺失授权 → 领域错误 400。
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, wdJSONRequestWdID(t, "missing-id", `{"expectedUpdatedAt":"2026-01-01T00:00:00Z","status":"active"}`, wdAuthCtx("owner", "user")), false, true)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("缺失授权应 404: %d", recorder.Code)
+	deps.patchScoped(recorder, request(`{"remark":"x"}`, wdAuthCtx("grantee", "user")), false, true)
+	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "授权不存在" {
+		t.Fatalf("非所有者 patch 应 400/授权不存在: %d %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	deps.patchScoped(recorder, wdJSONRequestWdID(t, created.Item.ID, `{"expectedUpdatedAt":"2020-01-01T00:00:00Z","status":"active"}`, wdAuthCtx("owner", "user")), false, true)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("版本冲突应 409: %d %s", recorder.Code, recorder.Body.String())
+	deps.patchScoped(recorder, wdJSONRequestWdID(t, "missing-id", `{"remark":"x"}`, wdAuthCtx("owner", "user")), false, true)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("缺失授权应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -337,32 +355,30 @@ func wdJSONRequestWdID(t *testing.T, id, body string, auth *authsys.AuthContext)
 
 func TestWdListFindVisibleToContracts(t *testing.T) {
 	f, deps, _ := wdNewRouteFixture(t)
-	created, err := f.store.Create(context.Background(), CreateInput{
+	created, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "group", ResourceID: "grp_r",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
+		GranteeType: "system_account", GranteeUsername: "grantee",
+	}, "owner", false, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// list：非法分页 400 / 超长 keyword 400 / admin 与 self 成功。
+	// list：分页参数已退役（不再解析 page/keyword），inbound 只返回接收方可见来源。
 	recorder := httptest.NewRecorder()
-	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?page=0", nil), false)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("page=0 应 400: %d %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?keyword="+strings.Repeat("长", 121), nil), false)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("超长 keyword 应 400: %d", recorder.Code)
-	}
-	recorder = httptest.NewRecorder()
-	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?status=all&direction=inbound", wdAuthCtx("grantee", "user")), true)
+	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?page=0", wdAuthCtx("grantee", "user")), true)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("self list 应 200: %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("self list 应忽略 page: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if items := wdDecodeMap(t, recorder)["items"].([]any); len(items) != 1 {
 		t.Fatalf("self list（入站方向）应看到自己被授权的行: %#v", items)
+	}
+	recorder = httptest.NewRecorder()
+	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?direction=outbound", wdAuthCtx("owner", "user")), true)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("owner outbound list 应 200: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if items := wdDecodeMap(t, recorder)["items"].([]any); len(items) != 1 {
+		t.Fatalf("outbound 应看到自己发起的行: %#v", items)
 	}
 	recorder = httptest.NewRecorder()
 	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?resourceType=account", wdAuthCtx("admin", "admin")), false)
@@ -370,7 +386,7 @@ func TestWdListFindVisibleToContracts(t *testing.T) {
 		t.Fatalf("admin list 应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// find：未找到 / 无关用户 404 / owner 可见。
+	// find：未找到 / 无关用户 404 / owner 与 grantee 可见。
 	recorder = httptest.NewRecorder()
 	request := wdGetReq(t, http.MethodGet, "/", nil)
 	request.SetPathValue("id", "missing")
@@ -379,22 +395,24 @@ func TestWdListFindVisibleToContracts(t *testing.T) {
 		t.Fatalf("missing find 应 404: %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
-	request = wdGetReq(t, http.MethodGet, "/", nil)
-	request.SetPathValue("id", created.Item.ID)
+	request = wdGetReq(t, http.MethodGet, "/", wdAuthCtx("other", "user"))
+	request.SetPathValue("id", created.GrantID)
 	deps.find(recorder, request, true)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("无关用户 find 应 404: %d", recorder.Code)
 	}
-	recorder = httptest.NewRecorder()
-	request = wdGetReq(t, http.MethodGet, "/", wdAuthCtx("grantee", "user"))
-	request.SetPathValue("id", created.Item.ID)
-	deps.find(recorder, request, true)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("grantee find 应 200: %d %s", recorder.Code, recorder.Body.String())
+	for _, viewer := range []string{"grantee", "owner"} {
+		recorder = httptest.NewRecorder()
+		request = wdGetReq(t, http.MethodGet, "/", wdAuthCtx(viewer, "user"))
+		request.SetPathValue("id", created.GrantID)
+		deps.find(recorder, request, true)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s find 应 200: %d %s", viewer, recorder.Code, recorder.Body.String())
+		}
 	}
 
 	// visibleTo 矩阵。
-	summary, err := f.store.Find(context.Background(), created.Item.ID)
+	summary, err := f.store.Find(context.Background(), created.GrantID)
 	if err != nil || summary == nil {
 		t.Fatalf("find: %v", err)
 	}

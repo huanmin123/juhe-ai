@@ -129,7 +129,7 @@
 | 《语音合成 TTS》 | 文本变音频 |
 | 《语音转文字》 | 短音频同步转写与长音频异步任务 |
 | 《实时语音 Realtime》 | 临时令牌 + WebSocket 双向语音 |
-| 《图像生成与文本嵌入》 | /v1/images 画图与 /v1/embeddings 向量 |
+| 《图像生成、文本嵌入与重排》 | /v1/images 画图、/v1/embeddings 向量与 /v1/rerank 重排 |
 | 《协议总览：三类协议面怎么选》 | OpenAI/Anthropic/Gemini 三类入口怎么选 |
 | 《Anthropic 原生协议》 | Claude 系客户端直连 /v1/messages |
 | 《Gemini 原生协议》 | Gemini 系客户端直连 /v1beta |

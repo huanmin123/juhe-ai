@@ -150,7 +150,11 @@ assert.match(batchEditModalSource, /v-if="requestOverridesSupported"/, '批量�
 assert.match(batchEditModalSource, /v-if="serviceTierOverrideFieldVisible"/, '批量编辑服务等级字段必须按供应商级声明能力显示')
 assert.match(batchEditModalSource, /v-if="reasoningEffortOverrideFieldVisible"/, '批量编辑思考级别字段必须按供应商级声明能力显示')
 assert.doesNotMatch(batchEditModalSource, /当前已选模型未声明可用服务等级|当前已选模型未声明可用思考级别/, '批量编辑不得保留按已选模型判定的说明')
-assert.doesNotMatch(batchEditModalSource, /accountType: homogeneousAccount\.value\?\.type/, '批量编辑能力计算不得再传 accountType')
+assert.doesNotMatch(
+  batchEditModalSource,
+  /isAccountRequestOverrideProviderSupported\([^)]*accountType/,
+  '请求覆盖能力计算不得再传 accountType（接口能力候选按账户类型收窄是另一条路径）'
+)
 assert.match(batchEditModalSource, /protocolCode: homogeneousAccount\.value\?\.protocolCode/, '批量编辑能力计算必须携带协议码用于族判定')
 assert.doesNotMatch(batchEditModalSource, /supportedModels: effectiveBatchModels\.value/, '批量编辑能力计算不得再依赖已选模型')
 // 保存前能力校验删除：值域由后端族集校验负责

@@ -73,7 +73,9 @@ func (s *Store) bindingRowColumns() string {
 	CASE
 		WHEN groups.id IS NULL THEN 0
 		WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
-		WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
+		WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1
+			AND COALESCE(group_authorization_settings.enabled, 0) = 1
+			AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '' THEN 1 ELSE 0 END
 		ELSE 0
 	END AS group_enabled`
 }
@@ -89,6 +91,16 @@ func (s *Store) bindingRowFrom() string {
 		AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
 		AND group_authorization.status = 'active'
 		AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+		AND COALESCE(group_authorization.effective_source_type, '') <> ''
+		AND EXISTS (
+			SELECT 1 FROM ` + s.table("resource_authorization_sources") + ` group_authorization_source
+			WHERE group_authorization_source.authorization_id = group_authorization.id
+			  AND group_authorization_source.status = 'active'
+			  AND ((group_authorization.effective_source_type = 'manual' AND group_authorization_source.source_type = 'manual')
+			    OR (group_authorization.effective_source_type = 'team'
+			        AND group_authorization_source.source_type = 'team'
+			        AND group_authorization_source.source_team_id = group_authorization.effective_source_team_id))
+		)
 	LEFT JOIN ` + s.table("group_authorization_settings") + ` group_authorization_settings
 		ON group_authorization_settings.authorization_id = group_authorization.id
 		AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
@@ -242,6 +254,22 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 		if !ok || !group.canBind {
 			return nil, &ValidationError{Message: routeStrategyGroupBoundaryError}
 		}
+		// The SQL join already requires an active runtime + enabled settings +
+		// snapshot row; this second gate re-computes the shared HMAC revisions
+		// inside the same transaction so a stale acceptance cannot be newly
+		// persisted as a binding.
+		if group.ownerID != ownerID && s.bindingValidator != nil {
+			valid, err := s.bindingValidator.ValidateGroupBinding(ctx, q, ownerID, groupID, group.ownerID, s.nowISO())
+			if err != nil {
+				return nil, err
+			}
+			if !valid {
+				return nil, &ValidationError{
+					Code:    "authorization_binding_stale",
+					Message: "授权分组状态已变化，请前往授权中心重新确认并启用后再绑定",
+				}
+			}
+		}
 		if input.Status == "active" && !group.enabled {
 			name := groupID
 			if group.name != "" {
@@ -297,7 +325,9 @@ func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string
 				ELSE 0
 			END AS can_bind,
 			CASE WHEN groups.system_account_id = ? THEN groups.enabled
-				WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
+				WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1
+			AND COALESCE(group_authorization_settings.enabled, 0) = 1
+			AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '' THEN 1 ELSE 0 END
 				ELSE 0
 			END AS enabled
 		FROM ` + s.table("groups") + ` groups
@@ -307,6 +337,16 @@ func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string
 			AND group_authorization.grantee_system_account_id = ?
 			AND group_authorization.status = 'active'
 			AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+			AND COALESCE(group_authorization.effective_source_type, '') <> ''
+			AND EXISTS (
+				SELECT 1 FROM ` + s.table("resource_authorization_sources") + ` group_authorization_source
+				WHERE group_authorization_source.authorization_id = group_authorization.id
+				  AND group_authorization_source.status = 'active'
+				  AND ((group_authorization.effective_source_type = 'manual' AND group_authorization_source.source_type = 'manual')
+				    OR (group_authorization.effective_source_type = 'team'
+				        AND group_authorization_source.source_type = 'team'
+				        AND group_authorization_source.source_team_id = group_authorization.effective_source_team_id))
+			)
 		LEFT JOIN ` + s.table("group_authorization_settings") + ` group_authorization_settings
 			ON group_authorization_settings.authorization_id = group_authorization.id
 			AND group_authorization_settings.system_account_id = ?

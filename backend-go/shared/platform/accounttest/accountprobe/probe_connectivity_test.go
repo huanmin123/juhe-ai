@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 )
 
@@ -46,6 +47,7 @@ func newConnectivityServer(t *testing.T, status int, body string, capture *conne
 
 func connectivityView(baseURL string, mode EndpointMode, model string) *View {
 	view := probeView(baseURL)
+	view.ConnectionPresetCode = contracts.PresetGPTOpenAIV1
 	view.HealthCheckModel = model
 	view.SupportedModels = []string{model}
 	view.HealthCheckEndpointMode = string(mode)
@@ -132,7 +134,7 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		if capture.method != http.MethodGet {
 			t.Fatalf("method = %s, want GET", capture.method)
 		}
-		if capture.path != "/api/v3/contents/generations/tasks/"+ConnectivityProbeTaskID {
+		if capture.path != "/api/v3/videos/"+ConnectivityProbeTaskID {
 			t.Fatalf("path = %s", capture.path)
 		}
 		if capture.body != "" {
@@ -166,7 +168,7 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		}
 	})
 
-	t.Run("audio_speech 带 model 的 POST tts/create", func(t *testing.T) {
+	t.Run("audio_speech 带 model 的 POST audio/speech", func(t *testing.T) {
 		capture := &connectivityCapture{}
 		server := newConnectivityServer(t, http.StatusBadRequest, `{}`, capture)
 		defer server.Close()
@@ -174,11 +176,9 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 		if _, err := newTestService(t, &fakeSource{view: view}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true}); err != nil {
 			t.Fatal(err)
 		}
-		if capture.method != http.MethodPost || capture.path != "/tts/create" {
+		if capture.method != http.MethodPost || capture.path != "/audio/speech" {
 			t.Fatalf("request = %s %s", capture.method, capture.path)
 		}
-		// volcengine openspeech 缺 model 时无法解析 resource_id（45000030），会误判
-		// 密钥无效；必须携带 model 才能进入参数校验层（400 text_prompt required）。
 		if capture.body != `{"model":"tts-model"}` {
 			t.Fatalf("audio 连通性探测应携带 model：%q", capture.body)
 		}
@@ -188,36 +188,55 @@ func TestConnectivityProbeRequestShape(t *testing.T) {
 // TestConnectivityProbeVolcengineSpeech：火山语音域是固定上游（openspeech +
 // /api/v3/tts/create + X-Api-Key speech_token），账户 base_url（ark /api/v3）
 // 不参与拼接；body 必须带 model（缺 model 会被 45000030 挡在 resource_id
-// 解析层，无法证明密钥有效）。
+// 解析层，无法证明密钥有效）。固定域无法用 httptest 重定向，这里直接断言
+// 构造出的出站请求；分类表由通用 OpenAI 规格覆盖。
 func TestConnectivityProbeVolcengineSpeech(t *testing.T) {
-	capture := &connectivityCapture{}
-	server := newConnectivityServer(t, http.StatusBadRequest, `{"code":45001116,"message":"text_prompt is required"}`, capture)
-	defer server.Close()
-	original := volcengineSpeechBaseURL
-	volcengineSpeechBaseURL = server.URL
-	t.Cleanup(func() { volcengineSpeechBaseURL = original })
-
 	view := connectivityView("https://ark.cn-beijing.volces.com/api/v3", ModeAudioSpeech, "seed-audio-1.0")
 	view.ProviderCode = "volcengine"
+	view.ConnectionPresetCode = contracts.PresetVolcengineOpenSpeech
 	view.Credentials = map[string]any{"speech_token": "speech-token-1"}
-	observation, err := newTestService(t, &fakeSource{view: view}).Probe(context.Background(), accountquality.ProbeRequest{AccountID: "acc-1", Full: true})
+
+	spec, ok := contracts.ConnectivityProbeForPreset(view.ConnectionPresetCode, string(ModeAudioSpeech))
+	if !ok {
+		t.Fatal("火山语音规格未登记")
+	}
+	request, err := buildConnectivityRequest(context.Background(), view, spec, view.HealthCheckModel, "api-key-not-used")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !observation.Result.Success {
-		t.Fatalf("火山语音连通性应通过：%+v", observation.Result)
+	if request.Method != http.MethodPost || request.URL.String() != "https://openspeech.bytedance.com/api/v3/tts/create" {
+		t.Fatalf("request = %s %s", request.Method, request.URL.String())
 	}
-	if capture.method != http.MethodPost || capture.path != "/api/v3/tts/create" {
-		t.Fatalf("request = %s %s", capture.method, capture.path)
+	if request.Header.Get("X-Api-Key") != "speech-token-1" {
+		t.Fatalf("X-Api-Key = %q", request.Header.Get("X-Api-Key"))
 	}
-	if capture.apiKey != "speech-token-1" {
-		t.Fatalf("X-Api-Key = %q", capture.apiKey)
+	if request.Header.Get("Authorization") != "" {
+		t.Fatalf("语音域不得走 Authorization: %q", request.Header.Get("Authorization"))
 	}
-	if capture.auth != "" {
-		t.Fatalf("语音域不得走 Authorization: %q", capture.auth)
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if capture.body != `{"model":"seed-audio-1.0"}` {
-		t.Fatalf("body = %q", capture.body)
+	if string(raw) != `{"model":"seed-audio-1.0"}` {
+		t.Fatalf("body = %q", raw)
+	}
+}
+
+// TestConnectivityProbeVolcengineSpeechMissingToken：规格显式要求的
+// speech_token 缺失时必须构造失败（由 executeConnectivityAttempt 归类为失败
+// 观测），不得回落到 Bearer 认证把 api_key 发到语音域。
+func TestConnectivityProbeVolcengineSpeechMissingToken(t *testing.T) {
+	view := connectivityView("https://ark.cn-beijing.volces.com/api/v3", ModeAudioSpeech, "seed-audio-1.0")
+	view.ProviderCode = "volcengine"
+	view.ConnectionPresetCode = contracts.PresetVolcengineOpenSpeech
+	view.Credentials = map[string]any{}
+
+	spec, ok := contracts.ConnectivityProbeForPreset(view.ConnectionPresetCode, string(ModeAudioSpeech))
+	if !ok {
+		t.Fatal("火山语音规格未登记")
+	}
+	if _, err := buildConnectivityRequest(context.Background(), view, spec, view.HealthCheckModel, "api-key"); err == nil {
+		t.Fatal("缺少 speech_token 时应构造失败")
 	}
 }
 
@@ -241,5 +260,72 @@ func TestConnectivityProbeLimitedMaskMessage(t *testing.T) {
 	}
 	if !observation.Evidence.Connectivity {
 		t.Fatal("evidence 必须带 connectivity 标记")
+	}
+}
+
+// TestConnectivityProbeVolcengineAUCHeaders 锁定 AUC 查询请求的资源头三件套：
+// 缺 X-Api-Resource-Id 时上游可能 200 + 业务错误，连接测试不能只看状态码。
+func TestConnectivityProbeVolcengineAUCHeaders(t *testing.T) {
+	view := connectivityView("https://ark.cn-beijing.volces.com/api/v3", ModeAudioTranscriptionJSON, "volc.seedasr.auc")
+	view.ProviderCode = "volcengine"
+	view.ConnectionPresetCode = contracts.PresetVolcengineOpenSpeech
+	view.Credentials = map[string]any{"speech_token": "speech-token-1"}
+
+	spec, ok := contracts.ConnectivityProbeForPreset(view.ConnectionPresetCode, string(ModeAudioTranscriptionJSON))
+	if !ok {
+		t.Fatal("火山 AUC 规格未登记")
+	}
+	request, err := buildConnectivityRequest(context.Background(), view, spec, view.HealthCheckModel, "api-key-not-used")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Method != http.MethodPost || request.URL.String() != "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query" {
+		t.Fatalf("request = %s %s", request.Method, request.URL.String())
+	}
+	if request.Header.Get("X-Api-Key") != "speech-token-1" {
+		t.Fatalf("X-Api-Key = %q", request.Header.Get("X-Api-Key"))
+	}
+	if request.Header.Get("X-Api-Resource-Id") != "volc.seedasr.auc" {
+		t.Fatalf("X-Api-Resource-Id = %q", request.Header.Get("X-Api-Resource-Id"))
+	}
+	if id := request.Header.Get("X-Api-Request-Id"); len(id) != 36 || strings.Count(id, "-") != 4 || id == ConnectivityProbeTaskID {
+		t.Fatalf("X-Api-Request-Id 必须是独立 UUID：%q", id)
+	}
+	if request.Header.Get("X-Api-Sequence") != "-1" {
+		t.Fatalf("X-Api-Sequence = %q", request.Header.Get("X-Api-Sequence"))
+	}
+}
+
+// TestConnectivityProbeOnlyContentMode 确保只声明 content/cancel 的账户也能
+// 选择到规格，不会因 mode 不在旧规格表而报“没有可用请求形态”。
+func TestConnectivityProbeOnlyContentMode(t *testing.T) {
+	cases := []struct {
+		preset string
+		mode   EndpointMode
+		method string
+		path   string
+	}{
+		{contracts.PresetQwenDashScope, ModeVideoContent, http.MethodGet, "/api/v1/tasks/" + ConnectivityProbeTaskID},
+		{contracts.PresetQwenDashScope, ModeVideoCancel, http.MethodGet, "/api/v1/tasks/" + ConnectivityProbeTaskID},
+		{contracts.PresetQwenDashScope, ModeAudioJobContent, http.MethodGet, "/api/v1/tasks/" + ConnectivityProbeTaskID},
+		{contracts.PresetQwenDashScope, ModeAudioJobCancel, http.MethodGet, "/api/v1/tasks/" + ConnectivityProbeTaskID},
+		{contracts.PresetMiniMaxMedia, ModeVideoCancel, http.MethodGet, "/query/video_generation"},
+		{contracts.PresetVolcengineArk, ModeVideoContent, http.MethodGet, "/contents/generations/tasks/" + ConnectivityProbeTaskID},
+		{contracts.PresetGeminiNativeV1Beta, ModeVideoContent, http.MethodGet, "/interactions/" + ConnectivityProbeTaskID},
+	}
+	for _, tc := range cases {
+		view := connectivityView("https://upstream.example.com", tc.mode, "media-model")
+		view.ConnectionPresetCode = tc.preset
+		mode, spec, ok := ConnectivityProbeModeForView(view)
+		if !ok || mode != tc.mode {
+			t.Fatalf("%s/%s 未命中探测规格：mode=%s ok=%v", tc.preset, tc.mode, mode, ok)
+		}
+		request, err := buildConnectivityRequest(context.Background(), view, spec, view.HealthCheckModel, "api-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.Method != tc.method || request.URL.Path != tc.path {
+			t.Fatalf("%s/%s request = %s %s, want %s %s", tc.preset, tc.mode, request.Method, request.URL.Path, tc.method, tc.path)
+		}
 	}
 }

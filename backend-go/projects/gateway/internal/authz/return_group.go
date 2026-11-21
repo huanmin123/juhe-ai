@@ -66,79 +66,42 @@ func (s *Store) ReturnGroupForGrantee(ctx context.Context, groupID, granteeUserI
 	if receipt.ResourceOwnerSystemAccountID == granteeUserID {
 		return nil, nil
 	}
-	hasManual, err := s.hasActiveManualSource(ctx, tx, receipt.ID)
+	// Recipient-consent narrowing: the compatibility group endpoint may return
+	// only when the runtime has exactly one non-terminal source. Multiple
+	// sources must be handled per-source in the authorization center.
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorization_sources")+`
+		WHERE authorization_id = ? AND status IN ('pending','active','dormant','needs_review')
+		ORDER BY id LIMIT 2`), receipt.ID)
 	if err != nil {
 		return nil, err
 	}
-	if !hasManual {
+	var sourceIDs []string
+	for rows.Next() {
+		var sourceID string
+		if err := rows.Scan(&sourceID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		sourceIDs = append(sourceIDs, sourceID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(sourceIDs) == 0 {
 		return nil, nil
 	}
-	// findReturnableDirectGrantForRuntimeAuthorization: the direct grant with
-	// the same resource identity and grantee still outside the terminal
-	// revoked/returned states.
-	grantQuery := s.bind(`SELECT ` + grantColumns + ` FROM ` + s.table("resource_authorization_grants") + ` g
-		WHERE g.resource_type = ?
-			AND g.resource_id = ?
-			AND g.resource_owner_system_account_id = ?
-			AND g.grantee_type = 'system_account'
-		AND g.grantee_system_account_id = ?
-		AND g.status NOT IN ('revoked', 'returned')
-		LIMIT 1`)
-	grantQuery += " FOR UPDATE"
-	grant, err := s.scanGrant(tx.QueryRowContext(ctx, grantQuery,
-		receipt.ResourceType, receipt.ResourceID, receipt.ResourceOwnerSystemAccountID, granteeUserID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+	if len(sourceIDs) > 1 {
+		return nil, failCode("return_requires_source_center", "授权分组存在多条来源，请前往授权中心按来源归还")
 	}
-	if err != nil {
+	// The source-level state machine owns its transaction; release the read
+	// transaction before delegating. The deferred rollback becomes a no-op.
+	if err := tx.Rollback(); err != nil {
 		return nil, err
 	}
-	// returnResourceAuthorizationGrantAsync: the grant lands in returned with
-	// the caller stamp, the manual sources revoke with the grantee_returned
-	// reason, and the runtime effective source refreshes toward the returned
-	// terminal status (no source left → terminal returned, no expired row
-	// preservation).
-	now := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
-		SET status = 'returned', revoked_by = ?, revoked_at = ?, updated_at = ?
-		WHERE id = ?`), actor, now, now, grant.ID); err != nil {
+	if err := s.ReturnSourceForGrantee(ctx, sourceIDs[0], actor); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
-		SET status = 'revoked',
-			ended_at = COALESCE(ended_at, ?),
-			ended_reason = COALESCE(ended_reason, 'grantee_returned'),
-			revoked_by = ?,
-			revoked_at = ?,
-			updated_at = ?
-		WHERE authorization_id = ?
-			AND source_type = 'manual'
-			AND status IN ('active', 'superseded')`), now, actor, now, now, receipt.ID); err != nil {
-		return nil, err
-	}
-	noPreserve := false
-	if err := s.refreshEffectiveSource(ctx, tx, receipt.ID, actor, now, refreshOptions{
-		noActiveSourceReason:              "grantee_returned",
-		preserveExpiredWhenNoActiveSource: &noPreserve,
-		terminalStatus:                    StatusReturned,
-	}); err != nil {
-		return nil, err
-	}
-	// returnResourceAuthorizationGrantAsync tail (return.repository.ts:587-596):
-	// bindings resync then the health input fanout inside the same transaction.
-	if err := s.syncGrantQuotaScopeBindings(ctx, tx, &grant, now); err != nil {
-		return nil, err
-	}
-	if _, err := s.enqueueGrantAccountHealthInputs(ctx, tx, &grant, now); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	// Post-commit invalidation fan-out with the returned reason
-	// (return.repository.ts:340/:381-384): the group return only commits when
-	// the returnable receipt resolved, matching the archive's `if
-	// (authorization)` guard.
 	s.invalidateAfterBusinessWrite(ctx, invalidationReasonReturned)
 	return &receipt, nil
 }

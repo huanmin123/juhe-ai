@@ -117,7 +117,7 @@ func TestPostgresDirectInputReaderSmoke(t *testing.T) {
 	}
 }
 
-func TestPostgresDirectInputReaderExcludesHealthyImagesFromPeriodicScan(t *testing.T) {
+func TestPostgresDirectInputReaderExcludesNonConversationAccounts(t *testing.T) {
 	postgresURL := os.Getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
 	secret := os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET")
 	imageAccountID := os.Getenv("JUHE_AI_J1_DIRECT_INPUT_SMOKE_IMAGE_ACCOUNT_ID")
@@ -144,15 +144,17 @@ func TestPostgresDirectInputReaderExcludesHealthyImagesFromPeriodicScan(t *testi
 	}
 	for _, input := range periodic {
 		if input.AccountID == imageAccountID {
-			t.Fatalf("healthy active image account %q must not enter periodic candidates: %#v", imageAccountID, input)
+			t.Fatalf("image account %q must not enter J1 periodic candidates: %#v", imageAccountID, input)
 		}
 	}
+	// 非对话账户由 account-connectivity-health 的连通性通道承载；即使显式
+	// 装载也不能回到 J1 的真实生图路径。
 	explicit, err := reader.LoadAccount(ctx, imageAccountID)
 	if err != nil {
 		t.Fatalf("load explicit image candidate: %v", err)
 	}
-	if len(explicit) != 1 || explicit[0].AccountID != imageAccountID || explicit[0].EndpointMode != "images_json" {
-		t.Fatalf("explicit image account must remain loadable: %#v", explicit)
+	if len(explicit) != 0 {
+		t.Fatalf("image account must not be loadable by J1: %#v", explicit)
 	}
 }
 

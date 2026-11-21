@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountstest"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // Manual account test diagnostic routes: the port of
@@ -204,6 +206,17 @@ func (d *Deps) testOptions(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusNotFound, "账户不存在")
 		return
 	}
+	testKind := accountstest.ManualTestKind(context)
+	if testKind == capabilitydomain.TestKindConnection {
+		setNoStoreHeaders(w)
+		kernel.WriteJSON(w, http.StatusOK, map[string]any{
+			"data":     []any{},
+			"total":    0,
+			"hasMore":  false,
+			"testKind": testKind,
+		})
+		return
+	}
 	query, message := NormalizeManualTestOptionsQuery(r.URL.Query())
 	if message != "" {
 		kernel.WriteBadRequest(w, message)
@@ -217,10 +230,13 @@ func (d *Deps) testOptions(w http.ResponseWriter, r *http.Request) {
 	setNoStoreHeaders(w)
 	// T23：data 保持数组，顶层附加 total（limit 截断前候选总数）与
 	// hasMore（total > 返回条数），前端以元数据替代条数推断。
+	// 2026-11-21：顶层 testKind 区分模型测试与连接测试；连接测试不返回模型
+	// 候选，前端只渲染连接测试入口。
 	kernel.WriteJSON(w, http.StatusOK, map[string]any{
-		"data":    options,
-		"total":   total,
-		"hasMore": total > len(options),
+		"data":     options,
+		"total":    total,
+		"hasMore":  total > len(options),
+		"testKind": testKind,
 	})
 }
 
@@ -234,6 +250,13 @@ func (d *Deps) testOptionsModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if context == nil {
 		kernel.WriteError(w, http.StatusNotFound, "账户不存在")
+		return
+	}
+	if accountstest.ManualTestKind(context) == capabilitydomain.TestKindConnection {
+		setNoStoreHeaders(w)
+		kernel.WriteJSON(w, http.StatusOK, accountstest.ManualTestModelCapabilities{
+			ID: r.PathValue("modelId"), TestEndpointModes: []string{},
+		})
 		return
 	}
 	capabilities, err := d.Store.AccountManualTestModelCapabilities(ctx, context, r.PathValue("modelId"))
@@ -297,24 +320,33 @@ func (d *Deps) testAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var model, testEndpointMode string
+	manualContext := view.manualContext()
 	if draft != nil {
-		// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
-		// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
-		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
-			manualTestCapabilitiesContextFromDraft(draft),
-			firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
-			firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
-	} else {
-		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
-			view.manualContext(),
-			parsed.Model,
-			parsed.TestEndpointMode)
+		manualContext = manualTestCapabilitiesContextFromDraft(draft)
 	}
-	if err != nil {
-		d.writeTestError(w, err)
-		return
+	var model, testEndpointMode string
+	if accountstest.ManualTestKind(manualContext) == capabilitydomain.TestKindModel {
+		if draft != nil {
+			// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
+			// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
+			model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
+				manualContext,
+				firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
+				firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
+		} else {
+			model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
+				manualContext,
+				parsed.Model,
+				parsed.TestEndpointMode)
+		}
+		if err != nil {
+			d.writeTestError(w, err)
+			return
+		}
 	}
+	// 连接测试不提交模型与请求形态（契约：只验证 API Key 与上游地址可达性）；
+	// 任务行 model/test_endpoint_mode 保持 NULL，执行侧按账户连接与注册表
+	// 规格自行选择探测形态。
 
 	task, err := d.Store.CreateTestTask(ctx, TestTaskCreateInput{
 		AccountID:        view.item.ID,
@@ -345,10 +377,19 @@ func (d *Deps) testAccount(w http.ResponseWriter, r *http.Request) {
 func firstNonEmptyTextValue(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
-			return value
+			return strings.TrimSpace(value)
 		}
 	}
 	return ""
+}
+
+// nullableTrimmedString 把可选字符串转为可空指针（空串 = 字段缺失）。
+func nullableTrimmedString(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // testDraftWorkerUnavailableMessage mirrors the dispatch-failure copy of
@@ -385,15 +426,19 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
 		return
 	}
-	// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
-	// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
-	model, testEndpointMode, err := d.Store.ResolveAccountManualTestSelection(ctx,
-		manualTestCapabilitiesContextFromDraft(draft),
-		firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
-		firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
-	if err != nil {
-		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
-		return
+	draftContext := manualTestCapabilitiesContextFromDraft(draft)
+	var model, testEndpointMode string
+	if accountstest.ManualTestKind(draftContext) == capabilitydomain.TestKindModel {
+		// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
+		// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
+		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
+			draftContext,
+			firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
+			firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
+		if err != nil {
+			kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
+			return
+		}
 	}
 	protocolCode := ""
 	if draft.ProtocolCode != nil {
@@ -455,16 +500,29 @@ func (d *Deps) testDraftOptions(w http.ResponseWriter, r *http.Request, access A
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "读取草稿测试模型选项失败"))
 		return
 	}
-	options, total, err := d.Store.AccountManualTestOptionsWithTotal(ctx, manualTestCapabilitiesContextFromDraft(draft), query)
+	draftContext := manualTestCapabilitiesContextFromDraft(draft)
+	testKind := accountstest.ManualTestKind(draftContext)
+	if testKind == capabilitydomain.TestKindConnection {
+		setNoStoreHeaders(w)
+		kernel.WriteJSON(w, http.StatusOK, map[string]any{
+			"data":     []any{},
+			"total":    0,
+			"hasMore":  false,
+			"testKind": testKind,
+		})
+		return
+	}
+	options, total, err := d.Store.AccountManualTestOptionsWithTotal(ctx, draftContext, query)
 	if err != nil {
 		d.writeTestError(w, err)
 		return
 	}
 	setNoStoreHeaders(w)
 	kernel.WriteJSON(w, http.StatusOK, map[string]any{
-		"data":    options,
-		"total":   total,
-		"hasMore": total > len(options),
+		"data":     options,
+		"total":    total,
+		"hasMore":  total > len(options),
+		"testKind": testKind,
 	})
 }
 
@@ -685,18 +743,21 @@ func (d *Deps) writeTestError(w http.ResponseWriter, err error) {
 type TestDraftAccountInput struct {
 	ProviderCode              string
 	ProviderProtocolProfileID string
-	Name                      string
-	Type                      string
-	Credentials               Credentials
-	SupportedModels           []string
-	HealthCheckModel          string
-	HealthCheckEndpointMode   string
-	ModelMappings             []ModelMapping
-	ConcurrencyLimit          *int
-	Priority                  *int
-	SuperPriorityEnabled      *bool
-	FallbackEnabled           *bool
-	ProxyProfileID            *string
+	// ConnectionPresetCode 是草稿测试所用连接 preset（连接测试规格查找）；
+	// 前端从表单连接载荷透传，缺失时连接测试 fail closed。
+	ConnectionPresetCode    string
+	Name                    string
+	Type                    string
+	Credentials             Credentials
+	SupportedModels         []string
+	HealthCheckModel        string
+	HealthCheckEndpointMode string
+	ModelMappings           []ModelMapping
+	ConcurrencyLimit        *int
+	Priority                *int
+	SuperPriorityEnabled    *bool
+	FallbackEnabled         *bool
+	ProxyProfileID          *string
 	// ProxyPoolID 是草稿测试的代理池绑定（代理池设计 §6.1 草稿测试行 /
 	// §8.3）：与 ProxyProfileID 互斥；执行时临时选成员、不固化租约。
 	ProxyPoolID          *string
@@ -779,7 +840,7 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 	input := &TestDraftAccountInput{}
 	for key := range record {
 		switch key {
-		case "providerCode", "providerProtocolProfileId", "name", "type", "credentials",
+		case "providerCode", "providerProtocolProfileId", "connectionPresetCode", "name", "type", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
 			"concurrencyLimit", "priority", "superPriorityEnabled", "fallbackEnabled",
 			"proxyProfileId", "proxyPoolId", "groupId", "accountExpiresAt", "availabilitySchedule", "notes":
@@ -800,6 +861,7 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 	}
 	input.ProviderCode, _ = text("providerCode")
 	input.ProviderProtocolProfileID, _ = text("providerProtocolProfileId")
+	input.ConnectionPresetCode, _ = text("connectionPresetCode")
 	input.Name, _ = text("name")
 	input.Type, _ = text("type")
 	input.HealthCheckModel, _ = text("healthCheckModel")
@@ -813,10 +875,12 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 	// providerProtocolProfileId 是过渡入参：profile 行已随目标 schema 退役
 	//（§9.3），协议上下文由 vendor 语义推导供给，字段保持接受但忽略（前端
 	// 仍在发送；字段删除归前端切片）。
-	if input.ProviderCode == "" || input.Name == "" ||
-		input.Type == "" || input.HealthCheckModel == "" || input.HealthCheckEndpointMode == "" {
+	if input.ProviderCode == "" || input.Name == "" || input.Type == "" {
 		return nil, "账户测试参数无效"
 	}
+	// 健康检查模型/形态不再在解析层强制：连接测试草稿（媒体域与只声明输入型
+	// 形态的 chat 账户）允许省略，由 prepareAccountDraftTestSnapshot 按最终
+	// 凭据声明集派生；模型测试草稿仍在快照准备阶段强制三件套。
 	if value, exists := record["groupId"]; exists && value != nil {
 		groupID, ok := value.(string)
 		if !ok || strings.TrimSpace(groupID) == "" {
@@ -1107,6 +1171,7 @@ func manualTestCapabilitiesContextFromDraft(draft *TestDraftSnapshot) *ManualTes
 	if draft.ProtocolVersion != nil {
 		protocolVersion = *draft.ProtocolVersion
 	}
+	modes := supportedEndpointModesFromCredentials(Credentials(draft.Credentials))
 	return &ManualTestContext{
 		ID:                        draft.ID,
 		FactAccountID:             factAccountID,
@@ -1119,7 +1184,8 @@ func manualTestCapabilitiesContextFromDraft(draft *TestDraftSnapshot) *ManualTes
 		ClientCompatibility:       draft.ClientCompatibility,
 		HealthCheckModel:          draft.HealthCheckModel,
 		HealthCheckEndpointMode:   draft.HealthCheckEndpointMode,
-		SupportedEndpointModes:    supportedEndpointModesFromCredentials(Credentials(draft.Credentials)),
+		CapabilityDomain:          string(capabilitydomain.DeriveDomain(modes)),
+		SupportedEndpointModes:    modes,
 		ModelMappings:             draft.ModelMappings,
 	}
 }
@@ -1255,19 +1321,33 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 	if err := assertSupportedModelsRequired(supportedModels); err != nil {
 		return nil, err
 	}
-	// requiredDraftHealthCheckModel.
+	// 连接测试草稿（媒体域与只声明输入型形态的 chat 账户）不要求检查模型/
+	// 形态：模型取首个支持模型，形态交给 resolveHealthCheckEndpointMode 按
+	// 最终声明集落默认值。模型测试草稿仍要求显式三件套。
+	enabledModes := supportedEndpointModesFromCredentials(credentials)
+	draftDomain := capabilitydomain.DeriveDomain(enabledModes)
+	connectionTest := capabilitydomain.TestKindForAccount(string(draftDomain), enabledModes) == capabilitydomain.TestKindConnection
 	healthCheckModel := strings.TrimSpace(input.HealthCheckModel)
 	if healthCheckModel == "" {
-		return nil, &ValidationError{Message: "账户检查模型不能为空"}
+		if !connectionTest {
+			return nil, &ValidationError{Message: "账户检查模型不能为空"}
+		}
+		if len(supportedModels) > 0 {
+			healthCheckModel = supportedModels[0]
+		}
 	}
-	if !containsString(supportedModels, healthCheckModel) {
+	if healthCheckModel != "" && !containsString(supportedModels, healthCheckModel) {
 		return nil, &ValidationError{Message: "账户检查模型必须属于账户支持模型"}
 	}
 	// resolveHealthCheckEndpointMode (images needs catalog evidence).
-	enabledModes := supportedEndpointModesFromCredentials(credentials)
-	endpointModeValue := input.HealthCheckEndpointMode
+	var endpointModeValue *string
+	if mode := strings.TrimSpace(input.HealthCheckEndpointMode); mode != "" {
+		endpointModeValue = &mode
+	} else if !connectionTest {
+		return nil, &ValidationError{Message: "账户健康检查请求形态不能为空"}
+	}
 	var modelSupportsImages *bool
-	if endpointModeValue == "images_json" {
+	if endpointModeValue != nil && *endpointModeValue == "images_json" {
 		item, err := s.findTestCatalogItem(ctx, input.ProviderCode, ownerSystemAccountID, healthCheckModel)
 		if err != nil {
 			return nil, err
@@ -1275,7 +1355,7 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		supported := item != nil && containsString(item.SupportedAPIProtocols, "images")
 		modelSupportsImages = &supported
 	}
-	healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(&endpointModeValue, input.ProviderCode, profile.profileID, enabledModes, modelSupportsImages)
+	healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(endpointModeValue, input.ProviderCode, profile.profileID, enabledModes, modelSupportsImages)
 	if err != nil {
 		return nil, err
 	}
@@ -1347,6 +1427,14 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		proxyPoolID = nil
 	}
 	notes := input.Notes
+	connectionPresetCode := strings.TrimSpace(input.ConnectionPresetCode)
+	if connectionPresetCode == "" {
+		// 前端创建/编辑草稿都会显式透传表单连接 preset；API 调用方省略时按
+		// vendor 默认 preset 兜底（与 vendorDefaultProtocolContext 同源），
+		// 保证连接测试仍能查到探测规格。volcengine 音频等非默认档案仍必须
+		// 显式提交（OpenSpeech 与 Ark 共用 vendor，无法从 vendor 唯一反推）。
+		connectionPresetCode = vendorDefaultPreset(input.ProviderCode)
+	}
 	credentialsMap := map[string]any{}
 	for key, value := range credentials {
 		credentialsMap[key] = value
@@ -1358,6 +1446,7 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		GroupName:                 &groupName,
 		ProviderCode:              input.ProviderCode,
 		ProviderProtocolProfileID: &providerProfileID,
+		ConnectionPresetCode:      nullableTrimmedString(connectionPresetCode),
 		ProtocolCode:              &protocolCode,
 		ProtocolVersion:           &protocolVersion,
 		Name:                      input.Name,

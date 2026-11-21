@@ -16,7 +16,7 @@ package aipublic
 //     pg_schema_dataset.go）；FK 按 accounts/apikeys 夹具先例放宽（store 删除
 //     级联为显式 DELETE，seed 行不满足生产外键链）；行为性约束逐字保留
 //     （idx_accounts_owner_name_unique 重名 409 映射依赖约束名、models 的
-//     scope/status/jsonb 形状 CHECK、account_endpoint_modes 25 值词表、
+//     scope/status/jsonb 形状 CHECK、account_endpoint_modes 27 值词表、
 //     account_lock_states / account_health_jobs_input_outbox /
 //     account_circuit_outbox 的生产 CHECK）。必要偏离登记：生产
 //     external_integration_source_tokens.token_secret_encrypted 为 NOT NULL，
@@ -429,7 +429,7 @@ const aipublicPGFixtureSchema = `
       connection_id text NOT NULL,
       endpoint_mode text NOT NULL,
       PRIMARY KEY (connection_id, endpoint_mode),
-      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session'))
+      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'embeddings_json', 'rerank_json', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session'))
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_entry_mappings (
       id text PRIMARY KEY,

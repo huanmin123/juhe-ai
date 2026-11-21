@@ -22,8 +22,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"testing"
 	"syscall"
+	"testing"
 	"time"
 )
 
@@ -421,11 +421,12 @@ func TestW12HDialGuardLoopArms(t *testing.T) {
 		t.Fatal("1.2.3.4:1 拨号必须失败")
 	}
 
-	// 解析结果全为 nil IP：跳过后无可拨地址，命中兜底错误。
+	// 解析结果全为 nil IP：按空解析处理，DialContext 统一报“no such host”，
+	// ValidateHost 维持 nil（空解析不构成策略命中）。
 	guard = NewDialGuard(URLSecurityConfig{}, w12hMapResolver{"w12h-nil.example": {{IP: nil}, {IP: nil}}}, dialer)
 	_, err := guard.DialContext(ctx, "tcp", "w12h-nil.example:80")
-	if err == nil || !strings.Contains(err.Error(), "no dialable validated address") {
-		t.Fatalf("全 nil IP 必须报无可拨地址: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no such host") {
+		t.Fatalf("全 nil IP 必须报 no such host: %v", err)
 	}
 	if err := guard.ValidateHost(ctx, "w12h-nil.example", "80"); err != nil {
 		t.Fatalf("ValidateHost 必须跳过 nil IP: %v", err)

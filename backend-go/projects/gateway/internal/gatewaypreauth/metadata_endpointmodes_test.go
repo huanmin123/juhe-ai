@@ -109,6 +109,26 @@ func TestRequestSupportedEndpointMode(t *testing.T) {
 			expect: EndpointModeAudioTranscriptionJSON,
 		},
 		{
+			name:   "embeddings",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/embeddings", nil)},
+			expect: EndpointModeEmbeddingsJSON,
+		},
+		{
+			name:   "rerank",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/rerank", nil)},
+			expect: EndpointModeRerankJSON,
+		},
+		{
+			name:   "embeddings mixed case path",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/Embeddings", nil)},
+			expect: EndpointModeEmbeddingsJSON,
+		},
+		{
+			name:   "rerank mixed case path",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/RERANK", nil)},
+			expect: EndpointModeRerankJSON,
+		},
+		{
 			name:   "video create",
 			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/video/generations", nil)},
 			expect: EndpointModeVideoCreate,

@@ -77,7 +77,7 @@ import {
 import { buildAccountSavePayload, type AccountSavePayload } from './accountSavePayload'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
-import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultHealthCheckEndpointModeForCapabilityDomain, preferredMediaDomainProviderCode, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultValidHealthCheckEndpointModeForCapabilityDomain, mediaDomainModelProtocolTokens, preferredMediaDomainProviderCode, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import { cachedMediaDomainModelAvailability } from './mediaDomainModelAvailability'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
@@ -198,13 +198,22 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   // （providerModelsForProtocolProfile，gpt images 分支已随对话域纯粹化删除）；
   // 媒体域旁路聊天档案协议过滤——媒体行的协议 token（video/audio_speech/images）
   // 与对话档案 endpointFamilies 不相交，经其过滤会把域内模型清空，媒体域的协议
-  // 正确性由 AccountMediaForm 的域 token 过滤承担。
-  const providerModelOptions = computed(() => capabilityDomainIsMedia(form.capabilityDomain)
-    ? loadedProviderModelOptions.value
-    : providerModelsForProtocolProfile(
-      loadedProviderModelOptions.value,
-      selectedProtocolProfile.value
-    ))
+  // 正确性由统一向导的域 token 过滤承担。
+  const providerModelOptions = computed(() => {
+    if (!capabilityDomainIsMedia(form.capabilityDomain)) {
+      return providerModelsForProtocolProfile(
+        loadedProviderModelOptions.value,
+        selectedProtocolProfile.value,
+        form.type
+      )
+    }
+    // 媒体域：服务端已按目录 mode 过滤；这里保留退役媒体表单的协议 token 二次
+    // 保险，custom 手加模型行未声明协议的仍属域外候选。
+    const tokens = new Set(mediaDomainModelProtocolTokens(form.capabilityDomain))
+    if (!tokens.size) return loadedProviderModelOptions.value
+    return loadedProviderModelOptions.value.filter((option) =>
+      option.supportedApiProtocols?.some((protocol) => tokens.has(protocol)))
+  })
   const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
   const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
@@ -414,14 +423,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     () => {
       const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
       if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
-      // 音频/视频域账户无后台探针，health_check_endpoint_mode 仅为记录值：失效时
-      // 兜底域常量（镜像 DefaultHealthCheckEndpointModeForDomain），不得落 chat 族
-      // 默认——qwen 长音频声明集没有任何检查形态词表值，落 chat_json 会被保存校验
-      // 拒绝（R5）。
-      if (form.capabilityDomain === 'audio' || form.capabilityDomain === 'video') {
-        form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
-          capabilityDomain: form.capabilityDomain
-        })
+      // 媒体域 health_check_endpoint_mode 是连接测试记录值：失效时优先域默认，
+      // 域默认不在当前声明集则取首个合法形态（qwen 音频只有 audio_job_*，
+      // 域默认 audio_speech 不可保存），不得落 chat 族默认。
+      if (capabilityDomainIsMedia(form.capabilityDomain)) {
+        form.healthCheckEndpointMode = defaultValidHealthCheckEndpointModeForCapabilityDomain({
+          capabilityDomain: form.capabilityDomain,
+          endpointModes: form.supportedEndpointModes
+        }) ?? form.healthCheckEndpointMode
         return
       }
       form.healthCheckEndpointMode = defaultAccountHealthCheckEndpointMode(

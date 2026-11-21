@@ -124,12 +124,10 @@ const modelMappingTooltip = computed(() => (
   '客户端协议与上游协议强制一致（含 Gemini 流式归一）；客户端模型可跨供应商选择，但必须支持所选协议；上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
-  // M2 能力域收口 + v8-A 对话域纯粹化：chat 域允许集 = 13 值对话锚集合 ∩
-  // 供应商写侧词表——媒体任务组与被移出三项（images_json /
-  // audio_transcription_json / realtime_session）不再出现在对话表单勾选区
-  // （媒体域走独立精简表单）。
+  // 2026-11-21 统一表单：勾选区按账户实际能力域渲染（chat 域仍为对话锚集合 ∩
+  // 供应商词表；媒体域为视频/音频/图像域允许集 ∩ 词表）。
   const allowedModes = new Set(allowedEndpointModesFor({
-    capabilityDomain: 'chat',
+    capabilityDomain: props.form.capabilityDomain,
     providerCode: props.form.providerCode,
     profile: activeProfile.value,
     accountType: props.form.type

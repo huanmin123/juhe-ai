@@ -130,6 +130,7 @@ type TestDraftSnapshot struct {
 	GroupName                 *string                     `json:"groupName,omitempty"`
 	ProviderCode              string                      `json:"providerCode"`
 	ProviderProtocolProfileID *string                     `json:"providerProtocolProfileId,omitempty"`
+	ConnectionPresetCode      *string                     `json:"connectionPresetCode,omitempty"`
 	ProtocolCode              *string                     `json:"protocolCode,omitempty"`
 	ProtocolVersion           *string                     `json:"protocolVersion,omitempty"`
 	Name                      string                      `json:"name"`

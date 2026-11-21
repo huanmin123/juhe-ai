@@ -542,7 +542,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       created_at text NOT NULL,
       updated_at text NOT NULL,
       FOREIGN KEY (team_id) REFERENCES system_teams(id) ON DELETE CASCADE,
-      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE RESTRICT
     )`,
 	},
 	{
@@ -569,7 +569,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       revoked_at text,
       revoked_reason text,
       updated_at text NOT NULL,
-      FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+      FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE RESTRICT
     )`,
 	},
 	{
@@ -580,7 +580,8 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// health_check_connection_id) 内联引用本表 (account_id, id)），反向
 		// account_id → accounts 外键由文件尾的守卫 DO 块补挂（PG 外键目标必须
 		// 已存在，双方互引只能单边内联）。enabled 语义、行数上限与 mode 词表
-		// 校验属应用层 registry；endpoint_mode CHECK 固定 §2.2 的 25 值。
+		// 校验属应用层 registry；endpoint_mode CHECK 固定 §2.2 的 27 值（2026-11-20
+		// 协议补齐批追加 embeddings_json / rerank_json）。
 		SchemaName: "juhe_business",
 		Source:     "account-connections-tables",
 		SQL: `CREATE TABLE IF NOT EXISTS account_connections (
@@ -604,8 +605,54 @@ var postgresSchemaBusinessTables = []PGStatement{
       endpoint_mode text NOT NULL,
       PRIMARY KEY (connection_id, endpoint_mode),
       FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE,
-      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session'))
+      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'embeddings_json', 'rerank_json', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session'))
     )`,
+	},
+	{
+		// account_endpoint_modes.endpoint_mode CHECK 增补 2026-11-20 协议补齐批
+		//（embeddings_json / rerank_json → 27 值）。建表内联约束在存量库上不会
+		// 被 CREATE TABLE IF NOT EXISTS 更新，必须按约束定义文本定位并重建：
+		// 旧约束（25 值，缺 rerank_json）先删除，再按具名约束补上含新值的
+		// 词表。建表 DDL 已含 27 值的新库：内联约束的 PG 自动名与本具名约束
+		// 同名，第二步 IF NOT EXISTS 直接命中跳过；重复执行无副作用。
+		SchemaName: "juhe_business",
+		Source:     "account-endpoint-mode-pg-check",
+		SQL: `DO $$
+DECLARE
+  legacy_constraint text;
+BEGIN
+  IF to_regclass('juhe_business.account_endpoint_modes') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_constraint
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'account_endpoint_modes'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%endpoint_mode%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%rerank_json%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'endpoint_mode'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.account_endpoint_modes DROP CONSTRAINT %I', legacy_constraint);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'account_endpoint_modes'
+        AND c.conname = 'account_endpoint_modes_endpoint_mode_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.account_endpoint_modes ADD CONSTRAINT account_endpoint_modes_endpoint_mode_check CHECK (endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''embeddings_json'', ''rerank_json'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session''))';
+    END IF;
+  END IF;
+END
+$$`,
 	},
 	{
 		// accounts 目标形态（设计 §2.1，迁移窗口 shim 已按 A 路线一次性收敛
@@ -618,8 +665,8 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// §10 硬规则：不得 NOT NULL，创建事务先插 accounts（三字段暂 NULL）、
 		// 再写 connection/mode/model 关系，最后同一条 UPDATE 补齐——NOT NULL +
 		// 复合外键会让 fresh 库任何插入顺序都无法创建账户）；
-		// health_check_endpoint_mode CHECK 固定 §2.2 的 25 值（不得沿用旧
-		// 22 值）。type 列名与 protocol_code / protocol_version 列的最终收敛
+		// health_check_endpoint_mode CHECK 固定 §2.2 的 27 值（不得沿用旧
+		// 25 值）。type 列名与 protocol_code / protocol_version 列的最终收敛
 		// （account_type 重命名、protocol 列退役）按设计 §9 后续切片处理；
 		// 存量库的删列/改由迁移命令处理，ensure 不写 DROP。
 		SchemaName: "juhe_business",
@@ -673,7 +720,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
       health_check_connection_id text,
       health_check_model text,
-      health_check_endpoint_mode text CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
+      health_check_endpoint_mode text CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'embeddings_json', 'rerank_json', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
       last_health_check_at text,
       next_health_check_at text,
       last_health_success_at text,
@@ -1248,8 +1295,8 @@ $$`,
       revoked_by text,
       revoked_at text,
       updated_at text NOT NULL,
-      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
-      FOREIGN KEY (source_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
+      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE RESTRICT,
+      FOREIGN KEY (source_team_id) REFERENCES system_teams(id) ON DELETE RESTRICT
     )`,
 	},
 	{
@@ -1278,8 +1325,8 @@ $$`,
         OR
         (grantee_type = 'team' AND grantee_team_id IS NOT NULL AND grantee_system_account_id IS NULL)
       ),
-      FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (grantee_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
+      FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE RESTRICT,
+      FOREIGN KEY (grantee_team_id) REFERENCES system_teams(id) ON DELETE RESTRICT
     )`,
 	},
 	{
@@ -2681,16 +2728,20 @@ $$`,
 		// CHECK 词表一致性入库）；M5b realtime 增 realtime_session（GET
 		// /v1/realtime WS 升级请求，Realtime 设计 §6，同随词表一致性入库，
 		// 自动探针形态未定不设默认）；供应商与上游协议面重构批（设计 :114）
-		// 增补 message_token_counting / count_tokens / embed_content → 固定
-		// §2.2 的 25 值，禁止沿用旧 22 值。幂等迁移沿 model-quality-schedule-
+		// 增补 message_token_counting / count_tokens / embed_content → 25 值；
+		// 2026-11-20 协议补齐批增补 embeddings_json / rerank_json → 固定
+		// §2.2 的 27 值。幂等迁移沿 model-quality-schedule-
 		// interval-pg-check 先例：按表 + conkey 列 + 约束定义文本定位——
-		// 存量表上缺 25 值词表的旧 CHECK（含 M2 之前无 video_*、M2～M3e 有
+		// 存量表上缺 27 值词表的旧 CHECK（含 M2 之前无 video_*、M2～M3e 有
 		// video_* 无 audio_job_*、M3f 后有 audio_job_* 无 realtime_session、
-		// realtime 后无 count_tokens 三新值的四种状态；建表内联约束被 PG
-		// 自动命名为 accounts_health_check_endpoint_mode_check）先删除，再按
-		// 名字补上含新值的具名约束。建表 DDL 已含 25 值的新库：内联约束的
-		// PG 自动名与具名约束同名，第二步 IF NOT EXISTS 直接命中跳过，不会
-		// 产生重复约束；重复执行无副作用。
+		// realtime 后无 count_tokens 三新值、本批前无 embeddings/rerank 的
+		// 五种状态；建表内联约束被 PG 自动命名为
+		// accounts_health_check_endpoint_mode_check）先删除，再按名字补上含
+		// 新值的具名约束。定位谓词必须用最新值 rerank_json：旧谓词
+		// message_token_counting 对 25 值约束不再命中，会假成功跳过替换。
+		// 建表 DDL 已含 27 值的新库：内联约束的 PG 自动名与具名约束同名，
+		// 第二步 IF NOT EXISTS 直接命中跳过，不会产生重复约束；重复执行无
+		// 副作用。
 		SchemaName: "juhe_business",
 		Source:     "accounts-health-check-endpoint-mode-pg-check",
 		SQL: `DO $$
@@ -2706,7 +2757,7 @@ BEGIN
       AND relation.relname = 'accounts'
       AND c.contype = 'c'
       AND pg_get_constraintdef(c.oid) LIKE '%health_check_endpoint_mode%'
-      AND pg_get_constraintdef(c.oid) NOT LIKE '%message_token_counting%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%rerank_json%'
       AND EXISTS (
         SELECT 1 FROM pg_attribute AS a
         WHERE a.attrelid = c.conrelid
@@ -2724,7 +2775,7 @@ BEGIN
         AND relation.relname = 'accounts'
         AND c.conname = 'accounts_health_check_endpoint_mode_check'
     ) THEN
-      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session''))';
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''message_token_counting'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''count_tokens'', ''embed_content'', ''embeddings_json'', ''rerank_json'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session''))';
     END IF;
   END IF;
 END

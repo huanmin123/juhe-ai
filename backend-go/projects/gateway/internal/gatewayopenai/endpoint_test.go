@@ -105,3 +105,26 @@ func TestBuildUpstreamURL(t *testing.T) {
 		})
 	}
 }
+
+func TestIsInputOnlyUsageRequestPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/embeddings", true},
+		{"/embeddings", true},
+		{"/V1/Embeddings?x=1", true},
+		{"/v1/embeddings/multimodal", true},
+		{"/v1/rerank", true},
+		{"/RERANK", true},
+		{"/v1/embeddings/other", false},
+		{"/v1/chat/completions", false},
+		{"/v1/responses", false},
+		{"/v1/images/generations", false},
+	}
+	for _, tc := range cases {
+		if got := IsInputOnlyUsageRequestPath(tc.path); got != tc.want {
+			t.Errorf("IsInputOnlyUsageRequestPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}

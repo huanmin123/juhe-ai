@@ -128,7 +128,7 @@ function racingDefinitionLoader(definitions: ProviderDefinition[]) {
 }
 
 // ---- 挂载 harness：useAccountEditForm + 模拟媒体表单的域默认 watch
-//（与 AccountMediaForm 相同的触发源，复用提取后的同一纯函数）。 ----
+//（统一向导新建态同一触发源，复用提取后的同一纯函数）。 ----
 
 type EditFormContext = ReturnType<typeof useAccountEditForm>
 
@@ -162,7 +162,7 @@ function mountMediaEditForm(
         systemAccounts,
         ...overrides
       })
-      // 模拟 AccountMediaForm 新建态域默认 watch（编辑态不重放；用例不触发
+      // 模拟统一向导新建态域默认 watch（编辑态不重放；用例不触发
       // 域外类型回退分支，故省略 select-type-choice 回退）。
       watch(
         [context.modalOpen, context.editingId, () => context!.form.providerCode, () => context!.form.providerProtocolProfileId, () => context!.form.type],
@@ -225,7 +225,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
       expect(ctx.form.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/v3')
       expect(ctx.form.supportedEndpointModes).toEqual(VIDEO_GROUP)
       expect(ctx.form.healthCheckEndpointMode).toBe('video_create')
-      expect(ctx.form.status).toBe('active')
+      expect(ctx.form.status).toBe('pending_test')
       // 凭据段可见性条件（AccountApiKeySection v-if form.type === 'api_key'）。
       expect(ctx.isApiKeyForm.value).toBe(true)
     } finally {
@@ -279,7 +279,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
       expect(ctx.form.baseUrl).toBe('https://api.minimaxi.chat/v1')
       expect(ctx.form.supportedEndpointModes).toEqual(VIDEO_GROUP)
       expect(ctx.form.healthCheckEndpointMode).toBe('video_create')
-      expect(ctx.form.status).toBe('active')
+      expect(ctx.form.status).toBe('pending_test')
       expect(ctx.isApiKeyForm.value).toBe(true)
     } finally {
       unmount()

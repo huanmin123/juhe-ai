@@ -174,12 +174,15 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
 		SET status = 'revoked',
+			ended_at = COALESCE(ended_at, ?),
+			ended_reason = COALESCE(ended_reason, 'source_deleted'),
+			pending_expires_at = NULL,
 			revoked_by = COALESCE(revoked_by, ?),
 			revoked_at = COALESCE(revoked_at, ?),
 			updated_at = ?
 		WHERE resource_type = 'account'
 			AND resource_id = ?
-			AND status NOT IN ('revoked', 'returned')`), actor, deletedAt, deletedAt, accountID); err != nil {
+			AND status NOT IN ('revoked', 'returned', 'declined', 'expired')`), deletedAt, actor, deletedAt, deletedAt, accountID); err != nil {
 		return err
 	}
 	if len(authorizationIDs) == 0 {
@@ -190,27 +193,45 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
 		SET status = 'revoked',
 			ended_at = COALESCE(ended_at, ?),
-			ended_reason = COALESCE(ended_reason, 'account_deleted'),
+			ended_reason = COALESCE(ended_reason, 'source_deleted'),
 			revoked_by = ?,
 			revoked_at = ?,
 			updated_at = ?
 		WHERE authorization_id IN (`+idsClause+`)
-			AND status IN ('active', 'superseded')`),
+			AND status IN ('pending', 'active', 'dormant', 'needs_review')`),
 		append([]any{deletedAt, actor, deletedAt, deletedAt}, authArgs...)...); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+`
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+`
 		SET status = 'revoked',
+			status_reason = 'source_deleted', status_changed_at = ?,
 			effective_source_type = NULL,
 			effective_source_team_id = NULL,
 			revoked_by = COALESCE(revoked_by, ?),
 			revoked_at = COALESCE(revoked_at, ?),
-			revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
+			revoked_reason = COALESCE(revoked_reason, 'source_deleted'),
 			last_source_changed_at = ?,
 			updated_at = ?
 		WHERE id IN (`+idsClause+`)
-			AND status <> 'returned'`),
-		append([]any{actor, deletedAt, deletedAt, deletedAt}, authArgs...)...)
+			AND status NOT IN ('revoked','returned','declined','expired')`),
+		append([]any{deletedAt, actor, deletedAt, deletedAt, deletedAt}, authArgs...)...); err != nil {
+		return err
+	}
+	// Terminal runtimes must not leave any schedulable binding behind.
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("group_accounts")+`
+		SET enabled = 0, updated_at = ? WHERE account_authorization_id IN (`+idsClause+`) AND enabled = 1`),
+		append([]any{deletedAt}, authArgs...)...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("group_authorization_settings")+`
+		SET enabled = 0, updated_at = ? WHERE authorization_id IN (`+idsClause+`) AND enabled = 1`),
+		append([]any{deletedAt}, authArgs...)...); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+`
+		SET status = 'disabled', schedulable = 0, updated_at = ?
+		WHERE authorization_instance_authorization_id IN (`+idsClause+`) AND deleted_at IS NULL`),
+		append([]any{deletedAt}, authArgs...)...)
 	return err
 }
 

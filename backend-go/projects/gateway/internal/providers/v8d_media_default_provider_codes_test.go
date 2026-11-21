@@ -92,7 +92,7 @@ func TestV8DModelOptionProviderCodes(t *testing.T) {
 
 	// modes 非法 400，文案与 options 端点同源。
 	code, bad := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options/provider-codes?modes=bogus", "")
-	if code != http.StatusBadRequest || bad["message"] != "modes 必须是 chat、responses、embedding、audio、video 或 image_generation" {
+	if code != http.StatusBadRequest || bad["message"] != "modes 必须是 chat、responses、embedding、rerank、audio、video 或 image_generation" {
 		t.Fatalf("modes=bogus: %d %v", code, bad)
 	}
 }

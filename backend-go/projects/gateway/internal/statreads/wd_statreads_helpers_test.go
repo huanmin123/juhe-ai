@@ -906,9 +906,6 @@ func TestWdJ1OutcomeMergeHelpers(t *testing.T) {
 	if nullable != "x" || nullableAny[string](nil) != nil {
 		t.Fatalf("nullableAny 错误")
 	}
-	if got := dedupeStrings([]string{"a", "b", "a"}); len(got) != 2 || got[0] != "a" {
-		t.Fatalf("dedupeStrings 错误: %#v", got)
-	}
 }
 
 func TestWdAiHealthAccountNameContainsFilter(t *testing.T) {

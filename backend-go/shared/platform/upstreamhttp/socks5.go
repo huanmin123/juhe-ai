@@ -13,10 +13,27 @@ import (
 	"time"
 )
 
-// NewSOCKS5DialContext returns a context-aware SOCKS5 dialer.  When
-// remoteResolve is true the target hostname is sent as a domain (SOCKS5H);
-// otherwise a hostname is resolved locally before the CONNECT request.
+// NewSOCKS5DialContext returns the historical unguarded dialer. It behaves
+// exactly like NewSOCKS5DialContextWithGuard(proxyURL, remoteResolve, nil):
+// when remoteResolve is true the target hostname is sent as a domain (SOCKS5H);
+// otherwise a hostname is resolved locally before the CONNECT request and the
+// first resolved address is used.
 func NewSOCKS5DialContext(proxyURL *url.URL, remoteResolve bool) func(context.Context, string, string) (net.Conn, error) {
+	return NewSOCKS5DialContextWithGuard(proxyURL, remoteResolve, nil)
+}
+
+// NewSOCKS5DialContextWithGuard returns a context-aware SOCKS5 dialer with the
+// deployment URL guard applied to local resolution. When remoteResolve is true
+// the target hostname is sent as a domain (SOCKS5H) and guard is ignored: the
+// proxy resolves, so the local prepare-time check remains best-effort. When
+// remoteResolve is false, the CONNECT address is selected through
+// guard.resolveDialable; in strict mode only addresses that clear the
+// blocked-range tables are sent to the proxy, and an all-blocked resolution
+// fails with UnsafeResolvedUpstreamURLError instead of dialing an unvalidated
+// address. A nil guard keeps the historical net.DefaultResolver first-address
+// behavior; a permissive guard (AllowPrivateBaseUrls / allowlist) returns the
+// historical first resolvable address.
+func NewSOCKS5DialContextWithGuard(proxyURL *url.URL, remoteResolve bool, guard *DialGuard) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		if proxyURL == nil || proxyURL.Host == "" {
 			return nil, ErrProxyURLInvalid
@@ -31,7 +48,7 @@ func NewSOCKS5DialContext(proxyURL *url.URL, remoteResolve bool) func(context.Co
 		stopCancellation := context.AfterFunc(ctx, func() {
 			_ = connection.Close()
 		})
-		if err := socks5Handshake(ctx, connection, proxyURL, address, remoteResolve); err != nil {
+		if err := socks5HandshakeWithGuard(ctx, connection, proxyURL, address, remoteResolve, guard); err != nil {
 			stopCancellation()
 			_ = connection.Close()
 			if contextErr := ctx.Err(); contextErr != nil {
@@ -56,6 +73,10 @@ func NewSOCKS5DialContext(proxyURL *url.URL, remoteResolve bool) func(context.Co
 }
 
 func socks5Handshake(ctx context.Context, connection net.Conn, proxyURL *url.URL, target string, remoteResolve bool) error {
+	return socks5HandshakeWithGuard(ctx, connection, proxyURL, target, remoteResolve, nil)
+}
+
+func socks5HandshakeWithGuard(ctx context.Context, connection net.Conn, proxyURL *url.URL, target string, remoteResolve bool, guard *DialGuard) error {
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := connection.SetDeadline(deadline); err != nil {
 			return err
@@ -101,7 +122,7 @@ func socks5Handshake(ctx context.Context, connection net.Conn, proxyURL *url.URL
 		return errors.New("SOCKS5 proxy returned an unknown authentication method")
 	}
 
-	request, err := socks5ConnectRequest(ctx, target, remoteResolve)
+	request, err := socks5ConnectRequestWithGuard(ctx, target, remoteResolve, guard)
 	if err != nil {
 		return err
 	}
@@ -150,6 +171,10 @@ func socksCredentials(proxyURL *url.URL) (string, string, bool) {
 }
 
 func socks5ConnectRequest(ctx context.Context, target string, remoteResolve bool) ([]byte, error) {
+	return socks5ConnectRequestWithGuard(ctx, target, remoteResolve, nil)
+}
+
+func socks5ConnectRequestWithGuard(ctx context.Context, target string, remoteResolve bool, guard *DialGuard) ([]byte, error) {
 	host, portText, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, fmt.Errorf("parse SOCKS5 target: %w", err)
@@ -166,13 +191,28 @@ func socks5ConnectRequest(ctx context.Context, target string, remoteResolve bool
 		request = append(request, 0x03, byte(len(host)))
 		request = append(request, []byte(host)...)
 	} else {
-		ip := net.ParseIP(host)
-		if ip == nil {
-			resolved, lookupErr := net.DefaultResolver.LookupIPAddr(ctx, host)
-			if lookupErr != nil || len(resolved) == 0 {
-				return nil, fmt.Errorf("local SOCKS5 target resolution failed: %w", lookupErr)
+		var ip net.IP
+		if guard != nil {
+			// Local resolution is address-selecting: only dialable (non-blocked)
+			// addresses may be sent to the proxy. An all-blocked answer is a
+			// policy rejection, never a reason to fall back to the first address.
+			dialable, resolveErr := guard.resolveDialable(ctx, host, portText)
+			if resolveErr != nil {
+				return nil, resolveErr
 			}
-			ip = resolved[0].IP
+			if len(dialable) == 0 {
+				return nil, &net.DNSError{Err: "no such host", Name: NormalizeHostToken(host), IsNotFound: true}
+			}
+			ip = dialable[0]
+		} else {
+			ip = net.ParseIP(host)
+			if ip == nil {
+				resolved, lookupErr := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if lookupErr != nil || len(resolved) == 0 {
+					return nil, fmt.Errorf("local SOCKS5 target resolution failed: %w", lookupErr)
+				}
+				ip = resolved[0].IP
+			}
 		}
 		if ipv4 := ip.To4(); ipv4 != nil {
 			request = append(request, 0x01)

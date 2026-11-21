@@ -323,6 +323,43 @@ func normalizedHealthCheckModel(value string, supportedModels []string) (string,
 	return "", &ValidationError{Message: "账户检查模型必须属于账户支持模型"}
 }
 
+// deriveConnectionHealthCheckTrio 为连接测试账户派生健康检查三件套：
+//   - preset：连接集合唯一（resolveConnectionSet 已限制单连接）；
+//   - model：首个非空支持模型（路由需要，连接测试本身不使用）；
+//   - mode：优先域默认检查形态；否则取连接已启用且注册表具备连通性规格的
+//     形态（按规格优先级）；再否则取连接首个形态。连接测试执行侧不会依赖
+//     该记录值，它只保证三字段完整落库与删除连接时的归属一致。
+func deriveConnectionHealthCheckTrio(domain string, connections []resolvedConnection, supportedModels []string) (preset, mode, model string) {
+	for _, candidate := range supportedModels {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			model = trimmed
+			break
+		}
+	}
+	if len(connections) == 0 {
+		return "", accountscore.DefaultHealthCheckEndpointModeForDomain(domain), model
+	}
+	connection := connections[0]
+	preset = strings.TrimSpace(connection.preset)
+	enabledModes := map[string]bool{}
+	for _, candidate := range connection.modes {
+		enabledModes[strings.TrimSpace(candidate)] = true
+	}
+	preferred := accountscore.DefaultHealthCheckEndpointModeForDomain(domain)
+	if enabledModes[preferred] {
+		return preset, preferred, model
+	}
+	if probeMode, _, ok := contracts.ConnectivityProbeForModes(preset, connection.modes); ok {
+		return preset, probeMode, model
+	}
+	for _, candidate := range connection.modes {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return preset, trimmed, model
+		}
+	}
+	return preset, preferred, model
+}
+
 // groupOwnerReference mirrors groupOwnerAndProviderForAccountWriteAsync rows
 // （组无 provider 维度，设计 §8）：只解析 owner 归属维度。
 type groupReference struct {
@@ -456,15 +493,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 
 	// 后台自动探测总开关（AI账户后台自动探测总开关设计 §2/§8）：缺省开启；
-	// 媒体域（audio/video）不适用该开关，显式关闭按 400 拒绝（全创建入口统一
-	// 在本写面拒绝，含管理面/OAuth 托管/公开 API/导入；image 域存在后台探测，
-	// 适用该开关）。手动模式下特供恢复不可用（自动恢复功能没有闭环），显式
-	// 开启同样拒绝。
+	// 2026-11-21 起图像/音频/视频统一适用该开关（媒体域新增连通性健康检查
+	// 通道，不再依赖 J1 模型探针）。手动模式下特供恢复不可用（自动恢复功能
+	// 没有闭环），显式开启同样拒绝。
 	backgroundProbeEnabled := 1
 	if input.BackgroundProbeEnabled != nil && !*input.BackgroundProbeEnabled {
-		if accountscore.SkipsConversationHealthStateMachine(domain) {
-			return nil, &ValidationError{Message: "媒体域账户不适用后台自动探测开关"}
-		}
 		backgroundProbeEnabled = 0
 		if input.ExpeditedRecoveryEnabled != nil && *input.ExpeditedRecoveryEnabled {
 			return nil, &ValidationError{Message: "手动模式账户不适用特供快速恢复"}
@@ -600,6 +633,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if outliers := accountscore.OutOfDomainModes(declaredModes, allowedModes); len(outliers) > 0 {
 		return nil, accountscore.CapabilityDomainOutlierError(domain, outliers)
 	}
+	// 测试/健康检查方式：媒体域与只声明非生成能力的 chat 账户走连接测试，
+	// 健康检查由连接器注册表驱动的连通性探测承载；真实对话生成形态走模型
+	// 测试（J1）。
+	connectionHealthCheck := accountscore.UsesConnectionHealthCheck(domain, declaredModes)
 	// Gemini 兼容校验联动（计划 §服务端统一校验）：chat 域 gemini（native
 	// 档案，api_key/google_oauth）保持「至少一种对话能力」；媒体域 gemini
 	// 走 native 档案域内允许集，不适用对话能力要求；chat 域其他供应商不新增
@@ -655,16 +692,15 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if err != nil {
 		return nil, err
 	}
-	// 初始状态按域分流（媒体账户生命周期定案表）：audio/video 域账户不参与
-	// 对话健康检查状态机（无后台探针执行），创建默认落 active——显式 disabled
-	// 仍 disabled，其余入参（含缺省 pending_test 哨兵值）一律 active；
-	// health_check_endpoint_mode 仅为记录值（DefaultHealthCheckEndpointModeFor
-	// Domain）。chat/image 域行为不变：仅 active+SkipInitialHealthCheck 才
-	// active，否则非 disabled 一律 pending_test 等待后台健康检查。
-	// 手动模式（background_probe_enabled=0，总开关设计 §8）先于域分流：显式
-	// active/error/disabled 保持，缺省哨兵收敛 active——不产生 pending_test、
-	// 不投递首次激活检查，真实流量即验收；schedulable 跟随派生状态。原始状态
-	// 词优先（哨兵归一化会把显式 error 折叠成 pending_test）。
+	// 初始状态按域分流（媒体账户生命周期定案表）：2026-11-21 起媒体域接入
+	// 连通性健康检查，开启后台探测时与其他域一致落 pending_test 等待探测；
+	// 显式 disabled 保持，显式 active+SkipInitialHealthCheck 保持 active。
+	// health_check_endpoint_mode 仍为记录值（DefaultHealthCheckEndpointModeFor
+	// Domain），连接测试不依赖它。手动模式（background_probe_enabled=0，总开关
+	// 设计 §8）先于域分流：显式 active/error/disabled 保持，缺省哨兵收敛
+	// active——不产生 pending_test、不投递首次激活检查，真实流量即验收；
+	// schedulable 跟随派生状态。原始状态词优先（哨兵归一化会把显式 error
+	// 折叠成 pending_test）。
 	manualCreationStatus := accountscore.CreationStatus{}
 	if backgroundProbeEnabled == 0 {
 		manualSourceStatus := input.Status.Status
@@ -676,10 +712,6 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	initialStatus := input.Status.Status
 	if backgroundProbeEnabled == 0 {
 		initialStatus = manualCreationStatus.Status
-	} else if accountscore.SkipsConversationHealthStateMachine(domain) {
-		if input.Status.Status != "disabled" && !(input.PreservePendingTest && input.Status.Status == "pending_test") {
-			initialStatus = "active"
-		}
 	} else if input.Status.Status == "active" && input.Status.SkipInitialHealthCheck {
 		initialStatus = "active"
 	} else if input.Status.Status != "disabled" {
@@ -697,17 +729,12 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 闸门是计划在当前时刻的唯一派生事实：无计划（或计划未启用）为 NULL，闸门
 	// 恒开；有计划时按时段求值落 1/0。计划与 status 正交，任何状态都写闸门。
 	scheduleGate := ScheduleGateValue(schedule, now)
-	// 媒体域 schedulable 跟随派生状态：入参 status 缺省时 CreationStatus 的
-	// Schedulable 哨兵为 false（对应 chat 的 pending_test 暂停调度），媒体域
-	// 派生为 active 后必须可调度，否则产生「active 却禁调度」的滞留行；显式
-	// disabled 仍由哨兵落 false。套餐过期臂不变。手动模式 schedulable 跟随
-	// 派生状态：active 可调度，error/disabled 停调度。
+	// 媒体域 schedulable 跟随派生状态：待检查状态暂停调度，探测通过后由健康
+	// 状态机恢复；显式 disabled 仍落 false。套餐过期臂不变。手动模式
+	// schedulable 跟随派生状态：active 可调度，error/disabled 停调度。
 	schedulable := input.Status.Schedulable
 	if backgroundProbeEnabled == 0 {
 		schedulable = manualCreationStatus.Schedulable
-	} else if accountscore.SkipsConversationHealthStateMachine(domain) && input.Status.Status != "disabled" &&
-		!(input.PreservePendingTest && input.Status.Status == "pending_test") {
-		schedulable = true
 	}
 	if expiredByPackage {
 		schedulable = false
@@ -935,18 +962,32 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// accountVendorIdentity 注释；创建链（直连创建、克隆、批量、导入均汇入
 	// 本函数）统一落 vendor_code / connection_driver_code 两列。
 
-	// 健康检查三件套显式提交（供应商与上游协议面重构设计 §8）：三字段必须全部
-	// 由载荷显式携带，缺失按 400 拒绝（错误文案列明缺失字段），不再走档案默认
-	// /域缺省推导（§2.2「新建账户不推导 endpoint mode 默认值」）。空串值保留
-	// 给后续归属/词表校验报既有文案（nil 判缺失）。
-	if input.HealthCheckModel == nil {
-		return nil, &ValidationError{Message: "创建载荷缺少 healthCheckModel：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
-	}
-	if input.HealthCheckEndpointMode == nil {
-		return nil, &ValidationError{Message: "创建载荷缺少 healthCheckEndpointMode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
-	}
-	if input.HealthCheckConnectionPresetCode == nil {
-		return nil, &ValidationError{Message: "创建载荷缺少 healthCheckConnectionPresetCode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	// 健康检查三件套（供应商与上游协议面重构设计 §8）：模型测试账户必须由
+	// 载荷显式提交三字段（缺失按 400 拒绝，错误文案列明缺失字段）。连接测试
+	// 账户（图像/音频/视频与只声明输入型形态的 chat 账户）不再要求「检查模型
+	// + 检查形态」：缺省时由首个支持模型、连接已启用且注册表具备连通性规格的
+	// 形态、唯一连接 preset 派生后落库，列本身 nullable、无 schema 变更。
+	if connectionHealthCheck {
+		preset, mode, model := deriveConnectionHealthCheckTrio(domain, resolvedConnections, supportedModels)
+		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
+			input.HealthCheckConnectionPresetCode = &preset
+		}
+		if input.HealthCheckEndpointMode == nil || strings.TrimSpace(*input.HealthCheckEndpointMode) == "" {
+			input.HealthCheckEndpointMode = &mode
+		}
+		if input.HealthCheckModel == nil || strings.TrimSpace(*input.HealthCheckModel) == "" {
+			input.HealthCheckModel = &model
+		}
+	} else {
+		if input.HealthCheckModel == nil {
+			return nil, &ValidationError{Message: "创建载荷缺少 healthCheckModel：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+		}
+		if input.HealthCheckEndpointMode == nil {
+			return nil, &ValidationError{Message: "创建载荷缺少 healthCheckEndpointMode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+		}
+		if input.HealthCheckConnectionPresetCode == nil {
+			return nil, &ValidationError{Message: "创建载荷缺少 healthCheckConnectionPresetCode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+		}
 	}
 	if !accountHealthCheckEndpointModes[*input.HealthCheckEndpointMode] {
 		return nil, &ValidationError{Message: "账户参数无效"}
@@ -1032,7 +1073,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// connection_id（preset → enabled 连接行）并以一条 UPDATE 补齐三字段，提交
 	// 前读回校验非 NULL（§9 事务级校验硬规则）。初始 INSERT 三列保持 NULL。
 	if err := s.finalizeAccountHealthCheckTrio(ctx, tx, id, vendorCode.String, systemAccountID,
-		healthCheckConnectionPresetCode, healthCheckEndpointMode, healthCheckModel, supportedModels); err != nil {
+		healthCheckConnectionPresetCode, healthCheckEndpointMode, healthCheckModel, supportedModels, connectionHealthCheck); err != nil {
 		return nil, err
 	}
 	// Dispatch revision family advance (repositories.ts:2412-2417): the fresh
@@ -1061,8 +1102,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// J1 snapshot outbox (repositories.ts:2418-2432): health-capable
 	// accounts reserve input version 1 and land the pending snapshot intent
 	// (reason 'account_created') in the same transaction, which is what puts
-	// the new account into the probe candidate join. Media domains have no
-	// conversation probe path. API Key accounts reserve for every vendor:
+	// the new account into the probe candidate join. 连接测试账户（媒体域与
+	// 非生成 chat 账户）不进入 J1 模型探针，改由 jobs 连通性健康检查通道按
+	// 周期调度，不写 J1 input outbox。API Key accounts reserve for every vendor:
 	// J1 direct reader covers all nine vendors (deepseek 等) — the legacy
 	// gpt/openai gate left non-GPT API Key accounts without an input-version
 	// row, so their creation probe was silently dropped by the jobs outbox
@@ -1071,7 +1113,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 已退场）。
 	// 手动模式（background_probe_enabled=0，总开关设计 §8）跳过首次激活检查
 	// 意图：不写 J1 input outbox，账户直接以 active 可调度参与真实流量。
-	if backgroundProbeEnabled != 0 && !accountscore.SkipsConversationHealthStateMachine(domain) &&
+	if backgroundProbeEnabled != 0 && !connectionHealthCheck &&
 		(accountType == "api_key" || (providerCode == contracts.VendorGPT && accountType == "oauth")) {
 		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
 			return nil, err
@@ -1081,13 +1123,14 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// account-health-check-dispatch.service.ts): a pending_test account always
 	// probes once; a freshly saved active single-Key API Key account without
 	// balance query probes once so the balance detector can classify it.
-	// 手动模式无后台探测：不投递任何创建期检查（含单 Key 余额探测臂）。
-	initialHealthCheck := backgroundProbeEnabled != 0 &&
-		!accountscore.SkipsConversationHealthStateMachine(domain) && (nextStatus == "pending_test" ||
-		(nextStatus == "active" && accountType == "api_key" &&
-			EffectiveAccountApiKeyCount(credentials) == 1 &&
-			balanceQueryEnabledInt != 1 &&
-			balanceQueryConfigJSON == "{}"))
+	// 连接测试账户不投递 J1 初始探针（由连通性通道接管）；手动模式无后台
+	// 探测：不投递任何创建期检查（含单 Key 余额探测臂）。
+	initialHealthCheck := backgroundProbeEnabled != 0 && !connectionHealthCheck &&
+		(nextStatus == "pending_test" ||
+			(nextStatus == "active" && accountType == "api_key" &&
+				EffectiveAccountApiKeyCount(credentials) == 1 &&
+				balanceQueryEnabledInt != 1 &&
+				balanceQueryConfigJSON == "{}"))
 	return &CreateResult{
 		ID: id, Status: nextStatus, ConfigRevision: configRevision, DispatchRevision: dispatchRevision,
 		OwnerSystemAccountID: systemAccountID, Name: strings.TrimSpace(input.Name),

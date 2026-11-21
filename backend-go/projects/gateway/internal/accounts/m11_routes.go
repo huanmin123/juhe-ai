@@ -54,7 +54,8 @@ func (d *Deps) mountM11Routes(k *kernel.Kernel, prefix string) {
 	// Mutation-guarded writes.
 	k.Register("POST "+prefix+"/accounts/{id}/force-activate", d.m11Guarded(d.forceActivate(false), "accounts.force_activate_pending", forceActivateFingerprint, false))
 	k.Register("POST "+prefix+"/my-accounts/{id}/force-activate", d.m11Guarded(d.forceActivate(true), "accounts.force_activate_pending", forceActivateFingerprint, true))
-	k.Register("POST "+prefix+"/accounts/{id}/return-authorization", d.m11Guarded(d.returnAuthorization(false), "accounts.return_authorization", returnAuthorizationFingerprint, false))
+	// 管理面强制归还入口已移除（设计 §6.5/§13 #22）：管理员移除访问走回收，
+	// 不得伪装成接收方归还。仅保留用户侧收窄入口（单来源可用，多来源 409）。
 	k.Register("POST "+prefix+"/my-accounts/{id}/return-authorization", d.m11Guarded(d.returnAuthorization(true), "accounts.return_authorization", returnAuthorizationFingerprint, true))
 }
 
@@ -629,11 +630,25 @@ func (d *Deps) returnAuthorization(selfOnly bool) http.HandlerFunc {
 			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 			return
 		}
+		if !selfOnly {
+			kernel.WriteJSON(w, http.StatusConflict, map[string]any{
+				"code":    "admin_return_forbidden",
+				"message": "管理员不得代接收方归还授权，请回收授权以移除访问",
+			})
+			return
+		}
 		before, _ := d.Store.findTrafficSummary(r.Context(), r.PathValue("id"), access)
 		err := d.Store.ReturnAuthorizationInstance(r.Context(), r.PathValue("id"), access)
 		if err != nil {
 			if errors.Is(err, errReturnAuthorizationMissing) {
 				kernel.WriteError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			if errors.Is(err, errReturnAuthorizationMultiSource) {
+				kernel.WriteJSON(w, http.StatusConflict, map[string]any{
+					"code":    "return_requires_source_center",
+					"message": err.Error(),
+				})
 				return
 			}
 			kernel.WriteBadRequest(w, pipelineErrorMessage(err, "归还授权账户失败"))

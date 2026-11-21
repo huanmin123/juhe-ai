@@ -5,6 +5,7 @@ import {
   accountTestEndpointModesForAccount,
   defaultAccountTestEndpointModeForSelection
 } from './accountEndpointModes'
+import type { AccountTestKind } from './accountCapabilityDomains'
 
 export type AccountTestEndpointMode = 'account_default' | AccountSupportedEndpointMode
 
@@ -16,8 +17,11 @@ export type AccountTestForm = {
 export function buildAccountTestPayload(
   form: AccountTestForm,
   account?: AccountListItem,
-  draftAccount?: AccountDraftTestAccountPayload
+  draftAccount?: AccountDraftTestAccountPayload,
+  testKind: AccountTestKind = 'model'
 ): { model?: string; testEndpointMode?: AccountSupportedEndpointMode } {
+  // 连接测试不提交模型与请求形态（契约：只验证凭证与上游可达性）。
+  if (testKind === 'connection') return {}
   const payload: { model?: string; testEndpointMode?: AccountSupportedEndpointMode } = {}
   const model = form.model.trim()
   if (model) {

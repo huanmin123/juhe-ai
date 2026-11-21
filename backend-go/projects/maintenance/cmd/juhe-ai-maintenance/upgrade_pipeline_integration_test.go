@@ -38,7 +38,7 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 		return upgradeSteps(td.DSN, testSecret)
 	}
 
-	// 1) 落后库 dry-run：blocked/3，pending 应为 7 步 = 注册表 16 步中排除
+	// 1) 落后库 dry-run：blocked/3，pending 应为 8 步 = 注册表 17 步中排除
 	// fresh-adopt 的 9 步（rev8 upstream-base-url 空库无行、rev10 studio 无遗留、
 	// rev11 退役监控表不存在、rev12 无系统账户即满足、rev13 空库无
 	// active+schedulable=0 行、rev20 空库无映射行且 juhe_codex_context schema
@@ -50,8 +50,8 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 	if out.ExitCode != upgradepipeline.ExitNeedsHuman || out.Report == nil || out.Report.Result != upgradepipeline.ResultBlocked {
 		t.Fatalf("dry-run 应 blocked/3，got code=%d result=%v", out.ExitCode, reportResult(out.Report))
 	}
-	if len(out.Report.Plan.Pending) != 7 {
-		t.Fatalf("fresh 库 pending 步骤数 = %d, want 7（16 步 - 9 步 fresh-adopt）", len(out.Report.Plan.Pending))
+	if len(out.Report.Plan.Pending) != 8 {
+		t.Fatalf("fresh 库 pending 步骤数 = %d, want 8（17 步 - 9 步 fresh-adopt；含 rev28 授权治理迁移）", len(out.Report.Plan.Pending))
 	}
 
 	// 2) 缺确认：exit 2。
@@ -71,7 +71,7 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 	}
 
 	// 4) 账本：16 行全 applied（rev7 chat-account-only-binding 已随退役删除，
-	// 注册表 16 步，含 rev22 高并发分组退役、rev23 usage shard 目录退役与
+	// 注册表 17 步，含 rev22 高并发分组退役、rev23 usage shard 目录退役、rev28 授权治理迁移与
 	// rev25 单 IP 并发限制迁移）；schema_state revision = SchemaRevision。
 	db := td.DB
 	var applied int
@@ -79,8 +79,8 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 		`SELECT count(*) FROM juhe_business.schema_migrations WHERE status = 'applied'`).Scan(&applied); err != nil {
 		t.Fatalf("读账本失败: %v", err)
 	}
-	if applied != 16 {
-		t.Fatalf("applied 行数 = %d, want 16", applied)
+	if applied != 17 {
+		t.Fatalf("applied 行数 = %d, want 17", applied)
 	}
 	var stateRevision int64
 	if err := db.QueryRowContext(context.Background(),

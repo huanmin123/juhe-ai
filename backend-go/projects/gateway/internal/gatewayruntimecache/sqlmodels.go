@@ -395,16 +395,23 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 	if authorization == nil {
 		return nil, nil
 	}
-	var localEnabled sql.NullInt64
-	err = m.db.QueryRowContext(ctx, m.bind(`SELECT enabled
+	// Fail closed (§4.6): a missing settings row, a disabled switch, an
+	// unbuilt snapshot, or a mismatched receiver/group is a denial — never a
+	// silent allow.
+	var localEnabled int
+	var snapshotRevision, settingsOwner, settingsGroup string
+	err = m.db.QueryRowContext(ctx, m.bind(`SELECT enabled, COALESCE(snapshot_revision, ''),
+			system_account_id, group_id
 		FROM `+m.table("group_authorization_settings")+`
-		WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? LIMIT 1`),
-		authorization.id, systemAccountID, groupID).
-		Scan(&localEnabled)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		WHERE authorization_id = ? LIMIT 1`), authorization.id).
+		Scan(&localEnabled, &snapshotRevision, &settingsOwner, &settingsGroup)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	if err == nil && localEnabled.Valid && localEnabled.Int64 == 0 {
+	if localEnabled != 1 || snapshotRevision == "" || settingsOwner != systemAccountID || settingsGroup != groupID {
 		return nil, nil
 	}
 	return &GroupUsageAccessMetadata{
@@ -439,6 +446,16 @@ func (m *SQLReadModels) activeGroupAuthorization(ctx context.Context, groupID, g
 		FROM `+m.table("resource_authorizations")+`
 		WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ?
 			AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)
+			AND COALESCE(effective_source_type, '') <> ''
+			AND EXISTS (
+				SELECT 1 FROM `+m.table("resource_authorization_sources")+` src
+				WHERE src.authorization_id = `+m.table("resource_authorizations")+`.id
+				  AND src.status = 'active'
+				  AND ((`+m.table("resource_authorizations")+`.effective_source_type = 'manual' AND src.source_type = 'manual')
+				    OR (`+m.table("resource_authorizations")+`.effective_source_type = 'team'
+				        AND src.source_type = 'team'
+				        AND src.source_team_id = `+m.table("resource_authorizations")+`.effective_source_team_id))
+			)
 		LIMIT 1`), groupID, granteeID, nowISO).
 		Scan(&id, &sourceType, &sourceTeamID, &expiresAt, &limitsJSON)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -63,7 +63,7 @@ monitoring/
    - **Prometheus 数据源**（`DS_PROMETHEUS`）：抓取 juhe-ai 两个 job 的 Prometheus 实例；
    - **postgres_exporter 数据源**（`DS_POSTGRES_EXPORTER`）：postgres_exporter 对应的 Prometheus 数据源（存储行走该 exporter 的指标）。变量默认值是名为 `Prometheus` 的数据源，名字不同则在顶部下拉框重选。
 3. `job` 变量自动从 `up{job=~"juhe-ai-(gateway|jobs)"}` 发现，支持多选/All；「后台任务」行只在选中 `juhe-ai-jobs` 时有数据，「网关流量」行只在 `juhe-ai-gateway` 有数据。
-4. 面板行：概览（up、进程运行时长）→ 网关流量（QPS/5xx 占比/时延 P95/在途/上游失败/首字延迟）→ Go Runtime 与主业务池 → 后台任务 → 存储（postgres_exporter）。
+4. 面板行：概览（up、进程运行时长）→ 网关流量（QPS/5xx 占比/在途/上游失败/首字延迟）→ Go Runtime 与主业务池 → 后台任务 → 存储（postgres_exporter）。
 
 使用 `stack/` 时不需要手工导入：`stack/dashboards/` 已包含全部面板，Grafana provisioning 自动加载到 `juhe-ai` 目录（30s 扫描）。
 

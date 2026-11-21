@@ -451,3 +451,165 @@ func TestNewTransportWithoutDialGuardDialsPlainly(t *testing.T) {
 		t.Fatalf("无 guard 不应产生保留网段拒绝: %v", dialErr)
 	}
 }
+
+// TestSOCKS5LocalResolutionUsesGuard proves the local-resolution SOCKS5 branch
+// selects only a validated address: the polluted mixed answer must send the
+// public A record, never the blocked Teredo AAAA or an unvalidated first entry.
+func TestSOCKS5LocalResolutionUsesGuard(t *testing.T) {
+	listener, observed := startSOCKS5TestServer(t)
+	proxyURL, err := url.Parse("socks5://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Put the blocked candidate first: taking the first resolved address would
+	// send the Teredo value, so only a real filter can satisfy the assertion.
+	resolver := &fakeResolver{addresses: []net.IPAddr{
+		{IP: net.ParseIP("2001::68f4:2eb9")},
+		{IP: net.ParseIP("31.13.112.4")},
+	}}
+	guard := NewDialGuard(URLSecurityConfig{}, resolver, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, err := NewSOCKS5DialContextWithGuard(proxyURL, false, guard)(ctx, "tcp", "rebind.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	actual := <-observed
+	if actual.typ != 0x01 || actual.host != "31.13.112.4" || actual.port != 443 {
+		t.Fatalf("SOCKS request = %#v, want the validated public address", actual)
+	}
+}
+
+// TestSOCKS5LocalResolutionRejectsAllBlocked proves an all-blocked answer fails
+// as a policy rejection instead of sending the first (unvalidated) address.
+func TestSOCKS5LocalResolutionRejectsAllBlocked(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	connectBytes := make(chan []byte, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		greeting := make([]byte, 2)
+		if _, readErr := io.ReadFull(connection, greeting[:]); readErr != nil {
+			return
+		}
+		methods := make([]byte, greeting[1])
+		if _, readErr := io.ReadFull(connection, methods); readErr != nil {
+			return
+		}
+		_, _ = connection.Write([]byte{0x05, 0x00})
+		// After method selection the client must fail locally and close without
+		// writing any CONNECT request bytes.
+		_ = connection.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buffer := make([]byte, 4)
+		n, _ := connection.Read(buffer)
+		connectBytes <- buffer[:n]
+	}()
+	proxyURL, err := url.Parse("socks5://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{addresses: []net.IPAddr{
+		{IP: net.ParseIP("2001::68f4:2eb9")},
+		{IP: net.ParseIP("10.0.0.5")},
+	}}
+	guard := NewDialGuard(URLSecurityConfig{}, resolver, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, dialErr := NewSOCKS5DialContextWithGuard(proxyURL, false, guard)(ctx, "tcp", "rebind.example:443")
+	var resolvedErr *UnsafeResolvedUpstreamURLError
+	if !errors.As(dialErr, &resolvedErr) {
+		t.Fatalf("all-blocked SOCKS5 dial err = %v, want UnsafeResolvedUpstreamURLError", dialErr)
+	}
+	select {
+	case sent := <-connectBytes:
+		if len(sent) != 0 {
+			t.Fatalf("all-blocked SOCKS5 must not send CONNECT bytes, got % x", sent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("test SOCKS5 proxy did not observe the closed connection")
+	}
+}
+
+// TestSOCKS5RemoteResolutionIgnoresGuard proves SOCKS5H keeps remote
+// resolution: the guard resolver must not be consulted.
+func TestSOCKS5RemoteResolutionIgnoresGuard(t *testing.T) {
+	listener, observed := startSOCKS5TestServer(t)
+	proxyURL, err := url.Parse("socks5h://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := NewDialGuard(URLSecurityConfig{}, &fakeResolver{err: errors.New("guard resolver must not be consulted")}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, err := NewSOCKS5DialContextWithGuard(proxyURL, true, guard)(ctx, "tcp", "rebind.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	actual := <-observed
+	if actual.typ != 0x03 || actual.host != "rebind.example" || actual.port != 443 {
+		t.Fatalf("SOCKS5H request = %#v, want the domain sent to the proxy", actual)
+	}
+}
+
+// TestNewTransportSOCKS5LocalUsesGuard covers the production wiring: the
+// transport's SOCKS5 branch must consume TransportOptions.DialGuard instead of
+// the historical unguarded dialer.
+func TestNewTransportSOCKS5LocalUsesGuard(t *testing.T) {
+	listener, observed := startSOCKS5TestServer(t)
+	guard := NewDialGuard(URLSecurityConfig{}, &fakeResolver{addresses: []net.IPAddr{
+		{IP: net.ParseIP("2001::68f4:2eb9")},
+		{IP: net.ParseIP("31.13.112.4")},
+	}}, nil)
+	transport, err := NewTransport("socks5://"+listener.Addr().String(), TransportOptions{DialGuard: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, err := transport.DialContext(ctx, "tcp", "rebind.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	actual := <-observed
+	if actual.typ != 0x01 || actual.host != "31.13.112.4" || actual.port != 443 {
+		t.Fatalf("transport SOCKS5 request = %#v, want the guarded public address", actual)
+	}
+}
+
+// TestNewTransportForceRemoteSOCKS5IgnoresGuard covers the socks5 +
+// ForceRemoteSOCKS5 combination: the target stays a domain and the guard
+// resolver must not be consulted.
+func TestNewTransportForceRemoteSOCKS5IgnoresGuard(t *testing.T) {
+	listener, observed := startSOCKS5TestServer(t)
+	guard := NewDialGuard(URLSecurityConfig{}, &fakeResolver{err: errors.New("guard resolver must not be consulted")}, nil)
+	transport, err := NewTransport("socks5://"+listener.Addr().String(), TransportOptions{
+		DialGuard:         guard,
+		ForceRemoteSOCKS5: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, err := transport.DialContext(ctx, "tcp", "rebind.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	actual := <-observed
+	if actual.typ != 0x03 || actual.host != "rebind.example" || actual.port != 443 {
+		t.Fatalf("force-remote SOCKS5 request = %#v, want the domain sent to the proxy", actual)
+	}
+}

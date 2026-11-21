@@ -41,8 +41,8 @@ func openJobsRepoPG(t *testing.T) *sql.DB {
 			params_ignored_json TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL);
-			CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY, vendor_code TEXT);
-			CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`)
+			CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY, vendor_code TEXT, name TEXT);
+			CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT)`)
 		return err
 	})
 	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN)

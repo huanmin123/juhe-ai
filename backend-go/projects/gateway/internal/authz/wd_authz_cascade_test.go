@@ -111,12 +111,12 @@ func TestWdTeamCascadeRevokeMemberRevokeAllReactivate(t *testing.T) {
 		t.Fatalf("其余成员不受影响: %q", member2Effective)
 	}
 
-	// 重新启用团队：active 成员重挂 team 运行时。
+	// 重新启用团队不再复活旧同意：Reactivate 是 no-op，成员需重新走 offer。
 	if err := f.store.ReactivateTeamGrants(context.Background(), "team_wd", "admin-actor"); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
-	if _, effective := wdGrantRuntimeStatus(t, f, "group", "grp_wd", "member1"); effective != "team" {
-		t.Fatalf("重新激活后成员应恢复 team 来源: %q", effective)
+	if status, effective := wdGrantRuntimeStatus(t, f, "group", "grp_wd", "member1"); status != StatusRevoked || effective != "" {
+		t.Fatalf("no-op reactivate 不得恢复成员来源: %s/%q", status, effective)
 	}
 
 	// 停用团队：全部 team source 翻转 revoked（保留真实 actor 与 reason）。
@@ -164,7 +164,10 @@ func TestWdCascadeMemberOverLimitRejected(t *testing.T) {
 			t.Fatalf("seed member: %v", err)
 		}
 	}
-	err := f.store.ReactivateTeamGrants(context.Background(), "team_limit", "actor")
+	_, err := f.store.CreateOffer(context.Background(), OfferInput{
+		ResourceType: "group", ResourceID: "grp_limit",
+		GranteeType: "team", TeamName: "Team team_limit",
+	}, "owner", false, "owner")
 	if err == nil || !strings.Contains(err.Error(), "授权团队最多支持") {
 		t.Fatalf("超限成员应拒绝: %v", err)
 	}
@@ -193,7 +196,12 @@ func TestWdCascadeGrantsOverLimitRejected(t *testing.T) {
 			t.Fatalf("seed runtime: %v", err)
 		}
 	}
-	err := f.store.ReactivateTeamGrants(context.Background(), "team_gl", "actor")
+	tx, err := f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.store.ApplyActiveTeamGrantsToMembersTx(context.Background(), tx, "team_gl", []string{"member"}, "actor", now)
+	tx.Rollback()
 	if err == nil || !strings.Contains(err.Error(), "单个授权团队最多支持") {
 		t.Fatalf("超限团队授权应拒绝: %v", err)
 	}

@@ -321,7 +321,7 @@ func TestW13g2FailpointArms(t *testing.T) {
 		}, "owner"); err != nil {
 			t.Fatal(err)
 		}
-		fp.arm("COALESCE(ended_reason, ?)")
+		fp.arm("ended_at = COALESCE(ended_at, ?)")
 		defer fp.disarm()
 		if err := s.RevokeAllTeamSources(ctx, "team_fp13", "owner", "team_disabled"); err == nil {
 			t.Fatalf("应失败")

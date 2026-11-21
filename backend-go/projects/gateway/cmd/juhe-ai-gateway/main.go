@@ -1025,6 +1025,9 @@ func main() {
 		// owner, so the component is not health-gated.
 		if composed.AuthzStore != nil {
 			components = append(components, newAuthzExpiryRuntimeSyncComponent(composed.AuthzStore))
+			// TTL 到期与来源修订对账同属 gateway authz 状态机，不能由 jobs
+			// 跨 module 调用；best-effort，单轮失败不拖垮 owner。
+			components = append(components, newAuthzGovernanceSweepComponent(composed.AuthzStore))
 		}
 		mainListener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", runtimeCfg.Host, runtimeCfg.Port))
 		if err != nil {

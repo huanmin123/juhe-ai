@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 )
 
 // ConflictError maps to the duplicate strategy name errors — 409 in the route
@@ -207,6 +209,16 @@ type Store struct {
 
 	validationInval ValidationCacheInvalidator
 	speedFirst      SpeedFirstRuntimeFacade
+	// bindingValidator checks an authorized group's runtime, accepted
+	// revisions and snapshot before the binding is persisted (nil = skip for
+	// legacy/test stores; composition always wires it).
+	bindingValidator authzrevision.GroupBindingValidator
+}
+
+// SetAuthorizationBindingValidator wires the recipient-consent group binding
+// gate. Nil keeps the slice self-contained for tests.
+func (s *Store) SetAuthorizationBindingValidator(v authzrevision.GroupBindingValidator) {
+	s.bindingValidator = v
 }
 
 // SetValidationCacheInvalidator wires the API-Key validation-cache

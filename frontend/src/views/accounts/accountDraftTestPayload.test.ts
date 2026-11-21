@@ -115,6 +115,18 @@ describe('buildAccountDraftTestPayload 已存明文回填', () => {
   })
 })
 
+describe('buildAccountDraftTestPayload 连接测试规格', () => {
+  it('从表单协议档案透传 connectionPresetCode，供后端连接测试查找探测规格', () => {
+    const payload = buildAccountDraftTestPayload({
+      accounts: [],
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      form: apiKeyDraftForm(['sk-draft'])
+    })
+    expect(payload.connectionPresetCode).toBe('gpt_openai_v1')
+  })
+})
+
 describe('validateAccountDraftTestForm OAuth 测试凭据', () => {
   it('已存 token 为真实明文：不再要求填写 Token', () => {
     const message = validateAccountDraftTestForm({

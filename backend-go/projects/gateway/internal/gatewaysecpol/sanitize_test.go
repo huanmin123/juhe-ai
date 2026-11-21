@@ -2,6 +2,7 @@ package gatewaysecpol
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -430,5 +431,65 @@ func TestAnthropicRedactedThinkingDataUntouched(t *testing.T) {
 	}
 	if len(result.Hits) != 0 {
 		t.Fatalf("redacted_thinking data 不得产生命中计数：%v", result.Hits)
+	}
+}
+
+func TestOpenAIEmbeddingsSanitizesTextInputOnly(t *testing.T) {
+	policy := singleRule(t, phonePlaceholderRule())
+	body := []byte(`{"model":"text-embedding","input":["打 13812345678","正常文本"],"encoding_format":"float"}`)
+	result := SanitizeBody(policy, body, FamilyOpenAIEmbeddings)
+	root := parseBody(t, result.Body)
+	input := asArray(root.get("input"))
+	if len(input) != 2 || input[0] != "打 [[PHONE_1]]" || input[1] != "正常文本" {
+		t.Fatalf("embeddings input 文本未按预期替换：%v", input)
+	}
+	if root.get("messages") != nil {
+		t.Fatalf("embeddings 请求不得注入 chat messages")
+	}
+	if got, _ := root.get("model").(string); got != "text-embedding" {
+		t.Fatalf("model 字段不得改写：%q", got)
+	}
+	if result.Hits["PHONE"] != 1 {
+		t.Fatalf("PHONE 命中数应为 1，得到 %d", result.Hits["PHONE"])
+	}
+	// token ID 数组不是文本，必须逐字节透传、不产生映射。
+	tokenBody := []byte(`{"model":"text-embedding","input":[[1,2,3]]}`)
+	tokenResult := SanitizeBody(policy, tokenBody, FamilyOpenAIEmbeddings)
+	if tokenResult.Applied || !bytes.Equal(tokenResult.Body, tokenBody) {
+		t.Fatalf("token ID 输入不得脱敏：applied=%v body=%s", tokenResult.Applied, tokenResult.Body)
+	}
+}
+
+func TestOpenAIRerankSanitizesQueryAndDocuments(t *testing.T) {
+	policy := singleRule(t, phonePlaceholderRule())
+	body := []byte(`{"model":"gte-rerank-v2","query":"查询 13812345678","documents":["文档 13912345678",{"text":"对象 13812345678"}],"top_n":1,"return_documents":true}`)
+	result := SanitizeBody(policy, body, FamilyOpenAIRerank)
+	root := parseBody(t, result.Body)
+	if got, _ := root.get("query").(string); got != "查询 [[PHONE_1]]" {
+		t.Fatalf("rerank query 未替换：%q", got)
+	}
+	documents := asArray(root.get("documents"))
+	if len(documents) != 2 || documents[0] != "文档 [[PHONE_2]]" {
+		t.Fatalf("rerank documents[0] 未替换：%v", documents)
+	}
+	if got, _ := asObject(documents[1]).get("text").(string); got != "对象 [[PHONE_1]]" {
+		t.Fatalf("rerank documents[1].text 未替换：%q", got)
+	}
+	if root.get("messages") != nil {
+		t.Fatalf("rerank 请求不得注入 chat messages")
+	}
+	if got, _ := root.get("top_n").(json.Number); string(got) != "1" {
+		t.Fatalf("top_n 控制字段不得改写：%v", root.get("top_n"))
+	}
+	// DashScope 转换形态（input.query/input.documents）同样覆盖。
+	dashBody := []byte(`{"model":"gte-rerank-v2","input":{"query":"查询 13812345678","documents":["文档一","文档二"]},"parameters":{"top_n":1}}`)
+	dashResult := SanitizeBody(policy, dashBody, FamilyOpenAIRerank)
+	dashRoot := parseBody(t, dashResult.Body)
+	dashInput := asObject(dashRoot.get("input"))
+	if got, _ := dashInput.get("query").(string); got != "查询 [[PHONE_1]]" {
+		t.Fatalf("DashScope input.query 未替换：%q", got)
+	}
+	if got, _ := asArray(dashInput.get("documents"))[0].(string); got != "文档一" {
+		t.Fatalf("DashScope documents 无辜文本被改写：%q", got)
 	}
 }

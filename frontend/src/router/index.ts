@@ -179,10 +179,10 @@ export const menuRoutes: RouteRecordRaw[] = [
   },
   {
     path: '/my-authorizations',
-    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    component: () => import('@/views/authorizations/AuthorizationCenterView.vue'),
     meta: {
-      title: '授权操作',
-      description: '管理自己授权出去或授权给自己的账户、分组和团队授权，不在这里展示消耗统计。',
+      title: '授权中心',
+      description: '查看收到的授权并主动接受、绑定分组或启用授权分组；管理自己发出的授权与团队审批。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
       viewScope: 'self',
@@ -359,10 +359,10 @@ export const menuRoutes: RouteRecordRaw[] = [
   },
   {
     path: '/authorizations',
-    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    component: () => import('@/views/authorizations/AuthorizationCenterView.vue'),
     meta: {
       title: '统一授权',
-      description: '管理谁把哪些 AI 账户或分组授权给个人或团队，不在这里展示消耗统计。',
+      description: '管理全量授权业务记录、审批状态、暂停/延长/回收和屏蔽记录，不展示接收方分组。',
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',

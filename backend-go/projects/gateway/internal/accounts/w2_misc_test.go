@@ -154,8 +154,10 @@ func TestW2ParseTestDraftAccountInputMatrix(t *testing.T) {
 	t.Run("必填缺失", func(t *testing.T) {
 		for key := range valid {
 			// providerProtocolProfileId 不再必填（§9.3 profile 退役，协议上下文
-			// 由 vendor 语义推导供给；携带时接受但忽略）。
-			if key == "providerProtocolProfileId" {
+			// 由 vendor 语义推导供给；携带时接受但忽略）。健康检查模型/形态也
+			// 不再在解析层必填：连接测试草稿允许省略，由快照准备阶段按最终
+			// 声明集派生；模型测试草稿的缺失由 prepare 阶段拒绝。
+			if key == "providerProtocolProfileId" || key == "healthCheckModel" || key == "healthCheckEndpointMode" {
 				continue
 			}
 			record := map[string]any{}

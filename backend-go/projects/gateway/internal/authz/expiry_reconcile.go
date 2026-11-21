@@ -43,29 +43,45 @@ func (s *Store) ReconcileExpiredGrants(ctx context.Context, lookback time.Durati
 	if limit <= 0 {
 		limit = expiryReconcileBatchLimit
 	}
+	s.expiryReconcileMu.Lock()
+	defer s.expiryReconcileMu.Unlock()
 	now := s.now()
 	nowText := now.UTC().Format("2006-01-02T15:04:05.000Z")
 	cutoff := now.Add(-lookback).UTC().Format("2006-01-02T15:04:05.000Z")
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorization_grants")+`
+	query := `SELECT id, updated_at FROM ` + s.table("resource_authorization_grants") + `
 		WHERE status = 'expired'
-			AND updated_at >= ?
-		ORDER BY updated_at ASC, id ASC
-		LIMIT ?`), cutoff, limit)
+			AND updated_at >= ?`
+	args := []any{cutoff}
+	if s.expiryReconcileUpdatedAt != "" {
+		query += ` AND (updated_at > ? OR (updated_at = ? AND id > ?))`
+		args = append(args, s.expiryReconcileUpdatedAt, s.expiryReconcileUpdatedAt, s.expiryReconcileID)
+	}
+	query += ` ORDER BY updated_at ASC, id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return 0, err
 	}
 	ids := []string{}
+	lastUpdated, lastID := "", ""
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, updatedAt string
+		if err := rows.Scan(&id, &updatedAt); err != nil {
 			rows.Close()
 			return 0, err
 		}
 		ids = append(ids, id)
+		lastUpdated, lastID = updatedAt, id
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
+	}
+	if len(ids) == 0 {
+		// The cursor fell outside the lookback window (or the table drained):
+		// restart the cycle on the next call.
+		s.expiryReconcileUpdatedAt, s.expiryReconcileID = "", ""
+		return 0, nil
 	}
 	reconciled := 0
 	for _, id := range ids {
@@ -122,6 +138,12 @@ func (s *Store) ReconcileExpiredGrants(ctx context.Context, lookback time.Durati
 		// cache like every other committed authorization write. Best-effort,
 		// never blocks or fails the reconcile pass.
 		s.invalidateAfterBusinessWrite(ctx, invalidationReasonExpired)
+	}
+	if len(ids) < limit {
+		// End of the cycle: the next pass restarts from the oldest row.
+		s.expiryReconcileUpdatedAt, s.expiryReconcileID = "", ""
+	} else {
+		s.expiryReconcileUpdatedAt, s.expiryReconcileID = lastUpdated, lastID
 	}
 	return reconciled, nil
 }

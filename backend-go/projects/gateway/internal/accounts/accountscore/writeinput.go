@@ -243,25 +243,28 @@ const MaxRPMLimit = MaxInt4
 //   - audio_transcription_json 已在本白名单（M1 同步音频批），v8-A 归音频域
 //     lane 集后语义不变——健康检查默认仍落 audio_speech，纯转写账户显式选
 //     audio_transcription_json（既有白名单语义，无代码变化）。
-//   - realtime_session 有意不加入本白名单：无探针执行器、无人工测试形态
-//     （周期候选白名单 J1 与人工测试 options 均不含该值），与 video_create
-//     同一处理口径——DB CHECK 词表含该值（maintenance pg_schema_business_
-//     tables.go）、写入口不开放落值；v8-A
-//     将其归入音频域 lane 集只影响推导与允许集，不开放健康检查形态。
+//   - realtime_session 与 video_create 仅为持久化诊断形态：无自动探针执行器
+//     （周期候选白名单 J1 与人工测试 options 均不含这两个值），写侧仍允许
+//     落值，使只声明实时会话/视频能力的账户可以创建；DB CHECK 词表同样
+//     包含这两个值。
+//   - 2026-11-20 向量/重排协议补齐批同口径增补 embeddings_json / rerank_json：
+//     纯向量或纯重排账户没有 chat/media 检查形态，健康检查三件套必须能落到
+//     新 mode 才能创建；两者同样只作记录值、不派发自动探针。
+// 2026-11-21 连接测试收口：白名单与 DB CHECK 的 27 值完全对齐——连接测试账户
+// 的检查形态只是持久化记录值（探测由连通性规格另选），媒体任务查询/内容/取消
+// 与 count_tokens/embed_content 等输入型形态都必须可落库，否则只声明这些
+// 形态的账户无法创建。
 var AccountHealthCheckEndpointModes = map[string]bool{
 	"images_json": true, "chat_json": true, "chat_sse": true,
 	"responses_json": true, "responses_sse": true,
 	"messages_json": true, "messages_sse": true,
+	"message_token_counting": true,
 	"generate_content_json": true, "generate_content_sse": true,
 	"interactions_json": true, "interactions_sse": true,
-	// M1 同步音频探针形态（与 accounts.health_check_endpoint_mode CHECK
-	// 同步，maintenance pg_schema_business_tables.go）；audio_job_create 是
-	// 长音频任务账户（qwen paraformer 等）唯一可落地的持久化诊断形态。
-	"audio_speech": true, "audio_transcription_json": true, "audio_job_create": true,
-	// realtime 账户只声明 realtime_session；该值仅作持久化诊断形态，J1
-	// 候选白名单不含它，不派发自动真实会话探针。
+	"count_tokens": true, "embed_content": true,
+	"embeddings_json": true, "rerank_json": true,
+	"audio_speech": true, "audio_transcription_json": true,
+	"video_create": true, "video_get": true, "video_content": true, "video_cancel": true,
+	"audio_job_create": true, "audio_job_get": true, "audio_job_content": true, "audio_job_cancel": true,
 	"realtime_session": true,
-	// M2 视频域默认落值（仅写侧白名单；J1 候选白名单不含该值，视频域账户
-	// 天然豁免周期检查）。
-	"video_create": true,
 }

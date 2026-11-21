@@ -14,28 +14,28 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
 // MountAuthorizationOptions wires the grantee option route family.
+//
+// 管理面返回全量候选；用户面只能读取与当前登录账户相关的候选，禁止普通用户
+// 枚举全量用户、团队或他人的分组（授权接收方确认与来源治理设计 §1.2/§9）。
 func (d *Deps) MountAuthorizationOptions(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	admin := d.RequireAdmin
 	self := d.RequireSelf
 
-	for _, surface := range []struct {
-		base string
-		wrap func(http.Handler) http.Handler
-	}{
-		{prefix + "/authorization-options", admin},
-		{prefix + "/my-authorization-options", self},
-	} {
-		base := surface.base
-		wrap := surface.wrap
-		k.Register("GET "+base+"/grantee-accounts", wrap(http.HandlerFunc(d.granteeAccounts)))
-		k.Register("GET "+base+"/grantee-teams", wrap(http.HandlerFunc(d.granteeTeams)))
-		k.Register("GET "+base+"/grantee-groups", wrap(http.HandlerFunc(d.granteeGroups)))
-	}
+	adminBase := prefix + "/authorization-options"
+	k.Register("GET "+adminBase+"/grantee-accounts", admin(http.HandlerFunc(d.granteeAccounts)))
+	k.Register("GET "+adminBase+"/grantee-teams", admin(http.HandlerFunc(d.granteeTeams)))
+	k.Register("GET "+adminBase+"/grantee-groups", admin(http.HandlerFunc(d.granteeGroups)))
+
+	myBase := prefix + "/my-authorization-options"
+	k.Register("GET "+myBase+"/grantee-accounts", self(http.HandlerFunc(d.myGranteeAccounts)))
+	k.Register("GET "+myBase+"/grantee-teams", self(http.HandlerFunc(d.myGranteeTeams)))
+	k.Register("GET "+myBase+"/grantee-groups", self(http.HandlerFunc(d.myGranteeGroups)))
 }
 
 func (d *Deps) granteeAccounts(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +64,53 @@ func (d *Deps) granteeGroups(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "被授权用户不能为空")
 		return
 	}
+	rows, err := d.Store.ListAuthorizationGranteeGroups(r.Context(), options)
+	if err != nil {
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		return
+	}
+	kernel.WriteOK(w, rows, "")
+}
+
+func (d *Deps) myGranteeAccounts(w http.ResponseWriter, r *http.Request) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	options := parseAuthorizationOptionListOptions(r.URL.Query())
+	rows, err := d.Store.ListAuthorizationGranteeAccountsScoped(r.Context(), auth.SystemAccountID, options)
+	if err != nil {
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		return
+	}
+	kernel.WriteOK(w, rows, "")
+}
+
+func (d *Deps) myGranteeTeams(w http.ResponseWriter, r *http.Request) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	options := parseAuthorizationOptionListOptions(r.URL.Query())
+	rows, err := d.Store.ListAuthorizationGranteeTeamsScoped(r.Context(), auth.SystemAccountID, options)
+	if err != nil {
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		return
+	}
+	kernel.WriteOK(w, rows, "")
+}
+
+func (d *Deps) myGranteeGroups(w http.ResponseWriter, r *http.Request) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	options := parseAuthorizationGranteeGroupOptionListOptions(r.URL.Query())
+	// 用户面只允许查看自己的分组；忽略越权传入的 granteeSystemAccountId。
+	options.GranteeSystemAccountID = auth.SystemAccountID
 	rows, err := d.Store.ListAuthorizationGranteeGroups(r.Context(), options)
 	if err != nil {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)

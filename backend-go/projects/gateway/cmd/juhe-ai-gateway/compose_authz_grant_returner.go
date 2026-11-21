@@ -39,3 +39,10 @@ func (r authzGrantReturner) Return(ctx context.Context, grantID, expectedUpdated
 	}
 	return mutation.Status, nil
 }
+
+// ReturnSourceForGrantee implements accounts.AuthorizationSourceReturner so
+// the legacy account return endpoint delegates to the source-level state
+// machine (single non-terminal source only).
+func (r authzGrantReturner) ReturnSourceForGrantee(ctx context.Context, sourceID, actorID string) error {
+	return r.store.ReturnSourceForGrantee(ctx, sourceID, actorID)
+}

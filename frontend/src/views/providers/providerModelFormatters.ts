@@ -52,6 +52,8 @@ export const apiProtocolLabels: Record<string, string> = {
   stream_generate_content: 'Stream Generate Content',
   count_tokens: 'Count Tokens',
   embed_content: 'Embed Content',
+  embeddings: 'Embeddings API',
+  rerank: 'Rerank API',
   interactions: 'Interactions',
   completions: 'Completions',
   images: 'Images API',
@@ -167,6 +169,8 @@ const providerCapabilityLabels: Record<string, string> = {
   stream_generate_content: 'Stream Generate Content',
   interactions: 'Interactions',
   embed_content: 'Embed Content',
+  embeddings: 'Embeddings API',
+  rerank: 'Rerank API',
   message_token_counting: 'Message Token Counting',
   images: 'Images',
   video: 'Video',
@@ -185,6 +189,8 @@ const providerCapabilityOrder = [
   'stream_generate_content',
   'interactions',
   'embed_content',
+  'embeddings',
+  'rerank',
   'message_token_counting',
   'images',
   'video',
@@ -342,7 +348,10 @@ export function getApiProtocolTagColor(protocol?: string): string {
       return 'magenta'
     case 'count_tokens':
     case 'embed_content':
+    case 'embeddings':
       return 'gold'
+    case 'rerank':
+      return 'orange'
     case 'message_token_counting':
       return 'lime'
     case 'images':
@@ -435,6 +444,8 @@ function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, cat
     || protocol === 'stream_generate_content'
     || protocol === 'count_tokens'
     || protocol === 'embed_content'
+    || protocol === 'embeddings'
+    || protocol === 'rerank'
     || protocol === 'interactions'
     || protocol === 'completions'
 }

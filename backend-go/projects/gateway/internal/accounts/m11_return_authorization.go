@@ -28,14 +28,30 @@ type AuthorizationGrantReturner interface {
 	Return(ctx context.Context, grantID, expectedUpdatedAt, granteeUserID string) (string, error)
 }
 
+// AuthorizationSourceReturner is the recipient-consent source-level return
+// port. Production wires it so the legacy account endpoint returns exactly one
+// source and never the whole grant.
+type AuthorizationSourceReturner interface {
+	ReturnSourceForGrantee(ctx context.Context, sourceID, actorID string) error
+}
+
 // SetAuthorizationGrantReturner wires the port (composition-root handover;
 // the production bridge passes the authz store adapter).
 func (s *Store) SetAuthorizationGrantReturner(returner AuthorizationGrantReturner) {
 	s.returner = returner
 }
 
+// SetAuthorizationSourceReturner wires the source-level return bridge.
+func (s *Store) SetAuthorizationSourceReturner(returner AuthorizationSourceReturner) {
+	s.sourceReturner = returner
+}
+
 // errReturnAuthorizationMissing marks 授权账户不存在或不可归还 (404).
 var errReturnAuthorizationMissing = errors.New("授权账户不存在或不可归还")
+
+// errReturnAuthorizationMultiSource tells the caller to use the authorization
+// center, where each source is returned/reviewed independently.
+var errReturnAuthorizationMultiSource = errors.New("授权账户存在多条来源，请前往授权中心按来源归还")
 
 // returnableGrant is the direct grant row the return path localizes
 // (findReturnableDirectGrantForRuntimeAuthorization).
@@ -106,6 +122,37 @@ func (s *Store) ReturnAuthorizationInstance(ctx context.Context, accountID strin
 	}
 	if runtime.ownerID == grantee {
 		return errReturnAuthorizationMissing
+	}
+	// Recipient-consent narrowing: the compatibility endpoint may return only
+	// when the runtime has exactly one non-terminal source. Multiple sources
+	// must be handled per-source in the authorization center.
+	if s.sourceReturner != nil {
+		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorization_sources")+`
+			WHERE authorization_id = ? AND status IN ('pending','active','dormant','needs_review')
+			ORDER BY id LIMIT 2`), runtime.id)
+		if err != nil {
+			return err
+		}
+		var sourceIDs []string
+		for rows.Next() {
+			var sourceID string
+			if err := rows.Scan(&sourceID); err != nil {
+				rows.Close()
+				return err
+			}
+			sourceIDs = append(sourceIDs, sourceID)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(sourceIDs) == 0 {
+			return errReturnAuthorizationMissing
+		}
+		if len(sourceIDs) > 1 {
+			return errReturnAuthorizationMultiSource
+		}
+		return s.sourceReturner.ReturnSourceForGrantee(ctx, sourceIDs[0], grantee)
 	}
 	grant, err := s.findReturnableDirectGrant(ctx, runtime.resourceType, runtime.resourceID, runtime.ownerID, grantee)
 	if err != nil {

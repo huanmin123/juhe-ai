@@ -81,6 +81,10 @@ type PGStatement struct {
 var postgresSchemaStatements = slices.Concat(
 	postgresSchemaBusinessTables,
 	postgresSchemaBusinessIndexes,
+	// 授权接收方确认与来源治理（revision 28）expand 相：必须排在业务表与既有
+	// 索引之后（旧表已存在、旧索引已建立）；数据回填由 revision 28 升级步骤
+	// 负责，约束以 NOT VALID 建立后由该步骤 VALIDATE。
+	postgresSchemaAuthzGovernance,
 	postgresSchemaDataset,
 	postgresSchemaUsage,
 	postgresSchemaStats,

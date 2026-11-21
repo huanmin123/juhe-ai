@@ -29,8 +29,10 @@ func TestW2OpenAIImagesEndpointMode(t *testing.T) {
 		// audio_job_content / audio_job_cancel 追加在尾部，/v1/audio/jobs
 		// 创建链候选过滤消费 audio_job_create，契约 §10.2）；M5b realtime
 		// 再扩至 16（realtime_session 追加在尾部，GET /v1/realtime WS 升级
-		// 请求的候选过滤消费面随 WS 桥接 handler 生效，Realtime 设计 §6）。
-		if got := accountscore.OpenAIEndpointModeValues; len(got) != 16 || got[0] != "images_json" {
+		// 请求的候选过滤消费面随 WS 桥接 handler 生效，Realtime 设计 §6）；
+		// 2026-11-20 协议补齐批扩至 17（embeddings_json 追加在尾部，
+		// POST /v1/embeddings 候选过滤消费面）。
+		if got := accountscore.OpenAIEndpointModeValues; len(got) != 17 || got[0] != "images_json" {
 			t.Fatalf("openai 模式表应含 images_json 且居首：%v", got)
 		}
 	})

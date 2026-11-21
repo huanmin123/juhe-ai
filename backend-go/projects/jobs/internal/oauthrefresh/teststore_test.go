@@ -214,6 +214,24 @@ CREATE TABLE juhe_business.resource_authorization_grants (
 	created_at text NOT NULL,
 	revoked_by text,
 	revoked_at text,
+	expired_from_status text,
+	expiry_cycle integer NOT NULL DEFAULT 0,
+	ended_at text,
+	ended_reason text,
+	pending_expires_at text,
+	updated_at text NOT NULL
+);
+
+CREATE TABLE juhe_business.resource_authorization_sources (
+	id text PRIMARY KEY,
+	grant_id text,
+	authorization_id text,
+	status text NOT NULL DEFAULT 'pending',
+	expired_from_status text,
+	expiry_cycle integer NOT NULL DEFAULT 0,
+	ended_at text,
+	ended_reason text,
+	pending_expires_at text,
 	updated_at text NOT NULL
 );
 

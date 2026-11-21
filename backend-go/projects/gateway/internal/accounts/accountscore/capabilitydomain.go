@@ -1,6 +1,10 @@
 package accountscore
 
-import "strings"
+import (
+	"strings"
+
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+)
 
 // 账户能力域（AI 账户能力域拆分，PLAN-20261011T141004000Z）：域枚举与列
 // CHECK 四值一致（maintenance/internal/schema accounts DDL 为权威 DDL）。
@@ -35,17 +39,9 @@ func NormalizeAccountCapabilityDomain(value string) (domain string, ok bool) {
 	return trimmed, AccountCapabilityDomainSet[trimmed]
 }
 
-// SkipsConversationHealthStateMachine 报告能力域是否不参与对话健康检查状态
-// 机（媒体账户生命周期定案表）：audio/video 域账户无后台探针执行、不产生
-// 上游计费，health_check_endpoint_mode 仅为记录值（见
-// DefaultHealthCheckEndpointModeForDomain）——创建默认 active、编辑连接变化
-// 不降级 pending_test、人工恢复（ClearFailureState）直达 active、冷却到期后
-// 媒体请求可再次准入。image 与 chat 域返回 false（现行状态机行为不变；image
-// 虽属媒体域，仍走对话健康检查生命周期）。
-func SkipsConversationHealthStateMachine(domain string) bool {
-	switch domain {
-	case CapabilityDomainAudio, CapabilityDomainVideo:
-		return true
-	}
-	return false
+// UsesConnectionHealthCheck 判定账户健康检查是否走连通性探测（连接测试）
+// 而非 J1 模型测试：媒体域恒连接；chat 域只有声明真实对话生成形态才走模型
+// 测试，embeddings/rerank/count_tokens 等输入型账户走连接测试。
+func UsesConnectionHealthCheck(domain string, modes []string) bool {
+	return capabilitydomain.TestKindForAccount(domain, modes) == capabilitydomain.TestKindConnection
 }

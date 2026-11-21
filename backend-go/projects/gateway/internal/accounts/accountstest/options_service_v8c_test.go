@@ -108,3 +108,48 @@ func TestV8CManualTestModelChatFaceExcludesImageVideoRows(t *testing.T) {
 		}
 	})
 }
+
+func TestQwenRerankEndpointModeSurvivesRuntimeNormalization(t *testing.T) {
+	defaults := accountscore.ModeDefaultContext{
+		ProviderCode:    "qwen",
+		ProtocolCode:    accountscore.OpenAIProtocolCode,
+		ProtocolVersion: "v1",
+		AccountType:     "api_key",
+	}
+	got := NormalizeOpenAIEndpointModesForRuntime(
+		[]string{"chat_json", "embeddings_json", "rerank_json", "responses_json"},
+		defaults,
+	)
+	want := []string{"chat_json", "embeddings_json", "rerank_json"}
+	if len(got) != len(want) {
+		t.Fatalf("qwen modes = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("qwen modes = %v, want %v", got, want)
+		}
+	}
+	// OpenAI 公共词表仍不得接受 rerank_json（非 qwen 账户必须被过滤）。
+	gpt := NormalizeOpenAIEndpointModesForRuntime([]string{"chat_json", "rerank_json"}, accountscore.ModeDefaultContext{
+		ProviderCode:    "gpt",
+		ProtocolCode:    accountscore.OpenAIProtocolCode,
+		ProtocolVersion: "v1",
+		AccountType:     "api_key",
+	})
+	if len(gpt) != 1 || gpt[0] != "chat_json" {
+		t.Fatalf("gpt modes = %v, want [chat_json]", gpt)
+	}
+	// 向量/重排没有人工测试请求模板：即使被保存为健康检查形态也不得进入
+	// 手工测试选项，避免 UI 发起未实现的测试请求。
+	manual := AccountManualTestEndpointModes(ManualTestModeSource{
+		ProviderCode:            "qwen",
+		ProtocolCode:            accountscore.OpenAIProtocolCode,
+		ProtocolVersion:         "v1",
+		AccountType:             "api_key",
+		SupportedEndpointModes:  []string{"rerank_json"},
+		HealthCheckEndpointMode: "rerank_json",
+	})
+	if len(manual) != 0 {
+		t.Fatalf("qwen rerank manual test modes = %v, want empty", manual)
+	}
+}

@@ -34,10 +34,6 @@ function requestShapes(): Array<[string, string]> {
   return requests.map((request) => [request.method, request.url])
 }
 
-function payloadOf(request: CapturedRequest): Record<string, unknown> {
-  return JSON.parse(String(request.data)) as Record<string, unknown>
-}
-
 beforeEach(() => installCaptureAdapter())
 afterEach(() => {
   http.defaults.adapter = originalAdapter
@@ -56,7 +52,6 @@ describe('groupsApi 请求形状', () => {
     await groupsApi.routeStrategyOptions()
     await groupsApi.create({ name: '分组' })
     await groupsApi.update('g-1', { expectedUpdatedAt: 'ts', name: '改名' } as never)
-    await groupsApi.returnAuthorization('g-1')
     await groupsApi.delete('g-1')
     expect(requestShapes()).toEqual([
       ['GET', '/groups'],
@@ -69,7 +64,6 @@ describe('groupsApi 请求形状', () => {
       ['GET', '/groups/route-strategy-options'],
       ['POST', '/groups'],
       ['PATCH', '/groups/g-1'],
-      ['POST', '/groups/g-1/return-authorization'],
       ['DELETE', '/groups/g-1']
     ])
   })
@@ -99,11 +93,6 @@ describe('groupsApi 请求形状', () => {
   it('options 归一化选项参数', async () => {
     await groupsApi.options({ keyword: ' 关键 ', manageableOnly: true, limit: 5 } as never)
     expect(requests[0].params).toEqual({ keyword: '关键', manageableOnly: true, limit: 5 })
-  })
-
-  it('returnAuthorization 发送空对象 body', async () => {
-    await groupsApi.returnAuthorization('g-1')
-    expect(payloadOf(requests[0])).toEqual({})
   })
 })
 

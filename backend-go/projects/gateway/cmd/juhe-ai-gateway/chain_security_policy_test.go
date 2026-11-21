@@ -289,7 +289,7 @@ func TestApplySecurityPolicyZeroPaths(t *testing.T) {
 	})
 }
 
-// TestSecurityPolicyFamilyForRequest：endpoint family 判定词表（五族 + 无法
+// TestSecurityPolicyFamilyForRequest：endpoint family 判定词表（七族 + 无法
 // 判定空串）。
 func TestSecurityPolicyFamilyForRequest(t *testing.T) {
 	cases := []struct {
@@ -307,7 +307,12 @@ func TestSecurityPolicyFamilyForRequest(t *testing.T) {
 		{http.MethodPost, "/v1/audio/jobs", "media"},
 		{http.MethodPost, "/v1/images/generations", "media"},
 		{http.MethodGet, "/v1/models", ""},
-		{http.MethodPost, "/v1/embeddings", ""},
+		{http.MethodPost, "/v1/embeddings", "openai_embeddings"},
+		{http.MethodPost, "/v1/embeddings/multimodal", "openai_embeddings"},
+		{http.MethodPost, "/v1/rerank", "openai_rerank"},
+		{http.MethodPost, "/rerank", "openai_rerank"},
+		{http.MethodPost, "/v1/embeddings/other", ""},
+		{http.MethodGet, "/v1/rerank", ""},
 		{http.MethodPost, "/v1/audio/transcriptions", "media"},
 	}
 	for _, c := range cases {
@@ -315,5 +320,49 @@ func TestSecurityPolicyFamilyForRequest(t *testing.T) {
 		if got := securityPolicyFamilyForRequest(req); got != c.want {
 			t.Fatalf("%s %s family = %q, want %q", c.method, c.path, got, c.want)
 		}
+	}
+}
+
+// TestApplySecurityPolicySanitizesVectorBodies：绑定策略的向量/重排请求也必须
+// 扫描 input/query/documents 文本，且不注入 chat system 提示（设计 §5/§6.2）。
+func TestApplySecurityPolicySanitizesVectorBodies(t *testing.T) {
+	row := &gatewayruntimecache.GatewayAPIKeyRow{
+		ID:                      "key",
+		SecurityPolicyID:        "secpol_vector",
+		SecurityPolicyRulesJSON: `{"rules":[{"id":"r1","type":"phone","action":"placeholder"}]}`,
+	}
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"embeddings", "/v1/embeddings", `{"model":"text-embedding","input":["打13812345678"]}`},
+		{"rerank", "/v1/rerank", `{"model":"gte-rerank-v2","query":"查询 13812345678","documents":["文档 13812345678"]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cloned := gatewayruntimecache.CloneGatewayAPIKeyRow(*row)
+			req := &gatewaypreauth.GatewayRequest{
+				HTTP:    httptest.NewRequest(http.MethodPost, tc.path, nil),
+				Runtime: &gatewayruntimecache.GatewayRuntime{APIKey: &cloned},
+				Body:    &gatewaybody.Request{RawBody: []byte(tc.body)},
+			}
+			if err := applySecurityPolicyIfNeeded(req, "t"); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			if req.Body.UpstreamBodyCache == nil {
+				t.Fatal("绑定策略必须写入 sanitized 上游 body")
+			}
+			sent := string(req.Body.UpstreamBodyCache.PassthroughBody)
+			if !strings.Contains(sent, "[[PHONE_1]]") {
+				t.Fatalf("上游 body 应包含占位符：%s", sent)
+			}
+			if strings.Contains(sent, "13812345678") {
+				t.Fatalf("上游 body 不得包含原文手机号：%s", sent)
+			}
+			if strings.Contains(sent, "messages") {
+				t.Fatalf("向量/重排请求不得注入 chat messages：%s", sent)
+			}
+		})
 	}
 }

@@ -1,6 +1,6 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { connectionPresetCodeForProfile, isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type {
   AccountEditBasicDetail,
   AccountListItem,
@@ -14,6 +14,7 @@ import type { AccountFormModel } from './accountFormTypes'
 import { buildAccountSavePayload, resolveFormProviderProfile, validateAccountSaveForm } from './accountSavePayload'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { canCreateOAuthAccount } from './accountProviderCapabilities'
+import { accountUsesConnectionTest } from './accountCapabilityDomains'
 
 interface AccountDraftTestPayloadInput {
   accountDetail?: AccountEditBasicDetail | AccountSummary
@@ -53,21 +54,27 @@ export function validateAccountDraftTestForm(input: AccountDraftTestPayloadInput
 
 export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput): AccountDraftTestAccountPayload {
   const payload = buildAccountSavePayload(input)
-  if (!payload.healthCheckModel) throw new Error('请先同步上游模型或选择检查模型后再测试')
+  const connectionTest = accountUsesConnectionTest(input.form.capabilityDomain, input.form.supportedEndpointModes)
+  if (!connectionTest && !payload.healthCheckModel) throw new Error('请先同步上游模型或选择检查模型后再测试')
   const credentials = accountDraftTestCredentials(payload.credentials, input.accountDetail)
+  const connectionPresetCode = connectionPresetCodeForProfile(input.form.providerProtocolProfileId)
   return {
     providerCode: payload.providerCode,
     // providerProtocolProfileId 已停发（B4 两表退役批）：后端草稿链按
     // vendor 语义推导协议上下文，入参为接受但忽略；协议档案维度在前端
     // 仅经 buildAccountDraftTestSummary 的本地投影保留。
+    // connectionPresetCode 是连接测试规格查找的唯一入参，必须随草稿透传：
+    // 后端无法从 vendor 唯一反推 volcengine OpenSpeech / Ark 等共用 vendor
+    // 的档案，缺失会让草稿连接测试直接报“没有可用请求形态”。
+    ...(connectionPresetCode ? { connectionPresetCode } : {}),
     name: payload.name ?? input.accountDetail?.name ?? input.form.name.trim(),
     type: payload.type,
     credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
     supportedModels: payload.supportedModels,
-    healthCheckModel: payload.healthCheckModel,
-    healthCheckEndpointMode: payload.healthCheckEndpointMode,
+    ...(payload.healthCheckModel ? { healthCheckModel: payload.healthCheckModel } : {}),
+    ...(payload.healthCheckEndpointMode ? { healthCheckEndpointMode: payload.healthCheckEndpointMode } : {}),
     modelMappings: payload.modelMappings,
     proxyProfileId: payload.proxyProfileId,
     proxyPoolId: payload.proxyPoolId,
@@ -103,8 +110,10 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     fallbackEnabled: input.accountDetail?.fallbackEnabled ?? false,
     clientCompatibility: input.accountDetail?.clientCompatibility ?? draftAccountClientCompatibility(input),
     supportedModels: input.draftPayload.supportedModels,
-    healthCheckModel: input.draftPayload.healthCheckModel,
-    healthCheckEndpointMode: input.draftPayload.healthCheckEndpointMode,
+    // 连接测试草稿不携带检查模型/形态；摘要类型要求非空，仅作占位，
+    // 测试弹窗按 testKind=connection 隐藏这两项，不参与请求。
+    healthCheckModel: input.draftPayload.healthCheckModel ?? '',
+    healthCheckEndpointMode: input.draftPayload.healthCheckEndpointMode ?? 'chat_json',
     modelMappings: input.draftPayload.modelMappings,
     proxyProfileId: input.draftPayload.proxyProfileId ?? undefined,
     proxyPoolId: input.draftPayload.proxyPoolId ?? undefined,

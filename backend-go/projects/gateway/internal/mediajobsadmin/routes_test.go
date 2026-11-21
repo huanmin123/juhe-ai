@@ -172,12 +172,20 @@ func TestMediaJobsListRequiresAdmin(t *testing.T) {
 func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	env := newTestEnv(t)
 	// vendor 水合源：accounts 行（B4① 拆除 media_jobs.provider_code 后读面
-	// 经 LEFT JOIN accounts 取 vendor_code）。
+	// 经 LEFT JOIN accounts 取 vendor_code）；名称水合源：api_keys 行（列表
+	// API Key 列展示名称，不展示内部 ID）。
 	for _, seed := range []struct{ id, vendor string }{
 		{"acc_1", "gpt"}, {"acc_2", "gpt"},
 	} {
 		if _, err := env.db.Exec(fixtureBind("INSERT INTO accounts (id, vendor_code) VALUES (?, ?)"), seed.id, seed.vendor); err != nil {
 			t.Fatalf("seed accounts: %v", err)
+		}
+	}
+	for _, seed := range []struct{ id, name string }{
+		{"key_1", "主 Key"}, {"key_2", "备用 Key"},
+	} {
+		if _, err := env.db.Exec(fixtureBind("INSERT INTO api_keys (id, name) VALUES (?, ?)"), seed.id, seed.name); err != nil {
+			t.Fatalf("seed api keys: %v", err)
 		}
 	}
 	longPrompt := strings.Repeat("长", 200)
@@ -229,7 +237,7 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	if completed["status"] != "completed" || completed["kind"] != "video" || completed["providerCode"] != "gpt" {
 		t.Fatalf("completed 行形状错误: %#v", completed)
 	}
-	if completed["providerJobId"] != "up_1" || completed["apiKeyId"] != "key_1" || completed["accountId"] != "acc_1" {
+	if completed["providerJobId"] != "up_1" || completed["apiKeyId"] != "key_1" || completed["apiKeyName"] != "主 Key" || completed["accountId"] != "acc_1" {
 		t.Fatalf("completed 行归属错误: %#v", completed)
 	}
 	if completed["model"] != "sora-2" || completed["seconds"] != float64(4) || completed["size"] != "1280x720" {
@@ -334,6 +342,13 @@ func TestMediaJobsDetailRequiresAdmin(t *testing.T) {
 
 func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	env := newTestEnv(t)
+	// 详情 API Key / AI 账户展示名水合源。
+	if _, err := env.db.Exec(fixtureBind("INSERT INTO accounts (id, name) VALUES (?, ?)"), "acc_detail", "详情账户"); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	if _, err := env.db.Exec(fixtureBind("INSERT INTO api_keys (id, name) VALUES (?, ?)"), "key_detail", "详情 Key"); err != nil {
+		t.Fatalf("seed api key: %v", err)
+	}
 	seconds := 8.0
 	expires := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
@@ -382,7 +397,8 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	if detail["prompt"] != "全量提示词" || detail["model"] != "sora-2" || detail["n"] != float64(1) || detail["size"] != "1280x720" {
 		t.Fatalf("detail 请求参数错误: %#v", detail)
 	}
-	if detail["providerJobId"] != "up_detail" || detail["apiKeyId"] != "key_detail" || detail["accountId"] != "acc_detail" || detail["costUsd"] != 0.8 {
+	if detail["providerJobId"] != "up_detail" || detail["apiKeyId"] != "key_detail" || detail["apiKeyName"] != "详情 Key" ||
+		detail["accountId"] != "acc_detail" || detail["accountName"] != "详情账户" || detail["costUsd"] != 0.8 {
 		t.Fatalf("detail 归属/成本错误: %#v", detail)
 	}
 	options, _ := detail["metadataApplied"].([]any)
@@ -528,16 +544,16 @@ func TestMyMediaJobsScopesToCaller(t *testing.T) {
 	env.login(t, "adminuser", "pass-123456", "admin")
 	userAID := env.login(t, "plainusera", "pass-123456", "user")
 	userBID := env.login(t, "plainuserb", "pass-123456", "user")
-	for _, key := range []struct{ id, owner string }{
-		{id: "key_a1", owner: userAID},
-		{id: "key_b1", owner: userBID},
+	for _, key := range []struct{ id, name, owner string }{
+		{id: "key_a1", name: "用户 A Key", owner: userAID},
+		{id: "key_b1", name: "用户 B Key", owner: userBID},
 	} {
-		if _, err := env.db.Exec(fixtureBind(`INSERT INTO api_keys (id, system_account_id) VALUES (?, ?)`), key.id, key.owner); err != nil {
+		if _, err := env.db.Exec(fixtureBind(`INSERT INTO api_keys (id, system_account_id, name) VALUES (?, ?, ?)`), key.id, key.owner, key.name); err != nil {
 			t.Fatalf("seed api key: %v", err)
 		}
 	}
 	// 归属列（owner_system_account_id）按写入路径语义直接落属主；api_keys
-	// 行保留作 apiKeyId 回显对照（读面归属已不依赖它）。
+	// 行保留作 Key 名称水合源（读面归属已不依赖它）。
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_owner_a", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", OwnerSystemAccountID: userAID, AccountID: "acc_a",
 		UpstreamJobID: "up_a", Status: gatewaymedia.JobStatusQueued,
@@ -567,8 +583,8 @@ func TestMyMediaJobsScopesToCaller(t *testing.T) {
 	rows, _ := data["rows"].([]any)
 	for _, row := range rows {
 		object, _ := row.(map[string]any)
-		if object["apiKeyId"] != "key_a1" {
-			t.Fatalf("userA 行跨属主: %#v", object)
+		if object["apiKeyId"] != "key_a1" || object["apiKeyName"] != "用户 A Key" {
+			t.Fatalf("userA 行跨属主或 Key 名称缺失: %#v", object)
 		}
 		if _, has := object["providerJobId"]; has {
 			t.Fatalf("userA 行不应携带 providerJobId: %#v", object)

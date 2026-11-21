@@ -525,7 +525,7 @@ const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NU
 // fifth) so the UNION ALL aligns positionally.
 func (s *Store) authorizedListArm() string {
 	return `SELECT g.id, g.system_account_id, g.name, g.description,
-			CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
+			CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
 			g.is_default,
 			g.group_type,
 			g.group_kind,
@@ -1211,7 +1211,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 				WHERE g.id = ? AND g.system_account_id = ?
 				UNION ALL
 				SELECT g.id, g.system_account_id, g.name, g.description,
-					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
+					CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
 					g.is_default,
 					g.group_type,
 					g.group_kind,
@@ -1878,6 +1878,37 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	// resource_authorizations.id) because the FK ON DELETE CASCADE is not
 	// reliably enforced on every SQLite connection (foreign_keys pragma).
 	// Without them the deleted group accumulates dangling authorization rows.
+	// Authorization history is retained (design §5.10 item 6): grants/sources/
+	// runtimes become terminal with group_deleted; only rows that the group FK
+	// itself cascades (settings, bindings) are removed by the group DELETE.
+	deletedAt := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
+		SET status = 'revoked', ended_at = COALESCE(ended_at, ?),
+			ended_reason = COALESCE(ended_reason, 'group_deleted'),
+			pending_expires_at = NULL, updated_at = ?
+		WHERE resource_type = 'group' AND resource_id = ?
+		  AND status NOT IN ('revoked','returned','declined','expired')`), deletedAt, deletedAt, id); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
+		SET status = 'revoked', ended_at = COALESCE(ended_at, ?),
+			ended_reason = COALESCE(ended_reason, 'group_deleted'),
+			pending_expires_at = NULL, updated_at = ?
+		WHERE authorization_id IN (SELECT id FROM `+s.table("resource_authorizations")+`
+			WHERE resource_type = 'group' AND resource_id = ?)
+		  AND status IN ('pending','active','dormant','needs_review')`), deletedAt, deletedAt, id); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+`
+		SET status = 'revoked', status_reason = 'group_deleted', status_changed_at = ?,
+			effective_source_type = NULL, effective_source_team_id = NULL,
+			revoked_reason = COALESCE(revoked_reason, 'group_deleted'),
+			last_source_changed_at = ?, updated_at = ?
+		WHERE resource_type = 'group' AND resource_id = ?
+		  AND status NOT IN ('revoked','returned','declined','expired')`),
+		deletedAt, deletedAt, deletedAt, id); err != nil {
+		return nil, err
+	}
 	for _, statement := range []struct {
 		sql  string
 		args []any
@@ -1888,8 +1919,6 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		{s.bind(`DELETE FROM ` + s.table("route_strategy_groups") + ` WHERE group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("group_accounts") + ` WHERE group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("group_authorization_settings") + ` WHERE group_id = ?`), []any{id}},
-		{s.bind(`DELETE FROM ` + s.table("resource_authorization_sources") + ` WHERE authorization_id IN (SELECT id FROM ` + s.table("resource_authorizations") + ` WHERE resource_type = 'group' AND resource_id = ?)`), []any{id}},
-		{s.bind(`DELETE FROM ` + s.table("resource_authorizations") + ` WHERE resource_type = 'group' AND resource_id = ?`), []any{id}},
 	} {
 		if _, err := tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
 			return nil, err
@@ -2054,7 +2083,7 @@ func (s *Store) activeBindingCountsExcludingGroup(ctx context.Context, q queryer
 		WHERE route_strategy_groups.status = 'active'
 			AND (
 				groups.system_account_id = route_strategy_groups.system_account_id
-				OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
+				OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 0) = 1 AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '')
 			)
 			AND route_strategy_groups.group_id <> ?
 			AND route_strategy_groups.route_strategy_id IN (`+strings.Join(placeholders, ",")+`)

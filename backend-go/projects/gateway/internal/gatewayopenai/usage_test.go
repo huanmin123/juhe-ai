@@ -119,6 +119,33 @@ func TestExtractUsageDualShapePicksNonZeroToken(t *testing.T) {
 			wantInput:  intPtr(270139),
 			wantOutput: intPtr(148),
 		},
+		{
+			// total_tokens 回填只属于 embeddings/rerank 输入型抽取；chat/
+			// Responses 共享抽取对显式零输入保持零事实。
+			name:       "input-only zero placeholder stays zero in shared extractor",
+			raw:        `{"input_tokens": 0, "output_tokens": 0, "total_tokens": 270139}`,
+			wantInput:  intPtr(0),
+			wantOutput: intPtr(0),
+		},
+		{
+			name:       "total_tokens only stays nil in shared extractor",
+			raw:        `{"total_tokens": 321}`,
+			wantInput:  nil,
+			wantOutput: nil,
+		},
+		{
+			name:       "prompt and completion zero stay zero in shared extractor",
+			raw:        `{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 88}`,
+			wantInput:  intPtr(0),
+			wantOutput: intPtr(0),
+		},
+		{
+			// 输出非零时不得把 total 当输入（total 含输出）。
+			name:       "non-zero output keeps zero input",
+			raw:        `{"input_tokens": 0, "output_tokens": 5, "total_tokens": 105}`,
+			wantInput:  intPtr(0),
+			wantOutput: intPtr(5),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +154,62 @@ func TestExtractUsageDualShapePicksNonZeroToken(t *testing.T) {
 			assertOptionalToken(t, got.OutputTokens, tc.wantOutput, "output")
 		})
 	}
+}
+
+func TestExtractInputOnlyUsageFallsBackToTotalTokens(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        string
+		wantInput  *int
+		wantOutput *int
+	}{
+		{
+			name:       "zero placeholders fall back to total_tokens",
+			raw:        `{"input_tokens": 0, "output_tokens": 0, "total_tokens": 270139}`,
+			wantInput:  intPtr(270139),
+			wantOutput: intPtr(0),
+		},
+		{
+			name:       "total_tokens only is input",
+			raw:        `{"total_tokens": 321}`,
+			wantInput:  intPtr(321),
+			wantOutput: nil,
+		},
+		{
+			name:       "prompt and completion zero fall back to total_tokens",
+			raw:        `{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 88}`,
+			wantInput:  intPtr(88),
+			wantOutput: intPtr(0),
+		},
+		{
+			name:       "non-zero output prevents total_tokens fallback",
+			raw:        `{"input_tokens": 0, "output_tokens": 5, "total_tokens": 105}`,
+			wantInput:  intPtr(0),
+			wantOutput: intPtr(5),
+		},
+		{
+			name:       "explicit prompt_tokens is not overwritten",
+			raw:        `{"prompt_tokens": 42, "total_tokens": 42}`,
+			wantInput:  intPtr(42),
+			wantOutput: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractInputOnlyUsage(mustParseJSON(t, tc.raw), "")
+			assertOptionalToken(t, got.InputTokens, tc.wantInput, "input")
+			assertOptionalToken(t, got.OutputTokens, tc.wantOutput, "output")
+		})
+	}
+}
+
+func TestParseInputOnlyUsageFromJSONValueAppliesTotalFallback(t *testing.T) {
+	got := ParseInputOnlyUsageFromJSONValue(mustParseJSON(t, `{
+		"object": "list",
+		"data": [{"embedding": [0.1]}],
+		"usage": {"total_tokens": 17}
+	}`))
+	assertToken(t, got.InputTokens, 17, "input")
 }
 
 func intPtr(value int) *int { return &value }

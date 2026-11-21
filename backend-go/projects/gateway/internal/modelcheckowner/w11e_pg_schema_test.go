@@ -340,8 +340,9 @@ func TestW11ECheckBusinessPostgresSchemaRejectsDrifts(t *testing.T) {
 	missingPK.skipPK["account_quality_enforcements"] = true
 	missingUnique := w11eNewPlan()
 	// T117c（2026-11-08）起 username 唯一性由表达式唯一索引承载（UniqueConstraints
-	// 已回收）；缺唯一形态 = 缺 idx_system_accounts_username_unique_lower。
-	missingUnique.skipIndex["idx_system_accounts_username_unique_lower"] = true
+	// 已回收）；rev28 起按 deleted_at IS NULL 收窄为部分唯一索引，缺唯一形态
+	// = 缺 idx_system_accounts_username_active_unique_lower。
+	missingUnique.skipIndex["idx_system_accounts_username_active_unique_lower"] = true
 	missingFK := w11eNewPlan()
 	missingFK.skipFK["system_sessions->system_accounts"] = true
 	wrongFKAction := w11eNewPlan()
@@ -367,7 +368,7 @@ func TestW11ECheckBusinessPostgresSchemaRejectsDrifts(t *testing.T) {
 		{schema: "w11e_bs_neg2", plan: asView, want: "want BASE TABLE"},
 		{schema: "w11e_bs_neg3", plan: missingColumn, want: "missing column model_quality_policies.profile"},
 		{schema: "w11e_bs_neg4", plan: missingPK, want: "missing primary key account_quality_enforcements"},
-		{schema: "w11e_bs_neg5", plan: missingUnique, want: "missing index system_accounts.idx_system_accounts_username_unique_lower"},
+		{schema: "w11e_bs_neg5", plan: missingUnique, want: "missing index system_accounts.idx_system_accounts_username_active_unique_lower"},
 		{schema: "w11e_bs_neg6", plan: missingFK, want: "missing foreign key"},
 		{schema: "w11e_bs_neg7", plan: wrongFKAction, want: "missing foreign key"},
 		{schema: "w11e_bs_neg8", plan: missingIndex, want: "missing index system_sessions.idx_system_sessions_expires_at"},

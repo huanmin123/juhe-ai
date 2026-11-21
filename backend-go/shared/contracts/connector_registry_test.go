@@ -93,24 +93,24 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 133 条与按 driver 计数，
+// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 138 条与按 driver 计数，
 // 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
-	if len(modeCombos) != 133 {
-		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 133", len(modeCombos))
+	if len(modeCombos) != 138 {
+		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 138", len(modeCombos))
 	}
 	counts := ModeComboDriverCounts()
 	expected := map[string]int{
-		DriverGPT:        18,
-		DriverXAI:        11,
-		DriverDeepSeek:   6,
+		DriverGPT:        19,
+		DriverXAI:        12,
+		DriverDeepSeek:   7,
 		DriverAnthropic:  6,
 		DriverGemini:     46,
 		DriverGLM:        18,
 		DriverMiniMax:    5,
 		DriverVolcengine: 13,
-		DriverQwen:       10,
+		DriverQwen:       12,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ModeComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -120,13 +120,13 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 			t.Errorf("driver %q 单 mode 组合数 = %d, want %d", driver, counts[driver], want)
 		}
 	}
-	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 133。
+	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 138。
 	sum := 0
 	for _, combo := range AllowedConnectorCombos() {
 		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
 	}
-	if sum != 133 {
-		t.Fatalf("42 个组合的 AllowedModes 求和 = %d, want 133", sum)
+	if sum != 138 {
+		t.Fatalf("42 个组合的 AllowedModes 求和 = %d, want 138", sum)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestConnectorRegistryCartesianProduct(t *testing.T) {
 	}
 }
 
-// TestDomainLanes 断言设计 §2.2 域 lane 的 13/4/7/1 与 25 个唯一 mode。
+// TestDomainLanes 断言设计 §2.2 域 lane 的 15/4/7/1 与 27 个唯一 mode。
 func TestDomainLanes(t *testing.T) {
 	if len(capabilityDomainLanes) != 4 {
 		t.Fatalf("域 lane 数 = %d, want 4", len(capabilityDomainLanes))
@@ -204,6 +204,7 @@ func TestDomainLanes(t *testing.T) {
 			ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting,
 			ModeGenerateContentJSON, ModeGenerateContentSSE,
 			ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens, ModeEmbedContent,
+			ModeEmbeddingsJSON, ModeRerankJSON,
 		},
 		DomainVideo: {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
 		DomainAudio: {
@@ -212,7 +213,7 @@ func TestDomainLanes(t *testing.T) {
 		},
 		DomainImage: {ModeImagesJSON},
 	}
-	expectedSizes := map[string]int{DomainChat: 13, DomainVideo: 4, DomainAudio: 7, DomainImage: 1}
+	expectedSizes := map[string]int{DomainChat: 15, DomainVideo: 4, DomainAudio: 7, DomainImage: 1}
 	seen := make(map[string]int)
 	for domain, want := range expected {
 		got, ok := capabilityDomainLanes[domain]
@@ -229,8 +230,8 @@ func TestDomainLanes(t *testing.T) {
 			seen[mode]++
 		}
 	}
-	if len(seen) != 25 {
-		t.Fatalf("域 lane 并集 = %d 个唯一 mode, want 25", len(seen))
+	if len(seen) != 27 {
+		t.Fatalf("域 lane 并集 = %d 个唯一 mode, want 27", len(seen))
 	}
 	for mode, count := range seen {
 		if count != 1 {
@@ -446,8 +447,8 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 	if err := json.Unmarshal([]byte(registryCanonicalJSON), &elements); err != nil {
 		t.Fatalf("canonical JSON 反序列化失败: %v", err)
 	}
-	if len(elements) != 133 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 133", len(elements))
+	if len(elements) != 138 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 138", len(elements))
 	}
 	checked := make(map[string]int, 14)
 	for _, element := range elements {
@@ -489,7 +490,7 @@ func TestPresetDefaultBaseURLAccessor(t *testing.T) {
 }
 
 // TestRegistryFingerprint 断言 fingerprint 稳定、64 位小写 hex，
-// 且 canonical JSON 为 133 元素紧凑数组、nullable 字段输出 JSON null。
+// 且 canonical JSON 为 138 元素紧凑数组、nullable 字段输出 JSON null。
 func TestRegistryFingerprint(t *testing.T) {
 	first := RegistryFingerprint()
 	second := RegistryFingerprint()
@@ -512,8 +513,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	if strings.Contains(registryCanonicalJSON, ", ") || strings.Contains(registryCanonicalJSON, ": ") {
 		t.Fatalf("canonical JSON 的结构分隔符后含空格，违反紧凑分隔要求")
 	}
-	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 133 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 133", got)
+	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 138 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 138", got)
 	}
 	// 九家真实厂商均有 vendor，删除 generic_http 后 canonical JSON 不得再出现 vendor null。
 	if strings.Contains(registryCanonicalJSON, `"vendor":null`) {
@@ -528,8 +529,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	// defaultBaseUrl 是标量尾字段：每元素恰一次且其后不得再有任何字段（设计
 	// :56/:81；不能按 } 切分——模板值含 {id}/{model} 占位符，故用正则断言尾位；
 	// generic 三 preset 输出 null，逐值精确断言见 TestPresetDefaultBaseURLs）。
-	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 133 {
-		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 133", got)
+	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 138 {
+		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 138", got)
 	}
 	if trailingFieldPattern.MatchString(registryCanonicalJSON) {
 		t.Fatalf("canonical JSON 存在 defaultBaseUrl 之后仍有字段或元素未以 defaultBaseUrl 收尾")
@@ -720,7 +721,7 @@ func TestRegistryInternalConsistency(t *testing.T) {
 		PresetDeepSeekOpenAIV1, PresetGLMGeneralOpenAIV1, PresetGLMCodingOpenAIV1,
 	} {
 		if !setsEqual(toSet(connectorPresetRecordIndex[preset].OperationPathTemplates), openAITemplateSet) {
-			t.Errorf("preset %q 必须精确使用 OpenAI 公共 15 条模板", preset)
+			t.Errorf("preset %q 必须精确使用 OpenAI 公共 16 条模板", preset)
 		}
 	}
 	anthropicTemplateSet := toSet(anthropicOperationTemplates)
@@ -762,8 +763,10 @@ func TestRegistryInternalConsistency(t *testing.T) {
 		},
 		PresetQwenDashScope: {
 			"POST /compatible-mode/v1/chat/completions",
+			"POST /compatible-mode/v1/embeddings",
 			"POST /api/v1/services/audio/asr/transcription",
 			"POST /api/v1/services/aigc/video-generation/video-synthesis",
+			"POST /api/v1/services/rerank/text-rerank/text-rerank",
 			"GET /api/v1/tasks/{task_id}",
 		},
 	}
@@ -777,11 +780,12 @@ func TestRegistryInternalConsistency(t *testing.T) {
 }
 
 // TestBasePathValidationTemplates 断言凭据域路径校验数据源（R8）：三个公共
-// 协议面已去版本前缀模板的并集副本，共 15+2+8=25 条，不包含 qwen 媒体模板。
+// 协议面已去版本前缀模板的并集副本，共 16+2+8=26 条，不包含 qwen 媒体/重排
+// 模板。
 func TestBasePathValidationTemplates(t *testing.T) {
 	union := BasePathValidationTemplates()
-	if len(union) != 25 {
-		t.Fatalf("BasePathValidationTemplates() = %d 条, want 25", len(union))
+	if len(union) != 26 {
+		t.Fatalf("BasePathValidationTemplates() = %d 条, want 26", len(union))
 	}
 	want := toSet(append(append(append([]string{}, openAIOperationTemplates...), anthropicOperationTemplates...), geminiNativeOperationTemplates...))
 	if !setsEqual(toSet(union), want) {
@@ -794,5 +798,58 @@ func TestBasePathValidationTemplates(t *testing.T) {
 	union[0] = "MUTATED"
 	if !setsEqual(toSet(BasePathValidationTemplates()), want) {
 		t.Fatalf("BasePathValidationTemplates() 必须返回副本，内部数据被修改")
+	}
+}
+
+// TestConnectivityProbeCoverage 锁定「每个可声明的连接测试形态都有探测规格」：
+// 遍历 registry 全部允许组合与 AllowedModes，凡不属于 10 个真实对话生成形态的
+// mode 都必须能查到 ConnectorConnectivityProbe。新增 preset/mode 时若漏登记，
+// 账户会出现“可保存但人工测试/后台探测永远无规格”的静默死路。
+func TestConnectivityProbeCoverage(t *testing.T) {
+	modelTestModes := map[string]bool{
+		"chat_json": true, "chat_sse": true,
+		"responses_json": true, "responses_sse": true,
+		"messages_json": true, "messages_sse": true,
+		"generate_content_json": true, "generate_content_sse": true,
+		"interactions_json": true, "interactions_sse": true,
+	}
+	for _, combo := range AllowedConnectorCombos() {
+		for _, mode := range AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType) {
+			if modelTestModes[mode] {
+				continue
+			}
+			spec, ok := ConnectivityProbeForPreset(combo.Preset, mode)
+			if !ok {
+				t.Errorf("preset %q mode %q 缺少连通性探测规格（组合 %+v）", combo.Preset, mode, combo)
+				continue
+			}
+			if !strings.HasPrefix(spec.PathTemplate, "/") {
+				t.Errorf("preset %q mode %q 探测路径必须以 / 开头：%q", combo.Preset, mode, spec.PathTemplate)
+			}
+			for _, code := range spec.ExpectedRejectionStatus {
+				if code == 401 || code == 403 {
+					t.Errorf("preset %q mode %q 不得把认证失败码 %d 列为预期拒绝", combo.Preset, mode, code)
+				}
+			}
+		}
+	}
+}
+
+// TestVolcengineAUCProbeHeaders 锁定豆包录音文件识别 AUC 的协议必需头：
+// 只带 X-Api-Key 会让上游返回 200 + 业务错误，连接测试误判为有效。
+func TestVolcengineAUCProbeHeaders(t *testing.T) {
+	for _, mode := range []string{ModeAudioTranscriptionJSON, ModeAudioJobCreate, ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel} {
+		spec, ok := ConnectivityProbeForPreset(PresetVolcengineOpenSpeech, mode)
+		if !ok {
+			t.Fatalf("缺少原告 AUC 探测规格：%s", mode)
+		}
+		if spec.ExtraHeaders["X-Api-Resource-Id"] != "volc.seedasr.auc" ||
+			spec.ExtraHeaders["X-Api-Request-Id"] != "{uuid}" ||
+			spec.ExtraHeaders["X-Api-Sequence"] != "-1" {
+			t.Fatalf("mode %s AUC 协议头不完整：%v", mode, spec.ExtraHeaders)
+		}
+		if spec.AuthHeaderName != "X-Api-Key" || spec.AuthTokenCredentialKey != "speech_token" {
+			t.Fatalf("mode %s AUC 认证头应复用 speech_token：%+v", mode, spec)
+		}
 	}
 }

@@ -178,6 +178,8 @@ ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS security_policy_id text
 | Anthropic Messages | `system`（字符串与 text 块）；`messages[].content`（字符串与 text 块）；`tool_use.input`（JSON 字符串叶子值）；`tool_result.content`（字符串与 text 块） | `image` source、`model` |
 | Gemini | `systemInstruction.parts[].text`；`contents[].parts[].text`；`functionCall.args`（JSON 叶子值）；`functionResponse.response`（JSON 字符串叶子值） | `inlineData`、`fileData` |
 | 媒体域（`gatewaymedia` 各 adapter） | 视频/音频/图像生成的 prompt、script、text 类请求字段（glm_video / minimax_video / minimax_tts / qwen_video / qwen_asr / gemini_tts 等按 adapter 实际字段逐点接入） | 音频/图像二进制与参考资源 |
+| OpenAI Embeddings（2026-11-20 协议补齐批） | `input`（字符串）；`input[]` 中的字符串与多模态 `{text}`；`/v1/embeddings/multimodal` 私有透传体同样覆盖 | token ID 数组（`[number[]]`/`number[]`）、`model`、`encoding_format`、`dimensions`、图像/二进制引用 |
+| Rerank（2026-11-20 协议补齐批） | Cohere/Jina 顶层 `query`、`documents[]`（字符串或 `{text}`）；qwen DashScope 转换形态 `input.{query,documents[]}` | `model`、`top_n`、`return_documents`、`max_chunk_per_doc`、`overlap_tokens` 等控制字段 |
 
 实现约束：
 
@@ -198,7 +200,7 @@ ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS security_policy_id text
 ### 6.2 触发与注入位置
 
 - 触发：策略含任意 `placeholder` 规则即注入（静态判断，构建出站 body 时已知）；纯 `mask` 策略不注入。**不按"本请求是否命中"动态判断**——注入文本必须逐请求稳定，否则破坏 §2 前缀缓存契约。
-- 注入点与脱敏同点（入口 body 定型后、调度与上游准备之前）；协议桥接从注入后的 body 派生，自然继承，**上游侧不二次注入**。
+- 注入点与脱敏同点（入口 body 定型后、调度与上游准备之前）；协议桥接从注入后的 body 派生，自然继承，**上游侧不二次注入**。向量/重排请求没有对话 system/messages 载体，`placeholder` 规则只做替换与响应还原、**不注入**系统提示（`gatewaysecpol` 的两族注入分支显式 no-op）；该两族的响应若无文本回显，占位符映射按请求生命周期自然丢弃。
 - 各协议追加位置：
   - OpenAI Chat：无 system 消息则首位插入一条 system；有则把文案追加到首个 system 文本末尾（`\n\n` 连接；content 为数组时追加 text part）；
   - OpenAI Responses：追加到 `instructions` 末尾（无则创建）；

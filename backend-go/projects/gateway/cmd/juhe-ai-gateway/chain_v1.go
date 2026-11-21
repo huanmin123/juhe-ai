@@ -173,6 +173,15 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		_, _ = w.Write([]byte(`{"message":"资源不存在"}`))
 		return
 	}
+	// 协议门只按路径族放行；向量/重排的方法与子路径在此收口（非 POST 及
+	// 未登记的 /embeddings/* 子路径按协议门同款 404 拒绝），避免进入鉴权/
+	// 候选/通用派发链。
+	if !chainProtocolRequestMethodPathAllowed(req) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"资源不存在"}`))
+		return
+	}
 	ctx := r.Context()
 	// AI 问答会话绑定模式的调度覆盖目标（设计 §6）：仅聊天进程内执行器注入
 	// AI 问答会话绑定账户的调度覆盖目标（账户唯一绑定设计 §5/§7）：仅聊天进程

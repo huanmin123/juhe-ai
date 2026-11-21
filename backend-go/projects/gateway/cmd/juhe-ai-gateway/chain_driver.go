@@ -27,6 +27,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrerank"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
@@ -355,6 +356,26 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// BUG-0178 的 responses→chat 路径改写与 accountHasNativeResponsesModes
 		// 守卫随桥删除；协议等价映射（同族改名）不改变请求路径，模型改名由
 		// driver body transform 承载。
+		// 向量协议（《对外协议面对齐 new-api 设计》§4.5）：qwen 走兼容模式
+		// /compatible-mode/v1/embeddings，其余厂商走 openai 直拼 /embeddings。
+		// /v1/embeddings/multimodal 不命中本分支（维持方舟私有透传）。
+		if req.MethodUpper() == http.MethodPost && chainIsEmbeddingsRequestPath(req.PathAndQuery()) {
+			upstreamURL, urlErr := chainEmbeddingsUpstreamURL(account, req)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{upstreamURL}, nil
+		}
+		// 重排协议（《对外协议面对齐 new-api 设计》§4.4）：qwen 走 DashScope
+		// text-rerank 服务路径，其余厂商走 openai 直拼 /rerank；在建 URL 前
+		// 与通用映射/媒体分支隔离，避免请求路径被当成 chat 处理。
+		if req.MethodUpper() == http.MethodPost && gatewayrerank.IsRequestPath(req.PathAndQuery()) {
+			upstreamURL, urlErr := chainRerankUpstreamURL(account, req)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{upstreamURL}, nil
+		}
 		pathAndQuery := req.PathAndQuery()
 		// 对话批（通义百炼对话承接）：qwen chat 通用 opPath 恒定拼厂商前缀
 		// /compatible-mode/v1（R6，chainQwenChatPathPrefix，registry preset
@@ -402,6 +423,21 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	_ = identity
 	if req == nil {
 		return gatewaydispatch.PreparedRequestParts{}, fmt.Errorf("构建上游请求缺少请求上下文")
+	}
+	// 重排协议（设计 §4.4）：请求体在通用映射/compatibility 链之前解析校验并
+	// 按厂商构造（qwen DashScope / 其余 Cohere 透传），与媒体 adapter 同属
+	// 「构造期短路」形态；校验错误是本地 400，不进入上游重试。
+	if parts, ok, rerankErr := d.chainRerankRequestParts(req, account); rerankErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, rerankErr
+	} else if ok {
+		return parts, nil
+	}
+	// 向量协议（设计 §4.5）：OpenAI 形态透传，不进入 chat 模型映射/兼容性
+	// 改写链（否则 /v1/embeddings 会被当成 chat 请求处理）。
+	if parts, ok, embeddingsErr := d.chainEmbeddingsRequestParts(req, account); embeddingsErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, embeddingsErr
+	} else if ok {
+		return parts, nil
 	}
 	// M2 视频创建（媒体设计 §5）：adapter 出站报文（URL 与 body 同源
 	// adapter.Create），在协议透传之前短路返回；客户端 body 不进通用映射/
@@ -1118,6 +1154,12 @@ func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 		// 与 countTokens 请求。此前误归 "messages"，带 messages 源映射的账号
 		// 会在记账/冻结侧命中映射而派发侧恒不命中，两侧词表不一致。
 		return "count_tokens"
+	case chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path))) == "/rerank":
+		// 重排/向量是独立协议族：不套用 chat 映射（否则同模型名的 chat 映射
+		// 会被错误应用到重排报文），也不进入跨协议映射矩阵。
+		return "rerank"
+	case chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path))) == "/embeddings":
+		return "embeddings"
 	default:
 		if req.MethodUpper() == http.MethodPost {
 			switch chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path))) {
@@ -1461,6 +1503,10 @@ func requestEndpointFamilyOf(pathAndQuery string) string {
 		return gatewayopenai.FamilyChatCompletions
 	case strings.Contains(path, "/responses"):
 		return gatewayopenai.FamilyResponses
+	case chainStripGatewayVersionPrefix(path) == "/rerank":
+		return "rerank"
+	case chainStripGatewayVersionPrefix(path) == "/embeddings":
+		return "embeddings"
 	default:
 		return gatewayopenai.FamilyChatCompletions
 	}

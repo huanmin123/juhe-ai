@@ -71,8 +71,8 @@ const formalProtocolMarkdown = nodeFs.readFileSync(nodePath.resolve(repoRoot, 'd
 const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   {
     name: '账户级健康检查模型与请求形态',
-    exportedPattern: /\| `healthCheckEndpointMode` \| 是 \| string \| 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create` 受模型目录与域能力约束），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 \|/,
-    formalPattern: /\| `healthCheckEndpointMode` \| 是 \| 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（\[AI账户检查模型与人工测试设计\]\(AI账户检查模型与人工测试设计\.md\) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 \|/
+    exportedPattern: /\| `healthCheckEndpointMode` \| 是 \| string \| 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create`、`embeddings_json`、`rerank_json` 受模型目录与域能力约束；后两者仅作持久化诊断形态，无自动探针），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 \|/,
+    formalPattern: /\| `healthCheckEndpointMode` \| 是 \| 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`[^|]*`rerank_json`（后两者仅作持久化诊断形态，无自动探针）。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（\[AI账户检查模型与人工测试设计\]\(AI账户检查模型与人工测试设计\.md\) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 \|/
   },
   {
     name: 'connections 与健康检查三件套必填',
@@ -314,7 +314,7 @@ const openAIVocabulary: readonly string[] = [
   'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json',
   'audio_speech', 'audio_transcription_json',
   'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel',
-  'video_create', 'video_get', 'video_content', 'video_cancel', 'realtime_session'
+  'video_create', 'video_get', 'video_content', 'video_cancel', 'realtime_session', 'embeddings_json'
 ]
 const anthropicVocabulary: readonly string[] = ['messages_json', 'messages_sse', 'message_token_counting']
 const geminiNativeVocabulary: readonly string[] = [
@@ -341,7 +341,7 @@ const openAIOperationTemplates: readonly string[] = [
   'POST /audio/speech', 'POST /audio/transcriptions', 'POST /audio/translations',
   'POST /audio/jobs', 'GET /audio/jobs/{id}', 'GET /audio/jobs/{id}/content', 'DELETE /audio/jobs/{id}',
   'POST /videos', 'GET /videos/{id}', 'GET /videos/{id}/content', 'DELETE /videos/{id}',
-  'GET /realtime'
+  'GET /realtime', 'POST /embeddings'
 ]
 const anthropicOperationTemplates: readonly string[] = ['POST /messages', 'POST /messages/count_tokens']
 const geminiNativeOperationTemplates: readonly string[] = [
@@ -364,17 +364,25 @@ const presetCapabilities: Record<string, PresetCapability> = {
   minimax_media: { operationTemplates: ['POST /video_generation', 'GET /query/video_generation', 'POST /t2a_v2'], vocabulary: mediaVocabulary },
   volcengine_ark: { operationTemplates: ['POST /contents/generations/tasks', 'GET /contents/generations/tasks/{id}'], vocabulary: ['chat_json', 'chat_sse', 'images_json', 'video_create', 'video_get', 'video_content', 'video_cancel'] },
   volcengine_openspeech: { operationTemplates: ['POST /tts/create', 'POST /auc/bigmodel/submit', 'POST /auc/bigmodel/query'], vocabulary: ['audio_speech', 'audio_transcription_json', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'] },
-  qwen_dashscope: { operationTemplates: ['POST /compatible-mode/v1/chat/completions', 'POST /api/v1/services/audio/asr/transcription', 'POST /api/v1/services/aigc/video-generation/video-synthesis', 'GET /api/v1/tasks/{task_id}'], vocabulary: ['chat_json', 'chat_sse', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'] }
+  qwen_dashscope: { operationTemplates: ['POST /compatible-mode/v1/chat/completions', 'POST /compatible-mode/v1/embeddings', 'POST /api/v1/services/audio/asr/transcription', 'POST /api/v1/services/aigc/video-generation/video-synthesis', 'POST /api/v1/services/rerank/text-rerank/text-rerank', 'GET /api/v1/tasks/{task_id}'], vocabulary: ['chat_json', 'chat_sse', 'embeddings_json', 'rerank_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'] }
 }
 
+// 与后端 accountscore.AccountHealthCheckEndpointModes 和
+// accountHealthCheckEndpointMode.ts 保持 27 值全集；任何一侧增删都要同批同步。
 const accountHealthCheckEndpointModes: readonly string[] = [
   'images_json', 'chat_json', 'chat_sse',
   'responses_json', 'responses_sse',
-  'messages_json', 'messages_sse',
+  'messages_json', 'messages_sse', 'message_token_counting',
   'generate_content_json', 'generate_content_sse',
   'interactions_json', 'interactions_sse',
-  'audio_speech', 'audio_transcription_json', 'video_create'
+  'count_tokens', 'embed_content',
+  'embeddings_json', 'rerank_json',
+  'audio_speech', 'audio_transcription_json',
+  'video_create', 'video_get', 'video_content', 'video_cancel',
+  'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel',
+  'realtime_session'
 ]
+assertEqual(accountHealthCheckEndpointModes.length, 27, '健康检查 endpoint mode 白名单必须为 27 值全集')
 
 const connectionAllowedKeys: readonly string[] = ['connectionPresetCode', 'protocolSurfaceCode', 'baseUrl', 'endpointModes', 'enabled']
 
@@ -406,7 +414,7 @@ function parseConnectionsForValidation(rawConnections: unknown, label: string): 
       assertTrue(typeof mode === 'string' && mode.trim() !== '', `${entryLabel} endpointModes 存在空值`)
       return mode.trim()
     })
-    assertTrue(connectorPresetCodes.includes(preset), `${entryLabel} connectionPresetCode ${preset} 不在连接器注册表 17 值内`)
+    assertTrue(connectorPresetCodes.includes(preset), `${entryLabel} connectionPresetCode ${preset} 不在连接器注册表 ${connectorPresetCodes.length} 值内`)
     assertTrue(!seenPresets.has(preset), `${entryLabel} 同一连接预设重复提交：${preset}`)
     seenPresets.add(preset)
     const capability = presetCapabilities[preset]

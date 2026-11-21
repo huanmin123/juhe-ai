@@ -411,6 +411,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create authorization store: %w", err)
 	}
+	// Material-change HMAC key (授权接收方确认与来源治理设计 §4.5). It must
+	// stay stable across releases; an empty key makes revision writes fail
+	// closed rather than silently accepting changed sources.
+	authzStore.AttachRevisionSecret(cfg.Secret)
 	// The authorization usage window reads (usage reads family) live in the
 	// juhe_stats schema: PostgreSQL qualifies it over the shared business pool.
 	// The usageStatsTimezone source keeps the in-package default (system_settings
@@ -460,6 +464,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create route-strategy store: %w", err)
 	}
+	// 授权分组绑定写入门禁：runtime/effective source/accepted revision 与
+	// 分组快照必须与当前 material 修订一致，否则不允许把旧接受结果写入新的
+	// 路由策略绑定。网关请求期仍会重复校验。
+	routeStrategyStore.SetAuthorizationBindingValidator(authzStore)
 	// M06 runtime-relevant PATCH 的 API-Key validation cache 失效（Node
 	// notifyGatewayApiKeyValidationCacheInvalidation）通过 K5 总线的
 	// topic:gateway_api_key_validation_cache 走既有订阅链；reason
@@ -505,6 +513,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// gateway runtime cache through the K5 bus post-commit (batch edit,
 	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
+	// Source material-change marker (§5.9): account PATCH/batch writes mark
+	// affected authorization sources needs_review in the same transaction.
+	accountStore.SetSourceRevisionMarker(authzStore)
 	// D-126 账户列表 usage 注水（W4-C）：totals 从 usage_stats_totals、
 	// statDate 从 usage_stats_daily 读，-nil source 保持零值降级。
 	accountUsageSource, err := accounts.NewStatsUsageSource(composed.statsDB)
@@ -553,6 +564,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// group-stats 脏标记 + K5 gateway runtime / api-key validation /
 	// authorization quota 主题）。
 	accountStore.SetAuthorizationGrantReturner(authzGrantReturner{store: authzStore})
+	// 接收方确认模型：旧账户归还入口只允许“恰好一条非终态来源”，实际写入
+	// 走来源级状态机；多条来源必须去授权中心逐来源处理。
+	accountStore.SetAuthorizationSourceReturner(authzGrantReturner{store: authzStore})
 	// 审计补齐装配（verdict-ak/ap/aa）：授权统计 loader（列表三字段投影）+
 	// API Key 运行明细读取器（/{id}/api-key-runtime 的 items 数据源），见
 	// compose_account_reads.go。

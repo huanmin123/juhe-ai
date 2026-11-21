@@ -502,9 +502,35 @@
       "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "官方人民币价 0.5 元/百万 tokens（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 向量段），按约定汇率 7.0 换算 0.0714/百万 tokens（0.5÷7.0）；此前落国际站 $0.07 明文（近似值 7e-08），按国内口径回正为精确值",
+      "sourcePricingNote": "官方人民币价 0.5 元/百万 tokens（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页（2026-10-17 浏览器渲染核对） 向量段），按约定汇率 7.0 换算 0.0714/百万 tokens（0.5÷7.0）；此前落国际站 $0.07 明文（近似值 7e-08），按国内口径回正为精确值；2026-11-20 协议补齐：对外协议由 Gemini 原生 embed_content 归一为 OpenAI 兼容 embeddings（百炼 POST /compatible-mode/v1/embeddings）",
       "supportedAPIProtocols": [
-        "embed_content"
+        "embeddings"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1.1428571428571428e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 30000,
+      "mode": "rerank",
+      "model": "gte-rerank-v2",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-11-20",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.8 元/百万 tokens（help.aliyun.com/zh/model-studio/model-pricing 百炼模型计费页 文本排序段，2026-11-20 核对），按约定汇率 7.0 换算 0.11428571428571428/百万 tokens（0.8÷7.0）；单次请求 query+documents 合计上限 30000 tokens；上游原生形态为 DashScope POST /api/v1/services/rerank/text-rerank/text-rerank，对外归一为 Cohere/Jina 兼容 /v1/rerank",
+      "supportedAPIProtocols": [
+        "rerank"
       ],
       "supportsPromptCaching": false
     }

@@ -33,6 +33,7 @@ import { useAccountTestModels } from './useAccountTestModels'
 import { waitForAccountTestResult } from './accountTestTaskPolling'
 import { isGatewayTestableAccountProfile } from './accountProviderCapabilities'
 import { accountTestEndpointModesForAccount } from './accountEndpointModes'
+import { testKindForAccount } from './accountCapabilityDomains'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import {
   clearAccountTestRunSession as clearStoredAccountTestRunSession,
@@ -89,6 +90,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
+    testKind,
     testModelOptions,
     testModelOptionsTruncated,
     testModelsError,
@@ -162,7 +164,9 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       return
     }
     const model = fixedHealthCheckModel.trim()
-    if (!model) {
+    const resolvedEndpointModes = fixedEndpointModes ?? accountTestEndpointModesForAccount(account, draftPayload)
+    const draftTestKind = testKindForAccount(account.capabilityDomain, resolvedEndpointModes)
+    if (!model && draftTestKind === 'model') {
       message.warning('请先选择检查模型')
       return
     }
@@ -173,23 +177,25 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       account,
       draftPayload,
       model,
-      fixedEndpointModes ?? accountTestEndpointModesForAccount(account, draftPayload),
+      resolvedEndpointModes,
       mode
     )
     testModalOpen.value = true
-    void loadAccountTestModelOptionsNow(account, '')
+    if (testKind.value !== 'connection') {
+      void loadAccountTestModelOptionsNow(account, '')
+    }
   }
 
   async function runAccountTest(): Promise<void> {
     const account = testingAccount.value
     const draftTestActive = Boolean(draftTestingAccountPayload.value)
+    const connectionTest = testKind.value === 'connection'
     if (
       !account
       || testRunning.value
       || !testModelsReady.value
-      || (!draftTestActive && (testModelsLoading.value || Boolean(testModelsError.value)))
-      || !testForm.model.trim()
-      || testForm.testEndpointMode === 'account_default'
+      || (!connectionTest && !draftTestActive && (testModelsLoading.value || Boolean(testModelsError.value)))
+      || (!connectionTest && (!testForm.model.trim() || testForm.testEndpointMode === 'account_default'))
     ) {
       return
     }
@@ -201,9 +207,9 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const payload = buildAccountTestPayload({
       model: testForm.model,
       testEndpointMode: testForm.testEndpointMode
-    }, account, draftPayload)
-    const endpointMode = payload.testEndpointMode
-    if (!endpointMode) return
+    }, account, draftPayload, testKind.value)
+    const endpointMode = payload.testEndpointMode ?? (account.healthCheckEndpointMode as AccountSupportedEndpointMode) ?? 'chat_json'
+    if (!connectionTest && !payload.testEndpointMode) return
     const run = beginAccountTestRun({
       account,
       draftMode: activeDraftMode,
@@ -260,7 +266,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         account,
         error,
         model: payload.model ?? '',
-        testEndpointMode: payload.testEndpointMode ?? testForm.testEndpointMode,
+        testEndpointMode: payload.testEndpointMode ?? endpointMode,
         startedAt
       })
       run.result = result
@@ -454,7 +460,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       const payload = buildAccountTestPayload({
         model: snapshot.model,
         testEndpointMode: snapshot.testEndpointMode
-      }, account)
+      }, account, undefined, testKindForAccount(account.capabilityDomain, snapshot.testEndpointModes))
       const result = await waitForSubmittedAccountTestResult(run, latestTask, payload)
       run.result = result
       if (!isRunAttached(run)) return
@@ -721,6 +727,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     stopAccountTest,
     testEndpointModes,
     testForm,
+    testKind,
     testModalOpen,
     testModelOptions,
     testModelOptionsTruncated,

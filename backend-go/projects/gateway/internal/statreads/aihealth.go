@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,9 +16,11 @@ import (
 )
 
 // AI-health read family (Node account-health-monitor.repository.ts): the
-// hourly status strip per account from account_health_hourly, optionally
-// merged with the J1 jobs outcome store (account_health_outcomes). The J1
-// outcome read is a single ranged SELECT of entity columns; the per-hour
+// hourly status strip per account from account_health_hourly is the primary
+// read surface, optionally gap-filled from the J1 jobs outcome store
+// (account_health_outcomes). The J1 read only covers contiguous missing-hour
+// ranges plus a recent freshness overlap, followed by one latest-quality probe
+// for accounts whose ranges do not span the full window; the per-hour
 // latest-wins merge lives in j1OutcomeHealthRows / newestJ1OutcomeHourRow.
 
 var statHourPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$`)
@@ -27,7 +32,9 @@ const aiHealthAccountNameMaxLength = 128
 // HealthOutcomeSource mirrors accountHealthJobsOutcomeStoreSource: the
 // jobs-owned outcome store the gateway only reads. It points at the jobs
 // database URL (outcomePostgresUrl) and reads juhe_jobs.account_health_outcomes
-// with a single ranged SELECT over entity columns. The merge semantics
+// only for the missing-hour ranges plus the recent freshness overlap, and for
+// one latest quality row per account whose ranges do not span the full window.
+// The merge semantics
 // (j1OutcomeHealthRows / newestJ1OutcomeHourRow) are source-independent. An
 // absent/unconfigured source keeps the merge absent exactly like Node.
 type HealthOutcomeSource struct {
@@ -186,7 +193,7 @@ func (d *Deps) aiHealthList(r *http.Request, scope AccessScope, options aiHealth
 	if err != nil {
 		return nil, err
 	}
-	j1Outcomes, err := d.j1OutcomesForAccounts(r.Context(), accountIds, now, options.Hours, hourBuckets)
+	j1Outcomes, err := d.j1OutcomesForAccountPage(r.Context(), accountIds, now, options.Hours, hourBuckets, rows, location)
 	if err != nil {
 		return nil, err
 	}
@@ -217,9 +224,9 @@ func (d *Deps) aiHealthHourDetail(r *http.Request, scope AccessScope, accountID,
 		row := rows[0]
 		detailRow = &row
 	}
-	// J1 outcome merge for the same hour (Node j1OutcomeHealthHourDetail):
-	// the latest non-stale outcome whose local hour equals statHour.
-	outcomes, err := d.j1OutcomesForAccounts(r.Context(), []string{accountID}, d.Now(), 31*24, []string{statHour})
+	// J1 outcome merge for the same hour: only the target hour's quality
+	// outcomes are read, never the full retention window.
+	outcomes, err := d.j1OutcomesForHour(r.Context(), accountID, statHour, location)
 	if err != nil {
 		return nil, false, err
 	}
@@ -441,30 +448,532 @@ type j1Outcome struct {
 	NextDueAt    *string `json:"nextDueAt"`
 }
 
-func (d *Deps) j1OutcomesForAccounts(ctx context.Context, accountIds []string, now time.Time, hours int, hourBuckets []string) ([]j1Outcome, error) {
+// j1OutcomeRange is one per-account J1 read range. The ranges are the
+// contiguous missing-hour runs plus the recent freshness overlap; rows outside
+// them are covered by the hourly strip.
+type j1OutcomeRange struct {
+	AccountID      string
+	ObservedAfter  string
+	ObservedBefore string
+}
+
+func (d *Deps) j1OutcomesForAccountPage(ctx context.Context, accountIds []string, now time.Time, hours int, hourBuckets []string, hourlyRows []Row, location *time.Location) ([]j1Outcome, error) {
 	// 空 URL 与 nil 同义：未配置的源保持合并缺席（Node absent-source 语义），
 	// 不得下探 sql.Open("")——那会拨驱动默认地址并把整个读面打成 500（B5）。
 	if d.HealthOutcomes == nil || d.HealthOutcomes.PostgresURL == "" || len(accountIds) == 0 || len(hourBuckets) == 0 {
 		return nil, nil
 	}
-	observedAfter := time.UnixMilli(now.UnixMilli() - int64(hours+2)*int64(time.Hour/time.Millisecond)).UTC().Format("2006-01-02T15:04:05.000Z")
-	return d.j1PostgresOutcomesForAccounts(ctx, accountIds, observedAfter)
+	windowStart := j1ObservedAfter(now, hours)
+	windowEnd := j1WindowEnd(now)
+	freshnessFloor := now.Add(-j1ListFreshnessOverlap).UTC().Format("2006-01-02T15:04:05.000Z")
+	ranges := j1OutcomeRangesForHourlyRows(accountIds, hourBuckets, hourlyRows, windowStart, windowEnd, freshnessFloor, location)
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+	return d.j1PostgresOutcomes(ctx, ranges, windowStart, windowEnd)
+}
+
+// j1ListFreshnessOverlap keeps the most recent two hours in the J1 read even
+// when the hourly strip already covers them. The hourly projection is
+// near-real-time but not synchronous; the overlap absorbs late outcomes and
+// projection lag without returning to a full-window scan.
+const j1ListFreshnessOverlap = 2 * time.Hour
+
+// j1PostgresOutcomeRangeLimit bounds one gap query's VALUES list. Larger
+// pages are split into multiple chunks instead of falling back to a
+// full-window read, so a page with many isolated missing hours keeps the
+// incremental read shape.
+const j1PostgresOutcomeRangeLimit = 2048
+
+// j1ObservedAfter is the full list-window lower bound, retaining the old
+// reader's +2h margin for timezone and projection lag.
+func j1ObservedAfter(now time.Time, hours int) string {
+	return time.UnixMilli(now.UnixMilli() - int64(hours+2)*int64(time.Hour/time.Millisecond)).UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// j1WindowEnd mirrors the old reader's open upper end with a +2h margin; the
+// hourly strip's own bucket filter discards anything beyond the requested
+// window.
+func j1WindowEnd(now time.Time) string {
+	return now.Add(2 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// j1OutcomeRangesForHourlyRows treats account_health_hourly as the primary
+// strip and computes per-account J1 gaps: each contiguous missing-hour run plus
+// the freshness range from the earlier of the newest hourly observation and
+// the two-hour floor. Accounts without hourly rows fall back to the full
+// window; an account with a malformed hourly timestamp also falls back so a
+// bad bound can never hide a newer J1 quality outcome.
+func j1OutcomeRangesForHourlyRows(accountIds []string, hourBuckets []string, hourlyRows []Row, windowStart, windowEnd, freshnessFloor string, location *time.Location) []j1OutcomeRange {
+	if len(accountIds) == 0 || len(hourBuckets) == 0 {
+		return nil
+	}
+	present := make(map[string]map[string]bool, len(accountIds))
+	latest := make(map[string]string, len(accountIds))
+	invalidObserved := make(map[string]bool, len(accountIds))
+	for _, row := range hourlyRows {
+		accountID := row.text("account_id")
+		if accountID == "" {
+			continue
+		}
+		if present[accountID] == nil {
+			present[accountID] = make(map[string]bool, len(hourBuckets))
+		}
+		present[accountID][row.text("stat_hour")] = true
+		observed, ok := normalizeJ1ObservedAfter(row.text("last_observed_at"))
+		if !ok {
+			invalidObserved[accountID] = true
+			continue
+		}
+		if timestampValue(observed) > timestampValue(latest[accountID]) {
+			latest[accountID] = observed
+		}
+	}
+	ranges := make([]j1OutcomeRange, 0, len(accountIds))
+	seen := make(map[string]bool, len(accountIds))
+	for _, accountID := range accountIds {
+		if accountID == "" || seen[accountID] {
+			continue
+		}
+		seen[accountID] = true
+		hoursPresent := present[accountID]
+		if len(hoursPresent) == 0 {
+			ranges = append(ranges, j1OutcomeRange{AccountID: accountID, ObservedAfter: windowStart, ObservedBefore: windowEnd})
+			continue
+		}
+		accountRanges := make([]j1OutcomeRange, 0, 2)
+		if invalidObserved[accountID] {
+			accountRanges = append(accountRanges, j1OutcomeRange{AccountID: accountID, ObservedAfter: windowStart, ObservedBefore: windowEnd})
+		} else {
+			runStart, runEnd := "", ""
+			flushRun := func() {
+				if runStart == "" {
+					return
+				}
+				accountRanges = append(accountRanges, j1OutcomeRange{AccountID: accountID, ObservedAfter: runStart, ObservedBefore: runEnd})
+				runStart, runEnd = "", ""
+			}
+			for _, hour := range hourBuckets {
+				if hoursPresent[hour] {
+					flushRun()
+					continue
+				}
+				start := hourBucketStartUTC(hour, location)
+				end := hourBucketEndUTC(hour, location)
+				if start == "" || end == "" {
+					continue
+				}
+				if runStart == "" {
+					runStart, runEnd = start, end
+					continue
+				}
+				if timestampValue(start) <= timestampValue(runEnd) {
+					if timestampValue(end) > timestampValue(runEnd) {
+						runEnd = end
+					}
+					continue
+				}
+				flushRun()
+				runStart, runEnd = start, end
+			}
+			flushRun()
+			freshnessStart := earlierJ1Timestamp(latest[accountID], freshnessFloor)
+			if freshnessStart == "" || timestampValue(freshnessStart) < timestampValue(windowStart) {
+				freshnessStart = windowStart
+			}
+			if timestampValue(freshnessStart) < timestampValue(windowEnd) {
+				accountRanges = append(accountRanges, j1OutcomeRange{AccountID: accountID, ObservedAfter: freshnessStart, ObservedBefore: windowEnd})
+			}
+		}
+		ranges = append(ranges, mergeJ1OutcomeRanges(accountRanges)...)
+	}
+	return ranges
+}
+
+func mergeJ1OutcomeRanges(ranges []j1OutcomeRange) []j1OutcomeRange {
+	if len(ranges) <= 1 {
+		return ranges
+	}
+	sort.SliceStable(ranges, func(left, right int) bool {
+		return timestampValue(ranges[left].ObservedAfter) < timestampValue(ranges[right].ObservedAfter)
+	})
+	merged := make([]j1OutcomeRange, 0, len(ranges))
+	for _, current := range ranges {
+		if len(merged) == 0 {
+			merged = append(merged, current)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		if timestampValue(current.ObservedAfter) <= timestampValue(last.ObservedBefore) {
+			if timestampValue(current.ObservedBefore) > timestampValue(last.ObservedBefore) {
+				last.ObservedBefore = current.ObservedBefore
+			}
+			continue
+		}
+		merged = append(merged, current)
+	}
+	return merged
+}
+
+// normalizeJ1ObservedAfter renders any RFC3339 instant as the millisecond UTC
+// form used by both the hourly table and the J1 reader. Invalid legacy text is
+// ignored by the caller, which then falls back to a wider lower bound instead
+// of failing the page.
+func normalizeJ1ObservedAfter(value string) (string, bool) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return "", false
+	}
+	return parsed.UTC().Format("2006-01-02T15:04:05.000Z"), true
+}
+
+// localHourBoundsUTC returns the half-open UTC range covering every instant
+// whose local hour key equals statHour. DST transitions make the mapping
+// non-trivial: a fall-back hour can occur twice (or for 30/45-minute shifts,
+// in two segments), a spring-forward hour can be absent or start at :30/:45.
+// The fast path is the ordinary one-hour case; around a transition a bounded
+// minute scan finds the first and last matching instant and lets the existing
+// hourKeyIn merge filter discard any adjacent-hour rows read by the wider
+// range.
+const (
+	localHourScanRadius  = 4 * time.Hour
+	localHourScanStep    = time.Minute
+	minLocalStatHourYear = 1970
+	maxLocalStatHourYear = 9998
+)
+
+func localHourBoundsUTC(statHour string, location *time.Location) (time.Time, time.Time, bool) {
+	if location == nil {
+		location = time.UTC
+	}
+	parsed, err := time.Parse("2006-01-02T15", statHour)
+	if err != nil || parsed.Year() < minLocalStatHourYear || parsed.Year() > maxLocalStatHourYear {
+		return time.Time{}, time.Time{}, false
+	}
+	start := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), parsed.Hour(), 0, 0, 0, location)
+	end := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), parsed.Hour()+1, 0, 0, 0, location)
+	if start.Minute() == 0 && start.Second() == 0 && end.Minute() == 0 && end.Second() == 0 {
+		nextHour := parsed.Add(time.Hour).Format("2006-01-02T15")
+		_, startOffset := start.Zone()
+		_, endOffset := end.Zone()
+		_, nextOffset := end.Add(time.Hour).Zone()
+		if hourKeyIn(start, location) == statHour && hourKeyIn(end, location) == nextHour &&
+			startOffset == endOffset && endOffset == nextOffset {
+			return start, end, true
+		}
+	}
+	var first, last time.Time
+	scanEnd := start.Add(localHourScanRadius)
+	for candidate := start.Add(-localHourScanRadius); !candidate.After(scanEnd); candidate = candidate.Add(localHourScanStep) {
+		if hourKeyIn(candidate, location) != statHour {
+			continue
+		}
+		if first.IsZero() {
+			first = candidate
+		}
+		last = candidate
+	}
+	if first.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	return first, last.Add(localHourScanStep), true
+}
+
+func hourBucketStartUTC(statHour string, location *time.Location) string {
+	start, _, ok := localHourBoundsUTC(statHour, location)
+	if !ok {
+		return ""
+	}
+	return start.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+func hourBucketEndUTC(statHour string, location *time.Location) string {
+	_, end, ok := localHourBoundsUTC(statHour, location)
+	if !ok {
+		return ""
+	}
+	return end.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+func earlierJ1Timestamp(left, right string) string {
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	if timestampValue(right) < timestampValue(left) {
+		return right
+	}
+	return left
 }
 
 // ---------------------------------------------------------------------------
-// PostgreSQL outcome reader: one ranged SELECT per management-page account
-// slice; the per-hour latest-wins merge stays in the Go merge layer.
+// PostgreSQL outcome reader: one incremental ranged query for the page's
+// missing hours plus one latest-quality probe per account; the per-hour
+// latest-wins merge stays in the Go merge layer.
 // ---------------------------------------------------------------------------
 
 // j1PostgresOutcomeBudget mirrors the Node reader's 5s statement_timeout /
-// query_timeout; one budget covers the connection and the single slice query.
+// query_timeout; one budget covers the connection and both list queries.
 const j1PostgresOutcomeBudget = 5 * time.Second
 
-// j1PostgresOutcomesForAccounts reads one management-page account slice from
-// juhe_jobs.account_health_outcomes as a single ranged SELECT over entity
-// columns (read-only connection by contract).
-func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []string, observedAfter string) ([]j1Outcome, error) {
-	query, args, err := j1PostgresOutcomeQuery(accountIds, observedAfter)
+const j1PostgresOutcomeAccountLimit = 50
+
+// j1PostgresOutcomes reads the page's J1 gap ranges and one latest quality row
+// for every account whose ranges did not already span the full window. The
+// latest probe is a single backward index scan with LIMIT 1 per account; it is
+// deliberately not skipped just because an earlier gap row exists, since the
+// newest quality outcome may sit in a covered hour outside the read ranges.
+func (d *Deps) j1PostgresOutcomes(ctx context.Context, ranges []j1OutcomeRange, windowStart, windowEnd string) ([]j1Outcome, error) {
+	db, err := sql.Open("pgx", d.HealthOutcomes.PostgresURL)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	readCtx, cancel := context.WithTimeout(ctx, j1PostgresOutcomeBudget)
+	defer cancel()
+	outcomes := make([]j1Outcome, 0, len(ranges))
+	for _, chunk := range j1OutcomeRangeChunks(ranges, j1PostgresOutcomeRangeLimit) {
+		gapQuery, gapArgs, err := j1PostgresOutcomeGapQuery(chunk)
+		if err != nil {
+			return nil, err
+		}
+		gapRows, err := queryRowsContext(readCtx, db, gapQuery, gapArgs...)
+		if err != nil {
+			return nil, err
+		}
+		outcomes = append(outcomes, buildJ1ListOutcomeRows(gapRows)...)
+	}
+	latestAccountIds := j1AccountsNeedingLatestProbe(ranges, windowStart, windowEnd)
+	if len(latestAccountIds) == 0 {
+		return outcomes, nil
+	}
+	latestQuery, latestArgs, err := j1PostgresLatestQualityQuery(latestAccountIds, windowStart, windowEnd)
+	if err != nil {
+		return nil, err
+	}
+	latestRows, err := queryRowsContext(readCtx, db, latestQuery, latestArgs...)
+	if err != nil {
+		// 表头探针失败不应丢弃已经读到的缺失小时数据；小时行仍可兜底表头。
+		slog.Default().Warn("AI 健康最新质量 outcome 读取失败，表头回退小时行",
+			"event", "ai_health_latest_probe_failed", "error", err)
+		return outcomes, nil
+	}
+	return append(outcomes, buildJ1ListOutcomeRows(latestRows)...), nil
+}
+
+// j1OutcomeRangeChunks splits the page's ranges into SQL-sized chunks. The
+// ranges stay incremental; unlike a full-window fallback, every chunk keeps
+// the missing-hour shape.
+func j1OutcomeRangeChunks(ranges []j1OutcomeRange, limit int) [][]j1OutcomeRange {
+	if limit < 1 {
+		limit = 1
+	}
+	chunks := make([][]j1OutcomeRange, 0, (len(ranges)+limit-1)/limit)
+	for start := 0; start < len(ranges); start += limit {
+		end := start + limit
+		if end > len(ranges) {
+			end = len(ranges)
+		}
+		chunks = append(chunks, ranges[start:end])
+	}
+	return chunks
+}
+
+// j1AccountsNeedingLatestProbe returns the accounts whose ranges did not span
+// the full window. An earlier gap row does not prove the header's latest
+// quality outcome is in the gap: a newer quality outcome may live in a covered
+// hour between two ranges. Only a single range that covers both window bounds
+// proves the gap read was exhaustive.
+func j1AccountsNeedingLatestProbe(ranges []j1OutcomeRange, windowStart, windowEnd string) []string {
+	fullWindow := make(map[string]bool, len(ranges))
+	windowStartMillis := timestampValue(windowStart)
+	windowEndMillis := timestampValue(windowEnd)
+	for _, r := range ranges {
+		if timestampValue(r.ObservedAfter) <= windowStartMillis && timestampValue(r.ObservedBefore) >= windowEndMillis {
+			fullWindow[r.AccountID] = true
+		}
+	}
+	seen := make(map[string]bool, len(ranges))
+	missing := make([]string, 0, len(ranges))
+	for _, r := range ranges {
+		if seen[r.AccountID] {
+			continue
+		}
+		seen[r.AccountID] = true
+		if fullWindow[r.AccountID] {
+			continue
+		}
+		missing = append(missing, r.AccountID)
+	}
+	return missing
+}
+
+// j1PostgresOutcomeGapQuery reads only the per-account ranges above the hourly
+// strip. The VALUES + LATERAL shape lets PostgreSQL use the
+// (account_id, observed_at) covering index once per range, and the non-quality
+// predicate keeps the scan index-only and the row count small.
+func j1PostgresOutcomeGapQuery(ranges []j1OutcomeRange) (string, []any, error) {
+	normalized, err := normalizeJ1OutcomeRanges(ranges)
+	if err != nil {
+		return "", nil, err
+	}
+	var values strings.Builder
+	args := make([]any, 0, len(normalized)*3)
+	for index, r := range normalized {
+		if index > 0 {
+			values.WriteString(",\n\t\t\t")
+		}
+		base := index*3 + 1
+		fmt.Fprintf(&values, "($%d::text, $%d::timestamptz, $%d::timestamptz)", base, base+1, base+2)
+		args = append(args, r.AccountID, r.ObservedAfter, r.ObservedBefore)
+	}
+	query := `
+		SELECT o.outcome_id, o.account_id, o.outcome,
+			to_char(timezone('UTC', o.observed_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at,
+			to_char(timezone('UTC', o.next_due_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS next_due_at
+		FROM (VALUES
+			` + values.String() + `
+		) AS b(account_id, observed_after, observed_before)
+		CROSS JOIN LATERAL (
+			SELECT outcome_id, account_id, outcome, observed_at, next_due_at
+			FROM juhe_jobs.account_health_outcomes
+			WHERE account_id = b.account_id
+				AND observed_at >= b.observed_after
+				AND observed_at < b.observed_before
+				AND ` + j1NonQualityOutcomeSQLPredicate + `
+		) AS o
+		ORDER BY o.observed_at ASC, o.outcome_id ASC`
+	return query, args, nil
+}
+
+func normalizeJ1OutcomeRanges(ranges []j1OutcomeRange) ([]j1OutcomeRange, error) {
+	if len(ranges) == 0 {
+		return nil, errors.New("J1 outcome 增量查询至少需要一个区间")
+	}
+	if len(ranges) > j1PostgresOutcomeRangeLimit {
+		return nil, errors.New("J1 outcome 增量查询区间数超过上限")
+	}
+	byAccount := make(map[string][]j1OutcomeRange, len(ranges))
+	order := make([]string, 0, len(ranges))
+	for _, r := range ranges {
+		accountID := strings.TrimSpace(r.AccountID)
+		if accountID == "" {
+			return nil, errors.New("J1 outcome 账户 ID 不能为空")
+		}
+		observedAfter, ok := normalizeJ1ObservedAfter(r.ObservedAfter)
+		if !ok {
+			return nil, errors.New("J1 outcome 区间起点必须是 RFC3339 时间")
+		}
+		observedBefore, ok := normalizeJ1ObservedAfter(r.ObservedBefore)
+		if !ok {
+			return nil, errors.New("J1 outcome 区间终点必须是 RFC3339 时间")
+		}
+		if timestampValue(observedAfter) >= timestampValue(observedBefore) {
+			return nil, errors.New("J1 outcome 区间起点必须早于终点")
+		}
+		if _, exists := byAccount[accountID]; !exists {
+			order = append(order, accountID)
+		}
+		byAccount[accountID] = append(byAccount[accountID], j1OutcomeRange{
+			AccountID:      accountID,
+			ObservedAfter:  observedAfter,
+			ObservedBefore: observedBefore,
+		})
+	}
+	normalized := make([]j1OutcomeRange, 0, len(ranges))
+	for _, accountID := range order {
+		normalized = append(normalized, mergeJ1OutcomeRanges(byAccount[accountID])...)
+	}
+	return normalized, nil
+}
+
+// j1PostgresLatestQualityQuery reads the newest quality outcome per account
+// over the same half-open window as the gap read. It drives the header's
+// last/next check fields without widening the strip read; the backward index
+// scan stops at the first quality row per account.
+func j1PostgresLatestQualityQuery(accountIds []string, observedAfter, observedBefore string) (string, []any, error) {
+	if len(accountIds) == 0 {
+		return "", nil, errors.New("J1 最新质量 outcome 查询至少需要一个账户")
+	}
+	if len(accountIds) > j1PostgresOutcomeAccountLimit {
+		return "", nil, errors.New("J1 outcome 账户查询最多允许 50 个账户")
+	}
+	normalized := make([]string, 0, len(accountIds))
+	seen := make(map[string]bool, len(accountIds))
+	for _, accountID := range accountIds {
+		accountID = strings.TrimSpace(accountID)
+		if accountID == "" {
+			return "", nil, errors.New("J1 outcome 账户 ID 不能为空")
+		}
+		if seen[accountID] {
+			continue
+		}
+		seen[accountID] = true
+		normalized = append(normalized, accountID)
+	}
+	windowStart, ok := normalizeJ1ObservedAfter(observedAfter)
+	if !ok {
+		return "", nil, errors.New("J1 outcome 窗口起点必须是 RFC3339 时间")
+	}
+	windowEnd, ok := normalizeJ1ObservedAfter(observedBefore)
+	if !ok {
+		return "", nil, errors.New("J1 outcome 窗口终点必须是 RFC3339 时间")
+	}
+	if timestampValue(windowEnd) <= timestampValue(windowStart) {
+		return "", nil, errors.New("J1 outcome 窗口终点必须晚于起点")
+	}
+	var values strings.Builder
+	args := make([]any, 0, len(normalized)+2)
+	for index, accountID := range normalized {
+		if index > 0 {
+			values.WriteString(", ")
+		}
+		fmt.Fprintf(&values, "($%d::text)", index+1)
+		args = append(args, accountID)
+	}
+	afterPlaceholder := fmt.Sprintf("$%d", len(normalized)+1)
+	beforePlaceholder := fmt.Sprintf("$%d", len(normalized)+2)
+	args = append(args, windowStart, windowEnd)
+	query := `
+		SELECT o.account_id, o.outcome_id, o.outcome,
+			to_char(timezone('UTC', o.observed_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at,
+			to_char(timezone('UTC', o.next_due_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS next_due_at
+		FROM (VALUES
+			` + values.String() + `
+		) AS b(account_id)
+		CROSS JOIN LATERAL (
+			SELECT account_id, outcome_id, outcome, observed_at, next_due_at
+			FROM juhe_jobs.account_health_outcomes
+			WHERE account_id = b.account_id
+				AND observed_at >= ` + afterPlaceholder + `::timestamptz
+				AND observed_at < ` + beforePlaceholder + `::timestamptz
+				AND ` + j1NonQualityOutcomeSQLPredicate + `
+			ORDER BY observed_at DESC, outcome_id DESC
+			LIMIT 1
+		) AS o`
+	return query, args, nil
+}
+
+// j1OutcomesForHour reads one target hour's quality outcomes for the detail
+// endpoint; the old 31-day read is not repeated here.
+func (d *Deps) j1OutcomesForHour(ctx context.Context, accountID, statHour string, location *time.Location) ([]j1Outcome, error) {
+	if d.HealthOutcomes == nil || d.HealthOutcomes.PostgresURL == "" || accountID == "" || statHour == "" {
+		return nil, nil
+	}
+	hourStart, hourEnd, ok := localHourBoundsUTC(statHour, location)
+	if !ok {
+		// 不存在的本地小时（spring-forward 跳过）或越界年份没有 J1 行；
+		// 详情仍可用小时表展示，避免把无效输入打成 500。
+		return nil, nil
+	}
+	query, args, err := j1PostgresOutcomeHourQuery(
+		accountID,
+		hourStart.UTC().Format("2006-01-02T15:04:05.000Z"),
+		hourEnd.UTC().Format("2006-01-02T15:04:05.000Z"),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -483,26 +992,20 @@ func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []s
 	return buildJ1OutcomeRows(rows), nil
 }
 
-// 单次范围读取替代旧 LATERAL 逐小时探测：「每账户每小时取最新非 stale」的
-// 语义由 Go 合并层（j1OutcomeHealthRows / newestJ1OutcomeHourRow）本就实现的
-// latest-wins 承担；SQL 只需按窗口取回全部候选行。投影读实体列。next_due_at
-// 2026-10-31 起是 jobs 落列的实体列（写侧与 payload 单键双写，读侧只取列），
-// 不再从 payload 提取：PG 无法对表达式索引列做 Index Only Scan 输出，payload
-// 单键投影使该读面在覆盖索引下仍逐行回表，慢盘冷缓存首开曾 2×5s 读预算超时；
-// 改列后全部投影都在覆盖索引 idx_account_health_outcomes_read_cover 内，读面
-// 走 Index Only Scan。存量行该列为 NULL，合并层按既有 fallback 回退
-// accounts.next_health_check_at（探针每小时重写，窗口自愈），无需回填。
-// 历史注记：旧实现整份回传 payload，且 payload 键形（snake_case）与旧解码
-// 结构体 tag（camelCase）不匹配，生产行曾在合并层被静默丢弃。ORDER BY ASC +
-// 合并层 >= last-wins 精确复刻旧的「observed_at DESC, outcome_id DESC LIMIT 1」
-// 胜者（同 observed_at 取更大 outcome_id）。status_code 是 INTEGER 列：pgx
-// stdlib 扫描本就把 int4 转 int64（nullNumber 的 int64 分支恒可命中），::bigint
-// cast 把这一依赖显式固化在 SQL 侧，防驱动行为变化。timezone('UTC', …) 与旧
-// 写法 AT TIME ZONE 'UTC' 是同一函数调用（timestamptz → UTC 墙钟），行为零
-// 变化。
-func j1PostgresOutcomeQuery(accountIds []string, observedAfter string) (string, []any, error) {
-	if len(accountIds) > 50 {
-		return "", nil, errors.New("J1 outcome 账户查询最多允许 50 个账户")
+// j1PostgresOutcomeHourQuery keeps the detail's full entity projection
+// (including the error columns) but bounds it to [hourStart, hourEnd).
+func j1PostgresOutcomeHourQuery(accountID, hourStart, hourEnd string) (string, []any, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return "", nil, errors.New("J1 小时详情账户 ID 不能为空")
+	}
+	start, ok := normalizeJ1ObservedAfter(hourStart)
+	if !ok {
+		return "", nil, errors.New("J1 小时详情起点必须是 RFC3339 时间")
+	}
+	end, ok := normalizeJ1ObservedAfter(hourEnd)
+	if !ok {
+		return "", nil, errors.New("J1 小时详情终点必须是 RFC3339 时间")
 	}
 	query := `
 		SELECT outcome_id, request_id, account_id, outcome,
@@ -510,11 +1013,12 @@ func j1PostgresOutcomeQuery(accountIds []string, observedAfter string) (string, 
 			status_code::bigint AS status_code, error_code, error_message,
 			to_char(timezone('UTC', next_due_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS next_due_at
 		FROM juhe_jobs.account_health_outcomes
-		WHERE account_id = ANY($1::text[])
+		WHERE account_id = $1::text
 			AND observed_at >= $2::timestamptz
-			AND outcome <> 'stale'
+			AND observed_at < $3::timestamptz
+			AND ` + j1NonQualityOutcomeSQLPredicate + `
 		ORDER BY observed_at ASC, outcome_id ASC`
-	return query, []any{dedupeStrings(accountIds), observedAfter}, nil
+	return query, []any{accountID, start, end}, nil
 }
 
 // buildJ1OutcomeRows 从范围读取的实体列构造合并层输入；可空列（status_code、
@@ -538,18 +1042,21 @@ func buildJ1OutcomeRows(rows []Row) []j1Outcome {
 	return outcomes
 }
 
-// dedupeStrings keeps the first occurrence order.
-func dedupeStrings(values []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
+// buildJ1ListOutcomeRows maps the narrow list projection. The strip merge and
+// the header only need identity, outcome, observed time and next due; error
+// columns stay exclusive to the detail endpoint.
+func buildJ1ListOutcomeRows(rows []Row) []j1Outcome {
+	outcomes := make([]j1Outcome, 0, len(rows))
+	for _, row := range rows {
+		outcomes = append(outcomes, j1Outcome{
+			OutcomeID:  row.text("outcome_id"),
+			AccountID:  row.text("account_id"),
+			Outcome:    row.text("outcome"),
+			ObservedAt: row.text("storage_observed_at"),
+			NextDueAt:  row.nullText("next_due_at"),
+		})
 	}
-	return out
+	return outcomes
 }
 
 // j1NonQualityOutcomes 是不得计入 AI 健康页健康率的非质量终态
@@ -566,6 +1073,25 @@ var j1NonQualityOutcomes = map[string]bool{
 	"gateway_capacity":         true,
 	"gateway_policy":           true,
 	"downstream_closed":        true,
+}
+
+// j1NonQualityOutcomeSQLPredicate is the SQL form of j1NonQualityOutcomes.
+// Building it from the map keeps the row-reduction filter and the Go merge
+// semantic authority in sync; it also guarantees the covering index's
+// index-only scan never has to revive a non-quality row.
+var j1NonQualityOutcomeSQLPredicate = buildJ1NonQualityOutcomeSQLPredicate()
+
+func buildJ1NonQualityOutcomeSQLPredicate() string {
+	names := make([]string, 0, len(j1NonQualityOutcomes))
+	for name := range j1NonQualityOutcomes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, "'"+strings.ReplaceAll(name, "'", "''")+"'")
+	}
+	return "outcome NOT IN (" + strings.Join(quoted, ", ") + ")"
 }
 
 // j1OutcomeHealthStatus 把 J1 探针终态映射为健康率口径：complete_success 是
@@ -608,7 +1134,6 @@ func j1OutcomeHealthRows(outcomes []j1Outcome, hourBuckets []string, location *t
 			"stat_hour":        statHour,
 			"status":           status,
 			"last_observed_at": outcome.ObservedAt,
-			"source_order":     int64(0),
 		}
 		key := outcome.AccountID + "\x00" + statHour
 		existing, ok := latest[key]

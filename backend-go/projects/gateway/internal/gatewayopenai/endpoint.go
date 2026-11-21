@@ -74,6 +74,10 @@ func IsProtocolRequestPath(originalPathAndQuery string) bool {
 		return true
 	case normalized == "/embeddings", strings.HasPrefix(normalized, "/embeddings/"):
 		return true
+	// 重排协议（《对外协议面对齐 new-api 设计》§4.4）：POST /v1/rerank 是
+	// Cohere/Jina 形态的独立协议面；方法/子路径细分由链内重排处理面裁决。
+	case normalized == "/rerank":
+		return true
 	case normalized == "/audio", strings.HasPrefix(normalized, "/audio/"):
 		return true
 	// 唯一视频面（设计《对外协议面对齐 new-api 设计》§4.2）：
@@ -101,6 +105,21 @@ func IsModelsRequest(method, originalPathAndQuery string) bool {
 	}
 	path, _ := SplitPathAndQuery(originalPathAndQuery)
 	return normalizedPathWithoutVersion(path) == "/models"
+}
+
+// IsInputOnlyUsageRequestPath 判定请求是否属于只消费输入 token 的协议面
+// （embeddings / rerank）。这类协议的 total-only usage 可安全回填输入；
+// chat/Responses 共享抽取不得套用该回填。
+func IsInputOnlyUsageRequestPath(pathAndQuery string) bool {
+	path, _ := SplitPathAndQuery(pathAndQuery)
+	path = strings.ToLower(strings.TrimSpace(path))
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	normalized := normalizedPathWithoutVersion(path)
+	return normalized == "/embeddings" ||
+		normalized == "/embeddings/multimodal" ||
+		normalized == "/rerank"
 }
 
 // BuildUpstreamURL 按上游 Base URL 版本根语义 v2 直拼最终上游 URL：

@@ -281,7 +281,7 @@ func normalizeModelOptionModes(r *http.Request) ([]string, string) {
 				continue
 			}
 			if !slices.Contains(ProviderCatalogModeValues, trimmed) {
-				return nil, "modes 必须是 chat、responses、embedding、audio、video 或 image_generation"
+				return nil, "modes 必须是 chat、responses、embedding、rerank、audio、video 或 image_generation"
 			}
 			seen[trimmed] = true
 			output = append(output, trimmed)

@@ -5,12 +5,15 @@ go 1.26.10
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.66.1
 	github.com/tidwall/gjson v1.20.1
 	golang.org/x/text v0.41.0
 )
+
+replace github.com/huanminabc/juhe-ai/backend-go-contracts => ../contracts
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

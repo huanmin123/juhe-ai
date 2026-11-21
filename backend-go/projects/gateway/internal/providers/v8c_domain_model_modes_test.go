@@ -6,8 +6,8 @@ import (
 )
 
 // v8-C 域模型选择器定向测试 + BUG-0324 回归（models 单表形态）：GET
-// /providers/models/options 的 `modes` 查询参数按目录 mode 词表（六值）白名单
-// 校验，非法值 400；命中时展开成 25 值 endpoint mode 集与
+// /providers/models/options 的 `modes` 查询参数按目录 mode 词表（七值）白名单
+// 校验，非法值 400；命中时展开成 27 值 endpoint mode 集与
 // supported_endpoint_modes_json 做 json 交集（单表后 builtin 与 custom 行共用
 // 同一词表与同一过滤，旧 customVocabularyModes 的 text/image 翻译层随双表退
 // 役）；响应行携带逆映射派生的六值 mode；缺省不过滤（既有调用方零破坏）。
@@ -137,7 +137,7 @@ func TestV8CModelOptionsDomainModes(t *testing.T) {
 
 	// 非法值 400，携带词表白名单报错文案。
 	code, bad := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?providerCode=gpt&modes=bogus", "")
-	if code != http.StatusBadRequest || bad["message"] != "modes 必须是 chat、responses、embedding、audio、video 或 image_generation" {
+	if code != http.StatusBadRequest || bad["message"] != "modes 必须是 chat、responses、embedding、rerank、audio、video 或 image_generation" {
 		t.Fatalf("modes=bogus: %d %v", code, bad)
 	}
 	code, bad = env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?providerCode=gpt&modes=chat%2Cbad", "")

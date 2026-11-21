@@ -115,7 +115,7 @@ func TestWdReadErrorsSurfaceAs500(t *testing.T) {
 func TestWdAiHealthPostgresOutcomeUnavailableSurfaces500(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		// 至少一个可见账户，j1OutcomesForAccounts 才会真正走到 PG 入口。
+		// 至少一个可见账户，j1OutcomesForAccountPage 才会真正走到 PG 入口。
 		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-pg', 'PGAccount', 'sys-user-1', 'openai', 'api_key', 'active')`,
 	)
 	// PG outcome 源在测试环境没有可达 PG：入口应在预算内失败并映射 500，

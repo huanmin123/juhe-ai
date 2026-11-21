@@ -34,10 +34,10 @@ export function useAccountRemovalActions(options: UseAccountRemovalActionsOption
     }
     try {
       if (options.isManagementView.value) {
-        await api.accounts.returnAuthorization(id, accountOperationScopeParams(account, options.accountScopeParams.value))
-      } else {
-        await api.myAccounts.returnAuthorization(id)
+        message.warning('管理视图不支持代归还授权账户，请在授权中心处理')
+        return
       }
+      await api.myAccounts.returnAuthorization(id)
       await removeLoadedRemovedAccount(id)
       message.success('授权账户已归还')
     } catch (error) {

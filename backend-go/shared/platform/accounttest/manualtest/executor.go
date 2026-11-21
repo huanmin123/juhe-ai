@@ -11,6 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // 手动账号测试执行器：Node worker 侧 runAccountTestQueueItem 诊断链的 Go 收口。
@@ -101,12 +102,21 @@ func (e *Executor) Execute(ctx context.Context, task accounttest.ManualTestTaskR
 	// 账户缺失都以消息收口），原 `view == nil` 兜底不可达，w12h 授权后删除。
 	limited := strings.EqualFold(strings.TrimSpace(task.Diagnostics), "limited")
 	reportProgress(report, view)
-	observation, poolAttempts, diagErr := e.probe.ManualDiagnostics(ctx, view, limited)
+	var observation *accountquality.ProbeObservation
+	var poolAttempts []accountprobe.PoolKeyAttempt
+	var diagErr error
+	if isConnectionTestTask(task) {
+		// 连接测试任务（model / test_endpoint_mode 均为 NULL）：只验证凭证与
+		// 上游可达性，不调用模型、不生成产物。
+		observation, poolAttempts, diagErr = e.probe.ManualConnectivityDiagnostics(ctx, view, limited)
+	} else {
+		observation, poolAttempts, diagErr = e.probe.ManualDiagnostics(ctx, view, limited)
+	}
 	if diagErr != nil {
-		// ManualDiagnostics 的错误面只有 ctx 取消（probeFixedKey /
-		// probePoolDetailed 的 ctx.Err() 出口）；attempt 错误一律分类为
-		// 失败观测，非取消错误分支不可达，w12h 授权后只保留取消归类。
-		return accounttest.ManualTestTaskExecutorResult{Canceled: true}, nil
+		// 连接测试在账户没有可用探测形态、草稿缺连接 preset 等配置错误上会
+		// 返回非 nil error；这类错误必须落失败结果，不能误标为“已取消”。
+		// 只有调用方上下文真正取消才走 cancel 语义。
+		return manualTestDiagFailureResult(ctx, diagErr), nil
 	}
 	if ctx.Err() != nil {
 		// Node：controller.signal.aborted → markAccountTestTaskCanceled。
@@ -120,6 +130,23 @@ func (e *Executor) Execute(ctx context.Context, task accounttest.ManualTestTaskR
 		Message:    result.Message,
 		ResultJSON: result.envelopeJSON,
 	}, nil
+}
+
+// manualTestDiagFailureResult 把诊断入口返回的错误归类为取消或配置/执行失败。
+// 诊断服务只有在调用方上下文取消时才返回 ctx 错误；其余错误（无可用连接
+// 测试形态、视图缺失等）都应以失败结果落库并保留原始文案。
+func manualTestDiagFailureResult(ctx context.Context, err error) accounttest.ManualTestTaskExecutorResult {
+	if ctx.Err() != nil {
+		return accounttest.ManualTestTaskExecutorResult{Canceled: true}
+	}
+	return accounttest.ManualTestTaskExecutorResult{Success: false, Message: err.Error()}
+}
+
+// isConnectionTestTask 判定任务是否为连接测试：网关创建连接测试任务时
+// model / test_endpoint_mode 均写 NULL，模型测试任务由 ManualTestSelection
+// 解析出非空值，二者互斥。
+func isConnectionTestTask(task accounttest.ManualTestTaskRecord) bool {
+	return strings.TrimSpace(task.Model) == "" && strings.TrimSpace(task.TestEndpointMode) == ""
 }
 
 // overlayRotatedCredentials 用保存账户行的实时 access/refresh token 覆盖草稿
@@ -239,6 +266,7 @@ type testResultEnvelope struct {
 	ProtocolCode              string            `json:"protocolCode,omitempty"`
 	ProtocolVersion           string            `json:"protocolVersion,omitempty"`
 	Type                      string            `json:"type"`
+	TestKind                  string            `json:"testKind,omitempty"`
 	TraceID                   string            `json:"traceId,omitempty"`
 	Success                   bool              `json:"success"`
 	StatusCode                *int              `json:"statusCode,omitempty"`
@@ -263,6 +291,15 @@ type builtResult struct {
 // buildResult 组装结果信封并序列化（Node complete/fail 的 result_json）。
 func (e *Executor) buildResult(task accounttest.ManualTestTaskRecord, view *accountprobe.View, observation *accountquality.ProbeObservation, poolAttempts []accountprobe.PoolKeyAttempt, startedAt time.Time) builtResult {
 	result := observation.Result
+	connectionTest := isConnectionTestTask(task)
+	testKind := capabilitydomain.TestKindModel
+	model := view.HealthCheckModel
+	if connectionTest {
+		testKind = capabilitydomain.TestKindConnection
+		// 连接测试不使用模型；视图里的 HealthCheckModel 只是账户落库的
+		// 检查模型（媒体域由写入口派生），不写进结果信封避免误导。
+		model = ""
+	}
 	envelope := &testResultEnvelope{
 		AccountID:                 view.AccountID,
 		AccountName:               view.AccountName,
@@ -271,12 +308,13 @@ func (e *Executor) buildResult(task accounttest.ManualTestTaskRecord, view *acco
 		ProtocolCode:              view.ProtocolCode,
 		ProtocolVersion:           view.ProtocolVersion,
 		Type:                      view.Type,
+		TestKind:                  testKind,
 		TraceID:                   result.TraceID,
 		Success:                   result.Success,
 		StatusCode:                result.StatusCode,
 		ErrorCode:                 result.ErrorCode,
 		Message:                   result.Message,
-		Model:                     view.HealthCheckModel,
+		Model:                     model,
 		TestEndpointMode:          strings.TrimSpace(task.TestEndpointMode),
 		ResponseHeaders:           result.ResponseHeaders,
 		ResponseText:              result.ResponseBodyText,

@@ -19,7 +19,9 @@ func TestOpenAIEndpointModeValuesIncludeImages(t *testing.T) {
 	// /v1/audio/jobs 创建链，契约 §10.2）。
 	// M5b realtime：realtime_session 同语义追加（GET /v1/realtime WS 升级
 	// 请求的候选过滤消费面随 M5b2 WS 桥接 handler 生效，Realtime 设计 §6）。
-	want := []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
+	// 2026-11-20 协议补齐批：embeddings_json 同语义追加（POST /v1/embeddings
+	// 候选过滤消费面，OpenAI Embeddings 规范面）。
+	want := []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session", "embeddings_json"}
 	if len(OpenAIEndpointModeValues) != len(want) {
 		t.Fatalf("openai 模式表长度不一致：%v", OpenAIEndpointModeValues)
 	}

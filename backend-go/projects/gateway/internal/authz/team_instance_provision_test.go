@@ -77,8 +77,10 @@ func TestTeamAccountGrantProvisionsEveryActiveMemberInstance(t *testing.T) {
 	}
 }
 
-// TestTeamMemberCascadeProvisionsLaterMemberInstance 新加入成员经级联获得实例；
-// 缺默认分组成员的级联失败并回滚整个团队操作事务。
+// TestTeamMemberCascadeProvisionsLaterMemberInstance pins the recipient-consent
+// cascade: a newly joined member receives a pending team source only; the
+// instance appears when that member accepts. Missing default groups no longer
+// fail the membership write (binding is the receiver's later, explicit step).
 func TestTeamMemberCascadeProvisionsLaterMemberInstance(t *testing.T) {
 	f := teamInstanceFixture(t)
 	f.seedTeamWithMember(t, "team_1", "member1")
@@ -91,9 +93,8 @@ func TestTeamMemberCascadeProvisionsLaterMemberInstance(t *testing.T) {
 	}
 	f.provisionInstanceByAuthorization(t, "acc-src", "member1") // member1 实例已就位
 
-	// 后加入成员 member2（fixture 已建账号，此处只补默认分组）：级联补运行时
-	// 行 + 实例克隆。
-	f.seedGranteeGroup(t, "grp-m2", "member2", "gpt", 1, 1)
+	// 后加入成员 member2：级联只创建 pending 成员来源，不建实例/绑定。
+	f.seedTeamWithMember(t, "team_1", "member2")
 	ctx := context.Background()
 	now := f.now.UTC().Format(time.RFC3339Nano)
 	tx, err := f.db.BeginTx(ctx, nil)
@@ -107,45 +108,64 @@ func TestTeamMemberCascadeProvisionsLaterMemberInstance(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	var runtimeStatus, sourceID string
+	if err := f.db.QueryRow(`SELECT ra.status, s.id FROM resource_authorizations ra
+		JOIN resource_authorization_sources s ON s.authorization_id = ra.id
+		WHERE ra.resource_id = 'acc-src' AND ra.grantee_system_account_id = 'member2'
+		  AND s.status = 'pending'`).Scan(&runtimeStatus, &sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeStatus != StatusPending {
+		t.Fatalf("later member runtime = %s, want pending", runtimeStatus)
+	}
+	var instanceCount int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts
+		WHERE authorization_instance_source_account_id = 'acc-src' AND system_account_id = 'member2'`).Scan(&instanceCount); err != nil {
+		t.Fatal(err)
+	}
+	if instanceCount != 0 {
+		t.Fatalf("pending member offer must not create an instance: %d", instanceCount)
+	}
+
+	// 成员接受后才创建实例；默认分组不是接受前置条件。
+	if _, err := f.acceptSourceForTest(t, "member2", sourceID); err != nil {
+		t.Fatal(err)
+	}
 	row := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
 	if row.systemAccountID != "member2" {
 		t.Fatalf("later member instance: %+v", row)
 	}
-	if groupID, enabled := f.provisionBinding(t, row.id, "acc-src", "member2"); groupID != "grp-m2" || enabled != 1 {
-		t.Fatalf("later member binding = %q %d", groupID, enabled)
-	}
 
-	// 缺默认分组的成员：级联失败并指明成员，事务回滚后无任何残留。
+	// 缺默认分组的 member3：级联仍为其创建待确认来源，不因绑定缺失回滚。
 	f.seedAccount(t, "member3", "active")
 	f.seedTeamWithMember(t, "team_1", "member3")
 	tx, err = f.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cascadeErr := f.store.ApplyActiveTeamGrantsToMembersTx(ctx, tx, "team_1", []string{"member3"}, "owner", now)
-	if err := tx.Rollback(); err != nil {
+	if err := f.store.ApplyActiveTeamGrantsToMembersTx(ctx, tx, "team_1", []string{"member3"}, "owner", now); err != nil {
+		tx.Rollback()
 		t.Fatal(err)
 	}
-	fail, ok := cascadeErr.(*Fail)
-	if !ok || fail.Message != "团队成员 member3 缺少该供应商的默认分组，无法完成团队授权" {
-		t.Fatalf("cascade without default group = %v, want member-identifying Fail", cascadeErr)
-	}
-	var runtimeCount, instanceCount int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorizations
-		WHERE resource_id = 'acc-src' AND grantee_system_account_id = 'member3'`).Scan(&runtimeCount); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts
-		WHERE authorization_instance_source_account_id = 'acc-src' AND system_account_id = 'member3'`).Scan(&instanceCount); err != nil {
+	var member3Source string
+	if err := f.db.QueryRow(`SELECT s.id FROM resource_authorization_sources s
+		JOIN resource_authorizations ra ON ra.id = s.authorization_id
+		WHERE ra.resource_id = 'acc-src' AND ra.grantee_system_account_id = 'member3'
+		  AND s.status = 'pending'`).Scan(&member3Source); err != nil {
 		t.Fatal(err)
 	}
-	if runtimeCount != 0 || instanceCount != 0 {
-		t.Fatalf("failed cascade must roll back: runtimes=%d instances=%d", runtimeCount, instanceCount)
+	if _, err := f.acceptSourceForTest(t, "member3", member3Source); err != nil {
+		t.Fatalf("member3 accept without default group: %v", err)
 	}
+	f.provisionInstanceByAuthorization(t, "acc-src", "member3")
 }
 
-// TestTeamReactivateRestoresInstanceCoverageIdempotently 团队停用（回收来源）
-// 后重新启用：级联恢复成员运行时授权与实例覆盖；实例已存在时不重复创建。
+// TestTeamReactivateRestoresInstanceCoverageIdempotently pins the consent
+// boundary: re-enabling a disabled team does not resurrect revoked member
+// sources. Reactivate is a no-op; a new offer must be sent and approved.
 func TestTeamReactivateRestoresInstanceCoverageIdempotently(t *testing.T) {
 	f := teamInstanceFixture(t)
 	f.seedTeamWithMember(t, "team_1", "member1")
@@ -158,24 +178,25 @@ func TestTeamReactivateRestoresInstanceCoverageIdempotently(t *testing.T) {
 	}, "owner"); err != nil {
 		t.Fatal(err)
 	}
-	first1 := f.provisionInstanceByAuthorization(t, "acc-src", "member1")
-	first2 := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
+	f.provisionInstanceByAuthorization(t, "acc-src", "member1")
+	f.provisionInstanceByAuthorization(t, "acc-src", "member2")
 
 	// 团队停用级联：成员运行时授权转回收，实例行保持原状（生产停用只回收来源）。
 	if err := f.store.RevokeAllTeamSources(context.Background(), "team_1", "owner", "team_disabled"); err != nil {
 		t.Fatal(err)
 	}
-	var runtimeStatus string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations
-		WHERE resource_id = 'acc-src' AND grantee_system_account_id = 'member1'`).Scan(&runtimeStatus); err != nil {
-		t.Fatal(err)
-	}
-	if runtimeStatus != StatusRevoked {
-		t.Fatalf("disabled team runtime = %s", runtimeStatus)
+	for _, member := range []string{"member1", "member2"} {
+		var runtimeStatus string
+		if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations
+			WHERE resource_id = 'acc-src' AND grantee_system_account_id = ?`), member).Scan(&runtimeStatus); err != nil {
+			t.Fatal(err)
+		}
+		if runtimeStatus != StatusRevoked {
+			t.Fatalf("disabled team runtime for %s = %s", member, runtimeStatus)
+		}
 	}
 
-	// 团队重新启用：ReactivateTeamGrantsTx 恢复成员授权并补齐实例；实例已存在
-	// → 幂等复用，不新建行。
+	// 团队重新启用：Reactivate 是 no-op，旧同意不得复活。
 	ctx := context.Background()
 	now := f.now.UTC().Format(time.RFC3339Nano)
 	tx, err := f.db.BeginTx(ctx, nil)
@@ -195,32 +216,30 @@ func TestTeamReactivateRestoresInstanceCoverageIdempotently(t *testing.T) {
 			WHERE resource_id = 'acc-src' AND grantee_system_account_id = ?`), member).Scan(&runtimeStatus); err != nil {
 			t.Fatal(err)
 		}
-		if runtimeStatus != StatusActive {
-			t.Fatalf("member %s runtime after reactivate = %s", member, runtimeStatus)
+		if runtimeStatus != StatusRevoked {
+			t.Fatalf("member %s runtime after no-op reactivate = %s", member, runtimeStatus)
 		}
 	}
-	restored1 := f.provisionInstanceByAuthorization(t, "acc-src", "member1")
-	restored2 := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
-	if restored1.id != first1.id || restored2.id != first2.id {
-		t.Fatalf("reactivate must reuse live instances: %q→%q %q→%q", first1.id, restored1.id, first2.id, restored2.id)
-	}
-	var totalInstances int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts
-		WHERE authorization_instance_source_account_id = 'acc-src'`).Scan(&totalInstances); err != nil {
+
+	// 重新启用必须重新发起 offer：新 offer 进入 pending_team_approval，且不
+	// 自动创建任何成员来源/实例。
+	offer, err := f.store.CreateOffer(ctx, OfferInput{
+		ResourceType: "account", ResourceID: "acc-src",
+		GranteeType: "team", TeamName: "Team team_1",
+	}, "owner", false, "owner")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if totalInstances != 2 {
-		t.Fatalf("reactivate duplicated instances: %d", totalInstances)
+	if offer.Status != StatusPendingTeamApproval {
+		t.Fatalf("re-enable offer status = %s, want pending_team_approval", offer.Status)
 	}
-	for _, member := range []string{"member1", "member2"} {
-		row := f.provisionInstanceByAuthorization(t, "acc-src", member)
-		wantGroup := "grp-m1"
-		if member == "member2" {
-			wantGroup = "grp-m2"
-		}
-		if groupID, enabled := f.provisionBinding(t, row.id, "acc-src", member); groupID != wantGroup || enabled != 1 {
-			t.Fatalf("member %s binding after reactivate = %q %d", member, groupID, enabled)
-		}
+	var pendingSources int
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM resource_authorization_sources
+		WHERE grant_id = ? AND status = 'pending'`), offer.GrantID).Scan(&pendingSources); err != nil {
+		t.Fatal(err)
+	}
+	if pendingSources != 0 {
+		t.Fatalf("team offer before approval must have no member sources: %d", pendingSources)
 	}
 }
 
@@ -363,7 +382,7 @@ func TestTeamMemberJoinCascadeSyncsQuotaHourlyBindings(t *testing.T) {
 		t.Fatalf("创建后 member1 团队额度绑定应存在")
 	}
 
-	// 新成员加入：级联在同一事务内补 runtime + 实例 + quota 绑定。
+	// 新成员加入：级联只创建 pending 来源；成员接受后才创建实例与 quota 绑定。
 	f.seedTeamWithMember(t, "team_1", "member2")
 	f.seedGranteeGroup(t, "grp-m2", "member2", "gpt", 1, 1)
 	ctx := context.Background()
@@ -379,9 +398,27 @@ func TestTeamMemberJoinCascadeSyncsQuotaHourlyBindings(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	var sourceID string
+	if err := f.db.QueryRow(`SELECT s.id FROM resource_authorization_sources s
+		JOIN resource_authorizations ra ON ra.id = s.authorization_id
+		WHERE ra.resource_id = 'acc-src' AND ra.grantee_system_account_id = 'member2'
+		  AND s.status = 'pending'`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	var pendingInstances int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts
+		WHERE authorization_instance_source_account_id = 'acc-src' AND system_account_id = 'member2'`).Scan(&pendingInstances); err != nil {
+		t.Fatal(err)
+	}
+	if pendingInstances != 0 {
+		t.Fatalf("pending cascade must not create an instance: %d", pendingInstances)
+	}
+	if _, err := f.acceptSourceForTest(t, "member2", sourceID); err != nil {
+		t.Fatal(err)
+	}
 	row2 := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
 	if countTeamBinding(row2.id) != 1 {
-		t.Fatalf("member2 加入后团队额度绑定应立即可见")
+		t.Fatalf("member2 接受后团队额度绑定应立即可见")
 	}
 }
 

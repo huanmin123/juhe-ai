@@ -65,11 +65,12 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		// 词表交集为空的矩阵外组合（矩阵内行 + 类型/词表收窄）。
 		{name: "qwen audio 无 audio_speech", domain: "audio", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}},
 
-		// 矩阵内组合。v8-A 对话域纯粹化：chat 域允许集 = 13 值锚集 ∩ 词表
-		// （openai 族 api_key 恰为 chat×2+responses×2）；images_json /
+		// 矩阵内组合。v8-A 对话域纯粹化：chat 域允许集 = 15 值锚集 ∩ 词表
+		// （openai 族 api_key 为 chat×2+responses×2+embeddings；2026-11-20
+		// 协议补齐批把 embeddings_json/rerank_json 纳入对话锚集）；images_json /
 		// audio_transcription_json / realtime_session 移出对话域。
-		{name: "gpt chat 恰为对话两对（v8-A）", domain: "chat", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "gpt chat 恰为对话两对 + embeddings（v8-A + 协议补齐）", domain: "chat", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "embeddings_json"}},
 		{name: "gpt audio 含 v8-A 新移入两项", domain: "audio", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
 			want: []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "audio_transcription_json", "realtime_session"}},
 		{name: "gpt oauth chat 只剩 responses 对", domain: "chat", providerCode: "gpt", accountType: "oauth", profile: gptOpenAI,
@@ -78,14 +79,16 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
 		{name: "anthropic chat", domain: "chat", providerCode: "anthropic", accountType: "api_key", profile: anthropicV1,
 			want: []string{"messages_json", "messages_sse", "message_token_counting"}},
-		{name: "deepseek openai chat 矩阵内（v8-A 收敛对话两对）", domain: "chat", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "deepseek openai chat 矩阵内（v8-A 收敛对话两对 + embeddings）", domain: "chat", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "embeddings_json"}},
 		{name: "xai video 矩阵内", domain: "video", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
-		{name: "xai chat 矩阵内（v8-A 收敛对话两对）", domain: "chat", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
-		{name: "gemini openai-chat chat 矩阵内（v8-A 收敛对话两对）", domain: "chat", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "xai chat 矩阵内（v8-A 收敛对话两对 + embeddings）", domain: "chat", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "embeddings_json"}},
+		{name: "gemini openai-chat chat 矩阵内（仅 Chat 对，向量走 native embed_content）", domain: "chat", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat,
+			want: []string{"chat_json", "chat_sse"}},
+		{name: "qwen chat 含向量/重排", domain: "chat", providerCode: "qwen", accountType: "api_key", profile: qwen,
+			want: []string{"chat_json", "chat_sse", "embeddings_json", "rerank_json"}},
 		{name: "glm chat 对（v8-A STT 透传移出对话域）", domain: "chat", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
 			want: []string{"chat_json", "chat_sse"}},
 		{name: "glm video", domain: "video", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,

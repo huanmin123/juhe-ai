@@ -1219,7 +1219,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 	}
 	if authorized {
 		item.AccessType = "authorized"
-		item.Permissions = authorizedPermissions(nullPtrString(row.authorizationEffectiveSourceType))
+		item.Permissions = authorizedPermissions(nullPtrString(row.authorizationEffectiveSourceType), !access.IsAdmin)
 		// 后台自动探测跟随来源账户（总开关设计 §2）：来源 join 未命中时保留
 		// 实例行自身值（传播链保持两者一致）。
 		if row.sourceBackgroundProbeEnabled.Valid {

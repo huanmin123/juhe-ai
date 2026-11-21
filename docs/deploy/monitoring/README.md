@@ -179,7 +179,7 @@ scrape_configs:
 | 行 | 面板 | 依赖 |
 | --- | --- | --- |
 | 概览 | 抓取目标 up、进程运行时长 | `up`、`process_start_time_seconds` |
-| 网关流量 | 请求速率 by `route_group` × `status_class`、5xx 占比、时延 P95、在途请求、上游失败速率、首字延迟 P95 | gateway 的 `juhe_ai_http_*` / `juhe_ai_gateway_*`；选中 jobs 时该行为空属正常 |
+| 网关流量 | 请求速率 by `route_group` × `status_class`、5xx 占比、在途请求、上游失败速率、首字延迟 P95 | gateway 的 `juhe_ai_http_*` / `juhe_ai_gateway_*`；选中 jobs 时该行为空属正常 |
 | Go Runtime 与主业务池 | goroutines、堆分配、RSS、CPU、GC 暂停、文件描述符、OS 线程、PG 池连接数/等待 | `go_*`、`process_*`、`juhe_ai_gateway_db_pool_*`；池族只在 gateway |
 | 后台任务 | 任务运行速率、失败率、耗时 P95、停滞时长 | `juhe_ai_jobs_task_*`；只在选中 jobs 时有数据 |
 | 存储 | 库容量、表容量 Top 10、表行数 Top 10 | postgres_exporter 的 `juhe_postgres_*` |

@@ -59,6 +59,8 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'streamGenerateContent (SSE)', value: 'generate_content_sse' },
   { label: 'countTokens', value: 'count_tokens' },
   { label: 'embedContent', value: 'embed_content' },
+  { label: 'Embeddings API', value: 'embeddings_json' },
+  { label: 'Rerank API', value: 'rerank_json' },
   { label: 'Interactions API (JSON)', value: 'interactions_json' },
   { label: 'Interactions API (SSE)', value: 'interactions_sse' }
 ]
@@ -209,6 +211,10 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
       return 'countTokens'
     case 'embed_content':
       return 'embedContent'
+    case 'embeddings_json':
+      return 'Embeddings API'
+    case 'rerank_json':
+      return 'Rerank API'
     case 'interactions_json':
       return 'Interactions API (JSON)'
     case 'interactions_sse':
@@ -265,6 +271,9 @@ export function accountTestEndpointModesForModel(
   return [...new Set(output)]
 }
 
+// testEndpointModeProtocol 只覆盖人工测试框架已实现的对话/图像请求形态。
+// embeddings_json / rerank_json 暂无手工测试请求模板（后端
+// AccountTestEndpointModeOrder 同样不产出），不在映射层伪造可测性。
 function testEndpointModeProtocol(mode: AccountSupportedEndpointMode): string {
   if (mode === 'chat_json' || mode === 'chat_sse') return 'chat_completions'
   if (mode === 'responses_json' || mode === 'responses_sse') return 'responses'

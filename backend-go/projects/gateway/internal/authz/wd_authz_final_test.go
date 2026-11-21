@@ -10,30 +10,18 @@ import (
 	"testing"
 )
 
-func TestWdListParserIntegerContract(t *testing.T) {
+func TestWdListIgnoresRetiredPagination(t *testing.T) {
+	// The recipient-consent list surface returns the full scoped offer set;
+	// page/pageSize/keyword were retired with the old grant list contract.
 	f := newFixture(t)
 	deps := &Deps{Store: f.store}
 	auth := wdAuthCtx("admin", "admin")
-	cases := []struct {
-		name    string
-		query   string
-		message string
-	}{
-		{"page 非数字", "/?page=abc", ""},
-		{"page 小数", "/?page=1.5", ""},
-		{"page 空值", "/?page=", "页码必须大于 0"},
-		{"page 为零", "/?page=0", "页码必须大于 0"},
-		{"pageSize 非数字", "/?pageSize=abc", ""},
-		{"pageSize 超上限", "/?pageSize=501", "每页最多 500 条"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			deps.list(recorder, wdGetReq(t, http.MethodGet, tc.query, auth), false)
-			if tc.message != "" && (recorder.Code != http.StatusBadRequest || decodeWd(recorder) != tc.message) || (tc.message == "" && recorder.Code != http.StatusBadRequest) {
-				t.Fatalf("%s 应 400/%s: %d %s", tc.name, tc.message, recorder.Code, recorder.Body.String())
-			}
-		})
+	for _, query := range []string{"/?page=abc", "/?page=0", "/?pageSize=501", "/?pageSize=oops"} {
+		recorder := httptest.NewRecorder()
+		deps.list(recorder, wdGetReq(t, http.MethodGet, query, auth), false)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s 应忽略分页参数并返回 200: %d %s", query, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

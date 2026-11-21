@@ -3,6 +3,7 @@ import { announcementsApi } from './domains/announcements'
 import { apiKeysApi, myApiKeysApi } from './domains/apiKeys'
 import { authApi } from './domains/auth'
 import { authorizationsApi, myAuthorizationsApi } from './domains/authorizations'
+import { adminAuthorizationCenterApi, myAuthorizationCenterApi } from './domains/authorizationGovernance'
 import { authorizationOptionsApi, myAuthorizationOptionsApi } from './domains/authorizationOptions'
 import { externalIntegrationSourcesApi } from './domains/externalIntegrationSources'
 import { groupsApi, myGroupsApi } from './domains/groups'
@@ -45,6 +46,8 @@ export const api = {
   myTeams: myTeamsApi,
   authorizations: authorizationsApi,
   myAuthorizations: myAuthorizationsApi,
+  authorizationCenter: adminAuthorizationCenterApi,
+  myAuthorizationCenter: myAuthorizationCenterApi,
   apiKeys: apiKeysApi,
   myApiKeys: myApiKeysApi,
   routeStrategies: routeStrategiesApi,

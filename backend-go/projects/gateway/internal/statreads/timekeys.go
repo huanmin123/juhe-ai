@@ -266,15 +266,23 @@ func hourBucketsForRange(r Range) []string {
 }
 
 // hourBucketsUntilNow mirrors hourBucketsUntilNow: the last `hours` local hour
-// buckets ending at the current hour.
+// buckets ending at the current hour. A DST fall-back repeats a local hour;
+// the display bucket is keyed by local hour, so duplicates are collapsed and
+// the same hourly row is never counted twice.
 func hourBucketsUntilNow(hours int, now time.Time, location *time.Location) []string {
 	size := hours
 	if size < 1 {
 		size = 1
 	}
 	buckets := make([]string, 0, size)
+	seen := make(map[string]bool, size)
 	for index := 0; index < size; index++ {
-		buckets = append(buckets, hourKeyIn(now.Add(time.Duration(-(size-1-index))*time.Hour), location))
+		key := hourKeyIn(now.Add(time.Duration(-(size-1-index))*time.Hour), location)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		buckets = append(buckets, key)
 	}
 	return buckets
 }

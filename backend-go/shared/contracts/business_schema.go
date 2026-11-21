@@ -106,10 +106,14 @@ type BusinessForeignKeySpec struct {
 // （《非对话媒体统一计费设计》§5.1）：
 // models.media_pricing_json text（NULL/空 = 继续 legacy 维度；非空为
 // version/unit/baseUsd/baseTier/tierMultipliers 严格 JSON 对象）。
-const BusinessSchemaVersion = "business-postgres-gateway-v25"
+// v26 (business-postgres-gateway-v26) 对齐授权治理 revision 28：
+// system_accounts 用户名单一性改为按 deleted_at IS NULL 的部分唯一索引
+// idx_system_accounts_username_active_unique_lower，允许逻辑删除后复用
+// 用户名；旧的全局 lower(username) 唯一索引不再存在。
+const BusinessSchemaVersion = "business-postgres-gateway-v26"
 
 var BusinessSchema = map[string]BusinessTableSpec{
-	"system_accounts":              {Columns: []string{"id", "username", "display_name", "status", "role", "must_change_password", "password_hash", "expedited_account_limit", "last_login_at", "updated_at"}, Indexes: []string{"idx_system_accounts_username_unique_lower", "idx_system_accounts_display_name_unique_lower"}, IndexDefinitions: []BusinessIndexDefinition{{Name: "idx_system_accounts_username_unique_lower", Columns: []string{"lower(username)"}, Unique: true}, {Name: "idx_system_accounts_display_name_unique_lower", Columns: []string{"lower(display_name)"}, Unique: true}}},
+	"system_accounts":              {Columns: []string{"id", "username", "display_name", "status", "role", "must_change_password", "password_hash", "expedited_account_limit", "last_login_at", "deleted_at", "updated_at"}, Indexes: []string{"idx_system_accounts_username_active_unique_lower", "idx_system_accounts_display_name_unique_lower"}, IndexDefinitions: []BusinessIndexDefinition{{Name: "idx_system_accounts_username_active_unique_lower", Columns: []string{"lower(username)"}, Unique: true, Predicate: "deleted_at IS NULL"}, {Name: "idx_system_accounts_display_name_unique_lower", Columns: []string{"lower(display_name)"}, Unique: true}}},
 	"system_sessions":              {Columns: []string{"id", "system_account_id", "token_hash", "expires_at", "created_at", "last_seen_at"}, UniqueConstraints: [][]string{{"token_hash"}}, Indexes: []string{"idx_system_sessions_expires_at"}, ForeignKeys: []BusinessForeignKeySpec{{Columns: []string{"system_account_id"}, RefTable: "system_accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}}},
 	"system_settings":              {Columns: []string{"system_account_id", "key", "value_json", "updated_at"}, PrimaryKey: []string{"system_account_id", "key"}, ForeignKeys: []BusinessForeignKeySpec{{Columns: []string{"system_account_id"}, RefTable: "system_accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}}},
 	"vendors":                      {Columns: []string{"id", "code", "name", "description", "enabled", "default_supported_models_json", "created_at", "updated_at"}, UniqueConstraints: [][]string{{"code"}}},

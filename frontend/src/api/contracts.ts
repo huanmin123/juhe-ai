@@ -234,14 +234,18 @@ export interface AccountDraftTestAccountPayload {
   // （prepareAccountDraftTestSnapshot）改由 vendor 语义推导协议上下文，
   // 该键仅为滚动期旧部署的接受但忽略入参保留可选形状。
   providerProtocolProfileId?: string
+  /** 连接测试规格查找所用连接 preset；连接测试草稿必填，模型测试草稿可省略。 */
+  connectionPresetCode?: string
   name: string
   type: string
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
-  healthCheckModel: string
-  healthCheckEndpointMode: import('@/types/domain').AccountHealthCheckEndpointMode
+  /** 连接测试草稿可省略；模型测试草稿必填。 */
+  healthCheckModel?: string
+  /** 连接测试草稿可省略；模型测试草稿必填。 */
+  healthCheckEndpointMode?: import('@/types/domain').AccountHealthCheckEndpointMode
   modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'video_generation' | 'tts'; enabled: boolean }>
   proxyProfileId?: string | null
   proxyPoolId?: string | null

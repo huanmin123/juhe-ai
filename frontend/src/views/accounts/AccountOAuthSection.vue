@@ -198,9 +198,12 @@
           </template>
         </a-select>
       </div>
+      <div v-if="modelsSettled && !modelsLoading && modelOptions.length === 0" class="supported-models-empty-hint">
+        该供应商在此域暂无可用目录模型
+      </div>
     </a-form-item>
     <AccountHealthCheckModelField
-      v-if="renderModelFields"
+      v-if="renderModelFields && !connectionTest"
       :editing="editing"
       :form="form"
       :model-options="modelOptions"
@@ -218,7 +221,7 @@ import { api } from '@/api/client'
 import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
 import { isXaiProviderCode } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
-import { capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { capabilityDomainIsMedia, accountUsesConnectionTest, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountNameField from './AccountNameField.vue'
@@ -239,6 +242,8 @@ const props = withDefaults(defineProps<{
   modelOptions: AccountModelSelectOption[]
   modelSyncing?: boolean
   modelsLoading: boolean
+  /** 模型候选已完成一次取数（加载成功或失败）；用于域内空目录提示。 */
+  modelsSettled?: boolean
   /** 最近一次浏览取数命中 50 条窗口时在下拉面板底部提示可搜索。 */
   modelsTruncated?: boolean
   profileDefaultEndpointModes: AccountSupportedEndpointMode[]
@@ -249,13 +254,15 @@ const props = withDefaults(defineProps<{
   capabilityDomain: 'chat'
 })
 
-// 媒体域（video/audio/image）经 AccountMediaForm 复用本组件。支持模型/检查模型
+// 媒体域（video/audio/image）经统一向导复用本组件。支持模型/检查模型
 // 仅在「chat 域托管四家（gpt/anthropic/gemini/xai）OAuth 创建态 + 后端会派生模型
 // 的授权形态」隐藏——托管派生只存在于 code/refresh_token/sso 三形态（oauthmgmt
 // CreateOAuthAccount）；access_token 直录走普通 create 端点，后端对空支持模型硬
 // 拒绝，必须渲染两字段让用户必填。编辑态、媒体域创建态与非托管供应商创建态照旧
 // 渲染且必填。
 const mediaDomain = computed(() => capabilityDomainIsMedia(props.capabilityDomain))
+const connectionTest = computed(() =>
+  accountUsesConnectionTest(props.capabilityDomain, props.form.supportedEndpointModes))
 const managedOAuthDefaultsAllowed = computed(() => (
   !mediaDomain.value
   && ['oauth', 'google_oauth'].includes(props.form.type)
@@ -429,6 +436,13 @@ defineEmits<{
 .supported-models-control :deep(.ant-select) {
   flex: 1;
   min-width: 0;
+}
+
+.supported-models-empty-hint {
+  margin-top: 6px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .supported-models-refresh-button {

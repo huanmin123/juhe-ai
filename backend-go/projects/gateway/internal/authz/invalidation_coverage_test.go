@@ -130,9 +130,10 @@ func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 	}
 	assertOneFanout(t, stats, bus, 1, 3, invalidationReasonRevoked)
 
-	// ReactivateTeamGrants: from the revoked runtime state left by the member
-	// removal, the committed re-expansion upserts the member runtime row back
-	// to active from the active team grant and fires the updated fan-out.
+	// ReactivateTeamGrants is an intentional no-op under recipient consent: a
+	// disabled team cannot resurrect old member consents. Re-enabling must go
+	// through a new offer / member acceptance, so no fan-out fires and the
+	// revoked runtime stays revoked.
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
 		resource_owner_system_account_id, grantee_type, grantee_team_id, status, created_by, created_at, updated_at)
 		VALUES ('rauthgrant_t1', 'group', 'grp_1', 'owner', 'team', 'team_1', 'active', 'owner', ?, ?)`), 		now, now); err != nil {
@@ -141,9 +142,9 @@ func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 	if err := f.store.ReactivateTeamGrants(context.Background(), "team_1", "owner"); err != nil {
 		t.Fatal(err)
 	}
-	assertOneFanout(t, stats, bus, 2, 6, invalidationReasonUpdated)
+	assertNoFanout(t, stats, bus, 2, 6)
 	var reactivated string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations WHERE id = 'rauth_m'`).Scan(&reactivated); err != nil || reactivated != StatusActive {
-		t.Fatalf("runtime status after reactivate = %q, %v", reactivated, err)
+	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations WHERE id = 'rauth_m'`).Scan(&reactivated); err != nil || reactivated != StatusRevoked {
+		t.Fatalf("runtime status after no-op reactivate = %q, %v", reactivated, err)
 	}
 }

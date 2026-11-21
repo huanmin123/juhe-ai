@@ -27,7 +27,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <RowActions v-if="canManageSystemAccounts" :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
+          <RowActions v-if="canViewSystemAccountActions" :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -55,7 +55,7 @@
               <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
-          <div v-if="canManageSystemAccounts" class="mobile-list-card-actions">
+          <div v-if="canViewSystemAccountActions" class="mobile-list-card-actions">
             <RowActions variant="button" :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
           </div>
         </article>
@@ -129,6 +129,37 @@
         <a-alert type="info" show-icon :message="resetPasswordHint" />
       </a-form>
     </a-modal>
+
+    <a-modal v-model:open="suspensionOpen" title="授权发起状态" :footer="null" width="520px">
+      <a-spin :spinning="suspensionLoading">
+        <template v-if="suspensionTarget">
+          <a-descriptions :column="1" bordered size="small">
+            <a-descriptions-item label="系统账户">{{ suspensionTarget.username }}</a-descriptions-item>
+            <a-descriptions-item label="当前状态">
+              <a-tag :color="suspension?.suspended ? 'red' : 'green'">{{ suspension?.suspended ? '已暂停发起授权' : '可正常发起授权' }}</a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item v-if="suspension?.suspended" label="暂停时间">{{ formatDateTimeToSeconds(suspension.suspendedAt) }}</a-descriptions-item>
+            <a-descriptions-item v-if="suspension?.reason" label="原因">{{ suspension.reason }}</a-descriptions-item>
+          </a-descriptions>
+          <a-alert
+            type="warning"
+            show-icon
+            style="margin-top: 12px"
+            message="暂停后，该账户不能创建、延长、恢复或重新邀请授权，也不能确认管理员代建 offer；仍可缩短、暂停和回收已有授权。"
+          />
+          <a-form v-if="!suspension?.suspended" layout="vertical" style="margin-top: 12px">
+            <a-form-item label="暂停原因（可选，写入审计）">
+              <a-textarea v-model:value="suspensionReason" :rows="2" placeholder="例如：批量向不同用户发起授权，疑似滥用" />
+            </a-form-item>
+          </a-form>
+          <a-space style="margin-top: 16px">
+            <a-button v-if="!suspension?.suspended" danger :loading="suspensionLoading" @click="suspendAuthorization">暂停发起授权</a-button>
+            <a-button v-else type="primary" :loading="suspensionLoading" @click="unsuspendAuthorization">解除暂停</a-button>
+            <a-button @click="suspensionOpen = false">关闭</a-button>
+          </a-space>
+        </template>
+      </a-spin>
+    </a-modal>
   </a-card>
 </template>
 
@@ -138,6 +169,7 @@ import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import type { AuthorizationSuspensionStatus } from '@/api/domains/systemAccounts'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
@@ -169,6 +201,11 @@ const systemAccountSaving = submittingRef('system_accounts.save')
 const resetPasswordSaving = submittingRef('system_accounts.reset_password')
 const modalOpen = ref(false)
 const passwordModalOpen = ref(false)
+const suspensionOpen = ref(false)
+const suspensionLoading = ref(false)
+const suspensionTarget = ref<SystemAccountListItem>()
+const suspension = ref<AuthorizationSuspensionStatus>()
+const suspensionReason = ref('')
 const editingId = ref<string>()
 const editingVersion = ref<string>()
 const editingBaseline = ref<SystemAccountEditableValues>()
@@ -178,6 +215,10 @@ const resettingAccountRole = ref<SystemAccountRole>()
 const resetPassword = ref('')
 const keyword = ref(initialPageState.keyword)
 const canManageSystemAccounts = computed(() => isSuperAdminRole(authState.currentUser.value?.role))
+// 授权发起暂停属于授权治理，后端对 admin 与 super_admin 开放；
+// 系统账户的新增/编辑/重置密码仍仅 super_admin。
+const canGovernAuthorization = computed(() => isAdminRole(authState.currentUser.value?.role))
+const canViewSystemAccountActions = computed(() => canManageSystemAccounts.value || canGovernAuthorization.value)
 const whitespacePattern = /\s/
 
 const form = reactive({
@@ -228,14 +269,23 @@ const baseColumns = [
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 }
 ]
 
-const columns = computed(() => canManageSystemAccounts.value
+const columns = computed(() => canViewSystemAccountActions.value
   ? [...baseColumns, { title: '操作', key: 'actions', fixed: 'right' }]
   : baseColumns)
 
-const systemAccountActions: RowActionItem[] = [
-  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-  { key: 'reset-password', label: '重置密码', icon: 'password', tone: 'warning' }
-]
+const systemAccountActions = computed<RowActionItem[]>(() => {
+  if (canManageSystemAccounts.value) {
+    return [
+      { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+      { key: 'reset-password', label: '重置密码', icon: 'password', tone: 'warning' },
+      { key: 'authorization-suspension', label: '授权发起状态', icon: 'settings', tone: 'info' }
+    ]
+  }
+  if (canGovernAuthorization.value) {
+    return [{ key: 'authorization-suspension', label: '授权发起状态', icon: 'settings', tone: 'info' }]
+  }
+  return []
+})
 
 const {
   items: accounts,
@@ -323,6 +373,58 @@ function handleSystemAccountAction(key: string, record: SystemAccountListItem) {
   }
   if (key === 'reset-password') {
     openResetPassword(record)
+  }
+  if (key === 'authorization-suspension') {
+    openAuthorizationSuspension(record)
+  }
+}
+
+async function openAuthorizationSuspension(record: SystemAccountListItem) {
+  if (!canGovernAuthorization.value) return
+  suspensionTarget.value = record
+  suspension.value = undefined
+  suspensionReason.value = ''
+  suspensionOpen.value = true
+  await loadAuthorizationSuspension()
+}
+
+async function loadAuthorizationSuspension() {
+  if (!suspensionTarget.value) return
+  suspensionLoading.value = true
+  try {
+    suspension.value = await api.systemAccounts.authorizationSuspension(suspensionTarget.value.id)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载授权发起状态失败'))
+  } finally {
+    suspensionLoading.value = false
+  }
+}
+
+async function suspendAuthorization() {
+  if (!suspensionTarget.value) return
+  suspensionLoading.value = true
+  try {
+    await api.systemAccounts.suspendAuthorization(suspensionTarget.value.id, suspensionReason.value.trim())
+    message.success('已暂停该账户发起授权')
+    await loadAuthorizationSuspension()
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '暂停发起授权失败'))
+  } finally {
+    suspensionLoading.value = false
+  }
+}
+
+async function unsuspendAuthorization() {
+  if (!suspensionTarget.value) return
+  suspensionLoading.value = true
+  try {
+    await api.systemAccounts.unsuspendAuthorization(suspensionTarget.value.id)
+    message.success('已解除暂停')
+    await loadAuthorizationSuspension()
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '解除暂停失败'))
+  } finally {
+    suspensionLoading.value = false
   }
 }
 

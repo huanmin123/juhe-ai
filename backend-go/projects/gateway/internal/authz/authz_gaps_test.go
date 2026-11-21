@@ -1,6 +1,6 @@
 // authz_gaps_test.go：授权面补齐切片的覆盖 —— 详情读路径 limits 回显、
 // keyword 名称维度检索、写路径存储错误 500 分流、{id}/usage 读路径去内联
-// sweep、admin 详情 owner scope 强制与 admin 列表 direction 语义。
+// sweep、admin 详情 owner scope 强制与 admin 列表全量语义。
 package authz
 
 import (
@@ -156,14 +156,14 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	}
 
 	// POST /authorizations（admin 面带授权人）。
-	createBody := `{"resourceType":"group","resourceId":"grp_500","granteeType":"system_account","granteeId":"grantee"}`
+	createBody := `{"resourceType":"group","resourceId":"grp_500","granteeType":"system_account","granteeUsername":"grantee"}`
 	createReq := httptest.NewRequest(http.MethodPost, "/authorizations?systemAccountId=owner", strings.NewReader(createBody))
 	createReq.Header.Set("Content-Type", "application/json")
 	createReq.Header.Set("Content-Length", itoaGap(len(createBody)))
 	createReq = createReq.WithContext(authsys.WithAuthContext(createReq.Context(), admin))
 	rec := httptest.NewRecorder()
 	deps.create(rec, createReq)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "创建授权失败") {
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "授权操作失败") {
 		t.Fatalf("create storage error = %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -176,12 +176,13 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	revokeReq = revokeReq.WithContext(authsys.WithAuthContext(revokeReq.Context(), admin))
 	rec = httptest.NewRecorder()
 	deps.revoke(rec, revokeReq)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "回收授权失败") {
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "授权操作失败") {
 		t.Fatalf("revoke storage error = %d %s", rec.Code, rec.Body.String())
 	}
 
-	// PATCH /authorizations/{id}。
-	patchBody := `{"expectedUpdatedAt":"` + created.Item.UpdatedAt + `","status":"paused"}`
+	// PATCH /authorizations/{id}：recipient-consent 面只允许备注/额度/到期时间，
+	// 旧 status 字段已由 strict JSON 拒绝；这里用 remark 走到存储错误。
+	patchBody := `{"expectedUpdatedAt":"` + created.Item.UpdatedAt + `","remark":"备注"}`
 	patchReq := httptest.NewRequest(http.MethodPatch, "/authorizations/"+created.Item.ID, strings.NewReader(patchBody))
 	patchReq.Header.Set("Content-Type", "application/json")
 	patchReq.Header.Set("Content-Length", itoaGap(len(patchBody)))
@@ -189,11 +190,11 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	patchReq = patchReq.WithContext(authsys.WithAuthContext(patchReq.Context(), admin))
 	rec = httptest.NewRecorder()
 	deps.patch(rec, patchReq, false)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "修改授权失败") {
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "授权操作失败") {
 		t.Fatalf("patch storage error = %d %s", rec.Code, rec.Body.String())
 	}
 
-	// DELETE /authorizations/{id}/return。
+	// 旧业务记录级归还入口固定 409：归还必须按来源在授权中心执行。
 	returnReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID+"/return", strings.NewReader(revokeBody))
 	returnReq.Header.Set("Content-Type", "application/json")
 	returnReq.Header.Set("Content-Length", itoaGap(len(revokeBody)))
@@ -201,8 +202,8 @@ func TestGapWritePathStorageErrorsReturn500(t *testing.T) {
 	returnReq = returnReq.WithContext(authsys.WithAuthContext(returnReq.Context(), admin))
 	rec = httptest.NewRecorder()
 	deps.returnValue(rec, returnReq, false)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "归还授权使用权失败") {
-		t.Fatalf("return storage error = %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"state_conflict"`) {
+		t.Fatalf("legacy return = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -291,10 +292,10 @@ func TestGapAdminDetailEnforcesOwnerScope(t *testing.T) {
 	}
 }
 
-// TestGapAdminListDirectionSemantics admin 列表带 systemAccountId 时 direction
-// 生效：outbound 只看归属人的资源，inbound 复用 self 面条件（直授给该账号或
-// 该账号是活跃团队成员的团队授权）；无 systemAccountId 时保持历史忽略。
-func TestGapAdminListDirectionSemantics(t *testing.T) {
+// TestGapAdminListIgnoresLegacyDirectionScope 管理面列表是“全部业务记录”视图：
+// 不再按 ?systemAccountId / ?direction 派生归属视角（这些参数只服务于旧版
+// 单条授权语义），所有合法查询返回同一批 offer；status 过滤仍然生效。
+func TestGapAdminListIgnoresLegacyDirectionScope(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
@@ -328,7 +329,14 @@ func TestGapAdminListDirectionSemantics(t *testing.T) {
 		items := decodeListItems(t, rec)
 		got := map[string]bool{}
 		for _, item := range items {
-			got[item["id"].(string)] = true
+			id, _ := item["grantId"].(string)
+			if id == "" {
+				id, _ = item["id"].(string)
+			}
+			if id == "" {
+				t.Fatalf("offer row missing grantId: %v", item)
+			}
+			got[id] = true
 		}
 		return got
 	}
@@ -343,14 +351,15 @@ func TestGapAdminListDirectionSemantics(t *testing.T) {
 			}
 		}
 	}
-	// 归属人视角：outbound 两行，inbound 空。
+	// 管理面不再按 systemAccountId / direction 派生视角：所有查询都返回完整
+	// 业务记录集合。
 	expect(list("systemAccountId=owner&direction=outbound"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("systemAccountId=owner&direction=inbound"))
-	// 被授权视角：inbound 命中直授 + 团队授权，outbound 空。
+	expect(list("systemAccountId=owner&direction=inbound"), direct.Item.ID, teamGrant.Item.ID)
 	expect(list("systemAccountId=grantee&direction=inbound"), direct.Item.ID, teamGrant.Item.ID)
-	expect(list("systemAccountId=grantee&direction=outbound"))
-	// 无 direction：沿用默认范围口径（归属 ∪ 被授 ∪ 团队成员）。
+	expect(list("systemAccountId=grantee&direction=outbound"), direct.Item.ID, teamGrant.Item.ID)
 	expect(list("systemAccountId=grantee"), direct.Item.ID, teamGrant.Item.ID)
-	// 无 systemAccountId：direction 保持历史忽略。
 	expect(list("direction=inbound"), direct.Item.ID, teamGrant.Item.ID)
+	// status 过滤仍按 grant 状态生效。
+	expect(list("status=active"), direct.Item.ID, teamGrant.Item.ID)
+	expect(list("status=expired"))
 }

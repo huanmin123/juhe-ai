@@ -102,6 +102,88 @@ func (s *Store) ListAuthorizationGranteeTeams(ctx context.Context, options autho
 	return summaries, rows.Err()
 }
 
+// ListAuthorizationGranteeAccountsScoped returns only the viewer's own account
+// on the user-facing surface. Ordinary users must not enumerate other system
+// accounts (design §1.2).
+func (s *Store) ListAuthorizationGranteeAccountsScoped(ctx context.Context, viewerID string, options authorizationPrincipalOptionListOptions) ([]systemAccountPrincipalSummary, error) {
+	clauses := []string{"id = ?"}
+	params := []any{viewerID}
+	if ids := normalizeTextList(options.IDs); len(ids) > 0 {
+		clauses = append(clauses, "id IN ("+placeholders(len(ids))+")")
+		params = append(params, idsToAny(ids)...)
+	}
+	if keyword := strings.TrimSpace(options.Keyword); keyword != "" {
+		clauses = append(clauses, `((username >= ? AND username < ?) OR (display_name >= ? AND display_name < ?))`)
+		params = append(params, keyword, textPrefixUpperBound(keyword), keyword, textPrefixUpperBound(keyword))
+	}
+	query := `
+		SELECT id, username, display_name, status
+		FROM ` + s.table("system_accounts") + `
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY status ASC, display_name ASC, username ASC, id ASC
+		LIMIT ?`
+	params = append(params, options.Limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), params...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	summaries := []systemAccountPrincipalSummary{}
+	for rows.Next() {
+		var summary systemAccountPrincipalSummary
+		var displayName string
+		if err := rows.Scan(&summary.ID, &summary.Username, &displayName, &summary.Status); err != nil {
+			return nil, err
+		}
+		summary.DisplayName = displayName
+		summaries = append(summaries, summary)
+	}
+	return summaries, rows.Err()
+}
+
+// ListAuthorizationGranteeTeamsScoped returns teams the viewer created or is
+// an active member of. It never exposes unrelated teams.
+func (s *Store) ListAuthorizationGranteeTeamsScoped(ctx context.Context, viewerID string, options authorizationPrincipalOptionListOptions) ([]systemTeamPrincipalSummary, error) {
+	clauses := []string{
+		"system_teams.deleted_at IS NULL",
+		`(system_teams.created_by = ? OR EXISTS (
+			SELECT 1 FROM ` + s.table("system_team_members") + ` members
+			WHERE members.team_id = system_teams.id
+			  AND members.system_account_id = ?
+			  AND members.status = 'active'))`,
+	}
+	params := []any{viewerID, viewerID}
+	if ids := normalizeTextList(options.IDs); len(ids) > 0 {
+		clauses = append(clauses, "system_teams.id IN ("+placeholders(len(ids))+")")
+		params = append(params, idsToAny(ids)...)
+	}
+	if keyword := strings.TrimSpace(options.Keyword); keyword != "" {
+		clauses = append(clauses, "(system_teams.name >= ? AND system_teams.name < ?)")
+		params = append(params, keyword, textPrefixUpperBound(keyword))
+	}
+	query := `
+		SELECT system_teams.id, system_teams.name, system_teams.status
+		FROM ` + s.table("system_teams") + ` system_teams
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY system_teams.status ASC, system_teams.name ASC, system_teams.id ASC
+		LIMIT ?`
+	params = append(params, options.Limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), params...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	summaries := []systemTeamPrincipalSummary{}
+	for rows.Next() {
+		var summary systemTeamPrincipalSummary
+		if err := rows.Scan(&summary.ID, &summary.Name, &summary.Status); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, rows.Err()
+}
+
 // ListAuthorizationGranteeGroups mirrors listAuthorizationGranteeGroups:
 // enabled groups of the grantee's owner namespace plus the active grantee
 // gate; is_default ordering unless preferDefault === false.

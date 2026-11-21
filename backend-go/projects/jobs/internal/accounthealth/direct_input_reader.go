@@ -654,7 +654,7 @@ LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authoriza
 WHERE a.deleted_at IS NULL
   AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta')
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
-  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
+  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
   -- Background auto-probe master switch (设计 §3 候选筛选): instance rows take
   -- the source account's value, so flipping the source hides both rows.
@@ -678,11 +678,9 @@ WHERE a.deleted_at IS NULL
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
   ))
-  -- Image generation is too expensive for a healthy periodic check. Keep
-  -- image accounts eligible for activation, cooldown recovery, and explicit
-  -- account loads (ignoreSchedule=$3), but never schedule an active image
-  -- account merely because next_health_check_at is due.
-  AND ($3::boolean OR a.status <> 'active' OR (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) <> 'images_json')
+  -- J1 只承载真实对话形态的模型检查（测试方式分层）：图像/音频/视频等
+  -- 非对话账户由 account-connectivity-health 的连通性通道负责，J1 的候选
+  -- 形态白名单不含图像形态，也不再有图像周期性跳过特判。
   AND ($3::boolean OR a.status IN ('temporary_unavailable', 'rate_limited') OR a.next_health_check_at IS NULL OR a.next_health_check_at <= $1 OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
   AND ($4 = '' OR a.id = $4)
 -- Keep activation work first, then interleave due cooldown recovery and

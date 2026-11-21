@@ -144,5 +144,15 @@ assert.deepEqual(
   ['grok-4.5'],
   'xAI OpenAI v1 文本档案不得把 image-only 模型暴露给 supportedModels 或 healthCheckModel'
 )
+// OpenAI 族 OAuth 写侧只允许 Responses 对（后端 openAIFamilyVocabulary），模型
+// 下拉同样不得保留 chat-only 模型，否则会保存出永远无法调度的支持模型。
+assert.deepEqual(
+  providerModelsForProtocolProfile([
+    { label: 'grok-4.5', value: 'grok-4.5', supportedApiProtocols: ['chat_completions', 'responses'] },
+    { label: 'grok-chat-only', value: 'grok-chat-only', supportedApiProtocols: ['chat_completions'] }
+  ], profile, 'oauth').map((item) => item.value),
+  ['grok-4.5'],
+  'OpenAI 族 OAuth 模型下拉必须按 Responses-only 词表收敛'
+)
 
 console.log('xAI 前端账户能力回归通过：API Key、Grok OAuth、端点模式与客户端兼容语义符合预期')

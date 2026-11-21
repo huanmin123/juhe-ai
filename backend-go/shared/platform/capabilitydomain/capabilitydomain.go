@@ -45,11 +45,13 @@ func (d Domain) Valid() bool {
 // 语义差异仅影响导入/批量新建户，由计划 §对话域纯粹化记录该裁量。
 const RuleVersion = 1
 
-// chatModes 是「对话 modes」锚集合（v8-A 对话域纯粹化后 13 值，计划
-// §推导规则 + §对话域纯粹化；前端 accountCapabilityDomains.ts 与网关词表
-// 镜像，本包不 import 两侧实现，以计划文本为唯一事实源）。v8-A 把
-// audio_transcription_json 与 realtime_session 移出对话域（归音频域）；
-// images_json 本就不在锚集（v8-A 后对话域不再追加，图像 lane 一律归图像域）。
+// chatModes 是「对话 modes」锚集合（v8-A 对话域纯粹化后 13 值 + 2026-11-20
+// 协议补齐批 2 值 = 15 值；计划 §推导规则 + §对话域纯粹化；前端
+// accountCapabilityDomains.ts 与网关词表镜像，本包不 import 两侧实现，以计划
+// 文本为唯一事实源）。v8-A 把 audio_transcription_json 与 realtime_session
+// 移出对话域（归音频域）；images_json 本就不在锚集（v8-A 后对话域不再追加，
+// 图像 lane 一律归图像域）。embeddings_json / rerank_json 是文本域的输入型
+// 协议（OpenAI Embeddings 与 Cohere/Jina 重排），归对话域。
 var chatModes = []string{
 	"chat_json",
 	"chat_sse",
@@ -64,14 +66,72 @@ var chatModes = []string{
 	"count_tokens",
 	"embed_content",
 	"message_token_counting",
+	"embeddings_json",
+	"rerank_json",
+}
+
+// 账户测试方式（2026-11-21 定案）：只有真实对话生成形态需要模型测试；
+// 媒体域以及只声明 embeddings/rerank/embed_content/count_tokens 等非生成
+// 能力的账户只做连接测试（凭证 + 上游地址可达性）。
+const (
+	TestKindModel      = "model"
+	TestKindConnection = "connection"
+)
+
+// modelTestModes 是「真实对话生成」形态集合（chatModes 去掉 count_tokens /
+// embed_content / message_token_counting / embeddings_json / rerank_json）。
+var modelTestModes = []string{
+	"chat_json",
+	"chat_sse",
+	"responses_json",
+	"responses_sse",
+	"messages_json",
+	"messages_sse",
+	"generate_content_json",
+	"generate_content_sse",
+	"interactions_json",
+	"interactions_sse",
+}
+
+var modelTestModeSet = func() map[string]bool {
+	set := make(map[string]bool, len(modelTestModes))
+	for _, mode := range modelTestModes {
+		set[mode] = true
+	}
+	return set
+}()
+
+// TestKindForEndpointModes 按账户声明的 endpoint modes 判定测试方式。
+func TestKindForEndpointModes(modes []string) string {
+	for _, mode := range modes {
+		if modelTestModeSet[mode] {
+			return TestKindModel
+		}
+	}
+	return TestKindConnection
+}
+
+// TestKindForAccount 先看能力域：媒体域恒连接测试；chat 域再按生成形态判定，
+// 避免 embeddings/rerank-only 账户被误判为模型测试。
+func TestKindForAccount(domain string, modes []string) string {
+	switch domain {
+	case string(DomainImage), string(DomainAudio), string(DomainVideo):
+		return TestKindConnection
+	}
+	return TestKindForEndpointModes(modes)
+}
+
+// IsModelTestEndpointMode 判定单个形态是否属于真实对话生成形态。
+func IsModelTestEndpointMode(mode string) bool {
+	return modelTestModeSet[mode]
 }
 
 // mediaModes 是媒体侧全部 lane 值：图像 lane、语音合成、视频任务四值、
 // 长音频任务四值与 v8-A 自对话域移入的短转写/实时会话。KnownModes =
 // chatModes ∪ mediaModes，与网关四档案族词表并集闭合
 // （chainOpenAIEndpointModeValues / chainAnthropicEndpointModes /
-// chainGeminiDefaultModes / chainHybridEndpointModes 的并集恰为这 25 值；
-// v8-A 只在对话/媒体两侧间移动成员，并集不变）。
+// chainGeminiDefaultModes / chainHybridEndpointModes 的并集恰为这 27 值；
+// v8-A 只在对话/媒体两侧间移动成员，2026-11-20 协议补齐批只在对话侧追加）。
 var mediaModes = []string{
 	"images_json",
 	"audio_speech",
@@ -122,8 +182,8 @@ func ChatModes() []string {
 	return append([]string{}, chatModes...)
 }
 
-// KnownModes 返回全部已知 endpoint mode 值的副本（对话 13 + 媒体 12，
-// 并集恒为 25 值）。
+// KnownModes 返回全部已知 endpoint mode 值的副本（对话 15 + 媒体 12，
+// 并集恒为 27 值）。
 func KnownModes() []string {
 	return append(append([]string{}, chatModes...), mediaModes...)
 }
@@ -155,7 +215,7 @@ func DeriveDomain(modes []string) Domain {
 	return DomainChat
 }
 
-// LaneModesForDomain 返回域 lane 集的副本（chat=对话 13 值锚集、video=视频
+// LaneModesForDomain 返回域 lane 集的副本（chat=对话 15 值锚集、video=视频
 // 四值、audio=语音合成+长音频四值+短转写+实时会话、image=images_json）；
 // 未知域返回 nil。迁移命令用它把声明集裁剪至落域 lane 内，网关侧允许集另经
 // 供应商矩阵与写侧词表求交（在 accountscore，本包不复制那份语义）。

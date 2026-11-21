@@ -378,7 +378,10 @@ func TestW1GRequestEndpointFamilyOf(t *testing.T) {
 		{"/v1/responses", "responses"},
 		{"/V1/RESPONSES", "responses"},
 		{"/chat/completions", "chat_completions"},
-		{"/v1/embeddings", "chat_completions"},
+		{"/v1/embeddings", "embeddings"},
+		{"/embeddings", "embeddings"},
+		{"/v1/rerank", "rerank"},
+		{"/rerank", "rerank"},
 	}
 	for _, testCase := range cases {
 		if got := requestEndpointFamilyOf(testCase.pathAndQuery); got != testCase.want {

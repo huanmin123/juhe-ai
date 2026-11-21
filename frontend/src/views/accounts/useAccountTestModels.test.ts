@@ -104,13 +104,31 @@ describe('useAccountTestModels 已保存账户测试选项', () => {
     expect(hook.testModelsReady.value).toBe(true)
   })
 
-  it('检查形态不在推导集内时回退首个可测形态', () => {
+  it('只声明输入型形态的 chat 账户（向量检查形态）走连接测试，不展示模型/形态', () => {
     const { hook, testForm } = setupTestModels()
     hook.initializeSavedAccountTestOptions(
-      savedAccountListItem({ healthCheckEndpointMode: 'images_json' as AccountListItem['healthCheckEndpointMode'] })
+      savedAccountListItem({ healthCheckEndpointMode: 'embeddings_json' as AccountListItem['healthCheckEndpointMode'] })
     )
-    expect(hook.testEndpointModes.value).toEqual(['chat_sse', 'responses_sse', 'chat_json', 'responses_json'])
-    expect(testForm.testEndpointMode).toBe('chat_sse')
+    expect(hook.testKind.value).toBe('connection')
+    expect(hook.testEndpointModes.value).toEqual([])
+    expect(testForm.model).toBe('')
+    expect(testForm.testEndpointMode).toBe('account_default')
+    expect(hook.testModelOptions.value).toEqual([])
+    expect(hook.testModelsReady.value).toBe(true)
+  })
+
+  it('媒体域账户始终走连接测试，与供应商默认形态无关', () => {
+    const { hook, testForm } = setupTestModels()
+    hook.initializeSavedAccountTestOptions(
+      savedAccountListItem({
+        capabilityDomain: 'video',
+        healthCheckEndpointMode: 'video_create' as AccountListItem['healthCheckEndpointMode']
+      })
+    )
+    expect(hook.testKind.value).toBe('connection')
+    expect(hook.testEndpointModes.value).toEqual([])
+    expect(testForm.model).toBe('')
+    expect(testForm.testEndpointMode).toBe('account_default')
     expect(hook.testModelsReady.value).toBe(true)
   })
 })

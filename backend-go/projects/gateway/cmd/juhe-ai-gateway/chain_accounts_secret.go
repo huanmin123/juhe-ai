@@ -506,9 +506,18 @@ var (
 	// M5b realtime（Realtime 设计 §6）：realtime_session 同语义进词表
 	//（词表缺失会让显式勾选 realtime 能力的账户在 secret 投影时被滤除，
 	// WS 桥接候选过滤随 handler 生效）。
-	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
-	chainOpenAIChatEndpointModes  = []string{"chat_json", "chat_sse"}
-	chainOpenAIResponsesModes     = []string{"responses_json", "responses_sse"}
+	// 2026-11-20 协议补齐批：OpenAI 族 embeddings_json 同语义进词表
+	//（词表缺失会让显式勾选的向量账户在 secret 投影时被滤除，
+	// /v1/embeddings 候选过滤无账户可命中）。rerank_json 属 qwen 专属，
+	// 不进 OpenAI 公共词表，见下方 chainQwenEndpointModeValues。
+	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session", "embeddings_json"}
+	// chainQwenEndpointModeValues mirrors accountscore.QwenEndpointModeValues:
+	// qwen OpenAI 协议档案的投影允许集（chat 对 + 视频四值 + 长音频四值 +
+	// embeddings_json/rerank_json）。不能复用 OpenAI 公共词表——后者不含
+	// rerank_json，会把 qwen 显式声明的重排能力静默滤掉。
+	chainQwenEndpointModeValues  = []string{"chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "embeddings_json", "rerank_json"}
+	chainOpenAIChatEndpointModes = []string{"chat_json", "chat_sse"}
+	chainOpenAIResponsesModes    = []string{"responses_json", "responses_sse"}
 	// chainOpenAIDefaultEndpointModes mirrors
 	// accountscore.OpenAIDefaultEndpointModes: the runtime fallback defaults
 	// stay the four chat/responses modes — images_json is opt-in only.
@@ -521,7 +530,10 @@ var (
 	// video_create / video_get / video_content / video_cancel（veo adapter
 	// 承载，契约 §5.2；词表缺失会让显式勾选的账户在 secret 投影时被滤除，
 	// /v1/video/generations 创建链按 video_create 候选过滤无账户可命中）。
-	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech", "video_create", "video_get", "video_content", "video_cancel"}
+	// embed_content 是 Gemini native 向量能力（:embedContent），词表缺失会让
+	// credentials 回退投影静默丢掉向量声明：混合模式账户失去向量候选，仅声明
+	// embed_content 的账户被过滤成空集后按「无约束」放行任意协议。
+	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "embed_content", "interactions_json", "interactions_sse", "audio_speech", "video_create", "video_get", "video_content", "video_cancel"}
 )
 
 // chainNormalizeGatewayEndpointModesForRuntime mirrors
@@ -547,18 +559,31 @@ func chainNormalizeGatewayEndpointModesForRuntime(value []any, vendorCode, accou
 // fallback defaults stay the four chat/responses modes (images_json is
 // opt-in); an explicit credential list passes through the widened filter.
 func chainNormalizeOpenAIEndpointModesForRuntime(value []any, vendorCode, accountType, clientCompatibility string) []string {
-	filtered := chainFilterEndpointModes(value, chainOpenAIEndpointModeValues)
+	// OAuth 写侧只允许 Responses 对（accountscore.openAIFamilyVocabulary），
+	// 运行时对存量显式 chat 声明同样收窄，避免旧数据继续把 chat 路由到
+	// 只支持 Responses 的 OAuth 上游。
+	if accountType == "oauth" {
+		if filtered := chainFilterEndpointModes(value, chainOpenAIResponsesModes); len(filtered) > 0 {
+			return filtered
+		}
+		return append([]string{}, chainOpenAIResponsesModes...)
+	}
+	allowed := chainOpenAIEndpointModeValues
+	if chainNormalizeProviderToken(vendorCode) == "qwen" {
+		allowed = chainQwenEndpointModeValues
+	}
+	filtered := chainFilterEndpointModes(value, allowed)
 	if len(filtered) > 0 {
 		return filtered
-	}
-	if accountType == "oauth" {
-		return append([]string{}, chainOpenAIResponsesModes...)
 	}
 	code := chainNormalizeProviderToken(vendorCode)
 	switch code {
 	case "gpt", "deepseek":
 		return append([]string{}, chainOpenAIDefaultEndpointModes...)
-	case "glm", "gemini":
+	case "glm", "gemini", "qwen", "volcengine":
+		// 这些档案写侧只声明 chat 对（qwen/volcengine 的 video/audio 等为
+		// opt-in，不在缺省集）；无 mode 事实的 legacy 行不得回落到含
+		// responses 的 OpenAI 缺省集。
 		return append([]string{}, chainOpenAIChatEndpointModes...)
 	}
 	if clientCompatibility == "codex_responses" {

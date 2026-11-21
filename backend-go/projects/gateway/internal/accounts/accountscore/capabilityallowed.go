@@ -26,8 +26,9 @@ import (
 //     状态；声明集裁剪由 maintenance 迁移命令一次性完成。
 
 // 域 lane 集（计划 §域模型设计 + §对话域纯粹化 v8-A）：chat = 平台包
-// 「对话 modes」13 值锚集（v8-A 后不追加 images_json——图像 lane 移出对话
-// 域，新增声明一律隔离在各域之内）；video = 视频任务四值；audio = 语音合成
+// 「对话 modes」15 值锚集（v8-A 后不追加 images_json——图像 lane 移出对话
+// 域，新增声明一律隔离在各域之内；2026-11-20 协议补齐批增 embeddings_json /
+// rerank_json 两个文本 lane 协议）；video = 视频任务四值；audio = 语音合成
 // + 长音频任务四值 + 短转写 + 实时会话（v8-A 自对话域移入）；image =
 // images_json。
 var (
@@ -56,8 +57,9 @@ func CapabilityDomainLabel(domain string) string {
 	return domain
 }
 
-// chatDomainLaneModes 返回对话域 lane 集（平台包 13 值锚集；v8-A 后不追加
-// images_json，图像 lane 声明只走图像域）。
+// chatDomainLaneModes 返回对话域 lane 集（平台包 15 值锚集；v8-A 后不追加
+// images_json，图像 lane 声明只走图像域；2026-11-20 协议补齐批增
+// embeddings_json / rerank_json）。
 func chatDomainLaneModes() []string {
 	return capabilitydomain.ChatModes()
 }
@@ -87,6 +89,14 @@ func openAIFamilyVocabulary(accountType string) []string {
 		return append([]string{}, OpenAIResponsesEndpointModes...)
 	}
 	return append([]string{}, OpenAIEndpointModeValues...)
+}
+
+// geminiOpenAIChatVocabulary 是 Gemini OpenAI Chat 档案的写侧词表：该档案只
+// 承接 OpenAI Chat Completions 直连（连接注册表 preset 词表与官方接入设计均
+// 只开放 chat 对），不承接 Responses / Embeddings / 媒体面。向量能力由 Gemini
+// native 档案的 embed_content 承载。
+func geminiOpenAIChatVocabulary() []string {
+	return append([]string{}, OpenAIChatEndpointModes...)
 }
 
 // glmOpenAIVocabulary 是 glm OpenAI 协议档案的写侧词表（chat 对 + M3 视频
@@ -183,7 +193,7 @@ func resolveCapabilityWriteContext(providerCode, accountType string, profile Pro
 	anthropicProtocol := IsAnthropicProtocolProfileOf(profile)
 	switch {
 	case provider == GeminiProviderCode && profileUnpinnedMatches(profileID, GeminiOpenAIChatV1BetaProfileID) && openaiProtocol:
-		return capabilityMatrixGeminiOpenAIChat, openAIFamilyVocabulary(accountType)
+		return capabilityMatrixGeminiOpenAIChat, geminiOpenAIChatVocabulary()
 	case provider == GptVendorCode && openaiProtocol:
 		return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
 	case (accountType == "api_key" || accountType == "oauth") &&

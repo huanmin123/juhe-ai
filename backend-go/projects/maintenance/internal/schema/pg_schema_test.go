@@ -169,8 +169,15 @@ import (
 // 629→630：2026-11-19 非对话媒体统一计费批（revision 26）——juhe_business
 // +1（models-media-pricing-json-pg-column 幂等 ALTER；models 建表 DDL
 // 原位加列与对象 CHECK 不另计语句）。
+// 630→631：2026-11-20 向量/重排协议批（revision 27）——juhe_business +1
+// （account-endpoint-mode-pg-check 幂等约束替换 DO 块；account_endpoint_modes
+// 与 accounts.health_check_endpoint_mode 两处建表 CHECK 原位扩到 27 值，
+// accounts-health-check-endpoint-mode-pg-check 的定位谓词改为 rerank_json）。
+// 631→718：2026-11-21 授权接收方确认与来源治理批（revision 28）——
+// juhe_business +87（40 ADD COLUMN、5 CREATE TABLE、23 CREATE INDEX、
+// 13 DO、6 DROP INDEX；明细见 per-schema 注释）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 630
+const goldenPostgresSchemaStatementCount = 718
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -217,7 +224,18 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// （api-key-client-ip-concurrency-limit-pg-column 幂等 ALTER）。
 	// 342→343：2026-11-19 revision 26 媒体统一计费 +1
 	// （models-media-pricing-json-pg-column 幂等 ALTER）。
-	"juhe_business": 343,
+	// 343→344：2026-11-20 revision 27 向量/重排协议 +1
+	// （account-endpoint-mode-pg-check 幂等约束替换 DO 块）。
+	// 344→431：2026-11-21 revision 28 授权接收方确认与来源治理 +87
+	// （40 条幂等 ADD COLUMN：system_accounts/system_teams.deleted_at、
+	// grants 的接收/审批/来源/周期/结束字段、authorizations 的状态/接收模式、
+	// sources 的 grant_id/接收/拒绝/归还/复核/双修订/周期字段、
+	// group_authorization_settings 快照字段；
+	// 5 张新表：分组快照账户、屏蔽、通知、发起暂停、offer cooldown；
+	// 23 条幂等索引含旧 active-only 唯一索引的 DROP 后重建；
+	// 13 个 DO 块：用户名/团队名唯一索引切换、grant 接收状态 CHECK、
+	// 快照模式 CHECK、通知类型 CHECK 等；6 条旧唯一索引 DROP INDEX IF EXISTS）。
+	"juhe_business": 431,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -287,7 +305,7 @@ func TestPostgresSchemaStatementCountsPerSchema(t *testing.T) {
 }
 
 func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
-	var doBlocks, alterColumns, droppedColumns, extensions, triggerBlocks, triggers, droppedTriggers int
+	var doBlocks, alterColumns, droppedColumns, alterDefaults, extensions, triggerBlocks, triggers, droppedTriggers int
 	for i, statement := range postgresSchemaStatements {
 		trimmed := strings.TrimSpace(statement.SQL)
 		upper := strings.ToUpper(trimmed)
@@ -310,13 +328,22 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 				alterColumns++
 			case strings.Contains(upper, "DROP COLUMN IF EXISTS"):
 				droppedColumns++
+			case strings.Contains(upper, "ALTER COLUMN") && strings.Contains(upper, "SET DEFAULT"):
+				// SET DEFAULT 本身可重复执行；revision 28 用它将
+				// group_authorization_settings.enabled 的默认值收敛为 0
+				//（非 legacy 分组缺 settings 时 fail-closed）。
+				alterDefaults++
 			default:
 				t.Fatalf("statement %d (%s) is an unguarded ALTER TABLE: %.120s", i, statement.Source, trimmed)
 			}
 		}
 		if strings.HasPrefix(upper, "DO ") {
 			doBlocks++
-			if !strings.Contains(upper, "IS NOT NULL") {
+			// 幂等守卫三形态：对象存在性探测（IS NOT NULL / IF EXISTS）
+			// 或约束/索引缺失探测（IF NOT EXISTS）。
+			if !strings.Contains(upper, "IS NOT NULL") &&
+				!strings.Contains(upper, "IF EXISTS") &&
+				!strings.Contains(upper, "IF NOT EXISTS") {
 				t.Fatalf("statement %d (%s) is an unguarded DO block", i, statement.Source)
 			}
 		}
@@ -366,21 +393,34 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// （api_keys.client_ip_concurrency_limit 幂等 ALTER）。
 	// 106→107：2026-11-19 revision 26 媒体统一计费 +1
 	// （models.media_pricing_json 幂等 ALTER）。
-	if alterColumns != 107 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 107", alterColumns)
+	// 107→147：2026-11-21 revision 28 授权接收方确认与来源治理 +40
+	// （见上方 per-schema 注释）。
+	if alterColumns != 147 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 147", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。
 	if droppedColumns != 0 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 0 (B08 removed all 12 idempotent DROP COLUMN statements on 2026-10-30)", droppedColumns)
 	}
+	if alterDefaults != 1 {
+		t.Fatalf("ALTER TABLE ALTER COLUMN SET DEFAULT count = %d, want 1 (revision 28 fail-closed enabled default)", alterDefaults)
+	}
 	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
 	// ALTER DO 块。7→8：2026-11-13 T207 收口批新增
 	// account-circuit-outbox-status-failed-pg-check（outbox 终态 failed 的
-	// CHECK 约束替换 DO 块，revision 24）。
-	if doBlocks != 8 {
-		t.Fatalf("DO block count = %d, want 8", doBlocks)
+	// CHECK 约束替换 DO 块，revision 24）。8→9：2026-11-20 revision 27 向量/
+	// 重排协议新增 account-endpoint-mode-pg-check（endpoint_mode 与
+	// health_check_endpoint_mode 两个 CHECK 约束替换 DO 块）。
+	// 9→22：2026-11-21 revision 28 授权接收方确认与来源治理 +13
+	// （system_accounts/system_teams 逻辑删除后的活跃唯一索引切换、
+	// resource_authorization_grants 接收/团队审批/来源状态 CHECK、
+	// resource_authorization_sources 接收/复核/周期状态 CHECK、
+	// group_authorization_settings.snapshot_mode CHECK、
+	// authorization_notifications.type CHECK 等，均为具名约束幂等补挂）。
+	if doBlocks != 22 {
+		t.Fatalf("DO block count = %d, want 22", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
@@ -466,25 +506,30 @@ func TestPostgresQualityScheduleIntervalCheckContract(t *testing.T) {
 // health_check_endpoint_mode / health_check_model 三列 nullable（NOT NULL +
 // 复合外键会让 fresh 库任何插入顺序都无法创建账户；创建事务先插 accounts 暂
 // NULL、事务内同一条 UPDATE 补齐）、health_check_endpoint_mode 列级 CHECK
-// 精确覆盖 §2.2 的 25 值、复合外键 (id, health_check_connection_id) 保留，
-// CHECK 迁移 DO 块按 message_token_counting 判别旧 22 值（及更早）约束。
+// 精确覆盖 §2.2 的 27 值、复合外键 (id, health_check_connection_id) 保留，
+// CHECK 迁移 DO 块按 rerank_json 判别旧 25 值（及更早）约束；同批
+// account_endpoint_modes 的 CHECK 也由幂等 DO 块替换覆盖 27 值。
 // DO 块无法在无服务环境下执行，与 interval CHECK 契约测试同口径只断言 SQL
 // 文本；三列 nullable 的实际插入顺序行为由 SQLite 同构 DDL 测试
 // （TestSQLiteAccountsHealthCheckNullabilityAndForeignKey）覆盖。
 func TestPostgresAccountsHealthCheckContract(t *testing.T) {
-	var createAccounts, modeMigration, dirtyTriggers string
+	var createAccounts, createEndpointModes, modeMigration, endpointModeMigration, dirtyTriggers string
 	for _, statement := range postgresSchemaStatements {
 		switch {
 		case statement.Source == "business" && strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS accounts ("):
 			createAccounts = statement.SQL
+		case statement.Source == "account-connections-tables" && strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS account_endpoint_modes ("):
+			createEndpointModes = statement.SQL
 		case statement.Source == "accounts-health-check-endpoint-mode-pg-check":
 			modeMigration = statement.SQL
+		case statement.Source == "account-endpoint-mode-pg-check":
+			endpointModeMigration = statement.SQL
 		case statement.Source == "account-list-projection-pg-dirty-triggers":
 			dirtyTriggers = statement.SQL
 		}
 	}
-	if createAccounts == "" || modeMigration == "" || dirtyTriggers == "" {
-		t.Fatalf("missing accounts CREATE TABLE, endpoint-mode migration or dirty trigger statement")
+	if createAccounts == "" || createEndpointModes == "" || modeMigration == "" || endpointModeMigration == "" || dirtyTriggers == "" {
+		t.Fatalf("missing accounts CREATE TABLE, endpoint-mode tables, endpoint-mode migrations or dirty trigger statement")
 	}
 	// B-1：三列必须 nullable，不得保留 NOT NULL。
 	for _, fragment := range []string{
@@ -505,24 +550,44 @@ func TestPostgresAccountsHealthCheckContract(t *testing.T) {
 	if !strings.Contains(createAccounts, "FOREIGN KEY (id, health_check_connection_id) REFERENCES account_connections(account_id, id)") {
 		t.Fatalf("accounts CREATE TABLE must keep the composite health-check FK")
 	}
-	// B-2：建表内联 CHECK 覆盖 §2.2 全 25 值（accounts 语句中 mode 值只出现在
+	// B-2：建表内联 CHECK 覆盖 §2.2 全 27 值（accounts 语句中 mode 值只出现在
 	// health_check_endpoint_mode CHECK 词表内）。
 	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
 		if !strings.Contains(createAccounts, "'"+mode+"'") {
-			t.Fatalf("accounts health_check_endpoint_mode CHECK must cover %q (25 值词表)", mode)
+			t.Fatalf("accounts health_check_endpoint_mode CHECK must cover %q (27 值词表)", mode)
 		}
 	}
-	// DO 块：判别谓词改为按 25 值新值定位旧约束，具名重建同样覆盖 25 值。
-	if !strings.Contains(modeMigration, `NOT LIKE '%message_token_counting%'`) {
-		t.Fatalf("endpoint-mode migration must locate legacy 22-value CHECKs via message_token_counting")
+	// DO 块：判别谓词改为按 27 值新值定位旧约束，具名重建同样覆盖 27 值。
+	if !strings.Contains(modeMigration, `NOT LIKE '%rerank_json%'`) {
+		t.Fatalf("endpoint-mode migration must locate legacy 25-value CHECKs via rerank_json")
+	}
+	if strings.Contains(modeMigration, `NOT LIKE '%message_token_counting%'`) {
+		t.Fatalf("endpoint-mode migration must not keep the stale message_token_counting predicate (25-value CHECK would be skipped)")
 	}
 	if strings.Contains(modeMigration, `NOT LIKE '%realtime_session%'`) {
 		t.Fatalf("endpoint-mode migration must drop the retired realtime-only legacy predicate")
 	}
 	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
 		if !strings.Contains(modeMigration, "''"+mode+"''") {
-			t.Fatalf("endpoint-mode migration named CHECK must cover %q (25 值词表)", mode)
+			t.Fatalf("endpoint-mode migration named CHECK must cover %q (27 值词表)", mode)
 		}
+	}
+	// account_endpoint_modes 的 CHECK 同样必须覆盖 27 值：建表内联与幂等替换
+	// DO 块（account-endpoint-mode-pg-check）两处都要有，且替换块按 rerank_json
+	// 判别旧 25 值约束。
+	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
+		if !strings.Contains(createEndpointModes, "'"+mode+"'") {
+			t.Fatalf("account_endpoint_modes CREATE TABLE CHECK must cover %q (27 值词表)", mode)
+		}
+		if !strings.Contains(endpointModeMigration, "''"+mode+"''") {
+			t.Fatalf("account-endpoint-mode-pg-check named CHECK must cover %q (27 值词表)", mode)
+		}
+	}
+	if !strings.Contains(endpointModeMigration, `NOT LIKE '%rerank_json%'`) {
+		t.Fatalf("account-endpoint-mode-pg-check must locate legacy 25-value CHECKs via rerank_json")
+	}
+	if !strings.Contains(endpointModeMigration, "account_endpoint_modes_endpoint_mode_check") {
+		t.Fatalf("account-endpoint-mode-pg-check must recreate the named endpoint_mode CHECK")
 	}
 	// 顺手项：dirty 触发器 ROW() 比较纳入协议面新列与健康检查连接列。
 	for _, fragment := range []string{
@@ -537,15 +602,17 @@ func TestPostgresAccountsHealthCheckContract(t *testing.T) {
 	}
 }
 
-// sqliteHealthCheckEndpointModeVocabulary 是设计 §2.2 的 25 值全词表
+// sqliteHealthCheckEndpointModeVocabulary 是设计 §2.2 的 27 值全词表
 // （与 account_endpoint_modes CHECK、accounts.health_check_endpoint_mode
-// CHECK、registry capabilityDomainLanes 并集同源）。
+// CHECK、registry capabilityDomainLanes 并集同源；2026-11-20 协议补齐批
+// 追加 embeddings_json / rerank_json）。
 var sqliteHealthCheckEndpointModeVocabulary = []string{
 	"images_json", "chat_json", "chat_sse",
 	"responses_json", "responses_sse",
 	"messages_json", "messages_sse", "message_token_counting",
 	"generate_content_json", "generate_content_sse",
 	"interactions_json", "interactions_sse", "count_tokens", "embed_content",
+	"embeddings_json", "rerank_json",
 	"audio_speech", "audio_transcription_json",
 	"video_create", "video_get", "video_content", "video_cancel",
 	"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",

@@ -1,6 +1,5 @@
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountListItem, AccountStatus } from '@/types/domain'
-import { capabilityDomainWithoutBackgroundProbe, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import { accountDiagnosticMessageWithoutRepeatedFields } from './accountDiagnosticMessages'
 
 /**
@@ -17,24 +16,22 @@ export function isAccountScheduleOutOfWindow(
 
 /**
  * 探测模式探针（总开关设计 §2）：行缺省（旧数据/未返回）按开启处理。
- * 开关不适用域仅 audio/video（二轮复审裁决：image 域存在后台探测，适用并显示
- * 「手动」标签）。
+ * 2026-11-21 起图像/音频/视频统一适用后台探测开关，不再按域豁免。
  */
 export function accountBackgroundProbeDisabled(account: {
   backgroundProbeEnabled?: boolean
-  capabilityDomain?: AccountCapabilityDomain
 }): boolean {
-  return account.backgroundProbeEnabled === false && !capabilityDomainWithoutBackgroundProbe(account.capabilityDomain)
+  return account.backgroundProbeEnabled === false
 }
 
-/** 手动模式「手动」标签（总开关设计 §9）：灰色 default，audio/video 媒体域不适用（image 适用）。 */
-export function accountManualModeTag(account: Pick<AccountListItem, 'backgroundProbeEnabled' | 'capabilityDomain'>):
+/** 手动模式「手动」标签（总开关设计 §9）：灰色 default，所有域统一适用。 */
+export function accountManualModeTag(account: Pick<AccountListItem, 'backgroundProbeEnabled'>):
   { color: string; label: string } | undefined {
   if (!accountBackgroundProbeDisabled(account)) return undefined
   return { color: 'default', label: '手动' }
 }
 
-export function accountManualModeTooltipText(account: Pick<AccountListItem, 'backgroundProbeEnabled' | 'capabilityDomain'>): string {
+export function accountManualModeTooltipText(account: Pick<AccountListItem, 'backgroundProbeEnabled'>): string {
   return accountBackgroundProbeDisabled(account)
     ? '手动模式：系统不主动探测，仅真实流量；特供 / 锁死等自动恢复功能不可用；异常需手动处理'
     : ''

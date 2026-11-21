@@ -29,10 +29,10 @@ func jsonRequest(t *testing.T, method, url, body string) *http.Request {
 	return req
 }
 
-// D-215 regression: the four user-side write surfaces must exist and behave
-// like the Node my-* mount of authorizations.routes.ts — the viewer is the
-// owner scope, inbound grants resolve as not_found for grantees, and the
-// operation logs degrade to mode 'self' with the owner scope.
+// D-215 regression: the user-side write surfaces follow the recipient-consent
+// model — the viewer is the owner scope, the receiver must explicitly accept
+// the pending source, and inbound grants resolve as not_found for grantees.
+// The operation logs degrade to mode 'self' with the owner scope.
 func TestMyAuthorizationsWriteSurfaceLifecycle(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
@@ -45,68 +45,92 @@ func TestMyAuthorizationsWriteSurfaceLifecycle(t *testing.T) {
 		return req.WithContext(authsys.WithAuthContext(req.Context(), &authsys.AuthContext{SystemAccountID: accountID, Role: "user"}))
 	}
 
-	// POST /my-authorizations: the viewer creates an outbound grant.
+	// POST /my-authorizations: the viewer creates an outbound offer. It starts
+	// pending until the receiver accepts the source.
 	createReq := identity(jsonRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
-		`{"resourceType":"group","resourceId":"grp_my","granteeType":"system_account","granteeId":"grantee"}`), "owner")
+		`{"resourceType":"group","resourceId":"grp_my","granteeType":"system_account","granteeUsername":"grantee"}`), "owner")
 	createRec := httptest.NewRecorder()
 	deps.create(createRec, createReq)
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("my-authorizations create = %d %s", createRec.Code, createRec.Body.String())
 	}
-	authorizationID := decodeJSONPath(t, createRec.Body.String(), "data", "item", "id")
-	if authorizationID == "" {
-		t.Fatal("create response must carry the authorization id")
+	grantID := decodeJSONPath(t, createRec.Body.String(), "data", "grantId")
+	sourceID := decodeJSONPath(t, createRec.Body.String(), "data", "sourceId")
+	if grantID == "" || sourceID == "" {
+		t.Fatalf("create response must carry grantId/sourceId: %s", createRec.Body.String())
+	}
+	if status := decodeJSONPath(t, createRec.Body.String(), "data", "status"); status != StatusPending {
+		t.Fatalf("create status = %q, want pending", status)
 	}
 
-	// PATCH /my-authorizations/{id}: the owner pauses the outbound grant.
-	patchReq := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+authorizationID,
-		`{"expectedUpdatedAt":"`+decodeJSONPath(t, createRec.Body.String(), "data", "item", "updatedAt")+`","status":"paused"}`), "owner")
-	patchReq.SetPathValue("id", authorizationID)
-	patchRec := httptest.NewRecorder()
-	deps.patchSelf(patchRec, patchReq, false)
-	if patchRec.Code != http.StatusOK || !strings.Contains(patchRec.Body.String(), `"status":"paused"`) {
-		t.Fatalf("my-authorizations patch = %d %s", patchRec.Code, patchRec.Body.String())
-	}
-	pausedVersion := decodeJSONPath(t, patchRec.Body.String(), "data", "updatedAt")
-
-	// PATCH /my-authorizations/{id}/expire: the owner extends the expiry.
-	expireReq := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+authorizationID+"/expire",
-		`{"expectedUpdatedAt":"`+pausedVersion+`","expiresAt":"2030-01-01T00:00:00Z"}`), "owner")
-	expireReq.SetPathValue("id", authorizationID)
-	expireRec := httptest.NewRecorder()
-	deps.patchSelf(expireRec, expireReq, true)
-	if expireRec.Code != http.StatusOK || !strings.Contains(expireRec.Body.String(), "2030-01-01") {
-		t.Fatalf("my-authorizations expire = %d %s", expireRec.Code, expireRec.Body.String())
-	}
-	expireVersion := decodeJSONPath(t, expireRec.Body.String(), "data", "updatedAt")
-
-	// The grantee cannot mutate the inbound grant: the owner scope pins the
-	// viewer, so the mutation resolves as not_found (scope boundary regression
-	// :746).
-	granteePatch := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+authorizationID,
-		`{"expectedUpdatedAt":"`+expireVersion+`","status":"active"}`), "grantee")
-	granteePatch.SetPathValue("id", authorizationID)
+	// The grantee cannot mutate the inbound offer: the owner scope pins the
+	// viewer, so the mutation resolves as not_found.
+	granteePatch := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+grantID,
+		`{"remark":"hijack"}`), "grantee")
+	granteePatch.SetPathValue("id", grantID)
 	granteePatchRec := httptest.NewRecorder()
 	deps.patchSelf(granteePatchRec, granteePatch, false)
-	if granteePatchRec.Code != http.StatusNotFound {
-		t.Fatalf("grantee inbound patch must be not_found = %d %s", granteePatchRec.Code, granteePatchRec.Body.String())
+	if granteePatchRec.Code != http.StatusBadRequest || !strings.Contains(granteePatchRec.Body.String(), "授权不存在") {
+		t.Fatalf("grantee inbound patch must be hidden as 授权不存在 = %d %s", granteePatchRec.Code, granteePatchRec.Body.String())
 	}
-
-	// DELETE /my-authorizations/{id}: grantee revocation of the inbound grant
-	// is not_found (scope boundary regression :747)…
-	granteeRevoke := identity(jsonRequest(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+authorizationID,
-		`{"expectedUpdatedAt":"`+expireVersion+`"}`), "grantee")
-	granteeRevoke.SetPathValue("id", authorizationID)
+	granteeRevoke := identity(jsonRequest(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+grantID,
+		`{}`), "grantee")
+	granteeRevoke.SetPathValue("id", grantID)
 	granteeRevokeRec := httptest.NewRecorder()
 	deps.revokeSelf(granteeRevokeRec, granteeRevoke)
-	if granteeRevokeRec.Code != http.StatusNotFound {
-		t.Fatalf("grantee inbound revoke must be not_found = %d %s", granteeRevokeRec.Code, granteeRevokeRec.Body.String())
+	if granteeRevokeRec.Code != http.StatusBadRequest || !strings.Contains(granteeRevokeRec.Body.String(), "授权不存在") {
+		t.Fatalf("grantee inbound revoke must be hidden as 授权不存在 = %d %s", granteeRevokeRec.Code, granteeRevokeRec.Body.String())
+	}
+
+	// The receiver accepts the source, which activates the runtime.
+	var observedRevision string
+	var revisionVersion int
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), sourceID).Scan(&observedRevision, &revisionVersion); err != nil {
+		t.Fatal(err)
+	}
+	acceptReq := identity(jsonRequest(t, http.MethodPost, "/__aisys__/api/my-authorization-sources/"+sourceID+"/accept",
+		`{"expectedRevision":"`+observedRevision+`","expectedRevisionVersion":`+strconv.Itoa(revisionVersion)+`}`), "grantee")
+	acceptReq.SetPathValue("sourceId", sourceID)
+	acceptRec := httptest.NewRecorder()
+	deps.acceptSource(acceptRec, acceptReq)
+	if acceptRec.Code != http.StatusOK || !strings.Contains(acceptRec.Body.String(), `"status":"active"`) {
+		t.Fatalf("source accept = %d %s", acceptRec.Code, acceptRec.Body.String())
+	}
+
+	// PATCH /my-authorizations/{id}: the owner edits remark/limits.
+	patchReq := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+grantID,
+		`{"remark":"updated","limits":{"daily":{"enabled":true,"limit":3}}}`), "owner")
+	patchReq.SetPathValue("id", grantID)
+	patchRec := httptest.NewRecorder()
+	deps.patchSelf(patchRec, patchReq, false)
+	if patchRec.Code != http.StatusOK || !strings.Contains(patchRec.Body.String(), `"updated":true`) {
+		t.Fatalf("my-authorizations patch = %d %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	// PATCH /my-authorizations/{id}/expire: the owner shortens the expiry.
+	expireReq := identity(jsonRequest(t, http.MethodPatch, "/__aisys__/api/my-authorizations/"+grantID+"/expire",
+		`{"expiresAt":"2030-01-01T00:00:00Z"}`), "owner")
+	expireReq.SetPathValue("id", grantID)
+	expireRec := httptest.NewRecorder()
+	deps.patchSelf(expireRec, expireReq, true)
+	if expireRec.Code != http.StatusOK {
+		t.Fatalf("my-authorizations expire set = %d %s", expireRec.Code, expireRec.Body.String())
+	}
+	// Moving the expiry further out is extension and must use /extend.
+	extendReq := identity(jsonRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations/"+grantID+"/extend",
+		`{"expiresAt":"2031-01-01T00:00:00Z"}`), "owner")
+	extendReq.SetPathValue("id", grantID)
+	extendRec := httptest.NewRecorder()
+	deps.extendOffer(extendRec, extendReq)
+	if extendRec.Code != http.StatusOK {
+		t.Fatalf("my-authorizations extend = %d %s", extendRec.Code, extendRec.Body.String())
 	}
 
 	// …while the owner revokes the outbound grant.
-	revokeReq := identity(jsonRequest(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+authorizationID,
-		`{"expectedUpdatedAt":"`+expireVersion+`"}`), "owner")
-	revokeReq.SetPathValue("id", authorizationID)
+	revokeReq := identity(jsonRequest(t, http.MethodDelete, "/__aisys__/api/my-authorizations/"+grantID,
+		`{}`), "owner")
+	revokeReq.SetPathValue("id", grantID)
 	revokeRec := httptest.NewRecorder()
 	deps.revokeSelf(revokeRec, revokeReq)
 	if revokeRec.Code != http.StatusOK || !strings.Contains(revokeRec.Body.String(), `"status":"revoked"`) {
@@ -114,10 +138,9 @@ func TestMyAuthorizationsWriteSurfaceLifecycle(t *testing.T) {
 	}
 
 	// Operation log contract: mode 'self' and the owner scope on every
-	// user-side mutation (Node operationMode(requestAccess) +
-	// outcome.context.resourceOwnerSystemAccountId).
+	// user-side mutation; create is the offer-creation action.
 	if len(sink.entries) != 4 {
-		t.Fatalf("operation log entries = %d, want 4 (create/patch/expire/revoke)", len(sink.entries))
+		t.Fatalf("operation log entries = %d, want 4 (create/update/expire+extend/revoke): %#v", len(sink.entries), sink.entries)
 	}
 	for _, entry := range sink.entries {
 		if entry.Mode != "self" {
@@ -130,16 +153,16 @@ func TestMyAuthorizationsWriteSurfaceLifecycle(t *testing.T) {
 			t.Fatalf("%s log module = %q", entry.Action, entry.Module)
 		}
 	}
-	wantActions := map[string]bool{"create": false, "update": false, "update_expire": false, "revoke": false}
+	wantActions := map[string]int{"create_offer": 1, "update": 2, "revoke": 1}
 	for _, entry := range sink.entries {
-		if _, ok := wantActions[entry.Action]; !ok {
+		if wantActions[entry.Action] == 0 {
 			t.Fatalf("unexpected log action %q", entry.Action)
 		}
-		wantActions[entry.Action] = true
+		wantActions[entry.Action]--
 	}
-	for action, seen := range wantActions {
-		if !seen {
-			t.Fatalf("missing %s operation log", action)
+	for action, remaining := range wantActions {
+		if remaining != 0 {
+			t.Fatalf("missing %s operation log (%d)", action, remaining)
 		}
 	}
 }
@@ -167,7 +190,7 @@ func TestMyAuthorizationsWriteSurfaceRejectsBlankScopeQuery(t *testing.T) {
 
 	createRec := httptest.NewRecorder()
 	deps.create(createRec, identity(jsonRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations?systemAccountId=",
-		`{"resourceType":"group","resourceId":"grp_blank","granteeType":"system_account","granteeId":"grantee"}`), "owner"))
+		`{"resourceType":"group","resourceId":"grp_blank","granteeType":"system_account","granteeUsername":"grantee"}`), "owner"))
 	assertBlankScope400("POST create", createRec)
 
 	patchRec := httptest.NewRecorder()

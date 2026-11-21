@@ -74,6 +74,10 @@ func mountGatewayRootForms(kern *kernel.Kernel, chain http.Handler) {
 	// ——doubao-embedding-vision 系独立 API 面，OpenAI 兼容 /embeddings 面不
 	// 承接该模型）与 /images 同风格整棵子树放行。
 	kern.Register("/embeddings/{rest...}", v1Adapter)
+	// 重排协议（2026-11-20 向量/重排协议补齐批）：根形态 /rerank 与
+	// /embeddings、/responses 同批放行（/v1/rerank 由 v1 挂载面承接）；
+	// Cohere/Jina 客户端常直接请求 /rerank。
+	kern.Register("/rerank", v1Adapter)
 	kern.Register("/images", v1Adapter)
 	kern.Register("/images/{rest...}", v1Adapter)
 	kern.Register("/audio", v1Adapter)

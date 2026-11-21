@@ -12,12 +12,14 @@ import {
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
   XAI_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
-import type { AccountSupportedEndpointMode, ProviderDefinition } from '@/types/domain'
+import type { AccountSupportedEndpointMode, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
   allAccountEndpointModes,
   defaultEndpointModesForAccount,
+  endpointModesForProfile,
   type AccountProviderProfileLike
 } from './accountProviderCapabilities'
+import { providerModelsForProtocolProfile } from './accountEditFormPayload'
 import {
   ACCOUNT_CAPABILITY_DOMAINS,
   ACCOUNT_CAPABILITY_DOMAIN_LABELS,
@@ -33,6 +35,7 @@ import {
   capabilityDomainIsMedia,
   defaultEndpointModesForCapabilityDomain,
   defaultHealthCheckEndpointModeForCapabilityDomain,
+  defaultValidHealthCheckEndpointModeForCapabilityDomain,
   defaultStatusForCapabilityDomain,
   deriveCapabilityDomain,
   mediaDomainModelProtocolTokens,
@@ -64,7 +67,7 @@ describe('能力域枚举与标签', () => {
 })
 
 describe('对话 modes 集合完整性', () => {
-  it('锚集合恰为 13 值（v8-A 移出三项）且顺序与计划锚定义一致', () => {
+  it('锚集合恰为 15 值（v8-A 移出三项 + 协议补齐批向量/重排两项）且顺序与计划锚定义一致', () => {
     expect([...DOMAIN_ENDPOINT_MODES_CHAT]).toEqual([
       'chat_json',
       'chat_sse',
@@ -78,7 +81,9 @@ describe('对话 modes 集合完整性', () => {
       'interactions_sse',
       'count_tokens',
       'embed_content',
-      'message_token_counting'
+      'message_token_counting',
+      'embeddings_json',
+      'rerank_json'
     ])
   })
 
@@ -140,6 +145,11 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
     {
       name: '对话辅助 modes：message_token_counting/count_tokens/embed_content 属对话锚集合',
       modes: ['count_tokens', 'embed_content', 'message_token_counting'],
+      expected: 'chat'
+    },
+    {
+      name: '向量/重排：embeddings_json/rerank_json 属对话锚集合（文本 lane，不新增域）',
+      modes: ['embeddings_json', 'rerank_json'],
       expected: 'chat'
     },
     {
@@ -262,13 +272,14 @@ const minimaxProfile = fallbackProfileById(MINIMAX_OPENAI_V1_PROFILE_ID)
 const volcengineProfile = fallbackProfileById(VOLCENGINE_OPENAI_V1_PROFILE_ID)
 const qwenProfile = fallbackProfileById(QWEN_OPENAI_V1_PROFILE_ID)
 
-describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 ∩ 供应商词表（v8-A）', () => {
-  it('gpt：恰为 chat×2+responses×2（v8-A 移出 realtime/短转写/images_json）', () => {
+describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 ∩ 供应商词表（v8-A + 协议补齐批）', () => {
+  it('gpt：chat×2+responses×2+embeddings（向量为 2026-11-20 显式可选文本 lane）', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: gptProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
       'chat_sse',
       'responses_json',
-      'responses_sse'
+      'responses_sse',
+      'embeddings_json'
     ])
   })
 
@@ -295,6 +306,14 @@ describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 �
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: geminiOpenAIChatProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
       'chat_sse'
+    ])
+    expect(endpointModesForProfile(geminiOpenAIChatProfile)).toEqual(['chat_json', 'chat_sse'])
+    // OpenAI/OAuth 与后端 openAIFamilyVocabulary(oauth) 对齐：只允许 responses
+    // 对，不得因共用 profile 展示 chat 或 embeddings。
+    expect(endpointModesForProfile(gptProfile, 'oauth')).toEqual(['responses_json', 'responses_sse'])
+    expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: gptProfile, accountType: 'oauth' })).toEqual([
+      'responses_json',
+      'responses_sse'
     ])
   })
 
@@ -323,6 +342,43 @@ describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 �
         }
       }
     }
+  })
+
+  it('自定义向量/重排模型按档案可声明 mode 进入账户模型下拉', () => {
+    const models = [
+      { label: 'custom-embed', value: 'custom-embed', supportedApiProtocols: ['embeddings' as const] },
+      { label: 'custom-rerank', value: 'custom-rerank', supportedApiProtocols: ['rerank' as const] },
+      { label: 'custom-chat', value: 'custom-chat', supportedApiProtocols: ['chat_completions' as const] }
+    ]
+    const gptValues = providerModelsForProtocolProfile(models, gptProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
+    expect(gptValues).toContain('custom-embed')
+    expect(gptValues).toContain('custom-chat')
+    expect(gptValues).not.toContain('custom-rerank')
+    const qwenValues = providerModelsForProtocolProfile(models, qwenProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
+    expect(qwenValues).toContain('custom-embed')
+    expect(qwenValues).toContain('custom-rerank')
+    const volcValues = providerModelsForProtocolProfile(models, volcengineProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
+    expect(volcValues).not.toContain('custom-embed')
+    // glm 的 OpenAI 写侧词表不含 embeddings_json（后端 glmOpenAIVocabulary），
+    // 前端不得把 embedding 模型展示成可绑定。
+    const glmValues = providerModelsForProtocolProfile(models, glmProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
+    expect(glmValues).not.toContain('custom-embed')
+    expect(glmValues).not.toContain('custom-rerank')
+    // OpenAI OAuth 写侧只保留 Responses 对：模型下拉必须收敛到 responses，
+    // 不能展示 chat-only/embedding/rerank 模型（后端 openAIFamilyVocabulary("oauth")）。
+    const oauthModels = [
+      ...models,
+      { label: 'custom-responses', value: 'custom-responses', supportedApiProtocols: ['responses' as const] }
+    ]
+    const oauthValues = providerModelsForProtocolProfile(
+      oauthModels,
+      gptProfile as unknown as ProviderProtocolProfileDefinition,
+      'oauth'
+    ).map((model) => model.value)
+    expect(oauthValues).toContain('custom-responses')
+    expect(oauthValues).not.toContain('custom-chat')
+    expect(oauthValues).not.toContain('custom-embed')
+    expect(oauthValues).not.toContain('custom-rerank')
   })
 })
 
@@ -436,17 +492,37 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
   it('health_check_endpoint_mode 默认落值为纯域常量：image→images_json、audio→audio_speech（含 qwen 长音频）、video→video_create、chat→chat_sse（流式优先）', () => {
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'image' })).toBe('images_json')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).toBe('audio_speech')
-    // qwen 长音频默认集首值是 audio_job_create（非检查形态词表值），不得作为记录值兜底。
+    // 2026-11-21 白名单扩展后 audio_job_create 已是合法记录值，但域默认仍是
+    // audio_speech；实际落值由 defaultValid... 按声明集收敛。
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).not.toBe('audio_job_create')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'video' })).toBe('video_create')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'chat' })).toBe('chat_sse')
   })
 
-  it('新建表单默认 status：chat=pending_test（现行），媒体域=active', () => {
+  it('声明集合法值优先于域常量：qwen/仅转写音频落 audio_job_create，不会写出未声明的 audio_speech', () => {
+    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
+      capabilityDomain: 'audio',
+      endpointModes: [...AUDIO_JOB_GROUP]
+    })).toBe('audio_job_create')
+    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
+      capabilityDomain: 'audio',
+      endpointModes: ['audio_speech', ...AUDIO_JOB_GROUP]
+    })).toBe('audio_speech')
+    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
+      capabilityDomain: 'video',
+      endpointModes: ['video_get', 'video_content']
+    })).toBe('video_get')
+    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
+      capabilityDomain: 'image',
+      endpointModes: []
+    })).toBeUndefined()
+  })
+
+  it('新建表单默认 status：2026-11-21 起全部能力域统一 pending_test', () => {
     expect(defaultStatusForCapabilityDomain('chat')).toBe('pending_test')
-    expect(defaultStatusForCapabilityDomain('video')).toBe('active')
-    expect(defaultStatusForCapabilityDomain('audio')).toBe('active')
-    expect(defaultStatusForCapabilityDomain('image')).toBe('active')
+    expect(defaultStatusForCapabilityDomain('video')).toBe('pending_test')
+    expect(defaultStatusForCapabilityDomain('audio')).toBe('pending_test')
+    expect(defaultStatusForCapabilityDomain('image')).toBe('pending_test')
   })
 
   it('媒体域判定与目录协议 token 词表', () => {
@@ -461,16 +537,17 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
     expect(mediaDomainModelProtocolTokens('chat')).toEqual([])
   })
 
-  it('v8-C 域→目录 mode 白名单：四域取值与目录词表六值对齐，embedding 不属于任何域', () => {
-    expect(DOMAIN_MODEL_MODES.chat).toEqual(['chat', 'responses'])
+  it('v8-C 域→目录 mode 白名单：四域取值与目录词表七值对齐，向量/重排归对话域', () => {
+    expect(DOMAIN_MODEL_MODES.chat).toEqual(['chat', 'responses', 'embedding', 'rerank'])
     expect(DOMAIN_MODEL_MODES.video).toEqual(['video'])
     expect(DOMAIN_MODEL_MODES.audio).toEqual(['audio'])
     expect(DOMAIN_MODEL_MODES.image).toEqual(['image_generation'])
-    // 四域 mode 值互不相交，且全部落在目录 mode 词表内（embedding 仅目录存在，
-    // 不放行给任何账户域）；词表与服务端 ProviderCatalogModeValues 同源。
+    // 四域 mode 值互不相交，且全部落在目录 mode 词表内（embedding/rerank 是
+    // 对话域文本 lane，2026-11-20 协议补齐批起放行给对话域账户）；词表与服务端
+    // ProviderCatalogModeValues 同源。
     const domainModes = ACCOUNT_CAPABILITY_DOMAINS.flatMap((domain) => [...DOMAIN_MODEL_MODES[domain]])
     expect(new Set(domainModes).size).toBe(domainModes.length)
-    const catalogModeValues = ['chat', 'responses', 'embedding', 'audio', 'video', 'image_generation']
+    const catalogModeValues = ['chat', 'responses', 'embedding', 'rerank', 'audio', 'video', 'image_generation']
     for (const mode of domainModes) {
       expect(catalogModeValues).toContain(mode)
     }

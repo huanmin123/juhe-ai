@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 )
 
@@ -145,6 +146,7 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		// 连通，不真实生成图片。400/422 = 参数校验拒绝属预期（密钥有效）；
 		// 401/403 = 密钥无效（失败）。
 		view := probeView(server.URL + "/v1")
+		view.ConnectionPresetCode = contracts.PresetGPTOpenAIV1
 		view.HealthCheckModel = "img-1"
 		view.HealthCheckEndpointMode = string(ModeImagesJSON)
 		view.SupportedModels = []string{"img-1"}
@@ -168,6 +170,7 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		}))
 		defer reject.Close()
 		view2 := probeView(reject.URL + "/v1")
+		view2.ConnectionPresetCode = contracts.PresetGPTOpenAIV1
 		view2.HealthCheckModel = "img-1"
 		view2.HealthCheckEndpointMode = string(ModeImagesJSON)
 		view2.SupportedModels = []string{"img-1"}
@@ -186,6 +189,7 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		}))
 		defer unauthorized.Close()
 		view3 := probeView(unauthorized.URL + "/v1")
+		view3.ConnectionPresetCode = contracts.PresetGPTOpenAIV1
 		view3.HealthCheckModel = "img-1"
 		view3.HealthCheckEndpointMode = string(ModeImagesJSON)
 		view3.SupportedModels = []string{"img-1"}

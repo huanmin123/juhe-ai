@@ -10,7 +10,7 @@
 
 | 协议面 | 入口路径 | 给谁用 | 详细篇目 |
 | --- | --- | --- | --- |
-| OpenAI 兼容族 | `/v1/...` | OpenAI SDK、各类聊天客户端、自动化脚本 | 《对话协议 chat completions》《视频生成：从提交到取片》《语音合成 TTS》《语音转文字》《实时语音 Realtime》《图像生成与文本嵌入》 |
+| OpenAI 兼容族 | `/v1/...` | OpenAI SDK、各类聊天客户端、自动化脚本 | 《对话协议 chat completions》《视频生成：从提交到取片》《语音合成 TTS》《语音转文字》《实时语音 Realtime》《图像生成、文本嵌入与重排》 |
 | Anthropic 原生 | `/v1/messages` 族 | Claude SDK、Claude Code 等 Anthropic 系客户端 | 《Anthropic 原生协议》 |
 | Gemini 原生 | `/v1beta/...` 族 | Gemini SDK、Gemini Code Assist 等 Google 系客户端 | 《Gemini 原生协议》 |
 

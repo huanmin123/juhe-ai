@@ -11,10 +11,12 @@
 // out of the repo, retrievable from git history):
 //
 //   - exact method+path whitelist (POST /v1/chat/completions,
-//     /v1/responses, /v1/embeddings; GET /v1/models) extended by the
-//     media families (POST /v1/audio/speech, /v1/audio/transcriptions,
-//     /v1/audio/translations and the Gemini TTS form
-//     POST /v1beta/models/{model}:generateContent, matched by
+//     /v1/responses, /v1/embeddings, /v1/rerank and the qwen origin-base
+//     full paths /compatible-mode/v1/embeddings +
+//     /api/v1/services/rerank/text-rerank/text-rerank; GET /v1/models)
+//     extended by the media families (POST /v1/audio/speech,
+//     /v1/audio/transcriptions, /v1/audio/translations and the Gemini TTS
+//     form POST /v1beta/models/{model}:generateContent, matched by
 //     prefix+suffix with a non-empty single-segment model); any other
 //     method+path pair is a Node-equivalent 404;
 //
@@ -160,7 +162,11 @@ var acceptedEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/v1/chat/completions"}: true,
 	{http.MethodPost, "/v1/responses"}:        true,
 	{http.MethodPost, "/v1/embeddings"}:       true,
+	{http.MethodPost, "/v1/rerank"}:           true,
 	{http.MethodGet, "/v1/models"}:            true,
+	// qwen 兼容模式/原生服务全路径（base_url 为 origin 的厂商特例）。
+	{http.MethodPost, "/compatible-mode/v1/embeddings"}:                  true,
+	{http.MethodPost, "/api/v1/services/rerank/text-rerank/text-rerank"}: true,
 }
 
 // acceptsEndpoint reports whether the method+path pair is whitelisted: the
@@ -376,8 +382,14 @@ func (m *Server) serve2(w http.ResponseWriter, r *http.Request, idx int, bodyStr
 	case "/v1/models":
 		writeJSONStatus(w, http.StatusOK, modelListBody())
 		return
-	case "/v1/embeddings":
+	case "/v1/embeddings", "/compatible-mode/v1/embeddings":
 		writeJSONStatus(w, http.StatusOK, embeddingsBody())
+		return
+	case "/v1/rerank":
+		writeJSONStatus(w, http.StatusOK, rerankBody())
+		return
+	case "/api/v1/services/rerank/text-rerank/text-rerank":
+		writeJSONStatus(w, http.StatusOK, qwenRerankBody())
 		return
 	}
 
@@ -526,6 +538,17 @@ func modelListBody() string {
 
 func embeddingsBody() string {
 	return `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-mock","usage":{"prompt_tokens":1,"total_tokens":1}}`
+}
+
+// rerankBody 是 Cohere/Jina 兼容 /v1/rerank 直出形态（非 qwen 上游）。
+func rerankBody() string {
+	return `{"results":[{"index":0,"relevance_score":0.9,"document":{"text":"doc-1"}},{"index":1,"relevance_score":0.2,"document":{"text":"doc-2"}}],"usage":{"prompt_tokens":12,"total_tokens":12}}`
+}
+
+// qwenRerankBody 是 DashScope text-rerank 原生形态（output.results 包裹、
+// usage 只有 total_tokens），chain 响应归一须把它压成 rerankBody 同构。
+func qwenRerankBody() string {
+	return `{"output":{"results":[{"index":0,"relevance_score":0.9,"document":{"text":"doc-1"}},{"index":1,"relevance_score":0.2,"document":{"text":"doc-2"}}]},"usage":{"total_tokens":12}}`
 }
 
 func sseHeaders(w http.ResponseWriter) {

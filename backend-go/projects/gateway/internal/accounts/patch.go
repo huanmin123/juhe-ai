@@ -471,17 +471,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 人工恢复目标状态（BUG-0288）：clearFailureState 是显式人工确认——冷却态
 	// 直接恢复调度（与授权实例 patchAuthorizedDispatchTx 的 clearFailure→
 	// active+schedulable 同语义），error 进入待检查复检；目标仍受时间计划与
-	// 套餐到期约束，由既有状态机统一裁定。两类账户 error 人工恢复直达 active
-	// （落 pending_test 会因永远等不到探针而滞留）：媒体域（audio/video）不参
-	// 与对话健康检查状态机（无后台探针复检）；手动模式（总开关设计 §7，二轮
-	// 复审 Major-1 补漏）异常恢复直接写 active，不经过 pending_test、不投递
-	// 后台检查。
+	// 套餐到期约束，由既有状态机统一裁定。开启后台探测的账户（含媒体域，
+	// 2026-11-21 起由连通性健康检查通道承担）error 人工恢复落 pending_test；
+	// 手动模式（总开关设计 §7，二轮复审 Major-1 补漏）异常恢复直接写 active，
+	// 不经过 pending_test、不投递后台检查。
 	clearFailureRestoreTarget := ""
 	if input.ClearFailureState {
 		switch row.status {
 		case "error":
-			if accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) ||
-				row.backgroundProbeEnabled == 0 {
+			if row.backgroundProbeEnabled == 0 {
 				clearFailureRestoreTarget = "active"
 			} else {
 				clearFailureRestoreTarget = "pending_test"
@@ -503,11 +501,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	setArgs := []any{}
 
 	// 后台自动探测总开关翻转（AI账户后台自动探测总开关设计 §2/§4）：授权实例
-	// 行只读跟随来源账户，提交即 400（先于媒体域判定——实例只读是无条件契约）；
-	// 媒体域（audio/video）不适用该开关，PATCH 幂等忽略（设计 §2 统一裁决：
-	// 创建/编辑拒绝，PATCH 幂等忽略；image 域存在后台探测，适用该开关）。
-	// 翻转副作用（状态归一化、特供/锁死
-	// 清理、J1 outbox 删除、实例传播）在下方各写段按 backgroundProbeDisabling /
+	// 行只读跟随来源账户，提交即 400（先于域判定——实例只读是无条件契约）；
+	// 2026-11-21 起图像/音频/视频统一适用该开关（媒体域由连通性健康检查通道
+	// 执行自动探测）。翻转副作用（状态归一化、特供/锁死清理、J1 outbox 删除、
+	// 实例传播）在下方各写段按 backgroundProbeDisabling /
 	// backgroundProbeEnabling 分臂执行。
 	backgroundProbeNext := row.backgroundProbeEnabled
 	backgroundProbeDisabling := false
@@ -516,19 +513,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if row.authorizationID.Valid && row.authorizationID.String != "" {
 			return nil, &ValidationError{Message: "授权实例跟随来源账户", Code: "authorized_instance_background_probe_follows_source"}
 		}
-		if !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
-			next := 0
-			if *input.BackgroundProbeEnabled {
-				next = 1
-			}
-			if next != row.backgroundProbeEnabled {
-				backgroundProbeNext = next
-				backgroundProbeDisabling = next == 0
-				backgroundProbeEnabling = next == 1
-				addChange("backgroundProbeEnabled", row.backgroundProbeEnabled == 1, *input.BackgroundProbeEnabled)
-				sets = append(sets, "background_probe_enabled = ?")
-				setArgs = append(setArgs, next)
-			}
+		next := 0
+		if *input.BackgroundProbeEnabled {
+			next = 1
+		}
+		if next != row.backgroundProbeEnabled {
+			backgroundProbeNext = next
+			backgroundProbeDisabling = next == 0
+			backgroundProbeEnabling = next == 1
+			addChange("backgroundProbeEnabled", row.backgroundProbeEnabled == 1, *input.BackgroundProbeEnabled)
+			sets = append(sets, "background_probe_enabled = ?")
+			setArgs = append(setArgs, next)
 		}
 	}
 
@@ -898,6 +893,34 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// patchAccountUsesConnectionTest 按补丁后的凭据形态判定账户是否属于连接测试
+	// 口径（媒体域恒 true；chat 域看是否只声明非对话形态）。连接测试账户不读
+	// 检查模型，检查形态也不参与模型能力校验。
+	patchAccountUsesConnectionTest := func() (bool, error) {
+		var creds Credentials
+		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &creds); err != nil {
+			return false, err
+		}
+		if input.CredentialsPresent {
+			for key, value := range input.Credentials {
+				creds[key] = value
+			}
+		}
+		// 连接集合整替换是最终形态事实：API 调用方只提交 connections 时，
+		// credentials.supported_endpoint_modes 可能仍是旧集合，测试方式判定
+		// 必须用最终连接 modes，否则模型/连接测试会判错。
+		if input.ConnectionsPresent {
+			modes := make([]string, 0, len(input.Connections))
+			for _, connection := range input.Connections {
+				modes = append(modes, connection.EndpointModes...)
+			}
+			if len(modes) > 0 {
+				creds["supported_endpoint_modes"] = modes
+			}
+		}
+		return accountscore.UsesConnectionHealthCheck(row.capabilityDomain, credentialEndpointModes(creds)), nil
+	}
+
 	// Health check model: must remain inside the supported model set.
 	if input.HealthCheckModel != nil || input.HealthCheckEndpointMode != nil || input.SupportedModelsPresent {
 		supportedModels := []string{}
@@ -941,6 +964,33 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				}
 				supportedModels = next
 				supportedModelsChanged = true
+				// 连接测试账户（媒体域与仅声明输入型形态的 chat 账户）的检查模型
+				// 只是记录值，前端不暴露该字段（测试方式分层，2026-11-21）。支持
+				// 模型变更导致旧记录值出集时，按首个新支持模型重新派生，避免用户
+				// 因隐藏字段触发保存失败；模型测试账户仍由下方成员校验拒绝。
+				if input.HealthCheckModel == nil && len(next) > 0 {
+					currentHealthModel := strings.TrimSpace(row.healthCheckModel)
+					found := false
+					for _, model := range next {
+						if model == currentHealthModel {
+							found = true
+							break
+						}
+					}
+					if !found {
+						connectionTest, err := patchAccountUsesConnectionTest()
+						if err != nil {
+							return nil, err
+						}
+						if connectionTest {
+							row.healthCheckModel = strings.TrimSpace(next[0])
+							addChange("healthCheckModel", currentHealthModel, row.healthCheckModel)
+							sets = append(sets, "health_check_model = ?")
+							setArgs = append(setArgs, row.healthCheckModel)
+							healthCheckModelChanged = true
+						}
+					}
+				}
 			}
 		}
 		if input.HealthCheckModel != nil {
@@ -1082,7 +1132,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 连接集合中一行 enabled 连接；未显式提交但连接集合被整替换时，现值也必须
 	// 仍解析到 enabled 行（§2.1：健康检查引用必须在同一事务中改选完整三字段，
 	// 否则 health_check_connection_conflict）。
-	if input.HealthCheckConnectionPresetCode != nil || input.ConnectionsPresent {
+	if input.HealthCheckConnectionPresetCode != nil || input.ConnectionsPresent || input.HealthCheckEndpointMode != nil {
 		healthPreset := strings.TrimSpace(row.currentHealthCheckPreset)
 		if input.HealthCheckConnectionPresetCode != nil {
 			healthPreset = strings.TrimSpace(*input.HealthCheckConnectionPresetCode)
@@ -1104,7 +1154,26 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			return nil, err
 		}
 		if !entryModeSet(connectionModes)[effectiveMode] {
-			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在健康检查连接已启用 mode 内", effectiveMode)}
+			connectionTest, connErr := patchAccountUsesConnectionTest()
+			if connErr != nil {
+				return nil, connErr
+			}
+			// 连接测试账户的健康形态只是记录值：连接集合变化导致旧值失效且
+			// 客户端未显式提交时，按最终连接 modes 重新派生；显式提交无效值
+			// 或模型测试账户仍按冲突拒绝。
+			if connectionTest && input.HealthCheckEndpointMode == nil {
+				derived, derr := resolveDefaultHealthCheckEndpointMode(row.providerCode, row.providerProtocolProfileID, connectionModes)
+				if derr != nil {
+					return nil, derr
+				}
+				effectiveMode = derived
+				addChange("healthCheckEndpointMode", row.healthCheckEndpointMode, effectiveMode)
+				sets = append(sets, "health_check_endpoint_mode = ?")
+				setArgs = append(setArgs, effectiveMode)
+				healthCheckEndpointModeChanged = true
+			} else {
+				return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在健康检查连接已启用 mode 内", effectiveMode)}
+			}
 		}
 		effectiveModel := strings.TrimSpace(row.healthCheckModel)
 		if input.HealthCheckModel != nil {
@@ -1129,6 +1198,31 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err := supportedModelRows.Err(); err != nil {
 			return nil, err
 		}
+		if input.HealthCheckModel == nil {
+			connectionTest, connErr := patchAccountUsesConnectionTest()
+			if connErr != nil {
+				return nil, connErr
+			}
+			// 连接测试账户的检查模型只是记录值：历史空值或出集值（如 legacy
+			// 媒体账户）在连接/形态变更时按首个支持模型收敛，避免隐藏字段阻塞
+			// 保存；显式提交仍走下方严格成员校验。
+			if connectionTest && len(supportedModelNames) > 0 {
+				found := false
+				for _, model := range supportedModelNames {
+					if model == effectiveModel {
+						found = true
+						break
+					}
+				}
+				if !found {
+					effectiveModel = supportedModelNames[0]
+					addChange("healthCheckModel", row.healthCheckModel, effectiveModel)
+					sets = append(sets, "health_check_model = ?")
+					setArgs = append(setArgs, effectiveModel)
+					healthCheckModelChanged = true
+				}
+			}
+		}
 		if _, err := normalizedHealthCheckModel(effectiveModel, supportedModelNames); err != nil {
 			return nil, err
 		}
@@ -1144,7 +1238,19 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err != nil {
 			return nil, err
 		}
-		if !entryModeSet(modelModes)[effectiveMode] {
+		// 连接测试账户的检查模型仅是记录值，不参与上游调用；与创建链
+		// finalizeAccountHealthCheckTrio(connectionTest=true) 同口径，跳过
+		// 「检查模型声明该形态」的成员校验，其余归属校验保持。
+		connectionTest, err := patchAccountUsesConnectionTest()
+		if err != nil {
+			return nil, err
+		}
+		// 模型测试账户的检查形态必须是真实对话生成形态：与创建链
+		// finalizeAccountHealthCheckTrio 同口径，避免两条自动检查通道都不选。
+		if err := validateModelTestHealthEndpointMode(effectiveMode, connectionTest); err != nil {
+			return nil, err
+		}
+		if !connectionTest && !entryModeSet(modelModes)[effectiveMode] {
 			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查模型 %s 未声明检查形态 %s", effectiveModel, effectiveMode)}
 		}
 		if healthConnectionID != row.healthCheckConnectionID.String {
@@ -1435,16 +1541,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// availability_schedule_gate（scheduleChanged 分支在下方写列），status 只由
 	// 用户选择、到期与健康状态机裁定。
 	nextStatus := scheduledStatus
-	// 连接变化降级臂按域守卫（媒体账户生命周期定案表）：audio/video 域不参
-	// 与对话健康检查状态机，凭据/代理编辑保持 scheduledStatus（active 保持
-	// active），不落 pending_test——否则同样因无探针复检而永久滞留。chat/
-	// image 域行为不变。手动模式（本次翻转后 background_probe_enabled=0）
-	// 同样跳过：连接变更不再落 pending_test，凭据/代理编辑保持原状态，由
-	// 真实流量验收（总开关设计 §4，对齐媒体域 SkipsConversationHealthState
-	// Machine 先例）。
+	// 连接变化降级臂（2026-11-21 起媒体域同样适用）：开启后台探测时凭据/
+	// 代理/连接编辑落 pending_test，由 J1 模型探针或连通性健康检查通道复检；
+	// 手动模式（本次翻转后 background_probe_enabled=0）跳过：连接变更不再落
+	// pending_test，凭据/代理编辑保持原状态，由真实流量验收（总开关设计 §4）。
 	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput &&
-		backgroundProbeNext != 0 &&
-		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+		backgroundProbeNext != 0 {
 		nextStatus = "pending_test"
 	}
 	// 手动模式状态归一化（总开关设计 §4，同事务二态收敛）：按行内现值状态
@@ -1849,11 +1951,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 
 	// Health state reset (Node :677-694): any health-relevant change clears
 	// the next scheduled check; a connection change also wipes the persisted
-	// health projection so the next probe starts clean. 手动模式账户不投递
+	// health projection so the next probe starts clean. 2026-11-21 起媒体域由
+	// 连通性健康检查通道复检，同样需要清排期与投影。手动模式账户不投递
 	// 配置变更复检（总开关设计 §4），last_health_* 保留为「关闭前」历史展示，
 	// 不清投影。
 	healthCheckRequired := backgroundProbeNext != 0 &&
-		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) &&
 		(connectionChanged || supportedModelsChanged || modelMappingsChanged ||
 			healthCheckModelChanged || healthCheckEndpointModeChanged || endpointModesChanged)
 	if healthCheckRequired {
@@ -1866,7 +1968,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if clearFailurePendingTest {
 		sets = append(sets, "next_health_check_at = NULL")
 	}
-	if connectionChanged && backgroundProbeNext != 0 && !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+	if connectionChanged && backgroundProbeNext != 0 {
 		sets = append(sets,
 			"last_health_check_at = NULL",
 			"last_health_success_at = NULL",
@@ -2088,6 +2190,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			nextPriority, nextSuperPriority, nextFallback, nowISO, row.id, row.systemAccountID); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.markSourceRevision(ctx, tx, row.id, nowISO); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -2814,6 +2919,23 @@ func (s *Store) assertGroupCanBind(ctx context.Context, q queryer, groupID, syst
 // binding rows for the account, then upsert the target binding with the
 // account's dispatch fields preserved (local_priority family).
 func (s *Store) replaceGroupBinding(ctx context.Context, q queryer, accountID, systemAccountID string, authorizationID sql.NullString, groupID string, priority int, superPriority, fallback bool, nowISO string) error {
+	if authorizationID.Valid && strings.TrimSpace(authorizationID.String) != "" {
+		// 接收方绑定授权实例：实例必须属于当前用户且 runtime 仍为 active。
+		// 来源 material change 会由授权域投影成 needs_review，这里直接拒绝。
+		var status string
+		err := q.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("resource_authorizations")+`
+			WHERE id = ? AND grantee_system_account_id = ? AND resource_type = 'account'
+			LIMIT 1`), authorizationID.String, systemAccountID).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &ValidationError{Message: "授权账户当前不可绑定"}
+		}
+		if err != nil {
+			return err
+		}
+		if status != "active" {
+			return &ValidationError{Message: "授权账户当前不可绑定，请先在授权中心处理来源状态"}
+		}
+	}
 	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("group_accounts")+`
 		WHERE account_id = ?
 			AND system_account_id = ?`), accountID, systemAccountID); err != nil {

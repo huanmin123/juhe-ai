@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,14 +50,17 @@ func w13g2UpdateAt(t *testing.T, body string) string {
 	return value
 }
 
-// TestW13g2MountSelfSurfaceChain 驱动 my-* 面全部注册闭包（routes.go
-// 153-189）+ create 的 MutationGuard Scope/Fingerprint/create 闭包
-// （177-181）+ account 资源 create 的 target-group 装载分支（428-430）。
+// TestW13g2MountSelfSurfaceChain drives the my-* surface through the full
+// recipient-consent chain: offer → team approval → member acceptance →
+// receiver bind for a group, plus the personal patch/expire/extend/return/
+// revoke lifecycle and the account-accept instance projection.
 func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	env := newUsageRouteEnv(t, "owner1")
 	f := env.f
+	f.seedAccount(t, "owner", "active")
 	f.seedGroup(t, "grp_w13s", "owner1")
 	f.seedGroup(t, "grp2_w13s", "owner1")
+	f.seedGroup(t, "grp3_w13s", "owner1")
 	f.seedTeamWithMember(t, "team_w13s", "grantee")
 	seedResourceAccount(t, f, "acc_w13s", "owner1", "源账户")
 	// grantee 的默认分组：provider_code 与源账户一致（bind 的供应商校验），
@@ -70,108 +74,191 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	}
 
 	const selfPrefix = "/__aisys__/api/my-authorizations"
-	// POST my-authorizations：MutationGuard Scope/Fingerprint/create 闭包
-	//（team 授权）。团队来源会把同资源 runtime 的 manual source 置为
-	// superseded，因此 direct 生命周期用独立资源 grp2_w13s 隔离。
+	// POST my-authorizations: the owner creates a team offer; it awaits team
+	// approval and creates no source yet.
 	status, body := env.do(t, http.MethodPost, selfPrefix,
-		`{"resourceType":"group","resourceId":"grp_w13s","granteeType":"team","granteeId":"team_w13s"}`)
+		`{"resourceType":"group","resourceId":"grp_w13s","granteeType":"team","teamName":"Team team_w13s"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("my create team 应 201: %d %s", status, body)
 	}
-	createdID := w13g2DataMap(t, body)["item"].(map[string]any)["id"].(string)
+	teamGrantID := w13g2DataMap(t, body)["grantId"].(string)
+	if got := w13g2DataMap(t, body)["status"]; got != StatusPendingTeamApproval {
+		t.Fatalf("team create status = %v, want pending_team_approval", got)
+	}
 
-	// direct grant：return 只支持个人授权，后续 patch/expire/return/revoke
-	// 用这条 direct grant 走完整生命周期。
+	// The team creator (owner, not the resource owner) approves; this expands
+	// eligible members into pending sources without instances/bindings.
+	teamCreatorEnv := newUsageRouteEnv(t, "owner", f)
+	status, body = teamCreatorEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-teams/team_w13s/authorization-offers/"+teamGrantID+"/approve", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("team approve 应 200: %d %s", status, body)
+	}
+	var teamSourceID string
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorization_sources
+		WHERE grant_id = ? AND status = 'pending'`), teamGrantID).Scan(&teamSourceID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The receiver accepts the member source; the group snapshot is built with
+	// settings.enabled=0 and no group binding.
+	granteeEnv := newUsageRouteEnv(t, "grantee", f)
+	var observed string
+	var version int
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), teamSourceID).Scan(&observed, &version); err != nil {
+		t.Fatal(err)
+	}
+	status, body = granteeEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorization-sources/"+teamSourceID+"/accept",
+		`{"expectedRevision":"`+observed+`","expectedRevisionVersion":`+strconv.Itoa(version)+`}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"active"`) {
+		t.Fatalf("member accept 应 active: %d %s", status, body)
+	}
+	var enabled int
+	if err := f.db.QueryRow(fixtureBind(`SELECT enabled FROM group_authorization_settings
+		WHERE authorization_id = (SELECT authorization_id FROM resource_authorization_sources WHERE id = ?)`),
+		teamSourceID).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 {
+		t.Fatalf("首次接受后 settings.enabled = %d, want 0", enabled)
+	}
+	status, body = granteeEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorization-sources/"+teamSourceID+"/bind", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("source bind 应 200: %d %s", status, body)
+	}
+	if err := f.db.QueryRow(fixtureBind(`SELECT enabled FROM group_authorization_settings
+		WHERE authorization_id = (SELECT authorization_id FROM resource_authorization_sources WHERE id = ?)`),
+		teamSourceID).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 {
+		t.Fatalf("bind 后 settings.enabled = %d, want 1", enabled)
+	}
+
+	// direct grant: return 只支持个人授权，后续 patch/expire/extend/return/
+	// revoke 用这条 direct grant 走完整生命周期。
 	status, body = env.do(t, http.MethodPost, selfPrefix,
-		`{"resourceType":"group","resourceId":"grp2_w13s","granteeType":"system_account","granteeId":"grantee"}`)
+		`{"resourceType":"group","resourceId":"grp2_w13s","granteeType":"system_account","granteeUsername":"grantee"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("my create direct 应 201: %d %s", status, body)
 	}
-	directID := w13g2DataMap(t, body)["item"].(map[string]any)["id"].(string)
-	directUpdatedAt := w13g2UpdateAt(t, body)
+	directID := w13g2DataMap(t, body)["grantId"].(string)
+	directSourceID := w13g2DataMap(t, body)["sourceId"].(string)
 
 	// GET 列表与详情闭包。
 	if status, body = env.do(t, http.MethodGet, selfPrefix, ""); status != http.StatusOK {
 		t.Fatalf("my list 应 200: %d %s", status, body)
 	}
-	if status, body = env.do(t, http.MethodGet, selfPrefix+"/"+createdID, ""); status != http.StatusOK {
+	if status, body = env.do(t, http.MethodGet, selfPrefix+"/"+directID, ""); status != http.StatusOK {
 		t.Fatalf("my find 应 200: %d %s", status, body)
 	}
 	_ = body
 
-	// PATCH（非 expire）闭包。
-	status, body = env.do(t, http.MethodPatch, selfPrefix+"/"+directID,
-		`{"expectedUpdatedAt":"`+directUpdatedAt+`","status":"paused"}`)
+	// The receiver accepts the direct source first; owner PATCH only applies
+	// to active/paused offers.
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), directSourceID).Scan(&observed, &version); err != nil {
+		t.Fatal(err)
+	}
+	status, body = granteeEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorization-sources/"+directSourceID+"/accept",
+		`{"expectedRevision":"`+observed+`","expectedRevisionVersion":`+strconv.Itoa(version)+`}`)
+	if status != http.StatusOK {
+		t.Fatalf("direct accept 应 200: %d %s", status, body)
+	}
+
+	// PATCH（非 expire）闭包：只允许备注/额度。
+	status, body = env.do(t, http.MethodPatch, selfPrefix+"/"+directID, `{"remark":"updated"}`)
 	if status != http.StatusOK {
 		t.Fatalf("my patch 应 200: %d %s", status, body)
 	}
-	pausedAt := w13g2UpdateAt(t, body)
 
-	// PATCH expire 闭包。
+	// PATCH expire 闭包：先设置一个到期时间。
 	status, body = env.do(t, http.MethodPatch, selfPrefix+"/"+directID+"/expire",
-		`{"expectedUpdatedAt":"`+pausedAt+`","expiresAt":"2027-01-01T00:00:00Z"}`)
+		`{"expiresAt":"2027-01-01T00:00:00Z"}`)
 	if status != http.StatusOK {
 		t.Fatalf("my expire 应 200: %d %s", status, body)
 	}
-
-	// DELETE return 闭包：my-* 面 viewer 钉到调用者，归还必须由被授权人
-	//（grantee）发起——owner 视角归还他人授权会 404。
-	granteeEnv := newUsageRouteEnv(t, "grantee", f)
-	status, _ = granteeEnv.do(t, http.MethodDelete, selfPrefix+"/"+directID+"/return",
-		`{"expectedUpdatedAt":"`+w13g2UpdateAt(t, body)+`"}`)
-	if status != http.StatusNoContent {
-		t.Fatalf("my return 应 204: %d", status)
-	}
-
-	// DELETE revoke 闭包（returned → revoked）。
-	grant, err := f.store.GetGrantForMutation(context.Background(), nil, directID)
-	if err != nil || grant == nil {
-		t.Fatalf("read grant: %v", err)
-	}
-	status, _ = env.do(t, http.MethodDelete, selfPrefix+"/"+directID,
-		`{"expectedUpdatedAt":"`+grant.UpdatedAt+`"}`)
+	// 延长必须走 /extend。
+	status, body = env.do(t, http.MethodPost, selfPrefix+"/"+directID+"/extend",
+		`{"expiresAt":"2028-01-01T00:00:00Z"}`)
 	if status != http.StatusOK {
-		t.Fatalf("my revoke 应 200: %d", status)
+		t.Fatalf("my extend 应 200: %d %s", status, body)
 	}
 
-	// account 资源 create：走 targetGroupID 输入（routes.go 428-430）与
-	// provision insert arm（instance + 绑定默认分组）。
+	// Per-source return: the receiver returns its own source. Terminal grants
+	// are not revocable, so the revoke closure runs on a fresh offer.
+	status, body = granteeEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorization-sources/"+directSourceID+"/return", `{}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"returned"`) {
+		t.Fatalf("my source return 应 200 returned: %d %s", status, body)
+	}
 	status, body = env.do(t, http.MethodPost, selfPrefix,
-		`{"resourceType":"account","resourceId":"acc_w13s","granteeType":"system_account","granteeId":"grantee","targetGroupId":"tg_w13s"}`)
-	if status != http.StatusCreated && status != http.StatusOK {
-		t.Fatalf("my account create 应成功: %d %s", status, body)
+		`{"resourceType":"group","resourceId":"grp3_w13s","granteeType":"system_account","granteeUsername":"grantee"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("my create revoke-target 应 201: %d %s", status, body)
+	}
+	revokeID := w13g2DataMap(t, body)["grantId"].(string)
+	status, body = env.do(t, http.MethodDelete, selfPrefix+"/"+revokeID, `{}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"revoked"`) {
+		t.Fatalf("my revoke 应 200: %d %s", status, body)
+	}
+
+	// account 资源 create：不再接受 targetGroupId；接收方接受后创建实例，但
+	// 不自动写入 group_accounts（绑定由接收方自行完成）。
+	status, body = env.do(t, http.MethodPost, selfPrefix,
+		`{"resourceType":"account","resourceId":"acc_w13s","granteeType":"system_account","granteeUsername":"grantee"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("my account create 应 201: %d %s", status, body)
+	}
+	accountSourceID := w13g2DataMap(t, body)["sourceId"].(string)
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), accountSourceID).Scan(&observed, &version); err != nil {
+		t.Fatal(err)
+	}
+	status, body = granteeEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorization-sources/"+accountSourceID+"/accept",
+		`{"expectedRevision":"`+observed+`","expectedRevisionVersion":`+strconv.Itoa(version)+`}`)
+	if status != http.StatusOK {
+		t.Fatalf("account accept 应 200: %d %s", status, body)
 	}
 	var instanceCount int
 	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id = 'acc_w13s' AND deleted_at IS NULL`).Scan(&instanceCount); err != nil {
 		t.Fatal(err)
 	}
 	if instanceCount != 1 {
-		t.Fatalf("account create 应装填 1 个实例账户: %d", instanceCount)
+		t.Fatalf("account accept 应装填 1 个实例账户: %d", instanceCount)
 	}
 	var boundGroups int
 	if err := f.db.QueryRow(`SELECT COUNT(*) FROM group_accounts WHERE group_id = 'tg_w13s'`).Scan(&boundGroups); err != nil {
 		t.Fatal(err)
 	}
-	if boundGroups != 1 {
-		t.Fatalf("实例账户应绑定 grantee 默认分组: %d", boundGroups)
+	if boundGroups != 0 {
+		t.Fatalf("接受不得自动绑定接收方默认分组: %d", boundGroups)
 	}
 }
 
-// TestW13g2MountAdminSurfaceChain 驱动管理面注册闭包（routes.go
-// 191-223）：GET 列表/详情、POST、DELETE、PATCH、PATCH expire。
+// TestW13g2MountAdminSurfaceChain drives the admin surface through a full
+// admin-created offer: owner approval gate, receiver acceptance, then the
+// admin patch/expire/extend/pause/resume/revoke governance actions.
 func TestW13g2MountAdminSurfaceChain(t *testing.T) {
 	env := newUsageRouteEnv(t, "admin")
 	f := env.f
 	f.seedGroup(t, "grp_w13a", "owner1")
-	f.seedTeamWithMember(t, "team_w13a", "grantee")
 
 	const adminPrefix = "/__aisys__/api/authorizations"
 	status, body := env.do(t, http.MethodPost, adminPrefix+"?systemAccountId=owner1",
-		`{"resourceType":"group","resourceId":"grp_w13a","granteeType":"team","granteeId":"team_w13a"}`)
+		`{"resourceType":"group","resourceId":"grp_w13a","granteeType":"system_account","granteeUsername":"grantee"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("admin create 应 201: %d %s", status, body)
 	}
-	createdID := w13g2DataMap(t, body)["item"].(map[string]any)["id"].(string)
+	createdID := w13g2DataMap(t, body)["grantId"].(string)
+	if got := w13g2DataMap(t, body)["status"]; got != StatusPendingOwnerApproval {
+		t.Fatalf("admin create status = %v, want pending_owner_approval", got)
+	}
 
 	if status, _ = env.do(t, http.MethodGet, adminPrefix, ""); status != http.StatusOK {
 		t.Fatalf("admin list 应 200: %d", status)
@@ -179,30 +266,62 @@ func TestW13g2MountAdminSurfaceChain(t *testing.T) {
 	if status, body = env.do(t, http.MethodGet, adminPrefix+"/"+createdID, ""); status != http.StatusOK {
 		t.Fatalf("admin find 应 200: %d", status)
 	}
-	updatedAt := w13g2UpdateAt(t, body)
 
-	// DELETE / PATCH / PATCH expire 闭包（每步版本取自上一响应）。
-	status, _ = env.do(t, http.MethodDelete, adminPrefix+"/"+createdID, `{"expectedUpdatedAt":"`+updatedAt+`"}`)
+	// The resource owner confirms the admin-created offer; the receiver then
+	// accepts its source.
+	ownerEnv := newUsageRouteEnv(t, "owner1", f)
+	status, body = ownerEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorizations/"+createdID+"/owner-approve", `{}`)
 	if status != http.StatusOK {
-		t.Fatalf("admin revoke 应 200: %d", status)
+		t.Fatalf("owner approve 应 200: %d %s", status, body)
 	}
-	grant, err := f.store.GetGrantForMutation(context.Background(), nil, createdID)
-	if err != nil || grant == nil {
-		t.Fatalf("read grant: %v", err)
-	}
-	status, body = env.do(t, http.MethodPatch, adminPrefix+"/"+createdID,
-		`{"expectedUpdatedAt":"`+grant.UpdatedAt+`","status":"paused"}`)
-	if status != http.StatusOK {
-		t.Fatalf("admin patch 应 200: %d %s", status, body)
-	}
-	grant, err = f.store.GetGrantForMutation(context.Background(), nil, createdID)
-	if err != nil {
+	var sourceID, observed string
+	var version int
+	if err := f.db.QueryRow(fixtureBind(`SELECT id, observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE grant_id = ? AND status = 'pending'`), createdID).
+		Scan(&sourceID, &observed, &version); err != nil {
 		t.Fatal(err)
 	}
-	status, _ = env.do(t, http.MethodPatch, adminPrefix+"/"+createdID+"/expire",
-		`{"expectedUpdatedAt":"`+grant.UpdatedAt+`","expiresAt":"2027-02-01T00:00:00Z"}`)
+	granteeEnv := newUsageRouteEnv(t, "grantee", f)
+	status, body = granteeEnv.do(t, http.MethodPost,
+		"/__aisys__/api/my-authorization-sources/"+sourceID+"/accept",
+		`{"expectedRevision":"`+observed+`","expectedRevisionVersion":`+strconv.Itoa(version)+`}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"active"`) {
+		t.Fatalf("grantee accept 应 active: %d %s", status, body)
+	}
+
+	// Remark/expiry PATCH stays owner-only (the admin governance surface only
+	// grants pause/resume/extend/revoke).
+	status, body = env.do(t, http.MethodPatch, adminPrefix+"/"+createdID, `{"remark":"admin-updated"}`)
+	if status != http.StatusBadRequest || !strings.Contains(body, "授权不存在") {
+		t.Fatalf("admin patch 应被 owner scope 拒绝: %d %s", status, body)
+	}
+	status, body = ownerEnv.do(t, http.MethodPatch,
+		"/__aisys__/api/my-authorizations/"+createdID, `{"remark":"owner-updated"}`)
 	if status != http.StatusOK {
-		t.Fatalf("admin expire 应 200: %d", status)
+		t.Fatalf("owner patch 应 200: %d %s", status, body)
+	}
+	status, body = ownerEnv.do(t, http.MethodPatch,
+		"/__aisys__/api/my-authorizations/"+createdID+"/expire", `{"expiresAt":"2027-02-01T00:00:00Z"}`)
+	if status != http.StatusOK {
+		t.Fatalf("owner expire 应 200: %d %s", status, body)
+	}
+	status, body = env.do(t, http.MethodPost, adminPrefix+"/"+createdID+"/extend",
+		`{"expiresAt":"2028-02-01T00:00:00Z"}`)
+	if status != http.StatusOK {
+		t.Fatalf("admin extend 应 200: %d %s", status, body)
+	}
+	status, body = env.do(t, http.MethodPost, adminPrefix+"/"+createdID+"/pause", `{}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"paused"`) {
+		t.Fatalf("admin pause 应 200: %d %s", status, body)
+	}
+	status, body = env.do(t, http.MethodPost, adminPrefix+"/"+createdID+"/resume", `{}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"active"`) {
+		t.Fatalf("admin resume 应 200: %d %s", status, body)
+	}
+	status, body = env.do(t, http.MethodDelete, adminPrefix+"/"+createdID, `{}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"revoked"`) {
+		t.Fatalf("admin revoke 应 200: %d %s", status, body)
 	}
 }
 
@@ -223,16 +342,10 @@ func TestW13g2RouteBranchGaps(t *testing.T) {
 		t.Fatalf("无认证 accessFor 应为零值: %#v", access)
 	}
 
-	created, err := f.store.Create(context.Background(), CreateInput{
-		ResourceType: "group", ResourceID: "grp_g13",
-		GranteeType: "system_account", GranteeID: "grantee",
-	}, "owner")
-	if err != nil {
-		t.Fatal(err)
-	}
+	grantID, _ := f.createAcceptedDirectOffer(t, "group", "grp_g13", "grantee")
 
-	// list：admin 面 ?systemAccountId 过滤（304-307）与 self 面 filter
-	//（301-303）。
+	// list：admin 面全量视图（忽略 legacy ?systemAccountId）与 self 面
+	// filter。
 	recorder := httptest.NewRecorder()
 	deps.list(recorder, wdGetReq(t, http.MethodGet, "/?systemAccountId=owner", wdAuthCtx("admin", "admin")), false)
 	if recorder.Code != http.StatusOK {
@@ -253,62 +366,72 @@ func TestW13g2RouteBranchGaps(t *testing.T) {
 		t.Fatalf("find 存储失败应 500: %d", recorder.Code)
 	}
 
-	// create 重新激活：revoke 后再次 create → 200 + previousStatus 回显
-	//（457-459、492-494）+ 日志摘要"重新激活资源授权："。
-	if _, err := f.store.Revoke(context.Background(), created.Item.ID, created.Item.UpdatedAt, "owner"); err != nil {
-		t.Fatal(err)
+	// revoke：recipient-consent model drops the optimistic version from the
+	// body; the owner revokes the accepted grant directly.
+	recorder = httptest.NewRecorder()
+	revokeRequest := wdJSONRequest(t, http.MethodDelete, "/", `{"expectedUpdatedAt":"2020-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user"))
+	revokeRequest.SetPathValue("id", grantID)
+	deps.revokeScoped(recorder, revokeRequest, false)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"revoked"`) {
+		t.Fatalf("revoke 应 200 revoked: %d %s", recorder.Code, recorder.Body.String())
 	}
+
+	// create after revoke opens a fresh pending offer (no previousStatus
+	// resurrection), logged as offer creation.
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/authorizations?systemAccountId=owner",
 		wdCreateBody("group", "grp_g13", "system_account", "grantee", ""), wdAuthCtx("admin", "admin")))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("revive create 应 200: %d %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("revoke 后二次 create 应 201 新 offer: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if previous, has := w13g2DataMap(t, recorder.Body.String())["previousStatus"]; !has || previous != StatusRevoked {
-		t.Fatalf("revive create 应回显 previousStatus=revoked: %s", recorder.Body.String())
-	}
-	reviveUpdatedAt := w13g2UpdateAt(t, recorder.Body.String())
+	secondGrantID := w13g2DataMap(t, recorder.Body.String())["grantId"].(string)
+	secondSourceID := w13g2DataMap(t, recorder.Body.String())["sourceId"].(string)
 	last := sink.entries[len(sink.entries)-1]
-	if last.Summary == "" || !strings.Contains(last.Summary, "重新激活资源授权") {
-		t.Fatalf("revive 日志摘要错误: %#v", last)
+	if last.Summary == "" || !strings.Contains(last.Summary, "发起资源授权") {
+		t.Fatalf("create 日志摘要错误: %#v", last)
 	}
 
-	// revoke：旧版本 → 乐观锁 409（554-558）。
-	recorder = httptest.NewRecorder()
-	revokeRequest := wdJSONRequest(t, http.MethodDelete, "/", `{"expectedUpdatedAt":"2020-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user"))
-	revokeRequest.SetPathValue("id", created.Item.ID)
-	deps.revokeScoped(recorder, revokeRequest, false)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("旧版本 revoke 应 409: %d %s", recorder.Code, recorder.Body.String())
+	// returnValue：整单归还面已退役，无论认证/scope 均返回 409。
+	for _, request := range []*http.Request{
+		wdJSONRequest(t, http.MethodDelete, "/", `{}`, nil),
+		wdJSONRequest(t, http.MethodDelete, "/?systemAccountId=", `{}`, wdAuthCtx("owner", "user")),
+	} {
+		recorder = httptest.NewRecorder()
+		deps.returnValue(recorder, request, true)
+		if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "按来源归还") {
+			t.Fatalf("retired return 应 409: %d %s", recorder.Code, recorder.Body.String())
+		}
 	}
 
-	// returnValue：无认证 401（590-593）与空白 scope 400（596-598）。
-	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, wdJSONRequest(t, http.MethodDelete, "/", `{}`, nil), true)
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("return 无认证应 401: %d", recorder.Code)
+	// patchScoped：先让接收方接受新 offer，再验证 domain Fail 原文透传
+	//（延长必须走 /extend，缩短/备注走 PATCH）。
+	var observed string
+	var version int
+	// The admin-created offer needs the resource owner's confirmation before
+	// the receiver can see/accept it.
+	if err := f.store.OwnerApprove(context.Background(), "owner", secondGrantID, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
 	}
-	recorder = httptest.NewRecorder()
-	deps.returnValue(recorder, wdJSONRequest(t, http.MethodDelete, "/?systemAccountId=", `{}`, wdAuthCtx("owner", "user")), true)
-	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "系统账号 ID 不能为空" {
-		t.Fatalf("return 空白 scope 应 400: %d %s", recorder.Code, recorder.Body.String())
+	if err := f.db.QueryRow(fixtureBind(`SELECT observed_source_revision, revision_version
+		FROM resource_authorization_sources WHERE id = ?`), secondSourceID).Scan(&observed, &version); err != nil {
+		t.Fatal(err)
 	}
-
-	// patchScoped：领域 Fail 原文透传（749-752）——expired 授权恢复 active
-	// 必须同时调整过期时间。先把授权 patch 成 expired（过去时间），再仅恢复
-	// active。
+	if _, err := f.store.AcceptSource(context.Background(), "grantee", secondSourceID, AcceptInput{
+		ExpectedRevision: observed, ExpectedRevisionVersion: version,
+	}, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
 	expireRec := httptest.NewRecorder()
-	deps.patchScoped(expireRec, wdJSONRequestWdID(t, created.Item.ID,
-		`{"expectedUpdatedAt":"`+reviveUpdatedAt+`","expiresAt":"2020-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user")), true, false)
+	deps.patchScoped(expireRec, wdJSONRequestWdID(t, secondGrantID,
+		`{"expiresAt":"2030-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user")), true, false)
 	if expireRec.Code != http.StatusOK {
 		t.Fatalf("patch 到期应 200: %d %s", expireRec.Code, expireRec.Body.String())
 	}
-	expiredAt := w13g2UpdateAt(t, expireRec.Body.String())
 	patchRec := httptest.NewRecorder()
-	deps.patchScoped(patchRec, wdJSONRequestWdID(t, created.Item.ID,
-		`{"expectedUpdatedAt":"`+expiredAt+`","status":"active"}`, wdAuthCtx("owner", "user")), false, false)
-	if patchRec.Code != http.StatusBadRequest || decodeWd(patchRec) != "到期授权恢复时请同时调整过期时间" {
-		t.Fatalf("expired 恢复应 400 Fail 原文: %d %s", patchRec.Code, patchRec.Body.String())
+	deps.patchScoped(patchRec, wdJSONRequestWdID(t, secondGrantID,
+		`{"expiresAt":"2031-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user")), false, false)
+	if patchRec.Code != http.StatusBadRequest || !strings.Contains(patchRec.Body.String(), "延长到期时间请使用延长接口") {
+		t.Fatalf("patch 延长应 400 原文: %d %s", patchRec.Code, patchRec.Body.String())
 	}
 
 	// errorsAsConflict 命中分支（818-821）。

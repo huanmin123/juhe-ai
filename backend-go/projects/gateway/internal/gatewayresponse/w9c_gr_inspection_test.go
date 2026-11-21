@@ -1,10 +1,13 @@
 package gatewayresponse
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -73,8 +76,30 @@ func TestW9CNonStreamSmallHelpers(t *testing.T) {
 	}
 }
 
-func TestW9CFirstPositiveMatchArms(t *testing.T) {
-	// outputTextIncludes requires visible text.
+func TestNonStreamJSONProtocolValidationExcludesEmbeddings(t *testing.T) {
+	cases := []struct {
+		path   string
+		family gatewayproto.ResponseEndpointFamily
+		want   bool
+	}{
+		{"/v1/embeddings", gatewayproto.EndpointFamilyUnknown, false},
+		{"/v1/embeddings/multimodal", gatewayproto.EndpointFamilyUnknown, false},
+		{"/v1/rerank", gatewayproto.EndpointFamilyUnknown, true},
+		{"/v1/chat/completions", gatewayproto.EndpointFamilyChatCompletions, true},
+	}
+	for _, tc := range cases {
+		req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, tc.path, nil))
+		input := HandleUpstreamResponseInput{
+			Req:              req,
+			UpstreamResponse: &GatewayUpstreamResponse{Status: http.StatusOK},
+		}
+		if got := nonStreamJsonProtocolValidationAllowed(input, tc.family); got != tc.want {
+			t.Errorf("nonStreamJsonProtocolValidationAllowed(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestW9CFirstPositiveMatchArms(t *testing.T) { // outputTextIncludes requires visible text.
 	match := gatewayruntimecache.ResponseInspectionPolicyMatch{OutputTextIncludes: []string{"hello"}}
 	if firstPositiveMatch(gatewayproto.SemanticFrame{}, match) != nil {
 		t.Fatal("empty text must not match outputTextIncludes")

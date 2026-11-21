@@ -38,7 +38,7 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 }
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
-	// 212 rows（当前 HEAD 快照钉值）：217 rows from the evidence batch +
+	// 217 rows（当前 HEAD 快照钉值）：217 rows from the evidence batch +
 	// gemini-3.5-live-translate-preview + 3 openai realtime/audio additions
 	// (gpt-realtime-mini / gpt-audio / gpt-audio-mini missed by the completion
 	// batch)（gemini-3.1-flash-tts-preview legacy TTS at co107 /
@@ -54,15 +54,16 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// +1（官方 changelog 2026-10-26 明文发布，gpt 69→70）→ 213。2026-11-18
 	// GPT-6.2 Sol / Astra 新增批 +2（官方模型页 2026-11-18 抓取，gpt 70→72）
 	// → 215；2026-11-20 百炼目录校准批 +1（恢复 paraformer-v2 作为异步文件
-	// 转写实际可用模型，qwen 16→17）→ 216。
-	if len(modelCatalogSeedRows) != 216 {
-		t.Fatalf("model catalog seed rows = %d, want 216 (stale snapshot? rerun the generator from backend-go/projects/gateway/internal/pricing/catalogdata/*.json)", len(modelCatalogSeedRows))
+	// 转写实际可用模型，qwen 16→17）→ 216；2026-11-20 向量/重排协议补齐批
+	// +1（gte-rerank-v2 重排行，qwen 17→18）→ 217。
+	if len(modelCatalogSeedRows) != 217 {
+		t.Fatalf("model catalog seed rows = %d, want 217 (stale snapshot? rerun the generator from backend-go/projects/gateway/internal/pricing/catalogdata/*.json)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 72, "xai": 17, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 19, "volcengine": 19, "qwen": 17}
+	want := map[string]int{"gpt": 72, "xai": 17, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 19, "volcengine": 19, "qwen": 18}
 	if len(perProvider) != len(want) {
 		t.Fatalf("vendor set = %v, want %v", perProvider, want)
 	}
@@ -213,7 +214,9 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse","interactions_json","interactions_sse"]`: 11,
 		`["chat_json","chat_sse","messages_json","messages_sse","responses_json","responses_sse"]`:                                      3,
 		`["chat_json","chat_sse","responses_json","responses_sse"]`:                                                                     45,
-		`["embed_content"]`: 3,
+		`["embed_content"]`:   2,
+		`["embeddings_json"]`: 1,
+		`["rerank_json"]`:     1,
 		`["generate_content_json","generate_content_sse"]`: 5,
 		`["images_json"]`: 13,
 		`["images_json","responses_json","responses_sse"]`:            3,

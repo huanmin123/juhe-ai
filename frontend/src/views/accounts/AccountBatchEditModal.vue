@@ -221,6 +221,7 @@
               </AccountBatchEditField>
 
               <AccountBatchEditField
+                v-if="!mediaDomain"
                 v-model:checked="form.enabled.responseInspectionRules"
                 label="响应检查策略"
                 description="直接覆盖账户专属响应检查规则；留空表示清空。"
@@ -273,7 +274,7 @@
                 </template>
               </AccountBatchEditField>
 
-              <div class="batch-edit-two-columns">
+              <div v-if="!mediaDomain" class="batch-edit-two-columns">
                 <AccountBatchEditField
                   v-model:checked="form.enabled.healthCheckModel"
                   :disabled="!homogeneousModelConfiguration"
@@ -474,7 +475,7 @@ import {
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
-import { DOMAIN_MODEL_MODES } from './accountCapabilityDomains'
+import { DOMAIN_MODEL_MODES, allowedEndpointModesFor, capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import { providerModelsForProtocolProfile, type AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountModelMappingSourceModelOptions,
@@ -493,7 +494,6 @@ import {
   isAccountModelMappingProtocolOptionAllowed
 } from './accountModelMappingProtocolMatrix'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { endpointModesForProfile } from './accountProviderCapabilities'
 import { canBatchEditAccount } from './accountRules'
 
 interface SelectOption {
@@ -505,6 +505,8 @@ interface SelectOption {
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{
   accounts: AccountListItem[]
+  /** 当前能力域：媒体域隐藏检查模型/检查形态、响应检查与请求覆盖（连接测试口径）。 */
+  capabilityDomain?: AccountCapabilityDomain
   isManagementView: boolean
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
@@ -554,6 +556,7 @@ const accountNameSummary = computed(() => {
   const names = props.accounts.slice(0, 4).map((account) => account.name)
   return props.accounts.length > 4 ? `${names.join('、')} 等 ${props.accounts.length} 个账户` : names.join('、')
 })
+const mediaDomain = computed(() => capabilityDomainIsMedia(props.capabilityDomain))
 const homogeneousModelConfiguration = computed(() => {
   if (!accountDetails.value.length) return false
   const signatures = new Set(accountDetails.value.map((account) => [
@@ -620,7 +623,14 @@ const mappingUpstreamModelOptions = computed(() => {
 })
 const endpointModeOptions = computed(() => {
   const profile = selectedProtocolProfile.value ?? homogeneousAccount.value
-  const allowed = new Set(endpointModesForProfile(profile))
+  // 批量编辑对四域开放，接口能力候选必须按当前能力域收窄，不能沿用协议族
+  // 全集（否则媒体批量会出现 chat 形态，反之亦然）。
+  const allowed = new Set(allowedEndpointModesFor({
+    capabilityDomain: props.capabilityDomain ?? 'chat',
+    providerCode: homogeneousAccount.value?.providerCode,
+    profile,
+    accountType: homogeneousAccount.value?.type
+  }))
   return accountEndpointModeOptionsForProfile(profile).filter((option) => allowed.has(option.value))
 })
 // Gemini Interactions-only 守卫的接口能力输入：尚未按需加载时传 undefined
@@ -660,7 +670,8 @@ const reasoningEffortOverrideFieldVisible = computed(() => Boolean(
     || form.enabled.reasoningEffortOverride)
 ))
 const requestOverridesSupported = computed(() => Boolean(
-  homogeneousAccount.value
+  !mediaDomain.value
+  && homogeneousAccount.value
   && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, requestOverrideGuardModes.value)
   && (serviceTierOverrideFieldVisible.value || reasoningEffortOverrideFieldVisible.value)
 ))
@@ -807,15 +818,15 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
       scopeParams: scope,
-      // 批量编辑仅覆盖对话域账户（媒体域账户不进入批量编辑），模型候选同样
-      // 按对话域目录 mode 过滤（v8-C）。
-      modes: [...DOMAIN_MODEL_MODES.chat],
+      // 批量编辑覆盖四域：模型候选按当前能力域过滤（媒体域取 video/audio/
+      // image_generation，不得把对话模型混入）。
+      modes: [...DOMAIN_MODEL_MODES[props.capabilityDomain ?? 'chat']],
       selectedIds,
       keyword
     })
     if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
     currentProviderModelOptions.value = models.data
-    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
+    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value, homogeneousAccount.value?.type)
     // 截断判定与账户编辑表单同口径（T25）：以服务端 hasMore 元数据为准——
     // 非搜索取数（浏览或纯 selectedIds 单批次补拉）都判定，编辑态恒带
     // selectedIds 的取数也能正确提示；带 keyword 的搜索与多批次补拉不改写。

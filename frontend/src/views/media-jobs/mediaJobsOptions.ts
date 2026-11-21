@@ -27,8 +27,8 @@ export const mediaJobColumns: Array<Record<string, unknown>> = [
   { title: '状态', key: 'status', width: 96 },
   { title: '模型', key: 'model', minWidth: 180, responsiveFlex: true },
   { title: '提示词', key: 'promptSummary', minWidth: 240, responsiveFlex: true },
-  { title: 'API Key', key: 'apiKeyId', width: 150 },
-  { title: '成本 USD', key: 'costUsd', width: 110 },
+  { title: 'API Key', key: 'apiKeyName', width: 150 },
+  { title: '成本', key: 'costUsd', width: 110 },
   { title: '创建时间', key: 'createdAt', width: 170 },
   { title: '操作', key: 'actions', width: 88, fixed: 'right', align: 'left' }
 ]

@@ -20,6 +20,8 @@ export interface MediaJobListItem {
   seconds?: number
   /** 媒体产物尺寸（WxH 像素串，如 1280x720），创建请求快照回显。 */
   size?: string
+  /** 归属 API Key 名称（读面水合；Key 已删除时为空，界面不展示内部 ID）。 */
+  apiKeyName?: string
   apiKeyId?: string
   accountId?: string
   costUsd?: number
@@ -60,7 +62,11 @@ export interface MediaJobDetail {
   n?: number
   language?: string
   metadataApplied?: string[]
+  /** 归属 API Key 名称（读面水合；Key 已删除时为空，界面不展示内部 ID）。 */
+  apiKeyName?: string
   apiKeyId?: string
+  /** 命中 AI 账户名称（读面水合；账户已删除时为空，界面不展示内部 ID）。 */
+  accountName?: string
   accountId?: string
   costUsd?: number
   createdAt: string

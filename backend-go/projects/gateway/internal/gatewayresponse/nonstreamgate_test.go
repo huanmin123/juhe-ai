@@ -163,6 +163,33 @@ func TestHandleNonStreamUpstreamResponseValidationLimitExceededRejectsBody(t *te
 	}
 }
 
+func TestHandleNonStreamUpstreamResponseOversizedEmbeddingsBodyStreamsThrough(t *testing.T) {
+	// /v1/embeddings 的 2xx 不走 1 MiB 全量协议校验：合法大 batch 向量响应
+	// 必须透传，而不是像 chat 一样按 upstream_protocol_error 502 拒绝。
+	padding := strings.Repeat("0.1,", (1<<20)/4)
+	payload := `{"object":"list","data":[{"embedding":[` + padding + `0.1]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`
+	input, recorder := newInputFixture(NewSliceUpstreamBody([]byte(payload)), 200, map[string]string{"Content-Type": "application/json"})
+	input.Req = gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/embeddings", nil))
+	audit := input.AuditCapture.(*mockAuditCapture)
+
+	result, err := HandleNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.AlreadyFinalized {
+		t.Fatalf("result = %+v", result)
+	}
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if recorder.Body.String() != payload {
+		t.Fatalf("client body length = %d want %d", recorder.Body.Len(), len(payload))
+	}
+	if len(audit.completed) != 1 || !audit.completed[0].Success {
+		t.Fatalf("attempt audit = %+v", audit.completed)
+	}
+}
+
 // ---- 非必需缓冲超限：管道边转发完整正文 ----
 
 func TestHandleNonStreamUpstreamResponseOversizedErrorBodyStreamsThrough(t *testing.T) {

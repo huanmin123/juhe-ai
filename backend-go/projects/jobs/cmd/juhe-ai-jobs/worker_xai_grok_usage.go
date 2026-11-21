@@ -479,7 +479,8 @@ func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http
 	defer cancel()
 	// 凭据 base_url 派生的用量端点必须先过部署级 URL 守卫：直连在拨号期
 	// 校验实际 socket 对端，代理分支的拨号期守卫只看代理主机，因此这里
-	// 对最终目标做同一 ValidateHost（与余额/目录读取同口径）。
+	// 对最终目标做同一 ValidateHost（与余额/目录读取同口径：混合解析放行，
+	// 全部命中保留段才拒绝）。
 	if r.dialGuard != nil {
 		parsed, parseErr := url.Parse(endpointURL)
 		if parseErr != nil || parsed.Hostname() == "" {

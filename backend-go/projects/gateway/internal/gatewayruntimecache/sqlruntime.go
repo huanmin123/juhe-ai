@@ -419,7 +419,7 @@ func (m *SQLReadModels) loadActiveGatewayAPIKeyGroupBindings(ctx context.Context
 			AND groups.enabled = 1
 			AND (
 				groups.system_account_id = route_strategy_groups.system_account_id
-				OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
+				OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 0) = 1 AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '')
 			)
 		ORDER BY route_strategy_groups.priority ASC, route_strategy_groups.created_at ASC, route_strategy_groups.id ASC
 		LIMIT ?`), nowISO, routeStrategyID, systemAccountID, maxRouteStrategyGroupBindings)

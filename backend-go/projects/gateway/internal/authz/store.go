@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,14 @@ const (
 	StatusExpired  = "expired"
 	StatusRevoked  = "revoked"
 	StatusReturned = "returned"
+	StatusPending  = "pending"
+	StatusDeclined = "declined"
+	StatusDormant  = "dormant"
+
+	StatusPendingOwnerApproval    = "pending_owner_approval"
+	StatusPendingTeamApproval     = "pending_team_approval"
+	StatusPendingMemberAcceptance = "pending_member_acceptance"
+	StatusNeedsReview             = "needs_review"
 )
 
 // Conflict mirrors the Node optimistic-concurrency 409.
@@ -79,6 +88,22 @@ type Store struct {
 	// ResourceAuthorizationStatsByResourceIds (stats_loader.go, Node
 	// authorization-read-loaders.ts).
 	statsCache *authorizationStatsCache
+	// revisionSecret keys the account material-change HMAC. It is injected by
+	// the composition root from the runtime secret and must stay stable across
+	// releases; an empty value makes revision-dependent writes fail closed.
+	revisionSecret string
+	// reconcileMu/reconcileCursor advance the material-change sweep across
+	// batches instead of rescanning the same first page every minute. Restart
+	// resets the cursor, which is safe because the sweep is idempotent.
+	reconcileMu     sync.Mutex
+	reconcileCursor string
+	// expiryReconcileMu/expiryReconcileUpdatedAt/expiryReconcileID advance the
+	// expired-grant replay across batches. The replay does not touch the grant's
+	// own updated_at, so without a cursor the oldest page would be rescanned
+	// forever and grants past the batch limit would starve.
+	expiryReconcileMu        sync.Mutex
+	expiryReconcileUpdatedAt string
+	expiryReconcileID        string
 }
 
 func NewStore(db *sql.DB, now func() time.Time) (*Store, error) {
@@ -100,6 +125,11 @@ func (s *Store) AttachStatsDatabase(db *sql.DB) { s.stats = db }
 func (s *Store) AttachTimezoneSource(source func(ctx context.Context) (string, error)) {
 	s.timezone = source
 }
+
+// AttachRevisionSecret injects the stable HMAC key used for account source
+// revisions. Production wiring passes the runtime secret; tests may pass a
+// fixed value after constructing the store.
+func (s *Store) AttachRevisionSecret(secret string) { s.revisionSecret = strings.TrimSpace(secret) }
 
 func (s *Store) table(name string) string {
 	return "juhe_business." + name

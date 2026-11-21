@@ -40,6 +40,7 @@ const authzPGFixtureSchema = `
       expedited_account_limit integer,
       request_limits_json text,
       last_login_at text,
+      deleted_at text,
       created_at text DEFAULT '',
       updated_at text DEFAULT ''
     );
@@ -49,6 +50,7 @@ const authzPGFixtureSchema = `
       description text,
       status text DEFAULT 'active',
       created_by text DEFAULT '',
+      deleted_at text,
       created_at text DEFAULT '',
       updated_at text DEFAULT ''
     );
@@ -98,6 +100,9 @@ const authzPGFixtureSchema = `
       revoked_by text,
       revoked_at text,
       revoked_reason text,
+      status_reason text,
+      status_changed_at text,
+      acceptance_mode text DEFAULT 'legacy',
       updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
@@ -113,6 +118,24 @@ const authzPGFixtureSchema = `
       created_at text DEFAULT '',
       revoked_by text,
       revoked_at text,
+      grant_id text,
+      acceptance_mode text DEFAULT 'legacy',
+      accepted_at text,
+      accepted_by text,
+      declined_at text,
+      declined_by text,
+      returned_at text,
+      returned_by text,
+      needs_review_at text,
+      needs_review_reason text,
+      needs_review_detail_json text,
+      accepted_source_revision text,
+      observed_source_revision text,
+      accepted_source_revision_version integer,
+      revision_version integer DEFAULT 1,
+      expiry_cycle integer DEFAULT 0,
+      expired_from_status text,
+      pending_expires_at text,
       updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
@@ -132,6 +155,21 @@ const authzPGFixtureSchema = `
       created_at text DEFAULT '',
       revoked_by text,
       revoked_at text,
+      acceptance_mode text DEFAULT 'legacy',
+      accepted_at text,
+      accepted_by text,
+      team_approved_at text,
+      team_approved_by text,
+      owner_approved_at text,
+      owner_approved_by text,
+      source_revision text,
+      expiry_cycle integer DEFAULT 0,
+      pending_expires_at text,
+      expired_from_status text,
+      ended_at text,
+      ended_reason text,
+      legacy_basis text,
+      legacy_review_deadline text,
       updated_at text DEFAULT ''
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.accounts (
@@ -154,6 +192,7 @@ const authzPGFixtureSchema = `
       oauth_access_token_expires_at text,
       oauth_refresh_token_present integer DEFAULT 0,
       proxy_profile_id text,
+      proxy_pool_id text,
       concurrency_limit integer DEFAULT 5000,
       rpm_limit integer DEFAULT 0,
       priority integer DEFAULT 0,
@@ -344,6 +383,53 @@ const authzPGFixtureSchema = `
       created_at text DEFAULT '',
       PRIMARY KEY (account_id, model_id)
     );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_connections (
+      id text PRIMARY KEY,
+      account_id text DEFAULT '',
+      connection_preset_code text DEFAULT '',
+      protocol_surface_code text,
+      base_url text DEFAULT '',
+      enabled integer DEFAULT 1,
+      created_at text DEFAULT '',
+      updated_at text DEFAULT ''
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_endpoint_modes (
+      connection_id text DEFAULT '',
+      endpoint_mode text DEFAULT '',
+      PRIMARY KEY (connection_id, endpoint_mode)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_entry_mappings (
+      id text PRIMARY KEY,
+      account_id text DEFAULT '',
+      source_model text DEFAULT '',
+      source_endpoint_family text DEFAULT '',
+      target_connection_id text DEFAULT '',
+      target_model_id text DEFAULT '',
+      target_endpoint_family text DEFAULT '',
+      enabled integer DEFAULT 1
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
+      id text PRIMARY KEY,
+      type text DEFAULT '',
+      host text DEFAULT '',
+      port integer DEFAULT 0,
+      username text,
+      password_encrypted text,
+      enabled integer DEFAULT 1
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_pools (
+      id text PRIMARY KEY,
+      strategy text DEFAULT '',
+      enabled integer DEFAULT 1
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.proxy_pool_members (
+      pool_id text DEFAULT '',
+      proxy_profile_id text DEFAULT '',
+      priority integer DEFAULT 0,
+      weight integer DEFAULT 0,
+      enabled integer DEFAULT 1,
+      PRIMARY KEY (pool_id, proxy_profile_id)
+    );
 	CREATE TABLE IF NOT EXISTS juhe_business.external_integration_sources (
       id text PRIMARY KEY,
       name text DEFAULT '',
@@ -463,6 +549,71 @@ const authzPGFixtureSchema = `
       first_dirty_at text DEFAULT '',
       updated_at text DEFAULT '',
       PRIMARY KEY (system_account_id, scope_type, scope_id)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.group_authorization_settings (
+      authorization_id text PRIMARY KEY,
+      system_account_id text DEFAULT '',
+      group_id text DEFAULT '',
+      enabled integer DEFAULT 1,
+      group_type text DEFAULT 'personal',
+      scheduling_policy_json text,
+      snapshot_revision text,
+      snapshot_mode text DEFAULT 'normal',
+      created_at text DEFAULT '',
+      updated_at text DEFAULT ''
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_group_accounts (
+      authorization_id text DEFAULT '',
+      account_id text DEFAULT '',
+      source_revision text DEFAULT '',
+      revision_version integer DEFAULT 1,
+      accepted_at text DEFAULT '',
+      updated_at text DEFAULT '',
+      PRIMARY KEY (authorization_id, account_id)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_blocks (
+      id text PRIMARY KEY,
+      blocker_system_account_id text DEFAULT '',
+      blocked_system_account_id text,
+      blocked_resource_type text,
+      blocked_resource_id text,
+      reason text,
+      created_at text DEFAULT '',
+      updated_at text DEFAULT ''
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.authorization_notifications (
+      id text PRIMARY KEY,
+      system_account_id text DEFAULT '',
+      type text DEFAULT '',
+      grant_id text,
+      source_id text,
+      payload_json text,
+      dedupe_key text DEFAULT '',
+      read_at text,
+      created_at text DEFAULT '',
+      UNIQUE (dedupe_key)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.system_account_authorization_suspensions (
+      id text PRIMARY KEY,
+      system_account_id text DEFAULT '',
+      suspended_by text DEFAULT '',
+      reason text,
+      suspended_at text DEFAULT '',
+      lifted_at text,
+      lifted_by text
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_offer_cooldowns (
+      id text PRIMARY KEY,
+      grantor_system_account_id text DEFAULT '',
+      grantee_type text DEFAULT '',
+      grantee_system_account_id text,
+      grantee_team_id text,
+      member_system_account_id text,
+      resource_type text DEFAULT '',
+      resource_id text DEFAULT '',
+      until_at text DEFAULT '',
+      reason text,
+      created_at text DEFAULT ''
     );
 `
 

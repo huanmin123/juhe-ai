@@ -62,7 +62,8 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		d.patchSuperMembers(w, r, adminScope(r))
 	})))
 	k.Register("POST "+prefix+"/groups", d.mountGuardedCreate(false))
-	k.Register("POST "+prefix+"/groups/{id}/return-authorization", d.mountGuardedReturnAuthorization(false))
+	// 管理面强制归还入口已移除（设计 §6.5/§13 #22）；用户侧入口在 my-groups
+	// 命名空间保留并按单来源收窄。
 	k.Register("PATCH "+prefix+"/groups/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.patch(w, r, adminScope(r))
 	})))
@@ -806,6 +807,13 @@ func (d *Deps) mountGuardedReturnAuthorization(selfOnly bool) http.Handler {
 			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 			return
 		}
+		if !selfOnly {
+			kernel.WriteJSON(w, http.StatusConflict, map[string]any{
+				"code":    "admin_return_forbidden",
+				"message": "管理员不得代接收方归还授权分组，请回收授权以移除访问",
+			})
+			return
+		}
 		if !scopeQueryOK(r) {
 			kernel.WriteBadRequest(w, "系统账号 ID 不能为空")
 			return
@@ -820,6 +828,15 @@ func (d *Deps) mountGuardedReturnAuthorization(selfOnly bool) http.Handler {
 		}
 		authorization, err := d.Authz.ReturnGroupForGrantee(r.Context(), r.PathValue("id"), access.granteeUserID(), auth.SystemAccountID)
 		if err != nil {
+			var fail *authz.Fail
+			if errors.As(err, &fail) {
+				status := http.StatusBadRequest
+				if fail.Code == "return_requires_source_center" {
+					status = http.StatusConflict
+				}
+				kernel.WriteJSON(w, status, map[string]any{"code": fail.Code, "message": fail.Message})
+				return
+			}
 			// Node's catch renders 400 with the error message; Go maps the
 			// non-domain (store) failure onto the 500 contract like the other
 			// families while keeping the Node fallback text.

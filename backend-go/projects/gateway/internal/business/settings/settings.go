@@ -247,6 +247,8 @@ var forwardProtocolEndpointModes = map[string][]string{
 	"message_token_counting":  {"message_token_counting"},
 	"count_tokens":            {"count_tokens"},
 	"embed_content":           {"embed_content"},
+	"embeddings":              {"embeddings_json"},
+	"rerank":                  {"rerank_json"},
 	"images":                  {"images_json"},
 	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
 	"realtime":                {"realtime_session"},
@@ -278,10 +280,12 @@ var endpointModeLegacyProjection = map[string][][2]string{
 	"message_token_counting":   {{"embedding", "message_token_counting"}},
 	"count_tokens":             {{"embedding", "count_tokens"}},
 	"embed_content":            {{"embedding", "embed_content"}},
+	"embeddings_json":          {{"embedding", "embeddings"}},
+	"rerank_json":              {{"rerank", "rerank"}},
 }
 
 var endpointModeLegacyRank = map[string]int{
-	"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5,
+	"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5, "rerank": 6,
 }
 
 // deriveProviderModelProjection 把 supported_endpoint_modes_json 逆映射成旧目

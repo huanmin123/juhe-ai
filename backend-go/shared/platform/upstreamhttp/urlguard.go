@@ -1,14 +1,14 @@
 // URL security primitives ported from the archived Node
 // shared/upstream-url-policy.ts (+ upstream-base-url-validator.ts) blocked
-// range tables: the static private/reserved-IP assertion and the
-// resolve-all + validated-dial guard (D-192/D-146, BUG-0175). The package
-// stays transport-only: it knows IP ranges and DNS, never accounts or
-// providers.
+// range tables: the static private/reserved-IP assertion and the allow-mixed
+// resolve + validated-dial guard (D-192/D-146, BUG-0175). Blocked candidates
+// are filtered out instead of rejecting the whole host, and only locally
+// selected addresses are ever dialed. The package stays transport-only: it
+// knows IP ranges and DNS, never accounts or providers.
 package upstreamhttp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -293,24 +293,30 @@ func NormalizePrivateUpstreamOrigin(name, value string) (string, error) {
 // dialGuardSequence disambiguates guard instances inside client-pool keys.
 var dialGuardSequence atomic.Uint64
 
-// DialGuard is the request-time half of the DNS rebinding defense: every new
-// upstream connection resolves the connect target itself, rejects the dial
-// when any resolved address falls into a blocked range, and dials one of the
-// validated addresses directly (pinning: no second resolution between check
-// and connect). The archived Node implementation pinned the lookup result at
+// DialGuard is the request-time half of the DNS rebinding defense for strict
+// deployments: every new upstream connection resolves the connect target
+// itself, keeps only the addresses that clear the blocked-range tables, and
+// dials one of the validated addresses directly (pinning: no second resolution
+// between check and connect). Resolution is allow-mixed: a hostname whose
+// answer contains at least one public address passes, and only an all-blocked
+// resolution is rejected. The archived Node implementation pinned the lookup result at
 // request-prepare time via the http request `lookup` option; Go has no
 // per-request dial hook, so the guard validates at the connection boundary
-// instead — every socket is established against a validated address, which is
-// the same guarantee applied per dial.
+// instead — every locally selected socket address is established against a
+// validated address, which is the same guarantee applied per dial.
 //
 // With an HTTP(S) proxy the guarded transport dials the proxy host, so the
 // guard validates the proxy target (the actual socket peer), matching the
-// Node semantics of validating the connect target. SOCKS dialers keep their
-// own resolution (socks5h is remote resolution by design).
+// Node semantics of validating the connect target. SOCKS dialers that resolve
+// locally use NewSOCKS5DialContextWithGuard so the CONNECT request carries a
+// validated address; socks5h keeps remote resolution by design and only
+// consumes the prepare-time best-effort precheck.
 //
-// Allowlisted origins (JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST) skip the
-// blocked-range rejection exactly like the archived implementation, while
-// hostname targets still resolve-and-dial through the same validated path.
+// Allowlisted origins (JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST) and
+// deployments with AllowPrivateBaseUrls keep the historical permissive
+// behavior: prepare-time validation short-circuits without DNS and the dial
+// path uses the plain dialer. Strict targets resolve-and-dial through the
+// validated path described above.
 type DialGuard struct {
 	config   URLSecurityConfig
 	resolver Resolver
@@ -393,39 +399,69 @@ func (g *DialGuard) rangeCheckAllowed(host, port string) bool {
 	return false
 }
 
-// ValidateHost resolves host and rejects it when any resolved address is
-// private or reserved (unless the deployment allowlisted the host or
-// explicitly allowed private base URLs). IP-literal hosts are validated
-// directly without DNS.
+// resolveDialable resolves host and returns the addresses that a
+// locally-selected-address path may dial (direct transport, local-resolution
+// SOCKS5). Resolution is allow-mixed: every non-nil address that clears the
+// blocked-range tables is returned, so a public+blocked answer yields the
+// public addresses only. A resolution whose IP addresses are all blocked
+// returns UnsafeResolvedUpstreamURLError; an empty/all-nil resolution returns
+// an empty slice and a nil error so callers keep their existing
+// empty-resolution semantics. IP-literal hosts are decided without DNS.
+// Allowlisted hosts and AllowPrivateBaseUrls skip the blocked-range filter and
+// return every non-nil address.
+func (g *DialGuard) resolveDialable(ctx context.Context, host, port string) ([]net.IP, error) {
+	normalized := NormalizeHostToken(host)
+	allowAny := g.rangeCheckAllowed(normalized, port)
+	if ip := net.ParseIP(normalized); ip != nil {
+		if allowAny || !IsPrivateOrReservedIP(normalized) {
+			return []net.IP{ip}, nil
+		}
+		return nil, &UnsafeResolvedUpstreamURLError{Message: UnsafeUpstreamURLMessage}
+	}
+	addresses, err := g.resolver.LookupIPAddr(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	dialable := make([]net.IP, 0, len(addresses))
+	blockedCount := 0
+	for _, addr := range addresses {
+		if addr.IP == nil {
+			continue
+		}
+		if allowAny || !IsPrivateOrReservedIP(addr.IP.String()) {
+			dialable = append(dialable, addr.IP)
+			continue
+		}
+		blockedCount++
+	}
+	if len(dialable) == 0 && blockedCount > 0 {
+		return nil, &UnsafeResolvedUpstreamURLError{Message: UnsafeUpstreamURLMessage}
+	}
+	return dialable, nil
+}
+
+// ValidateHost applies the deployment policy at request-preparation time: an
+// IP-literal host must clear the blocked-range tables, and a hostname is
+// accepted when at least one resolved address is dialable (mixed
+// public/blocked answers pass; an all-blocked resolution is rejected). An
+// empty resolution keeps the historical nil result. Allowlisted origins and
+// AllowPrivateBaseUrls keep the historical short-circuit without any DNS.
 func (g *DialGuard) ValidateHost(ctx context.Context, host, port string) error {
 	normalized := NormalizeHostToken(host)
 	if g.rangeCheckAllowed(normalized, port) {
 		return nil
 	}
-	if ip := net.ParseIP(normalized); ip != nil {
-		if IsPrivateOrReservedIP(normalized) {
-			return &UnsafeResolvedUpstreamURLError{Message: UnsafeUpstreamURLMessage}
-		}
-		return nil
-	}
-	addresses, err := g.resolver.LookupIPAddr(ctx, normalized)
-	if err != nil {
-		return err
-	}
-	for _, addr := range addresses {
-		if addr.IP == nil {
-			continue
-		}
-		if IsPrivateOrReservedIP(addr.IP.String()) {
-			return &UnsafeResolvedUpstreamURLError{Message: UnsafeUpstreamURLMessage}
-		}
-	}
-	return nil
+	_, err := g.resolveDialable(ctx, normalized, port)
+	return err
 }
 
-// DialContext implements the transport dial hook: resolve the address,
-// validate every candidate, then dial the validated IP directly so the
-// checked address is the connected address.
+// DialContext implements the transport dial hook: resolve the host, keep only
+// the addresses that clear the policy, then dial those IPs directly so the
+// checked address is the connected address. Blocked candidates are never
+// passed to the dialer. Permissive targets (allowlisted origin or
+// AllowPrivateBaseUrls) keep the historical plain dial without extra guard
+// resolution, so a deployment that explicitly allows private upstreams does
+// not acquire a new local-DNS dependency.
 func (g *DialGuard) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -435,36 +471,20 @@ func (g *DialGuard) DialContext(ctx context.Context, network, address string) (n
 	if g.rangeCheckAllowed(normalized, port) {
 		return g.dialer.DialContext(ctx, network, address)
 	}
-	if ip := net.ParseIP(normalized); ip != nil {
-		// Not allowlisted and a blocked literal: refuse the socket.
-		if IsPrivateOrReservedIP(normalized) {
-			return nil, &UnsafeResolvedUpstreamURLError{Message: UnsafeUpstreamURLMessage}
-		}
-		return g.dialer.DialContext(ctx, network, address)
-	}
-	addresses, err := g.resolver.LookupIPAddr(ctx, normalized)
+	dialable, err := g.resolveDialable(ctx, normalized, port)
 	if err != nil {
 		return nil, err
 	}
-	if len(addresses) == 0 {
+	if len(dialable) == 0 {
 		return nil, &net.DNSError{Err: "no such host", Name: normalized, IsNotFound: true}
 	}
 	var lastErr error
-	for _, addr := range addresses {
-		if addr.IP == nil {
-			continue
-		}
-		if IsPrivateOrReservedIP(addr.IP.String()) {
-			return nil, &UnsafeResolvedUpstreamURLError{Message: UnsafeUpstreamURLMessage}
-		}
-		conn, dialErr := g.dialer.DialContext(ctx, network, net.JoinHostPort(addr.IP.String(), port))
+	for _, ip := range dialable {
+		conn, dialErr := g.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		if dialErr == nil {
 			return conn, nil
 		}
 		lastErr = dialErr
-	}
-	if lastErr == nil {
-		lastErr = errors.New("upstream dial guard: no dialable validated address")
 	}
 	return nil, lastErr
 }

@@ -173,17 +173,18 @@ func TestParseEndpointModesTable(t *testing.T) {
 	}
 }
 
-// TestKnownModesClosure 断言已知词表与对话锚集合的闭合关系：已知 25 值 =
-// 对话 13 + 媒体 12（v8-A 只移动成员，并集不变），对话集合与媒体集合不相交；
-// 对话域纯粹化移动的三项归属同时钉住。
+// TestKnownModesClosure 断言已知词表与对话锚集合的闭合关系：已知 27 值 =
+// 对话 15 + 媒体 12（v8-A 只移动成员，并集不变；2026-11-20 协议补齐批向
+// 对话锚集追加 embeddings_json / rerank_json 两值，并集同步 25→27），
+// 对话集合与媒体集合不相交；对话域纯粹化移动的三项归属同时钉住。
 func TestKnownModesClosure(t *testing.T) {
 	chat := ChatModes()
 	known := KnownModes()
-	if len(chat) != 13 {
-		t.Fatalf("对话 modes 锚集合必须为 13 值（v8-A 移出三项），实际 %d", len(chat))
+	if len(chat) != 15 {
+		t.Fatalf("对话 modes 锚集合必须为 15 值（v8-A 移出三项 + 协议补齐批两项），实际 %d", len(chat))
 	}
-	if len(known) != 25 {
-		t.Fatalf("已知词表必须为 25 值（对话 13 + 媒体 12），实际 %d", len(known))
+	if len(known) != 27 {
+		t.Fatalf("已知词表必须为 27 值（对话 15 + 媒体 12），实际 %d", len(known))
 	}
 	chatSet := map[string]bool{}
 	for _, mode := range chat {
@@ -195,9 +196,9 @@ func TestKnownModesClosure(t *testing.T) {
 			overlap++
 		}
 	}
-	// known 内落在对话锚集合的值应恰为 13（媒体 12 值不在对话集合内）。
-	if overlap != 13 {
-		t.Fatalf("known ∩ chat 应为 13 值，实际 %d", overlap)
+	// known 内落在对话锚集合的值应恰为 15（媒体 12 值不在对话集合内）。
+	if overlap != 15 {
+		t.Fatalf("known ∩ chat 应为 15 值，实际 %d", overlap)
 	}
 	for _, mode := range mediaModes {
 		if chatSet[mode] {

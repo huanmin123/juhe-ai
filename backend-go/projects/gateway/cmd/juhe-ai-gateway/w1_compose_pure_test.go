@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -560,7 +561,10 @@ func TestW1CChainNormalizeGatewayEndpointModesForRuntime(t *testing.T) {
 		{"anthropic deepseek profile", []any{"messages_json", "messages_sse", "message_token_counting"}, "", "", "", "profile_deepseek_anthropic_v1", "anthropic", "v1", []string{"messages_json", "messages_sse"}},
 		{"anthropic glm coding profile", []any{"messages_json", "messages_sse", "message_token_counting"}, "", "", "", "profile_glm_coding_anthropic_v1", "anthropic", "v1", []string{"messages_json", "messages_sse"}},
 		{"gemini过滤", []any{"generate_content_json", "chat_json"}, "", "", "", "", "gemini", "v1beta", []string{"generate_content_json"}},
+		{"gemini保留native向量", []any{"generate_content_json", "embed_content", "chat_json"}, "", "", "", "", "gemini", "v1beta", []string{"generate_content_json", "embed_content"}},
+		{"gemini仅向量不落空集", []any{"embed_content", "chat_json"}, "", "", "", "", "gemini", "v1beta", []string{"embed_content"}},
 		{"默认走openai分支", []any{"chat_json"}, "gpt", "api_key", "", "", "", "", []string{"chat_json"}},
+		{"qwen保留向量与重排", []any{"chat_json", "embeddings_json", "rerank_json", "responses_json"}, "qwen", "api_key", "", "", "openai", "v1", []string{"chat_json", "embeddings_json", "rerank_json"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -569,6 +573,14 @@ func TestW1CChainNormalizeGatewayEndpointModesForRuntime(t *testing.T) {
 				t.Fatalf("期望 %#v 实际 %#v", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestW1CChainGeminiDefaultModesMatchAccountscore(t *testing.T) {
+	// secret 投影词表必须与写侧 canonical 词表逐值一致，否则 legacy
+	// credentials 回退会静默丢能力（例如 embed_content）或放行未声明协议。
+	if !reflect.DeepEqual(chainGeminiDefaultModes, accountscore.GeminiEndpointModeValues) {
+		t.Fatalf("chainGeminiDefaultModes = %#v, want %#v", chainGeminiDefaultModes, accountscore.GeminiEndpointModeValues)
 	}
 }
 
@@ -585,9 +597,12 @@ func TestW1CChainNormalizeOpenAIEndpointModesForRuntime(t *testing.T) {
 	}{
 		{"显式模式过滤去重", []any{"chat_sse", "bogus", "responses_json", "chat_sse"}, "", "api_key", "", []string{"chat_sse", "responses_json"}},
 		{"oauth回落responses", nil, "", "oauth", "", []string{"responses_json", "responses_sse"}},
+		{"oauth收窄chat", []any{"chat_json", "chat_sse"}, "", "oauth", "", []string{"responses_json", "responses_sse"}},
 		{"gpt全模式", nil, "GPT", "api_key", "", allModes},
 		{"deepseek全模式", []any{}, "deepseek", "api_key", "", allModes},
 		{"glm聊天模式", nil, " GLM ", "api_key", "", chatModes},
+		{"qwen空集回落chat", nil, "qwen", "api_key", "", chatModes},
+		{"volcengine空集回落chat", []any{}, "volcengine", "api_key", "", chatModes},
 		{"codex兼容全模式", nil, "unknown", "api_key", "codex_responses", allModes},
 		{"默认全模式", nil, "unknown", "api_key", "", allModes},
 	}

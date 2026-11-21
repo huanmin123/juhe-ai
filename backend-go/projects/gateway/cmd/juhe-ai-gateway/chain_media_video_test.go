@@ -808,8 +808,11 @@ func TestChainMediaJobRepoRoundTrip(t *testing.T) {
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create media_jobs: %v", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT, name TEXT)`); err != nil {
 		t.Fatalf("create accounts: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE api_keys (id TEXT PRIMARY KEY, name TEXT)`); err != nil {
+		t.Fatalf("create api_keys: %v", err)
 	}
 	repo := gatewaymedia.NewMediaJobsRepo(db, time.Now)
 	ctx := context.Background()

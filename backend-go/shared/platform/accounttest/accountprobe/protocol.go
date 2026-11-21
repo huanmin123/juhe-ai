@@ -43,6 +43,12 @@ const (
 	ModeInteractionsJSON    EndpointMode = "interactions_json"
 	ModeInteractionsSSE     EndpointMode = "interactions_sse"
 	ModeImagesJSON          EndpointMode = "images_json"
+	// 文本输入型形态（非真实对话生成）：只参与连接测试与协议等价判定。
+	ModeMessageTokenCounting EndpointMode = "message_token_counting"
+	ModeCountTokens          EndpointMode = "count_tokens"
+	ModeEmbedContent         EndpointMode = "embed_content"
+	ModeEmbeddingsJSON       EndpointMode = "embeddings_json"
+	ModeRerankJSON           EndpointMode = "rerank_json"
 	// M1 同步音频探针形态（音频设计 §11.9）：audio_speech = POST
 	// /v1/audio/speech（2xx + audio/* 判活）；audio_transcription_json =
 	// multipart POST /v1/audio/transcriptions（2xx + JSON text 判活）。
@@ -50,8 +56,18 @@ const (
 	ModeAudioTranscriptionJSON EndpointMode = "audio_transcription_json"
 	// M2 视频任务形态（媒体设计 §11.6）。2026-11-01 用户裁决起人工测试走
 	// 密钥连通性探测（绝不触碰创建端点，见 probe_connectivity.go），
-	// 不存在真实视频生成探针。
-	ModeVideoCreate EndpointMode = "video_create"
+	// 不存在真实视频生成探针。任务查询/内容/取消形态只用于连接测试。
+	ModeVideoCreate  EndpointMode = "video_create"
+	ModeVideoGet     EndpointMode = "video_get"
+	ModeVideoContent EndpointMode = "video_content"
+	ModeVideoCancel  EndpointMode = "video_cancel"
+	// 长音频任务形态（音频设计 §11.10）：创建后轮询 get/content/cancel。
+	ModeAudioJobCreate  EndpointMode = "audio_job_create"
+	ModeAudioJobGet     EndpointMode = "audio_job_get"
+	ModeAudioJobContent EndpointMode = "audio_job_content"
+	ModeAudioJobCancel  EndpointMode = "audio_job_cancel"
+	// Realtime 会话形态只用于连接测试（不建立 WebSocket 会话）。
+	ModeRealtimeSession EndpointMode = "realtime_session"
 )
 
 func (m EndpointMode) streaming() bool {

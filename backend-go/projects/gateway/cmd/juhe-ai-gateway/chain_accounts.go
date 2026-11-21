@@ -42,6 +42,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
@@ -1171,14 +1172,28 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 	if authorization == nil {
 		return nil, nil
 	}
-	var localEnabled sql.NullInt64
-	err = s.db.QueryRowContext(ctx, s.bind(`SELECT enabled FROM `+s.table("group_authorization_settings")+` WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? LIMIT 1`),
-		authorization.id, systemAccountID, groupID).Scan(&localEnabled)
-	if err != nil && err != sql.ErrNoRows {
+	// Group settings are fail-closed (§4.6): a missing row, a disabled switch,
+	// an unbuilt snapshot or a mismatched owner never degrades to "allowed".
+	var localEnabled int
+	var snapshotRevision, settingsOwner, settingsGroup string
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT enabled, COALESCE(snapshot_revision, ''),
+			system_account_id, group_id
+		FROM `+s.table("group_authorization_settings")+`
+		WHERE authorization_id = ? LIMIT 1`), authorization.id).
+		Scan(&localEnabled, &snapshotRevision, &settingsOwner, &settingsGroup)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	if localEnabled.Valid && localEnabled.Int64 == 0 {
+	if localEnabled != 1 || snapshotRevision == "" || settingsOwner != systemAccountID || settingsGroup != groupID {
 		return nil, nil
+	}
+	allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id, "group", groupID, ownerID,
+		authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
+	if err != nil || !allowed {
+		return nil, err
 	}
 	return &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      ownerID,
@@ -1358,6 +1373,11 @@ func (s *chainAccountsSelector) resolveChainAccountAccess(ctx context.Context, r
 		if boundAccountAuthorizationID != "" && authorization.id != boundAccountAuthorizationID {
 			return nil, nil
 		}
+		allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id, "account", authorization.resourceID,
+			authorization.resourceOwnerID, authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
+		if err != nil || !allowed {
+			return nil, err
+		}
 		return chainAccountAccessFromAuthorization(authorization), nil
 	}
 	if accountOwnerID == callerSystemAccountID {
@@ -1365,6 +1385,20 @@ func (s *chainAccountsSelector) resolveChainAccountAccess(ctx context.Context, r
 	}
 	if groupAccess.GroupAccessType == gatewayruntimecache.GroupAccessTypeAuthorized {
 		if accountOwnerID == groupAccess.GroupOwnerSystemAccountID {
+			authorizationID := ""
+			if groupAccess.GroupAuthorizationID != nil {
+				authorizationID = strings.TrimSpace(*groupAccess.GroupAuthorizationID)
+			}
+			groupAllowed, err := s.runtimeSourceRevisionOK(ctx, authorizationID, "group", row.GroupID.String,
+				groupAccess.GroupOwnerSystemAccountID, groupAccess.GroupAuthorizationSourceType,
+				groupAccess.GroupAuthorizationSourceTeamID)
+			if err != nil || !groupAllowed {
+				return nil, err
+			}
+			allowed, err := s.groupSnapshotAllows(ctx, authorizationID, row.ID)
+			if err != nil || !allowed {
+				return nil, err
+			}
 			return &chainAccountAccess{accountAccessType: chainAccountAccessGroupAuthorized}, nil
 		}
 		return nil, nil
@@ -1389,7 +1423,111 @@ func (s *chainAccountsSelector) resolveChainAccountAccess(ctx context.Context, r
 	if authorization == nil {
 		return nil, nil
 	}
+	allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id, "account", authorization.resourceID,
+		authorization.resourceOwnerID, authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
+	if err != nil || !allowed {
+		return nil, err
+	}
 	return chainAccountAccessFromAuthorization(authorization), nil
+}
+
+// runtimeSourceRevisionOK is the runtime source gate (authorization
+// governance design §8.1): the runtime must still have an active source of the
+// effective type, and its accepted material revision must equal the current
+// account/group revision. Runtime status alone is not sufficient.
+func (s *chainAccountsSelector) runtimeSourceRevisionOK(ctx context.Context, runtimeID, resourceType, resourceID, ownerID string,
+	effectiveSourceType, effectiveSourceTeamID *string) (bool, error) {
+	if strings.TrimSpace(runtimeID) == "" {
+		return false, nil
+	}
+	sourceType := ""
+	if effectiveSourceType != nil {
+		sourceType = strings.TrimSpace(*effectiveSourceType)
+	}
+	if sourceType != "manual" && sourceType != "team" {
+		return false, nil
+	}
+	teamID := ""
+	if effectiveSourceTeamID != nil {
+		teamID = strings.TrimSpace(*effectiveSourceTeamID)
+	}
+	if sourceType == "team" && teamID == "" {
+		return false, nil
+	}
+	var acceptedRevision string
+	var acceptedVersion, revisionVersion int
+	now := chainNowISO(s.now)
+	// The source gate must not trust a stale runtime projection: the runtime,
+	// its parent grant and the accepted source revision all have to agree at
+	// request time. A source without grant_id (legacy/unmigrated) fails
+	// closed because the inner JOIN cannot match it.
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT COALESCE(s.accepted_source_revision, ''),
+			COALESCE(s.accepted_source_revision_version, 0), s.revision_version
+		FROM `+s.table("resource_authorization_sources")+` s
+		JOIN `+s.table("resource_authorization_grants")+` g ON g.id = s.grant_id
+		JOIN `+s.table("resource_authorizations")+` ra ON ra.id = s.authorization_id
+		WHERE s.authorization_id = ? AND s.status = 'active'
+		  AND ra.status = 'active'
+		  AND (COALESCE(ra.expires_at, '') = '' OR ra.expires_at > ?)
+		  AND g.status = 'active'
+		  AND (COALESCE(g.expires_at, '') = '' OR g.expires_at > ?)
+		  AND ((? = 'manual' AND s.source_type = 'manual')
+		    OR (? = 'team' AND s.source_type = 'team' AND s.source_team_id = ?))
+		LIMIT 1`), runtimeID, now, now, sourceType, sourceType, teamID).
+		Scan(&acceptedRevision, &acceptedVersion, &revisionVersion)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if acceptedRevision == "" || acceptedVersion == 0 {
+		return false, nil
+	}
+	currentRevision, currentVersion, err := s.currentResourceRevision(ctx, resourceType, resourceID, ownerID)
+	if err != nil {
+		return false, err
+	}
+	return acceptedRevision == currentRevision && acceptedVersion == revisionVersion && currentVersion == revisionVersion, nil
+}
+
+func (s *chainAccountsSelector) currentResourceRevision(ctx context.Context, resourceType, resourceID, ownerID string) (string, int, error) {
+	if resourceType == "account" {
+		revision, version, _, err := authzrevision.Compute(ctx, s.db, resourceID, s.secret)
+		return revision, version, err
+	}
+	return authzrevision.Group(s.secret, resourceID, ownerID), authzrevision.Version, nil
+}
+
+// groupSnapshotAllows enforces the group scope snapshot at account granularity
+// (§4.6/§5.10): missing settings/snapshot or a changed account revision is a
+// denial. The group-level enabled switch is checked by resolveGroupAccess and
+// re-checked here so a stale cached access object cannot bypass it.
+func (s *chainAccountsSelector) groupSnapshotAllows(ctx context.Context, authorizationID, accountID string) (bool, error) {
+	if strings.TrimSpace(authorizationID) == "" || strings.TrimSpace(accountID) == "" {
+		return false, nil
+	}
+	var snapshotRevision, accountRevision string
+	var snapshotVersion int
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT COALESCE(s.snapshot_revision, ''),
+			COALESCE(ga.source_revision, ''), COALESCE(ga.revision_version, 0)
+		FROM `+s.table("group_authorization_settings")+` s
+		JOIN `+s.table("resource_authorization_group_accounts")+` ga
+		  ON ga.authorization_id = s.authorization_id AND ga.account_id = ?
+		WHERE s.authorization_id = ? AND s.enabled = 1 AND COALESCE(s.snapshot_revision, '') <> ''
+		LIMIT 1`), accountID, authorizationID).
+		Scan(&snapshotRevision, &accountRevision, &snapshotVersion)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	currentRevision, currentVersion, err := s.currentResourceRevision(ctx, "account", accountID, "")
+	if err != nil {
+		return false, err
+	}
+	return accountRevision == currentRevision && snapshotVersion == currentVersion, nil
 }
 
 // canScheduleChainAuthorizedAccount mirrors canScheduleAuthorizedAccount.

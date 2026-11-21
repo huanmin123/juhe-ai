@@ -29,8 +29,41 @@ assert.deepEqual(accountHealthCheckEndpointModeOptions([
   'embed_content'
 ]), [
   { label: 'Messages API（Streaming）', value: 'messages_sse' },
-  { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' }
-], '所有供应商的流式生成 mode 都应展示，工具型 endpoint mode 必须排除')
+  { label: 'Messages Token Counting', value: 'message_token_counting' },
+  { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' },
+  { label: 'Count Tokens', value: 'count_tokens' },
+  { label: 'Embed Content', value: 'embed_content' }
+], '2026-11-21 连接测试收口后，输入型 mode 是合法检查形态记录值，必须可展示')
+// 健康检查选项必须与后端 AccountHealthCheckEndpointModes 白名单同集：媒体任务
+// 查询/内容/取消与工具型 mode 都不是自动探针执行形态，但都是连接测试账户的合法
+// 记录值；audio_job_create/realtime_session 同属记录型白名单值，必须可展示与选择。
+assert.deepEqual(accountHealthCheckEndpointModeOptions([
+  'images_json', 'audio_speech', 'audio_transcription_json', 'audio_job_create',
+  'video_create', 'video_get', 'video_content', 'video_cancel', 'realtime_session',
+  'chat_json', 'chat_sse', 'responses_json', 'responses_sse',
+  'messages_json', 'messages_sse',
+  'generate_content_json', 'generate_content_sse',
+  'interactions_json', 'interactions_sse',
+  'embeddings_json', 'rerank_json'
+]).map((option) => option.value), [
+  'images_json', 'audio_speech', 'audio_transcription_json', 'audio_job_create',
+  'video_create', 'video_get', 'video_content', 'video_cancel', 'realtime_session',
+  'chat_json', 'chat_sse', 'responses_json', 'responses_sse',
+  'messages_json', 'messages_sse',
+  'generate_content_json', 'generate_content_sse',
+  'interactions_json', 'interactions_sse',
+  'embeddings_json', 'rerank_json'
+], '健康检查选项必须与后端 27 值白名单对齐')
+assert.equal(
+  defaultAccountHealthCheckEndpointMode('qwen', 'profile_qwen_openai_v1', ['audio_job_create']),
+  'audio_job_create',
+  '仅声明长音频任务的 qwen 账户必须默认落到可保存的 audio_job_create'
+)
+assert.equal(
+  defaultAccountHealthCheckEndpointMode('qwen', 'profile_qwen_openai_v1', ['realtime_session']),
+  'realtime_session',
+  '仅声明 realtime 的账户必须默认落到可保存的 realtime_session'
+)
 const draftEndpointModes = accountTestEndpointModesForAccount({
   providerCode: 'gpt',
   providerProtocolProfileId: 'profile_gpt_openai_v1',

@@ -68,7 +68,14 @@ type View struct {
 	// HealthCheckModel / HealthCheckEndpointMode 来自账户行。
 	HealthCheckModel        string
 	HealthCheckEndpointMode string
-	SupportedModels         []string
+	// ConnectionPresetCode 是探针所用连接的 registry preset，用于连接测试
+	// 规格查找（contracts.ConnectivityProbeForPreset）。保存账户与草稿测试
+	// 都必须显式透传；缺失时连接测试 fail closed。
+	ConnectionPresetCode string
+	// ConnectivityOnly 标记本次诊断是连接测试：不解析模型映射、不要求对话
+	// 形态、只按注册表规格验证凭证与上游可达性。
+	ConnectivityOnly bool
+	SupportedModels  []string
 	// ModelMappings 只在需要模型映射的账户（当前为 hybrid OpenAI 档案）
 	// 注入；未命中映射时必须显式失败，不得退回另一套协议请求。
 	ModelMappings []ModelMapping
@@ -234,9 +241,37 @@ func (s *Service) ManualDiagnostics(ctx context.Context, view *View, limited boo
 	return observation, nil, err
 }
 
+// ManualConnectivityDiagnostics 是连接测试诊断入口：只验证凭证与上游可达性，
+// 不调用模型、不生成产物。模式由连接器注册表按账户已声明形态选择；Key 池、
+// 代理、分级超时与 limited 脱敏沿用 ManualDiagnostics 同一链路。
+func (s *Service) ManualConnectivityDiagnostics(ctx context.Context, view *View, limited bool) (*accountquality.ProbeObservation, []PoolKeyAttempt, error) {
+	if view == nil {
+		return nil, nil, errors.New("探针视图缺失")
+	}
+	mode, _, ok := ConnectivityProbeModeForView(view)
+	if !ok {
+		return nil, nil, errors.New("账户没有可用于连接测试的请求形态")
+	}
+	stagedView := *view
+	stagedView.ConnectivityOnly = true
+	stagedView.HealthCheckEndpointMode = string(mode)
+	// 连接测试不要求检查模型；任务查询类请求完全不用模型，model_only 请求体
+	// 优先使用账户检查模型，其次首个支持模型。缺失时发送空 model 由上游参数
+	// 校验拒绝（仍可证明认证已通过）。
+	if strings.TrimSpace(stagedView.HealthCheckModel) == "" {
+		if len(stagedView.SupportedModels) > 0 {
+			stagedView.HealthCheckModel = strings.TrimSpace(stagedView.SupportedModels[0])
+		}
+	}
+	return s.ManualDiagnostics(ctx, &stagedView, limited)
+}
+
 // withScheduleForView 返回按视图端点形态取分级超时的派生服务
-// （images_json 单次 120s，其余保持服务默认序列）。
+// （images_json 单次 120s，其余保持服务默认序列；连接测试不使用生图长预算）。
 func (s *Service) withScheduleForView(view *View) *Service {
+	if view != nil && view.ConnectivityOnly {
+		return s
+	}
 	mode, err := resolveEndpointMode(view, EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode)))
 	if err == nil && mode == ModeImagesJSON {
 		return &Service{source: s.source, client: s.client, secret: s.secret, now: s.now, slots: s.slots, retryTimeouts: ImageDiagnosticRetryTimeouts}
@@ -462,7 +497,7 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	// audio_speech 人工测试只验证密钥能否访问上游，不真实生成产物——视频避免
 	// 真实计费任务，图像/语音避免真实消耗。请求构造、发送与状态码分类见
 	// probe_connectivity.go；分级阶梯与 Key 池调度沿用既有链路。
-	if isConnectivityProbeMode(endpointMode) {
+	if isConnectivityProbeMode(routedView, endpointMode) {
 		return s.executeConnectivityAttempt(ctx, routedView, endpointMode, model, apiKey, timeout, limited)
 	}
 	// 请求内身份快照（2026-11-06）：Anthropic OAuth 探针一次请求构造消费
@@ -477,8 +512,8 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	// 请求保持沉默（upstreamidentity 契约），不会覆盖身份头。
 	applyProbeIdentityHeaders(httpReq.Header, probeIdentityInput(routedView, httpReq), identitySnapshot)
 	// 发送前目标 URL 校验（SEC-03）：代理分支的 transport DialGuard 只校验
-	// 代理主机，目标由代理解析；strict 模式下目标域名指向内网必须在本地
-	// 发送前用同一部署级 URLSecurityConfig 拒绝。
+	// 代理主机，目标由代理解析；strict 模式下只有解析结果全部命中内网/保留段
+	// 才在本地拒绝（混合解析放行），直连与 socks5 本地解析只使用校验通过的地址。
 	if targetErr := s.validateProbeTarget(ctx, httpReq); targetErr != nil {
 		return nil, targetErr
 	}
@@ -591,9 +626,10 @@ func (s *Service) readUpstream(ctx context.Context, req *http.Request, timeout t
 }
 
 // validateProbeTarget 在发送前用部署级 DialGuard 校验目标 host/port（strict
-// 模式下域名解析到内网会被拒绝）。代理分支的 transport guard 校验的是代理
-// 主机而不是目标，因此目标校验必须在请求构造后单独执行；默认
-// AllowPrivateBaseUrls=true 时 ValidateHost 直接放行，行为与既有出站一致。
+// 模式下解析结果全部命中内网/保留段才拒绝，混合解析放行）。代理分支的
+// transport guard 校验的是代理主机而不是目标，因此目标校验必须在请求构造后
+// 单独执行；默认 AllowPrivateBaseUrls=true 时 ValidateHost 直接放行，行为与
+// 既有出站一致。
 func (s *Service) validateProbeTarget(ctx context.Context, req *http.Request) error {
 	if s == nil || s.dialGuard == nil || req == nil || req.URL == nil {
 		return nil
@@ -1090,6 +1126,28 @@ func isGeminiProtocol(view *View) bool {
 func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
 	if view == nil {
 		return nil, "", "", errors.New("探针视图缺失")
+	}
+	// 连接测试不解析模型映射、不要求对话形态：只按注册表规格验证凭证与
+	// 上游可达性。任务查询类请求不使用模型；model_only 请求体使用检查模型
+	// 或首个支持模型。
+	if view.ConnectivityOnly {
+		mode := EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode))
+		if mode == "" {
+			return nil, "", "", errors.New("连接测试缺少请求形态")
+		}
+		model := strings.TrimSpace(view.HealthCheckModel)
+		if model == "" {
+			model = strings.TrimSpace(view.ProbeModelOverride)
+		}
+		if model == "" && len(view.SupportedModels) > 0 {
+			model = strings.TrimSpace(view.SupportedModels[0])
+		}
+		if model == "" {
+			model = ConnectivityProbeTaskID
+		}
+		routed := *view
+		routed.HealthCheckModel = model
+		return &routed, mode, model, nil
 	}
 	defaultMode := EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode))
 	sourceMode, err := resolveEndpointMode(view, defaultMode)

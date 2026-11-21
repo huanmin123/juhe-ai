@@ -119,8 +119,8 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     updateSuperMembers: (id: string, payload: GroupSuperMembersPatchPayload, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.updateSuperMembers(id, payload, params)
       : api.myGroups.updateSuperMembers(id, payload),
-    returnAuthorization: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
-      ? api.groups.returnAuthorization(id, params)
+    returnAuthorization: (id: string, _params?: GroupMutationScopeParams) => isManagementView.value
+      ? Promise.reject(new Error('管理视图不支持归还授权分组，请在授权中心处理'))
       : api.myGroups.returnAuthorization(id),
     delete: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.delete(id, params)

@@ -74,6 +74,9 @@ export function getModelCategoryFromPricing(
 function categoryFromModeAlias(mode: string): ModelCategoryKey | undefined {
   if (mode === 'image_generation') return 'image'
   if (mode === 'chat' || mode === 'responses' || mode === 'completion') return 'text'
+  // 向量/重排（2026-11-20 协议补齐批）：目录 mode 新值，均为文本 lane，
+  // 归文本分类展示与编辑（与账户对话域模型白名单同口径）。
+  if (mode === 'embedding' || mode === 'rerank') return 'text'
   // 后端目录读链（catalog.go）把 audio_speech / audio_transcription 归一为
   // audio 分类（音频设计 §3），前端别名表同步。
   if (mode === 'audio_speech' || mode === 'audio_transcription') return 'audio'

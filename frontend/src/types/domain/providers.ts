@@ -51,6 +51,8 @@ export type ProviderModelApiProtocol =
   | 'stream_generate_content'
   | 'count_tokens'
   | 'embed_content'
+  | 'embeddings'
+  | 'rerank'
   | 'interactions'
   | 'completions'
   | 'images'

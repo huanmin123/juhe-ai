@@ -81,8 +81,20 @@ const ArchitectureVersion = "go-projects-v1"
 // 步骤写入 schema_migrations，只在 contract/all 相执行。2026-11-19 revision 26
 // 非对话媒体统一计费（《非对话媒体统一计费设计》§5.1）：models 新增
 // media_pricing_json text 加法列与对象形状 CHECK；纯 DDL 空号，无数据步骤，
-// 不写入 schema_migrations。当前值 26。
-const SchemaRevision int64 = 26
+// 不写入 schema_migrations。2026-11-20 revision 27 向量/重排协议
+// （《对外协议面对齐 new-api 设计》§4.4/§4.5/§6.3）：
+// account_endpoint_modes.endpoint_mode 与 accounts.health_check_endpoint_mode
+// 的 CHECK 词表追加 embeddings_json / rerank_json；新增
+// account-endpoint-mode-pg-check 幂等约束替换 DO 块，把存量两个约束按定义
+// 文本定位后重建（旧 health 迁移块按 message_token_counting 定位，对 25 值
+// 约束会假成功，本批同批修正）。纯 DDL 空号，无数据步骤，不写入
+// schema_migrations。2026-11-21 revision 28 授权接收方确认与来源治理
+// （《授权接收方确认与来源治理设计》§7/§12）：授权 grant/source/runtime 扩展
+// 状态与接受修订字段，新增分组快照、屏蔽、通知、暂停发起、cooldown 表，
+// system_accounts/system_teams 逻辑删除；注册
+// authz-recipient-consent-governance 数据/回填步骤（legacy 回填、grant_id 匹配、
+// 快照建立、约束 VALIDATE、外键收紧、复核通知）。当前值 28。
+const SchemaRevision int64 = 28
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

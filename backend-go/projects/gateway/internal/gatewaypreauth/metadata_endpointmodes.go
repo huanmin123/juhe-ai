@@ -54,6 +54,12 @@ const (
 	EndpointModeAudioJobContent        = "audio_job_content"
 	EndpointModeAudioJobCancel         = "audio_job_cancel"
 	EndpointModeRealtimeSession        = "realtime_session"
+	// 2026-11-20 协议补齐批（《对外协议面对齐 new-api 设计》§4.4/§4.5）：
+	// rerank_json 承载 POST /v1/rerank（Cohere/Jina 形态，候选过滤消费面）；
+	// embeddings_json 承载 POST /v1/embeddings（OpenAI Embeddings 规范面，
+	// 精确路径；/v1/embeddings/multimodal 是方舟私有子路径，维持透传不闸门）。
+	EndpointModeRerankJSON     = "rerank_json"
+	EndpointModeEmbeddingsJSON = "embeddings_json"
 )
 
 // RequestSupportedEndpointMode mirrors openAIEndpointModeForGatewayRequest +
@@ -65,7 +71,9 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return ""
 	}
 	method := req.MethodUpper()
-	path := RequestPathWithoutQuery(req)
+	// 协议门与链守卫按大小写不敏感匹配路径；mode 映射必须使用同一归一，
+	// 否则 /v1/Embeddings、/v1/RERANK 会通过入口却在候选过滤时丢失 mode。
+	path := strings.ToLower(RequestPathWithoutQuery(req))
 	stream := RequestStream(req)
 	switch {
 	case method == "POST" && strings.Contains(path, "/chat/completions"):
@@ -84,6 +92,10 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return EndpointModeAudioSpeech
 	case method == "POST" && (normalizedV1StrippedPath(path) == "/audio/transcriptions" || normalizedV1StrippedPath(path) == "/audio/translations"):
 		return EndpointModeAudioTranscriptionJSON
+	case method == "POST" && normalizedV1StrippedPath(path) == "/embeddings":
+		return EndpointModeEmbeddingsJSON
+	case method == "POST" && normalizedV1StrippedPath(path) == "/rerank":
+		return EndpointModeRerankJSON
 	case method == "POST" && normalizedV1StrippedPath(path) == "/video/generations":
 		return EndpointModeVideoCreate
 	case method == "GET" && videoGetEndpointMode(path) != "":
@@ -105,16 +117,16 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return EndpointModeMessagesJSON
 	case method == "POST" && strings.HasSuffix(path, "/messages/count_tokens"):
 		return EndpointModeMessageTokenCounting
-	case method == "POST" && strings.Contains(path, ":generateContent"):
+	case method == "POST" && strings.Contains(path, ":generatecontent"):
 		if stream {
 			return EndpointModeGenerateContentSSE
 		}
 		return EndpointModeGenerateContentJSON
-	case method == "POST" && strings.Contains(path, ":streamGenerateContent"):
+	case method == "POST" && strings.Contains(path, ":streamgeneratecontent"):
 		return EndpointModeGenerateContentSSE
-	case strings.Contains(path, ":countTokens"):
+	case strings.Contains(path, ":counttokens"):
 		return EndpointModeCountTokens
-	case method == "POST" && strings.Contains(path, ":embedContent"):
+	case method == "POST" && strings.Contains(path, ":embedcontent"):
 		return EndpointModeEmbedContent
 	case method == "POST" && strings.Contains(path, "/interactions"):
 		if stream {

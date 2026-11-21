@@ -1,4 +1,4 @@
-// `maintenance upgrade` 的 16 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 17 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/authzgovernance"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/groupspolicymigration"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/keyipmigration"
@@ -885,7 +886,7 @@ func applyUsageShardCatalogRetirement(ctx context.Context, dsn string) (upgradep
 	return upgradepipeline.Detail{"dropped": dropped, "alreadyRetired": false}, nil
 }
 
-// upgradeSteps 返回 16 步骤注册表（revision 升序；引擎再做一次排序校验）。
+// upgradeSteps 返回 17 步骤注册表（revision 升序；引擎再做一次排序校验）。
 // secret 为空时，凭据类 Check 不允许调用（第 8 步门禁保证到 Apply 阶段必有；
 // dry-run 阶段 Check 若需要 secret 会以错误呈现——预检语义可接受）。
 func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
@@ -960,6 +961,65 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 	}
 
 	return []upgradepipeline.Step{
+		{
+			Revision: 28, ID: "authz-recipient-consent-governance",
+			Title:                 "授权接收方确认与来源治理（legacy 回填、快照、约束/外键收紧）",
+			Target:                upgradepipeline.TargetPrimary,
+			Destructive:           true,
+			RequiredBeforeStartup: true,
+			ImplVersion:           1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return false, err
+				}
+				defer db.Close()
+				return authzgovernance.Satisfied(ctx, db, secret)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return nil, err
+				}
+				defer db.Close()
+				result, err := authzgovernance.Apply(ctx, db, authzgovernance.Options{Secret: secret})
+				detail := upgradepipeline.Detail{
+					"sourcesMapped":             result.SourcesMapped,
+					"sourcesStatusMigrated":     result.SourcesStatusMigrated,
+					"sourcesRevisionBackfilled": result.SourcesRevisionBackfilled,
+					"grantsLegacyMarked":        result.GrantsLegacyMarked,
+					"groupSnapshotsCreated":     result.GroupSnapshotsCreated,
+					"groupSettingsBackfilled":   result.GroupSettingsBackfilled,
+					"pendingTtlBackfilled":      result.PendingTTLBackfilled,
+					"legacyNotifications":       result.LegacyNotifications,
+					"constraintsValidated":      result.ConstraintsValidated,
+					"foreignKeysTightened":      result.ForeignKeysTightened,
+					"orphanSources":             result.OrphanSources,
+					"orphanGrants":              result.OrphanGrants,
+					"blockedReasons":            result.BlockedReasons,
+				}
+				if errors.Is(err, authzgovernance.ErrNeedsReview) {
+					fmt.Fprintf(os.Stderr, "revision 28 授权迁移被阻断：%s\n", strings.Join(result.BlockedReasons, "; "))
+					return detail, nil
+				}
+				if err != nil {
+					return detail, err
+				}
+				fmt.Fprintf(os.Stderr, "revision 28 授权迁移：source grant_id %d、状态迁移 %d、legacy 修订回填 %d、grant legacy %d、快照 %d、settings %d、pending TTL %d、复核通知 %d\n",
+					result.SourcesMapped, result.SourcesStatusMigrated, result.SourcesRevisionBackfilled,
+					result.GrantsLegacyMarked, result.GroupSnapshotsCreated, result.GroupSettingsBackfilled,
+					result.PendingTTLBackfilled, result.LegacyNotifications)
+				return detail, nil
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return err
+				}
+				defer db.Close()
+				return authzgovernance.Verify(ctx, db, secret)
+			},
+		},
 		{
 			Revision: 1, ID: "j3a-proxy-latency-pg",
 			Title: "J3a 代理延迟检测 PostgreSQL 表与索引预置", Target: upgradepipeline.TargetJ3A,

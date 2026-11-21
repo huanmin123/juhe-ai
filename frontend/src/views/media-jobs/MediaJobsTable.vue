@@ -49,8 +49,8 @@
         </a-tooltip>
         <span v-else class="muted-cell">-</span>
       </template>
-      <template v-else-if="column.key === 'apiKeyId'">
-        <span :class="record.apiKeyId ? 'id-cell' : 'muted-cell'">{{ record.apiKeyId || '-' }}</span>
+      <template v-else-if="column.key === 'apiKeyName'">
+        <span :class="record.apiKeyName ? 'name-cell' : 'muted-cell'">{{ record.apiKeyName || '-' }}</span>
       </template>
       <template v-else-if="column.key === 'costUsd'">
         <span :class="record.costUsd !== undefined ? 'mono-cell' : 'muted-cell'">{{ formatMediaJobCost(record.costUsd) }}</span>
@@ -132,8 +132,7 @@ defineEmits<{
 }
 
 .mono-cell,
-.job-id-text,
-.id-cell {
+.job-id-text {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
@@ -163,13 +162,14 @@ defineEmits<{
   white-space: nowrap;
 }
 
-.id-cell {
+.name-cell {
   display: inline-block;
   max-width: 140px;
   overflow: hidden;
-  color: var(--juhe-fg-soft);
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
   vertical-align: bottom;
+  white-space: nowrap;
 }
 
 .prompt-cell {

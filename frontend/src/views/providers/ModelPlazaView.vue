@@ -113,20 +113,11 @@
                 </div>
               </div>
             </div>
-            <div class="model-card-footer">
-              <div v-if="hasCardMeta(item)" class="model-card-meta">
-                <a-tag v-if="item.scope !== 'built_in'" :color="modelScopeColor(item.scope)">{{ formatModelScope(item.scope) }}</a-tag>
+            <div v-if="hasCardMeta(item)" class="model-card-footer">
+              <div class="model-card-meta">
                 <a-tag v-for="tier in modelServiceTierBadges(item)" :key="tier">{{ formatModelServiceTier(tier) }}</a-tag>
                 <a-tag v-if="item.status !== 'active'" :color="modelStatusColor(item.status)">{{ formatModelStatus(item.status) }}</a-tag>
                 <a-tag v-if="item.shutdownDate" color="orange">将停用 {{ item.shutdownDate }}</a-tag>
-              </div>
-              <div class="model-card-actions" @click.stop @keydown.stop>
-                <a-button class="model-card-copy" size="small" type="text" aria-label="复制模型 ID" @click="copyModelId(item)">
-                  <template #icon>
-                    <CopyOutlined />
-                  </template>
-                </a-button>
-                <RowActions v-if="rowActions(item).length" :actions="rowActions(item)" @action-click="handleModelAction($event, item)" />
               </div>
             </div>
           </article>
@@ -163,7 +154,6 @@
       </template>
       <template v-if="record">
         <div class="model-drawer-badges">
-          <a-tag v-if="record.scope !== 'built_in'" :color="modelScopeColor(record.scope)">{{ formatModelScope(record.scope) }}</a-tag>
           <a-tag v-for="tier in modelServiceTierBadges(record)" :key="tier">{{ formatModelServiceTier(tier) }}</a-tag>
           <a-tag v-if="record.status !== 'active'" :color="modelStatusColor(record.status)">{{ formatModelStatus(record.status) }}</a-tag>
           <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
@@ -269,7 +259,6 @@
 // 编辑后就地替换 + 手动刷新，不做激活自动刷新与轮询（no-auto-data-refresh 门禁）。
 // 卡片/抽屉形态契约自 ProviderModelCatalogModal 迁移（该 modal 随本设计退役），仅增补供应商徽标
 // （providers 摘要查表）；内置来源徽标与默认检查徽标属内部机制，不在卡面/抽屉展示。
-import { CopyOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -292,7 +281,6 @@ import {
   formatApiProtocol,
   formatModelCatalogDisplayValue,
   formatModelModalities,
-  formatModelScope,
   formatModelServiceTier,
   formatModelStatus,
   formatPriceTableCell,
@@ -303,7 +291,6 @@ import {
   modelInfoItems,
   modelPriceSlots,
   modelPriceTable,
-  modelScopeColor,
   modelStatusColor,
   type ModelCategoryKey
 } from './providerModelFormatters'
@@ -654,10 +641,9 @@ function modelServiceTierBadges(item: ProviderModelPricing): string[] {
   })
 }
 
-/** 卡面页脚是否有管理端元信息（范围/服务档位/非启用状态/停用日期）。 */
+/** 卡面页脚是否有管理端元信息（服务档位/非启用状态/停用日期）；范围不再上卡面。 */
 function hasCardMeta(item: ProviderModelPricing): boolean {
-  return item.scope !== 'built_in'
-    || modelServiceTierBadges(item).length > 0
+  return modelServiceTierBadges(item).length > 0
     || item.status !== 'active'
     || Boolean(item.shutdownDate)
 }
@@ -852,18 +838,6 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   text-overflow: ellipsis;
 }
 
-.model-card-copy {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  color: var(--juhe-muted);
-}
-
-.model-card-copy:hover {
-  color: var(--juhe-fg);
-}
-
 .model-card-caps {
   display: flex;
   flex-wrap: wrap;
@@ -991,15 +965,6 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 18px;
-}
-
-.model-card-actions {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
-  margin-left: auto;
 }
 
 .model-card-skeleton {

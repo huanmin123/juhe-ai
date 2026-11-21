@@ -369,15 +369,17 @@ var catalogEndpointModeLegacyProjection = map[string][][2]string{
 	"message_token_counting":   {{"embedding", "message_token_counting"}},
 	"count_tokens":             {{"embedding", "count_tokens"}},
 	"embed_content":            {{"embedding", "embed_content"}},
+	"embeddings_json":          {{"embedding", "embeddings"}},
+	"rerank_json":              {{"rerank", "rerank"}},
 }
 
 // catalogDeriveLegacyModeAndProtocols 从 supportedEndpointModes 行键反推旧目
-// 录行的 mode 与 supportedApiProtocols 投影：mode 取词表最高优先命中（video >
-// audio > image_generation > embedding > responses > chat，与旧 seed 行的
+// 录行的 mode 与 supportedApiProtocols 投影：mode 取词表最高优先命中（rerank >
+// video > audio > image_generation > embedding > responses > chat，与旧 seed 行的
 // mode 值域一致），协议 token 去重升序；空 mode 集（draft/disabled 行）不注入
 // mode 键（旧行为 NULL→absent），协议投影保持空数组。
 func catalogDeriveLegacyModeAndProtocols(row map[string]any) {
-	modeRank := map[string]int{"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5}
+	modeRank := map[string]int{"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5, "rerank": 6}
 	seenProtocols := map[string]bool{}
 	protocols := []string{}
 	bestMode := ""
